@@ -63,16 +63,24 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 	// 路由
 	mux := http.NewServeMux()
 
+	// 限速器
+	rl := middleware.NewRateLimiter(c)
+	loginPolicy := settingsSvc.LoginPolicy(context.Background())
+	loginRate := rl.Limit("login", loginPolicy.RateLimitPerMinute, time.Minute, middleware.IPKey)
+	captchaRate := rl.Limit("captcha", 20, time.Minute, middleware.IPKey)
+	sensitiveRate := rl.Limit("sensitive", 10, time.Minute, middleware.IPKey)
+	exportRate := rl.Limit("export", 5, time.Minute, middleware.IPKey)
+
 	// ---- 公开接口（无需认证） ----
 	mux.HandleFunc("GET /api/v1/health", a.health)
-	mux.HandleFunc("GET /api/v1/auth/captcha", authHandler.Captcha)
-	mux.HandleFunc("POST /api/v1/auth/login", authHandler.Login)
+	mux.Handle("GET /api/v1/auth/captcha", captchaRate(http.HandlerFunc(authHandler.Captcha)))
+	mux.Handle("POST /api/v1/auth/login", loginRate(http.HandlerFunc(authHandler.Login)))
 
 	// ---- 认证接口 ----
 	authz := a.authChain()
 	mux.Handle("POST /api/v1/auth/logout", authz(http.HandlerFunc(authHandler.Logout)))
 	mux.Handle("GET /api/v1/auth/me", authz(http.HandlerFunc(authHandler.Me)))
-	mux.Handle("POST /api/v1/auth/change-password", authz(http.HandlerFunc(authHandler.ChangePassword)))
+	mux.Handle("POST /api/v1/auth/change-password", authz(sensitiveRate(http.HandlerFunc(authHandler.ChangePassword))))
 	mux.Handle("GET /api/v1/auth/sessions", authz(http.HandlerFunc(authHandler.Sessions)))
 	mux.Handle("DELETE /api/v1/auth/sessions/{id}", authz(http.HandlerFunc(authHandler.RevokeSession)))
 
@@ -90,7 +98,7 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 	mux.Handle("POST /api/v1/users/{id}/enable", authz(middleware.RequirePermission("users.disable")(http.HandlerFunc(userHandler.Enable))))
 	mux.Handle("POST /api/v1/users/{id}/disable", authz(middleware.RequirePermission("users.disable")(http.HandlerFunc(userHandler.Disable))))
 	mux.Handle("POST /api/v1/users/{id}/unlock", authz(middleware.RequirePermission("users.unlock")(http.HandlerFunc(userHandler.Unlock))))
-	mux.Handle("POST /api/v1/users/{id}/reset-password", authz(middleware.RequirePermission("users.reset_password")(http.HandlerFunc(userHandler.ResetPassword))))
+	mux.Handle("POST /api/v1/users/{id}/reset-password", authz(middleware.RequirePermission("users.reset_password")(sensitiveRate(http.HandlerFunc(userHandler.ResetPassword)))))
 	mux.Handle("DELETE /api/v1/users/{id}/sessions", authz(middleware.RequirePermission("users.force_logout")(http.HandlerFunc(userHandler.ForceLogout))))
 
 	// ---- 角色权限查询 ----
@@ -101,12 +109,12 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 
 	// ---- 登录日志 ----
 	mux.Handle("GET /api/v1/login-logs", authz(http.HandlerFunc(logHandler.List)))
-	mux.Handle("GET /api/v1/login-logs/export", authz(middleware.RequirePermission("login_logs.export")(http.HandlerFunc(logHandler.Export))))
+	mux.Handle("GET /api/v1/login-logs/export", authz(middleware.RequirePermission("login_logs.export")(exportRate(http.HandlerFunc(logHandler.Export)))))
 
 	// ---- 操作审计 ----
 	mux.Handle("GET /api/v1/audits", authz(middleware.RequirePermission("audits.read")(http.HandlerFunc(auditHandler.List))))
 	mux.Handle("GET /api/v1/audits/{id}", authz(middleware.RequirePermission("audits.read")(http.HandlerFunc(auditHandler.Get))))
-	mux.Handle("GET /api/v1/audits/export", authz(middleware.RequirePermission("audits.export")(http.HandlerFunc(auditHandler.Export))))
+	mux.Handle("GET /api/v1/audits/export", authz(middleware.RequirePermission("audits.export")(exportRate(http.HandlerFunc(auditHandler.Export)))))
 	mux.Handle("POST /api/v1/audits/verify-chain", authz(middleware.RequirePermission("audits.read")(http.HandlerFunc(auditHandler.VerifyChain))))
 
 	// ---- 系统设置 ----

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -322,7 +323,7 @@ FROM operation_audits WHERE ` + where +
 	var out []Entry
 	for rows.Next() {
 		var e Entry
-		var sip, cip *string
+		var sip, cip *netip.Addr
 		if err := rows.Scan(&e.ID, &e.OccurredAt, &e.UserID, &e.Username, &sip, &cip,
 			&e.UserAgent, &e.Module, &e.Action, &e.ObjectType, &e.ObjectID, &e.ObjectName,
 			&e.BeforeSummary, &e.AfterSummary, &e.Result, &e.FailureReason, &e.RiskLevel,
@@ -330,10 +331,10 @@ FROM operation_audits WHERE ` + where +
 			return nil, 0, err
 		}
 		if sip != nil {
-			e.SourceIP = *sip
+			e.SourceIP = sip.String()
 		}
 		if cip != nil {
-			e.ConnectionIP = *cip
+			e.ConnectionIP = cip.String()
 		}
 		out = append(out, e)
 	}
@@ -348,7 +349,7 @@ SELECT id, occurred_at, user_id, username, source_ip, connection_ip, user_agent_
        result, failure_reason, risk_level, request_id, previous_hash, record_hash
 FROM operation_audits WHERE id = $1`, id)
 	var e Entry
-	var sip, cip *string
+	var sip, cip *netip.Addr
 	err := row.Scan(&e.ID, &e.OccurredAt, &e.UserID, &e.Username, &sip, &cip,
 		&e.UserAgent, &e.Module, &e.Action, &e.ObjectType, &e.ObjectID, &e.ObjectName,
 		&e.BeforeSummary, &e.AfterSummary, &e.Result, &e.FailureReason, &e.RiskLevel,
@@ -360,10 +361,10 @@ FROM operation_audits WHERE id = $1`, id)
 		return nil, err
 	}
 	if sip != nil {
-		e.SourceIP = *sip
+		e.SourceIP = sip.String()
 	}
 	if cip != nil {
-		e.ConnectionIP = *cip
+		e.ConnectionIP = cip.String()
 	}
 	return &e, nil
 }

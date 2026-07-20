@@ -4,6 +4,7 @@ package loginlogs
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -154,16 +155,16 @@ FROM login_logs WHERE ` + where +
 	var out []Entry
 	for rows.Next() {
 		var e Entry
-		var sip, cip *string
+		var sip, cip *netip.Addr
 		if err := rows.Scan(&e.ID, &e.OccurredAt, &e.Username, &e.UserID, &sip, &cip,
 			&e.UserAgent, &e.EventType, &e.Result, &e.FailureCode, &e.RequestID); err != nil {
 			return nil, 0, err
 		}
 		if sip != nil {
-			e.SourceIP = *sip
+			e.SourceIP = sip.String()
 		}
 		if cip != nil {
-			e.ConnectionIP = *cip
+			e.ConnectionIP = cip.String()
 		}
 		out = append(out, e)
 	}

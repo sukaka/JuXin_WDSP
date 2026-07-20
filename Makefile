@@ -1,8 +1,12 @@
 .PHONY: help build test lint fmt typecheck clean docker-up docker-down init-web init-server \
-	gateway-build gateway-up gateway-down gateway-logs gateway-test waf-test ftw-test
+	gateway-build gateway-up gateway-down gateway-logs gateway-test waf-test ftw-test \
+	server-build server-test server-test-integration web-install web-typecheck web-lint web-test web-build \
+	stage2-up stage2-down stage2-test stage2-status
 
 COMPOSE_STAGE1 := docker compose -f deployment/docker-compose.stage1.yml
+COMPOSE_STAGE2 := docker compose -f deployment/docker-compose.stage2.yml --env-file .env.example
 GATEWAY_PORT ?= 18080
+API_PORT ?= 18081
 FTW_BIN := $(shell go env GOPATH)/bin/go-ftw
 
 help:
@@ -111,3 +115,47 @@ ftw-test:
 	cd test/waf/ftw && $(FTW_BIN) run -d crs-tests --config ftw.yaml --read-timeout=10s
 
 waf-test: gateway-test ftw-test
+
+# ---------- 阶段2 管理系统 ----------
+
+server-build:
+	@echo "构建管理后端..."
+	cd server && go build -o ../bin/jiuzhang-api ./cmd/api
+
+server-test:
+	@echo "运行后端单元测试..."
+	cd server && go test -race ./internal/...
+
+server-test-integration:
+	@echo "运行后端接口集成测试(需 postgres+valkey)..."
+	cd server && go test ./tests/ -count=1
+
+web-install:
+	@echo "安装前端依赖..."
+	cd web && npm ci
+
+web-typecheck:
+	cd web && npm run typecheck
+
+web-lint:
+	cd web && npm run lint
+
+web-test:
+	cd web && npm test
+
+web-build:
+	@echo "构建前端..."
+	cd web && npm run build
+
+stage2-up:
+	@echo "启动阶段2环境..."
+	$(COMPOSE_STAGE2) up -d postgres valkey
+
+stage2-down:
+	@echo "停止阶段2环境..."
+	$(COMPOSE_STAGE2) down
+
+stage2-status:
+	@$(COMPOSE_STAGE2) ps
+
+stage2-test: server-test web-test

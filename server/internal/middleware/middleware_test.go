@@ -1,0 +1,137 @@
+package middleware
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/authz"
+)
+
+func TestSameOrigin(t *testing.T) {
+	cases := []struct {
+		origin string
+		host   string
+		want   bool
+	}{
+		{"http://localhost:5173", "localhost:5173", true},
+		{"https://waf.example.com", "waf.example.com", true},
+		{"http://evil.com", "waf.example.com", false},
+		{"https://waf.example.com/path", "waf.example.com", true},
+		{"http://waf.example.com.evil.com", "waf.example.com", false},
+	}
+	for _, c := range cases {
+		if got := sameOrigin(c.origin, c.host); got != c.want {
+			t.Errorf("sameOrigin(%q, %q) = %v, want %v", c.origin, c.host, got, c.want)
+		}
+	}
+}
+
+func TestSanitizeClientRequestID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool // 是否被采纳
+	}{
+		{"abc-123_DEF", true},
+		{"", false},
+		{"valid-uuid-1234", true},
+		{"with space", false},
+		{"with\nnewline", false},
+		{"with\"quote", false},
+		{string(make([]byte, 100)), false}, // 超长且含空字节
+	}
+	for _, c := range cases {
+		got := sanitizeClientRequestID(c.in)
+		if c.want && got != c.in {
+			t.Errorf("sanitizeClientRequestID(%q) rejected valid id", c.in)
+		}
+		if !c.want && got != "" {
+			t.Errorf("sanitizeClientRequestID(%q) = %q, want rejected", c.in, got)
+		}
+	}
+}
+
+func TestRequirePermission(t *testing.T) {
+	handler := RequirePermission("users.read")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// 无 Principal → 401
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("no principal status = %d, want 401", rec.Code)
+	}
+
+	// 有权限 → 200
+	p := &authz.Principal{
+		UserID:   uuid.New(),
+		Username: "admin",
+		PermsSet: map[string]bool{"users.read": true},
+	}
+	req2 := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req2 = req2.WithContext(authz.WithPrincipal(req2.Context(), p))
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Errorf("with permission status = %d, want 200", rec2.Code)
+	}
+
+	// 无权限 → 403
+	p2 := &authz.Principal{
+		UserID:   uuid.New(),
+		Username: "sec",
+		PermsSet: map[string]bool{"profile.read": true},
+	}
+	req3 := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req3 = req3.WithContext(authz.WithPrincipal(req3.Context(), p2))
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusForbidden {
+		t.Errorf("without permission status = %d, want 403", rec3.Code)
+	}
+}
+
+func TestCSRFProtectSafeMethods(t *testing.T) {
+	called := false
+	handler := CSRFProtect(func(r *http.Request, token string) bool {
+		return false // 总是校验失败
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// GET 安全方法应放行（不校验CSRF）
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if !called || rec.Code != http.StatusOK {
+		t.Errorf("GET should pass through, called=%v status=%d", called, rec.Code)
+	}
+
+	// POST 应校验失败
+	called = false
+	req2 := httptest.NewRequest(http.MethodPost, "/x", nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if called || rec2.Code != http.StatusForbidden {
+		t.Errorf("POST should be blocked, called=%v status=%d", called, rec2.Code)
+	}
+}
+
+func TestCSRFProtectValidToken(t *testing.T) {
+	handler := CSRFProtect(func(r *http.Request, token string) bool {
+		return token == "valid-token"
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req.Header.Set("X-CSRF-Token", "valid-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("valid csrf status = %d, want 200", rec.Code)
+	}
+}
