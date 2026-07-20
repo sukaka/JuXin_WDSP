@@ -12,12 +12,14 @@
 
 ## 核心防护组件
 
-| 软件名称 | 项目来源 | 计划版本 | 许可证 | 是否修改 | 使用方式 | 许可证文件位置 |
+| 软件名称 | 项目来源 | 锁定版本 | 许可证 | 是否修改 | 使用方式 | 许可证文件位置 |
 |---------|---------|---------|--------|---------|---------|---------------|
-| Caddy | https://github.com/caddyserver/caddy | 2.11.x | Apache-2.0 | 否 | 反向代理网关 | [licenses/caddy/LICENSE](licenses/caddy/LICENSE) |
-| Coraza WAF | https://github.com/corazawaf/coraza | 3.7.x | Apache-2.0 | 否 | WAF 检测引擎 | [licenses/coraza/LICENSE](licenses/coraza/LICENSE) |
-| coraza-caddy | https://github.com/corazawaf/coraza-caddy | 2.5.x | Apache-2.0 | 否 | Caddy 集成模块 | [licenses/coraza-caddy/LICENSE](licenses/coraza-caddy/LICENSE) |
-| OWASP CRS | https://github.com/coreruleset/coreruleset | 4.26.x | Apache-2.0 | 否 | 通用攻击规则集 | [licenses/owasp-crs/LICENSE](licenses/owasp-crs/LICENSE) |
+| Caddy | https://github.com/caddyserver/caddy | v2.11.4 (e2eee6a7fce3) | Apache-2.0 | 否 | 反向代理网关 | [licenses/caddy/LICENSE](licenses/caddy/LICENSE) |
+| Coraza WAF | https://github.com/corazawaf/coraza | v3.7.0 (27069d06c896) | Apache-2.0 | 否 | WAF 检测引擎 | [licenses/coraza/LICENSE](licenses/coraza/LICENSE) |
+| coraza-caddy | https://github.com/corazawaf/coraza-caddy | v2.5.0 (55c03d45dc55) | Apache-2.0 | 否 | Caddy 集成模块 | [licenses/coraza-caddy/LICENSE](licenses/coraza-caddy/LICENSE) |
+| OWASP CRS | https://github.com/coreruleset/coreruleset | v4.28.0 (55b09f5acfd1) | Apache-2.0 | 否 | 通用攻击规则集 | [licenses/owasp-crs/LICENSE](licenses/owasp-crs/LICENSE) |
+| xcaddy | https://github.com/caddyserver/xcaddy | v0.4.5 (328cac711a1f) | Apache-2.0 | 否 | Caddy 构建工具（仅构建期） | [licenses/xcaddy/LICENSE](licenses/xcaddy/LICENSE) |
+| go-ftw | https://github.com/coreruleset/go-ftw | v2.4.0 (23db497e3a61) | Apache-2.0 | 否 | CRS 回归测试（仅测试期） | [licenses/go-ftw/LICENSE](licenses/go-ftw/LICENSE) |
 
 ## 基础设施组件
 
@@ -25,6 +27,14 @@
 |---------|---------|---------|--------|---------|---------|---------------|
 | PostgreSQL | https://www.postgresql.org | 16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c | PostgreSQL License | 否 | 主数据库 | [licenses/postgresql/LICENSE](licenses/postgresql/LICENSE) |
 | Valkey | https://github.com/valkey-io/valkey | 8.1.8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885 | BSD-3-Clause | 否 | 缓存、会话辅助状态、分布式锁、任务状态 | [licenses/valkey/LICENSE](licenses/valkey/LICENSE) |
+
+## 基础镜像（Docker）
+
+| 软件名称 | 锁定版本 | 许可证 | 使用方式 |
+|---------|---------|--------|---------|
+| golang | 1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 | BSD-3-Clause | 网关/测试源站构建阶段 |
+| alpine | 3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b | MIT | 网关/测试源站运行阶段 |
+| curlimages/curl | 8.21.0@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13 | curl License (MIT/X) | 阶段1配置控制器容器 |
 
 ## 后端依赖（Go）
 

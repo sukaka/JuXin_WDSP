@@ -1,0 +1,11 @@
+---
+# go-ftw 配置：针对九章阶段1 POC 网关
+# 日志文件为 Coraza JSON 审计日志（bind mount 到宿主机）
+logfile: '../../../runtime/logs/stage1/coraza-audit.log'
+logmarkerheadername: X-CRS-TEST
+maxmarkerretries: 20
+testoverride:
+  input:
+    dest_addr: 127.0.0.1
+    port: 18080
+mode: "default"

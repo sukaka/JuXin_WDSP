@@ -56,4 +56,30 @@
 
 ## 当前状态
 
-阶段0已建立合规框架，尚未引入实际第三方组件二进制。计划在阶段1引入 Caddy、Coraza、coraza-caddy、OWASP CRS 并完成许可证归档。
+### 阶段0（2026-07-20）
+
+建立合规框架，引入 PostgreSQL 16.4 与 Valkey 8.1.8 容器镜像（Valkey BSD-3-Clause 许可证已归档 `licenses/valkey/`）。
+
+### 阶段0.1（2026-07-20）
+
+Redis 替换为 Valkey（规避 RSALv2/SSPLv1 合规风险），npm 统一包管理，全部镜像锁定版本+摘要。
+
+### 阶段1（2026-07-20）
+
+引入组件均为宽松许可证，许可证原文已归档：
+
+| 组件 | 版本 | 许可证 | 归档位置 |
+|------|------|--------|---------|
+| Caddy | v2.11.4 | Apache-2.0 | licenses/caddy/ |
+| Coraza WAF | v3.7.0 | Apache-2.0 | licenses/coraza/ |
+| coraza-caddy | v2.5.0 | Apache-2.0 | licenses/coraza-caddy/ |
+| OWASP CRS | v4.28.0 | Apache-2.0 | licenses/owasp-crs/（规则目录另附 LICENSE） |
+| xcaddy | v0.4.5 | Apache-2.0 | licenses/xcaddy/ |
+| go-ftw | v2.4.0 | Apache-2.0 | licenses/go-ftw/ |
+| curlimages/curl | 8.21.0 | curl License | licenses/curl/ |
+| 基础镜像 | golang/alpine | BSD/MIT | licenses/other/README.md |
+
+- 所有组件未经修改，通过 xcaddy 编译集成 / 只读挂载 / 容器镜像方式使用；
+- 无 GPL/AGPL 组件；
+- 无 `latest` 标签；
+- 详细版本与摘要见 [DEPENDENCIES.md](DEPENDENCIES.md)。

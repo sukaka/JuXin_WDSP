@@ -1,0 +1,15 @@
+============================================================
+九章阶段1 协议异常测试  127.0.0.1:18080  mode=on
+============================================================
+PASS  proto-conflicting-content-length (status=400, must not be 200)
+PASS  proto-oversized-header (status=431, want 431/400)
+PASS  proto-invalid-method (status=403)
+PASS  proto-body-type-mismatch (status=400)
+PASS  proto-duplicate-te-headers (status=501, must not be 200)
+============================================================
+总用例数: 5
+通过:     5
+失败:     0
+跳过:     0
+============================================================
+exit=0

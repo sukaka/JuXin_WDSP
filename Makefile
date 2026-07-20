@@ -1,4 +1,9 @@
-.PHONY: help build test lint fmt typecheck clean docker-up docker-down init-web init-server
+.PHONY: help build test lint fmt typecheck clean docker-up docker-down init-web init-server \
+	gateway-build gateway-up gateway-down gateway-logs gateway-test waf-test ftw-test
+
+COMPOSE_STAGE1 := docker compose -f deployment/docker-compose.stage1.yml
+GATEWAY_PORT ?= 18080
+FTW_BIN := $(shell go env GOPATH)/bin/go-ftw
 
 help:
 	@echo "九章WEB应用智能防护系统V2.0 构建工具"
@@ -12,6 +17,15 @@ help:
 	@echo "  make docker-up      启动基础依赖容器"
 	@echo "  make docker-down    停止基础依赖容器"
 	@echo "  make clean          清理构建产物"
+	@echo ""
+	@echo "阶段1网关POC:"
+	@echo "  make gateway-build  构建自定义Caddy与测试源站镜像"
+	@echo "  make gateway-up     启动阶段1网关环境(SEC_RULE_ENGINE=On|DetectionOnly|Off)"
+	@echo "  make gateway-down   停止阶段1网关环境"
+	@echo "  make gateway-logs   查看网关日志"
+	@echo "  make gateway-test   运行WAF攻击与协议异常测试"
+	@echo "  make ftw-test       运行go-ftw CRS回归测试"
+	@echo "  make waf-test       运行全部阶段1测试"
 
 build: build-server build-web
 
@@ -69,3 +83,31 @@ clean:
 	rm -rf web/dist/
 	rm -rf server/coverage.out
 	rm -rf web/coverage/
+
+# ---------- 阶段1 网关POC ----------
+
+gateway-build:
+	@echo "构建自定义Caddy与测试源站镜像..."
+	$(COMPOSE_STAGE1) build gateway testorigin
+
+gateway-up:
+	@echo "启动阶段1网关环境（SEC_RULE_ENGINE=$(SEC_RULE_ENGINE)）..."
+	SEC_RULE_ENGINE=$(or $(SEC_RULE_ENGINE),On) GATEWAY_PORT=$(GATEWAY_PORT) $(COMPOSE_STAGE1) up -d
+
+gateway-down:
+	@echo "停止阶段1网关环境..."
+	$(COMPOSE_STAGE1) down
+
+gateway-logs:
+	docker logs -f jiuzhang-stage1-gateway
+
+gateway-test:
+	@echo "运行WAF攻击与协议异常测试（EXPECT_MODE=$(or $(EXPECT_MODE),on)）..."
+	EXPECT_MODE=$(or $(EXPECT_MODE),on) GATEWAY_URL=http://127.0.0.1:$(GATEWAY_PORT) bash test/waf/scripts/run-waf-tests.sh
+	EXPECT_MODE=$(or $(EXPECT_MODE),on) GATEWAY_PORT=$(GATEWAY_PORT) python3 test/waf/scripts/protocol-tests.py
+
+ftw-test:
+	@echo "运行go-ftw CRS回归测试..."
+	cd test/waf/ftw && $(FTW_BIN) run -d crs-tests --config ftw.yaml --read-timeout=10s
+
+waf-test: gateway-test ftw-test
