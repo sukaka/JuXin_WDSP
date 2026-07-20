@@ -1,0 +1,66 @@
+# 依赖目录
+node_modules/
+vendor/
+
+# 构建产物
+dist/
+build/
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 测试产物
+coverage/
+*.coverprofile
+*.out
+
+# 环境文件
+.env
+.env.local
+.env.*.local
+
+# 运行时数据
+runtime/configs/*
+!runtime/configs/.gitkeep
+runtime/certificates/*
+!runtime/certificates/.gitkeep
+runtime/logs/*
+!runtime/logs/.gitkeep
+runtime/reports/*
+!runtime/reports/.gitkeep
+runtime/backups/*
+!runtime/backups/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 密钥与证书
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# Go
+*.test
+*.prof
+
+# Playwright
+playwright-report/
+test-results/

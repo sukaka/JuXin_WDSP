@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  server-test:
+    name: Server Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run go vet
+        working-directory: ./server
+        run: go vet ./...
+
+      - name: Run tests
+        working-directory: ./server
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Build
+        working-directory: ./server
+        run: go build -o ../bin/jiuzhang-server ./cmd/server
+
+  gateway-test:
+    name: Gateway Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run go vet
+        working-directory: ./gateway
+        run: go vet ./...
+
+      - name: Run tests
+        working-directory: ./gateway
+        run: go test -v -race ./...
+
+      - name: Build
+        working-directory: ./gateway
+        run: go build -o ../bin/jiuzhang-gateway ./cmd/gateway
+
+  web-test:
+    name: Web Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./web
+        run: npm ci
+
+      - name: Run typecheck
+        working-directory: ./web
+        run: npm run typecheck
+
+      - name: Run lint
+        working-directory: ./web
+        run: npm run lint
+
+      - name: Run tests
+        working-directory: ./web
+        run: npm test
+
+      - name: Build
+        working-directory: ./web
+        run: npm run build
+
+  docker-compose-check:
+    name: Docker Compose Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config
