@@ -16,6 +16,15 @@ type Config struct {
 	DB       DBConfig
 	Cache    CacheConfig
 	Security SecurityConfig
+	Gateway  GatewayConfig
+}
+
+// GatewayConfig 是网关配置（阶段3）。
+type GatewayConfig struct {
+	// AdminSocket Caddy Admin Unix Socket 路径
+	AdminSocket string
+	// DataDir 配置与证书数据目录
+	DataDir string
 }
 
 // HTTPConfig 是 HTTP 服务配置。
@@ -105,6 +114,10 @@ func Load() (*Config, error) {
 			InitialAdminPassword: os.Getenv("INITIAL_ADMIN_PASSWORD"),
 			InitialAdminUsername: getEnv("INITIAL_ADMIN_USERNAME", "jiuzhang_admin"),
 			CORSAllowedOrigins:   getEnvList("CORS_ALLOWED_ORIGINS"),
+		},
+		Gateway: GatewayConfig{
+			AdminSocket: getEnv("CADDY_ADMIN_SOCKET", "/var/run/caddy/admin.sock"),
+			DataDir:     getEnv("GATEWAY_DATA_DIR", "runtime"),
 		},
 	}
 	if cfg.DB.Password == "" {

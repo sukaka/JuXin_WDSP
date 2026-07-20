@@ -6,20 +6,26 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/applications"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/auth"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/cache"
+	"github.com/jiuzhang-waf/server/internal/certificates"
 	"github.com/jiuzhang-waf/server/internal/config"
+	"github.com/jiuzhang-waf/server/internal/encryption"
+	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
 	"github.com/jiuzhang-waf/server/internal/loginlogs"
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/roles"
 	"github.com/jiuzhang-waf/server/internal/security"
 	"github.com/jiuzhang-waf/server/internal/sessions"
 	"github.com/jiuzhang-waf/server/internal/settings"
+	"github.com/jiuzhang-waf/server/internal/upstreams"
 	"github.com/jiuzhang-waf/server/internal/users"
 )
 
@@ -45,6 +51,31 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 	auditSvc := audits.NewService(db)
 	captchaSvc := security.NewCaptchaService(c)
 	authSvc := auth.NewService(userStore, sessSvc, settingsSvc, logSvc, auditSvc, captchaSvc, c)
+
+	// 阶段3：加密服务（主密钥）
+	encSvc, err := initEncryption(cfg)
+	if err != nil {
+		slog.Warn("encryption service not configured, certificate features disabled", "error", err)
+	}
+
+	// 阶段3：应用/证书/网关服务
+	var appStore *applications.Store
+	var certStore *certificates.Store
+	var publisher *gatewayconfig.Publisher
+	var appHandler *applications.Handler
+	var certHandler *certificates.Handler
+	var upstreamTestHandler *upstreams.TestHandler
+	var gatewayHandler *gatewayconfig.Handler
+	if encSvc != nil {
+		appStore = applications.NewStore(db)
+		certStore = certificates.NewStore(db, encSvc)
+		publisher = gatewayconfig.NewPublisher(db, c, appStore, certStore,
+			cfg.Gateway.AdminSocket, cfg.Gateway.DataDir)
+		appHandler = applications.NewHandler(appStore, auditSvc)
+		certHandler = certificates.NewHandler(certStore, auditSvc)
+		upstreamTestHandler = upstreams.NewTestHandler(auditSvc)
+		gatewayHandler = gatewayconfig.NewHandler(publisher, appStore, auditSvc)
+	}
 
 	// 处理器
 	authHandler := auth.NewHandler(authSvc, sessSvc, userStore, captchaSvc, cfg.Security.CookieSecure)
@@ -122,6 +153,54 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 	// ---- 系统设置 ----
 	mux.Handle("GET /api/v1/system-settings", authz(middleware.RequirePermission("system_settings.read")(http.HandlerFunc(settingHandler.List))))
 	mux.Handle("PUT /api/v1/system-settings", authz(middleware.RequirePermission("system_settings.update")(http.HandlerFunc(settingHandler.Update))))
+
+	// ---- 阶段3：Web应用/域名/源站/证书/配置发布/版本/网关状态 ----
+	if encSvc != nil {
+		// Web应用
+		mux.Handle("GET /api/v1/applications", authz(middleware.RequirePermission("applications.read")(http.HandlerFunc(appHandler.List))))
+		mux.Handle("POST /api/v1/applications", authz(middleware.RequirePermission("applications.create")(http.HandlerFunc(appHandler.Create))))
+		mux.Handle("GET /api/v1/applications/{id}", authz(middleware.RequirePermission("applications.read")(http.HandlerFunc(appHandler.Get))))
+		mux.Handle("PUT /api/v1/applications/{id}", authz(middleware.RequirePermission("applications.update")(http.HandlerFunc(appHandler.Update))))
+		mux.Handle("DELETE /api/v1/applications/{id}", authz(middleware.RequirePermission("applications.delete")(http.HandlerFunc(appHandler.Delete))))
+		mux.Handle("POST /api/v1/applications/{id}/enable", authz(middleware.RequirePermission("applications.disable")(http.HandlerFunc(appHandler.Enable))))
+		mux.Handle("POST /api/v1/applications/{id}/disable", authz(middleware.RequirePermission("applications.disable")(http.HandlerFunc(appHandler.Disable))))
+		mux.Handle("POST /api/v1/applications/{id}/copy", authz(middleware.RequirePermission("applications.create")(http.HandlerFunc(appHandler.Copy))))
+
+		// 域名
+		mux.Handle("GET /api/v1/applications/{id}/domains", authz(middleware.RequirePermission("domains.read")(http.HandlerFunc(appHandler.ListDomains))))
+		mux.Handle("POST /api/v1/applications/{id}/domains", authz(middleware.RequirePermission("domains.create")(http.HandlerFunc(appHandler.AddDomain))))
+		mux.Handle("PUT /api/v1/applications/{id}/domains/{domain_id}", authz(middleware.RequirePermission("domains.update")(http.HandlerFunc(appHandler.UpdateDomain))))
+		mux.Handle("DELETE /api/v1/applications/{id}/domains/{domain_id}", authz(middleware.RequirePermission("domains.delete")(http.HandlerFunc(appHandler.DeleteDomain))))
+
+		// 源站
+		mux.Handle("GET /api/v1/applications/{id}/upstreams", authz(middleware.RequirePermission("upstreams.read")(http.HandlerFunc(appHandler.ListUpstreams))))
+		mux.Handle("POST /api/v1/applications/{id}/upstreams", authz(middleware.RequirePermission("upstreams.create")(http.HandlerFunc(appHandler.AddUpstream))))
+		mux.Handle("PUT /api/v1/upstreams/{id}", authz(middleware.RequirePermission("upstreams.update")(http.HandlerFunc(appHandler.UpdateUpstream))))
+		mux.Handle("DELETE /api/v1/upstreams/{id}", authz(middleware.RequirePermission("upstreams.delete")(http.HandlerFunc(appHandler.DeleteUpstream))))
+		mux.Handle("POST /api/v1/upstreams/{id}/enable", authz(middleware.RequirePermission("upstreams.update")(http.HandlerFunc(appHandler.EnableUpstream))))
+		mux.Handle("POST /api/v1/upstreams/{id}/disable", authz(middleware.RequirePermission("upstreams.update")(http.HandlerFunc(appHandler.DisableUpstream))))
+		mux.Handle("POST /api/v1/upstreams/test", authz(middleware.RequirePermission("upstreams.test")(http.HandlerFunc(upstreamTestHandler.Test))))
+
+		// 证书
+		mux.Handle("GET /api/v1/certificates", authz(middleware.RequirePermission("certificates.read")(http.HandlerFunc(certHandler.List))))
+		mux.Handle("POST /api/v1/certificates", authz(middleware.RequirePermission("certificates.create")(http.HandlerFunc(certHandler.Upload))))
+		mux.Handle("GET /api/v1/certificates/{id}", authz(middleware.RequirePermission("certificates.read")(http.HandlerFunc(certHandler.Get))))
+		mux.Handle("DELETE /api/v1/certificates/{id}", authz(middleware.RequirePermission("certificates.delete")(http.HandlerFunc(certHandler.Delete))))
+		mux.Handle("GET /api/v1/certificates/{id}/applications", authz(middleware.RequirePermission("certificates.read")(http.HandlerFunc(certHandler.ListApplications))))
+
+		// 配置发布/版本/网关状态
+		mux.Handle("POST /api/v1/gateway-config/preview", authz(middleware.RequirePermission("gateway_configs.preview")(http.HandlerFunc(gatewayHandler.Preview))))
+		mux.Handle("POST /api/v1/gateway-config/validate", authz(middleware.RequirePermission("gateway_configs.validate")(http.HandlerFunc(gatewayHandler.Validate))))
+		mux.Handle("POST /api/v1/gateway-config/publish", authz(middleware.RequirePermission("gateway_configs.publish")(http.HandlerFunc(gatewayHandler.Publish))))
+		mux.Handle("GET /api/v1/gateway-config/current", authz(middleware.RequirePermission("config_versions.read")(http.HandlerFunc(gatewayHandler.CurrentConfig))))
+		mux.Handle("GET /api/v1/publish-tasks", authz(middleware.RequirePermission("publish_tasks.read")(http.HandlerFunc(gatewayHandler.ListTasks))))
+		mux.Handle("GET /api/v1/publish-tasks/{id}", authz(middleware.RequirePermission("publish_tasks.read")(http.HandlerFunc(gatewayHandler.GetTask))))
+		mux.Handle("GET /api/v1/config-versions", authz(middleware.RequirePermission("config_versions.read")(http.HandlerFunc(gatewayHandler.ListVersions))))
+		mux.Handle("GET /api/v1/config-versions/{id}", authz(middleware.RequirePermission("config_versions.read")(http.HandlerFunc(gatewayHandler.GetVersion))))
+		mux.Handle("GET /api/v1/config-versions/{id}/diff", authz(middleware.RequirePermission("config_versions.read")(http.HandlerFunc(gatewayHandler.GetVersionDiff))))
+		mux.Handle("POST /api/v1/config-versions/{id}/rollback", authz(middleware.RequirePermission("gateway_configs.rollback")(http.HandlerFunc(gatewayHandler.Rollback))))
+		mux.Handle("GET /api/v1/gateway/status", authz(middleware.RequirePermission("gateway_status.read")(http.HandlerFunc(gatewayHandler.GatewayStatus))))
+	}
 
 	// 全局中间件链
 	var handler http.Handler = mux
@@ -209,3 +288,25 @@ func (a *App) health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"status":"%s","postgres":%t,"valkey":%t}`, status, dbOK, cacheOK)
 }
+
+// initEncryption 初始化加密服务（主密钥）。
+// 开发环境未配置时生成临时密钥并打印警告（不持久化，重启后旧密文无法解密）；
+// 生产环境必须配置 JIUZHANG_MASTER_KEY。
+func initEncryption(cfg *config.Config) (*encryption.Service, error) {
+	svc, err := encryption.NewFromEnv()
+	if err == nil {
+		return svc, nil
+	}
+	if cfg.Env == "prod" {
+		return nil, fmt.Errorf("JIUZHANG_MASTER_KEY is required in prod")
+	}
+	// 开发环境：生成临时主密钥（仅本次进程有效，供开发测试）
+	key, genErr := encryption.GenerateKey()
+	if genErr != nil {
+		return nil, genErr
+	}
+	slog.Warn("JIUZHANG_MASTER_KEY not set, using a temporary in-memory master key (dev only, encrypted data will not survive restart)")
+	return encryption.NewFromString(key)
+}
+
+var _ = os.Getenv
