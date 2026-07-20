@@ -1,9 +1,7 @@
-import type { FullConfig } from '@playwright/test'
-
 /**
  * E2E 全局 teardown：恢复登录接口限速为默认值（10次/分钟）。
  */
-export default async function globalTeardown(config: FullConfig) {
+export default async function globalTeardown() {
   // 与 global-setup 对称：恢复 login rate_limit_per_minute 为 10
   const { default: Redis } = await import('ioredis')
   const BASE_URL = process.env.E2E_BASE_URL || 'http://localhost:5173'
@@ -21,8 +19,9 @@ export default async function globalTeardown(config: FullConfig) {
       db: Number(process.env.VALKEY_DB || 0),
     })
     try {
-      const code = await r.get(`jiuzhang:captcha:${json?.data?.captcha_id}`)
-      return { id: json?.data?.captcha_id!, code: code! }
+      const id = json?.data?.captcha_id
+      const code = await r.get(`jiuzhang:captcha:${id}`)
+      return { id: id!, code: code! }
     } finally {
       r.disconnect()
     }
@@ -40,7 +39,9 @@ export default async function globalTeardown(config: FullConfig) {
     const cookies = loginResp.headers()['set-cookie'] || ''
     const listResp = await ctx.get(`${API}/system-settings?group=login`, { headers: { cookie: cookies } })
     const listJson = await listResp.json()
-    const item = (listJson?.data?.items || []).find((s: any) => s.setting_key === 'rate_limit_per_minute')
+    const item = (listJson?.data?.items || []).find(
+      (s: { setting_key: string }) => s.setting_key === 'rate_limit_per_minute',
+    )
     if (item) {
       await ctx.put(`${API}/system-settings`, {
         headers: { cookie: cookies, 'X-CSRF-Token': csrf },

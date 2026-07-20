@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { loginViaAPI, loginViaUI, createUserViaAPI, changePasswordViaAPI } from './helpers'
+import { loginViaAPI, createUserViaAPI, changePasswordViaAPI } from './helpers'
 
 /**
  * 场景二：安全管理员

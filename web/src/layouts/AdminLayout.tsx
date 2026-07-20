@@ -1,10 +1,16 @@
 import { useMemo, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { App as AntdApp, Avatar, Breadcrumb, Dropdown, Layout, Menu, Space, Spin } from 'antd'
+import type { MenuProps } from 'antd'
 import {
+  AppstoreOutlined,
   AuditOutlined,
+  CloudServerOutlined,
+  CloudUploadOutlined,
   DashboardOutlined,
+  FileProtectOutlined,
   FileSearchOutlined,
+  HistoryOutlined,
   KeyOutlined,
   LogoutOutlined,
   SafetyCertificateOutlined,
@@ -22,6 +28,11 @@ const { Header, Sider, Content } = Layout
 
 const MENU_ICONS: Record<string, ReactNode> = {
   '/dashboard': <DashboardOutlined />,
+  '/applications': <AppstoreOutlined />,
+  '/certificates': <FileProtectOutlined />,
+  '/config-publish': <CloudUploadOutlined />,
+  '/config-versions': <HistoryOutlined />,
+  '/gateway-status': <CloudServerOutlined />,
   '/users': <TeamOutlined />,
   '/roles': <SafetyCertificateOutlined />,
   '/login-logs': <FileSearchOutlined />,
@@ -43,6 +54,29 @@ export default function AdminLayout() {
     () => filterMenusByRoles(user?.roles.map((r) => r.code)),
     [user],
   )
+
+  // 无分组的顶层菜单在前，分组菜单按 group 聚合为分组节点
+  const menuItems = useMemo<NonNullable<MenuProps['items']>>(() => {
+    const items: NonNullable<MenuProps['items']> = []
+    const groups = new Map<string, typeof menus>()
+    for (const m of menus) {
+      if (!m.group) {
+        items.push({ key: m.key, icon: MENU_ICONS[m.key], label: m.label })
+      } else {
+        const arr = groups.get(m.group) ?? []
+        arr.push(m)
+        groups.set(m.group, arr)
+      }
+    }
+    for (const [label, children] of groups) {
+      items.push({
+        type: 'group',
+        label,
+        children: children.map((m) => ({ key: m.key, icon: MENU_ICONS[m.key], label: m.label })),
+      })
+    }
+    return items
+  }, [menus])
 
   const currentMenu = menus.find((m) => location.pathname.startsWith(m.key))
 
@@ -84,7 +118,7 @@ export default function AdminLayout() {
           theme="dark"
           mode="inline"
           selectedKeys={currentMenu ? [currentMenu.key] : []}
-          items={menus.map((m) => ({ key: m.key, icon: MENU_ICONS[m.key], label: m.label }))}
+          items={menuItems}
           onClick={({ key }) => navigate(key)}
         />
       </Sider>

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { loginViaAPI, createUserViaAPI, changePasswordViaAPI, getCaptcha, API_URL } from './helpers'
 
 /**
@@ -9,7 +9,7 @@ import { loginViaAPI, createUserViaAPI, changePasswordViaAPI, getCaptcha, API_UR
 const SYSADMIN = process.env.E2E_SYSADMIN_USER || 'jiuzhang_admin'
 const SYSADMIN_PWD = process.env.E2E_SYSADMIN_PWD || 'NewStr0ng!Pass2026'
 
-async function tryLogin(page: any, username: string, password: string) {
+async function tryLogin(page: Page, username: string, password: string) {
   const { id, code } = await getCaptcha()
   const resp = await page.request.post(`${API_URL}/auth/login`, {
     data: { username, password, captcha_id: id, captcha_code: code },
@@ -29,13 +29,12 @@ test.describe('场景四：账号锁定与解锁', () => {
 
     // 步骤1：连续 5 次错误密码
     for (let i = 0; i < 5; i++) {
-      const resp = await tryLogin(page, username, `wrong-pass-${i}`)
+      await tryLogin(page, username, `wrong-pass-${i}`)
       // 前几次返回 401（统一提示）
     }
 
     // 步骤2：正确密码仍不能登录（账号已锁定）
     const lockedResp = await tryLogin(page, username, realPwd)
-    const lockedBody = await lockedResp.json()
     // 锁定应返回 ACCOUNT_LOCKED（403）或统一 UNAUTHENTICATED（401）
     expect([403, 401]).toContain(lockedResp.status())
 

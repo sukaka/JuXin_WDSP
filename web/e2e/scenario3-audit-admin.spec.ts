@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { loginViaAPI, createUserViaAPI, changePasswordViaAPI } from './helpers'
 
 /**
@@ -9,7 +9,7 @@ import { loginViaAPI, createUserViaAPI, changePasswordViaAPI } from './helpers'
 const SYSADMIN = process.env.E2E_SYSADMIN_USER || 'jiuzhang_admin'
 const SYSADMIN_PWD = process.env.E2E_SYSADMIN_PWD || 'NewStr0ng!Pass2026'
 
-async function setupAuditAdmin(page: any) {
+async function setupAuditAdmin(page: Page) {
   await loginViaAPI(page, SYSADMIN, SYSADMIN_PWD)
   const username = `e2e_audit_${Date.now().toString().slice(-8)}`
   const { password: tempPwd } = await createUserViaAPI(page, username, 'AUDIT_ADMIN')
@@ -65,7 +65,7 @@ test.describe('场景三：审计管理员', () => {
   })
 
   test('审计管理员尝试修改用户被拒绝', async ({ page }) => {
-    const username = await setupAuditAdmin(page)
+    await setupAuditAdmin(page)
     const base = process.env.E2E_BASE_URL || 'http://localhost:5173'
     // 获取 CSRF
     const me = await page.request.get(`${base}/api/v1/auth/me`)

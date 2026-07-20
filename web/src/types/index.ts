@@ -162,3 +162,192 @@ export interface HealthStatus {
   postgres: boolean
   valkey: boolean
 }
+
+/* ==================== 阶段3：应用接入 / 源站 / 证书 / 配置发布 ==================== */
+
+/** 防护模式 */
+export type ProtectionMode = 'OFF' | 'OBSERVE' | 'PROTECT'
+
+/** 应用状态 */
+export type ApplicationStatus = 'DRAFT' | 'ACTIVE' | 'DISABLED' | 'ERROR' | 'DELETED'
+
+/** 部署状态 */
+export type DeploymentStatus =
+  | 'NOT_PUBLISHED'
+  | 'PUBLISHING'
+  | 'PUBLISHED'
+  | 'PUBLISH_FAILED'
+  | 'ROLLING_BACK'
+  | 'ROLLBACK_FAILED'
+
+/** Web 应用列表项 */
+export interface ApplicationItem {
+  id: string
+  code: string
+  name: string
+  description: string
+  business_owner: string
+  technical_owner: string
+  status: ApplicationStatus
+  protection_mode: ProtectionMode
+  deployment_status: DeploymentStatus
+  health_status: string
+  current_version_id?: string | null
+  last_publish_at?: string | null
+  last_publish_result: string
+  domain_count: number
+  upstream_count: number
+  created_at: string
+  updated_at: string
+  version: number
+}
+
+/** 应用详情（含域名与源站） */
+export interface ApplicationDetail extends ApplicationItem {
+  domains: DomainItem[]
+  upstreams: UpstreamItem[]
+}
+
+/** 应用域名 */
+export interface DomainItem {
+  id: string
+  application_id: string
+  hostname: string
+  normalized_hostname: string
+  domain_type: 'EXACT' | 'WILDCARD'
+  is_primary: boolean
+  http_enabled: boolean
+  https_enabled: boolean
+  http_port?: number | null
+  https_port?: number | null
+  redirect_http_to_https: boolean
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+/** 源站 */
+export interface UpstreamItem {
+  id: string
+  application_id: string
+  name: string
+  scheme: 'http' | 'https'
+  host: string
+  normalized_host: string
+  port: number
+  weight: number
+  priority: number
+  status: 'ACTIVE' | 'DISABLED'
+  health_check_enabled: boolean
+  health_check_path: string
+  health_check_method: string
+  health_check_interval_seconds: number
+  health_check_timeout_seconds: number
+  expected_status_codes: string
+  connect_timeout_ms: number
+  response_header_timeout_ms: number
+  tls_server_name: string
+  tls_verify: boolean
+  max_retries: number
+  created_at: string
+  updated_at: string
+  version: number
+}
+
+/** 源站连通性测试结果（HTTP 200 返回，成败看 error_code） */
+export interface UpstreamTestResult {
+  dns_result: '' | 'ok' | 'failed'
+  resolved_addresses?: string[] | null
+  tcp_connected: boolean
+  tls_handshake: boolean
+  tls_verify_result: string
+  http_status: number
+  response_time_ms: number
+  error_code: string
+  error_message: string
+}
+
+/** 证书状态 */
+export type CertificateStatus = 'VALID' | 'EXPIRING' | 'EXPIRED' | 'INVALID' | 'KEY_MISMATCH'
+
+/** HTTPS 证书列表项 */
+export interface CertificateItem {
+  id: string
+  name: string
+  certificate_type: string
+  common_name: string
+  subject: string
+  issuer: string
+  serial_number: string
+  not_before?: string | null
+  not_after?: string | null
+  fingerprint_sha256: string
+  public_key_algorithm: string
+  public_key_bits: number
+  signature_algorithm: string
+  san_domains: string[]
+  status: CertificateStatus
+  usage_count: number
+  created_at: string
+  updated_at: string
+  version: number
+}
+
+/** 证书详情（含绑定应用 ID 列表，不含私钥） */
+export interface CertificateDetail extends CertificateItem {
+  application_ids: string[]
+}
+
+/** 业务摘要（preview 响应中为对象；version/diff 中为同结构的 JSON 字符串） */
+export interface BusinessSnapshot {
+  apps: { code: string; mode: string; domains: number; upstreams: number }[]
+}
+
+/** 发布任务 */
+export interface PublishTaskItem {
+  id: string
+  task_type: 'PUBLISH' | 'ROLLBACK'
+  status: string
+  requested_by?: string | null
+  requested_at: string
+  started_at?: string | null
+  finished_at?: string | null
+  target_version_id?: string | null
+  current_step: string
+  progress: number
+  result_summary: string
+  failure_code: string
+  failure_message: string
+  request_id: string
+}
+
+/** 配置版本 */
+export interface ConfigVersionItem {
+  id: string
+  version_number: string
+  configuration_hash: string
+  /** JSON 字符串，内容为 BusinessSnapshot */
+  business_snapshot: string
+  change_summary: string
+  previous_version_id?: string | null
+  publish_task_id?: string | null
+  publish_result: '' | 'SUCCESS' | 'FAILED' | 'VERIFY_FAILED'
+  is_current: boolean
+  created_by?: string | null
+  created_at: string
+  published_at?: string | null
+}
+
+/** 网关运行状态 */
+export interface GatewayStatusData {
+  gateway_up: boolean
+  gateway_error: string
+  current_version: string
+  current_hash: string
+  last_publish_result: string
+  /** 格式为 "YYYY-MM-DD HH:mm:ss"，无发布记录时为空字符串 */
+  last_publish_at: string
+  application_count: number
+  domain_count: number
+  upstream_count: number
+}

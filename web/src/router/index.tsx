@@ -13,6 +13,12 @@ import LoginLogsPage from '../pages/login-logs/LoginLogsPage'
 import AuditsPage from '../pages/audits/AuditsPage'
 import SystemSettingsPage from '../pages/system-settings/SystemSettingsPage'
 import ProfilePage from '../pages/profile/ProfilePage'
+import ApplicationsPage from '../pages/applications/ApplicationsPage'
+import ApplicationDetailPage from '../pages/applications/ApplicationDetailPage'
+import CertificatesPage from '../pages/certificates/CertificatesPage'
+import ConfigPublishPage from '../pages/config-publish/ConfigPublishPage'
+import ConfigVersionsPage from '../pages/config-versions/ConfigVersionsPage'
+import GatewayStatusPage from '../pages/gateway-status/GatewayStatusPage'
 import { ForbiddenPage, NotFoundPage, ServerErrorPage } from '../pages/errors'
 
 function FullScreenLoading() {
@@ -66,6 +72,54 @@ export default function AppRoutes() {
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
+        <Route
+          path="applications"
+          element={
+            <RequirePermission permission="applications.read">
+              <ApplicationsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="applications/:id"
+          element={
+            <RequirePermission permission="applications.read">
+              <ApplicationDetailPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="certificates"
+          element={
+            <RequirePermission permission="certificates.read">
+              <CertificatesPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="config-publish"
+          element={
+            <RequirePermission permission="gateway_configs.preview">
+              <ConfigPublishPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="config-versions"
+          element={
+            <RequirePermission permission="config_versions.read">
+              <ConfigVersionsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="gateway-status"
+          element={
+            <RequirePermission permission="gateway_status.read">
+              <GatewayStatusPage />
+            </RequirePermission>
+          }
+        />
         <Route
           path="users"
           element={

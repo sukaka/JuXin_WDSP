@@ -26,6 +26,7 @@ services:
       - ../gateway/rules:/etc/caddy/rules:ro
       # 日志目录绑定挂载到宿主机，供事件解析器与 go-ftw 日志断言读取
       - ../runtime/logs/stage1:/var/log/caddy
+      # Admin Socket 共享卷：供配置控制器（后端容器）访问，不暴露到宿主机
       - stage1-gateway-admin:/var/run/caddy
     tmpfs:
       # read_only 根文件系统下提供可写临时目录（Coraza SecDataDir）

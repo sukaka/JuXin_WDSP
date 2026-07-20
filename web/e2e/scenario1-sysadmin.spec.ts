@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { loginViaUI, loginViaAPI, createUserViaAPI, API_URL } from './helpers'
+import { loginViaAPI } from './helpers'
 
 /**
  * 场景一：系统管理员完整流程

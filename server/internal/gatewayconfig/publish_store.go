@@ -80,9 +80,11 @@ func (p *Publisher) ListTasks(ctx context.Context, status string, page, pageSize
 	}
 	where := "1=1"
 	args := []interface{}{}
+	argIdx := 1
 	if status != "" {
-		where += " AND status = $1"
+		where += fmt.Sprintf(" AND status = $%d", argIdx)
 		args = append(args, status)
+		argIdx++
 	}
 	var total int64
 	if err := p.db.QueryRow(ctx, `SELECT count(*) FROM gateway_publish_tasks WHERE `+where, args...).Scan(&total); err != nil {
@@ -92,7 +94,7 @@ func (p *Publisher) ListTasks(ctx context.Context, status string, page, pageSize
 SELECT id, task_type, status, requested_by, requested_at, started_at, finished_at,
   target_version_id, previous_version_id, current_step, progress, result_summary,
   failure_code, failure_message, request_id
-FROM gateway_publish_tasks WHERE ` + where + ` ORDER BY requested_at DESC LIMIT $2 OFFSET $3`
+FROM gateway_publish_tasks WHERE ` + where + fmt.Sprintf(" ORDER BY requested_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := p.db.Query(ctx, query, args...)
 	if err != nil {

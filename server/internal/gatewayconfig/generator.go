@@ -71,8 +71,14 @@ func Generate(in GenerateInput) (*Generated, error) {
 		// 无应用时生成最小空配置（仅 admin 与空 servers）
 	}
 
+	// admin.listen 必须是 "unix/<path>" 形式（Caddy 将无前缀路径误解析为 TCP 地址）
+	adminListen := in.AdminSocket
+	if !strings.HasPrefix(adminListen, "unix/") && !strings.HasPrefix(adminListen, "tcp/") {
+		adminListen = "unix/" + adminListen
+	}
+
 	config := mapT{
-		"admin": mapT{"listen": in.AdminSocket},
+		"admin": mapT{"listen": adminListen},
 		"logging": mapT{
 			"logs": mapT{
 				"default": mapT{"writer": mapT{"output": "file", "filename": "/var/log/caddy/caddy.log"}, "encoder": mapT{"format": "json"}},
@@ -303,13 +309,16 @@ func buildReverseProxy(upstreams []applications.Upstream) mapT {
 	})
 
 	var ups []interface{}
+	var weights []int
 	for _, u := range active {
 		dial := fmt.Sprintf("%s:%d", u.NormalizedHost, u.Port)
-		up := mapT{"dial": dial}
-		if u.Weight > 0 {
-			up["weight"] = u.Weight
+		ups = append(ups, mapT{"dial": dial})
+		// Caddy upstream 不支持 weight 字段；权重通过 selection_policy.weights 数组表达
+		w := u.Weight
+		if w <= 0 {
+			w = 1
 		}
-		ups = append(ups, up)
+		weights = append(weights, w)
 	}
 
 	proxy := mapT{
@@ -317,11 +326,18 @@ func buildReverseProxy(upstreams []applications.Upstream) mapT {
 		"upstreams": ups,
 	}
 
-	// 负载均衡（多源站加权轮询）
+	// 负载均衡（多源站加权轮询）：weights 数组与 upstreams 顺序一一对应
 	if len(active) > 1 {
-		proxy["load_balancing"] = mapT{
-			"selection_policy": mapT{"policy": "weighted_round_robin"},
+		lb := mapT{
+			"selection_policy": mapT{
+				"policy":  "weighted_round_robin",
+				"weights": weights,
+			},
 		}
+		if active[0].MaxRetries > 0 {
+			lb["retries"] = active[0].MaxRetries
+		}
+		proxy["load_balancing"] = lb
 	}
 
 	// 健康检查（第一个启用健康检查的源站配置）
@@ -342,7 +358,7 @@ func buildReverseProxy(upstreams []applications.Upstream) mapT {
 		}
 	}
 
-	// 超时与重试
+	// 超时配置
 	if len(active) > 0 {
 		u := active[0]
 		transport := mapT{
@@ -351,9 +367,6 @@ func buildReverseProxy(upstreams []applications.Upstream) mapT {
 			"response_header_timeout": fmt.Sprintf("%dms", u.ResponseHeaderTimeoutMs),
 		}
 		proxy["transport"] = transport
-		if u.MaxRetries > 0 {
-			proxy["retries"] = u.MaxRetries
-		}
 	}
 
 	return proxy
