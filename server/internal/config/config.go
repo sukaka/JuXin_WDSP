@@ -1,11 +1,173 @@
+// Package config 加载管理后端配置。
+// 所有敏感配置通过环境变量注入，禁止写死默认值。
 package config
 
-// Config holds server configuration.
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"time"
+)
+
+// Config 是管理后端完整配置。
 type Config struct {
-	Env string
+	Env      string // dev / staging / prod
+	HTTP     HTTPConfig
+	DB       DBConfig
+	Cache    CacheConfig
+	Security SecurityConfig
 }
 
-// Load returns a placeholder config for stage 0.
+// HTTPConfig 是 HTTP 服务配置。
+type HTTPConfig struct {
+	Host         string
+	Port         int
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+}
+
+// DBConfig 是 PostgreSQL 配置。
+type DBConfig struct {
+	Host     string
+	Port     int
+	Database string
+	User     string
+	Password string
+	SSLMode  string
+	MaxConns int32
+}
+
+// CacheConfig 是 Valkey 配置。
+type CacheConfig struct {
+	Host     string
+	Port     int
+	Password string
+	DB       int
+}
+
+// SecurityConfig 是安全配置。
+type SecurityConfig struct {
+	// CookieSecure 生产环境必须为 true（仅 HTTPS 下发 Cookie）
+	CookieSecure bool
+	// InitialAdminPassword 初始管理员密码（可选注入；为空则启动时生成一次性随机密码）
+	InitialAdminPassword string
+	// InitialAdminUsername 初始管理员用户名，默认 jiuzhang_admin
+	InitialAdminUsername string
+	// CORSAllowedOrigins 允许的来源（开发环境为空时允许 vite dev server）
+	CORSAllowedOrigins []string
+}
+
+// DSN 返回 PostgreSQL 连接串。
+func (c DBConfig) DSN() string {
+	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		c.User, c.Password, c.Host, c.Port, c.Database, c.SSLMode)
+}
+
+// Addr 返回 Valkey 地址。
+func (c CacheConfig) Addr() string {
+	return fmt.Sprintf("%s:%d", c.Host, c.Port)
+}
+
+// HTTPAddr 返回 HTTP 监听地址。
+func (c HTTPConfig) HTTPAddr() string {
+	return fmt.Sprintf("%s:%d", c.Host, c.Port)
+}
+
+// Load 从环境变量加载配置。
 func Load() (*Config, error) {
-	return &Config{Env: "dev"}, nil
+	cfg := &Config{
+		Env: getEnv("APP_ENV", "dev"),
+		HTTP: HTTPConfig{
+			Host:         getEnv("SERVER_HOST", "0.0.0.0"),
+			Port:         getEnvInt("SERVER_PORT", 8080),
+			ReadTimeout:  getEnvDuration("SERVER_READ_TIMEOUT", 30*time.Second),
+			WriteTimeout: getEnvDuration("SERVER_WRITE_TIMEOUT", 30*time.Second),
+			IdleTimeout:  getEnvDuration("SERVER_IDLE_TIMEOUT", 60*time.Second),
+		},
+		DB: DBConfig{
+			Host:     getEnv("POSTGRES_HOST", "127.0.0.1"),
+			Port:     getEnvInt("POSTGRES_PORT", 5432),
+			Database: getEnv("POSTGRES_DB", "jiuzhang_waf"),
+			User:     getEnv("POSTGRES_USER", "jiuzhang"),
+			Password: os.Getenv("POSTGRES_PASSWORD"),
+			SSLMode:  getEnv("POSTGRES_SSLMODE", "disable"),
+			MaxConns: int32(getEnvInt("POSTGRES_MAX_CONNS", 10)),
+		},
+		Cache: CacheConfig{
+			Host:     getEnv("VALKEY_HOST", "127.0.0.1"),
+			Port:     getEnvInt("VALKEY_PORT", 6379),
+			Password: os.Getenv("VALKEY_PASSWORD"),
+			DB:       getEnvInt("VALKEY_DB", 0),
+		},
+		Security: SecurityConfig{
+			CookieSecure:         getEnvBool("COOKIE_SECURE", false),
+			InitialAdminPassword: os.Getenv("INITIAL_ADMIN_PASSWORD"),
+			InitialAdminUsername: getEnv("INITIAL_ADMIN_USERNAME", "jiuzhang_admin"),
+			CORSAllowedOrigins:   getEnvList("CORS_ALLOWED_ORIGINS"),
+		},
+	}
+	if cfg.DB.Password == "" {
+		return nil, fmt.Errorf("POSTGRES_PASSWORD is required")
+	}
+	if cfg.Cache.Password == "" {
+		return nil, fmt.Errorf("VALKEY_PASSWORD is required")
+	}
+	if cfg.Env == "prod" && !cfg.Security.CookieSecure {
+		return nil, fmt.Errorf("COOKIE_SECURE must be true in prod")
+	}
+	return cfg, nil
+}
+
+func getEnv(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func getEnvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func getEnvBool(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	return def
+}
+
+func getEnvDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return def
+}
+
+func getEnvList(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	var out []string
+	start := 0
+	for i := 0; i <= len(v); i++ {
+		if i == len(v) || v[i] == ',' {
+			item := v[start:i]
+			if item != "" {
+				out = append(out, item)
+			}
+			start = i + 1
+		}
+	}
+	return out
 }
