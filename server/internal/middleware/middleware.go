@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -145,14 +146,13 @@ func (w *statusWriter) WriteHeader(code int) {
 }
 
 // remoteIP 返回直接连接的来源 IP（管理面无前置代理时不信任 XFF）。
+// 正确处理 IPv4 与 IPv6（含方括号）地址。
 func remoteIP(r *http.Request) string {
-	addr := r.RemoteAddr
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			return addr[:i]
-		}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
 	}
-	return addr
+	return host
 }
 
 // RemoteIP 导出 remoteIP 供业务模块记录来源 IP。

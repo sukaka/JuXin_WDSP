@@ -1,14 +1,15 @@
 package middleware
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/response"
+	"github.com/redis/go-redis/v9"
 )
 
 // RateLimiter 是基于 Valkey 固定窗口计数器的接口限速器。
@@ -21,12 +22,17 @@ func NewRateLimiter(c *cache.Client) *RateLimiter {
 	return &RateLimiter{cache: c}
 }
 
-// Limit 返回限速中间件。
-// name: 限速维度名称（如 login/captcha/export）；maxPerWindow: 窗口内最大次数；
-// window: 时间窗口；keyFunc: 提取限速键（通常为 IP 或用户名+IP）。
+// Limit 返回限速中间件（固定限速值）。
 func (l *RateLimiter) Limit(name string, maxPerWindow int, window time.Duration, keyFunc func(*http.Request) string) func(http.Handler) http.Handler {
+	return l.LimitDynamic(name, func(context.Context) int { return maxPerWindow }, window, keyFunc)
+}
+
+// LimitDynamic 返回限速中间件，限速值由 limitFunc 动态获取（支持配置热更新）。
+// name: 限速维度名称；limitFunc: 动态限速值；window: 时间窗口；keyFunc: 限速键。
+func (l *RateLimiter) LimitDynamic(name string, limitFunc func(context.Context) int, window time.Duration, keyFunc func(*http.Request) string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			maxPerWindow := limitFunc(r.Context())
 			if maxPerWindow <= 0 {
 				next.ServeHTTP(w, r)
 				return

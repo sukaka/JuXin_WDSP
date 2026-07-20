@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/authz"
+	"log/slog"
+
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/response"
 	"github.com/jiuzhang-waf/server/internal/security"
@@ -91,6 +93,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, r, http.StatusForbidden, response.CodePasswordExpired, "密码已过期，请联系管理员重置")
 		default:
 			// 统一提示，不区分用户不存在/密码错误
+			slog.Warn("login failed", "request_id", response.RequestIDFrom(r), "err", err)
 			response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthenticated, "用户名或密码错误")
 		}
 		return

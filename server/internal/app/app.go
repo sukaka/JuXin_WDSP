@@ -63,11 +63,13 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 	// 路由
 	mux := http.NewServeMux()
 
-	// 限速器
+	// 限速器（登录/验证码限速动态读取系统设置，支持配置热更新；其余为固定值）
 	rl := middleware.NewRateLimiter(c)
-	loginPolicy := settingsSvc.LoginPolicy(context.Background())
-	loginRate := rl.Limit("login", loginPolicy.RateLimitPerMinute, time.Minute, middleware.IPKey)
-	captchaRate := rl.Limit("captcha", 20, time.Minute, middleware.IPKey)
+	dynamicLoginRate := func(ctx context.Context) int {
+		return settingsSvc.LoginPolicy(ctx).RateLimitPerMinute
+	}
+	loginRate := rl.LimitDynamic("login", dynamicLoginRate, time.Minute, middleware.IPKey)
+	captchaRate := rl.LimitDynamic("captcha", dynamicLoginRate, time.Minute, middleware.IPKey)
 	sensitiveRate := rl.Limit("sensitive", 10, time.Minute, middleware.IPKey)
 	exportRate := rl.Limit("export", 5, time.Minute, middleware.IPKey)
 

@@ -9,7 +9,8 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:18081',
-        changeOrigin: true,
+        // 保持原始 Host（localhost:5173），使 CSRF Origin 校验通过（与生产同域部署一致）
+        changeOrigin: false,
       },
     },
   },
