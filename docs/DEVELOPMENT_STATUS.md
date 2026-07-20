@@ -2,8 +2,8 @@
 
 ## 当前阶段
 
-**阶段1：网关技术验证** — 已完成
-**阶段2：用户权限和系统基础** — 待启动
+**阶段2：身份认证、三权权限与系统基础** — 已完成
+**阶段3：应用接入和配置发布** — 待启动
 
 ## 阶段进度总览
 
@@ -12,7 +12,7 @@
 | 阶段0 | 项目初始化 | 已完成 | 2026-07-20 |
 | 阶段0.1 | 工程基线修正 | 已完成 | 2026-07-20 |
 | 阶段1 | 网关技术验证 | 已完成 | 2026-07-20 |
-| 阶段2 | 用户权限和系统基础 | 未开始 | - |
+| 阶段2 | 身份认证、三权权限与系统基础 | 已完成 | 2026-07-21 |
 | 阶段3 | 应用接入和配置发布 | 未开始 | - |
 | 阶段4 | WAF策略和事件中心 | 未开始 | - |
 | 阶段5 | 访问控制和CC防护 | 未开始 | - |
@@ -100,15 +100,43 @@
 - [x] 容器安全（非 root/只读根文件系统/cap_drop ALL/no-new-privileges/无 docker socket）
 - [x] 构建与测试证据归档（docs/evidence/stage1/）
 
+## 阶段2完成内容
+
+详见 [STAGE2_TEST_REPORT.md](STAGE2_TEST_REPORT.md)、[AUTHENTICATION_DESIGN.md](AUTHENTICATION_DESIGN.md)、
+[RBAC_DESIGN.md](RBAC_DESIGN.md)、[AUDIT_DESIGN.md](AUDIT_DESIGN.md)、[server/openapi/openapi.yaml](../server/openapi/openapi.yaml)。
+
+**测试：后端单元 13 + 接口集成 28 + 前端单元 23 + E2E 16 + 安全测试 16 = 96 用例全部通过。**
+
+- [x] 数据库迁移（users/roles/permissions/user_roles/role_permissions/login_sessions/login_logs/operation_audits/system_settings/password_histories，含 up/down）
+- [x] 三权内置角色 + 24 项权限 + 角色权限映射种子数据
+- [x] Argon2id 密码哈希（独立随机盐）、密码策略（长度/复杂度/历史/弱口令/有效期）
+- [x] 初始管理员安全初始化（一次性随机密码 stdout 打印或环境变量注入，首次登录强制改密）
+- [x] 图形验证码（自绘 PNG，Valkey 短期 TTL，一次性使用）
+- [x] 服务端会话（Valkey，空闲 30 分钟/绝对 8 小时，PostgreSQL 仅存哈希摘要）
+- [x] 登录失败锁定（5 次/15 分钟）、统一错误提示防枚举
+- [x] CSRF 三重防护（SameSite Cookie + Token + Origin 校验）
+- [x] 三权互斥 RBAC（一账号一角色，后端强制校验，最后一个系统管理员保护）
+- [x] 用户管理（创建/编辑/启停/解锁/重置密码/删除/强制下线，乐观锁）
+- [x] 个人中心（资料/改密/会话管理/登录记录）
+- [x] 登录日志（16 类事件，不记录密码/验证码/完整会话）
+- [x] 操作审计（风险分级、敏感字段脱敏、哈希链、数据库 RULE 禁改删、verify-chain 校验）
+- [x] 系统设置（密码/登录/会话/展示四组，乐观锁，敏感值脱敏，白名单）
+- [x] 接口限速（登录/验证码/改密/重置/导出，动态配置热更新）
+- [x] 统一 API 规范（响应信封/错误码/Request ID/分页）
+- [x] 管理前端（登录页/工作台/用户管理/角色权限/登录日志/操作审计/系统设置/个人中心/错误页，按角色过滤菜单与路由守卫）
+- [x] server/web Dockerfile（多阶段、非 root）+ docker-compose.stage2 一键启停
+- [x] 关键修复：中间件顺序、INET 扫描（netip.Addr）、IPv6 地址解析、CSRF Origin、动态限速
+
 ## 遗留问题
 
-1. `create-vite` 在非交互环境下失败，前端项目为手动初始化，结构与标准模板一致，已补齐 `public/` 目录；
-2. 后端 Go 客户端尚未引入，阶段2引入时如使用 Redis 协议兼容客户端（如 go-redis），需在 THIRD_PARTY_NOTICES.md 单独记录其名称、版本与许可证；
-3. POC 审计引擎为 `On`（go-ftw marker 机制需要全量事务日志），生产配置发布时应按应用策略下发 `RelevantOnly`；
-4. `handle_errors` 错误处理链路不经过主路由 `header` 指令，阻断响应的 Server 头清理需在错误链路单独配置（阶段3统一处理）；
-5. 全量替换配置会覆盖 admin 设置：后续配置生成器必须始终显式包含 `admin unix//var/run/caddy/admin.sock`，发布前校验必须拒绝缺失或 TCP 形式的 admin 配置；
-6. 阶段1 POC 未启用 TLS、多应用路由、真实 IP 识别与 CC 防护（分别在阶段3、阶段5实现）。
+1. 开发环境管理面使用 HTTP，生产必须启用 HTTPS 且 `COOKIE_SECURE=true`（配置已强制 prod 校验）；
+2. 审计哈希链为基础防篡改（数据库 RULE 禁改删 + 哈希链），未含可信时间戳/外部存证（后续可选）；
+3. 前端 antd 全量引入单 chunk 约 1.34MB，未做代码分割（后续阶段优化）；
+4. POC 审计引擎为 `On`（go-ftw marker 需要），生产配置发布时应按应用策略下发 `RelevantOnly`；
+5. `handle_errors` 错误处理链路不经过主路由 `header` 指令，阻断响应的 Server 头清理需在阶段3统一处理；
+6. 全量替换配置会覆盖 admin 设置：配置生成器必须始终显式包含 `admin unix//var/run/caddy/admin.sock`，发布前校验必须拒绝缺失或 TCP 形式的 admin 配置；
+7. 阶段2未启用 TLS、Web应用接入、源站管理、证书管理、配置发布（阶段3实现）。
 
 ## 下一步
 
-阶段2：用户权限和系统基础（登录、三权角色、权限中间件、登录日志、操作审计、系统设置、数据库迁移、前端基础布局）。
+阶段3：应用接入和配置发布（Web应用管理、域名管理、源站管理、证书管理、配置生成/预览/校验/发布/版本/回滚、网关健康状态）。

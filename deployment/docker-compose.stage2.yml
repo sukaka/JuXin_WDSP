@@ -117,13 +117,10 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    read_only: true
-    cap_drop:
-      - ALL
+    # Caddy 官方镜像需写入 /config 与 /data，且二进制带 cap_net_bind_service，
+    # 因此不做 read_only 根文件系统与 cap_drop ALL；保留 no-new-privileges
     security_opt:
       - no-new-privileges:true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
       interval: 15s

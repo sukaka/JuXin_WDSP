@@ -18,5 +18,7 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: './src/setupTests.ts',
     globals: true,
+    // 排除 Playwright E2E 用例（由 npx playwright test 单独运行）
+    exclude: ['**/node_modules/**', '**/dist/**', 'e2e/**'],
   },
 })
