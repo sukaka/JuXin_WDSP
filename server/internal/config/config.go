@@ -17,6 +17,19 @@ type Config struct {
 	Cache    CacheConfig
 	Security SecurityConfig
 	Gateway  GatewayConfig
+	WAF      WAFConfig
+}
+
+// WAFConfig 是 WAF 配置（阶段4）。
+type WAFConfig struct {
+	// CRSDir OWASP CRS 规则目录
+	CRSDir string
+	// CRSVersion CRS 版本标识
+	CRSVersion string
+	// AuditLogPath Coraza 审计日志路径（事件采集）
+	AuditLogPath string
+	// GatewayNodeName 网关节点标识
+	GatewayNodeName string
 }
 
 // GatewayConfig 是网关配置（阶段3）。
@@ -118,6 +131,12 @@ func Load() (*Config, error) {
 		Gateway: GatewayConfig{
 			AdminSocket: getEnv("CADDY_ADMIN_SOCKET", "/var/run/caddy/admin.sock"),
 			DataDir:     getEnv("GATEWAY_DATA_DIR", "runtime"),
+		},
+		WAF: WAFConfig{
+			CRSDir:          getEnv("WAF_CRS_DIR", "gateway/rules/crs/rules"),
+			CRSVersion:      getEnv("WAF_CRS_VERSION", "4.28.0"),
+			AuditLogPath:    getEnv("WAF_AUDIT_LOG", "runtime/logs/stage1/coraza-audit.log"),
+			GatewayNodeName: getEnv("GATEWAY_NODE_NAME", "gateway-poc-01"),
 		},
 	}
 	if cfg.DB.Password == "" {

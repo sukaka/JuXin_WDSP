@@ -17,6 +17,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/config"
 	"github.com/jiuzhang-waf/server/internal/database"
 	"github.com/jiuzhang-waf/server/internal/security"
+	"github.com/jiuzhang-waf/server/internal/securityevents"
 	"github.com/jiuzhang-waf/server/internal/users"
 )
 
@@ -66,6 +67,12 @@ func run() error {
 
 	// 装配应用
 	application := app.New(cfg, db, cacheClient)
+
+	// 阶段4：启动安全事件采集器（后台 goroutine）
+	collectorCtx, collectorCancel := context.WithCancel(context.Background())
+	defer collectorCancel()
+	eventCollector := securityevents.NewCollector(db, "collector-01", cfg.WAF.AuditLogPath, cfg.WAF.GatewayNodeName)
+	go eventCollector.Run(collectorCtx, 2*time.Second)
 
 	srv := &http.Server{
 		Addr:         cfg.HTTP.HTTPAddr(),

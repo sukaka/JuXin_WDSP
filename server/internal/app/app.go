@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/applications"
 	"github.com/jiuzhang-waf/server/internal/audits"
@@ -17,16 +18,21 @@ import (
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/certificates"
 	"github.com/jiuzhang-waf/server/internal/config"
+	"github.com/jiuzhang-waf/server/internal/customrules"
 	"github.com/jiuzhang-waf/server/internal/encryption"
+	"github.com/jiuzhang-waf/server/internal/exceptions"
 	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
 	"github.com/jiuzhang-waf/server/internal/loginlogs"
 	"github.com/jiuzhang-waf/server/internal/middleware"
+	"github.com/jiuzhang-waf/server/internal/protectionpolicies"
 	"github.com/jiuzhang-waf/server/internal/roles"
 	"github.com/jiuzhang-waf/server/internal/security"
+	"github.com/jiuzhang-waf/server/internal/securityevents"
 	"github.com/jiuzhang-waf/server/internal/sessions"
 	"github.com/jiuzhang-waf/server/internal/settings"
 	"github.com/jiuzhang-waf/server/internal/upstreams"
 	"github.com/jiuzhang-waf/server/internal/users"
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 // App 是管理后端应用。
@@ -76,6 +82,18 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 		upstreamTestHandler = upstreams.NewTestHandler(auditSvc)
 		gatewayHandler = gatewayconfig.NewHandler(publisher, appStore, auditSvc)
 	}
+
+	// 阶段4：WAF策略/规则/例外/事件服务
+	policyStore := protectionpolicies.NewStore(db)
+	ruleHandler := wafrules.NewHandler(db, auditSvc, cfg.WAF.CRSDir, cfg.WAF.CRSVersion)
+	customRuleStore := customrules.NewStore(db)
+	exceptionStore := exceptions.NewStore(db)
+	policyHandler := protectionpolicies.NewHandler(policyStore, auditSvc)
+	customRuleHandler := customrules.NewHandler(customRuleStore, auditSvc)
+	exceptionHandler := exceptions.NewHandler(exceptionStore, auditSvc)
+	eventStore := securityevents.NewStore(db)
+	eventExceptionAdapter := &eventExceptionCreator{store: exceptionStore}
+	eventHandler := securityevents.NewHandler(eventStore, auditSvc, eventExceptionAdapter)
 
 	// 处理器
 	authHandler := auth.NewHandler(authSvc, sessSvc, userStore, captchaSvc, cfg.Security.CookieSecure)
@@ -204,6 +222,54 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 		mux.Handle("GET /api/v1/gateway/status", authz(middleware.RequirePermission("gateway_status.read")(http.HandlerFunc(gatewayHandler.GatewayStatus))))
 	}
 
+	// ---- 阶段4：防护策略/规则/自定义规则/例外/安全事件 ----
+	// 防护策略
+	mux.Handle("GET /api/v1/protection-policies", authz(middleware.RequirePermission("protection_policies.read")(http.HandlerFunc(policyHandler.List))))
+	mux.Handle("POST /api/v1/protection-policies", authz(middleware.RequirePermission("protection_policies.create")(http.HandlerFunc(policyHandler.Create))))
+	mux.Handle("GET /api/v1/protection-policies/{id}", authz(middleware.RequirePermission("protection_policies.read")(http.HandlerFunc(policyHandler.Get))))
+	mux.Handle("PUT /api/v1/protection-policies/{id}", authz(middleware.RequirePermission("protection_policies.update")(http.HandlerFunc(policyHandler.Update))))
+	mux.Handle("DELETE /api/v1/protection-policies/{id}", authz(middleware.RequirePermission("protection_policies.delete")(http.HandlerFunc(policyHandler.Delete))))
+	mux.Handle("POST /api/v1/protection-policies/{id}/copy", authz(middleware.RequirePermission("protection_policies.create")(http.HandlerFunc(policyHandler.Copy))))
+	mux.Handle("GET /api/v1/protection-policies/{id}/applications", authz(middleware.RequirePermission("protection_policies.read")(http.HandlerFunc(policyHandler.ListApplications))))
+
+	// WAF规则
+	mux.Handle("GET /api/v1/waf-rules", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(ruleHandler.List))))
+	mux.Handle("GET /api/v1/waf-rules/categories", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(ruleHandler.Categories))))
+	mux.Handle("GET /api/v1/waf-rules/versions", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(ruleHandler.Versions))))
+	mux.Handle("GET /api/v1/waf-rules/{rule_id}", authz(middleware.RequirePermission("waf_rules.read")(http.HandlerFunc(ruleHandler.Get))))
+	mux.Handle("POST /api/v1/waf-rules/sync", authz(middleware.RequirePermission("waf_rules.sync")(http.HandlerFunc(ruleHandler.Sync))))
+
+	// 自定义规则
+	mux.Handle("GET /api/v1/custom-rules", authz(middleware.RequirePermission("custom_rules.manage")(http.HandlerFunc(customRuleHandler.List))))
+	mux.Handle("POST /api/v1/custom-rules", authz(middleware.RequirePermission("custom_rules.manage")(http.HandlerFunc(customRuleHandler.Create))))
+	mux.Handle("GET /api/v1/custom-rules/{id}", authz(middleware.RequirePermission("custom_rules.manage")(http.HandlerFunc(customRuleHandler.Get))))
+	mux.Handle("PUT /api/v1/custom-rules/{id}", authz(middleware.RequirePermission("custom_rules.manage")(http.HandlerFunc(customRuleHandler.Update))))
+	mux.Handle("DELETE /api/v1/custom-rules/{id}", authz(middleware.RequirePermission("custom_rules.manage")(http.HandlerFunc(customRuleHandler.Delete))))
+	mux.Handle("POST /api/v1/custom-rules/{id}/validate", authz(middleware.RequirePermission("custom_rules.manage")(http.HandlerFunc(customRuleHandler.Validate))))
+	mux.Handle("POST /api/v1/custom-rules/{id}/enable", authz(middleware.RequirePermission("custom_rules.manage")(http.HandlerFunc(customRuleHandler.Enable))))
+	mux.Handle("POST /api/v1/custom-rules/{id}/disable", authz(middleware.RequirePermission("custom_rules.manage")(http.HandlerFunc(customRuleHandler.Disable))))
+
+	// 例外策略
+	mux.Handle("GET /api/v1/exceptions", authz(middleware.RequirePermission("exceptions.read")(http.HandlerFunc(exceptionHandler.List))))
+	mux.Handle("POST /api/v1/exceptions", authz(middleware.RequirePermission("exceptions.manage")(http.HandlerFunc(exceptionHandler.Create))))
+	mux.Handle("GET /api/v1/exceptions/{id}", authz(middleware.RequirePermission("exceptions.read")(http.HandlerFunc(exceptionHandler.Get))))
+	mux.Handle("DELETE /api/v1/exceptions/{id}", authz(middleware.RequirePermission("exceptions.manage")(http.HandlerFunc(exceptionHandler.Delete))))
+	mux.Handle("POST /api/v1/exceptions/{id}/enable", authz(middleware.RequirePermission("exceptions.manage")(http.HandlerFunc(exceptionHandler.Enable))))
+	mux.Handle("POST /api/v1/exceptions/{id}/disable", authz(middleware.RequirePermission("exceptions.manage")(http.HandlerFunc(exceptionHandler.Disable))))
+
+	// 安全事件
+	mux.Handle("GET /api/v1/security-events", authz(middleware.RequirePermission("security_events.read")(http.HandlerFunc(eventHandler.List))))
+	mux.Handle("GET /api/v1/security-events/export", authz(middleware.RequirePermission("security_events.export")(http.HandlerFunc(eventHandler.Export))))
+	mux.Handle("GET /api/v1/security-events/{id}", authz(middleware.RequirePermission("security_events.read")(http.HandlerFunc(eventHandler.Get))))
+	mux.Handle("GET /api/v1/security-events/{id}/related", authz(middleware.RequirePermission("security_events.read")(http.HandlerFunc(eventHandler.Related))))
+	mux.Handle("POST /api/v1/security-events/{id}/notes", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.AddNote))))
+	mux.Handle("POST /api/v1/security-events/{id}/confirm-attack", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.ConfirmAttack))))
+	mux.Handle("POST /api/v1/security-events/{id}/confirm-false-positive", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.ConfirmFalsePositive))))
+	mux.Handle("POST /api/v1/security-events/{id}/ignore", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.Ignore))))
+	mux.Handle("POST /api/v1/security-events/{id}/resolve", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.Resolve))))
+	mux.Handle("POST /api/v1/security-events/{id}/mark-analyzing", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.MarkAnalyzing))))
+	mux.Handle("POST /api/v1/security-events/{id}/create-exception", authz(middleware.RequirePermission("exceptions.manage")(http.HandlerFunc(eventHandler.CreateException))))
+
 	// 全局中间件链
 	var handler http.Handler = mux
 	handler = middleware.RecoverPanic(handler)
@@ -275,6 +341,28 @@ func (a *App) csrfValidator(r *http.Request, token string) bool {
 		return false
 	}
 	return a.authSvc.ValidateCSRFToken(r.Context(), p.SessionID, token)
+}
+
+// eventExceptionCreator 将 securityevents.Event 适配为例外草稿创建。
+type eventExceptionCreator struct {
+	store *exceptions.Store
+}
+
+// CreateFromEvent 实现 securityevents.ExceptionCreator 接口。
+func (e *eventExceptionCreator) CreateFromEvent(ctx context.Context, evt *securityevents.Event, createdBy uuid.UUID) (uuid.UUID, error) {
+	var ruleIDs []int
+	// 从事件获取规则ID（从匹配记录提取由调用方传入时为空，此处从事件的RawRef不易获取，
+	// 简化：使用攻击类型与域名/路径创建精确例外）
+	return e.store.CreateFromEvent(ctx, exceptions.CreateFromEventInput{
+		EventID:    evt.ID,
+		ClientIP:   evt.ClientIP,
+		Domain:     evt.Domain,
+		URI:        evt.URI,
+		Path:       evt.Path,
+		AttackType: evt.AttackType,
+		RuleIDs:    ruleIDs,
+		CreatedBy:  createdBy,
+	})
 }
 
 // health 健康检查（含依赖状态）。

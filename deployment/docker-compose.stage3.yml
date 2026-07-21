@@ -85,11 +85,17 @@ services:
       CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
       GATEWAY_DATA_DIR: /app/runtime
       MIGRATIONS_DIR: /app/migrations
+      WAF_CRS_DIR: /etc/caddy/rules/crs/rules
+      WAF_CRS_VERSION: 4.28.0
+      WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
+      GATEWAY_NODE_NAME: gateway-stage3-01
     ports:
       - "127.0.0.1:${API_PORT:-18081}:8080"
     volumes:
       # 与防护网关共享 Admin Socket 卷（后端经 Unix Socket 发布配置）
       - stage3-gateway-admin:/var/run/caddy
+      # 只读挂载网关日志卷（事件采集器读取 Coraza 审计日志）
+      - stage3-gateway-logs:/var/log/caddy-audit:ro
       - stage3-runtime:/app/runtime
     depends_on:
       postgres:
