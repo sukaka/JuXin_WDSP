@@ -429,7 +429,7 @@ type upstreamRequest struct {
 	Scheme                     string `json:"scheme"`
 	Host                       string `json:"host"`
 	Port                       int    `json:"port"`
-	Weight                     int    `json:"weight"`
+	Weight                     *int   `json:"weight"`
 	Priority                   int    `json:"priority"`
 	HealthCheckEnabled         bool   `json:"health_check_enabled"`
 	HealthCheckPath            string `json:"health_check_path"`
@@ -500,7 +500,7 @@ func (h *Handler) UpdateUpstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	risk := audits.RiskLow
-	if req.Weight != u.Weight {
+	if req.Weight != nil {
 		risk = audits.RiskMedium
 	}
 	h.recordAudit(r, p, "upstreams", "update", "upstream", id.String(), u.Name, before, upstreamSummary(u), audits.ResultSuccess, risk)
@@ -561,13 +561,17 @@ func (h *Handler) DeleteUpstream(w http.ResponseWriter, r *http.Request) {
 // ---------- 辅助 ----------
 
 func buildUpstream(req *upstreamRequest, appID uuid.UUID, createdBy *uuid.UUID) *Upstream {
+	weight := 10
+	if req.Weight != nil {
+		weight = *req.Weight
+	}
 	u := &Upstream{
 		ApplicationID:              appID,
 		Name:                       req.Name,
 		Scheme:                     defaultStr(req.Scheme, "http"),
 		Host:                       req.Host,
 		Port:                       req.Port,
-		Weight:                     defaultInt(req.Weight, 10),
+		Weight:                     weight,
 		Priority:                   req.Priority,
 		Status:                     "ACTIVE",
 		HealthCheckEnabled:         req.HealthCheckEnabled,
@@ -591,7 +595,9 @@ func applyUpstreamRequest(u *Upstream, req *upstreamRequest) {
 	u.Scheme = req.Scheme
 	u.Host = req.Host
 	u.Port = req.Port
-	u.Weight = req.Weight
+	if req.Weight != nil {
+		u.Weight = *req.Weight
+	}
 	u.Priority = req.Priority
 	u.HealthCheckEnabled = req.HealthCheckEnabled
 	u.HealthCheckPath = req.HealthCheckPath

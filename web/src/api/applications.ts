@@ -82,7 +82,11 @@ export interface UpstreamTestBody {
 export const applicationsApi = {
   list: (params: ApplicationListParams) =>
     request<PageResult<ApplicationItem>>('/applications', { query: { ...params } }),
-  get: (id: string) => request<ApplicationDetail>(`/applications/${id}`),
+  // 后端对无域名/源站的应用返回 null（Go nil slice），统一归一化为空数组
+  get: async (id: string) => {
+    const data = await request<ApplicationDetail>(`/applications/${id}`)
+    return { ...data, domains: data.domains ?? [], upstreams: data.upstreams ?? [] }
+  },
   create: (body: CreateApplicationBody) =>
     request<ApplicationItem>('/applications', { method: 'POST', body }),
   update: (id: string, body: UpdateApplicationBody) =>

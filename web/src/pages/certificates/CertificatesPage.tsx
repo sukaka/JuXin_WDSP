@@ -66,7 +66,7 @@ function BoundApplications({ certId }: { certId: string }) {
   const ids = appsQuery.data?.application_ids ?? []
   if (ids.length === 0) return <Typography.Text type="secondary">未绑定任何应用</Typography.Text>
   const nameOf = (id: string) => {
-    const app = appListQuery.data?.items.find((a) => a.id === id)
+    const app = (appListQuery.data?.items ?? []).find((a) => a.id === id)
     return app ? `${app.name}（${app.code}）` : id
   }
   return (

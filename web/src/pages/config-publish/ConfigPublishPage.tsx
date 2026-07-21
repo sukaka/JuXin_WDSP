@@ -37,7 +37,7 @@ import type { BusinessSnapshot, PublishTaskItem } from '../../types'
 
 /** 业务摘要表格（preview 响应对象 / version 字符串两种来源共用） */
 export function SnapshotTable({ snapshot }: { snapshot: BusinessSnapshot | null }) {
-  if (!snapshot || snapshot.apps.length === 0) {
+  if (!snapshot || !snapshot.apps || snapshot.apps.length === 0) {
     return <Typography.Text type="secondary">无应用纳入本次配置</Typography.Text>
   }
   return (

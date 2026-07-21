@@ -13,16 +13,17 @@ import type { CertificateItem } from '../../../types'
  */
 async function fetchBoundCertificates(appId: string): Promise<CertificateItem[]> {
   const page = await certificatesApi.list({ page: 1, page_size: 100 })
-  if (page.items.length === 0) return []
+  const certs = page.items ?? []
+  if (certs.length === 0) return []
   const flags = await Promise.all(
-    page.items.map((cert) =>
+    certs.map((cert) =>
       certificatesApi
         .applications(cert.id)
-        .then((r) => r.application_ids.includes(appId))
+        .then((r) => (r.application_ids ?? []).includes(appId))
         .catch(() => false),
     ),
   )
-  return page.items.filter((_, i) => flags[i])
+  return certs.filter((_, i) => flags[i])
 }
 
 export default function CertificatesTab({ appId }: { appId: string }) {
