@@ -47,9 +47,9 @@ type policyRequest struct {
 	Name                      string `json:"name"`
 	Description               string `json:"description"`
 	ProtectionMode            string `json:"protection_mode"`
-	ParanoiaLevel             int    `json:"paranoia_level"`
-	InboundAnomalyThreshold   int    `json:"inbound_anomaly_threshold"`
-	OutboundAnomalyThreshold  int    `json:"outbound_anomaly_threshold"`
+	ParanoiaLevel             *int   `json:"paranoia_level"`
+	InboundAnomalyThreshold   *int   `json:"inbound_anomaly_threshold"`
+	OutboundAnomalyThreshold  *int   `json:"outbound_anomaly_threshold"`
 	RequestBodyAccess         *bool  `json:"request_body_access"`
 	ResponseBodyAccess        *bool  `json:"response_body_access"`
 	Version                   int    `json:"version"`
@@ -63,15 +63,32 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
 		return
 	}
+	// 显式非法值校验（区分"未提供"与"显式非法"）
+	if req.ProtectionMode != "" && req.ProtectionMode != ModeOff && req.ProtectionMode != ModeObserve && req.ProtectionMode != ModeProtect {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的防护模式")
+		return
+	}
+	if req.ParanoiaLevel != nil && (*req.ParanoiaLevel < 1 || *req.ParanoiaLevel > 4) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "执行等级必须在1至4之间")
+		return
+	}
+	if req.InboundAnomalyThreshold != nil && (*req.InboundAnomalyThreshold < 1 || *req.InboundAnomalyThreshold > 100) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "入站异常阈值必须在1至100之间")
+		return
+	}
+	if req.OutboundAnomalyThreshold != nil && (*req.OutboundAnomalyThreshold < 1 || *req.OutboundAnomalyThreshold > 100) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "出站异常阈值必须在1至100之间")
+		return
+	}
 	policy := &Policy{
 		Code:           req.Code,
 		Name:           req.Name,
 		Description:    req.Description,
 		Status:         "ACTIVE",
 		ProtectionMode: defaultMode(req.ProtectionMode),
-		ParanoiaLevel:  defaultInt(req.ParanoiaLevel, 1),
-		InboundAnomalyThreshold:  defaultInt(req.InboundAnomalyThreshold, 5),
-		OutboundAnomalyThreshold: defaultInt(req.OutboundAnomalyThreshold, 4),
+		ParanoiaLevel:  defaultIntPtr(req.ParanoiaLevel, 1),
+		InboundAnomalyThreshold:  defaultIntPtr(req.InboundAnomalyThreshold, 5),
+		OutboundAnomalyThreshold: defaultIntPtr(req.OutboundAnomalyThreshold, 4),
 		RequestBodyAccess:  true,
 		ResponseBodyAccess: false,
 		RequestBodyLimit:   13107200,
@@ -153,14 +170,14 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.ProtectionMode != "" {
 		policy.ProtectionMode = defaultMode(req.ProtectionMode)
 	}
-	if req.ParanoiaLevel > 0 {
-		policy.ParanoiaLevel = req.ParanoiaLevel
+	if req.ParanoiaLevel != nil {
+		policy.ParanoiaLevel = *req.ParanoiaLevel
 	}
-	if req.InboundAnomalyThreshold > 0 {
-		policy.InboundAnomalyThreshold = req.InboundAnomalyThreshold
+	if req.InboundAnomalyThreshold != nil {
+		policy.InboundAnomalyThreshold = *req.InboundAnomalyThreshold
 	}
-	if req.OutboundAnomalyThreshold > 0 {
-		policy.OutboundAnomalyThreshold = req.OutboundAnomalyThreshold
+	if req.OutboundAnomalyThreshold != nil {
+		policy.OutboundAnomalyThreshold = *req.OutboundAnomalyThreshold
 	}
 	if req.RequestBodyAccess != nil {
 		policy.RequestBodyAccess = *req.RequestBodyAccess
@@ -265,11 +282,11 @@ func defaultMode(m string) string {
 	return ModeObserve
 }
 
-func defaultInt(v, def int) int {
-	if v <= 0 {
+func defaultIntPtr(v *int, def int) int {
+	if v == nil || *v <= 0 {
 		return def
 	}
-	return v
+	return *v
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, summary, result, risk string) {
