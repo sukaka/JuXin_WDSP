@@ -71,7 +71,7 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 		certStore = certificates.NewStore(db, encSvc)
 		publisher = gatewayconfig.NewPublisher(db, c, appStore, certStore,
 			cfg.Gateway.AdminSocket, cfg.Gateway.DataDir)
-		appHandler = applications.NewHandler(appStore, auditSvc)
+		appHandler = applications.NewHandler(appStore, auditSvc, certStore)
 		certHandler = certificates.NewHandler(certStore, auditSvc)
 		upstreamTestHandler = upstreams.NewTestHandler(auditSvc)
 		gatewayHandler = gatewayconfig.NewHandler(publisher, appStore, auditSvc)
@@ -165,6 +165,8 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 		mux.Handle("POST /api/v1/applications/{id}/enable", authz(middleware.RequirePermission("applications.disable")(http.HandlerFunc(appHandler.Enable))))
 		mux.Handle("POST /api/v1/applications/{id}/disable", authz(middleware.RequirePermission("applications.disable")(http.HandlerFunc(appHandler.Disable))))
 		mux.Handle("POST /api/v1/applications/{id}/copy", authz(middleware.RequirePermission("applications.create")(http.HandlerFunc(appHandler.Copy))))
+		mux.Handle("POST /api/v1/applications/{id}/certificate", authz(middleware.RequirePermission("certificates.bind")(http.HandlerFunc(appHandler.BindCertificate))))
+		mux.Handle("DELETE /api/v1/applications/{id}/certificate", authz(middleware.RequirePermission("certificates.bind")(http.HandlerFunc(appHandler.UnbindCertificate))))
 
 		// 域名
 		mux.Handle("GET /api/v1/applications/{id}/domains", authz(middleware.RequirePermission("domains.read")(http.HandlerFunc(appHandler.ListDomains))))

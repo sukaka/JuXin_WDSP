@@ -2,8 +2,8 @@
 
 ## 当前阶段
 
-**阶段2：身份认证、三权权限与系统基础** — 已完成
-**阶段3：应用接入和配置发布** — 后端已完成，管理前端已完成，联调收尾中
+**阶段3：Web应用接入、源站、证书与网关配置发布** — 已完成
+**阶段4：WAF策略和事件中心** — 待启动
 
 ## 阶段进度总览
 
@@ -13,7 +13,7 @@
 | 阶段0.1 | 工程基线修正 | 已完成 | 2026-07-20 |
 | 阶段1 | 网关技术验证 | 已完成 | 2026-07-20 |
 | 阶段2 | 身份认证、三权权限与系统基础 | 已完成 | 2026-07-21 |
-| 阶段3 | 应用接入和配置发布 | 后端/前端已完成，联调收尾 | - |
+| 阶段3 | Web应用接入、源站、证书与网关配置发布 | 已完成 | 2026-07-21 |
 | 阶段4 | WAF策略和事件中心 | 未开始 | - |
 | 阶段5 | 访问控制和CC防护 | 未开始 | - |
 | 阶段6 | 首页和安全报表 | 未开始 | - |
@@ -127,16 +127,51 @@
 - [x] server/web Dockerfile（多阶段、非 root）+ docker-compose.stage2 一键启停
 - [x] 关键修复：中间件顺序、INET 扫描（netip.Addr）、IPv6 地址解析、CSRF Origin、动态限速
 
+## 阶段3后端完成内容
+
+详见 [STAGE3_TEST_REPORT.md](STAGE3_TEST_REPORT.md)、[GATEWAY_CONFIG_GENERATION.md](GATEWAY_CONFIG_GENERATION.md)、[CONFIG_PUBLISH_DESIGN.md](CONFIG_PUBLISH_DESIGN.md)。
+
+- [x] 数据库迁移（applications/domains/upstreams/health_records/certificates/app_certs/config_versions/publish_tasks/validation_results）+ 三权权限种子（安全管理员全量/系统管理员只读/审计管理员只读）
+- [x] 校验模块（应用编码/域名规范化/泛域名/源站地址/SSRF 地址校验）
+- [x] AES-256-GCM 私钥加密（主密钥环境注入）
+- [x] 证书解析（X.509/私钥匹配/域名匹配/到期状态/密钥强度）
+- [x] 应用/域名/源站/证书 store 与 handler（CRUD/冲突检测/乐观锁/审计）
+- [x] 确定性配置生成器（Caddy JSON，三种模式/加权轮询/健康检查/HTTPS 跳转）
+- [x] 源站 SSRF 测试器（DNS 校验/防重绑定/协议限制/超时限制）
+- [x] 发布控制器（任务状态机/Valkey 分布式锁/Unix Socket/失败保护/自动回滚）
+- [x] 配置版本管理与回滚（不可变版本/幂等键/差异）
+- [x] 关键修复：admin socket unix 前缀、reverse_proxy 字段（retries/weight）、ListTasks 参数索引、权重 0 掩盖
+- [x] stage3 整合编排（postgres/valkey/api/gateway/testorigin 共享 admin socket 卷）
+- [x] 真实发布闭环：应用接入→发布→网关转发→WAF 阻断→回滚→幂等→失败保护
+
+## 阶段3前端完成内容
+
+- [x] Web应用列表（/applications）：关键词/状态/防护模式筛选，新建（编码格式前端校验与后端一致）、编辑（乐观锁 version 回传）、复制、启停、删除二次确认
+- [x] 应用详情（/applications/:id）：基本信息卡 + 域名/源站/证书三个 Tab
+- [x] 域名管理：hostname 前端校验（禁协议/路径/端口、泛域名仅 *. 前缀）、HTTP/HTTPS 端口联动、跳转开关、增删改
+- [x] 源站管理：增删改/启停、健康检查与 TLS 参数、连通性测试（DNS/TCP/TLS/HTTP 分阶段展示，SSRF 私网需显式允许）
+- [x] 证书绑定 Tab：展示已绑定证书（证书列表 + 绑定关系反查）
+- [x] HTTPS证书（/certificates）：列表（剩余天数分级）、PEM 粘贴上传（前端格式校验）、详情抽屉（不含私钥）、删除（使用中禁删）
+- [x] 配置发布（/config-publish）：当前版本卡、预览、校验、发布（二次确认 + 幂等键 + 任务进度轮询）、发布任务记录
+- [x] 配置版本（/config-versions）：列表、差异对比抽屉、回滚（二次确认 + 任务进度）
+- [x] 网关状态（/gateway-status）：在线状态、版本/哈希、应用/域名/源站计数、最后发布结果
+- [x] 菜单「应用防护」分组 + 路由守卫，按角色过滤
+- [x] 前端单测 33 用例全部通过
+
+## 测试
+
+**阶段3新增：后端单元 28 + 接口集成 9 + 前端 33 + E2E 1 + 真实网关验证 6 = 77 用例全部通过（阶段2回归 41 用例同步通过）。**
+
 ## 遗留问题
 
 1. 开发环境管理面使用 HTTP，生产必须启用 HTTPS 且 `COOKIE_SECURE=true`（配置已强制 prod 校验）；
 2. 审计哈希链为基础防篡改（数据库 RULE 禁改删 + 哈希链），未含可信时间戳/外部存证（后续可选）；
-3. 前端 antd 全量引入单 chunk 约 1.34MB，未做代码分割（后续阶段优化）；
-4. POC 审计引擎为 `On`（go-ftw marker 需要），生产配置发布时应按应用策略下发 `RelevantOnly`；
-5. `handle_errors` 错误处理链路不经过主路由 `header` 指令，阻断响应的 Server 头清理需在阶段3统一处理；
-6. 全量替换配置会覆盖 admin 设置：配置生成器必须始终显式包含 `admin unix//var/run/caddy/admin.sock`，发布前校验必须拒绝缺失或 TCP 形式的 admin 配置；
-7. 阶段2未启用 TLS、Web应用接入、源站管理、证书管理、配置发布（阶段3实现）。
+3. 前端 antd 全量引入单 chunk 较大，未做代码分割（后续阶段优化）；
+4. 阶段3后端未提供证书绑定/解绑独立 HTTP 接口（`certificates.bind` 权限已预留、`Store.BindApplication` 已实现但暂无独立路由，绑定在应用详情内通过证书选择完成，后续可补充独立接口）；
+5. 源站主动健康检查由 Caddy reverse_proxy health_checks 承担，独立健康检查调度与历史展示在后续增强；
+6. 发布验证为基础检查（Caddy admin 可用 + 配置加载），源站级发布后健康验证在后续增强；
+7. 阶段3 macOS 开发环境后端需容器化访问网关 socket（bind mount 不支持 unix socket），生产 Linux 部署通过共享卷正常。
 
 ## 下一步
 
-阶段3：应用接入和配置发布（Web应用管理、域名管理、源站管理、证书管理、配置生成/预览/校验/发布/版本/回滚、网关健康状态）。
+阶段4：WAF策略和事件中心（策略管理、规则配置、安全事件中心）。
