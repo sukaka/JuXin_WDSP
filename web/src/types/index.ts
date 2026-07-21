@@ -351,3 +351,220 @@ export interface GatewayStatusData {
   domain_count: number
   upstream_count: number
 }
+
+/* ==================== 阶段4：防护策略 / WAF规则 / 自定义规则 / 例外 / 安全事件 ==================== */
+
+/** 防护策略列表项 */
+export interface ProtectionPolicyItem {
+  id: string
+  code: string
+  name: string
+  description: string
+  is_builtin: boolean
+  status: string
+  protection_mode: ProtectionMode
+  paranoia_level: number
+  inbound_anomaly_threshold: number
+  outbound_anomaly_threshold: number
+  request_body_access: boolean
+  response_body_access: boolean
+  blocking_status_code: number
+  usage_count: number
+  created_at: string
+  updated_at: string
+  version: number
+}
+
+/** 防护策略详情（含绑定应用 ID 列表） */
+export interface ProtectionPolicyDetail extends ProtectionPolicyItem {
+  application_ids: string[]
+}
+
+/**
+ * WAF 规则（CRS 元数据）。
+ * 注意：后端将 jsonb 标签以 []byte 放入 map 序列化，tags 实际为 base64 编码的 JSON 字符串，
+ * 需用 utils/stage4.parseWafRuleTags 解码后展示。
+ */
+export interface WafRuleItem {
+  id: string
+  rule_id: number
+  rule_source: string
+  file_name: string
+  name: string
+  message: string
+  severity: string
+  phase: number
+  tags: string[] | string | null
+  attack_type: string
+  default_state: string
+  crs_version: string
+}
+
+/** 规则分类统计项 */
+export interface WafRuleCategory {
+  attack_type: string
+  count: number
+}
+
+/** CRS 规则同步报告 */
+export interface WafRuleSyncReport {
+  total_parsed: number
+  total_in_db: number
+  added: number
+  updated: number
+  unchanged: number
+  missing: number
+  parse_failed: number
+  conflicts: number
+  failed_rules: string[]
+}
+
+/** 自定义规则动作 */
+export type CustomRuleAction = 'LOG' | 'OBSERVE' | 'BLOCK'
+
+/** 自定义规则 */
+export interface CustomRuleItem {
+  id: string
+  rule_id: number
+  name: string
+  description: string
+  attack_type: string
+  severity: string
+  phase: number
+  operator: string
+  operator_value: string
+  target_variables: string[]
+  action: CustomRuleAction
+  tags: string[]
+  status: string
+  scope_type: string
+  scope_ids: string[]
+  generated_rule: string
+  version: number
+}
+
+/** 自定义规则校验结果 */
+export interface CustomRuleValidateResult {
+  valid: boolean
+  error?: string
+  generated_rule?: string
+}
+
+/** 例外策略动作 */
+export type ExceptionAction =
+  | 'REMOVE_RULE'
+  | 'REMOVE_RULE_TAG'
+  | 'REMOVE_VAR_DETECTION'
+  | 'ADJUST_SCORE'
+  | 'LOG_ONLY'
+
+/** 例外策略 */
+export interface ExceptionItem {
+  id: string
+  name: string
+  description: string
+  scope_type: string
+  application_id?: string | null
+  policy_id?: string | null
+  domain: string
+  uri_exact: string
+  uri_prefix: string
+  uri_regex: string
+  methods: string[] | null
+  source_ips: string[] | null
+  param_names: string[] | null
+  cookie_names: string[] | null
+  header_names: string[] | null
+  rule_ids: number[] | null
+  rule_tags: string[] | null
+  attack_types: string[] | null
+  content_types: string[] | null
+  exception_action: ExceptionAction
+  action_target: string
+  is_temporary: boolean
+  effective_from?: string | null
+  effective_until?: string | null
+  status: string
+  risk_acknowledged: boolean
+  reason: string
+  version: number
+}
+
+/** 例外策略详情（含宽泛判定） */
+export interface ExceptionDetail {
+  exception: ExceptionItem
+  is_broad: boolean
+}
+
+/** 安全事件列表项 */
+export interface SecurityEventItem {
+  id: string
+  request_id: string
+  occurred_at: string
+  application_id?: string | null
+  application_name_snapshot: string
+  domain: string
+  gateway_node_id: string
+  client_ip: string
+  client_port: number
+  request_method: string
+  request_uri: string
+  request_path: string
+  query_summary: string
+  http_version: string
+  content_type: string
+  user_agent_summary: string
+  referer_summary: string
+  attack_type: string
+  severity: string
+  anomaly_score: number
+  action: string
+  response_status: number
+  rule_match_count: number
+  disposition_status: string
+  disposition_result: string
+  raw_log_reference: string
+}
+
+/** 事件规则匹配（matched_data 已脱敏，渲染时必须按纯文本转义显示） */
+export interface SecurityEventMatch {
+  rule_id: number
+  rule_name: string
+  severity: string
+  message: string
+  matched_variable: string
+  matched_data: string
+  tags: string[]
+  phase: number
+}
+
+/** 事件备注 */
+export interface SecurityEventNote {
+  username: string
+  note: string
+  created_at: string
+}
+
+/** 事件处置记录 */
+export interface SecurityEventActionRecord {
+  action_type: string
+  operator_name: string
+  detail: string
+  related_ref_id: string
+  created_at: string
+}
+
+/** 安全事件详情 */
+export interface SecurityEventDetail {
+  event: SecurityEventItem
+  matches: SecurityEventMatch[] | null
+  notes: SecurityEventNote[] | null
+  actions: SecurityEventActionRecord[] | null
+  related: SecurityEventItem[] | null
+}
+
+/** 从事件创建例外草稿的结果 */
+export interface CreateExceptionFromEventResult {
+  exception_id: string
+  message: string
+}

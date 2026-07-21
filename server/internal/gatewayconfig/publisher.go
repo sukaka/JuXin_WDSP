@@ -74,6 +74,17 @@ type PolicyProvider interface {
 	GetApplicationPolicyParams(ctx context.Context, appID uuid.UUID) (*PolicyParams, error)
 }
 
+// ExceptionRule 是下发到网关的例外规则（SecLang 文本）。
+type ExceptionRule struct {
+	RuleID int
+	SecLang string
+}
+
+// ExceptionProvider 是启用例外策略查询接口（由 exceptions.Store 实现）。
+type ExceptionProvider interface {
+	GetEnabledExceptions(ctx context.Context) ([]ExceptionRule, error)
+}
+
 // Publisher 是配置发布控制器。
 type Publisher struct {
 	db      *pgxpool.Pool
@@ -83,10 +94,11 @@ type Publisher struct {
 	caddy   *CaddyClient
 	dataDir string // 配置与证书文件目录（runtime）
 	policies PolicyProvider
+	exceptions ExceptionProvider
 }
 
 // NewPublisher 创建发布控制器。
-func NewPublisher(db *pgxpool.Pool, c *cache.Client, apps *applications.Store, certs *certificates.Store, socketPath, dataDir string, policies PolicyProvider) *Publisher {
+func NewPublisher(db *pgxpool.Pool, c *cache.Client, apps *applications.Store, certs *certificates.Store, socketPath, dataDir string, policies PolicyProvider, exceptions ExceptionProvider) *Publisher {
 	return &Publisher{
 		db:      db,
 		cache:   c,
@@ -95,6 +107,7 @@ func NewPublisher(db *pgxpool.Pool, c *cache.Client, apps *applications.Store, c
 		caddy:   NewCaddyClient(socketPath),
 		dataDir: dataDir,
 		policies: policies,
+		exceptions: exceptions,
 	}
 }
 
@@ -182,11 +195,18 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		return
 	}
 
+	// 读取启用的例外策略（下发到网关）
+	var exceptionRules []ExceptionRule
+	if p.exceptions != nil {
+		exceptionRules, _ = p.exceptions.GetEnabledExceptions(ctx)
+	}
+
 	// 步骤2：生成候选配置
 	p.updateTaskStep(ctx, taskID, TaskGenerating, "生成候选配置", 25)
 	gen, err := Generate(GenerateInput{
 		Apps:        appsData,
 		AdminSocket: p.caddy.SocketPath(),
+		Exceptions:  exceptionRules,
 	})
 	if err != nil {
 		p.finishTask(ctx, taskID, TaskFailed, "GENERATE_FAILED", err.Error(), nil)

@@ -29,6 +29,8 @@ type GenerateInput struct {
 	AdminSocket string
 	// CertFileDir 证书文件在网关内的目录。
 	CertFileDir string
+	// Exceptions 启用的例外策略规则（SecLang 文本，加入 before-crs 加载段）。
+	Exceptions []ExceptionRule
 }
 
 // AppData 是单个应用的完整数据。
@@ -252,12 +254,12 @@ func buildHandles(in GenerateInput, app AppData, d applications.Domain) []interf
 			"delete": []string{}},
 	})
 
-	// 2. WAF（按防护模式与策略参数）
+	// 2. WAF（按防护模式与策略参数，含例外规则）
 	ruleEngine := modeToRuleEngine[app.ProtectionMode]
 	if ruleEngine == "" {
 		ruleEngine = "DetectionOnly"
 	}
-	directives := buildWAFDirectivesWithPolicy(ruleEngine, app)
+	directives := buildWAFDirectivesWithPolicy(ruleEngine, app, in.Exceptions)
 	handles = append(handles, mapT{
 		"handler":    "waf",
 		"directives": directives,
@@ -285,12 +287,12 @@ func buildHandles(in GenerateInput, app AppData, d applications.Domain) []interf
 
 // buildWAFDirectives 构建 WAF SecLang 指令（固定加载顺序）。
 func buildWAFDirectives(ruleEngine string) string {
-	return buildWAFDirectivesWithPolicy(ruleEngine, AppData{})
+	return buildWAFDirectivesWithPolicy(ruleEngine, AppData{}, nil)
 }
 
-// buildWAFDirectivesWithPolicy 构建带策略参数的 WAF SecLang 指令。
-// 阶段4：将应用的策略参数（执行等级、异常阈值）注入 crs-setup。
-func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData) string {
+// buildWAFDirectivesWithPolicy 构建带策略参数与例外规则的 WAF SecLang 指令。
+// 阶段4：策略参数（PL/阈值）注入 crs-setup；例外规则放 CRS 之前（运行时例外）。
+func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []ExceptionRule) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("SecRuleEngine %s\n", ruleEngine))
 	b.WriteString("Include /etc/caddy/rules/coraza.conf\n")
@@ -310,6 +312,11 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData) string {
 	b.WriteString(fmt.Sprintf("SecAction \"id:900001,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=%d,setvar:tx.inbound_anomaly_score_threshold=%d,setvar:tx.outbound_anomaly_score_threshold=%d\"\n", pl, inbound, outbound))
 	b.WriteString("Include /etc/caddy/rules/crs/crs-setup.conf\n")
 	b.WriteString("Include /etc/caddy/rules/exclusions/before-crs.conf\n")
+	// 例外策略规则（运行时例外，放 CRS 规则之前）
+	for _, ex := range exceptions {
+		b.WriteString(ex.SecLang)
+		b.WriteString("\n")
+	}
 	b.WriteString("Include /etc/caddy/rules/crs/rules/*.conf\n")
 	b.WriteString("Include /etc/caddy/rules/exclusions/after-crs.conf\n")
 	b.WriteString("Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf")
