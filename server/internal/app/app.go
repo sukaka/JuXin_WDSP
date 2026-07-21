@@ -64,7 +64,7 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 		slog.Warn("encryption service not configured, certificate features disabled", "error", err)
 	}
 
-	// 阶段3：应用/证书/网关服务
+	// 阶段3+阶段4：应用/证书/网关/策略服务
 	var appStore *applications.Store
 	var certStore *certificates.Store
 	var publisher *gatewayconfig.Publisher
@@ -72,11 +72,12 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 	var certHandler *certificates.Handler
 	var upstreamTestHandler *upstreams.TestHandler
 	var gatewayHandler *gatewayconfig.Handler
+	policyStore := protectionpolicies.NewStore(db)
 	if encSvc != nil {
 		appStore = applications.NewStore(db)
 		certStore = certificates.NewStore(db, encSvc)
 		publisher = gatewayconfig.NewPublisher(db, c, appStore, certStore,
-			cfg.Gateway.AdminSocket, cfg.Gateway.DataDir)
+			cfg.Gateway.AdminSocket, cfg.Gateway.DataDir, policyStore)
 		appHandler = applications.NewHandler(appStore, auditSvc, certStore)
 		certHandler = certificates.NewHandler(certStore, auditSvc)
 		upstreamTestHandler = upstreams.NewTestHandler(auditSvc)
@@ -84,7 +85,6 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 	}
 
 	// 阶段4：WAF策略/规则/例外/事件服务
-	policyStore := protectionpolicies.NewStore(db)
 	ruleHandler := wafrules.NewHandler(db, auditSvc, cfg.WAF.CRSDir, cfg.WAF.CRSVersion)
 	customRuleStore := customrules.NewStore(db)
 	exceptionStore := exceptions.NewStore(db)

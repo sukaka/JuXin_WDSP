@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
 )
 
 // 错误
@@ -346,9 +347,11 @@ func (s *Store) UnbindApplication(ctx context.Context, appID uuid.UUID) error {
 }
 
 // GetApplicationPolicy 查询应用当前活动策略。
+// 注意：JOIN 时必须加表别名前缀，避免与 application_policies 的同名列歧义。
 func (s *Store) GetApplicationPolicy(ctx context.Context, appID uuid.UUID) (*Policy, error) {
+	aliased := joinWithPrefix(policyColumns, "p")
 	row := s.db.QueryRow(ctx, `
-SELECT `+policyColumns+` FROM protection_policies p
+SELECT `+aliased+` FROM protection_policies p
 JOIN application_policies ap ON ap.policy_id = p.id
 WHERE ap.application_id = $1 AND ap.is_active = TRUE AND p.deleted_at IS NULL`, appID)
 	p, err := s.scanPolicy(row)
@@ -359,6 +362,19 @@ WHERE ap.application_id = $1 AND ap.is_active = TRUE AND p.deleted_at IS NULL`, 
 		return nil, err
 	}
 	return p, nil
+}
+
+// joinWithPrefix 为列清单添加表别名前缀（逗号分隔的列名，去除空白与换行）。
+func joinWithPrefix(columns, prefix string) string {
+	parts := strings.Split(columns, ",")
+	var cols []string
+	for _, c := range parts {
+		c = strings.TrimSpace(c)
+		if c != "" {
+			cols = append(cols, prefix+"."+c)
+		}
+	}
+	return strings.Join(cols, ",")
 }
 
 // ListApplicationIDs 查询策略绑定的应用。
@@ -386,4 +402,21 @@ func (s *Store) CountUsage(ctx context.Context, policyID uuid.UUID) (int, error)
 	err := s.db.QueryRow(ctx,
 		`SELECT count(*) FROM application_policies WHERE policy_id = $1 AND is_active = TRUE`, policyID).Scan(&n)
 	return n, err
+}
+
+// GetApplicationPolicyParams 查询应用当前策略参数（供配置生成器使用）。
+func (s *Store) GetApplicationPolicyParams(ctx context.Context, appID uuid.UUID) (*gatewayconfig.PolicyParams, error) {
+	p, err := s.GetApplicationPolicy(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil {
+		return nil, nil
+	}
+	return &gatewayconfig.PolicyParams{
+		ProtectionMode:    p.ProtectionMode,
+		ParanoiaLevel:     p.ParanoiaLevel,
+		InboundThreshold:  p.InboundAnomalyThreshold,
+		OutboundThreshold: p.OutboundAnomalyThreshold,
+	}, nil
 }

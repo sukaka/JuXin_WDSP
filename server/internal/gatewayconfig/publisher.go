@@ -1,6 +1,7 @@
 package gatewayconfig
 
 import (
+	"log/slog"
 	"context"
 	"errors"
 	"fmt"
@@ -60,6 +61,19 @@ type PublishTask struct {
 	RequestID         string     `json:"request_id"`
 }
 
+// PolicyParams 是应用策略参数。
+type PolicyParams struct {
+	ProtectionMode    string
+	ParanoiaLevel     int
+	InboundThreshold  int
+	OutboundThreshold int
+}
+
+// PolicyProvider 是应用策略查询接口（由 protectionpolicies.Store 实现）。
+type PolicyProvider interface {
+	GetApplicationPolicyParams(ctx context.Context, appID uuid.UUID) (*PolicyParams, error)
+}
+
 // Publisher 是配置发布控制器。
 type Publisher struct {
 	db      *pgxpool.Pool
@@ -68,10 +82,11 @@ type Publisher struct {
 	certs   *certificates.Store
 	caddy   *CaddyClient
 	dataDir string // 配置与证书文件目录（runtime）
+	policies PolicyProvider
 }
 
 // NewPublisher 创建发布控制器。
-func NewPublisher(db *pgxpool.Pool, c *cache.Client, apps *applications.Store, certs *certificates.Store, socketPath, dataDir string) *Publisher {
+func NewPublisher(db *pgxpool.Pool, c *cache.Client, apps *applications.Store, certs *certificates.Store, socketPath, dataDir string, policies PolicyProvider) *Publisher {
 	return &Publisher{
 		db:      db,
 		cache:   c,
@@ -79,6 +94,7 @@ func NewPublisher(db *pgxpool.Pool, c *cache.Client, apps *applications.Store, c
 		certs:   certs,
 		caddy:   NewCaddyClient(socketPath),
 		dataDir: dataDir,
+		policies: policies,
 	}
 }
 
@@ -266,6 +282,21 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			ProtectionMode: app.ProtectionMode,
 			Domains:        domains,
 			Upstreams:      upstreams,
+		}
+		// 阶段4：读取应用绑定的策略参数（策略模式优先于应用字段）
+		if p.policies != nil {
+			pp, err := p.policies.GetApplicationPolicyParams(ctx, app.ID)
+			if err != nil {
+				slog.Warn("get application policy params failed", "app", app.Code, "error", err)
+			}
+			if err == nil && pp != nil {
+				if pp.ProtectionMode != "" {
+					ad.ProtectionMode = pp.ProtectionMode
+				}
+				ad.ParanoiaLevel = pp.ParanoiaLevel
+				ad.InboundThreshold = pp.InboundThreshold
+				ad.OutboundThreshold = pp.OutboundThreshold
+			}
 		}
 		// 证书（HTTPS 应用）
 		hasHTTPS := false

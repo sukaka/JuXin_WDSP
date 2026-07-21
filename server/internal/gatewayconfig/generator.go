@@ -41,6 +41,10 @@ type AppData struct {
 	CertID       string
 	CertFileName string // 写入网关证书目录的文件名（不含目录）
 	HasCert      bool
+	// 阶段4策略参数（可选，为零值时使用默认）
+	ParanoiaLevel      int
+	InboundThreshold   int
+	OutboundThreshold  int
 }
 
 // Generated 是生成结果。
@@ -248,12 +252,12 @@ func buildHandles(in GenerateInput, app AppData, d applications.Domain) []interf
 			"delete": []string{}},
 	})
 
-	// 2. WAF（按防护模式）
+	// 2. WAF（按防护模式与策略参数）
 	ruleEngine := modeToRuleEngine[app.ProtectionMode]
 	if ruleEngine == "" {
 		ruleEngine = "DetectionOnly"
 	}
-	directives := buildWAFDirectives(ruleEngine)
+	directives := buildWAFDirectivesWithPolicy(ruleEngine, app)
 	handles = append(handles, mapT{
 		"handler":    "waf",
 		"directives": directives,
@@ -281,9 +285,29 @@ func buildHandles(in GenerateInput, app AppData, d applications.Domain) []interf
 
 // buildWAFDirectives 构建 WAF SecLang 指令（固定加载顺序）。
 func buildWAFDirectives(ruleEngine string) string {
+	return buildWAFDirectivesWithPolicy(ruleEngine, AppData{})
+}
+
+// buildWAFDirectivesWithPolicy 构建带策略参数的 WAF SecLang 指令。
+// 阶段4：将应用的策略参数（执行等级、异常阈值）注入 crs-setup。
+func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("SecRuleEngine %s\n", ruleEngine))
 	b.WriteString("Include /etc/caddy/rules/coraza.conf\n")
+	// 策略参数（PL 与异常阈值，覆盖 crs-setup.conf 默认值）
+	pl := app.ParanoiaLevel
+	if pl <= 0 {
+		pl = 1
+	}
+	inbound := app.InboundThreshold
+	if inbound <= 0 {
+		inbound = 5
+	}
+	outbound := app.OutboundThreshold
+	if outbound <= 0 {
+		outbound = 4
+	}
+	b.WriteString(fmt.Sprintf("SecAction \"id:900001,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=%d,setvar:tx.inbound_anomaly_score_threshold=%d,setvar:tx.outbound_anomaly_score_threshold=%d\"\n", pl, inbound, outbound))
 	b.WriteString("Include /etc/caddy/rules/crs/crs-setup.conf\n")
 	b.WriteString("Include /etc/caddy/rules/exclusions/before-crs.conf\n")
 	b.WriteString("Include /etc/caddy/rules/crs/rules/*.conf\n")
