@@ -316,4 +316,6 @@
 
 ## 下一步
 
-阶段8 规划（可选）：完整 RAG、策略版本快照、多租户 AI 计费、更深度的 What-If 回放与压测归档。
+产品线并行：WAF 维护与 WDSP（WAF+API 动态防护）见 [BRANCHING_AND_PRODUCT_LINES.md](BRANCHING_AND_PRODUCT_LINES.md)（`main`=WAF 可发版，`develop`/stage8=WDSP，edition 开关区分交付）。
+
+阶段7 收尾与阶段8 能力按任务书推进；可选增强：完整 RAG、策略版本快照、多租户 AI 计费、更深度的 What-If 回放与压测归档。
