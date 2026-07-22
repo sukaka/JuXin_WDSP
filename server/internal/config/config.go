@@ -18,6 +18,13 @@ type Config struct {
 	Security SecurityConfig
 	Gateway  GatewayConfig
 	WAF      WAFConfig
+	AI       AIConfig
+}
+
+// AIConfig 阶段7 AI 模块开关（关闭时 /api/v1/ai/* 返回不可用，不影响 WAF 核心）。
+type AIConfig struct {
+	// Enabled 是否启用 AI 安全运营模块；环境变量 AI_ENABLED，默认 true
+	Enabled bool
 }
 
 // WAFConfig 是 WAF 配置（阶段4）。
@@ -30,6 +37,14 @@ type WAFConfig struct {
 	AuditLogPath string
 	// GatewayNodeName 网关节点标识
 	GatewayNodeName string
+	// GuardEventsLog jiuzhang_guard 访问控制事件日志路径（API 侧采集，阶段5）
+	GuardEventsLog string
+	// GuardEventsLogGateway 网关容器内事件日志路径（下发网关配置用，阶段5）
+	GuardEventsLogGateway string
+	// GuardFailOpen CC 计数引擎故障策略：dev 默认 true；prod 默认 false（可用 GUARD_FAIL_OPEN 覆盖）
+	GuardFailOpen bool
+	// AccessLogPath Caddy 访问日志路径（API 侧采集，阶段6）
+	AccessLogPath string
 }
 
 // GatewayConfig 是网关配置（阶段3）。
@@ -133,10 +148,18 @@ func Load() (*Config, error) {
 			DataDir:     getEnv("GATEWAY_DATA_DIR", "runtime"),
 		},
 		WAF: WAFConfig{
-			CRSDir:          getEnv("WAF_CRS_DIR", "gateway/rules/crs/rules"),
-			CRSVersion:      getEnv("WAF_CRS_VERSION", "4.28.0"),
-			AuditLogPath:    getEnv("WAF_AUDIT_LOG", "runtime/logs/stage1/coraza-audit.log"),
-			GatewayNodeName: getEnv("GATEWAY_NODE_NAME", "gateway-poc-01"),
+			CRSDir:                getEnv("WAF_CRS_DIR", "gateway/rules/crs/rules"),
+			CRSVersion:            getEnv("WAF_CRS_VERSION", "4.28.0"),
+			AuditLogPath:          getEnv("WAF_AUDIT_LOG", "runtime/logs/stage1/coraza-audit.log"),
+			GatewayNodeName:       getEnv("GATEWAY_NODE_NAME", "gateway-poc-01"),
+			GuardEventsLog:        getEnv("WAF_GUARD_EVENTS_LOG", "runtime/logs/guard-events.log"),
+			GuardEventsLogGateway: getEnv("GATEWAY_GUARD_EVENTS_LOG", "/var/log/caddy/guard-events.log"),
+			// 非 prod 默认 fail-open 便于开发；prod 默认 fail-closed（可用 GUARD_FAIL_OPEN 覆盖）
+			GuardFailOpen: getEnvBool("GUARD_FAIL_OPEN", getEnv("APP_ENV", "dev") != "prod"),
+			AccessLogPath: getEnv("WAF_ACCESS_LOG", "runtime/logs/access.log"),
+		},
+		AI: AIConfig{
+			Enabled: getEnvBool("AI_ENABLED", true),
 		},
 	}
 	if cfg.DB.Password == "" {
@@ -147,6 +170,10 @@ func Load() (*Config, error) {
 	}
 	if cfg.Env == "prod" && !cfg.Security.CookieSecure {
 		return nil, fmt.Errorf("COOKIE_SECURE must be true in prod")
+	}
+	// 生产默认 fail-closed：若未显式设置 GUARD_FAIL_OPEN，强制 false
+	if cfg.Env == "prod" && os.Getenv("GUARD_FAIL_OPEN") == "" {
+		cfg.WAF.GuardFailOpen = false
 	}
 	return cfg, nil
 }

@@ -1,21 +1,56 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { App as AntdApp, Avatar, Breadcrumb, Dropdown, Layout, Menu, Space, Spin } from 'antd'
 import type { MenuProps } from 'antd'
 import {
+  AlertOutlined,
+  AimOutlined,
+  ApiOutlined,
   AppstoreOutlined,
   AuditOutlined,
+  BarChartOutlined,
+  BellOutlined,
+  BookOutlined,
+  BulbOutlined,
+  CheckSquareOutlined,
+  ClockCircleOutlined,
   CloudServerOutlined,
   CloudUploadOutlined,
+  ControlOutlined,
   DashboardOutlined,
+  DatabaseOutlined,
+  DeploymentUnitOutlined,
+  ExceptionOutlined,
+  FileDoneOutlined,
   FileProtectOutlined,
   FileSearchOutlined,
+  FileTextOutlined,
+  FundViewOutlined,
+  GlobalOutlined,
   HistoryOutlined,
+  InboxOutlined,
   KeyOutlined,
+  LineChartOutlined,
   LogoutOutlined,
+  MessageOutlined,
+  MonitorOutlined,
+  PieChartOutlined,
+  ProfileOutlined,
+  RadarChartOutlined,
+  RobotOutlined,
+  RocketOutlined,
   SafetyCertificateOutlined,
+  SafetyOutlined,
+  SaveOutlined,
+  ScheduleOutlined,
+  SecurityScanOutlined,
   SettingOutlined,
+  ShareAltOutlined,
+  SnippetsOutlined,
+  StopOutlined,
   TeamOutlined,
+  ThunderboltOutlined,
+  ToolOutlined,
   UserOutlined,
 } from '@ant-design/icons'
 import type { ReactNode } from 'react'
@@ -33,12 +68,48 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/config-publish': <CloudUploadOutlined />,
   '/config-versions': <HistoryOutlined />,
   '/gateway-status': <CloudServerOutlined />,
+  '/protection-policies': <SafetyOutlined />,
+  '/waf-rules': <SecurityScanOutlined />,
+  '/custom-rules': <ControlOutlined />,
+  '/exceptions': <ExceptionOutlined />,
+  '/trusted-proxies': <GlobalOutlined />,
+  '/access-rules': <StopOutlined />,
+  '/rate-limit': <ThunderboltOutlined />,
+  '/temporary-blocks': <ClockCircleOutlined />,
+  '/access-control-events': <ProfileOutlined />,
+  '/security-events': <AlertOutlined />,
+  '/event-statistics': <BarChartOutlined />,
+  '/security-overview': <RadarChartOutlined />,
+  '/analytics': <LineChartOutlined />,
+  '/system-alerts': <BellOutlined />,
+  '/reports': <FileTextOutlined />,
+  '/report-templates': <FileDoneOutlined />,
+  '/report-archives': <InboxOutlined />,
+  '/system-monitoring': <MonitorOutlined />,
+  '/storage': <DatabaseOutlined />,
+  '/backup-restore': <SaveOutlined />,
+  '/system-upgrade': <RocketOutlined />,
+  '/delivery-check': <CheckSquareOutlined />,
   '/users': <TeamOutlined />,
   '/roles': <SafetyCertificateOutlined />,
   '/login-logs': <FileSearchOutlined />,
   '/audits': <AuditOutlined />,
   '/system-settings': <SettingOutlined />,
   '/profile': <UserOutlined />,
+  '/ai/assistant': <RobotOutlined />,
+  '/ai/event-analysis': <FundViewOutlined />,
+  '/ai/attack-profile': <AimOutlined />,
+  '/ai/attack-chain': <ShareAltOutlined />,
+  '/ai/policy-recommendation': <BulbOutlined />,
+  '/ai/report-summary': <SnippetsOutlined />,
+  '/ai/tasks': <ScheduleOutlined />,
+  '/ai/admin/models': <DeploymentUnitOutlined />,
+  '/ai/admin/agents': <ApiOutlined />,
+  '/ai/admin/tools': <ToolOutlined />,
+  '/ai/admin/prompts': <MessageOutlined />,
+  '/ai/admin/memories': <BookOutlined />,
+  '/ai/admin/usage': <PieChartOutlined />,
+  '/ai/admin/audits': <AuditOutlined />,
 }
 
 export default function AdminLayout() {
@@ -49,6 +120,8 @@ export default function AdminLayout() {
   const reset = useAuthStore((s) => s.reset)
   const [collapsed, setCollapsed] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
+  // 二级菜单默认收起，仅记录用户手动展开的分组
+  const [openKeys, setOpenKeys] = useState<string[]>([])
 
   const menus = useMemo(
     () => filterMenusByRoles(user?.roles.map((r) => r.code)),
@@ -70,7 +143,7 @@ export default function AdminLayout() {
     }
     for (const [label, children] of groups) {
       items.push({
-        type: 'group',
+        key: label,
         label,
         children: children.map((m) => ({ key: m.key, icon: MENU_ICONS[m.key], label: m.label })),
       })
@@ -79,6 +152,14 @@ export default function AdminLayout() {
   }, [menus])
 
   const currentMenu = menus.find((m) => location.pathname.startsWith(m.key))
+
+  // 直接进入某个分组下的页面时，自动展开该分组以保证选中项可见
+  useEffect(() => {
+    const group = currentMenu?.group
+    if (group) {
+      setOpenKeys((keys) => (keys.includes(group) ? keys : [...keys, group]))
+    }
+  }, [currentMenu])
 
   const handleLogout = async () => {
     setLoggingOut(true)
@@ -118,6 +199,8 @@ export default function AdminLayout() {
           theme="dark"
           mode="inline"
           selectedKeys={currentMenu ? [currentMenu.key] : []}
+          openKeys={collapsed ? undefined : openKeys}
+          onOpenChange={(keys) => setOpenKeys(keys)}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
         />

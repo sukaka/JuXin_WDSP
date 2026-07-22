@@ -79,6 +79,7 @@ type exceptionRequest struct {
 	EffectiveUntil   *string    `json:"effective_until"`
 	RiskAcknowledged bool       `json:"risk_acknowledged"`
 	Reason           string     `json:"reason"`
+	Version          int        `json:"version"` // 乐观锁（更新必填）
 }
 
 // Create 创建例外。
@@ -100,6 +101,50 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		risk = audits.RiskHigh
 	}
 	h.recordAudit(r, p, "create", e.ID.String(), e.Name, audits.ResultSuccess, risk)
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{
+		"exception": e,
+		"is_broad":  e.IsBroad(),
+	})
+}
+
+// Update 更新例外（乐观锁 version，请求体 version 必填）。
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的例外ID")
+		return
+	}
+	existing, err := h.store.GetByID(r.Context(), id)
+	if err != nil {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "例外不存在")
+		return
+	}
+	var req exceptionRequest
+	if err := response.DecodeJSON(w, r, &req, 16384); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if req.Version <= 0 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "version 必填（乐观锁）")
+		return
+	}
+	e := buildException(&req)
+	e.ID = id
+	e.Status = existing.Status
+	if err := h.store.Update(r.Context(), e, req.Version); err != nil {
+		if err == ErrNotFound {
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "例外不存在或版本冲突，请刷新后重试")
+			return
+		}
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	risk := audits.RiskMedium
+	if e.IsBroad() {
+		risk = audits.RiskHigh
+	}
+	h.recordAudit(r, p, "update", e.ID.String(), e.Name, audits.ResultSuccess, risk)
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"exception": e,
 		"is_broad":  e.IsBroad(),

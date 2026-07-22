@@ -8,16 +8,24 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/accesscontrolevents"
+	"github.com/jiuzhang-waf/server/internal/accessrules"
+	"github.com/jiuzhang-waf/server/internal/aggregations"
 	"github.com/jiuzhang-waf/server/internal/app"
+	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/config"
 	"github.com/jiuzhang-waf/server/internal/database"
+	"github.com/jiuzhang-waf/server/internal/exceptions"
+	"github.com/jiuzhang-waf/server/internal/guardjanitor"
 	"github.com/jiuzhang-waf/server/internal/security"
 	"github.com/jiuzhang-waf/server/internal/securityevents"
+	"github.com/jiuzhang-waf/server/internal/temporaryblocks"
 	"github.com/jiuzhang-waf/server/internal/users"
 )
 
@@ -73,6 +81,33 @@ func run() error {
 	defer collectorCancel()
 	eventCollector := securityevents.NewCollector(db, "collector-01", cfg.WAF.AuditLogPath, cfg.WAF.GatewayNodeName)
 	go eventCollector.Run(collectorCtx, 2*time.Second)
+
+	// 阶段5：启动访问控制/CC 事件采集器（断点续传，封禁与命中联动）
+	// 注意：checkpoint 必须落在可写数据目录（日志卷以只读方式挂载，不能存放断点）
+	acEventStore := accesscontrolevents.NewStore(db)
+	acTempBlocks := temporaryblocks.NewStore(db, cacheClient)
+	acRules := accessrules.NewStore(db)
+	acCollector := accesscontrolevents.NewCollector(acEventStore, "ac-collector-01",
+		cfg.WAF.GuardEventsLog, filepath.Join(cfg.Gateway.DataDir, "guard-events.checkpoint"), cfg.WAF.GatewayNodeName)
+	acCollector.SetBlockUpserter(acTempBlocks)
+	acCollector.SetHitRecorder(acRules)
+	go acCollector.Run(collectorCtx, 2*time.Second)
+
+	// 阶段5：到期自动失效调度（临时规则/临时封禁/临时例外标记 EXPIRED + 系统审计）
+	auditSvcForJanitor := audits.NewService(db)
+	exceptionStoreForJanitor := exceptions.NewStore(db)
+	go guardjanitor.RunFull(collectorCtx, time.Minute, acRules, acTempBlocks, exceptionStoreForJanitor, auditSvcForJanitor, acEventStore)
+
+	// 阶段6：访问日志采集器与数据聚合任务
+	aggStore := aggregations.NewStore(db)
+	accessCollector := aggregations.NewAccessLogCollector(aggStore,
+		cfg.WAF.AccessLogPath, filepath.Join(cfg.Gateway.DataDir, "access-log.checkpoint"))
+	go accessCollector.Run(collectorCtx, 2*time.Second)
+	aggJobs := aggregations.NewJobs(aggStore)
+	go aggJobs.Run(collectorCtx)
+
+	// 阶段6：报告/备份/健康采集/告警评估后台工人
+	application.StartStage6Workers(collectorCtx)
 
 	srv := &http.Server{
 		Addr:         cfg.HTTP.HTTPAddr(),

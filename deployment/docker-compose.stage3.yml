@@ -96,6 +96,8 @@ services:
       - stage3-gateway-admin:/var/run/caddy
       # 只读挂载网关日志卷（事件采集器读取 Coraza 审计日志）
       - stage3-gateway-logs:/var/log/caddy-audit:ro
+      # 只读挂载 CRS 规则目录（CRS 元数据同步）
+      - ../gateway/rules:/etc/caddy/rules:ro
       - stage3-runtime:/app/runtime
     depends_on:
       postgres:

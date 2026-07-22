@@ -15,10 +15,14 @@ ENV GOPROXY=${GOPROXY}
 # 安装 xcaddy（锁定版本）
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION}
 
-# 使用 xcaddy 构建包含 Coraza 模块的自定义 Caddy
+# 复制自主 jiuzhang_guard 模块源码（本地路径替换，版本随仓库锁定）
+COPY modules /src/modules
+
+# 使用 xcaddy 构建包含 Coraza 模块与九章自主模块的自定义 Caddy
 # CGO_ENABLED=0 生成静态二进制，运行阶段无需 libc
 RUN CGO_ENABLED=0 xcaddy build ${CADDY_VERSION} \
     --with github.com/corazawaf/coraza-caddy/v2@${CORAZA_CADDY_VERSION} \
+    --with github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard=/src/modules/jiuzhang_guard \
     --output /usr/bin/caddy
 
 # ---------- 运行阶段 ----------

@@ -354,6 +354,35 @@ func (s *Store) SetStatus(ctx context.Context, id uuid.UUID, status string) erro
 	return nil
 }
 
+// Update 更新例外策略（乐观锁：version 不匹配则失败）。
+// 状态不在此方法修改，须走 SetStatus。
+func (s *Store) Update(ctx context.Context, e *Exception, expectedVersion int) error {
+	if err := ValidateInput(e); err != nil {
+		return err
+	}
+	res, err := s.db.Exec(ctx, `
+UPDATE exception_policies SET name=$1, description=$2, scope_type=$3, application_id=$4, policy_id=$5,
+  domain=$6, uri_exact=$7, uri_prefix=$8, uri_regex=$9, methods=$10, source_ips=$11, param_names=$12,
+  cookie_names=$13, header_names=$14, rule_ids=$15, rule_tags=$16, attack_types=$17, content_types=$18,
+  exception_action=$19, action_target=$20, is_temporary=$21, effective_from=$22, effective_until=$23,
+  risk_acknowledged=$24, reason=$25, updated_at=now(), version=version+1
+WHERE id=$26 AND version=$27 AND deleted_at IS NULL`,
+		e.Name, e.Description, e.ScopeType, e.ApplicationID, e.PolicyID,
+		e.Domain, e.URIExact, e.URIPrefix, e.URIRegex, jsonArray(e.Methods), jsonArray(e.SourceIPs),
+		jsonArray(e.ParamNames), jsonArray(e.CookieNames), jsonArray(e.HeaderNames),
+		jsonIntArray(e.RuleIDs), jsonArray(e.RuleTags), jsonArray(e.AttackTypes), jsonArray(e.ContentTypes),
+		e.ExceptionAction, e.ActionTarget, e.IsTemporary, e.EffectiveFrom, e.EffectiveUntil,
+		e.RiskAcknowledged, e.Reason, e.ID, expectedVersion)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	e.Version = expectedVersion + 1
+	return nil
+}
+
 // ExpireTemporary 到期临时例外自动失效（定时任务）。
 func (s *Store) ExpireTemporary(ctx context.Context) (int, error) {
 	res, err := s.db.Exec(ctx, `

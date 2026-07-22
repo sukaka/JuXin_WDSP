@@ -1,0 +1,206 @@
+# 九章阶段5 整合验证编排
+# 整合：PostgreSQL + Valkey + 管理API + 防护网关 + 测试源站
+# 管理API与防护网关共享 Caddy Admin Socket 卷（后端经 Unix Socket 发布配置）
+# 用法（仓库根目录）：
+#   docker compose -f deployment/docker-compose.stage5.yml --env-file .env.example up -d
+
+name: jiuzhang-rstore
+
+services:
+  postgres:
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    container_name: jiuzhang-rstore-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jiuzhang_waf}
+      POSTGRES_USER: ${POSTGRES_USER:-jiuzhang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - rstore-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jiuzhang} -d ${POSTGRES_DB:-jiuzhang_waf}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - rstore-net
+
+  valkey:
+    image: valkey/valkey:8.1.8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+    container_name: jiuzhang-rstore-valkey
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --requirepass
+      - ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    volumes:
+      - rstore-valkey-data:/data
+    ports:
+      - "127.0.0.1:56379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+    networks:
+      - rstore-net
+
+  api:
+    image: jiuzhang-server:stage5
+    build:
+      context: ../server
+      dockerfile: Dockerfile
+    container_name: jiuzhang-rstore-api
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jiuzhang_waf}
+      POSTGRES_USER: ${POSTGRES_USER:-jiuzhang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      VALKEY_HOST: valkey
+      VALKEY_PORT: 6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+      COOKIE_SECURE: "false"
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      JIUZHANG_MASTER_KEY: ${JIUZHANG_MASTER_KEY:-}
+      CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
+      GATEWAY_DATA_DIR: /app/runtime
+      MIGRATIONS_DIR: /app/migrations
+      WAF_CRS_DIR: /etc/caddy/rules/crs/rules
+      WAF_CRS_VERSION: 4.28.0
+      WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
+      GATEWAY_NODE_NAME: gateway-rstore-01
+      # 阶段5：采集网关 guard 事件日志（只读卷）+ 下发网关的事件日志路径
+      WAF_GUARD_EVENTS_LOG: /var/log/caddy-audit/guard-events.log
+      GATEWAY_GUARD_EVENTS_LOG: /var/log/caddy/guard-events.log
+      # 阶段5：CC 计数引擎故障策略（true=Fail-open / false=Fail-closed）
+      GUARD_FAIL_OPEN: ${GUARD_FAIL_OPEN:-true}
+      # 阶段6：Caddy 访问日志（请求指标采集）
+      WAF_ACCESS_LOG: /var/log/caddy-audit/access.log
+      # 阶段6：报告 PDF 字体
+      REPORT_FONT_PATH: /app/assets/fonts/NotoSansCJKsc-VF.ttf
+    ports:
+      - "127.0.0.1:${API_PORT:-18091}:8080"
+    volumes:
+      # 与防护网关共享 Admin Socket 卷（后端经 Unix Socket 发布配置）
+      - rstore-gateway-admin:/var/run/caddy
+      # 只读挂载网关日志卷（事件采集器读取 Coraza 审计日志）
+      - rstore-gateway-logs:/var/log/caddy-audit:ro
+      # 只读挂载 CRS 规则目录（CRS 元数据同步）
+      - ../gateway/rules:/etc/caddy/rules:ro
+      # 只读挂载文档与合规文件（交付检查）
+      - ../docs:/app/docs:ro
+      - ../THIRD_PARTY_NOTICES.md:/app/THIRD_PARTY_NOTICES.md:ro
+      - rstore-runtime:/app/runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      gateway:
+        condition: service_started
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - rstore-net
+
+  gateway:
+    image: jiuzhang-gateway:stage5
+    build:
+      context: ../gateway
+      dockerfile: Dockerfile
+    container_name: jiuzhang-rstore-gateway
+    restart: unless-stopped
+    environment:
+      SEC_RULE_ENGINE: On
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-18090}:8080"
+    volumes:
+      - ../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      - ../gateway/rules:/etc/caddy/rules:ro
+      - rstore-gateway-logs:/var/log/caddy
+      - rstore-gateway-admin:/var/run/caddy
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      testorigin:
+        condition: service_healthy
+    networks:
+      - rstore-net
+
+  testorigin:
+    build:
+      context: ../deployment/stage1/testorigin
+      dockerfile: Dockerfile
+    image: jiuzhang-testorigin:stage1
+    container_name: jiuzhang-rstore-testorigin
+    restart: unless-stopped
+    expose:
+      - "8081"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - rstore-net
+
+volumes:
+  rstore-postgres-data:
+    driver: local
+  rstore-valkey-data:
+    driver: local
+  rstore-gateway-admin:
+    driver: local
+  rstore-gateway-logs:
+    driver: local
+  rstore-runtime:
+    driver: local
+
+networks:
+  rstore-net:
+    driver: bridge

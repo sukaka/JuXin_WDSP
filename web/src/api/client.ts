@@ -44,6 +44,8 @@ export interface RequestOptions {
   query?: Record<string, QueryValue>
   /** 响应不是统一信封格式时置为 true（如 /health） */
   raw?: boolean
+  /** 响应为纯文本/HTML（非 JSON 信封，如报告预览）时置为 true，返回原始文本 */
+  rawText?: boolean
 }
 
 export function buildUrl(path: string, query?: Record<string, QueryValue>): string {
@@ -101,6 +103,17 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       throw new ApiError(`请求失败（HTTP ${resp.status}）`, 'HTTP_ERROR', resp.status)
     }
     return payload as T
+  }
+
+  // 纯文本响应（如报告预览 HTML）：成功返回原文；失败按信封提取错误信息
+  if (options.rawText) {
+    if (!resp.ok) {
+      const env = payload as ApiEnvelope<null> | null
+      const code = env && typeof env.code === 'string' ? env.code : 'HTTP_ERROR'
+      const message = env && typeof env.message === 'string' ? env.message : `请求失败（HTTP ${resp.status}）`
+      throw new ApiError(message, code, resp.status, env?.request_id, env?.details)
+    }
+    return text as T
   }
 
   const env = payload as ApiEnvelope<T> | null

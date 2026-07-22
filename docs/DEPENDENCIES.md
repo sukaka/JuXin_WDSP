@@ -13,6 +13,13 @@
 | xcaddy | v0.4.5 | 328cac711a1f | Apache-2.0 | https://github.com/caddyserver/xcaddy | 2025-07-29 | Caddy 自定义构建工具（仅构建期使用） | 否 |
 | go-ftw | v2.4.0 | 23db497e3a61 | Apache-2.0 | https://github.com/coreruleset/go-ftw | 2026-05-23 | CRS 回归测试框架（仅测试期使用） | 否 |
 
+## 阶段5新增组件
+
+| 组件名称 | 版本号 | 许可证 | 项目地址 | 用途 | 是否修改 |
+|---------|--------|--------|---------|------|---------|
+| valkey-go | v1.0.76 | Apache-2.0 | https://github.com/valkey-io/valkey-go | jiuzhang_guard 模块 Valkey 客户端（CC计数/临时封禁） | 否 |
+| jiuzhang_guard | 随仓库 | 自主开发 | 本仓库 gateway/modules/jiuzhang_guard | 访问控制与CC防护 Caddy 模块（独立 go.mod，xcaddy 本地路径替换构建） | 自研 |
+
 ## 基础镜像（Docker）
 
 | 镜像 | 标签 | 摘要 | 用途 |

@@ -95,10 +95,12 @@ func TestSystemSettingsForbiddenForOthers(t *testing.T) {
 // TestRateLimitLogin 登录接口限速生效。
 func TestRateLimitLogin(t *testing.T) {
 	env := setupTestEnv(t)
-	// 默认限速 10 次/分钟（登录接口），快速请求应触发 RATE_LIMITED
+	// 默认限速 10 次/分钟（登录接口），快速请求应触发 RATE_LIMITED。
+	// 注意：验证码接口与登录共用同额度配置，循环中验证码可能先被 429；
+	// 此时用占位验证码继续打登录接口，登录桶同样会耗尽并返回 RATE_LIMITED。
 	var lastCode string
 	for i := 0; i < 12; i++ {
-		capID, capCode := env.captcha(t)
+		capID, capCode := env.captchaTolerant(t)
 		body := fmt.Sprintf(`{"username":"rl_user","password":"x","captcha_id":%q,"captcha_code":%q}`, capID, capCode)
 		resp := env.post(t, "/api/v1/auth/login", body, nil, "")
 		var result apiResp

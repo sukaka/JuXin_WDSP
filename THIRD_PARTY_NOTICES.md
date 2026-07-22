@@ -56,6 +56,20 @@
 | Vitest | 3.x | MIT | 单元测试 |
 | Playwright | 1.x | Apache-2.0 | E2E 测试 |
 
+## 阶段5新增组件
+
+| 软件名称 | 项目来源 | 锁定版本 | 许可证 | 是否修改 | 使用方式 | 许可证文件位置 |
+|---------|---------|---------|--------|---------|---------|---------------|
+| valkey-go | https://github.com/valkey-io/valkey-go | v1.0.76 | Apache-2.0 | 否 | jiuzhang_guard 模块 Valkey 客户端（CC计数/临时封禁） | [licenses/valkey-go/LICENSE](licenses/valkey-go/LICENSE) |
+
+## 阶段6新增组件
+
+| 软件名称 | 项目来源 | 锁定版本 | 许可证 | 是否修改 | 使用方式 | 许可证文件位置 |
+|---------|---------|---------|--------|---------|---------|---------------|
+| gofpdf | https://github.com/jung-kurt/gofpdf | v2.17.3 | MIT | 否 | PDF 报告生成（管理后端） | [licenses/gofpdf/LICENSE](licenses/gofpdf/LICENSE) |
+| Noto Sans CJK | https://github.com/notofonts/noto-cjk | noto-cjk main（sha256 见 server/assets/fonts/README.md） | OFL-1.1 | 否 | PDF 报告中文字体（server/assets/fonts/） | [licenses/noto-fonts/LICENSE](licenses/noto-fonts/LICENSE) |
+| ECharts | https://github.com/apache/echarts | 6.1.0 | Apache-2.0 | 否 | 前端图表（态势与报表页） | [licenses/echarts/LICENSE](licenses/echarts/LICENSE) |
+
 ## 许可证原文
 
 各组件许可证原文存放于 `licenses/` 目录下，按组件名称分目录保存。阶段0先建立目录结构，正式引入组件时同步归档对应许可证文件。

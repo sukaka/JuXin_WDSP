@@ -83,3 +83,26 @@ Redis 替换为 Valkey（规避 RSALv2/SSPLv1 合规风险），npm 统一包管
 - 无 GPL/AGPL 组件；
 - 无 `latest` 标签；
 - 详细版本与摘要见 [DEPENDENCIES.md](DEPENDENCIES.md)。
+
+### 阶段5（访问控制与CC防护）
+
+| 组件 | 版本 | 许可证 | 归档位置 |
+|------|------|--------|---------|
+| valkey-go | v1.0.76 | Apache-2.0 | licenses/valkey-go/ |
+
+- jiuzhang_guard 为自主开发 Caddy 模块（gateway/modules/jiuzhang_guard，独立 go.mod），不引入额外第三方运行时组件；
+- 无 GPL/AGPL 组件，许可证原文已归档。
+
+### 阶段6（首页报表/备份恢复/升级交付）
+
+| 组件 | 版本 | 许可证 | 归档位置 |
+|------|------|--------|---------|
+| gofpdf | v2.17.3 | MIT | licenses/gofpdf/ |
+| Noto Sans CJK | noto-cjk main（sha256 见 server/assets/fonts/README.md） | OFL-1.1 | licenses/noto-fonts/ |
+| ECharts | 6.1.0 | Apache-2.0 | licenses/echarts/ |
+| PostgreSQL License 文本 | 16.4 对应 | PostgreSQL License | licenses/postgresql/（本阶段补齐归档） |
+
+- gofpdf 用于 PDF 报告生成，Noto Sans CJK 为 PDF 内嵌中文字体（OFL-1.1 允许随产品分发内嵌），ECharts 用于态势与报表页图表；
+- 本阶段起由 `scripts/generate-sbom.sh` 生成 SBOM（docs/SBOM.spdx.json / docs/SBOM.cyclonedx.json），
+  由 `scripts/license-audit.sh` 审计 licenses/ 归档一致性与禁用许可证（GPL/AGPL/SSPL 出现即失败）；
+- 无 GPL/AGPL 组件，无 `latest` 标签，许可证原文已归档。

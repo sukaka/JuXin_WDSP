@@ -414,6 +414,7 @@ func (s *Store) GetApplicationPolicyParams(ctx context.Context, appID uuid.UUID)
 		return nil, nil
 	}
 	return &gatewayconfig.PolicyParams{
+		PolicyID:          p.ID.String(),
 		ProtectionMode:    p.ProtectionMode,
 		ParanoiaLevel:     p.ParanoiaLevel,
 		InboundThreshold:  p.InboundAnomalyThreshold,

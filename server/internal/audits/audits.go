@@ -145,19 +145,38 @@ func computeHash(occurredAt time.Time, username, module, action, objectType, obj
 }
 
 // Record 写入一条审计记录（含哈希链）。
+// 关键约束：occurred_at 必须截断到微秒（PostgreSQL timestamptz 精度），
+// 否则链上重算哈希会因纳秒/微秒不一致而全部失配；
+// 并通过 advisory lock 串行化写入，防多实例并发造成链分叉。
 func (s *Service) Record(ctx context.Context, in RecordInput) error {
-	occurredAt := time.Now().UTC()
-	previousHash, err := s.latestHash(ctx)
-	if err != nil {
-		return err
-	}
-	recordHash := computeHash(occurredAt, in.Username, in.Module, in.Action,
-		in.ObjectType, in.ObjectID, in.Result, in.RequestID, previousHash)
+	occurredAt := time.Now().UTC().Truncate(time.Microsecond)
 
 	before := MaskSensitiveJSON(in.BeforeSummary)
 	after := MaskSensitiveJSON(in.AfterSummary)
 
-	_, err = s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// 串行化审计写入（同一数据库内多实例共用一条链）
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(93847561)`); err != nil {
+		return err
+	}
+	var previousHash string
+	err = tx.QueryRow(ctx,
+		`SELECT record_hash FROM operation_audits ORDER BY occurred_at DESC, id DESC LIMIT 1`).Scan(&previousHash)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			previousHash = ""
+		} else {
+			return err
+		}
+	}
+	recordHash := computeHash(occurredAt, in.Username, in.Module, in.Action,
+		in.ObjectType, in.ObjectID, in.Result, in.RequestID, previousHash)
+
+	_, err = tx.Exec(ctx, `
 INSERT INTO operation_audits
 (occurred_at, user_id, username, source_ip, connection_ip, user_agent_summary,
  module, action, object_type, object_id, object_name, before_summary, after_summary,
@@ -167,7 +186,10 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		truncateStr(in.UserAgent, 500), in.Module, in.Action, in.ObjectType, in.ObjectID,
 		in.ObjectName, before, after, in.Result, in.FailureReason, in.RiskLevel,
 		in.RequestID, previousHash, recordHash)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Service) latestHash(ctx context.Context) (string, error) {

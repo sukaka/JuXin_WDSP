@@ -42,4 +42,13 @@ export const protectionPoliciesApi = {
     request<ProtectionPolicyItem>(`/protection-policies/${id}/copy`, { method: 'POST' }),
   applications: (id: string) =>
     request<{ application_ids: string[]; count: number }>(`/protection-policies/${id}/applications`),
+  bindApplication: (id: string, applicationId: string) =>
+    request<{ message: string }>(`/protection-policies/${id}/applications`, {
+      method: 'POST',
+      body: { application_id: applicationId },
+    }),
+  unbindApplication: (id: string, applicationId: string) =>
+    request<{ message: string }>(`/protection-policies/${id}/applications/${applicationId}`, {
+      method: 'DELETE',
+    }),
 }

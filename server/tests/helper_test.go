@@ -30,6 +30,7 @@ type testEnv struct {
 	cache    *cache.Client
 	cfg      *config.Config
 	adminPwd string
+	app      *app.App
 }
 
 // setupTestEnv 初始化测试环境（每个测试套件一次）。
@@ -60,6 +61,8 @@ func setupTestEnv(t *testing.T) *testEnv {
 			CookieSecure: false,
 		},
 	}
+	// 数据目录指向测试临时目录，避免在仓库内产生报告/备份/配置产物
+	cfg.Gateway.DataDir = t.TempDir()
 	if cfg.DB.Password == "" || cfg.Cache.Password == "" {
 		t.Skip("POSTGRES_PASSWORD/VALKEY_PASSWORD not set, skipping integration test")
 	}
@@ -135,6 +138,7 @@ func setupTestEnv(t *testing.T) *testEnv {
 		cache:    cacheClient,
 		cfg:      cfg,
 		adminPwd: adminPwd,
+		app:      application,
 	}
 }
 
@@ -167,6 +171,28 @@ func (e *testEnv) captcha(t *testing.T) (string, string) {
 	var result apiResp
 	readJSON(t, resp, &result)
 	capID, _ := result.Data["captcha_id"].(string)
+	code, err := e.cache.Get(context.Background(), "jiuzhang:captcha:"+capID)
+	if err != nil {
+		t.Fatalf("read captcha code: %v", err)
+	}
+	return capID, code
+}
+
+// captchaTolerant 获取验证码，被限速（429）时返回占位值而不失败（限速测试专用）。
+func (e *testEnv) captchaTolerant(t *testing.T) (string, string) {
+	t.Helper()
+	resp, err := http.Get(e.server.URL + "/api/v1/auth/captcha")
+	if err != nil {
+		t.Fatalf("get captcha: %v", err)
+	}
+	defer resp.Body.Close()
+	var result apiResp
+	readJSON(t, resp, &result)
+	capID, _ := result.Data["captcha_id"].(string)
+	if capID == "" {
+		// 验证码接口已限速：返回占位值（后续请求预期同样被限速）
+		return "00000000-0000-0000-0000-000000000000", "0000"
+	}
 	code, err := e.cache.Get(context.Background(), "jiuzhang:captcha:"+capID)
 	if err != nil {
 		t.Fatalf("read captcha code: %v", err)

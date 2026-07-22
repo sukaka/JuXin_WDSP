@@ -1,25 +1,38 @@
 package certificates
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/applications"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
+// DomainLister 提供应用域名查询（由 applications.Store 实现，绑定前域名匹配校验用）。
+type DomainLister interface {
+	ListDomains(ctx context.Context, appID uuid.UUID) ([]applications.Domain, error)
+}
+
 // Handler 是证书管理处理器。
 type Handler struct {
 	store  *Store
 	audits *audits.Service
+	apps   DomainLister
 }
 
 // NewHandler 创建证书管理处理器。
 func NewHandler(store *Store, au *audits.Service) *Handler {
 	return &Handler{store: store, audits: au}
+}
+
+// SetDomainLister 注入应用域名查询（绑定/解绑独立接口使用）。
+func (h *Handler) SetDomainLister(apps DomainLister) {
+	h.apps = apps
 }
 
 // List 证书列表。
@@ -151,6 +164,88 @@ func certItem(c *Certificate, usage int) map[string]interface{} {
 
 func certSummary(c *Certificate) string {
 	return `{"name":"` + c.Name + `","cn":"` + c.CommonName + `","fingerprint":"` + c.FingerprintSHA256[:16] + `"}`
+}
+
+// bindRequest 是绑定/解绑请求体。
+type bindRequest struct {
+	ApplicationID string `json:"application_id"`
+}
+
+// Bind 绑定证书到应用（独立接口，权限 certificates.bind）。
+func (h *Handler) Bind(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	certID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的证书ID")
+		return
+	}
+	var req bindRequest
+	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	appID, err := uuid.Parse(req.ApplicationID)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的应用ID")
+		return
+	}
+	if h.apps == nil {
+		response.Error(w, r, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "应用服务未配置")
+		return
+	}
+	if _, err := h.store.GetByID(r.Context(), certID); err != nil {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "证书不存在")
+		return
+	}
+	// 收集应用 HTTPS 域名用于匹配校验
+	domains, err := h.apps.ListDomains(r.Context(), appID)
+	if err != nil {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "应用不存在")
+		return
+	}
+	var hostnames []string
+	for _, d := range domains {
+		if d.HTTPSEnabled {
+			hostnames = append(hostnames, d.NormalizedHostname)
+		}
+	}
+	if len(hostnames) == 0 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "应用未启用 HTTPS 域名，无法绑定证书")
+		return
+	}
+	if err := h.store.BindApplication(r.Context(), appID, certID, p.UserID, hostnames); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	h.recordAudit(r, p, "certificates", "bind", "certificate", certID.String(), certID.String(),
+		"", "bound_to="+appID.String(), audits.ResultSuccess, audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]string{"message": "证书已绑定"})
+}
+
+// Unbind 解绑应用证书（独立接口，权限 certificates.bind）。
+func (h *Handler) Unbind(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	if _, err := uuid.Parse(r.PathValue("id")); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的证书ID")
+		return
+	}
+	var req bindRequest
+	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	appID, err := uuid.Parse(req.ApplicationID)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的应用ID")
+		return
+	}
+	if err := h.store.UnbindApplication(r.Context(), appID); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "certificates", "unbind", "certificate", r.PathValue("id"), r.PathValue("id"),
+		"bound_to="+appID.String(), "", audits.ResultSuccess, audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]string{"message": "证书已解绑"})
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, before, after, result, risk string) {

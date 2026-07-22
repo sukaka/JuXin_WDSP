@@ -2,8 +2,9 @@
 
 ## 当前阶段
 
-**阶段3：Web应用接入、源站、证书与网关配置发布** — 已完成
-**阶段4：WAF策略和事件中心** — 待启动
+**阶段5：IP访问控制、真实客户端IP识别与CC防护** — 已完成
+**阶段6：安全态势、统计报表、运行监控与正式交付** — 已完成（遗留项见文末）
+**阶段7：AI 智能安全运营中心** — 已完成
 
 ## 阶段进度总览
 
@@ -14,10 +15,10 @@
 | 阶段1 | 网关技术验证 | 已完成 | 2026-07-20 |
 | 阶段2 | 身份认证、三权权限与系统基础 | 已完成 | 2026-07-21 |
 | 阶段3 | Web应用接入、源站、证书与网关配置发布 | 已完成 | 2026-07-21 |
-| 阶段4 | WAF策略和事件中心 | 未开始 | - |
-| 阶段5 | 访问控制和CC防护 | 未开始 | - |
-| 阶段6 | 首页和安全报表 | 未开始 | - |
-| 阶段7 | 质量和交付 | 未开始 | - |
+| 阶段4 | WAF策略和事件中心 | 已完成 | 2026-07-21 |
+| 阶段5 | IP访问控制、真实客户端IP识别与CC防护 | 已完成 | 2026-07-21 |
+| 阶段6 | 安全态势、统计报表、运行监控与正式交付 | 已完成 | 2026-07-22 |
+| 阶段7 | AI 安全运营 + 阶段4–6 合并修复 | 已完成 | 2026-07-22 |
 
 ## 阶段0完成内容
 
@@ -158,20 +159,161 @@
 - [x] 菜单「应用防护」分组 + 路由守卫，按角色过滤
 - [x] 前端单测 33 用例全部通过
 
+## 阶段4后端完成内容
+
+详见 [STAGE4_TEST_REPORT.md](STAGE4_TEST_REPORT.md)、[WAF_POLICY_DESIGN.md](WAF_POLICY_DESIGN.md)。
+
+- [x] 数据库迁移（12 表，security_events 按月分区）+ 三套内置策略模板（relaxed/standard/strict）+ 阶段4权限种子（安全管理员全量/审计管理员只读）
+- [x] 防护策略 store/handler（CRUD/复制/绑定应用查询/内置保护/乐观锁/审计）
+- [x] CRS 规则元数据同步（622 条入库，SecLang 解析，攻击类型标签映射，内容哈希变更检测）
+- [x] 规则覆盖（策略级/应用级启停，优先级 应用 > 策略 > 默认）
+- [x] 自定义规则（结构化编辑 → SecLang 生成，操作符/变量/动作白名单，exec/命令替换/文件读取等危险内容拦截，正则预编译，ID 段 7100000+ 控制）
+- [x] 例外策略（精确/临时/宽泛受控，宽泛例外强制风险确认，临时例外到期自动失效）
+- [x] 安全事件标准化 + 脱敏（Coraza 审计日志解析，攻击类型/评分/动作映射，敏感参数遮蔽）
+- [x] 事件采集器（断点续传/文件轮转检测/批量入库/错误队列/后台 goroutine）
+- [x] 事件中心（列表/详情/处置/备注/相关事件/CSV 导出/从事件一键建例外草稿）
+- [x] 策略发布下发网关（buildSnapshot 注入 900001 PL/阈值指令，启用例外生成 ctl 规则置于 CRS 前，精确例外实测消除误报）
+- [x] 关键修复：INET 扫描（netip.Addr）、MatchInfo JSON tag、宽泛例外误判、config 测试补环境变量
+- [x] stage3 编排补充：api 只读挂载 CRS 规则目录（元数据同步）
+
+## 阶段4前端完成内容
+
+- [x] 防护策略（/protection-policies）：列表/筛选/新建/编辑（乐观锁）/复制/删除二次确认/绑定应用查询/内置策略保护提示
+- [x] WAF规则（/waf-rules）：多条件筛选/详情/手动同步/tags base64 兼容解析
+- [x] 自定义规则（/custom-rules）：结构化表单/在线校验/启停
+- [x] 例外策略（/exceptions）：精确/临时/宽泛实时风险提示与强制确认
+- [x] 安全事件（/security-events）：列表/详情抽屉/处置/备注/相关事件/CSV 导出/一键建例外
+- [x] 事件统计（/event-statistics）：今日/未处置/阻断计数 + 攻击类型/动作/处置状态分布
+- [x] 菜单「WAF策略」「事件中心」分组 + 路由权限守卫（审计管理员只读可见，系统管理员不可见）
+- [x] 前端单测 stage4 工具 12 用例全部通过
+
+## 阶段5完成内容
+
+详见 [STAGE5_TEST_REPORT.md](STAGE5_TEST_REPORT.md)、[JIUZHANG_GUARD_MODULE.md](JIUZHANG_GUARD_MODULE.md)、
+[REAL_CLIENT_IP_DESIGN.md](REAL_CLIENT_IP_DESIGN.md)、[TRUSTED_PROXY_DESIGN.md](TRUSTED_PROXY_DESIGN.md)、
+[IP_ACCESS_CONTROL_DESIGN.md](IP_ACCESS_CONTROL_DESIGN.md)、[RATE_LIMIT_DESIGN.md](RATE_LIMIT_DESIGN.md)、
+[ACCESS_CONTROL_EVENT_DESIGN.md](ACCESS_CONTROL_EVENT_DESIGN.md)。
+
+### jiuzhang_guard 自主 Caddy 模块（独立 go.mod，xcaddy 真实构建加载）
+
+- [x] cidr：IPv4/IPv6/CIDR 解析规范化（映射归一、掩码化），精确 map + CIDR 扫描匹配器
+- [x] clientip：真实IP识别（仅可信代理才信代理头；XFF/X-Real-IP/Forwarded/自定义头；链遍历；超长链16；非法回退连接源；伪造检测事件）
+- [x] trustedproxy：优先级匹配、头类型绑定（自定义头仅对配置代理生效）
+- [x] accesscontrol：全局白→应用白→全局黑→应用黑分层评估，同层显式优先级，时间窗生效
+- [x] ratelimit：令牌桶（实时）+ 滑动窗口（封禁判断），内存（有界LRU）与 Valkey（Lua原子）双后端
+- [x] temporaryblock：Valkey HASH 存储 + 网关 1s 轮询内存缓存，到期本地失效
+- [x] events：JSONL 事件输出（字段截断、控制字符剥离、单行）
+- [x] Guard 模块：保护地址永不封禁、白名单绕过黑名单与CC（不绕WAF）、429+Retry-After+X-Jiuzhang-Request-ID、不泄露内部信息、Fail-open/Fail-closed + 告警节流
+- [x] 单元测试 41 测试函数 9 包全绿
+
+### 后端（7 个新服务包 + 发布集成）
+
+- [x] 迁移 000008（8 表：trusted_proxies/protected_addresses/ip_access_rules/rate_limit_policies/temporary_blocks/access_control_events(月分区)/access_control_versions/rate_limit_runtime_summaries）+ 000009 权限种子（安全管理员全量/审计只读/系统管理员可信代理+保护地址）
+- [x] trustedproxies/protectedaddresses/accessrules/ratelimitpolicies/temporaryblocks/accesscontrolevents/accesscontrolversions 七个包（CRUD/乐观锁/审计/校验）
+- [x] 批量导入导出（≤1MB/10000行、行级错误定位、dry_run 预览、ALL_OR_NOTHING/SKIP_ERRORS、公式注入转义）
+- [x] 保护地址（系统自动登记 refresh、封禁保护地址 400 + 高风险审计）
+- [x] 临时封禁（Valkey 键协议与网关一致、解封/延期/转永久、采集器 upsert）
+- [x] guardconfig 组装器 + 发布器集成（guard 配置注入、access_control_versions 快照、失败保护、历史版本回滚重发布）
+- [x] 访问控制事件采集器（断点续传、轮转检测、封禁/命中联动、运行汇总）
+- [x] 关键修复：采集器 checkpoint 改可写数据目录（曾误放只读卷导致全量重放）、api 镜像 /app/runtime 属主、空列表 items 归一
+- [x] 集成测试 16 例（含到期标记调度、证书绑定独立接口）+ 修复既有 TestRateLimitLogin 框架缺陷（captcha 限速容错）
+- [x] 收尾增强：`GUARD_FAIL_OPEN` 故障策略可配（随发布下发逐实例生效，Fail-closed 真实验证 5 用例）；
+  guardjanitor 到期自动失效调度（临时规则/封禁标记 EXPIRED + 系统审计）；
+  证书绑定/解绑独立接口（阶段3遗留补齐，POST /certificates/{id}/bind|unbind）
+
+### 前端（5 页面 + 菜单「访问控制」）
+
+- [x] 可信代理（含保护地址 Tab、命中测试）/ IP黑白名单（导入预览行级错误、导出、发布进度）/ CC防护（分步表单、干跑模拟、发布）/ 临时封禁（解封/延期/转永久）/ 访问控制事件（筛选/详情/导出）
+- [x] 菜单「访问控制」分组 + 路由权限守卫（系统管理员仅可信代理，审计管理员只读）
+- [x] stage5 工具元数据与校验 14 单测
+
+## 阶段6完成内容（进行中）
+
+详见 [SECURITY_DASHBOARD_DESIGN.md](SECURITY_DASHBOARD_DESIGN.md)、[METRICS_DATA_DICTIONARY.md](METRICS_DATA_DICTIONARY.md)、
+[REPORTING_DESIGN.md](REPORTING_DESIGN.md)、[MONITORING_ALERTING_DESIGN.md](MONITORING_ALERTING_DESIGN.md)、
+[BACKUP_RESTORE_DESIGN.md](BACKUP_RESTORE_DESIGN.md)、[UPGRADE_ROLLBACK_DESIGN.md](UPGRADE_ROLLBACK_DESIGN.md)、
+[DISASTER_RECOVERY_GUIDE.md](DISASTER_RECOVERY_GUIDE.md)、[INSTALLATION_GUIDE.md](INSTALLATION_GUIDE.md)、
+[OFFLINE_DEPLOYMENT_GUIDE.md](OFFLINE_DEPLOYMENT_GUIDE.md)、[OPERATIONS_MANUAL.md](OPERATIONS_MANUAL.md)。
+
+- [x] 统一指标模型与三级聚合（分钟/小时/天，幂等 upsert + 迟到修正，访问日志断点续传采集）
+- [x] 安全态势首页（总览卡片/趋势/排行/风险提示，三权视图）与统计分析 11 接口
+- [x] 报告系统（日报/周报/月报/自定义，21 章节，确定性结论规则，HTML + PDF(gofpdf+内嵌中文字体)，异步 worker，哈希/权限/审计）
+- [x] 运行监控（10 类组件快照）与系统告警（18 类，合并/冷却/抖动抑制/上限保护/自动恢复/确认处置）
+- [x] 备份（.jzbk 自定义格式，分块 AES-256-GCM，尾部清单，五级验证，保留策略）与恢复（隔离 schema 预览→确认→维护模式正式恢复）+ 备份文件导入（全新环境恢复入口）
+- [x] 升级包登记/预检（9 项）/执行（强制升级前备份/迁移 up-down 成对校验）/失败自动回滚
+- [x] 交付检查（22 项，关键 FAIL 阻止交付）与离线部署包（镜像+清单+SBOM+安装向导）
+- [x] 前端 11 页面（安全态势/统计分析/系统告警/报告任务/模板/归档/运行监控/存储/备份恢复/系统升级/交付检查，三权菜单）
+- [x] SBOM（SPDX+CycloneDX，557 组件）与许可证审计、ops 运维脚本 9 个
+- [x] 关键修复：审计哈希链时间精度截断（纳秒/微秒失配）与并发分叉（advisory lock）、restore_jobs.status 列宽、采集滞后语义（积压驱动）、报告模板 sections 默认、恢复建表保留默认值、空列表归一
+
 ## 测试
 
 **阶段3新增：后端单元 28 + 接口集成 9 + 前端 33 + E2E 1 + 真实网关验证 6 = 77 用例全部通过（阶段2回归 41 用例同步通过）。**
+
+**阶段4新增：后端单元 32 + 接口集成 10 + 前端 45 + E2E 5 + 真实WAF 22 + 安全 14 = 128 用例全部通过（阶段3 E2E 回归冒烟 8 用例同步通过）。**
+
+**阶段5新增：guard 模块单测 41 + 后端单元 283 + 接口集成 16 + 前端 59 + 真实网关 40 + 安全 25 + Fail-closed 5 + 性能 9 + E2E 6 = 484 用例全部通过（阶段4 E2E 回归 5 用例同步通过）。**
+
+**阶段6：接口集成 9 + 前端 81 + E2E 6 + 冒烟 26/27 + 安全 18/18 + 性能容量 10/10 + 全新环境恢复 18/18 + 离线安装验证通过 + 升级回滚实测通过。详见 [STAGE6_TEST_REPORT.md](STAGE6_TEST_REPORT.md)。**
+
+## 阶段4–7 合并修复（2026-07-22）
+
+详见 [STAGE_4_7_REMEDIATION_PLAN.md](tasks/STAGE_4_7_REMEDIATION_PLAN.md)。
+
+- [x] M-01 访问控制版本快照/API 脱敏 Valkey 密码，回滚时注入运行时密钥
+- [x] M-02 防护策略绑定/解绑 API + 前端详情绑定
+- [x] M-03 启用自定义规则写入发布生成的 WAF directives
+- [x] M-04 保护地址仅按客户端 IP 早放行（不再用 ConnectionIP 旁路）
+- [x] M-05 TEMP_BLOCK：Valkey Put 失败保留 localOnly，Refresh 不冲掉；人工解封仍以远程为准
+- [x] M-06/M-07 共享 engine 去掉错误 Once 半初始化，配置指纹变化可重建
+- [x] M-09 临时例外纳入 guardjanitor 到期调度
+- [x] M-10 发布加载例外失败则任务失败
+- [x] M-11 429 Content-Type 在 WriteHeader 之前设置
+- [x] M-12 生产默认 GUARD_FAIL_OPEN=false
+- [x] M-14 全局 CC TEMP_BLOCK 使用空 AppID
+- [x] M-15 维护模式中间件拦截写操作
+- [x] M-16 报告僵尸任务 WORKER_LOST 回收
+- [x] M-17 访问控制版本前端页面
+- [x] M-18 事件统计标明样本占比
+- [x] M-19 版本 List 仅元数据
+- [x] M-20 人工临时封禁优先于白名单；自动封禁仍可被白名单绕过
+- [x] M-21 令牌桶拒绝时 current_count 不为 0
+- [x] M-08 rule_overrides 完整 CRUD + 发布 DISABLE 注入（优先级 应用>策略>全局）
+- [x] M-22 例外策略 PUT 更新（乐观锁 version）
+- [x] M-23 AI draft 全量 ValidateInput / Store.Create 对齐（created_by 取自 Principal）
+- [x] M-24 CC 到期/解封事件（CC_TEMP_BLOCK_EXPIRED / RELEASED）
+
+## 阶段7完成内容
+
+详见 [STAGE7_TEST_REPORT.md](STAGE7_TEST_REPORT.md)、[AI_SECURITY_TEST_GUIDE.md](AI_SECURITY_TEST_GUIDE.md) 及 `docs/AI_*.md`。
+
+- [x] 模型网关（供应商/密钥加密/路由档位/健康测试/流式）
+- [x] Orchestrator（意图、计划摘要、多 Agent、证据、压缩、配额）
+- [x] 受控 Tool 体系（事件/日志/资产/统计/草稿；执行前权限重检）
+- [x] Chat SSE + 停止/重试/继续/反馈
+- [x] 一次性分析：事件/误报/画像/攻击链/策略/What-If/根因/报告
+- [x] 草稿与推荐 accept/reject；HTTP 草稿创建入口
+- [x] Prompt 版本/测试/发布/回滚/Diff；Memory；AI 审计哈希链
+- [x] 用量 overview/by-user/by-agent/by-task；评估集 API + 管理 UI
+- [x] AI 模块 `AI_ENABLED` 独立启停；事件详情一键 AI
+- [x] 前端：助手/分析/画像/链/策略/报告/任务 + 管理面 + 质量评估页
 
 ## 遗留问题
 
 1. 开发环境管理面使用 HTTP，生产必须启用 HTTPS 且 `COOKIE_SECURE=true`（配置已强制 prod 校验）；
 2. 审计哈希链为基础防篡改（数据库 RULE 禁改删 + 哈希链），未含可信时间戳/外部存证（后续可选）；
-3. 前端 antd 全量引入单 chunk 较大，未做代码分割（后续阶段优化）；
-4. 阶段3后端未提供证书绑定/解绑独立 HTTP 接口（`certificates.bind` 权限已预留、`Store.BindApplication` 已实现但暂无独立路由，绑定在应用详情内通过证书选择完成，后续可补充独立接口）；
-5. 源站主动健康检查由 Caddy reverse_proxy health_checks 承担，独立健康检查调度与历史展示在后续增强；
-6. 发布验证为基础检查（Caddy admin 可用 + 配置加载），源站级发布后健康验证在后续增强；
-7. 阶段3 macOS 开发环境后端需容器化访问网关 socket（bind mount 不支持 unix socket），生产 Linux 部署通过共享卷正常。
+3. 前端 antd 全量引入单 chunk 较大（阶段6已做 ECharts 按需引入，antd 分割后续优化）；
+4. 源站主动健康检查由 Caddy reverse_proxy health_checks 承担，独立健康检查调度与历史展示在后续增强；
+5. 发布验证为基础检查（Caddy admin 可用 + 配置加载），源站级发布后健康验证在后续增强；
+6. macOS 开发环境后端需容器化访问网关 socket（bind mount 不支持 unix socket），生产 Linux 部署通过共享卷正常；
+7. 阶段4 `policy_versions` 表与 `policy_versions.read` 权限已预留，策略版本快照/差异/回滚的 store 与路由在后续补充（当前策略下发走配置发布闭环，回滚由配置版本承担）；
+8. 开发库早期 693 条审计记录因阶段6修复前的哈希链时间精度缺陷失配（根因已修复，新记录链完整；全新环境部署链自始完整）；
+9. 72 小时连续稳定性未在会话内完成（墙钟限制）：已交付 `make stage6-test-stability`（HOURS 可配）浸泡框架并通过短浸泡 5 项检查，正式交付前建议 HOURS=72 执行一次并归档结果；
+10. 审计归档按设计不恢复写回（仅保存于备份文件）；如需恢复审计数据需专门流程；
+11. 多节点分布式 CC 全局一致性按任务书暂不开发（当前单节点 Valkey 共享计数已支持横向扩展）；
+12. 规则覆盖 SEVERITY_OVERRIDE/ACTION_OVERRIDE 可入库，发布侧当前仅落实 DISABLE/ENABLE 优先级解析；
+13. AI 知识库为规则元数据检索（完整 embedding RAG 可后续增强）；What-If 非全量离线回放引擎。
 
 ## 下一步
 
-阶段4：WAF策略和事件中心（策略管理、规则配置、安全事件中心）。
+阶段8 规划（可选）：完整 RAG、策略版本快照、多租户 AI 计费、更深度的 What-If 回放与压测归档。

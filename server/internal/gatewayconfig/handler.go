@@ -204,12 +204,12 @@ func (h *Handler) GetVersionDiff(w http.ResponseWriter, r *http.Request) {
 		currentNum = current.VersionNumber
 	}
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
-		"target_version":  versionItem(v),
+		"target_version":         versionItem(v),
 		"current_version_number": currentNum,
-		"current_hash":    currentHash,
-		"target_hash":     v.ConfigurationHash,
-		"same":            currentHash == v.ConfigurationHash,
-		"business_snapshot": v.BusinessSnapshot,
+		"current_hash":           currentHash,
+		"target_hash":            v.ConfigurationHash,
+		"same":                   currentHash == v.ConfigurationHash,
+		"business_snapshot":      v.BusinessSnapshot,
 	})
 }
 
@@ -263,15 +263,15 @@ func (h *Handler) GatewayStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
-		"gateway_up":            gatewayUp,
-		"gateway_error":         errString(pingErr),
-		"current_version":       currentVersion,
-		"current_hash":          currentHash,
-		"last_publish_result":   publishResult,
-		"last_publish_at":       lastPublishAt,
-		"application_count":     appCount,
-		"domain_count":          domainCount,
-		"upstream_count":        upstreamCount,
+		"gateway_up":          gatewayUp,
+		"gateway_error":       errString(pingErr),
+		"current_version":     currentVersion,
+		"current_hash":        currentHash,
+		"last_publish_result": publishResult,
+		"last_publish_at":     lastPublishAt,
+		"application_count":   appCount,
+		"domain_count":        domainCount,
+		"upstream_count":      upstreamCount,
 	})
 }
 

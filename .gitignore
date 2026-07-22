@@ -64,3 +64,8 @@ temp/
 # Playwright
 playwright-report/
 test-results/
+
+# PDF 中文字体（体积大，部署时按 server/assets/fonts/README.md 放置）
+server/assets/fonts/*.ttf
+server/assets/fonts/*.otf
+server/assets/fonts/*.ttc

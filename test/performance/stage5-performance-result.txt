@@ -1,0 +1,37 @@
+============================================================
+九章阶段5 性能测试  2026-07-21 21:48:00
+环境: Darwin 25.2.0 arm64, Docker Desktop
+============================================================
+PASS  publish-baseline 
+---- 1. 基线延迟（仅 guard 全链，无规则） ----
+基线: P50=3ms P95=9ms P99=11ms RPS=12728.42
+---- 2. 1000 条黑名单 ----
+imported: 1000
+1000规则: P50=3ms P95=7ms P99=24ms
+PASS  latency-1000-rules-p95-delta<5ms delta=-2ms
+---- 3. 10000 条黑名单 ----
+imported: 10000
+10000规则: P50=3ms P95=7ms P99=15ms
+PASS  latency-10000-rules-p95-delta<5ms delta=-2ms
+---- 4. 1000 条 CIDR ----
+imported: 1000
+1000CIDR: P50=3ms P95=7ms P99=9ms
+PASS  latency-1000-cidr-p95-delta<5ms delta=-2ms
+---- 5. CC 计数延迟（100 策略加载，单请求 1 次 Valkey 计数） ----
+CC计数: P50=3ms P95=6ms P99=9ms
+PASS  latency-cc-count-p95-delta<10ms delta=-3ms
+---- 6. 500 RPS / 200 并发 ----
+500RPS目标: 实测RPS=14742.35 Failed=0 P95=29ms P99=38ms
+PASS  500rps-no-errors rps=14742.35
+---- 7. 随机键攻击内存稳定性 ----
+网关内存: 218.7MiB -> 189.2MiB; valkey keys: 126 -> 20126
+PASS  random-key-memory-stable 218.7MiB->189.2MiB
+PASS  uri-key-bounded growth=20000
+---- 8. 发布期间旧策略持续可用 ----
+PASS  publish-during-load-no-errors 
+---- 9. 清理性能测试数据 ----
+[cleanup] done
+
+============================================================
+阶段5性能测试汇总: 总用例 9 通过 9 失败 0
+============================================================

@@ -53,7 +53,10 @@ export default function LoginPage() {
         return
       }
       const from = (location.state as { from?: string } | null)?.from
-      navigate(from && from !== '/login' ? from : '/dashboard', { replace: true })
+      // from 可能是强制改密页（改密成功跳转登录页时由路由守卫写入），
+      // 此时若回跳到 /change-password 会造成"改密后仍被要求改密"的死循环
+      const target = from && from !== '/login' && from !== '/change-password' ? from : '/dashboard'
+      navigate(target, { replace: true })
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '登录失败，请稍后重试')
       // 失败：保留用户名、清空密码、刷新验证码

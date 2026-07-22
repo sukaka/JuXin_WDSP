@@ -31,10 +31,15 @@ type GenerateInput struct {
 	CertFileDir string
 	// Exceptions 启用的例外策略规则（SecLang 文本，加入 before-crs 加载段）。
 	Exceptions []ExceptionRule
+	// CustomRules 启用的自定义规则 SecLang（CRS 之后加载，替代仅静态 include）。
+	CustomRules []string
+	// Guard 阶段5访问控制/CC 配置（nil 表示不注入 jiuzhang_guard 处理器，兼容阶段3/4）。
+	Guard *GuardConfig
 }
 
 // AppData 是单个应用的完整数据。
 type AppData struct {
+	AppID          string
 	Code           string
 	ProtectionMode string
 	Domains        []applications.Domain
@@ -44,9 +49,11 @@ type AppData struct {
 	CertFileName string // 写入网关证书目录的文件名（不含目录）
 	HasCert      bool
 	// 阶段4策略参数（可选，为零值时使用默认）
-	ParanoiaLevel      int
-	InboundThreshold   int
-	OutboundThreshold  int
+	ParanoiaLevel     int
+	InboundThreshold  int
+	OutboundThreshold int
+	// RuleOverrideSecLang 本应用生效的规则覆盖 SecLang（DISABLE → ctl:ruleRemoveById，置于 CRS 前）
+	RuleOverrideSecLang []string
 }
 
 // Generated 是生成结果。
@@ -88,6 +95,8 @@ func Generate(in GenerateInput) (*Generated, error) {
 		"logging": mapT{
 			"logs": mapT{
 				"default": mapT{"writer": mapT{"output": "file", "filename": "/var/log/caddy/caddy.log"}, "encoder": mapT{"format": "json"}},
+				// 阶段6：结构化访问日志（请求统计指标数据源）
+				"access": mapT{"writer": mapT{"output": "file", "filename": "/var/log/caddy/access.log"}, "encoder": mapT{"format": "json"}},
 			},
 		},
 		"apps": mapT{
@@ -188,6 +197,7 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 			"listen":          []string{addr},
 			"routes":          routes,
 			"automatic_https": mapT{"disable": true},
+			"logs":            mapT{"default_logger_name": "access"},
 		}
 		serverIdx++
 	}
@@ -204,6 +214,7 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 			"listen":          []string{addr},
 			"routes":          routes,
 			"automatic_https": mapT{"disable": true},
+			"logs":            mapT{"default_logger_name": "access"},
 		}
 		// TLS 连接策略：按域名关联证书
 		tlsPolicies := buildTLSPolicies(in)
@@ -254,12 +265,17 @@ func buildHandles(in GenerateInput, app AppData, d applications.Domain) []interf
 			"delete": []string{}},
 	})
 
+	// 1.5 阶段5：访问控制与CC防护（真实IP→保护地址→黑白名单→临时封禁→CC，位于 WAF 之前）
+	if in.Guard != nil {
+		handles = append(handles, buildGuardHandler(in.Guard, app))
+	}
+
 	// 2. WAF（按防护模式与策略参数，含例外规则）
 	ruleEngine := modeToRuleEngine[app.ProtectionMode]
 	if ruleEngine == "" {
 		ruleEngine = "DetectionOnly"
 	}
-	directives := buildWAFDirectivesWithPolicy(ruleEngine, app, in.Exceptions)
+	directives := buildWAFDirectivesWithPolicy(ruleEngine, app, in.Exceptions, in.CustomRules, app.RuleOverrideSecLang)
 	handles = append(handles, mapT{
 		"handler":    "waf",
 		"directives": directives,
@@ -287,12 +303,13 @@ func buildHandles(in GenerateInput, app AppData, d applications.Domain) []interf
 
 // buildWAFDirectives 构建 WAF SecLang 指令（固定加载顺序）。
 func buildWAFDirectives(ruleEngine string) string {
-	return buildWAFDirectivesWithPolicy(ruleEngine, AppData{}, nil)
+	return buildWAFDirectivesWithPolicy(ruleEngine, AppData{}, nil, nil, nil)
 }
 
-// buildWAFDirectivesWithPolicy 构建带策略参数与例外规则的 WAF SecLang 指令。
-// 阶段4：策略参数（PL/阈值）注入 crs-setup；例外规则放 CRS 之前（运行时例外）。
-func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []ExceptionRule) string {
+// buildWAFDirectivesWithPolicy 构建带策略参数、例外、规则覆盖与自定义规则的 WAF SecLang 指令。
+// 阶段4：策略参数（PL/阈值）注入 crs-setup；例外与规则覆盖放 CRS 之前；
+// 自定义规则放 CRS 之后（与静态 jiuzhang-custom 一并加载）。
+func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []ExceptionRule, customRules, ruleOverrides []string) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("SecRuleEngine %s\n", ruleEngine))
 	b.WriteString("Include /etc/caddy/rules/coraza.conf\n")
@@ -317,9 +334,31 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []E
 		b.WriteString(ex.SecLang)
 		b.WriteString("\n")
 	}
+	// 规则覆盖 DISABLE（ctl:ruleRemoveById，优先级已在组装时解析）
+	for _, line := range ruleOverrides {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		b.WriteString(line)
+		if !strings.HasSuffix(line, "\n") {
+			b.WriteString("\n")
+		}
+	}
 	b.WriteString("Include /etc/caddy/rules/crs/rules/*.conf\n")
 	b.WriteString("Include /etc/caddy/rules/exclusions/after-crs.conf\n")
-	b.WriteString("Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf")
+	b.WriteString("Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf\n")
+	// 管理面启用的自定义规则（确定性：按调用方已排序的切片顺序写出）
+	for _, line := range customRules {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		b.WriteString(line)
+		if !strings.HasSuffix(line, "\n") {
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 

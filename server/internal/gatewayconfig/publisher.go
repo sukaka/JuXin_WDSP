@@ -1,10 +1,10 @@
 package gatewayconfig
 
 import (
-	"log/slog"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -63,6 +63,7 @@ type PublishTask struct {
 
 // PolicyParams 是应用策略参数。
 type PolicyParams struct {
+	PolicyID          string // 绑定策略 ID（可空）
 	ProtectionMode    string
 	ParanoiaLevel     int
 	InboundThreshold  int
@@ -76,7 +77,7 @@ type PolicyProvider interface {
 
 // ExceptionRule 是下发到网关的例外规则（SecLang 文本）。
 type ExceptionRule struct {
-	RuleID int
+	RuleID  int
 	SecLang string
 }
 
@@ -85,30 +86,67 @@ type ExceptionProvider interface {
 	GetEnabledExceptions(ctx context.Context) ([]ExceptionRule, error)
 }
 
+// CustomRulesProvider 是启用自定义规则 SecLang 查询接口（由 customrules.Store 实现）。
+type CustomRulesProvider interface {
+	ListEnabledSecLang(ctx context.Context) ([]string, error)
+}
+
+// RuleOverridesProvider 是规则覆盖查询接口（由 ruleoverrides.Store 实现）。
+type RuleOverridesProvider interface {
+	// SecLangForApp 返回该应用生效的 DISABLE 覆盖 SecLang（已按优先级解析）。
+	SecLangForApp(ctx context.Context, appID uuid.UUID, policyID *uuid.UUID) ([]string, error)
+}
+
+// GuardProvider 是阶段5访问控制/CC 配置提供者（由 guardconfig.Provider 实现）。
+type GuardProvider interface {
+	BuildGuardConfig(ctx context.Context) (*GuardConfig, error)
+	SaveVersionSnapshot(ctx context.Context, cfg *GuardConfig, taskID, createdBy uuid.UUID) (uuid.UUID, error)
+	MarkVersionResult(ctx context.Context, id uuid.UUID, result string) error
+	GetVersionConfig(ctx context.Context, versionID uuid.UUID) (*GuardConfig, error)
+}
+
 // Publisher 是配置发布控制器。
 type Publisher struct {
-	db      *pgxpool.Pool
-	cache   *cache.Client
-	apps    *applications.Store
-	certs   *certificates.Store
-	caddy   *CaddyClient
-	dataDir string // 配置与证书文件目录（runtime）
-	policies PolicyProvider
-	exceptions ExceptionProvider
+	db         *pgxpool.Pool
+	cache      *cache.Client
+	apps       *applications.Store
+	certs      *certificates.Store
+	caddy      *CaddyClient
+	dataDir    string // 配置与证书文件目录（runtime）
+	policies      PolicyProvider
+	exceptions    ExceptionProvider
+	customRules   CustomRulesProvider
+	ruleOverrides RuleOverridesProvider
+	guard         GuardProvider
 }
 
 // NewPublisher 创建发布控制器。
 func NewPublisher(db *pgxpool.Pool, c *cache.Client, apps *applications.Store, certs *certificates.Store, socketPath, dataDir string, policies PolicyProvider, exceptions ExceptionProvider) *Publisher {
 	return &Publisher{
-		db:      db,
-		cache:   c,
-		apps:    apps,
-		certs:   certs,
-		caddy:   NewCaddyClient(socketPath),
-		dataDir: dataDir,
-		policies: policies,
+		db:         db,
+		cache:      c,
+		apps:       apps,
+		certs:      certs,
+		caddy:      NewCaddyClient(socketPath),
+		dataDir:    dataDir,
+		policies:   policies,
 		exceptions: exceptions,
 	}
+}
+
+// SetGuardProvider 注入阶段5访问控制配置提供者（可选，注入后发布包含 guard 配置）。
+func (p *Publisher) SetGuardProvider(g GuardProvider) {
+	p.guard = g
+}
+
+// SetCustomRulesProvider 注入自定义规则提供者（启用规则写入发布配置）。
+func (p *Publisher) SetCustomRulesProvider(c CustomRulesProvider) {
+	p.customRules = c
+}
+
+// SetRuleOverridesProvider 注入规则覆盖提供者。
+func (p *Publisher) SetRuleOverridesProvider(r RuleOverridesProvider) {
+	p.ruleOverrides = r
 }
 
 const publishLockKey = "jiuzhang:gateway:publish_lock"
@@ -138,6 +176,8 @@ type PublishInput struct {
 	IdempotencyKey string
 	// AppIDs 限定发布的应用（为空表示全部活动应用）。
 	AppIDs []uuid.UUID
+	// GuardOverride 阶段5访问控制配置覆盖（回滚历史版本时使用；nil 表示从数据库实时组装）。
+	GuardOverride *GuardConfig
 }
 
 // Publish 执行完整发布流程。
@@ -195,18 +235,48 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		return
 	}
 
-	// 读取启用的例外策略（下发到网关）
+	// 读取启用的例外策略（下发到网关；失败则中止发布，禁止静默清空例外）
 	var exceptionRules []ExceptionRule
 	if p.exceptions != nil {
-		exceptionRules, _ = p.exceptions.GetEnabledExceptions(ctx)
+		exceptionRules, err = p.exceptions.GetEnabledExceptions(ctx)
+		if err != nil {
+			p.finishTask(ctx, taskID, TaskFailed, "EXCEPTIONS_SNAPSHOT_FAILED", err.Error(), nil)
+			return
+		}
+	}
+
+	// 启用的自定义规则 SecLang
+	var customSecLang []string
+	if p.customRules != nil {
+		customSecLang, err = p.customRules.ListEnabledSecLang(ctx)
+		if err != nil {
+			p.finishTask(ctx, taskID, TaskFailed, "CUSTOM_RULES_SNAPSHOT_FAILED", err.Error(), nil)
+			return
+		}
+	}
+
+	// 阶段5：组装访问控制/CC 配置（或回滚覆盖）
+	var guardCfg *GuardConfig
+	if p.guard != nil {
+		if in.GuardOverride != nil {
+			guardCfg = in.GuardOverride
+		} else {
+			guardCfg, err = p.guard.BuildGuardConfig(ctx)
+			if err != nil {
+				p.finishTask(ctx, taskID, TaskFailed, "GUARD_SNAPSHOT_FAILED", err.Error(), nil)
+				return
+			}
+		}
 	}
 
 	// 步骤2：生成候选配置
 	p.updateTaskStep(ctx, taskID, TaskGenerating, "生成候选配置", 25)
 	gen, err := Generate(GenerateInput{
-		Apps:        appsData,
-		AdminSocket: p.caddy.SocketPath(),
-		Exceptions:  exceptionRules,
+		Apps:         appsData,
+		AdminSocket:  p.caddy.SocketPath(),
+		Exceptions:   exceptionRules,
+		CustomRules:  customSecLang,
+		Guard:        guardCfg,
 	})
 	if err != nil {
 		p.finishTask(ctx, taskID, TaskFailed, "GENERATE_FAILED", err.Error(), nil)
@@ -229,11 +299,32 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	}
 	_ = p.setTaskTargetVersion(ctx, taskID, version.ID)
 
+	// 阶段5：保存访问控制配置版本快照（PENDING，结果后续回填）
+	var acVersionID uuid.UUID
+	if p.guard != nil && guardCfg != nil {
+		acVersionID, err = p.guard.SaveVersionSnapshot(ctx, guardCfg, taskID, in.RequestedBy)
+		if err != nil {
+			// 快照失败不阻断发布，但记录不静默
+			p.finishTask(ctx, taskID, TaskFailed, "AC_VERSION_SAVE_FAILED", err.Error(), nil)
+			return
+		}
+	}
+
+	// 阶段5：回填访问控制版本结果（背景 ctx，避免请求取消丢失）
+	markAC := func(result string) {
+		if p.guard != nil && acVersionID != uuid.Nil {
+			if err := p.guard.MarkVersionResult(context.Background(), acVersionID, result); err != nil {
+				slog.Warn("mark access control version result failed", "version", acVersionID, "error", err)
+			}
+		}
+	}
+
 	// 步骤5：发布到 Caddy
 	p.updateTaskStep(ctx, taskID, TaskPublishing, "发布到网关", 60)
 	prevConfig, _ := p.caddy.GetCurrentConfig(ctx)
 	if err := p.caddy.LoadConfig(ctx, gen.JSON); err != nil {
 		p.markVersionResult(ctx, version.ID, "FAILED")
+		markAC("FAILED")
 		p.finishTask(ctx, taskID, TaskFailed, "PUBLISH_FAILED", sanitizeCaddyError(err), &version.ID)
 		return
 	}
@@ -246,6 +337,7 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		p.updateTaskStep(ctx, taskID, TaskRollingBack, "验证失败，自动回滚", 90)
 		rollbackErr := p.rollbackToConfig(ctx, prevConfig)
 		p.markVersionResult(ctx, version.ID, "VERIFY_FAILED")
+		markAC("FAILED")
 		if rollbackErr != nil {
 			p.finishTask(ctx, taskID, TaskFailed, "ROLLBACK_FAILED",
 				fmt.Sprintf("验证失败(%s)且回滚失败(%s)", verifyErr.Error(), rollbackErr.Error()), &version.ID)
@@ -258,6 +350,7 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 
 	// 成功
 	p.markVersionResult(ctx, version.ID, "SUCCESS")
+	markAC("SUCCESS")
 	_ = p.setCurrentVersion(ctx, version.ID)
 	p.updateAppsDeployment(ctx, in.AppIDs, applications.DeployPublished, version.ID)
 	p.finishTask(ctx, taskID, TaskSuccess, "", "发布成功", &version.ID)
@@ -298,12 +391,14 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			return nil, nil, err
 		}
 		ad := AppData{
+			AppID:          app.ID.String(),
 			Code:           app.Code,
 			ProtectionMode: app.ProtectionMode,
 			Domains:        domains,
 			Upstreams:      upstreams,
 		}
 		// 阶段4：读取应用绑定的策略参数（策略模式优先于应用字段）
+		var boundPolicyID *uuid.UUID
 		if p.policies != nil {
 			pp, err := p.policies.GetApplicationPolicyParams(ctx, app.ID)
 			if err != nil {
@@ -316,7 +411,20 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 				ad.ParanoiaLevel = pp.ParanoiaLevel
 				ad.InboundThreshold = pp.InboundThreshold
 				ad.OutboundThreshold = pp.OutboundThreshold
+				if pp.PolicyID != "" {
+					if pid, err := uuid.Parse(pp.PolicyID); err == nil {
+						boundPolicyID = &pid
+					}
+				}
 			}
+		}
+		// 规则覆盖（应用级 > 策略级 > 全局）
+		if p.ruleOverrides != nil {
+			lines, err := p.ruleOverrides.SecLangForApp(ctx, app.ID, boundPolicyID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("应用 %s 规则覆盖快照失败: %w", app.Code, err)
+			}
+			ad.RuleOverrideSecLang = lines
 		}
 		// 证书（HTTPS 应用）
 		hasHTTPS := false
@@ -440,6 +548,22 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 	_ = p.setCurrentVersion(ctx, in.VersionID)
 	p.finishTask(ctx, task.ID, TaskSuccess, "", "回滚成功", &in.VersionID)
 	return p.GetTask(ctx, task.ID)
+}
+
+// RollbackAccessControl 回滚访问控制配置到历史版本（以快照覆盖重新走完整发布流程）。
+func (p *Publisher) RollbackAccessControl(ctx context.Context, versionID uuid.UUID, requestedBy uuid.UUID, requestID string) (*PublishTask, error) {
+	if p.guard == nil {
+		return nil, fmt.Errorf("guard provider not configured")
+	}
+	override, err := p.guard.GetVersionConfig(ctx, versionID)
+	if err != nil {
+		return nil, fmt.Errorf("读取访问控制版本快照失败: %w", err)
+	}
+	return p.PublishSync(ctx, PublishInput{
+		RequestedBy:   requestedBy,
+		RequestID:     requestID,
+		GuardOverride: override,
+	})
 }
 
 // sanitizeCaddyError 清理 Caddy 错误信息（不泄露内部细节）。

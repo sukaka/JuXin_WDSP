@@ -349,6 +349,33 @@ func (s *Store) SetStatus(ctx context.Context, id uuid.UUID, status string) erro
 	return nil
 }
 
+// ListEnabledSecLang 返回所有 ENABLED 自定义规则的 SecLang（按 rule_id 升序，确定性）。
+func (s *Store) ListEnabledSecLang(ctx context.Context) ([]string, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT generated_rule FROM custom_rules
+WHERE status = 'ENABLED' AND generated_rule <> ''
+ORDER BY rule_id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return nil, err
+		}
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out, rows.Err()
+}
+
 // Delete 删除规则。
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	res, err := s.db.Exec(ctx, `DELETE FROM custom_rules WHERE id = $1`, id)

@@ -109,6 +109,47 @@ func TestGenerateProtectionModes(t *testing.T) {
 	}
 }
 
+func TestGenerateIncludesCustomRulesAndPolicyParams(t *testing.T) {
+	apps := sampleApps()
+	apps[0].ParanoiaLevel = 2
+	apps[0].InboundThreshold = 10
+	apps[0].OutboundThreshold = 8
+	g, err := Generate(GenerateInput{
+		Apps:        apps,
+		AdminSocket: "unix//var/run/caddy/admin.sock",
+		CustomRules: []string{`SecRule ARGS "@rx test" "id:7100001,phase:2,block,msg:'x'"`},
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !contains(g.JSON, "tx.blocking_paranoia_level=2") {
+		t.Error("expected PL=2 in directives")
+	}
+	if !contains(g.JSON, "tx.inbound_anomaly_score_threshold=10") {
+		t.Error("expected inbound threshold 10")
+	}
+	if !contains(g.JSON, "id:7100001") {
+		t.Error("expected custom rule SecLang in WAF directives")
+	}
+}
+
+func TestGenerateIncludesRuleOverrides(t *testing.T) {
+	apps := sampleApps()
+	apps[0].RuleOverrideSecLang = []string{
+		`SecRule REQUEST_URI "@rx .*" "id:7200001,phase:1,pass,nolog,ctl:ruleRemoveById=942100,tag:'jiuzhang-rule-override'"`,
+	}
+	g, err := Generate(GenerateInput{
+		Apps:        apps,
+		AdminSocket: "unix//var/run/caddy/admin.sock",
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !contains(g.JSON, "ctl:ruleRemoveById=942100") {
+		t.Error("expected rule override in WAF directives")
+	}
+}
+
 func TestGenerateMultiUpstream(t *testing.T) {
 	apps := sampleApps()
 	apps[0].Upstreams = append(apps[0].Upstreams, applications.Upstream{

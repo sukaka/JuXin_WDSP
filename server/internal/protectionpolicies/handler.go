@@ -259,6 +259,71 @@ func (h *Handler) ListApplications(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"application_ids": appIDs, "count": len(appIDs)})
 }
 
+// BindApplication 将策略绑定到应用（一应用一活动策略）。
+func (h *Handler) BindApplication(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	policyID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的策略ID")
+		return
+	}
+	var req struct {
+		ApplicationID string `json:"application_id"`
+	}
+	if err := response.DecodeJSON(w, r, &req, 1024); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	appID, err := uuid.Parse(req.ApplicationID)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的应用ID")
+		return
+	}
+	if _, err := h.store.GetByID(r.Context(), policyID); err != nil {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "策略不存在")
+		return
+	}
+	if err := h.store.BindApplication(r.Context(), appID, policyID, p.UserID); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "protection_policies", "bind", "policy", policyID.String(), appID.String(),
+		`{"application_id":"`+appID.String()+`"}`, audits.ResultSuccess, audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]string{"message": "策略已绑定到应用，请发布配置后生效"})
+}
+
+// UnbindApplication 解绑应用上的防护策略。
+func (h *Handler) UnbindApplication(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	policyID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的策略ID")
+		return
+	}
+	appID, err := uuid.Parse(r.PathValue("app_id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的应用ID")
+		return
+	}
+	// 仅当该应用当前绑定本策略时解绑
+	bound, err := h.store.GetApplicationPolicy(r.Context(), appID)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	if bound == nil || bound.ID != policyID {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "应用未绑定该策略")
+		return
+	}
+	if err := h.store.UnbindApplication(r.Context(), appID); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "protection_policies", "unbind", "policy", policyID.String(), appID.String(),
+		`{"application_id":"`+appID.String()+`"}`, audits.ResultSuccess, audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]string{"message": "策略已解绑，请发布配置后生效"})
+}
+
 func policyItem(p *Policy, usage int) map[string]interface{} {
 	return map[string]interface{}{
 		"id": p.ID, "code": p.Code, "name": p.Name, "description": p.Description,
