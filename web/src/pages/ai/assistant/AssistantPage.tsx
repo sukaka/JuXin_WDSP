@@ -48,7 +48,7 @@ interface StreamState {
   finishReason: string | null
 }
 
-/** AI 安全助手：多轮对话 + SSE 流式过程展示 + 停止/重试/继续 + 消息反馈 */
+/** 安全助手：多轮对话 + SSE 流式过程展示 + 停止/重试/继续 + 消息反馈 */
 export default function AssistantPage() {
   const { message } = AntdApp.useApp()
   const queryClient = useQueryClient()
@@ -299,7 +299,7 @@ export default function AssistantPage() {
   const canRetryOrContinue = !stream && lastMessage?.role === 'assistant' && currentSession?.status === 'ACTIVE'
 
   return (
-    <Card title="AI安全助手" styles={{ body: { padding: 0 } }}>
+    <Card title="安全助手" styles={{ body: { padding: 0 } }}>
       <div style={{ display: 'flex', height: 'calc(100vh - 200px)', minHeight: 480 }}>
         {/* 左侧会话列表 */}
         <div
@@ -429,7 +429,7 @@ export default function AssistantPage() {
               <Empty
                 description={
                   <>
-                    <div>向 AI 安全助手提问，例如：</div>
+                    <div>向 安全助手提问，例如：</div>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       「今天为什么攻击增多？」「942100 为什么一直命中？」「哪些 IP 建议封禁？」
                     </Typography.Text>
@@ -470,7 +470,7 @@ export default function AssistantPage() {
                         <Space size={6} style={{ marginBottom: 4 }}>
                           <ApiOutlined />
                           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            AI 安全助手
+                            安全助手
                           </Typography.Text>
                         </Space>
                         <Typography.Paragraph
@@ -541,10 +541,10 @@ export default function AssistantPage() {
                           <ApiOutlined spin />
                           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                             {stream.events.some((e) => e.type === 'composing')
-                              ? 'AI 安全助手正在生成回答...'
+                              ? '安全助手正在生成回答...'
                               : stream.events.some((e) => e.type === 'agent_start' || e.type === 'agent_done')
-                                ? 'AI 安全助手正在执行分析...'
-                                : 'AI 安全助手正在分析...'}
+                                ? '安全助手正在执行分析...'
+                                : '安全助手正在分析...'}
                           </Typography.Text>
                         </Space>
                         <AiRunSteps events={stream.events} running={!stream.errorText} defaultOpen />
@@ -603,7 +603,7 @@ export default function AssistantPage() {
                 继续输出
               </Button>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                AI 回答仅供辅助决策，涉及生产变更请走既有审核发布流程
+                回答仅供辅助决策，涉及生产变更请走既有审核发布流程
               </Typography.Text>
             </Space>
           </div>

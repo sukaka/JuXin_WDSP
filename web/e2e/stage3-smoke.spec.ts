@@ -49,10 +49,10 @@ test.describe('阶段3：应用接入与配置发布', () => {
 
   test('Web应用列表渲染真实数据', async ({ page }) => {
     await page.goto('/applications')
-    await expect(page.locator('.ant-card-head-title', { hasText: 'Web应用' })).toBeVisible()
+    await expect(page.locator('.ant-card-head-title', { hasText: '网站应用' })).toBeVisible()
     await expect(page.getByText('waf-test')).toBeVisible({ timeout: 10000 })
     await expect(page.getByText('WAF测试应用')).toBeVisible()
-    await expect(page.getByText(/OFF 关闭|OBSERVE 观察|PROTECT 防护/).first()).toBeVisible()
+    await expect(page.getByText(/关闭|观察|防护/).first()).toBeVisible()
   })
 
   test('新建应用 → 域名 → 源站 → 连通性测试 → 删除应用', async ({ page }) => {
@@ -164,7 +164,7 @@ test.describe('阶段3：应用接入与配置发布', () => {
 
   test('菜单按角色展示应用防护分组', async ({ page }) => {
     await page.goto('/dashboard')
-    await expect(page.getByRole('menuitem', { name: 'Web应用' })).toBeVisible()
+    await expect(page.getByRole('menuitem', { name: '网站应用' })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: 'HTTPS证书' })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: '配置发布' })).toBeVisible()
     await expect(page.getByRole('menuitem', { name: '配置版本' })).toBeVisible()

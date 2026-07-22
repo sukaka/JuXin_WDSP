@@ -59,6 +59,33 @@ func TestProcessDisabledSkips(t *testing.T) {
 	}
 }
 
+func TestProcessCleanAuthOnlyAllows(t *testing.T) {
+	// 干净 API 请求仅带 Authorization：信息性 identity match 不得导致 OBSERVE
+	body := `{"id":1}`
+	r, _ := http.NewRequest(http.MethodPost, "http://h/v1/orders/1", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer secret")
+	r.Header.Set("X-Request-Id", "clean-auth-1")
+	res, err := Process(r, Config{Enabled: true, Mode: "PROTECT"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.FinalAction != dsctx.ActionAllow {
+		t.Fatalf("expected ALLOW for clean auth-only request, got %s matches=%+v",
+			res.FinalAction, res.Context.CopyMatches())
+	}
+	// identity match may still be recorded as INFO
+	var hasInfo bool
+	for _, m := range res.Context.CopyMatches() {
+		if m.RuleID == "identity.token_present" && m.Category == "INFO" {
+			hasInfo = true
+		}
+	}
+	if !hasInfo {
+		t.Fatal("expected informational identity match")
+	}
+}
+
 func TestProcessFieldCapFlags(t *testing.T) {
 	limits := dsctx.ParseLimits{
 		MaxBodyParseBytes: 1 << 20, MaxBodySampleBytes: 1024,

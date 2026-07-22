@@ -52,7 +52,7 @@ export default function AiToolsPage() {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       patchAiTool(id, { enabled }),
     onSuccess: (_data, vars) => {
-      message.success(vars.enabled ? 'Tool 已启用' : 'Tool 已停用')
+      message.success(vars.enabled ? '工具已启用' : '工具已停用')
       void invalidate()
     },
     onError,
@@ -65,7 +65,7 @@ export default function AiToolsPage() {
         max_results: values.max_results,
       }),
     onSuccess: () => {
-      message.success('Tool 配置已更新')
+      message.success('工具配置已更新')
       setConfigTarget(null)
       void invalidate()
     },
@@ -137,7 +137,7 @@ export default function AiToolsPage() {
   ]
 
   return (
-    <Card title="Tool 管理">
+    <Card title="工具管理">
       <Space direction="vertical" size={16} style={{ display: 'flex' }}>
         <Alert
           type="info"
@@ -145,7 +145,7 @@ export default function AiToolsPage() {
           message="阶段7 仅允许 READ_ONLY 与 DRAFT_ONLY 风险等级 Tool；停用后编排器立即跳过该 Tool。"
         />
         {toolsQuery.isError ? (
-          <QueryErrorAlert error={toolsQuery.error} message="加载 Tool 列表失败" />
+          <QueryErrorAlert error={toolsQuery.error} message="加载工具列表失败" />
         ) : (
           <Table<AiTool>
             rowKey="id"
@@ -159,7 +159,7 @@ export default function AiToolsPage() {
       </Space>
 
       <Modal
-        title={`Tool Schema：${schemaTarget?.name ?? ''}`}
+        title={`工具结构定义：${schemaTarget?.name ?? ''}`}
         open={schemaTarget !== null}
         onCancel={() => setSchemaTarget(null)}
         footer={null}

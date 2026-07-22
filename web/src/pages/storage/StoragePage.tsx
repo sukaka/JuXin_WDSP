@@ -57,7 +57,7 @@ export default function StoragePage() {
           <Row gutter={[16, 16]}>
             <Col xs={12} md={8} lg={4}>
               <Card size="small">
-                <Statistic title="PostgreSQL 容量" value={formatBytes(s?.postgres_size_bytes)} loading={storageQuery.isLoading} />
+                <Statistic title="数据库容量" value={formatBytes(s?.postgres_size_bytes)} loading={storageQuery.isLoading} />
               </Card>
             </Col>
             <Col xs={12} md={8} lg={4}>
@@ -86,7 +86,7 @@ export default function StoragePage() {
               </Card>
             </Col>
             <Col xs={12} md={8} lg={4}>
-              <Card size="small" title="Valkey 内存">
+              <Card size="small" title="缓存内存">
                 <Progress
                   percent={valkeyPct}
                   size="small"

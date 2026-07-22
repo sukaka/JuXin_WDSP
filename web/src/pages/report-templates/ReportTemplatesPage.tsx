@@ -252,7 +252,7 @@ export default function ReportTemplatesPage() {
           <Form.Item name="product_name" label="产品名称" rules={[{ required: true, message: '请输入产品名称' }, { max: 200 }]}>
             <Input placeholder="如：九章WEB应用智能防护系统" />
           </Form.Item>
-          <Form.Item name="logo_text" label="Logo 文字" rules={[{ max: 50 }]}>
+          <Form.Item name="logo_text" label="标识文字" rules={[{ max: 50 }]}>
             <Input placeholder="以文字形式展示的标识（不加载外部图片）" />
           </Form.Item>
           <Form.Item name="header_text" label="页眉" rules={[{ max: 200 }]}>
@@ -267,7 +267,7 @@ export default function ReportTemplatesPage() {
             rules={[{ max: 100 }]}
             extra="支持变量：{TYPE} 报告类型、{DATE} 日期、{SEQ} 序号"
           >
-            <Input placeholder="如：WAF-{TYPE}-{DATE}-{SEQ}" />
+            <Input placeholder="如：防护报告-{类型}-{日期}-{序号}" />
           </Form.Item>
           <Form.Item name="prepared_by" label="编制人" rules={[{ max: 50 }]}>
             <Input />

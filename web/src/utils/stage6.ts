@@ -29,8 +29,8 @@ export const REPORT_STATUS_META: Record<string, { color: string; label: string }
 
 /** 报告格式 */
 export const REPORT_FORMAT_META: Record<string, { color: string; label: string }> = {
-  html: { color: 'blue', label: 'HTML' },
-  pdf: { color: 'red', label: 'PDF' },
+  html: { color: 'blue', label: '网页' },
+  pdf: { color: 'red', label: 'PDF 文档' },
 }
 
 /** 报告模板可开关章节（与报告结构对应，key 为后端约定标识） */
@@ -43,7 +43,7 @@ export const REPORT_SECTION_OPTIONS: { value: string; label: string }[] = [
   { value: 'source_ips', label: '攻击源IP' },
   { value: 'applications', label: '被攻击应用' },
   { value: 'rules', label: '命中规则' },
-  { value: 'cc', label: 'CC防护' },
+  { value: 'cc', label: '频率与 CC 防护' },
   { value: 'access_control', label: '黑白名单' },
   { value: 'disposition', label: '事件处置' },
   { value: 'upstreams', label: '源站健康' },
@@ -72,9 +72,9 @@ export const ALERT_STATUS_META: Record<string, { color: string; label: string }>
 /** 系统告警类型 */
 export const ALERT_TYPE_META: Record<string, { color: string; label: string }> = {
   GATEWAY_DOWN: { color: 'red', label: '网关不可用' },
-  MANAGEMENT_API_DOWN: { color: 'red', label: '管理API不可用' },
+  MANAGEMENT_API_DOWN: { color: 'red', label: '管理接口不可用' },
   DATABASE_UNAVAILABLE: { color: 'red', label: '数据库不可用' },
-  VALKEY_UNAVAILABLE: { color: 'red', label: 'Valkey不可用' },
+  VALKEY_UNAVAILABLE: { color: 'red', label: '缓存服务不可用' },
   EVENT_COLLECTOR_LAG: { color: 'orange', label: '事件采集积压' },
   EVENT_PARSE_FAILURE_RATE_HIGH: { color: 'orange', label: '事件解析失败率高' },
   SOURCE_UNHEALTHY: { color: 'volcano', label: '源站不健康' },
@@ -94,11 +94,11 @@ export const ALERT_TYPE_META: Record<string, { color: string; label: string }> =
 /** 监控组件展示名 */
 export const COMPONENT_NAME_META: Record<string, string> = {
   GATEWAY: '防护网关',
-  CORAZA: 'Coraza引擎',
-  GUARD: 'jiuzhang_guard',
-  API: '管理API',
-  POSTGRES: 'PostgreSQL',
-  VALKEY: 'Valkey',
+  CORAZA: 'WAF 引擎',
+  GUARD: '访问控制模块',
+  API: '管理接口',
+  POSTGRES: '数据库',
+  VALKEY: '缓存服务',
   EVENT_COLLECTOR: '事件采集器',
   UPSTREAM: '源站',
   CERTIFICATE: '证书',

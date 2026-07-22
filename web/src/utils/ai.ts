@@ -11,10 +11,10 @@ export const AI_TASK_TYPE_META: Record<string, { color: string; label: string }>
   LOG_QUERY: { color: 'cyan', label: '日志查询' },
   STATISTICS_QUERY: { color: 'cyan', label: '统计查询' },
   POLICY_RECOMMENDATION: { color: 'gold', label: '策略建议' },
-  WHAT_IF_ANALYSIS: { color: 'gold', label: 'What-If模拟' },
+  WHAT_IF_ANALYSIS: { color: 'gold', label: '情景模拟' },
   DRAFT_EXCEPTION: { color: 'lime', label: '例外草稿' },
   DRAFT_BLACKLIST: { color: 'lime', label: '黑名单草稿' },
-  DRAFT_CC_POLICY: { color: 'lime', label: 'CC策略草稿' },
+  DRAFT_CC_POLICY: { color: 'lime', label: '频率策略草稿' },
   DRAFT_CUSTOM_RULE: { color: 'lime', label: '自定义规则草稿' },
   REPORT_SUMMARY: { color: 'green', label: '报告总结' },
   GENERAL_SECURITY_QA: { color: 'blue', label: '安全问答' },
@@ -42,7 +42,7 @@ export const AI_RISK_META: Record<string, { color: string; label: string }> = {
 export const AI_DRAFT_TYPE_META: Record<string, { color: string; label: string }> = {
   EXCEPTION: { color: 'blue', label: '例外策略' },
   BLACKLIST: { color: 'red', label: '黑名单' },
-  CC_POLICY: { color: 'orange', label: 'CC策略' },
+  CC_POLICY: { color: 'orange', label: '频率策略' },
   CUSTOM_RULE: { color: 'purple', label: '自定义规则' },
   POLICY_CHANGE: { color: 'gold', label: '策略变更' },
   REPORT_SUMMARY: { color: 'green', label: '报告总结' },
@@ -59,8 +59,8 @@ export const AI_DRAFT_STATUS_META: Record<string, { color: string; label: string
 export const AI_PROMPT_TYPE_META: Record<string, { color: string; label: string }> = {
   SYSTEM: { color: 'geekblue', label: '系统' },
   ORCHESTRATOR: { color: 'purple', label: '编排器' },
-  AGENT: { color: 'blue', label: 'Agent' },
-  TOOL: { color: 'cyan', label: 'Tool' },
+  AGENT: { color: 'blue', label: '智能体' },
+  TOOL: { color: 'cyan', label: '工具' },
   TASK: { color: 'gold', label: '任务' },
   SAFETY: { color: 'red', label: '安全' },
   EVALUATION: { color: 'green', label: '评估' },
@@ -82,34 +82,34 @@ export const AI_MEMORY_SCOPE_META: Record<string, { color: string; label: string
 export const AI_MEMORY_CONFIDENCE_META: Record<string, { color: string; label: string }> = {
   USER_CONFIRMED: { color: 'green', label: '用户确认' },
   SYSTEM_CONFIRMED: { color: 'blue', label: '系统确认' },
-  AI_INFERRED: { color: 'orange', label: 'AI推测' },
+  AI_INFERRED: { color: 'orange', label: '智能推测' },
 }
 
 export const AI_PROVIDER_TYPE_META: Record<string, { color: string; label: string }> = {
-  openai_compatible: { color: 'blue', label: 'OpenAI 兼容' },
-  anthropic: { color: 'purple', label: 'Anthropic' },
-  ollama: { color: 'green', label: 'Ollama' },
+  openai_compatible: { color: 'blue', label: '开放兼容协议' },
+  anthropic: { color: 'purple', label: 'Anthropic 协议' },
+  ollama: { color: 'green', label: '本地推理服务' },
   local: { color: 'cyan', label: '本地模型' },
 }
 
 export const AI_AGENT_NAMES: Record<string, string> = {
-  dispatcher: '总调度 Agent',
-  security_event: '安全事件 Agent',
-  log_analysis: '日志分析 Agent',
-  waf_policy: 'WAF策略 Agent',
-  asset: '资产 Agent',
-  ops_diagnostic: '运维诊断 Agent',
-  report: '报告 Agent',
-  knowledge: '知识库 Agent',
+  dispatcher: '总调度智能体',
+  security_event: '安全事件智能体',
+  log_analysis: '日志分析智能体',
+  waf_policy: '防护策略智能体',
+  asset: '资产智能体',
+  ops_diagnostic: '运维诊断智能体',
+  report: '报告智能体',
+  knowledge: '知识库智能体',
 }
 
 /** SSE 步骤事件类型 → 展示元数据 */
 export const AI_STEP_META: Record<string, { color: string; label: string }> = {
   plan: { color: 'blue', label: '任务计划' },
-  agent_start: { color: 'processing', label: 'Agent 开始' },
-  agent_done: { color: 'green', label: 'Agent 完成' },
+  agent_start: { color: 'processing', label: '智能体开始' },
+  agent_done: { color: 'green', label: '智能体完成' },
   composing: { color: 'processing', label: '生成回答' },
-  tool: { color: 'cyan', label: 'Tool 调用' },
+  tool: { color: 'cyan', label: '工具调用' },
   error: { color: 'red', label: '错误' },
   compressed: { color: 'orange', label: '上下文压缩' },
   answer: { color: 'green', label: '回答就绪' },

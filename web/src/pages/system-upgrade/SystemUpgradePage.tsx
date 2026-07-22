@@ -336,7 +336,7 @@ export default function SystemUpgradePage() {
             label="文件哈希（SHA-256）"
             rules={[
               { required: true, message: '请输入文件哈希' },
-              { pattern: /^[0-9a-fA-F]{64}$/, message: '须为 64 位十六进制 SHA-256' },
+              { pattern: /^[0-9a-fA-F]{64}$/, message: '须为 64 位十六进制摘要（SHA-256）' },
             ]}
           >
             <Input placeholder="64 位十六进制" autoComplete="off" />

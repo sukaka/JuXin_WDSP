@@ -501,13 +501,13 @@ export default function ExceptionsPage() {
             <Input placeholder="如 api.example.com（可选）" autoComplete="off" />
           </Form.Item>
           <Space.Compact block>
-            <Form.Item name="uri_exact" label="URI 精确匹配" style={{ width: '33%', marginRight: 8 }}>
+            <Form.Item name="uri_exact" label="路径精确匹配" style={{ width: '33%', marginRight: 8 }}>
               <Input placeholder="/api/export" autoComplete="off" />
             </Form.Item>
-            <Form.Item name="uri_prefix" label="URI 前缀匹配" style={{ width: '33%', marginRight: 8 }}>
+            <Form.Item name="uri_prefix" label="路径前缀匹配" style={{ width: '33%', marginRight: 8 }}>
               <Input placeholder="/api/" autoComplete="off" />
             </Form.Item>
-            <Form.Item name="uri_regex" label="URI 正则匹配" style={{ width: '33%' }}>
+            <Form.Item name="uri_regex" label="路径正则匹配" style={{ width: '33%' }}>
               <Input placeholder="^/api/v\d+/export$" autoComplete="off" />
             </Form.Item>
           </Space.Compact>
@@ -534,7 +534,7 @@ export default function ExceptionsPage() {
             <Form.Item name="param_names" label="参数名" style={{ width: '33%', marginRight: 8 }}>
               <Select mode="tags" open={false} placeholder="回车添加" />
             </Form.Item>
-            <Form.Item name="cookie_names" label="Cookie 名" style={{ width: '33%', marginRight: 8 }}>
+            <Form.Item name="cookie_names" label="Cookie 名称" style={{ width: '33%', marginRight: 8 }}>
               <Select mode="tags" open={false} placeholder="回车添加" />
             </Form.Item>
             <Form.Item name="header_names" label="请求头名" style={{ width: '33%' }}>
@@ -552,14 +552,14 @@ export default function ExceptionsPage() {
               <Select mode="multiple" options={ATTACK_TYPE_OPTIONS} placeholder="选择攻击类型" />
             </Form.Item>
           </Space.Compact>
-          <Form.Item name="content_types" label="Content-Type">
+          <Form.Item name="content_types" label="内容类型">
             <Select mode="tags" open={false} placeholder="如 application/json，回车添加" />
           </Form.Item>
           <Form.Item name="exception_action" label="例外动作" rules={[{ required: true }]}>
             <Select options={ACTION_OPTIONS} />
           </Form.Item>
           <Form.Item name="action_target" label="动作目标">
-            <Input placeholder="ADJUST_SCORE 时填写评分调整说明（可选）" autoComplete="off" />
+            <Input placeholder="调整评分时填写说明（可选）" autoComplete="off" />
           </Form.Item>
           <Form.Item name="is_temporary" label="临时例外" valuePropName="checked">
             <Switch checkedChildren="是" unCheckedChildren="否" />
@@ -670,9 +670,9 @@ export default function ExceptionsPage() {
               <Descriptions.Item label="域名" span={2}>
                 {exc.domain || '-'}
               </Descriptions.Item>
-              <Descriptions.Item label="URI 精确">{exc.uri_exact || '-'}</Descriptions.Item>
-              <Descriptions.Item label="URI 前缀">{exc.uri_prefix || '-'}</Descriptions.Item>
-              <Descriptions.Item label="URI 正则" span={2}>
+              <Descriptions.Item label="路径精确">{exc.uri_exact || '-'}</Descriptions.Item>
+              <Descriptions.Item label="路径前缀">{exc.uri_prefix || '-'}</Descriptions.Item>
+              <Descriptions.Item label="路径正则" span={2}>
                 {exc.uri_regex || '-'}
               </Descriptions.Item>
               {listSection('HTTP 方法', exc.methods)}

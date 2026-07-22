@@ -36,7 +36,7 @@ export default function ApiModelsPage() {
   })
 
   return (
-    <Card title="API 模型版本">
+    <Card title="接口模型版本">
       <Typography.Paragraph type="secondary">
         候选版本经人工确认后冻结为正式模型；冻结后不可通过偏离自动扩宽。
       </Typography.Paragraph>
@@ -50,7 +50,7 @@ export default function ApiModelsPage() {
           try {
             schema = JSON.parse(v.schema_json || '{}') as Record<string, string>
           } catch {
-            message.error('schema 须为 JSON 对象')
+            message.error('结构定义须为 JSON 对象')
             return
           }
           createMut.mutate({
@@ -61,14 +61,14 @@ export default function ApiModelsPage() {
         }}
       >
         <Form.Item name="endpoint_id" label="端点 ID" rules={[{ required: true }]}>
-          <Input placeholder="UUID" />
+          <Input placeholder="端点唯一标识" />
         </Form.Item>
         <Form.Item name="endpoint_key" label="端点键" rules={[{ required: true }]}>
           <Input placeholder="POST /v1/orders/{id}" />
         </Form.Item>
         <Form.Item
           name="schema_json"
-          label="Schema JSON"
+          label="结构定义（JSON）"
           initialValue='{"id":"number","name":"string"}'
           rules={[{ required: true }]}
         >
@@ -89,9 +89,15 @@ export default function ApiModelsPage() {
             title: '状态',
             dataIndex: 'status',
             width: 120,
-            render: (v: string) => (
-              <Tag color={v === 'FORMAL' ? 'green' : v === 'CANDIDATE' ? 'blue' : 'default'}>{v}</Tag>
-            ),
+            render: (v: string) => {
+              const meta: Record<string, { color: string; label: string }> = {
+                FORMAL: { color: 'green', label: '正式' },
+                CANDIDATE: { color: 'blue', label: '候选' },
+                DEPRECATED: { color: 'default', label: '已废弃' },
+              }
+              const m = meta[v]
+              return <Tag color={m?.color ?? 'default'}>{m?.label ?? v}</Tag>
+            },
           },
           {
             title: '哈希',

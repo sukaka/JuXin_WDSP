@@ -42,3 +42,15 @@ func TestDecideAllowWhenClean(t *testing.T) {
 		t.Fatal(act)
 	}
 }
+
+func TestDecideIgnoresInfoIdentity(t *testing.T) {
+	ctx := dsctx.New("rid-info", dsctx.DefaultParseLimits())
+	ctx.AddMatch(dsctx.DetectorMatch{
+		Detector: "identity", RuleID: "identity.token_present",
+		Category: "INFO", Severity: "INFO",
+	})
+	act := Decide(ctx, Input{Mode: ModeProtect})
+	if act != dsctx.ActionAllow {
+		t.Fatalf("INFO must not force observe/block, got %s", act)
+	}
+}

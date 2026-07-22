@@ -135,7 +135,7 @@ export default function WafRulesPage() {
     mutationFn: () => wafRulesApi.sync(),
     onSuccess: (r) => {
       modal.info({
-        title: 'CRS 规则同步完成',
+        title: '规则集同步完成',
         width: 520,
         content: (
           <div>
@@ -202,7 +202,7 @@ export default function WafRulesPage() {
       width: 100,
       render: (v: string) => <StatusTag value={v} map={RULE_DEFAULT_STATE_META} />,
     },
-    { title: 'CRS版本', dataIndex: 'crs_version', width: 100 },
+    { title: '规则集版本', dataIndex: 'crs_version', width: 100 },
     {
       title: '操作',
       key: 'actions',
@@ -223,7 +223,7 @@ export default function WafRulesPage() {
 
   return (
     <Card
-      title="WAF规则"
+      title="防护规则库"
       extra={
         <Space>
           {(versionsQuery.data?.versions ?? []).length > 0 && (
@@ -334,7 +334,7 @@ export default function WafRulesPage() {
         <Alert
           type="error"
           showIcon
-          message="加载WAF规则失败"
+          message="加载防护规则失败"
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
@@ -401,7 +401,7 @@ export default function WafRulesPage() {
                   {detail.file_name || '-'}
                 </Typography.Text>
               </Descriptions.Item>
-              <Descriptions.Item label="CRS版本">{detail.crs_version || '-'}</Descriptions.Item>
+              <Descriptions.Item label="规则集版本">{detail.crs_version || '-'}</Descriptions.Item>
             </Descriptions>
             <Typography.Title level={5}>标签（{detailTags.length}）</Typography.Title>
             <Space wrap>
@@ -473,8 +473,8 @@ export default function WafRulesPage() {
                   <Form.Item name="action" label="动作" rules={[{ required: true }]}>
                     <Select
                       options={[
-                        { value: 'DISABLE', label: 'DISABLE 停用规则' },
-                        { value: 'ENABLE', label: 'ENABLE 启用（覆盖下层 DISABLE）' },
+                        { value: 'DISABLE', label: '停用规则' },
+                        { value: 'ENABLE', label: '启用（覆盖下层停用）' },
                       ]}
                     />
                   </Form.Item>

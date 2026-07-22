@@ -46,47 +46,47 @@ test.describe('阶段7：AI安全运营中心', () => {
 
     // 种子权限（000014）：安全管理员含 ai.models.read / ai.agents.read / ai.tools.read /
     // ai.prompts.read / ai.audits.read / ai.usage.read，菜单按角色显隐（menu.ts），两组均全量可见
-    await openMenuGroup(page, 'AI安全运营')
+    await openMenuGroup(page, '智能安全运营')
     for (const label of [
-      'AI安全助手',
-      'AI事件分析',
-      'AI攻击画像',
-      'AI攻击链',
-      'AI策略建议',
-      'AI报告总结',
-      'AI任务记录',
+      '安全助手',
+      '事件智能分析',
+      '攻击画像分析',
+      '攻击链分析',
+      '策略智能建议',
+      '报告智能总结',
+      '智能任务记录',
     ]) {
       await expect(page.getByRole('menuitem', { name: label })).toBeVisible()
     }
 
-    await openMenuGroup(page, 'AI管理')
+    await openMenuGroup(page, '智能能力管理')
     for (const label of [
       '模型管理',
-      'Agent管理',
-      'Tool管理',
-      'Prompt管理',
-      'Memory管理',
+      '智能体管理',
+      '工具管理',
+      '提示词管理',
+      '记忆管理',
       '配额与成本',
-      'AI审计',
+      '智能审计',
     ]) {
       await expect(page.getByRole('menuitem', { name: label })).toBeVisible()
     }
   })
 
-  test('菜单权限：审计管理员仅见 AI管理 下只读项', async ({ page }) => {
+  test('菜单权限：审计管理员仅见 智能能力管理 下只读项', async ({ page }) => {
     await loginViaAPI(page, AUD_USER, AUD_PWD)
     await page.goto('/dashboard')
 
-    // 审计管理员无任何 ai.*.use 权限 → 「AI安全运营」分组不出现
+    // 审计管理员无任何 ai.*.use 权限 → 「智能安全运营」分组不出现
     await expect(
-      page.locator('.ant-menu-submenu-title', { hasText: 'AI安全运营' }),
+      page.locator('.ant-menu-submenu-title', { hasText: '智能安全运营' }),
     ).toHaveCount(0)
 
-    // 仅 ai.usage.read + ai.audits.read → 只见 配额与成本、AI审计
-    await openMenuGroup(page, 'AI管理')
+    // 仅 ai.usage.read + ai.audits.read → 只见 配额与成本、智能审计
+    await openMenuGroup(page, '智能能力管理')
     await expect(page.getByRole('menuitem', { name: '配额与成本' })).toBeVisible()
-    await expect(page.getByRole('menuitem', { name: 'AI审计' })).toBeVisible()
-    for (const label of ['模型管理', 'Agent管理', 'Tool管理', 'Prompt管理', 'Memory管理']) {
+    await expect(page.getByRole('menuitem', { name: '智能审计' })).toBeVisible()
+    for (const label of ['模型管理', '智能体管理', '工具管理', '提示词管理', '记忆管理']) {
       await expect(page.getByRole('menuitem', { name: label })).toHaveCount(0)
     }
   })
@@ -107,7 +107,7 @@ test.describe('阶段7：AI安全运营中心', () => {
     await page.getByRole('button', { name: '发送' }).click()
 
     // 执行过程区出现 plan/agent 步骤
-    await expect(page.getByText(/任务计划|Agent 开始/).first()).toBeVisible({ timeout: 240_000 })
+    await expect(page.getByText(/任务计划|智能体开始/).first()).toBeVisible({ timeout: 240_000 })
 
     // 最终回答出现（持久化消息后渲染反馈按钮）
     await expect(page.locator('button:has(.anticon-like)').first()).toBeVisible({
@@ -158,7 +158,7 @@ test.describe('阶段7：AI安全运营中心', () => {
   test('AI任务记录：列表含成功记录并可打开详情抽屉', async ({ page }) => {
     await loginViaAPI(page, SEC_USER, SEC_PWD)
     await page.goto('/ai/tasks')
-    await expect(page.getByText('AI 任务记录')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('智能任务记录')).toBeVisible({ timeout: 15_000 })
 
     // 依赖上一个用例产生的任务；按状态过滤「成功」
     await page.locator('.ant-select', { hasText: '状态' }).first().click()
@@ -219,7 +219,7 @@ test.describe('阶段7：AI安全运营中心', () => {
     await loginViaAPI(page, SYS_USER, SYS_PWD)
     await page.goto('/ai/admin/agents')
 
-    await expect(page.getByText('Agent 管理')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('智能体管理')).toBeVisible({ timeout: 15_000 })
     await expect(page.locator('tbody tr')).toHaveCount(8, { timeout: 15_000 })
     await expect(page.getByText('dispatcher')).toBeVisible()
     await expect(page.getByText('security_event')).toBeVisible()
@@ -229,7 +229,7 @@ test.describe('阶段7：AI安全运营中心', () => {
     await loginViaAPI(page, SYS_USER, SYS_PWD)
     await page.goto('/ai/admin/tools')
 
-    await expect(page.getByText('Tool 管理')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('工具管理')).toBeVisible({ timeout: 15_000 })
     await expect(page.locator('tbody tr').first()).toBeVisible({ timeout: 15_000 })
     await expect(page.getByText('application.search')).toBeVisible()
   })
@@ -238,7 +238,7 @@ test.describe('阶段7：AI安全运营中心', () => {
     await loginViaAPI(page, SYS_USER, SYS_PWD)
     await page.goto('/ai/admin/audits')
 
-    await expect(page.getByText('AI 审计')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('智能审计')).toBeVisible({ timeout: 15_000 })
     await expect(page.locator('tbody tr').first()).toBeVisible({ timeout: 15_000 })
   })
 
@@ -254,7 +254,7 @@ test.describe('阶段7：AI安全运营中心', () => {
     await page.goto('/ai/admin/prompts')
 
     // 新建 Prompt
-    await page.getByRole('button', { name: '新建 Prompt' }).click()
+    await page.getByRole('button', { name: '新建提示词' }).click()
     let dialog = page.getByRole('dialog')
     await dialog.locator('#code').fill(code)
     await dialog.locator('#name').fill(name)
@@ -270,7 +270,7 @@ test.describe('阶段7：AI安全运营中心', () => {
       .click()
     await dialog.locator('#content').fill('你是安全运营助手，仅基于给定数据输出简短摘要。')
     await dialog.getByRole('button', { name: /确 ?定/ }).click()
-    await expect(page.getByText('Prompt 已创建')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('提示词已创建')).toBeVisible({ timeout: 15_000 })
     const row = page.locator('tbody tr', { hasText: code })
     await expect(row).toBeVisible({ timeout: 15_000 })
 

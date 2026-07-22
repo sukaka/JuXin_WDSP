@@ -112,7 +112,7 @@ export default function AiTasksPage() {
   const detail = detailQuery.data
 
   return (
-    <Card title="AI 任务记录">
+    <Card title="智能任务记录">
       <Space direction="vertical" size={16} style={{ display: 'flex' }}>
         <Typography.Text type="secondary">
           任务记录为本人 AI 分析执行历史（含计划摘要与状态），不含模型私有思维链。

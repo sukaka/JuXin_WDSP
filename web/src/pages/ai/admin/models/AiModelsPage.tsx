@@ -317,7 +317,7 @@ export default function AiModelsPage() {
       width: 140,
       render: (v: string) => <StatusTag value={v} map={AI_PROVIDER_TYPE_META} />,
     },
-    { title: 'Base URL', dataIndex: 'base_url', ellipsis: true },
+    { title: '服务地址', dataIndex: 'base_url', ellipsis: true },
     {
       title: '密钥引用',
       dataIndex: 'api_key_reference',
@@ -388,8 +388,8 @@ export default function AiModelsPage() {
       width: 130,
       render: (_, record) => (
         <Space size={4}>
-          {record.supports_tools && <Tag color="blue">Tool</Tag>}
-          {record.supports_streaming && <Tag color="cyan">流式</Tag>}
+          {record.supports_tools && <Tag color="blue">工具</Tag>}
+          {record.supports_streaming && <Tag color="cyan">流式输出</Tag>}
           {!record.supports_tools && !record.supports_streaming && '-'}
         </Space>
       ),
@@ -583,24 +583,24 @@ export default function AiModelsPage() {
               { max: 100, message: '不超过 100 个字符' },
             ]}
           >
-            <Input placeholder="如：自建 vLLM / 公有云 OpenAI 兼容端点" />
+            <Input placeholder="如：自建推理集群 / 公有云兼容端点" />
           </Form.Item>
           <Form.Item
             name="provider_type"
             label="类型"
             rules={[{ required: true, message: '请选择类型' }]}
-            extra="OpenAI 兼容 / Ollama / 本地 均走 /v1/chat/completions 协议"
+            extra="开放兼容协议 / 本地推理服务 / 本地模型均走标准对话补全接口"
           >
             <Select options={PROVIDER_TYPE_OPTIONS} placeholder="选择供应商类型" />
           </Form.Item>
           <Form.Item
             name="base_url"
-            label="Base URL"
+            label="服务地址"
             rules={[
-              { required: true, message: '请输入 Base URL' },
+              { required: true, message: '请输入服务地址' },
               { max: 255, message: '不超过 255 个字符' },
             ]}
-            extra="填到根路径即可（不要带 /chat/completions）。例：http://ollama:11434 或 https://api.openai.com"
+            extra="填写服务根地址即可（不要带对话补全路径）。例如：http://ollama:11434 或公有云接口根地址"
           >
             <Input placeholder="http://host:port 或 https://api.example.com" autoComplete="off" />
           </Form.Item>
@@ -618,9 +618,9 @@ export default function AiModelsPage() {
               />
             </Form.Item>
           ) : (
-            <Form.Item name="api_key" label="API 密钥（可选）">
+            <Form.Item name="api_key" label="接口密钥（可选）">
               <Input.Password
-                placeholder="本地 Ollama 可留空；公有云必填，仅创建时写入且不回显"
+                placeholder="本地推理服务可留空；公有云必填，仅创建时写入且不回显"
                 autoComplete="new-password"
               />
             </Form.Item>
@@ -652,7 +652,7 @@ export default function AiModelsPage() {
             label="新密钥"
             rules={[{ required: true, message: '请输入新密钥' }]}
           >
-            <Input.Password placeholder="输入新的 API 密钥" autoComplete="new-password" />
+            <Input.Password placeholder="输入新的 接口密钥" autoComplete="new-password" />
           </Form.Item>
         </Form>
       </Modal>
@@ -716,7 +716,7 @@ export default function AiModelsPage() {
             <InputNumber min={1} style={{ width: '100%' }} placeholder="如 4096" />
           </Form.Item>
           <Space size={24}>
-            <Form.Item name="supports_tools" label="支持 Tool" valuePropName="checked">
+            <Form.Item name="supports_tools" label="支持工具" valuePropName="checked">
               <Switch />
             </Form.Item>
             <Form.Item name="supports_streaming" label="支持流式" valuePropName="checked">

@@ -72,13 +72,13 @@ export default function DashboardPage() {
                     text={healthQuery.data?.status === 'ok' ? '运行中' : healthQuery.data?.status ?? '加载中'}
                   />
                 </Descriptions.Item>
-                <Descriptions.Item label="PostgreSQL">
+                <Descriptions.Item label="数据库">
                   <Badge
                     status={healthQuery.data?.postgres ? 'success' : 'error'}
                     text={healthQuery.data?.postgres ? '正常' : '异常'}
                   />
                 </Descriptions.Item>
-                <Descriptions.Item label="Valkey">
+                <Descriptions.Item label="缓存">
                   <Badge
                     status={healthQuery.data?.valkey ? 'success' : 'error'}
                     text={healthQuery.data?.valkey ? '正常' : '异常'}

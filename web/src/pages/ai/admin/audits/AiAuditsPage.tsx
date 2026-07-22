@@ -98,10 +98,10 @@ export default function AiAuditsPage() {
       width: 120,
       render: (v: string) => (v ? <StatusTag value={v} map={AI_TASK_TYPE_META} /> : '-'),
     },
-    { title: 'Agent', dataIndex: 'agent_code', width: 130, render: (v: string) => v || '-' },
-    { title: 'Tool', dataIndex: 'tool_code', width: 130, render: (v: string) => v || '-' },
+    { title: '智能体', dataIndex: 'agent_code', width: 130, render: (v: string) => v || '-' },
+    { title: '工具', dataIndex: 'tool_code', width: 130, render: (v: string) => v || '-' },
     {
-      title: 'Token',
+      title: '令牌用量',
       key: 'tokens',
       width: 110,
       align: 'right',
@@ -129,7 +129,7 @@ export default function AiAuditsPage() {
 
   return (
     <Card
-      title="AI 审计"
+      title="智能审计"
       extra={
         hasPermission(permissions, 'ai.audits.read') && (
           <Button
@@ -200,7 +200,7 @@ export default function AiAuditsPage() {
       )}
 
       <Drawer
-        title="AI 审计详情"
+        title="智能审计详情"
         open={selected !== null}
         onClose={() => setSelected(null)}
         width={720}
@@ -220,10 +220,10 @@ export default function AiAuditsPage() {
                   '-'
                 )}
               </Descriptions.Item>
-              <Descriptions.Item label="Agent">{selected.agent_code || '-'}</Descriptions.Item>
-              <Descriptions.Item label="Tool">{selected.tool_code || '-'}</Descriptions.Item>
+              <Descriptions.Item label="智能体">{selected.agent_code || '-'}</Descriptions.Item>
+              <Descriptions.Item label="工具">{selected.tool_code || '-'}</Descriptions.Item>
               <Descriptions.Item label="模型">{selected.model_code || '-'}</Descriptions.Item>
-              <Descriptions.Item label="Prompt 版本">
+              <Descriptions.Item label="提示词版本">
                 {selected.prompt_version || '-'}
               </Descriptions.Item>
               <Descriptions.Item label="输入 Token">{selected.input_tokens}</Descriptions.Item>

@@ -154,7 +154,7 @@ export default function CertificatesPage() {
       ),
     },
     {
-      title: 'SAN 域名',
+      title: '备用域名',
       dataIndex: 'san_domains',
       width: 100,
       render: (sans: string[]) =>
@@ -235,7 +235,7 @@ export default function CertificatesPage() {
 
   return (
     <Card
-      title="HTTPS证书"
+      title="HTTPS 证书"
       extra={
         hasPermission(permissions, 'certificates.create') && (
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
@@ -340,7 +340,7 @@ export default function CertificatesPage() {
             name="cert_pem"
             label="证书 PEM（cert_pem）"
             rules={[
-              { required: true, message: '请粘贴证书 PEM' },
+              { required: true, message: '请粘贴证书内容' },
               {
                 validator: (_, v: string) => {
                   if (!v) return Promise.resolve()
@@ -360,7 +360,7 @@ export default function CertificatesPage() {
             name="key_pem"
             label="私钥 PEM（key_pem）"
             rules={[
-              { required: true, message: '请粘贴私钥 PEM' },
+              { required: true, message: '请粘贴私钥内容' },
               {
                 validator: (_, v: string) => {
                   if (!v) return Promise.resolve()
@@ -423,7 +423,7 @@ export default function CertificatesPage() {
             <Descriptions.Item label="主题(Subject)">{detail.subject}</Descriptions.Item>
             <Descriptions.Item label="颁发者(Issuer)">{detail.issuer}</Descriptions.Item>
             <Descriptions.Item label="序列号">{detail.serial_number}</Descriptions.Item>
-            <Descriptions.Item label="SAN 域名">
+            <Descriptions.Item label="备用域名">
               {detail.san_domains && detail.san_domains.length > 0 ? (
                 <Space wrap>
                   {detail.san_domains.map((d) => (

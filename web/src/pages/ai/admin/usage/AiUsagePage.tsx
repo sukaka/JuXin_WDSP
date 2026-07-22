@@ -21,8 +21,8 @@ export default function AiUsagePage() {
 
   const columns: ColumnsType<AiUsageByUser> = [
     { title: '用户名', dataIndex: 'username' },
-    { title: '输入 Token', dataIndex: 'input_tokens', align: 'right' },
-    { title: '输出 Token', dataIndex: 'output_tokens', align: 'right' },
+    { title: '输入令牌', dataIndex: 'input_tokens', align: 'right' },
+    { title: '输出令牌', dataIndex: 'output_tokens', align: 'right' },
     { title: '调用次数', dataIndex: 'model_calls', align: 'right' },
     {
       title: '预估成本',
@@ -41,7 +41,7 @@ export default function AiUsagePage() {
           <Col flex="1 1 180px">
             <Card>
               <Statistic
-                title="今日输入 Token"
+                title="今日输入令牌"
                 value={overview?.today_input_tokens ?? 0}
                 loading={overviewQuery.isLoading}
               />
@@ -50,7 +50,7 @@ export default function AiUsagePage() {
           <Col flex="1 1 180px">
             <Card>
               <Statistic
-                title="今日输出 Token"
+                title="今日输出令牌"
                 value={overview?.today_output_tokens ?? 0}
                 loading={overviewQuery.isLoading}
               />
@@ -68,7 +68,7 @@ export default function AiUsagePage() {
           <Col flex="1 1 180px">
             <Card>
               <Statistic
-                title="Tool 调用次数"
+                title="工具调用次数"
                 value={overview?.today_tool_calls ?? 0}
                 loading={overviewQuery.isLoading}
               />

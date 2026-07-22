@@ -210,7 +210,7 @@ export default function AiMemoriesPage() {
   ]
 
   return (
-    <Card title="Memory 管理">
+    <Card title="记忆管理">
       <Alert
         type="info"
         showIcon

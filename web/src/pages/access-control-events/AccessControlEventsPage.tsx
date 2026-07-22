@@ -127,7 +127,7 @@ export default function AccessControlEventsPage() {
         ),
     },
     {
-      title: 'RequestID',
+      title: '请求 ID',
       dataIndex: 'request_id',
       width: 110,
       render: (v: string) =>
@@ -199,7 +199,7 @@ export default function AccessControlEventsPage() {
           onSearch={(v) => setFilter({ policy_id: v || undefined })}
         />
         <Input.Search
-          placeholder="RequestID"
+          placeholder="请求 ID"
           allowClear
           style={{ width: 170 }}
           onSearch={(v) => setFilter({ request_id: v || undefined })}
@@ -254,7 +254,7 @@ export default function AccessControlEventsPage() {
             <Descriptions.Item label="事件ID" span={2}>
               <Typography.Text code>{evt.id}</Typography.Text>
             </Descriptions.Item>
-            <Descriptions.Item label="RequestID" span={2}>
+            <Descriptions.Item label="请求 ID" span={2}>
               <Typography.Text code>{evt.request_id || '-'}</Typography.Text>
             </Descriptions.Item>
             <Descriptions.Item label="发生时间">{formatDateTime(evt.occurred_at)}</Descriptions.Item>

@@ -228,7 +228,7 @@ export default function PolicyRecommendationPage() {
       </Card>
 
       {canWhatIf && (
-        <Card title="What-If 策略模拟">
+        <Card title="情景策略模拟">
           <Typography.Paragraph type="secondary">
             输入规则 ID，模拟启用/调整该规则对历史请求的影响。模拟基于历史数据估算，仅供参考。
           </Typography.Paragraph>
@@ -261,12 +261,12 @@ export default function PolicyRecommendationPage() {
       )}
 
       {canViewDrafts && (
-        <Card title="AI 草稿">
+        <Card title="智能草稿">
           <Alert
             type="warning"
             showIcon
             style={{ marginBottom: 16 }}
-            message="AI 草稿不会自动生效，需经人工审核后进入既有校验发布流程"
+            message="智能草稿不会自动生效，需经人工审核后进入既有校验发布流程"
           />
           <Space style={{ marginBottom: 16 }} wrap>
             <Select

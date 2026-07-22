@@ -63,10 +63,11 @@ func CheckIdentitySignals(ctx *dsctx.RequestContext, p *parser.Parsed) {
 	if v, ok := p.Headers["authorization"]; ok && v == "[redacted]" {
 		ctx.AuthenticationType = "bearer_or_basic"
 		ctx.TokenFingerprint = "present"
+		// 信息性记录：不得抬高 FinalAction（决策引擎忽略 INFO）
 		ctx.AddMatch(dsctx.DetectorMatch{
 			Detector: "identity",
 			RuleID:   "identity.token_present",
-			Category: "OBSERVE",
+			Category: "INFO",
 			Severity: "INFO",
 			Message:  "credential header present (redacted)",
 			Evidence: map[string]string{"header": "authorization"},

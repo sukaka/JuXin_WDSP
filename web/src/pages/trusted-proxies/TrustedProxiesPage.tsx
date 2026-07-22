@@ -187,13 +187,13 @@ function TrustedProxyPanel() {
   const columns: ColumnsType<TrustedProxyItem> = [
     { title: '名称', dataIndex: 'name', width: 160, ellipsis: true },
     {
-      title: 'CIDR',
+      title: '网段（CIDR）',
       dataIndex: 'cidr',
       width: 150,
       render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
     },
     {
-      title: 'IP版本',
+      title: 'IP 版本',
       dataIndex: 'ip_version',
       width: 80,
       render: (v: string) => <StatusTag value={v} map={IP_VERSION_META} />,
@@ -278,7 +278,7 @@ function TrustedProxyPanel() {
     <>
       <Space style={{ marginBottom: 16 }} wrap>
         <Input.Search
-          placeholder="名称 / CIDR"
+          placeholder="名称 / 网段"
           allowClear
           style={{ width: 200 }}
           onSearch={(v) => {
@@ -415,7 +415,7 @@ function TrustedProxyPanel() {
                     },
                   ]}
                 >
-                  <Input placeholder="如 X-Client-IP" autoComplete="off" />
+                  <Input placeholder="如自定义客户端 IP 头名称" autoComplete="off" />
                 </Form.Item>
               )
             }
@@ -473,7 +473,7 @@ function TrustedProxyPanel() {
             name="cidr"
             label="待测 CIDR"
             rules={[
-              { required: true, message: '请输入待测 CIDR' },
+              { required: true, message: '请输入待测网段' },
               {
                 validator: (_, v: string) => {
                   const err = validateIPOrCIDR(v ?? '')

@@ -99,7 +99,7 @@ describe('展示元数据完整性', () => {
 
   it('访问控制事件类型覆盖后端全部 11 种', () => {
     expect(Object.keys(AC_EVENT_TYPE_META)).toHaveLength(11)
-    expect(AC_EVENT_TYPE_META.CC_THRESHOLD_EXCEEDED.label).toBe('CC超阈值')
+    expect(AC_EVENT_TYPE_META.CC_THRESHOLD_EXCEEDED.label).toBe('频率超阈值')
     expect(AC_EVENT_TYPE_META.IP_ALLOW_MATCH.label).toBe('命中白名单')
   })
 

@@ -95,7 +95,7 @@ function TestResultView({ result }: { result: UpstreamTestResult }) {
         style={{ marginBottom: 16 }}
       />
       <Descriptions column={2} size="small" bordered>
-        <Descriptions.Item label="DNS 解析">
+        <Descriptions.Item label="域名解析">
           {result.dns_result === 'ok' ? (
             <Tag color="green">成功</Tag>
           ) : result.dns_result === 'failed' ? (
@@ -109,13 +109,13 @@ function TestResultView({ result }: { result: UpstreamTestResult }) {
             ? result.resolved_addresses.join(', ')
             : '-'}
         </Descriptions.Item>
-        <Descriptions.Item label="TCP 连接">
+        <Descriptions.Item label="网络连接">
           {stepTag(result.tcp_connected, '已连接', '连接失败')}
         </Descriptions.Item>
-        <Descriptions.Item label="TLS 握手">
+        <Descriptions.Item label="加密握手">
           {result.tls_handshake ? <Tag color="green">成功</Tag> : <Tag>未执行/失败</Tag>}
         </Descriptions.Item>
-        <Descriptions.Item label="TLS 证书校验">
+        <Descriptions.Item label="证书校验">
           {result.tls_verify_result === 'ok' ? (
             <Tag color="green">通过</Tag>
           ) : (
@@ -473,7 +473,7 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
 
           {scheme === 'https' && (
             <Space size="middle" wrap style={{ display: 'flex' }}>
-              <Form.Item name="tls_server_name" label="TLS SNI" style={{ width: 240 }}>
+              <Form.Item name="tls_server_name" label="加密域名（SNI）" style={{ width: 240 }}>
                 <Input placeholder="留空则使用主机地址" />
               </Form.Item>
               <Form.Item name="tls_verify" valuePropName="checked" label=" ">

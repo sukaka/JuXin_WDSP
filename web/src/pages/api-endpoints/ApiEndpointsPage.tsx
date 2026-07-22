@@ -48,9 +48,16 @@ export default function ApiEndpointsPage() {
       title: '状态',
       dataIndex: 'status',
       width: 120,
-      render: (v: string) => (
-        <Tag color={v === 'CONFIRMED' ? 'green' : 'blue'}>{v}</Tag>
-      ),
+      render: (v: string) => {
+        const meta: Record<string, { color: string; label: string }> = {
+          CONFIRMED: { color: 'green', label: '已确认' },
+          DISCOVERED: { color: 'blue', label: '已发现' },
+          CANDIDATE: { color: 'blue', label: '候选' },
+          LEARNING: { color: 'processing', label: '学习中' },
+        }
+        const m = meta[v]
+        return <Tag color={m?.color ?? 'default'}>{m?.label ?? v}</Tag>
+      },
     },
     { title: '命中', dataIndex: 'hit_count', width: 80 },
     {
@@ -68,9 +75,9 @@ export default function ApiEndpointsPage() {
   ]
 
   return (
-    <Card title="API 端点资产">
+    <Card title="接口端点资产">
       <Typography.Paragraph type="secondary">
-        路径自动归一化（如 /users/123 → /users/&#123;id&#125;）。确认后进入正式资产；学习模型见「API
+        路径自动归一化（如 /users/123 → /users/&#123;id&#125;）。确认后进入正式资产；学习模型见「接口
         模型版本」。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error} />

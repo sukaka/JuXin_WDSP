@@ -50,6 +50,10 @@ func Decide(ctx *dsctx.RequestContext, in Input) dsctx.FinalAction {
 	for _, m := range matches {
 		cat := strings.ToUpper(m.Category)
 		sev := strings.ToUpper(m.Severity)
+		// 纯信息性明细（如凭据存在）不参与动作决策
+		if cat == "INFO" || sev == "INFO" {
+			continue
+		}
 		switch {
 		case cat == "TEMP_BLOCK" || strings.EqualFold(m.Detector, "temp_block"):
 			hasTempBlock = true
@@ -58,6 +62,8 @@ func Decide(ctx *dsctx.RequestContext, in Input) dsctx.FinalAction {
 		case cat == "BLOCK" || sev == "CRITICAL" || sev == "HIGH" || m.ScoreDelta >= 50:
 			if strings.EqualFold(m.Detector, "waf") || strings.EqualFold(m.Detector, "api_schema") ||
 				strings.EqualFold(m.Detector, "access_control") || cat == "BLOCK" {
+				hasBlock = true
+			} else if m.ScoreDelta >= 50 {
 				hasBlock = true
 			}
 		case cat == "OBSERVE" || sev == "MEDIUM" || sev == "LOW" || m.ScoreDelta > 0:

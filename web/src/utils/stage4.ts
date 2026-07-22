@@ -41,9 +41,9 @@ export const EVENT_ACTION_META: Record<string, { color: string; label: string }>
 
 /** 自定义规则动作：LOG 蓝 / OBSERVE 橙 / BLOCK 红 */
 export const CUSTOM_RULE_ACTION_META: Record<string, { color: string; label: string }> = {
-  LOG: { color: 'blue', label: 'LOG 记录' },
-  OBSERVE: { color: 'orange', label: 'OBSERVE 观察' },
-  BLOCK: { color: 'red', label: 'BLOCK 阻断' },
+  LOG: { color: 'blue', label: '仅记录' },
+  OBSERVE: { color: 'orange', label: '观察' },
+  BLOCK: { color: 'red', label: '阻断' },
 }
 
 /** 事件处置状态 */
@@ -93,7 +93,7 @@ export const RULE_DEFAULT_STATE_META: Record<string, { color: string; label: str
 
 /** 规则来源 */
 export const RULE_SOURCE_META: Record<string, { color: string; label: string }> = {
-  OWASP_CRS: { color: 'blue', label: 'OWASP CRS' },
+  OWASP_CRS: { color: 'blue', label: 'OWASP 核心规则集' },
   CUSTOM: { color: 'purple', label: '自定义' },
 }
 

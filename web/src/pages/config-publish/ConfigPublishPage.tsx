@@ -28,6 +28,7 @@ import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatJson } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import {
+  PROTECTION_MODE_META,
   PUBLISH_RESULT_META,
   TASK_STATUS_META,
   isTerminalTaskStatus,
@@ -48,7 +49,12 @@ export function SnapshotTable({ snapshot }: { snapshot: BusinessSnapshot | null 
       dataSource={snapshot.apps}
       columns={[
         { title: '应用编码', dataIndex: 'code' },
-        { title: '防护模式', dataIndex: 'mode', width: 110, render: (v: string) => <Tag>{v}</Tag> },
+        {
+          title: '防护模式',
+          dataIndex: 'mode',
+          width: 110,
+          render: (v: string) => <StatusTag value={v} map={PROTECTION_MODE_META} />,
+        },
         { title: '域名数', dataIndex: 'domains', width: 90, align: 'right' },
         { title: '源站数', dataIndex: 'upstreams', width: 90, align: 'right' },
       ]}
@@ -330,8 +336,8 @@ export default function ConfigPublishPage() {
                   {truncateHash(preview.configuration_hash)}
                 </Typography.Text>
               </Descriptions.Item>
-              <Descriptions.Item label="Server 数">{preview.server_count}</Descriptions.Item>
-              <Descriptions.Item label="Route 数">{preview.route_count}</Descriptions.Item>
+              <Descriptions.Item label="站点数量">{preview.server_count}</Descriptions.Item>
+              <Descriptions.Item label="路由数量">{preview.route_count}</Descriptions.Item>
             </Descriptions>
             <div>
               <Typography.Title level={5}>业务摘要</Typography.Title>

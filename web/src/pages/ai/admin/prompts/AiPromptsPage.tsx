@@ -44,7 +44,7 @@ interface VersionFormValues {
   change_summary?: string
 }
 
-/** Prompt 版本管理抽屉：版本列表 + 查看/测试/发布/回滚 + 新建版本 */
+/** 提示词版本管理抽屉：版本列表 + 查看/测试/发布/回滚 + 新建版本 */
 function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => void }) {
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
@@ -291,9 +291,9 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
           <Form.Item
             name="content"
             label="版本内容"
-            rules={[{ required: true, message: '请输入 Prompt 内容' }]}
+            rules={[{ required: true, message: '请输入提示词内容' }]}
           >
-            <Input.TextArea rows={8} placeholder="Prompt 内容" />
+            <Input.TextArea rows={8} placeholder="提示词内容" />
           </Form.Item>
           <Form.Item
             name="change_summary"
@@ -358,7 +358,7 @@ export default function AiPromptsPage() {
         change_summary: values.change_summary || undefined,
       }),
     onSuccess: () => {
-      message.success('Prompt 已创建')
+      message.success('提示词已创建')
       setCreateOpen(false)
       form.resetFields()
       void queryClient.invalidateQueries({ queryKey: ['ai-prompts'] })
@@ -416,10 +416,10 @@ export default function AiPromptsPage() {
   ]
 
   return (
-    <Card title="Prompt 管理">
+    <Card title="提示词管理">
       <Space style={{ marginBottom: 16 }} wrap>
         <Select
-          placeholder="Prompt 类型"
+          placeholder="提示词类型"
           allowClear
           style={{ width: 160 }}
           options={PROMPT_TYPE_OPTIONS}
@@ -427,13 +427,13 @@ export default function AiPromptsPage() {
         />
         {canCreate && (
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-            新建 Prompt
+            新建提示词
           </Button>
         )}
       </Space>
 
       {listQuery.isError ? (
-        <QueryErrorAlert error={listQuery.error} message="加载 Prompt 列表失败" />
+        <QueryErrorAlert error={listQuery.error} message="加载提示词列表失败" />
       ) : (
         <Table<AiPrompt>
           rowKey="id"
@@ -446,7 +446,7 @@ export default function AiPromptsPage() {
       )}
 
       <Modal
-        title="新建 Prompt"
+        title="新建提示词"
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         onOk={() => form.submit()}
@@ -489,9 +489,9 @@ export default function AiPromptsPage() {
           <Form.Item
             name="content"
             label="初始版本内容"
-            rules={[{ required: true, message: '请输入 Prompt 内容' }]}
+            rules={[{ required: true, message: '请输入提示词内容' }]}
           >
-            <Input.TextArea rows={8} placeholder="Prompt 内容" />
+            <Input.TextArea rows={8} placeholder="提示词内容" />
           </Form.Item>
           <Form.Item
             name="change_summary"

@@ -283,7 +283,7 @@ export default function AuditsPage() {
               {detail.failure_reason && (
                 <Descriptions.Item label="失败原因" span={2}>{detail.failure_reason}</Descriptions.Item>
               )}
-              <Descriptions.Item label="Request ID" span={2}>
+              <Descriptions.Item label="请求 ID" span={2}>
                 <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }} copyable={detail.request_id ? { text: detail.request_id } : false}>
                   {detail.request_id || '-'}
                 </Typography.Text>

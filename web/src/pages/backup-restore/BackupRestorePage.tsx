@@ -533,7 +533,7 @@ function RestorePanel() {
                 <>
                   <div>备份类型：{BACKUP_TYPE_META[preview.backup_type]?.label ?? preview.backup_type}｜备份时间：{formatDateTime(preview.backup_time)}</div>
                   <div>
-                    Schema 版本：备份 v{preview.schema_version ?? '-'} / 当前 v{preview.current_schema_version ?? '-'}
+                    结构版本：备份 v{preview.schema_version ?? '-'} / 当前 v{preview.current_schema_version ?? '-'}
                   </div>
                   {preview.note && <div>说明：{preview.note}</div>}
                 </>

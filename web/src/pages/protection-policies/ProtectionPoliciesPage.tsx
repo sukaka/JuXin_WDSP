@@ -45,9 +45,9 @@ type PolicyFormValues = Omit<CreateProtectionPolicyBody, 'code'> & { code?: stri
 const CODE_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/
 
 const MODE_OPTIONS = [
-  { value: 'OFF', label: 'OFF 关闭' },
-  { value: 'OBSERVE', label: 'OBSERVE 观察' },
-  { value: 'PROTECT', label: 'PROTECT 防护' },
+  { value: 'OFF', label: '关闭' },
+  { value: 'OBSERVE', label: '观察' },
+  { value: 'PROTECT', label: '防护' },
 ]
 
 const PL_OPTIONS = [1, 2, 3, 4].map((n) => ({ value: n, label: `PL${n}` }))

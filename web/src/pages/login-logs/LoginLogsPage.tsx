@@ -97,7 +97,7 @@ export default function LoginLogsPage() {
       render: (v?: string | null) => (v ? (FAILURE_CODE_LABELS[v] ?? v) : '-'),
     },
     {
-      title: 'Request ID',
+      title: '请求 ID',
       dataIndex: 'request_id',
       render: (v?: string | null) =>
         v ? (

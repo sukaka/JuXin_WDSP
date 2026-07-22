@@ -357,7 +357,7 @@ export default function RateLimitPage() {
 
   return (
     <Card
-      title="CC防护"
+      title="频率与 CC 防护"
       extra={
         <Space>
           {canPublish && (
@@ -523,7 +523,7 @@ export default function RateLimitPage() {
                 <Form.Item
                   name="application_id"
                   label="目标应用"
-                  rules={[{ required: true, message: 'APPLICATION/URI 范围必须选择应用' }]}
+                  rules={[{ required: true, message: '应用/路径范围必须选择应用' }]}
                 >
                   <Select
                     showSearch
@@ -539,7 +539,7 @@ export default function RateLimitPage() {
               )
             }
           </Form.Item>
-          <Form.Item name="uri_match_type" label="URI 匹配方式" rules={[{ required: true }]}>
+          <Form.Item name="uri_match_type" label="路径匹配方式" rules={[{ required: true }]}>
             <Select options={optionsOf(RATE_LIMIT_URI_MATCH_META)} />
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.uri_match_type !== cur.uri_match_type}>
@@ -558,9 +558,9 @@ export default function RateLimitPage() {
                   )}
                   <Form.Item
                     name="uri_pattern"
-                    label="URI 匹配模式"
+                    label="路径匹配模式"
                     rules={[
-                      { required: true, message: '请填写 URI 匹配模式' },
+                      { required: true, message: '请填写路径匹配模式' },
                       { max: 256, message: '不超过 256 个字符' },
                       ...(mt === 'EXACT' || mt === 'PREFIX'
                         ? [{ pattern: /^\//, message: '必须以 / 开头' }]
@@ -625,7 +625,7 @@ export default function RateLimitPage() {
                 <Form.Item
                   name="block_duration_seconds"
                   label="临时封禁时长（秒）"
-                  rules={[{ required: true, message: 'TEMP_BLOCK 必须设置封禁时长' }]}
+                  rules={[{ required: true, message: '临时封禁必须设置封禁时长' }]}
                   extra="最短 60 秒，最长 30 天（2592000 秒）；超阈值客户端将被临时封禁"
                 >
                   <InputNumber min={60} max={2592000} style={{ width: '100%' }} />

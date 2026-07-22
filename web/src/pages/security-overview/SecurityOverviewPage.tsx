@@ -11,7 +11,7 @@ import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import { ATTACK_TYPE_META, DISPOSITION_STATUS_META, EVENT_SEVERITY_META } from '../../utils/stage4'
-import { COMPONENT_NAME_META, TREND_RANGE_OPTIONS } from '../../utils/stage6'
+import { COMPONENT_NAME_META, COMPONENT_STATUS_META, TREND_RANGE_OPTIONS } from '../../utils/stage6'
 import type { KeyValue } from '../../types'
 
 /** KV 排行小表 */
@@ -208,7 +208,7 @@ export default function SecurityOverviewPage() {
                     },
                     {
                       key: 'uris',
-                      label: 'URI',
+                      label: '请求路径',
                       children: (
                         <Table
                           size="small"
@@ -217,7 +217,7 @@ export default function SecurityOverviewPage() {
                           dataSource={top?.uris ?? []}
                           locale={{ emptyText: '暂无数据' }}
                           columns={[
-                            { title: 'URI', dataIndex: 'path', ellipsis: true },
+                            { title: '请求路径', dataIndex: 'path', ellipsis: true },
                             { title: '事件数', dataIndex: 'events', width: 90, align: 'right' },
                             { title: '阻断数', dataIndex: 'blocks', width: 90, align: 'right' },
                           ]}
@@ -268,7 +268,7 @@ export default function SecurityOverviewPage() {
                           <Typography.Text strong>
                             {COMPONENT_NAME_META[g.component] ?? g.component}
                           </Typography.Text>
-                          <Tag>{g.status}</Tag>
+                          <StatusTag value={g.status} map={COMPONENT_STATUS_META} />
                         </Space>
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                           {g.message || '-'}｜{formatDateTime(g.taken_at)}

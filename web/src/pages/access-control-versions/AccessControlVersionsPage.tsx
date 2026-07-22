@@ -9,10 +9,10 @@ import {
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 
-const RESULT_COLOR: Record<string, string> = {
-  SUCCESS: 'success',
-  FAILED: 'error',
-  PENDING: 'processing',
+const PUBLISH_RESULT_META: Record<string, { color: string; label: string }> = {
+  SUCCESS: { color: 'success', label: '成功' },
+  FAILED: { color: 'error', label: '失败' },
+  PENDING: { color: 'processing', label: '进行中' },
 }
 
 /** 访问控制配置版本：列表 / 差异 / 回滚 */
@@ -67,7 +67,10 @@ export default function AccessControlVersionsPage() {
       title: '结果',
       dataIndex: 'publish_result',
       width: 100,
-      render: (v: string) => <Tag color={RESULT_COLOR[v] ?? 'default'}>{v}</Tag>,
+      render: (v: string) => {
+        const m = PUBLISH_RESULT_META[v]
+        return <Tag color={m?.color ?? 'default'}>{m?.label ?? v}</Tag>
+      },
     },
     { title: '变更摘要', dataIndex: 'change_summary', ellipsis: true },
     {

@@ -87,7 +87,7 @@ export default function SecurityEventsPage() {
     { title: '域名', dataIndex: 'domain', width: 170, ellipsis: true },
     { title: '方法', dataIndex: 'request_method', width: 70 },
     {
-      title: 'URI',
+      title: '请求路径',
       dataIndex: 'request_uri',
       width: 260,
       ellipsis: true,
@@ -175,7 +175,7 @@ export default function SecurityEventsPage() {
           onSearch={(v) => setFilter({ client_ip: v || undefined })}
         />
         <Input.Search
-          placeholder="URI"
+          placeholder="请求路径"
           allowClear
           style={{ width: 150 }}
           onSearch={(v) => setFilter({ uri: v || undefined })}
@@ -226,7 +226,7 @@ export default function SecurityEventsPage() {
           onChange={(v) => setFilter({ disposition_status: v })}
         />
         <Input.Search
-          placeholder="Request ID"
+          placeholder="请求 ID"
           allowClear
           style={{ width: 220 }}
           onSearch={(v) => setFilter({ request_id: v || undefined })}

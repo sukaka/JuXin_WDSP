@@ -155,7 +155,7 @@ export default function AiEvaluationsPage() {
         }
       >
         <Typography.Paragraph type="secondary">
-          模型、Prompt、Agent 或 Tool 变更后应运行回归评估；高风险集未通过不得发布到生产。
+          模型、提示词、智能体或工具变更后应运行回归评估；高风险集未通过不得发布到生产。
         </Typography.Paragraph>
         {setsQuery.isError ? (
           <QueryErrorAlert error={setsQuery.error} message="加载评估集失败" />

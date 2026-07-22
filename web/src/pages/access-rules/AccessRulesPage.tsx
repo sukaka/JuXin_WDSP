@@ -443,7 +443,7 @@ export default function AccessRulesPage() {
 
   return (
     <Card
-      title="IP黑白名单"
+      title="IP 黑白名单"
       extra={
         <Space>
           {canPublish && (
@@ -800,7 +800,7 @@ export default function AccessRulesPage() {
             <Form.Item name="format" label="格式" style={{ width: '24%', marginRight: 8 }} rules={[{ required: true }]}>
               <Select
                 options={[
-                  { value: 'csv', label: 'CSV（含表头）' },
+                  { value: 'csv', label: '表格文件（含表头）' },
                   { value: 'text', label: '纯文本（每行一个地址）' },
                 ]}
               />
@@ -931,7 +931,16 @@ export default function AccessRulesPage() {
                       title: '错误码',
                       dataIndex: 'code',
                       width: 130,
-                      render: (v: string) => <Tag color={v === 'PROTECTED' ? 'red' : 'orange'}>{v}</Tag>,
+                      render: (v: string) => {
+                        const meta: Record<string, { color: string; label: string }> = {
+                          PROTECTED: { color: 'red', label: '受保护地址' },
+                          INVALID: { color: 'orange', label: '格式非法' },
+                          DUPLICATE: { color: 'orange', label: '重复' },
+                          CONFLICT: { color: 'orange', label: '冲突' },
+                        }
+                        const m = meta[v]
+                        return <Tag color={m?.color ?? 'orange'}>{m?.label ?? v}</Tag>
+                      },
                     },
                   ]}
                 />

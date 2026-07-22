@@ -14,11 +14,11 @@ import (
 
 // Handler API 端点管理。
 type Handler struct {
-	store *Store
+	store Repository
 }
 
 // NewHandler 创建。
-func NewHandler(store *Store) *Handler { return &Handler{store: store} }
+func NewHandler(store Repository) *Handler { return &Handler{store: store} }
 
 // List GET /api/v1/api-endpoints
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {

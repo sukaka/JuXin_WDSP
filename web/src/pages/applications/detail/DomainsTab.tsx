@@ -142,21 +142,21 @@ export default function DomainsTab({ appId }: { appId: string }) {
       render: (v: string) => (v === 'WILDCARD' ? <Tag color="purple">泛域名</Tag> : <Tag>精确</Tag>),
     },
     {
-      title: 'HTTP',
+      title: 'HTTP 监听',
       key: 'http',
       width: 110,
       render: (_, r) =>
         r.http_enabled ? <Tag color="green">:{r.http_port ?? 80}</Tag> : <Tag>关闭</Tag>,
     },
     {
-      title: 'HTTPS',
+      title: 'HTTPS 监听',
       key: 'https',
       width: 110,
       render: (_, r) =>
         r.https_enabled ? <Tag color="green">:{r.https_port ?? 443}</Tag> : <Tag>关闭</Tag>,
     },
     {
-      title: 'HTTP→HTTPS',
+      title: 'HTTP 跳转 HTTPS',
       dataIndex: 'redirect_http_to_https',
       width: 130,
       render: (v: boolean) => (v ? <Tag color="blue">跳转</Tag> : <Tag>不跳转</Tag>),
@@ -276,7 +276,7 @@ export default function DomainsTab({ appId }: { appId: string }) {
             <Checkbox>设为主域名</Checkbox>
           </Form.Item>
           <Space size="large" align="start">
-            <Form.Item name="http_enabled" valuePropName="checked" label="HTTP">
+            <Form.Item name="http_enabled" valuePropName="checked" label="启用 HTTP">
               <Checkbox>启用</Checkbox>
             </Form.Item>
             <Form.Item
@@ -292,7 +292,7 @@ export default function DomainsTab({ appId }: { appId: string }) {
             </Form.Item>
           </Space>
           <Space size="large" align="start">
-            <Form.Item name="https_enabled" valuePropName="checked" label="HTTPS">
+            <Form.Item name="https_enabled" valuePropName="checked" label="启用 HTTPS">
               <Checkbox>启用</Checkbox>
             </Form.Item>
             <Form.Item

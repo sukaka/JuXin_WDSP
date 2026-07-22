@@ -252,7 +252,7 @@ export default function EventDetailDrawer({
 
           <Typography.Title level={5}>请求信息</Typography.Title>
           <Descriptions column={2} size="small" bordered style={{ marginBottom: 16 }}>
-            <Descriptions.Item label="Request ID" span={2}>
+            <Descriptions.Item label="请求 ID" span={2}>
               <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }} copyable>
                 {evt.request_id}
               </Typography.Text>
@@ -270,12 +270,12 @@ export default function EventDetailDrawer({
                 {evt.query_summary || '-'}
               </Typography.Text>
             </Descriptions.Item>
-            <Descriptions.Item label="Content-Type">{evt.content_type || '-'}</Descriptions.Item>
+            <Descriptions.Item label="内容类型">{evt.content_type || '-'}</Descriptions.Item>
             <Descriptions.Item label="客户端端口">{evt.client_port || '-'}</Descriptions.Item>
-            <Descriptions.Item label="User-Agent" span={2}>
+            <Descriptions.Item label="用户代理" span={2}>
               {evt.user_agent_summary || '-'}
             </Descriptions.Item>
-            <Descriptions.Item label="Referer" span={2}>
+            <Descriptions.Item label="来源地址" span={2}>
               {evt.referer_summary || '-'}
             </Descriptions.Item>
           </Descriptions>

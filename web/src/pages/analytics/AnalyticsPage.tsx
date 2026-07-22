@@ -194,9 +194,9 @@ export default function AnalyticsPage() {
           },
           {
             key: 'waf',
-            label: 'WAF趋势',
+            label: '防护趋势',
             children: eventTrendQuery.isError ? (
-              <QueryErrorAlert error={eventTrendQuery.error} message="加载WAF趋势失败" />
+              <QueryErrorAlert error={eventTrendQuery.error} message="加载防护趋势失败" />
             ) : (
               <EChart option={eventTrendOption} height={360} />
             ),
@@ -221,14 +221,14 @@ export default function AnalyticsPage() {
           },
           {
             key: 'cc',
-            label: 'CC概览',
+            label: '频率防护概览',
             children: ccQuery.isError ? (
-              <QueryErrorAlert error={ccQuery.error} message="加载CC概览失败" />
+              <QueryErrorAlert error={ccQuery.error} message="加载频率防护概览失败" />
             ) : (
               <Space direction="vertical" size={16} style={{ display: 'flex' }}>
                 <Row gutter={16}>
                   <Col span={6}>
-                    <Card size="small"><Statistic title="CC触发次数" value={cc?.threshold_exceeded ?? 0} /></Card>
+                    <Card size="small"><Statistic title="频率触发次数" value={cc?.threshold_exceeded ?? 0} /></Card>
                   </Col>
                   <Col span={6}>
                     <Card size="small"><Statistic title="拒绝请求(429)" value={cc?.requests_rejected ?? 0} valueStyle={{ color: '#cf1322' }} /></Card>

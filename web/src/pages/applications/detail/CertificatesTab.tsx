@@ -36,7 +36,7 @@ export default function CertificatesTab({ appId }: { appId: string }) {
     { title: '证书名称', dataIndex: 'name', width: 180 },
     { title: '通用名称(CN)', dataIndex: 'common_name', width: 180 },
     {
-      title: 'SAN 域名',
+      title: '备用域名',
       dataIndex: 'san_domains',
       render: (sans: string[]) =>
         sans && sans.length > 0 ? (

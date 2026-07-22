@@ -2,9 +2,9 @@
 
 /** 可信代理头类型 */
 export const TRUSTED_PROXY_HEADER_TYPE_META: Record<string, { color: string; label: string }> = {
-  X_FORWARDED_FOR: { color: 'blue', label: 'X-Forwarded-For' },
-  X_REAL_IP: { color: 'geekblue', label: 'X-Real-IP' },
-  FORWARDED: { color: 'purple', label: 'Forwarded' },
+  X_FORWARDED_FOR: { color: 'blue', label: 'X-Forwarded-For 头' },
+  X_REAL_IP: { color: 'geekblue', label: 'X-Real-IP 头' },
+  FORWARDED: { color: 'purple', label: 'Forwarded 头' },
   CUSTOM: { color: 'orange', label: '自定义头' },
 }
 
@@ -79,14 +79,14 @@ export const ACCESS_RULE_SOURCE_META: Record<string, { color: string; label: str
 export const RATE_LIMIT_SCOPE_META: Record<string, { color: string; label: string }> = {
   GLOBAL: { color: 'purple', label: '全局' },
   APPLICATION: { color: 'blue', label: '指定应用' },
-  URI: { color: 'geekblue', label: '应用+URI' },
+  URI: { color: 'geekblue', label: '应用+路径' },
 }
 
 /** CC 策略统计维度 */
 export const RATE_LIMIT_DIMENSION_META: Record<string, { color: string; label: string }> = {
   CLIENT_IP: { color: 'blue', label: '客户端IP' },
   APPLICATION: { color: 'purple', label: '应用（共享计数）' },
-  CLIENT_IP_AND_URI: { color: 'geekblue', label: '客户端IP+URI' },
+  CLIENT_IP_AND_URI: { color: 'geekblue', label: '客户端 IP+路径' },
   CLIENT_IP_AND_APPLICATION: { color: 'cyan', label: '客户端IP+应用' },
 }
 
@@ -106,7 +106,7 @@ export const RATE_LIMIT_ACTION_META: Record<string, { color: string; label: stri
 
 /** CC 策略 URI 匹配方式 */
 export const RATE_LIMIT_URI_MATCH_META: Record<string, { color: string; label: string }> = {
-  ALL: { color: 'default', label: '全部URI' },
+  ALL: { color: 'default', label: '全部路径' },
   EXACT: { color: 'blue', label: '精确匹配' },
   PREFIX: { color: 'geekblue', label: '前缀匹配' },
   REGEX: { color: 'orange', label: '正则匹配' },
@@ -128,7 +128,7 @@ export const TEMP_BLOCK_STATUS_META: Record<string, { color: string; label: stri
 
 /** 临时封禁触发类型 */
 export const TEMP_BLOCK_TRIGGER_META: Record<string, { color: string; label: string }> = {
-  CC_AUTO: { color: 'red', label: 'CC自动触发' },
+  CC_AUTO: { color: 'red', label: '频率防护自动触发' },
   MANUAL: { color: 'blue', label: '人工添加' },
 }
 
@@ -143,11 +143,11 @@ export const TEMP_BLOCK_RELEASE_TYPE_META: Record<string, { color: string; label
 export const AC_EVENT_TYPE_META: Record<string, { color: string; label: string }> = {
   IP_ALLOW_MATCH: { color: 'green', label: '命中白名单' },
   IP_DENY_MATCH: { color: 'red', label: '命中黑名单' },
-  CC_THRESHOLD_EXCEEDED: { color: 'orange', label: 'CC超阈值' },
-  CC_REQUEST_REJECTED: { color: 'red', label: 'CC请求被拒绝' },
-  CC_TEMP_BLOCK_CREATED: { color: 'magenta', label: 'CC临时封禁创建' },
-  CC_TEMP_BLOCK_EXPIRED: { color: 'default', label: 'CC临时封禁到期' },
-  CC_TEMP_BLOCK_RELEASED: { color: 'green', label: 'CC临时封禁解除' },
+  CC_THRESHOLD_EXCEEDED: { color: 'orange', label: '频率超阈值' },
+  CC_REQUEST_REJECTED: { color: 'red', label: '频率请求被拒绝' },
+  CC_TEMP_BLOCK_CREATED: { color: 'magenta', label: '频率临时封禁创建' },
+  CC_TEMP_BLOCK_EXPIRED: { color: 'default', label: '频率临时封禁到期' },
+  CC_TEMP_BLOCK_RELEASED: { color: 'green', label: '频率临时封禁解除' },
   TRUSTED_PROXY_INVALID: { color: 'volcano', label: '可信代理无效' },
   FORWARDED_HEADER_INVALID: { color: 'volcano', label: '转发头无效' },
   FORWARDED_CHAIN_TOO_LONG: { color: 'orange', label: '转发链过长' },

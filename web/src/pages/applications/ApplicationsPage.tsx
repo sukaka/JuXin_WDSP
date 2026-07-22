@@ -275,14 +275,14 @@ export default function ApplicationsPage() {
   ]
 
   const modeOptions = [
-    { value: 'OFF', label: 'OFF 关闭' },
-    { value: 'OBSERVE', label: 'OBSERVE 观察' },
-    { value: 'PROTECT', label: 'PROTECT 防护' },
+    { value: 'OFF', label: '关闭' },
+    { value: 'OBSERVE', label: '观察' },
+    { value: 'PROTECT', label: '防护' },
   ]
 
   return (
     <Card
-      title="Web应用"
+      title="网站应用"
       extra={
         hasPermission(permissions, 'applications.create') && (
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>

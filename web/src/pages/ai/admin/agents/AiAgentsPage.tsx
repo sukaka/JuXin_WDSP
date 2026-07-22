@@ -47,7 +47,7 @@ export default function AiAgentsPage() {
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       patchAiAgent(id, { enabled }),
     onSuccess: (_data, vars) => {
-      message.success(vars.enabled ? 'Agent 已启用' : 'Agent 已停用')
+      message.success(vars.enabled ? '智能体已启用' : '智能体已停用')
       void invalidate()
     },
     onError,
@@ -59,7 +59,7 @@ export default function AiAgentsPage() {
         allowed_tool_ids: values.allowed_tool_ids ?? [],
       }),
     onSuccess: () => {
-      message.success('Agent 配置已更新')
+      message.success('智能体配置已更新')
       setConfigTarget(null)
       void invalidate()
     },
@@ -120,7 +120,7 @@ export default function AiAgentsPage() {
       render: (_, record) => (
         <Space>
           {record.code === 'dispatcher' ? (
-            <Tooltip title="总调度 Agent 为编排器内置能力，不可停用">
+            <Tooltip title="总调度智能体为编排器内置能力，不可停用">
               <Switch checked={record.status === 'ENABLED'} disabled />
             </Tooltip>
           ) : (
@@ -142,15 +142,15 @@ export default function AiAgentsPage() {
   ]
 
   return (
-    <Card title="Agent 管理">
+    <Card title="智能体管理">
       <Space direction="vertical" size={16} style={{ display: 'flex' }}>
         <Alert
           type="info"
           showIcon
-          message="Agent 启停实时生效；调度前编排器会二次校验 Agent 状态与 Tool 权限。"
+          message="智能体启停实时生效；调度前编排器会二次校验智能体状态与工具权限。"
         />
         {agentsQuery.isError ? (
-          <QueryErrorAlert error={agentsQuery.error} message="加载 Agent 列表失败" />
+          <QueryErrorAlert error={agentsQuery.error} message="加载智能体列表失败" />
         ) : (
           <Table<AiAgent>
             rowKey="id"
@@ -172,7 +172,7 @@ export default function AiAgentsPage() {
         destroyOnHidden
       >
         <Typography.Paragraph type="secondary">
-          配置该 Agent 允许调用的 Tool 集，留空表示按 Agent 默认配置。
+          配置该智能体允许调用的工具集，留空表示按智能体默认配置。
         </Typography.Paragraph>
         <Form<{ allowed_tool_ids: string[] }>
           form={configForm}
@@ -184,7 +184,7 @@ export default function AiAgentsPage() {
               mode="tags"
               options={toolOptions}
               loading={toolsQuery.isLoading}
-              placeholder="选择 Tool，留空表示按默认配置"
+              placeholder="选择工具，留空表示按默认配置"
             />
           </Form.Item>
         </Form>
