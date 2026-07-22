@@ -316,6 +316,14 @@
 
 ## 下一步
 
-产品线并行：WAF 维护与 WDSP（WAF+API 动态防护）见 [BRANCHING_AND_PRODUCT_LINES.md](BRANCHING_AND_PRODUCT_LINES.md)（`main`=WAF 可发版，`develop`/stage8=WDSP，edition 开关区分交付）。
+### WDSP / 阶段8（进行中）
 
-阶段7 收尾与阶段8 能力按任务书推进；可选增强：完整 RAG、策略版本快照、多租户 AI 计费、更深度的 What-If 回放与压测归档。
+- 分支：`develop` + `feature/stage8-*`（见 [BRANCHING_AND_PRODUCT_LINES.md](BRANCHING_AND_PRODUCT_LINES.md)）
+- 开工说明：[STAGE_8_WDSP_KICKOFF.md](tasks/STAGE_8_WDSP_KICKOFF.md)
+- 任务书：[STAGE_8_UNIFIED_WEB_API_DYNAMIC_PROTECTION.md](tasks/STAGE_8_UNIFIED_WEB_API_DYNAMIC_PROTECTION.md)
+- 已落地：`PRODUCT_EDITION` / `API_DYNAMIC_PROTECTION_ENABLED`；`gateway/dynamic_security/context.RequestContext` 骨架
+- 下一迭代：一次解析、检测器适配、API 能力关闭时 WAF 回归
+
+### 其他
+
+阶段7 收尾（模型/权限等）优先合 `main` 再同步 `develop`；可选增强：完整 RAG、策略版本快照、多租户 AI 计费、更深度的 What-If 回放与压测归档。

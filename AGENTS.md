@@ -66,6 +66,8 @@ Caddy 中间件顺序必须经过集成测试验证，不得凭经验随意调�
 - [开源合规](docs/OPEN_SOURCE_COMPLIANCE.md)
 - [开发状态](docs/DEVELOPMENT_STATUS.md)
 - [产品线与分支策略（WAF/WDSP）](docs/BRANCHING_AND_PRODUCT_LINES.md)
+- [阶段8/WDSP 开工说明](docs/tasks/STAGE_8_WDSP_KICKOFF.md)
+- [阶段8 任务书](docs/tasks/STAGE_8_UNIFIED_WEB_API_DYNAMIC_PROTECTION.md)
 
 ## 版权
 

@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/jiuzhang-waf/server/internal/product"
 )
 
 // Config 是管理后端完整配置。
@@ -19,6 +21,8 @@ type Config struct {
 	Gateway  GatewayConfig
 	WAF      WAFConfig
 	AI       AIConfig
+	// Product 产品 edition 与 WDSP/API 能力开关（阶段8）
+	Product product.Settings
 }
 
 // AIConfig 阶段7 AI 模块开关（关闭时 /api/v1/ai/* 返回不可用，不影响 WAF 核心）。
@@ -161,6 +165,7 @@ func Load() (*Config, error) {
 		AI: AIConfig{
 			Enabled: getEnvBool("AI_ENABLED", true),
 		},
+		Product: product.Load(),
 	}
 	if cfg.DB.Password == "" {
 		return nil, fmt.Errorf("POSTGRES_PASSWORD is required")
