@@ -29,6 +29,8 @@ import RateLimitPage from '../pages/rate-limit/RateLimitPage'
 import TemporaryBlocksPage from '../pages/temporary-blocks/TemporaryBlocksPage'
 import AccessControlEventsPage from '../pages/access-control-events/AccessControlEventsPage'
 import AccessControlVersionsPage from '../pages/access-control-versions/AccessControlVersionsPage'
+import ApiEndpointsPage from '../pages/api-endpoints/ApiEndpointsPage'
+import ApiModelsPage from '../pages/api-models/ApiModelsPage'
 import SecurityEventsPage from '../pages/security-events/SecurityEventsPage'
 import EventStatisticsPage from '../pages/event-statistics/EventStatisticsPage'
 import SecurityOverviewPage from '../pages/security-overview/SecurityOverviewPage'
@@ -238,6 +240,22 @@ export default function AppRoutes() {
               permission={['access_control_versions.read', 'access_control_versions.rollback']}
             >
               <AccessControlVersionsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="api-endpoints"
+          element={
+            <RequirePermission permission={['api_endpoints.read', 'api_endpoints.manage']}>
+              <ApiEndpointsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="api-models"
+          element={
+            <RequirePermission permission={['api_models.read', 'api_models.manage']}>
+              <ApiModelsPage />
             </RequirePermission>
           }
         />

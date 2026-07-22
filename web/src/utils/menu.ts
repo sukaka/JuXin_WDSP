@@ -79,6 +79,19 @@ export const MENU_ITEMS: MenuDef[] = [
     roles: ['SECURITY_ADMIN', 'AUDIT_ADMIN'],
     group: '访问控制',
   },
+  // 阶段8 / WDSP：API 动态防护（纯 WAF 角色菜单仍可见时依赖权限；建议 PRODUCT_EDITION=wdsp 使用）
+  {
+    key: '/api-endpoints',
+    label: 'API端点资产',
+    roles: ['SECURITY_ADMIN', 'AUDIT_ADMIN', 'SYSTEM_ADMIN'],
+    group: 'API防护',
+  },
+  {
+    key: '/api-models',
+    label: 'API模型版本',
+    roles: ['SECURITY_ADMIN', 'AUDIT_ADMIN'],
+    group: 'API防护',
+  },
   {
     key: '/security-events',
     label: '安全事件',

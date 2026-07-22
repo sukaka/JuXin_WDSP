@@ -167,6 +167,21 @@ func (c *RequestContext) MatchCount() int {
 	return len(c.Matches)
 }
 
+// CopyMatches 返回 Matches 副本（决策引擎与测试用）。
+func (c *RequestContext) CopyMatches() []DetectorMatch {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.Matches) == 0 {
+		return nil
+	}
+	out := make([]DetectorMatch, len(c.Matches))
+	copy(out, c.Matches)
+	return out
+}
+
 // SetFinalAction 仅决策引擎应调用。
 func (c *RequestContext) SetFinalAction(a FinalAction) {
 	if c == nil {

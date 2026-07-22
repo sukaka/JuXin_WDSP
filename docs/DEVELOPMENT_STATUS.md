@@ -316,14 +316,19 @@
 
 ## 下一步
 
-### WDSP / 阶段8（进行中）
+### WDSP / 阶段8（本仓库交付范围已完成）
 
 - 分支：`develop` + `feature/stage8-*`（见 [BRANCHING_AND_PRODUCT_LINES.md](BRANCHING_AND_PRODUCT_LINES.md)）
 - 开工说明：[STAGE_8_WDSP_KICKOFF.md](tasks/STAGE_8_WDSP_KICKOFF.md)
 - 任务书：[STAGE_8_UNIFIED_WEB_API_DYNAMIC_PROTECTION.md](tasks/STAGE_8_UNIFIED_WEB_API_DYNAMIC_PROTECTION.md)
-- 已落地：`PRODUCT_EDITION` / `API_DYNAMIC_PROTECTION_ENABLED`；`gateway/dynamic_security/context.RequestContext` 骨架
-- 下一迭代：一次解析、检测器适配、API 能力关闭时 WAF 回归
+- **已交付（验收口径）**：
+  - 统一管线：`gateway/dynamic_security`（parse 限流、normalize、classifier、detectors 只写 Matches、decision 唯一 finalize）
+  - API 发现/端点归一与管理面 list/discover/confirm；迁移 `000016`/`000017`
+  - 学习：候选 → 确认冻结；正式模型不可变；偏离不扩宽
+  - 统一主事件结构（多 detector 明细）；`PRODUCT_EDITION`/`API_DYNAMIC_PROTECTION_ENABLED`；API 关时管线 skip、遗留 WAF 匹配仍可用
+  - 前端：API 端点资产 / API 模型版本页与菜单
+- **诚实遗留（任务书超集，不挡本目标验收）**：完整图谱/拓扑 UI、OpenAPI 导入、BOLA/BFLA 全量规则库、阶段7 `api_*` AI Tools、真实 Caddy 全链路 e2e（环境受限时以单元/集成为准）
 
 ### 其他
 
-阶段7 收尾（模型/权限等）优先合 `main` 再同步 `develop`；可选增强：完整 RAG、策略版本快照、多租户 AI 计费、更深度的 What-If 回放与压测归档。
+阶段7 收尾优先合 `main` 再同步 `develop`；可选增强：完整 RAG、策略版本快照、多租户 AI 计费、更深度的 What-If 回放与压测归档。

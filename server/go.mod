@@ -5,6 +5,7 @@ go 1.25.6
 require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.2
+	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0-00010101000000-000000000000
 	github.com/jung-kurt/gofpdf/v2 v2.17.3
 	github.com/redis/go-redis/v9 v9.7.0
 	golang.org/x/crypto v0.36.0
@@ -20,3 +21,5 @@ require (
 	golang.org/x/sys v0.31.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
 )
+
+replace github.com/jiuzhang-waf/gateway/dynamic_security => ../gateway/dynamic_security

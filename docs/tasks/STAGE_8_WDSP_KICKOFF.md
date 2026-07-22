@@ -16,10 +16,10 @@
 - [x] 任务书入库  
 - [x] `PRODUCT_EDITION` / `API_DYNAMIC_PROTECTION_ENABLED` 配置骨架  
 - [x] `gateway/dynamic_security/context`：`RequestContext` 类型与最小化约束  
-- [ ] Wave A：一次解析 + 与 guard/Coraza 适配（下一迭代）  
-- [ ] Wave B：API 识别 / 端点资产 / 学习  
-- [ ] Wave C：统一决策与事件  
-- [ ] Wave D：阶段7 AI Tool 接入（依赖 Tool 底座稳定）  
+- [x] Wave A：parse/normalize/classifier/decision/pipeline；外部 WAF match 写入上下文；API 关 skip  
+- [x] Wave B：端点发现/确认 API + 迁移 + 前端页  
+- [x] Wave C：学习候选/冻结 + schema 偏离 + 主事件多明细  
+- [ ] Wave D：阶段7 AI Tool 接入（`api_*`，依赖 Tool 底座；列为遗留）  
 
 ---
 

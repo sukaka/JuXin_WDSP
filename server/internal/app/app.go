@@ -16,6 +16,9 @@ import (
 	"github.com/jiuzhang-waf/server/internal/accesscontrolversions"
 	"github.com/jiuzhang-waf/server/internal/accessrules"
 	"github.com/jiuzhang-waf/server/internal/aggregations"
+	"github.com/jiuzhang-waf/server/internal/apiassets"
+	"github.com/jiuzhang-waf/server/internal/apimodels"
+	"github.com/jiuzhang-waf/server/internal/apiruntime"
 	"github.com/jiuzhang-waf/server/internal/aiagents"
 	"github.com/jiuzhang-waf/server/internal/aiaudit"
 	"github.com/jiuzhang-waf/server/internal/aicost"
@@ -634,6 +637,31 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 	// 升级与交付检查（权限在各自 handler 路由层）
 	upgradeHandler.RegisterRoutes(mux, authz)
 	deliveryHandler.RegisterRoutes(mux, authz)
+
+	// ---- 阶段8 / WDSP：API 资产、模型版本、统一运行时事件 ----
+	apiEndpointStore := apiassets.NewStore(db)
+	apiEndpointHandler := apiassets.NewHandler(apiEndpointStore)
+	apiModelStore := apimodels.NewStore(db)
+	apiModelHandler := apimodels.NewHandler(apiModelStore)
+	apiEventStore := apiruntime.NewStore(db)
+	apiEventHandler := apiruntime.NewHandler(apiEventStore)
+	mux.Handle("GET /api/v1/api-endpoints", authz(middleware.RequirePermission("api_endpoints.read")(http.HandlerFunc(apiEndpointHandler.List))))
+	mux.Handle("GET /api/v1/api-endpoints/{id}", authz(middleware.RequirePermission("api_endpoints.read")(http.HandlerFunc(apiEndpointHandler.Get))))
+	mux.Handle("POST /api/v1/api-endpoints/discover", authz(middleware.RequirePermission("api_endpoints.manage")(http.HandlerFunc(apiEndpointHandler.Discover))))
+	mux.Handle("POST /api/v1/api-endpoints/{id}/confirm", authz(middleware.RequirePermission("api_endpoints.manage")(http.HandlerFunc(apiEndpointHandler.Confirm))))
+	mux.Handle("GET /api/v1/api-model-versions", authz(middleware.RequirePermission("api_models.read")(http.HandlerFunc(apiModelHandler.List))))
+	mux.Handle("POST /api/v1/api-model-versions", authz(middleware.RequirePermission("api_models.manage")(http.HandlerFunc(apiModelHandler.CreateCandidate))))
+	mux.Handle("POST /api/v1/api-model-versions/{id}/confirm", authz(middleware.RequirePermission("api_models.manage")(http.HandlerFunc(apiModelHandler.Confirm))))
+	mux.Handle("GET /api/v1/api-runtime-events", authz(middleware.RequirePermission("api_runtime_events.read")(http.HandlerFunc(apiEventHandler.List))))
+	// 产品 edition 探测（已登录可读，供前端 WDSP 菜单）
+	mux.Handle("GET /api/v1/product/edition", authz(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response.JSON(w, r, http.StatusOK, map[string]interface{}{
+			"edition":                     string(cfg.Product.Edition),
+			"api_dynamic_protection":      cfg.Product.APIDynamicProtection,
+			"max_body_parse_bytes":        cfg.Product.MaxBodyParseBytes,
+			"max_body_sample_bytes":       cfg.Product.MaxBodySampleBytes,
+		})
+	})))
 
 	// ---- 阶段7：AI 安全运营（可独立启停，关闭不影响 WAF 核心）----
 	if cfg.AI.Enabled {
