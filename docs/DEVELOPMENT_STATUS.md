@@ -331,8 +331,9 @@
   - 接口：`/api/v1/api-security/*` 43 条（端点/学习/模型生命周期/参数/分类/图谱/规范/风险/运行时/策略），全量权限校验 + 操作审计，openapi.yaml 收录
   - 模型生命周期：CANDIDATE→IN_REVIEW→FORMAL/REJECTED/SUPERSEDED/ARCHIVED，版本号自增、diff、activate、FORMAL 不可变；冻结模型经发布通道下发网关
   - 策略接口：模式 OFF/OBSERVE/PROTECT（settings 表覆盖优先于 env）+ 同步发布到网关
+  - AI 工具（48 章）：10 个 `api_*` 工具全部 READ_ONLY（AI 不得确认/发布/修改），仅 WDSP 形态注册并同步 `ai_tools` 表
   - 前端：12 个阶段8 页面（端点/模型/学习中心/参数/分类/敏感数据/规范/图谱/拓扑/风险/影子僵尸/策略），产品形态 + 权限双层门控，全部符合前端风格指南
-  - 真实环境全链路验证：`test/waf/scripts/stage8-gateway-tests.sh` 15/15 通过（compose stage5+wdsp 覆盖）
+  - 测试：`make stage8-test-*` 全量命令；接口集成 9/9、全链路 15/15、回放 10/10、安全 11/11、性能 5/5、纯 WAF 回归 40/40，详见 [STAGE8_TEST_REPORT.md](STAGE8_TEST_REPORT.md)
 - **诚实遗留（任务书超集部分）**：
   - 学习自动化：样本达阈值自动生成候选模型未实现（候选靠手工/接口创建）；参数统计画像（字符串/数值/条件关系）仅有表结构
   - 响应侧解析与 MASK_RESPONSE 未实现（响应字段存在但无写入点）
