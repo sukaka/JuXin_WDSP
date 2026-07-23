@@ -46,6 +46,16 @@ func TestLoadAPIOverride(t *testing.T) {
 	}
 }
 
+func TestLoadInvalidAPIOverrideFailsClosed(t *testing.T) {
+	t.Setenv("PRODUCT_EDITION", "wdsp")
+	t.Setenv("API_DYNAMIC_PROTECTION_ENABLED", "tru")
+
+	s := Load()
+	if s.APIDynamicProtection {
+		t.Fatal("invalid explicit API dynamic protection value must fail closed")
+	}
+}
+
 func TestAPIDynamicProtectionEnabledRequiresWDSPAndFlag(t *testing.T) {
 	tests := []struct {
 		name string
