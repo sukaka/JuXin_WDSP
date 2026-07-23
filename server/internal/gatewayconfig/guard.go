@@ -71,6 +71,12 @@ type GuardConfig struct {
 	FailOpen           bool                      `json:"fail_open"`
 	EventsLog          string                    `json:"events_log"`
 	GatewayNode        string                    `json:"gateway_node"`
+	// 阶段8 / WDSP：API 动态防护（默认关闭，关闭时下发 JSON 与纯 WAF 完全一致）
+	APIDynamicProtection bool   `json:"api_dynamic_protection,omitempty"`
+	APIProtectionMode    string `json:"api_protection_mode,omitempty"` // OFF | OBSERVE | PROTECT
+	APIEventsLog         string `json:"api_events_log,omitempty"`
+	// APIFormalSchemas 冻结正式模型（endpoint_key → 字段名 → 期望类型），经发布通道下发网关
+	APIFormalSchemas map[string]map[string]string `json:"api_formal_schemas,omitempty"`
 }
 
 // buildGuardHandler 构建单应用路由的 jiuzhang_guard 处理器 JSON。
@@ -116,6 +122,19 @@ func buildGuardHandler(g *GuardConfig, app AppData) mapT {
 	h["rate_limits"] = policies
 	if g.Valkey != nil {
 		h["valkey"] = g.Valkey
+	}
+	// 阶段8：仅在 WDSP 开启时注入 API 动态防护配置（关闭时 JSON 与纯 WAF 一致）
+	if g.APIDynamicProtection {
+		h["api_dynamic_protection"] = true
+		if g.APIProtectionMode != "" {
+			h["api_protection_mode"] = g.APIProtectionMode
+		}
+		if g.APIEventsLog != "" {
+			h["api_events_log"] = g.APIEventsLog
+		}
+		if len(g.APIFormalSchemas) > 0 {
+			h["api_formal_schemas"] = g.APIFormalSchemas
+		}
 	}
 	return h
 }

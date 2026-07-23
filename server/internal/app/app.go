@@ -188,7 +188,15 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 				EventsLog:      cfg.WAF.GuardEventsLogGateway,
 				GatewayNode:    cfg.WAF.GatewayNodeName,
 				FailOpen:       cfg.WAF.GuardFailOpen,
+				// 阶段8 / WDSP：关闭时下发 JSON 与纯 WAF 完全一致
+				APIDynamicProtection: cfg.Product.APIDynamicProtectionEnabled(),
+				APIProtectionMode:    cfg.Product.EffectiveAPIProtectionMode(),
+				APIEventsLog:         cfg.WAF.APIEventsLogGateway,
 			})
+		// 阶段8：冻结正式模型随发布下发网关（WDSP 开启时）
+		if cfg.Product.APIDynamicProtectionEnabled() {
+			guardProvider.SetAPIModels(apimodels.NewStore(db))
+		}
 		publisher.SetGuardProvider(guardProvider)
 		publisher.SetCustomRulesProvider(customRuleStore)
 		publisher.SetRuleOverridesProvider(ruleOverrideStore)

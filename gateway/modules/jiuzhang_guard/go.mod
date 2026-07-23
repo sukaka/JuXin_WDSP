@@ -4,9 +4,12 @@ go 1.25.6
 
 require (
 	github.com/caddyserver/caddy/v2 v2.11.4
+	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0
 	github.com/valkey-io/valkey-go v1.0.76
 	go.uber.org/zap v1.28.0
 )
+
+replace github.com/jiuzhang-waf/gateway/dynamic_security => ../../dynamic_security
 
 require (
 	cel.dev/expr v0.25.1 // indirect

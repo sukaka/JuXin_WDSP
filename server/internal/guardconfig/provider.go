@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/accesscontrolversions"
 	"github.com/jiuzhang-waf/server/internal/accessrules"
+	"github.com/jiuzhang-waf/server/internal/apimodels"
 	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
 	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
 	"github.com/jiuzhang-waf/server/internal/ratelimitpolicies"
@@ -28,6 +29,7 @@ type Provider struct {
 	rules     *accessrules.Store
 	policies  *ratelimitpolicies.Store
 	versions  *accesscontrolversions.Store
+	apiModels *apimodels.Store // 阶段8：冻结模型下发（nil 时跳过）
 
 	valkeyAddr     string
 	valkeyPassword string
@@ -37,6 +39,11 @@ type Provider struct {
 	maxProxyChain  int
 	maxCounterKeys int
 	failOpen       bool
+
+	// 阶段8 / WDSP：API 动态防护下发配置
+	apiEnabled   bool
+	apiMode      string
+	apiEventsLog string // 网关容器内 API 事件日志路径
 }
 
 // Config 是组装器配置。
@@ -49,6 +56,10 @@ type Config struct {
 	MaxProxyChain  int  // 默认 16
 	MaxCounterKeys int  // 默认 100000
 	FailOpen       bool // 计数引擎故障策略
+	// 阶段8 / WDSP：APIDynamicProtection 为 false 时下发 JSON 与纯 WAF 完全一致
+	APIDynamicProtection bool
+	APIProtectionMode    string // OFF | OBSERVE | PROTECT（启用时缺省 OBSERVE）
+	APIEventsLog         string // 网关容器内路径（如 /var/log/caddy/api-runtime-events.log）
 }
 
 // NewProvider 创建组装器。
@@ -74,8 +85,12 @@ func NewProvider(
 		valkeyAddr: cfg.ValkeyAddress, valkeyPassword: cfg.ValkeyPassword, valkeyDB: cfg.ValkeyDB,
 		eventsLog: cfg.EventsLog, gatewayNode: cfg.GatewayNode,
 		maxProxyChain: cfg.MaxProxyChain, maxCounterKeys: cfg.MaxCounterKeys, failOpen: cfg.FailOpen,
+		apiEnabled: cfg.APIDynamicProtection, apiMode: cfg.APIProtectionMode, apiEventsLog: cfg.APIEventsLog,
 	}
 }
+
+// SetAPIModels 注入模型版本仓储（阶段8：冻结正式模型随发布下发网关；nil 表示不下发）。
+func (p *Provider) SetAPIModels(m *apimodels.Store) { p.apiModels = m }
 
 // BuildGuardConfig 从数据库读取生效配置并组装。
 func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardConfig, error) {
@@ -240,6 +255,22 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		ar.Policies = append(ar.Policies, gp)
 	}
 	cfg.AppRules = appRules
+
+	// 阶段8 / WDSP：API 动态防护开关与冻结模型（仅开启时注入；关闭时 GuardConfig 与纯 WAF 一致）
+	if p.apiEnabled {
+		cfg.APIDynamicProtection = true
+		cfg.APIProtectionMode = p.apiMode
+		cfg.APIEventsLog = p.apiEventsLog
+		if p.apiModels != nil {
+			schemas, err := p.apiModels.ListFormalSchemas(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("list formal api schemas: %w", err)
+			}
+			if len(schemas) > 0 {
+				cfg.APIFormalSchemas = schemas
+			}
+		}
+	}
 	return cfg, nil
 }
 

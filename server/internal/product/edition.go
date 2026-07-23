@@ -21,6 +21,8 @@ type Settings struct {
 	Edition Edition
 	// APIDynamicProtection 是否启用 API 动态防护（阶段8）；false 时不得加载 API 检测器。
 	APIDynamicProtection bool
+	// APIProtectionMode 网关侧 API 动态防护模式：OFF | OBSERVE | PROTECT（缺省 OBSERVE，fail-safe）
+	APIProtectionMode string
 	// 解析限制（与 gateway/dynamic_security 约定一致，供管理面展示/下发）
 	MaxBodyParseBytes  int
 	MaxBodySampleBytes int
@@ -43,9 +45,18 @@ func Load() Settings {
 		apiOn = ed == EditionWDSP
 	}
 
+	// 防护模式：仅识别 OFF/OBSERVE/PROTECT；非法值回退 OBSERVE（fail-safe）
+	mode := strings.ToUpper(strings.TrimSpace(os.Getenv("API_PROTECTION_MODE")))
+	switch mode {
+	case "OFF", "OBSERVE", "PROTECT":
+	default:
+		mode = "OBSERVE"
+	}
+
 	return Settings{
 		Edition:              ed,
 		APIDynamicProtection: apiOn,
+		APIProtectionMode:    mode,
 		MaxBodyParseBytes:    envInt("API_MAX_BODY_PARSE_BYTES", 1<<20),
 		MaxBodySampleBytes:   envInt("API_MAX_BODY_SAMPLE_BYTES", 64<<10),
 		MaxJSONDepth:         envInt("API_MAX_JSON_DEPTH", 32),
@@ -63,6 +74,14 @@ func (s Settings) IsWAF() bool { return s.Edition == EditionWAF }
 // 即使实验环境在 WAF edition 中显式打开检测开关，管理面与 API 路由也不得暴露 WDSP 功能。
 func (s Settings) APIDynamicProtectionEnabled() bool {
 	return s.IsWDSP() && s.APIDynamicProtection
+}
+
+// EffectiveAPIProtectionMode 下发网关的防护模式；能力关闭时恒为 OFF（网关零行为变化）。
+func (s Settings) EffectiveAPIProtectionMode() string {
+	if !s.APIDynamicProtectionEnabled() {
+		return "OFF"
+	}
+	return s.APIProtectionMode
 }
 
 func parseBool(s string, def bool) bool {

@@ -16,8 +16,8 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("model version not found")
-	ErrNotCandidate  = errors.New("only candidate can be confirmed")
+	ErrNotFound        = errors.New("model version not found")
+	ErrNotCandidate    = errors.New("only candidate can be confirmed")
 	ErrFormalImmutable = errors.New("formal model immutable")
 )
 
@@ -177,4 +177,31 @@ func hashSchema(endpoint string, schema map[string]string) string {
 	}{endpoint, arr})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// ListFormalSchemas 返回全部冻结正式模型（endpoint_key → 字段名 → 期望类型），供发布通道下发网关。
+// 同一 endpoint_key 存在多个 FORMAL 版本时取最近冻结者（正常 Confirm 流程至多一个 FORMAL）。
+func (s *Store) ListFormalSchemas(ctx context.Context) (map[string]map[string]string, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT DISTINCT ON (endpoint_key) endpoint_key, schema_json
+FROM api_model_versions WHERE status='FORMAL'
+ORDER BY endpoint_key, frozen_at DESC NULLS LAST`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]string{}
+	for rows.Next() {
+		var key string
+		var raw []byte
+		if err := rows.Scan(&key, &raw); err != nil {
+			return nil, err
+		}
+		var schema map[string]string
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			return nil, err
+		}
+		out[key] = schema
+	}
+	return out, rows.Err()
 }

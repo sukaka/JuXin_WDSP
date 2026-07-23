@@ -20,7 +20,8 @@ type Store struct {
 // NewStore 创建。
 func NewStore(db *pgxpool.Pool) *Store { return &Store{db: db} }
 
-// SavePrimary 保存统一主事件。
+// SavePrimary 保存统一主事件。按 request_id 幂等：同一 Request ID 只生成一个主事件
+// （任务书约束；采集器重放/重复上报时静默去重而非产生重复行）。
 func (s *Store) SavePrimary(ctx context.Context, ev *events.PrimaryEvent) error {
 	if ev == nil {
 		return nil
@@ -36,7 +37,8 @@ func (s *Store) SavePrimary(ctx context.Context, ev *events.PrimaryEvent) error 
 	}
 	_, err = s.db.Exec(ctx, `
 INSERT INTO api_runtime_events (id, request_id, endpoint_key, risk_score, risk_level, final_action, details_json, occurred_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+SELECT $1,$2,$3,$4,$5,$6,$7,$8
+WHERE $2 = '' OR NOT EXISTS (SELECT 1 FROM api_runtime_events WHERE request_id = $2)`,
 		id, ev.RequestID, ev.EndpointKey, ev.RiskScore, ev.RiskLevel, ev.FinalAction, raw, ev.OccurredAt)
 	return err
 }

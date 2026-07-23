@@ -103,6 +103,11 @@ services:
       # 阶段8 / WDSP 产品形态（默认 waf；本地演示可设 wdsp）
       PRODUCT_EDITION: ${PRODUCT_EDITION:-waf}
       API_DYNAMIC_PROTECTION_ENABLED: ${API_DYNAMIC_PROTECTION_ENABLED:-false}
+      # 阶段8：网关侧防护模式 OFF/OBSERVE/PROTECT（缺省 OBSERVE）
+      API_PROTECTION_MODE: ${API_PROTECTION_MODE:-OBSERVE}
+      # 阶段8：采集网关 API 运行时事件日志（只读卷）+ 下发网关的日志路径
+      WAF_API_EVENTS_LOG: /var/log/caddy-audit/api-runtime-events.log
+      GATEWAY_API_EVENTS_LOG: /var/log/caddy/api-runtime-events.log
       API_MAX_BODY_PARSE_BYTES: ${API_MAX_BODY_PARSE_BYTES:-1048576}
       API_MAX_BODY_SAMPLE_BYTES: ${API_MAX_BODY_SAMPLE_BYTES:-65536}
       API_MAX_JSON_DEPTH: ${API_MAX_JSON_DEPTH:-32}

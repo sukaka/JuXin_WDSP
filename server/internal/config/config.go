@@ -53,6 +53,10 @@ type WAFConfig struct {
 	GuardFailOpen bool
 	// AccessLogPath Caddy 访问日志路径（API 侧采集，阶段6）
 	AccessLogPath string
+	// APIEventsLog API 动态防护运行时事件日志路径（API 侧采集，阶段8）
+	APIEventsLog string
+	// APIEventsLogGateway 网关容器内 API 事件日志路径（下发网关配置用，阶段8）
+	APIEventsLogGateway string
 }
 
 // GatewayConfig 是网关配置（阶段3）。
@@ -175,8 +179,10 @@ func Load() (*Config, error) {
 			GuardEventsLog:        getEnv("WAF_GUARD_EVENTS_LOG", "runtime/logs/guard-events.log"),
 			GuardEventsLogGateway: getEnv("GATEWAY_GUARD_EVENTS_LOG", "/var/log/caddy/guard-events.log"),
 			// 非 prod 默认 fail-open 便于开发；prod 默认 fail-closed（可用 GUARD_FAIL_OPEN 覆盖）
-			GuardFailOpen: getEnvBool("GUARD_FAIL_OPEN", getEnv("APP_ENV", "dev") != "prod"),
-			AccessLogPath: getEnv("WAF_ACCESS_LOG", "runtime/logs/access.log"),
+			GuardFailOpen:       getEnvBool("GUARD_FAIL_OPEN", getEnv("APP_ENV", "dev") != "prod"),
+			AccessLogPath:       getEnv("WAF_ACCESS_LOG", "runtime/logs/access.log"),
+			APIEventsLog:        getEnv("WAF_API_EVENTS_LOG", "runtime/logs/api-runtime-events.log"),
+			APIEventsLogGateway: getEnv("GATEWAY_API_EVENTS_LOG", "/var/log/caddy/api-runtime-events.log"),
 		},
 		AI: AIConfig{
 			Enabled: getEnvBool("AI_ENABLED", true),

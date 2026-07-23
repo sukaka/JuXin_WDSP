@@ -1,8 +1,8 @@
-// Package jiuzhang_guard 实现九章自主 Caddy 防护模块（阶段5：访问控制与CC防护）。
+// Package jiuzhang_guard 实现九章自主 Caddy 防护模块（阶段5：访问控制与CC防护；阶段8：API 动态防护挂点）。
 //
 // 请求处理顺序：真实IP识别 → 保护地址 → 全局白 → 应用白 → 全局黑 → 应用黑
-// → 临时封禁 → CC限速 → 下一处理器（WAF）。
-// 白名单默认绕过黑名单与 CC，不绕过 WAF 与协议校验。
+// → 临时封禁 → CC限速 → API 动态防护管线（可选，默认关闭）→ 下一处理器（WAF）。
+// 白名单默认绕过黑名单与 CC，不绕过 WAF、API 动态防护与协议校验。
 package jiuzhang_guard
 
 import (
@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -24,6 +25,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/accesscontrol"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/apievents"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/cidr"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientip"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/counters"
@@ -121,6 +123,13 @@ type Guard struct {
 	EventsLog   string `json:"events_log"`
 	GatewayNode string `json:"gateway_node,omitempty"`
 
+	// API 动态防护（WDSP / 阶段8）：默认关闭，关闭时零行为变化
+	APIDynamicProtection bool   `json:"api_dynamic_protection,omitempty"`
+	APIProtectionMode    string `json:"api_protection_mode,omitempty"` // OFF | OBSERVE | PROTECT（启用时缺省 OBSERVE）
+	APIEventsLog         string `json:"api_events_log,omitempty"`      // 缺省与 events_log 同目录 api-runtime-events.log
+	// 冻结正式模型（发布通道下发）：endpoint_key → 字段名 → 期望类型
+	APIFormalSchemas map[string]map[string]string `json:"api_formal_schemas,omitempty"`
+
 	// 运行时
 	logger    *zap.Logger
 	resolver  clientip.Resolver
@@ -132,6 +141,7 @@ type Guard struct {
 	denyA     *accesscontrol.RuleSet
 	policies  []*compiledPolicy
 	events    *events.Logger
+	apiEvents *apievents.Logger
 	engine    *sharedEngine
 	failOpen  bool // 本实例故障策略（Provision 时确定，配置重载即可切换）
 }
@@ -341,6 +351,23 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	}
 	g.events = el
 
+	// API 动态防护事件记录器（独立事件流，由管理面采集入 api_runtime_events）
+	if g.APIDynamicProtection {
+		p := g.APIEventsLog
+		if p == "" {
+			p = filepath.Join(filepath.Dir(g.EventsLog), "api-runtime-events.log")
+		}
+		al, err := apievents.NewLogger(p, g.GatewayNode)
+		if err != nil {
+			return fmt.Errorf("api events log: %w", err)
+		}
+		g.apiEvents = al
+		g.logger.Info("api dynamic protection enabled",
+			zap.String("mode", string(apiDecisionMode(g.APIProtectionMode))),
+			zap.String("events_log", p),
+			zap.Int("formal_schemas", len(g.APIFormalSchemas)))
+	}
+
 	// 共享引擎
 	eng, err := getEngine(g)
 	if err != nil {
@@ -360,11 +387,22 @@ func (g *Guard) Validate() error {
 			return fmt.Errorf("rate limit %q: limit/window must be positive", p.ID)
 		}
 	}
+	if g.APIDynamicProtection {
+		switch g.APIProtectionMode {
+		case "", "OFF", "OBSERVE", "PROTECT":
+		default:
+			return fmt.Errorf("api_protection_mode must be OFF, OBSERVE or PROTECT")
+		}
+	}
 	return nil
 }
 
 // Cleanup 关闭事件记录器（共享引擎随进程生命周期，不在配置重载时关闭）。
 func (g *Guard) Cleanup() error {
+	if g.apiEvents != nil {
+		_ = g.apiEvents.Close()
+		g.apiEvents = nil
+	}
 	if g.events != nil {
 		return g.events.Close()
 	}
@@ -498,10 +536,10 @@ func (g *Guard) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp
 	r.RemoteAddr = net.JoinHostPort(clientIP.String(), "0")
 	r.Header.Set("X-Real-Ip", clientIP.String())
 
-	// 2. 保护地址：仅当「客户端 IP」命中时跳过 ACL/CC（仍过 WAF）。
+	// 2. 保护地址：仅当「客户端 IP」命中时跳过 ACL/CC（仍过 WAF 与 API 动态防护）。
 	// 连接源（LB/本机反代）不得用于旁路真实客户端的访问控制。
 	if g.protected.Contains(clientIP) {
-		return next.ServeHTTP(w, r)
+		return g.serveNext(w, r, next)
 	}
 
 	// 3. 临时封禁查询（人工封禁优先于白名单；自动 CC 封禁可由白名单绕过）
@@ -527,7 +565,7 @@ func (g *Guard) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp
 		ev := base
 		ev.AccessRuleID = dec.RuleID
 		g.emit(ev, events.IPAllowMatch, "ALLOW", 0)
-		return next.ServeHTTP(w, r)
+		return g.serveNext(w, r, next)
 	case accesscontrol.ActionDeny:
 		ev := base
 		ev.AccessRuleID = dec.RuleID
@@ -551,8 +589,8 @@ func (g *Guard) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp
 		return err
 	}
 
-	// 7. 放行（进入 WAF 等后续处理器）
-	return next.ServeHTTP(w, r)
+	// 7. 放行（经 API 动态防护管线后进入 WAF 等后续处理器）
+	return g.serveNext(w, r, next)
 }
 
 // enforceRateLimits 执行 CC 策略；handled=true 表示已响应。

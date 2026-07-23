@@ -16,6 +16,8 @@ import (
 	"github.com/jiuzhang-waf/server/internal/accesscontrolevents"
 	"github.com/jiuzhang-waf/server/internal/accessrules"
 	"github.com/jiuzhang-waf/server/internal/aggregations"
+	"github.com/jiuzhang-waf/server/internal/apiassets"
+	"github.com/jiuzhang-waf/server/internal/apiruntime"
 	"github.com/jiuzhang-waf/server/internal/app"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/cache"
@@ -108,6 +110,17 @@ func run() error {
 	go accessCollector.Run(collectorCtx, 2*time.Second)
 	aggJobs := aggregations.NewJobs(aggStore)
 	go aggJobs.Run(collectorCtx)
+
+	// 阶段8 / WDSP：API 运行时事件采集器（仅 WDSP 且开关开启时启动；
+	// checkpoint 落在可写数据目录，日志卷只读挂载）
+	if cfg.Product.APIDynamicProtectionEnabled() {
+		apiRuntimeStore := apiruntime.NewStore(db)
+		apiAssetStore := apiassets.NewStore(db)
+		apiCollector := apiruntime.NewCollector(apiRuntimeStore, "api-collector-01",
+			cfg.WAF.APIEventsLog, filepath.Join(cfg.Gateway.DataDir, "api-runtime-events.checkpoint"), cfg.WAF.GatewayNodeName)
+		apiCollector.SetDiscoveryUpserter(apiAssetStore)
+		go apiCollector.Run(collectorCtx, 2*time.Second)
+	}
 
 	// 阶段6：报告/备份/健康采集/告警评估后台工人
 	application.StartStage6Workers(collectorCtx)
