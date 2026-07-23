@@ -30,11 +30,12 @@ const listData = {
   items: [
     {
       id: 'e1',
-      method: 'GET',
-      path_template: '/v1/users/{id}',
+      http_method: 'GET',
+      normalized_path: '/v1/users/{id}',
       endpoint_key: 'GET /v1/users/{id}',
-      confidence: 0.6,
-      status: 'DISCOVERED',
+      api_confidence: 0.6,
+      asset_status: 'DISCOVERED',
+      learning_status: 'LEARNING',
       is_api: true,
       hit_count: 3,
       first_seen_at: '2026-07-01T10:00:00Z',
@@ -42,11 +43,12 @@ const listData = {
     },
     {
       id: 'e2',
-      method: 'POST',
-      path_template: '/v1/orders',
+      http_method: 'POST',
+      normalized_path: '/v1/orders',
       endpoint_key: 'POST /v1/orders',
-      confidence: 0.9,
-      status: 'CONFIRMED',
+      api_confidence: 0.9,
+      asset_status: 'CONFIRMED',
+      learning_status: 'LEARNED',
       is_api: true,
       hit_count: 12,
       first_seen_at: '2026-07-01T10:00:00Z',
@@ -78,7 +80,7 @@ describe('ApiEndpointsPage', () => {
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
-        if (url.includes('/api-endpoints')) {
+        if (url.includes('/api-security/endpoints')) {
           return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
         }
         return Promise.reject(new Error(`unexpected url: ${url}`))
@@ -90,33 +92,36 @@ describe('ApiEndpointsPage', () => {
     vi.unstubAllGlobals()
   })
 
-  it('渲染列表：路径模板、中文状态 Tag 与分页总数', async () => {
-    useAuthStore.setState({ user: makeUser(['api_endpoints.read']), csrfToken: null, initialized: true })
+  it('渲染列表：路径模板、中文状态与学习状态 Tag、分页总数', async () => {
+    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
     renderPage()
     expect(await screen.findByText('/v1/users/{id}')).toBeInTheDocument()
     expect(screen.getByText('/v1/orders')).toBeInTheDocument()
     expect(screen.getByText('已发现')).toBeInTheDocument()
-    expect(screen.getAllByText('已确认').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('已确认')).toBeInTheDocument()
+    expect(screen.getByText('学习中')).toBeInTheDocument()
+    expect(screen.getByText('已完成')).toBeInTheDocument()
     expect(screen.getByText('共 2 条')).toBeInTheDocument()
   })
 
-  it('无 manage 权限：不显示「登记发现」与行内「确认」', async () => {
-    useAuthStore.setState({ user: makeUser(['api_endpoints.read']), csrfToken: null, initialized: true })
+  it('无 confirm/ignore 权限：不显示行内「确认」与「忽略」', async () => {
+    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
     renderPage()
     await screen.findByText('/v1/users/{id}')
-    expect(screen.queryByRole('button', { name: /登\s*记\s*发\s*现/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^确\s*认$/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^忽\s*略$/ })).not.toBeInTheDocument()
   })
 
-  it('有 manage 权限：显示「登记发现」，未确认行显示「确认」操作', async () => {
+  it('有 confirm/ignore 权限：未确认行显示「确认」，未忽略行显示「忽略」；「登记发现」已移除', async () => {
     useAuthStore.setState({
-      user: makeUser(['api_endpoints.read', 'api_endpoints.manage']),
+      user: makeUser(['api_asset.read', 'api_asset.confirm', 'api_asset.ignore']),
       csrfToken: null,
       initialized: true,
     })
     renderPage()
     await screen.findByText('/v1/users/{id}')
-    expect(screen.getByRole('button', { name: /登\s*记\s*发\s*现/ })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /^确\s*认$/ })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /^忽\s*略$/ })).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: /登\s*记\s*发\s*现/ })).not.toBeInTheDocument()
   })
 })

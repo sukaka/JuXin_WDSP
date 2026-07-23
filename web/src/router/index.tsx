@@ -256,7 +256,7 @@ export default function AppRoutes() {
           path="api-endpoints"
           element={
             <RequireAPIDynamicProtection>
-              <RequirePermission permission={['api_endpoints.read', 'api_endpoints.manage']}>
+              <RequirePermission permission={['api_asset.read', 'api_asset.confirm', 'api_asset.edit']}>
                 <ApiEndpointsPage />
               </RequirePermission>
             </RequireAPIDynamicProtection>
@@ -266,7 +266,7 @@ export default function AppRoutes() {
           path="api-models"
           element={
             <RequireAPIDynamicProtection>
-              <RequirePermission permission={['api_models.read', 'api_models.manage']}>
+              <RequirePermission permission={['api_model.read', 'api_model.edit']}>
                 <ApiModelsPage />
               </RequirePermission>
             </RequireAPIDynamicProtection>

@@ -28,7 +28,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/analytics"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/apimodels"
-	"github.com/jiuzhang-waf/server/internal/apiruntime"
+	"github.com/jiuzhang-waf/server/internal/apisecurity"
 	"github.com/jiuzhang-waf/server/internal/applications"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/auth"
@@ -650,22 +650,14 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 	upgradeHandler.RegisterRoutes(mux, authz)
 	deliveryHandler.RegisterRoutes(mux, authz)
 
-	// ---- 阶段8 / WDSP：API 资产、模型版本、统一运行时事件 ----
+	// ---- 阶段8 / WDSP：API 动态防护（任务书 /api/v1/api-security 命名空间）----
 	if cfg.Product.APIDynamicProtectionEnabled() {
-		apiEndpointStore := apiassets.NewStore(db)
-		apiEndpointHandler := apiassets.NewHandler(apiEndpointStore)
-		apiModelStore := apimodels.NewStore(db)
-		apiModelHandler := apimodels.NewHandler(apiModelStore)
-		apiEventStore := apiruntime.NewStore(db)
-		apiEventHandler := apiruntime.NewHandler(apiEventStore)
-		mux.Handle("GET /api/v1/api-endpoints", authz(middleware.RequirePermission("api_endpoints.read")(http.HandlerFunc(apiEndpointHandler.List))))
-		mux.Handle("GET /api/v1/api-endpoints/{id}", authz(middleware.RequirePermission("api_endpoints.read")(http.HandlerFunc(apiEndpointHandler.Get))))
-		mux.Handle("POST /api/v1/api-endpoints/discover", authz(middleware.RequirePermission("api_endpoints.manage")(http.HandlerFunc(apiEndpointHandler.Discover))))
-		mux.Handle("POST /api/v1/api-endpoints/{id}/confirm", authz(middleware.RequirePermission("api_endpoints.manage")(http.HandlerFunc(apiEndpointHandler.Confirm))))
-		mux.Handle("GET /api/v1/api-model-versions", authz(middleware.RequirePermission("api_models.read")(http.HandlerFunc(apiModelHandler.List))))
-		mux.Handle("POST /api/v1/api-model-versions", authz(middleware.RequirePermission("api_models.manage")(http.HandlerFunc(apiModelHandler.CreateCandidate))))
-		mux.Handle("POST /api/v1/api-model-versions/{id}/confirm", authz(middleware.RequirePermission("api_models.manage")(http.HandlerFunc(apiModelHandler.Confirm))))
-		mux.Handle("GET /api/v1/api-runtime-events", authz(middleware.RequirePermission("api_runtime_events.read")(http.HandlerFunc(apiEventHandler.List))))
+		apiEndpointHandler := apiassets.NewHandler(apiassets.NewStore(db), auditSvc)
+		apiassets.RegisterRoutes(mux, authz, apiEndpointHandler)
+		apiModelHandler := apimodels.NewHandler(apimodels.NewStore(db), auditSvc)
+		apimodels.RegisterRoutes(mux, authz, apiModelHandler)
+		apiSecurityHandler := apisecurity.NewHandler(apisecurity.NewStore(db), auditSvc)
+		apisecurity.RegisterRoutes(mux, authz, apiSecurityHandler)
 	}
 	// 产品 edition 探测（已登录可读，供前端 WDSP 菜单）
 	mux.Handle("GET /api/v1/product/edition", authz(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App as AntdApp, Button, Card, Drawer, Form, Input, Select, Space, Table, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Input, Select, Space, Table, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { PlusOutlined } from '@ant-design/icons'
 import { apiEndpointsApi, type ApiEndpointItem } from '../../api/apiAssets'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
@@ -10,80 +9,99 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { API_ENDPOINT_STATUS_META } from '../../utils/stage8'
+import { API_ENDPOINT_STATUS_META, API_LEARNING_STATUS_META } from '../../utils/stage8'
 
-interface DiscoverFormValues {
-  method: string
-  path: string
-}
-
-/** API 端点资产（WDSP / 阶段8） */
+/** API 端点资产（WDSP / 阶段8）：发现由网关自动上报，页面负责确认与忽略 */
 export default function ApiEndpointsPage() {
   const { message, modal } = AntdApp.useApp()
   const qc = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
-  const canManage = hasPermission(permissions, 'api_endpoints.manage')
+  const canConfirm = hasPermission(permissions, 'api_asset.confirm')
+  const canIgnore = hasPermission(permissions, 'api_asset.ignore')
 
-  const [status, setStatus] = useState<string | undefined>()
+  const [assetStatus, setAssetStatus] = useState<string | undefined>()
+  const [learningStatus, setLearningStatus] = useState<string | undefined>()
+  const [keyword, setKeyword] = useState<string | undefined>()
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
-  const [discoverOpen, setDiscoverOpen] = useState(false)
-  const [form] = Form.useForm<DiscoverFormValues>()
 
   const listQuery = useQuery({
-    queryKey: ['api-endpoints', status, page, pageSize],
-    queryFn: () => apiEndpointsApi.list({ status, page, page_size: pageSize }),
-  })
-
-  const discoverMut = useMutation({
-    mutationFn: apiEndpointsApi.discover,
-    onSuccess: () => {
-      message.success('已登记发现结果')
-      setDiscoverOpen(false)
-      form.resetFields()
-      void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
-    },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '发现失败'),
+    queryKey: ['api-endpoints', assetStatus, learningStatus, keyword, page, pageSize],
+    queryFn: () =>
+      apiEndpointsApi.list({
+        asset_status: assetStatus,
+        learning_status: learningStatus,
+        keyword,
+        page,
+        page_size: pageSize,
+      }),
   })
 
   const confirmMut = useMutation({
-    mutationFn: (id: string) => apiEndpointsApi.confirm(id),
+    mutationFn: (id: string) => apiEndpointsApi.confirm([id]),
     onSuccess: (r) => {
-      message.success(r.message || '已确认')
+      if (r.failed && r.failed.length > 0) {
+        message.error(r.failed[0].reason || '确认失败')
+      } else {
+        message.success('已确认')
+      }
       void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
     },
     onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '确认失败'),
+  })
+
+  const ignoreMut = useMutation({
+    mutationFn: (id: string) => apiEndpointsApi.ignore(id),
+    onSuccess: (r) => {
+      message.success(r.message || '已忽略')
+      void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
+    },
+    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '忽略失败'),
   })
 
   /** 行内操作统一二次确认 */
   const confirmEndpoint = (record: ApiEndpointItem) => {
     modal.confirm({
       title: '操作确认',
-      content: `确定将端点「${record.method} ${record.path_template}」确认为正式接口资产吗？确认后进入正式资产管理。`,
+      content: `确定将端点「${record.http_method} ${record.normalized_path}」确认为正式接口资产吗？确认后进入正式资产管理。`,
       onOk: () => confirmMut.mutate(record.id),
     })
   }
 
+  const ignoreEndpoint = (record: ApiEndpointItem) => {
+    modal.confirm({
+      title: '操作确认',
+      content: `确定忽略端点「${record.http_method} ${record.normalized_path}」吗？忽略后标记为已忽略，不再进入正式资产管理。`,
+      onOk: () => ignoreMut.mutate(record.id),
+    })
+  }
+
   const columns: ColumnsType<ApiEndpointItem> = [
-    { title: '方法', dataIndex: 'method', width: 90 },
+    { title: '方法', dataIndex: 'http_method', width: 90 },
     {
       title: '路径模板',
-      dataIndex: 'path_template',
+      dataIndex: 'normalized_path',
       ellipsis: true,
       render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
     },
     {
       title: '置信度',
-      dataIndex: 'confidence',
+      dataIndex: 'api_confidence',
       width: 90,
       align: 'right',
       render: (v: number) => (v * 100).toFixed(0) + '%',
     },
     {
-      title: '状态',
-      dataIndex: 'status',
+      title: '资产状态',
+      dataIndex: 'asset_status',
       width: 100,
       render: (v: string) => <StatusTag value={v} map={API_ENDPOINT_STATUS_META} />,
+    },
+    {
+      title: '学习状态',
+      dataIndex: 'learning_status',
+      width: 100,
+      render: (v: string) => <StatusTag value={v} map={API_LEARNING_STATUS_META} />,
     },
     { title: '命中', dataIndex: 'hit_count', width: 80, align: 'right' },
     {
@@ -95,49 +113,72 @@ export default function ApiEndpointsPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 100,
+      width: 130,
       fixed: 'right',
       render: (_, record) => {
-        if (!canManage) return null
-        return record.status !== 'CONFIRMED' ? (
-          <Button type="link" size="small" onClick={() => confirmEndpoint(record)}>
-            确认
-          </Button>
-        ) : (
-          <Typography.Text type="secondary">已确认</Typography.Text>
+        const showConfirm = canConfirm && record.asset_status === 'DISCOVERED'
+        const showIgnore = canIgnore && record.asset_status !== 'IGNORED' && record.asset_status !== 'DEPRECATED'
+        if (!showConfirm && !showIgnore) return null
+        return (
+          <Space size={0}>
+            {showConfirm ? (
+              <Button type="link" size="small" onClick={() => confirmEndpoint(record)}>
+                确认
+              </Button>
+            ) : null}
+            {showIgnore ? (
+              <Button type="link" size="small" danger onClick={() => ignoreEndpoint(record)}>
+                忽略
+              </Button>
+            ) : null}
+          </Space>
         )
       },
     },
   ]
 
   return (
-    <Card
-      title="接口端点资产"
-      extra={
-        canManage ? (
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setDiscoverOpen(true)}>
-            登记发现
-          </Button>
-        ) : undefined
-      }
-    >
+    <Card title="接口端点资产">
       <Typography.Paragraph type="secondary">
-        路径自动归一化（如 /users/123 → /users/&#123;id&#125;）。确认后进入正式资产；学习模型见「接口
+        路径自动归一化（如 /users/123 → /users/&#123;id&#125;），端点由网关自动发现上报。确认后进入正式资产；学习模型见「接口
         模型版本」。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error} />
       <Space style={{ marginBottom: 16 }} wrap>
         <Select
-          placeholder="状态"
+          placeholder="资产状态"
           allowClear
           style={{ width: 140 }}
-          value={status}
+          value={assetStatus}
           options={Object.entries(API_ENDPOINT_STATUS_META).map(([value, meta]) => ({
             value,
             label: meta.label,
           }))}
           onChange={(v) => {
-            setStatus(v)
+            setAssetStatus(v)
+            setPage(1)
+          }}
+        />
+        <Select
+          placeholder="学习状态"
+          allowClear
+          style={{ width: 140 }}
+          value={learningStatus}
+          options={Object.entries(API_LEARNING_STATUS_META).map(([value, meta]) => ({
+            value,
+            label: meta.label,
+          }))}
+          onChange={(v) => {
+            setLearningStatus(v)
+            setPage(1)
+          }}
+        />
+        <Input.Search
+          placeholder="路径 / 端点键"
+          allowClear
+          style={{ width: 220 }}
+          onSearch={(v) => {
+            setKeyword(v || undefined)
             setPage(1)
           }}
         />
@@ -147,7 +188,7 @@ export default function ApiEndpointsPage() {
         loading={listQuery.isLoading}
         columns={columns}
         dataSource={listQuery.data?.items ?? []}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1200 }}
         pagination={{
           current: page,
           pageSize,
@@ -160,43 +201,6 @@ export default function ApiEndpointsPage() {
           },
         }}
       />
-
-      <Drawer
-        title="登记接口发现"
-        open={discoverOpen}
-        onClose={() => setDiscoverOpen(false)}
-        width={480}
-        destroyOnHidden
-        footer={
-          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <Button onClick={() => setDiscoverOpen(false)}>取消</Button>
-            <Button type="primary" loading={discoverMut.isPending} onClick={() => form.submit()}>
-              登记
-            </Button>
-          </Space>
-        }
-      >
-        <Form<DiscoverFormValues>
-          form={form}
-          layout="vertical"
-          initialValues={{ method: 'GET' }}
-          onFinish={(v) => discoverMut.mutate({ method: v.method, path: v.path, confidence: 0.6 })}
-        >
-          <Form.Item name="method" label="请求方法" rules={[{ required: true, message: '请选择请求方法' }]}>
-            <Select
-              options={['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => ({ value: m, label: m }))}
-            />
-          </Form.Item>
-          <Form.Item
-            name="path"
-            label="请求路径"
-            rules={[{ required: true, message: '请输入请求路径' }]}
-            extra="路径将自动归一化（如 /users/123 → /users/{id}）"
-          >
-            <Input placeholder="/v1/users/123" autoComplete="off" />
-          </Form.Item>
-        </Form>
-      </Drawer>
     </Card>
   )
 }

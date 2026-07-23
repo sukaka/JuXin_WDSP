@@ -26,82 +26,62 @@ func TestMemStoreUpsertListConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e1.EndpointKey != "GET /users/{id}" || e1.Status != "DISCOVERED" || e1.HitCount != 1 {
+	if e1.EndpointKey != "GET /users/{id}" || e1.AssetStatus != "DISCOVERED" || e1.HitCount != 1 {
 		t.Fatalf("%+v", e1)
 	}
 	e2, err := store.UpsertDiscovery(ctx, "get", tpl, 0.95, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e2.ID != e1.ID || e2.HitCount != 2 || e2.Confidence < 0.9 {
+	if e2.ID != e1.ID || e2.HitCount != 2 || e2.APIConfidence < 0.9 {
 		t.Fatalf("merge: %+v", e2)
 	}
-	list, total, err := store.List(ctx, "", 1, 20)
+	list, total, err := store.List(ctx, ListFilter{Page: 1, PageSize: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if total != 1 || len(list) != 1 {
 		t.Fatalf("list total=%d len=%d", total, len(list))
 	}
-	if list[0].PathTemplate != "/users/{id}" || list[0].Method != "GET" || list[0].EndpointKey == "" {
+	if list[0].NormalizedPath != "/users/{id}" || list[0].HTTPMethod != "GET" || list[0].EndpointKey == "" {
 		t.Fatalf("structured empty/wrong: %+v", list[0])
 	}
 	conf, err := store.Confirm(ctx, e1.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conf.Status != "CONFIRMED" || conf.ConfirmedAt == nil {
+	if conf.AssetStatus != "CONFIRMED" || conf.ConfirmedAt == nil {
 		t.Fatalf("%+v", conf)
 	}
 }
 
-// TestHandlerDiscoverListConfirmHTTP drives real Handler methods with fixture JSON.
-func TestHandlerDiscoverListConfirmHTTP(t *testing.T) {
+// TestHandlerListConfirmBatchHTTP drives real Handler methods with fixture JSON
+// （发现数据由网关采集链路 UpsertDiscovery 喂入，这里直接写存储层）。
+func TestHandlerListConfirmBatchHTTP(t *testing.T) {
 	store := NewMemStore()
-	h := NewHandler(store)
+	h := NewHandler(store, nil)
 
 	withRID := func(r *http.Request, id string) *http.Request {
 		return r.WithContext(context.WithValue(r.Context(), response.RequestIDKey, id))
 	}
 
-	// Discover fixture: POST /v1/orders/99 → template /v1/orders/{id}
-	body := []byte(`{"method":"POST","path":"/v1/orders/99","confidence":0.8}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/api-endpoints/discover", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = withRID(req, "disc-1")
-	rr := httptest.NewRecorder()
-	h.Discover(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("discover status=%d body=%s", rr.Code, rr.Body.String())
-	}
-	var env struct {
-		Code string `json:"code"`
-		Data struct {
-			Endpoint Endpoint `json:"endpoint"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+	// 发现数据（等价于网关采集链路调用 UpsertDiscovery）
+	ep, err := store.UpsertDiscovery(context.Background(), "POST", normalizer.NormalizePath("/v1/orders/99"), 0.8, true)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if env.Code != "SUCCESS" {
-		t.Fatalf("code=%s body=%s", env.Code, rr.Body.String())
-	}
-	ep := env.Data.Endpoint
 	if ep.ID == uuid.Nil {
 		t.Fatal("empty endpoint id")
 	}
-	if ep.PathTemplate != "/v1/orders/{id}" {
-		t.Fatalf("path_template=%s", ep.PathTemplate)
+	if ep.NormalizedPath != "/v1/orders/{id}" || ep.EndpointKey != "POST /v1/orders/{id}" {
+		t.Fatalf("%+v", ep)
 	}
-	if ep.EndpointKey != "POST /v1/orders/{id}" {
-		t.Fatalf("endpoint_key=%s", ep.EndpointKey)
-	}
-	if ep.Status != "DISCOVERED" || ep.HitCount < 1 {
+	if ep.AssetStatus != "DISCOVERED" || ep.HitCount < 1 {
 		t.Fatalf("%+v", ep)
 	}
 
 	// List must return non-empty structured results
-	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/api-endpoints?page=1&page_size=20", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/api-security/endpoints?page=1&page_size=20", nil)
 	req2 = withRID(req2, "list-1")
 	rr2 := httptest.NewRecorder()
 	h.List(rr2, req2)
@@ -124,7 +104,7 @@ func TestHandlerDiscoverListConfirmHTTP(t *testing.T) {
 	for _, it := range listEnv.Data.Items {
 		if it.EndpointKey == "POST /v1/orders/{id}" {
 			found = true
-			if it.Method != "POST" || it.PathTemplate != "/v1/orders/{id}" {
+			if it.HTTPMethod != "POST" || it.NormalizedPath != "/v1/orders/{id}" {
 				t.Fatalf("list item: %+v", it)
 			}
 		}
@@ -133,25 +113,21 @@ func TestHandlerDiscoverListConfirmHTTP(t *testing.T) {
 		t.Fatalf("fixture missing in list: %+v", listEnv.Data.Items)
 	}
 
-	// Confirm
-	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/api-endpoints/"+ep.ID.String()+"/confirm", nil)
-	req3.SetPathValue("id", ep.ID.String())
+	// 批量确认
+	body := []byte(`{"ids":["` + ep.ID.String() + `"]}`)
+	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/api-security/endpoints/confirm", bytes.NewReader(body))
+	req3.Header.Set("Content-Type", "application/json")
 	req3 = withRID(req3, "conf-1")
 	rr3 := httptest.NewRecorder()
-	h.Confirm(rr3, req3)
+	h.ConfirmBatch(rr3, req3)
 	if rr3.Code != http.StatusOK {
 		t.Fatalf("confirm status=%d %s", rr3.Code, rr3.Body.String())
 	}
-	var confEnv struct {
-		Data struct {
-			Endpoint Endpoint `json:"endpoint"`
-			Message  string   `json:"message"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(rr3.Body.Bytes(), &confEnv); err != nil {
+	got, err := store.GetByID(context.Background(), ep.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if confEnv.Data.Endpoint.Status != "CONFIRMED" {
-		t.Fatalf("confirm: %+v", confEnv.Data)
+	if got.AssetStatus != "CONFIRMED" || got.ConfirmedAt == nil {
+		t.Fatalf("confirm: %+v", got)
 	}
 }
