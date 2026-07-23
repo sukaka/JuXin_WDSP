@@ -123,6 +123,7 @@ func (s *Store) EndpointKey(ctx context.Context, endpointID uuid.UUID) (string, 
 }
 
 // CreateCandidate 创建候选版本（初始状态 CANDIDATE）。
+// version_number 在创建时按端点序号分配（同端点 max+1），状态迁移不再改变。
 func (s *Store) CreateCandidate(ctx context.Context, endpointID uuid.UUID, endpointKey, changeSummary string, schema map[string]string, createdBy uuid.UUID) (*Version, error) {
 	if schema == nil {
 		schema = map[string]string{}
@@ -130,8 +131,8 @@ func (s *Store) CreateCandidate(ctx context.Context, endpointID uuid.UUID, endpo
 	h := hashSchema(endpointKey, schema)
 	raw, _ := json.Marshal(schema)
 	v, err := scanVersion(s.db.QueryRow(ctx, `
-INSERT INTO api_model_versions (api_endpoint_id, endpoint_key, status, schema_json, content_hash, change_summary, created_reason, created_by)
-VALUES ($1,$2,$3,$4,$5,$6,'manual',$7)
+INSERT INTO api_model_versions (api_endpoint_id, endpoint_key, status, version_number, schema_json, content_hash, change_summary, created_reason, created_by)
+VALUES ($1,$2,$3,(SELECT COALESCE(MAX(version_number),0)+1 FROM api_model_versions WHERE api_endpoint_id=$1),$4,$5,$6,'manual',$7)
 RETURNING `+versionColumns,
 		endpointID, endpointKey, StatusCandidate, raw, h, changeSummary, nullUUID(createdBy)))
 	if err != nil {
@@ -153,8 +154,8 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Version, error) {
 }
 
 // Confirm 确认为正式模型：候选/评审中 → FORMAL；
-// 同端点旧 FORMAL 降级 SUPERSEDED，version_number 取同端点 max+1，
-// 并记录 confirmed_by/confirmed_at/activated_at（事务 + FOR UPDATE）。
+// 同端点旧 FORMAL 降级 SUPERSEDED，并记录 confirmed_by/confirmed_at/activated_at（事务 + FOR UPDATE）。
+// version_number 在创建时已分配，确认不改动（首个 FORMAL 即 v1）。
 func (s *Store) Confirm(ctx context.Context, id, operatorID uuid.UUID) (*Version, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -172,12 +173,6 @@ func (s *Store) Confirm(ctx context.Context, id, operatorID uuid.UUID) (*Version
 	if v.Status != StatusCandidate && v.Status != StatusInReview {
 		return nil, ErrNotCandidate
 	}
-	// 同端点版本号自增
-	var next int
-	if err := tx.QueryRow(ctx, `
-SELECT COALESCE(MAX(version_number),0)+1 FROM api_model_versions WHERE api_endpoint_id=$1`, v.EndpointID).Scan(&next); err != nil {
-		return nil, err
-	}
 	// 旧正式模型降级为 SUPERSEDED
 	if _, err := tx.Exec(ctx, `
 UPDATE api_model_versions SET status=$1 WHERE api_endpoint_id=$2 AND status=$3 AND id<>$4`,
@@ -186,9 +181,9 @@ UPDATE api_model_versions SET status=$1 WHERE api_endpoint_id=$2 AND status=$3 A
 	}
 	out, err := scanVersion(tx.QueryRow(ctx, `
 UPDATE api_model_versions
-SET status=$2, version_number=$3, confirmed_by=$4, confirmed_at=now(), activated_at=now()
+SET status=$2, confirmed_by=$3, confirmed_at=now(), activated_at=now()
 WHERE id=$1
-RETURNING `+versionColumns, id, StatusFormal, next, nullUUID(operatorID)))
+RETURNING `+versionColumns, id, StatusFormal, nullUUID(operatorID)))
 	if err != nil {
 		return nil, err
 	}
