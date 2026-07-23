@@ -39,10 +39,10 @@ func Load() Settings {
 		ed = EditionWAF
 	}
 
-	// API 动态防护：显式 env 优先；否则 wdsp 默认开、waf 默认关
+	// API 动态防护：显式 env 优先且无效值失败关闭；否则 wdsp 默认开、waf 默认关
 	apiOn := false
 	if v, ok := os.LookupEnv("API_DYNAMIC_PROTECTION_ENABLED"); ok && v != "" {
-		apiOn = parseBool(v, ed == EditionWDSP)
+		apiOn = parseBool(v, false)
 	} else {
 		apiOn = ed == EditionWDSP
 	}
