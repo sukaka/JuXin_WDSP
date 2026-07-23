@@ -12,7 +12,6 @@ import {
   Modal,
   Select,
   Space,
-  Table,
   Tag,
 } from 'antd'
 import type { MenuProps } from 'antd'
@@ -22,6 +21,7 @@ import { ApiError } from '../../api/client'
 import { applicationsApi } from '../../api/applications'
 import type { CreateApplicationBody } from '../../api/applications'
 import ProtectionModeTag from '../../components/ProtectionModeTag'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -335,7 +335,8 @@ export default function ApplicationsPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<ApplicationItem>
+        <SmartTable<ApplicationItem>
+          storageKey="applications"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

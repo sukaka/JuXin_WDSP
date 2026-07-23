@@ -1,9 +1,10 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Col, Row, Space, Table, Tag, Tooltip, Typography } from 'antd'
+import { Card, Col, Row, Space, Tag, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { apiGraphApi, type ApiGraphEdge, type ApiGraphNode } from '../../api/apiSecurity'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 import { API_ENDPOINT_STATUS_META } from '../../utils/stage8'
 
 /** 指纹/ID 截断展示：保留首尾，中间省略 */
@@ -85,7 +86,8 @@ export default function ApiTopologyPage() {
         ))}
       </Row>
       <Typography.Title level={5}>调用边明细</Typography.Title>
-      <Table<ApiGraphEdge>
+      <SmartTable<ApiGraphEdge>
+        storageKey="api-topology"
         rowKey="id"
         size="small"
         loading={topologyQuery.isLoading}

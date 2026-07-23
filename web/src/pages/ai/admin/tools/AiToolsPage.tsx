@@ -10,9 +10,9 @@ import {
   Modal,
   Space,
   Switch,
-  Table,
   Typography,
 } from 'antd'
+import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../../../api/client'
 import { aiAgentsToolsApi, patchAiTool } from '../../../../api/ai'
@@ -147,7 +147,8 @@ export default function AiToolsPage() {
         {toolsQuery.isError ? (
           <QueryErrorAlert error={toolsQuery.error} message="加载工具列表失败" />
         ) : (
-          <Table<AiTool>
+          <SmartTable<AiTool>
+            storageKey="ai-admin-tools"
             rowKey="id"
             loading={toolsQuery.isLoading}
             columns={columns}

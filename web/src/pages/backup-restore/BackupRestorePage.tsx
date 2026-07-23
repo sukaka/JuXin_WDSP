@@ -11,12 +11,12 @@ import {
   Select,
   Space,
   Steps,
-  Table,
   Tabs,
   Tag,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import SmartTable from '../../components/SmartTable'
 import { DownloadOutlined, PlusOutlined, SafetyOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
 import { backupsApi } from '../../api/backups'
@@ -210,7 +210,8 @@ function BackupPanel() {
       {listQuery.isError ? (
         <QueryErrorAlert error={listQuery.error} message="加载备份列表失败" />
       ) : (
-        <Table<BackupJobItem>
+        <SmartTable<BackupJobItem>
+          storageKey="backup-restore"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}
@@ -446,7 +447,8 @@ function RestorePanel() {
       {listQuery.isError ? (
         <QueryErrorAlert error={listQuery.error} message="加载恢复任务失败" />
       ) : (
-        <Table<RestoreJobItem>
+        <SmartTable<RestoreJobItem>
+          storageKey="backup-restore-2"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}
@@ -539,7 +541,8 @@ function RestorePanel() {
                 </>
               }
             />
-            <Table
+            <SmartTable
+              storageKey="backup-restore-3"
               size="small"
               rowKey="name"
               pagination={{ pageSize: 8 }}

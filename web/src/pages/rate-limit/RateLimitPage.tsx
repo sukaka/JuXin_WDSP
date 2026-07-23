@@ -16,7 +16,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -27,6 +26,7 @@ import { ApiError } from '../../api/client'
 import { rateLimitPoliciesApi } from '../../api/rateLimitPolicies'
 import type { RateLimitPolicyBody } from '../../api/rateLimitPolicies'
 import { applicationsApi } from '../../api/applications'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { PublishTaskProgress } from '../config-publish/ConfigPublishPage'
 import { useAuthStore } from '../../stores/auth'
@@ -428,7 +428,8 @@ export default function RateLimitPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<RateLimitPolicyItem>
+        <SmartTable<RateLimitPolicyItem>
+          storageKey="rate-limit"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

@@ -8,9 +8,9 @@ import {
   Drawer,
   Select,
   Space,
-  Table,
   Typography,
 } from 'antd'
+import SmartTable from '../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { aiTasksApi } from '../../../api/ai'
@@ -148,7 +148,8 @@ export default function AiTasksPage() {
         {listQuery.isError ? (
           <QueryErrorAlert error={listQuery.error} message="加载任务记录失败" />
         ) : (
-          <Table<AiTask>
+          <SmartTable<AiTask>
+            storageKey="ai-tasks"
             rowKey="id"
             loading={listQuery.isLoading}
             columns={columns}

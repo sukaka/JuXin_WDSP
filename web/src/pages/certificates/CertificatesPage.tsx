@@ -12,7 +12,6 @@ import {
   Modal,
   Select,
   Space,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -23,6 +22,7 @@ import { ApiError } from '../../api/client'
 import { applicationsApi } from '../../api/applications'
 import { certificatesApi } from '../../api/certificates'
 import type { UploadCertificateBody } from '../../api/certificates'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -279,7 +279,8 @@ export default function CertificatesPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<CertificateItem>
+        <SmartTable<CertificateItem>
+          storageKey="certificates"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert, App as AntdApp, Button, Card, Input, InputNumber, Switch, Table, Tabs, Tag, Typography } from 'antd'
+import { Alert, App as AntdApp, Button, Card, Input, InputNumber, Switch, Tabs, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import SmartTable from '../../components/SmartTable'
 import { ApiError } from '../../api/client'
 import { settingsApi } from '../../api/settings'
 import { useAuthStore } from '../../stores/auth'
@@ -146,7 +147,8 @@ function SettingGroupPanel({ group }: { group: string }) {
   }
 
   return (
-    <Table<SettingItem>
+    <SmartTable<SettingItem>
+      storageKey="system-settings"
       rowKey="id"
       loading={listQuery.isLoading}
       columns={columns}

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App as AntdApp, Button, Card, Drawer, Form, Input, Select, Space, Table, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Drawer, Form, Input, Select, Space, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { apiEndpointsApi, apiModelsApi, type ApiModelVersion } from '../../api/apiAssets'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -176,7 +177,8 @@ export default function ApiModelsPage() {
           }}
         />
       </Space>
-      <Table<ApiModelVersion>
+      <SmartTable<ApiModelVersion>
+        storageKey="api-models"
         rowKey="id"
         loading={listQuery.isLoading}
         columns={columns}

@@ -10,11 +10,11 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
 } from 'antd'
+import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../../../api/client'
 import { aiAgentsToolsApi, patchAiAgent } from '../../../../api/ai'
@@ -152,7 +152,8 @@ export default function AiAgentsPage() {
         {agentsQuery.isError ? (
           <QueryErrorAlert error={agentsQuery.error} message="加载智能体列表失败" />
         ) : (
-          <Table<AiAgent>
+          <SmartTable<AiAgent>
+            storageKey="ai-admin-agents"
             rowKey="id"
             loading={agentsQuery.isLoading}
             columns={columns}

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Col, List, Radio, Row, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
+import { Card, Col, List, Radio, Row, Space, Statistic, Tabs, Tag, Typography } from 'antd'
+import SmartTable from '../../components/SmartTable'
 import dayjs from 'dayjs'
 import { dashboardsApi } from '../../api/dashboards'
 import EChart from '../../components/EChart'
@@ -17,7 +18,8 @@ import type { KeyValue } from '../../types'
 /** KV 排行小表 */
 function KVTable({ items, nameTitle, nameMap }: { items: KeyValue[]; nameTitle: string; nameMap?: Record<string, { label: string }> }) {
   return (
-    <Table
+    <SmartTable
+      storageKey="security-overview"
       size="small"
       rowKey="key"
       pagination={false}
@@ -182,7 +184,8 @@ export default function SecurityOverviewPage() {
                       key: 'source_ips',
                       label: '源IP',
                       children: (
-                        <Table
+                        <SmartTable
+                          storageKey="security-overview-2"
                           size="small"
                           rowKey="ip"
                           pagination={false}
@@ -210,7 +213,8 @@ export default function SecurityOverviewPage() {
                       key: 'uris',
                       label: '请求路径',
                       children: (
-                        <Table
+                        <SmartTable
+                          storageKey="security-overview-3"
                           size="small"
                           rowKey="path"
                           pagination={false}
@@ -322,7 +326,8 @@ export default function SecurityOverviewPage() {
               <Row gutter={16}>
                 <Col xs={24} md={12}>
                   <Typography.Text type="secondary">处置状态分布</Typography.Text>
-                  <Table
+                  <SmartTable
+                    storageKey="security-overview-4"
                     size="small"
                     rowKey="status"
                     pagination={false}
@@ -340,7 +345,8 @@ export default function SecurityOverviewPage() {
                 </Col>
                 <Col xs={24} md={12}>
                   <Typography.Text type="secondary">今日操作类型 TOP</Typography.Text>
-                  <Table
+                  <SmartTable
+                    storageKey="security-overview-5"
                     size="small"
                     rowKey="action"
                     pagination={false}

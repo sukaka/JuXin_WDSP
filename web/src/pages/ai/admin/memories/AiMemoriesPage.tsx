@@ -12,9 +12,9 @@ import {
   Popconfirm,
   Select,
   Space,
-  Table,
   Tag,
 } from 'antd'
+import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { aiMemoriesApi } from '../../../../api/ai'
@@ -241,7 +241,8 @@ export default function AiMemoriesPage() {
       {listQuery.isError ? (
         <QueryErrorAlert error={listQuery.error} message="加载记忆列表失败" />
       ) : (
-        <Table<AiMemory>
+        <SmartTable<AiMemory>
+          storageKey="ai-admin-memories"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

@@ -15,7 +15,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -27,6 +26,7 @@ import { applicationsApi } from '../../api/applications'
 import { protectionPoliciesApi } from '../../api/protectionPolicies'
 import { exceptionsApi } from '../../api/exceptions'
 import type { CreateExceptionBody } from '../../api/exceptions'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -406,7 +406,8 @@ export default function ExceptionsPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<ExceptionItem>
+        <SmartTable<ExceptionItem>
+          storageKey="exceptions"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

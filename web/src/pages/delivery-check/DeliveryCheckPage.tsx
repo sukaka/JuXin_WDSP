@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App as AntdApp, Alert, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography } from 'antd'
+import { App as AntdApp, Alert, Button, Card, Col, Row, Space, Statistic, Tag, Typography } from 'antd'
+import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { DownloadOutlined, PlayCircleOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
@@ -132,7 +133,8 @@ export default function DeliveryCheckPage() {
         {listQuery.isError ? (
           <QueryErrorAlert error={listQuery.error} message="加载交付检查失败" />
         ) : (
-          <Table<DeliveryCheckItem>
+          <SmartTable<DeliveryCheckItem>
+            storageKey="delivery-check"
             rowKey="id"
             size="small"
             loading={listQuery.isLoading}
@@ -186,7 +188,8 @@ export default function DeliveryCheckPage() {
                   </Card>
                 </Col>
               </Row>
-              <Table<DeliveryCheckResultItem>
+              <SmartTable<DeliveryCheckResultItem>
+                storageKey="delivery-check-2"
                 rowKey="item"
                 size="small"
                 columns={resultColumns}

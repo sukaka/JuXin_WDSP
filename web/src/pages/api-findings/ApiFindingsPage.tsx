@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Button, Card, Descriptions, Drawer, Select, Space, Table, Tooltip, Typography } from 'antd'
+import { Button, Card, Descriptions, Drawer, Select, Space, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { apiFindingsApi, type ApiFinding } from '../../api/apiSecurity'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { formatDateTime, formatJson } from '../../utils/format'
 import {
@@ -148,7 +149,8 @@ export default function ApiFindingsPage() {
           }}
         />
       </Space>
-      <Table<ApiFinding>
+      <SmartTable<ApiFinding>
+        storageKey="api-findings"
         rowKey="id"
         loading={listQuery.isLoading}
         columns={columns}

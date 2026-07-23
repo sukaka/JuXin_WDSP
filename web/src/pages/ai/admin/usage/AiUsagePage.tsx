@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { Card, Col, Row, Space, Statistic, Table, Typography } from 'antd'
+import { Card, Col, Row, Space, Statistic, Typography } from 'antd'
+import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { aiUsageApi } from '../../../../api/ai'
 import type { AiUsageByUser } from '../../../../api/ai'
@@ -92,7 +93,8 @@ export default function AiUsagePage() {
         {byUserQuery.isError ? (
           <QueryErrorAlert error={byUserQuery.error} message="加载按用户统计失败" />
         ) : (
-          <Table<AiUsageByUser>
+          <SmartTable<AiUsageByUser>
+            storageKey="ai-admin-usage"
             rowKey="username"
             loading={byUserQuery.isLoading}
             columns={columns}

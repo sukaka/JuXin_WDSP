@@ -10,10 +10,10 @@ import {
   Modal,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd'
+import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { aiPromptsApi } from '../../../../api/ai'
@@ -263,7 +263,8 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
         {versionsQuery.isError ? (
           <QueryErrorAlert error={versionsQuery.error} message="加载版本列表失败" />
         ) : (
-          <Table<AiPromptVersion>
+          <SmartTable<AiPromptVersion>
+            storageKey="ai-admin-prompts"
             rowKey="id"
             size="small"
             loading={versionsQuery.isLoading}
@@ -435,7 +436,8 @@ export default function AiPromptsPage() {
       {listQuery.isError ? (
         <QueryErrorAlert error={listQuery.error} message="加载提示词列表失败" />
       ) : (
-        <Table<AiPrompt>
+        <SmartTable<AiPrompt>
+          storageKey="ai-admin-prompts-2"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

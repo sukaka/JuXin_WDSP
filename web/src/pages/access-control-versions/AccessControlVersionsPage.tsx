@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App, Button, Card, Drawer, Space, Table, Tag, Typography } from 'antd'
+import { App, Button, Card, Drawer, Space, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
 import {
   accessControlVersionsApi,
@@ -8,6 +8,7 @@ import {
 } from '../../api/accessControlVersions'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 
 const PUBLISH_RESULT_META: Record<string, { color: string; label: string }> = {
   SUCCESS: { color: 'success', label: '成功' },
@@ -111,7 +112,8 @@ export default function AccessControlVersionsPage() {
         访问控制与 CC 策略随配置发布产生版本快照。敏感凭据已脱敏，回滚时使用当前运行时密钥重新注入。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error} />
-      <Table
+      <SmartTable
+        storageKey="access-control-versions"
         rowKey="id"
         loading={listQuery.isLoading}
         columns={columns}

@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App as AntdApp, Button, Card, Drawer, Form, Input, Select, Space, Table, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Drawer, Form, Input, Select, Space, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { apiEndpointsApi } from '../../api/apiAssets'
 import { apiClassificationsApi, type ApiClassificationItem } from '../../api/apiSecurity'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
 
@@ -106,7 +107,8 @@ export default function ApiClassificationsPage() {
         分类体系定义可用的维度与取值（如业务域、数据等级）；在下方为具体端点设置维度键值对，用于分类统计与防护策略匹配。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error ?? endpointsQuery.error} />
-      <Table<ApiClassificationItem>
+      <SmartTable<ApiClassificationItem>
+        storageKey="api-classifications"
         rowKey="id"
         loading={listQuery.isLoading}
         columns={columns}

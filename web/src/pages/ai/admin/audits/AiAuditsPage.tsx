@@ -10,9 +10,9 @@ import {
   Input,
   Select,
   Space,
-  Table,
   Typography,
 } from 'antd'
+import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { SafetyOutlined } from '@ant-design/icons'
 import type dayjs from 'dayjs'
@@ -177,7 +177,8 @@ export default function AiAuditsPage() {
       {listQuery.isError ? (
         <QueryErrorAlert error={listQuery.error} message="加载 AI 审计失败" />
       ) : (
-        <Table<AiAuditRecord>
+        <SmartTable<AiAuditRecord>
+          storageKey="ai-admin-audits"
           rowKey={(r) =>
             `${r.occurred_at}-${r.username}-${r.action}-${r.request_summary?.slice(0, 24)}`
           }

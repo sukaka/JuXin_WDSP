@@ -12,10 +12,10 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Typography,
 } from 'antd'
+import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../../api/client'
@@ -523,7 +523,8 @@ export default function AiModelsPage() {
         {providersQuery.isError ? (
           <QueryErrorAlert error={providersQuery.error} message="加载模型供应商失败" />
         ) : (
-          <Table<AiModelProvider>
+          <SmartTable<AiModelProvider>
+            storageKey="ai-admin-models"
             rowKey="id"
             loading={providersQuery.isLoading}
             columns={providerColumns}
@@ -547,7 +548,8 @@ export default function AiModelsPage() {
         {modelsQuery.isError ? (
           <QueryErrorAlert error={modelsQuery.error} message="加载模型列表失败" />
         ) : (
-          <Table<AiModel>
+          <SmartTable<AiModel>
+            storageKey="ai-admin-models-2"
             rowKey="id"
             loading={modelsQuery.isLoading}
             columns={modelColumns}

@@ -12,10 +12,10 @@ import {
   Progress,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd'
+import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined, RollbackOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
@@ -253,7 +253,8 @@ export default function SystemUpgradePage() {
                 message={`预检结果：${CHECK_RESULT_META[precheck.overall_result]?.label ?? precheck.overall_result}`}
                 description={precheckBlocked ? '存在失败项，禁止执行升级。' : undefined}
               />
-              <Table
+              <SmartTable
+                storageKey="system-upgrade"
                 size="small"
                 rowKey="name"
                 pagination={false}
@@ -283,7 +284,8 @@ export default function SystemUpgradePage() {
         {listQuery.isError ? (
           <QueryErrorAlert error={listQuery.error} message="加载升级任务失败" />
         ) : (
-          <Table<UpgradeJobItem>
+          <SmartTable<UpgradeJobItem>
+            storageKey="system-upgrade-2"
             rowKey="id"
             loading={listQuery.isLoading}
             columns={columns}

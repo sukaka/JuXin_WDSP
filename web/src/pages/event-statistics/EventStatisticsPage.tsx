@@ -1,9 +1,10 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Card, Col, Row, Statistic, Table, Tag, Typography } from 'antd'
+import { Alert, Card, Col, Row, Statistic, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { securityEventsApi } from '../../api/securityEvents'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import {
   ATTACK_TYPE_META,
@@ -124,7 +125,8 @@ export default function EventStatisticsPage() {
           <Row gutter={16}>
             <Col span={8}>
               <Card size="small" title="攻击类型分布">
-                <Table
+                <SmartTable
+                  storageKey="event-statistics"
                   size="small"
                   rowKey="key"
                   loading={sampleQuery.isLoading}
@@ -136,7 +138,8 @@ export default function EventStatisticsPage() {
             </Col>
             <Col span={8}>
               <Card size="small" title="动作分布">
-                <Table
+                <SmartTable
+                  storageKey="event-statistics-actions"
                   size="small"
                   rowKey="key"
                   loading={sampleQuery.isLoading}
@@ -148,7 +151,8 @@ export default function EventStatisticsPage() {
             </Col>
             <Col span={8}>
               <Card size="small" title="处置状态分布">
-                <Table
+                <SmartTable
+                  storageKey="event-statistics-dispositions"
                   size="small"
                   rowKey="key"
                   loading={sampleQuery.isLoading}

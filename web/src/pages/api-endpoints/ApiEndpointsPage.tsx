@@ -9,7 +9,6 @@ import {
   Input,
   Select,
   Space,
-  Table,
   Tag,
   Tree,
   Typography,
@@ -19,6 +18,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { apiEndpointsApi, type ApiEndpointItem } from '../../api/apiAssets'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -365,7 +365,8 @@ export default function ApiEndpointsPage() {
               }}
             />
           </Space>
-          <Table<ApiEndpointItem>
+          <SmartTable<ApiEndpointItem>
+            storageKey="api-endpoints"
             rowKey="id"
             loading={listQuery.isLoading}
             columns={columns}
