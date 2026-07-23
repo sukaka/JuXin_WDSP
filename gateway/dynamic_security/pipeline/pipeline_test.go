@@ -61,10 +61,11 @@ func TestProcessDisabledSkips(t *testing.T) {
 
 func TestProcessCleanAuthOnlyAllows(t *testing.T) {
 	// 干净 API 请求仅带 Authorization：信息性 identity match 不得导致 OBSERVE
+	// （凭据需为非弱强度——短凭据会被 authentication 检测器判 WEAK_CREDENTIAL）
 	body := `{"id":1}`
 	r, _ := http.NewRequest(http.MethodPost, "http://h/v1/orders/1", strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer secret")
+	r.Header.Set("Authorization", "Bearer s3cr3t-token-0123456789abcdef")
 	r.Header.Set("X-Request-Id", "clean-auth-1")
 	res, err := Process(r, Config{Enabled: true, Mode: "PROTECT"}, nil)
 	if err != nil {

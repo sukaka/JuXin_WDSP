@@ -3,6 +3,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
@@ -20,16 +21,22 @@ type Config struct {
 	Limits  dsctx.ParseLimits
 	// FormalSchema 可选：字段名 → 期望类型（冻结模型）；nil 表示不跑偏离
 	FormalSchema map[string]string
+	// KnownEndpoints 已知端点基线（endpoint_key → asset_status，发布通道下发）；nil 关闭生命周期检测
+	KnownEndpoints map[string]string
+	// APIWriteRatePerMinute 写方法 API 每分钟限速（≤0 用 detectors.DefaultAPIWriteRatePerMinute）
+	APIWriteRatePerMinute int
+	// SensitivePatterns 敏感字段名模式（nil 用内置默认表；编译失败返回错误）
+	SensitivePatterns []detectors.SensitivePattern
 }
 
 // Result 管线输出。
 type Result struct {
-	Context    *dsctx.RequestContext
-	Parsed     *parser.Parsed
-	API        classifier.Result
+	Context     *dsctx.RequestContext
+	Parsed      *parser.Parsed
+	API         classifier.Result
 	EndpointKey string
 	FinalAction dsctx.FinalAction
-	Skipped    bool // API 管线关闭
+	Skipped     bool // API 管线关闭
 }
 
 // Process 执行统一管线。enabled=false 时返回 Skipped=true，不设置 final action（由遗留 WAF 负责）。
@@ -73,6 +80,31 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 	// identity fingerprint (presence only)
 	if parsed != nil {
 		detectors.CheckIdentitySignals(ctx, parsed)
+	}
+
+	// 追加检测器（只 AddMatch，统一由 decision 定案）
+	identity := detectors.IdentityKey(r)
+	if parsed != nil {
+		// 认证有效性（scheme/格式/弱凭据；凭据值不入证据）
+		detectors.CheckAuthentication(ctx, r, api.IsAPI)
+		// 敏感字段名（自定义模式编译失败为配置错误，不静默吞错）
+		patterns, err := detectors.CompileSensitivePatterns(cfg.SensitivePatterns)
+		if err != nil {
+			return nil, fmt.Errorf("compile sensitive patterns: %w", err)
+		}
+		detectors.CheckSensitiveData(ctx, parsed, patterns)
+		// 对象级访问辅助（BOLA/BFLA 前置信号）
+		detectors.CheckResourceAccess(ctx, parsed, identity)
+		if api.IsAPI {
+			// 生命周期（依赖 endpoint_key；仅 API 流量，静态路径不参与基线比对）
+			detectors.CheckLifecycle(ctx, ek, cfg.KnownEndpoints)
+			// 写方法 API 限速信号
+			if detectors.IsWriteMethod(parsed.Method) {
+				detectors.CheckAPIWriteRate(ctx, identity, ek, cfg.APIWriteRatePerMinute)
+			}
+		}
+		// 行为基线（identity+endpoint 进程内滑窗）
+		detectors.CheckBehavior(ctx, identity, ek)
 	}
 
 	mode := cfg.Mode

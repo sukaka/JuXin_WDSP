@@ -194,3 +194,36 @@ func TestServeNext_NonAPIGETNoEvent(t *testing.T) {
 		t.Fatalf("want no events for plain GET, got %+v", recs)
 	}
 }
+
+// 生命周期检测：端点不在发布下发的已知基线中 → NEW_ENDPOINT（OBSERVE 放行，事件含明细）。
+func TestServeNext_LifecycleNewEndpoint(t *testing.T) {
+	g, logPath := newAPITestGuard(t, "PROTECT", nil)
+	g.APIKnownEndpoints = map[string]string{"GET /v1/known": "CONFIRMED"}
+	called := false
+	next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+		called = true
+		return nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/new-thing", strings.NewReader(`{"id":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "req-lifecycle-1")
+	if err := g.serveNext(httptest.NewRecorder(), req, next); err != nil {
+		t.Fatalf("serveNext: %v", err)
+	}
+	if !called {
+		t.Fatal("NEW_ENDPOINT is OBSERVE class: next handler must be called")
+	}
+	recs := readAPIRecords(t, logPath)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 api event, got %d", len(recs))
+	}
+	found := false
+	for _, d := range recs[0].Details {
+		if d.RuleID == "lifecycle.new_endpoint" && d.Category == "OBSERVE" && d.Severity == "LOW" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("lifecycle.new_endpoint detail missing: %+v", recs[0].Details)
+	}
+}

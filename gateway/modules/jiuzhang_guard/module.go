@@ -129,6 +129,10 @@ type Guard struct {
 	APIEventsLog         string `json:"api_events_log,omitempty"`      // 缺省与 events_log 同目录 api-runtime-events.log
 	// 冻结正式模型（发布通道下发）：endpoint_key → 字段名 → 期望类型
 	APIFormalSchemas map[string]map[string]string `json:"api_formal_schemas,omitempty"`
+	// 已知 API 端点基线（发布通道下发）：endpoint_key → asset_status，供生命周期检测（新端点/DEPRECATED 调用）
+	APIKnownEndpoints map[string]string `json:"api_known_endpoints,omitempty"`
+	// 写方法 API 每分钟限速（缺省 60，由引擎默认值兜底）
+	APIWriteRatePerMinute int `json:"api_write_rate_per_minute,omitempty"`
 
 	// 运行时
 	logger    *zap.Logger
@@ -365,7 +369,8 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 		g.logger.Info("api dynamic protection enabled",
 			zap.String("mode", string(apiDecisionMode(g.APIProtectionMode))),
 			zap.String("events_log", p),
-			zap.Int("formal_schemas", len(g.APIFormalSchemas)))
+			zap.Int("formal_schemas", len(g.APIFormalSchemas)),
+			zap.Int("known_endpoints", len(g.APIKnownEndpoints)))
 	}
 
 	// 共享引擎

@@ -67,10 +67,12 @@ func (g *Guard) runAPIProtection(r *http.Request) (bool, error) {
 	// 端点键与管线内部同一算法，用于按端点选取冻结模型
 	ek := normalizer.EndpointKey(r.Method, r.URL.Path)
 	cfg := pipeline.Config{
-		Enabled:      true,
-		Mode:         apiDecisionMode(g.APIProtectionMode),
-		Limits:       dsctx.DefaultParseLimits(),
-		FormalSchema: g.APIFormalSchemas[ek],
+		Enabled:               true,
+		Mode:                  apiDecisionMode(g.APIProtectionMode),
+		Limits:                dsctx.DefaultParseLimits(),
+		FormalSchema:          g.APIFormalSchemas[ek],
+		KnownEndpoints:        g.APIKnownEndpoints,
+		APIWriteRatePerMinute: g.APIWriteRatePerMinute,
 	}
 	res, err := pipeline.Process(r, cfg, nil)
 	if err != nil {
