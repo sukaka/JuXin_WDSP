@@ -32,6 +32,16 @@ import AccessControlEventsPage from '../pages/access-control-events/AccessContro
 import AccessControlVersionsPage from '../pages/access-control-versions/AccessControlVersionsPage'
 import ApiEndpointsPage from '../pages/api-endpoints/ApiEndpointsPage'
 import ApiModelsPage from '../pages/api-models/ApiModelsPage'
+import ApiLearningPage from '../pages/api-learning/ApiLearningPage'
+import ApiParametersPage from '../pages/api-parameters/ApiParametersPage'
+import ApiClassificationsPage from '../pages/api-classifications/ApiClassificationsPage'
+import ApiSensitiveFieldsPage from '../pages/api-sensitive-fields/ApiSensitiveFieldsPage'
+import ApiSpecsPage from '../pages/api-specs/ApiSpecsPage'
+import ApiGraphPage from '../pages/api-graph/ApiGraphPage'
+import ApiTopologyPage from '../pages/api-topology/ApiTopologyPage'
+import ApiFindingsPage from '../pages/api-findings/ApiFindingsPage'
+import ApiShadowZombiePage from '../pages/api-shadow-zombie/ApiShadowZombiePage'
+import ApiPolicyPage from '../pages/api-policy/ApiPolicyPage'
 import SecurityEventsPage from '../pages/security-events/SecurityEventsPage'
 import EventStatisticsPage from '../pages/event-statistics/EventStatisticsPage'
 import SecurityOverviewPage from '../pages/security-overview/SecurityOverviewPage'
@@ -268,6 +278,106 @@ export default function AppRoutes() {
             <RequireAPIDynamicProtection>
               <RequirePermission permission={['api_model.read', 'api_model.edit']}>
                 <ApiModelsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-learning"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_learning.read">
+                <ApiLearningPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-parameters"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_parameter.read">
+                <ApiParametersPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-classifications"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_classification.read">
+                <ApiClassificationsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-sensitive-fields"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ApiSensitiveFieldsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-specs"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_spec.read">
+                <ApiSpecsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-graph"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_graph.read">
+                <ApiGraphPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-topology"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_graph.read">
+                <ApiTopologyPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-findings"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ApiFindingsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-shadow-zombie"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ApiShadowZombiePage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-policy"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_policy.read">
+                <ApiPolicyPage />
               </RequirePermission>
             </RequireAPIDynamicProtection>
           }

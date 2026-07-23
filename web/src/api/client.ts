@@ -39,7 +39,7 @@ export function setSessionExpiredHandler(handler: (() => void) | null): void {
 type QueryValue = string | number | boolean | undefined | null
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
   body?: unknown
   query?: Record<string, QueryValue>
   /** 响应不是统一信封格式时置为 true（如 /health） */
