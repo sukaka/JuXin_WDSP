@@ -53,6 +53,7 @@ Caddy 中间件顺序必须经过集成测试验证，不得凭经验随意调�
 - 阶段5：访问控制和CC防护
 - 阶段6：首页和安全报表
 - 阶段7：质量和交付
+- 阶段8：统一 Web 与 API 动态防护（WDSP，`develop` 分支；分支策略见 docs/BRANCHING_AND_PRODUCT_LINES.md，状态见 docs/DEVELOPMENT_STATUS.md 阶段8 小节）
 
 ## 文档索引
 

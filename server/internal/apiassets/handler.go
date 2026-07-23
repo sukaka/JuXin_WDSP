@@ -57,10 +57,6 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		Page:           queryInt(r, "page", 1),
 		PageSize:       queryInt(r, "page_size", 20),
 	}
-	// 兼容旧路由 /api/v1/api-endpoints 的 status 过滤参数
-	if f.AssetStatus == "" {
-		f.AssetStatus = strings.ToUpper(strings.TrimSpace(q.Get("status")))
-	}
 	if v := strings.TrimSpace(q.Get("application_id")); v != "" {
 		appID, err := uuid.Parse(v)
 		if err != nil {

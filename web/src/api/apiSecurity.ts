@@ -217,7 +217,7 @@ export const apiGraphApi = {
   graph: () =>
     request<{ nodes: ApiGraphNode[]; edges: ApiGraphEdge[] }>(`/api-security/graph`),
   topology: () =>
-    request<{ groups: ApiTopologyGroup[]; edges: ApiGraphEdge[] }>(`/api-security/topology`),
+    request<{ applications: ApiTopologyGroup[]; edges: ApiGraphEdge[] }>(`/api-security/topology`),
 }
 
 /** 风险发现与违例 */

@@ -20,7 +20,7 @@ export default function ApiTopologyPage() {
     queryFn: () => apiGraphApi.topology(),
   })
 
-  const groups = useMemo(() => topologyQuery.data?.groups ?? [], [topologyQuery.data])
+  const groups = useMemo(() => topologyQuery.data?.applications ?? [], [topologyQuery.data])
   const edges = useMemo(() => topologyQuery.data?.edges ?? [], [topologyQuery.data])
 
   const nodeById = useMemo(() => {
