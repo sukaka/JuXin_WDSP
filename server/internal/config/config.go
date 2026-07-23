@@ -4,8 +4,12 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jiuzhang-waf/server/internal/product"
@@ -97,12 +101,23 @@ type SecurityConfig struct {
 	InitialAdminUsername string
 	// CORSAllowedOrigins 允许的来源（开发环境为空时允许 vite dev server）
 	CORSAllowedOrigins []string
+	// TrustedProxyCIDRs 管理面可信反向代理网段；仅来自这些网段的转发头会被解析
+	TrustedProxyCIDRs []string
 }
 
 // DSN 返回 PostgreSQL 连接串。
 func (c DBConfig) DSN() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		c.User, c.Password, c.Host, c.Port, c.Database, c.SSLMode)
+	query := url.Values{}
+	query.Set("sslmode", c.SSLMode)
+	dsn := &url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(c.User, c.Password),
+		Host:     net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
+		Path:     "/" + c.Database,
+		RawPath:  "/" + url.PathEscape(c.Database),
+		RawQuery: query.Encode(),
+	}
+	return dsn.String()
 }
 
 // Addr 返回 Valkey 地址。
@@ -146,6 +161,7 @@ func Load() (*Config, error) {
 			InitialAdminPassword: os.Getenv("INITIAL_ADMIN_PASSWORD"),
 			InitialAdminUsername: getEnv("INITIAL_ADMIN_USERNAME", "jiuzhang_admin"),
 			CORSAllowedOrigins:   getEnvList("CORS_ALLOWED_ORIGINS"),
+			TrustedProxyCIDRs:    getEnvList("MANAGEMENT_TRUSTED_PROXY_CIDRS"),
 		},
 		Gateway: GatewayConfig{
 			AdminSocket: getEnv("CADDY_ADMIN_SOCKET", "/var/run/caddy/admin.sock"),
@@ -175,6 +191,11 @@ func Load() (*Config, error) {
 	}
 	if cfg.Env == "prod" && !cfg.Security.CookieSecure {
 		return nil, fmt.Errorf("COOKIE_SECURE must be true in prod")
+	}
+	for _, cidr := range cfg.Security.TrustedProxyCIDRs {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			return nil, fmt.Errorf("invalid MANAGEMENT_TRUSTED_PROXY_CIDRS entry %q: %w", cidr, err)
+		}
 	}
 	// 生产默认 fail-closed：若未显式设置 GUARD_FAIL_OPEN，强制 false
 	if cfg.Env == "prod" && os.Getenv("GUARD_FAIL_OPEN") == "" {
@@ -226,7 +247,7 @@ func getEnvList(key string) []string {
 	start := 0
 	for i := 0; i <= len(v); i++ {
 		if i == len(v) || v[i] == ',' {
-			item := v[start:i]
+			item := strings.TrimSpace(v[start:i])
 			if item != "" {
 				out = append(out, item)
 			}

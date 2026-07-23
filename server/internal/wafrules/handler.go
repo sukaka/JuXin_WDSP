@@ -14,10 +14,10 @@ import (
 
 // Handler 是WAF规则处理器。
 type Handler struct {
-	db        *pgxpool.Pool
-	syncSvc   *SyncService
-	audits    *audits.Service
-	crsDir    string
+	db         *pgxpool.Pool
+	syncSvc    *SyncService
+	audits     *audits.Service
+	crsDir     string
 	crsVersion string
 }
 
@@ -209,20 +209,20 @@ func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, summary, result, risk string) {
 	_ = h.audits.Record(r.Context(), audits.RecordInput{
-		UserID:        &p.UserID,
-		Username:      p.Username,
-		SourceIP:      middleware.RemoteIP(r),
-		ConnectionIP:  middleware.RemoteIP(r),
-		UserAgent:     r.UserAgent(),
-		Module:        module,
-		Action:        action,
-		ObjectType:    objType,
-		ObjectID:      objID,
-		ObjectName:    objName,
-		AfterSummary:  summary,
-		Result:        result,
-		RiskLevel:     risk,
-		RequestID:     response.RequestIDFrom(r),
+		UserID:       &p.UserID,
+		Username:     p.Username,
+		SourceIP:     middleware.RemoteIP(r),
+		ConnectionIP: middleware.ConnectionIP(r),
+		UserAgent:    r.UserAgent(),
+		Module:       module,
+		Action:       action,
+		ObjectType:   objType,
+		ObjectID:     objID,
+		ObjectName:   objName,
+		AfterSummary: summary,
+		Result:       result,
+		RiskLevel:    risk,
+		RequestID:    response.RequestIDFrom(r),
 	})
 }
 

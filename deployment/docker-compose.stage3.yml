@@ -82,6 +82,7 @@ services:
       COOKIE_SECURE: "false"
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
       JIUZHANG_MASTER_KEY: ${JIUZHANG_MASTER_KEY:-}
+      MANAGEMENT_TRUSTED_PROXY_CIDRS: ${MANAGEMENT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
       CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
       GATEWAY_DATA_DIR: /app/runtime
       MIGRATIONS_DIR: /app/migrations

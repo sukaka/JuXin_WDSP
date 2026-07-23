@@ -124,7 +124,10 @@ func setupTestEnv(t *testing.T) *testEnv {
 	}
 
 	// 启动服务
-	application := app.New(cfg, db, cacheClient)
+	application, err := app.New(cfg, db, cacheClient)
+	if err != nil {
+		t.Fatalf("initialize application: %v", err)
+	}
 	server := httptest.NewServer(application.Handler)
 	t.Cleanup(func() {
 		server.Close()

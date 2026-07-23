@@ -143,6 +143,9 @@ func (s *Store) ListPackages(ctx context.Context, status string, page, pageSize 
 const jobColumns = `id, package_id, status, precheck, backup_job_id, requested_by, requested_at,
 started_at, finished_at, failure_code, failure_message, request_id`
 
+// upgradeJobLockKey 串行化活动升级任务的检查与创建，避免两个请求同时通过预检。
+const upgradeJobLockKey int64 = 0x4a5a574146555047
+
 func scanJob(row pgx.Row) (*Job, error) {
 	var j Job
 	err := row.Scan(&j.ID, &j.PackageID, &j.Status, &j.Precheck, &j.BackupJobID,
@@ -155,6 +158,40 @@ func scanJob(row pgx.Row) (*Job, error) {
 		return nil, err
 	}
 	return &j, nil
+}
+
+// CreateJobIfNoActive 在同一事务中检查并创建升级任务。
+func (s *Store) CreateJobIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID string) (*Job, error) {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, upgradeJobLockKey); err != nil {
+		return nil, err
+	}
+	var active bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS(SELECT 1 FROM upgrade_jobs
+WHERE status NOT IN ($1, $2, $3))`, StatusSuccess, StatusFailed, StatusRolledBack).Scan(&active); err != nil {
+		return nil, err
+	}
+	if active {
+		return nil, ErrActiveUpgrade
+	}
+
+	job, err := scanJob(tx.QueryRow(ctx, `
+INSERT INTO upgrade_jobs (package_id, status, requested_by, request_id)
+VALUES ($1, $2, $3, $4)
+RETURNING `+jobColumns, packageID, StatusPending, requestedBy, requestID))
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return job, nil
 }
 
 // CreateJob 创建 PENDING 升级任务。

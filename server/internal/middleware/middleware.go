@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -177,7 +178,7 @@ func AccessLog(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", sw.status,
 			"duration_ms", time.Since(start).Milliseconds(),
-			"remote_ip", remoteIP(r),
+			"remote_ip", RemoteIP(r),
 		)
 	})
 }
@@ -204,9 +205,11 @@ func (w *statusWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
-// remoteIP 返回直接连接的来源 IP（管理面无前置代理时不信任 XFF）。
-// 正确处理 IPv4 与 IPv6（含方括号）地址。
-func remoteIP(r *http.Request) string {
+type clientIPContextKey struct{}
+type connectionIPContextKey struct{}
+
+// directIP 返回直接连接的来源 IP，正确处理 IPv4 与 IPv6（含方括号）。
+func directIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -214,7 +217,73 @@ func remoteIP(r *http.Request) string {
 	return host
 }
 
-// RemoteIP 导出 remoteIP 供业务模块记录来源 IP。
+// ClientIP 解析可信反向代理提供的 X-Forwarded-For。
+// 只有直接连接来自 trustedCIDRs 时才会采纳转发头，并从右向左跳过可信代理。
+func ClientIP(trustedCIDRs []string) (func(http.Handler) http.Handler, error) {
+	trusted := make([]netip.Prefix, 0, len(trustedCIDRs))
+	for _, raw := range trustedCIDRs {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, fmt.Errorf("parse trusted proxy CIDR %q: %w", raw, err)
+		}
+		trusted = append(trusted, prefix)
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			connection := directIP(r)
+			resolved := resolveForwardedIP(connection, r.Header.Get("X-Forwarded-For"), trusted)
+			ctx := context.WithValue(r.Context(), connectionIPContextKey{}, connection)
+			ctx = context.WithValue(ctx, clientIPContextKey{}, resolved)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}, nil
+}
+
+func resolveForwardedIP(connection, forwarded string, trusted []netip.Prefix) string {
+	peer, err := netip.ParseAddr(connection)
+	if err != nil || !isTrustedProxy(peer, trusted) || strings.TrimSpace(forwarded) == "" {
+		return connection
+	}
+
+	parts := strings.Split(forwarded, ",")
+	chain := make([]netip.Addr, 0, len(parts))
+	for _, part := range parts {
+		addr, err := netip.ParseAddr(strings.TrimSpace(part))
+		if err != nil {
+			return connection
+		}
+		chain = append(chain, addr)
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		if !isTrustedProxy(chain[i], trusted) {
+			return chain[i].String()
+		}
+	}
+	return chain[0].String()
+}
+
+func isTrustedProxy(addr netip.Addr, trusted []netip.Prefix) bool {
+	addr = addr.Unmap()
+	for _, prefix := range trusted {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// RemoteIP 返回安全解析后的客户端来源 IP。
 func RemoteIP(r *http.Request) string {
-	return remoteIP(r)
+	if ip, ok := r.Context().Value(clientIPContextKey{}).(string); ok && ip != "" {
+		return ip
+	}
+	return directIP(r)
+}
+
+// ConnectionIP 返回与管理 API 建立直接连接的对端 IP。
+func ConnectionIP(r *http.Request) string {
+	if ip, ok := r.Context().Value(connectionIPContextKey{}).(string); ok && ip != "" {
+		return ip
+	}
+	return directIP(r)
 }

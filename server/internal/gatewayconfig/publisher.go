@@ -40,6 +40,8 @@ var (
 	ErrInvalidState  = errors.New("invalid publish state")
 	ErrNoApps        = errors.New("no applications to publish")
 	ErrPublishFailed = errors.New("publish failed")
+
+	errPreviousConfigRead = errors.New("read previous gateway config")
 )
 
 // PublishTask 是发布任务。
@@ -107,17 +109,33 @@ type GuardProvider interface {
 
 // Publisher 是配置发布控制器。
 type Publisher struct {
-	db         *pgxpool.Pool
-	cache      *cache.Client
-	apps       *applications.Store
-	certs      *certificates.Store
-	caddy      *CaddyClient
-	dataDir    string // 配置与证书文件目录（runtime）
+	db            *pgxpool.Pool
+	cache         *cache.Client
+	apps          *applications.Store
+	certs         *certificates.Store
+	caddy         *CaddyClient
+	dataDir       string // 配置与证书文件目录（runtime）
 	policies      PolicyProvider
 	exceptions    ExceptionProvider
 	customRules   CustomRulesProvider
 	ruleOverrides RuleOverridesProvider
 	guard         GuardProvider
+}
+
+type gatewayConfigLoader interface {
+	GetCurrentConfig(ctx context.Context) (string, error)
+	LoadConfig(ctx context.Context, configJSON string) error
+}
+
+func loadGatewayConfig(ctx context.Context, loader gatewayConfigLoader, configJSON string) (string, error) {
+	previousConfig, err := loader.GetCurrentConfig(ctx)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errPreviousConfigRead, err)
+	}
+	if err := loader.LoadConfig(ctx, configJSON); err != nil {
+		return previousConfig, err
+	}
+	return previousConfig, nil
 }
 
 // NewPublisher 创建发布控制器。
@@ -272,11 +290,11 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	// 步骤2：生成候选配置
 	p.updateTaskStep(ctx, taskID, TaskGenerating, "生成候选配置", 25)
 	gen, err := Generate(GenerateInput{
-		Apps:         appsData,
-		AdminSocket:  p.caddy.SocketPath(),
-		Exceptions:   exceptionRules,
-		CustomRules:  customSecLang,
-		Guard:        guardCfg,
+		Apps:        appsData,
+		AdminSocket: p.caddy.SocketPath(),
+		Exceptions:  exceptionRules,
+		CustomRules: customSecLang,
+		Guard:       guardCfg,
 	})
 	if err != nil {
 		p.finishTask(ctx, taskID, TaskFailed, "GENERATE_FAILED", err.Error(), nil)
@@ -321,10 +339,15 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 
 	// 步骤5：发布到 Caddy
 	p.updateTaskStep(ctx, taskID, TaskPublishing, "发布到网关", 60)
-	prevConfig, _ := p.caddy.GetCurrentConfig(ctx)
-	if err := p.caddy.LoadConfig(ctx, gen.JSON); err != nil {
+	prevConfig, err := loadGatewayConfig(ctx, p.caddy, gen.JSON)
+	if err != nil {
 		p.markVersionResult(ctx, version.ID, "FAILED")
 		markAC("FAILED")
+		if errors.Is(err, errPreviousConfigRead) {
+			p.finishTask(ctx, taskID, TaskFailed, "PREVIOUS_CONFIG_READ_FAILED",
+				"无法读取发布前网关配置: "+sanitizeCaddyError(err), &version.ID)
+			return
+		}
 		p.finishTask(ctx, taskID, TaskFailed, "PUBLISH_FAILED", sanitizeCaddyError(err), &version.ID)
 		return
 	}
@@ -349,10 +372,23 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	}
 
 	// 成功
-	p.markVersionResult(ctx, version.ID, "SUCCESS")
+	if err := p.activatePublishedVersion(ctx, version.ID, in.AppIDs); err != nil {
+		rollbackErr := p.rollbackToConfig(ctx, prevConfig)
+		p.markVersionResult(ctx, version.ID, "ACTIVATION_FAILED")
+		markAC("FAILED")
+		if rollbackErr != nil {
+			p.finishTask(ctx, taskID, TaskFailed, "ROLLBACK_FAILED",
+				fmt.Sprintf("切换当前版本失败(%s)且网关回滚失败(%s)", err.Error(), rollbackErr.Error()), &version.ID)
+			return
+		}
+		p.finishTask(ctx, taskID, TaskFailed, "SET_CURRENT_VERSION_FAILED_ROLLED_BACK",
+			"激活版本状态失败，网关已自动回滚: "+err.Error(), &version.ID)
+		return
+	}
 	markAC("SUCCESS")
-	_ = p.setCurrentVersion(ctx, version.ID)
-	p.updateAppsDeployment(ctx, in.AppIDs, applications.DeployPublished, version.ID)
+	if _, err := WriteActiveConfig(p.dataDir, "current", gen.JSON); err != nil {
+		slog.Warn("write active gateway config failed", "version", version.ID, "error", err)
+	}
 	p.finishTask(ctx, taskID, TaskSuccess, "", "发布成功", &version.ID)
 }
 
@@ -532,20 +568,38 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 	}
 
 	p.updateTaskStep(ctx, task.ID, TaskPublishing, "回滚发布", 50)
-	prevConfig, _ := p.caddy.GetCurrentConfig(ctx)
-	if err := p.caddy.LoadConfig(ctx, version.ConfigurationJSON); err != nil {
+	prevConfig, err := loadGatewayConfig(ctx, p.caddy, version.ConfigurationJSON)
+	if err != nil {
+		if errors.Is(err, errPreviousConfigRead) {
+			p.finishTask(ctx, task.ID, TaskFailed, "PREVIOUS_CONFIG_READ_FAILED",
+				"无法读取回滚前网关配置: "+sanitizeCaddyError(err), nil)
+			return p.GetTask(ctx, task.ID)
+		}
 		p.finishTask(ctx, task.ID, TaskFailed, "ROLLBACK_PUBLISH_FAILED", sanitizeCaddyError(err), nil)
 		return p.GetTask(ctx, task.ID)
 	}
 
 	// 验证
 	if err := p.verifyPublish(ctx, &Generated{JSON: version.ConfigurationJSON, ServerCount: 1}, nil); err != nil {
-		_ = p.rollbackToConfig(ctx, prevConfig)
+		if restoreErr := p.rollbackToConfig(ctx, prevConfig); restoreErr != nil {
+			p.finishTask(ctx, task.ID, TaskFailed, "ROLLBACK_FAILED",
+				fmt.Sprintf("回滚后验证失败(%s)且恢复原配置失败(%s)", err.Error(), restoreErr.Error()), nil)
+			return p.GetTask(ctx, task.ID)
+		}
 		p.finishTask(ctx, task.ID, TaskFailed, "ROLLBACK_VERIFY_FAILED", "回滚后验证失败，已恢复", nil)
 		return p.GetTask(ctx, task.ID)
 	}
 
-	_ = p.setCurrentVersion(ctx, in.VersionID)
+	if err := p.setCurrentVersion(ctx, in.VersionID); err != nil {
+		if restoreErr := p.rollbackToConfig(ctx, prevConfig); restoreErr != nil {
+			p.finishTask(ctx, task.ID, TaskFailed, "ROLLBACK_FAILED",
+				fmt.Sprintf("切换当前版本失败(%s)且恢复原配置失败(%s)", err.Error(), restoreErr.Error()), nil)
+			return p.GetTask(ctx, task.ID)
+		}
+		p.finishTask(ctx, task.ID, TaskFailed, "SET_CURRENT_VERSION_FAILED_ROLLED_BACK",
+			"切换当前版本失败，网关已恢复原配置: "+err.Error(), nil)
+		return p.GetTask(ctx, task.ID)
+	}
 	p.finishTask(ctx, task.ID, TaskSuccess, "", "回滚成功", &in.VersionID)
 	return p.GetTask(ctx, task.ID)
 }

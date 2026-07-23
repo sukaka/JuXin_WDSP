@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jiuzhang-waf/server/internal/applications"
 )
 
 // ConfigVersion 是配置版本。
@@ -211,8 +212,12 @@ func (p *Publisher) setCurrentVersion(ctx context.Context, versionID uuid.UUID) 
 	if _, err := tx.Exec(ctx, `UPDATE gateway_config_versions SET is_current = FALSE WHERE is_current = TRUE`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE gateway_config_versions SET is_current = TRUE WHERE id = $1`, versionID); err != nil {
+	res, err := tx.Exec(ctx, `UPDATE gateway_config_versions SET is_current = TRUE WHERE id = $1`, versionID)
+	if err != nil {
 		return err
+	}
+	if res.RowsAffected() != 1 {
+		return fmt.Errorf("gateway config version %s not found", versionID)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
@@ -223,6 +228,55 @@ func (p *Publisher) setCurrentVersion(ctx context.Context, versionID uuid.UUID) 
 		_, _ = WriteActiveConfig(p.dataDir, "current", gen)
 	}
 	return nil
+}
+
+// activatePublishedVersion 原子切换当前版本并回填相关应用的部署状态。
+func (p *Publisher) activatePublishedVersion(ctx context.Context, versionID uuid.UUID, appIDs []uuid.UUID) error {
+	tx, err := p.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `UPDATE gateway_config_versions SET is_current = FALSE WHERE is_current = TRUE`); err != nil {
+		return err
+	}
+	res, err := tx.Exec(ctx, `
+UPDATE gateway_config_versions
+SET is_current = TRUE, publish_result = 'SUCCESS', published_at = now()
+WHERE id = $1`, versionID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() != 1 {
+		return fmt.Errorf("gateway config version %s not found", versionID)
+	}
+
+	if len(appIDs) == 0 {
+		if _, err := tx.Exec(ctx, `
+UPDATE applications
+SET deployment_status=$1, last_publish_result='SUCCESS', current_version_id=$2,
+  last_publish_at=now(), updated_at=now(), version=version+1
+WHERE status='ACTIVE' AND deleted_at IS NULL`, applications.DeployPublished, versionID); err != nil {
+			return err
+		}
+	} else {
+		for _, appID := range appIDs {
+			res, err := tx.Exec(ctx, `
+UPDATE applications
+SET deployment_status=$1, last_publish_result='SUCCESS', current_version_id=$2,
+  last_publish_at=now(), updated_at=now(), version=version+1
+WHERE id=$3 AND deleted_at IS NULL`, applications.DeployPublished, versionID, appID)
+			if err != nil {
+				return err
+			}
+			if res.RowsAffected() != 1 {
+				return fmt.Errorf("application %s not found during gateway activation", appID)
+			}
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 // getVersion 查询配置版本。
@@ -311,19 +365,4 @@ func scanVersionRows(rows pgx.Rows) (*ConfigVersion, error) {
 		return nil, err
 	}
 	return &v, nil
-}
-
-// updateAppsDeployment 更新应用部署状态。
-func (p *Publisher) updateAppsDeployment(ctx context.Context, appIDs []uuid.UUID, status string, versionID uuid.UUID) {
-	if len(appIDs) == 0 {
-		// 全部活动应用
-		_, _ = p.db.Exec(ctx, `
-UPDATE applications SET deployment_status=$1, last_publish_result='SUCCESS', current_version_id=$2,
-  last_publish_at=now(), updated_at=now()
-WHERE status='ACTIVE' AND deleted_at IS NULL`, status, versionID)
-		return
-	}
-	for _, id := range appIDs {
-		_ = p.apps.SetDeploymentStatus(ctx, id, status, "SUCCESS", &versionID)
-	}
 }

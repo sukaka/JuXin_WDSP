@@ -297,7 +297,7 @@ test.describe('阶段7：AI安全运营中心', () => {
     const versions = (await versionsResp.json())?.data?.items ?? []
     const v2 = versions.find((v: { id: string; version_number: number }) => v.version_number === 2)
     expect(v2, '版本列表中应存在 v2').toBeTruthy()
-    let token = await csrf(page)
+    const token = await csrf(page)
     const badPublish = await page.request.post(`${API_URL}/ai/prompts/${prompt.id}/publish`, {
       data: { version_id: v2.id },
       headers: { 'X-CSRF-Token': token },

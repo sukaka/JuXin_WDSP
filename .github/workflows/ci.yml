@@ -113,4 +113,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Validate docker-compose.yml
+        env:
+          POSTGRES_PASSWORD: compose-validation-only
+          VALKEY_PASSWORD: compose-validation-only
         run: docker compose -f docker-compose.yml config

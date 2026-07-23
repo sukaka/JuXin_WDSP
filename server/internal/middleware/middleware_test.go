@@ -28,6 +28,73 @@ func TestSameOrigin(t *testing.T) {
 	}
 }
 
+func TestClientIPTrustsForwardedChainOnlyFromConfiguredProxy(t *testing.T) {
+	resolver, err := ClientIP([]string{"172.16.0.0/12"})
+	if err != nil {
+		t.Fatalf("ClientIP() error = %v", err)
+	}
+	handler := resolver(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Resolved-IP", RemoteIP(r))
+		w.Header().Set("Connection-IP", ConnectionIP(r))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "172.18.0.2:43210"
+	req.Header.Set("X-Forwarded-For", "198.51.100.7, 172.18.0.3")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Resolved-IP"); got != "198.51.100.7" {
+		t.Fatalf("resolved IP = %q, want client IP", got)
+	}
+	if got := rec.Header().Get("Connection-IP"); got != "172.18.0.2" {
+		t.Fatalf("connection IP = %q, want direct peer", got)
+	}
+}
+
+func TestClientIPRejectsSpoofedForwardedHeaderFromUntrustedPeer(t *testing.T) {
+	resolver, err := ClientIP([]string{"172.16.0.0/12"})
+	if err != nil {
+		t.Fatalf("ClientIP() error = %v", err)
+	}
+	handler := resolver(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Resolved-IP", RemoteIP(r))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:43210"
+	req.Header.Set("X-Forwarded-For", "198.51.100.7")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Resolved-IP"); got != "203.0.113.9" {
+		t.Fatalf("resolved IP = %q, want direct untrusted peer", got)
+	}
+}
+
+func TestClientIPFallsBackOnMalformedForwardedChain(t *testing.T) {
+	resolver, err := ClientIP([]string{"172.16.0.0/12"})
+	if err != nil {
+		t.Fatalf("ClientIP() error = %v", err)
+	}
+	handler := resolver(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Resolved-IP", RemoteIP(r))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[2001:db8::10]:43210"
+	req.Header.Set("X-Forwarded-For", "198.51.100.7, not-an-ip")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Resolved-IP"); got != "2001:db8::10" {
+		t.Fatalf("resolved IP = %q, want direct IPv6 peer", got)
+	}
+}
+
 func TestSanitizeClientRequestID(t *testing.T) {
 	cases := []struct {
 		in   string
