@@ -313,26 +313,98 @@ func TestCollectorResumeFromCheckpoint(t *testing.T) {
 
 func TestCollectorRotation(t *testing.T) {
 	dir := t.TempDir()
-	logPath := writeEventsFile(t, dir, validLine(t, map[string]interface{}{"request_id": "old"}))
+	oldLine := validLine(t, map[string]interface{}{"request_id": "old"})
+	newLine := validLine(t, map[string]interface{}{"request_id": "new"})
+	if len(oldLine) != len(newLine) {
+		t.Fatal("test requires equal-sized old and new files")
+	}
+	logPath := writeEventsFile(t, dir, oldLine)
 	store := &fakeEventStore{}
 	c := NewCollector(store, "c", logPath, "", "n")
 	if _, err := c.CollectOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// 轮转：删除后重建（新 inode），内容更短
+	cpData, err := os.ReadFile(logPath + ".checkpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cp checkpoint
+	if err := json.Unmarshal(cpData, &cp); err != nil {
+		t.Fatal(err)
+	}
+
+	// 轮转：删除后以相同大小重建，并强制模拟 inode 被系统复用。
 	if err := os.Remove(logPath); err != nil {
 		t.Fatal(err)
 	}
-	logPath2 := writeEventsFile(t, dir, validLine(t, map[string]interface{}{"request_id": "new"}))
+	logPath2 := writeEventsFile(t, dir, newLine)
 	if logPath != logPath2 {
 		t.Fatal("path mismatch")
 	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp.Inode = fileInode(f)
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cpData, err = json.Marshal(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath+".checkpoint", cpData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	n, err := c.CollectOnce(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 || len(store.events) != 2 || store.events[1].RequestID != "new" {
 		t.Errorf("rotation re-read failed: n=%d events=%+v", n, store.events)
+	}
+}
+
+func TestCollectorDoesNotCheckpointPartialLine(t *testing.T) {
+	dir := t.TempDir()
+	line := validLine(t, map[string]interface{}{"request_id": "completed-later"})
+	logPath := writeEventsFile(t, dir, line[:len(line)-1])
+	store := &fakeEventStore{}
+	c := NewCollector(store, "c", logPath, "", "n")
+
+	if n, err := c.CollectOnce(context.Background()); err != nil || n != 0 {
+		t.Fatalf("partial collect = %d, %v; want 0, nil", n, err)
+	}
+	cpData, err := os.ReadFile(logPath + ".checkpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cp checkpoint
+	if err := json.Unmarshal(cpData, &cp); err != nil {
+		t.Fatal(err)
+	}
+	if cp.Offset != 0 {
+		t.Fatalf("partial line checkpoint offset = %d, want 0", cp.Offset)
+	}
+
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{'\n'}); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := c.CollectOnce(context.Background()); err != nil || n != 1 {
+		t.Fatalf("completed collect = %d, %v; want 1, nil", n, err)
+	}
+	if len(store.events) != 1 || store.events[0].RequestID != "completed-later" {
+		t.Fatalf("completed event not collected: %+v", store.events)
 	}
 }
 
@@ -351,6 +423,31 @@ func TestCollectorCorruptCheckpoint(t *testing.T) {
 	}
 	if n != 1 || len(store.events) != 1 {
 		t.Errorf("corrupt checkpoint should reset to 0: n=%d events=%d", n, len(store.events))
+	}
+}
+
+func TestCollectorRejectsInvalidCheckpointValues(t *testing.T) {
+	dir := t.TempDir()
+	logPath := writeEventsFile(t, dir, validLine(t, map[string]interface{}{"request_id": "r1"}))
+	cpData, err := json.Marshal(checkpoint{
+		Offset:       1,
+		PrefixSize:   checkpointPrefixLimit + 1,
+		PrefixSHA256: strings.Repeat("0", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath+".checkpoint", cpData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeEventStore{}
+	c := NewCollector(store, "c", logPath, "", "n")
+	n, err := c.CollectOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || len(store.events) != 1 {
+		t.Errorf("invalid checkpoint should reset to 0: n=%d events=%d", n, len(store.events))
 	}
 }
 
