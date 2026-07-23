@@ -294,7 +294,7 @@ test.describe('阶段8：接口动态防护（WDSP）', () => {
     // 关键词过滤定位本用例端点
     await page.getByPlaceholder('路径 / 端点键').fill(tag)
     await page.keyboard.press('Enter')
-    const row = page.locator('tr', { hasText: ep.endpointKey })
+    const row = page.locator('tr', { hasText: ep.endpointKey.replace(/^[A-Z]+ /, '') })
     await expect(row).toBeVisible({ timeout: 10000 })
     // 方法、路径模板与中文状态标签
     await expect(row).toContainText('POST')
@@ -329,7 +329,7 @@ test.describe('阶段8：接口动态防护（WDSP）', () => {
     await drawer.getByRole('button', { name: /创 ?建/ }).click()
 
     // 列表出现候选版本
-    const row = page.locator('tr', { hasText: ep.endpointKey })
+    const row = page.locator('tr', { hasText: ep.endpointKey.replace(/^[A-Z]+ /, '') })
     await expect(row.getByText('候选')).toBeVisible({ timeout: 10000 })
 
     // 确认冻结 → 状态变「正式」
@@ -427,7 +427,7 @@ test.describe('阶段8：接口动态防护（WDSP）', () => {
     // 端点列表可读、中文状态可见，但行内「确认/忽略」按钮不渲染
     await page.getByPlaceholder('路径 / 端点键').fill(tag)
     await page.keyboard.press('Enter')
-    const row = page.locator('tr', { hasText: ep.endpointKey })
+    const row = page.locator('tr', { hasText: ep.endpointKey.replace(/^[A-Z]+ /, '') })
     await expect(row).toBeVisible({ timeout: 10000 })
     await expect(row.getByText('已发现')).toBeVisible()
     await expect(row.getByRole('button', { name: '确认' })).toHaveCount(0)
