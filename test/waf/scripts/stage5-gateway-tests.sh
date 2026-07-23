@@ -113,8 +113,10 @@ s5_post /api/v1/access-rules "{\"name\":\"aa-70\",\"rule_type\":\"ALLOW\",\"scop
 # 真实IP识别：单级可信代理，X-Real-Ip 透传真实客户端
 REAL=$(curl -s -H "Host: $HOST_HEADER" -H "X-Forwarded-For: 203.0.113.123" "$GATEWAY_URL/echo" | python3 -c "import json,sys; print(json.load(sys.stdin)['headers'].get('X-Real-Ip',''))")
 [ "$REAL" = "203.0.113.123" ] && record "realip-single-proxy" 1 || record "realip-single-proxy" 0 "got=$REAL"
-# 多级代理：client, 可信172.20.x → 右跳可信取 client
-REAL=$(curl -s -H "Host: $HOST_HEADER" -H "X-Forwarded-For: 203.0.113.124, 172.20.0.9" "$GATEWAY_URL/echo" | python3 -c "import json,sys; print(json.load(sys.stdin)['headers'].get('X-Real-Ip',''))")
+# 多级代理：client, 可信<本子网地址> → 右跳可信取 client（子网随 compose 变化，动态取第 9 个主机位）
+TRUSTED_HOP=$(python3 -c "import ipaddress;print(list(ipaddress.ip_network('$SUBNET').hosts())[8])" 2>/dev/null)
+TRUSTED_HOP=${TRUSTED_HOP:-172.20.0.9}
+REAL=$(curl -s -H "Host: $HOST_HEADER" -H "X-Forwarded-For: 203.0.113.124, $TRUSTED_HOP" "$GATEWAY_URL/echo" | python3 -c "import json,sys; print(json.load(sys.stdin)['headers'].get('X-Real-Ip',''))")
 [ "$REAL" = "203.0.113.124" ] && record "realip-multi-proxy" 1 || record "realip-multi-proxy" 0 "got=$REAL"
 # 超长代理链（>16）→ 回退连接源 + 事件
 LONG_CHAIN=$(python3 -c "print(', '.join('10.0.0.%d'%i for i in range(1,21)))")
