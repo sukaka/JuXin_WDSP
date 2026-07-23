@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jiuzhang-waf/server/internal/applications"
 )
 
@@ -160,40 +161,53 @@ func (p *Publisher) setTaskTargetVersion(ctx context.Context, taskID, versionID 
 }
 
 // saveVersion 保存配置版本（不可变）。
+// 版本号：V<UTC 毫秒时间戳>-<哈希前8>；同秒同配置的快速连续发布会冲突，
+// 撞唯一约束时追加序号重试（不静默失败，超出次数如实返回错误）。
 func (p *Publisher) saveVersion(ctx context.Context, gen *Generated, snapshot map[string]interface{}, in PublishInput, taskID uuid.UUID) (*ConfigVersion, error) {
-	// 生成版本号（基于时间戳+哈希前缀，全局唯一可排序）
-	versionNum := fmt.Sprintf("V%s-%s", time.Now().UTC().Format("20060102.150405"), gen.Hash[:8])
+	base := fmt.Sprintf("V%s-%s", time.Now().UTC().Format("20060102.150405.000"), gen.Hash[:8])
 
 	snapshotJSON, _ := json.Marshal(snapshot)
-	v := &ConfigVersion{
-		VersionNumber:     versionNum,
-		ConfigurationJSON: gen.JSON,
-		ConfigurationHash: gen.Hash,
-		BusinessSnapshot:  string(snapshotJSON),
-		ChangeSummary:     fmt.Sprintf("发布 %d 个应用", len(snapshot["apps"].([]map[string]interface{}))),
-		PublishTaskID:     &taskID,
-		CreatedBy:         &in.RequestedBy,
-	}
 	// 上一版本
 	var prevID *uuid.UUID
 	_ = p.db.QueryRow(ctx,
 		`SELECT id FROM gateway_config_versions WHERE is_current = TRUE LIMIT 1`).Scan(&prevID)
-	v.PreviousVersionID = prevID
 
-	err := p.db.QueryRow(ctx, `
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		versionNum := base
+		if attempt > 0 {
+			versionNum = fmt.Sprintf("%s-%d", base, attempt+1)
+		}
+		v := &ConfigVersion{
+			VersionNumber:     versionNum,
+			ConfigurationJSON: gen.JSON,
+			ConfigurationHash: gen.Hash,
+			BusinessSnapshot:  string(snapshotJSON),
+			ChangeSummary:     fmt.Sprintf("发布 %d 个应用", len(snapshot["apps"].([]map[string]interface{}))),
+			PublishTaskID:     &taskID,
+			CreatedBy:         &in.RequestedBy,
+			PreviousVersionID: prevID,
+		}
+		err := p.db.QueryRow(ctx, `
 INSERT INTO gateway_config_versions (version_number, configuration_json, configuration_hash,
   business_snapshot, change_summary, previous_version_id, publish_task_id, created_by)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 RETURNING id, created_at`,
-		v.VersionNumber, v.ConfigurationJSON, v.ConfigurationHash, v.BusinessSnapshot,
-		v.ChangeSummary, v.PreviousVersionID, v.PublishTaskID, v.CreatedBy,
-	).Scan(&v.ID, &v.CreatedAt)
-	if err != nil {
-		return nil, err
+			v.VersionNumber, v.ConfigurationJSON, v.ConfigurationHash, v.BusinessSnapshot,
+			v.ChangeSummary, v.PreviousVersionID, v.PublishTaskID, v.CreatedBy,
+		).Scan(&v.ID, &v.CreatedAt)
+		if err == nil {
+			// 写入版本配置文件
+			_, _ = WriteVersionConfig(p.dataDir, v.VersionNumber, gen.JSON)
+			return v, nil
+		}
+		lastErr = err
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+			return nil, err
+		}
 	}
-	// 写入版本配置文件
-	_, _ = WriteVersionConfig(p.dataDir, v.VersionNumber, gen.JSON)
-	return v, nil
+	return nil, fmt.Errorf("save config version: version_number conflict after retries: %w", lastErr)
 }
 
 // markVersionResult 标记版本发布结果。

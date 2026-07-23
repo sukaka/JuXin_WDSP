@@ -54,8 +54,8 @@ else:
 EOF
 }
 
-# 非 200 响应计数（429/5xx 出现说明采样被限速或故障污染）
-bad_codes() { awk '$2 != "200" {n++} END {print n+0}' "$1"; }
+# 污染响应计数（429/5xx/000 为污染；testorigin 对未知路径 404 属正常全管线响应，不计入）
+bad_codes() { awk '$2 == "429" || $2 == "000" || $2 ~ /^5/ {n++} END {print n+0}' "$1"; }
 
 # 按 URL 文件并发采样：$1=URL文件 $2=并发 $3=输出文件（curl -w time_total）
 burst() {
@@ -110,10 +110,10 @@ LINES_API=$(wc -l < "$SMP_API" | tr -d ' '); LINES_WEB=$(wc -l < "$SMP_WEB" | tr
 log "[a] API 臂 p95=${API_P95}s（样本=$LINES_API 异常=${BAD_API}）  Web 臂 p95=${WEB_P95}s（样本=$LINES_WEB 异常=${BAD_WEB}）"
 
 if [ "$LINES_API" != "$N" ] || [ "$LINES_WEB" != "$N" ] || [ "$BAD_API" != "0" ] || [ "$BAD_WEB" != "0" ]; then
-  record "a) 采样纯净（样本完整且全部 200，无 429/5xx 污染）" 0 "样本 api=$LINES_API/$N web=$LINES_WEB/$N api_bad=$BAD_API web_bad=$BAD_WEB"
+  record "a) 采样纯净（样本完整且无 429/5xx 污染，200/404 均为干净响应）" 0 "样本 api=$LINES_API/$N web=$LINES_WEB/$N api_bad=$BAD_API web_bad=$BAD_WEB"
   record "a) API 管线 p95 开销增幅 < 50%" 0 "采样被污染，跳过对比"
 else
-  record "a) 采样纯净（样本完整且全部 200，无 429/5xx 污染）" 1
+  record "a) 采样纯净（样本完整且无 429/5xx 污染）" 1
   # 主判据：api_p95 ≤ web_p95×1.5；基线 p95 极小（<10ms 级）时比例噪声大，
   # 辅以绝对开销地板：增量 ≤10ms 视为同量级（任务书要求基准以实测为准）
   CMP=$(python3 - "$API_P95" "$WEB_P95" <<'EOF'
