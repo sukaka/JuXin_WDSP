@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
@@ -31,7 +32,7 @@ type PrimarySaver interface {
 
 // DiscoveryUpserter 端点发现入库接口（*apiassets.Store 实现，可为 nil）。
 type DiscoveryUpserter interface {
-	UpsertDiscovery(ctx context.Context, method, pathTemplate string, confidence float64, isAPI bool) (*apiassets.Endpoint, error)
+	UpsertDiscovery(ctx context.Context, in apiassets.DiscoveryInput) (*apiassets.Endpoint, error)
 }
 
 // Record 网关 apievents.Record 的采集端镜像（字段名与 JSON 输出一一对应）。
@@ -41,6 +42,7 @@ type Record struct {
 	OccurredAt    time.Time             `json:"occurred_at"`
 	ApplicationID string                `json:"application_id"`
 	AppCode       string                `json:"app_code"`
+	Domain        string                `json:"domain"`
 	EndpointKey   string                `json:"endpoint_key"`
 	Method        string                `json:"method"`
 	PathTemplate  string                `json:"path_template"`
@@ -62,6 +64,7 @@ func (r *Record) notable() bool {
 type Collector struct {
 	saver          PrimarySaver
 	discovery      DiscoveryUpserter // nil 时跳过端点发现
+	resolver       Resolver          // nil 时归属留空（未归属）
 	collectorID    string
 	logPath        string
 	checkpointPath string
@@ -91,6 +94,9 @@ func NewCollector(saver PrimarySaver, collectorID, logPath, checkpointPath, node
 
 // SetDiscoveryUpserter 设置端点发现入库接口（应用装配时使用）。
 func (c *Collector) SetDiscoveryUpserter(u DiscoveryUpserter) { c.discovery = u }
+
+// SetResolver 设置归属解析器（应用装配时使用；未设置时端点按未归属处理）。
+func (c *Collector) SetResolver(r Resolver) { c.resolver = r }
 
 // Metrics 返回采集指标。
 func (c *Collector) Metrics() map[string]interface{} {
@@ -306,12 +312,38 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 	return processed, nil
 }
 
-// handleRecord 记录副作用：端点发现 upsert（错误仅记录日志，不影响主流程）。
+// handleRecord 记录副作用：归属解析 + 端点发现 upsert（错误仅记录日志，不影响主流程）。
 func (c *Collector) handleRecord(ctx context.Context, rec *Record) {
 	if c.discovery == nil || rec.Method == "" || rec.PathTemplate == "" {
 		return
 	}
-	if _, err := c.discovery.UpsertDiscovery(ctx, rec.Method, rec.PathTemplate, rec.APIConfidence, rec.IsAPI); err != nil {
+	var appID, domID *uuid.UUID
+	if c.resolver != nil && rec.AppCode != "" {
+		id, err := c.resolver.ResolveApplication(ctx, rec.AppCode)
+		if err != nil {
+			slog.Error("resolve application failed",
+				"collector", c.collectorID, "app_code", rec.AppCode, "error", err)
+		} else {
+			appID = id
+		}
+		if appID != nil && rec.Domain != "" {
+			did, err := c.resolver.ResolveDomain(ctx, appID, rec.Domain)
+			if err != nil {
+				slog.Error("resolve domain failed",
+					"collector", c.collectorID, "domain", rec.Domain, "error", err)
+			} else {
+				domID = did
+			}
+		}
+	}
+	if _, err := c.discovery.UpsertDiscovery(ctx, apiassets.DiscoveryInput{
+		Method:        rec.Method,
+		PathTemplate:  rec.PathTemplate,
+		Confidence:    rec.APIConfidence,
+		IsAPI:         rec.IsAPI,
+		ApplicationID: appID,
+		DomainID:      domID,
+	}); err != nil {
 		slog.Error("upsert api endpoint discovery failed",
 			"collector", c.collectorID, "endpoint_key", rec.EndpointKey, "error", err)
 	}

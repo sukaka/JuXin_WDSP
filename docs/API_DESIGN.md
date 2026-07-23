@@ -441,8 +441,10 @@ data: {"type":"plan|agent_start|agent_done|answer|error|compressed|done","text":
 
 | 方法与路径 | 权限点 | 说明 |
 |---|---|---|
-| `GET /api/v1/api-security/endpoints` | `api_asset.read` | 端点列表（asset_status/learning_status/keyword/application_id 过滤） |
+| `GET /api/v1/api-security/endpoints` | `api_asset.read` | 端点列表（asset_status/learning_status/keyword/application_id/unassigned/directory_path 过滤，带出站点与目录） |
 | `POST /api/v1/api-security/endpoints/confirm` | `api_asset.confirm` | 批量确认为正式资产 `{ids:[]}` |
+| `GET /api/v1/api-security/endpoints/site-summary` | `api_asset.read` | 各站点端点计数 + 未归属计数 |
+| `GET /api/v1/api-security/endpoints/directory-tree` | `api_asset.read` | 目录聚合端点计数（前端组装目录树） |
 | `GET /api/v1/api-security/endpoints/{id}` | `api_asset.read` | 端点详情（含 api_assets 扩展字段） |
 | `PATCH /api/v1/api-security/endpoints/{id}` | `api_asset.edit` | 编辑资产属性（用途/暴露面/负责人/标签） |
 | `POST /api/v1/api-security/endpoints/{id}/merge` | `api_asset.merge` | 合并端点（别名归档、命中累加，事务） |

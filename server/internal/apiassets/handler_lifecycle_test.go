@@ -51,7 +51,7 @@ func TestLifecycleEventsHTTP(t *testing.T) {
 	h := NewHandler(store, nil)
 	mux := newTestMux(h)
 
-	ep, err := store.UpsertDiscovery(context.Background(), "GET", "/api/orders/{id}", 0.7, true)
+	ep, err := store.UpsertDiscovery(context.Background(), DiscoveryInput{Method: "GET", PathTemplate: "/api/orders/{id}", Confidence: 0.7, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestLearningSamplesHTTP(t *testing.T) {
 	h := NewHandler(store, nil)
 	mux := newTestMux(h)
 
-	ep, err := store.UpsertDiscovery(context.Background(), "POST", "/api/pay/{id}", 0.8, true)
+	ep, err := store.UpsertDiscovery(context.Background(), DiscoveryInput{Method: "POST", PathTemplate: "/api/pay/{id}", Confidence: 0.8, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}

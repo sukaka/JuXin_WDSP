@@ -310,15 +310,16 @@ paths:
   /api-security/endpoints:
     get:
       summary: API端点分页列表
-      description: 按资产状态/学习状态/关键字/应用过滤已发现的 API 端点。需要权限 api_asset.read
+      description: 按资产状态/学习状态/关键字/站点/目录过滤已发现的 API 端点。需要权限 api_asset.read
       tags: [api-security]
       operationId: listApiEndpoints
       parameters:
         - { name: asset_status, in: query, schema: { type: string, enum: [DISCOVERED, CONFIRMED, IGNORED, DEPRECATED] } }
         - { name: learning_status, in: query, schema: { type: string, enum: [NOT_STARTED, LEARNING, PAUSED, LEARNED] } }
         - { name: keyword, in: query, schema: { type: string }, description: 路径关键字（模糊匹配 normalized_path） }
-        - { name: application_id, in: query, schema: { type: string, format: uuid } }
-        - { name: status, in: query, schema: { type: string }, description: 兼容旧路由 /api/v1/api-endpoints 的资产状态过滤（asset_status 为空时生效） }
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按站点（应用）过滤 }
+        - { name: unassigned, in: query, schema: { type: boolean }, description: true 时仅查未归属端点（application_id 为空） }
+        - { name: directory_path, in: query, schema: { type: string }, description: 目录前缀过滤（含子目录，如 /test 命中 /test 与 /test/php） }
         - { name: page, in: query, schema: { type: integer, default: 1 } }
         - { name: page_size, in: query, schema: { type: integer, default: 20 } }
       responses:
@@ -332,6 +333,72 @@ paths:
                   code: { type: string, example: SUCCESS }
                   message: { type: string }
                   data: { $ref: '#/components/schemas/ApiEndpointPage' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 参数错误（无效的 application_id） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/endpoints/site-summary:
+    get:
+      summary: 站点端点计数汇总
+      description: 返回各站点（应用）的端点计数与未归属端点计数，供站点列表角标。需要权限 api_asset.read
+      tags: [api-security]
+      operationId: apiEndpointSiteSummary
+      responses:
+        '200':
+          description: 站点计数列表与未归属计数
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            application_id: { type: string, format: uuid }
+                            application_name: { type: string }
+                            endpoint_count: { type: integer }
+                      unassigned: { type: integer, description: 未归属端点数 }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/endpoints/directory-tree:
+    get:
+      summary: 目录聚合端点计数
+      description: 按目录（normalized_path 去掉最后一段）聚合端点计数，扁平返回由前端组装目录树。需要权限 api_asset.read
+      tags: [api-security]
+      operationId: apiEndpointDirectoryTree
+      parameters:
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 指定站点（缺省为全部站点） }
+        - { name: unassigned, in: query, schema: { type: boolean }, description: true 时仅统计未归属端点 }
+      responses:
+        '200':
+          description: 目录计数列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            directory_path: { type: string, example: /test/php }
+                            endpoint_count: { type: integer }
                   request_id: { type: string, format: uuid }
         '400': { description: 参数错误（无效的 application_id） }
         '401': { description: 未登录或会话失效 }
@@ -1674,10 +1741,12 @@ components:
       properties:
         id: { type: string, format: uuid }
         application_id: { type: string, format: uuid, description: 所属应用（可空） }
+        application_name: { type: string, description: 所属应用名称（列表带出，未归属为空） }
         domain_id: { type: string, format: uuid, description: 所属域名（可空） }
         http_method: { type: string, example: GET }
         normalized_path: { type: string, example: '/api/users/{id}' }
         raw_path_example: { type: string }
+        directory_path: { type: string, example: '/test/php', description: 目录（normalized_path 去掉最后一段） }
         endpoint_key: { type: string, example: 'GET /api/users/{id}' }
         api_confidence: { type: number, format: double }
         asset_status: { type: string, enum: [DISCOVERED, CONFIRMED, IGNORED, DEPRECATED] }

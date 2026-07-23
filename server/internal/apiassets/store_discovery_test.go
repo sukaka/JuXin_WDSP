@@ -22,14 +22,14 @@ func TestMemStoreUpsertListConfirm(t *testing.T) {
 	if tpl != "/users/{id}" {
 		t.Fatalf("normalize=%s", tpl)
 	}
-	e1, err := store.UpsertDiscovery(ctx, "GET", tpl, 0.7, true)
+	e1, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "GET", PathTemplate: tpl, Confidence: 0.7, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if e1.EndpointKey != "GET /users/{id}" || e1.AssetStatus != "DISCOVERED" || e1.HitCount != 1 {
 		t.Fatalf("%+v", e1)
 	}
-	e2, err := store.UpsertDiscovery(ctx, "get", tpl, 0.95, true)
+	e2, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "get", PathTemplate: tpl, Confidence: 0.95, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestHandlerListConfirmBatchHTTP(t *testing.T) {
 	}
 
 	// 发现数据（等价于网关采集链路调用 UpsertDiscovery）
-	ep, err := store.UpsertDiscovery(context.Background(), "POST", normalizer.NormalizePath("/v1/orders/99"), 0.8, true)
+	ep, err := store.UpsertDiscovery(context.Background(), DiscoveryInput{Method: "POST", PathTemplate: normalizer.NormalizePath("/v1/orders/99"), Confidence: 0.8, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}

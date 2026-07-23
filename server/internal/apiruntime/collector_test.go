@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
@@ -23,15 +24,13 @@ func (f *fakeSaver) SavePrimary(_ context.Context, ev *events.PrimaryEvent) erro
 }
 
 type discoveryCall struct {
-	method, pathTemplate string
-	confidence           float64
-	isAPI                bool
+	in apiassets.DiscoveryInput
 }
 
 type fakeDiscovery struct{ calls []discoveryCall }
 
-func (f *fakeDiscovery) UpsertDiscovery(_ context.Context, method, pathTemplate string, confidence float64, isAPI bool) (*apiassets.Endpoint, error) {
-	f.calls = append(f.calls, discoveryCall{method, pathTemplate, confidence, isAPI})
+func (f *fakeDiscovery) UpsertDiscovery(_ context.Context, in apiassets.DiscoveryInput) (*apiassets.Endpoint, error) {
+	f.calls = append(f.calls, discoveryCall{in})
 	return &apiassets.Endpoint{}, nil
 }
 
@@ -94,7 +93,7 @@ func TestCollectOnce_Ingests(t *testing.T) {
 	if len(disc.calls) != 2 {
 		t.Fatalf("want 2 discovery upserts, got %d", len(disc.calls))
 	}
-	if disc.calls[0].method != "GET" || disc.calls[0].pathTemplate != "/v1/users/{id}" || !disc.calls[0].isAPI {
+	if disc.calls[0].in.Method != "GET" || disc.calls[0].in.PathTemplate != "/v1/users/{id}" || !disc.calls[0].in.IsAPI {
 		t.Fatalf("bad discovery call: %+v", disc.calls[0])
 	}
 	// 主事件：仅 BLOCK 一条
@@ -167,4 +166,85 @@ func TestParseRecordLine(t *testing.T) {
 	if _, err := parseRecordLine([]byte(`{bad`)); err == nil {
 		t.Fatal("bad json must be rejected")
 	}
+}
+
+// 归属解析：带 app_code/domain 的发现记录经 Resolver 回填 application_id/domain_id。
+func TestCollectOnce_ResolvesSiteAndDomain(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "api-runtime-events.log")
+	cpPath := filepath.Join(dir, "checkpoint")
+
+	appID := uuid.New()
+	domID := uuid.New()
+	rec := Record{
+		RequestID: "r-site-1", EndpointKey: "POST /v1/orders", Method: "POST", PathTemplate: "/v1/orders",
+		AppCode: "shop", Domain: "www.example.com", IsAPI: true, APIConfidence: 0.9,
+		FinalAction: "ALLOW", OccurredAt: time.Now().UTC(),
+	}
+	writeLines(t, logPath, []string{mustJSON(t, rec)})
+
+	saver := &fakeSaver{}
+	disc := &fakeDiscovery{}
+	c := NewCollector(saver, "test-site", logPath, cpPath, "node-1")
+	c.SetDiscoveryUpserter(disc)
+	c.SetResolver(&fakeResolver{appID: appID, domID: domID})
+
+	if _, err := c.CollectOnce(context.Background()); err != nil {
+		t.Fatalf("CollectOnce: %v", err)
+	}
+	if len(disc.calls) != 1 {
+		t.Fatalf("want 1 discovery call, got %d", len(disc.calls))
+	}
+	in := disc.calls[0].in
+	if in.ApplicationID == nil || *in.ApplicationID != appID {
+		t.Fatalf("application not resolved: %+v", in)
+	}
+	if in.DomainID == nil || *in.DomainID != domID {
+		t.Fatalf("domain not resolved: %+v", in)
+	}
+}
+
+// 无解析器时按未归属处理（nil 归属，不报错）。
+func TestCollectOnce_WithoutResolverLeavesUnassigned(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "api-runtime-events.log")
+	cpPath := filepath.Join(dir, "checkpoint")
+
+	rec := Record{
+		RequestID: "r-site-2", EndpointKey: "GET /v1/items/{id}", Method: "GET", PathTemplate: "/v1/items/{id}",
+		AppCode: "shop", IsAPI: true, FinalAction: "ALLOW", OccurredAt: time.Now().UTC(),
+	}
+	writeLines(t, logPath, []string{mustJSON(t, rec)})
+
+	saver := &fakeSaver{}
+	disc := &fakeDiscovery{}
+	c := NewCollector(saver, "test-noresolver", logPath, cpPath, "node-1")
+	c.SetDiscoveryUpserter(disc)
+
+	if _, err := c.CollectOnce(context.Background()); err != nil {
+		t.Fatalf("CollectOnce: %v", err)
+	}
+	if len(disc.calls) != 1 || disc.calls[0].in.ApplicationID != nil || disc.calls[0].in.DomainID != nil {
+		t.Fatalf("expect nil site/domain without resolver: %+v", disc.calls)
+	}
+}
+
+type fakeResolver struct {
+	appID, domID uuid.UUID
+}
+
+func (f *fakeResolver) ResolveApplication(_ context.Context, code string) (*uuid.UUID, error) {
+	if code == "" {
+		return nil, nil
+	}
+	id := f.appID
+	return &id, nil
+}
+
+func (f *fakeResolver) ResolveDomain(_ context.Context, appID *uuid.UUID, hostname string) (*uuid.UUID, error) {
+	if appID == nil || hostname == "" {
+		return nil, nil
+	}
+	id := f.domID
+	return &id, nil
 }

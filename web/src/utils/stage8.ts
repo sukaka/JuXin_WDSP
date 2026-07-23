@@ -1,5 +1,82 @@
 /* ==================== 阶段8 / WDSP：接口动态防护 展示元数据 ==================== */
 
+import type { TreeDataNode } from 'antd'
+
+/** 目录树扁平项（/api-security/endpoints/directory-tree 返回项） */
+export interface DirectoryFlatItem {
+  directory_path: string
+  endpoint_count: number
+}
+
+/**
+ * 把目录扁平列表组装成 antd Tree 层级数据：
+ * - 按 `/` 切段逐级建树，节点 key 用全路径（如 /test、/test/php）
+ * - 计数写在叶子（精确匹配）节点标题「段名 (计数)」；中间节点若无独立计数仅显示段名
+ * - 空目录 '' 与 '/' 归到根节点（key 为 '/'）
+ */
+export function buildDirectoryTree(flat: DirectoryFlatItem[]): TreeDataNode[] {
+  interface MutableNode {
+    key: string
+    title: string
+    children?: MutableNode[]
+  }
+  const byPath = new Map<string, MutableNode>()
+
+  const ensure = (fullPath: string, segment: string): MutableNode => {
+    let node = byPath.get(fullPath)
+    if (!node) {
+      node = { key: fullPath, title: segment }
+      byPath.set(fullPath, node)
+    }
+    return node
+  }
+
+  for (const { directory_path: dir, endpoint_count: count } of flat) {
+    const segments = dir.split('/').filter(Boolean)
+    if (segments.length === 0) {
+      const root = ensure('/', '/')
+      root.title = `/ (${count})`
+      continue
+    }
+    let fullPath = ''
+    let parent: MutableNode | undefined
+    segments.forEach((segment, index) => {
+      fullPath += `/${segment}`
+      const node = ensure(fullPath, segment)
+      if (index === segments.length - 1) {
+        node.title = `${segment} (${count})`
+      }
+      if (parent) {
+        parent.children = parent.children ?? []
+        if (!parent.children.includes(node)) {
+          parent.children.push(node)
+        }
+      }
+      parent = node
+    })
+  }
+
+  // 顶层节点：根 '/' 或单段路径（如 /api）
+  const roots: MutableNode[] = []
+  for (const node of byPath.values()) {
+    const depth = node.key === '/' ? 0 : node.key.split('/').filter(Boolean).length
+    if (depth <= 1) {
+      roots.push(node)
+    }
+  }
+
+  // 按全路径排序，保证渲染顺序稳定
+  const sortRecursive = (nodes: MutableNode[]): void => {
+    nodes.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    for (const n of nodes) {
+      if (n.children) sortRecursive(n.children)
+    }
+  }
+  sortRecursive(roots)
+
+  return roots
+}
+
 /** 接口端点资产状态（与 server/internal/apiassets 状态枚举一致） */
 export const API_ENDPOINT_STATUS_META: Record<string, { color: string; label: string }> = {
   DISCOVERED: { color: 'blue', label: '已发现' },

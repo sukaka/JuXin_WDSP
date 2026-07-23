@@ -12,15 +12,15 @@ import (
 func TestMemStoreMerge(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
-	primary, err := store.UpsertDiscovery(ctx, "GET", "/users/{id}", 0.7, true)
+	primary, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "GET", PathTemplate: "/users/{id}", Confidence: 0.7, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := store.UpsertDiscovery(ctx, "GET", "/users/{id}/detail", 0.6, true)
+	other, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "GET", PathTemplate: "/users/{id}/detail", Confidence: 0.6, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.UpsertDiscovery(ctx, "GET", "/users/{id}/detail", 0.6, true); err != nil {
+	if _, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "GET", PathTemplate: "/users/{id}/detail", Confidence: 0.6, IsAPI: true}); err != nil {
 		t.Fatal(err)
 	}
 	merged, err := store.Merge(ctx, primary.ID, other.ID, "tester")
@@ -49,7 +49,7 @@ func TestMemStoreMerge(t *testing.T) {
 func TestMemStoreSplit(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
-	src, err := store.UpsertDiscovery(ctx, "POST", "/orders/{id}", 0.8, true)
+	src, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "POST", PathTemplate: "/orders/{id}", Confidence: 0.8, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestMemStoreSplit(t *testing.T) {
 func TestMemStoreSetAssetStatus(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
-	e, err := store.UpsertDiscovery(ctx, "GET", "/health", 0.5, true)
+	e, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "GET", PathTemplate: "/health", Confidence: 0.5, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestMemStoreSetAssetStatus(t *testing.T) {
 func TestMemStoreUpsertAsset(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
-	e, err := store.UpsertDiscovery(ctx, "GET", "/pay/orders", 0.9, true)
+	e, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "GET", PathTemplate: "/pay/orders", Confidence: 0.9, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestMemStoreUpsertAsset(t *testing.T) {
 func TestMemStoreLearningLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
-	e, err := store.UpsertDiscovery(ctx, "GET", "/users/{id}", 0.7, true)
+	e, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "GET", PathTemplate: "/users/{id}", Confidence: 0.7, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestMemStoreLearningLifecycle(t *testing.T) {
 		t.Fatalf("stop missing err=%v", err)
 	}
 	// 从未学习的端点状态
-	e2, err := store.UpsertDiscovery(ctx, "GET", "/never-learned", 0.5, true)
+	e2, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "GET", PathTemplate: "/never-learned", Confidence: 0.5, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestMemStoreLearningLifecycle(t *testing.T) {
 func TestMemStoreAutoClassify(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
-	e, err := store.UpsertDiscovery(ctx, "POST", "/api/login/{id}", 0.7, true)
+	e, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "POST", PathTemplate: "/api/login/{id}", Confidence: 0.7, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,8 +260,8 @@ func TestMemStoreAutoClassify(t *testing.T) {
 func TestMemStoreListFilters(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemStore()
-	e1, _ := store.UpsertDiscovery(ctx, "GET", "/users/{id}", 0.7, true)
-	_, _ = store.UpsertDiscovery(ctx, "POST", "/orders", 0.8, true)
+	e1, _ := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "GET", PathTemplate: "/users/{id}", Confidence: 0.7, IsAPI: true})
+	_, _ = store.UpsertDiscovery(ctx, DiscoveryInput{Method: "POST", PathTemplate: "/orders", Confidence: 0.8, IsAPI: true})
 	if _, err := store.SetAssetStatus(ctx, e1.ID, "IGNORED", "tester"); err != nil {
 		t.Fatal(err)
 	}

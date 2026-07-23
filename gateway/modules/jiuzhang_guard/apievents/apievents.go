@@ -20,6 +20,7 @@ type Record struct {
 	OccurredAt    time.Time             `json:"occurred_at"`
 	ApplicationID string                `json:"application_id,omitempty"`
 	AppCode       string                `json:"app_code,omitempty"`
+	Domain        string                `json:"domain,omitempty"`
 	EndpointKey   string                `json:"endpoint_key"`
 	Method        string                `json:"method,omitempty"`
 	PathTemplate  string                `json:"path_template,omitempty"`
@@ -36,6 +37,7 @@ type Record struct {
 const (
 	maxEndpointKeyLen = 560
 	maxPathLen        = 512
+	maxDomainLen      = 255
 )
 
 // Logger JSON Lines 事件记录器（并发安全）。
@@ -79,6 +81,7 @@ func (l *Logger) Emit(e Record) error {
 	e.GatewayNode = l.node
 	e.EndpointKey = sanitize(e.EndpointKey, maxEndpointKeyLen)
 	e.PathTemplate = sanitize(e.PathTemplate, maxPathLen)
+	e.Domain = sanitize(e.Domain, maxDomainLen)
 	if e.Details == nil {
 		e.Details = []dsctx.DetectorMatch{}
 	}

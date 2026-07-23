@@ -43,14 +43,16 @@ var validLearningStatuses = map[string]bool{
 	"LEARNED":     true,
 }
 
-// Endpoint API 端点（列名对齐迁移 000018）。
+// Endpoint API 端点（列名对齐迁移 000018 / 000020）。
 type Endpoint struct {
 	ID                    uuid.UUID  `json:"id"`
 	ApplicationID         *uuid.UUID `json:"application_id,omitempty"`
+	ApplicationName       string     `json:"application_name,omitempty"` // 列表 LEFT JOIN applications 带出
 	DomainID              *uuid.UUID `json:"domain_id,omitempty"`
 	HTTPMethod            string     `json:"http_method"`
 	NormalizedPath        string     `json:"normalized_path"`
 	RawPathExample        string     `json:"raw_path_example"`
+	DirectoryPath         string     `json:"directory_path"`
 	EndpointKey           string     `json:"endpoint_key"`
 	APIConfidence         float64    `json:"api_confidence"`
 	AssetStatus           string     `json:"asset_status"`
@@ -59,7 +61,7 @@ type Endpoint struct {
 	CurrentModelVersionID *uuid.UUID `json:"current_model_version_id,omitempty"`
 	ClassificationLocked  bool       `json:"classification_locked"`
 	IsAPI                 bool       `json:"is_api"`
-	HitCount              int64      `json:"hit_count"`
+	HitCount              int64       `json:"hit_count"`
 	FirstSeenAt           time.Time  `json:"first_seen_at"`
 	LastSeenAt            time.Time  `json:"last_seen_at"`
 	ConfirmedAt           *time.Time `json:"confirmed_at,omitempty"`
@@ -138,19 +140,21 @@ type LearningSample struct {
 
 // ListFilter 端点列表过滤条件。
 type ListFilter struct {
-	AssetStatus    string
-	LearningStatus string
-	Keyword        string
-	ApplicationID  *uuid.UUID
-	Page           int
-	PageSize       int
+	AssetStatus     string
+	LearningStatus  string
+	Keyword         string
+	ApplicationID   *uuid.UUID
+	Unassigned      bool   // true 时仅查未归属端点（application_id IS NULL）
+	DirectoryPrefix string // 目录前缀（含子目录）：/test 命中 /test 与 /test/php
+	Page            int
+	PageSize        int
 }
 
 // endpointColumns 端点全列（扫描顺序固定）。
 const endpointColumns = `id, application_id, domain_id, http_method, normalized_path, raw_path_example,
 	endpoint_key, api_confidence, asset_status, protocol_type, learning_status,
 	current_model_version_id, classification_locked, is_api, hit_count,
-	first_seen_at, last_seen_at, confirmed_at`
+	first_seen_at, last_seen_at, confirmed_at, directory_path`
 
 // learningJobColumns 学习任务全列（扫描顺序固定）。
 const learningJobColumns = `id, endpoint_id, status, sample_target, collected_count, valid_count,
@@ -166,11 +170,21 @@ func scanEndpoint(rs rowScanner) (*Endpoint, error) {
 	err := rs.Scan(&e.ID, &e.ApplicationID, &e.DomainID, &e.HTTPMethod, &e.NormalizedPath,
 		&e.RawPathExample, &e.EndpointKey, &e.APIConfidence, &e.AssetStatus, &e.ProtocolType,
 		&e.LearningStatus, &e.CurrentModelVersionID, &e.ClassificationLocked, &e.IsAPI,
-		&e.HitCount, &e.FirstSeenAt, &e.LastSeenAt, &e.ConfirmedAt)
+		&e.HitCount, &e.FirstSeenAt, &e.LastSeenAt, &e.ConfirmedAt, &e.DirectoryPath)
 	if err != nil {
 		return nil, err
 	}
 	return &e, nil
+}
+
+// DirectoryOf 目录派生：normalized_path 去掉最后一段（/test/php/login → /test/php；/users/{id} → /users）。
+// 与迁移 000020 的 regexp_replace(path, '/[^/]*$', '') 语义一致。
+func DirectoryOf(normalizedPath string) string {
+	i := strings.LastIndex(normalizedPath, "/")
+	if i <= 0 {
+		return ""
+	}
+	return normalizedPath[:i]
 }
 
 func scanLearningJob(rs rowScanner) (*LearningJob, error) {
@@ -192,25 +206,36 @@ type Store struct {
 // NewStore 创建。
 func NewStore(db *pgxpool.Pool) *Store { return &Store{db: db} }
 
+// DiscoveryInput 发现/命中端点输入（采集器从网关事件解析后传入）。
+type DiscoveryInput struct {
+	Method        string
+	PathTemplate  string
+	Confidence    float64
+	IsAPI         bool
+	ApplicationID *uuid.UUID // 可为 nil（未归属）
+	DomainID      *uuid.UUID // 可为 nil
+}
+
 // UpsertDiscovery 发现/命中端点（按 endpoint_key 幂等）。
-// 参数名为发现侧约定，内部写入 http_method / normalized_path。
-func (s *Store) UpsertDiscovery(ctx context.Context, method, pathTemplate string, confidence float64, isAPI bool) (*Endpoint, error) {
-	method = strings.ToUpper(strings.TrimSpace(method))
-	pathTemplate = strings.TrimSpace(pathTemplate)
+// application_id / domain_id / directory_path 仅首次发现写入；命中时不覆盖（允许后续人工改属）。
+func (s *Store) UpsertDiscovery(ctx context.Context, in DiscoveryInput) (*Endpoint, error) {
+	method := strings.ToUpper(strings.TrimSpace(in.Method))
+	pathTemplate := strings.TrimSpace(in.PathTemplate)
 	if method == "" || pathTemplate == "" {
 		return nil, fmt.Errorf("method and path_template required")
 	}
 	key := method + " " + pathTemplate
 	e, err := scanEndpoint(s.db.QueryRow(ctx, `
-INSERT INTO api_endpoints (http_method, normalized_path, raw_path_example, endpoint_key, api_confidence, is_api, hit_count, asset_status)
-VALUES ($1,$2,$2,$3,$4,$5,1,'DISCOVERED')
+INSERT INTO api_endpoints (application_id, domain_id, http_method, normalized_path, raw_path_example,
+  directory_path, endpoint_key, api_confidence, is_api, hit_count, asset_status)
+VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,1,'DISCOVERED')
 ON CONFLICT (endpoint_key) DO UPDATE SET
   hit_count = api_endpoints.hit_count + 1,
   last_seen_at = now(),
   api_confidence = GREATEST(api_endpoints.api_confidence, EXCLUDED.api_confidence),
   updated_at = now()
 RETURNING `+endpointColumns,
-		method, pathTemplate, key, confidence, isAPI,
+		in.ApplicationID, in.DomainID, method, pathTemplate, DirectoryOf(pathTemplate), key, in.Confidence, in.IsAPI,
 	))
 	if err != nil {
 		return nil, err
@@ -218,7 +243,8 @@ RETURNING `+endpointColumns,
 	return e, nil
 }
 
-// List 分页列表（asset_status / learning_status / keyword / application_id 过滤）。
+// List 分页列表（asset_status / learning_status / keyword / application_id / unassigned / directory 过滤）。
+// 应用名经 LEFT JOIN applications 带出（未归属为空字符串）。
 func (s *Store) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, error) {
 	if f.Page <= 0 {
 		f.Page = 1
@@ -233,25 +259,35 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, erro
 		where += fmt.Sprintf(" AND "+cond, len(args))
 	}
 	if f.AssetStatus != "" {
-		add("asset_status = $%d", f.AssetStatus)
+		add("e.asset_status = $%d", f.AssetStatus)
 	}
 	if f.LearningStatus != "" {
-		add("learning_status = $%d", f.LearningStatus)
+		add("e.learning_status = $%d", f.LearningStatus)
 	}
 	if f.Keyword != "" {
-		add("normalized_path ILIKE $%d", "%"+f.Keyword+"%")
+		add("e.normalized_path ILIKE $%d", "%"+f.Keyword+"%")
 	}
 	if f.ApplicationID != nil {
-		add("application_id = $%d", *f.ApplicationID)
+		add("e.application_id = $%d", *f.ApplicationID)
+	}
+	if f.Unassigned {
+		where += " AND e.application_id IS NULL"
+	}
+	if f.DirectoryPrefix != "" {
+		args = append(args, f.DirectoryPrefix, f.DirectoryPrefix+"/%")
+		where += fmt.Sprintf(" AND (e.directory_path = $%d OR e.directory_path LIKE $%d)", len(args)-1, len(args))
 	}
 	var total int64
-	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints WHERE `+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints e WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
+	cols := "e." + strings.ReplaceAll(endpointColumns, ", ", ", e.")
 	q := fmt.Sprintf(`
-SELECT %s FROM api_endpoints WHERE %s ORDER BY last_seen_at DESC LIMIT $%d OFFSET $%d`,
-		endpointColumns, where, len(args)-1, len(args))
+SELECT %s, COALESCE(a.name,'') FROM api_endpoints e
+LEFT JOIN applications a ON a.id = e.application_id
+WHERE %s ORDER BY e.last_seen_at DESC LIMIT $%d OFFSET $%d`,
+		cols, where, len(args)-1, len(args))
 	rows, err := s.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, 0, err
@@ -259,13 +295,86 @@ SELECT %s FROM api_endpoints WHERE %s ORDER BY last_seen_at DESC LIMIT $%d OFFSE
 	defer rows.Close()
 	out := []Endpoint{}
 	for rows.Next() {
-		e, err := scanEndpoint(rows)
-		if err != nil {
+		e := Endpoint{}
+		if err := rows.Scan(&e.ID, &e.ApplicationID, &e.DomainID, &e.HTTPMethod, &e.NormalizedPath,
+			&e.RawPathExample, &e.EndpointKey, &e.APIConfidence, &e.AssetStatus, &e.ProtocolType,
+			&e.LearningStatus, &e.CurrentModelVersionID, &e.ClassificationLocked, &e.IsAPI,
+			&e.HitCount, &e.FirstSeenAt, &e.LastSeenAt, &e.ConfirmedAt, &e.DirectoryPath,
+			&e.ApplicationName); err != nil {
 			return nil, 0, err
 		}
-		out = append(out, *e)
+		out = append(out, e)
 	}
 	return out, total, rows.Err()
+}
+
+// SiteSummaryItem 站点端点计数（站点列表角标）。
+type SiteSummaryItem struct {
+	ApplicationID   *uuid.UUID `json:"application_id,omitempty"`
+	ApplicationName string     `json:"application_name"`
+	EndpointCount   int64      `json:"endpoint_count"`
+}
+
+// SiteSummary 各站点端点计数（含未归属桶）。
+func (s *Store) SiteSummary(ctx context.Context) ([]SiteSummaryItem, int64, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT a.id, a.name, count(e.id) FROM applications a
+LEFT JOIN api_endpoints e ON e.application_id = a.id
+GROUP BY a.id, a.name ORDER BY a.name`)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []SiteSummaryItem{}
+	for rows.Next() {
+		var it SiteSummaryItem
+		if err := rows.Scan(&it.ApplicationID, &it.ApplicationName, &it.EndpointCount); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	var unassigned int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints WHERE application_id IS NULL`).Scan(&unassigned); err != nil {
+		return nil, 0, err
+	}
+	return out, unassigned, nil
+}
+
+// DirectoryCount 目录端点计数（目录树节点，扁平返回由前端组装层级）。
+type DirectoryCount struct {
+	DirectoryPath string `json:"directory_path"`
+	EndpointCount int64  `json:"endpoint_count"`
+}
+
+// DirectoryTree 按目录聚合端点计数（application_id 指定站点；unassigned=true 查未归属）。
+func (s *Store) DirectoryTree(ctx context.Context, applicationID *uuid.UUID, unassigned bool) ([]DirectoryCount, error) {
+	where := "1=1"
+	args := []any{}
+	if applicationID != nil {
+		args = append(args, *applicationID)
+		where = "application_id = $1"
+	} else if unassigned {
+		where = "application_id IS NULL"
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT directory_path, count(*) FROM api_endpoints
+WHERE `+where+` GROUP BY directory_path ORDER BY directory_path`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DirectoryCount{}
+	for rows.Next() {
+		var dc DirectoryCount
+		if err := rows.Scan(&dc.DirectoryPath, &dc.EndpointCount); err != nil {
+			return nil, err
+		}
+		out = append(out, dc)
+	}
+	return out, rows.Err()
 }
 
 // ListKeyStatus 返回全部端点的 endpoint_key → asset_status 映射（发布通道下发网关，生命周期检测基线）。
@@ -410,11 +519,11 @@ func (s *Store) Split(ctx context.Context, id uuid.UUID, newPaths []string, acto
 		key := src.HTTPMethod + " " + p
 		e, err := scanEndpoint(tx.QueryRow(ctx, `
 INSERT INTO api_endpoints (application_id, domain_id, http_method, normalized_path, raw_path_example,
-  endpoint_key, api_confidence, asset_status, protocol_type, is_api)
-VALUES ($1,$2,$3,$4,$4,$5,$6,'DISCOVERED',$7,$8)
+  directory_path, endpoint_key, api_confidence, asset_status, protocol_type, is_api)
+VALUES ($1,$2,$3,$4,$4,$5,$6,$7,'DISCOVERED',$8,$9)
 ON CONFLICT (endpoint_key) DO NOTHING
 RETURNING `+endpointColumns,
-			src.ApplicationID, src.DomainID, src.HTTPMethod, p, key, src.APIConfidence, src.ProtocolType, src.IsAPI))
+			src.ApplicationID, src.DomainID, src.HTTPMethod, p, DirectoryOf(p), key, src.APIConfidence, src.ProtocolType, src.IsAPI))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("%w: %s", ErrEndpointConflict, key)
 		}

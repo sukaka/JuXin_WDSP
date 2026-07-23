@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -33,6 +33,8 @@ const listData = {
       http_method: 'GET',
       normalized_path: '/v1/users/{id}',
       endpoint_key: 'GET /v1/users/{id}',
+      application_name: '',
+      directory_path: '/test/php',
       api_confidence: 0.6,
       asset_status: 'DISCOVERED',
       learning_status: 'LEARNING',
@@ -46,6 +48,8 @@ const listData = {
       http_method: 'POST',
       normalized_path: '/v1/orders',
       endpoint_key: 'POST /v1/orders',
+      application_name: '站点A',
+      directory_path: '',
       api_confidence: 0.9,
       asset_status: 'CONFIRMED',
       learning_status: 'LEARNED',
@@ -61,6 +65,21 @@ const listData = {
   total: 2,
 }
 
+const siteSummaryData = {
+  items: [
+    { application_id: 'app-1', application_name: '站点A', endpoint_count: 5 },
+    { application_id: 'app-2', application_name: '站点B', endpoint_count: 3 },
+  ],
+  unassigned: 2,
+}
+
+const directoryTreeData = {
+  items: [
+    { directory_path: '/test', endpoint_count: 4 },
+    { directory_path: '/test/php', endpoint_count: 2 },
+  ],
+}
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -74,12 +93,25 @@ function renderPage() {
   )
 }
 
+/** 左侧站点列表项（全部 / 未归属 / 各站点均为 role=button 的 div） */
+function siteItem(name: string, index = 0): HTMLElement {
+  const el = screen.getAllByText(name).map((n) => n.closest('[role="button"]')).filter(Boolean)[index]
+  expect(el).toBeTruthy()
+  return el as HTMLElement
+}
+
 describe('ApiEndpointsPage', () => {
   beforeEach(() => {
     vi.stubGlobal(
       'fetch',
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
+        if (url.includes('/api-security/endpoints/site-summary')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
+        }
+        if (url.includes('/api-security/endpoints/directory-tree')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
+        }
         if (url.includes('/api-security/endpoints')) {
           return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
         }
@@ -102,6 +134,52 @@ describe('ApiEndpointsPage', () => {
     expect(screen.getByText('学习中')).toBeInTheDocument()
     expect(screen.getByText('已完成')).toBeInTheDocument()
     expect(screen.getByText('共 2 条')).toBeInTheDocument()
+  })
+
+  it('站点列表：全部（合计）、未归属与各站点名称与端点计数角标', async () => {
+    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    renderPage()
+    // 「站点A」同时出现在站点列表与表格站点列，须用 findAllByText
+    await screen.findAllByText('站点A')
+    // 角标计数：antd Badge 多位数会拆分为逐位动画节点，统一用 sup 的 title 断言
+    // 全部 = 5 + 3 + 2 = 10
+    expect(within(siteItem('全部')).getByTitle('10')).toBeInTheDocument()
+    expect(within(siteItem('未归属')).getByTitle('2')).toBeInTheDocument()
+    expect(within(siteItem('站点A')).getByTitle('5')).toBeInTheDocument()
+    expect(within(siteItem('站点B')).getByTitle('3')).toBeInTheDocument()
+    // 目录树按段组装层级：test (4) → php (2)
+    expect(screen.getByText('test (4)')).toBeInTheDocument()
+    expect(screen.getByText('php (2)')).toBeInTheDocument()
+  })
+
+  it('点击站点：列表与目录树请求携带 application_id，并出现可关闭过滤 Tag', async () => {
+    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    renderPage()
+    fireEvent.click(await screen.findByText('站点B'))
+    await waitFor(() => {
+      const urls = (fetch as Mock).mock.calls.map((c) => String(c[0]))
+      expect(urls.some((u) => u.includes('/api-security/endpoints?') && u.includes('application_id=app-2'))).toBe(true)
+      expect(
+        urls.some((u) => u.includes('/api-security/endpoints/directory-tree') && u.includes('application_id=app-2')),
+      ).toBe(true)
+    })
+    expect(screen.getByText('站点：站点B')).toBeInTheDocument()
+  })
+
+  it('表格新增目录与站点列：目录 code 展示，站点空值显示未归属', async () => {
+    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    renderPage()
+    const table = await screen.findByRole('table')
+    // 表头（横向滚动下 antd 可能有辅助节点，统一按 columnheader 断言）
+    const headers = within(table)
+      .getAllByRole('columnheader')
+      .map((th) => th.textContent)
+    expect(headers).toContain('目录')
+    expect(headers).toContain('站点')
+    // 等数据行渲染后再断言单元格内容
+    expect(await within(table).findByText('/test/php')).toBeInTheDocument()
+    expect(within(table).getByText('未归属')).toBeInTheDocument()
+    expect(within(table).getByText('站点A')).toBeInTheDocument()
   })
 
   it('无 confirm/ignore 权限：不显示行内「确认」与「忽略」', async () => {

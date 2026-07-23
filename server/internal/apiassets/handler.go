@@ -32,6 +32,8 @@ func NewHandler(store Repository, audit *audits.Service) *Handler {
 // 权限点与任务书五十二章一致）。
 func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h *Handler) {
 	mux.Handle("GET /api/v1/api-security/endpoints", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.List))))
+	mux.Handle("GET /api/v1/api-security/endpoints/site-summary", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.SiteSummary))))
+	mux.Handle("GET /api/v1/api-security/endpoints/directory-tree", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.DirectoryTree))))
 	mux.Handle("POST /api/v1/api-security/endpoints/confirm", authz(middleware.RequirePermission("api_asset.confirm")(http.HandlerFunc(h.ConfirmBatch))))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.Get))))
 	mux.Handle("PATCH /api/v1/api-security/endpoints/{id}", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Update))))
@@ -47,15 +49,17 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 }
 
 // List GET /api/v1/api-security/endpoints
-// 过滤：asset_status / learning_status / keyword / application_id。
+// 过滤：asset_status / learning_status / keyword / application_id / unassigned / directory_path。
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := ListFilter{
-		AssetStatus:    strings.ToUpper(strings.TrimSpace(q.Get("asset_status"))),
-		LearningStatus: strings.ToUpper(strings.TrimSpace(q.Get("learning_status"))),
-		Keyword:        strings.TrimSpace(q.Get("keyword")),
-		Page:           queryInt(r, "page", 1),
-		PageSize:       queryInt(r, "page_size", 20),
+		AssetStatus:     strings.ToUpper(strings.TrimSpace(q.Get("asset_status"))),
+		LearningStatus:  strings.ToUpper(strings.TrimSpace(q.Get("learning_status"))),
+		Keyword:         strings.TrimSpace(q.Get("keyword")),
+		DirectoryPrefix: strings.TrimSpace(q.Get("directory_path")),
+		Unassigned:      q.Get("unassigned") == "true",
+		Page:            queryInt(r, "page", 1),
+		PageSize:        queryInt(r, "page_size", 20),
 	}
 	if v := strings.TrimSpace(q.Get("application_id")); v != "" {
 		appID, err := uuid.Parse(v)
@@ -71,6 +75,38 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Page(w, r, list, total, f.Page, f.PageSize)
+}
+
+// SiteSummary GET /api/v1/api-security/endpoints/site-summary
+// 各站点端点计数 + 未归属计数（站点列表数据源）。
+func (h *Handler) SiteSummary(w http.ResponseWriter, r *http.Request) {
+	items, unassigned, err := h.store.SiteSummary(r.Context())
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]any{"items": items, "unassigned": unassigned})
+}
+
+// DirectoryTree GET /api/v1/api-security/endpoints/directory-tree
+// 按目录聚合端点计数（扁平列表，前端组装层级）；application_id 指定站点，unassigned=true 查未归属。
+func (h *Handler) DirectoryTree(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var appID *uuid.UUID
+	if v := strings.TrimSpace(q.Get("application_id")); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的application_id")
+			return
+		}
+		appID = &id
+	}
+	items, err := h.store.DirectoryTree(r.Context(), appID, q.Get("unassigned") == "true")
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]any{"items": items})
 }
 
 // ConfirmBatch POST /api/v1/api-security/endpoints/confirm  {ids:[...]}
