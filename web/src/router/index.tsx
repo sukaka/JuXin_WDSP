@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Spin } from 'antd'
 import { useAuthStore } from '../stores/auth'
+import { useProductStore } from '../stores/product'
 import { hasAnyPermission } from '../utils/permission'
 import AdminLayout from '../layouts/AdminLayout'
 import LoginPage from '../pages/login/LoginPage'
@@ -88,6 +89,14 @@ function RequirePermission({ permission, children }: { permission: string | stri
   if (!hasAnyPermission(user?.permissions, codes)) {
     return <Navigate to="/403" replace />
   }
+  return <>{children}</>
+}
+
+/** WDSP 产品能力守卫：探测失败或纯 WAF 均按不存在处理 */
+function RequireAPIDynamicProtection({ children }: { children: ReactNode }) {
+  const { initialized, apiDynamicProtection } = useProductStore()
+  if (!initialized) return <FullScreenLoading />
+  if (!apiDynamicProtection) return <Navigate to="/404" replace />
   return <>{children}</>
 }
 
@@ -246,17 +255,21 @@ export default function AppRoutes() {
         <Route
           path="api-endpoints"
           element={
-            <RequirePermission permission={['api_endpoints.read', 'api_endpoints.manage']}>
-              <ApiEndpointsPage />
-            </RequirePermission>
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission={['api_endpoints.read', 'api_endpoints.manage']}>
+                <ApiEndpointsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
           }
         />
         <Route
           path="api-models"
           element={
-            <RequirePermission permission={['api_models.read', 'api_models.manage']}>
-              <ApiModelsPage />
-            </RequirePermission>
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission={['api_models.read', 'api_models.manage']}>
+                <ApiModelsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
           }
         />
         <Route

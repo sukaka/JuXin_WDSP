@@ -7,6 +7,7 @@ import AppRoutes from './router'
 import { authApi } from './api/auth'
 import { setSessionExpiredHandler } from './api/client'
 import { useAuthStore } from './stores/auth'
+import { useProductStore } from './stores/product'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -19,6 +20,7 @@ export default function App() {
   useEffect(() => {
     setSessionExpiredHandler(() => {
       useAuthStore.getState().reset()
+      useProductStore.getState().reset()
       if (!window.location.pathname.startsWith('/login')) {
         window.location.assign('/login')
       }
@@ -32,11 +34,16 @@ export default function App() {
     let cancelled = false
     authApi
       .me()
-      .then((data) => {
-        if (!cancelled) useAuthStore.getState().setSession(data.user, data.csrf_token)
+      .then(async (data) => {
+        if (cancelled) return
+        useAuthStore.getState().setSession(data.user, data.csrf_token)
+        await useProductStore.getState().load()
       })
       .catch(() => {
-        if (!cancelled) useAuthStore.getState().reset()
+        if (!cancelled) {
+          useAuthStore.getState().reset()
+          useProductStore.getState().reset()
+        }
       })
     return () => {
       cancelled = true

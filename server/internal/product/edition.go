@@ -59,6 +59,12 @@ func (s Settings) IsWDSP() bool { return s.Edition == EditionWDSP }
 // IsWAF 是否纯 WAF 产品形态。
 func (s Settings) IsWAF() bool { return s.Edition == EditionWAF }
 
+// APIDynamicProtectionEnabled 是否允许对外暴露 WDSP 接口动态防护能力。
+// 即使实验环境在 WAF edition 中显式打开检测开关，管理面与 API 路由也不得暴露 WDSP 功能。
+func (s Settings) APIDynamicProtectionEnabled() bool {
+	return s.IsWDSP() && s.APIDynamicProtection
+}
+
 func parseBool(s string, def bool) bool {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "1", "true", "yes", "on":

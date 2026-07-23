@@ -62,8 +62,8 @@ services:
   api:
     image: jiuzhang-server:stage2
     build:
-      context: ../server
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: server/Dockerfile
     container_name: jiuzhang-stage2-api
     restart: unless-stopped
     environment:

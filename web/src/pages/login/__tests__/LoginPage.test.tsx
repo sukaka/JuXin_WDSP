@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import LoginPage from '../LoginPage'
 import { useAuthStore } from '../../../stores/auth'
+import { useProductStore } from '../../../stores/product'
 import type { CurrentUser } from '../../../types'
 
 const fakeUser: CurrentUser = {
@@ -36,6 +37,11 @@ function renderLogin() {
 describe('LoginPage', () => {
   beforeEach(() => {
     useAuthStore.setState({ user: null, csrfToken: null, initialized: false })
+    useProductStore.setState({
+      edition: 'waf',
+      apiDynamicProtection: false,
+      initialized: false,
+    })
   })
 
   afterEach(() => {
@@ -75,6 +81,15 @@ describe('LoginPage', () => {
           }),
         )
       }
+      if (url.includes('/product/edition')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { edition: 'wdsp', api_dynamic_protection: true },
+          }),
+        )
+      }
       return Promise.reject(new Error(`unexpected url: ${url}`))
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -96,6 +111,7 @@ describe('LoginPage', () => {
     await waitFor(() => {
       expect(useAuthStore.getState().user?.username).toBe('admin')
       expect(useAuthStore.getState().csrfToken).toBe('csrf-login')
+      expect(useProductStore.getState().apiDynamicProtection).toBe(true)
     })
   })
 

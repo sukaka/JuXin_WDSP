@@ -3,8 +3,14 @@ export interface MenuDef {
   label: string
   /** 允许看到该菜单的角色编码；缺省表示所有登录用户可见 */
   roles?: string[]
+  /** 依赖的产品能力；缺省表示所有产品形态可见 */
+  capability?: 'api_dynamic_protection'
   /** 侧边栏分组名；缺省为顶层菜单 */
   group?: string
+}
+
+export interface ProductCapabilities {
+  apiDynamicProtection: boolean
 }
 
 export const MENU_ITEMS: MenuDef[] = [
@@ -79,17 +85,19 @@ export const MENU_ITEMS: MenuDef[] = [
     roles: ['SECURITY_ADMIN', 'AUDIT_ADMIN'],
     group: '访问控制',
   },
-  // 阶段8 / WDSP：接口动态防护（纯 WAF 角色菜单仍可见时依赖权限；建议 PRODUCT_EDITION=wdsp 使用）
+  // 阶段8 / WDSP：接口动态防护
   {
     key: '/api-endpoints',
     label: '接口端点资产',
     roles: ['SECURITY_ADMIN', 'AUDIT_ADMIN', 'SYSTEM_ADMIN'],
+    capability: 'api_dynamic_protection',
     group: '接口防护',
   },
   {
     key: '/api-models',
     label: '接口模型版本',
     roles: ['SECURITY_ADMIN', 'AUDIT_ADMIN'],
+    capability: 'api_dynamic_protection',
     group: '接口防护',
   },
   {
@@ -215,8 +223,17 @@ export const MENU_ITEMS: MenuDef[] = [
   { key: '/profile', label: '个人中心' },
 ]
 
-/** 按角色编码过滤菜单 */
-export function filterMenusByRoles(roleCodes: string[] | null | undefined): MenuDef[] {
+/** 按角色编码和产品能力过滤菜单；能力未初始化时按关闭处理 */
+export function filterMenusByRoles(
+  roleCodes: string[] | null | undefined,
+  capabilities?: Partial<ProductCapabilities>,
+): MenuDef[] {
   const codes = roleCodes ?? []
-  return MENU_ITEMS.filter((item) => !item.roles || item.roles.some((r) => codes.includes(r)))
+  return MENU_ITEMS.filter((item) => {
+    if (item.roles && !item.roles.some((r) => codes.includes(r))) return false
+    if (item.capability === 'api_dynamic_protection') {
+      return capabilities?.apiDynamicProtection === true
+    }
+    return true
+  })
 }

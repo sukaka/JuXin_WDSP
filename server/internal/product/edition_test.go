@@ -45,3 +45,22 @@ func TestLoadAPIOverride(t *testing.T) {
 		t.Fatal("waf + explicit true should enable for lab/debug")
 	}
 }
+
+func TestAPIDynamicProtectionEnabledRequiresWDSPAndFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		in   Settings
+		want bool
+	}{
+		{name: "wdsp enabled", in: Settings{Edition: EditionWDSP, APIDynamicProtection: true}, want: true},
+		{name: "wdsp disabled", in: Settings{Edition: EditionWDSP, APIDynamicProtection: false}, want: false},
+		{name: "waf flag ignored", in: Settings{Edition: EditionWAF, APIDynamicProtection: true}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.in.APIDynamicProtectionEnabled(); got != tt.want {
+				t.Fatalf("APIDynamicProtectionEnabled()=%v want %v", got, tt.want)
+			}
+		})
+	}
+}

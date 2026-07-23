@@ -5,6 +5,7 @@ import { LockOutlined, ReloadOutlined, SafetyCertificateOutlined, UserOutlined }
 import { ApiError } from '../../api/client'
 import { authApi } from '../../api/auth'
 import { useAuthStore } from '../../stores/auth'
+import { useProductStore } from '../../stores/product'
 import { SUPPORT_INFO, SYSTEM_NAME, SYSTEM_VERSION } from '../../constants'
 import type { CaptchaData } from '../../types'
 
@@ -47,6 +48,7 @@ export default function LoginPage() {
         captcha_code: captcha?.enabled ? values.captcha_code : undefined,
       })
       setSession(data.user, data.csrf_token)
+      await useProductStore.getState().load()
       message.success('登录成功')
       if (data.user.must_change_password) {
         navigate('/change-password', { replace: true })

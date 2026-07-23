@@ -1,0 +1,7 @@
+# WDSP 产品形态覆盖文件。
+# 与 docker-compose.stage5.yml 叠加使用，复用同一套代码和基础设施，仅开启 WDSP 能力边界。
+services:
+  api:
+    environment:
+      PRODUCT_EDITION: wdsp
+      API_DYNAMIC_PROTECTION_ENABLED: "true"

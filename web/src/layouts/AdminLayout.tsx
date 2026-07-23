@@ -56,6 +56,7 @@ import {
 import type { ReactNode } from 'react'
 import { authApi } from '../api/auth'
 import { useAuthStore } from '../stores/auth'
+import { useProductStore } from '../stores/product'
 import { filterMenusByRoles } from '../utils/menu'
 import { SYSTEM_NAME } from '../constants'
 
@@ -118,14 +119,15 @@ export default function AdminLayout() {
   const { message } = AntdApp.useApp()
   const user = useAuthStore((s) => s.user)
   const reset = useAuthStore((s) => s.reset)
+  const apiDynamicProtection = useProductStore((s) => s.apiDynamicProtection)
   const [collapsed, setCollapsed] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   // 二级菜单默认收起，仅记录用户手动展开的分组
   const [openKeys, setOpenKeys] = useState<string[]>([])
 
   const menus = useMemo(
-    () => filterMenusByRoles(user?.roles.map((r) => r.code)),
-    [user],
+    () => filterMenusByRoles(user?.roles.map((r) => r.code), { apiDynamicProtection }),
+    [apiDynamicProtection, user],
   )
 
   // 无分组的顶层菜单在前，分组菜单按 group 聚合为分组节点
@@ -169,6 +171,7 @@ export default function AdminLayout() {
       // 退出登录失败不阻断本地清理
     } finally {
       reset()
+      useProductStore.getState().reset()
       setLoggingOut(false)
       message.success('已退出登录')
       navigate('/login', { replace: true })

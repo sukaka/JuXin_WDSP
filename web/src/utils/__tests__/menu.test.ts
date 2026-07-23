@@ -3,7 +3,7 @@ import { filterMenusByRoles } from '../menu'
 
 describe('filterMenusByRoles', () => {
   it('系统管理员菜单含运维与 API 端点只读入口', () => {
-    const keys = filterMenusByRoles(['SYSTEM_ADMIN']).map((m) => m.key)
+    const keys = filterMenusByRoles(['SYSTEM_ADMIN'], { apiDynamicProtection: true }).map((m) => m.key)
     expect(keys).toEqual([
       '/dashboard',
       '/config-versions',
@@ -35,7 +35,7 @@ describe('filterMenusByRoles', () => {
   })
 
   it('审计管理员菜单含 API 资产只读', () => {
-    const keys = filterMenusByRoles(['AUDIT_ADMIN']).map((m) => m.key)
+    const keys = filterMenusByRoles(['AUDIT_ADMIN'], { apiDynamicProtection: true }).map((m) => m.key)
     expect(keys).toEqual([
       '/dashboard',
       '/config-versions',
@@ -68,7 +68,7 @@ describe('filterMenusByRoles', () => {
   })
 
   it('安全管理员菜单含 API 防护分组', () => {
-    const keys = filterMenusByRoles(['SECURITY_ADMIN']).map((m) => m.key)
+    const keys = filterMenusByRoles(['SECURITY_ADMIN'], { apiDynamicProtection: true }).map((m) => m.key)
     expect(keys).toEqual([
       '/dashboard',
       '/applications',
@@ -116,7 +116,10 @@ describe('filterMenusByRoles', () => {
   })
 
   it('多角色取并集', () => {
-    const keys = filterMenusByRoles(['SECURITY_ADMIN', 'AUDIT_ADMIN']).map((m) => m.key)
+    const keys = filterMenusByRoles(
+      ['SECURITY_ADMIN', 'AUDIT_ADMIN'],
+      { apiDynamicProtection: true },
+    ).map((m) => m.key)
     expect(keys).toContain('/login-logs')
     expect(keys).toContain('/dashboard')
     expect(keys).toContain('/applications')
@@ -127,11 +130,20 @@ describe('filterMenusByRoles', () => {
   })
 
   it('系统管理员无安全态势与报表中心菜单（三权隔离）', () => {
-    const keys = filterMenusByRoles(['SYSTEM_ADMIN']).map((m) => m.key)
+    const keys = filterMenusByRoles(['SYSTEM_ADMIN'], { apiDynamicProtection: true }).map((m) => m.key)
     expect(keys).not.toContain('/security-overview')
     expect(keys).not.toContain('/analytics')
     expect(keys).not.toContain('/reports')
     expect(keys).not.toContain('/report-templates')
     expect(keys).not.toContain('/report-archives')
+  })
+
+  it('WAF 产品对所有管理员隐藏接口防护菜单', () => {
+    for (const role of ['SECURITY_ADMIN', 'SYSTEM_ADMIN', 'AUDIT_ADMIN']) {
+      const menus = filterMenusByRoles([role], { apiDynamicProtection: false })
+      expect(menus.map((m) => m.key)).not.toContain('/api-endpoints')
+      expect(menus.map((m) => m.key)).not.toContain('/api-models')
+      expect(menus.map((m) => m.group)).not.toContain('接口防护')
+    }
   })
 })
