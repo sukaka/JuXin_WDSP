@@ -74,7 +74,10 @@ func run() error {
 	}
 
 	// 装配应用
-	application := app.New(cfg, db, cacheClient)
+	application, err := app.New(cfg, db, cacheClient)
+	if err != nil {
+		return fmt.Errorf("initialize application: %w", err)
+	}
 
 	// 阶段4：启动安全事件采集器（后台 goroutine）
 	collectorCtx, collectorCancel := context.WithCancel(context.Background())

@@ -25,6 +25,7 @@ describe('filterMenusByRoles', () => {
       '/ai/admin/memories',
       '/ai/admin/usage',
       '/ai/admin/audits',
+      '/ai/admin/evaluations',
       '/users',
       '/roles',
       '/system-settings',
@@ -55,6 +56,7 @@ describe('filterMenusByRoles', () => {
       '/delivery-check',
       '/ai/admin/usage',
       '/ai/admin/audits',
+      '/ai/admin/evaluations',
       '/roles',
       '/login-logs',
       '/audits',
@@ -103,6 +105,7 @@ describe('filterMenusByRoles', () => {
       '/ai/admin/memories',
       '/ai/admin/usage',
       '/ai/admin/audits',
+      '/ai/admin/evaluations',
       '/profile',
     ])
   })

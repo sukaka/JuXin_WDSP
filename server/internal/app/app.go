@@ -83,7 +83,17 @@ type App struct {
 }
 
 // New 装配应用。
-func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
+func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
+	// 加密能力是生产环境的启动前置条件，必须在装配其他依赖前校验。
+	encSvc, err := initEncryption(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("initialize encryption service: %w", err)
+	}
+	clientIPMiddleware, err := middleware.ClientIP(cfg.Security.TrustedProxyCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("initialize trusted proxies: %w", err)
+	}
+
 	// 仓储与服务
 	userStore := users.NewStore(db)
 	sessSvc := sessions.NewService(c, db)
@@ -92,12 +102,6 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 	auditSvc := audits.NewService(db)
 	captchaSvc := security.NewCaptchaService(c)
 	authSvc := auth.NewService(userStore, sessSvc, settingsSvc, logSvc, auditSvc, captchaSvc, c)
-
-	// 阶段3：加密服务（主密钥）
-	encSvc, err := initEncryption(cfg)
-	if err != nil {
-		slog.Warn("encryption service not configured, certificate features disabled", "error", err)
-	}
 
 	// 阶段3+阶段4：应用/证书/网关/策略服务
 	var appStore *applications.Store
@@ -667,9 +671,10 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) *App {
 	handler = middleware.SecurityHeaders(handler)
 	handler = middleware.CORS(cfg.Security.CORSAllowedOrigins)(handler)
 	handler = middleware.RequestID(handler)
+	handler = clientIPMiddleware(handler)
 
 	a.Handler = handler
-	return a
+	return a, nil
 }
 
 // maintenanceFlag 读取恢复流程写入的 Valkey 维护标志。
@@ -778,19 +783,42 @@ func (a *App) sessionMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		perms := make(map[string]bool, len(sess.Permissions))
-		for _, p := range sess.Permissions {
-			perms[p] = true
+		currentUser, err := a.users.GetActiveSessionUser(
+			r.Context(), sess.UserID, sessions.HashSessionID(sess.ID))
+		if err != nil {
+			slog.Warn("persistent session validation failed", "error", err, "path", r.URL.Path)
+			next.ServeHTTP(w, r)
+			return
+		}
+		currentRoles, err := a.users.GetRoles(r.Context(), sess.UserID)
+		if err != nil {
+			slog.Warn("current session roles resolve failed", "error", err, "path", r.URL.Path)
+			next.ServeHTTP(w, r)
+			return
+		}
+		currentPermissions, err := a.users.GetPermissions(r.Context(), sess.UserID)
+		if err != nil {
+			slog.Warn("current session permissions resolve failed", "error", err, "path", r.URL.Path)
+			next.ServeHTTP(w, r)
+			return
+		}
+		roleCodes := make([]string, len(currentRoles))
+		for i, role := range currentRoles {
+			roleCodes[i] = role.Code
+		}
+		perms := make(map[string]bool, len(currentPermissions))
+		for _, permission := range currentPermissions {
+			perms[permission] = true
 		}
 		p := &authz.Principal{
 			UserID:        sess.UserID,
-			Username:      sess.Username,
-			Roles:         sess.Roles,
-			Permissions:   sess.Permissions,
+			Username:      currentUser.Username,
+			Roles:         roleCodes,
+			Permissions:   currentPermissions,
 			SessionID:     sess.ID,
 			SourceIP:      sess.SourceIP,
 			UserAgent:     sess.UserAgent,
-			MustChangePwd: sess.MustChangePwd,
+			MustChangePwd: currentUser.MustChangePassword,
 			PermsSet:      perms,
 		}
 		next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), p)))
@@ -851,7 +879,7 @@ func initEncryption(cfg *config.Config) (*encryption.Service, error) {
 		return svc, nil
 	}
 	if cfg.Env == "prod" {
-		return nil, fmt.Errorf("JIUZHANG_MASTER_KEY is required in prod")
+		return nil, fmt.Errorf("JIUZHANG_MASTER_KEY is required and must be valid in prod: %w", err)
 	}
 	// 开发环境：生成临时主密钥（仅本次进程有效，供开发测试）
 	key, genErr := encryption.GenerateKey()

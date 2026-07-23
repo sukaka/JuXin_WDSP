@@ -202,19 +202,19 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, status, acti
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID, objName string, result, risk string) {
 	_ = h.audits.Record(r.Context(), audits.RecordInput{
-		UserID:        &p.UserID,
-		Username:      p.Username,
-		SourceIP:      middleware.RemoteIP(r),
-		ConnectionIP:  middleware.RemoteIP(r),
-		UserAgent:     r.UserAgent(),
-		Module:        "custom_rules",
-		Action:        action,
-		ObjectType:    "custom_rule",
-		ObjectID:      objID,
-		ObjectName:    objName,
-		Result:        result,
-		RiskLevel:     risk,
-		RequestID:     response.RequestIDFrom(r),
+		UserID:       &p.UserID,
+		Username:     p.Username,
+		SourceIP:     middleware.RemoteIP(r),
+		ConnectionIP: middleware.ConnectionIP(r),
+		UserAgent:    r.UserAgent(),
+		Module:       "custom_rules",
+		Action:       action,
+		ObjectType:   "custom_rule",
+		ObjectID:     objID,
+		ObjectName:   objName,
+		Result:       result,
+		RiskLevel:    risk,
+		RequestID:    response.RequestIDFrom(r),
 	})
 }
 

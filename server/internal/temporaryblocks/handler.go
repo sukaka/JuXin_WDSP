@@ -19,9 +19,9 @@ type ReleaseEventEmitter func(ctx context.Context, b *Block)
 
 // Handler 是临时封禁处理器。
 type Handler struct {
-	store           *Store
-	audits          *audits.Service
-	onReleaseEvent  ReleaseEventEmitter // 可选：人工解封写 CC_TEMP_BLOCK_RELEASED
+	store          *Store
+	audits         *audits.Service
+	onReleaseEvent ReleaseEventEmitter // 可选：人工解封写 CC_TEMP_BLOCK_RELEASED
 }
 
 // NewHandler 创建临时封禁处理器。
@@ -179,7 +179,7 @@ func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID
 		UserID:       &p.UserID,
 		Username:     p.Username,
 		SourceIP:     middleware.RemoteIP(r),
-		ConnectionIP: middleware.RemoteIP(r),
+		ConnectionIP: middleware.ConnectionIP(r),
 		UserAgent:    r.UserAgent(),
 		Module:       "temporary_blocks",
 		Action:       action,

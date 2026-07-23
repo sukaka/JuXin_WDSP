@@ -117,15 +117,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		PasswordExpiresAt:  expiresAt,
 		CreatedBy:          &p.UserID,
 	}
-	if err := h.store.Create(r.Context(), user); err != nil {
+	if err := h.store.CreateWithRole(r.Context(), user, roleID, p.UserID); err != nil {
 		if errors.Is(err, ErrUsernameExists) {
 			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "用户名已存在")
 			return
 		}
-		response.InternalError(w, r, err)
-		return
-	}
-	if err := h.store.AssignRole(r.Context(), user.ID, roleID, p.UserID); err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
@@ -186,6 +182,19 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			"该用户已被其他管理员修改，请刷新后重试")
 		return
 	}
+	var roleID *uuid.UUID
+	if req.RoleCode != "" {
+		if !authz.IsBuiltinRole(req.RoleCode) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的角色")
+			return
+		}
+		id, err := h.store.GetRoleIDByCode(r.Context(), req.RoleCode)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的角色")
+			return
+		}
+		roleID = &id
+	}
 
 	before := userSummary(target, roleCodesOf(target, h.store, r))
 
@@ -193,53 +202,44 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if target.DisplayName == "" {
 		target.DisplayName = target.Username
 	}
-	if err := h.store.Update(r.Context(), target); err != nil {
+	roleChanged, err := h.store.UpdateWithRole(r.Context(), target, roleID, p.UserID)
+	if errors.Is(err, ErrVersionConflict) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict,
+			"该用户已被其他管理员修改，请刷新后重试")
+		return
+	}
+	if errors.Is(err, ErrLastSystemAdmin) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict,
+			"不能移除最后一个系统管理员的角色")
+		return
+	}
+	if err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
 
-	// 角色变更
-	if req.RoleCode != "" {
-		if !authz.IsBuiltinRole(req.RoleCode) {
-			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的角色")
+	if roleChanged {
+		// 角色变更后目标用户全部会话失效。
+		if err := h.sessions.RevokeAllForUser(r.Context(), id, "role_changed"); err != nil {
+			response.InternalError(w, r, err)
 			return
 		}
-		currentRoles, _ := h.store.GetRoles(r.Context(), id)
-		changed := len(currentRoles) == 0 || currentRoles[0].Code != req.RoleCode
-		if changed {
-			// 防止将最后一个系统管理员改为其他角色
-			if len(currentRoles) > 0 && currentRoles[0].Code == authz.RoleSystemAdmin && req.RoleCode != authz.RoleSystemAdmin {
-				count, _ := h.store.CountActiveSystemAdmins(r.Context())
-				if count <= 1 {
-					response.Error(w, r, http.StatusConflict, response.CodeResourceConflict,
-						"不能移除最后一个系统管理员的角色")
-					return
-				}
-			}
-			roleID, err := h.store.GetRoleIDByCode(r.Context(), req.RoleCode)
-			if err != nil {
-				response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的角色")
-				return
-			}
-			if err := h.store.AssignRole(r.Context(), id, roleID, p.UserID); err != nil {
-				response.InternalError(w, r, err)
-				return
-			}
-			// 角色变更后目标用户全部会话失效
-			_ = h.sessions.RevokeAllForUser(r.Context(), id, "role_changed")
-			risk := audits.RiskHigh
-			if req.RoleCode == authz.RoleSystemAdmin {
-				risk = audits.RiskCritical
-			}
-			h.recordAudit(r, p, "users", "assign_role", "user", id.String(), target.Username,
-				before, userSummary(target, req.RoleCode), audits.ResultSuccess, "", risk)
+		risk := audits.RiskHigh
+		if req.RoleCode == authz.RoleSystemAdmin {
+			risk = audits.RiskCritical
 		}
+		h.recordAudit(r, p, "users", "assign_role", "user", id.String(), target.Username,
+			before, userSummary(target, req.RoleCode), audits.ResultSuccess, "", risk)
 	}
 
+	roles, err := h.store.GetRoles(r.Context(), id)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
 	h.recordAudit(r, p, "users", "update", "user", id.String(), target.Username,
-		before, userSummary(target, req.RoleCode), audits.ResultSuccess, "", audits.RiskLow)
+		before, userSummary(target, rolesStr(roles)), audits.ResultSuccess, "", audits.RiskLow)
 
-	roles, _ := h.store.GetRoles(r.Context(), id)
 	response.JSON(w, r, http.StatusOK, userItem(target, roles))
 }
 
@@ -260,26 +260,24 @@ func (h *Handler) Disable(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "不能停用当前登录账号")
 		return
 	}
-	// 禁止停用最后一个系统管理员
 	target, err := h.store.GetByID(r.Context(), id)
 	if err != nil {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "用户不存在")
 		return
 	}
 	roles, _ := h.store.GetRoles(r.Context(), id)
-	if len(roles) > 0 && roles[0].Code == authz.RoleSystemAdmin {
-		count, _ := h.store.CountActiveSystemAdmins(r.Context())
-		if count <= 1 {
-			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict,
-				"不能停用最后一个系统管理员")
-			return
-		}
-	}
-	if err := h.store.SetStatus(r.Context(), id, StatusDisabled); err != nil {
+	if err := h.store.SetStatusGuarded(r.Context(), id, StatusDisabled); errors.Is(err, ErrLastSystemAdmin) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict,
+			"不能停用最后一个系统管理员")
+		return
+	} else if err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
-	_ = h.sessions.RevokeAllForUser(r.Context(), id, "user_disabled")
+	if err := h.sessions.RevokeAllForUser(r.Context(), id, "user_disabled"); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
 	h.recordAudit(r, p, "users", "disable", "user", id.String(), target.Username,
 		userSummary(target, rolesStr(roles)), "status=DISABLED", audits.ResultSuccess, "", audits.RiskMedium)
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "用户已停用"})
@@ -362,7 +360,10 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
-	_ = h.sessions.RevokeAllForUser(r.Context(), id, "password_reset")
+	if err := h.sessions.RevokeAllForUser(r.Context(), id, "password_reset"); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
 	h.recordAudit(r, p, "users", "reset_password", "user", id.String(), target.Username,
 		"", "password_reset=true", audits.ResultSuccess, "", audits.RiskHigh)
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
@@ -411,19 +412,18 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	roles, _ := h.store.GetRoles(r.Context(), id)
-	if len(roles) > 0 && roles[0].Code == authz.RoleSystemAdmin {
-		count, _ := h.store.CountActiveSystemAdmins(r.Context())
-		if count <= 1 {
-			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict,
-				"不能删除最后一个系统管理员")
-			return
-		}
-	}
-	if err := h.store.SoftDelete(r.Context(), id); err != nil {
+	if err := h.store.SoftDeleteGuarded(r.Context(), id); errors.Is(err, ErrLastSystemAdmin) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict,
+			"不能删除最后一个系统管理员")
+		return
+	} else if err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
-	_ = h.sessions.RevokeAllForUser(r.Context(), id, "user_deleted")
+	if err := h.sessions.RevokeAllForUser(r.Context(), id, "user_deleted"); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
 	h.recordAudit(r, p, "users", "delete", "user", id.String(), target.Username,
 		userSummary(target, rolesStr(roles)), "deleted=true", audits.ResultSuccess, "", audits.RiskHigh)
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "用户已删除"})
@@ -434,7 +434,7 @@ func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, actio
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),
-		ConnectionIP:  middleware.RemoteIP(r),
+		ConnectionIP:  middleware.ConnectionIP(r),
 		UserAgent:     r.UserAgent(),
 		Module:        module,
 		Action:        action,

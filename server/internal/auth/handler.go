@@ -75,13 +75,14 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := h.svc.Login(r.Context(), LoginInput{
-		Username:    req.Username,
-		Password:    req.Password,
-		CaptchaID:   req.CaptchaID,
-		CaptchaCode: req.CaptchaCode,
-		SourceIP:    middleware.RemoteIP(r),
-		UserAgent:   r.UserAgent(),
-		RequestID:   response.RequestIDFrom(r),
+		Username:     req.Username,
+		Password:     req.Password,
+		CaptchaID:    req.CaptchaID,
+		CaptchaCode:  req.CaptchaCode,
+		SourceIP:     middleware.RemoteIP(r),
+		ConnectionIP: middleware.ConnectionIP(r),
+		UserAgent:    r.UserAgent(),
+		RequestID:    response.RequestIDFrom(r),
 	})
 	if err != nil {
 		switch {
@@ -102,7 +103,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	// 签发 CSRF Token
 	csrfToken, err := h.svc.IssueCSRFToken(r.Context(), result.Session.ID)
 	if err != nil {
-		response.InternalError(w, r, err)
+		response.InternalError(w, r, errors.Join(err, h.svc.Logout(r.Context(), result.Session.ID)))
 		return
 	}
 
@@ -120,10 +121,15 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 // Logout 处理退出。
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
+	var err error
 	if p != nil {
-		_ = h.svc.Logout(r.Context(), p.SessionID)
+		err = h.svc.Logout(r.Context(), p.SessionID)
 	}
 	h.clearSessionCookie(w)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "已退出登录"})
 }
 
@@ -187,12 +193,13 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := h.svc.ChangePassword(r.Context(), ChangePasswordInput{
-		UserID:      p.UserID,
-		OldPassword: req.OldPassword,
-		NewPassword: req.NewPassword,
-		SourceIP:    middleware.RemoteIP(r),
-		RequestID:   response.RequestIDFrom(r),
-		SessionID:   p.SessionID,
+		UserID:       p.UserID,
+		OldPassword:  req.OldPassword,
+		NewPassword:  req.NewPassword,
+		SourceIP:     middleware.RemoteIP(r),
+		ConnectionIP: middleware.ConnectionIP(r),
+		RequestID:    response.RequestIDFrom(r),
+		SessionID:    p.SessionID,
 	})
 	if err != nil {
 		switch {
@@ -211,8 +218,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 修改密码后重新创建会话（原会话失效）
-	_ = h.svc.Logout(r.Context(), p.SessionID)
+	// 服务层已持久化撤销当前会话。
 	h.clearSessionCookie(w)
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"message":          "密码修改成功，请重新登录",

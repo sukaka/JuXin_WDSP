@@ -256,7 +256,7 @@ func (h *Handler) recordAuditWithDetail(r *http.Request, p *authz.Principal, act
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),
-		ConnectionIP:  middleware.RemoteIP(r),
+		ConnectionIP:  middleware.ConnectionIP(r),
 		UserAgent:     r.UserAgent(),
 		Module:        "restores",
 		Action:        action,

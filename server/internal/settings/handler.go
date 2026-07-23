@@ -81,7 +81,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),
-		ConnectionIP:  middleware.RemoteIP(r),
+		ConnectionIP:  middleware.ConnectionIP(r),
 		UserAgent:     r.UserAgent(),
 		Module:        "system_settings",
 		Action:        "update",

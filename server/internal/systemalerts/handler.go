@@ -253,7 +253,7 @@ func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID
 		UserID:       &p.UserID,
 		Username:     p.Username,
 		SourceIP:     middleware.RemoteIP(r),
-		ConnectionIP: middleware.RemoteIP(r),
+		ConnectionIP: middleware.ConnectionIP(r),
 		UserAgent:    r.UserAgent(),
 		Module:       "system_alerts",
 		Action:       action,

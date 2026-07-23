@@ -81,14 +81,7 @@ func (s *Service) Execute(ctx context.Context, packageID, requestedBy uuid.UUID,
 	if pkg.Status != PackageVerified {
 		return nil, ErrPackageNotVerified
 	}
-	active, err := s.store.HasActiveJob(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if active {
-		return nil, ErrActiveUpgrade
-	}
-	job, err := s.store.CreateJob(ctx, packageID, &requestedBy, requestID)
+	job, err := s.store.CreateJobIfNoActive(ctx, packageID, &requestedBy, requestID)
 	if err != nil {
 		return nil, err
 	}

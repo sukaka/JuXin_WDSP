@@ -16,9 +16,11 @@ import (
 
 // 用户错误
 var (
-	ErrNotFound       = errors.New("user not found")
-	ErrUsernameExists = errors.New("username already exists")
-	ErrInvalidStatus  = errors.New("invalid user status")
+	ErrNotFound        = errors.New("user not found")
+	ErrUsernameExists  = errors.New("username already exists")
+	ErrInvalidStatus   = errors.New("invalid user status")
+	ErrVersionConflict = errors.New("user version conflict")
+	ErrLastSystemAdmin = errors.New("cannot remove the last active system administrator")
 )
 
 // 用户状态
@@ -71,6 +73,12 @@ const userColumns = `id, username, display_name, password_hash, status, must_cha
 password_changed_at, password_expires_at, failed_login_count, locked_until,
 last_login_at, last_login_ip, created_by, created_at, updated_at, deleted_at, version`
 
+const qualifiedUserColumns = `u.id, u.username, u.display_name, u.password_hash, u.status, u.must_change_password,
+u.password_changed_at, u.password_expires_at, u.failed_login_count, u.locked_until,
+u.last_login_at, u.last_login_ip, u.created_by, u.created_at, u.updated_at, u.deleted_at, u.version`
+
+const systemAdminGuardLockKey int64 = 0x4a5a57414641444d
+
 func (s *Store) scanUser(row pgx.Row) (*User, error) {
 	var u User
 	var lastLoginIP *netip.Addr
@@ -112,6 +120,26 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*User, error) {
 			return nil, ErrNotFound
 		}
 		return nil, err
+	}
+	return u, nil
+}
+
+// GetActiveSessionUser 校验持久化会话状态，并返回当前可登录用户。
+func (s *Store) GetActiveSessionUser(ctx context.Context, userID uuid.UUID, sessionHash string) (*User, error) {
+	row := s.db.QueryRow(ctx, `
+SELECT `+qualifiedUserColumns+`
+FROM users u
+JOIN login_sessions ls ON ls.user_id = u.id
+WHERE u.id = $1
+  AND u.status = $2
+  AND u.deleted_at IS NULL
+  AND ls.session_hash = $3
+  AND ls.revoked_at IS NULL
+  AND ls.expires_at > now()`,
+		userID, StatusActive, sessionHash)
+	u, err := s.scanUser(row)
+	if err != nil {
+		return nil, mapNotFound(err)
 	}
 	return u, nil
 }
@@ -247,6 +275,36 @@ RETURNING id, created_at, updated_at, version`,
 	return nil
 }
 
+// CreateWithRole 在同一事务内创建用户并分配角色。
+func (s *Store) CreateWithRole(ctx context.Context, u *User, roleID, operatorID uuid.UUID) error {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	err = tx.QueryRow(ctx, `
+INSERT INTO users (username, display_name, password_hash, status, must_change_password,
+                   password_changed_at, password_expires_at, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, created_at, updated_at, version`,
+		u.Username, u.DisplayName, u.PasswordHash, u.Status, u.MustChangePassword,
+		u.PasswordChangedAt, u.PasswordExpiresAt, u.CreatedBy).
+		Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt, &u.Version)
+	if err != nil {
+		if strings.Contains(err.Error(), "idx_users_username_lower") {
+			return ErrUsernameExists
+		}
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO user_roles (user_id, role_id, created_by) VALUES ($1, $2, $3)`,
+		u.ID, roleID, operatorID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // Update 更新用户基础信息（乐观锁）。
 func (s *Store) Update(ctx context.Context, u *User) error {
 	res, err := s.db.Exec(ctx, `
@@ -280,6 +338,49 @@ WHERE id = $3 AND deleted_at IS NULL`,
 	return nil
 }
 
+// ChangePassword 在同一事务内更新密码、记录旧密码历史并撤销持久化会话。
+func (s *Store) ChangePassword(
+	ctx context.Context,
+	userID uuid.UUID,
+	newHash, oldHash string,
+	expiresAt *time.Time,
+	currentSessionHash string,
+	revokeOtherSessions bool,
+) error {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	res, err := tx.Exec(ctx, `
+UPDATE users SET password_hash = $1, password_changed_at = now(), password_expires_at = $2,
+       must_change_password = FALSE, failed_login_count = 0, locked_until = NULL,
+       updated_at = now(), version = version + 1
+WHERE id = $3 AND deleted_at IS NULL`,
+		newHash, expiresAt, userID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO password_histories (user_id, password_hash) VALUES ($1, $2)`,
+		userID, oldHash); err != nil {
+		return err
+	}
+	if revokeOtherSessions {
+		if _, err := tx.Exec(ctx, `
+UPDATE login_sessions SET revoked_at = now(), revoke_reason = 'password_changed'
+WHERE user_id = $1 AND session_hash <> $2 AND revoked_at IS NULL`,
+			userID, currentSessionHash); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // UpdatePasswordForceChange 重置密码并强制首次登录修改。
 func (s *Store) UpdatePasswordForceChange(ctx context.Context, userID uuid.UUID, hash string, expiresAt *time.Time) error {
 	res, err := s.db.Exec(ctx, `
@@ -311,6 +412,46 @@ WHERE id = $2 AND deleted_at IS NULL`, status, id)
 	return nil
 }
 
+// SetStatusGuarded 原子更新状态，并确保至少保留一个可用系统管理员。
+func (s *Store) SetStatusGuarded(ctx context.Context, id uuid.UUID, status string) error {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockSystemAdminGuard(ctx, tx); err != nil {
+		return err
+	}
+
+	var currentStatus string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).
+		Scan(&currentStatus); err != nil {
+		return mapNotFound(err)
+	}
+	if currentStatus == StatusActive && status != StatusActive {
+		isAdmin, err := isSystemAdmin(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if isAdmin {
+			count, err := countActiveSystemAdmins(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if count <= 1 {
+				return ErrLastSystemAdmin
+			}
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE users SET status = $1, updated_at = now(), version = version + 1
+WHERE id = $2 AND deleted_at IS NULL`, status, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // SoftDelete 逻辑删除用户。
 func (s *Store) SoftDelete(ctx context.Context, id uuid.UUID) error {
 	res, err := s.db.Exec(ctx, `
@@ -323,6 +464,46 @@ WHERE id = $1 AND deleted_at IS NULL`, id, StatusDeleted)
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SoftDeleteGuarded 原子删除用户，并确保至少保留一个可用系统管理员。
+func (s *Store) SoftDeleteGuarded(ctx context.Context, id uuid.UUID) error {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockSystemAdminGuard(ctx, tx); err != nil {
+		return err
+	}
+
+	var status string
+	if err := tx.QueryRow(ctx,
+		`SELECT status FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).
+		Scan(&status); err != nil {
+		return mapNotFound(err)
+	}
+	if status == StatusActive {
+		isAdmin, err := isSystemAdmin(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if isAdmin {
+			count, err := countActiveSystemAdmins(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if count <= 1 {
+				return ErrLastSystemAdmin
+			}
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE users SET deleted_at = now(), status = $2, updated_at = now(), version = version + 1
+WHERE id = $1 AND deleted_at IS NULL`, id, StatusDeleted); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // RecordLoginSuccess 记录登录成功（清零失败计数）。
@@ -381,13 +562,44 @@ WHERE id = $1 AND locked_until IS NOT NULL AND locked_until <= now() AND status 
 
 // CountActiveSystemAdmins 统计可用系统管理员数量。
 func (s *Store) CountActiveSystemAdmins(ctx context.Context) (int, error) {
+	return countActiveSystemAdmins(ctx, s.db)
+}
+
+type rowQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func countActiveSystemAdmins(ctx context.Context, q rowQuerier) (int, error) {
 	var n int
-	err := s.db.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 SELECT count(DISTINCT u.id) FROM users u
 JOIN user_roles ur ON ur.user_id = u.id
 JOIN roles r ON r.id = ur.role_id
 WHERE r.code = 'SYSTEM_ADMIN' AND u.status = 'ACTIVE' AND u.deleted_at IS NULL`).Scan(&n)
 	return n, err
+}
+
+func lockSystemAdminGuard(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, systemAdminGuardLockKey)
+	return err
+}
+
+func isSystemAdmin(ctx context.Context, q rowQuerier, userID uuid.UUID) (bool, error) {
+	var ok bool
+	err := q.QueryRow(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM user_roles ur
+  JOIN roles r ON r.id = ur.role_id
+  WHERE ur.user_id = $1 AND r.code = 'SYSTEM_ADMIN'
+)`, userID).Scan(&ok)
+	return ok, err
+}
+
+func mapNotFound(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
 }
 
 // HasUsers 判断是否已有任何用户（用于初始化）。
@@ -406,6 +618,31 @@ func (s *Store) AssignRole(ctx context.Context, userID, roleID, operatorID uuid.
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockSystemAdminGuard(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, userID).
+		Scan(&userID); err != nil {
+		return mapNotFound(err)
+	}
+	currentAdmin, err := isSystemAdmin(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	var nextRoleCode string
+	if err := tx.QueryRow(ctx, `SELECT code FROM roles WHERE id = $1`, roleID).Scan(&nextRoleCode); err != nil {
+		return err
+	}
+	if currentAdmin && nextRoleCode != "SYSTEM_ADMIN" {
+		count, err := countActiveSystemAdmins(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if count <= 1 {
+			return ErrLastSystemAdmin
+		}
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1`, userID); err != nil {
 		return err
 	}
@@ -415,6 +652,82 @@ func (s *Store) AssignRole(ctx context.Context, userID, roleID, operatorID uuid.
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// UpdateWithRole 原子更新用户资料和可选角色，并执行乐观锁与最后管理员保护。
+func (s *Store) UpdateWithRole(ctx context.Context, u *User, roleID *uuid.UUID, operatorID uuid.UUID) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockSystemAdminGuard(ctx, tx); err != nil {
+		return false, err
+	}
+
+	var currentStatus string
+	var currentVersion int
+	if err := tx.QueryRow(ctx, `
+SELECT status, version FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, u.ID).
+		Scan(&currentStatus, &currentVersion); err != nil {
+		return false, mapNotFound(err)
+	}
+	if currentVersion != u.Version {
+		return false, ErrVersionConflict
+	}
+
+	var currentRoleID uuid.UUID
+	var currentRoleCode string
+	err = tx.QueryRow(ctx, `
+SELECT r.id, r.code FROM roles r
+JOIN user_roles ur ON ur.role_id = r.id
+WHERE ur.user_id = $1
+ORDER BY ur.created_at LIMIT 1`, u.ID).Scan(&currentRoleID, &currentRoleCode)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	hasCurrentRole := err == nil
+
+	roleChanged := false
+	if roleID != nil {
+		var nextRoleCode string
+		if err := tx.QueryRow(ctx, `SELECT code FROM roles WHERE id = $1`, *roleID).Scan(&nextRoleCode); err != nil {
+			return false, err
+		}
+		roleChanged = !hasCurrentRole || currentRoleID != *roleID
+		if roleChanged && currentStatus == StatusActive &&
+			currentRoleCode == "SYSTEM_ADMIN" && nextRoleCode != "SYSTEM_ADMIN" {
+			count, err := countActiveSystemAdmins(ctx, tx)
+			if err != nil {
+				return false, err
+			}
+			if count <= 1 {
+				return false, ErrLastSystemAdmin
+			}
+		}
+	}
+
+	if err := tx.QueryRow(ctx, `
+UPDATE users SET display_name = $1, status = $2, updated_at = now(), version = version + 1
+WHERE id = $3 AND version = $4 AND deleted_at IS NULL
+RETURNING updated_at, version`,
+		u.DisplayName, u.Status, u.ID, u.Version).Scan(&u.UpdatedAt, &u.Version); err != nil {
+		return false, mapNotFound(err)
+	}
+	if roleChanged {
+		if _, err := tx.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1`, u.ID); err != nil {
+			return false, err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO user_roles (user_id, role_id, created_by) VALUES ($1, $2, $3)`,
+			u.ID, *roleID, operatorID); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return roleChanged, nil
 }
 
 // GetRoleIDByCode 按编码查询角色 ID。

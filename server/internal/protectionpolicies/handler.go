@@ -43,16 +43,16 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 type policyRequest struct {
-	Code                      string `json:"code"`
-	Name                      string `json:"name"`
-	Description               string `json:"description"`
-	ProtectionMode            string `json:"protection_mode"`
-	ParanoiaLevel             *int   `json:"paranoia_level"`
-	InboundAnomalyThreshold   *int   `json:"inbound_anomaly_threshold"`
-	OutboundAnomalyThreshold  *int   `json:"outbound_anomaly_threshold"`
-	RequestBodyAccess         *bool  `json:"request_body_access"`
-	ResponseBodyAccess        *bool  `json:"response_body_access"`
-	Version                   int    `json:"version"`
+	Code                     string `json:"code"`
+	Name                     string `json:"name"`
+	Description              string `json:"description"`
+	ProtectionMode           string `json:"protection_mode"`
+	ParanoiaLevel            *int   `json:"paranoia_level"`
+	InboundAnomalyThreshold  *int   `json:"inbound_anomaly_threshold"`
+	OutboundAnomalyThreshold *int   `json:"outbound_anomaly_threshold"`
+	RequestBodyAccess        *bool  `json:"request_body_access"`
+	ResponseBodyAccess       *bool  `json:"response_body_access"`
+	Version                  int    `json:"version"`
 }
 
 // Create 创建策略。
@@ -81,29 +81,29 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	policy := &Policy{
-		Code:           req.Code,
-		Name:           req.Name,
-		Description:    req.Description,
-		Status:         "ACTIVE",
-		ProtectionMode: defaultMode(req.ProtectionMode),
-		ParanoiaLevel:  defaultIntPtr(req.ParanoiaLevel, 1),
+		Code:                     req.Code,
+		Name:                     req.Name,
+		Description:              req.Description,
+		Status:                   "ACTIVE",
+		ProtectionMode:           defaultMode(req.ProtectionMode),
+		ParanoiaLevel:            defaultIntPtr(req.ParanoiaLevel, 1),
 		InboundAnomalyThreshold:  defaultIntPtr(req.InboundAnomalyThreshold, 5),
 		OutboundAnomalyThreshold: defaultIntPtr(req.OutboundAnomalyThreshold, 4),
-		RequestBodyAccess:  true,
-		ResponseBodyAccess: false,
-		RequestBodyLimit:   13107200,
-		RequestBodyNoFilesLimit: 131072,
-		ResponseBodyLimit:  524288,
-		UploadFileLimit:    13107200,
-		JSONParserEnabled:  true,
-		XMLParserEnabled:   true,
-		MultipartParserEnabled: true,
-		AuditLogEnabled:    true,
-		AuditLogRelevantStatus: "^(?:(5|4)(0|1)[0-9])$",
-		AuditLogParts:      "ABIJDEFHZ",
-		BlockingStatusCode: 403,
-		BlockingPageID:     "default",
-		CreatedBy:          &p.UserID,
+		RequestBodyAccess:        true,
+		ResponseBodyAccess:       false,
+		RequestBodyLimit:         13107200,
+		RequestBodyNoFilesLimit:  131072,
+		ResponseBodyLimit:        524288,
+		UploadFileLimit:          13107200,
+		JSONParserEnabled:        true,
+		XMLParserEnabled:         true,
+		MultipartParserEnabled:   true,
+		AuditLogEnabled:          true,
+		AuditLogRelevantStatus:   "^(?:(5|4)(0|1)[0-9])$",
+		AuditLogParts:            "ABIJDEFHZ",
+		BlockingStatusCode:       403,
+		BlockingPageID:           "default",
+		CreatedBy:                &p.UserID,
 	}
 	if req.RequestBodyAccess != nil {
 		policy.RequestBodyAccess = *req.RequestBodyAccess
@@ -330,7 +330,7 @@ func policyItem(p *Policy, usage int) map[string]interface{} {
 		"is_builtin": p.IsBuiltin, "status": p.Status, "protection_mode": p.ProtectionMode,
 		"paranoia_level": p.ParanoiaLevel, "inbound_anomaly_threshold": p.InboundAnomalyThreshold,
 		"outbound_anomaly_threshold": p.OutboundAnomalyThreshold,
-		"request_body_access": p.RequestBodyAccess, "response_body_access": p.ResponseBodyAccess,
+		"request_body_access":        p.RequestBodyAccess, "response_body_access": p.ResponseBodyAccess,
 		"blocking_status_code": p.BlockingStatusCode, "usage_count": usage,
 		"created_at": p.CreatedAt, "updated_at": p.UpdatedAt, "version": p.Version,
 	}
@@ -356,20 +356,20 @@ func defaultIntPtr(v *int, def int) int {
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, summary, result, risk string) {
 	_ = h.audits.Record(r.Context(), audits.RecordInput{
-		UserID:        &p.UserID,
-		Username:      p.Username,
-		SourceIP:      middleware.RemoteIP(r),
-		ConnectionIP:  middleware.RemoteIP(r),
-		UserAgent:     r.UserAgent(),
-		Module:        module,
-		Action:        action,
-		ObjectType:    objType,
-		ObjectID:      objID,
-		ObjectName:    objName,
-		AfterSummary:  summary,
-		Result:        result,
-		RiskLevel:     risk,
-		RequestID:     response.RequestIDFrom(r),
+		UserID:       &p.UserID,
+		Username:     p.Username,
+		SourceIP:     middleware.RemoteIP(r),
+		ConnectionIP: middleware.ConnectionIP(r),
+		UserAgent:    r.UserAgent(),
+		Module:       module,
+		Action:       action,
+		ObjectType:   objType,
+		ObjectID:     objID,
+		ObjectName:   objName,
+		AfterSummary: summary,
+		Result:       result,
+		RiskLevel:    risk,
+		RequestID:    response.RequestIDFrom(r),
 	})
 }
 

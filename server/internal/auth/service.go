@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,13 +47,14 @@ func NewService(u *users.Store, sess *sessions.Service, st *settings.Service,
 
 // LoginInput 是登录输入。
 type LoginInput struct {
-	Username    string
-	Password    string
-	CaptchaID   string
-	CaptchaCode string
-	SourceIP    string
-	UserAgent   string
-	RequestID   string
+	Username     string
+	Password     string
+	CaptchaID    string
+	CaptchaCode  string
+	SourceIP     string
+	ConnectionIP string
+	UserAgent    string
+	RequestID    string
 }
 
 // LoginResult 是登录结果。
@@ -90,7 +92,9 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginResult, error
 	}
 
 	// 3. 清理过期锁定
-	_ = s.users.ClearExpiredLock(ctx, user.ID)
+	if err := s.users.ClearExpiredLock(ctx, user.ID); err != nil {
+		return nil, fmt.Errorf("clear expired account lock: %w", err)
+	}
 
 	// 4. 状态检查
 	if user.Status == users.StatusDisabled {
@@ -104,8 +108,11 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginResult, error
 
 	// 5. 密码校验
 	if err := security.VerifyPassword(in.Password, user.PasswordHash); err != nil {
-		locked, _ := s.users.RecordLoginFailure(ctx, user.ID, policy.MaxFailedAttempts,
+		locked, recordErr := s.users.RecordLoginFailure(ctx, user.ID, policy.MaxFailedAttempts,
 			time.Duration(policy.LockMinutes)*time.Minute)
+		if recordErr != nil {
+			return nil, fmt.Errorf("record login failure: %w", recordErr)
+		}
 		if locked {
 			s.recordLog(ctx, in, &user.ID, loginlogs.EventAccountLocked, loginlogs.ResultFailure, "MAX_FAILED_ATTEMPTS")
 		} else {
@@ -145,7 +152,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginResult, error
 
 	// 9. 记录成功
 	if err := s.users.RecordLoginSuccess(ctx, user.ID, in.SourceIP); err != nil {
-		return nil, err
+		return nil, errors.Join(err, s.sessions.Revoke(ctx, sess.ID, "login_record_failed"))
 	}
 	s.recordLog(ctx, in, &user.ID, loginlogs.EventLoginSuccess, loginlogs.ResultSuccess, "")
 
@@ -173,12 +180,13 @@ func (s *Service) Logout(ctx context.Context, sessionID string) error {
 
 // ChangePasswordInput 是修改密码输入。
 type ChangePasswordInput struct {
-	UserID      uuid.UUID
-	OldPassword string
-	NewPassword string
-	SourceIP    string
-	RequestID   string
-	SessionID   string
+	UserID       uuid.UUID
+	OldPassword  string
+	NewPassword  string
+	SourceIP     string
+	ConnectionIP string
+	RequestID    string
+	SessionID    string
 }
 
 // ChangePassword 修改密码。
@@ -216,15 +224,24 @@ func (s *Service) ChangePassword(ctx context.Context, in ChangePasswordInput) er
 		t := time.Now().Add(time.Duration(policy.ExpireDays) * 24 * time.Hour)
 		expiresAt = &t
 	}
-	if err := s.users.UpdatePassword(ctx, in.UserID, newHash, expiresAt); err != nil {
+	revokeOnChange := s.settings.GetBool(ctx, "session", "revoke_on_password_change", true)
+	if err := s.users.ChangePassword(
+		ctx,
+		in.UserID,
+		newHash,
+		user.PasswordHash,
+		expiresAt,
+		sessions.HashSessionID(in.SessionID),
+		revokeOnChange,
+	); err != nil {
 		return err
 	}
-	// 旧密码入历史
-	_ = s.users.AddPasswordHistory(ctx, in.UserID, user.PasswordHash)
-	// 其他会话失效（策略开启时）
-	revokeOnChange := s.settings.GetBool(ctx, "session", "revoke_on_password_change", true)
+	// 持久化撤销已和密码更新原子提交；此处只确保缓存尽快清理。
 	if revokeOnChange {
-		_ = s.sessions.RevokeOtherForUser(ctx, in.UserID, in.SessionID, "password_changed")
+		if err := s.sessions.RevokeOtherForUser(ctx, in.UserID, in.SessionID, "password_changed"); err != nil {
+			slog.Warn("password changed but session cache cleanup failed",
+				"user_id", in.UserID, "error", err)
+		}
 	}
 	s.recordPwdLog(ctx, in, loginlogs.EventPasswordChange)
 	return nil
@@ -251,7 +268,7 @@ func (s *Service) recordLog(ctx context.Context, in LoginInput, userID *uuid.UUI
 		Username:     in.Username,
 		UserID:       userID,
 		SourceIP:     in.SourceIP,
-		ConnectionIP: in.SourceIP,
+		ConnectionIP: in.ConnectionIP,
 		UserAgent:    in.UserAgent,
 		EventType:    eventType,
 		Result:       result,
@@ -265,7 +282,7 @@ func (s *Service) recordPwdLog(ctx context.Context, in ChangePasswordInput, even
 		Username:     "",
 		UserID:       &in.UserID,
 		SourceIP:     in.SourceIP,
-		ConnectionIP: in.SourceIP,
+		ConnectionIP: in.ConnectionIP,
 		EventType:    eventType,
 		Result:       loginlogs.ResultSuccess,
 		RequestID:    in.RequestID,

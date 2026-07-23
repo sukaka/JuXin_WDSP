@@ -109,7 +109,8 @@ INSERT INTO login_sessions (user_id, session_hash, source_ip, user_agent_summary
 VALUES ($1, $2, $3, $4, $5)`,
 		userID, HashSessionID(id), nullableIP(sourceIP), truncateUA(userAgent), sess.AbsoluteExpiry)
 	if err != nil {
-		return nil, fmt.Errorf("persist session summary: %w", err)
+		cleanupErr := s.deleteCachedSession(ctx, sess)
+		return nil, errors.Join(fmt.Errorf("persist session summary: %w", err), cleanupErr)
 	}
 	return sess, nil
 }
@@ -122,17 +123,17 @@ func (s *Service) Get(ctx context.Context, id string, policy Policy) (*Session, 
 	}
 	now := time.Now().UTC()
 	if now.After(sess.AbsoluteExpiry) {
-		_ = s.Revoke(ctx, id, "absolute_expired")
-		return nil, ErrSessionExpired
+		return nil, errors.Join(ErrSessionExpired, s.Revoke(ctx, id, "absolute_expired"))
 	}
 	// 刷新空闲超时
 	sess.LastSeenAt = now
 	if err := s.save(ctx, sess, policy.IdleTimeout); err != nil {
 		return nil, err
 	}
-	// 异步更新摘要表 last_seen（失败不影响请求）
-	_, _ = s.db.Exec(ctx,
-		`UPDATE login_sessions SET last_seen_at = now() WHERE session_hash = $1`, HashSessionID(id))
+	if _, err := s.db.Exec(ctx,
+		`UPDATE login_sessions SET last_seen_at = now() WHERE session_hash = $1`, HashSessionID(id)); err != nil {
+		return nil, fmt.Errorf("update session last seen: %w", err)
+	}
 	return sess, nil
 }
 
@@ -154,31 +155,49 @@ func (s *Service) RefreshPermissions(ctx context.Context, id string, roles, perm
 
 // Revoke 注销会话。
 func (s *Service) Revoke(ctx context.Context, id, reason string) error {
-	if err := s.cache.Del(ctx, sessionKeyPrefix+id); err != nil {
-		return err
-	}
-	_, _ = s.db.Exec(ctx,
+	sess, _ := s.load(ctx, id)
+	var errs []error
+	if _, err := s.db.Exec(ctx,
 		`UPDATE login_sessions SET revoked_at = now(), revoke_reason = $2 WHERE session_hash = $1 AND revoked_at IS NULL`,
-		HashSessionID(id), reason)
-	return nil
+		HashSessionID(id), reason); err != nil {
+		errs = append(errs, fmt.Errorf("persist session revocation: %w", err))
+	}
+	if err := s.cache.Del(ctx, sessionKeyPrefix+id); err != nil {
+		errs = append(errs, fmt.Errorf("delete cached session: %w", err))
+	}
+	if sess != nil {
+		if err := s.cache.Redis().SRem(ctx, userSessionIndexKey(sess.UserID), id).Err(); err != nil {
+			errs = append(errs, fmt.Errorf("remove cached session index: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // RevokeAllForUser 注销指定用户全部会话。
 func (s *Service) RevokeAllForUser(ctx context.Context, userID uuid.UUID, reason string) error {
+	var errs []error
+	if _, err := s.db.Exec(ctx,
+		`UPDATE login_sessions SET revoked_at = now(), revoke_reason = $2 WHERE user_id = $1 AND revoked_at IS NULL`,
+		userID, reason); err != nil {
+		errs = append(errs, fmt.Errorf("persist user session revocations: %w", err))
+	}
+
 	// Valkey 按用户索引删除
 	idxKey := userSessionIndexKey(userID)
 	members, err := s.cache.Redis().SMembers(ctx, idxKey).Result()
 	if err != nil && err != redis.Nil {
-		return err
+		errs = append(errs, fmt.Errorf("list cached user sessions: %w", err))
+	} else {
+		for _, id := range members {
+			if err := s.cache.Del(ctx, sessionKeyPrefix+id); err != nil {
+				errs = append(errs, fmt.Errorf("delete cached session %s: %w", HashSessionID(id), err))
+			}
+		}
 	}
-	for _, id := range members {
-		_ = s.cache.Del(ctx, sessionKeyPrefix+id)
+	if err := s.cache.Del(ctx, idxKey); err != nil {
+		errs = append(errs, fmt.Errorf("delete cached user session index: %w", err))
 	}
-	_ = s.cache.Del(ctx, idxKey)
-	_, _ = s.db.Exec(ctx,
-		`UPDATE login_sessions SET revoked_at = now(), revoke_reason = $2 WHERE user_id = $1 AND revoked_at IS NULL`,
-		userID, reason)
-	return nil
+	return errors.Join(errs...)
 }
 
 // ListForUser 返回用户的会话摘要（DB 中的审计记录）。
@@ -216,23 +235,32 @@ LIMIT $2`, userID, limit)
 
 // RevokeOtherForUser 注销用户除 currentID 外的全部会话。
 func (s *Service) RevokeOtherForUser(ctx context.Context, userID uuid.UUID, currentID, reason string) error {
+	var errs []error
+	if _, err := s.db.Exec(ctx,
+		`UPDATE login_sessions SET revoked_at = now(), revoke_reason = $3
+		 WHERE user_id = $1 AND session_hash <> $2 AND revoked_at IS NULL`,
+		userID, HashSessionID(currentID), reason); err != nil {
+		errs = append(errs, fmt.Errorf("persist other session revocations: %w", err))
+	}
+
 	idxKey := userSessionIndexKey(userID)
 	members, err := s.cache.Redis().SMembers(ctx, idxKey).Result()
 	if err != nil && err != redis.Nil {
-		return err
-	}
-	for _, id := range members {
-		if id == currentID {
-			continue
+		errs = append(errs, fmt.Errorf("list cached user sessions: %w", err))
+	} else {
+		for _, id := range members {
+			if id == currentID {
+				continue
+			}
+			if err := s.cache.Del(ctx, sessionKeyPrefix+id); err != nil {
+				errs = append(errs, fmt.Errorf("delete cached session %s: %w", HashSessionID(id), err))
+			}
+			if err := s.cache.Redis().SRem(ctx, idxKey, id).Err(); err != nil {
+				errs = append(errs, fmt.Errorf("remove cached session index %s: %w", HashSessionID(id), err))
+			}
 		}
-		_ = s.cache.Del(ctx, sessionKeyPrefix+id)
-		_ = s.cache.Redis().SRem(ctx, idxKey, id).Err()
 	}
-	_, _ = s.db.Exec(ctx,
-		`UPDATE login_sessions SET revoked_at = now(), revoke_reason = $3
-		 WHERE user_id = $1 AND session_hash <> $2 AND revoked_at IS NULL`,
-		userID, HashSessionID(currentID), reason)
-	return nil
+	return errors.Join(errs...)
 }
 
 // FindSessionIDByHash 通过摘要反查 Valkey 中的会话 ID（用于管理员强制下线）。
@@ -289,10 +317,19 @@ func (s *Service) save(ctx context.Context, sess *Session, idleTimeout time.Dura
 	// 用户会话索引
 	idxKey := userSessionIndexKey(sess.UserID)
 	if err := s.cache.Redis().SAdd(ctx, idxKey, sess.ID).Err(); err != nil {
-		return err
+		return errors.Join(err, s.cache.Del(ctx, sessionKeyPrefix+sess.ID))
 	}
-	_ = s.cache.Expire(ctx, idxKey, 30*24*time.Hour)
+	if err := s.cache.Expire(ctx, idxKey, 30*24*time.Hour); err != nil {
+		return errors.Join(err, s.deleteCachedSession(ctx, sess))
+	}
 	return nil
+}
+
+func (s *Service) deleteCachedSession(ctx context.Context, sess *Session) error {
+	return errors.Join(
+		s.cache.Del(ctx, sessionKeyPrefix+sess.ID),
+		s.cache.Redis().SRem(ctx, userSessionIndexKey(sess.UserID), sess.ID).Err(),
+	)
 }
 
 func (s *Service) enforceMaxSessions(ctx context.Context, userID uuid.UUID, max int) error {
@@ -307,7 +344,9 @@ func (s *Service) enforceMaxSessions(ctx context.Context, userID uuid.UUID, max 
 		if _, err := s.load(ctx, id); err == nil {
 			alive = append(alive, id)
 		} else {
-			_ = s.cache.Redis().SRem(ctx, idxKey, id).Err()
+			if err := s.cache.Redis().SRem(ctx, idxKey, id).Err(); err != nil {
+				return err
+			}
 		}
 	}
 	// 超限时淘汰最旧会话
@@ -325,7 +364,9 @@ func (s *Service) enforceMaxSessions(ctx context.Context, userID uuid.UUID, max 
 			}
 		}
 		if oldest != "" {
-			_ = s.Revoke(ctx, oldest, "max_sessions_evicted")
+			if err := s.Revoke(ctx, oldest, "max_sessions_evicted"); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
