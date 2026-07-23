@@ -24,7 +24,6 @@ CREATE INDEX IF NOT EXISTS idx_api_endpoints_learning ON api_endpoints (learning
 
 -- ==================== 2. api_model_versions 对齐任务书 50.2 ====================
 ALTER TABLE api_model_versions RENAME COLUMN endpoint_id TO api_endpoint_id;
-ALTER INDEX idx_api_model_versions_endpoint RENAME TO idx_api_model_versions_endpoint;
 ALTER TABLE api_model_versions
     ADD COLUMN IF NOT EXISTS version_number INTEGER NOT NULL DEFAULT 1,
     ADD COLUMN IF NOT EXISTS parent_version_id UUID,

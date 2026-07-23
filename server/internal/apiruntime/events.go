@@ -38,7 +38,7 @@ func (s *Store) SavePrimary(ctx context.Context, ev *events.PrimaryEvent) error 
 	_, err = s.db.Exec(ctx, `
 INSERT INTO api_runtime_events (id, request_id, endpoint_key, risk_score, risk_level, final_action, details_json, occurred_at)
 SELECT $1,$2,$3,$4,$5,$6,$7,$8
-WHERE $2 = '' OR NOT EXISTS (SELECT 1 FROM api_runtime_events WHERE request_id = $2)`,
+WHERE NOT EXISTS (SELECT 1 FROM api_runtime_events WHERE request_id = NULLIF($2::varchar, ''))`,
 		id, ev.RequestID, ev.EndpointKey, ev.RiskScore, ev.RiskLevel, ev.FinalAction, raw, ev.OccurredAt)
 	return err
 }

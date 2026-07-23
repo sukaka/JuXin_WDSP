@@ -13,7 +13,13 @@
 	stage7-test-performance stage7-test-security stage7-test-all \
 	stage7-up stage7-down stage7-status stage7-test-tools stage7-test-agents \
 	stage7-test-memory stage7-test-context stage7-test-injection stage7-test-hallucination \
-	stage7-test-cost ai-build ai-migrate ai-seed ai-evaluation
+	stage7-test-cost ai-build ai-migrate ai-seed ai-evaluation \
+	stage8-build stage8-migrate stage8-seed stage8-up stage8-status stage8-down \
+	stage8-test-unit stage8-test-api stage8-test-discovery stage8-test-learning \
+	stage8-test-versioning stage8-test-schema stage8-test-classification \
+	stage8-test-identity stage8-test-authorization stage8-test-sensitive-data \
+	stage8-test-behavior stage8-test-graph stage8-test-replay stage8-test-e2e \
+	stage8-test-performance stage8-test-security stage8-test-gateway stage8-test-all
 
 COMPOSE_STAGE1 := docker compose -f deployment/docker-compose.stage1.yml
 COMPOSE_STAGE2 := docker compose -f deployment/docker-compose.stage2.yml --env-file .env.example
@@ -391,3 +397,104 @@ stage7-test-hallucination:
 stage7-test-cost:
 	cd server && go test ./internal/aicost/ ./tests -run 'TestStage7Usage' -count=1 -v
 
+
+# ---------- 阶段8 / WDSP（统一 Web 与 API 动态防护） ----------
+# 环境 = stage5 编排 + wdsp 产品形态覆盖（PRODUCT_EDITION=wdsp, API_DYNAMIC_PROTECTION_ENABLED=true）
+COMPOSE_STAGE8 := $(COMPOSE_STAGE5) -f deployment/docker-compose.wdsp.yml
+
+stage8-build:
+	@echo "构建阶段8网关与全栈镜像（含 dynamic_security 引擎）..."
+	$(COMPOSE_STAGE8) build
+
+stage8-migrate:
+	@echo "阶段8迁移 000016-000019 随 api 容器启动自动执行"
+	cd server && go run ./cmd/api --migrate-only 2>/dev/null || echo "（无独立迁移入口，随服务启动执行）"
+
+stage8-seed:
+	@echo "阶段8权限种子：000019_stage8_perms（27 个权限点，随迁移执行）"
+
+stage8-up:
+	@echo "启动阶段8 WDSP 环境（stage5 + wdsp 覆盖）..."
+	$(COMPOSE_STAGE8) up -d
+
+stage8-status:
+	@$(COMPOSE_STAGE8) ps
+
+stage8-down:
+	@echo "停止阶段8环境..."
+	$(COMPOSE_STAGE8) down
+
+stage8-test-unit:
+	@echo "阶段8单元测试（引擎 + guard + 后端三包 + 前端）..."
+	cd gateway/dynamic_security && go test -race ./...
+	cd gateway/modules/jiuzhang_guard && go test -race ./...
+	cd server && go test ./internal/apiassets/ ./internal/apimodels/ ./internal/apisecurity/ ./internal/apiruntime/ ./internal/product/ ./internal/guardconfig/
+	cd web && npx vitest run
+
+stage8-test-api:
+	@echo "阶段8接口集成测试（需 postgres+valkey）..."
+	cd server && go test ./tests -run TestStage8 -count=1 -v
+
+stage8-test-discovery:
+	@echo "API 发现与归一化测试..."
+	cd gateway/dynamic_security && go test ./classifier/ ./normalizer/ ./parser/ -count=1
+	cd server && go test ./internal/apiassets/ -run 'TestMemStore|TestHandler|TestEndpoint' -count=1 -v
+
+stage8-test-learning:
+	@echo "学习与样本测试..."
+	cd gateway/dynamic_security && go test ./learning/ -count=1 -v
+	cd server && go test ./internal/apiassets/ -run 'TestLearning|TestEndpointGroup' -count=1 -v
+
+stage8-test-versioning:
+	@echo "模型版本测试..."
+	cd server && go test ./internal/apimodels/ -count=1 -v
+
+stage8-test-schema:
+	@echo "Schema 防护与偏离测试..."
+	cd gateway/dynamic_security && go test ./detectors/ ./pipeline/ -run 'TestSchema|TestProcess|TestCheck' -count=1 -v
+
+stage8-test-classification:
+	@echo "用途分类测试..."
+	cd server && go test ./internal/apisecurity/ -count=1 -v
+
+stage8-test-identity:
+	@echo "身份与凭据检测测试..."
+	cd gateway/dynamic_security && go test ./detectors/ -run 'TestAuth|TestIdentity' -count=1 -v
+
+stage8-test-authorization:
+	@echo "BOLA/BFLA 辅助检测测试..."
+	cd gateway/dynamic_security && go test ./detectors/ -run 'TestResource' -count=1 -v
+
+stage8-test-sensitive-data:
+	@echo "敏感数据检测测试..."
+	cd gateway/dynamic_security && go test ./detectors/ -run 'TestSensitive' -count=1 -v
+
+stage8-test-behavior:
+	@echo "行为基线与限速测试..."
+	cd gateway/dynamic_security && go test ./detectors/ -run 'TestBehavior|TestRate|TestWindow|TestLRU' -count=1 -v
+
+stage8-test-graph:
+	@echo "图谱与拓扑测试..."
+	cd server && go test ./internal/apisecurity/ -run 'TestSpec|TestGraph|TestTopology' -count=1 -v
+
+stage8-test-gateway:
+	@echo "阶段8真实网关全链路验证（需 stage8-up）..."
+	API_URL=http://127.0.0.1:$(API_PORT) GATEWAY_URL=http://127.0.0.1:$(GATEWAY_PORT) bash test/waf/scripts/stage8-gateway-tests.sh
+
+stage8-test-replay:
+	@echo "阶段8流量回放测试（需 stage8-up）..."
+	API_URL=http://127.0.0.1:$(API_PORT) GATEWAY_URL=http://127.0.0.1:$(GATEWAY_PORT) bash test/waf/scripts/stage8-replay-tests.sh
+
+stage8-test-e2e:
+	@echo "阶段8 Playwright E2E（需 stage8-up + 前端dev）..."
+	cd web && npx playwright test e2e/stage8-api-security.spec.ts
+
+stage8-test-performance:
+	@echo "阶段8性能测试（需 stage8-up）..."
+	API_URL=http://127.0.0.1:$(API_PORT) GATEWAY_URL=http://127.0.0.1:$(GATEWAY_PORT) bash test/performance/stage8-performance-tests.sh
+
+stage8-test-security:
+	@echo "阶段8安全测试（需 stage8-up）..."
+	API_URL=http://127.0.0.1:$(API_PORT) GATEWAY_URL=http://127.0.0.1:$(GATEWAY_PORT) bash test/security/stage8-security-tests.sh
+
+stage8-test-all: stage8-test-unit stage8-test-api stage8-test-gateway stage8-test-replay stage8-test-e2e stage8-test-performance stage8-test-security
