@@ -2,7 +2,7 @@ import { Alert } from 'antd'
 import { ApiError } from '../api/client'
 
 /**
- * 查询失败统一提示：403 展示无权限空状态（页面不崩溃），其余错误展示后端消息。
+ * 查询失败统一提示：无 error 时不渲染；403 展示无权限提示，其余错误展示后端消息。
  */
 export default function QueryErrorAlert({
   error,
@@ -11,6 +11,9 @@ export default function QueryErrorAlert({
   error: unknown
   message?: string
 }) {
+  if (error == null) {
+    return null
+  }
   if (error instanceof ApiError && error.status === 403) {
     return (
       <Alert

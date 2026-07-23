@@ -6,6 +6,7 @@ import type { Dayjs } from 'dayjs'
 import { analyticsApi } from '../../api/analytics'
 import type { AnalyticsParams } from '../../api/analytics'
 import { applicationsApi } from '../../api/applications'
+import { ApiError } from '../../api/client'
 import EChart from '../../components/EChart'
 import type { EChartOption } from '../../components/EChart'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
@@ -385,7 +386,7 @@ export default function AnalyticsPage() {
       {hasAnyPermission(permissions, ['analytics.security.read', 'analytics.disposition.read']) ? (
         <Tabs activeKey={activeTab} onChange={setActiveTab} items={tabItems} />
       ) : (
-        <QueryErrorAlert error={null} />
+        <QueryErrorAlert error={new ApiError('无权限', 'PERMISSION_DENIED', 403)} />
       )}
     </Card>
   )
