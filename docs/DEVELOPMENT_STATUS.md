@@ -316,19 +316,29 @@
 
 ## 下一步
 
-### WDSP / 阶段8（本仓库交付范围已完成）
+### WDSP / 阶段8（统一 Web 与 API 动态防护）
 
 - 分支：`develop` + `feature/stage8-*`（见 [BRANCHING_AND_PRODUCT_LINES.md](BRANCHING_AND_PRODUCT_LINES.md)）
 - 开工说明：[STAGE_8_WDSP_KICKOFF.md](tasks/STAGE_8_WDSP_KICKOFF.md)
 - 任务书：[STAGE_8_UNIFIED_WEB_API_DYNAMIC_PROTECTION.md](tasks/STAGE_8_UNIFIED_WEB_API_DYNAMIC_PROTECTION.md)
-- **已交付（验收口径）**：
-  - 统一管线：`gateway/dynamic_security`（parse 限流、normalize、classifier、detectors 只写 Matches、decision 唯一 finalize）
-  - API 发现/端点归一与管理面 list/discover/confirm；迁移 `000016`/`000017`
-  - 学习：候选 → 确认冻结；正式模型不可变；偏离不扩宽
-  - 统一主事件结构（多 detector 明细）；`PRODUCT_EDITION`/`API_DYNAMIC_PROTECTION_ENABLED`；API 关时管线 skip、遗留 WAF 匹配仍可用
-  - 前端：API 端点资产 / API 模型版本页与菜单
-- **关键遗留（任务书第二章核心原则未落地）**：统一引擎 `gateway/dynamic_security` **尚未挂接 `jiuzhang_guard` 请求处理链**——guard 不 import 该模块、xcaddy 构建不包含、`API_DYNAMIC_PROTECTION_ENABLED` 未注入网关容器；端点发现当前依赖手工 `POST /api-endpoints/discover` 登记，`api_runtime_events` 表无生产写入方。因此「API 防护关闭不影响 WAF」目前平凡成立（引擎不在请求路径上，开启亦然），挂接后必须重新回归该结论。详见 [STAGE8_IMPLEMENTATION_REVIEW.md](STAGE8_IMPLEMENTATION_REVIEW.md) §三.2。
-- **诚实遗留（任务书超集，不挡本目标验收）**：完整图谱/拓扑 UI、OpenAPI 导入、BOLA/BFLA 全量规则库、阶段7 `api_*` AI Tools、真实 Caddy 全链路 e2e（环境受限时以单元/集成为准）
+- 核查基线：[STAGE8_IMPLEMENTATION_REVIEW.md](STAGE8_IMPLEMENTATION_REVIEW.md)（2026-07-22，其 §7.1 第 1–3 项已全部落地）
+- **已交付**：
+  - 统一引擎挂接 `jiuzhang_guard` 请求链（`serveNext` 唯一挂点；一次解析→分类→归一→检测→统一决策；`api_dynamic_protection=false` 时零行为变化，下发 JSON 与纯 WAF 一致）
+  - 一次解析多协议：JSON / form / XML（流式、DOCTYPE 拒绝）/ multipart（文件不落内存）/ GraphQL；解析限制真实生效
+  - 检测器：schema 偏离、身份信号、认证有效性、敏感数据（Query 明文升 BLOCK）、BOLA 辅助、生命周期（已知端点基线随发布下发）、行为滑窗、API 限速
+  - 统一事件流：网关 `api-runtime-events.log` → 采集器（断点续传/轮转/错误文件）→ `api_runtime_events`（request_id 幂等）；端点发现由流量自动驱动
+  - 数据库 27 表（`000016`-`000018`）+ 27 权限点（`000019`，三权分配与既有口径一致）
+  - 接口：`/api/v1/api-security/*` 43 条（端点/学习/模型生命周期/参数/分类/图谱/规范/风险/运行时/策略），全量权限校验 + 操作审计，openapi.yaml 收录
+  - 模型生命周期：CANDIDATE→IN_REVIEW→FORMAL/REJECTED/SUPERSEDED/ARCHIVED，版本号自增、diff、activate、FORMAL 不可变；冻结模型经发布通道下发网关
+  - 策略接口：模式 OFF/OBSERVE/PROTECT（settings 表覆盖优先于 env）+ 同步发布到网关
+  - 前端：12 个阶段8 页面（端点/模型/学习中心/参数/分类/敏感数据/规范/图谱/拓扑/风险/影子僵尸/策略），产品形态 + 权限双层门控，全部符合前端风格指南
+  - 真实环境全链路验证：`test/waf/scripts/stage8-gateway-tests.sh` 15/15 通过（compose stage5+wdsp 覆盖）
+- **诚实遗留（任务书超集部分）**：
+  - 学习自动化：样本达阈值自动生成候选模型未实现（候选靠手工/接口创建）；参数统计画像（字符串/数值/条件关系）仅有表结构
+  - 响应侧解析与 MASK_RESPONSE 未实现（响应字段存在但无写入点）
+  - 行为基线为单节点进程内滑窗（多节点共享需 Valkey 化）；图谱调用边仅 caller→target 形态；BOLA/BFLA 为辅助信号而非全量规则库
+  - Coraza 命中未同步进 RequestContext（经 request_id 在管理面关联；coraza-caddy 为第三方模块，不 fork）
+  - 网关→管理面方向仍为单向日志采集（与既有架构一致）；WAF 纯形态回归以 stage5 既有测试套件为准
 
 ### 其他
 

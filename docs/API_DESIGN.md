@@ -430,3 +430,76 @@ data: {"type":"plan|agent_start|agent_done|answer|error|compressed|done","text":
 ## OpenAPI 3
 
 正式接口实现后，使用 OpenAPI 3 规范生成接口文档，存放于 `docs/openapi.yaml`。
+
+---
+
+## 阶段8 / WDSP：API 动态防护接口（/api/v1/api-security）
+
+> 仅在 `PRODUCT_EDITION=wdsp` 且 `API_DYNAMIC_PROTECTION_ENABLED=true` 时注册；纯 WAF 形态下整组路由不存在（404）。统一响应信封、分页参数（`page`/`page_size`）、错误码与既有接口一致；全部写操作记录操作审计。OpenAPI 定义见 `server/openapi/openapi.yaml`（tag: `api-security`）。
+
+### 端点资产与学习
+
+| 方法与路径 | 权限点 | 说明 |
+|---|---|---|
+| `GET /api/v1/api-security/endpoints` | `api_asset.read` | 端点列表（asset_status/learning_status/keyword/application_id 过滤） |
+| `POST /api/v1/api-security/endpoints/confirm` | `api_asset.confirm` | 批量确认为正式资产 `{ids:[]}` |
+| `GET /api/v1/api-security/endpoints/{id}` | `api_asset.read` | 端点详情（含 api_assets 扩展字段） |
+| `PATCH /api/v1/api-security/endpoints/{id}` | `api_asset.edit` | 编辑资产属性（用途/暴露面/负责人/标签） |
+| `POST /api/v1/api-security/endpoints/{id}/merge` | `api_asset.merge` | 合并端点（别名归档、命中累加，事务） |
+| `POST /api/v1/api-security/endpoints/{id}/split` | `api_asset.split` | 拆分端点 |
+| `POST /api/v1/api-security/endpoints/{id}/ignore` | `api_asset.ignore` | 标记忽略 |
+| `POST /api/v1/api-security/endpoints/{id}/classify` | `api_asset.edit` | 触发自动分类（source=AUTO） |
+| `GET /api/v1/api-security/endpoints/{id}/lifecycle-events` | `api_asset.read` | 生命周期事件（合并/拆分/状态变更轨迹） |
+| `POST /api/v1/api-security/endpoints/{id}/learning/start` | `api_learning.start` | 启动学习（已有 RUNNING 任务返回 409） |
+| `POST /api/v1/api-security/endpoints/{id}/learning/stop` | `api_learning.stop` | 停止学习 |
+| `GET /api/v1/api-security/endpoints/{id}/learning/status` | `api_learning.read` | 学习任务与样本统计 |
+| `GET /api/v1/api-security/endpoints/{id}/learning/samples` | `api_learning.read` | 学习样本列表（不落敏感明文） |
+
+### 模型版本与参数
+
+| 方法与路径 | 权限点 | 说明 |
+|---|---|---|
+| `GET /api/v1/api-security/endpoints/{id}/models` | `api_model.read` | 端点模型版本列表 |
+| `POST /api/v1/api-security/endpoints/{id}/models` | `api_model.edit` | 创建候选版本 |
+| `GET /api/v1/api-security/models/{id}` | `api_model.read` | 版本详情 |
+| `GET /api/v1/api-security/models/{id}/diff/{other_id}` | `api_model.read` | 版本差异（added/removed/type_changed） |
+| `POST /api/v1/api-security/models/{id}/submit-review` | `api_model.review` | 提交评审（CANDIDATE→IN_REVIEW） |
+| `POST /api/v1/api-security/models/{id}/confirm` | `api_model.confirm` | 确认冻结（FORMAL，旧版 SUPERSEDED，事务） |
+| `POST /api/v1/api-security/models/{id}/reject` | `api_model.review` | 评审拒绝 |
+| `POST /api/v1/api-security/models/{id}/activate` | `api_model.activate` | 激活（端点 current_model_version_id） |
+| `POST /api/v1/api-security/models/{id}/archive` | `api_model.archive` | 归档 |
+| `GET /api/v1/api-security/models/{id}/parameters` | `api_parameter.read` | 版本参数列表 |
+| `GET /api/v1/api-security/parameters/{id}` | `api_parameter.read` | 参数详情 |
+| `PATCH /api/v1/api-security/parameters/{id}` | `api_parameter.edit` | 修改确认约束 |
+| `POST /api/v1/api-security/parameters/{id}/confirm` | `api_parameter.edit` | 采纳推荐约束为确认约束 |
+
+状态机：`CANDIDATE → IN_REVIEW → FORMAL / REJECTED`；`FORMAL → SUPERSEDED / ARCHIVED`；FORMAL 内容不可变。冻结模型经配置发布通道下发网关（`api_formal_schemas`）。
+
+### 分类、图谱与规范
+
+| 方法与路径 | 权限点 | 说明 |
+|---|---|---|
+| `GET /api/v1/api-security/classifications` | `api_classification.read` | 内置 + 自定义分类 |
+| `POST /api/v1/api-security/classifications` | `api_classification.manage` | 新增自定义分类 |
+| `PUT /api/v1/api-security/endpoints/{id}/classification` | `api_classification.manage` | 设置端点分类维度（source=MANUAL 并锁定） |
+| `GET /api/v1/api-security/graph` | `api_graph.read` | 图谱（节点 + 调用边） |
+| `GET /api/v1/api-security/topology` | `api_graph.read` | 拓扑（按应用分组 + 调用边） |
+| `POST /api/v1/api-security/specs/import` | `api_spec.import` | 导入 OpenAPI 3（JSON），生成与运行时的差异 |
+| `GET /api/v1/api-security/specs` | `api_spec.read` | 规范列表 |
+| `GET /api/v1/api-security/specs/{id}/diff` | `api_spec.read` | 规范差异（MISSING_IN_RUNTIME / MISSING_IN_SPEC） |
+
+### 风险、运行时与策略
+
+| 方法与路径 | 权限点 | 说明 |
+|---|---|---|
+| `GET /api/v1/api-security/findings` | `api_runtime.read` | 风险发现（类型/级别/状态过滤） |
+| `GET /api/v1/api-security/violations` | `api_runtime.read` | Schema 违例记录 |
+| `GET /api/v1/api-security/posture` | `api_runtime.read` | 安全态势聚合（覆盖率/冻结率/开放发现） |
+| `GET /api/v1/api-security/runtime/statistics` | `api_runtime.read` | 运行时统计（动作/风险分布、热点端点） |
+| `GET /api/v1/api-security/runtime/events` | `api_runtime.read` | 统一运行时主事件（request_id 幂等） |
+| `GET /api/v1/api-security/sensitive-fields` | `api_runtime.read` | 敏感字段识别结果 |
+| `GET /api/v1/api-security/policy` | `api_policy.read` | 当前策略（模式/来源/解析限制） |
+| `PUT /api/v1/api-security/policy` | `api_policy.edit` | 修改防护模式（OFF/OBSERVE/PROTECT，settings 覆盖） |
+| `POST /api/v1/api-security/policy/publish` | `api_policy.publish` | 同步发布到网关（高风险操作） |
+
+专项设计文档：`docs/UNIFIED_DYNAMIC_SECURITY_ARCHITECTURE.md`、`docs/REQUEST_CONTEXT_DESIGN.md`、`docs/API_DISCOVERY_DESIGN.md`、`docs/API_PATH_NORMALIZATION.md`、`docs/API_PARAMETER_MODEL.md`、`docs/API_LEARNING_SECURITY.md`、`docs/API_MODEL_VERSIONING.md`、`docs/API_CLASSIFICATION_DESIGN.md`、`docs/API_SCHEMA_PROTECTION.md`、`docs/API_IDENTITY_SECURITY.md`、`docs/API_AUTHORIZATION_ANALYSIS.md`、`docs/API_SENSITIVE_DATA.md`、`docs/API_BEHAVIOR_ANALYSIS.md`、`docs/API_SECURITY_GRAPH.md`、`docs/API_PRODUCT_SEPARATION.md`。

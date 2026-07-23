@@ -142,3 +142,37 @@
 - 日志伪造测试；
 - 依赖漏洞扫描；
 - 容器配置检查。
+
+---
+
+## 阶段8 / WDSP：API 动态防护安全设计
+
+### 启用边界与故障策略
+
+- API 动态防护默认关闭（`PRODUCT_EDITION=waf` + `API_DYNAMIC_PROTECTION_ENABLED=false`）；关闭时网关 `serveNext` 早退、下发 JSON 与纯 WAF 完全一致、管理面不注册 `/api/v1/api-security/*` 路由、前端菜单隐藏。
+- 引擎故障一律 fail-open：管线错误仅告警并跳过（不阻断业务请求）；事件输出失败仅告警。防护模式缺省 `OBSERVE`（fail-safe），`PROTECT` 需显式设置并经发布生效。
+
+### 解析期安全
+
+- 一次解析限制：`MaxBodyParseBytes`（超限截断 + 采样，不做字段级解析防部分 schema 污染）、`MaxJSONDepth`、`MaxFieldCount`、`MaxXMLDepth`、`MaxFileMetaCount`，防资源耗尽。
+- XML 流式解析遇 `DOCTYPE` 直接停止并置标记（XXE 协议层拒绝，不展开实体）。
+- multipart 文件内容不落内存，仅计元数据（字段名/文件名/类型/大小）。
+
+### 数据最小化与脱敏
+
+- 请求头 `authorization`/`cookie`/`x-api-key` 仅标记存在（`[redacted]`）；凭据指纹为 FNV-1a 哈希，永不存明文。
+- 学习样本仅存 `sample_hash` 与指纹，不存完整敏感值（任务书 50.4）。
+- 敏感数据检测只匹配字段名/路径模式，Evidence 记录字段路径与类型，不记录值。
+- 事件日志字段截断 + 控制字符剥离（防日志注入），JSON 转义为第二道防线。
+
+### 访问控制与审计
+
+- 27 个权限点按三权分配（安全管理员全量 / 审计管理员只读 + API 审计 / 系统管理员运维只读），路由层 `RequirePermission` 强制；所有写操作记录操作审计（模块 `api_assets`/`api_security`）。
+- 策略发布（`api_policy.publish`）为高风险操作，同步执行并记录 SUCCESS/FAILURE。
+- AI 工具（`api_*`）全部为 READ_ONLY 风险等级：AI 不得自动确认模型、自动发布、自动修改用途、自动关闭 API、自动封禁身份。
+
+### 幂等与一致性
+
+- 统一主事件按 `request_id` 幂等（同一 Request ID 只生成一个主事件；采集器重放不产生重复行）。
+- 模型冻结事务化（`FOR UPDATE` 行锁 + 旧版 SUPERSEDED），FORMAL 不可变；端点合并/拆分事务化并写生命周期事件。
+- 配置下发经 Caddy Admin Unix Socket（不暴露 TCP），快照进版本库，回滚一致。
