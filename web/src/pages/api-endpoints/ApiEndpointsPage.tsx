@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App, Button, Card, Form, Input, Select, Space, Table, Tag, Typography } from 'antd'
+import { App, Button, Card, Form, Input, Select, Table, Tag, Typography } from 'antd'
 import { apiEndpointsApi, type ApiEndpointItem } from '../../api/apiAssets'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
