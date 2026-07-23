@@ -327,6 +327,7 @@
   - 学习：候选 → 确认冻结；正式模型不可变；偏离不扩宽
   - 统一主事件结构（多 detector 明细）；`PRODUCT_EDITION`/`API_DYNAMIC_PROTECTION_ENABLED`；API 关时管线 skip、遗留 WAF 匹配仍可用
   - 前端：API 端点资产 / API 模型版本页与菜单
+- **关键遗留（任务书第二章核心原则未落地）**：统一引擎 `gateway/dynamic_security` **尚未挂接 `jiuzhang_guard` 请求处理链**——guard 不 import 该模块、xcaddy 构建不包含、`API_DYNAMIC_PROTECTION_ENABLED` 未注入网关容器；端点发现当前依赖手工 `POST /api-endpoints/discover` 登记，`api_runtime_events` 表无生产写入方。因此「API 防护关闭不影响 WAF」目前平凡成立（引擎不在请求路径上，开启亦然），挂接后必须重新回归该结论。详见 [STAGE8_IMPLEMENTATION_REVIEW.md](STAGE8_IMPLEMENTATION_REVIEW.md) §三.2。
 - **诚实遗留（任务书超集，不挡本目标验收）**：完整图谱/拓扑 UI、OpenAPI 导入、BOLA/BFLA 全量规则库、阶段7 `api_*` AI Tools、真实 Caddy 全链路 e2e（环境受限时以单元/集成为准）
 
 ### 其他
