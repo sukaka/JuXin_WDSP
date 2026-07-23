@@ -3,6 +3,7 @@ package accesscontrolevents
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,8 +33,9 @@ type RuleHitRecorder interface {
 }
 
 // Collector 是访问控制事件采集器。
-// 读取网关 guard 事件 JSONL 文件，断点续传（checkpoint 文件记录 offset+inode，
-// 轮转检测），批量插入 access_control_events；解析失败的行写入错误文件，不静默丢弃。
+// 读取网关 guard 事件 JSONL 文件，断点续传（checkpoint 文件记录 offset、inode
+// 和文件前缀指纹，用于轮转检测），批量插入 access_control_events；
+// 解析失败的行写入错误文件，不静默丢弃。
 type Collector struct {
 	store          EventStore
 	blocks         BlockUpserter   // nil 时跳过封禁入库
@@ -92,8 +94,19 @@ func (c *Collector) Metrics() map[string]interface{} {
 
 // checkpoint 是采集断点（JSON 文件持久化）。
 type checkpoint struct {
-	Offset int64  `json:"offset"`
-	Inode  uint64 `json:"inode"`
+	Offset       int64  `json:"offset"`
+	Inode        uint64 `json:"inode"`
+	PrefixSize   int64  `json:"prefix_size,omitempty"`
+	PrefixSHA256 string `json:"prefix_sha256,omitempty"`
+}
+
+const checkpointPrefixLimit int64 = 4096
+
+func (cp checkpoint) valid() bool {
+	return cp.Offset >= 0 &&
+		cp.PrefixSize >= 0 &&
+		cp.PrefixSize <= checkpointPrefixLimit &&
+		cp.PrefixSize <= cp.Offset
 }
 
 // loadCheckpoint 从 checkpoint 文件加载断点；文件不存在时从头开始，
@@ -101,7 +114,11 @@ type checkpoint struct {
 func (c *Collector) loadCheckpoint() checkpoint {
 	data, err := os.ReadFile(c.checkpointPath)
 	if err != nil {
-		return checkpoint{} // 无断点文件，从头开始
+		if !os.IsNotExist(err) {
+			slog.Warn("checkpoint file unreadable, restarting from offset 0",
+				"collector", c.collectorID, "path", c.checkpointPath, "error", err)
+		}
+		return checkpoint{}
 	}
 	var cp checkpoint
 	if err := json.Unmarshal(data, &cp); err != nil {
@@ -109,12 +126,17 @@ func (c *Collector) loadCheckpoint() checkpoint {
 			"collector", c.collectorID, "path", c.checkpointPath, "error", err)
 		return checkpoint{}
 	}
+	if !cp.valid() {
+		slog.Warn("checkpoint values invalid, restarting from offset 0",
+			"collector", c.collectorID, "path", c.checkpointPath)
+		return checkpoint{}
+	}
 	return cp
 }
 
 // saveCheckpoint 原子保存断点（临时文件 + rename）。
-func (c *Collector) saveCheckpoint(offset int64, inode uint64) error {
-	data, err := json.Marshal(checkpoint{Offset: offset, Inode: inode})
+func (c *Collector) saveCheckpoint(cp checkpoint) error {
+	data, err := json.Marshal(cp)
 	if err != nil {
 		return err
 	}
@@ -135,6 +157,29 @@ func fileInode(f *os.File) uint64 {
 		return stat.Ino
 	}
 	return 0
+}
+
+// prefixFingerprint 返回文件开头指定长度内容的 SHA-256。
+// ReadAt 不改变采集器当前读取位置。
+func prefixFingerprint(f *os.File, size int64) (string, error) {
+	if size <= 0 {
+		return "", nil
+	}
+	buf := make([]byte, size)
+	n, err := f.ReadAt(buf, 0)
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	if int64(n) != size {
+		return "", io.ErrUnexpectedEOF
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(buf)), nil
+}
+
+func checkpointFingerprint(f *os.File, offset int64) (int64, string, error) {
+	prefixSize := min(offset, checkpointPrefixLimit)
+	hash, err := prefixFingerprint(f, prefixSize)
+	return prefixSize, hash, err
 }
 
 // policyCounter 按策略聚合计数。
@@ -162,9 +207,18 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 	}
 	currentInode := fileInode(f)
 
-	// 轮转检测：inode 变化或文件变小（被截断）→ 从头读取
+	// 轮转检测：inode 变化、文件变小或已提交前缀变化 → 从头读取。
+	// 前缀指纹覆盖删除重建时 inode 被系统立即复用且文件大小相同的情况。
 	offset := cp.Offset
-	if (cp.Inode != 0 && currentInode != cp.Inode) || info.Size() < offset {
+	rotated := (cp.Inode != 0 && currentInode != cp.Inode) || info.Size() < offset
+	if !rotated && cp.PrefixSize > 0 && cp.PrefixSHA256 != "" {
+		currentPrefix, err := prefixFingerprint(f, cp.PrefixSize)
+		if err != nil {
+			return 0, fmt.Errorf("fingerprint guard event log: %w", err)
+		}
+		rotated = currentPrefix != cp.PrefixSHA256
+	}
+	if rotated {
 		slog.Info("guard event log rotated, resetting offset",
 			"collector", c.collectorID, "old_offset", offset, "new_size", info.Size())
 		offset = 0
@@ -179,6 +233,7 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 
 	reader := bufio.NewReader(f)
 	processed := 0
+	committedOffset := offset
 	var batch []Event
 	agg := map[uuid.UUID]*policyCounter{}
 
@@ -194,10 +249,17 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 			c.insertSummaries(ctx, agg)
 			agg = map[uuid.UUID]*policyCounter{}
 		}
-		newOffset, _ := f.Seek(0, io.SeekCurrent)
-		newOffset -= int64(reader.Buffered())
-		if err := c.saveCheckpoint(newOffset, currentInode); err != nil {
-			slog.Error("save checkpoint failed", "collector", c.collectorID, "error", err)
+		prefixSize, prefixSHA256, err := checkpointFingerprint(f, committedOffset)
+		if err != nil {
+			return fmt.Errorf("fingerprint checkpoint: %w", err)
+		}
+		if err := c.saveCheckpoint(checkpoint{
+			Offset:       committedOffset,
+			Inode:        currentInode,
+			PrefixSize:   prefixSize,
+			PrefixSHA256: prefixSHA256,
+		}); err != nil {
+			return fmt.Errorf("save checkpoint: %w", err)
 		}
 		return nil
 	}
@@ -206,6 +268,7 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 && line[len(line)-1] == '\n' {
 			processed++
+			committedOffset += int64(len(line))
 			evt, perr := ParseEventLine(line, c.nodeName)
 			if perr != nil {
 				c.failedCount++
