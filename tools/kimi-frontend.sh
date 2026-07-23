@@ -211,7 +211,7 @@ EOF
 )"
 printf '%s\n' "$PROMPT" > "$RUN_DIR/prompt.txt"
 
-KIMI_COMMAND=(kimi --auto)
+KIMI_COMMAND=(kimi)
 if [[ -n "${KIMI_MODEL:-}" ]]; then
   KIMI_COMMAND+=(--model "$KIMI_MODEL")
 fi
@@ -276,7 +276,7 @@ if [[ "$SCOPE_EXIT" -ne 0 ]]; then
   exit 3
 fi
 if [[ "$KIMI_EXIT" -ne 0 ]]; then
-  echo "Kimi CLI 执行失败（退出码 $KIMI_EXIT）；详情见本地运行记录。" >&2
+  echo "Kimi CLI 执行失败（退出码 ${KIMI_EXIT}）；详情见本地运行记录。" >&2
   exit 4
 fi
 
