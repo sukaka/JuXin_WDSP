@@ -291,6 +291,11 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 	aitools.NewAssetTools(aiRegistry, db)
 	aitools.NewAccessTools(aiRegistry, db)
 	aitools.NewDraftTools(aiRegistry, db, exceptionStore, protectedStore)
+	// 阶段8 / WDSP：API 动态防护 Tool（任务书第四十八章，全部 READ_ONLY；
+	// 仅 WDSP 且开关开启时挂接，纯 WAF 形态下注册表与 ai_tools 同步均不出现）
+	if cfg.Product.APIDynamicProtectionEnabled() {
+		aitools.NewAPITools(aiRegistry, apiassets.NewStore(db), apimodels.NewStore(db), apisecurity.NewStore(db))
+	}
 	// Tool 执行强制尊重 ai_tools 表启停状态
 	aiRegistry.SetEnabledChecker(aihandlers.ToolEnabledChecker(db))
 	// 编排器：注册 7 个专业 Agent（总调度由编排器内置承担）

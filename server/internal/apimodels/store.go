@@ -362,6 +362,10 @@ RETURNING id, created_at`, id, otherID, raw).Scan(&out.ID, &out.CreatedAt)
 	return out, nil
 }
 
+// ComputeSchemaDiff 计算 from → to 的字段级差异（导出给只读调用方，如 AI Tool；
+// 纯计算不落 api_model_diffs，与 Store.Diff 的持久化路径区分）。
+func ComputeSchemaDiff(from, to map[string]string) SchemaDiff { return computeSchemaDiff(from, to) }
+
 // computeSchemaDiff 计算 from → to 的字段级差异（纯函数，输出按字段名排序保证确定性）。
 func computeSchemaDiff(from, to map[string]string) SchemaDiff {
 	d := SchemaDiff{Added: []string{}, Removed: []string{}, TypeChanged: []TypeChange{}}
