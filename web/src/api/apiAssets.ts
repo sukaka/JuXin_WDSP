@@ -5,6 +5,10 @@ import type { PageResult } from '../types'
 export interface ApiEndpointItem {
   id: string
   application_id?: string | null
+  /** 所属站点名称（未归属时为空字符串） */
+  application_name: string
+  /** 归一化目录路径（未归类时为空字符串） */
+  directory_path: string
   domain_id?: string | null
   http_method: string
   normalized_path: string
@@ -31,6 +35,10 @@ export const apiEndpointsApi = {
     learning_status?: string
     keyword?: string
     application_id?: string
+    /** 目录前缀过滤（含子目录） */
+    directory_path?: string
+    /** 仅查未归属站点的端点 */
+    unassigned?: boolean
     page: number
     page_size: number
   }) => {
@@ -38,6 +46,23 @@ export const apiEndpointsApi = {
       query: { ...params },
     })
     return { ...data, items: data.items ?? [] }
+  },
+  /** 站点归属汇总：各站点端点数 + 未归属数 */
+  siteSummary: async () => {
+    const data = await request<{
+      items: { application_id: string; application_name: string; endpoint_count: number }[]
+      unassigned: number
+    }>('/api-security/endpoints/site-summary')
+    return { items: data.items ?? [], unassigned: data.unassigned ?? 0 }
+  },
+  /** 目录扁平列表（按站点过滤；不传 application_id 查全部，unassigned=true 查未归属），前端按段组装层级 */
+  directoryTree: async (params: { application_id?: string; unassigned?: boolean }) => {
+    const data = await request<{
+      items: { directory_path: string; endpoint_count: number }[]
+    }>('/api-security/endpoints/directory-tree', {
+      query: { ...params },
+    })
+    return data.items ?? []
   },
   /** 批量确认（页面行内操作传单个 id） */
   confirm: (ids: string[]) =>
