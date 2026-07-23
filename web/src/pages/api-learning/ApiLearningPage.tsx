@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App as AntdApp, Button, Card, Descriptions, Empty, Select, Space, Table, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Descriptions, Empty, Select, Space, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { apiEndpointsApi } from '../../api/apiAssets'
 import { apiLearningApi, type ApiLearningSample } from '../../api/apiSecurity'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -210,7 +211,8 @@ export default function ApiLearningPage() {
         )}
       </Card>
 
-      <Table<ApiLearningSample>
+      <SmartTable<ApiLearningSample>
+        storageKey="api-learning"
         rowKey="id"
         loading={samplesQuery.isLoading}
         columns={columns}

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Space, Spin, Statistic, Table, Tooltip, Typography } from 'antd'
+import { Card, Space, Spin, Statistic, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import * as echarts from 'echarts/core'
 import { GraphChart } from 'echarts/charts'
@@ -11,6 +11,7 @@ import type { GraphSeriesOption } from 'echarts/charts'
 import type { LegendComponentOption, TooltipComponentOption } from 'echarts/components'
 import { apiGraphApi, type ApiGraphEdge, type ApiGraphNode } from '../../api/apiSecurity'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 import { API_ENDPOINT_STATUS_META } from '../../utils/stage8'
 
 // 按需注册 graph 图所需部件（共享 EChart 组件未注册 GraphChart，本页自带轻封装避免改动公共组件）
@@ -180,7 +181,8 @@ export default function ApiGraphPage() {
         <GraphChartView option={option} height={480} />
       </Spin>
       <Typography.Title level={5}>调用边明细</Typography.Title>
-      <Table<ApiGraphEdge>
+      <SmartTable<ApiGraphEdge>
+        storageKey="api-graph"
         rowKey="id"
         size="small"
         loading={graphQuery.isLoading}

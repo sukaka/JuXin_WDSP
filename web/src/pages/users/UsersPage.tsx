@@ -11,11 +11,11 @@ import {
   Modal,
   Select,
   Space,
-  Table,
   Tag,
 } from 'antd'
 import type { MenuProps } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import SmartTable from '../../components/SmartTable'
 import { DownOutlined, PlusOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
@@ -308,7 +308,8 @@ export default function UsersPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<UserItem>
+        <SmartTable<UserItem>
+          storageKey="users"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

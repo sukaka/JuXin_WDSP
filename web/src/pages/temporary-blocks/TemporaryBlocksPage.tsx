@@ -11,7 +11,6 @@ import {
   Modal,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -21,6 +20,7 @@ import dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { temporaryBlocksApi } from '../../api/temporaryBlocks'
 import { applicationsApi } from '../../api/applications'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -252,7 +252,8 @@ export default function TemporaryBlocksPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<TemporaryBlockItem>
+        <SmartTable<TemporaryBlockItem>
+          storageKey="temporary-blocks"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

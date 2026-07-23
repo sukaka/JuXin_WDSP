@@ -13,7 +13,6 @@ import {
   Modal,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -22,6 +21,7 @@ import { CheckCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
 import { customRulesApi } from '../../api/customRules'
 import type { CustomRuleBody } from '../../api/customRules'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
@@ -482,7 +482,8 @@ export default function CustomRulesPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<CustomRuleItem>
+        <SmartTable<CustomRuleItem>
+          storageKey="custom-rules"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

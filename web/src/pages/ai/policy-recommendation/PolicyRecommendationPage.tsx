@@ -12,10 +12,10 @@ import {
   InputNumber,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd'
+import SmartTable from '../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { SearchOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
@@ -299,7 +299,8 @@ export default function PolicyRecommendationPage() {
           {draftsQuery.isError ? (
             <QueryErrorAlert error={draftsQuery.error} message="加载 AI 草稿失败" />
           ) : (
-            <Table<AiDraft>
+            <SmartTable<AiDraft>
+              storageKey="ai-policy-recommendation"
               rowKey="id"
               loading={draftsQuery.isLoading}
               columns={draftColumns}

@@ -8,7 +8,6 @@ import {
   Descriptions,
   Drawer,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -16,6 +15,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { DiffOutlined, RollbackOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
 import { configVersionsApi } from '../../api/gatewayConfig'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -155,7 +155,8 @@ export default function ConfigVersionsPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<ConfigVersionItem>
+        <SmartTable<ConfigVersionItem>
+          storageKey="config-versions"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

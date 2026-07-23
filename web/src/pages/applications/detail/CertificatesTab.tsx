@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Table, Tag, Tooltip } from 'antd'
+import { Alert, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../../api/client'
 import { certificatesApi } from '../../../api/certificates'
+import SmartTable from '../../../components/SmartTable'
 import { formatDateTime } from '../../../utils/format'
 import { CERT_STATUS_META, certRemainingColor, certRemainingDays } from '../../../utils/stage3'
 import type { CertificateItem } from '../../../types'
@@ -91,7 +92,8 @@ export default function CertificatesTab({ appId }: { appId: string }) {
           description={boundQuery.error instanceof ApiError ? boundQuery.error.message : undefined}
         />
       ) : (
-        <Table<CertificateItem>
+        <SmartTable<CertificateItem>
+          storageKey="applications-certificates"
           rowKey="id"
           loading={boundQuery.isLoading}
           columns={columns}

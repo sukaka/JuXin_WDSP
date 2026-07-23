@@ -10,7 +10,6 @@ import {
   InputNumber,
   Modal,
   Space,
-  Table,
   Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -18,6 +17,7 @@ import { PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import { domainsApi } from '../../../api/applications'
 import type { DomainBody } from '../../../api/applications'
+import SmartTable from '../../../components/SmartTable'
 import { useAuthStore } from '../../../stores/auth'
 import { hasPermission } from '../../../utils/permission'
 import type { DomainItem } from '../../../types'
@@ -222,7 +222,8 @@ export default function DomainsTab({ appId }: { appId: string }) {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<DomainItem>
+        <SmartTable<DomainItem>
+          storageKey="applications-domains"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

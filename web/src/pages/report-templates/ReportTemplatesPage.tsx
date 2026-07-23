@@ -9,9 +9,9 @@ import {
   Form,
   Input,
   Space,
-  Table,
   Tag,
 } from 'antd'
+import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
@@ -199,7 +199,8 @@ export default function ReportTemplatesPage() {
       {listQuery.isError ? (
         <QueryErrorAlert error={listQuery.error} message="加载报告模板失败" />
       ) : (
-        <Table<ReportTemplateItem>
+        <SmartTable<ReportTemplateItem>
+          storageKey="report-templates"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

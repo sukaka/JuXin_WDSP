@@ -9,10 +9,10 @@ import {
   Input,
   Select,
   Space,
-  Table,
   Timeline,
   Typography,
 } from 'antd'
+import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../api/client'
 import { systemAlertsApi } from '../../api/systemAlerts'
@@ -216,7 +216,8 @@ export default function SystemAlertsPage() {
       {listQuery.isError ? (
         <QueryErrorAlert error={listQuery.error} message="加载系统告警失败" />
       ) : (
-        <Table<SystemAlertItem>
+        <SmartTable<SystemAlertItem>
+          storageKey="system-alerts"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

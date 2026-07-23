@@ -10,7 +10,6 @@ import {
   Input,
   Select,
   Space,
-  Table,
   Tooltip,
   Typography,
 } from 'antd'
@@ -19,6 +18,7 @@ import { DownloadOutlined } from '@ant-design/icons'
 import type dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { accessControlEventsApi } from '../../api/accessControlEvents'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -214,7 +214,8 @@ export default function AccessControlEventsPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<AccessControlEventItem>
+        <SmartTable<AccessControlEventItem>
+          storageKey="access-control-events"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

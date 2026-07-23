@@ -14,7 +14,6 @@ import {
   Radio,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -30,6 +29,7 @@ import { ApiError } from '../../api/client'
 import { accessRulesApi } from '../../api/accessRules'
 import type { ImportAccessRulesBody } from '../../api/accessRules'
 import { applicationsApi } from '../../api/applications'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { PublishTaskProgress } from '../config-publish/ConfigPublishPage'
 import { useAuthStore } from '../../stores/auth'
@@ -564,7 +564,8 @@ export default function AccessRulesPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<AccessRuleItem>
+        <SmartTable<AccessRuleItem>
+          storageKey="access-rules"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}
@@ -917,7 +918,8 @@ export default function AccessRulesPage() {
             message={`预览结果：共 ${preview.total} 行，合法 ${preview.valid} 行，错误 ${preview.invalid} 行`}
             description={
               preview.errors.length > 0 ? (
-                <Table
+                <SmartTable
+                  storageKey="access-rules-import-preview"
                   style={{ marginTop: 8 }}
                   rowKey="line"
                   size="small"

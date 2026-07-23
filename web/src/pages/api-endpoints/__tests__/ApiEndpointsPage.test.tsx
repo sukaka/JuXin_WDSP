@@ -170,12 +170,12 @@ describe('ApiEndpointsPage', () => {
     useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
     renderPage()
     const table = await screen.findByRole('table')
-    // 表头（横向滚动下 antd 可能有辅助节点，统一按 columnheader 断言）
+    // 表头（横向滚动下 antd 可能有辅助节点，统一按 columnheader 断言；SmartTable 表头附带列宽拖拽手柄文本，按包含匹配）
     const headers = within(table)
       .getAllByRole('columnheader')
       .map((th) => th.textContent)
-    expect(headers).toContain('目录')
-    expect(headers).toContain('站点')
+    expect(headers.some((h) => h?.includes('目录'))).toBe(true)
+    expect(headers.some((h) => h?.includes('站点'))).toBe(true)
     // 等数据行渲染后再断言单元格内容
     expect(await within(table).findByText('/test/php')).toBeInTheDocument()
     expect(within(table).getByText('未归属')).toBeInTheDocument()

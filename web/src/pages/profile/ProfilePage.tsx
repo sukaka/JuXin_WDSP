@@ -12,7 +12,6 @@ import {
   Modal,
   Popconfirm,
   Space,
-  Table,
   Tabs,
   Tag,
   Typography,
@@ -22,6 +21,7 @@ import { ApiError } from '../../api/client'
 import { authApi } from '../../api/auth'
 import { profileApi } from '../../api/profile'
 import ChangePasswordForm from '../../components/ChangePasswordForm'
+import SmartTable from '../../components/SmartTable'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import type { LoginLogEntry, SessionItem } from '../../types'
@@ -229,7 +229,8 @@ function SessionsPanel() {
   }
 
   return (
-    <Table<SessionItem>
+    <SmartTable<SessionItem>
+      storageKey="profile"
       rowKey="id"
       loading={sessionsQuery.isLoading}
       columns={columns}
@@ -278,7 +279,8 @@ function MyLoginLogsPanel() {
   }
 
   return (
-    <Table<LoginLogEntry>
+    <SmartTable<LoginLogEntry>
+      storageKey="profile-login-logs"
       rowKey="id"
       loading={logsQuery.isLoading}
       columns={columns}

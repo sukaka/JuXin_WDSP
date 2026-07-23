@@ -10,7 +10,6 @@ import {
   Select,
   Space,
   Statistic,
-  Table,
   Timeline,
   Tooltip,
   Typography,
@@ -19,6 +18,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { apiFindingsApi, apiLifecycleApi, type ApiFinding } from '../../api/apiSecurity'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { formatDateTime } from '../../utils/format'
 import {
@@ -201,7 +201,8 @@ export default function ApiShadowZombiePage() {
             }}
           />
         </Space>
-        <Table<ApiFinding>
+        <SmartTable<ApiFinding>
+          storageKey="api-shadow-zombie"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

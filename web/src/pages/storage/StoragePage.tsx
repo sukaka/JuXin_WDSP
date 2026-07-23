@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Col, Progress, Row, Space, Statistic, Table } from 'antd'
+import { Card, Col, Progress, Row, Space, Statistic } from 'antd'
+import SmartTable from '../../components/SmartTable'
 import type { EChartOption } from '../../components/EChart'
 import { systemHealthApi } from '../../api/systemHealth'
 import EChart from '../../components/EChart'
@@ -119,7 +120,8 @@ export default function StoragePage() {
             </Col>
             <Col xs={24} lg={12}>
               <Card size="small" title="分区明细">
-                <Table
+                <SmartTable
+                  storageKey="storage"
                   size="small"
                   rowKey="name"
                   pagination={false}

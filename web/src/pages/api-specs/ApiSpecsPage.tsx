@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App as AntdApp, Button, Card, Drawer, Form, Input, Modal, Table, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Drawer, Form, Input, Modal, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { apiSpecsApi, type ApiImportSpec, type ApiSpecDiff } from '../../api/apiSecurity'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -154,7 +155,8 @@ export default function ApiSpecsPage() {
         导入 OpenAPI 规范后，系统自动与运行时发现的端点对比：规范缺失、运行时缺失与定义变更三类差异可用于发现影子接口。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error} />
-      <Table<ApiImportSpec>
+      <SmartTable<ApiImportSpec>
+        storageKey="api-specs"
         rowKey="id"
         loading={listQuery.isLoading}
         columns={columns}
@@ -206,7 +208,8 @@ export default function ApiSpecsPage() {
         destroyOnHidden
       >
         <QueryErrorAlert error={diffQuery.error} />
-        <Table<ApiSpecDiff>
+        <SmartTable<ApiSpecDiff>
+          storageKey="api-specs-diff"
           rowKey="id"
           loading={diffQuery.isLoading}
           columns={diffColumns}

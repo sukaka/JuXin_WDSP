@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Select, Space, Table, Typography } from 'antd'
+import { Card, Select, Space, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { apiSensitiveFieldsApi, type ApiSensitiveField } from '../../api/apiSecurity'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { formatDateTime } from '../../utils/format'
 import { API_SENSITIVE_TYPE_META } from '../../utils/stage8'
@@ -98,7 +99,8 @@ export default function ApiSensitiveFieldsPage() {
           }}
         />
       </Space>
-      <Table<ApiSensitiveField>
+      <SmartTable<ApiSensitiveField>
+        storageKey="api-sensitive-fields"
         rowKey="id"
         loading={listQuery.isLoading}
         columns={columns}

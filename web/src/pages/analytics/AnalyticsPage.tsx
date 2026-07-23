@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Col, DatePicker, Radio, Row, Select, Space, Statistic, Table, Tabs } from 'antd'
+import { Card, Col, DatePicker, Radio, Row, Select, Space, Statistic, Tabs } from 'antd'
+import SmartTable from '../../components/SmartTable'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { analyticsApi } from '../../api/analytics'
@@ -269,7 +270,8 @@ export default function AnalyticsPage() {
                   </Col>
                 </Row>
                 <Card size="small" title="规则命中 TOP">
-                  <Table
+                  <SmartTable
+                    storageKey="analytics"
                     size="small"
                     rowKey={(r) => `${r.rule_id}-${r.event_type}`}
                     pagination={false}
@@ -310,7 +312,8 @@ export default function AnalyticsPage() {
                 <Row gutter={16}>
                   <Col xs={24} md={12}>
                     <Card size="small" title="处置状态分布">
-                      <Table
+                      <SmartTable
+                        storageKey="analytics-2"
                         size="small"
                         rowKey="status"
                         pagination={false}
@@ -329,7 +332,8 @@ export default function AnalyticsPage() {
                   </Col>
                   <Col xs={24} md={12}>
                     <Card size="small" title="处置人 TOP">
-                      <Table
+                      <SmartTable
+                        storageKey="analytics-3"
                         size="small"
                         rowKey="username"
                         pagination={false}

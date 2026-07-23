@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Button, Card, Collapse, Descriptions, Drawer, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Collapse, Descriptions, Drawer, Tag, Typography } from 'antd'
+import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../api/client'
 import { rolesApi } from '../../api/roles'
@@ -75,7 +76,8 @@ export default function RolesPage() {
             description={rolesQuery.error instanceof ApiError ? rolesQuery.error.message : undefined}
           />
         ) : (
-          <Table<RoleItem>
+          <SmartTable<RoleItem>
+            storageKey="roles"
             rowKey="id"
             loading={rolesQuery.isLoading}
             columns={columns}
@@ -99,7 +101,8 @@ export default function RolesPage() {
               key: module,
               label: `${module}（${items.length}）`,
               children: (
-                <Table<PermissionItem>
+                <SmartTable<PermissionItem>
+                  storageKey="roles-2"
                   rowKey="id"
                   columns={permissionColumns}
                   dataSource={items}
@@ -143,7 +146,8 @@ export default function RolesPage() {
                 key: module,
                 label: `${module}（${items.length}）`,
                 children: (
-                  <Table<PermissionItem>
+                  <SmartTable<PermissionItem>
+                    storageKey="roles-3"
                     rowKey="id"
                     columns={permissionColumns}
                     dataSource={items}

@@ -7,9 +7,9 @@ import {
   Input,
   Modal,
   Space,
-  Table,
   Typography,
 } from 'antd'
+import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { useState } from 'react'
 import { ApiError } from '../../../../api/client'
@@ -160,7 +160,8 @@ export default function AiEvaluationsPage() {
         {setsQuery.isError ? (
           <QueryErrorAlert error={setsQuery.error} message="加载评估集失败" />
         ) : (
-          <Table
+          <SmartTable
+            storageKey="ai-admin-evaluations"
             rowKey="id"
             size="middle"
             loading={setsQuery.isLoading}
@@ -175,7 +176,8 @@ export default function AiEvaluationsPage() {
         {runsQuery.isError ? (
           <QueryErrorAlert error={runsQuery.error} message="加载运行记录失败" />
         ) : (
-          <Table
+          <SmartTable
+            storageKey="ai-admin-evaluations-2"
             rowKey="id"
             size="middle"
             loading={runsQuery.isLoading}

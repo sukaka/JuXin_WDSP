@@ -13,7 +13,6 @@ import {
   Radio,
   Select,
   Space,
-  Table,
   Tabs,
   Tag,
   Typography,
@@ -23,6 +22,7 @@ import { ExperimentOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/ic
 import { ApiError } from '../../api/client'
 import { trustedProxiesApi } from '../../api/trustedProxies'
 import { protectedAddressesApi } from '../../api/protectedAddresses'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -327,7 +327,8 @@ function TrustedProxyPanel() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<TrustedProxyItem>
+        <SmartTable<TrustedProxyItem>
+          storageKey="trusted-proxies"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}
@@ -511,7 +512,8 @@ function TrustedProxyPanel() {
         </Form>
 
         {testResult && (
-          <Table
+          <SmartTable
+            storageKey="trusted-proxies-test-result"
             style={{ marginTop: 16 }}
             rowKey="ip"
             size="small"
@@ -725,7 +727,8 @@ function ProtectedAddressPanel() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<ProtectedAddressItem>
+        <SmartTable<ProtectedAddressItem>
+          storageKey="trusted-proxies-protected-addresses"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

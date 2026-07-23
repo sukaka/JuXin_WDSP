@@ -15,7 +15,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -30,6 +29,7 @@ import type {
   UpdateProtectionPolicyBody,
 } from '../../api/protectionPolicies'
 import ProtectionModeTag from '../../components/ProtectionModeTag'
+import SmartTable from '../../components/SmartTable'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -373,7 +373,8 @@ export default function ProtectionPoliciesPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<ProtectionPolicyItem>
+        <SmartTable<ProtectionPolicyItem>
+          storageKey="protection-policies"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

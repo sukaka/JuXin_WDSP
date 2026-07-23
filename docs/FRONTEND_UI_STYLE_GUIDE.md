@@ -206,9 +206,10 @@ import zhCN from 'antd/locale/zh_CN'
 这是本系统「好看且一致」的关键，**API 扫描系统 80% 页面应照抄此结构**。
 
 ```tsx
-import { Button, Card, Input, Select, Space, Table } from 'antd'
+import { Button, Card, Input, Select, Space } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import StatusTag from '@/components/StatusTag'
+import SmartTable from '@/components/SmartTable'
 
 export default function XxxListPage() {
   return (
@@ -227,8 +228,9 @@ export default function XxxListPage() {
         <Select placeholder="类型" allowClear style={{ width: 160 }} options={...} />
       </Space>
 
-      {/* 2. 表格：小尺寸操作、固定右侧操作列 */}
-      <Table
+      {/* 2. 表格：SmartTable（列宽拖拽 + 列显隐 + storageKey 记忆），小尺寸操作、固定右侧操作列 */}
+      <SmartTable
+        storageKey="xxx-list"
         rowKey="id"
         size="middle" // 或 small；不要 default 过大行高再叠自定义 padding
         loading={loading}
@@ -259,7 +261,16 @@ export default function XxxListPage() {
 | 操作列 | `fixed: 'right'`，`Button type="link" size="small"`，超过 3 个进「更多」Dropdown |
 | 空值 | 显示 `-`，不要空白 |
 
-### 7.2 操作按钮层级
+### 7.2 统一表格组件 SmartTable（全系统必须使用）
+
+所有业务表格一律用 `web/src/components/SmartTable`（与 antd Table 同 props + 可选 `storageKey`），**禁止**直接裸用 antd `Table`：
+
+- **列宽拖拽**：表头右侧 `⋮⋮` 手柄拖动调整；
+- **列显隐**：表体右上角「列设置」勾选显示列，含「重置列宽与显隐」；
+- **记忆**：传入 `storageKey`（取页面路由名，如 `api-endpoints`；同页多表加语义后缀）时，列宽与显隐持久化到 `localStorage`（`smart-table:<key>`），不传则仅会话内有效；
+- 替换方式：`<Table<T>` → `<SmartTable<T>` + `storageKey`，其余 props（columns/pagination/scroll/loading）原样保留。
+
+### 7.3 操作按钮层级
 
 1. **页面级主操作**：Card `extra` 里一个 `type="primary"`（新建）。
 2. **行内次要操作**：`type="link" size="small"`（编辑、详情、测试）。

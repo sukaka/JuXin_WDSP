@@ -12,7 +12,6 @@ import {
   Modal,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -21,6 +20,7 @@ import { ExperimentOutlined, PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import { upstreamsApi } from '../../../api/applications'
 import type { UpstreamBody, UpstreamTestBody } from '../../../api/applications'
+import SmartTable from '../../../components/SmartTable'
 import { useAuthStore } from '../../../stores/auth'
 import { hasPermission } from '../../../utils/permission'
 import type { UpstreamItem, UpstreamTestResult } from '../../../types'
@@ -359,7 +359,8 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<UpstreamItem>
+        <SmartTable<UpstreamItem>
+          storageKey="applications-upstreams"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

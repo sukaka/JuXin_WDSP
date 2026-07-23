@@ -17,7 +17,6 @@ import {
   Select,
   Space,
   Statistic,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -28,6 +27,7 @@ import { applicationsApi } from '../../api/applications'
 import { protectionPoliciesApi } from '../../api/protectionPolicies'
 import { ruleOverridesApi } from '../../api/ruleOverrides'
 import { wafRulesApi } from '../../api/wafRules'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
@@ -338,7 +338,8 @@ export default function WafRulesPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<WafRuleItem>
+        <SmartTable<WafRuleItem>
+          storageKey="waf-rules"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

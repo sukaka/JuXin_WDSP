@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Button, Card, DatePicker, Input, Select, Space, Table, Tag, Typography } from 'antd'
+import { Alert, Button, Card, DatePicker, Input, Select, Space, Tag, Typography } from 'antd'
+import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { DownloadOutlined } from '@ant-design/icons'
 import type dayjs from 'dayjs'
@@ -168,7 +169,8 @@ export default function LoginLogsPage() {
           description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
         />
       ) : (
-        <Table<LoginLogEntry>
+        <SmartTable<LoginLogEntry>
+          storageKey="login-logs"
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}

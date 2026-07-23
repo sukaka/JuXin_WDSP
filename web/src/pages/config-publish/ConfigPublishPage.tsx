@@ -9,7 +9,6 @@ import {
   Drawer,
   Progress,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -23,6 +22,7 @@ import {
 import { ApiError } from '../../api/client'
 import { gatewayConfigApi, publishTasksApi } from '../../api/gatewayConfig'
 import type { PreviewResult } from '../../api/gatewayConfig'
+import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatJson } from '../../utils/format'
@@ -42,7 +42,8 @@ export function SnapshotTable({ snapshot }: { snapshot: BusinessSnapshot | null 
     return <Typography.Text type="secondary">无应用纳入本次配置</Typography.Text>
   }
   return (
-    <Table
+    <SmartTable
+      storageKey="config-publish-snapshot"
       rowKey="code"
       size="small"
       pagination={false}
@@ -306,7 +307,8 @@ export default function ConfigPublishPage() {
             description={tasksQuery.error instanceof ApiError ? tasksQuery.error.message : undefined}
           />
         ) : (
-          <Table<PublishTaskItem>
+          <SmartTable<PublishTaskItem>
+            storageKey="config-publish"
             rowKey="id"
             loading={tasksQuery.isLoading}
             columns={taskColumns}
