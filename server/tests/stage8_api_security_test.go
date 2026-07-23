@@ -170,7 +170,9 @@ func setupStage8Env(t *testing.T) *testEnv {
 // 采集器本身为文件通道，集成测试等价地直接调用同一存储方法造数。
 func s8SeedEndpoint(t *testing.T, env *testEnv, method, pathTemplate string, confidence float64) *apiassets.Endpoint {
 	t.Helper()
-	ep, err := apiassets.NewStore(env.db).UpsertDiscovery(context.Background(), method, pathTemplate, confidence, true)
+	ep, err := apiassets.NewStore(env.db).UpsertDiscovery(context.Background(), apiassets.DiscoveryInput{
+		Method: method, PathTemplate: pathTemplate, Confidence: confidence, IsAPI: true,
+	})
 	if err != nil {
 		t.Fatalf("seed endpoint %s %s: %v", method, pathTemplate, err)
 	}

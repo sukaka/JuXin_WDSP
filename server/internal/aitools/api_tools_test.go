@@ -195,11 +195,11 @@ func seedEndpoints(t *testing.T) (*apiassets.MemStore, *apiassets.Endpoint, *api
 	t.Helper()
 	ctx := context.Background()
 	mem := apiassets.NewMemStore()
-	e1, err := mem.UpsertDiscovery(ctx, "GET", "/api/users/{id}", 0.9, true)
+	e1, err := mem.UpsertDiscovery(ctx, apiassets.DiscoveryInput{Method: "GET", PathTemplate: "/api/users/{id}", Confidence: 0.9, IsAPI: true})
 	if err != nil {
 		t.Fatalf("UpsertDiscovery e1: %v", err)
 	}
-	e2, err := mem.UpsertDiscovery(ctx, "POST", "/api/orders", 0.8, true)
+	e2, err := mem.UpsertDiscovery(ctx, apiassets.DiscoveryInput{Method: "POST", PathTemplate: "/api/orders", Confidence: 0.8, IsAPI: true})
 	if err != nil {
 		t.Fatalf("UpsertDiscovery e2: %v", err)
 	}

@@ -9,10 +9,13 @@ import (
 // Repository 端点资产仓储（SQL 与内存实现共用，便于诚实单测）。
 type Repository interface {
 	// 发现与查询
-	UpsertDiscovery(ctx context.Context, method, pathTemplate string, confidence float64, isAPI bool) (*Endpoint, error)
+	UpsertDiscovery(ctx context.Context, in DiscoveryInput) (*Endpoint, error)
 	List(ctx context.Context, f ListFilter) ([]Endpoint, int64, error)
 	Confirm(ctx context.Context, id uuid.UUID) (*Endpoint, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*Endpoint, error)
+	// 站点与目录组织视图
+	SiteSummary(ctx context.Context) ([]SiteSummaryItem, int64, error)
+	DirectoryTree(ctx context.Context, applicationID *uuid.UUID, unassigned bool) ([]DirectoryCount, error)
 	// 合并 / 拆分 / 状态
 	Merge(ctx context.Context, primaryID, otherID uuid.UUID, actor string) (*Endpoint, error)
 	Split(ctx context.Context, id uuid.UUID, newPaths []string, actor string) ([]Endpoint, error)

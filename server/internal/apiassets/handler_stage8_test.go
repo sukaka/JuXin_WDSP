@@ -109,11 +109,11 @@ func TestEndpointGroupHTTP(t *testing.T) {
 	h := NewHandler(store, nil) // 无审计服务：recordAudit 应安全跳过
 	mux := newTestMux(h)
 
-	login, err := store.UpsertDiscovery(ctx, "POST", "/api/login/{id}", 0.7, true)
+	login, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "POST", PathTemplate: "/api/login/{id}", Confidence: 0.7, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := store.UpsertDiscovery(ctx, "GET", "/api/login/{id}/logs", 0.6, true)
+	other, err := store.UpsertDiscovery(ctx, DiscoveryInput{Method: "GET", PathTemplate: "/api/login/{id}/logs", Confidence: 0.6, IsAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}

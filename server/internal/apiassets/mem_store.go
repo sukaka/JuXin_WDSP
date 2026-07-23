@@ -38,10 +38,10 @@ func NewMemStore() *MemStore {
 var _ Repository = (*MemStore)(nil)
 
 // UpsertDiscovery 幂等登记发现结果。
-func (m *MemStore) UpsertDiscovery(ctx context.Context, method, pathTemplate string, confidence float64, isAPI bool) (*Endpoint, error) {
+func (m *MemStore) UpsertDiscovery(ctx context.Context, in DiscoveryInput) (*Endpoint, error) {
 	_ = ctx
-	method = strings.ToUpper(strings.TrimSpace(method))
-	pathTemplate = strings.TrimSpace(pathTemplate)
+	method := strings.ToUpper(strings.TrimSpace(in.Method))
+	pathTemplate := strings.TrimSpace(in.PathTemplate)
 	if method == "" || pathTemplate == "" {
 		return nil, errRequired
 	}
@@ -51,8 +51,8 @@ func (m *MemStore) UpsertDiscovery(ctx context.Context, method, pathTemplate str
 	if id, ok := m.byKey[key]; ok {
 		e := m.byID[id]
 		e.HitCount++
-		if confidence > e.APIConfidence {
-			e.APIConfidence = confidence
+		if in.Confidence > e.APIConfidence {
+			e.APIConfidence = in.Confidence
 		}
 		e.LastSeenAt = time.Now().UTC()
 		return cloneEP(e), nil
@@ -60,9 +60,11 @@ func (m *MemStore) UpsertDiscovery(ctx context.Context, method, pathTemplate str
 	now := time.Now().UTC()
 	id := uuid.New()
 	e := &Endpoint{
-		ID: id, HTTPMethod: method, NormalizedPath: pathTemplate, RawPathExample: pathTemplate,
-		EndpointKey: key, APIConfidence: confidence, AssetStatus: "DISCOVERED",
-		ProtocolType: "REST", LearningStatus: "NOT_STARTED", IsAPI: isAPI, HitCount: 1,
+		ID: id, ApplicationID: in.ApplicationID, DomainID: in.DomainID,
+		HTTPMethod: method, NormalizedPath: pathTemplate, RawPathExample: pathTemplate,
+		DirectoryPath: DirectoryOf(pathTemplate),
+		EndpointKey: key, APIConfidence: in.Confidence, AssetStatus: "DISCOVERED",
+		ProtocolType: "REST", LearningStatus: "NOT_STARTED", IsAPI: in.IsAPI, HitCount: 1,
 		FirstSeenAt: now, LastSeenAt: now,
 	}
 	m.byID[id] = e
@@ -70,7 +72,7 @@ func (m *MemStore) UpsertDiscovery(ctx context.Context, method, pathTemplate str
 	return cloneEP(e), nil
 }
 
-// List 列表（过滤语义与 SQL List 一致）。
+// List 列表（过滤语义与 SQL List 一致；内存实现不带出应用名）。
 func (m *MemStore) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, error) {
 	_ = ctx
 	if f.Page <= 0 {
@@ -95,6 +97,13 @@ func (m *MemStore) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, e
 		if f.ApplicationID != nil && (e.ApplicationID == nil || *e.ApplicationID != *f.ApplicationID) {
 			continue
 		}
+		if f.Unassigned && e.ApplicationID != nil {
+			continue
+		}
+		if f.DirectoryPrefix != "" && e.DirectoryPath != f.DirectoryPrefix &&
+			!strings.HasPrefix(e.DirectoryPath, f.DirectoryPrefix+"/") {
+			continue
+		}
 		all = append(all, *cloneEP(e))
 	}
 	// 与 SQL 一致：last_seen_at 倒序
@@ -109,6 +118,43 @@ func (m *MemStore) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, e
 		end = len(all)
 	}
 	return all[start:end], total, nil
+}
+
+// SiteSummary 站点计数（内存实现无应用表，仅返回未归属桶计数，语义注释见 SQL）。
+func (m *MemStore) SiteSummary(ctx context.Context) ([]SiteSummaryItem, int64, error) {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var unassigned int64
+	for _, e := range m.byID {
+		if e.ApplicationID == nil {
+			unassigned++
+		}
+	}
+	return []SiteSummaryItem{}, unassigned, nil
+}
+
+// DirectoryTree 目录聚合（内存实现按目录分组计数）。
+func (m *MemStore) DirectoryTree(ctx context.Context, applicationID *uuid.UUID, unassigned bool) ([]DirectoryCount, error) {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	counts := map[string]int64{}
+	for _, e := range m.byID {
+		if applicationID != nil && (e.ApplicationID == nil || *e.ApplicationID != *applicationID) {
+			continue
+		}
+		if unassigned && e.ApplicationID != nil {
+			continue
+		}
+		counts[e.DirectoryPath]++
+	}
+	out := make([]DirectoryCount, 0, len(counts))
+	for dir, n := range counts {
+		out = append(out, DirectoryCount{DirectoryPath: dir, EndpointCount: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].DirectoryPath < out[j].DirectoryPath })
+	return out, nil
 }
 
 // Confirm 确认端点。
@@ -202,6 +248,7 @@ func (m *MemStore) Split(ctx context.Context, id uuid.UUID, newPaths []string, a
 		e := &Endpoint{
 			ID: nid, ApplicationID: src.ApplicationID, DomainID: src.DomainID,
 			HTTPMethod: src.HTTPMethod, NormalizedPath: p, RawPathExample: p,
+			DirectoryPath: DirectoryOf(p),
 			EndpointKey: key, APIConfidence: src.APIConfidence, AssetStatus: "DISCOVERED",
 			ProtocolType: src.ProtocolType, LearningStatus: "NOT_STARTED", IsAPI: src.IsAPI,
 			FirstSeenAt: now, LastSeenAt: now,

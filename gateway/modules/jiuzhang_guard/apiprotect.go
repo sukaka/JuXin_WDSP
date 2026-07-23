@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
@@ -88,7 +90,7 @@ func (g *Guard) runAPIProtection(r *http.Request) (bool, error) {
 
 	// 主事件：API 流量或存在检测命中时输出（其余请求由访问日志/WAF 事件覆盖）
 	if res.API.IsAPI || len(res.Context.CopyMatches()) > 0 {
-		g.emitAPIEvent(res)
+		g.emitAPIEvent(r, res)
 	}
 
 	switch res.FinalAction {
@@ -120,7 +122,7 @@ func preserveRequestBody(r *http.Request) (restore func()) {
 }
 
 // emitAPIEvent 构建并输出统一运行时主事件（含端点发现信息）；输出失败仅告警，不影响请求。
-func (g *Guard) emitAPIEvent(res *pipeline.Result) {
+func (g *Guard) emitAPIEvent(r *http.Request, res *pipeline.Result) {
 	if g.apiEvents == nil || res == nil || res.Context == nil {
 		return
 	}
@@ -142,7 +144,20 @@ func (g *Guard) emitAPIEvent(res *pipeline.Result) {
 		rec.Method = res.Parsed.Method
 		rec.PathTemplate = res.Parsed.NormalizedPath
 	}
+	rec.Domain = requestHost(r)
 	if err := g.apiEvents.Emit(rec); err != nil {
 		g.logger.Warn("api runtime event emit failed", zap.Error(err))
 	}
+}
+
+// requestHost 取请求 Host（去端口，小写），用于域名归属。
+func requestHost(r *http.Request) string {
+	h := r.Host
+	if i := strings.LastIndex(h, ":"); i > 0 {
+		// 仅当冒号后全是数字才按端口处理（避免 IPv6 字面量误截断）
+		if _, err := strconv.Atoi(h[i+1:]); err == nil {
+			h = h[:i]
+		}
+	}
+	return strings.ToLower(h)
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/apiruntime"
 	"github.com/jiuzhang-waf/server/internal/app"
+	"github.com/jiuzhang-waf/server/internal/applications"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/config"
@@ -119,6 +120,8 @@ func run() error {
 		apiCollector := apiruntime.NewCollector(apiRuntimeStore, "api-collector-01",
 			cfg.WAF.APIEventsLog, filepath.Join(cfg.Gateway.DataDir, "api-runtime-events.checkpoint"), cfg.WAF.GatewayNodeName)
 		apiCollector.SetDiscoveryUpserter(apiAssetStore)
+		// 端点归属解析：app_code → application_id，host → domain_id
+		apiCollector.SetResolver(apiruntime.NewAppResolver(applications.NewStore(db)))
 		go apiCollector.Run(collectorCtx, 2*time.Second)
 	}
 
