@@ -1084,3 +1084,91 @@ WHERE username=$1 AND module LIKE 'api%'`, secUser)
 		}
 	}
 }
+
+// TestStage8SiteAndDirectory 站点归属与目录组织视图（站点汇总/目录树/目录与未归属过滤）。
+func TestStage8SiteAndDirectory(t *testing.T) {
+	env := setupStage8Env(t)
+	cookies, csrf := env.s5Login(t, "s8sec", "SECURITY_ADMIN")
+	kw := "s8sd" + s5Rand()
+
+	// 建一个应用作为站点（经 HTTP API，与应用接入链路一致）
+	resp := env.post(t, "/api/v1/applications", fmt.Sprintf(
+		`{"code":"%s","name":"阶段8站点目录测试应用","business_owner":"t","technical_owner":"t","protection_mode":"OFF"}`, kw), cookies, csrf)
+	appObj := s5OK(t, resp, "create application")
+	appIDStr, _ := appObj.Data["id"].(string)
+	appID, err := uuid.Parse(appIDStr)
+	if err != nil {
+		t.Fatalf("application id: %v", err)
+	}
+
+	// 站点端点（带归属）与未归属端点
+	store := apiassets.NewStore(env.db)
+	mk := func(method, path string, app *uuid.UUID) *apiassets.Endpoint {
+		e, err := store.UpsertDiscovery(context.Background(), apiassets.DiscoveryInput{
+			Method: method, PathTemplate: path, Confidence: 0.8, IsAPI: true, ApplicationID: app,
+		})
+		if err != nil {
+			t.Fatalf("seed %s %s: %v", method, path, err)
+		}
+		return e
+	}
+	mk("POST", "/"+kw+"/php/login", &appID)
+	mk("POST", "/"+kw+"/php/logout", &appID)
+	mk("GET", "/"+kw+"/index", &appID)
+	mk("GET", "/other-"+kw+"/a", nil)
+
+	// 站点汇总：该站点计数=3，未归属=1
+	result := s5OK(t, env.get(t, "/api/v1/api-security/endpoints/site-summary", cookies), "site summary")
+	found := false
+	for _, it := range result.Data["items"].([]interface{}) {
+		m := it.(map[string]interface{})
+		if m["application_id"] == appID.String() && s5Num(t, m, "endpoint_count") == 3 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("site summary missing app %s with count 3: %+v", appID, result.Data["items"])
+	}
+	if s5Num(t, result.Data, "unassigned") != 1 {
+		t.Errorf("unassigned = %v, want 1", result.Data["unassigned"])
+	}
+
+	// 目录树（该站点）：/{kw}/php=2、/{kw}=1
+	result = s5OK(t, env.get(t, "/api/v1/api-security/endpoints/directory-tree?application_id="+appID.String(), cookies), "directory tree")
+	counts := map[string]int{}
+	for _, it := range result.Data["items"].([]interface{}) {
+		m := it.(map[string]interface{})
+		counts[m["directory_path"].(string)] = int(s5Num(t, m, "endpoint_count"))
+	}
+	if counts["/"+kw+"/php"] != 2 || counts["/"+kw] != 1 {
+		t.Errorf("directory tree counts = %+v", counts)
+	}
+
+	// 列表：按站点过滤带出应用名
+	page := s8Page(t, env.get(t, "/api/v1/api-security/endpoints?application_id="+appID.String(), cookies), "list by application")
+	if page.Data.Total != 3 {
+		t.Errorf("application filter total = %d, want 3", page.Data.Total)
+	}
+	if name, _ := page.Data.Items[0]["application_name"].(string); name == "" {
+		t.Errorf("application_name empty in list item: %+v", page.Data.Items[0])
+	}
+
+	// 列表：目录前缀（含子目录）
+	page = s8Page(t, env.get(t, "/api/v1/api-security/endpoints?directory_path=/"+kw, cookies), "list by directory prefix")
+	if page.Data.Total != 3 {
+		t.Errorf("directory prefix total = %d, want 3", page.Data.Total)
+	}
+	page = s8Page(t, env.get(t, "/api/v1/api-security/endpoints?directory_path=/"+kw+"/php", cookies), "list by exact directory")
+	if page.Data.Total != 2 {
+		t.Errorf("directory exact total = %d, want 2", page.Data.Total)
+	}
+	if dir, _ := page.Data.Items[0]["directory_path"].(string); dir != "/"+kw+"/php" {
+		t.Errorf("directory_path in item = %q", dir)
+	}
+
+	// 列表：未归属
+	page = s8Page(t, env.get(t, "/api/v1/api-security/endpoints?unassigned=true", cookies), "list unassigned")
+	if page.Data.Total != 1 {
+		t.Errorf("unassigned total = %d, want 1", page.Data.Total)
+	}
+}

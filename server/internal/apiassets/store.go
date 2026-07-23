@@ -284,7 +284,7 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, erro
 	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
 	cols := "e." + strings.ReplaceAll(endpointColumns, ", ", ", e.")
 	q := fmt.Sprintf(`
-SELECT e.%s, COALESCE(a.name,'') FROM api_endpoints e
+SELECT %s, COALESCE(a.name,'') FROM api_endpoints e
 LEFT JOIN applications a ON a.id = e.application_id
 WHERE %s ORDER BY e.last_seen_at DESC LIMIT $%d OFFSET $%d`,
 		cols, where, len(args)-1, len(args))
