@@ -67,6 +67,18 @@ Caddy 中间件顺序必须经过集成测试验证，不得凭经验随意调�
 - [开发状态](docs/DEVELOPMENT_STATUS.md)
 - [产品线与分支策略（WAF/WDSP）](docs/BRANCHING_AND_PRODUCT_LINES.md)
 
+## Codex 调用 Kimi CLI 的前端协作约束
+
+1. Codex 是唯一编排者，负责拆解任务、确定基线、审查差异、执行验收以及提交和推送。
+2. Kimi 必须在独立 Git worktree 中工作，默认只允许修改 `web/`；任务书不得扩大到后端、网关、部署或发布文件。
+3. Kimi 不得执行 `git commit`、`git push`、合并、变基、打标签或修改 Git 历史。
+4. Kimi 不得读取、输出或写入凭据、Token、私钥、`.env` 等敏感信息，也不得新增遥测或未授权网络调用。
+5. 每次调用必须使用 `.agent/tasks/active/` 下的明确任务书，并通过 `tools/kimi-frontend.sh` 建立可审计运行记录。
+6. Kimi 返回后必须先通过隔离工作树、其他工作树和共享 Git refs 的范围检查；Codex 再独立运行任务书中的 typecheck、lint、test、build 或 E2E 验收。
+7. Kimi 的自述不作为完成证据；最终以 Git 差异、范围检查和 Codex 重跑结果为准。
+
+详细流程与模板见 [`.agent/README.md`](.agent/README.md)。
+
 ## 版权
 
 Copyright © 聚信得仁
