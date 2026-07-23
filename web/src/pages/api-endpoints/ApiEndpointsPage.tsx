@@ -5,10 +5,8 @@ import {
   Badge,
   Button,
   Card,
-  Col,
   Divider,
   Input,
-  Row,
   Select,
   Space,
   Table,
@@ -249,8 +247,8 @@ export default function ApiEndpointsPage() {
   ]
 
   return (
-    <Row gutter={[16, 16]}>
-      <Col xs={24} md={7} lg={6}>
+    <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+      <div style={{ width: 264, flexShrink: 0 }}>
         <Card title="站点" styles={{ body: { padding: 8 } }}>
           <div
             role="button"
@@ -306,8 +304,8 @@ export default function ApiEndpointsPage() {
             </Typography.Text>
           )}
         </Card>
-      </Col>
-      <Col flex="1">
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
         <Card title="接口端点资产">
           <Typography.Paragraph type="secondary">
             路径自动归一化（如 /users/123 → /users/&#123;id&#125;），端点由网关自动发现上报。确认后进入正式资产；学习模型见「接口
@@ -386,7 +384,7 @@ export default function ApiEndpointsPage() {
             }}
           />
         </Card>
-      </Col>
-    </Row>
+      </div>
+    </div>
   )
 }
