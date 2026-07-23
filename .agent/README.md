@@ -33,6 +33,9 @@ kimi provider list
    tools/kimi-frontend.sh .agent/tasks/active/<task-id>.md origin/main
    ```
 
+   启动器使用 `kimi [--model <model>] --prompt <prompt>` 非交互模式。当前 CLI 的
+   `--auto` 与 `--prompt` 互斥，不得同时传入。
+
 4. 查看终端输出和 `.agent/runs/<run-id>/` 中的本地记录。
 5. Codex 审查工作树差异并重新执行任务书中的验收命令。
 6. 只有范围和验收全部通过后，Codex 才能决定是否提交、推送和创建 PR。

@@ -109,7 +109,27 @@ if [[ "${1:-}" == "--version" ]]; then
   echo "0.0.0-test"
   exit 0
 fi
+saw_auto=0
+saw_prompt=0
+for arg in "$@"; do
+  case "$arg" in
+    --auto) saw_auto=1 ;;
+    --prompt) saw_prompt=1 ;;
+  esac
+done
+if [[ "$saw_auto" -eq 1 && "$saw_prompt" -eq 1 ]]; then
+  echo "error: Cannot combine --prompt with --auto." >&2
+  exit 2
+fi
+if [[ -n "${KIMI_TEST_ARGS_PATH:-}" ]]; then
+  printf '%s\n' "$@" > "$KIMI_TEST_ARGS_PATH"
+fi
 case "${KIMI_TEST_MODE:-}" in
+  valid)
+    ;;
+  cli-error)
+    exit 7
+    ;;
   other-worktree)
     printf 'tampered by fake Kimi\n' >> "$KIMI_TEST_ATTACK_PATH"
     ;;
@@ -124,6 +144,56 @@ esac
 EOF
 chmod +x "$FAKE_BIN/kimi"
 
+printf '# 参数兼容测试\n' > "$FIXTURE/.agent/tasks/active/valid.md"
+set +e
+PATH="$FAKE_BIN:$PATH" \
+  KIMI_WORKTREE_PARENT="$TMP_ROOT/worktrees" \
+  KIMI_TEST_MODE="valid" \
+  KIMI_TEST_ARGS_PATH="$TMP_ROOT/kimi-args.txt" \
+  bash "$FIXTURE/tools/kimi-frontend.sh" \
+    "$FIXTURE/.agent/tasks/active/valid.md" "$LAUNCH_BASE" \
+    > "$TMP_ROOT/launcher-output.txt" 2>&1
+LAUNCH_EXIT=$?
+set -e
+if [[ "$LAUNCH_EXIT" -ne 0 ]]; then
+  echo "not ok - 启动器未使用兼容的 Kimi 非交互参数（退出码 ${LAUNCH_EXIT}）" >&2
+  cat "$TMP_ROOT/launcher-output.txt" >&2
+  exit 1
+fi
+if ! grep -Fxq -- "--prompt" "$TMP_ROOT/kimi-args.txt"; then
+  echo "not ok - 启动器没有传入 --prompt" >&2
+  exit 1
+fi
+if grep -Fxq -- "--auto" "$TMP_ROOT/kimi-args.txt"; then
+  echo "not ok - 启动器同时传入了互斥的 --auto" >&2
+  exit 1
+fi
+PASS_COUNT=$((PASS_COUNT + 1))
+echo "ok - 启动器使用兼容的 Kimi 非交互参数"
+
+printf '# CLI 失败测试\n' > "$FIXTURE/.agent/tasks/active/cli-error.md"
+set +e
+PATH="$FAKE_BIN:$PATH" \
+  KIMI_WORKTREE_PARENT="$TMP_ROOT/worktrees" \
+  KIMI_TEST_MODE="cli-error" \
+  bash "$FIXTURE/tools/kimi-frontend.sh" \
+    "$FIXTURE/.agent/tasks/active/cli-error.md" "$LAUNCH_BASE" \
+    > "$TMP_ROOT/launcher-output.txt" 2>&1
+LAUNCH_EXIT=$?
+set -e
+if [[ "$LAUNCH_EXIT" -ne 4 ]]; then
+  echo "not ok - 启动器未保留 Kimi CLI 失败语义（退出码 ${LAUNCH_EXIT}）" >&2
+  cat "$TMP_ROOT/launcher-output.txt" >&2
+  exit 1
+fi
+if ! grep -q "Kimi CLI 执行失败（退出码 7）" "$TMP_ROOT/launcher-output.txt"; then
+  echo "not ok - 启动器缺少 Kimi CLI 原始退出码" >&2
+  cat "$TMP_ROOT/launcher-output.txt" >&2
+  exit 1
+fi
+PASS_COUNT=$((PASS_COUNT + 1))
+echo "ok - 启动器正确报告 Kimi CLI 失败"
+
 printf '# 越界测试\n' > "$FIXTURE/.agent/tasks/active/escape.md"
 set +e
 PATH="$FAKE_BIN:$PATH" \
@@ -136,7 +206,7 @@ PATH="$FAKE_BIN:$PATH" \
 LAUNCH_EXIT=$?
 set -e
 if [[ "$LAUNCH_EXIT" -ne 3 ]]; then
-  echo "not ok - 启动器未阻止其他工作树越界（退出码 $LAUNCH_EXIT）" >&2
+  echo "not ok - 启动器未阻止其他工作树越界（退出码 ${LAUNCH_EXIT}）" >&2
   cat "$TMP_ROOT/launcher-output.txt" >&2
   exit 1
 fi
@@ -159,7 +229,7 @@ PATH="$FAKE_BIN:$PATH" \
 LAUNCH_EXIT=$?
 set -e
 if [[ "$LAUNCH_EXIT" -ne 3 ]]; then
-  echo "not ok - 启动器未阻止共享 refs 越界（退出码 $LAUNCH_EXIT）" >&2
+  echo "not ok - 启动器未阻止共享 refs 越界（退出码 ${LAUNCH_EXIT}）" >&2
   cat "$TMP_ROOT/launcher-output.txt" >&2
   exit 1
 fi
