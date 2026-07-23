@@ -20,6 +20,8 @@ type MemStore struct {
 	aliases map[string]uuid.UUID
 	dims    map[uuid.UUID][]ClassificationDimension
 	jobs    []*LearningJob
+	events  []LifecycleEvent
+	samples []LearningSample
 }
 
 // NewMemStore 创建空内存仓储。
@@ -139,7 +141,6 @@ func (m *MemStore) GetByID(ctx context.Context, id uuid.UUID) (*Endpoint, error)
 // Merge 把 other 并入 primary（命中数累加、历史键归档、删除 other）。
 func (m *MemStore) Merge(ctx context.Context, primaryID, otherID uuid.UUID, actor string) (*Endpoint, error) {
 	_ = ctx
-	_ = actor
 	if primaryID == otherID {
 		return nil, fmt.Errorf("不能将端点合并到自身")
 	}
@@ -169,13 +170,14 @@ func (m *MemStore) Merge(ctx context.Context, primaryID, otherID uuid.UUID, acto
 		}
 	}
 	m.jobs = jobs
+	m.appendEventLocked(primaryID, "", "MERGED",
+		fmt.Sprintf("合并端点 %s（%s）", otherID, other.EndpointKey), actor)
 	return cloneEP(primary), nil
 }
 
 // Split 按归一化路径拆分新端点（继承方法/置信度，状态 DISCOVERED）。
 func (m *MemStore) Split(ctx context.Context, id uuid.UUID, newPaths []string, actor string) ([]Endpoint, error) {
 	_ = ctx
-	_ = actor
 	if len(newPaths) == 0 {
 		return nil, fmt.Errorf("拆分路径不能为空")
 	}
@@ -208,13 +210,14 @@ func (m *MemStore) Split(ctx context.Context, id uuid.UUID, newPaths []string, a
 		m.byKey[key] = nid
 		created = append(created, *cloneEP(e))
 	}
+	m.appendEventLocked(id, "", "SPLIT",
+		fmt.Sprintf("拆分出 %d 个端点：%s", len(created), strings.Join(newPaths, ", ")), actor)
 	return created, nil
 }
 
 // SetAssetStatus 变更资产状态。
 func (m *MemStore) SetAssetStatus(ctx context.Context, id uuid.UUID, status, actor string) (*Endpoint, error) {
 	_ = ctx
-	_ = actor
 	status = strings.ToUpper(strings.TrimSpace(status))
 	if !validAssetStatuses[status] {
 		return nil, fmt.Errorf("无效的资产状态：%s", status)
@@ -225,7 +228,11 @@ func (m *MemStore) SetAssetStatus(ctx context.Context, id uuid.UUID, status, act
 	if !ok {
 		return nil, ErrNotFound
 	}
+	from := e.AssetStatus
 	e.AssetStatus = status
+	if from != status {
+		m.appendEventLocked(id, from, status, "资产状态变更", actor)
+	}
 	return cloneEP(e), nil
 }
 
@@ -354,7 +361,6 @@ func (m *MemStore) StartLearning(ctx context.Context, endpointID uuid.UUID, crea
 // StopLearning 停止 RUNNING 任务并置 learning_status=PAUSED。
 func (m *MemStore) StopLearning(ctx context.Context, endpointID uuid.UUID, actor string) (*LearningJob, error) {
 	_ = ctx
-	_ = actor
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.byID[endpointID]
@@ -367,6 +373,7 @@ func (m *MemStore) StopLearning(ctx context.Context, endpointID uuid.UUID, actor
 			j.Status = "STOPPED"
 			j.StoppedAt = &now
 			e.LearningStatus = "PAUSED"
+			m.appendEventLocked(endpointID, "LEARNING", "PAUSED", "停止学习", actor)
 			cp := *j
 			return &cp, nil
 		}
@@ -393,6 +400,94 @@ func (m *MemStore) LearningStatus(ctx context.Context, endpointID uuid.UUID) (*L
 	}
 	cp := *latest
 	return &cp, SampleStats{}, nil
+}
+
+// appendEventLocked 记录生命周期事件（调用方须已持锁；语义对齐 SQL 侧 INSERT）。
+func (m *MemStore) appendEventLocked(endpointID uuid.UUID, from, to, reason, actor string) {
+	if actor == "" {
+		actor = "system"
+	}
+	m.events = append(m.events, LifecycleEvent{
+		ID: uuid.New(), EndpointID: endpointID, FromStatus: from, ToStatus: to,
+		Reason: reason, Actor: actor, CreatedAt: time.Now().UTC(),
+	})
+}
+
+// ListLifecycleEvents 生命周期事件（created_at DESC 分页，语义同 SQL）。
+func (m *MemStore) ListLifecycleEvents(ctx context.Context, endpointID uuid.UUID, page, pageSize int) ([]LifecycleEvent, int64, error) {
+	_ = ctx
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var all []LifecycleEvent
+	for _, ev := range m.events {
+		if ev.EndpointID == endpointID {
+			all = append(all, ev)
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].CreatedAt.After(all[j].CreatedAt) })
+	total := int64(len(all))
+	start := (page - 1) * pageSize
+	if start >= len(all) {
+		return []LifecycleEvent{}, total, nil
+	}
+	end := start + pageSize
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[start:end], total, nil
+}
+
+// ListLearningSamples 学习样本（accepted 可空过滤，collected_at DESC 分页，语义同 SQL）。
+func (m *MemStore) ListLearningSamples(ctx context.Context, endpointID uuid.UUID, accepted *bool, page, pageSize int) ([]LearningSample, int64, error) {
+	_ = ctx
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var all []LearningSample
+	for _, sm := range m.samples {
+		if sm.EndpointID != endpointID {
+			continue
+		}
+		if accepted != nil && sm.Accepted != *accepted {
+			continue
+		}
+		all = append(all, sm)
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].CollectedAt.After(all[j].CollectedAt) })
+	total := int64(len(all))
+	start := (page - 1) * pageSize
+	if start >= len(all) {
+		return []LearningSample{}, total, nil
+	}
+	end := start + pageSize
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[start:end], total, nil
+}
+
+// AddLearningSample 登记学习样本（测试/回放置入；生产样本由网关侧写入数据库）。
+func (m *MemStore) AddLearningSample(s LearningSample) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s.ID == uuid.Nil {
+		s.ID = uuid.New()
+	}
+	if s.CollectedAt.IsZero() {
+		s.CollectedAt = time.Now().UTC()
+	}
+	m.samples = append(m.samples, s)
 }
 
 func cloneEP(e *Endpoint) *Endpoint {

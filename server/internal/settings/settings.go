@@ -53,6 +53,40 @@ func (s *Service) GetString(ctx context.Context, group, key, def string) string 
 	return str
 }
 
+// GetStringWithSource 读取字符串设置并报告是否命中数据库记录（覆盖来源判定用）。
+// 无记录返回 found=false；数据库错误如实返回，不静默回退默认值。
+func (s *Service) GetStringWithSource(ctx context.Context, group, key string) (value string, found bool, err error) {
+	v, err := s.getValue(ctx, group, key)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	var str string
+	if err := json.Unmarshal(v, &str); err != nil {
+		return "", false, err
+	}
+	return str, true, nil
+}
+
+// UpsertString 覆盖写入字符串设置（不存在则插入；命中则更新值并自增版本）。
+// 用于运行期功能开关类设置（如 api_protection.mode），区别于管理界面带乐观锁的 Update。
+func (s *Service) UpsertString(ctx context.Context, group, key, value, description string, operatorID uuid.UUID) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
+INSERT INTO system_settings (setting_group, setting_key, setting_value, value_type, description, updated_by)
+VALUES ($1, $2, $3::jsonb, 'string', $4, $5)
+ON CONFLICT (setting_group, setting_key) DO UPDATE
+SET setting_value = EXCLUDED.setting_value, updated_by = EXCLUDED.updated_by,
+    updated_at = now(), version = system_settings.version + 1`,
+		group, key, string(raw), description, operatorID)
+	return err
+}
+
 // GetInt 读取整数设置。
 func (s *Service) GetInt(ctx context.Context, group, key string, def int) int {
 	v, err := s.getValue(ctx, group, key)

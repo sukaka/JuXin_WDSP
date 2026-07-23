@@ -10,11 +10,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/accesscontrolversions"
 	"github.com/jiuzhang-waf/server/internal/accessrules"
+	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/apimodels"
 	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
 	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
@@ -30,6 +32,7 @@ type Provider struct {
 	policies  *ratelimitpolicies.Store
 	versions  *accesscontrolversions.Store
 	apiModels *apimodels.Store // 阶段8：冻结模型下发（nil 时跳过）
+	apiAssets *apiassets.Store // 阶段8：已知端点基线下发（nil 时跳过）
 
 	valkeyAddr     string
 	valkeyPassword string
@@ -44,6 +47,10 @@ type Provider struct {
 	apiEnabled   bool
 	apiMode      string
 	apiEventsLog string // 网关容器内 API 事件日志路径
+
+	// apiModeOverride settings 表模式覆盖读取（nil 时仅用构造配置 apiMode）；
+	// 返回 found=false 表示无覆盖。取值顺序：settings 表覆盖 > 构造配置（env/默认）。
+	apiModeOverride func(ctx context.Context) (value string, found bool, err error)
 }
 
 // Config 是组装器配置。
@@ -91,6 +98,29 @@ func NewProvider(
 
 // SetAPIModels 注入模型版本仓储（阶段8：冻结正式模型随发布下发网关；nil 表示不下发）。
 func (p *Provider) SetAPIModels(m *apimodels.Store) { p.apiModels = m }
+
+// SetAPIModeOverride 注入 settings 表模式覆盖读取（app 装配时接线 settings.Service；
+// 覆盖读取失败时发布失败，不静默回退）。
+func (p *Provider) SetAPIModeOverride(fn func(ctx context.Context) (value string, found bool, err error)) {
+	p.apiModeOverride = fn
+}
+
+// 防护模式下发白名单（与网关 jiuzhang_guard / 管理面策略接口约定一致）。
+var validAPIProtectionModes = map[string]bool{"OFF": true, "OBSERVE": true, "PROTECT": true}
+
+// resolveAPIProtectionMode 计算下发模式：settings 表覆盖（合法值）优先于构造配置；
+// 覆盖值非法时回退构造配置（fail-safe，网关行为不被脏数据改变）。
+func resolveAPIProtectionMode(configured, override string, found bool) string {
+	if found {
+		if v := strings.ToUpper(strings.TrimSpace(override)); validAPIProtectionModes[v] {
+			return v
+		}
+	}
+	return configured
+}
+
+// SetAPIAssets 注入端点资产仓储（阶段8：已知端点基线随发布下发网关；nil 表示不下发）。
+func (p *Provider) SetAPIAssets(s *apiassets.Store) { p.apiAssets = s }
 
 // BuildGuardConfig 从数据库读取生效配置并组装。
 func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardConfig, error) {
@@ -259,7 +289,15 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 	// 阶段8 / WDSP：API 动态防护开关与冻结模型（仅开启时注入；关闭时 GuardConfig 与纯 WAF 一致）
 	if p.apiEnabled {
 		cfg.APIDynamicProtection = true
-		cfg.APIProtectionMode = p.apiMode
+		mode := p.apiMode
+		if p.apiModeOverride != nil {
+			override, found, err := p.apiModeOverride(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("read api protection mode override: %w", err)
+			}
+			mode = resolveAPIProtectionMode(p.apiMode, override, found)
+		}
+		cfg.APIProtectionMode = mode
 		cfg.APIEventsLog = p.apiEventsLog
 		if p.apiModels != nil {
 			schemas, err := p.apiModels.ListFormalSchemas(ctx)
@@ -268,6 +306,15 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 			}
 			if len(schemas) > 0 {
 				cfg.APIFormalSchemas = schemas
+			}
+		}
+		if p.apiAssets != nil {
+			known, err := p.apiAssets.ListKeyStatus(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("list api endpoint key status: %w", err)
+			}
+			if len(known) > 0 {
+				cfg.APIKnownEndpoints = known
 			}
 		}
 	}

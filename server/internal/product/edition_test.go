@@ -64,3 +64,26 @@ func TestAPIDynamicProtectionEnabledRequiresWDSPAndFlag(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadModeFromEnvProvenance(t *testing.T) {
+	t.Setenv("PRODUCT_EDITION", "wdsp")
+	t.Setenv("API_DYNAMIC_PROTECTION_ENABLED", "")
+	// 显式合法 env → 标记来自 env
+	t.Setenv("API_PROTECTION_MODE", "protect")
+	s := Load()
+	if s.APIProtectionMode != "PROTECT" || !s.APIProtectionModeFromEnv {
+		t.Fatalf("env mode: %+v", s)
+	}
+	// 非法 env → 回退 OBSERVE 且不标记 env 来源（fail-safe 视为默认）
+	t.Setenv("API_PROTECTION_MODE", "garbage")
+	s = Load()
+	if s.APIProtectionMode != "OBSERVE" || s.APIProtectionModeFromEnv {
+		t.Fatalf("invalid env mode: %+v", s)
+	}
+	// 未设置 env → 默认 OBSERVE，非 env 来源
+	t.Setenv("API_PROTECTION_MODE", "")
+	s = Load()
+	if s.APIProtectionMode != "OBSERVE" || s.APIProtectionModeFromEnv {
+		t.Fatalf("default mode: %+v", s)
+	}
+}

@@ -40,4 +40,13 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.RuntimeStatistics))))
 	mux.Handle("GET /api/v1/api-security/runtime/events",
 		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.ListRuntimeEvents))))
+	mux.Handle("GET /api/v1/api-security/sensitive-fields",
+		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.ListSensitiveFields))))
+	// 防护策略（模式 db>env>default；发布触发配置下发网关）
+	mux.Handle("GET /api/v1/api-security/policy",
+		authz(middleware.RequirePermission("api_policy.read")(http.HandlerFunc(h.GetPolicy))))
+	mux.Handle("PUT /api/v1/api-security/policy",
+		authz(middleware.RequirePermission("api_policy.edit")(http.HandlerFunc(h.PutPolicy))))
+	mux.Handle("POST /api/v1/api-security/policy/publish",
+		authz(middleware.RequirePermission("api_policy.publish")(http.HandlerFunc(h.PublishPolicy))))
 }

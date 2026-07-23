@@ -77,6 +77,8 @@ type GuardConfig struct {
 	APIEventsLog         string `json:"api_events_log,omitempty"`
 	// APIFormalSchemas 冻结正式模型（endpoint_key → 字段名 → 期望类型），经发布通道下发网关
 	APIFormalSchemas map[string]map[string]string `json:"api_formal_schemas,omitempty"`
+	// APIKnownEndpoints 已知 API 端点基线（endpoint_key → asset_status），经发布通道下发网关
+	APIKnownEndpoints map[string]string `json:"api_known_endpoints,omitempty"`
 }
 
 // buildGuardHandler 构建单应用路由的 jiuzhang_guard 处理器 JSON。
@@ -134,6 +136,9 @@ func buildGuardHandler(g *GuardConfig, app AppData) mapT {
 		}
 		if len(g.APIFormalSchemas) > 0 {
 			h["api_formal_schemas"] = g.APIFormalSchemas
+		}
+		if len(g.APIKnownEndpoints) > 0 {
+			h["api_known_endpoints"] = g.APIKnownEndpoints
 		}
 	}
 	return h

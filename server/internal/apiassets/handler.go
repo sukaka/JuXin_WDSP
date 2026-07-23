@@ -42,6 +42,8 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/learning/start", authz(middleware.RequirePermission("api_learning.start")(http.HandlerFunc(h.LearningStart))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/learning/stop", authz(middleware.RequirePermission("api_learning.stop")(http.HandlerFunc(h.LearningStop))))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}/learning/status", authz(middleware.RequirePermission("api_learning.read")(http.HandlerFunc(h.LearningStatus))))
+	mux.Handle("GET /api/v1/api-security/endpoints/{id}/learning/samples", authz(middleware.RequirePermission("api_learning.read")(http.HandlerFunc(h.LearningSamples))))
+	mux.Handle("GET /api/v1/api-security/endpoints/{id}/lifecycle-events", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.LifecycleEvents))))
 }
 
 // List GET /api/v1/api-security/endpoints
@@ -482,6 +484,63 @@ func (h *Handler) LearningStatus(w http.ResponseWriter, r *http.Request) {
 		"job":             job,
 		"samples":         stats,
 	})
+}
+
+// LifecycleEvents GET /api/v1/api-security/endpoints/{id}/lifecycle-events
+// api_lifecycle_events 按 created_at DESC 分页。
+func (h *Handler) LifecycleEvents(w http.ResponseWriter, r *http.Request) {
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.store.GetByID(r.Context(), id); errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		return
+	} else if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 20)
+	list, total, err := h.store.ListLifecycleEvents(r.Context(), id, page, pageSize)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, list, total, page, pageSize)
+}
+
+// LearningSamples GET /api/v1/api-security/endpoints/{id}/learning/samples
+// api_learning_samples 过滤 accepted（true/false，可空）+ 分页。
+func (h *Handler) LearningSamples(w http.ResponseWriter, r *http.Request) {
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.store.GetByID(r.Context(), id); errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		return
+	} else if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	var accepted *bool
+	if v := strings.TrimSpace(r.URL.Query().Get("accepted")); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 accepted 取值（true/false）")
+			return
+		}
+		accepted = &b
+	}
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 20)
+	list, total, err := h.store.ListLearningSamples(r.Context(), id, accepted, page, pageSize)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, list, total, page, pageSize)
 }
 
 // recordAudit 写操作审计（语义同 customrules：操作者/动作/对象/前后摘要/风险等级）。

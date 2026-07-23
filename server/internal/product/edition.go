@@ -23,6 +23,8 @@ type Settings struct {
 	APIDynamicProtection bool
 	// APIProtectionMode 网关侧 API 动态防护模式：OFF | OBSERVE | PROTECT（缺省 OBSERVE，fail-safe）
 	APIProtectionMode string
+	// APIProtectionModeFromEnv 模式是否显式来自环境变量 API_PROTECTION_MODE（策略接口 mode_source 判定用）
+	APIProtectionModeFromEnv bool
 	// 解析限制（与 gateway/dynamic_security 约定一致，供管理面展示/下发）
 	MaxBodyParseBytes  int
 	MaxBodySampleBytes int
@@ -47,20 +49,23 @@ func Load() Settings {
 
 	// 防护模式：仅识别 OFF/OBSERVE/PROTECT；非法值回退 OBSERVE（fail-safe）
 	mode := strings.ToUpper(strings.TrimSpace(os.Getenv("API_PROTECTION_MODE")))
+	modeFromEnv := false
 	switch mode {
 	case "OFF", "OBSERVE", "PROTECT":
+		modeFromEnv = true
 	default:
 		mode = "OBSERVE"
 	}
 
 	return Settings{
-		Edition:              ed,
-		APIDynamicProtection: apiOn,
-		APIProtectionMode:    mode,
-		MaxBodyParseBytes:    envInt("API_MAX_BODY_PARSE_BYTES", 1<<20),
-		MaxBodySampleBytes:   envInt("API_MAX_BODY_SAMPLE_BYTES", 64<<10),
-		MaxJSONDepth:         envInt("API_MAX_JSON_DEPTH", 32),
-		MaxFieldCount:        envInt("API_MAX_FIELD_COUNT", 2048),
+		Edition:                  ed,
+		APIDynamicProtection:     apiOn,
+		APIProtectionMode:        mode,
+		APIProtectionModeFromEnv: modeFromEnv,
+		MaxBodyParseBytes:        envInt("API_MAX_BODY_PARSE_BYTES", 1<<20),
+		MaxBodySampleBytes:       envInt("API_MAX_BODY_SAMPLE_BYTES", 64<<10),
+		MaxJSONDepth:             envInt("API_MAX_JSON_DEPTH", 32),
+		MaxFieldCount:            envInt("API_MAX_FIELD_COUNT", 2048),
 	}
 }
 

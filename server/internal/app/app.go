@@ -193,9 +193,14 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 				APIProtectionMode:    cfg.Product.EffectiveAPIProtectionMode(),
 				APIEventsLog:         cfg.WAF.APIEventsLogGateway,
 			})
-		// 阶段8：冻结正式模型随发布下发网关（WDSP 开启时）
+		// 阶段8：冻结正式模型与已知端点基线随发布下发网关（WDSP 开启时）
 		if cfg.Product.APIDynamicProtectionEnabled() {
 			guardProvider.SetAPIModels(apimodels.NewStore(db))
+			guardProvider.SetAPIAssets(apiassets.NewStore(db))
+			// API 防护模式：settings 表覆盖优先（API策略页写库，发布时下发生效）
+			guardProvider.SetAPIModeOverride(func(ctx context.Context) (string, bool, error) {
+				return settingsSvc.GetStringWithSource(ctx, apisecurity.PolicySettingsGroup, apisecurity.PolicyModeKey)
+			})
 		}
 		publisher.SetGuardProvider(guardProvider)
 		publisher.SetCustomRulesProvider(customRuleStore)
@@ -657,6 +662,18 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 		apiModelHandler := apimodels.NewHandler(apimodels.NewStore(db), auditSvc)
 		apimodels.RegisterRoutes(mux, authz, apiModelHandler)
 		apiSecurityHandler := apisecurity.NewHandler(apisecurity.NewStore(db), auditSvc)
+		// 策略接口：产品设置 + settings 覆盖 + 发布通道（publisher 不可用时发布接口返回 503）
+		apiSecurityHandler.SetPolicySource(apisecurity.PolicySourceFromProduct(cfg.Product))
+		apiSecurityHandler.SetPolicySettings(settingsSvc)
+		if publisher != nil {
+			apiSecurityHandler.SetPolicyPublishFunc(func(ctx context.Context, uid uuid.UUID, rid string) (*apisecurity.PolicyPublishResult, error) {
+				task, err := publisher.PublishSync(ctx, gatewayconfig.PublishInput{RequestedBy: uid, RequestID: rid})
+				if err != nil {
+					return nil, err
+				}
+				return &apisecurity.PolicyPublishResult{TaskID: task.ID.String(), Status: task.Status}, nil
+			})
+		}
 		apisecurity.RegisterRoutes(mux, authz, apiSecurityHandler)
 	}
 	// 产品 edition 探测（已登录可读，供前端 WDSP 菜单）

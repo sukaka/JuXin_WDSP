@@ -24,6 +24,10 @@ const specImportMaxBytes = 16 << 20 // 16 MiB
 type Handler struct {
 	store  *Store
 	audits *audits.Service
+	// 策略接口依赖（Setter 注入，保持 app.go 接线简单；见 policy.go）
+	policySource   PolicySource
+	policySettings PolicySettings
+	publishFn      PolicyPublishFunc
 }
 
 // NewHandler 创建处理器。
@@ -411,10 +415,41 @@ func (h *Handler) ListRuntimeEvents(w http.ResponseWriter, r *http.Request) {
 	response.Page(w, r, list, total, page, pageSize)
 }
 
+// ListSensitiveFields GET /api/v1/api-security/sensitive-fields
+// 过滤 endpoint_id/direction(REQUEST/RESPONSE)/data_type + 分页；数据源 api_sensitive_fields。
+func (h *Handler) ListSensitiveFields(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	endpointID := strings.TrimSpace(q.Get("endpoint_id"))
+	if endpointID != "" {
+		if _, err := uuid.Parse(endpointID); err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的端点ID")
+			return
+		}
+	}
+	direction := strings.ToUpper(strings.TrimSpace(q.Get("direction")))
+	if direction != "" && direction != "REQUEST" && direction != "RESPONSE" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 direction 取值（REQUEST/RESPONSE）")
+		return
+	}
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 20)
+	list, total, err := h.store.ListSensitiveFields(r.Context(), endpointID, direction,
+		strings.TrimSpace(q.Get("data_type")), page, pageSize)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, list, total, page, pageSize)
+}
+
 // ---------- 通用 ----------
 
 // recordAudit 写操作审计（构造注入 audits.Service；含操作者、动作、对象、前后摘要、风险等级）。
+// 审计服务未注入（旧接线/单测）或无操作者上下文时跳过，不影响主流程。
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objType, objID, objName, before, after, result, risk string) {
+	if h.audits == nil || p == nil {
+		return
+	}
 	_ = h.audits.Record(r.Context(), audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,

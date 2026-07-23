@@ -111,6 +111,31 @@ type SampleStats struct {
 	Excluded int64 `json:"excluded"`
 }
 
+// LifecycleEvent 生命周期事件（api_lifecycle_events）。
+type LifecycleEvent struct {
+	ID         uuid.UUID `json:"id"`
+	EndpointID uuid.UUID `json:"endpoint_id"`
+	FromStatus string    `json:"from_status"`
+	ToStatus   string    `json:"to_status"`
+	Reason     string    `json:"reason"`
+	Actor      string    `json:"actor"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// LearningSample 学习样本（api_learning_samples；仅存样本哈希，不含完整敏感值）。
+type LearningSample struct {
+	ID                  uuid.UUID `json:"id"`
+	EndpointID          uuid.UUID `json:"endpoint_id"`
+	RequestID           string    `json:"request_id"`
+	SampleHash          string    `json:"sample_hash"`
+	SourceFingerprint   string    `json:"source_fingerprint"`
+	IdentityFingerprint string    `json:"identity_fingerprint"`
+	ResponseStatus      *int      `json:"response_status,omitempty"`
+	Accepted            bool      `json:"accepted"`
+	ExcludeReason       string    `json:"exclude_reason"`
+	CollectedAt         time.Time `json:"collected_at"`
+}
+
 // ListFilter 端点列表过滤条件。
 type ListFilter struct {
 	AssetStatus    string
@@ -241,6 +266,24 @@ SELECT %s FROM api_endpoints WHERE %s ORDER BY last_seen_at DESC LIMIT $%d OFFSE
 		out = append(out, *e)
 	}
 	return out, total, rows.Err()
+}
+
+// ListKeyStatus 返回全部端点的 endpoint_key → asset_status 映射（发布通道下发网关，生命周期检测基线）。
+func (s *Store) ListKeyStatus(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.Query(ctx, `SELECT endpoint_key, asset_status FROM api_endpoints`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var key, status string
+		if err := rows.Scan(&key, &status); err != nil {
+			return nil, err
+		}
+		out[key] = status
+	}
+	return out, rows.Err()
 }
 
 // Confirm 人工确认端点（asset_status=CONFIRMED）。
@@ -661,6 +704,80 @@ WHERE endpoint_id=$1 ORDER BY started_at DESC, id DESC LIMIT 1`, endpointID))
 		return nil, stats, err
 	}
 	return job, stats, nil
+}
+
+// ListLifecycleEvents 端点生命周期事件分页列表（created_at DESC）。
+func (s *Store) ListLifecycleEvents(ctx context.Context, endpointID uuid.UUID, page, pageSize int) ([]LifecycleEvent, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	var total int64
+	if err := s.db.QueryRow(ctx,
+		`SELECT count(*) FROM api_lifecycle_events WHERE endpoint_id=$1`, endpointID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT id, endpoint_id, from_status, to_status, reason, actor, created_at
+FROM api_lifecycle_events WHERE endpoint_id=$1 ORDER BY created_at DESC, id LIMIT $2 OFFSET $3`,
+		endpointID, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []LifecycleEvent{}
+	for rows.Next() {
+		var ev LifecycleEvent
+		if err := rows.Scan(&ev.ID, &ev.EndpointID, &ev.FromStatus, &ev.ToStatus,
+			&ev.Reason, &ev.Actor, &ev.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, ev)
+	}
+	return out, total, rows.Err()
+}
+
+// ListLearningSamples 端点学习样本分页列表（accepted 可空过滤，collected_at DESC）。
+func (s *Store) ListLearningSamples(ctx context.Context, endpointID uuid.UUID, accepted *bool, page, pageSize int) ([]LearningSample, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	where := "api_endpoint_id=$1"
+	args := []any{endpointID}
+	if accepted != nil {
+		args = append(args, *accepted)
+		where += fmt.Sprintf(" AND accepted=$%d", len(args))
+	}
+	var total int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_learning_samples WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := s.db.Query(ctx, fmt.Sprintf(`
+SELECT id, api_endpoint_id, request_id, sample_hash, source_fingerprint, identity_fingerprint,
+  response_status, accepted, exclude_reason, collected_at
+FROM api_learning_samples WHERE %s ORDER BY collected_at DESC, id LIMIT $%d OFFSET $%d`,
+		where, len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []LearningSample{}
+	for rows.Next() {
+		var sm LearningSample
+		if err := rows.Scan(&sm.ID, &sm.EndpointID, &sm.RequestID, &sm.SampleHash,
+			&sm.SourceFingerprint, &sm.IdentityFingerprint, &sm.ResponseStatus,
+			&sm.Accepted, &sm.ExcludeReason, &sm.CollectedAt); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, sm)
+	}
+	return out, total, rows.Err()
 }
 
 // classifyByPath 路径/方法启发式自动分类（AUTO 来源，供 SQL 与内存实现共用）。

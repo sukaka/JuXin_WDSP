@@ -28,6 +28,9 @@ type Repository interface {
 	StartLearning(ctx context.Context, endpointID uuid.UUID, createdBy *uuid.UUID) (*LearningJob, error)
 	StopLearning(ctx context.Context, endpointID uuid.UUID, actor string) (*LearningJob, error)
 	LearningStatus(ctx context.Context, endpointID uuid.UUID) (*LearningJob, SampleStats, error)
+	// 生命周期事件与学习样本
+	ListLifecycleEvents(ctx context.Context, endpointID uuid.UUID, page, pageSize int) ([]LifecycleEvent, int64, error)
+	ListLearningSamples(ctx context.Context, endpointID uuid.UUID, accepted *bool, page, pageSize int) ([]LearningSample, int64, error)
 }
 
 // 确保 *Store 实现 Repository。
