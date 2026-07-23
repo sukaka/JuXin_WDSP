@@ -1,14 +1,29 @@
-// Package parser 在 ParseLimits 下一次解析请求（Query/头/JSON 字段），供 Web 与 API 检测共享。
+// Package parser 在 ParseLimits 下一次解析请求（Query/头/JSON/表单/XML/multipart/GraphQL），供 Web 与 API 检测共享。
 package parser
 
 import (
 	"encoding/json"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
+)
+
+// 写入 RequestContext.Extensions 的扩展键（键集合固定，禁止无界动态膨胀；值均已脱敏）。
+const (
+	ExtFormFields           = "req.form_fields"
+	ExtXMLFields            = "req.xml_fields"
+	ExtMultipartParts       = "req.multipart_parts"
+	ExtHasFiles             = "req.has_files"
+	ExtGraphQLOperation     = "req.graphql_operation"
+	ExtGraphQLOperationName = "req.graphql_operation_name"
+	ExtGraphQLVariables     = "req.graphql_variables"
+	ExtMultipartCapped      = "req.multipart_capped"
+	ExtXMLTruncated         = "req.xml_truncated"
+	ExtXMLDTDBlocked        = "req.xml_dtd_blocked"
 )
 
 // Parsed 一次解析结果（不含明文密钥；字段名与粗类型供学习/偏离使用）。
@@ -20,12 +35,23 @@ type Parsed struct {
 	Headers        map[string]string // 已脱敏（authorization/cookie 仅标记存在）
 	ContentType    string
 	JSONFields     map[string]string // path -> type: string|number|bool|object|array|null
-	FieldCount     int
-	BodySize       int
-	BodyHash       string
-	BodyTruncated  bool
-	FieldCapped    bool
-	IsJSON         bool
+	FormFields     map[string]string // urlencoded 表单字段名 -> type: string|number|bool
+	XMLFields      map[string]string // XML 元素路径 -> 叶子类型: string|number|bool
+	MultipartParts []PartMeta        // multipart part 元数据（按出现顺序；文件内容不落内存）
+	HasFiles       bool              // multipart 中含文件 part
+	// GraphQL 识别（application/graphql 原始查询，或 /graphql 路径 + JSON body 含 query 字段）
+	GraphQLOperation     string   // query|mutation|subscription|unknown
+	GraphQLOperationName string   // operationName（缺省时从查询文本推断）
+	GraphQLVariables     []string // variables 顶层键名（排序，不存值）
+	FieldCount           int
+	BodySize             int
+	BodyHash             string
+	BodyTruncated        bool
+	FieldCapped          bool
+	MultipartCapped      bool // part 元数据数超 MaxFileMetaCount，已截断
+	XMLTruncated         bool // 元素嵌套超 MaxXMLDepth，已停止解析
+	XMLDTDBlocked        bool // 遇 DOCTYPE 拒绝解析（XXE 防御：禁止 DTD/实体展开）
+	IsJSON               bool
 }
 
 // ParseRequest 解析 HTTP 请求并填充 RequestContext 的请求侧字段。
@@ -44,6 +70,8 @@ func ParseRequest(r *http.Request, ctx *dsctx.RequestContext) (*Parsed, error) {
 		Query:          map[string]string{},
 		Headers:        map[string]string{},
 		JSONFields:     map[string]string{},
+		FormFields:     map[string]string{},
+		XMLFields:      map[string]string{},
 		ContentType:    r.Header.Get("Content-Type"),
 	}
 	// Query
@@ -71,36 +99,54 @@ func ParseRequest(r *http.Request, ctx *dsctx.RequestContext) (*Parsed, error) {
 
 	// Body
 	if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
-		limit := int64(limits.MaxBodyParseBytes) + 1
-		if limit < 2 {
-			limit = 2
-		}
-		raw, err := io.ReadAll(io.LimitReader(r.Body, limit))
-		if err != nil && err != io.EOF {
-			return p, err
-		}
-		_ = r.Body.Close()
-		if len(raw) > limits.MaxBodyParseBytes {
-			p.BodyTruncated = true
-			sample := limits.MaxBodySampleBytes
-			if sample <= 0 {
-				sample = limits.MaxBodyParseBytes
+		mediaType, params := splitMediaType(p.ContentType)
+		if mediaType == "multipart/form-data" && params["boundary"] != "" {
+			// multipart 流式解析：文件内容不落内存，仅计 part 元数据与大小
+			p.parseMultipart(r.Body, params["boundary"], limits)
+		} else {
+			limit := int64(limits.MaxBodyParseBytes) + 1
+			if limit < 2 {
+				limit = 2
 			}
-			if sample > len(raw) {
-				sample = len(raw)
+			raw, err := io.ReadAll(io.LimitReader(r.Body, limit))
+			if err != nil && err != io.EOF {
+				return p, err
 			}
-			// keep only sample for type sniffing; do not full-parse oversized bodies
-			raw = raw[:sample]
-		}
-		p.BodySize = len(raw)
-		p.BodyHash = shortHash(raw)
-		ct := strings.ToLower(p.ContentType)
-		if !p.BodyTruncated && (strings.Contains(ct, "application/json") || looksLikeJSON(raw)) {
-			p.IsJSON = true
-			extractJSONFields(raw, "", p, limits)
-		} else if p.BodyTruncated && (strings.Contains(ct, "application/json") || looksLikeJSON(raw)) {
-			p.IsJSON = true
-			// truncated: skip full field walk to avoid partial schema pollution
+			_ = r.Body.Close()
+			if len(raw) > limits.MaxBodyParseBytes {
+				p.BodyTruncated = true
+				sample := limits.MaxBodySampleBytes
+				if sample <= 0 {
+					sample = limits.MaxBodyParseBytes
+				}
+				if sample > len(raw) {
+					sample = len(raw)
+				}
+				// keep only sample for type sniffing; do not full-parse oversized bodies
+				raw = raw[:sample]
+			}
+			p.BodySize = len(raw)
+			p.BodyHash = shortHash(raw)
+			ct := strings.ToLower(p.ContentType)
+			isJSONBody := strings.Contains(ct, "application/json") || looksLikeJSON(raw)
+			switch {
+			case p.BodyTruncated:
+				// truncated: skip full field walk to avoid partial schema pollution
+				if isJSONBody {
+					p.IsJSON = true
+				}
+			case mediaType == "application/graphql":
+				// 原始 GraphQL 查询文档（优先于 JSON 嗅探："{" 开头的查询不是 JSON）
+				p.extractGraphQLQuery(string(raw))
+			case isJSONBody:
+				p.IsJSON = true
+				extractJSONFields(raw, "", p, limits)
+				p.extractGraphQLJSON(raw)
+			case mediaType == "application/x-www-form-urlencoded":
+				p.extractFormFields(raw, limits)
+			case isXMLMediaType(mediaType):
+				p.extractXMLFields(raw, limits)
+			}
 		}
 	}
 
@@ -113,6 +159,37 @@ func ParseRequest(r *http.Request, ctx *dsctx.RequestContext) (*Parsed, error) {
 		ctx.RequestBodyHash = p.BodyHash
 		ctx.BodyTruncated = p.BodyTruncated
 		ctx.FieldCountCapped = p.FieldCapped
+		// 解析产物经 Extensions 写入（键固定，值已脱敏；见 Ext* 常量）
+		if len(p.FormFields) > 0 {
+			ctx.SetExtension(ExtFormFields, p.FormFields)
+		}
+		if len(p.XMLFields) > 0 {
+			ctx.SetExtension(ExtXMLFields, p.XMLFields)
+		}
+		if len(p.MultipartParts) > 0 {
+			ctx.SetExtension(ExtMultipartParts, p.MultipartParts)
+		}
+		if p.HasFiles {
+			ctx.SetExtension(ExtHasFiles, true)
+		}
+		if p.GraphQLOperation != "" {
+			ctx.SetExtension(ExtGraphQLOperation, p.GraphQLOperation)
+		}
+		if p.GraphQLOperationName != "" {
+			ctx.SetExtension(ExtGraphQLOperationName, p.GraphQLOperationName)
+		}
+		if len(p.GraphQLVariables) > 0 {
+			ctx.SetExtension(ExtGraphQLVariables, p.GraphQLVariables)
+		}
+		if p.MultipartCapped {
+			ctx.SetExtension(ExtMultipartCapped, true)
+		}
+		if p.XMLTruncated {
+			ctx.SetExtension(ExtXMLTruncated, true)
+		}
+		if p.XMLDTDBlocked {
+			ctx.SetExtension(ExtXMLDTDBlocked, true)
+		}
 		if id := r.Header.Get("X-Request-Id"); id != "" && ctx.RequestID == "" {
 			ctx.RequestID = id
 		}
@@ -205,4 +282,18 @@ func formatHex(h uint64) string {
 		h >>= 4
 	}
 	return string(buf)
+}
+
+// splitMediaType 拆分 Content-Type 主类型与参数；头部畸形时降级为 ';' 前缀（小写）。
+func splitMediaType(ct string) (string, map[string]string) {
+	mt, params, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])), nil
+	}
+	return mt, params
+}
+
+// isXMLMediaType 匹配 application/xml、text/xml 及 +xml 后缀类型（如 application/soap+xml）。
+func isXMLMediaType(mt string) bool {
+	return mt == "application/xml" || mt == "text/xml" || strings.HasSuffix(mt, "+xml")
 }
