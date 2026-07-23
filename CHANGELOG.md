@@ -24,6 +24,12 @@
 - 前端 dev 代理前缀 `/api` 与阶段8 页面路由冲突导致整页刷新 404，收敛为 `/api/v1`。
 - stage5 网关测试的多级代理用例改为按 Docker 子网动态取可信跳地址。
 
+### 新增（阶段8 增补：站点与目录组织）
+
+- 接口端点资产支持站点归属：发现链路经 `app_code`/Host 解析回填 `application_id`/`domain_id`（缓存解析器，人工改属不被命中覆盖）；新增目录维度（`directory_path` = 归一化路径去掉最后一段，迁移 000020 回填）。
+- 新接口 `GET /api-security/endpoints/site-summary`（站点计数+未归属）与 `GET /api-security/endpoints/directory-tree`（目录聚合）；列表接口新增 `directory_path` 前缀与 `unassigned` 过滤并带出站点/目录列。
+- 端点资产页改为左右两栏：左侧站点列表（计数角标）与目录树，右侧表格新增目录/站点列与可关闭过滤标签。
+
 
 ## [2.1.0] - 2026-07-23
 
