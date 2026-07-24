@@ -516,6 +516,9 @@ export const aiPromptsApi = {
     content: string
     change_summary?: string
   }) => request<{ prompt: AiPrompt; version: AiPromptVersion }>('/ai/prompts', { method: 'POST', body }),
+  rename: (id: string, body: { name: string }) =>
+    request<{ prompt: AiPrompt }>(`/ai/prompts/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => request<{ message: string }>(`/ai/prompts/${id}`, { method: 'DELETE' }),
   listVersions: async (id: string) =>
     (await request<{ items: AiPromptVersion[] }>(`/ai/prompts/${id}/versions`)).items ?? [],
   createVersion: (id: string, body: { content: string; change_summary?: string }) =>

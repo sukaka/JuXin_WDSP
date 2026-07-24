@@ -332,17 +332,21 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
   )
 }
 
-/** Prompt 管理：Prompt 列表 + 新建 + 版本管理抽屉 */
+/** Prompt 管理：Prompt 列表 + 新建 + 编辑/删除 + 版本管理抽屉 */
 export default function AiPromptsPage() {
-  const { message } = AntdApp.useApp()
+  const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canCreate = hasPermission(permissions, 'ai.prompts.create')
+  const canEdit = hasPermission(permissions, 'ai.prompts.edit')
+  const canDelete = hasPermission(permissions, 'ai.prompts.delete')
 
   const [promptType, setPromptType] = useState<string | undefined>(undefined)
   const [createOpen, setCreateOpen] = useState(false)
+  const [editing, setEditing] = useState<AiPrompt | null>(null)
   const [versionsPrompt, setVersionsPrompt] = useState<AiPrompt | null>(null)
   const [form] = Form.useForm<CreateFormValues>()
+  const [editForm] = Form.useForm<{ name: string }>()
 
   const listQuery = useQuery({
     queryKey: ['ai-prompts', promptType],
@@ -368,6 +372,38 @@ export default function AiPromptsPage() {
       message.error(e instanceof ApiError ? e.message : '操作失败')
     },
   })
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) => aiPromptsApi.rename(id, { name }),
+    onSuccess: () => {
+      message.success('名称已更新')
+      setEditing(null)
+      void queryClient.invalidateQueries({ queryKey: ['ai-prompts'] })
+    },
+    onError: (e) => {
+      message.error(e instanceof ApiError ? e.message : '重命名失败')
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => aiPromptsApi.remove(id),
+    onSuccess: () => {
+      message.success('提示词已删除')
+      void queryClient.invalidateQueries({ queryKey: ['ai-prompts'] })
+    },
+    onError: (e) => {
+      message.error(e instanceof ApiError ? e.message : '删除失败')
+    },
+  })
+
+  const confirmDelete = (record: AiPrompt) => {
+    modal.confirm({
+      title: '删除确认',
+      content: `确定删除提示词「${record.name}」（${record.code}）吗？其全部版本将一并删除，不可恢复。`,
+      okButtonProps: { danger: true },
+      onOk: () => deleteMutation.mutate(record.id),
+    })
+  }
 
   const columns: ColumnsType<AiPrompt> = [
     {
@@ -406,12 +442,31 @@ export default function AiPromptsPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 80,
+      width: 190,
       fixed: 'right',
       render: (_, record) => (
-        <Button type="link" size="small" onClick={() => setVersionsPrompt(record)}>
-          版本
-        </Button>
+        <Space size={0}>
+          <Button type="link" size="small" onClick={() => setVersionsPrompt(record)}>
+            版本
+          </Button>
+          {canEdit && (
+            <Button
+              type="link"
+              size="small"
+              onClick={() => {
+                setEditing(record)
+                editForm.setFieldsValue({ name: record.name })
+              }}
+            >
+              编辑
+            </Button>
+          )}
+          {canDelete && record.status !== 'ACTIVE' && (
+            <Button type="link" size="small" danger onClick={() => confirmDelete(record)}>
+              删除
+            </Button>
+          )}
+        </Space>
       ),
     },
   ]
@@ -502,6 +557,35 @@ export default function AiPromptsPage() {
           >
             <Input placeholder="可选" />
           </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`编辑提示词 - ${editing?.code ?? ''}`}
+        open={editing !== null}
+        onCancel={() => setEditing(null)}
+        onOk={() => editForm.submit()}
+        confirmLoading={renameMutation.isPending}
+        destroyOnHidden
+      >
+        <Form<{ name: string }>
+          form={editForm}
+          layout="vertical"
+          onFinish={(v) => editing && renameMutation.mutate({ id: editing.id, name: v.name })}
+        >
+          <Form.Item
+            name="name"
+            label="名称"
+            rules={[
+              { required: true, message: '请输入名称' },
+              { max: 100, message: '不超过 100 个字符' },
+            ]}
+          >
+            <Input placeholder="提示词名称" />
+          </Form.Item>
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+            编码与类型不可修改；内容修改请通过「版本」新建版本后发布。
+          </Typography.Paragraph>
         </Form>
       </Modal>
 

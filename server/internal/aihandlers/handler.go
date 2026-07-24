@@ -135,6 +135,8 @@ func (d *Deps) RegisterRoutes(mux *http.ServeMux, authChain func(http.Handler) h
 	// ---- Prompt 管理 ----
 	mux.Handle("GET /api/v1/ai/prompts", authChain(rp("ai.prompts.read")(http.HandlerFunc(d.PromptList))))
 	mux.Handle("POST /api/v1/ai/prompts", authChain(rp("ai.prompts.create")(http.HandlerFunc(d.PromptCreate))))
+	mux.Handle("PATCH /api/v1/ai/prompts/{id}", authChain(rp("ai.prompts.edit")(http.HandlerFunc(d.PromptRename))))
+	mux.Handle("DELETE /api/v1/ai/prompts/{id}", authChain(rp("ai.prompts.delete")(http.HandlerFunc(d.PromptDelete))))
 	mux.Handle("GET /api/v1/ai/prompts/{id}/versions", authChain(rp("ai.prompts.read")(http.HandlerFunc(d.PromptVersionList))))
 	mux.Handle("POST /api/v1/ai/prompts/{id}/versions", authChain(rp("ai.prompts.create")(http.HandlerFunc(d.PromptVersionCreate))))
 	mux.Handle("GET /api/v1/ai/prompts/{id}/diff", authChain(rp("ai.prompts.read")(http.HandlerFunc(d.PromptDiff))))
