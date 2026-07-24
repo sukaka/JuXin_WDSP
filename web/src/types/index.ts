@@ -1470,3 +1470,57 @@ export interface DeliveryCheckDetail {
   check: DeliveryCheckItem
   results?: DeliveryCheckResultItem[] | null
 }
+/** 自定义头修改规则（请求/返回通用） */
+export interface CustomHeaderRule {
+  name: string
+  method: 'set' | 'add' | 'delete'
+  value: string
+}
+
+/** 应用级 HTTP 头合规与代理配置（每应用一份）。
+ *  下划线请求头由网关内核（Caddy 2.11+，GHSA-f59h-q822-g45g）入口强制丢弃，
+ *  始终生效、不可配置，故无对应字段。 */
+export interface AppHeaderConfig {
+  server_action: 'keep' | 'hide' | 'replace'
+  server_value: string
+  x_author_action: 'keep' | 'hide' | 'replace'
+  x_author_value: string
+  x_powered_by_action: 'keep' | 'hide' | 'replace'
+  x_powered_by_value: string
+  x_frame_options: 'default' | 'inherit' | 'deny' | 'sameorigin' | 'allow_from'
+  x_frame_options_url: string
+  x_xss_protection: boolean
+  vary_user_agent: boolean
+  hsts_enabled: boolean
+  hsts_max_age: number
+  csp_mode: 'off' | 'preset' | 'custom'
+  csp_value: string
+  response_buffering: boolean
+  xff_overwrite: boolean
+  host_strip_port: boolean
+  accept_encoding_off: boolean
+  redirect_port_rewrite: boolean
+  custom_request_rules: CustomHeaderRule[]
+  custom_response_rules: CustomHeaderRule[]
+}
+
+/** 头合规配置查询返回：configured=false 时 config 为默认值（尚未落库） */
+export interface AppHeaderConfigResult {
+  configured: boolean
+  config: AppHeaderConfig
+  version?: number
+}
+
+/** 路径粒度转发规则 */
+export interface AppPathRoute {
+  id: string
+  application_id: string
+  path_prefix: string
+  upstream_scheme: 'http' | 'https'
+  upstream_host: string
+  upstream_port: number
+  strip_prefix: boolean
+  priority: number
+  status: 'ENABLED' | 'DISABLED'
+  description: string
+  created_at: string

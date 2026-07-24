@@ -23,6 +23,7 @@ import { APP_STATUS_META, DEPLOYMENT_STATUS_META } from '../../utils/stage3'
 import DomainsTab from './detail/DomainsTab'
 import UpstreamsTab from './detail/UpstreamsTab'
 import CertificatesTab from './detail/CertificatesTab'
+import HeaderProxyTab from './detail/HeaderProxyTab'
 
 export default function ApplicationDetailPage() {
   const { id = '' } = useParams()
@@ -142,6 +143,11 @@ export default function ApplicationDetailPage() {
               key: 'upstreams',
               label: `源站管理 (${app.upstreams.length})`,
               children: <UpstreamsTab appId={app.id} />,
+            },
+            {
+              key: 'header-proxy',
+              label: '代理与头合规',
+              children: <HeaderProxyTab appId={app.id} />,
             },
             {
               key: 'certificates',

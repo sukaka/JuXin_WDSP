@@ -29,6 +29,8 @@ tags:
     description: 个人中心
   - name: api-security
     description: API动态防护（阶段8/WDSP：端点资产、模型版本、参数、分类图谱、规范导入、风险与运行时）
+  - name: applications
+    description: Web应用管理（含应用级 HTTP 头合规与代理配置、路径粒度转发）
 
 paths:
   /health:
@@ -1708,6 +1710,177 @@ paths:
         '403': { description: 无权限 }
         '503': { description: 发布能力未配置 }
 
+  /applications/{id}/header-config:
+    get:
+      summary: 查询应用头合规与代理配置
+      description: 返回应用已存储的头合规与代理配置；未配置时返回默认对象且 configured=false、version=0（默认行为等价于既有静态头版本）。需要权限 applications.read
+      tags: [applications]
+      operationId: getAppHeaderConfig
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 头合规配置（data 含 config / configured / version / updated_at）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      config: { $ref: '#/components/schemas/AppHeaderConfig' }
+                      configured: { type: boolean, description: 是否已存储配置（false 时 config 为默认对象） }
+                      version: { type: integer, description: 乐观锁版本（未配置时为 0） }
+                      updated_at: { type: string, format: date-time }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的应用ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+    put:
+      summary: 保存应用头合规与代理配置
+      description: 全量 upsert（body 为完整配置 + version）。version=0 表示首次创建（已存在报 409）；version>0 按乐观锁更新（记录不存在或版本不匹配报 409）。需要权限 applications.update
+      tags: [applications]
+      operationId: putAppHeaderConfig
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/AppHeaderConfig'
+                - type: object
+                  required: [version]
+                  properties:
+                    version: { type: integer, description: 乐观锁版本（0=创建） }
+      responses:
+        '200':
+          description: 保存成功（data 含 config / configured=true / 新 version）
+        '400': { description: 校验失败（action/x_frame_options/csp_mode/hsts_max_age/自定义规则非法） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 应用不存在 }
+        '409': { description: 版本冲突（配置已被其他人修改） }
+
+  /applications/{id}/path-routes:
+    get:
+      summary: 应用路径转发分页列表
+      description: 按 priority 升序、path_prefix 字典序返回应用全部路径转发规则。需要权限 applications.read
+      tags: [applications]
+      operationId: listAppPathRoutes
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页路径转发列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/AppPathRouteRecord' }
+                      page: { type: integer }
+                      page_size: { type: integer }
+                      total: { type: integer }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的应用ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+    post:
+      summary: 创建应用路径转发
+      description: 新增路径前缀 → 指定源站的转发规则（缺省 scheme=http、status=ENABLED、priority=100）。需要权限 applications.update
+      tags: [applications]
+      operationId: createAppPathRoute
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path_prefix, upstream_host, upstream_port]
+              properties:
+                path_prefix: { type: string, description: "以 / 开头，不含 ?、#、.." }
+                upstream_scheme: { type: string, enum: [http, https], default: http }
+                upstream_host: { type: string }
+                upstream_port: { type: integer, minimum: 1, maximum: 65535 }
+                strip_prefix: { type: boolean, default: false, description: true=剥离前缀转发 }
+                priority: { type: integer, default: 100, description: 数值小者优先；同优先级长前缀优先 }
+                status: { type: string, enum: [ENABLED, DISABLED], default: ENABLED }
+                description: { type: string, maxLength: 255 }
+      responses:
+        '200':
+          description: 创建成功（data.route 为完整记录）
+        '400': { description: 校验失败（路径前缀/端口/scheme/status 非法） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 应用不存在 }
+        '409': { description: 相同路径前缀与源站的规则已存在 }
+
+  /applications/{id}/path-routes/{rid}:
+    patch:
+      summary: 更新应用路径转发
+      description: 全量替换路径转发规则 + version 乐观锁（body 携带当前 version）。需要权限 applications.update
+      tags: [applications]
+      operationId: updateAppPathRoute
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: rid, in: path, required: true, schema: { type: string, format: uuid }, description: 路径转发ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path_prefix, upstream_host, upstream_port, version]
+              properties:
+                path_prefix: { type: string, description: "以 / 开头，不含 ?、#、.." }
+                upstream_scheme: { type: string, enum: [http, https], default: http }
+                upstream_host: { type: string }
+                upstream_port: { type: integer, minimum: 1, maximum: 65535 }
+                strip_prefix: { type: boolean, default: false }
+                priority: { type: integer, default: 100 }
+                status: { type: string, enum: [ENABLED, DISABLED], default: ENABLED }
+                description: { type: string, maxLength: 255 }
+                version: { type: integer, description: 乐观锁版本 }
+      responses:
+        '200':
+          description: 更新成功（data.route 为新版本记录）
+        '400': { description: 校验失败 }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 路径转发不存在 }
+        '409': { description: 版本冲突或相同路径前缀与源站的规则已存在 }
+    delete:
+      summary: 删除应用路径转发
+      description: 删除指定路径转发规则。需要权限 applications.update
+      tags: [applications]
+      operationId: deleteAppPathRoute
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: rid, in: path, required: true, schema: { type: string, format: uuid }, description: 路径转发ID }
+      responses:
+        '200':
+          description: 删除成功
+        '400': { description: 无效的应用ID或路径转发ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 路径转发不存在 }
+
 components:
   securitySchemes:
     cookieAuth:
@@ -1735,6 +1908,62 @@ components:
         message: { type: string }
         details: {}
         request_id: { type: string, format: uuid }
+
+    AppHeaderRule:
+      type: object
+      required: [name, method]
+      properties:
+        name: { type: string, description: HTTP 头字段名（RFC 7230 token） }
+        method: { type: string, enum: [set, add, delete], description: delete 时 value 必须为空 }
+        value: { type: string }
+
+    AppHeaderConfig:
+      type: object
+      description: 应用级 HTTP 头合规与代理配置（字段与 app_header_configs 表一致）。下划线请求头由网关内核（Caddy 2.11+，GHSA-f59h-q822-g45g）入口强制丢弃，始终生效、不可配置。
+      properties:
+        server_action: { type: string, enum: [keep, hide, replace] }
+        server_value: { type: string, maxLength: 255 }
+        x_author_action: { type: string, enum: [keep, hide, replace] }
+        x_author_value: { type: string, maxLength: 255 }
+        x_powered_by_action: { type: string, enum: [keep, hide, replace] }
+        x_powered_by_value: { type: string, maxLength: 255 }
+        x_frame_options: { type: string, enum: [default, inherit, deny, sameorigin, allow_from], description: allow_from 必须带 x_frame_options_url }
+        x_frame_options_url: { type: string, maxLength: 512 }
+        x_xss_protection: { type: boolean }
+        vary_user_agent: { type: boolean }
+        hsts_enabled: { type: boolean }
+        hsts_max_age: { type: integer, minimum: 1 }
+        csp_mode: { type: string, enum: [off, preset, custom], description: custom 必须带 csp_value }
+        csp_value: { type: string }
+        response_buffering: { type: boolean, description: 响应缓冲（flush_interval=-1） }
+        xff_overwrite: { type: boolean, description: X-Forwarded-For 上一跳覆盖 }
+        host_strip_port: { type: boolean, description: Host 不包含端口 }
+        accept_encoding_off: { type: boolean, description: 关闭压缩协商 }
+        redirect_port_rewrite: { type: boolean, description: 302 Location 端口改写为接入端口 }
+        custom_request_rules:
+          type: array
+          items: { $ref: '#/components/schemas/AppHeaderRule' }
+        custom_response_rules:
+          type: array
+          items: { $ref: '#/components/schemas/AppHeaderRule' }
+
+    AppPathRouteRecord:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        path_prefix: { type: string, example: /api }
+        upstream_scheme: { type: string, enum: [http, https] }
+        upstream_host: { type: string }
+        upstream_port: { type: integer }
+        strip_prefix: { type: boolean }
+        priority: { type: integer }
+        status: { type: string, enum: [ENABLED, DISABLED] }
+        description: { type: string }
+        created_by: { type: string, format: uuid, description: 可空 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
 
     ApiEndpoint:
       type: object

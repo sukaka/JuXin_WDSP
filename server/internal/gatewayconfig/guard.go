@@ -95,7 +95,8 @@ type GuardConfig struct {
 }
 
 // buildGuardHandler 构建单应用路由的 jiuzhang_guard 处理器 JSON。
-func buildGuardHandler(g *GuardConfig, app AppData) mapT {
+// publicPort 为路由所在监听的接入端口（302 Location 端口改写目标；0 表示不改写）。
+func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 	h := mapT{
 		"handler":             "jiuzhang_guard",
 		"app_id":              app.AppID,
@@ -157,6 +158,11 @@ func buildGuardHandler(g *GuardConfig, app AppData) mapT {
 		if len(g.APIKnownEndpoints) > 0 {
 			h["api_known_endpoints"] = g.APIKnownEndpoints
 		}
+	}
+	// 头合规：302 Location 端口改写（来自应用头合规配置）。
+	// 注：下划线请求头由 Caddy 内核入口强制丢弃（GHSA-f59h-q822-g45g），无需下发开关。
+	if app.HeaderConfig != nil && app.HeaderConfig.RedirectPortRewrite && publicPort > 0 {
+		h["redirect_port_rewrite"] = publicPort
 	}
 	return h
 }

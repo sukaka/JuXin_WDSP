@@ -54,6 +54,10 @@ type AppData struct {
 	OutboundThreshold int
 	// RuleOverrideSecLang 本应用生效的规则覆盖 SecLang（DISABLE → ctl:ruleRemoveById，置于 CRS 前）
 	RuleOverrideSecLang []string
+	// HeaderConfig 头合规与代理配置（nil 时使用默认静态头行为）
+	HeaderConfig *AppHeaderConfig
+	// PathRoutes 路径粒度转发（ENABLED 且校验通过的条目）
+	PathRoutes []AppPathRoute
 }
 
 // Generated 是生成结果。
@@ -151,15 +155,13 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 		for _, d := range app.Domains {
 			hosts := []string{d.NormalizedHostname}
 			// 泛域名 Caddy 用 *.example.com 形式（Caddy 支持通配符 host matcher）
-			handles := buildHandles(in, app, d)
-
-			route := mapT{
-				"match":  []interface{}{mapT{"host": hosts}},
-				"handle": handles,
-			}
+			route := mapT{}
 			if d.HTTPEnabled && d.HTTPPort != nil {
 				addr := fmt.Sprintf(":%d", *d.HTTPPort)
-				r := route
+				r := mapT{
+					"match":  []interface{}{mapT{"host": hosts}},
+					"handle": buildHandles(in, app, d, *d.HTTPPort),
+				}
 				// HTTP 跳 HTTPS：仅返回重定向
 				if d.RedirectHTTPToHTTPS && d.HTTPSEnabled {
 					r = mapT{
@@ -170,10 +172,16 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 						},
 					}
 				}
+				httpServers[addr] = append(httpServers[addr], pathRouteEntries(in, app, hosts, *d.HTTPPort)...)
 				httpServers[addr] = append(httpServers[addr], routeEntry{appCode: app.Code, route: r})
 			}
 			if d.HTTPSEnabled && d.HTTPSPort != nil {
 				addr := fmt.Sprintf(":%d", *d.HTTPSPort)
+				route = mapT{
+					"match":  []interface{}{mapT{"host": hosts}},
+					"handle": buildHandles(in, app, d, *d.HTTPSPort),
+				}
+				httpsServers[addr] = append(httpsServers[addr], pathRouteEntries(in, app, hosts, *d.HTTPSPort)...)
 				httpsServers[addr] = append(httpsServers[addr], routeEntry{appCode: app.Code, route: route})
 			}
 		}
@@ -186,8 +194,8 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 	// HTTP servers
 	for _, addr := range sortedKeys(httpServers) {
 		entries := httpServers[addr]
-		// 路由按应用编码排序（确定性）
-		sort.Slice(entries, func(i, j int) bool { return entries[i].appCode < entries[j].appCode })
+		// 路由按应用编码排序（确定性）；stable 保持同应用内路径转发先于默认路由
+		sort.SliceStable(entries, func(i, j int) bool { return entries[i].appCode < entries[j].appCode })
 		var routes []interface{}
 		for _, e := range entries {
 			routes = append(routes, e.route)
@@ -204,7 +212,7 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 	// HTTPS servers（带证书）
 	for _, addr := range sortedKeys(httpsServers) {
 		entries := httpsServers[addr]
-		sort.Slice(entries, func(i, j int) bool { return entries[i].appCode < entries[j].appCode })
+		sort.SliceStable(entries, func(i, j int) bool { return entries[i].appCode < entries[j].appCode })
 		var routes []interface{}
 		for _, e := range entries {
 			routes = append(routes, e.route)
@@ -255,50 +263,10 @@ func buildTLSPolicies(in GenerateInput) []interface{} {
 }
 
 // buildHandles 构建请求处理链：RequestID → WAF → reverse_proxy → 错误处理。
-func buildHandles(in GenerateInput, app AppData, d applications.Domain) []interface{} {
-	var handles []interface{}
-
-	// 1. Request ID（覆盖客户端传入）
-	handles = append(handles, mapT{
-		"handler": "headers",
-		"request": mapT{"set": mapT{"X-Request-Id": []string{"{http.request.uuid}"}},
-			"delete": []string{}},
-	})
-
-	// 1.5 阶段5：访问控制与CC防护（真实IP→保护地址→黑白名单→临时封禁→CC，位于 WAF 之前）
-	if in.Guard != nil {
-		handles = append(handles, buildGuardHandler(in.Guard, app))
-	}
-
-	// 2. WAF（按防护模式与策略参数，含例外规则）
-	ruleEngine := modeToRuleEngine[app.ProtectionMode]
-	if ruleEngine == "" {
-		ruleEngine = "DetectionOnly"
-	}
-	directives := buildWAFDirectivesWithPolicy(ruleEngine, app, in.Exceptions, in.CustomRules, app.RuleOverrideSecLang)
-	handles = append(handles, mapT{
-		"handler":    "waf",
-		"directives": directives,
-	})
-
-	// 3. 安全响应头
-	handles = append(handles, mapT{
-		"handler": "headers",
-		"response": mapT{"set": mapT{
-			"X-Content-Type-Options": []string{"nosniff"},
-			"X-Frame-Options":        []string{"DENY"},
-			"Referrer-Policy":        []string{"no-referrer"},
-		}, "delete": []string{"Server"}},
-	})
-
-	// 4. 反向代理
-	proxy := buildReverseProxy(app.Upstreams)
-	handles = append(handles, proxy)
-
-	// 5. 错误处理（403 → 阻断页面）
-	// errors 在 server 级别配置，这里不重复（见 server errors 配置）
-
-	return handles
+// publicPort 为路由所在监听的接入端口（302 Location 端口改写目标）。
+func buildHandles(in GenerateInput, app AppData, d applications.Domain, publicPort int) []interface{} {
+	proxy := applyProxyOptions(buildReverseProxy(app.Upstreams), app.HeaderConfig)
+	return buildChainHandles(in, app, proxy, publicPort)
 }
 
 // buildWAFDirectives 构建 WAF SecLang 指令（固定加载顺序）。

@@ -31,6 +31,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/apimodels"
 	"github.com/jiuzhang-waf/server/internal/apisecurity"
+	"github.com/jiuzhang-waf/server/internal/appconfigs"
 	"github.com/jiuzhang-waf/server/internal/applications"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/auth"
@@ -225,6 +226,8 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 		publisher.SetGuardProvider(guardProvider)
 		publisher.SetCustomRulesProvider(customRuleStore)
 		publisher.SetRuleOverridesProvider(ruleOverrideStore)
+		// 头合规与路径转发配置提供者（发布时随快照下发；DB 错误中止发布）
+		publisher.SetAppConfigsProvider(appconfigs.NewStore(db))
 		acVersionHandler.SetRollbackFunc(func(ctx context.Context, versionID uuid.UUID, requestedBy uuid.UUID, requestID string) (interface{}, error) {
 			return publisher.RollbackAccessControl(ctx, versionID, requestedBy, requestID)
 		})
@@ -495,6 +498,8 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 		mux.Handle("POST /api/v1/upstreams/{id}/enable", authz(middleware.RequirePermission("upstreams.update")(http.HandlerFunc(appHandler.EnableUpstream))))
 		mux.Handle("POST /api/v1/upstreams/{id}/disable", authz(middleware.RequirePermission("upstreams.update")(http.HandlerFunc(appHandler.DisableUpstream))))
 		mux.Handle("POST /api/v1/upstreams/test", authz(middleware.RequirePermission("upstreams.test")(http.HandlerFunc(upstreamTestHandler.Test))))
+		// 头合规与路径转发（站点级 HTTP 头合规 / HTTP 代理配置 / 路径粒度转发）
+		appconfigs.RegisterRoutes(mux, authz, appconfigs.NewHandler(appconfigs.NewStore(db), auditSvc))
 
 		// 证书
 		mux.Handle("GET /api/v1/certificates", authz(middleware.RequirePermission("certificates.read")(http.HandlerFunc(certHandler.List))))

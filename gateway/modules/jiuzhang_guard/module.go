@@ -3,6 +3,7 @@
 // 请求处理顺序：真实IP识别 → 保护地址 → 全局白 → 应用白 → 全局黑 → 应用黑
 // → 临时封禁 → CC限速 → API 动态防护管线（可选，默认关闭）→ 下一处理器（WAF）。
 // 白名单默认绕过黑名单与 CC，不绕过 WAF、API 动态防护与协议校验。
+// 注：下划线请求头由 Caddy 内核在处理器链之前强制丢弃（GHSA-f59h-q822-g45g），无需模块处理。
 package jiuzhang_guard
 
 import (
@@ -136,6 +137,11 @@ type Guard struct {
 
 	// 全量访问日志（二期）：默认关闭（nil 或 enabled=false 时零行为变化）
 	AccessLog *accessLogJSON `json:"access_log,omitempty"`
+
+	// HTTP 头合规与代理配置（阶段8；默认关闭，零行为变化）
+	// 注：下划线请求头由 Caddy 内核在处理器链之前强制丢弃（GHSA-f59h-q822-g45g），
+	// 模块无法观测也无需再拦截，故不提供配置项。
+	RedirectPortRewrite int `json:"redirect_port_rewrite,omitempty"` // 0=关闭；>0 改写 302 Location 显式端口为该值；80=剥离端口
 
 	// 运行时
 	logger    *zap.Logger
@@ -422,6 +428,9 @@ func (g *Guard) Validate() error {
 		default:
 			return fmt.Errorf("api_protection_mode must be OFF, OBSERVE or PROTECT")
 		}
+	}
+	if g.RedirectPortRewrite < 0 || g.RedirectPortRewrite > 65535 {
+		return fmt.Errorf("redirect_port_rewrite must be between 0 and 65535")
 	}
 	return nil
 }
