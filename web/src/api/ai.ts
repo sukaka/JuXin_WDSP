@@ -669,6 +669,123 @@ export const aiStatusApi = {
     request<{ enabled: boolean; degraded: boolean; message: string }>('/ai/status'),
 }
 
+/* ==================== AI 自动降噪 ==================== */
+
+/** 降噪簇（与 server/internal/ainoise.Cluster 对齐） */
+export interface AiNoiseCluster {
+  id: string
+  source: string // WAF / API
+  fingerprint_hash: string
+  application_id?: string | null
+  host: string
+  normalized_uri: string
+  rule_id?: number | null
+  detector_code: string
+  client_ip: string
+  event_count: number
+  first_seen: string
+  last_seen: string
+  status: string // ACTIVE / SUPPRESSED / RESOLVED
+  ai_verdict: string // TRUE_POSITIVE / LIKELY_FALSE_POSITIVE / UNKNOWN
+  ai_confidence?: number | null
+  ai_summary: string
+  created_at: string
+  updated_at: string
+}
+
+/** 降噪簇代表事件 */
+export interface AiNoiseClusterEvent {
+  event_id: string
+  source: string
+  is_representative: boolean
+  created_at: string
+}
+
+/** 降噪面板统计 */
+export interface AiNoiseStats {
+  active_clusters: number
+  folded_events: number
+  likely_false_positive_clusters: number
+  suppressed_clusters: number
+}
+
+/** 降噪扫描历史记录 */
+export interface AiNoiseSweepRun {
+  id: string
+  started_at: string
+  finished_at?: string | null
+  scanned_events: number
+  new_clusters: number
+  updated_clusters: number
+  llm_calls: number
+  tokens_used: number
+  status: string // SUCCESS / FAILED / PARTIAL
+  error: string
+}
+
+/** 手动触发扫描的同步返回 */
+export interface AiNoiseSweepResult {
+  started_at: string
+  finished_at: string
+  scanned_events: number
+  new_clusters: number
+  updated_clusters: number
+  llm_calls: number
+  tokens_used: number
+  recommendations: number
+  status: string
+  error?: string
+}
+
+/** 降噪设置（生效值，含默认回退） */
+export interface AiNoiseSettings {
+  enabled: boolean
+  interval_seconds: number
+  sweep_window_minutes: number
+  min_events_threshold: number
+  llm_verdict_enabled: boolean
+}
+
+export interface AiNoiseClusterListParams {
+  page: number
+  page_size: number
+  source?: string
+  status?: string
+  verdict?: string
+  start_time?: string
+  end_time?: string
+}
+
+/** AI 自动降噪（ai.noise_reduction.use / ai.noise_reduction.manage） */
+export const aiNoiseApi = {
+  listClusters: async (params: AiNoiseClusterListParams) => {
+    const data = await request<PageResult<AiNoiseCluster>>('/ai/noise/clusters', {
+      query: { ...params },
+    })
+    return { ...data, items: data.items ?? [] }
+  },
+  getCluster: async (id: string) =>
+    request<{ cluster: AiNoiseCluster; events: AiNoiseClusterEvent[] }>(
+      `/ai/noise/clusters/${id}`,
+    ),
+  stats: () => request<AiNoiseStats>('/ai/noise/stats'),
+  suppressCluster: (id: string) =>
+    request<AiNoiseCluster>(`/ai/noise/clusters/${id}/suppress`, { method: 'POST' }),
+  resolveCluster: (id: string) =>
+    request<AiNoiseCluster>(`/ai/noise/clusters/${id}/resolve`, { method: 'POST' }),
+  /** 手动触发一次降噪扫描（manage 权限，同步返回统计） */
+  triggerSweep: () => request<AiNoiseSweepResult>('/ai/noise/sweeps', { method: 'POST' }),
+  listSweeps: async (params: { page: number; page_size: number }) => {
+    const data = await request<PageResult<AiNoiseSweepRun>>('/ai/noise/sweeps', {
+      query: { ...params },
+    })
+    return { ...data, items: data.items ?? [] }
+  },
+  getSettings: () => request<AiNoiseSettings>('/ai/noise/settings'),
+  putSettings: (body: Partial<AiNoiseSettings>) =>
+    request<AiNoiseSettings>('/ai/noise/settings', { method: 'PUT', body }),
+}
+
 /* ==================== 质量评估 ==================== */
 
 export interface AiEvalCase {

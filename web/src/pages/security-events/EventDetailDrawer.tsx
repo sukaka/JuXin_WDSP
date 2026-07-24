@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import type { CSSProperties } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -84,6 +85,59 @@ function MatchCard({ match }: { match: SecurityEventMatch }) {
   )
 }
 
+const preStyle: CSSProperties = {
+  margin: '4px 0 0',
+  background: '#f5f5f5',
+  padding: 8,
+  borderRadius: 4,
+  fontSize: 12,
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-all',
+  maxHeight: 240,
+  overflow: 'auto',
+}
+
+/** 头体留痕渲染：全部按纯文本渲染（React 默认转义），防 XSS */
+function PayloadSection({
+  title,
+  headers,
+  body,
+  truncated,
+}: {
+  title: string
+  headers?: Record<string, string[]> | null
+  body?: string
+  truncated?: boolean
+}) {
+  const headerEntries = Object.entries(headers ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <Typography.Text strong>{title}</Typography.Text>
+      {truncated && (
+        <Tag color="orange" style={{ marginLeft: 8 }}>
+          体已截断（64KB）
+        </Tag>
+      )}
+      {headerEntries.length === 0 && !body ? (
+        <div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            无记录
+          </Typography.Text>
+        </div>
+      ) : (
+        <>
+          {headerEntries.length > 0 && (
+            <pre style={preStyle}>
+              {headerEntries.map(([k, vs]) => `${k}: ${(vs ?? []).join(', ')}`).join('\n')}
+            </pre>
+          )}
+          {body && <pre style={preStyle}>{body}</pre>}
+        </>
+      )}
+    </div>
+  )
+}
+
 export default function EventDetailDrawer({
   eventId,
   onClose,
@@ -100,6 +154,7 @@ export default function EventDetailDrawer({
   const canManageExceptions = hasPermission(permissions, 'exceptions.manage')
   const canAiAnalyze = hasPermission(permissions, 'ai.event_analysis.use')
   const canAiFp = hasPermission(permissions, 'ai.false_positive_analysis.use')
+  const canNoiseReduction = hasPermission(permissions, 'ai.noise_reduction.use')
   const [noteText, setNoteText] = useState('')
 
   const detailQuery = useQuery({
@@ -207,7 +262,7 @@ export default function EventDetailDrawer({
         />
       ) : evt ? (
         <>
-          {(canAiAnalyze || canAiFp) && eventId && (
+          {(canAiAnalyze || canAiFp || canNoiseReduction) && eventId && (
             <Space style={{ marginBottom: 16 }} wrap>
               {canAiAnalyze && (
                 <Link to={`/ai/event-analysis?event_id=${encodeURIComponent(eventId)}`} onClick={onClose}>
@@ -220,6 +275,11 @@ export default function EventDetailDrawer({
                   onClick={onClose}
                 >
                   <Button>AI 误报研判</Button>
+                </Link>
+              )}
+              {canNoiseReduction && (
+                <Link to="/ai/noise-reduction" onClick={onClose}>
+                  <Button>查看降噪簇</Button>
                 </Link>
               )}
             </Space>
@@ -279,6 +339,26 @@ export default function EventDetailDrawer({
               {evt.referer_summary || '-'}
             </Descriptions.Item>
           </Descriptions>
+
+          <Typography.Title level={5}>请求/响应留痕</Typography.Title>
+          <PayloadSection
+            title="请求头"
+            headers={evt.request_headers}
+          />
+          <PayloadSection
+            title="请求体"
+            body={evt.request_body}
+            truncated={evt.request_body_truncated}
+          />
+          <PayloadSection
+            title="响应头"
+            headers={evt.response_headers}
+          />
+          <PayloadSection
+            title="响应体"
+            body={evt.response_body}
+            truncated={evt.response_body_truncated}
+          />
 
           <Typography.Title level={5}>规则匹配（{detail?.matches.length ?? 0}）</Typography.Title>
           {(detail?.matches ?? []).length === 0 ? (

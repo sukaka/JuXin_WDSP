@@ -47,9 +47,12 @@ type auditEntry struct {
 			Protocol string              `json:"protocol"`
 			URI      string              `json:"uri"`
 			Headers  map[string][]string `json:"headers"`
+			Body     string              `json:"body"`
 		} `json:"request"`
 		Response struct {
-			Status int `json:"status"`
+			Status  int                 `json:"status"`
+			Headers map[string][]string `json:"headers"`
+			Body    string              `json:"body"`
 		} `json:"response"`
 		Producer struct {
 			RuleEngine string   `json:"rule_engine"`
@@ -64,28 +67,34 @@ type auditEntry struct {
 
 // NormalizedEvent 是标准化后的安全事件。
 type NormalizedEvent struct {
-	RequestID      string
-	OccurredAt     time.Time
-	ClientIP       string
-	ClientPort     int
-	Method         string
-	URI            string
-	Path           string
-	QuerySummary   string
-	HTTPVersion    string
-	ContentType    string
-	UserAgent      string
-	Referer        string
-	Host           string
-	AttackType     string
-	Severity       string
-	AnomalyScore   int
-	Action         string
-	ResponseStatus int
-	RuleEngine     string
-	GatewayNode    string
-	RawRef         string
-	Matches        []MatchInfo
+	RequestID             string
+	OccurredAt            time.Time
+	ClientIP              string
+	ClientPort            int
+	Method                string
+	URI                   string
+	Path                  string
+	QuerySummary          string
+	HTTPVersion           string
+	ContentType           string
+	UserAgent             string
+	Referer               string
+	Host                  string
+	AttackType            string
+	Severity              string
+	AnomalyScore          int
+	Action                string
+	ResponseStatus        int
+	RuleEngine            string
+	GatewayNode           string
+	RawRef                string
+	RequestHeaders        map[string][]string
+	RequestBody           string
+	RequestBodyTruncated  bool
+	ResponseHeaders       map[string][]string
+	ResponseBody          string
+	ResponseBodyTruncated bool
+	Matches               []MatchInfo
 }
 
 // MatchInfo 是规则匹配信息。
@@ -118,7 +127,18 @@ const (
 	maxMatchedDataLen = 128
 	maxUserAgentLen   = 256
 	maxURILen         = 2048
+	// maxBodyLen 是入库的请求/响应体最大长度（64KB），超出截断并打 truncated 标记
+	maxBodyLen = 65536
 )
+
+// 敏感请求/响应头：入库前掩码，防止凭据泄露（AGENTS.md 日志脱敏底线）
+var sensitiveHeaders = map[string]bool{
+	"authorization":       true,
+	"proxy-authorization": true,
+	"cookie":              true,
+	"set-cookie":          true,
+	"x-api-key":           true,
+}
 
 // ParseAuditLine 解析单行 Coraza 审计日志为标准化事件（脱敏）。
 func ParseAuditLine(line []byte, gatewayNode string) (*NormalizedEvent, error) {
@@ -160,6 +180,12 @@ func ParseAuditLine(line []byte, gatewayNode string) (*NormalizedEvent, error) {
 	evt.Referer = truncate(firstHeader(tx.Request.Headers, "referer"), maxUserAgentLen)
 	evt.ContentType = firstHeader(tx.Request.Headers, "content-type")
 	evt.Host = firstHeader(tx.Request.Headers, "host")
+
+	// 请求/响应头体留痕（敏感头掩码 + 64KB 截断），用于溯源取证
+	evt.RequestHeaders = maskHeaders(tx.Request.Headers)
+	evt.RequestBody, evt.RequestBodyTruncated = truncateBody(maskBody(tx.Request.Body))
+	evt.ResponseHeaders = maskHeaders(tx.Response.Headers)
+	evt.ResponseBody, evt.ResponseBodyTruncated = truncateBody(tx.Response.Body)
 
 	// 动作与状态
 	evt.Action = "OBSERVE"
@@ -342,6 +368,77 @@ func maskIP(ip string) string {
 		return addr.String()
 	}
 	return ip
+}
+
+// maskHeaders 返回敏感头掩码后的头部副本。
+func maskHeaders(headers map[string][]string) map[string][]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(headers))
+	for k, v := range headers {
+		if sensitiveHeaders[strings.ToLower(k)] {
+			masked := make([]string, len(v))
+			for i := range masked {
+				masked[i] = "masked"
+			}
+			out[k] = masked
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// truncateBody 截断头体到 maxBodyLen，返回截断标记。
+func truncateBody(body string) (string, bool) {
+	if len(body) > maxBodyLen {
+		return body[:maxBodyLen], true
+	}
+	return body, false
+}
+
+// maskBody 脱敏请求体中的敏感键值：表单 k=v、JSON "k":"v" / "k": "v" 两种形态。
+func maskBody(body string) string {
+	if body == "" {
+		return body
+	}
+	for name := range sensitiveParams {
+		// 表单形态 name=value（值到 & ; 空格 或结尾）
+		needle := name + "="
+		idx := strings.Index(strings.ToLower(body), needle)
+		for idx >= 0 {
+			start := idx + len(needle)
+			end := start
+			for end < len(body) && body[end] != '&' && body[end] != ';' && body[end] != ' ' {
+				end++
+			}
+			body = body[:start] + "masked" + body[end:]
+			next := strings.Index(strings.ToLower(body[start+len("masked"):]), needle)
+			if next < 0 {
+				break
+			}
+			idx = start + len("masked") + next
+		}
+		// JSON 形态 "name":"value" 或 "name": "value"
+		for _, pat := range []string{`"` + name + `":"`, `"` + name + `": "`} {
+			idx := strings.Index(strings.ToLower(body), pat)
+			for idx >= 0 {
+				start := idx + len(pat)
+				end := start
+				for end < len(body) && body[end] != '"' {
+					end++
+				}
+				body = body[:start] + "masked" + body[end:]
+				next := strings.Index(strings.ToLower(body[start+len("masked"):]), pat)
+				if next < 0 {
+					break
+				}
+				idx = start + len("masked") + next
+			}
+		}
+	}
+	return body
 }
 
 func truncate(s string, n int) string {

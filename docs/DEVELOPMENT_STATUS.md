@@ -298,6 +298,23 @@
 - [x] AI 模块 `AI_ENABLED` 独立启停；事件详情一键 AI
 - [x] 前端：助手/分析/画像/链/策略/报告/任务 + 管理面 + 质量评估页
 
+### AI 自动降噪（阶段7 增量，WAF + WDSP）
+
+详见 [AI_NOISE_REDUCTION_DESIGN.md](AI_NOISE_REDUCTION_DESIGN.md)。
+
+- [x] 确定性指纹聚类（sha256(source|host|normalized_uri|rule_id或detector_code|client_ip)；URI 归一化 数字→{n}、UUID→{uuid}、≥16位hex→{h}）：`server/internal/ainoise/`（fingerprint/source/store/mem_store/verdict/recommend/worker）
+- [x] 后台 worker（照搬 guardjanitor 模式：ticker + `SweepOnce` 可测；设置存 `system_settings` 组 `ai_noise`，每 tick 热读；仅 `cfg.AI.Enabled` 时启动，`StartStage6Workers` 中 `go Run`）
+- [x] 双事件源：WAF 读 `security_events`（窗口内 UNPROCESSED/ANALYZING）；WDSP（`APIDynamicProtectionEnabled()`）追加 `api_runtime_events`
+- [x] 可选 LLM 误报评分（standard 档、JSON 输出；失败降级 UNKNOWN 不致命；`llm_verdict_enabled` 默认 false 零 LLM 成本）
+- [x] DRAFT 降噪推荐（`ai_recommendations` 类型 NOISE_REDUCTION，同簇 DRAFT/PENDING_REVIEW 去重；不自动改事件处置、不自动封禁、不自动启用例外）
+- [x] 幂等 upsert（关联表 ON CONFLICT，窗口重叠重复扫描不重复计数）
+- [x] 接口 9 个端点 `/api/v1/ai/noise/*`（簇/统计/扫描历史/状态流转/设置；权限 `ai.noise_reduction.use` / `ai.noise_reduction.manage`；写操作落 ai_audit_records）：`server/internal/aihandlers/noise_handler.go`
+- [x] AI Tool 2 个（`noise_cluster.search` / `noise_cluster.get`，全部 READ_ONLY）：`server/internal/aitools/noise_tools.go`
+- [x] 迁移 `server/migrations/000021_ai_noise_reduction.up.sql`（3 张表 ai_noise_clusters / ai_noise_cluster_events / ai_noise_sweep_runs + 2 个权限点种子）
+- [x] 前端：自动降噪页 `web/src/pages/ai/noise-reduction/NoiseReductionPage.tsx`、`aiNoiseApi`（`web/src/api/ai.ts`）、路由 `/ai/noise-reduction`、菜单「智能安全运营→自动降噪」、事件详情抽屉「查看降噪簇」入口
+- [x] 测试：ainoise 5 个测试文件（fingerprint/store/worker/verdict/recommend）、aitools/noise_tools_test.go、aihandlers/noise_handler_test.go、前端 NoiseReductionPage.test.tsx + api/__tests__/ai-noise.test.ts
+- 遗留：迁移 000021 未在真实 PostgreSQL 实例执行过（仅经单元测试验证）；设置以字符串形式存 `system_settings`；API 源无处置状态过滤（`api_runtime_events` 无该列）
+
 ## 遗留问题
 
 1. 开发环境管理面使用 HTTP，生产必须启用 HTTPS 且 `COOKIE_SECURE=true`（配置已强制 prod 校验）；
@@ -313,6 +330,7 @@
 11. 多节点分布式 CC 全局一致性按任务书暂不开发（当前单节点 Valkey 共享计数已支持横向扩展）；
 12. 规则覆盖 SEVERITY_OVERRIDE/ACTION_OVERRIDE 可入库，发布侧当前仅落实 DISABLE/ENABLE 优先级解析；
 13. AI 知识库为规则元数据检索（完整 embedding RAG 可后续增强）；What-If 非全量离线回放引擎。
+14. AI 自动降噪迁移 000021 未在真实 PostgreSQL 实例执行过（建表与权限种子仅经单元测试验证，首次部署需观察迁移执行结果）；降噪设置以字符串形式存 `system_settings`（组 `ai_noise`）。
 
 ## 下一步
 

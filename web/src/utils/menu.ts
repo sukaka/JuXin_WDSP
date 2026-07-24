@@ -177,6 +177,12 @@ export const MENU_ITEMS: MenuDef[] = [
     group: '事件中心',
   },
   {
+    key: '/access-logs',
+    label: '访问日志',
+    roles: ['SECURITY_ADMIN', 'SYSTEM_ADMIN'],
+    group: '事件中心',
+  },
+  {
     key: '/event-statistics',
     label: '事件统计',
     roles: ['SECURITY_ADMIN', 'AUDIT_ADMIN'],
@@ -261,6 +267,12 @@ export const MENU_ITEMS: MenuDef[] = [
     group: '智能安全运营',
   },
   { key: '/ai/tasks', label: '智能任务记录', roles: ['SECURITY_ADMIN', 'SYSTEM_ADMIN'], group: '智能安全运营' },
+  {
+    key: '/ai/noise-reduction',
+    label: '自动降噪',
+    roles: ['SECURITY_ADMIN', 'SYSTEM_ADMIN'],
+    group: '智能安全运营',
+  },
   // 阶段7：智能能力管理
   { key: '/ai/admin/models', label: '模型管理', roles: ['SECURITY_ADMIN', 'SYSTEM_ADMIN'], group: '智能能力管理' },
   { key: '/ai/admin/agents', label: '智能体管理', roles: ['SECURITY_ADMIN', 'SYSTEM_ADMIN'], group: '智能能力管理' },

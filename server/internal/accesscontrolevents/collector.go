@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/syslogfw"
 	"github.com/jiuzhang-waf/server/internal/temporaryblocks"
 )
 
@@ -38,8 +39,9 @@ type RuleHitRecorder interface {
 // 解析失败的行写入错误文件，不静默丢弃。
 type Collector struct {
 	store          EventStore
-	blocks         BlockUpserter   // nil 时跳过封禁入库
-	hits           RuleHitRecorder // nil 时跳过命中计数
+	blocks         BlockUpserter       // nil 时跳过封禁入库
+	hits           RuleHitRecorder     // nil 时跳过命中计数
+	syslog         *syslogfw.Forwarder // nil 时跳过 syslog 外发
 	collectorID    string
 	logPath        string
 	checkpointPath string
@@ -73,6 +75,9 @@ func (c *Collector) SetBlockUpserter(u BlockUpserter) { c.blocks = u }
 
 // SetHitRecorder 设置规则命中计数接口（应用装配时使用）。
 func (c *Collector) SetHitRecorder(h RuleHitRecorder) { c.hits = h }
+
+// SetSyslogForwarder 设置 syslog 外发器（应用装配时使用，可为 nil）。
+func (c *Collector) SetSyslogForwarder(fw *syslogfw.Forwarder) { c.syslog = fw }
 
 // SetBatchSize 设置批量大小（测试用）。
 func (c *Collector) SetBatchSize(n int) {
@@ -242,6 +247,12 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 		if len(batch) > 0 {
 			if _, err := c.store.Insert(ctx, batch); err != nil {
 				return fmt.Errorf("insert events batch: %w", err)
+			}
+			// syslog 外发（三期）：入库成功后非阻塞投递，不拖慢采集主流程。
+			// 注意必须传值拷贝：batch 复用底层数组，下一批会覆盖本批元素。
+			for i := range batch {
+				evt := batch[i]
+				c.syslog.Enqueue(syslogfw.KindAccessControlEvent, "", evt)
 			}
 			batch = batch[:0]
 		}

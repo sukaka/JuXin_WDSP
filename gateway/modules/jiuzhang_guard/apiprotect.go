@@ -46,15 +46,22 @@ func apiDecisionMode(s string) decision.Mode {
 }
 
 // serveNext 统一放行出口：先执行 API 动态防护管线，再进入下游（WAF/反向代理）。
+// 全量访问日志开启时包装整个放行链路采集头体（采集失败 fail-open，不影响请求）。
 func (g *Guard) serveNext(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	if !g.APIDynamicProtection {
+	handler := func(w http.ResponseWriter, r *http.Request) error {
+		if !g.APIDynamicProtection {
+			return next.ServeHTTP(w, r)
+		}
+		handled, err := g.runAPIProtection(r)
+		if handled {
+			return err
+		}
 		return next.ServeHTTP(w, r)
 	}
-	handled, err := g.runAPIProtection(r)
-	if handled {
-		return err
+	if g.accessLog != nil {
+		return g.captureAccessLog(w, r, handler)
 	}
-	return next.ServeHTTP(w, r)
+	return handler(w, r)
 }
 
 // runAPIProtection 执行统一管线；handled=true 表示已按决策拦截，err 为 caddyhttp.Error。

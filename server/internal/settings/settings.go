@@ -281,4 +281,15 @@ var AllowedSettingKeys = map[string]bool{
 	"display:system_name":     true, "display:system_short_name": true,
 	"display:login_title": true, "display:support_info": true,
 	"display:default_timezone": true, "display:default_language": true,
+	// 全量访问日志（二期）：logging 组
+	"logging:access_log_enabled": true, "logging:capture_request_headers": true,
+	"logging:capture_request_body": true, "logging:capture_response_headers": true,
+	"logging:capture_response_body": true, "logging:body_limit_kb": true,
+	"logging:retention_days": true,
+	// syslog 外发（三期）：logging 组
+	"logging:syslog_enabled": true, "logging:syslog_protocol": true,
+	"logging:syslog_address": true, "logging:syslog_facility": true,
+	"logging:syslog_forward_security_events": true,
+	"logging:syslog_forward_access_control_events": true,
+	"logging:syslog_forward_access_logs": true,
 }

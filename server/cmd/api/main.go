@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/accesscontrolevents"
+	"github.com/jiuzhang-waf/server/internal/accesslogs"
 	"github.com/jiuzhang-waf/server/internal/accessrules"
 	"github.com/jiuzhang-waf/server/internal/aggregations"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
@@ -28,6 +29,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/guardjanitor"
 	"github.com/jiuzhang-waf/server/internal/security"
 	"github.com/jiuzhang-waf/server/internal/securityevents"
+	"github.com/jiuzhang-waf/server/internal/settings"
 	"github.com/jiuzhang-waf/server/internal/temporaryblocks"
 	"github.com/jiuzhang-waf/server/internal/users"
 )
@@ -82,10 +84,15 @@ func run() error {
 		return fmt.Errorf("initialize application: %w", err)
 	}
 
-	// 阶段4：启动安全事件采集器（后台 goroutine）
+	// syslog 外发（三期）：后台发送循环 + spool 重放，采集器入库成功后 fan-out 投递
 	collectorCtx, collectorCancel := context.WithCancel(context.Background())
 	defer collectorCancel()
+	syslogFw := application.SyslogForwarder()
+	go syslogFw.Run(collectorCtx)
+
+	// 阶段4：启动安全事件采集器（后台 goroutine）
 	eventCollector := securityevents.NewCollector(db, "collector-01", cfg.WAF.AuditLogPath, cfg.WAF.GatewayNodeName)
+	eventCollector.SetSyslogForwarder(syslogFw)
 	go eventCollector.Run(collectorCtx, 2*time.Second)
 
 	// 阶段5：启动访问控制/CC 事件采集器（断点续传，封禁与命中联动）
@@ -97,6 +104,7 @@ func run() error {
 		cfg.WAF.GuardEventsLog, filepath.Join(cfg.Gateway.DataDir, "guard-events.checkpoint"), cfg.WAF.GatewayNodeName)
 	acCollector.SetBlockUpserter(acTempBlocks)
 	acCollector.SetHitRecorder(acRules)
+	acCollector.SetSyslogForwarder(syslogFw)
 	go acCollector.Run(collectorCtx, 2*time.Second)
 
 	// 阶段5：到期自动失效调度（临时规则/临时封禁/临时例外标记 EXPIRED + 系统审计）
@@ -111,6 +119,12 @@ func run() error {
 	go accessCollector.Run(collectorCtx, 2*time.Second)
 	aggJobs := aggregations.NewJobs(aggStore)
 	go aggJobs.Run(collectorCtx)
+
+	// 全量访问日志（二期）：JSON Lines 采集器 + 留存清理（开关默认关闭，无日志文件时采集器空转）
+	accessFullCollector := accesslogs.NewCollector(db, "accesslog-01", cfg.WAF.AccessFullLog)
+	accessFullCollector.SetSyslogForwarder(syslogFw)
+	go accessFullCollector.Run(collectorCtx, 2*time.Second)
+	go accesslogs.NewRetentionCleaner(db, settings.NewService(db)).Run(collectorCtx, 10*time.Minute)
 
 	// 阶段8 / WDSP：API 运行时事件采集器（仅 WDSP 且开关开启时启动；
 	// checkpoint 落在可写数据目录，日志卷只读挂载）
