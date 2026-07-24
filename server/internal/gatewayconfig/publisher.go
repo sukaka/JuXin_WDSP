@@ -107,6 +107,13 @@ type GuardProvider interface {
 	GetVersionConfig(ctx context.Context, versionID uuid.UUID) (*GuardConfig, error)
 }
 
+// AppConfigsProvider 应用头合规与路径转发配置提供者（appconfigs.Store 实现，可为 nil）。
+// GetHeaderConfig 未配置时返回 (nil, nil)（默认静态头行为）；DB 错误如实返回（中止发布，禁止静默降级）。
+type AppConfigsProvider interface {
+	GetHeaderConfig(ctx context.Context, appID uuid.UUID) (*AppHeaderConfig, error)
+	ListEnabledPathRoutes(ctx context.Context, appID uuid.UUID) ([]AppPathRoute, error)
+}
+
 // Publisher 是配置发布控制器。
 type Publisher struct {
 	db            *pgxpool.Pool
@@ -120,6 +127,7 @@ type Publisher struct {
 	customRules   CustomRulesProvider
 	ruleOverrides RuleOverridesProvider
 	guard         GuardProvider
+	appConfigs    AppConfigsProvider
 }
 
 type gatewayConfigLoader interface {
@@ -160,6 +168,11 @@ func (p *Publisher) SetGuardProvider(g GuardProvider) {
 // SetCustomRulesProvider 注入自定义规则提供者（启用规则写入发布配置）。
 func (p *Publisher) SetCustomRulesProvider(c CustomRulesProvider) {
 	p.customRules = c
+}
+
+// SetAppConfigsProvider 注入应用头合规与路径转发配置提供者（可选）。
+func (p *Publisher) SetAppConfigsProvider(provider AppConfigsProvider) {
+	p.appConfigs = provider
 }
 
 // SetRuleOverridesProvider 注入规则覆盖提供者。
@@ -432,6 +445,19 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			ProtectionMode: app.ProtectionMode,
 			Domains:        domains,
 			Upstreams:      upstreams,
+		}
+		// 头合规与路径转发（注入者存在时加载；DB 错误中止发布，禁止静默降级为默认头行为）
+		if p.appConfigs != nil {
+			hc, err := p.appConfigs.GetHeaderConfig(ctx, app.ID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("load header config for %s: %w", app.Code, err)
+			}
+			ad.HeaderConfig = hc
+			prs, err := p.appConfigs.ListEnabledPathRoutes(ctx, app.ID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("load path routes for %s: %w", app.Code, err)
+			}
+			ad.PathRoutes = prs
 		}
 		// 阶段4：读取应用绑定的策略参数（策略模式优先于应用字段）
 		var boundPolicyID *uuid.UUID

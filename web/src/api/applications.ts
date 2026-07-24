@@ -1,5 +1,8 @@
 import { request } from './client'
 import type {
+  AppHeaderConfig,
+  AppHeaderConfigResult,
+  AppPathRoute,
   ApplicationDetail,
   ApplicationItem,
   DomainItem,
@@ -125,4 +128,42 @@ export const upstreamsApi = {
     request<{ message: string }>(`/upstreams/${id}/disable`, { method: 'POST' }),
   test: (body: UpstreamTestBody) =>
     request<UpstreamTestResult>('/upstreams/test', { method: 'POST', body }),
+}
+
+export interface UpdateHeaderConfigBody extends AppHeaderConfig {
+  version: number
+}
+
+export interface PathRouteBody {
+  path_prefix: string
+  upstream_scheme: string
+  upstream_host: string
+  upstream_port: number
+  strip_prefix: boolean
+  priority: number
+  status: string
+  description: string
+}
+
+export interface PathRouteListParams {
+  page: number
+  page_size: number
+}
+
+export const headerConfigApi = {
+  get: (appId: string) =>
+    request<AppHeaderConfigResult>(`/applications/${appId}/header-config`),
+  update: (appId: string, body: UpdateHeaderConfigBody) =>
+    request<AppHeaderConfigResult>(`/applications/${appId}/header-config`, { method: 'PUT', body }),
+}
+
+export const pathRoutesApi = {
+  list: (appId: string, params: PathRouteListParams) =>
+    request<PageResult<AppPathRoute>>(`/applications/${appId}/path-routes`, { query: { ...params } }),
+  create: (appId: string, body: PathRouteBody) =>
+    request<AppPathRoute>(`/applications/${appId}/path-routes`, { method: 'POST', body }),
+  update: (appId: string, routeId: string, body: Partial<PathRouteBody>) =>
+    request<AppPathRoute>(`/applications/${appId}/path-routes/${routeId}`, { method: 'PATCH', body }),
+  remove: (appId: string, routeId: string) =>
+    request<{ message: string }>(`/applications/${appId}/path-routes/${routeId}`, { method: 'DELETE' }),
 }
