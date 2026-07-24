@@ -1,0 +1,4 @@
+source: https://github.com/coreruleset/wordpress-rule-exclusions-plugin
+commit: 5cdb1598196d6301e6579f6f757d1a997f25041f
+date: 2026-07-23
+license: Apache-2.0

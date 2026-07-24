@@ -776,6 +776,12 @@ export const aiNoiseApi = {
     request<AiNoiseCluster>(`/ai/noise/clusters/${id}/suppress`, { method: 'POST' }),
   resolveCluster: (id: string) =>
     request<AiNoiseCluster>(`/ai/noise/clusters/${id}/resolve`, { method: 'POST' }),
+  /** 从降噪簇生成自定义规则草稿（DRAFT，需人工审核启用） */
+  draftRuleFromCluster: (id: string) =>
+    request<{ message: string; rule_id: number; draft: unknown }>(
+      `/ai/noise/clusters/${id}/draft-rule`,
+      { method: 'POST' },
+    ),
   /** 手动触发一次降噪扫描（manage 权限，同步返回统计） */
   triggerSweep: () => request<AiNoiseSweepResult>('/ai/noise/sweeps', { method: 'POST' }),
   listSweeps: async (params: { page: number; page_size: number }) => {

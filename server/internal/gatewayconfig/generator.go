@@ -328,6 +328,9 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []E
 	}
 	b.WriteString(fmt.Sprintf("SecAction \"id:900001,phase:1,pass,nolog,setvar:tx.blocking_paranoia_level=%d,setvar:tx.inbound_anomaly_score_threshold=%d,setvar:tx.outbound_anomaly_score_threshold=%d\"\n", pl, inbound, outbound))
 	b.WriteString("Include /etc/caddy/rules/crs/crs-setup.conf\n")
+	// CRS 插件（官方加载顺序：config → before → CRS 主规则 → contrib → after）
+	b.WriteString("Include /etc/caddy/rules/crs/plugins/*/plugins/*-config.conf\n")
+	b.WriteString("Include /etc/caddy/rules/crs/plugins/*/plugins/*-before.conf\n")
 	b.WriteString("Include /etc/caddy/rules/exclusions/before-crs.conf\n")
 	// 例外策略规则（运行时例外，放 CRS 规则之前）
 	for _, ex := range exceptions {
@@ -346,6 +349,9 @@ func buildWAFDirectivesWithPolicy(ruleEngine string, app AppData, exceptions []E
 		}
 	}
 	b.WriteString("Include /etc/caddy/rules/crs/rules/*.conf\n")
+	// 第三方与自建规则包（阶段：规则量扩展，放 CRS 主规则之后）
+	b.WriteString("Include /etc/caddy/rules/contrib/*/*.conf\n")
+	b.WriteString("Include /etc/caddy/rules/crs/plugins/*/plugins/*-after.conf\n")
 	b.WriteString("Include /etc/caddy/rules/exclusions/after-crs.conf\n")
 	b.WriteString("Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf\n")
 	// 管理面启用的自定义规则（确定性：按调用方已排序的切片顺序写出）

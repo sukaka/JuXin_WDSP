@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增（规则量扩展：多规则包体系）
+
+- 规则库从单一 OWASP_CRS 扩展为多包结构：CRS 官方插件（incubator，PINNED）、第三方应用白名单包（wordpress/nextcloud rule-exclusions，Apache-2.0，PINNED）、自建包（CVE 应急/WebShell/扫描器指纹/云滥用/API 滥用，共 157 条）；规则总量 622 → 979。
+- 自建包覆盖：log4j2/Spring4Shell/Confluence/ProxyShell/fastjson/Shiro/ThinkPHP/Struts2/未授权中间件、China Chopper/蚁剑/哥斯拉/冰蝎、sqlmap/nuclei/AWVS/敏感路径扫描、SSRF 云元数据/k8s/docker.sock/ES、GraphQL 内省/JWT alg=none/批量赋值/CRLF/XXE/路径穿越。
+- 同步管线多来源去重入库（rule_source 隔离），发布按官方顺序 include（插件 config/before/after + contrib）。
+- AI 规则生成闭环：降噪簇一键生成自定义规则草稿（DISABLED，人工审核启用），端点 `POST /api/v1/ai/noise/clusters/{id}/draft-rule`。
+- 诚实排除：antivirus（`@inspectFile`）与 body-decompress（Lua `SecRuleScript`）插件经实测 Coraza 不支持已移除；Atomicorp 免费规则因许可证禁止再分发不入库。
+
 ### 新增（阶段8 / WDSP：统一 Web 与 API 动态防护）
 
 - 统一动态安全引擎挂接 `jiuzhang_guard` 请求链：一次解析（JSON/form/XML/multipart/GraphQL）→ API 识别 → 路径归一 → 检测 → 统一决策；`api_dynamic_protection=false` 时行为与纯 WAF 完全一致。

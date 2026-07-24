@@ -4,6 +4,7 @@
 package aihandlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/aiaudit"
 	"github.com/jiuzhang-waf/server/internal/ainoise"
+	"github.com/jiuzhang-waf/server/internal/aitools"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
@@ -304,4 +306,87 @@ func (d *Deps) NoiseSettingsPut(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := ainoise.LoadConfig(r.Context(), d.Settings)
 	response.JSON(w, r, http.StatusOK, noiseSettingsPayload(cfg))
+}
+
+// NoiseClusterDraftRule 从降噪簇生成自定义规则草稿（闭环：事件→聚类→草稿→人工审核）。
+// 产出为 DISABLED 自定义规则 + ai_recommendations 记录；AI 不自动启用/发布（draft.custom_rule.create 工具）。
+func (d *Deps) NoiseClusterDraftRule(w http.ResponseWriter, r *http.Request) {
+	c, ok := d.loadNoiseCluster(w, r)
+	if !ok {
+		return
+	}
+	if d.Tools == nil {
+		response.Error(w, r, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "AI 工具注册表未装配")
+		return
+	}
+	if c.NormalizedURI == "" || c.NormalizedURI == "/" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "该簇缺少可用 URI 模式，无法生成规则草稿")
+		return
+	}
+	// 分配自定义规则 ID（7100000-7199999）
+	var rid int
+	if err := d.DB.QueryRow(r.Context(), `SELECT COALESCE(MAX(rule_id),7100000) FROM custom_rules`).Scan(&rid); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	rid++
+	if rid > 7199999 {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "自定义规则 ID 段已满")
+		return
+	}
+	severity := "WARNING"
+	if c.AIVerdict == "TRUE_POSITIVE" {
+		severity = "ERROR"
+	}
+	reason := fmt.Sprintf("由降噪簇生成（源 %s，命中 %d 次，客户端 %s，规则/检测器 %s）",
+		c.Source, c.EventCount, c.ClientIP, detectorOrRule(c))
+	input := map[string]interface{}{
+		"name":             "降噪簇 " + c.NormalizedURI,
+		"rule_id":          rid,
+		"attack_type":      "OTHER",
+		"severity":         severity,
+		"phase":            2,
+		"operator":         "beginsWith",
+		"operator_value":   c.NormalizedURI,
+		"target_variables": []string{"REQUEST_URI"},
+		"action":           "OBSERVE",
+		"reason":           reason,
+		"evidence":         []string{"noise_cluster:" + c.ID.String()},
+	}
+	raw, _ := json.Marshal(input)
+	p := authz.PrincipalFrom(r.Context())
+	prin := &aitools.Principal{UserID: p.UserID, Username: p.Username, Permissions: p.PermsSet}
+	out, _, err := d.Tools.Execute(r.Context(), prin, uuid.New(), nil, "draft.custom_rule.create", raw, nil)
+	if err != nil {
+		if errors.Is(err, aitools.ErrPermission) {
+			response.Error(w, r, http.StatusForbidden, response.CodePermissionDenied, "缺少 ai.draft.custom_rule 权限")
+			return
+		}
+		if errors.Is(err, aitools.ErrInvalidInput) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+			return
+		}
+		response.InternalError(w, r, err)
+		return
+	}
+	d.recordAIAudit(p, aiaudit.Record{
+		Action:         "noise_draft_rule",
+		RequestSummary: "cluster_id=" + c.ID.String(),
+		ResultSummary:  fmt.Sprintf("draft custom rule %d (DISABLED)", rid),
+	})
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{
+		"message": "规则草稿已生成（默认停用，请在「自定义规则」审核启用）",
+		"rule_id": rid, "draft": out,
+	})
+}
+
+// detectorOrRule 簇关联的规则/检测器标识（展示用）。
+func detectorOrRule(c *ainoise.Cluster) string {
+	if c.DetectorCode != "" {
+		return c.DetectorCode
+	}
+	if c.RuleID != nil {
+		return fmt.Sprint(*c.RuleID)
+	}
+	return "-"
 }

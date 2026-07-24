@@ -173,6 +173,7 @@ func (d *Deps) RegisterRoutes(mux *http.ServeMux, authChain func(http.Handler) h
 	mux.Handle("GET /api/v1/ai/noise/clusters/{id}", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseClusterGet))))
 	mux.Handle("POST /api/v1/ai/noise/clusters/{id}/suppress", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseClusterSuppress))))
 	mux.Handle("POST /api/v1/ai/noise/clusters/{id}/resolve", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseClusterResolve))))
+	mux.Handle("POST /api/v1/ai/noise/clusters/{id}/draft-rule", authChain(rp("ai.draft.custom_rule")(http.HandlerFunc(d.NoiseClusterDraftRule))))
 	mux.Handle("GET /api/v1/ai/noise/stats", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseStats))))
 	mux.Handle("POST /api/v1/ai/noise/sweeps", authChain(rp("ai.noise_reduction.manage")(http.HandlerFunc(d.NoiseSweepTrigger))))
 	mux.Handle("GET /api/v1/ai/noise/sweeps", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseSweepList))))
