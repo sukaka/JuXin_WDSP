@@ -1,0 +1,4 @@
+source: https://github.com/coreruleset/nextcloud-rule-exclusions-plugin
+commit: 1b41369fc99b7aa095b3d55328ffc7b2887f9568
+date: 2026-07-23
+license: Apache-2.0

@@ -22,6 +22,9 @@ import (
 // 规则来源
 const (
 	SourceCRS       = "OWASP_CRS"
+	SourceCRSPlugin = "CRS_PLUGIN"
+	SourceThirdParty = "THIRD_PARTY"
+	SourceCustomPack = "CUSTOM_PACK"
 	SourceJiuzhang  = "JIUZHANG_BUILTIN"
 	SourceCustom    = "USER_CUSTOM"
 )
@@ -84,17 +87,17 @@ var attackTypeByTag = map[string]string{
 	"attack-injection-generic": "REMOTE_CODE_EXECUTION",
 }
 
-// ParseCRSFile 解析单个 CRS 规则文件，提取规则元数据。
-func ParseCRSFile(filePath string) ([]*Rule, []string, error) {
+// ParseCRSFile 解析单个规则文件，提取规则元数据（source 标记入库 rule_source）。
+func ParseCRSFile(filePath, source string) ([]*Rule, []string, error) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, nil, err
 	}
-	return ParseCRSRules(string(content), filepath.Base(filePath))
+	return ParseCRSRules(string(content), filepath.Base(filePath), source)
 }
 
-// ParseCRSRules 解析 CRS 规则文本，提取规则元数据与失败行。
-func ParseCRSRules(content, fileName string) ([]*Rule, []string, error) {
+// ParseCRSRules 解析规则文本，提取规则元数据与失败行（source 标记入库 rule_source）。
+func ParseCRSRules(content, fileName, source string) ([]*Rule, []string, error) {
 	var rules []*Rule
 	var failed []string
 
@@ -110,7 +113,7 @@ func ParseCRSRules(content, fileName string) ([]*Rule, []string, error) {
 		ruleText := current.String()
 		current.Reset()
 		inRule = false
-		rule, err := parseOneRule(ruleText, fileName)
+		rule, err := parseOneRule(ruleText, fileName, source)
 		if err != nil {
 			failed = append(failed, truncate(ruleText, 80)+": "+err.Error())
 			return
@@ -145,7 +148,7 @@ func ParseCRSRules(content, fileName string) ([]*Rule, []string, error) {
 }
 
 // parseOneRule 解析单条 SecRule 文本。
-func parseOneRule(text, fileName string) (*Rule, error) {
+func parseOneRule(text, fileName, source string) (*Rule, error) {
 	idMatch := idPattern.FindStringSubmatch(text)
 	if idMatch == nil {
 		return nil, nil // 非规则行（如 SecAction/SecMarker）
@@ -154,10 +157,10 @@ func parseOneRule(text, fileName string) (*Rule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid rule id %q", idMatch[1])
 	}
-	// CRS 规则 ID 范围（900xxx-999xxx 及插件段）
+	// CRS 规则 ID 范围（900xxx-999xxx 及插件段）；来源由调用方指定
 	rule := &Rule{
 		RuleID:       ruleID,
-		RuleSource:   SourceCRS,
+		RuleSource:   source,
 		FileName:     fileName,
 		DefaultState: "ENABLED",
 		Severity:     "NOTICE",
@@ -249,25 +252,44 @@ func NewSyncService(db *pgxpool.Pool) *SyncService {
 	return &SyncService{db: db}
 }
 
-// SyncFromDirectory 从 CRS 规则目录同步元数据到数据库。
+// SourceDir 一个同步来源：目录 + 入库 rule_source。
+type SourceDir struct {
+	Dir    string
+	Source string
+}
+
+// SyncFromDirectory 从 CRS 规则目录同步元数据到数据库（OWASP_CRS 单来源，兼容旧调用）。
 func (s *SyncService) SyncFromDirectory(ctx context.Context, crsDir, crsVersion string) (*SyncReport, error) {
+	return s.SyncFromSources(ctx, crsVersion, []SourceDir{{Dir: crsDir, Source: SourceCRS}})
+}
+
+// SyncFromSources 从多个来源目录同步元数据到数据库（CRS 主包 + 插件 + 第三方/自建包）。
+// 各来源独立去重（rule_id, rule_source, crs_version 唯一）；报告为全部来源合计。
+func (s *SyncService) SyncFromSources(ctx context.Context, crsVersion string, sources []SourceDir) (*SyncReport, error) {
 	report := &SyncReport{}
-
-	// 读取所有 .conf 规则文件
-	pattern := filepath.Join(crsDir, "*.conf")
-	files, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, err
+	for _, sd := range sources {
+		pattern := filepath.Join(sd.Dir, "*.conf")
+		files, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		if len(files) == 0 {
+			continue // 空来源目录（如未启用 contrib 包）跳过，不视为错误
+		}
+		sort.Strings(files)
+		if err := s.syncSourceFiles(ctx, files, sd.Source, crsVersion, report); err != nil {
+			return nil, err
+		}
 	}
-	if len(files) == 0 {
-		return nil, fmt.Errorf("no .conf files in %s", crsDir)
-	}
-	sort.Strings(files)
+	return report, nil
+}
 
-	// 收集数据库现有规则（crs_version）
-	existing, err := s.existingRules(ctx, crsVersion)
+// syncSourceFiles 同步单个来源的文件集合：解析、去重（含同 ID 不同来源隔离）、入库与缺失统计。
+func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, source, crsVersion string, report *SyncReport) error {
+	// 收集数据库现有规则（该来源 + crs_version）
+	existing, err := s.existingRules(ctx, source, crsVersion)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	seen := map[int]bool{}
 
@@ -277,7 +299,7 @@ func (s *SyncService) SyncFromDirectory(ctx context.Context, crsDir, crsVersion 
 		if strings.HasSuffix(base, ".example") || strings.Contains(base, "EXCLUSION") {
 			continue
 		}
-		rules, failed, err := ParseCRSFile(file)
+		rules, failed, err := ParseCRSFile(file, source)
 		if err != nil {
 			report.ParseFailed++
 			report.FailedRules = append(report.FailedRules, base+": "+err.Error())
@@ -320,16 +342,16 @@ func (s *SyncService) SyncFromDirectory(ctx context.Context, crsDir, crsVersion 
 			report.Missing++
 		}
 	}
-	total, err := s.countRules(ctx, crsVersion)
+	total, err := s.countRules(ctx, source, crsVersion)
 	if err == nil {
-		report.TotalInDB = total
+		report.TotalInDB += total
 	}
-	return report, nil
+	return nil
 }
 
-func (s *SyncService) existingRules(ctx context.Context, crsVersion string) (map[int]*Rule, error) {
+func (s *SyncService) existingRules(ctx context.Context, source, crsVersion string) (map[int]*Rule, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT rule_id, content_hash FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, SourceCRS, crsVersion)
+		`SELECT rule_id, content_hash FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -370,10 +392,10 @@ WHERE rule_id=$9 AND rule_source=$10 AND crs_version=$11`,
 	return err
 }
 
-func (s *SyncService) countRules(ctx context.Context, crsVersion string) (int, error) {
+func (s *SyncService) countRules(ctx context.Context, source, crsVersion string) (int, error) {
 	var n int
 	err := s.db.QueryRow(ctx,
-		`SELECT count(*) FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, SourceCRS, crsVersion).Scan(&n)
+		`SELECT count(*) FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion).Scan(&n)
 	return n, err
 }
 

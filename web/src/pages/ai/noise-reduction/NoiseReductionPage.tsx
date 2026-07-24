@@ -56,7 +56,7 @@ function formatConfidence(value?: number | null): string {
   return `${(value * 100).toFixed(0)}%`
 }
 
-/** 规则标识：WAF 簇展示 rule_id，接口簇展示 detector_code */
+/** 规则标识：WAF 簇展示 rule_id，API 簇展示 detector_code */
 function formatRule(record: AiNoiseCluster): string {
   if (record.rule_id !== null && record.rule_id !== undefined) return `#${record.rule_id}`
   return record.detector_code || '-'
@@ -129,6 +129,15 @@ export default function NoiseReductionPage() {
     onError,
   })
 
+  const draftRuleMutation = useMutation({
+    mutationFn: (id: string) => aiNoiseApi.draftRuleFromCluster(id),
+    onSuccess: (r) => {
+      message.success(r.message || '规则草稿已生成')
+      invalidateAll()
+    },
+    onError,
+  })
+
   const sweepMutation = useMutation({
     mutationFn: () => aiNoiseApi.triggerSweep(),
     onSuccess: (s) => {
@@ -187,7 +196,7 @@ export default function NoiseReductionPage() {
       render: (_, record) => <Typography.Text code>{formatRule(record)}</Typography.Text>,
     },
     { title: '客户端 IP', dataIndex: 'client_ip', width: 130, render: (v: string) => v || '-' },
-    { title: '折叠事件数', dataIndex: 'event_count', width: 100, align: 'right' },
+    { title: '折叠事件数', dataIndex: 'event_count', width: 100 },
     {
       title: '状态',
       dataIndex: 'status',
@@ -204,7 +213,6 @@ export default function NoiseReductionPage() {
       title: '置信度',
       dataIndex: 'ai_confidence',
       width: 90,
-      align: 'right',
       render: (v?: number | null) => formatConfidence(v),
     },
     {
@@ -216,13 +224,24 @@ export default function NoiseReductionPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 170,
+      width: 230,
       fixed: 'right',
       render: (_, record) => (
         <Space size={0} wrap>
           <Button type="link" size="small" onClick={() => setSelectedId(record.id)}>
             详情
           </Button>
+          <Popconfirm
+            title="生成规则草稿"
+            description={`将为「${record.normalized_uri}」生成停用的自定义规则草稿，需在自定义规则页人工审核启用。确定生成吗？`}
+            okText="确定"
+            cancelText="取消"
+            onConfirm={() => draftRuleMutation.mutate(record.id)}
+          >
+            <Button type="link" size="small">
+              生成草稿
+            </Button>
+          </Popconfirm>
           {record.status === 'ACTIVE' && (
             <Popconfirm
               title="抑制该降噪簇"
@@ -262,10 +281,10 @@ export default function NoiseReductionPage() {
       width: 170,
       render: (v?: string | null) => formatDateTime(v),
     },
-    { title: '扫描事件', dataIndex: 'scanned_events', width: 90, align: 'right' },
-    { title: '新增簇', dataIndex: 'new_clusters', width: 80, align: 'right' },
-    { title: '更新簇', dataIndex: 'updated_clusters', width: 80, align: 'right' },
-    { title: 'LLM 调用', dataIndex: 'llm_calls', width: 90, align: 'right' },
+    { title: '扫描事件', dataIndex: 'scanned_events', width: 90 },
+    { title: '新增簇', dataIndex: 'new_clusters', width: 80 },
+    { title: '更新簇', dataIndex: 'updated_clusters', width: 80 },
+    { title: 'LLM 调用', dataIndex: 'llm_calls', width: 90 },
     {
       title: '状态',
       dataIndex: 'status',

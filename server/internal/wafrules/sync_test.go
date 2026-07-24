@@ -19,7 +19,7 @@ SecRule ARGS "@rx <script" "id:941100,phase:2,block,msg:'XSS Attack',tag:'attack
 `
 
 func TestParseCRSRules(t *testing.T) {
-	rules, failed, err := ParseCRSRules(sampleCRS, "TEST.conf")
+	rules, failed, err := ParseCRSRules(sampleCRS, "TEST.conf", SourceCRS)
 	if err != nil {
 		t.Fatalf("ParseCRSRules: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestParseCRSRules(t *testing.T) {
 }
 
 func TestParseSkipsSecAction(t *testing.T) {
-	rules, _, _ := ParseCRSRules(sampleCRS, "TEST.conf")
+	rules, _, _ := ParseCRSRules(sampleCRS, "TEST.conf", SourceCRS)
 	for _, r := range rules {
 		if r.RuleID == 900000 {
 			t.Error("SecAction should not be parsed as rule")
@@ -89,8 +89,8 @@ func TestNormalizeSeverity(t *testing.T) {
 }
 
 func TestContentHashDiffers(t *testing.T) {
-	r1, _, _ := ParseCRSRules(`SecRule ARGS "@rx a" "id:1,phase:2,msg:'a'"`, "a.conf")
-	r2, _, _ := ParseCRSRules(`SecRule ARGS "@rx b" "id:1,phase:2,msg:'b'"`, "a.conf")
+	r1, _, _ := ParseCRSRules(`SecRule ARGS "@rx a" "id:1,phase:2,msg:'a'"`, "a.conf", SourceCRS)
+	r2, _, _ := ParseCRSRules(`SecRule ARGS "@rx b" "id:1,phase:2,msg:'b'"`, "a.conf", SourceCRS)
 	if r1[0].ContentHash == r2[0].ContentHash {
 		t.Error("different rules should have different hashes")
 	}
