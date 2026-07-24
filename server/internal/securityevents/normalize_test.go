@@ -108,3 +108,50 @@ func toJSON(v interface{}) string {
 func jsonString(v interface{}) string { return toJSON(v) }
 
 var _ = jsonString
+
+func TestMaskBody(t *testing.T) {
+	cases := []struct{ name, in, wantNotContain string }{
+		{"form", "username=admin&password=topsecret&note=hello", "topsecret"},
+		{"json compact", `{"username":"admin","password":"topsecret"}`, "topsecret"},
+		{"json spaced", `{ "token": "abc123", "a": 1 }`, "abc123"},
+	}
+	for _, c := range cases {
+		got := maskBody(c.in)
+		if strings.Contains(got, c.wantNotContain) {
+			t.Errorf("%s: maskBody(%q) = %q, still contains %q", c.name, c.in, got, c.wantNotContain)
+		}
+		if !strings.Contains(got, "masked") {
+			t.Errorf("%s: maskBody(%q) = %q, no mask applied", c.name, c.in, got)
+		}
+	}
+	// 非敏感字段不受影响
+	if got := maskBody("username=admin&note=hello"); got != "username=admin&note=hello" {
+		t.Errorf("non-sensitive body changed: %q", got)
+	}
+}
+
+func TestMaskHeaders(t *testing.T) {
+	in := map[string][]string{
+		"Cookie":        {"session=abc"},
+		"Authorization": {"Bearer xyz"},
+		"X-Custom":      {"keep"},
+	}
+	out := maskHeaders(in)
+	if out["Cookie"][0] != "masked" || out["Authorization"][0] != "masked" {
+		t.Errorf("sensitive headers not masked: %v", out)
+	}
+	if out["X-Custom"][0] != "keep" {
+		t.Errorf("non-sensitive header changed: %v", out)
+	}
+}
+
+func TestTruncateBody(t *testing.T) {
+	body, truncated := truncateBody(strings.Repeat("a", maxBodyLen+1))
+	if !truncated || len(body) != maxBodyLen {
+		t.Errorf("expected truncation at %d, got len=%d truncated=%v", maxBodyLen, len(body), truncated)
+	}
+	body, truncated = truncateBody("short")
+	if truncated || body != "short" {
+		t.Errorf("short body should not be truncated")
+	}
+}

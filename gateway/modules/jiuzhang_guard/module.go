@@ -134,6 +134,9 @@ type Guard struct {
 	// 写方法 API 每分钟限速（缺省 60，由引擎默认值兜底）
 	APIWriteRatePerMinute int `json:"api_write_rate_per_minute,omitempty"`
 
+	// 全量访问日志（二期）：默认关闭（nil 或 enabled=false 时零行为变化）
+	AccessLog *accessLogJSON `json:"access_log,omitempty"`
+
 	// 运行时
 	logger    *zap.Logger
 	resolver  clientip.Resolver
@@ -146,6 +149,7 @@ type Guard struct {
 	policies  []*compiledPolicy
 	events    *events.Logger
 	apiEvents *apievents.Logger
+	accessLog *accessLogWriter
 	engine    *sharedEngine
 	failOpen  bool // 本实例故障策略（Provision 时确定，配置重载即可切换）
 }
@@ -373,6 +377,26 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 			zap.Int("known_endpoints", len(g.APIKnownEndpoints)))
 	}
 
+	// 全量访问日志记录器（二期；enabled=false 时不打开文件，零行为变化）
+	if g.AccessLog != nil && g.AccessLog.Enabled {
+		p := g.AccessLog.LogPath
+		if p == "" {
+			p = defaultAccessLogPath
+		}
+		aw, err := newAccessLogWriter(p)
+		if err != nil {
+			return fmt.Errorf("access log: %w", err)
+		}
+		g.accessLog = aw
+		g.logger.Info("full access log enabled",
+			zap.String("log_path", p),
+			zap.Bool("capture_request_headers", g.AccessLog.CaptureRequestHeaders),
+			zap.Bool("capture_request_body", g.AccessLog.CaptureRequestBody),
+			zap.Bool("capture_response_headers", g.AccessLog.CaptureResponseHeaders),
+			zap.Bool("capture_response_body", g.AccessLog.CaptureResponseBody),
+			zap.Int("body_limit_kb", g.AccessLog.BodyLimitKB))
+	}
+
 	// 共享引擎
 	eng, err := getEngine(g)
 	if err != nil {
@@ -404,6 +428,10 @@ func (g *Guard) Validate() error {
 
 // Cleanup 关闭事件记录器（共享引擎随进程生命周期，不在配置重载时关闭）。
 func (g *Guard) Cleanup() error {
+	if g.accessLog != nil {
+		_ = g.accessLog.close()
+		g.accessLog = nil
+	}
 	if g.apiEvents != nil {
 		_ = g.apiEvents.Close()
 		g.apiEvents = nil
@@ -517,6 +545,15 @@ func compilePolicies(in []policyJSON) ([]*compiledPolicy, error) {
 func (g *Guard) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	now := time.Now().UTC()
 	requestID := r.Header.Get("X-Request-Id")
+
+	// 全量访问日志：保留原始连接端口（下方 RemoteAddr 会被改写为真实IP+端口0）
+	if g.accessLog != nil {
+		if _, port, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			if p, err := strconv.Atoi(port); err == nil {
+				*r = *r.WithContext(context.WithValue(r.Context(), accessLogConnPortKey{}, p))
+			}
+		}
+	}
 
 	// 1. 真实IP识别
 	res := g.resolver.Resolve(r, g.proxies)

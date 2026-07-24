@@ -103,6 +103,29 @@ export const AI_AGENT_NAMES: Record<string, string> = {
   knowledge: '知识库智能体',
 }
 
+export const AI_NOISE_SOURCE_META: Record<string, { color: string; label: string }> = {
+  WAF: { color: 'blue', label: 'WAF 事件' },
+  API: { color: 'purple', label: '接口事件' },
+}
+
+export const AI_NOISE_STATUS_META: Record<string, { color: string; label: string }> = {
+  ACTIVE: { color: 'processing', label: '活跃' },
+  SUPPRESSED: { color: 'warning', label: '已抑制' },
+  RESOLVED: { color: 'success', label: '已解决' },
+}
+
+export const AI_NOISE_VERDICT_META: Record<string, { color: string; label: string }> = {
+  TRUE_POSITIVE: { color: 'green', label: '真实攻击' },
+  LIKELY_FALSE_POSITIVE: { color: 'orange', label: '疑似误报' },
+  UNKNOWN: { color: 'default', label: '未知' },
+}
+
+export const AI_NOISE_SWEEP_STATUS_META: Record<string, { color: string; label: string }> = {
+  SUCCESS: { color: 'success', label: '成功' },
+  FAILED: { color: 'error', label: '失败' },
+  PARTIAL: { color: 'warning', label: '部分成功' },
+}
+
 /** SSE 步骤事件类型 → 展示元数据 */
 export const AI_STEP_META: Record<string, { color: string; label: string }> = {
   plan: { color: 'blue', label: '任务计划' },

@@ -43,6 +43,7 @@ import ApiFindingsPage from '../pages/api-findings/ApiFindingsPage'
 import ApiShadowZombiePage from '../pages/api-shadow-zombie/ApiShadowZombiePage'
 import ApiPolicyPage from '../pages/api-policy/ApiPolicyPage'
 import SecurityEventsPage from '../pages/security-events/SecurityEventsPage'
+import AccessLogsPage from '../pages/access-logs/AccessLogsPage'
 import EventStatisticsPage from '../pages/event-statistics/EventStatisticsPage'
 import SecurityOverviewPage from '../pages/security-overview/SecurityOverviewPage'
 import AnalyticsPage from '../pages/analytics/AnalyticsPage'
@@ -62,6 +63,7 @@ import AttackChainPage from '../pages/ai/attack-chain/AttackChainPage'
 import PolicyRecommendationPage from '../pages/ai/policy-recommendation/PolicyRecommendationPage'
 import ReportSummaryPage from '../pages/ai/report-summary/ReportSummaryPage'
 import AiTasksPage from '../pages/ai/tasks/AiTasksPage'
+import NoiseReductionPage from '../pages/ai/noise-reduction/NoiseReductionPage'
 import AiModelsPage from '../pages/ai/admin/models/AiModelsPage'
 import AiAgentsPage from '../pages/ai/admin/agents/AiAgentsPage'
 import AiToolsPage from '../pages/ai/admin/tools/AiToolsPage'
@@ -391,6 +393,14 @@ export default function AppRoutes() {
           }
         />
         <Route
+          path="access-logs"
+          element={
+            <RequirePermission permission="access_logs.read">
+              <AccessLogsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
           path="event-statistics"
           element={
             <RequirePermission permission="security_events.read">
@@ -583,6 +593,14 @@ export default function AppRoutes() {
           element={
             <RequirePermission permission="ai.sessions.read_own">
               <AiTasksPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="ai/noise-reduction"
+          element={
+            <RequirePermission permission={['ai.noise_reduction.use', 'ai.noise_reduction.manage']}>
+              <NoiseReductionPage />
             </RequirePermission>
           }
         />

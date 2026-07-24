@@ -51,6 +51,20 @@ type Provider struct {
 	// apiModeOverride settings 表模式覆盖读取（nil 时仅用构造配置 apiMode）；
 	// 返回 found=false 表示无覆盖。取值顺序：settings 表覆盖 > 构造配置（env/默认）。
 	apiModeOverride func(ctx context.Context) (value string, found bool, err error)
+
+	// 全量访问日志（二期）：settings 读取（nil 时不下发 access_log 段）
+	accessLogPath   string // 网关容器内日志路径（env 注入）
+	accessLogLoader func(ctx context.Context) (AccessLogSettings, error)
+}
+
+// AccessLogSettings 是 logging 组系统设置（全量访问日志开关快照）。
+type AccessLogSettings struct {
+	Enabled                bool
+	CaptureRequestHeaders  bool
+	CaptureRequestBody     bool
+	CaptureResponseHeaders bool
+	CaptureResponseBody    bool
+	BodyLimitKB            int
 }
 
 // Config 是组装器配置。
@@ -67,6 +81,8 @@ type Config struct {
 	APIDynamicProtection bool
 	APIProtectionMode    string // OFF | OBSERVE | PROTECT（启用时缺省 OBSERVE）
 	APIEventsLog         string // 网关容器内路径（如 /var/log/caddy/api-runtime-events.log）
+	// AccessLogPath 全量访问日志网关容器内路径（如 /var/log/caddy/access-full.jsonl）
+	AccessLogPath string
 }
 
 // NewProvider 创建组装器。
@@ -87,12 +103,16 @@ func NewProvider(
 	if cfg.EventsLog == "" {
 		cfg.EventsLog = "/var/log/caddy/guard-events.log"
 	}
+	if cfg.AccessLogPath == "" {
+		cfg.AccessLogPath = "/var/log/caddy/access-full.jsonl"
+	}
 	return &Provider{
 		proxies: proxies, protected: protected, rules: rules, policies: policies, versions: versions,
 		valkeyAddr: cfg.ValkeyAddress, valkeyPassword: cfg.ValkeyPassword, valkeyDB: cfg.ValkeyDB,
 		eventsLog: cfg.EventsLog, gatewayNode: cfg.GatewayNode,
 		maxProxyChain: cfg.MaxProxyChain, maxCounterKeys: cfg.MaxCounterKeys, failOpen: cfg.FailOpen,
 		apiEnabled: cfg.APIDynamicProtection, apiMode: cfg.APIProtectionMode, apiEventsLog: cfg.APIEventsLog,
+		accessLogPath: cfg.AccessLogPath,
 	}
 }
 
@@ -121,6 +141,12 @@ func resolveAPIProtectionMode(configured, override string, found bool) string {
 
 // SetAPIAssets 注入端点资产仓储（阶段8：已知端点基线随发布下发网关；nil 表示不下发）。
 func (p *Provider) SetAPIAssets(s *apiassets.Store) { p.apiAssets = s }
+
+// SetAccessLogLoader 注入 logging 组系统设置读取（全量访问日志开关，发布时随 GuardConfig 下发；
+// 读取失败时发布失败，不静默回退——避免开关状态与管理面显示不一致）。
+func (p *Provider) SetAccessLogLoader(fn func(ctx context.Context) (AccessLogSettings, error)) {
+	p.accessLogLoader = fn
+}
 
 // BuildGuardConfig 从数据库读取生效配置并组装。
 func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardConfig, error) {
@@ -318,10 +344,28 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 			}
 		}
 	}
+	// 全量访问日志（二期）：logging 组设置随发布下发网关
+	if p.accessLogLoader != nil {
+		s, err := p.accessLogLoader(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("read access log settings: %w", err)
+		}
+		limitKB := s.BodyLimitKB
+		if limitKB <= 0 {
+			limitKB = 64
+		}
+		cfg.AccessLog = &gatewayconfig.GuardAccessLog{
+			Enabled:                s.Enabled,
+			CaptureRequestHeaders:  s.CaptureRequestHeaders,
+			CaptureRequestBody:     s.CaptureRequestBody,
+			CaptureResponseHeaders: s.CaptureResponseHeaders,
+			CaptureResponseBody:    s.CaptureResponseBody,
+			BodyLimitKB:            limitKB,
+			LogPath:                p.accessLogPath,
+		}
+	}
 	return cfg, nil
 }
-
-// RedactGuardConfig 返回脱敏副本（版本历史/API 不落明文密码）。
 func RedactGuardConfig(cfg *gatewayconfig.GuardConfig) *gatewayconfig.GuardConfig {
 	if cfg == nil {
 		return nil

@@ -524,6 +524,13 @@ export interface SecurityEventItem {
   disposition_status: string
   disposition_result: string
   raw_log_reference: string
+  /** 请求/响应头体留痕（仅详情接口返回；敏感头已掩码，体超 64KB 截断） */
+  request_headers?: Record<string, string[]> | null
+  request_body?: string
+  request_body_truncated?: boolean
+  response_headers?: Record<string, string[]> | null
+  response_body?: string
+  response_body_truncated?: boolean
 }
 
 /** 事件规则匹配（matched_data 已脱敏，渲染时必须按纯文本转义显示） */
@@ -567,6 +574,44 @@ export interface SecurityEventDetail {
 export interface CreateExceptionFromEventResult {
   exception_id: string
   message: string
+}
+
+/* ==================== 全量访问日志 ==================== */
+
+/** 访问日志列表项（不含请求/响应头体留痕） */
+export interface AccessLogItem {
+  id: string
+  occurred_at: string
+  request_id: string
+  application_id?: string | null
+  domain: string
+  gateway_node_id: string
+  client_ip: string
+  client_port: number
+  request_method: string
+  request_uri: string
+  request_path: string
+  query_summary: string
+  http_version: string
+  content_type: string
+  user_agent_summary: string
+  referer_summary: string
+  response_status: number
+  bytes_in: number
+  bytes_out: number
+  duration_ms: number
+  /** WAF 动作：BLOCK 或空串（放行）；网关仅对 403 推断 BLOCK，其余不推断 */
+  waf_action: string
+}
+
+/** 访问日志详情（额外含请求/响应头体留痕；敏感头已掩码，体超限截断） */
+export interface AccessLogDetail extends AccessLogItem {
+  request_headers?: Record<string, string[]> | null
+  request_body?: string
+  request_body_truncated?: boolean
+  response_headers?: Record<string, string[]> | null
+  response_body?: string
+  response_body_truncated?: boolean
 }
 
 /* ==================== 阶段5：访问控制（可信代理 / 保护地址 / IP黑白名单 / CC防护 / 临时封禁 / 访问控制事件） ==================== */

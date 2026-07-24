@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/syslogfw"
 )
 
 // Collector 是安全事件采集器。
 type Collector struct {
 	db          *pgxpool.Pool
 	store       *Store
+	syslog      *syslogfw.Forwarder // nil 时跳过 syslog 外发
 	collectorID string
 	logPath     string
 	nodeName    string
@@ -37,6 +39,9 @@ func NewCollector(db *pgxpool.Pool, collectorID, logPath, nodeName string) *Coll
 		batchSize:   100,
 	}
 }
+
+// SetSyslogForwarder 设置 syslog 外发器（应用装配时使用，可为 nil）。
+func (c *Collector) SetSyslogForwarder(fw *syslogfw.Forwarder) { c.syslog = fw }
 
 // Metrics 返回采集指标。
 func (c *Collector) Metrics() map[string]interface{} {
@@ -166,7 +171,13 @@ func (c *Collector) processLine(ctx context.Context, line []byte) {
 		}
 		return
 	}
-	if _, err := c.store.InsertEvent(ctx, evt); err != nil {
+	// 过滤正常流量：无规则命中的请求不是安全事件（SecAuditEngine On 会审计所有事务，
+	// 不过滤会把正常访问全部灌进事件表，开启头体留痕后体量更大）。
+	if len(evt.Matches) == 0 {
+		return
+	}
+	_, inserted, err := c.store.InsertEvent(ctx, evt)
+	if err != nil {
 		c.failedCount++
 		slog.Error("insert event failed", "error", err, "request_id", evt.RequestID)
 		if dbErr := c.store.InsertFailure(ctx, c.collectorID, string(line), "insert: "+err.Error()); dbErr != nil {
@@ -176,6 +187,10 @@ func (c *Collector) processLine(ctx context.Context, line []byte) {
 	}
 	c.processedCount++
 	c.lastProcessed = time.Now()
+	// syslog 外发（三期）：仅新插入的事件外发（去重已存在的不重复外发），非阻塞投递
+	if inserted {
+		c.syslog.Enqueue(syslogfw.KindSecurityEvent, evt.Severity, syslogPayload(evt))
+	}
 }
 
 // Run 持续采集（轮询间隔）。

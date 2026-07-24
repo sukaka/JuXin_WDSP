@@ -47,7 +47,7 @@ describe('SmartTable', () => {
       <SmartTable<Row> rowKey="id" columns={columns} dataSource={data} pagination={false} storageKey="t-reset" />,
     )
     fireEvent.click(screen.getByRole('button', { name: /列设置/ }))
-    let box = (await screen.findByText('重置列宽与显隐')).parentElement!.parentElement as HTMLElement
+    const box = (await screen.findByText('重置列宽与显隐')).parentElement!.parentElement as HTMLElement
     fireEvent.click(within(box).getByLabelText('状态'))
     const table = document.querySelector('table')!
     expect(within(table).queryByText('状态')).not.toBeInTheDocument()

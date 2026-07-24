@@ -108,6 +108,9 @@ services:
       # 阶段8：采集网关 API 运行时事件日志（只读卷）+ 下发网关的日志路径
       WAF_API_EVENTS_LOG: /var/log/caddy-audit/api-runtime-events.log
       GATEWAY_API_EVENTS_LOG: /var/log/caddy/api-runtime-events.log
+      # 全量访问日志（二期）：采集网关 JSON Lines 日志（只读卷）+ 下发网关的日志路径
+      WAF_ACCESS_FULL_LOG: /var/log/caddy-audit/access-full.jsonl
+      GATEWAY_ACCESS_FULL_LOG: /var/log/caddy/access-full.jsonl
       API_MAX_BODY_PARSE_BYTES: ${API_MAX_BODY_PARSE_BYTES:-1048576}
       API_MAX_BODY_SAMPLE_BYTES: ${API_MAX_BODY_SAMPLE_BYTES:-65536}
       API_MAX_JSON_DEPTH: ${API_MAX_JSON_DEPTH:-32}

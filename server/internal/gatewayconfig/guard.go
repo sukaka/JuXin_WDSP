@@ -48,6 +48,17 @@ type GuardValkey struct {
 	DB       int    `json:"db"`
 }
 
+// GuardAccessLog 全量访问日志采集配置（下发网关，对应 gateway jiuzhang_guard access_log 段）。
+type GuardAccessLog struct {
+	Enabled                bool   `json:"enabled"`
+	CaptureRequestHeaders  bool   `json:"capture_request_headers"`
+	CaptureRequestBody     bool   `json:"capture_request_body"`
+	CaptureResponseHeaders bool   `json:"capture_response_headers"`
+	CaptureResponseBody    bool   `json:"capture_response_body"`
+	BodyLimitKB            int    `json:"body_limit_kb"`
+	LogPath                string `json:"log_path"`
+}
+
 // GuardAppRules 单应用视角的规则与策略。
 type GuardAppRules struct {
 	Allow    []GuardRule   `json:"allow"`
@@ -79,6 +90,8 @@ type GuardConfig struct {
 	APIFormalSchemas map[string]map[string]string `json:"api_formal_schemas,omitempty"`
 	// APIKnownEndpoints 已知 API 端点基线（endpoint_key → asset_status），经发布通道下发网关
 	APIKnownEndpoints map[string]string `json:"api_known_endpoints,omitempty"`
+	// AccessLog 全量访问日志（二期；nil 或 enabled=false 时网关零行为变化）
+	AccessLog *GuardAccessLog `json:"access_log,omitempty"`
 }
 
 // buildGuardHandler 构建单应用路由的 jiuzhang_guard 处理器 JSON。
@@ -124,6 +137,10 @@ func buildGuardHandler(g *GuardConfig, app AppData) mapT {
 	h["rate_limits"] = policies
 	if g.Valkey != nil {
 		h["valkey"] = g.Valkey
+	}
+	// 全量访问日志（二期）：非 nil 时注入（网关按 enabled 决定是否采集）
+	if g.AccessLog != nil {
+		h["access_log"] = g.AccessLog
 	}
 	// 阶段8：仅在 WDSP 开启时注入 API 动态防护配置（关闭时 JSON 与纯 WAF 一致）
 	if g.APIDynamicProtection {

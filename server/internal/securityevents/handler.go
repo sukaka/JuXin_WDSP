@@ -254,7 +254,7 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 		AttackType: r.URL.Query().Get("attack_type"),
 		Severity:   r.URL.Query().Get("severity"),
 		Page:       1,
-		PageSize:   10000,
+		PageSize:   100,
 	}
 	if st := r.URL.Query().Get("start_time"); st != "" {
 		if t, err := time.Parse(time.RFC3339, st); err == nil {
@@ -266,10 +266,20 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 			f.EndTime = &t
 		}
 	}
-	list, _, err := h.store.List(r.Context(), f)
-	if err != nil {
-		response.InternalError(w, r, err)
-		return
+	// 分页拉取（List 单页上限 100），导出总量上限 10000 行
+	var list []Event
+	for page := 1; len(list) < 10000; page++ {
+		f.Page = page
+		f.PageSize = 100
+		batch, total, err := h.store.List(r.Context(), f)
+		if err != nil {
+			response.InternalError(w, r, err)
+			return
+		}
+		list = append(list, batch...)
+		if int64(len(list)) >= total || len(batch) == 0 {
+			break
+		}
 	}
 	h.recordAudit(r, p, "security_events", "export", "security_event", "", fmt.Sprintf("count=%d", len(list)), audits.ResultSuccess, audits.RiskMedium)
 

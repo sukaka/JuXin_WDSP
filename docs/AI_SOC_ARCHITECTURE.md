@@ -4,13 +4,14 @@
 
 - 编排器：`server/internal/aiorchestrator/`（orchestrator.go / intent.go / evidence.go / session.go / context.go / task_store.go）
 - 模型网关：`server/internal/aimodel/`（gateway.go / client.go / store.go）
-- Tool 体系：`server/internal/aitools/`（registry.go / event_tools.go / log_tools.go / asset_tools.go / access_tools.go / draft_tools.go / draft_store.go）
+- Tool 体系：`server/internal/aitools/`（registry.go / event_tools.go / log_tools.go / asset_tools.go / access_tools.go / draft_tools.go / draft_store.go / noise_tools.go）
 - 专业 Agent：`server/internal/aiagents/`（event_agent.go / policy_agent.go / misc_agents.go）
-- 接口层：`server/internal/aihandlers/`（chat / analyze / models / agents_tools / drafts / prompts / memories / audits / usage / tasks / evaluations 各 handler）
+- 自动降噪：`server/internal/ainoise/`（fingerprint.go / source.go / store.go / mem_store.go / verdict.go / recommend.go / worker.go，AI 模块首个后台任务）
+- 接口层：`server/internal/aihandlers/`（chat / analyze / models / agents_tools / drafts / prompts / memories / audits / usage / tasks / evaluations / noise 各 handler）
 - 支撑包：`server/internal/aiaudit/`、`server/internal/aicost/`、`server/internal/aimemory/`、`server/internal/aiprompts/`
-- 装配：`server/internal/app/app.go` 阶段7装配块（`aiDeps.RegisterRoutes` 统一挂载路由）
-- 数据迁移：`server/migrations/000013_stage7.up.sql`（20 张 ai_* 表）、`000014_seed_stage7_perms.up.sql`（31 个权限点）、`000015_seed_stage7_model.up.sql`（本地模型种子）
-- 前端：`web/src/pages/ai/`（assistant / event-analysis / attack-profile / attack-chain / policy-recommendation / report-summary / tasks / admin）
+- 装配：`server/internal/app/app.go` 阶段7装配块（`aiDeps.RegisterRoutes` 统一挂载路由；降噪 worker 仅 `cfg.AI.Enabled` 时启动）
+- 数据迁移：`server/migrations/000013_stage7.up.sql`（20 张 ai_* 表）、`000014_seed_stage7_perms.up.sql`（31 个权限点）、`000015_seed_stage7_model.up.sql`（本地模型种子）、`000021_ai_noise_reduction.up.sql`（3 张降噪表 + 2 个权限点）
+- 前端：`web/src/pages/ai/`（assistant / event-analysis / attack-profile / attack-chain / policy-recommendation / report-summary / tasks / noise-reduction / admin）
 
 ## 1. 定位与目标
 
@@ -38,9 +39,9 @@
 
 ## 2. 角色与权限模型
 
-阶段7 新增 31 个 `ai.*` 权限点（`module='ai'`，迁移 000014），沿用阶段2 三权分立角色（详见 `docs/RBAC_DESIGN.md`）。路由层经 `middleware.RequirePermission` 逐接口强制校验；多角色只读场景用 `requireAnyPerm`（任一权限满足即放行）。
+阶段7 新增 31 个 `ai.*` 权限点（`module='ai'`，迁移 000014），AI 自动降噪增量再增 2 个（迁移 000021），合计 33 个；沿用阶段2 三权分立角色（详见 `docs/RBAC_DESIGN.md`）。路由层经 `middleware.RequirePermission` 逐接口强制校验；多角色只读场景用 `requireAnyPerm`（任一权限满足即放行）。
 
-### 2.1 31 个权限点与角色分配
+### 2.1 33 个权限点与角色分配
 
 | 权限点 | 名称 | SECURITY_ADMIN | SYSTEM_ADMIN | AUDIT_ADMIN |
 |--------|------|:---:|:---:|:---:|
@@ -75,8 +76,10 @@
 | ai.audits.read | 查看AI审计 | ✓ | ✓ | ✓ |
 | ai.usage.read | 查看AI用量 | ✓ | ✓ | ✓ |
 | ai.evaluations.run | 运行AI评估 | | ✓ | |
+| ai.noise_reduction.use | 使用AI自动降噪（迁移 000021） | ✓ | ✓ | |
+| ai.noise_reduction.manage | 管理AI自动降噪（迁移 000021） | | ✓ | |
 
-分配原则（迁移 000014 注释）：安全管理员获得 AI 分析与草稿全量能力（23 点，不含模型/Agent/Tool/Prompt 管理）；系统管理员获得 AI 运维诊断与模型/Agent/Tool/Prompt/评估管理（20 点）；审计管理员仅 AI 审计与用量只读（2 点）。
+分配原则（迁移 000014/000021 注释）：安全管理员获得 AI 分析与草稿全量能力（24 点，不含模型/Agent/Tool/Prompt 管理；含降噪使用）；系统管理员获得 AI 运维诊断与模型/Agent/Tool/Prompt/评估管理（22 点，含降噪使用与管理）；审计管理员仅 AI 审计与用量只读（2 点）。
 
 ### 2.2 两层权限校验
 
@@ -118,12 +121,12 @@
         ▼                     │                          │
 ┌────────────────────┐        │                          │
 │ aitools.Registry   │        │                          │
-│ 31 个 Tool          │        │                          │
+│ 33 个 Tool          │        │                          │
 │ 权限校验→超时→审计   │        │                          │
 └───────┬────────────┘        │                          │
         ▼                     ▼                          ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│ PostgreSQL 16：业务表只读查询（事件/日志/策略/资产/监控）+ 20 张 ai_* 表 │
+│ PostgreSQL 16：业务表只读查询（事件/日志/策略/资产/监控）+ 23 张 ai_* 表 │
 │ Ollama 容器（默认 qwen2.5:3b，OpenAI 兼容 /v1/chat/completions）      │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -133,6 +136,7 @@
 - **总调度不设独立 Agent 进程**：任务书"总调度 Agent"由编排器内置承担（`app.go` 注释），`ai_agents` 表中 `dispatcher` 行仅作展示且标注"编排器内置，不可停用"；代码注册表实际调度 7 个专业 Agent。
 - **意图分类不用 LLM**：`Classify` 为确定性正则规则（可测试、无额外 Token 成本、无注入面），LLM 只出现在最终总结环节。
 - **证据优先于生成**：`composeAnswer` 把 LLM 总结放在确定性事实文本之前作为引导段，事实为主体；LLM 失败时直接省略总结段，回答仍然成立。
+- **降噪走独立后台支线**：`ainoise.Worker`（AI 模块首个后台任务）不经编排器，在 `StartStage6Workers` 中以 goroutine 周期扫描事件窗口做确定性指纹聚类，可选 LLM 误报评分，产物一律 DRAFT 推荐；仅 `cfg.AI.Enabled` 时启动，`ai_noise.enabled=false` 时 ticker 空转。详见 [AI_NOISE_REDUCTION_DESIGN.md](AI_NOISE_REDUCTION_DESIGN.md)。
 
 ## 4. 请求处理链路（用户消息 → SSE）
 
@@ -200,7 +204,8 @@ SSE 事件类型（`Step.Kind` 枚举：plan / agent_start / tool / agent_done /
 |----|------|----------|
 | aiorchestrator | 意图分类、任务规划、Agent 调度、证据聚合与引用校验、上下文预算与压缩、任务记录 | `Classify`/`ExtractIDs`（intent.go）、`Orchestrator.Run`（orchestrator.go）、`EvidenceSet`（evidence.go）、`SessionStore`（session.go）、`Compress`/`CheckBudget`（context.go）、`TaskStore`（task_store.go） |
 | aimodel | 模型网关与持久化 | `Gateway` 路由/熔断/健康检查（gateway.go）、`OpenAIClient`（client.go）、`Store` 供应商/模型/密钥（store.go） |
-| aitools | Tool 统一契约与注册中心、31 个 Tool、草稿落库 | `Registry.Execute`（registry.go）、查询 Tool 26 个 + 草稿 Tool 5 个、`DraftStore` |
+| aitools | Tool 统一契约与注册中心、33 个 Tool、草稿落库 | `Registry.Execute`（registry.go）、查询 Tool 28 个 + 草稿 Tool 5 个、`DraftStore` |
+| ainoise | AI 自动降噪：确定性指纹聚类、可选 LLM 误报评分、DRAFT 降噪推荐、后台周期扫描 | `NormalizeURI`/`Fingerprint`（fingerprint.go）、`Worker.Run`/`SweepOnce`（worker.go）、`SQLStore`（store.go）、`VerdictEvaluator`（verdict.go）、`Recommender`（recommend.go） |
 | aiagents | 7 个专业 Agent（确定性分析 + 证据引用 + 可选 LLM 受约束总结） | event_agent.go / policy_agent.go / misc_agents.go |
 | aihandlers | HTTP 接口层、SSE、属主隔离、配额前置、用量/审计落库、注册表同步 | handler.go（路由）、chat_handler.go、analyze_handler.go 等 12 个文件 |
 | aiaudit | AI 独立审计链（哈希链） | `Service.Record` / `VerifyChain` |
@@ -222,9 +227,9 @@ SSE 事件类型（`Step.Kind` 枚举：plan / agent_start / tool / agent_done /
 
 另有 `dispatcher`（总调度）为编排器内置，不在代码注册表中。Agent 启停由 `ai_agents.status` 控制，调度前逐次查库（`AgentEnabledChecker`）。
 
-### 5.3 Tool 注册中心（31 个 Tool）
+### 5.3 Tool 注册中心（33 个 Tool）
 
-风险等级仅两类：`READ_ONLY`（26 个查询 Tool）、`DRAFT_ONLY`（5 个草稿 Tool）。统一契约：`Code/Name/Description/Version/RiskLevel/RequiredPermission/TimeoutSeconds/MaxResults/InputSchema/Run`。
+风险等级仅两类：`READ_ONLY`（28 个查询 Tool）、`DRAFT_ONLY`（5 个草稿 Tool）。统一契约：`Code/Name/Description/Version/RiskLevel/RequiredPermission/TimeoutSeconds/MaxResults/InputSchema/Run`。
 
 | Tool code | 名称 | 风险 | 所需权限 |
 |-----------|------|------|----------|
@@ -254,6 +259,8 @@ SSE 事件类型（`Step.Kind` 枚举：plan / agent_start / tool / agent_done /
 | rule.search | WAF规则查询 | READ_ONLY | waf_rules.read |
 | rule.get | WAF规则详情 | READ_ONLY | waf_rules.read |
 | exception.search | 例外策略查询 | READ_ONLY | exceptions.read |
+| noise_cluster.search | 降噪簇查询 | READ_ONLY | ai.noise_reduction.use |
+| noise_cluster.get | 降噪簇详情 | READ_ONLY | ai.noise_reduction.use |
 | draft.exception.create | 例外策略草稿 | DRAFT_ONLY | ai.draft.exception |
 | draft.blacklist.create | 黑名单草稿 | DRAFT_ONLY | ai.draft.blacklist |
 | draft.cc_policy.create | CC策略草稿 | DRAFT_ONLY | ai.draft.cc_policy |
@@ -305,6 +312,7 @@ Agent 的事实来源只有两条通道，均为只读：
 | 反馈 | `ai_feedback` |
 | 草稿 | 草稿 Tool 写业务表（默认停用态）+ `ai_recommendations` 登记 |
 | 管理面 | `ai_model_providers` / `ai_models` / `ai_provider_secrets` / `ai_agents` / `ai_tools` / `ai_prompts` / `ai_prompt_versions` / `ai_memories` / `ai_evaluation_sets` / `ai_evaluation_runs` |
+| 自动降噪 | `ai_noise_clusters` / `ai_noise_cluster_events` / `ai_noise_sweep_runs`（降噪 worker 与降噪接口落库；推荐写 `ai_recommendations`，类型 `NOISE_REDUCTION`、DRAFT） |
 
 ### 6.3 草稿数据流（DRAFT_ONLY）
 
@@ -320,7 +328,7 @@ Agent 的事实来源只有两条通道，均为只读：
 
 每次生成同时 `RecordRecommendation` 写 `ai_recommendations`（`created_by_ai=TRUE`、`status='DRAFT'`、`evidence_references` 存证据编号、`draft_reference` 回挂草稿 ID）；黑名单草稿复用阶段5保护地址检查（`ProtectedChecker`）防误封保护地址。草稿查询/废弃接口要求任一 `ai.draft.*` 权限。
 
-### 6.4 ai_* 表清单（20 张，迁移 000013）
+### 6.4 ai_* 表清单（23 张：迁移 000013 建 20 张 + 迁移 000021 建 3 张）
 
 | 分组 | 表 |
 |------|----|
@@ -333,8 +341,9 @@ Agent 的事实来源只有两条通道，均为只读：
 | 推荐/压缩/反馈（3） | ai_recommendations、ai_context_compressions、ai_feedback |
 | 评估（2） | ai_evaluation_sets、ai_evaluation_runs |
 | 用量与审计（2） | ai_usage_records、ai_audit_records |
+| 自动降噪（3，迁移 000021） | ai_noise_clusters、ai_noise_cluster_events、ai_noise_sweep_runs |
 
-启动时 `SyncRegistry` 将代码注册表中的 7 个 Agent 与 31 个 Tool upsert 到 `ai_agents`/`ai_tools`（code 唯一，更新元数据但保留启停状态），管理面启停即时生效。
+启动时 `SyncRegistry` 将代码注册表中的 7 个 Agent 与 33 个 Tool upsert 到 `ai_agents`/`ai_tools`（code 唯一，更新元数据但保留启停状态），管理面启停即时生效。
 
 ## 7. 与阶段6 监控/审计的关系
 
@@ -353,7 +362,9 @@ Agent 的事实来源只有两条通道，均为只读：
 
 **监控现状（如实说明）**：阶段6 `runtimehealth` 的 10 类组件探针不包含 Ollama/AI 组件，AI 调用失败不触发 `system_alerts`；AI 可用性保障依赖模型网关熔断 + 主备切换 + 回答层降级（LLM 失败回退纯事实文本）+ 启动失败不致命（路由加载失败仅告警日志）。
 
-**故障解耦**：AI 模块整体内嵌于管理 API 进程，无独立 worker；Ollama 不可用或模型熔断期间，WAF 防护、事件采集、监控告警、备份恢复等阶段1-6 链路不受影响，AI 入口表现为分析失败或降级回答。
+**后台任务（降噪 worker，AI 模块首个后台任务）**：`ainoise.Worker` 在 `StartStage6Workers` 中以 goroutine 运行（仅 `cfg.AI.Enabled` 时装配），结构照搬 guardjanitor（ticker + `SweepOnce` 可独立调用）；设置存 `system_settings` 组 `ai_noise`，每 tick 热读，`enabled=false` 时空转。降级原则：LLM 不可用/输出非法 → verdict 记 UNKNOWN 不致命；单事件源失败 → 扫描记 PARTIAL；全部失败 → 记 FAILED；错误如实落 `ai_noise_sweep_runs` 与 slog，不静默吞掉。聚类为纯确定性 sha256 指纹，不依赖 LLM。
+
+**故障解耦**：AI 模块整体内嵌于管理 API 进程，无独立部署进程（降噪 worker 同为进程内 goroutine）；Ollama 不可用或模型熔断期间，WAF 防护、事件采集、监控告警、备份恢复等阶段1-6 链路不受影响，AI 入口表现为分析失败或降级回答，降噪仅缺失 LLM 评分（聚类与计数不受影响）。
 
 ## 8. 部署拓扑
 
@@ -381,11 +392,13 @@ Agent 的事实来源只有两条通道，均为只读：
 3. **默认零成本**：种子模型 `qwen2.5:3b`（上下文 32768、最大输出 2048、超时 120s、优先级 1、单价 0），三个路由档位默认全部指向它（配置缺失时 `defaultModelCode` 兜底，不致命）；
 4. **外部模型可选**：可登记任意 OpenAI 兼容供应商（`openai_compatible` 类型），密钥 AES-256-GCM 加密入库，支持轮换（`POST /api/v1/ai/models/providers/{id}/rotate-key`）；敏感场景可只用本地模型（路由档位全部指向本地模型即不出内网）；
 5. **许可证**：Ollama（MIT）、Qwen2.5（Apache-2.0），均为宽松许可证，符合项目第三方组件约束；
-6. **密钥底线**：文档与代码均不含任何明文密钥；`JIUZHANG_MASTER_KEY` 由环境变量注入，仅驻留服务端进程内存。
+6. **密钥底线**：文档与代码均不含任何明文密钥；`JIUZHANG_MASTER_KEY` 由环境变量注入，仅驻留服务端进程内存；
+7. **降噪无新部署依赖**：AI 自动降噪为管理 API 进程内 goroutine，复用同一 PostgreSQL 与模型网关，不新增容器/端口/服务；默认 `llm_verdict_enabled=false` 时整链零 LLM 调用（纯确定性聚类），开启后走 standard 路由档，单次扫描评分上限 20 簇构成成本兜底。
 
 ## 9. 关联文档
 
 - 任务书：[STAGE_7_AI_SECURITY_OPERATIONS.md](tasks/STAGE_7_AI_SECURITY_OPERATIONS.md)
+- AI 自动降噪设计：[AI_NOISE_REDUCTION_DESIGN.md](AI_NOISE_REDUCTION_DESIGN.md)
 - 总体架构：[ARCHITECTURE.md](ARCHITECTURE.md)
 - 权限设计（三权分立）：[RBAC_DESIGN.md](RBAC_DESIGN.md)
 - 操作审计与哈希链思想：[AUDIT_DESIGN.md](AUDIT_DESIGN.md)
