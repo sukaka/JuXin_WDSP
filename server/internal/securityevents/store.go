@@ -24,10 +24,11 @@ func NewStore(db *pgxpool.Pool) *Store {
 }
 
 // InsertEvent 插入安全事件与匹配记录（去重：同 request_id + 时间窗口）。
-func (s *Store) InsertEvent(ctx context.Context, evt *NormalizedEvent) (uuid.UUID, error) {
+// inserted 为 false 表示命中去重（事件已存在，未重复插入）。
+func (s *Store) InsertEvent(ctx context.Context, evt *NormalizedEvent) (uuid.UUID, bool, error) {
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -38,10 +39,10 @@ func (s *Store) InsertEvent(ctx context.Context, evt *NormalizedEvent) (uuid.UUI
 		evt.RequestID, evt.OccurredAt).Scan(&existingID)
 	if err == nil {
 		_ = tx.Commit(ctx)
-		return existingID, nil // 已存在，去重
+		return existingID, false, nil // 已存在，去重
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 
 	var eventID uuid.UUID
@@ -49,16 +50,19 @@ func (s *Store) InsertEvent(ctx context.Context, evt *NormalizedEvent) (uuid.UUI
 INSERT INTO security_events (request_id, occurred_at, domain, gateway_node_id, client_ip, connection_ip,
   client_port, request_method, request_uri, request_path, query_summary, http_version, content_type,
   user_agent_summary, referer_summary, event_source, attack_type, severity, anomaly_score, action,
-  response_status, rule_match_count, disposition_status, raw_log_reference)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+  response_status, rule_match_count, disposition_status, raw_log_reference,
+  request_headers, request_body, request_body_truncated, response_headers, response_body, response_body_truncated)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
 RETURNING id`,
 		evt.RequestID, evt.OccurredAt, evt.Host, evt.GatewayNode, nullableIP(evt.ClientIP), nullableIP(evt.ClientIP),
 		evt.ClientPort, evt.Method, evt.URI, evt.Path, evt.QuerySummary, evt.HTTPVersion, evt.ContentType,
 		evt.UserAgent, evt.Referer, "coraza", evt.AttackType, evt.Severity, evt.AnomalyScore, evt.Action,
 		evt.ResponseStatus, len(evt.Matches), "UNPROCESSED", evt.RawRef,
+		nonNilHeaders(evt.RequestHeaders), evt.RequestBody, evt.RequestBodyTruncated,
+		nonNilHeaders(evt.ResponseHeaders), evt.ResponseBody, evt.ResponseBodyTruncated,
 	).Scan(&eventID)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 
 	// 插入匹配记录
@@ -70,13 +74,13 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 			eventID, evt.OccurredAt, m.RuleID, m.RuleName, m.Severity, m.Message,
 			m.MatchedVariable, m.MatchedData, mustJSONStr(m.Tags), m.Phase, evt.AnomalyScore)
 		if err != nil {
-			return uuid.Nil, err
+			return uuid.Nil, false, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
-	return eventID, nil
+	return eventID, true, nil
 }
 
 // InsertFailure 记录解析失败到错误队列。
@@ -92,32 +96,38 @@ func (s *Store) InsertFailure(ctx context.Context, collectorID, rawLine, reason 
 
 // Event 是安全事件。
 type Event struct {
-	ID                uuid.UUID  `json:"id"`
-	RequestID         string     `json:"request_id"`
-	OccurredAt        time.Time  `json:"occurred_at"`
-	ApplicationID     *uuid.UUID `json:"application_id"`
-	AppName           string     `json:"application_name_snapshot"`
-	Domain            string     `json:"domain"`
-	GatewayNode       string     `json:"gateway_node_id"`
-	ClientIP          string     `json:"client_ip"`
-	ClientPort        int        `json:"client_port"`
-	Method            string     `json:"request_method"`
-	URI               string     `json:"request_uri"`
-	Path              string     `json:"request_path"`
-	QuerySummary      string     `json:"query_summary"`
-	HTTPVersion       string     `json:"http_version"`
-	ContentType       string     `json:"content_type"`
-	UserAgent         string     `json:"user_agent_summary"`
-	Referer           string     `json:"referer_summary"`
-	AttackType        string     `json:"attack_type"`
-	Severity          string     `json:"severity"`
-	AnomalyScore      int        `json:"anomaly_score"`
-	Action            string     `json:"action"`
-	ResponseStatus    int        `json:"response_status"`
-	RuleMatchCount    int        `json:"rule_match_count"`
-	DispositionStatus string     `json:"disposition_status"`
-	DispositionResult string     `json:"disposition_result"`
-	RawRef            string     `json:"raw_log_reference"`
+	ID                uuid.UUID           `json:"id"`
+	RequestID         string              `json:"request_id"`
+	OccurredAt        time.Time           `json:"occurred_at"`
+	ApplicationID     *uuid.UUID          `json:"application_id"`
+	AppName           string              `json:"application_name_snapshot"`
+	Domain            string              `json:"domain"`
+	GatewayNode       string              `json:"gateway_node_id"`
+	ClientIP          string              `json:"client_ip"`
+	ClientPort        int                 `json:"client_port"`
+	Method            string              `json:"request_method"`
+	URI               string              `json:"request_uri"`
+	Path              string              `json:"request_path"`
+	QuerySummary      string              `json:"query_summary"`
+	HTTPVersion       string              `json:"http_version"`
+	ContentType       string              `json:"content_type"`
+	UserAgent         string              `json:"user_agent_summary"`
+	Referer           string              `json:"referer_summary"`
+	AttackType        string              `json:"attack_type"`
+	Severity          string              `json:"severity"`
+	AnomalyScore      int                 `json:"anomaly_score"`
+	Action            string              `json:"action"`
+	ResponseStatus    int                 `json:"response_status"`
+	RuleMatchCount    int                 `json:"rule_match_count"`
+	DispositionStatus string              `json:"disposition_status"`
+	DispositionResult string              `json:"disposition_result"`
+	RawRef            string              `json:"raw_log_reference"`
+	RequestHeaders    map[string][]string `json:"request_headers"`
+	RequestBody       string              `json:"request_body"`
+	RequestBodyTrunc  bool                `json:"request_body_truncated"`
+	ResponseHeaders   map[string][]string `json:"response_headers"`
+	ResponseBody      string              `json:"response_body"`
+	ResponseBodyTrunc bool                `json:"response_body_truncated"`
 }
 
 // ListFilter 是事件查询筛选。
@@ -207,9 +217,9 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Event, int64, error) 
 	}
 	query := `
 SELECT id, request_id, occurred_at, application_id, application_name_snapshot, domain, gateway_node_id,
-  client_ip, connection_ip, client_port, request_method, request_uri, request_path, query_summary,
+  client_ip, connection_ip, COALESCE(client_port, 0), request_method, request_uri, request_path, query_summary,
   http_version, content_type, user_agent_summary, referer_summary, attack_type, severity, anomaly_score,
-  action, response_status, rule_match_count, disposition_status, disposition_result, raw_log_reference
+  action, COALESCE(response_status, 0), rule_match_count, disposition_status, disposition_result, raw_log_reference
 FROM security_events WHERE ` + where + fmt.Sprintf(" ORDER BY occurred_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
 	rows, err := s.db.Query(ctx, query, args...)
@@ -237,13 +247,14 @@ FROM security_events WHERE ` + where + fmt.Sprintf(" ORDER BY occurred_at DESC L
 	return out, total, rows.Err()
 }
 
-// GetByID 查询事件详情。
+// GetByID 查询事件详情（含请求/响应头体留痕）。
 func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Event, []MatchInfo, error) {
 	row := s.db.QueryRow(ctx, `
 SELECT id, request_id, occurred_at, application_id, application_name_snapshot, domain, gateway_node_id,
-  client_ip, connection_ip, client_port, request_method, request_uri, request_path, query_summary,
+  client_ip, connection_ip, COALESCE(client_port, 0), request_method, request_uri, request_path, query_summary,
   http_version, content_type, user_agent_summary, referer_summary, attack_type, severity, anomaly_score,
-  action, response_status, rule_match_count, disposition_status, disposition_result, raw_log_reference
+  action, COALESCE(response_status, 0), rule_match_count, disposition_status, disposition_result, raw_log_reference,
+  request_headers, request_body, request_body_truncated, response_headers, response_body, response_body_truncated
 FROM security_events WHERE id = $1`, id)
 	var e Event
 	var appID *uuid.UUID
@@ -251,7 +262,8 @@ FROM security_events WHERE id = $1`, id)
 	err := row.Scan(&e.ID, &e.RequestID, &e.OccurredAt, &appID, &e.AppName, &e.Domain, &e.GatewayNode,
 		&cip, &connIP, &e.ClientPort, &e.Method, &e.URI, &e.Path, &e.QuerySummary, &e.HTTPVersion,
 		&e.ContentType, &e.UserAgent, &e.Referer, &e.AttackType, &e.Severity, &e.AnomalyScore,
-		&e.Action, &e.ResponseStatus, &e.RuleMatchCount, &e.DispositionStatus, &e.DispositionResult, &e.RawRef)
+		&e.Action, &e.ResponseStatus, &e.RuleMatchCount, &e.DispositionStatus, &e.DispositionResult, &e.RawRef,
+		&e.RequestHeaders, &e.RequestBody, &e.RequestBodyTrunc, &e.ResponseHeaders, &e.ResponseBody, &e.ResponseBodyTrunc)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil, fmt.Errorf("event not found")
@@ -364,9 +376,9 @@ func (s *Store) RelatedEvents(ctx context.Context, e *Event, limit int) ([]Event
 	}
 	rows, err := s.db.Query(ctx, `
 SELECT id, request_id, occurred_at, application_id, application_name_snapshot, domain, gateway_node_id,
-  client_ip, connection_ip, client_port, request_method, request_uri, request_path, query_summary,
+  client_ip, connection_ip, COALESCE(client_port, 0), request_method, request_uri, request_path, query_summary,
   http_version, content_type, user_agent_summary, referer_summary, attack_type, severity, anomaly_score,
-  action, response_status, rule_match_count, disposition_status, disposition_result, raw_log_reference
+  action, COALESCE(response_status, 0), rule_match_count, disposition_status, disposition_result, raw_log_reference
 FROM security_events
 WHERE id <> $1 AND (client_ip = $2 OR attack_type = $3 OR domain = $4)
 ORDER BY occurred_at DESC LIMIT $5`,
@@ -403,6 +415,14 @@ func nullableIP(ip string) interface{} {
 		return nil
 	}
 	return ip
+}
+
+// nonNilHeaders 保证头部 map 非 nil（jsonb 列 NOT NULL，nil 会编码为 SQL NULL）。
+func nonNilHeaders(h map[string][]string) map[string][]string {
+	if h == nil {
+		return map[string][]string{}
+	}
+	return h
 }
 
 func mustJSONStr(v []string) string {
