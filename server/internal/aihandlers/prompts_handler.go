@@ -349,3 +349,53 @@ func (d *Deps) promptError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	response.InternalError(w, r, err)
 }
+
+// PromptRename PATCH /api/v1/ai/prompts/{id}：编辑 Prompt 名称（编码不可变）。
+func (d *Deps) PromptRename(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的Prompt ID")
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	prompt, err := d.Prompts.Rename(r.Context(), id, req.Name, &p.UserID)
+	if err != nil {
+		d.promptError(w, r, err)
+		return
+	}
+	d.recordAIAudit(p, aiaudit.Record{
+		Action: "prompt_rename",
+		RequestSummary: "重命名 Prompt " + prompt.Code + " 为 " + prompt.Name, ResultSummary: "SUCCESS",
+	})
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{"prompt": prompt})
+}
+
+// PromptDelete DELETE /api/v1/ai/prompts/{id}：删除未发布（DRAFT）Prompt 及全部版本。
+func (d *Deps) PromptDelete(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的Prompt ID")
+		return
+	}
+	if err := d.Prompts.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, aiprompts.ErrActivePrompt) {
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "已发布的 Prompt 不可删除")
+			return
+		}
+		d.promptError(w, r, err)
+		return
+	}
+	d.recordAIAudit(p, aiaudit.Record{
+		Action: "prompt_delete",
+		RequestSummary: "删除 Prompt " + id.String(), ResultSummary: "SUCCESS",
+	})
+	response.JSON(w, r, http.StatusOK, map[string]string{"message": "Prompt 已删除"})
+}

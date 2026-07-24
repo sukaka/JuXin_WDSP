@@ -88,3 +88,17 @@ func TestMarkTestResultInvalid(t *testing.T) {
 		t.Error("非法测试结果应被拒绝")
 	}
 }
+
+// TestRenameValidation 名称校验在 DB 前：空名/超长名直接拒绝。
+func TestRenameValidation(t *testing.T) {
+	s := NewStore(nil)
+	if _, err := s.Rename(context.Background(), uuid.New(), "", nil); err == nil {
+		t.Error("空名称应被拒绝")
+	}
+	if _, err := s.Rename(context.Background(), uuid.New(), strings.Repeat("长", 101), nil); err == nil {
+		t.Error("超过 100 字符的名称应被拒绝")
+	}
+	if _, err := s.Rename(context.Background(), uuid.New(), "  ", nil); err == nil {
+		t.Error("纯空白名称应被拒绝")
+	}
+}

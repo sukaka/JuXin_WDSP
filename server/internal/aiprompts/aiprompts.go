@@ -43,6 +43,9 @@ type Version struct {
 // ErrNotFound 不存在。
 var ErrNotFound = errors.New("prompt not found")
 
+// ErrActivePrompt 已发布（ACTIVE）的 Prompt 不可删除。
+var ErrActivePrompt = errors.New("published prompt cannot be deleted")
+
 // ErrUnsafeContent Prompt 包含禁止内容。
 var ErrUnsafeContent = errors.New("prompt contains forbidden content")
 
@@ -246,6 +249,54 @@ SELECT v.content FROM ai_prompts p JOIN ai_prompt_versions v ON v.id = p.current
 		return "", err
 	}
 	return content, nil
+}
+
+// Rename 修改 Prompt 名称（编码不可变，仅名称可编辑）。
+func (s *Store) Rename(ctx context.Context, id uuid.UUID, name string, updatedBy *uuid.UUID) (*Prompt, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 100 {
+		return nil, fmt.Errorf("名称必填且不超过 100 字符")
+	}
+	var p Prompt
+	err := s.db.QueryRow(ctx, `
+UPDATE ai_prompts SET name=$2, updated_by=$3, updated_at=now() WHERE id=$1
+RETURNING id, code, name, prompt_type, status, current_version_id, created_at`,
+		id, name, updatedBy).Scan(&p.ID, &p.Code, &p.Name, &p.PromptType, &p.Status, &p.CurrentVersionID, &p.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// Delete 删除 Prompt 及其全部版本（事务）。
+// 仅允许删除未发布（DRAFT）的 Prompt；已发布（ACTIVE）返回 ErrActivePrompt。
+func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM ai_prompts WHERE id=$1 FOR UPDATE`, id).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if status == "ACTIVE" {
+		return ErrActivePrompt
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM ai_prompt_versions WHERE prompt_id=$1`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM ai_prompts WHERE id=$1`, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // Rollback 回滚到指定已发布版本。
