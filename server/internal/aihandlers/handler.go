@@ -22,6 +22,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/aicost"
 	"github.com/jiuzhang-waf/server/internal/aimemory"
 	"github.com/jiuzhang-waf/server/internal/aimodel"
+	"github.com/jiuzhang-waf/server/internal/ainoise"
 	"github.com/jiuzhang-waf/server/internal/aiorchestrator"
 	"github.com/jiuzhang-waf/server/internal/aiprompts"
 	"github.com/jiuzhang-waf/server/internal/aitools"
@@ -48,6 +49,9 @@ type Deps struct {
 	Memories *aimemory.Store
 	Prompts  *aiprompts.Store
 	Settings *settings.Service
+	// 阶段7 增量：AI 自动降噪（簇仓储 + 后台扫描工人；未装配时端点降级 503）
+	Noise       ainoise.Store
+	NoiseWorker *ainoise.Worker
 	// AgentCodes 代码 registry 中实际注册的 Agent code（列表 in_registry 标记用）
 	AgentCodes map[string]bool
 	// chat 运行态（停止信号用）
@@ -161,6 +165,17 @@ func (d *Deps) RegisterRoutes(mux *http.ServeMux, authChain func(http.Handler) h
 	mux.Handle("POST /api/v1/ai/evaluation-sets", authChain(rp("ai.evaluations.run")(http.HandlerFunc(d.EvalSetCreate))))
 	mux.Handle("GET /api/v1/ai/evaluation-runs", authChain(evalRead(http.HandlerFunc(d.EvalRunList))))
 	mux.Handle("POST /api/v1/ai/evaluations/run", authChain(rp("ai.evaluations.run")(http.HandlerFunc(d.EvalRun))))
+
+	// ---- AI 自动降噪（簇查询/统计/状态流转 use；手动扫描与设置 manage）----
+	mux.Handle("GET /api/v1/ai/noise/clusters", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseClusterList))))
+	mux.Handle("GET /api/v1/ai/noise/clusters/{id}", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseClusterGet))))
+	mux.Handle("POST /api/v1/ai/noise/clusters/{id}/suppress", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseClusterSuppress))))
+	mux.Handle("POST /api/v1/ai/noise/clusters/{id}/resolve", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseClusterResolve))))
+	mux.Handle("GET /api/v1/ai/noise/stats", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseStats))))
+	mux.Handle("POST /api/v1/ai/noise/sweeps", authChain(rp("ai.noise_reduction.manage")(http.HandlerFunc(d.NoiseSweepTrigger))))
+	mux.Handle("GET /api/v1/ai/noise/sweeps", authChain(rp("ai.noise_reduction.use")(http.HandlerFunc(d.NoiseSweepList))))
+	mux.Handle("GET /api/v1/ai/noise/settings", authChain(rp("ai.noise_reduction.manage")(http.HandlerFunc(d.NoiseSettingsGet))))
+	mux.Handle("PUT /api/v1/ai/noise/settings", authChain(rp("ai.noise_reduction.manage")(http.HandlerFunc(d.NoiseSettingsPut))))
 }
 
 // requireAnyPerm 任一权限满足即放行（多角色只读/草稿聚合场景）。
@@ -288,6 +303,9 @@ func (d *Deps) loadOwnedSession(w http.ResponseWriter, r *http.Request) (*aiorch
 
 // recordAIAudit 写 AI 审计（独立短超时 ctx，避免请求取消后丢失；失败只记日志不吞主流程）。
 func (d *Deps) recordAIAudit(p *authz.Principal, rec aiaudit.Record) {
+	if p == nil || d.Audit == nil {
+		return
+	}
 	rec.UserID = &p.UserID
 	rec.Username = p.Username
 	rec.RoleCodes = strings.Join(p.Roles, ",")

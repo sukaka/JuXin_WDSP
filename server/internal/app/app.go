@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/accesscontrolevents"
 	"github.com/jiuzhang-waf/server/internal/accesscontrolversions"
+	"github.com/jiuzhang-waf/server/internal/accesslogs"
 	"github.com/jiuzhang-waf/server/internal/accessrules"
 	"github.com/jiuzhang-waf/server/internal/aggregations"
 	"github.com/jiuzhang-waf/server/internal/aiagents"
@@ -22,6 +23,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/aihandlers"
 	"github.com/jiuzhang-waf/server/internal/aimemory"
 	"github.com/jiuzhang-waf/server/internal/aimodel"
+	"github.com/jiuzhang-waf/server/internal/ainoise"
 	"github.com/jiuzhang-waf/server/internal/aiorchestrator"
 	"github.com/jiuzhang-waf/server/internal/aiprompts"
 	"github.com/jiuzhang-waf/server/internal/aitools"
@@ -59,6 +61,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/securityevents"
 	"github.com/jiuzhang-waf/server/internal/sessions"
 	"github.com/jiuzhang-waf/server/internal/settings"
+	"github.com/jiuzhang-waf/server/internal/syslogfw"
 	"github.com/jiuzhang-waf/server/internal/systemalerts"
 	"github.com/jiuzhang-waf/server/internal/temporaryblocks"
 	"github.com/jiuzhang-waf/server/internal/trustedproxies"
@@ -78,11 +81,15 @@ type App struct {
 	sessions *sessions.Service
 	settings *settings.Service
 	authSvc  *auth.Service
+	// syslog 外发器（三期）：采集器 fan-out 与 syslog-test 接口共用
+	syslogFw *syslogfw.Forwarder
 	// 阶段6后台工人（由 StartStage6Workers 启动）
 	alertEngine     *systemalerts.Engine
 	reportWorker    *reports.Handler
 	backupWorker    *backups.Worker
 	healthCollector *runtimehealth.Collector
+	// 阶段7 增量：AI 自动降噪后台工人（仅 AI 模块启用时启动）
+	noiseWorker *ainoise.Worker
 }
 
 // New 装配应用。
@@ -192,7 +199,20 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 				APIDynamicProtection: cfg.Product.APIDynamicProtectionEnabled(),
 				APIProtectionMode:    cfg.Product.EffectiveAPIProtectionMode(),
 				APIEventsLog:         cfg.WAF.APIEventsLogGateway,
+				// 全量访问日志（二期）：网关容器内日志路径
+				AccessLogPath: cfg.WAF.AccessFullLogGateway,
 			})
+		// 全量访问日志（二期）：logging 组系统设置随发布下发网关（热生效走现有发布链路）
+		guardProvider.SetAccessLogLoader(func(ctx context.Context) (guardconfig.AccessLogSettings, error) {
+			return guardconfig.AccessLogSettings{
+				Enabled:                settingsSvc.GetBool(ctx, "logging", "access_log_enabled", false),
+				CaptureRequestHeaders:  settingsSvc.GetBool(ctx, "logging", "capture_request_headers", true),
+				CaptureRequestBody:     settingsSvc.GetBool(ctx, "logging", "capture_request_body", false),
+				CaptureResponseHeaders: settingsSvc.GetBool(ctx, "logging", "capture_response_headers", true),
+				CaptureResponseBody:    settingsSvc.GetBool(ctx, "logging", "capture_response_body", false),
+				BodyLimitKB:            settingsSvc.GetInt(ctx, "logging", "body_limit_kb", 64),
+			}, nil
+		})
 		// 阶段8：冻结正式模型与已知端点基线随发布下发网关（WDSP 开启时）
 		if cfg.Product.APIDynamicProtectionEnabled() {
 			guardProvider.SetAPIModels(apimodels.NewStore(db))
@@ -298,6 +318,12 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 	}
 	// Tool 执行强制尊重 ai_tools 表启停状态
 	aiRegistry.SetEnabledChecker(aihandlers.ToolEnabledChecker(db))
+	// AI 自动降噪：确定性指纹聚类 + 可选 LLM 误报评分（产物一律 DRAFT，人工审核；
+	// 事件源在 WDSP 且 API 动态防护开启时追加 api_runtime_events）
+	noiseStore := ainoise.NewStore(db)
+	noiseSource := ainoise.NewEventSource(db, cfg.Product.APIDynamicProtectionEnabled())
+	noiseWorker := ainoise.NewWorker(noiseStore, noiseSource, settingsSvc, aiGateway, aitools.NewDraftStore(db))
+	aitools.NewNoiseTools(aiRegistry, noiseStore)
 	// 编排器：注册 7 个专业 Agent（总调度由编排器内置承担）
 	aiOrch := aiorchestrator.New(db, aiGateway, aiRegistry, aiAuditSvc, aiSessionStore, aiCostRec, aiorchestrator.DefaultLimits())
 	agentCodes := map[string]bool{}
@@ -336,6 +362,7 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 		DB: db, Orch: aiOrch, Sessions: aiSessionStore, Gateway: aiGateway, Models: aiModelStore,
 		Tools: aiRegistry, Drafts: aitools.NewDraftStore(db), Audit: aiAuditSvc, Cost: aiCostRec,
 		Memories: aiMemoryStore, Prompts: aiPromptStore, Settings: settingsSvc, AgentCodes: agentCodes,
+		Noise: noiseStore, NoiseWorker: noiseWorker,
 	})
 	// 启动时加载模型路由档位（配置缺失回退默认本地模型，加载失败不致命）
 	if err := aiDeps.ReloadRoutes(context.Background()); err != nil {
@@ -349,15 +376,23 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 	logHandler := loginlogs.NewHandler(logSvc)
 	auditHandler := audits.NewHandler(auditSvc)
 	settingHandler := settings.NewHandler(settingsSvc, auditSvc)
+	// syslog 外发（三期）：spool 落在可写数据目录
+	syslogFw := syslogfw.NewForwarder(settingsSvc, cfg.Gateway.DataDir)
+	syslogHandler := syslogfw.NewHandler(syslogFw, auditSvc)
 	profileHandler := users.NewProfileHandler(userStore, logSvc)
 
 	a := &App{
 		cfg: cfg, db: db, cache: c,
 		users: userStore, sessions: sessSvc, settings: settingsSvc, authSvc: authSvc,
+		syslogFw: syslogFw,
 	}
 	a.alertEngine = alertEngine
 	a.reportWorker = reportHandler
 	a.backupWorker = backupWorker
+	// AI 自动降噪后台工人仅随 AI 模块启用（空转判断在 ticker 内按设置执行）
+	if cfg.AI.Enabled {
+		a.noiseWorker = noiseWorker
+	}
 	a.healthCollector = runtimehealth.NewCollector(db, runtimehealth.Options{
 		Caddy:                 gatewayconfig.NewCaddyClient(cfg.Gateway.AdminSocket),
 		Cache:                 c,
@@ -430,6 +465,7 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 	// ---- 系统设置 ----
 	mux.Handle("GET /api/v1/system-settings", authz(middleware.RequirePermission("system_settings.read")(http.HandlerFunc(settingHandler.List))))
 	mux.Handle("PUT /api/v1/system-settings", authz(middleware.RequirePermission("system_settings.update")(http.HandlerFunc(settingHandler.Update))))
+	mux.Handle("POST /api/v1/system-settings/syslog-test", authz(middleware.RequirePermission("logging.syslog_test")(http.HandlerFunc(syslogHandler.Test))))
 
 	// ---- 阶段3：Web应用/域名/源站/证书/配置发布/版本/网关状态 ----
 	if encSvc != nil {
@@ -541,6 +577,12 @@ func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 	mux.Handle("POST /api/v1/security-events/{id}/resolve", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.Resolve))))
 	mux.Handle("POST /api/v1/security-events/{id}/mark-analyzing", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.MarkAnalyzing))))
 	mux.Handle("POST /api/v1/security-events/{id}/create-exception", authz(middleware.RequirePermission("exceptions.manage")(http.HandlerFunc(eventHandler.CreateException))))
+
+	// 全量访问日志（二期）
+	accessLogHandler := accesslogs.NewHandler(accesslogs.NewStore(db), auditSvc)
+	mux.Handle("GET /api/v1/access-logs", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.List))))
+	mux.Handle("GET /api/v1/access-logs/export", authz(exportRate(middleware.RequirePermission("access_logs.export")(http.HandlerFunc(accessLogHandler.Export)))))
+	mux.Handle("GET /api/v1/access-logs/{id}", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.Get))))
 
 	// ---- 阶段5：可信代理/保护地址/黑白名单/CC策略/临时封禁/访问控制事件/版本 ----
 	// 可信代理
@@ -767,6 +809,9 @@ func requireAnyPerm(perms ...string) func(http.Handler) http.Handler {
 
 // StartStage6Workers 启动阶段6后台工人：报告生成、备份执行、运行健康采集与告警评估。
 // 幂等（重复调用仅首次生效）。
+// SyslogForwarder 返回 syslog 外发器（main 装配采集器 fan-out 与后台发送循环用）。
+func (a *App) SyslogForwarder() *syslogfw.Forwarder { return a.syslogFw }
+
 func (a *App) StartStage6Workers(ctx context.Context) {
 	if a.reportWorker != nil {
 		go a.reportWorker.Run(ctx, 2*time.Second)
@@ -776,6 +821,10 @@ func (a *App) StartStage6Workers(ctx context.Context) {
 	}
 	if a.healthCollector != nil {
 		go a.healthCollector.Run(ctx, 30*time.Second)
+	}
+	// AI 自动降噪：周期聚类扫描（enabled=false 时 ticker 内空转）
+	if a.noiseWorker != nil {
+		go a.noiseWorker.Run(ctx)
 	}
 	// 告警评估：每 30s 基于最新健康快照评估一次
 	if a.alertEngine != nil && a.healthCollector != nil {
