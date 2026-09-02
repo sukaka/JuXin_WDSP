@@ -463,6 +463,9 @@ export default function WafRulesPage() {
                           <Tag>{item.date.slice(0, 10)}</Tag>
                           <Typography.Text>命中 {item.hits}</Typography.Text>
                           <Typography.Text>阻断 {item.blocks}</Typography.Text>
+                          <Typography.Text>确认攻击 {item.confirmed_attacks}</Typography.Text>
+                          <Typography.Text>确认误报 {item.false_positives}</Typography.Text>
+                          <Typography.Text>已研判 {item.reviewed}</Typography.Text>
                           <Typography.Text>未确认 {item.unresolved}</Typography.Text>
                           {item.protect_recommendation ? (
                             <Tag color="green">建议人工评估 PROTECT</Tag>
