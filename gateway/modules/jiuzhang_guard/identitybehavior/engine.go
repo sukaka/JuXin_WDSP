@@ -47,6 +47,12 @@ type Engine struct {
 	headless   *lru // identity -> 上次 HEADLESS 信号时间（60s 节流）
 }
 
+// degradationMetricsSource 是存储实现可选提供的低基数降级快照能力。
+// 内存存储不实现该能力，调用方应将零值视为“无远端降级指标”。
+type degradationMetricsSource interface {
+	DegradationMetrics() ValkeyDegradationMetrics
+}
+
 // NewEngine 装配引擎（cfg 为 Compile 产物；store/events 由装配层按配置选定实现）。
 func NewEngine(cfg *Config, store Store, events *EventLogger, opts Options) *Engine {
 	logger := opts.Logger
@@ -63,6 +69,20 @@ func NewEngine(cfg *Config, store Store, events *EventLogger, opts Options) *Eng
 		signalSink: opts.SignalSink,
 		headless:   newLRU(throttleCapLRU),
 	}
+}
+
+// DegradationMetrics 返回底层远端存储的降级计数快照。
+// 这是供装配层或运维采集器读取的 adapter hook，不创建额外的 HTTP/API 出口；
+// 未接入支持该能力的存储时返回零值。
+func (e *Engine) DegradationMetrics() ValkeyDegradationMetrics {
+	if e == nil || e.store == nil {
+		return ValkeyDegradationMetrics{}
+	}
+	source, ok := e.store.(degradationMetricsSource)
+	if !ok {
+		return ValkeyDegradationMetrics{}
+	}
+	return source.DegradationMetrics()
 }
 
 // throttleCapLRU HEADLESS 信号节流 LRU 容量（identity 键量级与内存存储一致）。

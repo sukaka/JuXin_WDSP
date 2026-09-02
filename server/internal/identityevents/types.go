@@ -27,6 +27,7 @@ const (
 	IdentityTypeBot         = "BOT"
 	IdentityTypeApplication = "APPLICATION"
 	IdentityTypeService     = "SERVICE"
+	IdentityTypeMachine     = "MACHINE"
 	IdentityTypeAgent       = "AGENT"
 	IdentityTypeUnknown     = "UNKNOWN"
 )
@@ -176,7 +177,7 @@ func parseRecordLine(line []byte) (*Record, error) {
 func normalizeIdentityType(t string) string {
 	switch t {
 	case IdentityTypeHuman, IdentityTypeBot, IdentityTypeApplication,
-		IdentityTypeService, IdentityTypeAgent:
+		IdentityTypeService, IdentityTypeMachine, IdentityTypeAgent:
 		return t
 	default:
 		return IdentityTypeUnknown

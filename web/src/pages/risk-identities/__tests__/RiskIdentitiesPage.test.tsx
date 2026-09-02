@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { App as AntdApp, ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -136,6 +136,16 @@ describe('RiskIdentitiesPage', () => {
       expect(await screen.findByText(label)).toBeInTheDocument()
     }
     expect(screen.getByText(`共 ${IDENTITY_TYPE_ROWS.length} 条`)).toBeInTheDocument()
+  })
+
+  it('身份筛选提供 V1.1 七类身份', async () => {
+    vi.stubGlobal('fetch', mockFetchWith({ items: [], page: 1, page_size: 20, total: 0 }))
+    renderPage()
+    fireEvent.mouseDown(screen.getByText('身份类型'))
+    for (const { label } of IDENTITY_TYPE_ROWS) {
+      expect(await screen.findByTitle(label)).toBeInTheDocument()
+    }
+    expect(screen.getByTitle('机器')).toBeInTheDocument()
   })
 
   it('列表为空时展示空态', async () => {
