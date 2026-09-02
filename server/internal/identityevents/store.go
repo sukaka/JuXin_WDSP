@@ -39,8 +39,9 @@ func NewStore(db *pgxpool.Pool) *Store {
 func (s *Store) UpsertObservation(ctx context.Context, q Querier, rec *Record) error {
 	accountID, jwtSubject, apiKeyHash, oauthClientID := derivedIdentityFields(rec.Credentials)
 	confidenceSource := []byte("[]")
-	if len(rec.IdentityEvidence) > 0 {
-		if raw, err := json.Marshal(rec.IdentityEvidence); err == nil {
+	identityEvidence := sanitizeIdentityEvidence(rec.IdentityEvidence)
+	if len(identityEvidence) > 0 {
+		if raw, err := json.Marshal(identityEvidence); err == nil {
 			confidenceSource = raw
 		}
 	}
@@ -196,14 +197,14 @@ func (s *Store) RecordSignal(ctx context.Context, q Querier, rec *Record) error 
 		return err
 	}
 	metadata := []byte("{}")
-	if len(rec.Metadata) > 0 {
-		if raw, merr := json.Marshal(rec.Metadata); merr == nil {
+	if cleanMetadata := sanitizeSignalMetadata(rec.Metadata); len(cleanMetadata) > 0 {
+		if raw, merr := json.Marshal(cleanMetadata); merr == nil {
 			metadata = raw
 		}
 	}
 	identityEvidence := []byte("[]")
-	if len(rec.IdentityEvidence) > 0 {
-		if raw, merr := json.Marshal(rec.IdentityEvidence); merr == nil {
+	if cleanEvidence := sanitizeIdentityEvidence(rec.IdentityEvidence); len(cleanEvidence) > 0 {
+		if raw, merr := json.Marshal(cleanEvidence); merr == nil {
 			identityEvidence = raw
 		}
 	}

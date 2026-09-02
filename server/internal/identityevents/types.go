@@ -27,7 +27,6 @@ const (
 	IdentityTypeBot         = "BOT"
 	IdentityTypeApplication = "APPLICATION"
 	IdentityTypeService     = "SERVICE"
-	IdentityTypeMachine     = "MACHINE"
 	IdentityTypeAgent       = "AGENT"
 	IdentityTypeUnknown     = "UNKNOWN"
 )
@@ -150,6 +149,7 @@ func parseRecordLine(line []byte) (*Record, error) {
 	switch rec.RecordType {
 	case RecordTypeObservation:
 		rec.IdentityType = normalizeIdentityType(rec.IdentityType)
+		rec.IdentityEvidence = sanitizeIdentityEvidence(rec.IdentityEvidence)
 	case RecordTypeSnapshot:
 		if len(rec.Windows) == 0 {
 			return nil, fmt.Errorf("behavior_snapshot without windows")
@@ -164,6 +164,8 @@ func parseRecordLine(line []byte) (*Record, error) {
 		if rec.Mode == "" {
 			rec.Mode = "OBSERVE"
 		}
+		rec.IdentityEvidence = sanitizeIdentityEvidence(rec.IdentityEvidence)
+		rec.Metadata = sanitizeSignalMetadata(rec.Metadata)
 	default:
 		return nil, fmt.Errorf("unknown record_type %q", rec.RecordType)
 	}
@@ -174,7 +176,7 @@ func parseRecordLine(line []byte) (*Record, error) {
 func normalizeIdentityType(t string) string {
 	switch t {
 	case IdentityTypeHuman, IdentityTypeBot, IdentityTypeApplication,
-		IdentityTypeService, IdentityTypeMachine, IdentityTypeAgent:
+		IdentityTypeService, IdentityTypeAgent:
 		return t
 	default:
 		return IdentityTypeUnknown
