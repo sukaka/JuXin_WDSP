@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -108,6 +109,25 @@ func TestEmitIdentityObservationFields(t *testing.T) {
 	l2.EmitIdentityObservation(testBase("ik-2", "203.0.113.2"), nil)
 	if got := readEventLines(t, path2)[0]["credentials"]; got == nil {
 		t.Fatal("credentials must be [] not null")
+	}
+}
+
+func TestEmitIdentityObservationDoesNotLeakCredentialRawValue(t *testing.T) {
+	l, path := newEventTestLogger(t)
+	const rawToken = "eyJhbGciOiJIUzI1NiJ9.secret-token-material"
+	l.EmitIdentityObservation(testBase("ik-secret", "203.0.113.9"), []Credential{
+		{Type: CredentialOAuth, Hash: "h-safe", OAuthClientID: "client-safe", raw: rawToken},
+	})
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), rawToken) {
+		t.Fatalf("identity observation must not contain raw credential: %s", data)
+	}
+	if !strings.Contains(string(data), `"hash":"h-safe"`) {
+		t.Fatalf("identity observation should retain credential fingerprint: %s", data)
 	}
 }
 

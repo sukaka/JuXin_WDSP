@@ -99,9 +99,10 @@ func ResolveIdentity(r *http.Request, salt, clientIP string) *Identity {
 			tls.VersionName(r.TLS.Version), tls.CipherSuiteName(r.TLS.CipherSuite))
 	}
 	id.Credentials = extractCredentials(r, salt)
-	// An API key/OAuth credential is a stable application signal. Other
-	// credentials remain subject to the UA/session classification so that an
-	// unverified JWT or cookie cannot silently become a stronger identity type.
+	// An API key/OAuth credential is a stable application correlation signal;
+	// OAuth claims are still unverified and therefore receive weak confidence.
+	// Other credentials remain subject to the UA/session classification so that
+	// an unverified JWT or cookie cannot silently become a stronger identity type.
 	if len(id.Credentials) > 0 {
 		switch id.Credentials[0].Type {
 		case CredentialAPIKey, CredentialOAuth:
@@ -134,7 +135,10 @@ func identityConfidence(id *Identity) (uint8, []string) {
 		case CredentialAPIKey:
 			return 75, []string{"credential:api_key"}
 		case CredentialOAuth:
-			return 75, []string{"credential:oauth"}
+			// client_id comes from an unverified JWT payload. It is useful for
+			// correlation, but must remain a weak signal until the gateway has
+			// verified the token/signature against a trusted issuer.
+			return 30, []string{"credential:oauth_unverified"}
 		case CredentialJWT:
 			return 65, []string{"credential:jwt", "credential:subject"}
 		case CredentialSession:

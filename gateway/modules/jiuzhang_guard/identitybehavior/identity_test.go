@@ -74,6 +74,18 @@ func TestResolveIdentityOAuthClientCredential(t *testing.T) {
 	if id.Key != detectors.Fingerprint("s", "cred:OAUTH:"+token) {
 		t.Fatalf("oauth key: %q", id.Key)
 	}
+	if id.Type != IdentityApplication {
+		t.Fatalf("oauth credential should remain APPLICATION for correlation: %q", id.Type)
+	}
+	if id.Confidence >= 70 {
+		t.Fatalf("unverified oauth claims must not get high confidence: %d", id.Confidence)
+	}
+	if !containsSignal(id.Evidence, "credential:oauth_unverified") {
+		t.Fatalf("oauth evidence must explain unverified source: %v", id.Evidence)
+	}
+	if containsSignal(id.Evidence, "credential:oauth") {
+		t.Fatalf("oauth evidence must not imply verification: %v", id.Evidence)
+	}
 }
 
 func TestResolveIdentityOpaqueBearerAndBasic(t *testing.T) {
