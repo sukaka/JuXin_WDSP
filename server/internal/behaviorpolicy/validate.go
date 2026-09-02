@@ -41,7 +41,7 @@ func Validate(p *Policy) []FieldError {
 	}
 
 	if p.Mode != ModeObserve {
-		add("mode", "当前仅支持 OBSERVE 观测模式")
+		add("mode", "行为策略仅支持 OBSERVE；PROTECT 请在风险策略中配置")
 	}
 
 	// 比率 0-1

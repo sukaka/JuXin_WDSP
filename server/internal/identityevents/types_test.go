@@ -50,6 +50,27 @@ func TestParseObservationIdentityTypeNormalize(t *testing.T) {
 	}
 }
 
+func TestParseObservationIdentityTypes(t *testing.T) {
+	for _, identityType := range []string{
+		IdentityTypeHuman,
+		IdentityTypeBot,
+		IdentityTypeApplication,
+		IdentityTypeService,
+		IdentityTypeMachine,
+		IdentityTypeAgent,
+		IdentityTypeUnknown,
+	} {
+		line := fmt.Sprintf(`{"record_type":"identity_observation","occurred_at":"2026-09-01T10:00:00Z","identity_key":"ik-%s","identity_type":"%s"}`, identityType, identityType)
+		rec, err := parseRecordLine([]byte(line))
+		if err != nil {
+			t.Fatalf("parse %s: %v", identityType, err)
+		}
+		if rec.IdentityType != identityType {
+			t.Errorf("identity_type = %q, want %q", rec.IdentityType, identityType)
+		}
+	}
+}
+
 func TestParseObservationV11IdentityContract(t *testing.T) {
 	line := `{"record_type":"identity_observation","occurred_at":"2026-09-01T10:00:00Z","identity_key":"ik-agent","identity_type":"AGENT","identity_confidence":82,"identity_evidence":["credential:oauth"]}`
 	rec, err := parseRecordLine([]byte(line))

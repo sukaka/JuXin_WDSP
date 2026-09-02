@@ -42,6 +42,27 @@ const IDENTITY_ROW = {
   last_seen_at: '2026-08-31T12:00:00Z',
 }
 
+const IDENTITY_TYPE_ROWS = [
+  ['HUMAN', '真人'],
+  ['BOT', '机器人'],
+  ['APPLICATION', '应用程序'],
+  ['SERVICE', '服务'],
+  ['MACHINE', '机器'],
+  ['AGENT', '智能体'],
+  ['UNKNOWN', '未知'],
+].map(([identity_type, label], index) => ({
+  ...IDENTITY_ROW,
+  id: `idn-demo-${index}`,
+  identity_key: `demo-identity-${identity_type.toLowerCase()}`,
+  identity_type,
+  primary_ip: `198.51.100.${index + 10}`,
+  account_id: identity_type === 'HUMAN' ? 'demo-account' : '',
+  risk_score: index * 10,
+  risk_level: index >= 6 ? 'LOW' : index >= 4 ? 'HIGH' : 'MEDIUM',
+  request_count: index + 1,
+  label,
+}))
+
 function mockFetchWith(body: unknown, status = 200) {
   const envelope =
     status === 200
@@ -97,6 +118,24 @@ describe('RiskIdentitiesPage', () => {
     expect(screen.getByText('86')).toBeInTheDocument()
     expect(screen.getByText('acct-1001')).toBeInTheDocument()
     expect(screen.getByText('共 1 条')).toBeInTheDocument()
+  })
+
+  it('展示全部身份类型标签', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetchWith({
+        items: IDENTITY_TYPE_ROWS,
+        page: 1,
+        page_size: 20,
+        total: IDENTITY_TYPE_ROWS.length,
+      }),
+    )
+    renderPage()
+
+    for (const { label } of IDENTITY_TYPE_ROWS) {
+      expect(await screen.findByText(label)).toBeInTheDocument()
+    }
+    expect(screen.getByText(`共 ${IDENTITY_TYPE_ROWS.length} 条`)).toBeInTheDocument()
   })
 
   it('列表为空时展示空态', async () => {

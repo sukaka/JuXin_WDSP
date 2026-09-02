@@ -11,7 +11,7 @@
 ```bash
 # 前置：已构建 jiuzhang-server:<version> 与 jiuzhang-gateway:<version> 镜像
 # 建议先生成 SBOM：scripts/generate-sbom.sh
-ops/offline-package/build.sh --version 2.5.3
+ops/offline-package/build.sh --version 2.5.4
 # 无 docker 环境仅打包文件清单验证时：--skip-images；输出目录可用 -o 指定
 ```
 

@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   App as AntdApp,
+  Alert,
   Button,
   Card,
   Col,
@@ -159,6 +160,12 @@ export default function BehaviorPolicyPage() {
         <QueryErrorAlert error={policyQuery.error} message="加载行为策略失败" />
       ) : (
         <>
+          <Alert
+            type="info"
+            showIcon
+            style={{ maxWidth: 1080, marginBottom: 16 }}
+            title="行为策略只负责生成 OBSERVE 信号，不直接阻断请求；需要限速或阻断时，请在风险策略中显式切换为 PROTECT。"
+          />
           <Form<PolicyFormValues>
             form={form}
             layout="vertical"
@@ -176,7 +183,7 @@ export default function BehaviorPolicyPage() {
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12} md={8}>
-                <Form.Item label="防护模式" extra="阻断动作将在后续阶段开放">
+                <Form.Item label="检测模式" extra="行为检测固定为 OBSERVE；Risk Engine 的处置模式由风险策略控制">
                   <Select
                     disabled
                     value="OBSERVE"

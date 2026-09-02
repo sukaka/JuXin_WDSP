@@ -39,6 +39,8 @@ const POLICY = {
   param_mutation_threshold: 10,
   auth_fail_threshold: 8,
   low_slow_sensitive_min_hits: 3,
+  account_enum_threshold: 20,
+  object_enum_threshold: 20,
   sensitive_paths: ['/admin'],
   scores: {
     URI_ENUMERATION: 10,
@@ -48,6 +50,9 @@ const POLICY = {
     PARAMETER_MUTATION: 12,
     AUTH_FAIL_PROBE: 10,
     LOW_SLOW_RECON: 20,
+    HEADLESS: 6,
+    ACCOUNT_ENUMERATION: 11,
+    OBJECT_ENUMERATION: 11,
   },
   whitelist_ips: ['10.0.0.1'],
   whitelist_uas: [],
@@ -108,8 +113,9 @@ describe('BehaviorPolicyPage', () => {
     // 敏感路径与白名单 tags 回填
     expect(screen.getByText('/admin')).toBeInTheDocument()
     expect(screen.getByText('10.0.0.1')).toBeInTheDocument()
-    // 模式禁用态 + 后续阶段说明
-    expect(screen.getByText('阻断动作将在后续阶段开放')).toBeInTheDocument()
+    // 行为检测固定 OBSERVE，处置模式由风险策略控制
+    expect(screen.getByText(/行为策略只负责生成 OBSERVE 信号/)).toBeInTheDocument()
+    expect(screen.getByText(/行为检测固定为 OBSERVE/)).toBeInTheDocument()
     // 页脚版本信息
     expect(screen.getByText(/版本 v3/)).toBeInTheDocument()
   }, 15000)
@@ -127,7 +133,7 @@ describe('BehaviorPolicyPage', () => {
     expect(screen.getByRole('switch')).toBeDisabled()
   }, 15000)
 
-  it('PUT 成功：全量提交携带 version 并提示保存成功', async () => {
+  it('PUT 成功：全量提交携带 version', async () => {
     useAuthStore.setState({
       user: makeUser(['behavior_policy.read', 'behavior_policy.edit']),
       csrfToken: null,
@@ -142,7 +148,11 @@ describe('BehaviorPolicyPage', () => {
     await waitFor(() => expect(threshold.value).toBe('30'))
     fireEvent.click(screen.getByRole('button', { name: '保存策略' }))
 
-    expect(await screen.findByText('行为策略已保存')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some((c) => (c[1] as RequestInit | undefined)?.method === 'PUT'),
+      ).toBe(true)
+    })
     const putCall = fetchMock.mock.calls.find(
       (c) => (c[1] as RequestInit | undefined)?.method === 'PUT',
     )
@@ -153,6 +163,8 @@ describe('BehaviorPolicyPage', () => {
     expect(body.mode).toBe('OBSERVE')
     expect(body.enabled).toBe(true)
     expect(body.uri_enum_unique_threshold).toBe(30)
+    expect(body.account_enum_threshold).toBe(20)
+    expect(body.object_enum_threshold).toBe(20)
     expect(body.sensitive_paths).toEqual(['/admin'])
     expect(body.scores).toMatchObject({ URI_ENUMERATION: 10, LOW_SLOW_RECON: 20 })
     expect(body.whitelist_ips).toEqual(['10.0.0.1'])

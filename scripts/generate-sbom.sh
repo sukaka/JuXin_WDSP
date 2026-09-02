@@ -191,7 +191,7 @@ jq -n \
     metadata: {
       timestamp: $created,
       tools: [{vendor: "jiuzhang", name: "generate-sbom.sh"}],
-      component: {type: "application", name: "jiuzhang-waf", version: "2.5.3"}
+      component: {type: "application", name: "jiuzhang-waf", version: "2.5.4"}
     },
     components: $comps
   }' > "$OUT_DIR/SBOM.cyclonedx.json"

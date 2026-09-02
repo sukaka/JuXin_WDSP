@@ -10,8 +10,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// 策略作用域与模式（当前仅支持 GLOBAL 单行 + OBSERVE 观测模式——网关契约
-// recon_signal.mode 已冻结为 OBSERVE，阻断模式随后续阶段开放）。
+// 策略作用域与模式。行为策略只负责检测参数与信号生成，网关 recon_signal.mode
+// 固定为 OBSERVE；最终的限速/阻断模式由 security_risk_policy 统一控制。
+// 这样可以避免把检测配置误当成实时处置开关，且保持 Behavior Detector 与 Risk
+// Engine 的职责分离。
 const (
 	ScopeGlobal = "GLOBAL"
 	ModeObserve = "OBSERVE"
