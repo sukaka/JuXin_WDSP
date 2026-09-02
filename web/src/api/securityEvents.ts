@@ -1,9 +1,11 @@
 import { buildUrl, request } from './client'
 import type {
   CreateExceptionFromEventResult,
+  EventRemediationResult,
   PageResult,
   SecurityEventDetail,
   SecurityEventItem,
+  WafRuleEffectStatisticsPage,
 } from '../types'
 
 export interface SecurityEventListParams {
@@ -30,7 +32,22 @@ export interface DispositionBody {
   note?: string
 }
 
+export interface RuleEffectStatisticsParams {
+  from?: string
+  to?: string
+  rule_id?: number | string
+  rule_version?: string
+  page: number
+  page_size: number
+}
+
 export const securityEventsApi = {
+  ruleEffectStatistics: async (params: RuleEffectStatisticsParams) => {
+    const data = await request<WafRuleEffectStatisticsPage>('/waf-rules/effect-statistics', {
+      query: { ...params },
+    })
+    return { ...data, items: data.items ?? [] }
+  },
   list: async (params: SecurityEventListParams) => {
     const data = await request<PageResult<SecurityEventItem>>('/security-events', {
       query: { ...params },
@@ -52,6 +69,8 @@ export const securityEventsApi = {
     const data = await request<{ items: SecurityEventItem[] }>(`/security-events/${id}/related`)
     return { items: data.items ?? [] }
   },
+  remediation: (id: string) =>
+    request<EventRemediationResult>(`/security-events/${id}/remediation`),
   addNote: (id: string, note: string) =>
     request<{ message: string }>(`/security-events/${id}/notes`, { method: 'POST', body: { note } }),
   confirmAttack: (id: string, body: DispositionBody = {}) =>

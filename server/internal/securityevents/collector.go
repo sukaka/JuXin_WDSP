@@ -17,6 +17,7 @@ import (
 type Collector struct {
 	db          *pgxpool.Pool
 	store       *Store
+	resolver    *appResolver
 	syslog      *syslogfw.Forwarder // nil 时跳过 syslog 外发
 	collectorID string
 	logPath     string
@@ -33,6 +34,7 @@ func NewCollector(db *pgxpool.Pool, collectorID, logPath, nodeName string) *Coll
 	return &Collector{
 		db:          db,
 		store:       NewStore(db),
+		resolver:    newAppResolver(db),
 		collectorID: collectorID,
 		logPath:     logPath,
 		nodeName:    nodeName,
@@ -121,6 +123,10 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 	if (cp.inode != 0 && currentInode != cp.inode) || info.Size() < offset {
 		slog.Info("audit log rotated, resetting offset", "collector", c.collectorID, "old_offset", offset, "new_size", info.Size())
 		offset = 0
+		// 立即落断点：文件截断为空期间若无新内容，断点不前进会导致每轮采集重复判定轮转刷日志
+		if err := c.saveCheckpoint(ctx, 0, int64(currentInode)); err != nil {
+			slog.Warn("save checkpoint after rotation failed", "collector", c.collectorID, "error", err)
+		}
 	}
 	if info.Size() == offset {
 		return 0, nil // 无新内容
@@ -175,6 +181,11 @@ func (c *Collector) processLine(ctx context.Context, line []byte) {
 	// 不过滤会把正常访问全部灌进事件表，开启头体留痕后体量更大）。
 	if len(evt.Matches) == 0 {
 		return
+	}
+	// 域名→应用解析：回填 application_id 与应用名快照（未命中保持 nil/""）。
+	if appID, appName, ok := c.resolver.resolve(ctx, evt.Host); ok {
+		evt.ApplicationID = &appID
+		evt.ApplicationName = appName
 	}
 	_, inserted, err := c.store.InsertEvent(ctx, evt)
 	if err != nil {

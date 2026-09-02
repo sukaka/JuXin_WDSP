@@ -3,7 +3,8 @@
 # 数据来源：
 #   Go 依赖   server/go.mod + gateway/modules/jiuzhang_guard/go.mod（go list -m -json all）
 #   Node 依赖 web/package.json 顶层 dependencies（npm ls --depth=0 --json，失败回退 package.json）
-#   核心组件  与 docs/DEPENDENCIES.md 一致的固化清单（Caddy/Coraza/CRS/PostgreSQL/Valkey/xcaddy 等）
+#   核心组件  与 docs/DEPENDENCIES.md 一致的固化清单（Caddy/Coraza/CRS/PostgreSQL/Valkey/xcaddy 等，
+#             含 APM 数据面镜像 ClickHouse/otel-collector-contrib）
 # 输出确定性：组件按名称排序；时间戳取 git 最近提交时间（无 git 时用固定值）。
 # 退出码：0=成功 1=失败 2=用法错误
 set -euo pipefail
@@ -47,8 +48,14 @@ license_of() { # license_of NAME
   local n="$1"
   case "$n" in
     github.com/caddyserver/*|github.com/valkey-io/*|echarts|core://caddy|core://coraza|core://coraza-caddy|core://owasp-crs|core://xcaddy|core://go-ftw) echo "Apache-2.0" ;;
-    github.com/jackc/*|github.com/jung-kurt/*|go.uber.org/*|react|react-dom|antd|@ant-design/*|zustand|axios|dayjs|vite|@vitejs/*|typescript|core://gofpdf) echo "MIT" ;;
+    github.com/ClickHouse/*|go.opentelemetry.io/*|core://clickhouse|core://otel-collector-contrib) echo "Apache-2.0" ;; # APM 阶段2 数据面（归档见 licenses/clickhouse*/ch-go/opentelemetry-*/otel-collector-contrib/）
+    github.com/jackc/*|github.com/jung-kurt/*|github.com/gomutex/*|github.com/vicanso/*|github.com/wcharczuk/*|github.com/dustin/*|go.uber.org/*|react|react-dom|antd|@ant-design/*|zustand|axios|dayjs|vite|@vitejs/*|typescript|core://gofpdf) echo "MIT" ;;
+    github.com/andybalholm/brotli|github.com/go-faster/city|github.com/paulmach/orb|github.com/segmentio/asm) echo "MIT" ;; # clickhouse-go 传递依赖（已逐一对照上游 LICENSE 核实）
     github.com/google/uuid|golang.org/x/*|core://valkey) echo "BSD-3-Clause" ;;
+    github.com/go-faster/errors|github.com/pierrec/lz4/*) echo "BSD-3-Clause" ;; # clickhouse-go 传递依赖（含 "Neither the name" 条款，核实为 3-Clause）
+    google.golang.org/grpc|google.golang.org/genproto/*) echo "Apache-2.0" ;; # OTLP exporter 传递依赖（APM 链，已逐一对照上游 LICENSE 核实）
+    github.com/grpc-ecosystem/grpc-gateway/*|github.com/klauspost/compress) echo "BSD-3-Clause" ;; # OTLP/ch-go 传递依赖（含 "Neither the name" 条款，核实为 3-Clause）
+    github.com/golang/freetype) echo "FTL" ;; # freetype-go 双许可 FTL/GPLv2+，本项目选择宽松许可证 FTL
     github.com/redis/go-redis/*) echo "BSD-2-Clause" ;;
     core://postgresql) echo "PostgreSQL" ;;
     core://noto-fonts) echo "OFL-1.1" ;;
@@ -111,6 +118,8 @@ core://postgresql	16.4	core:infra
 core://valkey	8.1.8	core:infra
 core://noto-fonts	main	core:report
 core://curl	8.21.0	core:tool
+core://clickhouse	25.8	core:apm
+core://otel-collector-contrib	0.154.0	core:apm
 EOF
 
 # ---- 规范化：去重（同名同版本）+ 排序 ----
@@ -182,7 +191,7 @@ jq -n \
     metadata: {
       timestamp: $created,
       tools: [{vendor: "jiuzhang", name: "generate-sbom.sh"}],
-      component: {type: "application", name: "jiuzhang-waf", version: "2.2.0"}
+      component: {type: "application", name: "jiuzhang-waf", version: "2.3.0"}
     },
     components: $comps
   }' > "$OUT_DIR/SBOM.cyclonedx.json"

@@ -31,6 +31,8 @@ export interface CurrentUser {
   roles: RoleRef[]
   permissions: string[]
   must_change_password: boolean
+  /** 是否已开启双因子认证（TOTP）；缺省按未开启处理 */
+  totp_enabled?: boolean
   last_login_at?: string | null
   last_login_ip?: string | null
 }
@@ -40,6 +42,23 @@ export interface LoginResult {
   csrf_token: string
   password_expiring?: boolean
   password_expires_at?: string | null
+}
+
+/** 登录第二步挑战（密码校验通过且已开启双因子时 /auth/login 返回） */
+export interface TotpChallenge {
+  challenge_token: string
+}
+
+/** /auth/login 响应：密码直接通过，或进入双因子第二步验证 */
+export type LoginResponse =
+  | { code: 'SUCCESS'; data: LoginResult }
+  | { code: 'TOTP_REQUIRED'; data: TotpChallenge }
+
+/** TOTP 自助开启返回的密钥与恢复码（明文仅本次响应可见，需立即保存） */
+export interface TotpSetupData {
+  secret: string
+  otpauth_url: string
+  recovery_codes: string[]
 }
 
 export type MeResult = LoginResult
@@ -58,6 +77,8 @@ export interface UserItem {
   display_name: string
   status: string
   must_change_password: boolean
+  /** 是否已开启双因子认证（TOTP） */
+  totp_enabled?: boolean
   password_expires_at?: string | null
   locked_until?: string | null
   last_login_at?: string | null
@@ -70,6 +91,8 @@ export interface UserItem {
 
 export interface ProfileData extends UserItem {
   permissions: string[]
+  /** 权限码对应的中文名称与模块（服务端随资料返回） */
+  permission_details?: { code: string; name: string; module: string }[]
 }
 
 export interface SessionItem {
@@ -165,11 +188,17 @@ export interface HealthStatus {
 
 /* ==================== 阶段3：应用接入 / 源站 / 证书 / 配置发布 ==================== */
 
-/** 防护模式 */
-export type ProtectionMode = 'OFF' | 'OBSERVE' | 'PROTECT'
+/** 防护模式（BYPASS 为数据透传：跳过全部检测，仅用于排障/应急） */
+export type ProtectionMode = 'OFF' | 'OBSERVE' | 'PROTECT' | 'BYPASS'
 
 /** 应用状态 */
 export type ApplicationStatus = 'DRAFT' | 'ACTIVE' | 'DISABLED' | 'ERROR' | 'DELETED'
+
+/**
+ * 部署模式（REVERSE_PROXY 反向代理为默认；ROUTED 路由牵引 / MIRROR 镜像旁路 / TRANSPARENT 透明串接，
+ * 见 docs/NETWORK_MODES_DESIGN.md §4）
+ */
+export type DeploymentMode = 'REVERSE_PROXY' | 'ROUTED' | 'MIRROR' | 'TRANSPARENT'
 
 /** 部署状态 */
 export type DeploymentStatus =
@@ -190,6 +219,8 @@ export interface ApplicationItem {
   technical_owner: string
   status: ApplicationStatus
   protection_mode: ProtectionMode
+  /** 缺省按 REVERSE_PROXY（反向代理）处理 */
+  deployment_mode?: DeploymentMode
   deployment_status: DeploymentStatus
   health_status: string
   current_version_id?: string | null
@@ -537,6 +568,8 @@ export interface SecurityEventItem {
 export interface SecurityEventMatch {
   rule_id: number
   rule_name: string
+  rule_source?: string
+  rule_version?: string
   severity: string
   message: string
   matched_variable: string
@@ -569,6 +602,28 @@ export interface SecurityEventDetail {
   actions: SecurityEventActionRecord[] | null
   related: SecurityEventItem[] | null
 }
+
+/** 规则版本按日效果统计 */
+export interface WafRuleEffectStatistics {
+  date: string
+  rule_id: number
+  rule_key: string
+  rule_name: string
+  rule_source: string
+  rule_version: string
+  hits: number
+  blocks: number
+  unresolved: number
+  confirmed_attacks: number
+  false_positives: number
+  reviewed: number
+  confirmation_rate: number | null
+  fp_rate: number | null
+  protect_recommendation: boolean
+  protect_recommendation_reason?: string
+}
+
+export interface WafRuleEffectStatisticsPage extends PageResult<WafRuleEffectStatistics> {}
 
 /** 从事件创建例外草稿的结果 */
 export interface CreateExceptionFromEventResult {
@@ -862,12 +917,85 @@ export interface AccessControlEventItem {
   response_status?: number | null
   gateway_node_id: string
   message: string
+  /** HTTP 协议版本（HTTP/1.1 / HTTP/2.0 / HTTP/3；空 = 旧版网关未上报） */
+  proto?: string | null
   created_at: string
 }
 
 /** 访问控制事件详情响应 */
 export interface AccessControlEventDetail {
   event: AccessControlEventItem
+}
+
+/* ==================== L7 访问控制（契约见 docs：l7-rules REST / guardconfig l7_rules 载荷） ==================== */
+
+/** L7 条件类型 */
+export type L7ConditionType = 'uri' | 'method' | 'header' | 'cookie' | 'query' | 'client_ip'
+
+/** L7 条件运算符（method/client_ip 用 values 数组，等价 in） */
+export type L7ConditionOp = 'eq' | 'ne' | 'prefix' | 'contains' | 'regex' | 'exists' | 'not_exists' | 'in'
+
+/** L7 访问控制条件（uri 无 name；exists/not_exists 无 value；method/client_ip 用 values） */
+export interface L7RuleCondition {
+  type: L7ConditionType
+  name?: string
+  op?: L7ConditionOp
+  value?: string
+  values?: string[]
+}
+
+/** L7 规则动作 */
+export type L7RuleAction = 'block' | 'allow' | 'redirect' | 'custom_page'
+
+/** L7 动作配置（按动作取对应字段，未用字段置空/默认值） */
+export interface L7RuleActionConfig {
+  status?: number
+  message?: string
+  redirect_url?: string
+  redirect_status?: number
+  content_type?: string
+  body?: string
+}
+
+/** L7 访问控制规则 */
+export interface L7RuleItem {
+  id: string
+  name: string
+  priority: number
+  enabled: boolean
+  conditions: L7RuleCondition[]
+  action: L7RuleAction
+  action_config: L7RuleActionConfig
+  /** 近 24 小时命中数 */
+  hit_count_24h: number
+  created_by?: string | null
+  updated_by?: string | null
+  created_at: string
+  updated_at: string
+}
+
+/** L7 规则详情响应 */
+export interface L7RuleDetail {
+  rule: L7RuleItem
+}
+
+/** L7 规则测试器入参 */
+export interface L7RuleTestRequest {
+  uri: string
+  method: string
+  headers: Record<string, string>
+  cookies: Record<string, string>
+  query: Record<string, string>
+  client_ip: string
+}
+
+/** L7 规则测试器结果（不产生真实流量、不写事件） */
+export interface L7RuleTestResult {
+  matched: boolean
+  rule_id?: string
+  rule_name?: string
+  action?: L7RuleAction | ''
+  reason?: string
 }
 
 
@@ -1123,6 +1251,44 @@ export interface CountList<T = KeyValue> {
   items?: T[] | null
 }
 
+/** 网站访问趋势-时间序列点 */
+export interface SiteAccessTrendPoint {
+  t: string
+  requests: number
+}
+
+/** 网站访问趋势-应用项（按应用聚合，含零流量应用，按 total_requests 降序） */
+export interface SiteAccessTrendItem {
+  application_id: string
+  app_code: string
+  app_name: string
+  total_requests: number
+  series?: SiteAccessTrendPoint[] | null
+}
+
+/** 网站访问趋势响应（时间跨度上限 7 天） */
+export interface SiteAccessTrendsData {
+  start: string
+  end: string
+  granularity: string
+  items?: SiteAccessTrendItem[] | null
+}
+
+/** 网站访问趋势-域名项（指定应用下按域名聚合） */
+export interface DomainAccessTrendItem {
+  domain: string
+  total_requests: number
+  series?: SiteAccessTrendPoint[] | null
+}
+
+/** 网站访问趋势-域名钻取响应 */
+export interface SiteAccessTrendDomainsData {
+  start: string
+  end: string
+  granularity: string
+  items?: DomainAccessTrendItem[] | null
+}
+
 /** CC 防护概览 */
 export interface CcOverviewData {
   start: string
@@ -1184,8 +1350,11 @@ export interface DispositionOverviewData {
 
 /* ---------- 报告 ---------- */
 
-/** 报告类型 */
+/** 报告类型（固定 日/周/月/自定义；API_* 为阶段8 遗留专项类型，仅兼容历史任务） */
 export type ReportType = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'CUSTOM'
+
+/** 报告内容范围：仅 Web 防护 / 仅 API 防护 / 全部（默认） */
+export type ReportContentScope = 'WAF' | 'API' | 'WAF_API'
 
 /** 报告任务状态 */
 export type ReportJobStatus =
@@ -1202,6 +1371,7 @@ export interface ReportJobItem {
   id: string
   report_no?: string
   report_type: ReportType
+  content_scope?: ReportContentScope
   time_range_start: string
   time_range_end: string
   application_ids?: string[] | null
@@ -1215,7 +1385,7 @@ export interface ReportJobItem {
   finished_at?: string | null
   file_reference?: string
   file_hash?: string
-  file_format: 'html' | 'pdf'
+  file_format: 'html' | 'pdf' | 'docx'
   file_size?: number | null
   failure_code?: string
   failure_message?: string
@@ -1284,6 +1454,210 @@ export interface StorageOverview {
   collected_at?: string
 }
 
+/** 节点物理网口（GET /gateway/interfaces；WDSP 阶段A 网口管理） */
+export interface NodeInterfaceItem {
+  ifname: string
+  mac: string
+  pci_path?: string
+  driver?: string
+  /** 介质类型：TP 电口 / FIBRE 光口 / UNKNOWN 未知 */
+  media_type: 'TP' | 'FIBRE' | 'UNKNOWN'
+  /** 链路速率（Mb/s），DOWN 为 0 */
+  link_speed?: number
+  operstate?: string
+  sort_order: number
+  /** 用途标记：MANAGEMENT 管理 / TRAFFIC 业务 / MIRROR 镜像；空为未分配 */
+  role?: string
+  /** 最近一次采集是否在线；false 表示已离线（曾为该节点上报过） */
+  present: boolean
+}
+
+/** 单个网关节点的网口清单 */
+export interface NodeInterfacesNode {
+  node_name: string
+  interfaces?: NodeInterfaceItem[] | null
+}
+
+/** 网口清单响应（GET /gateway/interfaces） */
+export interface NodeInterfacesData {
+  nodes?: NodeInterfacesNode[] | null
+}
+
+/** 网口排序保存项（PUT /gateway/interfaces/order） */
+export interface NodeInterfaceOrderItem {
+  ifname: string
+  sort_order: number
+  role?: string
+}
+
+/** 网口排序保存请求体 */
+export interface NodeInterfaceOrderPayload {
+  node_name: string
+  items: NodeInterfaceOrderItem[]
+}
+
+/** 端口联动（Link-Pair）配置：网桥两个成员口互为配对，一口链路故障时联动 down 配对口，
+ * 引导上游设备切换链路（docs/HA_ACTIVE_STANDBY_DESIGN.md §6） */
+export interface NetworkLinkPairConfig {
+  enabled: boolean
+  /** carrier 持续丢失认定故障的毫秒数（0=服务端落缺省 1000，区间 200~10000） */
+  hold_down_ms: number
+  /** carrier 持续恢复认定故障消除的毫秒数（0=服务端落缺省 5000，区间 1000~60000） */
+  hold_up_ms: number
+  /** 每小时联动次数上限（0=服务端落缺省 20，区间 1~200；超限进入抑制态） */
+  max_flaps_per_hour: number
+}
+
+/** 期望网桥（name 桥名，ports 成员口列表；透明串接/桥接场景） */
+export interface NetworkBridgeConfig {
+  name: string
+  ports: string[]
+  /** 端口联动配置（可选；不填或 enabled=false = 不启用） */
+  link_pair?: NetworkLinkPairConfig | null
+}
+
+/** 期望静态路由（dst 目的网段 CIDR，via 下一跳网关；路由牵引场景） */
+export interface NetworkRouteConfig {
+  dst: string
+  via: string
+}
+
+/** 网络期望配置：网桥 + 内核三层转发 + 静态路由（PUT 全量替换语义） */
+export interface NetworkDesiredConfig {
+  bridges: NetworkBridgeConfig[]
+  ip_forward: boolean
+  routes: NetworkRouteConfig[]
+}
+
+/** 网桥执行状态（state: ok/error，message 为失败原因等补充信息） */
+export interface NetworkBridgeStatus {
+  name: string
+  state: string
+  message?: string
+}
+
+/** 静态路由执行状态 */
+export interface NetworkRouteStatus {
+  dst: string
+  via?: string
+  state: string
+  message?: string
+}
+
+/** 端口联动运行状态（netmgrd 联动监控器上报） */
+export interface NetworkLinkPairStatus {
+  bridge: string
+  /** 状态机取值：BOTH_UP 正常 / PROPAGATED_DOWN 已联动 down / SUPPRESSED 频率超限抑制 */
+  state: string
+  /** 故障口（carrier 丢失的一方） */
+  down_port?: string
+  /** 被联动 down 的配对口 */
+  propagated_port?: string
+  /** 配对口是否系联动 down（区别于运维手工 down） */
+  propagated_by_linkpair?: boolean
+  /** 近 1 小时联动次数 */
+  flap_count_hour?: number
+  last_event_at?: string
+  message?: string
+}
+
+/** 节点网络配置执行状态（边车 network-status.json 上报；null 表示节点尚未上报） */
+export interface NetworkConfigStatus {
+  applied_at?: string
+  ok: boolean
+  bridges?: NetworkBridgeStatus[] | null
+  /** 内核三层转发执行结果：ok/error/skipped */
+  ip_forward?: string
+  routes?: NetworkRouteStatus[] | null
+  /** 启用端口联动的桥的运行状态（未启用联动时缺省） */
+  link_pairs?: NetworkLinkPairStatus[] | null
+  message?: string
+}
+
+/** 网络配置响应（GET /gateway/network-config） */
+export interface NetworkConfigData {
+  desired?: Partial<NetworkDesiredConfig> | null
+  status?: NetworkConfigStatus | null
+}
+
+/** 主备组成员 */
+export interface HaGroupMember {
+  node_id: string
+  node_name: string
+  priority: number
+}
+
+/** 主备高可用组（VIP 漂移；docs/HA_ACTIVE_STANDBY_DESIGN.md §8） */
+export interface HaGroup {
+  id: string
+  name: string
+  /** ENABLED/DISABLED */
+  state: string
+  vrid: number
+  iface: string
+  vips: string[]
+  preempt: boolean
+  advert_int_ms: number
+  unicast: boolean
+  unicast_peers: string[]
+  has_auth_pass: boolean
+  members: HaGroupMember[]
+  version: number
+  created_at?: string
+  updated_at?: string
+}
+
+/** 主备组创建/修改请求体（auth_pass：undefined=不变更；''=清除；其他=设置） */
+export interface HaGroupUpsert {
+  name: string
+  state: string
+  vrid: number
+  iface: string
+  vips: string[]
+  preempt: boolean
+  advert_int_ms: number
+  unicast: boolean
+  unicast_peers: string[]
+  auth_pass?: string
+  members: { node_id: string; priority: number }[]
+  version?: number
+}
+
+/** havipd 漂移/状态迁移事件 */
+export interface HaVipEvent {
+  at: string
+  from: string
+  to: string
+  detail?: string
+}
+
+/** havipd 运行状态（ha-vip-status.json 透传；null = 节点未上报） */
+export interface HaVipStatus {
+  group: string
+  node: string
+  /** MASTER/BACKUP/FAULT/DISABLED/STOPPED */
+  state: string
+  keepalived_running: boolean
+  vips_present: string[]
+  priority: number
+  last_transition_at?: string
+  applied_at?: string
+  message?: string
+  events?: HaVipEvent[]
+}
+
+/** 主备组列表响应 */
+export interface HaGroupListData {
+  items?: HaGroup[]
+  status?: HaVipStatus | null
+}
+
+/** 主备组详情响应 */
+export interface HaGroupDetailData {
+  group?: HaGroup
+  status?: HaVipStatus | null
+}
+
 /** 系统告警 */
 export interface SystemAlertItem {
   id: string
@@ -1318,6 +1692,41 @@ export interface SystemAlertNote {
 export interface SystemAlertDetail {
   alert: SystemAlertItem
   notes?: SystemAlertNote[] | null
+}
+
+/* ---------- 告警通知 ---------- */
+
+/** 通知渠道类型 */
+export type NotificationChannelType = 'wecom' | 'feishu' | 'smtp' | 'syslog' | 'sms'
+
+/** 通知级别 */
+export type NotificationSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+
+/** 通知渠道（密值字段读返回 ********，编辑时原样提交表示不修改） */
+export interface NotificationChannel {
+  id: string
+  name: string
+  type: NotificationChannelType
+  enabled: boolean
+  min_severity: NotificationSeverity
+  /** 订阅的告警类别 code；空数组 = 全部类别 */
+  categories: string[]
+  config: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+/** 通知元数据类别 */
+export interface NotificationMetaCategory {
+  code: string
+  name: string
+  alert_types: string[]
+}
+
+/** 通知元数据（GET /notification-meta） */
+export interface NotificationMeta {
+  categories: NotificationMetaCategory[]
+  severities: NotificationSeverity[]
 }
 
 /* ---------- 备份与恢复 ---------- */
@@ -1470,6 +1879,27 @@ export interface DeliveryCheckDetail {
   check: DeliveryCheckItem
   results?: DeliveryCheckResultItem[] | null
 }
+
+/** 攻击修复建议（处置知识库） */
+export interface EventRemediation {
+  attack_type: string
+  attack_label: string
+  analyze_steps: string[]
+  fix_suggestions: string[]
+  hardening: string[]
+}
+
+/** 修复建议接口返回 */
+export interface EventRemediationResult {
+  remediation: EventRemediation
+  event: {
+    id: string
+    attack_type: string
+    request_uri: string
+    rule_ids: number[]
+  }
+}
+
 /** 自定义头修改规则（请求/返回通用） */
 export interface CustomHeaderRule {
   name: string
@@ -1524,3 +1954,554 @@ export interface AppPathRoute {
   status: 'ENABLED' | 'DISABLED'
   description: string
   created_at: string
+  updated_at: string
+  version: number
+}
+
+/* ==================== 产品侧离线授权（.lic 导入与门控） ==================== */
+
+/** 授权产品形态（'' = 未授权/无有效授权） */
+export type LicenseProduct = 'waf' | 'wdsp' | 'api' | ''
+
+/** 授权配额（0 = 不限制；与 server/internal/license Quotas JSON tag 一致） */
+export interface LicenseQuotas {
+  max_applications: number
+  max_api_endpoints: number
+  max_qps: number
+}
+
+/** 配额当前用量（装配层可选返回；缺失时前端只显示上限） */
+export interface LicenseUsage {
+  applications: number
+  api_endpoints: number
+}
+
+/** 授权状态（GET /api/v1/license/status 与导入成功响应的 data；字段同 server/internal/license State） */
+export interface LicenseState {
+  valid: boolean
+  /** 生效产品形态；无有效授权时 '' */
+  product: LicenseProduct
+  quotas: LicenseQuotas
+  features: string[]
+  /** 到期时间（RFC3339）；null = 永久或无授权 */
+  expires_at: string | null
+  license_id: string
+  customer: string
+  license_type: 'FORMAL' | 'TRIAL' | ''
+  /** 无效原因（中文）；有效时 '' */
+  reason: string
+  /** 本机指纹（sha256:...；未采集时 ''） */
+  host_fingerprint: string
+  /** 当前用量（可选，装配层补齐后返回） */
+  usage?: LicenseUsage
+}
+
+/** 授权记录状态（licenses.status 词表） */
+export type LicenseRecordStatus =
+  | 'ACTIVE'
+  | 'EXPIRED'
+  | 'FINGERPRINT_MISMATCH'
+  | 'SUPERSEDED'
+  | 'INVALID'
+
+/** 授权导入历史项（GET /api/v1/license/history 的 items；字段同 server/internal/license Record，
+ *  payload/signature/raw_file 敏感原文后端不出参） */
+export interface LicenseHistoryItem {
+  id: string
+  license_id: string
+  license_type: 'FORMAL' | 'TRIAL'
+  product: 'waf' | 'wdsp' | 'api'
+  customer: string
+  status: LicenseRecordStatus
+  /** 导入操作人用户 ID；null = 系统 */
+  imported_by: string | null
+  imported_at: string
+  /** 到期日；null = 永久授权 */
+  expires_at: string | null
+  perpetual: boolean
+  machine_fingerprint: string
+  quotas: LicenseQuotas
+  features: string[]
+  created_at: string
+}
+
+/** 定时报告计划 */
+export interface ReportScheduleItem {
+  id: string
+  name: string
+  report_type: ReportType
+  content_scope?: ReportContentScope
+  application_ids?: string[] | null
+  template_id?: string | null
+  file_format: 'html' | 'pdf' | 'docx'
+  include_api_assets?: boolean
+  page_orientation?: 'P' | 'L'
+  time_of_day: string
+  day_of_week: number
+  day_of_month: number
+  send_email: boolean
+  emails?: string[] | null
+  enabled: boolean
+  next_run_at?: string | null
+  last_run_at?: string | null
+  last_job_id?: string | null
+  last_email_status?: string
+  last_email_error?: string
+  created_by?: string | null
+  created_at: string
+  updated_at: string
+}
+
+
+/* ==================== 业务性能（APM：无 Agent + Agent 模式） ==================== */
+
+/** 观测模式：agentless=无 Agent（网关访问日志与分钟聚合管道产出）；agent=已接入语言 Agent（OTel span） */
+export type ApmObservationMode = 'agentless' | 'agent'
+
+/** 时延分位数（毫秒） */
+export interface ApmLatency {
+  p50: number
+  p95: number
+  p99: number
+}
+
+/** 趋势桶（GET /api/v1/apm/overview 与 /apm/services/{id} 的 trend 元素） */
+export interface ApmTrendBucket {
+  bucket_start: string
+  requests: number
+  errors: number
+  blocked: number
+  p95: number
+}
+
+/** Top 应用行（GET /api/v1/apm/overview 的 top_slow_applications/top_error_applications 元素） */
+export interface ApmTopApplicationItem {
+  application_id: string
+  app: string
+  name: string
+  requests: number
+  error_rate: number
+  p95: number
+}
+
+/** Top 慢端点行（GET /api/v1/apm/overview 的 top_slow_endpoints 元素） */
+export interface ApmTopEndpointItem {
+  app: string
+  endpoint: string
+  requests: number
+  error_rate: number
+  p95: number
+}
+
+/** 业务性能总览（GET /api/v1/apm/overview 的 data） */
+export interface ApmOverview {
+  /** 数据来源标识；阶段1 固定为 agentless（无 Agent） */
+  data_source: string
+  /** 全量访问日志开关；false 时端点级数据不可用（应用级 RED 不受影响） */
+  access_log_enabled: boolean
+  start_time: string
+  end_time: string
+  requests_total: number
+  error_5xx_total: number
+  error_4xx_total: number
+  blocked_total: number
+  error_rate: number
+  latency: ApmLatency
+  trend: ApmTrendBucket[]
+  top_slow_applications: ApmTopApplicationItem[]
+  top_error_applications: ApmTopApplicationItem[]
+  top_slow_endpoints: ApmTopEndpointItem[]
+  /** 未归类请求数（路径无法归一化，计入 __UNCLASSIFIED__ 桶） */
+  unclassified_requests: number
+}
+
+/** 服务（应用）性能行（GET /api/v1/apm/services 的 items 元素） */
+export interface ApmServiceItem {
+  application_id: string
+  app: string
+  name: string
+  observation_mode: ApmObservationMode
+  /** 该服务当前在线 Agent 数（observation_mode=agent 时有意义） */
+  agents_online: number
+  /** 该服务已注册 Agent 总数 */
+  agents_total: number
+  requests: number
+  error_rate: number
+  blocked: number
+  p50: number
+  p95: number
+  p99: number
+  last_seen_at: string
+}
+
+/** 服务详情（GET /api/v1/apm/services/{id} 的 data） */
+export interface ApmServiceDetail {
+  application_id: string
+  app: string
+  name: string
+  observation_mode: ApmObservationMode
+  requests_total: number
+  error_rate: number
+  latency: ApmLatency
+  trend: ApmTrendBucket[]
+  status_classes: { status_class: string; count: number }[]
+  actions: { action: string; count: number }[]
+  top_endpoints: { endpoint: string; requests: number; error_rate: number; p95: number }[]
+}
+
+/** 端点性能行（GET /api/v1/apm/endpoints 的 list 元素）；
+ *  endpoint 可能为特殊桶：__UNCLASSIFIED__（未归类）/ __OTHER__（超出 Top-N 聚合） */
+export interface ApmEndpointItem {
+  app: string
+  application_id: string
+  endpoint: string
+  method: string
+  path_template: string
+  requests: number
+  error_rate: number
+  blocked: number
+  p50: number
+  p95: number
+  p99: number
+  last_seen_at: string
+}
+
+/** 端点性能分页（GET /api/v1/apm/endpoints 的 data：分页字段 + 访问日志开关） */
+export interface ApmEndpointPage {
+  list: ApmEndpointItem[]
+  total: number
+  page: number
+  page_size: number
+  access_log_enabled: boolean
+}
+
+/** Trace 关联访问记录（GET /api/v1/apm/traces/{trace_id} 的 access_logs 元素） */
+export interface ApmTraceAccessLog {
+  id: string
+  occurred_at: string
+  request_id: string
+  application_id: string
+  domain: string
+  client_ip: string
+  request_method: string
+  request_path: string
+  response_status: number
+  duration_ms: number
+  ttfb_ms: number
+  waf_action: string
+  endpoint_key: string
+}
+
+/** Trace 关联 WAF 安全事件（GET /api/v1/apm/traces/{trace_id} 的 security_events 元素） */
+export interface ApmTraceSecurityEvent {
+  id: string
+  occurred_at: string
+  action: string
+  rule_id: string
+  request_id: string
+}
+
+/** Trace 检索结果（GET /api/v1/apm/traces/{trace_id} 的 data） */
+export interface ApmTraceDetail {
+  trace_id: string
+  access_logs: ApmTraceAccessLog[]
+  security_events: ApmTraceSecurityEvent[]
+  /** true 表示结果不完整（采样/保留期截断），页面须如实标识 */
+  partial: boolean
+  note: string
+  /** OTel span 列表（Agent 模式）；无 Agent 时为空数组/缺省，页面降级为访问记录视图 */
+  otel_spans?: ApmOtelSpan[]
+  span_count?: number
+  /** true 表示 span 超出返回上限被截断，页面须提示"已截断" */
+  truncated?: boolean
+  /** 数据来源：agentless=无 Agent；otel=纯 Agent；mixed=混合 */
+  data_source?: 'agentless' | 'otel' | 'mixed'
+}
+
+/** OTel span（GET /api/v1/apm/traces/{trace_id} 的 otel_spans 元素；attributes 键值均为字符串） */
+export interface ApmOtelSpan {
+  span_id: string
+  parent_span_id: string
+  service_name: string
+  operation_name: string
+  span_kind: string
+  start_time: string
+  duration_ms: number
+  status_code: string
+  attributes: Record<string, string>
+}
+
+/** 调用链检索结果行（GET /api/v1/apm/trace-search 的 list 元素） */
+export interface ApmTraceSearchItem {
+  trace_id: string
+  root_service: string
+  root_operation: string
+  start_time: string
+  duration_ms: number
+  span_count: number
+  error_count: number
+  services: string[]
+}
+
+/** 调用链检索分页（GET /api/v1/apm/trace-search 的 data；DSN 未配置时 list 为空且 data_source=agentless） */
+export interface ApmTraceSearchPage {
+  list: ApmTraceSearchItem[]
+  total: number
+  page: number
+  page_size: number
+  data_source: string
+}
+
+/** Agent 状态五态（GET /api/v1/apm/agents 的 status 词表） */
+export type ApmAgentStatus =
+  | 'ENROLLING'
+  | 'CONNECTED_BASELINE'
+  | 'DIAGNOSING'
+  | 'OFFLINE'
+  | 'REVOKED'
+
+/** Agent 清单行（GET /api/v1/apm/agents 的 items 元素） */
+export interface ApmAgentItem {
+  id: string
+  service_name: string
+  instance_id: string
+  language: string
+  agent_version: string
+  status: ApmAgentStatus
+  last_heartbeat_at: string
+  cert_expires_at: string
+  application_id: string
+  environment: string
+}
+
+/** 一次性注册令牌创建结果（POST /api/v1/apm/agents/enrollment-tokens 的 data；token 原文仅此一次返回） */
+export interface ApmEnrollmentTokenResult {
+  id: string
+  /** 令牌原文，仅此一次返回，页面须醒目提示并一次性展示 */
+  token: string
+  expires_at: string
+}
+
+/** Agent 基线策略（GET/PUT /api/v1/apm/policies/{scope}；policy 为 opaque JSON，前端原样编辑） */
+export interface ApmPolicyDocument {
+  scope: string
+  version: number
+  issued_at: string
+  expires_at: string
+  policy: Record<string, unknown>
+  signature: string
+}
+
+/* ==================== APM 阶段3：SQL / 异常 / 依赖 / 运行时 / SLO ==================== */
+
+/** SQL 指纹聚合行（GET /api/v1/apm/sql 的 list 元素）；
+ *  只出指纹不出原始 SQL（APM 设计 §12 数据最小化），sample_trace_ids 用于跳转调用链 */
+export interface ApmSqlFingerprintItem {
+  sql_fingerprint: string
+  db_system: string
+  namespace: string
+  operation: string
+  calls: number
+  error_count: number
+  avg_ms: number
+  p95_ms: number
+  sample_trace_ids: string[]
+}
+
+/** SQL 指纹分页（GET /api/v1/apm/sql 的 data；data_source=agentless 表示未接入 OTel 数据面） */
+export interface ApmSqlPage {
+  list: ApmSqlFingerprintItem[]
+  total: number
+  page: number
+  page_size: number
+  data_source: string
+  /** 后端附言（如数据口径/降级原因），有值时须如实展示 */
+  message?: string
+}
+
+/** 异常指纹聚合行（GET /api/v1/apm/exceptions 的 list 元素） */
+export interface ApmExceptionItem {
+  exception_type: string
+  fingerprint: string
+  count: number
+  first_seen_at: string
+  last_seen_at: string
+  affected_services: string[]
+  sample_trace_ids: string[]
+}
+
+/** 异常指纹分页（GET /api/v1/apm/exceptions 的 data） */
+export interface ApmExceptionPage {
+  list: ApmExceptionItem[]
+  total: number
+  page: number
+  page_size: number
+  data_source: string
+}
+
+/** 依赖目标类型（GET /api/v1/apm/dependencies 的 target_type 词表） */
+export type ApmDependencyTargetType = 'service' | 'db' | 'messaging' | 'external'
+
+/** 依赖边（GET /api/v1/apm/dependencies 的 edges 元素） */
+export interface ApmDependencyEdge {
+  source: string
+  target: string
+  target_type: ApmDependencyTargetType
+  calls: number
+  error_rate: number
+  avg_ms: number
+}
+
+/** 依赖关系（GET /api/v1/apm/dependencies 的 data） */
+export interface ApmDependencyGraph {
+  edges: ApmDependencyEdge[]
+  data_source: string
+  /** 口径说明（如"基于客户端 span 单视角派生"），有值时须如实展示 */
+  note?: string
+}
+
+/** 运行时指标采样点（GET /api/v1/apm/runtime 的 points 元素；每指标 ≤200 点） */
+export interface ApmRuntimeMetricPoint {
+  ts: string
+  value: number
+}
+
+/** 运行时指标（name/unit/description 因语言而异，如实展示；每实例 ≤20 个指标） */
+export interface ApmRuntimeMetric {
+  name: string
+  unit: string
+  description: string
+  latest_value: number
+  points: ApmRuntimeMetricPoint[]
+}
+
+/** 运行时实例（GET /api/v1/apm/runtime 的 instances 元素） */
+export interface ApmRuntimeInstance {
+  instance_id: string
+  service_name: string
+  metrics: ApmRuntimeMetric[]
+}
+
+/** 运行时指标总览（GET /api/v1/apm/runtime 的 data） */
+export interface ApmRuntimeOverview {
+  data_source: string
+  instances: ApmRuntimeInstance[]
+  /** 口径说明，有值时须如实展示 */
+  note?: string
+}
+
+/** SLO 指标类型（GET/POST/PUT /api/v1/apm/slos 的 metric_type 词表） */
+export type ApmSloMetricType = 'availability' | 'latency_p95'
+
+/** SLO 状态三态（OK=达标 / AT_RISK=有风险 / BREACHED=已违约） */
+export type ApmSloStatus = 'OK' | 'AT_RISK' | 'BREACHED'
+
+/** SLO 行（GET /api/v1/apm/slos 的 list 元素） */
+export interface ApmSloItem {
+  id: string
+  name: string
+  service: string
+  metric_type: ApmSloMetricType
+  /** 目标阈值（availability 为 0-1 比例，如 0.999 表示 99.9%；latency_p95 为毫秒阈值） */
+  target: number
+  /** 评估窗口（如 7d / 30d） */
+  window: string
+  current_value: number
+  /** 达标率（0-1） */
+  compliance_ratio: number
+  /** 剩余错误预算（0-1） */
+  error_budget_remaining: number
+  status: ApmSloStatus
+  updated_at: string
+}
+
+/** SLO 清单（GET /api/v1/apm/slos 的 data） */
+export interface ApmSloList {
+  list: ApmSloItem[]
+  total: number
+}
+
+/** SLO 达标率趋势桶（GET /api/v1/apm/slos/{id} 的 trend 元素） */
+export interface ApmSloTrendBucket {
+  bucket_start: string
+  compliance_ratio: number
+}
+
+/** SLO 详情（GET /api/v1/apm/slos/{id} 的 data：清单字段 + 达标率趋势） */
+export interface ApmSloDetail extends ApmSloItem {
+  trend: ApmSloTrendBucket[]
+}
+
+/* ==================== APM 阶段4：深度诊断中心 ==================== */
+
+/** 诊断能力词表（POST /api/v1/apm/diagnostic-sessions 的 capabilities 枚举） */
+export type ApmDiagnosticCapability =
+  | 'sql_detail'
+  | 'function_probe'
+  | 'thread_block'
+  | 'gc_detail'
+  | 'mq_wait'
+
+/** 诊断会话状态四态（ACTIVE=进行中 / EXPIRED=到期自动结束 / STOPPED=人工停止 / KILLED=kill switch 熔断） */
+export type ApmDiagnosticSessionStatus = 'ACTIVE' | 'EXPIRED' | 'STOPPED' | 'KILLED'
+
+/** 诊断范围（diagnostic-sessions 的 scope；深度诊断默认仅选定实例，见设计 §21.2） */
+export interface ApmDiagnosticScope {
+  application_id: string
+  service: string
+  environment: string
+  instance_ids: string[]
+}
+
+/** 诊断会话行（GET /api/v1/apm/diagnostic-sessions 的 list 元素） */
+export interface ApmDiagnosticSession {
+  id: string
+  scope: ApmDiagnosticScope
+  capabilities: ApmDiagnosticCapability[]
+  /** 采样率（0-1 小数） */
+  sampling_rate: number
+  duration_minutes: number
+  status: ApmDiagnosticSessionStatus
+  created_by: string
+  created_at: string
+  expires_at: string
+  stopped_at?: string | null
+  stopped_by?: string | null
+  stop_reason?: string | null
+}
+
+/** 诊断会话分页（GET /api/v1/apm/diagnostic-sessions 的 data；kill_switch_enabled=true 时新建会话被拒绝） */
+export interface ApmDiagnosticSessionPage {
+  list: ApmDiagnosticSession[]
+  total: number
+  page: number
+  page_size: number
+  kill_switch_enabled: boolean
+}
+
+/** 诊断审计条目（GET /api/v1/apm/diagnostic-sessions/{id} 的 audits 元素） */
+export interface ApmDiagnosticAudit {
+  id: string
+  action: string
+  actor: string
+  detail?: string
+  created_at: string
+}
+
+/** 诊断会话详情（GET /api/v1/apm/diagnostic-sessions/{id} 的 data：会话全字段 + 关联审计） */
+export interface ApmDiagnosticSessionDetail extends ApmDiagnosticSession {
+  audits: ApmDiagnosticAudit[]
+}
+
+/** dry_run 预估开销（POST /api/v1/apm/diagnostic-sessions dry_run=true 的 data.estimated_overhead） */
+export interface ApmDiagnosticOverhead {
+  cpu_hint: string
+  spans_per_s_hint: string
+  data_volume_hint: string
+  risk_notes: string[]
+}
+
+/** dry_run 响应（POST /api/v1/apm/diagnostic-sessions dry_run=true 的 data） */
+export interface ApmDiagnosticDryRunResult {
+  estimated_overhead: ApmDiagnosticOverhead
+}

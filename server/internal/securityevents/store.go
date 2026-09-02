@@ -47,14 +47,14 @@ func (s *Store) InsertEvent(ctx context.Context, evt *NormalizedEvent) (uuid.UUI
 
 	var eventID uuid.UUID
 	err = tx.QueryRow(ctx, `
-INSERT INTO security_events (request_id, occurred_at, domain, gateway_node_id, client_ip, connection_ip,
+INSERT INTO security_events (request_id, occurred_at, application_id, application_name_snapshot, domain, gateway_node_id, client_ip, connection_ip,
   client_port, request_method, request_uri, request_path, query_summary, http_version, content_type,
   user_agent_summary, referer_summary, event_source, attack_type, severity, anomaly_score, action,
   response_status, rule_match_count, disposition_status, raw_log_reference,
   request_headers, request_body, request_body_truncated, response_headers, response_body, response_body_truncated)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
 RETURNING id`,
-		evt.RequestID, evt.OccurredAt, evt.Host, evt.GatewayNode, nullableIP(evt.ClientIP), nullableIP(evt.ClientIP),
+		evt.RequestID, evt.OccurredAt, evt.ApplicationID, evt.ApplicationName, evt.Host, evt.GatewayNode, nullableIP(evt.ClientIP), nullableIP(evt.ClientIP),
 		evt.ClientPort, evt.Method, evt.URI, evt.Path, evt.QuerySummary, evt.HTTPVersion, evt.ContentType,
 		evt.UserAgent, evt.Referer, "coraza", evt.AttackType, evt.Severity, evt.AnomalyScore, evt.Action,
 		evt.ResponseStatus, len(evt.Matches), "UNPROCESSED", evt.RawRef,
@@ -68,10 +68,10 @@ RETURNING id`,
 	// 插入匹配记录
 	for _, m := range evt.Matches {
 		_, err = tx.Exec(ctx, `
-INSERT INTO security_event_matches (event_id, event_occurred_at, rule_id, rule_name, severity, message,
-  matched_variable, matched_data_masked, tags, phase, anomaly_score)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-			eventID, evt.OccurredAt, m.RuleID, m.RuleName, m.Severity, m.Message,
+INSERT INTO security_event_matches (event_id, event_occurred_at, rule_id, rule_name, rule_source, rule_version,
+  severity, message, matched_variable, matched_data_masked, tags, phase, anomaly_score)
+VALUES ($1,$2,$3,$4,COALESCE(NULLIF($5, ''), 'OWASP_CRS'),$6,$7,$8,$9,$10,$11,$12,$13)`,
+			eventID, evt.OccurredAt, m.RuleID, m.RuleName, m.RuleSource, m.RuleVersion, m.Severity, m.Message,
 			m.MatchedVariable, m.MatchedData, mustJSONStr(m.Tags), m.Phase, evt.AnomalyScore)
 		if err != nil {
 			return uuid.Nil, false, err
@@ -277,7 +277,7 @@ FROM security_events WHERE id = $1`, id)
 
 	// 匹配记录
 	matchRows, err := s.db.Query(ctx, `
-SELECT rule_id, rule_name, severity, message, matched_variable, matched_data_masked, tags, phase
+SELECT rule_id, rule_name, rule_source, rule_version, severity, message, matched_variable, matched_data_masked, tags, phase
 FROM security_event_matches WHERE event_id = $1 ORDER BY id`, id)
 	if err != nil {
 		return nil, nil, err
@@ -287,8 +287,8 @@ FROM security_event_matches WHERE event_id = $1 ORDER BY id`, id)
 	for matchRows.Next() {
 		var m MatchInfo
 		var tags []byte
-		if err := matchRows.Scan(&m.RuleID, &m.RuleName, &m.Severity, &m.Message, &m.MatchedVariable,
-			&m.MatchedData, &tags, &m.Phase); err != nil {
+		if err := matchRows.Scan(&m.RuleID, &m.RuleName, &m.RuleSource, &m.RuleVersion, &m.Severity, &m.Message,
+			&m.MatchedVariable, &m.MatchedData, &tags, &m.Phase); err != nil {
 			return nil, nil, err
 		}
 		m.Tags = parseTags(tags)
@@ -309,6 +309,17 @@ WHERE id=$4`, status, result, userID, id)
 		return fmt.Errorf("event not found")
 	}
 	return nil
+}
+
+// UpdateDispositionIfCurrent 原子更新处置状态，防止并发处置覆盖较新的结论。
+func (s *Store) UpdateDispositionIfCurrent(ctx context.Context, id uuid.UUID, current, status, result string, userID uuid.UUID) (bool, error) {
+	res, err := s.db.Exec(ctx, `
+UPDATE security_events SET disposition_status=$1, disposition_result=$2, disposition_user_id=$3, disposition_at=now()
+WHERE id=$4 AND COALESCE(disposition_status, 'UNPROCESSED')=$5`, status, result, userID, id, current)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() > 0, nil
 }
 
 // AddNote 添加事件备注。

@@ -1,0 +1,456 @@
+# 片段：client_identity 体系与行为策略（WDSP AI 自动化渗透防护增强 阶段1，服务端）
+# 路由源：server/internal/app/app.go「client_identity 体系与行为策略」注册段
+# 数据源：网关 identity-events.log（identity_observation/behavior_snapshot/recon_signal，
+# 采集器 server/internal/identityevents 断点续传入库；表见迁移 000097-000099）
+paths:
+  # ==================== 客户身份 ====================
+  /security/identities:
+    get:
+      operationId: secIdentityList
+      tags: [security-identities]
+      summary: 客户身份分页列表
+      description: 按风险等级/身份类型/关键字（identity_key 前缀或 account_id）/IP（命中身份 IP 历史）/最近活跃时间窗筛选客户身份，默认 last_seen_at DESC。数据由网关身份观测采集生成。权限：`security_identities.read`
+      parameters:
+        - { name: risk_level, in: query, schema: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }, description: 按风险等级筛选 }
+        - { name: identity_type, in: query, schema: { type: string, enum: [HUMAN, BOT, APPLICATION, SERVICE, MACHINE, AGENT, UNKNOWN] }, description: 按身份类型筛选 }
+        - { name: keyword, in: query, schema: { type: string }, description: 关键字（identity_key 前缀匹配或 account_id 模糊匹配） }
+        - { name: ip, in: query, schema: { type: string }, description: 按身份历史 IP 精确筛选 }
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: 最近活跃时间下界（last_seen_at，RFC3339） }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: 最近活跃时间上界（last_seen_at，RFC3339） }
+        - { name: sort, in: query, schema: { type: string, enum: [last_seen_at, first_seen_at, risk_score, request_count] }, description: 排序字段（默认 last_seen_at） }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc] }, description: 排序方向（默认 desc） }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页客户身份列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecIdentityListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security/identities/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 身份 ID
+    get:
+      operationId: secIdentityGet
+      tags: [security-identities]
+      summary: 客户身份详情
+      description: 身份全字段 + IP 历史（last_seen_at DESC 全量）+ 凭据指纹（仅哈希）+ 最近 20 条侦察信号事件。权限：`security_identities.read`
+      responses:
+        '200':
+          description: 客户身份详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecIdentityDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security/identities/{id}/behavior:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 身份 ID
+    get:
+      operationId: secIdentityBehaviorList
+      tags: [security-identities]
+      summary: 身份行为窗口统计时间序列
+      description: behavior_statistics 时间序列（window 缺省全部窗口类型，时间范围缺省最近 24h，window_start ASC）。权限：`security_identities.read`
+      parameters:
+        - { name: window, in: query, schema: { type: string, enum: ['1m', '5m', '30m', '24h'] }, description: 窗口类型（缺省全部） }
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: 窗口起点下界（window_start，RFC3339；缺省 to-24h） }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: 窗口起点上界（window_start，RFC3339；缺省当前时间） }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 50 }, description: 每页条数（最大 200） }
+      responses:
+        '200':
+          description: 分页行为窗口统计序列
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecIdentityBehaviorListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security/identities/{id}/events:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 身份 ID
+    get:
+      operationId: secIdentityEventList
+      tags: [security-identities]
+      summary: 身份侦察信号事件分页
+      description: identity_behavior_events 分页（occurred_at DESC），可按信号类型与时间窗筛选。权限：`security_identities.read`
+      parameters:
+        - { name: signal, in: query, schema: { type: string, enum: [URI_ENUMERATION, NOT_FOUND_ENUMERATION, SENSITIVE_PATH_PROBE, METHOD_ENUMERATION, PARAMETER_MUTATION, AUTH_FAIL_PROBE, LOW_SLOW_RECON, HEADLESS, ACCOUNT_ENUMERATION, OBJECT_ENUMERATION] }, description: 按信号类型筛选 }
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: 发生时间下界（occurred_at，RFC3339） }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: 发生时间上界（occurred_at，RFC3339） }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页侦察信号事件列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecIdentityEventListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 行为策略 ====================
+  /security/behavior-policy:
+    get:
+      operationId: behaviorPolicyGet
+      tags: [behavior-policy]
+      summary: 读取行为策略
+      description: 读取侦察/枚举行为检测全局策略（GLOBAL 单行，含乐观锁 version；随网关发布下发 identity_behavior 段）。权限：`behavior_policy.read`
+      responses:
+        '200':
+          description: 行为策略全字段
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BehaviorPolicyDetailResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: behaviorPolicyUpdate
+      tags: [behavior-policy]
+      summary: 全量更新行为策略
+      description: 全量更新全局行为策略（version 乐观锁，冲突返回 409；比率 0-1、阈值 0-100000、sensitive_paths 以 / 开头、scores 键限定 10 种信号且值 0-100、枚举标识字段名 1-64 字符、whitelist_ips 为合法 IP/CIDR、whitelist_uas 单项 ≤128 字符）。成功后记录中风险审计并触发网关配置发布（identity_behavior 段热生效；enabled=false 时网关行为检测零行为）。权限：`behavior_policy.edit`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BehaviorPolicyUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功，返回更新后的策略（version+1）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BehaviorPolicyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 策略已被其他人修改（version 乐观锁冲突），需刷新后重试 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /waf-rules/effect-statistics:
+    get:
+      operationId: wafRuleEffectStatistics
+      tags: [waf-rules]
+      summary: 规则版本效果统计
+      description: 按 UTC 日期、规则及规则版本聚合安全事件命中效果。确认率与 FP Rate 的分母为已确认事件数；无已确认事件时返回 null。权限：`waf_rules.read`
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: 发生时间下界（含） }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: 发生时间上界（不含） }
+        - { name: rule_id, in: query, schema: { type: integer, minimum: 1 }, description: 规则 ID }
+        - { name: rule_version, in: query, schema: { type: string }, description: 规则版本 }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: 规则版本效果统计分页结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WafRuleEffectStatisticsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    # ==================== 客户身份 ====================
+    SecIdentityListItem:
+      type: object
+      description: 客户身份列表项
+      properties:
+        id: { type: string, format: uuid }
+        identity_key: { type: string, description: 身份键（网关联合指纹派生，全局唯一） }
+        identity_type: { type: string, enum: [HUMAN, BOT, APPLICATION, SERVICE, MACHINE, AGENT, UNKNOWN], description: 身份类型 }
+        identity_confidence: { type: integer, minimum: 0, maximum: 100, description: 身份识别置信度 }
+        risk_score: { type: integer, description: 风险分（0-100；24h 内信号 risk_score_delta 求和截断） }
+        risk_level: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL], description: 风险等级（0-19/20-39/40-69/70+） }
+        status: { type: string, description: 身份状态（NORMAL 等） }
+        primary_ip: { type: string, nullable: true, description: 最近观测客户端 IP }
+        ip_count: { type: integer, description: 历史 IP 数（identity_ip_history 聚合） }
+        account_id: { type: string, description: 关联账号标识（凭据派生，无则空串） }
+        request_count: { type: integer, description: 累计请求数 }
+        first_seen_at: { type: string, format: date-time, nullable: true, description: 首次观测时间 }
+        last_seen_at: { type: string, format: date-time, nullable: true, description: 最近观测时间 }
+
+    SecIdentity:
+      type: object
+      description: 客户身份全字段（详情）
+      properties:
+        id: { type: string, format: uuid }
+        identity_key: { type: string, description: 身份键 }
+        identity_type: { type: string, enum: [HUMAN, BOT, APPLICATION, SERVICE, MACHINE, AGENT, UNKNOWN], description: 身份类型 }
+        identity_confidence: { type: integer, minimum: 0, maximum: 100, description: 身份识别置信度 }
+        confidence_source: { type: array, items: { type: string }, description: 脱敏后的置信度证据标签 }
+        first_seen_at: { type: string, format: date-time, nullable: true }
+        last_seen_at: { type: string, format: date-time, nullable: true }
+        primary_ip: { type: string, nullable: true, description: 最近观测客户端 IP }
+        asn: { type: string, description: 自治域号（无则空串） }
+        tls_fingerprint: { type: string, description: TLS 指纹（无则空串） }
+        browser_fingerprint: { type: string, description: 浏览器指纹（无则空串） }
+        account_id: { type: string, description: 关联账号标识 }
+        jwt_subject: { type: string, description: JWT sub（首个 JWT 凭据派生） }
+        api_key_hash: { type: string, description: API Key 哈希（首个 API_KEY 凭据派生，仅哈希） }
+        oauth_client_id: { type: string, description: OAuth client_id（首个 OAUTH 凭据派生） }
+        device_type: { type: string, description: 设备类型 }
+        risk_score: { type: integer, description: 风险分（0-100） }
+        risk_level: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL], description: 风险等级 }
+        status: { type: string, description: 身份状态 }
+        request_count: { type: integer, description: 累计请求数 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    SecIdentityIPHistory:
+      type: object
+      description: 身份 × IP 历史项
+      properties:
+        ip: { type: string, description: 客户端 IP }
+        first_seen_at: { type: string, format: date-time, nullable: true }
+        last_seen_at: { type: string, format: date-time, nullable: true }
+        request_count: { type: integer, description: 该 IP 累计请求数 }
+
+    SecIdentityCredential:
+      type: object
+      description: 身份凭据指纹项（只含哈希，不含明文凭据）
+      properties:
+        credential_type: { type: string, enum: [JWT, API_KEY, SESSION, COOKIE, OAUTH, CUSTOM], description: 凭据类型 }
+        credential_hash: { type: string, description: 凭据哈希 }
+        first_seen_at: { type: string, format: date-time, nullable: true }
+        last_seen_at: { type: string, format: date-time, nullable: true }
+
+    SecIdentityEvent:
+      type: object
+      description: 侦察信号事件
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { type: string, format: date-time, description: 发生时间 }
+        event_kind: { type: string, description: 事件种类（RECON_SIGNAL） }
+        rule_code: { type: string, description: 规则编码 }
+        rule_version: { type: string, description: 规则版本 }
+        signal: { type: string, enum: [URI_ENUMERATION, NOT_FOUND_ENUMERATION, SENSITIVE_PATH_PROBE, METHOD_ENUMERATION, PARAMETER_MUTATION, AUTH_FAIL_PROBE, LOW_SLOW_RECON, HEADLESS, ACCOUNT_ENUMERATION, OBJECT_ENUMERATION], description: 信号类型 }
+        risk_score_delta: { type: integer, description: 风险分增量（计入身份 24h 滚动风险分） }
+        mode: { type: string, description: 执行模式（OBSERVE） }
+        reason: { type: string, description: 命中原因 }
+        metadata: { type: object, description: 规则证据元数据（不含敏感值） }
+        request_id: { type: string, description: 关联请求 ID }
+        client_ip: { type: string, description: 客户端 IP }
+        method: { type: string, description: HTTP 方法 }
+        path: { type: string, description: 请求路径 }
+        app_id: { type: string, description: 应用 ID }
+        domain: { type: string, description: 命中域名 }
+        gateway_node: { type: string, description: 网关节点标识 }
+        identity_confidence: { type: integer, minimum: 0, maximum: 100, description: 事件发生时身份识别置信度 }
+        identity_evidence: { type: array, items: { type: string }, description: 脱敏后的身份识别证据标签 }
+
+    SecIdentityBehaviorStat:
+      type: object
+      description: 行为窗口统计项（时间序列）
+      properties:
+        window_type: { type: string, enum: ['1m', '5m', '30m', '24h'], description: 窗口类型 }
+        window_start: { type: string, format: date-time, description: 窗口起点 }
+        request_count: { type: integer, description: 请求数 }
+        unique_uri_count: { type: integer, description: 去重 URI 数 }
+        new_uri_count: { type: integer, description: 新 URI 数 }
+        status_401_count: { type: integer, description: 401 响应数 }
+        status_403_count: { type: integer, description: 403 响应数 }
+        status_404_count: { type: integer, description: 404 响应数 }
+        status_405_count: { type: integer, description: 405 响应数 }
+        status_500_count: { type: integer, description: 500 响应数 }
+        auth_fail_count: { type: integer, description: 认证失败数 }
+        parameter_mutation_count: { type: integer, description: 参数篡改观测数 }
+        sensitive_path_hits: { type: integer, description: 敏感路径命中数 }
+        account_enum_count: { type: integer, description: 去重账号标识数 }
+        object_enum_count: { type: integer, description: 去重对象标识数 }
+
+    SecIdentityListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SecIdentityListItem' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    SecIdentityDetailResponse:
+      type: object
+      properties:
+        identity: { $ref: '#/components/schemas/SecIdentity' }
+        ip_history:
+          type: array
+          items: { $ref: '#/components/schemas/SecIdentityIPHistory' }
+        credentials:
+          type: array
+          items: { $ref: '#/components/schemas/SecIdentityCredential' }
+        recent_events:
+          type: array
+          description: 最近 20 条侦察信号事件
+          items: { $ref: '#/components/schemas/SecIdentityEvent' }
+
+    SecIdentityBehaviorListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SecIdentityBehaviorStat' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    SecIdentityEventListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SecIdentityEvent' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    # ==================== 行为策略 ====================
+    BehaviorPolicy:
+      type: object
+      description: 侦察/枚举行为检测全局策略（GLOBAL 单行；随网关发布下发 identity_behavior 段）
+      properties:
+        id: { type: string, format: uuid }
+        scope: { type: string, enum: [GLOBAL], description: 作用域（当前仅 GLOBAL 单行） }
+        enabled: { type: boolean, description: 总开关（false 时下发 enabled:false，网关行为检测零行为） }
+        mode: { type: string, enum: [OBSERVE], description: 执行模式（当前仅 OBSERVE 观测模式） }
+        version: { type: integer, description: 乐观锁版本号（下发网关 policy_version 字符串） }
+        uri_enum_unique_threshold: { type: integer, minimum: 0, maximum: 100000, description: URI 枚举去重 URI 数阈值（默认 50） }
+        uri_enum_new_ratio_threshold: { type: number, minimum: 0, maximum: 1, description: URI 枚举新 URI 比率阈值（默认 0.8） }
+        not_found_ratio_threshold: { type: number, minimum: 0, maximum: 1, description: 404 枚举响应比率阈值（默认 0.7） }
+        not_found_min_requests: { type: integer, minimum: 0, maximum: 100000, description: 404 枚举最小请求数（默认 30） }
+        method_enum_threshold: { type: integer, minimum: 0, maximum: 100000, description: 方法枚举 405 数阈值（默认 4） }
+        param_mutation_threshold: { type: integer, minimum: 0, maximum: 100000, description: 参数篡改观测数阈值（默认 30） }
+        auth_fail_threshold: { type: integer, minimum: 0, maximum: 100000, description: 认证失败数阈值（默认 10） }
+        low_slow_sensitive_min_hits: { type: integer, minimum: 0, maximum: 100000, description: 低速慢速侦察敏感路径最小命中数（默认 10） }
+        account_enum_threshold: { type: integer, minimum: 0, maximum: 100000, description: 账号枚举唯一标识阈值（默认 20） }
+        object_enum_threshold: { type: integer, minimum: 0, maximum: 100000, description: 对象枚举唯一标识阈值（默认 20） }
+        account_identifier_fields:
+          type: array
+          description: 账号枚举标识字段名清单（仅字段名，不落字段值）
+          items: { type: string, minLength: 1, maxLength: 64 }
+        object_identifier_fields:
+          type: array
+          description: 对象枚举标识字段名清单（仅字段名，不落字段值）
+          items: { type: string, minLength: 1, maxLength: 64 }
+        sensitive_paths:
+          type: array
+          description: 敏感路径清单（每项以 / 开头）
+          items: { type: string }
+        scores:
+          type: object
+          description: 各信号风险分值（键限定 10 种信号，值 0-100）
+          additionalProperties: { type: integer, minimum: 0, maximum: 100 }
+        whitelist_ips:
+          type: array
+          description: IP 白名单（合法 IP 或 CIDR；命中身份不参与行为检测）
+          items: { type: string }
+        whitelist_uas:
+          type: array
+          description: UA 白名单片段（单项 ≤128 字符）
+          items: { type: string, maxLength: 128 }
+        updated_by: { type: string, description: 最近更新人用户名 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BehaviorPolicyDetailResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/BehaviorPolicy' }
+
+    BehaviorPolicyUpdateRequest:
+      type: object
+      required: [enabled, mode, version]
+      description: 行为策略全量更新请求（version 为乐观锁预期值；scope 可选、不可变，若提供须与当前值一致）
+      properties:
+        scope: { type: string, enum: [GLOBAL], description: 作用域（不可变，若提供须与当前值一致） }
+        enabled: { type: boolean, description: 总开关 }
+        mode: { type: string, enum: [OBSERVE], description: 执行模式（当前仅 OBSERVE） }
+        version: { type: integer, description: 乐观锁版本号（与当前版本不一致返回 409） }
+        uri_enum_unique_threshold: { type: integer, minimum: 0, maximum: 100000 }
+        uri_enum_new_ratio_threshold: { type: number, minimum: 0, maximum: 1 }
+        not_found_ratio_threshold: { type: number, minimum: 0, maximum: 1 }
+        not_found_min_requests: { type: integer, minimum: 0, maximum: 100000 }
+        method_enum_threshold: { type: integer, minimum: 0, maximum: 100000 }
+        param_mutation_threshold: { type: integer, minimum: 0, maximum: 100000 }
+        auth_fail_threshold: { type: integer, minimum: 0, maximum: 100000 }
+        low_slow_sensitive_min_hits: { type: integer, minimum: 0, maximum: 100000 }
+        account_enum_threshold: { type: integer, minimum: 0, maximum: 100000 }
+        object_enum_threshold: { type: integer, minimum: 0, maximum: 100000 }
+        account_identifier_fields:
+          type: array
+          items: { type: string, minLength: 1, maxLength: 64 }
+        object_identifier_fields:
+          type: array
+          items: { type: string, minLength: 1, maxLength: 64 }
+        sensitive_paths:
+          type: array
+          items: { type: string, description: 以 / 开头的敏感路径 }
+        scores:
+          type: object
+          additionalProperties: { type: integer, minimum: 0, maximum: 100 }
+          description: 各信号风险分值（键限定 URI_ENUMERATION/NOT_FOUND_ENUMERATION/SENSITIVE_PATH_PROBE/METHOD_ENUMERATION/PARAMETER_MUTATION/AUTH_FAIL_PROBE/LOW_SLOW_RECON/HEADLESS/ACCOUNT_ENUMERATION/OBJECT_ENUMERATION）
+        whitelist_ips:
+          type: array
+          items: { type: string, description: 合法 IP 或 CIDR }
+        whitelist_uas:
+          type: array
+          items: { type: string, maxLength: 128 }
+
+    WafRuleEffectStatistics:
+      type: object
+      properties:
+        date: { type: string, format: date, description: UTC 统计日期 }
+        rule_id: { type: integer }
+        rule_key: { type: string, description: 规则来源与 ID 组合键 }
+        rule_name: { type: string }
+        rule_source: { type: string }
+        rule_version: { type: string }
+        hits: { type: integer, format: int64 }
+        blocks: { type: integer, format: int64 }
+        unresolved: { type: integer, format: int64, description: 未确认攻击或误报的命中数 }
+        confirmed_attacks: { type: integer, format: int64 }
+        false_positives: { type: integer, format: int64 }
+        reviewed: { type: integer, format: int64 }
+        confirmation_rate: { type: number, format: double, nullable: true, minimum: 0, maximum: 1 }
+        fp_rate: { type: number, format: double, nullable: true, minimum: 0, maximum: 1 }
+        protect_recommendation: { type: boolean, description: 仅表示满足保守门槛的人工评估建议，不会自动切换 PROTECT }
+        protect_recommendation_reason: { type: string, description: 建议依据（可空） }
+
+    WafRuleEffectStatisticsResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/WafRuleEffectStatistics' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }

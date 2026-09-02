@@ -26,10 +26,12 @@ import { ApiError } from '../../api/client'
 import { applicationsApi } from '../../api/applications'
 import { protectionPoliciesApi } from '../../api/protectionPolicies'
 import { ruleOverridesApi } from '../../api/ruleOverrides'
+import { securityEventsApi } from '../../api/securityEvents'
 import { wafRulesApi } from '../../api/wafRules'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
+import { ruleNameZh } from '../../utils/crsRuleNames'
 import { hasPermission } from '../../utils/permission'
 import {
   ATTACK_TYPE_META,
@@ -82,6 +84,17 @@ export default function WafRulesPage() {
   const detailQuery = useQuery({
     queryKey: ['waf-rule', detailRuleId],
     queryFn: () => wafRulesApi.get(detailRuleId as number),
+    enabled: detailRuleId !== null,
+  })
+
+  const effectStatsQuery = useQuery({
+    queryKey: ['waf-rule-effect-stats', detailRuleId],
+    queryFn: () =>
+      securityEventsApi.ruleEffectStatistics({
+        rule_id: detailRuleId as number,
+        page: 1,
+        page_size: 30,
+      }),
     enabled: detailRuleId !== null,
   })
 
@@ -173,7 +186,7 @@ export default function WafRulesPage() {
       ellipsis: true,
       render: (v: string, record) => (
         <a onClick={() => setDetailRuleId(record.rule_id)} title={v}>
-          {v || '-'}
+          {ruleNameZh(record) || '-'}
         </a>
       ),
     },
@@ -381,6 +394,9 @@ export default function WafRulesPage() {
               <Descriptions.Item label="来源">
                 <StatusTag value={detail.rule_source} map={RULE_SOURCE_META} />
               </Descriptions.Item>
+              <Descriptions.Item label="中文名称" span={2}>
+                {ruleNameZh(detail) || '-'}
+              </Descriptions.Item>
               <Descriptions.Item label="名称" span={2}>
                 {detail.name || '-'}
               </Descriptions.Item>
@@ -412,6 +428,60 @@ export default function WafRulesPage() {
                 detailTags.map((t) => <Tag key={t}>{t}</Tag>)
               )}
             </Space>
+
+            <Typography.Title level={5} style={{ marginTop: 24 }}>
+              规则效果（按日）
+            </Typography.Title>
+            {effectStatsQuery.isError ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="规则效果统计暂不可用"
+                description={
+                  effectStatsQuery.error instanceof ApiError
+                    ? effectStatsQuery.error.message
+                    : '请稍后重试'
+                }
+              />
+            ) : (
+              <List
+                size="small"
+                bordered
+                loading={effectStatsQuery.isLoading}
+                locale={{ emptyText: '暂无统计（异步聚合任务运行后显示）' }}
+                dataSource={effectStatsQuery.data?.items ?? []}
+                renderItem={(item) => {
+                  const confirmationRate =
+                    item.confirmation_rate == null
+                      ? '—'
+                      : `${(item.confirmation_rate * 100).toFixed(1)}%`
+                  const fpRate = item.fp_rate == null ? '—' : `${(item.fp_rate * 100).toFixed(1)}%`
+                  return (
+                    <List.Item>
+                      <Space direction="vertical" size={0} style={{ width: '100%' }}>
+                        <Space wrap>
+                          <Tag>{item.date.slice(0, 10)}</Tag>
+                          <Typography.Text>命中 {item.hits}</Typography.Text>
+                          <Typography.Text>阻断 {item.blocks}</Typography.Text>
+                          <Typography.Text>未确认 {item.unresolved}</Typography.Text>
+                          {item.protect_recommendation ? (
+                            <Tag color="green">建议人工评估 PROTECT</Tag>
+                          ) : null}
+                        </Space>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          确认率 {confirmationRate} · 误报率 {fpRate}
+                        </Typography.Text>
+                        {item.protect_recommendation_reason ? (
+                          <Typography.Text type="success" style={{ fontSize: 12 }}>
+                            {item.protect_recommendation_reason}
+                          </Typography.Text>
+                        ) : null}
+                      </Space>
+                    </List.Item>
+                  )
+                }}
+              />
+            )}
 
             {canManageOverride && (
               <>
@@ -531,7 +601,7 @@ export default function WafRulesPage() {
                     }}
                   </Form.Item>
                   <Form.Item name="reason" label="原因">
-                    <Input.TextArea rows={2} placeholder="如：业务接口误报，临时关闭该规则" />
+                    <Input.TextArea rows={2} placeholder="如：业务 API 误报，临时关闭该规则" />
                   </Form.Item>
                   <Button
                     type="primary"

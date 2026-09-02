@@ -14,13 +14,13 @@ import (
 type FinalAction string
 
 const (
-	ActionAllow      FinalAction = "ALLOW"
-	ActionObserve    FinalAction = "OBSERVE"
-	ActionBlock      FinalAction = "BLOCK"
-	ActionRateLimit  FinalAction = "RATE_LIMIT"
-	ActionTempBlock  FinalAction = "TEMP_BLOCK"
-	ActionMaskResp   FinalAction = "MASK_RESPONSE"
-	ActionUnset      FinalAction = ""
+	ActionAllow     FinalAction = "ALLOW"
+	ActionObserve   FinalAction = "OBSERVE"
+	ActionBlock     FinalAction = "BLOCK"
+	ActionRateLimit FinalAction = "RATE_LIMIT"
+	ActionTempBlock FinalAction = "TEMP_BLOCK"
+	ActionMaskResp  FinalAction = "MASK_RESPONSE"
+	ActionUnset     FinalAction = ""
 )
 
 // RiskLevel 风险等级。
@@ -42,7 +42,20 @@ type ParseLimits struct {
 	MaxXMLDepth        int
 	MaxFieldCount      int
 	MaxFileMetaCount   int
+	// RetainJSONScalarValues 为 true 时 walkJSON 额外留存标量值（截断 256 字符，
+	// 仅请求内存活，供参数约束检测取值；默认 false 零行为变化）
+	RetainJSONScalarValues bool
+	// RetainFormScalarValues 为 true 时表单解析额外留存标量值（截断 256 字符，
+	// 仅请求内存活，供值级敏感检测取值；默认 false 零行为变化）
+	RetainFormScalarValues bool
+	// MaxGRPCFrameBytes gRPC 单帧声明长度上限（P2-05 帧结构校验；≤0 由
+	// DefaultGRPCMaxFrameBytes 兜底，发布通道经 api_grpc_max_frame_bytes 下发覆盖）
+	MaxGRPCFrameBytes int
 }
+
+// DefaultGRPCMaxFrameBytes gRPC 单帧声明长度默认上限（4 MiB，与常见 gRPC 服务端
+// maxReceiveMessageSize 默认量级对齐；声明超限即 grpc.malformed_frame，不解消息内容）。
+const DefaultGRPCMaxFrameBytes = 4 << 20
 
 // DefaultParseLimits 安全默认值。
 func DefaultParseLimits() ParseLimits {
@@ -53,18 +66,111 @@ func DefaultParseLimits() ParseLimits {
 		MaxXMLDepth:        32,
 		MaxFieldCount:      2048,
 		MaxFileMetaCount:   64,
+		MaxGRPCFrameBytes:  DefaultGRPCMaxFrameBytes,
 	}
+}
+
+// SensitiveFieldHit 响应侧敏感字段命中（证据只含字段路径与数据类型标签，绝不含值）。
+type SensitiveFieldHit struct {
+	Path     string `json:"path"`
+	DataType string `json:"data_type"`
+}
+
+// ResponseObservation 响应结构观测（P0-06 响应 Schema 学习生产方）：
+// 一级字段路径→类型 + 响应元信息，供管理面按 端点×状态码 合并学习响应 Schema。
+// 证据纪律与敏感检测一致：只含字段路径与类型标签，绝不含值；
+// 仅 API 流量且捕获到合法 JSON 时产生（截断/流式/非 JSON 不产生）。
+type ResponseObservation struct {
+	StatusCode  int    `json:"status_code"`
+	ContentType string `json:"content_type,omitempty"`
+	BodySize    int64  `json:"body_size"`
+	// Fields 一级字段路径 → 类型（string/number/bool/object/array/null）；
+	// 数组元素形态（users[]）视为一级的一部分，更深层路径（users[].id）不收录。
+	Fields map[string]string `json:"fields"`
+	// FieldCount 观测到的一级字段总数（截断前；超护栏时大于 len(Fields)）。
+	FieldCount int `json:"field_count"`
+	// Truncated 字段数/路径长超护栏被截断的说明标记。
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// FieldTransform 响应字段级脱敏计划项（由响应相位按 api_mask_rules 与解析产物生成，
+// 由 Response Transformer 执行；Algorithm 取值 MASK | HASH | REMOVE）。
+type FieldTransform struct {
+	FieldPath string `json:"field_path"`          // 点路径，数组段以 [] 结尾（如 users[].phone）
+	DataType  string `json:"data_type,omitempty"` // 规则声明的数据类型标签（描述性，不参与匹配）
+	Algorithm string `json:"algorithm"`
+	KeepHead  int    `json:"keep_head,omitempty"` // MASK：前保留字符数（默认 3）
+	KeepTail  int    `json:"keep_tail,omitempty"` // MASK：后保留字符数（默认 4）
+}
+
+// ResponseContext 响应侧上下文（仅 API 流量在下游响应完成后由响应相位填充）。
+// 数据最小化纪律与请求侧一致：不保存响应明文体，解析产物只含字段路径与类型。
+type ResponseContext struct {
+	Status          int                 `json:"status"`
+	ContentType     string              `json:"content_type,omitempty"`
+	Headers         map[string]string   `json:"headers,omitempty"` // 已脱敏（set-cookie 等仅标记存在）
+	BodySize        int64               `json:"body_size"`         // 捕获/传输字节数（脱敏改写时为改写前大小）
+	BodyHash        string              `json:"body_hash,omitempty"`
+	Truncated       bool                `json:"truncated,omitempty"` // 体超捕获上限，未完整解析
+	Streamed        bool                `json:"streamed,omitempty"`  // 流式/非可安全重编码，未缓冲
+	IsJSON          bool                `json:"is_json,omitempty"`
+	ParsedBody      map[string]string   `json:"parsed_body,omitempty"` // JSON 字段路径 -> 类型
+	SensitiveFields []SensitiveFieldHit `json:"sensitive_fields,omitempty"`
+	ErrorSignatures []string            `json:"error_signatures,omitempty"`
+	TransformPlan   []FieldTransform    `json:"transform_plan,omitempty"`
+	// Observation 响应结构观测（P0-06；仅合法 JSON 解析成功时填充，否则为 nil 零变化）
+	Observation *ResponseObservation `json:"observation,omitempty"`
+	// FileObservation 文件下载观测（P1-04；仅 Content-Disposition 携带 filename 的
+	// 响应由响应相位填充，否则为 nil 零变化；仅元数据不落体）
+	FileObservation *FileObservation `json:"file_observation,omitempty"`
 }
 
 // DetectorMatch 单条检测结论（WAF/API/敏感数据等写入同一列表）。
 type DetectorMatch struct {
-	Detector   string            `json:"detector"`             // waf / api_schema / auth / ...
+	Detector   string            `json:"detector"` // waf / api_schema / auth / ...
 	RuleID     string            `json:"rule_id,omitempty"`
 	Category   string            `json:"category,omitempty"`
 	Severity   string            `json:"severity,omitempty"`
 	Message    string            `json:"message,omitempty"`
 	Evidence   map[string]string `json:"evidence,omitempty"` // 已脱敏的键值
 	ScoreDelta int               `json:"score_delta,omitempty"`
+	// Confidence 结论置信度（0-1）：零值由 AddMatch 按检测器保守默认填充；检测器可显式覆盖
+	Confidence float64 `json:"confidence,omitempty"`
+	// ModelVersion/PolicyVersion 命中时生效的模型/策略版本快照：
+	// 零值由 AddMatch 从 RequestContext 快照填充（检测器不感知版本，禁止各自拼装）
+	ModelVersion  string `json:"model_version,omitempty"`
+	PolicyVersion string `json:"policy_version,omitempty"`
+}
+
+// defaultConfidenceByDetector 各检测器置信度保守默认（0-1）。
+// 取值纪律：确定性规则（schema/约束/响应事实/凭据存在性）1.0；词表/基线成员判定 0.7-0.8；
+// 统计/行为推断 0.5；下游归因（waf）按机制强度 0.8。未列出的检测器回落 0.5（中性，不高估）。
+var defaultConfidenceByDetector = map[string]float64{
+	"api_schema":      1.0, // 类型/约束违例为确定性判定
+	"api_parser":      1.0, // 解析事实（多值/重复键计数为确定性观测）
+	"api_response":    1.0, // 响应相位事实（签名/计划/脱敏执行）
+	"identity":        1.0, // 凭据存在性事实（不含值）
+	"sensitive_data":  0.8, // 字段名词表匹配
+	"waf":             0.8, // 下游阻断归因（消息特征匹配，无规则明细）
+	"authentication":  0.7, // 凭据格式检查与环境异常推断混合
+	"lifecycle":       0.7, // 基线成员判定（基线本身为学习产物）
+	"api_ratelimit":   0.7, // 计数阈值判定
+	"behavior":        0.5, // 统计基线偏离
+	"resource_access": 0.5, // 对象游标启发式
+	"api_authz":       0.7, // 基线成员判定（人工确认基线，但角色取自未验签 JWT 声明，保守取值）
+	"llm":             0.7, // 词表匹配与名单成员判定（OBSERVE 信号级）
+	"grpc":            1.0, // 帧结构事实（5 字节前缀逐帧校验，不解消息内容）
+}
+
+// defaultConfidenceFallback 未列出检测器的置信度兜底（中性 0.5，不高估）。
+const defaultConfidenceFallback = 0.5
+
+// defaultConfidenceFor 检测器置信度保守默认（显式 Confidence 优先，见 AddMatch）。
+func defaultConfidenceFor(detector string) float64 {
+	if v, ok := defaultConfidenceByDetector[detector]; ok {
+		return v
+	}
+	return defaultConfidenceFallback
 }
 
 // RequestContext 统一请求上下文（请求路径只建一份）。
@@ -73,8 +179,11 @@ type RequestContext struct {
 	mu sync.RWMutex
 
 	// --- 关联与连接 ---
-	RequestID         string
-	TraceID           string
+	RequestID string
+	TraceID   string
+	// SpanID 本网关段 span id（APM 阶段1 D6 新增；与 TraceID 同源于 guard ServeHTTP 入口，
+	// 仅作关联键，不回传客户端、不注入上游）
+	SpanID            string
 	ConnectionID      string
 	ConnectionIP      netip.Addr
 	ClientIP          netip.Addr
@@ -82,13 +191,13 @@ type RequestContext struct {
 	OccurredAt        time.Time
 
 	// --- 应用与请求线 ---
-	ApplicationID string
-	DomainID      string
-	Domain        string
-	Scheme        string
-	ProtocolVer   string
-	HTTPMethod    string
-	RawPath       string
+	ApplicationID  string
+	DomainID       string
+	Domain         string
+	Scheme         string
+	ProtocolVer    string
+	HTTPMethod     string
+	RawPath        string
 	NormalizedPath string
 
 	// --- API 识别（Wave B 填充）---
@@ -106,12 +215,19 @@ type RequestContext struct {
 	ResponseBodyHash    string
 
 	// --- 身份指纹（仅指纹，不存明文 Token）---
-	AuthenticationType string
+	AuthenticationType  string
 	IdentityFingerprint string
-	TokenFingerprint    string
-	APIKeyFingerprint   string
-	SessionFingerprint  string
-	TenantFingerprint   string
+	// IdentityID is the server-side UUID when one is known. Gateway identity
+	// resolution intentionally leaves it empty rather than conflating it with
+	// the deterministic identity fingerprint.
+	IdentityID         string
+	IdentityType       string
+	IdentityConfidence uint8
+	IdentityEvidence   []string
+	TokenFingerprint   string
+	APIKeyFingerprint  string
+	SessionFingerprint string
+	TenantFingerprint  string
 
 	// --- 解析限制与截断标记 ---
 	Limits           ParseLimits
@@ -125,8 +241,43 @@ type RequestContext struct {
 	FinalAction FinalAction
 	EventID     string
 
+	// --- 版本快照（装配层在检测器运行前写入一次；AddMatch 逐条盖章到 DetectorMatch）---
+	ModelVersion  string // 命中端点的 FORMAL 模型版本（未下发为空）
+	PolicyVersion string // 生效运行时策略版本（未下发为空）
+
+	// Response 响应侧上下文（仅 API 流量、下游响应完成后由响应相位写入一次）
+	Response *ResponseContext
+
+	// LLMObservation LLM API 观测（P2-04；仅识别为 LLM 端点的流量由 LLM 检测器写入，
+	// 响应相位补全 token 用量；nil = 非 LLM 流量，事件零变化）
+	LLMObservation *LLMObservation
+
 	// Extensions 受控扩展（检测器写入前应使用已知键；禁止无界动态膨胀）
 	Extensions map[string]any
+}
+
+// SetIdentity sets the normalized identity contract on the request context.
+// Evidence is copied because the context may outlive the resolver's scratch
+// slice; confidence is always bounded to the documented [0,100] range.
+func (c *RequestContext) SetIdentity(identityType string, confidence int, evidence []string) {
+	if c == nil {
+		return
+	}
+	if confidence > 100 {
+		confidence = 100
+	}
+	if confidence < 0 {
+		confidence = 0
+	}
+	if identityType == "UNKNOWN" || confidence == 0 {
+		confidence = 0
+		evidence = nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.IdentityType = identityType
+	c.IdentityConfidence = uint8(confidence)
+	c.IdentityEvidence = append([]string(nil), evidence...)
 }
 
 // New 创建上下文；limits 为零值时使用 DefaultParseLimits。
@@ -143,13 +294,23 @@ func New(requestID string, limits ParseLimits) *RequestContext {
 	}
 }
 
-// AddMatch 追加检测结论（线程安全）。
+// AddMatch 追加检测结论（线程安全）：零值 Confidence 按检测器保守默认填充，
+// 零值 ModelVersion/PolicyVersion 从上下文版本快照盖章（显式值优先，不覆盖）。
 func (c *RequestContext) AddMatch(m DetectorMatch) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if m.Confidence <= 0 {
+		m.Confidence = defaultConfidenceFor(m.Detector)
+	}
+	if m.ModelVersion == "" {
+		m.ModelVersion = c.ModelVersion
+	}
+	if m.PolicyVersion == "" {
+		m.PolicyVersion = c.PolicyVersion
+	}
 	c.Matches = append(c.Matches, m)
 	if m.ScoreDelta != 0 {
 		c.RiskScore += m.ScoreDelta
@@ -213,6 +374,47 @@ func (c *RequestContext) SetExtension(key string, value any) {
 		c.Extensions = map[string]any{}
 	}
 	c.Extensions[key] = value
+}
+
+// GetExtension 读取扩展字段（未写入时 ok=false）。
+func (c *RequestContext) GetExtension(key string) (any, bool) {
+	if c == nil || key == "" {
+		return nil, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.Extensions[key]
+	return v, ok
+}
+
+// SetResponse 写入响应侧上下文（仅响应相位调用一次）。
+func (c *RequestContext) SetResponse(rc *ResponseContext) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Response = rc
+}
+
+// GetResponse 读取响应侧上下文（未执行响应相位时为 nil）。
+func (c *RequestContext) GetResponse() *ResponseContext {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Response
+}
+
+// HasTransformPlan 响应脱敏计划非空（决策引擎 MASK_RESPONSE 分支依据）。
+func (c *RequestContext) HasTransformPlan() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Response != nil && len(c.Response.TransformPlan) > 0
 }
 
 func scoreToLevel(score int) RiskLevel {

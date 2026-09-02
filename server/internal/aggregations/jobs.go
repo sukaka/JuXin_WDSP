@@ -48,7 +48,7 @@ func (j *Jobs) aggregateEventsMinute(ctx context.Context, bucket time.Time) (int
 	rows, err := db.Query(ctx, `
 SELECT COALESCE(a.code,'unknown'), e.attack_type, e.severity, e.action, count(*)
 FROM security_events e LEFT JOIN applications a ON a.id = e.application_id
-WHERE e.occurred_at >= $1 AND e.occurred_at < $2
+WHERE m.event_occurred_at >= $1 AND m.event_occurred_at < $2
 GROUP BY 1,2,3,4`, start, end)
 	if err != nil {
 		return 0, fmt.Errorf("waf events: %w", err)
@@ -224,6 +224,54 @@ func (j *Jobs) RunDaily(ctx context.Context, now time.Time) error {
 	return j.store.recordJob(ctx, "DAILY", bucket.AddDate(0, 0, -1), bucket.Add(24*time.Hour), "SUCCESS", total, "")
 }
 
+// RunRuleEffectStats 重算规则版本按日效果统计。当前日与上一日都会重算，
+// 以覆盖迟到的事件处置；删除后插入保证任务幂等且支持手工重算。
+func (j *Jobs) RunRuleEffectStats(ctx context.Context, now time.Time) error {
+	day := now.UTC().Truncate(24 * time.Hour)
+	start := day.AddDate(0, 0, -1)
+	end := day.AddDate(0, 0, 1)
+	tx, err := j.store.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // commit 成功后回滚为空操作
+	if _, err := tx.Exec(ctx, `DELETE FROM rule_statistics_daily WHERE stat_date >= $1::date AND stat_date < $2::date`, start, end); err != nil {
+		return fmt.Errorf("delete rule effect statistics: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO rule_statistics_daily
+  (rule_key, rule_id, rule_name, rule_source, rule_version, stat_date,
+   observed_count, blocked_count, confirmed_attack_count, confirmed_false_positive_count, unresolved_count, updated_at)
+SELECT CONCAT(m.rule_source, ':', m.rule_id::text), m.rule_id, m.rule_name, m.rule_source,
+       COALESCE(m.rule_version, ''), (e.occurred_at AT TIME ZONE 'UTC')::date,
+       COUNT(*),
+       COUNT(*) FILTER (WHERE UPPER(COALESCE(e.action, '')) = 'BLOCK'),
+       COUNT(*) FILTER (WHERE e.disposition_status = 'CONFIRMED_ATTACK'),
+       COUNT(*) FILTER (WHERE e.disposition_status = 'CONFIRMED_FALSE_POSITIVE'),
+       COUNT(*) FILTER (WHERE COALESCE(e.disposition_status, 'UNPROCESSED') NOT IN ('CONFIRMED_ATTACK', 'CONFIRMED_FALSE_POSITIVE')),
+       now()
+FROM security_event_matches m
+JOIN security_events e ON e.id = m.event_id
+WHERE e.occurred_at >= $1 AND e.occurred_at < $2
+GROUP BY 1, 2, 3, 4, 5, 6
+ON CONFLICT (rule_key, rule_version, stat_date) DO UPDATE SET
+  rule_id = EXCLUDED.rule_id,
+  rule_name = EXCLUDED.rule_name,
+  rule_source = EXCLUDED.rule_source,
+  observed_count = EXCLUDED.observed_count,
+  blocked_count = EXCLUDED.blocked_count,
+  confirmed_attack_count = EXCLUDED.confirmed_attack_count,
+  confirmed_false_positive_count = EXCLUDED.confirmed_false_positive_count,
+  unresolved_count = EXCLUDED.unresolved_count,
+  updated_at = now()`, start, end); err != nil {
+		return fmt.Errorf("insert rule effect statistics: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit rule effect statistics: %w", err)
+	}
+	return j.store.recordJob(ctx, "RULE_EFFECT", start, end, "SUCCESS", 0, "")
+}
+
 // rollup 下级表 → 上级表重算（Go 内聚合，幂等：先删后插窗口数据）。
 func (j *Jobs) rollup(ctx context.Context, srcTable, dstTable string, start, end time.Time) (int, error) {
 	db := j.store.db
@@ -322,12 +370,35 @@ func (j *Jobs) Run(ctx context.Context) {
 			if err := j.RunMinute(ctx, time.Now()); err != nil {
 				slog.Error("minute aggregation failed", "error", err)
 			}
+			// API 调用边派生（api_runtime_events → api_call_edges，P1-09/10；轻量水位增量）
+			if _, err := j.RunCallEdges(ctx); err != nil {
+				slog.Error("call edge sweep failed", "error", err)
+			}
+			// APM 阶段1：端点级 RED 分钟聚合（access_logs → metric_minute_aggregates，ADR D7/D9）
+			if err := j.RunEndpointRED(ctx, time.Now()); err != nil {
+				slog.Error("endpoint red aggregation failed", "error", err)
+			}
 		case <-hourT.C:
 			if err := j.RunHour(ctx, time.Now()); err != nil {
 				slog.Error("hour aggregation failed", "error", err)
 			}
 			if err := j.RunDaily(ctx, time.Now()); err != nil {
 				slog.Error("daily aggregation failed", "error", err)
+			}
+			if err := j.RunRuleEffectStats(ctx, time.Now()); err != nil {
+				slog.Error("rule effect statistics aggregation failed", "error", err)
+			}
+			// WDSP 访问微模型：API 行为基线画像离线聚合（api_runtime_events → api_behavior_profiles）
+			if err := j.RunBehaviorProfiles(ctx, time.Now()); err != nil {
+				slog.Error("behavior profile aggregation failed", "error", err)
+			}
+			// WDSP 身份微模型：身份画像聚合（api_runtime_events → api_identity_profiles）
+			if err := j.RunIdentityProfiles(ctx, time.Now()); err != nil {
+				slog.Error("identity profile aggregation failed", "error", err)
+			}
+			// WDSP 接口流量趋势：清理 7 天前的流量桶（api_endpoint_traffic_buckets 留存窗口）
+			if err := j.RunTrafficBucketCleanup(ctx, time.Now()); err != nil {
+				slog.Error("traffic bucket cleanup failed", "error", err)
 			}
 		}
 	}

@@ -40,6 +40,9 @@ func TestParseAuditLineValid(t *testing.T) {
 	if evt.Matches[0].RuleID != 942100 {
 		t.Errorf("match rule_id = %d", evt.Matches[0].RuleID)
 	}
+	if evt.Matches[0].RuleSource != "OWASP_CRS" || evt.Matches[0].RuleVersion != "4.28.0" {
+		t.Errorf("match rule metadata = %q/%q", evt.Matches[0].RuleSource, evt.Matches[0].RuleVersion)
+	}
 }
 
 func TestParseAuditLineMasking(t *testing.T) {
@@ -81,6 +84,52 @@ func TestParseAuditLineInvalid(t *testing.T) {
 	}
 	if _, err := ParseAuditLine([]byte(`{"transaction":{},"messages":[]}`), "node"); err == nil {
 		t.Error("missing tx id should fail")
+	}
+}
+
+// buildAuditLine 构造最小审计日志行，messages 为 ModSecurity 风格错误消息（JSON 转义后）。
+func buildAuditLine(messages ...string) string {
+	msgs := ""
+	for i, m := range messages {
+		if i > 0 {
+			msgs += ","
+		}
+		msgs += `{"error_message":"` + m + `"}`
+	}
+	return `{"transaction":{"timestamp":"2026/07/21 10:00:00","id":"tx-atk","client_ip":"192.0.2.1","client_port":12345,` +
+		`"request":{"method":"GET","protocol":"HTTP/1.1","uri":"/","headers":{"host":["waf.test"]}},` +
+		`"response":{"status":0},"producer":{"rule_engine":"On"},"is_interrupted":true},"messages":[` + msgs + `]}`
+}
+
+// 攻击类型按严重度优先：notice 级扫描器规则不得抢在 critical 级攻击规则前面；
+// 严重度并列时取先出现者；纯扫描器事件仍判 SCANNER_DETECTION。
+func TestParseAuditLineAttackTypeSeverityPriority(t *testing.T) {
+	// 自定义规则 1000712：扫描器检测，notice 级，phase 1（总先于 CRS phase-2 规则出现）
+	scannerMsg := `[client \"192.0.2.1\"] Coraza: Warning. Scanner [id \"1000712\"] [msg \"Scanner Detected\"] [severity \"notice\"] [tag \"attack-scanner\"] [phase \"1\"]`
+	xssMsg := `[client \"192.0.2.1\"] Coraza: Warning. XSS [id \"941100\"] [msg \"XSS Attack\"] [severity \"critical\"] [tag \"attack-xss\"]`
+	sqliMsg := `[client \"192.0.2.1\"] Coraza: Warning. SQLi [id \"942100\"] [msg \"SQL Injection Attack\"] [severity \"critical\"] [tag \"attack-sqli\"]`
+
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"扫描器在前+critical XSS 在后", buildAuditLine(scannerMsg, xssMsg), "XSS"},
+		{"仅扫描器", buildAuditLine(scannerMsg), "SCANNER_DETECTION"},
+		{"sqli 与 xss 同为 critical 取先出现者", buildAuditLine(sqliMsg, xssMsg), "SQL_INJECTION"},
+		{"同级并列 xss 在前", buildAuditLine(xssMsg, sqliMsg), "XSS"},
+		{"既有样例仍判 SQL_INJECTION", sampleAudit, "SQL_INJECTION"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			evt, err := ParseAuditLine([]byte(c.line), "node-01")
+			if err != nil {
+				t.Fatalf("ParseAuditLine: %v", err)
+			}
+			if evt.AttackType != c.want {
+				t.Errorf("attack_type = %q, want %q", evt.AttackType, c.want)
+			}
+		})
 	}
 }
 

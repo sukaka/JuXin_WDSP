@@ -1,0 +1,1962 @@
+# 域片段：安全事件、日志与态势分析
+# 路由源：server/internal/app/app.go 574-591 行（security-events / access-logs）、660-690 行（dashboard / analytics / system-health / system-alerts）
+# 约定：所有响应 data 负载按实际 JSON 字段文档化；分页列表统一 {items, page, page_size, total}
+
+paths:
+  # ==================== 安全事件 ====================
+  /security-events:
+    get:
+      operationId: secEventList
+      tags: [security-events]
+      summary: 安全事件分页列表
+      description: >-
+        按时间倒序返回 WAF 安全事件（Coraza/CRS 检测结果）。权限：security_events.read。
+        page_size 上限 100，超出按 20 处理；列表项不含请求/响应头体留痕（为 null/空值），详情见 GET /security-events/{id}。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339），按 occurred_at 过滤 }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，含边界） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID 精确过滤 }
+        - { name: domain, in: query, required: false, schema: { type: string }, description: 域名模糊匹配（ILIKE） }
+        - { name: client_ip, in: query, required: false, schema: { type: string }, description: 客户端 IP 精确匹配 }
+        - { name: uri, in: query, required: false, schema: { type: string }, description: 请求 URI 模糊匹配（ILIKE） }
+        - { name: method, in: query, required: false, schema: { type: string }, description: 请求方法精确匹配（如 GET/POST） }
+        - { name: attack_type, in: query, required: false, schema: { type: string }, description: 攻击类型，取值见 SecEvent.attack_type }
+        - { name: severity, in: query, required: false, schema: { type: string, enum: [HIGH, MEDIUM, LOW, INFO] }, description: 严重等级 }
+        - { name: action, in: query, required: false, schema: { type: string, enum: [BLOCK, OBSERVE] }, description: WAF 动作 }
+        - { name: disposition_status, in: query, required: false, schema: { type: string, enum: [UNPROCESSED, ANALYZING, CONFIRMED_ATTACK, CONFIRMED_FALSE_POSITIVE, IGNORED, RESOLVED] }, description: 处置状态 }
+        - { name: request_id, in: query, required: false, schema: { type: string }, description: 请求 ID 精确匹配 }
+        - { name: gateway_node, in: query, required: false, schema: { type: string }, description: 网关节点 ID 精确匹配 }
+        - { name: rule_id, in: query, required: false, schema: { type: integer }, description: 按命中规则 ID 过滤（关联 security_event_matches） }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码 }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20 }, description: 每页条数（上限 100） }
+      responses:
+        '200':
+          description: 分页安全事件列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecEventListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/export:
+    get:
+      operationId: secEventExport
+      tags: [security-events]
+      summary: 导出安全事件（CSV）
+      description: >-
+        导出筛选后的安全事件为 CSV 文件（security-events.csv），列：occurred_at, client_ip, domain, method, uri,
+        attack_type, severity, anomaly_score, action, response_status, disposition_status, request_id。
+        导出总量上限 10000 行。权限：security_events.export。导出行为记录操作审计（中风险）。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，含边界） }
+        - { name: domain, in: query, required: false, schema: { type: string }, description: 域名模糊匹配 }
+        - { name: attack_type, in: query, required: false, schema: { type: string }, description: 攻击类型 }
+        - { name: severity, in: query, required: false, schema: { type: string, enum: [HIGH, MEDIUM, LOW, INFO] }, description: 严重等级 }
+      responses:
+        '200':
+          description: "CSV 文件（text/csv; charset=utf-8，Content-Disposition: attachment）"
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/{id}:
+    get:
+      operationId: secEventGet
+      tags: [security-events]
+      summary: 安全事件详情
+      description: >-
+        返回事件完整字段（含请求/响应头体留痕，敏感头已掩码、体超 64KB 截断）、规则匹配明细、备注、处置记录与相关事件（最多 10 条）。
+        权限：security_events.read。matches/notes/actions/related 无数据时为 null。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      responses:
+        '200':
+          description: 事件详情聚合
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecEventDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/{id}/related:
+    get:
+      operationId: secEventRelated
+      tags: [security-events]
+      summary: 相关安全事件
+      description: >-
+        返回与当前事件同客户端 IP、同攻击类型或同域名的其他事件（按时间倒序，最多 20 条）。权限：security_events.read。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      responses:
+        '200':
+          description: 相关事件列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecEventRelatedResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/{id}/remediation:
+    get:
+      operationId: secEventRemediation
+      tags: [security-events]
+      summary: 事件修复建议（处置知识库）
+      description: >-
+        按事件攻击类型返回处置知识库内容：分析步骤、修复建议与加固建议；未知攻击类型返回通用建议。权限：security_events.read。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      responses:
+        '200':
+          description: 修复建议与事件摘要
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecEventRemediationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/{id}/notes:
+    post:
+      operationId: secEventAddNote
+      tags: [security-events]
+      summary: 添加事件备注
+      description: 为事件添加分析备注（1-1000 字符）。权限：security_events.disposition。记录操作审计（低风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecEventNoteRequest' }
+      responses:
+        '200':
+          description: 备注已添加
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/{id}/confirm-attack:
+    post:
+      operationId: secEventConfirmAttack
+      tags: [security-events]
+      summary: 确认攻击（处置）
+      description: >-
+        将事件处置状态置为 CONFIRMED_ATTACK。result 缺省时取目标状态值；note 非空时追加为事件备注并拼接进处置记录。
+        权限：security_events.disposition。记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecEventDispositionRequest' }
+      responses:
+        '200':
+          description: 处置完成
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/{id}/confirm-false-positive:
+    post:
+      operationId: secEventConfirmFalsePositive
+      tags: [security-events]
+      summary: 确认误报（处置）
+      description: 将事件处置状态置为 CONFIRMED_FALSE_POSITIVE。语义同 confirm-attack。权限：security_events.disposition。记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecEventDispositionRequest' }
+      responses:
+        '200':
+          description: 处置完成
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/{id}/ignore:
+    post:
+      operationId: secEventIgnore
+      tags: [security-events]
+      summary: 忽略事件（处置）
+      description: 将事件处置状态置为 IGNORED。语义同 confirm-attack。权限：security_events.disposition。记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecEventDispositionRequest' }
+      responses:
+        '200':
+          description: 处置完成
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/{id}/resolve:
+    post:
+      operationId: secEventResolve
+      tags: [security-events]
+      summary: 标记已处置
+      description: 将事件处置状态置为 RESOLVED。语义同 confirm-attack。权限：security_events.disposition。记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecEventDispositionRequest' }
+      responses:
+        '200':
+          description: 处置完成
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/{id}/mark-analyzing:
+    post:
+      operationId: secEventMarkAnalyzing
+      tags: [security-events]
+      summary: 标记分析中（处置）
+      description: 将事件处置状态置为 ANALYZING。语义同 confirm-attack。权限：security_events.disposition。记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecEventDispositionRequest' }
+      responses:
+        '200':
+          description: 处置完成
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security-events/{id}/create-exception:
+    post:
+      operationId: secEventCreateException
+      tags: [security-events]
+      summary: 从事件创建例外草稿
+      description: >-
+        基于事件命中信息创建例外策略草稿（DRAFT 状态，需前往例外策略页面审核发布）。无请求体。
+        权限：exceptions.manage。记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 事件 ID }
+      responses:
+        '200':
+          description: 例外草稿已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecEventCreateExceptionResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503':
+          description: 例外服务未配置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ==================== 全量访问日志 ====================
+  /access-logs:
+    get:
+      operationId: accessLogList
+      tags: [access-logs]
+      summary: 访问日志分页列表
+      description: >-
+        全量访问日志（网关放行路径采集）按时间倒序分页查询。权限：access_logs.read。
+        page_size 上限 100；列表不返回请求/响应头体留痕（字段缺省），详情见 GET /access-logs/{id}。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，含边界） }
+        - { name: domain, in: query, required: false, schema: { type: string }, description: 域名模糊匹配（ILIKE） }
+        - { name: client_ip, in: query, required: false, schema: { type: string }, description: 客户端 IP 精确匹配 }
+        - { name: method, in: query, required: false, schema: { type: string }, description: 请求方法精确匹配 }
+        - { name: uri, in: query, required: false, schema: { type: string }, description: 请求 URI 模糊匹配（ILIKE） }
+        - { name: status, in: query, required: false, schema: { type: integer }, description: 响应状态码精确匹配（如 200/403） }
+        - { name: waf_action, in: query, required: false, schema: { type: string }, description: WAF 动作（BLOCK 或空串=放行；网关仅对 403 推断 BLOCK） }
+        - { name: request_id, in: query, required: false, schema: { type: string }, description: 请求 ID 精确匹配 }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码 }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20 }, description: 每页条数（上限 100） }
+      responses:
+        '200':
+          description: 分页访问日志列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessLogListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-logs/export:
+    get:
+      operationId: accessLogExport
+      tags: [access-logs]
+      summary: 导出访问日志（CSV）
+      description: >-
+        导出筛选后的访问日志为 CSV 文件（access-logs.csv），列：occurred_at, client_ip, domain, method, uri, status,
+        waf_action, bytes_in, bytes_out, duration_ms, gateway_node_id, request_id。上限 10000 行。
+        权限：access_logs.export。限流：每 IP 5 次/分钟（超限返回 429）。导出行为记录操作审计（中风险）。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，含边界） }
+        - { name: domain, in: query, required: false, schema: { type: string }, description: 域名模糊匹配 }
+        - { name: client_ip, in: query, required: false, schema: { type: string }, description: 客户端 IP 精确匹配 }
+        - { name: method, in: query, required: false, schema: { type: string }, description: 请求方法 }
+        - { name: uri, in: query, required: false, schema: { type: string }, description: 请求 URI 模糊匹配 }
+        - { name: status, in: query, required: false, schema: { type: integer }, description: 响应状态码 }
+        - { name: waf_action, in: query, required: false, schema: { type: string }, description: WAF 动作 }
+        - { name: request_id, in: query, required: false, schema: { type: string }, description: 请求 ID }
+      responses:
+        '200':
+          description: "CSV 文件（text/csv; charset=utf-8，Content-Disposition: attachment）"
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-logs/{id}:
+    get:
+      operationId: accessLogGet
+      tags: [access-logs]
+      summary: 访问日志详情
+      description: 返回单条访问日志完整字段，含请求/响应头体留痕（敏感头已掩码、体超限截断）。权限：access_logs.read。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 日志 ID }
+      responses:
+        '200':
+          description: 访问日志详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessLog' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 态势首页 ====================
+  /dashboard/security-overview:
+    get:
+      operationId: dashboardSecurityOverview
+      tags: [dashboard]
+      summary: 安全态势总览
+      description: >-
+        安全视角首页聚合：今日计数、趋势序列（请求/事件/阻断/观察/CC/黑名单）、排行（攻击类型/源 IP/应用/规则/URI）与风险区
+        （高危未处置事件、发布失败任务、异常组件、采集延迟）。数据分层：range≤24h 查分钟聚合表，>24h 查小时聚合表。
+        权限：dashboard.security.read。
+      parameters:
+        - { name: range, in: query, required: false, schema: { type: string, enum: ['1h', '24h', '7d', '30d'], default: '24h' }, description: 趋势时间范围 }
+      responses:
+        '200':
+          description: 安全态势数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardSecurityOverview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /dashboard/runtime-overview:
+    get:
+      operationId: dashboardRuntimeOverview
+      tags: [dashboard]
+      summary: 运行态势总览
+      description: >-
+        运行视角首页聚合：各组件最新健康快照、网关运行状态、近 30 天发布/报告成功率、存储用量（PG/Valkey/磁盘）。
+        权限：dashboard.runtime.read。
+      responses:
+        '200':
+          description: 运行态势数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardRuntimeOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /dashboard/audit-overview:
+    get:
+      operationId: dashboardAuditOverview
+      tags: [dashboard]
+      summary: 审计态势总览
+      description: >-
+        审计视角首页聚合：今日处置数、未处置事件数、今日审计条数、最近审计摘要（10 条）、事件处置状态分布与今日操作类型统计。
+        权限：dashboard.audit.read。
+      responses:
+        '200':
+          description: 审计态势数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardAuditOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 统计分析 ====================
+  /analytics/request-trend:
+    get:
+      operationId: analyticsRequestTrend
+      tags: [analytics]
+      summary: 请求趋势
+      description: >-
+        请求量与耗时分位数趋势。series 键：requests（总量）、status_2xx/status_4xx/status_5xx（按状态分类）、
+        p50_ms/p95_ms/p99_ms（毫秒）。start_time/end_time 均缺省时取最近 24 小时；仅给 end_time 时向前推 24 小时；
+        跨度上限 366 天。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339），必须早于 end_time }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID（按应用 code 聚合标签过滤；应用不存在返回 400） }
+      responses:
+        '200':
+          description: 请求趋势数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsTrendData' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/security-event-trend:
+    get:
+      operationId: analyticsSecurityEventTrend
+      tags: [analytics]
+      summary: 安全事件趋势
+      description: >-
+        WAF 事件/阻断/观察趋势。series 键：events、blocks、observes。时间范围规则同 request-trend。
+        权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 安全事件趋势数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsTrendData' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/risk-levels:
+    get:
+      operationId: analyticsRiskLevels
+      tags: [analytics]
+      summary: 风险等级分布
+      description: 按严重等级（HIGH/MEDIUM/LOW/INFO）统计事件量，值降序（最多 20 项）。时间范围规则同 request-trend。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 风险等级分布
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsKVListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/attack-types:
+    get:
+      operationId: analyticsAttackTypes
+      tags: [analytics]
+      summary: 攻击类型分布
+      description: 按攻击类型统计事件量，值降序（最多 50 项）。时间范围规则同 request-trend。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 攻击类型分布
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsKVListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/top-source-ips:
+    get:
+      operationId: analyticsTopSourceIps
+      tags: [analytics]
+      summary: 攻击源 IP 排行
+      description: 按事件数统计攻击源 IP（直接查事件表）。时间范围规则同 request-trend。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 10 }, description: 返回条数（1-100） }
+      responses:
+        '200':
+          description: 源 IP 排行
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsSourceIPListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/top-applications:
+    get:
+      operationId: analyticsTopApplications
+      tags: [analytics]
+      summary: 被攻击应用排行
+      description: 按事件数统计被攻击应用（聚合表 app 标签 → 应用 code/name）。时间范围规则同 request-trend。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 10 }, description: 返回条数 }
+      responses:
+        '200':
+          description: 应用排行
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsAppListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/top-rules:
+    get:
+      operationId: analyticsTopRules
+      tags: [analytics]
+      summary: 命中规则排行
+      description: 按命中数统计 WAF 规则（含误报数，来自事件处置结果）。时间范围规则同 request-trend。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 10 }, description: 返回条数（1-100） }
+      responses:
+        '200':
+          description: 规则命中排行
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsRuleListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/top-uris:
+    get:
+      operationId: analyticsTopUris
+      tags: [analytics]
+      summary: 被攻击 URI 排行
+      description: 按事件数统计被攻击请求路径（直接查事件表）。时间范围规则同 request-trend。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 10 }, description: 返回条数（1-100） }
+      responses:
+        '200':
+          description: URI 排行
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsURIListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/cc-overview:
+    get:
+      operationId: analyticsCcOverview
+      tags: [analytics]
+      summary: CC 防护概览
+      description: >-
+        CC 防护统计：阈值触发/拒绝请求数、临时封禁创建/过期/解除数、黑白名单命中、全局/应用级规则事件、
+        非法代理头与引擎错误计数、临时封禁趋势。时间范围规则同 request-trend。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: CC 防护概览
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsCcOverview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/access-control-overview:
+    get:
+      operationId: analyticsAccessControlOverview
+      tags: [analytics]
+      summary: 访问控制概览
+      description: >-
+        访问控制统计：白/黑名单命中数、规则命中排行、规则启停分布、当前生效临时封禁数与封禁趋势。
+        时间范围规则同 request-trend。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 访问控制概览
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsAcOverview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/site-access-trends:
+    get:
+      operationId: analyticsSiteAccessTrends
+      tags: [analytics]
+      summary: 网站访问趋势（应用维度）
+      description: >-
+        直查 access_logs 按应用聚合访问趋势：以 applications 为准 LEFT JOIN，含零流量应用；
+        series 为补桶后的完整时间轴（范围内空桶补 0），按总访问量降序（相同按应用编码升序）。
+        桶粒度按跨度自适应：≤1h 分钟桶，≤7d 小时桶，更大为天桶；因访问日志保留期约 7 天，跨度上限 7 天（超限返回 400）。
+        start_time/end_time 均缺省时取最近 24 小时；仅给 end_time 时向前推 24 小时。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339），必须早于 end_time }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+      responses:
+        '200':
+          description: 应用维度访问趋势
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsSiteAccessTrendsData' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/site-access-trends/domains:
+    get:
+      operationId: analyticsSiteAccessTrendDomains
+      tags: [analytics]
+      summary: 网站访问趋势（域名维度）
+      description: >-
+        限定应用按域名（Host）聚合访问趋势，按总访问量降序（相同按域名升序）；
+        series 补桶规则与跨度上限同 /analytics/site-access-trends。权限：analytics.security.read。
+      parameters:
+        - { name: application_id, in: query, required: true, schema: { type: string, format: uuid }, description: 应用 ID（缺失或非法返回 400） }
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339），必须早于 end_time }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+      responses:
+        '200':
+          description: 域名维度访问趋势
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsDomainAccessTrendsData' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /analytics/disposition-overview:
+    get:
+      operationId: analyticsDispositionOverview
+      tags: [analytics]
+      summary: 事件处置统计
+      description: >-
+        事件处置统计：处置状态分布、平均处置耗时（秒）与处置人排行。时间范围规则同 request-trend。
+        权限：analytics.disposition.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 事件处置统计
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsDispositionOverview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 运行监控 ====================
+  /system-health:
+    get:
+      operationId: systemHealthOverview
+      tags: [system-health]
+      summary: 系统健康汇总
+      description: >-
+        汇总各组件最新健康快照并计算整体状态（DOWN > DEGRADED > UNKNOWN > UP）；未采集到快照的组件按 UNKNOWN 计入
+        missing_components。权限：system_health.read。
+      responses:
+        '200':
+          description: 系统健康汇总
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemHealthOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-health/components:
+    get:
+      operationId: systemHealthComponents
+      tags: [system-health]
+      summary: 组件健康快照列表
+      description: 返回每个组件的最新一条健康快照（含延迟与指标明细）。权限：system_health.read。
+      responses:
+        '200':
+          description: 组件快照列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemHealthComponentsResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-health/storage:
+    get:
+      operationId: systemHealthStorage
+      tags: [system-health]
+      summary: 存储容量监控
+      description: >-
+        实时采集存储指标：PG 库容量与连接数、容量 Top10 表/分区、Valkey 内存、报告/备份目录占用、磁盘总量与剩余。
+        Valkey 与目录类采集失败仅置零值，不导致整体失败。权限：system_health.read。
+      responses:
+        '200':
+          description: 存储容量数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SystemHealthStorage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 系统告警 ====================
+  /system-alerts:
+    get:
+      operationId: sysAlertList
+      tags: [system-alerts]
+      summary: 系统告警分页列表
+      description: >-
+        按 last_seen_at 倒序返回系统告警。权限：system_alerts.read / system_alerts.read_security /
+        system_alerts.read_audit 任一。status/severity/alert_type 参数不合法（不在枚举内）返回 400；page_size 上限 1000。
+        view 三态视图（ACTIVE 未关闭且未在静默期 / SILENCED 未关闭且静默期内 / HISTORY 已关闭）与 status 互斥，同传返回 400。
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [OPEN, ACKNOWLEDGED, RESOLVED, IGNORED] }, description: 告警状态（大小写不敏感，服务端统一转大写） }
+        - { name: view, in: query, required: false, schema: { type: string, enum: [ACTIVE, SILENCED, HISTORY] }, description: 三态视图（与 status 互斥；由 status + silenced_until 推导，自动转大写） }
+        - { name: severity, in: query, required: false, schema: { type: string, enum: [CRITICAL, HIGH, MEDIUM, LOW, INFO] }, description: 告警等级 }
+        - { name: alert_type, in: query, required: false, schema: { type: string }, description: 告警类型，取值见 SysAlert.alert_type }
+        - { name: component, in: query, required: false, schema: { type: string }, description: 组件名（GATEWAY/CORAZA/GUARD/API/POSTGRES/VALKEY/EVENT_COLLECTOR/UPSTREAM/CERTIFICATE/DISK/API_SECURITY） }
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 按 last_seen_at 过滤的起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 按 last_seen_at 过滤的结束时间（RFC3339，含边界） }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码 }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20 }, description: 每页条数（上限 1000） }
+      responses:
+        '200':
+          description: 分页系统告警列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SysAlertListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-alerts/{id}:
+    get:
+      operationId: sysAlertGet
+      tags: [system-alerts]
+      summary: 系统告警详情
+      description: >-
+        返回告警完整字段与备注时间线（按时间正序）。权限：system_alerts.read / system_alerts.read_security /
+        system_alerts.read_audit 任一。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 告警 ID }
+      responses:
+        '200':
+          description: 告警详情（含备注）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SysAlertDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-alerts/{id}/acknowledge:
+    post:
+      operationId: sysAlertAcknowledge
+      tags: [system-alerts]
+      summary: 确认告警
+      description: >-
+        状态流转 OPEN → ACKNOWLEDGED，返回更新后的告警。无请求体。当前状态不允许该流转时返回 409。
+        权限：system_alerts.acknowledge / system_alerts.acknowledge_security 任一。记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 告警 ID }
+      responses:
+        '200':
+          description: 更新后的告警
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SysAlert' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 当前状态不允许该操作（状态机冲突）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-alerts/{id}/resolve:
+    post:
+      operationId: sysAlertResolve
+      tags: [system-alerts]
+      summary: 标记告警已解决
+      description: >-
+        状态流转 OPEN/ACKNOWLEDGED → RESOLVED（resolve_type=MANUAL），返回更新后的告警。无请求体。
+        权限：system_alerts.acknowledge / system_alerts.acknowledge_security 任一。记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 告警 ID }
+      responses:
+        '200':
+          description: 更新后的告警
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SysAlert' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 当前状态不允许该操作（状态机冲突）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-alerts/{id}/ignore:
+    post:
+      operationId: sysAlertIgnore
+      tags: [system-alerts]
+      summary: 忽略告警
+      description: >-
+        状态流转 OPEN/ACKNOWLEDGED → IGNORED，返回更新后的告警。无请求体。
+        权限：system_alerts.acknowledge / system_alerts.acknowledge_security 任一。记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 告警 ID }
+      responses:
+        '200':
+          description: 更新后的告警
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SysAlert' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 当前状态不允许该操作（状态机冲突）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-alerts/{id}/notes:
+    post:
+      operationId: sysAlertAddNote
+      tags: [system-alerts]
+      summary: 添加告警备注
+      description: >-
+        为告警添加备注（去首尾空白后 1-1000 字符），返回新创建的备注。权限：system_alerts.acknowledge /
+        system_alerts.acknowledge_security 任一。记录操作审计（低风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 告警 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SysAlertNoteRequest' }
+      responses:
+        '200':
+          description: 新创建的备注
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SysAlertNote' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-alerts/{id}/silence:
+    post:
+      operationId: sysAlertSilence
+      tags: [system-alerts]
+      summary: 静默告警
+      description: >-
+        设置 silenced_until = now + duration_minutes（1~43200 分钟，即最长 30 天）。仅未关闭
+        （OPEN/ACKNOWLEDGED）告警可静默，其余状态返回 409；重复静默视为延长。静默期间告警保持未关闭状态
+        照常合并记录（occurrence_count 累计、last_seen_at 刷新），同指纹（alert_type+component）新建告警
+        跳过 syslog 外发不重复通知。权限：system_alerts.acknowledge / system_alerts.acknowledge_security 任一。
+        记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 告警 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SysAlertSilenceRequest' }
+      responses:
+        '200':
+          description: 更新后的告警（含 silenced_until）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SysAlert' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 当前状态不允许该操作（状态机冲突）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-alerts/{id}/resume:
+    post:
+      operationId: sysAlertResume
+      tags: [system-alerts]
+      summary: 解除告警静默
+      description: >-
+        清除 silenced_until，恢复同指纹告警通知。仅处于静默（含已到期未清除）的未关闭告警可解除，
+        其余返回 409。无请求体。权限：system_alerts.acknowledge / system_alerts.acknowledge_security 任一。
+        记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 告警 ID }
+      responses:
+        '200':
+          description: 更新后的告警（silenced_until 已清除）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SysAlert' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 当前状态不允许该操作（状态机冲突）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 告警通知渠道 ====================
+  /notification-meta:
+    get:
+      operationId: notificationMeta
+      tags: [notifications]
+      summary: 通知元数据词表
+      description: 返回固定 8 类告警类别（含各类别覆盖的告警类型）与可选最低通知级别词表（LOW/MEDIUM/HIGH/CRITICAL），用于渠道编辑表单下拉。权限：`notification.read`
+      responses:
+        '200':
+          description: 通知元数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationMetaResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /notification-channels:
+    get:
+      operationId: notificationChannelList
+      tags: [notifications]
+      summary: 通知渠道列表
+      description: 返回全部通知渠道（不分页；config 中密值字段脱敏为 ********）。权限：`notification.read`
+      responses:
+        '200':
+          description: 渠道列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationChannelListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: notificationChannelCreate
+      tags: [notifications]
+      summary: 新建通知渠道
+      description: >-
+        新建通知渠道。config 按渠道类型严格校验（拒绝未知字段，见 NotificationChannelInput.config）；
+        密值字段加密落库，响应不回显明文（脱敏为 ********）。min_severity 缺省 LOW。
+        记录中风险审计。权限：`notification.update`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationChannelInput' }
+      responses:
+        '200':
+          description: 创建成功，返回脱敏后的完整渠道对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationChannel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /notification-channels/{id}:
+    put:
+      operationId: notificationChannelUpdate
+      tags: [notifications]
+      summary: 更新通知渠道
+      description: >-
+        全量更新通知渠道。密值字段提交 ******** 表示保留原值（仅渠道类型不变时允许；更换类型后须重新填写真实密值）。
+        记录中风险审计。权限：`notification.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 渠道 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotificationChannelInput' }
+      responses:
+        '200':
+          description: 更新成功，返回脱敏后的完整渠道对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NotificationChannel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: notificationChannelDelete
+      tags: [notifications]
+      summary: 删除通知渠道
+      description: 删除通知渠道。记录中风险审计。权限：`notification.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 渠道 ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /notification-channels/{id}/test:
+    post:
+      operationId: notificationChannelTest
+      tags: [notifications]
+      summary: 发送测试消息
+      description: 以渠道当前配置立即发送一条测试消息（不经过队列与风暴抑制），失败时返回 400 并附真实失败原因。记录操作审计（成功/失败均记）。权限：`notification.test`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 渠道 ID }
+      responses:
+        '200':
+          description: 测试消息已发送
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { description: 测试消息发送失败（message 含真实失败原因）或渠道 ID 非法 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    # ==================== 安全事件 ====================
+    SecEvent:
+      type: object
+      description: 安全事件。请求/响应头体留痕仅详情接口有值，列表项对应字段为 null/空。
+      properties:
+        id: { type: string, format: uuid, description: 事件 ID }
+        request_id: { type: string, description: 网关请求 ID }
+        occurred_at: { type: string, format: date-time, description: 发生时间（UTC） }
+        application_id: { type: string, format: uuid, nullable: true, description: 命中应用 ID（未关联为 null） }
+        application_name_snapshot: { type: string, description: 应用名快照 }
+        domain: { type: string, description: 请求域名（Host） }
+        gateway_node_id: { type: string, description: 网关节点 ID }
+        client_ip: { type: string, description: 客户端 IP（已按隐私策略掩码） }
+        client_port: { type: integer, description: 客户端端口 }
+        request_method: { type: string, description: 请求方法 }
+        request_uri: { type: string, description: 请求 URI（查询串已脱敏） }
+        request_path: { type: string, description: 请求路径 }
+        query_summary: { type: string, description: 查询串摘要（参数名，不含值） }
+        http_version: { type: string, description: HTTP 协议版本 }
+        content_type: { type: string, description: 请求 Content-Type }
+        user_agent_summary: { type: string, description: User-Agent 摘要（截断） }
+        referer_summary: { type: string, description: Referer 摘要（截断） }
+        attack_type:
+          type: string
+          description: 攻击类型（由规则标签映射，未识别为 OTHER）
+          enum: [SQL_INJECTION, XSS, COMMAND_INJECTION, LOCAL_FILE_INCLUSION, REMOTE_FILE_INCLUSION, PHP_INJECTION, JAVA_INJECTION, PROTOCOL_VIOLATION, SESSION_FIXATION, SCANNER_DETECTION, INFORMATION_DISCLOSURE, REMOTE_CODE_EXECUTION, SSRF, XXE_INJECTION, WEBSHELL, FILE_UPLOAD, DESERIALIZATION, SSTI, DOS, MASS_ASSIGNMENT, EXCLUSION, OTHER]
+        severity: { type: string, enum: [HIGH, MEDIUM, LOW, INFO], description: 严重等级（取命中规则最高级） }
+        anomaly_score: { type: integer, description: 异常评分（CRS Anomaly Score） }
+        action: { type: string, enum: [BLOCK, OBSERVE], description: WAF 动作（阻断/观察） }
+        response_status: { type: integer, description: 响应状态码（阻断时为 403） }
+        rule_match_count: { type: integer, description: 规则命中条数 }
+        disposition_status:
+          type: string
+          enum: [UNPROCESSED, ANALYZING, CONFIRMED_ATTACK, CONFIRMED_FALSE_POSITIVE, IGNORED, RESOLVED]
+          description: 处置状态
+        disposition_result: { type: string, description: 处置结论（处置时写入，未处置为空串） }
+        raw_log_reference: { type: string, description: 原始审计日志引用（coraza-audit:<txID>） }
+        request_headers:
+          type: object
+          additionalProperties: { type: array, items: { type: string } }
+          nullable: true
+          description: 请求头留痕（敏感头已掩码；仅详情返回）
+        request_body: { type: string, description: 请求体留痕（已脱敏，超 64KB 截断；仅详情返回） }
+        request_body_truncated: { type: boolean, description: 请求体是否被截断 }
+        response_headers:
+          type: object
+          additionalProperties: { type: array, items: { type: string } }
+          nullable: true
+          description: 响应头留痕（仅详情返回）
+        response_body: { type: string, description: 响应体留痕（超 64KB 截断；仅详情返回） }
+        response_body_truncated: { type: boolean, description: 响应体是否被截断 }
+
+    SecEventMatch:
+      type: object
+      description: 规则匹配明细（matched_data 已脱敏，前端须按纯文本转义渲染）
+      properties:
+        rule_id: { type: integer, description: CRS/自定义规则 ID }
+        rule_name: { type: string, description: 规则名称（msg） }
+        rule_source: { type: string, description: 规则来源（如 OWASP_CRS） }
+        rule_version: { type: string, description: 规则版本（由审计日志规则集元数据提取） }
+        severity: { type: string, enum: [HIGH, MEDIUM, LOW, INFO], description: 规则严重等级 }
+        message: { type: string, description: 规则消息 }
+        matched_variable: { type: string, description: 命中变量（如 ARGS:q） }
+        matched_data: { type: string, description: 命中数据（已脱敏） }
+        tags: { type: array, items: { type: string }, nullable: true, description: 规则标签 }
+        phase: { type: integer, description: 命中阶段（1=请求头，2=请求体，3=响应头，4=响应体） }
+
+    SecEventNote:
+      type: object
+      description: 事件备注
+      properties:
+        username: { type: string, description: 备注人用户名 }
+        note: { type: string, description: 备注内容 }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+
+    SecEventActionRecord:
+      type: object
+      description: 事件处置动作记录
+      properties:
+        action_type: { type: string, description: 动作类型（confirm_attack/confirm_false_positive/ignore/resolve/mark_analyzing/create_exception 等） }
+        operator_name: { type: string, description: 操作人用户名 }
+        detail: { type: string, description: 处置详情（结论 + 备注） }
+        related_ref_id: { type: string, description: 关联引用 ID（如例外草稿 ID，无则空串） }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+
+    SecEventDetail:
+      type: object
+      description: 事件详情聚合（无数据的可空数组返回 null）
+      properties:
+        event: { $ref: '#/components/schemas/SecEvent' }
+        matches: { type: array, items: { $ref: '#/components/schemas/SecEventMatch' }, nullable: true }
+        notes: { type: array, items: { $ref: '#/components/schemas/SecEventNote' }, nullable: true }
+        actions: { type: array, items: { $ref: '#/components/schemas/SecEventActionRecord' }, nullable: true }
+        related: { type: array, items: { $ref: '#/components/schemas/SecEvent' }, nullable: true, description: 相关事件（最多 10 条） }
+
+    SecEventListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SecEvent' }, nullable: true }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, format: int64, description: 总条数 }
+
+    SecEventRelatedResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SecEvent' }, nullable: true, description: 相关事件（最多 20 条） }
+
+    SecEventRemediation:
+      type: object
+      description: 按攻击类型组织的处置知识
+      properties:
+        attack_type: { type: string, description: 攻击类型 }
+        attack_label: { type: string, description: 攻击类型中文名 }
+        analyze_steps: { type: array, items: { type: string }, description: 研判分析步骤 }
+        fix_suggestions: { type: array, items: { type: string }, description: 修复建议 }
+        hardening: { type: array, items: { type: string }, description: 加固建议 }
+
+    SecEventRemediationResponse:
+      type: object
+      properties:
+        remediation: { $ref: '#/components/schemas/SecEventRemediation' }
+        event:
+          type: object
+          description: 事件摘要
+          properties:
+            id: { type: string, format: uuid }
+            attack_type: { type: string }
+            request_uri: { type: string }
+            rule_ids: { type: array, items: { type: integer }, description: 命中规则 ID 列表 }
+
+    SecEventNoteRequest:
+      type: object
+      required: [note]
+      properties:
+        note: { type: string, minLength: 1, maxLength: 1000, description: 备注内容（去空白后非空） }
+
+    SecEventDispositionRequest:
+      type: object
+      description: 处置请求体（整体可省略；字段均可选）
+      properties:
+        result: { type: string, description: 处置结论（缺省时取目标处置状态值） }
+        note: { type: string, maxLength: 1000, description: 处置备注（非空时追加为事件备注） }
+
+    SecEventCreateExceptionResult:
+      type: object
+      properties:
+        exception_id: { type: string, format: uuid, description: 例外草稿 ID }
+        message: { type: string, description: 提示信息 }
+
+    # ==================== 全量访问日志 ====================
+    AccessLog:
+      type: object
+      description: 全量访问日志。请求/响应头体留痕仅详情接口返回（omitempty），列表项不含这些键。
+      properties:
+        id: { type: string, format: uuid, description: 日志 ID }
+        occurred_at: { type: string, format: date-time, description: 发生时间（UTC） }
+        request_id: { type: string, description: 网关请求 ID }
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID（未关联为 null） }
+        domain: { type: string, description: 请求域名 }
+        gateway_node_id: { type: string, description: 网关节点 ID }
+        client_ip: { type: string, description: 客户端 IP }
+        client_port: { type: integer, description: 客户端端口 }
+        request_method: { type: string, description: 请求方法 }
+        request_uri: { type: string, description: 请求 URI（查询串已脱敏） }
+        request_path: { type: string, description: 请求路径 }
+        query_summary: { type: string, description: 查询串摘要 }
+        http_version: { type: string, description: HTTP 协议版本 }
+        content_type: { type: string, description: 请求 Content-Type }
+        user_agent_summary: { type: string, description: User-Agent 摘要 }
+        referer_summary: { type: string, description: Referer 摘要 }
+        response_status: { type: integer, description: 响应状态码 }
+        bytes_in: { type: integer, format: int64, description: 请求字节数 }
+        bytes_out: { type: integer, format: int64, description: 响应字节数 }
+        duration_ms: { type: integer, description: 处理耗时（毫秒） }
+        waf_action: { type: string, description: WAF 动作（BLOCK 或空串=放行；网关仅对 403 推断 BLOCK） }
+        request_headers:
+          type: object
+          additionalProperties: { type: array, items: { type: string } }
+          nullable: true
+          description: 请求头留痕（敏感头已掩码；仅详情返回）
+        request_body: { type: string, description: 请求体留痕（已脱敏截断；仅详情返回） }
+        request_body_truncated: { type: boolean, description: 请求体是否被截断 }
+        response_headers:
+          type: object
+          additionalProperties: { type: array, items: { type: string } }
+          nullable: true
+          description: 响应头留痕（仅详情返回）
+        response_body: { type: string, description: 响应体留痕（仅详情返回） }
+        response_body_truncated: { type: boolean, description: 响应体是否被截断 }
+
+    AccessLogListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AccessLog' }, nullable: true }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, format: int64, description: 总条数 }
+
+    # ==================== 态势首页 ====================
+    DashboardKV:
+      type: object
+      description: 键值对（排行/分布项）
+      properties:
+        key: { type: string, description: 维度键（攻击类型/应用 code/规则 ID 等） }
+        value: { type: number, format: double, description: 数量 }
+
+    DashboardSourceIPStat:
+      type: object
+      properties:
+        ip: { type: string, description: 源 IP }
+        events: { type: integer, format: int64, description: 事件数 }
+        blocks: { type: integer, format: int64, description: 阻断数 }
+
+    DashboardURIStat:
+      type: object
+      properties:
+        path: { type: string, description: 请求路径 }
+        events: { type: integer, format: int64, description: 事件数 }
+        blocks: { type: integer, format: int64, description: 阻断数 }
+
+    DashboardTodayCounters:
+      type: object
+      description: 今日计数（UTC 当天；计数类来自分钟聚合表，状态类来自业务表实时查询）
+      properties:
+        requests_total: { type: number, format: double, description: 今日请求总量 }
+        waf_events: { type: number, format: double, description: 今日 WAF 事件数 }
+        waf_blocks: { type: number, format: double, description: 今日阻断数 }
+        waf_observes: { type: number, format: double, description: 今日观察数 }
+        cc_exceeded: { type: number, format: double, description: 今日 CC 阈值触发数 }
+        ip_deny_matches: { type: number, format: double, description: 今日黑名单命中数 }
+        temp_blocked_ips: { type: integer, format: int64, description: 当前临时封禁 IP 数 }
+        unprocessed_high_events: { type: integer, format: int64, description: 未处置高危事件数 }
+        protected_apps: { type: integer, format: int64, description: 受保护应用数 }
+        abnormal_apps: { type: integer, format: int64, description: 异常应用数 }
+        abnormal_upstreams: { type: integer, format: int64, description: 异常上游数 }
+        expiring_certs: { type: integer, format: int64, description: 临期证书数 }
+
+    DashboardSecurityTrend:
+      type: object
+      description: 安全态势趋势（times 与各数值序列等长对齐；步长：1h→分钟，24h/7d→小时，30d→天）
+      properties:
+        start: { type: string, format: date-time, description: 范围起点 }
+        end: { type: string, format: date-time, description: 范围终点 }
+        step_seconds: { type: integer, format: int64, description: 桶步长（秒） }
+        times: { type: array, items: { type: string, format: date-time }, description: 桶时间序列 }
+        requests: { type: array, items: { type: number, format: double }, description: 请求量 }
+        security_events: { type: array, items: { type: number, format: double }, description: 安全事件数 }
+        blocks: { type: array, items: { type: number, format: double }, description: 阻断数 }
+        observes: { type: array, items: { type: number, format: double }, description: 观察数 }
+        cc_exceeded: { type: array, items: { type: number, format: double }, description: CC 阈值触发数 }
+        ip_deny: { type: array, items: { type: number, format: double }, description: 黑名单命中数 }
+        risk_levels:
+          type: object
+          additionalProperties: { type: array, items: { type: number, format: double } }
+          description: 按严重等级的分维度序列（键如 HIGH/MEDIUM/LOW/INFO）
+        disposition:
+          type: object
+          additionalProperties: { type: array, items: { type: number, format: double } }
+          description: 按处置状态的分维度序列
+
+    DashboardTopData:
+      type: object
+      description: 排行区
+      properties:
+        attack_types: { type: array, items: { $ref: '#/components/schemas/DashboardKV' }, description: 攻击类型 Top5 }
+        source_ips: { type: array, items: { $ref: '#/components/schemas/DashboardSourceIPStat' }, description: 源 IP Top10 }
+        applications: { type: array, items: { $ref: '#/components/schemas/DashboardKV' }, description: 被攻击应用 Top5（key 为应用 code） }
+        rules: { type: array, items: { $ref: '#/components/schemas/DashboardKV' }, description: 命中规则 Top10（key 为规则 ID） }
+        uris: { type: array, items: { $ref: '#/components/schemas/DashboardURIStat' }, description: 被攻击 URI Top10 }
+
+    DashboardEventSummary:
+      type: object
+      description: 高危未处置事件摘要
+      properties:
+        id: { type: string, description: 事件 ID }
+        occurred_at: { type: string, format: date-time }
+        client_ip: { type: string }
+        application_name: { type: string, description: 应用名快照 }
+        attack_type: { type: string }
+        severity: { type: string }
+        request_path: { type: string }
+        action: { type: string, description: WAF 动作（BLOCK/OBSERVE） }
+
+    DashboardPublishTaskSummary:
+      type: object
+      description: 发布失败任务摘要
+      properties:
+        id: { type: string, description: 任务 ID }
+        task_type: { type: string, description: 任务类型 }
+        status: { type: string, description: 任务状态（FAILED） }
+        requested_at: { type: string, format: date-time }
+        failure_message: { type: string, description: 失败原因 }
+
+    DashboardComponentIssue:
+      type: object
+      description: 异常组件（最新快照非 UP）
+      properties:
+        component: { type: string, description: 组件名 }
+        status: { type: string, description: 状态（DOWN/DEGRADED/UNKNOWN） }
+        message: { type: string, description: 状态说明 }
+        taken_at: { type: string, format: date-time, description: 快照时间 }
+
+    DashboardJobStatus:
+      type: object
+      description: 聚合任务最新状态
+      properties:
+        job_type: { type: string, description: 任务类型 }
+        status: { type: string, description: 状态 }
+        started_at: { type: string, format: date-time }
+        rows_written: { type: integer, description: 写入行数 }
+
+    DashboardCollectorLag:
+      type: object
+      description: 事件采集延迟与聚合任务状态
+      properties:
+        lag_seconds: { type: number, format: double, nullable: true, description: 采集延迟（秒；无上报为 null） }
+        measured_at: { type: string, format: date-time, nullable: true, description: 延迟测量时间 }
+        recent_job_failures: { type: integer, format: int64, description: 近 24h 聚合任务失败数 }
+        jobs: { type: array, items: { $ref: '#/components/schemas/DashboardJobStatus' }, description: 各聚合任务最新状态 }
+
+    DashboardRiskData:
+      type: object
+      description: 风险区
+      properties:
+        high_unprocessed_events: { type: array, items: { $ref: '#/components/schemas/DashboardEventSummary' }, description: 最近高危未处置事件（10 条） }
+        failed_publish_tasks: { type: array, items: { $ref: '#/components/schemas/DashboardPublishTaskSummary' }, description: 最近发布失败任务（5 条） }
+        gateway_issues: { type: array, items: { $ref: '#/components/schemas/DashboardComponentIssue' }, description: 异常组件 }
+        collector_lag: { $ref: '#/components/schemas/DashboardCollectorLag' }
+
+    DashboardSecurityOverview:
+      type: object
+      description: 安全态势首页数据
+      properties:
+        generated_at: { type: string, format: date-time, description: 生成时间（UTC） }
+        range: { type: string, description: 实际使用的范围（1h/24h/7d/30d） }
+        today: { $ref: '#/components/schemas/DashboardTodayCounters' }
+        trends: { $ref: '#/components/schemas/DashboardSecurityTrend' }
+        top: { $ref: '#/components/schemas/DashboardTopData' }
+        risks: { $ref: '#/components/schemas/DashboardRiskData' }
+
+    DashboardComponentStatus:
+      type: object
+      description: 组件健康快照（运行态势用，不含快照 ID）
+      properties:
+        component: { type: string, description: 组件名 }
+        status: { type: string, enum: [UP, DOWN, DEGRADED, UNKNOWN], description: 组件状态 }
+        latency_ms: { type: integer, nullable: true, description: 探测延迟（毫秒） }
+        message: { type: string, description: 状态说明 }
+        taken_at: { type: string, format: date-time, description: 快照时间 }
+        metrics:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: 组件指标明细（键随组件类型不同，如 uptime_seconds/db_connections 等）
+
+    DashboardGatewayRuntime:
+      type: object
+      description: 网关运行状态（取最新 gateway 组件快照；无快照时 status=UNKNOWN）
+      properties:
+        status: { type: string, description: 网关状态 }
+        uptime_seconds: { type: number, format: double, nullable: true, description: 运行时长（秒） }
+        snapshot_at: { type: string, format: date-time, nullable: true, description: 快照时间 }
+
+    DashboardPublishStats:
+      type: object
+      description: 配置发布统计（近 window_days 天）
+      properties:
+        window_days: { type: integer, description: 统计窗口（天） }
+        total: { type: integer, format: int64, description: 任务总数 }
+        success: { type: integer, format: int64, description: 成功数 }
+        failed: { type: integer, format: int64, description: 失败数 }
+        success_rate: { type: number, format: double, description: 成功率（0-1） }
+        avg_duration_seconds: { type: number, format: double, description: 平均发布耗时（秒） }
+
+    DashboardReportStats:
+      type: object
+      description: 报告任务统计（近 window_days 天）
+      properties:
+        window_days: { type: integer, description: 统计窗口（天） }
+        total: { type: integer, format: int64, description: 任务总数 }
+        success: { type: integer, format: int64, description: 成功数 }
+        failed: { type: integer, format: int64, description: 失败数 }
+        success_rate: { type: number, format: double, description: 成功率（0-1） }
+
+    DashboardStorageStats:
+      type: object
+      description: 存储用量（单项采集失败不导致整体失败，错误说明经 valkey_error/disk_error 携带）
+      properties:
+        pg_database_size_bytes: { type: integer, format: int64, description: PG 库容量（字节） }
+        valkey_used_memory_bytes: { type: integer, format: int64, nullable: true, description: Valkey 已用内存（字节） }
+        valkey_error: { type: string, description: Valkey 采集错误说明（正常时缺省） }
+        disk_path: { type: string, description: 磁盘统计路径 }
+        disk_total_bytes: { type: integer, format: int64, nullable: true, description: 磁盘总量（字节） }
+        disk_free_bytes: { type: integer, format: int64, nullable: true, description: 磁盘剩余（字节） }
+        disk_error: { type: string, description: 磁盘采集错误说明（正常时缺省） }
+
+    DashboardRuntimeOverview:
+      type: object
+      description: 运行态势首页数据
+      properties:
+        generated_at: { type: string, format: date-time, description: 生成时间（UTC） }
+        components: { type: array, items: { $ref: '#/components/schemas/DashboardComponentStatus' }, description: 各组件最新快照 }
+        gateway: { $ref: '#/components/schemas/DashboardGatewayRuntime' }
+        publish: { $ref: '#/components/schemas/DashboardPublishStats' }
+        reports: { $ref: '#/components/schemas/DashboardReportStats' }
+        storage: { $ref: '#/components/schemas/DashboardStorageStats' }
+
+    DashboardAuditSummary:
+      type: object
+      description: 最近审计摘要
+      properties:
+        id: { type: string, description: 审计记录 ID }
+        occurred_at: { type: string, format: date-time }
+        username: { type: string, description: 操作人 }
+        module: { type: string, description: 模块 }
+        action: { type: string, description: 动作 }
+        object_name: { type: string, description: 对象名称 }
+        result: { type: string, description: 结果 }
+        risk_level: { type: string, description: 风险等级 }
+
+    DashboardStatusCount:
+      type: object
+      properties:
+        status: { type: string, description: 处置状态 }
+        count: { type: integer, format: int64, description: 数量 }
+
+    DashboardActionCount:
+      type: object
+      properties:
+        action: { type: string, description: 操作类型 }
+        count: { type: integer, format: int64, description: 数量 }
+
+    DashboardAuditOverview:
+      type: object
+      description: 审计态势首页数据
+      properties:
+        generated_at: { type: string, format: date-time, description: 生成时间（UTC） }
+        today_dispositions: { type: integer, format: int64, description: 今日处置数 }
+        unprocessed_events: { type: integer, format: int64, description: 未处置事件总数 }
+        today_audits: { type: integer, format: int64, description: 今日审计条数 }
+        recent_audits: { type: array, items: { $ref: '#/components/schemas/DashboardAuditSummary' }, description: 最近审计（10 条） }
+        disposition_distribution: { type: array, items: { $ref: '#/components/schemas/DashboardStatusCount' }, description: 事件处置状态分布 }
+        action_stats: { type: array, items: { $ref: '#/components/schemas/DashboardActionCount' }, description: 今日操作类型统计（10 条） }
+
+    # ==================== 统计分析 ====================
+    AnalyticsTrendData:
+      type: object
+      description: 通用时间序列响应（times 与 series 各序列等长对齐，缺失桶补 0）
+      properties:
+        start: { type: string, format: date-time, description: 范围起点（UTC） }
+        end: { type: string, format: date-time, description: 范围终点（UTC，右开） }
+        granularity: { type: string, enum: [minute, hour], description: 聚合粒度（≤24h 为 minute，否则 hour） }
+        times: { type: array, items: { type: string, format: date-time }, description: 桶时间序列（升序） }
+        series:
+          type: object
+          additionalProperties: { type: array, items: { type: number, format: double } }
+          description: 序列集合（键见各接口说明，如 requests/events/blocks/observes/p50_ms 等）
+
+    AnalyticsKV:
+      type: object
+      description: 键值对分布项（值降序、键升序，确定性排序）
+      properties:
+        key: { type: string, description: 维度键（严重等级/攻击类型） }
+        value: { type: number, format: double, description: 数量 }
+
+    AnalyticsKVListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AnalyticsKV' }, nullable: true }
+
+    AnalyticsSourceIPStat:
+      type: object
+      properties:
+        ip: { type: string, description: 源 IP }
+        events: { type: integer, format: int64, description: 事件数 }
+        blocks: { type: integer, format: int64, description: 阻断数 }
+
+    AnalyticsSourceIPListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AnalyticsSourceIPStat' }, nullable: true }
+
+    AnalyticsAppStat:
+      type: object
+      properties:
+        code: { type: string, description: 应用 code }
+        name: { type: string, description: 应用名称 }
+        events: { type: number, format: double, description: 事件数 }
+
+    AnalyticsAppListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AnalyticsAppStat' }, nullable: true }
+
+    AnalyticsRuleStat:
+      type: object
+      properties:
+        rule_id: { type: integer, description: 规则 ID }
+        hits: { type: integer, format: int64, description: 命中数 }
+        false_positives: { type: integer, format: int64, description: 误报数（处置为 CONFIRMED_FALSE_POSITIVE 的事件数） }
+
+    AnalyticsRuleListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AnalyticsRuleStat' }, nullable: true }
+
+    AnalyticsURIStat:
+      type: object
+      properties:
+        path: { type: string, description: 请求路径 }
+        events: { type: integer, format: int64, description: 事件数 }
+        blocks: { type: integer, format: int64, description: 阻断数 }
+
+    AnalyticsURIListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AnalyticsURIStat' }, nullable: true }
+
+    AnalyticsCountPoint:
+      type: object
+      description: 时间点计数
+      properties:
+        time: { type: string, format: date-time, description: 桶时间 }
+        count: { type: integer, format: int64, description: 数量 }
+
+    AnalyticsCcOverview:
+      type: object
+      description: CC 防护统计总览
+      properties:
+        start: { type: string, format: date-time, description: 范围起点（UTC） }
+        end: { type: string, format: date-time, description: 范围终点（UTC，右开） }
+        threshold_exceeded: { type: integer, format: int64, description: CC 阈值触发次数 }
+        requests_rejected: { type: integer, format: int64, description: CC 拒绝请求数 }
+        temp_blocks_created: { type: integer, format: int64, description: 临时封禁创建数 }
+        temp_blocks_expired: { type: integer, format: int64, description: 临时封禁过期数 }
+        temp_blocks_released: { type: integer, format: int64, description: 临时封禁人工解除数 }
+        ip_allow_matches: { type: integer, format: int64, description: IP 白名单命中数 }
+        ip_deny_matches: { type: integer, format: int64, description: IP 黑名单命中数 }
+        global_rule_events: { type: integer, format: int64, description: 全局规则事件数 }
+        app_rule_events: { type: integer, format: int64, description: 应用级规则事件数 }
+        invalid_proxy_headers: { type: integer, format: int64, description: 非法代理头计数 }
+        engine_errors: { type: integer, format: int64, description: 引擎错误计数 }
+        temp_block_trend: { type: array, items: { $ref: '#/components/schemas/AnalyticsCountPoint' }, nullable: true, description: 临时封禁趋势 }
+
+    AnalyticsRuleHitStat:
+      type: object
+      description: 访问控制规则命中排行项
+      properties:
+        rule_id: { type: string, description: 规则 ID（UUID 文本） }
+        event_type: { type: string, description: 事件类型 }
+        hits: { type: integer, format: int64, description: 命中数 }
+
+    AnalyticsRuleStatusStat:
+      type: object
+      description: 访问控制规则启停统计项
+      properties:
+        rule_type: { type: string, description: 规则类型 }
+        status: { type: string, description: 状态 }
+        count: { type: integer, format: int64, description: 数量 }
+
+    AnalyticsAcOverview:
+      type: object
+      description: 访问控制统计总览
+      properties:
+        start: { type: string, format: date-time, description: 范围起点（UTC） }
+        end: { type: string, format: date-time, description: 范围终点（UTC，右开） }
+        allow_matches: { type: integer, format: int64, description: 白名单命中数 }
+        deny_matches: { type: integer, format: int64, description: 黑名单命中数 }
+        rule_hits: { type: array, items: { $ref: '#/components/schemas/AnalyticsRuleHitStat' }, nullable: true, description: 规则命中排行 }
+        rule_status: { type: array, items: { $ref: '#/components/schemas/AnalyticsRuleStatusStat' }, nullable: true, description: 规则启停分布 }
+        active_temp_blocks: { type: integer, format: int64, description: 当前生效临时封禁数 }
+        temp_block_trend: { type: array, items: { $ref: '#/components/schemas/AnalyticsCountPoint' }, nullable: true, description: 临时封禁趋势 }
+
+    AnalyticsStatusCount:
+      type: object
+      properties:
+        status: { type: string, description: 处置状态 }
+        count: { type: integer, format: int64, description: 数量 }
+
+    AnalyticsHandlerStat:
+      type: object
+      description: 处置人统计项
+      properties:
+        username: { type: string, description: 处置人用户名 }
+        count: { type: integer, format: int64, description: 处置数量 }
+
+    AnalyticsDispositionOverview:
+      type: object
+      description: 事件处置统计总览
+      properties:
+        start: { type: string, format: date-time, description: 范围起点（UTC） }
+        end: { type: string, format: date-time, description: 范围终点（UTC，右开） }
+        status_distribution: { type: array, items: { $ref: '#/components/schemas/AnalyticsStatusCount' }, nullable: true, description: 处置状态分布 }
+        avg_disposition_seconds: { type: number, format: double, description: 平均处置耗时（秒） }
+        handlers: { type: array, items: { $ref: '#/components/schemas/AnalyticsHandlerStat' }, nullable: true, description: 处置人排行 }
+
+    # ==================== 运行监控 ====================
+    SystemHealthSnapshot:
+      type: object
+      description: 组件健康快照
+      properties:
+        id: { type: string, format: uuid, description: 快照 ID }
+        taken_at: { type: string, format: date-time, description: 采集时间 }
+        component:
+          type: string
+          enum: [GATEWAY, CORAZA, GUARD, API, POSTGRES, VALKEY, EVENT_COLLECTOR, UPSTREAM, CERTIFICATE, DISK]
+          description: 组件名
+        status: { type: string, enum: [UP, DOWN, DEGRADED, UNKNOWN], description: 组件状态 }
+        latency_ms: { type: integer, nullable: true, description: 探测延迟（毫秒） }
+        metrics:
+          type: object
+          additionalProperties: true
+          description: 组件指标明细（如 uptime_seconds、db_connections、used_memory_bytes 等）
+        message: { type: string, description: 状态说明 }
+
+    SystemHealthOverview:
+      type: object
+      description: 系统健康汇总
+      properties:
+        status: { type: string, enum: [UP, DOWN, DEGRADED, UNKNOWN], description: 整体状态（取各组件最差） }
+        status_counts:
+          type: object
+          additionalProperties: { type: integer }
+          description: 各状态计数（键 UP/DOWN/DEGRADED/UNKNOWN）
+        components: { type: array, items: { $ref: '#/components/schemas/SystemHealthSnapshot' }, nullable: true, description: 已采集组件的最新快照 }
+        missing_components: { type: array, items: { type: string }, description: 未采集到快照的组件（按 UNKNOWN 计） }
+        checked_at: { type: string, format: date-time, description: 检查时间（UTC） }
+
+    SystemHealthComponentsResponse:
+      type: object
+      properties:
+        components: { type: array, items: { $ref: '#/components/schemas/SystemHealthSnapshot' }, description: 各组件最新快照 }
+        checked_at: { type: string, format: date-time, description: 检查时间（UTC） }
+
+    SystemHealthPartition:
+      type: object
+      description: 单张表/分区容量
+      properties:
+        name: { type: string, description: 关系名（schema.table） }
+        size_bytes: { type: integer, format: int64, description: 总容量（字节，pg_total_relation_size） }
+
+    SystemHealthStorage:
+      type: object
+      description: 存储容量监控（Valkey/目录类采集失败仅置零值）
+      properties:
+        postgres_size_bytes: { type: integer, format: int64, description: PG 库容量（字节） }
+        db_connections: { type: integer, description: 当前库连接数 }
+        partitions: { type: array, items: { $ref: '#/components/schemas/SystemHealthPartition' }, description: 容量 Top10 表/分区 }
+        valkey_used_memory_bytes: { type: integer, format: int64, description: Valkey 已用内存（字节；不可达为 0） }
+        valkey_max_memory_bytes: { type: integer, format: int64, description: Valkey 最大内存（字节；不可达为 0） }
+        disk_total_bytes: { type: integer, format: int64, description: 磁盘总量（字节） }
+        disk_free_bytes: { type: integer, format: int64, description: 磁盘剩余（字节） }
+        reports_size_bytes: { type: integer, format: int64, description: 报告目录占用（字节） }
+        reports_file_count: { type: integer, description: 报告文件数 }
+        backups_size_bytes: { type: integer, format: int64, description: 备份目录占用（字节） }
+        backups_file_count: { type: integer, description: 备份文件数 }
+        collected_at: { type: string, format: date-time, description: 采集时间（UTC） }
+
+    # ==================== 系统告警 ====================
+    SysAlert:
+      type: object
+      description: 系统告警
+      properties:
+        id: { type: string, format: uuid, description: 告警 ID }
+        alert_type:
+          type: string
+          enum: [GATEWAY_DOWN, MANAGEMENT_API_DOWN, DATABASE_UNAVAILABLE, VALKEY_UNAVAILABLE, EVENT_COLLECTOR_LAG, EVENT_PARSE_FAILURE_RATE_HIGH, SOURCE_UNHEALTHY, CERTIFICATE_EXPIRING, CERTIFICATE_EXPIRED, CONFIG_PUBLISH_FAILED, CONFIG_HASH_MISMATCH, DISK_SPACE_LOW, DATABASE_CAPACITY_HIGH, BACKUP_FAILED, RESTORE_VALIDATION_FAILED, REPORT_FAILED, UPGRADE_FAILED, AUDIT_INTEGRITY_FAILED, API_CRITICAL_FINDING, API_FINDING_SPIKE, API_MASK_FAILURE]
+          description: 告警类型（API_* 三型为 API 安全告警：严重风险发现/发现激增/响应脱敏失败，组件为 API_SECURITY）
+        severity: { type: string, enum: [CRITICAL, HIGH, MEDIUM, LOW, INFO], description: 告警等级 }
+        component: { type: string, description: 来源组件 }
+        title: { type: string, description: 标题（≤200 字符） }
+        message: { type: string, description: 详情（≤1000 字符） }
+        status: { type: string, enum: [OPEN, ACKNOWLEDGED, RESOLVED, IGNORED], description: 告警状态 }
+        first_seen_at: { type: string, format: date-time, description: 首次发生时间 }
+        last_seen_at: { type: string, format: date-time, description: 最近发生时间 }
+        occurrence_count: { type: integer, description: 合并发生次数 }
+        acknowledged_by: { type: string, format: uuid, nullable: true, description: 确认人用户 ID }
+        acknowledged_at: { type: string, format: date-time, nullable: true, description: 确认时间 }
+        resolved_by: { type: string, format: uuid, nullable: true, description: 解决人用户 ID（自动恢复为 null） }
+        resolved_at: { type: string, format: date-time, nullable: true, description: 解决时间 }
+        resolve_type: { type: string, enum: [MANUAL, RECOVERED], nullable: true, description: 解决方式（手动/自动恢复） }
+        silenced_until: { type: string, format: date-time, nullable: true, description: 静默截止时刻（null = 未静默；静默期内仍记录，同指纹新建告警不重复通知） }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+
+    SysAlertNote:
+      type: object
+      description: 告警备注
+      properties:
+        id: { type: string, format: uuid, description: 备注 ID }
+        alert_id: { type: string, format: uuid, description: 告警 ID }
+        note: { type: string, description: 备注内容 }
+        created_by: { type: string, format: uuid, nullable: true, description: 创建人用户 ID }
+        username: { type: string, description: 创建人用户名 }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+
+    SysAlertListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SysAlert' } }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, format: int64, description: 总条数 }
+
+    SysAlertDetail:
+      type: object
+      properties:
+        alert: { $ref: '#/components/schemas/SysAlert' }
+        notes: { type: array, items: { $ref: '#/components/schemas/SysAlertNote' }, description: 备注时间线（按时间正序） }
+
+    SysAlertNoteRequest:
+      type: object
+      required: [note]
+      properties:
+        note: { type: string, minLength: 1, maxLength: 1000, description: 备注内容（去首尾空白后非空、≤1000 字符） }
+
+    SysAlertSilenceRequest:
+      type: object
+      required: [duration_minutes]
+      properties:
+        duration_minutes: { type: integer, minimum: 1, maximum: 43200, description: 静默时长（分钟，1~43200 即最长 30 天；重复静默视为延长） }
+
+    # ==================== 网站访问趋势 ====================
+    AnalyticsSiteTrendPoint:
+      type: object
+      description: 单个时间桶的请求计数点
+      properties:
+        t: { type: string, format: date-time, description: 桶起始时间（UTC） }
+        requests: { type: integer, format: int64, description: 请求数 }
+
+    AnalyticsSiteAccessTrendItem:
+      type: object
+      properties:
+        application_id: { type: string, format: uuid, description: 应用 ID }
+        app_code: { type: string, description: 应用编码 }
+        app_name: { type: string, description: 应用名称 }
+        total_requests: { type: integer, format: int64, description: 时间范围内总请求数 }
+        series: { type: array, items: { $ref: '#/components/schemas/AnalyticsSiteTrendPoint' }, description: 补桶后的完整时间轴（空桶补 0） }
+
+    AnalyticsSiteAccessTrendsData:
+      type: object
+      properties:
+        start: { type: string, format: date-time, description: 范围起始（UTC） }
+        end: { type: string, format: date-time, description: 范围结束（UTC，右开） }
+        granularity: { type: string, enum: [minute, hour, day], description: 桶粒度（按跨度自适应） }
+        items: { type: array, items: { $ref: '#/components/schemas/AnalyticsSiteAccessTrendItem' }, description: 应用维度趋势项（按总访问量降序，相同按应用编码升序） }
+
+    AnalyticsDomainAccessTrendItem:
+      type: object
+      properties:
+        domain: { type: string, description: 域名（Host） }
+        total_requests: { type: integer, format: int64, description: 时间范围内总请求数 }
+        series: { type: array, items: { $ref: '#/components/schemas/AnalyticsSiteTrendPoint' }, description: 补桶后的完整时间轴（空桶补 0） }
+
+    AnalyticsDomainAccessTrendsData:
+      type: object
+      properties:
+        start: { type: string, format: date-time, description: 范围起始（UTC） }
+        end: { type: string, format: date-time, description: 范围结束（UTC，右开） }
+        granularity: { type: string, enum: [minute, hour, day], description: 桶粒度（按跨度自适应） }
+        items: { type: array, items: { $ref: '#/components/schemas/AnalyticsDomainAccessTrendItem' }, description: 域名维度趋势项（按总访问量降序，相同按域名升序） }
+
+    # ==================== 告警通知渠道 ====================
+    NotificationChannel:
+      type: object
+      description: 通知渠道。订阅语义：enabled 且事件级别 ≥ min_severity 且（categories 为空=全部类别 或 含事件所属类别）；config 密值字段读出时脱敏为 ********
+      properties:
+        id: { type: string, format: uuid, description: 渠道 ID }
+        name: { type: string, maxLength: 128, description: 渠道名称 }
+        type: { type: string, enum: [wecom, feishu, smtp, sms, syslog], description: 渠道类型 }
+        enabled: { type: boolean, description: 是否启用 }
+        min_severity: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL], description: 最低通知级别（INFO 级别不外发） }
+        categories:
+          type: array
+          items: { type: string }
+          description: 订阅的告警类别 code（空数组=全部类别；词表见 /notification-meta）
+        config:
+          type: object
+          description: 渠道配置（结构随 type 不同，见 NotificationChannelInput.config；密值字段已脱敏）
+        created_at: { type: string, format: date-time, description: 创建时间 }
+        updated_at: { type: string, format: date-time, description: 最近更新时间 }
+
+    NotificationChannelListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/NotificationChannel' }, description: 全部渠道（不分页） }
+
+    NotificationChannelInput:
+      type: object
+      required: [name, type]
+      description: 渠道创建/更新请求。config 按类型严格校验（拒绝未知字段）；密值字段（wecom.webhook_url / feishu.webhook_url+secret / smtp.password / sms.app_secret）更新时提交 ******** 表示保留原值
+      properties:
+        name: { type: string, maxLength: 128, description: 渠道名称（去首尾空白后非空，≤128 字符） }
+        type: { type: string, enum: [wecom, feishu, smtp, sms, syslog], description: 渠道类型 }
+        enabled: { type: boolean, description: 是否启用 }
+        min_severity: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL], description: 最低通知级别（缺省 LOW） }
+        categories:
+          type: array
+          items: { type: string }
+          description: 订阅类别 code（服务端去重；空数组=全部类别；未知类别返回 400）
+        config:
+          type: object
+          description: |-
+            渠道配置（按类型严格校验，拒绝未知字段）：
+            wecom={webhook_url, mention_all}；feishu={webhook_url, secret?}；
+            smtp={host, port(1~65535), security(none/starttls/ssl), username?, password?, from, to[]}；
+            sms={gateway_url, app_key, app_secret?, template_id, phones[]}；
+            syslog={}（无自有配置，沿用 logging 组 syslog 配置）。webhook/gateway 地址仅支持 http/https
+
+    NotificationMetaCategory:
+      type: object
+      properties:
+        code: { type: string, description: 类别 code（infrastructure/storage/certificate/collection/config_publish/api_security/ops/security_events 之一） }
+        name: { type: string, description: 类别中文名 }
+        alert_types: { type: array, items: { type: string }, description: 该类别覆盖的告警类型 }
+
+    NotificationMetaResponse:
+      type: object
+      properties:
+        categories: { type: array, items: { $ref: '#/components/schemas/NotificationMetaCategory' }, description: 固定 8 类告警类别 }
+        severities: { type: array, items: { type: string }, description: '可选最低通知级别词表（[LOW, MEDIUM, HIGH, CRITICAL]）' }

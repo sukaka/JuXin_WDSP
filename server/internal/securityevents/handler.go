@@ -77,6 +77,49 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	response.Page(w, r, list, total, f.Page, f.PageSize)
 }
 
+// RuleEffectStats 返回规则版本按日效果统计。
+func (h *Handler) RuleEffectStats(w http.ResponseWriter, r *http.Request) {
+	f := RuleEffectStatsFilter{
+		RuleVersion: r.URL.Query().Get("rule_version"),
+		Page:        queryInt(r, "page", 1),
+		PageSize:    queryInt(r, "page_size", 50),
+	}
+	if raw := r.URL.Query().Get("from"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "from 必须是 RFC3339 时间")
+			return
+		}
+		f.From = &t
+	}
+	if raw := r.URL.Query().Get("to"); raw != "" {
+		t, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "to 必须是 RFC3339 时间")
+			return
+		}
+		f.To = &t
+	}
+	if raw := r.URL.Query().Get("rule_id"); raw != "" {
+		ruleID, err := strconv.Atoi(raw)
+		if err != nil || ruleID <= 0 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "rule_id 必须是正整数")
+			return
+		}
+		f.RuleID = &ruleID
+	}
+	if f.From != nil && f.To != nil && !f.From.Before(*f.To) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "from 必须早于 to")
+		return
+	}
+	items, total, err := h.store.RuleEffectStats(r.Context(), f)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, items, total, f.Page, f.PageSize)
+}
+
 // Get 事件详情。
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -98,6 +141,33 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		"notes":   notes,
 		"actions": actions,
 		"related": related,
+	})
+}
+
+// GetRemediation 返回事件对应攻击类型的修复建议（处置知识库）。
+func (h *Handler) GetRemediation(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的事件ID")
+		return
+	}
+	evt, matches, err := h.store.GetByID(r.Context(), id)
+	if err != nil {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "事件不存在")
+		return
+	}
+	ruleIDs := make([]int, 0, len(matches))
+	for _, m := range matches {
+		ruleIDs = append(ruleIDs, m.RuleID)
+	}
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{
+		"remediation": RemediationFor(evt.AttackType),
+		"event": map[string]interface{}{
+			"id":          evt.ID,
+			"attack_type": evt.AttackType,
+			"request_uri": evt.URI,
+			"rule_ids":    ruleIDs,
+		},
 	})
 }
 
@@ -142,7 +212,8 @@ func (h *Handler) AddNote(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "备注不能为空且不超过1000字符")
 		return
 	}
-	if _, _, err := h.store.GetByID(r.Context(), id); err != nil {
+	_, _, err = h.store.GetByID(r.Context(), id)
+	if err != nil {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "事件不存在")
 		return
 	}
@@ -168,8 +239,12 @@ func (h *Handler) disposition(w http.ResponseWriter, r *http.Request, status, ac
 		return
 	}
 	var req dispositionRequest
-	_ = response.DecodeJSON(w, r, &req, 4096)
-	if _, _, err := h.store.GetByID(r.Context(), id); err != nil {
+	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	evt, _, err := h.store.GetByID(r.Context(), id)
+	if err != nil {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "事件不存在")
 		return
 	}
@@ -177,8 +252,22 @@ func (h *Handler) disposition(w http.ResponseWriter, r *http.Request, status, ac
 	if result == "" {
 		result = status
 	}
-	if err := h.store.UpdateDisposition(r.Context(), id, status, result, p.UserID); err != nil {
+	idempotent, transitionErr := ValidateDispositionTransition(evt.DispositionStatus, status)
+	if transitionErr != nil {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "事件已完成该处置，不能重复改变结论")
+		return
+	}
+	if idempotent {
+		response.JSON(w, r, http.StatusOK, map[string]string{"message": "处置已是当前状态"})
+		return
+	}
+	updated, err := h.store.UpdateDispositionIfCurrent(r.Context(), id, evt.DispositionStatus, status, result, p.UserID)
+	if err != nil {
 		response.InternalError(w, r, err)
+		return
+	}
+	if !updated {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "事件状态已被其他操作更新，请刷新后重试")
 		return
 	}
 	detail := result
