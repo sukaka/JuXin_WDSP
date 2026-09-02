@@ -374,6 +374,45 @@ func TestValkeyStoreFailOpen(t *testing.T) {
 	}
 }
 
+// DegradationMetrics 暴露低基数故障计数：普通错误与超时分开统计，恢复后的成功请求不再增长。
+func TestValkeyStoreDegradationMetrics(t *testing.T) {
+	f := newFakeIBValkey()
+	clk := &memTestClock{now: time.Date(2026, 9, 1, 10, 0, 10, 0, time.UTC)}
+	s, _ := newValkeyTestStore(f, clk)
+
+	if got := s.DegradationMetrics(); got != (ValkeyDegradationMetrics{}) {
+		t.Fatalf("initial degradation metrics = %+v, want zero", got)
+	}
+	f.fail = true
+	for i := 0; i < 2; i++ {
+		if _, err := s.Observe(baseInput("id-1")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := s.DegradationMetrics()
+	if got.FallbackTotal != 2 || got.ErrorTotal != 2 || got.TimeoutTotal != 0 {
+		t.Fatalf("ordinary error metrics = %+v, want fallback=2 error=2 timeout=0", got)
+	}
+
+	// 成功请求不应把历史降级计数清零或误增。
+	f.fail = false
+	if _, err := s.Observe(baseInput("id-1")); err != nil {
+		t.Fatal(err)
+	}
+	if got = s.DegradationMetrics(); got.FallbackTotal != 2 || got.ErrorTotal != 2 || got.TimeoutTotal != 0 {
+		t.Fatalf("metrics after recovery = %+v, want unchanged", got)
+	}
+
+	f.hang = true
+	if _, err := s.Observe(baseInput("id-1")); err != nil {
+		t.Fatal(err)
+	}
+	got = s.DegradationMetrics()
+	if got.FallbackTotal != 3 || got.ErrorTotal != 2 || got.TimeoutTotal != 1 {
+		t.Fatalf("timeout metrics = %+v, want fallback=3 error=2 timeout=1", got)
+	}
+}
+
 // Valkey 悬挂：Eval 在 opTimeout 内取消并 fail-open（请求 goroutine 阻塞有界）。
 func TestValkeyStoreHangTimesOut(t *testing.T) {
 	f := newFakeIBValkey()

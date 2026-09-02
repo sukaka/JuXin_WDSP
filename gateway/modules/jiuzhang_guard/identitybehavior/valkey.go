@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/counters"
@@ -149,6 +150,15 @@ const observeResultLen = 4*13 + 2 + 13
 
 // ValkeyStore Valkey 行为滑窗统计（跨节点共享；任何 Valkey 故障 fail-open 回退进程内存
 // 并以 zap Warn 告警（节流 1/min），观测语义不中断——与 behaviorstore 同一纪律）。
+//
+// 故障计数仅按故障原因聚合，不携带身份、URI 或凭据等高基数标签；通过
+// DegradationMetrics 由装配层/运维采集器读取。
+type ValkeyDegradationMetrics struct {
+	FallbackTotal uint64 `json:"fallback_total"`
+	TimeoutTotal  uint64 `json:"timeout_total"`
+	ErrorTotal    uint64 `json:"error_total"`
+}
+
 type ValkeyStore struct {
 	cli    counters.ValkeyClient
 	pfx    string
@@ -158,6 +168,10 @@ type ValkeyStore struct {
 
 	mu       sync.Mutex
 	lastWarn time.Time // Warn 节流（每分钟最多一条，防日志洪泛）
+
+	fallbackTotal atomic.Uint64 // 远端记账失败后回退内存的次数
+	timeoutTotal  atomic.Uint64 // 回退原因为 context deadline 的次数
+	errorTotal    atomic.Uint64 // 回退的其他远端错误次数
 }
 
 // NewValkeyStore 构造 Valkey 存储（mem 为 nil 时自建内存回退；keyPrefix 空取
@@ -179,10 +193,36 @@ func NewValkeyStore(cli counters.ValkeyClient, mem *MemoryStore, logger *zap.Log
 func (s *ValkeyStore) Observe(in ObserveInput) (*Snapshot, error) {
 	snap, err := s.observeRemote(in)
 	if err != nil {
+		s.recordFailure(err)
 		s.warn("observe", err)
 		return s.mem.Observe(in)
 	}
 	return snap, nil
+}
+
+// DegradationMetrics 返回 Valkey 故障降级计数快照。
+//
+// FallbackTotal 是所有远端记账失败次数；TimeoutTotal 是其中因超时回退的次数；
+// ErrorTotal 是其中的其他错误次数，三者满足 FallbackTotal = TimeoutTotal + ErrorTotal。
+// 快照只包含固定字段，调用方无需按身份或 URI 建立指标标签。
+func (s *ValkeyStore) DegradationMetrics() ValkeyDegradationMetrics {
+	if s == nil {
+		return ValkeyDegradationMetrics{}
+	}
+	return ValkeyDegradationMetrics{
+		FallbackTotal: s.fallbackTotal.Load(),
+		TimeoutTotal:  s.timeoutTotal.Load(),
+		ErrorTotal:    s.errorTotal.Load(),
+	}
+}
+
+func (s *ValkeyStore) recordFailure(err error) {
+	s.fallbackTotal.Add(1)
+	if errors.Is(err, context.DeadlineExceeded) {
+		s.timeoutTotal.Add(1)
+		return
+	}
+	s.errorTotal.Add(1)
 }
 
 // observeRemote 远端记账：键材料一律 counters.HashParts（禁止拼接原始输入），
