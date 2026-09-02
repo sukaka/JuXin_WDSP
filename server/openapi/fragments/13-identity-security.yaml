@@ -239,7 +239,7 @@ components:
       type: object
       description: 身份凭据指纹项（只含哈希，不含明文凭据）
       properties:
-        credential_type: { type: string, enum: [JWT, API_KEY, SESSION, COOKIE, OAUTH, CUSTOM], description: 凭据类型 }
+        credential_type: { type: string, enum: [JWT, API_KEY, SESSION, COOKIE, OAUTH, CUSTOM, MTLS], description: 凭据类型（MTLS 表示已由 TLS 校验的客户端证书摘要） }
         credential_hash: { type: string, description: 凭据哈希 }
         first_seen_at: { type: string, format: date-time, nullable: true }
         last_seen_at: { type: string, format: date-time, nullable: true }

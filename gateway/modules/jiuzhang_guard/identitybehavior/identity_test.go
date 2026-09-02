@@ -1,8 +1,12 @@
 package identitybehavior
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -273,6 +277,43 @@ func TestTLSFingerprint(t *testing.T) {
 	r2.TLS = &tls.ConnectionState{Version: tls.VersionTLS12, CipherSuite: tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256}
 	if ResolveIdentity(r2, "s", "10.0.0.1").TLSFingerprint == id.TLSFingerprint {
 		t.Fatal("different TLS params must change fingerprint")
+	}
+}
+
+func TestResolveIdentityVerifiedMTLS(t *testing.T) {
+	cert := &x509.Certificate{Raw: []byte("verified-client-certificate")}
+	r := ibReq(t, "https://waf-test.local/api", map[string]string{"User-Agent": "Mozilla/5.0 Chrome/120"})
+	r.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
+	}
+	id := ResolveIdentity(r, "s", "203.0.113.10")
+	if len(id.Credentials) != 1 || id.Credentials[0].Type != CredentialMTLS {
+		t.Fatalf("verified client certificate must be extracted first: %+v", id.Credentials)
+	}
+	if id.Type != IdentityService || id.Confidence != 95 || !containsSignal(id.Evidence, "credential:mtls_verified") {
+		t.Fatalf("mTLS identity classification: %+v", id)
+	}
+	digest := sha256.Sum256(cert.Raw)
+	stable := "mtls:" + hex.EncodeToString(digest[:])
+	want := detectors.Fingerprint("s", "cred:MTLS:"+stable)
+	if id.Key != want || id.Credentials[0].Hash != detectors.Fingerprint("s", stable) {
+		t.Fatalf("mTLS fingerprint mismatch: %+v", id)
+	}
+	serialized, err := json.Marshal(id.Credentials)
+	if err != nil {
+		t.Fatalf("marshal credentials: %v", err)
+	}
+	if strings.Contains(string(serialized), string(cert.Raw)) {
+		t.Fatal("certificate raw bytes must not be serialized")
+	}
+}
+
+func TestResolveIdentityUnverifiedMTLSHeaderIgnored(t *testing.T) {
+	r := ibReq(t, "https://waf-test.local/api", map[string]string{"X-Client-Certificate": "forged"})
+	id := ResolveIdentity(r, "s", "203.0.113.10")
+	if len(id.Credentials) != 0 || id.Confidence >= 70 {
+		t.Fatalf("unverified certificate header must be ignored: %+v", id)
 	}
 }
 

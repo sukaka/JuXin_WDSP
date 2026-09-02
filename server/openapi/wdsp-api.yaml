@@ -19083,7 +19083,8 @@ components:
           - COOKIE
           - OAUTH
           - CUSTOM
-          description: 凭据类型
+          - MTLS
+          description: 凭据类型（MTLS 表示已由 TLS 校验的客户端证书摘要）
         credential_hash:
           type: string
           description: 凭据哈希

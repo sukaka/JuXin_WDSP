@@ -1,9 +1,11 @@
 package identitybehavior
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -32,6 +34,7 @@ const (
 	CredentialCookie  CredentialType = "COOKIE"
 	CredentialOAuth   CredentialType = "OAUTH"
 	CredentialCustom  CredentialType = "CUSTOM"
+	CredentialMTLS    CredentialType = "MTLS"
 )
 
 // Credential 请求凭据观测（仅指纹与未验签关联字段；无明文）。
@@ -99,6 +102,13 @@ func ResolveIdentity(r *http.Request, salt, clientIP string) *Identity {
 			tls.VersionName(r.TLS.Version), tls.CipherSuiteName(r.TLS.CipherSuite))
 	}
 	id.Credentials = extractCredentials(r, salt)
+	// A verified client certificate is the only strong credential evidence this
+	// resolver can establish locally. Without an application-level mapping it is
+	// conservatively classified as a service identity; the certificate digest is
+	// still the deterministic identity key. API key/OAuth remain correlation signals.
+	if len(id.Credentials) > 0 && id.Credentials[0].Type == CredentialMTLS {
+		id.Type = IdentityService
+	}
 	// An API key/OAuth credential is a stable application correlation signal;
 	// neither is verified by this observer, so neither receives high confidence.
 	// Other credentials remain subject to the UA/session classification so that
@@ -132,6 +142,8 @@ func identityConfidence(id *Identity) (uint8, []string) {
 	var evidence []string
 	if len(id.Credentials) > 0 {
 		switch id.Credentials[0].Type {
+		case CredentialMTLS:
+			return 95, []string{"credential:mtls_verified"}
 		case CredentialAPIKey:
 			// Header presence/fingerprint alone does not prove that the key was
 			// accepted by an upstream authenticator.
@@ -186,10 +198,16 @@ func classifyUA(ua string) string {
 	return IdentityUnknown
 }
 
-// extractCredentials 按优先级提取凭据：Authorization（Bearer JWT >  opaque bearer > 其他方案）
-// → API Key 头 → 会话 Cookie → 其他 Cookie。每项仅保留 HMAC 指纹与未验签关联字段。
+// extractCredentials 按优先级提取凭据：已验证 mTLS 客户端证书 → Authorization
+// （Bearer JWT > opaque bearer > 其他方案）→ API Key 头 → 会话 Cookie → 其他 Cookie。
+// 每项仅保留 HMAC 指纹与未验签关联字段。
 func extractCredentials(r *http.Request, salt string) []Credential {
 	var out []Credential
+	// VerifiedChains is populated only after Go's TLS client certificate
+	// verification succeeds. Never trust a forwarded certificate header here.
+	if c, ok := verifiedMTLSCredential(r, salt); ok {
+		out = append(out, c)
+	}
 	if v := strings.TrimSpace(r.Header.Get("Authorization")); v != "" {
 		scheme, token := v, ""
 		if i := strings.IndexByte(v, ' '); i > 0 {
@@ -244,6 +262,26 @@ func extractCredentials(r *http.Request, salt string) []Credential {
 		}
 	}
 	return out
+}
+
+// verifiedMTLSCredential returns a bounded, non-secret certificate digest only
+// when the request carries a verified client certificate. The raw certificate
+// bytes never leave this function and are not included in event records.
+func verifiedMTLSCredential(r *http.Request, salt string) (Credential, bool) {
+	if r == nil || r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.PeerCertificates) == 0 {
+		return Credential{}, false
+	}
+	chain := r.TLS.VerifiedChains[0]
+	if len(chain) == 0 || chain[0] == nil || len(chain[0].Raw) == 0 {
+		return Credential{}, false
+	}
+	digest := sha256.Sum256(chain[0].Raw)
+	stable := "mtls:" + hex.EncodeToString(digest[:])
+	return Credential{
+		Type: CredentialMTLS,
+		Hash: detectors.Fingerprint(salt, stable),
+		raw:  stable,
+	}, true
 }
 
 // parseUnverifiedJWTClaims 未验签解析 JWT claims 取 sub/client_id（结构三段 + payload 可解）。

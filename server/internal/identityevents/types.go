@@ -60,9 +60,9 @@ var validSignals = map[string]bool{
 	SignalObjectEnumeration:   true,
 }
 
-// 凭据类型（credentials[].type 字段；网关契约六值，其余类型的凭据跳过不入库）。
+// 凭据类型（credentials[].type 字段；网关契约七值，其余类型的凭据跳过不入库）。
 var validCredentialTypes = map[string]bool{
-	"JWT": true, "API_KEY": true, "SESSION": true, "COOKIE": true, "OAUTH": true, "CUSTOM": true,
+	"JWT": true, "API_KEY": true, "SESSION": true, "COOKIE": true, "OAUTH": true, "CUSTOM": true, "MTLS": true,
 }
 
 // 行为窗口键（windows map 键；未知键跳过并告警，容忍网关后续新增窗口）。

@@ -63,7 +63,7 @@ ops/install/install.sh
 
 其余初始化项在安装后通过管理面完成：
 
-- **系统名称、时区**：登录管理面「系统设置」配置；当前版本号记录于 `system_settings` 的 `system:current_version`（升级预检读取，缺省回退常量 `2.5.2`）；
+- **系统名称、时区**：登录管理面「系统设置」配置；当前版本号记录于 `system_settings` 的 `system:current_version`（升级预检读取，缺省回退常量 `2.5.3`）；
 - **密码策略**：口令以 argon2id 散列；登录验证码等安全开关在「系统设置」中调整（如 `login:captcha_enabled`）；
 - **主密钥**：由 .env 的 `JIUZHANG_MASTER_KEY` 提供，仅驻留 api 进程内存，任何日志/备份文件中不出现；
 - **HTTPS**：管理 API 容器仅绑定 `127.0.0.1:18081`，生产环境必须在其前以反向代理终结 HTTPS（`COOKIE_SECURE=true` 已默认开启，要求经 HTTPS 访问）；网关业务侧 80/443 按接入应用配置证书。

@@ -27,6 +27,17 @@ func TestParseObservation(t *testing.T) {
 	}
 }
 
+func TestParseObservationMTLSCredential(t *testing.T) {
+	line := `{"record_type":"identity_observation","occurred_at":"2026-09-01T10:00:00Z","identity_key":"ik-mtls","identity_type":"SERVICE","identity_confidence":95,"credentials":[{"type":"MTLS","hash":"cert-hash"}]}`
+	rec, err := parseRecordLine([]byte(line))
+	if err != nil {
+		t.Fatalf("parse mTLS observation: %v", err)
+	}
+	if len(rec.Credentials) != 1 || rec.Credentials[0].Type != "MTLS" || rec.Credentials[0].Hash != "cert-hash" {
+		t.Fatalf("mTLS credential: %+v", rec.Credentials)
+	}
+}
+
 // TestParseObservationIdentityTypeNormalize 非法身份类型归一为 UNKNOWN。
 func TestParseObservationIdentityTypeNormalize(t *testing.T) {
 	line := `{"record_type":"identity_observation","occurred_at":"2026-09-01T10:00:00Z","identity_key":"ik-1","identity_type":"ROBOT"}`
