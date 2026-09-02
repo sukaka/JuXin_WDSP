@@ -114,10 +114,10 @@ func TestResolveIdentityAPIKeyHeaders(t *testing.T) {
 		if id.Key != detectors.Fingerprint("s", "cred:API_KEY:key-abc-123") {
 			t.Fatalf("%s key: %q", h, id.Key)
 		}
-		if id.Type != IdentityApplication || id.Confidence < 70 {
+		if id.Type != IdentityApplication || id.Confidence >= 70 {
 			t.Fatalf("%s identity classification: type=%q confidence=%d", h, id.Type, id.Confidence)
 		}
-		if !containsSignal(id.Evidence, "credential:api_key") {
+		if !containsSignal(id.Evidence, "credential:api_key_observed") {
 			t.Fatalf("%s identity evidence: %v", h, id.Evidence)
 		}
 	}

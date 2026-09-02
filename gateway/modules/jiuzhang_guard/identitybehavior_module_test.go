@@ -128,11 +128,11 @@ func TestIdentityBehaviorEnabledEmits(t *testing.T) {
 	if obs["identity_key"] == "" || obs["identity_type"] != "APPLICATION" || obs["client_ip"] != "203.0.113.10" {
 		t.Fatalf("observation fields: %v", obs)
 	}
-	if confidence, ok := obs["identity_confidence"].(float64); !ok || confidence != 75 {
+	if confidence, ok := obs["identity_confidence"].(float64); !ok || confidence != 60 {
 		t.Fatalf("identity confidence: %v", obs["identity_confidence"])
 	}
 	evidence, ok := obs["identity_evidence"].([]any)
-	if !ok || len(evidence) != 1 || evidence[0] != "credential:api_key" {
+	if !ok || len(evidence) != 1 || evidence[0] != "credential:api_key_observed" {
 		t.Fatalf("identity evidence: %v", obs["identity_evidence"])
 	}
 	creds, ok := obs["credentials"].([]any)

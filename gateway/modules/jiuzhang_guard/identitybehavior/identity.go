@@ -100,7 +100,7 @@ func ResolveIdentity(r *http.Request, salt, clientIP string) *Identity {
 	}
 	id.Credentials = extractCredentials(r, salt)
 	// An API key/OAuth credential is a stable application correlation signal;
-	// OAuth claims are still unverified and therefore receive weak confidence.
+	// neither is verified by this observer, so neither receives high confidence.
 	// Other credentials remain subject to the UA/session classification so that
 	// an unverified JWT or cookie cannot silently become a stronger identity type.
 	if len(id.Credentials) > 0 {
@@ -133,7 +133,9 @@ func identityConfidence(id *Identity) (uint8, []string) {
 	if len(id.Credentials) > 0 {
 		switch id.Credentials[0].Type {
 		case CredentialAPIKey:
-			return 75, []string{"credential:api_key"}
+			// Header presence/fingerprint alone does not prove that the key was
+			// accepted by an upstream authenticator.
+			return 60, []string{"credential:api_key_observed"}
 		case CredentialOAuth:
 			// client_id comes from an unverified JWT payload. It is useful for
 			// correlation, but must remain a weak signal until the gateway has
