@@ -8,6 +8,9 @@
   gen-plan          --manifest F --profiles-dir D --seed N [--run-id R]
                                                     生成确定性回放计划（stdout）
   init-cases        --replay-plan F                   由回放计划生成 cases.jsonl NOT_RUN 骨架（stdout）
+  execute           --replay-plan F --manifest F --profiles-dir D --env F --run-dir D --run-id R
+                                                    R2 真实栈执行：回放→对账→判定→cases.jsonl/perf.jsonl；
+                                                    0=全执行无 FAIL，1=有 FAIL，3=执行不完整，2=结构错误
   write-report      --run-dir D                       只读 run 目录 → report.md
   compare           --baseline D --candidate D [--out D]
                                                     只读两个已完成证据目录逐例配对比较；
@@ -125,6 +128,32 @@ def _cmd_init_cases(args) -> int:
     return 0
 
 
+def _cmd_execute(args) -> int:
+    from . import executor
+
+    try:
+        summary = executor.execute_run(
+            args.replay_plan, args.manifest, args.profiles_dir,
+            args.env, args.run_dir, args.run_id)
+    except executor.ExecutorError as exc:
+        print(f"EXECUTE_ERROR: {exc}", file=sys.stderr)
+        return 2
+    counts = summary["status_counts"]
+    print(
+        "EXECUTE_DONE planned={planned} executed={executed} "
+        "PASS={PASS} FAIL={FAIL} BLOCKED={BLOCKED} NOT_RUN={NOT_RUN} "
+        "NOT_APPLICABLE={NA} incomplete={inc}".format(
+            planned=summary["planned"], executed=summary["executed_cases"],
+            PASS=counts.get("PASS", 0), FAIL=counts.get("FAIL", 0),
+            BLOCKED=counts.get("BLOCKED", 0), NOT_RUN=counts.get("NOT_RUN", 0),
+            NA=counts.get("NOT_APPLICABLE", 0), inc=summary["incomplete"]))
+    if summary["incomplete"] > 0 or counts.get("BLOCKED") or counts.get("NOT_RUN"):
+        return 3
+    if counts.get("FAIL"):
+        return 1
+    return 0
+
+
 def _cmd_write_report(args) -> int:
     try:
         out = report_mod.write_report(args.run_dir)
@@ -185,6 +214,15 @@ def main(argv=None) -> int:
     p = sub.add_parser("init-cases", help="由回放计划生成 cases.jsonl NOT_RUN 骨架（stdout JSONL）")
     p.add_argument("--replay-plan", required=True)
     p.set_defaults(func=_cmd_init_cases)
+
+    p = sub.add_parser("execute", help="R2 真实栈执行：回放→对账→判定（写 cases.jsonl/perf.jsonl）")
+    p.add_argument("--replay-plan", required=True)
+    p.add_argument("--manifest", required=True)
+    p.add_argument("--profiles-dir", required=True)
+    p.add_argument("--env", required=True, help="环境描述符（p1reg_stage5_env JSON，0600）")
+    p.add_argument("--run-dir", required=True)
+    p.add_argument("--run-id", required=True)
+    p.set_defaults(func=_cmd_execute)
 
     p = sub.add_parser("write-report", help="只读 run 目录 → report.md")
     p.add_argument("--run-dir", required=True)

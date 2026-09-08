@@ -11,10 +11,16 @@ export const TRAFFIC_AGENT_STATUS_META: Record<string, { color: string; label: s
   DISABLED: { color: 'default', label: '已禁用' },
 }
 
-/** TLS 可见性展示（§3.4；ENCRYPTED 需提示加密流量无法完整分析） */
+/** TLS 可见性展示（§3.4；ENCRYPTED 需提示加密流量无法完整分析；DECRYPTED 为 v2 增量——
+ * 需可信终止点证据，不能由外部 Header 单独决定） */
 export const TLS_VISIBILITY_META: Record<string, { color: string; label: string; tooltip?: string }> = {
   PLAINTEXT: { color: 'green', label: '明文' },
   ENCRYPTED: { color: 'orange', label: '加密', tooltip: '加密流量无法完整分析' },
+  DECRYPTED: {
+    color: 'cyan',
+    label: '已解密',
+    tooltip: 'TLS 终止点后观测（部署拓扑断言的可信终止点，非外部 Header 决定）',
+  },
   UNKNOWN: { color: 'default', label: '未知' },
 }
 
@@ -100,6 +106,93 @@ export const BODY_SKIPPED_REASON_META: Record<string, string> = {
   content_type: '内容类型不在采集白名单',
   encoding: '压缩编码无法解压',
 }
+
+/* ==================== P1-03 G4a：HTTP 事件 v2 展示（v2 契约 §2/§5；任务书 §4.3） ==================== */
+
+/** 采集来源类型展示（NGINX_MIRROR/ENVOY_TAP 由 G2/G3 适配器产生） */
+export const SOURCE_TYPE_META: Record<string, { color: string; label: string; tooltip?: string }> = {
+  PASSIVE_HTTP1: { color: 'blue', label: '被动 HTTP/1' },
+  NGINX_MIRROR: {
+    color: 'purple',
+    label: 'Nginx 镜像',
+    tooltip: 'TLS 终止后请求镜像：仅请求可见，原业务响应与延迟不可见',
+  },
+  ENVOY_TAP: { color: 'geekblue', label: 'Envoy Tap' },
+}
+
+/** 请求/响应关联状态展示（v2 契约 §2；COMPLETE 之外必须有原因） */
+export const ASSOC_STATE_META: Record<string, { color: string; label: string }> = {
+  COMPLETE: { color: 'green', label: '完整配对' },
+  REQUEST_ONLY: { color: 'orange', label: '仅请求' },
+  PARTIAL: { color: 'orange', label: '部分数据' },
+  UNCORRELATED: { color: 'red', label: '未关联' },
+}
+
+/** 关联原因码展示（v2 契约 §2；未知码原样展示） */
+export const ASSOC_REASON_META: Record<string, string> = {
+  SOURCE_REQUEST_ONLY: '来源仅提供请求（单向源）',
+  TIMEOUT: '响应等待超时',
+  DISCONNECT: '来源连接中断',
+  TRUNCATED: '数据被截断',
+  CORRELATION_MISS: '流关联失败',
+}
+
+/** 资产来源关联状态展示（v2 契约 §5；事件入库 ≠ 资产关联成功） */
+export const ASSET_LINK_STATE_META: Record<string, { color: string; label: string; tooltip?: string }> = {
+  LINKED: { color: 'green', label: '已关联' },
+  UNASSIGNED: {
+    color: 'orange',
+    label: '未绑定',
+    tooltip: '记录未声明来源绑定，待管理面确认；不随意归入同名路径资产',
+  },
+  QUOTA_REJECTED: { color: 'red', label: '配额拒绝', tooltip: '授权端点配额超限，新端点未落库' },
+  FAILED: { color: 'red', label: '关联失败' },
+}
+
+/** gRPC 流状态展示（v2 契约 §2.2；取消与未结束如实表示） */
+export const GRPC_STREAM_STATE_META: Record<string, { color: string; label: string }> = {
+  OPEN: { color: 'processing', label: '流进行中' },
+  CLOSED: { color: 'green', label: '流已关闭' },
+  CANCELLED: { color: 'orange', label: '已取消' },
+  UNKNOWN: { color: 'default', label: '未知' },
+}
+
+/** HTTP 版本展示（UNKNOWN=无法确认，不从 User-Agent 推断） */
+export function httpVersionLabel(v?: string | null): string {
+  if (v === null || v === undefined || v === '') return '-'
+  if (v === 'UNKNOWN') return '未知'
+  return `HTTP/${v}`
+}
+
+/** HTTP 事件 schema 版本展示（v1=旧采集无来源/协议观测信息） */
+export function httpSchemaLabel(v?: number | null): string {
+  if (v === 2) return 'v2'
+  return 'v1'
+}
+
+/** Agent HTTP 事件能力集是否包含 v2（v2 契约 §3；不支持时页面显示「需升级」，不假报启用） */
+export function supportsHttpEventV2(schemas?: number[] | null): boolean {
+  return Array.isArray(schemas) && schemas.includes(2)
+}
+
+/** 采集→入库延迟（秒）；任一缺失返回 null（v1 行无此口径） */
+export function ingestionDelaySec(
+  collectionTs?: number | null,
+  ingestionTs?: number | null,
+): number | null {
+  if (
+    collectionTs === null || collectionTs === undefined ||
+    ingestionTs === null || ingestionTs === undefined ||
+    !Number.isFinite(collectionTs) || !Number.isFinite(ingestionTs)
+  ) {
+    return null
+  }
+  const d = ingestionTs - collectionTs
+  return d >= 0 ? d : null
+}
+
+/** 缓存补传判定阈值（秒）：采集→入库延迟超过该值视为可能经磁盘缓存补传 */
+export const REPLAY_DELAY_THRESHOLD_SEC = 30
 
 /** Unix 秒时间戳 → 本地时间展示，空值/非法值返回占位符 */
 export function formatUnixTime(value?: number | null): string {

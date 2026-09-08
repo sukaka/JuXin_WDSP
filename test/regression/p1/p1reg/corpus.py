@@ -25,6 +25,10 @@ from p0bench.corpus import ACTIONS as FINAL_ACTIONS  # 复用 P0 动作词表
 from p0bench.plan import RFC3339_RE, SHA256_RE, sha256_file
 
 from .profiles import DEFAULT_PROFILE_IDS
+from .vocab import EXTRA_ACTIONS
+
+# P1 期望/观测动作全集 = P0 词表 + P1 本地扩展（LOCAL_REJECT）
+EXPECTED_ACTIONS = FINAL_ACTIONS + EXTRA_ACTIONS
 
 CASE_ID_RE = re.compile(r"^[A-Z][A-Z0-9]*-(BEN|ATK|UNK)-[A-Z0-9]+-[0-9]{3}$")
 
@@ -59,6 +63,29 @@ WAIT_PARAM_TYPES: dict[str, dict[str, tuple]] = {
 }
 
 _FORBIDDEN_RESET_TOKENS = ("flushall", "flushdb")
+
+
+CLIENT_KEYS = ("bot_challenge_solve",)
+
+
+def _validate_client(client, path: str, errors: list[str]) -> None:
+    """可选 client 对象：声明回放客户端行为（执行层解释，校验层只钉结构）。
+
+    bot_challenge_solve=true：遇到 Bot 挑战页（403 + wdsp-bot-params）时，
+    客户端按浏览器同构流程现场求解 PoW 并 verify（不得复用预计算结果），
+    然后携带通行 Cookie 重放本步骤请求；缺省/为 false 时不求解（脚本客户端）。
+    """
+    if client is None:
+        return
+    if not isinstance(client, dict):
+        _err(errors, path, "client: 必须是对象")
+        return
+    for k in client:
+        if k not in CLIENT_KEYS:
+            _err(errors, path, f"client: 未知键 {k!r}（允许: {list(CLIENT_KEYS)}）")
+    v = client.get("bot_challenge_solve")
+    if v is not None and not isinstance(v, bool):
+        _err(errors, path, "client.bot_challenge_solve: 必须为布尔值")
 
 
 class CorpusError(Exception):
@@ -291,12 +318,12 @@ def _validate_expectations(exp, path: str, known_profiles, errors: list[str]) ->
         if det is not None and "rule_family" in det and not _is_nonempty_str(det.get("rule_family")):
             _err(errors, epath, "expected_detection.rule_family: 必须为非空字符串")
         action = e.get("expected_final_action")
-        if action not in FINAL_ACTIONS:
-            _err(errors, epath, f"expected_final_action: 必须为 {FINAL_ACTIONS} 之一")
+        if action not in EXPECTED_ACTIONS:
+            _err(errors, epath, f"expected_final_action: 必须为 {EXPECTED_ACTIONS} 之一")
         if e.get("expected_origin") not in ORIGIN_EXPECTATIONS:
             _err(errors, epath, f"expected_origin: 必须为 {ORIGIN_EXPECTATIONS} 之一")
         # 期望自洽：检测期望与动作期望不得互相矛盾
-        if det is not None and action in FINAL_ACTIONS:
+        if det is not None and action in EXPECTED_ACTIONS:
             module = det.get("module")
             if module == "none" and action != "PASS":
                 _err(errors, epath, "期望矛盾：无检测期望（module=none）时动作只能为 PASS")
@@ -380,6 +407,7 @@ def validate_case_doc(doc, known_profiles=DEFAULT_PROFILE_IDS, path: str = "case
     _validate_evidence_requirements(doc.get("evidence_requirements"), f"{path}.evidence_requirements", errors)
     if doc.get("dataset_partition") not in PARTITIONS:
         _err(errors, path, f"dataset_partition: 必须为 {PARTITIONS} 之一")
+    _validate_client(doc.get("client"), f"{path}.client", errors)
 
     # 真值与期望一致性（§4.1：不以规则命中反向生成类别）
     exp = doc.get("expectations_by_profile")

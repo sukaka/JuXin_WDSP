@@ -41,16 +41,22 @@ const (
 )
 
 // security_action 枚举（契约 §2；观察命中不进入——仅实断/实改写动作）。
+// WDSP P1-02 B3 版本化增量：CHALLENGE 为 Bot 挑战终止动作（403 挑战页，
+// 响应来源 GATEWAY，未访问源站）；新增枚举值不改变既有动作含义，旧采集端/
+// 旧客户端对未知值按原始字符串安全回退显示（JSONB 字符串透传）。
 const (
 	DisActionNone         = "NONE"
 	DisActionBlock        = "BLOCK"
 	DisActionTempBlock    = "TEMP_BLOCK"
 	DisActionRateLimit    = "RATE_LIMIT"
 	DisActionMaskResponse = "MASK_RESPONSE"
+	DisActionChallenge    = "CHALLENGE"
 )
 
-// executor_module 枚举（契约 §2 冻结 13 值）。白名单不产生终止动作（命中即放行），
-// 不在 executor 词表；其步骤模块词见 StepModuleIPAllowlist。
+// executor_module 枚举（契约 §2 冻结 13 值 + P1-02 B3 版本化增量 BOT）。
+// 白名单不产生终止动作（命中即放行），不在 executor 词表；其步骤模块词见
+// StepModuleIPAllowlist。BOT 为 Bot 挑战步骤（WDSP P1-02：CC 之后、API 动态
+// 防护之前；挑战终止/verify 本地端点均归此 executor）。
 const (
 	ExecutorProtectedAddress = "PROTECTED_ADDRESS"
 	ExecutorManualBan        = "MANUAL_BAN"
@@ -60,6 +66,7 @@ const (
 	ExecutorRiskPolicy       = "RISK_POLICY"
 	ExecutorLicenseQuota     = "LICENSE_QUOTA"
 	ExecutorCC               = "CC"
+	ExecutorBot              = "BOT"
 	ExecutorJWT              = "JWT"
 	ExecutorAPI              = "API"
 	ExecutorWAF              = "WAF"
@@ -98,6 +105,7 @@ var dispositionModuleOrder = []string{
 	ExecutorRiskPolicy,
 	ExecutorLicenseQuota,
 	ExecutorCC,
+	ExecutorBot,
 	ExecutorAPI,
 	ExecutorWAF,
 }
@@ -120,6 +128,7 @@ var disValidExecutors = map[string]bool{
 	ExecutorRiskPolicy:       true,
 	ExecutorLicenseQuota:     true,
 	ExecutorCC:               true,
+	ExecutorBot:              true,
 	ExecutorJWT:              true,
 	ExecutorAPI:              true,
 	ExecutorWAF:              true,
@@ -128,13 +137,16 @@ var disValidExecutors = map[string]bool{
 }
 
 // disValidTerminalActions 终止分支动作合法集。NONE 用于非安全动作的网关终止
-// （L7 redirect/custom_page——请求不到源站但不是安全阻断）；阻断类为
-// BLOCK/TEMP_BLOCK/RATE_LIMIT；MASK_RESPONSE 是放行+响应改写，不是终止动作。
+// （L7 redirect/custom_page、Bot verify 本地端点——请求不到源站但不是安全阻断）；
+// 阻断类为 BLOCK/TEMP_BLOCK/RATE_LIMIT；CHALLENGE 为 Bot 挑战终止（P1-02 B3：
+// 403 挑战页，未访问源站；与挑战通过后的业务成功请求分开统计——BOT-022）；
+// MASK_RESPONSE 是放行+响应改写，不是终止动作。
 var disValidTerminalActions = map[string]bool{
 	DisActionNone:      true,
 	DisActionBlock:     true,
 	DisActionTempBlock: true,
 	DisActionRateLimit: true,
+	DisActionChallenge: true,
 }
 
 var disValidStepResults = map[string]bool{

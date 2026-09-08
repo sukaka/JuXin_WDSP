@@ -47,7 +47,7 @@ RUN if [ "$WDSP_LICENSE_TEST_KEYS" = "1" ]; then \
 FROM alpine:3.24${ALPINE_IMAGE_DIGEST:+@$ALPINE_IMAGE_DIGEST}
 
 RUN addgroup -g 1000 -S jiuzhang && adduser -u 1000 -S -G jiuzhang jiuzhang \
-    && mkdir -p /app/migrations /app/runtime && chown -R jiuzhang:jiuzhang /app
+    && mkdir -p /app/migrations /app/runtime/certificates && chown -R jiuzhang:jiuzhang /app
 
 COPY --from=builder /out/jiuzhang-api /usr/local/bin/jiuzhang-api
 COPY --chown=jiuzhang:jiuzhang server/migrations/ /app/migrations/

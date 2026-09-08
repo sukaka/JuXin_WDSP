@@ -257,6 +257,30 @@ type HTTPEventRow struct {
 	RespSkippedReason string          `json:"resp_skipped_reason"`
 	CreatedAt         time.Time       `json:"created_at"`
 	K8s               json.RawMessage `json:"k8s,omitempty"`
+
+	// ---- 000133 v2 列（管理端展示，任务书 P1-03 §4.3） ----
+	// v1 存量行取库默认值（schema_version=1 / source_type=PASSIVE_HTTP1 /
+	// observed=UNKNOWN / 可空列 NULL），如实表达"旧采集无来源/协议观测信息"。
+	SchemaVersion             int             `json:"schema_version"`
+	EventID                   *string         `json:"event_id"`
+	SourceType                string          `json:"source_type"`
+	SourceInstance            string          `json:"source_instance"`
+	SourceEpoch               int64           `json:"source_epoch"`
+	SourceCapabilitiesVersion string          `json:"source_capabilities_version"`
+	ObservedHTTPVersion       string          `json:"observed_http_version"`
+	OriginalHTTPVersion       *string         `json:"original_http_version"`
+	AssociationState          *string         `json:"association_state"`
+	AssociationReason         string          `json:"association_reason"`
+	CaptureStreamID           *string         `json:"capture_stream_id"`
+	ApplicationBindingID      *uuid.UUID      `json:"application_binding_id"`
+	BindingVersion            *int64          `json:"binding_version"`
+	GRPC                      json.RawMessage `json:"grpc"`
+	RequestTrailers           json.RawMessage `json:"request_trailers"`
+	ResponseTrailers          json.RawMessage `json:"response_trailers"`
+	ReqBodyQuality            json.RawMessage `json:"req_body_quality"`
+	RespBodyQuality           json.RawMessage `json:"resp_body_quality"`
+	CollectionTS              *time.Time      `json:"collection_ts"`
+	IngestionTS               *time.Time      `json:"ingestion_ts"`
 }
 
 // HTTPEventFilter 管理端 http-events 列表过滤（host 精确匹配大小写不敏感；
@@ -267,7 +291,37 @@ type HTTPEventFilter struct {
 	Page   PageParams
 }
 
-// ---------- 管理端输出（契约 §3 嵌套结构） ----------
+// ---------- 管理端输出（契约 §3 嵌套结构 + v2 增量字段） ----------
+
+// HTTPEventMessageJSON 管理端输出消息体（请求/响应共用）：
+//   - Headers 为 json.RawMessage 双形态——v1 行 string map、v2 行数组 map
+//     （{"name":["v1","v2"]}，保序保留重复值；同列双形态按 schema_version 区分解读，
+//     v2 契约 §6）；v2 行还原失败（非数组形态）回落空对象，不静默吞成 null；
+//   - Trailers/BodyQuality 仅 v2 行有值（v1 行输出 null——来源无此概念，不伪造）。
+type HTTPEventMessageJSON struct {
+	Headers           json.RawMessage `json:"headers"`
+	Body              string          `json:"body"`
+	BodyTruncated     bool            `json:"body_truncated"`
+	OriginalBodySize  int64           `json:"original_body_size"`
+	BodySkippedReason string          `json:"body_skipped_reason"`
+	Trailers          json.RawMessage `json:"trailers"`
+	BodyQuality       json.RawMessage `json:"body_quality"`
+}
+
+// HTTPEventRequestJSON 管理端输出请求侧。
+type HTTPEventRequestJSON struct {
+	Method string `json:"method"`
+	Scheme string `json:"scheme"`
+	Host   string `json:"host"`
+	URI    string `json:"uri"`
+	HTTPEventMessageJSON
+}
+
+// HTTPEventResponseJSON 管理端输出响应侧。
+type HTTPEventResponseJSON struct {
+	Status int `json:"status"`
+	HTTPEventMessageJSON
+}
 
 // HTTPEventJSON 管理端输出记录（契约 §3 嵌套结构 + 顶层 id/agent_id——前后端统一形状；
 // 机器端上报同为该嵌套结构，管理端仅追加存储主键与归属）。
@@ -279,26 +333,50 @@ type HTTPEventFilter struct {
 //   - response 为 NULL（响应未捕获/超时）时输出 "response": null 且
 //     response_ts/latency_ms 同步为 null（与机器端上报口径一致）；
 //   - body_skipped_reason 自迁移 000113 起持久化（content_type/encoding），
-//     输出真实值——采集完整性信号（设计 §34/§35/§65），不再恒空串。
+//     输出真实值——采集完整性信号（设计 §34/§35/§65），不再恒空串；
+//   - v2 增量（v2 契约 §2/§6，任务书 §4.3）：schema_version/event_id/来源三元组与
+//     能力版本/观测与原协议/关联状态与原因/流标识/来源绑定/grpc/trailers/body_quality/
+//     collection_ts/ingestion_ts；v1 存量行如实输出库默认值或 null，不回填伪造；
+//   - collection_ts（来源采集）与 ingestion_ts（服务端接收）分列——两者差值为
+//     采集→入库延迟（缓存补传可辨），均不混入业务延迟（业务延迟仅 latency_ms）。
 type HTTPEventJSON struct {
-	ID            int64             `json:"id"`
-	AgentID       uuid.UUID         `json:"agent_id"`
-	FlowID        string            `json:"flow_id"`
-	RequestTS     float64           `json:"request_ts"`
-	ResponseTS    *float64          `json:"response_ts"`
-	LatencyMS     *int64            `json:"latency_ms"`
-	SrcIP         string            `json:"src_ip"`
-	SrcPort       int               `json:"src_port"`
-	DstIP         string            `json:"dst_ip"`
-	DstPort       int               `json:"dst_port"`
-	Direction     string            `json:"direction"`
-	TLSVisibility string            `json:"tls_visibility"`
-	Request       HTTPRequestPart   `json:"request"`
-	Response      *HTTPResponsePart `json:"response"`
-	K8s           json.RawMessage   `json:"k8s,omitempty"`
+	ID            int64                  `json:"id"`
+	AgentID       uuid.UUID              `json:"agent_id"`
+	FlowID        string                 `json:"flow_id"`
+	RequestTS     float64                `json:"request_ts"`
+	ResponseTS    *float64               `json:"response_ts"`
+	LatencyMS     *int64                 `json:"latency_ms"`
+	SrcIP         string                 `json:"src_ip"`
+	SrcPort       int                    `json:"src_port"`
+	DstIP         string                 `json:"dst_ip"`
+	DstPort       int                    `json:"dst_port"`
+	Direction     string                 `json:"direction"`
+	TLSVisibility string                 `json:"tls_visibility"`
+	Request       HTTPEventRequestJSON   `json:"request"`
+	Response      *HTTPEventResponseJSON `json:"response"`
+	K8s           json.RawMessage        `json:"k8s,omitempty"`
+
+	// ---- v2 增量（000133 列；v1 行为库默认值/null） ----
+	SchemaVersion             int             `json:"schema_version"`
+	EventID                   *string         `json:"event_id"`
+	SourceType                string          `json:"source_type"`
+	SourceInstance            string          `json:"source_instance"`
+	SourceEpoch               int64           `json:"source_epoch"`
+	SourceCapabilitiesVersion string          `json:"source_capabilities_version"`
+	ObservedHTTPVersion       string          `json:"observed_http_version"`
+	OriginalHTTPVersion       *string         `json:"original_http_version"`
+	AssociationState          *string         `json:"association_state"`
+	AssociationReason         string          `json:"association_reason"`
+	CaptureStreamID           *string         `json:"capture_stream_id"`
+	ApplicationBindingID      *uuid.UUID      `json:"application_binding_id"`
+	BindingVersion            *int64          `json:"binding_version"`
+	GRPC                      json.RawMessage `json:"grpc"`
+	CollectionTS              *float64        `json:"collection_ts"`
+	IngestionTS               *float64        `json:"ingestion_ts"`
 }
 
-// headersFromJSON jsonb → map（nil/空一律给非 nil 空对象——嵌套结构 headers 不输出 null）。
+// headersFromJSON jsonb → v1 string map（nil/空一律给非 nil 空对象——嵌套结构 headers
+// 不输出 null）。仅适用于 v1 行；v2 行（数组形态）须走 headerValuesFromJSON。
 func headersFromJSON(raw json.RawMessage) map[string]string {
 	out := map[string]string{}
 	if len(raw) > 0 {
@@ -309,16 +387,76 @@ func headersFromJSON(raw json.RawMessage) map[string]string {
 	return out
 }
 
-// ToNestedJSON 转换管理端输出（契约 §3 嵌套结构）。
+// headerValuesFromJSON v2 行 jsonb → 数组形态 RawMessage 还原（v2 契约 §2：
+// {"name":["v1","v2"]} 保序保留重复值）。nil/空 → "{}"；非数组形态（损坏/越版本数据）
+// 回落 "{}"——不输出 null，不把非法形态原样透传给前端。
+func headerValuesFromJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	var probe HTTPHeaderValues
+	if err := json.Unmarshal(raw, &probe); err != nil || probe == nil {
+		return json.RawMessage(`{}`)
+	}
+	return raw
+}
+
+// headersAdminJSON 按 schema_version 还原 headers 输出形态（同列双形态，v2 契约 §6）：
+// v1 → string map 原样；v2 → 数组 map 还原。full=false（列表）一律 "{}"。
+func headersAdminJSON(schemaVersion int, raw json.RawMessage, full bool) json.RawMessage {
+	if !full {
+		return json.RawMessage(`{}`)
+	}
+	if schemaVersion == HTTPEventSchemaV2 {
+		return headerValuesFromJSON(raw)
+	}
+	out, err := json.Marshal(headersFromJSON(raw))
+	if err != nil { // map[string]string 理论上不会失败；防御性兜底
+		return json.RawMessage(`{}`)
+	}
+	return out
+}
+
+// unixFloat time.Time → Unix 秒浮点（毫秒精度，与 request_ts 口径一致）。
+func unixFloat(t time.Time) float64 {
+	return float64(t.UnixMilli()) / 1000.0
+}
+
+// unixFloatPtr 可空时间戳 → 可空 Unix 秒浮点。
+func unixFloatPtr(t *time.Time) *float64 {
+	if t == nil {
+		return nil
+	}
+	v := unixFloat(*t)
+	return &v
+}
+
+// ToNestedJSON 转换管理端输出（契约 §3 嵌套结构 + v2 增量字段）。
 // full=false（列表）保持轻量：request/response 的 headers 置空对象、body 置空串，
 // body_truncated/original_body_size 标志如实保留（前端列表需截断标记）；
-// full=true（详情）给全量 headers/body。
+// full=true（详情）给全量 headers/body，并还原 v2 trailers/body_quality 子对象。
+// v2 标量字段（来源/协议/关联/绑定/时间戳）列表与详情均返回——列表需独立状态展示
+// （任务书 §4.3/§8 AGT-026）；JSONB 子对象（grpc/trailers/body_quality）仅详情返回
+// （与 headers/body 同纪律，列表行保持轻量）。
 func (e *HTTPEventRow) ToNestedJSON(full bool) *HTTPEventJSON {
+	// 零值归一：直构行（单测）未走库默认值时与存量 v1 行口径对齐。
+	schemaVersion := e.SchemaVersion
+	if schemaVersion == 0 {
+		schemaVersion = 1
+	}
+	sourceType := e.SourceType
+	if sourceType == "" {
+		sourceType = SourceTypePassiveHTTP1
+	}
+	observed := e.ObservedHTTPVersion
+	if observed == "" {
+		observed = HTTPVersionUnknown
+	}
 	out := &HTTPEventJSON{
 		ID:            e.ID,
 		AgentID:       e.AgentID,
 		FlowID:        e.FlowID,
-		RequestTS:     float64(e.Ts.UnixMilli()) / 1000.0,
+		RequestTS:     unixFloat(e.Ts),
 		SrcIP:         e.SrcIP,
 		SrcPort:       e.SrcPort,
 		DstIP:         e.DstIP,
@@ -326,21 +464,44 @@ func (e *HTTPEventRow) ToNestedJSON(full bool) *HTTPEventJSON {
 		Direction:     e.Direction,
 		TLSVisibility: e.TLSVisibility,
 		K8s:           e.K8s,
-		Request: HTTPRequestPart{
+		Request: HTTPEventRequestJSON{
 			Method: e.Method,
 			Scheme: e.Scheme,
 			Host:   e.Host,
 			URI:    e.URI,
-			HTTPBodyFields: HTTPBodyFields{
-				Headers:           map[string]string{},
+			HTTPEventMessageJSON: HTTPEventMessageJSON{
+				Headers:           headersAdminJSON(schemaVersion, e.RequestHeaders, full),
 				BodyTruncated:     e.ReqTruncated,
 				OriginalBodySize:  e.ReqOriginalSize,
 				BodySkippedReason: e.ReqSkippedReason,
 			},
 		},
+		SchemaVersion:             schemaVersion,
+		EventID:                   e.EventID,
+		SourceType:                sourceType,
+		SourceInstance:            e.SourceInstance,
+		SourceEpoch:               e.SourceEpoch,
+		SourceCapabilitiesVersion: e.SourceCapabilitiesVersion,
+		ObservedHTTPVersion:       observed,
+		OriginalHTTPVersion:       e.OriginalHTTPVersion,
+		AssociationState:          e.AssociationState,
+		AssociationReason:         e.AssociationReason,
+		CaptureStreamID:           e.CaptureStreamID,
+		ApplicationBindingID:      e.ApplicationBindingID,
+		BindingVersion:            e.BindingVersion,
+		CollectionTS:              unixFloatPtr(e.CollectionTS),
+		IngestionTS:               unixFloatPtr(e.IngestionTS),
 	}
 	if full {
-		out.Request.Headers = headersFromJSON(e.RequestHeaders)
+		// v2 行还原 JSONB 子对象；v1 行保持 null（来源无此概念，不伪造）。
+		// trailers 保留 null（来源不可见）与 {}（确认无 trailer）的语义区分——v2 契约 §2。
+		if schemaVersion == HTTPEventSchemaV2 {
+			if e.RequestTrailers != nil {
+				out.Request.Trailers = headerValuesFromJSON(e.RequestTrailers)
+			}
+			out.Request.BodyQuality = e.ReqBodyQuality
+			out.GRPC = e.GRPC
+		}
 		if e.RequestBody != nil {
 			out.Request.Body = *e.RequestBody
 		}
@@ -352,17 +513,22 @@ func (e *HTTPEventRow) ToNestedJSON(full bool) *HTTPEventJSON {
 			ts := out.RequestTS + float64(ms)/1000.0
 			out.ResponseTS = &ts
 		}
-		resp := &HTTPResponsePart{
+		resp := &HTTPEventResponseJSON{
 			Status: *e.Status,
-			HTTPBodyFields: HTTPBodyFields{
-				Headers:           map[string]string{},
+			HTTPEventMessageJSON: HTTPEventMessageJSON{
+				Headers:           headersAdminJSON(schemaVersion, e.ResponseHeaders, full),
 				BodyTruncated:     e.RespTruncated,
 				OriginalBodySize:  e.RespOriginalSize,
 				BodySkippedReason: e.RespSkippedReason,
 			},
 		}
 		if full {
-			resp.Headers = headersFromJSON(e.ResponseHeaders)
+			if schemaVersion == HTTPEventSchemaV2 {
+				if e.ResponseTrailers != nil {
+					resp.Trailers = headerValuesFromJSON(e.ResponseTrailers)
+				}
+				resp.BodyQuality = e.RespBodyQuality
+			}
 			if e.ResponseBody != nil {
 				resp.Body = *e.ResponseBody
 			}

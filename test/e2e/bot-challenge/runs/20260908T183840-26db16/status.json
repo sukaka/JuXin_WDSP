@@ -1,0 +1,23 @@
+{
+  "run_id": "20260908T183840-26db16",
+  "task": "P1-02 B4 BOT-004/005/021 浏览器与自动化基准",
+  "finished_at": "2026-09-08T10:39:15Z",
+  "totals": {
+    "total": 27,
+    "pass": 27,
+    "fail": 0,
+    "blocked": 0
+  },
+  "groups": {
+    "http-script": {
+      "evidence": "group-http-script/"
+    },
+    "browser": {
+      "evidence": "group-browser.playwright.json"
+    },
+    "automation-js": {
+      "evidence": "group-automation-js.playwright.json"
+    }
+  },
+  "verdict": "PASS"
+}

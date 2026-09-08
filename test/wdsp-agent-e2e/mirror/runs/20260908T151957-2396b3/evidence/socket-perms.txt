@@ -1,0 +1,1 @@
+srw-rw----    1 root     nginx            0 Sep  8 07:20 /run/wdsp/mirror.sock

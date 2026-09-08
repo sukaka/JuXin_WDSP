@@ -40,12 +40,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "status": {"podIP": pod_ip},
                 }],
             }
-        elif parsed.path == "/api/v1/endpoints":
+        elif parsed.path == "/api/v1/namespaces/wdsp-e2e/endpoints":
+            # G4b：Agent 按本节点 Pod 所在 namespace 分别查询 endpoints（不再全集群分页）
             payload = {
                 "metadata": {},
                 "items": [{
                     "metadata": {"name": "wdsp-e2e-service", "namespace": "wdsp-e2e"},
                     "subsets": [{"addresses": [{"ip": pod_ip}]}],
+                }],
+            }
+        elif parsed.path == "/apis/apps/v1/namespaces/wdsp-e2e/replicasets":
+            # G4b：ReplicaSet → Deployment 权威归属解析
+            payload = {
+                "metadata": {},
+                "items": [{
+                    "metadata": {
+                        "name": "wdsp-e2e-agent-7d9f84c8bf",
+                        "namespace": "wdsp-e2e",
+                        "ownerReferences": [{"kind": "Deployment", "name": "wdsp-e2e-agent"}],
+                    },
                 }],
             }
         else:

@@ -685,7 +685,7 @@ export interface FinalDecision {
   application_id?: string
   gateway_node?: string
   completion_status?: 'COMPLETED' | 'ABORTED' | 'ERROR' | 'PENDING_CORRELATION' | 'UNKNOWN' | string
-  security_action?: 'NONE' | 'BLOCK' | 'TEMP_BLOCK' | 'RATE_LIMIT' | 'MASK_RESPONSE' | string
+  security_action?: 'NONE' | 'BLOCK' | 'TEMP_BLOCK' | 'RATE_LIMIT' | 'MASK_RESPONSE' | 'CHALLENGE' | string
   executor_module?:
     | 'PROTECTED_ADDRESS'
     | 'MANUAL_BAN'
@@ -695,6 +695,7 @@ export interface FinalDecision {
     | 'RISK_POLICY'
     | 'LICENSE_QUOTA'
     | 'CC'
+    | 'BOT'
     | 'JWT'
     | 'API'
     | 'WAF'

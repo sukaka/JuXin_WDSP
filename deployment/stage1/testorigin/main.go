@@ -35,6 +35,10 @@ type echoResponse struct {
 	UpstreamMark string            `json:"upstream_mark"`
 }
 
+// OriginMarkHeader 受控源站标记契约（P1-04 回归对账）：源站对每个到达请求
+// 回写该响应头，证明请求真实到达源站（HTTP 状态不能替代源站到达证据）。
+const OriginMarkHeader = "X-Wdsp-Origin-Mark"
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -131,6 +135,15 @@ func main() {
 			"time":         time.Now().UTC().Format(time.RFC3339),
 		})
 	})
+	// P1-04 回归语料路径（仅追加注册，其余未知路径保持 404 语义不变）：
+	// 正常/攻击样本的业务路径全部回显 echo，由响应头 X-Wdsp-Origin-Mark
+	// 承担源站到达对账；不改动既有 /cc/* 等未知路径的 404 行为。
+	for _, p := range []string{
+		"/search", "/download", "/ping", "/form", "/submit", "/articles",
+		"/api/fetch", "/api/xml", "/api/v1/tenants/t001/projects/p002/items",
+	} {
+		mux.HandleFunc(p, buildEcho)
+	}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
 	})
@@ -158,8 +171,12 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
+		Addr: addr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 受控源站标记：任何到达源站的请求（含 404）均回写，供回归对账
+			w.Header().Set(OriginMarkHeader, "jiuzhang-test-origin")
+			mux.ServeHTTP(w, r)
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	log.Printf("jiuzhang-test-origin listening on %s", addr)

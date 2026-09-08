@@ -10,7 +10,12 @@
   reason；环境不可用记 `BLOCKED / ENVIRONMENT_UNAVAILABLE`）
 - `corpus-validation.txt`：语料 schema v1 校验输出（含逐例内容哈希自校验）
 - `replay-plan.json`：seed 驱动的确定性回放计划（0444 冻结）
-- `cases.jsonl`：逐例状态（执行层填充前全部为 NOT_RUN 骨架）
+- `cases.jsonl`：逐例状态（执行层填充前全部为 NOT_RUN 骨架；真实回放
+  轮为逐例 verdict + 对账细节）
+- `perf.jsonl`：逐请求性能记录（request_id/seq/kind/status/latency_ms/
+  gateway_request_id/origin_reached），仅真实回放轮存在
+- `execution-summary.json` / `env-summary.json`：执行汇总与脱敏环境摘要，
+  仅真实回放轮存在
 - `report.md`：由 `p1reg write-report` 只读生成
 
 `compare-<run-id>/` 子目录由 `run.sh compare` 创建，包含前后版本逐例配对

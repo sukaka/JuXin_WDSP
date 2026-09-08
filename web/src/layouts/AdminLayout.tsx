@@ -112,6 +112,7 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/certificates': <FileProtectOutlined />,
   '/config-publish': <CloudUploadOutlined />,
   '/config-versions': <HistoryOutlined />,
+  '/security-regressions': <FileSearchOutlined />,
   '/gateway-status': <CloudServerOutlined />,
   '/protection-policies': <SafetyOutlined />,
   '/waf-rules': <SecurityScanOutlined />,

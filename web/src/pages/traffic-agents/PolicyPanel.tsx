@@ -14,6 +14,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -295,7 +296,36 @@ export default function PolicyPanel({ canManage }: { canManage: boolean }) {
       ellipsis: true,
       render: (_, r) => {
         const values = extractFormValues(r)
-        return `${values.interfaces.join(',') || '-'} / ${values.direction} / 端口 ${values.ports.join(',') || '-'} / ${values.output_mode} / 限速 ${values.outbound_mbps} Mbps`
+        return `等级 ${values.capture_level} / ${values.interfaces.join(',') || '-'} / ${values.direction} / 端口 ${values.ports.join(',') || '-'} / ${values.output_mode} / 限速 ${values.outbound_mbps} Mbps`
+      },
+    },
+    {
+      title: '适配器 / 来源绑定',
+      key: 'adapters',
+      width: 150,
+      render: (_, r) => {
+        const config = (r.config ?? {}) as Record<string, unknown>
+        const adapters = config.adapters
+        const bindings = config.source_bindings
+        const hasAdapters =
+          typeof adapters === 'object' && adapters !== null &&
+          Object.keys(adapters as Record<string, unknown>).length > 0
+        const hasBindings = Array.isArray(bindings) && bindings.length > 0
+        if (!hasAdapters && !hasBindings) {
+          return (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              未配置
+            </Typography.Text>
+          )
+        }
+        return (
+          <Tooltip title="适配器启用状态与来源绑定由策略 config 的 adapters/source_bindings 键携带，随版本快照不可变保存">
+            <Space size={4} wrap>
+              {hasAdapters ? <Tag color="blue">适配器已配置</Tag> : null}
+              {hasBindings ? <Tag color="purple">来源绑定已配置</Tag> : null}
+            </Space>
+          </Tooltip>
+        )
       },
     },
     {
@@ -595,6 +625,12 @@ export default function PolicyPanel({ canManage }: { canManage: boolean }) {
           保存时以上方表单字段覆盖 JSON 中对应键（capture.interfaces/direction/ports、capture_level、
           masking.headers/params、output.mode、limits.outbound_mbps）， sampling、buffer
           等高级键按 JSON 原文保留。
+        </Typography.Text>
+        <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+          保存即生成新的策略版本（版本历史链不可变，见「历史」）并提升绑定 Agent
+          的服务端目标配置版本；Agent 收到版本与实际加载结果在 Agent
+          详情中分离显示（待同步 ≠ 已生效）。适配器 enabled 与来源绑定等 v2
+          字段需在 Agent 支持相应能力后方可生效，旧 Agent 侧显示「需升级」。
         </Typography.Text>
       </Modal>
 

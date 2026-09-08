@@ -24,17 +24,17 @@ func TestResolvePrefersDestinationAndCopiesMetadata(t *testing.T) {
 	}
 }
 
-func TestWorkloadReplicaSetHeuristic(t *testing.T) {
-	if got := workloadName(ownerRef{Kind: "ReplicaSet", Name: "payment-api-7d9f84c8bf"}); got != "payment-api" {
+func TestTruncateReplicaSetName(t *testing.T) {
+	if got := truncateReplicaSetName("payment-api-7d9f84c8bf"); got != "payment-api" {
 		t.Fatalf("got %q", got)
 	}
-	if got := workloadName(ownerRef{Kind: "StatefulSet", Name: "redis"}); got != "redis" {
+	if got := truncateReplicaSetName("redis"); got != "redis" {
 		t.Fatalf("got %q", got)
 	}
 }
 
 func TestSyncPaginatesAndJoinsService(t *testing.T) {
-	var podRequests, endpointRequests int
+	var podRequests, endpointRequests, rsRequests int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("limit") != "500" {
@@ -54,10 +54,15 @@ func TestSyncPaginatesAndJoinsService(t *testing.T) {
 				"metadata": map[string]any{"name": "api-7d9f6c8b5d-x", "namespace": "prod", "ownerReferences": []any{map[string]string{"kind": "ReplicaSet", "name": "api-7d9f6c8b5d"}}},
 				"status":   map[string]string{"podIP": "10.2.0.8"},
 			}}})
-		case "/api/v1/endpoints":
+		case "/apis/apps/v1/namespaces/prod/replicasets":
+			rsRequests++
+			_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]string{}, "items": []any{map[string]any{
+				"metadata": map[string]any{"name": "api-7d9f6c8b5d", "ownerReferences": []any{map[string]string{"kind": "Deployment", "name": "api"}}},
+			}}})
+		case "/api/v1/namespaces/prod/endpoints":
 			endpointRequests++
 			_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]string{}, "items": []any{map[string]any{
-				"metadata": map[string]string{"name": "api", "namespace": "prod"},
+				"metadata": map[string]any{"name": "api", "namespace": "prod"},
 				"subsets":  []any{map[string]any{"addresses": []any{map[string]string{"ip": "10.2.0.8"}}}},
 			}}})
 		default:
@@ -71,11 +76,18 @@ func TestSyncPaginatesAndJoinsService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if podRequests != 2 || endpointRequests != 1 {
-		t.Fatalf("requests pods=%d endpoints=%d", podRequests, endpointRequests)
+	if podRequests != 2 || endpointRequests != 1 || rsRequests != 1 {
+		t.Fatalf("requests pods=%d endpoints=%d replicasets=%d", podRequests, endpointRequests, rsRequests)
+	}
+	got, ok := items["10.2.0.8"]
+	if !ok {
+		t.Fatalf("missing entry: %#v", items)
 	}
 	want := Metadata{Cluster: "cluster-a", Namespace: "prod", Pod: "api-7d9f6c8b5d-x", Workload: "api", Service: "api"}
-	if got := items["10.2.0.8"]; got != want {
-		t.Fatalf("metadata = %#v, want %#v", got, want)
+	if got.meta != want {
+		t.Fatalf("metadata = %#v, want %#v", got.meta, want)
+	}
+	if got.inferred {
+		t.Fatal("经 ReplicaSet→Deployment 权威解析的 workload 不应标记为推断")
 	}
 }

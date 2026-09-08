@@ -30,6 +30,7 @@ import { formatRelativeTime } from '../../utils/apm'
 import HealthScoreBadge from './HealthScoreBadge'
 import HttpEventsPanel, { TlsVisibilityTag } from './HttpEventsPanel'
 import CaptureOverridesPanel from './CaptureOverridesPanel'
+import HttpAssetSourcesPanel from './HttpAssetSourcesPanel'
 import {
   FLOW_EVENT_TYPE_META,
   TRAFFIC_AGENT_STATUS_META,
@@ -38,6 +39,7 @@ import {
   formatRate,
   formatUnixTime,
   healthReasonLabels,
+  supportsHttpEventV2,
 } from './meta'
 
 const interfaceColumns: ColumnsType<TrafficAgentInterface> = [
@@ -314,9 +316,34 @@ export default function AgentDetailDrawer({
                     <Descriptions.Item label="架构">
                       {detail.arch || '-'}
                     </Descriptions.Item>
-                    <Descriptions.Item label="配置版本">
-                      v{detail.applied_config_version} / v
-                      {detail.config_version}（已应用 / 最新）
+                    <Descriptions.Item label="HTTP 事件能力" span={2}>
+                      <Space size={8} wrap>
+                        {(detail.http_event_schemas ?? [1]).map((v) => (
+                          <Tag key={v} color={v === 2 ? 'green' : 'default'}>
+                            {`schema v${v}`}
+                          </Tag>
+                        ))}
+                        {supportsHttpEventV2(detail.http_event_schemas) ? null : (
+                          <Tooltip title="该 Agent 能力协商生效集仅含 v1：来源、协议观测、关联状态、Body 数据质量等 v2 事件字段不可用。升级 Agent 并重新注册/心跳声明 capabilities 后自动生效">
+                            <Tag color="orange">需升级</Tag>
+                          </Tooltip>
+                        )}
+                      </Space>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="服务端目标版本">
+                      {`v${detail.config_version}`}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Agent 已加载版本">
+                      <Space size={8} wrap>
+                        <span>{`v${detail.applied_config_version}`}</span>
+                        {detail.applied_config_version >= detail.config_version ? (
+                          <Tag color="green">已同步</Tag>
+                        ) : (
+                          <Tooltip title="Agent 收到的目标版本与实际加载结果分离显示；不一致表示配置尚未 ACK 或加载失败">
+                            <Tag color="orange">待同步</Tag>
+                          </Tooltip>
+                        )}
+                      </Space>
                     </Descriptions.Item>
                     <Descriptions.Item label="最后心跳">
                       <Tooltip title={formatDateTime(detail.last_seen)}>
@@ -409,6 +436,18 @@ export default function AgentDetailDrawer({
                           </Typography.Text>
                         )}
                       </Space>
+                      <Typography.Text
+                        type="secondary"
+                        style={{ display: 'block', fontSize: 12, marginTop: 4 }}
+                      >
+                        {detail.policy_binding
+                          ? `已保存策略版本 v${
+                              detail.policy_binding.version ?? '-'
+                            }（策略历史链不可变）；保存/换绑后服务端目标版本升为 v${
+                              detail.config_version
+                            }，Agent 实际加载 v${detail.applied_config_version}——目标与实载分离显示`
+                          : '策略保存生成新版本并作为服务端目标版本下发；Agent 收到版本与实际加载结果在上方分别显示'}
+                      </Typography.Text>
                       {canManage ? (
                         <Space wrap style={{ marginTop: 8 }}>
                           <Select
@@ -492,7 +531,18 @@ export default function AgentDetailDrawer({
               key: 'http-events',
               label: 'HTTP 事件',
               children: (
-                <HttpEventsPanel agentId={detail.agent_id} enabled={open} />
+                <HttpEventsPanel
+                  agentId={detail.agent_id}
+                  enabled={open}
+                  httpEventSchemas={detail.http_event_schemas}
+                />
+              ),
+            },
+            {
+              key: 'asset-sources',
+              label: '资产来源',
+              children: (
+                <HttpAssetSourcesPanel agentId={detail.agent_id} enabled={open} />
               ),
             },
             {

@@ -59,15 +59,16 @@ class TestRepoCorpus(unittest.TestCase):
     def test_repo_case_count_and_truth_mix(self):
         docs = [it["doc"] for it in self.corpus["cases"].values()]
         self.assertGreaterEqual(len(docs), 15)
-        self.assertLessEqual(len(docs), 25)
+        self.assertLessEqual(len(docs), 30)
         benign = [d for d in docs if d["truth"] == "BENIGN"]
         attack = [d for d in docs if d["truth"] == "ATTACK"]
         self.assertGreaterEqual(len(benign), 5, "不得只有攻击集")
         self.assertGreaterEqual(len(attack), 5)
 
-    def test_repo_only_waf_family_in_s1(self):
+    def test_repo_families_r2(self):
         fams = {it["doc"]["family"] for it in self.corpus["cases"].values()}
-        self.assertEqual(fams, {"waf"}, "S1 仅交付 waf 类样本，其余族待对应阶段落地后补充")
+        self.assertEqual(fams, {"waf", "bot"},
+                         "R2 交付 waf + bot 类样本，其余族待对应阶段落地后补充")
 
     def test_repo_partitions_cover_train_and_holdout(self):
         parts = {it["doc"]["dataset_partition"] for it in self.corpus["cases"].values()}

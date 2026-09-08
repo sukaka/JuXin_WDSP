@@ -1,0 +1,5 @@
+# run.sh 运行时生成的 Playwright 模块解析软链（相对目标 ../../../web/node_modules）。
+# 根 .gitignore 的 node_modules/ 只匹配真实目录、不匹配符号链接，故此处目录级兜底。
+node_modules
+# 每轮实跑证据（含随机口令栈的诊断信息，不进仓库）
+runs/

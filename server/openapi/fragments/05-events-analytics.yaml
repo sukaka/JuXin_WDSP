@@ -792,6 +792,21 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /metrics:
+    get:
+      operationId: prometheusMetricsGet
+      tags: [system-health]
+      summary: 导出 Prometheus 指标
+      description: 以 Prometheus 0.0.4 文本格式导出服务端审计等运行指标。权限：`system_health.read`。
+      responses:
+        '200':
+          description: Prometheus 指标文本
+          content:
+            text/plain; version=0.0.4:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   # ==================== 系统告警 ====================
   /system-alerts:
     get:

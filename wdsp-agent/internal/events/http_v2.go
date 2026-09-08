@@ -301,9 +301,8 @@ func bodyQualityOf(m *HTTPMessage) BodyQuality {
 		zero := int64(0) // 确认为空报文体（契约 §2.1：0 仅表示确认空）
 		q.OriginalTotalSize = &zero
 	default:
-		// 截断但原始总大小未知：被动采集不可达（截断发生时 wireSize 必大于
-		// 已采字节）。保持 null 不造假值；若上游不变量被破坏，服务端校验会
-		// 拒绝该条并由发送路径按索引隔离丢弃。
+		// 截断但原始总大小未知：契约 V1.1 起为合法组合（truncated=true +
+		// original_total_size=null，表达「截断但总大小未知」）。保持 null 不造假值。
 	}
 	return q
 }

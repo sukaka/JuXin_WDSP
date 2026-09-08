@@ -1,0 +1,204 @@
+==== compose ps ====
+NAME                         IMAGE                                                                                                COMMAND                  SERVICE      CREATED          STATUS                            PORTS
+jiuzhang-stage5-api          jiuzhang-server:stage5                                                                               "/bin/sh -c 'jiuzhan…"   api          18 seconds ago   Up 6 seconds (healthy)            127.0.0.1:18081->8080/tcp
+jiuzhang-stage5-gateway      jiuzhang-gateway:stage5                                                                              "/usr/local/bin/dock…"   gateway      19 seconds ago   Up 7 seconds (health: starting)   0.0.0.0:81->81/tcp, [::]:81->81/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp, 127.0.0.1:18080->8080/tcp
+jiuzhang-stage5-postgres     postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c         "docker-entrypoint.s…"   postgres     19 seconds ago   Up 17 seconds (healthy)           127.0.0.1:5432->5432/tcp
+jiuzhang-stage5-testorigin   jiuzhang-testorigin:stage1                                                                           "/usr/local/bin/test…"   testorigin   19 seconds ago   Up 18 seconds (healthy)           8081/tcp
+jiuzhang-stage5-valkey       valkey/valkey:8.1.8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885   "docker-entrypoint.s…"   valkey       19 seconds ago   Up 17 seconds (healthy)           127.0.0.1:6379->6379/tcp
+
+==== api 日志尾部 ====
+jiuzhang-stage5-api  | applied migration 000001_init
+jiuzhang-stage5-api  | applied migration 000002_seed_rbac
+jiuzhang-stage5-api  | applied migration 000003_seed_settings
+jiuzhang-stage5-api  | applied migration 000004_stage3
+jiuzhang-stage5-api  | applied migration 000005_seed_stage3_perms
+jiuzhang-stage5-api  | applied migration 000006_stage4
+jiuzhang-stage5-api  | applied migration 000007_seed_stage4
+jiuzhang-stage5-api  | applied migration 000008_stage5
+jiuzhang-stage5-api  | applied migration 000009_seed_stage5_perms
+jiuzhang-stage5-api  | applied migration 000010_stage6
+jiuzhang-stage5-api  | applied migration 000011_seed_stage6_perms
+jiuzhang-stage5-api  | applied migration 000012_perf_indexes
+jiuzhang-stage5-api  | applied migration 000013_stage7
+jiuzhang-stage5-api  | applied migration 000014_seed_stage7_perms
+jiuzhang-stage5-api  | applied migration 000015_seed_stage7_model
+jiuzhang-stage5-api  | applied migration 000016_stage8
+jiuzhang-stage5-api  | applied migration 000017_seed_stage8_perms
+jiuzhang-stage5-api  | applied migration 000018_stage8_full_schema
+jiuzhang-stage5-api  | applied migration 000019_stage8_perms
+jiuzhang-stage5-api  | applied migration 000020_api_endpoint_directory
+jiuzhang-stage5-api  | applied migration 000021_ai_noise_reduction
+jiuzhang-stage5-api  | applied migration 000022_security_event_payloads
+jiuzhang-stage5-api  | applied migration 000023_access_logs
+jiuzhang-stage5-api  | applied migration 000024_syslog_settings
+jiuzhang-stage5-api  | applied migration 000025_prompt_edit_delete_perms
+jiuzhang-stage5-api  | applied migration 000026_header_proxy_path_routes
+jiuzhang-stage5-api  | applied migration 000027_learning_automation
+jiuzhang-stage5-api  | applied migration 000028_parameter_constraints
+jiuzhang-stage5-api  | applied migration 000029_runtime_event_identity
+jiuzhang-stage5-api  | applied migration 000030_behavior_profile_time_dist
+jiuzhang-stage5-api  | applied migration 000031_micro_models_batch
+jiuzhang-stage5-api  | applied migration 000032_l7_access_rules
+jiuzhang-stage5-api  | applied migration 000033_totp
+jiuzhang-stage5-api  | applied migration 000034_api_endpoint_traffic_buckets
+jiuzhang-stage5-api  | applied migration 000035_api_runtime_event_enrichment
+jiuzhang-stage5-api  | applied migration 000036_api_findings_enrichment
+jiuzhang-stage5-api  | applied migration 000037_api_runtime_policies
+jiuzhang-stage5-api  | applied migration 000038_api_learning_deepen
+jiuzhang-stage5-api  | applied migration 000039_api_weaknesses
+jiuzhang-stage5-api  | applied migration 000040_api_sensitive_data
+jiuzhang-stage5-api  | applied migration 000041_api_weakness_data_perms
+jiuzhang-stage5-api  | applied migration 000042_api_risk_center
+jiuzhang-stage5-api  | applied migration 000043_api_authz_baselines
+jiuzhang-stage5-api  | applied migration 000044_api_field_permissions
+jiuzhang-stage5-api  | applied migration 000045_api_asset_lifecycle
+jiuzhang-stage5-api  | applied migration 000046_api_spec_versions
+jiuzhang-stage5-api  | applied migration 000048_api_authorization_perms
+jiuzhang-stage5-api  | applied migration 000049_gateway_node_interfaces
+jiuzhang-stage5-api  | applied migration 000050_syslog_more_kinds
+jiuzhang-stage5-api  | applied migration 000051_api_response_schema_learning
+jiuzhang-stage5-api  | applied migration 000052_application_deployment_mode
+jiuzhang-stage5-api  | applied migration 000053_api_scan_core
+jiuzhang-stage5-api  | applied migration 000054_api_scan_findings
+jiuzhang-stage5-api  | applied migration 000055_api_security_alerts
+jiuzhang-stage5-api  | applied migration 000056_api_scan_perms
+jiuzhang-stage5-api  | applied migration 000057_notification_channels
+jiuzhang-stage5-api  | applied migration 000058_api_cross_border
+jiuzhang-stage5-api  | applied migration 000059_api_reports
+jiuzhang-stage5-api  | applied migration 000060_notify_phase2
+jiuzhang-stage5-api  | applied migration 000061_api_file_assets
+jiuzhang-stage5-api  | applied migration 000062_api_ai_schedules
+jiuzhang-stage5-api  | applied migration 000063_api_ai_schedule_perms
+jiuzhang-stage5-api  | applied migration 000064_deployment_mode_mirror_transparent
+jiuzhang-stage5-api  | applied migration 000065_node_network_configs
+jiuzhang-stage5-api  | applied migration 000066_api_llm_observations
+jiuzhang-stage5-api  | applied migration 000067_api_call_edges_identity_count
+jiuzhang-stage5-api  | applied migration 000068_api_parameter_relations_confirm
+jiuzhang-stage5-api  | applied migration 000069_api_gateway_nodes
+jiuzhang-stage5-api  | applied migration 000070_api_llm_observations_mcp_method
+jiuzhang-stage5-api  | applied migration 000071_api_file_compliance
+jiuzhang-stage5-api  | applied migration 000072_api_spec_source
+jiuzhang-stage5-api  | applied migration 000073_api_classifications_seed
+jiuzhang-stage5-api  | applied migration 000074_api_gateway_nodes_sync
+jiuzhang-stage5-api  | applied migration 000075_access_control_events_proto
+jiuzhang-stage5-api  | applied migration 000076_api_grpc_descriptors
+jiuzhang-stage5-api  | applied migration 000077_site_discovery
+jiuzhang-stage5-api  | applied migration 000078_license
+jiuzhang-stage5-api  | applied migration 000079_security_events_repair
+jiuzhang-stage5-api  | applied migration 000080_ha_groups
+jiuzhang-stage5-api  | applied migration 000081_api_file_compliance_webshell_ext_seed
+jiuzhang-stage5-api  | applied migration 000082_report_content_scope
+jiuzhang-stage5-api  | applied migration 000083_report_schedules
+jiuzhang-stage5-api  | applied migration 000084_reports_delete_all_perm
+jiuzhang-stage5-api  | applied migration 000085_report_include_api_assets
+jiuzhang-stage5-api  | applied migration 000086_report_page_orientation
+jiuzhang-stage5-api  | applied migration 000087_api_classifications_expansion
+jiuzhang-stage5-api  | applied migration 000088_apm_stage1
+jiuzhang-stage5-api  | applied migration 000089_apm_agent_control_plane
+jiuzhang-stage5-api  | applied migration 000090_apm_sql_read_perm
+jiuzhang-stage5-api  | applied migration 000091_apm_runtime_read_perm
+jiuzhang-stage5-api  | applied migration 000092_apm_slos
+jiuzhang-stage5-api  | applied migration 000093_apm_diagnostics
+jiuzhang-stage5-api  | applied migration 000094_apm_ingest_lag_alert
+jiuzhang-stage5-api  | applied migration 000095_api_taxonomy_catalog_seed
+jiuzhang-stage5-api  | applied migration 000096_api_classifications_builtin_backfill
+jiuzhang-stage5-api  | applied migration 000097_client_identity
+jiuzhang-stage5-api  | applied migration 000098_behavior_policy
+jiuzhang-stage5-api  | applied migration 000099_identity_security_perms
+jiuzhang-stage5-api  | applied migration 000100_role_perm_rebalance
+jiuzhang-stage5-api  | applied migration 000101_risk_policy
+jiuzhang-stage5-api  | applied migration 000102_risk_policy_perms
+jiuzhang-stage5-api  | applied migration 000103_attack_session
+jiuzhang-stage5-api  | applied migration 000104_attack_session_perms
+jiuzhang-stage5-api  | applied migration 000105_api_assets_business_type
+jiuzhang-stage5-api  | applied migration 000106_attack_session_automation
+jiuzhang-stage5-api  | applied migration 000107_ha_groups_unicast_peers
+jiuzhang-stage5-api  | applied migration 000108_traffic_agents
+jiuzhang-stage5-api  | applied migration 000109_traffic_agent_perms
+jiuzhang-stage5-api  | applied migration 000110_traffic_agent_policy_versions
+jiuzhang-stage5-api  | applied migration 000111_traffic_agent_certs
+jiuzhang-stage5-api  | applied migration 000112_traffic_agent_http_events
+jiuzhang-stage5-api  | applied migration 000113_traffic_agent_http_skipped_reason
+jiuzhang-stage5-api  | applied migration 000114_traffic_agent_capture_overrides
+jiuzhang-stage5-api  | applied migration 000115_traffic_agent_k8s_metadata
+jiuzhang-stage5-api  | applied migration 000116_identity_contract_v1_1
+jiuzhang-stage5-api  | applied migration 000117_identity_behavior_v1_1_contract
+jiuzhang-stage5-api  | applied migration 000118_rule_effect_stats_index
+jiuzhang-stage5-api  | applied migration 000119_rule_statistics_daily
+jiuzhang-stage5-api  | applied migration 000120_remove_machine_identity
+jiuzhang-stage5-api  | applied migration 000121_seed_systemops_perms
+jiuzhang-stage5-api  | applied migration 000122_audit_admin_permission_rebalance
+jiuzhang-stage5-api  | applied migration 000123_header_proxy_xff_default_true
+jiuzhang-stage5-api  | applied migration 000124_operation_audit_delivery_id
+jiuzhang-stage5-api  | applied migration 000125_jwt_trust_policy
+jiuzhang-stage5-api  | applied migration 000126_jwt_trust_perms
+jiuzhang-stage5-api  | applied migration 000127_api_runtime_events_jwt_verification
+jiuzhang-stage5-api  | applied migration 000128_bot_policy
+jiuzhang-stage5-api  | applied migration 000129_bot_policy_perms
+jiuzhang-stage5-api  | applied migration 000130_exception_scope_contract
+jiuzhang-stage5-api  | applied migration 000131_api_runtime_events_final_decision
+jiuzhang-stage5-api  | applied migration 000132_security_events_final_decision
+jiuzhang-stage5-api  | applied migration 000133_agent_http_event_v2
+jiuzhang-stage5-api  | applied migration 000134_security_regression
+jiuzhang-stage5-api  | applied migration 000135_security_regression_perms
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.218030293Z","level":"INFO","msg":"initial admin created from environment variable","username":"jiuzhang_admin"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.221177918Z","level":"WARN","msg":"geoip unavailable, source geo section degraded","error":"read mmdb \"/app/runtime/geoip/country.mmdb\": open /app/runtime/geoip/country.mmdb: no such file or directory"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.326041251Z","level":"WARN","msg":"api geo mmdb unavailable, cross-border detection degraded","error":"read mmdb \"/app/runtime/geoip/country.mmdb\": open /app/runtime/geoip/country.mmdb: no such file or directory"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.332495876Z","level":"INFO","msg":"notify dispatcher started","spool":"/app/runtime/notify-spool.jsonl"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.332413126Z","level":"INFO","msg":"access log collector started","collector":"accesslog-01","log":"/var/log/caddy-audit/access-full.jsonl","interval":2000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.332866085Z","level":"INFO","msg":"identity event collector started","collector":"identity-events-01","log":"/var/log/caddy-audit/identity-events.log","interval":2000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.332897876Z","level":"INFO","msg":"node interface collector started","collector":"iface-collector-01","log":"/var/log/caddy-audit/node-interfaces.jsonl","interval":60000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.332432251Z","level":"INFO","msg":"guard janitor started","interval":60000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.333050918Z","level":"INFO","msg":"aggregation jobs started"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.332641168Z","level":"INFO","msg":"site discovery collector started","collector":"site-discovery-01","log":"/var/log/caddy-audit/site-discovery.jsonl","interval":2000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.333341376Z","level":"INFO","msg":"access log retention cleaner started","interval":600000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.332850293Z","level":"INFO","msg":"syslog forwarder started","spool":"/app/runtime/syslog-spool.jsonl"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.333482793Z","level":"INFO","msg":"api metrics collector started","interval":60000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.333856126Z","level":"INFO","msg":"event collector started","collector":"collector-01","log":"/var/log/caddy-audit/coraza-audit.log","interval":2000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.333904376Z","level":"INFO","msg":"access control event collector started","collector":"ac-collector-01","log":"/var/log/caddy-audit/guard-events.log","interval":2000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.332587001Z","level":"INFO","msg":"api runtime event collector started","collector":"api-collector-01","log":"/var/log/caddy-audit/api-runtime-events.log","interval":2000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.33400071Z","level":"INFO","msg":"attack session aggregator started","interval":60000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.334363251Z","level":"INFO","msg":"report scheduler started","interval":30000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.334457043Z","level":"INFO","msg":"api gateway nodes sweeper started","interval":60000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.334561293Z","level":"INFO","msg":"jiuzhang api server started","addr":"0.0.0.0:8080","env":"dev"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.335106876Z","level":"INFO","msg":"backup worker started"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.335156335Z","level":"INFO","msg":"runtime health collector started","interval":30000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.353679501Z","level":"INFO","msg":"api ai ops sweeper started","interval":60000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.353928835Z","level":"INFO","msg":"api scan worker started","interval":10000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.354620501Z","level":"INFO","msg":"learning jobs worker started","interval":30000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.36008321Z","level":"INFO","msg":"report generator worker started","interval":2000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:22.360475418Z","level":"INFO","msg":"ai noise worker started","interval":300000000000}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:23.561817294Z","level":"INFO","msg":"api access","request_id":"502c6576-c16b-49e1-b0f8-de6e10f789b1","method":"GET","path":"/api/v1/health","status":200,"duration_ms":2,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:23.608008085Z","level":"INFO","msg":"api access","request_id":"611a72ad-ae94-485a-ab57-27d87f922379","method":"GET","path":"/api/v1/auth/captcha","status":200,"duration_ms":6,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:23.974914044Z","level":"INFO","msg":"api access","request_id":"b4b59c9c-f0c6-49b9-9cef-be3c6501157f","method":"POST","path":"/api/v1/auth/login","status":200,"duration_ms":177,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:24.014030877Z","level":"INFO","msg":"api access","request_id":"1a3a84a4-643c-46a5-ae6b-e95a3c5fdfeb","method":"GET","path":"/api/v1/auth/me","status":200,"duration_ms":6,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:24.319489086Z","level":"INFO","msg":"api access","request_id":"84375b17-44e4-426b-8029-ed5f503a4d47","method":"POST","path":"/api/v1/auth/change-password","status":200,"duration_ms":231,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:24.358993669Z","level":"INFO","msg":"api access","request_id":"d9b42496-5884-4c38-be3b-23fa4a4cf965","method":"GET","path":"/api/v1/auth/captcha","status":200,"duration_ms":3,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:24.574016836Z","level":"INFO","msg":"api access","request_id":"aa345da7-0491-44eb-b950-d8cd499d06ee","method":"POST","path":"/api/v1/auth/login","status":200,"duration_ms":87,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:24.633163669Z","level":"INFO","msg":"api access","request_id":"946f28f4-e5fc-44a0-a859-fad4dafb6a69","method":"POST","path":"/api/v1/license/import","status":200,"duration_ms":10,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:24.872525336Z","level":"INFO","msg":"api access","request_id":"b98be8db-04ff-4b6f-a3b6-58ee06beca04","method":"POST","path":"/api/v1/users","status":200,"duration_ms":226,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:24.915251253Z","level":"INFO","msg":"api access","request_id":"12d5aff3-1a5a-49ec-b19f-5d6e1c701d15","method":"GET","path":"/api/v1/auth/captcha","status":200,"duration_ms":3,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:25.109249586Z","level":"INFO","msg":"api access","request_id":"54c6f1d1-a2e0-4278-b86b-087ba0e51dcb","method":"POST","path":"/api/v1/auth/login","status":200,"duration_ms":86,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:25.460034003Z","level":"INFO","msg":"api access","request_id":"27d8d37e-607b-48df-a769-f2dfffd90590","method":"GET","path":"/api/v1/health","status":200,"duration_ms":0,"remote_ip":"127.0.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:25.509048878Z","level":"INFO","msg":"api access","request_id":"7c05a55f-dd5d-4f74-81de-7dcf68540fd8","method":"POST","path":"/api/v1/auth/change-password","status":200,"duration_ms":368,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:25.539950211Z","level":"INFO","msg":"api access","request_id":"8e378e73-e1f2-46e7-9b9c-5378d333ce2e","method":"GET","path":"/api/v1/auth/captcha","status":200,"duration_ms":4,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:25.735423253Z","level":"INFO","msg":"api access","request_id":"cdc0adbd-33de-4808-82e6-311e42b1be3b","method":"POST","path":"/api/v1/auth/login","status":200,"duration_ms":81,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:25.947870961Z","level":"INFO","msg":"api access","request_id":"dadeccee-df63-4934-b8fa-faf0da228f5a","method":"POST","path":"/api/v1/certificates","status":200,"duration_ms":5,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:25.976680211Z","level":"INFO","msg":"api access","request_id":"c157113b-68dd-4cdb-b408-d3e51f4a745c","method":"POST","path":"/api/v1/applications","status":200,"duration_ms":6,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:25.998366586Z","level":"INFO","msg":"api access","request_id":"b286dc97-82a7-4a67-a59e-bfe659fc3860","method":"POST","path":"/api/v1/applications/6b38d8d5-3f0c-4200-b392-60821af28ee8/domains","status":200,"duration_ms":6,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:26.020443003Z","level":"INFO","msg":"api access","request_id":"dfa42665-ac02-450c-9d7b-851aefd8dbb6","method":"POST","path":"/api/v1/applications/6b38d8d5-3f0c-4200-b392-60821af28ee8/upstreams","status":200,"duration_ms":6,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:26.037717587Z","level":"INFO","msg":"api access","request_id":"d5cd2491-e61c-4c76-9f7c-a94d52d8bd41","method":"POST","path":"/api/v1/applications/6b38d8d5-3f0c-4200-b392-60821af28ee8/certificate","status":200,"duration_ms":5,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:26.05525592Z","level":"INFO","msg":"api access","request_id":"e7df6480-3f7c-454c-b1bc-bac482bceab6","method":"POST","path":"/api/v1/applications/6b38d8d5-3f0c-4200-b392-60821af28ee8/enable","status":200,"duration_ms":4,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:26.314825628Z","level":"INFO","msg":"api access","request_id":"206d62f1-343c-49e9-939b-cd77b4ee8cf4","method":"GET","path":"/api/v1/security/behavior-policy","status":200,"duration_ms":3,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:26.359852503Z","level":"INFO","msg":"api access","request_id":"04b6fa5a-3891-4744-ba38-dcfaf86f6db5","method":"PUT","path":"/api/v1/security/behavior-policy","status":200,"duration_ms":6,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:26.408227295Z","level":"INFO","msg":"api access","request_id":"40cb9d9e-10fe-4202-8b30-8057acf6de8e","method":"PUT","path":"/api/v1/applications/6b38d8d5-3f0c-4200-b392-60821af28ee8/bot-policy","status":200,"duration_ms":6,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:26.427440837Z","level":"INFO","msg":"api access","request_id":"43291d7b-f188-4ee0-b2d8-8466db9929b2","method":"POST","path":"/api/v1/applications/6b38d8d5-3f0c-4200-b392-60821af28ee8/bot-policy/preflight","status":200,"duration_ms":6,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:26.480437712Z","level":"INFO","msg":"api access","request_id":"0d2ebc42-0c1b-4a85-95be-e9844a6bf022","method":"POST","path":"/api/v1/gateway-config/publish","status":200,"duration_ms":8,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:26.505314545Z","level":"INFO","msg":"api access","request_id":"8f377e75-335d-4b02-aaac-cffe2d60fb55","method":"GET","path":"/api/v1/publish-tasks/8d0c1fd8-43f7-417a-8d6e-53d4106c1d36","status":200,"duration_ms":3,"remote_ip":"172.19.0.1"}
+jiuzhang-stage5-api  | {"time":"2026-09-08T10:12:26.531465962Z","level":"INFO","msg":"api access","request_id":"12a0900d-a80b-4ff7-8b10-f426b60494f8","method":"GET","path":"/api/v1/publish-tasks","status":200,"duration_ms":4,"remote_ip":"172.19.0.1"}
+
+==== gateway 日志尾部 ====
+
+==== gateway guard-events 尾部 ====
+tail: can't open '/var/log/caddy/guard-events.log': No such file or directory
+tail: no files

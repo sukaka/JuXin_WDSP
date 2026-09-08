@@ -93,7 +93,7 @@ UPDATE api_runtime_events SET final_decision = $2::jsonb
 WHERE request_id = NULLIF($1::varchar, '')
   AND (final_decision IS NULL
        OR (final_decision->>'completion_status' = 'PENDING_CORRELATION'
-           AND COALESCE(final_decision->>'security_action', 'NONE') NOT IN ('BLOCK','TEMP_BLOCK','RATE_LIMIT','MASK_RESPONSE')
+           AND COALESCE(final_decision->>'security_action', 'NONE') NOT IN ('BLOCK','TEMP_BLOCK','RATE_LIMIT','MASK_RESPONSE','CHALLENGE')
            AND $3 IN ('COMPLETED','ABORTED')))`,
 			ev.RequestID, fdRaw, fdCompletion)
 		return err

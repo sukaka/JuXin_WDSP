@@ -27,6 +27,7 @@ import UpstreamsTab from './detail/UpstreamsTab'
 import CertificatesTab from './detail/CertificatesTab'
 import HeaderProxyTab from './detail/HeaderProxyTab'
 import JwtTrustTab from './detail/JwtTrustTab'
+import BotPolicyTab from './detail/BotPolicyTab'
 
 export default function ApplicationDetailPage() {
   const { id = '' } = useParams()
@@ -170,6 +171,16 @@ export default function ApplicationDetailPage() {
                     key: 'jwt-trust',
                     label: 'JWT 信任策略',
                     children: <JwtTrustTab appId={app.id} appCode={app.code} />,
+                  },
+                ]
+              : []),
+            // Bot 挑战策略（WDSP P1-02 B4）：无 bot_policy.read 权限不露入口
+            ...(hasPermission(permissions, 'bot_policy.read')
+              ? [
+                  {
+                    key: 'bot-policy',
+                    label: 'Bot 挑战策略',
+                    children: <BotPolicyTab appId={app.id} appCode={app.code} />,
                   },
                 ]
               : []),

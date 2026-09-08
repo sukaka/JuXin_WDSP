@@ -127,12 +127,12 @@ class TestReplayPlanDenominator(PlanFixture):
 
 
 class TestRepoPlanShape(unittest.TestCase):
-    def test_repo_plan_has_36_entries(self):
+    def test_repo_plan_has_48_entries(self):
         repo_corpus = corpus_mod.require_valid_corpus(
             p1fixture.REPO_MANIFEST, profile_ids(p1fixture.PROFILES_DIR))
         plan = replayplan.generate_plan(repo_corpus, PROFILES, seed=20260906)
-        self.assertEqual(len(plan["entries"]), 18 * 2)
-        self.assertEqual(plan["planned_counts"], {"OBSERVE": 18, "PROTECT": 18})
+        self.assertEqual(len(plan["entries"]), 24 * 2)
+        self.assertEqual(plan["planned_counts"], {"OBSERVE": 24, "PROTECT": 24})
 
 
 if __name__ == "__main__":

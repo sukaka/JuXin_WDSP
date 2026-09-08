@@ -21,6 +21,7 @@
 package botchallenge
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -230,6 +231,15 @@ type CallContext struct {
 	RequestID    string // X-Request-Id（链路已生成）
 	ClientIP     string // 真实客户端 IP（Guard 真实 IP 识别结果）
 	ConnectionIP string // 连接源 IP
+	// RecordTerminal 终止事实回调（WDSP P1-02 B3：guard disposition 挂接；
+	// nil = 跳过）。本包在挑战签发/验证的终止结局发出事件**之前**调用，
+	// 参数：security_action（CHALLENGE/RATE_LIMIT/BLOCK/NONE）、HTTP 状态码、
+	// 响应是否已提交、理由码。回调方负责把事实记入请求最终处置上下文。
+	RecordTerminal func(securityAction string, status int, committed bool, reasons []string)
+	// FinalDecision final_decision JSON 供应器（B3：guard disposition 挂接；
+	// nil = 事件不挂 final_decision）。在本包 emit 内调用——此时 RecordTerminal
+	// 已先行，返回内容即该请求完整终态（schema_version=1）。
+	FinalDecision func() json.RawMessage
 }
 
 // Service Bot 挑战服务（每应用一个实例；并发安全）。

@@ -102,11 +102,32 @@ func (s *Store) InsertHTTPEvents(ctx context.Context, agentID uuid.UUID, records
 }
 
 // httpEventListCols 列表列（不含 headers/body——契约 §6 列表分页轻量，详情全量；
-// skipped_reason 为采集完整性信号，列表同样带出——契约 §9 前端列表需明示 skipped 标记）。
+// skipped_reason 为采集完整性信号，列表同样带出——契约 §9 前端列表需明示 skipped 标记；
+// 000133 v2 标量列（来源/协议/关联/绑定/collection_ts/ingestion_ts）列表同样带出——
+// 任务书 §4.3/AGT-026 列表需来源/协议/数据质量独立状态展示；grpc/trailers/body_quality
+// JSONB 子对象仅详情（与 headers/body 同纪律）。
 const httpEventListCols = `id, agent_id, flow_id, ts, latency_ms, src_ip, src_port, dst_ip, dst_port,
 	direction, tls_visibility, method, scheme, host, uri, status,
 	req_truncated, resp_truncated, req_original_size, resp_original_size,
-	req_skipped_reason, resp_skipped_reason, created_at, k8s`
+	req_skipped_reason, resp_skipped_reason, created_at, k8s,
+	schema_version, event_id, source_type, source_instance, source_epoch,
+	source_capabilities_version, observed_http_version, original_http_version,
+	association_state, association_reason, capture_stream_id,
+	application_binding_id, binding_version, collection_ts, ingestion_ts`
+
+// scanHTTPEventListRow 按 httpEventListCols 列序扫描一行（count(*) OVER () 尾列）。
+func scanHTTPEventListRow(rows pgx.Rows, e *HTTPEventRow, total *int64) error {
+	return rows.Scan(&e.ID, &e.AgentID, &e.FlowID, &e.Ts, &e.LatencyMS,
+		&e.SrcIP, &e.SrcPort, &e.DstIP, &e.DstPort, &e.Direction, &e.TLSVisibility,
+		&e.Method, &e.Scheme, &e.Host, &e.URI, &e.Status,
+		&e.ReqTruncated, &e.RespTruncated, &e.ReqOriginalSize, &e.RespOriginalSize,
+		&e.ReqSkippedReason, &e.RespSkippedReason, &e.CreatedAt, &e.K8s,
+		&e.SchemaVersion, &e.EventID, &e.SourceType, &e.SourceInstance, &e.SourceEpoch,
+		&e.SourceCapabilitiesVersion, &e.ObservedHTTPVersion, &e.OriginalHTTPVersion,
+		&e.AssociationState, &e.AssociationReason, &e.CaptureStreamID,
+		&e.ApplicationBindingID, &e.BindingVersion, &e.CollectionTS, &e.IngestionTS,
+		total)
+}
 
 // ListHTTPEvents 管理端分页（host/method 精确过滤大小写不敏感；ts 倒序——契约 §6）。
 func (s *Store) ListHTTPEvents(ctx context.Context, agentID uuid.UUID, f HTTPEventFilter) ([]HTTPEventRow, int64, error) {
@@ -135,11 +156,7 @@ LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)
 	var total int64
 	for rows.Next() {
 		var e HTTPEventRow
-		if err := rows.Scan(&e.ID, &e.AgentID, &e.FlowID, &e.Ts, &e.LatencyMS,
-			&e.SrcIP, &e.SrcPort, &e.DstIP, &e.DstPort, &e.Direction, &e.TLSVisibility,
-			&e.Method, &e.Scheme, &e.Host, &e.URI, &e.Status,
-			&e.ReqTruncated, &e.RespTruncated, &e.ReqOriginalSize, &e.RespOriginalSize,
-			&e.ReqSkippedReason, &e.RespSkippedReason, &e.CreatedAt, &e.K8s, &total); err != nil {
+		if err := scanHTTPEventListRow(rows, &e, &total); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, e)
@@ -147,14 +164,21 @@ LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)
 	return out, total, rows.Err()
 }
 
-// GetHTTPEvent 单条全量（含 headers/body——契约 §6；不属于该 Agent 同样 404 防越权探测）。
+// GetHTTPEvent 单条全量（含 headers/body——契约 §6；v2 行还原 trailers/body_quality/
+// grpc 子对象与数组形态 headers；不属于该 Agent 同样 404 防越权探测）。
 func (s *Store) GetHTTPEvent(ctx context.Context, agentID uuid.UUID, id int64) (*HTTPEventRow, error) {
 	row := s.db.QueryRow(ctx, `
 SELECT id, agent_id, flow_id, ts, latency_ms, src_ip, src_port, dst_ip, dst_port,
        direction, tls_visibility, method, scheme, host, uri, status,
        request_headers, response_headers, request_body, response_body,
        req_truncated, resp_truncated, req_original_size, resp_original_size,
-	       req_skipped_reason, resp_skipped_reason, created_at, k8s
+	       req_skipped_reason, resp_skipped_reason, created_at, k8s,
+       schema_version, event_id, source_type, source_instance, source_epoch,
+       source_capabilities_version, observed_http_version, original_http_version,
+       association_state, association_reason, capture_stream_id,
+       application_binding_id, binding_version, grpc,
+       request_trailers, response_trailers, req_body_quality, resp_body_quality,
+       collection_ts, ingestion_ts
 FROM agent_http_events
 WHERE agent_id = $1 AND id = $2`, agentID, id)
 	var e HTTPEventRow
@@ -163,7 +187,13 @@ WHERE agent_id = $1 AND id = $2`, agentID, id)
 		&e.Method, &e.Scheme, &e.Host, &e.URI, &e.Status,
 		&e.RequestHeaders, &e.ResponseHeaders, &e.RequestBody, &e.ResponseBody,
 		&e.ReqTruncated, &e.RespTruncated, &e.ReqOriginalSize, &e.RespOriginalSize,
-		&e.ReqSkippedReason, &e.RespSkippedReason, &e.CreatedAt, &e.K8s); err != nil {
+		&e.ReqSkippedReason, &e.RespSkippedReason, &e.CreatedAt, &e.K8s,
+		&e.SchemaVersion, &e.EventID, &e.SourceType, &e.SourceInstance, &e.SourceEpoch,
+		&e.SourceCapabilitiesVersion, &e.ObservedHTTPVersion, &e.OriginalHTTPVersion,
+		&e.AssociationState, &e.AssociationReason, &e.CaptureStreamID,
+		&e.ApplicationBindingID, &e.BindingVersion, &e.GRPC,
+		&e.RequestTrailers, &e.ResponseTrailers, &e.ReqBodyQuality, &e.RespBodyQuality,
+		&e.CollectionTS, &e.IngestionTS); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrHTTPEventNotFound
 		}

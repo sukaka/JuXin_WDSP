@@ -2,8 +2,44 @@
   "schema_version": 1,
   "corpus_id": "p1-regression-corpus-v1",
   "created_at": "2026-09-06T00:00:00Z",
-  "description": "P1-04 规则/模型持续回归首批固定核心语料（schema v1，R1/S1 交付）。全部为项目自研合成样本（source=self_synthetic），不复制任何第三方攻击语料库或竞品测试数据。本批次仅覆盖 WAF 类：正常样本（合法 SQL 文本、Unicode 多语言正文、复杂表单多步骤流程、普通搜索查询、嵌套 JSON、multipart 上传、协议边界）与攻击样本（CRS 声明的 SQLi/XSS/路径穿越/命令注入/协议违规，CUSTOM_PACK 声明的 WebShell 上传、云元数据 SSRF、XXE、SSTI、双编码绕过）。API/JWT/例外/Bot/Agent/APM 类样本本阶段不造：待对应 P0/P1 阶段（P0-03 JWT、P0-04 最终处置与例外、P1-02 Bot、P1-03 Agent、APM 关联）落地并产生真实证据后按同一 schema 补充，本语料不放占位假样本。分区纪律：模型学习只消费 TRAIN；HOLDOUT 不输入自动学习、模型确认或阈值调优；truth=UNKNOWN 与 deferred=true 不进入任何准确率/检出率分母；样本语义变化必须升 case_version 并重新登记 content_sha256（REG-002）；运行后禁止自动更新 expectations 把当前结果变成新真值（§4.2）。",
+  "description": "P1-04 规则/模型持续回归首批固定核心语料（schema v1，R1/S1 交付）。全部为项目自研合成样本（source=self_synthetic），不复制任何第三方攻击语料库或竞品测试数据。本批次仅覆盖 WAF 类：正常样本（合法 SQL 文本、Unicode 多语言正文、复杂表单多步骤流程、普通搜索查询、嵌套 JSON、multipart 上传、协议边界）与攻击样本（CRS 声明的 SQLi/XSS/路径穿越/命令注入/协议违规，CUSTOM_PACK 声明的 WebShell 上传、云元数据 SSRF、XXE、SSTI、双编码绕过）。R2 起按同一 schema 补充 Bot 类 6 例（以 P1-02 B2/B3/B4 真实验收行为为真值依据）：正常浏览器 PoW 挑战通行（BOT-BEN-NAV-001）、不合格请求放行（BOT-BEN-INELIG-001）、无脚本自动化客户端挑战供给（BOT-UNK-SCRIPT-001，UNKNOWN 观测样本）、伪造 verify 提交拒绝（BOT-ATK-FORGE-001）、保留命名空间墓碑 405/404（BOT-UNK-TOMB-001，UNKNOWN 观测样本）、挑战通过后 WAF 仍生效（BOT-ATK-WAFSTILL-001）。API/JWT/例外/Agent/APM 类样本待对应能力产生真实证据后补充，本语料不放占位假样本。分区纪律：模型学习只消费 TRAIN；HOLDOUT 不输入自动学习、模型确认或阈值调优；truth=UNKNOWN 与 deferred=true 不进入任何准确率/检出率分母；样本语义变化必须升 case_version 并重新登记 content_sha256（REG-002）；运行后禁止自动更新 expectations 把当前结果变成新真值（§4.2）。",
   "cases": [
+    {
+      "case_id": "BOT-ATK-FORGE-001",
+      "case_version": 1,
+      "file": "cases/bot-atk-forge-001.json",
+      "content_sha256": "549ec7d030543a432e57c61f9f44c59bf1780d5fc7698c625436dcd907ba4513"
+    },
+    {
+      "case_id": "BOT-ATK-WAFSTILL-001",
+      "case_version": 1,
+      "file": "cases/bot-atk-wafstill-001.json",
+      "content_sha256": "9ab8e5fc47c05be062a9fcc2349c6f549e505918b0a0a7794c9bf5223e916393"
+    },
+    {
+      "case_id": "BOT-BEN-INELIG-001",
+      "case_version": 1,
+      "file": "cases/bot-ben-inelig-001.json",
+      "content_sha256": "348438f8e019e9a1ff502a86ffce854216fcbc3bb60a30192ebfef80a8772e54"
+    },
+    {
+      "case_id": "BOT-BEN-NAV-001",
+      "case_version": 1,
+      "file": "cases/bot-ben-nav-001.json",
+      "content_sha256": "c749d288c3c6b6db75bdf1f5e75ed3db330cfac3d93d07038eeb3122592d727e"
+    },
+    {
+      "case_id": "BOT-UNK-SCRIPT-001",
+      "case_version": 1,
+      "file": "cases/bot-unk-script-001.json",
+      "content_sha256": "291a66da7615cc88925a2afbb70a6934281cce0a9c4553c51cda6a9a14f15f32"
+    },
+    {
+      "case_id": "BOT-UNK-TOMB-001",
+      "case_version": 1,
+      "file": "cases/bot-unk-tomb-001.json",
+      "content_sha256": "d5969dc5a4eab7ba23161cab1cc1a0aff5b30956f66ea7223db42eab45560a51"
+    },
     {
       "case_id": "WAF-ATK-ENC-001",
       "case_version": 1,
@@ -12,15 +48,15 @@
     },
     {
       "case_id": "WAF-ATK-PATH-001",
-      "case_version": 1,
+      "case_version": 2,
       "file": "cases/waf-atk-path-001.json",
-      "content_sha256": "f300bb21c67dfa0e52e0dd72ef81fdc172136a72100e441d9801cc3f7e9f86ca"
+      "content_sha256": "b0ce1cf814f09243db7f7523790e96717cc65c85bf1d22cd767193312a709818"
     },
     {
       "case_id": "WAF-ATK-PROTO-001",
-      "case_version": 1,
+      "case_version": 2,
       "file": "cases/waf-atk-proto-001.json",
-      "content_sha256": "e24fc249db82ae5871a2715739ce12b6f4516fe24df34c3f4cd138ac7fb889aa"
+      "content_sha256": "9f53abf746ee61e9c05609aba3f813260c7289bc3e9564e6573506d9f7972405"
     },
     {
       "case_id": "WAF-ATK-RCE-001",
@@ -42,21 +78,21 @@
     },
     {
       "case_id": "WAF-ATK-SSRF-001",
-      "case_version": 1,
+      "case_version": 2,
       "file": "cases/waf-atk-ssrf-001.json",
-      "content_sha256": "b5d3f0b56e12fb4348e60febe565e7c3b302ef77fbf07103f15aa41ae45cee60"
+      "content_sha256": "41008fc486564b0a1eb04daa0df97ea76e024bba393dd8758a7466b59a95a6bf"
     },
     {
       "case_id": "WAF-ATK-SSTI-001",
-      "case_version": 1,
+      "case_version": 2,
       "file": "cases/waf-atk-ssti-001.json",
-      "content_sha256": "75b5de231bb9a9dfc54c958507051642b7f697aa8b5588f7cf57c27497b199de"
+      "content_sha256": "04826d17568948691939ba5673e50c06528c467d39d7fcd35cd5f0177da75103"
     },
     {
       "case_id": "WAF-ATK-WEBSHELL-001",
-      "case_version": 1,
+      "case_version": 2,
       "file": "cases/waf-atk-webshell-001.json",
-      "content_sha256": "6575a1ffd10cbd3ea6c4444974968935efd445c936d4f8e6959a68f772efd7bf"
+      "content_sha256": "0e5f5f11f4206cdb475a7834bf56cd3dee9b1d9f01ce3677463526de76b5941e"
     },
     {
       "case_id": "WAF-ATK-XSS-001",
@@ -66,9 +102,9 @@
     },
     {
       "case_id": "WAF-ATK-XXE-001",
-      "case_version": 1,
+      "case_version": 2,
       "file": "cases/waf-atk-xxe-001.json",
-      "content_sha256": "0fe2b5f15a4ac3c6ae43c96ca860fde4823590dc2a370e4dba14a985fde5307a"
+      "content_sha256": "774ea14f776a959c1a9dea1ebf4abfd975d75c0097252a17aa8a821def6cf59d"
     },
     {
       "case_id": "WAF-BEN-EDGE-001",
@@ -78,9 +114,9 @@
     },
     {
       "case_id": "WAF-BEN-FORM-001",
-      "case_version": 1,
+      "case_version": 2,
       "file": "cases/waf-ben-form-001.json",
-      "content_sha256": "ebcb47d275bd9ea96a35bdc6a4301f0ff098d88183cf971229092871fae57022"
+      "content_sha256": "c25a772c2744fe58356d86a64c40f1810c51fcf4cc9dc26be7d84ea2848caba8"
     },
     {
       "case_id": "WAF-BEN-JSON-001",

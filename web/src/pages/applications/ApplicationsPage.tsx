@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -69,9 +69,28 @@ export default function ApplicationsPage() {
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
 
-  const [filters, setFilters] = useState<Filters>({})
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(20)
+  // 筛选/分页上下文挂在 URL 查询串上：进入详情（如 Bot 策略编辑）后返回列表
+  // 保持筛选与分页不丢失（BOT-023），且可分享/刷新不丢状态
+  const [searchParams, setSearchParams] = useSearchParams()
+  const parsePage = (raw: string | null, def: number) => {
+    const n = Number(raw)
+    return Number.isInteger(n) && n >= 1 ? n : def
+  }
+  const filters: Filters = {
+    keyword: searchParams.get('keyword') || undefined,
+    status: searchParams.get('status') || undefined,
+    protection_mode: searchParams.get('protection_mode') || undefined,
+  }
+  const page = parsePage(searchParams.get('page'), 1)
+  const pageSize = parsePage(searchParams.get('page_size'), 20)
+  const updateListQuery = (patch: Record<string, string | undefined>) => {
+    const next = new URLSearchParams(searchParams)
+    for (const [k, v] of Object.entries(patch)) {
+      if (v) next.set(k, v)
+      else next.delete(k)
+    }
+    setSearchParams(next, { replace: true })
+  }
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<ApplicationItem | null>(null)
   const [createForm] = Form.useForm<CreateApplicationBody>()
@@ -409,33 +428,34 @@ export default function ApplicationsPage() {
           placeholder="搜索编码或名称"
           allowClear
           style={{ width: 240 }}
+          key={filters.keyword ?? ''}
+          defaultValue={filters.keyword}
           onSearch={(v) => {
-            setFilters((f) => ({ ...f, keyword: v || undefined }))
-            setPage(1)
+            updateListQuery({ keyword: v || undefined, page: undefined })
           }}
         />
         <Select
           placeholder="状态"
           allowClear
           style={{ width: 140 }}
+          value={filters.status}
           options={[
             { value: 'DRAFT', label: '草稿' },
             { value: 'ACTIVE', label: '已启用' },
             { value: 'DISABLED', label: '已停用' },
           ]}
           onChange={(v) => {
-            setFilters((f) => ({ ...f, status: v }))
-            setPage(1)
+            updateListQuery({ status: v, page: undefined })
           }}
         />
         <Select
           placeholder="防护模式"
           allowClear
           style={{ width: 150 }}
+          value={filters.protection_mode}
           options={modeOptions}
           onChange={(v) => {
-            setFilters((f) => ({ ...f, protection_mode: v }))
-            setPage(1)
+            updateListQuery({ protection_mode: v, page: undefined })
           }}
         />
         {batchDeleteButton}
@@ -472,8 +492,7 @@ export default function ApplicationsPage() {
             showSizeChanger: true,
             showTotal: (t) => `共 ${t} 条`,
             onChange: (p, ps) => {
-              setPage(p)
-              setPageSize(ps)
+              updateListQuery({ page: String(p), page_size: String(ps) })
             },
           }}
         />

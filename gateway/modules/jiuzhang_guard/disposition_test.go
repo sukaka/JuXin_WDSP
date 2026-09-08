@@ -54,9 +54,9 @@ func TestDispositionLifecycle_Terminal(t *testing.T) {
 	if m["schema_version"].(float64) != 1 {
 		t.Errorf("schema_version=%v", m["schema_version"])
 	}
-	// 终止后模块补 SKIPPED：CC 之后的 API/WAF 未记录 → SKIPPED
+	// 终止后模块补 SKIPPED：CC 之后的 BOT/API/WAF 未记录 → SKIPPED
 	steps := m["steps"].([]any)
-	var apiSkipped, wafSkipped, ccExecuted bool
+	var apiSkipped, wafSkipped, botSkipped, ccExecuted bool
 	for _, s := range steps {
 		sm := s.(map[string]any)
 		switch sm["module"] {
@@ -68,22 +68,26 @@ func TestDispositionLifecycle_Terminal(t *testing.T) {
 			if sm["result"] == StepSkipped {
 				wafSkipped = true
 			}
+		case ExecutorBot:
+			if sm["result"] == StepSkipped {
+				botSkipped = true
+			}
 		case ExecutorCC:
 			if sm["result"] == StepExecuted {
 				ccExecuted = true
 			}
 		}
 	}
-	if !ccExecuted || !apiSkipped || !wafSkipped {
-		t.Errorf("steps 不符: ccExecuted=%v apiSkipped=%v wafSkipped=%v steps=%v", ccExecuted, apiSkipped, wafSkipped, steps)
+	if !ccExecuted || !botSkipped || !apiSkipped || !wafSkipped {
+		t.Errorf("steps 不符: ccExecuted=%v botSkipped=%v apiSkipped=%v wafSkipped=%v steps=%v", ccExecuted, botSkipped, apiSkipped, wafSkipped, steps)
 	}
-	// findings：实断 1、skipped 含补记的 API+WAF
+	// findings：实断 1、skipped 含补记的 BOT+API+WAF
 	findings := m["findings"].(map[string]any)
 	if findings["enforced"].(float64) != 1 {
 		t.Errorf("findings.enforced=%v", findings["enforced"])
 	}
-	if findings["skipped"].(float64) != 2 {
-		t.Errorf("findings.skipped=%v, 期望 2（API+WAF）", findings["skipped"])
+	if findings["skipped"].(float64) != 3 {
+		t.Errorf("findings.skipped=%v, 期望 3（BOT+API+WAF）", findings["skipped"])
 	}
 	if m["finalized_at"] == nil {
 		t.Error("finalized_at 缺失")

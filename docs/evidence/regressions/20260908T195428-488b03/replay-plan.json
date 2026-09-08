@@ -1,0 +1,1277 @@
+{
+  "corpus": {
+    "corpus_id": "p1-regression-corpus-v1",
+    "manifest_sha256": "cfdaf27c0af9c370e85b3ee6150a65fec3c6bdbec7140fafedcb05ff0d38f088"
+  },
+  "denominator_policy": {
+    "excluded": [
+      "truth=UNKNOWN",
+      "deferred=true",
+      "executed=false 或 valid=false"
+    ],
+    "included": "满足适用范围（expectations 覆盖该 profile）且实际执行有效（executed=true 且 valid=true）",
+    "zero_denominator": "N/A"
+  },
+  "entries": [
+    {
+      "case_id": "WAF-BEN-SQL-001",
+      "case_version": 1,
+      "content_sha256": "4bad633656c86a4b9c50739f0c64a6ab7a8498a95e1f4ea481225ca1033ce7f8",
+      "criticality": "MANDATORY",
+      "dataset_partition": "TRAIN",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-SQL-001:"
+      },
+      "seed": 1001,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-ATK-XXE-001",
+      "case_version": 1,
+      "content_sha256": "0fe2b5f15a4ac3c6ae43c96ca860fde4823590dc2a370e4dba14a985fde5307a",
+      "criticality": "STANDARD",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-XXE-001:"
+      },
+      "seed": 2009,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-SSTI-001",
+      "case_version": 1,
+      "content_sha256": "75b5de231bb9a9dfc54c958507051642b7f697aa8b5588f7cf57c27497b199de",
+      "criticality": "STANDARD",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-SSTI-001:"
+      },
+      "seed": 2010,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "BOT-BEN-INELIG-001",
+      "case_version": 1,
+      "content_sha256": "348438f8e019e9a1ff502a86ffce854216fcbc3bb60a30192ebfef80a8772e54",
+      "criticality": "MANDATORY",
+      "dataset_partition": "TRAIN",
+      "excluded_from_denominator": false,
+      "family": "bot",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-BEN-INELIG-001:"
+      },
+      "seed": 3102,
+      "step_count": 3,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-ATK-XSS-001",
+      "case_version": 1,
+      "content_sha256": "34778f88d877ed33003d35a8f36100d2eab150e76fecbfc1dc050f64e454d622",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-XSS-001:"
+      },
+      "seed": 2003,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-BEN-JSON-001",
+      "case_version": 1,
+      "content_sha256": "3e2b3ee9dbf8baa29d2b7430ac847886ed67ff1cff9c2c534ed67402f70397cc",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-JSON-001:"
+      },
+      "seed": 1005,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-ATK-RCE-001",
+      "case_version": 1,
+      "content_sha256": "9672ea0141c1e5a577ffe8783a2268ec5a82c7ef88826edd6ebce4e8df0fbf8a",
+      "criticality": "MANDATORY",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-RCE-001:"
+      },
+      "seed": 2005,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-SSRF-001",
+      "case_version": 1,
+      "content_sha256": "b5d3f0b56e12fb4348e60febe565e7c3b302ef77fbf07103f15aa41ae45cee60",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-SSRF-001:"
+      },
+      "seed": 2008,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-BEN-FORM-001",
+      "case_version": 1,
+      "content_sha256": "ebcb47d275bd9ea96a35bdc6a4301f0ff098d88183cf971229092871fae57022",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "reset_app_state"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-FORM-001:"
+      },
+      "seed": 1003,
+      "step_count": 2,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-ATK-SQLI-001",
+      "case_version": 1,
+      "content_sha256": "19ac8f94e2eab5f29517470f341e134411bf78a5513c78e6c9d58cc1e106b77f",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-SQLI-001:"
+      },
+      "seed": 2001,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-BEN-QUERY-001",
+      "case_version": 1,
+      "content_sha256": "820c4d5c03077a2c3ee8fec2405ca232ac7c6fd19bfe03a632df4a646d583572",
+      "criticality": "MANDATORY",
+      "dataset_partition": "TRAIN",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-QUERY-001:"
+      },
+      "seed": 1004,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "BOT-BEN-NAV-001",
+      "case_version": 1,
+      "content_sha256": "938964d01cbb1ec9348a02539432e3f6de0380f9ae6133442dc3fe9247f0a4f9",
+      "criticality": "MANDATORY",
+      "dataset_partition": "TRAIN",
+      "excluded_from_denominator": false,
+      "family": "bot",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-BEN-NAV-001:"
+      },
+      "seed": 3101,
+      "step_count": 3,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-BEN-EDGE-001",
+      "case_version": 1,
+      "content_sha256": "22435aad29a3603674247c19db012ff81c56f546fd86d6336a671a662be7648a",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-EDGE-001:"
+      },
+      "seed": 1007,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "BOT-ATK-WAFSTILL-001",
+      "case_version": 1,
+      "content_sha256": "9ab8e5fc47c05be062a9fcc2349c6f549e505918b0a0a7794c9bf5223e916393",
+      "criticality": "STANDARD",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "bot",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-ATK-WAFSTILL-001:"
+      },
+      "seed": 3106,
+      "step_count": 4,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-PATH-001",
+      "case_version": 1,
+      "content_sha256": "f300bb21c67dfa0e52e0dd72ef81fdc172136a72100e441d9801cc3f7e9f86ca",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-PATH-001:"
+      },
+      "seed": 2004,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "BOT-UNK-TOMB-001",
+      "case_version": 1,
+      "content_sha256": "d5969dc5a4eab7ba23161cab1cc1a0aff5b30956f66ea7223db42eab45560a51",
+      "criticality": "STANDARD",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": true,
+      "family": "bot",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-UNK-TOMB-001:"
+      },
+      "seed": 3105,
+      "step_count": 2,
+      "truth": "UNKNOWN"
+    },
+    {
+      "case_id": "BOT-ATK-FORGE-001",
+      "case_version": 1,
+      "content_sha256": "549ec7d030543a432e57c61f9f44c59bf1780d5fc7698c625436dcd907ba4513",
+      "criticality": "STANDARD",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "bot",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-ATK-FORGE-001:"
+      },
+      "seed": 3104,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-PROTO-001",
+      "case_version": 1,
+      "content_sha256": "e24fc249db82ae5871a2715739ce12b6f4516fe24df34c3f4cd138ac7fb889aa",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-PROTO-001:"
+      },
+      "seed": 2006,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-BEN-UNI-001",
+      "case_version": 1,
+      "content_sha256": "8f5df7e97ff874eff95c817ca2a05724bfccfd6815081e02067180ad6833809a",
+      "criticality": "MANDATORY",
+      "dataset_partition": "TRAIN",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-UNI-001:"
+      },
+      "seed": 1002,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-ATK-WEBSHELL-001",
+      "case_version": 1,
+      "content_sha256": "6575a1ffd10cbd3ea6c4444974968935efd445c936d4f8e6959a68f772efd7bf",
+      "criticality": "MANDATORY",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "reset_app_state"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-WEBSHELL-001:"
+      },
+      "seed": 2007,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-BEN-UPLOAD-001",
+      "case_version": 1,
+      "content_sha256": "6ba98b291f74828d1cc0e89740622f4cd426ccd8e7d4d7dc525352f7d0aec41a",
+      "criticality": "MANDATORY",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "reset_app_state"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-UPLOAD-001:"
+      },
+      "seed": 1006,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "BOT-UNK-SCRIPT-001",
+      "case_version": 1,
+      "content_sha256": "b76fac11fa89ceac45b498ceda952f665363396365f7e2249db4a3c541d1f7d2",
+      "criticality": "STANDARD",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": true,
+      "family": "bot",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-UNK-SCRIPT-001:"
+      },
+      "seed": 3103,
+      "step_count": 3,
+      "truth": "UNKNOWN"
+    },
+    {
+      "case_id": "WAF-ATK-SQLI-002",
+      "case_version": 1,
+      "content_sha256": "f1942ccf39b9fa1375998bab9fd08073e7ef0a7050677d306d6a155df5bf3d9e",
+      "criticality": "MANDATORY",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-SQLI-002:"
+      },
+      "seed": 2002,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-ENC-001",
+      "case_version": 1,
+      "content_sha256": "0328d95300dbc1c4f5dcbe39c4088610f4250a777437882790010b968923067a",
+      "criticality": "STANDARD",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "PROTECT",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-ENC-001:"
+      },
+      "seed": 2011,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-BEN-EDGE-001",
+      "case_version": 1,
+      "content_sha256": "22435aad29a3603674247c19db012ff81c56f546fd86d6336a671a662be7648a",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-EDGE-001:"
+      },
+      "seed": 1007,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "BOT-ATK-FORGE-001",
+      "case_version": 1,
+      "content_sha256": "549ec7d030543a432e57c61f9f44c59bf1780d5fc7698c625436dcd907ba4513",
+      "criticality": "STANDARD",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "bot",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-ATK-FORGE-001:"
+      },
+      "seed": 3104,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-PATH-001",
+      "case_version": 1,
+      "content_sha256": "f300bb21c67dfa0e52e0dd72ef81fdc172136a72100e441d9801cc3f7e9f86ca",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-PATH-001:"
+      },
+      "seed": 2004,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-RCE-001",
+      "case_version": 1,
+      "content_sha256": "9672ea0141c1e5a577ffe8783a2268ec5a82c7ef88826edd6ebce4e8df0fbf8a",
+      "criticality": "MANDATORY",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-RCE-001:"
+      },
+      "seed": 2005,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-ENC-001",
+      "case_version": 1,
+      "content_sha256": "0328d95300dbc1c4f5dcbe39c4088610f4250a777437882790010b968923067a",
+      "criticality": "STANDARD",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-ENC-001:"
+      },
+      "seed": 2011,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-SQLI-001",
+      "case_version": 1,
+      "content_sha256": "19ac8f94e2eab5f29517470f341e134411bf78a5513c78e6c9d58cc1e106b77f",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-SQLI-001:"
+      },
+      "seed": 2001,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-BEN-SQL-001",
+      "case_version": 1,
+      "content_sha256": "4bad633656c86a4b9c50739f0c64a6ab7a8498a95e1f4ea481225ca1033ce7f8",
+      "criticality": "MANDATORY",
+      "dataset_partition": "TRAIN",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-SQL-001:"
+      },
+      "seed": 1001,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-BEN-UNI-001",
+      "case_version": 1,
+      "content_sha256": "8f5df7e97ff874eff95c817ca2a05724bfccfd6815081e02067180ad6833809a",
+      "criticality": "MANDATORY",
+      "dataset_partition": "TRAIN",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-UNI-001:"
+      },
+      "seed": 1002,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-ATK-SSRF-001",
+      "case_version": 1,
+      "content_sha256": "b5d3f0b56e12fb4348e60febe565e7c3b302ef77fbf07103f15aa41ae45cee60",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-SSRF-001:"
+      },
+      "seed": 2008,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-SQLI-002",
+      "case_version": 1,
+      "content_sha256": "f1942ccf39b9fa1375998bab9fd08073e7ef0a7050677d306d6a155df5bf3d9e",
+      "criticality": "MANDATORY",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-SQLI-002:"
+      },
+      "seed": 2002,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "BOT-UNK-SCRIPT-001",
+      "case_version": 1,
+      "content_sha256": "b76fac11fa89ceac45b498ceda952f665363396365f7e2249db4a3c541d1f7d2",
+      "criticality": "STANDARD",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": true,
+      "family": "bot",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-UNK-SCRIPT-001:"
+      },
+      "seed": 3103,
+      "step_count": 3,
+      "truth": "UNKNOWN"
+    },
+    {
+      "case_id": "WAF-BEN-FORM-001",
+      "case_version": 1,
+      "content_sha256": "ebcb47d275bd9ea96a35bdc6a4301f0ff098d88183cf971229092871fae57022",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "reset_app_state"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-FORM-001:"
+      },
+      "seed": 1003,
+      "step_count": 2,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "BOT-BEN-NAV-001",
+      "case_version": 1,
+      "content_sha256": "938964d01cbb1ec9348a02539432e3f6de0380f9ae6133442dc3fe9247f0a4f9",
+      "criticality": "MANDATORY",
+      "dataset_partition": "TRAIN",
+      "excluded_from_denominator": false,
+      "family": "bot",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-BEN-NAV-001:"
+      },
+      "seed": 3101,
+      "step_count": 3,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-ATK-WEBSHELL-001",
+      "case_version": 1,
+      "content_sha256": "6575a1ffd10cbd3ea6c4444974968935efd445c936d4f8e6959a68f772efd7bf",
+      "criticality": "MANDATORY",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "reset_app_state"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-WEBSHELL-001:"
+      },
+      "seed": 2007,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-BEN-JSON-001",
+      "case_version": 1,
+      "content_sha256": "3e2b3ee9dbf8baa29d2b7430ac847886ed67ff1cff9c2c534ed67402f70397cc",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-JSON-001:"
+      },
+      "seed": 1005,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-BEN-UPLOAD-001",
+      "case_version": 1,
+      "content_sha256": "6ba98b291f74828d1cc0e89740622f4cd426ccd8e7d4d7dc525352f7d0aec41a",
+      "criticality": "MANDATORY",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "reset_app_state"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-UPLOAD-001:"
+      },
+      "seed": 1006,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-BEN-QUERY-001",
+      "case_version": 1,
+      "content_sha256": "820c4d5c03077a2c3ee8fec2405ca232ac7c6fd19bfe03a632df4a646d583572",
+      "criticality": "MANDATORY",
+      "dataset_partition": "TRAIN",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-BEN-QUERY-001:"
+      },
+      "seed": 1004,
+      "step_count": 1,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-ATK-XXE-001",
+      "case_version": 1,
+      "content_sha256": "0fe2b5f15a4ac3c6ae43c96ca860fde4823590dc2a370e4dba14a985fde5307a",
+      "criticality": "STANDARD",
+      "dataset_partition": "HOLDOUT",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-XXE-001:"
+      },
+      "seed": 2009,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "BOT-UNK-TOMB-001",
+      "case_version": 1,
+      "content_sha256": "d5969dc5a4eab7ba23161cab1cc1a0aff5b30956f66ea7223db42eab45560a51",
+      "criticality": "STANDARD",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": true,
+      "family": "bot",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-UNK-TOMB-001:"
+      },
+      "seed": 3105,
+      "step_count": 2,
+      "truth": "UNKNOWN"
+    },
+    {
+      "case_id": "WAF-ATK-XSS-001",
+      "case_version": 1,
+      "content_sha256": "34778f88d877ed33003d35a8f36100d2eab150e76fecbfc1dc050f64e454d622",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-XSS-001:"
+      },
+      "seed": 2003,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "WAF-ATK-PROTO-001",
+      "case_version": 1,
+      "content_sha256": "e24fc249db82ae5871a2715739ce12b6f4516fe24df34c3f4cd138ac7fb889aa",
+      "criticality": "MANDATORY",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-PROTO-001:"
+      },
+      "seed": 2006,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "BOT-BEN-INELIG-001",
+      "case_version": 1,
+      "content_sha256": "348438f8e019e9a1ff502a86ffce854216fcbc3bb60a30192ebfef80a8772e54",
+      "criticality": "MANDATORY",
+      "dataset_partition": "TRAIN",
+      "excluded_from_denominator": false,
+      "family": "bot",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-BEN-INELIG-001:"
+      },
+      "seed": 3102,
+      "step_count": 3,
+      "truth": "BENIGN"
+    },
+    {
+      "case_id": "WAF-ATK-SSTI-001",
+      "case_version": 1,
+      "content_sha256": "75b5de231bb9a9dfc54c958507051642b7f697aa8b5588f7cf57c27497b199de",
+      "criticality": "STANDARD",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "waf",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "none",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:WAF-ATK-SSTI-001:"
+      },
+      "seed": 2010,
+      "step_count": 1,
+      "truth": "ATTACK"
+    },
+    {
+      "case_id": "BOT-ATK-WAFSTILL-001",
+      "case_version": 1,
+      "content_sha256": "9ab8e5fc47c05be062a9fcc2349c6f549e505918b0a0a7794c9bf5223e916393",
+      "criticality": "STANDARD",
+      "dataset_partition": "VALIDATION",
+      "excluded_from_denominator": false,
+      "family": "bot",
+      "profile": "OBSERVE",
+      "reset": {
+        "actions": [
+          "none"
+        ],
+        "forbidden_globally": [
+          "FLUSHALL",
+          "FLUSHDB",
+          "drop_shared_tables",
+          "reset_other_runs"
+        ],
+        "scope": "case",
+        "valkey_namespace": "p1reg:20260908T195428-488b03:BOT-ATK-WAFSTILL-001:"
+      },
+      "seed": 3106,
+      "step_count": 4,
+      "truth": "ATTACK"
+    }
+  ],
+  "kind": "p1_replay_plan",
+  "planned_counts": {
+    "OBSERVE": 24,
+    "PROTECT": 24
+  },
+  "profiles": [
+    "PROTECT",
+    "OBSERVE"
+  ],
+  "run_id": "20260908T195428-488b03",
+  "schema_version": 1,
+  "seed": 20260908
+}

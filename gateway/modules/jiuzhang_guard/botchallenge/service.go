@@ -47,8 +47,18 @@ func (e *emittedFlows) mark(flowID string) bool {
 	return first
 }
 
+// noteTerminal 终止事实回调（B3：cc.RecordTerminal 非 nil 时调用）。
+// 调用纪律：必须在对应结局的事件 emit **之前**——事件挂载的 final_decision
+// 由 cc.FinalDecision 供应器取终止后的完整终态。
+func noteTerminal(cc CallContext, securityAction string, status int, reasons ...string) {
+	if cc.RecordTerminal != nil {
+		cc.RecordTerminal(securityAction, status, true, reasons)
+	}
+}
+
 // emit 事件出口（对齐 guard events.Logger 通道形状；发送失败仅 zap Warn，
-// 不阻断请求——与 g.emit 同一纪律）。
+// 不阻断请求——与 g.emit 同一纪律）。cc.FinalDecision 非 nil 时挂载
+// final_decision 终态快照（B3；供应器在 RecordTerminal 之后取值）。
 func (s *Service) emit(r *http.Request, cc CallContext, t events.Type, action string, status int, detail *events.BotDetail) {
 	if s.cfg.Sink == nil {
 		return
@@ -72,6 +82,9 @@ func (s *Service) emit(r *http.Request, cc CallContext, t events.Type, action st
 		EventType:     t,
 		Action:        action,
 		Bot:           detail,
+	}
+	if cc.FinalDecision != nil {
+		ev.FinalDecision = cc.FinalDecision()
 	}
 	if r != nil {
 		ev.Domain = r.Host
@@ -221,6 +234,8 @@ func (s *Service) Offer(w http.ResponseWriter, r *http.Request, cc CallContext, 
 		if retry > 0 && int(retry.Seconds())+1 > retrySec {
 			retrySec = int(retry.Seconds()) + 1
 		}
+		// B3 终止事实：RATE_LIMIT（与 disposition.go 枚举同词；先于事件 emit）
+		noteTerminal(cc, "RATE_LIMIT", http.StatusTooManyRequests, "BOT_ISSUE_RATE_LIMITED")
 		s.emit(r, cc, events.BotStateUnavailable, "CHALLENGE", http.StatusTooManyRequests,
 			&events.BotDetail{Reason: "ISSUE_RATE_LIMITED"})
 		writeSessCookie()
@@ -261,6 +276,8 @@ func (s *Service) Offer(w http.ResponseWriter, r *http.Request, cc CallContext, 
 		return
 	}
 	if !ok {
+		// B3 终止事实：容量耗尽 503 fail-closed（BLOCK 语义，同 jwt_trust UNAVAILABLE 503 口径）
+		noteTerminal(cc, "BLOCK", http.StatusServiceUnavailable, "BOT_STATE_UNAVAILABLE")
 		s.emit(r, cc, events.BotStateUnavailable, "CHALLENGE", http.StatusServiceUnavailable,
 			&events.BotDetail{Reason: "INFLIGHT_CAP_REACHED"})
 		writeSessCookie()
@@ -287,6 +304,10 @@ func (s *Service) Offer(w http.ResponseWriter, r *http.Request, cc CallContext, 
 		BudgetMS:    computeBudgetMS,
 		RequestID:   cc.RequestID,
 	}, hex.EncodeToString(cspRaw))
+	// B3 终止事实：CHALLENGE（403 挑战页，响应来源 GATEWAY 未访问源站；
+	// 与 disposition.go DisActionChallenge 同词；先于事件 emit——
+	// 挑战完成后的业务请求是新 Request ID，两者经 flow_id 脱敏关联、分开统计）
+	noteTerminal(cc, "CHALLENGE", http.StatusForbidden, "BOT_CHALLENGE_OFFERED")
 	s.emit(r, cc, events.BotChallengeOffered, "CHALLENGE", http.StatusForbidden,
 		&events.BotDetail{Reason: reason, FlowID: fl})
 }
@@ -296,6 +317,8 @@ func (s *Service) Offer(w http.ResponseWriter, r *http.Request, cc CallContext, 
 func (s *Service) failOffer(w http.ResponseWriter, r *http.Request, cc CallContext, reason string, err error) {
 	s.logger.Warn("botchallenge: 挑战签发失败（fail-closed 503）",
 		zap.String("reason", reason), zap.Error(err), zap.String("app", s.cfg.AppCode))
+	// B3 终止事实：BLOCK（fail-closed 拒绝，同 jwt_trust UNAVAILABLE 503 口径；先于 emit）
+	noteTerminal(cc, "BLOCK", http.StatusServiceUnavailable, "BOT_STATE_UNAVAILABLE")
 	s.emit(r, cc, events.BotStateUnavailable, "CHALLENGE", http.StatusServiceUnavailable,
 		&events.BotDetail{Reason: reason})
 	writeStatusPage(w, http.StatusServiceUnavailable, retryAfterUnavailable, "服务暂不可用", "安全验证服务暂时不可用，请稍后重试。", cc.RequestID)

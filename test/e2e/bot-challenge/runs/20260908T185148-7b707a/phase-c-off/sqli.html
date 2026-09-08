@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>请求已被安全策略阻断</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    background: #1b2431;
+    color: #e6e9ef;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .block-card {
+    max-width: 560px;
+    width: 90%;
+    background: #232f42;
+    border: 1px solid #33415c;
+    border-radius: 8px;
+    padding: 40px 36px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  }
+  .block-badge {
+    display: inline-block;
+    background: rgba(217, 83, 79, 0.15);
+    color: #e06c75;
+    border: 1px solid rgba(224, 108, 117, 0.4);
+    border-radius: 4px;
+    font-size: 13px;
+    padding: 4px 12px;
+    margin-bottom: 20px;
+    letter-spacing: 1px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin-bottom: 14px;
+    color: #f0f3f8;
+  }
+  .desc {
+    font-size: 14px;
+    line-height: 1.8;
+    color: #9aa7bd;
+    margin-bottom: 28px;
+  }
+  .meta {
+    background: #1b2431;
+    border: 1px solid #2c3a52;
+    border-radius: 6px;
+    padding: 16px 18px;
+    font-size: 13px;
+    margin-bottom: 26px;
+  }
+  .meta-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    word-break: break-all;
+  }
+  .meta-label { color: #7c8aa5; flex-shrink: 0; padding-right: 16px; }
+  .meta-value { color: #c3cede; font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .contact {
+    font-size: 13px;
+    color: #8fa0bb;
+    line-height: 1.7;
+    border-top: 1px solid #2c3a52;
+    padding-top: 18px;
+  }
+  .brand {
+    margin-top: 24px;
+    font-size: 12px;
+    color: #5a6a86;
+    text-align: center;
+    letter-spacing: 2px;
+  }
+</style>
+</head>
+<body>
+  <div class="block-card">
+    <div class="block-badge">安全拦截</div>
+    <h1>请求已被安全策略阻断</h1>
+    <p class="desc">
+      您发起的请求触发了本站的安全防护策略，已被拦截。
+      如果您认为这是误判，请记录以下信息并联系系统管理员处理。
+    </p>
+    <div class="meta">
+      <div class="meta-row">
+        <span class="meta-label">请求编号</span>
+        <span class="meta-value">f2b22c17-005c-4651-8108-c1604858797f</span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-label">发生时间</span>
+        <span class="meta-value">2026-09-08 10:52:21 UTC</span>
+      </div>
+    </div>
+    <p class="contact">
+      请联系您的系统管理员，并提供上方的请求编号与发生时间，以便快速定位和处理。
+    </p>
+    <div class="brand">九章WEB应用智能防护系统</div>
+  </div>
+</body>
+</html>

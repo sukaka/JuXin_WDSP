@@ -20,6 +20,11 @@ const (
 	ActionRateLimit FinalAction = "RATE_LIMIT"
 	ActionTempBlock FinalAction = "TEMP_BLOCK"
 	ActionMaskResp  FinalAction = "MASK_RESPONSE"
+	// ActionChallenge Bot 挑战终止动作（WDSP P1-02 B3 版本化增量；与 jiuzhang_guard
+	// disposition.go DisActionChallenge 同词）。仅作枚举增量登记：Bot 挑战在 guard
+	// 请求链的 Bot 步骤执行（CC 之后、API 动态防护之前），不经本决策引擎裁决，
+	// 不改变既有动作含义；未知该值的旧消费端按原始字符串安全回退。
+	ActionChallenge FinalAction = "CHALLENGE"
 	ActionUnset     FinalAction = ""
 )
 

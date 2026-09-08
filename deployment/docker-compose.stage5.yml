@@ -146,6 +146,10 @@ services:
       - ../docs:/app/docs:ro
       - ../THIRD_PARTY_NOTICES.md:/app/THIRD_PARTY_NOTICES.md:ro
       - stage5-runtime:/app/runtime
+      # 证书下发通道：发布器写入 <dataDir>/certificates（本卷），网关侧只读挂载到
+      # /etc/caddy/certs（生成配置引用路径）。嵌套在 stage5-runtime 挂载点之下；
+      # api 与网关运行用户同为 uid/gid 1000，0600 权属数值一致可读。
+      - stage5-gateway-certs:/app/runtime/certificates
       # 离线授权：宿主机指纹文件只读挂载（安装期 ops/install/install.sh 采集写入仓库根 runtime/license/；
       # 叠加在命名卷 stage5-runtime 挂载点之下，容器内路径 /app/runtime/license/host_fingerprint）
       - ../runtime/license:/app/runtime/license:ro
@@ -202,6 +206,8 @@ services:
       - stage5-gateway-admin:/var/run/caddy
       - stage5-gateway-config:/config
       - stage5-gateway-config:/data
+      # 证书下发通道（与 api 侧 stage5-gateway-certs 同一卷；生成配置引用 /etc/caddy/certs）
+      - stage5-gateway-certs:/etc/caddy/certs:ro
     tmpfs:
       - /tmp:size=64m,mode=1777
     read_only: true
@@ -297,6 +303,8 @@ volumes:
   stage5-gateway-config:
     driver: local
   stage5-runtime:
+    driver: local
+  stage5-gateway-certs:
     driver: local
   stage5-ollama-data:
     driver: local

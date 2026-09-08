@@ -17,6 +17,48 @@
 # 成功响应统一信封：{code, message, data, request_id}，下列 200 响应的 schema 均为该信封，data 为各业务负载。
 
 paths:
+  /apm/settings:
+    get:
+      operationId: apmSettingsGet
+      tags: [APM]
+      summary: 读取 APM 运行设置
+      description: 读取 APM 总开关、配置来源和 ClickHouse 连接状态；不会回显 ClickHouse DSN。该接口不受 APM 总开关门控。权限：`system_settings.read`。
+      responses:
+        '200':
+          description: APM 设置生效状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApmSettingsState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apmSettingsUpdate
+      tags: [APM]
+      summary: 更新 APM 运行设置
+      description: 字段缺省表示保持不变；clickhouse_dsn 为空串时清除数据库覆盖并回退环境配置，非空时校验后通过敏感设置通道保存。更新后立即重建 ClickHouse 连接且审计不记录 DSN 明文。权限：`system_settings.update`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                enabled: { type: boolean }
+                clickhouse_dsn: { type: string, maxLength: 4096, writeOnly: true, description: ClickHouse DSN；空串清除界面覆盖 }
+      responses:
+        '200':
+          description: 更新后的 APM 设置生效状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApmSettingsState' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /apm/overview:
     get:
       operationId: apmOverview
@@ -919,6 +961,16 @@ paths:
 
 components:
   schemas:
+    ApmSettingsState:
+      type: object
+      required: [enabled, enabled_source, clickhouse_dsn_set, clickhouse_dsn_source, ch_connected]
+      properties:
+        enabled: { type: boolean }
+        enabled_source: { type: string, description: 生效值来源 }
+        clickhouse_dsn_set: { type: boolean, description: 是否配置了 ClickHouse DSN，不回显原值 }
+        clickhouse_dsn_source: { type: string, description: DSN 生效值来源 }
+        ch_connected: { type: boolean, description: 当前 ClickHouse 连接是否可用 }
+
     ApmLatency:
       type: object
       description: 耗时/首字节分位数（毫秒，直方图桶线性插值估算；无样本时各项为 0）

@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/botpolicy"
 	"github.com/jiuzhang-waf/server/internal/database"
+	"github.com/jiuzhang-waf/server/internal/encryption"
+	"github.com/jiuzhang-waf/server/internal/settings"
 )
 
 // botNested 从 map 中取嵌套对象（对应 s5Obj 的 map 版本，s5Obj 只接 apiResp）。
@@ -98,11 +100,15 @@ WHERE p.code = 'bot_policy.edit' AND r.code IN ('SYSTEM_ADMIN','SECURITY_ADMIN')
 
 // TestBotPolicyLifecycle GET 默认 OFF / PUT 草稿（400 矩阵）/ 409 并发 / 审计 / 预检。
 func TestBotPolicyLifecycle(t *testing.T) {
+	// PROTECT 预检/发布门禁要求 key_ref 签名密钥就绪（P1-02 B3 起 fail-closed）：
+	// 固定主密钥并种子 bot_signing_keys，否则 signing_key 检查 FAIL 阻断发布
+	t.Setenv("JIUZHANG_MASTER_KEY", strings.Repeat("ab", 32))
 	env := setupTestEnv(t)
 	cookies, csrf := env.s5Login(t, "bot_sec", "SECURITY_ADMIN")
 	appID := botTestApp(t, env, cookies, csrf, "bot-app-"+s5Rand())
 	path := "/api/v1/applications/" + appID + "/bot-policy"
 	ctx := context.Background()
+	seedBotSigningKeys(t, env)
 
 	// 未配置应用 GET → 默认 OFF 空策略（version=0, NOT_CONFIGURED, found=false）
 	result := s5OK(t, env.get(t, path, cookies), "get default bot policy")
@@ -414,6 +420,95 @@ VALUES ('bot-cf-all', '0.0.0.0/0', 'CUSTOM', 'MANUAL')`); err != nil {
 "route_reservation":{"state":"ENABLED"}}`, cookies, csrf), "preflight after cleanup")
 	if result.Data["publishable"] != true {
 		t.Errorf("publishable after cleanup = %v, want true: %+v", result.Data["publishable"], result.Data)
+	}
+}
+
+// TestBotPolicyPreflightSigningKey key_ref 签名密钥就绪检查（B3，与发布门禁
+// checkBotPolicyDeps 同口径）：PROTECT 候选 key_ref 未就绪 → signing_key FAIL 且
+// publishable=false；种子密钥后就绪 → PASS；OBSERVE 未就绪仅 WARN 不阻断；
+// OFF → SKIP。
+// seedBotSigningKeys 种子 Bot 签名密钥（system_settings 密文；要求 setupTestEnv 前
+// t.Setenv JIUZHANG_MASTER_KEY 使种子密文与应用侧解密口径一致）。
+func seedBotSigningKeys(t *testing.T, env *testEnv) {
+	t.Helper()
+	encSvc, err := encryption.NewFromEnv()
+	if err != nil {
+		t.Fatalf("encryption from env: %v", err)
+	}
+	ciphertext, err := encSvc.Encrypt(`{"bot-hmac-2026":"` + strings.Repeat("ab", 32) + `"}`)
+	if err != nil {
+		t.Fatalf("encrypt keys: %v", err)
+	}
+	if err := settings.NewService(env.db).UpsertString(context.Background(), "gateway_runtime", "bot_signing_keys",
+		ciphertext, "Bot 签名密钥（密文）", uuid.Nil); err != nil {
+		t.Fatalf("seed bot_signing_keys: %v", err)
+	}
+}
+
+func TestBotPolicyPreflightSigningKey(t *testing.T) {
+	// 固定主密钥：种子密钥需与应用侧加解密一致（stage6 备份测试同模式）
+	t.Setenv("JIUZHANG_MASTER_KEY", strings.Repeat("ab", 32))
+	env := setupTestEnv(t)
+	cookies, csrf := env.s5Login(t, "bot_sk", "SECURITY_ADMIN")
+	appID := botTestApp(t, env, cookies, csrf, "bot-sk-"+s5Rand())
+	path := "/api/v1/applications/" + appID + "/bot-policy/preflight"
+	ctx := context.Background()
+
+	protectCandidate := `{"mode":"PROTECT","selectors":[{"path_prefix":"/docs"}],
+"signal_rules":{"min_independent_groups":2,"require_behavior_group":true,"rules":[
+{"id":"rb_4xx","group":"request_behavior","metric":"status_family_ratio","params":{"family":"4xx"},"window_seconds":300,"weight":1,"threshold":0.6},
+{"id":"as_known","group":"access_sequence","metric":"known_uri_ratio","window_seconds":300,"weight":1,"threshold":0.3}]},
+"challenge":{"type":"JS","key_ref":"bot-hmac-2026"},
+"route_reservation":{"state":"ENABLED","namespace":"/_wdsp/bot/v1/"}}`
+
+	checkByName := func(data map[string]interface{}, name string) string {
+		t.Helper()
+		checks, _ := data["checks"].([]interface{})
+		for _, c := range checks {
+			if cm, ok := c.(map[string]interface{}); ok && cm["name"] == name {
+				st, _ := cm["status"].(string)
+				return st
+			}
+		}
+		t.Fatalf("check %s missing: %+v", name, data["checks"])
+		return ""
+	}
+
+	// 未配置密钥：PROTECT → signing_key FAIL 且 publishable=false
+	result := s5OK(t, env.post(t, path, protectCandidate, cookies, csrf), "preflight protect without keys")
+	if got := checkByName(result.Data, "signing_key"); got != "FAIL" {
+		t.Errorf("signing_key without keys = %q, want FAIL", got)
+	}
+	if result.Data["publishable"] != false {
+		t.Errorf("publishable = %v, want false (key_ref not ready)", result.Data["publishable"])
+	}
+
+	// OBSERVE 同情形仅 WARN 不阻断
+	observeCandidate := strings.Replace(protectCandidate, `"mode":"PROTECT"`, `"mode":"OBSERVE"`, 1)
+	result = s5OK(t, env.post(t, path, observeCandidate, cookies, csrf), "preflight observe without keys")
+	if got := checkByName(result.Data, "signing_key"); got != "WARN" {
+		t.Errorf("signing_key OBSERVE without keys = %q, want WARN", got)
+	}
+	if result.Data["publishable"] != true {
+		t.Errorf("OBSERVE publishable = %v, want true", result.Data["publishable"])
+	}
+
+	// OFF → SKIP
+	result = s5OK(t, env.post(t, path,
+		`{"mode":"OFF","route_reservation":{"state":"RELEASED"}}`, cookies, csrf), "preflight off")
+	if got := checkByName(result.Data, "signing_key"); got != "SKIP" {
+		t.Errorf("signing_key OFF = %q, want SKIP", got)
+	}
+
+	// 种子密钥（密文经同一主密钥加密）：PROTECT → signing_key PASS
+	seedBotSigningKeys(t, env)
+	result = s5OK(t, env.post(t, path, protectCandidate, cookies, csrf), "preflight protect with keys")
+	if got := checkByName(result.Data, "signing_key"); got != "PASS" {
+		t.Errorf("signing_key with keys = %q, want PASS: %+v", got, result.Data["checks"])
+	}
+	if _, err := env.db.Exec(ctx,
+		`DELETE FROM system_settings WHERE setting_group='gateway_runtime' AND setting_key='bot_signing_keys'`); err != nil {
+		t.Fatalf("cleanup bot_signing_keys: %v", err)
 	}
 }
 

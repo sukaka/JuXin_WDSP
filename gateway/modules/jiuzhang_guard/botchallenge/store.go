@@ -231,7 +231,7 @@ func (s *Store) Read(appID, challengeID string) (*ReadResult, error) {
 	if !ok || n < 0 || int64(len(out)) != n+2 {
 		return nil, errBadEvalResult
 	}
-	hint, _ := out[len(out)-1].(string)
+	hint := luaFieldString(out[len(out)-1])
 	if n == 0 {
 		if hint == "1" {
 			return &ReadResult{Hint: "EXPIRED"}, nil
@@ -241,14 +241,28 @@ func (s *Store) Read(appID, challengeID string) (*ReadResult, error) {
 	fields := map[string]string{}
 	for i := int64(0); i+1 < n+1; i += 2 {
 		k, _ := out[1+i].(string)
-		v, _ := out[1+i+1].(string)
-		fields[k] = v
+		// 值类型容忍：counters.Eval 对可解析的数字串返回 int64（bulk string
+		// 被按 int 解析），字段值须两型兼容——绝不能把数字静默吞成空串
+		// （f["v"] 缺失会被当成未知版本存储故障）。
+		fields[k] = luaFieldString(out[1+i+1])
 	}
 	st, err := parseChallengeFields(fields)
 	if err != nil {
 		return nil, err
 	}
 	return &ReadResult{State: st, Hint: "OK"}, nil
+}
+
+// luaFieldString Lua 返回值字符串化（Eval 解码对数字串给 int64——两型统一还原十进制串）。
+func luaFieldString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case int64:
+		return strconv.FormatInt(t, 10)
+	default:
+		return ""
+	}
 }
 
 // parseChallengeFields HASH 字段解析（损坏状态按存储故障处理——不静默吞掉）。

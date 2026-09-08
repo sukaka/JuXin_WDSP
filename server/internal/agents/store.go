@@ -637,25 +637,36 @@ LIMIT $4 OFFSET $5`,
 }
 
 // GetAgent 详情（基础字段 + interfaces + policy_binding + 当前证书指纹/到期——
-// Phase 2-B §11 详情增量，无证书为 NULL；不存在 → ErrAgentNotFound）。
+// Phase 2-B §11 详情增量，无证书为 NULL；000133 起含 http_event_schemas 能力协商生效集——
+// 任务书 P1-03 §4.3 管理端「需升级」判定依据字段；不存在 → ErrAgentNotFound）。
 func (s *Store) GetAgent(ctx context.Context, agentID uuid.UUID) (*AgentDetail, error) {
 	row := s.db.QueryRow(ctx, `
 SELECT a.agent_id, a.hostname, a.ip, a.os, a.kernel, a.arch, a.version, a.disabled,
        a.last_seen, a.last_status, a.last_metrics, a.config_version, a.applied_config_version,
        a.last_clock_offset_ms, a.created_at, a.agent_cert_fingerprint, a.agent_cert_not_after,
+       a.http_event_schemas,
        `+policyLimitCols+`
 FROM agents a`+policyLimitJoin("a")+`
 WHERE a.agent_id=$1`, agentID)
 	var d AgentDetail
+	var schemas []int16
 	if err := row.Scan(&d.AgentID, &d.Hostname, &d.IP, &d.OS, &d.Kernel, &d.Arch, &d.Version,
 		&d.Disabled, &d.LastSeen, &d.LastStatus, &d.LastMetrics,
 		&d.ConfigVersion, &d.AppliedConfigVersion, &d.ClockOffsetMS, &d.CreatedAt,
-		&d.CertFingerprint, &d.CertNotAfter,
+		&d.CertFingerprint, &d.CertNotAfter, &schemas,
 		&d.cpuLimitPercent, &d.memoryLimitMB, &d.bufferLimitMB); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrAgentNotFound
 		}
 		return nil, err
+	}
+	// 能力集归一：库列 NOT NULL DEFAULT '{1}'；空集兜底 {1}（仅 v1——旧 Agent 语义）。
+	d.HTTPEventSchemas = make([]int, 0, len(schemas))
+	for _, v := range schemas {
+		d.HTTPEventSchemas = append(d.HTTPEventSchemas, int(v))
+	}
+	if len(d.HTTPEventSchemas) == 0 {
+		d.HTTPEventSchemas = []int{1}
 	}
 	ifRows, err := s.db.Query(ctx, `
 SELECT name, mac, ipv4, ipv6, mtu, speed_mbps

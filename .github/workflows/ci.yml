@@ -1,5 +1,15 @@
 name: CI
 
+# CI 分层（WDSP P1-04 R3 §6.1）PR / 推送层：
+#   - 全部核心安全集无条件执行——本工作流刻意不配置 paths/paths-ignore 过滤，
+#     任何 PR 都无法跳过 server/gateway/嵌套 Go 模块/前端检查与安全 smoke；
+#     后续如需路径过滤，只能在「增加相关集」方向使用，不得用于跳过本文件任何 job。
+#   - corpus-schema-check：回归语料/schema 校验 + 语料工具单测 + 签名工具构建测试；
+#   - nested-go-modules：嵌套 Go 模块 vet+test+build（任务书限制 5：嵌套模块
+#     不得漏跑；模块清单与 test/regression/p1 S0 冻结一致，新增 go.mod 必须补入）；
+#   - smoke-waf / smoke-wdsp：固定安全 smoke 核心集（仓内 Dockerfile 真实构建）。
+# 定期完整回归层见 .github/workflows/regression-nightly.yml（cron 触发；
+# 强制项缺环境标 BLOCKED 且汇总不变绿）。
 on:
   push:
     branches: [main, develop]
@@ -7,6 +17,85 @@ on:
     branches: [main, develop]
 
 jobs:
+  # ---- 回归语料/schema 校验（WDSP P1-04 R3 §6.1：PR 层固定执行，无路径过滤）----
+  corpus-schema-check:
+    name: Corpus & Schema Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate P1 regression corpus (schema v1 + content hashes)
+        run: |
+          cd test/regression/p1
+          python3 -m p1reg.cli validate-corpus --manifest corpus/manifest.json
+
+      - name: Run P1 regression tool tests
+        run: python3 -m unittest discover -s test/regression/p1/tests
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      # 证据签名小工具（tools/regsign）为发布门禁信任链的一部分，纳入 PR 层构建+测试
+      - name: Build & vet regression sign tool
+        working-directory: ./tools/regsign
+        run: |
+          go vet ./...
+          go build ./...
+
+      - name: Run regression evidence package unit tests
+        working-directory: ./server
+        run: go test -count=1 ./internal/regression/...
+
+  # ---- 嵌套 Go 模块（任务书限制 5：嵌套模块不得漏跑；清单与 S0 冻结一致，
+  #      新增 go.mod 必须同步补入本 matrix）----
+  nested-go-modules:
+    name: Nested Go Module (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - gateway/modules/jiuzhang_guard
+          - gateway/dynamic_security
+          - wdsp-agent
+          - tools/apisrc
+          - tools/regsign
+          - deployment/stage1/testorigin
+          - test/security-apm-demo/services
+          - test/wdsp-agent-e2e/poptool
+          - test/wdsp-agent-e2e/envoy-tap/harness
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-nested-${{ hashFiles(format('{0}/go.sum', matrix.module)) }}
+          restore-keys: |
+            ${{ runner.os }}-go-nested-
+
+      - name: go vet
+        working-directory: ./${{ matrix.module }}
+        run: go vet ./...
+
+      - name: go test
+        working-directory: ./${{ matrix.module }}
+        run: go test -count=1 ./...
+
+      - name: go build
+        working-directory: ./${{ matrix.module }}
+        run: go build ./...
+
   server-test:
     name: Server Tests
     runs-on: ubuntu-latest

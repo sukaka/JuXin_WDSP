@@ -58,7 +58,7 @@ UPDATE security_events SET final_decision = $3::jsonb
 WHERE request_id = $1 AND occurred_at = $2
   AND (final_decision IS NULL
        OR (final_decision->>'completion_status' = 'PENDING_CORRELATION'
-           AND COALESCE(final_decision->>'security_action', 'NONE') NOT IN ('BLOCK','TEMP_BLOCK','RATE_LIMIT','MASK_RESPONSE')
+           AND COALESCE(final_decision->>'security_action', 'NONE') NOT IN ('BLOCK','TEMP_BLOCK','RATE_LIMIT','MASK_RESPONSE','CHALLENGE')
            AND $4 IN ('COMPLETED','ABORTED')))`,
 				evt.RequestID, evt.OccurredAt, fdJSON, evt.FinalDecision.CompletionStatus); uerr != nil {
 				return uuid.Nil, false, uerr

@@ -23,9 +23,11 @@ import (
 
 // fakeRepo 内存仓储（接口契约级 fake：唯一约束/候选行选择/条件翻转语义与 Store 一致）。
 type fakeRepo struct {
-	mu       sync.Mutex
-	rows     []*Record
-	rawFiles map[uuid.UUID][]byte // id → raw_file 密文（nil = NULL）
+	mu         sync.Mutex
+	rows       []*Record
+	rawFiles   map[uuid.UUID][]byte // id → raw_file 密文（nil = NULL）
+	latestErr  error
+	rawFileErr error
 }
 
 func (r *fakeRepo) InsertActive(_ context.Context, rec *Record, rawFileCipher []byte) error {
@@ -56,6 +58,9 @@ func (r *fakeRepo) InsertActive(_ context.Context, rec *Record, rawFileCipher []
 func (r *fakeRepo) LatestCandidate(_ context.Context) (*Record, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.latestErr != nil {
+		return nil, r.latestErr
+	}
 	var best *Record
 	for _, row := range r.rows {
 		if row.Status != StatusActive && row.Status != StatusFingerprintMismatch {
@@ -123,6 +128,9 @@ func (r *fakeRepo) EarliestProduct(_ context.Context) (string, error) {
 func (r *fakeRepo) RawFileCipher(_ context.Context, id uuid.UUID) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.rawFileErr != nil {
+		return nil, r.rawFileErr
+	}
 	return r.rawFiles[id], nil
 }
 
@@ -152,6 +160,18 @@ func (r *fakeRepo) setRawFile(t *testing.T, licenseID string, cipher []byte) {
 		}
 	}
 	t.Fatalf("行不存在: %s", licenseID)
+}
+
+func (r *fakeRepo) setRawFileError(err error) {
+	r.mu.Lock()
+	r.rawFileErr = err
+	r.mu.Unlock()
+}
+
+func (r *fakeRepo) setLatestError(err error) {
+	r.mu.Lock()
+	r.latestErr = err
+	r.mu.Unlock()
 }
 
 // fakeEnc 测试加解密（前缀标记可逆变换，模拟 *encryption.Service 契约）。
@@ -484,6 +504,68 @@ func TestServiceSweepFingerprintMaterialMissing(t *testing.T) {
 	st := env.svc.State()
 	if st.Valid || st.Reason != "宿主机指纹材料缺失" {
 		t.Fatalf("指纹材料缺失应如实呈现: %+v", st)
+	}
+}
+
+func TestServiceIntegrityDependencyFailurePreservesGatewayConfiguration(t *testing.T) {
+	tests := []struct {
+		name    string
+		inject  func(*fakeRepo, error)
+		recover func(*fakeRepo)
+	}{
+		{
+			name:    "候选记录读取失败",
+			inject:  func(repo *fakeRepo, err error) { repo.setLatestError(err) },
+			recover: func(repo *fakeRepo) { repo.setLatestError(nil) },
+		},
+		{
+			name:    "授权原文读取失败",
+			inject:  func(repo *fakeRepo, err error) { repo.setRawFileError(err) },
+			recover: func(repo *fakeRepo) { repo.setRawFileError(nil) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newTestSvcEnv(t, "")
+			if err := env.importSample(t, validSample()); err != nil {
+				t.Fatalf("Import: %v", err)
+			}
+			env.waitRepublish(t, 1)
+			tt.inject(env.repo, errors.New("temporary database read failure"))
+
+			if err := env.svc.Refresh(context.Background()); err == nil {
+				t.Fatal("事实源临时故障应如实返回错误")
+			}
+			st := env.svc.State()
+			if st.Valid || st.IntegrityStatus != IntegrityDatabaseUnavailable ||
+				st.ProtectionState.CommercialAuthorization != "UNKNOWN" ||
+				st.ProtectionState.ArtifactIntegrity != "UNKNOWN" ||
+				st.ProtectionState.GatewayProtection != "PRESERVE_EXISTING" ||
+				st.ProtectionState.Recovery != "SUPPORT_REQUIRED" {
+				t.Fatalf("临时完整性故障状态不准确: %+v", st)
+			}
+			if env.svc.AllowsGatewayConfigPublish() {
+				t.Fatal("完整性事实源不可用时必须暂停网关配置发布")
+			}
+			time.Sleep(50 * time.Millisecond)
+			if n := env.spy.republishCount(); n != 1 {
+				t.Fatalf("临时完整性故障不得触发旁路重发布，got %d", n)
+			}
+			for _, ev := range env.spy.alerts() {
+				if ev.Type == AlertLicenseInvalid {
+					t.Fatalf("临时完整性故障不得误报为 LICENSE_INVALID: %+v", ev)
+				}
+			}
+
+			tt.recover(env.repo)
+			if err := env.svc.Refresh(context.Background()); err != nil {
+				t.Fatalf("事实源恢复后 Refresh: %v", err)
+			}
+			if st := env.svc.State(); !st.Valid || st.IntegrityStatus != IntegrityVerified || !env.svc.AllowsGatewayConfigPublish() {
+				t.Fatalf("事实源恢复后应重新验证并允许发布: %+v", st)
+			}
+			env.waitRepublish(t, 2)
+		})
 	}
 }
 

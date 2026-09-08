@@ -58,6 +58,13 @@ export const MENU_ITEMS: MenuDef[] = [
     roles: ['SECURITY_ADMIN'],
     group: '应用防护',
   },
+  // P1-04 R4a：安全回归证据与发布门禁（read 含 AUDIT_ADMIN，按权限点显隐）
+  {
+    key: '/security-regressions',
+    label: '安全回归',
+    permissions: ['security_regression.read'],
+    group: '应用防护',
+  },
   {
     key: '/gateway-status',
     label: '网关状态',

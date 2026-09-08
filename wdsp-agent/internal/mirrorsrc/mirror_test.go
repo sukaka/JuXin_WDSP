@@ -325,10 +325,10 @@ func TestChunkedUnknownTotal(t *testing.T) {
 	if rec.Request.BodyQuality.OriginalTotalSize != nil {
 		t.Fatalf("未知总大小必须为 null: %+v", rec.Request.BodyQuality)
 	}
-	// 契约 §2.1 一致性：truncated=true 要求总大小非 null——未知总大小时不能
-	// 声明截断，已捕获字节数如实保留
-	if rec.Request.BodyQuality.Truncated {
-		t.Fatal("未知总大小不得声明 truncated")
+	// 契约 V1.1：truncated=true + original_total_size=null 表达「截断但总大小未知」，
+	// 已捕获字节数如实保留
+	if !rec.Request.BodyQuality.Truncated {
+		t.Fatal("超预算截断应如实声明 truncated=true（总大小未知不影响截断事实）")
 	}
 	if rec.Request.BodyQuality.CapturedBytes != 16 {
 		t.Fatalf("已捕获字节应照记: %d", rec.Request.BodyQuality.CapturedBytes)

@@ -7,11 +7,11 @@
 //	      gateway-config 发布通道——bot_policy 段随整站快照下发，保存草稿不等于节点已生效）
 //	POST /api/v1/applications/{id}/bot-policy/preflight 路由保留冲突预检（bot_policy.edit；
 //	      保留命名空间与 L7 拒绝规则/保护地址/既有应用路径/路径转发的冲突列表 +
-//	      PROTECT 共享状态依赖与节点状态检查；不保存、不自动发布）
+//	      PROTECT 共享状态依赖、key_ref 签名密钥就绪与节点状态检查；不保存、不自动发布）
 //
 // 发布链路纪律（与 guardconfig/bot_policy.go 同源）：读取失败中止发布（fail-hard）；
-// 存在 PROTECT 策略而共享状态存储（Valkey）未配置时拒绝发布。本阶段（B1）不实现挑战
-// 生成/verify 端点/Eval 处置（B2/B3）。
+// 存在 PROTECT 策略而共享状态存储（Valkey）未配置、或 key_ref 引用的签名密钥未就绪时
+// 拒绝发布。挑战生成/verify 端点/Eval 处置在网关侧 botchallenge/bot_step（B2/B3）。
 package botpolicy
 
 import (
@@ -29,6 +29,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
+	"github.com/jiuzhang-waf/server/internal/guardconfig"
 	"github.com/jiuzhang-waf/server/internal/l7rules"
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
@@ -82,6 +83,7 @@ type Handler struct {
 	pathRoutes  PathRouteLister
 	protected   ProtectedLister
 	sharedState SharedStateFunc
+	signingKeys guardconfig.BotSigningKeysLoader
 }
 
 // NewHandler 创建处理器。
@@ -107,6 +109,11 @@ func (h *Handler) SetProtectedLister(l ProtectedLister) { h.protected = l }
 
 // SetSharedStateFunc 注入共享状态存储就绪读取（预检与发布门禁同口径）。
 func (h *Handler) SetSharedStateFunc(fn SharedStateFunc) { h.sharedState = fn }
+
+// SetSigningKeysLoader 注入 Bot 签名密钥读取（预检 signing_key 检查用；
+// 与发布门禁 checkBotPolicyDeps 的 key_ref 就绪判定同一加载器与同一口径——
+// guardconfig.NewBotSigningKeysLoader 一行接线，nil = 未装配视同密钥未就绪）。
+func (h *Handler) SetSigningKeysLoader(l guardconfig.BotSigningKeysLoader) { h.signingKeys = l }
 
 // ---------- 请求/响应 DTO ----------
 
@@ -503,6 +510,46 @@ func (h *Handler) Preflight(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		checks = append(checks, PreflightCheck{Name: "shared_state", Status: CheckSkip, Message: "OFF 不初始化挑战依赖"})
+	}
+
+	// 3.5 签名密钥就绪（与发布门禁 checkBotPolicyDeps 的 key_ref 判定同一加载器、同一口径：
+	// PROTECT 的 challenge.key_ref 未在已配置密钥集合中就绪时拒绝发布——防新 key 未安装
+	// 导致网关全站挑战 fail-closed 503；OBSERVE 未就绪仅降级观测，WARN 不阻断）
+	switch p.Mode {
+	case ModeProtect:
+		keyErr := ""
+		ready := false
+		if h.signingKeys == nil {
+			keyErr = "签名密钥加载器未装配"
+		} else if keys, err := h.signingKeys(r.Context()); err != nil {
+			keyErr = "签名密钥读取失败: " + err.Error()
+		} else if kr := p.Challenge.KeyRef; kr == "" {
+			keyErr = "challenge.key_ref 未配置"
+		} else if keys[kr] != "" {
+			ready = true
+		} else {
+			keyErr = fmt.Sprintf("key_ref %q 未在已配置签名密钥集合中就绪", kr)
+		}
+		if !ready {
+			fail("signing_key", "签名密钥未就绪（"+keyErr+"）：密钥须经系统设置 gateway_runtime.bot_signing_keys 配置并随发布下发，缺少密钥时网关对挑战/通行只能 fail-closed 503，拒绝发布（多节点先完成密钥准备再发布策略）")
+		} else {
+			checks = append(checks, PreflightCheck{Name: "signing_key", Status: CheckPass, Message: "challenge.key_ref 引用的签名密钥已就绪"})
+		}
+	case ModeObserve:
+		ready := false
+		if h.signingKeys != nil && p.Challenge.KeyRef != "" {
+			if keys, err := h.signingKeys(r.Context()); err == nil && keys[p.Challenge.KeyRef] != "" {
+				ready = true
+			}
+		}
+		if !ready {
+			checks = append(checks, PreflightCheck{Name: "signing_key", Status: CheckWarn,
+				Message: "签名密钥未就绪：OBSERVE 不签发挑战不阻断，但网关侧挑战服务将降级（观测失真）"})
+		} else {
+			checks = append(checks, PreflightCheck{Name: "signing_key", Status: CheckPass, Message: "challenge.key_ref 引用的签名密钥已就绪"})
+		}
+	default:
+		checks = append(checks, PreflightCheck{Name: "signing_key", Status: CheckSkip, Message: "OFF 不初始化挑战依赖"})
 	}
 
 	// 4. 目标节点状态（已知同步失败的扇出节点不接收含 PROTECT 的新配置）

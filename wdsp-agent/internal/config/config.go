@@ -66,6 +66,33 @@ type Config struct {
 	// 默认关闭）。记录为 v2 单向源（source_type=NGINX_MIRROR，response 恒 null），
 	// 仅在服务端协商支持 v2 时上行；未协商时丢弃计数（不降级为 v1 以免来源误标）。
 	Mirror MirrorConfig `json:"mirror,omitempty"`
+
+	// Tap Envoy tap 管理流适配（P1-03 §3.3，G3；本地运维意志，默认关闭）。
+	// 记录为 v2 来源（source_type=ENVOY_TAP）；适配器只出向连接本机回环
+	// Envoy Admin 读取 tap 流，不监听采集端口、不代理业务流量。
+	Tap TapConfig `json:"tap,omitempty"`
+}
+
+// TapConfig tap 适配器本地配置（装配见 internal/tapsrc 包注释；
+// 转换在 internal/agent/tap.go，config 包不反向依赖）。
+// 单会话约束：Envoy Admin 同时只允许一条已挂接 tap 流，多个 listener 的
+// tap filter 共享同一 config_id；协议/TLS 断言覆盖全部 tapped listener，
+// 混合场景必须保守（UNKNOWN / false）。
+type TapConfig struct {
+	Enabled        bool   `json:"enabled,omitempty"`
+	AdminAddr      string `json:"admin_addr,omitempty"` // 仅回环 host:port（默认 127.0.0.1:9901）
+	SourceInstance string `json:"source_instance,omitempty"`
+	ConfigID       string `json:"config_id,omitempty"` // tap filter admin_config config_id
+	// ObservedHTTPVersion 部署断言：全部 tapped listener 的观测协议
+	//（1.0/1.1/2/3；缺省/混合 UNKNOWN；不从数据内容猜测）
+	ObservedHTTPVersion string `json:"observed_http_version,omitempty"`
+	// TLSTerminated 部署断言：全部 tapped listener 均为可信 TLS 终止点 → DECRYPTED
+	TLSTerminated   bool  `json:"tls_terminated_upstream,omitempty"`
+	BodyEnabled     bool  `json:"body_enabled,omitempty"`      // 默认仅元数据；gRPC 正文恒不采集
+	MaxBodyBytes    int   `json:"max_body_bytes,omitempty"`    // 默认 4KB；同时下发 Envoy max_buffered_*_bytes
+	MaxMessageBytes int64 `json:"max_message_bytes,omitempty"` // 单条 TraceWrapper JSON 上限（默认 1MB）
+	ReconnectMinMs  int   `json:"reconnect_min_ms,omitempty"`  // 默认 1000
+	ReconnectMaxMs  int   `json:"reconnect_max_ms,omitempty"`  // 默认 30000
 }
 
 // MirrorConfig mirror 接收器本地配置（装配见 internal/mirrorsrc 包注释；

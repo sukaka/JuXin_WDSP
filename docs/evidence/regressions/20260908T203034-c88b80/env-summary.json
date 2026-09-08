@@ -1,0 +1,35 @@
+{
+  "allowed_targets": [
+    "p1reg-observe.local",
+    "p1reg-protect.local"
+  ],
+  "api_url": "http://127.0.0.1:18081",
+  "custom_rule_families": {
+    "7100001": "webshell_uploads",
+    "7100002": "cloud_abuse",
+    "7100003": "ssti_injection",
+    "7100004": "xxe_lfi_variants",
+    "7100005": "attack_variants_evasion"
+  },
+  "gateway_scheme": "https",
+  "kind": "p1reg_stage5_env",
+  "origin_mark": "jiuzhang-test-origin",
+  "profiles": {
+    "OBSERVE": {
+      "app_code": "p1regobs",
+      "app_id": "92e6dc11-2856-475f-bb2b-16b3b1c3a195",
+      "host": "p1reg-observe.local"
+    },
+    "PROTECT": {
+      "app_code": "p1regprot",
+      "app_id": "d64ec929-9536-4c6f-9214-98b4a55ce75d",
+      "host": "p1reg-protect.local"
+    }
+  },
+  "stack": {
+    "compose_project": "jiuzhang-stage5",
+    "note": "口令/密钥每轮随机存于 mktemp（已随描述符同目录保留至 stack-down）",
+    "site_https_port": 443,
+    "stack_id": "20260908T195137-b509b9"
+  }
+}

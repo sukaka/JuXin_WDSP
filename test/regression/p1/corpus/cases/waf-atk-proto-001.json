@@ -1,22 +1,34 @@
 {
   "schema_version": 1,
   "case_id": "WAF-ATK-PROTO-001",
-  "case_version": 1,
+  "case_version": 2,
   "family": "waf",
-  "tags": ["protocol-violation", "trace-method", "crs-declared"],
+  "tags": [
+    "protocol-violation",
+    "trace-method",
+    "crs-declared"
+  ],
   "criticality": "MANDATORY",
   "truth": "ATTACK",
-  "truth_reason": "协议级违规：TRACE 方法请求（XST 攻击面），自研合成；属项目 CRS 协议防护声明范围",
+  "truth_reason": "协议级违规：TRACE 方法请求（XST 攻击面），自研合成；属项目 CRS 协议防护声明范围；R2 真实栈回放对齐（2026-09-08，run 20260908T203034-c88b80 实证）：phase-1 计分规则（含 contrib CUSTOM_PACK nolog 计分）汇总后由 9000102 二次评估阻断，审计 messages 仅见评估规则，911/920 族逐条证据缺失，规则族期望置空为诚实不可得",
   "source": "self_synthetic",
   "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
   "authorization": "项目自研合成攻击样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
   "scope": {
     "capability": "waf.crs.protocol",
-    "applications": ["p1reg-echo-site"],
-    "protocols": ["http/1.1"]
+    "applications": [
+      "p1reg-echo-site"
+    ],
+    "protocols": [
+      "http/1.1"
+    ]
   },
   "prerequisites": {
-    "environment": ["isolated_stack", "controlled_origin", "waf_event_pipeline"]
+    "environment": [
+      "isolated_stack",
+      "controlled_origin",
+      "waf_event_pipeline"
+    ]
   },
   "steps": [
     {
@@ -32,19 +44,36 @@
     }
   ],
   "seed": 2006,
-  "reset_plan": {"scope": "none", "actions": ["none"]},
+  "reset_plan": {
+    "scope": "none",
+    "actions": [
+      "none"
+    ]
+  },
   "expectations_by_profile": {
     "OBSERVE": {
-      "expected_detection": {"module": "coraza_crs", "rule_family": "protocol"},
+      "expected_detection": {
+        "module": "coraza_crs"
+      },
       "expected_final_action": "DETECT_PASS",
       "expected_origin": "reached",
-      "expected_events": [{"type": "waf_security_event", "rule_family": "protocol"}]
+      "expected_events": [
+        {
+          "type": "waf_security_event"
+        }
+      ]
     },
     "PROTECT": {
-      "expected_detection": {"module": "coraza_crs", "rule_family": "protocol"},
+      "expected_detection": {
+        "module": "coraza_crs"
+      },
       "expected_final_action": "BLOCK_403",
       "expected_origin": "not_reached",
-      "expected_events": [{"type": "waf_security_event", "rule_family": "protocol"}]
+      "expected_events": [
+        {
+          "type": "waf_security_event"
+        }
+      ]
     }
   },
   "evidence_requirements": {

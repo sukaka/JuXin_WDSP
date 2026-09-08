@@ -1,0 +1,930 @@
+{
+  "baseline": {
+    "cases_sha256": "14f8e386feb863b75c017dcd02f22ba3bc2f678624f2702e1f129e277f1a385e",
+    "run_id": "20260908T222305-798cfb"
+  },
+  "candidate": {
+    "cases_sha256": "d78c22e73258d927df7b8cd564f24019353538ba486c72191c2ad127c2ea3276",
+    "run_id": "20260908T222701-b7f86d"
+  },
+  "incomparable": [
+    {
+      "case_id": "BOT-UNK-SCRIPT-001",
+      "profile": "OBSERVE",
+      "reason": "TRUTH_UNKNOWN_EXCLUDED"
+    },
+    {
+      "case_id": "BOT-UNK-SCRIPT-001",
+      "profile": "PROTECT",
+      "reason": "TRUTH_UNKNOWN_EXCLUDED"
+    },
+    {
+      "case_id": "BOT-UNK-TOMB-001",
+      "profile": "OBSERVE",
+      "reason": "TRUTH_UNKNOWN_EXCLUDED"
+    },
+    {
+      "case_id": "BOT-UNK-TOMB-001",
+      "profile": "PROTECT",
+      "reason": "TRUTH_UNKNOWN_EXCLUDED"
+    },
+    {
+      "case_id": "WAF-ATK-XXE-001",
+      "profile": "OBSERVE",
+      "reason": "TRUTH_UNKNOWN_EXCLUDED"
+    },
+    {
+      "case_id": "WAF-ATK-XXE-001",
+      "profile": "PROTECT",
+      "reason": "TRUTH_UNKNOWN_EXCLUDED"
+    }
+  ],
+  "integrity_errors": [],
+  "kind": "p1_regression_compare",
+  "pairs": [
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "BOT-ATK-FORGE-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "STANDARD",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "BOT-ATK-FORGE-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "STANDARD",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "BOT-ATK-WAFSTILL-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "STANDARD",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "BOT-ATK-WAFSTILL-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "STANDARD",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "BOT-BEN-INELIG-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "BOT-BEN-INELIG-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "BOT-BEN-NAV-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "BOT-BEN-NAV-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-ENC-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "STANDARD",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-ENC-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "STANDARD",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-PATH-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-PATH-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-PROTO-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-PROTO-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-RCE-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-RCE-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-SQLI-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-SQLI-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-SQLI-002",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-SQLI-002",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-SSRF-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-SSRF-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-SSTI-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "STANDARD",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-SSTI-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "STANDARD",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": false,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "FAIL"
+      },
+      "case_id": "WAF-ATK-WEBSHELL-001",
+      "case_version": 2,
+      "changes": [
+        "lost_detection",
+        "new_failure"
+      ],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-WEBSHELL-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "DETECT_PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-XSS-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "BLOCK_403",
+        "origin_reached": false,
+        "status": "PASS"
+      },
+      "case_id": "WAF-ATK-XSS-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "ATTACK"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-EDGE-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-EDGE-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-FORM-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-FORM-001",
+      "case_version": 2,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-JSON-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-JSON-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-QUERY-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-QUERY-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-SQL-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-SQL-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-UNI-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-UNI-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-UPLOAD-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "OBSERVE",
+      "truth": "BENIGN"
+    },
+    {
+      "baseline": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "candidate": {
+        "detection_correct": true,
+        "observed_action": "PASS",
+        "origin_reached": true,
+        "status": "PASS"
+      },
+      "case_id": "WAF-BEN-UPLOAD-001",
+      "case_version": 1,
+      "changes": [],
+      "criticality": "MANDATORY",
+      "profile": "PROTECT",
+      "truth": "BENIGN"
+    }
+  ],
+  "schema_version": 1,
+  "summary": {
+    "action_changes": [],
+    "denominator": 42,
+    "fixed_false_positives": [],
+    "incomparable_count": 6,
+    "lost_detection_rate": 0.041666666666666664,
+    "lost_detections": [
+      {
+        "case_id": "WAF-ATK-WEBSHELL-001",
+        "criticality": "MANDATORY",
+        "profile": "OBSERVE",
+        "truth": "ATTACK"
+      }
+    ],
+    "mandatory_incomparable": 0,
+    "new_block_false_positives": [],
+    "new_correct_detections": [],
+    "new_failure_rate": 0.023809523809523808,
+    "new_failures": [
+      {
+        "case_id": "WAF-ATK-WEBSHELL-001",
+        "criticality": "MANDATORY",
+        "profile": "OBSERVE",
+        "truth": "ATTACK"
+      }
+    ],
+    "new_false_positive_rate": 0.0,
+    "new_false_positives": [],
+    "origin_changes": [],
+    "paired": 42,
+    "paired_attack": 24,
+    "paired_benign": 18,
+    "persistent_failures": [],
+    "unchanged_correct": 41
+  },
+  "verdict": "FAIL",
+  "verdict_reasons": [
+    "新增失败 1 条（baseline 通过→候选失败）: ['WAF-ATK-WEBSHELL-001']",
+    "丢失检测 1 条（强制 1）: ['WAF-ATK-WEBSHELL-001']"
+  ]
+}

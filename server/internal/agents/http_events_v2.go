@@ -429,8 +429,10 @@ func (q *HTTPBodyQuality) validate(side string) error {
 	if q.SkippedReason != "" && q.CapturedBytes != 0 {
 		return fmt.Errorf("%s.body_quality.skipped_reason 非空时 captured_bytes 须为 0", side)
 	}
-	if q.Truncated && (q.OriginalTotalSize == nil || *q.OriginalTotalSize < q.CapturedBytes) {
-		return fmt.Errorf("%s.body_quality.truncated=true 要求 original_total_size 非 null 且 ≥ captured_bytes", side)
+	// 契约 V1.1 修订：truncated=true 允许 original_total_size=null（原始总大小未知，
+	// 如流式/tap 截断）；非 null 时必须 ≥ captured_bytes。
+	if q.Truncated && q.OriginalTotalSize != nil && *q.OriginalTotalSize < q.CapturedBytes {
+		return fmt.Errorf("%s.body_quality.truncated=true 且 original_total_size 非 null 时须 ≥ captured_bytes", side)
 	}
 	return nil
 }

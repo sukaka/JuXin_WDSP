@@ -82,6 +82,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
 	"github.com/jiuzhang-waf/server/internal/protectionpolicies"
 	"github.com/jiuzhang-waf/server/internal/ratelimitpolicies"
+	"github.com/jiuzhang-waf/server/internal/regression"
 	"github.com/jiuzhang-waf/server/internal/reports"
 	"github.com/jiuzhang-waf/server/internal/response"
 	"github.com/jiuzhang-waf/server/internal/restores"
@@ -269,6 +270,16 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	jwtTrustStore := jwttrust.NewStore(db)
 	// Bot 挑战策略管理面（WDSP P1-02 B1；表见迁移 000128，权限种子见 000129）
 	botPolicyStore := botpolicy.NewStore(db)
+	// 安全回归证据登记与发布门禁（WDSP P1-04 R3；表见迁移 000134，权限种子见 000135）。
+	// 受控证据存储为双方共用的受控本地存储适配器（S0 协调表：P0-01 服务端存储不存在，
+	// 由本任务提供）；装配失败 fail-closed（证据根目录不可写时不带病启动）。
+	regressionStore := regression.NewStore(db)
+	regEvidence, err := regression.NewLocalEvidenceStore(filepath.Join(cfg.Gateway.DataDir, "regression-evidence"), regressionStore)
+	if err != nil {
+		return nil, fmt.Errorf("initialize regression evidence store: %w", err)
+	}
+	regressionHandler := regression.NewHandler(regressionStore, regEvidence,
+		regression.NewImporter(regressionStore, regEvidence, settingsSvc.GetString), auditSvc)
 	// 攻击活动会话聚合（WDSP AI 自动化渗透防护增强 阶段4；表/权限种子见迁移 000103-000104）：
 	// 仓储与处理器恒装配（管理面查询）；聚合器 60s 一轮由 StartStage6Workers 启动，
 	// Business 滥用检测器随聚合器注入（默认 OBSERVE，数据源缺失形态自然零产出）。
@@ -346,6 +357,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	botPolicyHandler.SetSharedStateFunc(func(context.Context) bool {
 		return cfg.Gateway.ValkeyAddress(cfg.Cache) != ""
 	})
+	// 签名密钥就绪检查（预检 signing_key；与发布门禁 checkBotPolicyDeps 同一加载器同口径，
+	// 见 guardProvider.SetBotSigningKeysLoader）
+	botPolicyHandler.SetSigningKeysLoader(guardconfig.NewBotSigningKeysLoader(settingsSvc.GetString, encSvc.Decrypt))
 	// 攻击活动会话处理器
 	attackSessionHandler := attacksessions.NewHandler(attackSessionStore)
 
@@ -444,6 +458,13 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			guardProvider.SetGRPCDescriptorLister(guardconfig.NewGRPCDescriptorStore(db))
 		}
 		publisher.SetGuardProvider(guardProvider)
+		// 安全回归发布门禁（WDSP P1-04 R3 §7.2）：候选编译完成后、发往节点前评估；
+		// 规则启停/自定义规则/模型激活/运行时发布最终都走此入口（模型回滚经
+		// RollbackRuntimePolicy → PublishSync 同一通道，发布失败已映射 FAILED/502，
+		// 不会在门禁失败时对外报告网关 ACTIVE）。策略默认 OFF，未登记证据不改变发布。
+		publisher.SetRegressionGate(regressionGateAdapter{
+			gate: regression.NewGate(regressionStore, settingsSvc.GetString, regEvidence),
+		})
 		// 行为策略变更触发网关配置发布（identity_behavior 段热生效；异步发布任务，
 		// 触发失败仅记日志——策略已落库，发布任务可追踪重试，与其他策略变更同一口径）
 		behaviorPolicyHandler.SetPublishFunc(func(ctx context.Context, uid uuid.UUID, rid string) {
@@ -468,6 +489,14 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		publisher.SetLicenseStateProvider(func(context.Context) (bool, int64) {
 			st := licSvc.State()
 			return st.Valid, st.Quotas.MaxQPS
+		})
+		// 完整性事实源暂不可用时保留当前网关配置，不把不确定故障重发布为旁路；
+		// 到期、指纹失配和确定篡改仍由既有授权状态门控处理。
+		publisher.SetLicensePublishAllowedProvider(func(context.Context) (bool, string) {
+			if licSvc.AllowsGatewayConfigPublish() {
+				return true, ""
+			}
+			return false, "授权完整性暂不可用，已暂停配置发布并保留当前网关配置"
 		})
 		// 授权状态翻转（导入成功/到期/指纹变化/恢复）→ 触发整站重发布。
 		// svc 侧已异步调用且 panic 安全；发布锁（Valkey SetNX）防重入——
@@ -808,7 +837,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// 基线为无效授权时按 svc 契约由装配层驱动一次透传发布（svc 首次评估不触发重发布，
 	// 避免与启动首发重复——见 license.Service.commitStateLocked）；基线有效不重复发布，
 	// 网关沿用当前已生效配置
-	if republishForLicense != nil && !licSvc.State().Valid {
+	if republishForLicense != nil && !licSvc.State().Valid && licSvc.AllowsGatewayConfigPublish() {
 		go func() {
 			defer func() {
 				if rec := recover(); rec != nil {
@@ -943,6 +972,15 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		mux.Handle("GET /api/v1/applications/{id}/bot-policy", authz(middleware.RequirePermission("bot_policy.read")(http.HandlerFunc(botPolicyHandler.Get))))
 		mux.Handle("PUT /api/v1/applications/{id}/bot-policy", authz(middleware.RequirePermission("bot_policy.edit")(http.HandlerFunc(botPolicyHandler.Put))))
 		mux.Handle("POST /api/v1/applications/{id}/bot-policy/preflight", authz(middleware.RequirePermission("bot_policy.edit")(http.HandlerFunc(botPolicyHandler.Preflight))))
+		// 安全回归证据登记与发布门禁（WDSP P1-04 R3 §7.1；权限种子见迁移 000135；
+		// 导入只接受已登记受控对象 ID，不接收 URL/路径/压缩包/shell，不执行测试命令）
+		mux.Handle("GET /api/v1/security/regressions", authz(middleware.RequirePermission("security_regression.read")(http.HandlerFunc(regressionHandler.List))))
+		mux.Handle("GET /api/v1/security/regressions/{id}", authz(middleware.RequirePermission("security_regression.read")(http.HandlerFunc(regressionHandler.Get))))
+		mux.Handle("GET /api/v1/security/regressions/{id}/cases", authz(middleware.RequirePermission("security_regression.read")(http.HandlerFunc(regressionHandler.ListCases))))
+		mux.Handle("POST /api/v1/security/regressions/imports", authz(middleware.RequirePermission("security_regression.import")(http.HandlerFunc(regressionHandler.Import))))
+		mux.Handle("GET /api/v1/security/regression-policy", authz(middleware.RequirePermission("security_regression.read")(http.HandlerFunc(regressionHandler.GetPolicy))))
+		mux.Handle("PUT /api/v1/security/regression-policy", authz(middleware.RequirePermission("security_regression.policy")(http.HandlerFunc(regressionHandler.PutPolicy))))
+		mux.Handle("POST /api/v1/security/regression-objects", authz(middleware.RequirePermission("security_regression.import")(http.HandlerFunc(regressionHandler.UploadObject))))
 		mux.Handle("POST /api/v1/applications/{id}/certificate", authz(middleware.RequirePermission("certificates.bind")(http.HandlerFunc(appHandler.BindCertificate))))
 		mux.Handle("DELETE /api/v1/applications/{id}/certificate", authz(middleware.RequirePermission("certificates.bind")(http.HandlerFunc(appHandler.UnbindCertificate))))
 
@@ -1576,7 +1614,33 @@ func (a *App) StartAPIMetrics(ctx context.Context) {
 	}
 }
 
+// regressionGateAdapter 适配 gatewayconfig.RegressionGate（regression 包不反引发布包；
+// 错误分类在此显式映射——依赖不可用与证据拒绝是两种不同的发布失败码，不混用）。
+type regressionGateAdapter struct{ gate *regression.Gate }
+
+func (a regressionGateAdapter) EvaluatePublish(ctx context.Context, in gatewayconfig.RegressionGateInput) gatewayconfig.RegressionGateOutcome {
+	res, err := a.gate.Evaluate(ctx, regression.GateInput{
+		Fingerprint:    in.Fingerprint,
+		PublishTaskID:  &in.TaskID,
+		VersionID:      &in.VersionID,
+		RestoreChannel: in.RestoreChannel,
+	})
+	if err == nil {
+		return gatewayconfig.RegressionGateOutcome{Allowed: true}
+	}
+	if errors.Is(err, regression.ErrGateRejected) {
+		msg := err.Error()
+		if res != nil && len(res.Reasons) > 0 {
+			msg = strings.Join(res.Reasons, "; ")
+		}
+		return gatewayconfig.RegressionGateOutcome{Allowed: false, Message: msg}
+	}
+	// ErrGateUnavailable 及其他错误统一按依赖不可用处理（明确失败，不静默放行）
+	return gatewayconfig.RegressionGateOutcome{Allowed: false, Unavailable: true, Message: err.Error()}
+}
+
 // syncAlerterAdapter 适配 gatewayconfig.SyncAlerter（规避 systemalerts→gatewayconfig 传递依赖成环；
+
 // NotifyFailure 返回 (*Alert, error)，适配器收敛为仅 error 的最小接口）。
 type syncAlerterAdapter struct{ e *systemalerts.Engine }
 

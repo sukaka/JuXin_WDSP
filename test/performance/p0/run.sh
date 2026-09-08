@@ -8,9 +8,10 @@
 #   matrix      --plan F   七模式 × 负载阶梯 × 重复（§4/§6.1）
 #   soak        --plan F   七模式稳定性 + combined_protect 72h 长稳（§6.3）
 #   recovery    --plan F   故障注入与恢复时限核验（§6.3）
-#   regression  --plan F   P1-04 规则/模型回归（R1/S1 工具层；执行层在隔离栈
-#                          接线前明确 BLOCKED/ENVIRONMENT_UNAVAILABLE 并非零
-#                          退出，不假执行）
+#   regression  --plan F   P1-04 规则/模型回归。plan 登记
+#                          environment.stage5_env_descriptor 时真实栈回放
+#                          （R2）；未登记时执行层明确 BLOCKED/
+#                          ENVIRONMENT_UNAVAILABLE 并非零退出，不假执行
 #   compare     --baseline R --candidate R   P1-04 前后版本逐例比较（只读
 #                          两个已完成证据目录，不重新执行、不猜测期望）
 #
@@ -991,12 +992,44 @@ cmd_regression() {
   planned="$(wc -l < "$RUN_DIR/cases.jsonl" | tr -d ' ')"
   set_status replay-plan PASS "确定性回放计划已生成（计划样本数 ${planned}）"
 
-  # 4) 执行层：R1/S1 尚未完成隔离栈接线（真实执行属 R2）——明确 BLOCKED，
-  #    不发起任何请求，不产生任何假 PASS；计划数>0 而执行数=0 使退出码非零。
-  set_status regression-execution BLOCKED \
-    "ENVIRONMENT_UNAVAILABLE：S1 工具层交付，真实网关执行待隔离环境接线（P1-04 R2）；未执行任何请求（0/${planned}），不做假 PASS"
-  log "regression: 执行层 BLOCKED（ENVIRONMENT_UNAVAILABLE），计划 $planned 条均未执行"
-  regression_finish 3
+  # 4) 执行层：plan 登记 environment.stage5_env_descriptor（R2 真实隔离栈
+  #    描述符，0600）时走真实回放→对账→判定；未登记时保持 R1/S1 语义——
+  #    明确 BLOCKED，不发起任何请求，不产生任何假 PASS。
+  local env_desc=""
+  env_desc="$(json_get "$RUN_DIR/plan.json" environment.stage5_env_descriptor 2>/dev/null || true)"
+  if [ -z "$env_desc" ]; then
+    set_status regression-execution BLOCKED \
+      "ENVIRONMENT_UNAVAILABLE：S1 工具层交付，真实网关执行待隔离环境接线（P1-04 R2）；未执行任何请求（0/${planned}），不做假 PASS"
+    log "regression: 执行层 BLOCKED（ENVIRONMENT_UNAVAILABLE），计划 $planned 条均未执行"
+    regression_finish 3
+  fi
+  if [ ! -f "$env_desc" ]; then
+    set_status regression-execution FAIL "环境描述符不存在: $env_desc"
+    regression_finish 3
+  fi
+  log "regression: 真实栈执行（描述符 ${env_desc}），计划 ${planned} 条"
+  local exec_rc=0
+  p1reg execute --replay-plan "$RUN_DIR/replay-plan.json" \
+    --manifest "$REPO_ROOT/$corpus_path" --profiles-dir "$REG_PROFILES_DIR" \
+    --env "$env_desc" --run-dir "$RUN_DIR" --run-id "$RUN_ID" || exec_rc=$?
+  case "$exec_rc" in
+    0)
+      set_status regression-execution PASS "真实栈回放完成：全部执行且无 FAIL（明细 cases.jsonl / perf.jsonl）"
+      regression_finish 0
+      ;;
+    1)
+      set_status regression-execution FAIL "真实栈回放存在 FAIL 用例（明细 cases.jsonl / report.md）"
+      regression_finish 1
+      ;;
+    2)
+      set_status regression-execution FAIL "执行层结构错误（描述符/计划/语料不符）"
+      regression_finish 3
+      ;;
+    *)
+      set_status regression-execution BLOCKED "执行不完整（存在 BLOCKED/NOT_RUN/执行无效），不授予完整通过"
+      regression_finish 3
+      ;;
+  esac
 }
 
 cmd_compare() {

@@ -27,6 +27,9 @@ TAG_DESCRIPTIONS = {
     'applications': 'Web 应用接入',
     'site-discovery': '站点资产发现',
     'APM': 'APM 业务性能监控（无 Agent 查询 + Agent 控制面）',
+    'traffic-agents': '分布式流量采集 Agent 管理',
+    'traffic-policies': '分布式流量采集策略',
+    'agent-control': '分布式流量 Agent 机器控制面',
     'certificates': 'HTTPS 证书',
     'gateway-config': '网关配置与发布',
     'protection-policies': '防护策略',
@@ -48,6 +51,7 @@ TAG_DESCRIPTIONS = {
     'risk-policy': '风险策略（身份风险处置）',
     'jwt-trust': 'JWT 信任策略（业务 JWT 信任链，WDSP P0-03）',
     'bot-policy': 'Bot 挑战策略（WDSP P1-02）',
+    'security-regression': '安全回归证据与发布门禁（WDSP P1-04）',
     'attack-sessions': '攻击活动（Attack Session）',
     'access-logs': '访问日志',
     'dashboard': '态势总览',
@@ -113,7 +117,7 @@ def build_skeleton():
         'openapi': '3.0.3',
         'info': {
             'title': '九章WEB动态安全管理平台（WDSP）管理 API',
-            'version': '2.0.0',
+            'version': '1.0.0',
             'description': '''九章WEB动态安全管理平台（WDSP，统一 Web 与 API 动态防护）管理后端 RESTful API 完整文档。
 
 ## 认证与安全
@@ -147,6 +151,30 @@ def build_skeleton():
                     'in': 'cookie',
                     'name': 'jiuzhang_session',
                     'description': '登录后下发的 HttpOnly 会话 Cookie',
+                },
+                'agentBearer': {
+                    'type': 'http',
+                    'scheme': 'bearer',
+                    'bearerFormat': 'wda_<64hex>',
+                    'description': '分布式流量 Agent 过渡期凭据；凭据必须属于路径中的 agent_id',
+                },
+                'agentCertificate': {
+                    'type': 'apiKey',
+                    'in': 'header',
+                    'name': 'X-WDSP-Agent-Cert',
+                    'description': 'Base64 编码的 Agent 客户端证书 PEM；须与时间戳和签名头同时提供',
+                },
+                'agentTimestamp': {
+                    'type': 'apiKey',
+                    'in': 'header',
+                    'name': 'X-WDSP-Agent-Timestamp',
+                    'description': 'Agent PoP 请求时间戳，允许时钟偏差 ±300 秒',
+                },
+                'agentSignature': {
+                    'type': 'apiKey',
+                    'in': 'header',
+                    'name': 'X-WDSP-Agent-Signature',
+                    'description': 'Agent 对请求方法、路径、时间戳和正文摘要生成的持有证明签名',
                 },
             },
             'responses': {

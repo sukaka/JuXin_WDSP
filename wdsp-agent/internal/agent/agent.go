@@ -40,6 +40,7 @@ import (
 	"github.com/jiuzhang-waf/wdsp-agent/internal/override"
 	"github.com/jiuzhang-waf/wdsp-agent/internal/ratelimit"
 	"github.com/jiuzhang-waf/wdsp-agent/internal/selfmon"
+	"github.com/jiuzhang-waf/wdsp-agent/internal/tapsrc"
 	"github.com/jiuzhang-waf/wdsp-agent/internal/transport"
 )
 
@@ -110,6 +111,7 @@ type Agent struct {
 	tracker      *flow.Tracker
 	sensor       *httpsensor.Sensor
 	mirror       *mirrorsrc.Receiver // Nginx mirror 接收器（G2；nil=未启用）
+	tap          *tapsrc.Source      // Envoy tap 适配器（G3；nil=未启用）
 	monitor      *selfmon.Monitor
 	sampler      selfmon.Sampler
 	k8sResolver  *k8smeta.Resolver
@@ -248,6 +250,7 @@ func New(cfg *config.Config, cfgPath, stateDir string, log *slog.Logger) (*Agent
 	}
 	a.initPhase4()                   // Phase 4：背压帽/定向规则/生效等级/采样 接线
 	a.mirror = a.newMirrorReceiver() // G2：Nginx mirror 接收器（默认关闭）
+	a.tap = a.newTapSource()         // G3：Envoy tap 适配器（默认关闭）
 	return a, nil
 }
 
@@ -262,6 +265,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	// 初始应用策略（含抓包启动）
 	a.applyPolicy(a.cfg.EffectivePolicy())
 	a.startMirror() // G2：镜像接收器（默认关闭；启动失败 Fail-Open）
+	a.startTap()    // G3：Envoy tap 适配器（默认关闭；Fail-Open）
 
 	ctrl := control.New(control.Deps{
 		Client:           a.client,
@@ -309,6 +313,7 @@ func (a *Agent) recover(name string) {
 // shutdown 停抓并冲刷流表与缓存句柄。
 func (a *Agent) shutdown() {
 	a.stopMirror() // 先停镜像接收器（不再收新镜像请求）
+	a.stopTap()    // 停止 tap 适配器（取消全部 tap 管理流）
 	a.stopCaptures()
 	a.sensor.Close() // 收尾 HTTP 会话（补发 response=null 记录）后再冲刷流表
 	a.tracker.Close(time.Now())
@@ -370,6 +375,10 @@ func (a *Agent) applyPolicy(policy *config.Policy) {
 		// G2：镜像适配器与被动传感器同口径应用策略（等级门控/脱敏/正文上限），
 		// 不绕过原采集策略（P1-03 §3.1）
 		a.mirror.UpdatePolicy(level, policy.Limits.EffectiveMaxBodySize(), policy.Masking.Effective())
+	}
+	if a.tap != nil {
+		// G3：tap 适配器同口径应用策略（不绕过原采集策略）
+		a.tap.UpdatePolicy(level, policy.Limits.EffectiveMaxBodySize(), policy.Masking.Effective())
 	}
 	// Phase 4：基础等级缓存（生效等级=max(基础,规则) 后按背压帽 min 压制，
 	// request 事件抑制由 flow 包按流生效等级驱动：≥L1 停发旧 request 事件）
@@ -1442,6 +1451,12 @@ func (a *Agent) metricsSnapshot() transport.Metrics {
 		m.Normalized += a.mirror.Stats.Emitted.Load()
 		m.Masked += a.mirror.MaskedFieldCount()
 	}
+	if a.tap != nil {
+		// G3：tap 来源计数并入统一指标；tap 管理流断连计入 source_disconnect
+		m.Normalized += a.tap.Stats.Emitted.Load()
+		m.Masked += a.tap.MaskedFieldCount()
+		m.SourceDisconnects += a.tap.Stats.Disconnects.Load()
+	}
 	m.Accepted = a.metrics.Accepted.Load()
 	m.Duplicate = a.metrics.Duplicate.Load()
 	m.SourceDisconnects = a.metrics.SourceDisconnects.Load()
@@ -1478,6 +1493,27 @@ func (a *Agent) metricsSnapshot() transport.Metrics {
 		merged[DropReasonReassemblyConnFull] += rj
 	}
 	m.DroppedByReason = merged
+	// G4b：k8smeta 健康接入心跳 metrics（server 端 jsonb 透传，管理端 Agent 详情可见）。
+	// 元数据失效不影响采集本身，故不改动 status 的 ONLINE/DEGRADED/ERROR 判定，
+	// 由 k8smeta_state 显式表达 STALE/UNAVAILABLE。
+	if a.k8sResolver != nil {
+		h := a.k8sResolver.Health()
+		m.K8sMetaState = string(h.State)
+		m.K8sMetaEntries = h.Entries
+		m.K8sMetaInferredOwners = h.InferredOwners
+		m.K8sMetaSyncFailures = h.SyncFailures
+		if h.State != k8smeta.StateOK {
+			m.K8sMetaStaleSeconds = h.StaleFor.Seconds()
+		}
+	} else {
+		a.cfgMu.Lock()
+		k8sForced := a.cfg.K8s.Mode() == "on"
+		a.cfgMu.Unlock()
+		if k8sForced {
+			// 显式开启但集群凭据不可用：显式 UNAVAILABLE，不静默缺省
+			m.K8sMetaState = string(k8smeta.StateUnavailable)
+		}
+	}
 	return m
 }
 

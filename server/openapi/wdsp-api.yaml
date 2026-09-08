@@ -4,7 +4,7 @@
 openapi: 3.0.3
 info:
   title: 九章WEB动态安全管理平台（WDSP）管理 API
-  version: 2.0.0
+  version: 1.0.0
   description: "九章WEB动态安全管理平台（WDSP，统一 Web 与 API 动态防护）管理后端 RESTful API 完整文档。\n\n## 认证与安全\n\n- 认证方式：HttpOnly Cookie 会话（`jiuzhang_session`），由\
     \ `POST /auth/login` 建立。\n- CSRF：所有非 GET 请求必须携带 `X-CSRF-Token` 头（登录响应与 `GET /auth/me` 返回 `csrf_token`）。\n- 权限：多数接口要求指定权限点（见各接口\
     \ description 的「权限：」说明）；无权限返回 403。\n- 限流：登录、验证码、改密、导出等敏感接口有独立限流（超限返回 429）。\n\n## 响应约定\n\n- 统一信封：除 `/health` 与文件下载外，所有\
@@ -27,6 +27,26 @@ components:
       in: cookie
       name: jiuzhang_session
       description: 登录后下发的 HttpOnly 会话 Cookie
+    agentBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: wda_<64hex>
+      description: 分布式流量 Agent 过渡期凭据；凭据必须属于路径中的 agent_id
+    agentCertificate:
+      type: apiKey
+      in: header
+      name: X-WDSP-Agent-Cert
+      description: Base64 编码的 Agent 客户端证书 PEM；须与时间戳和签名头同时提供
+    agentTimestamp:
+      type: apiKey
+      in: header
+      name: X-WDSP-Agent-Timestamp
+      description: Agent PoP 请求时间戳，允许时钟偏差 ±300 秒
+    agentSignature:
+      type: apiKey
+      in: header
+      name: X-WDSP-Agent-Signature
+      description: Agent 对请求方法、路径、时间戳和正文摘要生成的持有证明签名
   responses:
     BadRequest:
       description: 请求参数或校验错误
@@ -17769,6 +17789,29 @@ components:
         total:
           type: integer
           description: 总条数
+    ApmSettingsState:
+      type: object
+      required:
+      - enabled
+      - enabled_source
+      - clickhouse_dsn_set
+      - clickhouse_dsn_source
+      - ch_connected
+      properties:
+        enabled:
+          type: boolean
+        enabled_source:
+          type: string
+          description: 生效值来源
+        clickhouse_dsn_set:
+          type: boolean
+          description: 是否配置了 ClickHouse DSN，不回显原值
+        clickhouse_dsn_source:
+          type: string
+          description: DSN 生效值来源
+        ch_connected:
+          type: boolean
+          description: 当前 ClickHouse 连接是否可用
     ApmLatency:
       type: object
       description: 耗时/首字节分位数（毫秒，直方图桶线性插值估算；无样本时各项为 0）
@@ -21030,6 +21073,928 @@ components:
         publishable:
           type: boolean
           description: 整体可发布判定（false 时发布链路以同口径拒绝）
+    SecurityRegressionRun:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        run_id:
+          type: string
+          description: 外部运行 ID（唯一）
+        manifest_sha256:
+          type: string
+          description: manifest 规范形字节 sha256
+        level:
+          type: string
+          enum:
+          - SMOKE
+          - FULL
+          - RELEASE
+        declared_status:
+          type: string
+          enum:
+          - PASS
+          - FAIL
+          - SKIP
+          - BLOCKED
+          - NOT_RUN
+          description: 验证服务声明状态（仅登记不采信）
+        verification_status:
+          type: string
+          enum:
+          - PENDING
+          - PASSED
+          - FAILED
+          description: 服务端独立核验结论
+        verification_reasons:
+          type: array
+          items:
+            type: string
+        signature_algorithm:
+          type: string
+          description: 恒 ed25519
+        signature_key_id:
+          type: string
+        config_fingerprint:
+          type: string
+          description: 候选配置指纹 cfgfpv1:<configuration_hash>
+        build_digest:
+          type: string
+        compiler:
+          type: string
+        corpus_id:
+          type: string
+        corpus_version:
+          type: integer
+        corpus_sha256:
+          type: string
+        plan_sha256:
+          type: string
+        counts:
+          $ref: '#/components/schemas/SecurityRegressionCounts'
+        run_started_at:
+          type: string
+          format: date-time
+          nullable: true
+        run_finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        policy_version:
+          type: integer
+          description: 导入时门禁策略版本
+        imported_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    SecurityRegressionCounts:
+      type: object
+      properties:
+        planned:
+          type: integer
+        executed:
+          type: integer
+        skipped:
+          type: integer
+        blocked:
+          type: integer
+        not_run:
+          type: integer
+        passed:
+          type: integer
+        failed:
+          type: integer
+        mandatory_total:
+          type: integer
+        mandatory_failed:
+          type: integer
+    SecurityRegressionRunListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityRegressionRun'
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+    SecurityRegressionGateAssessment:
+      type: object
+      properties:
+        usable_for_publish:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            type: string
+        policy_mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - ENFORCE
+        required_level:
+          type: string
+          enum:
+          - SMOKE
+          - FULL
+          - RELEASE
+        evidence_max_age_seconds:
+          type: integer
+        age_seconds:
+          type: integer
+        expired:
+          type: boolean
+    SecurityRegressionRunDetailResponse:
+      type: object
+      properties:
+        run:
+          $ref: '#/components/schemas/SecurityRegressionRun'
+        gate_assessment:
+          $ref: '#/components/schemas/SecurityRegressionGateAssessment'
+    SecurityRegressionCase:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        case_id:
+          type: string
+        case_version:
+          type: integer
+        family:
+          type: string
+        truth:
+          type: string
+          enum:
+          - BENIGN
+          - ATTACK
+          - UNKNOWN
+        criticality:
+          type: string
+          enum:
+          - MANDATORY
+          - OPTIONAL
+        status:
+          type: string
+          enum:
+          - PASS
+          - FAIL
+          - SKIP
+          - BLOCKED
+          - NOT_RUN
+        diff_summary:
+          type: object
+          description: 差异摘要（不含原始正文）
+    SecurityRegressionCaseListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityRegressionCase'
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+    SecurityRegressionSignatureEnvelope:
+      type: object
+      required:
+      - algorithm
+      - key_id
+      - signature
+      properties:
+        algorithm:
+          type: string
+          enum:
+          - ed25519
+        key_id:
+          type: string
+          description: 已登记受信验签公钥 ID
+        signature:
+          type: string
+          description: base64 签名（对 manifest 规范形字节）
+    SecurityRegressionImportObjectRef:
+      type: object
+      required:
+      - object_id
+      - role
+      - name
+      properties:
+        object_id:
+          type: string
+          format: uuid
+          description: 已登记受控对象 ID
+        role:
+          type: string
+          enum:
+          - CASES_CHUNK
+          - REPORT
+          - PERF
+          - LOG
+        name:
+          type: string
+          description: 与 manifest files[] 条目对应的文件名（不含路径）
+    SecurityRegressionImportRequest:
+      type: object
+      required:
+      - manifest_object_id
+      - signature
+      - objects
+      properties:
+        manifest_object_id:
+          type: string
+          format: uuid
+        signature:
+          $ref: '#/components/schemas/SecurityRegressionSignatureEnvelope'
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityRegressionImportObjectRef'
+    SecurityRegressionImportResponse:
+      type: object
+      properties:
+        run:
+          $ref: '#/components/schemas/SecurityRegressionRun'
+        idempotent:
+          type: boolean
+    SecurityRegressionPolicy:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - ENFORCE
+          description: 门禁模式（默认 OFF；ENFORCE 才拒绝不满足条件的发布）
+        required_level:
+          type: string
+          enum:
+          - SMOKE
+          - FULL
+          - RELEASE
+        required_corpus_id:
+          type: string
+          description: 空 = 不约束语料
+        evidence_max_age_seconds:
+          type: integer
+          description: 证据有效期（86400~2592000，默认 604800=7 天）
+        version:
+          type: integer
+          description: 乐观锁版本
+        updated_by:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+    SecurityRegressionPolicyResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/SecurityRegressionPolicy'
+    SecurityRegressionPolicyPutRequest:
+      type: object
+      required:
+      - mode
+      - required_level
+      - evidence_max_age_seconds
+      - expected_version
+      - reason
+      properties:
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - ENFORCE
+        required_level:
+          type: string
+          enum:
+          - SMOKE
+          - FULL
+          - RELEASE
+        required_corpus_id:
+          type: string
+        evidence_max_age_seconds:
+          type: integer
+          minimum: 86400
+          maximum: 2592000
+        expected_version:
+          type: integer
+          description: 乐观锁（必须等于当前 version）
+        reason:
+          type: string
+          description: 变更理由（非空，进操作审计）
+    SecurityRegressionObject:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 服务端生成的对象 ID
+        kind:
+          type: string
+          enum:
+          - MANIFEST
+          - CASES_CHUNK
+          - REPORT
+          - PERF
+          - LOG
+        sha256:
+          type: string
+          description: 服务端流式计算的 sha256
+        size_bytes:
+          type: integer
+        state:
+          type: string
+          enum:
+          - REGISTERED
+          - CONSUMED
+        uploaded_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    TrafficAgentEnrollmentTokenCreate:
+      type: object
+      required:
+      - ttl_minutes
+      additionalProperties: false
+      properties:
+        label:
+          type: string
+          maxLength: 128
+        ttl_minutes:
+          type: integer
+          minimum: 5
+          maximum: 10080
+    TrafficAgentEnrollmentTokenCreated:
+      type: object
+      required:
+      - id
+      - token
+      - expires_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        token:
+          type: string
+          pattern: ^wdt_[0-9a-f]{64}$
+          writeOnly: true
+          description: 仅本次返回
+        expires_at:
+          type: string
+          format: date-time
+    TrafficAgentEnrollmentTokenList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        total:
+          type: integer
+    TrafficAgentSummary:
+      type: object
+      additionalProperties:
+        type: integer
+    TrafficAgent:
+      type: object
+      required:
+      - agent_id
+      - hostname
+      - ip
+      properties:
+        agent_id:
+          type: string
+          format: uuid
+        hostname:
+          type: string
+          maxLength: 255
+        ip:
+          type: string
+        os:
+          type: string
+        kernel:
+          type: string
+        arch:
+          type: string
+        version:
+          type: string
+        status:
+          type: string
+          enum:
+          - ONLINE
+          - DEGRADED
+          - ERROR
+          - OFFLINE
+          - DISABLED
+        desired_state:
+          type: string
+          enum:
+          - ENABLED
+          - DISABLED
+        config_version:
+          type: integer
+          format: int64
+        applied_config_version:
+          type: integer
+          format: int64
+        last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+        metrics:
+          type: object
+          additionalProperties: true
+        capabilities:
+          type: object
+          additionalProperties: true
+        interfaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrafficAgentInterface'
+    TrafficAgentList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrafficAgent'
+        total:
+          type: integer
+    TrafficAgentInterface:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          maxLength: 128
+        mac:
+          type: string
+          maxLength: 32
+        ipv4:
+          type: string
+        ipv6:
+          type: string
+        mtu:
+          type: integer
+          minimum: 0
+          maximum: 65535
+        speed_mbps:
+          type: integer
+          minimum: 0
+    TrafficAgentEventList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        total:
+          type: integer
+    TrafficAgentCaptureOverrideCreate:
+      type: object
+      required:
+      - match
+      - capture_level
+      additionalProperties: false
+      properties:
+        match:
+          type: object
+          minProperties: 1
+          additionalProperties: false
+          properties:
+            dst_ip:
+              type: string
+              description: 单个 IPv4/IPv6 地址或 CIDR
+            dst_port:
+              type: integer
+              minimum: 1
+              maximum: 65535
+            host:
+              type: string
+              maxLength: 255
+            uri_prefix:
+              type: string
+              maxLength: 512
+              pattern: ^/
+        capture_level:
+          type: string
+          enum:
+          - L0
+          - L1
+          - L2
+          - L3
+        ttl_minutes:
+          type: integer
+          minimum: 1
+          maximum: 1440
+          default: 30
+        note:
+          type: string
+          maxLength: 512
+    TrafficAgentCaptureOverride:
+      allOf:
+      - $ref: '#/components/schemas/TrafficAgentCaptureOverrideCreate'
+      - type: object
+        properties:
+          id:
+            type: string
+            format: uuid
+          agent_id:
+            type: string
+            format: uuid
+          created_by:
+            type: string
+          created_at:
+            type: string
+            format: date-time
+          expires_at:
+            type: string
+            format: date-time
+          active:
+            type: boolean
+    TrafficAgentCaptureOverrideList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrafficAgentCaptureOverride'
+        total:
+          type: integer
+    TrafficPolicyWrite:
+      type: object
+      required:
+      - name
+      - config
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 128
+        config:
+          $ref: '#/components/schemas/TrafficPolicyConfig'
+    TrafficPolicy:
+      allOf:
+      - $ref: '#/components/schemas/TrafficPolicyWrite'
+      - type: object
+        properties:
+          id:
+            type: string
+            format: uuid
+          version:
+            type: integer
+            minimum: 1
+          created_by:
+            type: string
+          created_at:
+            type: string
+            format: date-time
+          updated_at:
+            type: string
+            format: date-time
+    TrafficPolicyList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrafficPolicy'
+        total:
+          type: integer
+    TrafficPolicyConfig:
+      type: object
+      required:
+      - name
+      - capture
+      - capture_level
+      - output
+      - limits
+      - sampling
+      - buffer
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          maxLength: 128
+        capture:
+          type: object
+          required:
+          - direction
+          - protocols
+          - ports
+          properties:
+            interfaces:
+              type: array
+              maxItems: 32
+              items:
+                type: string
+                maxLength: 128
+            direction:
+              type: string
+              enum:
+              - ingress
+              - egress
+              - both
+            protocols:
+              type: array
+              minItems: 1
+              items:
+                type: string
+                enum:
+                - tcp
+                - udp
+            ports:
+              type: array
+              minItems: 1
+              maxItems: 64
+              uniqueItems: true
+              items:
+                type: integer
+                minimum: 1
+                maximum: 65535
+            backend:
+              type: string
+              enum:
+              - afpacket
+              - ebpf
+              - auto
+        capture_level:
+          type: string
+          enum:
+          - L0
+          - L1
+          - L2
+          - L3
+        output:
+          type: object
+          required:
+          - mode
+          properties:
+            mode:
+              type: string
+              enum:
+              - FLOW
+              - RAW
+              - FLOW_RAW
+        limits:
+          type: object
+          additionalProperties: true
+        sampling:
+          type: object
+          additionalProperties: true
+        buffer:
+          type: object
+          additionalProperties: true
+        masking:
+          type: object
+          additionalProperties: true
+    TrafficAgentEnrollRequest:
+      type: object
+      required:
+      - enrollment_token
+      - hostname
+      - ip
+      additionalProperties: false
+      properties:
+        enrollment_token:
+          type: string
+          pattern: ^wdt_[0-9a-f]{64}$
+          writeOnly: true
+        hostname:
+          type: string
+          maxLength: 255
+        ip:
+          type: string
+        os:
+          type: string
+          maxLength: 255
+        kernel:
+          type: string
+          maxLength: 255
+        arch:
+          type: string
+          maxLength: 64
+        version:
+          type: string
+          maxLength: 64
+        interfaces:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/TrafficAgentInterface'
+        csr_pem:
+          type: string
+          maxLength: 16384
+          writeOnly: true
+        capabilities:
+          type: object
+          additionalProperties: true
+    TrafficAgentEnrollResponse:
+      type: object
+      required:
+      - agent_id
+      - credential
+      - heartbeat_interval_seconds
+      properties:
+        agent_id:
+          type: string
+          format: uuid
+        credential:
+          type: string
+          pattern: ^wda_[0-9a-f]{64}$
+          writeOnly: true
+          description: 仅本次返回
+        heartbeat_interval_seconds:
+          type: integer
+          example: 15
+        agent_cert_pem:
+          type: string
+          nullable: true
+        ca_cert_pem:
+          type: string
+          nullable: true
+        cert_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    TrafficAgentHeartbeatRequest:
+      type: object
+      required:
+      - timestamp
+      - status
+      additionalProperties: false
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix 秒
+        status:
+          type: string
+          enum:
+          - ONLINE
+          - DEGRADED
+          - ERROR
+        metrics:
+          type: object
+          additionalProperties: true
+        capabilities:
+          type: object
+          additionalProperties: true
+    TrafficAgentHeartbeatResponse:
+      type: object
+      properties:
+        server_time:
+          type: string
+          format: date-time
+        heartbeat_interval_seconds:
+          type: integer
+          example: 15
+        desired_state:
+          type: string
+          enum:
+          - ENABLED
+          - DISABLED
+        config_version:
+          type: integer
+          format: int64
+    TrafficAgentConfigResponse:
+      type: object
+      properties:
+        desired_state:
+          type: string
+          enum:
+          - ENABLED
+          - DISABLED
+        version:
+          type: integer
+          format: int64
+        policy:
+          $ref: '#/components/schemas/TrafficPolicyConfig'
+          nullable: true
+        overrides:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrafficAgentCaptureOverride'
+    TrafficAgentConfigAckRequest:
+      type: object
+      required:
+      - version
+      - status
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+        status:
+          type: string
+          enum:
+          - APPLIED
+          - FAILED
+        error:
+          type: string
+          maxLength: 1024
+    TrafficAgentFlowsRequest:
+      type: object
+      required:
+      - events
+      additionalProperties: false
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: object
+            required:
+            - event_type
+            - flow_id
+            - timestamp
+            - protocol
+            properties:
+              event_type:
+                type: string
+                enum:
+                - request
+                - flow_end
+              flow_id:
+                type: string
+                maxLength: 255
+              timestamp:
+                type: integer
+                format: int64
+              src_ip:
+                type: string
+              src_port:
+                type: integer
+                minimum: 0
+                maximum: 65535
+              dst_ip:
+                type: string
+              dst_port:
+                type: integer
+                minimum: 0
+                maximum: 65535
+              protocol:
+                type: string
+                enum:
+                - tcp
+              direction:
+                type: string
+                enum:
+                - ingress
+                - egress
+                - both
+              bytes_in:
+                type: integer
+                format: int64
+                minimum: 0
+              bytes_out:
+                type: integer
+                format: int64
+                minimum: 0
+              http_method:
+                type: string
+                maxLength: 16
+              http_host:
+                type: string
+                maxLength: 255
+              http_uri:
+                type: string
+                maxLength: 4096
+              http_status:
+                type: integer
+                minimum: 0
+                maximum: 999
+    TrafficAgentCertificateResponse:
+      type: object
+      required:
+      - agent_cert_pem
+      - ca_cert_pem
+      - cert_expires_at
+      properties:
+        agent_cert_pem:
+          type: string
+        ca_cert_pem:
+          type: string
+        cert_expires_at:
+          type: string
+          format: date-time
 paths:
   /auth/captcha:
     get:
@@ -30110,6 +31075,25 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
+    x-source: 05-events-analytics.yaml
+  /metrics:
+    get:
+      operationId: prometheusMetricsGet
+      tags:
+      - system-health
+      summary: 导出 Prometheus 指标
+      description: 以 Prometheus 0.0.4 文本格式导出服务端审计等运行指标。权限：`system_health.read`。
+      responses:
+        '200':
+          description: Prometheus 指标文本
+          content:
+            text/plain; version=0.0.4:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
     x-source: 05-events-analytics.yaml
   /system-alerts:
     get:
@@ -43078,6 +44062,64 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 11-site-discovery.yaml
+  /apm/settings:
+    get:
+      operationId: apmSettingsGet
+      tags:
+      - APM
+      summary: 读取 APM 运行设置
+      description: 读取 APM 总开关、配置来源和 ClickHouse 连接状态；不会回显 ClickHouse DSN。该接口不受 APM 总开关门控。权限：`system_settings.read`。
+      responses:
+        '200':
+          description: APM 设置生效状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApmSettingsState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: apmSettingsUpdate
+      tags:
+      - APM
+      summary: 更新 APM 运行设置
+      description: 字段缺省表示保持不变；clickhouse_dsn 为空串时清除数据库覆盖并回退环境配置，非空时校验后通过敏感设置通道保存。更新后立即重建 ClickHouse 连接且审计不记录 DSN 明文。权限：`system_settings.update`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                enabled:
+                  type: boolean
+                clickhouse_dsn:
+                  type: string
+                  maxLength: 4096
+                  writeOnly: true
+                  description: ClickHouse DSN；空串清除界面覆盖
+      responses:
+        '200':
+          description: 更新后的 APM 设置生效状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApmSettingsState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 12-apm.yaml
   /apm/overview:
     get:
       operationId: apmOverview
@@ -45672,6 +46714,1523 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 17-bot-policy.yaml
+  /security/regressions:
+    get:
+      operationId: securityRegressionList
+      tags:
+      - security-regression
+      summary: 分页查询回归运行
+      description: 按候选指纹、时间、级别、服务端核验状态分页查询回归运行摘要（默认 page_size=20、最多 100）。返回行含 run_id、级别、声明状态、服务端核验状态、签名 key_id、候选配置指纹、语料/计划哈希、执行计数与登记时间。权限：`security_regression.read`
+      parameters:
+      - name: fingerprint
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 候选配置指纹（cfgfpv1:<hex>）精确过滤
+      - name: level
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - SMOKE
+          - FULL
+          - RELEASE
+        description: 运行级别
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - PENDING
+          - PASSED
+          - FAILED
+        description: 服务端核验状态
+      - name: since
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 登记时间下界（RFC3339）
+      - name: until
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 登记时间上界（RFC3339）
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 20
+          maximum: 100
+      responses:
+        '200':
+          description: 回归运行分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityRegressionRunListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 18-security-regression.yaml
+  /security/regressions/{id}:
+    get:
+      operationId: securityRegressionGet
+      tags:
+      - security-regression
+      summary: 回归运行摘要与门禁可用性评估
+      description: 返回运行摘要与按当前门禁策略实时评估的 gate_assessment（usable_for_publish、逐项理由、策略模式/要求级别/有效期/证据年龄/是否过期；只读评估，不产生判定留痕）。权限：`security_regression.read`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 运行内部 ID
+      responses:
+        '200':
+          description: 运行摘要与门禁评估
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityRegressionRunDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 18-security-regression.yaml
+  /security/regressions/{id}/cases:
+    get:
+      operationId: securityRegressionCaseList
+      tags:
+      - security-regression
+      summary: 回归用例索引分页
+      description: 分页返回用例索引/差异摘要（状态、family、真值、强制级别、差异摘要；不含原始请求/响应正文，禁止一次返回全部——page_size 上限 100）。权限：`security_regression.read`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 运行内部 ID
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - PASS
+          - FAIL
+          - SKIP
+          - BLOCKED
+          - NOT_RUN
+        description: 用例状态过滤
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 20
+          maximum: 100
+      responses:
+        '200':
+          description: 用例索引分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityRegressionCaseListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 18-security-regression.yaml
+  /security/regressions/imports:
+    post:
+      operationId: securityRegressionImport
+      tags:
+      - security-regression
+      summary: 登记已签名的回归报告
+      description: 通过已上传的受控对象 ID 登记 manifest、签名及证据（请求上限 1 MiB；不执行测试命令）。核验顺序：manifest 确定编码与 schema → Ed25519 签名（拒绝重复 JSON 键/未知算法/未登记或已撤销
+        key_id）→ 幂等判定 → 全部必需对象哈希与类别限额逐块校验 → 用例唯一性与计数对账 → 单事务落库。任何失败不落任何运行记录并记失败审计；同 run_id 同 manifest 哈希重复导入幂等返回 200（idempotent=true），同
+        run_id 异内容返回 409。权限：`security_regression.import`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecurityRegressionImportRequest'
+      responses:
+        '200':
+          description: 幂等命中既有登记（idempotent=true）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityRegressionImportResponse'
+        '201':
+          description: 登记成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityRegressionImportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 同 run_id 已登记不同内容的报告（记失败审计）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 18-security-regression.yaml
+  /security/regression-policy:
+    get:
+      operationId: securityRegressionPolicyGet
+      tags:
+      - security-regression
+      summary: 查询发布门禁策略
+      description: 返回门禁模式（OFF 默认/OBSERVE/ENFORCE）、要求级别、要求语料与证据有效期（秒，默认 604800=7 天）及乐观锁版本。权限：`security_regression.read`
+      responses:
+        '200':
+          description: 门禁策略
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityRegressionPolicyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: securityRegressionPolicyUpdate
+      tags:
+      - security-regression
+      summary: 修改发布门禁策略
+      description: 修改门禁模式/要求级别/语料/证据有效期（86400~2592000 秒）；expected_version 乐观锁冲突返回 409；启用与降级均为高风险审计；请求体不承接 skip_gate 等未知字段（400）。权限：`security_regression.policy`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecurityRegressionPolicyPutRequest'
+      responses:
+        '200':
+          description: 修改后的门禁策略
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityRegressionPolicyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 策略已被其他人修改（expected_version 冲突）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 18-security-regression.yaml
+  /security/regression-objects:
+    post:
+      operationId: securityRegressionObjectUpload
+      tags:
+      - security-regression
+      summary: 受控证据对象登记上传
+      description: 受控本地存储适配器的写入登记接口（S0 契约：对象 ID 服务端生成、写入仅经受控登记、流式 sha256；调用方无法声明哈希/路径）。请求体为原始字节流，类别由 ?kind= 指定；类别限额 MANIFEST
+        4 MiB、CASES_CHUNK 4 MiB、REPORT 16 MiB、PERF 256 MiB（流式不全量读入内存）、LOG 64 MiB，超限 400。登记后对象只读不可改写，无删除 API。权限：`security_regression.import`
+      parameters:
+      - name: kind
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - MANIFEST
+          - CASES_CHUNK
+          - REPORT
+          - PERF
+          - LOG
+        description: 对象类别
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '201':
+          description: 登记完成（sha256/size 为服务端计算值）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityRegressionObject'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 18-security-regression.yaml
+  /traffic/agents/enrollment-tokens:
+    get:
+      operationId: trafficAgentEnrollmentTokenList
+      tags:
+      - traffic-agents
+      summary: 注册令牌列表
+      description: 返回注册令牌及派生状态，永不返回令牌明文或摘要。权限：`traffic.agents.view`。
+      responses:
+        '200':
+          description: 注册令牌列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentEnrollmentTokenList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: trafficAgentEnrollmentTokenCreate
+      tags:
+      - traffic-agents
+      summary: 创建一次性注册令牌
+      description: 创建有效期为 5 至 10080 分钟的注册令牌；明文仅在本次响应返回。权限：`traffic.agents.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrafficAgentEnrollmentTokenCreate'
+      responses:
+        '201':
+          description: 注册令牌已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentEnrollmentTokenCreated'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/enrollment-tokens/{id}/revoke:
+    post:
+      operationId: trafficAgentEnrollmentTokenRevoke
+      tags:
+      - traffic-agents
+      summary: 吊销注册令牌
+      description: 吊销指定注册令牌。权限：`traffic.agents.manage`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: 已吊销
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/summary:
+    get:
+      operationId: trafficAgentSummary
+      tags:
+      - traffic-agents
+      summary: Agent 状态汇总
+      description: 按 ONLINE、DEGRADED、ERROR、OFFLINE、DISABLED 派生状态汇总。权限：`traffic.agents.view`。
+      responses:
+        '200':
+          description: Agent 状态汇总
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents:
+    get:
+      operationId: trafficAgentList
+      tags:
+      - traffic-agents
+      summary: Agent 列表
+      description: 分页查询 Agent，并返回派生状态和健康评分。权限：`traffic.agents.view`。
+      parameters:
+      - name: status
+        in: query
+        schema:
+          type: string
+          enum:
+          - ONLINE
+          - DEGRADED
+          - ERROR
+          - OFFLINE
+          - DISABLED
+      - name: q
+        in: query
+        schema:
+          type: string
+          maxLength: 200
+        description: 主机名或 IP 关键字
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: Agent 分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/{agent_id}:
+    get:
+      operationId: trafficAgentGet
+      tags:
+      - traffic-agents
+      summary: Agent 详情
+      description: 返回 Agent、网卡、能力声明及策略绑定详情。权限：`traffic.agents.view`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Agent 详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: trafficAgentDelete
+      tags:
+      - traffic-agents
+      summary: 删除 Agent
+      description: 吊销凭据并级联删除绑定、网卡和流量事件。权限：`traffic.agents.manage`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/{agent_id}/disable:
+    post:
+      operationId: trafficAgentDisable
+      tags:
+      - traffic-agents
+      summary: 禁用 Agent
+      description: 幂等地将 Agent 期望状态设为 DISABLED。权限：`traffic.agents.manage`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: 已禁用
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/{agent_id}/enable:
+    post:
+      operationId: trafficAgentEnable
+      tags:
+      - traffic-agents
+      summary: 启用 Agent
+      description: 幂等地将 Agent 期望状态设为 ENABLED。权限：`traffic.agents.manage`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: 已启用
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/{agent_id}/events:
+    get:
+      operationId: trafficAgentFlowEventList
+      tags:
+      - traffic-agents
+      summary: Agent 流量事件列表
+      description: 按时间倒序分页返回 FLOW 事件。权限：`traffic.agents.view`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: FLOW 事件分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentEventList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/{agent_id}/http-events:
+    get:
+      operationId: trafficAgentHttpEventList
+      tags:
+      - traffic-agents
+      summary: Agent HTTP 事件列表
+      description: 按时间倒序分页返回 HTTP 事件摘要。权限：`traffic.agents.view`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: host
+        in: query
+        schema:
+          type: string
+          maxLength: 255
+      - name: method
+        in: query
+        schema:
+          type: string
+          maxLength: 16
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: HTTP 事件分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentEventList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/{agent_id}/http-events/{id}:
+    get:
+      operationId: trafficAgentHttpEventGet
+      tags:
+      - traffic-agents
+      summary: Agent HTTP 事件详情
+      description: 返回已按采集级别和脱敏策略留存的 HTTP 请求/响应详情。权限：`traffic.agents.view`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: HTTP 事件详情
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/{agent_id}/http-asset-sources:
+    get:
+      operationId: trafficAgentHttpAssetSourceList
+      tags:
+      - traffic-agents
+      summary: Agent HTTP 资产来源列表
+      description: 返回 Agent HTTP 观测与 API 资产联动的状态和失败原因。权限：`traffic.agents.view`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: HTTP 资产来源列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentEventList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/{agent_id}/overrides:
+    get:
+      operationId: trafficAgentCaptureOverrideList
+      tags:
+      - traffic-agents
+      summary: 定向采集规则列表
+      description: 返回有效和已过期规则，并附派生 active 状态。权限：`traffic.agents.view`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: 定向采集规则列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentCaptureOverrideList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: trafficAgentCaptureOverrideCreate
+      tags:
+      - traffic-agents
+      summary: 创建定向采集规则
+      description: 创建只升不降的临时采集规则，并递增 Agent 配置版本。权限：`traffic.agents.manage`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrafficAgentCaptureOverrideCreate'
+      responses:
+        '201':
+          description: 规则已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentCaptureOverride'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/{agent_id}/overrides/{override_id}:
+    delete:
+      operationId: trafficAgentCaptureOverrideDelete
+      tags:
+      - traffic-agents
+      summary: 删除定向采集规则
+      description: 删除规则并递增 Agent 配置版本。权限：`traffic.agents.manage`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: override_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/agents/{agent_id}/policy:
+    post:
+      operationId: trafficAgentPolicyBind
+      tags:
+      - traffic-policies
+      summary: 绑定采集策略
+      description: 将策略绑定到 Agent 并递增配置版本。权限：`traffic.agents.manage`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - policy_id
+              additionalProperties: false
+              properties:
+                policy_id:
+                  type: string
+                  format: uuid
+      responses:
+        '204':
+          description: 已绑定
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: trafficAgentPolicyUnbind
+      tags:
+      - traffic-policies
+      summary: 解除采集策略绑定
+      description: 解除 Agent 的策略绑定并递增配置版本。权限：`traffic.agents.manage`。
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: 已解除绑定
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/policies:
+    get:
+      operationId: trafficPolicyList
+      tags:
+      - traffic-policies
+      summary: 采集策略列表
+      description: 返回全部采集策略。权限：`traffic.agents.view`。
+      responses:
+        '200':
+          description: 策略列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficPolicyList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: trafficPolicyCreate
+      tags:
+      - traffic-policies
+      summary: 创建采集策略
+      description: 创建版本为 1 的采集策略；name 必须与 config.name 一致。权限：`traffic.agents.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrafficPolicyWrite'
+      responses:
+        '201':
+          description: 策略已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficPolicy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/policies/{id}:
+    get:
+      operationId: trafficPolicyGet
+      tags:
+      - traffic-policies
+      summary: 采集策略详情
+      description: 按 ID 返回采集策略。权限：`traffic.agents.view`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: 策略详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficPolicy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: trafficPolicyUpdate
+      tags:
+      - traffic-policies
+      summary: 更新采集策略
+      description: 更新策略并创建不可变历史版本，已绑定 Agent 的配置版本同步递增。权限：`traffic.agents.manage`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrafficPolicyWrite'
+      responses:
+        '200':
+          description: 更新后的策略
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficPolicy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: trafficPolicyDelete
+      tags:
+      - traffic-policies
+      summary: 删除采集策略
+      description: 删除未被 Agent 绑定的采集策略。权限：`traffic.agents.manage`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: 已删除
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/policies/{id}/versions:
+    get:
+      operationId: trafficPolicyVersionList
+      tags:
+      - traffic-policies
+      summary: 采集策略版本历史
+      description: 返回策略的不可变版本历史。权限：`traffic.agents.view`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: 版本历史
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TrafficPolicy'
+                  total:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /traffic/policies/{id}/rollback:
+    post:
+      operationId: trafficPolicyRollback
+      tags:
+      - traffic-policies
+      summary: 回滚采集策略
+      description: 以指定历史版本内容创建一个新的当前版本。权限：`traffic.agents.manage`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - version
+              additionalProperties: false
+              properties:
+                version:
+                  type: integer
+                  minimum: 1
+      responses:
+        '200':
+          description: 回滚后的策略
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficPolicy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /agents/enroll:
+    post:
+      operationId: trafficAgentEnroll
+      tags:
+      - agent-control
+      summary: Agent 注册
+      description: 使用一次性注册令牌登记 Agent 并仅一次返回 Bearer credential；可携带 P-256 CSR 获取客户端证书。
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrafficAgentEnrollRequest'
+      responses:
+        '201':
+          description: Agent 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentEnrollResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /agents/{agent_id}/heartbeat:
+    post:
+      operationId: trafficAgentHeartbeat
+      tags:
+      - agent-control
+      summary: Agent 心跳
+      description: 刷新活性、运行状态、指标和能力声明；禁用 Agent 仍可调用以获取 desired_state。
+      security:
+      - agentBearer: []
+      - agentCertificate: []
+        agentTimestamp: []
+        agentSignature: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrafficAgentHeartbeatRequest'
+      responses:
+        '200':
+          description: 心跳回执
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentHeartbeatResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /agents/{agent_id}/metrics:
+    post:
+      operationId: trafficAgentMetricsPush
+      tags:
+      - agent-control
+      summary: 上报 Agent 指标快照
+      security:
+      - agentBearer: []
+      - agentCertificate: []
+        agentTimestamp: []
+        agentSignature: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '204':
+          description: 指标已接收
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /agents/{agent_id}/config:
+    get:
+      operationId: trafficAgentConfigGet
+      tags:
+      - agent-control
+      summary: 拉取 Agent 配置
+      description: 返回期望状态、配置版本、绑定策略和未过期定向采集规则；无绑定时 policy 为 null。
+      security:
+      - agentBearer: []
+      - agentCertificate: []
+        agentTimestamp: []
+        agentSignature: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Agent 配置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentConfigResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /agents/{agent_id}/config/ack:
+    post:
+      operationId: trafficAgentConfigAck
+      tags:
+      - agent-control
+      summary: 确认 Agent 配置应用结果
+      description: APPLIED 时回填已应用配置版本；FAILED 必须提供错误说明。
+      security:
+      - agentBearer: []
+      - agentCertificate: []
+        agentTimestamp: []
+        agentSignature: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrafficAgentConfigAckRequest'
+      responses:
+        '204':
+          description: ACK 已接收
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /agents/{agent_id}/flows:
+    post:
+      operationId: trafficAgentFlowsPush
+      tags:
+      - agent-control
+      summary: 批量上报 FLOW 事件
+      description: 每批 1 至 500 条 request/flow_end 事件。
+      security:
+      - agentBearer: []
+      - agentCertificate: []
+        agentTimestamp: []
+        agentSignature: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrafficAgentFlowsRequest'
+      responses:
+        '202':
+          description: 事件已接收
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /agents/{agent_id}/http:
+    post:
+      operationId: trafficAgentHttpEventsPush
+      tags:
+      - agent-control
+      summary: 批量上报 HTTP 事件
+      description: 每批最多 100 条、请求体最多 8 MiB；支持契约版本对应的 HTTP 记录结构。
+      security:
+      - agentBearer: []
+      - agentCertificate: []
+        agentTimestamp: []
+        agentSignature: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - records
+              properties:
+                records:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    additionalProperties: true
+      responses:
+        '202':
+          description: HTTP 事件已接收
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /agents/{agent_id}/packets:
+    post:
+      operationId: trafficAgentPacketsPush
+      tags:
+      - agent-control
+      summary: 批量上报 RAW 数据帧
+      description: 接收最多 8 MiB 的 WDP1 二进制批次，校验后只累计计数并丢弃载荷。
+      security:
+      - agentBearer: []
+      - agentCertificate: []
+        agentTimestamp: []
+        agentSignature: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/x-wdsp-packet-batch:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '202':
+          description: 数据帧已接收
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accepted_frames:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
+  /agents/{agent_id}/rotate-cert:
+    post:
+      operationId: trafficAgentCertificateRotate
+      tags:
+      - agent-control
+      summary: 轮换 Agent 客户端证书
+      description: 仅接受证书 PoP 认证；签发新证书并为旧证书保留 24 小时宽限期。
+      security:
+      - agentCertificate: []
+        agentTimestamp: []
+        agentSignature: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - csr_pem
+              additionalProperties: false
+              properties:
+                csr_pem:
+                  type: string
+                  maxLength: 16384
+      responses:
+        '200':
+          description: 新证书材料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrafficAgentCertificateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 19-traffic-agents.yaml
 tags:
 - name: auth
   description: 身份认证
@@ -45695,6 +48254,12 @@ tags:
   description: 站点资产发现
 - name: APM
   description: APM 业务性能监控（无 Agent 查询 + Agent 控制面）
+- name: traffic-agents
+  description: 分布式流量采集 Agent 管理
+- name: traffic-policies
+  description: 分布式流量采集策略
+- name: agent-control
+  description: 分布式流量 Agent 机器控制面
 - name: certificates
   description: HTTPS 证书
 - name: gateway-config
@@ -45737,6 +48302,8 @@ tags:
   description: JWT 信任策略（业务 JWT 信任链，WDSP P0-03）
 - name: bot-policy
   description: Bot 挑战策略（WDSP P1-02）
+- name: security-regression
+  description: 安全回归证据与发布门禁（WDSP P1-04）
 - name: attack-sessions
   description: 攻击活动（Attack Session）
 - name: access-logs

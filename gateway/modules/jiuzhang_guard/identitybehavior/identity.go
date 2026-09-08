@@ -238,6 +238,11 @@ func classifyUA(ua string) string {
 	return IdentityUnknown
 }
 
+// ClassifyUA 导出 UA 分类启发（WDSP P1-02 B3：Bot 信号评估的 client_claim 组
+// ua_class_match 指标复用同一口径）。注意：纯 UA 启发只会产出 BOT/HUMAN/UNKNOWN——
+// APPLICATION/SERVICE/AGENT 需凭据佐证，UA 属可伪造弱信号，不能单独构成挑战依据。
+func ClassifyUA(ua string) string { return classifyUA(ua) }
+
 // extractCredentials 按优先级提取凭据：已验证 mTLS 客户端证书 → Authorization
 // （Bearer JWT > opaque bearer > 其他方案）→ API Key 头 → 会话 Cookie → 其他 Cookie。
 // 每项仅保留 HMAC 指纹与未验签关联字段。

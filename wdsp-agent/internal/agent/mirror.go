@@ -23,6 +23,35 @@ import (
 // 丢弃计数（可查询），不降级误标（dropped_by_reason 词表增量，G2）。
 const DropReasonMirrorV2NotNegotiated = "mirror_v2_not_negotiated"
 
+// DropReasonTapV2NotNegotiated tap 记录未协商 v2 丢弃原因（G3；与镜像分账区分）。
+const DropReasonTapV2NotNegotiated = "tap_v2_not_negotiated"
+
+// dropV2NotNegotiated 未协商 v2 的适配器记录丢弃计数：按来源类型如实分账
+// （镜像记录计 mirror_v2_not_negotiated，tap 记录计 tap_v2_not_negotiated）。
+func (a *Agent) dropV2NotNegotiated(recs []events.HTTPRecordV2) {
+	var nm, nt uint64
+	for _, r := range recs {
+		if r.SourceType == events.SourceEnvoyTap {
+			nt++
+		} else {
+			nm++
+		}
+	}
+	a.metrics.Dropped.Add(uint64(len(recs)))
+	if nm > 0 {
+		a.metrics.DropReason(DropReasonMirrorV2NotNegotiated, nm)
+	}
+	if nt > 0 {
+		a.metrics.DropReason(DropReasonTapV2NotNegotiated, nt)
+	}
+}
+
+// sendMirrorBatch 镜像批外发（兼容包装：v2 适配器共用 sendV2Batch）。
+func (a *Agent) sendMirrorBatch(recs []events.HTTPRecordV2) { a.sendV2Batch(recs) }
+
+// replayMirrorBatch 镜像批补传（兼容包装：v2 适配器共用 replayV2Batch）。
+func (a *Agent) replayMirrorBatch(recs []events.HTTPRecordV2) error { return a.replayV2Batch(recs) }
+
 // mirrorReceiverConfig 本地配置 → 接收器配置（校验在 mirrorsrc.New 内完成）。
 func mirrorReceiverConfig(mc config.MirrorConfig) mirrorsrc.Config {
 	return mirrorsrc.Config{
@@ -84,14 +113,14 @@ func (a *Agent) bufferMirror(recs []events.HTTPRecordV2) {
 	}
 }
 
-// sendMirrorBatch 镜像 v2 批外发（实时路径；错误分类同 sendHTTPBatch，
+// sendV2Batch 受控适配器 v2 批外发（镜像/tap 共用实时路径；错误分类同 sendHTTPBatch，
 // 但绝不降级 v1 线格式）：
 //   - 未协商 v2 → 丢弃计数（mirror_v2_not_negotiated，WARN 一次）；
 //   - 429 窗口内 / 限速桶满 / 5xx / 网络错误 → 转磁盘缓存；
 //   - 永久非法：有 invalid_records 按索引隔离丢弃（其余重发一次）；
 //     无索引定位 → 整批丢弃计数（适配器侧已全量自检，包络级 400 属异常）；
 //   - 404（旧服务端无端点）→ 与主通道同处置：标记 httpGone 并丢弃计数。
-func (a *Agent) sendMirrorBatch(recs []events.HTTPRecordV2) {
+func (a *Agent) sendV2Batch(recs []events.HTTPRecordV2) {
 	if len(recs) == 0 {
 		return
 	}
@@ -101,9 +130,8 @@ func (a *Agent) sendMirrorBatch(recs []events.HTTPRecordV2) {
 		return
 	}
 	if !a.httpV2.Load() {
-		a.metrics.Dropped.Add(uint64(len(recs)))
-		a.metrics.DropReason(DropReasonMirrorV2NotNegotiated, uint64(len(recs)))
-		a.log.Warn("服务端未协商 HTTP 事件 schema v2，镜像记录丢弃计数（不降级 v1 误标来源）",
+		a.dropV2NotNegotiated(recs)
+		a.log.Warn("服务端未协商 HTTP 事件 schema v2，适配器记录丢弃计数（不降级 v1 误标来源）",
 			"records", len(recs))
 		return
 	}
@@ -118,10 +146,10 @@ func (a *Agent) sendMirrorBatch(recs []events.HTTPRecordV2) {
 		return
 	}
 	if len(data) > events.MaxHTTPBatchBytes && len(recs) > 1 {
-		// 防御性拆分（镜像记录本身有界，正常不可达）
+		// 防御性拆分（适配器记录本身有界，正常不可达）
 		mid := len(recs) / 2
-		a.sendMirrorBatch(recs[:mid])
-		a.sendMirrorBatch(recs[mid:])
+		a.sendV2Batch(recs[:mid])
+		a.sendV2Batch(recs[mid:])
 		return
 	}
 	if !a.bucket.Allow(len(data)) {
@@ -132,7 +160,7 @@ func (a *Agent) sendMirrorBatch(recs []events.HTTPRecordV2) {
 	accepted, duplicate, invalid, err := a.client.PostHTTPV2(ctx, a.cfg.AgentID, recs)
 	cancel()
 	if err != nil {
-		a.handleMirrorSendError(recs, invalid, err)
+		a.handleV2SendError(recs, invalid, err)
 		return
 	}
 	a.metrics.Forwarded.Add(uint64(len(recs)))
@@ -143,8 +171,8 @@ func (a *Agent) sendMirrorBatch(recs []events.HTTPRecordV2) {
 	a.metrics.ForwardBytes.Add(uint64(len(data)))
 }
 
-// handleMirrorSendError 镜像批发送失败分类处置（无 v1 降级路径）。
-func (a *Agent) handleMirrorSendError(recs []events.HTTPRecordV2, invalid []events.InvalidRecord, err error) {
+// handleV2SendError 适配器 v2 批发送失败分类处置（无 v1 降级路径）。
+func (a *Agent) handleV2SendError(recs []events.HTTPRecordV2, invalid []events.InvalidRecord, err error) {
 	switch {
 	case transport.IsNotFound(err):
 		a.httpGone.Store(true)
@@ -152,7 +180,7 @@ func (a *Agent) handleMirrorSendError(recs []events.HTTPRecordV2, invalid []even
 		a.metrics.Dropped.Add(uint64(len(recs)))
 		a.metrics.DropReason(DropReasonHTTPEndpointGone, uint64(len(recs)))
 	case transport.IsPermanent(err) && len(invalid) > 0:
-		a.isolateMirrorByIndex(recs, invalid)
+		a.isolateV2ByIndex(recs, invalid)
 	case transport.IsPermanent(err):
 		a.log.Warn("镜像批次被服务端永久拒绝且无非法记录定位，整批丢弃计数", "records", len(recs), "err", err)
 		a.metrics.Dropped.Add(uint64(len(recs)))
@@ -168,13 +196,13 @@ func (a *Agent) handleMirrorSendError(recs []events.HTTPRecordV2, invalid []even
 	}
 }
 
-// isolateMirrorByIndex 按 v2 invalid_records 索引隔离非法镜像记录（丢弃计数），
+// isolateV2ByIndex 按 v2 invalid_records 索引隔离非法适配器记录（丢弃计数），
 // 剩余记录重发一次；索引不可定位按批次级拒绝整批丢弃（不无限重试）。
-func (a *Agent) isolateMirrorByIndex(recs []events.HTTPRecordV2, invalid []events.InvalidRecord) {
+func (a *Agent) isolateV2ByIndex(recs []events.HTTPRecordV2, invalid []events.InvalidRecord) {
 	bad := make(map[int]string, len(invalid))
 	for _, iv := range invalid {
 		if iv.Index < 0 || iv.Index >= len(recs) {
-			a.log.Warn("镜像批 v2 非法记录索引不可定位，整批丢弃计数", "index", iv.Index, "reason", iv.Reason)
+			a.log.Warn("适配器 v2 批非法记录索引不可定位，整批丢弃计数", "index", iv.Index, "reason", iv.Reason)
 			a.metrics.Dropped.Add(uint64(len(recs)))
 			a.metrics.DropReason(DropReasonPermanentInvalid, uint64(len(recs)))
 			return
@@ -184,7 +212,7 @@ func (a *Agent) isolateMirrorByIndex(recs []events.HTTPRecordV2, invalid []event
 	keep := make([]events.HTTPRecordV2, 0, len(recs)-len(bad))
 	for i, rec := range recs {
 		if reason, drop := bad[i]; drop {
-			a.log.Warn("镜像记录被服务端判定永久非法，按索引隔离丢弃",
+			a.log.Warn("适配器记录被服务端判定永久非法，按索引隔离丢弃",
 				"event_id", rec.EventID, "reason", reason)
 			a.metrics.Dropped.Add(1)
 			a.metrics.DropReason(DropReasonPermanentInvalid, 1)
@@ -193,14 +221,14 @@ func (a *Agent) isolateMirrorByIndex(recs []events.HTTPRecordV2, invalid []event
 		keep = append(keep, rec)
 	}
 	if len(keep) > 0 {
-		a.sendMirrorBatch(keep)
+		a.sendV2Batch(keep)
 	}
 }
 
-// replayMirrorBatch 补传一批镜像 v2 记录（'M' 标签缓存）。返回 nil 本批了结；
+// replayV2Batch 补传一批适配器 v2 记录（'M' 标签缓存）。返回 nil 本批了结；
 // 返回错误保留该段下轮重试。未协商 v2 → 丢弃计数（服务端升级前补传无意义，
 // 且不得阻塞同段其他记录补传）；429 → errReplayBackoff；5xx/网络 → 保留重试。
-func (a *Agent) replayMirrorBatch(recs []events.HTTPRecordV2) error {
+func (a *Agent) replayV2Batch(recs []events.HTTPRecordV2) error {
 	if len(recs) == 0 {
 		return nil
 	}
@@ -229,7 +257,7 @@ func (a *Agent) replayMirrorBatch(recs []events.HTTPRecordV2) error {
 			a.metrics.DropReason(DropReasonHTTPEndpointGone, uint64(len(recs)))
 			return nil
 		case transport.IsPermanent(err) && len(invalid) > 0:
-			a.isolateMirrorByIndex(recs, invalid)
+			a.isolateV2ByIndex(recs, invalid)
 			return nil
 		case transport.IsPermanent(err):
 			a.metrics.Dropped.Add(uint64(len(recs)))

@@ -1,22 +1,34 @@
 {
   "schema_version": 1,
   "case_id": "WAF-ATK-SSTI-001",
-  "case_version": 1,
+  "case_version": 2,
   "family": "waf",
-  "tags": ["ssti", "template-probe", "custom-pack-declared"],
+  "tags": [
+    "ssti",
+    "template-probe",
+    "custom-pack-declared"
+  ],
   "criticality": "STANDARD",
   "truth": "ATTACK",
-  "truth_reason": "SSTI 探针：Jinja2/Twig 形态定界表达式 {{7*7}}，自研合成；属 CUSTOM_PACK ssti-injection 声明检测范围（探针形态）",
+  "truth_reason": "SSTI 探针：Jinja2/Twig 形态定界表达式 {{7*7}}，自研合成；属 CUSTOM_PACK ssti-injection 声明检测范围（探针形态）；R2 真实栈回放对齐（2026-09-08，run 20260908T203034-c88b80 实证）：PROTECT 相位拦截语义——CRS 934200 命中使 949110 在自定义规则（CRS 之后）执行前中断相位 2，故 PROTECT 检出模块为 coraza_crs（934→application_attack）；OBSERVE DetectionOnly 无中断，7100003 正常命中",
   "source": "self_synthetic",
   "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
   "authorization": "项目自研合成攻击样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
   "scope": {
     "capability": "waf.custom_pack.ssti_injection",
-    "applications": ["p1reg-echo-site"],
-    "protocols": ["http/1.1"]
+    "applications": [
+      "p1reg-echo-site"
+    ],
+    "protocols": [
+      "http/1.1"
+    ]
   },
   "prerequisites": {
-    "environment": ["isolated_stack", "controlled_origin", "waf_event_pipeline"]
+    "environment": [
+      "isolated_stack",
+      "controlled_origin",
+      "waf_event_pipeline"
+    ]
   },
   "steps": [
     {
@@ -25,7 +37,9 @@
       "request": {
         "method": "POST",
         "path": "/api/json",
-        "headers": {"Content-Type": "application/json"},
+        "headers": {
+          "Content-Type": "application/json"
+        },
         "body": "{\"nickname\": \"{{7*7}}\", \"bio\": \"p1reg ssti probe\"}"
       },
       "wait": null,
@@ -33,19 +47,40 @@
     }
   ],
   "seed": 2010,
-  "reset_plan": {"scope": "none", "actions": ["none"]},
+  "reset_plan": {
+    "scope": "none",
+    "actions": [
+      "none"
+    ]
+  },
   "expectations_by_profile": {
     "OBSERVE": {
-      "expected_detection": {"module": "custom_pack", "rule_family": "ssti_injection"},
+      "expected_detection": {
+        "module": "custom_pack",
+        "rule_family": "ssti_injection"
+      },
       "expected_final_action": "DETECT_PASS",
       "expected_origin": "reached",
-      "expected_events": [{"type": "waf_security_event", "rule_family": "ssti_injection"}]
+      "expected_events": [
+        {
+          "type": "waf_security_event",
+          "rule_family": "ssti_injection"
+        }
+      ]
     },
     "PROTECT": {
-      "expected_detection": {"module": "custom_pack", "rule_family": "ssti_injection"},
+      "expected_detection": {
+        "module": "coraza_crs",
+        "rule_family": "application_attack"
+      },
       "expected_final_action": "BLOCK_403",
       "expected_origin": "not_reached",
-      "expected_events": [{"type": "waf_security_event", "rule_family": "ssti_injection"}]
+      "expected_events": [
+        {
+          "type": "waf_security_event",
+          "rule_family": "application_attack"
+        }
+      ]
     }
   },
   "evidence_requirements": {

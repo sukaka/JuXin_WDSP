@@ -1,0 +1,29 @@
+{
+  "run_id": "20260908T185148-7b707a",
+  "task": "P1-02 B5 BOT-024 升级/关闭/回退演练",
+  "finished_at": "2026-09-08T10:52:24Z",
+  "totals": {
+    "total": 23,
+    "pass": 23,
+    "fail": 0,
+    "blocked": 0
+  },
+  "phases": {
+    "a-upgrade": {
+      "evidence": "phase-a-upgrade/"
+    },
+    "b-protect-baseline": {
+      "evidence": "phase-b-protect/"
+    },
+    "c-off-tombstone": {
+      "evidence": "phase-c-off/"
+    },
+    "d-rollback-protect": {
+      "evidence": "phase-d-rollback/"
+    },
+    "publish-evidence": {
+      "evidence": "publish-*.json"
+    }
+  },
+  "verdict": "PASS"
+}

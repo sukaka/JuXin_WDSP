@@ -41,29 +41,28 @@ MASTER_KEY="$(openssl rand -hex 32)"
 API_ENABLED="false"
 [ "$EDITION" = "wdsp" ] && API_ENABLED="true"
 
-# ---- wdsp：生成 CI 临时 Ed25519 验签密钥对（公钥经 env 注入 api 容器）----
+# ---- 生成 edition 对应的 CI 临时 Ed25519 授权（公钥经 env 注入 api 容器）----
 # .lic 语义与 server/tests/license_helper_test.go buildTestLicense 完全一致：
 # 签名输入 = payload map 的 Go json.Marshal 规范字节（键字典序、紧凑、无 HTML 字符），
 # python json.dumps(sort_keys, 紧凑分隔符, 全 ASCII) 逐字节等价（已由口径校验脚本比对）。
 LIC_KEY_ID="ci-smoke-key"
-if [ "$EDITION" = "wdsp" ]; then
-  openssl genpkey -algorithm ed25519 -out "$WORK_DIR/lic-key.pem" >/dev/null 2>&1
-  LIC_PUB_HEX="$(openssl pkey -in "$WORK_DIR/lic-key.pem" -pubout -outform DER 2>/dev/null \
-    | tail -c 32 | python3 -c 'import sys; print(sys.stdin.buffer.read().hex())')"
-  python3 - "$WORK_DIR" "$LIC_KEY_ID" <<'PY'
+openssl genpkey -algorithm ed25519 -out "$WORK_DIR/lic-key.pem" >/dev/null 2>&1
+LIC_PUB_HEX="$(openssl pkey -in "$WORK_DIR/lic-key.pem" -pubout -outform DER 2>/dev/null \
+  | tail -c 32 | python3 -c 'import sys; print(sys.stdin.buffer.read().hex())')"
+python3 - "$WORK_DIR" "$LIC_KEY_ID" "$EDITION" <<'PY'
 import json, sys, datetime
-work_dir, key_id = sys.argv[1], sys.argv[2]
+work_dir, key_id, edition = sys.argv[1], sys.argv[2], sys.argv[3]
 payload = {
     "license_id": "LIC-CI-SMOKE-0001",
     "license_type": "FORMAL",
-    "product": "wdsp",
+    "product": edition,
     "customer": "CI Smoke",
     "issued_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "expires_at": None,            # 永久授权
     "perpetual": True,
     "machine_fingerprint": None,   # 不绑定机器指纹（CI 容器无指纹材料也可生效）
     "quotas": {"max_applications": 0, "max_api_endpoints": 0, "max_qps": 0},  # 0 = 不限制
-    "features": ["api", "waf"],
+    "features": ["api", "waf"] if edition == "wdsp" else ["waf"],
     "version": 1,
     "key_id": key_id,
 }
@@ -71,10 +70,10 @@ canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_as
 with open(work_dir + "/lic-payload.bin", "w") as f:
     f.write(canonical)
 PY
-  openssl pkeyutl -sign -rawin -inkey "$WORK_DIR/lic-key.pem" \
-    -in "$WORK_DIR/lic-payload.bin" -out "$WORK_DIR/lic-sig.bin"
-  LIC_SIG_HEX="$(python3 -c 'import sys; print(open(sys.argv[1], "rb").read().hex())' "$WORK_DIR/lic-sig.bin")"
-  python3 - "$WORK_DIR" "$LIC_SIG_HEX" <<'PY'
+openssl pkeyutl -sign -rawin -inkey "$WORK_DIR/lic-key.pem" \
+  -in "$WORK_DIR/lic-payload.bin" -out "$WORK_DIR/lic-sig.bin"
+LIC_SIG_HEX="$(python3 -c 'import sys; print(open(sys.argv[1], "rb").read().hex())' "$WORK_DIR/lic-sig.bin")"
+python3 - "$WORK_DIR" "$LIC_SIG_HEX" <<'PY'
 import json, sys
 work_dir, sig = sys.argv[1], sys.argv[2]
 with open(work_dir + "/lic-payload.bin") as f:
@@ -82,7 +81,6 @@ with open(work_dir + "/lic-payload.bin") as f:
 with open(work_dir + "/license.lic", "w") as f:
     json.dump({"payload": payload, "signature": sig}, f)
 PY
-fi
 
 # ---- 生成本轮 compose env 文件（mktemp 内，不污染仓库 .env）----
 {
@@ -95,30 +93,35 @@ fi
   echo "API_DYNAMIC_PROTECTION_ENABLED=$API_ENABLED"
   echo "API_PORT=$API_PORT"
   echo "GATEWAY_PORT=$GATEWAY_PORT"
-  if [ "$EDITION" = "wdsp" ]; then
-    echo "LICENSE_VENDOR_PUBLIC_KEY=$LIC_KEY_ID:$LIC_PUB_HEX"
-  fi
+  echo "LICENSE_VENDOR_PUBLIC_KEY=$LIC_KEY_ID:$LIC_PUB_HEX"
 } > "$ENV_FILE"
 
-COMPOSE=(docker compose --env-file "$ENV_FILE" -f deployment/docker-compose.stage5.yml)
-[ "$EDITION" = "wdsp" ] && COMPOSE+=(-f deployment/docker-compose.wdsp.yml -f deployment/docker-compose.test-license.yml)
+RUN_ID="$(date +%s)-$$"
+COMPOSE=(docker compose --project-name "jiuzhang-ci-edition-${RUN_ID}" --env-file "$ENV_FILE" -f deployment/docker-compose.stage5.yml)
+[ "$EDITION" = "wdsp" ] && COMPOSE+=(-f deployment/docker-compose.wdsp.yml)
+COMPOSE+=(-f deployment/docker-compose.test-license.yml)
 
-# ---- 本地安全防护：既有 stage5 容器在运行时拒绝接管（CI runner 恒为空）----
-if [ "${CI:-}" != "true" ] && [ -n "$("${COMPOSE[@]}" ps -q 2>/dev/null)" ]; then
-  echo "ERROR: 检测到 stage5 编排已有容器在运行；本地冒烟会互相干扰，请先 make stage5-down" >&2
+# ---- 安全防护：stage5 使用固定容器名，任何既有实例（含已停止）均拒绝接管。----
+existing_stage5="$(docker ps -a --format '{{.Names}}' 2>/dev/null | awk '/^jiuzhang-stage5-/{print; exit}')"
+if [ -n "$existing_stage5" ]; then
+  echo "ERROR: 检测到既有 stage5 容器（${existing_stage5}）；拒绝中断或复用它" >&2
   rm -rf "$WORK_DIR"
   exit 1
 fi
 
 cleanup() {
   local rc=$?
+  # EXIT trap 中的 set -u、命令替换等异常可能让 `$?` 被重置为 0；只有脚本
+  # 走到汇总末尾才允许返回成功，避免测试门禁假绿。
+  if [ "$rc" -eq 0 ] && [ "${SCRIPT_DONE:-0}" != "1" ]; then rc=1; fi
   if [ "$rc" -ne 0 ]; then
     echo "==== 失败诊断：compose ps ===="
     "${COMPOSE[@]}" ps 2>&1 || true
     echo "==== 失败诊断：api/gateway 日志尾部 ===="
     "${COMPOSE[@]}" logs --tail=150 api gateway 2>&1 | tail -n 320 || true
   fi
-  # 不删卷（-v）：CI runner 一次性无需清理；避免误伤本地同名历史卷
+  # 每轮以独立 Compose 项目名创建专用卷，避免复用旧凭据；退出时仅删除本轮
+  # 容器与网络，绝不删除现有数据卷。
   "${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$WORK_DIR"
   exit "$rc"
@@ -137,13 +140,27 @@ expect_code() { [ "$2" = "$3" ] && record "$1" 1 || record "$1" 0 "status=$3 wan
 
 # wait_http <url> <want_code> <timeout_s>
 wait_http() {
-  local url="$1" want="$2" deadline=$(( $(date +%s) + ${3:-120} )) code
+  local url="$1" want="$2" deadline=$(( $(date +%s) + ${3:-120} )) code="000"
   while [ "$(date +%s)" -lt "$deadline" ]; do
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null || echo 000)"
     [ "$code" = "$want" ] && return 0
     sleep 3
   done
-  echo "ERROR: 等待 $url 返回 $want 超时（last=$code）" >&2
+  echo "ERROR: 等待 $url 返回 $want 超时（last=${code:-000}）" >&2
+  return 1
+}
+
+# WDSP 网关在尚未导入授权、创建应用并发布前会由透传发布卸载业务监听，
+# 因而不能用固定 /health 路径作启动前置。发布后按应用 Host 探测任意 HTTP
+# 响应即可，后续用例再精确断言业务状态码与运行时事件。
+wait_gateway_app() {
+  local deadline=$(( $(date +%s) + ${1:-90} )) code="000"
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Host: $HOST_HEADER" "$GATEWAY_URL/v1/orders/123" 2>/dev/null || echo 000)"
+    [ "$code" != "000" ] && return 0
+    sleep 2
+  done
+  echo "ERROR: 发布后网关未应答（Host=${HOST_HEADER}，last=${code:-000}）" >&2
   return 1
 }
 
@@ -179,22 +196,52 @@ if [ "$EDITION" = "waf" ]; then
   expect_code "api-security/runtime/events 未注册（404）" 404 \
     "$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/api/v1/api-security/runtime/events")"
 
-  # 默认 Caddyfile（SEC_RULE_ENGINE=On）反代 testorigin：与阶段1 run-waf-tests.sh 同口径
-  wait_http "$GATEWAY_URL/health" 200 90
-  resp="$(curl -s -w $'\n%{http_code}' "$GATEWAY_URL/echo?a=1&b=2")"
+  # 配置发布器会卸载未绑定应用的默认监听；创建并发布普通 WAF 应用后再验防护链路。
+  export API_URL GATEWAY_URL
+  export HOST_HEADER="ci-smoke-waf.local"
+  export VALKEY_PASSWORD="$VK_PWD" VALKEY_CONTAINER="jiuzhang-stage5-valkey"
+  export SYS_USER="jiuzhang_admin" SYS_PWD="$ADMIN_PWD" SYS_NEW_PWD="$ADMIN_NEW_PWD"
+  export SEC_USER="ci_smoke_sec" SEC_PWD="$SEC_PWD_CI"
+  export APP_CODE="cismokewaf" APP_PROTECTION_MODE="PROTECT"
+  # shellcheck source=../waf/scripts/stage5-setup.sh
+  source test/waf/scripts/stage5-setup.sh
+
+  SYS_CSRF="$(s5_ensure_sysadmin)" || { echo "ERROR: sysadmin 登录失败" >&2; exit 1; }
+  record "系统管理员登录（含强制改密）" 1
+  LIC_BODY="$(python3 -c 'import json,sys; print(json.dumps({"file_content": open(sys.argv[1]).read()}))' "$WORK_DIR/license.lic")"
+  expect_code "导入 CI 临时 waf 授权" 200 \
+    "$(curl -s -o /dev/null -w '%{http_code}' -b "/tmp/s5-$SYS_USER.txt" -X POST "$API_URL/api/v1/license/import" \
+      -H 'Content-Type: application/json' -H "X-CSRF-Token: $SYS_CSRF" -d "$LIC_BODY")"
+  EDITION_OK="$(curl -s -b "/tmp/s5-$SYS_USER.txt" "$API_URL/api/v1/product/edition" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['data']
+print('OK' if (d.get('edition')=='waf' and d.get('api_dynamic_protection') is False
+      and d.get('license_valid') is True) else 'BAD')" 2>/dev/null || echo BAD)"
+  [ "$EDITION_OK" = "OK" ] && record "product/edition=waf 且授权生效" 1 \
+    || record "product/edition=waf 且授权生效" 0 "probe=$EDITION_OK"
+  SEC_CSRF="$(s5_ensure_secuser "$SYS_CSRF")"
+  [ -n "$SEC_CSRF" ] || { echo "ERROR: 安全管理员登录失败" >&2; exit 1; }
+  APP_ID="$(s5_ensure_app "$SEC_CSRF")"
+  PUB="$(s5_publish "$SEC_CSRF")"
+  [ "$PUB" = "PUBLISH_OK" ] && record "WAF 应用配置发布成功" 1 \
+    || { record "WAF 应用配置发布成功" 0 "$PUB"; echo "ABORT"; exit 1; }
+  wait_gateway_app 90 \
+    && record "WAF 发布后网关可达" 1 \
+    || { record "WAF 发布后网关可达" 0 "超时"; echo "ABORT"; exit 1; }
+
+  resp="$(curl -s -w $'\n%{http_code}' -H "Host: $HOST_HEADER" "$GATEWAY_URL/echo?a=1&b=2")"
   code="$(echo "$resp" | tail -n1)"
   mark="$(echo "$resp" | sed '$d' | python3 -c 'import json,sys; print(json.load(sys.stdin).get("upstream_mark",""))' 2>/dev/null || echo '')"
   [ "$code" = "200" ] && [ "$mark" = "REACHED_ORIGIN" ] \
     && record "正常请求 200 到达源站" 1 || record "正常请求 200 到达源站" 0 "status=$code mark=$mark"
 
-  resp="$(curl -s -w $'\n%{http_code}' "$GATEWAY_URL/echo?id=1%20UNION%20SELECT%20username,password%20FROM%20users--")"
+  resp="$(curl -s -w $'\n%{http_code}' -H "Host: $HOST_HEADER" "$GATEWAY_URL/echo?id=1%20UNION%20SELECT%20username,password%20FROM%20users--")"
   code="$(echo "$resp" | tail -n1)"
   body="$(echo "$resp" | sed '$d')"
   [ "$code" = "403" ] && echo "$body" | grep -q "请求已被安全策略阻断" \
     && record "SQLi 被拦 403（九章阻断页）" 1 || record "SQLi 被拦 403（九章阻断页）" 0 "status=$code"
 else
   # ---------- WDSP 形态：API 命名空间可认证访问 + 运行时事件 ----------
-  wait_http "$GATEWAY_URL/health" 200 90
   # 未认证命中已注册命名空间 → 认证链 401（区别于 waf 形态的 404）
   expect_code "api-security 命名空间已注册（未认证 401）" 401 \
     "$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/api/v1/api-security/endpoints")"
@@ -233,6 +280,9 @@ print('OK' if (d.get('edition')=='wdsp' and d.get('api_dynamic_protection') is T
   PUB="$(s5_publish "$SEC_CSRF")"
   [ "$PUB" = "PUBLISH_OK" ] && record "配置发布成功（含 API 防护下发）" 1 \
     || { record "配置发布成功（含 API 防护下发）" 0 "$PUB"; echo "ABORT"; exit 1; }
+  wait_gateway_app 90 \
+    && record "WDSP 发布后网关可达" 1 \
+    || { record "WDSP 发布后网关可达" 0 "超时"; echo "ABORT"; exit 1; }
 
   # 可认证访问 API 命名空间（授权+权限齐备 → 200）
   expect_code "api-security/endpoints 可认证访问（200）" 200 \
@@ -242,7 +292,7 @@ print('OK' if (d.get('edition')=='wdsp' and d.get('api_dynamic_protection') is T
   code="$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $HOST_HEADER" -H 'Content-Type: application/json' \
     -X POST -d '{"id":1,"name":"widget"}' "$GATEWAY_URL/v1/orders/123")"
   [ "$code" != "403" ] && [ "$code" != "429" ] \
-    && record "API 请求经网关到达源站（=$code）" 1 || record "API 请求经网关到达源站" 0 "status=$code"
+    && record "API 请求经网关到达源站（=${code}）" 1 || record "API 请求经网关到达源站" 0 "status=$code"
 
   # 采集器 2s 轮询：30s 内应能在管理面查到该请求的运行时事件
   EV_TOTAL=""
@@ -252,14 +302,15 @@ print('OK' if (d.get('edition')=='wdsp' and d.get('api_dynamic_protection') is T
     [ "${EV_TOTAL:-0}" -ge 1 ] && break
     sleep 2
   done
-  [ "${EV_TOTAL:-0}" -ge 1 ] && record "一次请求产生 API 运行时事件（total=$EV_TOTAL）" 1 \
+  [ "${EV_TOTAL:-0}" -ge 1 ] && record "一次请求产生 API 运行时事件（total=${EV_TOTAL}）" 1 \
     || record "一次请求产生 API 运行时事件" 0 "total=${EV_TOTAL:-查询失败}"
 fi
 
 echo "============================================================"
-echo "CI edition 冒烟（$EDITION）汇总: 总用例 $TOTAL 通过 $PASS 失败 $FAIL"
+echo "CI edition 冒烟（${EDITION}）汇总: 总用例 ${TOTAL} 通过 ${PASS} 失败 ${FAIL}"
 if [ "$FAIL" -gt 0 ]; then
   for c in "${FAILED[@]}"; do echo "  - $c"; done
 fi
 echo "============================================================"
 [ "$FAIL" -eq 0 ]
+SCRIPT_DONE=1

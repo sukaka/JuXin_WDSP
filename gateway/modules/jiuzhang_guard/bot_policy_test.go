@@ -1,8 +1,8 @@
-// bot_policy_test.go bot_policy 段解析/校验/装配单元测试（WDSP P1-02 B1）。
+// bot_policy_test.go bot_policy 段解析/校验/装配单元测试（WDSP P1-02）。
 // 覆盖：严格解码 fail-closed（未知字段/未知 schema_version/未知 mode 拒绝加载）、
 // B0 冻结校验边界（选择器/信号规则/挑战参数/路由保留）、默认值兜底、
-// Provision/Validate 拒绝与装配；B1 不接入请求链（无 ServeHTTP 挂点可测，
-// 装配产物仅为解析结果与日志）。
+// Provision/Validate 拒绝与装配（B3：OFF 保留段内容供墓碑；非 OFF 依赖缺失
+// OBSERVE 降级 / PROTECT fail-closed 拒载）。请求链行为由 bot_step_test.go 覆盖。
 package jiuzhang_guard
 
 import (
@@ -309,8 +309,10 @@ func TestBotPolicyRouteReservation(t *testing.T) {
 	}
 }
 
-// TestBotPolicyAssemble 装配语义：段缺失/OFF 零行为（不持有策略）；非 OFF 合法段
-// 装配持有解析结果；非法段拒绝（fail-closed）。
+// TestBotPolicyAssemble 装配语义（B3）：段缺失零行为（不持有策略）；OFF 保留段内容
+// （verify 命名空间墓碑需要 route_reservation 段）但不构造挑战服务；非 OFF 合法段
+// 装配持有解析结果（无 Valkey 依赖时 OBSERVE 降级仅持有、PROTECT fail-closed 拒载）；
+// 非法段拒绝（fail-closed）。
 func TestBotPolicyAssemble(t *testing.T) {
 	g := &Guard{}
 	if err := g.assembleBotPolicy(); err != nil || g.botPolicy != nil {
@@ -322,8 +324,14 @@ func TestBotPolicyAssemble(t *testing.T) {
 	off.SignalRules.Rules = nil
 	off.RouteReservation.State = botReservationReleased
 	g = &Guard{BotPolicy: mustJSON(t, off)}
-	if err := g.assembleBotPolicy(); err != nil || g.botPolicy != nil {
-		t.Errorf("OFF must not assemble: err=%v policy=%+v", err, g.botPolicy)
+	if err := g.assembleBotPolicy(); err != nil {
+		t.Fatalf("OFF assemble: %v", err)
+	}
+	if g.botPolicy == nil || g.botPolicy.Mode != botModeOff {
+		t.Errorf("OFF must retain section for tombstone: policy=%+v", g.botPolicy)
+	}
+	if g.botSvc != nil {
+		t.Error("OFF must not construct challenge service")
 	}
 	g = &Guard{BotPolicy: mustJSON(t, botValidSection())}
 	if err := g.assembleBotPolicy(); err != nil {
@@ -331,6 +339,18 @@ func TestBotPolicyAssemble(t *testing.T) {
 	}
 	if g.botPolicy == nil || g.botPolicy.Mode != botModeObserve || g.botPolicy.Version != 1 {
 		t.Errorf("assembled policy = %+v", g.botPolicy)
+	}
+	if g.botSvc != nil {
+		t.Error("OBSERVE without valkey must degrade to policy-hold only")
+	}
+	// PROTECT 依赖缺失（无共享引擎 Valkey 连接）→ fail-closed 拒绝加载
+	protect := botValidSection()
+	protect.Mode = botModeProtect
+	protect.Challenge.KeyRef = botTestKeyID
+	protect.SigningKeys = map[string]string{botTestKeyID: botTestKeyHex}
+	g = &Guard{BotPolicy: mustJSON(t, protect)}
+	if err := g.assembleBotPolicy(); err == nil {
+		t.Fatal("PROTECT without valkey dependency must refuse load (fail-closed)")
 	}
 	bad := botValidSection()
 	bad.Mode = "BLOCK"

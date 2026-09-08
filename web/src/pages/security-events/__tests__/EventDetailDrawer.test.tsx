@@ -386,4 +386,55 @@ describe('EventDetailDrawer 最终处置（P0-04）', () => {
     while (row && !row.textContent?.includes('阻断')) row = row.parentElement
     expect(row).toBeTruthy()
   })
+
+  it('CHALLENGE/BOT（P1-02 Bot 挑战）：映射展示为「Bot 挑战」', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch({
+        ...EVENT_DETAIL,
+        event: {
+          ...EVENT_DETAIL.event,
+          final_decision: {
+            schema_version: 1,
+            security_action: 'CHALLENGE',
+            executor_module: 'BOT',
+            response_source: 'GATEWAY',
+            http_status: 403,
+            completion_status: 'COMPLETED',
+            reason_codes: ['BOT_CHALLENGE_OFFERED'],
+          },
+        },
+      }),
+    )
+    renderDrawer()
+
+    expect(await screen.findByText('最终处置')).toBeInTheDocument()
+    // 安全动作与执行模块均命中新映射（同文案出现两处：动作行 + 模块行）
+    expect(screen.getAllByText('Bot 挑战').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('未知安全动作/执行模块（未来新增值）：原样展示原始值，不渲染为空或误导文案', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch({
+        ...EVENT_DETAIL,
+        event: {
+          ...EVENT_DETAIL.event,
+          final_decision: {
+            schema_version: 1,
+            security_action: 'FUTURE_ACTION_X',
+            executor_module: 'FUTURE_MODULE_X',
+            response_source: 'GATEWAY',
+            http_status: 418,
+            completion_status: 'COMPLETED',
+          },
+        },
+      }),
+    )
+    renderDrawer()
+
+    expect(await screen.findByText('最终处置')).toBeInTheDocument()
+    expect(screen.getByText('FUTURE_ACTION_X')).toBeInTheDocument()
+    expect(screen.getByText('FUTURE_MODULE_X')).toBeInTheDocument()
+  })
 })

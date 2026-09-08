@@ -720,7 +720,8 @@ type Agent struct {
 	CertFingerprint *string    `json:"-"`
 	CertNotAfter    *time.Time `json:"-"`
 	// HTTPEventSchemas 能力协商生效的 HTTP 事件 schema 集合（v2 契约 §3；落库
-	// agents.http_event_schemas，json:"-" ——管理端展示属任务书 §4.3 后续阶段）。
+	// agents.http_event_schemas，json:"-" ——列表输出不变，详情经 AgentDetail 同名字段
+	// 暴露（任务书 P1-03 §4.3：管理端按能力集区分「需升级」展示）。
 	HTTPEventSchemas []int `json:"-"`
 	// 健康评分输入（不出 JSON；由仓储从绑定策略 config 提取，0 表示无限制/无绑定）
 	cpuLimitPercent float64
@@ -760,12 +761,14 @@ func (a *Agent) FillHealth() {
 // AgentDetail 详情（列表字段 + interfaces + policy_binding + 当前证书信息——
 // Phase 2-B §11：cert_fingerprint/cert_not_after 仅详情输出，无证书为 null；
 // 同名字段遮蔽内嵌 Agent 的 json:"-" 版本，存储扫描一律写外层字段）。
+// HTTPEventSchemas 同理遮蔽（v2 契约 §3 能力集，仅详情输出——任务书 P1-03 §4.3）。
 type AgentDetail struct {
 	Agent
-	Interfaces      []InterfaceInfo `json:"interfaces"`
-	PolicyBinding   *PolicyBinding  `json:"policy_binding"`
-	CertFingerprint *string         `json:"cert_fingerprint"`
-	CertNotAfter    *time.Time      `json:"cert_not_after"`
+	Interfaces       []InterfaceInfo `json:"interfaces"`
+	PolicyBinding    *PolicyBinding  `json:"policy_binding"`
+	CertFingerprint  *string         `json:"cert_fingerprint"`
+	CertNotAfter     *time.Time      `json:"cert_not_after"`
+	HTTPEventSchemas []int           `json:"http_event_schemas"`
 }
 
 // PolicyBinding 生效绑定（详情内嵌；无绑定为 null）。

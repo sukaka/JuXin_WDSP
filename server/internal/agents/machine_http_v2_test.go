@@ -588,9 +588,11 @@ func TestHTTPRecordV2Validate(t *testing.T) {
 		}},
 		{"collection_ts 非法", func(r *HTTPRecordV2) { r.CollectionTS = 0 }},
 		{"headers 空值数组", func(r *HTTPRecordV2) { r.Request.Headers["x-empty"] = []string{} }},
-		{"truncated 无 original_total_size", func(r *HTTPRecordV2) {
+		{"truncated 且 original_total_size 小于 captured", func(r *HTTPRecordV2) {
+			orig := int64(1)
 			r.Request.BodyQuality.Truncated = true
-			r.Request.BodyQuality.OriginalTotalSize = nil
+			r.Request.BodyQuality.CapturedBytes = 4
+			r.Request.BodyQuality.OriginalTotalSize = &orig
 		}},
 		{"skipped 但 captured 非零", func(r *HTTPRecordV2) {
 			r.Request.BodyQuality.SkippedReason = SkipReasonContentType
@@ -621,6 +623,14 @@ func TestHTTPRecordV2Validate(t *testing.T) {
 		rec2.AssociationReason = AssocReasonSourceRequestOnly
 		if !ok(rec2) {
 			t.Error("REQUEST_ONLY + SOURCE_REQUEST_ONLY 应被接受")
+		}
+	})
+	t.Run("truncated 且 original_total_size=null 接受（V1.1：原始总大小未知）", func(t *testing.T) {
+		rec := validHTTPRecordV2()
+		rec.Request.BodyQuality.Truncated = true
+		rec.Request.BodyQuality.OriginalTotalSize = nil
+		if !ok(rec) {
+			t.Error("truncated=true + original_total_size=null（未知）应被接受（契约 V1.1）")
 		}
 	})
 }

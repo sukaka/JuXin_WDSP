@@ -1,4 +1,4 @@
-// Bot 挑战策略（WDSP P1-02 B1，任务书 docs/tasks/wdsp-p1/P1-02_BOT_CHALLENGE.md）：
+// Bot 挑战策略（WDSP P1-02，任务书 docs/tasks/wdsp-p1/P1-02_BOT_CHALLENGE.md）：
 // bot_policy 段的配置解析、校验与装配。
 //
 // 纪律：
@@ -8,9 +8,10 @@
 //     而 bot_policy 携带 PROTECT 强制语义（挑战路由保留与强制挑战），静默消毒/
 //     降级等于把「应当挑战」变成「直接放行」；server 侧 botpolicy.SchemaVersion
 //     注释已冻结「旧节点不识别即拒绝加载，与 jwt_trust 同一纪律」。
-//   - B1 仅解析/校验/装配：**不接入 ServeHTTP 请求链**——挑战生成、verify 端点、
-//     信号 Eval 与处置属 B2/B3；本阶段请求处理零行为变化（OFF/未下发等价，
-//     非 OFF 也仅持有解析结果与加载日志）。
+//   - 请求链接入（B3）：解析产物总是保留在 g.botPolicy（OFF + RESERVED_TOMBSTONE
+//     需段内容维持 verify 命名空间本地墓碑）；非 OFF 装配 botchallenge.Service
+//     （g.botSvc）供 bot_step.go 的 Bot 步骤消费；PROTECT 依赖缺失 fail-closed 拒载，
+//     OBSERVE 依赖缺失降级为仅装配持有（观测不阻断请求链）。
 //   - 配置内容为跨分片契约（json tag 与 server/internal/gatewayconfig.GuardBotPolicy
 //     同形，不得改动）；校验边界与 server/internal/botpolicy/validate.go 的 B0 冻结
 //     口径逐条对应（网关独立复检，不信任发布侧已校验）。
@@ -25,6 +26,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -131,7 +133,7 @@ type botPolicyJSON struct {
 	SigningKeys map[string]string `json:"signing_keys,omitempty"`
 
 	// keyring 装配产物（非配置字段，不参与 JSON 序列化；nil = OFF/未下发密钥/
-	// OBSERVE 无 key_ref；B3 请求链接入时消费）。
+	// OBSERVE 无 key_ref；B3 由 assembleBotService 消费构造挑战服务）。
 	keyring *botchallenge.Keyring
 }
 
@@ -598,13 +600,12 @@ func parseAndValidateBotPolicy(raw json.RawMessage) (*botPolicyJSON, error) {
 }
 
 // assembleBotPolicy 装配 Bot 挑战策略（Provision 调用）：解析/校验失败拒绝整体配置
-// 加载（fail-closed，已存在 PROTECT 策略不得被静默删除/降级）；段缺失/Mode=OFF 时
-// 不装配（零行为变化——发布通道对 OFF 也下发以覆盖旧配置残留）。
+// 加载（fail-closed，已存在 PROTECT 策略不得被静默删除/降级）；段缺失 = 零行为变化
+// （发布通道对 OFF 也下发以覆盖旧配置残留）。
 //
-// B1 边界：装配产物为解析后的策略本体（g.botPolicy，B3 预备起含签名密钥环
-// sec.keyring——botchallenge.NewKeyring 构造，PROTECT 缺密钥 fail-closed 拒载）
-// 与加载日志——**不接入 ServeHTTP 请求链**；挑战生成、verify 本地端点、信号
-// Eval 与处置在 B3 挂接，届时须经真实中间件顺序集成测试验证（任务书 §3.2 末段）。
+// 解析产物（含签名密钥环 sec.keyring）总是保留在 g.botPolicy——OFF + RESERVED_TOMBSTONE
+// 需要段内容维持 verify 命名空间本地墓碑（防旧挑战提交落入业务源站）；OFF 不构造挑战
+// 服务（不初始化签名/状态依赖），非 OFF 经 assembleBotService 装配请求链服务（B3）。
 func (g *Guard) assembleBotPolicy() error {
 	if len(g.BotPolicy) == 0 {
 		return nil
@@ -612,9 +613,6 @@ func (g *Guard) assembleBotPolicy() error {
 	sec, err := parseAndValidateBotPolicy(g.BotPolicy)
 	if err != nil {
 		return err
-	}
-	if sec.Mode == botModeOff {
-		return nil
 	}
 	g.botPolicy = sec
 	if g.logger != nil {
@@ -632,7 +630,60 @@ func (g *Guard) assembleBotPolicy() error {
 				zap.String("signing_key_id", sec.keyring.Current().ID),
 				zap.Int("signing_keys", len(sec.keyring.KeyIDs())))
 		}
-		g.logger.Info("bot policy loaded (B1: parse/validate/assemble only, request chain unchanged)", fields...)
+		g.logger.Info("bot policy loaded", fields...)
 	}
+	if sec.Mode == botModeOff {
+		// OFF：不初始化挑战依赖（墓碑由请求链按保留段内容本地处理）
+		return nil
+	}
+	return g.assembleBotService(sec)
+}
+
+// assembleBotService 装配 Bot 挑战请求链服务（B3；非 OFF 模式）：
+//   - 状态存储/限速器复用共享引擎（engine.valkey / engine.limiter）；Valkey 客户端
+//     缺失（如 counter_backend=memory）时：PROTECT fail-closed 拒绝整体配置加载
+//     （挑战/验通行必然 503 的配置宁可拒载，与发布门禁同口径），OBSERVE 降级为
+//     仅装配持有 + Warn（观测不阻断请求链，verify 命名空间按依赖缺失墓碑处理）；
+//   - 签名密钥环缺失时同理（PROTECT 在 assembleBotKeyring 已 fail-closed，此处防御；
+//     OBSERVE 不签名不强制）。
+func (g *Guard) assembleBotService(sec *botPolicyJSON) error {
+	degrade := func(reason string) error {
+		if sec.Mode == botModeProtect {
+			return fmt.Errorf("bot_policy: PROTECT 挑战服务依赖缺失（%s；拒绝加载——宁可拒载也不发布必然 fail-closed 503 的配置）", reason)
+		}
+		if g.logger != nil {
+			g.logger.Warn("bot policy OBSERVE degraded: challenge service unavailable（仅装配持有，请求链零行为变化）",
+				zap.String("app_id", sec.ApplicationID),
+				zap.String("reason", reason))
+		}
+		return nil
+	}
+	if g.engine == nil || g.engine.valkey == nil {
+		return degrade("valkey client unavailable")
+	}
+	if sec.keyring == nil {
+		return degrade("signing keyring unavailable")
+	}
+	svc, err := botchallenge.NewService(botchallenge.Config{
+		AppID:         sec.ApplicationID,
+		AppCode:       g.AppCode,
+		Mode:          sec.Mode,
+		PolicyVersion: sec.Version,
+		NonceTTL:      time.Duration(sec.Challenge.NonceTTLSeconds) * time.Second,
+		ClearanceTTL:  time.Duration(sec.Challenge.ClearanceTTLSeconds) * time.Second,
+		Difficulty:    sec.Challenge.Difficulty,
+		MaxAttempts:   sec.Challenge.MaxAttempts,
+		KeyRef:        sec.Challenge.KeyRef,
+		Keyring:       sec.keyring,
+		Store:         botchallenge.NewStore(g.engine.valkey, ""),
+		Limiter:       g.engine.limiter,
+		Sink:          g.events,
+		Node:          g.GatewayNode,
+		Logger:        g.logger,
+	})
+	if err != nil {
+		return fmt.Errorf("bot_policy: 挑战服务构造失败（拒绝加载）: %w", err)
+	}
+	g.botSvc = svc
 	return nil
 }

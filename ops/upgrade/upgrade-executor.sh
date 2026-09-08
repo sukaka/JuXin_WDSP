@@ -69,14 +69,19 @@ safe_extract() {
 import os, pathlib, sys, tarfile
 archive, destination = sys.argv[1:]
 root = pathlib.Path(destination).resolve()
+MAX_EXPANDED_BYTES = 8 << 30
 with tarfile.open(archive, "r:gz") as tf:
     members = tf.getmembers()
     if not members or len(members) > 20:
         raise SystemExit("升级包文件数量异常")
+    expanded = 0
     for m in members:
         p = pathlib.PurePosixPath(m.name)
         if p.is_absolute() or ".." in p.parts or not (m.isdir() or m.isfile()):
             raise SystemExit("升级包包含不安全路径或文件类型")
+        if m.size < 0 or expanded > MAX_EXPANDED_BYTES - m.size:
+            raise SystemExit("升级包解压大小超出安全上限")
+        expanded += m.size
         target = (root / p).resolve()
         if os.path.commonpath((root, target)) != str(root):
             raise SystemExit("升级包路径越界")

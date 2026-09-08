@@ -1,0 +1,154 @@
+{
+  "config": {
+    "configFile": "/Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/playwright.config.ts",
+    "rootDir": "/Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/specs",
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "reporter": [
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 15000
+    },
+    "quiet": false,
+    "projects": [
+      {
+        "outputDir": "/Users/zhanglei/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {},
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "/Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/specs",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      }
+    ],
+    "shard": null,
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.50.1",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "challenge-flow.spec.ts",
+      "file": "challenge-flow.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "BOT-004 真实浏览器挑战链路 @browser",
+          "file": "challenge-flow.spec.ts",
+          "line": 90,
+          "column": 6,
+          "specs": [
+            {
+              "title": "挑战 → verify 204 → 一次刷新 → 源站成功",
+              "ok": false,
+              "tags": [
+                "browser"
+              ],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "status": "failed",
+                      "duration": 822,
+                      "error": {
+                        "message": "Error: 导航后应出现 Bot 挑战页（链路未通则属 B3 缺口，如实 FAIL）\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32mtrue\u001b[39m\nReceived: \u001b[31mfalse\u001b[39m",
+                        "stack": "Error: 导航后应出现 Bot 挑战页（链路未通则属 B3 缺口，如实 FAIL）\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32mtrue\u001b[39m\nReceived: \u001b[31mfalse\u001b[39m\n    at runChallengeFlow (/Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/specs/challenge-flow.spec.ts:58:66)\n    at /Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/specs/challenge-flow.spec.ts:92:21",
+                        "matcherResult": {
+                          "actual": false,
+                          "expected": true,
+                          "message": "\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32mtrue\u001b[39m\nReceived: \u001b[31mfalse\u001b[39m",
+                          "name": "toBe",
+                          "pass": false
+                        },
+                        "location": {
+                          "file": "/Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/specs/challenge-flow.spec.ts",
+                          "column": 66,
+                          "line": 58
+                        },
+                        "snippet": "  56 |     user_agent: await page.evaluate(() => navigator.userAgent),\n  57 |   }\n> 58 |   expect(nav.challenged, '导航后应出现 Bot 挑战页（链路未通则属 B3 缺口，如实 FAIL）').toBe(true)\n     |                                                                  ^\n  59 |\n  60 |   // 挑战页可读状态：等待中文案以 role=status 播报（BOT-006 侧面）\n  61 |   await expect(page.getByRole('status')).toContainText('安全验证')"
+                      },
+                      "errors": [
+                        {
+                          "location": {
+                            "file": "/Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/specs/challenge-flow.spec.ts",
+                            "column": 66,
+                            "line": 58
+                          },
+                          "message": "Error: 导航后应出现 Bot 挑战页（链路未通则属 B3 缺口，如实 FAIL）\n\n\u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).\u001b[22mtoBe\u001b[2m(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m) // Object.is equality\u001b[22m\n\nExpected: \u001b[32mtrue\u001b[39m\nReceived: \u001b[31mfalse\u001b[39m\n\n  56 |     user_agent: await page.evaluate(() => navigator.userAgent),\n  57 |   }\n> 58 |   expect(nav.challenged, '导航后应出现 Bot 挑战页（链路未通则属 B3 缺口，如实 FAIL）').toBe(true)\n     |                                                                  ^\n  59 |\n  60 |   // 挑战页可读状态：等待中文案以 role=status 播报（BOT-006 侧面）\n  61 |   await expect(page.getByRole('status')).toContainText('安全验证')\n    at runChallengeFlow (/Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/specs/challenge-flow.spec.ts:58:66)\n    at /Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/specs/challenge-flow.spec.ts:92:21"
+                        }
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-09-08T10:32:43.748Z",
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "/Users/zhanglei/test-results/challenge-flow-BOT-004-真实浏-6b665--→-verify-204-→-一次刷新-→-源站成功-chromium/test-failed-1.png"
+                        },
+                        {
+                          "name": "trace",
+                          "contentType": "application/zip",
+                          "path": "/Users/zhanglei/test-results/challenge-flow-BOT-004-真实浏-6b665--→-verify-204-→-一次刷新-→-源站成功-chromium/trace.zip"
+                        }
+                      ],
+                      "errorLocation": {
+                        "file": "/Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/specs/challenge-flow.spec.ts",
+                        "column": 66,
+                        "line": 58
+                      }
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ],
+              "id": "069d9f9dca3a47313a22-94b7462aaeb4800d69f1",
+              "file": "challenge-flow.spec.ts",
+              "line": 91,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-09-08T10:32:43.213Z",
+    "duration": 2283.576,
+    "expected": 0,
+    "skipped": 0,
+    "unexpected": 1,
+    "flaky": 0
+  }
+}

@@ -22,6 +22,10 @@ spec:
       terminationGracePeriodSeconds: 30
       initContainers:
         - name: enroll
+          # 镜像为自主构建（deployment/docker/wdsp-agent/Dockerfile），当前未发布到可访问的
+          # 镜像仓库，无法取得真实 registry digest，故不虚构。正式发布推送后必须把两个
+          # image 字段改为 jiuzhang/wdsp-agent:<version>@sha256:<digest> 锁定，digest 取自
+          # 目标仓库（docker buildx imagetools inspect jiuzhang/wdsp-agent:<version>）。
           image: jiuzhang/wdsp-agent:2.3.0
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "-ec"]
@@ -64,7 +68,7 @@ spec:
               readOnly: true
       containers:
         - name: wdsp-agent
-          image: jiuzhang/wdsp-agent:2.3.0
+          image: jiuzhang/wdsp-agent:2.3.0 # 发布时同上锁定 @sha256:<digest>
           imagePullPolicy: IfNotPresent
           args:
             - --config

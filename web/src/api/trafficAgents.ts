@@ -78,6 +78,9 @@ export interface TrafficPolicyBinding {
 export interface TrafficAgentDetail extends TrafficAgentItem {
   interfaces: TrafficAgentInterface[]
   policy_binding: TrafficPolicyBinding | null
+  /** v2 契约 §3 能力协商生效集（注册/心跳声明 ∩ 服务端支持集；不含 2 = 旧 Agent
+   * 仅支持 v1 事件——页面按此显示「需升级」，不假报 v2 能力已启用） */
+  http_event_schemas?: number[]
 }
 
 /** 流量事件（GET /traffic/agents/{agent_id}/events；字段同契约 §3.4 上报结构） */
@@ -114,15 +117,39 @@ export interface TrafficFlowEvent {
   k8s?: TrafficK8sMetadata
 }
 
+/** HTTP 事件 Header 值（v1 行 string map、v2 行数组 map——同列双形态按 schema_version
+ * 区分解读，v2 契约 §6；数组形态保序保留重复值，禁止隐式逗号合并） */
+export type TrafficHttpHeaders = Record<string, string | string[]>
+
+/** Body 采集质量（v2 契约 §2.1；original_total_size 未知为 null——不得按 0 展示） */
+export interface TrafficHttpBodyQuality {
+  captured_bytes: number
+  original_total_size: number | null
+  truncated: boolean
+  skipped_reason: string
+}
+
+/** gRPC 元数据子对象（v2 契约 §2.2；grpc_status null=流未结束/不可见，HTTP 200 ≠ RPC 成功） */
+export interface TrafficGrpcMeta {
+  service: string
+  method: string
+  grpc_status: number | null
+  stream_state: 'OPEN' | 'CLOSED' | 'CANCELLED' | 'UNKNOWN' | string
+}
+
 /** HTTP 事件请求/响应消息（Phase 3 契约 §3；仅 PLAINTEXT 流且采集等级 ≥L1 含 headers/body，列表端点可省略） */
 export interface TrafficHttpMessage {
-  headers?: Record<string, string> | null
+  headers?: TrafficHttpHeaders | null
   /** 脱敏后的最终值（Agent 侧离主机前完成，服务端/前端不再二次脱敏）；未采集为 null */
   body?: string | null
   body_truncated?: boolean
   original_body_size?: number
   /** 未采集原因码（content_type/encoding，§4）；空串表示已采集 */
   body_skipped_reason?: string
+  /** v2：trailers 数组形态（null=来源不可见，空对象=确认无 trailer） */
+  trailers?: TrafficHttpHeaders | null
+  /** v2：完整 body 质量对象（含 captured_bytes 与"未知长度"语义；v1 行为 null） */
+  body_quality?: TrafficHttpBodyQuality | null
 }
 
 /** HTTP 事件请求消息（Phase 3 契约 §3） */
@@ -156,6 +183,52 @@ export interface TrafficHttpEvent {
   request: TrafficHttpRequestMessage
   response: TrafficHttpResponseMessage | null
   k8s?: TrafficK8sMetadata
+  /* ---- v2 增量（v2 契约 §2/§6；v1 存量行为库默认值/null，不回填伪造） ---- */
+  /** 事件 schema 版本（1=v1 旧采集，2=v2） */
+  schema_version?: number
+  /** v2 幂等去重键（重试/补传不变）；v1 行为 null（无去重能力） */
+  event_id?: string | null
+  source_type?: 'PASSIVE_HTTP1' | 'NGINX_MIRROR' | 'ENVOY_TAP' | string
+  source_instance?: string
+  source_epoch?: number
+  source_capabilities_version?: string
+  /** 适配器观测协议（UNKNOWN=无法确认，不从 User-Agent 推断） */
+  observed_http_version?: string
+  /** 可确认的原协议；null=不可确认（与原协议分开记录，不互相回填） */
+  original_http_version?: string | null
+  /** 请求/响应关联状态；v1 行为 null */
+  association_state?: 'COMPLETE' | 'REQUEST_ONLY' | 'PARTIAL' | 'UNCORRELATED' | string | null
+  association_reason?: string
+  capture_stream_id?: string | null
+  application_binding_id?: string | null
+  binding_version?: number | null
+  /** gRPC 元数据（null=非 gRPC 流量；仅详情端点带出） */
+  grpc?: TrafficGrpcMeta | null
+  /** 来源采集时间（Unix 秒浮点）；与 ingestion_ts 差值为采集→入库延迟（缓存补传可辨） */
+  collection_ts?: number | null
+  /** 服务端接收时间（Unix 秒浮点）；均不混入业务延迟（业务延迟仅 latency_ms） */
+  ingestion_ts?: number | null
+}
+
+/** HTTP 资产来源关系（GET /traffic/agents/{agent_id}/http-asset-sources，v2 契约 §5；
+ * 事件入库 ≠ 资产关联成功——配额拒绝/未绑定/关联失败均可查询） */
+export interface TrafficHttpAssetSource {
+  id: number
+  agent_id: string
+  endpoint_id: string | null
+  host: string
+  method: string
+  path_template: string
+  source_type: string
+  source_instance: string
+  source_epoch: number
+  application_binding_id: string | null
+  binding_version: number | null
+  /** LINKED=关联成功 / UNASSIGNED=未绑定待确认 / QUOTA_REJECTED=授权配额拒绝 / FAILED=关联失败 */
+  association_state: 'LINKED' | 'UNASSIGNED' | 'QUOTA_REJECTED' | 'FAILED' | string
+  last_error: string
+  first_seen_at: string
+  last_seen_at: string
 }
 
 /** HTTP 事件分页查询参数（Phase 3 契约 §6：page/page_size/host/method） */
@@ -345,6 +418,18 @@ export const trafficAgentsApi = {
     request<TrafficHttpEvent>(
       `/traffic/agents/${encodeURIComponent(agentId)}/http-events/${encodeURIComponent(String(id))}`,
     ),
+  /** GET /traffic/agents/{agent_id}/http-asset-sources：资产来源关系分页（state 精确过滤，
+   * last_seen_at 倒序，v2 契约 §5——配额拒绝/未绑定/关联失败均可查询） */
+  agentHttpAssetSources: async (
+    agentId: string,
+    params: TrafficPageParams & { state?: string },
+  ) => {
+    const data = await request<ItemsPage<TrafficHttpAssetSource>>(
+      `/traffic/agents/${encodeURIComponent(agentId)}/http-asset-sources`,
+      { query: { ...params } },
+    )
+    return { ...data, items: data.items ?? [] }
+  },
   /** GET /traffic/policies：采集策略列表 */
   policies: async (params?: Partial<TrafficPageParams>) => {
     const data = await request<ItemsPage<TrafficPolicy>>('/traffic/policies', {

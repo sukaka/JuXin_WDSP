@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "case_id": "BOT-BEN-NAV-001",
+  "case_version": 1,
+  "family": "bot",
+  "tags": [
+    "bot-challenge",
+    "browser-navigation",
+    "pow-solve",
+    "false-positive-guard"
+  ],
+  "criticality": "MANDATORY",
+  "truth": "BENIGN",
+  "truth_reason": "正常浏览器文档导航：可执行 JavaScript 的客户端在收到挑战后现场求解 PoW 并通过 verify，属于任务书 §4.2 Bot 类要求的正常浏览器样本；人工核验为真实用户行为",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "bot.challenge.browser_pass",
+    "applications": [
+      "p1reg-bot-site"
+    ],
+    "protocols": [
+      "https"
+    ]
+  },
+  "prerequisites": {
+    "environment": [
+      "isolated_stack",
+      "controlled_origin",
+      "bot_event_pipeline",
+      "identity_behavior_observation"
+    ],
+    "notes": "行为双信号组（URI 集中度 + 已知 URI 占比）需两次基线导航后第三次评估达阈；判定需 Bot 事件对账"
+  },
+  "client": {
+    "bot_challenge_solve": true
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+      },
+      "wait": null,
+      "assert": [
+        {
+          "type": "http_status_in",
+          "statuses": [
+            200
+          ]
+        },
+        {
+          "type": "origin_marker_present"
+        }
+      ]
+    },
+    {
+      "step_id": "s2",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+      },
+      "wait": {
+        "type": "previous_step_status_in",
+        "statuses": [
+          200
+        ]
+      },
+      "assert": [
+        {
+          "type": "http_status_in",
+          "statuses": [
+            200
+          ]
+        },
+        {
+          "type": "origin_marker_present"
+        }
+      ]
+    },
+    {
+      "step_id": "s3",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+      },
+      "wait": {
+        "type": "previous_step_status_in",
+        "statuses": [
+          200
+        ]
+      },
+      "assert": [
+        {
+          "type": "http_status_in",
+          "statuses": [
+            200
+          ]
+        },
+        {
+          "type": "origin_marker_present"
+        }
+      ]
+    }
+  ],
+  "seed": 3101,
+  "reset_plan": {
+    "scope": "case",
+    "actions": [
+      "none"
+    ]
+  },
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {
+        "module": "none"
+      },
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [
+        {
+          "type": "none"
+        }
+      ]
+    },
+    "PROTECT": {
+      "expected_detection": {
+        "module": "none"
+      },
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [
+        {
+          "type": "BOT_CHALLENGE_OFFERED"
+        },
+        {
+          "type": "BOT_VERIFY_SUCCESS"
+        },
+        {
+          "type": "BOT_CLEARANCE_ACCEPTED"
+        }
+      ]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": false,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "TRAIN"
+}

@@ -245,3 +245,71 @@ describe('ApplicationsPage 部署模式', () => {
     expect(body.deployment_mode).toBe('TRANSPARENT')
   })
 })
+
+
+describe('ApplicationsPage 筛选分页上下文（BOT-023）', () => {
+  function renderAt(url: string) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <MemoryRouter initialEntries={[url]}>
+        <QueryClientProvider client={qc}>
+          <AntdApp>
+            <ApplicationsPage />
+          </AntdApp>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    )
+  }
+
+  function lastListCall() {
+    const urls = (fetch as Mock).mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes('/api/v1/applications?'))
+    return urls.length > 0 ? urls[urls.length - 1] : undefined
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockFetch())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('URL 查询串驱动筛选与分页：进入页即按 keyword/status/page/page_size 请求', async () => {
+    useAuthStore.setState({
+      user: makeUser(['applications.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderAt('/applications?keyword=portal&status=ACTIVE&page=2&page_size=50')
+    await screen.findByText('门户应用')
+    const url = lastListCall()
+    expect(url).toBeTruthy()
+    expect(url).toContain('keyword=portal')
+    expect(url).toContain('status=ACTIVE')
+    expect(url).toContain('page=2')
+    expect(url).toContain('page_size=50')
+    // 筛选控件回显上下文（返回列表后状态可见）
+    expect(screen.getByDisplayValue('portal')).toBeInTheDocument()
+  })
+
+  it('变更筛选写回 URL 并重置到第一页（返回列表可恢复上下文）', async () => {
+    useAuthStore.setState({
+      user: makeUser(['applications.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    const first = renderAt('/applications')
+    await screen.findByText('门户应用')
+    const search = screen.getByPlaceholderText('搜索编码或名称')
+    fireEvent.change(search, { target: { value: 'order' } })
+    fireEvent.keyDown(search, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(lastListCall()).toContain('keyword=order'))
+    // 历史记录中存在带 keyword 的条目：模拟返回 = 重新以该 URL 挂载即恢复
+    first.unmount()
+    vi.stubGlobal('fetch', mockFetch())
+    renderAt('/applications?keyword=order')
+    expect(await screen.findByDisplayValue('order')).toBeInTheDocument()
+  })
+})

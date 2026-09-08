@@ -20,8 +20,11 @@
   },
   "corpus": {
     "manifest_path": "test/regression/p1/corpus/manifest.json",
-    "manifest_sha256": "53cfe68c299c959971325b1934ac389103e57950b27ea6ea306574aff8e6152e",
+    "manifest_sha256": "feaadc81c3ddae79eba4eec192315f612b48856cbbbbc81615c714e5512a025b",
     "seed": 20260906
   },
-  "profiles": ["OBSERVE", "PROTECT"]
+  "profiles": [
+    "OBSERVE",
+    "PROTECT"
+  ]
 }

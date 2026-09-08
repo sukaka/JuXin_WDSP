@@ -14,6 +14,7 @@ SEC_PWD="${SEC_PWD:-SecAdmin@S5!2026}"
 VALKEY_CONTAINER="${VALKEY_CONTAINER:-jiuzhang-stage5-valkey}"
 VALKEY_PASSWORD="${VALKEY_PASSWORD:-CHANGE_ME_STRONG_PASSWORD}"
 APP_CODE="${APP_CODE:-s5app}"
+APP_PROTECTION_MODE="${APP_PROTECTION_MODE:-OFF}"
 
 # 登录（验证码从 Valkey 读取），打印 CSRF；cookie 存 /tmp/s5-<user>.txt
 # 注意：CSRF token 取自登录响应（/auth/me 每次调用都会轮换 token，重复调用会使先前 token 失效）
@@ -67,7 +68,7 @@ s5_ensure_secuser() {
   s5_login "$SEC_USER" "$SEC_PWD"
 }
 
-# 确保测试应用存在（OFF 模式避免 WAF 干扰访问控制测试），打印 app_id
+# 确保测试应用存在（默认 OFF 避免 WAF 干扰访问控制测试；可由环境变量覆盖），打印 app_id
 s5_ensure_app() {
   local csrf="$1" cookie="/tmp/s5-$SEC_USER.txt"
   local existing
@@ -79,7 +80,7 @@ print(next((i['id'] for i in items if i['code']=='$APP_CODE'),''))" 2>/dev/null)
   local appid
   appid=$(curl -s -b "$cookie" -X POST "$API_URL/api/v1/applications" \
     -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
-    -d "{\"code\":\"$APP_CODE\",\"name\":\"阶段5测试应用\",\"description\":\"访问控制与CC防护测试\",\"business_owner\":\"test\",\"technical_owner\":\"test\",\"protection_mode\":\"OFF\"}" \
+    -d "{\"code\":\"$APP_CODE\",\"name\":\"阶段5测试应用\",\"description\":\"访问控制与CC防护测试\",\"business_owner\":\"test\",\"technical_owner\":\"test\",\"protection_mode\":\"$APP_PROTECTION_MODE\"}" \
     | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
   # 域名
   curl -s -b "$cookie" -X POST "$API_URL/api/v1/applications/$appid/domains" \
@@ -95,24 +96,30 @@ print(next((i['id'] for i in items if i['code']=='$APP_CODE'),''))" 2>/dev/null)
   echo "$appid"
 }
 
-# 发布配置并等待成功
+# 发布配置并等待成功；任务因 LOCK_BUSY（与其他发布并发）失败时退避重试
 s5_publish() {
   local csrf="$1" cookie="/tmp/s5-$SEC_USER.txt"
-  local task
-  task=$(curl -s -b "$cookie" -X POST "$API_URL/api/v1/gateway-config/publish" \
-    -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
-    -d "{\"idempotency_key\":\"s5-$(date +%s)-$RANDOM\"}" \
-    | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
-  for _ in $(seq 1 30); do
-    local st
-    st=$(curl -s -b "$cookie" "$API_URL/api/v1/publish-tasks/$task" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['status'])" 2>/dev/null)
-    case "$st" in
-      SUCCESS) echo "PUBLISH_OK"; return 0;;
-      FAILED) echo "PUBLISH_FAILED"; return 1;;
-    esac
-    sleep 1
+  local task attempt code
+  for attempt in $(seq 1 8); do
+    task=$(curl -s -b "$cookie" -X POST "$API_URL/api/v1/gateway-config/publish" \
+      -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
+      -d "{\"idempotency_key\":\"s5-$(date +%s)-$RANDOM\"}" \
+      | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
+    for _ in $(seq 1 30); do
+      local st
+      st=$(curl -s -b "$cookie" "$API_URL/api/v1/publish-tasks/$task" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['status'])" 2>/dev/null)
+      case "$st" in
+        SUCCESS) echo "PUBLISH_OK"; return 0;;
+        FAILED)
+          code=$(curl -s -b "$cookie" "$API_URL/api/v1/publish-tasks/$task" | python3 -c "import json,sys; print(json.load(sys.stdin)['data'].get('failure_code') or '')" 2>/dev/null)
+          if [ "$code" = "LOCK_BUSY" ]; then sleep 3; break; fi
+          echo "PUBLISH_FAILED"; return 1;;
+      esac
+      sleep 1
+    done
+    [ "$st" = "FAILED" ] && [ "$code" = "LOCK_BUSY" ] || { echo "PUBLISH_TIMEOUT"; return 1; }
   done
-  echo "PUBLISH_TIMEOUT"; return 1
+  echo "PUBLISH_FAILED"; return 1
 }
 
 # 发请求到网关（带 Host 头），可选额外 curl 参数

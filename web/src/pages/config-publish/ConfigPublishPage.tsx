@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -25,6 +26,9 @@ import type { PreviewResult } from '../../api/gatewayConfig'
 import SmartTable from '../../components/SmartTable'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
+import RegressionGateNotice, {
+  RegressionGateFailureDetail,
+} from './RegressionGateNotice'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatJson } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -35,6 +39,7 @@ import {
   isTerminalTaskStatus,
   truncateHash,
 } from '../../utils/stage3'
+import { isRegressionGateFailure } from '../../utils/securityRegression'
 import type { BusinessSnapshot, PublishTaskItem } from '../../types'
 
 /** 业务摘要表格（preview 响应对象 / version 字符串两种来源共用） */
@@ -89,7 +94,12 @@ export function PublishTaskProgress({ taskId }: { taskId: string }) {
             type="error"
             showIcon
             message={`发布失败（${task.failure_code || '未知原因'}）`}
-            description={task.failure_message || task.result_summary}
+            description={
+              <>
+                {task.failure_message || task.result_summary}
+                <RegressionGateFailureDetail task={task} />
+              </>
+            }
           />
         )}
         {task.status === 'SUCCESS' && (
@@ -202,9 +212,14 @@ export default function ConfigPublishPage() {
       dataIndex: 'result_summary',
       ellipsis: true,
       render: (v: string, record) => (
-        <Typography.Text type={record.status === 'FAILED' ? 'danger' : undefined}>
-          {v || record.failure_message || '-'}
-        </Typography.Text>
+        <Space size={8}>
+          <Typography.Text type={record.status === 'FAILED' ? 'danger' : undefined}>
+            {v || record.failure_message || '-'}
+          </Typography.Text>
+          {isRegressionGateFailure(record.failure_code) && (
+            <Link to="/security-regressions">查看回归证据</Link>
+          )}
+        </Space>
       ),
     },
   ]
@@ -253,6 +268,9 @@ export default function ConfigPublishPage() {
       </Card>
 
       <Card title="配置操作">
+        <div style={{ marginBottom: 12 }}>
+          <RegressionGateNotice />
+        </div>
         <Space wrap>
           {hasPermission(permissions, 'gateway_configs.preview') && (
             <Button

@@ -1,0 +1,1 @@
+UPDATE system_settings SET setting_value='"[{\"algorithm\": \"ed25519\", \"key_id\": \"r4b-verifier-2026-09\", \"public_key\": \"qWLoFyFkQxzxkv74RYsViLKJw/Mj4IcGtu+0zIF5E2E=\", \"status\": \"REVOKED\"}]"'::jsonb WHERE setting_group='security_regression' AND setting_key='trusted_verify_keys';

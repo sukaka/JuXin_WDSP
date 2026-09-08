@@ -274,12 +274,17 @@ func (s *Service) History(ctx context.Context, page, pageSize int) ([]Record, in
 
 // evaluateLocked 评估最新生效候选行：篡改检测（raw_file 重验签）翻 INVALID、到期翻 EXPIRED、
 // 指纹失配翻 FINGERPRINT_MISMATCH、指纹恢复翻回 ACTIVE、落库数据非法翻 INVALID；
-// 随后提交内存状态并触发告警/重发布。
+// 随后提交内存状态。完整性事实源暂不可用时，状态会如实标记为不可验证，
+// 但不会将该不确定故障等同于授权失效而发布旁路配置。
 func (s *Service) evaluateLocked(ctx context.Context) error {
 	// 每轮重读指纹文件：安装/换机后材料可能变化；缺失按 '' 处理
 	hostFP, _ := ReadHostFingerprint(s.fpPath)
 	row, err := s.repo.LatestCandidate(ctx)
 	if err != nil && !errors.Is(err, ErrNoEffective) {
+		// 候选记录与 raw_file 都是完整性判断的事实源。读取失败时不能沿用
+		// 上一次 VERIFIED 状态，也不能把不确定性误判为授权失效而重发布旁路。
+		st := invalidState("读取授权候选记录失败", IntegrityDatabaseUnavailable, hostFP)
+		s.commitStateLocked(ctx, st)
 		return fmt.Errorf("查询生效授权失败: %w", err)
 	}
 	var st State
@@ -397,6 +402,10 @@ func protectionState(integrityStatus, reason string) ProtectionState {
 // commitStateLocked 提交内存状态：首次评估为基线——如实抛出当前状态告警（供下游
 // 合并冷却），但不触发重发布（启动首发由装配层按 State() 驱动，避免重复发布）；
 // 之后状态翻转（Valid/LicenseID/Reason 任一变化）时无效化告警 + 触发重发布。
+//
+// 完整性事实源不可用不是确定的授权失效：此时只更新可观测状态，保留最近已下发
+// 的网关配置，且不以 LICENSE_INVALID 告警混淆故障语义。调用方仍会收到 Refresh
+// 错误并记录；需要恢复后重新复核，见 AllowsGatewayConfigPublish。
 func (s *Service) commitStateLocked(ctx context.Context, st State) {
 	prev := s.State()
 	s.state.Store(st)
@@ -405,7 +414,7 @@ func (s *Service) commitStateLocked(ctx context.Context, st State) {
 	}
 	if !s.hasBaseline {
 		s.hasBaseline = true
-		if !st.Valid {
+		if !st.Valid && !holdsGatewayConfiguration(st.IntegrityStatus) {
 			s.fireAlert(ctx, AlertEvent{Type: AlertLicenseInvalid, Severity: SeverityCritical, Title: "授权无效", Message: st.Reason})
 		} else {
 			s.maybeAlertExpiringSoon(ctx, st)
@@ -420,10 +429,31 @@ func (s *Service) commitStateLocked(ctx context.Context, st State) {
 		}
 		return
 	}
+	if holdsGatewayConfiguration(st.IntegrityStatus) {
+		return
+	}
 	if !st.Valid {
 		s.fireAlert(ctx, AlertEvent{Type: AlertLicenseInvalid, Severity: SeverityCritical, Title: "授权失效", Message: st.Reason})
 	}
 	s.triggerRepublish(ctx)
+}
+
+// AllowsGatewayConfigPublish 表示当前授权状态是否允许生成并下发新的网关配置。
+// 完整性事实源暂不可用时，不能据此确认授权已经失效，也不能将正在运行的防护配置
+// 自动替换为旁路配置；发布器应暂停发布，待复核恢复后再继续。
+func (s *Service) AllowsGatewayConfigPublish() bool {
+	return !holdsGatewayConfiguration(s.State().IntegrityStatus)
+}
+
+// holdsGatewayConfiguration 仅覆盖无法从事实源作出确定判断的完整性状态。
+// 明确的验签失败、缓存不一致、到期和设备不匹配仍按既有授权策略处理。
+func holdsGatewayConfiguration(integrityStatus string) bool {
+	switch integrityStatus {
+	case IntegrityDatabaseUnavailable, IntegrityOriginalMissing, IntegrityEncryptionUnavailable, IntegrityDecryptionFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 // maybeWarnCapabilityLocked 授权产品形态宽于本包装配能力时 WARN 一次

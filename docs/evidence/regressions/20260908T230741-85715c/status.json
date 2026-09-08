@@ -1,0 +1,28 @@
+{
+  "records": {
+    "corpus-validation": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T230741-85715c",
+      "mandatory": true,
+      "reason": "语料 schema v1 与内容哈希一致: feaadc81c3ddae79…",
+      "status": "PASS"
+    },
+    "regression-execution": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T230741-85715c",
+      "mandatory": true,
+      "reason": "真实栈回放完成：全部执行且无 FAIL（明细 cases.jsonl / perf.jsonl）",
+      "status": "PASS"
+    },
+    "regression-plan": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T230741-85715c",
+      "mandatory": true,
+      "reason": "回归 run-plan 结构校验通过",
+      "status": "PASS"
+    },
+    "replay-plan": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T230741-85715c",
+      "mandatory": true,
+      "reason": "确定性回放计划已生成（计划样本数 48）",
+      "status": "PASS"
+    }
+  }
+}

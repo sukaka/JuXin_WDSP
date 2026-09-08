@@ -75,6 +75,14 @@ type Metrics struct {
 	OldestAgeSec       float64           `json:"oldest_age_sec,omitempty"`      // 最旧缓存段年龄（秒）
 	SourceDisconnects  uint64            `json:"source_disconnect,omitempty"`   // 控制/数据通道断连次数
 	AssociationPending int               `json:"association_pending,omitempty"` // 重组中未完成配对的连接数
+
+	// G4b（P1-03 §6）：Kubernetes 元数据采集健康。server 端 metrics 为 jsonb
+	// 透传落库（RecordHeartbeat last_metrics 合并），新增键不破坏冻结契约。
+	K8sMetaState          string  `json:"k8smeta_state,omitempty"`           // OK | STALE | UNAVAILABLE
+	K8sMetaEntries        int     `json:"k8smeta_entries,omitempty"`         // 未过期快照条目数
+	K8sMetaInferredOwners int     `json:"k8smeta_inferred_owners,omitempty"` // Workload 为 ReplicaSet 截尾推断的条目数
+	K8sMetaStaleSeconds   float64 `json:"k8smeta_stale_seconds,omitempty"`   // 距上次成功同步秒数（非 OK 时）
+	K8sMetaSyncFailures   uint64  `json:"k8smeta_sync_failures,omitempty"`   // 累计同步失败次数
 }
 
 // InterfaceInfo 注册上报的网卡信息（契约 §3.1）。

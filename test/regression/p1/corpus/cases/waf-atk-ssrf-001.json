@@ -1,22 +1,34 @@
 {
   "schema_version": 1,
   "case_id": "WAF-ATK-SSRF-001",
-  "case_version": 1,
+  "case_version": 2,
   "family": "waf",
-  "tags": ["ssrf", "cloud-metadata", "custom-pack-declared"],
+  "tags": [
+    "ssrf",
+    "cloud-metadata",
+    "custom-pack-declared"
+  ],
   "criticality": "MANDATORY",
   "truth": "ATTACK",
-  "truth_reason": "SSRF：请求参数指向云元数据地址 169.254.169.254，自研合成；属 CUSTOM_PACK cloud-abuse（云元数据 SSRF）与 ssrf-protocols 声明检测范围",
+  "truth_reason": "SSRF：请求参数指向云元数据地址 169.254.169.254，自研合成；属 CUSTOM_PACK cloud-abuse（云元数据 SSRF）与 ssrf-protocols 声明检测范围；R2 真实栈回放对齐（2026-09-08，run 20260908T203034-c88b80 实证）：PROTECT 下 CRS 931100 命中后 949110 相位中断，7100002 不执行，检出归 coraza_crs（931→rfi）；OBSERVE 下 7100002 命中",
   "source": "self_synthetic",
   "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
   "authorization": "项目自研合成攻击样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
   "scope": {
     "capability": "waf.custom_pack.cloud_abuse_ssrf",
-    "applications": ["p1reg-echo-site"],
-    "protocols": ["http/1.1"]
+    "applications": [
+      "p1reg-echo-site"
+    ],
+    "protocols": [
+      "http/1.1"
+    ]
   },
   "prerequisites": {
-    "environment": ["isolated_stack", "controlled_origin", "waf_event_pipeline"],
+    "environment": [
+      "isolated_stack",
+      "controlled_origin",
+      "waf_event_pipeline"
+    ],
     "notes": "隔离栈内不存在真实元数据服务；仅验证网关检测与阻断，不发起任何出栈请求"
   },
   "steps": [
@@ -26,7 +38,9 @@
       "request": {
         "method": "POST",
         "path": "/api/fetch",
-        "headers": {"Content-Type": "application/json"},
+        "headers": {
+          "Content-Type": "application/json"
+        },
         "body": "{\"url\": \"http://169.254.169.254/latest/meta-data/\", \"timeout\": 3}"
       },
       "wait": null,
@@ -34,19 +48,40 @@
     }
   ],
   "seed": 2008,
-  "reset_plan": {"scope": "none", "actions": ["none"]},
+  "reset_plan": {
+    "scope": "none",
+    "actions": [
+      "none"
+    ]
+  },
   "expectations_by_profile": {
     "OBSERVE": {
-      "expected_detection": {"module": "custom_pack", "rule_family": "cloud_abuse"},
+      "expected_detection": {
+        "module": "custom_pack",
+        "rule_family": "cloud_abuse"
+      },
       "expected_final_action": "DETECT_PASS",
       "expected_origin": "reached",
-      "expected_events": [{"type": "waf_security_event", "rule_family": "cloud_abuse"}]
+      "expected_events": [
+        {
+          "type": "waf_security_event",
+          "rule_family": "cloud_abuse"
+        }
+      ]
     },
     "PROTECT": {
-      "expected_detection": {"module": "custom_pack", "rule_family": "cloud_abuse"},
+      "expected_detection": {
+        "module": "coraza_crs",
+        "rule_family": "rfi"
+      },
       "expected_final_action": "BLOCK_403",
       "expected_origin": "not_reached",
-      "expected_events": [{"type": "waf_security_event", "rule_family": "cloud_abuse"}]
+      "expected_events": [
+        {
+          "type": "waf_security_event",
+          "rule_family": "rfi"
+        }
+      ]
     }
   },
   "evidence_requirements": {

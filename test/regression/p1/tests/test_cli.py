@@ -88,7 +88,7 @@ class TestCliCorpus(CliFixture):
         with redirect_stdout(buf):
             self.assertEqual(cli.main(["init-cases", "--replay-plan", str(pp)]), 0)
         rows = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
-        self.assertEqual(len(rows), 36)
+        self.assertEqual(len(rows), 48)
         for r in rows:
             self.assertEqual(r["status"], "NOT_RUN")
             self.assertFalse(r["executed"])

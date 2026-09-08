@@ -64,6 +64,13 @@ not_before, not_after, fingerprint_sha256, public_key_algorithm, public_key_bits
 signature_algorithm, san_domains, status, certificate_reference, encrypted_private_key_reference,
 chain_reference, created_by, created_at, updated_at, version`
 
+// certColumnsC 是 certColumns 的 c 别名限定版本，用于与 application_certificates
+// JOIN 的查询（两表存在 id/created_by/created_at/updated_at 同名列，不限定会歧义）。
+const certColumnsC = `c.id, c.name, c.certificate_type, c.common_name, c.subject, c.issuer, c.serial_number,
+c.not_before, c.not_after, c.fingerprint_sha256, c.public_key_algorithm, c.public_key_bits,
+c.signature_algorithm, c.san_domains, c.status, c.certificate_reference, c.encrypted_private_key_reference,
+c.chain_reference, c.created_by, c.created_at, c.updated_at, c.version`
+
 func (s *Store) scanCert(row pgx.Row) (*Certificate, error) {
 	var c Certificate
 	err := row.Scan(&c.ID, &c.Name, &c.CertificateType, &c.CommonName, &c.Subject, &c.Issuer,
@@ -349,7 +356,7 @@ func (s *Store) UnbindApplication(ctx context.Context, appID uuid.UUID) error {
 // GetApplicationCertificate 查询应用当前活动证书。
 func (s *Store) GetApplicationCertificate(ctx context.Context, appID uuid.UUID) (*Certificate, error) {
 	row := s.db.QueryRow(ctx, `
-SELECT `+certColumns+` FROM certificates c
+SELECT `+certColumnsC+` FROM certificates c
 JOIN application_certificates ac ON ac.certificate_id = c.id
 WHERE ac.application_id = $1 AND ac.is_active = TRUE AND c.deleted_at IS NULL`, appID)
 	c, err := s.scanCert(row)

@@ -1,0 +1,91 @@
+occurred_at,username,module,action,object_type,object_name,result,failure_reason,risk_level
+2026-09-08 14:58:28.780368+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 14:58:32.172328+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 15:01:10.492161+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 15:01:13.666242+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 15:04:47.429148+00,p1reg_sec,security,upload,security_regression_object,MANIFEST,SUCCESS,"",LOW
+2026-09-08 15:04:47.459005+00,p1reg_sec,security,upload,security_regression_object,CASES_CHUNK,SUCCESS,"",LOW
+2026-09-08 15:04:47.483861+00,p1reg_sec,security,upload,security_regression_object,REPORT,SUCCESS,"",LOW
+2026-09-08 15:04:47.515436+00,p1reg_sec,security,upload,security_regression_object,PERF,SUCCESS,"",LOW
+2026-09-08 15:04:47.637654+00,p1reg_sec,security,import,security_regression_run,"",FAILURE,分块 cases-chunk-001.json 校验失败: [cases[0].criticality: 非法词 cases[1].criticality: 非法词 cases[2].criticality: 非法词 cases[3].cr,HIGH
+2026-09-08 15:05:56.573662+00,p1reg_sec,security,upload,security_regression_object,MANIFEST,SUCCESS,"",LOW
+2026-09-08 15:05:56.607949+00,p1reg_sec,security,upload,security_regression_object,CASES_CHUNK,SUCCESS,"",LOW
+2026-09-08 15:05:56.697556+00,p1reg_sec,security,upload,security_regression_object,REPORT,SUCCESS,"",LOW
+2026-09-08 15:05:56.726869+00,p1reg_sec,security,upload,security_regression_object,PERF,SUCCESS,"",LOW
+2026-09-08 15:05:56.813717+00,p1reg_sec,security,import,security_regression_run,20260908T230148-798a3f,SUCCESS,"",MEDIUM
+2026-09-08 15:06:10.069901+00,p1reg_sec,security,import,security_regression_run,20260908T230148-798a3f,SUCCESS,"",MEDIUM
+2026-09-08 15:06:22.004593+00,p1reg_sec,security,update,security_regression_policy,regression-policy,SUCCESS,"",HIGH
+2026-09-08 15:06:33.596387+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:07:22.432602+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:10:09.185347+00,p1reg_sec,security,upload,security_regression_object,MANIFEST,SUCCESS,"",LOW
+2026-09-08 15:10:09.22525+00,p1reg_sec,security,upload,security_regression_object,CASES_CHUNK,SUCCESS,"",LOW
+2026-09-08 15:10:09.253654+00,p1reg_sec,security,upload,security_regression_object,REPORT,SUCCESS,"",LOW
+2026-09-08 15:10:09.278471+00,p1reg_sec,security,upload,security_regression_object,PERF,SUCCESS,"",LOW
+2026-09-08 15:10:09.366685+00,p1reg_sec,security,import,security_regression_run,20260908T230741-85715c,SUCCESS,"",MEDIUM
+2026-09-08 15:10:27.746452+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 15:10:46.966976+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:11:03.321897+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:13:24.566327+00,p1reg_sec,security,update,security_regression_policy,regression-policy,SUCCESS,"",HIGH
+2026-09-08 15:13:53.902054+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 15:17:37.339329+00,p1reg_sec,security,upload,security_regression_object,MANIFEST,SUCCESS,"",LOW
+2026-09-08 15:17:37.370131+00,p1reg_sec,security,upload,security_regression_object,CASES_CHUNK,SUCCESS,"",LOW
+2026-09-08 15:17:37.395501+00,p1reg_sec,security,upload,security_regression_object,REPORT,SUCCESS,"",LOW
+2026-09-08 15:17:37.420594+00,p1reg_sec,security,upload,security_regression_object,PERF,SUCCESS,"",LOW
+2026-09-08 15:17:37.488341+00,p1reg_sec,security,import,security_regression_run,20260908T231454-7f8355,SUCCESS,"",MEDIUM
+2026-09-08 15:17:58.679706+00,p1reg_sec,security,update,security_regression_policy,regression-policy,SUCCESS,"",HIGH
+2026-09-08 15:17:58.857536+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:18:22.435745+00,p1reg_sec,access_control_versions,rollback,access_control_version,"",SUCCESS,"",HIGH
+2026-09-08 15:34:36.323216+00,p1reg_sec,access_control_versions,rollback,access_control_version,"",SUCCESS,"",HIGH
+2026-09-08 15:35:08.715399+00,p1reg_sec,access_control_versions,rollback,access_control_version,"",SUCCESS,"",HIGH
+2026-09-08 15:36:23.360067+00,p1reg_sec,access_control_versions,rollback,access_control_version,"",SUCCESS,"",HIGH
+2026-09-08 15:37:03.210739+00,p1reg_sec,access_control_versions,rollback,access_control_version,"",SUCCESS,"",HIGH
+2026-09-08 15:37:38.629634+00,p1reg_sec,access_control_versions,rollback,access_control_version,"",SUCCESS,"",HIGH
+2026-09-08 15:37:53.582783+00,p1reg_sec,access_control_versions,rollback,access_control_version,"",SUCCESS,"",HIGH
+2026-09-08 15:38:12.666928+00,p1reg_sec,access_control_versions,rollback,access_control_version,"",SUCCESS,"",HIGH
+2026-09-08 15:39:10.791816+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:40:48.177873+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:40:51.303835+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:43:26.59199+00,p1reg_sec,security,upload,security_regression_object,MANIFEST,SUCCESS,"",LOW
+2026-09-08 15:43:26.613494+00,p1reg_sec,security,upload,security_regression_object,CASES_CHUNK,SUCCESS,"",LOW
+2026-09-08 15:43:26.638815+00,p1reg_sec,security,upload,security_regression_object,REPORT,SUCCESS,"",LOW
+2026-09-08 15:43:26.66718+00,p1reg_sec,security,upload,security_regression_object,PERF,SUCCESS,"",LOW
+2026-09-08 15:43:26.831473+00,p1reg_sec,security,import,security_regression_run,20260908T234102-31b924,SUCCESS,"",MEDIUM
+2026-09-08 15:43:51.560642+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:44:28.758172+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 15:45:12.42424+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:49:39.069951+00,p1reg_sec,gateway_configs,rollback,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 15:52:45.5707+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:53:28.260632+00,p1reg_sec,security,upload,security_regression_object,MANIFEST,SUCCESS,"",LOW
+2026-09-08 15:53:41.557818+00,p1reg_sec,security,upload,security_regression_object,MANIFEST,SUCCESS,"",LOW
+2026-09-08 15:53:48.237023+00,p1reg_sec,security,upload,security_regression_object,MANIFEST,SUCCESS,"",LOW
+2026-09-08 15:54:03.066055+00,p1reg_sec,security,upload,security_regression_object,CASES_CHUNK,SUCCESS,"",LOW
+2026-09-08 15:54:03.090966+00,p1reg_sec,security,upload,security_regression_object,REPORT,SUCCESS,"",LOW
+2026-09-08 15:54:03.118494+00,p1reg_sec,security,upload,security_regression_object,PERF,SUCCESS,"",LOW
+2026-09-08 15:54:03.196356+00,p1reg_sec,security,import,security_regression_run,20260908T235005-75aa77,SUCCESS,"",MEDIUM
+2026-09-08 15:54:11.894277+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 15:54:37.867672+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 15:56:02.445012+00,p1reg_sec,api_security,create,api_model,POST /api/json,SUCCESS,"",LOW
+2026-09-08 15:56:18.264187+00,p1reg_sec,api_security,submit_review,api_model,POST /api/json,SUCCESS,"",LOW
+2026-09-08 15:56:18.3223+00,p1reg_sec,api_security,confirm,api_model,POST /api/json,SUCCESS,"",MEDIUM
+2026-09-08 15:56:18.383015+00,p1reg_sec,api_security,activate,api_model,POST /api/json,SUCCESS,"",HIGH
+2026-09-08 15:56:38.386335+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:58:50.410898+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 15:59:17.567068+00,p1reg_sec,security,upload,security_regression_object,MANIFEST,SUCCESS,"",LOW
+2026-09-08 15:59:17.591554+00,p1reg_sec,security,upload,security_regression_object,CASES_CHUNK,SUCCESS,"",LOW
+2026-09-08 15:59:17.616975+00,p1reg_sec,security,upload,security_regression_object,REPORT,SUCCESS,"",LOW
+2026-09-08 15:59:17.643129+00,p1reg_sec,security,upload,security_regression_object,PERF,SUCCESS,"",LOW
+2026-09-08 15:59:17.788443+00,p1reg_sec,security,import,security_regression_run,20260908T235648-2a165a,SUCCESS,"",MEDIUM
+2026-09-08 15:59:30.589678+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 16:00:05.758488+00,p1reg_sec,api_security,create,api_model,POST /api/json,SUCCESS,"",LOW
+2026-09-08 16:00:06.033764+00,p1reg_sec,api_security,submit_review,api_model,POST /api/json,SUCCESS,"",LOW
+2026-09-08 16:00:06.128801+00,p1reg_sec,api_security,confirm,api_model,POST /api/json,SUCCESS,"",MEDIUM
+2026-09-08 16:00:06.187977+00,p1reg_sec,api_security,activate,api_model,POST /api/json,SUCCESS,"",HIGH
+2026-09-08 16:00:20.280325+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 16:04:59.714394+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,FAILURE,"",HIGH
+2026-09-08 16:05:22.130633+00,p1reg_sec,security,upload,security_regression_object,MANIFEST,SUCCESS,"",LOW
+2026-09-08 16:05:22.266717+00,p1reg_sec,security,upload,security_regression_object,CASES_CHUNK,SUCCESS,"",LOW
+2026-09-08 16:05:22.301634+00,p1reg_sec,security,upload,security_regression_object,REPORT,SUCCESS,"",LOW
+2026-09-08 16:05:22.33353+00,p1reg_sec,security,upload,security_regression_object,PERF,SUCCESS,"",LOW
+2026-09-08 16:05:22.40349+00,p1reg_sec,security,import,security_regression_run,20260909T000300-c54786,SUCCESS,"",MEDIUM
+2026-09-08 16:05:30.684798+00,p1reg_sec,gateway_configs,publish,publish_task,gateway,SUCCESS,"",HIGH
+2026-09-08 16:06:11.657926+00,p1reg_sec,api_security,rollback,api_runtime_policy,POST /api/json,FAILURE,发布任务状态: FAILED,HIGH

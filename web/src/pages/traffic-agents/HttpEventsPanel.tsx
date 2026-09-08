@@ -16,17 +16,27 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { trafficAgentsApi } from '../../api/trafficAgents'
 import type {
+  TrafficGrpcMeta,
   TrafficHttpEvent,
+  TrafficHttpHeaders,
   TrafficHttpMessage,
 } from '../../api/trafficAgents'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import { formatBytes, formatJson } from '../../utils/format'
 import {
+  ASSOC_REASON_META,
+  ASSOC_STATE_META,
   BODY_SKIPPED_REASON_META,
+  GRPC_STREAM_STATE_META,
+  REPLAY_DELAY_THRESHOLD_SEC,
+  SOURCE_TYPE_META,
   TLS_VISIBILITY_META,
   formatUnixTime,
   httpStatusColor,
+  httpVersionLabel,
+  ingestionDelaySec,
+  supportsHttpEventV2,
 } from './meta'
 
 /** TLS 可见性 Tag（ENCRYPTED 附带"加密流量无法完整分析"提示） */
@@ -63,19 +73,53 @@ function directionLabel(value: string): string {
   return value || '-'
 }
 
-/** 请求/响应 Header 表（脱敏值即最终值，原样展示） */
+/** 采集来源 Tag（v2；v1 行返回占位符——旧采集无来源观测信息，不伪造） */
+function SourceTypeTag({ event }: { event: TrafficHttpEvent }) {
+  if (event.schema_version !== 2) return <span>-</span>
+  const meta = SOURCE_TYPE_META[event.source_type ?? '']
+  const tag = (
+    <Tag color={meta?.color}>{meta?.label ?? event.source_type ?? '-'}</Tag>
+  )
+  const tip = `实例: ${event.source_instance || '-'}；代次: ${event.source_epoch ?? 0}${
+    event.source_capabilities_version
+      ? `；能力版本: ${event.source_capabilities_version}`
+      : ''
+  }${meta?.tooltip ? `；${meta.tooltip}` : ''}`
+  return <Tooltip title={tip}>{tag}</Tooltip>
+}
+
+/** 关联状态 Tag（v2；COMPLETE 之外附原因提示） */
+function AssociationTag({ event }: { event: TrafficHttpEvent }) {
+  if (!event.association_state) return <span>-</span>
+  const meta = ASSOC_STATE_META[event.association_state]
+  const tag = (
+    <Tag color={meta?.color}>{meta?.label ?? event.association_state}</Tag>
+  )
+  const reason = event.association_reason
+    ? (ASSOC_REASON_META[event.association_reason] ?? event.association_reason)
+    : ''
+  return reason ? <Tooltip title={reason}>{tag}</Tooltip> : tag
+}
+
+/** 请求/响应 Header 表（脱敏值即最终值，原样纯文本展示——不渲染 HTML；
+ * v1 string map 与 v2 数组 map 双形态兼容，v2 重复值逐行保序展示） */
 function HeadersTable({
   headers,
+  emptyText = '无 Header（采集等级 L0 或未捕获）',
 }: {
-  headers?: Record<string, string> | null
+  headers?: TrafficHttpHeaders | null
+  emptyText?: string
 }) {
-  const rows = Object.entries(headers ?? {}).map(([name, value]) => ({
-    name,
-    value,
-  }))
+  const rows = Object.entries(headers ?? {}).flatMap(([name, value]) =>
+    (Array.isArray(value) ? value : [value]).map((v, idx) => ({
+      key: `${name}#${idx}`,
+      name,
+      value: v,
+    })),
+  )
   return (
     <Table
-      rowKey="name"
+      rowKey="key"
       size="small"
       pagination={false}
       columns={[
@@ -92,8 +136,28 @@ function HeadersTable({
         },
       ]}
       dataSource={rows}
-      locale={{ emptyText: '无 Header（采集等级 L0 或未捕获）' }}
+      locale={{ emptyText }}
     />
+  )
+}
+
+/** Body 数据质量说明（v2 body_quality 子对象；未知长度如实展示"未知"，不按 0 处理） */
+function BodyQualityLine({ message }: { message: TrafficHttpMessage }) {
+  const q = message.body_quality
+  if (!q) return null
+  return (
+    <Typography.Text
+      type="secondary"
+      style={{ display: 'block', fontSize: 12, marginTop: 4 }}
+    >
+      {`数据质量：实际捕获 ${formatBytes(q.captured_bytes)} / 原始总大小 ${
+        q.original_total_size === null ? '未知' : formatBytes(q.original_total_size)
+      }${q.truncated ? ' / 已截断' : ''}${
+        q.skipped_reason
+          ? ` / 未采集（${BODY_SKIPPED_REASON_META[q.skipped_reason] ?? q.skipped_reason}）`
+          : ''
+      }`}
+    </Typography.Text>
   )
 }
 
@@ -139,6 +203,7 @@ function BodyView({ message }: { message: TrafficHttpMessage }) {
       ) : !skipped ? (
         <Typography.Text type="secondary">无 Body</Typography.Text>
       ) : null}
+      <BodyQualityLine message={message} />
       <Typography.Text
         type="secondary"
         style={{ display: 'block', fontSize: 12, marginTop: 4 }}
@@ -149,7 +214,134 @@ function BodyView({ message }: { message: TrafficHttpMessage }) {
   )
 }
 
-/** 单条 HTTP 事件详情（五元组/方向/TLS 可见性 + 请求/响应 headers 与 body） */
+/** v2 来源/协议/数据质量区块（仅 v2 行渲染；v1 行无此口径不伪造） */
+function EventV2Section({ event }: { event: TrafficHttpEvent }) {
+  if (event.schema_version !== 2) return null
+  const delay = ingestionDelaySec(event.collection_ts, event.ingestion_ts)
+  const replaySuspected = delay !== null && delay > REPLAY_DELAY_THRESHOLD_SEC
+  return (
+    <div>
+      <Typography.Text strong>来源与数据质量（schema v2）</Typography.Text>
+      <Descriptions
+        column={2}
+        size="small"
+        bordered
+        style={{ marginTop: 8 }}
+      >
+        <Descriptions.Item label="事件 ID（幂等去重键）" span={2}>
+          <Space size={8} wrap>
+            <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
+              {event.event_id ?? '-'}
+            </Typography.Text>
+            <Tooltip title="重试与缓存补传不改变 event_id，服务端按（Agent, event_id）幂等去重，不重复入库、不扩大资产计数">
+              <Tag color="green">幂等去重生效</Tag>
+            </Tooltip>
+          </Space>
+        </Descriptions.Item>
+        <Descriptions.Item label="采集来源">
+          <SourceTypeTag event={event} />
+        </Descriptions.Item>
+        <Descriptions.Item label="来源实例 / 代次">
+          {`${event.source_instance || '-'} / epoch ${event.source_epoch ?? 0}`}
+        </Descriptions.Item>
+        <Descriptions.Item label="来源能力版本">
+          {event.source_capabilities_version || '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="协议（观测 / 原始）">
+          {`${httpVersionLabel(event.observed_http_version)} / ${
+            event.original_http_version === null ||
+            event.original_http_version === undefined
+              ? '不可确认'
+              : httpVersionLabel(event.original_http_version)
+          }`}
+        </Descriptions.Item>
+        <Descriptions.Item label="关联状态">
+          <AssociationTag event={event} />
+        </Descriptions.Item>
+        <Descriptions.Item label="流标识">
+          {event.capture_stream_id ? (
+            <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
+              {event.capture_stream_id}
+            </Typography.Text>
+          ) : (
+            '-'
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="来源绑定">
+          {event.application_binding_id ? (
+            <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
+              {`${event.application_binding_id}（v${event.binding_version ?? '-'}）`}
+            </Typography.Text>
+          ) : (
+            '未绑定（资产关联待确认）'
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="采集时间">
+          {event.collection_ts != null ? formatUnixTime(event.collection_ts) : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="入库时间 / 延迟">
+          <Space size={8} wrap>
+            <span>
+              {event.ingestion_ts != null
+                ? `${formatUnixTime(event.ingestion_ts)} / ${
+                    delay !== null ? `${delay.toFixed(1)}s` : '-'
+                  }`
+                : '-'}
+            </span>
+            {replaySuspected ? (
+              <Tooltip title="采集→入库延迟超过阈值，大概率为磁盘缓存补传（断线恢复后回放）；延迟不混入业务时延">
+                <Tag color="orange">疑似缓存补传</Tag>
+              </Tooltip>
+            ) : null}
+          </Space>
+        </Descriptions.Item>
+      </Descriptions>
+    </div>
+  )
+}
+
+/** gRPC 元数据区块（v2 契约 §2.2：本期仅元数据；HTTP 200 ≠ RPC 成功，不伪造 grpc-status=0） */
+function GrpcSection({ grpc }: { grpc: TrafficGrpcMeta }) {
+  const stateMeta = GRPC_STREAM_STATE_META[grpc.stream_state]
+  return (
+    <div>
+      <Typography.Text strong>gRPC 元数据</Typography.Text>
+      <Descriptions
+        column={2}
+        size="small"
+        bordered
+        style={{ marginTop: 8 }}
+      >
+        <Descriptions.Item label="服务">{grpc.service || '-'}</Descriptions.Item>
+        <Descriptions.Item label="方法">{grpc.method || '-'}</Descriptions.Item>
+        <Descriptions.Item label="grpc-status">
+          {grpc.grpc_status === null || grpc.grpc_status === undefined ? (
+            <Tooltip title="流未结束或 trailers 不可见——不伪造 grpc-status=0；HTTP 200 ≠ RPC 成功">
+              <span>未知（流未结束/不可见）</span>
+            </Tooltip>
+          ) : (
+            <Tag color={grpc.grpc_status === 0 ? 'green' : 'red'}>
+              {grpc.grpc_status}
+            </Tag>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="流状态">
+          <Tag color={stateMeta?.color}>
+            {stateMeta?.label ?? grpc.stream_state}
+          </Tag>
+        </Descriptions.Item>
+      </Descriptions>
+      <Typography.Text
+        type="secondary"
+        style={{ display: 'block', fontSize: 12, marginTop: 4 }}
+      >
+        本期仅采集 gRPC 元数据（服务/方法/状态/流状态），不解析 Protobuf 消息正文
+      </Typography.Text>
+    </div>
+  )
+}
+
+/** 单条 HTTP 事件详情（五元组/方向/TLS 可见性 + v2 来源与质量 + 请求/响应 headers 与 body） */
 function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
   const req = event.request
   const resp = event.response
@@ -195,6 +387,9 @@ function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
         </Descriptions.Item>
       </Descriptions>
 
+      <EventV2Section event={event} />
+      {event.grpc ? <GrpcSection grpc={event.grpc} /> : null}
+
       <div>
         <Typography.Text strong>请求</Typography.Text>
         <div
@@ -203,6 +398,20 @@ function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
           {`${req.method} ${req.scheme}://${req.host}${req.uri}`}
         </div>
         <HeadersTable headers={req.headers} />
+        {req.trailers ? (
+          <>
+            <Typography.Text
+              strong
+              style={{ display: 'block', margin: '8px 0 4px' }}
+            >
+              请求 Trailers
+            </Typography.Text>
+            <HeadersTable
+              headers={req.trailers}
+              emptyText="确认无请求 Trailer"
+            />
+          </>
+        ) : null}
         <Typography.Text
           strong
           style={{ display: 'block', margin: '8px 0 4px' }}
@@ -220,6 +429,20 @@ function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
               <StatusTagCell status={resp.status} />
             </div>
             <HeadersTable headers={resp.headers} />
+            {resp.trailers ? (
+              <>
+                <Typography.Text
+                  strong
+                  style={{ display: 'block', margin: '8px 0 4px' }}
+                >
+                  响应 Trailers
+                </Typography.Text>
+                <HeadersTable
+                  headers={resp.trailers}
+                  emptyText="确认无响应 Trailer"
+                />
+              </>
+            ) : null}
             <Typography.Text
               strong
               style={{ display: 'block', margin: '8px 0 4px' }}
@@ -241,13 +464,18 @@ function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
   )
 }
 
-/** Agent HTTP 事件面板（Phase 3 契约 §9）：服务端分页表 + host/method 过滤 + 行点击详情 */
+/** Agent HTTP 事件面板（Phase 3 契约 §9 + P1-03 §4.3 v2 展示）：
+ * 服务端分页表 + host/method 过滤 + 行点击详情；来源/协议/关联/数据质量独立状态展示；
+ * 旧 Agent（能力集不含 v2）明示「需升级」，不假报 v2 能力已启用 */
 export default function HttpEventsPanel({
   agentId,
   enabled = true,
+  httpEventSchemas,
 }: {
   agentId: string
   enabled?: boolean
+  /** Agent 能力协商生效集（http_event_schemas）；缺省视为未知（不提示升级） */
+  httpEventSchemas?: number[]
 }) {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -281,6 +509,9 @@ export default function HttpEventsPanel({
     enabled: enabled && !!agentId && detailId !== null,
   })
 
+  const upgradeNeeded =
+    httpEventSchemas !== undefined && !supportsHttpEventV2(httpEventSchemas)
+
   const columns: ColumnsType<TrafficHttpEvent> = [
     {
       title: '时间',
@@ -297,6 +528,37 @@ export default function HttpEventsPanel({
           {`${r.request.method} ${r.request.host}${r.request.uri}`}
         </Typography.Text>
       ),
+    },
+    {
+      title: '来源',
+      key: 'source',
+      width: 110,
+      render: (_, r) => <SourceTypeTag event={r} />,
+    },
+    {
+      title: '协议',
+      key: 'protocol',
+      width: 90,
+      render: (_, r) =>
+        r.schema_version === 2 ? (
+          <Tooltip
+            title={`观测协议；原协议: ${
+              r.original_http_version == null
+                ? '不可确认'
+                : httpVersionLabel(r.original_http_version)
+            }（分开记录，不互相回填）`}
+          >
+            <span>{httpVersionLabel(r.observed_http_version)}</span>
+          </Tooltip>
+        ) : (
+          '-'
+        ),
+    },
+    {
+      title: '关联',
+      key: 'association',
+      width: 100,
+      render: (_, r) => <AssociationTag event={r} />,
     },
     {
       title: 'K8s 工作负载',
@@ -355,6 +617,15 @@ export default function HttpEventsPanel({
 
   return (
     <>
+      {upgradeNeeded ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="该 Agent 仅支持 v1 事件（需升级）"
+          description="来源、协议观测、关联状态、Body 数据质量等 v2 字段需要 Agent 升级并在注册/心跳中声明 schema v2 能力后才会产生；当前列表中 v1 记录的相应位置显示为「-」。"
+        />
+      ) : null}
       <Space style={{ marginBottom: 12 }} wrap>
         <Input.Search
           placeholder="按 Host 过滤"
@@ -388,7 +659,7 @@ export default function HttpEventsPanel({
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
-          scroll={{ x: 760 }}
+          scroll={{ x: 1080 }}
           locale={{ emptyText: '暂无 HTTP 事件' }}
           onRow={(r) => ({
             onClick: () => setDetailId(r.id),

@@ -57,8 +57,8 @@ FROM alpine:3.24${ALPINE_IMAGE_DIGEST:+@$ALPINE_IMAGE_DIGEST}
 
 # 创建非 root 运行用户（固定 UID/GID 便于与配置控制器容器共享 Admin Socket 卷）
 RUN addgroup -g 1000 -S caddy && adduser -u 1000 -S -G caddy -h /var/lib/caddy caddy \
-    && mkdir -p /etc/caddy /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data \
-    && chown -R caddy:caddy /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data
+    && mkdir -p /etc/caddy/certs /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data \
+    && chown -R caddy:caddy /etc/caddy/certs /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data
 
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

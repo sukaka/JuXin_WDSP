@@ -33,6 +33,15 @@ source "$SCRIPT_DIR/../lib/signing.sh"
 # 交付清单与构建侧安全扫描器只服务于打包阶段，不复制进客户包。
 ALLOWLIST_FILE="$SCRIPT_DIR/allowlist.v1"
 SCANNER_FILE="$SCRIPT_DIR/scan.py"
+# Full product images include reviewed data-plane layers larger than the unit
+# test defaults. The package scanner remains bounded and fail-closed; these
+# limits cover the largest pinned delivery component without treating it as a
+# compression bomb solely because it is a production database image.
+PACKAGE_SCAN_MAX_MEMBER_BYTES=1073741824
+PACKAGE_SCAN_MAX_TOTAL_BYTES=8589934592
+# Full-image recursive scanning is intentionally bounded but needs more than
+# the unit-test default.  Five minutes still fails closed on a stalled scanner.
+PACKAGE_SCAN_TIMEOUT_SECONDS=300
 
 # 锁定镜像（与 docs/DEPENDENCIES.md 一致，禁止使用 latest）。
 # 下列 digest 为多架构 index/manifest list 摘要（含 amd64+arm64），
@@ -744,14 +753,26 @@ jq -n \
 
 # ---------- 6. allowlist / 内容扫描（签名之前，失败即拒绝） ----------
 package_scan_report="$work/package-scan.json"
-python3 "$SCANNER_FILE" \
+if ! python3 "$SCANNER_FILE" \
   --root "$pkg_dir" \
   --allowlist "$ALLOWLIST_FILE" \
   --output "$package_scan_report" \
   --product "$PRODUCT" \
   --version "$VERSION" \
   --platform "$ARCH" \
-  || die "离线包 allowlist/内容扫描失败，拒绝继续打包"
+  --max-member-bytes "$PACKAGE_SCAN_MAX_MEMBER_BYTES" \
+  --max-total-bytes "$PACKAGE_SCAN_MAX_TOTAL_BYTES" \
+  --timeout-seconds "$PACKAGE_SCAN_TIMEOUT_SECONDS"; then
+  # The package directory is removed by the exit trap. Preserve only the
+  # scanner's metadata report so a rejected build remains diagnosable without
+  # retaining its images, credentials, or other package payloads.
+  rejection_report="$OUT_DIR/${PKG_BASENAME}.package-scan.reject.json"
+  [[ -f "$package_scan_report" ]] \
+    || die "离线包扫描失败且未生成诊断报告，拒绝继续打包"
+  cp "$package_scan_report" "$rejection_report" \
+    || die "离线包扫描失败且无法保留诊断报告，拒绝继续打包"
+  die "离线包 allowlist/内容扫描失败，拒绝继续打包；诊断报告：$rejection_report"
+fi
 jq -e --arg allowlist_sha256 "$allowlist_sha256" \
   '.result == "PASS" and .scope.allowlist == "allowlist.v1" and
    .scope.allowlist_sha256 == $allowlist_sha256 and
@@ -776,6 +797,9 @@ python3 "$SCANNER_FILE" \
   --product "$PRODUCT" \
   --version "$VERSION" \
   --platform "$ARCH" \
+  --max-member-bytes "$PACKAGE_SCAN_MAX_MEMBER_BYTES" \
+  --max-total-bytes "$PACKAGE_SCAN_MAX_TOTAL_BYTES" \
+  --timeout-seconds "$PACKAGE_SCAN_TIMEOUT_SECONDS" \
   || die "最终离线归档扫描失败，拒绝签名/交付"
 jq -e --arg allowlist_sha256 "$allowlist_sha256" \
   --arg package_manifest_sha256 "$package_manifest_sha256" \

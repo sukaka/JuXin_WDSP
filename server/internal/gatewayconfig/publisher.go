@@ -199,6 +199,11 @@ type Publisher struct {
 	// 无效授权 → 强制纯透传（Guard=nil、全部应用 BYPASS）；有效且配额 max_qps>0 →
 	// Guard 注入 LicenseMaxQPS。nil 视为授权有效（未装配授权时发布行为与历史一致）。
 	licenseState func(ctx context.Context) (valid bool, maxQPS int64)
+	// licensePublishAllowed 由授权服务提供。完整性事实源不可用时必须暂停发布，
+	// 防止把已运行防护配置错误重生成为授权失效时的旁路配置；nil 视为允许。
+	licensePublishAllowed func(ctx context.Context) (allowed bool, reason string)
+	// regressionGate 安全回归发布门禁（WDSP P1-04 R3；nil = 未装配，与历史行为一致）
+	regressionGate RegressionGate
 	// gatewayTracing 网关原生 OTel tracing 下发开关（装配侧从 GATEWAY_TRACING_ENABLED
 	// 注入，默认 false；见 GenerateInput.GatewayTracing）
 	gatewayTracing bool
@@ -288,6 +293,12 @@ func (p *Publisher) SetLicenseStateProvider(fn func(ctx context.Context) (valid 
 	p.licenseState = fn
 }
 
+// SetLicensePublishAllowedProvider 注入授权完整性发布闸门。返回 false 时本次任务
+// 明确失败，不读取业务快照、不生成候选配置，也不改写当前网关配置。
+func (p *Publisher) SetLicensePublishAllowedProvider(fn func(ctx context.Context) (allowed bool, reason string)) {
+	p.licensePublishAllowed = fn
+}
+
 const publishLockKey = "jiuzhang:gateway:publish_lock"
 const publishLockTTL = 120 * time.Second
 
@@ -358,6 +369,10 @@ func (p *Publisher) PublishSync(ctx context.Context, in PublishInput) (*PublishT
 
 // executePublish 执行发布流程（状态机）。
 func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in PublishInput) {
+	if allowed, reason := p.allowsLicensePublish(ctx); !allowed {
+		p.finishTask(ctx, taskID, TaskFailed, "LICENSE_INTEGRITY_UNAVAILABLE", reason, nil)
+		return
+	}
 	lockOwner := taskID.String()
 	// 获取发布锁
 	ok, err := p.acquireLock(ctx, lockOwner)
@@ -453,6 +468,17 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	}
 	_ = p.setTaskTargetVersion(ctx, taskID, version.ID)
 
+	// 安全回归发布门禁（WDSP P1-04 R3 §7.2）：候选编译完成且不可变版本已保存、
+	// 发往节点（主节点 Caddy /load 及次要节点扇出）之前评估。评估绑定本次实际
+	// 构建的候选指纹（cfgfpv1 + gen.Hash），随后发送的仍是同一份 gen.JSON——
+	// 排队后正式执行前核对，检查后无替换窗口。GuardOverride 历史快照重放按
+	// 已知良好恢复通道口径评估（§7.3）。ENFORCE 阻止/依赖不可用时任务明确失败。
+	if ok, code, msg := p.evaluateRegressionGate(ctx, taskID, version.ID, "cfgfpv1:"+gen.Hash, in.GuardOverride != nil); !ok {
+		p.markVersionResult(ctx, version.ID, "FAILED")
+		p.finishTask(ctx, taskID, TaskFailed, code, msg, &version.ID)
+		return
+	}
+
 	// 阶段5：保存访问控制配置版本快照（PENDING，结果后续回填）
 	var acVersionID uuid.UUID
 	if p.guard != nil && guardCfg != nil {
@@ -531,6 +557,20 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	// （逐节点回填 last_sync_*；次要节点失败不阻断主发布——记录并告警）。
 	p.SyncConfigToNodes(ctx, gen.JSON, version.ID)
 	p.finishTask(ctx, taskID, TaskSuccess, "", "发布成功", &version.ID)
+}
+
+func (p *Publisher) allowsLicensePublish(ctx context.Context) (bool, string) {
+	if p.licensePublishAllowed == nil {
+		return true, ""
+	}
+	allowed, reason := p.licensePublishAllowed(ctx)
+	if allowed {
+		return true, ""
+	}
+	if reason == "" {
+		reason = "授权完整性暂不可用，已暂停配置发布并保留当前网关配置"
+	}
+	return false, reason
 }
 
 // SyncConfigToNodes 将本次构建的最终配置扇出到全部登记次要节点（W18-SYNC §200

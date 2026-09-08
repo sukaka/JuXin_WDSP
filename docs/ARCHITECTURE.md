@@ -88,6 +88,10 @@ IP 黑名单判断
   ↓
 CC 频率限制
   ↓
+Bot 挑战判定（bot_policy，可选，默认 OFF；OBSERVE 只记录不实断，PROTECT 挑战/verify；
+保护地址/白名单/L7 allow 不跳过 Bot；保留命名空间 /_wdsp/bot/v1/ 在本步骤最前置
+本地处理，verify 与墓碑均不反向代理）
+  ↓
 请求大小及协议检查
   ↓
 Coraza/CRS 攻击检测

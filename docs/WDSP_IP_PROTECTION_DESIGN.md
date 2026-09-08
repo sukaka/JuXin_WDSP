@@ -744,12 +744,12 @@ flowchart TB
 
 ## 16. 当前完成情况与后续接手记录
 
-本节是 2026-09-07 的实施快照，不能替代
+本节是截至 2026-09-08 的实施快照，不能替代
 [WDSP_IP_PROTECTION_ACCEPTANCE.md](/Users/zhanglei/Documents/JiuZhang_WAF/docs/WDSP_IP_PROTECTION_ACCEPTANCE.md) 的逐项状态。
 
 ### 16.1 已落地并有本地证据的内容
 
-- IP-01/IP-02：`ops/offline-package/allowlist.v1`、递归扫描器和离线包构建门禁已落地；覆盖嵌套归档、source map、疑似凭据、路径穿越、符号链接、格式能力不足和资源预算。构建报告绑定 allowlist、manifest、归档摘要及扫描报告摘要。
+- IP-01/IP-02：`ops/offline-package/allowlist.v1`、递归扫描器和离线包构建门禁已落地；覆盖嵌套归档、source map、疑似凭据、路径穿越、符号链接、格式能力不足和资源预算。扫描器当前为 `wdsp-offline-scan/1.9`，48 项回归通过；WDSP 1.0.0 的 amd64/arm64 完整镜像开发离线包均已完成最终递归扫描，报告分别扫描 117 个归档、10,774 / 10,762 个成员及 4.75 / 4.54 GB 内容，且 `coverage.complete=true`。构建报告绑定 allowlist、manifest、归档摘要及扫描报告摘要。
 - IP-03：生产授权公钥从 Go 内嵌材料加载，运行时环境变量不能替换；当前生产公钥材料为空，所以正式授权路径保持 fail-closed。测试公钥仅通过 `wdsp_testkeys` 或显式依赖注入进入测试。
 - IP-04：授权服务以加密保存的原始 `.lic` 作为复核事实源，区分原文缺失、加密能力不可用、解密失败、签名/字段不一致、过期和设备不匹配等状态；已有服务级测试覆盖这些边界。合法历史原文迁移仍需受控材料和独立回归。
 - IP-05：离线包正式模式必须配置 `WDSP_SIGNING_KEY`；安装、升级预检和执行前均使用固定发布公钥验证签名、摘要和归档 manifest。临时 Ed25519 密钥仅用于验证机制，不能作为生产发布证据。
@@ -769,6 +769,9 @@ python3 -m unittest discover -s test/offline-package -p 'test_*.py' -v
 bash test/wdsp-ip/offline-delivery-gates.sh
 bash test/wdsp-ip/signed-delivery-gates.sh
 bash test/wdsp-ip/diagnostics-collect.sh
+python3 test/offline-package/test_offline_package_scan.py
+bash ops/offline-package/build.sh --product wdsp --version 1.0.0 --arch amd64 --development --output /private/tmp/wdsp-ip-amd64-development-tty5
+bash ops/offline-package/build.sh --product wdsp --version 1.0.0 --arch arm64 --development --output /private/tmp/wdsp-ip-arm64-development-tty2
 npm run typecheck --prefix web
 NODE_OPTIONS=--no-experimental-webstorage npm test --prefix web -- --run
 npm run build --prefix web
@@ -779,7 +782,7 @@ npm run build --prefix web
 ### 16.3 尚未具备发布资格的边界
 
 - 仓库没有合法厂商授权公钥内容、正式离线包签名私钥、客户授权文件或批准的根轮换材料；不能生成正式可交付授权或把临时密钥当作生产证据。
-- 尚未在本环境构建并验收带完整镜像的 amd64/arm64 多架构正式包，也未完成全部安装、升级、恢复、HA 和业务性能门禁。
+- 已在本环境构建并递归扫描带完整镜像的 amd64/arm64 WDSP 开发包；其 traceability sidecar 分别绑定 `fa6b2c120805050baa1fde9dd2333f487614e1d158c4e8c3bc7db7a31081857e` 和 `45a1ac59319e2bed43662e63ffab4ea78b7a5202c2ef02d477a121b57ede4f98`。两包均因没有 `WDSP_SIGNING_KEY` 而保持未签名开发状态，尚未完成正式签名、隔离安装/升级/恢复、HA 和业务性能门禁。
 - 没有批准的真实 TEE/远程证明/密钥释放环境；IP-10～IP-13 的实机验收保持阻断或不适用。
 - 版本号、CHANGELOG、tag、commit 和 push 本轮未执行；只有用户明确要求“推送”时才按仓库版本规则处理。
 

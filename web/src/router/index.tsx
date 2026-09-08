@@ -79,6 +79,9 @@ const AttackSessionsPage = lazy(() => import('../pages/attack-sessions/AttackSes
 const AttackSessionDetailPage = lazy(() => import('../pages/attack-sessions/AttackSessionDetailPage'))
 const BehaviorPolicyPage = lazy(() => import('../pages/behavior-policy/BehaviorPolicyPage'))
 const RiskPolicyPage = lazy(() => import('../pages/risk-policy/RiskPolicyPage'))
+const SecurityRegressionsPage = lazy(() => import('../pages/security-regressions/SecurityRegressionsPage'))
+const SecurityRegressionDetailPage = lazy(() => import('../pages/security-regressions/SecurityRegressionDetailPage'))
+const SecurityRegressionCasesPage = lazy(() => import('../pages/security-regressions/SecurityRegressionCasesPage'))
 const AccessLogsPage = lazy(() => import('../pages/access-logs/AccessLogsPage'))
 const EventStatisticsPage = lazy(() => import('../pages/event-statistics/EventStatisticsPage'))
 const SiteAccessTrendsPage = lazy(() => import('../pages/site-access-trends/SiteAccessTrendsPage'))
@@ -422,6 +425,31 @@ export default function AppRoutes() {
           element={
             <RequirePermission permission="risk_policy.read" denyAuditOnly>
               <RiskPolicyPage />
+            </RequirePermission>
+          }
+        />
+        {/* P1-04 R4a：安全回归证据与发布门禁（列表 + 详情 + 用例差异；AUDIT_ADMIN 持 read 可看） */}
+        <Route
+          path="security-regressions"
+          element={
+            <RequirePermission permission="security_regression.read">
+              <SecurityRegressionsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="security-regressions/:id"
+          element={
+            <RequirePermission permission="security_regression.read">
+              <SecurityRegressionDetailPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="security-regressions/:id/cases"
+          element={
+            <RequirePermission permission="security_regression.read">
+              <SecurityRegressionCasesPage />
             </RequirePermission>
           }
         />

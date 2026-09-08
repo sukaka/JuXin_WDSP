@@ -27,6 +27,7 @@ from p0bench.corpus import ACTIONS as FINAL_ACTIONS
 from p0bench.metrics import NA
 
 from .vocab import (
+    EXTRA_ACTIONS,
     NON_PASSABLE_EXECUTION_STATES,
     REASON_ENVIRONMENT_UNAVAILABLE,
     REASON_EXPECTATION_MISMATCH,
@@ -36,7 +37,8 @@ from .vocab import (
     REASON_PROFILE_NOT_APPLICABLE,
 )
 
-OBSERVED_ACTIONS = FINAL_ACTIONS + ("UNEXPECTED_ERROR",)
+EXPECTED_ACTIONS = FINAL_ACTIONS + EXTRA_ACTIONS
+OBSERVED_ACTIONS = FINAL_ACTIONS + EXTRA_ACTIONS + ("UNEXPECTED_ERROR",)
 
 
 def judge_case(case_doc: dict, profile: str, observation: dict | None) -> dict:
@@ -114,16 +116,19 @@ def judge_case(case_doc: dict, profile: str, observation: dict | None) -> dict:
         detected = bool(det_obs.get("detected"))
         obs_module = det_obs.get("module")
         obs_family = det_obs.get("rule_family")
+        obs_families = det_obs.get("matched_families") or ([obs_family] if obs_family else [])
         if exp_module == "none":
             correct = not detected
         else:
             correct = (
                 detected
                 and obs_module == exp_module
-                and (exp_family is None or obs_family == exp_family)
+                # 规则族按命中集合成员判定：多规则命中是常态，首条顺序不代表语义
+                and (exp_family is None or exp_family in obs_families)
             )
         det_detail = {"expected_module": exp_module, "expected_rule_family": exp_family,
                       "observed_module": obs_module, "observed_rule_family": obs_family,
+                      "observed_matched_families": obs_families,
                       "detected": detected, "correct": correct}
         if not correct:
             if exp_module == "none" and detected:
@@ -160,7 +165,7 @@ def judge_case(case_doc: dict, profile: str, observation: dict | None) -> dict:
                 f"{REASON_EXPECTATION_MISMATCH}: 最终动作不符（期望 {exp_action}，实际 {obs_action}）"
             )
         action_detail = {"expected": exp_action, "observed": obs_action,
-                         "correct": obs_action == exp_action and obs_action in FINAL_ACTIONS}
+                         "correct": obs_action == exp_action and obs_action in EXPECTED_ACTIONS}
     detail["action"] = action_detail
 
     # 3) 源站到达判定（受控源站标记对账；HTTP 状态不能替代）

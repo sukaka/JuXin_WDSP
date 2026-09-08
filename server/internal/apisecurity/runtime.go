@@ -267,6 +267,8 @@ func round4(v float64) float64 { return float64(int(v*10000+0.5)) / 10000 }
 
 // postureProtectedActions 防护量口径：实际处置动作（BLOCK/TEMP_BLOCK/RATE_LIMIT/MASK_RESPONSE，
 // 词表见 gateway/dynamic_security/context FinalAction）；ALLOW/OBSERVE 等观察性动作不计入。
+// CHALLENGE（Bot 挑战）刻意不计入防护量也不计入业务成功——挑战是中间态处置，
+// 单独统计（BOT-022），避免与攻击拦截混算。
 const postureProtectedActions = "('BLOCK','TEMP_BLOCK','RATE_LIMIT','MASK_RESPONSE')"
 
 // PostureOverview 顶部核心指标（GET /posture/overview，口径逐字段注明）。

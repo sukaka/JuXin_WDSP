@@ -4,6 +4,58 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-09-09
+
+### 新增（P1-01：安全与 APM 标准客户演示）
+
+> 任务书 docs/tasks/wdsp-p1/P1-01_SECURITY_APM_DEMO.md；验收 APMD-001～018 中 17 项 PASS，APMD-017（用户任务耗时验证）BLOCKED 如实保留（需未参与开发的人员，脚本已固化待执行）。证据见 docs/tasks/wdsp-p1/WORKLOG.md S2 记录与 A4 真实产品栈联调。
+
+- 安全事件到关联请求、Trace、慢 SQL、异常的闭环定位演示（自建合成业务，真实产品栈四场景联调通过）。
+- APM 数据健康可判别：未配置探针、存储失败、样本缺失分别返回明确状态，不再统一降为空页。
+- 关联边界如实表达：Trace 匹配验证上下文，不只按时间相近归因；缺数据与权限边界可解释。
+
+### 新增（P1-02：Bot 挑战及多信号策略）
+
+> 任务书 docs/tasks/wdsp-p1/P1-02_BOT_CHALLENGE.md；验收矩阵 BOT-001～024 PASS 20 / PARTIAL 4 / FAIL 0（docs/WDSP_BOT_CHALLENGE_ACCEPTANCE_MATRIX.md）。运维手册 docs/BOT_CHALLENGE_OPERATIONS.md。
+
+- **应用级浏览器挑战**：`bot_policy` 配置（缺省 OFF；OBSERVE 只记录，PROTECT 对合格的 HTTPS GET 浏览器文档导航签发 JS 挑战）；网关新增 Bot 挑战判定步骤（`bot_step.go`），四个放行出口统一经 `serveNextViaBot`；保留命名空间 `/_wdsp/bot/v1/` 本地处理不反向代理。
+- **挑战服务**：`botchallenge/`（Valkey 共享态、签名签发/验证、失败计数）；信号评估只读消费身份行为窗口计数（`identitybehavior.PeekSnapshot`），不记账。
+- **final_decision 增量扩展 CHALLENGE 动作**（P0-04 schema 有版本增量，旧动作含义不变；挑战成功只允许通过 Bot 步骤）。
+- **管理面**：Bot 策略管理页（草稿/发布/回退）；浏览器与自动化基准 27/27 PASS；升级/关闭/回退演练 23/23 PASS。
+- 如实披露：仅 Chromium 通道实测；慢设备/读屏、移动网络 IP 变化、签发验证洪峰压测待补（详见验收矩阵）。
+
+### 新增（P1-03：Agent 解密后接入及协议覆盖）
+
+> 任务书 docs/tasks/wdsp-p1/P1-03_AGENT_GATEWAY_PROTOCOLS.md；验收 AGT-001～028 中 26 项 PASS，AGT-021/022 BLOCKED_ENV（无真实 K8s 集群，组件级等价断言已覆盖）。支持矩阵 docs/agents/WDSP_AGENT_P1_SUPPORT_MATRIX.md。
+
+- **真实 Nginx mirror 与 Envoy tap 接入**：E2E 各 11/11 PASS（Envoy tap 覆盖 h2/gRPC/WebSocket 元数据）；Kubernetes DaemonSet/RBAC 部署清单。
+- **HTTP 事件 v2 契约**：解密后、多路复用场景的协议表达（请求/响应、截断、关联边界明确）；Agent v1→v2 升级与能力收回降级实证。
+- **可靠性**：断线磁盘缓存、重放、背压、重启恢复经演练；Agent 采集为被动观测，不宣称阻断原始业务请求。
+- 范围外如实标注 NOT_SUPPORTED：原生旁路 HTTP/2 HPACK 帧解析、WebSocket 帧正文、HTTP/3/QUIC、gRPC Protobuf 正文解码、AF_XDP、Agent 在线阻断。
+
+### 新增（P1-04：规则与模型持续回归）
+
+> 任务书 docs/tasks/wdsp-p1/P1-04_RULE_MODEL_REGRESSION.md；验收 REG-001～026 工具层/后端/门禁/回退全部实证通过。证据 docs/evidence/regressions/（P1-04-R2-FINAL-REPORT.md、P1-04-R4B-DRILL-REPORT.md）。
+
+- **固定语料回归管线**：`test/regression/p1/`（语料契约、回放适配器、判定/对比，201 单测）；全量回放基线 48/48，候选对比精准捕获唯一预期内丢失检测并如实 FAIL。
+- **发布门禁**：regression-policy 三态 OFF/OBSERVE/ENFORCE（默认 OFF）；受信验签公钥登记（system_settings）+ `tools/regsign` 签名工具（私钥不入库不入仓）；证据有效期默认 7 天；迁移 000134/000135。
+- **回退演练**：ENFORCE 端到端 + 误报/故障回退全相位 PASS；配置版本回退与 GuardOverride 已知良好快照恢复均经实证。
+- **管理界面**：安全回归管理页 + 页面 E2E 11/11；CI 新增 nightly 回归工作流。
+
+### 修复（P1 实施期间抓出，均有证据链）
+
+- server 证书查询 SQL 歧义（certColumns 未限定别名，SQLSTATE 42702）导致「HTTPS 域名+绑定证书」应用发布必失败。
+- docker stage5 栈证书下发通道未接线（stage5-gateway-certs 卷 + 两 Dockerfile 预建目录）。
+- botchallenge Store.Read 在真实 Valkey 下 HGETALL 数字型 bulk string 解析失败导致 verify 恒 503（luaFieldString 两型兼容）。
+- web 回归详情页 gate_assessment.reasons 为 null 时白屏（归一化 + 守护测试）。
+- s5_publish 发布锁 LOCK_BUSY 无重试（自动发布与显式发布竞争，补退避重试）。
+
+### 已知限制（如实披露）
+
+- APMD-017、AGT-021/022 及 Bot 四项 PARTIAL 待对应环境/人员条件补做，详见 docs/tasks/wdsp-p1/DELIVERY_SUMMARY.md。
+- 13 条产品发现已转修复排期（docs/tasks/wdsp-p1/PRODUCT_FINDINGS_FIX_PLAN.md），最高优先级为回滚草稿孤儿化。
+- P0 挂起项延续：JWT-18 与 BENCH-03/04/08/09/10/11/12 待专用隔离硬件与 72h 长稳窗口；发布状态保持 DEVELOPMENT（见 docs/tasks/wdsp-p0/WORKLOG.md S6 差距清单）。
+
 ## [1.1.0] - 2026-09-08
 
 ### 新增（P0-03：业务 JWT 验证信任链）

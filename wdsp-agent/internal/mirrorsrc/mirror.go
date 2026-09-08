@@ -445,12 +445,12 @@ func (r *Receiver) normalize(req *http.Request) events.HTTPRecordV2 {
 		ObservedHTTPVersion: observedProto(req),
 		RequestOnly:         true,
 	})
-	// 原始 Body 总大小不可确认（chunked 且未读尽）时 body_quality.original_total_size
-	// 保持 null（不得填 0），且按契约 §2.1 一致性约束不能声明 truncated
-	// （truncated=true 要求总大小非 null 且 ≥ captured）——已捕获字节数如实保留。
+	// 原始 Body 总大小不可确认（chunked 且未读尽/读取中断）时
+	// body_quality.original_total_size 保持 null（不得填 0）；契约 V1.1 起
+	// truncated 如实保留（truncated=true + null 表达「截断但总大小未知」），
+	// 已捕获字节数 captured_bytes 如实保留。
 	if !knownTotal {
 		out.Request.BodyQuality.OriginalTotalSize = nil
-		out.Request.BodyQuality.Truncated = false
 	}
 	return out
 }

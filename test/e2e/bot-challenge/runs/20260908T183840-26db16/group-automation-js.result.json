@@ -1,0 +1,11 @@
+{
+  "group": "automation-js",
+  "nav_attempts_before_challenge": 1,
+  "challenge_seen": true,
+  "solve_ms": 106,
+  "final_status": 200,
+  "final_reached_origin": true,
+  "clearance_cookie": true,
+  "webdriver": true,
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.16 Safari/537.36"
+}

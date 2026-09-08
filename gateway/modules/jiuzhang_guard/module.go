@@ -4,12 +4,16 @@
 // → 身份解析与行为观测（可选）→ 保护地址
 // → 人工临时封禁 → 全局白 → 应用白 → 全局黑 → 应用黑 → L7 访问控制（首中即停）→ 自动临时封禁
 // → 身份风险策略处置（risk_policy，可选，OBSERVE 默认不实断）→ 授权全局限速（可选，默认关闭）
-// → CC限速 → API 动态防护管线（可选，默认关闭；JWT 强制处置在管线阶段统一放行出口 serveNext 执行，
+// → CC限速 → Bot 挑战判定（bot_policy，可选，默认 OFF；OBSERVE 只记录不实断，PROTECT 挑战/verify，
+// 保护地址/白名单/L7 allow 不跳过 Bot；保留命名空间 /_wdsp/bot/v1/ 在本步骤最前置本地处理，
+// verify 固定协议端点与墓碑均不反向代理）
+// → API 动态防护管线（可选，默认关闭；JWT 强制处置在管线阶段统一放行出口 serveNext 执行，
 // 白名单/L7 allow 不绕过 JWT PROTECT）→ 下一处理器（WAF）。
 // 人工临时封禁查询在黑白名单之前（白名单不绕过人工封禁）；自动 CC 封禁可被白名单/L7 allow 绕过。
 // 白名单命中直接放行：跳过 L7 访问控制、自动临时封禁、授权全局限速与 CC，
-// 不绕过 API 动态防护、协议校验与 WAF（安全底线）；
-// L7 allow 命中跳过自动临时封禁、授权全局限速与 CC 等后续 guard 检查，同样不绕过 API 动态防护与 WAF。
+// 不绕过 Bot 挑战、API 动态防护、协议校验与 WAF（安全底线）；
+// L7 allow 命中跳过自动临时封禁、授权全局限速与 CC 等后续 guard 检查，同样不绕过 Bot 挑战、
+// API 动态防护与 WAF。
 // 注：下划线请求头由 Caddy 内核在处理器链之前强制丢弃（GHSA-f59h-q822-g45g），无需模块处理。
 package jiuzhang_guard
 
@@ -41,6 +45,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/response"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/accesscontrol"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/apievents"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/botchallenge"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/cidr"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientip"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/counters"
@@ -384,7 +389,8 @@ type Guard struct {
 	apiExceptions     map[string][]APIException               // 按 APIExceptions 装配（nil = 未下发，请求链路零变化）
 	jwtFetcher        *jwtverify.Fetcher                      // 测试注入钩子（nil = 存在 REMOTE_JWKS 时装配期建默认受限获取器）
 	jwtCancel         context.CancelFunc                      // 远程 JWKS 后台刷新取消（nil = 未启动；Cleanup 调用）
-	botPolicy         *botPolicyJSON                          // 按 BotPolicy 装配（nil = 未下发/OFF；B1 仅解析/校验/装配持有，请求链零行为变化，B2/B3 挂接）
+	botPolicy         *botPolicyJSON                          // 按 BotPolicy 装配（nil = 未下发；OFF 也保留段内容以维持 verify 命名空间墓碑；B3 起请求链经 serveNextViaBot 消费）
+	botSvc            *botchallenge.Service                   // Bot 挑战服务（nil = OFF/未下发/OBSERVE 依赖缺失降级；PROTECT 依赖缺失在装配期 fail-closed 拒载）
 }
 
 // compiledPolicy 编译后的 CC 策略。
@@ -791,8 +797,9 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 		return err
 	}
 	// Bot 挑战策略装配（bot_policy 段；与 jwt_trust 同一 fail-closed 纪律——解析/校验
-	// 失败拒绝整体配置加载；段缺失/OFF = 零行为变化。B1 仅解析/校验/装配，
-	// 不接入请求链——挑战/verify/Eval 属 B2/B3）
+	// 失败拒绝整体配置加载；段缺失 = 零行为变化。B3 起接入请求链：非 OFF 装配挑战
+	// 服务 g.botSvc（PROTECT 依赖缺失拒载、OBSERVE 降级仅装配持有），请求链经
+	// serveNextViaBot 在 CC 之后、serveNext 之前消费）
 	if err := g.assembleBotPolicy(); err != nil {
 		return err
 	}
@@ -1331,14 +1338,14 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 	}
 
-	// 2. 保护地址：仅当「客户端 IP」命中时跳过 ACL/CC（仍过 WAF 与 API 动态防护）。
+	// 2. 保护地址：仅当「客户端 IP」命中时跳过 ACL/CC（仍过 Bot 挑战、WAF 与 API 动态防护）。
 	// 连接源（LB/本机反代）不得用于旁路真实客户端的访问控制。
 	if g.protected.Contains(clientIP) {
 		dispo.RecordStep(ExecutorProtectedAddress, StepExecuted, "client IP in protected addresses")
 		recordBypassedSteps(dispo, "PROTECTED_ADDRESS",
 			ExecutorManualBan, StepModuleIPAllowlist, ExecutorIPBlacklist, ExecutorL7ACL,
 			ExecutorAutoBan, ExecutorRiskPolicy, ExecutorLicenseQuota, ExecutorCC)
-		return g.serveNext(w, r, next)
+		return g.serveNextViaBot(w, r, next, base, res)
 	}
 
 	// 3. 临时封禁查询（人工封禁优先于白名单；自动 CC 封禁可由白名单绕过）
@@ -1362,12 +1369,12 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 
 	// 4. 黑白名单（白名单命中直接放行：跳过 L7、自动封禁、授权限速与 CC，
-	// 不跳过 API 动态防护与 WAF；不绕过人工临时封禁——封禁查询已在上方执行）
+	// 不跳过 Bot 挑战、API 动态防护与 WAF；不绕过人工临时封禁——封禁查询已在上方执行）
 	dec := accesscontrol.Evaluate(clientIP, now, g.allowG, g.allowA, g.denyG, g.denyA)
 	switch dec.Action {
 	case accesscontrol.ActionAllow:
 		// 白名单命中放行（P0-04 事实记录）：只记录实际绕过的步骤（SKIPPED + detail）；
-		// 放行非终止，不挂 final_decision（该请求仍过 API 动态防护与 WAF——安全底线）
+		// 放行非终止，不挂 final_decision（该请求仍过 Bot 挑战、API 动态防护与 WAF——安全底线）
 		dispo.RecordStep(StepModuleIPAllowlist, StepExecuted, "allow hit rule="+dec.RuleID)
 		recordBypassedSteps(dispo, "IP_ALLOWLIST",
 			ExecutorIPBlacklist, ExecutorL7ACL, ExecutorAutoBan,
@@ -1375,7 +1382,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		ev := base
 		ev.AccessRuleID = dec.RuleID
 		g.emit(ev, events.IPAllowMatch, "ALLOW", 0)
-		return g.serveNext(w, r, next)
+		return g.serveNextViaBot(w, r, next, base, res)
 	case accesscontrol.ActionDeny:
 		dispo.RecordTerminal(ExecutorIPBlacklist, DisActionBlock, http.StatusForbidden, false,
 			[]string{"IP_IN_BLACKLIST"}, []string{dec.RuleID})
@@ -1390,7 +1397,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	// 4.5 L7 访问控制（IP 黑白名单之后、CC 之前；按优先级首中即停）
 	if g.l7 != nil {
 		if l7dec, ok := g.l7.Eval(r, clientIP); ok {
-			return g.executeL7(w, r, next, base, l7dec)
+			return g.executeL7(w, r, next, base, res, l7dec)
 		}
 	}
 
@@ -1432,8 +1439,8 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		return err
 	}
 
-	// 7. 放行（经 API 动态防护管线后进入 WAF 等后续处理器）
-	return g.serveNext(w, r, next)
+	// 7. 放行（经 Bot 挑战判定与 API 动态防护管线后进入 WAF 等后续处理器）
+	return g.serveNextViaBot(w, r, next, base, res)
 }
 
 // l7SkipKey 请求上下文标记：L7 allow 命中后设置，CC 等后续 guard 检查据此跳过。
@@ -1447,21 +1454,21 @@ func l7Skip(ctx context.Context) bool {
 
 // executeL7 执行 L7 规则命中动作。
 // block/redirect/custom_page 直接写响应终结请求；allow 放行并设置跳过标记，
-// 跳过自动封禁与 CC 等后续 guard 检查（仍经 serveNext 过 API 动态防护与 WAF——安全底线）。
-func (g *Guard) executeL7(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler, base events.Event, dec l7rules.Decision) error {
+// 跳过自动封禁与 CC 等后续 guard 检查（仍经 Bot 挑战判定与 serveNext 过 API 动态防护与 WAF——安全底线）。
+func (g *Guard) executeL7(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler, base events.Event, res clientip.Result, dec l7rules.Decision) error {
 	dispo := DispositionFrom(r.Context())
 	ev := base
 	ev.AccessRuleID = dec.RuleID
 	switch dec.Action {
 	case l7rules.ActionAllow:
 		// L7 allow 放行（P0-04 事实记录）：只记录实际绕过的步骤；放行非终止，
-		// 不挂 final_decision（仍经 serveNext 过 API 动态防护与 WAF——安全底线）
+		// 不挂 final_decision（仍经 Bot 挑战判定与 serveNext 过 API 动态防护与 WAF——安全底线）
 		dispo.RecordStep(ExecutorL7ACL, StepExecuted, "allow hit rule="+dec.RuleID)
 		recordBypassedSteps(dispo, "L7_ACL",
 			ExecutorAutoBan, ExecutorRiskPolicy, ExecutorLicenseQuota, ExecutorCC)
 		g.emit(ev, events.L7RuleAllow, "ALLOW", 0)
 		*r = *r.WithContext(context.WithValue(r.Context(), l7SkipKey{}, dec.RuleID))
-		return g.serveNext(w, r, next)
+		return g.serveNextViaBot(w, r, next, base, res)
 	case l7rules.ActionBlock:
 		g.writeL7Block(w, r, base.RequestID, dec.Config.Status, dec.Config.Message)
 		dispo.RecordTerminal(ExecutorL7ACL, DisActionBlock, dec.Config.Status, true,

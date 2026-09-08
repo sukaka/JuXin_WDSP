@@ -59,10 +59,10 @@
 | S0 实施现状核实与契约冻结 | PASS | 2026-09-06 完成四项现状核实与共享契约冻结，详见「S0 记录」；代码行为未改动 |
 | S1 回放基础与改动前基线 | PASS（工具层） | 2026-09-06 完成 P1-04 R1：语料契约+判定/对比+run.sh 增量+174 单测全绿；真实网关回放 BLOCKED_ENV（无隔离栈，不假 PASS）。详见「S1 记录」 |
 | S2 安全与 APM | PASS（APMD-017 除外） | 2026-09-07 A1/A2/A3、2026-09-08 A4（真实产品栈联调四场景 PASS）完成，见四条 S2 记录；APMD-017 用户耗时验证 BLOCKED（无未参与者人员条件，任务脚本已固化待执行） |
-| S3 Bot 挑战 | PARTIAL | 2026-09-07 B0+B1+B2、2026-09-08 B3 预备（server 密钥下发通道 + Bot 事件落库，复验全绿）完成；B3 请求链接入待 P0 S4 落定（module.go/disposition.go 冲突避让），B4/B5 未做 |
-| S4 Agent 协议与 K8s | PARTIAL | 2026-09-08 G0 契约冻结 + G1 server 侧（迁移 000133/幂等/协商/来源关系）、G1 agent 侧（批次预算/严格缓存/背压公平/指标）、G1 双侧联调（v2 发送路径接通，契约对齐修正）、G2（Nginx mirror 适配器+真实 Nginx E2E 11 场景 37 断言全过）完成，见 S4 各记录；G3（Envoy）、G4（严格缓存真实 K8s 与页面）、G5（升级回退矩阵回归）未做 |
-| S5 持续门禁与回退 | NOT_RUN | 无本轮实施证据 |
-| S6 最终交付 | NOT_RUN | 无本轮实施证据 |
+| S3 Bot 挑战 | PASS（4 项 PARTIAL 如实披露） | 2026-09-07 B0+B1+B2、2026-09-08 B3 预备+B3 请求链接入（真实 Caddy/Valkey 集成测试 PASS）+B4（管理页+基准 27/27）+B5（升级/关闭/回退演练 23/23）完成，见 S3 各记录；验收矩阵 BOT-001~024 PASS 20/PARTIAL 4/FAIL 0（docs/WDSP_BOT_CHALLENGE_ACCEPTANCE_MATRIX.md） |
+| S4 Agent 协议与 K8s | PASS（AGT-021/022 BLOCKED_ENV） | 2026-09-08 G0-G5 全部完成（含 G5 兼容升级回退+完整矩阵回归复跑），见 S4 各记录与 docs/agents/WDSP_AGENT_P1_SUPPORT_MATRIX.md；真实 K8s 证据 BLOCKED_ENV（本机无集群，组件级断言已覆盖） |
+| S5 持续门禁与回退 | PASS | 2026-09-08 R3（CI 分层+证据登记+发布门禁，迁移 000134/135，stage 5/5）、R2（全量回放 24 例语料，基线 48/48、候选对比精准捕获唯一预期内丢失检测、性能关联）、2026-09-09 R4b（ENFORCE 端到端+误报/故障回退全相位 PASS 无 BLOCKED）与 R4a（回归管理界面+页面 E2E 11/11）完成，见 S5 各记录与 docs/evidence/regressions/ 两份终验报告 |
+| S6 最终交付 | PASS | 2026-09-09 汇总交付证据与客户说明 docs/tasks/wdsp-p1/DELIVERY_SUMMARY.md；最终全量验证扫尾全绿（gateway 根+子模块、server build+vet+internal 全包、wdsp-agent、web 113 文件/858 用例、p1reg 201 单测） |
 
 ## S0 记录（2026-09-06，实施现状核实与契约冻结）
 
@@ -364,6 +364,116 @@ agent 侧（wdsp-agent/）：注册/心跳声明 `capabilities.http_event_schema
 真实 E2E（run `20260908T101135-51b803`，PASS=11/断言 37 全过）：伪造令牌 403×3、伪造 XFF 被覆盖、五元组不采信外部头、脱敏零泄漏（全局明文扫描）、8MB 截断 original_total_size=CL、chunked 未知大小如实 null、源站 500 不影响镜像且 response 恒 null、慢上传/取消/适配器被杀业务均 200、socket 0660、源站计数对账。
 契约增量（主代理已确认）：`X-WDSP-Original-Body-Size` 可信控制头（Nginx mirror 清空子请求 CL，由 internal location 注入 `$http_content_length`，适配器剥离不入记录，伪造防护靠实例令牌覆盖注入）。模板警示：internal location 需显式 client_max_body_size（实测暴露）。
 已知限制：五元组为镜像连接对端非真实客户端；DECRYPTED 为部署拓扑断言非密码学证明；macOS E2E 单容器 loopback 拓扑。
+
+## S4 记录（2026-09-08，P1-03 G4a：管理端 v2 字段 + traffic-agents 页面扩展）
+
+server 管理端（agents 包）：HTTP 事件列表/详情输出全部 000133 v2 列（来源三元组/协议/关联状态/body_quality/grpc/trailers/采集与入库时间）；`headerValuesFromJSON` 修复 v2 数组形态详情 headers 返回空对象的限制（v1 string map / v2 数组双形态，非法回落 `{}`）；Agent 详情暴露 `http_event_schemas` 能力集（空集兜底 {1}）；权限沿用 traffic.agents.view/manage 未新开入口。
+web（traffic-agents）：HttpEventsPanel 重写（来源/协议/关联独立状态列，v1 行显示 `-` 不伪造；v2 详情分区含 event_id 幂等 Tag、gRPC 元数据分区（grpc_status null 显示未知不伪造 0）、trailers 表、body_quality、超 30s「疑似缓存补传」启发式 Tag、旧 Agent「需升级」Alert）；AgentDetailDrawer 配置版本三段分离 + 资产来源 Tab（HttpAssetSourcesPanel 四态过滤）；PolicyPanel 采集等级与适配器/来源绑定如实展示。
+契约文档 §6 状态行更新（冻结语义未动）。
+复验（编码代理实跑）：server agents 包 ok（新增 6 用例）；web typecheck/lint 通过、Vitest 108 文件/824 用例全绿（新增 8 用例含 XSS 纯文本断言与筛选分页上下文保留）。
+已知限制：duplicate 为批次级语义不落逐事件标记；「疑似缓存补传」为前端启发式非 Agent 显式上报；策略的适配器/来源绑定字段服务端 schema 待 G2/G3 来源绑定管理落地。
+
+## S4 记录（2026-09-08，P1-03 G4b：k8smeta 状态契约强化 + K8s 验证环境检查）
+
+实现（wdsp-agent/，server 与 gateway 零改动）：
+- `internal/k8smeta/k8smeta.go`：快照健康状态机 OK/STALE/UNAVAILABLE（刷新失败保留旧快照，Health 输出距上次成功时长 StaleFor；持续失败 ≥5min 或从未成功 → UNAVAILABLE）；条目 TTL（默认 10min 未被成功快照再确认即不参与解析，防 Pod 删除/IP 重用串联旧归属；快照差分天然失效——全量原子替换保留）；owner 权威/推断区分——Deployment 经 ReplicaSet→Deployment 列表权威解析（仅查本节点 Pod 所在 namespace），RS 缺失或查询失败降级截尾推断并显式标记 entry.inferred、经 Health.InferredOwners 计数；StatefulSet/DaemonSet/Job 直接 owner 与独立 Pod/独立 RS 为权威；hostNetwork Pod 跳过 IP 映射（podIP 即节点 IP）；endpoints 由全集群分页改为按本节点 Pod 所在 namespace 分别查询；实现只用 list 动词。
+- 心跳接入：`internal/transport/transport.go` Metrics 新增 k8smeta_state/entries/inferred_owners/stale_seconds/sync_failures（server 端 metrics 为 jsonb 透传落库——RecordHeartbeat `$4::jsonb || rawKeepExpr`，新增键不破坏冻结契约；机器端点 DisallowUnknownFields 仅作用于包络，故未动事件线格式 k8s 字段）；`internal/agent/agent.go` metricsSnapshot 接线，k8s.enabled=on 但无凭据时显式 UNAVAILABLE；不改 status 的 ONLINE/DEGRADED/ERROR 判定（元数据失效不影响采集）。
+- 部署：`deployment/kubernetes/wdsp-agent-rbac.yaml` 去除 watch、新增 apps/replicasets list（权威归属解析所需），注释说明收敛理由；`wdsp-agent-daemonset.yaml` 与 README 补 digest 锁定步骤；`test/wdsp-agent-e2e/fake_kube_server.py` 适配 namespace 限定 endpoints + replicasets 路径（该 harness 仅组件测试参考，不作正式证据）。
+
+验证（实跑）：`cd wdsp-agent && go test ./... -count=1` 20 包全 ok；`go test -race ./internal/k8smeta/ ./internal/agent/ -count=1` ok；`go vet ./...` 干净。新增/更新测试 11 个：状态机（UNAVAILABLE→OK→STALE→UNAVAILABLE→OK）、条目 TTL 过期、差分失效（IP 重用/Pod 删除）、owner 权威/推断四分位、独立 RS 权威、RS 403 降级推断+计数、hostNetwork 跳过、endpoints 按 namespace 与跨 ns 隔离、Run 循环 403→STALE→恢复（10ms 刷新注入）、API 超时如实报错、心跳 metrics 接线×2。
+
+AGT-021/AGT-022 → **BLOCKED_ENV**：本机 kubectl v1.32.2 存在但 `kubectl config get-contexts` 为空、KUBECONFIG 未设、~/.kube 不存在；Docker Desktop 运行中但 Kubernetes 未启用；kind/minikube/k3d/k3s/colima 均未安装（任务纪律禁止自行 brew install 大型依赖）；docker.io 不可达（TLS handshake timeout），即使装 kind 也无法拉取 kindest/node。缺口：真实集群的滚动更新/删除/IP 重用/跨 namespace/hostNetwork 映射证据与 RBAC 最小权限实证仍缺，需在具备真实集群的环境补做（组件级等价断言已由上述单测覆盖，但非正式证据）。
+
+已知限制：①daemonset 镜像 `jiuzhang/wdsp-agent:2.3.0` 为自主构建且未发布到可访问仓库，无法取得真实 registry digest——按 Phase 5 契约不虚构，清单保留 tag 并以注释+README 强制发布时改 `<tag>@sha256:<digest>`；②owner 权威/推断区分无法进事件线格式（server 机器端点 DisallowUnknownFields + 不改 server 纪律），可见性走心跳 metrics 的 k8smeta_inferred_owners；③endpoints 失败仍整体置 STALE（保守，防止静默丢失 Service 关联），RS 失败仅降级推断。
+
+## S4 记录（2026-09-08，P1-03 G3：Envoy tap 适配器 + 真实 Envoy 取证）
+
+新增：`wdsp-agent/internal/tapsrc/`（tap.go 单会话管理流客户端——Envoy Admin 回环校验、`POST /tap` 提交会话级 tap 配置、1s→30s 有界退避重连并重提交；scan.go 括号深度+字符串/转义状态机 JSON 分帧器（跨块累积、单帧超限丢弃但状态机继续同步）；trace.go TraceWrapper→v2 规范化——伪头映射、authority 优先于冲突 host、重复头/Trailer 逐值脱敏保序、五元组 127.0.0.1:0 占位、时间戳=tap 消息接收时间（latency 恒 0）、capture_stream_id=nil、gRPC 经 content-type 前缀判定+grpc-status 取响应 trailers/trailers-only 响应头+取消/未完成 UNKNOWN 不伪造 0、WS 只握手视图帧不驻留、gRPC/WS 正文强制 content_type 跳过、x-wdsp-* 剥离；16+ 单测）；`httpsensor/export.go` 增量 MaskedResponseMessage/MaskedHeaderValues；`agent/tap.go` 装配（默认关闭）+ `agent/mirror.go` 泛化为通用 v2 发送路径（tap/mirror 共用，`dropped_by_reason` 按来源分账 `tap_v2_not_negotiated`/`mirror_v2_not_negotiated`）；`config.go` tap 段（单会话字段）；`cmd/tapharness/`（取证工具，计数快照跨守护重启累计）；`test/wdsp-agent-e2e/envoy-tap/`（run.sh 双相位 + envoy-h2.yaml/envoy-h1.yaml + 独立 Go module 取证 harness：web/grpc/ws/h2 客户端服务端，grpc 用 raw codec 免 protoc）；`deployment/envoy-tap/`（README + envoy.tap.yaml.example）；契约附录 B（ENVOY_TAP 来源剖面，纯增补）。
+
+S0 锁定实测三大发现（docker 真实验证，先于实现）：①`streaming_admin + PROTO_BINARY_LENGTH_DELIMITED` 使 Envoy v1.35.3 **进程崩溃**（SIGTRAP，absl null check）→ 锁定 `JSON_BODY_AS_BYTES`，二进制路径禁用；②JSON 管理流为美化 JSON 消息换行相接的自相似流，须按括号深度分帧；③**Admin 同时只允许一条已挂接 tap 流**（第二条 `POST /tap` 400 "An attached /tap admin stream already exists."）→ 适配器被迫单会话设计（原 §3.3 多 channel 设想废弃），多 listener 共用同一 config_id，协议/TLS 断言按会话维度覆盖全部 tapped listener，混合场景必须 UNKNOWN/false。管理流可用 → 不写 tap 文件 → 无需「脱敏前不落盘」ADR。
+
+契约 V1.1 修订（主代理批准的附带澄清）：§2.1 一致性约束允许 `truncated=true + original_total_size=null`（截断但原始总大小未知）；server `http_events_v2.go` 校验与测试、mirrorsrc normalize、附录 A 口径同步；文末修订记录表登记 V1.1 与附录 B 增补两行。
+
+真实 E2E（run `20260908T131748-c5bdf8`，PASS=11/0 FAIL，记录断言 34 项全过，证据 `test/wdsp-agent-e2e/envoy-tap/runs/20260908T131748-c5bdf8/`）：相位 A（8443 TLS/h2 挂 tap）S1 六流多路复用按流配对不串流（X-Rid 回显）、observed=2/DECRYPTED、query token 脱敏、五元组占位、latency=0；S2 gRPC unary grpc_status=0/CLOSED、HTTP 200 与 RPC 状态分列、正文 content_type 跳过、trailers 可见；S3 非零状态 grpc_status=3（**实测发现：trailers-only 响应的 grpc-status/set-cookie 并入响应 headers 呈现**，已如实解析并断言）；S4 streaming CLOSED/0；S5/S6 取消/截止不伪造成功（实测形态：取消=COMPLETE+grpc_status null+UNKNOWN，截止=grpc_status 14 UNAVAILABLE+CLOSED，如实记录于 verify-report「实际到达形态」节）；S12 正文 8KB 超 4KB 缓冲截断 truncated=true+original_total_size=null（V1.1 口径实证）；S9 Envoy 进程重启后断连/重连计数生效、采集恢复；S10 适配器被杀业务 3/3 200（采集故障不影响转发）、守护拉起恢复。相位 B（换 envoy-h1.yaml，8080 明文挂 tap）S7 WS 握手 101/COMPLETE、帧不驻留、observed=1.1/PLAINTEXT；S8 握手失败 403 如实。全局四类合成敏感标记明文零泄漏。适配器计数：received=17/emitted=17/disconnects=4/reconnects=2/parse_errors=0/oversize_drops=0。环境：envoyproxy/envoy:v1.35.3 tag+digest 双锁（本机 arm64），容器零端口发布，run_id 双校验隔离清理。BLOCKED 项：无。
+
+已知限制：①单管理流约束（上述 S0-③）；②tap 缓冲输出不含地址/时间戳/流 ID——五元组占位、时间戳=接收时间 latency=0、capture_stream_id=null（如实，不造假）；③WS 握手记录在连接关闭时才由 Envoy 冲刷（非实时）；④gRPC 取消/截止的 tap 到达形态以取证证据为准（取消无 grpc-status，截止为 Envoy 生成的 14）；⑤macOS 单容器回环拓扑，Admin 回环绑定致容器外不可达属正常行为；⑥契约 §2.1 修订仅放宽此前必被拒的组合，对存量合法记录无影响。
+
+## S4 记录（2026-09-08，P1-03 G5：兼容升级回退 + 完整矩阵回归）
+
+新增：`docs/agents/WDSP_AGENT_P1_SUPPORT_MATRIX.md`（任务书 §1 支持矩阵与 §8 AGT-001～028 逐格证据总表，PASS/BLOCKED_ENV/NOT_SUPPORTED/PARTIAL 词表）；agent 侧 G5 测试 `internal/agent/upgrade_rollback_g5_test.go`（v1→v2 升级带缓存补传、能力收回降 v1 且适配器记录不假报、适配器停止被动采集继续、旧程序不误解析 v2 缓存）；server 侧 `internal/agents/compat_g5_test.go`（旧 v1 Agent 上新 server 形状不变、缺省能力集 {1}、非法 400）、`http_admin_v2_test.go`（资产来源管理端四态）；`internal/k8smeta/k8smeta_state_test.go`、`agent/k8smeta_metrics_test.go`；`test/wdsp-ip/upgrade-executor-gates.sh`（升级执行器危险归档/错误架构拒绝）、`attacker-package-gate.sh`（AT-12 攻击者包不替换固定信任根）；ops/upgrade、ops/offline-package 安全解压加固。
+迁移演练：000133 真实 PG（postgres:16.4-alpine digest 锁）up→插 v1 存量行→down（旧记录可读、v2 列移除）→up（行完整、默认 schema_version=1、幂等索引重建）实证；回退顺序（先停新来源并处理 v2 缓存再降级程序）在矩阵文档 §4 固化为操作纪律。
+复验（主代理实跑）：`cd wdsp-agent && go test ./... -count=1` 22 包全 ok；`cd server && go test ./internal/agents -count=1` ok；mirror E2E 复跑 run `20260908T151957-2396b3` PASS=11/FAIL=0（status.json 已读）；envoy-tap E2E 复跑 run `20260908T152129-c4a655` PASS=11/FAIL=0（status.json 已读）。
+BLOCKED 不变：AGT-021/022 真实 K8s 集群证据 BLOCKED_ENV（本机无集群，组件级断言已覆盖，不得伪造）；范围外能力 NOT_SUPPORTED 已在矩阵文档如实标注。
+**S4（P1-03 全部 G 任务）至此完成，G5 关闭。**
+
+## S3 记录（2026-09-08，P1-02 B3：请求链接入 + CHALLENGE final_decision 增量 + preflight 密钥检查）
+
+实现（gateway）：`bot_step.go` 新增——`serveNextViaBot` 统一入口（命名空间 `/_wdsp/bot/v1/` 最前置本地处理→选择器→clearance 先行→合格性→多信号判定→OBSERVE 记录/PROTECT 挑战），module.go 四个放行出口（保护地址/白名单/L7 allow 经 executeL7/常规 CC 后）全部改经 serveNextViaBot；Guard 加 botSvc；bot_policy.go `assembleBotPolicy` 重写（OFF 保留段供墓碑）+`assembleBotService`（PROTECT 缺 valkey/keyring fail-closed 拒载，与发布门禁同口径；OBSERVE 降级 Warn）；`identitybehavior/peek.go` 只读快照 PeekSnapshot（Store 接口本体不加方法，可选接口；MemoryStore/ValkeyStore 单 Lua 只读往返，远端故障回退内存）；`identitybehavior/identity.go` 导出 ClassifyUA；disposition.go +DisActionChallenge/"BOT" executor（CC 后 API 前）；dynamic_security/context +ActionChallenge（仅枚举增量）；botchallenge CallContext 加 RecordTerminal/FinalDecision 回调，Offer/429/503 三结局挂 noteTerminal、emit 挂 FinalDecision（Settled 门禁）。
+**真实 Valkey 才暴露的存量 bug 修复**：`botchallenge/store.go` Read 的 HGETALL 字段解析加 `luaFieldString` 两型兼容——counters.Eval 把数字型 bulk string 返回 int64，导致 v/ep/df/exp/att 断言空串、verify 恒 503；fakevalkey 单测从未暴露，真实 Valkey 对拍定位修复（hint 同修法）。
+实现（server）：securityevents/store.go:61 与 apiruntime/events.go:96 两处 NOT IN 补 'CHALLENGE'；apisecurity/runtime.go postureProtectedActions 刻意不含 CHALLENGE（注释注明）；botpolicy/handler.go Preflight 新增 signing_key 检查（PROTECT 未就绪 FAIL+publishable=false、OBSERVE WARN、OFF SKIP）；app.go 接线 NewBotSigningKeysLoader；tests/stage_bot_policy_test.go 加 TestBotPolicyPreflightSigningKey 四态。
+实现（web）：EventDetailDrawer CHALLENGE/BOT 映射 + types 联合类型 +2 值 + 未知值原样回退用例。
+文档：AGENTS.md 请求顺序段与真实实现顺序段、docs/ARCHITECTURE.md 请求顺序图均加 Bot 步骤（主代理已核对与实现一致）。
+验证（编码代理实跑 + 主代理复跑）：`gateway/modules/jiuzhang_guard go test -race ./... -count=1` 17 包全 ok（主代理复跑 `go test ./... -count=1` 全绿）；真实 Caddy 集成测试（caddy v2.11.4 + coraza-caddy v2.5.0 对齐 Dockerfile 锁定 + 真实 CRS + docker Valkey 锁定镜像）：中间件顺序、BOT-014（clearance 后 SQLi 仍被 CRS 阻断）、BOT-015（热更新白名单仍挑战）、BOT-016（verify 405/未知子路径 404 本地处理）、策略代次撤销旧通行——PASS；server 五包（botpolicy/guardconfig/securityevents/apiruntime/accesscontrolevents）ok（主代理复跑绿）；stage 测试一次性 PG/Valkey 容器 8/8 PASS；web typecheck + vitest 绿。
+已知限制：method_ratio 无每方法计数源恒 UNAVAILABLE；identity_behavior 未启用时行为组不可用→PROTECT 不挑战（preflight/文档注明配套要求）；规则窗口映射档 ≤90s→1m/≤450s→5m/≤1800s→30m/否则 24h；counters.Eval 数字串→int64 共享语义未改，其他 Lua HGETALL 数字字段消费者存在同类潜在风险，待后续排查。
+
+## S3 记录（2026-09-08，P1-02 B4：管理页面 + 挑战页核对 + 浏览器/自动化基准 27/27 PASS）
+
+web 管理页（agent-108 交付，主代理复跑 typecheck/lint/vitest 全绿）：`web/src/api/botPolicy.ts`（GET/PUT/preflight 客户端+B0 冻结限制常量+null 归一化）、`web/src/utils/botPolicy.ts`（中文映射/7 信号指标规格/后端字段错误→表单路径）、`pages/applications/detail/BotPolicyTab.tsx`（管理页主体：未配置/草稿待发布/已发布含批次号/部分节点未生效逐节点 SUCCESS/FAILED/HASH_MISMATCH/依赖故障预检逐项 FAIL-WARN-SKIP+publishable 门禁理由+冲突列表；恢复入口：重新预检/前往发布/409 刷新重载/字段级错误回显；expected_version 乐观锁；reason 必填审计；key_ref 仅引用名；PROTECT 发布门禁警告；「草稿≠生效」明示）、`BotChallengePreview.tsx`（挑战页四态静态预览，只读用户可见）、ApplicationDetailPage 挂 Tab（bot_policy.read 门控，仿 jwt_trust 先例）、ApplicationsPage 筛选/分页迁 URL 查询串（BOT-023 返回列表保留上下文）。测试：BotPolicyTab 11 用例+ApplicationsPage 2 用例（含 XSS 纯文本、未知值 FUTURE_MODE/STATE 原样回退、上下文保留、只读隐藏编辑、403）；全量 vitest **109 文件/839 用例全绿**（主代理复跑确认）。
+BOT-006 静态核对（挑战页 render.go）：noscript 可读、12 错误码中文映射+兜底、重试自动 focus、role=status+aria-live、2048 迭代分片让出主线程、≤2s 预算转手动、sessionStorage 一次性标记最多自动刷新一次、429/503 全转义、CSP nonce+no-store+frame-ancestors 'none'、无 eval。Cookie 不可用无独立文案（SESSION_INVALID 重载兜底，如实记录）；慢设备/读屏实测 NOT_RUN（无环境）。
+**基准过程中主代理修复的栈级/存量缺陷（均有证据链）**：①server/internal/certificates/store.go GetApplicationCertificate 的 certColumns 未限定别名与 application_certificates JOIN 歧义（id/created_by/created_at/updated_at 四同名列，SQLSTATE 42702）——任何「HTTPS 域名+绑定证书」应用发布必失败的存量 bug，加 certColumnsC 修复；②docker stage5 栈从未接通证书下发通道（裸机设计为宿主机共享目录，docker 栈未接线）——deployment/docker-compose.stage5.yml 新增 stage5-gateway-certs 命名卷（api 挂 /app/runtime/certificates、网关挂 /etc/caddy/certs:ro），server/Dockerfile 与 gateway/Dockerfile 预建对应目录使卷初始化继承 uid 1000 权属（两镜像运行用户同 1000:1000，0600 数值权属一致可读）；③test/waf/scripts/stage5-setup.sh s5_publish 加 LOCK_BUSY 退避重试（策略保存触发自动发布与显式发布竞争）；④run.sh 多处 bash 3.2 `$VAR` 后紧跟全角字符 unbound variable 修复。
+浏览器/自动化基准（test/e2e/bot-challenge/，stage5 真实栈+真实 Chromium）：最终轮 run `20260908T184056-940230` **27/27 PASS、verdict=PASS**（主代理读 status.json 确认）。三组分别如实报告：http-script 组（BOT-005 HEAD/POST/JSON 不返回 HTML 挑战直达源站、合格导航第三次被挑战 403+CSP nonce+no-store、伪造 verify 403 不签发、verify GET 405、未知子路径 404 本地）；browser 组（BOT-004：nav_attempts_before_challenge=3、PoW 求解 5ms、verify 204、clearance 落 Cookie、终态 200 到源站）；automation-js 组（如实记录 webdriver=true，与 browser 组同身份累积达阈 nav=1）。**关键口径修正（夹具非产品 bug）**：identitybehavior 在请求收束时记账、PeekSnapshot 只读不含本次请求，uri_concentration≥0.5 数学上第 3 次导航才首次达阈——夹具改为 nav-1/2 断言放行（基线门控）+nav-3 断言挑战，实跑精确命中；B3 集成测试「循环打到挑战」同理。Playwright 解析修为目录级 node_modules 相对软链（运行时生成物，.gitignore 已排除）；spec 反竞态重写（挑战以 403+响应体标记为权威、verify 204 用导航前注册的 response 捕获、clearance Cookie 轮询、webdriver 首航前采集），未降低断言强度。
+NOT_RUN/BLOCKED：BOT-004 的 Firefox/Safari/移动维度（基准仅 Chromium 通道）；慢设备/读屏实测。
+
+## S3 记录（2026-09-08，P1-02 B5：升级/关闭/回退演练 + 验收矩阵 + 交付归档）
+
+BOT-024 演练（`test/e2e/bot-challenge/rollback-drill.sh`，真实 stage5 栈一次跑通）：run `20260908T185148-7b707a` **23/23 PASS、verdict=PASS**（主代理读 status.json 确认）。相位 A 升级留证（compose build/up、images.txt）；相位 B PROTECT v1 基线（200/200/403→现场解 PoW→verify 204→clearance 200）；相位 C OFF+RESERVED_TOMBSTONE（4 次导航全 200 挑战停止、verify POST 404/未知路径 404、SQLi 仍 403 非挑战页、历史 BOT_CHALLENGE_OFFERED 事件 API 可读）；相位 D 回退 v3（挑战恢复、旧 epoch=1 双 Cookie 403 不复活、新挑战完整通行）；各相位 publish 留证齐全；演练后栈 down -v 无遗留（主代理 docker ps 确认）。
+验收矩阵：`docs/WDSP_BOT_CHALLENGE_ACCEPTANCE_MATRIX.md`——BOT-001~024 逐项映射证据（测试函数名 grep 核实），**PASS 20 / PARTIAL 4 / FAIL 0**。PARTIAL 缺口如实：BOT-004 Firefox/Safari/移动浏览器 NOT_RUN（仅 Chromium）；BOT-006 慢设备/读屏/键盘实测 NOT_RUN；BOT-013 移动网络实测 BLOCKED_ENV；BOT-018 洪峰压测 NOT_RUN。
+文档：新增 `docs/BOT_CHALLENGE_OPERATIONS.md`（默认 OFF/三模式语义/8 条已知限制/命名空间表/策略 JSON 示例/密钥登记步骤/部署配套 Valkey+identity_behavior/事件排障）；AGENTS.md 文档索引加两行（与他人 BOLA 两行共存）；test/e2e/bot-challenge/README.md 更新实测状态与 BOT-024 小节。
+**P1-02（B0-B5）至此全部完成。**
+
+## S5 记录（2026-09-08，P1-04 R2：全量语料真实回放 + 前后对比 + 性能关联）
+
+语料扩展（§4.2 纪律）：18→24 例（新增 Bot 挑战类：PROTECT 合格导航挑战/clearance 通行/INELIGIBLE 放行/verify 墓碑等 6 例；老例修正预期升 case_version v2；manifest 重算 sha256 `feaadc81…`；TRAIN 仅正常样本纪律保持；无占位假样本）。单测 174→201（主代理复跑 `python3 -m unittest discover -s test/regression/p1/tests` Ran 201 OK）。
+执行层接真实环境：新增 `reconcile.py`/`executor.py`/`stage5/` 适配器（stack-up/down + run-plan.stage5.example.json），对 stage5 真实栈（含证书通道修复后的 HTTPS 发布链）逐例回放并事件对账（access_control_events/security_events/final_decision）。
+逐例结果与对比：基线构建 48/48 全绿；候选构建（真实规则变更：禁用一条 phase-2 自定义规则 7100001）47/48——compare 报告（`docs/evidence/regressions/compare-20260908T222932-46b792/`）精准捕获唯一预期内变化：丢失检测 1 条（WAF-ATK-WEBSHELL-001 OBSERVE，custom_pack/webshell_uploads 检出归属丢失）、新增误报 0、动作/源站变化 0、6 例 TRUTH_UNKNOWN_EXCLUDED，总判定如实 FAIL（rc=1）；演练后规则已恢复 ENABLED（version 3→4）+重发布+探针实证命中恢复，栈已 down -v 无残留。
+性能关联：基线/候选各 74 请求 perf.jsonl（p50 11.31/11.25ms、p95 16.46/18.12ms、p99 25.63/30.19ms；状态码分布与 origin_reached=52 两轮完全一致；结论：影响在噪声范围内，不作统计显著性主张）。
+篡改验证（§141）：文件删除被捕获；**内容篡改本地工具层静默接受——如实披露**（内容完整性属签名服务范围，R3 已交付 Ed25519 核验）。
+产品发现 7 条（全部真实栈实证、未改产品代码，终验报告 §产品发现）：escapeSecLangArg 转义 bug、CRS 949110 相位抢占、Coraza 无 XML 体处理器、apigeo nil panic、事件关联键口径、族映射、OBSERVE offer 语义——**待后续排期修复**。
+终验报告：`docs/evidence/regressions/P1-04-R2-FINAL-REPORT.md`（run_id 清单/环境/判定口径/语料变化/逐例计数/性能表/篡改验证/限制与未覆盖项）。限制：JWT/Agent/APM 类语料仍缺口（如实标注）。
+
+## S5 记录（2026-09-08，P1-04 R3 前半：CI 分层 + 可信证据登记 + 发布门禁）
+
+实现（server，新包 `internal/regression/` 约 2400 行）：types.go 限额冻结（请求 1MiB、manifest 4MiB、分块 4MiB×64、REPORT 16MiB、PERF 256MiB、LOG 64MiB、单 run 512MiB、证据有效期默认 7 天可调 1~30）；canonical.go 确定字节编码（流式拒绝重复 JSON 键+再编码逐字节比对，嵌套深度 200）；signature.go Ed25519 验签+受信公钥登记（system_settings，拒绝未知算法/未知或已撤销 key_id，登记损坏=依赖不可用）；manifest.go schema v1+计数对账；storage.go 受控本地存储适配器（P0-01 服务端存储确认不存在由本任务提供：服务端生成对象 ID、流式 sha256、类别限额、0444 原子登记、0700 根目录、路径越界防御）；store.go pgx 仓储（单事务导入不残留半份、幂等/409、策略乐观锁）；gate.go 门禁评估（OFF 不检查/OBSERVE 只记录/ENFORCE 缺失过期撤销级别不足强制项不完整验证失败证据被清理均 BLOCK、依赖不可用 ErrGateUnavailable 明确失败、恢复通道仅豁免超有效期）；import.go+handler.go 六 API+受控对象上传端点。
+迁移：000134（6 表 objects/runs/cases/run_objects/policy/gate_decisions，policy 单行默认 OFF）、000135（权限种子 security_regression.read/.import/.policy）——编号用前重核无抢号；真实 PG 演练 up→down→重 up DRILL_OK。
+发布门禁挂接：gatewayconfig/publisher_gate.go（跨包接口+失败码映射），publisher.go 仅 2 处小增量（regressionGate 字段+executePublish 在 saveVersion 后、loadGatewayConfig 前插检查点，失败码 REGRESSION_GATE_REJECTED/UNAVAILABLE，版本标 FAILED）；无 skip_gate 参数（请求带该字段 400）；模型激活/回退经 PublishSync 同一入口单点强制；恢复通道（GuardOverride 历史快照重放）按 §7.3 豁免有效期不豁免撤销/缺失/不完整。
+API：GET regressions（过滤分页）/GET {id}（摘要+门禁理由）/GET {id}/cases（分页无原始正文）/POST imports（仅受控对象 ID，201/幂等 200/异内容 409/核验失败 400 不落库）/GET·PUT regression-policy（expected_version 409）/POST regression-objects（受控写入登记通道，godoc 声明补充理由）。OpenAPI 片段 18-security-regression.yaml 已加，merge 重生成留编排方。
+工具：tools/regsign/（独立 go.mod 仅标准库）genkey/canonicalize/sign/verify 四子命令，私钥 0600 校验不入库不入仓；端到端 genkey→canonicalize→sign→verify OK，重复键 sign 拒绝。
+CI 分层：.github/workflows/ci.yml 头部加分层纪律注释+两个新 job（corpus-schema-check：语料校验+语料工具单测+regsign 构建+regression 包单测；nested-go-modules：9 个 go.mod 矩阵），无 paths 过滤、核心安全集不可跳过；regression-nightly.yml 定期完整回归（cron `17 2 * * *`+dispatch；11 模块全量矩阵+语料/证据链+run.sh regression 强制项 BLOCKED 恒红；注释声明信任边界：无 pull_request_target、无私钥、固定提交）。
+验证（编码代理实跑 + 主代理复跑）：`go test ./internal/regression/ ./internal/gatewayconfig/ -count=1` ok（约 60 测试：伪造签名/未知算法/未知与撤销 key_id/重复键/非规范形/过期/恢复通道/并发 409/幂等重导入/哈希篡改/计数不一致/门禁三模式矩阵/依赖不可用；主代理复跑绿）；stage 集成一次性 PG/Valkey 容器 5/5 PASS（Migrations/Permissions/PolicyValidationAndConflict/ImportFlow/UploadLimits）；server build+vet 干净、9 嵌套 module build/vet 过；`run.sh regression` 本机 exit=3 如实 BLOCKED_ENV（证据 docs/evidence/regressions/20260908T174347-f23b04/），与 nightly「缺环境不变绿」一致。
+BLOCKED/留待：真实隔离环境全量回放属 R2；ENFORCE 拒绝真实发布的端到端验证属 R2/R4；OpenAPI merge 重生成留编排方；公钥登记无新 UI（web 不在本任务范围）。
+
+## S5 记录（2026-09-09，P1-04 R4b：真实升级/误报/故障回退演练）
+
+全部相位真实 stage5 栈实证通过、无 BLOCKED，栈已拆除。证据：`docs/evidence/regressions/r4b-20260909T0015/`（55 文件+索引）与终验报告 `docs/evidence/regressions/P1-04-R4B-DRILL-REPORT.md`；可复跑脚本 `test/regression/p1/stage5/r4b-drill.sh`（bash -n 过）+ `test/regression/p1/tools/pack_evidence.py` 证据打包器。
+相位①ENFORCE 端到端：证据匹配发布 SUCCESS；缺失×2/过期×1 全部 REGRESSION_GATE_REJECTED（版本 FAILED、is_current 不变，无半发布）；证据存储 chmod 000 → REGRESSION_GATE_UNAVAILABLE 明确失败不静默放行；31 行 gate_decisions 指纹逐行等于实发版本 configuration_hash（排队后快照绑定实证）。
+相位②误报回退（§7.3）：误伤 L7 规则上线（/search 403）→ 8 FAIL 证据签名导入 → ENFORCE 拒发（声明 FAIL+mandatory_failed=6）→ GuardOverride 快照重放恢复（/search 200）→ 复跑 48/48 → 失败候选未自动重发；豁免矩阵 4/4（仅超有效期 ALLOW，撤销/缺失/不完整均 BLOCK）。
+相位③故障回退：网关停止期发布在门禁 ALLOW 后仍 PUBLISH_FAILED（GATEWAY_DOWN/CRITICAL 告警，恢复重发 SUCCESS——「门禁 ALLOW ≠ 发布成功」实证）；次要节点不可达→主 SUCCESS+节点 FAILED+CONFIG_PUBLISH_FAILED/HIGH 告警。
+相位④模型门禁：模型 A/B 激活→候选指纹变→无证据 REJECTED 且策略滞留 VALIDATED 不报 ACTIVE、网关指纹不变；绑定证据后 SUCCESS→ACTIVE（A 自动 ROLLED_BACK）；撤销密钥后 rollback → 502 不伪装成功。
+产品发现 6 条（真实栈实证，未改产品代码，转修复排期）：学习态指纹漂移×3（证据绑定须待学习态稳定，判据=连发两次拒绝指纹一致）；WAF-BEN-EDGE-001/CUSTOM_PACK 1001012 非确定命中 flake（10 轮 2 轮，transaction.args 为空）；GuardOverride 恢复不清 DB 规则本体；config-versions 回滚不经回归门禁（与 access-control 回滚口径不一致）；**回滚草稿孤儿化**（门禁拒绝路径不回写 runtime 策略，rollback 502 文案与实际 DRAFT 滞留不符，下一次无关发布会静默带生效——优先级最高）；EDGE 事件 client_ip 恒为网关出口；公钥登记无 settings API（直写 DB）。
+
+## S5 记录（2026-09-09，P1-04 R4a：安全回归管理界面 + 页面 E2E 11/11 PASS）
+
+web（agent-108 交付，主代理复跑 vitest/typecheck/lint 绿）：`api/securityRegression.ts`+`utils/securityRegression.ts`（枚举 meta/null 归一化/指纹提取/差异分类/门禁理由建议）；`pages/security-regressions/` 三页（列表：筛选分页挂 URL、计划/实际/缺失、新鲜度超期标红、可用性预判带原因 Tooltip 且注明非终判；详情：run 摘要+核验理由+gate_assessment 逐项理由与恢复动作；用例差异：status 服务端过滤+family/diff 当前页客户端筛选如实标注+diff_summary 纯文本受限展开无 dangerouslySetInnerHTML）；regression-policy 卡（三态 Alert+.policy 权限门控+reason 必填审计+expected_version 409 处理）；配置发布页挂 RegressionGateNotice/RegressionGateFailureDetail（REJECTED/UNAVAILABLE 显示确切缺失项+`cfgfpv1:<hex>` 指纹深链，无 read 权限不渲染）。路由 3 条（security_regression.read）+菜单项。Vitest **112 文件/858 用例全绿**（含 XSS 纯文本、未知枚举回退、上下文保留、权限门控、409）。
+E2E（test/e2e/security-regression/，stage5 真实栈+vite dev+Playwright）：最终轮 run `20260909T003233-d76e86` **11/11 PASS、verdict=PASS**（主代理读 status.json 确认）——真实 regsign 签名两份证据经 regression-objects+imports API 登记（服务端真实验签 PASSED），链路一「列表→详情→用例差异→发布门禁状态」、链路二「ENFORCE→真实发布被 REGRESSION_GATE_REJECTED→缺失项+指纹深链→空态」。
+调试中发现的两个真实问题（已修）：①web bug：`gate_assessment.reasons` Go nil slice 序列化 null 致详情页白屏——api client 归一化 null→[]+2 例守护测试；②E2E 夹具：StrictMode 双挂致登录 captcha 双发取错 id（dev-only，spec 改为跟踪最新 captcha 响应静默窗收敛）、vite dev 默认绑 ::1 需 --host 127.0.0.1、内联 python 引号笔误、bash 3.2 全角界定（后两处主代理修）。
+**P1-04 R0-R4 至此全部完成。**
+
+## S6 记录（2026-09-09，汇总交付证据与客户说明）
+
+交付：`docs/tasks/wdsp-p1/DELIVERY_SUMMARY.md`——四项任务强制验收总表（APMD-001~018：17 PASS+APMD-017 BLOCKED 人员；BOT-001~024：PASS 20/PARTIAL 4/FAIL 0；AGT-001~028：26 PASS+AGT-021/022 BLOCKED_ENV；REG-001~026：工具层/后端/门禁/回退全实证）、关键 run_id 索引、已知限制与未覆盖项如实披露、过程修复的 5 个真实缺陷、13 条产品发现转修复排期（R2 七条+R4b 六条，最高优先级=回滚草稿孤儿化）、客户部署与升级说明（全部新能力默认关闭、启用配套、升级回退路径与运维文档索引）。
+最终全量验证扫尾（主代理实跑，exit 0）：`gateway` 根模块 build+test 全绿（仅 tproxyd 良性日志）、`gateway/modules/jiuzhang_guard` 全包绿、`server` build+vet+`./internal/...` 全包绿、`wdsp-agent` 22 包绿、`python3 -m unittest discover -s test/regression/p1/tests` Ran 201 OK、web typecheck+lint+vitest **113 文件/858 用例全绿**。
+WORKLOG 阶段状态表已同步：S0-S6 全部 PASS（如实保留 APMD-017 BLOCKED、AGT-021/022 BLOCKED_ENV、BOT 四项 PARTIAL 披露）。
+**P1 全部六个阶段至此完成。**
 
 ## 每阶段更新模板
 

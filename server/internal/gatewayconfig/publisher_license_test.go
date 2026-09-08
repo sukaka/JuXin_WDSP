@@ -5,11 +5,23 @@
 package gatewayconfig
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/jiuzhang-waf/server/internal/applications"
 )
+
+func TestLicensePublishGateBlocksUnverifiableIntegrity(t *testing.T) {
+	p := &Publisher{}
+	p.SetLicensePublishAllowedProvider(func(context.Context) (bool, string) {
+		return false, "授权完整性暂不可用，已暂停配置发布并保留当前网关配置"
+	})
+	allowed, reason := p.allowsLicensePublish(context.Background())
+	if allowed || reason != "授权完整性暂不可用，已暂停配置发布并保留当前网关配置" {
+		t.Fatalf("完整性故障应阻止发布且保留明确原因，got allowed=%t reason=%q", allowed, reason)
+	}
+}
 
 // licenseTestApps 单应用生成输入（PROTECT，含域名与源站）。
 func licenseTestApps() []AppData {

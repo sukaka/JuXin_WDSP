@@ -1,6 +1,6 @@
 # WDSP Agent HTTP 事件 schema v2 与机器端点幂等 — 三方冻结契约
 
-**版本：V1.0（2026-09-08 冻结）**
+**版本：V1.1（2026-09-08 修订；V1.0 2026-09-08 冻结）**
 **上游：docs/tasks/wdsp-p1/P1-03_AGENT_GATEWAY_PROTOCOLS.md §4.1/§4.2；兼容基线：docs/agents/WDSP_AGENT_PHASE1_CONTRACT.md 与 PHASE3 契约 §3/§6**
 
 本文件冻结 HTTP 事件 schema v2 字段表、逐字段上限与 null 语义、能力协商扩展、批次幂等语义与资产来源关系，供 server / wdsp-agent / web 三方共同遵守。本契约是 Phase 1–5 契约的**增量**，未提及部分沿用既有冻结口径（认证、错误信封、分页、脱敏纪律均不变）。
@@ -66,7 +66,7 @@ v1 字段在 v2 中的口径确认：`request_ts/response_ts/latency_ms` 同步 
 | `truncated` | bool | 因预算截断 |
 | `skipped_reason` | string | `""` / `content_type` / `encoding`（与 v1 枚举一致；skipepd 时 body 应为空串） |
 
-一致性约束：`captured_bytes > 0` 时 `skipped_reason` 必须为 `""`；`skipped_reason` 非空时 `captured_bytes` 必须为 0；`truncated=true` 要求 `original_total_size` 非 null 且 ≥ `captured_bytes`。
+一致性约束：`captured_bytes > 0` 时 `skipped_reason` 必须为 `""`；`skipped_reason` 非空时 `captured_bytes` 必须为 0；`truncated=true` 且 `original_total_size` 非 null 时要求 `original_total_size` ≥ `captured_bytes`；**`truncated=true` 允许 `original_total_size=null`，表示「截断且原始总大小未知」**（如流式读取中断、Envoy tap 按 `max_buffered_*_bytes` 截断后总大小不可确认——V1.1 修订，见修订记录）。
 
 ### 2.2 `grpc` 子对象（[冻结]，G3 产生）
 
@@ -169,7 +169,7 @@ HTTP 事件入库成功 ≠ 资产关联成功。来源关系持久化于新表 
 
 v2 行的 headers 以数组形态 jsonb 存入既有 `request_headers`/`response_headers` 列（同列双形态：v1 为 string map、v2 为数组 map，按 `schema_version` 列区分解读）；`body_quality` 四要素同时镜像到既有 `req/resp_truncated`、`req/resp_original_size`（`original_total_size` 已知时）、`req/resp_skipped_reason` 列以保持管理端列表/详情兼容，完整对象另存 `req/resp_body_quality` jsonb（`captured_bytes` 与"未知长度"语义仅此保留）。
 
-**管理端展示口径（本阶段）**：http-events 列表/详情既有字段照常工作（截断/跳过标记来自镜像列）；v2 专有字段的来源/协议/质量展示属任务书 §4.3 后续阶段，web 在适配前不得宣称 v2 字段已可视化。
+**管理端展示口径（G4a 已落地，2026-09-08）**：http-events 列表/详情既有字段照常工作（截断/跳过标记来自镜像列）；任务书 §4.3 管理接口与页面对齐已完成——列表/详情返回 v2 标量字段（来源三元组/能力版本/观测与原协议/关联状态与原因/流标识/来源绑定/collection_ts/ingestion_ts），详情还原 v2 headers/trailers 数组形态并带出 grpc/body_quality 子对象（v1 行上述子对象为 null，不伪造）；Agent 详情暴露 `http_event_schemas` 能力集（旧 Agent 页面显示「需升级」）；资产关联状态经 `GET /api/v1/traffic/agents/{agent_id}/http-asset-sources` 独立面板展示。权限沿用 `traffic.agents.view`/`traffic.agents.manage`，未新开入口。
 
 ## 7. 安全与脱敏纪律（沿用并重申）
 
@@ -186,6 +186,29 @@ v2 行的 headers 以数组形态 jsonb 存入既有 `request_headers`/`response
 - **TLS 可见性**：`tls_visibility=DECRYPTED` 仅由部署拓扑断言（agent 配置 `mirror.tls_terminated_upstream=true`，接入模板锁定同机 unix socket / 回环），不由任何外部 Header 决定；默认 `PLAINTEXT`。
 - **来源标识**：`source_instance` 取自受控配置 `mirror.source_instance`（必填）；`source_epoch` 为接收器启动时刻 Unix 秒（同一实例重启即换代次）；`source_capabilities_version` 恒为 `nginx-mirror/1`。`event_id`（flow_id）形态 `agentID-mirror-<instance>-<ms>-<seq>`。
 - **可信控制头**：`X-WDSP-Original-Body-Size`（十进制字节数）由 Nginx mirror 内部 location 注入（`set $wdsp_orig_cl $http_content_length`，子请求 `Content-Length` 被 Nginx 清空时传递原始正文大小）。仅当 Go 侧 `req.ContentLength<=0` 时采用；该头连同全部 `x-wdsp-*` 命名空间头一律剥离、不进入记录。伪造防护：接入强制实例令牌（`X-WDSP-Mirror-Instance` 单值等值比对，缺失/错误/多值均 403 且不计入采集），令牌覆盖任何注入头。
-- **body_quality 一致性**：chunked 且未读尽（原始总大小不可确认）时 `original_total_size` 保持 null（不填 0），且按 §2.1 一致性约束 `truncated=false`（已捕获字节数 `captured_bytes` 如实保留）。
+- **body_quality 一致性**：chunked 且未读尽（原始总大小不可确认）时 `original_total_size` 保持 null（不填 0），`truncated` 如实保留（V1.1 起允许 truncated=true + null 组合表达「截断但总大小未知」）；已捕获字节数 `captured_bytes` 如实保留。
 - **上行与降级纪律**：镜像记录仅经 v2 线格式上行；服务端未协商 v2 时不降级 v1，按 `drop_reason=mirror_v2_not_negotiated` 计数丢弃。
 - **已知边界**：事件五元组为 Nginx↔适配器镜像连接的真实对端（unix socket 接入时以 `127.0.0.1:0` 占位），非真实客户端；业务侧取消/慢速/大正文上传不影响采集（E2E S4–S6 已取证，证据 `test/wdsp-agent-e2e/mirror/runs/`）。
+
+## 附录 B：ENVOY_TAP 来源剖面（G3 落地，增量不改动正文冻结口径）
+
+本附录描述 `wdsp-agent/internal/tapsrc`（Envoy tap 管理流适配器）落地后，`source_type=ENVOY_TAP` 记录的具体口径；与正文冲突时以正文冻结条款为准。S0 锁定与全部实测发现见 `deployment/envoy-tap/README.md`，真实取证证据见 `test/wdsp-agent-e2e/envoy-tap/runs/`。
+
+- **单会话约束**：Envoy Admin 同时只允许一条已挂接 tap 流（v1.35.3 实测第二条 `POST /tap` 返回 400 "An attached /tap admin stream already exists."）。适配器因此为单会话设计：全部 tapped listener 的 tap filter 共用同一 `config_id`，一条管理流统一接收；原 §3.3 设想的多 channel（每 listener 一条流）不可行，以本实测约束为准。
+- **不可获得字段（如实占位/置空，不造假）**：tap 缓冲输出不含地址、时间戳、连接/流 ID——五元组以 `127.0.0.1:0` 占位；`request_ts=response_ts=collection_ts`（tap 消息接收时间），`latency_ms=0` 不表达业务延迟；`capture_stream_id` 恒 null。
+- **协议断言机制**：tap 输出中 HTTP/1 与 HTTP/2 呈现同一伪头形态，观测协议只能来自部署断言（会话级 `tap.observed_http_version`，覆盖全部 tapped listener；混合协议时必须 UNKNOWN，禁止据内容猜测）。tap 位于下游侧，断言有效时 `original_http_version=observed_http_version`，UNKNOWN 时恒 null。`tls_visibility=DECRYPTED` 仅由部署断言 `tap.tls_terminated=true`（可信终止点、同机回环拓扑）决定，混合终止点时必须 false，不由外部 Header 决定。
+- **配对口径**：HTTP/2 多路复用的请求/响应配对由 Envoy 按流缓冲完成（一条 HttpBufferedTrace=一个流）；适配器不做跨消息配对，不用五元组/时间接近合并流。响应缺失（取消/重置/断连冲刷）如实 `association_state=REQUEST_ONLY`。
+- **gRPC 口径**：仅元数据；`grpc_status` 取自响应 trailers，trailers-only 响应（错误快捷路径）时并入响应 headers 呈现（Envoy 实测形态），两处均如实解析；非法值视为不可见（null）；取消/未完成如实 `stream_state=UNKNOWN`，不伪造 `grpc_status=0`；消息正文恒不采集（`skipped_reason=content_type`），不解析 Protobuf。取消/截止场景 tap 实际到达形态以取证证据（verify-report.md「实际到达形态」节）为准。
+- **WebSocket 口径**：只交付握手视图（101/失败状态如实记录）；帧/消息正文不驻留、不解析；握手记录在连接关闭时由 Envoy 冲刷（非实时）。
+- **body_quality 截断口径**：正文被 Envoy 按 `max_buffered_*_bytes` 截断时 `truncated=true` 且 `original_total_size=null`（V1.1「截断但原始总大小未知」）；未截断时 `original_total_size` 为实际缓冲长度。
+- **来源标识**：`source_instance` 取自受控配置 `tap.source_instance`（必填）；`source_epoch` 为适配器进程启动代次；`source_capabilities_version` 恒为 `envoy-tap/1`。`x-wdsp-*` 控制命名空间头一律剥离不入记录。
+- **上行与降级纪律**：tap 记录仅经 v2 线格式上行；服务端未协商 v2 时不降级 v1，按 `drop_reason=tap_v2_not_negotiated` 计数丢弃（与 mirror 分账）。
+- **输出与崩溃锁定**：输出格式锁定 `streaming_admin + JSON_BODY_AS_BYTES`；`streaming_admin + PROTO_BINARY_LENGTH_DELIMITED` 在 v1.35.3 实测使 Envoy 进程崩溃（SIGTRAP，absl null check），二进制路径禁用；不使用 file_per_tap 文件输出（脱敏前不落盘，无需 ADR）；Admin 仅回环。
+
+## 修订记录
+
+| 版本 | 日期 | 修订内容 | 批准 |
+|---|---|---|---|
+| V1.0 | 2026-09-08 | 初始冻结（G0+G1） | 三方冻结 |
+| V1.1 | 2026-09-08 | §2.1 一致性约束修订：允许 `truncated=true` 且 `original_total_size=null` 表达「截断但原始总大小未知」（原约束要求 truncated=true 必配非 null original_total_size，使该真实场景不可表达）。同步修订：`server/internal/agents/http_events_v2.go` 一致性校验与测试、`wdsp-agent/internal/mirrorsrc` 不再强行回填 `truncated=false`、附录 A 对应口径。其他条款不变，对存量合法记录无影响（仅放宽此前必被拒的组合） | 主代理批准（P1-03 G3 任务附带契约澄清） |
+| V1.1（增补） | 2026-09-08 | 新增附录 B：ENVOY_TAP 来源剖面（G3 落地）。纯增补，不改动正文与附录 A 任何冻结条款；单会话设计以 Envoy v1.35.3 实测约束（Admin 同时只允许一条已挂接 tap 流）为依据，取代原多 channel 设想 | 主代理批准（P1-03 G3 任务范围） |

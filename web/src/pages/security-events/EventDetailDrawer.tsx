@@ -55,6 +55,7 @@ const FINAL_SECURITY_ACTION_META: Record<string, { color: string; label: string 
   TEMP_BLOCK: { color: 'red', label: '临时封禁' },
   RATE_LIMIT: { color: 'orange', label: '限速' },
   MASK_RESPONSE: { color: 'gold', label: '响应脱敏' },
+  CHALLENGE: { color: 'gold', label: 'Bot 挑战' },
 }
 
 /** 实际执行模块（固定枚举，S4 §2） */
@@ -67,6 +68,7 @@ const EXECUTOR_MODULE_META: Record<string, { color: string; label: string }> = {
   RISK_POLICY: { color: 'orange', label: '身份风险策略' },
   LICENSE_QUOTA: { color: 'orange', label: '授权配额限速' },
   CC: { color: 'orange', label: 'CC 频率限制' },
+  BOT: { color: 'gold', label: 'Bot 挑战' },
   JWT: { color: 'purple', label: 'JWT 信任链' },
   API: { color: 'purple', label: 'API 动态防护' },
   WAF: { color: 'red', label: 'WAF（Coraza/CRS）' },

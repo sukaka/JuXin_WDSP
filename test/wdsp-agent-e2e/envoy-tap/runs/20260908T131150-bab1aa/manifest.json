@@ -1,0 +1,18 @@
+{
+  "base_image": "envoyproxy/envoy:v1.35.3@sha256:4d496918618a7ebd6c71ae8285e31ebff092f3a0a5ad642d50decf4a54eb2456",
+  "base_image_id": "sha256:4d496918618a7ebd6c71ae8285e31ebff092f3a0a5ad642d50decf4a54eb2456",
+  "docker_version": "28.3.0",
+  "envoy_version": "envoy  version: ff3fe7f0bb9e4ac6a283ea38bf9ee3f375530d56/1.35.3/Clean/RELEASE/BoringSSL",
+  "git_commit": "621d2e4a542ae8e78fa18b7fdc4067d5353d7832",
+  "go_version": "go version go1.25.6 darwin/amd64",
+  "host": {
+    "machine": "arm64",
+    "os": "macOS-26.2-arm64-arm-64bit"
+  },
+  "run_id": "20260908T131150-bab1aa",
+  "s0_lock": {
+    "envoy": "v1.35.3",
+    "note": "streaming_admin+PROTO_BINARY_LENGTH_DELIMITED 在 v1.35.3 实测使 Envoy 崩溃（SIGTRAP），禁用二进制路径；不写 tap 文件，无需 ADR",
+    "tap_output": "streaming_admin / JSON_BODY_AS_BYTES"
+  }
+}
