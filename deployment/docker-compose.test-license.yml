@@ -1,0 +1,9 @@
+# 仅供本地/CI 授权集成测试使用，不得用于正式交付。
+# 该覆盖文件构建显式 wdsp_testkeys 测试产物，才允许读取临时验签公钥环境变量。
+services:
+  api:
+    build:
+      args:
+        WDSP_LICENSE_TEST_KEYS: "1"
+    environment:
+      LICENSE_VENDOR_PUBLIC_KEY: ${LICENSE_VENDOR_PUBLIC_KEY:?LICENSE_VENDOR_PUBLIC_KEY is required for test license build}

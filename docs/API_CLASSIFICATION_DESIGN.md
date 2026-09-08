@@ -3,15 +3,15 @@
 ## 一、目的与范围
 
 本文档描述阶段8 API 用途分类体系：多维分类维度、分类来源（AUTO / MANUAL / AI）、
-分类锁定机制与自动分类启发式。覆盖三张表与一个端点标记：
+分类锁定机制与自动分类启发式。覆盖三张表与一个API标记：
 
 - `api_classifications`：内置分类目录；
-- `api_classification_dimensions`：端点分类维度（多维，每端点每维度一行）；
+- `api_classification_dimensions`：API分类维度（多维，每API每维度一行）；
 - `api_custom_taxonomies`：企业自定义分类法；
 - `api_endpoints.classification_locked`：人工分类后的覆盖保护锁。
 
 设计前提对应任务书第 2.3 条"Web 与 API 不采用互斥分类"与第三十四章
-"不得仅保存单一分类"：一个端点可同时持有多个维度的分类值，分类是标签集合而非
+"不得仅保存单一分类"：一个API可同时持有多个维度的分类值，分类是标签集合而非
 单选枚举。
 
 ## 二、架构与数据流
@@ -47,20 +47,20 @@
 Go 结构体 `ClassificationItem` 见 `server/internal/apisecurity/store.go:29-36`。
 当前迁移不含种子数据，目录行由后续数据迁移或管理面维护补充。
 
-### 3.2 api_classification_dimensions（端点分类维度）
+### 3.2 api_classification_dimensions（API分类维度）
 
 迁移第 204-214 行：
 
 | 列 | 说明 |
 |----|------|
-| `endpoint_id` | 所属端点，FK 级联删除 |
+| `endpoint_id` | 所属API，FK 级联删除 |
 | `dimension` | 维度名：`PURPOSE` / `DATA_TYPE` / `EXPOSURE` / `CUSTOM:*`（迁移注释口径）；实现另使用 `ACCESS`（见 4.1） |
 | `value` | 维度值（如 `AUTH`、`TRADE`、`READ`） |
 | `source` | 来源：`AUTO` / `MANUAL` / `AI` |
 | `confidence` | 置信度（人工写入固定为 1） |
 | `updated_at` | 最近更新时间 |
 
-约束：`UNIQUE (endpoint_id, dimension)`——同一端点同一维度仅一行，重复写入即
+约束：`UNIQUE (endpoint_id, dimension)`——同一API同一维度仅一行，重复写入即
 upsert 覆盖。Go 结构体 `ClassificationDimension` 见
 `server/internal/apisecurity/store.go:116-122`。
 
@@ -101,7 +101,7 @@ PURPOSE 分支按 `switch` 顺序首个命中生效（`/auth` 优先于 `/user` 
 
 `server/internal/apiassets/store.go:565-598`：
 
-1. 开事务，`SELECT ... FOR UPDATE` 锁定端点行，不存在返回 `ErrNotFound`；
+1. 开事务，`SELECT ... FOR UPDATE` 锁定API行，不存在返回 `ErrNotFound`；
 2. `classification_locked=TRUE` 时返回 `ErrClassificationLocked`（store.go:579-581）；
 3. 调 `classifyByPath` 得维度集合，逐维 upsert：`source='AUTO'`、置信度取规则表值，
    冲突时更新 `value/source/confidence/updated_at`（store.go:585-592）；
@@ -116,7 +116,7 @@ HTTP 层 `Classify`（`server/internal/apiassets/handler.go:373-404`）：锁冲
 
 - **人工覆盖**：`PutEndpointClassification`（`server/internal/apisecurity/handler.go:110-180`）
   校验 `dimensions` 非空、维度名 1-64 字符、值 1-128 字符、同请求维度不重复；
-  端点不存在返回 404；写入前后各读一次维度集合，前后 JSON 摘要写操作审计
+  API不存在返回 404；写入前后各读一次维度集合，前后 JSON 摘要写操作审计
   （`update`，中风险）。仓储 `SetEndpointClassification`
   （`server/internal/apisecurity/store.go:153-178`）在单事务内逐维 upsert
   （`source='MANUAL'`、`confidence=1`）并置 `classification_locked=TRUE`。
@@ -129,7 +129,7 @@ HTTP 层 `Classify`（`server/internal/apiassets/handler.go:373-404`）：锁冲
 
 ## 六、关键设计决策
 
-1. **多维标签而非单一分类**。每端点每维度一行，维度间独立 upsert，
+1. **多维标签而非单一分类**。每API每维度一行，维度间独立 upsert，
    允许"登录接口 + 敏感接口 + 写接口"并存（任务书 2.3、第三十四章）。
 2. **来源与置信度显式化**。`source` 区分 AUTO / MANUAL / AI，人工写入置信度
    固定为 1，自动结果带规则置信度，界面可据此区分展示。
@@ -137,17 +137,18 @@ HTTP 层 `Classify`（`server/internal/apiassets/handler.go:373-404`）：锁冲
    自动分类在仓储层强制让位（ErrClassificationLocked），不依赖调用方自觉。
 4. **启发式与存储解耦**。`classifyByPath` 为纯函数，SQL 与内存仓储共用，
    规则表变更不需要迁移。
-5. **自定义分类法与端点维度解耦**。`api_custom_taxonomies` 只是可选值目录，
-   不做引用完整性约束，管理员可将任意值写入端点维度。
+5. **自定义分类法与API维度解耦**。`api_custom_taxonomies` 只是可选值目录，
+   不做引用完整性约束，管理员可将任意值写入API维度。
 
 ## 七、当前实现范围与限制
 
-- **内置分类目录无种子数据**。`api_classifications` 已建表但未随迁移插入内置行，
-  `ListClassifications` 的 `builtin` 段当前恒为空数组；分类值实际来自启发式
-  AUTO 写入与自定义分类法。
-- **维度集合为简化口径**。实现使用 `PURPOSE` / `EXPOSURE` / `ACCESS` 三个维度
-  （启发式）加任意自定义维度；任务书 34.1 的 16 个内置业务领域、34.2 的
-  40 余个操作动作未落成目录数据，`DATA_TYPE` 维度暂无写入方。
+- **维度值目录已种子化，自动写入方仍有限**。`api_classifications` 内置业务领域
+  由迁移 000073（16 项）与 000087（8 项）种子，启发式 AUTO 产出的 7 个用途值与
+  3 个暴露面值由迁移 000096 回填为内置目录（仅补空说明，不覆盖人工修订）；`api_custom_taxonomies` 维度值目录
+  由迁移 000095 预置 8 个维度（DATA_TYPE / OPERATION / LIFECYCLE / DIRECTION /
+  AUTH_TYPE / ENV / COMPLIANCE_SCOPE / DATA_CROSS_BORDER）共 47 个标准取值，
+  供人工分类选用；自动写入方仍只有启发式 AUTO（PURPOSE / EXPOSURE / ACCESS），
+  任务书 34.2 的 40 余个操作动作的自动识别未实现，DATA_TYPE 等维度暂无 AUTO 写入方。
 - **AI 来源未接线**。`source` 枚举含 `AI`，但当前无任何代码以 AI 来源写入
   分类维度；任务书 34.3 的语义模型证据、调用顺序证据未实现，启发式仅使用
   路径词与 HTTP 方法两类证据。

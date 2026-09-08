@@ -199,7 +199,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID, objName, result, risk, failReason string) {
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),

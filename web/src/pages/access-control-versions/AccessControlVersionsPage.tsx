@@ -9,6 +9,8 @@ import {
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
+import { useAuthStore } from '../../stores/auth'
+import { hasPermission } from '../../utils/permission'
 
 const PUBLISH_RESULT_META: Record<string, { color: string; label: string }> = {
   SUCCESS: { color: 'success', label: '成功' },
@@ -16,10 +18,12 @@ const PUBLISH_RESULT_META: Record<string, { color: string; label: string }> = {
   PENDING: { color: 'processing', label: '进行中' },
 }
 
-/** 访问控制配置版本：列表 / 差异 / 回滚 */
+/** 访问控制配置版本：列表 / 差异 / 回滚（回滚按 access_control_versions.rollback 控制显隐，路由为 any-of 语义） */
 export default function AccessControlVersionsPage() {
   const { message, modal } = App.useApp()
   const qc = useQueryClient()
+  const permissions = useAuthStore((s) => s.user?.permissions)
+  const canRollback = hasPermission(permissions, 'access_control_versions.rollback')
   const [page, setPage] = useState(1)
   const [diffOpen, setDiffOpen] = useState(false)
   const [diffLines, setDiffLines] = useState<string[]>([])
@@ -98,9 +102,11 @@ export default function AccessControlVersionsPage() {
           <Button type="link" size="small" onClick={() => void onDiff(row)}>
             差异
           </Button>
-          <Button type="link" size="small" danger onClick={() => onRollback(row)}>
-            回滚
-          </Button>
+          {canRollback ? (
+            <Button type="link" size="small" danger onClick={() => onRollback(row)}>
+              回滚
+            </Button>
+          ) : null}
         </Space>
       ),
     },
@@ -118,6 +124,10 @@ export default function AccessControlVersionsPage() {
         loading={listQuery.isLoading}
         columns={columns}
         dataSource={listQuery.data?.items ?? []}
+        onRow={(row) => ({
+          onDoubleClick: () => void onDiff(row),
+          style: { cursor: 'pointer' },
+        })}
         pagination={{
           current: page,
           pageSize: 20,

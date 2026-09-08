@@ -2,6 +2,7 @@ package apiassets
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,31 +12,52 @@ import (
 	"github.com/google/uuid"
 )
 
-// MemStore 进程内端点仓储：与 SQL Store 相同业务语义，供单测与无库环境驱动真实 Handler。
+// MemStore 进程内接口仓储：与 SQL Store 相同业务语义，供单测与无库环境驱动真实 Handler。
 type MemStore struct {
-	mu      sync.Mutex
-	byID    map[uuid.UUID]*Endpoint
-	byKey   map[string]uuid.UUID
-	assets  map[uuid.UUID]*Asset
-	aliases map[string]uuid.UUID
-	dims    map[uuid.UUID][]ClassificationDimension
-	jobs    []*LearningJob
-	events  []LifecycleEvent
-	samples []LearningSample
+	mu       sync.Mutex
+	byID     map[uuid.UUID]*Endpoint
+	byKey    map[string]uuid.UUID
+	assets   map[uuid.UUID]*Asset
+	aliases  map[string]uuid.UUID
+	dims     map[uuid.UUID][]ClassificationDimension
+	segments map[uuid.UUID][]PathSegment // endpoint_id → 段形（派生口径同 SQL，见 segments.go）
+	jobs     []*LearningJob
+	events   []LifecycleEvent
+	samples  []LearningSample
+	traffic  map[uuid.UUID]map[time.Time]int64 // endpoint_id → 桶起点 → 计数
+	// 生命周期增强（评分输入种子与计算时间；SQL 侧为表查询，语义一致）
+	sensitiveCounts map[uuid.UUID]int       // endpoint_id → 敏感字段数
+	authTypes       map[uuid.UUID]string    // endpoint_id → 主导认证形态
+	valueComputedAt map[uuid.UUID]time.Time // endpoint_id → 上次评分计算时间
+	serviceAssets   []ServiceAsset          // 服务资产种子（聚合 SQL 语义由集成测试覆盖）
+	// endpointQuota 授权端点配额提供者（与 SQL Store 同口径：nil/0 = 不限制）
+	endpointQuota func(ctx context.Context) int64
 }
 
 // NewMemStore 创建空内存仓储。
 func NewMemStore() *MemStore {
 	return &MemStore{
-		byID:    map[uuid.UUID]*Endpoint{},
-		byKey:   map[string]uuid.UUID{},
-		assets:  map[uuid.UUID]*Asset{},
-		aliases: map[string]uuid.UUID{},
-		dims:    map[uuid.UUID][]ClassificationDimension{},
+		byID:            map[uuid.UUID]*Endpoint{},
+		byKey:           map[string]uuid.UUID{},
+		assets:          map[uuid.UUID]*Asset{},
+		aliases:         map[string]uuid.UUID{},
+		dims:            map[uuid.UUID][]ClassificationDimension{},
+		segments:        map[uuid.UUID][]PathSegment{},
+		traffic:         map[uuid.UUID]map[time.Time]int64{},
+		sensitiveCounts: map[uuid.UUID]int{},
+		authTypes:       map[uuid.UUID]string{},
+		valueComputedAt: map[uuid.UUID]time.Time{},
 	}
 }
 
 var _ Repository = (*MemStore)(nil)
+
+// SetEndpointQuotaProvider 注入授权端点配额（与 SQL Store 同口径：0=不限制；
+// 仅新端点首插强制，既有端点命中不受影响）。
+func (m *MemStore) SetEndpointQuotaProvider(fn func(ctx context.Context) int64) *MemStore {
+	m.endpointQuota = fn
+	return m
+}
 
 // UpsertDiscovery 幂等登记发现结果。
 func (m *MemStore) UpsertDiscovery(ctx context.Context, in DiscoveryInput) (*Endpoint, error) {
@@ -57,18 +79,26 @@ func (m *MemStore) UpsertDiscovery(ctx context.Context, in DiscoveryInput) (*End
 		e.LastSeenAt = time.Now().UTC()
 		return cloneEP(e), nil
 	}
+	// 授权端点配额强制（与 SQL Store 同口径）：总数已达配额时新端点拒绝落库（哨兵错误）
+	if m.endpointQuota != nil {
+		if quota := m.endpointQuota(ctx); quota > 0 && int64(len(m.byID)) >= quota {
+			return nil, ErrLicenseQuotaExceeded
+		}
+	}
 	now := time.Now().UTC()
 	id := uuid.New()
 	e := &Endpoint{
 		ID: id, ApplicationID: in.ApplicationID, DomainID: in.DomainID,
 		HTTPMethod: method, NormalizedPath: pathTemplate, RawPathExample: pathTemplate,
 		DirectoryPath: DirectoryOf(pathTemplate),
-		EndpointKey: key, APIConfidence: in.Confidence, AssetStatus: "DISCOVERED",
-		ProtocolType: "REST", LearningStatus: "NOT_STARTED", IsAPI: in.IsAPI, HitCount: 1,
+		EndpointKey:   key, APIConfidence: in.Confidence, AssetStatus: "DISCOVERED",
+		ProtocolType: protocolOrDefault(in.ProtocolType), LearningStatus: "NOT_STARTED", IsAPI: in.IsAPI, HitCount: 1,
 		FirstSeenAt: now, LastSeenAt: now,
 	}
 	m.byID[id] = e
 	m.byKey[key] = id
+	// 首插派生段形（命中重放不重写，与 SQL 侧 xmax=0 分支同口径）
+	m.segments[id] = withEndpointID(derivePathSegments(pathTemplate), id)
 	return cloneEP(e), nil
 }
 
@@ -104,7 +134,23 @@ func (m *MemStore) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, e
 			!strings.HasPrefix(e.DirectoryPath, f.DirectoryPrefix+"/") {
 			continue
 		}
-		all = append(all, *cloneEP(e))
+		if f.BusinessType != "" {
+			// 与 SQL 一致：无资产记录接口按 OTHER 计
+			bt := "OTHER"
+			if a, ok := m.assets[e.ID]; ok && a.BusinessType != "" {
+				bt = a.BusinessType
+			}
+			if bt != f.BusinessType {
+				continue
+			}
+		}
+		item := cloneEP(e)
+		// 与 SQL List 一致：列表带出 business_type（无资产记录归一 OTHER）
+		item.BusinessType = "OTHER"
+		if a, ok := m.assets[e.ID]; ok && a.BusinessType != "" {
+			item.BusinessType = a.BusinessType
+		}
+		all = append(all, *item)
 	}
 	// 与 SQL 一致：last_seen_at 倒序
 	sort.Slice(all, func(i, j int) bool { return all[i].LastSeenAt.After(all[j].LastSeenAt) })
@@ -118,6 +164,16 @@ func (m *MemStore) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, e
 		end = len(all)
 	}
 	return all[start:end], total, nil
+}
+
+// ListPathSegments 读取端点段形（按位置升序；内存实现，语义同 SQL）。
+func (m *MemStore) ListPathSegments(_ context.Context, endpointID uuid.UUID) ([]PathSegment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	segs := m.segments[endpointID]
+	out := make([]PathSegment, len(segs))
+	copy(out, segs)
+	return out, nil
 }
 
 // SiteSummary 站点计数（内存实现无应用表，仅返回未归属桶计数，语义注释见 SQL）。
@@ -157,7 +213,7 @@ func (m *MemStore) DirectoryTree(ctx context.Context, applicationID *uuid.UUID, 
 	return out, nil
 }
 
-// Confirm 确认端点。
+// Confirm 确认接口。
 func (m *MemStore) Confirm(ctx context.Context, id uuid.UUID) (*Endpoint, error) {
 	_ = ctx
 	m.mu.Lock()
@@ -188,7 +244,7 @@ func (m *MemStore) GetByID(ctx context.Context, id uuid.UUID) (*Endpoint, error)
 func (m *MemStore) Merge(ctx context.Context, primaryID, otherID uuid.UUID, actor string) (*Endpoint, error) {
 	_ = ctx
 	if primaryID == otherID {
-		return nil, fmt.Errorf("不能将端点合并到自身")
+		return nil, fmt.Errorf("不能将接口合并到自身")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -209,6 +265,7 @@ func (m *MemStore) Merge(ctx context.Context, primaryID, otherID uuid.UUID, acto
 	delete(m.byKey, other.EndpointKey)
 	delete(m.assets, otherID)
 	delete(m.dims, otherID)
+	delete(m.segments, otherID) // 段形随端点删除清理（对应 SQL 侧 ON DELETE CASCADE）
 	jobs := m.jobs[:0]
 	for _, j := range m.jobs {
 		if j.EndpointID != otherID {
@@ -217,11 +274,11 @@ func (m *MemStore) Merge(ctx context.Context, primaryID, otherID uuid.UUID, acto
 	}
 	m.jobs = jobs
 	m.appendEventLocked(primaryID, "", "MERGED",
-		fmt.Sprintf("合并端点 %s（%s）", otherID, other.EndpointKey), actor)
+		fmt.Sprintf("合并接口 %s（%s）", otherID, other.EndpointKey), actor)
 	return cloneEP(primary), nil
 }
 
-// Split 按归一化路径拆分新端点（继承方法/置信度，状态 DISCOVERED）。
+// Split 按归一化路径拆分新接口（继承方法/置信度，状态 DISCOVERED）。
 func (m *MemStore) Split(ctx context.Context, id uuid.UUID, newPaths []string, actor string) ([]Endpoint, error) {
 	_ = ctx
 	if len(newPaths) == 0 {
@@ -249,16 +306,17 @@ func (m *MemStore) Split(ctx context.Context, id uuid.UUID, newPaths []string, a
 			ID: nid, ApplicationID: src.ApplicationID, DomainID: src.DomainID,
 			HTTPMethod: src.HTTPMethod, NormalizedPath: p, RawPathExample: p,
 			DirectoryPath: DirectoryOf(p),
-			EndpointKey: key, APIConfidence: src.APIConfidence, AssetStatus: "DISCOVERED",
+			EndpointKey:   key, APIConfidence: src.APIConfidence, AssetStatus: "DISCOVERED",
 			ProtocolType: src.ProtocolType, LearningStatus: "NOT_STARTED", IsAPI: src.IsAPI,
 			FirstSeenAt: now, LastSeenAt: now,
 		}
 		m.byID[nid] = e
 		m.byKey[key] = nid
+		m.segments[nid] = withEndpointID(derivePathSegments(p), nid)
 		created = append(created, *cloneEP(e))
 	}
 	m.appendEventLocked(id, "", "SPLIT",
-		fmt.Sprintf("拆分出 %d 个端点：%s", len(created), strings.Join(newPaths, ", ")), actor)
+		fmt.Sprintf("拆分出 %d 个接口：%s", len(created), strings.Join(newPaths, ", ")), actor)
 	return created, nil
 }
 
@@ -277,6 +335,9 @@ func (m *MemStore) SetAssetStatus(ctx context.Context, id uuid.UUID, status, act
 	}
 	from := e.AssetStatus
 	e.AssetStatus = status
+	if status != "ZOMBIE" {
+		e.ZombieSince = nil
+	}
 	if from != status {
 		m.appendEventLocked(id, from, status, "资产状态变更", actor)
 	}
@@ -296,11 +357,15 @@ func (m *MemStore) GetAsset(ctx context.Context, endpointID uuid.UUID) (*Asset, 
 }
 
 // UpsertAsset 全量替换业务维度扩展。
-func (m *MemStore) UpsertAsset(ctx context.Context, endpointID uuid.UUID, purpose, exposure, owner string, tags []string) (*Asset, error) {
+func (m *MemStore) UpsertAsset(ctx context.Context, endpointID uuid.UUID, purpose, exposure, owner string, tags []string, businessType string) (*Asset, error) {
 	_ = ctx
 	exposure = strings.ToUpper(strings.TrimSpace(exposure))
 	if exposure == "" {
 		exposure = "INTERNAL"
+	}
+	businessType = NormalizeBusinessType(businessType)
+	if !validBusinessTypes[businessType] {
+		return nil, fmt.Errorf("无效的业务类型：%s", businessType)
 	}
 	if tags == nil {
 		tags = []string{}
@@ -320,6 +385,7 @@ func (m *MemStore) UpsertAsset(ctx context.Context, endpointID uuid.UUID, purpos
 	a.Exposure = exposure
 	a.Owner = owner
 	a.Tags = append([]string{}, tags...)
+	a.BusinessType = businessType
 	a.UpdatedAt = now
 	return cloneAsset(a), nil
 }
@@ -377,10 +443,17 @@ func (m *MemStore) AutoClassify(ctx context.Context, id uuid.UUID) ([]Classifica
 }
 
 // StartLearning 创建 RUNNING 任务并置 learning_status=LEARNING。
-func (m *MemStore) StartLearning(ctx context.Context, endpointID uuid.UUID, createdBy *uuid.UUID) (*LearningJob, error) {
+// sampleTarget 语义同 SQL 侧：0 取缺省，越界返回 ErrInvalidSampleTarget。
+func (m *MemStore) StartLearning(ctx context.Context, endpointID uuid.UUID, sampleTarget int, createdBy *uuid.UUID) (*LearningJob, error) {
 	_ = ctx
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if sampleTarget == 0 {
+		sampleTarget = DefaultSampleTarget
+	}
+	if sampleTarget < MinSampleTarget || sampleTarget > MaxSampleTarget {
+		return nil, ErrInvalidSampleTarget
+	}
 	e, ok := m.byID[endpointID]
 	if !ok {
 		return nil, ErrNotFound
@@ -396,7 +469,7 @@ func (m *MemStore) StartLearning(ctx context.Context, endpointID uuid.UUID, crea
 		createdByCopy = &v
 	}
 	job := &LearningJob{
-		ID: uuid.New(), EndpointID: endpointID, Status: "RUNNING",
+		ID: uuid.New(), EndpointID: endpointID, Status: "RUNNING", SampleTarget: sampleTarget,
 		StartedAt: time.Now().UTC(), CreatedBy: createdByCopy, CreatedAt: time.Now().UTC(),
 	}
 	m.jobs = append(m.jobs, job)
@@ -537,11 +610,162 @@ func (m *MemStore) AddLearningSample(s LearningSample) {
 	m.samples = append(m.samples, s)
 }
 
+// RecordTrafficBucket 流量桶自增（语义同 SQL：按桶起点对齐累加）。
+func (m *MemStore) RecordTrafficBucket(ctx context.Context, endpointID uuid.UUID, bucketStart time.Time) error {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b := TrafficBucketStart(bucketStart)
+	if m.traffic[endpointID] == nil {
+		m.traffic[endpointID] = map[time.Time]int64{}
+	}
+	m.traffic[endpointID][b]++
+	return nil
+}
+
+// TrafficBuckets 读取 [from, to) 窗口内流量桶（语义同 SQL）。
+func (m *MemStore) TrafficBuckets(ctx context.Context, endpointID uuid.UUID, from, to time.Time) (map[time.Time]int64, error) {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[time.Time]int64{}
+	start := TrafficBucketStart(from)
+	for b, c := range m.traffic[endpointID] {
+		if !b.Before(start) && b.Before(to) {
+			out[b] = c
+		}
+	}
+	return out, nil
+}
+
+// RefreshAssetValues 内存实现：候选口径同 SQL（未评分或评分后又有新流量的非 IGNORED 端点，
+// last_seen_at 倒序、limit 截断）；评分输入由内存状态装配（分类维度/资产扩展/流量桶/种子）。
+func (m *MemStore) RefreshAssetValues(ctx context.Context, limit int) (int, error) {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var candidates []*Endpoint
+	for _, e := range m.byID {
+		if e.AssetStatus == "IGNORED" {
+			continue
+		}
+		computedAt, ok := m.valueComputedAt[e.ID]
+		if ok && !e.LastSeenAt.After(computedAt) {
+			continue
+		}
+		candidates = append(candidates, e)
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].LastSeenAt.After(candidates[j].LastSeenAt) })
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	now := time.Now().UTC()
+	for _, e := range candidates {
+		if err := m.refreshAssetValueLocked(e, now); err != nil {
+			return 0, err
+		}
+	}
+	return len(candidates), nil
+}
+
+// refreshAssetValueLocked 单端点评分回填（调用方须已持锁；纯函数 ScoreAssetValue 与 SQL 侧共用）。
+func (m *MemStore) refreshAssetValueLocked(e *Endpoint, now time.Time) error {
+	in := AssetValueInput{
+		HTTPMethod:          e.HTTPMethod,
+		AuthType:            m.authTypes[e.ID],
+		SensitiveFieldCount: m.sensitiveCounts[e.ID],
+		// 内存实现不读 api_call_edges（表自阶段8 起由 aggregations.RunCallEdges 分钟级生产），恒 0
+	}
+	for _, d := range m.dims[e.ID] {
+		switch d.Dimension {
+		case "PURPOSE":
+			in.Purpose = d.Value
+		case "EXPOSURE":
+			in.Exposure = d.Value
+		}
+	}
+	if in.Exposure == "" {
+		if a, ok := m.assets[e.ID]; ok {
+			in.Exposure = a.Exposure
+		}
+	}
+	since := now.Add(-valueTrafficWindowDays * 24 * time.Hour)
+	for b, c := range m.traffic[e.ID] {
+		if !b.Before(since) {
+			in.DailyTraffic += c
+		}
+	}
+	in.DailyTraffic /= valueTrafficWindowDays
+	score := ScoreAssetValue(in)
+	score.ComputedAt = &now
+	raw, err := json.Marshal(score)
+	if err != nil {
+		return fmt.Errorf("序列化资产价值评分失败：%w", err)
+	}
+	e.AssetValue = score.Level
+	e.AssetValueExplain = raw
+	m.valueComputedAt[e.ID] = now
+	return nil
+}
+
+// ListServiceAssets 服务资产分页（内存实现按种子返回；聚合 SQL 语义由集成测试覆盖）。
+func (m *MemStore) ListServiceAssets(ctx context.Context, page, pageSize int) ([]ServiceAsset, int64, error) {
+	_ = ctx
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	total := int64(len(m.serviceAssets))
+	start := (page - 1) * pageSize
+	if start >= len(m.serviceAssets) {
+		return []ServiceAsset{}, total, nil
+	}
+	end := start + pageSize
+	if end > len(m.serviceAssets) {
+		end = len(m.serviceAssets)
+	}
+	out := make([]ServiceAsset, end-start)
+	copy(out, m.serviceAssets[start:end])
+	return out, total, nil
+}
+
+// AddServiceAsset 登记服务资产种子（测试用；生产数据由 upstreams 表聚合）。
+func (m *MemStore) AddServiceAsset(sa ServiceAsset) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.serviceAssets = append(m.serviceAssets, sa)
+}
+
+// SetSensitiveFieldCount 设置端点敏感字段数种子（评分输入；测试用）。
+func (m *MemStore) SetSensitiveFieldCount(endpointID uuid.UUID, n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sensitiveCounts[endpointID] = n
+}
+
+// SetAuthType 设置端点主导认证形态种子（评分输入；测试用）。
+func (m *MemStore) SetAuthType(endpointID uuid.UUID, authType string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.authTypes[endpointID] = authType
+}
+
 func cloneEP(e *Endpoint) *Endpoint {
 	cp := *e
 	if e.ConfirmedAt != nil {
 		t := *e.ConfirmedAt
 		cp.ConfirmedAt = &t
+	}
+	if e.ZombieSince != nil {
+		t := *e.ZombieSince
+		cp.ZombieSince = &t
+	}
+	if e.AssetValueExplain != nil {
+		cp.AssetValueExplain = append(json.RawMessage{}, e.AssetValueExplain...)
 	}
 	if e.ApplicationID != nil {
 		v := *e.ApplicationID

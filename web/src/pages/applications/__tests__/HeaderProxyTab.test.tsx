@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import HeaderProxyTab from '../detail/HeaderProxyTab'
@@ -95,6 +95,47 @@ const pathRoutesData = {
 
 const emptyRoutesData = { items: [], page: 1, page_size: 20, total: 0 }
 
+// 未配置（configured:false）时服务端返回的默认对象（与 server DefaultHeaderConfig 对齐）
+const unconfiguredData = {
+  configured: false,
+  version: 0,
+  config: {
+    server_action: 'keep',
+    server_value: '',
+    x_author_action: 'keep',
+    x_author_value: '',
+    x_powered_by_action: 'keep',
+    x_powered_by_value: '',
+    x_frame_options: 'default',
+    x_frame_options_url: '',
+    x_xss_protection: false,
+    vary_user_agent: false,
+    hsts_enabled: false,
+    hsts_max_age: 31536000,
+    csp_mode: 'off',
+    csp_value: '',
+    response_buffering: false,
+    xff_overwrite: true,
+    host_strip_port: false,
+    accept_encoding_off: false,
+    redirect_port_rewrite: false,
+    custom_request_rules: [],
+    custom_response_rules: [],
+  },
+}
+
+function xffSwitch() {
+  const item = screen.getByText('X-Forwarded-For 上一跳覆盖').closest('.ant-form-item') as HTMLElement
+  return within(item).getByRole('switch')
+}
+
+function lastConfigPut(): Record<string, unknown> | null {
+  const putCall = (fetch as Mock).mock.calls.find(
+    (c) => String(c[0]).includes(`/applications/${APP_ID}/header-config`) && c[1]?.method === 'PUT',
+  )
+  return putCall ? (JSON.parse(String(putCall[1]?.body)) as Record<string, unknown>) : null
+}
+
 function mockFetch(routesData: unknown = pathRoutesData, configData: unknown = headerConfigData) {
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -154,6 +195,8 @@ describe('HeaderProxyTab', () => {
     // 自定义头修改两个 Form.List
     expect(screen.getByText('自定义请求头修改')).toBeInTheDocument()
     expect(screen.getByText('自定义返回头修改')).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: /添加规则/ })[0])
+    expect(screen.getByRole('button', { name: '删除此头修改规则' })).toBeInTheDocument()
   })
 
   it('保存触发 PUT /header-config 并携带 version', async () => {
@@ -168,6 +211,9 @@ describe('HeaderProxyTab', () => {
     const saveBtn = await screen.findByRole('button', { name: /保\s*存\s*配\s*置/ })
     // 等待配置回显（SAMEORIGIN 仅在数据加载后出现）后再提交
     await screen.findByText('SAMEORIGIN')
+    // 刷新 effect 链（TanStack v5 useMutation 在 useEffect 中 setOptions），
+    // 确保保存闭包取到 setConfigVersion 后的最新 version
+    await act(async () => {})
     fireEvent.click(saveBtn)
     await waitFor(() => {
       const putCall = (fetch as Mock).mock.calls.find(
@@ -179,6 +225,45 @@ describe('HeaderProxyTab', () => {
       expect(body.server_action).toBe('keep')
       expect(body.x_frame_options).toBe('sameorigin')
       expect(body.custom_request_rules).toEqual([])
+    })
+  })
+
+  it('未配置应用：XFF 上一跳覆盖默认开启，保存显式写入 true', async () => {
+    // x_frame_options 仅作「数据回显完成」的等待标记（表单初始渲染开关即为开，需区分）
+    const loadedUnconfigured = {
+      ...unconfiguredData,
+      config: { ...unconfiguredData.config, x_frame_options: 'sameorigin' },
+    }
+    vi.stubGlobal('fetch', mockFetch(pathRoutesData, loadedUnconfigured))
+    useAuthStore.setState({ user: makeUser(['applications.update']), csrfToken: null, initialized: true })
+    renderTab()
+    const saveBtn = await screen.findByRole('button', { name: /保\s*存\s*配\s*置/ })
+    await screen.findByText('SAMEORIGIN')
+    // 刷新 effect 链：setConfigVersion(0) → useMutation options 被动 effect（TanStack v5 在
+    // useEffect 中 setOptions），确保保存闭包取到最新 version
+    await act(async () => {})
+    expect(xffSwitch()).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(saveBtn)
+    await waitFor(() => {
+      const body = lastConfigPut()
+      expect(body).toBeTruthy()
+      expect(body!.xff_overwrite).toBe(true)
+      expect(body!.version).toBe(0)
+    })
+  })
+
+  it('显式保存过 xff_overwrite=false 的配置保持关闭', async () => {
+    // headerConfigData：configured=true 且 xff_overwrite=false（显式关闭）
+    useAuthStore.setState({ user: makeUser(['applications.update']), csrfToken: null, initialized: true })
+    renderTab()
+    const saveBtn = await screen.findByRole('button', { name: /保\s*存\s*配\s*置/ })
+    // 表单初始默认 true，等待数据回显后翻转为 false
+    await waitFor(() => expect(xffSwitch()).toHaveAttribute('aria-checked', 'false'))
+    fireEvent.click(saveBtn)
+    await waitFor(() => {
+      const body = lastConfigPut()
+      expect(body).toBeTruthy()
+      expect(body!.xff_overwrite).toBe(false)
     })
   })
 

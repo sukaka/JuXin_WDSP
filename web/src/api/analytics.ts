@@ -7,6 +7,8 @@ import type {
   CountList,
   DispositionOverviewData,
   RuleStat,
+  SiteAccessTrendsData,
+  SiteAccessTrendDomainsData,
   SourceIPStat,
   URIStat,
 } from '../types'
@@ -16,7 +18,7 @@ export interface AnalyticsParams {
   start_time?: string
   end_time?: string
   application_id?: string
-  /** 快捷时间范围：1h/24h/7d/30d（前端换算为 start_time/end_time） */
+  /** 快捷时间范围：1h/24h/7d/30d/today（前端换算为 start_time/end_time） */
   range?: string
 }
 
@@ -27,12 +29,18 @@ const RANGE_MS: Record<string, number> = {
   '30d': 30 * 24 * 3600_000,
 }
 
-/** 后端仅接受 start_time/end_time：range 在此换算（缺省最近 24 小时） */
+/** 后端仅接受 start_time/end_time：range 在此换算（缺省最近 24 小时；today 为本地当日零点至今） */
 function toQuery(params: AnalyticsParams): Record<string, string> {
   const query: Record<string, string> = {}
   if (params.start_time && params.end_time) {
     query.start_time = params.start_time
     query.end_time = params.end_time
+  } else if (params.range === 'today') {
+    const end = new Date()
+    const start = new Date(end)
+    start.setHours(0, 0, 0, 0)
+    query.end_time = end.toISOString()
+    query.start_time = start.toISOString()
   } else {
     const span = RANGE_MS[params.range ?? ''] ?? RANGE_MS['24h']
     const end = new Date()
@@ -78,4 +86,10 @@ export const analyticsApi = {
   /** 事件处置统计 */
   dispositionOverview: (params: AnalyticsParams) =>
     request<DispositionOverviewData>('/analytics/disposition-overview', { query: toQuery(params) }),
+  /** 网站访问趋势（按应用聚合，含零流量应用，按总访问量降序；时间跨度上限 7 天） */
+  siteAccessTrends: (params: AnalyticsParams) =>
+    request<SiteAccessTrendsData>('/analytics/site-access-trends', { query: toQuery(params) }),
+  /** 网站访问趋势-域名钻取（指定应用下各域名的访问量与趋势） */
+  siteAccessTrendDomains: (params: AnalyticsParams & { application_id: string }) =>
+    request<SiteAccessTrendDomainsData>('/analytics/site-access-trends/domains', { query: toQuery(params) }),
 }

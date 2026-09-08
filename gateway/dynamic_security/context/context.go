@@ -140,6 +140,11 @@ type DetectorMatch struct {
 	// 零值由 AddMatch 从 RequestContext 快照填充（检测器不感知版本，禁止各自拼装）
 	ModelVersion  string `json:"model_version,omitempty"`
 	PolicyVersion string `json:"policy_version,omitempty"`
+	// Excepted 被受限例外命中（WDSP P0-04）：证据保留于 Matches，仅取消本次执法贡献；
+	// 仅由决策引擎经 MarkMatchExcepted 打标（检测器不得自标），omitempty 保证未打标零变化
+	Excepted         bool   `json:"excepted,omitempty"`
+	ExceptionID      string `json:"exception_id,omitempty"`
+	ExceptionVersion int    `json:"exception_version,omitempty"`
 }
 
 // defaultConfidenceByDetector 各检测器置信度保守默认（0-1）。
@@ -177,6 +182,10 @@ func defaultConfidenceFor(detector string) float64 {
 // 字段按任务书 §7 裁剪为核心可序列化集合；扩展经 Extensions 注册写入。
 type RequestContext struct {
 	mu sync.RWMutex
+	// detectorStoreOverrides 是请求级运行时依赖，不参与事件序列化。具体类型由
+	// detectors 包解释；context 包保持底层无依赖，避免形成 import cycle。
+	detectorStoreOverrides      any
+	detectorStoreOverridesBound bool
 
 	// --- 关联与连接 ---
 	RequestID string
@@ -256,6 +265,24 @@ type RequestContext struct {
 	Extensions map[string]any
 }
 
+// BindDetectorStoreOverrides 将本次管线的检测器存储选择绑定到请求上下文。
+// overrides 可为 nil：bound=true 明确表示使用默认内存，避免回退到进程级兼容注入。
+func (c *RequestContext) BindDetectorStoreOverrides(overrides any) {
+	if c == nil {
+		return
+	}
+	c.detectorStoreOverrides = overrides
+	c.detectorStoreOverridesBound = true
+}
+
+// DetectorStoreOverrides 返回请求级检测器存储与是否已由管线显式绑定。
+func (c *RequestContext) DetectorStoreOverrides() (overrides any, bound bool) {
+	if c == nil {
+		return nil, false
+	}
+	return c.detectorStoreOverrides, c.detectorStoreOverridesBound
+}
+
 // SetIdentity sets the normalized identity contract on the request context.
 // Evidence is copied because the context may outlive the resolver's scratch
 // slice; confidence is always bounded to the documented [0,100] range.
@@ -316,6 +343,33 @@ func (c *RequestContext) AddMatch(m DetectorMatch) {
 		c.RiskScore += m.ScoreDelta
 		c.RiskLevel = scoreToLevel(c.RiskScore)
 	}
+}
+
+// MarkMatchExcepted 将下标 index 的检测明细标记为被受限例外豁免（WDSP P0-04；
+// 幂等，线程安全口径与 AddMatch 一致）。detector/ruleID 校验快照未过期（不一致
+// 拒绝写回）；已打标明细不覆盖（先入例外优先，重复打标不产生变化）。
+// 仅置标记位，不删证据、不回溯 RiskScore（豁免只取消定案贡献，风险分事实保留）。
+// 返回本次是否新打标。
+func (c *RequestContext) MarkMatchExcepted(index int, detector, ruleID, exceptionID string, exceptionVersion int) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if index < 0 || index >= len(c.Matches) {
+		return false
+	}
+	m := &c.Matches[index]
+	if m.Detector != detector || m.RuleID != ruleID {
+		return false
+	}
+	if m.Excepted {
+		return false
+	}
+	m.Excepted = true
+	m.ExceptionID = exceptionID
+	m.ExceptionVersion = exceptionVersion
+	return true
 }
 
 // MatchCount 当前检测明细数。

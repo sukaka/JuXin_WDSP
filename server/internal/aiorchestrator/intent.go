@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+var contextualFollowUpPattern = regexp.MustCompile(`^(?:继续|接着|往下|再查|再看看|详细点|展开|那|那么|这个|这个呢|该事件|该规则|昨天呢|今天呢|上周呢|本周呢|上个月呢|本月呢|刚才|之前|上面|前面|同一个|相比|对比)`)
+
 // TaskType 任务类型。
 type TaskType string
 
@@ -43,7 +45,7 @@ var intentRules = []intentRule{
 	{TaskWhatIf, regexp.MustCompile(`what.?if|如果.*(关掉|关闭|启用|改成|切换|调整)|模拟|假设`), []string{"waf_policy"}},
 	{TaskReportSummary, regexp.MustCompile(`(日报|周报|月报|总结|汇总).*(安全|攻击|运营)?|(安全|攻击|运营).*(日报|周报|月报|总结|汇总)`), []string{"report"}},
 	{TaskLogQuery, regexp.MustCompile(`日志|log|查询.*请求|请求.*记录`), []string{"log_analysis"}},
-	{TaskStatistics, regexp.MustCompile(`统计|趋势|排行|top|多少|数量|分布`), []string{"security_event", "log_analysis"}},
+	{TaskStatistics, regexp.MustCompile(`统计|趋势|排行|top|多少|数量|分布|占比|(?:攻击|安全事件|拦截).*(?:最多|最高|最常见|主要|首位|第一)|(?:最多|最高|最常见|主要|首位|第一).*(?:攻击|安全事件|拦截)`), []string{"security_event"}},
 }
 
 // Plan 任务计划摘要（前端可展示，非私有思维链）。
@@ -84,6 +86,42 @@ func Classify(message string) Plan {
 	// 通用问答默认只走知识库，不拉 24h 攻击统计（避免闲聊/非安全问题刷屏运营数据）
 	return Plan{TaskType: TaskGeneralQA, Agents: []string{"knowledge"}, RiskLevel: "LOW",
 		Summary: "通用安全问答"}
+}
+
+// ResolveContextualMessage 为短追问继承上一条用户问题中的事件、规则、IP 和查询条件。
+// 最近消息可能包含当前轮，因此会先跳过最后一条与当前问题相同的用户消息；
+// 助手消息永远不会拼入 Agent 输入，避免把模型输出当作可信指令。
+func ResolveContextualMessage(message string, recent []Message) string {
+	current := strings.TrimSpace(message)
+	if current == "" || !isContextualFollowUp(current) {
+		return message
+	}
+
+	skippedCurrent := false
+	for i := len(recent) - 1; i >= 0; i-- {
+		m := recent[i]
+		if !strings.EqualFold(strings.TrimSpace(m.Role), "user") {
+			continue
+		}
+		content := strings.TrimSpace(m.Content)
+		if content == "" {
+			continue
+		}
+		if !skippedCurrent && content == current {
+			skippedCurrent = true
+			continue
+		}
+		return content + "\n当前追问：" + current
+	}
+	return message
+}
+
+func isContextualFollowUp(message string) bool {
+	m := strings.Trim(strings.ToLower(strings.TrimSpace(message)), " \t\r\n!！?？.。~～、,，")
+	if m == "" || len([]rune(m)) > 40 {
+		return false
+	}
+	return contextualFollowUpPattern.MatchString(m)
 }
 
 // IsGreetingOrHelp 识别问候、寒暄与「你能做什么」类能力询问。

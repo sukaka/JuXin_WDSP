@@ -26,9 +26,10 @@ func TestSeverityRulesMatrix(t *testing.T) {
 		{TypeReportFailed, SeverityMedium},
 		{TypeUpgradeFailed, SeverityHigh},
 		{TypeAuditIntegrityFailed, SeverityCritical},
+		{TypeAuditWriteFailed, SeverityHigh},
 	}
-	if len(cases) != 18 {
-		t.Fatalf("规则矩阵应覆盖 18 种告警类型，实际 %d", len(cases))
+	if len(cases) != 19 {
+		t.Fatalf("规则矩阵应覆盖 19 种告警类型，实际 %d", len(cases))
 	}
 	for _, c := range cases {
 		if !IsValidType(c.alertType) {
@@ -61,6 +62,27 @@ func TestSeverityForCertExpiring(t *testing.T) {
 	for _, c := range cases {
 		if got := SeverityForCertExpiring(c.days); got != c.want {
 			t.Errorf("剩余 %d 天等级 = %s，期望 %s", c.days, got, c.want)
+		}
+	}
+}
+
+// TestLicenseAlertTypesRegistered 离线授权告警类型注册（LICENSE_INVALID=CRITICAL /
+// LICENSE_EXPIRING_SOON=HIGH / LICENSE_QUOTA_EXCEEDED=HIGH；事件驱动 Raise 依赖规则矩阵）。
+func TestLicenseAlertTypesRegistered(t *testing.T) {
+	cases := []struct {
+		alertType string
+		severity  string
+	}{
+		{TypeLicenseInvalid, SeverityCritical},
+		{TypeLicenseExpiringSoon, SeverityHigh},
+		{TypeLicenseQuotaExceeded, SeverityHigh},
+	}
+	for _, c := range cases {
+		if !IsValidType(c.alertType) {
+			t.Errorf("%s 应为合法类型", c.alertType)
+		}
+		if got := SeverityFor(c.alertType); got != c.severity {
+			t.Errorf("%s 等级 = %s，期望 %s", c.alertType, got, c.severity)
 		}
 	}
 }

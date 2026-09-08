@@ -3,20 +3,27 @@ package reports
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/aggregations"
+	"github.com/jiuzhang-waf/server/internal/apigeo"
 	"github.com/jiuzhang-waf/server/internal/metrics"
+	"github.com/jiuzhang-waf/server/internal/product"
 )
 
 // CollectInput 采集输入。
 type CollectInput struct {
-	ReportType     string
-	Start          time.Time
-	End            time.Time
-	ApplicationIDs []uuid.UUID // 空 = 全部应用
+	ReportType       string
+	ContentScope     string // WAF / API / WAF_API（空为 WAF_API）
+	IncludeAPIAssets bool   // 是否采集全量 API 资产清单
+	PageOrientation  string // P 竖向 / L 横向（PDF/Word）
+	Start            time.Time
+	End              time.Time
+	ApplicationIDs   []uuid.UUID // 空 = 全部应用
 }
 
 // KV 通用计数对。
@@ -33,9 +40,10 @@ type Point struct {
 
 // AppInfo 应用范围信息。
 type AppInfo struct {
-	ID   uuid.UUID `json:"id"`
-	Code string    `json:"code"`
-	Name string    `json:"name"`
+	ID           uuid.UUID `json:"id"`
+	Code         string    `json:"code"`
+	Name         string    `json:"name"`
+	APIEndpoints int64     `json:"api_endpoints"` // 该站点的 API 端点总数（API 内容范围启用时统计）
 }
 
 // RuleHit 规则命中统计。
@@ -88,19 +96,36 @@ type ComponentHealth struct {
 	TakenAt   time.Time `json:"taken_at"`
 }
 
-// ReportData 报告统计数据（21节所需全部内容，均为聚合统计，不含未脱敏载荷）。
+// EventSample 高危事件明细条目（仅元数据：不含查询串与攻击载荷，路径已截断）。
+type EventSample struct {
+	OccurredAt time.Time `json:"occurred_at"`
+	ClientIP   string    `json:"client_ip"`
+	AppName    string    `json:"app_name"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	AttackType string    `json:"attack_type"`
+	Severity   string    `json:"severity"`
+	Action     string    `json:"action"`
+}
+
+// ReportData 报告统计数据（全部内容所需，均为聚合统计，不含未脱敏载荷）。
 type ReportData struct {
-	ReportType  string    `json:"report_type"`
-	RangeStart  time.Time `json:"range_start"`
-	RangeEnd    time.Time `json:"range_end"`
-	GeneratedAt time.Time `json:"generated_at"`
-	ScopeAll    bool      `json:"scope_all"`
+	ReportType      string    `json:"report_type"`
+	ContentScope    string    `json:"content_scope"`    // WAF / API / WAF_API
+	PageOrientation string    `json:"page_orientation"` // P 竖向 / L 横向（PDF/Word）
+	RangeStart      time.Time `json:"range_start"`
+	RangeEnd        time.Time `json:"range_end"`
+	GeneratedAt     time.Time `json:"generated_at"`
+	ScopeAll        bool      `json:"scope_all"`
 
 	Applications []AppInfo `json:"applications"`
 
 	// 请求流量
 	TotalRequests int64   `json:"total_requests"`
 	RequestsTrend []Point `json:"requests_trend"`
+
+	// 环比对比（上一等长周期）
+	Comparison ComparisonData `json:"comparison"`
 
 	// 安全事件总览
 	EventsTotal    int64  `json:"events_total"`
@@ -109,12 +134,17 @@ type ReportData struct {
 	HighSeverity   int64  `json:"high_severity"`
 	RiskLevel      string `json:"risk_level"` // LOW / MEDIUM / HIGH / CRITICAL（确定性规则）
 
-	SeverityDist []KV      `json:"severity_dist"`
-	AttackTypes  []KV      `json:"attack_types"`
-	AttackTrend  []Point   `json:"attack_trend"`
-	TopSourceIPs []KV      `json:"top_source_ips"`
-	AttackedApps []KV      `json:"attacked_apps"`
-	TopRules     []RuleHit `json:"top_rules"`
+	SeverityDist []KV          `json:"severity_dist"`
+	AttackTypes  []KV          `json:"attack_types"`
+	AttackTrend  []Point       `json:"attack_trend"`
+	AttackHours  []KV          `json:"attack_hours"` // 攻击时段分布（0-23 时）
+	TopSourceIPs []KV          `json:"top_source_ips"`
+	GeoEnabled   bool          `json:"geo_enabled"` // GeoIP 是否可用（地区分布降级判定）
+	SourceGeo    []KV          `json:"source_geo"`  // 攻击源地区分布（GeoIP 可用时）
+	AttackedApps []KV          `json:"attacked_apps"`
+	TargetPaths  []KV          `json:"target_paths"` // 被攻击路径 TOP10（request_path，不含查询串）
+	TopRules     []RuleHit     `json:"top_rules"`
+	EventSamples []EventSample `json:"event_samples"` // 高危事件明细 TOP20
 
 	// CC防护 / 黑白名单
 	CCExceeded   int64 `json:"cc_exceeded"`
@@ -138,17 +168,22 @@ type ReportData struct {
 	// 结论和建议（确定性模板规则）
 	Conclusions []string `json:"conclusions"`
 	Suggestions []string `json:"suggestions"`
+
+	// API 安全部分（WDSP 且 API 动态防护开启时采集；nil 表示不输出 API 部分）
+	API *APIReportData `json:"api,omitempty"`
 }
 
 // Collector 报告数据采集器。
 type Collector struct {
-	db  *pgxpool.Pool
-	agg *aggregations.Store
+	db         *pgxpool.Pool
+	agg        *aggregations.Store
+	geo        apigeo.CountryLookup // GeoIP 国家码查询（nil = 未启用，地区分布降级）
+	apiEnabled bool                 // API 动态防护是否开启（开启时主报告附 API 安全部分）
 }
 
-// NewCollector 创建采集器。
-func NewCollector(db *pgxpool.Pool, agg *aggregations.Store) *Collector {
-	return &Collector{db: db, agg: agg}
+// NewCollector 创建采集器。geo 为 nil 时攻击源地区分布输出「未启用」占位。
+func NewCollector(db *pgxpool.Pool, agg *aggregations.Store, geo apigeo.CountryLookup) *Collector {
+	return &Collector{db: db, agg: agg, geo: geo, apiEnabled: product.Load().APIDynamicProtectionEnabled()}
 }
 
 // chooseAggTable 按时间跨度选择聚合表（>7天用天表，否则用小时表）。
@@ -186,17 +221,21 @@ func computeRiskLevel(d *ReportData) string {
 }
 
 // Collect 采集报告数据。任何一步失败都返回明确错误（不静默吞错）。
+// 内容范围：WAF 仅采集 Web 部分；API 仅采集 API 部分；WAF_API 全量（缺省）。
 func (c *Collector) Collect(ctx context.Context, in CollectInput) (*ReportData, error) {
+	scope := NormalizeContentScope(in.ContentScope)
 	d := &ReportData{
-		ReportType:  in.ReportType,
-		RangeStart:  in.Start.UTC(),
-		RangeEnd:    in.End.UTC(),
-		GeneratedAt: time.Now().UTC(),
-		ScopeAll:    len(in.ApplicationIDs) == 0,
+		ReportType:      in.ReportType,
+		ContentScope:    scope,
+		PageOrientation: NormalizePageOrientation(in.PageOrientation),
+		RangeStart:      in.Start.UTC(),
+		RangeEnd:        in.End.UTC(),
+		GeneratedAt:     time.Now().UTC(),
+		ScopeAll:        len(in.ApplicationIDs) == 0,
 	}
 	appIDs := in.ApplicationIDs
 
-	// 1. 应用范围
+	// 1. 应用范围（任何内容范围都需要：报告范围小节展示 + 过滤输入）
 	apps, err := c.collectApplications(ctx, appIDs)
 	if err != nil {
 		return nil, fmt.Errorf("collect applications: %w", err)
@@ -207,51 +246,119 @@ func (c *Collector) Collect(ctx context.Context, in CollectInput) (*ReportData, 
 		appCodes = append(appCodes, a.Code)
 	}
 
-	// 2. 请求流量（聚合表）
-	if err := c.collectTraffic(ctx, d, appCodes); err != nil {
-		return nil, fmt.Errorf("collect traffic: %w", err)
+	if ContentScopeIncludesWeb(scope) {
+		// 2. 请求流量（聚合表）
+		if err := c.collectTraffic(ctx, d, appCodes); err != nil {
+			return nil, fmt.Errorf("collect traffic: %w", err)
+		}
+
+		// 3. 安全事件（原始表）
+		if err := c.collectEvents(ctx, d, appIDs); err != nil {
+			return nil, fmt.Errorf("collect events: %w", err)
+		}
+
+		// 3b. 明细增强：环比 / 时段分布 / 地区分布 / 被攻击路径 / 高危事件明细
+		if err := c.collectDetails(ctx, d, appIDs, appCodes); err != nil {
+			return nil, fmt.Errorf("collect details: %w", err)
+		}
+
+		// 4. CC / 黑白名单（访问控制事件表）
+		if err := c.collectAccessControl(ctx, d, appIDs); err != nil {
+			return nil, fmt.Errorf("collect access control: %w", err)
+		}
+
+		// 5. 误报和例外
+		if err := c.collectExceptions(ctx, d); err != nil {
+			return nil, fmt.Errorf("collect exceptions: %w", err)
+		}
+
+		// 6. 源站健康
+		if err := c.collectUpstreams(ctx, d, appIDs); err != nil {
+			return nil, fmt.Errorf("collect upstreams: %w", err)
+		}
+
+		// 7. 证书状态
+		if err := c.collectCertificates(ctx, d, appIDs); err != nil {
+			return nil, fmt.Errorf("collect certificates: %w", err)
+		}
+
+		// 8. 策略发布
+		if err := c.collectPublishTasks(ctx, d); err != nil {
+			return nil, fmt.Errorf("collect publish tasks: %w", err)
+		}
+
+		// 9. 系统运行
+		if err := c.collectSystemHealth(ctx, d); err != nil {
+			return nil, fmt.Errorf("collect system health: %w", err)
+		}
+
+		// 10. 风险等级与结论建议（确定性规则）
+		d.RiskLevel = computeRiskLevel(d)
+		d.Conclusions = BuildConclusions(d)
+		d.Suggestions = BuildSuggestions(d)
 	}
 
-	// 3. 安全事件（原始表）
-	if err := c.collectEvents(ctx, d, appIDs); err != nil {
-		return nil, fmt.Errorf("collect events: %w", err)
+	// 11. API 安全部分（WDSP 且 API 动态防护开启 + 内容范围包含 API；与站点过滤同范围）
+	if c.apiEnabled && ContentScopeIncludesAPI(scope) {
+		// 每个站点的 API 端点总数（报告范围清单展示）
+		if err := c.collectAppEndpointCounts(ctx, d); err != nil {
+			return nil, fmt.Errorf("collect app endpoint counts: %w", err)
+		}
+		apiData := &APIReportData{
+			ReportType:      "COMBINED",
+			PageOrientation: d.PageOrientation,
+			RangeStart:      d.RangeStart,
+			RangeEnd:        d.RangeEnd,
+			GeneratedAt:     d.GeneratedAt,
+		}
+		if err := c.collectAPICombined(ctx, apiData, appIDs, in.IncludeAPIAssets); err != nil {
+			return nil, fmt.Errorf("collect api combined: %w", err)
+		}
+		d.API = apiData
 	}
-
-	// 4. CC / 黑白名单（访问控制事件表）
-	if err := c.collectAccessControl(ctx, d, appIDs); err != nil {
-		return nil, fmt.Errorf("collect access control: %w", err)
-	}
-
-	// 5. 误报和例外
-	if err := c.collectExceptions(ctx, d); err != nil {
-		return nil, fmt.Errorf("collect exceptions: %w", err)
-	}
-
-	// 6. 源站健康
-	if err := c.collectUpstreams(ctx, d, appIDs); err != nil {
-		return nil, fmt.Errorf("collect upstreams: %w", err)
-	}
-
-	// 7. 证书状态
-	if err := c.collectCertificates(ctx, d, appIDs); err != nil {
-		return nil, fmt.Errorf("collect certificates: %w", err)
-	}
-
-	// 8. 策略发布
-	if err := c.collectPublishTasks(ctx, d); err != nil {
-		return nil, fmt.Errorf("collect publish tasks: %w", err)
-	}
-
-	// 9. 系统运行
-	if err := c.collectSystemHealth(ctx, d); err != nil {
-		return nil, fmt.Errorf("collect system health: %w", err)
-	}
-
-	// 10. 风险等级与结论建议（确定性规则）
-	d.RiskLevel = computeRiskLevel(d)
-	d.Conclusions = BuildConclusions(d)
-	d.Suggestions = BuildSuggestions(d)
 	return d, nil
+}
+
+// totalAPIEndpoints 应用清单 API 端点数合计。
+func totalAPIEndpoints(apps []AppInfo) int64 {
+	var n int64
+	for _, a := range apps {
+		n += a.APIEndpoints
+	}
+	return n
+}
+
+// collectAppEndpointCounts 每个应用的 API 端点总数（is_api 全量口径，与资产总览一致）。
+func (c *Collector) collectAppEndpointCounts(ctx context.Context, d *ReportData) error {
+	if len(d.Applications) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(d.Applications))
+	for _, a := range d.Applications {
+		ids = append(ids, a.ID)
+	}
+	rows, err := c.db.Query(ctx,
+		`SELECT application_id, count(*) FROM api_endpoints WHERE is_api AND application_id = ANY($1) GROUP BY 1`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	counts := make(map[uuid.UUID]int64, len(ids))
+	for rows.Next() {
+		var id uuid.UUID
+		var n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return err
+		}
+		counts[id] = n
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range d.Applications {
+		d.Applications[i].APIEndpoints = counts[d.Applications[i].ID]
+	}
+	return nil
 }
 
 // collectApplications 查询报告覆盖的应用。
@@ -470,7 +577,10 @@ func (c *Collector) collectUpstreams(ctx context.Context, d *ReportData, appIDs 
 	}
 	rows, err := c.db.Query(ctx, fmt.Sprintf(`
 SELECT u.name, u.scheme || '://' || u.host || ':' || u.port,
-       COALESCE(h.status, 'UNKNOWN'), h.checked_at, h.response_time_ms
+       CASE WHEN h.status IS NOT NULL THEN h.status
+            WHEN u.health_check_enabled THEN 'UNKNOWN'
+            ELSE 'DISABLED' END,
+       h.checked_at, h.response_time_ms
 FROM upstreams u
 LEFT JOIN LATERAL (
   SELECT status, checked_at, response_time_ms FROM upstream_health_records
@@ -596,4 +706,238 @@ func (c *Collector) groupCount(ctx context.Context, query string, args ...interf
 		out = append(out, kv)
 	}
 	return out, rows.Err()
+}
+
+// collectDetails 明细增强采集：环比对照 / 攻击时段分布 / 攻击源地区分布 /
+// 被攻击路径 / 高危事件明细。任何一步失败都返回明确错误（不静默吞错）。
+func (c *Collector) collectDetails(ctx context.Context, d *ReportData, appIDs []uuid.UUID, appCodes []string) error {
+	if err := c.collectComparison(ctx, d, appIDs, appCodes); err != nil {
+		return err
+	}
+	where, args := eventScope(d, appIDs)
+	if err := c.collectAttackHours(ctx, d, where, args); err != nil {
+		return err
+	}
+	if err := c.collectSourceGeo(ctx, d, where, args); err != nil {
+		return err
+	}
+	if err := c.collectTargetPaths(ctx, d, where, args); err != nil {
+		return err
+	}
+	return c.collectEventSamples(ctx, d, where, args)
+}
+
+// eventScope 事件表通用过滤（时间窗 + 可选应用范围）。
+func eventScope(d *ReportData, appIDs []uuid.UUID) (string, []interface{}) {
+	where := `occurred_at >= $1 AND occurred_at < $2`
+	args := []interface{}{d.RangeStart, d.RangeEnd}
+	if len(appIDs) > 0 {
+		where += ` AND application_id = ANY($3)`
+		args = append(args, appIDs)
+	}
+	return where, args
+}
+
+// collectComparison 环比对照：上一等长周期同口径事件与流量指标。
+func (c *Collector) collectComparison(ctx context.Context, d *ReportData, appIDs []uuid.UUID, appCodes []string) error {
+	span := d.RangeEnd.Sub(d.RangeStart)
+	if span <= 0 {
+		return nil
+	}
+	prevStart, prevEnd := d.RangeStart.Add(-span), d.RangeStart
+	d.Comparison.PrevRangeStart = prevStart.Unix()
+	d.Comparison.PrevRangeEnd = prevEnd.Unix()
+
+	where := `occurred_at >= $1 AND occurred_at < $2`
+	args := []interface{}{prevStart, prevEnd}
+	if len(appIDs) > 0 {
+		where += ` AND application_id = ANY($3)`
+		args = append(args, appIDs)
+	}
+	if err := c.db.QueryRow(ctx, fmt.Sprintf(`
+SELECT count(*),
+       count(*) FILTER (WHERE action = 'BLOCK'),
+       count(*) FILTER (WHERE severity = 'HIGH' OR severity = 'CRITICAL')
+FROM security_events WHERE %s`, where), args...).
+		Scan(&d.Comparison.PrevEventsTotal, &d.Comparison.PrevEventsBlocked, &d.Comparison.PrevHighSeverity); err != nil {
+		return fmt.Errorf("collect comparison events: %w", err)
+	}
+
+	// 上一周期请求流量（聚合表，与 collectTraffic 同口径）
+	table := chooseAggTable(prevStart, prevEnd)
+	tWhere := `metric = $1 AND bucket_start >= $2 AND bucket_start < $3`
+	tArgs := []interface{}{metrics.HTTPRequestsTotal, prevStart, prevEnd}
+	if !d.ScopeAll {
+		tWhere += ` AND labels->>'app' = ANY($4)`
+		tArgs = append(tArgs, appCodes)
+	}
+	if err := c.db.QueryRow(ctx,
+		fmt.Sprintf(`SELECT COALESCE(SUM(value),0) FROM %s WHERE %s`, table, tWhere), tArgs...).
+		Scan(&d.Comparison.PrevTotalRequests); err != nil {
+		return fmt.Errorf("collect comparison traffic: %w", err)
+	}
+	return nil
+}
+
+// collectAttackHours 攻击时段分布（0-23 时，无事件的时段补 0）。
+func (c *Collector) collectAttackHours(ctx context.Context, d *ReportData, where string, args []interface{}) error {
+	rows, err := c.db.Query(ctx, fmt.Sprintf(`
+SELECT EXTRACT(HOUR FROM occurred_at)::int, count(*) FROM security_events WHERE %s
+GROUP BY 1 ORDER BY 1`, where), args...)
+	if err != nil {
+		return fmt.Errorf("collect attack hours: %w", err)
+	}
+	defer rows.Close()
+	var counts [24]int64
+	for rows.Next() {
+		var h int
+		var n int64
+		if err := rows.Scan(&h, &n); err != nil {
+			return err
+		}
+		if h >= 0 && h < 24 {
+			counts[h] = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	d.AttackHours = make([]KV, 24)
+	for i := 0; i < 24; i++ {
+		d.AttackHours[i] = KV{Key: fmt.Sprintf("%02d", i), Value: counts[i]}
+	}
+	return nil
+}
+
+// maxGeoDistinctIPs 地区分布统计纳入的去重源 IP 上限（按事件数降序，余量归「其他」）。
+const maxGeoDistinctIPs = 200
+
+// collectSourceGeo 攻击源地区分布（GeoIP 国家码聚合；geo 为 nil 时跳过，渲染层显示未启用）。
+func (c *Collector) collectSourceGeo(ctx context.Context, d *ReportData, where string, args []interface{}) error {
+	if c.geo == nil {
+		return nil
+	}
+	d.GeoEnabled = true
+	rows, err := c.db.Query(ctx, fmt.Sprintf(`
+SELECT host(client_ip), count(*) FROM security_events WHERE %s AND client_ip IS NOT NULL
+GROUP BY 1 ORDER BY 2 DESC LIMIT %d`, where, maxGeoDistinctIPs), args...)
+	if err != nil {
+		return fmt.Errorf("collect source geo ips: %w", err)
+	}
+	defer rows.Close()
+
+	sums := map[string]int64{}
+	var covered int64
+	for rows.Next() {
+		var ip string
+		var n int64
+		if err := rows.Scan(&ip, &n); err != nil {
+			return err
+		}
+		country := CountryCodeName("")
+		if addr, err := netip.ParseAddr(ip); err == nil {
+			switch {
+			case addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsUnspecified():
+				country = "内网地址"
+			default:
+				code, err := c.geo.LookupCountry(addr)
+				if err != nil {
+					return fmt.Errorf("geoip lookup: %w", err) // 数据损坏上抛（与 apigeo 语义一致）
+				}
+				country = CountryCodeName(code)
+			}
+		}
+		sums[country] += n
+		covered += n
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// 未纳入 top IP 的事件归「其他」
+	var totalWithIP int64
+	if err := c.db.QueryRow(ctx, fmt.Sprintf(
+		`SELECT count(*) FROM security_events WHERE %s AND client_ip IS NOT NULL`, where), args...).
+		Scan(&totalWithIP); err != nil {
+		return fmt.Errorf("collect source geo total: %w", err)
+	}
+	if rest := totalWithIP - covered; rest > 0 {
+		sums["其他"] += rest
+	}
+	d.SourceGeo = topKVs(sums, 10, "其他")
+	return nil
+}
+
+// collectTargetPaths 被攻击路径 TOP10（request_path 为目标路径，不含查询串与载荷）。
+func (c *Collector) collectTargetPaths(ctx context.Context, d *ReportData, where string, args []interface{}) error {
+	kvs, err := c.groupCount(ctx, fmt.Sprintf(`
+SELECT request_path, count(*) FROM security_events WHERE %s AND request_path <> ''
+GROUP BY 1 ORDER BY 2 DESC LIMIT 10`, where), args...)
+	if err != nil {
+		return fmt.Errorf("collect target paths: %w", err)
+	}
+	for i := range kvs {
+		kvs[i].Key = truncateRunes(kvs[i].Key, 80)
+	}
+	d.TargetPaths = kvs
+	return nil
+}
+
+// collectEventSamples 高危事件明细 TOP20（高危优先、其余按时间倒序；仅元数据）。
+func (c *Collector) collectEventSamples(ctx context.Context, d *ReportData, where string, args []interface{}) error {
+	rows, err := c.db.Query(ctx, fmt.Sprintf(`
+SELECT occurred_at, COALESCE(host(client_ip), '-'),
+       COALESCE(NULLIF(application_name_snapshot, ''), '未知应用'),
+       request_method, request_path, attack_type, severity, action
+FROM security_events WHERE %s
+ORDER BY CASE WHEN severity IN ('HIGH', 'CRITICAL') THEN 0 ELSE 1 END, occurred_at DESC
+LIMIT 20`, where), args...)
+	if err != nil {
+		return fmt.Errorf("collect event samples: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s EventSample
+		if err := rows.Scan(&s.OccurredAt, &s.ClientIP, &s.AppName, &s.Method, &s.Path, &s.AttackType, &s.Severity, &s.Action); err != nil {
+			return err
+		}
+		s.Path = truncateRunes(s.Path, 80)
+		d.EventSamples = append(d.EventSamples, s)
+	}
+	return rows.Err()
+}
+
+// topKVs 计数聚合取前 n 名（降序、同名按 key 排序保证确定性），其余合并为 otherKey。
+func topKVs(sums map[string]int64, n int, otherKey string) []KV {
+	all := make([]KV, 0, len(sums))
+	for k, v := range sums {
+		all = append(all, KV{Key: k, Value: v})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Value != all[j].Value {
+			return all[i].Value > all[j].Value
+		}
+		return all[i].Key < all[j].Key
+	})
+	if len(all) <= n {
+		return all
+	}
+	out := make([]KV, 0, n+1)
+	out = append(out, all[:n]...)
+	var rest int64
+	for _, kv := range all[n:] {
+		rest += kv.Value
+	}
+	if rest > 0 {
+		out = append(out, KV{Key: otherKey, Value: rest})
+	}
+	return out
+}
+
+// truncateRunes 按字符数截断（超出补省略号）。
+func truncateRunes(s string, max int) string {
+	if len([]rune(s)) <= max {
+		return s
+	}
+	r := []rune(s)
+	return string(r[:max-1]) + "…"
 }

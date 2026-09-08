@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -193,5 +193,38 @@ describe('ApiLearningPage', () => {
     renderPage()
     expect(await screen.findByRole('button', { name: /启动学习/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /停止学习/ })).not.toBeInTheDocument()
+  })
+
+  it('启动学习：确认弹窗默认样本目标 100，修改后随请求提交 sample_target', async () => {
+    statusBody = notStartedStatus
+    useAuthStore.setState({
+      user: makeUser(['api_learning.read', 'api_learning.start']),
+      csrfToken: null,
+      initialized: true,
+    })
+    // 包装 beforeEach 的 fetch stub 旁路记录请求（含 body）
+    const calls: { url: string; body?: string }[] = []
+    const inner = globalThis.fetch
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: init?.body ? String(init.body) : undefined })
+      return inner(input, init)
+    })
+    renderPage()
+    // 等待接口自动选中后按钮可用（disabled={!endpointId}；轮询重新查询按钮）
+    await waitFor(
+      () => expect(screen.getByRole('button', { name: /启动学习/ })).toBeEnabled(),
+      { timeout: 3000 },
+    )
+    fireEvent.click(screen.getByRole('button', { name: /启动学习/ }))
+    // 确认弹窗含样本目标输入（默认 100）
+    const input = (await screen.findByRole('spinbutton')) as HTMLInputElement
+    expect(input.value).toBe('100')
+    fireEvent.change(input, { target: { value: '500' } })
+    fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
+    await waitFor(() => {
+      const startCall = calls.find((c) => c.url.includes('/learning/start'))
+      expect(startCall).toBeTruthy()
+      expect(JSON.parse(startCall?.body ?? '')).toEqual({ sample_target: 500 })
+    })
   })
 })

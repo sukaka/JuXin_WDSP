@@ -101,3 +101,65 @@ func TestParseLineOccurredAtPreserved(t *testing.T) {
 		t.Errorf("occurred_at = %v, want %v", e.OccurredAt, want)
 	}
 }
+
+// TestParseLineAPMFields APM 阶段1 字段合同（ADR D6/D7/D8，WP2 网关侧产出）：
+// 新格式行携带 trace_id/span_id/endpoint_key/path_template/ttfb_ms，旧格式行
+// 全部缺省（空串/nil），两种行都必须可解析。
+func TestParseLineAPMFields(t *testing.T) {
+	t.Run("new format with apm fields", func(t *testing.T) {
+		line := `{"occurred_at":"2026-08-30T10:00:00Z","request_id":"req-apm-1",` +
+			`"trace_id":"0123456789abcdef0123456789abcdef","span_id":"0123456789abcdef",` +
+			`"endpoint_key":"GET /api/users/{id}","path_template":"/api/users/{id}",` +
+			`"ttfb_ms":42,"response_status":200,"duration_ms":58,"waf_action":"OBSERVE"}`
+		e, err := ParseLine([]byte(line))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.TraceID != "0123456789abcdef0123456789abcdef" || e.SpanID != "0123456789abcdef" {
+			t.Errorf("trace/span wrong: %+v", e)
+		}
+		if e.EndpointKey != "GET /api/users/{id}" || e.PathTemplate != "/api/users/{id}" {
+			t.Errorf("endpoint fields wrong: %+v", e)
+		}
+		if e.TTFBMs == nil || *e.TTFBMs != 42 {
+			t.Errorf("ttfb_ms = %v, want 42", e.TTFBMs)
+		}
+		if e.WAFAction != "OBSERVE" {
+			t.Errorf("waf_action = %q, want OBSERVE", e.WAFAction)
+		}
+	})
+	t.Run("old format without apm fields", func(t *testing.T) {
+		e, err := ParseLine([]byte(`{"occurred_at":"2026-08-30T10:00:00Z","request_id":"req-old-1","response_status":403,"waf_action":"BLOCK"}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.TraceID != "" || e.SpanID != "" || e.EndpointKey != "" || e.PathTemplate != "" || e.TTFBMs != nil {
+			t.Errorf("old line must leave apm fields empty: %+v", e)
+		}
+	})
+	t.Run("dirty ttfb nulled", func(t *testing.T) {
+		for _, v := range []string{"-5", "9999999999999"} {
+			e, err := ParseLine([]byte(`{"occurred_at":"2026-08-30T10:00:00Z","ttfb_ms":` + v + `}`))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if e.TTFBMs != nil {
+				t.Errorf("ttfb_ms %s must be nulled (integer 列防溢出), got %d", v, *e.TTFBMs)
+			}
+		}
+	})
+	t.Run("apm fields truncated", func(t *testing.T) {
+		line := `{"occurred_at":"2026-08-30T10:00:00Z","trace_id":"` + strings.Repeat("t", 100) +
+			`","endpoint_key":"` + strings.Repeat("e", 300) + `"}`
+		e, err := ParseLine([]byte(line))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(e.TraceID) != maxTraceIDLen {
+			t.Errorf("trace_id not truncated: %d", len(e.TraceID))
+		}
+		if len(e.EndpointKey) != maxEndpointKeyLen {
+			t.Errorf("endpoint_key not truncated: %d", len(e.EndpointKey))
+		}
+	})
+}

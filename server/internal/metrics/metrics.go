@@ -24,6 +24,37 @@ const (
 	DiskFreeBytes           = "disk_free_bytes"
 )
 
+// API 专项指标（阶段8 / 补全任务书 §158 口径；仅实现有真实数据源者，数据源见各注释）。
+// 均为 DB 周期聚合的 gauge（当前值快照），由 APICollector 采集，见 api_collector.go。
+// 无数据源而未实现的指标（不造假）：api_discovery_qps（每秒识别量，网关未上报识别速率）、
+// api_parse_latency（请求/响应解析耗时，无分项耗时数据源）、学习延迟、事件积压、
+// 图谱边数量、AI Tool 调用量（均无计数载体）。
+const (
+	APIAssetsTotal       = "api_assets_total"       // 数据源：api_endpoints 全表计数（is_api=TRUE）
+	APIAssetsNew         = "api_assets_new"         // 数据源：api_endpoints.first_seen_at 近 24h 新发现
+	APILearningJobs      = "api_learning_jobs"      // 数据源：api_learning_jobs status='RUNNING'
+	APILearningSamples   = "api_learning_samples"   // 数据源：api_learning_samples 全表计数
+	APILearningExcluded  = "api_learning_excluded"  // 数据源：api_learning_samples accepted=FALSE
+	APICandidatesCreated = "api_candidates_created" // 数据源：api_model_versions status IN (CANDIDATE,IN_REVIEW)
+	APIModelsConfirmed   = "api_models_confirmed"   // 数据源：api_model_versions status='FORMAL'
+	RuntimeCompileTotal  = "runtime_compile_total"  // 数据源：api_runtime_policies 全表计数（每行一次编译产物）
+	RuntimeCompileError  = "runtime_compile_error"  // 数据源：api_runtime_policies status='FAILED'
+	SchemaFindings       = "schema_findings"        // 数据源：api_runtime_findings finding_type 前缀 SCHEMA_/API_SCHEMA
+	AuthFindings         = "auth_findings"          // 数据源：api_runtime_findings finding_type 前缀 AUTH_/AUTHENTICATION
+	AuthzFindings        = "authz_findings"         // 数据源：api_runtime_findings finding_type 前缀 BOLA/BFLA/AUTHZ_
+	SensitiveFindings    = "sensitive_findings"     // 数据源：api_runtime_findings finding_type 前缀 SENSITIVE_
+	BehaviorFindings     = "behavior_findings"      // 数据源：api_runtime_findings finding_type 前缀 BEHAVIOR
+	MaskResponseTotal    = "mask_response_total"    // 数据源：api_runtime_events final_action='MASK_RESPONSE'
+)
+
+// APM 阶段1 端点级 RED 指标（ADR docs/APM_STAGE0_ADR.md D7/D9；数据源：access_logs 全量
+// 访问日志分钟聚合，见 aggregations/endpoint_red.go；labels：app/endpoint/status_class/action）。
+const (
+	HTTPEndpointRequestsTotal = "http_endpoint_requests_total" // 端点级请求数
+	HTTPEndpointDurationMs    = "http_endpoint_duration_ms"    // 端点级总耗时直方图（extra.buckets）
+	HTTPEndpointTTFBMs        = "http_endpoint_ttfb_ms"        // 端点级 TTFB 直方图（extra.buckets）
+)
+
 // DurationBucketsMs HTTP 响应时长直方图桶（毫秒）。
 var DurationBucketsMs = []int{5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000}
 
@@ -65,10 +96,12 @@ func PercentileFromBuckets(counts []int, p float64) float64 {
 }
 
 // 允许的标签键（受控维度，防高基数攻击）。
+// endpoint 为 APM 阶段1 端点级 RED 维度：值经网关归一化（METHOD /path/{id}）+
+// 聚合侧 Top-N 护栏（__OTHER__/__UNCLASSIFIED__），不引入原始 path 基数。
 var allowedLabelKeys = map[string]bool{
 	"app": true, "attack_type": true, "severity": true, "action": true,
 	"status_class": true, "scope": true, "component": true, "policy": true,
-	"method": true, "content_type": true,
+	"method": true, "content_type": true, "endpoint": true,
 }
 
 // ValidateLabels 校验标签键集合（未知键返回 false）。

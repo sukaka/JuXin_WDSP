@@ -16,7 +16,7 @@ func NewAssetTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&appSearch{baseTool: baseTool{meta: toolMeta{
 		code: "application.search", name: "应用查询", version: "1.0",
 		description: "按关键字/状态/防护模式查询应用",
-		risk: RiskReadOnly, permission: "applications.read", timeout: 15, maxResults: 50,
+		risk:        RiskReadOnly, permission: "applications.read", timeout: 15, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"keyword": sch("string", "编码或名称关键字（可选）"), "status": sch("string", "状态（可选）"),
 			"page": sch("integer", "页码"),
@@ -24,57 +24,57 @@ func NewAssetTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&appGet{baseTool: baseTool{meta: toolMeta{
 		code: "application.get", name: "应用详情", version: "1.0",
 		description: "按ID获取应用详情（含域名与源站）",
-		risk: RiskReadOnly, permission: "applications.read", timeout: 10, maxResults: 1,
+		risk:        RiskReadOnly, permission: "applications.read", timeout: 10, maxResults: 1,
 		schema: obj(map[string]interface{}{"application_id": sch("string", "应用ID")})}}, db: db})
 	r.Register(&domainGet{baseTool: baseTool{meta: toolMeta{
 		code: "domain.get", name: "域名查询", version: "1.0",
 		description: "按域名或应用ID查询域名配置",
-		risk: RiskReadOnly, permission: "applications.read", timeout: 10, maxResults: 50,
+		risk:        RiskReadOnly, permission: "applications.read", timeout: 10, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"hostname": sch("string", "域名（可选）"), "application_id": sch("string", "应用ID（可选）"),
 		})}}, db: db})
 	r.Register(&upstreamGet{baseTool: baseTool{meta: toolMeta{
 		code: "upstream.get", name: "源站查询", version: "1.0",
 		description: "按应用ID查询源站列表（不含敏感凭据）",
-		risk: RiskReadOnly, permission: "applications.read", timeout: 10, maxResults: 50,
+		risk:        RiskReadOnly, permission: "applications.read", timeout: 10, maxResults: 50,
 		schema: obj(map[string]interface{}{"application_id": sch("string", "应用ID")})}}, db: db})
 	r.Register(&certMeta{baseTool: baseTool{meta: toolMeta{
 		code: "certificate.get_metadata", name: "证书元数据", version: "1.0",
 		description: "查询证书元数据（不含私钥），含到期状态",
-		risk: RiskReadOnly, permission: "certificates.read", timeout: 10, maxResults: 50,
+		risk:        RiskReadOnly, permission: "certificates.read", timeout: 10, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"certificate_id": sch("string", "证书ID（可选）"), "expiring_days": sch("integer", "N天内到期过滤（可选）"),
 		})}}, db: db})
 	r.Register(&gatewayStatus{baseTool: baseTool{meta: toolMeta{
 		code: "gateway.get_status", name: "网关状态", version: "1.0",
 		description: "查询网关在线状态、当前配置版本与应用计数",
-		risk: RiskReadOnly, permission: "gateway_status.read", timeout: 15, maxResults: 1,
+		risk:        RiskReadOnly, permission: "gateway_status.read", timeout: 15, maxResults: 1,
 		schema: obj(map[string]interface{}{})}}, db: db})
 	r.Register(&policyGet{baseTool: baseTool{meta: toolMeta{
 		code: "policy.get", name: "防护策略查询", version: "1.0",
 		description: "查询防护策略（含内置模板）",
-		risk: RiskReadOnly, permission: "protection_policies.read", timeout: 10, maxResults: 50,
+		risk:        RiskReadOnly, permission: "protection_policies.read", timeout: 10, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"policy_id": sch("string", "策略ID（可选）"), "keyword": sch("string", "关键字（可选）"),
 		})}}, db: db})
 	r.Register(&policyVersion{baseTool: baseTool{meta: toolMeta{
 		code: "policy.version", name: "配置版本查询", version: "1.0",
 		description: "查询网关配置版本列表/当前版本元数据",
-		risk: RiskReadOnly, permission: "config_versions.read", timeout: 15, maxResults: 20,
+		risk:        RiskReadOnly, permission: "config_versions.read", timeout: 15, maxResults: 20,
 		schema: obj(map[string]interface{}{
 			"version_number": sch("string", "版本号（可选，空则当前）"),
 		})}}, db: db})
 	r.Register(&policyDiff{baseTool: baseTool{meta: toolMeta{
 		code: "policy.diff", name: "配置版本差异", version: "1.0",
 		description: "比较两个网关配置版本的元数据差异（不含完整配置 blob）",
-		risk: RiskReadOnly, permission: "config_versions.read", timeout: 15, maxResults: 1,
+		risk:        RiskReadOnly, permission: "config_versions.read", timeout: 15, maxResults: 1,
 		schema: obj(map[string]interface{}{
 			"from_version": sch("string", "源版本号"), "to_version": sch("string", "目标版本号"),
 		})}}, db: db})
 	r.Register(&ruleSearch{baseTool: baseTool{meta: toolMeta{
 		code: "rule.search", name: "WAF规则查询", version: "1.0",
 		description: "按规则ID/关键字/攻击类型查询CRS与自定义规则",
-		risk: RiskReadOnly, permission: "waf_rules.read", timeout: 20, maxResults: 50,
+		risk:        RiskReadOnly, permission: "waf_rules.read", timeout: 20, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"rule_id": sch("integer", "规则ID（可选）"), "keyword": sch("string", "关键字（可选）"),
 			"attack_type": sch("string", "攻击类型（可选）"), "page": sch("integer", "页码"),
@@ -82,12 +82,12 @@ func NewAssetTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&ruleGet{baseTool: baseTool{meta: toolMeta{
 		code: "rule.get", name: "WAF规则详情", version: "1.0",
 		description: "按规则ID获取规则详情与命中统计",
-		risk: RiskReadOnly, permission: "waf_rules.read", timeout: 15, maxResults: 1,
+		risk:        RiskReadOnly, permission: "waf_rules.read", timeout: 15, maxResults: 1,
 		schema: obj(map[string]interface{}{"rule_id": sch("integer", "规则ID")})}}, db: db})
 	r.Register(&ruleHitStats{baseTool: baseTool{meta: toolMeta{
 		code: "rule.hit_statistics", name: "规则命中统计", version: "1.0",
 		description: "指定规则在时间范围内的命中/阻断/误报统计",
-		risk: RiskReadOnly, permission: "waf_rules.read", timeout: 20, maxResults: 1,
+		risk:        RiskReadOnly, permission: "waf_rules.read", timeout: 20, maxResults: 1,
 		schema: obj(map[string]interface{}{
 			"rule_id": sch("integer", "规则ID"), "start_time": sch("string", "起始时间"),
 			"end_time": sch("string", "结束时间"),
@@ -95,7 +95,7 @@ func NewAssetTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&exceptionSearch{baseTool: baseTool{meta: toolMeta{
 		code: "exception.search", name: "例外策略查询", version: "1.0",
 		description: "按范围/状态查询例外策略",
-		risk: RiskReadOnly, permission: "exceptions.read", timeout: 15, maxResults: 50,
+		risk:        RiskReadOnly, permission: "exceptions.read", timeout: 15, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"status": sch("string", "状态（可选）"), "scope_type": sch("string", "范围（可选）"),
 			"page": sch("integer", "页码"),
@@ -103,7 +103,7 @@ func NewAssetTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&exceptionGet{baseTool: baseTool{meta: toolMeta{
 		code: "exception.get", name: "例外策略详情", version: "1.0",
 		description: "按ID获取例外策略详情",
-		risk: RiskReadOnly, permission: "exceptions.read", timeout: 10, maxResults: 1,
+		risk:        RiskReadOnly, permission: "exceptions.read", timeout: 10, maxResults: 1,
 		schema: obj(map[string]interface{}{"exception_id": sch("string", "例外ID")})}}, db: db})
 }
 
@@ -520,8 +520,8 @@ FROM gateway_config_versions WHERE version_number = $1`, vn).
 		return nil, err
 	}
 	return map[string]interface{}{
-		"from": map[string]interface{}{"version": a.Version, "config_hash": a.Hash, "publish_result": a.Result, "published_at": a.At},
-		"to":   map[string]interface{}{"version": b.Version, "config_hash": b.Hash, "publish_result": b.Result, "published_at": b.At},
+		"from":         map[string]interface{}{"version": a.Version, "config_hash": a.Hash, "publish_result": a.Result, "published_at": a.At},
+		"to":           map[string]interface{}{"version": b.Version, "config_hash": b.Hash, "publish_result": b.Result, "published_at": b.At},
 		"hash_changed": a.Hash != b.Hash,
 		"note":         "仅返回元数据差异，不含完整配置内容",
 	}, nil

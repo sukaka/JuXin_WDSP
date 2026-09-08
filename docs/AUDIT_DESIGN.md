@@ -42,7 +42,7 @@ password、password_hash、old_password、new_password、temporary_password、se
 ## 数据库权限
 
 - 审计表：应用账号仅 INSERT/SELECT，RULE 禁止 UPDATE/DELETE
-- 业务接口不提供审计修改/删除端点
+- 业务接口不提供审计修改/删除API
 
 ## 查询与导出
 

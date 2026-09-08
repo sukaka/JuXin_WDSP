@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import WafRulesPage from '../WafRulesPage'
@@ -137,5 +137,51 @@ describe('WafRulesPage 规则效果', () => {
     expect(screen.getByText('未确认 4')).toBeInTheDocument()
     expect(screen.getByText('确认率 60.0% · 误报率 40.0%')).toBeInTheDocument()
     expect(screen.getByText('确认率 — · 误报率 —')).toBeInTheDocument()
+  })
+
+  it('规则ID筛选：输入不触发查询，回车提交一次', async () => {
+    renderPage()
+    // 等初始列表加载完成
+    await screen.findByText('942100')
+    const listCallsWithRuleId = () =>
+      (fetch as Mock).mock.calls.filter(
+        (c) => String(c[0]).includes('/waf-rules?') && String(c[0]).includes('rule_id='),
+      )
+
+    const input = screen.getByPlaceholderText('规则ID（回车生效）')
+    // 逐字符输入不触发带 rule_id 的列表查询
+    fireEvent.change(input, { target: { value: '9' } })
+    fireEvent.change(input, { target: { value: '94' } })
+    fireEvent.change(input, { target: { value: '942100' } })
+    expect(listCallsWithRuleId()).toHaveLength(0)
+
+    // 回车提交：按输入值查询一次
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(listCallsWithRuleId()).toHaveLength(1))
+    expect(String(listCallsWithRuleId()[0][0])).toContain('rule_id=942100')
+  })
+
+  it('规则ID筛选：失焦提交，清空后失焦清除筛选', async () => {
+    renderPage()
+    await screen.findByText('942100')
+    const listCallsWithRuleId = () =>
+      (fetch as Mock).mock.calls.filter(
+        (c) => String(c[0]).includes('/waf-rules?') && String(c[0]).includes('rule_id='),
+      )
+    const allListCalls = () =>
+      (fetch as Mock).mock.calls.filter((c) => String(c[0]).includes('/waf-rules?'))
+
+    const input = screen.getByPlaceholderText('规则ID（回车生效）')
+    fireEvent.change(input, { target: { value: '942100' } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(listCallsWithRuleId()).toHaveLength(1))
+
+    // 清空后失焦：再次查询且不带 rule_id
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    await waitFor(() => expect(allListCalls().length).toBeGreaterThanOrEqual(3))
+    const calls = allListCalls()
+    const last = String(calls[calls.length - 1]![0])
+    expect(last).not.toContain('rule_id=')
   })
 })

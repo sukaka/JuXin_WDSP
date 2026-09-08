@@ -16,7 +16,7 @@ import (
 )
 
 // policyPerms 本测试覆盖的全部权限点。
-var policyPerms = []string{"api_runtime.read", "api_policy.read", "api_policy.edit", "api_policy.publish"}
+var policyPerms = []string{"api_runtime.read", "api_policy.read", "api_policy.edit", "api_policy.publish", "api_data.manage"}
 
 // injectPolicyPrincipal 模拟认证链：注入持有权限点的主体与 Request ID。
 func injectPolicyPrincipal(next http.Handler) http.Handler {
@@ -119,6 +119,7 @@ func TestPolicyRoutesPermission(t *testing.T) {
 		{http.MethodPut, "/api/v1/api-security/policy"},
 		{http.MethodPost, "/api/v1/api-security/policy/publish"},
 		{http.MethodGet, "/api/v1/api-security/sensitive-fields"},
+		{http.MethodPost, "/api/v1/api-security/sensitive-fields/batch-delete"},
 	}
 	muxNoAuth := http.NewServeMux()
 	RegisterRoutes(muxNoAuth, func(next http.Handler) http.Handler { return next }, h)
@@ -156,6 +157,45 @@ func TestSensitiveFieldsValidation(t *testing.T) {
 	rr = doReq(t, mux, http.MethodGet, "/api/v1/api-security/sensitive-fields?direction=BOTH", nil)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("bad direction status=%d", rr.Code)
+	}
+}
+
+// TestSensitiveFieldsBatchDeleteValidation 批量删除校验层（400 在访问 store 之前返回，nil store 不触发 panic）。
+func TestSensitiveFieldsBatchDeleteValidation(t *testing.T) {
+	h := NewHandler(nil, nil)
+	mux := newPolicyTestMux(h)
+	url := "/api/v1/api-security/sensitive-fields/batch-delete"
+
+	// 空 ids → 400
+	rr := doReq(t, mux, http.MethodPost, url, map[string]any{"ids": []string{}})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("empty ids status=%d", rr.Code)
+	}
+	// 缺 ids 字段 → 400
+	rr = doReq(t, mux, http.MethodPost, url, map[string]any{})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("missing ids status=%d", rr.Code)
+	}
+	// 超上限（>500）→ 400
+	tooMany := make([]string, sensitiveFieldsBatchDeleteMax+1)
+	for i := range tooMany {
+		tooMany[i] = uuid.NewString()
+	}
+	rr = doReq(t, mux, http.MethodPost, url, map[string]any{"ids": tooMany})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("too many ids status=%d", rr.Code)
+	}
+	// 非法 UUID → 400
+	rr = doReq(t, mux, http.MethodPost, url, map[string]any{"ids": []string{uuid.NewString(), "not-a-uuid"}})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad uuid status=%d", rr.Code)
+	}
+	// 非 JSON body → 400
+	req := httptest.NewRequest(http.MethodPost, url, bytes.NewReader([]byte("not-json")))
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("bad json status=%d", rr.Code)
 	}
 }
 

@@ -14,12 +14,12 @@ import (
 
 // RateLimiter 是基于 Valkey 固定窗口计数器的接口限速器。
 type RateLimiter struct {
-	cache *cache.Client
+	rdb *redis.Client
 }
 
 // NewRateLimiter 创建限速器。
 func NewRateLimiter(c *cache.Client) *RateLimiter {
-	return &RateLimiter{cache: c}
+	return &RateLimiter{rdb: c.Redis()}
 }
 
 // Limit 返回限速中间件（固定限速值）。
@@ -40,7 +40,7 @@ func (l *RateLimiter) LimitDynamic(name string, limitFunc func(context.Context) 
 			key := fmt.Sprintf("jiuzhang:ratelimit:%s:%s", name, keyFunc(r))
 			ctx := r.Context()
 
-			count, err := l.cache.Redis().Incr(ctx, key).Result()
+			count, err := l.rdb.Incr(ctx, key).Result()
 			if err != nil {
 				// Valkey 故障时安全失败：不静默放行，返回服务不可用
 				response.Error(w, r, http.StatusServiceUnavailable,
@@ -48,7 +48,14 @@ func (l *RateLimiter) LimitDynamic(name string, limitFunc func(context.Context) 
 				return
 			}
 			if count == 1 {
-				_ = l.cache.Redis().Expire(ctx, key, window).Err()
+				if err := l.rdb.Expire(ctx, key, window).Err(); err != nil {
+					// Expire 失败会让计数键无 TTL、固定窗口永不过期（该来源被永久 429）。
+					// 与 Incr 失败同口径安全失败：删除计数键并如实报错。
+					_ = l.rdb.Del(ctx, key).Err()
+					response.Error(w, r, http.StatusServiceUnavailable,
+						response.CodeServiceUnavailable, "服务暂时不可用，请稍后重试")
+					return
+				}
 			}
 			// 剩余次数响应头
 			remaining := maxPerWindow - int(count)
@@ -59,8 +66,16 @@ func (l *RateLimiter) LimitDynamic(name string, limitFunc func(context.Context) 
 			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
 
 			if int(count) > maxPerWindow {
-				ttl, _ := l.cache.Redis().TTL(ctx, key).Result()
-				w.Header().Set("Retry-After", strconv.Itoa(int(ttl.Seconds())))
+				// 键无 TTL（-1）或不存在（-2）时 TTL 为负，Retry-After 负值非法：
+				// 退化为窗口长度作为合理默认。
+				retryAfter := int(window.Seconds())
+				if ttl, err := l.rdb.TTL(ctx, key).Result(); err == nil && ttl > 0 {
+					retryAfter = int(ttl.Seconds())
+					if retryAfter < 1 {
+						retryAfter = 1
+					}
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				response.Error(w, r, http.StatusTooManyRequests,
 					response.CodeRateLimited, "请求过于频繁，请稍后重试")
 				return

@@ -39,20 +39,20 @@ var (
 
 // Override 规则覆盖。
 type Override struct {
-	ID                uuid.UUID  `json:"id"`
-	RuleID            int        `json:"rule_id"`
-	ScopeType         string     `json:"scope_type"`
-	ScopeID           *uuid.UUID `json:"scope_id"`
-	Action            string     `json:"action"`
-	SeverityOverride  string     `json:"severity_override"`
-	EffectiveFrom     *time.Time `json:"effective_from"`
-	EffectiveUntil    *time.Time `json:"effective_until"`
-	Reason            string     `json:"reason"`
-	CreatedBy         *uuid.UUID `json:"created_by"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedBy         *uuid.UUID `json:"updated_by"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	Version           int        `json:"version"`
+	ID               uuid.UUID  `json:"id"`
+	RuleID           int        `json:"rule_id"`
+	ScopeType        string     `json:"scope_type"`
+	ScopeID          *uuid.UUID `json:"scope_id"`
+	Action           string     `json:"action"`
+	SeverityOverride string     `json:"severity_override"`
+	EffectiveFrom    *time.Time `json:"effective_from"`
+	EffectiveUntil   *time.Time `json:"effective_until"`
+	Reason           string     `json:"reason"`
+	CreatedBy        *uuid.UUID `json:"created_by"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedBy        *uuid.UUID `json:"updated_by"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	Version          int        `json:"version"`
 }
 
 // Store 仓储。

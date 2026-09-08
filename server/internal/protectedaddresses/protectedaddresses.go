@@ -108,6 +108,52 @@ FROM protected_addresses WHERE `+where+` ORDER BY created_at ASC`, args...)
 	return out, rows.Err()
 }
 
+// ListPaged 分页查询启用中的保护地址，可按地址类型筛选。
+func (s *Store) ListPaged(ctx context.Context, addressType string, page, pageSize int) ([]ProtectedAddress, int64, error) {
+	page, pageSize = normalizePage(page, pageSize)
+	where := "status = 'ENABLED'"
+	args := []interface{}{}
+	argIdx := 1
+	if addressType != "" {
+		where += fmt.Sprintf(" AND address_type = $%d", argIdx)
+		args = append(args, addressType)
+		argIdx++
+	}
+	var total int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM protected_addresses WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := `SELECT ` + addressColumns + `
+FROM protected_addresses WHERE ` + where +
+		fmt.Sprintf(" ORDER BY created_at ASC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []ProtectedAddress
+	for rows.Next() {
+		a, err := scanAddressRows(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *a)
+	}
+	return out, total, rows.Err()
+}
+
+// normalizePage 分页参数归一化（page_size 夹取 ≤100，非法回退默认；与兄弟包口径一致）。
+func normalizePage(page, pageSize int) (int, int) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	return page, pageSize
+}
+
 // GetByID 查询保护地址。
 func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*ProtectedAddress, error) {
 	row := s.db.QueryRow(ctx, `SELECT `+addressColumns+`

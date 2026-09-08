@@ -5,6 +5,7 @@ import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { reportArchivesApi } from '../../api/reports'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
 import { formatBytes, formatDateTime } from '../../utils/format'
 import { truncateHash } from '../../utils/stage3'
@@ -15,6 +16,7 @@ import type { ReportArchiveItem } from '../../types'
 export default function ReportArchivesPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const [detailRecord, setDetailRecord] = useState<ReportArchiveItem | null>(null)
 
   const listQuery = useQuery({
     queryKey: ['report-archives', page, pageSize],
@@ -45,7 +47,6 @@ export default function ReportArchivesPage() {
       title: '文件大小',
       dataIndex: 'file_size',
       width: 100,
-      align: 'right',
       render: (v: number | null | undefined) => formatBytes(v),
     },
     {
@@ -77,6 +78,10 @@ export default function ReportArchivesPage() {
           <SmartTable<ReportArchiveItem>
             storageKey="report-archives"
             rowKey="id"
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailRecord(record),
+              style: { cursor: 'pointer' },
+            })}
             loading={listQuery.isLoading}
             columns={columns}
             dataSource={listQuery.data?.items}
@@ -95,6 +100,12 @@ export default function ReportArchivesPage() {
           />
         )}
       </Space>
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="归档记录详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

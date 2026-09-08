@@ -48,14 +48,22 @@
 	}
 
 	coraza_waf {
+		# 加载顺序与配置发布生成器（gatewayconfig）保持一致：
+		# 插件 config/before → before-crs → crs/rules → contrib → 插件 after
+		# → after-crs → jiuzhang-custom → post-contrib-blocking（必须最后）。
 		directives `
 			SecRuleEngine {$SEC_RULE_ENGINE:On}
 			Include /etc/caddy/rules/coraza.conf
 			Include /etc/caddy/rules/crs/crs-setup.conf
+			Include /etc/caddy/rules/crs/plugins/*/plugins/*-config.conf
+			Include /etc/caddy/rules/crs/plugins/*/plugins/*-before.conf
 			Include /etc/caddy/rules/exclusions/before-crs.conf
 			Include /etc/caddy/rules/crs/rules/*.conf
+			Include /etc/caddy/rules/contrib/*/*.conf
+			Include /etc/caddy/rules/crs/plugins/*/plugins/*-after.conf
 			Include /etc/caddy/rules/exclusions/after-crs.conf
 			Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf
+			Include /etc/caddy/rules/jiuzhang/post-contrib-blocking.conf
 		`
 	}
 

@@ -5,33 +5,52 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/aggregations"
+	"github.com/jiuzhang-waf/server/internal/apigeo"
+	"github.com/jiuzhang-waf/server/internal/audits"
+	"github.com/jiuzhang-waf/server/internal/notify"
 )
 
 // Generator 报告生成器：加载任务 → 采集 → 结论 → 渲染 → 写文件 → 记录产物。
 type Generator struct {
-	store     *Store
-	collector *Collector
-	dataDir   string
-	fontPath  string
-	timeout   time.Duration
+	store       *Store
+	collector   *Collector
+	dataDir     string
+	fontPath    string
+	timeout     time.Duration
+	audits      *audits.Service
+	notifyStore *notify.Store
 }
 
 // NewGenerator 创建报告生成器。
 // fontPath 为内嵌中文字体路径（NotoSansCJKsc-VF.ttf），为空或文件缺失时
-// PDF 降级为 ASCII 摘要页。
-func NewGenerator(store *Store, db *pgxpool.Pool, agg *aggregations.Store, dataDir, fontPath string) *Generator {
+// PDF 降级为 ASCII 摘要页。GeoIP 库（dataDir/geoip/country.mmdb）缺失时
+// 攻击源地区分布降级为「未启用」占位。
+func NewGenerator(store *Store, db *pgxpool.Pool, agg *aggregations.Store, dataDir, fontPath string, auditSvc *audits.Service) *Generator {
+	var geo apigeo.CountryLookup
+	if m, err := apigeo.OpenMMDB(filepath.Join(dataDir, "geoip", "country.mmdb")); err != nil {
+		slog.Warn("geoip unavailable, source geo section degraded", "error", err)
+	} else {
+		geo = m
+	}
 	return &Generator{
 		store:     store,
-		collector: NewCollector(db, agg),
+		collector: NewCollector(db, agg, geo),
 		dataDir:   dataDir,
 		fontPath:  fontPath,
 		timeout:   GenerateTimeout,
+		audits:    auditSvc,
 	}
+}
+
+// SetNotifyStore 注入通知存储（定时计划邮件发送的 SMTP 配置来源）。
+func (g *Generator) SetNotifyStore(ns *notify.Store) {
+	g.notifyStore = ns
 }
 
 // Generate 执行一次完整生成流程。任何失败都会标记任务 FAILED 并返回错误。
@@ -51,13 +70,23 @@ func (g *Generator) Generate(ctx context.Context, jobID uuid.UUID) error {
 		return fmt.Errorf("%w: 任务状态 %s 不可生成", ErrInvalidState, job.Status)
 	}
 
-	// 1. 采集（COLLECTING → 40%）
-	data, err := g.collector.Collect(ctx, CollectInput{
-		ReportType:     job.ReportType,
-		Start:          job.Start,
-		End:            job.End,
-		ApplicationIDs: job.ApplicationIDs,
-	})
+	// 1. 采集（COLLECTING → 40%；API 域报告走 API 采集分支）
+	collectIn := CollectInput{
+		ReportType:       job.ReportType,
+		ContentScope:     job.ContentScope,
+		IncludeAPIAssets: job.IncludeAPIAssets,
+		PageOrientation:  job.PageOrientation,
+		Start:            job.Start,
+		End:              job.End,
+		ApplicationIDs:   job.ApplicationIDs,
+	}
+	var data *ReportData
+	var apiData *APIReportData
+	if IsAPIReportType(job.ReportType) {
+		apiData, err = g.collector.CollectAPI(ctx, collectIn)
+	} else {
+		data, err = g.collector.Collect(ctx, collectIn)
+	}
 	if err != nil {
 		return g.fail(ctx, jobID, FailCollect, err)
 	}
@@ -82,21 +111,20 @@ func (g *Generator) Generate(ctx context.Context, jobID uuid.UUID) error {
 		return g.fail(ctx, jobID, FailInvalidState, err)
 	}
 
-	// 3. 渲染（RENDERING）
-	html, err := RenderHTML(tpl, data, reportNo)
-	if err != nil {
-		return g.fail(ctx, jobID, FailRender, err)
+	// 3. 渲染（RENDERING；API 域报告走 API 渲染分支；图表在渲染前统一构建，
+	// 字体缺失时自动降级为无图表，字体解析失败归 FONT_UNAVAILABLE）
+	var content []byte
+	if apiData != nil {
+		content, err = renderAPIReport(tpl, apiData, reportNo, job.FileFormat, g.fontPath)
+	} else {
+		content, err = renderMainReport(tpl, data, reportNo, job.FileFormat, g.fontPath)
 	}
-	content := html
-	if job.FileFormat == FormatPDF {
-		content, err = RenderPDF(tpl, data, reportNo, g.fontPath)
-		if err != nil {
-			code := FailRender
-			if errors.Is(err, errPDFFont) {
-				code = FailFont
-			}
-			return g.fail(ctx, jobID, code, err)
+	if err != nil {
+		code := FailRender
+		if errors.Is(err, errPDFFont) || errors.Is(err, errChartFont) {
+			code = FailFont
 		}
+		return g.fail(ctx, jobID, code, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return g.fail(ctx, jobID, FailTimeout, err)
@@ -117,6 +145,9 @@ func (g *Generator) Generate(ctx context.Context, jobID uuid.UUID) error {
 	if err := g.store.CompleteJob(ctx, jobID, name, hash, job.FileFormat, size, reportNo); err != nil {
 		return g.fail(ctx, jobID, FailWrite, fmt.Errorf("complete job: %w", err))
 	}
+
+	// 6. 定时计划邮件发送（仅计划任务且开启邮件；失败只记录，不回滚任务）
+	g.sendScheduledMail(context.Background(), job, name, reportNo)
 	return nil
 }
 
@@ -129,6 +160,38 @@ func (g *Generator) jobTemplate(ctx context.Context, job *Job) (*Template, error
 		return nil, err
 	}
 	return g.store.DefaultTemplate(ctx)
+}
+
+// renderMainReport 按导出格式渲染主报告（图表统一构建后分发）。
+func renderMainReport(tpl *Template, data *ReportData, reportNo, format, fontPath string) ([]byte, error) {
+	charts, err := BuildMainCharts(data, fontPath)
+	if err != nil {
+		return nil, err
+	}
+	switch format {
+	case FormatPDF:
+		return RenderPDF(tpl, data, reportNo, fontPath, charts)
+	case FormatDOCX:
+		return RenderDOCX(tpl, data, reportNo, charts)
+	default:
+		return RenderHTML(tpl, data, reportNo, charts)
+	}
+}
+
+// renderAPIReport 按导出格式渲染 API 域报告（图表统一构建后分发）。
+func renderAPIReport(tpl *Template, data *APIReportData, reportNo, format, fontPath string) ([]byte, error) {
+	charts, err := BuildAPICharts(data, fontPath)
+	if err != nil {
+		return nil, err
+	}
+	switch format {
+	case FormatPDF:
+		return RenderAPIPDF(tpl, data, reportNo, fontPath, charts)
+	case FormatDOCX:
+		return RenderAPIDOCX(tpl, data, reportNo, charts)
+	default:
+		return RenderAPIHTML(tpl, data, reportNo, charts)
+	}
 }
 
 // fail 标记任务失败并返回错误。标记失败本身的错误只记录日志（不覆盖原始错误）。

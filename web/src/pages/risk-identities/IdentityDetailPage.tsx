@@ -30,8 +30,10 @@ import type {
 } from '../../api/securityIdentities'
 import EChart, { type EChartOption } from '../../components/EChart'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
 import SmartTable from '../../components/SmartTable'
+import { useBreadcrumbObjectName } from '../../stores/breadcrumb'
 import { formatDateTime } from '../../utils/format'
 import { IDENTITY_TYPE_META, RISK_LEVEL_META, SIGNAL_META } from '../../utils/identitySecurity'
 
@@ -134,6 +136,8 @@ export default function IdentityDetailPage() {
   const [eventSignal, setEventSignal] = useState<string | undefined>()
   const [eventPage, setEventPage] = useState(1)
   const [eventPageSize, setEventPageSize] = useState(20)
+  // 行双击通用详情（IP 历史 / 关联凭据 / 行为事件共用）
+  const [recordDetail, setRecordDetail] = useState<{ title: string; record: Record<string, unknown> } | null>(null)
 
   const detailQuery = useQuery({
     queryKey: ['security-identities', 'detail', id],
@@ -164,6 +168,9 @@ export default function IdentityDetailPage() {
       }),
     enabled: !!id,
   })
+
+  // 面包屑注入当前身份标识（卸载时自动清理）
+  useBreadcrumbObjectName(detailQuery.data?.identity_key)
 
   const onTrendRangeChange = (range: RangeValue) => {
     if (range?.[0] && range[1]) {
@@ -323,6 +330,10 @@ export default function IdentityDetailPage() {
                   dataSource={detail?.ip_history}
                   loading={detailQuery.isLoading}
                   pagination={false}
+                  onRow={(record) => ({
+                    onDoubleClick: () => setRecordDetail({ title: 'IP 历史详情', record: { ...record } }),
+                    style: { cursor: 'pointer' },
+                  })}
                 />
               ),
             },
@@ -337,6 +348,10 @@ export default function IdentityDetailPage() {
                   dataSource={detail?.credentials}
                   loading={detailQuery.isLoading}
                   pagination={false}
+                  onRow={(record) => ({
+                    onDoubleClick: () => setRecordDetail({ title: '凭据详情', record: { ...record } }),
+                    style: { cursor: 'pointer' },
+                  })}
                 />
               ),
             },
@@ -363,7 +378,11 @@ export default function IdentityDetailPage() {
                   ) : behaviorQuery.isError ? (
                     <QueryErrorAlert error={behaviorQuery.error} message="加载行为趋势失败" />
                   ) : (behaviorQuery.data?.items.length ?? 0) > 0 ? (
-                    <EChart option={behaviorTrendOption(behaviorQuery.data?.items ?? [])} height={320} />
+                    <EChart
+                      option={behaviorTrendOption(behaviorQuery.data?.items ?? [])}
+                      height={320}
+                      ariaLabel="身份行为趋势（5分钟统计窗口）"
+                    />
                   ) : (
                     <Empty
                       image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -424,6 +443,13 @@ export default function IdentityDetailPage() {
           ]}
         />
       </Card>
+
+      <RecordDetailDrawer
+        open={recordDetail !== null}
+        title={recordDetail?.title ?? '详情'}
+        record={recordDetail?.record ?? null}
+        onClose={() => setRecordDetail(null)}
+      />
     </Space>
   )
 }

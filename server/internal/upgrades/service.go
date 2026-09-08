@@ -8,12 +8,12 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/backups"
-	"github.com/jiuzhang-waf/server/internal/database"
 	"github.com/jiuzhang-waf/server/internal/restores"
 )
 
@@ -33,6 +33,9 @@ type Service struct {
 	prechecker    *Prechecker
 	migrationsDir string
 	alertFn       backups.AlertFunc
+	packagesDir   string
+	executorDir   string
+	resultMu      sync.Mutex
 
 	backupWait  time.Duration
 	restoreWait time.Duration
@@ -166,7 +169,7 @@ func (s *Service) run(id uuid.UUID) {
 			"升级任务 "+id.String()+" 阶段 "+stage+" 失败（"+code+"），已恢复升级前备份："+failMsg(stepErr))
 	}
 
-	// ---- APPLYING（镜像切换属运维脚本职责；API 侧做迁移 dry-run 校验并记录目标版本） ----
+	// ---- APPLYING（提交宿主机执行器；执行器负责镜像、迁移、健康检查与容器回滚） ----
 	if err := s.store.Transition(ctx, id, StatusBackup, StatusApplying); err != nil {
 		rollbackOnFail(StatusApplying, FailApply, err)
 		return
@@ -175,35 +178,22 @@ func (s *Service) run(id uuid.UUID) {
 		rollbackOnFail(StatusApplying, FailApply, err)
 		return
 	}
-
-	// ---- MIGRATING ----
-	if err := s.store.Transition(ctx, id, StatusApplying, StatusMigrating); err != nil {
-		rollbackOnFail(StatusMigrating, FailMigrate, err)
+	if err := s.submitExecutorJob(ctx, job); err != nil {
+		rollbackOnFail(StatusApplying, FailApply, err)
 		return
 	}
-	if err := database.Migrate(ctx, s.db, s.migrationsDir, "up"); err != nil {
-		rollbackOnFail(StatusMigrating, FailMigrate, err)
+	result, err := s.waitExecutorResult(ctx, id)
+	if err != nil {
+		rollbackOnFail(StatusApplying, FailApply, err)
 		return
 	}
-
-	// ---- VERIFYING ----
-	if err := s.store.Transition(ctx, id, StatusMigrating, StatusVerifying); err != nil {
-		rollbackOnFail(StatusVerifying, FailVerify, err)
-		return
+	if err := s.processExecutorResult(context.Background(), result); err != nil {
+		rollbackOnFail(result.Stage, result.ErrorCode, err)
 	}
-	if err := s.verify(ctx); err != nil {
-		rollbackOnFail(StatusVerifying, FailVerify, err)
-		return
-	}
-	if err := s.store.MarkFinished(ctx, id, StatusSuccess); err != nil {
-		fail(FailVerify, err)
-		return
-	}
-	slog.Info("upgrade job success", "id", id)
 }
 
 // applyDryRun 迁移 dry-run 校验：迁移文件成对（up/down）且版本序列可读；
-// 记录组件目标版本（镜像切换由 ops/upgrade/apply.sh 完成）。
+// 记录组件目标版本（镜像切换由宿主机升级执行器完成）。
 func (s *Service) applyDryRun(packageID uuid.UUID) error {
 	pkg, err := s.store.GetPackage(context.Background(), packageID)
 	if err != nil {
@@ -214,7 +204,7 @@ func (s *Service) applyDryRun(packageID uuid.UUID) error {
 	}
 	slog.Info("upgrade apply dry-run ok",
 		"package", pkg.FileName, "version_to", pkg.VersionTo,
-		"note", "容器镜像切换由运维脚本执行，API 侧完成迁移文件校验")
+		"note", "即将提交宿主机升级执行器")
 	return nil
 }
 

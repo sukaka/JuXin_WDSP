@@ -100,10 +100,16 @@ func TestComposeEvidenceBlock(t *testing.T) {
 	if !strings.Contains(block, "**证据引用**") {
 		t.Error("缺少证据引用标题")
 	}
-	if !strings.Contains(block, "[E1] security_event.search：命中事件 3 条") {
+	if !strings.Contains(block, "[E1] 安全事件查询：命中事件 3 条") {
 		t.Errorf("缺少 E1 证据行: %q", block)
 	}
-	if !strings.Contains(block, "[E2] log.query：日志 10 条") {
+	if !strings.Contains(block, "[E2] 日志查询：日志 10 条") {
 		t.Errorf("缺少 E2 证据行: %q", block)
+	}
+}
+
+func TestEvidenceSourceDisplayNameKeepsUnknownSource(t *testing.T) {
+	if got, want := evidenceSourceDisplayName("custom.internal.tool"), "custom.internal.tool"; got != want {
+		t.Fatalf("evidenceSourceDisplayName() = %q, want %q", got, want)
 	}
 }

@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "CUSTOM_PACK 1001733: String.fromCharCode payload reconstruction"
+rule_id: 1001733
+tests:
+  - test_id: 1
+    desc: "String.fromCharCode with 4 char codes"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "JiuZhang CUSTOM_PACK test agent"
+            Accept: "*/*"
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "var=String.fromCharCode(104,116,116,112)"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001733]

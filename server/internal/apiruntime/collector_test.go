@@ -3,6 +3,7 @@ package apiruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,13 +12,12 @@ import (
 
 	"github.com/google/uuid"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
-	"github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 )
 
-type fakeSaver struct{ saved []*events.PrimaryEvent }
+type fakeSaver struct{ saved []*PrimaryEvent }
 
-func (f *fakeSaver) SavePrimary(_ context.Context, ev *events.PrimaryEvent) error {
+func (f *fakeSaver) SavePrimary(_ context.Context, ev *PrimaryEvent) error {
 	cp := *ev
 	f.saved = append(f.saved, &cp)
 	return nil
@@ -160,11 +160,76 @@ func TestParseRecordLine(t *testing.T) {
 	if _, err := parseRecordLine([]byte(`{"request_id":"r","endpoint_key":"GET /a"}`)); err != nil {
 		t.Fatalf("valid record rejected: %v", err)
 	}
+	// 身份字段按 JSON 名解析（匿名时缺省为空串）
+	rec, err := parseRecordLine([]byte(`{"request_id":"r","identity_fingerprint":"fp-1","auth_type":"bearer_or_basic"}`))
+	if err != nil || rec.AuthType != "bearer_or_basic" || rec.IdentityFingerprint != "fp-1" {
+		t.Fatalf("identity fields not parsed: %+v, err=%v", rec, err)
+	}
 	if _, err := parseRecordLine([]byte(`{"foo":1}`)); err == nil {
 		t.Fatal("record without request_id and endpoint_key must be rejected")
 	}
 	if _, err := parseRecordLine([]byte(`{bad`)); err == nil {
 		t.Fatal("bad json must be rejected")
+	}
+}
+
+// TestParseRecordLineJWTVerification jwt_verification 可选对象（WDSP P0-03）：
+// 新版网关上报时解析进 Record；旧版网关事件缺该键时为 nil（JWT-17 兼容，不回填）。
+func TestParseRecordLineJWTVerification(t *testing.T) {
+	rec, err := parseRecordLine([]byte(`{"request_id":"r-jwt","endpoint_key":"GET /a","jwt_verification":{`+
+		`"status":"VERIFIED","reason_code":"VALID","policy_version":"3","issuer_config_id":"iss-1",`+
+		`"keyset_version":"ks-v2","verified_principal_id":"fp-001","verified_tenant_id":"fp-t1",`+
+		`"evaluated_at":"2026-09-06T12:00:00Z"}}`))
+	if err != nil {
+		t.Fatalf("record with jwt_verification rejected: %v", err)
+	}
+	jv := rec.JWTVerification
+	if jv == nil || jv.Status != "VERIFIED" || jv.ReasonCode != "VALID" || jv.PolicyVersion != "3" ||
+		jv.IssuerConfigID != "iss-1" || jv.KeysetVersion != "ks-v2" ||
+		jv.VerifiedPrincipalID != "fp-001" || jv.VerifiedTenantID != "fp-t1" ||
+		jv.EvaluatedAt != "2026-09-06T12:00:00Z" {
+		t.Fatalf("jwt_verification not parsed: %+v", jv)
+	}
+	// 旧版网关事件：无该键，容忍缺失
+	old, err := parseRecordLine([]byte(`{"request_id":"r-old","endpoint_key":"GET /a"}`))
+	if err != nil || old.JWTVerification != nil {
+		t.Fatalf("legacy record must tolerate missing jwt_verification: %+v, err=%v", old.JWTVerification, err)
+	}
+}
+
+// 身份字段传播：JSONL 记录的身份指纹/凭据形态随 notable 记录进入待入库主事件，
+// 匿名记录（无凭据）身份字段保持空串（docs/API_MICRO_MODELS.md §2.2 边界规则）。
+func TestCollectOnce_IdentityFieldsPropagate(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "api-runtime-events.log")
+	cpPath := filepath.Join(dir, "checkpoint")
+
+	authed := Record{
+		RequestID: "r-id-1", EndpointKey: "GET /v1/orders/{id}", Method: "GET", PathTemplate: "/v1/orders/{id}",
+		IsAPI: true, FinalAction: "BLOCK", RiskLevel: "HIGH", RiskScore: 90,
+		IdentityFingerprint: "fp-abc123", AuthType: "api_key",
+		OccurredAt: time.Now().UTC(),
+	}
+	anon := Record{
+		RequestID: "r-id-2", EndpointKey: "GET /v1/orders/{id}", Method: "GET", PathTemplate: "/v1/orders/{id}",
+		IsAPI: true, FinalAction: "BLOCK", RiskLevel: "MEDIUM", RiskScore: 40,
+		OccurredAt: time.Now().UTC(),
+	}
+	writeLines(t, logPath, []string{mustJSON(t, authed), mustJSON(t, anon)})
+
+	saver := &fakeSaver{}
+	c := NewCollector(saver, "test-identity", logPath, cpPath, "node-1")
+	if _, err := c.CollectOnce(context.Background()); err != nil {
+		t.Fatalf("CollectOnce: %v", err)
+	}
+	if len(saver.saved) != 2 {
+		t.Fatalf("want 2 primary saved, got %d", len(saver.saved))
+	}
+	if saver.saved[0].IdentityFingerprint != "fp-abc123" || saver.saved[0].AuthType != "api_key" {
+		t.Fatalf("identity not propagated: %+v", saver.saved[0])
+	}
+	if saver.saved[1].IdentityFingerprint != "" || saver.saved[1].AuthType != "" {
+		t.Fatalf("anonymous identity must stay empty: %+v", saver.saved[1])
 	}
 }
 
@@ -247,4 +312,67 @@ func (f *fakeResolver) ResolveDomain(_ context.Context, appID *uuid.UUID, hostna
 	}
 	id := f.domID
 	return &id, nil
+}
+
+// 错误文件超限轮转：写入将超 maxErrorFileBytes 时旧档单份轮转为 .errors.1，新行写新档；
+// 轮转档仅保留最近一份，再次未超限的追加不触碰轮转档。
+func TestAppendError_RotatesWhenOversize(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "api-runtime-events.log")
+	errPath := logPath + ".errors"
+
+	// 预置错误文件：距上限 64 字节，不足一条错误记录（单行约百余字节）
+	stale := strings.Repeat("x", maxErrorFileBytes-64)
+	if err := os.WriteFile(errPath, []byte(stale), 0o600); err != nil {
+		t.Fatalf("seed errors file: %v", err)
+	}
+
+	c := NewCollector(&fakeSaver{}, "test-rotate", logPath, "", "node-1")
+	c.appendError([]byte("{bad json"), errors.New("bad json"))
+
+	// 旧档完整保留为 .errors.1
+	old, err := os.ReadFile(errPath + ".1")
+	if err != nil {
+		t.Fatalf("read rotated file: %v", err)
+	}
+	if len(old) != len(stale) {
+		t.Fatalf("rotated file size want %d, got %d", len(stale), len(old))
+	}
+	// 新档只含新错误行，远小于上限
+	cur, err := os.ReadFile(errPath)
+	if err != nil {
+		t.Fatalf("read errors file: %v", err)
+	}
+	if !strings.Contains(string(cur), "bad json") || int64(len(cur)) >= maxErrorFileBytes {
+		t.Fatalf("new errors file unexpected: size=%d", len(cur))
+	}
+	// 再次追加未超限：不触发二轮轮转，.errors.1 保持旧档内容
+	c.appendError([]byte("{bad json2"), errors.New("bad json2"))
+	old2, err := os.ReadFile(errPath + ".1")
+	if err != nil || len(old2) != len(stale) {
+		t.Fatalf("rotated file must stay intact: size=%d err=%v", len(old2), err)
+	}
+	cur2, err := os.ReadFile(errPath)
+	if err != nil {
+		t.Fatalf("read errors file: %v", err)
+	}
+	if got := len(strings.Split(strings.TrimSpace(string(cur2)), "\n")); got != 2 {
+		t.Fatalf("want 2 error lines in new file, got %d", got)
+	}
+}
+
+// 未达上限时直接追加，不产生轮转档。
+func TestAppendError_NoRotationBelowLimit(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "api-runtime-events.log")
+
+	c := NewCollector(&fakeSaver{}, "test-norotate", logPath, "", "node-1")
+	c.appendError([]byte("{bad json"), errors.New("bad json"))
+
+	if _, err := os.Stat(logPath + ".errors"); err != nil {
+		t.Fatalf("errors file not written: %v", err)
+	}
+	if _, err := os.Stat(logPath + ".errors.1"); !os.IsNotExist(err) {
+		t.Fatalf("unexpected rotation below limit: err=%v", err)
+	}
 }

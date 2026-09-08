@@ -35,7 +35,7 @@ func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
-	gen, err := Generate(GenerateInput{Apps: appsData, AdminSocket: pub.caddy.SocketPath()})
+	gen, err := Generate(GenerateInput{Apps: appsData, AdminSocket: pub.caddy.SocketPath(), GatewayTracing: pub.gatewayTracing})
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
@@ -59,7 +59,7 @@ func (h *Handler) Validate(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusOK, response.CodeInvalidArgument, err.Error())
 		return
 	}
-	gen, err := Generate(GenerateInput{Apps: appsData, AdminSocket: pub.caddy.SocketPath()})
+	gen, err := Generate(GenerateInput{Apps: appsData, AdminSocket: pub.caddy.SocketPath(), GatewayTracing: pub.gatewayTracing})
 	if err != nil {
 		response.JSON(w, r, http.StatusOK, map[string]interface{}{
 			"valid": false, "error": err.Error(),
@@ -112,7 +112,11 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 // CurrentConfig 当前生效配置。
 func (h *Handler) CurrentConfig(w http.ResponseWriter, r *http.Request) {
 	version, err := h.publisher.GetCurrentVersion(r.Context())
-	if err != nil || version == nil {
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	if version == nil {
 		response.JSON(w, r, http.StatusOK, map[string]interface{}{"has_current": false})
 		return
 	}
@@ -334,7 +338,7 @@ func errString(err error) string {
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, before, after, result, risk string) {
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),

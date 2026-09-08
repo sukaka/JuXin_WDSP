@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "CUSTOM_PACK 1001703: concat_ws/group_concat with hex separator"
+rule_id: 1001703
+tests:
+  - test_id: 1
+    desc: "concat_ws(0x3a,...) exfiltration in UNION SELECT"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "JiuZhang CUSTOM_PACK test agent"
+            Accept: "*/*"
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "var=-1' union select concat_ws(0x3a,user(),version())-- -"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001703]

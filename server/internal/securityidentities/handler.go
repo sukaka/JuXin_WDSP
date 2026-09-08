@@ -45,7 +45,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if f.IdentityType != "" && !validTypes[f.IdentityType] {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的身份类型（HUMAN/BOT/APPLICATION/SERVICE/MACHINE/AGENT/UNKNOWN）")
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的身份类型（HUMAN/BOT/APPLICATION/SERVICE/AGENT/UNKNOWN）")
 		return
 	}
 	if f.Sort != "" && validSortFields[f.Sort] == "" {

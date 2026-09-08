@@ -7,6 +7,7 @@ import { DownloadOutlined, PlayCircleOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
 import { deliveryChecksApi } from '../../api/deliveryChecks'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -22,6 +23,7 @@ export default function DeliveryCheckPage() {
   const canRun = hasPermission(permissions, 'delivery_checks.run')
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [detailRecord, setDetailRecord] = useState<DeliveryCheckResultItem | null>(null)
 
   const listQuery = useQuery({
     queryKey: ['delivery-checks'],
@@ -53,7 +55,7 @@ export default function DeliveryCheckPage() {
   const confirmRun = () => {
     modal.confirm({
       title: '运行检查确认',
-      content: '将执行完整交付检查（组件状态、安全配置、备份恢复、合规材料等），期间会调用多项系统接口。确定运行吗？',
+      content: '将执行完整交付检查（组件状态、安全配置、备份恢复、合规材料等），期间会调用多项系统 API。确定运行吗？',
       onOk: () => runMutation.mutate(),
     })
   }
@@ -70,9 +72,9 @@ export default function DeliveryCheckPage() {
       width: 100,
       render: (v: string) => (v ? <StatusTag value={v} map={CHECK_RESULT_META} /> : <Tag>进行中</Tag>),
     },
-    { title: '通过', dataIndex: 'pass_count', width: 70, align: 'right' },
-    { title: '警告', dataIndex: 'warning_count', width: 70, align: 'right' },
-    { title: '失败', dataIndex: 'fail_count', width: 70, align: 'right' },
+    { title: '通过', dataIndex: 'pass_count', width: 70 },
+    { title: '警告', dataIndex: 'warning_count', width: 70 },
+    { title: '失败', dataIndex: 'fail_count', width: 70 },
     {
       title: '执行时间',
       dataIndex: 'created_at',
@@ -140,6 +142,10 @@ export default function DeliveryCheckPage() {
             loading={listQuery.isLoading}
             columns={historyColumns}
             dataSource={listQuery.data?.items}
+            onRow={(record) => ({
+              onDoubleClick: () => setSelectedId(record.id),
+              style: { cursor: 'pointer' },
+            })}
             pagination={false}
           />
         )}
@@ -194,6 +200,10 @@ export default function DeliveryCheckPage() {
                 size="small"
                 columns={resultColumns}
                 dataSource={results}
+                onRow={(record) => ({
+                  onDoubleClick: () => setDetailRecord(record),
+                  style: { cursor: 'pointer' },
+                })}
                 pagination={false}
               />
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -206,6 +216,13 @@ export default function DeliveryCheckPage() {
           )}
         </Card>
       )}
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="检查项详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Space>
   )
 }

@@ -129,24 +129,63 @@ func renderPNG(code string) ([]byte, error) {
 
 	// 干扰线
 	for i := 0; i < 6; i++ {
-		c := randomColor()
-		x1 := randInt(width)
-		y1 := randInt(height)
-		x2 := randInt(width)
-		y2 := randInt(height)
+		c, err := randomColor()
+		if err != nil {
+			return nil, err
+		}
+		x1, err := randInt(width)
+		if err != nil {
+			return nil, err
+		}
+		y1, err := randInt(height)
+		if err != nil {
+			return nil, err
+		}
+		x2, err := randInt(width)
+		if err != nil {
+			return nil, err
+		}
+		y2, err := randInt(height)
+		if err != nil {
+			return nil, err
+		}
 		drawLine(img, x1, y1, x2, y2, c)
 	}
 	// 干扰点
 	for i := 0; i < 80; i++ {
-		img.Set(randInt(width), randInt(height), randomColor())
+		x, err := randInt(width)
+		if err != nil {
+			return nil, err
+		}
+		y, err := randInt(height)
+		if err != nil {
+			return nil, err
+		}
+		c, err := randomColor()
+		if err != nil {
+			return nil, err
+		}
+		img.Set(x, y, c)
 	}
 
 	// 字符（逐字符绘制，简易点阵字体，随机偏移与颜色）
 	cellW := width / (len(code) + 1)
 	for i, ch := range code {
-		x := cellW*(i+1) - 6 + randInt(4) - 2
-		y := 10 + randInt(6) - 3
-		drawChar(img, byte(ch), x, y, randomDarkColor())
+		ox, err := randInt(4)
+		if err != nil {
+			return nil, err
+		}
+		oy, err := randInt(6)
+		if err != nil {
+			return nil, err
+		}
+		c, err := randomDarkColor()
+		if err != nil {
+			return nil, err
+		}
+		x := cellW*(i+1) - 6 + ox - 2
+		y := 10 + oy - 3
+		drawChar(img, byte(ch), x, y, c)
 	}
 
 	var out bytes.Buffer
@@ -156,27 +195,46 @@ func renderPNG(code string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func randInt(max int) int {
-	v, _ := rand.Int(rand.Reader, big.NewInt(int64(max)))
-	return int(v.Int64())
+// randInt 返回 [0, max) 的密码学随机整数；crypto/rand 失败时如实返回错误，
+// 不得吞错（rand.Int 出错返回 nil，直接使用会 nil 解引用）。
+func randInt(max int) (int, error) {
+	v, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		return 0, fmt.Errorf("secure random int: %w", err)
+	}
+	return int(v.Int64()), nil
 }
 
-func randomColor() color.RGBA {
-	return color.RGBA{
-		uint8(120 + randInt(135)),
-		uint8(120 + randInt(135)),
-		uint8(120 + randInt(135)),
-		255,
+func randomColor() (color.RGBA, error) {
+	r, err := randInt(135)
+	if err != nil {
+		return color.RGBA{}, err
 	}
+	g, err := randInt(135)
+	if err != nil {
+		return color.RGBA{}, err
+	}
+	b, err := randInt(135)
+	if err != nil {
+		return color.RGBA{}, err
+	}
+	return color.RGBA{uint8(120 + r), uint8(120 + g), uint8(120 + b), 255}, nil
 }
 
-func randomDarkColor() color.RGBA {
-	return color.RGBA{
-		uint8(30 + randInt(90)),
-		uint8(30 + randInt(90)),
-		uint8(60 + randInt(100)),
-		255,
+func randomDarkColor() (color.RGBA, error) {
+	r, err := randInt(90)
+	if err != nil {
+		return color.RGBA{}, err
 	}
+	g, err := randInt(90)
+	if err != nil {
+		return color.RGBA{}, err
+	}
+	b, err := randInt(100)
+	if err != nil {
+		return color.RGBA{}, err
+	}
+	return color.RGBA{uint8(30 + r), uint8(30 + g), uint8(60 + b), 255}, nil
 }
 
 func drawLine(img *image.RGBA, x1, y1, x2, y2 int, c color.RGBA) {

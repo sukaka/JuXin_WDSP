@@ -139,18 +139,120 @@ func TestAuthentication_Digest(t *testing.T) {
 	}
 }
 
-func TestIdentityKey(t *testing.T) {
+// 统一指纹：HMAC-SHA256(key=salt) 截断 16 字节 hex（32 字符）；加盐确定性、异盐异指纹。
+func TestFingerprint(t *testing.T) {
+	fp := Fingerprint("s1", "Bearer token-value")
+	if len(fp) != 32 {
+		t.Fatalf("want 32-char hex, got %d chars: %q", len(fp), fp)
+	}
+	for _, c := range fp {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			t.Fatalf("non-hex char in fingerprint: %q", fp)
+		}
+	}
+	if Fingerprint("s1", "Bearer token-value") != fp {
+		t.Fatal("same salt+value must be deterministic")
+	}
+	if Fingerprint("s2", "Bearer token-value") == fp {
+		t.Fatal("different salt must yield different fingerprint")
+	}
+	// 空盐走固定域分隔前缀：仍确定、仍 32 字符，且与任意显式盐不同
+	unsalted := Fingerprint("", "Bearer token-value")
+	if len(unsalted) != 32 || unsalted == fp {
+		t.Fatalf("unsalted fingerprint unexpected: %q", unsalted)
+	}
+}
+
+// 身份键仅凭据派生：auth > key > sess 优先级链；无凭据为空（匿名）。
+func TestCredentialKey(t *testing.T) {
+	const salt = "test-salt"
+	// auth 优先于 key/sess
 	r := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
 	r.Header.Set("Authorization", "Bearer some-token-value")
-	k1 := IdentityKey(r)
+	r.Header.Set("X-API-Key", "0123456789abcdef")
+	r.Header.Set("Cookie", "sid=abc")
+	k := CredentialKey(r, salt)
+	if !strings.HasPrefix(k, "auth:") {
+		t.Fatalf("want auth: priority, got %q", k)
+	}
+	if strings.Contains(k, "some-token-value") {
+		t.Fatal("credential key must not contain raw credential")
+	}
+	// key 优先于 sess
+	r2 := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
+	r2.Header.Set("X-API-Key", "0123456789abcdef")
+	r2.Header.Set("Cookie", "sid=abc")
+	if k := CredentialKey(r2, salt); !strings.HasPrefix(k, "key:") {
+		t.Fatalf("want key: priority, got %q", k)
+	}
+	// 仅 cookie → sess:
+	r3 := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
+	r3.Header.Set("Cookie", "sid=abc")
+	k3 := CredentialKey(r3, salt)
+	if !strings.HasPrefix(k3, "sess:") {
+		t.Fatalf("want sess: for cookie-only, got %q", k3)
+	}
+	if strings.Contains(k3, "sid=abc") {
+		t.Fatal("cookie plaintext must not leave credential key")
+	}
+	// 无凭据 → 空串（匿名，不得以 IP 冒充身份）
+	r4 := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
+	if k := CredentialKey(r4, salt); k != "" {
+		t.Fatalf("anonymous credential key must be empty, got %q", k)
+	}
+	if k := CredentialKey(nil, salt); k != "" {
+		t.Fatalf("nil request credential key must be empty, got %q", k)
+	}
+	// 指纹部分随盐变化
+	r5 := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
+	r5.Header.Set("Authorization", "Bearer some-token-value")
+	if CredentialKey(r5, "s1") == CredentialKey(r5, "s2") {
+		t.Fatal("credential key must vary with salt")
+	}
+}
+
+// 追踪键：凭据指纹优先，无凭据回退 ip:（仅作滑窗计数维度，避免匿名流量并桶）。
+func TestTrackingKey(t *testing.T) {
+	const salt = "test-salt"
+	r := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
+	r.Header.Set("Authorization", "Bearer some-token-value")
+	r.Header.Set("Cookie", "sid=abc")
+	k1 := TrackingKey(r, salt)
 	if !strings.HasPrefix(k1, "auth:") {
 		t.Fatalf("want auth fingerprint key, got %q", k1)
 	}
 	if strings.Contains(k1, "some-token-value") {
-		t.Fatal("identity key must not contain raw credential")
+		t.Fatal("tracking key must not contain raw credential")
 	}
+	// cookie-only → sess:（第三级）
+	r3 := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
+	r3.Header.Set("Cookie", "sid=abc")
+	if !strings.HasPrefix(TrackingKey(r3, salt), "sess:") {
+		t.Fatalf("want sess: for cookie-only, got %q", TrackingKey(r3, salt))
+	}
+	// 无凭据 → ip: 回退
 	r2 := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
-	if !strings.HasPrefix(IdentityKey(r2), "ip:") {
-		t.Fatalf("want ip fallback, got %q", IdentityKey(r2))
+	if !strings.HasPrefix(TrackingKey(r2, salt), "ip:") {
+		t.Fatalf("want ip fallback, got %q", TrackingKey(r2, salt))
+	}
+	// 完全无信号 → unknown
+	if k := TrackingKey(nil, salt); k != "unknown" {
+		t.Fatalf("want unknown for nil request, got %q", k)
+	}
+}
+
+func TestAuthentication_JWTAlgNone(t *testing.T) {
+	// header {"alg":"none","typ":"JWT"} payload {"sub":"1"} empty sig
+	// eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxIn0.
+	token := "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxIn0."
+	ctx := authTestCtx()
+	r := httptest.NewRequest(http.MethodGet, "/v1/x", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	CheckAuthentication(ctx, r, true)
+	if findMatch(ctx, "auth.jwt_alg_none") == nil {
+		t.Fatalf("want jwt_alg_none, got %+v", ctx.CopyMatches())
+	}
+	if findMatch(ctx, "auth.jwt_empty_signature") == nil {
+		t.Fatalf("want jwt_empty_signature, got %+v", ctx.CopyMatches())
 	}
 }

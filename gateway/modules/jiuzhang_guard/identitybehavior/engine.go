@@ -3,6 +3,7 @@ package identitybehavior
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientip"
 	"go.uber.org/zap"
 )
@@ -138,9 +140,12 @@ func (e *Engine) Begin(w http.ResponseWriter, r *http.Request, res clientip.Resu
 	*r = *r.WithContext(context.WithValue(r.Context(), identityResultKey{}, id))
 	sw := &statusWriter{ResponseWriter: w}
 	accountKey, objectKey := "", ""
-	if !enumerationExcluded(r.URL.Path, r.URL.Query()) {
-		accountKey = identifierKey(r.URL.Query(), e.cfg.AccountIdentifierFields)
-		objectKey = identifierKey(r.URL.Query(), e.cfg.ObjectIdentifierFields)
+	if !enumerationExcludedPath(r.URL.Path) {
+		// 分页字段不整请求跳过（MED-1：「&page=1 即免疫枚举检测」一键绕过）——
+		// 剔除分页字段后照常提取账号/对象标识，翻页本身的变化不计入标识轮换
+		idQuery := identifierQuery(r.URL.Query())
+		accountKey = identifierKey(idQuery, e.cfg.AccountIdentifierFields)
+		objectKey = identifierKey(idQuery, e.cfg.ObjectIdentifierFields)
 	}
 	obs := &Observation{
 		identity:        id,
@@ -157,9 +162,15 @@ func (e *Engine) Begin(w http.ResponseWriter, r *http.Request, res clientip.Resu
 	return sw, obs
 }
 
-// End 请求收束：读状态码 → Store.Observe 原子记账 → 阈值评估 → 发事件（按节流）。
+// End 请求收束：读状态码（wrapper 未采集到时从返回错误链兜底，见下）→ Store.Observe
+// 原子记账 → 阈值评估 → 发事件（按节流）。
 // panic 恢复 + zap Error（fail-open）；存储/事件失败仅告警，请求不受影响。
-func (e *Engine) End(r *http.Request, obs *Observation) {
+//
+// chainErr 为防护链返回错误（serveGuard 命名返回值）：前置拦截（人工/自动临时封禁、
+// IP deny、risk BLOCK、Coraza 中断）经 caddyhttp.Error 返回时响应在 statusWriter 链
+// 之外写出，obs.writer.status 恒 0——与 accesslog.go 同一口径从错误链取 HandlerError
+// 状态码兜底，避免被拦截请求全部 status=0 入账。
+func (e *Engine) End(r *http.Request, obs *Observation, chainErr error) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			e.logger.Error("identitybehavior: panic in end (fail-open)",
@@ -169,11 +180,18 @@ func (e *Engine) End(r *http.Request, obs *Observation) {
 	if e == nil || obs == nil || obs.identity == nil {
 		return
 	}
+	status := obs.writer.status
+	if status == 0 && chainErr != nil {
+		var he caddyhttp.HandlerError
+		if errors.As(chainErr, &he) {
+			status = he.StatusCode
+		}
+	}
 	snap, err := e.store.Observe(ObserveInput{
 		IdentityKey:    obs.identity.Key,
 		Method:         obs.method,
 		URI:            obs.path,
-		Status:         obs.writer.status,
+		Status:         status,
 		ParamSignature: obs.paramSig,
 		SensitivePath:  obs.sensitivePrefix != "",
 		AccountKey:     obs.accountKey,
@@ -257,19 +275,20 @@ func (e *Engine) baseRecord(obs *Observation) CommonRecord {
 }
 
 // Close 关闭事件记录器与存储（Valkey 共享连接不在此关闭——归共享引擎所有）。
+// 幂等且不置 nil 字段（LOW-G4）：配置重载 Cleanup 与在途请求并发，End 无锁读
+// e.events/e.store，置 nil 构成数据竞态并可 nil 解引用；关闭后在途写入按 fail-open
+// 告警处理（EventLogger 写已关闭文件仅 Warn，内存/Valkey Store 的 Close 为 no-op）。
 func (e *Engine) Close() error {
 	var firstErr error
 	if e.events != nil {
 		if err := e.events.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		e.events = nil
 	}
 	if e.store != nil {
 		if err := e.store.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		e.store = nil
 	}
 	return firstErr
 }

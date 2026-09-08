@@ -32,7 +32,7 @@ func (h *Handler) Test(w http.ResponseWriter, r *http.Request) {
 		result = audits.ResultFailure
 		detail = "syslog 测试消息发送失败: " + err.Error()
 	}
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:       &p.UserID,
 		Username:     p.Username,
 		SourceIP:     middleware.RemoteIP(r),

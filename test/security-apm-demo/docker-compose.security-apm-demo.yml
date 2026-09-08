@@ -1,0 +1,218 @@
+# P1-01 A1 安全与 APM 标准演示编排（独立演示夹具）
+#
+# 隔离纪律（仿 test/performance/p0 基准编排，deployment/docker-compose.p0-benchmark.yml）：
+#   - 无 `name:`、无 `container_name:`：项目名由 run.sh 以 `-p apmdemo-<run_id>` 注入，
+#     容器/网络/卷名全部由 compose project 前缀派生，多个 run 可同时共存互不影响；
+#   - 所有对外端口绑定 127.0.0.1：DEMO_*_PORT 由 run.sh 在 startup 时显式分配
+#     （用户预设优先，否则取回环空闲端口；Docker Desktop 实测空宿主端口=不发布，
+#     故不沿用「留空由 Docker 随机分配」的写法）；
+#   - 每个资源打 apmdemo.run_id 标签（双标签归属：project + run_id）；
+#     清理只删除本 run 资源，禁止全局 prune（见 run.sh cleanup）；
+#   - 本文件不通过 run.sh 之外的方式直接 up：变量缺省值（STATIC-CHECK-PLACEHOLDER-*）
+#     仅为 `docker compose config` 静态校验可读，不是可用凭据；真实运行的全部密码由
+#     run.sh 现场生成（/dev/urandom，env 文件 0600，运行结束删除）。
+#
+# 与既有部署的关系：
+#   - 不复制管理面（不起第二套 server/网关）；演示应用经既有部署的管理面接入
+#     （手动步骤见 README §4），攻击/阻断场景流量走既有网关；
+#   - OTel Collector 与 ClickHouse 复用 deployment/apm 的锁定镜像与 schema SQL
+#     （镜像值引用同一 tag+digest；schema 经 ../../deployment/apm/clickhouse 卷挂载，
+#     引用而非复制）；采样配置独立（collector/demo-*.yaml）。
+#
+# 用法（只经 run.sh 调用）：
+#   docker compose -p apmdemo-<run_id> -f test/security-apm-demo/docker-compose.security-apm-demo.yml \
+#       --env-file <run 目录>/env up -d
+
+services:
+  # ---------- 合成业务：服务 A（HTTP 入口 → 调用服务 B） ----------
+  service-a:
+    image: jiuzhang-apmdemo-service-a:a1
+    build:
+      context: ./services
+      dockerfile: Dockerfile
+      args:
+        SERVICE: service-a
+        GOLANG_IMAGE_DIGEST: sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587
+        ALPINE_IMAGE_DIGEST: sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      # 服务 B 地址为 compose 内网固定值，不接受运行时请求输入
+      SERVICE_B_URL: http://service-b:8080
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+      DEMO_ENV: security-apm-demo
+      # 场景开关：代码内默认关闭（democommon.ScenariosEnabled），演示栈显式开启；
+      # 仅接受 slow-sql|exception 白名单，不接收任意 SQL/命令/外部 URL
+      DEMO_SCENARIOS_ENABLED: ${DEMO_SCENARIOS_ENABLED:-true}
+      # A4「仅网关观测」场景：`run.sh instrumentation off` 时以 shell 环境
+      # OTEL_SDK_DISABLED=true 重建本容器（compose 变量 shell 优先于 env 文件），
+      # 业务照常运行但不产生 Span；缺省 false 不改变 A1 行为
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-false}
+    ports:
+      - "127.0.0.1:${DEMO_SERVICE_A_PORT-}:8080"   # 回环随机端口；既有网关经宿主地址接入
+    depends_on:
+      service-b:
+        condition: service_healthy
+      collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/app/service", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+    networks:
+      - demo-net
+
+  # ---------- 合成业务：服务 B（→ 独立测试库） ----------
+  service-b:
+    image: jiuzhang-apmdemo-service-b:a1
+    build:
+      context: ./services
+      dockerfile: Dockerfile
+      args:
+        SERVICE: service-b
+        GOLANG_IMAGE_DIGEST: sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587
+        ALPINE_IMAGE_DIGEST: sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      # 测试库 DSN：密码由 run.sh 现场生成注入（不写文件默认值；缺省占位仅供 config 解析）
+      DATABASE_DSN: postgres://demo:${DEMO_DB_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}@db:5432/demo?sslmode=disable
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+      DEMO_ENV: security-apm-demo
+      DEMO_SCENARIOS_ENABLED: ${DEMO_SCENARIOS_ENABLED:-true}
+    ports:
+      - "127.0.0.1:${DEMO_SERVICE_B_PORT-}:8080"   # 回环随机端口（排障/直连核对用）
+    depends_on:
+      db:
+        condition: service_healthy
+      collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/app/service", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+    networks:
+      - demo-net
+
+  # ---------- 独立测试库（PostgreSQL；选择与许可证理由见 README §2） ----------
+  db:
+    # 与 deployment/docker-compose.p0-benchmark.yml 同一锁定值（tag + multi-arch index digest）
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: demo
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: ${DEMO_DB_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # 演示 schema 与预定义有界延迟/合成错误函数（空数据卷首启执行）
+      - ./db-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${DEMO_DB_PORT-}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+    networks:
+      - demo-net
+
+  # ---------- 演示数据面：ClickHouse（镜像与 schema 引用 deployment/apm） ----------
+  clickhouse:
+    # 与 deployment/docker-compose.apm.yml 同一锁定值（tag + multi-arch index digest）
+    image: clickhouse/clickhouse-server:25.8-alpine@sha256:87e0a5b72f5465b18eacca7c76850e7ff551c9795c50e451f5646299e5e24146
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${DEMO_CH_ADMIN_USER:-default}
+      CLICKHOUSE_PASSWORD: ${DEMO_CH_ADMIN_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"   # 允许 SQL 方式创建 apm_writer 账号
+    volumes:
+      - ch-data:/var/lib/clickhouse
+      # schema SQL 引用（非复制）deployment/apm/clickhouse（001/002/003，空数据卷首启执行；
+      # ha/ 子目录不被 entrypoint 执行，见 deployment/apm/clickhouse/README.md）
+      - ../../deployment/apm/clickhouse:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${DEMO_CH_HTTP_PORT-}:8123"   # 查询/运维入口，仅回环
+      # native tcp 9000 不发布宿主机，仅 compose 内网供 Collector 写入
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+    networks:
+      - demo-net
+
+  # ---------- 演示数据面：OTel Collector（镜像引用 deployment/apm；采样配置独立） ----------
+  collector:
+    # 与 deployment/docker-compose.apm.yml 同一锁定值（tag + multi-arch index digest）
+    image: otel/opentelemetry-collector-contrib:0.154.0@sha256:b3079f45e19bdb7326bf49cdddce6cf60dfd865138db39f2733ea48ab17bc4cb
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/demo.yaml"]
+    environment:
+      CLICKHOUSE_APM_WRITER_USER: ${DEMO_CH_WRITER_USER:-apm_writer}
+      CLICKHOUSE_APM_WRITER_PASSWORD: ${DEMO_CH_WRITER_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}
+    volumes:
+      # 演示采样配置（独立于产品默认值）：
+      #   demo-keep-all.yaml  默认（正常全保留，场景 1-7 确定性）
+      #   demo-sampled.yaml   对照（正常基线 0%，场景 8 显式不采样证据）
+      - ./collector/${DEMO_COLLECTOR_CONFIG:-demo-keep-all.yaml}:/etc/otelcol-contrib/demo.yaml:ro
+    ports:
+      - "127.0.0.1:${DEMO_COLLECTOR_METRICS_PORT-}:8888"   # 自监控 Prometheus（采样决策证据）
+      - "127.0.0.1:${DEMO_COLLECTOR_HEALTH_PORT-}:13133"   # health_check 扩展
+      # OTLP 4317/4318 不发布宿主机：仅 compose 内网接收演示业务上报
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    # contrib 镜像为 distroless（无 shell/wget），容器内无法执行 healthcheck；
+    # 健康检查由 run.sh 外部探测 13133（与 production compose 同一口径）
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+    networks:
+      - demo-net
+
+networks:
+  demo-net:
+    driver: bridge
+    # 与 deployment/docker-compose.apm.yml 同一口径 internal: false：
+    # Docker Desktop（4.43 实测）下 internal: true 网络无默认网关，已发布端口不被
+    # 用户态转发（容器 PortBindings 正常但宿主侧不通）；对外暴露面仍由
+    # 127.0.0.1 绑定 + 显式端口分配控制
+    internal: false
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+
+volumes:
+  db-data:
+    driver: local
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+  ch-data:
+    driver: local
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}

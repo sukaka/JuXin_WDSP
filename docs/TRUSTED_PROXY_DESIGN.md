@@ -26,7 +26,7 @@
 
 `GET/POST /api/v1/trusted-proxies`、`GET/PUT/DELETE /{id}`、`POST /{id}/enable|disable`、`POST /test`。
 
-**测试端点**（`POST /test`）：输入 `{cidr, test_ips[]}`，返回每个 IP 的合法性与命中结果
+**测试API**（`POST /test`）：输入 `{cidr, test_ips[]}`，返回每个 IP 的合法性与命中结果
 （本 CIDR 是否命中 + 库中已启用代理的命中列表），供前端"可信代理测试"。
 
 ## 权限

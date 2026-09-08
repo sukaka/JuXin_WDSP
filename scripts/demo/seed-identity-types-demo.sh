@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 用途：向本地演示环境的 PostgreSQL 注入风险身份类型演示数据。
 #
-# 覆盖 HUMAN/BOT/APPLICATION/SERVICE/MACHINE/AGENT/UNKNOWN 七类身份，
+# 覆盖 HUMAN/BOT/APPLICATION/SERVICE/AGENT/UNKNOWN 六类身份，
 # 供「安全中心 → 风险身份」（/risk-identities）列表与详情页查看。
 # 所有标识、IP 和置信度来源均为合成数据，不含真实凭据；本脚本只面向演示环境，禁止用于生产库。
 # 幂等可重跑：仅清理 identity_key 为 demo-identity-* 的演示行，再重新写入。
@@ -39,7 +39,6 @@ VALUES
   ('demo-identity-bot',         'BOT',         85, '["user_agent:automation","behavior:headless"]'::jsonb, now() - interval '5 days',  now() - interval '8 minutes', '198.51.100.11', '',                  68, 'HIGH',     'ACTIVE', 2140),
   ('demo-identity-application', 'APPLICATION', 88, '["credential:api_key"]'::jsonb, now() - interval '4 days',  now() - interval '12 minutes', '198.51.100.12', 'demo-app-client', 24, 'MEDIUM',   'ACTIVE', 860),
   ('demo-identity-service',     'SERVICE',     95, '["credential:mtls_verified"]'::jsonb, now() - interval '4 days',  now() - interval '2 minutes',  '198.51.100.13', 'demo-service',     8, 'LOW',      'ACTIVE', 4200),
-  ('demo-identity-machine',     'MACHINE',     80, '["fingerprint:tls"]'::jsonb, now() - interval '3 days',  now() - interval '20 minutes', '198.51.100.14', '',                 45, 'HIGH',     'ACTIVE', 3100),
   ('demo-identity-agent',       'AGENT',       82, '["credential:oauth_verified"]'::jsonb, now() - interval '2 days',  now() - interval '15 minutes', '198.51.100.15', 'demo-agent',       72, 'CRITICAL', 'ACTIVE', 1780),
   ('demo-identity-unknown',     'UNKNOWN',      0, '[]'::jsonb, now() - interval '1 day',   now() - interval '30 minutes', '198.51.100.16', '',                  0, 'LOW',      'ACTIVE', 34);
 
@@ -68,7 +67,6 @@ VALUES
   ('demo-identity-bot',         'BOT',         now() - interval '5 days',  now() - interval '8 minutes',  '198.51.100.11', '',                  68, 'HIGH',     'ACTIVE', 2140),
   ('demo-identity-application', 'APPLICATION', now() - interval '4 days',  now() - interval '12 minutes', '198.51.100.12', 'demo-app-client', 24, 'MEDIUM',   'ACTIVE', 860),
   ('demo-identity-service',     'SERVICE',     now() - interval '4 days',  now() - interval '2 minutes',  '198.51.100.13', 'demo-service',     8, 'LOW',      'ACTIVE', 4200),
-  ('demo-identity-machine',     'MACHINE',     now() - interval '3 days',  now() - interval '20 minutes', '198.51.100.14', '',                 45, 'HIGH',     'ACTIVE', 3100),
   ('demo-identity-agent',       'AGENT',       now() - interval '2 days',  now() - interval '15 minutes', '198.51.100.15', 'demo-agent',       72, 'CRITICAL', 'ACTIVE', 1780),
   ('demo-identity-unknown',     'UNKNOWN',     now() - interval '1 day',   now() - interval '30 minutes', '198.51.100.16', '',                  0, 'LOW',      'ACTIVE', 34);
 
@@ -81,4 +79,4 @@ COMMIT;
 SQL
 fi
 
-echo "[seed-identity-types-demo] 已写入 7 类演示身份；打开 /risk-identities 查看。"
+echo "[seed-identity-types-demo] 已写入 6 类演示身份；打开 /risk-identities 查看。"

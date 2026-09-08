@@ -1,0 +1,65 @@
+{
+  "admin": {
+    "listen": "unix//var/run/caddy/admin.sock"
+  },
+  "apps": {
+    "tls": {
+      "certificates": {
+        "load_files": [
+          {
+            "certificate": "/certs/site.pem",
+            "key": "/certs/site.key",
+            "tags": [
+              "t0"
+            ]
+          }
+        ]
+      },
+      "session_tickets": {
+        "key_source": {
+          "provider": "jiuzhang",
+          "keys_hex": [
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          ]
+        }
+      }
+    },
+    "http": {
+      "servers": {
+        "s0": {
+          "listen": [
+            ":8443"
+          ],
+          "routes": [
+            {
+              "match": [
+                {
+                  "host": [
+                    "stek.test"
+                  ]
+                }
+              ],
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "body": "ok\n",
+                  "status_code": 200
+                }
+              ],
+              "terminal": true
+            }
+          ],
+          "tls_connection_policies": [
+            {
+              "certificate_selection": {
+                "any_tag": [
+                  "t0"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

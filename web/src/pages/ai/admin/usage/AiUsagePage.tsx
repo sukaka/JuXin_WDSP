@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 import { Card, Col, Row, Space, Statistic, Typography } from 'antd'
 import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { aiUsageApi } from '../../../../api/ai'
 import type { AiUsageByUser } from '../../../../api/ai'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
 
 /** 配额成本：今日用量概览 + 按用户统计（近 7 天） */
 export default function AiUsagePage() {
@@ -20,15 +22,16 @@ export default function AiUsagePage() {
 
   const overview = overviewQuery.data
 
+  const [detailRecord, setDetailRecord] = useState<AiUsageByUser | null>(null)
+
   const columns: ColumnsType<AiUsageByUser> = [
     { title: '用户名', dataIndex: 'username' },
-    { title: '输入令牌', dataIndex: 'input_tokens', align: 'right' },
-    { title: '输出令牌', dataIndex: 'output_tokens', align: 'right' },
-    { title: '调用次数', dataIndex: 'model_calls', align: 'right' },
+    { title: '输入令牌', dataIndex: 'input_tokens' },
+    { title: '输出令牌', dataIndex: 'output_tokens' },
+    { title: '调用次数', dataIndex: 'model_calls' },
     {
       title: '预估成本',
       dataIndex: 'cost',
-      align: 'right',
       render: (v: number) => `¥${v.toFixed(4)}`,
     },
   ]
@@ -100,6 +103,10 @@ export default function AiUsagePage() {
             columns={columns}
             dataSource={byUserQuery.data}
             pagination={false}
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailRecord(record),
+              style: { cursor: 'pointer' },
+            })}
           />
         )}
       </Card>
@@ -107,6 +114,13 @@ export default function AiUsagePage() {
       <Typography.Text type="secondary">
         配额在服务端强制统计与限制；本地模型单价为 0 时成本为 0。
       </Typography.Text>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="用户用量详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Space>
   )
 }

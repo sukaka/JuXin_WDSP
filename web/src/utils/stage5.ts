@@ -152,6 +152,10 @@ export const AC_EVENT_TYPE_META: Record<string, { color: string; label: string }
   FORWARDED_HEADER_INVALID: { color: 'volcano', label: '转发头无效' },
   FORWARDED_CHAIN_TOO_LONG: { color: 'orange', label: '转发链过长' },
   RATE_LIMIT_ENGINE_ERROR: { color: 'red', label: '限速引擎错误' },
+  L7_RULE_ALLOW: { color: 'green', label: 'L7规则放行' },
+  L7_RULE_BLOCK: { color: 'red', label: 'L7规则阻断' },
+  L7_RULE_REDIRECT: { color: 'blue', label: 'L7规则重定向' },
+  L7_RULE_CUSTOM: { color: 'purple', label: 'L7自定义页面' },
 }
 
 /** 访问控制事件动作 */
@@ -160,6 +164,8 @@ export const AC_EVENT_ACTION_META: Record<string, { color: string; label: string
   BLOCK: { color: 'red', label: '阻断' },
   LOG: { color: 'blue', label: '仅记录' },
   OBSERVE: { color: 'orange', label: '观察' },
+  REDIRECT: { color: 'blue', label: '重定向' },
+  CUSTOM_PAGE: { color: 'purple', label: '自定义页面' },
 }
 
 /** 自定义代理头名规则（与后端 customHeaderRe 一致：字母、数字、点、下划线、连字符） */

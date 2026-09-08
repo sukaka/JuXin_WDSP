@@ -134,7 +134,8 @@ func TestHeaderConfigHTTP(t *testing.T) {
 	}
 	cfg := data["config"].(map[string]any)
 	if cfg["server_action"] != "keep" || cfg["x_frame_options"] != "default" ||
-		cfg["csp_mode"] != "off" || cfg["hsts_max_age"].(float64) != 31536000 {
+		cfg["csp_mode"] != "off" || cfg["hsts_max_age"].(float64) != 31536000 ||
+		cfg["xff_overwrite"] != true {
 		t.Fatalf("default config: %v", cfg)
 	}
 

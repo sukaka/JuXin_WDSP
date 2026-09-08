@@ -37,12 +37,12 @@ func NormalizePath(raw string) string {
 		if p == "" {
 			continue
 		}
-		switch {
-		case reUUID.MatchString(p):
+		switch IdentifierShape(p) {
+		case "uuid":
 			parts[i] = "{uuid}"
-		case reInt.MatchString(p):
+		case "numeric":
 			parts[i] = "{id}"
-		case reHexLong.MatchString(p):
+		case "hex":
 			parts[i] = "{hex}"
 		default:
 			// keep literal
@@ -55,6 +55,22 @@ func NormalizePath(raw string) string {
 	return out
 }
 
+// IdentifierShape 识别单个值的对象标识形态：纯数字 → numeric；UUID → uuid；
+// 长十六进制 → hex；其余返回空串。判定顺序与路径段归一化一致（UUID > 纯数字 > 长 hex）。
+// 「只认形态不认语义」：不依据参数名/位置猜测含义，供对象标识来源扩展（Query 参数等）复用。
+func IdentifierShape(s string) string {
+	switch {
+	case reUUID.MatchString(s):
+		return "uuid"
+	case reInt.MatchString(s):
+		return "numeric"
+	case reHexLong.MatchString(s):
+		return "hex"
+	default:
+		return ""
+	}
+}
+
 // EndpointKey 端点唯一键：METHOD + 空格 + 归一化路径。
 func EndpointKey(method, rawPath string) string {
 	m := strings.ToUpper(strings.TrimSpace(method))
@@ -62,6 +78,20 @@ func EndpointKey(method, rawPath string) string {
 		m = "GET"
 	}
 	return m + " " + NormalizePath(rawPath)
+}
+
+// EndpointKeyPreserve 端点唯一键（路径全保留，不做动态段归一化）：
+// gRPC /package.Service/Method 形态专用（P2-05）——服务/方法名即端点稳定身份，
+// 归一化会破坏方法名语义（如全数字方法名被模板化为 {id}）；仍剥离 query/fragment。
+func EndpointKeyPreserve(method, rawPath string) string {
+	m := strings.ToUpper(strings.TrimSpace(method))
+	if m == "" {
+		m = "GET"
+	}
+	if i := strings.IndexAny(rawPath, "?#"); i >= 0 {
+		rawPath = rawPath[:i]
+	}
+	return m + " " + rawPath
 }
 
 // MergeCompatible 判断两条归一化路径是否可合并为同一端点（模板一致）。

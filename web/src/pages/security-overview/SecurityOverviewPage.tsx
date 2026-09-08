@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, Col, List, Radio, Row, Space, Statistic, Tabs, Tag, Typography } from 'antd'
 import SmartTable from '../../components/SmartTable'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import dayjs from 'dayjs'
 import { dashboardsApi } from '../../api/dashboards'
 import EChart from '../../components/EChart'
@@ -13,34 +14,48 @@ import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import { ATTACK_TYPE_META, DISPOSITION_STATUS_META, EVENT_SEVERITY_META } from '../../utils/stage4'
 import { COMPONENT_NAME_META, COMPONENT_STATUS_META, TREND_RANGE_OPTIONS } from '../../utils/stage6'
-import type { KeyValue } from '../../types'
+import type { ActionCountItem, KeyValue, SourceIPStat, StatusCountItem, URIStat } from '../../types'
 
 /** KV 排行小表 */
 function KVTable({ items, nameTitle, nameMap }: { items: KeyValue[]; nameTitle: string; nameMap?: Record<string, { label: string }> }) {
+  const [detailRecord, setDetailRecord] = useState<KeyValue | null>(null)
   return (
-    <SmartTable
-      storageKey="security-overview"
-      size="small"
-      rowKey="key"
-      pagination={false}
-      dataSource={items}
-      locale={{ emptyText: '暂无数据' }}
-      columns={[
-        {
-          title: nameTitle,
-          dataIndex: 'key',
-          ellipsis: true,
-          render: (v: string) => nameMap?.[v]?.label ?? v,
-        },
-        { title: '数量', dataIndex: 'value', width: 90, align: 'right' },
-      ]}
-    />
+    <>
+      <SmartTable
+        storageKey="security-overview"
+        size="small"
+        rowKey="key"
+        pagination={false}
+        dataSource={items}
+        locale={{ emptyText: '暂无数据' }}
+        onRow={(record) => ({ onDoubleClick: () => setDetailRecord(record), style: { cursor: 'pointer' } })}
+        columns={[
+          {
+            title: nameTitle,
+            dataIndex: 'key',
+            ellipsis: true,
+            render: (v: string) => nameMap?.[v]?.label ?? v,
+          },
+          { title: '数量', dataIndex: 'value', width: 90 },
+        ]}
+      />
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title={`${nameTitle}详情`}
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
+    </>
   )
 }
 
 /** 安全总览：12 项今日指标 + 趋势 + 排行 + 风险区；审计视角附加处置统计 */
 export default function SecurityOverviewPage() {
   const [range, setRange] = useState('24h')
+  const [ipDetail, setIpDetail] = useState<SourceIPStat | null>(null)
+  const [uriDetail, setUriDetail] = useState<URIStat | null>(null)
+  const [dispositionDetail, setDispositionDetail] = useState<StatusCountItem | null>(null)
+  const [actionDetail, setActionDetail] = useState<ActionCountItem | null>(null)
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canReadAudit = hasPermission(permissions, 'dashboard.audit.read')
 
@@ -103,7 +118,7 @@ export default function SecurityOverviewPage() {
     () => ({
       grid: { left: 48, right: 16, top: 40, bottom: 28 },
       tooltip: { trigger: 'axis' },
-      legend: { data: ['安全事件', '阻断', '观察', 'CC超限', '黑名单命中'] },
+      legend: { data: ['安全事件', '阻断', '观察', 'CC超限', '黑名单命中'], top: 0 },
       xAxis: { type: 'category', data: timeLabels, axisLabel: { hideOverlap: true } },
       yAxis: { type: 'value', minInterval: 1 },
       series: [
@@ -160,12 +175,16 @@ export default function SecurityOverviewPage() {
           <Row gutter={16}>
             <Col xs={24} lg={12}>
               <Card size="small" title="请求趋势">
-                <EChart option={requestOption} height={260} />
+                <EChart option={requestOption} height={260} ariaLabel="请求总数趋势" />
               </Card>
             </Col>
             <Col xs={24} lg={12}>
               <Card size="small" title="安全趋势">
-                <EChart option={securityOption} height={260} />
+                <EChart
+                  option={securityOption}
+                  height={260}
+                  ariaLabel="安全事件趋势，包含阻断、观察、CC超限和黑名单命中"
+                />
               </Card>
             </Col>
           </Row>
@@ -191,10 +210,11 @@ export default function SecurityOverviewPage() {
                           pagination={false}
                           dataSource={top?.source_ips ?? []}
                           locale={{ emptyText: '暂无数据' }}
+                          onRow={(record) => ({ onDoubleClick: () => setIpDetail(record), style: { cursor: 'pointer' } })}
                           columns={[
                             { title: '源IP', dataIndex: 'ip', ellipsis: true },
-                            { title: '事件数', dataIndex: 'events', width: 90, align: 'right' },
-                            { title: '阻断数', dataIndex: 'blocks', width: 90, align: 'right' },
+                            { title: '事件数', dataIndex: 'events', width: 90 },
+                            { title: '阻断数', dataIndex: 'blocks', width: 90 },
                           ]}
                         />
                       ),
@@ -220,10 +240,11 @@ export default function SecurityOverviewPage() {
                           pagination={false}
                           dataSource={top?.uris ?? []}
                           locale={{ emptyText: '暂无数据' }}
+                          onRow={(record) => ({ onDoubleClick: () => setUriDetail(record), style: { cursor: 'pointer' } })}
                           columns={[
                             { title: '请求路径', dataIndex: 'path', ellipsis: true },
-                            { title: '事件数', dataIndex: 'events', width: 90, align: 'right' },
-                            { title: '阻断数', dataIndex: 'blocks', width: 90, align: 'right' },
+                            { title: '事件数', dataIndex: 'events', width: 90 },
+                            { title: '阻断数', dataIndex: 'blocks', width: 90 },
                           ]}
                         />
                       ),
@@ -333,13 +354,14 @@ export default function SecurityOverviewPage() {
                     pagination={false}
                     dataSource={audit?.disposition_distribution ?? []}
                     locale={{ emptyText: '暂无数据' }}
+                    onRow={(record) => ({ onDoubleClick: () => setDispositionDetail(record), style: { cursor: 'pointer' } })}
                     columns={[
                       {
                         title: '处置状态',
                         dataIndex: 'status',
                         render: (v: string) => <StatusTag value={v} map={DISPOSITION_STATUS_META} />,
                       },
-                      { title: '数量', dataIndex: 'count', width: 90, align: 'right' },
+                      { title: '数量', dataIndex: 'count', width: 90 },
                     ]}
                   />
                 </Col>
@@ -352,9 +374,10 @@ export default function SecurityOverviewPage() {
                     pagination={false}
                     dataSource={audit?.action_stats ?? []}
                     locale={{ emptyText: '暂无数据' }}
+                    onRow={(record) => ({ onDoubleClick: () => setActionDetail(record), style: { cursor: 'pointer' } })}
                     columns={[
                       { title: '操作', dataIndex: 'action', ellipsis: true },
-                      { title: '数量', dataIndex: 'count', width: 90, align: 'right' },
+                      { title: '数量', dataIndex: 'count', width: 90 },
                     ]}
                   />
                 </Col>
@@ -363,6 +386,30 @@ export default function SecurityOverviewPage() {
           )}
         </Card>
       )}
+      <RecordDetailDrawer
+        open={ipDetail !== null}
+        title="源IP详情"
+        record={ipDetail as Record<string, unknown> | null}
+        onClose={() => setIpDetail(null)}
+      />
+      <RecordDetailDrawer
+        open={uriDetail !== null}
+        title="请求路径详情"
+        record={uriDetail as Record<string, unknown> | null}
+        onClose={() => setUriDetail(null)}
+      />
+      <RecordDetailDrawer
+        open={dispositionDetail !== null}
+        title="处置状态详情"
+        record={dispositionDetail as Record<string, unknown> | null}
+        onClose={() => setDispositionDetail(null)}
+      />
+      <RecordDetailDrawer
+        open={actionDetail !== null}
+        title="操作类型详情"
+        record={actionDetail as Record<string, unknown> | null}
+        onClose={() => setActionDetail(null)}
+      />
     </Space>
   )
 }

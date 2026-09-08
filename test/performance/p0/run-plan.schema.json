@@ -1,0 +1,269 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://jiuzhang.local/schemas/p0-run-plan.schema.json",
+  "title": "P0-02 基准运行预登记计划（run-plan）",
+  "description": "docs/tasks/wdsp-p0/P0-02_SECURITY_PERFORMANCE_BENCHMARK.md §7 的必填字段契约。缺任一必填字段时 correctness/matrix/soak/recovery 拒绝启动；smoke 可运行但结果只能标记 smoke。权威校验逻辑见 test/performance/p0/p0bench/plan.py，本文件为文档化镜像。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "plan_id",
+    "created_at",
+    "purpose",
+    "environment",
+    "build",
+    "config",
+    "corpus",
+    "load",
+    "resource_limits",
+    "thresholds"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "plan_id": {"type": "string", "pattern": "^plan-[0-9]{8}T[0-9]{6}-[a-z0-9]{6}$"},
+    "created_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(Z|[+-]\\d{2}:\\d{2})$"},
+    "purpose": {"enum": ["BEFORE", "AFTER", "SMOKE", "LONG_RUN", "RECOVERY"]},
+    "environment": {
+      "type": "object",
+      "required": ["environment_id", "hardware", "os", "docker_version", "isolation", "clock"],
+      "additionalProperties": false,
+      "properties": {
+        "environment_id": {"type": "string", "minLength": 8, "description": "环境唯一标识；预检将实际环境指纹与其比对，不一致即拒绝运行"},
+        "hardware": {
+          "type": "object",
+          "required": ["cpu_model", "cpu_cores", "memory_gb", "storage", "network"],
+          "additionalProperties": false,
+          "properties": {
+            "cpu_model": {"type": "string"},
+            "cpu_cores": {"type": "integer", "minimum": 1},
+            "memory_gb": {"type": "number", "exclusiveMinimum": 0},
+            "storage": {"type": "string"},
+            "network": {"type": "string"}
+          }
+        },
+        "os": {"type": "string"},
+        "docker_version": {"type": "string"},
+        "isolation": {
+          "type": "object",
+          "required": ["mode", "registered_targets"],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {"enum": ["compose_project", "dedicated_host"]},
+            "registered_targets": {
+              "type": "array",
+              "description": "登记的本任务专用测试地址（host 或 host:port）；compose_project 模式下运行器自动追加本 project 的 127.0.0.1 端口",
+              "items": {"type": "string"}
+            }
+          }
+        },
+        "clock": {
+          "type": "object",
+          "required": ["sync_method", "max_skew_ms"],
+          "additionalProperties": false,
+          "properties": {
+            "sync_method": {"type": "string"},
+            "max_skew_ms": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "required": ["git_commit", "worktree_dirty", "images"],
+      "additionalProperties": false,
+      "properties": {
+        "git_commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+        "worktree_dirty": {"type": "boolean"},
+        "images": {
+          "type": "object",
+          "required": ["gateway", "server", "testorigin"],
+          "additionalProperties": false,
+          "properties": {
+            "gateway": {"type": "string"},
+            "server": {"type": "string"},
+            "testorigin": {"type": "string"}
+          },
+          "description": "自建镜像锁 tag；第三方基础镜像锁 tag+digest（编排文件内）"
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": ["base_config_version", "profiles", "toggles"],
+      "additionalProperties": false,
+      "properties": {
+        "base_config_version": {"type": "string", "description": "节点回执确认的有效配置版本，不可用草稿版本填充"},
+        "profiles": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "description": "七模式矩阵；同轮必须使用相同二进制/基础配置，仅改变 waf_mode/api_mode",
+          "items": {
+            "type": "object",
+            "required": ["profile_id", "waf_mode", "api_mode"],
+            "additionalProperties": false,
+            "properties": {
+              "profile_id": {"enum": ["proxy", "waf_observe", "waf_protect", "api_observe", "api_protect", "combined_observe", "combined_protect"]},
+              "waf_mode": {"enum": ["OFF", "DETECTION_ONLY", "ON"]},
+              "api_mode": {"enum": ["OFF", "OBSERVE", "PROTECT"]}
+            }
+          }
+        },
+        "toggles": {
+          "type": "object",
+          "required": ["jwt", "response_detection", "identity_behavior", "log_sampling", "apm"],
+          "additionalProperties": false,
+          "properties": {
+            "jwt": {"type": "boolean", "description": "false=纯七模式基线（JWT 不参与）；true=本运行包含 JWT 启用 profile，必须配套 config.jwt_pair 声明（JWT-18 配对实验，S3 起已接线：jwt_off/jwt_protect 配对 profile，静态 JWKS + 运行期本地测试密钥签发回放；配对测量仍待专用隔离环境，BLOCKED_ENV 语义不变）"},
+            "response_detection": {"type": "boolean"},
+            "identity_behavior": {"type": "boolean"},
+            "log_sampling": {"type": "boolean"},
+            "apm": {"type": "boolean"}
+          }
+        },
+        "jwt_pair": {
+          "type": "object",
+          "required": ["app_code", "issuer", "audience"],
+          "additionalProperties": false,
+          "description": "JWT-18 配对实验声明（可选；S3 起接线）。声明后 correctness/matrix/soak 在七模式主基线之外追加 jwt_off/jwt_protect 配对 profile（同构建同基础配置，仅 JWT 信任链 OFF vs PROTECT 静态 JWKS）；主基线切换时 JWT 同步压回 OFF 防残留。测试 RSA 密钥由运行器在 run 目录现场生成（0600，不入库不入 git，运行结束删除），Token 现场签发经 0600 头文件注入。权威校验见 p0bench/plan.py _check_jwt_pair",
+          "properties": {
+            "app_code": {"type": "string", "minLength": 1, "description": "基准应用编码（PUT jwt-trust-policy 目标；应用须已在基准栈接入，缺失则配对轮 BLOCKED）"},
+            "issuer": {"type": "string", "minLength": 1, "description": "受信发行方精确值（Token iss 须一致）"},
+            "audience": {"type": "string", "minLength": 1, "description": "受信 audience（Token aud 须一致）"},
+            "kid": {"type": "string", "minLength": 1, "description": "测试密钥 kid（缺省 p0bench-jwt-test-key）"},
+            "token_ttl_seconds": {"type": "integer", "minimum": 60, "description": "签发 Token 有效期，须覆盖回放窗口（缺省 3600）"},
+            "selector": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "JWT 验证范围选择器（缺省 methods=[GET,POST]、path_prefix=/）；token_required 必须为 false（配对语料含不携带 Token 的正常样本）",
+              "properties": {
+                "methods": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+                "path_exact": {"type": "string"},
+                "path_prefix": {"type": "string"},
+                "token_required": {"const": false}
+              }
+            }
+          }
+        }
+      }
+    },
+    "corpus": {
+      "type": "object",
+      "required": ["manifest_path", "manifest_sha256", "seed"],
+      "additionalProperties": false,
+      "properties": {
+        "manifest_path": {"type": "string"},
+        "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "seed": {"type": "integer", "description": "数据生成与模式执行顺序随机化的固定种子"}
+      }
+    },
+    "load": {
+      "type": "object",
+      "required": ["model", "warmup_seconds", "steady_point_seconds", "repeats", "rps_ladder", "loadgen", "soak", "smoke"],
+      "additionalProperties": false,
+      "properties": {
+        "model": {"enum": ["open_fixed_rate", "closed_concurrency"], "description": "优先开放模型固定到达率；闭环并发必须如实报告协调遗漏限制"},
+        "warmup_seconds": {"type": "integer", "minimum": 60},
+        "steady_point_seconds": {"type": "integer", "minimum": 300},
+        "repeats": {"type": "integer", "minimum": 3, "description": "每个性能点至少 3 次有效重复"},
+        "rps_ladder": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "integer", "exclusiveMinimum": 0},
+          "description": "逐级 offered RPS；先确认压测器与源站容量再进入正式阶梯"
+        },
+        "loadgen": {
+          "type": "object",
+          "required": ["tool", "version"],
+          "additionalProperties": false,
+          "properties": {
+            "tool": {"enum": ["ab", "curl", "wrk", "k6"], "description": "默认 ab/curl；wrk/k6 可选但必须在运行记录中采集版本"},
+            "version": {"type": "string"},
+            "notes": {"type": "string"}
+          }
+        },
+        "soak": {
+          "type": "object",
+          "required": ["per_profile_minutes", "combined_protect_hours", "sustained_load_ratio"],
+          "additionalProperties": false,
+          "properties": {
+            "per_profile_minutes": {"type": "integer", "minimum": 30},
+            "combined_protect_hours": {"type": "integer", "minimum": 72},
+            "sustained_load_ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "建议取实测可持续容量的 0.6，须记录确定方式"}
+          }
+        },
+        "smoke": {
+          "type": "object",
+          "required": ["duration_seconds", "rps"],
+          "additionalProperties": false,
+          "properties": {
+            "duration_seconds": {"type": "integer", "minimum": 1},
+            "rps": {"type": "integer", "exclusiveMinimum": 0}
+          },
+          "description": "短时 smoke 只证明工具可运行，不产生容量结论"
+        }
+      }
+    },
+    "resource_limits": {
+      "type": "object",
+      "required": ["services", "steady_memory_growth_mb_per_hour_max", "disk_retention_max_mb", "queue_growth"],
+      "additionalProperties": false,
+      "properties": {
+        "services": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "patternProperties": {
+            "^(gateway|api|postgres|valkey|testorigin|logrotator)$": {
+              "type": "object",
+              "required": ["cpu", "memory"],
+              "additionalProperties": false,
+              "properties": {
+                "cpu": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?$"},
+                "memory": {"type": "string", "pattern": "^[0-9]+[mMgG]$"}
+              }
+            }
+          }
+        },
+        "steady_memory_growth_mb_per_hour_max": {"type": "number", "minimum": 0},
+        "disk_retention_max_mb": {"type": "number", "exclusiveMinimum": 0},
+        "queue_growth": {"enum": ["bounded"], "description": "队列必须背压有界，不允许无限增长"}
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "required": [
+        "mandatory_security_cases",
+        "normal_unexpected_error_rate_max",
+        "throughput_regression_min_ratio",
+        "p99_regression",
+        "detection_false_positive_rate_max",
+        "block_false_positive_max",
+        "persisted_event_permanent_loss_max",
+        "event_visibility_latency_ms_max",
+        "recovery_time_seconds_max"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mandatory_security_cases": {"const": "ALL_PASS", "description": "必测安全用例全部满足断言，不允许平均识别率掩盖绕过"},
+        "normal_unexpected_error_rate_max": {"type": "number", "minimum": 0, "description": "初始内部门槛 0.001（0.1%）；预期 403/429 不计入但单列"},
+        "throughput_regression_min_ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "同 profile 同约束下不低于前测 90%；无前测基线时须先建基线"},
+        "p99_regression": {
+          "type": "object",
+          "required": ["max_ratio", "max_abs_ms"],
+          "additionalProperties": false,
+          "properties": {
+            "max_ratio": {"type": "number", "minimum": 1},
+            "max_abs_ms": {"type": "number", "minimum": 0}
+          },
+          "description": "不超过 max(前测 P99 × ratio, 前测 P99 + abs_ms)"
+        },
+        "detection_false_positive_rate_max": {"type": "number", "minimum": 0},
+        "block_false_positive_max": {"type": "integer", "minimum": 0, "description": "新增正常流量误拦截初始门槛为 0 条"},
+        "persisted_event_permanent_loss_max": {"type": "integer", "minimum": 0, "description": "已确认持久化事件恢复追平后永久丢失初始门槛为 0"},
+        "event_visibility_latency_ms_max": {"type": "integer", "exclusiveMinimum": 0, "description": "目标硬件对应的绝对毫秒值，正式测量前冻结"},
+        "recovery_time_seconds_max": {"type": "integer", "exclusiveMinimum": 0, "description": "目标硬件对应的绝对秒值，正式测量前冻结"}
+      }
+    }
+  }
+}

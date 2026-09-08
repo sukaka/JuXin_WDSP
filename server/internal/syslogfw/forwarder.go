@@ -34,13 +34,16 @@ type SettingsReader interface {
 
 // config 是 syslog 外发配置快照（每次发送批量前从 settings 热读取）。
 type config struct {
-	enabled       bool
-	protocol      string
-	address       string
-	facility      int
-	forwardSecEvt bool
-	forwardACEvt  bool
-	forwardAccess bool
+	enabled         bool
+	protocol        string
+	address         string
+	facility        int
+	forwardSecEvt   bool
+	forwardACEvt    bool
+	forwardAccess   bool
+	forwardOpAudit  bool
+	forwardLoginLog bool
+	forwardSysAlert bool
 }
 
 // item 是队列中的一条待外发消息。
@@ -78,13 +81,16 @@ func NewForwarder(settings SettingsReader, dataDir string) *Forwarder {
 // loadConfig 读取最新 syslog 配置（热更新：运行中改开关/地址即生效）。
 func (f *Forwarder) loadConfig(ctx context.Context) config {
 	return config{
-		enabled:       f.settings.GetBool(ctx, "logging", "syslog_enabled", false),
-		protocol:      f.settings.GetString(ctx, "logging", "syslog_protocol", "udp"),
-		address:       f.settings.GetString(ctx, "logging", "syslog_address", ""),
-		facility:      f.settings.GetInt(ctx, "logging", "syslog_facility", 1),
-		forwardSecEvt: f.settings.GetBool(ctx, "logging", "syslog_forward_security_events", true),
-		forwardACEvt:  f.settings.GetBool(ctx, "logging", "syslog_forward_access_control_events", true),
-		forwardAccess: f.settings.GetBool(ctx, "logging", "syslog_forward_access_logs", false),
+		enabled:         f.settings.GetBool(ctx, "logging", "syslog_enabled", false),
+		protocol:        f.settings.GetString(ctx, "logging", "syslog_protocol", "udp"),
+		address:         f.settings.GetString(ctx, "logging", "syslog_address", ""),
+		facility:        f.settings.GetInt(ctx, "logging", "syslog_facility", 1),
+		forwardSecEvt:   f.settings.GetBool(ctx, "logging", "syslog_forward_security_events", true),
+		forwardACEvt:    f.settings.GetBool(ctx, "logging", "syslog_forward_access_control_events", true),
+		forwardAccess:   f.settings.GetBool(ctx, "logging", "syslog_forward_access_logs", false),
+		forwardOpAudit:  f.settings.GetBool(ctx, "logging", "syslog_forward_operation_audits", true),
+		forwardLoginLog: f.settings.GetBool(ctx, "logging", "syslog_forward_login_logs", true),
+		forwardSysAlert: f.settings.GetBool(ctx, "logging", "syslog_forward_system_alerts", true),
 	}
 }
 
@@ -97,6 +103,12 @@ func (c config) kindEnabled(k Kind) bool {
 		return c.forwardACEvt
 	case KindAccessLog:
 		return c.forwardAccess
+	case KindOperationAudit:
+		return c.forwardOpAudit
+	case KindLoginLog:
+		return c.forwardLoginLog
+	case KindSystemAlert:
+		return c.forwardSysAlert
 	case KindTest:
 		return true
 	}

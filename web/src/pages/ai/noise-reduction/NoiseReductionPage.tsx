@@ -420,6 +420,10 @@ export default function NoiseReductionPage() {
             columns={columns}
             dataSource={listQuery.data?.items}
             scroll={{ x: 1400 }}
+            onRow={(record) => ({
+              onDoubleClick: () => setSelectedId(record.id),
+              style: { cursor: 'pointer' },
+            })}
             pagination={{
               current: page,
               pageSize,

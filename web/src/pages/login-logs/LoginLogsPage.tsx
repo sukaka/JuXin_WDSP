@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Button, Card, DatePicker, Input, Select, Space, Tag, Typography } from 'antd'
+import { Alert, Card, DatePicker, Input, Select, Space, Tag, Typography } from 'antd'
 import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
-import { DownloadOutlined } from '@ant-design/icons'
+import ExportDropdown from '../../components/ExportDropdown'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import type dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { logsApi } from '../../api/logs'
@@ -15,6 +16,7 @@ import type { LoginLogEntry } from '../../types'
 const EVENT_TYPE_OPTIONS = [
   { value: 'LOGIN_SUCCESS', label: '登录成功' },
   { value: 'LOGIN_FAILURE', label: '登录失败' },
+  { value: 'LOGIN_TOTP_CHALLENGE', label: '双因子挑战（TOTP）' },
   { value: 'CAPTCHA_FAILURE', label: '验证码错误' },
   { value: 'ACCOUNT_LOCKED', label: '账号锁定' },
   { value: 'LOGOUT', label: '登出' },
@@ -37,6 +39,9 @@ const FAILURE_CODE_LABELS: Record<string, string> = {
   ACCOUNT_LOCKED: '账号已锁定',
   MAX_FAILED_ATTEMPTS: '失败次数超限',
   PASSWORD_EXPIRED: '密码已过期',
+  // TOTP 双因子（server/internal/auth/totp.go）：挑战令牌无效/过期、动态令牌/恢复码错误
+  TOTP_CHALLENGE_INVALID: '双因子挑战无效或过期',
+  TOTP_INVALID: '动态令牌或恢复码错误',
 }
 
 interface Filters {
@@ -54,6 +59,7 @@ export default function LoginLogsPage() {
   const [filters, setFilters] = useState<Filters>({})
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const [detailRecord, setDetailRecord] = useState<LoginLogEntry | null>(null)
 
   const listQuery = useQuery({
     queryKey: ['login-logs', filters, page, pageSize],
@@ -116,12 +122,10 @@ export default function LoginLogsPage() {
       title="登录日志"
       extra={
         hasPermission(permissions, 'login_logs.export') && (
-          <Button
-            icon={<DownloadOutlined />}
-            onClick={() => window.open(logsApi.loginLogsExportUrl(filters), '_blank')}
-          >
-            导出 CSV
-          </Button>
+          <ExportDropdown
+            onExportFiltered={() => window.open(logsApi.loginLogsExportUrl(filters), '_blank')}
+            onExportAll={() => window.open(logsApi.loginLogsExportUrl({}), '_blank')}
+          />
         )
       }
     >
@@ -175,6 +179,10 @@ export default function LoginLogsPage() {
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             current: page,
             pageSize,
@@ -188,6 +196,12 @@ export default function LoginLogsPage() {
           }}
         />
       )}
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="登录日志详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

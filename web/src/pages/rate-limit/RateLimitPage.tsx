@@ -27,7 +27,9 @@ import { rateLimitPoliciesApi } from '../../api/rateLimitPolicies'
 import type { RateLimitPolicyBody } from '../../api/rateLimitPolicies'
 import { applicationsApi } from '../../api/applications'
 import SmartTable from '../../components/SmartTable'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { PublishTaskProgress } from '../config-publish/ConfigPublishPage'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
@@ -92,6 +94,7 @@ export default function RateLimitPage() {
   const [testing, setTesting] = useState<RateLimitPolicyItem | null>(null)
   const [testResult, setTestResult] = useState<RateLimitTestResult | null>(null)
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const [detailRecord, setDetailRecord] = useState<RateLimitPolicyItem | null>(null)
   const [form] = Form.useForm<PolicyFormValues>()
   const [testForm] = Form.useForm<TestFormValues>()
 
@@ -104,6 +107,13 @@ export default function RateLimitPage() {
     queryKey: ['applications', 'all-for-rate-limit'],
     queryFn: () => applicationsApi.list({ page: 1, page_size: 100 }),
     enabled: formOpen,
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<RateLimitPolicyItem>({
+    remove: (id) => rateLimitPoliciesApi.remove(id),
+    invalidateKeys: [['rate-limit-policies']],
+    entityName: '频率限制策略',
+    canDelete: canManage,
   })
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['rate-limit-policies'] })
@@ -304,7 +314,7 @@ export default function RateLimitPage() {
       width: 90,
       render: (v: string) => <StatusTag value={v} map={RATE_LIMIT_STATUS_META} />,
     },
-    { title: '优先级', dataIndex: 'priority', width: 80, align: 'right' },
+    { title: '优先级', dataIndex: 'priority', width: 80 },
     {
       title: '操作',
       key: 'actions',
@@ -418,6 +428,7 @@ export default function RateLimitPage() {
             setPage(1)
           }}
         />
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -431,9 +442,14 @@ export default function RateLimitPage() {
         <SmartTable<RateLimitPolicyItem>
           storageKey="rate-limit"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
           scroll={{ x: 1350 }}
           pagination={{
             current: page,
@@ -495,7 +511,7 @@ export default function RateLimitPage() {
               { max: 200, message: '不超过 200 个字符' },
             ]}
           >
-            <Input placeholder="如：登录接口防爆破" />
+            <Input placeholder="如：登录 API 防爆破" />
           </Form.Item>
           <Form.Item name="description" label="描述" rules={[{ max: 500 }]}>
             <Input.TextArea rows={2} placeholder="策略用途说明（可选）" />
@@ -722,6 +738,13 @@ export default function RateLimitPage() {
           </>
         )}
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="策略详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

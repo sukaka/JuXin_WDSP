@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/cache"
@@ -25,6 +26,12 @@ const (
 	defaultUpstreamTimeout    = 3 * time.Second
 	defaultEventLagDegraded   = 120.0 // 秒
 	defaultDiskLowFreePercent = 10.0
+	// defaultAccessLogStaleAfter accesslog-01 链路停滞降级阈值（与事件采集滞后同档；
+	// settings logging.access_log_stale_seconds 可覆盖）。
+	defaultAccessLogStaleAfter = 120 * time.Second
+	// defaultAPIEventStaleAfter API 运行时事件停滞降级阈值（默认 10 分钟）。
+	// 低流量站点分钟级无事件属正常，阈值取保守值避免误报。
+	defaultAPIEventStaleAfter = 10 * time.Minute
 	maxUpstreamProbes         = 20 // 单轮最多探测的源站数（控制采集耗时）
 	maxUpstreamFailDetails    = 5  // metrics 中最多记录的失败明细
 	probeDBTimeout            = 5 * time.Second
@@ -49,10 +56,23 @@ type Options struct {
 	AccessLogCheckpoint string
 	// AccessLogPath Caddy 访问日志路径（滞后积压计算）
 	AccessLogPath string
+	// AccessLogFullCollectorID 全量访问日志采集器 collector_id（DB checkpoint，默认 accesslog-01）
+	AccessLogFullCollectorID string
+	// AccessLogStaleAfter accesslog-01 链路停滞降级阈值（默认 120 秒；
+	// settings logging.access_log_stale_seconds 可覆盖）
+	AccessLogStaleAfter time.Duration
+	// Settings 系统设置读取源（accesslog-01 链路开关 logging.access_log_enabled 与
+	// 停滞阈值覆盖）；nil 时该链路不纳入 EVENT_COLLECTOR 判级（默认部署零行为变化）
+	Settings SettingsReader
+	// APMClickHouse APM ClickHouse 数据面探针（APM_ENABLED 且 DSN 连接成功时由装配层
+	// 注入）；nil 时 APM_CLICKHOUSE 组件不采集不判级（默认部署零行为变化）
+	APMClickHouse ClickHouseProber
 	// DiskPath 磁盘检测挂载点（默认 /app）
 	DiskPath string
 	// GuardStaleAfter guard 日志停滞阈值（默认 5 分钟）
 	GuardStaleAfter time.Duration
+	// APIEventStaleAfter API 运行时事件停滞降级阈值（默认 10 分钟）
+	APIEventStaleAfter time.Duration
 	// UpstreamTimeout 源站健康探测超时（默认 3 秒）
 	UpstreamTimeout time.Duration
 	// EventLagDegradedSeconds 事件采集滞后降级阈值（默认 120 秒）
@@ -75,6 +95,15 @@ func (o *Options) withDefaults() Options {
 	}
 	if out.GuardStaleAfter <= 0 {
 		out.GuardStaleAfter = defaultGuardStaleAfter
+	}
+	if out.APIEventStaleAfter <= 0 {
+		out.APIEventStaleAfter = defaultAPIEventStaleAfter
+	}
+	if out.AccessLogFullCollectorID == "" {
+		out.AccessLogFullCollectorID = defaultAccessLogFullCollectorID
+	}
+	if out.AccessLogStaleAfter <= 0 {
+		out.AccessLogStaleAfter = defaultAccessLogStaleAfter
 	}
 	if out.UpstreamTimeout <= 0 {
 		out.UpstreamTimeout = defaultUpstreamTimeout
@@ -99,6 +128,8 @@ type Collector struct {
 	db    *pgxpool.Pool
 	store *Store
 	opts  Options
+
+	lastHealthPurge time.Time // 上次源站健康记录清理时间（按周期节流）
 }
 
 // NewCollector 创建采集器。
@@ -157,7 +188,7 @@ func (c *Collector) collectAll(ctx context.Context) []*Snapshot {
 	gw := c.probeGateway(ctx)
 	disk := c.probeDisk()
 	pg := c.probePostgres(ctx, disk)
-	return []*Snapshot{
+	snaps := []*Snapshot{
 		gw,
 		c.deriveCoraza(gw),
 		c.probeGuard(gw),
@@ -165,10 +196,16 @@ func (c *Collector) collectAll(ctx context.Context) []*Snapshot {
 		pg,
 		c.probeValkey(ctx),
 		c.probeEventCollector(ctx),
+		c.probeAPISecurity(ctx),
 		c.probeUpstreams(ctx),
 		c.probeCertificates(ctx),
 		disk,
 	}
+	// APM ClickHouse 数据面：仅注入探针时纳入采集（DSN 空/未接入不判级，见 apm_clickhouse.go）
+	if c.apmClickHouseIncluded() {
+		snaps = append(snaps, c.probeAPMClickHouse(ctx))
+	}
+	return snaps
 }
 
 // ---------- GATEWAY ----------
@@ -409,8 +446,10 @@ func readFileCheckpoint(path string) (fileCheckpoint, time.Time, bool) {
 	return cp, st.ModTime(), true
 }
 
-// probeEventCollector 汇总三个采集 checkpoint 的滞后：
-// 安全事件（DB 表 event_collector_checkpoints）、访问控制事件与 access-log（文件 checkpoint）。
+// probeEventCollector 汇总采集 checkpoint 的滞后：
+// 安全事件（DB 表 event_collector_checkpoints）、访问控制事件与 access-log（文件 checkpoint），
+// 以及 accesslog-01 全量访问日志（DB checkpoint；仅 logging.access_log_enabled=true
+// 时纳入判级，见 accesslog_freshness.go）。
 // 滞后语义：存在未消费日志字节时才算滞后（checkpoint 推进时间至今），无积压为 0。
 func (c *Collector) probeEventCollector(ctx context.Context) *Snapshot {
 	snap := &Snapshot{Component: ComponentEventCollector, Metrics: map[string]interface{}{}}
@@ -451,20 +490,25 @@ func (c *Collector) probeEventCollector(ctx context.Context) *Snapshot {
 		cps = append(cps, CheckpointLag{Name: "access_log", Missing: true})
 	}
 
-	maxLag, missing := SummarizeCheckpoints(cps)
+	// 4. accesslog-01 全量访问日志采集（APM 阶段1 WP5，DB checkpoint）；
+	// 仅 logging.access_log_enabled=true 时纳入判级（开关关闭无日志产出，不报停滞）
+	al := c.probeAccessLogFull(ctx, now)
+	if al.err != nil {
+		snap.Status = StatusUnknown
+		snap.Message = "checkpoint 查询失败"
+		return snap
+	}
+	if al.included {
+		cps = append(cps, al.cp)
+		if !al.cp.Missing {
+			snap.Metrics[MetricAccessLogStaleSecs] = al.cp.LagSecs
+		}
+	}
+
+	maxLag, _ := SummarizeCheckpoints(cps) // missing 计数在 eventCollectorStatus 内判级
 	snap.Metrics[MetricMaxLagSeconds] = maxLag
 	snap.Metrics[MetricCheckpoints] = cps
-	switch {
-	case missing == len(cps):
-		snap.Status = StatusUnknown
-		snap.Message = "采集器尚未产生 checkpoint"
-	case maxLag > c.opts.EventLagDegradedSeconds:
-		snap.Status = StatusDegraded
-		snap.Message = fmt.Sprintf("事件采集最大滞后 %d 秒", int(maxLag))
-	default:
-		snap.Status = StatusUp
-		snap.Message = "事件采集滞后正常"
-	}
+	snap.Status, snap.Message = eventCollectorStatus(cps, c.opts.EventLagDegradedSeconds, al)
 	return snap
 }
 
@@ -490,7 +534,7 @@ func (c *Collector) probeUpstreams(ctx context.Context) *Snapshot {
 	qCtx, cancel := context.WithTimeout(ctx, probeDBTimeout)
 	defer cancel()
 	rows, err := c.db.Query(qCtx, `
-SELECT name, host, port, health_check_path, expected_status_codes
+SELECT id, name, host, port, health_check_path, expected_status_codes
 FROM upstreams
 WHERE status = 'ACTIVE' AND health_check_enabled = TRUE AND deleted_at IS NULL AND scheme = 'http'
 ORDER BY created_at ASC LIMIT $1`, maxUpstreamProbes)
@@ -501,13 +545,14 @@ ORDER BY created_at ASC LIMIT $1`, maxUpstreamProbes)
 	}
 	defer rows.Close()
 	type target struct {
+		id                         uuid.UUID
 		name, host, path, expected string
 		port                       int
 	}
 	var targets []target
 	for rows.Next() {
 		var t target
-		if err := rows.Scan(&t.name, &t.host, &t.port, &t.path, &t.expected); err != nil {
+		if err := rows.Scan(&t.id, &t.name, &t.host, &t.port, &t.path, &t.expected); err != nil {
 			snap.Status = StatusUnknown
 			snap.Message = "源站清单读取失败"
 			return snap
@@ -530,6 +575,7 @@ ORDER BY created_at ASC LIMIT $1`, maxUpstreamProbes)
 
 	healthy := 0
 	var failures []map[string]interface{}
+	var records []upstreamHealthRecord
 	for _, t := range targets {
 		probeCtx, probeCancel := context.WithTimeout(ctx, c.opts.UpstreamTimeout)
 		res := upstreams.TestConnectivity(probeCtx, upstreams.TestInput{
@@ -539,17 +585,29 @@ ORDER BY created_at ASC LIMIT $1`, maxUpstreamProbes)
 			HealthCheckPath: t.path,
 		})
 		probeCancel()
+		rec := upstreamHealthRecord{
+			upstreamID:     t.id,
+			responseStatus: res.HTTPStatus,
+			responseTimeMs: res.ResponseTimeMs,
+			errorCode:      res.ErrorCode,
+			errorMessage:   res.ErrorMessage,
+		}
 		if res.ErrorCode == "" && upstreams.CheckExpectedStatus(res.HTTPStatus, t.expected) {
 			healthy++
-			continue
+			rec.status = StatusUp
+		} else {
+			rec.status = StatusDown
+			if len(failures) < maxUpstreamFailDetails {
+				failures = append(failures, map[string]interface{}{
+					"name": t.name, "host": t.host, "port": t.port,
+					"error_code": res.ErrorCode, "http_status": res.HTTPStatus,
+				})
+			}
 		}
-		if len(failures) < maxUpstreamFailDetails {
-			failures = append(failures, map[string]interface{}{
-				"name": t.name, "host": t.host, "port": t.port,
-				"error_code": res.ErrorCode, "http_status": res.HTTPStatus,
-			})
-		}
+		records = append(records, rec)
 	}
+	// 逐源站健康记录落库（报告/仪表盘数据源；此前该表无写入方，报告只能显示 UNKNOWN）
+	c.writeUpstreamHealthRecords(ctx, records)
 	total := len(targets)
 	unhealthy := total - healthy
 	snap.Metrics[MetricUpstreamTotal] = total
@@ -559,6 +617,91 @@ ORDER BY created_at ASC LIMIT $1`, maxUpstreamProbes)
 	snap.Status = upstreamStatus(total, healthy)
 	snap.Message = fmt.Sprintf("源站健康 %d/%d", healthy, total)
 	return snap
+}
+
+// upstreamHealthRecord 单条源站健康探测记录。
+type upstreamHealthRecord struct {
+	upstreamID     uuid.UUID
+	status         string
+	responseStatus int
+	responseTimeMs int64
+	errorCode      string
+	errorMessage   string
+}
+
+// upstreamHealthRetention 源站健康记录保留时长（超出即清理）。
+const upstreamHealthRetention = 7 * 24 * time.Hour
+
+// writeUpstreamHealthRecords 批量写入源站健康记录（含连续成功/失败计数），
+// 并按保留时长节流清理历史记录。写库失败只记日志，不影响快照采集主流程。
+func (c *Collector) writeUpstreamHealthRecords(ctx context.Context, records []upstreamHealthRecord) {
+	if len(records) == 0 {
+		return
+	}
+	qCtx, cancel := context.WithTimeout(ctx, probeDBTimeout)
+	defer cancel()
+
+	ids := make([]uuid.UUID, 0, len(records))
+	for _, r := range records {
+		ids = append(ids, r.upstreamID)
+	}
+	// 上一轮各源站连续计数（DISTINCT ON 取最新一条）
+	prev := map[uuid.UUID][2]int{}
+	rows, err := c.db.Query(qCtx, `
+SELECT DISTINCT ON (upstream_id) upstream_id, status, consecutive_successes, consecutive_failures
+FROM upstream_health_records WHERE upstream_id = ANY($1)
+ORDER BY upstream_id, checked_at DESC`, ids)
+	if err != nil {
+		slog.Error("query previous upstream health records failed", "error", err)
+	} else {
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			var status string
+			var succ, fail int
+			if err := rows.Scan(&id, &status, &succ, &fail); err == nil {
+				if status == StatusUp {
+					prev[id] = [2]int{succ, 0}
+				} else {
+					prev[id] = [2]int{0, fail}
+				}
+			}
+		}
+	}
+
+	for _, r := range records {
+		succ, fail := 0, 0
+		if p, ok := prev[r.upstreamID]; ok {
+			succ, fail = p[0], p[1]
+		}
+		if r.status == StatusUp {
+			succ, fail = succ+1, 0
+		} else {
+			succ, fail = 0, fail+1
+		}
+		errMsg := r.errorMessage
+		if len(errMsg) > 512 {
+			errMsg = errMsg[:512]
+		}
+		if _, err := c.db.Exec(qCtx, `
+INSERT INTO upstream_health_records
+  (upstream_id, status, response_status, response_time_ms, error_code, error_message, consecutive_successes, consecutive_failures)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			r.upstreamID, r.status, r.responseStatus, r.responseTimeMs, r.errorCode, errMsg, succ, fail); err != nil {
+			slog.Error("insert upstream health record failed", "upstream_id", r.upstreamID, "error", err)
+		}
+	}
+
+	// 节流清理历史记录（每小时一次；采集间隔 30s，避免每轮全表扫描）
+	if time.Since(c.lastHealthPurge) > time.Hour {
+		if _, err := c.db.Exec(qCtx,
+			`DELETE FROM upstream_health_records WHERE checked_at < now() - $1::interval`,
+			upstreamHealthRetention.String()); err != nil {
+			slog.Error("purge upstream health records failed", "error", err)
+		} else {
+			c.lastHealthPurge = time.Now()
+		}
+	}
 }
 
 // upstreamStatus 源站总体状态：全部健康 UP；部分健康 DEGRADED；全部失败 DOWN。

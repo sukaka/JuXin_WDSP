@@ -19,7 +19,13 @@
 	stage8-test-versioning stage8-test-schema stage8-test-classification \
 	stage8-test-identity stage8-test-authorization stage8-test-sensitive-data \
 	stage8-test-behavior stage8-test-graph stage8-test-replay stage8-test-e2e \
-	stage8-test-performance stage8-test-security stage8-test-gateway stage8-test-all
+	stage8-test-performance stage8-test-security stage8-test-gateway stage8-test-all \
+	api-security-test-assets api-security-test-learning api-security-test-models \
+	api-security-test-runtime api-security-test-schema api-security-test-response \
+	api-security-test-auth api-security-test-authz api-security-test-behavior \
+	api-security-test-data api-security-test-risk api-security-test-audit \
+	api-security-test-spec api-security-test-e2e api-security-test-all api-security-inventory \
+	openapi-reconcile
 
 COMPOSE_STAGE1 := docker compose -f deployment/docker-compose.stage1.yml
 COMPOSE_STAGE2 := docker compose -f deployment/docker-compose.stage2.yml --env-file .env.example
@@ -487,7 +493,7 @@ stage8-test-replay:
 
 stage8-test-e2e:
 	@echo "阶段8 Playwright E2E（需 stage8-up + 前端dev）..."
-	cd web && npx playwright test e2e/stage8-api-security.spec.ts
+	cd web && npx playwright test e2e/stage8-api-security.spec.ts e2e/stage8-api-security-ops.spec.ts e2e/stage8-api-security-ops2.spec.ts
 
 stage8-test-performance:
 	@echo "阶段8性能测试（需 stage8-up）..."
@@ -498,3 +504,87 @@ stage8-test-security:
 	API_URL=http://127.0.0.1:$(API_PORT) GATEWAY_URL=http://127.0.0.1:$(GATEWAY_PORT) bash test/security/stage8-security-tests.sh
 
 stage8-test-all: stage8-test-unit stage8-test-api stage8-test-gateway stage8-test-replay stage8-test-e2e stage8-test-performance stage8-test-security
+
+# ---------- API 安全补全测试（api-security-test-*，任务书 §234 口径） ----------
+# 领域目标只映射真实存在的测试路径；尚无测试资产的领域不建目标（如 scan 未实现）。
+
+api-security-test-assets:
+	@echo "API 资产（发现/生命周期/流量趋势）单元测试..."
+	cd server && go test ./internal/apiassets/ -count=1
+
+api-security-test-learning:
+	@echo "学习闭环（样本/候选/janitor/自动候选）测试..."
+	cd gateway/dynamic_security && go test ./learning/ -count=1
+	cd server && go test ./internal/learningjobs/ -count=1
+	cd server && go test ./internal/apiassets/ -run 'TestLearning' -count=1
+
+api-security-test-models:
+	@echo "模型版本/参数/运行时策略编译（Compiler/版本/回滚）测试..."
+	cd server && go test ./internal/apimodels/ -count=1
+
+api-security-test-runtime:
+	@echo "运行时采集与事件（采集器/事件落库/findings 物化）测试..."
+	cd server && go test ./internal/apiruntime/ -count=1
+
+api-security-test-schema:
+	@echo "Schema 防护与参数约束测试..."
+	cd gateway/dynamic_security && go test ./detectors/ ./pipeline/ -run 'TestSchema|TestProcess|TestCheck' -count=1
+
+api-security-test-response:
+	@echo "响应侧（ResponseContext/响应相位/Response Transformer/MASK_RESPONSE）测试..."
+	cd gateway/dynamic_security && go test ./response/ -count=1
+	cd gateway/dynamic_security && go test ./pipeline/ -run 'TestResponse|TestProcessResponse' -count=1
+	cd gateway/modules/jiuzhang_guard && go test ./ -run 'TestServeNext_Mask|TestServeNext_Fail|TestServeNext_Oversized|TestServeNext_NonJSON|TestServeNext_Response|TestServeNext_Downstream' -count=1
+
+api-security-test-auth:
+	@echo "身份与凭据检测（含指纹/画像风险评估）测试..."
+	cd gateway/dynamic_security && go test ./detectors/ -run 'TestAuth|TestIdentity|TestFingerprint' -count=1
+	cd server && go test ./internal/apisecurity/ -run 'TestIdentity' -count=1
+
+api-security-test-authz:
+	@echo "BOLA/BFLA 辅助检测测试..."
+	cd gateway/dynamic_security && go test ./detectors/ -run 'TestResource' -count=1
+
+api-security-test-behavior:
+	@echo "行为基线与分布式状态（含 Valkey behaviorstore）测试..."
+	cd gateway/dynamic_security && go test ./detectors/ -run 'TestBehavior|TestRate|TestWindow|TestLRU' -count=1
+	cd gateway/modules/jiuzhang_guard && go test ./behaviorstore/ -count=1
+
+api-security-test-data:
+	@echo "敏感数据管理面（类型/脱敏规则/态势/派生扫描）测试..."
+	cd server && go test ./internal/apidata/ -count=1
+
+api-security-test-risk:
+	@echo "风险发现与弱点中心（findings 物化/弱点状态机/派生扫描）测试..."
+	cd server && go test ./internal/apiweakness/ -count=1
+	cd server && go test ./internal/apiruntime/ -run 'TestFinding|TestRecordFindings|TestMaterializable|TestSanitizeEvidence|TestDedupFingerprint' -count=1
+
+api-security-test-audit:
+	@echo "审计溯源（操作审计/事件与 findings 富化迁移静态一致性）测试..."
+	cd server && go test ./internal/audits/ -count=1
+	cd server && go test ./tests/ -run 'TestAPIEnrichmentMigrationStatic' -count=1
+
+api-security-test-spec:
+	@echo "规范导入与 Diff 测试..."
+	cd server && go test ./internal/apisecurity/ -run 'TestSpec|TestParseOpenAPI3|TestDiffEndpointKeys|TestHashSpecContent' -count=1
+
+api-security-test-e2e:
+	@echo "API 安全 Playwright E2E（需 stage8-up + 前端dev）..."
+	cd web && npx playwright test e2e/stage8-api-security.spec.ts e2e/stage8-api-security-ops.spec.ts e2e/stage8-api-security-ops2.spec.ts
+
+api-security-test-all: api-security-test-assets api-security-test-learning api-security-test-models api-security-test-runtime api-security-test-schema api-security-test-response api-security-test-auth api-security-test-authz api-security-test-behavior api-security-test-data api-security-test-risk api-security-test-audit api-security-test-spec
+
+api-security-inventory:
+	@echo "API 安全能力现状盘点文档：docs/API_SECURITY_CURRENT_STATE.md"
+	@ls -l docs/API_SECURITY_CURRENT_STATE.md
+	@echo ""
+	@echo "工作树 git 状态摘要（$(shell git status --short | wc -l | tr -d ' ') 个变更/未跟踪条目，前 20 条）："
+	@git status --short | head -20
+
+# ---------- OpenAPI 文档对账 ----------
+
+openapi-reconcile:
+	@echo "合并 fragments 并校验片段不变量（重新生成 wdsp-api.yaml）..."
+	python3 server/openapi/merge.py
+	@echo "路由 ↔ OpenAPI 片段双向对账..."
+	python3 tools/check-api-reconcile.py

@@ -21,13 +21,12 @@ const (
 	RecordTypeSignal      = "recon_signal"
 )
 
-// 身份类型（identity_type 字段；与网关 V1.1 契约保持一致）。
+// 身份类型（identity_type 字段；管理面当前支持六类，旧 MACHINE 输入归一为 UNKNOWN）。
 const (
 	IdentityTypeHuman       = "HUMAN"
 	IdentityTypeBot         = "BOT"
 	IdentityTypeApplication = "APPLICATION"
 	IdentityTypeService     = "SERVICE"
-	IdentityTypeMachine     = "MACHINE"
 	IdentityTypeAgent       = "AGENT"
 	IdentityTypeUnknown     = "UNKNOWN"
 )
@@ -177,7 +176,7 @@ func parseRecordLine(line []byte) (*Record, error) {
 func normalizeIdentityType(t string) string {
 	switch t {
 	case IdentityTypeHuman, IdentityTypeBot, IdentityTypeApplication,
-		IdentityTypeService, IdentityTypeMachine, IdentityTypeAgent:
+		IdentityTypeService, IdentityTypeAgent:
 		return t
 	default:
 		return IdentityTypeUnknown

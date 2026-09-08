@@ -13,6 +13,8 @@ import (
 )
 
 // LogEntry 是网关 access-full.jsonl 单行（字段与 guard accessLogRecord / access_logs 表对应）。
+// APM 阶段1 新增 trace_id/span_id/endpoint_key/path_template/ttfb_ms（ADR D6/D7/D8）：
+// 旧网关不携带这些字段，解析后为空值，入库为 NULL（迁移 000088 新列全部 nullable）。
 type LogEntry struct {
 	OccurredAt            time.Time           `json:"occurred_at"`
 	RequestID             string              `json:"request_id"`
@@ -34,6 +36,11 @@ type LogEntry struct {
 	BytesOut              int64               `json:"bytes_out"`
 	DurationMS            int                 `json:"duration_ms"`
 	WAFAction             string              `json:"waf_action"`
+	TraceID               string              `json:"trace_id"`
+	SpanID                string              `json:"span_id"`
+	EndpointKey           string              `json:"endpoint_key"`
+	PathTemplate          string              `json:"path_template"`
+	TTFBMs                *int64              `json:"ttfb_ms"`
 	RequestHeaders        map[string][]string `json:"request_headers"`
 	RequestBody           string              `json:"request_body"`
 	RequestBodyTruncated  bool                `json:"request_body_truncated"`
@@ -44,16 +51,20 @@ type LogEntry struct {
 
 // 入库前字段长度兜底（网关侧已截断，采集侧再防一道，防脏数据撑爆表）。
 const (
-	maxLineLen       = 1 << 20 // 1MB，超限行直接进失败队列
-	maxRequestIDLen  = 64
-	maxDomainLen     = 255
-	maxNodeLen       = 64
-	maxMethodLen     = 16
-	maxVersionLen    = 16
-	maxCTLen         = 255
-	maxSummaryLen    = 512
-	maxWAFActionLen  = 32
-	maxBodyColumnLen = 1 << 20 // text 列兜底 1MB
+	maxLineLen         = 1 << 20 // 1MB，超限行直接进失败队列
+	maxRequestIDLen    = 64
+	maxDomainLen       = 255
+	maxNodeLen         = 64
+	maxMethodLen       = 16
+	maxVersionLen      = 16
+	maxCTLen           = 255
+	maxSummaryLen      = 512
+	maxWAFActionLen    = 32
+	maxTraceIDLen      = 64 // W3C trace_id 为 32 hex，留一倍余量
+	maxSpanIDLen       = 32 // W3C span_id 为 16 hex
+	maxEndpointKeyLen  = 255
+	maxPathTemplateLen = 512
+	maxBodyColumnLen   = 1 << 20 // text 列兜底 1MB
 )
 
 // ParseLine 解析单行 JSON Lines 访问日志（校验 + 长度兜底 + NUL 剥离）。
@@ -81,6 +92,14 @@ func ParseLine(line []byte) (*LogEntry, error) {
 	e.UserAgentSummary = truncateStr(e.UserAgentSummary, maxSummaryLen)
 	e.RefererSummary = truncateStr(e.RefererSummary, maxSummaryLen)
 	e.WAFAction = truncateStr(e.WAFAction, maxWAFActionLen)
+	e.TraceID = truncateStr(e.TraceID, maxTraceIDLen)
+	e.SpanID = truncateStr(e.SpanID, maxSpanIDLen)
+	e.EndpointKey = truncateStr(e.EndpointKey, maxEndpointKeyLen)
+	e.PathTemplate = truncateStr(e.PathTemplate, maxPathTemplateLen)
+	// ttfb_ms 列为 integer（int32）：负数/超界为脏数据，置 nil 防插入失败整行丢失
+	if e.TTFBMs != nil && (*e.TTFBMs < 0 || *e.TTFBMs > 2147483647) {
+		e.TTFBMs = nil
+	}
 	// PostgreSQL text 列拒绝 NUL；网关侧已剥离，采集侧再兜底
 	e.RequestBody = truncateStr(stripNUL(e.RequestBody), maxBodyColumnLen)
 	e.ResponseBody = truncateStr(stripNUL(e.ResponseBody), maxBodyColumnLen)

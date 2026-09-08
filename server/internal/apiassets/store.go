@@ -1,4 +1,4 @@
-// Package apiassets API 端点资产管理（发现、列表、确认、合并/拆分、学习与分类）。
+// Package apiassets API 接口资产管理（发现、列表、确认、合并/拆分、学习与分类）。
 package apiassets
 
 import (
@@ -15,16 +15,21 @@ import (
 )
 
 var (
-	// ErrNotFound 端点不存在。
+	// ErrNotFound 接口不存在。
 	ErrNotFound = errors.New("api endpoint not found")
-	// ErrEndpointConflict 端点键已存在（拆分目标路径与现有端点冲突）。
+	// ErrEndpointConflict 接口键已存在（拆分目标路径与现有接口冲突）。
 	ErrEndpointConflict = errors.New("api endpoint already exists")
-	// ErrLearningRunning 端点已有运行中的学习任务。
+	// ErrLearningRunning 接口已有运行中的学习任务。
 	ErrLearningRunning = errors.New("learning job already running")
-	// ErrLearningNotRunning 端点没有运行中的学习任务。
+	// ErrLearningNotRunning 接口没有运行中的学习任务。
 	ErrLearningNotRunning = errors.New("no running learning job")
-	// ErrClassificationLocked 端点分类已锁定，禁止自动分类覆盖。
+	// ErrInvalidSampleTarget 学习样本目标超出允许范围。
+	ErrInvalidSampleTarget = errors.New("invalid sample target")
+	// ErrClassificationLocked 接口分类已锁定，禁止自动分类覆盖。
 	ErrClassificationLocked = errors.New("classification locked")
+	// ErrLicenseQuotaExceeded 授权 API 端点配额超限：新发现端点拒绝落库
+	// （采集链路捕获后告警，不重试；既有端点命中不受影响）。
+	ErrLicenseQuotaExceeded = errors.New("api endpoint license quota exceeded")
 )
 
 // 资产状态白名单（asset_status）。
@@ -33,6 +38,7 @@ var validAssetStatuses = map[string]bool{
 	"CONFIRMED":  true,
 	"IGNORED":    true,
 	"DEPRECATED": true,
+	"ZOMBIE":     true,
 }
 
 // 学习状态白名单（learning_status）。
@@ -43,11 +49,36 @@ var validLearningStatuses = map[string]bool{
 	"LEARNED":     true,
 }
 
-// Endpoint API 端点（列名对齐迁移 000018 / 000020）。
+// 业务类型白名单（business_type；WDSP AI 自动化渗透防护增强 阶段4，设计 #12.1 原文枚举，
+// 应用层校验——与 exposure 同纪律不落 CHECK 约束，扩枚举不迁移）。
+var validBusinessTypes = map[string]bool{
+	"LOGIN": true, "REGISTER": true, "PASSWORD_RESET": true, "SMS": true, "EMAIL": true,
+	"ORDER": true, "PAYMENT": true, "EXPORT": true, "DOWNLOAD": true, "SEARCH": true,
+	"QUERY_PERSONAL_DATA": true, "AI_INFERENCE": true, "OTHER": true,
+}
+
+// NormalizeBusinessType 业务类型归一（大写去空白；空值归 OTHER）。
+func NormalizeBusinessType(v string) string {
+	v = strings.ToUpper(strings.TrimSpace(v))
+	if v == "" {
+		return "OTHER"
+	}
+	return v
+}
+
+// 学习样本目标（sample_target）取值域：缺省 100，允许 [10, 100000]。
+const (
+	DefaultSampleTarget = 100
+	MinSampleTarget     = 10
+	MaxSampleTarget     = 100000
+)
+
+// Endpoint API 接口（列名对齐迁移 000018 / 000020）。
 type Endpoint struct {
 	ID                    uuid.UUID  `json:"id"`
 	ApplicationID         *uuid.UUID `json:"application_id,omitempty"`
-	ApplicationName       string     `json:"application_name,omitempty"` // 列表 LEFT JOIN applications 带出
+	ApplicationName       string     `json:"application_name,omitempty"`   // 列表 LEFT JOIN applications 带出
+	ApplicationDomain     string     `json:"application_domain,omitempty"` // 主域名（application_domains 主记录）
 	DomainID              *uuid.UUID `json:"domain_id,omitempty"`
 	HTTPMethod            string     `json:"http_method"`
 	NormalizedPath        string     `json:"normalized_path"`
@@ -61,10 +92,17 @@ type Endpoint struct {
 	CurrentModelVersionID *uuid.UUID `json:"current_model_version_id,omitempty"`
 	ClassificationLocked  bool       `json:"classification_locked"`
 	IsAPI                 bool       `json:"is_api"`
-	HitCount              int64       `json:"hit_count"`
+	HitCount              int64      `json:"hit_count"`
 	FirstSeenAt           time.Time  `json:"first_seen_at"`
 	LastSeenAt            time.Time  `json:"last_seen_at"`
 	ConfirmedAt           *time.Time `json:"confirmed_at,omitempty"`
+	// 生命周期增强（迁移 000045）：资产价值评分（未评分为空）与僵尸态起点。
+	AssetValue        string          `json:"asset_value,omitempty"`
+	AssetValueExplain json.RawMessage `json:"asset_value_explain,omitempty"`
+	ZombieSince       *time.Time      `json:"zombie_since,omitempty"`
+	// BusinessType 业务类型（api_assets.business_type，列表经 LEFT JOIN 带出；
+	// 无资产记录时归一为 OTHER；设计 #12.1，迁移 000105）。
+	BusinessType string `json:"business_type,omitempty"`
 	// Asset 业务维度扩展（来自 api_assets，详情接口附带，无记录时为空）。
 	Asset *Asset `json:"asset,omitempty"`
 }
@@ -77,11 +115,12 @@ type Asset struct {
 	DataClassification string    `json:"data_classification"`
 	Owner              string    `json:"owner"`
 	Tags               []string  `json:"tags"`
+	BusinessType       string    `json:"business_type"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
-// ClassificationDimension 端点分类维度（api_classification_dimensions）。
+// ClassificationDimension 接口分类维度（api_classification_dimensions）。
 type ClassificationDimension struct {
 	EndpointID uuid.UUID `json:"endpoint_id"`
 	Dimension  string    `json:"dimension"`
@@ -138,23 +177,25 @@ type LearningSample struct {
 	CollectedAt         time.Time `json:"collected_at"`
 }
 
-// ListFilter 端点列表过滤条件。
+// ListFilter 接口列表过滤条件。
 type ListFilter struct {
 	AssetStatus     string
 	LearningStatus  string
 	Keyword         string
 	ApplicationID   *uuid.UUID
-	Unassigned      bool   // true 时仅查未归属端点（application_id IS NULL）
+	Unassigned      bool   // true 时仅查未归属接口（application_id IS NULL）
 	DirectoryPrefix string // 目录前缀（含子目录）：/test 命中 /test 与 /test/php
+	BusinessType    string // 业务类型过滤（api_assets.business_type；无资产记录接口按 OTHER 计）
 	Page            int
 	PageSize        int
 }
 
-// endpointColumns 端点全列（扫描顺序固定）。
+// endpointColumns 接口全列（扫描顺序固定）。
 const endpointColumns = `id, application_id, domain_id, http_method, normalized_path, raw_path_example,
 	endpoint_key, api_confidence, asset_status, protocol_type, learning_status,
 	current_model_version_id, classification_locked, is_api, hit_count,
-	first_seen_at, last_seen_at, confirmed_at, directory_path`
+	first_seen_at, last_seen_at, confirmed_at, directory_path,
+	asset_value, asset_value_explain, zombie_since`
 
 // learningJobColumns 学习任务全列（扫描顺序固定）。
 const learningJobColumns = `id, endpoint_id, status, sample_target, collected_count, valid_count,
@@ -165,20 +206,41 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanEndpoint(rs rowScanner) (*Endpoint, error) {
+// scanEndpoint 扫描端点行（extra 追加列目标，供 UpsertDiscovery 顺带取 inserted 标记）。
+func scanEndpoint(rs rowScanner, extra ...any) (*Endpoint, error) {
 	var e Endpoint
-	err := rs.Scan(&e.ID, &e.ApplicationID, &e.DomainID, &e.HTTPMethod, &e.NormalizedPath,
+	// 000045 新增列可空：经中间变量转换（NULL → 零值）
+	var assetValue *string
+	var assetValueExplain []byte
+	dests := []any{&e.ID, &e.ApplicationID, &e.DomainID, &e.HTTPMethod, &e.NormalizedPath,
 		&e.RawPathExample, &e.EndpointKey, &e.APIConfidence, &e.AssetStatus, &e.ProtocolType,
 		&e.LearningStatus, &e.CurrentModelVersionID, &e.ClassificationLocked, &e.IsAPI,
-		&e.HitCount, &e.FirstSeenAt, &e.LastSeenAt, &e.ConfirmedAt, &e.DirectoryPath)
+		&e.HitCount, &e.FirstSeenAt, &e.LastSeenAt, &e.ConfirmedAt, &e.DirectoryPath,
+		&assetValue, &assetValueExplain, &e.ZombieSince}
+	dests = append(dests, extra...)
+	err := rs.Scan(dests...)
 	if err != nil {
 		return nil, err
+	}
+	if assetValue != nil {
+		e.AssetValue = *assetValue
+	}
+	if assetValueExplain != nil {
+		e.AssetValueExplain = json.RawMessage(assetValueExplain)
 	}
 	return &e, nil
 }
 
 // DirectoryOf 目录派生：normalized_path 去掉最后一段（/test/php/login → /test/php；/users/{id} → /users）。
-// 与迁移 000020 的 regexp_replace(path, '/[^/]*$', '') 语义一致。
+// 与迁移 000020 的 regexp_replace(path, '/[^/]*$', ”) 语义一致。
+// protocolOrDefault 协议类型缺省回落（发现链路：空串归 REST；与 UpsertDiscovery COALESCE 口径一致）。
+func protocolOrDefault(v string) string {
+	if v == "" {
+		return "REST"
+	}
+	return v
+}
+
 func DirectoryOf(normalizedPath string) string {
 	i := strings.LastIndex(normalizedPath, "/")
 	if i <= 0 {
@@ -199,14 +261,35 @@ func scanLearningJob(rs rowScanner) (*LearningJob, error) {
 }
 
 // Store 仓储。
+// db 为查询句柄（默认连接池，逐语句 autocommit）；pool 保留给自管理事务的方法
+// （Merge/Split/生命周期迁移等 Begin 路径，pgx.Tx 无 Begin 不可经 db 抽象）。
+// W22 采集器批次事务窗口内经 WithDB 浅拷贝把采集链路方法切到事务句柄（pool=nil），
+// 该浅拷贝只允许调用采集链路方法（UpsertDiscovery/RecordLearningSample/
+// RecordTrafficBucket），调 Begin 路径会因 pool 为 nil 直接 panic（快速失败，不静默）。
 type Store struct {
-	db *pgxpool.Pool
+	db   DBTX
+	pool *pgxpool.Pool
+	// endpointQuota 授权 API 端点配额提供者（装配层闭包读取 license 内存状态，无 IO；
+	// nil 或返回 0 = 不限制）。WithDB 浅拷贝透传该字段（批次事务窗口内配额语义一致）。
+	endpointQuota func(ctx context.Context) int64
 }
 
 // NewStore 创建。
-func NewStore(db *pgxpool.Pool) *Store { return &Store{db: db} }
+func NewStore(db *pgxpool.Pool) *Store { return &Store{db: db, pool: db} }
 
-// DiscoveryInput 发现/命中端点输入（采集器从网关事件解析后传入）。
+// SetEndpointQuotaProvider 注入授权端点配额（0=不限制；仅发现链路 UpsertDiscovery 强制）。
+func (s *Store) SetEndpointQuotaProvider(fn func(ctx context.Context) int64) *Store {
+	s.endpointQuota = fn
+	return s
+}
+
+// WithDB 返回绑定到给定句柄的浅拷贝（采集器批次事务化：句柄为该批次的 pgx.Tx）。
+// 浅拷贝上采集链路方法不再自开事务，提交权归外层批次事务；失败由批次整体回滚，
+// 断点不前移，重放由各 upsert/幂等键兜底（语义与 autocommit 路径一致）。
+// 配额提供者随浅拷贝透传，批次事务窗口内发现配额强制语义与 autocommit 路径一致。
+func (s *Store) WithDB(db DBTX) *Store { return &Store{db: db, endpointQuota: s.endpointQuota} }
+
+// DiscoveryInput 发现/命中接口输入（采集器从网关事件解析后传入）。
 type DiscoveryInput struct {
 	Method        string
 	PathTemplate  string
@@ -214,33 +297,92 @@ type DiscoveryInput struct {
 	IsAPI         bool
 	ApplicationID *uuid.UUID // 可为 nil（未归属）
 	DomainID      *uuid.UUID // 可为 nil
+	// ProtocolType 协议类型（REST/GRPC…；空串回落 REST）。
+	// 仅首次发现写入，命中时不覆盖（允许后续人工修正）。
+	ProtocolType string
 }
 
-// UpsertDiscovery 发现/命中端点（按 endpoint_key 幂等）。
+// UpsertDiscovery 发现/命中接口（按 endpoint_key 幂等）。
 // application_id / domain_id / directory_path 仅首次发现写入；命中时不覆盖（允许后续人工改属）。
+// 首插（xmax = 0 判插入，命中走 DO UPDATE）同事务派生 api_endpoint_path_segments
+// 段形——normalized_path 不可变，命中重放不重写段形（一致性方案见 segments.go）。
+// WithDB 浅拷贝（pool==nil，采集器批次事务窗口）时不再自开事务：写入并入外层
+// 批次事务，段形原子性由批次事务 + 采集端记录级 SAVEPOINT 保证。
 func (s *Store) UpsertDiscovery(ctx context.Context, in DiscoveryInput) (*Endpoint, error) {
+	if s.pool == nil {
+		return s.upsertDiscovery(ctx, s.db, in)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	e, err := s.upsertDiscovery(ctx, tx, in)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+// upsertDiscovery 在给定句柄上执行发现 upsert 与段形派生（事务边界由调用方负责）。
+func (s *Store) upsertDiscovery(ctx context.Context, q DBTX, in DiscoveryInput) (*Endpoint, error) {
 	method := strings.ToUpper(strings.TrimSpace(in.Method))
 	pathTemplate := strings.TrimSpace(in.PathTemplate)
 	if method == "" || pathTemplate == "" {
 		return nil, fmt.Errorf("method and path_template required")
 	}
 	key := method + " " + pathTemplate
-	e, err := scanEndpoint(s.db.QueryRow(ctx, `
+	var inserted bool
+	e, err := scanEndpoint(q.QueryRow(ctx, `
 INSERT INTO api_endpoints (application_id, domain_id, http_method, normalized_path, raw_path_example,
-  directory_path, endpoint_key, api_confidence, is_api, hit_count, asset_status)
-VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,1,'DISCOVERED')
+  directory_path, endpoint_key, api_confidence, is_api, hit_count, asset_status, protocol_type)
+VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,1,'DISCOVERED',COALESCE(NULLIF($9,''),'REST'))
 ON CONFLICT (endpoint_key) DO UPDATE SET
   hit_count = api_endpoints.hit_count + 1,
   last_seen_at = now(),
   api_confidence = GREATEST(api_endpoints.api_confidence, EXCLUDED.api_confidence),
   updated_at = now()
-RETURNING `+endpointColumns,
+RETURNING `+endpointColumns+`, (xmax = 0) AS inserted`,
 		in.ApplicationID, in.DomainID, method, pathTemplate, DirectoryOf(pathTemplate), key, in.Confidence, in.IsAPI,
-	))
+		in.ProtocolType,
+	), &inserted)
 	if err != nil {
 		return nil, err
 	}
+	if inserted {
+		// 授权端点配额强制（0=不限制）：插入后总数 > 配额 ⟺ 插入前已达上限，
+		// 同一事务句柄删回本行并返回哨兵——autocommit 路径外层事务随错误回滚、
+		// 批次事务路径显式删除生效，两路径语义一致（新端点不落库）；
+		// 命中既有端点（inserted=false）不受配额影响，与「已有端点不受影响」口径一致。
+		if s.endpointQuota != nil {
+			if quota := s.endpointQuota(ctx); quota > 0 {
+				var total int64
+				if err := q.QueryRow(ctx, `SELECT count(*) FROM api_endpoints`).Scan(&total); err != nil {
+					return nil, err
+				}
+				if total > quota {
+					if _, err := q.Exec(ctx, `DELETE FROM api_endpoints WHERE id = $1`, e.ID); err != nil {
+						return nil, err
+					}
+					return nil, ErrLicenseQuotaExceeded
+				}
+			}
+		}
+		if err := upsertPathSegments(ctx, q, e.ID, pathTemplate); err != nil {
+			return nil, err
+		}
+	}
 	return e, nil
+}
+
+// Count 端点总数（全表计数不受生命周期状态影响；授权配额强制与授权状态页配额用量展示共用口径）。
+func (s *Store) Count(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints`).Scan(&n)
+	return n, err
 }
 
 // List 分页列表（asset_status / learning_status / keyword / application_id / unassigned / directory 过滤）。
@@ -277,15 +419,24 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, erro
 		args = append(args, f.DirectoryPrefix, f.DirectoryPrefix+"/%")
 		where += fmt.Sprintf(" AND (e.directory_path = $%d OR e.directory_path LIKE $%d)", len(args)-1, len(args))
 	}
+	if f.BusinessType != "" {
+		add("COALESCE(ast.business_type,'OTHER') = $%d", f.BusinessType)
+	}
 	var total int64
-	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints e WHERE `+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_endpoints e
+LEFT JOIN api_assets ast ON ast.endpoint_id = e.id WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
 	cols := "e." + strings.ReplaceAll(endpointColumns, ", ", ", e.")
 	q := fmt.Sprintf(`
-SELECT %s, COALESCE(a.name,'') FROM api_endpoints e
+SELECT %s, COALESCE(a.name,''),
+  COALESCE((SELECT d.hostname FROM application_domains d
+    WHERE d.application_id = a.id ORDER BY d.is_primary DESC, d.created_at LIMIT 1), ''),
+  COALESCE(ast.business_type,'OTHER')
+FROM api_endpoints e
 LEFT JOIN applications a ON a.id = e.application_id
+LEFT JOIN api_assets ast ON ast.endpoint_id = e.id
 WHERE %s ORDER BY e.last_seen_at DESC LIMIT $%d OFFSET $%d`,
 		cols, where, len(args)-1, len(args))
 	rows, err := s.db.Query(ctx, q, args...)
@@ -296,29 +447,44 @@ WHERE %s ORDER BY e.last_seen_at DESC LIMIT $%d OFFSET $%d`,
 	out := []Endpoint{}
 	for rows.Next() {
 		e := Endpoint{}
+		// 000045 新增列可空：经中间变量转换（NULL → 零值）
+		var assetValue *string
+		var assetValueExplain []byte
 		if err := rows.Scan(&e.ID, &e.ApplicationID, &e.DomainID, &e.HTTPMethod, &e.NormalizedPath,
 			&e.RawPathExample, &e.EndpointKey, &e.APIConfidence, &e.AssetStatus, &e.ProtocolType,
 			&e.LearningStatus, &e.CurrentModelVersionID, &e.ClassificationLocked, &e.IsAPI,
 			&e.HitCount, &e.FirstSeenAt, &e.LastSeenAt, &e.ConfirmedAt, &e.DirectoryPath,
-			&e.ApplicationName); err != nil {
+			&assetValue, &assetValueExplain, &e.ZombieSince,
+			&e.ApplicationName, &e.ApplicationDomain, &e.BusinessType); err != nil {
 			return nil, 0, err
+		}
+		if assetValue != nil {
+			e.AssetValue = *assetValue
+		}
+		if assetValueExplain != nil {
+			e.AssetValueExplain = json.RawMessage(assetValueExplain)
 		}
 		out = append(out, e)
 	}
 	return out, total, rows.Err()
 }
 
-// SiteSummaryItem 站点端点计数（站点列表角标）。
+// SiteSummaryItem 站点接口计数（站点列表角标）。
 type SiteSummaryItem struct {
-	ApplicationID   *uuid.UUID `json:"application_id,omitempty"`
-	ApplicationName string     `json:"application_name"`
-	EndpointCount   int64      `json:"endpoint_count"`
+	ApplicationID     *uuid.UUID `json:"application_id,omitempty"`
+	ApplicationName   string     `json:"application_name"`
+	ApplicationDomain string     `json:"application_domain"` // 主域名，前端优先展示
+	EndpointCount     int64      `json:"endpoint_count"`
 }
 
-// SiteSummary 各站点端点计数（含未归属桶）。
+// SiteSummary 各站点接口计数（含未归属桶）。
 func (s *Store) SiteSummary(ctx context.Context) ([]SiteSummaryItem, int64, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT a.id, a.name, count(e.id) FROM applications a
+SELECT a.id, a.name,
+  COALESCE((SELECT d.hostname FROM application_domains d
+    WHERE d.application_id = a.id ORDER BY d.is_primary DESC, d.created_at LIMIT 1), ''),
+  count(e.id)
+FROM applications a
 LEFT JOIN api_endpoints e ON e.application_id = a.id
 GROUP BY a.id, a.name ORDER BY a.name`)
 	if err != nil {
@@ -328,7 +494,7 @@ GROUP BY a.id, a.name ORDER BY a.name`)
 	out := []SiteSummaryItem{}
 	for rows.Next() {
 		var it SiteSummaryItem
-		if err := rows.Scan(&it.ApplicationID, &it.ApplicationName, &it.EndpointCount); err != nil {
+		if err := rows.Scan(&it.ApplicationID, &it.ApplicationName, &it.ApplicationDomain, &it.EndpointCount); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, it)
@@ -343,13 +509,13 @@ GROUP BY a.id, a.name ORDER BY a.name`)
 	return out, unassigned, nil
 }
 
-// DirectoryCount 目录端点计数（目录树节点，扁平返回由前端组装层级）。
+// DirectoryCount 目录接口计数（目录树节点，扁平返回由前端组装层级）。
 type DirectoryCount struct {
 	DirectoryPath string `json:"directory_path"`
 	EndpointCount int64  `json:"endpoint_count"`
 }
 
-// DirectoryTree 按目录聚合端点计数（application_id 指定站点；unassigned=true 查未归属）。
+// DirectoryTree 按目录聚合接口计数（application_id 指定站点；unassigned=true 查未归属）。
 func (s *Store) DirectoryTree(ctx context.Context, applicationID *uuid.UUID, unassigned bool) ([]DirectoryCount, error) {
 	where := "1=1"
 	args := []any{}
@@ -377,7 +543,7 @@ WHERE `+where+` GROUP BY directory_path ORDER BY directory_path`, args...)
 	return out, rows.Err()
 }
 
-// ListKeyStatus 返回全部端点的 endpoint_key → asset_status 映射（发布通道下发网关，生命周期检测基线）。
+// ListKeyStatus 返回全部接口的 endpoint_key → asset_status 映射（发布通道下发网关，生命周期检测基线）。
 func (s *Store) ListKeyStatus(ctx context.Context) (map[string]string, error) {
 	rows, err := s.db.Query(ctx, `SELECT endpoint_key, asset_status FROM api_endpoints`)
 	if err != nil {
@@ -395,7 +561,7 @@ func (s *Store) ListKeyStatus(ctx context.Context) (map[string]string, error) {
 	return out, rows.Err()
 }
 
-// Confirm 人工确认端点（asset_status=CONFIRMED）。
+// Confirm 人工确认接口（asset_status=CONFIRMED）。
 func (s *Store) Confirm(ctx context.Context, id uuid.UUID) (*Endpoint, error) {
 	e, err := scanEndpoint(s.db.QueryRow(ctx, `
 UPDATE api_endpoints SET asset_status='CONFIRMED', confirmed_at=now(), updated_at=now()
@@ -416,19 +582,19 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Endpoint, error) {
 	return e, err
 }
 
-// Merge 把 other 端点并入 primary：命中数累加、other 历史端点键归档进
+// Merge 把 other 接口并入 primary：命中数累加、other 历史接口键归档进
 // api_endpoint_aliases、删除 other、写生命周期 MERGED（事务）。
 func (s *Store) Merge(ctx context.Context, primaryID, otherID uuid.UUID, actor string) (*Endpoint, error) {
 	if primaryID == otherID {
-		return nil, fmt.Errorf("不能将端点合并到自身")
+		return nil, fmt.Errorf("不能将接口合并到自身")
 	}
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 单语句按固定扫描顺序锁定两端点，避免并发合并相互死锁
+	// 单语句按固定扫描顺序锁定两接口，避免并发合并相互死锁
 	type mergeRow struct {
 		key      string
 		hits     int64
@@ -459,7 +625,7 @@ WHERE id IN ($1,$2) FOR UPDATE`, primaryID, otherID)
 	}
 	other := locked[otherID]
 
-	// other 的历史端点键归档到 primary（重复归档幂等）
+	// other 的历史接口键归档到 primary（重复归档幂等）
 	if _, err = tx.Exec(ctx, `
 INSERT INTO api_endpoint_aliases (endpoint_id, alias_key, created_reason)
 VALUES ($1,$2,'merge')
@@ -472,13 +638,14 @@ UPDATE api_endpoints SET hit_count = hit_count + $2,
 WHERE id = $1`, primaryID, other.hits, other.lastSeen); err != nil {
 		return nil, err
 	}
+	// 删除对方端点行：段形/扩展表随 ON DELETE CASCADE 清理（见 segments.go 一致性说明）
 	if _, err = tx.Exec(ctx, `DELETE FROM api_endpoints WHERE id = $1`, otherID); err != nil {
 		return nil, err
 	}
 	if _, err = tx.Exec(ctx, `
 INSERT INTO api_lifecycle_events (endpoint_id, from_status, to_status, reason, actor)
 VALUES ($1,'','MERGED',$2,$3)`,
-		primaryID, fmt.Sprintf("合并端点 %s（%s）", otherID, other.key), actor); err != nil {
+		primaryID, fmt.Sprintf("合并接口 %s（%s）", otherID, other.key), actor); err != nil {
 		return nil, err
 	}
 	merged, err := scanEndpoint(tx.QueryRow(ctx, `SELECT `+endpointColumns+` FROM api_endpoints WHERE id=$1`, primaryID))
@@ -491,13 +658,13 @@ VALUES ($1,'','MERGED',$2,$3)`,
 	return merged, nil
 }
 
-// Split 按给定归一化路径从 id 端点拆分出新端点（继承 http_method/api_confidence
-// 等身份属性，asset_status=DISCOVERED），原端点写生命周期 SPLIT（事务）。
+// Split 按给定归一化路径从 id 接口拆分出新接口（继承 http_method/api_confidence
+// 等身份属性，asset_status=DISCOVERED），原接口写生命周期 SPLIT（事务）。
 func (s *Store) Split(ctx context.Context, id uuid.UUID, newPaths []string, actor string) ([]Endpoint, error) {
 	if len(newPaths) == 0 {
 		return nil, fmt.Errorf("拆分路径不能为空")
 	}
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -530,12 +697,16 @@ RETURNING `+endpointColumns,
 		if err != nil {
 			return nil, err
 		}
+		// 新端点行同事务派生段形（与发现链路同口径，见 segments.go）
+		if err := upsertPathSegments(ctx, tx, e.ID, p); err != nil {
+			return nil, err
+		}
 		created = append(created, *e)
 	}
 	if _, err = tx.Exec(ctx, `
 INSERT INTO api_lifecycle_events (endpoint_id, from_status, to_status, reason, actor)
 VALUES ($1,'','SPLIT',$2,$3)`,
-		id, fmt.Sprintf("拆分出 %d 个端点：%s", len(created), strings.Join(newPaths, ", ")), actor); err != nil {
+		id, fmt.Sprintf("拆分出 %d 个接口：%s", len(created), strings.Join(newPaths, ", ")), actor); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -550,7 +721,7 @@ func (s *Store) SetAssetStatus(ctx context.Context, id uuid.UUID, status, actor 
 	if !validAssetStatuses[status] {
 		return nil, fmt.Errorf("无效的资产状态：%s", status)
 	}
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -565,9 +736,11 @@ func (s *Store) SetAssetStatus(ctx context.Context, id uuid.UUID, status, actor 
 		return nil, err
 	}
 	e, err := scanEndpoint(tx.QueryRow(ctx, `
-UPDATE api_endpoints SET asset_status=$2, updated_at=now()
+UPDATE api_endpoints SET asset_status=$2,
+  zombie_since = CASE WHEN $3 = 'ZOMBIE' THEN zombie_since ELSE NULL END,
+  updated_at=now()
 WHERE id=$1
-RETURNING `+endpointColumns, id, status))
+RETURNING `+endpointColumns, id, status, status))
 	if err != nil {
 		return nil, err
 	}
@@ -584,14 +757,14 @@ VALUES ($1,$2,$3,'资产状态变更',$4)`, id, from, status, actor); err != nil
 	return e, nil
 }
 
-// GetAsset 读取端点业务维度扩展；无记录返回 (nil, nil)。
+// GetAsset 读取接口业务维度扩展；无记录返回 (nil, nil)。
 func (s *Store) GetAsset(ctx context.Context, endpointID uuid.UUID) (*Asset, error) {
 	var a Asset
 	var tags []byte
 	err := s.db.QueryRow(ctx, `
-SELECT endpoint_id, purpose, exposure, data_classification, owner, tags, created_at, updated_at
+SELECT endpoint_id, purpose, exposure, data_classification, owner, tags, business_type, created_at, updated_at
 FROM api_assets WHERE endpoint_id=$1`, endpointID).Scan(
-		&a.EndpointID, &a.Purpose, &a.Exposure, &a.DataClassification, &a.Owner, &tags, &a.CreatedAt, &a.UpdatedAt)
+		&a.EndpointID, &a.Purpose, &a.Exposure, &a.DataClassification, &a.Owner, &tags, &a.BusinessType, &a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -605,11 +778,16 @@ FROM api_assets WHERE endpoint_id=$1`, endpointID).Scan(
 	return &a, nil
 }
 
-// UpsertAsset 按端点 upsert 业务维度扩展（purpose/exposure/owner/tags 全量替换）。
-func (s *Store) UpsertAsset(ctx context.Context, endpointID uuid.UUID, purpose, exposure, owner string, tags []string) (*Asset, error) {
+// UpsertAsset 按接口 upsert 业务维度扩展（purpose/exposure/owner/tags/business_type 全量替换；
+// business_type 空值归一为 OTHER，枚举校验见 handler 层与 NormalizeBusinessType）。
+func (s *Store) UpsertAsset(ctx context.Context, endpointID uuid.UUID, purpose, exposure, owner string, tags []string, businessType string) (*Asset, error) {
 	exposure = strings.ToUpper(strings.TrimSpace(exposure))
 	if exposure == "" {
 		exposure = "INTERNAL"
+	}
+	businessType = NormalizeBusinessType(businessType)
+	if !validBusinessTypes[businessType] {
+		return nil, fmt.Errorf("无效的业务类型：%s", businessType)
 	}
 	if tags == nil {
 		tags = []string{}
@@ -621,14 +799,15 @@ func (s *Store) UpsertAsset(ctx context.Context, endpointID uuid.UUID, purpose, 
 	var a Asset
 	var tagsRaw []byte
 	err = s.db.QueryRow(ctx, `
-INSERT INTO api_assets (endpoint_id, purpose, exposure, owner, tags)
-VALUES ($1,$2,$3,$4,$5::jsonb)
+INSERT INTO api_assets (endpoint_id, purpose, exposure, owner, tags, business_type)
+VALUES ($1,$2,$3,$4,$5::jsonb,$6)
 ON CONFLICT (endpoint_id) DO UPDATE SET
   purpose = EXCLUDED.purpose, exposure = EXCLUDED.exposure,
-  owner = EXCLUDED.owner, tags = EXCLUDED.tags, updated_at = now()
-RETURNING endpoint_id, purpose, exposure, data_classification, owner, tags, created_at, updated_at`,
-		endpointID, purpose, exposure, owner, string(tagsJSON)).Scan(
-		&a.EndpointID, &a.Purpose, &a.Exposure, &a.DataClassification, &a.Owner, &tagsRaw, &a.CreatedAt, &a.UpdatedAt)
+  owner = EXCLUDED.owner, tags = EXCLUDED.tags, business_type = EXCLUDED.business_type,
+  updated_at = now()
+RETURNING endpoint_id, purpose, exposure, data_classification, owner, tags, business_type, created_at, updated_at`,
+		endpointID, purpose, exposure, owner, string(tagsJSON), businessType).Scan(
+		&a.EndpointID, &a.Purpose, &a.Exposure, &a.DataClassification, &a.Owner, &tagsRaw, &a.BusinessType, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -670,9 +849,9 @@ UPDATE api_endpoints SET learning_status=$2, updated_at=now() WHERE id=$1`, id, 
 }
 
 // AutoClassify 按路径/方法启发式自动分类，写 api_classification_dimensions（source=AUTO）。
-// 端点分类已锁定时返回 ErrClassificationLocked（事务）。
+// 接口分类已锁定时返回 ErrClassificationLocked（事务）。
 func (s *Store) AutoClassify(ctx context.Context, id uuid.UUID) ([]ClassificationDimension, error) {
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -706,16 +885,23 @@ ON CONFLICT (endpoint_id, dimension) DO UPDATE SET
 	return dims, nil
 }
 
-// StartLearning 创建 RUNNING 学习任务并置端点 learning_status=LEARNING；
+// StartLearning 创建 RUNNING 学习任务并置接口 learning_status=LEARNING；
 // 已有 RUNNING 任务时返回 ErrLearningRunning（事务）。
-func (s *Store) StartLearning(ctx context.Context, endpointID uuid.UUID, createdBy *uuid.UUID) (*LearningJob, error) {
-	tx, err := s.db.Begin(ctx)
+// sampleTarget 为样本目标：0 取缺省 DefaultSampleTarget；越界返回 ErrInvalidSampleTarget。
+func (s *Store) StartLearning(ctx context.Context, endpointID uuid.UUID, sampleTarget int, createdBy *uuid.UUID) (*LearningJob, error) {
+	if sampleTarget == 0 {
+		sampleTarget = DefaultSampleTarget
+	}
+	if sampleTarget < MinSampleTarget || sampleTarget > MaxSampleTarget {
+		return nil, ErrInvalidSampleTarget
+	}
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 学习启停互斥：锁定端点行防并发双开；不存在则返回 ErrNotFound
+	// 学习启停互斥：锁定接口行防并发双开；不存在则返回 ErrNotFound
 	var one int
 	err = tx.QueryRow(ctx, `SELECT 1 FROM api_endpoints WHERE id=$1 FOR UPDATE`, endpointID).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -733,9 +919,9 @@ SELECT EXISTS(SELECT 1 FROM api_learning_jobs WHERE endpoint_id=$1 AND status='R
 		return nil, ErrLearningRunning
 	}
 	job, err := scanLearningJob(tx.QueryRow(ctx, `
-INSERT INTO api_learning_jobs (endpoint_id, status, created_by)
-VALUES ($1,'RUNNING',$2)
-RETURNING `+learningJobColumns, endpointID, createdBy))
+INSERT INTO api_learning_jobs (endpoint_id, status, sample_target, created_by)
+VALUES ($1,'RUNNING',$2,$3)
+RETURNING `+learningJobColumns, endpointID, sampleTarget, createdBy))
 	if err != nil {
 		return nil, err
 	}
@@ -749,16 +935,16 @@ UPDATE api_endpoints SET learning_status='LEARNING', updated_at=now() WHERE id=$
 	return job, nil
 }
 
-// StopLearning 停止运行中的学习任务（置 STOPPED），端点 learning_status=PAUSED；
+// StopLearning 停止运行中的学习任务（置 STOPPED），接口 learning_status=PAUSED；
 // 无 RUNNING 任务时返回 ErrLearningNotRunning（事务）。
 func (s *Store) StopLearning(ctx context.Context, endpointID uuid.UUID, actor string) (*LearningJob, error) {
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 锁定端点行，与 StartLearning 互斥；不存在则返回 ErrNotFound
+	// 锁定接口行，与 StartLearning 互斥；不存在则返回 ErrNotFound
 	var one int
 	err = tx.QueryRow(ctx, `SELECT 1 FROM api_endpoints WHERE id=$1 FOR UPDATE`, endpointID).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -815,7 +1001,7 @@ WHERE endpoint_id=$1 ORDER BY started_at DESC, id DESC LIMIT 1`, endpointID))
 	return job, stats, nil
 }
 
-// ListLifecycleEvents 端点生命周期事件分页列表（created_at DESC）。
+// ListLifecycleEvents 接口生命周期事件分页列表（created_at DESC）。
 func (s *Store) ListLifecycleEvents(ctx context.Context, endpointID uuid.UUID, page, pageSize int) ([]LifecycleEvent, int64, error) {
 	if page <= 0 {
 		page = 1
@@ -848,7 +1034,7 @@ FROM api_lifecycle_events WHERE endpoint_id=$1 ORDER BY created_at DESC, id LIMI
 	return out, total, rows.Err()
 }
 
-// ListLearningSamples 端点学习样本分页列表（accepted 可空过滤，collected_at DESC）。
+// ListLearningSamples 接口学习样本分页列表（accepted 可空过滤，collected_at DESC）。
 func (s *Store) ListLearningSamples(ctx context.Context, endpointID uuid.UUID, accepted *bool, page, pageSize int) ([]LearningSample, int64, error) {
 	if page <= 0 {
 		page = 1

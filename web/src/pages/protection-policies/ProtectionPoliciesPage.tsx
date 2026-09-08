@@ -30,6 +30,7 @@ import type {
 } from '../../api/protectionPolicies'
 import ProtectionModeTag from '../../components/ProtectionModeTag'
 import SmartTable from '../../components/SmartTable'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -152,6 +153,13 @@ export default function ProtectionPoliciesPage() {
     queryFn: () => protectionPoliciesApi.list({ ...filters, page, page_size: pageSize }),
   })
 
+  const { rowSelection, batchDeleteButton } = useBatchDelete<ProtectionPolicyItem>({
+    remove: (id) => protectionPoliciesApi.remove(id),
+    invalidateKeys: [['protection-policies']],
+    entityName: '防护策略',
+    canDelete: hasPermission(permissions, 'protection_policies.delete'),
+  })
+
   const detailQuery = useQuery({
     queryKey: ['protection-policy', detailId],
     queryFn: () => protectionPoliciesApi.get(detailId as string),
@@ -253,7 +261,16 @@ export default function ProtectionPoliciesPage() {
       title: '名称',
       dataIndex: 'name',
       width: 180,
-      render: (v: string, record) => <a onClick={() => setDetailId(record.id)}>{v}</a>,
+      render: (v: string, record) => (
+        <Button
+          type="link"
+          size="small"
+          style={{ padding: 0, height: 'auto' }}
+          onClick={() => setDetailId(record.id)}
+        >
+          {v}
+        </Button>
+      ),
     },
     {
       title: '防护模式',
@@ -268,8 +285,8 @@ export default function ProtectionPoliciesPage() {
       align: 'center',
       render: (v: number) => <Tag color="geekblue">{`PL${v}`}</Tag>,
     },
-    { title: '入站阈值', dataIndex: 'inbound_anomaly_threshold', width: 90, align: 'right' },
-    { title: '出站阈值', dataIndex: 'outbound_anomaly_threshold', width: 90, align: 'right' },
+    { title: '入站阈值', dataIndex: 'inbound_anomaly_threshold', width: 90 },
+    { title: '出站阈值', dataIndex: 'outbound_anomaly_threshold', width: 90 },
     {
       title: '内置',
       dataIndex: 'is_builtin',
@@ -280,7 +297,6 @@ export default function ProtectionPoliciesPage() {
       title: '引用应用数',
       dataIndex: 'usage_count',
       width: 100,
-      align: 'right',
       render: (v: number) => (v > 0 ? <Tag color="blue">{v}</Tag> : v),
     },
     {
@@ -363,6 +379,7 @@ export default function ProtectionPoliciesPage() {
             setPage(1)
           }}
         />
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -376,9 +393,14 @@ export default function ProtectionPoliciesPage() {
         <SmartTable<ProtectionPolicyItem>
           storageKey="protection-policies"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailId(record.id),
+            style: { cursor: 'pointer' },
+          })}
           scroll={{ x: 1250 }}
           pagination={{
             current: page,

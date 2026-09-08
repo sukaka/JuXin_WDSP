@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "case_id": "WAF-ATK-PATH-001",
+  "case_version": 1,
+  "family": "waf",
+  "tags": ["path-traversal", "encoded-dotdot", "crs-declared"],
+  "criticality": "MANDATORY",
+  "truth": "ATTACK",
+  "truth_reason": "路径穿越：URL 编码的 ../ 序列读取 /etc/passwd，自研合成；属项目 CRS 声明检测范围（路径穿越/LFI）",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成攻击样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "waf.crs.path_traversal",
+    "applications": ["p1reg-echo-site"],
+    "protocols": ["http/1.1"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin", "waf_event_pipeline"]
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/download",
+        "query": "file=%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+        "headers": {}
+      },
+      "wait": null,
+      "assert": []
+    }
+  ],
+  "seed": 2004,
+  "reset_plan": {"scope": "none", "actions": ["none"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "coraza_crs", "rule_family": "path_traversal"},
+      "expected_final_action": "DETECT_PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "waf_security_event", "rule_family": "path_traversal"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "coraza_crs", "rule_family": "path_traversal"},
+      "expected_final_action": "BLOCK_403",
+      "expected_origin": "not_reached",
+      "expected_events": [{"type": "waf_security_event", "rule_family": "path_traversal"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": true,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "VALIDATION"
+}

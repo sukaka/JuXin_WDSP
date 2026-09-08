@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Alert, Button, Card, DatePicker, Input, InputNumber, Select, Space, Tag, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { DownloadOutlined } from '@ant-design/icons'
+import ExportDropdown from '../../components/ExportDropdown'
 import type dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { accessLogsApi } from '../../api/accessLogs'
@@ -32,7 +32,8 @@ const METHOD_OPTIONS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTION
   label: m,
 }))
 
-// 网关仅对 403 推断 BLOCK，其余请求 waf_action 为空（放行）
+// 网关仅当错误链确证 WAF 归属（Coraza 中断 / guard API 防护管线阻断）才标 BLOCK；
+// 源站自返 403 等其余请求 waf_action 为空（放行或不归因），见 gateway/modules/jiuzhang_guard/accesslog.go
 const WAF_ACTION_OPTIONS = [{ value: 'BLOCK', label: '阻断' }]
 
 export default function AccessLogsPage() {
@@ -51,6 +52,26 @@ export default function AccessLogsPage() {
     setFilters((f) => ({ ...f, ...patch }))
     setPage(1)
   }
+
+  /** 导出筛选结果：携带当前全部过滤条件（后端上限 10000 行） */
+  const exportFiltered = () =>
+    window.open(
+      accessLogsApi.exportUrl({
+        start_time: filters.start_time,
+        end_time: filters.end_time,
+        domain: filters.domain,
+        client_ip: filters.client_ip,
+        method: filters.method,
+        uri: filters.uri,
+        status: filters.status,
+        waf_action: filters.waf_action,
+        request_id: filters.request_id,
+      }),
+      '_blank',
+    )
+
+  /** 导出全部：不带任何过滤条件（后端上限 10000 行） */
+  const exportAll = () => window.open(accessLogsApi.exportUrl({}), '_blank')
 
   const onRangeChange = (range: RangeValue) => {
     setFilter({
@@ -84,7 +105,6 @@ export default function AccessLogsPage() {
       title: '状态码',
       dataIndex: 'response_status',
       width: 80,
-      align: 'right',
       render: (v: number) => (
         <Typography.Text type={v >= 500 ? 'danger' : v >= 400 ? 'warning' : undefined}>
           {v || '-'}
@@ -95,14 +115,12 @@ export default function AccessLogsPage() {
       title: '耗时',
       dataIndex: 'duration_ms',
       width: 90,
-      align: 'right',
       render: (v: number) => `${v} ms`,
     },
     {
       title: '响应大小',
       dataIndex: 'bytes_out',
       width: 100,
-      align: 'right',
       render: (v: number) => `${v} B`,
     },
     {
@@ -117,6 +135,24 @@ export default function AccessLogsPage() {
       ellipsis: true,
       render: (v: string) => v || '-',
     },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 80,
+      fixed: 'right',
+      render: (_, record) => (
+        <Button
+          type="link"
+          size="small"
+          onClick={(e) => {
+            e.stopPropagation()
+            setSelectedId(record.id)
+          }}
+        >
+          详情
+        </Button>
+      ),
+    },
   ]
 
   return (
@@ -124,27 +160,7 @@ export default function AccessLogsPage() {
       title="访问日志"
       extra={
         hasPermission(permissions, 'access_logs.export') && (
-          <Button
-            icon={<DownloadOutlined />}
-            onClick={() =>
-              window.open(
-                accessLogsApi.exportUrl({
-                  start_time: filters.start_time,
-                  end_time: filters.end_time,
-                  domain: filters.domain,
-                  client_ip: filters.client_ip,
-                  method: filters.method,
-                  uri: filters.uri,
-                  status: filters.status,
-                  waf_action: filters.waf_action,
-                  request_id: filters.request_id,
-                }),
-                '_blank',
-              )
-            }
-          >
-            导出 CSV
-          </Button>
+          <ExportDropdown onExportFiltered={exportFiltered} onExportAll={exportAll} />
         )
       }
     >

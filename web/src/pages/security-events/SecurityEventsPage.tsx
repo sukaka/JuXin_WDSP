@@ -12,7 +12,7 @@ import {
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { DownloadOutlined } from '@ant-design/icons'
+import ExportDropdown from '../../components/ExportDropdown'
 import type dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { securityEventsApi } from '../../api/securityEvents'
@@ -109,7 +109,7 @@ export default function SecurityEventsPage() {
       width: 80,
       render: (v: string) => <StatusTag value={v} map={EVENT_SEVERITY_META} />,
     },
-    { title: '评分', dataIndex: 'anomaly_score', width: 70, align: 'right' },
+    { title: '评分', dataIndex: 'anomaly_score', width: 70 },
     {
       title: '动作',
       dataIndex: 'action',
@@ -140,9 +140,9 @@ export default function SecurityEventsPage() {
       title="安全事件"
       extra={
         hasPermission(permissions, 'security_events.export') && (
-          <Button
-            icon={<DownloadOutlined />}
-            onClick={() =>
+          <ExportDropdown
+            tooltip="「导出筛选结果」仅携带时间范围、域名、攻击类型、风险四项筛选（与后端导出接口一致）；客户端IP、请求路径、方法、动作、处置状态、请求 ID 不参与导出。「导出全部」不携带任何筛选。"
+            onExportFiltered={() =>
               window.open(
                 securityEventsApi.exportUrl({
                   start_time: filters.start_time,
@@ -154,9 +154,8 @@ export default function SecurityEventsPage() {
                 '_blank',
               )
             }
-          >
-            导出 CSV
-          </Button>
+            onExportAll={() => window.open(securityEventsApi.exportUrl({}), '_blank')}
+          />
         )
       }
     >
@@ -248,6 +247,10 @@ export default function SecurityEventsPage() {
           columns={columns}
           dataSource={listQuery.data?.items}
           scroll={{ x: 1550 }}
+          onRow={(record) => ({
+            onDoubleClick: () => setSelectedId(record.id),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             current: page,
             pageSize,

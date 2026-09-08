@@ -7,14 +7,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -76,15 +80,28 @@ type RecordInput struct {
 	RequestID     string
 }
 
+// SyslogEnqueueFunc 是 syslog 外发投递函数（装配层闭包注入，本包不依赖 syslogfw，
+// 避免与 syslogfw 的 handler 形成循环导入；模式参考 backups.AlertFunc）。nil 时跳过外发。
+type SyslogEnqueueFunc func(severityHint string, payload interface{})
+
 // Service 是操作审计服务。
 type Service struct {
-	db *pgxpool.Pool
+	db              *pgxpool.Pool
+	syslog          SyslogEnqueueFunc // nil 时跳过 syslog 外发
+	fallbackMu      sync.Mutex
+	fallbackPath    string
+	persistOverride func(context.Context, RecordInput, *uuid.UUID) (bool, error)
+	failureHook     func(context.Context, uint64, error)
+	recoveredHook   func(context.Context)
 }
 
 // NewService 创建审计服务。
 func NewService(db *pgxpool.Pool) *Service {
 	return &Service{db: db}
 }
+
+// SetSyslogForwarder 设置 syslog 外发投递函数（应用装配时使用，可为 nil）。
+func (s *Service) SetSyslogForwarder(fn SyslogEnqueueFunc) { s.syslog = fn }
 
 // 敏感字段（审计摘要中脱敏）
 var sensitiveFields = map[string]bool{
@@ -144,11 +161,34 @@ func computeHash(occurredAt time.Time, username, module, action, objectType, obj
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// Record 写入一条审计记录（含哈希链）。
+// Record 写入一条审计记录（含哈希链）。数据库暂时不可用且已配置补写目录时，
+// 记录会进入本地持久化队列；数据库与队列均写入失败时才返回错误。
+func (s *Service) Record(ctx context.Context, in RecordInput) error {
+	if err := s.recordDurably(ctx, in); err != nil {
+		slog.Warn("audit record persist failed",
+			"module", in.Module, "action", in.Action,
+			"username", in.Username, "request_id", in.RequestID,
+			"error", err)
+		return err
+	}
+	return nil
+}
+
+// record 是 Record 的持久化实现。
 // 关键约束：occurred_at 必须截断到微秒（PostgreSQL timestamptz 精度），
 // 否则链上重算哈希会因纳秒/微秒不一致而全部失配；
 // 并通过 advisory lock 串行化写入，防多实例并发造成链分叉。
-func (s *Service) Record(ctx context.Context, in RecordInput) error {
+func (s *Service) record(ctx context.Context, in RecordInput) error {
+	_, err := s.recordWithDelivery(ctx, in, nil)
+	return err
+}
+
+// recordWithDelivery 写入一条审计记录。补写时 deliveryID 提供跨进程重启的幂等键；
+// 常规直写传 nil，不改变现有写入语义。
+func (s *Service) recordWithDelivery(ctx context.Context, in RecordInput, deliveryID *uuid.UUID) (bool, error) {
+	if s.db == nil {
+		return false, errors.New("audit database is not configured")
+	}
 	occurredAt := time.Now().UTC().Truncate(time.Microsecond)
 
 	before := MaskSensitiveJSON(in.BeforeSummary)
@@ -156,12 +196,12 @@ func (s *Service) Record(ctx context.Context, in RecordInput) error {
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	// 串行化审计写入（同一数据库内多实例共用一条链）
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(93847561)`); err != nil {
-		return err
+		return false, err
 	}
 	var previousHash string
 	err = tx.QueryRow(ctx,
@@ -170,26 +210,90 @@ func (s *Service) Record(ctx context.Context, in RecordInput) error {
 		if err == pgx.ErrNoRows {
 			previousHash = ""
 		} else {
-			return err
+			return false, err
 		}
 	}
 	recordHash := computeHash(occurredAt, in.Username, in.Module, in.Action,
 		in.ObjectType, in.ObjectID, in.Result, in.RequestID, previousHash)
 
-	_, err = tx.Exec(ctx, `
+	var insertedID uuid.UUID
+	// operation_audits 以 RULE 实现只增不改（000001），PostgreSQL 不允许在带
+	// INSERT/UPDATE RULE 的表上使用 ON CONFLICT（SQLSTATE 0A000）；delivery_id
+	// 幂等改为捕获唯一索引冲突：命中 idx_operation_audits_delivery_id 唯一冲突
+	// 视为补写重放已投递（inserted=false，无错误），其余错误照常返回。
+	err = tx.QueryRow(ctx, `
 INSERT INTO operation_audits
 (occurred_at, user_id, username, source_ip, connection_ip, user_agent_summary,
  module, action, object_type, object_id, object_name, before_summary, after_summary,
- result, failure_reason, risk_level, request_id, previous_hash, record_hash)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+ result, failure_reason, risk_level, request_id, previous_hash, record_hash, delivery_id)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+RETURNING id`,
 		occurredAt, in.UserID, in.Username, nullableIP(in.SourceIP), nullableIP(in.ConnectionIP),
 		truncateStr(in.UserAgent, 500), in.Module, in.Action, in.ObjectType, in.ObjectID,
 		in.ObjectName, before, after, in.Result, in.FailureReason, in.RiskLevel,
-		in.RequestID, previousHash, recordHash)
+		in.RequestID, previousHash, recordHash, deliveryID).Scan(&insertedID)
+	inserted := true
 	if err != nil {
-		return err
+		var pgErr *pgconn.PgError
+		if deliveryID != nil && errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+			pgErr.ConstraintName == "idx_operation_audits_delivery_id" {
+			return false, nil
+		}
+		return false, err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	// syslog 外发：入库成功后非阻塞投递，外发器异常（含 panic）不影响审计主流程。
+	if inserted {
+		s.enqueueSyslog(syslogSeverityHint(in.Action), syslogPayload(in, occurredAt, before, after, recordHash))
+	}
+	return inserted, nil
+}
+
+// syslogPayload 组装操作审计的 syslog 外发 JSON payload（before/after 须为脱敏后摘要，与库内记录一致）。
+func syslogPayload(in RecordInput, occurredAt time.Time, before, after, recordHash string) map[string]interface{} {
+	return map[string]interface{}{
+		"occurred_at":    occurredAt.Format(time.RFC3339Nano),
+		"username":       in.Username,
+		"source_ip":      in.SourceIP,
+		"connection_ip":  in.ConnectionIP,
+		"module":         in.Module,
+		"action":         in.Action,
+		"object_type":    in.ObjectType,
+		"object_id":      in.ObjectID,
+		"object_name":    in.ObjectName,
+		"before_summary": before,
+		"after_summary":  after,
+		"result":         in.Result,
+		"failure_reason": in.FailureReason,
+		"risk_level":     in.RiskLevel,
+		"request_id":     in.RequestID,
+		"record_hash":    recordHash,
+	}
+}
+
+// syslogSeverityHint 计算审计外发的 severity 提示：删除/禁用类操作 → warning，其余 → info。
+func syslogSeverityHint(action string) string {
+	a := strings.ToLower(action)
+	if strings.Contains(a, "delete") || strings.Contains(a, "disable") {
+		return "warning"
+	}
+	return ""
+}
+
+// enqueueSyslog 非阻塞投递 syslog 外发；未注入投递函数时跳过，
+// 投递函数 panic 时记录错误日志而不扩散到调用方主流程。
+func (s *Service) enqueueSyslog(severityHint string, payload interface{}) {
+	if s.syslog == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("syslog enqueue panicked", "panic", r)
+		}
+	}()
+	s.syslog(severityHint, payload)
 }
 
 func (s *Service) latestHash(ctx context.Context) (string, error) {
@@ -269,13 +373,16 @@ type ListFilter struct {
 	Module     string
 	Action     string
 	ObjectType string
-	Result     string
-	RiskLevel  string
-	RequestID  string
-	StartTime  *time.Time
-	EndTime    *time.Time
-	Page       int
-	PageSize   int
+	// ObjectID 按对象精确匹配（APM 诊断会话详情等"按对象关联审计条目"场景；
+	// 与 ObjectType 联合使用，避免跨对象类型串扰）。
+	ObjectID  string
+	Result    string
+	RiskLevel string
+	RequestID string
+	StartTime *time.Time
+	EndTime   *time.Time
+	Page      int
+	PageSize  int
 }
 
 // List 分页查询审计。
@@ -308,6 +415,9 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Entry, int64, error
 	}
 	if f.ObjectType != "" {
 		add("object_type = $%d", f.ObjectType)
+	}
+	if f.ObjectID != "" {
+		add("object_id = $%d", f.ObjectID)
 	}
 	if f.Result != "" {
 		add("result = $%d", f.Result)
@@ -428,7 +538,16 @@ func (s *Service) DistinctModules(ctx context.Context) ([]string, error) {
 	return out, rows.Err()
 }
 
+// csvEscape CSV 字段转义：=、+、-、@ 开头前加 ' 防公式注入（username 等用户输入可落审计）；
+// 含逗号/引号/换行的字段加双引号并双写内部引号。（与 accessrules/csv.go 同一实现）
 func csvEscape(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@':
+		s = "'" + s
+	}
 	if strings.ContainsAny(s, ",\"\n\r") {
 		return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
 	}

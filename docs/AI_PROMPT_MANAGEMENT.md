@@ -93,13 +93,13 @@ ai_prompts (1) ──────────── (N) ai_prompt_versions
 ### 3.3 拦截位置
 
 - **写入时强制**：`CreatePrompt` 与 `CreateVersion` 在落库前调用 `ValidateContent`，命中即拒绝（接口层映射为 400"Prompt 内容包含禁止内容（密钥/Shell/越权/思维链等）"）——禁止内容根本没有进入数据库的路径；
-- **测试时复查**：测试端点对已存版本再次执行同一检查并计入检查明细（见 §4）。
+- **测试时复查**：测试API对已存版本再次执行同一检查并计入检查明细（见 §4）。
 
 设计决策：子串匹配是刻意保守的静态门禁——实现简单、结果确定、可解释；代价是可能误伤（如正文中出现英文单词 "shell" 即被拦截），误伤时须改写措辞后重新建版。该检查是纵深防御的一环，不声称防御全部 Prompt 注入；运行时的注入隔离（知识文档内容只作数据、不得覆盖系统 Prompt）由任务书第二十三章另行约束。
 
 ## 4. 版本测试与发布门禁
 
-### 4.1 测试端点行为
+### 4.1 测试API行为
 
 `POST /api/v1/ai/prompts/versions/{versionId}/test`（权限 `ai.prompts.test`）对指定版本执行**静态测试**：
 
@@ -110,7 +110,7 @@ ai_prompts (1) ──────────── (N) ai_prompt_versions
 3. 全部通过则 `result = "PASSED"`，否则 `"FAILED"`，经 `MarkTestResult` 落库（该方法仅接受 `PASSED` / `FAILED`，其他值报错）；
 4. 响应 `{test_result, checks}`，并写审计（`prompt_test`，含版本号与结果）。
 
-说明：当前测试内容为上述静态检查；任务书第 24.4 节中的"测试集回归、对抗测试、结果对比、人工审核"环节未纳入本端点（见 §10 差异说明）。
+说明：当前测试内容为上述静态检查；任务书第 24.4 节中的"测试集回归、对抗测试、结果对比、人工审核"环节未纳入本API（见 §10 差异说明）。
 
 ### 4.2 PASSED 门禁（强制）
 
@@ -159,7 +159,7 @@ ACTIVE（消费方按 code 经 CurrentContent 读到新当前版本，见 §8）
 
 ## 6. 权限模型
 
-权限点定义于 `000014_seed_stage7_perms.up.sql`（module = `ai`），路由层由 `middleware.RequirePermission` 逐端点强制校验（`handler.go` 注册）：
+权限点定义于 `000014_seed_stage7_perms.up.sql`（module = `ai`），路由层由 `middleware.RequirePermission` 逐API强制校验（`handler.go` 注册）：
 
 | 权限码 | 名称 | 覆盖接口 |
 |--------|------|----------|
@@ -234,8 +234,8 @@ WHERE p.code = $1
 
 任务书 `docs/tasks/STAGE_7_AI_SECURITY_OPERATIONS.md` 第二十四章为本模块的需求来源，实现与其存在以下有意识的差异（以代码为准）：
 
-1. **API 形态**：任务书列出 `GET/PUT /api/v1/ai/prompts/{id}`、`GET .../{id}/diff`、`POST .../{id}/test`；实际实现为 §7 的 7 个路由——因版本不可变，无 `PUT` 更新端点；版本详情/差异查看未单独开放（版本列表已返回全部字段）；测试端点按版本定位（`POST .../versions/{versionId}/test`）；
-2. **测试深度**：当前测试为静态检查（§4.1），任务书的"测试集回归、对抗测试"未纳入 Prompt 测试端点；
+1. **API 形态**：任务书列出 `GET/PUT /api/v1/ai/prompts/{id}`、`GET .../{id}/diff`、`POST .../{id}/test`；实际实现为 §7 的 7 个路由——因版本不可变，无 `PUT` 更新API；版本详情/差异查看未单独开放（版本列表已返回全部字段）；测试API按版本定位（`POST .../versions/{versionId}/test`）；
+2. **测试深度**：当前测试为静态检查（§4.1），任务书的"测试集回归、对抗测试"未纳入 Prompt 测试API；
 3. **状态枚举**：DDL 注释声明 5 态，当前代码仅流转 `DRAFT` / `ACTIVE`（§2.3）；
 4. **运行时接入**：编排器尚未从 `ai_prompts` 读取提示词（§8）。
 

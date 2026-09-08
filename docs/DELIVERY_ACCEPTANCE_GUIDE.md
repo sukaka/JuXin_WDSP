@@ -124,3 +124,22 @@
 3. **WARNING 处置**：逐条评估是否可现场消除（如试生成报告、补恢复演练、移除 INITIAL_ADMIN_PASSWORD）；不能现场消除的记入验收记录"遗留问题"栏，明确整改期限。
 4. **AUDIT_INTEGRITY_FAILED 特例**：哈希链不一致属重大完整性事件，除不得交付外，立即按《运维手册》告警处置流程保全取证。
 5. **复验规则**：整改后重跑 `POST /api/v1/delivery-checks/run`，以最新一次检查 ID 的结果导出件作为验收附件归档。
+
+## 8. 运行环境检查与版本能力证据的区别
+
+本文档第 2 节的 22 项交付检查（`server/internal/delivery/`，页面入口「系统运维 → 交付检查」）回答的是"**此运行环境**当前是否满足交付基线"：组件在线、端口未暴露、账号齐备、备份有效等，针对的是部署现场，结果随环境变化。
+
+**版本能力证据**回答的是另一个问题："**此构建**实际具备哪些能力、哪些经过验证、证据在哪里"。它由 P0-01 工具链承载，与交付检查相互独立、互为补充：
+
+- 能力清单：`docs/capabilities/capabilities.json`（手工维护的唯一数据源）与 `docs/capabilities/capabilities.schema.json`（结构契约）。
+- 生成报告：`docs/capabilities/CAPABILITIES.md`（自动生成，禁止手改状态）。
+- 校验/生成工具：`tools/capability_evidence.py`（纯本地标准库，不执行测试、不访问网络）。
+- 证据包：`docs/evidence/releases/<build-id>/manifest.json` 与 `artifacts/`（经脱敏的结果与校验和，规则见 `docs/evidence/releases/README.md`）。
+
+使用规则：
+
+1. 交付检查 PASS 不能推出"某能力已验证"；反之能力证据通过也不替代现场环境检查。验收时两者分别取证、分别记录。
+2. 能力报告中的验证状态由证据计算：无证据或证据与构建不匹配时显示"未验证"（NOT_RUN），不会生成"发布验收通过"（RELEASE_VERIFIED）。
+3. 复验命令：
+   `python3 tools/capability_evidence.py check --catalog docs/capabilities/capabilities.json --manifest docs/evidence/releases/<build-id>/manifest.json --release`
+   非零退出即发布门槛未满足，错误信息会定位到具体字段/文件。

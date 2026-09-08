@@ -1,0 +1,154 @@
+/* 全球攻击态势感知大屏：全屏沉浸式布局与四角浮层（bsg- 前缀，深色渐变/网格/扫描线复用 bs-root） */
+
+/* 星空背景：多层不同周期的径向渐变星点叠加，避免规律性网格感 */
+.bsg-stars {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.7;
+  background-image:
+    radial-gradient(1.6px 1.6px at 18% 24%, rgba(255, 255, 255, 0.95) 50%, transparent 52%),
+    radial-gradient(1.2px 1.2px at 64% 68%, rgba(190, 225, 255, 0.8) 50%, transparent 52%),
+    radial-gradient(1.8px 1.8px at 82% 12%, rgba(255, 255, 255, 0.9) 50%, transparent 52%),
+    radial-gradient(1.3px 1.3px at 38% 82%, rgba(190, 225, 255, 0.75) 50%, transparent 52%),
+    radial-gradient(1.1px 1.1px at 48% 42%, rgba(255, 255, 255, 0.7) 50%, transparent 52%),
+    radial-gradient(1.5px 1.5px at 90% 56%, rgba(214, 228, 255, 0.85) 50%, transparent 52%);
+  background-size:
+    720px 720px,
+    940px 940px,
+    1180px 1180px,
+    860px 860px,
+    1040px 1040px,
+    1280px 1280px;
+}
+
+/* 全屏地球画布层 */
+.bsg-globe {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+/* 返回大厅按钮（浮于左上角） */
+.bsg-back {
+  position: absolute;
+  top: 18px;
+  left: 20px;
+  z-index: 6;
+}
+
+/* 顶部居中大标题（不拦截鼠标，保证地球可拖拽） */
+.bsg-title {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  text-align: center;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.bsg-title-main {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 10px;
+  color: #fff;
+  text-shadow:
+    0 0 20px rgba(0, 229, 255, 0.85),
+    0 0 48px rgba(41, 121, 255, 0.55);
+}
+
+.bsg-title-sub {
+  margin-top: 6px;
+  font-family: 'DIN Alternate', 'Bahnschrift', monospace;
+  font-size: 14px;
+  letter-spacing: 3px;
+  color: rgba(0, 224, 255, 0.85);
+  text-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
+}
+
+/* 四角浮层面板：半透明 + 毛玻璃，保持地球可见 */
+.bsg-panel {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 14px 12px;
+  background: linear-gradient(160deg, rgba(13, 34, 64, 0.72), rgba(5, 17, 41, 0.78));
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  box-shadow:
+    0 0 24px rgba(0, 176, 255, 0.12),
+    inset 0 0 20px rgba(41, 121, 255, 0.1);
+  backdrop-filter: blur(3px);
+}
+
+.bsg-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: #9fdcff;
+  text-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
+}
+
+.bsg-panel-title::before {
+  content: '';
+  width: 4px;
+  height: 14px;
+  background: linear-gradient(180deg, #00e5ff, #2979ff);
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.8);
+}
+
+.bsg-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 四角定位 */
+.bsg-kpis { left: 24px; top: 96px; width: 300px; }
+.bsg-donut { right: 24px; top: 96px; width: 330px; height: 310px; }
+.bsg-top5 { left: 24px; bottom: 24px; width: 400px; height: 270px; }
+.bsg-ticker { right: 24px; bottom: 24px; width: 480px; height: 270px; }
+
+/* KPI 行：标签左、大数字右 */
+.bsg-kpi {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 2px;
+  border-bottom: 1px dashed rgba(0, 229, 255, 0.15);
+}
+
+.bsg-kpi:last-child {
+  border-bottom: none;
+}
+
+.bsg-kpi-label {
+  font-size: 13px;
+  letter-spacing: 2px;
+  color: rgba(214, 228, 255, 0.65);
+}
+
+.bsg-kpi-value {
+  font-family: 'DIN Alternate', 'Bahnschrift', monospace;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+/* 中小屏适配：浮层等比收缩，避免遮挡地球主体 */
+@media (max-width: 1500px) {
+  .bsg-kpis { width: 260px; }
+  .bsg-donut { width: 290px; height: 280px; }
+  .bsg-top5 { width: 340px; height: 240px; }
+  .bsg-ticker { width: 400px; height: 240px; }
+  .bsg-title-main { font-size: 28px; }
+}

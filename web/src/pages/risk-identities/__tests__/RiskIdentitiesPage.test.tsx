@@ -47,7 +47,6 @@ const IDENTITY_TYPE_ROWS = [
   ['BOT', '机器人'],
   ['APPLICATION', '应用程序'],
   ['SERVICE', '服务'],
-  ['MACHINE', '机器'],
   ['AGENT', '智能体'],
   ['UNKNOWN', '未知'],
 ].map(([identity_type, label], index) => ({
@@ -138,14 +137,14 @@ describe('RiskIdentitiesPage', () => {
     expect(screen.getByText(`共 ${IDENTITY_TYPE_ROWS.length} 条`)).toBeInTheDocument()
   })
 
-  it('身份筛选提供 V1.1 七类身份', async () => {
+  it('身份筛选不再提供已移除的机器类型', async () => {
     vi.stubGlobal('fetch', mockFetchWith({ items: [], page: 1, page_size: 20, total: 0 }))
     renderPage()
     fireEvent.mouseDown(screen.getByText('身份类型'))
     for (const { label } of IDENTITY_TYPE_ROWS) {
       expect(await screen.findByTitle(label)).toBeInTheDocument()
     }
-    expect(screen.getByTitle('机器')).toBeInTheDocument()
+    expect(screen.queryByTitle('机器')).not.toBeInTheDocument()
   })
 
   it('列表为空时展示空态', async () => {

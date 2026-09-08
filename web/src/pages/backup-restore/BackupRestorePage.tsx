@@ -22,7 +22,9 @@ import { ApiError } from '../../api/client'
 import { backupsApi } from '../../api/backups'
 import { restoresApi } from '../../api/restores'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatBytes, formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -52,12 +54,20 @@ function BackupPanel() {
   const [pageSize, setPageSize] = useState(20)
   const [createOpen, setCreateOpen] = useState(false)
   const [createType, setCreateType] = useState<'FULL' | 'CONFIG_ONLY'>('FULL')
+  const [detailRecord, setDetailRecord] = useState<BackupJobItem | null>(null)
 
   const listQuery = useQuery({
     queryKey: ['backups', page, pageSize],
     queryFn: () => backupsApi.list({ page, page_size: pageSize }),
     refetchInterval: (query) =>
       (query.state.data?.items ?? []).some((b) => !isTerminalBackupStatus(b.status)) ? 3000 : false,
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<BackupJobItem>({
+    remove: (id) => backupsApi.remove(id),
+    invalidateKeys: [['backups']],
+    entityName: '备份',
+    canDelete,
   })
 
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['backups'] })
@@ -140,7 +150,6 @@ function BackupPanel() {
       title: '大小',
       dataIndex: 'file_size',
       width: 100,
-      align: 'right',
       render: (v: number | null | undefined) => formatBytes(v),
     },
     {
@@ -206,6 +215,7 @@ function BackupPanel() {
             创建备份
           </Button>
         )}
+        {batchDeleteButton}
       </Space>
       {listQuery.isError ? (
         <QueryErrorAlert error={listQuery.error} message="加载备份列表失败" />
@@ -213,6 +223,11 @@ function BackupPanel() {
         <SmartTable<BackupJobItem>
           storageKey="backup-restore"
           rowKey="id"
+          rowSelection={rowSelection}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
@@ -250,6 +265,13 @@ function BackupPanel() {
           备份文件加密存储并生成清单与哈希；创建成功后建议执行一次校验，未通过校验的备份不可用于恢复。
         </Typography.Paragraph>
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="备份任务详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </>
   )
 }
@@ -270,6 +292,7 @@ function RestorePanel() {
   const [scope, setScope] = useState('FULL')
   const [preview, setPreview] = useState<RestorePreviewData | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
+  const [detailRecord, setDetailRecord] = useState<RestoreJobItem | null>(null)
 
   const listQuery = useQuery({
     queryKey: ['restores', page, pageSize],
@@ -450,6 +473,10 @@ function RestorePanel() {
         <SmartTable<RestoreJobItem>
           storageKey="backup-restore-2"
           rowKey="id"
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
@@ -550,7 +577,7 @@ function RestorePanel() {
               columns={[
                 { title: '数据表', dataIndex: 'name', width: 220, ellipsis: true },
                 { title: '分组', dataIndex: 'group', width: 120 },
-                { title: '备份行数', dataIndex: 'backup_rows', width: 110, align: 'right' },
+                { title: '备份行数', dataIndex: 'backup_rows', width: 110 },
                 {
                   title: '行数一致',
                   dataIndex: 'match',
@@ -618,6 +645,13 @@ function RestorePanel() {
           </Space>
         )}
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="恢复任务详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </>
   )
 }

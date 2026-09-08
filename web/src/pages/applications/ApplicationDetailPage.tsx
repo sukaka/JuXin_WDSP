@@ -10,6 +10,7 @@ import {
   Spin,
   Tabs,
   Tag,
+  Tooltip,
 } from 'antd'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
@@ -17,13 +18,15 @@ import { applicationsApi } from '../../api/applications'
 import ProtectionModeTag from '../../components/ProtectionModeTag'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
+import { useBreadcrumbObjectName } from '../../stores/breadcrumb'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { APP_STATUS_META, DEPLOYMENT_STATUS_META } from '../../utils/stage3'
+import { APP_STATUS_META, DEPLOYMENT_MODE_META, DEPLOYMENT_STATUS_META } from '../../utils/stage3'
 import DomainsTab from './detail/DomainsTab'
 import UpstreamsTab from './detail/UpstreamsTab'
 import CertificatesTab from './detail/CertificatesTab'
 import HeaderProxyTab from './detail/HeaderProxyTab'
+import JwtTrustTab from './detail/JwtTrustTab'
 
 export default function ApplicationDetailPage() {
   const { id = '' } = useParams()
@@ -48,6 +51,9 @@ export default function ApplicationDetailPage() {
     },
     onError: (e) => message.error(e instanceof ApiError ? e.message : '操作失败'),
   })
+
+  // 面包屑注入当前应用名（卸载时自动清理）
+  useBreadcrumbObjectName(detailQuery.data?.name)
 
   if (detailQuery.isLoading) {
     return (
@@ -81,9 +87,17 @@ export default function ApplicationDetailPage() {
       <Card
         title={
           <Space>
-            <Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/applications')} />
+            <Tooltip title="返回应用列表">
+              <Button
+                type="text"
+                icon={<ArrowLeftOutlined />}
+                aria-label="返回应用列表"
+                onClick={() => navigate('/applications')}
+              />
+            </Tooltip>
             <span>{app.name}</span>
             <ProtectionModeTag mode={app.protection_mode} />
+            <StatusTag value={app.deployment_mode || 'REVERSE_PROXY'} map={DEPLOYMENT_MODE_META} />
             <StatusTag value={app.status} map={APP_STATUS_META} />
             <StatusTag value={app.deployment_status} map={DEPLOYMENT_STATUS_META} />
           </Space>
@@ -149,6 +163,16 @@ export default function ApplicationDetailPage() {
               label: '代理与头合规',
               children: <HeaderProxyTab appId={app.id} />,
             },
+            // JWT 信任策略（WDSP P0-03）：无 jwt_trust.read 权限不露入口
+            ...(hasPermission(permissions, 'jwt_trust.read')
+              ? [
+                  {
+                    key: 'jwt-trust',
+                    label: 'JWT 信任策略',
+                    children: <JwtTrustTab appId={app.id} appCode={app.code} />,
+                  },
+                ]
+              : []),
             {
               key: 'certificates',
               label: '证书绑定',

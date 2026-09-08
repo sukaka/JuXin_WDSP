@@ -1,0 +1,118 @@
+# 九章 APM 阶段2 —— 数据面编排（独立于主栈 docker-compose.yml，不改动既有文件）
+# 依据：docs/BUSINESS_PERFORMANCE_APM_DESIGN.md §19.2；docs/APM_STAGE0_ADR.md D2/D3
+#
+# profile 说明：
+#   central —— 中央数据面（ClickHouse + 中央 Collector Gateway），与九章管理面同侧部署
+#   local   —— 本地 Collector 示例（业务宿主机/容器侧），实际生产通常以 systemd/独立
+#              compose 部署在业务主机上，这里仅作可运行参考
+#
+# 启动：
+#   docker compose -f docker-compose.apm.yml --profile central up -d
+#   docker compose -f docker-compose.apm.yml --profile local up -d   # 可选示例
+#
+# 镜像锁定纪律：tag + multi-arch index digest 双锁（见 docs/DEPENDENCIES.md
+# 「多架构镜像锁定」），digest 于 2026-08-30 经 docker buildx imagetools inspect 实测。
+# 升级镜像前必须重跑兼容性回归并更新本文档与 DEPENDENCIES.md。
+
+name: jiuzhang-apm
+
+services:
+  clickhouse:
+    # multi-arch index digest（amd64: 07c3dac1… / arm64: e6155c78…，子摘要见 DEPENDENCIES.md）
+    image: clickhouse/clickhouse-server:25.8-alpine@sha256:87e0a5b72f5465b18eacca7c76850e7ff551c9795c50e451f5646299e5e24146
+    container_name: jiuzhang-apm-clickhouse
+    restart: unless-stopped
+    profiles: [central]
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: ${CLICKHOUSE_ADMIN_USER:-default}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_ADMIN_PASSWORD:?CLICKHOUSE_ADMIN_PASSWORD is required}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"   # 允许 SQL 方式创建 apm_writer 账号
+    volumes:
+      - apm-clickhouse-data:/var/lib/clickhouse
+      # 首次启动（空数据卷）自动执行 deployment/apm/clickhouse/*.sql 初始化 schema；
+      # 已有数据卷不会重跑，schema 变更走迁移评审（见 deployment/apm/clickhouse/README.md）
+      - ./apm/clickhouse:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${CLICKHOUSE_HTTP_PORT:-8123}:8123"   # 运维/查询入口，仅回环
+      # native tcp 9000 不暴露到宿主机，仅 compose 内网供 Collector 写入
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - apm-data
+
+  collector-central:
+    # multi-arch index digest（amd64: aa96c26b… / arm64: 9d76815c…，子摘要见 DEPENDENCIES.md）
+    image: otel/opentelemetry-collector-contrib:0.154.0@sha256:b3079f45e19bdb7326bf49cdddce6cf60dfd865138db39f2733ea48ab17bc4cb
+    container_name: jiuzhang-apm-collector-central
+    restart: unless-stopped
+    profiles: [central]
+    command: ["--config=/etc/otelcol-contrib/central-gateway.yaml"]
+    environment:
+      CLICKHOUSE_APM_WRITER_USER: ${CLICKHOUSE_APM_WRITER_USER:-default}
+      CLICKHOUSE_APM_WRITER_PASSWORD: ${CLICKHOUSE_APM_WRITER_PASSWORD:?CLICKHOUSE_APM_WRITER_PASSWORD is required}
+    volumes:
+      - ./apm/collector/central-gateway.yaml:/etc/otelcol-contrib/central-gateway.yaml:ro
+      # mTLS 证书占位目录（server.crt/server.key/ca.crt），由部署侧私有 CA 签发后挂载
+      - ./apm/pki:/etc/jiuzhang-apm/tls:ro
+    ports:
+      - "${APM_CENTRAL_OTLP_GRPC:-4317}:4317"    # mTLS gRPC 接收，按内网 ACL 收敛
+      - "${APM_CENTRAL_OTLP_HTTP:-4318}:4318"
+      - "127.0.0.1:${APM_CENTRAL_METRICS:-8888}:8888"   # 自监控 Prometheus，仅回环
+      - "127.0.0.1:${APM_CENTRAL_HEALTH:-13133}:13133"  # health_check 扩展，仅回环
+    # contrib 镜像为 distroless（无 shell/wget），容器内无法执行 healthcheck 命令；
+    # 健康检查由外部经 13133（health_check 扩展）或 8888（metrics）完成。
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G        # memory_limiter 以此为基线（75% + 20% spike）
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - apm-data
+
+  collector-local:
+    # 与中央同一锁定镜像；profile=local 仅作业务侧部署参考（生产多为 systemd 直装）
+    image: otel/opentelemetry-collector-contrib:0.154.0@sha256:b3079f45e19bdb7326bf49cdddce6cf60dfd865138db39f2733ea48ab17bc4cb
+    container_name: jiuzhang-apm-collector-local
+    restart: unless-stopped
+    profiles: [local]
+    command: ["--config=/etc/otelcol-contrib/local-collector.yaml"]
+    volumes:
+      - ./apm/collector/local-collector.yaml:/etc/otelcol-contrib/local-collector.yaml:ro
+      # 客户端 mTLS 证书占位（client.crt/client.key/ca.crt），身份绑定租户
+      - ./apm/pki:/etc/jiuzhang-apm/tls:ro
+    ports:
+      - "127.0.0.1:${APM_LOCAL_OTLP_GRPC:-4317}:4317"    # 仅回环，Agent 只允许本机连接
+      - "127.0.0.1:${APM_LOCAL_OTLP_HTTP:-4318}:4318"
+      - "127.0.0.1:${APM_LOCAL_METRICS:-9888}:9888"
+      - "127.0.0.1:${APM_LOCAL_HEALTH:-13133}:13133"
+    # distroless 镜像无 shell：健康检查走外部探测 13133（health_check 扩展）。
+    deploy:
+      resources:
+        limits:
+          memory: 512M      # memory_limiter 以此为基线（70% + 20% spike）
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - apm-data
+
+networks:
+  apm-data:
+    driver: bridge
+    internal: false         # 中央 Collector 需被本地 Collector 经内网访问；纯单机实验可改 true
+
+volumes:
+  apm-clickhouse-data:

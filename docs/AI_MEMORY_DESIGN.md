@@ -165,7 +165,7 @@ ACTIVE ──禁用（SetStatus DISABLED）──▶ DISABLED（保留数据，�
 | 禁用 | `SetStatus(id, "DISABLED")` | 属主校验；状态白名单仅 `ACTIVE`/`DISABLED`；禁用后不再被 `List` 默认返回、不再进入 `LoadForContext` |
 | 删除 | `Delete` 物理 `DELETE` | 属主校验；不可恢复 |
 
-说明：仓储层 `SetStatus` 支持重新置回 `ACTIVE`，但当前路由只暴露了 `POST /{id}/disable` 禁用端点，未提供"启用"接口（见 §8）；不存在的 ID 在各写路径统一经 `RowsAffected() == 0` 归一为 `ErrNotFound` → 404。
+说明：仓储层 `SetStatus` 支持重新置回 `ACTIVE`，但当前路由只暴露了 `POST /{id}/disable` 禁用API，未提供"启用"接口（见 §8）；不存在的 ID 在各写路径统一经 `RowsAffected() == 0` 归一为 `ErrNotFound` → 404。
 
 ## 8. API 清单
 

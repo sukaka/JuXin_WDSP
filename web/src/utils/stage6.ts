@@ -8,12 +8,23 @@ export const TREND_RANGE_OPTIONS: { value: string; label: string }[] = [
   { value: '30d', label: '最近30天' },
 ]
 
+/** 检索类快捷时间范围（APM 调用链/SQL/异常/依赖/运行时）：后端原始表扫描限窗 ≤24 小时
+ * （server/internal/apm/handler.go parseSearchWindow），不提供 7d/30d 档位 */
+export const SEARCH_RANGE_OPTIONS: { value: string; label: string }[] = TREND_RANGE_OPTIONS.slice(0, 2)
+
 /** 报告类型 */
 export const REPORT_TYPE_META: Record<string, { color: string; label: string }> = {
   DAILY: { color: 'blue', label: '日报' },
   WEEKLY: { color: 'geekblue', label: '周报' },
   MONTHLY: { color: 'purple', label: '月报' },
   CUSTOM: { color: 'orange', label: '自定义' },
+}
+
+/** 报告内容范围 */
+export const CONTENT_SCOPE_META: Record<string, { color: string; label: string }> = {
+  WAF_API: { color: 'green', label: 'Web + API' },
+  WAF: { color: 'blue', label: '仅 Web 防护' },
+  API: { color: 'magenta', label: '仅 API 防护' },
 }
 
 /** 报告任务状态 */
@@ -31,6 +42,7 @@ export const REPORT_STATUS_META: Record<string, { color: string; label: string }
 export const REPORT_FORMAT_META: Record<string, { color: string; label: string }> = {
   html: { color: 'blue', label: '网页' },
   pdf: { color: 'red', label: 'PDF 文档' },
+  docx: { color: 'geekblue', label: 'Word 文档' },
 }
 
 /** 报告模板可开关章节（与报告结构对应，key 为后端约定标识） */
@@ -72,7 +84,7 @@ export const ALERT_STATUS_META: Record<string, { color: string; label: string }>
 /** 系统告警类型 */
 export const ALERT_TYPE_META: Record<string, { color: string; label: string }> = {
   GATEWAY_DOWN: { color: 'red', label: '网关不可用' },
-  MANAGEMENT_API_DOWN: { color: 'red', label: '管理接口不可用' },
+  MANAGEMENT_API_DOWN: { color: 'red', label: '管理 API 不可用' },
   DATABASE_UNAVAILABLE: { color: 'red', label: '数据库不可用' },
   VALKEY_UNAVAILABLE: { color: 'red', label: '缓存服务不可用' },
   EVENT_COLLECTOR_LAG: { color: 'orange', label: '事件采集积压' },
@@ -96,7 +108,7 @@ export const COMPONENT_NAME_META: Record<string, string> = {
   GATEWAY: '防护网关',
   CORAZA: 'WAF 引擎',
   GUARD: '访问控制模块',
-  API: '管理接口',
+  API: '管理 API',
   POSTGRES: '数据库',
   VALKEY: '缓存服务',
   EVENT_COLLECTOR: '事件采集器',
@@ -157,13 +169,26 @@ export const RESTORE_STATUS_META: Record<string, { color: string; label: string 
   CANCELLED: { color: 'default', label: '已取消' },
 }
 
-/** 升级任务状态 */
+/** 升级任务状态（与后端 upgrades 状态机一致） */
 export const UPGRADE_STATUS_META: Record<string, { color: string; label: string }> = {
   PENDING: { color: 'default', label: '排队中' },
+  PRECHECK: { color: 'blue', label: '升级前检查' },
+  BACKUP: { color: 'cyan', label: '升级前备份' },
+  APPLYING: { color: 'geekblue', label: '应用升级' },
+  MIGRATING: { color: 'geekblue', label: '数据库迁移' },
+  VERIFYING: { color: 'gold', label: '升级后验证' },
   RUNNING: { color: 'blue', label: '升级中' },
   SUCCESS: { color: 'green', label: '升级成功' },
   FAILED: { color: 'red', label: '升级失败' },
+  ROLLING_BACK: { color: 'orange', label: '回滚中' },
   ROLLED_BACK: { color: 'orange', label: '已回滚' },
+}
+
+/** 升级包状态 */
+export const UPGRADE_PACKAGE_STATUS_META: Record<string, { color: string; label: string }> = {
+  REGISTERED: { color: 'default', label: '已登记' },
+  VERIFIED: { color: 'green', label: '校验通过' },
+  REJECTED: { color: 'red', label: '校验未通过' },
 }
 
 /** 预检/交付检查结果 */
@@ -195,6 +220,13 @@ export function isTerminalRestoreStatus(status: string): boolean {
 /** 升级任务是否终态 */
 export function isTerminalUpgradeStatus(status: string): boolean {
   return status === 'SUCCESS' || status === 'FAILED' || status === 'ROLLED_BACK'
+}
+
+/** 汇总预检/检查项整体结果：任一 FAIL → FAIL，否则任一 WARNING → WARNING，全 PASS → PASS */
+export function summarizeCheckResult(items: { result: string }[]): string {
+  if (items.some((i) => i.result === 'FAIL')) return 'FAIL'
+  if (items.some((i) => i.result === 'WARNING')) return 'WARNING'
+  return 'PASS'
 }
 
 /** 交付检查任务是否终态 */

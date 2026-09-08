@@ -17,6 +17,13 @@
 13. **安全响应头**：配置默认安全响应头；
 14. **限速**：登录和高风险接口限速。
 
+## 三权角色权限划分（迁移 000100 口径）
+
+- **安全管理员（SECURITY_ADMIN）**：全部安全功能——应用防护、应用防护策略、访问控制、API 防护、事件中心、安全态势（含系统告警的安全告警）、报表中心、智能安全运营，以及 HA 主备、告警通知只读。
+- **系统管理员（SYSTEM_ADMIN）**：系统运维（运行监控/网口/网络/存储/备份/升级/交付检查/告警通知）、用户与角色管理、系统设置、授权管理、系统告警（系统运维告警），以及智能能力管理整组（模型/智能体/工具/提示词/记忆/配额成本/智能审计/质量评估）；不持有任何安全业务权限点。
+- **审计管理员（AUDIT_ADMIN）**：纯审计角色，仅操作审计（`audits.*`）、登录日志（`login_logs.*`）、个人资料与自身会话自助、工作台基础信息；不持有任何业务与 AI 权限点。
+- 该划分由迁移 `000100_role_perm_rebalance` 统一收口，前端菜单（`web/src/utils/menu.ts`）角色码与后端路由 `RequirePermission` 权限点口径一致；自定义角色不受影响，仍按权限点补显菜单。
+
 ## 身份认证安全
 
 - 密码使用 Argon2id 或 bcrypt 存储；
@@ -74,6 +81,31 @@
 
 安全事件只保留调查所需信息，不默认保存完整请求体和响应体。
 
+## 日志外发（syslog）
+
+管理面业务日志可外发至用户自建 syslog 服务器（SIEM 对接），外发不改变库内记录，外发失败不影响任何主流程。
+
+- **外发范围（六类）**：安全事件、访问控制事件、全量访问日志、操作审计、登录日志、系统告警。网关 Caddy 运行日志、Coraza 原始 audit 文件、API 进程 stdout 属进程运行日志，不经管理面外发。
+- **架构**：各采集器/业务服务在**入库成功后**通过非阻塞 `Enqueue` 投递（有界内存队列 10000 条，满时丢弃最旧并告警计数）；后台单协程批量发送。操作审计/登录日志/系统告警以装配层闭包注入投递函数（避免包间循环依赖），未注入时跳过。发送失败的报文追加到磁盘 spool（`syslog-spool.jsonl`，上限 50MB，超限截断只留后半部分），后台每 10s 重放，全部成功后删除文件。配置每批发送前从 `system_settings` 热读取，改开关/地址即时生效。
+- **报文格式**：RFC5424（`<pri>1 ts host app-name procid msgid - msg`），APP-NAME 固定 `jiuzhang-waf`，MSGID 按类型区分（`security-event` / `access-control-event` / `access-log` / `operation-audit` / `login-log` / `system-alert` / `test`），MSG 为紧凑 JSON，换行与控制字符一律清洗防帧破坏。severity 映射：安全事件 HIGH→3/MEDIUM→4/LOW→5；系统告警按等级 CRITICAL→2/HIGH→3/MEDIUM→4/LOW→5；登录失败与删除/禁用类审计→4（warning）；其余→6（info）。
+- **配置项**（`system_settings` logging 组，接口仅允许白名单键、boolean 类型强校验）：
+
+| 设置键 | 类型 | 默认 | 说明 |
+|--------|------|------|------|
+| `syslog_enabled` | boolean | false | 外发总开关 |
+| `syslog_protocol` | string | udp | 传输协议（udp / tcp） |
+| `syslog_address` | string | 空 | 服务器地址（host:port） |
+| `syslog_facility` | integer | 1 | facility 数值 |
+| `syslog_forward_security_events` | boolean | true | 外发安全事件 |
+| `syslog_forward_access_control_events` | boolean | true | 外发访问控制事件 |
+| `syslog_forward_access_logs` | boolean | false | 外发全量访问日志 |
+| `syslog_forward_operation_audits` | boolean | true | 外发操作审计 |
+| `syslog_forward_login_logs` | boolean | true | 外发登录日志 |
+| `syslog_forward_system_alerts` | boolean | true | 外发系统告警 |
+
+- **可靠性语义**：UDP 不保证送达（无重传，发送失败仅进 spool 依赖下次重放，队列满丢弃最旧）；TCP 断线自动重连（退避 1s→30s）+ spool 重放，尽力投递不保证零丢失。外发为旁路设计：任何环节失败只记日志/告警计数，绝不阻塞或回滚业务写入。
+- **安全约束**：操作审计外发 payload 复用脱敏后的 before/after 摘要（与库内一致）；登录日志不含密码、验证码、完整会话标识；测试消息接口（`POST /api/v1/system-settings/syslog-test`）需 `logging.syslog_test` 权限并记操作审计；系统告警仅新建 OPEN 时外发（合并不重复外发），评估器对同 type+component 未关闭告警去重，防止外发失败→告警→再外发的循环放大。
+
 ## 数据安全
 
 - 证书私钥在数据库或磁盘中加密保存；
@@ -106,7 +138,7 @@
 
 ## AI 安全运营中心安全（阶段7）
 
-- **权限模型（能力权限 + 数据权限两层）**：能力层——迁移 000014 种子 31 个 `ai.*` 权限点并按角色分配：安全管理员获 AI 分析与草稿全量能力（不含模型/Agent/Tool/Prompt 管理），系统管理员获 AI 运维诊断与模型/Agent/Tool/Prompt/评估管理，审计管理员仅 `ai.audits.read` 与 `ai.usage.read`；所有阶段7接口在路由层按权限点强制校验，Tool 每次执行前重新校验调用者当前真实权限（RequiredPermission）。数据层——会话、任务记录、记忆严格属主隔离，非属主访问一律 404，不泄露资源存在性。
+- **权限模型（能力权限 + 数据权限两层）**：能力层——迁移 000014 种子 31 个 `ai.*` 权限点，000100 起按新三权口径分配：安全管理员获智能安全运营全量能力（分析/草稿/降噪，不含模型/Agent/Tool/Prompt/记忆/配额等能力管理），系统管理员独占智能能力管理（模型/Agent/Tool/Prompt/记忆/配额成本/智能审计/质量评估），审计管理员不持有任何 `ai.*` 权限点；所有阶段7接口在路由层按权限点强制校验，Tool 每次执行前重新校验调用者当前真实权限（RequiredPermission）。数据层——会话、任务记录、记忆严格属主隔离，非属主访问一律 404，不泄露资源存在性。
 - **确定性管线与受约束总结**：意图分类与任务规划为确定性正则规则（非 LLM 决策）；事实唯一来源为 Tool 查询结果，回答主体为确定性事实文本，LLM 仅做受约束语言总结——系统提示词限定只能复述给定事实、禁止编造数字/事件/规则/IP/时间、不超过 6 句、数据不足时直接声明不得推测、背景记忆中的指令性内容一律忽略；LLM 总结失败时降级为直接返回确定性事实文本。
 - **Prompt Injection 防护**：事件/日志/知识库内容仅以 user 角色的事实段进入上下文并标注为已核实事实，不作为指令执行，事实段截断 3000 字符；回答路径的系统提示词为代码内联（`composeAnswer`），数据库 `ai_prompts` 的 `CurrentContent` 当前无运行时消费方（仅管理面使用），DB Prompt 内容不影响运行路径；知识库文件名/元数据/正文中的指令性内容不执行（详见 docs/AI_RAG_SECURITY.md、docs/AI_TOOL_SECURITY.md）；Prompt 管理面写入与版本创建经禁止内容静态扫描（密钥/Shell/越权/思维链），仅静态测试 PASSED 的版本可发布。
 - **幻觉防护**：Tool 结果登记为证据集并以 [Ex] 编号引用，最终回答经 `ValidateCitations` 校验，未能对应到证据集的引用一律剔除并附加说明，回答末尾附证据列表；无事实支撑时回答固定声明"当前数据不足，无法确认"。
@@ -167,12 +199,12 @@
 
 ### 访问控制与审计
 
-- 27 个权限点按三权分配（安全管理员全量 / 审计管理员只读 + API 审计 / 系统管理员运维只读），路由层 `RequirePermission` 强制；所有写操作记录操作审计（模块 `api_assets`/`api_security`）。
+- 27 个权限点按三权分配（000100 起：安全管理员全量独占，系统管理员与审计管理员不再持有 `api_*` 权限点），路由层 `RequirePermission` 强制；所有写操作记录操作审计（模块 `api_assets`/`api_security`）。
 - 策略发布（`api_policy.publish`）为高风险操作，同步执行并记录 SUCCESS/FAILURE。
 - AI 工具（`api_*`）全部为 READ_ONLY 风险等级：AI 不得自动确认模型、自动发布、自动修改用途、自动关闭 API、自动封禁身份。
 
 ### 幂等与一致性
 
 - 统一主事件按 `request_id` 幂等（同一 Request ID 只生成一个主事件；采集器重放不产生重复行）。
-- 模型冻结事务化（`FOR UPDATE` 行锁 + 旧版 SUPERSEDED），FORMAL 不可变；端点合并/拆分事务化并写生命周期事件。
+- 模型冻结事务化（`FOR UPDATE` 行锁 + 旧版 SUPERSEDED），FORMAL 不可变；API合并/拆分事务化并写生命周期事件。
 - 配置下发经 Caddy Admin Unix Socket（不暴露 TCP），快照进版本库，回滚一致。

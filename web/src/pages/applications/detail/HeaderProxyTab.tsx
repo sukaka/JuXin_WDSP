@@ -23,7 +23,9 @@ import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import { headerConfigApi, pathRoutesApi } from '../../../api/applications'
 import type { PathRouteBody } from '../../../api/applications'
+import RecordDetailDrawer from '../../../components/RecordDetailDrawer'
 import SmartTable from '../../../components/SmartTable'
+import useBatchDelete from '../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../stores/auth'
 import { formatDateTime } from '../../../utils/format'
 import { hasPermission } from '../../../utils/permission'
@@ -46,7 +48,7 @@ const DEFAULT_CONFIG: AppHeaderConfig = {
   csp_mode: 'off',
   csp_value: '',
   response_buffering: false,
-  xff_overwrite: false,
+  xff_overwrite: true,
   host_strip_port: false,
   accept_encoding_off: false,
   redirect_port_rewrite: false,
@@ -221,7 +223,15 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
                 >
                   <Input placeholder="内容（delete 时无需填写）" style={{ width: 280 }} autoComplete="off" />
                 </Form.Item>
-                <MinusCircleOutlined onClick={() => remove(field.name)} />
+                <Tooltip title="删除此头修改规则">
+                  <Button
+                    type="text"
+                    danger
+                    icon={<MinusCircleOutlined />}
+                    aria-label="删除此头修改规则"
+                    onClick={() => remove(field.name)}
+                  />
+                </Tooltip>
               </Space>
             ))}
             <Button
@@ -243,6 +253,7 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
   const [pageSize, setPageSize] = useState(20)
   const [editing, setEditing] = useState<AppPathRoute | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
+  const [detailRecord, setDetailRecord] = useState<AppPathRoute | null>(null)
   const [routeForm] = Form.useForm<PathRouteFormValues>()
 
   const routesQuery = useQuery({
@@ -296,6 +307,13 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
       invalidateRoutes()
     },
     onError: onRouteError,
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<AppPathRoute>({
+    remove: (routeId) => pathRoutesApi.remove(appId, routeId),
+    invalidateKeys: [['path-routes']],
+    entityName: '路径路由',
+    canDelete: canUpdate,
   })
 
   const openEditRoute = (record: AppPathRoute) => {
@@ -580,19 +598,22 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
         title="路径转发配置"
         style={{ marginTop: 16 }}
         extra={
-          canUpdate && (
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => {
-                setEditing(null)
-                routeForm.resetFields()
-                setCreateOpen(true)
-              }}
-            >
-              新增转发规则
-            </Button>
-          )
+          <Space>
+            {batchDeleteButton}
+            {canUpdate && (
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={() => {
+                  setEditing(null)
+                  routeForm.resetFields()
+                  setCreateOpen(true)
+                }}
+              >
+                新增转发规则
+              </Button>
+            )}
+          </Space>
         }
       >
         {routesQuery.isError ? (
@@ -606,10 +627,15 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
           <SmartTable<AppPathRoute>
             storageKey="app-path-routes"
             rowKey="id"
+            rowSelection={rowSelection}
             loading={routesQuery.isLoading}
             columns={routeColumns}
             dataSource={routesQuery.data?.items}
             scroll={{ x: 900 }}
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailRecord(record),
+              style: { cursor: 'pointer' },
+            })}
             pagination={{
               current: page,
               pageSize,
@@ -744,6 +770,13 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
           </Form.Item>
         </Form>
       </Drawer>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="路径转发详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </>
   )
 }

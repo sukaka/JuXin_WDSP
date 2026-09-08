@@ -9,7 +9,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -122,9 +124,31 @@ func (s *Store) EndpointKey(ctx context.Context, endpointID uuid.UUID) (string, 
 	return key, err
 }
 
-// CreateCandidate 创建候选版本（初始状态 CANDIDATE）。
-// version_number 在创建时按端点序号分配（同端点 max+1），状态迁移不再改变。
+// CreateCandidate 创建候选版本（初始状态 CANDIDATE，created_reason=manual 手工入口）。
+// version_number 在创建时按接口序号分配（同接口 max+1），状态迁移不再改变。
 func (s *Store) CreateCandidate(ctx context.Context, endpointID uuid.UUID, endpointKey, changeSummary string, schema map[string]string, createdBy uuid.UUID) (*Version, error) {
+	return s.CreateCandidateWithReason(ctx, endpointID, endpointKey, changeSummary, CreatedReasonManual, schema, createdBy)
+}
+
+// 候选创建来源（created_reason）白名单。
+const (
+	// CreatedReasonManual 手工/接口创建。
+	CreatedReasonManual = "manual"
+	// CreatedReasonLearningThreshold 学习样本达阈值自动生成。
+	CreatedReasonLearningThreshold = "learning_threshold"
+)
+
+// ValidCreatedReason 校验 created_reason 取值（白名单外拒绝，不静默改写）。
+func ValidCreatedReason(reason string) bool {
+	return reason == CreatedReasonManual || reason == CreatedReasonLearningThreshold
+}
+
+// CreateCandidateWithReason 按来源创建候选版本（初始状态 CANDIDATE）。
+// reason 必须在白名单内（ValidCreatedReason），否则返回错误；手工入口行为不变（CreateCandidate）。
+func (s *Store) CreateCandidateWithReason(ctx context.Context, endpointID uuid.UUID, endpointKey, changeSummary, reason string, schema map[string]string, createdBy uuid.UUID) (*Version, error) {
+	if !ValidCreatedReason(reason) {
+		return nil, fmt.Errorf("invalid created_reason: %q", reason)
+	}
 	if schema == nil {
 		schema = map[string]string{}
 	}
@@ -132,9 +156,9 @@ func (s *Store) CreateCandidate(ctx context.Context, endpointID uuid.UUID, endpo
 	raw, _ := json.Marshal(schema)
 	v, err := scanVersion(s.db.QueryRow(ctx, `
 INSERT INTO api_model_versions (api_endpoint_id, endpoint_key, status, version_number, schema_json, content_hash, change_summary, created_reason, created_by)
-VALUES ($1,$2,$3,(SELECT COALESCE(MAX(version_number),0)+1 FROM api_model_versions WHERE api_endpoint_id=$1),$4,$5,$6,'manual',$7)
+VALUES ($1,$2,$3,(SELECT COALESCE(MAX(version_number),0)+1 FROM api_model_versions WHERE api_endpoint_id=$1),$4,$5,$6,$7,$8)
 RETURNING `+versionColumns,
-		endpointID, endpointKey, StatusCandidate, raw, h, changeSummary, nullUUID(createdBy)))
+		endpointID, endpointKey, StatusCandidate, raw, h, changeSummary, reason, nullUUID(createdBy)))
 	if err != nil {
 		return nil, err
 	}
@@ -186,6 +210,18 @@ WHERE id=$1
 RETURNING `+versionColumns, id, StatusFormal, nullUUID(operatorID)))
 	if err != nil {
 		return nil, err
+	}
+	// 同事务物化请求体参数行（幂等；schema 为空跳过），供参数约束确认与下发
+	if err := materializeRequestParameters(ctx, tx, id, v.Schema); err != nil {
+		return nil, fmt.Errorf("materialize request parameters: %w", err)
+	}
+	// P0-06 最小联动：运行时学习到的响应 Schema 按本版本物化快照（无学习数据零影响）
+	if err := snapshotResponseSchemas(ctx, tx, id, v.EndpointKey); err != nil {
+		return nil, fmt.Errorf("snapshot response schemas: %w", err)
+	}
+	// P0-03：编译 FORMAL 模型为端点级运行时策略（初始 DRAFT，随整站发布联动生效）
+	if err := s.createDraftRuntimePolicyTx(ctx, tx, v); err != nil {
+		return nil, fmt.Errorf("compile runtime policy: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -270,6 +306,14 @@ UPDATE api_model_versions SET activated_at=now() WHERE id=$1 RETURNING `+version
 	}
 	if _, err := tx.Exec(ctx, `
 UPDATE api_endpoints SET current_model_version_id=$1, updated_at=now() WHERE id=$2`, id, v.EndpointID); err != nil {
+		return nil, err
+	}
+	// P0-03：对应运行时策略标记「待发布」（DRAFT → VALIDATED）；
+	// FAILED 随重新激活回到待发布集合（发布失败后的恢复路径：重新激活 + 重新发布）
+	if _, err := tx.Exec(ctx, `
+UPDATE api_runtime_policies SET status=$2, error=''
+WHERE source_model_version_id=$1 AND status IN ($3,$4)`,
+		id, PolicyStatusValidated, PolicyStatusDraft, PolicyStatusFailed); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -514,6 +558,30 @@ ORDER BY endpoint_key, confirmed_at DESC NULLS LAST`)
 			return nil, err
 		}
 		out[key] = schema
+	}
+	return out, rows.Err()
+}
+
+// ListFormalModelVersions 返回 endpoint_key → FORMAL 版本号（十进制字符串），供发布通道下发网关。
+// 网关随运行时事件回报 model_version，用于“命中时生效的是哪版模型”的审计溯源。
+// 选取语义与 ListFormalSchemas 一致（同 endpoint_key 取最近确认的 FORMAL 版本）。
+func (s *Store) ListFormalModelVersions(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT DISTINCT ON (endpoint_key) endpoint_key, version_number
+FROM api_model_versions WHERE status='FORMAL'
+ORDER BY endpoint_key, confirmed_at DESC NULLS LAST`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var key string
+		var versionNumber int
+		if err := rows.Scan(&key, &versionNumber); err != nil {
+			return nil, err
+		}
+		out[key] = strconv.Itoa(versionNumber)
 	}
 	return out, rows.Err()
 }

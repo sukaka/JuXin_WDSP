@@ -24,6 +24,8 @@ func TestClassifyIntents(t *testing.T) {
 		{"root cause", "为什么 WAF 延迟突然升高，帮忙排查", TaskRootCause, "LOW"},
 		{"log query", "查询今天的访问日志", TaskLogQuery, "LOW"},
 		{"statistics", "统计最近 7 天的攻击趋势", TaskStatistics, "LOW"},
+		{"statistics natural top attack", "今天哪种类型的攻击最多", TaskStatistics, "LOW"},
+		{"statistics natural common attack", "最常见的攻击类型是什么", TaskStatistics, "LOW"},
 		{"policy recommendation", "请给出策略优化建议", TaskPolicyRec, "MEDIUM"},
 		{"what-if", "如果关闭这条规则会怎样", TaskWhatIf, "MEDIUM"},
 		{"report summary", "生成本周安全周报", TaskReportSummary, "LOW"},
@@ -45,6 +47,13 @@ func TestClassifyIntents(t *testing.T) {
 				t.Errorf("Classify(%q).Summary 为空", c.message)
 			}
 		})
+	}
+}
+
+func TestClassifyAttackRankingUsesSecurityEventOnly(t *testing.T) {
+	plan := Classify("今天哪种类型的攻击最多")
+	if len(plan.Agents) != 1 || plan.Agents[0] != "security_event" {
+		t.Fatalf("expected only security_event agent, got %#v", plan.Agents)
 	}
 }
 

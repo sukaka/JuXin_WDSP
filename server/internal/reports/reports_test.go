@@ -253,7 +253,7 @@ func TestRenderHTMLEscapesInjection(t *testing.T) {
 	d := sampleData()
 	d.Conclusions = BuildConclusions(d)
 	d.Suggestions = BuildSuggestions(d)
-	html, err := RenderHTML(testTemplate(), d, "JZ-202607-0001")
+	html, err := RenderHTML(testTemplate(), d, "JZ-202607-0001", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestRenderHTMLNoExternalResources(t *testing.T) {
 	d := sampleData()
 	d.Conclusions = BuildConclusions(d)
 	d.Suggestions = BuildSuggestions(d)
-	html, err := RenderHTML(BuiltinTemplate(), d, "JZ-202607-0001")
+	html, err := RenderHTML(BuiltinTemplate(), d, "JZ-202607-0001", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestRenderHTMLSectionSwitch(t *testing.T) {
 	d.Suggestions = BuildSuggestions(d)
 	tpl := BuiltinTemplate()
 	tpl.Sections = map[string]bool{SectionSourceIPs: false, SectionConclusions: true}
-	html, err := RenderHTML(tpl, d, "JZ-202607-0001")
+	html, err := RenderHTML(tpl, d, "JZ-202607-0001", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +421,7 @@ func TestRenderPDFWithFont(t *testing.T) {
 	if _, err := os.Stat(fontPath); err != nil {
 		t.Skipf("font not available: %v", err)
 	}
-	pdf, err := RenderPDF(BuiltinTemplate(), pdfTestData(), "JZ-202607-0001", fontPath)
+	pdf, err := RenderPDF(BuiltinTemplate(), pdfTestData(), "JZ-202607-0001", fontPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +435,7 @@ func TestRenderPDFWithFont(t *testing.T) {
 
 func TestRenderPDFASCIIFallback(t *testing.T) {
 	// 字体文件缺失 → 降级 ASCII 摘要而非崩溃
-	pdf, err := RenderPDF(BuiltinTemplate(), pdfTestData(), "JZ-202607-0001", "/nonexistent/font.ttf")
+	pdf, err := RenderPDF(BuiltinTemplate(), pdfTestData(), "JZ-202607-0001", "/nonexistent/font.ttf", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestRenderPDFInvalidFont(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("not a font"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := RenderPDF(BuiltinTemplate(), pdfTestData(), "JZ-202607-0001", bad)
+	_, err := RenderPDF(BuiltinTemplate(), pdfTestData(), "JZ-202607-0001", bad, nil)
 	if err == nil {
 		t.Fatal("invalid font should return error")
 	}

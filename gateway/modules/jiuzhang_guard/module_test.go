@@ -14,9 +14,11 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/apievents"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/cidr"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientip"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/events"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/l7rules"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/ratelimit"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/temporaryblock"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/trustedproxy"
@@ -55,6 +57,13 @@ func newTestGuard(t *testing.T, cfg Guard) *Guard {
 	g.policies, err = compilePolicies(cfg.RateLimits)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.L7Rules != nil {
+		eng, ruleErrs := l7rules.Compile(cfg.L7Rules)
+		for _, re := range ruleErrs {
+			t.Logf("l7rules rejected rule %s: %v", re.RuleID, re.Err)
+		}
+		g.l7 = eng
 	}
 	logPath := filepath.Join(t.TempDir(), "events.log")
 	g.events, err = events.NewLogger(logPath, "test-node")
@@ -158,6 +167,9 @@ func TestDenyBlocks(t *testing.T) {
 	evs := g.readEvents(t)
 	if len(evs) != 1 || evs[0].EventType != events.IPDenyMatch || evs[0].AccessRuleID != "d1" {
 		t.Fatalf("deny event: %+v", evs)
+	}
+	if evs[0].Proto != "HTTP/1.1" {
+		t.Fatalf("deny event proto = %q, want HTTP/1.1", evs[0].Proto)
 	}
 }
 
@@ -426,6 +438,146 @@ type errLimiter struct{}
 
 func (e *errLimiter) Allow(_ context.Context, _ string, _ ratelimit.Algorithm, _ int64, _ time.Duration, _ int64) (ratelimit.Result, error) {
 	return ratelimit.Result{}, errEngine
+}
+
+// fakeValkeyClient Valkey 测试替身：仅记录 Close 调用（命令方法不支持，调用即错）。
+type fakeValkeyClient struct{ closed bool }
+
+func (f *fakeValkeyClient) Eval(context.Context, string, []string, []string) ([]interface{}, error) {
+	return nil, errors.New("fake valkey: eval unsupported")
+}
+func (f *fakeValkeyClient) HSet(context.Context, string, string, string) error {
+	return errors.New("fake valkey: hset unsupported")
+}
+func (f *fakeValkeyClient) HGetAll(context.Context, string) (map[string]string, error) {
+	return nil, errors.New("fake valkey: hgetall unsupported")
+}
+func (f *fakeValkeyClient) HDel(context.Context, string, ...string) error {
+	return errors.New("fake valkey: hdel unsupported")
+}
+func (f *fakeValkeyClient) Ping(context.Context) error {
+	return errors.New("fake valkey: ping unsupported")
+}
+func (f *fakeValkeyClient) Close() error { f.closed = true; return nil }
+
+// 共享引擎重建（配置指纹变化）：旧 Valkey 连接必须关闭——不关则每次改 Valkey 配置的
+// reload 泄漏一条连接。
+func TestGetEngineRebuildClosesOldValkey(t *testing.T) {
+	resetSharedEngineForTest()
+	t.Cleanup(resetSharedEngineForTest)
+	fc := &fakeValkeyClient{}
+	engineMu.Lock()
+	engineInst = &sharedEngine{
+		initialized: true,
+		sig:         "stale-sig", // 与下方 Guard 指纹不同 → 强制重建
+		valkey:      fc,
+		limiter:     ratelimit.NewMemoryLimiter(100),
+		blockCache:  temporaryblock.NewCache(nil, 0),
+		lastErrEmit: map[string]time.Time{},
+	}
+	engineMu.Unlock()
+
+	eng, err := getEngine(&Guard{CounterBackend: "memory"})
+	if err != nil {
+		t.Fatalf("getEngine: %v", err)
+	}
+	if eng == nil || eng.limiter == nil || eng.blockCache == nil {
+		t.Fatal("rebuilt engine incomplete")
+	}
+	if !fc.closed {
+		t.Fatal("old valkey connection must be closed on engine rebuild")
+	}
+}
+
+// Cleanup 只关闭资源、不置 nil 字段（LOW-G4：配置重载与在途请求并发，请求路径无锁读
+// 这些字段，置 nil 构成数据竞态）；sync.Once 保证重复调用安全。
+func TestCleanupClosesWithoutNilifying(t *testing.T) {
+	dir := t.TempDir()
+	apiLog, err := apievents.NewLogger(filepath.Join(dir, "api-events.log"), "test-node")
+	if err != nil {
+		t.Fatalf("new api events logger: %v", err)
+	}
+	evLog, err := events.NewLogger(filepath.Join(dir, "events.log"), "test-node")
+	if err != nil {
+		t.Fatalf("new events logger: %v", err)
+	}
+	g := &Guard{logger: zap.NewNop(), apiEvents: apiLog, events: evLog}
+	if err := g.Cleanup(); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if g.events == nil || g.apiEvents == nil {
+		t.Fatal("cleanup must keep fields assigned (request-path reads are lock-free)")
+	}
+	if err := g.Cleanup(); err != nil {
+		t.Fatalf("second cleanup must be safe: %v", err)
+	}
+}
+
+// HIGH-5 回归：共享引擎重建失败（新配置 Valkey 不可达）时，在线旧引擎必须保持存活——
+// 不取消封禁轮询、不关闭旧 Valkey 连接、共享指针仍指向旧实例（Caddy 拒绝新配置但旧
+// 配置的 CC/封禁能力不受失败重载影响）。
+func TestGetEngineFailedRebuildKeepsOldEngine(t *testing.T) {
+	resetSharedEngineForTest()
+	t.Cleanup(resetSharedEngineForTest)
+	fc := &fakeValkeyClient{}
+	pollCancelled := false
+	old := &sharedEngine{
+		initialized: true,
+		sig:         "stale-sig", // 与下方 Guard 指纹不同 → 强制重建
+		valkey:      fc,
+		limiter:     ratelimit.NewMemoryLimiter(100),
+		blockCache:  temporaryblock.NewCache(nil, 0),
+		cancelPoll:  func() { pollCancelled = true },
+		lastErrEmit: map[string]time.Time{},
+	}
+	engineMu.Lock()
+	engineInst = old
+	engineMu.Unlock()
+
+	// 127.0.0.1:1 连接即拒（closed port），valkey.NewClient 初始拨号失败 → init 失败
+	_, err := getEngine(&Guard{CounterBackend: "valkey", Valkey: &valkeyJSON{Address: "127.0.0.1:1"}})
+	if err == nil {
+		t.Fatal("expected init error for unreachable valkey")
+	}
+	engineMu.Lock()
+	cur := engineInst
+	engineMu.Unlock()
+	if cur != old {
+		t.Fatal("failed rebuild must keep the old engine instance alive")
+	}
+	if pollCancelled {
+		t.Fatal("old poll must not be cancelled on failed rebuild")
+	}
+	if fc.closed {
+		t.Fatal("old valkey connection must not be closed on failed rebuild")
+	}
+	// 旧引擎仍可用（CC/限速不受失败重载影响）
+	res, lerr := old.limiter.Allow(context.Background(), "k", ratelimit.TokenBucket, 1, time.Minute, 1)
+	if lerr != nil || !res.Allowed {
+		t.Fatalf("old engine must remain functional: %v %+v", lerr, res)
+	}
+}
+
+// MED-8：max_counter_keys 必须有上限——内存计数/身份行为/风险存储按它 make 预分配，
+// 异常大值在 Provision 阶段即可 OOM 杀进程。
+func TestValidateMaxCounterKeysBound(t *testing.T) {
+	g := &Guard{EventsLog: filepath.Join(t.TempDir(), "events.log")}
+	g.MaxCounterKeys = maxCounterKeysLimit + 1
+	if err := g.Validate(); err == nil {
+		t.Fatal("max_counter_keys above limit must be rejected")
+	}
+	g.MaxCounterKeys = -1
+	if err := g.Validate(); err == nil {
+		t.Fatal("negative max_counter_keys must be rejected")
+	}
+	g.MaxCounterKeys = maxCounterKeysLimit
+	if err := g.Validate(); err != nil {
+		t.Fatalf("max_counter_keys at limit must pass: %v", err)
+	}
+	g.MaxCounterKeys = 0
+	if err := g.Validate(); err != nil {
+		t.Fatalf("zero (default) max_counter_keys must pass: %v", err)
+	}
 }
 
 // ---------- 测试辅助 ----------

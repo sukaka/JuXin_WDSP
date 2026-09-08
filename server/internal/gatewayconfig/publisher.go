@@ -78,14 +78,28 @@ type PolicyProvider interface {
 }
 
 // ExceptionRule 是下发到网关的例外规则（SecLang 文本）。
+// 作用域字段（ScopeType/ApplicationID/PolicyID）供生成器按应用过滤下发：
+// 仅 GLOBAL 与归属本应用（APPLICATION）的例外进入该应用的 WAF 指令段。
+// ExceptionID/ExceptionVersion 为发布时可反查的稳定映射（WDSP P0-04）：
+// 生成器在每条规则前写 `# jiuzhang-exc-map: <rule_id> <exception_id> <version>`
+// 注释行，且 SecLang 规则自身携带 tag:'exc:<uuid>' / tag:'excv:<version>'，
+// 事件侧据此反查，不再依赖当次列表序号归因。
 type ExceptionRule struct {
-	RuleID  int
-	SecLang string
+	RuleID           int
+	SecLang          string
+	ScopeType        string // GLOBAL / APPLICATION（其余取值 fail-closed 不下发）
+	ApplicationID    string // APPLICATION 作用域的归属应用 ID（空 = 未绑定）
+	PolicyID         string // 预留：POLICY 作用域（当前 API 不可创建）
+	ExceptionID      string // 来源例外 UUID（空 = 旧版构建产物，不可反查）
+	ExceptionVersion int    // 发布时例外行版本
 }
 
-// ExceptionProvider 是启用例外策略查询接口（由 exceptions.Store 实现）。
+// ExceptionProvider 是启用例外策略发布快照接口（由 exceptions.Store 实现）。
+// WDSP P0-04：返回全量 ENABLED+VALID 的 WAF 引擎例外（单查询、按 exception_id
+// 字典序稳定排序，marker/effect 规则 ID 由提供方分配）；读取或编译失败返回错误，
+// 发布 fail-hard，禁止静默清空例外。
 type ExceptionProvider interface {
-	GetEnabledExceptions(ctx context.Context) ([]ExceptionRule, error)
+	ListForPublish(ctx context.Context) ([]ExceptionRule, error)
 }
 
 // CustomRulesProvider 是启用自定义规则 SecLang 查询接口（由 customrules.Store 实现）。
@@ -114,6 +128,50 @@ type AppConfigsProvider interface {
 	ListEnabledPathRoutes(ctx context.Context, appID uuid.UUID) ([]AppPathRoute, error)
 }
 
+// ---------- W18-SYNC 多节点发布扇出（任务书 §200 配置面主动同步 v2） ----------
+
+// 节点同步结果词表（api_gateway_nodes.last_sync_result；空串 = 从未同步）。
+const (
+	NodeSyncSuccess      = "SUCCESS"
+	NodeSyncFailed       = "FAILED"
+	NodeSyncHashMismatch = "HASH_MISMATCH"
+)
+
+// 同步失败告警类型与组件。类型复用 systemalerts 既有词表（字面量镜像：
+// 推送失败 = CONFIG_PUBLISH_FAILED，内容不一致 = CONFIG_HASH_MISMATCH）；
+// 本包不能直接 import systemalerts——systemalerts 经 runtimehealth 传递依赖
+// 本包，反向引用会成环，故告警出口用下方最小接口 + 装配侧适配器。
+const (
+	syncAlertTypePublishFailed = "CONFIG_PUBLISH_FAILED"
+	syncAlertTypeHashMismatch  = "CONFIG_HASH_MISMATCH"
+	// SyncAlertComponent 扇出失败告警组件名（逐节点失败合并到同一指纹，
+	// 节点名与地址在 title/message 中如实呈现）。
+	SyncAlertComponent = "API_GATEWAY_NODE_SYNC"
+)
+
+// SyncTarget 是一个登记参与扇出的次要网关节点。
+type SyncTarget struct {
+	NodeID    uuid.UUID
+	NodeName  string
+	AdminAddr string // Caddy Admin 通道标识（unix socket 路径或 http(s)://host[:port]）
+}
+
+// NodeSyncStore 多节点同步目标查询与结果回填接口（由 apinodes.Store 实现；
+// nil 时发布不扇出，行为与单网关完全一致）。
+type NodeSyncStore interface {
+	// ListSyncTargets 返回全部 sync_enabled 且已登记 admin_addr 的节点（主节点不在其中——
+	// 主发布走 Publisher 自身 CaddyClient，登记针对的是次要节点）。
+	ListSyncTargets(ctx context.Context) ([]SyncTarget, error)
+	// RecordSyncResult 回填单节点 last_sync_*（result 取 NodeSync* 词表）。
+	RecordSyncResult(ctx context.Context, nodeID uuid.UUID, result, errMsg string, versionID uuid.UUID) error
+}
+
+// SyncAlerter 次要节点同步失败告警出口（装配侧以 *systemalerts.Engine 适配实现；
+// nil 时失败事实仅落库 + slog.Warn——不静默吞错，也不因告警未接线阻断发布）。
+type SyncAlerter interface {
+	NotifyFailure(ctx context.Context, alertType, component, title, message string) error
+}
+
 // Publisher 是配置发布控制器。
 type Publisher struct {
 	db            *pgxpool.Pool
@@ -128,6 +186,22 @@ type Publisher struct {
 	ruleOverrides RuleOverridesProvider
 	guard         GuardProvider
 	appConfigs    AppConfigsProvider
+	// 镜像/透明边车配置（docs/NETWORK_MODES_DESIGN.md §4.2/§4.3）：
+	// gatewayNode 为网关节点名；mirrorIfaces 提供镜像口清单；sidecarDir 为共享卷目录（空用默认）。
+	gatewayNode  string
+	mirrorIfaces MirrorInterfacesProvider
+	sidecarDir   string
+	// W18-SYNC 多节点扇出（§200）：nodeSync 提供登记次要节点与结果回填；
+	// syncAlerter 为失败告警出口。均为 nil 时退化为单网关发布（既有行为）。
+	nodeSync    NodeSyncStore
+	syncAlerter SyncAlerter
+	// licenseState 授权状态视图（装配层注入 license 内存状态，发布时实时读取无 IO）：
+	// 无效授权 → 强制纯透传（Guard=nil、全部应用 BYPASS）；有效且配额 max_qps>0 →
+	// Guard 注入 LicenseMaxQPS。nil 视为授权有效（未装配授权时发布行为与历史一致）。
+	licenseState func(ctx context.Context) (valid bool, maxQPS int64)
+	// gatewayTracing 网关原生 OTel tracing 下发开关（装配侧从 GATEWAY_TRACING_ENABLED
+	// 注入，默认 false；见 GenerateInput.GatewayTracing）
+	gatewayTracing bool
 }
 
 type gatewayConfigLoader interface {
@@ -165,6 +239,12 @@ func (p *Publisher) SetGuardProvider(g GuardProvider) {
 	p.guard = g
 }
 
+// SetGatewayTracing 注入网关原生 OTel tracing 下发开关（默认关；仅影响配置生成内容，
+// 不改变发布流程本身）。
+func (p *Publisher) SetGatewayTracing(enabled bool) {
+	p.gatewayTracing = enabled
+}
+
 // SetCustomRulesProvider 注入自定义规则提供者（启用规则写入发布配置）。
 func (p *Publisher) SetCustomRulesProvider(c CustomRulesProvider) {
 	p.customRules = c
@@ -178,6 +258,34 @@ func (p *Publisher) SetAppConfigsProvider(provider AppConfigsProvider) {
 // SetRuleOverridesProvider 注入规则覆盖提供者。
 func (p *Publisher) SetRuleOverridesProvider(r RuleOverridesProvider) {
 	p.ruleOverrides = r
+}
+
+// SetSidecarConfig 注入镜像/透明边车配置写出所需的网关节点名与镜像口提供者（可选；
+// 未注入 mirrorIfaces 时 interfaces 输出空数组）。
+func (p *Publisher) SetSidecarConfig(gatewayNode string, ifaces MirrorInterfacesProvider) {
+	p.gatewayNode = gatewayNode
+	p.mirrorIfaces = ifaces
+}
+
+// SetSidecarDir 覆盖边车配置目录（默认 DefaultSidecarDir；测试用临时目录）。
+func (p *Publisher) SetSidecarDir(dir string) {
+	p.sidecarDir = dir
+}
+
+// SetNodeSyncStore 注入多节点同步目标仓储（W18-SYNC §200；nil 时发布不扇出）。
+func (p *Publisher) SetNodeSyncStore(s NodeSyncStore) {
+	p.nodeSync = s
+}
+
+// SetSyncAlerter 注入次要节点同步失败告警出口（可为 nil；nil 时失败仅落库与日志）。
+func (p *Publisher) SetSyncAlerter(a SyncAlerter) {
+	p.syncAlerter = a
+}
+
+// SetLicenseStateProvider 注入授权状态视图（离线授权门控；nil 视为授权有效）。
+// 语义见 applyLicenseState；视图由装配层闭包读取 license 内存状态，发布路径无额外 IO。
+func (p *Publisher) SetLicenseStateProvider(fn func(ctx context.Context) (valid bool, maxQPS int64)) {
+	p.licenseState = fn
 }
 
 const publishLockKey = "jiuzhang:gateway:publish_lock"
@@ -208,6 +316,7 @@ type PublishInput struct {
 	// AppIDs 限定发布的应用（为空表示全部活动应用）。
 	AppIDs []uuid.UUID
 	// GuardOverride 阶段5访问控制配置覆盖（回滚历史版本时使用；nil 表示从数据库实时组装）。
+	// 使用前按当前产品开关再门控（API 动态防护关闭时剥除 API 段，见 gateGuardOverride）。
 	GuardOverride *GuardConfig
 }
 
@@ -269,7 +378,7 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	// 读取启用的例外策略（下发到网关；失败则中止发布，禁止静默清空例外）
 	var exceptionRules []ExceptionRule
 	if p.exceptions != nil {
-		exceptionRules, err = p.exceptions.GetEnabledExceptions(ctx)
+		exceptionRules, err = p.exceptions.ListForPublish(ctx)
 		if err != nil {
 			p.finishTask(ctx, taskID, TaskFailed, "EXCEPTIONS_SNAPSHOT_FAILED", err.Error(), nil)
 			return
@@ -290,7 +399,12 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	var guardCfg *GuardConfig
 	if p.guard != nil {
 		if in.GuardOverride != nil {
-			guardCfg = in.GuardOverride
+			// 回滚覆盖快照按当前产品开关再门控（防跨重启泄漏 API 段，见 gateGuardOverride）
+			guardCfg, err = p.gateGuardOverride(ctx, in.GuardOverride)
+			if err != nil {
+				p.finishTask(ctx, taskID, TaskFailed, "GUARD_OVERRIDE_GATE_FAILED", err.Error(), nil)
+				return
+			}
 		} else {
 			guardCfg, err = p.guard.BuildGuardConfig(ctx)
 			if err != nil {
@@ -300,14 +414,23 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		}
 	}
 
+	// 离线授权门控：无效授权强制纯透传（Guard=nil、全部应用 BYPASS）；
+	// 有效授权注入 max_qps 全局限速配额（license 内存状态，发布路径无额外 IO）
+	licenseValid, licenseMaxQPS := true, int64(0)
+	if p.licenseState != nil {
+		licenseValid, licenseMaxQPS = p.licenseState(ctx)
+	}
+	appsData, guardCfg = applyLicenseState(appsData, guardCfg, snapshot, licenseValid, licenseMaxQPS)
+
 	// 步骤2：生成候选配置
 	p.updateTaskStep(ctx, taskID, TaskGenerating, "生成候选配置", 25)
 	gen, err := Generate(GenerateInput{
-		Apps:        appsData,
-		AdminSocket: p.caddy.SocketPath(),
-		Exceptions:  exceptionRules,
-		CustomRules: customSecLang,
-		Guard:       guardCfg,
+		Apps:           appsData,
+		AdminSocket:    p.caddy.SocketPath(),
+		Exceptions:     exceptionRules,
+		CustomRules:    customSecLang,
+		Guard:          guardCfg,
+		GatewayTracing: p.gatewayTracing,
 	})
 	if err != nil {
 		p.finishTask(ctx, taskID, TaskFailed, "GENERATE_FAILED", err.Error(), nil)
@@ -335,7 +458,7 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	if p.guard != nil && guardCfg != nil {
 		acVersionID, err = p.guard.SaveVersionSnapshot(ctx, guardCfg, taskID, in.RequestedBy)
 		if err != nil {
-			// 快照失败不阻断发布，但记录不静默
+			// 快照失败中止发布并如实记录（不静默跳过——缺失快照会使访问控制版本无法回滚溯源）
 			p.finishTask(ctx, taskID, TaskFailed, "AC_VERSION_SAVE_FAILED", err.Error(), nil)
 			return
 		}
@@ -402,7 +525,117 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	if _, err := WriteActiveConfig(p.dataDir, "current", gen.JSON); err != nil {
 		slog.Warn("write active gateway config failed", "version", version.ID, "error", err)
 	}
+	// 镜像/透明边车配置（附加产物：写失败只记日志，不回滚已加载的 Caddy 配置）
+	p.writeSidecarConfigs(ctx, appsData)
+	// W18-SYNC §200：主节点全链路成功后，同一份最终配置扇出到登记次要节点
+	// （逐节点回填 last_sync_*；次要节点失败不阻断主发布——记录并告警）。
+	p.SyncConfigToNodes(ctx, gen.JSON, version.ID)
 	p.finishTask(ctx, taskID, TaskSuccess, "", "发布成功", &version.ID)
+}
+
+// SyncConfigToNodes 将本次构建的最终配置扇出到全部登记次要节点（W18-SYNC §200
+// 配置面主动同步 v2）。纪律：
+//   - 直接使用主发布已验证的 configJSON（不重新构建），保证全节点内容一致；
+//     注意配置内 admin.listen 为主节点 socket 路径约定，次要节点须以相同路径
+//     部署（同构部署前提，部署侧登记责任）；
+//   - 逐节点 /load + 规范化哈希比对（与主发布 verifyPublish 同口径），
+//     结果回填 api_gateway_nodes.last_sync_*；
+//   - 任一节点失败不影响其余节点、不阻断主发布（失败如实落库并产系统告警，
+//     告警类型复用 CONFIG_PUBLISH_FAILED / CONFIG_HASH_MISMATCH）；
+//   - 主节点失败按既有回滚语义处理，不进入本函数。
+func (p *Publisher) SyncConfigToNodes(ctx context.Context, configJSON string, versionID uuid.UUID) {
+	if p.nodeSync == nil {
+		return
+	}
+	targets, err := p.nodeSync.ListSyncTargets(ctx)
+	if err != nil {
+		slog.Error("list gateway node sync targets failed", "version", versionID, "error", err)
+		return
+	}
+	if len(targets) == 0 {
+		return
+	}
+	wantHash, err := CanonicalConfigHash(configJSON)
+	if err != nil {
+		slog.Error("hash fanout config failed", "version", versionID, "error", err)
+		return
+	}
+	for _, t := range targets {
+		result, errMsg := syncConfigToNode(ctx, t, configJSON, wantHash)
+		// 回填用背景 ctx：请求取消不丢同步事实（与 markAC 同一纪律）
+		if err := p.nodeSync.RecordSyncResult(context.Background(), t.NodeID, result, errMsg, versionID); err != nil {
+			slog.Error("record node sync result failed", "node", t.NodeName, "version", versionID, "error", err)
+		}
+		if result != NodeSyncSuccess {
+			p.notifyNodeSyncFailure(t, result, errMsg, versionID)
+		}
+	}
+}
+
+// syncConfigToNode 推送配置到单节点并验证哈希一致性，返回（结果词表，错误摘要）。
+func syncConfigToNode(ctx context.Context, t SyncTarget, configJSON, wantHash string) (string, string) {
+	// 推送前再校验登记地址（登记接口已校验，此处防御 DB 直改等绕过路径）
+	client, err := NewCaddyClientForAdminAddr(t.AdminAddr)
+	if err != nil {
+		return NodeSyncFailed, "管理通道地址非法: " + err.Error()
+	}
+	if err := client.LoadConfig(ctx, configJSON); err != nil {
+		return NodeSyncFailed, sanitizeCaddyError(err)
+	}
+	loadedHash, err := client.GetConfigHash(ctx)
+	if err != nil {
+		return NodeSyncFailed, "读取节点配置哈希失败: " + sanitizeCaddyError(err)
+	}
+	if loadedHash != wantHash {
+		return NodeSyncHashMismatch,
+			fmt.Sprintf("同步内容与节点实际加载配置不一致（hash %.12s != %.12s）", wantHash, loadedHash)
+	}
+	return NodeSyncSuccess, ""
+}
+
+// notifyNodeSyncFailure 次要节点同步失败告警（alerter 未接线时仅记日志，不静默）。
+func (p *Publisher) notifyNodeSyncFailure(t SyncTarget, result, errMsg string, versionID uuid.UUID) {
+	alertType := syncAlertTypePublishFailed
+	if result == NodeSyncHashMismatch {
+		alertType = syncAlertTypeHashMismatch
+	}
+	title := fmt.Sprintf("次要网关节点 %s 配置同步失败", t.NodeName)
+	msg := fmt.Sprintf("配置版本 %s 同步到节点 %s 失败（结果 %s）：%s", versionID, t.NodeName, result, errMsg)
+	if p.syncAlerter == nil {
+		slog.Warn("gateway node config sync failed (alerter not wired, recorded only)",
+			"component", SyncAlertComponent, "node", t.NodeName, "result", result, "error", errMsg)
+		return
+	}
+	// 告警用背景 ctx：请求取消不丢告警（与 markAC 同一纪律）
+	if err := p.syncAlerter.NotifyFailure(context.Background(), alertType, SyncAlertComponent, title, msg); err != nil {
+		slog.Error("raise node sync alert failed", "node", t.NodeName, "error", err)
+	}
+}
+
+// applyLicenseState 按授权状态调整发布生成输入（executePublish 生成候选配置前调用）：
+// 授权无效 → Guard=nil 且快照内全部应用 ProtectionMode 强制 BYPASS——生成侧 BYPASS
+// 语义（headers.go buildChainHandles）产出「RequestID + 安全响应头 + reverse_proxy」的
+// 纯透传配置，快照 mode 同步修正，保证版本记录与实发配置一致；
+// 授权有效且 maxQPS>0 → Guard 非 nil 时注入 LicenseMaxQPS（0=不限制不下发；
+// GuardConfig 拷贝后修改，不污染回滚覆盖快照 in.GuardOverride）。
+func applyLicenseState(appsData []AppData, guardCfg *GuardConfig, snapshot map[string]interface{}, valid bool, maxQPS int64) ([]AppData, *GuardConfig) {
+	if !valid {
+		for i := range appsData {
+			appsData[i].ProtectionMode = applications.ModeBypass
+		}
+		if items, ok := snapshot["apps"].([]map[string]interface{}); ok {
+			for _, item := range items {
+				item["mode"] = applications.ModeBypass
+			}
+		}
+		return appsData, nil
+	}
+	if guardCfg != nil && maxQPS > 0 {
+		cp := *guardCfg
+		cp.LicenseMaxQPS = int(maxQPS)
+		guardCfg = &cp
+	}
+	return appsData, guardCfg
 }
 
 // buildSnapshot 读取业务数据并组装生成输入。
@@ -443,6 +676,7 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 			AppID:          app.ID.String(),
 			Code:           app.Code,
 			ProtectionMode: app.ProtectionMode,
+			DeploymentMode: app.DeploymentMode,
 			Domains:        domains,
 			Upstreams:      upstreams,
 		}
@@ -467,7 +701,8 @@ func (p *Publisher) buildSnapshot(ctx context.Context, appIDs []uuid.UUID) ([]Ap
 				slog.Warn("get application policy params failed", "app", app.Code, "error", err)
 			}
 			if err == nil && pp != nil {
-				if pp.ProtectionMode != "" {
+				// BYPASS（数据透传）为排障/应急直通，必须绝对生效，不允许被绑定策略的模式覆盖
+				if pp.ProtectionMode != "" && ad.ProtectionMode != applications.ModeBypass {
 					ad.ProtectionMode = pp.ProtectionMode
 				}
 				ad.ParanoiaLevel = pp.ParanoiaLevel
@@ -536,7 +771,7 @@ func (p *Publisher) writeCertFiles(ctx context.Context, cert *certificates.Certi
 	return WriteCertificateFiles(p.dataDir, cert.ID.String(), certPEM, keyPEM)
 }
 
-// verifyPublish 发布后验证（Caddy 可用 + 配置已加载）。
+// verifyPublish 发布后验证（Caddy 可用 + 配置已加载 + 内容与发布一致）。
 func (p *Publisher) verifyPublish(ctx context.Context, gen *Generated, appsData []AppData) error {
 	// 1. Caddy Admin 可用
 	if err := p.caddy.Ping(ctx); err != nil {
@@ -549,6 +784,19 @@ func (p *Publisher) verifyPublish(ctx context.Context, gen *Generated, appsData 
 	}
 	if gen.ServerCount > 0 && !strings.Contains(current, "servers") {
 		return fmt.Errorf("发布后配置未包含预期的 server 定义")
+	}
+	// 3. 生效校验（P0-21）：发布内容与网关实际加载配置的规范化哈希必须一致，
+	//    不一致视为未生效 → 上层触发自动回滚
+	wantHash, err := CanonicalConfigHash(gen.JSON)
+	if err != nil {
+		return fmt.Errorf("计算发布内容哈希失败: %w", err)
+	}
+	loadedHash, err := p.caddy.GetConfigHash(ctx)
+	if err != nil {
+		return fmt.Errorf("读取网关配置哈希失败: %w", err)
+	}
+	if wantHash != loadedHash {
+		return fmt.Errorf("发布内容与网关实际加载配置不一致（hash %.12s != %.12s）", wantHash, loadedHash)
 	}
 	return nil
 }
@@ -593,8 +841,18 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 		return p.GetTask(ctx, task.ID)
 	}
 
+	// 密钥语义与 RollbackAccessControl 统一为「重注入当前密钥」：版本表不再保存密钥明文
+	// （saveVersion 脱敏存储），存量历史版本可能含旧明文，统一在重放前按当前设置重注入
+	// guard 段密钥类字段（valkey 密码、identity_salt、扫描/文件签名 key_hex、TLS 票据键），
+	// 取不到当前值则失败并明确报错（见 config_secrets.go）
+	rollbackJSON, err := p.reinjectConfigSecrets(ctx, version.ConfigurationJSON)
+	if err != nil {
+		p.finishTask(ctx, task.ID, TaskFailed, "ROLLBACK_SECRET_REINJECT_FAILED", err.Error(), nil)
+		return p.GetTask(ctx, task.ID)
+	}
+
 	p.updateTaskStep(ctx, task.ID, TaskPublishing, "回滚发布", 50)
-	prevConfig, err := loadGatewayConfig(ctx, p.caddy, version.ConfigurationJSON)
+	prevConfig, err := loadGatewayConfig(ctx, p.caddy, rollbackJSON)
 	if err != nil {
 		if errors.Is(err, errPreviousConfigRead) {
 			p.finishTask(ctx, task.ID, TaskFailed, "PREVIOUS_CONFIG_READ_FAILED",
@@ -606,7 +864,7 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 	}
 
 	// 验证
-	if err := p.verifyPublish(ctx, &Generated{JSON: version.ConfigurationJSON, ServerCount: 1}, nil); err != nil {
+	if err := p.verifyPublish(ctx, &Generated{JSON: rollbackJSON, ServerCount: 1}, nil); err != nil {
 		if restoreErr := p.rollbackToConfig(ctx, prevConfig); restoreErr != nil {
 			p.finishTask(ctx, task.ID, TaskFailed, "ROLLBACK_FAILED",
 				fmt.Sprintf("回滚后验证失败(%s)且恢复原配置失败(%s)", err.Error(), restoreErr.Error()), nil)
@@ -644,6 +902,73 @@ func (p *Publisher) RollbackAccessControl(ctx context.Context, versionID uuid.UU
 		RequestID:     requestID,
 		GuardOverride: override,
 	})
+}
+
+// gateGuardOverride 回滚覆盖快照按当前产品开关再门控（防跨重启泄漏）：
+// 快照可能取自 WDSP 开启时期，当前 API_DYNAMIC_PROTECTION_ENABLED=false 或
+// edition=waf 时剥除 API 段（口径与 buildGuardHandler 一致——仅 APIDynamicProtection
+// 为 true 才下发 API 段），避免把 API 动态防护能力回放到纯 WAF 产品形态。
+// 当前开关以 BuildGuardConfig 产物的 APIDynamicProtection 为准（装配侧 env/edition 口径）；
+// 读取失败如实返回（回滚发布失败，不静默放行快照 API 段）。
+// 快照未开启 API 段或当前开关开启时原样返回（不修改入参）。
+func (p *Publisher) gateGuardOverride(ctx context.Context, override *GuardConfig) (*GuardConfig, error) {
+	if override == nil || !override.APIDynamicProtection {
+		return override, nil
+	}
+	cur, err := p.guard.BuildGuardConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("读取当前访问控制配置以门控回滚快照失败: %w", err)
+	}
+	if cur.APIDynamicProtection {
+		return override, nil
+	}
+	return stripAPIGuardSections(override), nil
+}
+
+// stripAPIGuardSections 返回剥除 API 动态防护段后的 GuardConfig 拷贝（不修改入参；
+// 剥除口径与 buildGuardHandler 的 if g.APIDynamicProtection 块一致；
+// 非 API 字段——valkey、L7、访问日志、TLS 票据键、授权限速等——原样保留）。
+func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
+	cp := *g
+	cp.APIDynamicProtection = false
+	cp.APIProtectionMode = ""
+	cp.APIEventsLog = ""
+	cp.APIFormalSchemas = nil
+	cp.APIFormalModelVersions = nil
+	cp.APIParameterConstraints = nil
+	cp.APIKnownEndpoints = nil
+	cp.APIPolicyVersion = ""
+	// P0-04：API 引擎受限例外随 API 动态防护门控下发，一并剥除
+	cp.APIExceptions = nil
+	// 网关运行时设置（gateway_runtime 组）仅在 API 段内下发，一并剥除
+	cp.BehaviorStore = ""
+	cp.BehaviorStoreTTLSeconds = 0
+	cp.IdentitySalt = ""
+	cp.CredentialIPSpreadLimit = 0
+	cp.CredentialConcurrencyLimit = 0
+	cp.APIWriteRatePerMinute = 0
+	cp.APIMaskRules = nil
+	cp.APISensitiveValueRules = nil
+	cp.APIRoleBaselines = nil
+	cp.APIFieldPermissions = nil
+	cp.APIScanVerification = nil
+	cp.APIResponseBaselines = nil
+	cp.APIParameterRelations = nil
+	cp.APILLMAllowedModels = nil
+	cp.APIFileWatermark = nil
+	cp.APIFileSignature = nil
+	cp.APIFileComplianceRules = nil
+	cp.APIResponseFailPolicy = ""
+	cp.APIResponseCaptureMaxBytes = 0
+	cp.APIGRPCMaxFrameBytes = 0
+	cp.APIGRPCAllowCompression = false
+	cp.APIGRPCDescriptors = nil
+	cp.JWTTrust = nil
+	cp.BotPolicy = nil
+	// P1-02 B3 预备：Bot 签名密钥随 bot_policy 段同一门控剥除（秘密材料不得
+	// 在 WDSP 关闭形态下随回滚快照回放）
+	cp.BotSigningKeys = nil
+	return &cp
 }
 
 // sanitizeCaddyError 清理 Caddy 错误信息（不泄露内部细节）。

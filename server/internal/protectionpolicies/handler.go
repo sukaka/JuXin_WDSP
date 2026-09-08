@@ -355,7 +355,7 @@ func defaultIntPtr(v *int, def int) int {
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, summary, result, risk string) {
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:       &p.UserID,
 		Username:     p.Username,
 		SourceIP:     middleware.RemoteIP(r),

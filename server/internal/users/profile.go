@@ -29,8 +29,10 @@ func (h *ProfileHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	roles, _ := h.store.GetRoles(r.Context(), p.UserID)
 	perms, _ := h.store.GetPermissions(r.Context(), p.UserID)
+	permDetails, _ := h.store.GetPermissionDetails(r.Context(), p.UserID)
 	item := userItem(user, roles)
 	item["permissions"] = perms
+	item["permission_details"] = permDetails
 	response.JSON(w, r, http.StatusOK, item)
 }
 

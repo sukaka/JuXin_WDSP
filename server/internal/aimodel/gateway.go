@@ -4,6 +4,8 @@ package aimodel
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -42,7 +44,7 @@ type routedModel struct {
 }
 
 type circuitState struct {
-	failures int
+	failures  int
 	openUntil time.Time
 }
 
@@ -110,16 +112,22 @@ func (g *Gateway) recordResult(modelID uuid.UUID, err error) {
 	}
 }
 
-// apiKey 解析密钥（绝不记录日志）。
-func (g *Gateway) apiKey(ctx context.Context, p *Provider) string {
-	if g.resolver == nil || p.KeyReference == "" {
-		return ""
+// apiKey 解析密钥（密钥本体绝不记录日志）。
+// KeyReference 已配置但解密失败时返回错误并记 Warn：配置故障必须暴露，
+// 不得按空密钥继续呼叫（随后 401 静默切备用模型会掩盖配置故障，见审查 LOW-S11）。
+func (g *Gateway) apiKey(ctx context.Context, p *Provider) (string, error) {
+	if p.KeyReference == "" {
+		return "", nil
+	}
+	if g.resolver == nil {
+		return "", fmt.Errorf("ai provider %q 已配置密钥引用但加密服务未装配", p.Name)
 	}
 	key, err := g.resolver.DecryptSecret(ctx, p.KeyReference)
 	if err != nil {
-		return ""
+		slog.Warn("ai provider key decrypt failed", "provider", p.Name, "reference", p.KeyReference, "error", err)
+		return "", fmt.Errorf("ai provider %q 密钥解密失败: %w", p.Name, err)
 	}
-	return key
+	return key, nil
 }
 
 // Chat 路由式对话（按复杂度选模型，主备切换）。
@@ -156,12 +164,20 @@ func (g *Gateway) chatWith(ctx context.Context, complexity TaskComplexity, req C
 			timeout = 60 * time.Second
 		}
 		callCtx, cancel := context.WithTimeout(ctx, timeout)
+		key, keyErr := g.apiKey(ctx, c.provider)
+		if keyErr != nil {
+			// 密钥配置故障：该候选直接判失败，不发起 HTTP 呼叫（空密钥 401 会掩盖故障）；
+			// 不计熔断——非模型调用失败，避免配置错误把健康模型熔断
+			cancel()
+			lastErr = keyErr
+			continue
+		}
 		var res *ChatResult
 		var err error
 		if cb != nil && c.model.SupportsStreaming {
-			res, err = g.client.ChatStream(callCtx, c.provider.BaseURL, g.apiKey(ctx, c.provider), c.model.Code, req, cb)
+			res, err = g.client.ChatStream(callCtx, c.provider.BaseURL, key, c.model.Code, req, cb)
 		} else {
-			res, err = g.client.Chat(callCtx, c.provider.BaseURL, g.apiKey(ctx, c.provider), c.model.Code, req)
+			res, err = g.client.Chat(callCtx, c.provider.BaseURL, key, c.model.Code, req)
 		}
 		cancel()
 		g.recordResult(c.model.ID, err)
@@ -188,14 +204,23 @@ func (g *Gateway) HealthCheckAll(ctx context.Context) map[uuid.UUID]error {
 	g.mu.RUnlock()
 	out := map[uuid.UUID]error{}
 	for id, c := range seen {
-		out[id] = g.client.HealthCheck(ctx, c.provider.BaseURL, g.apiKey(ctx, c.provider), c.model.Code)
+		key, err := g.apiKey(ctx, c.provider)
+		if err != nil {
+			out[id] = err // 密钥配置故障如实上报（健康检查面板暴露）
+			continue
+		}
+		out[id] = g.client.HealthCheck(ctx, c.provider.BaseURL, key, c.model.Code)
 	}
 	return out
 }
 
 // HealthCheckModel 单模型健康检查（管理面"测试模型"用；密钥仅服务端内部解析，不外传）。
 func (g *Gateway) HealthCheckModel(ctx context.Context, m *Model, p *Provider) error {
-	return g.client.HealthCheck(ctx, p.BaseURL, g.apiKey(ctx, p), m.Code)
+	key, err := g.apiKey(ctx, p)
+	if err != nil {
+		return err
+	}
+	return g.client.HealthCheck(ctx, p.BaseURL, key, m.Code)
 }
 
 // ModelCount 已注册模型数。

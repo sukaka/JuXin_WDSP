@@ -6,6 +6,7 @@ import { ApiError } from '../../../api/client'
 import { aiAnalyzeApi } from '../../../api/ai'
 import type { AiAnalyzeResult } from '../../../api/ai'
 import AnalyzeResultView from '../../../components/ai/AnalyzeResultView'
+import RemediationCard from '../../../components/RemediationCard'
 import { useAuthStore } from '../../../stores/auth'
 import { hasPermission } from '../../../utils/permission'
 
@@ -20,6 +21,7 @@ export default function EventAnalysisPage() {
   const [fpForm] = Form.useForm<{ event_id?: string; rule_id?: number }>()
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<AiAnalyzeResult | null>(null)
+  const [lastEventId, setLastEventId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState(searchParams.get('tab') === 'fp' ? 'fp' : 'event')
 
   // 安全事件详情一键带入 event_id
@@ -51,6 +53,7 @@ export default function EventAnalysisPage() {
       message.warning('请输入事件 ID 或分析问题')
       return
     }
+    setLastEventId(eventId || null)
     await run(() => aiAnalyzeApi.event({ event_id: eventId || undefined, question: question || undefined }))
   }
 
@@ -61,6 +64,7 @@ export default function EventAnalysisPage() {
       message.warning('请输入事件 ID 或规则 ID')
       return
     }
+    setLastEventId(eventId || null)
     await run(() =>
       aiAnalyzeApi.falsePositive({ event_id: eventId || undefined, rule_id: v.rule_id || undefined }),
     )
@@ -135,6 +139,7 @@ export default function EventAnalysisPage() {
         </Typography.Paragraph>
       )}
       {result && <AnalyzeResultView result={result} />}
+      {result && lastEventId && <RemediationCard eventId={lastEventId} />}
     </Card>
   )
 }

@@ -4,6 +4,208 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-08
+
+### 新增（P0-03：业务 JWT 验证信任链）
+
+> 任务书 docs/tasks/wdsp-p0/P0-03_JWT_TRUST_CHAIN.md；迁移 000125–000127；验收 JWT-01～17 PASS、JWT-18 待专用测量硬件（如实 BLOCKED）。证据包 `docs/evidence/releases/dev-s3-jwt-20260907/`。
+
+- **网关验签核心**：`gateway/dynamic_security/jwtverify/`（RS256/ES256 显式白名单验签、严格声明校验、JWKS 内网受限获取与有界缓存、KeysetVersion 指纹与管理面逐字节一致并互钉测试）。
+- **网关挂接**：`jwt_trust.go`（真实 IP 之后、身份观测之前）；`apiprotect.go` serveNext 统一放行出口 JWT 强制处置（白名单/L7 allow 不绕过）；OBSERVE 只记录、PROTECT 401/503。
+- **管理面**：`server/internal/jwttrust/`（策略 CRUD/预检/乐观锁/审计/静态 JWKS 私参拒收/ListForGuard 下发契约）；配置供应链 fail-hard 加载与 PROTECT 管线门禁；权限 `jwt_trust.read/manage`。
+- **前端**：应用详情「JWT 信任策略」页签（草稿/预检/状态）；API 运行时事件详情展示 JWT 验证摘要。
+- **测试**：真实网关冒烟 `test/e2e/jwt-trust-smoke.sh` 26/26（合法 200/伪造 401/OBSERVE 放行/VERIFIED+SQLi→403/事件落库/发布门禁）；接口测试真库覆盖。
+
+### 新增（P0-04：整条请求处置解释与有限范围例外）
+
+> 任务书 docs/tasks/wdsp-p0/P0-04_DECISION_SCOPED_EXCEPTIONS.md；迁移 000130–000132；验收 DEC-01～06、EXC-01～15 全 PASS。证据包 `docs/evidence/releases/dev-s4-dec-exc-20260907/`。
+
+- **最终处置 final_decision**：网关 disposition 终止分支全量归因（执行者/动作/来源/状态码/规则引用/例外命中/处置步骤链）；Coraza 合流归因（下游中断如实记 BLOCK，决策结果不改写保留于 steps）；WAF 安全事件与 API 运行时事件跨侧 request_id 关联、幂等条件补全（已确认拦截优先）；事件详情抽屉「最终处置」区块。
+- **例外能力重写**：多条件交集编译（URI/方法/来源 IP/参数名全匹配才生效）、运行时时间窗半开区间（控制面离线不延长）、LOG_ONLY/ADJUST_SCORE 停用门禁（历史数据迁移标 NEEDS_REVIEW）、发布全量快照 2000 容量字典序确定性、预览 409 乐观锁、从事件创建草稿绑定真实事件且缺证据不得启用、保护模块（JWT/协议底线/人工封禁/CC/配额）不可例外。
+- **引擎侧语义**：corazasemantics 两规则标记法全维翻折 + 载荷覆盖集不动点实测（942100/942190/942270/942360+contrib 1001209 全摘除才放行）；审计日志携带 exc:<uuid>/excv:<version> 命中标记。
+- **测试**：真实网关冒烟 `test/e2e/exception-p0-smoke.sh` 34/34；E2E `web/e2e/exception-p0.spec.ts` 5/5；接口测试 16/16；迁移 up/down/幂等演练 23/23。
+
+### 新增（P0-01/02：能力证据清单与安全性能基准工具）
+
+> 任务书 docs/tasks/wdsp-p0/P0-01、P0-02；证据冻结包 `docs/evidence/releases/dev-s6-freeze-20260908/`。
+
+- **能力证据体系**：`docs/capabilities/capabilities.json`（15 项能力，实现/接线/验证三态分离）+ `tools/capability_evidence.py`（结构/断链/工件 sha256/状态伪造校验，原子写报告，38 单测）+ `docs/capabilities/CAPABILITIES.md` 自动生成；`--release` 门槛实测拒绝未达标发布。
+- **基准工具**：`test/performance/p0`（run-plan 预检、隔离归属判定、检测/处置指标分离零分母 N/A、最近秩分位数禁平均伪汇总、事件对账、报告完整性；123 单测）。正式测量矩阵/72h 长稳/异机复跑待专用隔离硬件，BLOCKED 如实保留。
+- **冻结现状**：63 条强制验收项全部可定位（PASS 52 / BLOCKED 10 / NOT_APPLICABLE 1）；能力验证 PASS 9 / BLOCKED 6；发布状态 DEVELOPMENT（差距清单见 docs/tasks/wdsp-p0/WORKLOG.md S6 记录）。
+
+### 修复（P0 实施期间抓出）
+
+- 审计写入在存在 000001 no_update/no_delete RULE 的库上报 0A000：recordWithDelivery 去掉 `ON CONFLICT (delivery_id)`，改普通 INSERT + 捕获 23505 幂等返回。
+
+### 修复（1.0.1 审计管理员权限收敛）
+
+- 审计管理员不再显示或访问「风险策略」「攻击活动」「Agent 管理」「授权管理」；新增迁移 000122 清理历史误授权限，同时保留授权失效时的授权恢复入口。
+- 完整安装包的安装向导会自动安装并验证宿主机升级执行器；安装前检查 root、systemd 和必需命令，避免新装系统仍需单独安装执行器，或 Web 升级显示成功但实际未执行。
+
+### 新增（APM 设置前台化：系统设置界面热生效）
+
+- **APM 总开关与 ClickHouse 连接串界面化**：「系统设置 → APM 性能监控」页可配置 `APM_ENABLED` 与 `APM_CLICKHOUSE_DSN` 等价项（权限 `system_settings.read`/`.update`，SYSTEM_ADMIN）；界面值（`system_settings` 表 apm 组）优先于环境变量、保存后立即生效无需重启，未配置界面值时行为与纯 env 部署完全一致（无迁移种子）。
+- **后端**：新增 `GET/PUT /api/v1/apm/settings`（挂主 mux，不受 APM 关闭 503 门控；DSN 经 clickhouse-go ParseDSN 校验、is_sensitive 不回显、审计只记 set/cleared）；ClickHouse 连接改由 `CHManager` 运行期惰性建连/DSN 变化重建（旧连接先回收，建连失败 Warn 降级不 500）；APM 路由恒注册 + 运行期 gate 门控（关闭时报文与原 503 stub 一致），系统告警 APM 评估器与组件探针随开关空转；capabilities 的 `apm_enabled` 改运行期判定。
+
+### 新增（AI 自动化渗透防护增强 阶段2：Parser 歧义检测）
+
+> 实施文档 docs/WDSP_AI_PENTEST_PROTECTION_ENHANCEMENT.md（阶段2）；无新迁移。全部信号仅 OBSERVE 不拦截。
+
+- **解析歧义四类检测（网关 dynamic_security）**：重复 JSON 键（PARSER-DUP-JSON-001）、重复查询参数、重复 Header、重复表单参数；detector=`api_parser`、ScoreDelta=20、Severity=MEDIUM（仅过物化门槛），规则版本化 1.0.0；经统一 Finding 通道落 `api_runtime_findings`（PARSER_DUPLICATE_JSON_KEY/QUERY_PARAM/HEADER/FORM_PARAM），evidence 仅白名单键（parameter_name/value_count/rule_code/path）。
+- **阶段1 强化（网关 identitybehavior）**：identity_observation 洪泛修复（16 容量已知 IP 集，扫描身份轮换 IP 观测记录 105→5 条/150 请求）；轮转快照携带完成桶计数（memory/Valkey Lua 同步），短突发请求量估算失真收敛。
+
+### 新增（AI 自动化渗透防护增强 阶段3：Risk Engine + Enforcement）
+
+> 实施文档同一（阶段3）；迁移 000101–000102。策略缺省 OBSERVE 零拦截；评估/存储故障 fail-open 放行；处置原因固定 `identity_risk_policy`。
+
+- **身份风险引擎（网关 riskengine）**：身份滑窗信号累加（默认 24h；信号三入口——identitybehavior 侦察信号含 HEADLESS-001、apiprotect DetectorMatch、身份键与身份引擎同算法同盐）；内存+Valkey ZSET（`jiuzhang:guard:risk` 单 Lua 原子入账）双实现，Valkey 故障回退内存；双阈值（block/rate_limit+rps），OBSERVE 记 would_*、PROTECT 实断 403/429；执行点位于自动临时封禁之后、授权限速与 CC 之前；身份白名单零记账。
+- **可解释处置事件**：RISK_POLICY_BLOCK/RATE_LIMIT（60s identity+action 节流）携带嵌套 risk 证据对象（identity_key/score/risk_level/threshold/mode/policy_version/action_taken/信号全量明细）；采集落 `access_control_events.details` JSONB（000101），action 映射 REJECT/OBSERVE，不产生 temporary_blocks、不计入 CC 统计。
+- **管理面**：`security_risk_policy` 单行策略（000101，乐观锁+审计+PUT 发布下发 `risk_policy` 段）；`GET/PUT /api/v1/security/risk-policy`；权限 `risk_policy.read`（三角色）/`.edit`（仅 SECURITY_ADMIN，000102）；前端风险策略页（模式/双阈值/信号分值覆盖/等级档位）。
+- **修复（实况验收抓出）**：发布装配漏注入 `risk_policy` 段（网关收不到策略）；采集解析器与网关线格式失配（扁平 vs 嵌套 risk 对象，事件被丢弃）——均已修复并补测试。
+
+### 新增（AI 自动化渗透防护增强 阶段4：Attack Session + Business Security）
+
+> 实施文档同一（阶段4）；迁移 000103–000105。聚合只读不改写源事件；PERSISTENCE 仅占位枚举。
+
+- **攻击活动聚合**：`attack_session` + `attack_session_event`（`UNIQUE(source_table,source_id)` 幂等）两表；60s Sweep + 30min 不活跃滑窗；四类来源水位线增量（security/api_runtime/identity_behavior/access_control 事件），request_id 首选关联、IP 反查兜底、NAT 歧义跳过计数；request_count 跨源去重、双落同请求不互去；风险累计截断 [0,100]。
+- **攻击阶段推断（规则表）**：阶段秩 UNKNOWN<RECON<DISCOVERY<AUTH_PROBE<AUTHORIZATION_PROBE<EXPLOIT<DATA_ACCESS<PERSISTENCE；行为事件规则码前缀映射、运行时事件按 detector/rule 映射（waf/api_schema/api_parser→EXPLOIT、resource_access 对象访问→AUTHORIZATION_PROBE、authentication→AUTH_PROBE、lifecycle→DISCOVERY、sensitive.value 实值→DATA_ACCESS；字段名命中不抬升阶段）、安全事件命中即 EXPLOIT；会话阶段取最高秩。
+- **敏感业务流滥用**：`api_assets.business_type` 13 枚举（000105，应用层校验）全链路含前端编辑；Business 三判定器（BIZ-LOGIN 登录滥用/BIZ-EXPORT 导出滥用/BIZ-OBJENUM 对象枚举，写 BUSINESS_ABUSE 行为事件，OBSERVE 1.0.0，冷却重跑零产出）。
+- **管理面**：`GET /api/v1/security/attack-sessions[/{id}]`（stage/risk_level/status/时间窗筛选，`attack_sessions.read` 三角色只读）；前端攻击活动列表+详情页（阶段筛选、会话事件时间线）。
+- **疑似自动化攻击标注（迁移 000106）**：会话内有效阶段≥3 且命中自动化指示信号（无头/枚举/低慢/对象枚举类）即派生 `automation_suspected=true`（单调不回退），判定依据 `automation_basis`（命中阶段集+首个指示信号）随行持久化、前端 tooltip 可解释；攻击活动列表/详情页红色徽标展示；历史会话不追溯。
+- **修复（实况验收抓出）**：阶段推断检测器名对齐网关实名（authentication/resource_access）；`sensitive.field`/`sensitive.in_query` 字段名命中不再抬升 DATA_ACCESS（仅 sensitive.value 实值保留）。
+
+### 新增（AI 自动化渗透防护增强 阶段1：Identity + Behavior + Recon）
+
+> 实施文档 docs/WDSP_AI_PENTEST_PROTECTION_ENHANCEMENT.md（阶段1：先解决 AI 自动化侦察与低慢扫描）；迁移 000097–000099。配置缺省零行为变化；行为统计失败 fail-open 不影响转发；本阶段全部检测信号仅 OBSERVE 不拦截。
+
+- **Client Identity 引擎（网关）**：`identitybehavior` 包按请求提取 JWT/API Key/会话 Cookie 凭据（未验签仅关联用途）、浏览器指纹（UA+Accept 系头 HMAC）、弱 TLS 指纹，三级优先级派生确定性 identity_key（cred > anon 指纹 > IP）；同一浏览器多 IP 关联为同一身份；UA 启发式分类 HUMAN/BOT/UNKNOWN；identity 经请求上下文桥接进 WDSP 统一 RequestContext。
+- **行为滑动窗口（网关）**：1m/5m/30m/24h 四窗，双桶轮转估值；计数含请求量、401/403/404/405/500、认证失败、参数变异（参数名+值类别签名 HLL）、敏感路径命中、唯一 URI（HLL）、新 URI（48h 已知集）；Valkey 单 Lua 单往返原子更新（键前缀 `jiuzhang:guard:ibh`），故障 fail-open 回退进程内存（LRU 有界）。
+- **Recon 检测（七条规则，全部默认 OBSERVE、版本化 1.0.0）**：RECON-URI-001 URI 枚举、RECON-404-001 404 枚举、RECON-PATH-001 敏感路径探测（可配路径表）、RECON-METHOD-001 方法枚举、RECON-PARAM-001 参数变异、AUTH-FAIL-001 认证探测、RECON-LOWSLOW-001 低慢侦察（30m/24h 长窗）；阈值/分值/白名单（IP CIDR + UA 子串）全部配置化；检测器只产风险信号不阻断。
+- **身份行为事件通道**：新增 `identity-events.log` JSONL（identity_observation / behavior_snapshot / recon_signal 三种记录，进程内节流防洪泛：观测 5min、快照 60s+1m 桶轮转补发、信号 60s）→ server `identityevents` 采集器断点续传批量入库；logrotator 纳入轮转。
+- **管理面**：`client_identity` / `identity_ip_history` / `identity_credential` / `behavior_statistics` / `identity_behavior_events` 五表 + `security_behavior_policy` 单行策略（版本乐观锁）；风险分按 24h 信号加分求和（截断 [0,100]），等级 0-19/20-39/40-69/70+ 四档；请求量按行为快照 1m 窗计数估算累加（估算语义）。
+- **API**：`GET /api/v1/security/identities`（列表/筛选/分页）、`GET .../{id}`（详情+IP历史+凭据+近期事件）、`GET .../{id}/behavior`（窗口时间序列）、`GET .../{id}/events`（信号事件）、`GET/PUT /api/v1/security/behavior-policy`（校验、409 乐观锁、审计、触发发布经 `identity_behavior` 段下发网关）；权限点 `security_identities.read`、`behavior_policy.read/.edit`。
+- **前端**：「安全风险」新分组—风险身份列表/详情页（IP历史、关联凭据、行为趋势图、行为事件）；「应用防护策略」分组—行为策略页（阈值/敏感路径/七信号分值/白名单编辑）。
+
+### 新增（APM 阶段0+阶段1：无 Agent 业务性能监控）
+
+> 设计 docs/BUSINESS_PERFORMANCE_APM_DESIGN.md，决策 docs/APM_STAGE0_ADR.md，批次明细见 docs/DEVELOPMENT_STATUS.md APM 小节。默认关闭（`APM_ENABLED=false`），关闭时现有行为不变。
+
+- **网关 trace 上下文**：W3C traceparent 入口严格校验，默认新建内部 trace_id/span_id（不信任外部上下文，tracestate 不续传、不向上游注入、不向客户端返回）；统一 RequestContext 补齐 TraceID/ApplicationID/ClientIP 等关联字段；API 运行时事件携带 trace_id。
+- **访问日志全量覆盖**：采集点上移至 guard 入口，人工封禁/IP 黑名单/L7/CC 拦截的 403/429 同样产生记录；新增 trace_id/span_id/endpoint_key/path_template/ttfb_ms 字段；waf_action 收口 ALLOW/OBSERVE/BLOCK 三态；端点键对纯 WAF 站点同样归一化生成。
+- **端点级 RED 聚合**：`http_endpoint_requests_total`/`http_endpoint_duration_ms`/`http_endpoint_ttfb_ms` 分钟级聚合（应用×端点×状态码类别×动作），Top-200 + 未归类/其它保留桶基数护栏，幂等可重算（迁移 000088）。
+- **APM 查询接口**：`/api/v1/apm/overview|services|services/{id}|endpoints|traces/{trace_id}` 五接口（权限 `apm.overview.read`/`apm.services.read`/`apm.traces.read`）；trace 检索串联访问记录与关联 WAF 安全事件；`APM_ENABLED` 开关 + edition 下发 `apm_enabled`。
+- **性能告警**：端点 P95 超限与端点错误率告警（最小请求量+持续窗口防误报）；accesslog-01 采集链路数据新鲜度探针。
+- **业务性能前端**：总览/服务列表/端点性能三页面（菜单分组「业务性能」），全量图表标注「数据来源：无 Agent」，未开启全量访问日志时如实降级提示。
+
+### 新增（APM 阶段2–5：OTel 数据面、Agent 基线、诊断下钻与深度诊断）
+
+> 部署手册 docs/APM_DATA_PLANE_DEPLOYMENT.md，运维/排障/接入手册 docs/APM_OPERATIONS_GUIDE.md / docs/APM_TROUBLESHOOTING.md / docs/APM_ONBOARDING_GUIDE.md。迁移 000089–000094；全部默认关闭，遥测链路故障 fail-open 不影响 WAF 转发。
+
+- **Agent 控制面**：一次性注册令牌 + CSR 注册、内置 Ed25519 CA（材料加密入库）、PoP 签名心跳/策略拉取/证书轮换、签名策略版本单调递增、证书指纹撤销列表；Agent 五态生命周期；管理接口全量高风险审计（`apm.agents.manage`/`apm.settings.manage`）。
+- **OTel/ClickHouse 数据面**：双层 Collector（本地+中央，脱敏双清单、有界队列、tail_sampling 错误/慢/高风险优先保留）；ClickHouse traces/metrics 标准表与分钟聚合物化视图、分层 TTL（正常 7 天/错误慢 14 天/聚合 30 天起）；镜像 digest 双架构锁定。
+- **Trace 检索与瀑布**：`/apm/trace-search` 多维检索（trace_id/request_id/服务/耗时/错误），瀑布图与 WAF 访问记录、安全事件同屏关联；属性白名单透传。
+- **诊断下钻**：SQL 指纹慢查询（不出原始 statement）、异常指纹聚合、服务依赖边（客户端 span 派生如实标注）、多语言运行时指标（Go 首期）、SLO 目标管理与 `APM_SLO_BREACH` 告警（错误预算 OK/AT_RISK/BREACHED）。
+- **深度诊断会话**：dry_run 开销预估→二次确认创建（默认 15 分钟、最长 2 小时）、签名诊断策略叠加与到期/停止/kill switch 自动恢复基线、Agent 失联本地硬截止兜底、Critical 级审计；诊断中心页四步向导。
+- **Go 自埋点与网关 tracing**：`APM_SELF_TELEMETRY_ENABLED` 管理面 OTel 埋点（traces+runtime metrics）；`GATEWAY_TRACING_ENABLED` Caddy 原生 tracing handler 下发；`trace_inject_upstream` 网关向上游注入内部 traceparent（默认关）。
+- **规模化与交付**：中央 Collector router+sampler 双层 HA 与 K8s 清单、ClickHouse 双副本变体与备份恢复文档、`APM_CLICKHOUSE` 健康探针与 `APM_INGEST_LAG` 采集滞后告警、SBOM/许可证审计全量覆盖、离线包纳入 APM 组件镜像；通知类别新增「业务性能」类。
+
+### 新增（阶段8 主体：API 安全补全与多节点/运维能力）
+
+> 覆盖阶段8 后续全部批次（迁移 000027–000087，000047 为并发改号空缺；000016–000026 见上文阶段8 各条目），批次明细见 docs/DEVELOPMENT_STATUS.md 阶段8 小节。
+
+- **统一引擎深化**：协议识别词表由 REST/GRPC 扩为五值（新增 GRAPHQL/SOAP/WEBSOCKET 三检测器互斥打标，事件→采集→发现链路零改动透传）；Coraza 合流——下游中断经 coraza-caddy 哨兵归因补记 `waf.downstream_intercept` 明细（不 fork coraza-caddy，归因耦合与相位局限如实声明）；参数约束词汇升级 regex/nullable/empty_allowed，required 缺失在 PROTECT 模式升为 BLOCK。
+- **学习闭环与运行时策略编译**：学习任务样本目标与采集落样闭环（000027）；达标多条件判定（最小样本/独立 IP/独立身份/学习时长/成功率，`api_learning` 设置组可调）+ 达标自动产非空 Schema 候选并自动提交评审（000038）；Runtime Model Compiler（000037）：FORMAL 版本事务内编译为 API 级运行时策略（DRAFT→VALIDATED→ACTIVE 状态机、content_hash 溯源、回滚克隆上一良好版本重发布）；响应 Schema 学习闭环（000051）与响应基线下发偏离检测；参数条件关系 REQUIRES/MUTEX/CO_OCCURS 确认下发与网关运行时检测（000068）。
+- **响应侧脱敏**：ResponseContext + 统一引擎响应相位 + Response Transformer（MASK/HASH/REMOVE 字段级脱敏、重编码、Content-Length 修正）；MASK_RESPONSE 决策分支；`api_mask_rules` 随发布下发；失败策略 FAIL_OPEN（默认）/FAIL_CLOSED；流式/SSE/非 identity 编码直通不缓冲。
+- **findings 与弱点中心**：运行时 findings 物化入库（000036，dedup_fingerprint 幂等、证据白名单脱敏）；风险处置 8 接口与七态状态机（000042，`api_risk` 权限点）；弱点中心（000039）：`api_weaknesses` + 处置动作只增不改、四规则周期派生、FIXED 再命中自动回 REPRODUCED。
+- **敏感数据管理**（000040）：敏感数据类型五级分级（7 内置类型禁删禁改名）、脱敏规则 GLOBAL<APPLICATION<ENDPOINT 优先级合并求值、敏感字段 Sweep 生产与敏感态势 overview；值级敏感检测规则下发执行（QUERY 值命中升 BLOCK，单值截断 + 单请求求值预算防 CPU 放大）。
+- **规范中心增强**（000046）：导入规范版本状态机（同名单 ACTIVE 部分唯一索引）、URL 导入（SSRF 防护、抓取函数可注入测试）、Swagger 2.0 最小映射转换、跨版本 CHANGED 级 diff 与任意两版本只读对比、导入回写运行时缺失资产。
+- **AuthZ 实体层**（000043/000044/000048）：BFLA 角色基线、BOLA 对象权属、字段权限七属性三张表与 13 条接口；五档 BOLA 评估（证据而非定罪）；confirmed 基线与字段权限经发布通道下发并纳入版本哈希，网关 authzcheck 运行时检测（BFLA OBSERVE 信号、`authz.forbidden_field` PROTECT 可阻断）+ 响应方向字段权限判定。
+- **资产生命周期**（000045）：DEPRECATED 近 N 天仍有流量自动判 ZOMBIE（归档须人工）、deprecate/restore 接口、资产价值九维评分可解释周期回填、服务资产聚合视图。
+- **主动扫描 v1**（000053/000054/000056）：授权先于执行（主机白名单/时间窗/QPS/并发/探针画像/有效期）、双人分离（建标 `api_scan.manage` 与授权 `api_scan.execute` 分离、建标人不得自授权）、撤销即停；6 内置探针集词表；证据脱敏不落原文；签名头 X-JiuZhang-Scan 流量隔离（网关签名校验，扫描流量不进学习与行为基线）；复测桥接弱点中心状态机；前端扫描页四 Tab。
+- **数据出境**（000058）：自研纯 Go 只读 MMDB 解析器（零新依赖，复用已登记 country.mmdb）；出境五档判定（内网/保留地址宁漏勿误）；`api_cross_border_events` 双保险幂等生产与 cross-border 看板（geo_enabled 降级标识）。
+- **AI 定时运营**（000062/000063）：自研五段 cron 解析器（零新依赖）+ next_run_at 游标 claim 防重入；五种内置运营任务纯确定性查询只产报告不做任何变更；LLM 润色失败一律回退模板；全局开关默认关；第二批 5 个 READ_ONLY `api_*` AI 工具（弱点/敏感/运行时策略/规范/态势）。
+- **LLM/MCP 安全**（000066/000070）：LLM API 双重确认识别、请求/响应观测（不落原文）、Prompt Injection 词表 v1（8 条仅 OBSERVE/LOW）、未授权模型名单检测；MCP JSON-RPC 方法词表核对与 tools/call 参数值级敏感检测（证据不落参数值）。
+- **gRPC 与描述符解析**（000072/000076）：gRPC 识别与 5 字节前缀帧结构校验（帧异常 PROTECT 定案 403、压缩标志 OBSERVE）；protoset 上传 → 发布下发 → dynamicpb 动态解码（编译失败逐集 Warn 跳过），字段路径级敏感值检测；源码 API 发现工具 `tools/apisrc`（Go 路由字面量 → OpenAPI3 骨架导入规范中心）。
+- **文件水印/签名/合规**（000071）：文本族不可见水印 + OOXML（docx/xlsx/pptx）docProps 水印（零新依赖，pdf 显式拒绝不静默）；文件签名 `jzsig1`（HMAC-SHA256，密钥加密下发，verify/rotate 接口审计不含密钥与完整 token）；文件合规规则双相位执行（上传 403、下载缓冲抑制，直通场景诚实降级）。
+- **站点资产自动发现**（000077）：mirrorcap 全端口被动嗅探（HTTP Host + TLS ClientHello SNI）覆盖 MIRROR/ROUTED/TRANSPARENT 三模式；`site_asset_discoveries` 幂等 upsert（人工处置字段不被覆盖）；管理端确认/忽略/恢复（`site_discovery.*` 权限 + 审计）与前端「站点发现」页。
+- **离线授权**（000078）：`.lic` 授权文件由授权中心离线 Ed25519 签发、产品侧验签导入；唯一 ACTIVE 部分唯一索引，导入新授权同事务取代旧授权；`license.*` 权限点（设计 docs/LICENSE_DESIGN.md）。
+- **HA 与多节点**：节点版本遥测校验（000069：ACTIVE/STALE/SILENT 判定 + CONFIG_HASH_MISMATCH 告警）；网关心跳（`api_node_heartbeat_seconds`，无业务流量不失活）；发布扇出 v2（000074：同一份构建产物扇出全部次要节点 /load + 规范化哈希比对 + 逐节点回填，次要节点失败不阻断主发布；节点管理地址仅内网 + 拨号时 DNS 重解析复检防 SSRF）；主备高可用（000080：ha_groups/ha_group_members + havipd VIP 漂移，设计 docs/HA_ACTIVE_STANDBY_DESIGN.md）；双节点 ha-lab 编排与验证脚本 28/28 场景实测通过（docs/HA_TWO_NODE_DESIGN.md）。
+- **性能基线实测**：Baseline Proxy 5337–5499 QPS（p95 9ms）vs Full API Security（OBSERVE）3211–3540 QPS（p95 13ms、0 失败）；Coraza 全量 CRS 开销约为 API 动态防护管线的 2.7 倍（网关水平扩展首要驱动是 WAF 规则评估）；11.5 万事件洪峰约 6.5 分钟追平零丢失；原始数据见 docs/evidence/api-security-performance-baseline.md。
+- **HTTP/3**：Caddy 2.11 TLS 监听默认开启 h1/h2/h3；http3-lab 旁路实测 guard 管线/真实 IP/检测器/路径归一在 h3 下全部正常，proto=HTTP/3.0 三面记录（docs/HTTP3_SUPPORT.md；QUIC 层深度解析未做如实声明）；访问控制/CC 事件补 proto 列（000075）。
+- **网口管理**（000049）：节点物理网口清单快照经 sidecar 采集 UPSERT（保留人工 sort_order/role，消失的口置 present=false），权限复用 `system_health.read`/`system_settings.update` 不新增（设计 docs/NETWORK_MODES_DESIGN.md）。
+- **通知渠道**（000057/000060）：通知渠道表 + 内置 syslog 渠道（企业微信/飞书/SMTP 等密值字段 AES-256-GCM 加密落库、接口读出恒脱敏），notify 组抑制参数。
+- **报表调度**（000082–000086）：报告内容上篇 Web 26 节 + 下篇 API 11 节并全面中文化（内容范围 WAF/API/WAF_API 可选）；定时报告计划（每天/每周/每月 UTC 固定时刻，FOR UPDATE SKIP LOCKED 认领防重）+ 生成后邮件发送；报表删除权限、API 资产纳入与页面方向设置。
+- **TOTP 双因子认证**（000033）：RFC 6238，密钥 AES-256-GCM 加密存储不落明文，恢复码只存 SHA-256 哈希。
+- **L7 访问控制规则**（000032）：URI/方法/请求头/Cookie/Query/来源 IP 组合条件首中即停（allow/block/redirect/custom_page），经发布通道随 GuardConfig 下发网关执行。
+- **图谱/态势/告警/报告**：调用边派生（同身份 ≤10 分钟相邻调用成边，水位与 upsert 同事务）与 identity_count 持久化（000067）；API 态势 overview/trends/sources/targets 全真实 SQL 口径；API 专项告警三类型与告警静默/恢复（000055）；API 专项报告四类型（000059）；敏感文件资产与同身份批量下载风险（000061）；API 专项指标 15 项与 API_SECURITY 健康探针；用途分类内置业务种子与词表扩充（000073/000087）；OpenAPI 全量对账 504 条路由与文档零差集。
+
+### 变更（阶段8 主体）
+
+- 发布通道扩展：`gateway_runtime` 组六键（behavior_store/identity_salt 等）+ 正式模型版本 + 脱敏规则 + `api_policy_version` 内容哈希随整站发布下发；读取失败或取值非法中止发布（脱敏规则段缺失容忍 Warn 跳过）。
+- `api_runtime_events` 扩充审计列（000035：client_ip/method/raw_path/latency_ms/model_version/policy_version，可空不伪造 0 值）；API 放行流量事件改为响应完成后输出（真实 response_status 与 latency_ms）。
+- 运行时事件与全量访问日志两采集器由「EOF 才 flush」改为批量（默认 2000 行）/周期（默认 2s）flush 且断点同节奏落盘（崩溃重扫量有界，`WAF_COLLECTOR_FLUSH_BATCH`/`WAF_COLLECTOR_FLUSH_INTERVAL` 可配）；每个 flush 批次副作用与主事件并入单 DB 事务整批提交（失败整体回滚、断点不前移、重放幂等）。
+- `api_runtime_findings` status 词表由注释约定四态升级为七态 CHECK 约束（存量 OPEN→NEW、ACKNOWLEDGED→IN_PROGRESS）。
+
+### 修复（阶段8 主体）
+
+- 全流程走查修复批（000079，真实「建站→发布→攻击→核验」走查暴露）：安全事件补 application_id 站点归属（Host 映射缓存 + 存量回填）；attack_type 误分类改严重度优先（存量同口径重算）；动态发布配置补错误路由（403 阻断页 + 正常/透传响应全覆盖 X-Jiuzhang-Request-ID 头）；被拦请求全量访问日志 response_status=0 改从错误链兜底取状态码；网关日志新增 logrotator sidecar 轮转（copytruncate，写入方 fd 不中断、采集断点自动重置）；五个采集器轮转判定即落断点（消除空文件期重复刷日志）。
+- accesslogs 采集器断点按完整行累计错位与 EOF 落盘失败静默两处同域缺陷。
+- 运行时策略查询 policySelect 列歧义导致恒 500（JOIN 后 42702，逐列补表前缀）。
+- 网关心跳采集装配遗漏（`SetHeartbeatRecorder` 未在装配层接线，心跳已采集但不落 `api_gateway_nodes` 致节点活性/版本视图失真），ha-lab S3/S4 场景复测全通。
+
+### 新增（设备运维控制台）
+
+- `jiuzhang-console`（`server/cmd/console` + `server/internal/sysconsole`）：硬件服务器定制运维后台，
+  专用账号（`jiuzhang-ops` 登录 shell）+ bcrypt 口令认证（`/etc/jiuzhang/console.yaml`，无默认口令，
+  5 次失败退出）→ 白名单 REPL：`show sysinfo/network`、`set mgmt-ip/route/dns`、`ping`、`passwd`；
+  参数全部经白名单校验，输入不交 shell 执行；网络变更经 sudoers 精确放行的唯一 root helper
+  `ops/console/netapply.sh`（netplan 重写托管文件 + 备份，nmcli 兜底）；SSH 侧对该账户 ForceCommand
+  强制进控制台并禁用转发/sftp；审计优先写 syslog（客户无权清除），兜底 `/var/log/jiuzhang-console.log`。安装：`ops/console/install-console.sh`（初始口令随机生成仅打印一次）。
+
+### 新增（syslog 日志外发覆盖六类业务日志）
+
+- syslog 外发范围由 3 类（安全事件 / 访问控制事件 / 全量访问日志）扩展至 6 类，新增**操作审计、登录日志、系统告警**：三者入库成功后经装配层闭包注入的投递函数非阻塞入队（避免包间循环依赖，模式同 `backups.AlertFunc`），外发失败（含 panic）不影响主流程；系统告警仅新建 OPEN 时外发，合并去重防循环放大。
+- severity 映射补充：系统告警按等级 CRITICAL→2/HIGH→3/MEDIUM→4/LOW→5，登录失败与删除/禁用类审计→warning(4)，其余→info(6)；RFC5424 MSGID 新增 `operation-audit` / `login-log` / `system-alert`。
+- 新增 3 个设置键（迁移 000050，`system_settings` logging 组，boolean 默认 true）：`syslog_forward_operation_audits` / `syslog_forward_login_logs` / `syslog_forward_system_alerts`，加入设置白名单，复用既有 `system_settings.update` 权限，不新增权限点。
+- 测试：syslogfw 类型开关/severity/MSGID 单测，audits/loginlogs/systemalerts fan-out 单测（投递、nil 安全、panic 容忍、合并不重复外发），集成测试覆盖新设置键 PUT 200/400 与 Record 写库后投递。
+- 文档：`docs/SECURITY_DESIGN.md` 新增「日志外发（syslog）」小节（架构、报文格式、六类范围、配置项表、可靠性语义）。
+
+### 新增（三微模型增强批：参数/身份/访问）
+
+- **参数微模型**：网关脱敏值观测（`param_observations`：length / value_hash / num，无明文）→ 表 `api_parameter_value_obs`（迁移 000031）→ 统计画像回填长度/值域/基数 → recommended 可真正产出；PATH/COOKIE 约束消费；`semantic_type` 启发式推断并下发网关；BODY 对象标识联动；参数关系 CO_OCCURS 候选只读；`POST .../models/{id}/parameters/confirm-batch` 批量采纳推荐约束。
+- **身份微模型**：`api_identity_profiles` 离线聚合写入 + `GET /api-security/identity-profiles`（质量分）；JWT 结构级 OBSERVE（alg=none、kid 穿越、空签名、exp 过期，不验签）；管理面「身份画像」页 `/api-identity-profiles`（WDSP 能力门控 + `api_runtime.read`）。
+- **访问微模型**：同凭据非常规小时 / UA 族突变 / 环境异常叠加信号（均 OBSERVE）；对象标识扩展至 Body 语义类型字段。
+- **运营**：模型成熟度卡片钻取到参数模型 / 身份画像；集成测试 `TestStage8IdentityProfiles`、`TestStage8ParamValueObservations`。
+- **身份画像详情**：`GET /api-security/identity-profiles/detail`（画像 + 五级风险评估 + 该指纹最近 10 条运行时事件，`api_runtime.read` 只读）；风险评估映射 GB/T 31509 修订稿（5.2.3 威胁频率 / 5.3.3 定性矩阵法）：可能性（高危事件分档，24h 密集上调、全数拦截消减）× 严重程度（最高风险分五档）经 5×5 矩阵定级 VERY_LOW…VERY_HIGH，只产信号不阻断；管理面身份画像列表行可点击打开详情抽屉；OpenAPI 补齐 identity-profiles 列表/详情文档。
+- 纪律不变：检测器只 AddMatch；身份不由 IP 冒充；观测值不落证据明文。
+
+### 新增（攻击变种 / 编码绕过增强包，+99 条）
+
+- `attack-variants-evasion.conf`（99，ID 1001201–1001299，`ver: CUSTOM_PACK/1.4.0`）：面向同一攻击类的变形写法与 WAF 绕过手法，**不复制第三方 WAF 产品规则**。
+  - 编码层：双重 URL / overlong UTF-8、全角与零宽字符、空字节截断、UTF-7、`%uXXXX`、双重 HTML 实体、半编码路径混用；
+  - SQLi：注释/空白拆关键字、条件注释 `/*!50000*/`、时间/布尔/UNION/报错/堆叠、OOB(`into outfile`/`load_file`/`utl_*`)、CASE/IF 盲注、hex/unhex、高危参数旁拼接；
+  - XSS：事件处理器、SVG/MathML、`javascript:`/`data:`、实体编码 script、srcdoc/formaction、DOM sink、CSS expression；
+  - RCE：管道/逻辑连接、`$IFS`/ANSI-C quoting、PowerShell `-enc`、Windows LOLBins、brace/`/dev/tcp`、解释器一行执行；
+  - LFI/RFI/SSRF：多级穿越、PHP wrapper、回环地址编码、云元数据、URL 凭据混淆；
+  - Log4j/Struts 更深绕过：嵌套 lookup、全角 `${`、JNDI 协议族空白插入、单字符重构、OGNL Runtime 链、`%{...}` 强制求值；
+  - XXE/反序列化/协议：参数实体、XInclude、Java/PHP/pickle 序列化头、TE/CL 走私、Host/Cookie 载荷走私、上传双扩展/NTFS ADS/`filename*`、JWT alg=none、GraphQL 内省。
+- 本包由初版 54 条扩至 **99** 条（ID 段用满 1001201–1001299）；自建包总量 **500 → 545**（与 `TestCustomPackParses` 统计一致）。发布网关后执行 `POST /api/v1/waf-rules/sync` 同步元数据。
+
+### 新增（开源 Web 系统 CNNVD/CVE + 加密 WebShell，+89 条）
+
+- `oss-webapps-cve.conf`（50，ID 1000900–1000950）：WordPress/Drupal/Joomla/Discuz/DedeCMS/帝国 CMS/ThinkPHP/Laravel/Shiro/Fastjson/Struts2/Solr/XXL-JOB/若依/Jeecg/UEditor/泛微/致远/用友等公开利用路径与特征（依据公开 CVE/CNNVD 同源情报自行编写，非抄录第三方 WAF）。
+- `webshell-obfuscation.conf`（39，ID 1001000–1001040）：多层编码链、动态函数、openssl/AES 加密马、蚁剑/哥斯拉/冰蝎痕迹、图片马、双扩展上传、defineClass 内存马等。
+- 自建包总量 **297 → 386**。
+
+### 新增（自建规则包二期扩展 +140 条）
+
+- 新增 4 个自建包（ID 段 1000500–1000899，`ver: CUSTOM_PACK/1.1.0`）：
+  - `sensitive-exposure.conf`（40）：`.git`/`.env`/密钥/备份/Actuator/IDE/CI 等敏感暴露；
+  - `deserialization-rce.conf`（30）：Java/PHP/Python/.NET 反序列化、OGNL/SpEL/SSTI、LOLBins；
+  - `bot-protocol.conf`（35）：危险方法、走私/TE、路径覆盖头、扫描器 UA、上传可执行文件、GraphQL 放大；
+  - `cve-recent.conf`（35）：Tomcat/JBoss/Confluence/Exchange/Jenkins/Nacos/WebLogic 等组件利用路径。
+- 自建包总量 **157 → 297**；加载路径不变（`Include /etc/caddy/rules/contrib/*/*.conf`）。发布后执行 `POST /api/v1/waf-rules/sync` 同步元数据入库。
+
 ### 新增（规则量扩展：多规则包体系）
 
 - 规则库从单一 OWASP_CRS 扩展为多包结构：CRS 官方插件（incubator，PINNED）、第三方应用白名单包（wordpress/nextcloud rule-exclusions，Apache-2.0，PINNED）、自建包（CVE 应急/WebShell/扫描器指纹/云滥用/API 滥用，共 157 条）；规则总量 622 → 979。

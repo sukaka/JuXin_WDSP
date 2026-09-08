@@ -1,0 +1,2044 @@
+paths:
+  /auth/captcha:
+    get:
+      operationId: authCaptcha
+      tags: [auth]
+      summary: 获取图形验证码
+      description: >-
+        生成登录用图形验证码（4 位字符）。权限：无（公开）。
+        当系统设置关闭验证码（login.captcha_enabled=false）时仅返回 enabled=false，无其余字段。
+        限流：按来源 IP 限制，阈值动态读取登录策略 login.rate_limit_per_minute（默认 10 次/分钟），超限返回 429。
+      responses:
+        '200':
+          description: 验证码信息（image 为 data:image/png;base64 数据）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthCaptchaResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/login:
+    post:
+      operationId: authLogin
+      tags: [auth]
+      summary: 用户登录
+      description: >-
+        用户名密码登录。权限：无（公开）。
+        成功后通过 Set-Cookie 下发 HttpOnly 会话 Cookie（jiuzhang_session），响应 data 中返回 csrf_token，
+        后续写操作须在请求头 X-CSRF-Token 中携带。验证码未关闭时 captcha_id/captcha_code 必填。
+        失败统一提示「用户名或密码错误」，不区分用户不存在与密码错误；
+        连续失败达到阈值（login.max_failed_attempts，默认 5 次）账号将被锁定。
+        限流：按来源 IP 限制，阈值动态读取 login.rate_limit_per_minute（默认 10 次/分钟），超限返回 429。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+      responses:
+        '200':
+          description: >-
+            登录成功（同时 Set-Cookie 下发会话）；若账号已开启双因子认证，则返回业务分支码
+            TOTP_REQUIRED（HTTP 200，未下发会话），data.challenge_token 为一次性挑战令牌
+            （5 分钟有效），须凭它调用 /auth/totp-verify 完成第二步验证
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthLoginResponse'
+                  - $ref: '#/components/schemas/AuthTOTPChallengeResponse'
+        '400':
+          description: 参数缺失或验证码错误/已过期（错误码 CAPTCHA_INVALID）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: 用户名或密码错误（统一提示）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: 账号不可用/已锁定（ACCOUNT_LOCKED）或密码已过期（PASSWORD_EXPIRED）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/totp-verify:
+    post:
+      operationId: authTOTPVerify
+      tags: [auth]
+      summary: 登录第二步：双因子认证验证
+      description: >-
+        凭 /auth/login 返回的 challenge_token 与 6 位动态令牌（或一次性恢复码 xxxx-xxxx）完成登录。
+        权限：无（公开）。挑战令牌一次性使用：验证成功即失效；动态令牌错误（TOTP_INVALID）可在
+        5 分钟 TTL 内重试，连续失败计入账号锁定（login.max_failed_attempts）。恢复码命中即消费，不可复用。
+        成功响应与 /auth/login 一致（Set-Cookie 下发会话、data 返回 csrf_token）。
+        限流：与登录同一桶，按来源 IP 限制（login.rate_limit_per_minute，默认 10 次/分钟），超限返回 429。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthTOTPVerifyRequest'
+      responses:
+        '200':
+          description: 验证通过，登录成功（同时 Set-Cookie 下发会话）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLoginResponse'
+        '400':
+          description: 参数缺失或格式错误
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: 挑战令牌无效/已过期（UNAUTHENTICATED）或动态令牌/恢复码错误（TOTP_INVALID）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: 账号不可用/已锁定（ACCOUNT_LOCKED）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/logout:
+    post:
+      operationId: authLogout
+      tags: [auth]
+      summary: 退出登录
+      description: >-
+        注销当前会话并清除会话 Cookie。权限：登录即可访问。
+        需 CSRF：请求头须携带 X-CSRF-Token。
+      responses:
+        '200':
+          description: 已退出登录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /auth/me:
+    get:
+      operationId: authMe
+      tags: [auth]
+      summary: 当前登录用户信息
+      description: >-
+        返回当前登录用户及其角色、权限点，并幂等签发新的 CSRF Token。
+        权限：登录即可访问（must_change_password 状态下也可访问）。
+      responses:
+        '200':
+          description: 用户信息与新 CSRF Token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLoginResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/change-password:
+    post:
+      operationId: authChangePassword
+      tags: [auth]
+      summary: 修改密码
+      description: >-
+        修改当前用户密码。权限：登录即可访问（must_change_password 状态下也可访问）。
+        需 CSRF：请求头须携带 X-CSRF-Token。
+        新密码须符合密码安全策略（长度/复杂度/历史不重复），不符时返回 400 且 details 为原因列表。
+        成功后当前会话被撤销、Cookie 被清除，客户端须重新登录。
+        限流：按来源 IP 10 次/分钟，超限返回 429。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthChangePasswordRequest'
+      responses:
+        '200':
+          description: 密码修改成功（需重新登录）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthChangePasswordResponse'
+        '400':
+          description: 原密码错误、新密码与近期密码重复或不符合密码策略（details 含具体原因）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /auth/sessions:
+    get:
+      operationId: authSessionList
+      tags: [auth]
+      summary: 当前用户会话列表
+      description: >-
+        返回当前登录用户的会话摘要列表（最多 20 条，含已撤销会话），is_current 标记当前会话。
+        权限：登录即可访问（仅能看到自己的会话）。
+      responses:
+        '200':
+          description: 会话摘要列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSessionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/sessions/{id}:
+    delete:
+      operationId: authSessionRevoke
+      tags: [auth]
+      summary: 结束指定会话
+      description: >-
+        结束当前用户的指定会话（仅能操作自己的会话）。权限：登录即可访问。
+        需 CSRF：请求头须携带 X-CSRF-Token。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 会话摘要 ID（来自 GET /auth/sessions 返回的 id 字段）
+      responses:
+        '200':
+          description: 会话已结束
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 会话不存在或已结束
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/totp/setup:
+    post:
+      operationId: authTOTPSetup
+      tags: [auth]
+      summary: 生成双因子密钥与恢复码
+      description: >-
+        为当前登录用户生成待启用 TOTP 密钥（Base32）与 10 个一次性恢复码。权限：登录即可访问。
+        需 CSRF：请求头须携带 X-CSRF-Token。明文密钥与恢复码仅本次响应返回（服务端只存
+        AES-256-GCM 密文与恢复码 SHA-256 哈希），须立即保存；重复调用覆盖旧的待启用密钥。
+        已开启双因子时返回 409，须先关闭再重新设置。限流：按来源 IP 10 次/分钟，超限返回 429。
+      responses:
+        '200':
+          description: 待启用密钥与恢复码（明文仅本次返回）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTOTPSetupResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 已开启双因子认证，须先关闭后再重新设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/totp/enable:
+    post:
+      operationId: authTOTPEnable
+      tags: [auth]
+      summary: 启用双因子认证
+      description: >-
+        用 /auth/totp/setup 生成的待启用密钥验证 6 位动态令牌，通过后正式开启双因子认证
+        （pending 密钥转正）。权限：登录即可访问。需 CSRF：请求头须携带 X-CSRF-Token。
+        无待启用密钥时返回 409（请先调用 setup）。限流：按来源 IP 10 次/分钟，超限返回 429。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthTOTPCodeRequest'
+      responses:
+        '200':
+          description: 双因子认证已开启
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: 动态令牌格式错误或校验失败（TOTP_INVALID）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 无待启用密钥（须先 setup）或已开启双因子认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/totp/disable:
+    post:
+      operationId: authTOTPDisable
+      tags: [auth]
+      summary: 关闭双因子认证（高危）
+      description: >-
+        验证 6 位动态令牌或一次性恢复码（xxxx-xxxx）后关闭双因子认证，并清除密钥与全部恢复码。
+        权限：登录即可访问。需 CSRF：请求头须携带 X-CSRF-Token。操作审计记录为高危（HIGH）。
+        限流：按来源 IP 10 次/分钟，超限返回 429。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthTOTPCodeRequest'
+      responses:
+        '200':
+          description: 双因子认证已关闭
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: 动态令牌或恢复码错误（TOTP_INVALID）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 未开启双因子认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /profile:
+    get:
+      operationId: profileGet
+      tags: [profile]
+      summary: 获取个人资料
+      description: >-
+        返回当前登录用户的资料、角色、权限点及权限中文明细（permission_details）。
+        权限：登录即可访问。
+      responses:
+        '200':
+          description: 个人资料与权限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: profileUpdate
+      tags: [profile]
+      summary: 修改个人资料（显示名称）
+      description: >-
+        修改当前用户的显示名称（仅 display_name，1-128 字符），采用乐观锁：
+        version 须与当前资料版本一致，否则返回 409。权限：登录即可访问。
+        需 CSRF：请求头须携带 X-CSRF-Token。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileUpdateRequest'
+      responses:
+        '200':
+          description: 修改成功，返回更新后的资料（不含 permissions 字段）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 资料已被其他操作修改（乐观锁冲突），请刷新后重试
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /profile/login-logs:
+    get:
+      operationId: profileLoginLogList
+      tags: [profile]
+      summary: 我的登录记录
+      description: >-
+        分页查询当前登录用户自己的登录日志。权限：登录即可访问。
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数（超过 100 按 20 处理）
+      responses:
+        '200':
+          description: 分页登录记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginLogListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users:
+    get:
+      operationId: userList
+      tags: [users]
+      summary: 用户列表
+      description: >-
+        分页查询用户（不含已逻辑删除用户），支持用户名/显示名模糊搜索、状态与角色过滤。
+        权限：users.read。
+      parameters:
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 用户名或显示名关键字（模糊匹配，不区分大小写）
+        - name: status
+          in: query
+          schema: { type: string, enum: [ACTIVE, DISABLED, LOCKED, DELETED] }
+          description: 按状态过滤
+        - name: role_code
+          in: query
+          schema: { type: string, enum: [SYSTEM_ADMIN, SECURITY_ADMIN, AUDIT_ADMIN] }
+          description: 按内置角色编码过滤
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数（超过 100 按 20 处理）
+      responses:
+        '200':
+          description: 分页用户列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      operationId: userCreate
+      tags: [users]
+      summary: 创建用户（返回一次性临时密码）
+      description: >-
+        创建管理用户并分配一个内置三权角色。权限：users.create。
+        需 CSRF：请求头须携带 X-CSRF-Token。
+        用户名规则：4-64 位，仅字母/数字/下划线/短横线，不区分大小写唯一，不得为保留名（root/system/anonymous/null/undefined）。
+        服务端生成 16 位临时密码，仅在创建响应中返回一次（不落日志与审计）；
+        新用户 must_change_password=true，首次登录必须修改密码。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '200':
+          description: 创建成功（temporary_password 仅本次返回）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserCreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 用户名已存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users/{id}:
+    get:
+      operationId: userGet
+      tags: [users]
+      summary: 用户详情
+      description: >-
+        查询指定用户详情（含角色）。权限：users.read。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 用户 ID
+      responses:
+        '200':
+          description: 用户信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: userUpdate
+      tags: [users]
+      summary: 修改用户（含角色变更，乐观锁）
+      description: >-
+        修改用户显示名称，可选变更角色（三权互斥，一个用户仅一个内置管理角色）。
+        权限：users.update。需 CSRF：请求头须携带 X-CSRF-Token。
+        乐观锁：version 须与当前一致，否则返回 409。
+        role_code 为空表示不变更角色；角色变更后该用户全部会话失效，
+        且不允许移除最后一个可用系统管理员的角色（返回 409）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 用户 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+      responses:
+        '200':
+          description: 修改成功，返回更新后的用户
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 版本冲突或不能移除最后一个系统管理员的角色
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: userDelete
+      tags: [users]
+      summary: 删除用户（逻辑删除）
+      description: >-
+        逻辑删除用户并撤销其全部会话。权限：users.update（注意：删除复用 users.update 权限点）。
+        需 CSRF：请求头须携带 X-CSRF-Token。
+        不能删除当前登录账号或最后一个可用系统管理员（返回 409）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 用户 ID
+      responses:
+        '200':
+          description: 用户已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 不能删除当前登录账号或最后一个系统管理员
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users/{id}/enable:
+    post:
+      operationId: userEnable
+      tags: [users]
+      summary: 启用用户
+      description: >-
+        将用户状态置为 ACTIVE。权限：users.disable（启用/停用共用同一权限点）。
+        需 CSRF：请求头须携带 X-CSRF-Token。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 用户 ID
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/{id}/disable:
+    post:
+      operationId: userDisable
+      tags: [users]
+      summary: 停用用户
+      description: >-
+        将用户状态置为 DISABLED 并撤销其全部会话。权限：users.disable。
+        需 CSRF：请求头须携带 X-CSRF-Token。
+        不能停用当前登录账号或最后一个可用系统管理员（返回 409）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 用户 ID
+      responses:
+        '200':
+          description: 用户已停用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 不能停用当前登录账号或最后一个系统管理员
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users/{id}/unlock:
+    post:
+      operationId: userUnlock
+      tags: [users]
+      summary: 解锁用户
+      description: >-
+        解除登录失败锁定（清零失败计数、清除 locked_until，状态恢复 ACTIVE）。
+        权限：users.unlock。需 CSRF：请求头须携带 X-CSRF-Token。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 用户 ID
+      responses:
+        '200':
+          description: 用户已解锁
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/{id}/reset-password:
+    post:
+      operationId: userResetPassword
+      tags: [users]
+      summary: 重置密码（返回临时密码）
+      description: >-
+        重置为 16 位随机临时密码并撤销该用户全部会话，重置后 must_change_password=true。
+        权限：users.reset_password。需 CSRF：请求头须携带 X-CSRF-Token。
+        临时密码仅在响应中返回一次（不落日志与审计）。
+        限流：按来源 IP 10 次/分钟，超限返回 429。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 用户 ID
+      responses:
+        '200':
+          description: 重置成功（temporary_password 仅本次返回）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResetPasswordResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/{id}/totp/reset:
+    post:
+      operationId: userResetTOTP
+      tags: [users]
+      summary: 重置用户双因子认证（高危）
+      description: >-
+        清空指定用户的 TOTP 密钥、待启用密钥与全部恢复码（用于令牌丢失等账号访问恢复场景）。
+        权限：users.reset_password。需 CSRF：请求头须携带 X-CSRF-Token。
+        操作审计记录为高危（HIGH）。限流：按来源 IP 10 次/分钟，超限返回 429。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 用户 ID
+      responses:
+        '200':
+          description: 双因子认证已重置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 该用户未开启双因子认证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users/{id}/sessions:
+    delete:
+      operationId: userForceLogout
+      tags: [users]
+      summary: 强制用户下线
+      description: >-
+        撤销指定用户的全部会话。权限：users.force_logout。
+        需 CSRF：请求头须携带 X-CSRF-Token。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 用户 ID
+      responses:
+        '200':
+          description: 该用户已全部下线
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /roles:
+    get:
+      operationId: roleList
+      tags: [roles]
+      summary: 角色列表
+      description: >-
+        返回全部角色（内置角色在前）。权限：roles.read。
+      responses:
+        '200':
+          description: 角色列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /roles/{id}:
+    get:
+      operationId: roleGet
+      tags: [roles]
+      summary: 角色详情（含权限与用户计数）
+      description: >-
+        返回角色信息、其权限点清单及关联用户计数。权限：roles.read。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 角色 ID
+      responses:
+        '200':
+          description: 角色与权限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /roles/{id}/permissions:
+    get:
+      operationId: rolePermissionList
+      tags: [roles]
+      summary: 角色权限清单
+      description: >-
+        返回指定角色的权限点清单（按模块与编码排序）。权限：roles.read。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 角色 ID
+      responses:
+        '200':
+          description: 权限清单
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RolePermissionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /permissions:
+    get:
+      operationId: permissionList
+      tags: [roles]
+      summary: 全部权限点清单
+      description: >-
+        返回系统全部权限点（按模块与编码排序）。权限：permissions.read。
+      responses:
+        '200':
+          description: 权限清单
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RolePermissionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /login-logs:
+    get:
+      operationId: loginLogList
+      tags: [login-logs]
+      summary: 登录日志查询
+      description: >-
+        分页查询登录日志。权限：登录即可访问；
+        持有 login_logs.read 权限（审计管理员）可查询全部用户，否则强制仅返回本人记录。
+      parameters:
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 用户名关键字（模糊匹配）
+        - name: source_ip
+          in: query
+          schema: { type: string }
+          description: 来源 IP（精确匹配）
+        - name: result
+          in: query
+          schema: { type: string, enum: [SUCCESS, FAILURE] }
+          description: 按结果过滤
+        - name: event_type
+          in: query
+          schema:
+            type: string
+            enum: [LOGIN_SUCCESS, LOGIN_FAILURE, CAPTCHA_FAILURE, ACCOUNT_LOCKED, LOGOUT, FORCE_LOGOUT, SESSION_EXPIRED, PASSWORD_CHANGE, PASSWORD_RESET, FIRST_CHANGE_PASSWORD]
+          description: 按事件类型过滤
+        - name: request_id
+          in: query
+          schema: { type: string }
+          description: 按请求 ID 精确过滤（用于链路追踪）
+        - name: start_time
+          in: query
+          schema: { type: string, format: date-time }
+          description: 起始时间（RFC3339，含边界）
+        - name: end_time
+          in: query
+          schema: { type: string, format: date-time }
+          description: 截止时间（RFC3339，含边界）
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数（超过 100 按 20 处理）
+      responses:
+        '200':
+          description: 分页登录日志
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginLogListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /login-logs/export:
+    get:
+      operationId: loginLogExport
+      tags: [login-logs]
+      summary: 导出登录日志（CSV）
+      description: >-
+        按筛选条件导出登录日志 CSV（UTF-8，最多 10000 条），
+        响应头 Content-Disposition: attachment; filename="login-logs.csv"。
+        权限：login_logs.export。导出接口按来源 IP 限流 5 次/分钟，超限返回 429。
+        CSV 列：occurred_at,username,source_ip,event_type,result,failure_code,request_id。
+      parameters:
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 用户名关键字（模糊匹配）
+        - name: source_ip
+          in: query
+          schema: { type: string }
+          description: 来源 IP（精确匹配）
+        - name: result
+          in: query
+          schema: { type: string, enum: [SUCCESS, FAILURE] }
+          description: 按结果过滤
+        - name: event_type
+          in: query
+          schema:
+            type: string
+            enum: [LOGIN_SUCCESS, LOGIN_FAILURE, CAPTCHA_FAILURE, ACCOUNT_LOCKED, LOGOUT, FORCE_LOGOUT, SESSION_EXPIRED, PASSWORD_CHANGE, PASSWORD_RESET, FIRST_CHANGE_PASSWORD]
+          description: 按事件类型过滤
+        - name: request_id
+          in: query
+          schema: { type: string }
+          description: 按请求 ID 精确过滤
+        - name: start_time
+          in: query
+          schema: { type: string, format: date-time }
+          description: 起始时间（RFC3339，含边界）
+        - name: end_time
+          in: query
+          schema: { type: string, format: date-time }
+          description: 截止时间（RFC3339，含边界）
+      responses:
+        '200':
+          description: CSV 文件下载
+          content:
+            text/csv:
+              schema: { type: string }
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /audits:
+    get:
+      operationId: auditList
+      tags: [audits]
+      summary: 操作审计查询
+      description: >-
+        分页查询操作审计记录（按发生时间倒序）。审计记录仅可新增与查询，数据库层禁止修改/删除。
+        权限：audits.read。
+      parameters:
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 操作人用户名关键字（模糊匹配）
+        - name: source_ip
+          in: query
+          schema: { type: string }
+          description: 来源 IP（精确匹配）
+        - name: module
+          in: query
+          schema: { type: string }
+          description: 按模块过滤（如 users、system_settings）
+        - name: action
+          in: query
+          schema: { type: string }
+          description: 按操作动作过滤（如 create、update、delete）
+        - name: object_type
+          in: query
+          schema: { type: string }
+          description: 按操作对象类型过滤（如 user、setting）
+        - name: result
+          in: query
+          schema: { type: string, enum: [SUCCESS, FAILURE] }
+          description: 按结果过滤
+        - name: risk_level
+          in: query
+          schema: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+          description: 按风险等级过滤
+        - name: request_id
+          in: query
+          schema: { type: string }
+          description: 按请求 ID 精确过滤（用于链路追踪）
+        - name: start_time
+          in: query
+          schema: { type: string, format: date-time }
+          description: 起始时间（RFC3339，含边界）
+        - name: end_time
+          in: query
+          schema: { type: string, format: date-time }
+          description: 截止时间（RFC3339，含边界）
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数（超过 100 按 20 处理）
+      responses:
+        '200':
+          description: 分页操作审计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /audits/{id}:
+    get:
+      operationId: auditGet
+      tags: [audits]
+      summary: 审计详情
+      description: >-
+        查询单条审计记录（含变更前后摘要与哈希链字段）。权限：audits.read。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 审计记录 ID
+      responses:
+        '200':
+          description: 审计详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /audits/export:
+    get:
+      operationId: auditExport
+      tags: [audits]
+      summary: 导出操作审计（CSV）
+      description: >-
+        按筛选条件导出审计记录 CSV（UTF-8，最多 10000 条），
+        响应头 Content-Disposition: attachment; filename="operation-audits.csv"。
+        权限：audits.export。导出接口按来源 IP 限流 5 次/分钟，超限返回 429。
+        CSV 列：occurred_at,username,source_ip,module,action,object_type,object_id,result,risk_level,request_id。
+      parameters:
+        - name: username
+          in: query
+          schema: { type: string }
+          description: 操作人用户名关键字（模糊匹配）
+        - name: source_ip
+          in: query
+          schema: { type: string }
+          description: 来源 IP（精确匹配）
+        - name: module
+          in: query
+          schema: { type: string }
+          description: 按模块过滤
+        - name: action
+          in: query
+          schema: { type: string }
+          description: 按操作动作过滤
+        - name: object_type
+          in: query
+          schema: { type: string }
+          description: 按操作对象类型过滤
+        - name: result
+          in: query
+          schema: { type: string, enum: [SUCCESS, FAILURE] }
+          description: 按结果过滤
+        - name: risk_level
+          in: query
+          schema: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+          description: 按风险等级过滤
+        - name: request_id
+          in: query
+          schema: { type: string }
+          description: 按请求 ID 精确过滤
+        - name: start_time
+          in: query
+          schema: { type: string, format: date-time }
+          description: 起始时间（RFC3339，含边界）
+        - name: end_time
+          in: query
+          schema: { type: string, format: date-time }
+          description: 截止时间（RFC3339，含边界）
+      responses:
+        '200':
+          description: CSV 文件下载
+          content:
+            text/csv:
+              schema: { type: string }
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /audits/verify-chain:
+    post:
+      operationId: auditVerifyChain
+      tags: [audits]
+      summary: 校验审计哈希链完整性
+      description: >-
+        对最近 10000 条审计记录重算 SHA-256 哈希链，校验是否存在篡改或断链。
+        权限：audits.read。需 CSRF：请求头须携带 X-CSRF-Token。
+      responses:
+        '200':
+          description: 校验结果（valid 为 true 表示链完整）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerifyChainResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /system-settings:
+    get:
+      operationId: settingList
+      tags: [system-settings]
+      summary: 系统设置列表
+      description: >-
+        按分组列出系统设置（可按 group 过滤），敏感设置（is_sensitive=true）的值恒脱敏为 "********"。
+        权限：system_settings.read。
+      parameters:
+        - name: group
+          in: query
+          schema: { type: string, enum: [password, login, session, display, logging] }
+          description: 按设置分组过滤（缺省返回全部）
+      responses:
+        '200':
+          description: 设置列表（敏感值已脱敏）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      operationId: settingUpdate
+      tags: [system-settings]
+      summary: 更新系统设置（乐观锁）
+      description: >-
+        更新单条系统设置。权限：system_settings.update。
+        需 CSRF：请求头须携带 X-CSRF-Token。
+        仅允许白名单内的设置键（password/login/session/display/logging 组）；setting_value 的 JSON 类型
+        须与该设置的 value_type 一致，否则返回 400。乐观锁：version 须与当前一致，否则返回 409。
+        更新成功会写入操作审计（模块 system_settings）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SettingUpdateRequest'
+      responses:
+        '200':
+          description: 设置已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: 不支持的设置项或值类型与 value_type 不符
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 设置项不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: 设置已被其他人修改（乐观锁冲突），请刷新后重试
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /system-settings/syslog-test:
+    post:
+      operationId: settingSyslogTest
+      tags: [system-settings]
+      summary: 发送 syslog 测试消息
+      description: >-
+        使用当前系统设置立即向 syslog 服务器发送一条测试消息，用于验证外发配置（logging.syslog_*）。
+        权限：logging.syslog_test。需 CSRF：请求头须携带 X-CSRF-Token。
+        无论成功失败均写入操作审计；未启用、地址为空或网络错误时返回 400，message 为失败原因。
+      responses:
+        '200':
+          description: 测试消息已发送
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          description: 发送失败（message 为失败原因：未启用/地址为空/网络错误等）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  schemas:
+    AuthCaptchaResponse:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+          description: 验证码是否启用；false 时无其余字段，登录可不传验证码
+        captcha_id:
+          type: string
+          description: 验证码标识（登录时随 captcha_code 提交）
+        image:
+          type: string
+          description: 验证码图片（data:image/png;base64 数据 URL）
+        expires_in:
+          type: integer
+          description: 验证码有效期，单位秒（login.captcha_expire_seconds，默认 120）
+
+    AuthLoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          description: 用户名
+        password:
+          type: string
+          format: password
+          description: 密码
+        captcha_id:
+          type: string
+          description: 验证码标识（验证码启用时必填）
+        captcha_code:
+          type: string
+          description: 验证码字符（验证码启用时必填）
+
+    AuthCurrentUser:
+      type: object
+      required: [id, username, display_name, status, roles, permissions, must_change_password]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 用户 ID
+        username:
+          type: string
+          description: 用户名
+        display_name:
+          type: string
+          description: 显示名称
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, LOCKED, DELETED]
+          description: 用户状态
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleBrief'
+          description: 用户角色（三权互斥，至多一个内置管理角色）
+        permissions:
+          type: array
+          items: { type: string }
+          description: 权限点编码列表（经角色聚合）
+        must_change_password:
+          type: boolean
+          description: 是否必须修改密码（首次登录或密码被重置后为 true）
+        totp_enabled:
+          type: boolean
+          description: 是否已开启双因子认证（TOTP）
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近登录时间
+        last_login_ip:
+          type: string
+          description: 最近登录来源 IP（无记录时为空字符串）
+
+    AuthLoginResponse:
+      type: object
+      required: [user, csrf_token]
+      properties:
+        user:
+          $ref: '#/components/schemas/AuthCurrentUser'
+        csrf_token:
+          type: string
+          description: CSRF Token，写操作须在请求头 X-CSRF-Token 携带
+        password_expiring:
+          type: boolean
+          description: 密码是否即将过期（进入提醒窗口期）
+        password_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 密码过期时间（null 表示永不过期）
+
+    AuthTOTPChallengeResponse:
+      type: object
+      required: [challenge_token]
+      description: >-
+        登录业务分支（信封 code=TOTP_REQUIRED，HTTP 200）：密码校验通过且账号已开启双因子认证，
+        未创建会话，须凭挑战令牌调用 /auth/totp-verify 完成第二步验证
+      properties:
+        challenge_token:
+          type: string
+          description: 一次性挑战令牌（32 字节随机 hex，5 分钟有效，验证成功即失效）
+
+    AuthTOTPVerifyRequest:
+      type: object
+      required: [challenge_token, code]
+      properties:
+        challenge_token:
+          type: string
+          description: /auth/login 返回的挑战令牌
+        code:
+          type: string
+          description: 6 位动态令牌，或一次性恢复码（xxxx-xxxx，不区分大小写）
+
+    AuthTOTPCodeRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: 6 位动态令牌；关闭双因子时也可使用一次性恢复码（xxxx-xxxx）
+
+    AuthTOTPSetupResponse:
+      type: object
+      required: [secret, otpauth_url, recovery_codes]
+      properties:
+        secret:
+          type: string
+          description: Base32 编码的 TOTP 密钥（明文仅本次返回，服务端只存密文）
+        otpauth_url:
+          type: string
+          description: otpauth:// 链接，供令牌 App 扫码绑定
+        recovery_codes:
+          type: array
+          items: { type: string }
+          description: 10 个一次性恢复码（xxxx-xxxx），仅本次返回，服务端只存 SHA-256 哈希
+        notice:
+          type: string
+          description: 保存提示
+
+    AuthChangePasswordRequest:
+      type: object
+      required: [old_password, new_password]
+      properties:
+        old_password:
+          type: string
+          format: password
+          description: 原密码
+        new_password:
+          type: string
+          format: password
+          description: 新密码（须符合密码安全策略）
+
+    AuthChangePasswordResponse:
+      type: object
+      required: [message, relogin_required]
+      properties:
+        message:
+          type: string
+          description: 提示信息
+        relogin_required:
+          type: boolean
+          description: 是否须重新登录（恒为 true，改密后当前会话已撤销）
+
+    AuthSession:
+      type: object
+      required: [id, session_hash, is_current]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 会话摘要 ID（撤销会话时作为路径参数）
+        session_hash:
+          type: string
+          description: 会话标识哈希（非原始会话 ID）
+        source_ip:
+          type: string
+          description: 登录来源 IP（可为空字符串）
+        user_agent_summary:
+          type: string
+          description: User-Agent 摘要（截断至 500 字符）
+        created_at:
+          type: string
+          format: date-time
+          description: 会话创建时间
+        last_seen_at:
+          type: string
+          format: date-time
+          description: 最近活跃时间
+        expires_at:
+          type: string
+          format: date-time
+          description: 会话过期时间（绝对过期）
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 撤销时间（未撤销为 null）
+        revoke_reason:
+          type: string
+          description: 撤销原因（如 logout、user_revoke_self、password_changed；未撤销为空字符串）
+        is_current:
+          type: boolean
+          description: 是否为当前请求所用会话
+
+    AuthSessionListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuthSession'
+
+    RoleBrief:
+      type: object
+      required: [code, name]
+      properties:
+        code:
+          type: string
+          description: 角色编码（如 SYSTEM_ADMIN）
+        name:
+          type: string
+          description: 角色中文名称
+
+    User:
+      type: object
+      required: [id, username, display_name, status, must_change_password, roles, created_at, updated_at, version]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 用户 ID
+        username:
+          type: string
+          description: 用户名
+        display_name:
+          type: string
+          description: 显示名称
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, LOCKED, DELETED]
+          description: 用户状态
+        must_change_password:
+          type: boolean
+          description: 是否必须修改密码
+        password_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 密码过期时间（null 表示永不过期）
+        locked_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: 锁定截止时间（未锁定为 null）
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近登录时间
+        last_login_ip:
+          type: string
+          description: 最近登录来源 IP（无记录时为空字符串）
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleBrief'
+          description: 用户角色
+        created_at:
+          type: string
+          format: date-time
+          description: 创建时间
+        updated_at:
+          type: string
+          format: date-time
+          description: 更新时间
+        version:
+          type: integer
+          description: 乐观锁版本号（更新时需回传）
+
+    UserListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+        page:
+          type: integer
+          description: 当前页码
+        page_size:
+          type: integer
+          description: 每页条数
+        total:
+          type: integer
+          description: 总条数
+
+    UserCreateRequest:
+      type: object
+      required: [username, role_code]
+      properties:
+        username:
+          type: string
+          minLength: 4
+          maxLength: 64
+          description: 用户名（仅字母/数字/下划线/短横线，不区分大小写唯一）
+        display_name:
+          type: string
+          maxLength: 128
+          description: 显示名称（缺省同用户名）
+        role_code:
+          type: string
+          enum: [SYSTEM_ADMIN, SECURITY_ADMIN, AUDIT_ADMIN]
+          description: 内置角色编码（仅允许三权角色）
+
+    UserCreateResponse:
+      type: object
+      required: [user, temporary_password]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        temporary_password:
+          type: string
+          description: 一次性临时密码（仅本次返回，须立即告知用户）
+        notice:
+          type: string
+          description: 提示文案
+
+    UserUpdateRequest:
+      type: object
+      required: [display_name, version]
+      properties:
+        display_name:
+          type: string
+          maxLength: 128
+          description: 显示名称（为空时回退为用户名）
+        role_code:
+          type: string
+          enum: [SYSTEM_ADMIN, SECURITY_ADMIN, AUDIT_ADMIN]
+          description: 新角色编码（缺省/空表示不变更角色）
+        version:
+          type: integer
+          description: 乐观锁版本号（须与当前用户 version 一致）
+
+    UserResetPasswordResponse:
+      type: object
+      required: [temporary_password]
+      properties:
+        temporary_password:
+          type: string
+          description: 一次性临时密码（仅本次返回）
+        notice:
+          type: string
+          description: 提示文案
+
+    Role:
+      type: object
+      required: [id, code, name, description, is_builtin]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 角色 ID
+        code:
+          type: string
+          description: 角色编码（如 SYSTEM_ADMIN）
+        name:
+          type: string
+          description: 角色中文名称
+        description:
+          type: string
+          description: 角色描述
+        is_builtin:
+          type: boolean
+          description: 是否内置角色
+
+    RoleListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+
+    RolePermission:
+      type: object
+      required: [id, code, name, module, description]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 权限 ID
+        code:
+          type: string
+          description: 权限点编码（如 users.read）
+        name:
+          type: string
+          description: 权限中文名称
+        module:
+          type: string
+          description: 所属模块
+        description:
+          type: string
+          description: 权限描述
+
+    RolePermissionListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RolePermission'
+
+    RoleDetailResponse:
+      type: object
+      required: [role, permissions, user_count]
+      properties:
+        role:
+          $ref: '#/components/schemas/Role'
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RolePermission'
+          description: 该角色的权限点清单
+        user_count:
+          type: integer
+          description: 关联该角色的用户数量
+
+    ProfilePermissionDetail:
+      type: object
+      required: [code, name, module]
+      properties:
+        code:
+          type: string
+          description: 权限点编码
+        name:
+          type: string
+          description: 权限中文名称
+        module:
+          type: string
+          description: 所属模块
+
+    ProfileResponse:
+      type: object
+      required: [id, username, display_name, status, must_change_password, roles, created_at, updated_at, version, permissions]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 用户 ID
+        username:
+          type: string
+          description: 用户名
+        display_name:
+          type: string
+          description: 显示名称
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, LOCKED, DELETED]
+          description: 用户状态
+        must_change_password:
+          type: boolean
+          description: 是否必须修改密码
+        password_expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 密码过期时间
+        locked_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: 锁定截止时间
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近登录时间
+        last_login_ip:
+          type: string
+          description: 最近登录来源 IP（无记录时为空字符串）
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleBrief'
+        created_at:
+          type: string
+          format: date-time
+          description: 创建时间
+        updated_at:
+          type: string
+          format: date-time
+          description: 更新时间
+        version:
+          type: integer
+          description: 乐观锁版本号（修改资料时需回传）
+        permissions:
+          type: array
+          items: { type: string }
+          description: 权限点编码列表（经角色聚合）
+        permission_details:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProfilePermissionDetail'
+          description: 权限点中文明细（与 permissions 对应）
+
+    ProfileUpdateRequest:
+      type: object
+      required: [display_name, version]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 显示名称
+        version:
+          type: integer
+          description: 乐观锁版本号（须与当前资料 version 一致）
+
+    LoginLogEntry:
+      type: object
+      required: [id, occurred_at, username, event_type, result]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 日志 ID
+        occurred_at:
+          type: string
+          format: date-time
+          description: 事件发生时间
+        username:
+          type: string
+          description: 登录用户名
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 用户 ID（登录失败且用户不存在时为 null）
+        source_ip:
+          type: string
+          description: 来源 IP（识别真实客户端后的 IP，可为空字符串）
+        connection_ip:
+          type: string
+          description: 直连 IP（TCP 对端，可为空字符串）
+        user_agent_summary:
+          type: string
+          description: User-Agent 摘要（截断至 500 字符）
+        event_type:
+          type: string
+          enum: [LOGIN_SUCCESS, LOGIN_FAILURE, CAPTCHA_FAILURE, ACCOUNT_LOCKED, LOGOUT, FORCE_LOGOUT, SESSION_EXPIRED, PASSWORD_CHANGE, PASSWORD_RESET, FIRST_CHANGE_PASSWORD]
+          description: 事件类型
+        result:
+          type: string
+          enum: [SUCCESS, FAILURE]
+          description: 结果
+        failure_code:
+          type: string
+          description: 失败原因码（如 CAPTCHA_REQUIRED、PASSWORD_EXPIRED；成功时为空字符串）
+        request_id:
+          type: string
+          description: 请求 ID（链路追踪）
+
+    LoginLogListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LoginLogEntry'
+        page:
+          type: integer
+          description: 当前页码
+        page_size:
+          type: integer
+          description: 每页条数
+        total:
+          type: integer
+          description: 总条数
+
+    AuditEntry:
+      type: object
+      required: [id, occurred_at, username, module, action, result, risk_level]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 审计记录 ID
+        occurred_at:
+          type: string
+          format: date-time
+          description: 发生时间（UTC，微秒精度）
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 操作人用户 ID
+        username:
+          type: string
+          description: 操作人用户名
+        source_ip:
+          type: string
+          description: 来源 IP（可为空字符串）
+        connection_ip:
+          type: string
+          description: 直连 IP（可为空字符串）
+        user_agent_summary:
+          type: string
+          description: User-Agent 摘要（截断至 500 字符）
+        module:
+          type: string
+          description: 模块（如 users、system_settings）
+        action:
+          type: string
+          description: 操作动作（如 create、update、delete、assign_role）
+        object_type:
+          type: string
+          description: 操作对象类型（如 user、setting）
+        object_id:
+          type: string
+          description: 操作对象标识
+        object_name:
+          type: string
+          description: 操作对象名称
+        before_summary:
+          type: string
+          description: 变更前摘要（JSON 字符串，敏感字段已脱敏为 ********；可为空字符串）
+        after_summary:
+          type: string
+          description: 变更后摘要（JSON 字符串，敏感字段已脱敏为 ********；可为空字符串）
+        result:
+          type: string
+          enum: [SUCCESS, FAILURE]
+          description: 操作结果
+        failure_reason:
+          type: string
+          description: 失败原因（成功时为空字符串）
+        risk_level:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+          description: 风险等级
+        request_id:
+          type: string
+          description: 请求 ID（链路追踪）
+        previous_hash:
+          type: string
+          description: 上一条审计记录哈希（链起点为空字符串）
+        record_hash:
+          type: string
+          description: 本记录哈希（SHA-256，十六进制）
+
+    AuditListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntry'
+        page:
+          type: integer
+          description: 当前页码
+        page_size:
+          type: integer
+          description: 每页条数
+        total:
+          type: integer
+          description: 总条数
+
+    AuditVerifyChainResponse:
+      type: object
+      required: [valid, mismatch_count, mismatch_ids]
+      properties:
+        valid:
+          type: boolean
+          description: 哈希链是否完整（mismatch_count 为 0 时 true）
+        mismatch_count:
+          type: integer
+          description: 不一致记录数量
+        mismatch_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: 不一致记录 ID 列表
+
+    Setting:
+      type: object
+      required: [id, setting_group, setting_key, setting_value, value_type, is_sensitive, description, updated_at, version]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 设置记录 ID
+        setting_group:
+          type: string
+          enum: [password, login, session, display, logging]
+          description: 设置分组
+        setting_key:
+          type: string
+          description: 设置键（如 min_length）
+        setting_value:
+          description: 设置值（JSON 任意类型，与 value_type 一致；敏感设置恒为 "********"）
+        value_type:
+          type: string
+          enum: [string, integer, boolean]
+          description: 值类型（服务端据此校验 setting_value 的 JSON 类型）
+        is_sensitive:
+          type: boolean
+          description: 是否敏感设置（敏感设置读取时值被脱敏）
+        description:
+          type: string
+          description: 设置项描述
+        updated_at:
+          type: string
+          format: date-time
+          description: 最近更新时间
+        version:
+          type: integer
+          description: 乐观锁版本号（更新时需回传）
+
+    SettingListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Setting'
+
+    SettingUpdateRequest:
+      type: object
+      required: [setting_group, setting_key, setting_value, version]
+      properties:
+        setting_group:
+          type: string
+          description: 设置分组（须为白名单内的组合，如 password、login）
+        setting_key:
+          type: string
+          description: 设置键（如 min_length）
+        setting_value:
+          description: 新值（JSON 类型须与该设置的 value_type 一致，如 integer 组传 8、boolean 组传 true、string 组传 "文本"）
+        version:
+          type: integer
+          description: 乐观锁版本号（须与当前设置 version 一致）

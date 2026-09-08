@@ -1,0 +1,365 @@
+# 九章双节点 HA 验证编排（docs/HA_TWO_NODE_DESIGN.md §5 的 lab 落地）
+#
+# 拓扑（§1.1 Active-Active）：
+#   客户端 → LB（Caddy，least_conn + 被动健康检查）→ gw-a / gw-b（同镜像双网关）
+#   两网关 → 共享 Valkey（CC 计数 counter_backend=valkey + 行为状态 behavior_store=valkey）
+#   管理面 api（单实例）+ 共享 PostgreSQL 主库 + testorigin 源站
+#
+# 启动前置（敏感值一律必填注入，不再内置任何默认口令——MED-22）：
+#   1. 准备 lab 专用环境文件（示例，请勿提交真实口令到版本库）：
+#        {
+#          printf 'POSTGRES_PASSWORD=%s\n'  "$(openssl rand -hex 24)"
+#          printf 'VALKEY_PASSWORD=%s\n'   "$(openssl rand -hex 24)"
+#          printf 'JIUZHANG_MASTER_KEY=%s\n' "$(openssl rand -hex 32)"
+#          printf 'INITIAL_ADMIN_PASSWORD=%s\n' '<自设强口令，首次登录强制改密>'
+#        } > deployment/ha-lab/.env.ha-lab
+#   2. 启动时必须显式指定该文件（compose 默认只读 CWD 的 .env，不会自动捡本目录文件）：
+#        docker compose --env-file deployment/ha-lab/.env.ha-lab \
+#          -f deployment/ha-lab/docker-compose.ha-lab.yml up -d --build
+#   3. 跑验证脚本前导出同源口令（test/ha/ha-lab-verify.sh 与 stage5-setup.sh 的
+#      历史默认值已与本编排解耦，必须显式一致）：
+#        export VALKEY_PASSWORD=<同上>  SYS_PWD=<同上 INITIAL_ADMIN_PASSWORD>
+#
+# 用法（仓库根目录）：
+#   docker compose --env-file deployment/ha-lab/.env.ha-lab \
+#     -f deployment/ha-lab/docker-compose.ha-lab.yml up -d --build
+#   bash test/ha/ha-lab-verify.sh            # 全部场景（S1-S5）
+#   bash test/ha/ha-lab-verify.sh --scenario S2
+#   docker compose -f deployment/ha-lab/docker-compose.ha-lab.yml down -v   # 清理
+#
+# 端口分配（避开本机已用的 18080/18081/15432/16379/21434/55444/56388 等，选 188xx/159xx 段）：
+#   18880 LB 客户端入口 | 18881/18882 gw-a/gw-b 直连口（验证脚本定向打流用）
+#   18883 管理 api | 15932 postgres | 15979 valkey —— 全部仅绑定 127.0.0.1
+#
+# 与 stage5 编排的差异（HA 必需 + 如实记录的 lab 形态取舍）：
+#   1. 双网关各自唯一 gateway_node 经 nodepatch 工具在每次发布后打身份补丁
+#      （发布扇出推送同一份配置，gateway_node 单一值；按节点注入是发布通道后续工程）；
+#   2. 网关启动命令加 --resume + /var/lib/caddy 独立数据卷：节点重启恢复
+#      最近一次生效配置（含身份补丁），无需等待重发即恢复防护与心跳；
+#   3. api-runtime-events 为双节点共写的追加式事件总线卷（O_APPEND 单行原子 +
+#      采集端 request_id 幂等去重兜底）：管理面当前仅支持单路径单采集器，
+#      生产「每节点独立日志 + 独立采集器」为多采集器支持的后续工程（见设计文档 §8）；
+#      两节点其余日志（caddy.log/access.log/guard-events.log/Coraza 审计）仍为各自独立卷，
+#      api 侧只采集主节点 gw-a 的该类日志（场景断言不依赖节点 B 的 CC/审计流）。
+#   4. 生产主从/哨兵形态（PG 流复制、Valkey Sentinel）见设计文档 §3，lab 用单实例。
+
+name: jiuzhang-ha-lab
+
+services:
+  # 一次性卷初始化：共享事件总线卷 ha-api-events 的挂载路径不在网关镜像内，
+  # 命名卷初始化为 root 所有，网关（uid 1000）写日志会 permission denied——
+  # 启动前修正属主为 1000:1000（网关写 / api 读同一 uid）。复用 valkey 锁定镜像，零新增。
+  ha-init:
+    image: valkey/valkey:8.1.8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+    container_name: jiuzhang-ha-init
+    user: "0:0"
+    entrypoint: ["sh", "-c", "chown 1000:1000 /events && chmod 0755 /events"]
+    volumes:
+      - ha-api-events:/events
+    network_mode: none
+
+  postgres:
+    # 与 stage5 同款锁定镜像（multi-arch index digest）
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    container_name: jiuzhang-ha-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jiuzhang_waf}
+      POSTGRES_USER: ${POSTGRES_USER:-jiuzhang}
+      # 必填注入（无默认口令；经 --env-file 或同名环境变量提供，见文件头「启动前置」）
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ha-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-15932}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jiuzhang} -d ${POSTGRES_DB:-jiuzhang_waf}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - ha-net
+
+  valkey:
+    # 与 stage5 同款锁定镜像（两网关共享 CC 计数与行为状态）
+    image: valkey/valkey:8.1.8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+    container_name: jiuzhang-ha-valkey
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --requirepass
+      - ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    volumes:
+      - ha-valkey-data:/data
+    ports:
+      - "127.0.0.1:${VALKEY_PORT:-15979}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+    networks:
+      - ha-net
+
+  gw-a: &gateway_defaults
+    # 双节点同一镜像（compose build 自产，构建锁版本见 gateway/Dockerfile）
+    image: jiuzhang-gateway:ha-lab
+    build:
+      context: ../../gateway
+      dockerfile: Dockerfile
+    container_name: jiuzhang-ha-gw-a
+    restart: unless-stopped
+    # --resume：重启恢复 /var/lib/caddy 内 autosave 的最近生效配置（含 nodepatch 身份补丁）；
+    # 首次启动无 autosave 时回退 --config 引导配置（Caddy 原生语义，非错误）
+    command: ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--resume"]
+    environment:
+      SEC_RULE_ENGINE: On
+    ports:
+      # 直连口：验证脚本定向打流/断言按节点归因用（生产形态网关不对客户端单独暴露）
+      - "127.0.0.1:18881:8080"
+    volumes:
+      - ../../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      - ../../gateway/rules:/etc/caddy/rules:ro
+      - ha-gw-a-logs:/var/log/caddy                 # 本节点独立日志卷
+      - ha-admin-a:/var/run/caddy                   # 本节点 Admin Socket 卷（api 主发布通道 + nodepatch）
+      - ha-gw-a-data:/var/lib/caddy                 # autosave 持久化（--resume 恢复点）
+      - ha-api-events:/var/log/jiuzhang-shared      # 双节点共享 API 运行时事件总线（追加写，见文件头说明 3）
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      testorigin:
+        condition: service_healthy
+      ha-init:
+        condition: service_completed_successfully
+    networks:
+      - ha-net
+
+  gw-b:
+    <<: *gateway_defaults
+    container_name: jiuzhang-ha-gw-b
+    ports:
+      - "127.0.0.1:18882:8080"
+    volumes:
+      - ../../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      - ../../gateway/rules:/etc/caddy/rules:ro
+      - ha-gw-b-logs:/var/log/caddy
+      - ha-admin-b:/var/run/caddy
+      - ha-gw-b-data:/var/lib/caddy
+      - ha-api-events:/var/log/jiuzhang-shared
+    depends_on:
+      testorigin:
+        condition: service_healthy
+      ha-init:
+        condition: service_completed_successfully
+    networks:
+      - ha-net
+
+  lb:
+    # 前置负载均衡：复用网关镜像（Caddy 2.11.4 同一二进制），零新增镜像
+    image: jiuzhang-gateway:ha-lab
+    container_name: jiuzhang-ha-lb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18880:8080"
+    volumes:
+      - ./Caddyfile.lb:/etc/caddy/Caddyfile:ro
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /var/lib/caddy:size=8m,uid=1000,gid=1000
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      gw-a:
+        condition: service_started
+      gw-b:
+        condition: service_started
+    networks:
+      - ha-net
+
+  api:
+    image: jiuzhang-server:ha-lab
+    build:
+      context: ../..
+      dockerfile: server/Dockerfile
+    container_name: jiuzhang-ha-api
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jiuzhang_waf}
+      POSTGRES_USER: ${POSTGRES_USER:-jiuzhang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      VALKEY_HOST: valkey
+      VALKEY_PORT: 6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+      COOKIE_SECURE: "false"
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?INITIAL_ADMIN_PASSWORD is required}
+      JIUZHANG_MASTER_KEY: ${JIUZHANG_MASTER_KEY:?JIUZHANG_MASTER_KEY is required}
+      MANAGEMENT_TRUSTED_PROXY_CIDRS: ${MANAGEMENT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
+      # 主发布通道：gw-a 的 Admin Socket（与发布配置 admin.listen 同路径——
+      # 发布器按 socket 路径生成 admin.listen，扇出纪律要求全节点同构路径部署）
+      CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
+      GATEWAY_DATA_DIR: /app/runtime
+      MIGRATIONS_DIR: /app/migrations
+      WAF_CRS_DIR: /etc/caddy/rules/crs/rules
+      WAF_CRS_VERSION: 4.28.0
+      # 主节点（gw-a）日志采集（只读卷）；节点 B 的该类日志 lab 不采集（见文件头说明 3）
+      WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
+      WAF_GUARD_EVENTS_LOG: /var/log/caddy-audit/guard-events.log
+      GATEWAY_GUARD_EVENTS_LOG: /var/log/caddy/guard-events.log
+      WAF_NODE_IFACES_LOG: /var/log/caddy-audit/node-interfaces.jsonl
+      GUARD_FAIL_OPEN: ${GUARD_FAIL_OPEN:-true}
+      WAF_ACCESS_LOG: /var/log/caddy-audit/access.log
+      REPORT_FONT_PATH: /app/assets/fonts/NotoSansCJKsc-VF.ttf
+      # WDSP 形态 + API 动态防护（HA 方案 §5 前置：api_dynamic_protection=true）
+      PRODUCT_EDITION: wdsp
+      API_DYNAMIC_PROTECTION_ENABLED: "true"
+      API_PROTECTION_MODE: ${API_PROTECTION_MODE:-OBSERVE}
+      # 发布配置中 gateway_node 的基准值（=主节点名 gw-a；次节点由 nodepatch 改写）
+      GATEWAY_NODE_NAME: gw-a
+      # 双节点共享 API 事件总线：发布侧下发网关侧路径（两节点同路径共写），
+      # 采集侧同路径只读挂载（采集器断点 /app/runtime/api-runtime-events.checkpoint）
+      WAF_API_EVENTS_LOG: /var/log/jiuzhang-shared/api-runtime-events.log
+      GATEWAY_API_EVENTS_LOG: /var/log/jiuzhang-shared/api-runtime-events.log
+      WAF_SITE_DISCOVERY_LOG: /var/log/caddy-audit/site-discovery.jsonl
+      WAF_ACCESS_FULL_LOG: /var/log/caddy-audit/access-full.jsonl
+      GATEWAY_ACCESS_FULL_LOG: /var/log/caddy/access-full.jsonl
+      API_MAX_BODY_PARSE_BYTES: ${API_MAX_BODY_PARSE_BYTES:-1048576}
+      API_MAX_BODY_SAMPLE_BYTES: ${API_MAX_BODY_SAMPLE_BYTES:-65536}
+      API_MAX_JSON_DEPTH: ${API_MAX_JSON_DEPTH:-32}
+      API_MAX_FIELD_COUNT: ${API_MAX_FIELD_COUNT:-2048}
+    ports:
+      - "127.0.0.1:${API_PORT:-18883}:8080"
+    volumes:
+      # 主发布通道：gw-a Admin Socket（同 stage5 形态，同路径挂载）
+      - ha-admin-a:/var/run/caddy
+      # 次节点扇出通道：gw-b Admin Socket（登记 admin_addr=/var/run/caddy-node-b/admin.sock）
+      - ha-admin-b:/var/run/caddy-node-b
+      # 主节点日志采集（只读；同 stage5 形态）
+      - ha-gw-a-logs:/var/log/caddy-audit:ro
+      - ../../gateway/rules:/etc/caddy/rules:ro
+      - ../../docs:/app/docs:ro
+      - ../../THIRD_PARTY_NOTICES.md:/app/THIRD_PARTY_NOTICES.md:ro
+      - ha-runtime:/app/runtime
+      # 双节点共享 API 事件总线（只读采集）
+      - ha-api-events:/var/log/jiuzhang-shared:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      gw-a:
+        condition: service_started
+      gw-b:
+        condition: service_started
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - ha-net
+
+  testorigin:
+    build:
+      context: ../../deployment/stage1/testorigin
+      dockerfile: Dockerfile
+    image: jiuzhang-testorigin:stage1
+    container_name: jiuzhang-ha-testorigin
+    restart: unless-stopped
+    expose:
+      - "8081"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - ha-net
+
+  # nodepatch 节点身份补丁工具（profile=tools，不随主栈启动）：
+  # 每次发布后由验证脚本经 docker compose run 调用，逐节点改写 gateway_node/心跳周期。
+  # 仅挂两节点 Admin Socket 卷，无网络（network_mode: none）——socket 可达即可。
+  nodepatch:
+    profiles: ["tools"]
+    build:
+      context: ./nodepatch
+      dockerfile: Dockerfile
+    image: jiuzhang-ha-nodepatch:ha-lab
+    network_mode: none
+    volumes:
+      - ha-admin-a:/sock/a
+      - ha-admin-b:/sock/b
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  ha-postgres-data:
+    driver: local
+  ha-valkey-data:
+    driver: local
+  ha-gw-a-logs:
+    driver: local
+  ha-gw-b-logs:
+    driver: local
+  ha-admin-a:
+    driver: local
+  ha-admin-b:
+    driver: local
+  ha-gw-a-data:
+    driver: local
+  ha-gw-b-data:
+    driver: local
+  ha-api-events:
+    driver: local
+  ha-runtime:
+    driver: local
+
+networks:
+  ha-net:
+    driver: bridge

@@ -3,19 +3,35 @@ package temporaryblock
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
 )
 
 type fakeValkey struct {
-	hash map[string]string
+	hash     map[string]string
+	failEval bool
 }
 
 func newFake() *fakeValkey { return &fakeValkey{hash: map[string]string{}} }
 
-func (f *fakeValkey) Eval(_ context.Context, _ string, _ []string, _ []string) ([]interface{}, error) {
-	return nil, nil
+func (f *fakeValkey) Eval(_ context.Context, script string, _ []string, args []string) ([]interface{}, error) {
+	if f.failEval {
+		return nil, errors.New("valkey down")
+	}
+	if script != pruneLua {
+		return nil, errors.New("unexpected script")
+	}
+	// pruneLua 语义镜像：仅当当前值与快照一致时删除
+	n := int64(0)
+	for i := 0; i+1 < len(args); i += 2 {
+		if v, ok := f.hash[args[i]]; ok && v == args[i+1] {
+			delete(f.hash, args[i])
+			n++
+		}
+	}
+	return []interface{}{n}, nil
 }
 func (f *fakeValkey) HSet(_ context.Context, _, field, value string) error {
 	f.hash[field] = value
@@ -46,7 +62,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err := s.Put(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	all, bad, err := s.All(ctx)
+	all, _, bad, err := s.All(ctx)
 	if err != nil || bad != 0 {
 		t.Fatal(err)
 	}
@@ -56,7 +72,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	// 损坏条目：计数不吞错
 	fk.hash["broken"] = "{not json"
-	_, bad, _ = s.All(ctx)
+	_, _, bad, _ = s.All(ctx)
 	if bad != 1 {
 		t.Fatalf("bad entries counted: %d", bad)
 	}
@@ -64,7 +80,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err := s.Remove(ctx, "203.0.113.5", "app1"); err != nil {
 		t.Fatal(err)
 	}
-	all, _, _ = s.All(ctx)
+	all, _, _, _ = s.All(ctx)
 	if _, ok := all[FieldKey("203.0.113.5", "app1")]; ok {
 		t.Fatal("remove failed")
 	}
@@ -124,4 +140,110 @@ func TestCacheRefresh(t *testing.T) {
 	if _, ok := c.Blocked(netip.MustParseAddr("198.51.100.9"), "x"); ok {
 		t.Fatal("released block should clear after refresh")
 	}
+}
+
+// 纯内存模式（store 为 nil）：PutLocal 惰性清扫过期项，map 不随轮换源 IP 无界增长。
+func TestPutLocalEvictsExpired(t *testing.T) {
+	ctx := context.Background()
+	c := NewCache(nil, 0)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	if err := c.PutLocal(ctx, Block{ID: "old", ClientIP: "2001:db8::1", ExpiresAt: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute) // old 过期
+	if err := c.PutLocal(ctx, Block{ID: "new", ClientIP: "2001:db8::2", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.items) != 1 {
+		t.Fatalf("expired entries must be swept on PutLocal: %d", len(c.items))
+	}
+	if _, ok := c.items[FieldKey("2001:db8::1", "")]; ok {
+		t.Fatal("expired entry should be deleted, not just skipped")
+	}
+}
+
+// Valkey 模式：Refresh 对过期 field 条件 HDel（哈希不单调膨胀），存活与 localOnly 条目不受影响。
+func TestRefreshPrunesExpiredRemote(t *testing.T) {
+	ctx := context.Background()
+	fk := newFake()
+	s := NewStore(fk, "")
+	now := time.Now()
+	expiredKey := FieldKey("203.0.113.20", "")
+	freshKey := FieldKey("203.0.113.21", "")
+	d, _ := json.Marshal(Block{ID: "old", ClientIP: "203.0.113.20", ExpiresAt: now.Add(-time.Minute)})
+	fk.hash[expiredKey] = string(d)
+	d, _ = json.Marshal(Block{ID: "fresh", ClientIP: "203.0.113.21", ExpiresAt: now.Add(time.Hour)})
+	fk.hash[freshKey] = string(d)
+
+	c := NewCache(s, 0)
+	c.now = func() time.Time { return now }
+	// localOnly 条目（Valkey 写失败遗留）不应被过期清理波及
+	c.localOnly[FieldKey("203.0.113.22", "")] = Block{ID: "local", ClientIP: "203.0.113.22", ExpiresAt: now.Add(time.Hour)}
+
+	if err := c.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fk.hash[expiredKey]; ok {
+		t.Fatal("expired field must be HDel'd from valkey")
+	}
+	if _, ok := fk.hash[freshKey]; !ok {
+		t.Fatal("fresh field must survive prune")
+	}
+	if _, ok := c.Blocked(netip.MustParseAddr("203.0.113.22"), ""); !ok {
+		t.Fatal("localOnly entry must survive refresh")
+	}
+	// 清理失败如实上报（不静默吞错），本地视图仍已更新
+	fk.hash[expiredKey] = string(mustJSON(t, Block{ID: "old2", ClientIP: "203.0.113.20", ExpiresAt: now.Add(-time.Minute)}))
+	fk.failEval = true
+	if err := c.Refresh(ctx); err == nil || c.LastError() == nil {
+		t.Fatal("prune failure must surface via err/LastError")
+	}
+	if _, ok := c.Blocked(netip.MustParseAddr("203.0.113.20"), ""); ok {
+		t.Fatal("expired entry must not block even when prune fails")
+	}
+	fk.failEval = false
+	if err := c.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fk.hash[expiredKey]; ok {
+		t.Fatal("next refresh should retry prune")
+	}
+}
+
+// 读后重封竞态：快照值已变化时 PruneIfUnchanged 不得误删新封禁。
+func TestPruneIfUnchangedSkipsRewritten(t *testing.T) {
+	ctx := context.Background()
+	fk := newFake()
+	s := NewStore(fk, "")
+	key := FieldKey("198.51.100.30", "")
+	old := string(mustJSON(t, Block{ID: "old", ClientIP: "198.51.100.30", ExpiresAt: time.Now().Add(-time.Minute)}))
+	fk.hash[key] = old
+	// 快照后管理平台重封同 field（值已变化）
+	fk.hash[key] = string(mustJSON(t, Block{ID: "renewed", ClientIP: "198.51.100.30", ExpiresAt: time.Now().Add(time.Hour)}))
+	if err := s.PruneIfUnchanged(ctx, map[string]string{key: old}); err != nil {
+		t.Fatal(err)
+	}
+	var b Block
+	if err := json.Unmarshal([]byte(fk.hash[key]), &b); err != nil || b.ID != "renewed" {
+		t.Fatalf("rewritten field must not be pruned: %q %v", fk.hash[key], err)
+	}
+	// 值未变化时正常删除
+	if err := s.PruneIfUnchanged(ctx, map[string]string{key: fk.hash[key]}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fk.hash[key]; ok {
+		t.Fatal("unchanged field should be pruned")
+	}
+}
+
+func mustJSON(t *testing.T, b Block) []byte {
+	t.Helper()
+	d, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

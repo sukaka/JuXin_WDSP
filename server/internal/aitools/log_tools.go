@@ -16,7 +16,7 @@ func NewLogTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&accessLogSearch{baseTool: baseTool{meta: toolMeta{
 		code: "access_log.search", name: "访问日志摘要查询", version: "1.0",
 		description: "按时间/域名/状态码查询访问聚合摘要（非原始日志全文）",
-		risk: RiskReadOnly, permission: "analytics.security.read", timeout: 20, maxResults: 50,
+		risk:        RiskReadOnly, permission: "analytics.security.read", timeout: 20, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 			"domain": sch("string", "域名（可选）"), "status_code": sch("integer", "状态码（可选）"),
@@ -26,7 +26,7 @@ func NewLogTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&wafLogSearch{baseTool: baseTool{meta: toolMeta{
 		code: "waf_log.search", name: "WAF日志查询", version: "1.0",
 		description: "按时间/IP/规则/动作查询 WAF 安全事件（载荷脱敏）",
-		risk: RiskReadOnly, permission: "security_events.read", timeout: 20, maxResults: 50,
+		risk:        RiskReadOnly, permission: "security_events.read", timeout: 20, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 			"client_ip": sch("string", "IP（可选）"), "rule_id": sch("integer", "规则ID（可选）"),
@@ -36,7 +36,7 @@ func NewLogTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&ccLogSearch{baseTool: baseTool{meta: toolMeta{
 		code: "cc_log.search", name: "CC日志查询", version: "1.0",
 		description: "按时间/IP/策略查询 CC 相关访问控制事件",
-		risk: RiskReadOnly, permission: "access_control_events.read", timeout: 20, maxResults: 50,
+		risk:        RiskReadOnly, permission: "access_control_events.read", timeout: 20, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 			"client_ip": sch("string", "IP（可选）"), "policy_id": sch("string", "策略ID（可选）"),
@@ -45,35 +45,35 @@ func NewLogTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&acEventSearch{baseTool: baseTool{meta: toolMeta{
 		code: "access_control_log.search", name: "访问控制/CC事件查询", version: "1.0",
 		description: "按时间/类型/IP/策略/RequestID 分页查询访问控制与CC事件",
-		risk: RiskReadOnly, permission: "access_control_events.read", timeout: 20, maxResults: 50,
+		risk:        RiskReadOnly, permission: "access_control_events.read", timeout: 20, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 			"event_type": sch("string", "事件类型（可选）"), "client_ip": sch("string", "IP（可选）"),
-			"policy_id":  sch("string", "策略ID（可选）"), "request_id": sch("string", "Request ID（可选）"),
-			"page":       sch("integer", "页码"),
+			"policy_id": sch("string", "策略ID（可选）"), "request_id": sch("string", "Request ID（可选）"),
+			"page": sch("integer", "页码"),
 		})}}, db: db})
 	r.Register(&auditSearch{baseTool: baseTool{meta: toolMeta{
 		code: "audit_log.search", name: "操作审计查询", version: "1.0",
 		description: "按时间/用户/模块/动作查询操作审计",
-		risk: RiskReadOnly, permission: "audits.read", timeout: 20, maxResults: 50,
+		risk:        RiskReadOnly, permission: "audits.read", timeout: 20, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
-			"username":   sch("string", "用户名（可选）"), "module": sch("string", "模块（可选）"),
-			"action":     sch("string", "动作（可选）"), "page": sch("integer", "页码"),
+			"username": sch("string", "用户名（可选）"), "module": sch("string", "模块（可选）"),
+			"action": sch("string", "动作（可选）"), "page": sch("integer", "页码"),
 		})}}, db: db})
 	r.Register(&requestTrace{baseTool: baseTool{meta: toolMeta{
 		code: "request_trace.get", name: "Request ID 链路追踪", version: "1.0",
 		description: "按 Request ID 聚合 WAF 事件与访问控制事件链路",
-		risk: RiskReadOnly, permission: "security_events.read", timeout: 15, maxResults: 30,
+		risk:        RiskReadOnly, permission: "security_events.read", timeout: 15, maxResults: 30,
 		schema: obj(map[string]interface{}{"request_id": sch("string", "Request ID")})}}, db: db})
 	r.Register(&systemLogSearch{baseTool: baseTool{meta: toolMeta{
 		code: "system_log.search", name: "系统告警查询", version: "1.0",
 		description: "按时间/类型/等级/组件/状态查询系统告警",
-		risk: RiskReadOnly, permission: "system_alerts.read", timeout: 15, maxResults: 50,
+		risk:        RiskReadOnly, permission: "system_alerts.read", timeout: 15, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 			"alert_type": sch("string", "告警类型（可选）"), "severity": sch("string", "等级（可选）"),
-			"status":     sch("string", "状态（可选）"), "page": sch("integer", "页码"),
+			"status": sch("string", "状态（可选）"), "page": sch("integer", "页码"),
 		})}}, db: db})
 }
 

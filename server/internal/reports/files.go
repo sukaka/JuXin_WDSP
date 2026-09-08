@@ -11,8 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// reportFileNameRe 合法报告文件名（report-{uuid}.{html|pdf}）。
-var reportFileNameRe = regexp.MustCompile(`^report-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.(html|pdf)$`)
+// reportFileNameRe 合法报告文件名（report-{uuid}.{html|pdf|docx}）。
+var reportFileNameRe = regexp.MustCompile(`^report-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.(html|pdf|docx)$`)
 
 // ReportFileName 生成报告文件名（仅由任务ID与格式组成，防路径穿越）。
 func ReportFileName(id uuid.UUID, format string) string {

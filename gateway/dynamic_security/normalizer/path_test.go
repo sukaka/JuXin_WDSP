@@ -43,3 +43,28 @@ func TestMergeCompatible(t *testing.T) {
 		t.Fatal("should not merge")
 	}
 }
+
+// IdentifierShape 与路径段归一化同一形态判据：UUID > 纯数字 > 长 hex；
+// 只认形态不认语义，非对象形态返回空串。
+func TestIdentifierShape(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"123", "numeric"},
+		{"0", "numeric"},
+		{"550e8400-e29b-41d4-a716-446655440000", "uuid"},
+		{"550E8400-E29B-41D4-A716-446655440000", "uuid"}, // 大小写不敏感
+		{"0123456789abcdef", "hex"},
+		{"0123456789ABCDEF", "hex"},
+		{"1234567890123456", "numeric"}, // 纯数字优先于 hex（与 NormalizePath 一致）
+		{"abc", ""},                     // 短 hex（<16）不算对象标识
+		{"hello world", ""},
+		{"", ""},
+		{"12a", ""}, // 混合短串非任一形态
+	}
+	for _, c := range cases {
+		if got := IdentifierShape(c.in); got != c.want {
+			t.Fatalf("IdentifierShape(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}

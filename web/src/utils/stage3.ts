@@ -1,11 +1,20 @@
 import dayjs from 'dayjs'
 import type { BusinessSnapshot } from '../types'
 
-/** 防护模式展示元数据：OFF 灰 / OBSERVE 蓝 / PROTECT 绿 */
+/** 部署模式展示元数据：REVERSE_PROXY 默认色 / ROUTED 紫 / MIRROR 青 / TRANSPARENT 橙（四者可区分） */
+export const DEPLOYMENT_MODE_META: Record<string, { color: string; label: string }> = {
+  REVERSE_PROXY: { color: 'default', label: '反向代理' },
+  ROUTED: { color: 'purple', label: '路由牵引' },
+  MIRROR: { color: 'cyan', label: '镜像' },
+  TRANSPARENT: { color: 'orange', label: '透明串接' },
+}
+
+/** 防护模式展示元数据：OFF 灰 / OBSERVE 蓝 / PROTECT 绿 / BYPASS 火山橙（醒目警示） */
 export const PROTECTION_MODE_META: Record<string, { color: string; label: string }> = {
   OFF: { color: 'default', label: '关闭' },
   OBSERVE: { color: 'blue', label: '观察' },
   PROTECT: { color: 'green', label: '防护' },
+  BYPASS: { color: 'volcano', label: '透传' },
 }
 
 export const APP_STATUS_META: Record<string, { color: string; label: string }> = {

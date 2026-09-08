@@ -28,7 +28,7 @@ import {
   API_FINDING_TYPE_META,
 } from '../../utils/stage8'
 
-/** 本页固定关注的三类风险：影子 / 僵尸 / 已下线接口 */
+/** 本页固定关注的三类风险：影子 / 僵尸 / 已下线 API */
 const LIFECYCLE_FINDING_TYPES = ['SHADOW', 'ZOMBIE', 'DEPRECATED'] as const
 
 /** 指纹/ID 截断展示：保留首尾，中间省略 */
@@ -46,7 +46,7 @@ function useFindingTotal(findingType: string) {
   })
 }
 
-/** Shadow 与 Zombie API（WDSP / 阶段8）：影子/僵尸/已下线接口计数与列表，行内查看端点生命周期 */
+/** Shadow 与 Zombie API（WDSP / 阶段8）：影子/僵尸/已下线 API 计数与列表，行内查看接口生命周期 */
 export default function ApiShadowZombiePage() {
   const [findingType, setFindingType] = useState<string>('SHADOW')
   const [status, setStatus] = useState<string | undefined>()
@@ -96,7 +96,7 @@ export default function ApiShadowZombiePage() {
     },
     { title: '标题', dataIndex: 'title', ellipsis: true },
     {
-      title: '端点',
+      title: '接口',
       dataIndex: 'endpoint_id',
       width: 150,
       render: (v: string | null) =>
@@ -140,7 +140,7 @@ export default function ApiShadowZombiePage() {
         <Col xs={24} sm={8}>
           <Card size="small">
             <Statistic
-              title="影子接口"
+              title="影子 API"
               value={shadowTotal.data?.total ?? 0}
               loading={shadowTotal.isLoading}
               valueStyle={{ color: '#d4380d' }}
@@ -150,7 +150,7 @@ export default function ApiShadowZombiePage() {
         <Col xs={24} sm={8}>
           <Card size="small">
             <Statistic
-              title="僵尸接口"
+              title="僵尸 API"
               value={zombieTotal.data?.total ?? 0}
               loading={zombieTotal.isLoading}
               valueStyle={{ color: '#c41d7f' }}
@@ -160,7 +160,7 @@ export default function ApiShadowZombiePage() {
         <Col xs={24} sm={8}>
           <Card size="small">
             <Statistic
-              title="已下线接口"
+              title="已下线 API"
               value={deprecatedTotal.data?.total ?? 0}
               loading={deprecatedTotal.isLoading}
               valueStyle={{ color: '#d46b08' }}
@@ -170,7 +170,7 @@ export default function ApiShadowZombiePage() {
       </Row>
       <Card title="Shadow 与 Zombie API">
         <Typography.Paragraph type="secondary">
-          影子接口：运行时观测到但未登记的接口；僵尸接口：登记在册但长期无流量的接口；已下线接口：已废弃仍被调用的接口。
+          影子 API：运行时观测到但未登记的 API；僵尸 API：登记在册但长期无流量的 API；已下线 API：已废弃仍被调用的 API。
         </Typography.Paragraph>
         <QueryErrorAlert error={listQuery.error} />
         <Space style={{ marginBottom: 16 }} wrap>
@@ -208,6 +208,13 @@ export default function ApiShadowZombiePage() {
           columns={columns}
           dataSource={listQuery.data?.items ?? []}
           scroll={{ x: 1200 }}
+          onRow={(record) => ({
+            // 与操作列「生命周期」按钮同口径：仅有关联接口的发现可查看
+            onDoubleClick: () => {
+              if (record.endpoint_id) setSelected(record)
+            },
+            style: { cursor: record.endpoint_id ? 'pointer' : undefined },
+          })}
           pagination={{
             current: page,
             pageSize,
@@ -222,7 +229,7 @@ export default function ApiShadowZombiePage() {
         />
       </Card>
       <Drawer
-        title={selected ? `端点生命周期：${truncateMiddle(selected.endpoint_id ?? '')}` : '端点生命周期'}
+        title={selected ? `接口生命周期：${truncateMiddle(selected.endpoint_id ?? '')}` : '接口生命周期'}
         open={selected !== null}
         onClose={() => setSelected(null)}
         width={520}

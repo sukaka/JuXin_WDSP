@@ -161,6 +161,10 @@ export default function ConfigVersionsPage() {
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
+          onRow={(record) => ({
+            onDoubleClick: () => setDiffId(record.id),
+            style: { cursor: 'pointer' },
+          })}
           scroll={{ x: 1300 }}
           pagination={{
             current: page,

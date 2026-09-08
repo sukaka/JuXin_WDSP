@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jiuzhang-waf/server/internal/wafrules"
 	"github.com/jiuzhang-waf/server/internal/config"
 	"github.com/jiuzhang-waf/server/internal/database"
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 func main() {
@@ -33,4 +33,9 @@ func main() {
 		fmt.Println("failed sample:", report.FailedRules[:min(3, len(report.FailedRules))])
 	}
 }
-func min(a, b int) int { if a < b { return a }; return b }
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

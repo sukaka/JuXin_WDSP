@@ -1,0 +1,24 @@
+---
+meta:
+  author: "JiuZhang"
+  description: Content-Disposition 行内重复 filename 参数检测（解析差异绕过，自建规则 1001320）
+rule_id: 1001320
+tests:
+  - test_id: 1
+    desc: "同一 Content-Disposition 行内两个 filename 参数（b.asmx 规避 CRS php/jsp 扩展名先行规则）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb320"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb320\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"; filename=\"b.asmx\"\r\n\r\nx\r\n--jzb320--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001320]

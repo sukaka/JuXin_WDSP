@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: multipart boundary 参数为空值检测（自建规则 1001325）
+rule_id: 1001325
+tests:
+  - test_id: 1
+    desc: "boundary= 后无值（行尾结束）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary="
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001325]
+  - test_id: 2
+    desc: "boundary 为空引号串 boundary=\"\""
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: 'multipart/form-data; boundary=""'
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001325]

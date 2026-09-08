@@ -113,3 +113,91 @@ func TestGenerateWithoutGuardBackwardCompatible(t *testing.T) {
 		t.Error("nil guard must not inject handler (stage3/4 compatibility)")
 	}
 }
+
+// 授权配额全局限速下发：LicenseMaxQPS>0 时 guard JSON 携带 license_max_qps；0=不限制不下发。
+func TestGenerateGuardLicenseMaxQPS(t *testing.T) {
+	newApp := func() AppData {
+		return AppData{
+			AppID: "app-uuid-1", Code: "shop", ProtectionMode: applications.ModeProtect,
+			Domains:   []applications.Domain{{NormalizedHostname: "shop.example.com", HTTPEnabled: true, HTTPPort: intPtr(8080), Status: "ACTIVE"}},
+			Upstreams: []applications.Upstream{{NormalizedHost: "127.0.0.1", Port: 9001, Status: "ACTIVE", Weight: 1}},
+		}
+	}
+
+	// >0：注入 guard JSON
+	cfg := testGuardConfig()
+	cfg.LicenseMaxQPS = 1000
+	gen, err := Generate(GenerateInput{
+		Apps:        []AppData{newApp()},
+		AdminSocket: "/var/run/caddy/admin.sock",
+		Guard:       cfg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gen.JSON, `"license_max_qps":1000`) {
+		t.Error("license_max_qps must be injected into guard JSON when > 0")
+	}
+
+	// 0（缺省）：不下发，JSON 与历史版本一致
+	gen, err = Generate(GenerateInput{
+		Apps:        []AppData{newApp()},
+		AdminSocket: "/var/run/caddy/admin.sock",
+		Guard:       testGuardConfig(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(gen.JSON, "license_max_qps") {
+		t.Error("license_max_qps must be omitted when 0")
+	}
+}
+
+// ROUTED（路由牵引，docs/NETWORK_MODES_DESIGN.md §4.1）：guard JSON 的 trusted_proxies
+// 输出为空数组且附加 "deployment_mode":"ROUTED"；REVERSE_PROXY（含缺省）逐字节不变。
+func TestGenerateGuardRoutedDeploymentMode(t *testing.T) {
+	newApp := func(mode string) AppData {
+		return AppData{
+			AppID: "app-uuid-1", Code: "shop", ProtectionMode: applications.ModeProtect, DeploymentMode: mode,
+			Domains:   []applications.Domain{{NormalizedHostname: "shop.example.com", HTTPEnabled: true, HTTPPort: intPtr(8080), Status: "ACTIVE"}},
+			Upstreams: []applications.Upstream{{NormalizedHost: "127.0.0.1", Port: 9001, Status: "ACTIVE", Weight: 1}},
+		}
+	}
+
+	// ROUTED：不下发可信代理链（空数组而非 null），附加 deployment_mode 便于事件/排障识别
+	gen, err := Generate(GenerateInput{
+		Apps:        []AppData{newApp(applications.DeployModeRouted)},
+		AdminSocket: "/var/run/caddy/admin.sock",
+		Guard:       testGuardConfig(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gen.JSON, `"trusted_proxies":[]`) {
+		t.Error("ROUTED guard must output empty trusted_proxies array")
+	}
+	if !strings.Contains(gen.JSON, `"deployment_mode":"ROUTED"`) {
+		t.Error("ROUTED guard must carry deployment_mode field")
+	}
+	if strings.Contains(gen.JSON, "10.0.0.0/8") {
+		t.Error("ROUTED guard must not leak trusted proxy CIDRs")
+	}
+
+	// REVERSE_PROXY 与缺省（空串）：可信代理链照常下发，不出现 deployment_mode 键
+	for _, mode := range []string{applications.DeployModeReverseProxy, ""} {
+		gen, err := Generate(GenerateInput{
+			Apps:        []AppData{newApp(mode)},
+			AdminSocket: "/var/run/caddy/admin.sock",
+			Guard:       testGuardConfig(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(gen.JSON, "10.0.0.0/8") {
+			t.Errorf("mode %q: trusted proxies must be passed through", mode)
+		}
+		if strings.Contains(gen.JSON, `"deployment_mode"`) {
+			t.Errorf("mode %q: guard JSON must not contain deployment_mode (byte-identical to legacy)", mode)
+		}
+	}
+}

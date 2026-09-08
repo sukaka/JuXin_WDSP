@@ -33,9 +33,13 @@ s5_ensure_sysadmin() {
   local csrf
   csrf=$(s5_login "$SYS_USER" "$SYS_PWD")
   if [ -z "$csrf" ]; then echo "ERROR: sysadmin login failed" >&2; return 1; fi
+  # /auth/me 会轮换 CSRF token，后续写操作必须使用其响应中的新 token
+  local me
+  me=$(curl -s -b "/tmp/s5-$SYS_USER.txt" "$API_URL/api/v1/auth/me")
+  csrf=$(echo "$me" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['csrf_token'])" 2>/dev/null)
   # 若必须改密
   local must
-  must=$(curl -s -b "/tmp/s5-$SYS_USER.txt" "$API_URL/api/v1/auth/me" | python3 -c "import json,sys; print(json.load(sys.stdin)['data'].get('user',{}).get('must_change_password', False))" 2>/dev/null)
+  must=$(echo "$me" | python3 -c "import json,sys; print(json.load(sys.stdin)['data'].get('user',{}).get('must_change_password', False))" 2>/dev/null)
   if [ "$must" = "True" ]; then
     curl -s -b "/tmp/s5-$SYS_USER.txt" -X POST "$API_URL/api/v1/auth/change-password" \
       -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \

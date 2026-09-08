@@ -143,7 +143,7 @@ export default function AnalyticsPage() {
     return {
       grid: { left: 56, right: 56, top: 40, bottom: 28 },
       tooltip: { trigger: 'axis' },
-      legend: { data: ['请求量', 'P50', 'P95', 'P99'] },
+      legend: { data: ['请求量', 'P50', 'P95', 'P99'], top: 0 },
       xAxis: { type: 'category', data: times, axisLabel: { hideOverlap: true } },
       yAxis: [
         { type: 'value', name: '请求量', minInterval: 1 },
@@ -165,7 +165,7 @@ export default function AnalyticsPage() {
     return {
       grid: { left: 48, right: 16, top: 40, bottom: 28 },
       tooltip: { trigger: 'axis' },
-      legend: { data: ['安全事件', '阻断', '观察'] },
+      legend: { data: ['安全事件', '阻断', '观察'], top: 0 },
       xAxis: { type: 'category', data: times, axisLabel: { hideOverlap: true } },
       yAxis: { type: 'value', minInterval: 1 },
       series: [
@@ -191,7 +191,7 @@ export default function AnalyticsPage() {
             children: requestTrendQuery.isError ? (
               <QueryErrorAlert error={requestTrendQuery.error} message="加载请求趋势失败" />
             ) : (
-              <EChart option={requestOption} height={360} />
+              <EChart option={requestOption} height={360} ariaLabel="请求趋势" />
             ),
           },
           {
@@ -200,7 +200,7 @@ export default function AnalyticsPage() {
             children: eventTrendQuery.isError ? (
               <QueryErrorAlert error={eventTrendQuery.error} message="加载防护趋势失败" />
             ) : (
-              <EChart option={eventTrendOption} height={360} />
+              <EChart option={eventTrendOption} height={360} ariaLabel="防护趋势（安全事件与处置动作）" />
             ),
           },
           {
@@ -209,7 +209,7 @@ export default function AnalyticsPage() {
             children: riskLevelsQuery.isError ? (
               <QueryErrorAlert error={riskLevelsQuery.error} message="加载风险等级失败" />
             ) : (
-              <EChart option={kvPieOption(riskLevelsQuery.data ?? EMPTY_KV, EVENT_SEVERITY_META)} height={360} />
+              <EChart option={kvPieOption(riskLevelsQuery.data ?? EMPTY_KV, EVENT_SEVERITY_META)} height={360} ariaLabel="风险等级分布" />
             ),
           },
           {
@@ -218,7 +218,7 @@ export default function AnalyticsPage() {
             children: attackTypesQuery.isError ? (
               <QueryErrorAlert error={attackTypesQuery.error} message="加载攻击类型失败" />
             ) : (
-              <EChart option={kvBarOption(attackTypesQuery.data ?? EMPTY_KV, ATTACK_TYPE_META, '#f5222d')} height={360} />
+              <EChart option={kvBarOption(attackTypesQuery.data ?? EMPTY_KV, ATTACK_TYPE_META, '#f5222d')} height={360} ariaLabel="攻击类型分布" />
             ),
           },
           {
@@ -243,7 +243,7 @@ export default function AnalyticsPage() {
                   </Col>
                 </Row>
                 <Card size="small" title="临时封禁趋势">
-                  <EChart option={trendLineOption(cc?.temp_block_trend ?? [], '临时封禁', '#fa8c16')} height={260} />
+                  <EChart option={trendLineOption(cc?.temp_block_trend ?? [], '临时封禁', '#fa8c16')} height={260} ariaLabel="临时封禁趋势" />
                 </Card>
               </Space>
             ),
@@ -280,7 +280,7 @@ export default function AnalyticsPage() {
                     columns={[
                       { title: '规则', dataIndex: 'rule_id', width: 220, ellipsis: true },
                       { title: '事件类型', dataIndex: 'event_type', width: 200, ellipsis: true },
-                      { title: '命中次数', dataIndex: 'hits', width: 100, align: 'right' },
+                      { title: '命中次数', dataIndex: 'hits', width: 100 },
                     ]}
                   />
                 </Card>
@@ -325,7 +325,7 @@ export default function AnalyticsPage() {
                             dataIndex: 'status',
                             render: (v: string) => <StatusTag value={v} map={DISPOSITION_STATUS_META} />,
                           },
-                          { title: '数量', dataIndex: 'count', width: 90, align: 'right' },
+                          { title: '数量', dataIndex: 'count', width: 90 },
                         ]}
                       />
                     </Card>
@@ -341,7 +341,7 @@ export default function AnalyticsPage() {
                         locale={{ emptyText: '暂无数据' }}
                         columns={[
                           { title: '处置人', dataIndex: 'username', ellipsis: true },
-                          { title: '处置数', dataIndex: 'count', width: 90, align: 'right' },
+                          { title: '处置数', dataIndex: 'count', width: 90 },
                         ]}
                       />
                     </Card>

@@ -33,14 +33,10 @@ type testEnv struct {
 	app      *app.App
 }
 
-// setupTestEnv 初始化测试环境（每个测试套件一次）。
-func setupTestEnv(t *testing.T) *testEnv {
-	t.Helper()
-	if testing.Short() {
-		t.Skip("integration test skipped in short mode")
-	}
-
-	cfg := &config.Config{
+// baseTestCfg 公共测试配置（DB/Valkey/Security），各产品形态套件在此之上叠加
+// Product 等差异配置后交给 newTestEnv 装配。
+func baseTestCfg() *config.Config {
+	return &config.Config{
 		Env: "test",
 		DB: config.DBConfig{
 			Host:     envOr("POSTGRES_HOST", "127.0.0.1"),
@@ -60,9 +56,32 @@ func setupTestEnv(t *testing.T) *testEnv {
 		Security: config.SecurityConfig{
 			CookieSecure: false,
 		},
+		AI: config.AIConfig{Enabled: true},
 	}
+}
+
+// setupTestEnv 初始化测试环境（每个测试套件一次），并导入公共测试授权
+// （离线授权门控下业务接口 423，存量用例统一在 setup 阶段解锁）。
+func setupTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+	env := newTestEnv(t, baseTestCfg())
+	env.importBaseLicense(t)
+	return env
+}
+
+// newTestEnv 装配测试应用环境：重建测试库、全量迁移、Valkey、测试管理员、
+// 授权验签环境变量（app.New 前注入），启动真实应用 + httptest.Server。
+// 不导入授权——授权流程测试直接用本函数构造无授权环境。
+func newTestEnv(t *testing.T, cfg *config.Config) *testEnv {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("integration test skipped in short mode")
+	}
+
 	// 数据目录指向测试临时目录，避免在仓库内产生报告/备份/配置产物
-	cfg.Gateway.DataDir = t.TempDir()
+	if cfg.Gateway.DataDir == "" {
+		cfg.Gateway.DataDir = t.TempDir()
+	}
 	if cfg.DB.Password == "" || cfg.Cache.Password == "" {
 		t.Skip("POSTGRES_PASSWORD/VALKEY_PASSWORD not set, skipping integration test")
 	}
@@ -123,8 +142,11 @@ func setupTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("assign role: %v", err)
 	}
 
+	// 离线授权：测试验签公钥通过装配层显式注入；宿主机指纹文件仍由测试 env 指向。
+	vendorKeys := configureTestLicense(t)
+
 	// 启动服务
-	application, err := app.New(cfg, db, cacheClient)
+	application, err := app.NewWithVendorKeys(cfg, db, cacheClient, vendorKeys)
 	if err != nil {
 		t.Fatalf("initialize application: %v", err)
 	}

@@ -11,7 +11,11 @@ package ratelimit
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -203,6 +207,7 @@ return {allowed, count, retry}
 type ValkeyLimiter struct {
 	cli    counters.ValkeyClient
 	seq    atomic.Int64 // ZSET member 唯一序列（保持脚本确定性）
+	inst   string       // 实例级随机前缀：多节点同毫秒同序号时 member 仍唯一，防 ZADD 互相覆盖少计
 	now    func() time.Time
 	keyPfx string
 }
@@ -212,7 +217,19 @@ func NewValkeyLimiter(cli counters.ValkeyClient, keyPrefix string) *ValkeyLimite
 	if keyPrefix == "" {
 		keyPrefix = "jiuzhang:guard:cc"
 	}
-	return &ValkeyLimiter{cli: cli, keyPfx: keyPrefix, now: time.Now}
+	return &ValkeyLimiter{cli: cli, keyPfx: keyPrefix, now: time.Now, inst: newInstanceID()}
+}
+
+// newInstanceID 启动期实例 ID：8 字节 crypto/rand hex；随机源故障时派生
+// 纳秒时间+PID 的 SHA-256 截断（与 trace.go 派生兜底同一思路——仅作 ZSET member
+// 跨节点去重，不构成安全边界）。
+func newInstanceID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	sum := sha256.Sum256([]byte(strconv.FormatInt(time.Now().UnixNano(), 10) + "|" + strconv.Itoa(os.Getpid())))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // Allow Valkey 限速判定（一次原子脚本往返）。
@@ -244,7 +261,7 @@ func (v *ValkeyLimiter) Allow(ctx context.Context, key string, algo Algorithm, l
 			RetryAfter: time.Duration(toInt64(out[2])) * time.Millisecond,
 		}, nil
 	case SlidingWindow:
-		member := strconv.FormatInt(nowMs, 10) + "-" + strconv.FormatInt(v.seq.Add(1), 10)
+		member := v.inst + "-" + strconv.FormatInt(nowMs, 10) + "-" + strconv.FormatInt(v.seq.Add(1), 10)
 		out, err := v.cli.Eval(ctx, slidingWindowLua, []string{fullKey}, []string{
 			strconv.FormatInt(nowMs, 10),
 			strconv.FormatInt(window.Milliseconds(), 10),

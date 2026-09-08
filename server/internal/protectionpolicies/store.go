@@ -32,34 +32,34 @@ const (
 
 // Policy 是WAF防护策略。
 type Policy struct {
-	ID                        uuid.UUID  `json:"id"`
-	Code                      string     `json:"code"`
-	Name                      string     `json:"name"`
-	Description               string     `json:"description"`
-	IsBuiltin                 bool       `json:"is_builtin"`
-	Status                    string     `json:"status"`
-	ProtectionMode            string     `json:"protection_mode"`
-	ParanoiaLevel             int        `json:"paranoia_level"`
-	InboundAnomalyThreshold   int        `json:"inbound_anomaly_threshold"`
-	OutboundAnomalyThreshold  int        `json:"outbound_anomaly_threshold"`
-	RequestBodyAccess         bool       `json:"request_body_access"`
-	ResponseBodyAccess        bool       `json:"response_body_access"`
-	RequestBodyLimit          int64      `json:"request_body_limit"`
-	RequestBodyNoFilesLimit   int64      `json:"request_body_no_files_limit"`
-	ResponseBodyLimit         int64      `json:"response_body_limit"`
-	UploadFileLimit           int64      `json:"upload_file_limit"`
-	JSONParserEnabled         bool       `json:"json_parser_enabled"`
-	XMLParserEnabled          bool       `json:"xml_parser_enabled"`
-	MultipartParserEnabled    bool       `json:"multipart_parser_enabled"`
-	AuditLogEnabled           bool       `json:"audit_log_enabled"`
-	AuditLogRelevantStatus    string     `json:"audit_log_relevant_status"`
-	AuditLogParts             string     `json:"audit_log_parts"`
-	BlockingStatusCode        int        `json:"blocking_status_code"`
-	BlockingPageID            string     `json:"blocking_page_id"`
-	CreatedBy                 *uuid.UUID `json:"created_by,omitempty"`
-	CreatedAt                 time.Time  `json:"created_at"`
-	UpdatedAt                 time.Time  `json:"updated_at"`
-	Version                   int        `json:"version"`
+	ID                       uuid.UUID  `json:"id"`
+	Code                     string     `json:"code"`
+	Name                     string     `json:"name"`
+	Description              string     `json:"description"`
+	IsBuiltin                bool       `json:"is_builtin"`
+	Status                   string     `json:"status"`
+	ProtectionMode           string     `json:"protection_mode"`
+	ParanoiaLevel            int        `json:"paranoia_level"`
+	InboundAnomalyThreshold  int        `json:"inbound_anomaly_threshold"`
+	OutboundAnomalyThreshold int        `json:"outbound_anomaly_threshold"`
+	RequestBodyAccess        bool       `json:"request_body_access"`
+	ResponseBodyAccess       bool       `json:"response_body_access"`
+	RequestBodyLimit         int64      `json:"request_body_limit"`
+	RequestBodyNoFilesLimit  int64      `json:"request_body_no_files_limit"`
+	ResponseBodyLimit        int64      `json:"response_body_limit"`
+	UploadFileLimit          int64      `json:"upload_file_limit"`
+	JSONParserEnabled        bool       `json:"json_parser_enabled"`
+	XMLParserEnabled         bool       `json:"xml_parser_enabled"`
+	MultipartParserEnabled   bool       `json:"multipart_parser_enabled"`
+	AuditLogEnabled          bool       `json:"audit_log_enabled"`
+	AuditLogRelevantStatus   string     `json:"audit_log_relevant_status"`
+	AuditLogParts            string     `json:"audit_log_parts"`
+	BlockingStatusCode       int        `json:"blocking_status_code"`
+	BlockingPageID           string     `json:"blocking_page_id"`
+	CreatedBy                *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt                time.Time  `json:"created_at"`
+	UpdatedAt                time.Time  `json:"updated_at"`
+	Version                  int        `json:"version"`
 }
 
 // Store 是策略仓储。

@@ -10,11 +10,12 @@ import {
   Input,
   Select,
   Space,
+  Tag,
   Tooltip,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { DownloadOutlined } from '@ant-design/icons'
+import ExportDropdown from '../../components/ExportDropdown'
 import type dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { accessControlEventsApi } from '../../api/accessControlEvents'
@@ -36,6 +37,19 @@ interface Filters {
 }
 
 type RangeValue = [dayjs.Dayjs | null, dayjs.Dayjs | null] | null
+
+/** 协议版本 Tag 配色（HTTP/1.1 / HTTP/2.0 / HTTP/3，空值展示 '-'） */
+const PROTO_TAG_COLORS: Record<string, string> = {
+  'HTTP/1.0': 'default',
+  'HTTP/1.1': 'default',
+  'HTTP/2.0': 'blue',
+  'HTTP/3': 'green',
+}
+
+function renderProtoTag(proto?: string | null) {
+  if (!proto) return '-'
+  return <Tag color={PROTO_TAG_COLORS[proto] ?? 'default'}>{proto}</Tag>
+}
 
 export default function AccessControlEventsPage() {
   const permissions = useAuthStore((s) => s.user?.permissions)
@@ -107,6 +121,12 @@ export default function AccessControlEventsPage() {
       ),
     },
     {
+      title: '协议',
+      dataIndex: 'proto',
+      width: 90,
+      render: (v: string | null) => renderProtoTag(v),
+    },
+    {
       title: '动作',
       dataIndex: 'action',
       width: 90,
@@ -153,9 +173,8 @@ export default function AccessControlEventsPage() {
       title="访问控制事件"
       extra={
         canExport && (
-          <Button
-            icon={<DownloadOutlined />}
-            onClick={() =>
+          <ExportDropdown
+            onExportFiltered={() =>
               window.open(
                 accessControlEventsApi.exportUrl({
                   start_time: filters.start_time,
@@ -168,9 +187,8 @@ export default function AccessControlEventsPage() {
                 '_blank',
               )
             }
-          >
-            导出 CSV
-          </Button>
+            onExportAll={() => window.open(accessControlEventsApi.exportUrl({}), '_blank')}
+          />
         )
       }
     >
@@ -220,7 +238,11 @@ export default function AccessControlEventsPage() {
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
-          scroll={{ x: 1450 }}
+          scroll={{ x: 1540 }}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailId(record.id),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             current: page,
             pageSize,

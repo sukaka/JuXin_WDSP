@@ -1,0 +1,2 @@
+# bpf2go 生成期临时产物（generate.sh 现取现删；本地手工生成时避免误提交）
+internal/ebpfcapture/vmlinux.h

@@ -15,6 +15,15 @@ import (
 // ErrNotFound 身份不存在。
 var ErrNotFound = errors.New("identity not found")
 
+// normalizeIdentityType keeps records written by the retired MACHINE contract
+// readable without exposing that value through the management API.
+func normalizeIdentityType(identityType string) string {
+	if identityType == "MACHINE" {
+		return "UNKNOWN"
+	}
+	return identityType
+}
+
 // 排序字段白名单（防注入；缺省 last_seen_at DESC）。
 var validSortFields = map[string]string{
 	"last_seen_at":  "last_seen_at",
@@ -46,7 +55,9 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]ListItem, int64, erro
 	if f.PageSize <= 0 || f.PageSize > 100 {
 		f.PageSize = 20
 	}
-	where := "1=1"
+	// MACHINE is a legacy value retained only for backward-compatible reads. It
+	// must not appear in the current management list or affect its pagination.
+	where := "identity_type <> 'MACHINE'"
 	args := []interface{}{}
 	argIdx := 1
 	add := func(cond string, v interface{}) {
@@ -107,6 +118,7 @@ FROM client_identity WHERE ` + where +
 			&it.FirstSeenAt, &it.LastSeenAt); err != nil {
 			return nil, 0, err
 		}
+		it.IdentityType = normalizeIdentityType(it.IdentityType)
 		out = append(out, it)
 	}
 	return out, total, rows.Err()
@@ -126,6 +138,7 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Identity, error) {
 		}
 		return nil, err
 	}
+	it.IdentityType = normalizeIdentityType(it.IdentityType)
 	return &it, nil
 }
 

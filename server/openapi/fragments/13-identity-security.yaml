@@ -12,7 +12,7 @@ paths:
       description: 按风险等级/身份类型/关键字（identity_key 前缀或 account_id）/IP（命中身份 IP 历史）/最近活跃时间窗筛选客户身份，默认 last_seen_at DESC。数据由网关身份观测采集生成。权限：`security_identities.read`
       parameters:
         - { name: risk_level, in: query, schema: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }, description: 按风险等级筛选 }
-        - { name: identity_type, in: query, schema: { type: string, enum: [HUMAN, BOT, APPLICATION, SERVICE, MACHINE, AGENT, UNKNOWN] }, description: 按身份类型筛选 }
+        - { name: identity_type, in: query, schema: { type: string, enum: [HUMAN, BOT, APPLICATION, SERVICE, AGENT, UNKNOWN] }, description: 按身份类型筛选 }
         - { name: keyword, in: query, schema: { type: string }, description: 关键字（identity_key 前缀匹配或 account_id 模糊匹配） }
         - { name: ip, in: query, schema: { type: string }, description: 按身份历史 IP 精确筛选 }
         - { name: from, in: query, schema: { type: string, format: date-time }, description: 最近活跃时间下界（last_seen_at，RFC3339） }
@@ -187,7 +187,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         identity_key: { type: string, description: 身份键（网关联合指纹派生，全局唯一） }
-        identity_type: { type: string, enum: [HUMAN, BOT, APPLICATION, SERVICE, MACHINE, AGENT, UNKNOWN], description: 身份类型 }
+        identity_type: { type: string, enum: [HUMAN, BOT, APPLICATION, SERVICE, AGENT, UNKNOWN], description: 身份类型 }
         identity_confidence: { type: integer, minimum: 0, maximum: 100, description: 身份识别置信度 }
         risk_score: { type: integer, description: 风险分（0-100；24h 内信号 risk_score_delta 求和截断） }
         risk_level: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL], description: 风险等级（0-19/20-39/40-69/70+） }
@@ -205,7 +205,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         identity_key: { type: string, description: 身份键 }
-        identity_type: { type: string, enum: [HUMAN, BOT, APPLICATION, SERVICE, MACHINE, AGENT, UNKNOWN], description: 身份类型 }
+        identity_type: { type: string, enum: [HUMAN, BOT, APPLICATION, SERVICE, AGENT, UNKNOWN], description: 身份类型 }
         identity_confidence: { type: integer, minimum: 0, maximum: 100, description: 身份识别置信度 }
         confidence_source: { type: array, items: { type: string }, description: 脱敏后的置信度证据标签 }
         first_seen_at: { type: string, format: date-time, nullable: true }

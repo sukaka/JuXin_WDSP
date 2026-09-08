@@ -14,7 +14,7 @@ import (
 
 // Store 是全量访问日志仓储。
 type Store struct {
-	db *pgxpool.Pool
+	db DBTX
 }
 
 // NewStore 创建访问日志仓储。
@@ -22,8 +22,17 @@ func NewStore(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
 }
 
+// WithDB 返回绑定到给定句柄的浅拷贝（W22 采集器批次事务化：句柄为该批次的
+// pgx.Tx；Insert/InsertFailure 并入外层批次事务，提交权归采集器，
+// 失败整体回滚、断点不前移、重放由 request_id 去重兜底）。
+func (s *Store) WithDB(db DBTX) *Store {
+	return &Store{db: db}
+}
+
 // Insert 插入一条访问日志（request_id 非空时去重：采集器重读/断点回退不产生重复行）。
 // inserted 为 false 表示命中去重（已存在，未重复插入）。
+// waf_action 写入侧归一（ADR D9）：旧网关上报空串按 ALLOW 口径落库，历史行不回改。
+// APM 新字段（trace_id/span_id/endpoint_key/path_template/ttfb_ms）空值写 NULL。
 func (s *Store) Insert(ctx context.Context, e *LogEntry) (bool, error) {
 	var appID *uuid.UUID
 	if e.ApplicationID != "" {
@@ -36,20 +45,31 @@ INSERT INTO access_logs (occurred_at, request_id, application_id, domain, gatewa
   client_ip, client_port, request_method, request_uri, request_path, query_summary,
   http_version, content_type, user_agent_summary, referer_summary,
   response_status, bytes_in, bytes_out, duration_ms, waf_action,
+  trace_id, span_id, endpoint_key, path_template, ttfb_ms,
   request_headers, request_body, request_body_truncated,
   response_headers, response_body, response_body_truncated)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
 ON CONFLICT (request_id) WHERE request_id <> '' DO NOTHING`,
 		e.OccurredAt, e.RequestID, appID, e.Domain, e.GatewayNodeID,
 		nullableIP(e.ClientIP), e.ClientPort, e.RequestMethod, e.RequestURI, e.RequestPath, e.QuerySummary,
 		e.HTTPVersion, e.ContentType, e.UserAgentSummary, e.RefererSummary,
-		e.ResponseStatus, e.BytesIn, e.BytesOut, e.DurationMS, e.WAFAction,
+		e.ResponseStatus, e.BytesIn, e.BytesOut, e.DurationMS, NormalizeWAFAction(e.WAFAction),
+		nullStr(e.TraceID), nullStr(e.SpanID), nullStr(e.EndpointKey), nullStr(e.PathTemplate), nullInt64(e.TTFBMs),
 		nonNilHeaders(e.RequestHeaders), e.RequestBody, e.RequestBodyTruncated,
 		nonNilHeaders(e.ResponseHeaders), e.ResponseBody, e.ResponseBodyTruncated)
 	if err != nil {
 		return false, err
 	}
 	return res.RowsAffected() > 0, nil
+}
+
+// NormalizeWAFAction 访问日志 waf_action 写入/读取归一（ADR D9 三态）：
+// 空串（旧网关两态数据）按 ALLOW 口径归一；其余原样返回。
+func NormalizeWAFAction(action string) string {
+	if action == "" {
+		return "ALLOW"
+	}
+	return action
 }
 
 // InsertFailure 记录解析失败到错误队列（与安全事件共用 event_parse_failures 表）。
@@ -245,6 +265,22 @@ func nullableIP(ip string) interface{} {
 		return nil // 脏数据不入 inet 列（防插入失败整行丢失）
 	}
 	return ip
+}
+
+// nullStr 空串转 NULL（APM 新列可空：旧网关不携带时保持 NULL，不占部分索引）。
+func nullStr(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// nullInt64 nil 指针转 NULL（ttfb_ms 可空：旧网关缺省不入库值）。
+func nullInt64(p *int64) interface{} {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // nonNilHeaders 保证头部 map 非 nil（jsonb 列 NOT NULL，nil 会编码为 SQL NULL）。

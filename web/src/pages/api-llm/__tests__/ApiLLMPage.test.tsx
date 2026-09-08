@@ -1,0 +1,204 @@
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { App as AntdApp } from 'antd'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import ApiLLMPage from '../ApiLLMPage'
+import { useAuthStore } from '../../../stores/auth'
+import type { CurrentUser } from '../../../types'
+
+/** EChart 在 jsdom 下无法真实渲染（无 canvas），替换为捕获 option 的桩组件 */
+const chartProps = vi.hoisted(() => [] as { option: unknown; height?: number }[])
+vi.mock('../../../components/EChart', () => ({
+  default: (props: { option: unknown; height?: number }) => {
+    chartProps.push(props)
+    return <div data-testid="echart-stub" />
+  },
+}))
+
+function lastChartOption(): {
+  xAxis: { data: string[] }
+  series: { name: string; data: number[] }[]
+} {
+  const last = chartProps[chartProps.length - 1]
+  expect(last).toBeTruthy()
+  return JSON.parse(JSON.stringify(last.option))
+}
+
+function makeUser(permissions: string[]): CurrentUser {
+  return {
+    id: 'u1',
+    username: 'sec',
+    display_name: '安全管理员',
+    status: 'ACTIVE',
+    roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+    permissions,
+    must_change_password: false,
+  }
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+const statsData = {
+  days: 7,
+  summary: { observations: 120, with_findings: 5, total_tokens: 34000, stream_calls: 12, distinct_models: 3 },
+  by_model: [
+    { model: 'gpt-4o', observations: 80, total_tokens: 20000, findings: 3 },
+    { model: '', observations: 40, total_tokens: 14000, findings: 2 },
+  ],
+  token_trend: [{ day: '2026-08-19', observations: 120, total_tokens: 34000 }],
+  findings_by_rule: [{ rule_id: 'llm.pii.id_card', count: 5 }],
+}
+
+/** 带命中的 LLM 调用观测 */
+const obs1 = {
+  id: 'ob-1',
+  occurred_at: '2026-08-19T10:00:00Z',
+  endpoint_key: 'POST /v1/chat/completions',
+  model: 'gpt-4o',
+  identity_fingerprint: 'fp-1',
+  prompt_len_bucket: '257-1024',
+  total_tokens: 512,
+  stream: true,
+  mcp_method: '',
+  findings: [
+    {
+      detector: 'api_llm',
+      rule_id: 'llm.pii.id_card',
+      category: 'sensitive',
+      severity: 'HIGH',
+      message: '响应含疑似身份证号',
+      evidence: { field: 'content' },
+      score_delta: 30,
+    },
+  ],
+  created_at: '2026-08-19T10:00:01Z',
+}
+
+/** 未声明模型的 MCP 端点观测（findings 为空） */
+const obs2 = {
+  id: 'ob-2',
+  occurred_at: '2026-08-19T09:00:00Z',
+  endpoint_key: 'POST /v1/mcp',
+  model: '',
+  identity_fingerprint: '',
+  prompt_len_bucket: '0',
+  total_tokens: 0,
+  stream: false,
+  mcp_method: 'tools/call',
+  findings: null,
+  created_at: '2026-08-19T09:00:01Z',
+}
+
+const observationsData = { items: [obs1, obs2], page: 1, page_size: 20, total: 2 }
+
+function renderPage() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <AntdApp>
+          <ApiLLMPage />
+        </AntdApp>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
+
+/** 在指定 placeholder 的 Input.Search 上输入并触发搜索 */
+function triggerSearch(placeholder: string, value: string) {
+  const input = screen.getByPlaceholderText(placeholder)
+  fireEvent.change(input, { target: { value } })
+  const wrapper = input.closest('.ant-input-search')
+  const btn = wrapper?.querySelector('.ant-input-search-btn')
+  expect(btn).toBeTruthy()
+  fireEvent.click(btn as HTMLElement)
+}
+
+describe('ApiLLMPage', () => {
+  beforeEach(() => {
+    chartProps.length = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/api-security/llm/stats')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: statsData }))
+        }
+        if (url.includes('/api-security/llm/observations')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: observationsData }))
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+    useAuthStore.setState({ user: makeUser(['api_runtime.read']), csrfToken: null, initialized: true })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('stats 卡片：观测总数/命中/token 合计/流式/模型数', async () => {
+    renderPage()
+    await screen.findByText('POST /v1/chat/completions')
+    const statOf = (title: string) =>
+      screen.getByText(title).closest('.ant-statistic') as HTMLElement
+    expect(statOf('观测总数').textContent).toContain('120')
+    expect(statOf('命中观测').textContent).toContain('5')
+    expect(statOf('token 合计').textContent).toContain('34,000')
+    expect(statOf('流式调用').textContent).toContain('12')
+    expect(statOf('涉及模型').textContent).toContain('3')
+  })
+
+  it('模型分布图：按观测数双柱（命中并列），空模型归入「未声明」', async () => {
+    renderPage()
+    await screen.findByText('POST /v1/chat/completions')
+    await waitFor(() => expect(chartProps.length).toBeGreaterThan(0))
+    const option = lastChartOption()
+    expect(option.xAxis.data).toEqual(['gpt-4o', '未声明'])
+    expect(option.series[0].data).toEqual([80, 40])
+    expect(option.series[1].data).toEqual([3, 2])
+  })
+
+  it('观测列表：模型/端点/prompt 桶/tokens/流式/MCP 方法/findings 标签', async () => {
+    renderPage()
+    const row1 = (await screen.findByText('POST /v1/chat/completions')).closest('tr') as HTMLElement
+    expect(within(row1).getByText('gpt-4o')).toBeInTheDocument()
+    expect(within(row1).getByText('257-1024')).toBeInTheDocument()
+    expect(within(row1).getByText('512')).toBeInTheDocument()
+    expect(within(row1).getByText('流式')).toBeInTheDocument()
+    expect(within(row1).getByText('llm.pii.id_card')).toBeInTheDocument()
+    // 未声明模型行：Tag 占位 + MCP 方法展示
+    const row2 = screen.getByText('POST /v1/mcp').closest('tr') as HTMLElement
+    expect(within(row2).getByText('未声明')).toBeInTheDocument()
+    expect(within(row2).getByText('tools/call')).toBeInTheDocument()
+  })
+
+  it('过滤：model/endpoint_key/findings_only 分别携带对应查询参数', async () => {
+    renderPage()
+    await screen.findByText('POST /v1/chat/completions')
+
+    triggerSearch('模型（精确匹配，如 gpt-4o）', 'gpt-4o')
+    await waitFor(() => {
+      const urls = (fetch as Mock).mock.calls.map((c) => String(c[0]))
+      expect(urls.some((u) => u.includes('model=gpt-4o'))).toBe(true)
+    })
+
+    triggerSearch('API 键（精确匹配）', 'POST /v1/mcp')
+    await waitFor(() => {
+      const urls = (fetch as Mock).mock.calls.map((c) => String(c[0]))
+      expect(urls.some((u) => u.includes('endpoint_key='))).toBe(true)
+    })
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '仅看命中观测' }))
+    await waitFor(() => {
+      const urls = (fetch as Mock).mock.calls.map((c) => String(c[0]))
+      expect(urls.some((u) => u.includes('findings_only=true'))).toBe(true)
+    })
+  })
+})

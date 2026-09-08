@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "CUSTOM_PACK 1001710: lock-wait time-based SQLi"
+rule_id: 1001710
+tests:
+  - test_id: 1
+    desc: "dbms_lock.sleep(5) Oracle delay channel"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "JiuZhang CUSTOM_PACK test agent"
+            Accept: "*/*"
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "var=1' and dbms_lock.sleep(5)-- -"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001710]

@@ -11,9 +11,12 @@ import {
   Radio,
   Select,
   Space,
+  Switch,
+  Tabs,
   Typography,
 } from 'antd'
 import SmartTable from '../../components/SmartTable'
+import ReportSchedulesPanel from './ReportSchedulesPanel'
 import type { ColumnsType } from 'antd/es/table'
 import { DownloadOutlined, EyeOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -24,19 +27,24 @@ import type { CreateReportBody } from '../../api/reports'
 import { reportTemplatesApi } from '../../api/reportTemplates'
 import { applicationsApi } from '../../api/applications'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasAnyPermission, hasPermission } from '../../utils/permission'
-import { REPORT_FORMAT_META, REPORT_STATUS_META, REPORT_TYPE_META, isTerminalReportStatus } from '../../utils/stage6'
-import type { ReportJobItem, ReportType } from '../../types'
+import { CONTENT_SCOPE_META, REPORT_FORMAT_META, REPORT_STATUS_META, REPORT_TYPE_META, isTerminalReportStatus } from '../../utils/stage6'
+import type { ReportContentScope, ReportJobItem, ReportType } from '../../types'
 
 interface CreateFormValues {
   report_type: ReportType
+  content_scope: ReportContentScope
+  include_api_assets?: boolean
+  page_orientation?: 'P' | 'L'
   custom_range?: [Dayjs, Dayjs] | null
   application_ids?: string[]
   template_id?: string
-  format: 'html' | 'pdf'
+  format: 'html' | 'pdf' | 'docx'
 }
 
 /** 周期单元格：起止时间 */
@@ -57,6 +65,8 @@ export default function ReportsPage() {
   const canCreate = hasPermission(permissions, 'reports.create')
   const canDownload = hasAnyPermission(permissions, ['reports.download', 'reports.download_audit'])
   const canDeleteOwn = hasPermission(permissions, 'reports.delete_own')
+  /** reports.delete_all：删除任意用户报告（管理）；行内删除与批量删除的显隐都受它升级 */
+  const canDeleteAll = hasPermission(permissions, 'reports.delete_all')
 
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
@@ -64,6 +74,7 @@ export default function ReportsPage() {
   const [statusFilter, setStatusFilter] = useState<string>()
   const [createOpen, setCreateOpen] = useState(false)
   const [previewId, setPreviewId] = useState<string | null>(null)
+  const [detailRecord, setDetailRecord] = useState<ReportJobItem | null>(null)
   const [form] = Form.useForm<CreateFormValues>()
 
   const listQuery = useQuery({
@@ -73,6 +84,15 @@ export default function ReportsPage() {
     // 存在非终态任务时轮询进度
     refetchInterval: (query) =>
       (query.state.data?.items ?? []).some((r) => !isTerminalReportStatus(r.status)) ? 3000 : false,
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<ReportJobItem>({
+    remove: (id) => reportsApi.remove(id),
+    invalidateKeys: [['reports']],
+    entityName: '报表',
+    canDelete: canDeleteOwn || canDeleteAll,
+    // 仅 delete_own 时他人报告不可勾选（后端逐条 403），与行内删除按钮显隐口径一致
+    rowDisabled: (record) => !(canDeleteAll || (canDeleteOwn && user?.id === record.requested_by)),
   })
 
   const templatesQuery = useQuery({
@@ -131,6 +151,9 @@ export default function ReportsPage() {
   const submitCreate = (values: CreateFormValues) => {
     const body: CreateReportBody = {
       report_type: values.report_type,
+      content_scope: values.content_scope,
+      include_api_assets: values.content_scope !== 'WAF' ? values.include_api_assets : undefined,
+      page_orientation: values.page_orientation,
       format: values.format,
       application_ids: values.application_ids?.length ? values.application_ids : undefined,
       template_id: values.template_id || undefined,
@@ -166,8 +189,15 @@ export default function ReportsPage() {
     {
       title: '类型',
       dataIndex: 'report_type',
-      width: 90,
-      render: (v: string) => <StatusTag value={v} map={REPORT_TYPE_META} />,
+      width: 150,
+      render: (v: string, record) => (
+        <Space size={4}>
+          <StatusTag value={v} map={REPORT_TYPE_META} />
+          {record.content_scope && record.content_scope !== 'WAF_API' && (
+            <StatusTag value={record.content_scope} map={CONTENT_SCOPE_META} />
+          )}
+        </Space>
+      ),
     },
     { title: '统计周期', key: 'period', width: 190, render: (_, r) => <PeriodCell record={r} /> },
     {
@@ -241,7 +271,7 @@ export default function ReportsPage() {
               {record.failure_message}
             </Typography.Text>
           )}
-          {canDeleteOwn && user?.id === record.requested_by && (
+          {(canDeleteAll || (canDeleteOwn && user?.id === record.requested_by)) && (
             <Button type="link" size="small" danger onClick={() => confirmDelete(record)}>
               删除
             </Button>
@@ -251,38 +281,37 @@ export default function ReportsPage() {
     },
   ]
 
-  return (
-    <Card
-      title="报告任务"
-      extra={
-        canCreate && (
+  const jobsTab = (
+    <>
+      <Space style={{ marginBottom: 16, width: '100%', justifyContent: 'space-between' }} wrap>
+        <Space wrap>
+          <Select
+            placeholder="报告类型"
+            allowClear
+            style={{ width: 130 }}
+            options={Object.entries(REPORT_TYPE_META).map(([value, meta]) => ({ value, label: meta.label }))}
+            onChange={(v) => {
+              setTypeFilter(v)
+              setPage(1)
+            }}
+          />
+          <Select
+            placeholder="状态"
+            allowClear
+            style={{ width: 130 }}
+            options={Object.entries(REPORT_STATUS_META).map(([value, meta]) => ({ value, label: meta.label }))}
+            onChange={(v) => {
+              setStatusFilter(v)
+              setPage(1)
+            }}
+          />
+          {batchDeleteButton}
+        </Space>
+        {canCreate && (
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
             创建报告
           </Button>
-        )
-      }
-    >
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Select
-          placeholder="报告类型"
-          allowClear
-          style={{ width: 130 }}
-          options={Object.entries(REPORT_TYPE_META).map(([value, meta]) => ({ value, label: meta.label }))}
-          onChange={(v) => {
-            setTypeFilter(v)
-            setPage(1)
-          }}
-        />
-        <Select
-          placeholder="状态"
-          allowClear
-          style={{ width: 130 }}
-          options={Object.entries(REPORT_STATUS_META).map(([value, meta]) => ({ value, label: meta.label }))}
-          onChange={(v) => {
-            setStatusFilter(v)
-            setPage(1)
-          }}
-        />
+        )}
       </Space>
 
       {listQuery.isError ? (
@@ -291,6 +320,11 @@ export default function ReportsPage() {
         <SmartTable<ReportJobItem>
           storageKey="reports"
           rowKey="id"
+          rowSelection={rowSelection}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
@@ -308,6 +342,17 @@ export default function ReportsPage() {
           }}
         />
       )}
+    </>
+  )
+
+  return (
+    <Card>
+      <Tabs
+        items={[
+          { key: 'jobs', label: '报告任务', children: jobsTab },
+          { key: 'schedules', label: '定时报告', children: <ReportSchedulesPanel /> },
+        ]}
+      />
 
       <Modal
         title="创建报告"
@@ -320,7 +365,7 @@ export default function ReportsPage() {
         <Form<CreateFormValues>
           form={form}
           layout="vertical"
-          initialValues={{ report_type: 'DAILY', format: 'html' }}
+          initialValues={{ report_type: 'DAILY', content_scope: 'WAF_API', page_orientation: 'P', format: 'html' }}
           onFinish={submitCreate}
         >
           <Form.Item name="report_type" label="报告类型" rules={[{ required: true }]}>
@@ -328,6 +373,26 @@ export default function ReportsPage() {
               options={Object.entries(REPORT_TYPE_META).map(([value, meta]) => ({ value, label: meta.label }))}
               optionType="button"
             />
+          </Form.Item>
+          <Form.Item name="content_scope" label="内容范围（API 部分按应用范围过滤）" rules={[{ required: true }]}>
+            <Radio.Group
+              options={Object.entries(CONTENT_SCOPE_META).map(([value, meta]) => ({ value, label: meta.label }))}
+              optionType="button"
+            />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.content_scope !== cur.content_scope}>
+            {({ getFieldValue }) =>
+              getFieldValue('content_scope') !== 'WAF' && (
+                <Form.Item
+                  name="include_api_assets"
+                  label="API 资产清单（全量，含用途与影子/僵尸标记）"
+                  valuePropName="checked"
+                  tooltip="开启后报告附全部 API 资产列表（最多 500 条，按命中次数排序）"
+                >
+                  <Switch />
+                </Form.Item>
+              )
+            }
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(prev, cur) => prev.report_type !== cur.report_type}>
             {({ getFieldValue }) =>
@@ -361,6 +426,15 @@ export default function ReportsPage() {
               options={(templatesQuery.data?.items ?? []).map((t) => ({ value: t.id, label: t.name }))}
             />
           </Form.Item>
+          <Form.Item name="page_orientation" label="纸张方向（PDF/Word 生效）" rules={[{ required: true }]}>
+            <Radio.Group
+              options={[
+                { value: 'P', label: '竖向 A4' },
+                { value: 'L', label: '横向 A4' },
+              ]}
+              optionType="button"
+            />
+          </Form.Item>
           <Form.Item name="format" label="导出格式" rules={[{ required: true }]}>
             <Radio.Group
               options={Object.entries(REPORT_FORMAT_META).map(([value, meta]) => ({ value, label: meta.label }))}
@@ -392,6 +466,13 @@ export default function ReportsPage() {
           <Typography.Text type="secondary">加载中…</Typography.Text>
         )}
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="报告任务详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

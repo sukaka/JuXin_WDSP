@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
@@ -22,11 +23,37 @@ type Handler struct {
 	store   *Store
 	service *Service
 	audits  *audits.Service
+	// 上传配置（SetUploadDir 注入；packagesDir 为空时上传接口不可用）
+	packagesDir    string
+	maxUploadBytes int64
+	// uploadLocks 按目标文件名划分上传互斥锁（同名并发上传串行化，防 check-then-rename
+	// TOCTOU 竞态互相覆盖导致登记哈希与落盘文件不符）
+	uploadLocks sync.Map
+	// artifactVerifier 负责固定信任根、签名和归档内容绑定校验。
+	// 仅测试可替换；生产默认使用 verifyPackageArtifact。
+	artifactVerifier PackageArtifactVerifier
 }
 
 // NewHandler 创建处理器。
 func NewHandler(store *Store, svc *Service, au *audits.Service) *Handler {
-	return &Handler{store: store, service: svc, audits: au}
+	return &Handler{
+		store:           store,
+		service:         svc,
+		audits:          au,
+		artifactVerifier: verifyPackageArtifact,
+	}
+}
+
+// SetArtifactVerifier 为隔离测试注入临时验签器；正式路径不得通过环境变量替换信任根。
+func (h *Handler) SetArtifactVerifier(verifier PackageArtifactVerifier) *Handler {
+	h.artifactVerifier = verifier
+	return h
+}
+
+// uploadLock 返回按目标文件名划分的上传互斥锁（进程内同名上传串行化）。
+func (h *Handler) uploadLock(target string) *sync.Mutex {
+	v, _ := h.uploadLocks.LoadOrStore(target, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // RegisterRoutes 注册升级路由。authChain 为认证链（会话解析+认证+CSRF），
@@ -37,6 +64,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, authChain func(http.Handler
 	// 升级包
 	mux.Handle("GET /api/v1/upgrade-packages", authChain(read(http.HandlerFunc(h.ListPackages))))
 	mux.Handle("POST /api/v1/upgrades/packages", authChain(middleware.RequirePermission("upgrades.execute")(http.HandlerFunc(h.RegisterPackage))))
+	mux.Handle("POST /api/v1/upgrades/packages/upload", authChain(middleware.RequirePermission("upgrades.execute")(http.HandlerFunc(h.UploadPackage))))
 	mux.Handle("GET /api/v1/upgrade-packages/{id}", authChain(read(http.HandlerFunc(h.GetPackage))))
 	// 升级前检查（body 携带 package_id）
 	mux.Handle("POST /api/v1/upgrades/precheck", authChain(middleware.RequirePermission("upgrades.precheck")(http.HandlerFunc(h.Precheck))))
@@ -111,7 +139,7 @@ type registerPackageRequest struct {
 }
 
 // RegisterPackage 登记升级包：校验版本号与哈希格式，
-// 全部通过则状态 VERIFIED（登记信息自洽），否则 REJECTED。
+// 全部通过则状态 REGISTERED；只有实际上传包通过签名与 manifest 校验后才进入 VERIFIED。
 func (h *Handler) RegisterPackage(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	var req registerPackageRequest
@@ -136,7 +164,8 @@ func (h *Handler) RegisterPackage(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"package": pkg})
 }
 
-// buildPackage 校验登记请求并构造升级包（哈希自洽即 VERIFIED）。
+// buildPackage 校验登记请求并构造升级包。仅凭登记信息不能宣称内容已验证，
+// 因此合法请求初始状态为 REGISTERED。
 // 返回的 error 为校验失败原因（包仍以 REJECTED 状态登记，保留证据）。
 func buildPackage(req *registerPackageRequest, uploadedBy uuid.UUID) (*Package, error) {
 	pkg := &Package{
@@ -146,7 +175,7 @@ func buildPackage(req *registerPackageRequest, uploadedBy uuid.UUID) (*Package, 
 		FileHash:    strings.ToLower(strings.TrimSpace(req.FileHash)),
 		FileSize:    req.FileSize,
 		Manifest:    req.Manifest,
-		Status:      PackageVerified,
+		Status:      PackageRegistered,
 		UploadedBy:  &uploadedBy,
 	}
 	validate := func() error {

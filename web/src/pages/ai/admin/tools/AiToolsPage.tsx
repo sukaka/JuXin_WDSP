@@ -18,6 +18,7 @@ import { ApiError } from '../../../../api/client'
 import { aiAgentsToolsApi, patchAiTool } from '../../../../api/ai'
 import type { AiTool } from '../../../../api/ai'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
 import StatusTag from '../../../../components/StatusTag'
 import { useAuthStore } from '../../../../stores/auth'
 import { AI_TOOL_RISK_META } from '../../../../utils/ai'
@@ -39,6 +40,7 @@ export default function AiToolsPage() {
 
   const [schemaTarget, setSchemaTarget] = useState<AiTool | null>(null)
   const [configTarget, setConfigTarget] = useState<AiTool | null>(null)
+  const [detailRecord, setDetailRecord] = useState<AiTool | null>(null)
   const [configForm] = Form.useForm<ToolConfigFormValues>()
 
   const toolsQuery = useQuery({ queryKey: ['ai-tools'], queryFn: aiAgentsToolsApi.listTools })
@@ -102,8 +104,8 @@ export default function AiToolsPage() {
       ellipsis: true,
       render: (v: string) => v || '-',
     },
-    { title: '超时(s)', dataIndex: 'timeout_seconds', width: 90, align: 'right' },
-    { title: '最大返回数', dataIndex: 'max_results', width: 110, align: 'right' },
+    { title: '超时(s)', dataIndex: 'timeout_seconds', width: 90 },
+    { title: '最大返回数', dataIndex: 'max_results', width: 110 },
     {
       title: '状态',
       dataIndex: 'status',
@@ -155,6 +157,10 @@ export default function AiToolsPage() {
             dataSource={toolsQuery.data}
             scroll={{ x: 1250 }}
             pagination={false}
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailRecord(record),
+              style: { cursor: 'pointer' },
+            })}
           />
         )}
       </Space>
@@ -209,6 +215,13 @@ export default function AiToolsPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="工具详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

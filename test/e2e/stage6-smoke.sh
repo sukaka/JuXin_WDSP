@@ -104,6 +104,18 @@ done
 curl -s -b "$CK" -o /tmp/s6-report.pdf "$API_URL/api/v1/reports/$PID/download"
 MAGIC=$(head -c 5 /tmp/s6-report.pdf)
 [ "$MAGIC" = "%PDF-" ] && record "report-pdf-download" 1 || record "report-pdf-download" 0 "magic=$MAGIC"
+DID=$(curl -s -b "$CK" -X POST "$API_URL/api/v1/reports" -H 'Content-Type: application/json' -H "X-CSRF-Token: $SEC_CSRF" \
+  -d "{\"report_type\":\"CUSTOM\",\"start_time\":\"$T_START\",\"end_time\":\"$T_END\",\"format\":\"docx\"}" | jid)
+ST=""
+for i in $(seq 1 90); do
+  ST=$(curl -s -b "$CK" "$API_URL/api/v1/reports/$DID" | jst)
+  case "$ST" in SUCCESS|FAILED) break;; esac
+  sleep 2
+done
+[ "$ST" = "SUCCESS" ] && record "report-docx-success" 1 || record "report-docx-success" 0 "status=$ST"
+curl -s -b "$CK" -o /tmp/s6-report.docx "$API_URL/api/v1/reports/$DID/download"
+MAGIC=$(head -c 2 /tmp/s6-report.docx)
+[ "$MAGIC" = "PK" ] && record "report-docx-download" 1 || record "report-docx-download" 0 "magic=$MAGIC"
 sys
 ST=$(curl -s -o /dev/null -w "%{http_code}" -b "$SCK" "$API_URL/api/v1/reports/$RID/download")
 [ "$ST" = "403" ] && record "report-download-rbac" 1 || record "report-download-rbac" 0 "status=$ST"

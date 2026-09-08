@@ -200,12 +200,12 @@ VALUES ($1, $2, now() + interval '1 hour'),
 	}
 
 	if err := store.ChangePassword(
-		ctx, user.ID, newHash, user.PasswordHash, nil, currentSessionHash, true,
+		ctx, user.ID, newHash, user.PasswordHash, nil, true,
 	); err != nil {
 		t.Fatalf("change password: %v", err)
 	}
 
-	var storedHash, historyHash, otherRevokeReason string
+	var storedHash, historyHash, currentRevokeReason, otherRevokeReason string
 	var currentRevoked, otherRevoked bool
 	if err := env.db.QueryRow(ctx, `
 SELECT u.password_hash,
@@ -213,15 +213,18 @@ SELECT u.password_hash,
         WHERE ph.user_id = u.id ORDER BY ph.created_at DESC LIMIT 1),
        (SELECT ls.revoked_at IS NOT NULL FROM login_sessions ls WHERE ls.session_hash = $2),
        (SELECT ls.revoked_at IS NOT NULL FROM login_sessions ls WHERE ls.session_hash = $3),
+       (SELECT ls.revoke_reason FROM login_sessions ls WHERE ls.session_hash = $2),
        (SELECT ls.revoke_reason FROM login_sessions ls WHERE ls.session_hash = $3)
 FROM users u WHERE u.id = $1`, user.ID, currentSessionHash, otherSessionHash).
-		Scan(&storedHash, &historyHash, &currentRevoked, &otherRevoked, &otherRevokeReason); err != nil {
+		Scan(&storedHash, &historyHash, &currentRevoked, &otherRevoked, &currentRevokeReason, &otherRevokeReason); err != nil {
 		t.Fatalf("read password change state: %v", err)
 	}
-	if storedHash != newHash || historyHash != user.PasswordHash || currentRevoked ||
-		!otherRevoked || otherRevokeReason != "password_changed" {
-		t.Fatalf("unexpected password change state: new=%t history=%t current_revoked=%t other_revoked=%t reason=%q",
-			storedHash == newHash, historyHash == user.PasswordHash, currentRevoked, otherRevoked, otherRevokeReason)
+	// 改密即视为密码可能泄露：含当前会话在内的全部持久化会话都必须在同事务吊销
+	if storedHash != newHash || historyHash != user.PasswordHash || !currentRevoked ||
+		!otherRevoked || currentRevokeReason != "password_changed" || otherRevokeReason != "password_changed" {
+		t.Fatalf("unexpected password change state: new=%t history=%t current_revoked=%t other_revoked=%t reasons=%q/%q",
+			storedHash == newHash, historyHash == user.PasswordHash, currentRevoked, otherRevoked,
+			currentRevokeReason, otherRevokeReason)
 	}
 }
 

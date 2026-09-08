@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, Space, Spin, Statistic, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -11,15 +11,17 @@ import type { GraphSeriesOption } from 'echarts/charts'
 import type { LegendComponentOption, TooltipComponentOption } from 'echarts/components'
 import { apiGraphApi, type ApiGraphEdge, type ApiGraphNode } from '../../api/apiSecurity'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import { API_ENDPOINT_STATUS_META } from '../../utils/stage8'
+import { escapeHtml } from '../../utils/format'
 
 // 按需注册 graph 图所需部件（共享 EChart 组件未注册 GraphChart，本页自带轻封装避免改动公共组件）
 echarts.use([GraphChart, TooltipComponent, LegendComponent, CanvasRenderer])
 
 type GraphOption = ComposeOption<GraphSeriesOption | TooltipComponentOption | LegendComponentOption>
 
-/** 端点资产状态 → 图谱节点配色（与 antd 语义色板一致） */
+/** 接口资产状态 → 图谱节点配色（与 antd 语义色板一致） */
 const NODE_COLOR_BY_STATUS: Record<string, string> = {
   DISCOVERED: '#1677ff',
   CONFIRMED: '#52c41a',
@@ -27,7 +29,7 @@ const NODE_COLOR_BY_STATUS: Record<string, string> = {
   DEPRECATED: '#fa8c16',
 }
 
-/** 外部调用方（非已发现端点）节点配色 */
+/** 外部调用方（非已发现接口）节点配色 */
 const EXTERNAL_CALLER_COLOR = '#8c8c8c'
 
 /** 指纹/ID 截断展示：保留首尾，中间省略 */
@@ -62,8 +64,10 @@ function GraphChartView({ option, height = 480 }: { option: GraphOption; height?
   return <div ref={containerRef} style={{ width: '100%', height }} />
 }
 
-/** API 安全图谱（WDSP / 阶段8）：端点节点 + 调用边，节点按资产状态上色，边宽按调用次数 */
+/** API 安全图谱（WDSP / 阶段8）：接口节点 + 调用边，节点按资产状态上色，边宽按调用次数 */
 export default function ApiGraphPage() {
+  const [detailRecord, setDetailRecord] = useState<ApiGraphEdge | null>(null)
+
   const graphQuery = useQuery({
     queryKey: ['api-graph'],
     queryFn: () => apiGraphApi.graph(),
@@ -94,7 +98,7 @@ export default function ApiGraphPage() {
     }))
     const links: NonNullable<GraphSeriesOption['links']> = []
     for (const e of edges) {
-      // 源端点未知（外部调用方）时合成灰色节点；目标端点必须存在，否则跳过该边
+      // 源接口未知（外部调用方）时合成灰色节点；目标接口必须存在，否则跳过该边
       let source = e.source_endpoint_id ?? undefined
       if (!source || !nodeById.has(source)) {
         source = `caller:${e.caller_fingerprint}`
@@ -122,7 +126,9 @@ export default function ApiGraphPage() {
         formatter: (params) => {
           const p = params as { dataType: string; data: { name?: string; value?: number } }
           if (p.dataType === 'edge') return `调用次数：${p.data.value ?? 0}`
-          return p.data.name ?? ''
+          // name 为 endpoint_key（攻击者可通过恶意请求路径注入 HTML）：
+          // tooltip 默认 html 渲染模式将返回值作为 HTML 插入 DOM，必须转义防存储型 XSS
+          return escapeHtml(p.data.name ?? '')
         },
       },
       legend: [{ data: categories.map((c) => c.name), top: 0 }],
@@ -156,7 +162,7 @@ export default function ApiGraphPage() {
       ),
     },
     {
-      title: '目标端点',
+      title: '目标接口',
       dataIndex: 'target_endpoint_id',
       ellipsis: true,
       render: (v: string) => {
@@ -164,13 +170,13 @@ export default function ApiGraphPage() {
         return target ? <Typography.Text code>{target.endpoint_key}</Typography.Text> : truncateMiddle(v)
       },
     },
-    { title: '调用次数', dataIndex: 'call_count', width: 110, align: 'right' },
+    { title: '调用次数', dataIndex: 'call_count', width: 110 },
   ]
 
   return (
     <Card title="API 安全图谱">
       <Typography.Paragraph type="secondary">
-        节点为接口端点（按资产状态上色：蓝=已发现、绿=已确认、灰=已忽略、橙=已废弃），边为运行时观测到的调用关系，边宽随调用次数增加；灰色小节点为未匹配到端点的外部调用方。
+        节点为 API 接口（按资产状态上色：蓝=已发现、绿=已确认、灰=已忽略、橙=已废弃），边为运行时观测到的调用关系，边宽随调用次数增加；灰色小节点为未匹配到接口的外部调用方。
       </Typography.Paragraph>
       <QueryErrorAlert error={graphQuery.error} />
       <Space size="large" style={{ marginBottom: 16 }}>
@@ -188,7 +194,17 @@ export default function ApiGraphPage() {
         loading={graphQuery.isLoading}
         columns={edgeColumns}
         dataSource={edges}
+        onRow={(record) => ({
+          onDoubleClick: () => setDetailRecord(record),
+          style: { cursor: 'pointer' },
+        })}
         pagination={{ pageSize: 8, showSizeChanger: false, hideOnSinglePage: true, showTotal: (t) => `共 ${t} 条` }}
+      />
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="调用边详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
       />
     </Card>
   )

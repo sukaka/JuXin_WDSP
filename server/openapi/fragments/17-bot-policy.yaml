@@ -1,0 +1,251 @@
+# 片段：应用级 Bot 挑战策略（WDSP P1-02 B1，服务端管理面）
+# 路由源：server/internal/app/app.go「Bot 挑战策略」注册段（/applications/{id}/bot-policy*）
+# 数据源：bot_policies 草稿行 + bot_policy_versions 不可变版本记录（迁移 000128；
+# 权限种子 000129：bot_policy.read 三角色全授，bot_policy.edit 仅 SYSTEM_ADMIN/SECURITY_ADMIN）。
+# 发布：保存草稿成功即触发既有 gateway-config 发布通道（GuardConfig bot_policy 段，
+# 仅 WDSP 形态下发；读取失败中止发布 fail-hard；存在 PROTECT 策略而共享状态存储
+# （Valkey）未配置时拒绝发布）。preflight 不保存、不发布。
+# 边界：本阶段（B1）只落地策略与配置链——挑战生成、/_wdsp/bot/v1/verify 端点与
+# 信号 Eval 处置属 B2/B3，网关请求链不变。
+paths:
+  # ==================== Bot 挑战策略 ====================
+  /applications/{id}/bot-policy:
+    get:
+      operationId: botPolicyGet
+      tags: [bot-policy]
+      summary: 读取应用 Bot 挑战策略
+      description: 读取应用 Bot 挑战策略当前草稿与状态摘要（草稿版本、最近成功发布批次、扇出节点有效版本分离返回，不混成一个 enabled；state：NOT_CONFIGURED 未配置 / DRAFT_PENDING 草稿未发布或领先已发布 / PUBLISHED 草稿与最近成功发布一致）。历史应用无记录时返回默认 OFF 空策略（version=0）。内容不含任何秘密材料（key_ref 仅为预置内部签名密钥的引用名）。权限：`bot_policy.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 策略草稿与状态摘要
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BotPolicyGetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: botPolicyUpdate
+      tags: [bot-policy]
+      summary: 保存 Bot 挑战策略草稿
+      description: 校验并全量保存草稿（expected_version 乐观锁，冲突返回 409——无草稿时必须为 0，已有草稿时必须等于当前 version；mode 仅 OFF/OBSERVE/PROTECT；selectors 仅 GET 浏览器文档导航、path_exact/path_prefix 二选一、路径为解码后形式且大小写敏感、prefix 按完整路径段匹配、禁止正则/百分号编码/全站通配/落入保留命名空间 /_wdsp/bot/v1/；signal_rules 三组信号白名单（request_behavior/access_sequence 行为组 + client_claim 可伪造弱声明组）、提出挑战需 ≥2 个独立信号组且至少 1 个行为组、同源计数派生指标（同 group+metric+params）不重复计权；challenge 仅 type=JS，nonce_ttl_seconds 30~300 默认 90、clearance_ttl_seconds 60~3600 默认 900、difficulty 10~18bit 默认 14、max_attempts 1~5 默认 3，缺省字段按默认值；route_reservation 状态机 ENABLED/RESERVED_TOMBSTONE/RELEASED 且 namespace 固定，PROTECT 必须 ENABLED，未携带时沿用上版草稿状态；reason 非空进操作审计与不可变版本记录）。保存成功触发既有 gateway-config 发布通道；保存草稿不等于节点已生效（生效状态以 GET 摘要的发布批次与节点同步状态为准）。权限：`bot_policy.edit`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BotPolicyUpdateRequest' }
+      responses:
+        '200':
+          description: 草稿保存成功，返回保存后的策略（version+1）并已触发配置发布
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BotPolicyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 策略已被其他人修改（expected_version 乐观锁冲突），需刷新后重试 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/bot-policy/preflight:
+    post:
+      operationId: botPolicyPreflight
+      tags: [bot-policy]
+      summary: Bot 挑战策略路由保留冲突预检
+      description: 对请求体候选策略（缺省为当前草稿）执行结构校验与保留路由冲突预检——保留命名空间 /_wdsp/bot/v1/ 与 L7 拒绝规则（确定性覆盖 verify 端点判 FAIL 阻断，含正则/客户端依赖条件判 WARN）、L7 放行规则覆盖（WARN）、既有应用路径（api_endpoints 已登记落入命名空间判 FAIL）、路径转发前缀覆盖或落入命名空间（FAIL）、保护地址全量段（WARN）的冲突列表；另含 PROTECT 共享状态存储（Valkey）依赖与目标节点同步状态检查（与发布链路同口径，publishable=false 时发布将以同口径拒绝）。不保存、不发布。操作进入审计（低风险）。权限：`bot_policy.edit`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BotPolicyPreflightRequest' }
+      responses:
+        '200':
+          description: 预检结果（逐项检查 + 冲突列表 + 整体可发布判定）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BotPolicyPreflightResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    # ==================== Bot 挑战策略 ====================
+    BotSelector:
+      type: object
+      description: 挑战适用范围选择器（仅 GET 浏览器文档导航——方法固定 GET 不出现在契约中；不同 selector 之间 OR）
+      properties:
+        path_exact: { type: string, maxLength: 512, description: 精确路径（与 path_prefix 二选一；解码后形式、大小写敏感；不含 query/fragment/百分号编码；不得落入保留命名空间） }
+        path_prefix: { type: string, maxLength: 512, description: 规范化路径前缀（与 path_exact 二选一；按完整路径段匹配——/docs 匹配 /docs 与 /docs/a，不匹配 /docsx；不以 / 结尾，不允许全站通配 /；不得覆盖保留命名空间） }
+
+    BotSignalRule:
+      type: object
+      description: 单条信号规则（id 稳定且策略内唯一；threshold 语义按指标冻结——占比/计数类 ≥ 阈值触发，known_uri_ratio ≤ 阈值触发，声明匹配类命中即触发且 threshold 恒 0）
+      properties:
+        id: { type: string, pattern: '^[a-z][a-z0-9_]{0,63}$', description: 规则 ID（小写字母开头的小写字母/数字/下划线） }
+        group: { type: string, enum: [request_behavior, access_sequence, client_claim], description: 信号组（须与指标所属组一致；client_claim 为可伪造弱声明组） }
+        metric: { type: string, enum: [status_family_ratio, method_ratio, uri_concentration, known_uri_ratio, method_enumeration_size, ua_class_match, tls_client_hint], description: 信号指标（白名单；未知指标拒绝） }
+        params:
+          type: object
+          additionalProperties: { type: string }
+          description: 指标参数（按指标白名单：family=2xx/3xx/4xx/5xx；method=HTTP 方法；class=UA 分类；field=version/cipher_suite 配 equals 比对值；多/少/未知键一律拒绝）
+        window_seconds: { type: integer, minimum: 30, maximum: 3600, description: 信号窗口（秒） }
+        weight: { type: number, minimum: 0, maximum: 10, exclusiveMinimum: true, description: 规则权重（组满足 = 组内已触发权重和 ≥1） }
+        threshold: { type: number, description: '阈值（占比类 (0,1]；known_uri_ratio [0,1)；计数类 1~100；声明匹配类恒 0）' }
+
+    BotSignalRules:
+      type: object
+      description: 多信号判定配置（B0 冻结：≥min_independent_groups 个独立信号组同时满足且至少 1 个行为组才可提出挑战；同源计数派生指标不重复计权）
+      properties:
+        min_independent_groups: { type: integer, minimum: 2, maximum: 3, description: 最少独立信号组数（缺省 2） }
+        require_behavior_group: { type: boolean, description: 必须恒 true（至少 1 个行为观测组；缺省 true） }
+        rules:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/BotSignalRule' }
+          description: 信号规则列表（OFF 可空，非 OFF 必填非空）
+
+    BotChallenge:
+      type: object
+      description: 挑战参数（仅第一方 JS 挑战；参数为待测产品初值，非性能保证）
+      properties:
+        type: { type: string, enum: [JS], description: 挑战类型（仅 JS） }
+        nonce_ttl_seconds: { type: integer, minimum: 30, maximum: 300, description: 挑战 nonce 有效期（秒，默认 90） }
+        clearance_ttl_seconds: { type: integer, minimum: 60, maximum: 3600, description: 挑战通过后通行有效期（秒，默认 900） }
+        difficulty: { type: integer, minimum: 10, maximum: 18, description: SHA-256 工作量难度（bit，默认 14） }
+        max_attempts: { type: integer, minimum: 1, maximum: 5, description: 单题最多验证尝试次数（默认 3） }
+        key_ref: { type: string, pattern: '^[a-z0-9][a-z0-9_.-]{0,63}$', description: 预置内部签名密钥引用名（仅引用名；任何接口与审计均不返回密钥材料） }
+
+    BotRouteReservation:
+      type: object
+      description: 保留路由状态（版本化配置；PUT 未携带时沿用上版草稿状态，防全量替换静默解除墓碑保留）
+      properties:
+        state: { type: string, enum: [ENABLED, RESERVED_TOMBSTONE, RELEASED], description: ENABLED=保留路由已注册 / RESERVED_TOMBSTONE=从已启用状态关闭保留本地 404 墓碑 / RELEASED=保留解除（首次 OFF 且从未启用不抢占业务路径）；PROTECT 必须 ENABLED }
+        namespace: { type: string, enum: ['/_wdsp/bot/v1/'], description: 保留命名空间（固定；更换需升 schema 版本） }
+
+    BotPolicy:
+      type: object
+      description: 应用 Bot 挑战策略（当前草稿；version 乐观锁不可变递增）
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 模式（默认 OFF——不观测不挑战、不改变既有流量；OBSERVE 仅观测记录；PROTECT 达阈提出挑战） }
+        version: { type: integer, description: 乐观锁版本（无记录应用为 0；随发布下发供溯源） }
+        selectors:
+          type: array
+          maxItems: 64
+          items: { $ref: '#/components/schemas/BotSelector' }
+        signal_rules: { $ref: '#/components/schemas/BotSignalRules' }
+        challenge: { $ref: '#/components/schemas/BotChallenge' }
+        route_reservation: { $ref: '#/components/schemas/BotRouteReservation' }
+        updated_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BotPublishState:
+      type: object
+      description: 最近成功发布快照中本应用策略的生效状态
+      properties:
+        found: { type: boolean, description: 是否存在成功发布批次（false=从未成功发布） }
+        version_no: { type: integer, description: 发布批次号（0=无） }
+        version_id: { type: string, format: uuid, description: 发布批次 ID（与节点 last_sync_version_id 比对） }
+        policy_version: { type: integer, description: 快照 bot_policy 段中本应用策略版本（0=该快照未下发本应用策略） }
+
+    BotNodeSyncState:
+      type: object
+      description: 扇出节点同步状态
+      properties:
+        node_name: { type: string }
+        last_sync_result: { type: string, description: SUCCESS/FAILED/HASH_MISMATCH；空=从未同步 }
+        last_sync_version_id: { type: string, format: uuid, nullable: true, description: 最近同步的配置版本；null=从未同步 }
+        effective: { type: boolean, description: 是否已同步到最新成功发布批次 }
+
+    BotStatusSummary:
+      type: object
+      description: 状态摘要（草稿版本 vs 发布批次 vs 节点有效版本分离；不混成一个 enabled）
+      properties:
+        state: { type: string, enum: [NOT_CONFIGURED, DRAFT_PENDING, PUBLISHED], description: 未配置 / 草稿待发布 / 已发布一致 }
+        draft_version: { type: integer, description: 当前草稿版本（0=无草稿） }
+        published: { $ref: '#/components/schemas/BotPublishState' }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/BotNodeSyncState' }
+          description: 参与发布扇出的次要节点同步状态（单网关部署为空）
+
+    BotPolicyGetResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/BotPolicy' }
+        summary: { $ref: '#/components/schemas/BotStatusSummary' }
+
+    BotPolicyDetailResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/BotPolicy' }
+
+    BotPolicyUpdateRequest:
+      type: object
+      required: [mode, expected_version, reason]
+      description: 全量保存草稿请求（expected_version 乐观锁：无草稿=0，已有草稿=当前 version；冲突 409）
+      properties:
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        expected_version: { type: integer, minimum: 0 }
+        selectors:
+          type: array
+          maxItems: 64
+          items: { $ref: '#/components/schemas/BotSelector' }
+        signal_rules: { $ref: '#/components/schemas/BotSignalRules' }
+        challenge: { $ref: '#/components/schemas/BotChallenge' }
+        route_reservation: { $ref: '#/components/schemas/BotRouteReservation' }
+        reason: { type: string, minLength: 1, maxLength: 500, description: 变更理由（非空，进入操作审计与不可变版本记录） }
+
+    BotPolicyPreflightRequest:
+      type: object
+      description: 预检候选策略（全部缺省时检查当前草稿；不保存、不发布；route_reservation 未携带时沿用上版草稿状态）
+      properties:
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        selectors:
+          type: array
+          maxItems: 64
+          items: { $ref: '#/components/schemas/BotSelector' }
+        signal_rules: { $ref: '#/components/schemas/BotSignalRules' }
+        challenge: { $ref: '#/components/schemas/BotChallenge' }
+        route_reservation: { $ref: '#/components/schemas/BotRouteReservation' }
+
+    BotPreflightCheck:
+      type: object
+      properties:
+        name: { type: string, enum: [structure, route_conflicts, shared_state, node_capability], description: 检查项 }
+        status: { type: string, enum: [PASS, FAIL, WARN, SKIP] }
+        message: { type: string, description: 可读原因（结构错误含字段级明细；不含任何秘密材料） }
+
+    BotRouteConflict:
+      type: object
+      description: 保留路由冲突条目（status=FAIL 阻断发布，WARN 仅提示）
+      properties:
+        type: { type: string, enum: [l7_deny_rule, l7_allow_rule, reserved_path_asset, path_route, protected_address_scope], description: 冲突来源 }
+        status: { type: string, enum: [FAIL, WARN] }
+        message: { type: string, description: 可读原因 }
+        ref: { type: string, description: 定位信息（规则名/路径/地址段） }
+
+    BotPolicyPreflightResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/BotPolicy' }
+        checks:
+          type: array
+          items: { $ref: '#/components/schemas/BotPreflightCheck' }
+        conflicts:
+          type: array
+          items: { $ref: '#/components/schemas/BotRouteConflict' }
+        publishable: { type: boolean, description: 整体可发布判定（false 时发布链路以同口径拒绝） }

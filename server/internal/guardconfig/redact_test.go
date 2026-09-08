@@ -36,6 +36,54 @@ func TestRedactGuardConfigStripsPassword(t *testing.T) {
 	}
 }
 
+// TestRedactGuardConfigStripsTicketKey tls_session_ticket_key 为票据密钥明文，快照脱敏（同一纪律）。
+func TestRedactGuardConfigStripsTicketKey(t *testing.T) {
+	cfg := &gatewayconfig.GuardConfig{TLSSessionTicketKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+	cp := RedactGuardConfig(cfg)
+	if cp.TLSSessionTicketKey != "***" {
+		t.Fatalf("票据键未脱敏: %q", cp.TLSSessionTicketKey)
+	}
+	if cfg.TLSSessionTicketKey == "***" {
+		t.Fatal("原配置被改写")
+	}
+}
+
+// TestRedactGuardConfigStripsIdentitySalt identity_salt 为敏感盐值，快照脱敏（与 valkey.password 同一纪律）。
+func TestRedactGuardConfigStripsIdentitySalt(t *testing.T) {
+	cfg := &gatewayconfig.GuardConfig{IdentitySalt: "live-salt"}
+	red := RedactGuardConfig(cfg)
+	if red.IdentitySalt != "***" {
+		t.Fatalf("identity_salt not redacted: %q", red.IdentitySalt)
+	}
+	if cfg.IdentitySalt != "live-salt" {
+		t.Fatal("original config mutated")
+	}
+}
+
+// TestRedactGuardConfigStripsScanVerificationKey api_scan_verification.key_hex 为扫描签名
+// 密钥明文，快照脱敏为占位（与 valkey.password/identity_salt 同一纪律）；
+// 序列化产物不得含密钥明文，原配置不受影响。
+func TestRedactGuardConfigStripsScanVerificationKey(t *testing.T) {
+	const keyHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cfg := &gatewayconfig.GuardConfig{
+		APIScanVerification: &gatewayconfig.GuardScanVerification{KeyHex: keyHex},
+	}
+	red := RedactGuardConfig(cfg)
+	if red.APIScanVerification == nil || red.APIScanVerification.KeyHex != "***" {
+		t.Fatalf("api_scan_verification.key_hex 未脱敏: %+v", red.APIScanVerification)
+	}
+	if cfg.APIScanVerification.KeyHex != keyHex {
+		t.Fatal("原配置被改写")
+	}
+	data, err := json.Marshal(red)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsStr(string(data), keyHex) {
+		t.Fatalf("序列化快照仍含扫描签名密钥明文: %s", data)
+	}
+}
+
 func TestInjectRuntimeSecrets(t *testing.T) {
 	p := &Provider{valkeyAddr: "127.0.0.1:6379", valkeyPassword: "live-pass", valkeyDB: 2}
 	cfg := &gatewayconfig.GuardConfig{

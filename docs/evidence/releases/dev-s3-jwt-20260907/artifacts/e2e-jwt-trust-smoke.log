@@ -1,0 +1,248 @@
+============================================================
+P0-03 JWT 信任链真实网关冒烟  api=http://127.0.0.1:18081  gateway=http://127.0.0.1:18080
+============================================================
+[build] 从当前工作树构建 api/gateway/testorigin 镜像 ...
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.08kB done
+#1 DONE 0.0s
+
+#2 [api internal] load build definition from Dockerfile
+#2 transferring dockerfile: 3.07kB done
+#2 DONE 0.0s
+
+#3 [gateway internal] load build definition from Dockerfile
+#3 transferring dockerfile: 4.43kB done
+#3 DONE 0.0s
+
+#4 [testorigin internal] load build definition from Dockerfile
+#4 transferring dockerfile: 762B done
+#4 DONE 0.0s
+
+#5 [testorigin internal] load metadata for docker.io/library/golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587
+#5 DONE 1.5s
+
+#6 [testorigin internal] load metadata for docker.io/library/alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+#6 DONE 1.5s
+
+#7 [gateway internal] load .dockerignore
+#7 transferring context: 2B done
+#7 DONE 0.0s
+
+#8 [testorigin internal] load .dockerignore
+#8 transferring context: 2B done
+#8 DONE 0.0s
+
+#9 [api internal] load .dockerignore
+#9 transferring context: 2B done
+#9 DONE 0.0s
+
+#10 [gateway builder 1/5] FROM docker.io/library/golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587
+#10 resolve docker.io/library/golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 0.0s done
+#10 DONE 0.0s
+
+#11 [gateway stage-1 1/4] FROM docker.io/library/alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+#11 resolve docker.io/library/alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b 0.0s done
+#11 DONE 0.0s
+
+#12 [gateway internal] load build context
+#12 transferring context: 17.25kB 0.0s done
+#12 DONE 0.1s
+
+#13 [testorigin internal] load build context
+#13 transferring context: 54B done
+#13 DONE 0.0s
+
+#14 [api internal] load build context
+#14 transferring context: 92.19kB 0.1s done
+#14 DONE 0.1s
+
+#15 [gateway builder 4/5] COPY dynamic_security /src/dynamic_security
+#15 CACHED
+
+#16 [gateway builder 5/5] RUN CGO_ENABLED=0 GOAMD64=v1 GOOS=linux GOARCH=arm64 xcaddy build v2.11.4     --with github.com/corazawaf/coraza-caddy/v2@v2.5.0     --with github.com/jiuzhang-waf/gateway/dynamic_security=/src/dynamic_security     --with github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard=/src/modules/jiuzhang_guard     --output /usr/bin/caddy
+#16 CACHED
+
+#17 [gateway builder 3/5] COPY modules /src/modules
+#17 CACHED
+
+#18 [gateway builder 2/5] RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
+#18 CACHED
+
+#19 [gateway stage-1 3/4] COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+#19 CACHED
+
+#20 [gateway stage-1 2/4] RUN addgroup -g 1000 -S caddy && adduser -u 1000 -S -G caddy -h /var/lib/caddy caddy     && mkdir -p /etc/caddy /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data     && chown -R caddy:caddy /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data
+#20 CACHED
+
+#21 [gateway stage-1 4/4] COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+#21 CACHED
+
+#22 [testorigin stage-1 2/3] RUN addgroup -S origin && adduser -S -G origin origin
+#22 CACHED
+
+#23 [testorigin builder 3/4] COPY main.go go.mod ./
+#23 CACHED
+
+#24 [testorigin builder 2/4] WORKDIR /build
+#24 CACHED
+
+#25 [testorigin builder 4/4] RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/testorigin .
+#25 CACHED
+
+#26 [testorigin stage-1 3/3] COPY --from=builder /out/testorigin /usr/local/bin/testorigin
+#26 CACHED
+
+#27 [api builder 2/7] WORKDIR /build/server
+#27 CACHED
+
+#28 [api builder 7/7] RUN CGO_ENABLED=0 GOAMD64=v1 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /out/jiuzhang-api ./cmd/api
+#28 CACHED
+
+#29 [api stage-1 3/6] COPY --from=builder /out/jiuzhang-api /usr/local/bin/jiuzhang-api
+#29 CACHED
+
+#30 [api builder 5/7] RUN go mod download
+#30 CACHED
+
+#31 [api stage-1 2/6] RUN addgroup -g 1000 -S jiuzhang && adduser -u 1000 -S -G jiuzhang jiuzhang     && mkdir -p /app/migrations /app/runtime && chown -R jiuzhang:jiuzhang /app
+#31 CACHED
+
+#32 [api stage-1 4/6] COPY --chown=jiuzhang:jiuzhang server/migrations/ /app/migrations/
+#32 CACHED
+
+#33 [api builder 4/7] COPY gateway/dynamic_security/ /build/gateway/dynamic_security/
+#33 CACHED
+
+#34 [api builder 3/7] COPY server/go.mod server/go.sum ./
+#34 CACHED
+
+#35 [api builder 6/7] COPY server/ ./
+#35 CACHED
+
+#36 [api stage-1 5/6] COPY --chown=jiuzhang:jiuzhang server/assets/ /app/assets/
+#36 CACHED
+
+#37 [api stage-1 6/6] WORKDIR /app
+#37 CACHED
+
+#38 [api] exporting to image
+#38 exporting layers done
+#38 exporting manifest sha256:a53d30af1805c65e6b6e95f401b3d960089ae62ca198d1d6cc2b24eb3d9626cf done
+#38 exporting config sha256:39719c2f249a45d35c1253c1444b9cc74ec14784599b2ffbdb5aa258119d01bd done
+#38 exporting attestation manifest sha256:bbef4a4c03e917a934b150f70ae7a7de5a77c51b0aacff00fe4ef1e594a3548f
+#38 exporting attestation manifest sha256:bbef4a4c03e917a934b150f70ae7a7de5a77c51b0aacff00fe4ef1e594a3548f 0.0s done
+#38 exporting manifest list sha256:ecd85af92f70b560cd4928bb725675941467d9d3aceb80df47a9649b9f469d80 0.0s done
+#38 naming to docker.io/library/jiuzhang-server:stage5 done
+#38 unpacking to docker.io/library/jiuzhang-server:stage5 0.0s done
+#38 DONE 0.2s
+
+#39 [testorigin] exporting to image
+#39 exporting layers done
+#39 exporting manifest sha256:fdedaf83e3f64ef677356d9fe0e8678c045ac9ac174a1a0b00b3a50af443d0cf done
+#39 exporting config sha256:f19efa73d62a0a2356ba44baa4f52ece681a68e673f987a8e4f2572d82857f81 done
+#39 exporting attestation manifest sha256:4832983245c16441e885aeb9979b5888689e44777885f31a1047f9befca02720 0.0s done
+#39 exporting manifest list sha256:718a8cdee84e04b4bc716a7cb88163ff9247576409ae20f3dcedd32b79c322ff 0.0s done
+#39 naming to docker.io/library/jiuzhang-testorigin:stage1 done
+#39 unpacking to docker.io/library/jiuzhang-testorigin:stage1 done
+#39 DONE 0.1s
+
+#40 [gateway] exporting to image
+#40 exporting layers done
+#40 exporting manifest sha256:b27e2e235a857bb828710e92e492f7b1c0195cafb6d34d286bd6b6df5249739e done
+#40 exporting config sha256:f026c4f204f70087879ad78546c47f1af0157feefa8ce40edd08c4f0c8fcd3ef done
+#40 exporting attestation manifest sha256:f827c7addb51e7bd7bca2c6362a5af1fa84831433080afb98b4cb6aff158d930 0.0s done
+#40 exporting manifest list sha256:6aae4ff0f4a0021928c5cb7ec20e6e41e97dfad24566051f6c1697660191b017 0.0s done
+#40 naming to docker.io/library/jiuzhang-gateway:stage5 done
+#40 unpacking to docker.io/library/jiuzhang-gateway:stage5 done
+#40 DONE 0.1s
+
+#41 [testorigin] resolving provenance for metadata file
+#41 DONE 0.1s
+
+#42 [gateway] resolving provenance for metadata file
+#42 DONE 0.1s
+
+#43 [api] resolving provenance for metadata file
+#43 DONE 0.0s
+ api  Built
+ gateway  Built
+ testorigin  Built
+[up] 启动 postgres/valkey/testorigin/gateway/api ...
+ Network jiuzhang-stage5_stage5-net  Creating
+ Network jiuzhang-stage5_stage5-net  Created
+ Volume "jiuzhang-stage5_stage5-gateway-logs"  Creating
+ Volume "jiuzhang-stage5_stage5-gateway-logs"  Created
+ Volume "jiuzhang-stage5_stage5-gateway-admin"  Creating
+ Volume "jiuzhang-stage5_stage5-gateway-admin"  Created
+ Volume "jiuzhang-stage5_stage5-gateway-config"  Creating
+ Volume "jiuzhang-stage5_stage5-gateway-config"  Created
+ Volume "jiuzhang-stage5_stage5-postgres-data"  Creating
+ Volume "jiuzhang-stage5_stage5-postgres-data"  Created
+ Volume "jiuzhang-stage5_stage5-valkey-data"  Creating
+ Volume "jiuzhang-stage5_stage5-valkey-data"  Created
+ Volume "jiuzhang-stage5_stage5-runtime"  Creating
+ Volume "jiuzhang-stage5_stage5-runtime"  Created
+ Container jiuzhang-stage5-testorigin  Creating
+ Container jiuzhang-stage5-valkey  Creating
+ Container jiuzhang-stage5-postgres  Creating
+ Container jiuzhang-stage5-testorigin  Created
+ Container jiuzhang-stage5-gateway  Creating
+ Container jiuzhang-stage5-valkey  Created
+ Container jiuzhang-stage5-postgres  Created
+ Container jiuzhang-stage5-gateway  Created
+ Container jiuzhang-stage5-api  Creating
+ Container jiuzhang-stage5-api  Created
+ Container jiuzhang-stage5-postgres  Starting
+ Container jiuzhang-stage5-valkey  Starting
+ Container jiuzhang-stage5-testorigin  Starting
+ Container jiuzhang-stage5-testorigin  Started
+ Container jiuzhang-stage5-testorigin  Waiting
+ Container jiuzhang-stage5-valkey  Started
+ Container jiuzhang-stage5-postgres  Started
+ Container jiuzhang-stage5-testorigin  Healthy
+ Container jiuzhang-stage5-gateway  Starting
+ Container jiuzhang-stage5-gateway  Started
+ Container jiuzhang-stage5-postgres  Waiting
+ Container jiuzhang-stage5-valkey  Waiting
+ Container jiuzhang-stage5-valkey  Healthy
+ Container jiuzhang-stage5-postgres  Healthy
+ Container jiuzhang-stage5-api  Starting
+ Container jiuzhang-stage5-api  Started
+PASS  api 健康检查通过
+PASS  系统管理员登录（含强制改密）
+PASS  导入 CI 临时 wdsp 授权
+PASS  product/edition=wdsp 且授权生效
+PASS  安全管理员就绪
+PASS  创建 PROTECT 应用
+[setup] app=6bcf572e-7670-401f-afce-c036c7bcb071 host=jwt-smoke.local
+PASS  身份指纹盐（identity_salt）播种
+PASS  RSA-2048 测试密钥生成并导出公钥 JWKS
+[setup] valid_token=eyJhbGciOiJS...Zg6jlcRTVzDQ
+[setup] forged_token=eyJhbGciOiJS...65_1aqnB6MrA
+PASS  保存 JWT 策略 OBSERVE 草稿
+PASS  OBSERVE 配置发布成功
+[gw] 网关已应答（Host=jwt-smoke.local status=404）
+PASS  OBSERVE 发布生效后网关可达
+PASS  OBSERVE 无 Token 仍放行（JWT-10）
+  [observe] no-token status=404
+PASS  OBSERVE 伪造签名仍放行（JWT-02 观测侧）
+  [observe] forged status=404
+PASS  OBSERVE 产生 JWT_OBSERVED 事件（=3）
+PASS  API 动态管线模式置为 PROTECT（发布门禁前提）
+PASS  保存 JWT 策略 PROTECT 草稿（乐观锁 v1）
+PASS  PROTECT 预检 publishable=true 且 pipeline_gate=PASS
+PASS  PROTECT 配置发布成功（门禁通过）
+[gw] 网关已应答（Host=jwt-smoke.local status=401）
+PASS  PROTECT 缺必需 Bearer → 401（JWT-10）
+PASS  401 携带 WWW-Authenticate Bearer challenge
+PASS  PROTECT 伪造签名 Token → 401（JWT-02）
+PASS  PROTECT 合法 Token VERIFIED → 到达源站 200（JWT-01）
+PASS  VERIFIED + SQLi → WAF 拦截 403（JWT-12）
+PASS  JWT_AUTH_FAILED 事件计数 ≥2（=3）
+PASS  JWT_AUTH_FAILED 事件 details 含 reason_code/policy_version/keyset_version
+  [event] OK rc=SIGNATURE_INVALID pv=2 kv=327bc7fbf5b18024d7828ebc0b4dce41
+PASS  api_runtime_events 落库 jwt_verification.status=VERIFIED 摘要（库层可查）
+  [event] status|policy_version|keyset_version|verified_principal_id = VERIFIED|2|327bc7fbf5b18024d7828ebc0b4dce41|96e77c930a68451b142f10ef142e9dc3
+============================================================
+P0-03 JWT 信任链真实网关冒烟汇总: 总用例 26 通过 26 失败 0
+============================================================

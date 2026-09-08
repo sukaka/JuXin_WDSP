@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Alert, Button, Card, Collapse, Descriptions, Drawer, Tag, Typography } from 'antd'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../api/client'
@@ -19,6 +20,8 @@ function groupByModule(permissions: PermissionItem[]): [string, PermissionItem[]
 
 export default function RolesPage() {
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null)
+  const [detailRecord, setDetailRecord] = useState<RoleItem | null>(null)
+  const [permissionDetailRecord, setPermissionDetailRecord] = useState<PermissionItem | null>(null)
 
   const rolesQuery = useQuery({ queryKey: ['roles'], queryFn: rolesApi.list })
   const permissionsQuery = useQuery({ queryKey: ['permissions'], queryFn: rolesApi.permissions })
@@ -83,6 +86,7 @@ export default function RolesPage() {
             columns={columns}
             dataSource={rolesQuery.data?.items}
             pagination={false}
+            onRow={(record) => ({ onDoubleClick: () => setDetailRecord(record), style: { cursor: 'pointer' } })}
           />
         )}
       </Card>
@@ -108,6 +112,7 @@ export default function RolesPage() {
                   dataSource={items}
                   pagination={false}
                   size="small"
+                  onRow={(record) => ({ onDoubleClick: () => setPermissionDetailRecord(record), style: { cursor: 'pointer' } })}
                 />
               ),
             }))}
@@ -160,6 +165,19 @@ export default function RolesPage() {
           </>
         ) : null}
       </Drawer>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="角色详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
+      <RecordDetailDrawer
+        open={permissionDetailRecord !== null}
+        title="权限详情"
+        record={permissionDetailRecord as Record<string, unknown> | null}
+        onClose={() => setPermissionDetailRecord(null)}
+      />
     </>
   )
 }

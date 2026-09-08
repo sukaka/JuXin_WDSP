@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: gzip FNAME 字段含脚本扩展名检测（\\x1f\\x8b\\x08 头后原始文件名，自建规则 1001314）
+rule_id: 1001314
+tests:
+  - test_id: 1
+    desc: "urlencoded 提交 gzip FNAME=evil.php；含 NUL 与非法 UTF-8 字节，PROTECT 模式下 CRS 920270/920250 先行计分阻断，故断言 403（DetectionOnly 下 1001314 命中，已经引擎级测试验证）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/x-www-form-urlencoded"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "file=%1f%8b%08abcdefgevil.php%00"
+          version: HTTP/1.1
+        output:
+          status: [403]

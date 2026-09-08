@@ -44,13 +44,18 @@ Caddy 会回退到默认 `127.0.0.1:2019`。后续配置生成器必须始终显
 - 不输出完整请求头集合；仅提取 User-Agent（截断 256）与 x-request-id；
 - Authorization / Cookie / Set-Cookie / X-API-Key 等敏感头值不进入标准事件；
 - URI 查询串中 password/token/secret/session 等参数值替换为 `masked`；
-- 匹配数据（matched_data）执行键值模式遮蔽并截断 128 字符；
-- 不保存完整请求体（审计日志 Parts 配置 ABIJDEFHZ，不含 C 部分）；
+- 匹配数据（matched_data）按键值模式循环遮蔽全部出现位置并截断 128 字符；
+  命中变量为敏感头（REQUEST_HEADERS:Authorization/Cookie 等）时值段整段遮蔽；
+- 完整请求体落盘为 POC 专用配置（审计日志 Parts 为 ABCIJDEFHZ，含 C 部分；受
+  SecRequestBodyLimit 12.5MB 限制，生产发布模板必须改用 RelevantOnly 并评审是否保留 C/E，见
+  `rules/coraza.conf` 审计段警告注释）；
 - 私钥、证书内容不进入任何日志。
 
 ### 解析失败处理
 
-- 失败记录（含原因与截断后的原始行）写入 `parse-errors.jsonl`；
+- 失败记录写入 `parse-errors.jsonl`，只保留结构化摘要（原因 + 尽力提取的 tx_id +
+  行长度 + 行内容 SHA-256），不落原始审计行——原始行可能含 Authorization/Cookie/
+  口令明文，排查时凭 tx_id/哈希对照原始审计日志（0600）；
 - 不静默丢弃。
 
 ## 4. Request ID 安全

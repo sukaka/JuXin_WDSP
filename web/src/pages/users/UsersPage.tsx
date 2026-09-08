@@ -22,8 +22,10 @@ import { ApiError } from '../../api/client'
 import { rolesApi } from '../../api/roles'
 import { usersApi } from '../../api/users'
 import type { CreateUserBody } from '../../api/users'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import TempPasswordModal from '../../components/TempPasswordModal'
 import UserStatusTag from '../../components/UserStatusTag'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -53,6 +55,7 @@ export default function UsersPage() {
   const [pageSize, setPageSize] = useState(20)
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<UserItem | null>(null)
+  const [detailRecord, setDetailRecord] = useState<UserItem | null>(null)
   const [tempPassword, setTempPassword] = useState<{ password: string; notice?: string } | null>(null)
   const [createForm] = Form.useForm<CreateUserBody>()
   const [editForm] = Form.useForm<{ display_name: string; role_code: string }>()
@@ -64,6 +67,13 @@ export default function UsersPage() {
   const rolesQuery = useQuery({ queryKey: ['roles'], queryFn: rolesApi.list })
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['users'] })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<UserItem>({
+    remove: usersApi.remove,
+    invalidateKeys: [['users']],
+    entityName: '用户',
+    canDelete: hasPermission(permissions, 'users.update'),
+  })
 
   const onError = (e: unknown) => {
     if (e instanceof ApiError && e.code === 'RESOURCE_CONFLICT') {
@@ -298,6 +308,7 @@ export default function UsersPage() {
             setPage(1)
           }}
         />
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -311,10 +322,15 @@ export default function UsersPage() {
         <SmartTable<UserItem>
           storageKey="users"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
           scroll={{ x: 1100 }}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             current: page,
             pageSize,
@@ -396,6 +412,13 @@ export default function UsersPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="用户详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
 
       <TempPasswordModal
         open={tempPassword !== null}

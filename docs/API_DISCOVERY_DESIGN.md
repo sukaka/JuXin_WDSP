@@ -2,11 +2,11 @@
 
 ## 一、目的与范围
 
-API 发现回答三个问题：哪些流量是 API（识别）、它们构成哪些端点（归一与登记）、
-这些端点处于什么管理与学习状态（生命周期）。本文覆盖：
+API 发现回答三个问题：哪些流量是 API（识别）、它们构成哪些API（归一与登记）、
+这些API处于什么管理与学习状态（生命周期）。本文覆盖：
 
 - 网关侧多信号分类器（`gateway/dynamic_security/classifier/api.go`）；
-- 发现数据流：guard 事件 → 采集器 → 端点资产幂等 upsert；
+- 发现数据流：guard 事件 → 采集器 → API资产幂等 upsert；
 - 管理面手工确认、合并/拆分、忽略、分类；
 - 资产状态（`asset_status`）与学习状态（`learning_status`）两轨生命周期。
 
@@ -64,9 +64,9 @@ METHOD + 空格 + path_template` 为幂等键：
 - 首次：`INSERT ... asset_status='DISCOVERED', hit_count=1`；
 - 再次命中：`ON CONFLICT (endpoint_key) DO UPDATE`——`hit_count+1`、
   `last_seen_at=now()`、`api_confidence` 取两者较大值；
-- 采集器重放、多网关节点上报同一键均不产生重复端点。
+- 采集器重放、多网关节点上报同一键均不产生重复API。
 
-端点表身份列：`http_method / normalized_path / raw_path_example / endpoint_key /
+API表身份列：`http_method / normalized_path / raw_path_example / endpoint_key /
 api_confidence / is_api / hit_count / first_seen_at / last_seen_at`
 （迁移 000018，`apiassets/store.go:47-68`）。
 
@@ -81,7 +81,7 @@ api_confidence / is_api / hit_count / first_seen_at / last_seen_at`
 | 批量确认 | `POST .../endpoints/confirm`（`api_asset.confirm`） | `asset_status=CONFIRMED` 并记 `confirmed_at`；单次≤100 个，逐项报告失败（handler.go:82-129） |
 | 忽略 | `POST .../{id}/ignore`（`api_asset.ignore`） | `asset_status=IGNORED`，写生命周期事件 |
 | 合并 | `POST .../{id}/merge`（`api_asset.merge`） | other 并入 primary：命中数累加、历史键归档 `api_endpoint_aliases`、写 MERGED 事件（store.go:312-383） |
-| 拆分 | `POST .../{id}/split`（`api_asset.split`） | 指定新归一化路径拆出端点（继承方法/置信度/协议），单次≤50 路径，键冲突返回 409（handler.go:283-338、store.go:387-436） |
+| 拆分 | `POST .../{id}/split`（`api_asset.split`） | 指定新归一化路径拆出API（继承方法/置信度/协议），单次≤50 路径，键冲突返回 409（handler.go:283-338、store.go:387-436） |
 | 编辑资产 | `PATCH .../{id}`（`api_asset.edit`） | purpose/exposure(INTERNAL/PARTNER/PUBLIC)/owner/tags 全量替换，长度与数量校验（handler.go:157-223） |
 | 自动分类 | `POST .../{id}/classify`（`api_asset.edit`） | 路径/方法启发式写 PURPOSE/EXPOSURE/ACCESS 三维（source=AUTO）；已锁定返回 409（store.go:565-598、784-818） |
 | 人工分类 | `PUT .../{id}/classification`（`api_classification.manage`） | 逐维 upsert（source=MANUAL）并锁定，自动分类不得覆盖（apisecurity/store.go:153-178） |
@@ -105,7 +105,7 @@ DISCOVERED ──人工确认──► CONFIRMED
 - `IGNORED`：管理员标记忽略（`POST .../{id}/ignore` 路由）；
 - `DEPRECATED`：白名单内的合法值，当前无专用路由（可经仓储/SQL 标记，
   管理面接口在后续补充）；网关生命周期检测器对发布基线中 DEPRECATED
-  端点的调用产生 `lifecycle.deprecated_api_call`（OBSERVE/MEDIUM，
+  API的调用产生 `lifecycle.deprecated_api_call`（OBSERVE/MEDIUM，
   `detectors/lifecycle.go:34-46`）。
 
 **学习状态**（`learning_status`，白名单见 `store.go:39-44`）：
@@ -120,21 +120,21 @@ NOT_STARTED ──learning/start──► LEARNING ──learning/stop──► 
 （store.go:602-684）。两轨分离：资产是否受管理（asset_status）与模型学到哪一步
 （learning_status）互不阻塞（任务书 §12）。
 
-**Shadow 识别**：网关生命周期检测器以发布下发的「已知端点基线」
+**Shadow 识别**：网关生命周期检测器以发布下发的「已知API基线」
 （`api_known_endpoints`，`ListKeyStatus`，store.go:272-287）为准，API 流量命中
-表外端点即产生 `lifecycle.new_endpoint`（OBSERVE/LOW，信号 `shadow_candidate`，
+表外API即产生 `lifecycle.new_endpoint`（OBSERVE/LOW，信号 `shadow_candidate`，
 `detectors/lifecycle.go:19-32`）。
 
 ## 六、关键设计决策
 
 1. **发现喂数据与事件入库解耦**。所有被输出的运行时记录都喂 `UpsertDiscovery`
-   （含 `is_api=false` 的非 API 记录，保留非 API 端点画像），只有 notable 记录进
+   （含 `is_api=false` 的非 API 记录，保留非 API画像），只有 notable 记录进
    事件表（`collector.go:56-59`）。发现覆盖面不受「是否有风险命中」影响。
 2. **幂等键用 endpoint_key 而非 UUID**。网关与采集器不需要知道数据库主键，
    归一化算法即身份；重放、扩容、重启天然幂等（store.go:204-212）。
-3. **置信度只升不降（GREATEST）**。同一端点多次观测取最大置信度，避免偶发低信号
+3. **置信度只升不降（GREATEST）**。同一API多次观测取最大置信度，避免偶发低信号
    请求拉低已积累的识别结论（store.go:210）。
-4. **合并留别名、拆分留事件**。合并把历史端点键归档进 `api_endpoint_aliases`
+4. **合并留别名、拆分留事件**。合并把历史API键归档进 `api_endpoint_aliases`
    （alias_key 唯一，重复归档幂等），旧键流量可追溯；拆分写 SPLIT 生命周期事件，
    审计链完整（store.go:353-374、426-431）。
 5. **自动分类可锁定**。AUTO 来源分类置信度低（0.5-0.9），人工分类（MANUAL，
@@ -148,7 +148,7 @@ NOT_STARTED ──learning/start──► LEARNING ──learning/stop──► 
 
 1. **发现信号集是任务书 §8.1 的裁剪子集**：未使用响应 Content-Type（响应侧未
    解析）、Token/签名特征（认证检测独立于分类器）、调用客户端/User-Agent、
-   状态码、字段结构稳定性、重复端点模式、Webhook 特征；识别结果分级
+   状态码、字段结构稳定性、重复API模式、Webhook 特征；识别结果分级
    （CONFIRMED_API/PROBABLE_API/POSSIBLE_API/NON_API）未实现，当前为
    布尔 + 0..1 置信度。
 2. **Zombie API 未实现**：任务书 §11.2 的「标记下线仍有流量」判定无对应状态与
@@ -157,9 +157,16 @@ NOT_STARTED ──learning/start──► LEARNING ──learning/stop──► 
 3. **运行时发现表无写入方**：`api_runtime_findings`（SHADOW/ZOMBIE/BOLA 等条目）
    与查询接口已建，但当前无生产写入路径；Shadow/Deprecated 线索以主事件
    `details_json` 中的 lifecycle 明细为准。
-4. **协议类型粗化**：`protocol_type` 默认 `REST`（迁移 000018 默认值），
-   GraphQL/SOAP 在解析与分类信号中可识别，但未回写端点 `protocol_type`。
-5. **非 API 端点也会登记**：`is_api=false` 的记录同样 upsert 端点（见决策 1），
+4. ~~**协议类型粗化**~~ **已补全（协议识别波）**：`protocol_type` 词表
+   `REST / GRPC / GRAPHQL / SOAP / WEBSOCKET`。判定均在网关管线
+   （`classifier` 包，不挂 api.IsAPI 分类门槛）：
+   GRPC=Content-Type application/grpc(+proto) + /package.Service/Method 路径形态；
+   GRAPHQL=application/graphql 原始查询或 /graphql 路径 + JSON body 含 query 字段
+   （解析层已双重确认）；SOAP=application/soap+xml，或 text/xml|application/xml +
+   SOAPAction 头；WEBSOCKET=Upgrade: websocket + Connection 含 upgrade 令牌
+   （仅标注握手）。空值仍回落 REST（迁移 000018 默认值）；首写不覆盖。
+   遗留：GraphQL 不按 operationName 拆API（API键仍按路径归一化）。
+5. **非 API也会登记**：`is_api=false` 的记录同样 upsert API（见决策 1），
    列表需以 `is_api`/置信度自行区分；当前列表接口未提供 is_api 过滤参数。
 6. **应用归属**：`application_id` 列已建，但发现 upsert 不填（事件的
    application_id 未传入 UpsertDiscovery 签名），归属靠后续管理操作。

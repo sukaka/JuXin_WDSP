@@ -135,3 +135,66 @@ func TestProcessKnownEndpointNoLifecycleMatch(t *testing.T) {
 		t.Fatalf("final=%s, want ALLOW", res.FinalAction)
 	}
 }
+
+// 值级敏感规则经管线生效：QUERY 值命中（字段名不命中词表）在 PROTECT 下定案 BLOCK；
+// FORM 值随规则开启留存并命中产 OBSERVE；证据不含明文值。
+func TestProcessSensitiveValueRules(t *testing.T) {
+	rules := []detectors.SensitiveValueRule{
+		{DataType: "phone", Regex: `^1[3-9]\d{9}$`, Locations: []string{"query", "form"}, Level: "SENSITIVE"},
+	}
+	r, _ := http.NewRequest(http.MethodGet, "http://h/v1/users?contact=13800138000", nil)
+	r.Header.Set("Authorization", "Bearer s3cr3t-token-0123456789abcdef")
+	res, err := Process(r, Config{Enabled: true, Mode: "PROTECT", SensitiveValueRules: rules}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRule(res, "sensitive.value_in_query") {
+		t.Fatalf("expected sensitive.value_in_query, got %+v", res.Context.CopyMatches())
+	}
+	if res.FinalAction != dsctx.ActionBlock {
+		t.Fatalf("final=%s, want BLOCK", res.FinalAction)
+	}
+	for _, m := range res.Context.CopyMatches() {
+		for _, v := range m.Evidence {
+			if strings.Contains(v, "13800138000") {
+				t.Fatalf("sensitive value leaked into evidence: %+v", m.Evidence)
+			}
+		}
+	}
+
+	// FORM 值命中（OBSERVE）：规则开启时表单标量值留存生效
+	body := "nickname=abc&contact2=13912345678"
+	r2, _ := http.NewRequest(http.MethodPost, "http://h/v1/form", strings.NewReader(body))
+	r2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r2.Header.Set("Authorization", "Bearer s3cr3t-token-0123456789abcdef")
+	res2, err := Process(r2, Config{Enabled: true, Mode: "OBSERVE", SensitiveValueRules: rules}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range res2.Context.CopyMatches() {
+		if m.RuleID == "sensitive.value" && m.Evidence["location"] == "form" && m.Evidence["field"] == "contact2" {
+			found = true
+		}
+		for _, v := range m.Evidence {
+			if strings.Contains(v, "13912345678") {
+				t.Fatalf("sensitive value leaked into evidence: %+v", m.Evidence)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected form value hit, got %+v", res2.Context.CopyMatches())
+	}
+}
+
+// 值级敏感规则编译失败必须返回错误（不静默吞错）。
+func TestProcessBadSensitiveValueRuleReturnsError(t *testing.T) {
+	r, _ := http.NewRequest(http.MethodGet, "http://h/v1/x", nil)
+	_, err := Process(r, Config{
+		Enabled:             true,
+		SensitiveValueRules: []detectors.SensitiveValueRule{{DataType: "x", Regex: "([bad", Locations: []string{"query"}}},
+	}, nil)
+	if err == nil {
+		t.Fatal("bad sensitive value rule must return error")
+	}
+}

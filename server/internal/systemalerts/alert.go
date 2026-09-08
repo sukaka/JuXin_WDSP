@@ -34,7 +34,9 @@ type Alert struct {
 	ResolvedBy      *uuid.UUID `json:"resolved_by"`
 	ResolvedAt      *time.Time `json:"resolved_at"`
 	ResolveType     *string    `json:"resolve_type"`
-	CreatedAt       time.Time  `json:"created_at"`
+	// SilencedUntil 静默截止时刻（迁移 000055）；NULL = 未静默。
+	SilencedUntil *time.Time `json:"silenced_until"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 // Note 是告警备注。
@@ -53,6 +55,8 @@ type ListFilter struct {
 	Severity  string
 	AlertType string
 	Component string
+	// View 三态视图口径（ACTIVE/SILENCED/HISTORY，见 rules.go）；与 Status 互斥。
+	View      string
 	StartTime *time.Time
 	EndTime   *time.Time
 	Page      int
@@ -154,6 +158,28 @@ WHERE component = $1 AND status IN ('OPEN','ACKNOWLEDGED')`
 	return out, rows.Err()
 }
 
+// ListOpenByTypes 查询给定类型集合的全部未关闭告警（按最近活跃倒序）。
+func (s *Store) ListOpenByTypes(ctx context.Context, alertTypes []string) ([]Alert, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT `+alertColumns+`
+FROM system_alerts
+WHERE alert_type = ANY($1) AND status IN ('OPEN','ACKNOWLEDGED')
+ORDER BY last_seen_at DESC`, alertTypes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Alert
+	for rows.Next() {
+		a, err := scanAlert(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
 // ResolveRecovered 自动恢复：OPEN/ACKNOWLEDGED → RESOLVED(resolve_type=RECOVERED)。
 func (s *Store) ResolveRecovered(ctx context.Context, id uuid.UUID, now time.Time) error {
 	res, err := s.db.Exec(ctx, `
@@ -211,6 +237,15 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Alert, int64, error) 
 	}
 	if f.Status != "" {
 		add("status = $%d", f.Status)
+	}
+	// 三态视图（与 status 互斥，handler 层已校验）：由 status + silenced_until 推导
+	switch f.View {
+	case ViewActive:
+		where += " AND status IN ('OPEN','ACKNOWLEDGED') AND (silenced_until IS NULL OR silenced_until <= now())"
+	case ViewSilenced:
+		where += " AND status IN ('OPEN','ACKNOWLEDGED') AND silenced_until > now()"
+	case ViewHistory:
+		where += " AND status IN ('RESOLVED','IGNORED')"
 	}
 	if f.Severity != "" {
 		add("severity = $%d", f.Severity)
@@ -292,6 +327,48 @@ WHERE id=$1 AND status IN ('OPEN','ACKNOWLEDGED')`, id)
 	return nil
 }
 
+// Silence 静默告警：仅未关闭（OPEN/ACKNOWLEDGED）可静默；重复静默视为延长
+// （覆盖 silenced_until）。静默不改变 status，合并/恢复机制照常工作。
+func (s *Store) Silence(ctx context.Context, id uuid.UUID, until time.Time) error {
+	res, err := s.db.Exec(ctx, `
+UPDATE system_alerts SET silenced_until=$2
+WHERE id=$1 AND status IN ('OPEN','ACKNOWLEDGED')`, id, until)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrInvalidTransition
+	}
+	return nil
+}
+
+// Resume 解除静默：清除 silenced_until；未处于静默的未关闭告警返回 ErrInvalidTransition。
+// 已到期的 silenced_until 也允许清除（便于列表口径与数据一致）。
+func (s *Store) Resume(ctx context.Context, id uuid.UUID) error {
+	res, err := s.db.Exec(ctx, `
+UPDATE system_alerts SET silenced_until=NULL
+WHERE id=$1 AND status IN ('OPEN','ACKNOWLEDGED') AND silenced_until IS NOT NULL`, id)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrInvalidTransition
+	}
+	return nil
+}
+
+// HasActiveSilence 判断同指纹（alert_type+component）是否存在静默期内的告警
+// （含已关闭行：静默意愿在实例关闭后仍延续至到期，支撑「静默期间同指纹告警
+// 不重复通知但仍记录」——引擎新建路径据此跳过 syslog 外发）。
+func (s *Store) HasActiveSilence(ctx context.Context, alertType, component string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM system_alerts
+  WHERE alert_type=$1 AND component=$2 AND silenced_until > now())`, alertType, component).Scan(&exists)
+	return exists, err
+}
+
 // AddNote 添加备注。
 func (s *Store) AddNote(ctx context.Context, alertID uuid.UUID, note string, by *uuid.UUID) (*Note, error) {
 	n := &Note{AlertID: alertID, Note: truncateStr(note, 1000), CreatedBy: by}
@@ -329,13 +406,14 @@ WHERE n.alert_id = $1 ORDER BY n.created_at ASC`, alertID)
 const alertColumns = `
 id, alert_type, severity, component, title, message, status,
 first_seen_at, last_seen_at, occurrence_count,
-acknowledged_by, acknowledged_at, resolved_by, resolved_at, resolve_type, created_at`
+acknowledged_by, acknowledged_at, resolved_by, resolved_at, resolve_type, silenced_until, created_at`
 
 func scanAlert(row pgx.Row) (*Alert, error) {
 	var a Alert
 	err := row.Scan(&a.ID, &a.AlertType, &a.Severity, &a.Component, &a.Title, &a.Message,
 		&a.Status, &a.FirstSeenAt, &a.LastSeenAt, &a.OccurrenceCount,
-		&a.AcknowledgedBy, &a.AcknowledgedAt, &a.ResolvedBy, &a.ResolvedAt, &a.ResolveType, &a.CreatedAt)
+		&a.AcknowledgedBy, &a.AcknowledgedAt, &a.ResolvedBy, &a.ResolvedAt, &a.ResolveType,
+		&a.SilencedUntil, &a.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

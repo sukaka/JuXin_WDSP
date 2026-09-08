@@ -69,6 +69,8 @@ make test
 
 ## 文档
 
+- [当前产品版本（版本判断唯一事实来源）](VERSION.md)
+- [补丁包与升级包规则](docs/UPGRADE_PACKAGE_POLICY.md)
 - [产品需求文档](docs/PRODUCT_REQUIREMENTS.md)
 - [架构设计文档](docs/ARCHITECTURE.md)
 - [数据库设计文档](docs/DATABASE_DESIGN.md)

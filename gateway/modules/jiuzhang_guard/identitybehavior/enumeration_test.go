@@ -1,8 +1,13 @@
 package identitybehavior
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientip"
+	"go.uber.org/zap"
 )
 
 func TestIdentifierKeyIsStableAndHashed(t *testing.T) {
@@ -16,15 +21,67 @@ func TestIdentifierKeyIsStableAndHashed(t *testing.T) {
 	}
 }
 
-func TestEnumerationExcludedPaginationAndBatch(t *testing.T) {
-	if !enumerationExcluded("/v1/users", url.Values{"account": {"alice"}, "page": {"2"}}) {
-		t.Fatal("pagination requests must be excluded")
-	}
-	if !enumerationExcluded("/v1/users/batch", url.Values{"account": {"alice"}}) {
+func TestEnumerationExcludedBatchPath(t *testing.T) {
+	if !enumerationExcludedPath("/v1/users/batch") {
 		t.Fatal("batch endpoints must be excluded")
 	}
-	if enumerationExcluded("/v1/users", url.Values{"account": {"alice"}}) {
-		t.Fatal("ordinary identifier requests must remain eligible")
+	if !enumerationExcludedPath("/v1/Export") {
+		t.Fatal("export endpoints must be excluded (case-insensitive)")
+	}
+	if enumerationExcludedPath("/v1/users") {
+		t.Fatal("ordinary paths must remain eligible")
+	}
+}
+
+// MED-1 回归：query 携带分页字段不再整请求跳过标识提取（「&page=1 即免疫枚举检测」
+// 一键绕过），降级为剔除分页字段后照常提取账号/对象标识。
+func TestPaginationFieldsNoLongerBypassExtraction(t *testing.T) {
+	q := identifierQuery(url.Values{"account": {"alice"}, "page": {"1"}, "Limit": {"50"}})
+	if _, ok := q["page"]; ok {
+		t.Fatal("pagination fields must be stripped from identifier query")
+	}
+	if _, ok := q["Limit"]; ok {
+		t.Fatal("pagination field match must be case-insensitive")
+	}
+	got := identifierKey(q, []string{"account"})
+	if got == "" || got == "alice" {
+		t.Fatalf("account identifier must still be extracted (hashed): %q", got)
+	}
+	if identifierKey(q, []string{"page"}) != "" {
+		t.Fatal("pagination field itself must not be counted as an identifier")
+	}
+	// 仅分页字段、无标识字段：不产生账号/对象键（翻页本身不计入枚举统计）
+	only := identifierQuery(url.Values{"cursor": {"abc"}, "offset": {"20"}})
+	if identifierKey(only, []string{"account"}) != "" {
+		t.Fatal("pure pagination traffic must not produce identifier keys")
+	}
+}
+
+// 引擎级回归：Begin 对带分页参数的请求仍产出 accountKey（不再被 enumerationExcluded 整请求跳过）。
+func TestBeginPaginatedRequestStillTracksAccount(t *testing.T) {
+	threshold := int64(2)
+	cfg, err := Compile(&Params{Enabled: true, AccountIdentifierFields: []string{"account"},
+		AccountEnumThreshold: &threshold}, nil)
+	if err != nil || cfg == nil {
+		t.Fatalf("compile: %v %v", cfg, err)
+	}
+	e := NewEngine(cfg, NewMemoryStore(0, zap.NewNop()), nil, Options{Logger: zap.NewNop()})
+	r := httptest.NewRequest(http.MethodGet, "http://waf-test.local/v1/users?account=alice&page=1", nil)
+	r.RemoteAddr = "203.0.113.10:1"
+	w, obs := e.Begin(httptest.NewRecorder(), r, clientip.Result{ClientIP: mustIP(t, "203.0.113.10")})
+	if obs == nil {
+		t.Fatal("observation expected")
+	}
+	if obs.accountKey == "" {
+		t.Fatal("paginated request must still extract account identifier (MED-1 bypass)")
+	}
+	_ = w
+	// 批量路径仍整请求跳过
+	r2 := httptest.NewRequest(http.MethodGet, "http://waf-test.local/v1/users/sync?account=alice", nil)
+	r2.RemoteAddr = "203.0.113.10:1"
+	_, obs2 := e.Begin(httptest.NewRecorder(), r2, clientip.Result{ClientIP: mustIP(t, "203.0.113.10")})
+	if obs2 == nil || obs2.accountKey != "" {
+		t.Fatalf("batch path must remain excluded: %+v", obs2)
 	}
 }
 

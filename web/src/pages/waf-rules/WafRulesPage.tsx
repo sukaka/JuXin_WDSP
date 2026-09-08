@@ -65,6 +65,15 @@ export default function WafRulesPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [detailRuleId, setDetailRuleId] = useState<number | null>(null)
+  // 规则 ID 筛选为本地输入态，回车/失焦才提交查询（与同页 Input.Search 纪律一致，避免逐字符触发）
+  const [ruleIdInput, setRuleIdInput] = useState<number | null>(null)
+
+  const commitRuleId = () => {
+    const next = ruleIdInput ?? undefined
+    if (filters.rule_id === next) return
+    setFilters((f) => ({ ...f, rule_id: next }))
+    setPage(1)
+  }
 
   const listQuery = useQuery({
     queryKey: ['waf-rules', filters, page, pageSize],
@@ -185,9 +194,15 @@ export default function WafRulesPage() {
       dataIndex: 'name',
       ellipsis: true,
       render: (v: string, record) => (
-        <a onClick={() => setDetailRuleId(record.rule_id)} title={v}>
+        <Button
+          type="link"
+          size="small"
+          style={{ padding: 0, height: 'auto' }}
+          title={v}
+          onClick={() => setDetailRuleId(record.rule_id)}
+        >
           {ruleNameZh(record) || '-'}
-        </a>
+        </Button>
       ),
     },
     {
@@ -278,13 +293,13 @@ export default function WafRulesPage() {
 
       <Space style={{ marginBottom: 16 }} wrap>
         <InputNumber
-          placeholder="规则ID"
-          style={{ width: 130 }}
+          placeholder="规则ID（回车生效）"
+          style={{ width: 160 }}
           min={1}
-          onChange={(v) => {
-            setFilters((f) => ({ ...f, rule_id: v ?? undefined }))
-            setPage(1)
-          }}
+          value={ruleIdInput}
+          onChange={(v) => setRuleIdInput(v)}
+          onPressEnter={commitRuleId}
+          onBlur={commitRuleId}
         />
         <Input.Search
           placeholder="搜索名称或描述"
@@ -357,6 +372,10 @@ export default function WafRulesPage() {
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRuleId(record.rule_id),
+            style: { cursor: 'pointer' },
+          })}
           scroll={{ x: 1150 }}
           pagination={{
             current: page,

@@ -10,8 +10,47 @@ jobs:
   server-test:
     name: Server Tests
     runs-on: ubuntu-latest
+    # server/tests 集成测试依赖真实 PostgreSQL/Valkey（helper_test.go 读取
+    # POSTGRES_HOST/POSTGRES_PORT/POSTGRES_USER/POSTGRES_PASSWORD、
+    # VALKEY_HOST/VALKEY_PORT/VALKEY_PASSWORD；无凭据则 t.Skip）。
+    # 镜像与 deployment/docker-compose.stage5.yml 同一 minor 系列锁定。
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          # 仅 CI 临时服务使用的占位口令（runner 即弃，无保密价值）
+          POSTGRES_USER: jiuzhang
+          POSTGRES_PASSWORD: ci-only-postgres-pwd
+          POSTGRES_DB: jiuzhang_waf
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jiuzhang -d jiuzhang_waf"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
+
+      # Valkey 必须带 --requirepass 启动（helper 要求 VALKEY_PASSWORD 非空且服务端鉴权），
+      # 而 GHA services 不支持覆盖容器启动命令，故用 docker run 拉起等效服务
+      # （同镜像 minor tag、健康检查齐备；口令同上为 CI 占位口令）。
+      - name: Start Valkey (CI service)
+        run: |
+          docker run -d --name ci-valkey \
+            -p 6379:6379 \
+            --health-cmd "valkey-cli -a ci-only-valkey-pwd --no-auth-warning ping | grep -q PONG" \
+            --health-interval 10s --health-timeout 5s --health-retries 5 \
+            valkey/valkey:8.1.8-alpine \
+            valkey-server --requirepass ci-only-valkey-pwd
+          for i in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' ci-valkey 2>/dev/null || echo starting)"
+            [ "$status" = "healthy" ] && exit 0
+            sleep 2
+          done
+          echo "valkey failed to become healthy" >&2
+          docker logs ci-valkey || true
+          exit 1
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -32,13 +71,33 @@ jobs:
         working-directory: ./server
         run: go vet ./...
 
+      - name: Run go vet (linux/arm64)
+        working-directory: ./server
+        run: GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+
       - name: Run tests
         working-directory: ./server
-        run: go test -v -race ./...
+        env:
+          # helper_test.go 实际读取的环境变量（默认值与此一致，显式注入以固定接线）
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: '5432'
+          POSTGRES_USER: jiuzhang
+          POSTGRES_PASSWORD: ci-only-postgres-pwd
+          VALKEY_HOST: 127.0.0.1
+          VALKEY_PORT: '6379'
+          VALKEY_PASSWORD: ci-only-valkey-pwd
+        # 集成套件（约百个 TestStage8* 用例）逐个重建测试库并全量迁移，
+        # 超出 go test 默认 10m 包级超时，放宽到 45m；不能用 -short
+        # （helper 在 short 模式全量 Skip，违反不得静默缺失的要求）
+        run: go test -v -race -timeout 45m ./...
 
       - name: Build
         working-directory: ./server
         run: go build -o ../bin/jiuzhang-server ./cmd/server
+
+      - name: Cross-compile check (linux/arm64)
+        working-directory: ./server
+        run: GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ./...
 
   gateway-test:
     name: Gateway Tests
@@ -65,6 +124,10 @@ jobs:
         working-directory: ./gateway
         run: go vet ./...
 
+      - name: Run go vet (linux/arm64)
+        working-directory: ./gateway
+        run: GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go vet ./...
+
       - name: Run tests
         working-directory: ./gateway
         run: go test -v -race ./...
@@ -72,6 +135,10 @@ jobs:
       - name: Build
         working-directory: ./gateway
         run: go build -o ../bin/jiuzhang-gateway ./cmd/gateway
+
+      - name: Cross-compile check (linux/arm64)
+        working-directory: ./gateway
+        run: GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build ./...
 
   web-test:
     name: Web Tests
@@ -117,3 +184,101 @@ jobs:
           POSTGRES_PASSWORD: compose-validation-only
           VALKEY_PASSWORD: compose-validation-only
         run: docker compose -f docker-compose.yml config
+
+  # ---- CI edition 冒烟矩阵（阶段8 任务书退出条件 #92，PR 必绿门禁）----
+  # smoke-waf（API 关闭态）与 smoke-wdsp（API 开启态）共用同一脚本
+  # test/e2e/ci-edition-smoke.sh，以 EDITION 区分断言集：
+  #   waf  ：api-security 命名空间 404 + 核心防护冒烟（正常 200 / SQLi 403）
+  #   wdsp ：api-security 可认证访问 + 一次请求产生 API 运行时事件
+  # 镜像用仓内 Dockerfile 构建（server/Dockerfile、gateway/Dockerfile、
+  # deployment/stage1/testorigin/Dockerfile），经 build-push-action + type=gha
+  # 缓存控制时长；GOPROXY 覆盖为 proxy.golang.org（默认 goproxy.cn 面向国内构建机）。
+  smoke-waf:
+    name: Edition Smoke (waf, API 关闭)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          tags: jiuzhang-server:stage5
+          load: true
+          build-args: GOPROXY=https://proxy.golang.org,direct
+          cache-from: type=gha,scope=jiuzhang-server
+          cache-to: type=gha,mode=max,scope=jiuzhang-server
+
+      - name: Build gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: gateway
+          file: gateway/Dockerfile
+          tags: jiuzhang-gateway:stage5
+          load: true
+          build-args: GOPROXY=https://proxy.golang.org,direct
+          cache-from: type=gha,scope=jiuzhang-gateway
+          cache-to: type=gha,mode=max,scope=jiuzhang-gateway
+
+      - name: Build testorigin image
+        uses: docker/build-push-action@v6
+        with:
+          context: deployment/stage1/testorigin
+          tags: jiuzhang-testorigin:stage1
+          load: true
+          build-args: GOPROXY=https://proxy.golang.org,direct
+          cache-from: type=gha,scope=jiuzhang-testorigin
+          cache-to: type=gha,mode=max,scope=jiuzhang-testorigin
+
+      - name: Run edition smoke (waf)
+        run: EDITION=waf bash test/e2e/ci-edition-smoke.sh
+
+  smoke-wdsp:
+    name: Edition Smoke (wdsp, API 开启)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          tags: jiuzhang-server:stage5
+          load: true
+          build-args: GOPROXY=https://proxy.golang.org,direct
+          cache-from: type=gha,scope=jiuzhang-server
+          cache-to: type=gha,mode=max,scope=jiuzhang-server
+
+      - name: Build gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: gateway
+          file: gateway/Dockerfile
+          tags: jiuzhang-gateway:stage5
+          load: true
+          build-args: GOPROXY=https://proxy.golang.org,direct
+          cache-from: type=gha,scope=jiuzhang-gateway
+          cache-to: type=gha,mode=max,scope=jiuzhang-gateway
+
+      - name: Build testorigin image
+        uses: docker/build-push-action@v6
+        with:
+          context: deployment/stage1/testorigin
+          tags: jiuzhang-testorigin:stage1
+          load: true
+          build-args: GOPROXY=https://proxy.golang.org,direct
+          cache-from: type=gha,scope=jiuzhang-testorigin
+          cache-to: type=gha,mode=max,scope=jiuzhang-testorigin
+
+      - name: Run edition smoke (wdsp)
+        run: EDITION=wdsp bash test/e2e/ci-edition-smoke.sh

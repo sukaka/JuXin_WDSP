@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: wdsp-agent
+  namespace: wdsp-system
+  labels:
+    app.kubernetes.io/name: wdsp-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wdsp-agent
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wdsp-agent
+    spec:
+      serviceAccountName: wdsp-agent
+      hostNetwork: false
+      hostPID: false
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: enroll
+          image: jiuzhang/wdsp-agent:2.3.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              if [ ! -s /var/lib/wdsp-agent/agent.json ]; then
+                token_file="/var/run/wdsp-bootstrap/${NODE_NAME}"
+                if [ ! -s "${token_file}" ]; then
+                  echo "缺少节点 ${NODE_NAME} 的一次性 Enrollment Token: ${token_file}" >&2
+                  exit 1
+                fi
+                /usr/local/bin/wdsp-agent enroll \
+                  --server "${WDSP_SERVER}" \
+                  --token "$(cat "${token_file}")" \
+                  --config /var/lib/wdsp-agent/agent.json \
+                  --state-dir /var/lib/wdsp-agent
+              fi
+          env:
+            - name: WDSP_SERVER
+              valueFrom:
+                secretKeyRef:
+                  name: wdsp-agent-bootstrap
+                  key: server
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/wdsp-agent
+            - name: bootstrap-tokens
+              mountPath: /var/run/wdsp-bootstrap
+              readOnly: true
+      containers:
+        - name: wdsp-agent
+          image: jiuzhang/wdsp-agent:2.3.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /var/lib/wdsp-agent/agent.json
+            - --state-dir
+            - /var/lib/wdsp-agent
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: K8S_CLUSTER_NAME
+              value: change-me
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_ADMIN", "NET_RAW"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/wdsp-agent
+      volumes:
+        - name: bootstrap-tokens
+          secret:
+            secretName: wdsp-agent-bootstrap-tokens
+            defaultMode: 0400
+        - name: state
+          hostPath:
+            path: /var/lib/wdsp-agent
+            type: DirectoryOrCreate

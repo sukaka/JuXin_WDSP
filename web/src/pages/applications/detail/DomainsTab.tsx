@@ -17,7 +17,9 @@ import { PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import { domainsApi } from '../../../api/applications'
 import type { DomainBody } from '../../../api/applications'
+import RecordDetailDrawer from '../../../components/RecordDetailDrawer'
 import SmartTable from '../../../components/SmartTable'
+import useBatchDelete from '../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../stores/auth'
 import { hasPermission } from '../../../utils/permission'
 import type { DomainItem } from '../../../types'
@@ -58,6 +60,7 @@ export default function DomainsTab({ appId }: { appId: string }) {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const [editing, setEditing] = useState<DomainItem | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
+  const [detailRecord, setDetailRecord] = useState<DomainItem | null>(null)
   const [form] = Form.useForm<DomainFormValues>()
   const httpEnabled = Form.useWatch('http_enabled', form)
   const httpsEnabled = Form.useWatch('https_enabled', form)
@@ -109,6 +112,13 @@ export default function DomainsTab({ appId }: { appId: string }) {
       void invalidate()
     },
     onError,
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<DomainItem>({
+    remove: (domainId) => domainsApi.remove(appId, domainId),
+    invalidateKeys: [['domains']],
+    entityName: '域名',
+    canDelete: hasPermission(permissions, 'domains.delete'),
   })
 
   const openEdit = (record: DomainItem) => {
@@ -212,6 +222,7 @@ export default function DomainsTab({ appId }: { appId: string }) {
             新增域名
           </Button>
         )}
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -225,10 +236,15 @@ export default function DomainsTab({ appId }: { appId: string }) {
         <SmartTable<DomainItem>
           storageKey="applications-domains"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
           pagination={false}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
         />
       )}
 
@@ -318,6 +334,13 @@ export default function DomainsTab({ appId }: { appId: string }) {
           )}
         </Form>
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="域名详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </>
   )
 }

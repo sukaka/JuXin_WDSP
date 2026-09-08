@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "CUSTOM_PACK 1001711: HAVING/GROUP BY column probe"
+rule_id: 1001711
+tests:
+  - test_id: 1
+    desc: "having 1=1 tautology probe"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "JiuZhang CUSTOM_PACK test agent"
+            Accept: "*/*"
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "var=1' having 1=1-- -"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001711]

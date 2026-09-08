@@ -1,0 +1,30 @@
+# 九章 HA lab 前置负载均衡（deployment/ha-lab）
+# 复用网关镜像内的 Caddy 二进制（项目自有组件，零新增依赖/零新增镜像）。
+# 转发面：两网关 Active-Active（docs/HA_TWO_NODE_DESIGN.md §1.1）。
+{
+	# Admin API 直接关闭（红线是禁止暴露到 TCP 端口；lab LB 无配置面需求，关闭更严）
+	admin off
+
+	# lab 纯 HTTP，禁用自动 HTTPS
+	auto_https off
+}
+
+# 客户端入口（compose 发布到 127.0.0.1:18880）
+:8080 {
+	# 透传 Host 头（网关按应用域名路由），Caddy 默认附加 X-Forwarded-For
+	reverse_proxy gw-a:8080 gw-b:8080 {
+		# 最少连接优先
+		lb_policy least_conn
+
+		# 单请求跨上游重试预算：本节点失败时在预算内重试下一上游，
+		# 摘除窗口内客户端无感（连接拒绝类错误秒级转移）
+		lb_try_duration 5s
+		lb_try_interval 100ms
+
+		# 被动健康检查：fail_duration 内失败 max_fails 次即标记摘除，
+		# 到期后自动重试恢复（fail 摘除 + 恢复，主动健康检查留待生产 LB）
+		max_fails 1
+		fail_duration 15s
+		unhealthy_status 5xx
+	}
+}

@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Alert, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../../api/client'
 import { certificatesApi } from '../../../api/certificates'
+import RecordDetailDrawer from '../../../components/RecordDetailDrawer'
 import SmartTable from '../../../components/SmartTable'
 import { formatDateTime } from '../../../utils/format'
 import { CERT_STATUS_META, certRemainingColor, certRemainingDays } from '../../../utils/stage3'
@@ -28,6 +30,7 @@ async function fetchBoundCertificates(appId: string): Promise<CertificateItem[]>
 }
 
 export default function CertificatesTab({ appId }: { appId: string }) {
+  const [detailRecord, setDetailRecord] = useState<CertificateItem | null>(null)
   const boundQuery = useQuery({
     queryKey: ['app-certificates', appId],
     queryFn: () => fetchBoundCertificates(appId),
@@ -82,7 +85,7 @@ export default function CertificatesTab({ appId }: { appId: string }) {
         showIcon
         style={{ marginBottom: 16 }}
         message="证书绑定关系由后端发布流程管理"
-        description="当前后端未提供证书绑定/解绑的 HTTP 接口（certificates.bind 权限已预留），本页展示已绑定到本应用的证书。绑定与替换请在后续版本通过发布流程完成。"
+        description="当前后端未提供证书绑定/解绑的 HTTP API（certificates.bind 权限已预留），本页展示已绑定到本应用的证书。绑定与替换请在后续版本通过发布流程完成。"
       />
       {boundQuery.isError ? (
         <Alert
@@ -100,8 +103,18 @@ export default function CertificatesTab({ appId }: { appId: string }) {
           dataSource={boundQuery.data}
           pagination={false}
           locale={{ emptyText: '当前应用未绑定证书' }}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
         />
       )}
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="证书详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </div>
   )
 }

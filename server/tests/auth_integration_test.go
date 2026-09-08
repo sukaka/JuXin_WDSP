@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestHealthCheck 健康检查。
+// TestHealthCheck 健康检查（含环境指纹 P-T1：响应头与 environment/product 字段）。
 func TestHealthCheck(t *testing.T) {
 	env := setupTestEnv(t)
 	resp := env.get(t, "/api/v1/health", nil)
@@ -14,9 +14,16 @@ func TestHealthCheck(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("health status = %d", resp.StatusCode)
 	}
+	// 环境标识头：测试装配 Env=test（helper baseTestCfg），门禁依赖该头识别测试环境
+	if got := resp.Header.Get("X-Jiuzhang-Environment"); got != "test" {
+		t.Errorf("X-Jiuzhang-Environment = %q, want test", got)
+	}
 	body := readBodyString(t, resp)
 	if !contains(body, `"postgres":true`) || !contains(body, `"valkey":true`) {
 		t.Errorf("health body = %s", body)
+	}
+	if !contains(body, `"environment":"test"`) || !contains(body, `"product":"`) {
+		t.Errorf("health body missing environment/product fingerprint = %s", body)
 	}
 }
 

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "profile_id": "PROTECT",
+  "description": "防护模式：WAF SecRuleEngine=On，API 动态防护 PROTECT，JWT 信任链与风险策略关闭。声明检测范围内的攻击样本预期 BLOCK_403 且源站不可达；正常业务样本预期 PASS（新增正常业务误拦截门槛为 0，沿用 P0-02 预登记阈值）。",
+  "modes": {
+    "waf_engine": "On",
+    "api_security": "PROTECT",
+    "jwt_trust": "OFF",
+    "risk_policy": "OFF"
+  },
+  "blocking": true
+}

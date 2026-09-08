@@ -17,13 +17,13 @@ import (
 
 // Prompt Prompt 定义。
 type Prompt struct {
-	ID               uuid.UUID `json:"id"`
-	Code             string    `json:"code"`
-	Name             string    `json:"name"`
-	PromptType       string    `json:"prompt_type"`
-	Status           string    `json:"status"`
+	ID               uuid.UUID  `json:"id"`
+	Code             string     `json:"code"`
+	Name             string     `json:"name"`
+	PromptType       string     `json:"prompt_type"`
+	Status           string     `json:"status"`
 	CurrentVersionID *uuid.UUID `json:"current_version_id"`
-	CreatedAt        time.Time `json:"created_at"`
+	CreatedAt        time.Time  `json:"created_at"`
 }
 
 // Version Prompt 版本。

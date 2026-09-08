@@ -1,93 +1,143 @@
-import type { ReactNode } from 'react'
+import { lazy, Suspense, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { Spin } from 'antd'
 import { useAuthStore } from '../stores/auth'
+import { useLicenseStore } from '../stores/license'
 import { useProductStore } from '../stores/product'
 import { hasAnyPermission } from '../utils/permission'
-import AdminLayout from '../layouts/AdminLayout'
-import LoginPage from '../pages/login/LoginPage'
-import ChangePasswordPage from '../pages/change-password/ChangePasswordPage'
-import DashboardPage from '../pages/dashboard/DashboardPage'
-import UsersPage from '../pages/users/UsersPage'
-import RolesPage from '../pages/roles/RolesPage'
-import LoginLogsPage from '../pages/login-logs/LoginLogsPage'
-import AuditsPage from '../pages/audits/AuditsPage'
-import SystemSettingsPage from '../pages/system-settings/SystemSettingsPage'
-import ProfilePage from '../pages/profile/ProfilePage'
-import ApplicationsPage from '../pages/applications/ApplicationsPage'
-import ApplicationDetailPage from '../pages/applications/ApplicationDetailPage'
-import CertificatesPage from '../pages/certificates/CertificatesPage'
-import ConfigPublishPage from '../pages/config-publish/ConfigPublishPage'
-import ConfigVersionsPage from '../pages/config-versions/ConfigVersionsPage'
-import GatewayStatusPage from '../pages/gateway-status/GatewayStatusPage'
-import ProtectionPoliciesPage from '../pages/protection-policies/ProtectionPoliciesPage'
-import WafRulesPage from '../pages/waf-rules/WafRulesPage'
-import CustomRulesPage from '../pages/custom-rules/CustomRulesPage'
-import ExceptionsPage from '../pages/exceptions/ExceptionsPage'
-import TrustedProxiesPage from '../pages/trusted-proxies/TrustedProxiesPage'
-import AccessRulesPage from '../pages/access-rules/AccessRulesPage'
-import RateLimitPage from '../pages/rate-limit/RateLimitPage'
-import TemporaryBlocksPage from '../pages/temporary-blocks/TemporaryBlocksPage'
-import AccessControlEventsPage from '../pages/access-control-events/AccessControlEventsPage'
-import AccessControlVersionsPage from '../pages/access-control-versions/AccessControlVersionsPage'
-import ApiEndpointsPage from '../pages/api-endpoints/ApiEndpointsPage'
-import ApiModelsPage from '../pages/api-models/ApiModelsPage'
-import ApiLearningPage from '../pages/api-learning/ApiLearningPage'
-import ApiParametersPage from '../pages/api-parameters/ApiParametersPage'
-import ApiClassificationsPage from '../pages/api-classifications/ApiClassificationsPage'
-import ApiSensitiveFieldsPage from '../pages/api-sensitive-fields/ApiSensitiveFieldsPage'
-import ApiSpecsPage from '../pages/api-specs/ApiSpecsPage'
-import ApiGraphPage from '../pages/api-graph/ApiGraphPage'
-import ApiTopologyPage from '../pages/api-topology/ApiTopologyPage'
-import ApiFindingsPage from '../pages/api-findings/ApiFindingsPage'
-import ApiShadowZombiePage from '../pages/api-shadow-zombie/ApiShadowZombiePage'
-import ApiPolicyPage from '../pages/api-policy/ApiPolicyPage'
-import SecurityEventsPage from '../pages/security-events/SecurityEventsPage'
-import AccessLogsPage from '../pages/access-logs/AccessLogsPage'
-import EventStatisticsPage from '../pages/event-statistics/EventStatisticsPage'
-import SecurityOverviewPage from '../pages/security-overview/SecurityOverviewPage'
-import AnalyticsPage from '../pages/analytics/AnalyticsPage'
-import SystemAlertsPage from '../pages/system-alerts/SystemAlertsPage'
-import ReportsPage from '../pages/reports/ReportsPage'
-import ReportTemplatesPage from '../pages/report-templates/ReportTemplatesPage'
-import ReportArchivesPage from '../pages/report-archives/ReportArchivesPage'
-import SystemMonitoringPage from '../pages/system-monitoring/SystemMonitoringPage'
-import StoragePage from '../pages/storage/StoragePage'
-import BackupRestorePage from '../pages/backup-restore/BackupRestorePage'
-import SystemUpgradePage from '../pages/system-upgrade/SystemUpgradePage'
-import DeliveryCheckPage from '../pages/delivery-check/DeliveryCheckPage'
-import AssistantPage from '../pages/ai/assistant/AssistantPage'
-import EventAnalysisPage from '../pages/ai/event-analysis/EventAnalysisPage'
-import AttackProfilePage from '../pages/ai/attack-profile/AttackProfilePage'
-import AttackChainPage from '../pages/ai/attack-chain/AttackChainPage'
-import PolicyRecommendationPage from '../pages/ai/policy-recommendation/PolicyRecommendationPage'
-import ReportSummaryPage from '../pages/ai/report-summary/ReportSummaryPage'
-import AiTasksPage from '../pages/ai/tasks/AiTasksPage'
-import NoiseReductionPage from '../pages/ai/noise-reduction/NoiseReductionPage'
-import AiModelsPage from '../pages/ai/admin/models/AiModelsPage'
-import AiAgentsPage from '../pages/ai/admin/agents/AiAgentsPage'
-import AiToolsPage from '../pages/ai/admin/tools/AiToolsPage'
-import AiPromptsPage from '../pages/ai/admin/prompts/AiPromptsPage'
-import AiMemoriesPage from '../pages/ai/admin/memories/AiMemoriesPage'
-import AiUsagePage from '../pages/ai/admin/usage/AiUsagePage'
-import AiAuditsPage from '../pages/ai/admin/audits/AiAuditsPage'
-import AiEvaluationsPage from '../pages/ai/admin/evaluations/AiEvaluationsPage'
-import { ForbiddenPage, NotFoundPage, ServerErrorPage } from '../pages/errors'
-
-function FullScreenLoading() {
-  return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <Spin size="large" tip="加载中..." />
-    </div>
-  )
-}
+import { FullScreenLoading, RequireLicense } from './RequireLicense'
+import { RequireWebWaf } from './RequireWebWaf'
+import { RequireApm } from './RequireApm'
+const AdminLayout = lazy(() => import('../layouts/AdminLayout'))
+const LoginPage = lazy(() => import('../pages/login/LoginPage'))
+const ChangePasswordPage = lazy(() => import('../pages/change-password/ChangePasswordPage'))
+const DashboardPage = lazy(() => import('../pages/dashboard/DashboardPage'))
+const ScreenLobbyPage = lazy(() => import('../pages/big-screen/ScreenLobbyPage'))
+const SecurityPostureScreen = lazy(() => import('../pages/big-screen/SecurityPostureScreen'))
+const AttackMonitorScreen = lazy(() => import('../pages/big-screen/AttackMonitorScreen'))
+const GlobeScreen = lazy(() => import('../pages/big-screen/GlobeScreen'))
+const TrafficAccessScreen = lazy(() => import('../pages/big-screen/TrafficAccessScreen'))
+const ApiSecurityScreen = lazy(() => import('../pages/big-screen/ApiSecurityScreen'))
+const RuntimeOpsScreen = lazy(() => import('../pages/big-screen/RuntimeOpsScreen'))
+const UsersPage = lazy(() => import('../pages/users/UsersPage'))
+const RolesPage = lazy(() => import('../pages/roles/RolesPage'))
+const LoginLogsPage = lazy(() => import('../pages/login-logs/LoginLogsPage'))
+const AuditsPage = lazy(() => import('../pages/audits/AuditsPage'))
+const SystemSettingsPage = lazy(() => import('../pages/system-settings/SystemSettingsPage'))
+const ProfilePage = lazy(() => import('../pages/profile/ProfilePage'))
+const ApplicationsPage = lazy(() => import('../pages/applications/ApplicationsPage'))
+const ApplicationDetailPage = lazy(() => import('../pages/applications/ApplicationDetailPage'))
+const SiteDiscoveryPage = lazy(() => import('../pages/site-discovery/SiteDiscoveryPage'))
+const CertificatesPage = lazy(() => import('../pages/certificates/CertificatesPage'))
+const ConfigPublishPage = lazy(() => import('../pages/config-publish/ConfigPublishPage'))
+const ConfigVersionsPage = lazy(() => import('../pages/config-versions/ConfigVersionsPage'))
+const GatewayStatusPage = lazy(() => import('../pages/gateway-status/GatewayStatusPage'))
+const ProtectionPoliciesPage = lazy(() => import('../pages/protection-policies/ProtectionPoliciesPage'))
+const WafRulesPage = lazy(() => import('../pages/waf-rules/WafRulesPage'))
+const CustomRulesPage = lazy(() => import('../pages/custom-rules/CustomRulesPage'))
+const ExceptionsPage = lazy(() => import('../pages/exceptions/ExceptionsPage'))
+const TrustedProxiesPage = lazy(() => import('../pages/trusted-proxies/TrustedProxiesPage'))
+const AccessRulesPage = lazy(() => import('../pages/access-rules/AccessRulesPage'))
+const L7RulesPage = lazy(() => import('../pages/l7-rules/L7RulesPage'))
+const RateLimitPage = lazy(() => import('../pages/rate-limit/RateLimitPage'))
+const TemporaryBlocksPage = lazy(() => import('../pages/temporary-blocks/TemporaryBlocksPage'))
+const AccessControlEventsPage = lazy(() => import('../pages/access-control-events/AccessControlEventsPage'))
+const AccessControlVersionsPage = lazy(() => import('../pages/access-control-versions/AccessControlVersionsPage'))
+const ApiEndpointsPage = lazy(() => import('../pages/api-endpoints/ApiEndpointsPage'))
+const ApiModelsPage = lazy(() => import('../pages/api-models/ApiModelsPage'))
+const ModelMaturityPage = lazy(() => import('../pages/api-model-maturity/ModelMaturityPage'))
+const ApiIdentityProfilesPage = lazy(() => import('../pages/api-identity-profiles/ApiIdentityProfilesPage'))
+const ApiAccessProfilesPage = lazy(() => import('../pages/api-access-profiles/ApiAccessProfilesPage'))
+const ApiLearningPage = lazy(() => import('../pages/api-learning/ApiLearningPage'))
+const ApiParametersPage = lazy(() => import('../pages/api-parameters/ApiParametersPage'))
+const ApiClassificationsPage = lazy(() => import('../pages/api-classifications/ApiClassificationsPage'))
+const ApiSensitiveFieldsPage = lazy(() => import('../pages/api-sensitive-fields/ApiSensitiveFieldsPage'))
+const ApiSpecsPage = lazy(() => import('../pages/api-specs/ApiSpecsPage'))
+const ApiGraphPage = lazy(() => import('../pages/api-graph/ApiGraphPage'))
+const ApiTopologyPage = lazy(() => import('../pages/api-topology/ApiTopologyPage'))
+const ApiFindingsPage = lazy(() => import('../pages/api-findings/ApiFindingsPage'))
+const ApiShadowZombiePage = lazy(() => import('../pages/api-shadow-zombie/ApiShadowZombiePage'))
+const ApiPolicyPage = lazy(() => import('../pages/api-policy/ApiPolicyPage'))
+const ApiWeaknessesPage = lazy(() => import('../pages/api-weaknesses/ApiWeaknessesPage'))
+const ApiSensitiveTypesPage = lazy(() => import('../pages/api-sensitive-types/ApiSensitiveTypesPage'))
+const ApiMaskingRulesPage = lazy(() => import('../pages/api-masking-rules/ApiMaskingRulesPage'))
+const ApiViolationsPage = lazy(() => import('../pages/api-violations/ApiViolationsPage'))
+const ApiRuntimeEventsPage = lazy(() => import('../pages/api-runtime-events/ApiRuntimeEventsPage'))
+const ApiRuntimePoliciesPage = lazy(() => import('../pages/api-runtime-policies/ApiRuntimePoliciesPage'))
+const ApiAuthzPage = lazy(() => import('../pages/api-authz/ApiAuthzPage'))
+const ApiScanPage = lazy(() => import('../pages/api-scan/ApiScanPage'))
+const ApiPosturePage = lazy(() => import('../pages/api-posture/ApiPosturePage'))
+const ApiAIOpsPage = lazy(() => import('../pages/api-ai-ops/ApiAIOpsPage'))
+const ApiLLMPage = lazy(() => import('../pages/api-llm/ApiLLMPage'))
+const ApiCrossBorderPage = lazy(() => import('../pages/api-cross-border/ApiCrossBorderPage'))
+const ApiServiceAssetsPage = lazy(() => import('../pages/api-service-assets/ApiServiceAssetsPage'))
+const ApiNodesPage = lazy(() => import('../pages/api-nodes/ApiNodesPage'))
+const ApiFileCompliancePage = lazy(() => import('../pages/api-file-compliance/ApiFileCompliancePage'))
+const SecurityEventsPage = lazy(() => import('../pages/security-events/SecurityEventsPage'))
+const RiskIdentitiesPage = lazy(() => import('../pages/risk-identities/RiskIdentitiesPage'))
+const IdentityDetailPage = lazy(() => import('../pages/risk-identities/IdentityDetailPage'))
+const AttackSessionsPage = lazy(() => import('../pages/attack-sessions/AttackSessionsPage'))
+const AttackSessionDetailPage = lazy(() => import('../pages/attack-sessions/AttackSessionDetailPage'))
+const BehaviorPolicyPage = lazy(() => import('../pages/behavior-policy/BehaviorPolicyPage'))
+const RiskPolicyPage = lazy(() => import('../pages/risk-policy/RiskPolicyPage'))
+const AccessLogsPage = lazy(() => import('../pages/access-logs/AccessLogsPage'))
+const EventStatisticsPage = lazy(() => import('../pages/event-statistics/EventStatisticsPage'))
+const SiteAccessTrendsPage = lazy(() => import('../pages/site-access-trends/SiteAccessTrendsPage'))
+const ApmOverviewPage = lazy(() => import('../pages/apm-overview/ApmOverviewPage'))
+const ApmServicesPage = lazy(() => import('../pages/apm-services/ApmServicesPage'))
+const ApmEndpointsPage = lazy(() => import('../pages/apm-endpoints/ApmEndpointsPage'))
+const ApmTracesPage = lazy(() => import('../pages/apm-traces/ApmTracesPage'))
+const ApmAgentsPage = lazy(() => import('../pages/apm-agents/ApmAgentsPage'))
+const ApmSqlPage = lazy(() => import('../pages/apm-sql/ApmSqlPage'))
+const ApmExceptionsPage = lazy(() => import('../pages/apm-exceptions/ApmExceptionsPage'))
+const ApmRuntimePage = lazy(() => import('../pages/apm-runtime/ApmRuntimePage'))
+const ApmDependenciesPage = lazy(() => import('../pages/apm-dependencies/ApmDependenciesPage'))
+const ApmSlosPage = lazy(() => import('../pages/apm-slos/ApmSlosPage'))
+const ApmDiagnosticsPage = lazy(() => import('../pages/apm-diagnostics/ApmDiagnosticsPage'))
+const TrafficAgentsPage = lazy(() => import('../pages/traffic-agents/TrafficAgentsPage'))
+const SecurityOverviewPage = lazy(() => import('../pages/security-overview/SecurityOverviewPage'))
+const AnalyticsPage = lazy(() => import('../pages/analytics/AnalyticsPage'))
+const SystemAlertsPage = lazy(() => import('../pages/system-alerts/SystemAlertsPage'))
+const AlertNotificationsPage = lazy(() => import('../pages/alert-notifications/AlertNotificationsPage'))
+const ReportsPage = lazy(() => import('../pages/reports/ReportsPage'))
+const ReportTemplatesPage = lazy(() => import('../pages/report-templates/ReportTemplatesPage'))
+const ReportArchivesPage = lazy(() => import('../pages/report-archives/ReportArchivesPage'))
+const SystemMonitoringPage = lazy(() => import('../pages/system-monitoring/SystemMonitoringPage'))
+const NodeInterfacesPage = lazy(() => import('../pages/node-interfaces/NodeInterfacesPage'))
+const NetworkConfigPage = lazy(() => import('../pages/network-config/NetworkConfigPage'))
+const HaGroupsPage = lazy(() => import('../pages/ha-groups/HaGroupsPage'))
+const StoragePage = lazy(() => import('../pages/storage/StoragePage'))
+const BackupRestorePage = lazy(() => import('../pages/backup-restore/BackupRestorePage'))
+const SystemUpgradePage = lazy(() => import('../pages/system-upgrade/SystemUpgradePage'))
+const SystemControlPage = lazy(() => import('../pages/system-control/SystemControlPage'))
+const DeliveryCheckPage = lazy(() => import('../pages/delivery-check/DeliveryCheckPage'))
+const AssistantPage = lazy(() => import('../pages/ai/assistant/AssistantPage'))
+const EventAnalysisPage = lazy(() => import('../pages/ai/event-analysis/EventAnalysisPage'))
+const AttackProfilePage = lazy(() => import('../pages/ai/attack-profile/AttackProfilePage'))
+const AttackChainPage = lazy(() => import('../pages/ai/attack-chain/AttackChainPage'))
+const PolicyRecommendationPage = lazy(() => import('../pages/ai/policy-recommendation/PolicyRecommendationPage'))
+const ReportSummaryPage = lazy(() => import('../pages/ai/report-summary/ReportSummaryPage'))
+const AiTasksPage = lazy(() => import('../pages/ai/tasks/AiTasksPage'))
+const NoiseReductionPage = lazy(() => import('../pages/ai/noise-reduction/NoiseReductionPage'))
+const AiModelsPage = lazy(() => import('../pages/ai/admin/models/AiModelsPage'))
+const AiAgentsPage = lazy(() => import('../pages/ai/admin/agents/AiAgentsPage'))
+const AiToolsPage = lazy(() => import('../pages/ai/admin/tools/AiToolsPage'))
+const AiPromptsPage = lazy(() => import('../pages/ai/admin/prompts/AiPromptsPage'))
+const AiMemoriesPage = lazy(() => import('../pages/ai/admin/memories/AiMemoriesPage'))
+const AiUsagePage = lazy(() => import('../pages/ai/admin/usage/AiUsagePage'))
+const AiAuditsPage = lazy(() => import('../pages/ai/admin/audits/AiAuditsPage'))
+const AiEvaluationsPage = lazy(() => import('../pages/ai/admin/evaluations/AiEvaluationsPage'))
+const ForbiddenPage = lazy(() => import('../pages/errors').then((module) => ({ default: module.ForbiddenPage })))
+const NotFoundPage = lazy(() => import('../pages/errors').then((module) => ({ default: module.NotFoundPage })))
+const ServerErrorPage = lazy(() => import('../pages/errors').then((module) => ({ default: module.ServerErrorPage })))
+const LicensePage = lazy(() => import('../pages/license/LicensePage'))
 
 /** 登录守卫：未初始化完成先 Loading；未登录跳登录页；强制改密跳改密页 */
 function RequireAuth({ children }: { children: ReactNode }) {
   const { user, initialized } = useAuthStore()
   const location = useLocation()
   if (!initialized) return <FullScreenLoading />
-  if (!user) return <Navigate to="/login" state={{ from: location.pathname }} replace />
+  if (!user)
+    return <Navigate to="/login" state={{ from: location.pathname }} replace />
   if (user.must_change_password && location.pathname !== '/change-password') {
     return <Navigate to="/change-password" replace />
   }
@@ -95,10 +145,47 @@ function RequireAuth({ children }: { children: ReactNode }) {
 }
 
 /** 权限守卫：无权限跳 403；传入数组时表示拥有任一权限即可 */
-function RequirePermission({ permission, children }: { permission: string | string[]; children: ReactNode }) {
+function RequirePermission({
+  permission,
+  denyAuditOnly = false,
+  children,
+}: {
+  permission: string | string[]
+  denyAuditOnly?: boolean
+  children: ReactNode
+}) {
   const user = useAuthStore((s) => s.user)
   const codes = Array.isArray(permission) ? permission : [permission]
+  const roleCodes = user?.roles.map((role) => role.code) ?? []
+  const auditOnly =
+    roleCodes.includes('AUDIT_ADMIN') &&
+    !roleCodes.some(
+      (code) => code === 'SYSTEM_ADMIN' || code === 'SECURITY_ADMIN',
+    )
+  if (denyAuditOnly && auditOnly) {
+    return <Navigate to="/403" replace />
+  }
   if (!hasAnyPermission(user?.permissions, codes)) {
+    return <Navigate to="/403" replace />
+  }
+  return <>{children}</>
+}
+
+/** 授权有效时要求查看权限；授权失效时保留恢复入口，避免重定向循环。 */
+function RequireLicenseAccess({ children }: { children: ReactNode }) {
+  const user = useAuthStore((s) => s.user)
+  const status = useLicenseStore((s) => s.status)
+  const roleCodes = user?.roles.map((role) => role.code) ?? []
+  const builtInOperator = roleCodes.some(
+    (code) => code === 'SYSTEM_ADMIN' || code === 'SECURITY_ADMIN',
+  )
+  const auditOnly = roleCodes.includes('AUDIT_ADMIN') && !builtInOperator
+  if (
+    status?.valid &&
+    (auditOnly ||
+      (!builtInOperator &&
+        !hasAnyPermission(user?.permissions, ['license.read'])))
+  ) {
     return <Navigate to="/403" replace />
   }
   return <>{children}</>
@@ -114,7 +201,8 @@ function RequireAPIDynamicProtection({ children }: { children: ReactNode }) {
 
 export default function AppRoutes() {
   return (
-    <Routes>
+    <Suspense fallback={<FullScreenLoading />}>
+      <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route
         path="/change-password"
@@ -125,15 +213,104 @@ export default function AppRoutes() {
         }
       />
       <Route
+        path="/big-screen/security-posture"
+        element={
+          <RequireAuth>
+            <RequireLicense>
+              <RequirePermission permission="dashboard.security.read">
+                <SecurityPostureScreen />
+              </RequirePermission>
+            </RequireLicense>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/big-screen/attack-monitor"
+        element={
+          <RequireAuth>
+            <RequireLicense>
+              <RequirePermission
+                permission={['analytics.security.read', 'security_events.read']}
+              >
+                <AttackMonitorScreen />
+              </RequirePermission>
+            </RequireLicense>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/big-screen/globe-attack"
+        element={
+          <RequireAuth>
+            <RequireLicense>
+              <RequirePermission
+                permission={['analytics.security.read', 'security_events.read']}
+              >
+                <GlobeScreen />
+              </RequirePermission>
+            </RequireLicense>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/big-screen/traffic-access"
+        element={
+          <RequireAuth>
+            <RequireLicense>
+              <RequirePermission permission="analytics.security.read">
+                <TrafficAccessScreen />
+              </RequirePermission>
+            </RequireLicense>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/big-screen/api-security"
+        element={
+          <RequireAuth>
+            <RequireLicense>
+              <RequireAPIDynamicProtection>
+                <RequirePermission permission="api_runtime.read">
+                  <ApiSecurityScreen />
+                </RequirePermission>
+              </RequireAPIDynamicProtection>
+            </RequireLicense>
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/big-screen/runtime-ops"
+        element={
+          <RequireAuth>
+            <RequireLicense>
+              <RequirePermission permission="system_health.read">
+                <RuntimeOpsScreen />
+              </RequirePermission>
+            </RequireLicense>
+          </RequireAuth>
+        }
+      />
+      <Route
         path="/"
         element={
           <RequireAuth>
-            <AdminLayout />
+            <RequireLicense>
+              <AdminLayout />
+            </RequireLicense>
           </RequireAuth>
         }
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="big-screen" element={<ScreenLobbyPage />} />
+        <Route
+          path="license"
+          element={
+            <RequireLicenseAccess>
+              <LicensePage />
+            </RequireLicenseAccess>
+          }
+        />
         <Route
           path="applications"
           element={
@@ -147,6 +324,14 @@ export default function AppRoutes() {
           element={
             <RequirePermission permission="applications.read">
               <ApplicationDetailPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="site-discovery"
+          element={
+            <RequirePermission permission="site_discovery.read">
+              <SiteDiscoveryPage />
             </RequirePermission>
           }
         />
@@ -185,32 +370,58 @@ export default function AppRoutes() {
         <Route
           path="protection-policies"
           element={
-            <RequirePermission permission="protection_policies.read">
-              <ProtectionPoliciesPage />
-            </RequirePermission>
+            <RequireWebWaf>
+              <RequirePermission permission="protection_policies.read">
+                <ProtectionPoliciesPage />
+              </RequirePermission>
+            </RequireWebWaf>
           }
         />
         <Route
           path="waf-rules"
           element={
-            <RequirePermission permission="waf_rules.read">
-              <WafRulesPage />
-            </RequirePermission>
+            <RequireWebWaf>
+              <RequirePermission permission="waf_rules.read">
+                <WafRulesPage />
+              </RequirePermission>
+            </RequireWebWaf>
           }
         />
         <Route
           path="custom-rules"
           element={
-            <RequirePermission permission="custom_rules.manage">
-              <CustomRulesPage />
-            </RequirePermission>
+            <RequireWebWaf>
+              <RequirePermission permission="custom_rules.manage">
+                <CustomRulesPage />
+              </RequirePermission>
+            </RequireWebWaf>
           }
         />
         <Route
           path="exceptions"
           element={
-            <RequirePermission permission="exceptions.read">
-              <ExceptionsPage />
+            <RequireWebWaf>
+              <RequirePermission permission="exceptions.read">
+                <ExceptionsPage />
+              </RequirePermission>
+            </RequireWebWaf>
+          }
+        />
+        {/* AI 自动化渗透防护 阶段1：行为检测策略（全局单例） */}
+        <Route
+          path="behavior-policy"
+          element={
+            <RequirePermission permission="behavior_policy.read">
+              <BehaviorPolicyPage />
+            </RequirePermission>
+          }
+        />
+        {/* AI 自动化渗透防护 阶段3：风险策略（全局单例） */}
+        <Route
+          path="risk-policy"
+          element={
+            <RequirePermission permission="risk_policy.read" denyAuditOnly>
+              <RiskPolicyPage />
             </RequirePermission>
           }
         />
@@ -225,51 +436,90 @@ export default function AppRoutes() {
         <Route
           path="access-rules"
           element={
-            <RequirePermission permission="access_rules.read">
-              <AccessRulesPage />
-            </RequirePermission>
+            <RequireWebWaf>
+              <RequirePermission permission="access_rules.read">
+                <AccessRulesPage />
+              </RequirePermission>
+            </RequireWebWaf>
+          }
+        />
+        <Route
+          path="l7-rules"
+          element={
+            <RequireWebWaf>
+              <RequirePermission permission="l7rules.read">
+                <L7RulesPage />
+              </RequirePermission>
+            </RequireWebWaf>
           }
         />
         <Route
           path="rate-limit"
           element={
-            <RequirePermission permission="rate_limits.read">
-              <RateLimitPage />
-            </RequirePermission>
+            <RequireWebWaf>
+              <RequirePermission permission="rate_limits.read">
+                <RateLimitPage />
+              </RequirePermission>
+            </RequireWebWaf>
           }
         />
         <Route
           path="temporary-blocks"
           element={
-            <RequirePermission permission="temporary_blocks.read">
-              <TemporaryBlocksPage />
-            </RequirePermission>
+            <RequireWebWaf>
+              <RequirePermission permission="temporary_blocks.read">
+                <TemporaryBlocksPage />
+              </RequirePermission>
+            </RequireWebWaf>
           }
         />
         <Route
           path="access-control-events"
           element={
-            <RequirePermission permission="access_control_events.read">
-              <AccessControlEventsPage />
-            </RequirePermission>
+            <RequireWebWaf>
+              <RequirePermission permission="access_control_events.read">
+                <AccessControlEventsPage />
+              </RequirePermission>
+            </RequireWebWaf>
           }
         />
         <Route
           path="access-control-versions"
           element={
-            <RequirePermission
-              permission={['access_control_versions.read', 'access_control_versions.rollback']}
-            >
-              <AccessControlVersionsPage />
-            </RequirePermission>
+            <RequireWebWaf>
+              <RequirePermission
+                permission={[
+                  'access_control_versions.read',
+                  'access_control_versions.rollback',
+                ]}
+              >
+                <AccessControlVersionsPage />
+              </RequirePermission>
+            </RequireWebWaf>
           }
         />
         <Route
           path="api-endpoints"
           element={
             <RequireAPIDynamicProtection>
-              <RequirePermission permission={['api_asset.read', 'api_asset.confirm', 'api_asset.edit']}>
+              <RequirePermission
+                permission={[
+                  'api_asset.read',
+                  'api_asset.confirm',
+                  'api_asset.edit',
+                ]}
+              >
                 <ApiEndpointsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-posture"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ApiPosturePage />
               </RequirePermission>
             </RequireAPIDynamicProtection>
           }
@@ -278,8 +528,40 @@ export default function AppRoutes() {
           path="api-models"
           element={
             <RequireAPIDynamicProtection>
-              <RequirePermission permission={['api_model.read', 'api_model.edit']}>
+              <RequirePermission
+                permission={['api_model.read', 'api_model.edit']}
+              >
                 <ApiModelsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-model-maturity"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ModelMaturityPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-identity-profiles"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ApiIdentityProfilesPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-access-profiles"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ApiAccessProfilesPage />
               </RequirePermission>
             </RequireAPIDynamicProtection>
           }
@@ -385,6 +667,146 @@ export default function AppRoutes() {
           }
         />
         <Route
+          path="api-weaknesses"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_weakness.read">
+                <ApiWeaknessesPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-sensitive-types"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_data.read">
+                <ApiSensitiveTypesPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-masking-rules"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_data.read">
+                <ApiMaskingRulesPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-violations"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ApiViolationsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-runtime-events"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ApiRuntimeEventsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-runtime-policies"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_model.read">
+                <ApiRuntimePoliciesPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-authz"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_authorization.read">
+                <ApiAuthzPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-scan"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_scan.read">
+                <ApiScanPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-ai-ops"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_ai.read">
+                <ApiAIOpsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-llm"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ApiLLMPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-cross-border"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_data.read">
+                <ApiCrossBorderPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-service-assets"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_asset.read">
+                <ApiServiceAssetsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-nodes"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_runtime.read">
+                <ApiNodesPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-file-compliance"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_data.read">
+                <ApiFileCompliancePage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
           path="security-events"
           element={
             <RequirePermission permission="security_events.read">
@@ -409,6 +831,170 @@ export default function AppRoutes() {
           }
         />
         <Route
+          path="site-access-trends"
+          element={
+            <RequirePermission permission="analytics.security.read">
+              <SiteAccessTrendsPage />
+            </RequirePermission>
+          }
+        />
+        {/* AI 自动化渗透防护 阶段1：风险身份列表 + 详情 */}
+        <Route
+          path="risk-identities"
+          element={
+            <RequirePermission permission="security_identities.read">
+              <RiskIdentitiesPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="risk-identities/:id"
+          element={
+            <RequirePermission permission="security_identities.read">
+              <IdentityDetailPage />
+            </RequirePermission>
+          }
+        />
+        {/* AI 自动化渗透防护 阶段4：攻击活动列表 + 详情 */}
+        <Route
+          path="attack-sessions"
+          element={
+            <RequirePermission permission="attack_sessions.read" denyAuditOnly>
+              <AttackSessionsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="attack-sessions/:id"
+          element={
+            <RequirePermission permission="attack_sessions.read" denyAuditOnly>
+              <AttackSessionDetailPage />
+            </RequirePermission>
+          }
+        />
+        {/* APM 阶段1（无 Agent 模式）：能力关闭按 404 处理 */}
+        <Route
+          path="apm-overview"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.overview.read">
+                <ApmOverviewPage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        <Route
+          path="apm-services"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.services.read">
+                <ApmServicesPage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        <Route
+          path="apm-endpoints"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.services.read">
+                <ApmEndpointsPage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        <Route
+          path="apm-traces"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.traces.read">
+                <ApmTracesPage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        <Route
+          path="apm-agents"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.agents.manage">
+                <ApmAgentsPage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        {/* WDSP 流量采集 Agent 管理（契约 §4：读 traffic.agents.view，写 traffic.agents.manage） */}
+        <Route
+          path="traffic-agents"
+          element={
+            <RequirePermission permission="traffic.agents.view" denyAuditOnly>
+              <TrafficAgentsPage />
+            </RequirePermission>
+          }
+        />
+        {/* APM 阶段3：SQL / 异常 / 运行时 / 依赖 / SLO（同样受 apm_enabled 门控） */}
+        <Route
+          path="apm-sql"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.sql.read">
+                <ApmSqlPage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        <Route
+          path="apm-exceptions"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.traces.read">
+                <ApmExceptionsPage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        <Route
+          path="apm-runtime"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.runtime.read">
+                <ApmRuntimePage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        <Route
+          path="apm-dependencies"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.services.read">
+                <ApmDependenciesPage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        <Route
+          path="apm-slos"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.overview.read">
+                <ApmSlosPage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        {/* APM 阶段4：诊断中心（深度诊断会话 + 全局 kill switch，受 apm_enabled 门控） */}
+        <Route
+          path="apm-diagnostics"
+          element={
+            <RequireApm>
+              <RequirePermission permission="apm.diagnostics.manage">
+                <ApmDiagnosticsPage />
+              </RequirePermission>
+            </RequireApm>
+          }
+        />
+        <Route
           path="security-overview"
           element={
             <RequirePermission permission="dashboard.security.read">
@@ -419,7 +1005,12 @@ export default function AppRoutes() {
         <Route
           path="analytics"
           element={
-            <RequirePermission permission={['analytics.security.read', 'analytics.disposition.read']}>
+            <RequirePermission
+              permission={[
+                'analytics.security.read',
+                'analytics.disposition.read',
+              ]}
+            >
               <AnalyticsPage />
             </RequirePermission>
           }
@@ -428,7 +1019,11 @@ export default function AppRoutes() {
           path="system-alerts"
           element={
             <RequirePermission
-              permission={['system_alerts.read', 'system_alerts.read_security', 'system_alerts.read_audit']}
+              permission={[
+                'system_alerts.read',
+                'system_alerts.read_security',
+                'system_alerts.read_audit',
+              ]}
             >
               <SystemAlertsPage />
             </RequirePermission>
@@ -437,7 +1032,9 @@ export default function AppRoutes() {
         <Route
           path="reports"
           element={
-            <RequirePermission permission={['reports.read', 'reports.read_audit']}>
+            <RequirePermission
+              permission={['reports.read', 'reports.read_audit']}
+            >
               <ReportsPage />
             </RequirePermission>
           }
@@ -453,7 +1050,9 @@ export default function AppRoutes() {
         <Route
           path="report-archives"
           element={
-            <RequirePermission permission={['reports.read', 'reports.read_audit']}>
+            <RequirePermission
+              permission={['reports.read', 'reports.read_audit']}
+            >
               <ReportArchivesPage />
             </RequirePermission>
           }
@@ -463,6 +1062,30 @@ export default function AppRoutes() {
           element={
             <RequirePermission permission="system_health.read">
               <SystemMonitoringPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="node-interfaces"
+          element={
+            <RequirePermission permission="system_health.read">
+              <NodeInterfacesPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="network-config"
+          element={
+            <RequirePermission permission="system_health.read">
+              <NetworkConfigPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="ha-groups"
+          element={
+            <RequirePermission permission="ha.read">
+              <HaGroupsPage />
             </RequirePermission>
           }
         />
@@ -491,10 +1114,32 @@ export default function AppRoutes() {
           }
         />
         <Route
+          path="system-control"
+          element={
+            <RequirePermission
+              permission={[
+                'system.reboot',
+                'system.shutdown',
+                'system.factory_reset',
+              ]}
+            >
+              <SystemControlPage />
+            </RequirePermission>
+          }
+        />
+        <Route
           path="delivery-check"
           element={
             <RequirePermission permission="delivery_checks.read">
               <DeliveryCheckPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="alert-notifications"
+          element={
+            <RequirePermission permission="notification.read">
+              <AlertNotificationsPage />
             </RequirePermission>
           }
         />
@@ -583,7 +1228,9 @@ export default function AppRoutes() {
         <Route
           path="ai/report-summary"
           element={
-            <RequirePermission permission={['ai.report_summary.use', 'ai.root_cause.use']}>
+            <RequirePermission
+              permission={['ai.report_summary.use', 'ai.root_cause.use']}
+            >
               <ReportSummaryPage />
             </RequirePermission>
           }
@@ -599,7 +1246,12 @@ export default function AppRoutes() {
         <Route
           path="ai/noise-reduction"
           element={
-            <RequirePermission permission={['ai.noise_reduction.use', 'ai.noise_reduction.manage']}>
+            <RequirePermission
+              permission={[
+                'ai.noise_reduction.use',
+                'ai.noise_reduction.manage',
+              ]}
+            >
               <NoiseReductionPage />
             </RequirePermission>
           }
@@ -664,7 +1316,13 @@ export default function AppRoutes() {
         <Route
           path="ai/admin/evaluations"
           element={
-            <RequirePermission permission={['ai.evaluations.run', 'ai.usage.read', 'ai.audits.read']}>
+            <RequirePermission
+              permission={[
+                'ai.evaluations.run',
+                'ai.usage.read',
+                'ai.audits.read',
+              ]}
+            >
               <AiEvaluationsPage />
             </RequirePermission>
           }
@@ -673,6 +1331,7 @@ export default function AppRoutes() {
       <Route path="/403" element={<ForbiddenPage />} />
       <Route path="/500" element={<ServerErrorPage />} />
       <Route path="*" element={<NotFoundPage />} />
-    </Routes>
+      </Routes>
+    </Suspense>
   )
 }

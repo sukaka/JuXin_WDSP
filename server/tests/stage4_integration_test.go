@@ -223,18 +223,18 @@ func TestStage4SysAdminCannotManagePolicies(t *testing.T) {
 	}
 }
 
-// TestStage4AuditAdminReadOnly 审计管理员只读。
+// TestStage4AuditAdminReadOnly 审计管理员（000100 收紧为纯审计角色）：策略/规则/事件读写均无权限。
 func TestStage4AuditAdminReadOnly(t *testing.T) {
 	env := setupTestEnv(t)
 	env.createUserDirect(t, "audit_s4", "AuditS4@Test2026!", "AUDIT_ADMIN")
 	cookies, csrf := env.login(t, "audit_s4", "AuditS4@Test2026!")
 
-	// 可读策略/规则/事件
+	// 纯审计角色不再持有 waf_policies/waf_rules/security_events 读权限点 → 403
 	for _, path := range []string{"/api/v1/protection-policies", "/api/v1/waf-rules", "/api/v1/security-events"} {
 		resp := env.get(t, path, cookies)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("audit admin GET %s status = %d, want 200", path, resp.StatusCode)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("audit admin GET %s status = %d, want 403", path, resp.StatusCode)
 		}
 	}
 	// 不可创建策略

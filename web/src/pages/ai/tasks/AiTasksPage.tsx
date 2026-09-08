@@ -155,6 +155,10 @@ export default function AiTasksPage() {
             columns={columns}
             dataSource={listQuery.data?.items}
             scroll={{ x: 1100 }}
+            onRow={(record) => ({
+              onDoubleClick: () => setSelectedId(record.id),
+              style: { cursor: 'pointer' },
+            })}
             pagination={{
               current: page,
               pageSize,

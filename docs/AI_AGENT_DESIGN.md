@@ -141,7 +141,7 @@ DB 启停检查（ai_tools.status）→ 权限点校验（RequiredPermission，�
 
 ### 4.3 标识提取（ExtractIDs）
 
-`ExtractIDs` 从消息文本提取三类标识作为 Agent 输入：UUID（事件 ID/Request ID，≤5）、规则 ID（`91-96` 开头 6 位、`7100xx`、`8000xx` 开头 7 位号段，≤5）、IPv4（逐段数值校验，≤5）。一次性分析端点（`analyze_handler.go`）把事件 ID/规则 ID/IP 拼进模板消息，同样经 `ExtractIDs` 进入 Agent。
+`ExtractIDs` 从消息文本提取三类标识作为 Agent 输入：UUID（事件 ID/Request ID，≤5）、规则 ID（`91-96` 开头 6 位、`7100xx`、`8000xx` 开头 7 位号段，≤5）、IPv4（逐段数值校验，≤5）。一次性分析API（`analyze_handler.go`）把事件 ID/规则 ID/IP 拼进模板消息，同样经 `ExtractIDs` 进入 Agent。
 
 ### 4.4 执行限制与降级
 

@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: multipart/form-data 缺失 boundary 参数检测（链式规则，自建规则 1001315）
+rule_id: 1001315
+tests:
+  - test_id: 1
+    desc: "Content-Type 为 multipart/form-data;（尾分号无 boundary）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data;"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001315]
+  - test_id: 2
+    desc: "Content-Type 为 multipart/form-data（光秃秃无参数）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001315]

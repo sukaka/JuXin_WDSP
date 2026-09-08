@@ -120,7 +120,7 @@ export default function SystemAlertsPage() {
       render: (v: string) => COMPONENT_NAME_META[v] ?? v,
     },
     { title: '标题', dataIndex: 'title', ellipsis: true },
-    { title: '次数', dataIndex: 'occurrence_count', width: 70, align: 'right' },
+    { title: '次数', dataIndex: 'occurrence_count', width: 70 },
     {
       title: '状态',
       dataIndex: 'status',
@@ -222,6 +222,10 @@ export default function SystemAlertsPage() {
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailId(record.id),
+            style: { cursor: 'pointer' },
+          })}
           scroll={{ x: 1200 }}
           pagination={{
             current: page,

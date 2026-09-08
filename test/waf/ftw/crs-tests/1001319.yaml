@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: Content-Disposition 无引号 filename 脚本扩展名检测（解析差异，自建规则 1001319）
+rule_id: 1001319
+tests:
+  - test_id: 1
+    desc: "multipart part 头 filename=evil.asmx（无引号 token 形态）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb319"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb319\r\nContent-Disposition: form-data; name=\"file\"; filename=evil.asmx\r\n\r\nx\r\n--jzb319--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001319]
+  - test_id: 2
+    desc: "multipart part 头 filename=cmd.war（无引号，后随其他参数）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb319"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb319\r\nContent-Disposition: form-data; name=\"file\"; filename=cmd.war; x=1\r\n\r\nx\r\n--jzb319--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001319]

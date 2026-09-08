@@ -227,6 +227,10 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 		slog.Info("guard event log rotated, resetting offset",
 			"collector", c.collectorID, "old_offset", offset, "new_size", info.Size())
 		offset = 0
+		// 立即落断点（空前缀指纹）：文件截断为空期间若无新内容，断点不前进会导致每轮采集重复判定轮转刷日志
+		if err := c.saveCheckpoint(checkpoint{Offset: 0, Inode: currentInode}); err != nil {
+			slog.Warn("save checkpoint after rotation failed", "collector", c.collectorID, "error", err)
+		}
 	}
 	if info.Size() == offset {
 		return 0, nil // 无新内容

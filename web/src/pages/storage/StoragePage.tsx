@@ -1,7 +1,8 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, Col, Progress, Row, Space, Statistic } from 'antd'
 import SmartTable from '../../components/SmartTable'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import type { EChartOption } from '../../components/EChart'
 import { systemHealthApi } from '../../api/systemHealth'
 import EChart from '../../components/EChart'
@@ -20,6 +21,8 @@ export default function StoragePage() {
     queryFn: () => systemHealthApi.storage(),
     refetchInterval: 60000,
   })
+
+  const [detailRecord, setDetailRecord] = useState<{ name: string; size_bytes: number } | null>(null)
 
   const s = storageQuery.data
   const partitions = useMemo(
@@ -112,7 +115,11 @@ export default function StoragePage() {
             <Col xs={24} lg={12}>
               <Card size="small" title="事件分区 TOP10">
                 {partitions.length > 0 ? (
-                  <EChart option={partitionOption} height={Math.max(240, partitions.length * 32)} />
+                  <EChart
+                    option={partitionOption}
+                    height={Math.max(240, partitions.length * 32)}
+                    ariaLabel="事件分区占用 TOP10"
+                  />
                 ) : (
                   <Space style={{ padding: 24 }}>暂无分区数据</Space>
                 )}
@@ -127,13 +134,16 @@ export default function StoragePage() {
                   pagination={false}
                   loading={storageQuery.isLoading}
                   dataSource={partitions}
+                  onRow={(record) => ({
+                    onDoubleClick: () => setDetailRecord(record),
+                    style: { cursor: 'pointer' },
+                  })}
                   columns={[
                     { title: '分区', dataIndex: 'name', ellipsis: true },
                     {
                       title: '大小',
                       dataIndex: 'size_bytes',
                       width: 120,
-                      align: 'right',
                       render: (v: number) => formatBytes(v),
                     },
                   ]}
@@ -143,6 +153,12 @@ export default function StoragePage() {
           </Row>
         </Space>
       )}
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="分区详情"
+        record={detailRecord}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

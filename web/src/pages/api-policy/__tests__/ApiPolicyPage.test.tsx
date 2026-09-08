@@ -87,7 +87,7 @@ describe('ApiPolicyPage', () => {
     renderPage()
     expect(await screen.findByText('观察')).toBeInTheDocument()
     expect(screen.getByText('数据库')).toBeInTheDocument()
-    expect(screen.getByText('ENTERPRISE')).toBeInTheDocument()
+    expect(screen.getByText('企业版')).toBeInTheDocument()
     expect(screen.getByText('已启用')).toBeInTheDocument()
     expect(screen.getByText('1.00 MB')).toBeInTheDocument()
     expect(screen.getByText('64.0 KB')).toBeInTheDocument()

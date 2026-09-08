@@ -306,6 +306,10 @@ export default function PolicyRecommendationPage() {
               columns={draftColumns}
               dataSource={draftsQuery.data?.items}
               scroll={{ x: 1000 }}
+              onRow={(record) => ({
+                onDoubleClick: () => setSelectedDraftId(record.id),
+                style: { cursor: 'pointer' },
+              })}
               pagination={{
                 current: draftPage,
                 pageSize: draftPageSize,

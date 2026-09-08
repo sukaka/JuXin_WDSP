@@ -53,7 +53,7 @@ func (h *TestHandler) Test(w http.ResponseWriter, r *http.Request) {
 	if result.ErrorCode == "SSRF_BLOCKED" {
 		risk = audits.RiskMedium
 	}
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:       &p.UserID,
 		Username:     p.Username,
 		SourceIP:     middleware.RemoteIP(r),

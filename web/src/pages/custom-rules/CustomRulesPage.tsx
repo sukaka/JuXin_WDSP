@@ -23,6 +23,7 @@ import { customRulesApi } from '../../api/customRules'
 import type { CustomRuleBody } from '../../api/customRules'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
 import {
@@ -124,6 +125,13 @@ export default function CustomRulesPage() {
   const listQuery = useQuery({
     queryKey: ['custom-rules', filters, page, pageSize],
     queryFn: () => customRulesApi.list({ ...filters, page, page_size: pageSize }),
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<CustomRuleItem>({
+    remove: (id) => customRulesApi.remove(id),
+    invalidateKeys: [['custom-rules']],
+    entityName: '自定义规则',
+    canDelete: canManage,
   })
 
   const detailQuery = useQuery({
@@ -246,7 +254,16 @@ export default function CustomRulesPage() {
       dataIndex: 'name',
       width: 200,
       ellipsis: true,
-      render: (v: string, record) => <a onClick={() => setDetailId(record.id)}>{v}</a>,
+      render: (v: string, record) => (
+        <Button
+          type="link"
+          size="small"
+          style={{ padding: 0, height: 'auto' }}
+          onClick={() => setDetailId(record.id)}
+        >
+          {v}
+        </Button>
+      ),
     },
     {
       title: '攻击类型',
@@ -472,6 +489,7 @@ export default function CustomRulesPage() {
             setPage(1)
           }}
         />
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -485,9 +503,14 @@ export default function CustomRulesPage() {
         <SmartTable<CustomRuleItem>
           storageKey="custom-rules"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailId(record.id),
+            style: { cursor: 'pointer' },
+          })}
           scroll={{ x: 1100 }}
           pagination={{
             current: page,

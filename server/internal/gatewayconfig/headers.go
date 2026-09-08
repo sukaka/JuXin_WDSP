@@ -152,15 +152,22 @@ func buildHeaderHandler(cfg *AppHeaderConfig) mapT {
 }
 
 // applyProxyOptions 把头合规中的代理配置应用到 reverse_proxy（header_up 与响应缓冲）。
+// X-Forwarded-For 上一跳覆盖默认开启（LOW-G3）：jiuzhang_guard 在处理器链前置位已将
+// RemoteAddr 改写为已解析的真实客户端 IP，{http.request.remote.host} 即真实 IP——默认
+// 覆盖客户端伪造的 XFF 左端；仅当存在头合规配置记录且显式 xff_overwrite=false 时保留
+// 入站原值（BYPASS/可信 LB 后需保留 XFF 链的场景须显式关闭）。
 func applyProxyOptions(proxy mapT, cfg *AppHeaderConfig) mapT {
-	if cfg == nil {
-		return proxy
-	}
 	set := map[string][]string{}
 	add := map[string][]string{}
 	del := []string{}
-	if cfg.XffOverwrite {
+	if cfg == nil || cfg.XffOverwrite {
 		set["X-Forwarded-For"] = []string{"{http.request.remote.host}"}
+	}
+	if cfg == nil {
+		if len(set) > 0 {
+			proxy["headers"] = mapT{"request": mapT{"set": set}}
+		}
+		return proxy
 	}
 	if cfg.HostStripPort {
 		set["Host"] = []string{"{http.request.host}"}
@@ -225,6 +232,9 @@ func pathRouteEntries(in GenerateInput, app AppData, hosts []string, publicPort 
 		upstream := applications.Upstream{
 			Scheme: pr.UpstreamScheme, NormalizedHost: pr.UpstreamHost, Port: pr.UpstreamPort,
 			Status: "ACTIVE",
+			// 路径转发无逐路由证书校验开关，跟随应用源站字段的库默认（tls_verify DEFAULT TRUE）：
+			// https 回源默认校验证书（SNI/证名取源站主机名，见 buildReverseProxy）
+			TLSVerify: true,
 		}
 		proxy := applyProxyOptions(buildReverseProxy([]applications.Upstream{upstream}), app.HeaderConfig)
 		handles := buildChainHandles(in, app, proxy, publicPort)
@@ -252,25 +262,31 @@ func pathRouteEntries(in GenerateInput, app AppData, hosts []string, publicPort 
 
 // buildChainHandles 构建除反代外的通用处理链（RequestID → guard → WAF → 安全响应头）。
 // 供默认路由与路径转发路由复用；反代由调用方按路由目标构建并追加。
+// BYPASS（数据透传）模式不注入 guard 与 waf 处理器，仅保留 RequestID、安全响应头与反代。
 func buildChainHandles(in GenerateInput, app AppData, proxy mapT, publicPort int) []interface{} {
 	var handles []interface{}
+	// RequestID 请求头（供 WAF 日志与阻断页关联）；响应侧同步输出 X-Jiuzhang-Request-ID，
+	// 使正常响应（含 BYPASS 透传链）也携带请求 ID，便于客户端与日志对账。
 	handles = append(handles, mapT{
 		"handler": "headers",
 		"request": mapT{"set": mapT{"X-Request-Id": []string{"{http.request.uuid}"}},
 			"delete": []string{}},
+		"response": mapT{"set": mapT{"X-Jiuzhang-Request-ID": []string{"{http.request.header.X-Request-Id}"}}},
 	})
-	if in.Guard != nil {
-		handles = append(handles, buildGuardHandler(in.Guard, app, publicPort))
+	if app.ProtectionMode != applications.ModeBypass {
+		if in.Guard != nil {
+			handles = append(handles, buildGuardHandler(in.Guard, app, publicPort))
+		}
+		ruleEngine := modeToRuleEngine[app.ProtectionMode]
+		if ruleEngine == "" {
+			ruleEngine = "DetectionOnly"
+		}
+		directives := buildWAFDirectivesWithPolicy(ruleEngine, app, in.Exceptions, in.CustomRules, app.RuleOverrideSecLang)
+		handles = append(handles, mapT{
+			"handler":    "waf",
+			"directives": directives,
+		})
 	}
-	ruleEngine := modeToRuleEngine[app.ProtectionMode]
-	if ruleEngine == "" {
-		ruleEngine = "DetectionOnly"
-	}
-	directives := buildWAFDirectivesWithPolicy(ruleEngine, app, in.Exceptions, in.CustomRules, app.RuleOverrideSecLang)
-	handles = append(handles, mapT{
-		"handler":    "waf",
-		"directives": directives,
-	})
 	handles = append(handles, buildHeaderHandler(app.HeaderConfig))
 	handles = append(handles, proxy)
 	return handles

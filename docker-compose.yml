@@ -2,6 +2,8 @@ name: jiuzhang-waf
 
 services:
   postgres:
+    # multi-arch index digest（含 amd64 + arm64）；Docker 按宿主机/--platform 自动选层。
+    # 海光 C86、兆芯 KX/KH 走 amd64。详见 docs/DEPENDENCIES.md「多架构镜像锁定」。
     image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
     container_name: jiuzhang-postgres
     restart: unless-stopped
@@ -25,6 +27,8 @@ services:
       - jiuzhang-internal
 
   valkey:
+    # multi-arch index digest（含 amd64 + arm64）；Docker 按宿主机/--platform 自动选层。
+    # 海光 C86、兆芯 KX/KH 走 amd64。详见 docs/DEPENDENCIES.md「多架构镜像锁定」。
     image: valkey/valkey:8.1.8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
     container_name: jiuzhang-valkey
     restart: unless-stopped

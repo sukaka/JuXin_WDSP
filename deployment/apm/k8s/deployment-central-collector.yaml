@@ -1,0 +1,246 @@
+# 九章 APM 阶段5 —— K8s 形态：中央 Collector 双层部署（设计 §13.2/§19.3/§19.4）
+# 适配版本：otel/opentelemetry-collector-contrib:0.154.0（tag + digest 锁定，
+#   与 docs/DEPENDENCIES.md 同一值）。
+#
+# 拓扑（tail sampling 多实例硬约束的实现）：
+#   本地 Collector/Agent ──mTLS──► Service apm-central-router（ClusterIP，上行入口）
+#        │                         Deployment apm-central-router ×2（无状态路由层）
+#        │                           loadbalancing exporter：traces 按 traceID 一致性哈希、
+#        │                           metrics 按 service.name 哈希；DNS 解析器 10s 重解析
+#        │                         ▼（经 headless Service 解析全部 Pod IP）
+#        │                    Deployment apm-central-sampler ×2（tail_sampling/二层脱敏/写库）
+#        ▼
+#   ClickHouse（需在同命名空间提供名为 clickhouse 的 Service——ClusterIP 指向 CH 副本
+#   LB 或任一健康副本；central-gateway.yaml 写库地址固定 tcp://clickhouse:9000）
+#
+# 配置单一事实来源（不内嵌复制，避免漂移）：
+#   kubectl create namespace jiuzhang-apm
+#   kubectl -n jiuzhang-apm create configmap apm-central-collector-config \
+#     --from-file=central-router.yaml=../collector/central-router.yaml \
+#     --from-file=central-gateway.yaml=../collector/central-gateway.yaml
+#   kubectl -n jiuzhang-apm create secret generic apm-central-tls \
+#     --from-file=server.crt=../pki/server.crt --from-file=server.key=../pki/server.key \
+#     --from-file=client.crt=../pki/client.crt --from-file=client.key=../pki/client.key \
+#     --from-file=ca.crt=../pki/ca.crt
+#   kubectl -n jiuzhang-apm create secret generic apm-clickhouse-writer \
+#     --from-literal=user=apm_writer --from-literal=password='<强随机>'
+# 部署纪律（与 compose HA 形态相同，违反即破坏尾采样正确性）：
+#   - 上行只对接 apm-central-router Service；禁止绕过路由层直连 sampler Pod；
+#   - router 与 sampler 证书 SAN 须覆盖各自 Service 名（私有 CA 签发时登记）。
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apm-central-router
+  namespace: jiuzhang-apm
+  labels:
+    app.kubernetes.io/part-of: jiuzhang-apm
+    app.kubernetes.io/component: central-router
+spec:
+  replicas: 2
+  # required 反亲和下滚动发布必须 maxSurge=0（新 Pod 无法与同节点旧 Pod 共存）
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 0, maxUnavailable: 1}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: central-router
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: jiuzhang-apm
+        app.kubernetes.io/component: central-router
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8888"
+    spec:
+      # 跨节点反亲和（硬约束）：集群节点数 < 副本数时应放宽为
+      # preferredDuringSchedulingIgnoredDuringExecution，否则 Pod Pending。
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: central-router
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.154.0@sha256:b3079f45e19bdb7326bf49cdddce6cf60dfd865138db39f2733ea48ab17bc4cb
+          args: ["--config=/etc/otelcol-contrib/central-router.yaml"]
+          env:
+            # loadbalancing DNS 解析目标：headless Service 短名（同命名空间），
+            # 返回全部 sampler Pod IP（K8s 等价于 compose 形态的 collector-sampler 别名）
+            - name: LB_DNS_HOSTNAME
+              value: apm-central-sampler-headless
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - {name: otlp-grpc, containerPort: 4317, protocol: TCP}
+            - {name: otlp-http, containerPort: 4318, protocol: TCP}
+            - {name: metrics, containerPort: 8888, protocol: TCP}
+            - {name: health, containerPort: 13133, protocol: TCP}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 1Gi}   # 路由层无采样状态（memory_limiter 75%+20% 基线）
+          readinessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol-contrib, readOnly: true}
+            - {name: tls, mountPath: /etc/jiuzhang-apm/tls, readOnly: true}
+      volumes:
+        - name: config
+          configMap:
+            name: apm-central-collector-config
+        - name: tls
+          secret:
+            secretName: apm-central-tls
+            defaultMode: 0640
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: apm-central-router
+  namespace: jiuzhang-apm
+spec:
+  minAvailable: 1              # 驱逐窗口内至少保留 1 个路由实例
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: central-router
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apm-central-router
+  namespace: jiuzhang-apm
+  labels:
+    app.kubernetes.io/part-of: jiuzhang-apm
+    app.kubernetes.io/component: central-router
+spec:
+  type: ClusterIP              # 跨集群上行经 L4 LB/Ingress 时须 mTLS 透传（勿做 TLS 终结）
+  selector:
+    app.kubernetes.io/component: central-router
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: 4317, protocol: TCP}
+    - {name: otlp-http, port: 4318, targetPort: 4318, protocol: TCP}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apm-central-sampler
+  namespace: jiuzhang-apm
+  labels:
+    app.kubernetes.io/part-of: jiuzhang-apm
+    app.kubernetes.io/component: central-sampler
+spec:
+  replicas: 2                  # 尾采样决策层副本数；扩缩容后 router 经 DNS 10s 内收敛
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 0, maxUnavailable: 1}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: central-sampler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: jiuzhang-apm
+        app.kubernetes.io/component: central-sampler
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8888"
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: central-sampler
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.154.0@sha256:b3079f45e19bdb7326bf49cdddce6cf60dfd865138db39f2733ea48ab17bc4cb
+          args: ["--config=/etc/otelcol-contrib/central-gateway.yaml"]
+          env:
+            - name: CLICKHOUSE_APM_WRITER_USER
+              valueFrom:
+                secretKeyRef: {name: apm-clickhouse-writer, key: user}
+            - name: CLICKHOUSE_APM_WRITER_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: apm-clickhouse-writer, key: password}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            # 不暴露 Service 上行入口；4317/4318 仅经 headless Service 供 router 路由
+            - {name: otlp-grpc, containerPort: 4317, protocol: TCP}
+            - {name: otlp-http, containerPort: 4318, protocol: TCP}
+            - {name: metrics, containerPort: 8888, protocol: TCP}
+            - {name: health, containerPort: 13133, protocol: TCP}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 2Gi}   # 与单副本形态一致（tail_sampling num_traces=100000 基线）
+          readinessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol-contrib, readOnly: true}
+            - {name: tls, mountPath: /etc/jiuzhang-apm/tls, readOnly: true}
+      volumes:
+        - name: config
+          configMap:
+            name: apm-central-collector-config
+        - name: tls
+          secret:
+            secretName: apm-central-tls
+            defaultMode: 0640
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: apm-central-sampler
+  namespace: jiuzhang-apm
+spec:
+  minAvailable: 1              # 驱逐窗口内至少保留 1 个采样实例（存活实例仍按 traceID 路由决策）
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: central-sampler
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apm-central-sampler-headless
+  namespace: jiuzhang-apm
+  labels:
+    app.kubernetes.io/part-of: jiuzhang-apm
+    app.kubernetes.io/component: central-sampler
+spec:
+  clusterIP: None              # headless：DNS 返回全部就绪 Pod IP，供 loadbalancing 解析器发现后端
+  selector:
+    app.kubernetes.io/component: central-sampler
+  ports:
+    - {name: otlp-grpc, port: 4317, targetPort: 4317, protocol: TCP}

@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -27,6 +28,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/pipeline"
@@ -118,12 +120,19 @@ func (g *Guard) serveNext(w http.ResponseWriter, r *http.Request, next caddyhttp
 		injectTraceparent(traceContextFrom(r.Context()), r)
 	}
 	handler := func(w http.ResponseWriter, r *http.Request) error {
+		// JWT 信任链强制处置（WDSP P0-03）：执行点在 API 动态管线阶段——serveNext
+		// 是所有放行出口（保护地址旁路/白名单/L7 allow/常规链路）的唯一汇合点，
+		// 白名单/L7 allow 不绕过 JWT PROTECT（安全底线）；VERIFIED 不产生全局放行，
+		// 继续 API 管线与 WAF 等后续检测。处置表见 jwt_trust.go enforceJWTTrust。
+		if handled, err := g.enforceJWTTrust(w, r); handled {
+			return err
+		}
 		if !g.APIDynamicProtection {
 			return next.ServeHTTP(w, r)
 		}
 		// 同凭据并发记账：入口 +1、出口（检测+下游转发全程结束）-1；匿名不跟踪。
 		// pipeline 无请求生命周期钩子，serveNext 放行链路是最接近的真实 in-flight 埋点。
-		_, release := detectors.AcquireCredentialInFlight(detectors.CredentialKey(r, g.IdentitySalt))
+		_, release := detectors.AcquireCredentialInFlightWithStores(detectors.CredentialKey(r, g.IdentitySalt), g.behaviorStores)
 		defer release()
 		return g.serveAPIProtected(w, r, next)
 	}
@@ -177,6 +186,7 @@ func (g *Guard) serveAPIProtected(w http.ResponseWriter, r *http.Request, next c
 // nextErr 非 nil 时跳过响应相位与写回（错误页由 Caddy 错误处理流程写），事件按已捕获状态尽力输出；
 // 其中 Coraza 阻断中断（coraza-caddy 哨兵错误）经 attributeWAFIntercept 归因补记（见 apicoraza.go）。
 func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture, r *http.Request, res *pipeline.Result, start time.Time, nextErr error) {
+	dispo := DispositionFrom(r.Context())
 	status, kind := cw.outcome()
 	latency := time.Since(start).Milliseconds()
 	tail := &apiEventTail{status: status, latencyMS: latency}
@@ -190,6 +200,16 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 			if tail.status == 0 {
 				tail.status = code
 			}
+			// P0-04：WAF 终止事实（同步仅知 executor+status；规则明细由 eventparser
+			// 从审计日志异步补全 → PENDING_CORRELATION；cw.status!=0 表示中断码已先行写出）
+			if txID, _, ok := corazaInterruption(nextErr); ok && txID != "" {
+				dispo.AddEvidenceRef(txID)
+			}
+			dispo.RecordTerminal(ExecutorWAF, DisActionBlock, code, cw.status != 0, []string{"WAF_INTERCEPT"}, nil)
+			dispo.NotePendingCorrelation()
+		} else {
+			// 非 WAF 归因的下游错误（反代 502 等）：ERROR，不硬映射 BLOCK（契约 §2 纪律）
+			dispo.RecordError(ExecutorAPI, "downstream error: request did not complete normally")
 		}
 		g.emitAPIEvent(r, res, tail)
 		return
@@ -197,6 +217,7 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 
 	// 连接劫持：响应已脱离捕获，尽力输出事件（状态码可能为 0 = 未采集到）
 	if kind == outcomeHijacked {
+		dispo.RecordOrigin(cw.status, true)
 		g.emitAPIEvent(r, res, tail)
 		return
 	}
@@ -213,18 +234,31 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		})
 		g.writeFailClosedResponse(w, res.Context.RequestID)
 		tail.status = http.StatusInternalServerError
+		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusInternalServerError, true,
+			[]string{"RESPONSE_FAIL_CLOSED"}, []string{"api_response:response.fail_closed"})
 		g.emitAPIEvent(r, res, tail)
 		return
 	}
 
 	// 响应相位（统一引擎）：JSON 解析/敏感字段/错误签名/transform plan + 响应相位决策
+	// BodySize 口径（code-review LOW-G10）：溢出（spill）时已缓冲前缀经 bytesStreamed
+	// 外发记账，body.Len() 不再重复计入；未溢出缓冲路径 bytesStreamed=0，取缓冲全长
+	bodySize := cw.bytesStreamed
+	if !cw.spilled {
+		bodySize += int64(cw.body.Len())
+	}
 	respIn := pipeline.ResponseInput{
-		Status:      status,
-		Headers:     redactResponseHeaders(cw.base.Header()),
-		BodySize:    int64(cw.body.Len()) + cw.bytesStreamed,
-		Truncated:   cw.spilled,
-		Streamed:    kind == outcomeStreamed,
-		ContentType: cw.base.Header().Get("Content-Type"),
+		Status:  status,
+		Headers: redactResponseHeaders(cw.base.Header()),
+		// ContentDisposition 取截断/脱敏前的原始头值（code-review HIGH-6）：Headers 快照
+		// 单值按 256 字节截断，超长 Content-Disposition 经快照解析必然失败，下载观测与
+		// 下载方向合规评估随之静默缺失——文件观测必须走原始值通道（不落事件，
+		// 观测落库的 FileName 仍由引擎侧截断 128）
+		ContentDisposition: cw.base.Header().Get("Content-Disposition"),
+		BodySize:           bodySize,
+		Truncated:          cw.spilled,
+		Streamed:           kind == outcomeStreamed,
+		ContentType:        cw.base.Header().Get("Content-Type"),
 	}
 	if kind == outcomeBuffered {
 		respIn.Body = cw.body.Bytes()
@@ -267,6 +301,8 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		if kind == outcomeBuffered {
 			g.writeFileComplianceBlockedResponse(w, res.Context.RequestID)
 			tail.status = http.StatusForbidden
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
+				[]string{"FILE_COMPLIANCE_DOWNLOAD_BLOCK"}, []string{"file:download_compliance"})
 			g.emitAPIEvent(r, res, tail)
 			return
 		}
@@ -318,6 +354,8 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 					zap.String("endpoint_key", res.EndpointKey), zap.String("request_id", res.Context.RequestID))
 				g.writeFailClosedResponse(w, res.Context.RequestID)
 				tail.status = http.StatusInternalServerError
+				dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusInternalServerError, true,
+					[]string{"RESPONSE_FAIL_CLOSED"}, []string{"api_response:response.mask_failed"})
 				g.emitAPIEvent(r, res, tail)
 				return
 			case terr != nil:
@@ -371,6 +409,12 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		}
 		g.writeBufferedResponse(w, cw, body, modified)
 	}
+	// P0-04 源站完成事实：响应脱敏实改写时 security_action=MASK_RESPONSE
+	// （response_source 仍落 ORIGIN——契约 §7）；tail.status 为实际写出码
+	if masked {
+		dispo.RecordMaskResponse()
+	}
+	dispo.RecordOrigin(tail.status, true)
 	g.emitAPIEvent(r, res, tail)
 }
 
@@ -585,9 +629,11 @@ func (g *Guard) writeFailClosedResponse(w http.ResponseWriter, requestID string)
 
 // runAPIProtection 执行统一管线请求相位；handled=true 表示已按决策拦截（阻断事件在此输出），err 为 caddyhttp.Error。
 func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Result, bool, error) {
-	restore, bodySample := preserveRequestBody(r)
+	restore, bodySample, skipReason := preserveRequestBody(r)
 	if restore == nil {
-		// 请求体读取失败：已尽力还原，跳过管线（fail-open）
+		// 请求体读取失败或超保全上限：已尽力还原，跳过管线（fail-open）；
+		// 跳过必须可见——落 OBSERVE 明细事件并节流 Warn（code-review HIGH-7）
+		g.noteAPIBodyPreserveSkipped(r, start, skipReason)
 		return nil, false, nil
 	}
 	defer restore()
@@ -598,7 +644,26 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 	// （parser 之后 r.Body 已消费；样本仅请求内存活，不落证据）；不挂 api.IsAPI 分类门槛——
 	// WebShell 端点通常非 API 分类，分类漏判不应关掉观测；只记账不产明细，
 	// 评估在响应收束处（见 pipeline webshellc2 挂点）
-	pipeline.ObserveWebShellC2Request(r, g.IdentitySalt, bodySample)
+	pipeline.ObserveWebShellC2RequestWithStores(r, g.IdentitySalt, bodySample, g.behaviorStores)
+	dispo := DispositionFrom(r.Context())
+	// API 受限例外（WDSP P0-04；契约 S4_DESIGN_BASELINE §6/§10）：按请求事实范围筛选
+	// （domain/path/method/可信 IP/当前 UTC 秒；clientIP 为可信代理处理后值），结果传入
+	// 决策引擎 Finding 级豁免重算；适用例外版本记入 disposition effective_config。
+	var apiExcRefs []decision.ExceptionRef
+	var apiExcList []APIException
+	if len(g.apiExceptions) > 0 {
+		apiExcList = g.apiExceptions[g.AppCode]
+		if len(apiExcList) > 0 {
+			clientIP := ""
+			if cres, ok := clientIPResultFrom(r.Context()); ok {
+				clientIP = cres.ClientIP.String()
+			}
+			apiExcRefs = FilterAPIExceptions(apiExcList, r.Host, r.URL.Path, r.Method, clientIP, start.Unix())
+			for _, ref := range apiExcRefs {
+				dispo.NoteExceptionVersion(ref.ExceptionID, ref.Version)
+			}
+		}
+	}
 	cfg := pipeline.Config{
 		Enabled:               true,
 		Mode:                  apiDecisionMode(g.APIProtectionMode),
@@ -635,6 +700,8 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 		// gRPC 描述符注册表（W14-DESC / P2-05 深化：Provision 装配产物；
 		// nil = 无描述符下发或全部编译失败，gRPC 处理与 v1 完全一致）
 		GRPCDescriptors: g.apiGRPCRegistry,
+		// API 受限例外（WDSP P0-04）：上方范围筛选结果；nil = 无适用例外，零行为变化
+		Exceptions: apiExcRefs,
 	}
 	res, err := pipeline.Process(r, cfg, nil)
 	if err != nil {
@@ -645,6 +712,26 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 		return res, false, nil
 	}
 
+	// P0-04：例外命中的 Finding（决策侧已打标 Excepted）写 disposition.matched_exceptions
+	// 与 EXCEPTED 步骤——例外命中可审计是契约要求（证据保留于事件 matches 不变）
+	if len(apiExcRefs) > 0 {
+		matches := res.Context.CopyMatches()
+		excepted := 0
+		for _, m := range matches {
+			if !m.Excepted {
+				continue
+			}
+			excepted++
+			exc := findAPIExceptionByID(apiExcList, m.ExceptionID)
+			dispo.RecordMatchedException(m.ExceptionID, m.ExceptionVersion, "API",
+				[]string{m.Detector + ":" + m.RuleID}, apiExceptionScopeSummary(exc),
+				apiExceptionTimeFrom(exc), apiExceptionTimeUntil(exc))
+		}
+		if excepted > 0 {
+			dispo.RecordStep(ExecutorAPI, StepExcepted, fmt.Sprintf("excepted_findings=%d", excepted))
+		}
+	}
+
 	// APM 阶段1（D6）：桥接请求级关联字段进统一 RequestContext（原死字段填充）
 	g.bridgeRequestContext(r, res.Context)
 
@@ -652,6 +739,9 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 	*r = *r.WithContext(context.WithValue(r.Context(), requestContextKey{}, res.Context))
 
 	// 阻断类动作：事件在阻断时输出（状态码按决策映射；放行请求的事件在响应完成后输出，见 serveAPIProtected）
+	// P0-04：RecordTerminal 先于 emitBlocked——事件 final_decision 挂载需终止事实已记录
+	// （emitAPIEvent 经 Settled 门禁取 dispo.JSON()）；committed=false——caddyhttp.Error
+	// 路径响应由 Caddy 错误链写出，此处未提交；ruleRefs 取执法贡献明细（未被例外豁免）
 	emitBlocked := func(status int) {
 		if res.API.IsAPI || len(res.Context.CopyMatches()) > 0 {
 			g.emitAPIEvent(r, res, &apiEventTail{status: status, latencyMS: time.Since(start).Milliseconds()})
@@ -659,50 +749,127 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 	}
 	switch res.FinalAction {
 	case dsctx.ActionBlock:
+		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, false,
+			[]string{"API_POLICY_BLOCK"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 		emitBlocked(http.StatusForbidden)
 		return res, true, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("request blocked by api protection"))
 	case dsctx.ActionRateLimit:
+		dispo.RecordTerminal(ExecutorAPI, DisActionRateLimit, http.StatusTooManyRequests, false,
+			[]string{"API_RATE_LIMIT"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 		emitBlocked(http.StatusTooManyRequests)
 		return res, true, caddyhttp.Error(http.StatusTooManyRequests, fmt.Errorf("api request rate limited"))
 	case dsctx.ActionTempBlock:
+		dispo.RecordTerminal(ExecutorAPI, DisActionTempBlock, http.StatusForbidden, false,
+			[]string{"API_TEMP_BLOCK"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 		emitBlocked(http.StatusForbidden)
 		return res, true, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("api client temporarily blocked"))
 	default:
+		// OBSERVE 定案：观察命中进 steps（不进 security_action）
+		if res.FinalAction == dsctx.ActionObserve && len(res.Context.CopyMatches()) > 0 {
+			dispo.RecordStep(ExecutorAPI, StepObserved, "final_action=OBSERVE")
+		}
 		return res, false, nil
 	}
 }
 
-// maxBodyPreserveBytes API 管线读体上限（与 dsctx.DefaultParseLimits.MaxBodyParseBytes 对齐）。
-// 超限不整包入内存，避免大报文 OOM；跳过管线 fail-open，原请求体完整交给下游。
-const maxBodyPreserveBytes = 1 << 20 // 1 MiB
+// maxBodyPreserveBytes API 管线读体上限（必须大于 parser 的 MaxBodyParseBytes，否则
+// parser 的截断+采样路径永远不会触发而成为死代码——code-review HIGH-7）。
+// parser 自身按 dsctx.DefaultParseLimits（MaxBodyParseBytes=1MiB）限流读取，超限截断为
+// MaxBodySampleBytes（64KiB）样本并置 BodyTruncated；guard 上限取 4MiB：
+//   - ≤1MiB：完整解析，行为不变；
+//   - 1MiB~4MiB：不再整体跳过，走 parser 截断采样路径——文件上传合规、gRPC 帧校验、
+//     Prompt 注入、参数约束等请求侧检测对样本前缀仍生效；
+//   - >4MiB：不整包入内存（防 OOM），跳过管线 fail-open，原请求体完整交给下游，
+//     同时落 OBSERVE 明细事件 + 节流 Warn（不静默）。
+const maxBodyPreserveBytes = 4 << 20 // 4 MiB
 
 // preserveRequestBody 在上限内读出请求体并还原；返回的 restore 用于管线结束后再次还原给下游，
 // bodySample 为读出的完整请求体（webshell C2 请求相位观测的体统计样本由此供给，仅请求内存活；
 // GET/HEAD 无体为 nil）。restore 返回 nil 表示读取失败或报文超限（Body 已完整还原给下游，
-// 调用方应跳过管线）。
-func preserveRequestBody(r *http.Request) (restore func(), bodySample []byte) {
+// 调用方应跳过管线），skipReason 说明跳过原因（供事件明细与告警留痕）。
+func preserveRequestBody(r *http.Request) (restore func(), bodySample []byte, skipReason string) {
 	if r.Body == nil || r.Method == http.MethodGet || r.Method == http.MethodHead {
-		return func() {}, nil
+		return func() {}, nil, ""
 	}
 	// Content-Length 已知且超限：不读入内存，Body 原样留给下游，跳过管线
 	if r.ContentLength > maxBodyPreserveBytes {
-		return nil, nil
+		return nil, nil, "content_length_exceeds_preserve_limit"
 	}
 	// 限流读：多读 1 字节探测是否超限
 	b, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodyPreserveBytes)+1))
 	if err != nil {
 		// 已读部分 + 剩余流拼回，跳过管线
 		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), r.Body))
-		return nil, nil
+		return nil, nil, "body_read_error"
 	}
 	if len(b) > maxBodyPreserveBytes {
 		// 超限：已读字节 + 剩余 Body 拼回完整流，不截断下游，跳过管线
 		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(b), r.Body))
-		return nil, nil
+		return nil, nil, "body_exceeds_preserve_limit"
 	}
 	_ = r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewReader(b))
-	return func() { r.Body = io.NopCloser(bytes.NewReader(b)) }, b
+	return func() { r.Body = io.NopCloser(bytes.NewReader(b)) }, b, ""
+}
+
+// bodySkipWarnInterval 大体跳过告警的节流窗口（进程级；OBSERVE 事件本身逐条落盘不节流）。
+const bodySkipWarnInterval = time.Minute
+
+// bodySkipWarnLast 上次跳过告警时刻（UnixNano；CAS 节流，防大报文洪泛刷日志）。
+var bodySkipWarnLast atomic.Int64
+
+// noteAPIBodyPreserveSkipped 请求体无法保全（读取失败/超 maxBodyPreserveBytes）导致 API
+// 动态防护请求相位被跳过时的可见性留痕（code-review HIGH-7）：节流 Warn + OBSERVE 明细事件
+// （rule_id=request.body_preserve_skipped，final_action=OBSERVE，response_status=0 未采集；
+// 不产阻断语义、不冒充已检测）。定性限定：仅 API 动态防护请求相位被跳过，
+// 下游 Coraza/CRS 检测不受影响（请求体已完整还原交给下游）。
+func (g *Guard) noteAPIBodyPreserveSkipped(r *http.Request, start time.Time, reason string) {
+	now := time.Now()
+	if last := bodySkipWarnLast.Load(); now.UnixNano()-last >= int64(bodySkipWarnInterval) &&
+		bodySkipWarnLast.CompareAndSwap(last, now.UnixNano()) {
+		g.logger.Warn("api request phase skipped: request body not preserved (fail-open, request-side detections degraded for this request)",
+			zap.String("reason", reason),
+			zap.String("endpoint_key", normalizer.EndpointKey(r.Method, r.URL.Path)),
+			zap.Int64("content_length", r.ContentLength),
+			zap.Int("preserve_limit_bytes", maxBodyPreserveBytes))
+	}
+	if g.apiEvents == nil {
+		return
+	}
+	// 合成最小管线结果复用 emitAPIEvent（保持事件字段口径一致：域名/指纹/身份/版本戳）；
+	// 体未保全无法分类，IsAPI 如实置 false
+	reqID := r.Header.Get("X-Request-Id")
+	if reqID == "" {
+		reqID = r.Header.Get("X-Jiuzhang-Request-ID")
+	}
+	rc := dsctx.New(reqID, dsctx.DefaultParseLimits())
+	rc.PolicyVersion = g.APIPolicyVersion
+	rc.SetFinalAction(dsctx.ActionObserve)
+	g.bridgeRequestContext(r, rc)
+	evidence := map[string]string{"reason": reason}
+	if r.ContentLength >= 0 {
+		evidence["content_length"] = strconv.FormatInt(r.ContentLength, 10)
+	}
+	rc.AddMatch(dsctx.DetectorMatch{
+		Detector:   "api_request",
+		RuleID:     "request.body_preserve_skipped",
+		Category:   "OBSERVE",
+		Severity:   "HIGH",
+		Message:    "api request phase skipped: request body exceeds preserve limit or read failed (fail-open)",
+		Confidence: 1.0,
+		Evidence:   evidence,
+	})
+	res := &pipeline.Result{
+		Context: rc,
+		Parsed: &parser.Parsed{
+			Method:         strings.ToUpper(r.Method),
+			RawPath:        r.URL.Path,
+			NormalizedPath: normalizer.NormalizePath(r.URL.Path),
+		},
+		EndpointKey: normalizer.EndpointKey(r.Method, r.URL.Path),
+		FinalAction: dsctx.ActionObserve,
+	}
+	g.emitAPIEvent(r, res, &apiEventTail{latencyMS: time.Since(start).Milliseconds()})
 }
 
 // apiEventTail 事件响应侧尾注（状态码/耗时）；nil 表示响应前输出（状态码置 0）。
@@ -821,6 +988,18 @@ func (g *Guard) emitAPIEvent(r *http.Request, res *pipeline.Result, tail *apiEve
 	if obs := res.Context.GetLLMObservation(); obs != nil {
 		rec.LLMObservation = obs
 	}
+	// JWT 信任链验证摘要（WDSP P0-03）：请求经 jwt_trust 范围内评估时携带
+	// jwt_verification 可选对象（OFF/范围外 UNVERIFIED 不携带，事件零变化；
+	// 不落原始 Token/payload/明文 sub/tenant——tenant 为加盐指纹）
+	if jwtRes, ok := jwtResultFrom(r.Context()); ok && jwtRes.Status != jwtverify.StatusUnverified {
+		rec.JWTVerification = g.jwtEventDetail(jwtRes)
+	}
+	// 请求最终处置上下文（WDSP P0-04）：仅处置事实已确定（终止/源站完成/错误）时挂载——
+	// 响应前输出（非 API 命中、体未保全跳过等）请求仍在途，提前 Finalize 会落 UNKNOWN
+	// 并锁死后续记录（Settled 门禁；JSON 内部幂等 Finalize，重复取结果稳定）
+	if d := DispositionFrom(r.Context()); d != nil && d.Settled() {
+		rec.FinalDecision = d.JSON()
+	}
 	if err := g.apiEvents.Emit(rec); err != nil {
 		g.logger.Warn("api runtime event emit failed", zap.Error(err))
 	}
@@ -836,4 +1015,79 @@ func requestHost(r *http.Request) string {
 		}
 	}
 	return strings.ToLower(h)
+}
+
+// ---------- WDSP P0-04：API 受限例外与处置上下文辅助 ----------
+
+// findAPIExceptionByID 按 exception_id 查适用例外原文（scope 摘要/有效期取数）。
+func findAPIExceptionByID(list []APIException, id string) *APIException {
+	for i := range list {
+		if list[i].ExceptionID == id {
+			return &list[i]
+		}
+	}
+	return nil
+}
+
+// apiExceptionScopeSummary 例外范围脱敏摘要（契约 §2 scope_summary）：
+// 只给维度取值与计数，不落完整 source_ips 清单。
+func apiExceptionScopeSummary(exc *APIException) string {
+	if exc == nil {
+		return ""
+	}
+	var b strings.Builder
+	if exc.Domain != "" {
+		fmt.Fprintf(&b, "domain=%s ", exc.Domain)
+	}
+	if exc.URIExact != "" {
+		fmt.Fprintf(&b, "uri_exact=%s ", exc.URIExact)
+	}
+	if exc.URIPrefix != "" {
+		fmt.Fprintf(&b, "uri_prefix=%s ", exc.URIPrefix)
+	}
+	fmt.Fprintf(&b, "methods=%s", strings.Join(exc.Methods, ","))
+	if len(exc.SourceIPs) > 0 {
+		fmt.Fprintf(&b, " source_ips=%d条", len(exc.SourceIPs))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// apiExceptionTimeFrom 例外生效起点（UTC 秒 → time；nil 透传）。
+func apiExceptionTimeFrom(exc *APIException) *time.Time {
+	if exc == nil || exc.EffectiveFrom == nil {
+		return nil
+	}
+	t := time.Unix(*exc.EffectiveFrom, 0).UTC()
+	return &t
+}
+
+// apiExceptionTimeUntil 例外生效终点（UTC 秒 → time；nil 透传）。
+func apiExceptionTimeUntil(exc *APIException) *time.Time {
+	if exc == nil || exc.EffectiveUntil == nil {
+		return nil
+	}
+	t := time.Unix(*exc.EffectiveUntil, 0).UTC()
+	return &t
+}
+
+// apiEnforcementRuleRefs 执法贡献规则引用（终止事件 rule_refs 取数）：
+// 排除被例外豁免（Excepted）与纯信息性（INFO）明细——最终动作的关键规则引用
+// 必须真实贡献定案（契约 §2：只记录已执行事实）。格式 detector:rule_id。
+func apiEnforcementRuleRefs(matches []dsctx.DetectorMatch) []string {
+	var out []string
+	for _, m := range matches {
+		if m.Excepted {
+			continue
+		}
+		cat := strings.ToUpper(m.Category)
+		sev := strings.ToUpper(m.Severity)
+		if cat == "INFO" || sev == "INFO" {
+			continue
+		}
+		if m.RuleID == "" {
+			continue
+		}
+		out = append(out, m.Detector+":"+m.RuleID)
+	}
+	return out
 }

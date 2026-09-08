@@ -18,151 +18,63 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
+	"github.com/jiuzhang-waf/server/internal/accesscontrolversions"
+	"github.com/jiuzhang-waf/server/internal/accessrules"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
-	"github.com/jiuzhang-waf/server/internal/app"
-	"github.com/jiuzhang-waf/server/internal/cache"
+	"github.com/jiuzhang-waf/server/internal/apimodels"
+	"github.com/jiuzhang-waf/server/internal/apiruntime"
 	"github.com/jiuzhang-waf/server/internal/config"
-	"github.com/jiuzhang-waf/server/internal/database"
+	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
+	"github.com/jiuzhang-waf/server/internal/guardconfig"
 	"github.com/jiuzhang-waf/server/internal/product"
-	"github.com/jiuzhang-waf/server/internal/security"
-	"github.com/jiuzhang-waf/server/internal/users"
+	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
+	"github.com/jiuzhang-waf/server/internal/ratelimitpolicies"
+	"github.com/jiuzhang-waf/server/internal/trustedproxies"
 )
 
 // ---------- 阶段8 测试环境与通用辅助 ----------
 
 // setupStage8Env 初始化阶段8集成测试环境。
 // 与 setupTestEnv 同一套纪律（真实 postgres/valkey、独立测试库重建、全量迁移、
-// 真实应用 + httptest.Server），差异仅在显式以 WDSP 产品形态装配：
-// 阶段8路由在 app 层按 cfg.Product.APIDynamicProtectionEnabled() 门控，
-// 不开启时 /api/v1/api-security/* 一律 404。
+// 真实应用 + httptest.Server + setup 阶段导入公共测试授权），差异仅在显式以
+// WDSP 产品形态装配：阶段8路由在 app 层按 cfg.Product.APIDynamicProtectionEnabled()
+// 门控，不开启时 /api/v1/api-security/* 一律 404。
 func setupStage8Env(t *testing.T) *testEnv {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("integration test skipped in short mode")
-	}
+	env := newTestEnv(t, stage8TestCfg(t))
+	env.importBaseLicense(t)
+	return env
+}
 
-	cfg := &config.Config{
-		Env: "test",
-		DB: config.DBConfig{
-			Host:     envOr("POSTGRES_HOST", "127.0.0.1"),
-			Port:     envInt("POSTGRES_PORT", 5432),
-			Database: testDBName,
-			User:     envOr("POSTGRES_USER", "jiuzhang"),
-			Password: os.Getenv("POSTGRES_PASSWORD"),
-			SSLMode:  "disable",
-			MaxConns: 5,
-		},
-		Cache: config.CacheConfig{
-			Host:     envOr("VALKEY_HOST", "127.0.0.1"),
-			Port:     envInt("VALKEY_PORT", 6379),
-			Password: os.Getenv("VALKEY_PASSWORD"),
-			DB:       15, // 独立 Valkey DB
-		},
-		Security: config.SecurityConfig{
-			CookieSecure: false,
-		},
-		// WDSP 形态 + API 动态防护开启；默认模式 OBSERVE（非 env 来源 → mode_source=default）。
-		Product: product.Settings{
-			Edition:              product.EditionWDSP,
-			APIDynamicProtection: true,
-			APIProtectionMode:    "OBSERVE",
-			MaxBodyParseBytes:    1 << 20,
-			MaxBodySampleBytes:   64 << 10,
-			MaxJSONDepth:         32,
-			MaxFieldCount:        2048,
-		},
+// stage8TestCfg WDSP 形态装配配置（API 动态防护开启；默认模式 OBSERVE，
+// 非 env 来源 → mode_source=default）。授权流程测试中需要 api-security 路由
+// 注册的用例也基于本配置构造（不导入授权）。
+// 注意同步设置 PRODUCT_EDITION env：reports 等包按 product.Load() 在请求期直读
+// env（与 config.Load 同源），仅注入 cfg.Product 会造成测试进程内两种口径分叉。
+func stage8TestCfg(t *testing.T) *config.Config {
+	t.Helper()
+	t.Setenv("PRODUCT_EDITION", string(product.EditionWDSP))
+	cfg := baseTestCfg()
+	cfg.Product = product.Settings{
+		Edition:              product.EditionWDSP,
+		APIDynamicProtection: true,
+		APIProtectionMode:    "OBSERVE",
+		MaxBodyParseBytes:    1 << 20,
+		MaxBodySampleBytes:   64 << 10,
+		MaxJSONDepth:         32,
+		MaxFieldCount:        2048,
 	}
-	// 数据目录指向测试临时目录，避免在仓库内产生报告/备份/配置产物
-	cfg.Gateway.DataDir = t.TempDir()
-	if cfg.DB.Password == "" || cfg.Cache.Password == "" {
-		t.Skip("POSTGRES_PASSWORD/VALKEY_PASSWORD not set, skipping integration test")
-	}
-
-	ctx := context.Background()
-
-	// 重建测试数据库（每个用例独立数据，与既有阶段测试同一纪律）
-	adminDSN := fmt.Sprintf("postgres://%s:%s@%s:%d/postgres?sslmode=disable",
-		cfg.DB.User, cfg.DB.Password, cfg.DB.Host, cfg.DB.Port)
-	adminPool, err := pgxpool.New(ctx, adminDSN)
-	if err != nil {
-		t.Fatalf("connect admin db: %v", err)
-	}
-	_, _ = adminPool.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", testDBName))
-	if _, err := adminPool.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", testDBName)); err != nil {
-		adminPool.Close()
-		t.Fatalf("create test db: %v", err)
-	}
-	adminPool.Close()
-
-	// 全量迁移（含 000018 阶段8完整结构 / 000019 阶段8权限点种子）
-	db, err := database.Connect(ctx, cfg.DB)
-	if err != nil {
-		t.Fatalf("connect test db: %v", err)
-	}
-	if err := database.Migrate(ctx, db, "../migrations", "up"); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	// Valkey
-	cacheClient, err := cache.New(ctx, cfg.Cache)
-	if err != nil {
-		t.Fatalf("connect valkey: %v", err)
-	}
-	cacheClient.Redis().FlushDB(ctx)
-
-	// 创建测试管理员（密码固定用于测试）
-	adminPwd := "Test@Admin2026!"
-	hash, _ := security.HashPassword(adminPwd)
-	store := users.NewStore(db)
-	now := time.Now()
-	adminUser := &users.User{
-		Username:           "test_sysadmin",
-		DisplayName:        "测试系统管理员",
-		PasswordHash:       hash,
-		Status:             users.StatusActive,
-		MustChangePassword: false,
-		PasswordChangedAt:  &now,
-	}
-	if err := store.Create(ctx, adminUser); err != nil {
-		t.Fatalf("create admin: %v", err)
-	}
-	roleID, err := store.GetRoleIDByCode(ctx, "SYSTEM_ADMIN")
-	if err != nil {
-		t.Fatalf("get role: %v", err)
-	}
-	if err := store.AssignRole(ctx, adminUser.ID, roleID, adminUser.ID); err != nil {
-		t.Fatalf("assign role: %v", err)
-	}
-
-	// 启动真实应用服务
-	application, err := app.New(cfg, db, cacheClient)
-	if err != nil {
-		t.Fatalf("initialize application: %v", err)
-	}
-	server := httptest.NewServer(application.Handler)
-	t.Cleanup(func() {
-		server.Close()
-		db.Close()
-		cacheClient.Close()
-	})
-
-	return &testEnv{
-		server:   server,
-		db:       db,
-		cache:    cacheClient,
-		cfg:      cfg,
-		adminPwd: adminPwd,
-		app:      application,
-	}
+	// 网桥/路由牵引（netconfig）：固定默认节点名；边车共享卷指向测试临时目录，
+	// 避免写真实 /var/run/caddy/sidecars（网络配置边车 network.json / network-status.json）
+	cfg.WAF.GatewayNodeName = "it-gateway-01"
+	cfg.WAF.SidecarDir = t.TempDir()
+	return cfg
 }
 
 // s8SeedEndpoint 通过存储层写入一条发现端点。
@@ -667,6 +579,224 @@ RETURNING id`, versionID).Scan(&p2); err != nil {
 	}
 }
 
+// ---------- 4b. P0-2：FORMAL 确认物化参数行 → 确认约束经发布通道下发 → 违例专项落库 ----------
+
+// TestStage8ParameterConstraintsDelivery 参数约束下发网关链路（P0-2）：
+// Confirm 同事务物化 REQUEST/BODY 参数行（幂等、空 schema 跳过）；
+// ListFormalParameterConstraints 仅取最新 FORMAL 版本的 confirmed 非空参数；
+// guardconfig.Provider 组装进 GuardConfig；schema 类明细 ETL 落 api_schema_violations（幂等）。
+func TestStage8ParameterConstraintsDelivery(t *testing.T) {
+	env := setupStage8Env(t)
+	cookies, csrf := env.s5Login(t, "s8sec2", "SECURITY_ADMIN")
+	ctx := context.Background()
+
+	ep := s8SeedEndpoint(t, env, "POST", "/s8"+s5Rand()+"/delivery/orders", 0.9)
+
+	// 候选 v1（含嵌套同名叶字段，覆盖类型映射、末段名推导与 structured_path 身份）
+	result := s5OK(t, env.post(t, "/api/v1/api-security/endpoints/"+ep.ID.String()+"/models",
+		`{"schema":{"amount":"number","buyer.name":"string","seller.name":"string","note":"string"},"change_summary":"v1"}`, cookies, csrf), "create v1")
+	v1ID, _ := s5Obj(t, result, "version")["id"].(string)
+
+	// 预置同路径行（模拟学习链路已写入）：Confirm 物化必须跳过而非重复/覆盖
+	var preID string
+	if err := env.db.QueryRow(ctx, `
+INSERT INTO api_parameter_models (model_version_id, direction, location, structured_path, parameter_name,
+  base_type, recommended_constraints, confidence)
+VALUES ($1,'REQUEST','BODY','note','note','string','{"max_length":32}'::jsonb,0.5)
+RETURNING id`, v1ID).Scan(&preID); err != nil {
+		t.Fatalf("pre-insert parameter: %v", err)
+	}
+
+	s5OK(t, env.post(t, "/api/v1/api-security/models/"+v1ID+"/confirm", "", cookies, csrf), "confirm v1")
+
+	// 物化：4 字段各一行（buyer.name/seller.name 同叶名不得合并）；方向/位置/路径/类型正确
+	if n := s8Count(t, env, `SELECT count(*) FROM api_parameter_models WHERE model_version_id=$1`, v1ID); n != 4 {
+		t.Fatalf("materialized rows = %d, want 4", n)
+	}
+	if n := s8Count(t, env, `SELECT count(*) FROM api_parameter_models
+WHERE model_version_id=$1 AND direction='REQUEST' AND location='BODY'
+  AND ((structured_path='amount' AND parameter_name='amount' AND base_type='number' AND confidence=1.0)
+    OR (structured_path='buyer.name' AND parameter_name='name' AND base_type='string')
+    OR (structured_path='seller.name' AND parameter_name='name' AND base_type='string')
+    OR (structured_path='note' AND parameter_name='note' AND base_type='string'))`, v1ID); n != 4 {
+		t.Fatalf("materialized identity/type mismatch: %d", n)
+	}
+	if n := s8Count(t, env, `SELECT count(*) FROM api_parameter_models
+WHERE model_version_id=$1 AND structured_path IN ('amount','buyer.name','seller.name')
+  AND observed_constraints='{}'::jsonb AND recommended_constraints='{}'::jsonb
+  AND confirmed_constraints='{}'::jsonb AND sensitivity_level='UNKNOWN'`, v1ID); n != 3 {
+		t.Fatalf("materialized defaults mismatch: %d", n)
+	}
+	// 预置行未被覆盖（先查后插幂等）：置信度仍为 0.5，recommended 保留
+	var conf float64
+	if err := env.db.QueryRow(ctx, `SELECT confidence FROM api_parameter_models WHERE id=$1`, preID).Scan(&conf); err != nil {
+		t.Fatal(err)
+	}
+	if conf != 0.5 {
+		t.Fatalf("pre-existing row overwritten by materialization, confidence=%v", conf)
+	}
+
+	// 空 schema 跳过（学习链路形态：learning_threshold 空候选经 store 层确认；HTTP 层本就不收空 schema）
+	ep2 := s8SeedEndpoint(t, env, "GET", "/s8"+s5Rand()+"/delivery/empty", 0.7)
+	models := apimodels.NewStore(env.db)
+	emptyV, err := models.CreateCandidateWithReason(ctx, ep2.ID, ep2.EndpointKey, "空候选",
+		apimodels.CreatedReasonLearningThreshold, map[string]string{}, uuid.Nil)
+	if err != nil {
+		t.Fatalf("create empty candidate: %v", err)
+	}
+	if _, err := models.Confirm(ctx, emptyV.ID, uuid.Nil); err != nil {
+		t.Fatalf("confirm empty candidate: %v", err)
+	}
+	if n := s8Count(t, env, `SELECT count(*) FROM api_parameter_models WHERE model_version_id=$1`, emptyV.ID); n != 0 {
+		t.Fatalf("empty schema must not materialize parameters, got %d", n)
+	}
+
+	// 确认约束编辑（钉死词汇 snake_case）；QUERY 参数与 required-only / 空确认行直接 SQL 造数
+	s5OK(t, env.do(t, http.MethodPatch, "/api/v1/api-security/parameters/"+preID,
+		`{"required":true,"nullable":true,"empty_allowed":true,"confirmed_constraints":{"max_length":32,"enum":["A","B"]},"sensitivity_level":"LOW"}`,
+		cookies, csrf), "patch note constraints")
+	s8Exec(t, env, `
+INSERT INTO api_parameter_models (model_version_id, direction, location, structured_path, parameter_name,
+  base_type, required, confirmed_constraints, confidence)
+VALUES ($1,'REQUEST','QUERY','page','page','number',true,'{"minimum":1,"maximum":1000}'::jsonb,0.9)`, v1ID)
+	// required=true 且 confirmed 为空：必须下发（仅必填也应产生 param_required）
+	s8Exec(t, env, `
+INSERT INTO api_parameter_models (model_version_id, direction, location, structured_path, parameter_name,
+  base_type, required, confirmed_constraints, confidence)
+VALUES ($1,'REQUEST','QUERY','tenant_id','tenant_id','string',true,'{}'::jsonb,0.9)`, v1ID)
+	// required=false 且 confirmed 为空：不下发
+	s8Exec(t, env, `
+INSERT INTO api_parameter_models (model_version_id, direction, location, structured_path, parameter_name,
+  base_type, required, confirmed_constraints, confidence)
+VALUES ($1,'REQUEST','QUERY','trace','trace','string',false,'{}'::jsonb,0.9)`, v1ID)
+
+	// ListFormalParameterConstraints：required 或 confirmed 非空的三行，词汇原样下发
+	delivered, err := models.ListFormalParameterConstraints(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := delivered[ep.EndpointKey]
+	if len(list) != 3 {
+		t.Fatalf("delivered constraints = %+v, want 3 entries", list)
+	}
+	byKey := map[string]apimodels.ParamConstraint{}
+	for _, pc := range list {
+		byKey[pc.Location+"/"+pc.Name] = pc
+	}
+	page, ok := byKey["QUERY/page"]
+	if !ok || page.BaseType != "number" || !page.Required ||
+		page.Constraints["minimum"] != float64(1) || page.Constraints["maximum"] != float64(1000) {
+		t.Errorf("page constraint = %+v", page)
+	}
+	note, ok := byKey["BODY/note"]
+	if !ok || note.Path != "note" || note.Constraints["max_length"] != float64(32) {
+		t.Errorf("note constraint = %+v", note)
+	}
+	if enumArr, ok := note.Constraints["enum"].([]any); !ok || len(enumArr) != 2 {
+		t.Errorf("note enum = %+v", note.Constraints["enum"])
+	}
+	tenant, ok := byKey["QUERY/tenant_id"]
+	if !ok || !tenant.Required || len(tenant.Constraints) != 0 {
+		t.Errorf("tenant_id required-only constraint = %+v", tenant)
+	}
+	if _, ok := byKey["QUERY/trace"]; ok {
+		t.Errorf("trace (optional, empty confirmed) must not be delivered: %+v", list)
+	}
+
+	// provider 组装：确认约束随 GuardConfig 下发（真实 store 全链路）
+	provider := guardconfig.NewProvider(
+		trustedproxies.NewStore(env.db), protectedaddresses.NewStore(env.db),
+		accessrules.NewStore(env.db), ratelimitpolicies.NewStore(env.db),
+		accesscontrolversions.NewStore(env.db),
+		guardconfig.Config{APIDynamicProtection: true, APIProtectionMode: "OBSERVE"},
+	)
+	provider.SetAPIModels(models)
+	gcfg, err := provider.BuildGuardConfig(ctx)
+	if err != nil {
+		t.Fatalf("BuildGuardConfig: %v", err)
+	}
+	glist := gcfg.APIParameterConstraints[ep.EndpointKey]
+	if len(glist) != 3 {
+		t.Fatalf("guard config constraints = %+v, want 3 entries", glist)
+	}
+	var gpage *gatewayconfig.GuardParamConstraint
+	for i := range glist {
+		if glist[i].Location == "QUERY" && glist[i].Name == "page" {
+			gpage = &glist[i]
+		}
+	}
+	if gpage == nil || !gpage.Required || gpage.Constraints["maximum"] != float64(1000) {
+		t.Errorf("guard config page constraint = %+v", gpage)
+	}
+
+	// FORMAL 选取语义：确认 v2 后仅下发 v2 参数（v2 物化行 confirmed 全空 → 端点从下发表消失）
+	result = s5OK(t, env.post(t, "/api/v1/api-security/endpoints/"+ep.ID.String()+"/models",
+		`{"schema":{"amount":"number"},"change_summary":"v2"}`, cookies, csrf), "create v2")
+	v2ID, _ := s5Obj(t, result, "version")["id"].(string)
+	s5OK(t, env.post(t, "/api/v1/api-security/models/"+v2ID+"/confirm", "", cookies, csrf), "confirm v2")
+	delivered, err = models.ListFormalParameterConstraints(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list, ok := delivered[ep.EndpointKey]; ok && len(list) != 0 {
+		t.Fatalf("superseded version constraints must not be delivered: %+v", list)
+	}
+
+	// violations ETL：schema 类明细落库（映射安全字段 + 端点/FORMAL 版本归属 + request_id 幂等）
+	rt := apiruntime.NewStore(env.db)
+	vioIn := apiruntime.ViolationInput{
+		EndpointKey: ep.EndpointKey,
+		RequestID:   "req-vio-1",
+		FinalAction: "BLOCK",
+		Matches: []dsctx.DetectorMatch{
+			{Detector: "api_schema", RuleID: "schema.param_length",
+				Evidence: map[string]string{"field": "note", "constraint": "max_length", "location": "BODY"}},
+			{Detector: "api_schema", RuleID: "schema.type_mismatch",
+				Evidence: map[string]string{"field": "amount", "want": "number", "got": "string"}},
+		},
+	}
+	if err := rt.SaveSchemaViolations(ctx, vioIn); err != nil {
+		t.Fatalf("SaveSchemaViolations: %v", err)
+	}
+	if err := rt.SaveSchemaViolations(ctx, vioIn); err != nil {
+		t.Fatalf("SaveSchemaViolations replay: %v", err)
+	}
+	if n := s8Count(t, env, `SELECT count(*) FROM api_schema_violations WHERE request_id='req-vio-1'`); n != 2 {
+		t.Fatalf("violations rows = %d, want 2 (idempotent replay)", n)
+	}
+	var vEpID, vMvID *uuid.UUID
+	var vExpected, vObserved, vAction string
+	if err := env.db.QueryRow(ctx, `
+SELECT endpoint_id, model_version_id, expected, observed, action_taken
+FROM api_schema_violations WHERE request_id='req-vio-1' AND violation_type='schema.param_length'`).
+		Scan(&vEpID, &vMvID, &vExpected, &vObserved, &vAction); err != nil {
+		t.Fatal(err)
+	}
+	if vEpID == nil || *vEpID != ep.ID {
+		t.Errorf("violation endpoint not resolved: %v", vEpID)
+	}
+	if vMvID == nil || *vMvID != uuid.MustParse(v2ID) {
+		t.Errorf("violation model version = %v, want current FORMAL v2", vMvID)
+	}
+	if vExpected != "max_length" || vObserved != "" || vAction != "BLOCK" {
+		t.Errorf("param violation mapping = %q/%q/%q", vExpected, vObserved, vAction)
+	}
+	if err := env.db.QueryRow(ctx, `
+SELECT expected, observed FROM api_schema_violations
+WHERE request_id='req-vio-1' AND violation_type='schema.type_mismatch'`).Scan(&vExpected, &vObserved); err != nil {
+		t.Fatal(err)
+	}
+	if vExpected != "number" || vObserved != "string" {
+		t.Errorf("type mismatch mapping = %q/%q", vExpected, vObserved)
+	}
+
+	// 违例查询接口（既有只读路径）可读出
+	vioPage := s8Page(t, env.get(t, "/api/v1/api-security/violations?endpoint_id="+ep.ID.String(), cookies), "list violations")
+	if vioPage.Data.Total != 2 {
+		t.Errorf("violations total = %d, want 2", vioPage.Data.Total)
+	}
+}
+
 // ---------- 5. 分类：自定义分类法 → 端点分类覆盖（锁定）→ 二次覆盖与前后摘要审计 ----------
 
 // TestStage8Classification 用途分类管理（任务书 51.4）。
@@ -674,10 +804,16 @@ func TestStage8Classification(t *testing.T) {
 	env := setupStage8Env(t)
 	cookies, csrf := env.s5Login(t, "s8sec", "SECURITY_ADMIN")
 
-	// 初始分类列表（内置表无种子数据，为空数组；自定义为空）
+	// 初始分类列表：000095 起预置标准取值目录（docs/API_CLASSIFICATION_DESIGN.md §七），
+	// 以当前目录条数为基线，后续断言按基线增量校验
 	result := s5OK(t, env.get(t, "/api/v1/api-security/classifications", cookies), "list classifications")
-	if custom, _ := result.Data["custom"].([]interface{}); len(custom) != 0 {
-		t.Errorf("initial custom taxonomy len = %d, want 0", len(custom))
+	customSeed, _ := result.Data["custom"].([]interface{})
+	baseline := len(customSeed)
+	for _, c := range customSeed {
+		m, _ := c.(map[string]interface{})
+		if m["dimension"] == "BU" && m["value"] == "FINANCE" {
+			t.Fatalf("seed catalog unexpectedly contains BU/FINANCE: %+v", m)
+		}
 	}
 
 	// 新增自定义分类法；重复 → 409
@@ -692,8 +828,8 @@ func TestStage8Classification(t *testing.T) {
 
 	result = s5OK(t, env.get(t, "/api/v1/api-security/classifications", cookies), "list classifications after create")
 	custom, _ := result.Data["custom"].([]interface{})
-	if len(custom) != 1 {
-		t.Fatalf("custom taxonomy len = %d, want 1", len(custom))
+	if len(custom) != baseline+1 {
+		t.Fatalf("custom taxonomy len = %d, want baseline(%d)+1", len(custom), baseline)
 	}
 
 	// 端点分类覆盖：PURPOSE=TRADE + BU=FINANCE → classification_locked=true
@@ -836,11 +972,11 @@ func TestStage8RuntimeRisk(t *testing.T) {
 	epKey := "GET /" + kw + "/pay/{id}"
 
 	// 检测明细由网关检测管线写入，无 HTTP 写入口，直接 SQL 造数：
-	// findings 3 条（2 OPEN：HIGH/LOW；1 RESOLVED：MEDIUM）
+	// findings 3 条（2 NEW：HIGH/LOW；1 RESOLVED：MEDIUM）
 	s8Exec(t, env, `
 INSERT INTO api_runtime_findings (endpoint_id, request_id, finding_type, severity, status, title)
-VALUES ($1,'f-req-1','SHADOW','HIGH','OPEN','影子API'),
-       ($1,'f-req-2','BOLA','LOW','OPEN','越权访问迹象'),
+VALUES ($1,'f-req-1','SHADOW','HIGH','NEW','影子API'),
+       ($1,'f-req-2','BOLA','LOW','NEW','越权访问迹象'),
        ($1,'f-req-3','ZOMBIE','MEDIUM','RESOLVED','僵尸API')`, ep.ID)
 	// violations 2 条
 	s8Exec(t, env, `
@@ -858,9 +994,9 @@ VALUES ($2,$1,0,'NONE','ALLOW'),
 		epKey, "r1-"+rid, "r2-"+rid, "r3-"+rid, "r4-"+rid)
 
 	// findings 过滤与分页
-	page := s8Page(t, env.get(t, "/api/v1/api-security/findings?status=OPEN", cookies), "findings OPEN")
+	page := s8Page(t, env.get(t, "/api/v1/api-security/findings?status=NEW", cookies), "findings NEW")
 	if page.Data.Total != 2 {
-		t.Errorf("findings OPEN total = %d, want 2", page.Data.Total)
+		t.Errorf("findings NEW total = %d, want 2", page.Data.Total)
 	}
 	page = s8Page(t, env.get(t, "/api/v1/api-security/findings?severity=HIGH", cookies), "findings HIGH")
 	if page.Data.Total != 1 {
@@ -870,7 +1006,7 @@ VALUES ($2,$1,0,'NONE','ALLOW'),
 	if page.Data.Total != 1 {
 		t.Errorf("findings BOLA total = %d, want 1", page.Data.Total)
 	}
-	page = s8Page(t, env.get(t, "/api/v1/api-security/findings?status=OPEN&page=1&page_size=1", cookies), "findings paged")
+	page = s8Page(t, env.get(t, "/api/v1/api-security/findings?status=NEW&page=1&page_size=1", cookies), "findings paged")
 	if page.Data.Total != 2 || len(page.Data.Items) != 1 {
 		t.Errorf("findings page total = %d items = %d, want 2/1", page.Data.Total, len(page.Data.Items))
 	}
@@ -887,7 +1023,7 @@ VALUES ($2,$1,0,'NONE','ALLOW'),
 	resp := env.get(t, "/api/v1/api-security/violations?endpoint_id=not-a-uuid", cookies)
 	s5Expect(t, resp, http.StatusBadRequest, "violations with invalid endpoint_id")
 
-	// 安全态势聚合（库内仅本用例数据：1 端点 DISCOVERED / 2 OPEN findings）
+	// 安全态势聚合（库内仅本用例数据：1 端点 DISCOVERED / 2 NEW findings）
 	result := s5OK(t, env.get(t, "/api/v1/api-security/posture", cookies), "posture")
 	endpoints := s5Obj(t, result, "endpoints")
 	if s5Num(t, endpoints, "total") != 1 {
@@ -984,7 +1120,7 @@ func TestStage8PermissionAndAudit(t *testing.T) {
 	env := setupStage8Env(t)
 	auditCookies, auditCSRF := env.s5Login(t, "s8aud", "AUDIT_ADMIN")
 
-	// 只读角色（AUDIT_ADMIN）对全部只读接口有权限
+	// 只读角色（AUDIT_ADMIN）000100 收紧为纯审计角色：api_* 读权限点全部移除，只读接口 403
 	for _, path := range []string{
 		"/api/v1/api-security/endpoints",
 		"/api/v1/api-security/classifications",
@@ -999,7 +1135,7 @@ func TestStage8PermissionAndAudit(t *testing.T) {
 		"/api/v1/api-security/policy",
 	} {
 		resp := env.get(t, path, auditCookies)
-		s5Expect(t, resp, http.StatusOK, "AUDIT_ADMIN GET "+path)
+		s5Expect(t, resp, http.StatusForbidden, "AUDIT_ADMIN GET "+path)
 	}
 
 	// 只读角色对全部写操作 403（五十二章：写权限点仅 SECURITY_ADMIN 持有）

@@ -1,0 +1,6 @@
+..........................................................openssl 签名失败: Could not open file or uri for loading private key from /var/folders/jj/6mw2q02d29v6nfl19n7kjnz40000gn/T/tmp0fwmooba/nope.pem: No such file or directory
+.................................................................
+----------------------------------------------------------------------
+Ran 123 tests in 1.572s
+
+OK

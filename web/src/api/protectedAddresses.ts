@@ -1,5 +1,6 @@
 import { request } from './client'
 import type {
+  PageResult,
   ProtectedAddressDetail,
   ProtectedAddressItem,
   ProtectedAddressRefreshResult,
@@ -7,6 +8,8 @@ import type {
 
 export interface ProtectedAddressListParams {
   address_type?: string
+  page: number
+  page_size: number
 }
 
 /** 创建自定义保护地址：address 与 cidr 必须且只能填写一个 */
@@ -18,12 +21,11 @@ export interface CreateProtectedAddressBody {
 }
 
 export const protectedAddressesApi = {
-  // 保护地址列表不分页（系统登记 + 自定义，量级有限）
-  list: async (params: ProtectedAddressListParams = {}) => {
-    const data = await request<{ items: ProtectedAddressItem[] }>('/protected-addresses', {
+  list: async (params: ProtectedAddressListParams) => {
+    const data = await request<PageResult<ProtectedAddressItem>>('/protected-addresses', {
       query: { ...params },
     })
-    return { items: data.items ?? [] }
+    return { ...data, items: data.items ?? [] }
   },
   create: (body: CreateProtectedAddressBody) =>
     request<ProtectedAddressDetail>('/protected-addresses', { method: 'POST', body }),

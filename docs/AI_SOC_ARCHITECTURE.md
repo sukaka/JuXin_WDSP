@@ -83,7 +83,7 @@
 
 ### 2.2 两层权限校验
 
-1. **能力权限（路由层）**：`ai.*` 权限点决定能否调用接口。注意：多轮对话入口仅要求 `ai.chat.use`；`ai.event_analysis.use` 等 8 个能力点约束的是 `/api/v1/ai/analyze/*` 一次性分析端点。
+1. **能力权限（路由层）**：`ai.*` 权限点决定能否调用接口。注意：多轮对话入口仅要求 `ai.chat.use`；`ai.event_analysis.use` 等 8 个能力点约束的是 `/api/v1/ai/analyze/*` 一次性分析API。
 2. **数据权限（Tool 层）**：对话内实际能查到哪些数据，由 Tool 声明的业务权限点决定（如 Tool `security_event.search` 要求 `security_events.read`），`Registry.Execute` 每次执行前以当前用户真实权限重新校验，越权调用记 `DENIED` 审计并拒绝——AI 不能借对话绕过阶段2-6 既有权限体系。
 
 ### 2.3 属主隔离
@@ -194,7 +194,7 @@ SSE 事件类型（`Step.Kind` 枚举：plan / agent_start / tool / agent_done /
 
 停止/重试/继续：`POST .../stop` 经 `chatRuntime` 取消运行中任务；`POST .../retry` 取最后一条用户消息重跑（不重复落库）；`POST .../continue` 仅当最后一条为 assistant 消息时以「请继续」续跑（否则 409）；`POST /api/v1/ai/messages/{id}/feedback` 反馈（rating ±1，类型 GENERAL/WRONG_FACT/MISSING_EVIDENCE/HALLUCINATION/OTHER，落 ai_feedback）。
 
-一次性分析链路（`POST /api/v1/ai/analyze/*`）：同一编排器，差异在于——非流式（收集 ≤100 条步骤随响应返回）、创建一次性会话（标题 `[一次性分析] xxx`，响应后删除，审计保留 session_id）、按端点要求对应 `ai.*.use` 能力权限、事件 ID 做 UUID 形态校验防注入。
+一次性分析链路（`POST /api/v1/ai/analyze/*`）：同一编排器，差异在于——非流式（收集 ≤100 条步骤随响应返回）、创建一次性会话（标题 `[一次性分析] xxx`，响应后删除，审计保留 session_id）、按API要求对应 `ai.*.use` 能力权限、事件 ID 做 UUID 形态校验防注入。
 
 ## 5. 模块清单与职责
 

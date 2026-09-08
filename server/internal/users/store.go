@@ -3,6 +3,7 @@ package users
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -45,12 +46,18 @@ type User struct {
 	LockedUntil        *time.Time `json:"locked_until,omitempty"`
 	LastLoginAt        *time.Time `json:"last_login_at"`
 	LastLoginIP        string     `json:"last_login_ip,omitempty"`
-	CreatedBy          *uuid.UUID `json:"created_by,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	DeletedAt          *time.Time `json:"-"`
-	Version            int        `json:"version"`
-	Roles              []RoleInfo `json:"roles,omitempty"`
+	// 双因子认证（TOTP）：密钥密文与恢复码哈希不随 JSON 输出
+	TOTPSecretEncrypted        *string    `json:"-"`
+	TOTPPendingSecretEncrypted *string    `json:"-"`
+	TOTPEnabled                bool       `json:"totp_enabled"`
+	TOTPEnabledAt              *time.Time `json:"totp_enabled_at,omitempty"`
+	TOTPRecoveryCodeHashes     []string   `json:"-"`
+	CreatedBy                  *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt                  time.Time  `json:"created_at"`
+	UpdatedAt                  time.Time  `json:"updated_at"`
+	DeletedAt                  *time.Time `json:"-"`
+	Version                    int        `json:"version"`
+	Roles                      []RoleInfo `json:"roles,omitempty"`
 }
 
 // RoleInfo 是用户关联的角色摘要。
@@ -71,21 +78,32 @@ func NewStore(db *pgxpool.Pool) *Store {
 
 const userColumns = `id, username, display_name, password_hash, status, must_change_password,
 password_changed_at, password_expires_at, failed_login_count, locked_until,
-last_login_at, last_login_ip, created_by, created_at, updated_at, deleted_at, version`
+last_login_at, last_login_ip, totp_secret_encrypted, totp_pending_secret_encrypted,
+totp_enabled, totp_enabled_at, totp_recovery_codes,
+created_by, created_at, updated_at, deleted_at, version`
 
 const qualifiedUserColumns = `u.id, u.username, u.display_name, u.password_hash, u.status, u.must_change_password,
 u.password_changed_at, u.password_expires_at, u.failed_login_count, u.locked_until,
-u.last_login_at, u.last_login_ip, u.created_by, u.created_at, u.updated_at, u.deleted_at, u.version`
+u.last_login_at, u.last_login_ip, u.totp_secret_encrypted, u.totp_pending_secret_encrypted,
+u.totp_enabled, u.totp_enabled_at, u.totp_recovery_codes,
+u.created_by, u.created_at, u.updated_at, u.deleted_at, u.version`
 
 const systemAdminGuardLockKey int64 = 0x4a5a57414641444d
+
+// scanUserInto 按 userColumns 列序扫描用户（供单行与多行查询复用）。
+func scanUserInto(u *User, lastLoginIP **netip.Addr) []interface{} {
+	return []interface{}{&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Status,
+		&u.MustChangePassword, &u.PasswordChangedAt, &u.PasswordExpiresAt,
+		&u.FailedLoginCount, &u.LockedUntil, &u.LastLoginAt, lastLoginIP,
+		&u.TOTPSecretEncrypted, &u.TOTPPendingSecretEncrypted,
+		&u.TOTPEnabled, &u.TOTPEnabledAt, &u.TOTPRecoveryCodeHashes,
+		&u.CreatedBy, &u.CreatedAt, &u.UpdatedAt, &u.DeletedAt, &u.Version}
+}
 
 func (s *Store) scanUser(row pgx.Row) (*User, error) {
 	var u User
 	var lastLoginIP *netip.Addr
-	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Status,
-		&u.MustChangePassword, &u.PasswordChangedAt, &u.PasswordExpiresAt,
-		&u.FailedLoginCount, &u.LockedUntil, &u.LastLoginAt, &lastLoginIP,
-		&u.CreatedBy, &u.CreatedAt, &u.UpdatedAt, &u.DeletedAt, &u.Version)
+	err := row.Scan(scanUserInto(&u, &lastLoginIP)...)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +183,37 @@ WHERE ur.user_id = $1`, userID)
 	return out, rows.Err()
 }
 
-// GetPermissions 查询用户权限（经角色聚合）。
+// PermissionInfo 是用户权限码与中文名称。
+type PermissionInfo struct {
+	Code   string `json:"code"`
+	Name   string `json:"name"`
+	Module string `json:"module"`
+}
+
+// GetPermissionDetails 查询用户权限（经角色聚合），含中文名称与模块。
+func (s *Store) GetPermissionDetails(ctx context.Context, userID uuid.UUID) ([]PermissionInfo, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT DISTINCT p.code, p.name, p.module FROM permissions p
+JOIN role_permissions rp ON rp.permission_id = p.id
+JOIN user_roles ur ON ur.role_id = rp.role_id
+WHERE ur.user_id = $1
+ORDER BY p.module, p.code`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PermissionInfo{}
+	for rows.Next() {
+		var pi PermissionInfo
+		if err := rows.Scan(&pi.Code, &pi.Name, &pi.Module); err != nil {
+			return nil, err
+		}
+		out = append(out, pi)
+	}
+	return out, rows.Err()
+}
+
+// GetPermissions 查询用户权限码（经角色聚合）。
 func (s *Store) GetPermissions(ctx context.Context, userID uuid.UUID) ([]string, error) {
 	rows, err := s.db.Query(ctx, `
 SELECT DISTINCT p.code FROM permissions p
@@ -241,10 +289,7 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]User, int64, error) {
 	for rows.Next() {
 		var u User
 		var lastLoginIP *netip.Addr
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Status,
-			&u.MustChangePassword, &u.PasswordChangedAt, &u.PasswordExpiresAt,
-			&u.FailedLoginCount, &u.LockedUntil, &u.LastLoginAt, &lastLoginIP,
-			&u.CreatedBy, &u.CreatedAt, &u.UpdatedAt, &u.DeletedAt, &u.Version); err != nil {
+		if err := rows.Scan(scanUserInto(&u, &lastLoginIP)...); err != nil {
 			return nil, 0, err
 		}
 		u.PasswordHash = "" // 列表不返回哈希
@@ -339,13 +384,14 @@ WHERE id = $3 AND deleted_at IS NULL`,
 }
 
 // ChangePassword 在同一事务内更新密码、记录旧密码历史并撤销持久化会话。
+// revokeSessions 为 true 时撤销该用户含当前会话在内的全部持久化会话：
+// 改密通常因为密码疑似泄露，保留任何旧会话（包括发起改密的会话）都会让被盗会话继续有效。
 func (s *Store) ChangePassword(
 	ctx context.Context,
 	userID uuid.UUID,
 	newHash, oldHash string,
 	expiresAt *time.Time,
-	currentSessionHash string,
-	revokeOtherSessions bool,
+	revokeSessions bool,
 ) error {
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -370,11 +416,11 @@ WHERE id = $3 AND deleted_at IS NULL`,
 		userID, oldHash); err != nil {
 		return err
 	}
-	if revokeOtherSessions {
+	if revokeSessions {
 		if _, err := tx.Exec(ctx, `
 UPDATE login_sessions SET revoked_at = now(), revoke_reason = 'password_changed'
-WHERE user_id = $1 AND session_hash <> $2 AND revoked_at IS NULL`,
-			userID, currentSessionHash); err != nil {
+WHERE user_id = $1 AND revoked_at IS NULL`,
+			userID); err != nil {
 			return err
 		}
 	}
@@ -382,8 +428,22 @@ WHERE user_id = $1 AND session_hash <> $2 AND revoked_at IS NULL`,
 }
 
 // UpdatePasswordForceChange 重置密码并强制首次登录修改。
+// 与 ChangePassword 同一纪律：同事务把旧密码哈希写入 password_histories，
+// 否则管理员重置路径可让历史密码回退绕过历史策略。
 func (s *Store) UpdatePasswordForceChange(ctx context.Context, userID uuid.UUID, hash string, expiresAt *time.Time) error {
-	res, err := s.db.Exec(ctx, `
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var oldHash string
+	if err := tx.QueryRow(ctx,
+		`SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, userID).
+		Scan(&oldHash); err != nil {
+		return mapNotFound(err)
+	}
+	res, err := tx.Exec(ctx, `
 UPDATE users SET password_hash = $1, password_changed_at = now(), password_expires_at = $2,
        must_change_password = TRUE, failed_login_count = 0, locked_until = NULL,
        updated_at = now(), version = version + 1
@@ -395,7 +455,12 @@ WHERE id = $3 AND deleted_at IS NULL`,
 	if res.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO password_histories (user_id, password_hash) VALUES ($1, $2)`,
+		userID, oldHash); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // SetStatus 设置用户状态。
@@ -558,6 +623,74 @@ UPDATE users SET failed_login_count = 0, locked_until = NULL, status = $2, updat
 WHERE id = $1 AND locked_until IS NOT NULL AND locked_until <= now() AND status = $3`,
 		id, StatusActive, StatusLocked)
 	return err
+}
+
+// ---------- 双因子认证（TOTP） ----------
+
+// ErrNoTOTPPending 没有待启用密钥（enable 前置条件不满足）。
+var ErrNoTOTPPending = errors.New("no pending totp secret")
+
+// SaveTOTPPending 保存待启用密钥（密文）与恢复码哈希。
+// 重复调用覆盖旧待启用密钥与恢复码，不改变已启用状态。
+func (s *Store) SaveTOTPPending(ctx context.Context, userID uuid.UUID, pendingEnc string, recoveryHashes []string) error {
+	hashesJSON, err := json.Marshal(recoveryHashes)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.Exec(ctx, `
+UPDATE users SET totp_pending_secret_encrypted = $2, totp_recovery_codes = $3::jsonb, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL`, userID, pendingEnc, hashesJSON)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// EnableTOTP 将待启用密钥转正并开启双因子（仅当存在待启用密钥）。
+func (s *Store) EnableTOTP(ctx context.Context, userID uuid.UUID) error {
+	res, err := s.db.Exec(ctx, `
+UPDATE users SET totp_secret_encrypted = totp_pending_secret_encrypted,
+       totp_pending_secret_encrypted = NULL, totp_enabled = TRUE, totp_enabled_at = now(),
+       updated_at = now(), version = version + 1
+WHERE id = $1 AND deleted_at IS NULL AND totp_pending_secret_encrypted IS NOT NULL`, userID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNoTOTPPending
+	}
+	return nil
+}
+
+// ClearTOTP 清空全部 TOTP 字段（关闭/管理员重置共用）。
+func (s *Store) ClearTOTP(ctx context.Context, userID uuid.UUID) error {
+	res, err := s.db.Exec(ctx, `
+UPDATE users SET totp_secret_encrypted = NULL, totp_pending_secret_encrypted = NULL,
+       totp_enabled = FALSE, totp_enabled_at = NULL, totp_recovery_codes = '[]'::jsonb,
+       updated_at = now(), version = version + 1
+WHERE id = $1 AND deleted_at IS NULL`, userID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ConsumeTOTPRecoveryCode 原子消费一个恢复码哈希（命中即从数组移除），返回是否命中。
+// 单行 UPDATE 加条件匹配，保证一次性使用语义（并发重复提交仅一次生效）。
+func (s *Store) ConsumeTOTPRecoveryCode(ctx context.Context, userID uuid.UUID, hash string) (bool, error) {
+	res, err := s.db.Exec(ctx, `
+UPDATE users SET totp_recovery_codes = totp_recovery_codes - $2::text, updated_at = now()
+WHERE id = $1 AND totp_enabled AND totp_recovery_codes ? $2`, userID, hash)
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() > 0, nil
 }
 
 // CountActiveSystemAdmins 统计可用系统管理员数量。

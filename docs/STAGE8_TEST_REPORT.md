@@ -8,8 +8,8 @@
 
 - 统一动态安全引擎（一次解析 → 分类 → 归一 → 检测 → 统一决策）挂接 `jiuzhang_guard` 请求链
 - 多协议解析（JSON/form/XML/multipart/GraphQL）与 8 个运行时检测器
-- 统一事件流（网关 JSONL → 采集器 → `api_runtime_events`）与端点自动发现
-- 冻结模型 / 已知端点基线经发布通道下发网关
+- 统一事件流（网关 JSONL → 采集器 → `api_runtime_events`）与API自动发现
+- 冻结模型 / 已知API基线经发布通道下发网关
 - `/api/v1/api-security/*` 43 条接口、27 权限点、27 张表、12 个前端页面、10 个 `api_*` AI 工具
 - 纯 WAF 形态回归（关闭零影响）
 
@@ -21,7 +21,7 @@
 | guard 单测 | `cd gateway/modules/jiuzhang_guard && go test ./...` | 通过（8 包；含 6 个 API 管线挂接用例：关闭透传/OBSERVE 记录/PROTECT 403/请求体保全/生命周期） |
 | 后端包单测 | `go test ./internal/{apiassets,apimodels,apisecurity,apiruntime,guardconfig,product,aitools}` | 通过（含采集器 3 用例、模型 diff、策略矩阵、AI 工具 12 用例） |
 | 前端单测 | `cd web && npx vitest run` | 通过（16 文件 105+ 用例；12 个阶段8 页面权限显隐与列表渲染） |
-| 接口集成 | `make stage8-test-api`（`TestStage8*`，真实 postgres+valkey） | **9/9 通过**（端点组合并/拆分、学习启停、模型全生命周期、参数、分类、规范导入、风险运行时、策略、越权+审计） |
+| 接口集成 | `make stage8-test-api`（`TestStage8*`，真实 postgres+valkey） | **9/9 通过**（API组合并/拆分、学习启停、模型全生命周期、参数、分类、规范导入、风险运行时、策略、越权+审计） |
 | 全链路 e2e | `make stage8-test-gateway` | **15/15 通过**（edition→发布→流量→发现→冻结→下发→OBSERVE 记录→PROTECT 阻断→策略发布） |
 | 流量回放 | `make stage8-test-replay` | **10/10 通过**（主事件与访问日志共享 Request ID、幂等重放、Web 路径隔离、偏离重放） |
 | 安全 | `make stage8-test-security` | **11/11 通过**（XXE 拒绝、>1MB 截断、PROTECT 敏感 Query 403、401/403/CSRF、注入无泄露） |
@@ -38,7 +38,7 @@
 
 ### 3.2 统一事件与发现
 
-- 发送 `POST /v1/orders/123 {"id":1,...}`：自动发现 `POST /v1/orders/{id}`（hit_count 累计），`api_runtime_events` 含该端点主事件，明细含 `authentication`/`resource` 检测器记录。
+- 发送 `POST /v1/orders/123 {"id":1,...}`：自动发现 `POST /v1/orders/{id}`（hit_count 累计），`api_runtime_events` 含该API主事件，明细含 `authentication`/`resource` 检测器记录。
 - 回放同一 `request_id` 的事件行两次，主事件仍 1 条（request_id 幂等）；同一 Request ID 同时出现在 Web 访问日志（Web/API 统一 ID 成立）。
 
 ### 3.3 模型下发与决策
@@ -80,8 +80,8 @@
 `cd web && npx playwright test e2e/stage8-api-security.spec.ts`：**6 通过 / 1 跳过**（用例7 WAF 形态按设计跳过，已由 §2 纯 WAF 回归覆盖）：
 
 1. 菜单可见性：「接口防护」分组 12 项全部可见，三个核心页面可打开；
-2. 端点资产：网关流量自动发现 → 中文状态 Tag → 行内确认（二次确认弹窗）→ 已确认；
-3. 模型版本：选择端点 → Drawer 创建候选 → 确认冻结 → 正式；
+2. API资产：网关流量自动发现 → 中文状态 Tag → 行内确认（二次确认弹窗）→ 已确认；
+3. 模型版本：选择API → Drawer 创建候选 → 确认冻结 → 正式；
 4. 策略页：改「防护」保存 → 模式 Tag 与来源（数据库）变更 → 刷新保持 → 恢复观察；
 5. 学习中心：启动学习 → 学习中 → 停止 → 已暂停；
 6. 权限：AUDIT_ADMIN 菜单全可见但确认/忽略/保存/发布按钮均不渲染。
@@ -95,7 +95,7 @@
 3. 行为基线/限速为单节点进程内滑窗（多节点需 Valkey 化）；图谱调用边仅 caller→target 形态；BOLA/BFLA 为辅助信号而非全量规则库；Zombie API 判定未实现。
 4. Coraza 命中未同步进 RequestContext（经 request_id 在管理面关联；不 fork coraza-caddy）。
 5. 客户端自带 `X-Request-Id` 会被网关强制覆盖（`gatewayconfig/generator.go` 以 `{http.request.uuid}` 统一下发），统一 ID 语义为"网关生成的同一 ID 贯穿 Web/API 事件与访问日志"。
-6. 采集器副作用（端点发现命中计数）为 at-least-once 语义：断点未提交的重放窗口内 hit_count 可能偏高（开发环境实测曾放大；不影响事件幂等）。
+6. 采集器副作用（API发现命中计数）为 at-least-once 语义：断点未提交的重放窗口内 hit_count 可能偏高（开发环境实测曾放大；不影响事件幂等）。
 
 ## 5. 自动化命令（63 章）
 

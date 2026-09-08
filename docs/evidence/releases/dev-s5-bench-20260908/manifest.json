@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "build_id": "dev-s5-bench-20260908",
+  "product_version": "unresolved",
+  "source": {
+    "commit": "3c73774",
+    "dirty": true,
+    "snapshot_sha256": null,
+    "file_manifest": []
+  },
+  "images": [],
+  "config_fingerprint": null,
+  "environment": {
+    "id": "dev-mac-local",
+    "os": "Darwin 25.2.0 (arm64)",
+    "go": "go1.25.6 darwin/amd64",
+    "python": "3.12.0",
+    "node": "v24.13.0",
+    "docker": "28.3.0",
+    "topology": "工具层单测（本机）+ run-plan 预检（示例计划，未发送真实负载）",
+    "clock": "宿主机本地时钟，未做受控时钟注入",
+    "note": "开发机证据，非发布构建；共享开发机按纪律禁止正式性能测量，正式矩阵/长稳/异机复跑需专用隔离硬件"
+  },
+  "started_at": "2026-09-08T08:30:00+08:00",
+  "ended_at": "2026-09-08T09:45:00+08:00",
+  "tests": [
+    {
+      "id": "BENCH-01",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_isolation.py：run_id+project 双标签归属判定，双 run_id 资源隔离可单测部分）；p0bench run-plan 预检实跑（run 20260908T083935-e58633，隔离与预检 PASS）",
+      "artifacts": [
+        {"path": "artifacts/p0bench-unittests.log", "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"},
+        {"path": "artifacts/preflight-report.md", "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"},
+        {"path": "artifacts/preflight-status.json", "sha256": "cd0e12b99c8feb0c9fbfaa3694d34f4ada0609f1906eac8018296b8f17722507"}
+      ],
+      "note": "双 run_id 并发建栈的端到端演练属工具层组合行为，已由归属判定单测+预检覆盖；真实负载下的并发隔离随 BENCH-11 正式矩阵一并终验"
+    },
+    {
+      "id": "BENCH-02",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_isolation.py：共享/外部目标、错误环境标识、重定向逃离一律拒绝）；预检实跑 PASS",
+      "artifacts": [
+        {"path": "artifacts/p0bench-unittests.log", "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"},
+        {"path": "artifacts/preflight-status.json", "sha256": "cd0e12b99c8feb0c9fbfaa3694d34f4ada0609f1906eac8018296b8f17722507"}
+      ]
+    },
+    {
+      "id": "BENCH-03",
+      "status": "BLOCKED",
+      "capabilities": [],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "上传源站不读 body/意外 404 时正式计时被阻止——需真实隔离栈与受控源站故障注入；预检报告如实显示七模式矩阵 NOT_RUN，未伪造测量",
+      "artifacts": [
+        {"path": "artifacts/preflight-report.md", "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"}
+      ],
+      "note": "共享开发机纪律禁止正式测量；待专用隔离硬件"
+    },
+    {
+      "id": "BENCH-04",
+      "status": "BLOCKED",
+      "capabilities": ["api-assets-models", "config-release-ha"],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "七模式切换 + 节点回执/配置差异校验——需真实发布链路与多配置栈；本轮未执行",
+      "artifacts": [
+        {"path": "artifacts/preflight-report.md", "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"}
+      ],
+      "note": "待专用隔离硬件；轮次无效化逻辑随正式矩阵终验"
+    },
+    {
+      "id": "BENCH-05",
+      "status": "PASS",
+      "capabilities": ["waf-crs-detection", "access-control-cc", "api-assets-models", "api-request-response-detection", "apm-entry-performance"],
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_metrics.py/test_report.py：检测/处置指标分离、预期 403/429 归类、零分母 N/A 不输出 0% 冒充、TP/FP/TN/FN 分母正确）",
+      "artifacts": [
+        {"path": "artifacts/p0bench-unittests.log", "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"}
+      ],
+      "note": "指标算法层 PASS；真实混合流量下的指标产出随 BENCH-11 正式矩阵终验"
+    },
+    {
+      "id": "BENCH-06",
+      "status": "PASS",
+      "capabilities": ["apm-entry-performance"],
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_metrics.py：已知分布最近秩分位数校验；test_report.py：聚合分位数来自样本合并/同 bin 直方图，禁止跨运行平均伪汇总）",
+      "artifacts": [
+        {"path": "artifacts/p0bench-unittests.log", "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"}
+      ]
+    },
+    {
+      "id": "BENCH-07",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_report.py：强制用例 SKIP/原始文件缺失/哈希错误 → 报告显示未通过）；python3 -m unittest discover -s tools/tests（P0-01 校验器对缺证据/哈希不符/状态伪造拒绝最终验收，38 用例）",
+      "artifacts": [
+        {"path": "artifacts/p0bench-unittests.log", "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"}
+      ]
+    },
+    {
+      "id": "BENCH-08",
+      "status": "BLOCKED",
+      "capabilities": ["event-chain", "apm-trace-sql-exception", "agent-collection-forwarding"],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_collect.py：采样/重复/积压各层数量可解释、永久丢失与临时不可见不混淆——可单测部分 PASS）；制造真实采样/重复/积压后恢复的端到端对账需真实栈",
+      "artifacts": [
+        {"path": "artifacts/p0bench-unittests.log", "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"},
+        {"path": "artifacts/preflight-report.md", "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"}
+      ],
+      "note": "对账算法层已测；事件可见性章节在预检报告中如实 NOT_RUN（无 reconciliation.json），未伪造"
+    },
+    {
+      "id": "BENCH-09",
+      "status": "BLOCKED",
+      "capabilities": ["event-chain", "config-release-ha", "agent-collection-forwarding"],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "网关/接收器带积压重启与强制终止，ACK 边界内数据完整、恢复满足冻结时限——需真实栈与故障注入；本轮未执行",
+      "artifacts": [
+        {"path": "artifacts/preflight-report.md", "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"}
+      ]
+    },
+    {
+      "id": "BENCH-10",
+      "status": "BLOCKED",
+      "capabilities": ["agent-collection-forwarding"],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "资源受限与数据库/Valkey 故障下背压有界、错误可见、恢复后对账——需真实受限环境；本轮未执行",
+      "artifacts": [
+        {"path": "artifacts/preflight-report.md", "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"}
+      ]
+    },
+    {
+      "id": "BENCH-11",
+      "status": "BLOCKED",
+      "capabilities": [],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "完整矩阵 3 次重复 + 72 小时组合防护长稳——任务书明确不得以短测顶替；需专用隔离硬件与连续时间窗",
+      "artifacts": [
+        {"path": "artifacts/preflight-report.md", "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"}
+      ],
+      "note": "预检报告长稳章节如实 NOT_RUN（无 soak/ 记录）；本项不过则四项 P0 总状态不得为完成（任务书硬约束）"
+    },
+    {
+      "id": "BENCH-12",
+      "status": "BLOCKED",
+      "capabilities": [],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "另一套同规格干净环境按说明复跑——当前仅一台开发机可用，无第二套同规格硬件",
+      "artifacts": [
+        {"path": "artifacts/preflight-report.md", "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"}
+      ]
+    }
+  ],
+  "release_status": "DEVELOPMENT"
+}

@@ -1,0 +1,72 @@
+{"Time":"2026-09-08T09:10:07.003133+08:00","Action":"start","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser"}
+{"Time":"2026-09-08T09:10:07.969995+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineValid"}
+{"Time":"2026-09-08T09:10:07.970224+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineValid","Output":"=== RUN   TestParseLineValid\n"}
+{"Time":"2026-09-08T09:10:07.988053+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineValid","Output":"--- PASS: TestParseLineValid (0.02s)\n"}
+{"Time":"2026-09-08T09:10:07.988341+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineValid","Elapsed":0.02}
+{"Time":"2026-09-08T09:10:07.989034+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMasking"}
+{"Time":"2026-09-08T09:10:07.989052+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMasking","Output":"=== RUN   TestParseLineMasking\n"}
+{"Time":"2026-09-08T09:10:07.991974+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMasking","Output":"--- PASS: TestParseLineMasking (0.00s)\n"}
+{"Time":"2026-09-08T09:10:07.992054+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMasking","Elapsed":0}
+{"Time":"2026-09-08T09:10:07.9921+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineDetectAction"}
+{"Time":"2026-09-08T09:10:07.992111+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineDetectAction","Output":"=== RUN   TestParseLineDetectAction\n"}
+{"Time":"2026-09-08T09:10:07.993348+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineDetectAction","Output":"--- PASS: TestParseLineDetectAction (0.00s)\n"}
+{"Time":"2026-09-08T09:10:07.993388+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineDetectAction","Elapsed":0}
+{"Time":"2026-09-08T09:10:07.993409+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineInvalidJSON"}
+{"Time":"2026-09-08T09:10:07.993416+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineInvalidJSON","Output":"=== RUN   TestParseLineInvalidJSON\n"}
+{"Time":"2026-09-08T09:10:07.993842+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineInvalidJSON","Output":"--- PASS: TestParseLineInvalidJSON (0.00s)\n"}
+{"Time":"2026-09-08T09:10:07.993859+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineInvalidJSON","Elapsed":0}
+{"Time":"2026-09-08T09:10:07.993867+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMissingTxID"}
+{"Time":"2026-09-08T09:10:07.993873+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMissingTxID","Output":"=== RUN   TestParseLineMissingTxID\n"}
+{"Time":"2026-09-08T09:10:07.994094+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMissingTxID","Output":"--- PASS: TestParseLineMissingTxID (0.00s)\n"}
+{"Time":"2026-09-08T09:10:07.994106+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMissingTxID","Elapsed":0}
+{"Time":"2026-09-08T09:10:07.994134+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineEmpty"}
+{"Time":"2026-09-08T09:10:07.994157+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineEmpty","Output":"=== RUN   TestParseLineEmpty\n"}
+{"Time":"2026-09-08T09:10:07.995743+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineEmpty","Output":"--- PASS: TestParseLineEmpty (0.00s)\n"}
+{"Time":"2026-09-08T09:10:07.995846+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineEmpty","Elapsed":0}
+{"Time":"2026-09-08T09:10:07.995882+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestMaskURI"}
+{"Time":"2026-09-08T09:10:07.995906+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestMaskURI","Output":"=== RUN   TestMaskURI\n"}
+{"Time":"2026-09-08T09:10:07.995927+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestMaskURI","Output":"--- PASS: TestMaskURI (0.00s)\n"}
+{"Time":"2026-09-08T09:10:07.995932+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestMaskURI","Elapsed":0}
+{"Time":"2026-09-08T09:10:07.995941+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestRequestIDFallbackToTxID"}
+{"Time":"2026-09-08T09:10:07.995951+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestRequestIDFallbackToTxID","Output":"=== RUN   TestRequestIDFallbackToTxID\n"}
+{"Time":"2026-09-08T09:10:07.997139+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestRequestIDFallbackToTxID","Output":"--- PASS: TestRequestIDFallbackToTxID (0.00s)\n"}
+{"Time":"2026-09-08T09:10:07.997166+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestRequestIDFallbackToTxID","Elapsed":0}
+{"Time":"2026-09-08T09:10:07.997172+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestMaskMatchedDataMasksAllOccurrences"}
+{"Time":"2026-09-08T09:10:07.997176+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestMaskMatchedDataMasksAllOccurrences","Output":"=== RUN   TestMaskMatchedDataMasksAllOccurrences\n"}
+{"Time":"2026-09-08T09:10:07.997255+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestMaskMatchedDataMasksAllOccurrences","Output":"--- PASS: TestMaskMatchedDataMasksAllOccurrences (0.00s)\n"}
+{"Time":"2026-09-08T09:10:07.997263+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestMaskMatchedDataMasksAllOccurrences","Elapsed":0}
+{"Time":"2026-09-08T09:10:07.997269+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMasksSensitiveHeaderMatchedData"}
+{"Time":"2026-09-08T09:10:07.997284+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMasksSensitiveHeaderMatchedData","Output":"=== RUN   TestParseLineMasksSensitiveHeaderMatchedData\n"}
+{"Time":"2026-09-08T09:10:07.998261+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMasksSensitiveHeaderMatchedData","Output":"--- PASS: TestParseLineMasksSensitiveHeaderMatchedData (0.00s)\n"}
+{"Time":"2026-09-08T09:10:07.998289+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineMasksSensitiveHeaderMatchedData","Elapsed":0}
+{"Time":"2026-09-08T09:10:07.998299+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineNonSensitiveHeaderMatchedDataKept"}
+{"Time":"2026-09-08T09:10:07.998303+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineNonSensitiveHeaderMatchedDataKept","Output":"=== RUN   TestParseLineNonSensitiveHeaderMatchedDataKept\n"}
+{"Time":"2026-09-08T09:10:07.998973+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineNonSensitiveHeaderMatchedDataKept","Output":"--- PASS: TestParseLineNonSensitiveHeaderMatchedDataKept (0.00s)\n"}
+{"Time":"2026-09-08T09:10:07.999016+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineNonSensitiveHeaderMatchedDataKept","Elapsed":0}
+{"Time":"2026-09-08T09:10:07.999025+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExtendedAttackTypes"}
+{"Time":"2026-09-08T09:10:07.999029+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExtendedAttackTypes","Output":"=== RUN   TestParseLineExtendedAttackTypes\n"}
+{"Time":"2026-09-08T09:10:08.001283+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExtendedAttackTypes","Output":"--- PASS: TestParseLineExtendedAttackTypes (0.00s)\n"}
+{"Time":"2026-09-08T09:10:08.001309+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExtendedAttackTypes","Elapsed":0}
+{"Time":"2026-09-08T09:10:08.001316+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineFinalDecisionBlocked"}
+{"Time":"2026-09-08T09:10:08.001321+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineFinalDecisionBlocked","Output":"=== RUN   TestParseLineFinalDecisionBlocked\n"}
+{"Time":"2026-09-08T09:10:08.002495+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineFinalDecisionBlocked","Output":"--- PASS: TestParseLineFinalDecisionBlocked (0.00s)\n"}
+{"Time":"2026-09-08T09:10:08.002527+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineFinalDecisionBlocked","Elapsed":0}
+{"Time":"2026-09-08T09:10:08.002535+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionHitNotAttack"}
+{"Time":"2026-09-08T09:10:08.00254+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionHitNotAttack","Output":"=== RUN   TestParseLineExceptionHitNotAttack\n"}
+{"Time":"2026-09-08T09:10:08.003455+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionHitNotAttack","Output":"--- PASS: TestParseLineExceptionHitNotAttack (0.00s)\n"}
+{"Time":"2026-09-08T09:10:08.003467+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionHitNotAttack","Elapsed":0}
+{"Time":"2026-09-08T09:10:08.003474+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionOnlyNoAttack"}
+{"Time":"2026-09-08T09:10:08.003479+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionOnlyNoAttack","Output":"=== RUN   TestParseLineExceptionOnlyNoAttack\n"}
+{"Time":"2026-09-08T09:10:08.004158+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionOnlyNoAttack","Output":"--- PASS: TestParseLineExceptionOnlyNoAttack (0.00s)\n"}
+{"Time":"2026-09-08T09:10:08.004188+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionOnlyNoAttack","Elapsed":0}
+{"Time":"2026-09-08T09:10:08.004196+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionSegmentGuard"}
+{"Time":"2026-09-08T09:10:08.0042+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionSegmentGuard","Output":"=== RUN   TestParseLineExceptionSegmentGuard\n"}
+{"Time":"2026-09-08T09:10:08.004597+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionSegmentGuard","Output":"--- PASS: TestParseLineExceptionSegmentGuard (0.00s)\n"}
+{"Time":"2026-09-08T09:10:08.004627+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLineExceptionSegmentGuard","Elapsed":0}
+{"Time":"2026-09-08T09:10:08.004633+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLinePhase4InterruptedStatus"}
+{"Time":"2026-09-08T09:10:08.004637+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLinePhase4InterruptedStatus","Output":"=== RUN   TestParseLinePhase4InterruptedStatus\n"}
+{"Time":"2026-09-08T09:10:08.005064+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLinePhase4InterruptedStatus","Output":"--- PASS: TestParseLinePhase4InterruptedStatus (0.00s)\n"}
+{"Time":"2026-09-08T09:10:08.00511+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Test":"TestParseLinePhase4InterruptedStatus","Elapsed":0}
+{"Time":"2026-09-08T09:10:08.00648+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Output":"PASS\n"}
+{"Time":"2026-09-08T09:10:09.016178+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Output":"ok  \tgithub.com/jiuzhang-waf/gateway/internal/eventparser\t2.011s\n"}
+{"Time":"2026-09-08T09:10:09.016297+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/internal/eventparser","Elapsed":2.013}

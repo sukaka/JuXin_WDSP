@@ -105,7 +105,7 @@ export const AI_AGENT_NAMES: Record<string, string> = {
 
 export const AI_NOISE_SOURCE_META: Record<string, { color: string; label: string }> = {
   WAF: { color: 'blue', label: 'WAF 事件' },
-  API: { color: 'purple', label: '接口事件' },
+  API: { color: 'purple', label: 'API 事件' },
 }
 
 export const AI_NOISE_STATUS_META: Record<string, { color: string; label: string }> = {
@@ -132,6 +132,7 @@ export const AI_STEP_META: Record<string, { color: string; label: string }> = {
   agent_start: { color: 'processing', label: '智能体开始' },
   agent_done: { color: 'green', label: '智能体完成' },
   composing: { color: 'processing', label: '生成回答' },
+  degraded: { color: 'orange', label: '模型降级' },
   tool: { color: 'cyan', label: '工具调用' },
   error: { color: 'red', label: '错误' },
   compressed: { color: 'orange', label: '上下文压缩' },

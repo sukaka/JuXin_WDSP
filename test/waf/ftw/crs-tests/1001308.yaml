@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: PNG 魔数图片马检测（\\x89PNG 后紧跟脚本标签，自建规则 1001308）
+rule_id: 1001308
+tests:
+  - test_id: 1
+    desc: "urlencoded 提交 PNG 魔数+<% 图片马；含非法 UTF-8 字节，PROTECT 模式下 CRS 920250 先行计分阻断，故断言 403（DetectionOnly 下 1001308 命中，已经引擎级测试验证）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/x-www-form-urlencoded"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "file=%89PNG%0d%0a%1a%0aIHDR%3C%25x"
+          version: HTTP/1.1
+        output:
+          status: [403]

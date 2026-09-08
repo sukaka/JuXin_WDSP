@@ -1,12 +1,13 @@
 package detectors
 
 import (
-	"hash/fnv"
+	"encoding/base64"
+	"encoding/json"
 	"net"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
+	"time"
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 )
@@ -128,6 +129,123 @@ func checkAuthorization(ctx *dsctx.RequestContext, v string) {
 	}
 	if !reTokenBase64ish.MatchString(token) {
 		weak("not_base64ish", scheme, len(token))
+		return
+	}
+	// Bearer JWT 结构级识别（不验签、不落 payload 明文；仅 OBSERVE）
+	if scheme == "bearer" {
+		checkJWTStructure(ctx, token)
+	}
+}
+
+// checkJWTStructure 对疑似 JWT（两段点分隔三部）做结构级安全信号。
+// 纪律：只解 header/claims 的 alg/exp/kid 形态，不做签名校验、不把 sub/email 等写入证据。
+func checkJWTStructure(ctx *dsctx.RequestContext, token string) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return // 非 JWT 形态（opaque bearer）不处理
+	}
+	hdrJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		// 兼容带 padding
+		hdrJSON, err = base64.URLEncoding.DecodeString(parts[0])
+		if err != nil {
+			ctx.AddMatch(dsctx.DetectorMatch{
+				Detector:   "authentication",
+				RuleID:     "auth.jwt_malformed_header",
+				Category:   "OBSERVE",
+				Severity:   "LOW",
+				Message:    "jwt header not decodable",
+				Evidence:   map[string]string{"reason": "header_b64"},
+				ScoreDelta: 5,
+			})
+			return
+		}
+	}
+	var hdr map[string]any
+	if err := json.Unmarshal(hdrJSON, &hdr); err != nil {
+		ctx.AddMatch(dsctx.DetectorMatch{
+			Detector:   "authentication",
+			RuleID:     "auth.jwt_malformed_header",
+			Category:   "OBSERVE",
+			Severity:   "LOW",
+			Message:    "jwt header json invalid",
+			Evidence:   map[string]string{"reason": "header_json"},
+			ScoreDelta: 5,
+		})
+		return
+	}
+	alg, _ := hdr["alg"].(string)
+	algLower := strings.ToLower(strings.TrimSpace(alg))
+	if algLower == "none" || algLower == "" {
+		ctx.AddMatch(dsctx.DetectorMatch{
+			Detector:   "authentication",
+			RuleID:     "auth.jwt_alg_none",
+			Category:   "OBSERVE",
+			Severity:   "HIGH",
+			Message:    "jwt alg none or empty",
+			Evidence:   map[string]string{"alg": clipScheme(algLower)},
+			ScoreDelta: 25,
+		})
+	}
+	// kid 路径穿越形态（不输出 kid 全文，只记 reason）
+	if kid, ok := hdr["kid"].(string); ok {
+		lk := strings.ToLower(kid)
+		if strings.Contains(lk, "../") || strings.HasPrefix(lk, "file:") || strings.Contains(lk, "/etc/") {
+			ctx.AddMatch(dsctx.DetectorMatch{
+				Detector:   "authentication",
+				RuleID:     "auth.jwt_kid_traversal",
+				Category:   "OBSERVE",
+				Severity:   "HIGH",
+				Message:    "jwt kid looks like path traversal",
+				Evidence:   map[string]string{"reason": "kid_path_like"},
+				ScoreDelta: 25,
+			})
+		}
+	}
+	// 空签名段
+	if parts[2] == "" {
+		ctx.AddMatch(dsctx.DetectorMatch{
+			Detector:   "authentication",
+			RuleID:     "auth.jwt_empty_signature",
+			Category:   "OBSERVE",
+			Severity:   "MEDIUM",
+			Message:    "jwt empty signature segment",
+			Evidence:   map[string]string{"reason": "empty_sig"},
+			ScoreDelta: 15,
+		})
+	}
+	// exp 过期（若 claims 可解；仅作信号，不验签）
+	claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		claimsJSON, err = base64.URLEncoding.DecodeString(parts[1])
+	}
+	if err == nil {
+		var claims map[string]any
+		if json.Unmarshal(claimsJSON, &claims) == nil {
+			if exp, ok := claimUnix(claims["exp"]); ok && exp < time.Now().Unix() {
+				ctx.AddMatch(dsctx.DetectorMatch{
+					Detector:   "authentication",
+					RuleID:     "auth.jwt_expired",
+					Category:   "OBSERVE",
+					Severity:   "MEDIUM",
+					Message:    "jwt exp in the past (unverified claims)",
+					Evidence:   map[string]string{"reason": "exp_past"},
+					ScoreDelta: 10,
+				})
+			}
+		}
+	}
+}
+
+func claimUnix(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int64(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	default:
+		return 0, false
 	}
 }
 
@@ -158,17 +276,35 @@ func lengthBucket(n int) string {
 	}
 }
 
-// IdentityKey 身份维度键：凭据指纹（FNV-1a，非明文）优先，缺省回退客户端 IP。
-// 供 behavior/ratelimit/resource 检测器做维度归并；指纹非可逆，不落明文。
-func IdentityKey(r *http.Request) string {
+// CredentialKey 身份维度键：仅由凭据派生（auth:/key:/sess: 前缀 + 统一加盐指纹），
+// 无凭据返回空串（匿名）。身份维度不得由 IP 冒充（边界规则见 docs/API_MICRO_MODELS.md §2.2：
+// IP 属访问微模型的环境维度；NAT/出口代理会把大量用户折叠成一个“身份”）。
+// 凭据明文不出本函数作用域。
+func CredentialKey(r *http.Request, salt string) string {
 	if r == nil {
-		return "unknown"
+		return ""
 	}
 	if v := strings.TrimSpace(r.Header.Get("Authorization")); v != "" {
-		return "auth:" + fingerprint(v)
+		return "auth:" + Fingerprint(salt, v)
 	}
 	if v := strings.TrimSpace(r.Header.Get("X-API-Key")); v != "" {
-		return "key:" + fingerprint(v)
+		return "key:" + Fingerprint(salt, v)
+	}
+	if v := strings.TrimSpace(r.Header.Get("Cookie")); v != "" {
+		return "sess:" + Fingerprint(salt, v)
+	}
+	return ""
+}
+
+// TrackingKey 追踪维度键：凭据指纹优先（见 CredentialKey），无凭据回退 ip:+客户端 IP。
+// 仅供 behavior/ratelimit/resource 检测器的滑窗/游标计数使用（避免匿名流量全部并入同一桶）；
+// 不得作为身份指纹输出到事件或画像。
+func TrackingKey(r *http.Request, salt string) string {
+	if key := CredentialKey(r, salt); key != "" {
+		return key
+	}
+	if r == nil {
+		return "unknown"
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil || host == "" {
@@ -178,11 +314,4 @@ func IdentityKey(r *http.Request) string {
 		return "unknown"
 	}
 	return "ip:" + host
-}
-
-// fingerprint 轻量指纹（FNV-1a 64，非加密用途，与 parser.BodyHash 同族）。
-func fingerprint(v string) string {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(v))
-	return strconv.FormatUint(h.Sum64(), 16)
 }

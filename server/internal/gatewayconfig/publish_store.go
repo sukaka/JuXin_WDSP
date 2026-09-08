@@ -163,14 +163,24 @@ func (p *Publisher) setTaskTargetVersion(ctx context.Context, taskID, versionID 
 // saveVersion 保存配置版本（不可变）。
 // 版本号：V<UTC 毫秒时间戳>-<哈希前8>；同秒同配置的快速连续发布会冲突，
 // 撞唯一约束时追加序号重试（不静默失败，超出次数如实返回错误）。
+// 密钥纪律：版本表不再保存密钥明文，回滚时重注入当前密钥（见 config_secrets.go）——
+// configuration_json 存储脱敏形态（guard 段 valkey 密码、identity_salt、扫描/文件签名
+// key_hex、TLS 票据键以 "***" 占位）；configuration_hash 仍为实发配置哈希（生效校验口径不变）。
 func (p *Publisher) saveVersion(ctx context.Context, gen *Generated, snapshot map[string]interface{}, in PublishInput, taskID uuid.UUID) (*ConfigVersion, error) {
 	base := fmt.Sprintf("V%s-%s", time.Now().UTC().Format("20060102.150405.000"), gen.Hash[:8])
 
 	snapshotJSON, _ := json.Marshal(snapshot)
-	// 上一版本
+	storedJSON, err := RedactConfigSecrets(gen.JSON)
+	if err != nil {
+		return nil, fmt.Errorf("redact config version secrets: %w", err)
+	}
+	// 上一版本（无生效版本属正常：首轮发布；其余查询错误如实上抛，不静默吞掉）
 	var prevID *uuid.UUID
-	_ = p.db.QueryRow(ctx,
+	err = p.db.QueryRow(ctx,
 		`SELECT id FROM gateway_config_versions WHERE is_current = TRUE LIMIT 1`).Scan(&prevID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("query previous config version: %w", err)
+	}
 
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
@@ -180,7 +190,7 @@ func (p *Publisher) saveVersion(ctx context.Context, gen *Generated, snapshot ma
 		}
 		v := &ConfigVersion{
 			VersionNumber:     versionNum,
-			ConfigurationJSON: gen.JSON,
+			ConfigurationJSON: storedJSON,
 			ConfigurationHash: gen.Hash,
 			BusinessSnapshot:  string(snapshotJSON),
 			ChangeSummary:     fmt.Sprintf("发布 %d 个应用", len(snapshot["apps"].([]map[string]interface{}))),
@@ -197,8 +207,8 @@ RETURNING id, created_at`,
 			v.ChangeSummary, v.PreviousVersionID, v.PublishTaskID, v.CreatedBy,
 		).Scan(&v.ID, &v.CreatedAt)
 		if err == nil {
-			// 写入版本配置文件
-			_, _ = WriteVersionConfig(p.dataDir, v.VersionNumber, gen.JSON)
+			// 写入版本配置文件（与版本表同口径脱敏存储）
+			_, _ = WriteVersionConfig(p.dataDir, v.VersionNumber, storedJSON)
 			return v, nil
 		}
 		lastErr = err
@@ -341,6 +351,7 @@ FROM gateway_config_versions ORDER BY created_at DESC LIMIT $1 OFFSET $2`, pageS
 }
 
 // GetCurrentVersion 查询当前生效版本。
+// 无生效版本（从未发布）返回 (nil, nil)；其余扫描/查询错误如实上抛，不吞成 (nil, nil)。
 func (p *Publisher) GetCurrentVersion(ctx context.Context) (*ConfigVersion, error) {
 	row := p.db.QueryRow(ctx, `
 SELECT id, version_number, configuration_json, configuration_hash, business_snapshot, change_summary,
@@ -349,7 +360,10 @@ SELECT id, version_number, configuration_json, configuration_hash, business_snap
 FROM gateway_config_versions WHERE is_current = TRUE LIMIT 1`)
 	v, err := scanVersion(row)
 	if err != nil {
-		return nil, nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	return v, nil
 }
@@ -362,7 +376,7 @@ func scanVersion(row pgx.Row) (*ConfigVersion, error) {
 		&v.PublishedBy, &v.PublishedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("version not found")
+			return nil, fmt.Errorf("version not found: %w", err)
 		}
 		return nil, err
 	}

@@ -90,6 +90,9 @@ services:
       WAF_CRS_VERSION: 4.28.0
       WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
       GATEWAY_NODE_NAME: gateway-stage3-01
+      # 采集器批量/周期 flush 阈值（W20 批量化修复；作用于 API 运行时事件与全量访问日志采集器）
+      WAF_COLLECTOR_FLUSH_BATCH: ${WAF_COLLECTOR_FLUSH_BATCH:-2000}
+      WAF_COLLECTOR_FLUSH_INTERVAL: ${WAF_COLLECTOR_FLUSH_INTERVAL:-2s}
     ports:
       - "127.0.0.1:${API_PORT:-18081}:8080"
     volumes:

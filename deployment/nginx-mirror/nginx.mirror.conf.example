@@ -1,0 +1,69 @@
+# WDSP Agent mirrorsrc 接入 —— Nginx mirror 配置示例（P1-03 G2）
+# 配合 deployment/nginx-mirror/README.md 使用。占位符：
+#   __MIRROR_TOKEN__    与 agent.json mirror.instance_token 一致的随机令牌（≥32B hex）
+#   __MIRROR_SOCK__     适配器 Unix Socket 路径（默认 /var/run/wdsp-agent/nginx-mirror.sock）
+# 约束：mirror location 必须 internal；实例标识头必须 proxy_set_header 覆盖注入
+# （mirror 子请求继承原请求头，客户端同名伪造头必须被覆盖）。
+
+http {
+    upstream business_backend {
+        server 127.0.0.1:18081;   # 业务源站（按实际改）
+    }
+
+    server {
+        listen 443 ssl;
+        server_name app.example.com;
+        ssl_certificate     /etc/nginx/tls/app.crt;
+        ssl_certificate_key /etc/nginx/tls/app.key;
+
+        # 伪造来源头覆盖（双保险；适配器侧仍不采信外部头做身份/拓扑判定）
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # 默认：仅元数据镜像（不预读正文，对上传/流式业务零额外开销）
+        location / {
+            set $wdsp_mirror_target $request_uri;
+            set $wdsp_orig_cl $http_content_length;
+            mirror /__wdsp_mirror;
+            proxy_pass http://business_backend;
+        }
+
+        # 正文按路径显式开启（mirror_request_body 会预读正文，影响非缓冲代理
+        # 与上传/流式业务时延；务必配 client_max_body_size 限额）
+        location /api/ {
+            set $wdsp_mirror_target $request_uri;
+            mirror /__wdsp_mirror_body;
+            mirror_request_body on;
+            client_max_body_size 32m;
+            proxy_pass http://business_backend;
+        }
+
+        # 元数据镜像出口：显式清空 Content-Length（否则接收端按继承的头等待
+        # 不存在的正文）；原始正文大小经可信控制头传递（适配器剥离不入记录）
+        location = /__wdsp_mirror {
+            internal;
+            proxy_pass http://unix:__MIRROR_SOCK__:$wdsp_mirror_target;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header X-WDSP-Mirror-Instance "__MIRROR_TOKEN__";
+            proxy_set_header Content-Length "";
+            proxy_set_header Connection "";
+            proxy_set_header X-WDSP-Original-Body-Size $wdsp_orig_cl;
+        }
+
+        # 正文镜像出口：保留子请求正文及其 Content-Length。
+        # 注意：client_max_body_size 在 mirror 子请求进入本 internal location 时
+        # 重新生效（默认 1m 会拒大正文子请求），必须与业务侧对齐
+        location = /__wdsp_mirror_body {
+            internal;
+            client_max_body_size 32m;
+            proxy_pass http://unix:__MIRROR_SOCK__:$wdsp_mirror_target;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_set_header X-WDSP-Mirror-Instance "__MIRROR_TOKEN__";
+        }
+    }
+}

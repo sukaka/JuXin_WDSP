@@ -3120,7 +3120,7 @@ components:
           description: 总条数
     Exception:
       type: object
-      description: WAF 例外策略
+      description: WAF / API 例外策略（P0-04 起含目标引擎与编译/审查扩展字段）
       properties:
         id:
           type: string
@@ -3139,7 +3139,7 @@ components:
           - GLOBAL
           - APPLICATION
           - POLICY
-          description: 范围类型
+          description: 范围类型（P0-04 起新启用必须为 APPLICATION；GLOBAL 历史记录保留可读、禁止启用）
         application_id:
           type: string
           format: uuid
@@ -3149,73 +3149,73 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: 策略 ID（只读字段；创建/更新请求不接受该字段）
+          description: 策略 ID（创建/更新请求可传入）
         domain:
           type: string
-          description: 限定域名（Host 精确匹配）
+          description: 限定域名（Host 精确匹配，允许带端口、大小写不敏感）
         uri_exact:
           type: string
-          description: 限定 URI（精确匹配）
+          description: 限定 URI（精确匹配，不含 query）
         uri_prefix:
           type: string
-          description: 限定 URI（前缀匹配）
+          description: 限定 URI（按路径段边界前缀匹配；不得以裸 / 为唯一范围）
         uri_regex:
           type: string
-          description: 限定 URI（正则匹配，须为合法正则）
+          description: 限定 URI（正则匹配，RE2 语法；历史/高级配置，启用需 risk_acknowledged 且 ≤512 字符）
         methods:
           type: array
           items:
             type: string
           nullable: true
-          description: 限定 HTTP 方法列表
+          description: 限定 HTTP 方法列表（启用门禁要求非空、标准化大写、≤10）
         source_ips:
           type: array
           items:
             type: string
           nullable: true
-          description: 限定来源 IP/CIDR 列表
+          description: 限定来源 IP/CIDR 列表（可信代理处理后的客户端 IP）
         param_names:
           type: array
           items:
             type: string
           nullable: true
-          description: 限定参数名列表
+          description: '限定参数名列表（编译为 ARGS: 目标排除）'
         cookie_names:
           type: array
           items:
             type: string
           nullable: true
-          description: 限定 Cookie 名列表
+          description: '限定 Cookie 名列表（编译为 REQUEST_COOKIES: 目标排除）'
         header_names:
           type: array
           items:
             type: string
           nullable: true
-          description: 限定请求头名列表
+          description: '限定请求头名列表（编译为 REQUEST_HEADERS: 目标排除，统一大写）'
         rule_ids:
           type: array
           items:
             type: integer
           nullable: true
-          description: 例外作用的规则 ID 列表
+          description: 例外作用的 WAF 规则 ID 列表（API 引擎请使用 api_rule_refs）
         rule_tags:
           type: array
           items:
             type: string
           nullable: true
-          description: 例外作用的规则标签列表
+          description: 例外作用的规则标签列表（REMOVE_RULE_TAG；启用时经规则目录展开冻结进 resolved_rule_ids）
         attack_types:
           type: array
           items:
             type: string
           nullable: true
-          description: 例外作用的攻击类型列表
+          description: 例外作用的攻击类型列表（仅作事件分类/筛选，不构成运行时范围授权）
         content_types:
           type: array
           items:
             type: string
           nullable: true
-          description: 限定 Content-Type 列表
+          description: 限定 Content-Type 列表（规范化 MIME 主类型，参数分离、不含通配符）
         exception_action:
           type: string
           enum:
@@ -3224,10 +3224,12 @@ components:
           - REMOVE_VAR_DETECTION
           - ADJUST_SCORE
           - LOG_ONLY
-          description: 例外动作
+          - OBSERVE_RULE
+          description: 例外动作（WAF：REMOVE_RULE/REMOVE_RULE_TAG/REMOVE_VAR_DETECTION；LOG_ONLY/ADJUST_SCORE 仅历史记录，不支持新启用；API 引擎仅
+            OBSERVE_RULE）
         action_target:
           type: string
-          description: 例外动作目标说明
+          description: 例外动作目标集合别名（仅 REMOVE_VAR_DETECTION：ARGS/REQUEST_COOKIES/REQUEST_HEADERS 或指向已声明目标名）
         is_temporary:
           type: boolean
           description: 是否临时例外；临时例外必须设置 effective_until
@@ -3235,19 +3237,20 @@ components:
           type: string
           format: date-time
           nullable: true
-          description: 生效起始时间
+          description: 生效起始时间（含）
         effective_until:
           type: string
           format: date-time
           nullable: true
-          description: 失效时间，须晚于生效时间
+          description: 失效时间（不含；半开区间，须晚于生效时间）
         status:
           type: string
           enum:
+          - DRAFT
           - ENABLED
           - DISABLED
           - EXPIRED
-          description: 状态；EXPIRED 为临时例外到期后由定时任务自动置为失效
+          description: 状态；P0-04 起新建默认 DRAFT，须经启用门禁置 ENABLED；EXPIRED 为临时例外到期后由定时任务自动置为失效
         risk_acknowledged:
           type: boolean
           description: 是否已确认风险；宽泛例外必须为 true
@@ -3257,6 +3260,55 @@ components:
         version:
           type: integer
           description: 乐观锁版本号，更新时随请求体回传
+        target_engine:
+          type: string
+          enum:
+          - WAF
+          - API
+          description: 目标引擎（默认 WAF：编译为 before-CRS SecLang；API：经 guard 配置 api_exceptions 段下发）
+        api_rule_refs:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              detector_id:
+                type: string
+                description: 检测器 ID（限 api_schema/api_parser 注册表）
+              rule_id:
+                type: string
+                maxLength: 128
+                description: 规则稳定 ID（匹配 Finding 的 rule_id）
+              model_version:
+                type: string
+                description: 模型版本（可选）
+          description: API 引擎目标规则引用（仅 target_engine=API）
+        resolved_rule_ids:
+          type: array
+          items:
+            type: integer
+          nullable: true
+          description: rule_tags 启用时经规则目录展开并冻结的有界规则 ID 集（只读，服务端维护）
+        source_event_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 来源安全事件 ID（从事件创建时服务端可信绑定，只读）
+        validation_status:
+          type: string
+          enum:
+          - VALID
+          - NEEDS_REVIEW
+          description: 校验状态（保存/更新时按启用门禁同一结构化校验重算；NEEDS_REVIEW 禁止启用）
+        compiled_fingerprint:
+          type: string
+          description: 编译摘要（sha256 hex；保存/启用/预览时重算，发布前比对防预览后篡改）
+        unsupported_reasons:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: 不支持字段/动作的可读原因（历史配置审查与预览素材）
     ExceptionUpsertRequest:
       type: object
       required:
@@ -3265,7 +3317,8 @@ components:
       - exception_action
       - is_temporary
       - risk_acknowledged
-      description: 创建/更新例外策略请求体。注意：后端拒绝未知字段（DisallowUnknownFields），不接受 policy_id
+      description: 创建/更新例外策略请求体。后端拒绝未知字段（DisallowUnknownFields）。P0-04 起接受 policy_id、target_engine（默认 WAF）、api_rule_refs（仅
+        API 引擎）；创建默认 DRAFT，启用须走 enable 门禁
       properties:
         name:
           type: string
@@ -3280,29 +3333,34 @@ components:
           - GLOBAL
           - APPLICATION
           - POLICY
-          description: 范围类型
+          description: 范围类型（GLOBAL 历史兼容可保存，禁止启用）
         application_id:
           type: string
           format: uuid
           nullable: true
           description: 应用 ID（scope_type=APPLICATION 时传入）
+        policy_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 策略 ID（P0-04 起创建/更新接受）
         domain:
           type: string
           description: 限定域名（须为合法主机名）
         uri_exact:
           type: string
-          description: 限定 URI（精确匹配）
+          description: 限定 URI（精确匹配，不含 query）
         uri_prefix:
           type: string
-          description: 限定 URI（前缀匹配）
+          description: 限定 URI（按路径段边界前缀匹配）
         uri_regex:
           type: string
-          description: 限定 URI（正则匹配，须为合法正则）
+          description: 限定 URI（正则匹配，RE2 语法；历史/高级配置）
         methods:
           type: array
           items:
             type: string
-          description: 限定 HTTP 方法列表
+          description: 限定 HTTP 方法列表（≤10，标准方法，大小写归一）
         source_ips:
           type: array
           items:
@@ -3312,7 +3370,7 @@ components:
           type: array
           items:
             type: string
-          description: 限定参数名列表
+          description: 限定参数名列表（仅字母/数字/_/-/.）
         cookie_names:
           type: array
           items:
@@ -3327,22 +3385,44 @@ components:
           type: array
           items:
             type: integer
-          description: 例外作用的规则 ID 列表
+          description: 例外作用的 WAF 规则 ID 列表（API 引擎请使用 api_rule_refs）
         rule_tags:
           type: array
           items:
             type: string
-          description: 例外作用的规则标签列表
+          description: 例外作用的规则标签列表（REMOVE_RULE_TAG）
         attack_types:
           type: array
           items:
             type: string
-          description: 例外作用的攻击类型列表
+          description: 例外作用的攻击类型列表（仅作事件分类/筛选）
         content_types:
           type: array
           items:
             type: string
-          description: 限定 Content-Type 列表
+          description: 限定 Content-Type 列表（合法 MIME 主类型，不含通配符）
+        target_engine:
+          type: string
+          enum:
+          - WAF
+          - API
+          description: 目标引擎（默认 WAF）
+        api_rule_refs:
+          type: array
+          items:
+            type: object
+            properties:
+              detector_id:
+                type: string
+                description: 检测器 ID（限 api_schema/api_parser）
+              rule_id:
+                type: string
+                maxLength: 128
+                description: 规则稳定 ID
+              model_version:
+                type: string
+                description: 模型版本（可选）
+          description: API 引擎目标规则引用（≤64 条；仅 target_engine=API 且动作 OBSERVE_RULE）
         exception_action:
           type: string
           enum:
@@ -3351,10 +3431,12 @@ components:
           - REMOVE_VAR_DETECTION
           - ADJUST_SCORE
           - LOG_ONLY
-          description: 例外动作
+          - OBSERVE_RULE
+          description: 例外动作（WAF：REMOVE_RULE/REMOVE_RULE_TAG/REMOVE_VAR_DETECTION；API 仅 OBSERVE_RULE；LOG_ONLY/ADJUST_SCORE
+            仅历史记录可保存，不支持新启用）
         action_target:
           type: string
-          description: 例外动作目标说明
+          description: 例外动作目标集合别名（仅 REMOVE_VAR_DETECTION）
         is_temporary:
           type: boolean
           description: 是否临时例外；为 true 时 effective_until 必填
@@ -3402,6 +3484,144 @@ components:
         total:
           type: integer
           description: 总条数
+    ExceptionPreviewRequest:
+      type: object
+      required:
+      - expected_version
+      description: 例外生效预览请求体（后端拒绝未知字段）
+      properties:
+        expected_version:
+          type: integer
+          description: 调用方持有的当前版本号；与服务端不一致返回 409
+    ExceptionPreviewResponse:
+      type: object
+      description: 例外生效预览（P0-04 契约；不启用、不发布、不回放真实请求）
+      properties:
+        validation_status:
+          type: string
+          enum:
+          - VALID
+          - NEEDS_REVIEW
+          description: 按启用门禁同一结构化校验重算的校验状态（不落库）
+        field_errors:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                description: 字段名
+              message:
+                type: string
+                description: 可读原因
+              code:
+                type: string
+                description: 机器可读码（如 UNSUPPORTED_ACTION）
+          description: 字段级校验错误明细（无则为 null）
+        normalized_scope:
+          type: object
+          description: 规范化范围（方法大写排序；时间为 RFC3339）
+          properties:
+            domain:
+              type: string
+            uri_exact:
+              type: string
+            uri_prefix:
+              type: string
+            uri_regex:
+              type: string
+            methods:
+              type: array
+              items:
+                type: string
+              nullable: true
+            source_ips:
+              type: array
+              items:
+                type: string
+              nullable: true
+            content_types:
+              type: array
+              items:
+                type: string
+              nullable: true
+            effective_from:
+              type: string
+              format: date-time
+              nullable: true
+            effective_until:
+              type: string
+              format: date-time
+              nullable: true
+        resolved_rule_refs:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              engine:
+                type: string
+                enum:
+                - WAF
+                - API
+              rule_id:
+                type: integer
+                description: WAF 规则 ID（engine=WAF）
+              detector_id:
+                type: string
+                description: API 检测器 ID（engine=API）
+              model_version:
+                type: string
+          description: 目标规则引用（WAF：rule_ids + 标签展开冻结集；API：api_rule_refs）
+        effective_window:
+          type: object
+          description: 生效窗口（半开区间 from≤now<until，到期无需再发布）
+          properties:
+            from:
+              type: string
+              format: date-time
+              nullable: true
+            until:
+              type: string
+              format: date-time
+              nullable: true
+            half_open:
+              type: boolean
+              enum:
+              - true
+        unsupported:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              field_or_action:
+                type: string
+                description: 不支持的字段或动作（如 LOG_ONLY）
+              migration_preview:
+                type: string
+                description: 迁移预览说明（改为精确目标排除等）
+          description: 不支持项及迁移预览（EXC-04）
+        protected_modules_unchanged:
+          type: array
+          items:
+            type: string
+          description: 不受例外影响持续有效的保护模块（JWT/ACCESS_CONTROL/CC/RATE_LIMIT_QUOTA/MANUAL_BAN/PROTOCOL_LIMITS/RISK_POLICY）
+        compiled_fingerprint:
+          type: string
+          description: 编译摘要（sha256 hex；预览后草稿被改则指纹变化）
+        required_publish_targets:
+          type: array
+          items:
+            type: string
+          description: 必需发布目标（绑定应用的编码列表）
+        historical_sample_coverage:
+          nullable: true
+          description: 历史样本覆盖率（本阶段恒 null——不显示零影响）
+        estimated_match_count:
+          nullable: true
+          description: 估计命中数（本阶段恒 null——不显示零影响）
     TrustedProxy:
       type: object
       description: 可信代理记录（真实客户端 IP 识别的信任边界）
@@ -3664,12 +3884,21 @@ components:
           format: date-time
     ProtectedAddrListResponse:
       type: object
-      description: 保护地址列表（不分页，仅启用中记录）
+      description: 保护地址分页列表（仅启用中记录）
       properties:
         items:
           type: array
           items:
             $ref: '#/components/schemas/ProtectedAddr'
+        page:
+          type: integer
+          description: 当前页码
+        page_size:
+          type: integer
+          description: 每页条数
+        total:
+          type: integer
+          description: 总条数
     ProtectedAddrDetailResponse:
       type: object
       properties:
@@ -6971,6 +7200,39 @@ components:
           items:
             type: string
           description: 可选最低通知级别词表（[LOW, MEDIUM, HIGH, CRITICAL]）
+    SystemOpsControlRequest:
+      type: object
+      required:
+      - password
+      properties:
+        password:
+          type: string
+          description: 当前登录用户密码（二次确认）
+    SystemOpsFactoryResetRequest:
+      type: object
+      required:
+      - password
+      - confirmText
+      properties:
+        password:
+          type: string
+          description: 当前登录用户密码（二次确认）
+        confirmText:
+          type: string
+          description: 确认文本，必须严格等于「恢复出厂」
+    SystemOpsAcceptedResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          description: 受理提示（指令已受理，系统将在数秒后执行）
+        action:
+          type: string
+          enum:
+          - reboot
+          - shutdown
+          - factory_reset
+          description: 已受理的控制动作
     ReportTemplate:
       type: object
       properties:
@@ -7985,6 +8247,79 @@ components:
         api_endpoints:
           type: integer
           description: 当前 API 端点用量
+    LicenseProtectionState:
+      type: object
+      required:
+      - schema_version
+      - protection_form
+      - commercial_authorization
+      - artifact_integrity
+      - gateway_protection
+      - confidential_computing
+      - recovery
+      properties:
+        schema_version:
+          type: string
+          description: 状态模型版本
+        protection_form:
+          type: string
+          enum:
+          - STANDARD_OFFLINE
+          - CONFIDENTIAL_COMPUTING
+          - UNKNOWN
+          description: 当前交付/保护形态；不代表商业授权本身有效
+        commercial_authorization:
+          type: string
+          enum:
+          - AUTHORIZED
+          - NOT_IMPORTED
+          - EXPIRED
+          - DEVICE_MISMATCH
+          - INVALID
+          - UNKNOWN
+          description: 商业授权事实状态
+        artifact_integrity:
+          type: string
+          enum:
+          - VERIFIED
+          - PENDING_MIGRATION
+          - UNVERIFIABLE
+          - FAILED
+          - UNKNOWN
+          description: 交付物/授权原文完整性事实状态
+        gateway_protection:
+          type: string
+          enum:
+          - PROTECTED
+          - BYPASS
+          - UNAVAILABLE
+          - PRESERVE_EXISTING
+          - UNKNOWN
+          description: 网关实际保护状态；授权有效不自动推导为 PROTECTED
+        confidential_computing:
+          type: string
+          enum:
+          - DISABLED
+          - VERIFIED
+          - FAILED
+          - UNSUPPORTED
+          - UNAVAILABLE
+          - UNKNOWN
+          description: 机密计算启用与验证状态
+        recovery:
+          type: string
+          enum:
+          - NONE
+          - IMPORT_LICENSE
+          - REVALIDATE_PACKAGE
+          - KEEP_LAST_CONFIG
+          - SUPPORT_REQUIRED
+          - UNKNOWN
+          description: 当前状态对应的恢复动作
+        reason:
+          type: string
+          nullable: true
+          description: 面向运维的事实说明
     LicenseState:
       type: object
       properties:
@@ -8027,6 +8362,22 @@ components:
         reason:
           type: string
           description: 无效原因（中文）；有效时为空串
+        integrity_status:
+          type: string
+          enum:
+          - NOT_IMPORTED
+          - VERIFIED
+          - ORIGINAL_MISSING
+          - ENCRYPTION_UNAVAILABLE
+          - DECRYPTION_FAILED
+          - SIGNATURE_INVALID
+          - DB_INCONSISTENT
+          - EXPIRED
+          - DEVICE_MISMATCH
+          - DATABASE_UNAVAILABLE
+          description: 授权原文与数据库缓存的复核状态
+        protection_state:
+          $ref: '#/components/schemas/LicenseProtectionState'
         host_fingerprint:
           type: string
           description: 本机指纹（sha256:...；未采集时为空串）
@@ -10568,6 +10919,42 @@ components:
           type: string
           format: date-time
           description: 发生时间
+        jwt_verification:
+          type: object
+          nullable: true
+          description: JWT 信任链验证摘要（WDSP P0-03，迁移 000127）。网关未上报或请求未经 jwt_trust 范围评估时为 NULL，历史事件不回填，消费端必须容忍缺失。脱敏纪律：不含原始 Token/完整
+            payload/明文 sub 或 tenant，principal/tenant 均为加盐 HMAC 指纹；UNVERIFIED 表示策略关闭或不在校验范围，不代表非法用户。
+          properties:
+            status:
+              type: string
+              enum:
+              - VERIFIED
+              - INVALID
+              - UNAVAILABLE
+              - NOT_PRESENT
+              - UNVERIFIED
+              description: 验证状态
+            reason_code:
+              type: string
+              description: 固定原因码（16 枚举，如 VALID/SIGNATURE_INVALID/EXPIRED/KEYSET_UNAVAILABLE 等）
+            policy_version:
+              type: string
+              description: 本次验证依据的策略版本戳
+            issuer_config_id:
+              type: string
+              description: 命中的 issuer 配置 ID
+            keyset_version:
+              type: string
+              description: 密钥集版本
+            verified_principal_id:
+              type: string
+              description: 可信主体指纹（应用隔离 HMAC，非明文 sub；仅 VERIFIED 非空）
+            verified_tenant_id:
+              type: string
+              description: 可信租户指纹（加盐 HMAC，非明文 tenant；仅 VERIFIED 且配置 tenant_claim 时非空）
+            evaluated_at:
+              type: string
+              description: 验证时间（RFC3339 UTC）
     ApiSecRuntimeEventListResponse:
       type: object
       description: 运行时事件分页响应（统一分页结构）
@@ -17515,6 +17902,8 @@ components:
         unclassified_requests:
           type: integer
           description: 未归类端点（__UNCLASSIFIED__）请求数（access_log 关闭时为 0）
+        availability:
+          $ref: '#/components/schemas/ApmAvailability'
     ApmServiceRow:
       type: object
       description: APM 服务（应用）列表行
@@ -17565,7 +17954,7 @@ components:
           description: 窗口内最后有流量的聚合桶时间（无流量为 null）
     ApmServiceListResponse:
       type: object
-      description: 服务分页响应（统一分页结构）
+      description: 服务分页响应（统一分页结构 + availability 数据质量自述）
       properties:
         items:
           type: array
@@ -17577,6 +17966,8 @@ components:
           type: integer
         total:
           type: integer
+        availability:
+          $ref: '#/components/schemas/ApmAvailability'
     ApmStatusClassCount:
       type: object
       properties:
@@ -17644,6 +18035,8 @@ components:
           items:
             $ref: '#/components/schemas/ApmEndpointStat'
           description: 慢端点榜（按 p95 降序，最多 5 个；access_log 关闭时为空数组）
+        availability:
+          $ref: '#/components/schemas/ApmAvailability'
     ApmEndpointRow:
       type: object
       description: APM 端点列表行
@@ -17690,7 +18083,7 @@ components:
           description: 窗口内最后出现的聚合桶时间
     ApmEndpointListResponse:
       type: object
-      description: 端点分页对象（在统一分页结构上将 items 命名为 list，并扩展 access_log_enabled）
+      description: 端点分页对象（在统一分页结构上将 items 命名为 list，并扩展 access_log_enabled 与 availability）
       properties:
         list:
           type: array
@@ -17705,6 +18098,8 @@ components:
         access_log_enabled:
           type: boolean
           description: logging.access_log_enabled 当前状态（false 时 list 恒为空数组）
+        availability:
+          $ref: '#/components/schemas/ApmAvailability'
     ApmTraceAccessLog:
       type: object
       description: trace 关联的访问记录（安全子集，不含请求/响应头体留痕）
@@ -17841,6 +18236,10 @@ components:
           - otel
           - mixed
           description: 数据来源说明（与 data_source 同值）
+        availability:
+          $ref: '#/components/schemas/ApmAvailability'
+        correlation:
+          $ref: '#/components/schemas/ApmCorrelation'
     ApmOTelSpan:
       type: object
       description: OTel 瀑布单个 span（attributes 仅白名单键——HTTP 方法/路由/状态码、db.system/db.operation.name/db.namespace、消息与 RPC 语义键、jiuzhang.waf_action；db.statement/url.query/头体留痕类键严禁透传）
@@ -17942,6 +18341,120 @@ components:
         message:
           type: string
           description: 降级原因提示（正常时为空串）
+        availability:
+          $ref: '#/components/schemas/ApmAvailability'
+        correlation:
+          $ref: '#/components/schemas/ApmCorrelation'
+          description: 关联判定（仅 request_id 检索时携带；trace_id 直达不经解析链，字段缺省）
+    ApmAvailability:
+      type: object
+      description: 数据质量自述（reason_codes/observed_sources 恒为数组而非 null；last_collected_at/last_ingested_at 未知为 null，不以当前时间伪造；estimated_lag_ms
+        仅在取得可比较水位时非 null——表级 max(Timestamp) 估计值，非请求级精确延迟）
+      properties:
+        query_state:
+          type: string
+          enum:
+          - READY
+          - EMPTY
+          - PARTIAL
+          - UNAVAILABLE
+          description: READY=有实际可用数据；EMPTY=成功查询的零结果；PARTIAL=部分结果（丢 Span/单腿降级/截断）；UNAVAILABLE=存储未配置/不可用
+        reason_codes:
+          type: array
+          items:
+            type: string
+            enum:
+            - STORAGE_NOT_CONFIGURED
+            - STORAGE_UNAVAILABLE
+            - ACCESS_LOG_DISABLED
+            - NO_INSTRUMENTATION_CONFIRMED
+            - NOT_SAMPLED_CONFIRMED
+            - INGESTION_DELAY_CONFIRMED
+            - OUTSIDE_RETENTION
+            - NO_MATCH
+            - UNKNOWN
+          description: 原因码（只填有依据者；NO_INSTRUMENTATION_CONFIRMED/NOT_SAMPLED_CONFIRMED 当前无证据来源、词表冻结保留但不产出）
+        observed_sources:
+          type: array
+          items:
+            type: string
+            enum:
+            - GATEWAY
+            - OTEL
+          description: 本次真实查询结果观测到的数据源（Agent 心跳不构成观测证据）
+        last_collected_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近实际观测到的数据时间（本次结果集内；未知为 null）
+        last_ingested_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: CH 数据面最近确认入库水位（otel_traces max(Timestamp)；未知为 null）
+        estimated_lag_ms:
+          type: integer
+          format: int64
+          nullable: true
+          description: 采集滞后估计（now − last_ingested_at，非负；仅有水位时非 null）
+        partial:
+          type: boolean
+          description: 丢 Span/降级/截断/关闭的腿导致部分结果
+    ApmCorrelation:
+      type: object
+      description: 关联判定（独立于数据源健康；后端不轮询，PENDING 的有界等待归前端）
+      properties:
+        state:
+          type: string
+          enum:
+          - MATCHED
+          - AMBIGUOUS
+          - PENDING
+          - NOT_FOUND
+          - NOT_EXPECTED
+          - UNKNOWN
+          description: MATCHED=唯一候选且已命中；AMBIGUOUS=一对多（候选全列不任取第一条）；PENDING=目标可能尚在采集/入库途中；NOT_FOUND=目标在证据范围内不存在；NOT_EXPECTED=已证实网关终止且未调用源站（BLOCK
+            动作证据），无 Span 为预期；UNKNOWN=证据不足不编造结论
+        match_basis:
+          type: string
+          enum:
+          - request_id_to_trace_id
+          - trace_id_direct
+          description: 匹配依据（request_id 经 access_logs 解析链 / trace_id 直接精确匹配）
+        candidate_count:
+          type: integer
+          description: 候选数（与 candidates 长度一致）
+        reason:
+          type: string
+          description: 人类可读判定解释（无附带说明为空串）
+        candidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApmCorrelationCandidate'
+          description: 候选列表（无候选为空数组）
+    ApmCorrelationCandidate:
+      type: object
+      description: 关联候选（一对多时逐候选返回时间/服务/匹配依据）
+      properties:
+        trace_id:
+          type: string
+          description: 候选 trace ID（32 位十六进制）
+        occurred_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 候选时间（数据面 trace 起始或访问记录发生时间；未知为 null）
+        services:
+          type: array
+          items:
+            type: string
+          description: 候选涉及服务（未知为空数组，上限 16）
+        match_basis:
+          type: string
+          enum:
+          - otel_traces.trace_id
+          - access_logs.trace_id
+          description: 候选级依据（数据面 Span 命中 / 网关访问记录解析未确认）
     ApmSqlFingerprintRow:
       type: object
       description: SQL 指纹聚合行（只出指纹不出原始 statement；calls/error_count/avg_ms 来自 002 分钟聚合表，p95_ms/namespace/operation/sample_trace_ids
@@ -18002,6 +18515,20 @@ components:
         message:
           type: string
           description: 降级原因提示（正常时为空串）
+        trace_id:
+          type: string
+          description: 请求侧 trace_id 回显（未提供为空串）
+        match_mode:
+          type: string
+          enum:
+          - trace_exact
+          - window_aggregate
+          description: 定位语义（trace_exact=仅该 trace 的 DB Span 派生；window_aggregate=同时间窗候选聚合）
+        match_note:
+          type: string
+          description: 匹配语义说明（window_aggregate 时如实标注"非特定请求定位"）
+        availability:
+          $ref: '#/components/schemas/ApmAvailability'
     ApmExceptionRow:
       type: object
       description: 异常指纹聚合行（002 异常指纹表；不出堆栈原文；首末出现为分钟聚合桶粒度）
@@ -18034,6 +18561,41 @@ components:
           items:
             type: string
           description: 示例 trace ID（去重，上限 3）
+    ApmExceptionTraceItem:
+      type: object
+      description: trace 级异常定位行（trace_id 参数模式，从 otel_traces 的 exception 事件直接派生——精确语义，非窗口聚合候选；文本经凭据形态掩码 + rune 上限截断，截断时对应 *_truncated=true）
+      properties:
+        trace_id:
+          type: string
+          description: trace ID（32 位十六进制）
+        span_id:
+          type: string
+          description: 16 位十六进制 span ID
+        service_name:
+          type: string
+          description: OTel service.name
+        occurred_at:
+          type: string
+          format: date-time
+          description: exception 事件时间（Events.Timestamp，UTC）
+        exception_type:
+          type: string
+          description: 异常类型（exception.type；缺失为空串）
+        exception_message:
+          type: string
+          description: 异常消息（掩码+截断后纯文本，上限 2048 runes）
+        stacktrace:
+          type: string
+          description: 堆栈（掩码+截断后纯文本，上限 8192 runes）
+        fingerprint:
+          type: string
+          description: 异常指纹（hex(MD5(exception.stacktrace 原文))，与窗口聚合行同式可对照）
+        message_truncated:
+          type: boolean
+          description: exception_message 超上限被截断
+        stacktrace_truncated:
+          type: boolean
+          description: stacktrace 超上限被截断
     ApmExceptionData:
       type: object
       description: 异常指纹聚合分页数据（ClickHouse 未配置/不可用时 list 为空、data_source=agentless 且 message 给出原因，不返回 500）
@@ -18058,6 +18620,25 @@ components:
         message:
           type: string
           description: 降级原因提示（正常时为空串）
+        trace_id:
+          type: string
+          description: 请求侧 trace_id 回显（未提供为空串）
+        match_mode:
+          type: string
+          enum:
+          - trace_exact
+          - window_aggregate
+          description: 定位语义（trace_exact=仅该 trace 的 exception 事件；window_aggregate=窗口聚合候选）
+        match_note:
+          type: string
+          description: 匹配语义说明
+        trace_exceptions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApmExceptionTraceItem'
+          description: trace 级定位结果（仅 trace_exact 模式；窗口模式为空数组）
+        availability:
+          $ref: '#/components/schemas/ApmAvailability'
     ApmDependencyEdge:
       type: object
       description: 服务依赖边（客户端 span 单视角派生，无对端 SERVER span 配对）
@@ -18916,7 +19497,6 @@ components:
           - BOT
           - APPLICATION
           - SERVICE
-          - MACHINE
           - AGENT
           - UNKNOWN
           description: 身份类型
@@ -18979,7 +19559,6 @@ components:
           - BOT
           - APPLICATION
           - SERVICE
-          - MACHINE
           - AGENT
           - UNKNOWN
           description: 身份类型
@@ -19887,6 +20466,570 @@ components:
           description: 成员事件（occurred_at 时间序；数量恒等于 session.event_count）
           items:
             $ref: '#/components/schemas/AttackSessionEvent'
+    JwtTrustSelector:
+      type: object
+      description: 请求范围选择器（不同 selector 之间 OR；重叠时 token_required 取 true 优先）
+      properties:
+        methods:
+          type: array
+          items:
+            type: string
+          description: HTTP 方法集合（大写去重；如 ["GET","POST"]）
+        path_exact:
+          type: string
+          description: 精确路径（与 path_prefix 二选一；不含 query）
+        path_prefix:
+          type: string
+          description: 路径前缀（与 path_exact 二选一；按完整路径段匹配——/api 匹配 /api 与 /api/orders，不匹配 /apix；不以 / 结尾）
+        token_required:
+          type: boolean
+          description: 命中该选择器时是否必须携带 Bearer Token
+    JwtTrustKeySource:
+      type: object
+      description: issuer 密钥来源（二选一）
+      properties:
+        type:
+          type: string
+          enum:
+          - STATIC_JWKS
+          - REMOTE_JWKS
+          description: 静态公钥集 / 远程 JWKS 地址
+        jwks:
+          type: string
+          description: STATIC_JWKS 必填：公钥 JWKS JSON 文本（仅公钥；≤256KiB、≤32 个公钥；RSA≥2048 位、EC 仅 P-256；拒绝私钥参数/对称密钥/x5u/jku；kid 非空且集内唯一）
+        url:
+          type: string
+          description: REMOTE_JWKS 必填：HTTPS JWKS 地址（SSRF 校验：默认拒私网/回环/云元数据，内网 IdP 须经 jwt_trust:remote_jwks_allowlist 登记）
+    JwtTrustIssuer:
+      type: object
+      description: 受信发行方配置（issuer 为大小写敏感精确值，策略内唯一）
+      properties:
+        issuer:
+          type: string
+          maxLength: 512
+          description: issuer 精确值（不擅自去路径或末尾斜杠）
+        audiences:
+          type: array
+          items:
+            type: string
+            maxLength: 256
+          description: 合法 audience 集合（非空；Token aud 字符串/数组至少匹配一项）
+        algorithms:
+          type: array
+          items:
+            type: string
+            enum:
+            - RS256
+            - ES256
+          description: 签名算法白名单（非空子集；不由 Token 扩展）
+        key_source:
+          $ref: '#/components/schemas/JwtTrustKeySource'
+        clock_skew_seconds:
+          type: integer
+          minimum: 0
+          maximum: 120
+          description: 时钟偏移宽限（秒，缺省 30）
+        tenant_claim:
+          type: string
+          description: 可选：单一受信 tenant 声明名（仅 VERIFIED 后读取，不自动猜测）
+    JwtTrustPolicy:
+      type: object
+      description: 应用 JWT 信任策略（当前草稿；version 乐观锁不可变递增）
+      properties:
+        id:
+          type: string
+          format: uuid
+        application_id:
+          type: string
+          format: uuid
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - PROTECT
+          description: 模式（默认 OFF——不校验 Token、不产生可信主体；OBSERVE 仅观测；PROTECT 在 API 动态管线阶段强制处置）
+        version:
+          type: integer
+          description: 乐观锁版本（无记录应用为 0；随发布下发供溯源）
+        selectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/JwtTrustSelector'
+          description: 选择器列表（OFF 可空，非 OFF 必填非空）
+        issuers:
+          type: array
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/JwtTrustIssuer'
+          description: 受信发行方列表（OFF 可空，非 OFF 必填非空，≤8 项）
+        updated_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    JwtTrustStatusSummary:
+      type: object
+      description: 状态摘要（草稿 vs 最近成功发布快照中的生效版本）
+      properties:
+        state:
+          type: string
+          enum:
+          - NOT_CONFIGURED
+          - DRAFT_PENDING
+          - PUBLISHED
+          description: 未配置 / 草稿待发布 / 已发布一致
+        draft_version:
+          type: integer
+          description: 当前草稿版本（0=无草稿）
+        published_version:
+          type: integer
+          description: 最近 SUCCESS 发布快照中本应用的策略版本（0=未随发布下发；发布失败保留旧有效版本）
+    JwtTrustPolicyGetResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/JwtTrustPolicy'
+        summary:
+          $ref: '#/components/schemas/JwtTrustStatusSummary'
+    JwtTrustPolicyDetailResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/JwtTrustPolicy'
+    JwtTrustPolicyUpdateRequest:
+      type: object
+      required:
+      - mode
+      - expected_version
+      - reason
+      description: 全量保存草稿请求（expected_version 乐观锁：无草稿=0，已有草稿=当前 version；冲突 409）
+      properties:
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - PROTECT
+        expected_version:
+          type: integer
+          minimum: 0
+        selectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/JwtTrustSelector'
+        issuers:
+          type: array
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/JwtTrustIssuer'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: 变更理由（非空，进入操作审计与不可变版本记录）
+    JwtTrustPreflightRequest:
+      type: object
+      description: 预检候选策略（全部缺省时检查当前草稿；不保存、不发布）
+      properties:
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - PROTECT
+        selectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/JwtTrustSelector'
+        issuers:
+          type: array
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/JwtTrustIssuer'
+    JwtTrustPreflightCheck:
+      type: object
+      properties:
+        name:
+          type: string
+          enum:
+          - structure
+          - remote_url_ssrf
+          - remote_connectivity
+          - pipeline_gate
+          - node_capability
+          description: 检查项
+        status:
+          type: string
+          enum:
+          - PASS
+          - FAIL
+          - WARN
+          - SKIP
+        message:
+          type: string
+          description: 可读原因（结构错误含字段级明细；不含任何秘密材料）
+    JwtTrustPreflightResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/JwtTrustPolicy'
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/JwtTrustPreflightCheck'
+        publishable:
+          type: boolean
+          description: 整体可发布判定（false 时发布链路以同口径拒绝）
+    BotSelector:
+      type: object
+      description: 挑战适用范围选择器（仅 GET 浏览器文档导航——方法固定 GET 不出现在契约中；不同 selector 之间 OR）
+      properties:
+        path_exact:
+          type: string
+          maxLength: 512
+          description: 精确路径（与 path_prefix 二选一；解码后形式、大小写敏感；不含 query/fragment/百分号编码；不得落入保留命名空间）
+        path_prefix:
+          type: string
+          maxLength: 512
+          description: 规范化路径前缀（与 path_exact 二选一；按完整路径段匹配——/docs 匹配 /docs 与 /docs/a，不匹配 /docsx；不以 / 结尾，不允许全站通配 /；不得覆盖保留命名空间）
+    BotSignalRule:
+      type: object
+      description: 单条信号规则（id 稳定且策略内唯一；threshold 语义按指标冻结——占比/计数类 ≥ 阈值触发，known_uri_ratio ≤ 阈值触发，声明匹配类命中即触发且 threshold 恒 0）
+      properties:
+        id:
+          type: string
+          pattern: ^[a-z][a-z0-9_]{0,63}$
+          description: 规则 ID（小写字母开头的小写字母/数字/下划线）
+        group:
+          type: string
+          enum:
+          - request_behavior
+          - access_sequence
+          - client_claim
+          description: 信号组（须与指标所属组一致；client_claim 为可伪造弱声明组）
+        metric:
+          type: string
+          enum:
+          - status_family_ratio
+          - method_ratio
+          - uri_concentration
+          - known_uri_ratio
+          - method_enumeration_size
+          - ua_class_match
+          - tls_client_hint
+          description: 信号指标（白名单；未知指标拒绝）
+        params:
+          type: object
+          additionalProperties:
+            type: string
+          description: 指标参数（按指标白名单：family=2xx/3xx/4xx/5xx；method=HTTP 方法；class=UA 分类；field=version/cipher_suite 配 equals 比对值；多/少/未知键一律拒绝）
+        window_seconds:
+          type: integer
+          minimum: 30
+          maximum: 3600
+          description: 信号窗口（秒）
+        weight:
+          type: number
+          minimum: 0
+          maximum: 10
+          exclusiveMinimum: true
+          description: 规则权重（组满足 = 组内已触发权重和 ≥1）
+        threshold:
+          type: number
+          description: 阈值（占比类 (0,1]；known_uri_ratio [0,1)；计数类 1~100；声明匹配类恒 0）
+    BotSignalRules:
+      type: object
+      description: 多信号判定配置（B0 冻结：≥min_independent_groups 个独立信号组同时满足且至少 1 个行为组才可提出挑战；同源计数派生指标不重复计权）
+      properties:
+        min_independent_groups:
+          type: integer
+          minimum: 2
+          maximum: 3
+          description: 最少独立信号组数（缺省 2）
+        require_behavior_group:
+          type: boolean
+          description: 必须恒 true（至少 1 个行为观测组；缺省 true）
+        rules:
+          type: array
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/BotSignalRule'
+          description: 信号规则列表（OFF 可空，非 OFF 必填非空）
+    BotChallenge:
+      type: object
+      description: 挑战参数（仅第一方 JS 挑战；参数为待测产品初值，非性能保证）
+      properties:
+        type:
+          type: string
+          enum:
+          - JS
+          description: 挑战类型（仅 JS）
+        nonce_ttl_seconds:
+          type: integer
+          minimum: 30
+          maximum: 300
+          description: 挑战 nonce 有效期（秒，默认 90）
+        clearance_ttl_seconds:
+          type: integer
+          minimum: 60
+          maximum: 3600
+          description: 挑战通过后通行有效期（秒，默认 900）
+        difficulty:
+          type: integer
+          minimum: 10
+          maximum: 18
+          description: SHA-256 工作量难度（bit，默认 14）
+        max_attempts:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: 单题最多验证尝试次数（默认 3）
+        key_ref:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_.-]{0,63}$
+          description: 预置内部签名密钥引用名（仅引用名；任何接口与审计均不返回密钥材料）
+    BotRouteReservation:
+      type: object
+      description: 保留路由状态（版本化配置；PUT 未携带时沿用上版草稿状态，防全量替换静默解除墓碑保留）
+      properties:
+        state:
+          type: string
+          enum:
+          - ENABLED
+          - RESERVED_TOMBSTONE
+          - RELEASED
+          description: ENABLED=保留路由已注册 / RESERVED_TOMBSTONE=从已启用状态关闭保留本地 404 墓碑 / RELEASED=保留解除（首次 OFF 且从未启用不抢占业务路径）；PROTECT
+            必须 ENABLED
+        namespace:
+          type: string
+          enum:
+          - /_wdsp/bot/v1/
+          description: 保留命名空间（固定；更换需升 schema 版本）
+    BotPolicy:
+      type: object
+      description: 应用 Bot 挑战策略（当前草稿；version 乐观锁不可变递增）
+      properties:
+        id:
+          type: string
+          format: uuid
+        application_id:
+          type: string
+          format: uuid
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - PROTECT
+          description: 模式（默认 OFF——不观测不挑战、不改变既有流量；OBSERVE 仅观测记录；PROTECT 达阈提出挑战）
+        version:
+          type: integer
+          description: 乐观锁版本（无记录应用为 0；随发布下发供溯源）
+        selectors:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/BotSelector'
+        signal_rules:
+          $ref: '#/components/schemas/BotSignalRules'
+        challenge:
+          $ref: '#/components/schemas/BotChallenge'
+        route_reservation:
+          $ref: '#/components/schemas/BotRouteReservation'
+        updated_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    BotPublishState:
+      type: object
+      description: 最近成功发布快照中本应用策略的生效状态
+      properties:
+        found:
+          type: boolean
+          description: 是否存在成功发布批次（false=从未成功发布）
+        version_no:
+          type: integer
+          description: 发布批次号（0=无）
+        version_id:
+          type: string
+          format: uuid
+          description: 发布批次 ID（与节点 last_sync_version_id 比对）
+        policy_version:
+          type: integer
+          description: 快照 bot_policy 段中本应用策略版本（0=该快照未下发本应用策略）
+    BotNodeSyncState:
+      type: object
+      description: 扇出节点同步状态
+      properties:
+        node_name:
+          type: string
+        last_sync_result:
+          type: string
+          description: SUCCESS/FAILED/HASH_MISMATCH；空=从未同步
+        last_sync_version_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 最近同步的配置版本；null=从未同步
+        effective:
+          type: boolean
+          description: 是否已同步到最新成功发布批次
+    BotStatusSummary:
+      type: object
+      description: 状态摘要（草稿版本 vs 发布批次 vs 节点有效版本分离；不混成一个 enabled）
+      properties:
+        state:
+          type: string
+          enum:
+          - NOT_CONFIGURED
+          - DRAFT_PENDING
+          - PUBLISHED
+          description: 未配置 / 草稿待发布 / 已发布一致
+        draft_version:
+          type: integer
+          description: 当前草稿版本（0=无草稿）
+        published:
+          $ref: '#/components/schemas/BotPublishState'
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/BotNodeSyncState'
+          description: 参与发布扇出的次要节点同步状态（单网关部署为空）
+    BotPolicyGetResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/BotPolicy'
+        summary:
+          $ref: '#/components/schemas/BotStatusSummary'
+    BotPolicyDetailResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/BotPolicy'
+    BotPolicyUpdateRequest:
+      type: object
+      required:
+      - mode
+      - expected_version
+      - reason
+      description: 全量保存草稿请求（expected_version 乐观锁：无草稿=0，已有草稿=当前 version；冲突 409）
+      properties:
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - PROTECT
+        expected_version:
+          type: integer
+          minimum: 0
+        selectors:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/BotSelector'
+        signal_rules:
+          $ref: '#/components/schemas/BotSignalRules'
+        challenge:
+          $ref: '#/components/schemas/BotChallenge'
+        route_reservation:
+          $ref: '#/components/schemas/BotRouteReservation'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: 变更理由（非空，进入操作审计与不可变版本记录）
+    BotPolicyPreflightRequest:
+      type: object
+      description: 预检候选策略（全部缺省时检查当前草稿；不保存、不发布；route_reservation 未携带时沿用上版草稿状态）
+      properties:
+        mode:
+          type: string
+          enum:
+          - false
+          - OBSERVE
+          - PROTECT
+        selectors:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/BotSelector'
+        signal_rules:
+          $ref: '#/components/schemas/BotSignalRules'
+        challenge:
+          $ref: '#/components/schemas/BotChallenge'
+        route_reservation:
+          $ref: '#/components/schemas/BotRouteReservation'
+    BotPreflightCheck:
+      type: object
+      properties:
+        name:
+          type: string
+          enum:
+          - structure
+          - route_conflicts
+          - shared_state
+          - node_capability
+          description: 检查项
+        status:
+          type: string
+          enum:
+          - PASS
+          - FAIL
+          - WARN
+          - SKIP
+        message:
+          type: string
+          description: 可读原因（结构错误含字段级明细；不含任何秘密材料）
+    BotRouteConflict:
+      type: object
+      description: 保留路由冲突条目（status=FAIL 阻断发布，WARN 仅提示）
+      properties:
+        type:
+          type: string
+          enum:
+          - l7_deny_rule
+          - l7_allow_rule
+          - reserved_path_asset
+          - path_route
+          - protected_address_scope
+          description: 冲突来源
+        status:
+          type: string
+          enum:
+          - FAIL
+          - WARN
+        message:
+          type: string
+          description: 可读原因
+        ref:
+          type: string
+          description: 定位信息（规则名/路径/地址段）
+    BotPolicyPreflightResponse:
+      type: object
+      properties:
+        policy:
+          $ref: '#/components/schemas/BotPolicy'
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/BotPreflightCheck'
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/BotRouteConflict'
+        publishable:
+          type: boolean
+          description: 整体可发布判定（false 时发布链路以同口径拒绝）
 paths:
   /auth/captcha:
     get:
@@ -24948,17 +26091,31 @@ paths:
       tags:
       - exceptions
       summary: 创建例外策略
-      description: '创建 WAF 例外策略。校验要点：临时例外（is_temporary=true）必须设置 effective_until；
+      description: '创建 WAF / API 例外策略。校验要点：临时例外（is_temporary=true）必须设置 effective_until；
 
         source_ips 须为合法 IP/CIDR；uri_regex 须为合法正则；domain 须为合法主机名；
 
-        宽泛例外（无具体限定条件的全局例外、面向全部 SQLi/XSS/命令注入类型的例外等，
+        uri_exact/uri_prefix/uri_regex 同时最多配置一个；methods 最多 10 个且须为标准 HTTP 方法；
 
-        见响应 is_broad）必须显式 risk_acknowledged=true，否则返回 400。新例外默认 ENABLED。
+        content_types 须为合法 MIME 主类型（不含通配符）；param_names/cookie_names/header_names
 
-        创建后需发布配置方可生效。宽泛例外记录高风险审计，其余为中风险。
+        仅允许字母/数字/_/-/. 字符；action_target 仅可作为 REMOVE_VAR_DETECTION 的目标集合别名。
 
-        权限：`exceptions.manage`
+        动作 × 引擎矩阵：WAF 引擎支持 REMOVE_RULE/REMOVE_RULE_TAG/REMOVE_VAR_DETECTION
+
+        （LOG_ONLY/ADJUST_SCORE 仅历史记录可保存，P0-04 起不支持新启用）；
+
+        API 引擎仅支持 OBSERVE_RULE 且必须使用 api_rule_refs（detector_id 限 api_schema/api_parser）。
+
+        不支持字段组合返回 400 并带 details.field_errors 字段级错误明细，不静默舍弃。
+
+        宽泛例外（见响应 is_broad）必须显式 risk_acknowledged=true，否则返回 400。
+
+        P0-04 起新例外默认 DRAFT（保存时自动重算 validation_status/compiled_fingerprint），
+
+        须经验证门禁（enable 接口）后方可启用；启用后需发布配置方可生效。
+
+        宽泛例外记录高风险审计，其余为中风险。权限：`exceptions.manage`
 
         '
       requestBody:
@@ -25118,9 +26275,31 @@ paths:
       tags:
       - exceptions
       summary: 启用例外策略
-      description: '将例外策略状态置为 ENABLED。无请求体。启用后需发布配置方可生效。
+      description: '启用例外策略（P0-04 启用门禁）。无请求体。启用前服务端执行结构化范围校验：
 
-        记录操作审计（风险：低）。权限：`exceptions.manage`
+        validation_status 必须为 VALID（NEEDS_REVIEW 记录须先修改达标）；必须绑定真实存在的
+
+        应用（scope_type=APPLICATION，GLOBAL 历史记录保留可读但禁止启用）；methods 非空且
+
+        全部为标准方法；uri_exact/uri_prefix 恰一（uri_regex 为历史/高级配置，另需
+
+        risk_acknowledged 且不超过 512 字符）；uri_prefix 不得以裸 / 为唯一范围；
+
+        临时例外必须有 effective_until 且满足 from < until（半开区间）；
+
+        必须指定目标规则（WAF：rule_ids 非空，REMOVE_RULE_TAG 的规则标签须能经规则目录
+
+        展开为有界规则 ID 集并在启用时冻结进 resolved_rule_ids；API：api_rule_refs 非空且
+
+        detector_id ∈ api_schema/api_parser）。
+
+        LOG_ONLY/ADJUST_SCORE（整请求仅观察/调分语义）与未注册 detector 不支持新启用，
+
+        返回 400 且业务码 UNSUPPORTED_ACTION，details.field_errors 携带迁移预览说明。
+
+        门禁通过后状态置 ENABLED、version 递增，并落库编译摘要 compiled_fingerprint。
+
+        启用后需发布配置方可生效。记录操作审计。权限：`exceptions.manage`
 
         '
       parameters:
@@ -25133,13 +26312,17 @@ paths:
         description: 例外 ID
       responses:
         '200':
-          description: 操作成功
+          description: 启用成功，返回启用后的例外（status=ENABLED、version 已递增、含 compiled_fingerprint）
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MessageResponse'
+                $ref: '#/components/schemas/ExceptionDetailResponse'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: 启用门禁未通过（INVALID_ARGUMENT 或 UNSUPPORTED_ACTION，details.field_errors 含字段级错误与迁移预览）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -25183,6 +26366,67 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 03-policies.yaml
+  /exceptions/{id}/preview:
+    post:
+      operationId: exceptionPreview
+      tags:
+      - exceptions
+      summary: 例外生效预览
+      description: '预览例外生效范围与编译产物（P0-04 契约）：按启用门禁同一结构化校验重算
+
+        validation_status 与 field_errors，返回规范化范围、目标规则引用、生效窗口
+
+        （半开区间 from≤now<until）、不支持项及迁移预览、不受例外影响持续有效的保护
+
+        模块、编译摘要与必需发布目标（应用编码）。expected_version 与当前版本不符返回
+
+        409；预览后草稿被修改会推进 version 并改变 compiled_fingerprint，发布前重验可检出。
+
+        预览不启用、不发布、不回放真实请求；历史日志字段不足，
+
+        historical_sample_coverage 与 estimated_match_count 恒为 null（不显示零影响）。
+
+        记录操作审计（风险：低）。权限：`exceptions.manage`
+
+        '
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 例外 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExceptionPreviewRequest'
+      responses:
+        '200':
+          description: 预览结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExceptionPreviewResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 版本不符（RESOURCE_CONFLICT），例外已被修改，请刷新后重试
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 03-policies.yaml
@@ -25459,8 +26703,8 @@ paths:
       operationId: protectedAddrList
       tags:
       - protected-addresses
-      summary: 保护地址列表（不分页）
-      description: 返回全部启用中（ENABLED）的保护地址，可按地址类型筛选；量级有限，不分页。权限：`protected_addresses.read`
+      summary: 保护地址分页列表
+      description: 返回启用中（ENABLED）的保护地址，可按地址类型筛选，按创建时间升序排列。权限：`protected_addresses.read`
       parameters:
       - name: address_type
         in: query
@@ -25477,9 +26721,21 @@ paths:
           - LINK_LOCAL
           - CUSTOM
         description: 按地址类型筛选
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+        description: 页码
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+        description: 每页条数（最大 100）
       responses:
         '200':
-          description: 保护地址列表
+          description: 分页保护地址列表
           content:
             application/json:
               schema:
@@ -30515,13 +31771,69 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 06-ops.yaml
+  /upgrades/packages/upload:
+    post:
+      operationId: upgradePackageUpload
+      tags:
+      - upgrades
+      summary: 上传升级包
+      description: multipart 上传升级包文件（字段 `file`），服务端流式落盘到升级包目录（`UPGRADE_PACKAGES_DIR`， 默认数据目录下 `upgrade-packages/`）并自算 SHA-256
+        与大小后登记； 附加表单字段 `version_from`、`version_to` 必填，`manifest` 可选（JSON 字符串）。 上传大小上限默认 4GiB（`UPGRADE_PACKAGE_MAX_BYTES` 可覆盖）。
+        同名文件已存在且内容不同、或相同哈希已登记时返回 409。 版本校验未通过仍以 REJECTED 状态登记（保留证据）并删除已落盘文件。写操作审计。权限：`upgrades.execute`。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              - version_from
+              - version_to
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 升级包文件（如 jiuzhang-wdsp-offline-2.6.0-amd64.tar.gz）
+                version_from:
+                  type: string
+                  description: 起始版本（须与当前系统版本一致）
+                  example: 2.5.5
+                version_to:
+                  type: string
+                  description: 目标版本（须高于起始版本）
+                  example: 2.6.0
+                manifest:
+                  type: string
+                  description: 可选 manifest（JSON 字符串，可声明 target_schema_version）
+      responses:
+        '200':
+          description: 上传并登记成功（校验未通过时包状态为 REJECTED 且 message 说明原因）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpgradeRegisterPackageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    x-source: 06-ops.yaml
   /upgrades/precheck:
     post:
       operationId: upgradePrecheck
       tags:
       - upgrades
       summary: 升级前检查
-      description: 对指定升级包执行升级前检查（版本匹配、磁盘空间、依赖可达性、进行中任务、迁移版本、主密钥、 最近已验证备份、未决 CRITICAL 告警等），返回逐项结果与整体是否通过。权限：`upgrades.precheck`。
+      description: 对指定升级包执行升级前检查（版本匹配、磁盘空间、依赖可达性、进行中任务、迁移版本、主密钥、 最近已验证备份、未决 CRITICAL 告警、升级包文件完整性（服务端目录中文件存在且 SHA-256/大小与登记一致，
+        缺失或不一致即 FAIL）等），返回逐项结果与整体是否通过。权限：`upgrades.precheck`。
       requestBody:
         required: true
         content:
@@ -31305,8 +32617,9 @@ paths:
       tags:
       - ha
       summary: 主备组人工回切
-      description: 人工回切（nopreempt 场景把 MASTER 倾向切到指定节点）：交换两成员优先级后整体更新并重新下发， VIP 随选举回切。请求体 node_id 为期望持有 VIP 的节点；目标节点已是高优先级时幂等返回。
-        高危操作，全程操作审计。权限：`ha.manage`。
+      description: 人工回切（nopreempt 场景把 MASTER 倾向切到指定节点）：请求体 node_id 为期望持有 VIP 的节点。 幂等判定以「目标节点已实际持有 VIP」为准：目标已持有 VIP 时直接返回、不做变更；
+        目标优先级低于对端时交换两成员优先级并重新下发，VIP 随选举回切； 目标已是高优先级但确认未持有 VIP（nopreempt 故障转移后的典型场景）时， 微调对端优先级强制其 keepalived 重载让位，仍可执行回切； 目标已是高优先级且无法确认
+        VIP 实际持有方（havipd 未上报或状态过期）时不做变更。 高危操作，全程操作审计。权限：`ha.manage`。
       parameters:
       - name: id
         in: path
@@ -31322,7 +32635,7 @@ paths:
               $ref: '#/components/schemas/HaFailbackRequest'
       responses:
         '200':
-          description: 已交换成员优先级并重新下发（或目标已是高优先级，无需回切）
+          description: 回切已受理并重新下发（交换优先级或微调对端优先级强制让位）， 或目标节点已持有 VIP / 无法确认持有方而未做变更
           content:
             application/json:
               schema:
@@ -31337,6 +32650,96 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 06-ops.yaml
+  /system/reboot:
+    post:
+      operationId: systemReboot
+      tags:
+      - system-ops
+      summary: 系统重启
+      description: 重启系统。高危操作：要求当前用户密码二次确认（错误返回 400 并记 FAILURE 审计）， 校验通过后在宿主控制目录（HOSTCTL_DIR）原子写入指令标志文件，由宿主侧 hostctl 消费执行，
+        全程 CRITICAL 级审计。权限：`system.reboot`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemOpsControlRequest'
+      responses:
+        '202':
+          description: 指令已受理，系统将在数秒后执行
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemOpsAcceptedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 06-ops.yaml
+  /system/shutdown:
+    post:
+      operationId: systemShutdown
+      tags:
+      - system-ops
+      summary: 系统关机
+      description: 关闭系统。高危操作：要求当前用户密码二次确认（错误返回 400 并记 FAILURE 审计）， 校验通过后在宿主控制目录（HOSTCTL_DIR）原子写入指令标志文件，由宿主侧 hostctl 消费执行，
+        全程 CRITICAL 级审计。权限：`system.shutdown`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemOpsControlRequest'
+      responses:
+        '202':
+          description: 指令已受理，系统将在数秒后执行
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemOpsAcceptedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 06-ops.yaml
+  /system/factory-reset:
+    post:
+      operationId: systemFactoryReset
+      tags:
+      - system-ops
+      summary: 恢复出厂设置
+      description: 恢复出厂设置。高危操作：除密码二次确认外，还要求 confirmText 严格等于「恢复出厂」 （不匹配返回 400 并记 FAILURE 审计）；校验通过后在宿主控制目录（HOSTCTL_DIR） 原子写入指令标志文件，由宿主侧
+        hostctl 消费执行，全程 CRITICAL 级审计。 权限：`system.factory_reset`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemOpsFactoryResetRequest'
+      responses:
+        '202':
+          description: 指令已受理，系统将在数秒后执行
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemOpsAcceptedResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 06-ops.yaml
@@ -41682,7 +43085,8 @@ paths:
       - APM
       summary: APM 概览（应用级 RED + 趋势 + 榜单）
       description: 无 Agent 模式（data_source=agentless）业务性能概览：窗口内请求总量、5xx/4xx 错误量、WAF 阻断量、错误率（5xx 占比）、p50/p95/p99 耗时估算、趋势桶序列与慢应用/错误应用/慢端点榜单。top_slow_endpoints
-        与 unclassified_requests 依赖端点级聚合（logging.access_log_enabled 开启才有数据，关闭时返回空数组/0，access_log_enabled 字段如实标识）。权限：`apm.overview.read`
+        与 unclassified_requests 依赖端点级聚合（logging.access_log_enabled 开启才有数据，关闭时返回空数组/0，access_log_enabled 字段如实标识）。响应恒含 availability
+        数据质量自述（网关侧 PG 聚合口径；access_log 关闭时 reason_codes 含 ACCESS_LOG_DISABLED 且 partial=true）。权限：`apm.overview.read`
       parameters:
       - name: start_time
         in: query
@@ -41735,7 +43139,8 @@ paths:
       summary: APM 服务（应用）列表
       description: applications 表分页 LEFT JOIN 窗口聚合指标（无流量的应用如实返回零值与 last_seen_at=null），并关联 apm_agents/apm_services 回填 Agent
         覆盖（agents_online/agents_total/observation_mode；心跳超 APM_AGENT_OFFLINE_MINUTES 判离线，REVOKED 不计）。支持 keyword 按应用名称/code
-        模糊匹配。权限：`apm.services.read`
+        模糊匹配。响应恒含 availability 数据质量自述（窗口内有应用登记行即 READY，observed_sources 仅在确有流量观测时含 GATEWAY 且 last_collected_at 取各行 last_seen_at
+        最大值；无登记行为 EMPTY+NO_MATCH）。权限：`apm.services.read`
       parameters:
       - name: start_time
         in: query
@@ -41810,7 +43215,7 @@ paths:
       - APM
       summary: APM 服务详情
       description: 单应用窗口 RED 详情：请求总量、错误率、p50/p95/p99、趋势、状态码类别分布、动作分布（allow/observe/block，app 级派生口径 allow=requests−block−observe）、慢端点榜单（access_log
-        关闭时为空数组）。应用不存在返回 404。权限：`apm.services.read`
+        关闭时为空数组）。响应恒含 availability 数据质量自述。应用不存在返回 404。权限：`apm.services.read`
       parameters:
       - name: id
         in: path
@@ -41871,7 +43276,8 @@ paths:
       - APM
       summary: APM 端点列表
       description: 端点级 RED 列表（窗口内聚合后排序分页）。__OTHER__（Top-N 之外尾端点合并桶）与 __UNCLASSIFIED__（endpoint_key 缺失治理桶）原样返回，前端负责标注。access_log
-        关闭时 list 为空数组且 access_log_enabled=false（端点级数据未开启）。权限：`apm.services.read`
+        关闭时 list 为空数组且 access_log_enabled=false（端点级数据未开启，availability.reason_codes 含 ACCESS_LOG_DISABLED）。响应恒含 availability
+        数据质量自述。权限：`apm.services.read`
       parameters:
       - name: start_time
         in: query
@@ -41959,9 +43365,11 @@ paths:
       summary: APM trace 检索（ClickHouse OTel 数据面）
       description: OTel trace 聚合检索（查询 apm.otel_traces 原始表，schema 以 deployment/apm/clickhouse/001_otel_traces.sql 为准）。强制时间窗（缺省最近
         1 小时，上限 24 小时——原始表扫描必须限窗）与分页上限（page_size ≤100，超限夹紧）。trace_id 为 32 位十六进制精确直达（与 request_id 同给时 trace_id 优先）；request_id
-        先经 access_logs 解析 trace_id 集合再查 ClickHouse。耗时口径 duration_ms = trace 墙钟耗时（max(span 结束) − min(span 开始)）；根 span 取 ParentSpanId
-        为空且 SpanKind=Server 中耗时最长者，无 Server 根退化为任一无父根，仍无则如实返回空串。ClickHouse 未配置（APM_CLICKHOUSE_DSN 为空）或查询失败时返回空页 + data_source=agentless
-        + message 提示，不返回 500（遥测故障不影响管理面）。权限：`apm.traces.read`
+        先经 access_logs 解析 trace_id 集合再查 ClickHouse。application_id 按应用约束检索（经 apm_services 服务名集合下推 CH 与 access_logs 解析；非法 UUID
+        或应用不存在/已删除返回 400，不静默忽略约束；应用无映射 OTel 服务时返回如实空页 + message 说明）。耗时口径 duration_ms = trace 墙钟耗时（max(span 结束) − min(span
+        开始)）；根 span 取 ParentSpanId 为空且 SpanKind=Server 中耗时最长者，无 Server 根退化为任一无父根，仍无则如实返回空串。响应恒含 availability 数据质量自述（query_state/reason_codes/observed_sources/水位字段）；request_id
+        检索追加 correlation 关联判定（state ∈ MATCHED/AMBIGUOUS/PENDING/NOT_FOUND/NOT_EXPECTED/UNKNOWN，一对多候选全列不任取第一条；trace_id 直达不经解析链不携带）。ClickHouse
+        未配置（APM_CLICKHOUSE_DSN 为空）或查询失败时返回空页 + data_source=agentless + message 提示，不返回 500（遥测故障不影响管理面）。权限：`apm.traces.read`
       parameters:
       - name: start_time
         in: query
@@ -41997,7 +43405,14 @@ paths:
         schema:
           type: string
           maxLength: 128
-        description: 请求 ID（先经 access_logs 解析关联 trace_id 集合再查 ClickHouse）
+        description: 请求 ID（先经 access_logs 解析关联 trace_id 集合再查 ClickHouse；响应追加 correlation 关联判定）
+      - name: application_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+        description: 按应用约束检索（非法 UUID 或应用不存在/已删除返回 400；应用无映射 OTel 服务时返回如实空页）
       - name: min_duration_ms
         in: query
         required: false
@@ -42065,9 +43480,10 @@ paths:
       summary: APM trace 检索（访问记录 + 关联安全事件 + OTel 瀑布）
       description: 按 trace_id（32 位十六进制，非法返回 400）检索 access_logs（迁移 000088 新增列），再按命中记录的 request_id 关联 security_events（仅回传必要安全字段子集，不含请求/响应头体留痕，遵循既有写入侧脱敏口径）。接入
         ClickHouse 数据面后追加 otel_spans 瀑布（span 属性仅透传白名单键，db.statement/url.query/头体留痕类键严禁放出；单 trace 上限 1000 span，超出截断并置 truncated=true；CH
-        侧强制时间窗——入参窗口优先，缺省对齐原始表最长 TTL 层 14 天）。data_source 如实标识 agentless/otel/mixed；无 OTel span、缺根 span 或被截断时 partial=true。可选
-        start_time/end_time 限窗（需同时提供，上限 31 天；缺省不限时间——trace_id 为 128 位随机精确匹配键，走部分索引点查，单侧结果上限 100 条）。ClickHouse 未配置/不可用时降级为纯
-        agentless 数据，不返回 500。均无命中时 access_logs/security_events/otel_spans 返回空数组而非 404。权限：`apm.traces.read`
+        侧强制时间窗——入参窗口优先，缺省对齐原始表最长 TTL 层 14 天）。data_source 如实标识 agentless/otel/mixed；无 OTel span、缺根 span 或被截断时 partial=true。响应恒含
+        availability 数据质量自述（网关腿/OTel 腿按本次真实结果逐腿判定）与 correlation 关联判定（trace_id 直达口径，state ∈ MATCHED/NOT_EXPECTED/PENDING/NOT_FOUND/UNKNOWN；阻断动作
+        BLOCK 证据 → NOT_EXPECTED）。可选 start_time/end_time 限窗（需同时提供，上限 31 天；缺省不限时间——trace_id 为 128 位随机精确匹配键，走部分索引点查，单侧结果上限 100
+        条）。ClickHouse 未配置/不可用时降级为纯 agentless 数据，不返回 500。均无命中时 access_logs/security_events/otel_spans 返回空数组而非 404。权限：`apm.traces.read`
       parameters:
       - name: trace_id
         in: path
@@ -42126,9 +43542,11 @@ paths:
       - APM
       summary: APM SQL 指纹聚合列表
       description: SQL 指纹聚合（只出指纹不出原始 statement——设计 §11.1 首期只存指纹）。数据源优先 002 分钟聚合表 apm.apm_sql_minutes（calls/error_count/avg_ms）；p95_ms/namespace/operation/sample_trace_ids
-        由 apm.otel_traces 同窗派生（p95 为 quantile(0.95) 估算，示例 trace 去重上限 3），两侧以 db_system + hex(MD5(db.statement)) 指纹等值关联。强制时间窗（缺省最近
-        1 小时，上限 24 小时）与分页上限（page_size ≤100，超限夹紧）；sort 白名单 calls/avg_ms/p95_ms（默认 p95_ms 倒序）。ClickHouse 未配置（APM_CLICKHOUSE_DSN
-        为空）或查询失败时返回空页 + data_source=agentless + message 提示，不返回 500（遥测故障不影响管理面）。权限：`apm.sql.read`（迁移 000090）
+        由 apm.otel_traces 同窗派生（p95 为 quantile(0.95) 估算，示例 trace 去重上限 3），两侧以 db_system + hex(MD5(db.statement)) 指纹等值关联。trace_id
+        参数切换 trace 级精确定位（仅从该 trace 的 Client DB span 派生指纹，match_mode=trace_exact）；缺省窗口聚合模式 match_mode=window_aggregate（match_note
+        如实标注"同时间窗候选，非特定请求定位"）。响应恒含 availability 数据质量自述。强制时间窗（缺省最近 1 小时，上限 24 小时）与分页上限（page_size ≤100，超限夹紧）；sort 白名单 calls/avg_ms/p95_ms（默认
+        p95_ms 倒序）。ClickHouse 未配置（APM_CLICKHOUSE_DSN 为空）或查询失败时返回空页 + data_source=agentless + message 提示，不返回 500（遥测故障不影响管理面）。权限：`apm.sql.read`（迁移
+        000090）
       parameters:
       - name: start_time
         in: query
@@ -42158,6 +43576,13 @@ paths:
           type: string
           maxLength: 64
         description: 数据库系统精确匹配（OTel db.system，如 postgresql/mysql/redis）
+      - name: trace_id
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[0-9a-fA-F]{32}$
+        description: 32 位十六进制 trace ID（切换 trace 级精确定位；非法返回 400）
       - name: sort
         in: query
         required: false
@@ -42223,7 +43648,9 @@ paths:
       summary: APM 异常指纹聚合列表
       description: 异常指纹聚合（数据源为 002 异常指纹表 apm.apm_exception_fingerprints，由 otel_traces 的 exception 事件物化聚合；不存/不出堆栈原文）。count
         为 exception 事件数（一个 span 可携带多个 exception 事件）；first_seen_at/last_seen_at 为分钟聚合桶粒度（±1 分钟）；affected_services 去重上限 16，sample_trace_ids
-        去重上限 3。强制时间窗（缺省最近 1 小时，上限 24 小时）与分页上限（page_size ≤100，超限夹紧）；按事件数倒序分页。ClickHouse 未配置或查询失败时返回空页 + data_source=agentless
+        去重上限 3。trace_id 参数切换 trace 级精确定位（直读该 trace 的 exception 事件，结果在 trace_exceptions 且 list 为空数组；exception_message/stacktrace
+        为应用上报原文经凭据形态掩码 + rune 上限截断后的纯文本，截断时对应 *_truncated=true；fingerprint 与聚合表同式可对照）；缺省窗口聚合模式 match_mode=window_aggregate。响应恒含
+        availability 数据质量自述。强制时间窗（缺省最近 1 小时，上限 24 小时）与分页上限（page_size ≤100，超限夹紧）；按事件数倒序分页。ClickHouse 未配置或查询失败时返回空页 + data_source=agentless
         + message 提示，不返回 500。权限：`apm.traces.read`
       parameters:
       - name: start_time
@@ -42247,6 +43674,13 @@ paths:
           type: string
           maxLength: 128
         description: 服务名精确匹配（OTel service.name）
+      - name: trace_id
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[0-9a-fA-F]{32}$
+        description: 32 位十六进制 trace ID（切换 trace 级精确定位；非法返回 400）
       - name: page
         in: query
         required: false
@@ -43477,7 +44911,6 @@ paths:
           - BOT
           - APPLICATION
           - SERVICE
-          - MACHINE
           - AGENT
           - UNKNOWN
         description: 按身份类型筛选
@@ -44004,6 +45437,241 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 15-attack-sessions.yaml
+  /applications/{id}/jwt-trust-policy:
+    get:
+      operationId: jwtTrustPolicyGet
+      tags:
+      - jwt-trust
+      summary: 读取应用 JWT 信任策略
+      description: 读取应用业务 JWT 信任策略当前草稿、最近成功发布的生效版本与状态摘要（state：NOT_CONFIGURED 未配置 / DRAFT_PENDING 草稿未发布或领先已发布 / PUBLISHED 草稿与最近成功发布一致；不含任何业务
+        Token）。历史应用无记录时返回默认 OFF 空策略（version=0）。权限：`jwt_trust.read`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      responses:
+        '200':
+          description: 策略草稿与状态摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwtTrustPolicyGetResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: jwtTrustPolicyUpdate
+      tags:
+      - jwt-trust
+      summary: 保存 JWT 信任策略草稿
+      description: 校验并全量保存草稿（expected_version 乐观锁，冲突返回 409——无草稿时必须为 0，已有草稿时必须等于当前 version；方法大写去重、path_exact/path_prefix 二选一且不含
+        query、prefix 按完整路径段、issuer 精确值唯一且 ≤8 项、audiences 非空、algorithms 为 RS256/ES256 非空子集、clock_skew_seconds 0~120 缺省 30、静态
+        JWKS 仅公钥（拒绝私钥参数/对称密钥/短 RSA/非 P-256 曲线，提交私钥立即拒绝且不回显）、REMOTE_JWKS 仅 HTTPS 且经 SSRF 校验（默认拒私网/回环/云元数据，企业内网 IdP 须经系统设置 jwt_trust:remote_jwks_allowlist
+        显式登记）；reason 非空进操作审计）。保存草稿不等于线上生效，发布走既有 gateway-config 发布通道。权限：`jwt_trust.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JwtTrustPolicyUpdateRequest'
+      responses:
+        '200':
+          description: 草稿保存成功，返回保存后的策略（version+1）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwtTrustPolicyDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 策略已被其他人修改（expected_version 乐观锁冲突），需刷新后重试
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 16-jwt-trust.yaml
+  /applications/{id}/jwt-trust-policy/preflight:
+    post:
+      operationId: jwtTrustPolicyPreflight
+      tags:
+      - jwt-trust
+      summary: JWT 信任策略发布预检
+      description: 对请求体候选策略（缺省为当前草稿）执行结构与静态公钥校验、REMOTE_JWKS 地址 SSRF 校验与受限连通性检查（2 秒超时、禁跳转、拨号时 DNS 复检、响应 ≤256KiB 且须为合法公钥 JWKS；管理端视角，不代表各网关节点可达）、API
+        动态管线门禁（PROTECT 策略要求管线已启用且为 PROTECT，防静默降级）与目标节点状态检查（已知同步失败的扇出节点阻断 PROTECT 发布）。不保存、不自动发布；publishable=false 时发布链路将以同口径拒绝。操作进入审计（低风险）。权限：`jwt_trust.manage`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JwtTrustPreflightRequest'
+      responses:
+        '200':
+          description: 预检结果（逐项检查 + 整体可发布判定）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwtTrustPreflightResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 16-jwt-trust.yaml
+  /applications/{id}/bot-policy:
+    get:
+      operationId: botPolicyGet
+      tags:
+      - bot-policy
+      summary: 读取应用 Bot 挑战策略
+      description: 读取应用 Bot 挑战策略当前草稿与状态摘要（草稿版本、最近成功发布批次、扇出节点有效版本分离返回，不混成一个 enabled；state：NOT_CONFIGURED 未配置 / DRAFT_PENDING
+        草稿未发布或领先已发布 / PUBLISHED 草稿与最近成功发布一致）。历史应用无记录时返回默认 OFF 空策略（version=0）。内容不含任何秘密材料（key_ref 仅为预置内部签名密钥的引用名）。权限：`bot_policy.read`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      responses:
+        '200':
+          description: 策略草稿与状态摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotPolicyGetResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: botPolicyUpdate
+      tags:
+      - bot-policy
+      summary: 保存 Bot 挑战策略草稿
+      description: 校验并全量保存草稿（expected_version 乐观锁，冲突返回 409——无草稿时必须为 0，已有草稿时必须等于当前 version；mode 仅 OFF/OBSERVE/PROTECT；selectors
+        仅 GET 浏览器文档导航、path_exact/path_prefix 二选一、路径为解码后形式且大小写敏感、prefix 按完整路径段匹配、禁止正则/百分号编码/全站通配/落入保留命名空间 /_wdsp/bot/v1/；signal_rules
+        三组信号白名单（request_behavior/access_sequence 行为组 + client_claim 可伪造弱声明组）、提出挑战需 ≥2 个独立信号组且至少 1 个行为组、同源计数派生指标（同 group+metric+params）不重复计权；challenge
+        仅 type=JS，nonce_ttl_seconds 30~300 默认 90、clearance_ttl_seconds 60~3600 默认 900、difficulty 10~18bit 默认 14、max_attempts
+        1~5 默认 3，缺省字段按默认值；route_reservation 状态机 ENABLED/RESERVED_TOMBSTONE/RELEASED 且 namespace 固定，PROTECT 必须 ENABLED，未携带时沿用上版草稿状态；reason
+        非空进操作审计与不可变版本记录）。保存成功触发既有 gateway-config 发布通道；保存草稿不等于节点已生效（生效状态以 GET 摘要的发布批次与节点同步状态为准）。权限：`bot_policy.edit`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BotPolicyUpdateRequest'
+      responses:
+        '200':
+          description: 草稿保存成功，返回保存后的策略（version+1）并已触发配置发布
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotPolicyDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 策略已被其他人修改（expected_version 乐观锁冲突），需刷新后重试
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 17-bot-policy.yaml
+  /applications/{id}/bot-policy/preflight:
+    post:
+      operationId: botPolicyPreflight
+      tags:
+      - bot-policy
+      summary: Bot 挑战策略路由保留冲突预检
+      description: 对请求体候选策略（缺省为当前草稿）执行结构校验与保留路由冲突预检——保留命名空间 /_wdsp/bot/v1/ 与 L7 拒绝规则（确定性覆盖 verify 端点判 FAIL 阻断，含正则/客户端依赖条件判
+        WARN）、L7 放行规则覆盖（WARN）、既有应用路径（api_endpoints 已登记落入命名空间判 FAIL）、路径转发前缀覆盖或落入命名空间（FAIL）、保护地址全量段（WARN）的冲突列表；另含 PROTECT 共享状态存储（Valkey）依赖与目标节点同步状态检查（与发布链路同口径，publishable=false
+        时发布将以同口径拒绝）。不保存、不发布。操作进入审计（低风险）。权限：`bot_policy.edit`
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BotPolicyPreflightRequest'
+      responses:
+        '200':
+          description: 预检结果（逐项检查 + 冲突列表 + 整体可发布判定）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotPolicyPreflightResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 17-bot-policy.yaml
 tags:
 - name: auth
   description: 身份认证
@@ -44065,6 +45733,10 @@ tags:
   description: 行为策略（侦察/枚举行为检测）
 - name: risk-policy
   description: 风险策略（身份风险处置）
+- name: jwt-trust
+  description: JWT 信任策略（业务 JWT 信任链，WDSP P0-03）
+- name: bot-policy
+  description: Bot 挑战策略（WDSP P1-02）
 - name: attack-sessions
   description: 攻击活动（Attack Session）
 - name: access-logs
@@ -44093,6 +45765,8 @@ tags:
   description: 系统升级
 - name: delivery-checks
   description: 交付检查
+- name: system-ops
+  description: 系统控制（重启/关机/恢复出厂）
 - name: api-security
   description: API 动态防护（WDSP）
 - name: ai-assistant

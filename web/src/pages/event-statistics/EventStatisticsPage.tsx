@@ -1,11 +1,14 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Card, Col, Row, Statistic, Tag, Typography } from 'antd'
+import { Alert, Card, Col, Radio, Row, Statistic, Typography } from 'antd'
 import dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
+import { analyticsApi } from '../../api/analytics'
 import { securityEventsApi } from '../../api/securityEvents'
-import SmartTable from '../../components/SmartTable'
-import StatusTag from '../../components/StatusTag'
+import EChart from '../../components/EChart'
+import type { EChartOption } from '../../components/EChart'
+import { useAuthStore } from '../../stores/auth'
+import { hasPermission } from '../../utils/permission'
 import {
   ATTACK_TYPE_META,
   DISPOSITION_STATUS_META,
@@ -22,8 +25,65 @@ function countBy<T extends string>(items: SecurityEventItem[], key: (e: Security
   return [...map.entries()].sort((a, b) => b[1] - a[1])
 }
 
-/** 事件统计（简单版）：精确计数走分页 total，分布基于最近 100 条样本 */
+function metaLabel(map: Record<string, { label: string }>, name: string): string {
+  return map[name]?.label ?? name
+}
+
+/** 柱状图：攻击类型分布 */
+function barOption(entries: [string, number][], map: Record<string, { label: string }>, color: string): EChartOption {
+  return {
+    grid: { left: 40, right: 12, top: 20, bottom: 60 },
+    tooltip: {},
+    xAxis: {
+      type: 'category',
+      data: entries.map(([k]) => metaLabel(map, k)),
+      axisLabel: { rotate: entries.length > 4 ? 30 : 0, hideOverlap: true },
+    },
+    yAxis: { type: 'value', minInterval: 1 },
+    series: [{ type: 'bar', data: entries.map(([, v]) => v), itemStyle: { color }, barMaxWidth: 32 }],
+  }
+}
+
+/** 饼图：动作/处置状态分布 */
+function pieOption(entries: [string, number][], map: Record<string, { label: string }>): EChartOption {
+  return {
+    tooltip: { trigger: 'item' },
+    legend: { bottom: 0 },
+    series: [
+      {
+        type: 'pie',
+        radius: ['35%', '62%'],
+        center: ['50%', '44%'],
+        data: entries.map(([k, v]) => ({ name: metaLabel(map, k), value: v })),
+        label: { formatter: '{b}: {c}' },
+      },
+    ],
+  }
+}
+
+/** 折线图：事件趋势（事件/阻断/观察） */
+function trendOption(data?: { times?: string[] | null; series?: Record<string, number[]> | null }): EChartOption {
+  const times = (data?.times ?? []).map((t) => dayjs(t).format('MM-DD HH:mm'))
+  const series = data?.series ?? {}
+  return {
+    grid: { left: 48, right: 16, top: 40, bottom: 28 },
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['安全事件', '阻断', '观察'], top: 0 },
+    xAxis: { type: 'category', data: times, axisLabel: { hideOverlap: true } },
+    yAxis: { type: 'value', minInterval: 1 },
+    series: [
+      { name: '安全事件', type: 'line', smooth: true, areaStyle: {}, data: series.events ?? [], itemStyle: { color: '#f5222d' } },
+      { name: '阻断', type: 'line', smooth: true, data: series.blocks ?? [] },
+      { name: '观察', type: 'line', smooth: true, data: series.observes ?? [] },
+    ],
+  }
+}
+
+/** 事件统计：精确计数走分页 total，分布图基于最近 100 条样本，趋势图走聚合接口 */
 export default function EventStatisticsPage() {
+  const permissions = useAuthStore((s) => s.user?.permissions)
+  const canAnalytics = hasPermission(permissions, 'analytics.security.read')
+  const [trendRange, setTrendRange] = useState('24h')
   const todayStart = dayjs().startOf('day').toISOString()
 
   const todayQuery = useQuery({
@@ -46,33 +106,16 @@ export default function EventStatisticsPage() {
     queryFn: () => securityEventsApi.list({ page: 1, page_size: SAMPLE_SIZE }),
   })
 
+  const trendQuery = useQuery({
+    queryKey: ['analytics', 'security-event-trend', trendRange],
+    queryFn: () => analyticsApi.securityEventTrend({ range: trendRange }),
+    enabled: canAnalytics,
+  })
+
   const sample = useMemo(() => sampleQuery.data?.items ?? [], [sampleQuery.data])
   const attackDist = useMemo(() => countBy(sample, (e) => e.attack_type), [sample])
   const actionDist = useMemo(() => countBy(sample, (e) => e.action), [sample])
   const dispositionDist = useMemo(() => countBy(sample, (e) => e.disposition_status), [sample])
-
-  const distColumns = (render: (v: string) => React.ReactNode) => [
-    {
-      title: '类别',
-      dataIndex: 'name',
-      render,
-    },
-    { title: '数量', dataIndex: 'count', align: 'right' as const, width: 90 },
-    {
-      title: '占比',
-      dataIndex: 'percent',
-      width: 90,
-      render: (v: string) => <Tag>{v}</Tag>,
-    },
-  ]
-
-  const distRows = (entries: [string, number][]) =>
-    entries.map(([name, count]) => ({
-      key: name,
-      name,
-      count,
-      percent: sample.length > 0 ? `${Math.round((count / sample.length) * 100)}%` : '-',
-    }))
 
   const firstError = [todayQuery, unprocessedQuery, blockedQuery, sampleQuery].find((q) => q.isError)
 
@@ -118,48 +161,47 @@ export default function EventStatisticsPage() {
             </Col>
           </Row>
 
+          {canAnalytics && (
+            <Card
+              size="small"
+              title="事件趋势"
+              style={{ marginBottom: 16 }}
+              extra={
+                <Radio.Group
+                  value={trendRange}
+                  onChange={(e) => setTrendRange(e.target.value as string)}
+                  options={[
+                    { value: '24h', label: '24小时' },
+                    { value: '7d', label: '7天' },
+                    { value: '30d', label: '30天' },
+                  ]}
+                  optionType="button"
+                  size="small"
+                />
+              }
+            >
+              <EChart option={trendOption(trendQuery.data)} height={280} ariaLabel="安全事件趋势" />
+            </Card>
+          )}
+
           <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
             以下分布基于最近 {sample.length} 条事件样本统计
           </Typography.Text>
 
           <Row gutter={16}>
             <Col span={8}>
-              <Card size="small" title="攻击类型分布">
-                <SmartTable
-                  storageKey="event-statistics"
-                  size="small"
-                  rowKey="key"
-                  loading={sampleQuery.isLoading}
-                  columns={distColumns((v) => <StatusTag value={v} map={ATTACK_TYPE_META} />)}
-                  dataSource={distRows(attackDist)}
-                  pagination={false}
-                />
+              <Card size="small" title="攻击类型分布" loading={sampleQuery.isLoading}>
+                <EChart option={barOption(attackDist, ATTACK_TYPE_META, '#f5222d')} height={300} ariaLabel="攻击类型分布" />
               </Card>
             </Col>
             <Col span={8}>
-              <Card size="small" title="动作分布">
-                <SmartTable
-                  storageKey="event-statistics-actions"
-                  size="small"
-                  rowKey="key"
-                  loading={sampleQuery.isLoading}
-                  columns={distColumns((v) => <StatusTag value={v} map={EVENT_ACTION_META} />)}
-                  dataSource={distRows(actionDist)}
-                  pagination={false}
-                />
+              <Card size="small" title="动作分布" loading={sampleQuery.isLoading}>
+                <EChart option={pieOption(actionDist, EVENT_ACTION_META)} height={300} ariaLabel="事件动作分布" />
               </Card>
             </Col>
             <Col span={8}>
-              <Card size="small" title="处置状态分布">
-                <SmartTable
-                  storageKey="event-statistics-dispositions"
-                  size="small"
-                  rowKey="key"
-                  loading={sampleQuery.isLoading}
-                  columns={distColumns((v) => <StatusTag value={v} map={DISPOSITION_STATUS_META} />)}
-                  dataSource={distRows(dispositionDist)}
-                  pagination={false}
-                />
+              <Card size="small" title="处置状态分布" loading={sampleQuery.isLoading}>
+                <EChart option={pieOption(dispositionDist, DISPOSITION_STATUS_META)} height={300} ariaLabel="事件处置状态分布" />
               </Card>
             </Col>
           </Row>

@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "case_id": "WAF-ATK-ENC-001",
+  "case_version": 1,
+  "family": "waf",
+  "tags": ["path-traversal", "double-encoding", "evasion", "custom-pack-declared"],
+  "criticality": "STANDARD",
+  "truth": "ATTACK",
+  "truth_reason": "边界/绕过样本：双重 URL 编码的路径穿越（%252e%252e%252f），自研合成；属 CUSTOM_PACK attack-variants-evasion 声明的双编码绕过增强检测范围",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成攻击样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "waf.custom_pack.attack_variants_evasion",
+    "applications": ["p1reg-echo-site"],
+    "protocols": ["http/1.1"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin", "waf_event_pipeline"]
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/download",
+        "query": "file=%252e%252e%252f%252e%252e%252fetc%252fpasswd",
+        "headers": {}
+      },
+      "wait": null,
+      "assert": []
+    }
+  ],
+  "seed": 2011,
+  "reset_plan": {"scope": "none", "actions": ["none"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "custom_pack", "rule_family": "attack_variants_evasion"},
+      "expected_final_action": "DETECT_PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "waf_security_event", "rule_family": "attack_variants_evasion"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "custom_pack", "rule_family": "attack_variants_evasion"},
+      "expected_final_action": "BLOCK_403",
+      "expected_origin": "not_reached",
+      "expected_events": [{"type": "waf_security_event", "rule_family": "attack_variants_evasion"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": true,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "HOLDOUT"
+}

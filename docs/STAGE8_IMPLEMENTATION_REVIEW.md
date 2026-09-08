@@ -43,7 +43,7 @@
 
 另多建了一张清单外的 `api_runtime_events`（统一运行时主事件表）。
 
-### 2.2 REST 接口（任务书 51.1–51.6，约35个端点）
+### 2.2 REST 接口（任务书 51.1–51.6，约35个API）
 
 路由注册于 `server/internal/app/app.go:641-655`。任务书要求的 `/api/v1/api-security/*` 命名空间**完全不存在**，实际为另一套路径：
 
@@ -57,7 +57,7 @@
 
 **未实现（约 27/35）**：learning/start|stop|status、models/{id}/diff、submit-review/reject/activate/archive、endpoints merge/split/ignore/classify、parameters 全部 4 个、classifications、graph、topology、specs/import 全部 3 个、findings、violations、posture、runtime/statistics。
 
-Handler：`server/internal/apiassets/handler.go`、`server/internal/apimodels/handler.go`、`server/internal/apiruntime/handler.go`。另注：`server/openapi/openapi.yaml` 未收录任何新端点。
+Handler：`server/internal/apiassets/handler.go`、`server/internal/apimodels/handler.go`、`server/internal/apiruntime/handler.go`。另注：`server/openapi/openapi.yaml` 未收录任何新API。
 
 ### 2.3 权限（任务书52章，27个权限点）
 
@@ -152,7 +152,7 @@ AI Tool 注册中心在 `server/internal/aitools/`（registry.go + 5 个工具�
 - 网关侧 `learning/version.go`：内存 Store，CreateCandidate/Confirm（FORMAL + 旧版 SUPERSEDED）/`MutateFormal` 返回 `ErrFormalImmutable` 均为真实逻辑且有测试；但 `Observe()` 是 **stub**（只 `samples++` 丢弃 fields），"达到最小样本生成候选"的触发条件未实现；
 - 管理面 `server/internal/apimodels/store.go` 用 DB 实现同一语义（Confirm 带 `FOR UPDATE` 事务），冻结不可变由"只 UPDATE status、无 schema 更新接口"保证；
 - **两侧未连通**：没有任何代码把管理面的 formal schema 下发到网关，`pipeline.Config.FormalSchema` 需调用方手工传入；
-- 端点"发现"靠手工 `POST /api-endpoints/discover` 喂数据，网关不会自动上报，"持续发现"无数据源。
+- API"发现"靠手工 `POST /api-endpoints/discover` 喂数据，网关不会自动上报，"持续发现"无数据源。
 
 ### 3.8 大报文限制（任务书 §7.2）
 
@@ -217,8 +217,8 @@ dynamic_security 非测试 1073 行中：真实逻辑约 800 行，stub/空转�
 
 `gateway/dynamic_security/` 下 8 个测试文件、20 个测试函数、442 行，实测**全部通过**（注意：dynamic_security 是独立 module，须进子目录跑 `go test ./...`）：
 
-- ✅ 有测试（9 项，其中 5 项很浅）：API识别、路径归一化、动态段识别、端点合并（弱）、参数提取（弱）、类型识别（极弱）、模型冻结、身份提取（弱）、Schema偏离、风险聚合、统一事件、敏感数据脱敏（弱）
-- ❌ 完全缺失（16 项）：端点拆分、字符串统计、数值统计、数组和对象Schema、文件模型、条件关系、样本过滤、防污染、版本触发、版本差异、重新学习、用途分类、API Tool权限 等
+- ✅ 有测试（9 项，其中 5 项很浅）：API识别、路径归一化、动态段识别、API合并（弱）、参数提取（弱）、类型识别（极弱）、模型冻结、身份提取（弱）、Schema偏离、风险聚合、统一事件、敏感数据脱敏（弱）
+- ❌ 完全缺失（16 项）：API拆分、字符串统计、数值统计、数组和对象Schema、文件模型、条件关系、样本过滤、防污染、版本触发、版本差异、重新学习、用途分类、API Tool权限 等
 
 ### 5.2 接口测试（57章，18项）
 

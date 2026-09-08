@@ -8,13 +8,26 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
+	"time"
 
 	valkey "github.com/valkey-io/valkey-go"
 )
 
 // DefaultMaxKeys 内存键上限默认值。
 const DefaultMaxKeys = 100000
+
+// Valkey 客户端超时：valkey-go 库默认建连 5s（DefaultDialTimeout）、连接读写
+// KeepAlive×10≈10s，对 WAF 请求热路径与悬挂兜底均过长，统一显式收紧。
+const (
+	// valkeyDialTimeout 建连超时（ClientOption.Dialer.Timeout）：启动/重连失败快速暴露。
+	valkeyDialTimeout = 2 * time.Second
+	// valkeyCmdTimeout 连接级读写超时（ClientOption.ConnWriteTimeout，作用于每命令
+	// net.Conn.SetDeadline 与周期 PING）：兜底 Valkey 悬挂（TCP 活但不响应），超时后
+	// 连接废弃重建；调用侧 ctx 超时更短（如 behaviorstore 单次 Eval 300ms）时优先生效。
+	valkeyCmdTimeout = 3 * time.Second
+)
 
 // MemoryMap 并发安全、LRU 淘汰、容量有界的键值存储。
 // 防随机 IP/URI 无限建键：超过 maxKeys 时淘汰最久未用键。
@@ -136,10 +149,12 @@ func NewValkeyClient(cfg ValkeyConfig) (ValkeyClient, error) {
 		return nil, errors.New("valkey address required")
 	}
 	opt := valkey.ClientOption{
-		InitAddress: []string{cfg.Address},
-		Username:    cfg.Username,
-		Password:    cfg.Password,
-		SelectDB:    cfg.DB,
+		InitAddress:      []string{cfg.Address},
+		Username:         cfg.Username,
+		Password:         cfg.Password,
+		SelectDB:         cfg.DB,
+		Dialer:           net.Dialer{Timeout: valkeyDialTimeout},
+		ConnWriteTimeout: valkeyCmdTimeout,
 	}
 	cli, err := valkey.NewClient(opt)
 	if err != nil {

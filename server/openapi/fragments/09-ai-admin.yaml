@@ -1,0 +1,2462 @@
+# 片段：AI 能力管理（模型供应商/模型/路由档位、Agent、Tool、Prompt、记忆、审计、用量、模块状态）
+# 路由源：server/internal/aihandlers/handler.go:111-164；server/internal/app/app.go:746-763（/ai/status 与 AI 禁用降级）
+# 全局说明：AI 模块关闭（AI_ENABLED=false）时，除 GET /ai/status 外所有 /ai/* 接口统一返回 503（WAF 核心防护不受影响）。
+# 供应商密钥仅在创建/轮换时以明文入参，加密存储于 ai_provider_secrets，任何响应不回传密钥（仅返回 api_key_reference 引用名）。
+
+paths:
+  /ai/status:
+    get:
+      operationId: aiStatusGet
+      tags: [ai-models]
+      summary: AI 模块状态探测
+      description: |
+        权限：登录即可访问（无需权限点）。
+        供前端降级提示使用：enabled=false 时 AI 安全运营模块已关闭（AI_ENABLED=false），
+        其余 /ai/* 接口统一返回 503（WAF 核心防护不受影响）；enabled=true 时 degraded=false。
+      responses:
+        '200':
+          description: 模块状态（无论启用与否均返回 200）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled, degraded, message]
+                properties:
+                  enabled:
+                    type: boolean
+                    description: AI 安全运营模块是否启用
+                  degraded:
+                    type: boolean
+                    description: 是否降级（模块关闭时为 true）
+                  message:
+                    type: string
+                    description: 状态说明文案
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ---- 模型供应商 ----
+  /ai/models/providers:
+    get:
+      operationId: aiProviderList
+      tags: [ai-models]
+      summary: 模型供应商列表
+      description: |
+        权限：ai.models.read。
+        返回全部供应商（不分页）；响应仅含密钥引用名，绝不含密钥明文/密文。
+        AI 模块全局关闭时本接口返回 503。
+      responses:
+        '200':
+          description: 供应商列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiProviderListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: aiProviderCreate
+      tags: [ai-models]
+      summary: 创建模型供应商
+      description: |
+        权限：ai.models.manage。
+        api_key 可选，仅创建时以明文入参，服务端即加密存储（ai_provider_secrets），任何响应不回传。
+        创建成功后写入 AI 审计（model_provider_create）。AI 模块全局关闭时本接口返回 503。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiProviderCreateRequest'
+      responses:
+        '200':
+          description: 创建成功，返回供应商（不含密钥）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiProviderResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/models/providers/{id}:
+    patch:
+      operationId: aiProviderPatch
+      tags: [ai-models]
+      summary: 更新模型供应商
+      description: |
+        权限：ai.models.manage。
+        仅更新名称/类型/BaseURL/状态，空字段忽略；body 中 api_key 字段被忽略，密钥变更须走 rotate-key。
+        供应商状态/BaseURL 影响路由，变更后热生效；写入 AI 审计（model_provider_update）。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 供应商 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiProviderPatchRequest'
+      responses:
+        '200':
+          description: 更新成功，返回供应商（不含密钥）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiProviderResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: aiProviderDelete
+      tags: [ai-models]
+      summary: 删除模型供应商
+      description: |
+        权限：ai.models.manage。
+        供应商下仍有模型时不允许删除（返回 409）；删除时同步清理密钥密文，变更后路由热生效；
+        写入 AI 审计（model_provider_delete）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 供应商 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 冲突（该供应商下仍有模型，须先删除全部关联模型）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/models/providers/{id}/rotate-key:
+    post:
+      operationId: aiProviderRotateKey
+      tags: [ai-models]
+      summary: 轮换供应商密钥
+      description: |
+        权限：ai.models.manage。
+        新密钥仅以明文入参，加密覆盖存储；审计摘要不包含任何密钥材料（model_key_rotate）。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 供应商 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiProviderRotateKeyRequest'
+      responses:
+        '200':
+          description: 密钥已轮换
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---- 模型 ----
+  /ai/models:
+    get:
+      operationId: aiModelList
+      tags: [ai-models]
+      summary: 模型列表
+      description: |
+        权限：ai.models.read。
+        返回全部模型（不分页，按优先级、展示名排序）。AI 模块全局关闭时本接口返回 503。
+      responses:
+        '200':
+          description: 模型列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiModelListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: aiModelCreate
+      tags: [ai-models]
+      summary: 创建模型
+      description: |
+        权限：ai.models.manage。
+        初始状态 ENABLED；参数归一化：context_window≤0 取 8192，max_output_tokens≤0 取 2048，
+        timeout_seconds 不在 1-600 取 60，priority≤0 取 100，成本单价负值取 0；display_name 为空时取 model_code。
+        创建后路由热生效；写入 AI 审计（model_create）。AI 模块全局关闭时本接口返回 503。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiModelCreateRequest'
+      responses:
+        '200':
+          description: 创建成功，返回模型
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiModelResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/models/{id}:
+    put:
+      operationId: aiModelUpdate
+      tags: [ai-models]
+      summary: 更新模型
+      description: |
+        权限：ai.models.manage。
+        更新展示名/上下文窗口/输出上限/能力开关/优先级/超时/成本单价（同样做归一化）；
+        body 中 provider_id 与 model_code 被忽略（不可变），状态变更走 enable/disable 接口。
+        更新后路由热生效；写入 AI 审计（model_update）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 模型 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiModelUpdateRequest'
+      responses:
+        '200':
+          description: 更新成功，返回模型
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiModelResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: aiModelDelete
+      tags: [ai-models]
+      summary: 删除模型
+      description: |
+        权限：ai.models.manage。
+        删除后路由热生效；写入 AI 审计（model_delete）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 模型 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/models/{id}/enable:
+    post:
+      operationId: aiModelEnable
+      tags: [ai-models]
+      summary: 启用模型
+      description: |
+        权限：ai.models.manage。
+        状态置为 ENABLED 并热生效；写入 AI 审计（model_status）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 模型 ID
+      responses:
+        '200':
+          description: 模型已启用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/models/{id}/disable:
+    post:
+      operationId: aiModelDisable
+      tags: [ai-models]
+      summary: 停用模型
+      description: |
+        权限：ai.models.manage。
+        状态置为 DISABLED 并热生效；写入 AI 审计（model_status）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 模型 ID
+      responses:
+        '200':
+          description: 模型已停用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/models/{id}/test:
+    post:
+      operationId: aiModelTest
+      tags: [ai-models]
+      summary: 模型连通性健康检查
+      description: |
+        权限：ai.models.read（只读探测，不改配置，与 trusted_proxies/test、rate_limits/test 一致）。
+        执行连通性 + 短对话检查；探测失败也返回 200（ok=false）；结果写入 AI 审计（model_test）。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 模型 ID
+      responses:
+        '200':
+          description: 探测结果（ok=false 表示连通性检查失败）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiModelTestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/models/routes:
+    get:
+      operationId: aiModelRoutesGet
+      tags: [ai-models]
+      summary: 读取模型路由档位
+      description: |
+        权限：ai.models.read。
+        返回 simple/standard/high 三档位对应的 model_code（缺省回退默认本地模型 qwen2.5:3b）及当前已加载模型数。
+        AI 模块全局关闭时本接口返回 503。
+      responses:
+        '200':
+          description: 路由档位与已加载模型数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiModelRoutesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: aiModelRoutesPut
+      tags: [ai-models]
+      summary: 更新模型路由档位
+      description: |
+        权限：ai.models.manage。
+        仅更新请求中出现的档位（未提供的保持现状，全不提供返回 400）；档位值必须是已存在的 model_code。
+        持久化到 system_settings（ai 组）并热生效；写入 AI 审计（model_route_update）。
+        AI 模块全局关闭时本接口返回 503。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiModelRoutesUpdateRequest'
+      responses:
+        '200':
+          description: 模型路由已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---- Agent 管理 ----
+  /ai/agents:
+    get:
+      operationId: aiAgentList
+      tags: [ai-agents]
+      summary: Agent 列表
+      description: |
+        权限：ai.agents.read。
+        能力来源为代码 registry，ai_agents 表存启停与配置；列表为 DB 左联代码 registry（不分页，按 code 排序），
+        in_registry 标记是否在代码 registry 中注册（dispatcher 为编排器内置总调度，恒为 true）。
+        AI 模块全局关闭时本接口返回 503。
+      responses:
+        '200':
+          description: Agent 列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAgentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/agents/{id}:
+    patch:
+      operationId: aiAgentPatch
+      tags: [ai-agents]
+      summary: 配置 Agent（启停 / 允许 Tool 集）
+      description: |
+        权限：ai.agents.manage。
+        enabled 与 allowed_tool_ids 至少提供一项（全不提供返回 400）；
+        dispatcher 为编排器内置总调度能力，禁止停用（返回 400）。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Agent ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAgentPatchRequest'
+      responses:
+        '200':
+          description: Agent 配置已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/agents/{id}/test:
+    post:
+      operationId: aiAgentTest
+      tags: [ai-agents]
+      summary: Agent 可用性探测
+      description: |
+        权限：ai.agents.read。
+        仅校验代码 registry 注册与启停状态，不执行真实业务分析；ok = 已启用且已注册。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Agent ID
+      responses:
+        '200':
+          description: 探测结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAgentTestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---- Tool 管理 ----
+  /ai/tools:
+    get:
+      operationId: aiToolList
+      tags: [ai-tools]
+      summary: Tool 列表
+      description: |
+        权限：ai.tools.read。
+        能力来源为代码 registry，ai_tools 表存启停与配置；列表为 DB 左联代码 registry（不分页，按 code 排序）。
+        AI 模块全局关闭时本接口返回 503。
+      responses:
+        '200':
+          description: Tool 列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiToolListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/tools/{id}:
+    patch:
+      operationId: aiToolPatch
+      tags: [ai-tools]
+      summary: 配置 Tool（启停 / 超时 / 最大返回数）
+      description: |
+        权限：ai.tools.manage。
+        enabled、timeout_seconds、max_results 至少提供一项（全不提供返回 400）；
+        执行路径每次实时查库，启停即时生效。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Tool ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiToolPatchRequest'
+      responses:
+        '200':
+          description: Tool 配置已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/tools/{id}/test:
+    post:
+      operationId: aiToolTest
+      tags: [ai-tools]
+      summary: Tool 可用性探测
+      description: |
+        权限：ai.tools.read。
+        DRAFT_ONLY 等风险等级仅校验注册与启停；READ_ONLY 且无必填参数的 Tool 会尝试空参数探测
+        （失败不视为故障，仅以 probe/probe_error 附加说明）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Tool ID
+      responses:
+        '200':
+          description: 探测结果（ok=false 时也为 200）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiToolTestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---- Prompt 管理 ----
+  /ai/prompts:
+    get:
+      operationId: aiPromptList
+      tags: [ai-prompts]
+      summary: Prompt 列表
+      description: |
+        权限：ai.prompts.read。
+        不分页，按 code 排序；prompt_type/status 可选过滤。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: prompt_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [SYSTEM, ORCHESTRATOR, AGENT, TOOL, TASK, SAFETY, EVALUATION]
+          description: 按 Prompt 类型过滤（无效值返回 400）
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [DRAFT, ACTIVE]
+          description: 按状态过滤（DRAFT 草稿 / ACTIVE 已发布）
+      responses:
+        '200':
+          description: Prompt 列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiPromptListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: aiPromptCreate
+      tags: [ai-prompts]
+      summary: 创建 Prompt 及首版本
+      description: |
+        权限：ai.prompts.create。
+        创建 Prompt（初始 DRAFT）及版本号 1 的首版本；code 全局唯一（重复返回 409）。
+        内容需通过静态安全校验：禁止包含密钥/Shell/越权/思维链等模式（命中返回 400）。
+        写入 AI 审计（prompt_create）。AI 模块全局关闭时本接口返回 503。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiPromptCreateRequest'
+      responses:
+        '200':
+          description: 创建成功，返回 Prompt 与首版本
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiPromptCreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 冲突（Prompt 编码已存在）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/prompts/{id}:
+    patch:
+      operationId: aiPromptRename
+      tags: [ai-prompts]
+      summary: 重命名 Prompt
+      description: |
+        权限：ai.prompts.edit。
+        仅名称可编辑，编码不可变；写入 AI 审计（prompt_rename）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Prompt ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiPromptRenameRequest'
+      responses:
+        '200':
+          description: 重命名成功，返回 Prompt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiPromptResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: aiPromptDelete
+      tags: [ai-prompts]
+      summary: 删除 Prompt
+      description: |
+        权限：ai.prompts.delete。
+        仅允许删除未发布（DRAFT）的 Prompt，已发布（ACTIVE）返回 409；事务级联删除全部版本。
+        写入 AI 审计（prompt_delete）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Prompt ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 冲突（已发布的 Prompt 不可删除）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/prompts/{id}/versions:
+    get:
+      operationId: aiPromptVersionList
+      tags: [ai-prompts]
+      summary: Prompt 版本列表
+      description: |
+        权限：ai.prompts.read。
+        按版本号倒序，最多 50 条；Prompt 不存在时返回空列表（不报错）。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Prompt ID
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiPromptVersionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: aiPromptVersionCreate
+      tags: [ai-prompts]
+      summary: 创建 Prompt 新版本
+      description: |
+        权限：ai.prompts.create。
+        版本不可变，版本号自动递增；内容需通过静态安全校验（密钥/Shell/越权/思维链等禁止，命中返回 400）。
+        写入 AI 审计（prompt_version_create）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Prompt ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiPromptVersionCreateRequest'
+      responses:
+        '200':
+          description: 创建成功，返回新版本
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiPromptVersionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/prompts/{id}/diff:
+    get:
+      operationId: aiPromptDiff
+      tags: [ai-prompts]
+      summary: Prompt 版本差异比较
+      description: |
+        权限：ai.prompts.read。
+        比较同一 Prompt 两个版本的内容差异：行级统计（相同/新增/删除）+ 截断至 500 字符的内容预览；
+        from/to 均必填，可传版本号或版本 ID。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Prompt ID
+        - name: from
+          in: query
+          required: true
+          schema: { type: string }
+          description: 起始版本（版本号或版本 ID）
+        - name: to
+          in: query
+          required: true
+          schema: { type: string }
+          description: 目标版本（版本号或版本 ID）
+      responses:
+        '200':
+          description: 差异统计与内容预览
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiPromptDiffResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/prompts/versions/{versionId}/test:
+    post:
+      operationId: aiPromptVersionTest
+      tags: [ai-prompts]
+      summary: Prompt 版本静态测试
+      description: |
+        权限：ai.prompts.test。
+        执行静态检查（非空与长度 ≤50000 字符、禁止内容扫描），并将结果回写版本 test_result（PASSED/FAILED）；
+        仅 PASSED 的版本可发布。写入 AI 审计（prompt_test）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: versionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Prompt 版本 ID
+      responses:
+        '200':
+          description: 测试结果与检查明细
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiPromptVersionTestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/prompts/{id}/publish:
+    post:
+      operationId: aiPromptPublish
+      tags: [ai-prompts]
+      summary: 发布 Prompt 版本
+      description: |
+        权限：ai.prompts.publish。
+        仅静态测试通过（PASSED）的版本可发布（否则返回 400，store 层强制）；
+        发布后该版本成为当前版本（is_current），Prompt 状态置为 ACTIVE。
+        写入 AI 审计（prompt_publish）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Prompt ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiPromptVersionActionRequest'
+      responses:
+        '200':
+          description: 版本已发布
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/prompts/{id}/rollback:
+    post:
+      operationId: aiPromptRollback
+      tags: [ai-prompts]
+      summary: 回滚 Prompt 到已发布版本
+      description: |
+        权限：ai.prompts.rollback。
+        仅可回滚到已发布过（published_at 非空）的版本，否则返回 409；
+        回滚后目标版本成为当前版本，Prompt 状态置为 ACTIVE。
+        写入 AI 审计（prompt_rollback）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Prompt ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiPromptVersionActionRequest'
+      responses:
+        '200':
+          description: 已回滚到指定版本
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 冲突（仅可回滚到已发布过的版本）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---- 记忆管理 ----
+  /ai/memories:
+    get:
+      operationId: aiMemoryList
+      tags: [ai-memories]
+      summary: 本人记忆列表
+      description: |
+        权限：ai.memories.read_own（严格属主隔离，仅返回当前用户本人的记忆）。
+        不分页，按更新时间倒序，最多 100 条；默认仅返回 ACTIVE，include_disabled=true 时含已禁用。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: scope
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [SESSION, PROJECT, LONG_TERM]
+          description: 按记忆作用域过滤（无效值返回 400）
+        - name: include_disabled
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: 是否包含已禁用的记忆
+      responses:
+        '200':
+          description: 记忆列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiMemoryListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: aiMemoryCreate
+      tags: [ai-memories]
+      summary: 新增记忆
+      description: |
+        权限：ai.memories.manage_own（归属当前用户）。
+        敏感内容（密码/密钥/私钥/疑似凭据特征）一律拦截（400）；
+        AI_INFERRED（智能推测）置信度不得直接写入 LONG_TERM 长期记忆（400，须用户确认）；
+        source_type 固定为 MANUAL；confidence_type 缺省为 USER_CONFIRMED。
+        AI 模块全局关闭时本接口返回 503。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiMemoryCreateRequest'
+      responses:
+        '200':
+          description: 创建成功，返回记忆
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiMemoryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/memories/{id}:
+    put:
+      operationId: aiMemoryUpdate
+      tags: [ai-memories]
+      summary: 修改记忆内容
+      description: |
+        权限：ai.memories.manage_own（严格属主隔离：非属主一律返回 404）。
+        仅修改内容；敏感内容（密码/密钥/私钥特征）拦截（400）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 记忆 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiMemoryUpdateRequest'
+      responses:
+        '200':
+          description: 记忆已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: aiMemoryDelete
+      tags: [ai-memories]
+      summary: 删除记忆
+      description: |
+        权限：ai.memories.manage_own（严格属主隔离：非属主一律返回 404）。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 记忆 ID
+      responses:
+        '200':
+          description: 记忆已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/memories/{id}/disable:
+    post:
+      operationId: aiMemoryDisable
+      tags: [ai-memories]
+      summary: 禁用记忆
+      description: |
+        权限：ai.memories.manage_own（严格属主隔离：非属主一律返回 404）。
+        禁用后不再进入 AI 会话上下文（列表默认不再返回，可经 include_disabled 查看）。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 记忆 ID
+      responses:
+        '200':
+          description: 记忆已禁用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---- AI 审计 ----
+  /ai/audits:
+    get:
+      operationId: aiAuditList
+      tags: [ai-audits]
+      summary: AI 审计分页查询
+      description: |
+        权限：ai.audits.read。
+        按发生时间倒序分页；page_size 超出 1-100 范围时回落为 20。
+        审计正文在写入时已脱敏：不保存密钥/密码/私钥/完整载荷与模型私有思维链。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数（超出范围回落为 20）
+        - name: user_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: 按操作用户过滤（非法 UUID 返回 400）
+        - name: session_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: 按 AI 会话过滤（非法 UUID 返回 400）
+        - name: action
+          in: query
+          required: false
+          schema: { type: string }
+          description: 按动作过滤（如 model_create、prompt_publish、tool_call 等）
+        - name: task_type
+          in: query
+          required: false
+          schema: { type: string }
+          description: 按任务类型过滤（如 EVENT_ANALYSIS、LOG_QUERY 等）
+        - name: start_time
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: 起始时间（RFC3339，含边界；格式错误返回 400）
+        - name: end_time
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: 结束时间（RFC3339，不含边界；格式错误返回 400）
+      responses:
+        '200':
+          description: 审计记录分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAuditListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/audits/verify:
+    post:
+      operationId: aiAuditVerify
+      tags: [ai-audits]
+      summary: 审计哈希链完整性校验
+      description: |
+        权限：ai.audits.read。
+        从最早记录起按序校验 previous_hash 链接与 record_hash 重算结果；
+        limit 缺省 10000，超过 100000 按 100000 处理；mismatches=0 表示链完整。
+        AI 模块全局关闭时本接口返回 503。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAuditVerifyRequest'
+      responses:
+        '200':
+          description: 校验结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAuditVerifyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ---- 用量与成本 ----
+  /ai/usage/overview:
+    get:
+      operationId: aiUsageOverview
+      tags: [ai-usage]
+      summary: 今日用量总览
+      description: |
+        权限：ai.usage.read。
+        统计当日（UTC 0 点起）全平台的输入/输出 Token、模型调用次数、Tool 调用次数与估算成本。
+        AI 模块全局关闭时本接口返回 503。
+      responses:
+        '200':
+          description: 今日用量总览
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiUsageOverviewResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/usage/by-user:
+    get:
+      operationId: aiUsageByUser
+      tags: [ai-usage]
+      summary: 按用户统计用量
+      description: |
+        权限：ai.usage.read。
+        近 7 天按用户聚合（Token/调用次数/估算成本），按成本降序，最多 20 条。
+        AI 模块全局关闭时本接口返回 503。
+      responses:
+        '200':
+          description: 按用户用量列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiUsageByUserListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/usage/by-agent:
+    get:
+      operationId: aiUsageByAgent
+      tags: [ai-usage]
+      summary: 按 Agent 统计用量
+      description: |
+        权限：ai.usage.read。
+        近 7 天按 Agent 聚合运行记录（ai_agent_runs：运行次数/Token/失败次数），按运行次数降序，最多 30 条。
+        AI 模块全局关闭时本接口返回 503。
+      responses:
+        '200':
+          description: 按 Agent 用量列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiUsageByAgentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/usage/by-task:
+    get:
+      operationId: aiUsageByTask
+      tags: [ai-usage]
+      summary: 按任务类型统计用量
+      description: |
+        权限：ai.usage.read。
+        近 7 天按任务类型聚合（任务数/Token/估算成本），按任务数降序，最多 30 条。
+        AI 模块全局关闭时本接口返回 503。
+      responses:
+        '200':
+          description: 按任务类型用量列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiUsageByTaskListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  schemas:
+    # ---- 模型供应商 / 模型 / 路由档位 ----
+    AiProvider:
+      type: object
+      description: 模型供应商（绝不含密钥明文/密文，仅引用名）
+      required: [id, name, provider_type, base_url, api_key_reference, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 供应商 ID
+        name:
+          type: string
+          description: 供应商名称（≤100 字符）
+        provider_type:
+          type: string
+          enum: [openai_compatible, anthropic, ollama, local]
+          description: 供应商类型（开放兼容协议 / Anthropic / 本地推理服务 / 本地模型）
+        base_url:
+          type: string
+          description: API 基础地址（≤255 字符）
+        api_key_reference:
+          type: string
+          description: 密钥引用名（密文存于 ai_provider_secrets，任何响应不回传密钥本体）
+        status:
+          type: string
+          enum: [ENABLED, DISABLED]
+          description: 状态
+
+    AiProviderCreateRequest:
+      type: object
+      required: [name, provider_type, base_url]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          description: 供应商名称（必填）
+        provider_type:
+          type: string
+          enum: [openai_compatible, anthropic, ollama, local]
+          description: 供应商类型（必填）
+        base_url:
+          type: string
+          maxLength: 255
+          description: API 基础地址（必填）
+        api_key:
+          type: string
+          format: password
+          description: 供应商 API 密钥（可选；仅创建/轮换时以明文传入，服务端即加密存储，任何响应不回显）
+        status:
+          type: string
+          enum: [ENABLED, DISABLED]
+          description: 初始状态（缺省 ENABLED）
+
+    AiProviderPatchRequest:
+      type: object
+      description: 全部字段可选，空字段忽略；api_key 字段被忽略（密钥变更走 rotate-key）
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          description: 供应商名称
+        provider_type:
+          type: string
+          enum: [openai_compatible, anthropic, ollama, local]
+          description: 供应商类型
+        base_url:
+          type: string
+          maxLength: 255
+          description: API 基础地址
+        status:
+          type: string
+          enum: [ENABLED, DISABLED]
+          description: 状态
+
+    AiProviderRotateKeyRequest:
+      type: object
+      required: [api_key]
+      properties:
+        api_key:
+          type: string
+          format: password
+          description: 新密钥（明文仅入参，加密覆盖存储，任何响应不回显）
+
+    AiProviderResponse:
+      type: object
+      required: [provider]
+      properties:
+        provider:
+          $ref: '#/components/schemas/AiProvider'
+
+    AiProviderListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiProvider'
+
+    AiModel:
+      type: object
+      required: [id, provider_id, model_code, display_name, context_window, max_output_tokens, supports_tools, supports_streaming, priority, timeout_seconds, cost_input_unit, cost_output_unit, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 模型 ID
+        provider_id:
+          type: string
+          format: uuid
+          description: 所属供应商 ID
+        model_code:
+          type: string
+          description: 模型编码（≤100 字符，创建后不可变）
+        display_name:
+          type: string
+          description: 展示名（为空时取 model_code）
+        context_window:
+          type: integer
+          description: 上下文窗口 Token 数（≤0 时归一为 8192）
+        max_output_tokens:
+          type: integer
+          description: 最大输出 Token 数（≤0 时归一为 2048）
+        supports_tools:
+          type: boolean
+          description: 是否支持 Tool 调用
+        supports_streaming:
+          type: boolean
+          description: 是否支持流式输出
+        priority:
+          type: integer
+          description: 优先级（≤0 时归一为 100，列表按此升序）
+        timeout_seconds:
+          type: integer
+          description: 调用超时时间（秒；不在 1-600 时归一为 60）
+        cost_input_unit:
+          type: number
+          description: 每千输入 Token 的估算成本单价（负值归一为 0）
+        cost_output_unit:
+          type: number
+          description: 每千输出 Token 的估算成本单价（负值归一为 0）
+        status:
+          type: string
+          enum: [ENABLED, DISABLED]
+          description: 状态
+
+    AiModelCreateRequest:
+      type: object
+      required: [provider_id, model_code]
+      properties:
+        provider_id:
+          type: string
+          format: uuid
+          description: 所属供应商 ID（必须已存在，否则 400）
+        model_code:
+          type: string
+          maxLength: 100
+          description: 模型编码（必填）
+        display_name:
+          type: string
+          description: 展示名（可选，为空取 model_code）
+        context_window:
+          type: integer
+          description: 上下文窗口 Token 数（缺省/≤0 取 8192）
+        max_output_tokens:
+          type: integer
+          description: 最大输出 Token 数（缺省/≤0 取 2048）
+        supports_tools:
+          type: boolean
+          description: 是否支持 Tool 调用
+        supports_streaming:
+          type: boolean
+          description: 是否支持流式输出
+        priority:
+          type: integer
+          description: 优先级（缺省/≤0 取 100）
+        timeout_seconds:
+          type: integer
+          description: 调用超时时间（秒；缺省或不在 1-600 取 60）
+        cost_input_unit:
+          type: number
+          description: 每千输入 Token 估算成本单价（负值取 0）
+        cost_output_unit:
+          type: number
+          description: 每千输出 Token 估算成本单价（负值取 0）
+
+    AiModelUpdateRequest:
+      type: object
+      description: 更新模型可变字段（整体赋值后归一化）；provider_id 与 model_code 字段被忽略（不可变），状态走 enable/disable
+      properties:
+        provider_id:
+          type: string
+          format: uuid
+          description: 被忽略（供应商不可变）
+        model_code:
+          type: string
+          description: 被忽略（模型编码不可变）
+        display_name:
+          type: string
+          description: 展示名（为空时取 model_code）
+        context_window:
+          type: integer
+          description: 上下文窗口 Token 数
+        max_output_tokens:
+          type: integer
+          description: 最大输出 Token 数
+        supports_tools:
+          type: boolean
+          description: 是否支持 Tool 调用
+        supports_streaming:
+          type: boolean
+          description: 是否支持流式输出
+        priority:
+          type: integer
+          description: 优先级
+        timeout_seconds:
+          type: integer
+          description: 调用超时时间（秒）
+        cost_input_unit:
+          type: number
+          description: 每千输入 Token 估算成本单价
+        cost_output_unit:
+          type: number
+          description: 每千输出 Token 估算成本单价
+
+    AiModelResponse:
+      type: object
+      required: [model]
+      properties:
+        model:
+          $ref: '#/components/schemas/AiModel'
+
+    AiModelListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiModel'
+
+    AiModelTestResponse:
+      type: object
+      required: [ok, message]
+      properties:
+        ok:
+          type: boolean
+          description: 连通性检查是否通过（不通过时也为 HTTP 200）
+        message:
+          type: string
+          description: 检查结果说明
+
+    AiModelRoutes:
+      type: object
+      description: 路由档位 → model_code 映射
+      required: [simple, standard, high]
+      properties:
+        simple:
+          type: string
+          description: 简单档位模型编码
+        standard:
+          type: string
+          description: 标准档位模型编码
+        high:
+          type: string
+          description: 高级档位模型编码
+
+    AiModelRoutesResponse:
+      type: object
+      required: [routes, loaded_models]
+      properties:
+        routes:
+          $ref: '#/components/schemas/AiModelRoutes'
+        loaded_models:
+          type: integer
+          description: 当前网关已加载的可用模型数
+
+    AiModelRoutesUpdateRequest:
+      type: object
+      description: 至少提供一个档位（全不提供返回 400）；未提供的档位保持现状；档位值必须是已存在的 model_code
+      properties:
+        simple:
+          type: string
+          description: 简单档位模型编码
+        standard:
+          type: string
+          description: 标准档位模型编码
+        high:
+          type: string
+          description: 高级档位模型编码
+
+    # ---- Agent / Tool ----
+    AiAgent:
+      type: object
+      required: [id, code, name, description, allowed_tool_ids, status, version, in_registry]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Agent ID
+        code:
+          type: string
+          description: Agent 编码（如 dispatcher/security_event/log_analysis/waf_policy/asset/ops_diagnostic/report/knowledge）
+        name:
+          type: string
+          description: Agent 名称
+        description:
+          type: string
+          description: 能力描述
+        allowed_tool_ids:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: 允许调用的 Tool 编码集（null 表示不限制）
+        status:
+          type: string
+          enum: [ENABLED, DISABLED]
+          description: 状态（dispatcher 恒为 ENABLED）
+        version:
+          type: integer
+          description: 配置版本号
+        in_registry:
+          type: boolean
+          description: 是否在代码 registry 中注册（未注册的 Agent 不可调度）
+
+    AiAgentListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiAgent'
+
+    AiAgentPatchRequest:
+      type: object
+      description: enabled 与 allowed_tool_ids 至少提供一项（全不提供返回 400）
+      properties:
+        enabled:
+          type: boolean
+          description: 启用/停用（dispatcher 禁止停用，传 false 返回 400）
+        allowed_tool_ids:
+          type: array
+          items:
+            type: string
+            maxLength: 100
+          description: 允许调用的 Tool 编码集
+
+    AiAgentTestResponse:
+      type: object
+      required: [ok, code, status, in_registry, message]
+      properties:
+        ok:
+          type: boolean
+          description: 是否可用（已启用且已注册）
+        code:
+          type: string
+          description: Agent 编码
+        status:
+          type: string
+          enum: [ENABLED, DISABLED]
+          description: 当前状态
+        in_registry:
+          type: boolean
+          description: 是否在代码 registry 中注册
+        message:
+          type: string
+          description: 探测结果说明
+
+    AiTool:
+      type: object
+      required: [id, code, name, description, version, risk_level, required_permission, input_schema, timeout_seconds, max_results, status, in_registry]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Tool ID
+        code:
+          type: string
+          description: Tool 编码
+        name:
+          type: string
+          description: Tool 名称
+        description:
+          type: string
+          description: 功能描述
+        version:
+          type: string
+          description: 版本号
+        risk_level:
+          type: string
+          enum: [READ_ONLY, DRAFT_ONLY, REQUIRES_CONFIRMATION, PROHIBITED]
+          description: 风险等级（只读 / 仅草稿 / 需确认 / 禁止）
+        required_permission:
+          type: string
+          description: 调用该 Tool 所需的业务权限点
+        input_schema:
+          type: object
+          description: 入参 JSON Schema
+        timeout_seconds:
+          type: integer
+          description: 执行超时时间（秒，可配范围 1-300）
+        max_results:
+          type: integer
+          description: 最大返回条数（可配范围 1-1000）
+        status:
+          type: string
+          enum: [ENABLED, DISABLED]
+          description: 状态（执行路径实时强制）
+        in_registry:
+          type: boolean
+          description: 是否在代码 registry 中注册
+
+    AiToolListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiTool'
+
+    AiToolPatchRequest:
+      type: object
+      description: 三个字段至少提供一项（全不提供返回 400）
+      properties:
+        enabled:
+          type: boolean
+          description: 启用/停用
+        timeout_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          description: 执行超时时间（秒，1-300）
+        max_results:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          description: 最大返回条数（1-1000）
+
+    AiToolTestResponse:
+      type: object
+      required: [ok, code, message]
+      properties:
+        ok:
+          type: boolean
+          description: 是否可用（已启用且已注册；探测失败也为 HTTP 200）
+        code:
+          type: string
+          description: Tool 编码
+        status:
+          type: string
+          description: 当前状态（部分分支不返回）
+        risk_level:
+          type: string
+          description: 风险等级（已注册且启用时返回）
+        in_registry:
+          type: boolean
+          description: 是否在代码 registry 中注册（已注册且启用时返回 true）
+        timeout_seconds:
+          type: integer
+          description: 执行超时时间（秒；已注册且启用时返回）
+        message:
+          type: string
+          description: 探测结果说明
+        probe:
+          type: string
+          enum: [ok, 'error']
+          description: READ_ONLY Tool 空参数探测结果（仅只读 Tool 返回）
+        probe_error:
+          type: string
+          description: 空参数探测错误信息（probe=error 时返回；可能仅因缺少业务参数）
+
+    # ---- Prompt ----
+    AiPrompt:
+      type: object
+      required: [id, code, name, prompt_type, status, current_version_id, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Prompt ID
+        code:
+          type: string
+          description: Prompt 编码（≤50 字符，全局唯一，创建后不可变）
+        name:
+          type: string
+          description: Prompt 名称（≤100 字符）
+        prompt_type:
+          type: string
+          enum: [SYSTEM, ORCHESTRATOR, AGENT, TOOL, TASK, SAFETY, EVALUATION]
+          description: Prompt 类型
+        status:
+          type: string
+          enum: [DRAFT, ACTIVE]
+          description: 状态（DRAFT 草稿 / ACTIVE 已发布）
+        current_version_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 当前发布版本 ID（未发布为 null）
+        created_at:
+          type: string
+          format: date-time
+          description: 创建时间
+
+    AiPromptListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiPrompt'
+
+    AiPromptCreateRequest:
+      type: object
+      required: [code, name, prompt_type, content]
+      properties:
+        code:
+          type: string
+          maxLength: 50
+          description: Prompt 编码（必填，全局唯一）
+        name:
+          type: string
+          maxLength: 100
+          description: Prompt 名称（必填）
+        prompt_type:
+          type: string
+          enum: [SYSTEM, ORCHESTRATOR, AGENT, TOOL, TASK, SAFETY, EVALUATION]
+          description: Prompt 类型（必填）
+        content:
+          type: string
+          description: 首版本内容（必填，≤50000 字符；禁止包含密钥/Shell/越权/思维链等模式）
+        change_summary:
+          type: string
+          description: 变更说明（可选，截断至 500 字符）
+
+    AiPromptCreateResponse:
+      type: object
+      required: [prompt, version]
+      properties:
+        prompt:
+          $ref: '#/components/schemas/AiPrompt'
+        version:
+          $ref: '#/components/schemas/AiPromptVersion'
+
+    AiPromptRenameRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          description: 新名称（必填）
+
+    AiPromptResponse:
+      type: object
+      required: [prompt]
+      properties:
+        prompt:
+          $ref: '#/components/schemas/AiPrompt'
+
+    AiPromptVersion:
+      type: object
+      description: Prompt 版本（不可变）
+      required: [id, prompt_id, version_number, content, content_hash, change_summary, test_result, created_at, published_at, is_current]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 版本 ID
+        prompt_id:
+          type: string
+          format: uuid
+          description: 所属 Prompt ID
+        version_number:
+          type: integer
+          description: 版本号（自 1 递增）
+        content:
+          type: string
+          description: Prompt 内容
+        content_hash:
+          type: string
+          description: 内容 SHA-256（hex）
+        change_summary:
+          type: string
+          description: 变更说明
+        test_result:
+          type: string
+          enum: ['', PASSED, FAILED]
+          description: 静态测试结果（空字符串 = 未测试；仅 PASSED 可发布）
+        created_at:
+          type: string
+          format: date-time
+          description: 创建时间
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 首次发布时间（从未发布为 null）
+        is_current:
+          type: boolean
+          description: 是否为当前生效版本
+
+    AiPromptVersionListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiPromptVersion'
+
+    AiPromptVersionCreateRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          description: 版本内容（必填，≤50000 字符；禁止包含密钥/Shell/越权/思维链等模式）
+        change_summary:
+          type: string
+          description: 变更说明（可选，截断至 500 字符）
+
+    AiPromptVersionResponse:
+      type: object
+      required: [version]
+      properties:
+        version:
+          $ref: '#/components/schemas/AiPromptVersion'
+
+    AiPromptVersionActionRequest:
+      type: object
+      description: 发布/回滚共用请求体
+      required: [version_id]
+      properties:
+        version_id:
+          type: string
+          format: uuid
+          description: 目标版本 ID
+
+    AiPromptTestCheck:
+      type: object
+      required: [name, passed]
+      properties:
+        name:
+          type: string
+          description: 检查项名称
+        passed:
+          type: boolean
+          description: 是否通过
+        message:
+          type: string
+          description: 未通过时的说明（如命中禁止内容）
+
+    AiPromptVersionTestResponse:
+      type: object
+      required: [test_result, checks]
+      properties:
+        test_result:
+          type: string
+          enum: [PASSED, FAILED]
+          description: 综合测试结果（已回写版本 test_result）
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiPromptTestCheck'
+
+    AiPromptDiffSide:
+      type: object
+      required: [version_id, version_number, content_hash, preview]
+      properties:
+        version_id:
+          type: string
+          format: uuid
+          description: 版本 ID
+        version_number:
+          type: integer
+          description: 版本号
+        content_hash:
+          type: string
+          description: 内容 SHA-256（hex）
+        preview:
+          type: string
+          description: 内容预览（截断至 500 字符）
+
+    AiPromptDiffStats:
+      type: object
+      required: [from_lines, to_lines, same_lines, removed_lines, added_lines, content_equal]
+      properties:
+        from_lines:
+          type: integer
+          description: 起始版本总行数
+        to_lines:
+          type: integer
+          description: 目标版本总行数
+        same_lines:
+          type: integer
+          description: 两侧相同行数
+        removed_lines:
+          type: integer
+          description: 仅起始版本存在的行数（删除）
+        added_lines:
+          type: integer
+          description: 仅目标版本存在的行数（新增）
+        content_equal:
+          type: boolean
+          description: 内容哈希是否一致
+
+    AiPromptDiffResponse:
+      type: object
+      required: [from, to, stats]
+      properties:
+        from:
+          $ref: '#/components/schemas/AiPromptDiffSide'
+        to:
+          $ref: '#/components/schemas/AiPromptDiffSide'
+        stats:
+          $ref: '#/components/schemas/AiPromptDiffStats'
+
+    # ---- 记忆 ----
+    AiMemory:
+      type: object
+      required: [id, user_id, memory_scope, scope_reference, content, confidence_type, source_type, source_reference, status, last_used_at, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 记忆 ID
+        user_id:
+          type: string
+          format: uuid
+          description: 归属用户 ID（严格属主隔离）
+        memory_scope:
+          type: string
+          enum: [SESSION, PROJECT, LONG_TERM]
+          description: 作用域（会话 / 项目 / 长期）
+        scope_reference:
+          type: string
+          description: 作用域引用（如会话/项目标识，≤100 字符）
+        content:
+          type: string
+          description: 记忆内容（≤4000 字符；敏感内容禁止写入）
+        confidence_type:
+          type: string
+          enum: [USER_CONFIRMED, SYSTEM_CONFIRMED, AI_INFERRED]
+          description: 置信度（用户确认 / 系统确认 / 智能推测；AI_INFERRED 须确认后才可进入长期记忆）
+        source_type:
+          type: string
+          description: 来源类型（手工创建为 MANUAL）
+        source_reference:
+          type: string
+          description: 来源引用
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+          description: 状态（DISABLED 不进入上下文）
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近使用时间（未使用为 null）
+        created_at:
+          type: string
+          format: date-time
+          description: 创建时间
+        updated_at:
+          type: string
+          format: date-time
+          description: 更新时间
+
+    AiMemoryListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiMemory'
+
+    AiMemoryCreateRequest:
+      type: object
+      required: [memory_scope, content]
+      properties:
+        memory_scope:
+          type: string
+          enum: [SESSION, PROJECT, LONG_TERM]
+          description: 作用域（必填）
+        scope_reference:
+          type: string
+          description: 作用域引用（可选，截断至 100 字符）
+        content:
+          type: string
+          maxLength: 4000
+          description: 记忆内容（必填；敏感内容特征拦截）
+        confidence_type:
+          type: string
+          enum: [USER_CONFIRMED, SYSTEM_CONFIRMED, AI_INFERRED]
+          description: 置信度（缺省 USER_CONFIRMED；AI_INFERRED 不得写入 LONG_TERM）
+
+    AiMemoryUpdateRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          maxLength: 4000
+          description: 新的记忆内容（必填；敏感内容特征拦截）
+
+    AiMemoryResponse:
+      type: object
+      required: [memory]
+      properties:
+        memory:
+          $ref: '#/components/schemas/AiMemory'
+
+    # ---- AI 审计 ----
+    AiAuditRecord:
+      type: object
+      description: AI 审计记录（写入时已脱敏；列表接口不查询 prompt_version/confirm_result 列，该两字段恒为空字符串）
+      required: [occurred_at, username, role_codes, action, task_type, agent_code, tool_code, model_code, prompt_version, input_tokens, output_tokens, duration_ms, estimated_cost, request_summary, result_summary, draft_reference, confirm_result]
+      properties:
+        occurred_at:
+          type: string
+          format: date-time
+          description: 发生时间（UTC）
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 操作用户 ID（系统动作为空，可能缺省）
+        username:
+          type: string
+          description: 操作用户名
+        role_codes:
+          type: string
+          description: 操作人角色编码集
+        session_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 关联 AI 会话 ID（可空，可能缺省）
+        task_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 关联任务 ID（可空，可能缺省；哈希链 objectID 来源）
+        action:
+          type: string
+          description: 动作（如 model_create、model_key_rotate、prompt_publish、tool_call 等）
+        task_type:
+          type: string
+          description: 任务类型（如 EVENT_ANALYSIS、LOG_QUERY 等）
+        agent_code:
+          type: string
+          description: Agent 编码
+        tool_code:
+          type: string
+          description: Tool 编码
+        model_code:
+          type: string
+          description: 模型编码
+        prompt_version:
+          type: string
+          description: Prompt 版本号（列表接口不返回该列，恒为空字符串）
+        input_tokens:
+          type: integer
+          description: 输入 Token 数
+        output_tokens:
+          type: integer
+          description: 输出 Token 数
+        duration_ms:
+          type: integer
+          description: 耗时（毫秒）
+        estimated_cost:
+          type: number
+          description: 估算成本
+        request_summary:
+          type: string
+          description: 请求摘要（已脱敏，≤500 字符）
+        result_summary:
+          type: string
+          description: 结果摘要（已脱敏，≤1000 字符）
+        draft_reference:
+          type: string
+          description: 草稿引用
+        confirm_result:
+          type: string
+          description: 确认结果（列表接口不返回该列，恒为空字符串）
+
+    AiAuditListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiAuditRecord'
+        page:
+          type: integer
+          description: 当前页码
+        page_size:
+          type: integer
+          description: 每页条数
+        total:
+          type: integer
+          description: 总条数
+
+    AiAuditVerifyRequest:
+      type: object
+      properties:
+        limit:
+          type: integer
+          description: 校验的最大记录数（缺省 10000，上限 100000）
+
+    AiAuditVerifyResponse:
+      type: object
+      required: [checked, mismatches, ok]
+      properties:
+        checked:
+          type: integer
+          description: 实际校验的记录数（limit 与总量的较小值）
+        mismatches:
+          type: integer
+          description: 链断裂/哈希不一致的记录数
+        ok:
+          type: boolean
+          description: 链是否完整（mismatches=0）
+
+    # ---- 用量与成本 ----
+    AiUsageOverview:
+      type: object
+      required: [today_input_tokens, today_output_tokens, today_model_calls, today_tool_calls, today_cost]
+      properties:
+        today_input_tokens:
+          type: integer
+          description: 今日输入 Token 总数
+        today_output_tokens:
+          type: integer
+          description: 今日输出 Token 总数
+        today_model_calls:
+          type: integer
+          description: 今日模型调用次数
+        today_tool_calls:
+          type: integer
+          description: 今日 Tool 调用次数
+        today_cost:
+          type: number
+          description: 今日估算成本
+
+    AiUsageOverviewResponse:
+      type: object
+      required: [usage]
+      properties:
+        usage:
+          $ref: '#/components/schemas/AiUsageOverview'
+
+    AiUsageByUserItem:
+      type: object
+      required: [username, input_tokens, output_tokens, model_calls, cost]
+      properties:
+        username:
+          type: string
+          description: 用户名
+        input_tokens:
+          type: integer
+          description: 输入 Token 总数（近 7 天）
+        output_tokens:
+          type: integer
+          description: 输出 Token 总数（近 7 天）
+        model_calls:
+          type: integer
+          description: 模型调用次数（近 7 天）
+        cost:
+          type: number
+          description: 估算成本（近 7 天）
+
+    AiUsageByUserListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiUsageByUserItem'
+
+    AiUsageByAgentItem:
+      type: object
+      required: [agent, runs, input_tokens, output_tokens, failures]
+      properties:
+        agent:
+          type: string
+          description: Agent 编码（未入库时回退为 agent_id）
+        runs:
+          type: integer
+          description: 运行次数（近 7 天）
+        input_tokens:
+          type: integer
+          description: 输入 Token 总数（近 7 天）
+        output_tokens:
+          type: integer
+          description: 输出 Token 总数（近 7 天）
+        failures:
+          type: integer
+          description: 失败次数（近 7 天，status=FAILED）
+
+    AiUsageByAgentListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiUsageByAgentItem'
+
+    AiUsageByTaskItem:
+      type: object
+      required: [task_type, tasks, input_tokens, output_tokens, cost]
+      properties:
+        task_type:
+          type: string
+          description: 任务类型（如 EVENT_ANALYSIS、LOG_QUERY 等）
+        tasks:
+          type: integer
+          description: 任务数（近 7 天）
+        input_tokens:
+          type: integer
+          description: 输入 Token 总数（近 7 天）
+        output_tokens:
+          type: integer
+          description: 输出 Token 总数（近 7 天）
+        cost:
+          type: number
+          description: 估算成本（近 7 天）
+
+    AiUsageByTaskListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiUsageByTaskItem'

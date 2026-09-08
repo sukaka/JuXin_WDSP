@@ -1,0 +1,1996 @@
+# 片段：访问控制与 CC 防护（阶段5）
+# 路由源：server/internal/app/app.go 第 595-656 行
+# 域：可信代理 / 保护地址 / IP黑白名单 / CC防护策略 / 临时封禁 / 访问控制事件 / 配置版本
+paths:
+  # ==================== 可信代理 ====================
+  /trusted-proxies:
+    get:
+      operationId: trustedProxyList
+      tags: [trusted-proxies]
+      summary: 可信代理分页列表
+      description: 按状态/代理头类型/关键字筛选可信代理，按优先级升序、创建时间倒序排列。权限：`trusted_proxies.read`
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [ENABLED, DISABLED] }, description: 按状态筛选 }
+        - { name: header_type, in: query, schema: { type: string, enum: [X_FORWARDED_FOR, X_REAL_IP, FORWARDED, CUSTOM] }, description: 按代理头类型筛选 }
+        - { name: keyword, in: query, schema: { type: string }, description: 关键字（模糊匹配名称或 CIDR） }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页可信代理列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustedProxyListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: trustedProxyCreate
+      tags: [trusted-proxies]
+      summary: 创建可信代理
+      description: 创建可信代理（初始状态 ENABLED；CIDR 入库前规范化并派生 IP 版本）。相同地址与节点的代理已存在时返回 409。记录中风险审计。权限：`trusted_proxies.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TrustedProxyCreateRequest' }
+      responses:
+        '200':
+          description: 创建成功，返回完整代理对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustedProxyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 相同地址与节点的可信代理已存在 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /trusted-proxies/test:
+    post:
+      operationId: trustedProxyTest
+      tags: [trusted-proxies]
+      summary: 可信代理命中测试
+      description: 纯计算不落库、不审计：返回每个测试 IP 是否被输入的 CIDR 命中，以及当前库中全部启用代理对该 IP 的匹配结果。测试 IP 数量须为 1-100。权限：`trusted_proxies.read`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TrustedProxyTestRequest' }
+      responses:
+        '200':
+          description: 命中测试结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustedProxyTestResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /trusted-proxies/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 可信代理 ID
+    get:
+      operationId: trustedProxyGet
+      tags: [trusted-proxies]
+      summary: 可信代理详情
+      description: 按 ID 查询可信代理。权限：`trusted_proxies.read`
+      responses:
+        '200':
+          description: 可信代理详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustedProxyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: trustedProxyUpdate
+      tags: [trusted-proxies]
+      summary: 更新可信代理（乐观锁）
+      description: 全量更新可信代理，`version` 与当前版本不一致返回 409。记录中风险审计。权限：`trusted_proxies.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TrustedProxyUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功，返回更新后的代理对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TrustedProxyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 版本冲突（已被他人修改）或相同地址与节点的代理已存在 }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: trustedProxyDelete
+      tags: [trusted-proxies]
+      summary: 删除可信代理（软删除）
+      description: 软删除可信代理。记录中风险审计。权限：`trusted_proxies.manage`
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /trusted-proxies/{id}/enable:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 可信代理 ID
+    post:
+      operationId: trustedProxyEnable
+      tags: [trusted-proxies]
+      summary: 启用可信代理
+      description: 将可信代理置为 ENABLED。记录低风险审计。权限：`trusted_proxies.manage`
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /trusted-proxies/{id}/disable:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 可信代理 ID
+    post:
+      operationId: trustedProxyDisable
+      tags: [trusted-proxies]
+      summary: 停用可信代理
+      description: 将可信代理置为 DISABLED（改变真实 IP 识别信任边界）。记录中风险审计。权限：`trusted_proxies.manage`
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 保护地址 ====================
+  /protected-addresses:
+    get:
+      operationId: protectedAddrList
+      tags: [protected-addresses]
+      summary: 保护地址分页列表
+      description: 返回启用中（ENABLED）的保护地址，可按地址类型筛选，按创建时间升序排列。权限：`protected_addresses.read`
+      parameters:
+        - { name: address_type, in: query, schema: { type: string, enum: [GATEWAY, MANAGEMENT, UPSTREAM, DATABASE, CACHE, TRUSTED_PROXY, LOOPBACK, LINK_LOCAL, CUSTOM] }, description: 按地址类型筛选 }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页保护地址列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProtectedAddrListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: protectedAddrCreate
+      tags: [protected-addresses]
+      summary: 创建自定义保护地址
+      description: 创建 source_type=MANUAL、address_type=CUSTOM 的保护地址；`address` 与 `cidr` 必须且只能填写一个。相同地址已存在返回 409。记录中风险审计。权限：`protected_addresses.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProtectedAddrCreateRequest' }
+      responses:
+        '200':
+          description: 创建成功，返回完整保护地址对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProtectedAddrDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 相同地址的保护地址已存在 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /protected-addresses/refresh:
+    post:
+      operationId: protectedAddrRefresh
+      tags: [protected-addresses]
+      summary: 自动登记系统保护地址（幂等）
+      description: 扫描回环/链路本地地址、环境变量中的组件地址、活动源站与启用中的可信代理，自动登记 SYSTEM 保护地址；已存在同地址记录则跳过，可安全重复调用。记录低风险审计。权限：`protected_addresses.manage`
+      responses:
+        '200':
+          description: 登记结果（新增数与跳过数）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProtectedAddrRefreshResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /protected-addresses/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 保护地址 ID
+    delete:
+      operationId: protectedAddrDelete
+      tags: [protected-addresses]
+      summary: 删除保护地址
+      description: 仅 MANUAL 来源的保护地址可删除；尝试删除 SYSTEM 地址返回 409 并记录高风险失败审计。成功删除记录中风险审计。权限：`protected_addresses.manage`
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 系统自动登记的保护地址不可删除 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== IP 黑白名单 ====================
+  /access-rules:
+    get:
+      operationId: accessRuleList
+      tags: [access-rules]
+      summary: IP 黑白名单规则分页列表
+      description: 按类型/范围/状态/来源/关键字/地址筛选规则。权限：`access_rules.read`
+      parameters:
+        - { name: rule_type, in: query, schema: { type: string, enum: [ALLOW, DENY] }, description: 规则类型（ALLOW 白名单 / DENY 黑名单） }
+        - { name: scope_type, in: query, schema: { type: string, enum: [GLOBAL, APPLICATION] }, description: 生效范围 }
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按应用筛选 }
+        - { name: status, in: query, schema: { type: string, enum: [DRAFT, ACTIVE, DISABLED, EXPIRED] }, description: 按状态筛选 }
+        - { name: source_type, in: query, schema: { type: string, enum: [MANUAL, SECURITY_EVENT, IMPORT, AUTO_BLOCK, SYSTEM] }, description: 按来源筛选 }
+        - { name: keyword, in: query, schema: { type: string }, description: 关键字（模糊匹配名称或地址） }
+        - { name: address, in: query, schema: { type: string }, description: 地址精确匹配（先规范化再匹配） }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页规则列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRuleListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: accessRuleCreate
+      tags: [access-rules]
+      summary: 创建 IP 黑白名单规则
+      description: |
+        创建规则（初始状态 ACTIVE）。DENY 规则地址命中保护地址时拒绝（400）并记录高风险失败审计。
+        相同范围下同地址同类型规则冲突返回 409。记录中风险审计。权限：`access_rules.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRuleCreateRequest' }
+      responses:
+        '200':
+          description: 创建成功，返回完整规则对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRuleDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 相同范围下已存在同地址同类型规则 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-rules/validate:
+    post:
+      operationId: accessRuleValidate
+      tags: [access-rules]
+      summary: 校验规则输入（不落库）
+      description: 校验规则字段、保护地址冲突与同范围重复，返回错误列表；不产生任何写入。权限：`access_rules.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRuleCreateRequest' }
+      responses:
+        '200':
+          description: 校验结果（valid=false 时 errors 给出原因）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRuleValidateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-rules/import:
+    post:
+      operationId: accessRuleImport
+      tags: [access-rules]
+      summary: 批量导入规则（JSON 携带 CSV/纯文本内容）
+      description: |
+        JSON 请求体携带导入内容（非文件上传）：`content` 为 CSV（含表头，必须含 address 列，识别列
+        address,rule_type,scope_type,application_code,effective_until,reason）或纯文本（每行一个地址），
+        内容 ≤1MB、行数 ≤10000。`dry_run=true` 时只校验并返回前 50 条预览，不落库。
+        ALL_OR_NOTHING 模式存在错误行时整体不导入并返回 400（details 为行级错误）；
+        SKIP_ERRORS 模式跳过错误行逐条插入。记录审计（含保护地址错误时高风险）。权限：`access_rules.import`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRuleImportRequest' }
+      responses:
+        '200':
+          description: 导入结果（dry_run 时含 preview；正式导入含 imported）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRuleImportResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: ALL_OR_NOTHING 模式批量落库时存在冲突规则 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-rules/export:
+    get:
+      operationId: accessRuleExport
+      tags: [access-rules]
+      summary: 导出规则 CSV
+      description: |
+        按筛选条件导出规则 CSV（含表头，防公式注入，最多 10000 条），
+        列为 id,name,rule_type,scope_type,application_code,address,ip_version,priority,status,validity_type,
+        effective_from,effective_until,reason,source_type,hit_count,last_hit_at,created_at。
+        响应头 Content-Disposition 附件文件名形如 ip_access_rules_YYYYMMDD.csv。
+        限流：每 IP 5 次/分钟（导出类接口共享）。记录低风险审计。权限：`access_rules.read`
+      parameters:
+        - { name: rule_type, in: query, schema: { type: string, enum: [ALLOW, DENY] }, description: 规则类型 }
+        - { name: scope_type, in: query, schema: { type: string, enum: [GLOBAL, APPLICATION] }, description: 生效范围 }
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按应用筛选 }
+        - { name: status, in: query, schema: { type: string, enum: [DRAFT, ACTIVE, DISABLED, EXPIRED] }, description: 按状态筛选 }
+        - { name: source_type, in: query, schema: { type: string, enum: [MANUAL, SECURITY_EVENT, IMPORT, AUTO_BLOCK, SYSTEM] }, description: 按来源筛选 }
+        - { name: keyword, in: query, schema: { type: string }, description: 关键字（模糊匹配名称或地址） }
+        - { name: address, in: query, schema: { type: string }, description: 地址精确匹配 }
+      responses:
+        '200':
+          description: CSV 文件流（text/csv; charset=utf-8）
+          content:
+            text/csv:
+              schema: { type: string, description: CSV 文本（含表头） }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { description: 导出频率超限（每 IP 5 次/分钟） }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-rules/publish:
+    post:
+      operationId: accessRulePublish
+      tags: [access-rules]
+      summary: 发布访问控制配置到网关
+      description: |
+        将当前访问控制配置发布到防护网关（与配置发布共用发布任务模型，同步执行并返回任务结果）。
+        `idempotency_key` 用于幂等去重，重复键返回原任务。记录高风险审计。
+        注意：该路由仅在网关发布器装配时注册，未装配时返回 404。权限：`access_rules.publish`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRulePublishRequest' }
+      responses:
+        '200':
+          description: 发布任务结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRulePublishTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-rules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 规则 ID
+    get:
+      operationId: accessRuleGet
+      tags: [access-rules]
+      summary: 规则详情
+      description: 按 ID 查询规则。权限：`access_rules.read`
+      responses:
+        '200':
+          description: 规则详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRuleDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: accessRuleUpdate
+      tags: [access-rules]
+      summary: 更新规则（乐观锁）
+      description: |
+        更新规则，`version` 与当前版本不一致返回 409。
+        rule_type / scope_type / application_id 不允许修改（避免变更唯一性维度）。记录中风险审计。权限：`access_rules.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRuleUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功，返回更新后的规则对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRuleDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 版本冲突（已被他人修改）或规则冲突 }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: accessRuleDelete
+      tags: [access-rules]
+      summary: 删除规则（软删除）
+      description: 软删除规则。记录高风险审计。权限：`access_rules.manage`
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-rules/{id}/enable:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 规则 ID
+    post:
+      operationId: accessRuleEnable
+      tags: [access-rules]
+      summary: 启用规则
+      description: 将规则置为 ACTIVE。记录低风险审计。权限：`access_rules.manage`
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-rules/{id}/disable:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 规则 ID
+    post:
+      operationId: accessRuleDisable
+      tags: [access-rules]
+      summary: 停用规则
+      description: 将规则置为 DISABLED。记录低风险审计。权限：`access_rules.manage`
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-rules/{id}/extend:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 规则 ID
+    post:
+      operationId: accessRuleExtend
+      tags: [access-rules]
+      summary: 延长临时规则失效时间
+      description: 仅 TEMPORARY 规则支持延期；新失效时间必须晚于当前时间且晚于生效时间。记录中风险审计。权限：`access_rules.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRuleExtendRequest' }
+      responses:
+        '200':
+          description: 规则已延期
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-rules/{id}/release:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 规则 ID
+    post:
+      operationId: accessRuleRelease
+      tags: [access-rules]
+      summary: 立即解封临时规则
+      description: 仅 TEMPORARY 规则支持解封，解封后规则置为 DISABLED。记录中风险审计。权限：`access_rules.manage`
+      responses:
+        '200':
+          description: 规则已解封
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-rules/{id}/copy:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 规则 ID
+    post:
+      operationId: accessRuleCopy
+      tags: [access-rules]
+      summary: 复制规则
+      description: 复制规则生成新规则（名称追加“-副本”，source_type=MANUAL）。记录低风险审计。权限：`access_rules.manage`
+      responses:
+        '200':
+          description: 复制成功，返回新规则对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRuleDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 相同范围下已存在同地址同类型规则 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== CC 防护策略 ====================
+  /rate-limit-policies:
+    get:
+      operationId: rateLimitList
+      tags: [rate-limit-policies]
+      summary: CC 防护策略分页列表
+      description: 按范围/状态/动作/关键字/应用筛选策略。权限：`rate_limits.read`
+      parameters:
+        - { name: scope_type, in: query, schema: { type: string, enum: [GLOBAL, APPLICATION, URI] }, description: 作用范围 }
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE, DISABLED] }, description: 按状态筛选 }
+        - { name: action, in: query, schema: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK] }, description: 按触发动作筛选 }
+        - { name: keyword, in: query, schema: { type: string }, description: 关键字（模糊匹配名称） }
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按应用筛选 }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页策略列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RateLimitListResponse' }
+        '400': { description: 参数错误（无效的应用ID） }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: rateLimitCreate
+      tags: [rate-limit-policies]
+      summary: 创建 CC 防护策略
+      description: 创建策略（初始状态 ACTIVE）；校验未通过返回 400 且 details 为字段级错误列表。记录中风险审计。权限：`rate_limits.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RateLimitUpsertRequest' }
+      responses:
+        '200':
+          description: 创建成功，直接返回策略对象（非包裹结构）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RateLimitPolicy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /rate-limit-policies/publish:
+    post:
+      operationId: rateLimitPublish
+      tags: [rate-limit-policies]
+      summary: 发布 CC 防护配置到网关
+      description: |
+        将当前 CC 防护配置发布到防护网关（与配置发布共用发布任务模型，同步执行并返回任务结果）。
+        `idempotency_key` 用于幂等去重，重复键返回原任务。记录高风险审计。
+        注意：该路由仅在网关发布器装配时注册，未装配时返回 404。权限：`rate_limits.publish`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRulePublishRequest' }
+      responses:
+        '200':
+          description: 发布任务结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRulePublishTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /rate-limit-policies/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 策略 ID
+    get:
+      operationId: rateLimitGet
+      tags: [rate-limit-policies]
+      summary: 策略详情
+      description: 按 ID 查询策略，直接返回策略对象（非包裹结构）。权限：`rate_limits.read`
+      responses:
+        '200':
+          description: 策略对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RateLimitPolicy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: rateLimitUpdate
+      tags: [rate-limit-policies]
+      summary: 更新 CC 防护策略（乐观锁）
+      description: 全量更新策略，`version` 与当前版本不一致返回 409；状态只能通过启停接口变更。记录中风险审计。权限：`rate_limits.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RateLimitUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功，直接返回策略对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RateLimitPolicy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 版本冲突（已被他人修改） }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: rateLimitDelete
+      tags: [rate-limit-policies]
+      summary: 删除 CC 防护策略（软删除）
+      description: 软删除策略。记录高风险审计。权限：`rate_limits.manage`
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /rate-limit-policies/{id}/enable:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 策略 ID
+    post:
+      operationId: rateLimitEnable
+      tags: [rate-limit-policies]
+      summary: 启用策略
+      description: 将策略置为 ACTIVE。记录低风险审计。权限：`rate_limits.manage`
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /rate-limit-policies/{id}/disable:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 策略 ID
+    post:
+      operationId: rateLimitDisable
+      tags: [rate-limit-policies]
+      summary: 停用策略
+      description: 将策略置为 DISABLED。记录低风险审计。权限：`rate_limits.manage`
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /rate-limit-policies/{id}/validate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 策略 ID（当前实现仅校验请求体，id 不参与校验逻辑）
+    post:
+      operationId: rateLimitValidate
+      tags: [rate-limit-policies]
+      summary: 校验策略配置（不保存）
+      description: 与创建前置校验共用同一套校验逻辑，聚合返回全部字段级错误；不产生任何写入。权限：`rate_limits.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RateLimitUpsertRequest' }
+      responses:
+        '200':
+          description: 校验结果（valid=false 时 errors 给出字段级错误）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RateLimitValidateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /rate-limit-policies/{id}/test:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 策略 ID
+    post:
+      operationId: rateLimitTest
+      tags: [rate-limit-policies]
+      summary: 策略干跑模拟测试
+      description: |
+        按策略配置在服务端模拟限速判定（不真实请求网关、不影响线上计数）：请求按 10ms 间隔注入，
+        多个 client_ips 轮询使用，算法语义与网关内存后端一致。权限：`rate_limits.read`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RateLimitTestRequest' }
+      responses:
+        '200':
+          description: 模拟结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RateLimitTestResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 临时封禁 ====================
+  /temporary-blocks:
+    get:
+      operationId: tempBlockList
+      tags: [temporary-blocks]
+      summary: 临时封禁分页列表
+      description: 按状态/客户端IP/应用筛选封禁记录。权限：`temporary_blocks.read`
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE, EXPIRED, MANUALLY_RELEASED, CANCELLED] }, description: 按封禁状态筛选 }
+        - { name: client_ip, in: query, schema: { type: string }, description: 按客户端 IP 筛选 }
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按应用筛选 }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页封禁列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TempBlockListResponse' }
+        '400': { description: 参数错误（无效的封禁状态或应用ID） }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /temporary-blocks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 封禁记录 ID
+    get:
+      operationId: tempBlockGet
+      tags: [temporary-blocks]
+      summary: 封禁详情
+      description: 按 ID 查询封禁记录。权限：`temporary_blocks.read`
+      responses:
+        '200':
+          description: 封禁详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TempBlockDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /temporary-blocks/{id}/release:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 封禁记录 ID
+    post:
+      operationId: tempBlockRelease
+      tags: [temporary-blocks]
+      summary: 人工解封
+      description: 解除生效中的封禁（同步清除网关封禁键，并写入 CC_TEMP_BLOCK_RELEASED 事件）。仅 ACTIVE 状态可操作。记录中风险审计。权限：`temporary_blocks.manage`
+      responses:
+        '200':
+          description: 封禁已解除
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 封禁不在生效状态，无法执行该操作 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /temporary-blocks/{id}/extend:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 封禁记录 ID
+    post:
+      operationId: tempBlockExtend
+      tags: [temporary-blocks]
+      summary: 延长封禁
+      description: 延长生效中封禁的到期时间（新到期时间必须晚于当前时间）。仅 ACTIVE 状态可操作。记录低风险审计。权限：`temporary_blocks.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TempBlockExtendRequest' }
+      responses:
+        '200':
+          description: 封禁已延长
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 封禁不在生效状态，无法执行该操作 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /temporary-blocks/{id}/convert-to-permanent:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 封禁记录 ID
+    post:
+      operationId: tempBlockConvertToPermanent
+      tags: [temporary-blocks]
+      summary: 转永久封禁（生成 DENY 规则）
+      description: 将临时封禁转换为永久 DENY 黑名单规则并结束封禁。仅 ACTIVE 状态可操作。记录高风险审计。权限：`temporary_blocks.manage`
+      responses:
+        '200':
+          description: 转换成功，返回新建规则 ID
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TempBlockConvertResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 封禁不在生效状态，无法执行该操作 }
+        '503': { description: 访问控制规则服务未配置，无法转换 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 访问控制事件 ====================
+  /access-control-events:
+    get:
+      operationId: acEventList
+      tags: [access-control-events]
+      summary: 访问控制事件分页列表
+      description: 查询 IP 黑白名单与 CC 防护产生的访问控制事件（网关 jiuzhang_guard 上报 + 管理面补齐）。权限：`access_control_events.read`
+      parameters:
+        - { name: start_time, in: query, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, schema: { type: string, format: date-time }, description: 截止时间（RFC3339，必须晚于 start_time） }
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按应用筛选 }
+        - { name: client_ip, in: query, schema: { type: string }, description: 按客户端 IP 筛选 }
+        - { name: event_type, in: query, schema: { type: string, enum: [CC_TEMP_BLOCK_CREATED, CC_TEMP_BLOCK_EXPIRED, CC_TEMP_BLOCK_RELEASED, CC_THRESHOLD_EXCEEDED, CC_REQUEST_REJECTED] }, description: 按事件类型筛选 }
+        - { name: action, in: query, schema: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK] }, description: 按动作筛选 }
+        - { name: policy_id, in: query, schema: { type: string }, description: 按策略 ID 筛选 }
+        - { name: request_id, in: query, schema: { type: string }, description: 按请求 ID 筛选 }
+        - { name: gateway_node_id, in: query, schema: { type: string }, description: 按网关节点筛选 }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页事件列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ACEventListResponse' }
+        '400': { description: 参数错误（时间格式或应用ID无效、时间范围颠倒） }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-control-events/export:
+    get:
+      operationId: acEventExport
+      tags: [access-control-events]
+      summary: 导出访问控制事件 CSV
+      description: |
+        按筛选条件导出事件 CSV（含表头，防公式注入，最多 10000 条），
+        列为 occurred_at,request_id,application_code,client_ip,connection_ip,domain,method,path,event_type,
+        action,policy_id,access_rule_id,current_count,limit_value,window_seconds,response_status,gateway_node_id,message。
+        响应头 Content-Disposition 附件文件名为 access-control-events.csv。
+        限流：每 IP 5 次/分钟（导出类接口共享）。记录中风险审计。权限：`access_control_events.export`
+      parameters:
+        - { name: start_time, in: query, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, schema: { type: string, format: date-time }, description: 截止时间（RFC3339，必须晚于 start_time） }
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按应用筛选 }
+        - { name: client_ip, in: query, schema: { type: string }, description: 按客户端 IP 筛选 }
+        - { name: event_type, in: query, schema: { type: string, enum: [CC_TEMP_BLOCK_CREATED, CC_TEMP_BLOCK_EXPIRED, CC_TEMP_BLOCK_RELEASED, CC_THRESHOLD_EXCEEDED, CC_REQUEST_REJECTED] }, description: 按事件类型筛选 }
+        - { name: action, in: query, schema: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK] }, description: 按动作筛选 }
+        - { name: policy_id, in: query, schema: { type: string }, description: 按策略 ID 筛选 }
+        - { name: request_id, in: query, schema: { type: string }, description: 按请求 ID 筛选 }
+        - { name: gateway_node_id, in: query, schema: { type: string }, description: 按网关节点筛选 }
+      responses:
+        '200':
+          description: CSV 文件流（text/csv; charset=utf-8）
+          content:
+            text/csv:
+              schema: { type: string, description: CSV 文本（含表头） }
+        '400': { description: 参数错误（时间格式或应用ID无效、时间范围颠倒） }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { description: 导出频率超限（每 IP 5 次/分钟） }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-control-events/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 事件 ID
+    get:
+      operationId: acEventGet
+      tags: [access-control-events]
+      summary: 访问控制事件详情
+      description: 按 ID 查询事件详情。权限：`access_control_events.read`
+      responses:
+        '200':
+          description: 事件详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ACEventDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 访问控制配置版本 ====================
+  /access-control/versions:
+    get:
+      operationId: acVersionList
+      tags: [access-control-versions]
+      summary: 配置版本分页列表（仅元数据）
+      description: 按版本号倒序返回版本元数据（不含 config 正文，防大数据与密钥外泄）。权限：`access_control_versions.read`
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页版本列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ACVersionListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-control/versions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 版本 ID
+    get:
+      operationId: acVersionGet
+      tags: [access-control-versions]
+      summary: 配置版本详情（config 已脱敏）
+      description: 返回版本元数据与完整 config（config 中 valkey.password 等敏感字段已脱敏为 ***）。权限：`access_control_versions.read`
+      responses:
+        '200':
+          description: 版本详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ACVersionDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-control/versions/{id}/diff:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 目标版本 ID
+    get:
+      operationId: acVersionDiff
+      tags: [access-control-versions]
+      summary: 两版本配置对比
+      description: |
+        对两份 guard 配置做顶层浅层 diff（顶层键新增/移除；共有键按数组长度、对象哈希、标量值对比），
+        输出人类可读摘要行。`compare_with` 为空时默认与上一版本对比；无上一版本且未指定时返回 400。
+        权限：`access_control_versions.read`
+      parameters:
+        - { name: compare_with, in: query, schema: { type: string, format: uuid }, description: 对比基准版本 ID（缺省为上一版本） }
+      responses:
+        '200':
+          description: 对比结果（differences 为空数组表示无差异）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ACVersionDiffResponse' }
+        '400': { description: 参数错误（无效的版本ID，或该版本没有上一版本且未指定 compare_with） }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-control/versions/{id}/rollback:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 版本 ID
+    post:
+      operationId: acVersionRollback
+      tags: [access-control-versions]
+      summary: 回滚到指定版本
+      description: 将网关访问控制配置回滚到指定版本（通过发布管线执行，返回发布结果）。记录高风险审计。权限：`access_control_versions.rollback`
+      responses:
+        '200':
+          description: 回滚已提交，result 为发布结果（如发布任务信息）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ACVersionRollbackResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: 发布服务未配置，无法回滚 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== L7 访问控制规则 ====================
+  /l7-rules:
+    get:
+      operationId: l7RuleList
+      tags: [l7-rules]
+      summary: L7 规则分页列表
+      description: 按优先级升序、创建时间升序返回 L7 访问控制规则，支持名称关键字模糊与启停状态筛选；每条规则附近 24 小时命中数（hit_count_24h）。仅 WAF/WDSP 交付形态注册（edition=api 时不出现）。权限：`l7rules.read`
+      parameters:
+        - { name: keyword, in: query, schema: { type: string }, description: 规则名称关键字（模糊匹配） }
+        - { name: enabled, in: query, schema: { type: boolean }, description: 按启停状态筛选（非法值返回 400） }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页规则列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/L7RuleListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: l7RuleCreate
+      tags: [l7-rules]
+      summary: 新建 L7 规则
+      description: |
+        新建 L7 访问控制规则（草稿语义：发布前不下发网关）。priority 缺省 100、enabled 缺省 true；
+        条件与动作配置的校验规则见 L7RuleRequest（校验失败返回 400 并附中文原因）；规则总数上限 500 条（超限返回 409）。
+        记录中风险审计。权限：`l7rules.create`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/L7RuleRequest' }
+      responses:
+        '200':
+          description: 创建成功，返回完整规则对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/L7RuleDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 规则总数已达上限 500 条 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /l7-rules/test:
+    post:
+      operationId: l7RuleTest
+      tags: [l7-rules]
+      summary: L7 规则测试器
+      description: |
+        以当前规则集（含停用规则，评估时跳过）对输入请求做纯函数评估：不产生真实流量、不写事件、不审计。
+        按（priority 升序, created_at 升序）首中即停；全部未命中返回 matched=false。权限：`l7rules.read`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/L7RuleTestRequest' }
+      responses:
+        '200':
+          description: 评估结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/L7RuleTestResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /l7-rules/publish:
+    post:
+      operationId: l7RulePublish
+      tags: [l7-rules]
+      summary: 发布 L7 规则到网关
+      description: |
+        将当前 L7 规则随网关配置发布到防护网关（与配置发布共用发布任务模型，同步执行并返回任务结果）。
+        `idempotency_key` 用于幂等去重，重复键返回原任务。记录高风险审计。
+        注意：该路由仅在网关发布器装配时注册，未装配时返回 404。权限：`l7rules.publish`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRulePublishRequest' }
+      responses:
+        '200':
+          description: 发布任务结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessRulePublishTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /l7-rules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 规则 ID
+    get:
+      operationId: l7RuleGet
+      tags: [l7-rules]
+      summary: L7 规则详情
+      description: 按 ID 查询规则（含近 24 小时命中数）。权限：`l7rules.read`
+      responses:
+        '200':
+          description: 规则详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/L7RuleDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      operationId: l7RuleUpdate
+      tags: [l7-rules]
+      summary: 更新 L7 规则（全量）
+      description: 全量更新规则（名称/优先级/启停/条件/动作），字段缺失按默认值处理（enabled 缺省 true、priority 缺省 100）。记录中风险审计。权限：`l7rules.update`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/L7RuleRequest' }
+      responses:
+        '200':
+          description: 更新成功，返回更新后的规则对象
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/L7RuleDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: l7RuleDelete
+      tags: [l7-rules]
+      summary: 删除 L7 规则
+      description: 删除规则（二次确认由前端完成）。记录高风险审计。权限：`l7rules.delete`
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    # ==================== 可信代理 ====================
+    TrustedProxy:
+      type: object
+      description: 可信代理记录（真实客户端 IP 识别的信任边界）
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, description: 名称（不超过100字符） }
+        cidr: { type: string, description: 代理地址段（规范形式：单IP或掩码化CIDR） }
+        ip_version: { type: string, enum: [IPV4, IPV6], description: IP 版本（由 CIDR 派生） }
+        header_type: { type: string, enum: [X_FORWARDED_FOR, X_REAL_IP, FORWARDED, CUSTOM], description: 真实 IP 提取代理头类型 }
+        custom_header_name: { type: string, description: 自定义头名（header_type=CUSTOM 时必填，≤64字符，仅字母/数字/点/下划线/连字符） }
+        priority: { type: integer, description: 优先级，数值小者优先（0-10000） }
+        status: { type: string, enum: [ENABLED, DISABLED], description: 状态 }
+        scope: { type: string, enum: [GLOBAL, NODE], description: 生效范围 }
+        node_name: { type: string, description: 节点名称（scope=NODE 时必填，≤100字符） }
+        description: { type: string, description: 描述（≤500字符） }
+        created_by: { type: string, format: uuid, nullable: true, description: 创建人用户 ID }
+        created_at: { type: string, format: date-time }
+        updated_by: { type: string, format: uuid, nullable: true, description: 最近更新人用户 ID }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, description: 乐观锁版本号 }
+
+    TrustedProxyListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/TrustedProxy' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    TrustedProxyDetailResponse:
+      type: object
+      properties:
+        proxy: { $ref: '#/components/schemas/TrustedProxy' }
+
+    TrustedProxyCreateRequest:
+      type: object
+      required: [name, cidr, header_type]
+      properties:
+        name: { type: string, maxLength: 100, description: 名称 }
+        cidr: { type: string, description: 单 IP 或 CIDR（入库前规范化） }
+        header_type: { type: string, enum: [X_FORWARDED_FOR, X_REAL_IP, FORWARDED, CUSTOM], description: 真实 IP 提取代理头类型 }
+        custom_header_name: { type: string, maxLength: 64, description: 自定义头名（header_type=CUSTOM 时必填，其余类型必须为空） }
+        priority: { type: integer, minimum: 0, maximum: 10000, default: 0, description: 优先级，数值小者优先 }
+        scope: { type: string, enum: [GLOBAL, NODE], default: GLOBAL, description: 生效范围（缺省 GLOBAL） }
+        node_name: { type: string, maxLength: 100, description: 节点名称（scope=NODE 时必填；GLOBAL 时必须为空） }
+        description: { type: string, maxLength: 500, description: 描述 }
+
+    TrustedProxyUpdateRequest:
+      allOf:
+        - $ref: '#/components/schemas/TrustedProxyCreateRequest'
+        - type: object
+          required: [version]
+          properties:
+            version: { type: integer, description: 乐观锁版本号（与当前版本不一致返回 409） }
+
+    TrustedProxyTestRequest:
+      type: object
+      required: [cidr, test_ips]
+      properties:
+        cidr: { type: string, description: 待测试的单 IP 或 CIDR }
+        test_ips:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { type: string }
+          description: 测试 IP 列表（1-100 个）
+
+    TrustedProxyTestMatchedProxy:
+      type: object
+      description: 命中测试 IP 的库内启用代理
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        cidr: { type: string }
+        scope: { type: string, enum: [GLOBAL, NODE] }
+        node_name: { type: string }
+
+    TrustedProxyTestIPResult:
+      type: object
+      description: 单个测试 IP 的命中结果
+      properties:
+        ip: { type: string, description: 测试 IP }
+        valid: { type: boolean, description: 是否为合法 IP 字面量 }
+        matched: { type: boolean, description: 是否被本次输入的 CIDR 命中 }
+        matched_proxies:
+          type: array
+          items: { $ref: '#/components/schemas/TrustedProxyTestMatchedProxy' }
+          description: 库中启用代理对该 IP 的命中结果
+
+    TrustedProxyTestResponse:
+      type: object
+      properties:
+        cidr: { type: string, description: 规范化后的测试 CIDR }
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/TrustedProxyTestIPResult' }
+
+    # ==================== 保护地址 ====================
+    ProtectedAddr:
+      type: object
+      description: 保护地址记录（address 与 cidr 二选一；命中保护地址的 IP 禁止加入黑名单）
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, description: 名称 }
+        address: { type: string, description: 单 IP（规范形式；与 cidr 二选一） }
+        cidr: { type: string, description: CIDR（掩码化规范形式；与 address 二选一） }
+        address_type: { type: string, enum: [GATEWAY, MANAGEMENT, UPSTREAM, DATABASE, CACHE, TRUSTED_PROXY, LOOPBACK, LINK_LOCAL, CUSTOM], description: 地址类型 }
+        source_type: { type: string, enum: [SYSTEM, MANUAL], description: 来源（SYSTEM 系统登记 / MANUAL 手工创建） }
+        description: { type: string, description: 描述 }
+        status: { type: string, enum: [ENABLED, DISABLED], description: 状态 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ProtectedAddrListResponse:
+      type: object
+      description: 保护地址分页列表（仅启用中记录）
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ProtectedAddr' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    ProtectedAddrDetailResponse:
+      type: object
+      properties:
+        address: { $ref: '#/components/schemas/ProtectedAddr' }
+
+    ProtectedAddrCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, description: 名称 }
+        address: { type: string, description: 单 IP（与 cidr 必须且只能填写一个） }
+        cidr: { type: string, description: CIDR（与 address 必须且只能填写一个） }
+        description: { type: string, description: 描述 }
+
+    ProtectedAddrRefreshResponse:
+      type: object
+      properties:
+        added: { type: integer, description: 本次新登记的系统保护地址数 }
+        skipped: { type: integer, description: 已存在而跳过的地址数 }
+
+    # ==================== IP 黑白名单 ====================
+    AccessRule:
+      type: object
+      description: IP 访问控制（黑白名单）规则
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, description: 规则名称（≤200字符） }
+        rule_type: { type: string, enum: [ALLOW, DENY], description: 规则类型（ALLOW 白名单 / DENY 黑名单） }
+        scope_type: { type: string, enum: [GLOBAL, APPLICATION], description: 生效范围 }
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID（scope_type=APPLICATION 时必填） }
+        address: { type: string, description: 规范形式的单 IP 或 CIDR }
+        ip_version: { type: string, enum: [IPV4, IPV6], description: IP 版本（由地址派生） }
+        priority: { type: integer, description: 优先级，数值小者优先 }
+        status: { type: string, enum: [DRAFT, ACTIVE, DISABLED, EXPIRED, DELETED], description: 状态（EXPIRED 为临时规则已过期） }
+        validity_type: { type: string, enum: [PERMANENT, TEMPORARY], description: 有效期类型 }
+        effective_from: { type: string, format: date-time, nullable: true, description: 生效时间 }
+        effective_until: { type: string, format: date-time, nullable: true, description: 失效时间（TEMPORARY 必填） }
+        reason: { type: string, description: 原因说明（≤500字符） }
+        source_type: { type: string, enum: [MANUAL, SECURITY_EVENT, IMPORT, AUTO_BLOCK, SYSTEM], description: 来源类型 }
+        source_event_id: { type: string, format: uuid, nullable: true, description: 来源安全事件 ID }
+        hit_count: { type: integer, format: int64, description: 命中次数 }
+        last_hit_at: { type: string, format: date-time, nullable: true, description: 最近命中时间 }
+        created_by: { type: string, format: uuid, nullable: true, description: 创建人用户 ID }
+        created_at: { type: string, format: date-time }
+        updated_by: { type: string, format: uuid, nullable: true, description: 最近更新人用户 ID }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, description: 乐观锁版本号 }
+
+    AccessRuleListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AccessRule' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    AccessRuleDetailResponse:
+      type: object
+      properties:
+        rule: { $ref: '#/components/schemas/AccessRule' }
+
+    AccessRuleCreateRequest:
+      type: object
+      required: [name, rule_type, address]
+      properties:
+        name: { type: string, maxLength: 200, description: 规则名称 }
+        rule_type: { type: string, enum: [ALLOW, DENY], description: 规则类型 }
+        scope_type: { type: string, enum: [GLOBAL, APPLICATION], default: GLOBAL, description: 生效范围（缺省 GLOBAL；GLOBAL 不允许指定应用） }
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID（scope_type=APPLICATION 时必填） }
+        address: { type: string, maxLength: 64, description: 单 IP 或 CIDR（不支持域名/协议前缀/端口/通配符） }
+        priority: { type: integer, default: 0, description: 优先级，数值小者优先 }
+        validity_type: { type: string, enum: [PERMANENT, TEMPORARY], default: PERMANENT, description: 有效期类型（缺省 PERMANENT；PERMANENT 不允许设置失效时间） }
+        effective_from: { type: string, format: date-time, nullable: true, description: 生效时间（支持 RFC3339 / YYYY-MM-DD HH:mm:ss / YYYY-MM-DD） }
+        effective_until: { type: string, format: date-time, nullable: true, description: 失效时间（TEMPORARY 必填且须晚于当前时间；格式同 effective_from） }
+        reason: { type: string, maxLength: 500, description: 原因说明 }
+
+    AccessRuleUpdateRequest:
+      type: object
+      required: [name, address, version]
+      description: 更新规则（rule_type / scope_type / application_id 不允许修改）
+      properties:
+        name: { type: string, maxLength: 200, description: 规则名称 }
+        address: { type: string, maxLength: 64, description: 单 IP 或 CIDR }
+        priority: { type: integer, description: 优先级（不传则保持原值） }
+        validity_type: { type: string, enum: [PERMANENT, TEMPORARY], description: 有效期类型 }
+        effective_from: { type: string, format: date-time, nullable: true, description: 生效时间（支持 RFC3339 / YYYY-MM-DD HH:mm:ss / YYYY-MM-DD） }
+        effective_until: { type: string, format: date-time, nullable: true, description: 失效时间（格式同 effective_from） }
+        reason: { type: string, maxLength: 500, description: 原因说明 }
+        version: { type: integer, description: 乐观锁版本号（与当前版本不一致返回 409） }
+
+    AccessRuleExtendRequest:
+      type: object
+      required: [effective_until]
+      properties:
+        effective_until: { type: string, format: date-time, description: 新的失效时间（须晚于当前时间与生效时间；支持 RFC3339 / YYYY-MM-DD HH:mm:ss / YYYY-MM-DD） }
+
+    AccessRuleValidateResponse:
+      type: object
+      properties:
+        valid: { type: boolean, description: 是否通过校验 }
+        errors:
+          type: array
+          items: { type: string }
+          description: 错误信息列表（为空表示通过）
+
+    AccessRuleImportRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string, description: 导入内容（CSV 含表头或纯文本每行一个地址；≤1MB、≤10000 行） }
+        format: { type: string, enum: [csv, text], default: csv, description: 内容格式（缺省 csv） }
+        mode: { type: string, enum: [ALL_OR_NOTHING, SKIP_ERRORS], default: ALL_OR_NOTHING, description: 导入模式（缺省 ALL_OR_NOTHING 全部成功才落库） }
+        dry_run: { type: boolean, default: false, description: true 时只校验预览不落库 }
+        rule_type: { type: string, enum: [ALLOW, DENY], description: 默认规则类型（行内未指定时使用） }
+        scope_type: { type: string, enum: [GLOBAL, APPLICATION], description: 默认生效范围 }
+        application_id: { type: string, format: uuid, nullable: true, description: 默认应用 ID }
+        effective_until: { type: string, format: date-time, nullable: true, description: 默认失效时间 }
+        reason: { type: string, description: 默认原因说明 }
+
+    AccessRuleImportRowError:
+      type: object
+      description: 行级导入错误
+      properties:
+        line: { type: integer, description: 行号（表头为第 1 行） }
+        content: { type: string, description: 行原始内容 }
+        error: { type: string, description: 错误信息 }
+        code: { type: string, enum: [INVALID, PROTECTED, APP_NOT_FOUND, CONFLICT], description: 错误码 }
+
+    AccessRuleImportPreviewRow:
+      type: object
+      description: dry_run 模式下的有效行预览（最多返回前 50 条）
+      properties:
+        line: { type: integer, description: 行号 }
+        address: { type: string, description: 规范化后的地址 }
+        rule_type: { type: string, enum: [ALLOW, DENY] }
+        scope_type: { type: string, enum: [GLOBAL, APPLICATION] }
+        application_id: { type: string, format: uuid, nullable: true }
+        effective_until: { type: string, format: date-time, nullable: true }
+        reason: { type: string }
+
+    AccessRuleImportResponse:
+      type: object
+      properties:
+        total: { type: integer, description: 解析出的总行数 }
+        valid: { type: integer, description: 通过校验的行数 }
+        invalid: { type: integer, description: 错误行数 }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/AccessRuleImportRowError' }
+          description: 行级错误列表
+        imported: { type: integer, description: 实际导入条数（仅正式导入返回） }
+        preview:
+          type: array
+          items: { $ref: '#/components/schemas/AccessRuleImportPreviewRow' }
+          description: 有效行预览（仅 dry_run=true 返回，最多 50 条）
+
+    AccessRulePublishRequest:
+      type: object
+      description: 网关配置发布请求（访问控制与 CC 防护发布共用）
+      properties:
+        idempotency_key: { type: string, description: 幂等键（重复键返回原任务，防止重复发布） }
+        app_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: 指定发布的应用 ID 列表（为空表示全部）
+
+    AccessRulePublishTask:
+      type: object
+      description: 网关发布任务（访问控制与 CC 防护发布共用，与配置发布同一任务模型）
+      properties:
+        id: { type: string, format: uuid, description: 任务 ID }
+        task_type: { type: string, enum: [PUBLISH, ROLLBACK], description: 任务类型 }
+        status: { type: string, enum: [PENDING, VALIDATING, GENERATING, PUBLISHING, VERIFYING, SUCCESS, FAILED, ROLLING_BACK, ROLLED_BACK], description: 任务状态 }
+        requested_by: { type: string, format: uuid, nullable: true, description: 发起人用户 ID }
+        requested_at: { type: string, format: date-time, description: 发起时间 }
+        started_at: { type: string, format: date-time, nullable: true, description: 开始时间 }
+        finished_at: { type: string, format: date-time, nullable: true, description: 完成时间 }
+        target_version_id: { type: string, format: uuid, nullable: true, description: 目标配置版本 ID }
+        current_step: { type: string, description: 当前步骤 }
+        progress: { type: integer, description: 进度（0-100） }
+        result_summary: { type: string, description: 结果摘要 }
+        failure_code: { type: string, description: 失败错误码 }
+        failure_message: { type: string, description: 失败信息 }
+        request_id: { type: string, description: 关联的请求 ID }
+
+    # ==================== CC 防护策略 ====================
+    RateLimitPolicy:
+      type: object
+      description: CC 防护（限速）策略
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, description: 策略名称（≤200字符） }
+        description: { type: string, description: 策略描述（≤500字符） }
+        scope_type: { type: string, enum: [GLOBAL, APPLICATION, URI], description: 作用范围（GLOBAL 不得关联应用；APPLICATION/URI 必须关联应用） }
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID }
+        uri_match_type: { type: string, enum: [ALL, EXACT, PREFIX, REGEX], description: URI 匹配方式（ALL 时 uri_pattern 必须为空；REGEX 为 RE2 语法，线性时间防 ReDoS） }
+        uri_pattern: { type: string, description: URI 匹配模式（≤256字符，须以 / 开头） }
+        dimension: { type: string, enum: [CLIENT_IP, APPLICATION, CLIENT_IP_AND_URI, CLIENT_IP_AND_APPLICATION], description: 统计维度 }
+        algorithm: { type: string, enum: [TOKEN_BUCKET, SLIDING_WINDOW], description: 限速算法（令牌桶 / 滑动窗口，与网关同语义） }
+        requests_limit: { type: integer, description: 请求数阈值（1-1000000） }
+        window_seconds: { type: integer, description: 统计窗口，单位秒（1-86400） }
+        burst_capacity: { type: integer, description: 突发容量（0 表示取 requests_limit；上限为阈值的 10 倍） }
+        action: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK], description: 触发动作（REJECT 返回 429；TEMP_BLOCK 需 block_duration_seconds） }
+        block_duration_seconds: { type: integer, description: 临时封禁时长，单位秒（action=TEMP_BLOCK 时必填，60-2592000） }
+        status: { type: string, enum: [ACTIVE, DISABLED], description: 状态 }
+        observe_only: { type: boolean, description: 仅观察（记录并标记，不阻断） }
+        priority: { type: integer, description: 优先级（0-10000） }
+        effective_from: { type: string, format: date-time, nullable: true, description: 生效时间 }
+        effective_until: { type: string, format: date-time, nullable: true, description: 失效时间 }
+        created_by: { type: string, format: uuid, nullable: true, description: 创建人用户 ID }
+        created_at: { type: string, format: date-time }
+        updated_by: { type: string, format: uuid, nullable: true, description: 最近更新人用户 ID }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, description: 乐观锁版本号 }
+
+    RateLimitListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/RateLimitPolicy' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    RateLimitUpsertRequest:
+      type: object
+      required: [name, scope_type, uri_match_type, dimension, algorithm, requests_limit, window_seconds, action]
+      properties:
+        name: { type: string, maxLength: 200, description: 策略名称 }
+        description: { type: string, maxLength: 500, description: 策略描述 }
+        scope_type: { type: string, enum: [GLOBAL, APPLICATION, URI], description: 作用范围 }
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID（APPLICATION/URI 范围必填；GLOBAL 不得填写） }
+        uri_match_type: { type: string, enum: [ALL, EXACT, PREFIX, REGEX], description: URI 匹配方式 }
+        uri_pattern: { type: string, maxLength: 256, description: URI 匹配模式（ALL 时必须为空；EXACT/PREFIX 必须以 / 开头；REGEX 为 RE2 语法） }
+        dimension: { type: string, enum: [CLIENT_IP, APPLICATION, CLIENT_IP_AND_URI, CLIENT_IP_AND_APPLICATION], description: 统计维度 }
+        algorithm: { type: string, enum: [TOKEN_BUCKET, SLIDING_WINDOW], description: 限速算法 }
+        requests_limit: { type: integer, minimum: 1, maximum: 1000000, description: 请求数阈值 }
+        window_seconds: { type: integer, minimum: 1, maximum: 86400, description: 统计窗口，单位秒 }
+        burst_capacity: { type: integer, minimum: 0, default: 0, description: 突发容量（0 表示取阈值；不超过阈值的 10 倍） }
+        action: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK], description: 触发动作 }
+        block_duration_seconds: { type: integer, minimum: 0, default: 0, description: 临时封禁时长，单位秒（action=TEMP_BLOCK 时须在 60-2592000 之间） }
+        observe_only: { type: boolean, default: false, description: 仅观察（记录并标记，不阻断） }
+        priority: { type: integer, minimum: 0, maximum: 10000, default: 0, description: 优先级 }
+        effective_from: { type: string, format: date-time, nullable: true, description: 生效时间（RFC3339） }
+        effective_until: { type: string, format: date-time, nullable: true, description: 失效时间（RFC3339，须晚于生效时间） }
+
+    RateLimitUpdateRequest:
+      allOf:
+        - $ref: '#/components/schemas/RateLimitUpsertRequest'
+        - type: object
+          required: [version]
+          properties:
+            version: { type: integer, description: 乐观锁版本号（与当前版本不一致返回 409） }
+
+    RateLimitFieldError:
+      type: object
+      description: 字段级校验错误
+      properties:
+        field: { type: string, description: 字段名 }
+        message: { type: string, description: 错误信息 }
+
+    RateLimitValidateResponse:
+      type: object
+      properties:
+        valid: { type: boolean, description: 是否通过校验 }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/RateLimitFieldError' }
+          description: 字段级错误列表（为空表示通过）
+
+    RateLimitTestRequest:
+      type: object
+      properties:
+        requests: { type: integer, minimum: 1, maximum: 10000, default: 100, description: 模拟请求总数（0 或缺省按 100 计，1-10000） }
+        client_ips:
+          type: array
+          maxItems: 10
+          items: { type: string }
+          description: 模拟客户端 IP 列表（最多 10 个，轮询使用；为空时使用文档保留地址 203.0.113.10）
+        uri: { type: string, description: 模拟请求 URI（须以 / 开头且不含控制字符，缺省 /） }
+
+    RateLimitTestResponse:
+      type: object
+      description: 策略干跑模拟结果
+      properties:
+        algorithm: { type: string, enum: [TOKEN_BUCKET, SLIDING_WINDOW], description: 使用的限速算法 }
+        dimension: { type: string, enum: [CLIENT_IP, APPLICATION, CLIENT_IP_AND_URI, CLIENT_IP_AND_APPLICATION], description: 统计维度 }
+        dimension_note: { type: string, description: 维度计数方式说明 }
+        requests: { type: integer, description: 模拟请求总数 }
+        allowed: { type: integer, description: 放行数 }
+        rejected: { type: integer, description: 拒绝数 }
+        first_reject_at: { type: integer, description: 第几个请求被首次拒绝（1 起），0 表示无拒绝 }
+        retry_after_seconds: { type: integer, description: 建议重试等待秒数 }
+
+    # ==================== 临时封禁 ====================
+    TempBlock:
+      type: object
+      description: 临时封禁记录（数据库记录 + Valkey 封禁键同步）
+      properties:
+        id: { type: string, format: uuid }
+        client_ip: { type: string, description: 被封禁的客户端 IP }
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID（null 表示全局） }
+        trigger_type: { type: string, enum: [CC_AUTO, MANUAL], description: 触发类型（CC 自动封禁 / 手工） }
+        trigger_policy_id: { type: string, format: uuid, nullable: true, description: 触发的 CC 策略 ID }
+        trigger_event_ids:
+          type: array
+          items: { type: string }
+          description: 触发事件 ID 列表
+        block_started_at: { type: string, format: date-time, description: 封禁开始时间 }
+        block_expires_at: { type: string, format: date-time, description: 封禁到期时间 }
+        status: { type: string, enum: [ACTIVE, EXPIRED, MANUALLY_RELEASED, CANCELLED], description: 封禁状态 }
+        hit_count: { type: integer, format: int64, description: 封禁期间命中次数 }
+        release_type: { type: string, enum: [AUTO_EXPIRE, MANUAL, CONVERTED], description: 解除类型（未解除时缺省） }
+        released_by: { type: string, format: uuid, nullable: true, description: 解封操作人用户 ID }
+        released_at: { type: string, format: date-time, nullable: true, description: 解封时间 }
+        created_at: { type: string, format: date-time }
+
+    TempBlockListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/TempBlock' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    TempBlockDetailResponse:
+      type: object
+      properties:
+        block: { $ref: '#/components/schemas/TempBlock' }
+
+    TempBlockExtendRequest:
+      type: object
+      required: [new_expires_at]
+      properties:
+        new_expires_at: { type: string, format: date-time, description: 新的到期时间（RFC3339，必须晚于当前时间） }
+
+    TempBlockConvertResponse:
+      type: object
+      properties:
+        rule_id: { type: string, format: uuid, description: 转换生成的永久 DENY 规则 ID }
+        message: { type: string, description: 提示信息 }
+
+    # ==================== 访问控制事件 ====================
+    ACEvent:
+      type: object
+      description: 访问控制事件（IP 黑白名单 / CC 防护）
+      properties:
+        id: { type: string, format: uuid }
+        request_id: { type: string, description: 关联的请求 ID }
+        occurred_at: { type: string, format: date-time, description: 事件发生时间 }
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID }
+        application_code: { type: string, description: 应用编码 }
+        client_ip: { type: string, description: 真实客户端 IP }
+        connection_ip: { type: string, description: 直接连接 IP }
+        domain: { type: string, description: 请求域名 }
+        request_method: { type: string, description: 请求方法 }
+        request_path: { type: string, description: 请求路径 }
+        event_type: { type: string, enum: [CC_TEMP_BLOCK_CREATED, CC_TEMP_BLOCK_EXPIRED, CC_TEMP_BLOCK_RELEASED, CC_THRESHOLD_EXCEEDED, CC_REQUEST_REJECTED], description: 事件类型 }
+        action: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK], description: 动作 }
+        policy_id: { type: string, description: 关联策略 ID }
+        access_rule_id: { type: string, description: 关联访问规则 ID }
+        current_count: { type: integer, format: int64, nullable: true, description: 触发时窗口内当前计数 }
+        limit_value: { type: integer, format: int64, nullable: true, description: 触发阈值 }
+        window_seconds: { type: integer, nullable: true, description: 统计窗口，单位秒 }
+        block_expires_at: { type: string, format: date-time, nullable: true, description: 封禁到期时间 }
+        response_status: { type: integer, nullable: true, description: 响应状态码 }
+        gateway_node_id: { type: string, description: 网关节点 ID }
+        message: { type: string, description: 事件描述信息 }
+        created_at: { type: string, format: date-time, description: 入库时间 }
+
+    ACEventListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ACEvent' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    ACEventDetailResponse:
+      type: object
+      properties:
+        event: { $ref: '#/components/schemas/ACEvent' }
+
+    # ==================== 访问控制配置版本 ====================
+    ACVersion:
+      type: object
+      description: 访问控制配置版本元数据（列表项，不含 config 正文）
+      properties:
+        id: { type: string, format: uuid }
+        version_no: { type: integer, description: 版本号（自增） }
+        config_hash: { type: string, description: 配置内容 sha256（十六进制） }
+        change_summary: { type: string, description: 变更摘要（≤1000字符） }
+        previous_version_id: { type: string, format: uuid, nullable: true, description: 上一版本 ID }
+        publish_task_id: { type: string, format: uuid, nullable: true, description: 关联发布任务 ID }
+        publish_result: { type: string, enum: [PENDING, SUCCESS, FAILED], description: 发布结果 }
+        created_by: { type: string, format: uuid, nullable: true, description: 创建人用户 ID }
+        created_at: { type: string, format: date-time }
+
+    ACVersionListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ACVersion' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    ACVersionDetail:
+      allOf:
+        - $ref: '#/components/schemas/ACVersion'
+        - type: object
+          properties:
+            config:
+              type: object
+              description: 完整配置 JSON（valkey.password 等敏感字段已脱敏为 ***）
+
+    ACVersionDetailResponse:
+      type: object
+      properties:
+        version: { $ref: '#/components/schemas/ACVersionDetail' }
+
+    ACVersionDiffResponse:
+      type: object
+      properties:
+        version_id: { type: string, format: uuid, description: 目标版本 ID }
+        version_no: { type: integer, description: 目标版本号 }
+        compare_with: { type: string, format: uuid, description: 对比基准版本 ID }
+        compare_with_no: { type: integer, description: 对比基准版本号 }
+        differences:
+          type: array
+          items: { type: string }
+          description: 人类可读差异摘要行（空数组表示无差异）
+
+    ACVersionRollbackResponse:
+      type: object
+      properties:
+        message: { type: string, description: 提示信息 }
+        result:
+          type: object
+          nullable: true
+          description: 回滚产生的发布结果（如发布任务信息，结构同 AccessRulePublishTask）
+
+    # ==================== L7 访问控制规则 ====================
+    L7RuleCondition:
+      type: object
+      required: [type]
+      description: 匹配条件（多条件 AND）。method/client_ip 用 values 数组（等价 op=in，规范化后不携带 op）；uri 无 name；header/cookie/query 用 name+op+value；exists/not_exists 不需要 value
+      properties:
+        type: { type: string, enum: [uri, method, header, cookie, query, client_ip], description: 条件类型 }
+        name: { type: string, maxLength: 128, description: 条件名称（header/cookie/query 必填；header/cookie 须为合法 HTTP token，header 名称大小写不敏感） }
+        op: { type: string, enum: [eq, ne, prefix, contains, regex, exists, not_exists, in], description: 运算符（uri 仅支持 eq/ne/prefix/contains/regex；regex 须可编译） }
+        value: { type: string, description: 条件值（最长 512 字节，regex 最长 512 字节；非 regex 的 uri 条件值须以 / 开头） }
+        values:
+          type: array
+          items: { type: string }
+          maxItems: 64
+          description: 值数组（method 为 HTTP 方法白名单，入库统一大写；client_ip 为单 IP 或 CIDR，入库严格规范化）
+
+    L7RuleActionConfig:
+      type: object
+      description: 动作配置（六键全量存储/下发，按动作取对应字段：block→status+message；allow→无；redirect→redirect_url+redirect_status；custom_page→status+content_type+body）
+      properties:
+        status: { type: integer, description: 响应状态码（缺省 403，custom_page 缺省 200；block 限 400~599，custom_page 限 200~599） }
+        message: { type: string, maxLength: 1024, description: 阻止文案（block 使用） }
+        redirect_url: { type: string, maxLength: 2048, description: 重定向地址（redirect 必填，仅 http/https 绝对地址） }
+        redirect_status: { type: integer, enum: [301, 302], description: 重定向状态码（缺省 302） }
+        content_type: { type: string, maxLength: 128, description: 自定义页面 Content-Type（缺省 text/html; charset=utf-8） }
+        body: { type: string, description: 自定义页面内容（custom_page 必填，≤64KB） }
+
+    L7Rule:
+      type: object
+      description: L7 访问控制规则。评估语义（与网关引擎一致）：按（priority 升序, created_at 升序）稳定排序，首个 enabled 且条件全中的规则生效（首中即停）；全部未命中 = 继续后续检查（默认放行到 CC）
+      properties:
+        id: { type: string, format: uuid, description: 规则 ID }
+        name: { type: string, maxLength: 200, description: 规则名称 }
+        priority: { type: integer, description: 优先级（数值小者优先，-1000000~1000000，缺省 100） }
+        enabled: { type: boolean, description: 是否启用 }
+        conditions:
+          type: array
+          items: { $ref: '#/components/schemas/L7RuleCondition' }
+          maxItems: 10
+          description: 匹配条件（1~10 条，多条件 AND）
+        action: { type: string, enum: [block, allow, redirect, custom_page], description: 命中动作（allow 跳过 CC 等后续 guard 检查，仍过 Coraza——安全底线） }
+        action_config: { $ref: '#/components/schemas/L7RuleActionConfig' }
+        hit_count_24h: { type: integer, format: int64, description: 近 24 小时命中数（事件聚合填充，非表字段） }
+        created_by: { type: string, format: uuid, nullable: true, description: 创建人用户 ID }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+        updated_by: { type: string, format: uuid, nullable: true, description: 最近更新人用户 ID }
+        updated_at: { type: string, format: date-time, description: 最近更新时间 }
+
+    L7RuleListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/L7Rule' } }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, format: int64, description: 总条数 }
+
+    L7RuleDetailResponse:
+      type: object
+      properties:
+        rule: { $ref: '#/components/schemas/L7Rule' }
+
+    L7RuleRequest:
+      type: object
+      required: [name, conditions, action]
+      description: 新建/编辑规则请求（PATCH 为全量更新语义：字段缺失按默认值处理）
+      properties:
+        name: { type: string, maxLength: 200, description: 规则名称（去首尾空白后非空，≤200 字符） }
+        priority: { type: integer, description: 优先级（缺省 100，范围 -1000000~1000000） }
+        enabled: { type: boolean, description: 是否启用（缺省 true） }
+        conditions:
+          type: array
+          items: { $ref: '#/components/schemas/L7RuleCondition' }
+          minItems: 1
+          maxItems: 10
+          description: 匹配条件（1~10 条，多条件 AND）
+        action: { type: string, enum: [block, allow, redirect, custom_page], description: 命中动作 }
+        action_config: { $ref: '#/components/schemas/L7RuleActionConfig' }
+
+    L7RuleTestRequest:
+      type: object
+      required: [uri]
+      description: 规则测试器输入（uri 以 / 开头且 ≤2048 字符；client_ip 为单个 IP 不支持 CIDR；headers/cookies/query 各 ≤64 条，值 ≤8192 字节且不含控制字符）
+      properties:
+        uri: { type: string, description: 请求 URI（须以 / 开头） }
+        method: { type: string, description: 请求方法（GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS/TRACE/CONNECT，可空） }
+        headers: { type: object, additionalProperties: { type: string }, description: 请求头键值 }
+        cookies: { type: object, additionalProperties: { type: string }, description: Cookie 键值 }
+        query: { type: object, additionalProperties: { type: string }, description: Query 参数键值 }
+        client_ip: { type: string, description: 来源 IP（单个 IP，可空） }
+
+    L7RuleTestResponse:
+      type: object
+      description: 规则测试器评估结果
+      properties:
+        matched: { type: boolean, description: 是否命中规则 }
+        rule_id: { type: string, description: 命中规则 ID（未命中为空串） }
+        rule_name: { type: string, description: 命中规则名称（未命中为空串） }
+        action: { type: string, description: 命中规则动作（未命中为空串） }
+        reason: { type: string, description: 评估说明 }

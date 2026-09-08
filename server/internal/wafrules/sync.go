@@ -21,12 +21,12 @@ import (
 
 // 规则来源
 const (
-	SourceCRS       = "OWASP_CRS"
-	SourceCRSPlugin = "CRS_PLUGIN"
+	SourceCRS        = "OWASP_CRS"
+	SourceCRSPlugin  = "CRS_PLUGIN"
 	SourceThirdParty = "THIRD_PARTY"
 	SourceCustomPack = "CUSTOM_PACK"
-	SourceJiuzhang  = "JIUZHANG_BUILTIN"
-	SourceCustom    = "USER_CUSTOM"
+	SourceJiuzhang   = "JIUZHANG_BUILTIN"
+	SourceCustom     = "USER_CUSTOM"
 )
 
 // Rule 是WAF规则元数据。
@@ -50,15 +50,15 @@ type Rule struct {
 
 // SyncReport 是同步结果报告。
 type SyncReport struct {
-	TotalParsed  int      `json:"total_parsed"`
-	TotalInDB    int      `json:"total_in_db"`
-	Added        int      `json:"added"`
-	Updated      int      `json:"updated"`
-	Unchanged    int      `json:"unchanged"`
-	Missing      int      `json:"missing"`
-	ParseFailed  int      `json:"parse_failed"`
-	Conflicts    int      `json:"conflicts"`
-	FailedRules  []string `json:"failed_rules"`
+	TotalParsed int      `json:"total_parsed"`
+	TotalInDB   int      `json:"total_in_db"`
+	Added       int      `json:"added"`
+	Updated     int      `json:"updated"`
+	Unchanged   int      `json:"unchanged"`
+	Missing     int      `json:"missing"`
+	ParseFailed int      `json:"parse_failed"`
+	Conflicts   int      `json:"conflicts"`
+	FailedRules []string `json:"failed_rules"`
 }
 
 // secRulePattern 匹配 SecRule 行首（多行规则用 \ 续行）。
@@ -73,18 +73,25 @@ var tagPattern = regexp.MustCompile(`\btag\s*:\s*'((?:[^'\\]|\\.)*)'`)
 
 // attackTypeByTag 标签到攻击类型的映射。
 var attackTypeByTag = map[string]string{
-	"attack-sqli":             "SQL_INJECTION",
-	"attack-xss":              "XSS",
-	"attack-rce":              "COMMAND_INJECTION",
-	"attack-lfi":              "LOCAL_FILE_INCLUSION",
-	"attack-rfi":              "REMOTE_FILE_INCLUSION",
-	"attack-php":              "PHP_INJECTION",
-	"attack-java":             "JAVA_INJECTION",
-	"attack-protocol":         "PROTOCOL_VIOLATION",
-	"attack-fixation":         "SESSION_FIXATION",
-	"attack-scanner":          "SCANNER_DETECTION",
-	"attack-disclosure":       "INFORMATION_DISCLOSURE",
+	"attack-sqli":              "SQL_INJECTION",
+	"attack-xss":               "XSS",
+	"attack-rce":               "COMMAND_INJECTION",
+	"attack-lfi":               "LOCAL_FILE_INCLUSION",
+	"attack-rfi":               "REMOTE_FILE_INCLUSION",
+	"attack-php":               "PHP_INJECTION",
+	"attack-java":              "JAVA_INJECTION",
+	"attack-protocol":          "PROTOCOL_VIOLATION",
+	"attack-fixation":          "SESSION_FIXATION",
+	"attack-scanner":           "SCANNER_DETECTION",
+	"attack-disclosure":        "INFORMATION_DISCLOSURE",
 	"attack-injection-generic": "REMOTE_CODE_EXECUTION",
+	"attack-ssrf":              "SSRF",
+	"attack-xxe":               "XXE_INJECTION",
+	"attack-dos":               "DOS",
+	"attack-mass-assignment":   "MASS_ASSIGNMENT",
+	"attack-deserialization":   "DESERIALIZATION",
+	"attack-ssti":              "SSTI",
+	"attack-upload":            "FILE_UPLOAD",
 }
 
 // ParseCRSFile 解析单个规则文件，提取规则元数据（source 标记入库 rule_source）。
@@ -101,9 +108,12 @@ func ParseCRSRules(content, fileName, source string) ([]*Rule, []string, error) 
 	var rules []*Rule
 	var failed []string
 
-	// 按行扫描，拼接续行（以 \ 结尾）
+	// 按行扫描，拼接续行（以 \ 结尾）；同时记录每条 SecRule 正上方紧邻的
+	// 注释块（跳过分隔线与版权/许可证行），供无 msg 的规则兜底命名
 	lines := strings.Split(content, "\n")
 	var current strings.Builder
+	var currentComments []string
+	var pendingComments []string
 	inRule := false
 
 	flush := func() {
@@ -113,7 +123,8 @@ func ParseCRSRules(content, fileName, source string) ([]*Rule, []string, error) 
 		ruleText := current.String()
 		current.Reset()
 		inRule = false
-		rule, err := parseOneRule(ruleText, fileName, source)
+		rule, err := parseOneRule(ruleText, fileName, source, currentComments)
+		currentComments = nil
 		if err != nil {
 			failed = append(failed, truncate(ruleText, 80)+": "+err.Error())
 			return
@@ -129,6 +140,8 @@ func ParseCRSRules(content, fileName, source string) ([]*Rule, []string, error) 
 		if secRuleStartPattern.MatchString(line) {
 			flush()
 			inRule = true
+			currentComments = pendingComments
+			pendingComments = nil
 			current.WriteString(strings.TrimSpace(line))
 			if !isContinuation {
 				flush()
@@ -141,14 +154,35 @@ func ParseCRSRules(content, fileName, source string) ([]*Rule, []string, error) 
 			if !isContinuation {
 				flush()
 			}
+			continue
+		}
+		// 规则之外的行：收集紧邻下一条 SecRule 上方的注释块
+		text := strings.TrimSpace(line)
+		if strings.HasPrefix(text, "#") {
+			c := strings.TrimSpace(strings.TrimPrefix(text, "#"))
+			if c == "" || isNoiseComment(c) {
+				continue // 空注释、分隔线、版权/许可证行不计入注释块，也不打断相邻块
+			}
+			pendingComments = append(pendingComments, c)
+		} else {
+			pendingComments = nil // 空行或其他指令行打断相邻注释块
 		}
 	}
 	flush()
 	return rules, failed, nil
 }
 
-// parseOneRule 解析单条 SecRule 文本。
-func parseOneRule(text, fileName, source string) (*Rule, error) {
+// isNoiseComment 判断注释行是否为分隔线或版权/许可证信息（不作为规则名称来源）。
+func isNoiseComment(c string) bool {
+	if strings.HasPrefix(c, "---") {
+		return true
+	}
+	lower := strings.ToLower(c)
+	return strings.Contains(lower, "copyright") || strings.Contains(lower, "license")
+}
+
+// parseOneRule 解析单条 SecRule 文本；commentBlock 为规则正上方紧邻的注释块。
+func parseOneRule(text, fileName, source string, commentBlock []string) (*Rule, error) {
 	idMatch := idPattern.FindStringSubmatch(text)
 	if idMatch == nil {
 		return nil, nil // 非规则行（如 SecAction/SecMarker）
@@ -177,6 +211,17 @@ func parseOneRule(text, fileName, source string) (*Rule, error) {
 		rule.Message = unescape(m[1])
 		rule.Name = truncate(rule.Message, 200)
 	}
+	// 名称/消息兜底（msg 优先原则不变）：msg 缺失时取规则正上方注释块，
+	// 注释也没有时用「文件名去扩展名 + 规则 ID」，保证规则始终有名称
+	if rule.Message == "" {
+		if len(commentBlock) > 0 {
+			rule.Message = truncate(strings.Join(commentBlock, " "), 200)
+		} else {
+			base := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+			rule.Message = fmt.Sprintf("%s 规则 %d", base, ruleID)
+		}
+		rule.Name = rule.Message
+	}
 	var tags []string
 	for _, m := range tagPattern.FindAllStringSubmatch(text, -1) {
 		tags = append(tags, unescape(m[1]))
@@ -184,10 +229,14 @@ func parseOneRule(text, fileName, source string) (*Rule, error) {
 	if len(tags) > 0 {
 		tagJSON, _ := json.Marshal(tags)
 		rule.Tags = tagJSON
-		// 攻击类型从标签推断
+		// 攻击类型从标签推断（webshell/ 前缀统一归为 WEBSHELL）
 		for _, t := range tags {
 			if at, ok := attackTypeByTag[t]; ok {
 				rule.AttackType = at
+				break
+			}
+			if strings.HasPrefix(t, "webshell/") {
+				rule.AttackType = "WEBSHELL"
 				break
 			}
 		}
@@ -201,6 +250,10 @@ func parseOneRule(text, fileName, source string) (*Rule, error) {
 		}
 	} else {
 		rule.Tags = json.RawMessage("[]")
+	}
+	// 标签无法识别时按规则文件兜底分类（自建包/第三方排除插件）
+	if rule.AttackType == "OTHER" {
+		rule.AttackType = fallbackAttackTypeByFile(fileName)
 	}
 	// 内容哈希（用于变更检测）
 	h := sha256.Sum256([]byte(text))
@@ -216,6 +269,35 @@ func mapAttackCategory(cat string) string {
 	}
 	if v, ok := mapping[strings.ToUpper(cat)]; ok {
 		return v
+	}
+	return "OTHER"
+}
+
+// attackTypeByFileName 文件级攻击类型兜底映射（标签推断仍为 OTHER 的自建包文件）。
+var attackTypeByFileName = map[string]string{
+	"ssrf-protocols.conf":       "SSRF",
+	"cloud-abuse.conf":          "SSRF",
+	"xxe-lfi-variants.conf":     "LOCAL_FILE_INCLUSION",
+	"deserialization-rce.conf":  "DESERIALIZATION",
+	"ssti-injection.conf":       "SSTI",
+	"webshell.conf":             "WEBSHELL",
+	"webshell-obfuscation.conf": "WEBSHELL",
+	"webshell-uploads.conf":     "WEBSHELL",
+	"webshell-content.conf":     "WEBSHELL",
+	"unauth-access.conf":        "INFORMATION_DISCLOSURE",
+	"sensitive-exposure.conf":   "INFORMATION_DISCLOSURE",
+	"scanner-fingerprints.conf": "SCANNER_DETECTION",
+	"bot-protocol.conf":         "PROTOCOL_VIOLATION",
+}
+
+// fallbackAttackTypeByFile 按文件名兜底攻击类型；rule-exclusions 第三方排除插件
+// 统一归为 EXCLUSION，其余（如 CRS 901 初始化/949 阻断评估）保持 OTHER。
+func fallbackAttackTypeByFile(fileName string) string {
+	if at, ok := attackTypeByFileName[fileName]; ok {
+		return at
+	}
+	if strings.Contains(fileName, "rule-exclusions") {
+		return "EXCLUSION"
 	}
 	return "OTHER"
 }
@@ -322,8 +404,10 @@ func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, sourc
 					continue
 				}
 				report.Added++
-			} else if existingRule.ContentHash != rule.ContentHash {
-				// 更新
+			} else if existingRule.ContentHash != rule.ContentHash ||
+				existingRule.Name != rule.Name || existingRule.Message != rule.Message ||
+				existingRule.AttackType != rule.AttackType {
+				// 更新（规则原文变化，或解析器升级导致名称/消息/攻击类型等元数据修正）
 				if err := s.updateRule(ctx, rule); err != nil {
 					report.Conflicts++
 					report.FailedRules = append(report.FailedRules, fmt.Sprintf("rule %d update: %v", rule.RuleID, err))
@@ -351,7 +435,7 @@ func (s *SyncService) syncSourceFiles(ctx context.Context, files []string, sourc
 
 func (s *SyncService) existingRules(ctx context.Context, source, crsVersion string) (map[int]*Rule, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT rule_id, content_hash FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion)
+		`SELECT rule_id, content_hash, name, message, attack_type FROM waf_rules WHERE rule_source = $1 AND crs_version = $2`, source, crsVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -359,11 +443,11 @@ func (s *SyncService) existingRules(ctx context.Context, source, crsVersion stri
 	out := map[int]*Rule{}
 	for rows.Next() {
 		var id int
-		var hash string
-		if err := rows.Scan(&id, &hash); err != nil {
+		var hash, name, message, attackType string
+		if err := rows.Scan(&id, &hash, &name, &message, &attackType); err != nil {
 			return nil, err
 		}
-		out[id] = &Rule{RuleID: id, ContentHash: hash}
+		out[id] = &Rule{RuleID: id, ContentHash: hash, Name: name, Message: message, AttackType: attackType}
 	}
 	return out, rows.Err()
 }

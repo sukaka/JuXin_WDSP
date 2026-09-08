@@ -1,0 +1,105 @@
+# 九章 APM 阶段5 —— 中央数据面 HA 编排（Collector 双副本 + trace ID 一致性路由）
+# 依据：docs/BUSINESS_PERFORMANCE_APM_DESIGN.md §13.2 / §19.4；docs/APM_DATA_PLANE_DEPLOYMENT.md
+#
+# 为什么新增本文件而不改 deployment/docker-compose.apm.yml：
+#   1) 单副本 base 文件是已交付的默认形态，本文件为「规模化/HA」可选形态，二者并存互不影响
+#      （不改既有交付物语义）；
+#   2) 本文件使用独立 compose project（jiuzhang-apm-ha），通过 external 网络
+#      jiuzhang-apm_apm-data 复用 base 文件的 ClickHouse，演示/灰度可同机共存。
+#
+# 拓扑（tail sampling 多实例硬约束的实现，设计 §13.2/§19.4）：
+#   本地 Collector ──mTLS──► collector-router（无状态路由层，可水平扩展）
+#                              │ loadbalancing exporter：traces 按 traceID 一致性哈希、
+#                              │ metrics 按 service.name 哈希；DNS 解析器 10s 重解析
+#                              ▼
+#                          collector-sampler ×2（tail_sampling/二层脱敏/写 ClickHouse；
+#                              配置复用 collector/central-gateway.yaml，单一事实来源）
+#
+# 部署纪律（违反即破坏尾采样正确性）：
+#   - 上行只对接 router（4317/4318 mTLS）；禁止绕过 router 直连 sampler；
+#   - sampler 不得暴露任何宿主机端口，仅经 router 的 loadbalancing 出口可达；
+#   - sampler 扩缩容无需改配置（DNS 别名 collector-sampler 返回全部副本 IP，
+#     Docker 内嵌 DNS 轮询解析；router 每 10s 重解析收敛路由表）。
+#
+# 启动（演示/灰度，ClickHouse 复用 base 文件 central profile 的单实例）：
+#   docker compose -f deployment/docker-compose.apm.yml --profile central up -d clickhouse
+#   export CLICKHOUSE_ADMIN_PASSWORD=... CLICKHOUSE_APM_WRITER_PASSWORD=...
+#   docker compose -f deployment/apm/docker-compose.ha.yml up -d
+# 生产：ClickHouse 双副本 ReplicatedMergeTree 形态见 deployment/apm/clickhouse/README.md
+#   「HA（双副本 ReplicatedMergeTree）」节；sampler 写库地址沿用 central-gateway.yaml 的
+#   tcp://clickhouse:9000，须由部署侧保证 clickhouse 名称解析到写入入口
+#   （单副本演示=base 网络别名；双副本=TCP LB VIP，可用 sampler 的 extra_hosts 静态指向）。
+#
+# 镜像锁定纪律：与 base 文件相同，tag + multi-arch index digest 双锁
+# （docs/DEPENDENCIES.md「APM 镜像 digest 现状」，2026-08-30 实测）；本文件不引入新镜像。
+
+name: jiuzhang-apm-ha
+
+services:
+  collector-router:
+    # multi-arch index digest（与 base 文件同一锁定值）
+    image: otel/opentelemetry-collector-contrib:0.154.0@sha256:b3079f45e19bdb7326bf49cdddce6cf60dfd865138db39f2733ea48ab17bc4cb
+    container_name: jiuzhang-apm-collector-router
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/central-router.yaml"]
+    environment:
+      # loadbalancing exporter DNS 解析目标：collector-sampler 服务别名
+      # （deploy.replicas>1 时 Docker 内嵌 DNS 轮询返回全部副本 IP）
+      LB_DNS_HOSTNAME: collector-sampler
+    volumes:
+      - ./collector/central-router.yaml:/etc/otelcol-contrib/central-router.yaml:ro
+      # mTLS 证书占位目录（server.crt/server.key/client.crt/client.key/ca.crt），
+      # 由部署侧私有 CA 签发后挂载；server 证书 SAN 须覆盖 router 服务名，
+      # client 证书用于 router→sampler 一跳（sampler 侧 RequireAndVerifyClientCert）
+      - ./pki:/etc/jiuzhang-apm/tls:ro
+    ports:
+      # 上行入口（本地 Collector）：mTLS gRPC/HTTP，按内网 ACL 收敛
+      - "${APM_HA_ROUTER_OTLP_GRPC:-4317}:4317"
+      - "${APM_HA_ROUTER_OTLP_HTTP:-4318}:4318"
+      # 自监控/健康仅回环；用 8889/13134 避开 base 文件 central/local 已占的 8888/13133
+      - "127.0.0.1:${APM_HA_ROUTER_METRICS:-8889}:8888"
+      - "127.0.0.1:${APM_HA_ROUTER_HEALTH:-13134}:13133"
+    # distroless 镜像无 shell：健康检查由外部探测 13133（health_check 扩展）。
+    deploy:
+      resources:
+        limits:
+          memory: 1G        # 路由层无采样状态，1G 足够（memory_limiter 75%+20% 以此为基线）
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - apm-data
+
+  collector-sampler:
+    image: otel/opentelemetry-collector-contrib:0.154.0@sha256:b3079f45e19bdb7326bf49cdddce6cf60dfd865138db39f2733ea48ab17bc4cb
+    # 双副本：不设 container_name（replicas 与固定容器名互斥）；实例名由 compose 派生
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/central-gateway.yaml"]
+    environment:
+      CLICKHOUSE_APM_WRITER_USER: ${CLICKHOUSE_APM_WRITER_USER:-default}
+      CLICKHOUSE_APM_WRITER_PASSWORD: ${CLICKHOUSE_APM_WRITER_PASSWORD:?CLICKHOUSE_APM_WRITER_PASSWORD is required}
+    volumes:
+      # 复用既有中央网关配置（tail_sampling/二层脱敏/写库单一事实来源，不改语义）
+      - ./collector/central-gateway.yaml:/etc/otelcol-contrib/central-gateway.yaml:ro
+      - ./pki:/etc/jiuzhang-apm/tls:ro
+    # 不暴露任何宿主机端口：只接受 router 经 compose 内网 4317 的转发（见文件头纪律）。
+    # sampler 自监控 8888/健康 13133 在 apm-data 内网可达（prometheus 抓 <实例>:8888）。
+    deploy:
+      replicas: 2         # 尾采样决策层副本数；扩容直接改此值，router 经 DNS 自动收敛
+      resources:
+        limits:
+          memory: 2G      # 与单副本形态一致（tail_sampling num_traces=100000 的内存基线）
+    security_opt:
+      - no-new-privileges:true
+    # 生产双副本 ClickHouse：把 clickhouse 名称静态指到 TCP LB VIP 的示例（按需启用）：
+    # extra_hosts:
+    #   - "clickhouse:10.0.0.10"
+    networks:
+      - apm-data
+
+networks:
+  apm-data:
+    # 复用 base 文件（project jiuzhang-apm）创建的网络：跨 project 共享 Docker 内嵌 DNS，
+    # sampler 可按服务别名解析 clickhouse，router 可解析 collector-sampler。
+    # 独立部署（无 base 栈）时改为普通 bridge 并自建 ClickHouse。
+    external: true
+    name: jiuzhang-apm_apm-data

@@ -53,7 +53,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "不支持的设置项")
 		return
 	}
-	if err := h.svc.Update(r.Context(), req.Group, req.Key, req.Value, req.Version, p.UserID); err != nil {
+	sensitive, err := h.svc.Update(r.Context(), req.Group, req.Key, req.Value, req.Version, p.UserID)
+	if err != nil {
 		if err == ErrNotFound {
 			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "设置项不存在")
 			return
@@ -74,10 +75,16 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	before, _ := json.Marshal(map[string]interface{}{
 		"setting_group": req.Group, "setting_key": req.Key, "version": req.Version,
 	})
+	// 敏感设置（identity_salt/tls_session_ticket_key 等秘密材料）审计摘要脱敏：
+	// 原文落 operation_audits.after_summary 并随审计 syslog 外发会造成泄漏
+	afterValue := req.Value
+	if sensitive {
+		afterValue = json.RawMessage(`"********"`)
+	}
 	after, _ := json.Marshal(map[string]interface{}{
-		"setting_group": req.Group, "setting_key": req.Key, "setting_value": req.Value,
+		"setting_group": req.Group, "setting_key": req.Key, "setting_value": afterValue,
 	})
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),

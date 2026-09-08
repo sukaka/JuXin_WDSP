@@ -29,6 +29,9 @@ func TestValidateLabels(t *testing.T) {
 	if !ValidateLabels(map[string]string{"app": "shop", "attack_type": "SQL_INJECTION"}) {
 		t.Error("valid labels rejected")
 	}
+	if !ValidateLabels(map[string]string{"app": "shop", "endpoint": "GET /api/users/{id}"}) {
+		t.Error("endpoint label must be accepted (APM 阶段1 端点级 RED)")
+	}
 	if ValidateLabels(map[string]string{"uri": "/a?x=1"}) {
 		t.Error("uri label key must be rejected (高基数)")
 	}

@@ -1,0 +1,247 @@
+# P1-01 A4 产品栈叠加编排（在 A1 演示夹具上叠加真实产品栈，同 compose project）
+#
+# 用途：与 docker-compose.security-apm-demo.yml 经两个 -f 合并使用（run.sh
+# `startup --with-product` 自动合并），把演示夹具接入真实产品组成：
+#   管理 server（api）+ 防护网关（gateway）+ 管理 PG（mgmt-postgres）+
+#   Valkey（mgmt-valkey）+ 演示 Collector/ClickHouse（基座文件，兼作 APM 数据面）
+#
+# 隔离纪律与基座文件一致：无 name:/container_name:、项目名 apmdemo-<run_id>、
+# 全部资源打 apmdemo.run_id 标签、对外端口仅 127.0.0.1 且由 run.sh 显式分配、
+# 密码全部由 run.sh 现场生成（env 0600，cleanup 删除）。本文件不通过 run.sh
+# 之外的方式直接 up；变量缺省占位仅供 `docker compose config` 静态校验。
+#
+# 与 deployment/docker-compose.stage5.yml 的关系：服务组成与环境变量口径复刻
+# stage5（唯一事实来源仍是 deployment/），差异仅：①去 name/container_name 硬编码
+# 与固定端口，满足 run 级隔离；②不起 testorigin/ollama/logrotator（与演示无关）；
+# ③api 镜像以 WDSP_LICENSE_TEST_KEYS=1 构建并接受每轮随机的 LICENSE_VENDOR_PUBLIC_KEY
+# （同 deployment/docker-compose.test-license.yml 的本地/CI 口径，不用于交付）；
+# ④APM_CLICKHOUSE_DSN 指向本 run 的演示 ClickHouse（README §8-6 的手动指向在此
+# 自动化为 run 级注入）。
+#
+# 镜像构建：api/gateway 由仓库源码现建（锁定基础镜像 digest，同 server/Dockerfile、
+# gateway/Dockerfile）；adminpatch 为演示夹具自有一次性工具（services/cmd/adminpatch）。
+
+services:
+  # ---------- 管理面数据库（PostgreSQL，与 stage5 同一锁定镜像） ----------
+  mgmt-postgres:
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: jiuzhang_waf
+      POSTGRES_USER: jiuzhang
+      POSTGRES_PASSWORD: ${DEMO_MGMT_PG_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - mgmt-pg-data:/var/lib/postgresql/data
+    # 不发布宿主机端口：仅 compose 内网供 api 使用
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jiuzhang -d jiuzhang_waf"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+    networks:
+      - demo-net
+
+  # ---------- 会话/验证码/计数（Valkey，与 stage5 同一锁定镜像） ----------
+  mgmt-valkey:
+    image: valkey/valkey:8.1.8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --requirepass
+      - ${DEMO_MGMT_VALKEY_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    environment:
+      VALKEY_PASSWORD: ${DEMO_MGMT_VALKEY_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}
+    volumes:
+      - mgmt-valkey-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+    networks:
+      - demo-net
+
+  # ---------- 防护网关（仓库 gateway/ 现建；与 server 共享 Admin Socket 卷） ----------
+  gateway:
+    image: jiuzhang-apmdemo-gateway:a4
+    build:
+      context: ../../gateway
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      SEC_RULE_ENGINE: On   # 仅作用于初始 Caddyfile 兜底站点；发布配置按应用模式下发
+      XDG_CONFIG_HOME: /config
+      XDG_DATA_HOME: /data
+    command: ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--resume"]
+    ports:
+      - "127.0.0.1:${DEMO_GATEWAY_PORT:-19980}:8080"   # 演示应用站点监听（domain http_port=8080）
+    volumes:
+      - ../../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      - ../../gateway/rules:/etc/caddy/rules:ro
+      - gateway-logs:/var/log/caddy
+      - gateway-admin:/var/run/caddy
+      - gateway-config:/config
+      - gateway-config:/data
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+    networks:
+      - demo-net
+
+  # ---------- 管理 server（仓库 server/ 现建，wdsp_testkeys 测试构建） ----------
+  api:
+    image: jiuzhang-apmdemo-server:a4
+    build:
+      context: ../..
+      dockerfile: server/Dockerfile
+      args:
+        # 与 deployment/docker-compose.test-license.yml 同口径：仅本地/CI 授权集成测试
+        WDSP_LICENSE_TEST_KEYS: "1"
+    restart: unless-stopped
+    environment:
+      APP_ENV: dev
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      POSTGRES_HOST: mgmt-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: jiuzhang_waf
+      POSTGRES_USER: jiuzhang
+      POSTGRES_PASSWORD: ${DEMO_MGMT_PG_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}
+      VALKEY_HOST: mgmt-valkey
+      VALKEY_PORT: 6379
+      VALKEY_PASSWORD: ${DEMO_MGMT_VALKEY_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}
+      COOKIE_SECURE: "false"
+      INITIAL_ADMIN_USERNAME: ${DEMO_ADMIN_USER:-jiuzhang_admin}
+      INITIAL_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}
+      JIUZHANG_MASTER_KEY: ${DEMO_MGMT_MASTER_KEY:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}
+      LICENSE_HOST_FINGERPRINT_FILE: /app/runtime/license/host_fingerprint
+      # 每轮随机 Ed25519 验签公钥（run.sh startup 生成，env 0600 注入，不入证据）
+      LICENSE_VENDOR_PUBLIC_KEY: ${LICENSE_VENDOR_PUBLIC_KEY:-STATIC-CHECK-ONLY}
+      MANAGEMENT_TRUSTED_PROXY_CIDRS: 172.16.0.0/12
+      CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
+      GATEWAY_DATA_DIR: /app/runtime
+      MIGRATIONS_DIR: /app/migrations
+      WAF_CRS_DIR: /etc/caddy/rules/crs/rules
+      WAF_CRS_VERSION: 4.28.0
+      WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
+      GATEWAY_NODE_NAME: apmdemo-gw-01
+      WAF_GUARD_EVENTS_LOG: /var/log/caddy-audit/guard-events.log
+      GATEWAY_GUARD_EVENTS_LOG: /var/log/caddy/guard-events.log
+      WAF_NODE_IFACES_LOG: /var/log/caddy-audit/node-interfaces.jsonl
+      GUARD_FAIL_OPEN: "true"
+      WAF_ACCESS_LOG: /var/log/caddy-audit/access.log
+      REPORT_FONT_PATH: /app/assets/fonts/NotoSansCJKsc-VF.ttf
+      PRODUCT_EDITION: wdsp
+      API_DYNAMIC_PROTECTION_ENABLED: "true"
+      API_PROTECTION_MODE: OBSERVE
+      # APM 数据面指向本 run 演示 ClickHouse（writer 账号最小授权，密码 run 级随机）
+      APM_ENABLED: "true"
+      APM_CLICKHOUSE_DSN: clickhouse://${DEMO_CH_WRITER_USER:-apm_writer}:${DEMO_CH_WRITER_PASSWORD:-STATIC-CHECK-PLACEHOLDER-NOT-A-SECRET}@clickhouse:9000/apm
+      WAF_API_EVENTS_LOG: /var/log/caddy-audit/api-runtime-events.log
+      GATEWAY_API_EVENTS_LOG: /var/log/caddy/api-runtime-events.log
+      WAF_IDENTITY_EVENTS_LOG: /var/log/caddy-audit/identity-events.log
+      GATEWAY_IDENTITY_EVENTS_LOG: /var/log/caddy/identity-events.log
+      WAF_SITE_DISCOVERY_LOG: /var/log/caddy-audit/site-discovery.jsonl
+      # 全量访问日志（request_id → trace_id 关联链的 PG 侧证据来源）
+      WAF_ACCESS_FULL_LOG: /var/log/caddy-audit/access-full.jsonl
+      GATEWAY_ACCESS_FULL_LOG: /var/log/caddy/access-full.jsonl
+      WAF_COLLECTOR_FLUSH_BATCH: "2000"
+      WAF_COLLECTOR_FLUSH_INTERVAL: 2s
+      HOSTCTL_DIR: /app/runtime/hostctl
+    ports:
+      - "127.0.0.1:${DEMO_API_PORT:-19981}:8080"
+    volumes:
+      - gateway-admin:/var/run/caddy
+      - gateway-logs:/var/log/caddy-audit:ro
+      - ../../gateway/rules:/etc/caddy/rules:ro
+      - ../../docs:/app/docs:ro
+      - ../../THIRD_PARTY_NOTICES.md:/app/THIRD_PARTY_NOTICES.md:ro
+      - mgmt-runtime:/app/runtime
+    depends_on:
+      mgmt-postgres:
+        condition: service_healthy
+      mgmt-valkey:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      gateway:
+        condition: service_started
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+    networks:
+      - demo-net
+
+  # ---------- 一次性工具：网关 trace_inject_upstream 显式开启（见 services/cmd/adminpatch） ----------
+  adminpatch:
+    image: jiuzhang-apmdemo-adminpatch:a1
+    build:
+      context: ./services
+      dockerfile: Dockerfile
+      args:
+        SERVICE: adminpatch
+        GOLANG_IMAGE_DIGEST: sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587
+        ALPINE_IMAGE_DIGEST: sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+    profiles: ["tool"]   # 仅经 `docker compose run --rm adminpatch` 调用，不随 up 启动
+    user: "1000:1000"    # 与 caddy/jiuzhang 容器内用户同 UID，可写 Admin Socket
+    environment:
+      ADMIN_SOCKET: /run/caddy-admin/admin.sock
+    volumes:
+      - gateway-admin:/run/caddy-admin
+    network_mode: none   # 只需 Unix Socket 卷，无需网络
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+
+volumes:
+  mgmt-pg-data:
+    driver: local
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+  mgmt-valkey-data:
+    driver: local
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+  gateway-admin:
+    driver: local
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+  gateway-logs:
+    driver: local
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+  gateway-config:
+    driver: local
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}
+  mgmt-runtime:
+    driver: local
+    labels:
+      apmdemo.run_id: ${DEMO_RUN_ID:-STATIC-CHECK-ONLY}

@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: Windows system ini filename in parameter/body (CUSTOM_PACK)
+rule_id: 1001622
+tests:
+  - test_id: 1
+    desc: "boot.ini bare filename with boundaries"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "note=please%20read%20boot.ini%20now"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001622]

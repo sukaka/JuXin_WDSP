@@ -124,10 +124,10 @@ credential 五类中英文常见命名，短关键字（tel/pan/sfz）加非字�
   查询接口 `GET /api/v1/api-security/runtime/events`（按 endpoint_key/
   final_action 过滤，`apisecurity/runtime.go:348-391`）。
 - 专项违例表 `api_schema_violations`（字段：violation_type/field_path/expected/
-  observed/action_taken，迁移 000018）与查询接口
-  `GET /api/v1/api-security/violations` 已就绪，**但当前无生产写入方**：
-  违例明细以主事件 details 为准，专项表的 ETL 映射（DetectorMatch → 违例行）
-  属后续工作（如实披露，见第八节）。
+  observed/action_taken，迁移 000018）已有生产写入方（P0-2）：采集器 ETL 把
+  schema 类检测明细（`detector=api_schema`，含偏离三规则与参数约束四规则）
+  映射为违例行（`server/internal/apiruntime/violations.go`，request_id 幂等），
+  查询接口 `GET /api/v1/api-security/violations` 直接可用。
 
 ## 七、关键设计决策
 
@@ -137,9 +137,10 @@ credential 五类中英文常见命名，短关键字（tel/pan/sfz）加非字�
 2. **偏离只观测、不扩模**。`CheckSchemaDeviation` 没有任何写模型的路径；
    模型变更只能走「新候选 → 人工确认 → 发布」闭环（`apimodels/store.go:126-199`）。
    攻击者持续发送异常请求不会改变防护基准。
-3. **三规则而非全量校验**。当前实现聚焦「多了什么、类型对不对、少了什么」三类
-   最高信噪比信号；长度/数值范围/枚举/格式等细粒度约束由参数模型
-   （`api_parameter_models`）承载，检测器尚未消费（见第八节）。
+3. **三规则而非全量校验**。偏离检测聚焦「多了什么、类型对不对、少了什么」三类
+   最高信噪比信号；长度/数值范围/枚举等细粒度约束由参数模型
+   （`api_parameter_models`）承载，经 `api_parameter_constraints` 下发字段由
+   `CheckParamConstraints` 消费（P0-2 已接通，见第八节）。
 4. **缺失字段只记 LOW**。可选参数与稀疏调用是 API 常态，缺失不等于异常；
    真正高危的是「多出来的字段」（Mass Assignment 面）与「类型被换掉」，
    分别给 MEDIUM 与 BLOCK。
@@ -153,17 +154,18 @@ credential 五类中英文常见命名，短关键字（tel/pan/sfz）加非字�
 
 对照任务书 §32 的 19 类偏离检测：
 
-1. **当前实现三类**：undefined_field / type_mismatch / missing_field，
-   且**仅覆盖请求 JSON 体**；Query/Header/Cookie/Form/XML 参数不参与正式模型
-   比对（表单/XML 字段已解析入 `Parsed`，比对器尚未消费）。
-2. **未实现**：长度上下限、数值范围、枚举、格式（正则/语义类型）、NULL/空值
-   约束、数组元素数、对象字段数、嵌套深度约束、动态 Key、文件类型、
-   请求 Content-Type 约束、响应 Schema 检测、响应敏感字段新增、未定义状态码；
+1. **Schema 偏离三类**（`CheckSchemaDeviation`）：undefined_field / type_mismatch /
+   missing_field，**仅覆盖请求 JSON 体**；Query/Header/Cookie/Form/XML 参数不参与
+   正式模型比对（表单/XML 字段已解析入 `Parsed`，比对器尚未消费）。
+2. **参数级确认约束（P0-2 已接通）**：`min_length`/`max_length`、`minimum`/`maximum`、
+   `enum` 与参数 `required` 经发布通道下发网关 `CheckParamConstraints`；
+   格式（正则/语义类型）、NULL/空值、数组元素数、对象字段数、嵌套深度、动态 Key、
+   文件类型、请求 Content-Type、响应 Schema、响应敏感字段新增、未定义状态码仍未实现；
    `MASK_RESPONSE` 动作已定义无生产者。
-3. **必填语义粗化**：missing_field 把正式模型全部字段视为应出现，
-   未区分 required/optional（参数模型的 `required` 列已建，检测器未消费）。
-4. **违例专项表无写入方**（见第六节）；`api_runtime_findings` 的
-   SCHEMA_DEVIATION 条目同理。
+3. **必填语义双轨**：`missing_field` 仍把正式模型全部字段视为应出现（粗化）；
+   参数模型 `required` 列已由参数约束检测消费（`schema.param_required`，OBSERVE/LOW）。
+4. **违例专项表已接通 ETL**（`apiruntime.SaveSchemaViolations`）；`api_runtime_findings`
+   的 SCHEMA_DEVIATION 条目仍依赖独立 findings 链路。
 5. **响应侧未覆盖**：响应 Schema 与响应敏感数据检测依赖响应解析挂点，
    当前管线只处理请求。
 6. **比对粒度为粗类型**：`number` 不区分整数/浮点与精度，`string` 不含长度与

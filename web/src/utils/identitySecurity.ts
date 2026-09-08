@@ -15,7 +15,6 @@ export const IDENTITY_TYPE_META: Record<string, { color: string; label: string }
   BOT: { color: 'volcano', label: '机器人' },
   APPLICATION: { color: 'geekblue', label: '应用程序' },
   SERVICE: { color: 'blue', label: '服务' },
-  MACHINE: { color: 'cyan', label: '机器' },
   AGENT: { color: 'purple', label: '智能体' },
 }
 

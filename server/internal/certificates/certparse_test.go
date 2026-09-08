@@ -148,10 +148,10 @@ func TestMatchDomain(t *testing.T) {
 		want bool
 	}{
 		{"www.example.com", true},
-		{"v1.api.example.com", true},   // 泛域名 *.api.example.com
-		{"api.example.com", false},     // 泛域名不含根
+		{"v1.api.example.com", true}, // 泛域名 *.api.example.com
+		{"api.example.com", false},   // 泛域名不含根
 		{"other.com", false},
-		{"WWW.EXAMPLE.COM", true},      // 大小写不敏感
+		{"WWW.EXAMPLE.COM", true}, // 大小写不敏感
 	}
 	for _, c := range cases {
 		if got := MatchDomain(parsed, c.host); got != c.want {

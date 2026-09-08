@@ -1,0 +1,651 @@
+{
+  "schema_version": 1,
+  "corpus_id": "p0-corpus-v1",
+  "created_at": "2026-09-06T00:00:00Z",
+  "description": "P0-02 基准语料（任务书 §5）。全部为项目自研合成样本，不复制任何第三方攻击语料库；攻击样本仅覆盖项目当前声明支持的检测范围，未声明能力（如决策域例外，S4 交付）明确标注 deferred，不计入检出率分母。业务 JWT 验签（P0-03/S3）已交付：N-JWT-01/A-JWT-01 已解除 deferred 纳入正常语料，jwt_off/jwt_protect 配对 profile 期望值按网关真实行为设定（PROTECT 下无效 Token 401 + Bearer challenge，有效 Token VERIFIED 继续后续检测且不产生事件；JWT 关闭时放行如实记录，不构成漏报）。",
+  "source_license": {
+    "origin": "self_synthetic",
+    "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离基准）",
+    "note": "样本内容为手工构造的通用协议/注入模式，不来自任何现有 WAF 产品或外部攻击语料库。"
+  },
+  "request_templates": {
+    "json_post": {
+      "method": "POST",
+      "path": "/api/json",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "generator": "json_object",
+        "seed": 101
+      }
+    },
+    "form_post": {
+      "method": "POST",
+      "path": "/login",
+      "headers": {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      "body": {
+        "generator": "form_pairs",
+        "seed": 102
+      }
+    },
+    "multipart_upload": {
+      "method": "POST",
+      "path": "/upload",
+      "headers": {
+        "Content-Type": "multipart/form-data; boundary=p0benchBOUNDARY"
+      },
+      "body": {
+        "generator": "multipart_file",
+        "seed": 103,
+        "size_bytes": 65536
+      }
+    },
+    "get_search": {
+      "method": "GET",
+      "path": "/",
+      "query": {
+        "generator": "search_query",
+        "seed": 104
+      },
+      "headers": {}
+    },
+    "get_echo": {
+      "method": "GET",
+      "path": "/echo",
+      "headers": {}
+    }
+  },
+  "expected_actions": {
+    "_comment": "枚举：PASS（放行到源站）、DETECT_PASS（产生检测证据但放行）、BLOCK_403（拦截）、BLOCK_401（JWT 信任链 PROTECT 认证失败，规范 Bearer challenge）、RATE_LIMIT_429（限速）、NA（该模式不产生判定）。OBSERVE 模式下正确放行攻击不是拦截漏报。jwt_off/jwt_protect 为 JWT-18 配对 profile：同构建同基础配置（waf=Off、api_mode=OFF），仅 JWT 信任链 OFF vs PROTECT（静态 JWKS，运行期本地测试密钥），不属于七模式主基线。",
+    "profiles": [
+      "proxy",
+      "waf_observe",
+      "waf_protect",
+      "api_observe",
+      "api_protect",
+      "combined_observe",
+      "combined_protect",
+      "jwt_off",
+      "jwt_protect"
+    ]
+  },
+  "cases": [
+    {
+      "case_id": "N-SQL-01",
+      "category": "normal_sql_text",
+      "label": "normal",
+      "template": "form_post",
+      "seed": 1001,
+      "description": "合法 SQL 文本作为文章内容提交（含 SELECT ... WHERE 字样的技术博客草稿）",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic"
+    },
+    {
+      "case_id": "N-SQL-02",
+      "category": "normal_sql_text",
+      "label": "normal",
+      "template": "json_post",
+      "seed": 1002,
+      "description": "JSON 字段内含合法代码片段（存储过程示例），引号与注释符号均为文本内容",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic"
+    },
+    {
+      "case_id": "N-SYM-01",
+      "category": "normal_search_symbols",
+      "label": "normal",
+      "template": "get_search",
+      "seed": 1003,
+      "description": "搜索词含引号、括号、斜杠与百分号等符号（如 C++ \"vector<T>\" 用法）",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic"
+    },
+    {
+      "case_id": "N-UNI-01",
+      "category": "normal_unicode_cjk",
+      "label": "normal",
+      "template": "json_post",
+      "seed": 1004,
+      "description": "中文与多语言 Unicode 正文（含 emoji、全角标点、组合字符）",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic"
+    },
+    {
+      "case_id": "N-JSON-01",
+      "category": "normal_json_body",
+      "label": "normal",
+      "template": "json_post",
+      "seed": 1012,
+      "description": "普通 JSON 提交（嵌套对象、数组、null、数字精度边界）",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic"
+    },
+    {
+      "case_id": "N-XML-01",
+      "category": "normal_xml_body",
+      "label": "normal",
+      "template": "json_post",
+      "seed": 1005,
+      "description": "XML 文档正文提交（CDATA、命名空间、实体引用均为合法用法）；模板 header 由生成器替换为 application/xml",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic"
+    },
+    {
+      "case_id": "N-MP-01",
+      "category": "normal_multipart",
+      "label": "normal",
+      "template": "multipart_upload",
+      "seed": 1006,
+      "description": "多部分表单：文本字段 + 小型文本文件上传",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic"
+    },
+    {
+      "case_id": "N-UPL-01",
+      "category": "normal_upload",
+      "label": "normal",
+      "template": "multipart_upload",
+      "seed": 1007,
+      "description": "64KB 随机内容文件上传；源站必须完整读取 body 并返回 body_sha256（预检 BENCH-03 覆盖不读 body 的源站）",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic"
+    },
+    {
+      "case_id": "N-PAGE-01",
+      "category": "normal_pagination",
+      "label": "normal",
+      "template": "get_search",
+      "seed": 1008,
+      "description": "分页参数（page=2&size=50&sort=created_at,desc）",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic"
+    },
+    {
+      "case_id": "N-ROLE-01",
+      "category": "normal_shared_object_role_switch",
+      "label": "normal",
+      "template": "json_post",
+      "seed": 1009,
+      "description": "共享对象/角色切换语义的正常请求体（role 字段在正常枚举内切换）",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic"
+    },
+    {
+      "case_id": "N-JWT-01",
+      "category": "normal_legit_jwt",
+      "label": "normal",
+      "template": "get_echo",
+      "seed": 1010,
+      "description": "携带合法业务 JWT 的正常请求（RS256，运行器用本 run 专用测试私钥现场签发，iss/aud/sub/exp 符合策略）；jwt_protect 下应 VERIFIED 并继续后续检测——VERIFIED 不产生安全事件，也不产生绕过 WAF/API 的全局放行",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic",
+      "jwt_inject": "valid"
+    },
+    {
+      "case_id": "N-BND-01",
+      "category": "normal_boundary_size",
+      "label": "normal",
+      "template": "json_post",
+      "seed": 1011,
+      "description": "接近系统解析上限（API_MAX_BODY_PARSE_BYTES=1MB）的合法 JSON 边界大小请求",
+      "expected_detection_module": "none",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "none"
+      },
+      "source": "self_synthetic",
+      "generator_params": {
+        "size_bytes": 950000
+      }
+    },
+    {
+      "case_id": "A-SQLI-01",
+      "category": "attack_sqli",
+      "label": "attack",
+      "template": "get_search",
+      "seed": 2001,
+      "description": "经典 SQL 注入探测（UNION SELECT / 布尔盲注片段），属 CRS 声明检测范围",
+      "expected_detection_module": "coraza_crs",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "DETECT_PASS",
+        "waf_protect": "BLOCK_403",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "DETECT_PASS",
+        "combined_protect": "BLOCK_403",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "not_reached_when_protected",
+      "expected_event": {
+        "type": "waf_security_event",
+        "rule_family": "sqli"
+      },
+      "source": "self_synthetic",
+      "request_override": {
+        "query": "q=' UNION SELECT username, password FROM users--"
+      }
+    },
+    {
+      "case_id": "A-SQLI-02",
+      "category": "attack_sqli",
+      "label": "attack",
+      "template": "form_post",
+      "seed": 2002,
+      "description": "POST 表单内注入片段（注释截断 + 恒真条件），属 CRS 声明检测范围",
+      "expected_detection_module": "coraza_crs",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "DETECT_PASS",
+        "waf_protect": "BLOCK_403",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "DETECT_PASS",
+        "combined_protect": "BLOCK_403",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "not_reached_when_protected",
+      "expected_event": {
+        "type": "waf_security_event",
+        "rule_family": "sqli"
+      },
+      "source": "self_synthetic",
+      "request_override": {
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        "body": "user=admin' OR '1'='1'--&pass=x"
+      }
+    },
+    {
+      "case_id": "A-XSS-01",
+      "category": "attack_xss",
+      "label": "attack",
+      "template": "get_search",
+      "seed": 2003,
+      "description": "反射型 XSS 探测（脚本事件处理器属性注入），属 CRS 声明检测范围",
+      "expected_detection_module": "coraza_crs",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "DETECT_PASS",
+        "waf_protect": "BLOCK_403",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "DETECT_PASS",
+        "combined_protect": "BLOCK_403",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "not_reached_when_protected",
+      "expected_event": {
+        "type": "waf_security_event",
+        "rule_family": "xss"
+      },
+      "source": "self_synthetic",
+      "request_override": {
+        "query": "q=<img src=x onerror=alert(1)>"
+      }
+    },
+    {
+      "case_id": "A-PATH-01",
+      "category": "attack_path_traversal",
+      "label": "attack",
+      "template": "get_echo",
+      "seed": 2004,
+      "description": "路径穿越（编码 ../ 序列），属 CRS 声明检测范围",
+      "expected_detection_module": "coraza_crs",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "DETECT_PASS",
+        "waf_protect": "BLOCK_403",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "DETECT_PASS",
+        "combined_protect": "BLOCK_403",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "not_reached_when_protected",
+      "expected_event": {
+        "type": "waf_security_event",
+        "rule_family": "path_traversal"
+      },
+      "source": "self_synthetic",
+      "request_override": {
+        "query": "file=%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd"
+      }
+    },
+    {
+      "case_id": "A-PROTO-01",
+      "category": "attack_protocol_violation",
+      "label": "attack",
+      "template": "json_post",
+      "seed": 2005,
+      "description": "协议异常：非法 Content-Length 与 Transfer-Encoding 组合/缺失 Host 头等协议级违规，属 CRS 协议防护声明范围",
+      "expected_detection_module": "coraza_crs",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "DETECT_PASS",
+        "waf_protect": "BLOCK_403",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "DETECT_PASS",
+        "combined_protect": "BLOCK_403",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "not_reached_when_protected",
+      "expected_event": {
+        "type": "waf_security_event",
+        "rule_family": "protocol"
+      },
+      "source": "self_synthetic",
+      "request_override": {
+        "method": "TRACE",
+        "note": "TRACE/TRACK 方法属 CRS 协议防护声明范围"
+      }
+    },
+    {
+      "case_id": "A-APISCH-01",
+      "category": "attack_api_schema",
+      "label": "attack",
+      "template": "json_post",
+      "seed": 2006,
+      "description": "API schema 违背：声明外的字段类型/深度超限 JSON（受 API 动态防护 schema 微模型约束的已登记端点）",
+      "expected_detection_module": "api_dynamic",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "DETECT_PASS",
+        "api_protect": "BLOCK_403",
+        "combined_observe": "DETECT_PASS",
+        "combined_protect": "BLOCK_403",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "not_reached_when_protected",
+      "expected_event": {
+        "type": "api_event",
+        "rule_family": "api_schema"
+      },
+      "source": "self_synthetic",
+      "request_override": {
+        "body": "{\"level1\":{\"level2\":{\"level3\":{\"level4\":{\"level5\":\"x\"}}}},\"id\":\"not-a-number\"}",
+        "note": "深度/类型违背已登记端点 schema"
+      }
+    },
+    {
+      "case_id": "A-APIRESP-01",
+      "category": "attack_api_response",
+      "label": "attack",
+      "template": "json_post",
+      "seed": 2007,
+      "description": "响应侧敏感数据暴露场景（源站按指令返回含敏感字段的响应，验证响应检测声明范围）；仅当 toggles.response_detection=true 时产生检测",
+      "expected_detection_module": "api_dynamic",
+      "applies_when": {
+        "response_detection": true
+      },
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "DETECT_PASS",
+        "api_protect": "BLOCK_403",
+        "combined_observe": "DETECT_PASS",
+        "combined_protect": "BLOCK_403",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "reached",
+      "expected_event": {
+        "type": "api_event",
+        "rule_family": "api_response"
+      },
+      "source": "self_synthetic",
+      "request_override": {
+        "body": "{\"echo_marker\":\"110101199001011234\",\"note\":\"合成假身份证号，验证响应侧检测\"}"
+      }
+    },
+    {
+      "case_id": "A-JWT-01",
+      "category": "attack_jwt_boundary",
+      "label": "attack",
+      "template": "get_echo",
+      "seed": 2008,
+      "description": "篡改签名的业务 JWT（结构合法、iss/aud/sub/exp 合法、仅签名无效，由运行器现场签发后确定性翻转签名末字节）。S3 已交付验签：jwt_protect 下 INVALID → 401（规范 Bearer challenge，事件 JWT_AUTH_FAILED 落 access_control_events）；七模式基线与 jwt_off（JWT 关闭）下不检测、原样放行——能力关闭下的放行如实记录，不构成漏报",
+      "expected_detection_module": "jwt_trust",
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "PASS",
+        "waf_protect": "PASS",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "PASS",
+        "combined_protect": "PASS",
+        "jwt_off": "PASS",
+        "jwt_protect": "BLOCK_401"
+      },
+      "origin_expectation": "not_reached_when_protected",
+      "expected_event": {
+        "type": "access_control_event",
+        "rule_family": "jwt_trust",
+        "note": "仅 JWT 信任链启用时产生（jwt_protect → JWT_AUTH_FAILED/REJECT/401；OBSERVE 形态为 JWT_OBSERVED 记录放行）；JWT 关闭的七模式基线与 jwt_off 无事件"
+      },
+      "source": "self_synthetic",
+      "jwt_inject": "tampered"
+    },
+    {
+      "case_id": "A-EXC-01",
+      "category": "attack_exception_escape",
+      "label": "attack",
+      "template": "get_search",
+      "seed": 2009,
+      "description": "例外逃逸边界：在已配置精确例外（特定 URI+参数名）的对象上发送例外条件之外的攻击变体，验证例外不扩大生效范围。依赖 P0-04/S4 例外编译修复，标记 deferred_s4，不计入分母",
+      "expected_detection_module": "deferred_s4_exceptions",
+      "deferred": true,
+      "expected_action": {
+        "proxy": "PASS",
+        "waf_observe": "DETECT_PASS",
+        "waf_protect": "BLOCK_403",
+        "api_observe": "PASS",
+        "api_protect": "PASS",
+        "combined_observe": "DETECT_PASS",
+        "combined_protect": "BLOCK_403",
+        "jwt_off": "PASS",
+        "jwt_protect": "PASS"
+      },
+      "origin_expectation": "not_reached_when_protected",
+      "expected_event": {
+        "type": "waf_security_event",
+        "rule_family": "sqli"
+      },
+      "source": "self_synthetic",
+      "request_override": {
+        "query": "q=' OR '1'='1"
+      }
+    }
+  ],
+  "request_override_semantics": "可选字段：覆盖模板的具体请求要素（method/path/query/headers/body 字面量），用于攻击样本的确定性回放；全部内容为自研合成。jwt_inject（valid/tampered）声明该样本回放 Bearer Token 的注入形态：运行器用本 run 专用测试私钥现场签发（RS256），经 run 目录 0600 临时头文件以 curl -H @file 注入，Token 不上命令行、不入库、不入 git；request_override.headers 禁止静态写入 Authorization。jwt_inject 仅在 JWT 配对 profile（jwt_off/jwt_protect）回放时生效，七模式基线回放不注入（JWT 关闭语义）。"
+}

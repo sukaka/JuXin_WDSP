@@ -1,4 +1,4 @@
-// Package apiassets API 端点资产管理（阶段8/WDSP 任务书 51.1 端点组 + 学习启停）。
+// Package apiassets API 接口资产管理（阶段8/WDSP 任务书 51.1 接口组 + 学习启停）。
 package apiassets
 
 import (
@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
@@ -17,7 +18,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
-// Handler API 端点管理。
+// Handler API 接口管理。
 type Handler struct {
 	store  Repository
 	audits *audits.Service
@@ -28,7 +29,7 @@ func NewHandler(store Repository, audit *audits.Service) *Handler {
 	return &Handler{store: store, audits: audit}
 }
 
-// RegisterRoutes 注册任务书 51.1 / 51.2 端点组（统一 /api/v1/api-security 前缀，
+// RegisterRoutes 注册任务书 51.1 / 51.2 接口组（统一 /api/v1/api-security 前缀，
 // 权限点与任务书五十二章一致）。
 func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h *Handler) {
 	mux.Handle("GET /api/v1/api-security/endpoints", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.List))))
@@ -36,11 +37,15 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 	mux.Handle("GET /api/v1/api-security/endpoints/directory-tree", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.DirectoryTree))))
 	mux.Handle("POST /api/v1/api-security/endpoints/confirm", authz(middleware.RequirePermission("api_asset.confirm")(http.HandlerFunc(h.ConfirmBatch))))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.Get))))
+	mux.Handle("GET /api/v1/api-security/endpoints/{id}/traffic-trend", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.TrafficTrend))))
 	mux.Handle("PATCH /api/v1/api-security/endpoints/{id}", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Update))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/merge", authz(middleware.RequirePermission("api_asset.merge")(http.HandlerFunc(h.Merge))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/split", authz(middleware.RequirePermission("api_asset.split")(http.HandlerFunc(h.Split))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/ignore", authz(middleware.RequirePermission("api_asset.ignore")(http.HandlerFunc(h.Ignore))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/classify", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Classify))))
+	mux.Handle("POST /api/v1/api-security/endpoints/{id}/deprecate", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Deprecate))))
+	mux.Handle("POST /api/v1/api-security/endpoints/{id}/restore", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Restore))))
+	mux.Handle("GET /api/v1/api-security/service-assets", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.ServiceAssets))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/learning/start", authz(middleware.RequirePermission("api_learning.start")(http.HandlerFunc(h.LearningStart))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/learning/stop", authz(middleware.RequirePermission("api_learning.stop")(http.HandlerFunc(h.LearningStop))))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}/learning/status", authz(middleware.RequirePermission("api_learning.read")(http.HandlerFunc(h.LearningStatus))))
@@ -49,7 +54,7 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 }
 
 // List GET /api/v1/api-security/endpoints
-// 过滤：asset_status / learning_status / keyword / application_id / unassigned / directory_path。
+// 过滤：asset_status / learning_status / keyword / application_id / unassigned / directory_path / business_type。
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := ListFilter{
@@ -69,6 +74,15 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		f.ApplicationID = &appID
 	}
+	if v := strings.TrimSpace(q.Get("business_type")); v != "" {
+		bt := NormalizeBusinessType(v)
+		if !validBusinessTypes[bt] {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+				"无效的业务类型（LOGIN/REGISTER/PASSWORD_RESET/SMS/EMAIL/ORDER/PAYMENT/EXPORT/DOWNLOAD/SEARCH/QUERY_PERSONAL_DATA/AI_INFERENCE/OTHER）")
+			return
+		}
+		f.BusinessType = bt
+	}
 	list, total, err := h.store.List(r.Context(), f)
 	if err != nil {
 		response.InternalError(w, r, err)
@@ -78,7 +92,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // SiteSummary GET /api/v1/api-security/endpoints/site-summary
-// 各站点端点计数 + 未归属计数（站点列表数据源）。
+// 各站点接口计数 + 未归属计数（站点列表数据源）。
 func (h *Handler) SiteSummary(w http.ResponseWriter, r *http.Request) {
 	items, unassigned, err := h.store.SiteSummary(r.Context())
 	if err != nil {
@@ -89,7 +103,7 @@ func (h *Handler) SiteSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 // DirectoryTree GET /api/v1/api-security/endpoints/directory-tree
-// 按目录聚合端点计数（扁平列表，前端组装层级）；application_id 指定站点，unassigned=true 查未归属。
+// 按目录聚合接口计数（扁平列表，前端组装层级）；application_id 指定站点，unassigned=true 查未归属。
 func (h *Handler) DirectoryTree(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var appID *uuid.UUID
@@ -125,7 +139,7 @@ func (h *Handler) ConfirmBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.IDs) > 100 {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "单次最多确认 100 个端点")
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "单次最多确认 100 个接口")
 		return
 	}
 	type failedItem struct {
@@ -137,7 +151,7 @@ func (h *Handler) ConfirmBatch(w http.ResponseWriter, r *http.Request) {
 	for _, id := range req.IDs {
 		_, err := h.store.Confirm(r.Context(), id)
 		if errors.Is(err, ErrNotFound) {
-			failed = append(failed, failedItem{ID: id.String(), Reason: "端点不存在"})
+			failed = append(failed, failedItem{ID: id.String(), Reason: "接口不存在"})
 			continue
 		}
 		if err != nil {
@@ -150,7 +164,7 @@ func (h *Handler) ConfirmBatch(w http.ResponseWriter, r *http.Request) {
 	if len(req.IDs) > 0 {
 		objID = req.IDs[0].String()
 	}
-	h.recordAudit(r, p, "confirm", objID, fmt.Sprintf("批量确认 %d 个端点", len(req.IDs)),
+	h.recordAudit(r, p, "confirm", objID, fmt.Sprintf("批量确认 %d 个接口", len(req.IDs)),
 		summaryJSON(map[string]any{"ids": req.IDs}),
 		summaryJSON(map[string]any{"confirmed": len(confirmed), "failed": len(failed)}), audits.RiskLow)
 	response.JSON(w, r, http.StatusOK, map[string]any{
@@ -168,7 +182,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.store.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if err != nil {
@@ -184,8 +198,43 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e})
 }
 
+// TrafficTrend GET /api/v1/api-security/endpoints/{id}/traffic-trend?range=1h|24h|7d
+// 单接口访问趋势波形图数据源：5 分钟桶（UTC 对齐），服务端补零、时间升序；
+// range 缺省 24h，非法值取默认；端点不存在 404。
+func (h *Handler) TrafficTrend(w http.ResponseWriter, r *http.Request) {
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.store.GetByID(r.Context(), id); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+			return
+		}
+		response.InternalError(w, r, err)
+		return
+	}
+	rangeName, dur := ParseTrafficRange(r.URL.Query().Get("range"))
+	now := time.Now().UTC()
+	from := now.Add(-dur)
+	counts, err := h.store.TrafficBuckets(r.Context(), id, from, TrafficBucketStart(now).Add(TrafficBucketSeconds*time.Second))
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	points, total := FillTrafficPoints(from, now, counts)
+	response.JSON(w, r, http.StatusOK, &TrafficTrend{
+		EndpointID:    id.String(),
+		BucketSeconds: TrafficBucketSeconds,
+		Range:         rangeName,
+		Total:         total,
+		Points:        points,
+	})
+}
+
 // Update PATCH /api/v1/api-security/endpoints/{id}
-// 编辑 api_assets：purpose/exposure/owner/tags（全量替换）。
+// 编辑 api_assets：purpose/exposure/owner/tags/business_type（全量替换；
+// business_type 空值归一 OTHER，枚举校验，设计 #12.1）。
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	id, ok := parsePathID(w, r)
@@ -193,10 +242,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Purpose  string   `json:"purpose"`
-		Exposure string   `json:"exposure"`
-		Owner    string   `json:"owner"`
-		Tags     []string `json:"tags"`
+		Purpose      string   `json:"purpose"`
+		Exposure     string   `json:"exposure"`
+		Owner        string   `json:"owner"`
+		Tags         []string `json:"tags"`
+		BusinessType string   `json:"business_type"`
 	}
 	if err := response.DecodeJSON(w, r, &req, 8192); err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
@@ -205,7 +255,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	req.Purpose = strings.TrimSpace(req.Purpose)
 	req.Owner = strings.TrimSpace(req.Owner)
 	req.Exposure = strings.ToUpper(strings.TrimSpace(req.Exposure))
-	if req.Purpose == "" && req.Exposure == "" && req.Owner == "" && req.Tags == nil {
+	req.BusinessType = NormalizeBusinessType(req.BusinessType)
+	if req.Purpose == "" && req.Exposure == "" && req.Owner == "" && req.Tags == nil && req.BusinessType == "OTHER" {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求体不能为空")
 		return
 	}
@@ -213,6 +264,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	case "", "INTERNAL", "PARTNER", "PUBLIC":
 	default:
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的暴露面取值（INTERNAL/PARTNER/PUBLIC）")
+		return
+	}
+	if !validBusinessTypes[req.BusinessType] {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+			"无效的业务类型（LOGIN/REGISTER/PASSWORD_RESET/SMS/EMAIL/ORDER/PAYMENT/EXPORT/DOWNLOAD/SEARCH/QUERY_PERSONAL_DATA/AI_INFERENCE/OTHER）")
 		return
 	}
 	if len(req.Purpose) > 128 || len(req.Owner) > 128 {
@@ -231,7 +287,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.store.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if err != nil {
@@ -243,7 +299,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
-	asset, err := h.store.UpsertAsset(r.Context(), id, req.Purpose, req.Exposure, req.Owner, req.Tags)
+	asset, err := h.store.UpsertAsset(r.Context(), id, req.Purpose, req.Exposure, req.Owner, req.Tags, req.BusinessType)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
@@ -273,12 +329,12 @@ func (h *Handler) Merge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.OtherID == id {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "不能将端点合并到自身")
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "不能将接口合并到自身")
 		return
 	}
 	other, err := h.store.GetByID(r.Context(), req.OtherID)
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "待合并端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "待合并接口不存在")
 		return
 	}
 	if err != nil {
@@ -287,7 +343,7 @@ func (h *Handler) Merge(w http.ResponseWriter, r *http.Request) {
 	}
 	before, err := h.store.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if err != nil {
@@ -296,7 +352,7 @@ func (h *Handler) Merge(w http.ResponseWriter, r *http.Request) {
 	}
 	merged, err := h.store.Merge(r.Context(), id, req.OtherID, actorOf(p))
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if err != nil {
@@ -308,7 +364,7 @@ func (h *Handler) Merge(w http.ResponseWriter, r *http.Request) {
 			"other_id": req.OtherID.String(), "other_key": other.EndpointKey}),
 		summaryJSON(map[string]any{"endpoint_key": merged.EndpointKey, "hit_count": merged.HitCount}),
 		audits.RiskHigh)
-	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": merged, "message": "端点已合并"})
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": merged, "message": "接口已合并"})
 }
 
 // Split POST /api/v1/api-security/endpoints/{id}/split  {paths:[...]}
@@ -343,7 +399,7 @@ func (h *Handler) Split(w http.ResponseWriter, r *http.Request) {
 	}
 	src, err := h.store.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if err != nil {
@@ -352,7 +408,7 @@ func (h *Handler) Split(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := h.store.Split(r.Context(), id, normed, actorOf(p))
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if errors.Is(err, ErrEndpointConflict) {
@@ -366,7 +422,7 @@ func (h *Handler) Split(w http.ResponseWriter, r *http.Request) {
 	h.recordAudit(r, p, "split", id.String(), truncateName(src.EndpointKey),
 		summaryJSON(map[string]any{"endpoint_key": src.EndpointKey}),
 		summaryJSON(map[string]any{"paths": normed, "created": len(created)}), audits.RiskMedium)
-	response.JSON(w, r, http.StatusOK, map[string]any{"endpoints": created, "message": "端点已拆分"})
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoints": created, "message": "接口已拆分"})
 }
 
 // Ignore POST /api/v1/api-security/endpoints/{id}/ignore（asset_status=IGNORED）
@@ -378,7 +434,7 @@ func (h *Handler) Ignore(w http.ResponseWriter, r *http.Request) {
 	}
 	before, err := h.store.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if err != nil {
@@ -387,7 +443,7 @@ func (h *Handler) Ignore(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.store.SetAssetStatus(r.Context(), id, "IGNORED", actorOf(p))
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if err != nil {
@@ -397,7 +453,92 @@ func (h *Handler) Ignore(w http.ResponseWriter, r *http.Request) {
 	h.recordAudit(r, p, "ignore", id.String(), truncateName(e.EndpointKey),
 		summaryJSON(map[string]any{"asset_status": before.AssetStatus}),
 		summaryJSON(map[string]any{"asset_status": e.AssetStatus}), audits.RiskMedium)
-	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e, "message": "端点已忽略"})
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e, "message": "接口已忽略"})
+}
+
+// Deprecate POST /api/v1/api-security/endpoints/{id}/deprecate
+// 人工下线（DISCOVERED/CONFIRMED→DEPRECATED，任务书 §11.3）；状态不允许 409。
+func (h *Handler) Deprecate(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	before, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	e, err := h.store.Deprecate(r.Context(), id, actorOf(p))
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if errors.Is(err, ErrInvalidTransition) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, err.Error())
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "deprecate", id.String(), truncateName(e.EndpointKey),
+		summaryJSON(map[string]any{"asset_status": before.AssetStatus}),
+		summaryJSON(map[string]any{"asset_status": e.AssetStatus}), audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e, "message": "接口已标记下线"})
+}
+
+// Restore POST /api/v1/api-security/endpoints/{id}/restore
+// 人工恢复（DEPRECATED/ZOMBIE→CONFIRMED）；状态不允许 409。
+func (h *Handler) Restore(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	before, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	e, err := h.store.Restore(r.Context(), id, actorOf(p))
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if errors.Is(err, ErrInvalidTransition) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, err.Error())
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "restore", id.String(), truncateName(e.EndpointKey),
+		summaryJSON(map[string]any{"asset_status": before.AssetStatus}),
+		summaryJSON(map[string]any{"asset_status": e.AssetStatus}), audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e, "message": "接口已恢复为已确认"})
+}
+
+// ServiceAssets GET /api/v1/api-security/service-assets
+// 服务资产聚合（§14）：upstreams 主机:端口 视角反聚端点归属，分页返回。
+func (h *Handler) ServiceAssets(w http.ResponseWriter, r *http.Request) {
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 20)
+	items, total, err := h.store.ListServiceAssets(r.Context(), page, pageSize)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, items, total, page, pageSize)
 }
 
 // Classify POST /api/v1/api-security/endpoints/{id}/classify
@@ -410,7 +551,7 @@ func (h *Handler) Classify(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.store.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if err != nil {
@@ -419,7 +560,7 @@ func (h *Handler) Classify(w http.ResponseWriter, r *http.Request) {
 	}
 	dims, err := h.store.AutoClassify(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if errors.Is(err, ErrClassificationLocked) {
@@ -436,24 +577,49 @@ func (h *Handler) Classify(w http.ResponseWriter, r *http.Request) {
 }
 
 // LearningStart POST /api/v1/api-security/endpoints/{id}/learning/start
+// 可选请求体 {"sample_target": N}：N∈[10,100000]，缺省 100；0 或越界 400。无请求体按缺省。
 func (h *Handler) LearningStart(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	id, ok := parsePathID(w, r)
 	if !ok {
 		return
 	}
+	// 可选请求体：缺省（无体或无字段）由 store 归一为 DefaultSampleTarget
+	sampleTarget := 0
+	if r.Body != nil && r.ContentLength != 0 {
+		var req struct {
+			SampleTarget *int `json:"sample_target"`
+		}
+		if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+			return
+		}
+		if req.SampleTarget != nil {
+			if *req.SampleTarget < MinSampleTarget || *req.SampleTarget > MaxSampleTarget {
+				response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+					fmt.Sprintf("样本目标需在 %d~%d 之间", MinSampleTarget, MaxSampleTarget))
+				return
+			}
+			sampleTarget = *req.SampleTarget
+		}
+	}
 	var createdBy *uuid.UUID
 	if p != nil {
 		uid := p.UserID
 		createdBy = &uid
 	}
-	job, err := h.store.StartLearning(r.Context(), id, createdBy)
+	job, err := h.store.StartLearning(r.Context(), id, sampleTarget, createdBy)
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if errors.Is(err, ErrLearningRunning) {
-		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "该端点已有运行中的学习任务")
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "该接口已有运行中的学习任务")
+		return
+	}
+	if errors.Is(err, ErrInvalidSampleTarget) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+			fmt.Sprintf("样本目标需在 %d~%d 之间", MinSampleTarget, MaxSampleTarget))
 		return
 	}
 	if err != nil {
@@ -461,7 +627,7 @@ func (h *Handler) LearningStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.recordAudit(r, p, "learning_start", id.String(), id.String(), "",
-		summaryJSON(map[string]any{"job_id": job.ID.String(), "status": job.Status}), audits.RiskLow)
+		summaryJSON(map[string]any{"job_id": job.ID.String(), "status": job.Status, "sample_target": job.SampleTarget}), audits.RiskLow)
 	response.JSON(w, r, http.StatusOK, map[string]any{"job": job, "message": "学习任务已启动"})
 }
 
@@ -474,7 +640,7 @@ func (h *Handler) LearningStop(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := h.store.StopLearning(r.Context(), id, actorOf(p))
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if errors.Is(err, ErrLearningNotRunning) {
@@ -498,7 +664,7 @@ func (h *Handler) LearningStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.store.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	}
 	if err != nil {
@@ -526,7 +692,7 @@ func (h *Handler) LifecycleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.store.GetByID(r.Context(), id); errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	} else if err != nil {
 		response.InternalError(w, r, err)
@@ -550,7 +716,7 @@ func (h *Handler) LearningSamples(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.store.GetByID(r.Context(), id); errors.Is(err, ErrNotFound) {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "端点不存在")
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
 		return
 	} else if err != nil {
 		response.InternalError(w, r, err)
@@ -581,7 +747,7 @@ func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID
 	if h.audits == nil || p == nil {
 		return
 	}
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),
@@ -603,7 +769,7 @@ func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID
 func parsePathID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的端点ID")
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的接口ID")
 		return uuid.Nil, false
 	}
 	return id, true
@@ -633,6 +799,7 @@ func assetSummary(a *Asset) string {
 	return summaryJSON(map[string]any{
 		"purpose": a.Purpose, "exposure": a.Exposure,
 		"owner": a.Owner, "tags": a.Tags,
+		"business_type": a.BusinessType,
 	})
 }
 

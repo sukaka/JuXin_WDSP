@@ -3,12 +3,12 @@
 ## 一、目的与范围
 
 路径归一化把 `/api/users/10001`、`/api/users/10002` 这类带动态段的 URL 折叠为稳定
-的路径模板 `/api/users/{id}`，使端点获得**稳定身份**：发现登记、命中计数、冻结模型
+的路径模板 `/api/users/{id}`，使API获得**稳定身份**：发现登记、命中计数、冻结模型
 下发、生命周期基线比对全部以归一化产物为键。本文覆盖：
 
 - 归一化规则（`gateway/dynamic_security/normalizer/path.go`）；
 - `endpoint_key` 规范与全体使用方；
-- 合并兼容判定与端点别名表（`api_endpoint_aliases`）。
+- 合并兼容判定与API别名表（`api_endpoint_aliases`）。
 
 ## 二、归一化规则
 
@@ -46,7 +46,7 @@
 | `//a//b//` | `/a/b`（折叠斜杠、去尾斜杠） |
 
 `EndpointKey("get", "/users/1")` 与 `EndpointKey("GET", "/users/99")` 产出同一键
-`GET /users/{id}`；`POST /users/{id}` 与之不同键（方法区分端点）。
+`GET /users/{id}`；`POST /users/{id}` 与之不同键（方法区分API）。
 `MergeCompatible("/users/1", "/users/2")` 为真、
 `MergeCompatible("/users/1", "/orders/1")` 为假。
 
@@ -59,7 +59,7 @@ endpoint_key = 大写HTTP方法 + 单个空格 + NormalizePath(rawPath)
 ```
 
 - 方法去空白并大写，空方法按 `GET`；
-- 不同方法是不同端点（`GET /users/{id}` ≠ `POST /users/{id}`，任务书 §65 第12条）；
+- 不同方法是不同API（`GET /users/{id}` ≠ `POST /users/{id}`，任务书 §65 第12条）；
 - 键长上限 560（`VARCHAR(560)`，迁移 000016；事件日志同长截断，`apievents.go:37`）。
 
 **全体使用方（同一算法、同一键空间）**：
@@ -81,7 +81,7 @@ endpoint_key = 大写HTTP方法 + 单个空格 + NormalizePath(rawPath)
 ## 四、合并兼容与拆分
 
 `MergeCompatible(a, b)`（`path.go:68-70`）：两条原始路径归一化结果相等即可合并为
-同一端点。这是**模板一致性**判定，是合并的必要条件而非充分条件——任务书 §10.4
+同一API。这是**模板一致性**判定，是合并的必要条件而非充分条件——任务书 §10.4
 要求结合方法、结构、用途、人工确认，本实现中「是否合并」始终由管理员在管理面
 显式执行（`POST .../endpoints/{id}/merge`），系统不自动合并。
 
@@ -89,28 +89,28 @@ endpoint_key = 大写HTTP方法 + 单个空格 + NormalizePath(rawPath)
 
 ```text
 api_endpoint_aliases(endpoint_id, alias_key, created_reason='merge')
-  - other 端点的历史 endpoint_key 归档到 primary；
+  - other API的历史 endpoint_key 归档到 primary；
   - alias_key 全局唯一（迁移 000018 唯一索引），重复归档幂等（ON CONFLICT DO NOTHING）；
   - other 删除，hit_count 与 last_seen_at 并入 primary，写 MERGED 生命周期事件。
 ```
 
-别名表的用途：历史事件/旧配置中的端点键仍可追溯到存续端点，为后续按别名归并
+别名表的用途：历史事件/旧配置中的API键仍可追溯到存续API，为后续按别名归并
 统计、重归一化迁移保留映射。当前实现中别名在合并时写入，查询侧尚无独立接口
-（经端点生命周期事件可见合并轨迹）。
+（经API生命周期事件可见合并轨迹）。
 
 **拆分**（`store.go:387-436`）：管理员指定若干新路径（先经 `NormalizePath`，
-`handler.go:304-311`），按 `方法 + 新路径` 生成新端点（继承 application/domain/
-置信度/协议/is_api，初始 DISCOVERED）；键已存在返回 409 冲突；原端点写 SPLIT
-生命周期事件。拆分不删除原端点、不写别名。
+`handler.go:304-311`），按 `方法 + 新路径` 生成新API（继承 application/domain/
+置信度/协议/is_api，初始 DISCOVERED）；键已存在返回 409 冲突；原API写 SPLIT
+生命周期事件。拆分不删除原API、不写别名。
 
 ## 五、关键设计决策
 
 1. **只替换三类高置信动态段**。数字 ID、UUID、长十六进制几乎必然是对象标识；
-   其余段保守保留字面量。误合并的代价（两个不同端点共享一个模型/基线）远大于
-   多登记几个端点的代价，规则从简从严（任务书 §10.4「不得仅因为路径位置均为
+   其余段保守保留字面量。误合并的代价（两个不同API共享一个模型/基线）远大于
+   多登记几个API的代价，规则从简从严（任务书 §10.4「不得仅因为路径位置均为
    数字就自动合并」——本实现连「自动合并」本身都不做，合并一律人工）。
-2. **方法进入端点键**。同一模板的不同 HTTP 方法语义不同、Schema 不同，
-   拆为独立端点才能独立学习与防护。
+2. **方法进入API键**。同一模板的不同 HTTP 方法语义不同、Schema 不同，
+   拆为独立API才能独立学习与防护。
 3. **键即算法产物，不含随机成分**。任何节点、任何时刻对同一请求算出的键一致，
    采集重放与多节点上报天然幂等；键可复算也意味着别名表只用于「历史键 →
    存续键」的演化映射，而非身份本体。
@@ -127,7 +127,7 @@ api_endpoint_aliases(endpoint_id, alias_key, created_reason='merge')
 
 1. **当前实现三类**：纯数字、UUID、长十六进制。日期/时间戳/雪花 ID 若由纯数字
    构成会被 `{id}` 覆盖（如 `/o/20240101`）；含分隔符的日期（`2024-01-01`）、
-   短哈希、随机字符串、文件名、业务编号**不归一**，各流量会形成独立端点键，
+   短哈希、随机字符串、文件名、业务编号**不归一**，各流量会形成独立API键，
    需人工合并收敛。
 2. **占位符不可改名**：模板固定为 `{id}/{uuid}/{hex}`，任务书 §10.3「管理员将
    `{integer}` 改名为 `{userId}`」未实现；`api_endpoint_path_segments` 表
@@ -145,7 +145,7 @@ api_endpoint_aliases(endpoint_id, alias_key, created_reason='merge')
 |----------|--------|
 | 二、归一化规则 | §10.2 动态路径识别（裁剪子集）、§10.3 归一化示例 |
 | 三、endpoint_key | §10.1 唯一键（application/domain 维度的当前取舍见下） |
-| 四、合并与拆分 | §10.4 合并安全、§10.5 端点拆分 |
+| 四、合并与拆分 | §10.4 合并安全、§10.5 API拆分 |
 | 五、决策 1/2 | §10.4「不得仅因数字段自动合并」 |
 
 说明：任务书 §10.1 的唯一键含 `application_id + domain_id + http_method +

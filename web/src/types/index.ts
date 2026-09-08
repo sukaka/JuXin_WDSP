@@ -186,19 +186,30 @@ export interface HealthStatus {
   valkey: boolean
 }
 
+/** APM 性能监控设置（GET /apm/settings）；DSN 原文任何情况下不下发，仅用 clickhouse_dsn_set 标记 */
+export interface ApmSettings {
+  enabled: boolean
+  enabled_source: 'ui' | 'env'
+  clickhouse_dsn_set: boolean
+  clickhouse_dsn_source: 'ui' | 'env' | ''
+  ch_connected: boolean
+}
+
 /* ==================== 阶段3：应用接入 / 源站 / 证书 / 配置发布 ==================== */
 
 /** 防护模式（BYPASS 为数据透传：跳过全部检测，仅用于排障/应急） */
 export type ProtectionMode = 'OFF' | 'OBSERVE' | 'PROTECT' | 'BYPASS'
 
 /** 应用状态 */
-export type ApplicationStatus = 'DRAFT' | 'ACTIVE' | 'DISABLED' | 'ERROR' | 'DELETED'
+export type ApplicationStatus =
+  'DRAFT' | 'ACTIVE' | 'DISABLED' | 'ERROR' | 'DELETED'
 
 /**
  * 部署模式（REVERSE_PROXY 反向代理为默认；ROUTED 路由牵引 / MIRROR 镜像旁路 / TRANSPARENT 透明串接，
  * 见 docs/NETWORK_MODES_DESIGN.md §4）
  */
-export type DeploymentMode = 'REVERSE_PROXY' | 'ROUTED' | 'MIRROR' | 'TRANSPARENT'
+export type DeploymentMode =
+  'REVERSE_PROXY' | 'ROUTED' | 'MIRROR' | 'TRANSPARENT'
 
 /** 部署状态 */
 export type DeploymentStatus =
@@ -299,7 +310,8 @@ export interface UpstreamTestResult {
 }
 
 /** 证书状态 */
-export type CertificateStatus = 'VALID' | 'EXPIRING' | 'EXPIRED' | 'INVALID' | 'KEY_MISMATCH'
+export type CertificateStatus =
+  'VALID' | 'EXPIRING' | 'EXPIRED' | 'INVALID' | 'KEY_MISMATCH'
 
 /** HTTPS 证书列表项 */
 export interface CertificateItem {
@@ -481,13 +493,32 @@ export interface CustomRuleValidateResult {
   generated_rule?: string
 }
 
-/** 例外策略动作 */
+/**
+ * 例外策略动作（P0-04 动作矩阵，S4 §3）：
+ * WAF 引擎新启用仅允许 REMOVE_RULE / REMOVE_RULE_TAG / REMOVE_VAR_DETECTION；
+ * LOG_ONLY / ADJUST_SCORE 仅历史记录可读（NEEDS_REVIEW），拒绝新启用；
+ * API 引擎仅 OBSERVE_RULE。
+ */
 export type ExceptionAction =
   | 'REMOVE_RULE'
   | 'REMOVE_RULE_TAG'
   | 'REMOVE_VAR_DETECTION'
   | 'ADJUST_SCORE'
   | 'LOG_ONLY'
+  | 'OBSERVE_RULE'
+
+/** 例外目标引擎（迁移 000130 exception_policies.target_engine） */
+export type ExceptionTargetEngine = 'WAF' | 'API'
+
+/** API 规则引用（api_rule_refs 元素；S4 §3 detector_id 受支持注册表：api_schema / api_parser） */
+export interface ApiExceptionRuleRef {
+  detector_id: string
+  rule_id: string
+  model_version?: string | null
+}
+
+/** 例外校验状态（迁移 000130 validation_status；NEEDS_REVIEW 禁止启用） */
+export type ExceptionValidationStatus = 'VALID' | 'NEEDS_REVIEW'
 
 /** 例外策略 */
 export interface ExceptionItem {
@@ -519,12 +550,189 @@ export interface ExceptionItem {
   risk_acknowledged: boolean
   reason: string
   version: number
+  /** 目标引擎（迁移 000130；缺省按 WAF 处理，兼容旧后端不返回该字段） */
+  target_engine?: ExceptionTargetEngine
+  /** API 规则引用（target_engine=API 时非空；旧记录/旧后端可空） */
+  api_rule_refs?: ApiExceptionRuleRef[] | null
+  /** 规则标签启用时展开冻结的规则 ID 集（迁移 000130 resolved_rule_ids） */
+  resolved_rule_ids?: number[] | null
+  /** 来源安全事件（从事件创建的草稿携带） */
+  source_event_id?: string | null
+  /** 校验状态（迁移 000130；NEEDS_REVIEW 禁止启用，须先修改达标） */
+  validation_status?: ExceptionValidationStatus
+  /** 编译指纹（预览/发布前重验，防预览后草稿被改） */
+  compiled_fingerprint?: string | null
+  /** 不支持项原因列表（NEEDS_REVIEW 记录逐条说明缺什么，S4 §4/§8） */
+  unsupported_reasons?: string[] | null
 }
 
 /** 例外策略详情（含宽泛判定） */
 export interface ExceptionDetail {
   exception: ExceptionItem
   is_broad: boolean
+}
+
+/* ---------- P0-04：例外预览（POST /api/v1/exceptions/{id}/preview，契约 S4 §8，已冻结逐字字段） ---------- */
+
+/** 预览字段级错误 */
+export interface ExceptionPreviewFieldError {
+  field: string
+  message: string
+}
+
+/** 预览规范化范围（normalized_scope） */
+export interface ExceptionPreviewNormalizedScope {
+  domain?: string
+  uri_exact?: string
+  uri_prefix?: string
+  methods?: string[]
+  source_ips?: string[]
+  content_types?: string[]
+  effective_from?: string | null
+  effective_until?: string | null
+}
+
+/** 预览解析后的规则引用（WAF：rule_id 数值；API：detector_id + rule_id 字符串） */
+export interface ExceptionPreviewRuleRef {
+  engine: string
+  rule_id?: number | string
+  detector_id?: string
+  model_version?: string | null
+}
+
+/** 预览不支持项与迁移预览 */
+export interface ExceptionPreviewUnsupported {
+  field_or_action: string
+  migration_preview?: string
+}
+
+/**
+ * 例外影响预览结果（S4 §8 契约，逐字字段）。
+ * 预览不启用、不发布、不回放真实请求；estimated_match_count / historical_sample_coverage
+ * 为 null 表示历史日志字段不足「无法估算」，前端禁止显示 0 影响。
+ */
+export interface ExceptionPreviewResult {
+  validation_status: ExceptionValidationStatus
+  field_errors: ExceptionPreviewFieldError[]
+  normalized_scope: ExceptionPreviewNormalizedScope
+  resolved_rule_refs: ExceptionPreviewRuleRef[]
+  effective_window: { from?: string | null; until?: string | null; half_open: boolean }
+  unsupported: ExceptionPreviewUnsupported[]
+  protected_modules_unchanged: string[]
+  compiled_fingerprint: string
+  required_publish_targets: string[]
+  historical_sample_coverage?: number | null
+  estimated_match_count: number | null
+}
+
+/* ---------- P0-04：最终处置记录（final_decision JSON，契约 S4 §2，schema_version=1，已冻结逐字字段） ---------- */
+
+/** 模块规则/策略/模型标识及版本（rule_refs ≤ 64，超出由后端显式截断） */
+export interface FinalDecisionRuleRef {
+  module?: string
+  rule_id?: string
+  version?: string | null
+}
+
+/** 节点实际生效配置指纹（发布批次/策略/规则包/例外版本；不取当前最新草稿） */
+export interface FinalDecisionEffectiveConfig {
+  config_fingerprint?: string | null
+  api_policy_version?: string | null
+  exception_versions?: Record<string, number> | null
+}
+
+/** Finding 有界计数摘要 */
+export interface FinalDecisionFindings {
+  observed?: number
+  enforced?: number
+  excepted?: number
+  skipped?: number
+}
+
+/** 执行过程步骤（steps ≤ 32；后端截断时追加 module=TRUNCATED 条目） */
+export interface FinalDecisionStep {
+  module?: string
+  result?: 'EXECUTED' | 'OBSERVED' | 'EXCEPTED' | 'SKIPPED' | string
+  detail?: string | null
+}
+
+/** 命中的例外（ID、版本、目标规则、范围摘要、起止时间与实际匹配） */
+export interface FinalDecisionMatchedException {
+  exception_id?: string
+  version?: number
+  target?: string
+  rule_refs?: string[]
+  scope_summary?: string
+  effective_from?: string | null
+  effective_until?: string | null
+}
+
+/** 身份验证引用（P0-03 状态与可信主体指纹，历史可空；不含原始 Token/明文声明） */
+export interface FinalDecisionIdentityVerification {
+  status?: string
+  verified_principal_id?: string
+}
+
+/**
+ * 最终处置记录（security_events.final_decision / api_runtime_events.final_decision /
+ * access_control_events.details.final_decision；历史事件不回填，为 null）。
+ * 归因纪律：只记录已执行事实；API ALLOW 是中间决策，不等于最终放行；
+ * 观察命中不进 security_action。
+ */
+export interface FinalDecision {
+  schema_version?: number
+  request_id?: string
+  application_id?: string
+  gateway_node?: string
+  completion_status?: 'COMPLETED' | 'ABORTED' | 'ERROR' | 'PENDING_CORRELATION' | 'UNKNOWN' | string
+  security_action?: 'NONE' | 'BLOCK' | 'TEMP_BLOCK' | 'RATE_LIMIT' | 'MASK_RESPONSE' | string
+  executor_module?:
+    | 'PROTECTED_ADDRESS'
+    | 'MANUAL_BAN'
+    | 'IP_BLACKLIST'
+    | 'L7_ACL'
+    | 'AUTO_BAN'
+    | 'RISK_POLICY'
+    | 'LICENSE_QUOTA'
+    | 'CC'
+    | 'JWT'
+    | 'API'
+    | 'WAF'
+    | 'NONE'
+    | 'UNKNOWN'
+    | string
+  response_source?: 'GATEWAY' | 'ORIGIN' | 'UNKNOWN' | string
+  http_status?: number
+  response_committed?: boolean
+  reason_codes?: string[]
+  rule_refs?: FinalDecisionRuleRef[]
+  effective_config?: FinalDecisionEffectiveConfig | null
+  findings?: FinalDecisionFindings | null
+  steps?: FinalDecisionStep[]
+  matched_exceptions?: FinalDecisionMatchedException[]
+  identity_verification?: FinalDecisionIdentityVerification | null
+  evidence_refs?: string[]
+  finalized_at?: string
+}
+
+/**
+ * 事件 JWT 验证信息（WDSP P0-03 §5；契约 server/internal/jwttrust/result.go，
+ * 事件落库线格式为网关 dynamic_security/events.JWTVerification）。
+ * 集成落库前历史事件无此字段，前端按可选对象做空态（「当时未记录」）。
+ * 脱敏纪律：不含原始 Token、完整 payload、明文 sub/tenant；
+ * verified_principal_id/verified_tenant_id 为应用隔离/加盐 HMAC 指纹；UNVERIFIED 不代表非法用户。
+ */
+export interface JwtVerificationInfo {
+  status: string
+  reason_code: string
+  /** 策略版本（溯源）：安全事件契约为数值；api_runtime_events 落库（events.JWTVerification）为字符串版本戳，两种形态均容忍 */
+  policy_version?: number | string
+  issuer_config_id?: string
+  keyset_version?: string
+  verified_principal_id?: string
+  /** 可信租户指纹（加盐 HMAC，非明文 tenant；仅 VERIFIED 且配置 tenant_claim 验证成功时非空） */
+  verified_tenant_id?: string
+  evaluated_at?: string
 }
 
 /** 安全事件列表项 */
@@ -562,6 +770,10 @@ export interface SecurityEventItem {
   response_headers?: Record<string, string[]> | null
   response_body?: string
   response_body_truncated?: boolean
+  /** JWT 验证信息（WDSP P0-03；仅启用 JWT 信任策略且集成落库后的事件携带，历史事件为空） */
+  jwt_verification?: JwtVerificationInfo | null
+  /** 最终处置记录（WDSP P0-04 S4 §2；历史事件不回填为 null，前端显示「无最终处置记录（旧数据）」） */
+  final_decision?: FinalDecision | null
 }
 
 /** 事件规则匹配（matched_data 已脱敏，渲染时必须按纯文本转义显示） */
@@ -623,7 +835,7 @@ export interface WafRuleEffectStatistics {
   protect_recommendation_reason?: string
 }
 
-export interface WafRuleEffectStatisticsPage extends PageResult<WafRuleEffectStatistics> {}
+export type WafRuleEffectStatisticsPage = PageResult<WafRuleEffectStatistics>
 
 /** 从事件创建例外草稿的结果 */
 export interface CreateExceptionFromEventResult {
@@ -824,7 +1036,11 @@ export interface RateLimitPolicyItem {
   application_id?: string | null
   uri_match_type: 'ALL' | 'EXACT' | 'PREFIX' | 'REGEX'
   uri_pattern: string
-  dimension: 'CLIENT_IP' | 'APPLICATION' | 'CLIENT_IP_AND_URI' | 'CLIENT_IP_AND_APPLICATION'
+  dimension:
+    | 'CLIENT_IP'
+    | 'APPLICATION'
+    | 'CLIENT_IP_AND_URI'
+    | 'CLIENT_IP_AND_APPLICATION'
   algorithm: 'TOKEN_BUCKET' | 'SLIDING_WINDOW'
   requests_limit: number
   window_seconds: number
@@ -930,10 +1146,12 @@ export interface AccessControlEventDetail {
 /* ==================== L7 访问控制（契约见 docs：l7-rules REST / guardconfig l7_rules 载荷） ==================== */
 
 /** L7 条件类型 */
-export type L7ConditionType = 'uri' | 'method' | 'header' | 'cookie' | 'query' | 'client_ip'
+export type L7ConditionType =
+  'uri' | 'method' | 'header' | 'cookie' | 'query' | 'client_ip'
 
 /** L7 条件运算符（method/client_ip 用 values 数组，等价 in） */
-export type L7ConditionOp = 'eq' | 'ne' | 'prefix' | 'contains' | 'regex' | 'exists' | 'not_exists' | 'in'
+export type L7ConditionOp =
+  'eq' | 'ne' | 'prefix' | 'contains' | 'regex' | 'exists' | 'not_exists' | 'in'
 
 /** L7 访问控制条件（uri 无 name；exists/not_exists 无 value；method/client_ip 用 values） */
 export interface L7RuleCondition {
@@ -997,7 +1215,6 @@ export interface L7RuleTestResult {
   action?: L7RuleAction | ''
   reason?: string
 }
-
 
 /* ==================== 阶段6：安全态势 / 统计分析 / 报告 / 监控告警 / 备份恢复 / 升级交付 ==================== */
 
@@ -1697,7 +1914,8 @@ export interface SystemAlertDetail {
 /* ---------- 告警通知 ---------- */
 
 /** 通知渠道类型 */
-export type NotificationChannelType = 'wecom' | 'feishu' | 'smtp' | 'syslog' | 'sms'
+export type NotificationChannelType =
+  'wecom' | 'feishu' | 'smtp' | 'syslog' | 'sms'
 
 /** 通知级别 */
 export type NotificationSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
@@ -1813,8 +2031,10 @@ export interface UpgradePackageItem {
   version_to: string
   file_hash: string
   file_size: number
-  status?: string
-  created_at: string
+  manifest?: unknown
+  status: string
+  uploaded_by?: string | null
+  uploaded_at: string
 }
 
 /** 升级预检单项 */
@@ -1976,6 +2196,76 @@ export interface LicenseUsage {
   api_endpoints: number
 }
 
+/**
+ * 授权与实际防护的分维度状态。
+ * 这些状态不能由单一的 valid 字段互相推断，缺失时前端必须保持未知。
+ */
+export type LicenseProtectionForm =
+  | 'STANDARD_OFFLINE'
+  | 'CONFIDENTIAL_COMPUTING'
+  | 'UNKNOWN'
+
+export type LicenseCommercialAuthorization =
+  | 'AUTHORIZED'
+  | 'NOT_IMPORTED'
+  | 'EXPIRED'
+  | 'DEVICE_MISMATCH'
+  | 'INVALID'
+  | 'UNKNOWN'
+
+export type LicenseArtifactIntegrity =
+  | 'VERIFIED'
+  | 'PENDING_MIGRATION'
+  | 'UNVERIFIABLE'
+  | 'FAILED'
+  | 'UNKNOWN'
+
+export type LicenseGatewayProtection =
+  | 'PROTECTED'
+  | 'BYPASS'
+  | 'UNAVAILABLE'
+  | 'PRESERVE_EXISTING'
+  | 'UNKNOWN'
+
+export type LicenseConfidentialComputing =
+  | 'DISABLED'
+  | 'VERIFIED'
+  | 'FAILED'
+  | 'UNSUPPORTED'
+  | 'UNAVAILABLE'
+  | 'UNKNOWN'
+
+export type LicenseRecovery =
+  | 'NONE'
+  | 'IMPORT_LICENSE'
+  | 'REVALIDATE_PACKAGE'
+  | 'KEEP_LAST_CONFIG'
+  | 'SUPPORT_REQUIRED'
+  | 'UNKNOWN'
+
+export type LicenseIntegrityStatus =
+  | 'NOT_IMPORTED'
+  | 'VERIFIED'
+  | 'ORIGINAL_MISSING'
+  | 'ENCRYPTION_UNAVAILABLE'
+  | 'DECRYPTION_FAILED'
+  | 'SIGNATURE_INVALID'
+  | 'DB_INCONSISTENT'
+  | 'EXPIRED'
+  | 'DEVICE_MISMATCH'
+  | 'DATABASE_UNAVAILABLE'
+
+export interface LicenseProtectionState {
+  schema_version: string
+  protection_form: LicenseProtectionForm
+  commercial_authorization: LicenseCommercialAuthorization
+  artifact_integrity: LicenseArtifactIntegrity
+  gateway_protection: LicenseGatewayProtection
+  confidential_computing: LicenseConfidentialComputing
+  recovery: LicenseRecovery
+  reason?: string
+}
+
 /** 授权状态（GET /api/v1/license/status 与导入成功响应的 data；字段同 server/internal/license State） */
 export interface LicenseState {
   valid: boolean
@@ -1990,19 +2280,19 @@ export interface LicenseState {
   license_type: 'FORMAL' | 'TRIAL' | ''
   /** 无效原因（中文）；有效时 '' */
   reason: string
+  /** 签名授权原文与数据库缓存的复核状态 */
+  integrity_status?: LicenseIntegrityStatus
   /** 本机指纹（sha256:...；未采集时 ''） */
   host_fingerprint: string
   /** 当前用量（可选，装配层补齐后返回） */
   usage?: LicenseUsage
+  /** 授权、产物完整性、实际防护和机密计算的分维度状态（后端未提供时保持未知） */
+  protection_state?: LicenseProtectionState
 }
 
 /** 授权记录状态（licenses.status 词表） */
 export type LicenseRecordStatus =
-  | 'ACTIVE'
-  | 'EXPIRED'
-  | 'FINGERPRINT_MISMATCH'
-  | 'SUPERSEDED'
-  | 'INVALID'
+  'ACTIVE' | 'EXPIRED' | 'FINGERPRINT_MISMATCH' | 'SUPERSEDED' | 'INVALID'
 
 /** 授权导入历史项（GET /api/v1/license/history 的 items；字段同 server/internal/license Record，
  *  payload/signature/raw_file 敏感原文后端不出参） */
@@ -2051,7 +2341,6 @@ export interface ReportScheduleItem {
   created_at: string
   updated_at: string
 }
-
 
 /* ==================== 业务性能（APM：无 Agent + Agent 模式） ==================== */
 
@@ -2146,7 +2435,12 @@ export interface ApmServiceDetail {
   trend: ApmTrendBucket[]
   status_classes: { status_class: string; count: number }[]
   actions: { action: string; count: number }[]
-  top_endpoints: { endpoint: string; requests: number; error_rate: number; p95: number }[]
+  top_endpoints: {
+    endpoint: string
+    requests: number
+    error_rate: number
+    p95: number
+  }[]
 }
 
 /** 端点性能行（GET /api/v1/apm/endpoints 的 list 元素）；
@@ -2201,6 +2495,50 @@ export interface ApmTraceSecurityEvent {
   request_id: string
 }
 
+/* ---------- P1-01 A2：数据质量自述（availability）与关联（correlation） ----------
+ * 契约：docs/tasks/wdsp-p1/P1-01_SECURITY_APM_DEMO.md §4.3；词表与 server/internal/apm/types.go 冻结常量一致。
+ * 旧后端缺这些字段时（undefined），页面显示「状态信息不足」，不编造原因。 */
+
+/** availability.query_state 词表：READY 有可用数据；EMPTY 成功查询零结果；PARTIAL 部分结果；UNAVAILABLE 存储未配置/不可用 */
+export type ApmQueryState = 'READY' | 'EMPTY' | 'PARTIAL' | 'UNAVAILABLE'
+
+/** 数据质量自述（reason_codes/observed_sources 恒为数组；last_*_at/estimated_lag_ms 未知为 null） */
+export interface ApmAvailability {
+  query_state: ApmQueryState | string
+  reason_codes: string[]
+  observed_sources: string[]
+  last_collected_at: string | null
+  last_ingested_at: string | null
+  estimated_lag_ms: number | null
+  partial: boolean
+}
+
+/** 关联候选（一对多时逐候选返回时间/服务/匹配依据，不任取第一条） */
+export interface ApmCorrelationCandidate {
+  trace_id: string
+  occurred_at: string | null
+  services: string[]
+  match_basis: string
+}
+
+/** correlation.state 词表：MATCHED/AMBIGUOUS/PENDING/NOT_FOUND/NOT_EXPECTED/UNKNOWN */
+export type ApmCorrelationState =
+  | 'MATCHED'
+  | 'AMBIGUOUS'
+  | 'PENDING'
+  | 'NOT_FOUND'
+  | 'NOT_EXPECTED'
+  | 'UNKNOWN'
+
+/** 关联判定（独立于数据源健康；trace-search 仅 request_id 检索时携带，traces/{id} 恒携带） */
+export interface ApmCorrelation {
+  state: ApmCorrelationState | string
+  match_basis: string
+  candidate_count: number
+  reason: string
+  candidates: ApmCorrelationCandidate[]
+}
+
 /** Trace 检索结果（GET /api/v1/apm/traces/{trace_id} 的 data） */
 export interface ApmTraceDetail {
   trace_id: string
@@ -2216,6 +2554,10 @@ export interface ApmTraceDetail {
   truncated?: boolean
   /** 数据来源：agentless=无 Agent；otel=纯 Agent；mixed=混合 */
   data_source?: 'agentless' | 'otel' | 'mixed'
+  /** 数据质量自述（P1-01 A2；旧后端缺省为 undefined） */
+  availability?: ApmAvailability | null
+  /** trace_id 直达关联判定（P1-01 A2，恒携带；旧后端缺省为 undefined） */
+  correlation?: ApmCorrelation | null
 }
 
 /** OTel span（GET /api/v1/apm/traces/{trace_id} 的 otel_spans 元素；attributes 键值均为字符串） */
@@ -2250,15 +2592,17 @@ export interface ApmTraceSearchPage {
   page: number
   page_size: number
   data_source: string
+  /** 降级原因提示/过滤约束说明（P1-01 A2；正常时为空串） */
+  message?: string
+  /** 数据质量自述（P1-01 A2；旧后端缺省为 undefined） */
+  availability?: ApmAvailability | null
+  /** 关联判定（P1-01 A2；仅 request_id 检索时携带） */
+  correlation?: ApmCorrelation | null
 }
 
 /** Agent 状态五态（GET /api/v1/apm/agents 的 status 词表） */
 export type ApmAgentStatus =
-  | 'ENROLLING'
-  | 'CONNECTED_BASELINE'
-  | 'DIAGNOSING'
-  | 'OFFLINE'
-  | 'REVOKED'
+  'ENROLLING' | 'CONNECTED_BASELINE' | 'DIAGNOSING' | 'OFFLINE' | 'REVOKED'
 
 /** Agent 清单行（GET /api/v1/apm/agents 的 items 元素） */
 export interface ApmAgentItem {
@@ -2317,6 +2661,14 @@ export interface ApmSqlPage {
   data_source: string
   /** 后端附言（如数据口径/降级原因），有值时须如实展示 */
   message?: string
+  /** 请求侧 trace_id 回显（P1-01 A2；未提供为空串/缺省） */
+  trace_id?: string
+  /** 定位语义：trace_exact=trace 级精确定位；window_aggregate=窗口聚合（仅为候选） */
+  match_mode?: 'trace_exact' | 'window_aggregate' | string
+  /** 匹配语义说明（window_aggregate 时如实标注「非特定请求定位」），有值时须如实展示 */
+  match_note?: string
+  /** 数据质量自述（P1-01 A2；旧后端缺省为 undefined） */
+  availability?: ApmAvailability | null
 }
 
 /** 异常指纹聚合行（GET /api/v1/apm/exceptions 的 list 元素） */
@@ -2330,6 +2682,21 @@ export interface ApmExceptionItem {
   sample_trace_ids: string[]
 }
 
+/** trace 级异常明细（GET /api/v1/apm/exceptions 的 trace_exceptions 元素，仅 trace_exact 模式）；
+ *  exception_message/stacktrace 为后端掩码+截断后的纯文本，前端一律按纯文本渲染并再限长 */
+export interface ApmExceptionTraceItem {
+  trace_id: string
+  span_id: string
+  service_name: string
+  occurred_at: string
+  exception_type: string
+  exception_message: string
+  stacktrace: string
+  fingerprint: string
+  message_truncated: boolean
+  stacktrace_truncated: boolean
+}
+
 /** 异常指纹分页（GET /api/v1/apm/exceptions 的 data） */
 export interface ApmExceptionPage {
   list: ApmExceptionItem[]
@@ -2337,10 +2704,23 @@ export interface ApmExceptionPage {
   page: number
   page_size: number
   data_source: string
+  /** 降级原因提示（P1-01 A2；正常时为空串） */
+  message?: string
+  /** 请求侧 trace_id 回显（P1-01 A2；未提供为空串/缺省） */
+  trace_id?: string
+  /** 定位语义：trace_exact=trace 级精确定位；window_aggregate=窗口聚合（仅为候选） */
+  match_mode?: 'trace_exact' | 'window_aggregate' | string
+  /** 匹配语义说明，有值时须如实展示 */
+  match_note?: string
+  /** trace 级精确定位结果（仅 trace_exact 模式；窗口模式为空数组/缺省） */
+  trace_exceptions?: ApmExceptionTraceItem[]
+  /** 数据质量自述（P1-01 A2；旧后端缺省为 undefined） */
+  availability?: ApmAvailability | null
 }
 
 /** 依赖目标类型（GET /api/v1/apm/dependencies 的 target_type 词表） */
-export type ApmDependencyTargetType = 'service' | 'db' | 'messaging' | 'external'
+export type ApmDependencyTargetType =
+  'service' | 'db' | 'messaging' | 'external'
 
 /** 依赖边（GET /api/v1/apm/dependencies 的 edges 元素） */
 export interface ApmDependencyEdge {
@@ -2436,14 +2816,11 @@ export interface ApmSloDetail extends ApmSloItem {
 
 /** 诊断能力词表（POST /api/v1/apm/diagnostic-sessions 的 capabilities 枚举） */
 export type ApmDiagnosticCapability =
-  | 'sql_detail'
-  | 'function_probe'
-  | 'thread_block'
-  | 'gc_detail'
-  | 'mq_wait'
+  'sql_detail' | 'function_probe' | 'thread_block' | 'gc_detail' | 'mq_wait'
 
 /** 诊断会话状态四态（ACTIVE=进行中 / EXPIRED=到期自动结束 / STOPPED=人工停止 / KILLED=kill switch 熔断） */
-export type ApmDiagnosticSessionStatus = 'ACTIVE' | 'EXPIRED' | 'STOPPED' | 'KILLED'
+export type ApmDiagnosticSessionStatus =
+  'ACTIVE' | 'EXPIRED' | 'STOPPED' | 'KILLED'
 
 /** 诊断范围（diagnostic-sessions 的 scope；深度诊断默认仅选定实例，见设计 §21.2） */
 export interface ApmDiagnosticScope {

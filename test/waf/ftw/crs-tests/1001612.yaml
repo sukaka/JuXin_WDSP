@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: php://filter dangerous chain iconv/rot13/zlib/quoted-printable (CUSTOM_PACK)
+rule_id: 1001612
+tests:
+  - test_id: 1
+    desc: "php://filter with convert.iconv chain"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "file=php://filter/convert.iconv.utf-8.utf-16/resource=/etc/passwd"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001612]

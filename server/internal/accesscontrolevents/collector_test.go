@@ -62,6 +62,33 @@ func TestParseEventLineValid(t *testing.T) {
 	}
 }
 
+func TestParseEventLineProto(t *testing.T) {
+	// 网关上报 proto → 解析带出
+	evt, err := ParseEventLine(validLine(t, map[string]interface{}{"proto": "HTTP/3"}), "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evt.Proto != "HTTP/3" {
+		t.Errorf("proto = %q, want HTTP/3", evt.Proto)
+	}
+	// 旧版网关事件无 proto 键 → 缺失容忍（空串，落库为 NULL）
+	evt, err = ParseEventLine(validLine(t, nil), "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evt.Proto != "" {
+		t.Errorf("missing proto must default to empty, got %q", evt.Proto)
+	}
+	// 超长 proto 截断（防注入）
+	evt, err = ParseEventLine(validLine(t, map[string]interface{}{"proto": strings.Repeat("H", 64)}), "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evt.Proto) != 32 {
+		t.Errorf("proto not truncated: len=%d", len(evt.Proto))
+	}
+}
+
 func TestParseEventLineIPv6Normalized(t *testing.T) {
 	evt, err := ParseEventLine(validLine(t, map[string]interface{}{
 		"client_ip": "2001:0db8:0000:0000:0000:ff00:0042:8329",
@@ -196,7 +223,7 @@ func TestCollectorCollectOnce(t *testing.T) {
 	policyID := "660e8400-e29b-41d4-a716-446655440000"
 	blockExpires := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 
-	good1 := validLine(t, map[string]interface{}{"request_id": "r1"})
+	good1 := validLine(t, map[string]interface{}{"request_id": "r1", "proto": "HTTP/2.0"})
 	good2 := validLine(t, map[string]interface{}{
 		"request_id":       "r2",
 		"event_type":       "CC_TEMP_BLOCK_CREATED",
@@ -230,6 +257,13 @@ func TestCollectorCollectOnce(t *testing.T) {
 	}
 	if len(store.events) != 3 {
 		t.Fatalf("inserted = %d, want 3", len(store.events))
+	}
+	// proto 随事件落批（r1 上报 HTTP/2.0；r2/r3 未上报为空串，入库侧落 NULL）
+	if store.events[0].Proto != "HTTP/2.0" {
+		t.Errorf("collected proto = %q, want HTTP/2.0", store.events[0].Proto)
+	}
+	if store.events[1].Proto != "" || store.events[2].Proto != "" {
+		t.Errorf("missing proto must stay empty: %q/%q", store.events[1].Proto, store.events[2].Proto)
 	}
 	// 封禁副作用：CC_TEMP_BLOCK_CREATED → UpsertFromEvent
 	if len(blocks.blocks) != 1 {

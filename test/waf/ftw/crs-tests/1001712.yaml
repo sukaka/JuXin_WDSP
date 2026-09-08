@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "CUSTOM_PACK 1001712: bash IFS positional/expansion variant"
+rule_id: 1001712
+tests:
+  - test_id: 1
+    desc: "$IFS$9 whitespace substitution"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "JiuZhang CUSTOM_PACK test agent"
+            Accept: "*/*"
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "var=cat$IFS$9/etc/passwd"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001712]

@@ -1,0 +1,155 @@
+# 域片段：站点资产发现（镜像旁路/路由牵引/透明串接流量被动学习域名/IP/端口/协议）
+# 设计来源：docs/SITE_DISCOVERY_DESIGN.md §4.4；路由来源：server/internal/sitediscovery handler RegisterRoutes
+# 成功响应统一信封：{code, message, data, request_id}，下列 200 响应的 schema 均为该信封，data 为各业务负载。
+
+paths:
+  /site-discoveries:
+    get:
+      operationId: siteDiscoveryList
+      tags: [site-discovery]
+      summary: 站点发现分页列表
+      description: 按 last_seen 倒序返回流量学习到的站点清单（域名+IP+端口+协议），支持处置状态、协议、来源模式与关键字（域名或 IP 模糊匹配）筛选。权限：`site_discovery.read`
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [NEW, CONFIRMED, IGNORED] }, description: 按处置状态筛选（NEW 新发现/CONFIRMED 已确认/IGNORED 已忽略） }
+        - { name: protocol, in: query, required: false, schema: { type: string, enum: [HTTP, HTTPS] }, description: 按站点协议筛选 }
+        - { name: source_mode, in: query, required: false, schema: { type: string, enum: [MIRROR, ROUTED, TRANSPARENT] }, description: 按发现来源部署模式筛选（镜像旁路/路由牵引/透明串接） }
+        - { name: keyword, in: query, required: false, schema: { type: string }, description: 关键字（域名或 IP 模糊匹配） }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: 站点发现分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/SiteDiscoveryListResponse' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /site-discoveries/{id}/confirm:
+    post:
+      operationId: siteDiscoveryConfirm
+      tags: [site-discovery]
+      summary: 确认站点发现
+      description: 将站点发现从 NEW 流转为 CONFIRMED，记录确认人与确认时间（confirmed_by/confirmed_at）；仅 NEW 可确认，其余状态返回 409。确认仅表示管理员已知悉该站点，接入防护需前往「网站应用」手动完成，不做自动接入。记操作审计。权限：`site_discovery.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 站点发现ID }
+      responses:
+        '200':
+          description: 确认成功，返回更新后的条目
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/SiteDiscoveryItem' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 非法状态流转（仅 NEW 可确认）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /site-discoveries/{id}/ignore:
+    post:
+      operationId: siteDiscoveryIgnore
+      tags: [site-discovery]
+      summary: 忽略站点发现
+      description: 将站点发现从 NEW/CONFIRMED 流转为 IGNORED（如内部测试站点、无需防护的站点）；已 IGNORED 的条目重复忽略返回 409。记操作审计。权限：`site_discovery.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 站点发现ID }
+      responses:
+        '200':
+          description: 忽略成功，返回更新后的条目
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/SiteDiscoveryItem' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 非法状态流转（仅 NEW/CONFIRMED 可忽略）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /site-discoveries/{id}/restore:
+    post:
+      operationId: siteDiscoveryRestore
+      tags: [site-discovery]
+      summary: 恢复站点发现为新发现
+      description: 将任意状态的站点发现恢复为 NEW（清空 confirmed_by/confirmed_at 确认审计字段）；已是 NEW 的条目返回 409。记操作审计。权限：`site_discovery.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 站点发现ID }
+      responses:
+        '200':
+          description: 恢复成功，返回更新后的条目
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/SiteDiscoveryItem' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 非法状态流转（条目已是 NEW）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    SiteDiscoveryItem:
+      type: object
+      description: 站点发现条目（按 (domain, ip, port) 唯一聚合；命中/客户端数为流量窗口近似统计）
+      properties:
+        id: { type: string, format: uuid }
+        domain: { type: string, description: 识别到的域名（HTTP 取 Host、HTTPS 取 TLS ClientHello SNI）；空串表示未识别 }
+        ip: { type: string, description: 源站 IP }
+        port: { type: integer, description: 源站端口 }
+        protocol: { type: string, enum: [HTTP, HTTPS], description: 站点协议 }
+        source_mode: { type: string, enum: [MIRROR, ROUTED, TRANSPARENT], description: 发现来源部署模式（MIRROR 镜像旁路/ROUTED 路由牵引/TRANSPARENT 透明串接） }
+        gateway_node: { type: string, description: 发现该站点的网关节点 }
+        seen_count: { type: integer, format: int64, description: 累计命中次数（近似值，采集器重放会重复累计） }
+        client_count: { type: integer, description: 最近窗口去重客户端数（覆盖式，近似值） }
+        first_seen: { type: string, format: date-time, description: 首次发现时间 }
+        last_seen: { type: string, format: date-time, description: 最近发现时间 }
+        status: { type: string, enum: [NEW, CONFIRMED, IGNORED], description: 处置状态（NEW 新发现/CONFIRMED 已确认/IGNORED 已忽略） }
+        confirmed_by: { type: string, description: 确认人用户名（未确认为空串） }
+        confirmed_at: { type: string, format: date-time, nullable: true, description: 确认时间（未确认为 null） }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    SiteDiscoveryListResponse:
+      type: object
+      description: 站点发现分页列表
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SiteDiscoveryItem' } }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }

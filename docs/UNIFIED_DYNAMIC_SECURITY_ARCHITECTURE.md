@@ -58,7 +58,7 @@
   ↓ parser.ParseRequest        一次解析（Query/头/JSON/表单/XML/Multipart/GraphQL）
 RequestContext + Parsed        限界解析（ParseLimits），敏感头脱敏，体哈希
   ↓ classifier.Classify        API 流量识别（多信号打分，置信度 0..1）
-  ↓ normalizer.EndpointKey     端点键 = METHOD + 归一化路径
+  ↓ normalizer.EndpointKey     API键 = METHOD + 归一化路径
   ↓ detectors.*                各检测器只 AddMatch（结论+证据+分值），不得定案：
                                api_schema 偏离 / identity 存在性 / authentication 有效性 /
                                sensitive_data 敏感字段 / resource_access 对象级辅助 /
@@ -83,12 +83,12 @@ guard 侧把 `BLOCK` 映射 403、`RATE_LIMIT` 映射 429、`TEMP_BLOCK` 映射 
 ```text
 jiuzhang_guard.emitAPIEvent（apiprotect.go:123）
   │  仅当：API 流量 或 存在检测明细（apiprotect.go:90）
-  │  apievents.Record（主事件 + 端点发现信息；字段截断、控制字符剥离）
+  │  apievents.Record（主事件 + API发现信息；字段截断、控制字符剥离）
   ▼
 /var/log/caddy/api-runtime-events.log（JSONL，共享日志卷）
   ▼
 apiruntime.Collector（server/internal/apiruntime/collector.go:62；2s 轮询，断点续传）
-  ├─ 全部记录 → apiassets.UpsertDiscovery（端点发现，按 endpoint_key 幂等）
+  ├─ 全部记录 → apiassets.UpsertDiscovery（API发现，按 endpoint_key 幂等）
   └─ notable 记录（有检测明细或动作非 ALLOW）→ api_runtime_events
        （SavePrimary 按 request_id 幂等，同一 Request ID 一个主事件）
 ```
@@ -105,7 +105,7 @@ guardconfig.Provider.BuildGuardConfig（server/internal/guardconfig/provider.go:
   │  阶段8 追加（仅 apiEnabled 时，provider.go:289-320）：
   │    api_dynamic_protection / api_protection_mode（settings 表覆盖 > env > 默认）
   │    api_formal_schemas   ← apimodels.ListFormalSchemas（冻结正式模型）
-  │    api_known_endpoints  ← apiassets.ListKeyStatus（已知端点基线）
+  │    api_known_endpoints  ← apiassets.ListKeyStatus（已知API基线）
   ▼
 gatewayconfig.buildGuardHandler → Caddy JSON（server/internal/gatewayconfig/guard.go:85）
   ▼ 发布通道（Caddy Admin API over Unix Socket）
@@ -154,7 +154,7 @@ headers → jiuzhang_guard → waf（`gatewayconfig/guard_test.go:58-67`）。
    与阶段5 事件体系同一范式，运维心智一致。
 
 6. **模型与基线经发布通道下发，网关不轮询管理库**。冻结模型（`api_formal_schemas`）
-   与已知端点基线（`api_known_endpoints`）随配置发布进入 Caddy JSON，
+   与已知API基线（`api_known_endpoints`）随配置发布进入 Caddy JSON，
    网关重启/重载后仍持有最后有效配置；配置发布失败不影响当前运行配置
    （与 `docs/SECURITY_DESIGN.md` 网关安全一节一致）。
 
@@ -196,7 +196,7 @@ headers → jiuzhang_guard → waf（`gatewayconfig/guard_test.go:58-67`）。
 
 6. **事件覆盖范围**。guard 只对「API 流量或存在检测明细」的请求输出主事件
    （`apiprotect.go:90`），纯通行非 API 请求仍由访问日志/WAF 事件覆盖，
-   不产生 API 运行时事件（但所有被输出的事件都会喂端点发现）。
+   不产生 API 运行时事件（但所有被输出的事件都会喂API发现）。
 
 ## 五、与任务书章节对应
 

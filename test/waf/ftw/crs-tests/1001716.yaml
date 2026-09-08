@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "CUSTOM_PACK 1001716: backslash-spliced command evasion"
+rule_id: 1001716
+tests:
+  - test_id: 1
+    desc: "c\\at backslash-spliced command"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "JiuZhang CUSTOM_PACK test agent"
+            Accept: "*/*"
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'var=c\at /etc/passwd'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001716]

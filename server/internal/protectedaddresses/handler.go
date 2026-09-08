@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
@@ -24,10 +25,11 @@ func NewHandler(store *Store, auditSvc *audits.Service) *Handler {
 	return &Handler{store: store, audits: auditSvc}
 }
 
-// List 保护地址列表（启用中，可按 address_type 筛选）。
+// List 保护地址分页列表（启用中，可按 address_type 筛选；page_size 上限 100）。
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	addressType := r.URL.Query().Get("address_type")
-	list, err := h.store.List(r.Context(), addressType)
+	page, pageSize := queryInt(r, "page", 1), queryPageSize(r, 20)
+	list, total, err := h.store.ListPaged(r.Context(), addressType, page, pageSize)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
@@ -35,7 +37,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []ProtectedAddress{}
 	}
-	response.JSON(w, r, http.StatusOK, map[string]interface{}{"items": list})
+	response.Page(w, r, list, total, page, pageSize)
 }
 
 type createAddressRequest struct {
@@ -117,7 +119,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID, objName, before, after, result, risk string) {
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),
@@ -150,4 +152,26 @@ func addressSummary(a *ProtectedAddress) string {
 		return ""
 	}
 	return string(data)
+}
+
+// queryPageSize 分页大小（夹取 ≤100，非法回退默认值；与兄弟包上限口径一致）。
+func queryPageSize(r *http.Request, def int) int {
+	n := queryInt(r, "page_size", def)
+	if n > 100 {
+		n = 100
+	}
+	return n
+}
+
+// queryInt 查询参数整型（正数，非法回退默认值）。
+func queryInt(r *http.Request, key string, def int) int {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }

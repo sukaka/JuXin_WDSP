@@ -62,6 +62,45 @@ type StandardEvent struct {
 	Security    SecurityInfo   `json:"security"`
 	Gateway     GatewayInfo    `json:"gateway"`
 	RawRef      string         `json:"raw_log_reference"`
+	// FinalDecision 请求最终处置上下文的 WAF 侧重建（WDSP P0-04，final_decision
+	// JSON schema_version=1）：从审计事务事实（中断标记/响应码/命中规则/例外 tag）
+	// 构建，与 guard 内存态处置上下文经 request_id 关联；server 侧按「已确认拦截
+	// 优先」合并去重（契约 S4_DESIGN_BASELINE §2/§7）
+	FinalDecision *FinalDecisionInfo `json:"final_decision,omitempty"`
+}
+
+// FinalDecisionInfo final_decision 的 eventparser 重建视图（与网关 disposition.go
+// 输出同构的子集：审计行可诚实提供的事实；identity_verification/effective_config
+// 等仅 guard 内存态可知的维度留空，由 server 合并补齐）。
+type FinalDecisionInfo struct {
+	SchemaVersion     int                    `json:"schema_version"`
+	RequestID         string                 `json:"request_id"`
+	ApplicationID     string                 `json:"application_id,omitempty"`
+	GatewayNode       string                 `json:"gateway_node"`
+	CompletionStatus  string                 `json:"completion_status"`
+	SecurityAction    string                 `json:"security_action"`
+	ExecutorModule    string                 `json:"executor_module"`
+	ResponseSource    string                 `json:"response_source"`
+	HTTPStatus        int                    `json:"http_status,omitempty"`
+	ResponseCommitted bool                   `json:"response_committed"`
+	RuleRefs          []FinalDecisionRuleRef `json:"rule_refs,omitempty"`
+	MatchedExceptions []MatchedExceptionInfo `json:"matched_exceptions,omitempty"`
+	FinalizedAt       string                 `json:"finalized_at"`
+}
+
+// FinalDecisionRuleRef final_decision.rule_refs 条目。
+type FinalDecisionRuleRef struct {
+	Module string `json:"module"`
+	RuleID string `json:"rule_id"`
+}
+
+// MatchedExceptionInfo final_decision.matched_exceptions 条目（WAF 侧经效果规则
+// exc:/excv: tag 反查 exception_id/version；契约 §5 两规则标记法）。
+type MatchedExceptionInfo struct {
+	ExceptionID string   `json:"exception_id"`
+	Version     int      `json:"version"`
+	Target      string   `json:"target"` // WAF
+	RuleRefs    []string `json:"rule_refs,omitempty"`
 }
 
 // ApplicationRef 引用产生事件的应用。
@@ -163,6 +202,14 @@ var attackTypeByTag = map[string]string{
 	"attack-scanner":           "SCANNER",
 	"attack-disclosure":        "DATA_DISCLOSURE",
 	"attack-injection-generic": "GENERIC_INJECTION",
+	// 以下与规则库同步侧（server/internal/wafrules）保持一致
+	"attack-ssrf":            "SSRF",
+	"attack-xxe":             "XXE_INJECTION",
+	"attack-dos":             "DOS",
+	"attack-mass-assignment": "MASS_ASSIGNMENT",
+	"attack-deserialization": "DESERIALIZATION",
+	"attack-ssti":            "SSTI",
+	"attack-upload":          "FILE_UPLOAD",
 }
 
 // severityMap 将 CRS severity 映射为九章风险等级。
@@ -220,18 +267,36 @@ func ParseLine(line []byte, gatewayNode string, app ApplicationRef) (*StandardEv
 	maxSeverityRank := -1
 	severity := "INFO"
 	anomalyScore := 0
+	var matchedExceptions []MatchedExceptionInfo
 
 	for _, m := range entry.Messages {
 		mi := parseMessage(m.ErrorMessage)
 		if mi.RuleID == "" {
 			continue
 		}
+		// WDSP P0-04：受限例外效果规则命中（契约 §5 两规则标记法——规则 ID 落在
+		// jiuzhang 例外段 8000001-8004000 且携带 exc:<uuid> tag，excv:<version> 配版）：
+		// 转入 final_decision.matched_exceptions，不算攻击命中（不进 matches/
+		// attackType/severity）——仅标记命中而无攻击的事件 matches 为空，采集端
+		// 按无攻击命中过滤（例外命中不是攻击）
+		if rid, err := strconv.Atoi(mi.RuleID); err == nil && rid >= exceptionRuleIDMin && rid <= exceptionRuleIDMax {
+			if excID, excVer, ok := exceptionTagInfo(mi.Tags); ok {
+				matchedExceptions = appendMatchedException(matchedExceptions, excID, excVer, mi.RuleID)
+				continue
+			}
+		}
 		matches = append(matches, mi)
 
-		// 攻击类型取第一个可识别的攻击标签
+		// 攻击类型取第一个可识别的攻击标签（webshell/ 前缀统一归为 WEBSHELL）；
+		// 仅在尚未识别（UNKNOWN）时赋值，保持首个命中优先
 		for _, tag := range mi.Tags {
-			if at, ok := attackTypeByTag[tag]; ok && attackType == "UNKNOWN" {
+			if attackType != "UNKNOWN" {
+				continue
+			}
+			if at, ok := attackTypeByTag[tag]; ok {
 				attackType = at
+			} else if strings.HasPrefix(tag, "webshell/") {
+				attackType = "WEBSHELL"
 			}
 		}
 		// 严重等级取最高
@@ -253,6 +318,10 @@ func ParseLine(line []byte, gatewayNode string, app ApplicationRef) (*StandardEv
 	if tx.IsInterrupted {
 		action = "BLOCK"
 		statusCode = 403
+		// 响应相位（phase 4）中断码已先行写入——response.status 有效 4xx/5xx 取之
+		if tx.Response.Status >= 400 && tx.Response.Status <= 599 {
+			statusCode = tx.Response.Status
+		}
 	}
 
 	return &StandardEvent{
@@ -279,9 +348,94 @@ func ParseLine(line []byte, gatewayNode string, app ApplicationRef) (*StandardEv
 			RuleEngine:   tx.Producer.RuleEngine,
 			Matches:      matches,
 		},
-		Gateway: GatewayInfo{Node: gatewayNode},
-		RawRef:  fmt.Sprintf("coraza-audit:%s", tx.ID),
+		Gateway:       GatewayInfo{Node: gatewayNode},
+		RawRef:        fmt.Sprintf("coraza-audit:%s", tx.ID),
+		FinalDecision: buildFinalDecision(tx, requestID, app.ID, gatewayNode, occurred, matches, matchedExceptions),
 	}, nil
+}
+
+// 例外规则 ID 段（契约 §5：marker=8000001+2i、effect=8000002+2i，容量 2000 条）。
+const (
+	exceptionRuleIDMin = 8000001
+	exceptionRuleIDMax = 8004000
+)
+
+// exceptionTagInfo 从命中 tag 列表提取例外锚点（exc:<uuid> 必须，excv:<version> 配版）。
+func exceptionTagInfo(tags []string) (id string, version int, ok bool) {
+	for _, t := range tags {
+		if strings.HasPrefix(t, "exc:") {
+			id = strings.TrimPrefix(t, "exc:")
+		} else if strings.HasPrefix(t, "excv:") {
+			if v, err := strconv.Atoi(strings.TrimPrefix(t, "excv:")); err == nil {
+				version = v
+			}
+		}
+	}
+	return id, version, id != ""
+}
+
+// appendMatchedException 追加例外命中（同 exception_id 合并 rule_refs，保持先入序）。
+func appendMatchedException(list []MatchedExceptionInfo, id string, version int, ruleID string) []MatchedExceptionInfo {
+	for i := range list {
+		if list[i].ExceptionID == id {
+			dup := false
+			for _, r := range list[i].RuleRefs {
+				if r == ruleID {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				list[i].RuleRefs = append(list[i].RuleRefs, ruleID)
+			}
+			return list
+		}
+	}
+	return append(list, MatchedExceptionInfo{
+		ExceptionID: id,
+		Version:     version,
+		Target:      "WAF",
+		RuleRefs:    []string{ruleID},
+	})
+}
+
+// buildFinalDecision 从审计事务事实构建 final_decision 的 WAF 侧视图（P0-04）：
+// interrupted → ABORTED/BLOCK/WAF/GATEWAY；否则 COMPLETED/NONE/NONE/ORIGIN。
+// 规则引用取真实攻击命中（例外命中已分流，不进 rule_refs 的关键执法证据——
+// 它们体现在 matched_exceptions）。
+func buildFinalDecision(tx AuditTransaction, requestID, appID, node, occurred string, matches []MatchInfo, matchedExceptions []MatchedExceptionInfo) *FinalDecisionInfo {
+	fd := &FinalDecisionInfo{
+		SchemaVersion: 1,
+		RequestID:     requestID,
+		ApplicationID: appID,
+		GatewayNode:   node,
+		FinalizedAt:   occurred,
+	}
+	if tx.IsInterrupted {
+		fd.CompletionStatus = "ABORTED"
+		fd.SecurityAction = "BLOCK"
+		fd.ExecutorModule = "WAF"
+		fd.ResponseSource = "GATEWAY"
+		fd.HTTPStatus = 403
+		if tx.Response.Status >= 400 && tx.Response.Status <= 599 {
+			fd.HTTPStatus = tx.Response.Status
+		}
+		fd.ResponseCommitted = true
+	} else {
+		fd.CompletionStatus = "COMPLETED"
+		fd.SecurityAction = "NONE"
+		fd.ExecutorModule = "NONE"
+		fd.ResponseSource = "ORIGIN"
+		if tx.Response.Status > 0 {
+			fd.HTTPStatus = tx.Response.Status
+		}
+		fd.ResponseCommitted = true
+	}
+	for _, m := range matches {
+		fd.RuleRefs = append(fd.RuleRefs, FinalDecisionRuleRef{Module: "WAF", RuleID: m.RuleID})
+	}
+	fd.MatchedExceptions = matchedExceptions
+	return fd
 }
 
 // parseMessage 解析 ModSecurity 风格错误消息为结构化命中信息。
@@ -308,11 +462,33 @@ func parseMessage(em string) MatchInfo {
 	// 从 data 字段提取匹配变量与匹配数据（脱敏）
 	if md := matchedDataPattern.FindStringSubmatch(kv["data"]); len(md) == 4 {
 		mi.MatchedVariable = md[2]
-		mi.MatchedData = maskMatchedData(md[3])
+		mi.MatchedData = maskMatchedValue(md[2], md[3])
 	} else if kv["data"] != "" {
 		mi.MatchedData = maskMatchedData(kv["data"])
 	}
 	return mi
+}
+
+// maskMatchedValue 按命中变量脱敏匹配数据：命中敏感请求/响应头
+// （REQUEST_HEADERS:Authorization / Cookie 等）时值段整段遮蔽——
+// 键值模式遮蔽无法覆盖 "Bearer xxx" 这类无键值结构的头值。
+func maskMatchedValue(variable, value string) string {
+	if isSensitiveHeaderVariable(variable) {
+		return "masked"
+	}
+	return maskMatchedData(value)
+}
+
+// isSensitiveHeaderVariable 命中变量是否指向敏感头（REQUEST_HEADERS:Authorization 等）。
+func isSensitiveHeaderVariable(variable string) bool {
+	parts := strings.SplitN(variable, ":", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	if parts[0] != "REQUEST_HEADERS" && parts[0] != "RESPONSE_HEADERS" {
+		return false
+	}
+	return sensitiveHeaderNames[strings.ToLower(parts[1])]
 }
 
 // mapSeverity 映射风险等级，未知值归一化为 INFO。
@@ -376,20 +552,35 @@ func maskURI(uri string) string {
 }
 
 // maskMatchedData 脱敏匹配数据：遮蔽键值模式中的敏感值并限制长度。
+// 同名敏感参数重复出现时逐处循环遮蔽（strings.Index 只取首处会漏掉第二次起
+// 的原样值）；替换后从遮蔽文本之后继续检索，避免死循环。
 func maskMatchedData(data string) string {
 	data = strings.TrimSpace(data)
-	// 键值模式 password=xxx / token: xxx 遮蔽
+	// 键值模式 password=xxx / token: xxx 遮蔽（全部出现位置）
 	for name := range sensitiveParamNames {
 		for _, sep := range []string{"=", ":"} {
 			needle := name + sep
-			idx := strings.Index(strings.ToLower(data), needle)
-			if idx >= 0 {
-				start := idx + len(needle)
+			from := 0
+			for from < len(data) {
+				idx := strings.Index(strings.ToLower(data[from:]), needle)
+				if idx < 0 {
+					break
+				}
+				start := from + idx + len(needle)
+				// 跳过分隔符后空白（"token: xxx" 带空格形式）
+				for start < len(data) && data[start] == ' ' {
+					start++
+				}
 				end := start
 				for end < len(data) && data[end] != ' ' && data[end] != '&' && data[end] != ';' {
 					end++
 				}
+				if end == start {
+					from = start // 空值不插入遮蔽标记，继续检索后续出现
+					continue
+				}
 				data = data[:start] + "masked" + data[end:]
+				from = start + len("masked")
 			}
 		}
 	}

@@ -43,9 +43,9 @@ type Certificate struct {
 	UpdatedAt          time.Time       `json:"updated_at"`
 	Version            int             `json:"version"`
 	// 以下字段不对外返回明文（仅内部使用）
-	certPEM        string
-	encryptedKey   string
-	chainPEM       string
+	certPEM      string
+	encryptedKey string
+	chainPEM     string
 }
 
 // Store 是证书仓储。

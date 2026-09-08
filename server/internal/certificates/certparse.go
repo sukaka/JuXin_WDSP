@@ -28,13 +28,13 @@ const (
 
 // 解析错误
 var (
-	ErrInvalidPEM       = errors.New("invalid PEM format")
-	ErrInvalidCert      = errors.New("invalid X.509 certificate")
-	ErrInvalidKey       = errors.New("invalid private key")
-	ErrKeyMismatch      = errors.New("certificate and private key do not match")
-	ErrCertExpired      = errors.New("certificate has expired")
-	ErrCertNotYetValid  = errors.New("certificate is not yet valid")
-	ErrWeakKey          = errors.New("key strength too weak")
+	ErrInvalidPEM      = errors.New("invalid PEM format")
+	ErrInvalidCert     = errors.New("invalid X.509 certificate")
+	ErrInvalidKey      = errors.New("invalid private key")
+	ErrKeyMismatch     = errors.New("certificate and private key do not match")
+	ErrCertExpired     = errors.New("certificate has expired")
+	ErrCertNotYetValid = errors.New("certificate is not yet valid")
+	ErrWeakKey         = errors.New("key strength too weak")
 )
 
 // ParsedCertificate 是解析后的证书信息。

@@ -108,14 +108,14 @@ type toolMeta struct {
 // baseTool 内嵌元数据的基座。
 type baseTool struct{ meta toolMeta }
 
-func (b *baseTool) Code() string                       { return b.meta.code }
-func (b *baseTool) Name() string                       { return b.meta.name }
-func (b *baseTool) Description() string                { return b.meta.description }
-func (b *baseTool) Version() string                    { return b.meta.version }
-func (b *baseTool) RiskLevel() string                  { return b.meta.risk }
-func (b *baseTool) RequiredPermission() string         { return b.meta.permission }
-func (b *baseTool) TimeoutSeconds() int                { return b.meta.timeout }
-func (b *baseTool) MaxResults() int                    { return b.meta.maxResults }
+func (b *baseTool) Code() string                        { return b.meta.code }
+func (b *baseTool) Name() string                        { return b.meta.name }
+func (b *baseTool) Description() string                 { return b.meta.description }
+func (b *baseTool) Version() string                     { return b.meta.version }
+func (b *baseTool) RiskLevel() string                   { return b.meta.risk }
+func (b *baseTool) RequiredPermission() string          { return b.meta.permission }
+func (b *baseTool) TimeoutSeconds() int                 { return b.meta.timeout }
+func (b *baseTool) MaxResults() int                     { return b.meta.maxResults }
 func (b *baseTool) InputSchema() map[string]interface{} { return b.meta.schema }
 
 // EnabledChecker Tool 启停检查（DB 管理面状态；返回 false 禁止执行）。
@@ -157,7 +157,7 @@ func (r *Registry) List() []map[string]interface{} {
 			"code": t.Code(), "name": t.Name(), "description": t.Description(),
 			"version": t.Version(), "risk_level": t.RiskLevel(),
 			"required_permission": t.RequiredPermission(),
-			"timeout_seconds": t.TimeoutSeconds(), "max_results": t.MaxResults(),
+			"timeout_seconds":     t.TimeoutSeconds(), "max_results": t.MaxResults(),
 			"input_schema": t.InputSchema(),
 		})
 	}
@@ -166,15 +166,15 @@ func (r *Registry) List() []map[string]interface{} {
 
 // AuditRecord Tool 调用审计记录。
 type AuditRecord struct {
-	TaskID      uuid.UUID
-	AgentRunID  *uuid.UUID
-	ToolCode    string
-	ToolVersion string
-	RiskLevel   string
+	TaskID       uuid.UUID
+	AgentRunID   *uuid.UUID
+	ToolCode     string
+	ToolVersion  string
+	RiskLevel    string
 	InputSummary string
-	Status      string // SUCCESS / FAILED / TIMEOUT / DENIED
-	DurationMs  int
-	ErrorCode   string
+	Status       string // SUCCESS / FAILED / TIMEOUT / DENIED
+	DurationMs   int
+	ErrorCode    string
 }
 
 // Auditor 审计接口（由 aiaudit 实现）。

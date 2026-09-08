@@ -1,0 +1,22 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: "SSRF 请求路径内嵌内网 URL 检测（CUSTOM_PACK ssrf-protocols）"
+rule_id: 1001518
+tests:
+  - test_id: 1
+    desc: "/proxy/http://127.0.0.1/admin 代理式 SSRF 路径"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: GET
+          port: 80
+          uri: "/proxy/http://127.0.0.1/admin"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001518]

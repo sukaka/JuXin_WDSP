@@ -286,7 +286,8 @@ func TestIdentityBehaviorValidate(t *testing.T) {
 	}
 }
 
-// 配置重载（Provision/Cleanup）无泄漏：Cleanup 置 nil 且可重复；重装配可继续记录。
+// 配置重载（Provision/Cleanup）无泄漏：Cleanup 关闭资源但不置 nil（请求路径无锁读，
+// 见 LOW-G4）且可重复；重装配可继续记录。
 func TestIdentityBehaviorReloadNoLeak(t *testing.T) {
 	dir := t.TempDir()
 	mk := func() *Guard {
@@ -305,8 +306,8 @@ func TestIdentityBehaviorReloadNoLeak(t *testing.T) {
 	if err := g1.Cleanup(); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	if g1.ibh != nil {
-		t.Fatal("cleanup must nil engine")
+	if g1.ibh == nil {
+		t.Fatal("cleanup must keep engine field assigned (request path reads are lock-free)")
 	}
 	if err := g1.Cleanup(); err != nil {
 		t.Fatalf("second cleanup must be safe: %v", err)

@@ -23,6 +23,7 @@ import { ApiError } from '../../api/client'
 import { gatewayConfigApi, publishTasksApi } from '../../api/gatewayConfig'
 import type { PreviewResult } from '../../api/gatewayConfig'
 import SmartTable from '../../components/SmartTable'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatJson } from '../../utils/format'
@@ -56,8 +57,8 @@ export function SnapshotTable({ snapshot }: { snapshot: BusinessSnapshot | null 
           width: 110,
           render: (v: string) => <StatusTag value={v} map={PROTECTION_MODE_META} />,
         },
-        { title: '域名数', dataIndex: 'domains', width: 90, align: 'right' },
-        { title: '源站数', dataIndex: 'upstreams', width: 90, align: 'right' },
+        { title: '域名数', dataIndex: 'domains', width: 90 },
+        { title: '源站数', dataIndex: 'upstreams', width: 90 },
       ]}
     />
   )
@@ -108,6 +109,7 @@ export default function ConfigPublishPage() {
   const [validateResult, setValidateResult] = useState<{ valid: boolean; error?: string } | null>(null)
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [taskPage, setTaskPage] = useState(1)
+  const [detailRecord, setDetailRecord] = useState<PublishTaskItem | null>(null)
 
   const currentQuery = useQuery({
     queryKey: ['gateway-config-current'],
@@ -313,6 +315,10 @@ export default function ConfigPublishPage() {
             loading={tasksQuery.isLoading}
             columns={taskColumns}
             dataSource={tasksQuery.data?.items}
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailRecord(record),
+              style: { cursor: 'pointer' },
+            })}
             pagination={{
               current: taskPage,
               pageSize: 10,
@@ -329,8 +335,7 @@ export default function ConfigPublishPage() {
         open={preview !== null}
         onClose={() => setPreview(null)}
         width={720}
-      >
-        {preview && (
+      >        {preview && (
           <Space direction="vertical" size={16} style={{ display: 'flex' }}>
             <Descriptions column={3} size="small" bordered>
               <Descriptions.Item label="配置哈希">
@@ -364,6 +369,13 @@ export default function ConfigPublishPage() {
           </Space>
         )}
       </Drawer>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="发布任务详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Space>
   )
 }

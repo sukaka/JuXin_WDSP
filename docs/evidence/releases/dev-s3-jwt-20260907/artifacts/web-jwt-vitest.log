@@ -1,0 +1,157 @@
+
+ RUN  v3.2.7 /Users/zhanglei/Documents/JiuZhang_WAF/web
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > 事件携带 jwt_verification 时展示状态/原因/主体指纹/策略版本
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > 事件携带 jwt_verification 时展示状态/原因/主体指纹/策略版本
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > 历史事件无 jwt_verification 字段时显示「当时未记录」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > 历史事件无 jwt_verification 字段时显示「当时未记录」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > UNVERIFIED 显示为「未验证」，不渲染为「非法用户」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > UNVERIFIED 显示为「未验证」，不渲染为「非法用户」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+ ✓ src/pages/security-events/__tests__/EventDetailDrawer.test.tsx (6 tests | 3 skipped) 320ms
+ ↓ src/pages/applications/__tests__/HeaderProxyTab.test.tsx (7 tests | 7 skipped)
+ ↓ src/pages/applications/__tests__/ApplicationsPage.test.tsx (8 tests | 8 skipped)
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：携带 jwt_verification 的事件渲染「JWT 验证信息」区块（状态/原因/版本/主体/租户/时间）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+ ↓ src/api/__tests__/jwtTrust.test.ts (9 tests | 9 skipped)
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：携带 jwt_verification 的事件渲染「JWT 验证信息」区块（状态/原因/版本/主体/租户/时间）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：携带 jwt_verification 的事件渲染「JWT 验证信息」区块（状态/原因/版本/主体/租户/时间）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Warning: [antd: Space] `direction` is deprecated. Please use `orientation` instead.
+Warning: [antd: Table] `index` parameter of `rowKey` function is deprecated. There is no guarantee that it will work as expected.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：历史事件 jwt_verification 为 NULL 时不渲染「JWT 验证信息」区块（空态不显示）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：历史事件 jwt_verification 为 NULL 时不渲染「JWT 验证信息」区块（空态不显示）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：历史事件 jwt_verification 为 NULL 时不渲染「JWT 验证信息」区块（空态不显示）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Warning: [antd: Space] `direction` is deprecated. Please use `orientation` instead.
+Warning: [antd: Table] `index` parameter of `rowKey` function is deprecated. There is no guarantee that it will work as expected.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+ ✓ src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx (6 tests | 4 skipped) 1037ms
+   ✓ ApiRuntimeEventsPage > 详情抽屉：携带 jwt_verification 的事件渲染「JWT 验证信息」区块（状态/原因/版本/主体/租户/时间）  710ms
+   ✓ ApiRuntimeEventsPage > 详情抽屉：历史事件 jwt_verification 为 NULL 时不渲染「JWT 验证信息」区块（空态不显示）  326ms
+ ↓ src/pages/applications/__tests__/JwtTrustTab.test.tsx (8 tests | 8 skipped)
+ ↓ src/pages/security-events/__tests__/SecurityEventsPage.test.tsx (2 tests | 2 skipped)
+
+ Test Files  2 passed | 5 skipped (7)
+      Tests  5 passed | 41 skipped (46)
+   Start at  01:56:42
+   Duration  4.10s (transform 375ms, setup 818ms, collect 8.98s, tests 1.36s, environment 2.51s, prepare 413ms)
+

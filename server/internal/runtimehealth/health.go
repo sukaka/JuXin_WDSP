@@ -23,6 +23,12 @@ const (
 	ComponentUpstream       = "UPSTREAM"
 	ComponentCertificate    = "CERTIFICATE"
 	ComponentDisk           = "DISK"
+	ComponentAPISecurity    = "API_SECURITY" // 阶段8：API 安全采集链路（事件落库存活）
+	// ComponentAPMClickHouse APM 阶段2 数据面：ClickHouse 存储健康（探针见
+	// apm_clickhouse.go）。不纳入 AllComponents() 固定清单——SystemHealth 对清单内
+	// 无快照组件按 UNKNOWN 计入整体判级，而本组件仅在装配层注入探针（APM_ENABLED
+	// 且 DSN 连接成功）时产生快照，DSN 空/未接入不判级（默认部署零行为变化）。
+	ComponentAPMClickHouse = "APM_CLICKHOUSE"
 )
 
 // 组件状态
@@ -59,6 +65,13 @@ const (
 	MetricDiskFreePercent   = "disk_free_percent"
 	MetricGuardLogStaleSecs = "guard_log_stale_seconds"
 	MetricDBCapacityPercent = "db_capacity_percent"
+	MetricAPILastEventAt    = "api_last_event_at"
+	MetricAPIEventStaleSecs = "api_event_stale_seconds"
+	MetricAPIEventsTotal    = "api_events_total"
+	MetricAPILastSampleAt   = "api_last_sample_at"
+	// MetricAccessLogStaleSecs accesslog-01 全量访问日志链路断点滞后秒数
+	// （仅 logging.access_log_enabled=true 且断点存在时产出，见 accesslog_freshness.go）
+	MetricAccessLogStaleSecs = "access_log_stale_seconds"
 )
 
 // AllComponents 返回采集的组件清单（固定顺序）。
@@ -67,6 +80,7 @@ func AllComponents() []string {
 		ComponentGateway, ComponentCoraza, ComponentGuard, ComponentAPI,
 		ComponentPostgres, ComponentValkey, ComponentEventCollector,
 		ComponentUpstream, ComponentCertificate, ComponentDisk,
+		ComponentAPISecurity,
 	}
 }
 

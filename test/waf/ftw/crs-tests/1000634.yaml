@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "XMLDecoder java/void/array member invocation, WebLogic style (1000634)"
+rule_id: 1000634
+tests:
+  - test_id: 1
+    desc: "XMLDecoder void property invocation payload in form value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'x=<java version="1.4"><void property="command"><string>id</string></void></java>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000634]

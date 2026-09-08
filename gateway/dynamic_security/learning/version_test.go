@@ -3,8 +3,8 @@ package learning
 import (
 	"testing"
 
-	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 )
 
 func TestCandidateConfirmFreezeAndDeviationDoesNotWiden(t *testing.T) {

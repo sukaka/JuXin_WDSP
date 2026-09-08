@@ -376,7 +376,8 @@ func TestStage7ChatStreamAndTasks(t *testing.T) {
 
 // ---------- 3. 权限矩阵 ----------
 
-// TestStage7PermissionMatrix 无权限角色访问 AI 接口一律 403；只读角色可读审计/用量。
+// TestStage7PermissionMatrix 无权限角色访问 AI 接口一律 403；000100 后审计角色纯审计化
+// （ai.* 全移除）、安全角色交出智能能力管理（ai.models.read 等）。
 func TestStage7PermissionMatrix(t *testing.T) {
 	env := setupTestEnv(t)
 	audCookies, audCSRF := env.s5Login(t, "s7pma", "AUDIT_ADMIN")
@@ -390,9 +391,9 @@ func TestStage7PermissionMatrix(t *testing.T) {
 	s5Expect(t, env.post(t, "/api/v1/ai/sessions/"+uuid.NewString()+"/messages", `{"content":"x"}`, audCookies, audCSRF),
 		http.StatusForbidden, "audit post message")
 	s5Expect(t, env.get(t, "/api/v1/ai/sessions", audCookies), http.StatusForbidden, "audit list sessions")
-	// 审计角色有 ai.audits.read / ai.usage.read
-	s5OK(t, env.get(t, "/api/v1/ai/audits", audCookies), "audit read ai audits")
-	s5OK(t, env.get(t, "/api/v1/ai/usage/overview", audCookies), "audit read usage")
+	// 审计角色 000100 后 ai.audits.read / ai.usage.read 一并移除 → 403
+	s5Expect(t, env.get(t, "/api/v1/ai/audits", audCookies), http.StatusForbidden, "audit read ai audits")
+	s5Expect(t, env.get(t, "/api/v1/ai/usage/overview", audCookies), http.StatusForbidden, "audit read usage")
 
 	// 安全角色（无 manage 类权限）
 	s5Expect(t, env.post(t, "/api/v1/ai/models",
@@ -403,8 +404,8 @@ func TestStage7PermissionMatrix(t *testing.T) {
 	s5Expect(t, env.post(t, "/api/v1/ai/evaluation-sets",
 		s7Body(t, map[string]interface{}{"code": "x", "name": "y", "cases": []map[string]string{{"question": "q"}}}),
 		secCookies, secCSRF), http.StatusForbidden, "sec create eval set")
-	// 安全角色可读模型（ai.models.read）
-	s5OK(t, env.get(t, "/api/v1/ai/models", secCookies), "sec read models")
+	// 安全角色 000100 交出智能能力管理：ai.models.read 移除 → 读模型同样 403
+	s5Expect(t, env.get(t, "/api/v1/ai/models", secCookies), http.StatusForbidden, "sec read models")
 
 	// 无角色用户：AI 审计与用量一律 403
 	s5Expect(t, env.get(t, "/api/v1/ai/audits", noCookies), http.StatusForbidden, "norole read audits")
@@ -634,10 +635,13 @@ func TestStage7DraftNotEffective(t *testing.T) {
 func TestStage7ModelManagement(t *testing.T) {
 	env := setupTestEnv(t)
 	sysCookies, sysCSRF := env.s7SetupLLM(t)
+	// 000100 后 ai.models.* 归系统管理员（安全管理员已无读权限），本用例读写统一走系统管理员
 	secCookies, _ := env.s5Login(t, "s7mod", "SECURITY_ADMIN")
+	// 安全管理员读模型列表 → 403（权限矩阵在 TestStage7PermissionMatrix 覆盖，此处仅复核边界）
+	s5Expect(t, env.get(t, "/api/v1/ai/models", secCookies), http.StatusForbidden, "sec read models forbidden")
 
 	// GET /ai/models 含 qwen2.5:3b
-	result := s5OK(t, env.get(t, "/api/v1/ai/models", secCookies), "list models")
+	result := s5OK(t, env.get(t, "/api/v1/ai/models", sysCookies), "list models")
 	items, _ := result.Data["items"].([]interface{})
 	hasQwen := false
 	for _, it := range items {
@@ -687,7 +691,7 @@ func TestStage7ModelManagement(t *testing.T) {
 		sysCookies, sysCSRF), "create model")
 	s5OK(t, env.do(t, http.MethodPut, "/api/v1/ai/models/routes", `{"simple":"t7-route-model"}`, sysCookies, sysCSRF),
 		"put routes")
-	result = s5OK(t, env.get(t, "/api/v1/ai/models/routes", secCookies), "get routes")
+	result = s5OK(t, env.get(t, "/api/v1/ai/models/routes", sysCookies), "get routes")
 	routes, _ := result.Data["routes"].(map[string]interface{})
 	if routes["simple"] != "t7-route-model" || routes["standard"] != "qwen2.5:3b" {
 		t.Errorf("routes = %+v", routes)
@@ -700,7 +704,7 @@ func TestStage7ModelManagement(t *testing.T) {
 		http.StatusBadRequest, "put routes unknown model")
 	s5OK(t, env.do(t, http.MethodPut, "/api/v1/ai/models/routes", `{"simple":"qwen2.5:3b"}`, sysCookies, sysCSRF),
 		"restore routes")
-	result = s5OK(t, env.get(t, "/api/v1/ai/models/routes", secCookies), "get routes restored")
+	result = s5OK(t, env.get(t, "/api/v1/ai/models/routes", sysCookies), "get routes restored")
 	if r, _ := result.Data["routes"].(map[string]interface{}); r["simple"] != "qwen2.5:3b" {
 		t.Errorf("routes after restore = %+v", r)
 	}
@@ -858,8 +862,9 @@ func TestStage7PromptManagement(t *testing.T) {
 // TestStage7Memories 正常记忆创建；敏感内容 400；属主隔离；禁用与删除。
 func TestStage7Memories(t *testing.T) {
 	env := setupTestEnv(t)
-	cookiesA, csrfA := env.s5Login(t, "s7mema", "SECURITY_ADMIN")
-	cookiesB, csrfB := env.s5Login(t, "s7memb", "SECURITY_ADMIN")
+	// 000100 后 ai.memories.* 归系统管理员（安全管理员已交出智能能力管理）
+	cookiesA, csrfA := env.s5Login(t, "s7mema", "SYSTEM_ADMIN")
+	cookiesB, csrfB := env.s5Login(t, "s7memb", "SYSTEM_ADMIN")
 
 	// 正常记忆
 	result := s5OK(t, env.post(t, "/api/v1/ai/memories",
@@ -922,7 +927,8 @@ func TestStage7AuditVerify(t *testing.T) {
 	sid := s7CreateSession(t, env, secCookies, secCSRF, "审计测试会话")
 	s7SendMessage(t, env, sid, "请分析最近的安全事件分布", secCookies, secCSRF)
 
-	audCookies, audCSRF := env.s5Login(t, "s7auda", "AUDIT_ADMIN")
+	// 000100 后 ai.audits.read 归系统管理员（审计管理员纯审计化，不再持有 ai.*）
+	audCookies, audCSRF := env.s5Login(t, "s7auda", "SYSTEM_ADMIN")
 	page := s7Page(t, env.get(t, "/api/v1/ai/audits", audCookies), "list ai audits")
 	if page.Data.Total < 1 {
 		t.Fatalf("ai audits total = %d, want >=1", page.Data.Total)
@@ -952,7 +958,9 @@ func TestStage7UsageOverview(t *testing.T) {
 	sid := s7CreateSession(t, env, cookies, csrf, "用量测试会话")
 	s7SendMessage(t, env, sid, "请分析最近的安全事件分布", cookies, csrf)
 
-	result := s5OK(t, env.get(t, "/api/v1/ai/usage/overview", cookies), "usage overview")
+	// 000100 后 ai.usage.read 归系统管理员（安全管理员已交出）
+	usageCookies, _ := env.s5Login(t, "s7use2", "SYSTEM_ADMIN")
+	result := s5OK(t, env.get(t, "/api/v1/ai/usage/overview", usageCookies), "usage overview")
 	usage := s5Obj(t, result, "usage")
 	if s5Num(t, usage, "today_model_calls") < 1 {
 		t.Errorf("today_model_calls = %v", usage["today_model_calls"])
@@ -960,7 +968,7 @@ func TestStage7UsageOverview(t *testing.T) {
 	if s5Num(t, usage, "today_input_tokens") <= 0 || s5Num(t, usage, "today_output_tokens") <= 0 {
 		t.Errorf("tokens = %+v", usage)
 	}
-	result = s5OK(t, env.get(t, "/api/v1/ai/usage/by-user", cookies), "usage by user")
+	result = s5OK(t, env.get(t, "/api/v1/ai/usage/by-user", usageCookies), "usage by user")
 	if items, _ := result.Data["items"].([]interface{}); len(items) < 1 {
 		t.Errorf("usage by-user empty")
 	}

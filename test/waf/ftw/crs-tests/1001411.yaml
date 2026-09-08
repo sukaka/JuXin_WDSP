@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang Security Team"
+  description: "ASP CreateObject WScript.Shell/Shell.Application"
+rule_id: 1001411
+tests:
+  - test_id: 1
+    desc: "ASP CreateObject WScript.Shell/Shell.Application"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'file=<% Set x = Server.CreateObject("WScript.Shell") %>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001411]
+  - test_id: 2
+    desc: "ASP CreateObject WScript.Shell/Shell.Application"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'file=<% Set a = CreateObject("Shell.Application") %>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001411]

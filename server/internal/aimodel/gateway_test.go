@@ -101,10 +101,13 @@ func TestGatewayFallbackToStandard(t *testing.T) {
 	}
 }
 
-// TestGatewayAPIKeyResolution 密钥经 KeyResolver 解析后注入 Authorization；解析失败降级为空。
+// TestGatewayAPIKeyResolution 密钥经 KeyResolver 解析后注入 Authorization；
+// 引用已配置但解密失败 → 该候选直接判失败（记 Warn），不得空密钥呼叫（401 掩盖配置故障）。
 func TestGatewayAPIKeyResolution(t *testing.T) {
 	var gotAuth string
+	var hits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{}}`)
@@ -131,14 +134,18 @@ func TestGatewayAPIKeyResolution(t *testing.T) {
 	if gotAuth != "Bearer sk-secret" {
 		t.Errorf("Authorization = %q, want Bearer sk-secret", gotAuth)
 	}
-	// 引用无法解析 → 空密钥降级，不报错
-	gotAuth = ""
+	// 引用已配置但无法解析 → 候选判失败并返回错误，不发起 HTTP 呼叫（不误报 401/不静默切换）
+	hitsBefore := atomic.LoadInt32(&hits)
 	g = newRouted(&fakeKeyResolver{keys: map[string]string{}})
-	if _, err := g.Chat(context.Background(), ComplexitySimple, simpleReq()); err != nil {
-		t.Fatalf("Chat() error = %v", err)
+	if _, err := g.Chat(context.Background(), ComplexitySimple, simpleReq()); err == nil {
+		t.Fatal("密钥解密失败应返回错误（暴露配置故障），不得静默成功")
 	}
-	if gotAuth != "" {
-		t.Errorf("密钥解析失败不应携带 Authorization, got %q", gotAuth)
+	if got := atomic.LoadInt32(&hits); got != hitsBefore {
+		t.Errorf("密钥解密失败不应发起后端呼叫, hits %d → %d", hitsBefore, got)
+	}
+	// 熔断不应被配置故障触发（非模型调用失败）
+	if g.circuitOpen(uuid.Nil) || len(g.circuit) != 0 {
+		t.Error("密钥配置故障不得计入熔断")
 	}
 }
 

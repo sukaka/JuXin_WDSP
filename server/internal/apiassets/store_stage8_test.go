@@ -117,19 +117,19 @@ func TestMemStoreUpsertAsset(t *testing.T) {
 	if a, err := store.GetAsset(ctx, e.ID); err != nil || a != nil {
 		t.Fatalf("empty asset: %v %v", a, err)
 	}
-	a, err := store.UpsertAsset(ctx, e.ID, "订单支付", "public", "支付组", []string{"core", "pci"})
+	a, err := store.UpsertAsset(ctx, e.ID, "订单支付", "public", "支付组", []string{"core", "pci"}, "PAYMENT")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Purpose != "订单支付" || a.Exposure != "PUBLIC" || a.Owner != "支付组" || len(a.Tags) != 2 {
+	if a.Purpose != "订单支付" || a.Exposure != "PUBLIC" || a.Owner != "支付组" || len(a.Tags) != 2 || a.BusinessType != "PAYMENT" {
 		t.Fatalf("asset: %+v", a)
 	}
-	// 再次 upsert 为全量替换
-	a2, err := store.UpsertAsset(ctx, e.ID, "订单查询", "", "", nil)
+	// 再次 upsert 为全量替换（business_type 空值归一 OTHER）
+	a2, err := store.UpsertAsset(ctx, e.ID, "订单查询", "", "", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a2.Purpose != "订单查询" || a2.Exposure != "INTERNAL" || a2.Tags == nil || len(a2.Tags) != 0 {
+	if a2.Purpose != "订单查询" || a2.Exposure != "INTERNAL" || a2.Tags == nil || len(a2.Tags) != 0 || a2.BusinessType != "OTHER" {
 		t.Fatalf("asset replace: %+v", a2)
 	}
 	got, err := store.GetAsset(ctx, e.ID)
@@ -140,8 +140,12 @@ func TestMemStoreUpsertAsset(t *testing.T) {
 		t.Fatalf("get asset: %+v", got)
 	}
 	// 端点不存在
-	if _, err := store.UpsertAsset(ctx, uuid.New(), "x", "", "", nil); !errors.Is(err, ErrNotFound) {
+	if _, err := store.UpsertAsset(ctx, uuid.New(), "x", "", "", nil, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing endpoint err=%v", err)
+	}
+	// 非法业务类型
+	if _, err := store.UpsertAsset(ctx, e.ID, "x", "", "", nil, "NOPE"); err == nil {
+		t.Fatalf("bad business_type should error")
 	}
 }
 
@@ -154,12 +158,15 @@ func TestMemStoreLearningLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	uid := uuid.New()
-	job, err := store.StartLearning(ctx, e.ID, &uid)
+	job, err := store.StartLearning(ctx, e.ID, 0, &uid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if job.Status != "RUNNING" || job.CreatedBy == nil || *job.CreatedBy != uid {
 		t.Fatalf("job: %+v", job)
+	}
+	if job.SampleTarget != DefaultSampleTarget {
+		t.Fatalf("default sample_target=%d, want %d", job.SampleTarget, DefaultSampleTarget)
 	}
 	cur, err := store.GetByID(ctx, e.ID)
 	if err != nil {
@@ -169,7 +176,7 @@ func TestMemStoreLearningLifecycle(t *testing.T) {
 		t.Fatalf("learning_status=%s", cur.LearningStatus)
 	}
 	// 状态机冲突：重复启动
-	if _, err := store.StartLearning(ctx, e.ID, nil); !errors.Is(err, ErrLearningRunning) {
+	if _, err := store.StartLearning(ctx, e.ID, 0, nil); !errors.Is(err, ErrLearningRunning) {
 		t.Fatalf("double start err=%v", err)
 	}
 	// 状态查询
@@ -197,7 +204,7 @@ func TestMemStoreLearningLifecycle(t *testing.T) {
 		t.Fatalf("double stop err=%v", err)
 	}
 	// 端点不存在
-	if _, err := store.StartLearning(ctx, uuid.New(), nil); !errors.Is(err, ErrNotFound) {
+	if _, err := store.StartLearning(ctx, uuid.New(), 0, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("start missing err=%v", err)
 	}
 	if _, err := store.StopLearning(ctx, uuid.New(), "tester"); !errors.Is(err, ErrNotFound) {

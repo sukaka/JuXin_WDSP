@@ -1,0 +1,22 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "CUSTOM_PACK 1001729: GBK wide-byte XSS lead byte before %3c"
+rule_id: 1001729
+tests:
+  - test_id: 1
+    desc: "%bf%3c wide-byte lead byte before encoded tag"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "JiuZhang CUSTOM_PACK test agent"
+            Accept: "*/*"
+          method: GET
+          port: 80
+          uri: "/get?x=%bf%3cscript%3e"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001729]

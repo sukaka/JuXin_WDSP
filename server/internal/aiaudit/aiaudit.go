@@ -19,7 +19,7 @@ import (
 
 // Record 审计记录。
 type Record struct {
-	OccurredAt     time.Time `json:"occurred_at"`
+	OccurredAt     time.Time  `json:"occurred_at"`
 	UserID         *uuid.UUID `json:"user_id,omitempty"`
 	Username       string     `json:"username"`
 	RoleCodes      string     `json:"role_codes"`

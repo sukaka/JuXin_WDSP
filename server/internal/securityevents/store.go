@@ -2,6 +2,7 @@ package securityevents
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -25,6 +26,11 @@ func NewStore(db *pgxpool.Pool) *Store {
 
 // InsertEvent 插入安全事件与匹配记录（去重：同 request_id + 时间窗口）。
 // inserted 为 false 表示命中去重（事件已存在，未重复插入）。
+// P0-04：final_decision 随插入落列；去重命中时若本次解析携带 final_decision，
+// 按「已确认拦截优先」条件补全——仅当现有行 final_decision IS NULL，或现有行为
+// PENDING_CORRELATION 且未被确认执法（security_action 不在 BLOCK/TEMP_BLOCK/
+// RATE_LIMIT/MASK_RESPONSE）且 incoming completion_status ∈ (COMPLETED, ABORTED)
+// 时更新（契约 S4_DESIGN_BASELINE §2：先到先得 + 终止动作优先）。
 func (s *Store) InsertEvent(ctx context.Context, evt *NormalizedEvent) (uuid.UUID, bool, error) {
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -32,14 +38,34 @@ func (s *Store) InsertEvent(ctx context.Context, evt *NormalizedEvent) (uuid.UUI
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	var fdJSON any
+	if evt.FinalDecision != nil {
+		if b, merr := json.Marshal(evt.FinalDecision); merr == nil {
+			fdJSON = string(b)
+		}
+	}
+
 	// 去重：相同 request_id + occurred_at（同一事务不重复入库）
 	var existingID uuid.UUID
 	err = tx.QueryRow(ctx,
 		`SELECT id FROM security_events WHERE request_id = $1 AND occurred_at = $2 LIMIT 1`,
 		evt.RequestID, evt.OccurredAt).Scan(&existingID)
 	if err == nil {
+		// 已存在：去重；final_decision 按「已确认拦截优先」条件补全（P0-04）
+		if fdJSON != nil {
+			if _, uerr := tx.Exec(ctx, `
+UPDATE security_events SET final_decision = $3::jsonb
+WHERE request_id = $1 AND occurred_at = $2
+  AND (final_decision IS NULL
+       OR (final_decision->>'completion_status' = 'PENDING_CORRELATION'
+           AND COALESCE(final_decision->>'security_action', 'NONE') NOT IN ('BLOCK','TEMP_BLOCK','RATE_LIMIT','MASK_RESPONSE')
+           AND $4 IN ('COMPLETED','ABORTED')))`,
+				evt.RequestID, evt.OccurredAt, fdJSON, evt.FinalDecision.CompletionStatus); uerr != nil {
+				return uuid.Nil, false, uerr
+			}
+		}
 		_ = tx.Commit(ctx)
-		return existingID, false, nil // 已存在，去重
+		return existingID, false, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, false, err
@@ -51,15 +77,15 @@ INSERT INTO security_events (request_id, occurred_at, application_id, applicatio
   client_port, request_method, request_uri, request_path, query_summary, http_version, content_type,
   user_agent_summary, referer_summary, event_source, attack_type, severity, anomaly_score, action,
   response_status, rule_match_count, disposition_status, raw_log_reference,
-  request_headers, request_body, request_body_truncated, response_headers, response_body, response_body_truncated)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+  request_headers, request_body, request_body_truncated, response_headers, response_body, response_body_truncated, final_decision)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
 RETURNING id`,
 		evt.RequestID, evt.OccurredAt, evt.ApplicationID, evt.ApplicationName, evt.Host, evt.GatewayNode, nullableIP(evt.ClientIP), nullableIP(evt.ClientIP),
 		evt.ClientPort, evt.Method, evt.URI, evt.Path, evt.QuerySummary, evt.HTTPVersion, evt.ContentType,
 		evt.UserAgent, evt.Referer, "coraza", evt.AttackType, evt.Severity, evt.AnomalyScore, evt.Action,
 		evt.ResponseStatus, len(evt.Matches), "UNPROCESSED", evt.RawRef,
 		nonNilHeaders(evt.RequestHeaders), evt.RequestBody, evt.RequestBodyTruncated,
-		nonNilHeaders(evt.ResponseHeaders), evt.ResponseBody, evt.ResponseBodyTruncated,
+		nonNilHeaders(evt.ResponseHeaders), evt.ResponseBody, evt.ResponseBodyTruncated, fdJSON,
 	).Scan(&eventID)
 	if err != nil {
 		return uuid.Nil, false, err
@@ -121,6 +147,9 @@ type Event struct {
 	RuleMatchCount    int                 `json:"rule_match_count"`
 	DispositionStatus string              `json:"disposition_status"`
 	DispositionResult string              `json:"disposition_result"`
+	// FinalDecision 最终处置事实（WDSP P0-04；迁移 000132 列，nil=旧事件无此证据，
+	// 详情 API 投影——列表不投影以控制载荷）
+	FinalDecision *FinalDecision `json:"final_decision,omitempty"`
 	RawRef            string              `json:"raw_log_reference"`
 	RequestHeaders    map[string][]string `json:"request_headers"`
 	RequestBody       string              `json:"request_body"`
@@ -254,16 +283,19 @@ SELECT id, request_id, occurred_at, application_id, application_name_snapshot, d
   client_ip, connection_ip, COALESCE(client_port, 0), request_method, request_uri, request_path, query_summary,
   http_version, content_type, user_agent_summary, referer_summary, attack_type, severity, anomaly_score,
   action, COALESCE(response_status, 0), rule_match_count, disposition_status, disposition_result, raw_log_reference,
-  request_headers, request_body, request_body_truncated, response_headers, response_body, response_body_truncated
+  request_headers, request_body, request_body_truncated, response_headers, response_body, response_body_truncated,
+  final_decision
 FROM security_events WHERE id = $1`, id)
 	var e Event
 	var appID *uuid.UUID
 	var cip, connIP *netip.Addr
+	var fdRaw []byte
 	err := row.Scan(&e.ID, &e.RequestID, &e.OccurredAt, &appID, &e.AppName, &e.Domain, &e.GatewayNode,
 		&cip, &connIP, &e.ClientPort, &e.Method, &e.URI, &e.Path, &e.QuerySummary, &e.HTTPVersion,
 		&e.ContentType, &e.UserAgent, &e.Referer, &e.AttackType, &e.Severity, &e.AnomalyScore,
 		&e.Action, &e.ResponseStatus, &e.RuleMatchCount, &e.DispositionStatus, &e.DispositionResult, &e.RawRef,
-		&e.RequestHeaders, &e.RequestBody, &e.RequestBodyTrunc, &e.ResponseHeaders, &e.ResponseBody, &e.ResponseBodyTrunc)
+		&e.RequestHeaders, &e.RequestBody, &e.RequestBodyTrunc, &e.ResponseHeaders, &e.ResponseBody, &e.ResponseBodyTrunc,
+		&fdRaw)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil, fmt.Errorf("event not found")
@@ -273,6 +305,13 @@ FROM security_events WHERE id = $1`, id)
 	e.ApplicationID = appID
 	if cip != nil {
 		e.ClientIP = cip.String()
+	}
+	if len(fdRaw) > 0 {
+		var fd FinalDecision
+		if uerr := json.Unmarshal(fdRaw, &fd); uerr != nil {
+			return nil, nil, fmt.Errorf("decode final_decision: %w", uerr)
+		}
+		e.FinalDecision = &fd
 	}
 
 	// 匹配记录

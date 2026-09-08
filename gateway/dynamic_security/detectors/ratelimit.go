@@ -8,7 +8,8 @@ import (
 
 // API 限速信号：写方法 API 请求按 identity+endpoint_key 进程内 1 分钟窗口计数，
 // 超阈值 → API_WRITE_RATE（RATE_LIMIT 类；决策引擎映射 RATE_LIMIT，网关侧 429）。
-// 纯内存实现（单节点限制，见 window.go 注释）；与阶段5 CC 限速互补，维度更细。
+// 默认进程内存实现（单节点限制，见 window.go 注释）；存储可插拔（见 store.go）。
+// 与阶段5 CC 限速互补，维度更细。
 const (
 	// DefaultAPIWriteRatePerMinute 写方法 API 默认每分钟上限（Config 未显式传入时）。
 	DefaultAPIWriteRatePerMinute = 60
@@ -37,7 +38,7 @@ func CheckAPIWriteRate(ctx *dsctx.RequestContext, identity, endpointKey string, 
 	if limit <= 0 {
 		limit = DefaultAPIWriteRatePerMinute
 	}
-	count, _ := defaultAPIWriteTracker.add(identity + "|" + endpointKey)
+	count, _ := apiWriteCounts(ctx, identity+"|"+endpointKey)
 	if count <= limit {
 		return
 	}

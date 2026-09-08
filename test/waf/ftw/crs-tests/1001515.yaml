@@ -1,0 +1,22 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: "SSRF 127.0.0.0/8 全网段 URL 目标检测（CUSTOM_PACK ssrf-protocols）"
+rule_id: 1001515
+tests:
+  - test_id: 1
+    desc: "http://127.0.0.2:8080/ 回环段非 127.0.0.1 地址"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: GET
+          port: 80
+          uri: "/get?url=http://127.0.0.2:8080/admin"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001515]

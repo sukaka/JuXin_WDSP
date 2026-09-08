@@ -371,7 +371,7 @@ func (d *Deps) PromptRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.recordAIAudit(p, aiaudit.Record{
-		Action: "prompt_rename",
+		Action:         "prompt_rename",
 		RequestSummary: "重命名 Prompt " + prompt.Code + " 为 " + prompt.Name, ResultSummary: "SUCCESS",
 	})
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"prompt": prompt})
@@ -394,7 +394,7 @@ func (d *Deps) PromptDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.recordAIAudit(p, aiaudit.Record{
-		Action: "prompt_delete",
+		Action:         "prompt_delete",
 		RequestSummary: "删除 Prompt " + id.String(), ResultSummary: "SUCCESS",
 	})
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "Prompt 已删除"})

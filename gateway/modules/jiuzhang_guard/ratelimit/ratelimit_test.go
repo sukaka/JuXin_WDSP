@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -116,5 +117,59 @@ func TestValkeyLimiterParsing(t *testing.T) {
 	fk.evalErr = errors.New("valkey down")
 	if _, err := l.Allow(context.Background(), "k", TokenBucket, 5, time.Minute, 5); err == nil {
 		t.Fatal("error should propagate (fail strategy by caller)")
+	}
+}
+
+// 记录 Eval 入参的测试替身（滑动窗口 member 断言用）。
+type recValkey struct {
+	args [][]string
+}
+
+func (f *recValkey) Eval(_ context.Context, _ string, _ []string, args []string) ([]interface{}, error) {
+	f.args = append(f.args, append([]string(nil), args...))
+	return []interface{}{int64(1), int64(1), int64(0)}, nil
+}
+func (f *recValkey) HSet(_ context.Context, _, _, _ string) error { return nil }
+func (f *recValkey) HGetAll(_ context.Context, _ string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+func (f *recValkey) HDel(_ context.Context, _ string, _ ...string) error { return nil }
+func (f *recValkey) Ping(_ context.Context) error                        { return nil }
+func (f *recValkey) Close() error                                        { return nil }
+
+// 多节点同毫秒同序号时滑动窗口 member 必须仍唯一（实例随机前缀），防 ZADD 互相覆盖少计。
+func TestValkeySlidingWindowMemberNodeUnique(t *testing.T) {
+	fk := &recValkey{}
+	now := time.Now()
+	l1, l2 := NewValkeyLimiter(fk, ""), NewValkeyLimiter(fk, "")
+	l1.now = func() time.Time { return now }
+	l2.now = func() time.Time { return now }
+	ctx := context.Background()
+	if l1.inst == l2.inst {
+		t.Fatal("instance ids must differ across limiters")
+	}
+	// 两节点（两 limiter）同一毫秒、同起始序号各发一请求
+	if _, err := l1.Allow(ctx, "k", SlidingWindow, 5, time.Minute, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l2.Allow(ctx, "k", SlidingWindow, 5, time.Minute, 0); err != nil {
+		t.Fatal(err)
+	}
+	m1, m2 := fk.args[0][3], fk.args[1][3]
+	if m1 == m2 {
+		t.Fatalf("members must not collide across nodes: %q", m1)
+	}
+	// member 结构：<实例前缀>-<毫秒>-<序号>
+	for _, m := range []string{m1, m2} {
+		if parts := strings.Split(m, "-"); len(parts) != 3 || parts[0] == "" {
+			t.Fatalf("member format: %q", m)
+		}
+	}
+	// 同节点连续请求 member 也因序号自增而不同
+	if _, err := l1.Allow(ctx, "k", SlidingWindow, 5, time.Minute, 0); err != nil {
+		t.Fatal(err)
+	}
+	if fk.args[2][3] == m1 {
+		t.Fatal("same-node members must differ by seq")
 	}
 }

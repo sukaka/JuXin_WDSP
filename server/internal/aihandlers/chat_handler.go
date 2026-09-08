@@ -366,6 +366,14 @@ func (d *Deps) runStream(w http.ResponseWriter, r *http.Request, sess *aiorchest
 			_ = writeSSE(w, flusher, sseEvent{Type: "done", Text: "已停止", Payload: map[string]interface{}{"finish_reason": "cancelled"}})
 			return
 		}
+		if errors.Is(err, aicost.ErrQuotaExceeded) {
+			d.recordAIAudit(p, aiaudit.Record{
+				SessionID: &sess.ID, Action: "chat", RequestSummary: trunc(content, 400),
+				ResultSummary: "高成本任务配额超限", DurationMs: durMs,
+			})
+			_ = writeSSE(w, flusher, sseEvent{Type: "error", Text: "高成本任务次数已达今日上限，请明日再试或联系管理员"})
+			return
+		}
 		slog.Error("ai run failed", "session_id", sess.ID, "error", err)
 		d.recordAIAudit(p, aiaudit.Record{
 			SessionID: &sess.ID, Action: "chat", RequestSummary: trunc(content, 400),

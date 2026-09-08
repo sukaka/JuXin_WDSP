@@ -14,11 +14,12 @@ import (
 
 // fakeStore 是 EngineStore + ParseStatsStore 的内存实现。
 type fakeStore struct {
-	mu        sync.Mutex
-	alerts    map[uuid.UUID]*Alert
-	openTotal *int // 非 nil 时覆盖 CountOpen（模拟上限）
-	failures  int64
-	processed int64
+	mu          sync.Mutex
+	alerts      map[uuid.UUID]*Alert
+	openTotal   *int // 非 nil 时覆盖 CountOpen（模拟上限）
+	failures    int64
+	processed   int64
+	silencedNow *time.Time // 非 nil 时 HasActiveSilence 用此时刻判定（可控时钟）
 }
 
 func newFakeStore() *fakeStore {
@@ -110,6 +111,29 @@ func (f *fakeStore) ListOpenByComponent(_ context.Context, component string, ale
 	return out, nil
 }
 
+func (f *fakeStore) ListOpenByTypes(_ context.Context, alertTypes []string) ([]Alert, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Alert
+	for _, a := range f.alerts {
+		if !IsOpenStatus(a.Status) {
+			continue
+		}
+		match := false
+		for _, t := range alertTypes {
+			if a.AlertType == t {
+				match = true
+				break
+			}
+		}
+		if match {
+			out = append(out, *a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeenAt.After(out[j].LastSeenAt) })
+	return out, nil
+}
+
 func (f *fakeStore) ResolveRecovered(_ context.Context, id uuid.UUID, now time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -126,6 +150,25 @@ func (f *fakeStore) ResolveRecovered(_ context.Context, id uuid.UUID, now time.T
 
 func (f *fakeStore) ParseFailureRate(_ context.Context, _ time.Duration) (int64, int64, error) {
 	return f.failures, f.processed, nil
+}
+
+// HasActiveSilence 内存实现：同指纹（alert_type+component）存在 silenced_until 晚于
+// 当前时刻的告警即为静默中（含已关闭行，与 Store SQL 口径一致）；silencedNow 为
+// 测试注入的当前时刻（nil 时用真实时钟）。
+func (f *fakeStore) HasActiveSilence(_ context.Context, alertType, component string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now()
+	if f.silencedNow != nil {
+		now = *f.silencedNow
+	}
+	for _, a := range f.alerts {
+		if a.AlertType == alertType && a.Component == component &&
+			a.SilencedUntil != nil && a.SilencedUntil.After(now) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeStore) get(id uuid.UUID) Alert {

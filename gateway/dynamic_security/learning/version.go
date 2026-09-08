@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	ErrNotFound       = errors.New("model version not found")
-	ErrAlreadyFrozen  = errors.New("formal model already frozen")
-	ErrNotCandidate   = errors.New("only candidate versions can be confirmed")
+	ErrNotFound        = errors.New("model version not found")
+	ErrAlreadyFrozen   = errors.New("formal model already frozen")
+	ErrNotCandidate    = errors.New("only candidate versions can be confirmed")
 	ErrFormalImmutable = errors.New("formal model is immutable")
 )
 
@@ -22,19 +22,19 @@ var (
 type Status string
 
 const (
-	StatusCandidate Status = "CANDIDATE"
-	StatusFormal    Status = "FORMAL"
+	StatusCandidate  Status = "CANDIDATE"
+	StatusFormal     Status = "FORMAL"
 	StatusSuperseded Status = "SUPERSEDED"
 )
 
 // Version 模型版本（不可变快照内容）。
 type Version struct {
-	ID        string
-	Endpoint  string // METHOD path-template
-	Status    Status
-	Schema    map[string]string // field -> type
+	ID          string
+	Endpoint    string // METHOD path-template
+	Status      Status
+	Schema      map[string]string // field -> type
 	ContentHash string
-	CreatedAt time.Time
+	CreatedAt   time.Time
 	// FrozenAt set when confirmed
 	FrozenAt *time.Time
 }

@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: XXE double-URL-encoded or HTML-entity-encoded form (CUSTOM_PACK)
+rule_id: 1001610
+tests:
+  - test_id: 1
+    desc: "Double URL encoded %253c%21entity in raw body"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "x=%253c%21entity"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001610]

@@ -1,0 +1,41 @@
+---
+meta:
+  author: "JiuZhang"
+  description: 上传文件名路径穿越检测（../../evil.jsp，FILES 与 X-Filename 头两种通道，自建规则 1001324）
+rule_id: 1001324
+tests:
+  - test_id: 1
+    desc: "multipart 文件名 ../../evil.jsp；PROTECT 模式下 CRS 930 路径穿越规则先行阻断，故断言 403（DetectionOnly 下 1001324 命中，已经引擎级测试验证）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb324"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb324\r\nContent-Disposition: form-data; name=\"file\"; filename=\"../../evil.jsp\"\r\n\r\nx\r\n--jzb324--\r\n"
+          version: HTTP/1.1
+        output:
+          status: [403]
+  - test_id: 2
+    desc: "X-Filename 头 ../../../webapps/root.war；同样被 CRS 930 先行阻断，断言 403"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/x-www-form-urlencoded"
+            X-Filename: "../../../webapps/root.war"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          status: [403]

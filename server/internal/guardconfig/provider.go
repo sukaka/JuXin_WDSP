@@ -19,6 +19,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/apimodels"
 	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
+	"github.com/jiuzhang-waf/server/internal/l7rules"
 	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
 	"github.com/jiuzhang-waf/server/internal/ratelimitpolicies"
 	"github.com/jiuzhang-waf/server/internal/trustedproxies"
@@ -33,6 +34,7 @@ type Provider struct {
 	versions  *accesscontrolversions.Store
 	apiModels *apimodels.Store // 阶段8：冻结模型下发（nil 时跳过）
 	apiAssets *apiassets.Store // 阶段8：已知端点基线下发（nil 时跳过）
+	l7Rules   *l7rules.Store   // L7 访问控制规则（nil 时不下发 l7_rules 段——API 形态零行为变化）
 
 	valkeyAddr     string
 	valkeyPassword string
@@ -55,6 +57,58 @@ type Provider struct {
 	// 全量访问日志（二期）：settings 读取（nil 时不下发 access_log 段）
 	accessLogPath   string // 网关容器内日志路径（env 注入）
 	accessLogLoader func(ctx context.Context) (AccessLogSettings, error)
+
+	// gateway_runtime 组系统设置读取（P0-18：behavior_store/identity_salt 等随发布下发；
+	// nil 时不下发运行时键，网关内置默认值兜底）
+	runtimeSettingsLoader GatewayRuntimeSettingsLoader
+	// 响应脱敏规则读取（api_masking_rules 表，迁移 000040；nil 或查询失败时 Warn 跳过）
+	maskRules MaskRuleLister
+	// 值级敏感检测规则读取（api_sensitive_data_types 表，迁移 000040；nil 或查询失败时 Warn 跳过）
+	sensitiveValueRules SensitiveValueRuleLister
+	// 角色功能级基线读取（api_role_baselines 表 confirmed 行，迁移 000043；nil 或查询失败时 Warn 跳过）
+	roleBaselines RoleBaselineLister
+	// 字段权限读取（api_field_permissions 表，迁移 000044；nil 或查询失败时 Warn 跳过）
+	fieldPermissions FieldPermissionLister
+	// 扫描签名密钥读取（system_settings api_scan.signing_key 密文解密；nil/未配置时
+	// 不下发 api_scan_verification；读取/解密失败中止发布——降级为仅按头存在性识别
+	// 会放行伪造扫描头投毒学习样本，不静默降级）
+	scanVerification ScanVerificationLoader
+	// 响应结构基线读取（api_response_schemas 表达阈值学习行，迁移 000018/000051；nil 或查询失败时 Warn 跳过）
+	responseBaselines ResponseBaselineLister
+	// 文件合规规则读取（api_file_compliance_rules 表 enabled 行，表由另一分片迁移建立；
+	// nil 或查询失败时 Warn 跳过，与 MaskRuleStore 同一模式）
+	fileComplianceRules FileComplianceRuleLister
+	// gRPC 描述符集读取（api_grpc_descriptors 表 ENABLED 行，迁移 000076；
+	// nil 或查询失败时 Warn 跳过，与 MaskRuleStore 同一模式）
+	grpcDescriptors GRPCDescriptorLister
+	// 文件签名密钥读取（system_settings gateway_runtime 组 api_file_signature_key 密文解密
+	// + api_file_signature_kid；nil/未配置时不下发 api_file_signature，网关零行为变化；
+	// 读取/解密失败中止发布——静默停用签名会让管理面显示与网关行为不一致）
+	fileSignature FileSignatureLoader
+	// 行为策略读取（security_behavior_policy 表 GLOBAL 行，迁移 000098；nil 或查询失败时
+	// Warn 跳过不下发 identity_behavior 段，与 MaskRuleStore 同一模式）
+	behaviorPolicy BehaviorPolicyLister
+	// 身份与行为事件日志网关容器内路径（随 identity_behavior 段下发）
+	identityEventsLog string
+	// 风险策略读取（security_risk_policy 表 GLOBAL 行，迁移 000101；nil 或查询失败时
+	// Warn 跳过不下发 risk_policy 段，与 BehaviorPolicyLister 同一模式）
+	riskPolicy RiskPolicyLister
+	// JWT 信任策略读取（jwt_trust_policies 表按应用行，迁移 000125；仅 WDSP 开启时下发
+	// jwt_trust 段；读取失败中止发布——fail-hard，防止已 PROTECT 应用被静默关闭强制校验）
+	jwtTrust JWTTrustLister
+	// JWT PROTECT 发布的节点门禁（nil 时仅执行管线模式门禁）
+	jwtTrustNodeGuard JWTTrustNodeGuard
+	// Bot 挑战策略读取（bot_policies 表按应用行，迁移 000128；仅 WDSP 开启时下发
+	// bot_policy 段；读取失败中止发布——fail-hard，与 jwt_trust 同一口径）
+	botPolicy BotPolicyLister
+	// Bot 挑战签名密钥读取（system_settings gateway_runtime 组 bot_signing_keys 密文
+	// 解密；nil/未配置时不下发 bot_signing_keys，存在 PROTECT 策略时由就绪门禁拒绝发布；
+	// 读取/解密失败中止发布——fail-hard，与 scanVerification/fileSignature 同一纪律）
+	botSigningKeys BotSigningKeysLoader
+	// API 引擎受限例外读取（exception_policies 表 target_engine='API' 的 ENABLED+VALID
+	// 行，列由迁移 000130 建立；仅 WDSP 开启时下发 api_exceptions 段；读取失败中止
+	// 发布——fail-hard，与 jwt_trust 同一口径；nil 时不下发该段，网关零行为变化）
+	apiExceptions APIExceptionLister
 }
 
 // AccessLogSettings 是 logging 组系统设置（全量访问日志开关快照）。
@@ -83,6 +137,9 @@ type Config struct {
 	APIEventsLog         string // 网关容器内路径（如 /var/log/caddy/api-runtime-events.log）
 	// AccessLogPath 全量访问日志网关容器内路径（如 /var/log/caddy/access-full.jsonl）
 	AccessLogPath string
+	// IdentityEventsLog 身份与行为事件日志网关容器内路径（如 /var/log/caddy/identity-events.log；
+	// 随 identity_behavior 段下发，与 EventsLog 同目录推导——GATEWAY_IDENTITY_EVENTS_LOG）
+	IdentityEventsLog string
 }
 
 // NewProvider 创建组装器。
@@ -106,13 +163,16 @@ func NewProvider(
 	if cfg.AccessLogPath == "" {
 		cfg.AccessLogPath = "/var/log/caddy/access-full.jsonl"
 	}
+	if cfg.IdentityEventsLog == "" {
+		cfg.IdentityEventsLog = "/var/log/caddy/identity-events.log"
+	}
 	return &Provider{
 		proxies: proxies, protected: protected, rules: rules, policies: policies, versions: versions,
 		valkeyAddr: cfg.ValkeyAddress, valkeyPassword: cfg.ValkeyPassword, valkeyDB: cfg.ValkeyDB,
 		eventsLog: cfg.EventsLog, gatewayNode: cfg.GatewayNode,
 		maxProxyChain: cfg.MaxProxyChain, maxCounterKeys: cfg.MaxCounterKeys, failOpen: cfg.FailOpen,
 		apiEnabled: cfg.APIDynamicProtection, apiMode: cfg.APIProtectionMode, apiEventsLog: cfg.APIEventsLog,
-		accessLogPath: cfg.AccessLogPath,
+		accessLogPath: cfg.AccessLogPath, identityEventsLog: cfg.IdentityEventsLog,
 	}
 }
 
@@ -141,6 +201,9 @@ func resolveAPIProtectionMode(configured, override string, found bool) string {
 
 // SetAPIAssets 注入端点资产仓储（阶段8：已知端点基线随发布下发网关；nil 表示不下发）。
 func (p *Provider) SetAPIAssets(s *apiassets.Store) { p.apiAssets = s }
+
+// SetL7Rules 注入 L7 访问控制规则仓储（仅 WAF/WDSP 装配；nil 表示不下发 l7_rules 段）。
+func (p *Provider) SetL7Rules(s *l7rules.Store) { p.l7Rules = s }
 
 // SetAccessLogLoader 注入 logging 组系统设置读取（全量访问日志开关，发布时随 GuardConfig 下发；
 // 读取失败时发布失败，不静默回退——避免开关状态与管理面显示不一致）。
@@ -312,6 +375,16 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 	}
 	cfg.AppRules = appRules
 
+	// L7 访问控制（契约一 l7_rules 段）：注入仓储后恒下发（含全部规则与 enabled 标志；
+	// 空数组用于清空网关旧规则）。读取失败中止发布，禁止静默降级为空集。
+	if p.l7Rules != nil {
+		l7List, err := p.l7Rules.ListAllOrdered(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list l7 access rules: %w", err)
+		}
+		cfg.L7Rules = toGuardL7Rules(l7List)
+	}
+
 	// 阶段8 / WDSP：API 动态防护开关与冻结模型（仅开启时注入；关闭时 GuardConfig 与纯 WAF 一致）
 	if p.apiEnabled {
 		cfg.APIDynamicProtection = true
@@ -333,6 +406,59 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 			if len(schemas) > 0 {
 				cfg.APIFormalSchemas = schemas
 			}
+			// FORMAL 模型版本号随发布下发（网关事件回报 model_version，供版本溯源）
+			versions, err := p.apiModels.ListFormalModelVersions(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("list formal api model versions: %w", err)
+			}
+			if len(versions) > 0 {
+				cfg.APIFormalModelVersions = versions
+			}
+			// P0-2：FORMAL 端点请求侧确认参数约束随发布下发
+			constraints, err := p.apiModels.ListFormalParameterConstraints(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("list formal api parameter constraints: %w", err)
+			}
+			if len(constraints) > 0 {
+				out := make(map[string][]gatewayconfig.GuardParamConstraint, len(constraints))
+				for ek, list := range constraints {
+					items := make([]gatewayconfig.GuardParamConstraint, 0, len(list))
+					for _, pc := range list {
+						items = append(items, gatewayconfig.GuardParamConstraint{
+							Location:    pc.Location,
+							Name:        pc.Name,
+							Path:        pc.Path,
+							BaseType:    pc.BaseType,
+							Required:    pc.Required,
+							Constraints: pc.Constraints,
+						})
+					}
+					out[ek] = items
+				}
+				cfg.APIParameterConstraints = out
+			}
+			// W11-REL / P0-02：FORMAL 端点已确认参数条件关系随发布下发
+			// （confirmed=true 才下发；候选不生效——任务书 §45「只有 Confirmed 关系进入强制检测」）
+			relations, err := p.apiModels.ListConfirmedParameterRelations(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("list confirmed api parameter relations: %w", err)
+			}
+			if len(relations) > 0 {
+				out := make([]gatewayconfig.GuardParamRelation, 0, len(relations))
+				for _, r := range relations {
+					out = append(out, gatewayconfig.GuardParamRelation{
+						EndpointKey:  r.EndpointKey,
+						RelationType: r.RelationType,
+						ParamA: gatewayconfig.GuardParamRef{
+							Location: r.ParamA.Location, Path: r.ParamA.Path, Name: r.ParamA.Name,
+						},
+						ParamB: gatewayconfig.GuardParamRef{
+							Location: r.ParamB.Location, Path: r.ParamB.Path, Name: r.ParamB.Name,
+						},
+					})
+				}
+				cfg.APIParameterRelations = out
+			}
 		}
 		if p.apiAssets != nil {
 			known, err := p.apiAssets.ListKeyStatus(ctx)
@@ -343,6 +469,62 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 				cfg.APIKnownEndpoints = known
 			}
 		}
+		// P0-18：gateway_runtime 组运行时设置随发布下发（behavior_store/identity_salt 等；
+		// 缺省不下发=网关默认；读取失败或取值非法中止发布，不静默回退）
+		if err := p.applyGatewayRuntime(ctx, cfg); err != nil {
+			return nil, err
+		}
+		// P0-07 前置：响应脱敏规则随发布下发（表由迁移 000040 建立；缺失/失败 Warn 跳过）
+		cfg.APIMaskRules = p.loadAPIMaskRules(ctx)
+		// W3-E：值级敏感检测规则随发布下发（表由迁移 000040 建立；缺失/失败 Warn 跳过）
+		cfg.APISensitiveValueRules = p.loadAPISensitiveValueRules(ctx)
+		// W4-GW：授权基线随发布下发（表由迁移 000043/000044 建立；缺失/失败 Warn 跳过）
+		cfg.APIRoleBaselines = p.loadAPIRoleBaselines(ctx)
+		cfg.APIFieldPermissions = p.loadAPIFieldPermissions(ctx)
+		// W9-GW：扫描签名密钥随发布下发（system_settings 密文解密；未配置不下发，
+		// 读取/解密失败中止发布——降级为仅按头存在性识别会放行伪造扫描头投毒学习样本；
+		// 快照脱敏，回滚时按当前设置重新注入）
+		scanVerification, err := p.loadAPIScanVerification(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.APIScanVerification = scanVerification
+		// W9-GW：响应结构基线随发布下发（表由迁移 000018/000051 建立；缺失/失败 Warn 跳过）
+		cfg.APIResponseBaselines = p.loadAPIResponseBaselines(ctx)
+		// W13-GW / P2-03：文件合规规则随发布下发（表由另一分片迁移建立；缺失/失败 Warn 跳过）
+		cfg.APIFileComplianceRules = p.loadAPIFileComplianceRules(ctx)
+		// W13-GW / P2-02：文件签名密钥随发布下发（system_settings 密文解密；未配置不下发，
+		// 读取/解密失败中止发布——静默停用签名会让管理面显示与网关行为不一致；
+		// 快照脱敏，回滚时按当前设置重新注入；秘密材料不参与版本戳）
+		fileSignature, err := p.loadAPIFileSignature(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.APIFileSignature = fileSignature
+		// W14-DESC / P2-05 深化：gRPC 描述符集随发布下发（表由迁移 000076 建立；
+		// 缺失/失败 Warn 跳过；无描述符下发时网关退化为 v1 帧结构校验）
+		cfg.APIGRPCDescriptors = p.loadAPIGRPCDescriptors(ctx)
+		// P0-03：JWT 信任策略随发布下发 jwt_trust 段（表由迁移 000125 建立；
+		// 读取失败或 PROTECT 门禁不满足时中止发布——拒绝发布并保留旧有效版本，
+		// 不静默关闭原 PROTECT；含策略版本与 issuer 配置 ID/keyset 版本标识，无秘密材料）
+		if err := p.loadJWTTrust(ctx, cfg, mode); err != nil {
+			return nil, err
+		}
+		// P1-02 B1：Bot 挑战策略随发布下发 bot_policy 段（表由迁移 000128 建立；
+		// 读取失败或 PROTECT 依赖门禁（共享 Valkey 未配置）不满足时中止发布——
+		// 拒绝发布并保留旧有效版本，不静默关闭原 PROTECT；无任何秘密材料）
+		if err := p.loadBotPolicy(ctx, cfg); err != nil {
+			return nil, err
+		}
+		// P0-04 A：API 引擎受限例外随发布下发 api_exceptions 段（列由迁移 000130
+		// 建立；读取失败中止发布 fail-hard——不静默丢失已启用例外；无启用行/未注入
+		// lister 时不下发该段，网关零行为变化；key=应用编码，仅 OBSERVE_RULE）
+		if err := p.loadAPIExceptions(ctx, cfg); err != nil {
+			return nil, err
+		}
+		// P0-03/21：API 策略版本戳（本次发布内容哈希，恒下发供生效校验与网关回报比对；
+		// 覆盖面对齐 guard.go 实际下发面，密钥三段与 identity_salt 不参与）
+		cfg.APIPolicyVersion = computeAPIPolicyVersion(cfg)
 	}
 	// 全量访问日志（二期）：logging 组设置随发布下发网关
 	if p.accessLogLoader != nil {
@@ -364,6 +546,14 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 			LogPath:                p.accessLogPath,
 		}
 	}
+	// 侦察/枚举行为检测策略（WDSP AI 自动化渗透防护增强 阶段1）：security_behavior_policy
+	// 表 GLOBAL 行随发布下发 identity_behavior 段（表由迁移 000098 建立；读取失败 Warn 跳过，
+	// 不阻断发布主流程；不受 API 动态防护门控——client_identity 体系为全产品形态能力）
+	p.loadIdentityBehavior(ctx, cfg)
+	// 身份风险处置策略（WDSP AI 自动化渗透防护增强 阶段3）：security_risk_policy 表
+	// GLOBAL 行随发布下发 risk_policy 段（表由迁移 000101 建立；读取失败 Warn 跳过，
+	// 不阻断发布主流程；同样不受 API 动态防护门控）
+	p.loadRiskPolicy(ctx, cfg)
 	return cfg, nil
 }
 func RedactGuardConfig(cfg *gatewayconfig.GuardConfig) *gatewayconfig.GuardConfig {
@@ -377,6 +567,49 @@ func RedactGuardConfig(cfg *gatewayconfig.GuardConfig) *gatewayconfig.GuardConfi
 			v.Password = "***"
 		}
 		cp.Valkey = &v
+	}
+	// identity_salt 为敏感盐值，快照脱敏（与 valkey.password 同一纪律）；
+	// 回滚发布时由 GetVersionConfig 按当前 gateway_runtime 设置重新注入
+	if cfg.IdentitySalt != "" {
+		cp.IdentitySalt = "***"
+	}
+	// tls_session_ticket_key 为 TLS 会话票据密钥明文，快照脱敏（同一纪律）；
+	// 回滚发布时按当前 gateway_runtime 设置重新注入
+	if cfg.TLSSessionTicketKey != "" {
+		cp.TLSSessionTicketKey = "***"
+	}
+	// api_scan_verification.key_hex 为扫描签名密钥明文，快照脱敏（同一纪律）；
+	// 回滚发布时由 GetVersionConfig 按当前设置重新解密注入
+	if cfg.APIScanVerification != nil {
+		v := *cfg.APIScanVerification
+		if v.KeyHex != "" {
+			v.KeyHex = "***"
+		}
+		cp.APIScanVerification = &v
+	}
+	// api_file_signature.key_hex 为文件签名密钥明文，快照脱敏（同一纪律）；
+	// kid 非秘密（随 token 明文嵌入文件），保留以便快照审计；
+	// 回滚发布时由 GetVersionConfig 按当前设置重新解密注入
+	if cfg.APIFileSignature != nil {
+		v := *cfg.APIFileSignature
+		if v.KeyHex != "" {
+			v.KeyHex = "***"
+		}
+		cp.APIFileSignature = &v
+	}
+	// bot_signing_keys 为 Bot 挑战签名密钥明文（key_ref → hex），快照脱敏（同一纪律）；
+	// key_ref 引用名非秘密（随 clearance token key_id 明文嵌入），保留以便快照审计；
+	// 回滚发布时由 GetVersionConfig 按当前设置重新解密注入
+	if cfg.BotSigningKeys != nil {
+		v := make(map[string]string, len(cfg.BotSigningKeys))
+		for ref, key := range cfg.BotSigningKeys {
+			if key != "" {
+				v[ref] = "***"
+			} else {
+				v[ref] = key
+			}
+		}
+		cp.BotSigningKeys = v
 	}
 	// 深拷贝 AppRules map，避免调用方修改影响快照
 	if cfg.AppRules != nil {
@@ -431,6 +664,9 @@ func (p *Provider) SaveVersionSnapshot(ctx context.Context, cfg *gatewayconfig.G
 	summary := fmt.Sprintf("可信代理%d 保护地址%d 全局白%d 全局黑%d 应用规则组%d 全局CC%d",
 		len(cfg.TrustedProxies), len(cfg.ProtectedAddresses), len(cfg.GlobalAllow), len(cfg.GlobalDeny),
 		len(cfg.AppRules), len(cfg.GlobalPolicies))
+	if cfg.L7Rules != nil {
+		summary += fmt.Sprintf(" L7规则%d", len(cfg.L7Rules.Rules))
+	}
 	v, err := p.versions.Create(ctx, accesscontrolversions.CreateInput{
 		Config:            data,
 		ConfigHash:        hex.EncodeToString(sum[:]),
@@ -445,9 +681,20 @@ func (p *Provider) SaveVersionSnapshot(ctx context.Context, cfg *gatewayconfig.G
 	return v.ID, nil
 }
 
-// MarkVersionResult 回填版本发布结果。
+// MarkVersionResult 回填版本发布结果；
+// P0-03/21 联动：整站发布结果同时回写端点级运行时策略状态机
+// （SUCCESS → 待发布集合落 ACTIVE、旧 ACTIVE 退 ROLLED_BACK；其余 → FAILED+原因）。
 func (p *Provider) MarkVersionResult(ctx context.Context, id uuid.UUID, result string) error {
-	return p.versions.SetResult(ctx, id, result)
+	if err := p.versions.SetResult(ctx, id, result); err != nil {
+		return err
+	}
+	if p.apiModels != nil {
+		if err := p.apiModels.MarkRuntimePoliciesPublishResult(ctx, result == "SUCCESS",
+			"整站发布失败: "+result); err != nil {
+			return fmt.Errorf("mark runtime policies publish result: %w", err)
+		}
+	}
+	return nil
 }
 
 // GetVersionConfig 读取历史版本的 Guard 配置快照（回滚用），并注入当前运行时密钥。
@@ -461,7 +708,102 @@ func (p *Provider) GetVersionConfig(ctx context.Context, versionID uuid.UUID) (*
 		return nil, fmt.Errorf("decode version config: %w", err)
 	}
 	p.InjectRuntimeSecrets(&cfg)
+	if err := p.replayRuntimeSecrets(ctx, &cfg); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+// replayRuntimeSecrets 回滚重放（GetVersionConfig 快照反序列化后调用）：
+// 快照中的 gateway_runtime 运行时键与密钥段已脱敏为占位/已过期，先清零快照旧值，
+// 再按当前设置重放；读取/解密失败如实返回（回滚也是发布，与 BuildGuardConfig 同一
+// fail-hard 纪律——不下发脱敏占位、不静默降级为无密钥配置）。
+// 清零清单必须覆盖 RedactGuardConfig 脱敏段与 applyGatewayRuntimeSettings 全部写入键：
+// 漏清零时快照中的 "***" 占位会被原样发布（如 tls_session_ticket_key 非 hex 致
+// Caddy /load 拒绝、回滚失败）。当前设置值为 Redact 占位符的键由
+// applyGatewayRuntimeSettings 视同取不到跳过（不写入）。
+func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.GuardConfig) error {
+	if p.runtimeSettingsLoader != nil {
+		cfg.BehaviorStore = ""
+		cfg.BehaviorStoreTTLSeconds = 0
+		cfg.IdentitySalt = ""
+		cfg.TLSSessionTicketKey = ""
+		cfg.CredentialIPSpreadLimit = 0
+		cfg.CredentialConcurrencyLimit = 0
+		cfg.APIWriteRatePerMinute = 0
+		cfg.APIResponseFailPolicy = ""
+		cfg.APIResponseCaptureMaxBytes = 0
+		cfg.APILLMAllowedModels = nil
+		cfg.APIFileWatermark = nil
+		cfg.APIGRPCMaxFrameBytes = 0
+		cfg.APIGRPCAllowCompression = false
+		if err := p.applyGatewayRuntime(ctx, cfg); err != nil {
+			return err
+		}
+	}
+	// api_scan_verification.key_hex 快照已脱敏为占位：按当前设置重新解密注入
+	// （与 identity_salt 同一纪律；读取/解密失败如实返回，回滚发布失败）
+	if p.scanVerification != nil {
+		scanVerification, err := p.loadAPIScanVerification(ctx)
+		if err != nil {
+			return err
+		}
+		cfg.APIScanVerification = scanVerification
+	}
+	// api_file_signature.key_hex 快照已脱敏为占位：按当前设置重新解密注入（同一纪律）
+	if p.fileSignature != nil {
+		fileSignature, err := p.loadAPIFileSignature(ctx)
+		if err != nil {
+			return err
+		}
+		cfg.APIFileSignature = fileSignature
+	}
+	// bot_signing_keys 快照已脱敏为占位：清零后按当前设置重新解密注入（同一纪律；
+	// 未配置 → nil 不下发，含 PROTECT 策略的快照由下方门禁以可读原因拒绝回滚发布）
+	if p.botSigningKeys != nil {
+		cfg.BotSigningKeys = nil
+		botKeys, err := p.loadBotSigningKeys(ctx)
+		if err != nil {
+			return err
+		}
+		cfg.BotSigningKeys = botKeys
+	}
+	// P0-03 回滚门禁：快照含 PROTECT JWT 信任策略而当前身份指纹密钥未配置时，
+	// 回滚发布必然被网关 fail-closed 拒载——提前以可读原因失败（与 loadJWTTrust 同一口径），
+	// 不静默降级为无密钥配置
+	if len(cfg.JWTTrust) > 0 {
+		protectApps := []string{}
+		for code, pol := range cfg.JWTTrust {
+			if pol != nil && pol.Mode == "PROTECT" {
+				protectApps = append(protectApps, code)
+			}
+		}
+		if len(protectApps) > 0 {
+			sort.Strings(protectApps)
+			if err := checkJWTTrustSecret(cfg, protectApps); err != nil {
+				return err
+			}
+		}
+	}
+	// P1-02 B1 回滚门禁：快照含 PROTECT Bot 策略而共享状态存储（Valkey）未配置时，
+	// 回滚后网关只能 fail-closed 503——提前以可读原因失败（与 loadBotPolicy 同一口径）；
+	// B3 预备：同门禁覆盖 key_ref 签名密钥就绪（上方已按当前设置重放 bot_signing_keys，
+	// 快照中的脱敏占位不参与判定）
+	if len(cfg.BotPolicy) > 0 {
+		protectApps := []string{}
+		for code, pol := range cfg.BotPolicy {
+			if pol != nil && pol.Mode == "PROTECT" {
+				protectApps = append(protectApps, code)
+			}
+		}
+		if len(protectApps) > 0 {
+			sort.Strings(protectApps)
+			if err := checkBotPolicyDeps(cfg, protectApps, cfg.BotPolicy); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // formatTime RFC3339 格式化（nil → 空串）。

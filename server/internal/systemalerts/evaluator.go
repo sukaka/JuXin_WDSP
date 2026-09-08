@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -44,7 +45,11 @@ type EngineStore interface {
 	Merge(ctx context.Context, id uuid.UUID, message, severity string, updateMessage bool, now time.Time) error
 	CountOpen(ctx context.Context) (int, error)
 	ListOpenByComponent(ctx context.Context, component string, alertTypes []string) ([]Alert, error)
+	// ListOpenByTypes 查询给定类型集合的全部未关闭告警（端点性能告警恢复扫描用）。
+	ListOpenByTypes(ctx context.Context, alertTypes []string) ([]Alert, error)
 	ResolveRecovered(ctx context.Context, id uuid.UUID, now time.Time) error
+	// HasActiveSilence 同指纹静默判定（静默期内新建告警跳过通知但仍记录）。
+	HasActiveSilence(ctx context.Context, alertType, component string) (bool, error)
 }
 
 // ParseStatsStore 提供解析失败率统计（EVENT_PARSE_FAILURE_RATE_HIGH 评估）。
@@ -75,21 +80,54 @@ type EngineOptions struct {
 	ParseFailureWindow      time.Duration
 	ParseFailureMinCount    int64
 	ParseFailureRatePercent float64
+	// APIFindings API 安全 findings 统计源；nil 时 EvaluateAPIFindings 不执行（W6-B）
+	APIFindings APIFindingsStatsStore
+	// SecuritySpikes 安全事件/CC 封禁统计源；nil 时 EvaluateSecuritySpikes 不执行（通知二期）
+	SecuritySpikes SecuritySpikeStatsStore
+	// EndpointPerf 端点级分钟聚合统计源（APM 阶段1 WP5）；nil 时 EvaluateEndpointPerf 不执行
+	EndpointPerf EndpointPerfStatsStore
+	// SLOBreach APM SLO 违约评估源（apm.SLOStore 实现）；nil 时 EvaluateSLOBreach 不执行
+	SLOBreach SLOBreachStatsStore
+	// IngestLag APM 数据面采集滞后读数源（apm.CHHealth 实现）；nil 时 EvaluateIngestLag 不执行
+	IngestLag IngestLagStatsStore
+	// APMEnabled APM 运行期总开关判定（界面设置热生效，生产为 apm.RuntimeConfig.Enabled）；
+	// nil 视为恒 true（兼容既有测试与其他调用方）。返回 false 时 EndpointPerf/SLOBreach/
+	// IngestLag 三个 APM 评估器空转，关闭期间不新建也不清动既有告警。
+	APMEnabled func(ctx context.Context) bool
+	// Settings 评估规则配置源（api_alert 组）；nil 时全部取默认值
+	Settings SettingsReader
 }
+
+// SyslogEnqueueFunc 是 syslog 外发投递函数（装配层闭包注入，本包不依赖 syslogfw，
+// 避免循环导入；模式参考 backups.AlertFunc）。nil 时跳过外发。
+type SyslogEnqueueFunc func(severityHint string, payload interface{})
+
+// NotifyEnqueueFunc 是告警通知外发投递函数（装配层闭包注入 notify.Dispatcher，
+// 本包不依赖 notify，避免循环导入）。nil 时跳过通知外发。
+type NotifyEnqueueFunc func(a Alert)
 
 // Engine 是告警评估引擎：触发、合并、冷却、抖动抑制、上限保护与自动恢复。
 type Engine struct {
-	store         EngineStore
-	now           func() time.Time
-	maxOpen       int
-	cooldown      time.Duration
-	flapWindow    time.Duration
-	flapThreshold int
-	dbCapHighPct  float64
-	parseStats    ParseStatsStore
-	parseWindow   time.Duration
-	parseMinFail  int64
-	parseRatePct  float64
+	store          EngineStore
+	syslog         SyslogEnqueueFunc // nil 时跳过 syslog 外发
+	notify         NotifyEnqueueFunc // nil 时跳过通知外发
+	now            func() time.Time
+	maxOpen        int
+	cooldown       time.Duration
+	flapWindow     time.Duration
+	flapThreshold  int
+	dbCapHighPct   float64
+	parseStats     ParseStatsStore
+	parseWindow    time.Duration
+	parseMinFail   int64
+	parseRatePct   float64
+	apiFindings    APIFindingsStatsStore
+	securitySpikes SecuritySpikeStatsStore
+	endpointPerf   EndpointPerfStatsStore
+	sloBreach      SLOBreachStatsStore
+	ingestLag      IngestLagStatsStore
+	apmEnabled     func(ctx context.Context) bool
+	settings       SettingsReader
 
 	flaps *flapTracker
 	// msgUpdated 记录各去重键最近一次 message 更新时间（冷却判定）
@@ -100,18 +138,25 @@ type Engine struct {
 // NewEngine 创建评估引擎。
 func NewEngine(store EngineStore, opts EngineOptions) *Engine {
 	e := &Engine{
-		store:         store,
-		now:           opts.Now,
-		maxOpen:       opts.MaxOpen,
-		cooldown:      opts.Cooldown,
-		flapWindow:    opts.FlapWindow,
-		flapThreshold: opts.FlapThreshold,
-		dbCapHighPct:  opts.DBCapacityHighPercent,
-		parseStats:    opts.ParseStats,
-		parseWindow:   opts.ParseFailureWindow,
-		parseMinFail:  opts.ParseFailureMinCount,
-		parseRatePct:  opts.ParseFailureRatePercent,
-		msgUpdated:    map[string]time.Time{},
+		store:          store,
+		now:            opts.Now,
+		maxOpen:        opts.MaxOpen,
+		cooldown:       opts.Cooldown,
+		flapWindow:     opts.FlapWindow,
+		flapThreshold:  opts.FlapThreshold,
+		dbCapHighPct:   opts.DBCapacityHighPercent,
+		parseStats:     opts.ParseStats,
+		parseWindow:    opts.ParseFailureWindow,
+		parseMinFail:   opts.ParseFailureMinCount,
+		parseRatePct:   opts.ParseFailureRatePercent,
+		apiFindings:    opts.APIFindings,
+		securitySpikes: opts.SecuritySpikes,
+		endpointPerf:   opts.EndpointPerf,
+		sloBreach:      opts.SLOBreach,
+		ingestLag:      opts.IngestLag,
+		apmEnabled:     opts.APMEnabled,
+		settings:       opts.Settings,
+		msgUpdated:     map[string]time.Time{},
 	}
 	if e.now == nil {
 		e.now = func() time.Time { return time.Now().UTC() }
@@ -142,6 +187,48 @@ func NewEngine(store EngineStore, opts EngineOptions) *Engine {
 	}
 	e.flaps = newFlapTracker(e.flapWindow)
 	return e
+}
+
+// SetSyslogForwarder 设置 syslog 外发投递函数（应用装配时使用，可为 nil）。
+func (e *Engine) SetSyslogForwarder(fn SyslogEnqueueFunc) { e.syslog = fn }
+
+// SetNotifyForwarder 设置告警通知外发投递函数（应用装配时使用，可为 nil）。
+func (e *Engine) SetNotifyForwarder(fn NotifyEnqueueFunc) { e.notify = fn }
+
+// SetIngestLag 注入/替换数据面采集滞后读数源（集成测试 fake CH 注入缝；
+// 生产装配走 EngineOptions.IngestLag）。
+func (e *Engine) SetIngestLag(src IngestLagStatsStore) { e.ingestLag = src }
+
+// apmEnabledNow APM 运行期总开关判定（nil = 恒 true，兼容未注入的既有装配与测试）。
+func (e *Engine) apmEnabledNow(ctx context.Context) bool {
+	return e.apmEnabled == nil || e.apmEnabled(ctx)
+}
+
+// enqueueNotify 非阻塞投递告警通知外发（按值快照；投递函数 panic 只记日志，不扩散到告警主流程）。
+func (e *Engine) enqueueNotify(a Alert) {
+	if e.notify == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("notify enqueue panicked", "alert_type", a.AlertType, "panic", r)
+		}
+	}()
+	e.notify(a)
+}
+
+// enqueueSyslog 非阻塞投递 syslog 外发（按值快照，避免调用方后续修改告警引入竞态）；
+// 未注入投递函数时跳过，投递函数 panic 时记录错误日志而不扩散到告警主流程。
+func (e *Engine) enqueueSyslog(a Alert) {
+	if e.syslog == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("syslog enqueue panicked", "alert_type", a.AlertType, "panic", r)
+		}
+	}()
+	e.syslog(a.Severity, a)
 }
 
 // dedupKey 是合并去重键（同 type+component）。
@@ -205,6 +292,23 @@ func (e *Engine) Raise(ctx context.Context, req RaiseRequest) (*Alert, error) {
 		}
 		e.flaps.record(key, now)
 		e.setMsgUpdate(key, now)
+		// syslog 外发：仅新建 OPEN 告警外发（合并与 IGNORED 不重复外发），非阻塞投递。
+		// 防循环：forwarder 发送失败只写磁盘 spool 与 slog，不产生系统告警；
+		// 即使未来新增 syslog 自身故障类告警，引擎对同 type+component 的 OPEN 告警
+		// 去重合并（FindOpen→Merge），后续失败只合并不再外发，不会无限放大。
+		//
+		// 静默抑制（W6-B）：同指纹存在静默期内告警时跳过外发，告警照常落库
+		// （「不重复通知但仍记录」）；静默判定失败如实返回错误，不退化为外发或吞错。
+		silenced, err := e.store.HasActiveSilence(ctx, req.AlertType, req.Component)
+		if err != nil {
+			return a, fmt.Errorf("check active silence: %w", err)
+		}
+		if !silenced {
+			e.enqueueSyslog(*a)
+			// 通知外发（一期）：与 syslog 同挂点同静默语义；通知层内部再做
+			// 渠道订阅过滤与风暴抑制，引擎只负责投递新建 OPEN 告警。
+			e.enqueueNotify(*a)
+		}
 		return a, nil
 	default: // actionMerge
 		if err := e.store.Merge(ctx, existing.ID, message, severity, d.updateMessage, now); err != nil {
@@ -253,6 +357,14 @@ func (e *Engine) AutoRecover(ctx context.Context, component string, alertTypes .
 			}
 			e.flaps.record(key, now)
 			resolved++
+			// 恢复通知（一期）：投递 RESOLVED 事件，通知层按 notify_resolved 开关决定
+			// 是否外发；与引擎去重/冷却逻辑无关（仅追加投递，不改变状态机）。
+			na := *a
+			na.Status = StatusResolved
+			na.ResolvedAt = &now
+			rt := ResolveRecovered
+			na.ResolveType = &rt
+			e.enqueueNotify(na)
 			continue
 		}
 		// 抖动抑制：保持 OPEN，message 补抖动标记

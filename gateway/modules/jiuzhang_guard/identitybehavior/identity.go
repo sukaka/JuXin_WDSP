@@ -1,6 +1,7 @@
 package identitybehavior
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -19,7 +20,6 @@ const (
 	IdentityBot         = "BOT"
 	IdentityApplication = "APPLICATION"
 	IdentityService     = "SERVICE"
-	IdentityMachine     = "MACHINE"
 	IdentityAgent       = "AGENT"
 	IdentityUnknown     = "UNKNOWN"
 )
@@ -52,7 +52,7 @@ type Credential struct {
 // Identity 单请求身份解析结果（确定性 identity_key：同信号输入恒同键）。
 type Identity struct {
 	Key                string   // 确定性身份键（HMAC 指纹，优先级：凭据 > 浏览器指纹 > IP）
-	Type               string   // HUMAN | BOT | APPLICATION | SERVICE | MACHINE | AGENT | UNKNOWN
+	Type               string   // HUMAN | BOT | APPLICATION | SERVICE | AGENT | UNKNOWN
 	Confidence         uint8    // 0..100; explanation/policy signal only, never a standalone block reason
 	Evidence           []string // signal types only; never credential values
 	ClientIP           string
@@ -60,6 +60,39 @@ type Identity struct {
 	TLSFingerprint     string // TLS 版本+密码套件指纹（拿不到 ClientHello，不做 JA3/JA4；无 TLS 为空串）
 	BrowserFingerprint string // UA/Accept 族指纹（UA 为空时为空串）
 	Credentials        []Credential
+	// VerifiedPrincipalID / VerifiedTenantID JWT 信任链（WDSP P0-03）VERIFIED 时
+	// 由 jwt_trust 模块经请求上下文注入的独立可信信号（应用隔离 HMAC 主体指纹 /
+	// 受信 tenant 声明值）。仅 JWT 验签通过后非空；与 identity_key/identity_type
+	// 语义完全独立——不改写 Type（APPLICATION/SERVICE 不变 HUMAN），不与未验证
+	// sub 相同的其他主体合并，不参与 identity_key 计算。
+	VerifiedPrincipalID string
+	VerifiedTenantID    string
+}
+
+// verifiedIdentityKey 请求上下文中的可信身份信号键（jwt_trust 验证点写入，Begin 消费）。
+type verifiedIdentityKey struct{}
+
+// VerifiedIdentity JWT 信任链 VERIFIED 结果的可信身份信号（验签通过后由
+// 网关 jwt_trust 挂点注入请求上下文；观测层只消费，验证与执行不经过本模块）。
+type VerifiedIdentity struct {
+	PrincipalID    string // 应用隔离 HMAC 主体指纹（非明文 sub）
+	TenantID       string // 受信 tenant 声明值（内存信号，不落事件明文）
+	IssuerConfigID string // 命中的 issuer 配置 ID（溯源）
+	PolicyVersion  string // 策略版本（溯源）
+}
+
+// WithVerifiedIdentity 把可信身份信号写入请求上下文（仅 VERIFIED 时调用）。
+func WithVerifiedIdentity(ctx context.Context, v *VerifiedIdentity) context.Context {
+	if v == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, verifiedIdentityKey{}, v)
+}
+
+// VerifiedIdentityFrom 取请求上下文中的可信身份信号（未注入为 nil）。
+func VerifiedIdentityFrom(ctx context.Context) *VerifiedIdentity {
+	v, _ := ctx.Value(verifiedIdentityKey{}).(*VerifiedIdentity)
+	return v
 }
 
 // headlessUAMarker 无头浏览器 UA 标记（HEADLESS-001 信号与 bot 分类复用同一词表项）。
@@ -129,6 +162,13 @@ func ResolveIdentity(r *http.Request, salt, clientIP string) *Identity {
 		id.Key = detectors.Fingerprint(salt, "ip:"+clientIP)
 	}
 	id.Confidence, id.Evidence = identityConfidence(id)
+	// JWT 信任链可信信号（WDSP P0-03）：VERIFIED 时由 jwt_trust 验证点经请求
+	// 上下文注入；只填充独立字段，不改 Key/Type/Confidence 语义（APPLICATION/
+	// SERVICE 不改写为 HUMAN，未验证 sub 相同不合并可信主体）。
+	if vi := VerifiedIdentityFrom(r.Context()); vi != nil {
+		id.VerifiedPrincipalID = vi.PrincipalID
+		id.VerifiedTenantID = vi.TenantID
+	}
 	return id
 }
 

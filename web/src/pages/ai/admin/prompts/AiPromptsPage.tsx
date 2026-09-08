@@ -20,7 +20,9 @@ import { aiPromptsApi } from '../../../../api/ai'
 import type { AiPrompt, AiPromptVersion } from '../../../../api/ai'
 import { ApiError } from '../../../../api/client'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
 import StatusTag from '../../../../components/StatusTag'
+import useBatchDelete from '../../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../../stores/auth'
 import { AI_PROMPT_TYPE_META } from '../../../../utils/ai'
 import { formatDateTime } from '../../../../utils/format'
@@ -272,6 +274,10 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
             dataSource={versionsQuery.data}
             scroll={{ x: 860 }}
             pagination={false}
+            onRow={(record) => ({
+              onDoubleClick: () => setViewing(record),
+              style: { cursor: 'pointer' },
+            })}
           />
         )}
       </Space>
@@ -345,12 +351,20 @@ export default function AiPromptsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<AiPrompt | null>(null)
   const [versionsPrompt, setVersionsPrompt] = useState<AiPrompt | null>(null)
+  const [detailRecord, setDetailRecord] = useState<AiPrompt | null>(null)
   const [form] = Form.useForm<CreateFormValues>()
   const [editForm] = Form.useForm<{ name: string }>()
 
   const listQuery = useQuery({
     queryKey: ['ai-prompts', promptType],
     queryFn: () => aiPromptsApi.list({ prompt_type: promptType }),
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<AiPrompt>({
+    remove: (id) => aiPromptsApi.remove(id),
+    invalidateKeys: [['ai-prompts']],
+    entityName: '提示词',
+    canDelete,
   })
 
   const createMutation = useMutation({
@@ -486,6 +500,7 @@ export default function AiPromptsPage() {
             新建提示词
           </Button>
         )}
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -494,11 +509,16 @@ export default function AiPromptsPage() {
         <SmartTable<AiPrompt>
           storageKey="ai-admin-prompts-2"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data}
           scroll={{ x: 1050 }}
           pagination={false}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
         />
       )}
 
@@ -592,6 +612,13 @@ export default function AiPromptsPage() {
       {versionsPrompt && (
         <VersionsDrawer prompt={versionsPrompt} onClose={() => setVersionsPrompt(null)} />
       )}
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="提示词详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

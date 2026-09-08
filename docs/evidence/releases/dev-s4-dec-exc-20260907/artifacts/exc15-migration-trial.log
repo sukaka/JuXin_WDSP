@@ -1,0 +1,51 @@
+============================================================
+EXC-15 迁移试运行  2026-09-07 13:43:42 +0800
+目标容器 p0s3-pg  库 p0s4_mig_trial  迁移目录 /Users/zhanglei/Documents/JiuZhang_WAF/server/migrations
+============================================================
+[setup] 重建 scratch 库 p0s4_mig_trial
+NOTICE:  database "p0s4_mig_trial" does not exist, skipping
+[up] 应用 000001..000129（旧 schema）
+NOTICE:  column "unicast_peers" of relation "ha_groups" already exists, skipping
+NOTICE:  relation "agent_enrollment_tokens" already exists, skipping
+NOTICE:  relation "idx_agent_enrollment_tokens_created" already exists, skipping
+NOTICE:  relation "agents" already exists, skipping
+NOTICE:  relation "idx_agents_hostname" already exists, skipping
+NOTICE:  relation "agent_interfaces" already exists, skipping
+NOTICE:  relation "agent_policies" already exists, skipping
+NOTICE:  relation "agent_policy_bindings" already exists, skipping
+NOTICE:  relation "idx_agent_policy_bindings_policy" already exists, skipping
+NOTICE:  relation "agent_flow_events" already exists, skipping
+NOTICE:  relation "idx_agent_flow_events_agent_ts" already exists, skipping
+NOTICE:  constraint "identity_behavior_events_identity_confidence_check" of relation "identity_behavior_events" does not exist, skipping
+PASS  旧 schema 无 validation_status 列 (=0)
+[seed] 插入 6 条历史例外脏数据
+PASS  脏数据行数 (=6)
+[up] 应用 000130（例外范围契约扩展列 + 历史标记）
+PASS  E1 GLOBAL → NEEDS_REVIEW (=NEEDS_REVIEW)
+PASS  E1 原因含 GLOBAL 文案 (=["GLOBAL 作用域无应用绑定，P0-04 起不允许新建/启用；历史记录保留可读"])
+PASS  E2 LOG_ONLY → NEEDS_REVIEW (=NEEDS_REVIEW)
+PASS  E2 原因含仅观察文案 (=["动作 LOG_ONLY/ADJUST_SCORE 为整请求仅观察语义，P0-04 起不支持新启用，请改为精确目标排除"])
+PASS  E3 空规则 → NEEDS_REVIEW (=NEEDS_REVIEW)
+PASS  E3 原因含缺少目标规则文案 (=["WAF 例外缺少目标规则（rule_ids/rule_tags 均为空），编译产物无任何 ctl 动作"])
+PASS  E4 绑定缺失 → NEEDS_REVIEW (=NEEDS_REVIEW)
+PASS  E5 合法 → 保持 VALID (=VALID)
+PASS  E5 无 unsupported_reasons (=[])
+PASS  E6 已删除 → 不标记（保持 VALID） (=VALID)
+PASS  标记不改 status 本身（E2 仍 ENABLED） (=ENABLED)
+PASS  新增列默认值 target_engine=WAF (=WAF)
+[up] 应用 000131/000132（final_decision 列）
+PASS  api_runtime_events.final_decision 存在 (=1)
+PASS  security_events.final_decision 存在 (=1)
+PASS  分区级联：security_events_default.final_decision 存在 (=1)
+[down] 依次回退 000132/000131/000130
+PASS  down 后 final_decision 列消失（api_runtime_events） (=0)
+PASS  down 后 final_decision 列消失（security_events） (=0)
+PASS  down 后 exception_policies 扩展列消失 (=0)
+PASS  down 后历史行完好（6 行） (=6)
+PASS  down 后历史数据原值（E2 仍 LOG_ONLY/ENABLED） (=LOG_ONLY/ENABLED)
+[up] 重跑 000130/000131/000132（幂等性：IF NOT EXISTS）
+PASS  重跑后历史脏数据再次被标记（E1 NEEDS_REVIEW） (=NEEDS_REVIEW)
+[cleanup] drop scratch 库
+============================================================
+EXC-15 迁移试运行汇总: 检查 23 失败 0
+============================================================

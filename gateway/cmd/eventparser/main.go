@@ -14,6 +14,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -25,10 +27,31 @@ import (
 	"github.com/jiuzhang-waf/gateway/internal/eventparser"
 )
 
+// errorRecord 解析失败记录：不保留原始审计行（可能含 Authorization/Cookie/口令明文），
+// 只留结构化摘要——tx_id（尽力提取）+ 行长度 + 行内容哈希（与原始审计日志对照检索用，
+// 原始行仍在 0600 审计日志文件中可供排查）。
 type errorRecord struct {
 	OccurredAt string `json:"occurred_at"`
 	Reason     string `json:"reason"`
-	RawLine    string `json:"raw_line"`
+	TxID       string `json:"tx_id,omitempty"`
+	LineBytes  int    `json:"line_bytes"`
+	LineSHA256 string `json:"line_sha256"`
+}
+
+// summarizeLine 生成失败行的结构化摘要（不含原始内容，杜绝敏感数据落错误文件）。
+func summarizeLine(line []byte, reason string) errorRecord {
+	rec := errorRecord{
+		OccurredAt: time.Now().UTC().Format(time.RFC3339),
+		Reason:     reason,
+		LineBytes:  len(line),
+	}
+	sum := sha256.Sum256(line)
+	rec.LineSHA256 = hex.EncodeToString(sum[:])
+	var entry eventparser.AuditEntry
+	if err := json.Unmarshal(line, &entry); err == nil {
+		rec.TxID = entry.Transaction.ID
+	}
+	return rec
 }
 
 func main() {
@@ -134,33 +157,18 @@ func processNewLines(auditPath string, offset *int64, eventsFile, errorsFile *os
 func processLine(line []byte, eventsFile, errorsFile *os.File, node string, app eventparser.ApplicationRef) {
 	evt, err := eventparser.ParseLine(line, node, app)
 	if err != nil {
-		// 解析失败不静默丢弃：写入错误文件，保留原始行供排查
-		rec := errorRecord{
-			OccurredAt: time.Now().UTC().Format(time.RFC3339),
-			Reason:     err.Error(),
-			RawLine:    truncateForLog(string(line), 4096),
-		}
+		// 解析失败不静默丢弃：写入错误文件（结构化摘要，不落原始行——含敏感头/口令明文风险）
+		rec := summarizeLine(line, err.Error())
 		b, _ := json.Marshal(rec)
 		_, _ = errorsFile.Write(append(b, '\n'))
 		return
 	}
 	b, err := json.Marshal(evt)
 	if err != nil {
-		rec := errorRecord{
-			OccurredAt: time.Now().UTC().Format(time.RFC3339),
-			Reason:     fmt.Sprintf("marshal event: %v", err),
-			RawLine:    truncateForLog(string(line), 4096),
-		}
+		rec := summarizeLine(line, fmt.Sprintf("marshal event: %v", err))
 		eb, _ := json.Marshal(rec)
 		_, _ = errorsFile.Write(append(eb, '\n'))
 		return
 	}
 	_, _ = eventsFile.Write(append(b, '\n'))
-}
-
-func truncateForLog(s string, n int) string {
-	if len(s) > n {
-		return s[:n] + "...(truncated)"
-	}
-	return s
 }

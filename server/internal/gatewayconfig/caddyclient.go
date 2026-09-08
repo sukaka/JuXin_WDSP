@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -16,6 +19,9 @@ import (
 // CaddyClient 通过 Unix Socket 与 Caddy Admin API 通信。
 type CaddyClient struct {
 	socketPath string
+	// baseURL 请求基址（unix socket 目标为 http://localhost 占位；
+	// http(s) 目标为登记的管理面地址，见 NewCaddyClientForAdminAddr）
+	baseURL    string
 	httpClient *http.Client
 }
 
@@ -28,6 +34,7 @@ func NewCaddyClient(socketPath string) *CaddyClient {
 	}
 	return &CaddyClient{
 		socketPath: socketPath,
+		baseURL:    "http://localhost",
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   30 * time.Second,
@@ -40,9 +47,165 @@ func (c *CaddyClient) SocketPath() string {
 	return c.socketPath
 }
 
+// ErrAdminAddrDenied 节点管理通道地址非法（格式错误或非内网管理面地址）。
+var ErrAdminAddrDenied = errors.New("invalid node admin address")
+
+// ValidateNodeAdminAddr 登记时校验节点 Caddy Admin 通道地址（W18-SYNC，任务书 §200）。
+// 支持两种形态：
+//   - unix socket：绝对路径（/run/caddy-admin.sock）或 unix:///path 形式
+//   - http(s)://host[:port]：仅内网管理面地址（回环/RFC1918/链路本地；主机名
+//     须可解析且全部解析结果为内网地址，任一公网/保留地址即拒绝）
+//
+// 安全纪律（仿 apisecurity URL 导入的 SSRF 防护，方向相反——那里只许公网、
+// 这里只许内网）：Caddy Admin API 无鉴权，登记公网或任意地址等于把配置面写入
+// 能力交给网络可达者；http(s) 目标在拨号时还会重解析复检（防 DNS 重绑定，
+// 见 NewCaddyClientForAdminAddr）。
+func ValidateNodeAdminAddr(addr string) error {
+	_, err := parseAdminAddr(addr)
+	return err
+}
+
+// adminAddrTarget 解析后的管理通道目标。
+type adminAddrTarget struct {
+	socketPath string   // unix socket 路径（httpURL 为空时有效）
+	httpURL    *url.URL // http(s) 目标（socketPath 为空时有效）
+}
+
+// parseAdminAddr 解析并校验管理通道地址。
+func parseAdminAddr(addr string) (*adminAddrTarget, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil, fmt.Errorf("%w: 地址为空", ErrAdminAddrDenied)
+	}
+	if len(addr) > 255 {
+		return nil, fmt.Errorf("%w: 地址过长", ErrAdminAddrDenied)
+	}
+	// unix socket：绝对路径或 unix:// 形式
+	if strings.HasPrefix(addr, "/") {
+		return &adminAddrTarget{socketPath: addr}, nil
+	}
+	if strings.HasPrefix(addr, "unix://") {
+		p := strings.TrimPrefix(addr, "unix://")
+		if !strings.HasPrefix(p, "/") {
+			return nil, fmt.Errorf("%w: unix socket 路径须为绝对路径", ErrAdminAddrDenied)
+		}
+		return &adminAddrTarget{socketPath: p}, nil
+	}
+	u, err := url.Parse(addr)
+	if err != nil {
+		return nil, fmt.Errorf("%w: URL 解析失败", ErrAdminAddrDenied)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("%w: 仅支持 unix socket 路径或 http(s)://host[:port]", ErrAdminAddrDenied)
+	}
+	// 拒绝 userinfo（凭据不入库）与非根路径/查询/片段（Admin API 在根路径，避免歧义）
+	if u.User != nil {
+		return nil, fmt.Errorf("%w: 不允许携带用户信息", ErrAdminAddrDenied)
+	}
+	if u.Path != "" && u.Path != "/" {
+		return nil, fmt.Errorf("%w: 不允许携带路径", ErrAdminAddrDenied)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("%w: 不允许携带查询或片段", ErrAdminAddrDenied)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("%w: 缺少主机名", ErrAdminAddrDenied)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if err := checkInternalAdminIP(ip); err != nil {
+			return nil, err
+		}
+		warnPlaintextAdminScheme(u)
+		return &adminAddrTarget{httpURL: u}, nil
+	}
+	// 主机名：解析全部 A/AAAA 逐一校验（任一公网/保留地址即拒绝）
+	ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip", host)
+	if err != nil || len(ips) == 0 {
+		return nil, fmt.Errorf("%w: 主机名解析失败", ErrAdminAddrDenied)
+	}
+	for _, ip := range ips {
+		if err := checkInternalAdminIP(ip); err != nil {
+			return nil, err
+		}
+	}
+	warnPlaintextAdminScheme(u)
+	return &adminAddrTarget{httpURL: u}, nil
+}
+
+// warnPlaintextAdminScheme http 明文管理通道风险提示：Caddy Admin API 无鉴权，
+// 推送配置携带密钥材料（valkey 密码、签名密钥等），明文 http 传输存在链路旁路
+// 读取与篡改风险，生产环境应使用 unix socket 或 https（仅提示，不改变地址校验逻辑；
+// 登记路径 ValidateNodeAdminAddr 与推送路径 NewCaddyClientForAdminAddr 同经此处）。
+func warnPlaintextAdminScheme(u *url.URL) {
+	if u.Scheme != "http" {
+		return
+	}
+	slog.Warn("node admin address uses plaintext http: Caddy Admin API is unauthenticated and pushed config carries secret material; prefer unix socket or https",
+		"admin_addr", u.Host)
+}
+
+// checkInternalAdminIP 校验目标 IP 属于内网管理面（回环/私网/链路本地单播）。
+func checkInternalAdminIP(ip net.IP) error {
+	if ip == nil {
+		return fmt.Errorf("%w: 空地址", ErrAdminAddrDenied)
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return nil
+	}
+	return fmt.Errorf("%w: 非内网管理面地址 %s", ErrAdminAddrDenied, ip)
+}
+
+// NewCaddyClientForAdminAddr 按节点登记的管理通道地址构建 Caddy Admin 客户端
+// （发布扇出到次要节点用）。unix 目标与 NewCaddyClient 等价；http(s) 目标走
+// 普通 TCP，拨号时重解析并复检内网地址（防校验与连接之间的 DNS 重绑定，
+// 与 apisecurity specFetchTransport 同一纪律）。
+func NewCaddyClientForAdminAddr(addr string) (*CaddyClient, error) {
+	target, err := parseAdminAddr(addr)
+	if err != nil {
+		return nil, err
+	}
+	if target.httpURL == nil {
+		return NewCaddyClient(target.socketPath), nil
+	}
+	base := "http://" + target.httpURL.Host
+	if target.httpURL.Scheme == "https" {
+		base = "https://" + target.httpURL.Host
+	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("%w: 地址解析失败", ErrAdminAddrDenied)
+			}
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil || len(ips) == 0 {
+				return nil, fmt.Errorf("%w: 主机名解析失败", ErrAdminAddrDenied)
+			}
+			for _, ip := range ips {
+				if err := checkInternalAdminIP(ip); err != nil {
+					return nil, err
+				}
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		},
+	}
+	return &CaddyClient{
+		baseURL: base,
+		httpClient: &http.Client{
+			Transport: transport,
+			Timeout:   30 * time.Second,
+		},
+	}, nil
+}
+
 // Ping 检查 Admin API 是否可用（GET /config/）。
 func (c *CaddyClient) Ping(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/config/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/config/", nil)
 	if err != nil {
 		return err
 	}
@@ -61,7 +224,7 @@ func (c *CaddyClient) Ping(ctx context.Context) error {
 // LoadConfig 发布配置到 Caddy（POST /load）。
 // 返回错误信息（Caddy 返回的错误详情，已截断）。
 func (c *CaddyClient) LoadConfig(ctx context.Context, configJSON string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/load",
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/load",
 		strings.NewReader(configJSON))
 	if err != nil {
 		return err
@@ -94,7 +257,7 @@ func (e *LoadError) Error() string {
 
 // GetCurrentConfig 获取当前生效配置（GET /config/）。
 func (c *CaddyClient) GetCurrentConfig(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/config/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/config/", nil)
 	if err != nil {
 		return "", err
 	}
@@ -113,15 +276,29 @@ func (c *CaddyClient) GetCurrentConfig(ctx context.Context) (string, error) {
 	return string(body), nil
 }
 
-// GetConfigHash 获取当前配置的哈希（用于发布前后一致性验证）。
-// 注意：Caddy 会规范化配置，该哈希与生成器的确定性哈希不保证一致，
-// 仅用于发布前后状态比对（发布后哈希应变化为预期新配置的语义）。
+// GetConfigHash 获取当前配置的规范化哈希（发布内容一致性验证与健康指标共用）。
+// 规范化指键序/空白不敏感（Go encoding/json 对 map 键排序），容忍 Caddy /config/
+// 返回与 /load 原文之间的格式差异；语义不一致（内容真实不同）才会得到不同哈希。
 func (c *CaddyClient) GetConfigHash(ctx context.Context) (string, error) {
 	cfg, err := c.GetCurrentConfig(ctx)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte(cfg))
+	return CanonicalConfigHash(cfg)
+}
+
+// CanonicalConfigHash 规范化 JSON 的 sha256 hex：先解析再重新序列化（map 键排序、
+// 空白归一），用于「发布内容 vs 网关实际加载配置」的生效比对（P0-21）。
+func CanonicalConfigHash(configJSON string) (string, error) {
+	var v interface{}
+	if err := json.Unmarshal([]byte(configJSON), &v); err != nil {
+		return "", fmt.Errorf("parse config json: %w", err)
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize config json: %w", err)
+	}
+	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
 }
 

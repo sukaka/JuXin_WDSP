@@ -1,0 +1,931 @@
+{
+  "schema_version": 1,
+  "build_id": "dev-s3s4s5-merged-20260908",
+  "product_version": "unresolved",
+  "source": {
+    "commit": "3c73774",
+    "dirty": true,
+    "snapshot_sha256": null,
+    "file_manifest": []
+  },
+  "images": [],
+  "config_fingerprint": null,
+  "environment": {
+    "id": "dev-mac-local",
+    "note": "合并校验视图：capability_evidence.py 单 manifest 语义下，用 S3+S4+S5 证据合并校验累计能力清单；非构建证据包，工件 sha256 仍指向原证据包内文件",
+    "sources": [
+      "releases/dev-s3-jwt-20260907/manifest.json",
+      "releases/dev-s4-dec-exc-20260907/manifest.json",
+      "releases/dev-s5-bench-20260908/manifest.json"
+    ]
+  },
+  "started_at": "2026-09-06T16:45:00Z",
+  "ended_at": "2026-09-08T09:45:00+08:00",
+  "tests": [
+    {
+      "id": "JWT-01",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json；cd gateway/modules/jiuzhang_guard && go test -race ./... -count=1 -json；bash test/e2e/jwt-trust-smoke.sh（stage5+wdsp 隔离栈，真实 Caddy/Coraza/发布链路）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-guard-test.jsonl",
+          "sha256": "37aa47678e790fdadfb0655d40bcf028d89b6784e095fd3f3567939d14ab6627"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/e2e-jwt-trust-smoke.log",
+          "sha256": "da3ab4a3baa729770ba2f47402d80b902b455f201f360c406c9fbb8d435465d8"
+        }
+      ]
+    },
+    {
+      "id": "JWT-02",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json；cd gateway/modules/jiuzhang_guard && go test -race ./... -count=1 -json；bash test/e2e/jwt-trust-smoke.sh（stage5+wdsp 隔离栈，真实 Caddy/Coraza/发布链路）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-guard-test.jsonl",
+          "sha256": "37aa47678e790fdadfb0655d40bcf028d89b6784e095fd3f3567939d14ab6627"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/e2e-jwt-trust-smoke.log",
+          "sha256": "da3ab4a3baa729770ba2f47402d80b902b455f201f360c406c9fbb8d435465d8"
+        }
+      ]
+    },
+    {
+      "id": "JWT-03",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        }
+      ]
+    },
+    {
+      "id": "JWT-04",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        }
+      ]
+    },
+    {
+      "id": "JWT-05",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        }
+      ]
+    },
+    {
+      "id": "JWT-06",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        }
+      ]
+    },
+    {
+      "id": "JWT-07",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json；cd server && go test ./internal/jwttrust/... -count=1 -json；cd server && go test ./tests -run 'JWTTrust' -count=1 -json（POSTGRES_*/VALKEY_* 指向一次性隔离容器 p0s3-pg:55432 / p0s3-valkey:56379，口令经环境变量传入不记录；helper 重建 jiuzhang_waf_test，Valkey DB 15）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/server-jwttrust-test.jsonl",
+          "sha256": "7a6b4feb9f5b26d7110435a9d7b60272038099623979db00885b42c3f5204f08"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/server-jwt-interface-test.jsonl",
+          "sha256": "a30d4a9db5e393b3eb9f27a162b027a7f11bab533265d2fb9aa74118239bd7d2"
+        }
+      ]
+    },
+    {
+      "id": "JWT-08",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json；cd gateway/modules/jiuzhang_guard && go test -race ./... -count=1 -json",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-guard-test.jsonl",
+          "sha256": "37aa47678e790fdadfb0655d40bcf028d89b6784e095fd3f3567939d14ab6627"
+        }
+      ]
+    },
+    {
+      "id": "JWT-09",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json；cd server && go test ./internal/jwttrust/... -count=1 -json",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/server-jwttrust-test.jsonl",
+          "sha256": "7a6b4feb9f5b26d7110435a9d7b60272038099623979db00885b42c3f5204f08"
+        }
+      ]
+    },
+    {
+      "id": "JWT-10",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json；cd gateway/modules/jiuzhang_guard && go test -race ./... -count=1 -json；cd server && go test ./internal/guardconfig/... -count=1 -json",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-guard-test.jsonl",
+          "sha256": "37aa47678e790fdadfb0655d40bcf028d89b6784e095fd3f3567939d14ab6627"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/server-jwt-integration-units.jsonl",
+          "sha256": "d54fff4b38b03fd65bb204ae34d496c54e642244e6b7d611195759bfaa998393"
+        }
+      ]
+    },
+    {
+      "id": "JWT-11",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/modules/jiuzhang_guard && go test -race ./... -count=1 -json",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-guard-test.jsonl",
+          "sha256": "37aa47678e790fdadfb0655d40bcf028d89b6784e095fd3f3567939d14ab6627"
+        }
+      ]
+    },
+    {
+      "id": "JWT-12",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/modules/jiuzhang_guard && go test -race ./... -count=1 -json；bash test/e2e/jwt-trust-smoke.sh（stage5+wdsp 隔离栈，真实 Caddy/Coraza/发布链路）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-guard-test.jsonl",
+          "sha256": "37aa47678e790fdadfb0655d40bcf028d89b6784e095fd3f3567939d14ab6627"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/e2e-jwt-trust-smoke.log",
+          "sha256": "da3ab4a3baa729770ba2f47402d80b902b455f201f360c406c9fbb8d435465d8"
+        }
+      ]
+    },
+    {
+      "id": "JWT-13",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd server && go test ./tests -run 'JWTTrust' -count=1 -json（POSTGRES_*/VALKEY_* 指向一次性隔离容器 p0s3-pg:55432 / p0s3-valkey:56379，口令经环境变量传入不记录；helper 重建 jiuzhang_waf_test，Valkey DB 15）；cd web && npx vitest run -t JWT（组件测试：JwtTrustTab / 事件详情 JWT 区块）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/server-jwt-interface-test.jsonl",
+          "sha256": "a30d4a9db5e393b3eb9f27a162b027a7f11bab533265d2fb9aa74118239bd7d2"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/web-jwt-vitest.log",
+          "sha256": "3f697edf4e3de94af447c863cc86104efc3ee116ec5675be07c4094b8e6d8b33"
+        }
+      ]
+    },
+    {
+      "id": "JWT-14",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification",
+        "config-release-ha"
+      ],
+      "command": "cd server && go test ./internal/guardconfig/... -count=1 -json；cd server && go test ./tests -run 'JWTTrust' -count=1 -json（POSTGRES_*/VALKEY_* 指向一次性隔离容器 p0s3-pg:55432 / p0s3-valkey:56379，口令经环境变量传入不记录；helper 重建 jiuzhang_waf_test，Valkey DB 15）；bash test/e2e/jwt-trust-smoke.sh（stage5+wdsp 隔离栈，真实 Caddy/Coraza/发布链路）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/server-jwt-integration-units.jsonl",
+          "sha256": "d54fff4b38b03fd65bb204ae34d496c54e642244e6b7d611195759bfaa998393"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/server-jwt-interface-test.jsonl",
+          "sha256": "a30d4a9db5e393b3eb9f27a162b027a7f11bab533265d2fb9aa74118239bd7d2"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/e2e-jwt-trust-smoke.log",
+          "sha256": "da3ab4a3baa729770ba2f47402d80b902b455f201f360c406c9fbb8d435465d8"
+        }
+      ],
+      "note": "发布门禁/预检与有效版本逻辑经单测+接口+真实 smoke 验证；「部分节点失败/回退」未在真实多节点环境演练，限制见 WORKLOG"
+    },
+    {
+      "id": "JWT-15",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd web && npx vitest run -t JWT（组件测试：JwtTrustTab / 事件详情 JWT 区块）；E2E_BASE_URL=http://localhost:5199 npx playwright test e2e/jwt-trust.spec.ts（stage5+wdsp 隔离栈 + 自有 vite 5199；驱动脚本含授权导入与用户 provision）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/web-jwt-vitest.log",
+          "sha256": "3f697edf4e3de94af447c863cc86104efc3ee116ec5675be07c4094b8e6d8b33"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/e2e-jwt-playwright.log",
+          "sha256": "63d029b03496bc751cdaaa73c271d3191cd1aa456f1422b5738a4a241197d3bc"
+        }
+      ],
+      "note": "Playwright 5 passed + 用例6（事件详情 JWT 区块）按设计条件跳过：security_events 恒不携带 jwt_verification（normalize.go），spec 以 annotation 记录原因，不伪造事件；组件测试覆盖该区块渲染"
+    },
+    {
+      "id": "JWT-16",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./jwtverify/... -count=1 -json",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/gateway-jwtverify-test.jsonl",
+          "sha256": "8351d61f68457c153a0ba3e70c9e1c86086c1144440bc9b2a8c8e88e04c91bc6"
+        }
+      ],
+      "note": "-race 全绿；热路径零网络 IO 由 jwtverify 单测断言（受限拨号仅发生在缓存刷新路径）"
+    },
+    {
+      "id": "JWT-17",
+      "status": "PASS",
+      "capabilities": [
+        "jwt-verification",
+        "identity-behavior-observation"
+      ],
+      "command": "cd server && go test ./internal/guardconfig/... -count=1 -json；cd server && go test ./internal/apisecurity/... -count=1 -json；cd web && npx vitest run -t JWT（组件测试：JwtTrustTab / 事件详情 JWT 区块）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/server-jwt-integration-units.jsonl",
+          "sha256": "d54fff4b38b03fd65bb204ae34d496c54e642244e6b7d611195759bfaa998393"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/server-apisecurity-apiruntime.jsonl",
+          "sha256": "898d4a2ade11ee149386641e25896438f48f6c5739cf47cb465f3774ae99a56e"
+        },
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/web-jwt-vitest.log",
+          "sha256": "3f697edf4e3de94af447c863cc86104efc3ee116ec5675be07c4094b8e6d8b33"
+        }
+      ]
+    },
+    {
+      "id": "JWT-18",
+      "status": "BLOCKED",
+      "capabilities": [
+        "jwt-verification"
+      ],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（jwt_pair 语料/接线单测）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s3-jwt-20260907/artifacts/p0-bench-unittests.log",
+          "sha256": "b271b221dabcc67a8e76a94c1b77c639aa9c9ecd3c4e4831a2bd798873f0f393"
+        }
+      ],
+      "note": "jwt_pair 配对实验语料与接线完成、123 单测绿；正式测量需专用隔离硬件（P0-02 同一约束），留待 S5"
+    },
+    {
+      "id": "DEC-01",
+      "status": "BLOCKED",
+      "capabilities": [
+        "request-final-disposition",
+        "waf-crs-detection",
+        "api-request-response-detection",
+        "api-unified-decision"
+      ],
+      "reason": "跨侧 request_id 关联需同请求同时落 security_events 与 api_runtime_events final_decision；冒烟素材 /api/json 经统一管线分类 is_api=false（confidence 0.15），非 API 流量仅在存在检测明细时出事件且不收束 final_decision，api 侧无行可关联。修复方向已注释于 test/e2e/exception-p0-smoke.sh 头部（素材改用 JSON body/CT application/json 或已发现端点）。用户指示本轮暂停，待下轮修复素材后重验。",
+      "command": "bash test/e2e/exception-p0-smoke.sh（第六轮 29/34，本项 count=0）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        }
+      ]
+    },
+    {
+      "id": "DEC-02",
+      "status": "BLOCKED",
+      "capabilities": [
+        "request-final-disposition"
+      ],
+      "reason": "源站归因（COMPLETED/NONE/ORIGIN）在 security_events 侧已由第六轮 dump 实证（POST /api/json2 404 行 executor=NONE/source=ORIGIN），但 api_runtime_events 侧定时断言因 DEC-01 同一 is_api 分类根因无行可查；待素材修复后重验。",
+      "command": "bash test/e2e/exception-p0-smoke.sh（第六轮 E25 空行）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        }
+      ]
+    },
+    {
+      "id": "DEC-03",
+      "status": "PASS",
+      "capabilities": [
+        "request-final-disposition",
+        "real-client-ip",
+        "access-control-cc",
+        "identity-behavior-observation"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（第六轮：WAF 拦截事件 final_decision 实测输出 ABORTED|BLOCK|WAF|GATEWAY|403|true|true，执行者/动作/来源/状态码/规则引用/例外命中全字段正确——轮内 FAIL 系脚本期望串误写 t/t 所致，已修）；cd gateway/modules/jiuzhang_guard && go test -race ./...（disposition 各终止分支 RecordTerminal/Finalize 单测）；JWT 执行者证据承 S3 包 dev-s3-jwt-20260907",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/gateway-guard.jsonl",
+          "sha256": "01f6861f62b0de800184ba1ac4899f39b59978d105384bdca9d1f45d14f869fc"
+        }
+      ]
+    },
+    {
+      "id": "DEC-04",
+      "status": "PASS",
+      "capabilities": [
+        "request-final-disposition",
+        "api-request-response-detection",
+        "api-unified-decision"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./decision/... ./context/... ./pipeline/...（观察与实际动作分离：excepted 不定案、OBSERVE 降级、MASK_RESPONSE 优先级）；bash test/e2e/exception-p0-smoke.sh（A2 事件 rule_refs 仅含真实攻击命中，例外命中分流 matched_exceptions）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/gateway-decision-ctx-pipeline.jsonl",
+          "sha256": "7628de7d1a2a91cdd2084a9e77f85f808e6bc1a8016bf30e2cb061c573869979"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        }
+      ]
+    },
+    {
+      "id": "DEC-05",
+      "status": "BLOCKED",
+      "capabilities": [
+        "request-final-disposition",
+        "api-unified-decision",
+        "event-chain"
+      ],
+      "reason": "幂等关联与「已确认拦截优先」条件补全已经 server 接口测试覆盖（TestFinalDecisionAPIConditionalMerge/TestFinalDecisionSecurityEventStore PASS）；真实网关链的 API ALLOW≠最终放行 同请求对证因 DEC-01 同一 is_api 分类根因缺 API 侧行，待素材修复后重验。",
+      "command": "cd server && go test ./tests -run 'FinalDecision'（PASS）；bash test/e2e/exception-p0-smoke.sh（第六轮 E3 空行）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        }
+      ]
+    },
+    {
+      "id": "DEC-06",
+      "status": "PASS",
+      "capabilities": [
+        "request-final-disposition"
+      ],
+      "command": "cd gateway/modules/jiuzhang_guard && go test -race ./...（连接劫持 outcomeHijacked/下游错误 RecordError/捕获边界分支单测）。限制如实保留：真实 SSE/gRPC 长连接端到端未专项实测，可捕获范围以组件级分支测试为准。",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/gateway-guard.jsonl",
+          "sha256": "01f6861f62b0de800184ba1ac4899f39b59978d105384bdca9d1f45d14f869fc"
+        }
+      ]
+    },
+    {
+      "id": "EXC-01",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（第六轮：例外字段 comment SQLi → 200 REACHED_ORIGIN；基线无例外 403 对照）；cd gateway && go test -race ./corazasemantics/（两规则标记法全维翻折 + 载荷覆盖集不动点：942100/942190/942270/942360+contrib 1001209 全摘除才放行）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/gateway-corazasemantics.jsonl",
+          "sha256": "d2eb5a7ebd2cb86161c465af77955fef824b10439fe113899cc40010db331ec7"
+        }
+      ]
+    },
+    {
+      "id": "EXC-02",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（EXC-02：目标外字段 name 同载荷仍 403）；corazasemantics TestSmokePayloadCoverageSet 第 4 步（name 字段摘除过宽反证）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/gateway-corazasemantics.jsonl",
+          "sha256": "d2eb5a7ebd2cb86161c465af77955fef824b10439fe113899cc40010db331ec7"
+        }
+      ]
+    },
+    {
+      "id": "EXC-03",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions",
+        "waf-crs-detection"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（第三轮实证：只摘 942100 时其余三条 SQLi 规则仍打分达阈阻断——例外不产生全局放行）；cd gateway/dynamic_security && go test -race ./decision/...（部分豁免重算单测）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/gateway-decision-ctx-pipeline.jsonl",
+          "sha256": "7628de7d1a2a91cdd2084a9e77f85f808e6bc1a8016bf30e2cb061c573869979"
+        }
+      ]
+    },
+    {
+      "id": "EXC-04",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "cd server && go test ./tests -run 'Exception'（TestP0ExceptionUnsupportedActionGate：LOG_ONLY/ADJUST_SCORE 拒绝新启用）；bash artifacts/exc15-migration-trial.sh（历史 LOG_ONLY 迁移标 NEEDS_REVIEW 23/23）；E2E_BASE_URL=… npx playwright test e2e/exception-p0.spec.ts（LOG_ONLY 门禁可见性用例）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exc15-migration-trial.log",
+          "sha256": "90a3c9799ffdf71c202dfcf16f4dcb6b55a72e6d2a5206f38259279d84d9a0f0"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-e2e.log",
+          "sha256": "49a06b68d4d3ed0ff730e2d7f2e1113f9a514c6f4550746efe1bd16ab3a41c66"
+        }
+      ]
+    },
+    {
+      "id": "EXC-05",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "corazasemantics TestExceptionChainSemantics（TIME_EPOCH 半开区间：生效前/起点/结束前/恰好结束逐点实测；运行时求值不依赖控制面在线）；bash test/e2e/exception-p0-smoke.sh（EXC-09：未来生效例外当前请求 403）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/gateway-corazasemantics.jsonl",
+          "sha256": "d2eb5a7ebd2cb86161c465af77955fef824b10439fe113899cc40010db331ec7"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        }
+      ]
+    },
+    {
+      "id": "EXC-06",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "cd server && go test ./internal/exceptions/（ListForPublish 2000 容量上限 + 字典序确定性）；corazasemantics 容量实测（2000 条例外规则编译/求值）；接口测试预览 409 乐观锁（版本冲突检出）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-unit.jsonl",
+          "sha256": "40f96a96121af083b3a5232ab73c0180986731fe45637a402e62ddca1e7c5911"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/gateway-corazasemantics.jsonl",
+          "sha256": "d2eb5a7ebd2cb86161c465af77955fef824b10439fe113899cc40010db331ec7"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        }
+      ]
+    },
+    {
+      "id": "EXC-07",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "cd server && go test ./tests -run 'Exception'（TestP0ExceptionFromEventDraft：绑定真实事件、缺证据 NEEDS_REVIEW 不得启用、不跨应用）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        }
+      ]
+    },
+    {
+      "id": "EXC-08",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions",
+        "real-client-ip"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（EXC-08：范围外路径 403 / 范围外方法 403 / 伪造 XFF 不命中 source_ips 例外 403）；corazasemantics 链语义（REQUEST_FILENAME 不含 query、Host 端口/大小写、ipMatch 边界）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/gateway-corazasemantics.jsonl",
+          "sha256": "d2eb5a7ebd2cb86161c465af77955fef824b10439fe113899cc40010db331ec7"
+        }
+      ]
+    },
+    {
+      "id": "EXC-09",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "cd server && go test ./internal/exceptions/（ValidateInput/ValidateForEnable 严格校验：控制字符/引号/病态正则有界拒绝，GenerateSecLang 编译失败显式报错不注入额外规则）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-unit.jsonl",
+          "sha256": "40f96a96121af083b3a5232ab73c0180986731fe45637a402e62ddca1e7c5911"
+        }
+      ]
+    },
+    {
+      "id": "EXC-10",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions",
+        "api-unified-decision"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./decision/...（OBSERVE_RULE：被豁免 Finding 保留证据打标 Excepted、ScoreDelta/类别排除后重算、其余 Finding 动作仍有效）；第六轮冒烟 dump 实证范围内请求 details_json 含 excepted=true+exception_id+exception_version（定时断言因 DEC-01 同根因未计，证据见 stack dump 注记）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/gateway-decision-ctx-pipeline.jsonl",
+          "sha256": "7628de7d1a2a91cdd2084a9e77f85f808e6bc1a8016bf30e2cb061c573869979"
+        }
+      ]
+    },
+    {
+      "id": "EXC-11",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "cd server && go test ./internal/exceptions/（目标门禁：仅 WAF/API 引擎规则级动作，JWT/协议底线/人工封禁/CC/配额不可例外——protected_modules_unchanged 契约）；cd server && go test ./tests -run 'Exception'（UNSUPPORTED_ACTION 门禁接口测试）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-unit.jsonl",
+          "sha256": "40f96a96121af083b3a5232ab73c0180986731fe45637a402e62ddca1e7c5911"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        }
+      ]
+    },
+    {
+      "id": "EXC-12",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions",
+        "config-release-ha"
+      ],
+      "command": "cd server && go test ./tests -run 'Exception'（预览乐观锁 expected_version 409）；E2E 预览 409 用例 + 启用后派生状态「未发布/未知」如实翻转（无节点回执不假装已生效）。限制如实保留：单节点栈，多节点部分失败扇出未实测。",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-e2e.log",
+          "sha256": "49a06b68d4d3ed0ff730e2d7f2e1113f9a514c6f4550746efe1bd16ab3a41c66"
+        }
+      ]
+    },
+    {
+      "id": "EXC-13",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（EXC-13：Coraza 审计日志含 exc:<uuid>/excv:<version> 命中标记；WAF 事件 matched_exceptions 含例外 uuid）；cd server && go test ./tests -run 'Exception'（TestP0ExceptionRBAC 越权拒绝）；E2E 审计管理员只读用例",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-smoke.log",
+          "sha256": "1e3905f246795267cd0ec9f2a200b94f750190967c707a1911dfb4c014d0e0e1"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-e2e.log",
+          "sha256": "49a06b68d4d3ed0ff730e2d7f2e1113f9a514c6f4550746efe1bd16ab3a41c66"
+        }
+      ]
+    },
+    {
+      "id": "EXC-14",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "bash test/e2e/exception-p0-e2e-driver.sh（stage5+wdsp 隔离栈 + CI 临时授权 + vite 5199 + playwright e2e/exception-p0.spec.ts 5/5：草稿→预览→启用→派生状态 / LOG_ONLY 门禁 / 预览 409 / 审计管理员只读 / 事件详情最终处置区块）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exception-p0-e2e.log",
+          "sha256": "49a06b68d4d3ed0ff730e2d7f2e1113f9a514c6f4550746efe1bd16ab3a41c66"
+        }
+      ]
+    },
+    {
+      "id": "EXC-15",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "bash artifacts/exc15-migration-trial.sh（迁移 000130/000131/000132 up/down/幂等重跑 + security_events 分区级联 + 历史 LOG_ONLY 标 NEEDS_REVIEW，23/23 PASS）；cd server && go test ./tests -run 'Exception'（TestP0ExceptionMigrationColumns）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exc15-migration-trial.log",
+          "sha256": "90a3c9799ffdf71c202dfcf16f4dcb6b55a72e6d2a5206f38259279d84d9a0f0"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/exc15-migration-trial.sh",
+          "sha256": "94b1c0294442a70e53eb6f0a7a6e9345dc077763723bd5f9dfd8d36c9a339128"
+        },
+        {
+          "path": "releases/dev-s4-dec-exc-20260907/artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        }
+      ]
+    },
+    {
+      "id": "BENCH-01",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_isolation.py：run_id+project 双标签归属判定，双 run_id 资源隔离可单测部分）；p0bench run-plan 预检实跑（run 20260908T083935-e58633，隔离与预检 PASS）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/p0bench-unittests.log",
+          "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"
+        },
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/preflight-report.md",
+          "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"
+        },
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/preflight-status.json",
+          "sha256": "cd0e12b99c8feb0c9fbfaa3694d34f4ada0609f1906eac8018296b8f17722507"
+        }
+      ],
+      "note": "双 run_id 并发建栈的端到端演练属工具层组合行为，已由归属判定单测+预检覆盖；真实负载下的并发隔离随 BENCH-11 正式矩阵一并终验"
+    },
+    {
+      "id": "BENCH-02",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_isolation.py：共享/外部目标、错误环境标识、重定向逃离一律拒绝）；预检实跑 PASS",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/p0bench-unittests.log",
+          "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"
+        },
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/preflight-status.json",
+          "sha256": "cd0e12b99c8feb0c9fbfaa3694d34f4ada0609f1906eac8018296b8f17722507"
+        }
+      ]
+    },
+    {
+      "id": "BENCH-03",
+      "status": "BLOCKED",
+      "capabilities": [],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "上传源站不读 body/意外 404 时正式计时被阻止——需真实隔离栈与受控源站故障注入；预检报告如实显示七模式矩阵 NOT_RUN，未伪造测量",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/preflight-report.md",
+          "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"
+        }
+      ],
+      "note": "共享开发机纪律禁止正式测量；待专用隔离硬件"
+    },
+    {
+      "id": "BENCH-04",
+      "status": "BLOCKED",
+      "capabilities": [
+        "api-assets-models",
+        "config-release-ha"
+      ],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "七模式切换 + 节点回执/配置差异校验——需真实发布链路与多配置栈；本轮未执行",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/preflight-report.md",
+          "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"
+        }
+      ],
+      "note": "待专用隔离硬件；轮次无效化逻辑随正式矩阵终验"
+    },
+    {
+      "id": "BENCH-05",
+      "status": "PASS",
+      "capabilities": [
+        "waf-crs-detection",
+        "access-control-cc",
+        "api-assets-models",
+        "api-request-response-detection",
+        "apm-entry-performance"
+      ],
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_metrics.py/test_report.py：检测/处置指标分离、预期 403/429 归类、零分母 N/A 不输出 0% 冒充、TP/FP/TN/FN 分母正确）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/p0bench-unittests.log",
+          "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"
+        }
+      ],
+      "note": "指标算法层 PASS；真实混合流量下的指标产出随 BENCH-11 正式矩阵终验"
+    },
+    {
+      "id": "BENCH-06",
+      "status": "PASS",
+      "capabilities": [
+        "apm-entry-performance"
+      ],
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_metrics.py：已知分布最近秩分位数校验；test_report.py：聚合分位数来自样本合并/同 bin 直方图，禁止跨运行平均伪汇总）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/p0bench-unittests.log",
+          "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"
+        }
+      ]
+    },
+    {
+      "id": "BENCH-07",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_report.py：强制用例 SKIP/原始文件缺失/哈希错误 → 报告显示未通过）；python3 -m unittest discover -s tools/tests（P0-01 校验器对缺证据/哈希不符/状态伪造拒绝最终验收，38 用例）",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/p0bench-unittests.log",
+          "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"
+        }
+      ]
+    },
+    {
+      "id": "BENCH-08",
+      "status": "BLOCKED",
+      "capabilities": [
+        "event-chain",
+        "apm-trace-sql-exception",
+        "agent-collection-forwarding"
+      ],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "python3 -m unittest discover -s test/performance/p0/tests（test_collect.py：采样/重复/积压各层数量可解释、永久丢失与临时不可见不混淆——可单测部分 PASS）；制造真实采样/重复/积压后恢复的端到端对账需真实栈",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/p0bench-unittests.log",
+          "sha256": "d2b224dfae7ac12a9c5a6528623725f571f85d63f6617ebcd9e834d96209fb13"
+        },
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/preflight-report.md",
+          "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"
+        }
+      ],
+      "note": "对账算法层已测；事件可见性章节在预检报告中如实 NOT_RUN（无 reconciliation.json），未伪造"
+    },
+    {
+      "id": "BENCH-09",
+      "status": "BLOCKED",
+      "capabilities": [
+        "event-chain",
+        "config-release-ha",
+        "agent-collection-forwarding"
+      ],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "网关/接收器带积压重启与强制终止，ACK 边界内数据完整、恢复满足冻结时限——需真实栈与故障注入；本轮未执行",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/preflight-report.md",
+          "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"
+        }
+      ]
+    },
+    {
+      "id": "BENCH-10",
+      "status": "BLOCKED",
+      "capabilities": [
+        "agent-collection-forwarding"
+      ],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "资源受限与数据库/Valkey 故障下背压有界、错误可见、恢复后对账——需真实受限环境；本轮未执行",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/preflight-report.md",
+          "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"
+        }
+      ]
+    },
+    {
+      "id": "BENCH-11",
+      "status": "BLOCKED",
+      "capabilities": [],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "完整矩阵 3 次重复 + 72 小时组合防护长稳——任务书明确不得以短测顶替；需专用隔离硬件与连续时间窗",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/preflight-report.md",
+          "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"
+        }
+      ],
+      "note": "预检报告长稳章节如实 NOT_RUN（无 soak/ 记录）；本项不过则四项 P0 总状态不得为完成（任务书硬约束）"
+    },
+    {
+      "id": "BENCH-12",
+      "status": "BLOCKED",
+      "capabilities": [],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "另一套同规格干净环境按说明复跑——当前仅一台开发机可用，无第二套同规格硬件",
+      "artifacts": [
+        {
+          "path": "releases/dev-s5-bench-20260908/artifacts/preflight-report.md",
+          "sha256": "6f8bfcbe4a7b0049898d11473ad31e84ff6a6a79a61b3a27aa4f95e7e59cda56"
+        }
+      ]
+    }
+  ],
+  "release_status": "DEVELOPMENT"
+}

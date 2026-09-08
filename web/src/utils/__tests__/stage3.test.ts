@@ -3,10 +3,36 @@ import dayjs from 'dayjs'
 import {
   certRemainingColor,
   certRemainingDays,
+  DEPLOYMENT_MODE_META,
   isTerminalTaskStatus,
   parseBusinessSnapshot,
+  PROTECTION_MODE_META,
   truncateHash,
 } from '../stage3'
+
+describe('DEPLOYMENT_MODE_META', () => {
+  it('覆盖四种部署模式且颜色两两可区分', () => {
+    const modes = ['REVERSE_PROXY', 'ROUTED', 'MIRROR', 'TRANSPARENT']
+    for (const mode of modes) {
+      expect(DEPLOYMENT_MODE_META[mode], `missing meta for ${mode}`).toBeDefined()
+    }
+    expect(DEPLOYMENT_MODE_META.MIRROR.label).toBe('镜像')
+    expect(DEPLOYMENT_MODE_META.TRANSPARENT.label).toBe('透明串接')
+    const colors = modes.map((m) => DEPLOYMENT_MODE_META[m].color)
+    expect(new Set(colors).size).toBe(modes.length)
+  })
+})
+
+describe('PROTECTION_MODE_META', () => {
+  it('覆盖四种防护模式且 BYPASS 颜色醒目区别于其他模式', () => {
+    for (const mode of ['OFF', 'OBSERVE', 'PROTECT', 'BYPASS']) {
+      expect(PROTECTION_MODE_META[mode], `missing meta for ${mode}`).toBeDefined()
+    }
+    expect(PROTECTION_MODE_META.BYPASS.label).toBe('透传')
+    const otherColors = ['OFF', 'OBSERVE', 'PROTECT'].map((m) => PROTECTION_MODE_META[m].color)
+    expect(otherColors).not.toContain(PROTECTION_MODE_META.BYPASS.color)
+  })
+})
 
 describe('certRemainingDays', () => {
   it('空值与非法日期返回 null', () => {

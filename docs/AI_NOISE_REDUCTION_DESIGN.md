@@ -4,7 +4,7 @@
 
 - 核心包：`server/internal/ainoise/`（fingerprint.go / source.go / store.go / mem_store.go / verdict.go / recommend.go / worker.go）
 - Tool：`server/internal/aitools/noise_tools.go`（`noise_cluster.search` / `noise_cluster.get`，全部 READ_ONLY）
-- 接口层：`server/internal/aihandlers/noise_handler.go`（9 个端点，路由注册于 `handler.go`）
+- 接口层：`server/internal/aihandlers/noise_handler.go`（9 个API，路由注册于 `handler.go`）
 - 装配：`server/internal/app/app.go`（阶段7装配块内创建 store/source/worker；worker 仅 `cfg.AI.Enabled` 时挂到 App，`StartStage6Workers` 中 `go Run`）
 - 数据迁移：`server/migrations/000021_ai_noise_reduction.up.sql`（3 张表 + 2 个权限点）
 - 前端：`web/src/pages/ai/noise-reduction/NoiseReductionPage.tsx`、`web/src/api/ai.ts`（`aiNoiseApi`）、路由 `/ai/noise-reduction`、菜单「智能安全运营 → 自动降噪」、事件详情抽屉（`EventDetailDrawer.tsx`）「查看降噪簇」入口
@@ -180,7 +180,7 @@ sha256( source | host(小写,去空白) | normalized_uri | 判别键 | client_ip
 
 AI 权限点总数由阶段7 的 31 个增至 33 个（`module='ai'`）。
 
-## 9. API 端点清单（`aihandlers/noise_handler.go`，9 个）
+## 9. API清单（`aihandlers/noise_handler.go`，9 个）
 
 全部走 `authChain + RequirePermission`；写操作落 `ai_audit_records`。
 
@@ -256,7 +256,7 @@ WDSP 判定取 `cfg.Product.APIDynamicProtectionEnabled()`（`app.go` 装配时�
 | `server/internal/ainoise/verdict_test.go` | ParseVerdict（围栏/杂文本/白名单/钳制）、LLM 失败降级 UNKNOWN |
 | `server/internal/ainoise/recommend_test.go` | DRAFT 推荐生成、同簇去重、证据引用 |
 | `server/internal/aitools/noise_tools_test.go` | 2 个 Tool 注册/权限/白名单/查询与详情、DENIED 审计 |
-| `server/internal/aihandlers/noise_handler_test.go` | 9 个端点权限、筛选校验、suppress/resolve 流转 409、手动扫描、设置校验 |
+| `server/internal/aihandlers/noise_handler_test.go` | 9 个API权限、筛选校验、suppress/resolve 流转 409、手动扫描、设置校验 |
 
 前端（Vitest）：
 

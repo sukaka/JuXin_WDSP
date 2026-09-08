@@ -22,8 +22,10 @@ import { ExperimentOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/ic
 import { ApiError } from '../../api/client'
 import { trustedProxiesApi } from '../../api/trustedProxies'
 import { protectedAddressesApi } from '../../api/protectedAddresses'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -86,12 +88,23 @@ function TrustedProxyPanel() {
   const [formOpen, setFormOpen] = useState(false)
   const [testOpen, setTestOpen] = useState(false)
   const [testResult, setTestResult] = useState<TrustedProxyTestResult | null>(null)
+  const [detailRecord, setDetailRecord] = useState<TrustedProxyItem | null>(null)
+  const [testDetailRecord, setTestDetailRecord] = useState<
+    TrustedProxyTestResult['results'][number] | null
+  >(null)
   const [form] = Form.useForm<ProxyFormValues>()
   const [testForm] = Form.useForm<TestFormValues>()
 
   const listQuery = useQuery({
     queryKey: ['trusted-proxies', filters, page, pageSize],
     queryFn: () => trustedProxiesApi.list({ ...filters, page, page_size: pageSize }),
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<TrustedProxyItem>({
+    remove: (id) => trustedProxiesApi.remove(id),
+    invalidateKeys: [['trusted-proxies']],
+    entityName: '可信代理',
+    canDelete: canManage,
   })
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['trusted-proxies'] })
@@ -211,7 +224,7 @@ function TrustedProxyPanel() {
         </Space>
       ),
     },
-    { title: '优先级', dataIndex: 'priority', width: 80, align: 'right' },
+    { title: '优先级', dataIndex: 'priority', width: 80 },
     {
       title: '范围',
       dataIndex: 'scope',
@@ -317,6 +330,7 @@ function TrustedProxyPanel() {
             新建可信代理
           </Button>
         )}
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -330,10 +344,15 @@ function TrustedProxyPanel() {
         <SmartTable<TrustedProxyItem>
           storageKey="trusted-proxies"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
           scroll={{ x: 1250 }}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             current: page,
             pageSize,
@@ -519,6 +538,10 @@ function TrustedProxyPanel() {
             size="small"
             pagination={false}
             dataSource={testResult.results}
+            onRow={(record) => ({
+              onDoubleClick: () => setTestDetailRecord(record),
+              style: { cursor: 'pointer' },
+            })}
             columns={[
               { title: '测试IP', dataIndex: 'ip', width: 140 },
               {
@@ -555,6 +578,19 @@ function TrustedProxyPanel() {
           />
         )}
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="可信代理详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
+      <RecordDetailDrawer
+        open={testDetailRecord !== null}
+        title="测试结果详情"
+        record={testDetailRecord as Record<string, unknown> | null}
+        onClose={() => setTestDetailRecord(null)}
+      />
     </>
   )
 }
@@ -573,12 +609,24 @@ function ProtectedAddressPanel() {
   const canManage = hasPermission(permissions, 'protected_addresses.manage')
 
   const [addressType, setAddressType] = useState<string | undefined>(undefined)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [createOpen, setCreateOpen] = useState(false)
+  const [detailRecord, setDetailRecord] = useState<ProtectedAddressItem | null>(null)
   const [form] = Form.useForm<AddressFormValues>()
 
   const listQuery = useQuery({
-    queryKey: ['protected-addresses', addressType],
-    queryFn: () => protectedAddressesApi.list({ address_type: addressType }),
+    queryKey: ['protected-addresses', addressType, page, pageSize],
+    queryFn: () => protectedAddressesApi.list({ address_type: addressType, page, page_size: pageSize }),
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<ProtectedAddressItem>({
+    remove: (id) => protectedAddressesApi.remove(id),
+    invalidateKeys: [['protected-addresses']],
+    entityName: '保护地址',
+    canDelete: canManage,
+    // 系统登记地址不可删除（后端 409），与行内删除按钮显隐口径一致
+    rowDisabled: (record) => record.source_type !== 'MANUAL',
   })
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['protected-addresses'] })
@@ -694,7 +742,10 @@ function ProtectedAddressPanel() {
             value,
             label: meta.label,
           }))}
-          onChange={(v) => setAddressType(v)}
+          onChange={(v) => {
+            setAddressType(v)
+            setPage(1)
+          }}
         />
         {canManage && (
           <>
@@ -717,6 +768,7 @@ function ProtectedAddressPanel() {
             </Button>
           </>
         )}
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -730,11 +782,26 @@ function ProtectedAddressPanel() {
         <SmartTable<ProtectedAddressItem>
           storageKey="trusted-proxies-protected-addresses"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
           scroll={{ x: 1050 }}
-          pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+          pagination={{
+            current: page,
+            pageSize,
+            total: listQuery.data?.total ?? 0,
+            showSizeChanger: true,
+            showTotal: (t) => `共 ${t} 条`,
+            onChange: (p, ps) => {
+              setPage(p)
+              setPageSize(ps)
+            },
+          }}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
         />
       )}
 
@@ -781,6 +848,13 @@ function ProtectedAddressPanel() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="保护地址详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </>
   )
 }

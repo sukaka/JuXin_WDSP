@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap');
+      text { font-family: 'JetBrains Mono', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+      .title { font-size: 32px; font-weight: 700; fill: #f8fafc; }
+      .subtitle { font-size: 14px; fill: #94a3b8; }
+      .domain { font-size: 18px; font-weight: 700; fill: #f8fafc; }
+      .index { font-size: 12px; font-weight: 700; }
+      .item { font-size: 12px; font-weight: 600; fill: #e2e8f0; }
+      .desc { font-size: 10px; fill: #94a3b8; }
+      .foundation { font-size: 12px; font-weight: 600; fill: #cbd5e1; }
+    </style>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#1e293b" stroke-width="0.6"/>
+    </pattern>
+    <radialGradient id="coreGlow" cx="50%" cy="45%" r="65%">
+      <stop offset="0" stop-color="#164e63" stop-opacity="0.7"/>
+      <stop offset="0.55" stop-color="#0f2436" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#0f172a" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#020617" flood-opacity="0.55"/>
+    </filter>
+    <filter id="glow" x="-70%" y="-70%" width="240%" height="240%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="900" fill="#0f172a"/>
+  <rect width="1600" height="900" fill="url(#grid)"/>
+  <ellipse cx="800" cy="454" rx="660" ry="390" fill="url(#coreGlow)"/>
+
+  <text x="52" y="58" class="title">九章 WDSP · 产品功能全景</text>
+  <text x="54" y="86" class="subtitle">从规则匹配升级为“API 资产 + 调用身份 + 业务行为”的统一动态防护</text>
+  <g transform="translate(1292,43)">
+    <rect width="256" height="42" rx="21" fill="#082f49" stroke="#22d3ee"/>
+    <circle cx="23" cy="21" r="6" fill="#22d3ee" filter="url(#glow)"/>
+    <text x="43" y="26" font-size="11" font-weight="700" fill="#a5f3fc">20 项差异化能力</text>
+  </g>
+
+  <!-- Domain 1 -->
+  <g filter="url(#shadow)">
+    <rect x="48" y="126" width="482" height="224" rx="16" fill="#0f172a"/>
+    <rect x="48" y="126" width="482" height="224" rx="16" fill="#083344" fill-opacity="0.66" stroke="#22d3ee" stroke-width="1.5"/>
+    <circle cx="86" cy="166" r="20" fill="#155e75" stroke="#22d3ee"/>
+    <text x="86" y="171" class="index" fill="#cffafe" text-anchor="middle">01</text>
+    <text x="120" y="173" class="domain">统一动态防护</text>
+    <text x="474" y="172" class="desc" fill="#67e8f9" text-anchor="end">ONE PIPELINE</text>
+    <line x1="72" y1="194" x2="506" y2="194" stroke="#155e75"/>
+    <g>
+      <circle cx="82" cy="220" r="4" fill="#22d3ee"/><text x="98" y="224" class="item">Web / API 一条流量链，一次解析</text>
+      <circle cx="82" cy="250" r="4" fill="#22d3ee"/><text x="98" y="254" class="item">请求 + 响应双向建模与检测</text>
+      <circle cx="82" cy="280" r="4" fill="#22d3ee"/><text x="98" y="284" class="item">多检测信号统一风险决策</text>
+      <circle cx="82" cy="310" r="4" fill="#22d3ee"/><text x="98" y="314" class="item">同一 Request ID 归并统一安全事件</text>
+    </g>
+    <text x="486" y="323" class="desc" text-anchor="end">ALLOW · OBSERVE · BLOCK · LIMIT · MASK</text>
+  </g>
+
+  <!-- Domain 2 -->
+  <g filter="url(#shadow)">
+    <rect x="559" y="126" width="482" height="224" rx="16" fill="#0f172a"/>
+    <rect x="559" y="126" width="482" height="224" rx="16" fill="#064e3b" fill-opacity="0.54" stroke="#34d399" stroke-width="1.5"/>
+    <circle cx="597" cy="166" r="20" fill="#065f46" stroke="#34d399"/>
+    <text x="597" y="171" class="index" fill="#d1fae5" text-anchor="middle">02</text>
+    <text x="631" y="173" class="domain">API 资产与生命周期</text>
+    <text x="985" y="172" class="desc" fill="#6ee7b7" text-anchor="end">DISCOVERY</text>
+    <line x1="583" y1="194" x2="1017" y2="194" stroke="#065f46"/>
+    <g>
+      <circle cx="593" cy="220" r="4" fill="#34d399"/><text x="609" y="224" class="item">真实流量自动发现与资产清单</text>
+      <circle cx="593" cy="250" r="4" fill="#34d399"/><text x="609" y="254" class="item">路径归一化、模板化、合并与拆分</text>
+      <circle cx="593" cy="280" r="4" fill="#34d399"/><text x="609" y="284" class="item">Shadow / Zombie / Deprecated / Debug</text>
+      <circle cx="593" cy="310" r="4" fill="#34d399"/><text x="609" y="314" class="item">生命周期、调用拓扑与安全图谱</text>
+    </g>
+    <text x="997" y="323" class="desc" text-anchor="end">REST · JSON · XML · SOAP · GraphQL · Webhook</text>
+  </g>
+
+  <!-- Domain 3 -->
+  <g filter="url(#shadow)">
+    <rect x="1070" y="126" width="482" height="224" rx="16" fill="#0f172a"/>
+    <rect x="1070" y="126" width="482" height="224" rx="16" fill="#4c1d95" fill-opacity="0.38" stroke="#a78bfa" stroke-width="1.5"/>
+    <circle cx="1108" cy="166" r="20" fill="#5b21b6" stroke="#a78bfa"/>
+    <text x="1108" y="171" class="index" fill="#ede9fe" text-anchor="middle">03</text>
+    <text x="1142" y="173" class="domain">动态学习与正向模型</text>
+    <text x="1496" y="172" class="desc" fill="#c4b5fd" text-anchor="end">LEARNING</text>
+    <line x1="1094" y1="194" x2="1528" y2="194" stroke="#5b21b6"/>
+    <g>
+      <circle cx="1104" cy="220" r="4" fill="#a78bfa"/><text x="1120" y="224" class="item">参数微模型：类型、范围、枚举、关联</text>
+      <circle cx="1104" cy="250" r="4" fill="#a78bfa"/><text x="1120" y="254" class="item">请求 / 响应 Schema 动态学习</text>
+      <circle cx="1104" cy="280" r="4" fill="#a78bfa"/><text x="1120" y="284" class="item">人工确认冻结、版本差异、重新学习</text>
+      <circle cx="1104" cy="310" r="4" fill="#a78bfa"/><text x="1120" y="314" class="item">Schema 偏离与未知异常检测</text>
+    </g>
+    <text x="1508" y="323" class="desc" text-anchor="end">学习不自动放宽 · 样本污染防护</text>
+  </g>
+
+  <!-- Domain 4 -->
+  <g filter="url(#shadow)">
+    <rect x="48" y="378" width="482" height="224" rx="16" fill="#0f172a"/>
+    <rect x="48" y="378" width="482" height="224" rx="16" fill="#78350f" fill-opacity="0.4" stroke="#fbbf24" stroke-width="1.5"/>
+    <circle cx="86" cy="418" r="20" fill="#92400e" stroke="#fbbf24"/>
+    <text x="86" y="423" class="index" fill="#fef3c7" text-anchor="middle">04</text>
+    <text x="120" y="425" class="domain">身份、访问与授权安全</text>
+    <text x="474" y="424" class="desc" fill="#fcd34d" text-anchor="end">IDENTITY</text>
+    <line x1="72" y1="446" x2="506" y2="446" stroke="#92400e"/>
+    <g>
+      <circle cx="82" cy="472" r="4" fill="#fbbf24"/><text x="98" y="476" class="item">Token / JWT / API Key 不可逆身份指纹</text>
+      <circle cx="82" cy="502" r="4" fill="#fbbf24"/><text x="98" y="506" class="item">环境 + 对象双维访问微模型</text>
+      <circle cx="82" cy="532" r="4" fill="#fbbf24"/><text x="98" y="536" class="item">BOLA / BFLA / 字段级越权辅助检测</text>
+      <circle cx="82" cy="562" r="4" fill="#fbbf24"/><text x="98" y="566" class="item">Mass Assignment 与异常权限调用</text>
+    </g>
+    <text x="486" y="575" class="desc" text-anchor="end">身份 × API × 对象 × 环境</text>
+  </g>
+
+  <!-- Domain 5 -->
+  <g filter="url(#shadow)">
+    <rect x="559" y="378" width="482" height="224" rx="16" fill="#0f172a"/>
+    <rect x="559" y="378" width="482" height="224" rx="16" fill="#881337" fill-opacity="0.36" stroke="#fb7185" stroke-width="1.5"/>
+    <circle cx="597" cy="418" r="20" fill="#9f1239" stroke="#fb7185"/>
+    <text x="597" y="423" class="index" fill="#ffe4e6" text-anchor="middle">05</text>
+    <text x="631" y="425" class="domain">行为与敏感数据保护</text>
+    <text x="985" y="424" class="desc" fill="#fda4af" text-anchor="end">BEHAVIOR</text>
+    <line x1="583" y1="446" x2="1017" y2="446" stroke="#9f1239"/>
+    <g>
+      <circle cx="593" cy="472" r="4" fill="#fb7185"/><text x="609" y="476" class="item">业务流程偏离与调用序列基线</text>
+      <circle cx="593" cy="502" r="4" fill="#fb7185"/><text x="609" y="506" class="item">低慢探测、批量抓取与资源滥用</text>
+      <circle cx="593" cy="532" r="4" fill="#fb7185"/><text x="609" y="536" class="item">请求 / 响应敏感数据发现与泄露检测</text>
+      <circle cx="593" cy="562" r="4" fill="#fb7185"/><text x="609" y="566" class="item">按身份、Token、租户、API 精细限流</text>
+    </g>
+    <text x="997" y="575" class="desc" text-anchor="end">正常单步 + 异常全程 = 可识别风险</text>
+  </g>
+
+  <!-- Domain 6 -->
+  <g filter="url(#shadow)">
+    <rect x="1070" y="378" width="482" height="224" rx="16" fill="#0f172a"/>
+    <rect x="1070" y="378" width="482" height="224" rx="16" fill="#1e3a8a" fill-opacity="0.36" stroke="#60a5fa" stroke-width="1.5"/>
+    <circle cx="1108" cy="418" r="20" fill="#1d4ed8" stroke="#60a5fa"/>
+    <text x="1108" y="423" class="index" fill="#dbeafe" text-anchor="middle">06</text>
+    <text x="1142" y="425" class="domain">对抗、运营与闭环</text>
+    <text x="1496" y="424" class="desc" fill="#93c5fd" text-anchor="end">SECOPS</text>
+    <line x1="1094" y1="446" x2="1528" y2="446" stroke="#1d4ed8"/>
+    <g>
+      <circle cx="1104" cy="472" r="4" fill="#60a5fa"/><text x="1120" y="476" class="item">AI Agent 自动侦察与 Payload 变异对抗</text>
+      <circle cx="1104" cy="502" r="4" fill="#60a5fa"/><text x="1120" y="506" class="item">主动扫描、复测与弱点闭环</text>
+      <circle cx="1104" cy="532" r="4" fill="#60a5fa"/><text x="1120" y="536" class="item">AI 研判、模型建议与安全报告</text>
+      <circle cx="1104" cy="562" r="4" fill="#60a5fa"/><text x="1120" y="566" class="item">检测 → 研判 → 处置 → 模型修订</text>
+    </g>
+    <text x="1508" y="575" class="desc" text-anchor="end">AI 只读研判 · 人工确认与发布</text>
+  </g>
+
+  <!-- Foundation -->
+  <g filter="url(#shadow)">
+    <rect x="48" y="638" width="1504" height="182" rx="18" fill="#0f172a"/>
+    <rect x="48" y="638" width="1504" height="182" rx="18" fill="#111827" fill-opacity="0.9" stroke="#64748b" stroke-width="1.4"/>
+    <text x="78" y="676" class="domain">WAF 与平台基础底座</text>
+    <text x="1518" y="675" class="desc" text-anchor="end">CADDY · CORAZA · OWASP CRS · GO · POSTGRESQL · VALKEY</text>
+    <line x1="78" y1="694" x2="1522" y2="694" stroke="#334155"/>
+    <g text-anchor="middle">
+      <g><rect x="78" y="716" width="202" height="72" rx="11" fill="#1e293b" stroke="#64748b"/><text x="179" y="746" class="foundation">应用接入与反向代理</text><text x="179" y="768" class="desc">HTTP/S · 多域名 · 健康检查</text></g>
+      <g><rect x="300" y="716" width="202" height="72" rx="11" fill="#1e293b" stroke="#64748b"/><text x="401" y="746" class="foundation">Web 攻击防护</text><text x="401" y="768" class="desc">SQLi · XSS · RCE · 上传检测</text></g>
+      <g><rect x="522" y="716" width="202" height="72" rx="11" fill="#1e293b" stroke="#64748b"/><text x="623" y="746" class="foundation">访问控制与 CC</text><text x="623" y="768" class="desc">黑白名单 · L7 ACL · 限速</text></g>
+      <g><rect x="744" y="716" width="202" height="72" rx="11" fill="#1e293b" stroke="#64748b"/><text x="845" y="746" class="foundation">统一策略管理</text><text x="845" y="768" class="desc">模板 · 例外 · 版本 · 回滚</text></g>
+      <g><rect x="966" y="716" width="202" height="72" rx="11" fill="#1e293b" stroke="#64748b"/><text x="1067" y="746" class="foundation">事件与安全态势</text><text x="1067" y="768" class="desc">事件中心 · 趋势 · 报表</text></g>
+      <g><rect x="1188" y="716" width="334" height="72" rx="11" fill="#1e293b" stroke="#64748b"/><text x="1355" y="746" class="foundation">企业级系统治理</text><text x="1355" y="768" class="desc">三权分立 · 操作审计 · 备份恢复 · 高可用</text></g>
+    </g>
+  </g>
+
+  <text x="52" y="858" class="desc">产品定位：统一 Web / API 动态防护系统 · 运行时一体化，能力域可拆分</text>
+  <text x="1548" y="858" class="desc" text-anchor="end">依据：WDSP 阶段 8 任务书 / Top 20 差异化能力</text>
+</svg>

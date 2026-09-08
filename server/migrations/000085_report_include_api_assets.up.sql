@@ -1,0 +1,7 @@
+-- 报告可选项：是否包含全量 API 资产清单
+BEGIN;
+
+ALTER TABLE report_jobs ADD COLUMN IF NOT EXISTS include_api_assets BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS include_api_assets BOOLEAN NOT NULL DEFAULT FALSE;
+
+COMMIT;

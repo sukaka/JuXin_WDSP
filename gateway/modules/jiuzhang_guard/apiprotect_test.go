@@ -229,21 +229,21 @@ func TestServeNext_LifecycleNewEndpoint(t *testing.T) {
 	}
 }
 
-// preserveRequestBody：Content-Length 超限不读入内存、跳过管线；限内完整可读可还原，
+// preserveRequestBody：Content-Length 超限不读入内存、跳过管线并说明原因；限内完整可读可还原，
 // 体样本与原文一致（webshell C2 请求相位观测样本由此供给）。
 func TestPreserveRequestBodyCap(t *testing.T) {
-	// 超限 Content-Length：不读 body，返回 nil（跳过管线）
+	// 超限 Content-Length：不读 body，返回 nil（跳过管线）并给出原因
 	over := httptest.NewRequest(http.MethodPost, "/v1/x", strings.NewReader("payload"))
 	over.ContentLength = maxBodyPreserveBytes + 1
-	if restore, _ := preserveRequestBody(over); restore != nil {
-		t.Fatal("oversized Content-Length must skip preserve")
+	if restore, _, reason := preserveRequestBody(over); restore != nil || reason == "" {
+		t.Fatalf("oversized Content-Length must skip preserve with reason, reason=%q", reason)
 	}
 	// 限内：可读且 restore 可还原，体样本与原文一致
 	body := `{"id":1}`
 	okReq := httptest.NewRequest(http.MethodPost, "/v1/x", strings.NewReader(body))
-	restore, sample := preserveRequestBody(okReq)
+	restore, sample, reason := preserveRequestBody(okReq)
 	if restore == nil {
-		t.Fatal("in-limit body must be preserved")
+		t.Fatalf("in-limit body must be preserved, reason=%q", reason)
 	}
 	if string(sample) != body {
 		t.Fatalf("body sample = %q, want %q", sample, body)
@@ -257,6 +257,87 @@ func TestPreserveRequestBodyCap(t *testing.T) {
 	if err != nil || string(got) != body {
 		t.Fatalf("restored read = %q err=%v", got, err)
 	}
+}
+
+// parser 上限（1MiB）与 guard 保全上限（4MiB）之间的报文：不再整体跳过——管线执行且
+// parser 截断+采样路径真正生效（BodyTruncated=true），下游仍拿到完整请求体
+// （code-review HIGH-7：两处上限同为 1MiB 时该路径为死代码）。
+func TestServeNext_BodyBetweenParserAndGuardLimit(t *testing.T) {
+	g, _ := newAPITestGuard(t, "PROTECT", nil)
+	full := `{"pad":"` + strings.Repeat("x", (1<<20)+(1<<19)) + `"}` // ≈1.5MiB：超 parser 上限、在 guard 上限内
+	var gotLen int
+	next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+		b, _ := io.ReadAll(r.Body)
+		gotLen = len(b)
+		return nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/big", strings.NewReader(full))
+	req.Header.Set("Content-Type", "application/json")
+	if err := g.serveNext(httptest.NewRecorder(), req, next); err != nil {
+		t.Fatalf("serveNext: %v", err)
+	}
+	if gotLen != len(full) {
+		t.Fatalf("downstream body must stay intact: %d, want %d", gotLen, len(full))
+	}
+	rc := RequestContextFrom(req)
+	if rc == nil {
+		t.Fatal("pipeline must run for bodies within guard preserve limit")
+	}
+	if !rc.BodyTruncated {
+		t.Fatal("parser truncation+sampling path must engage for bodies over parser limit")
+	}
+}
+
+// 超 guard 保全上限的报文：fail-open 放行且下游体完整；跳过必须可见——
+// OBSERVE 明细事件落盘（request.body_preserve_skipped），不再零日志零事件
+// （code-review HIGH-7）。Content-Length 已知超限与未知长度（chunked）两种路径均覆盖。
+func TestServeNext_OversizedBodySkipVisible(t *testing.T) {
+	full := strings.Repeat("y", maxBodyPreserveBytes+1)
+	run := func(t *testing.T, contentLength int64, wantReason string) {
+		g, logPath := newAPITestGuard(t, "PROTECT", nil)
+		var gotLen int
+		next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+			b, _ := io.ReadAll(r.Body)
+			gotLen = len(b)
+			return nil
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/upload", strings.NewReader(full))
+		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("X-Request-Id", "req-big-skip")
+		req.ContentLength = contentLength
+		if err := g.serveNext(httptest.NewRecorder(), req, next); err != nil {
+			t.Fatalf("serveNext: %v", err)
+		}
+		if gotLen != len(full) {
+			t.Fatalf("downstream must receive full body on skip: %d, want %d", gotLen, len(full))
+		}
+		recs := readAPIRecords(t, logPath)
+		if len(recs) != 1 {
+			t.Fatalf("want 1 skip-marker event, got %d: %+v", len(recs), recs)
+		}
+		rec := recs[0]
+		if rec.RequestID != "req-big-skip" || rec.FinalAction != "OBSERVE" || rec.ResponseStatus != 0 {
+			t.Fatalf("bad skip event: %+v", rec)
+		}
+		found := false
+		for _, d := range rec.Details {
+			if d.RuleID == "request.body_preserve_skipped" && d.Category == "OBSERVE" && d.Severity == "HIGH" {
+				found = true
+				if d.Evidence["reason"] != wantReason {
+					t.Fatalf("skip reason = %q, want %q", d.Evidence["reason"], wantReason)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("skip detail missing: %+v", rec.Details)
+		}
+	}
+	t.Run("content-length known", func(t *testing.T) {
+		run(t, int64(len(full)), "content_length_exceeds_preserve_limit")
+	})
+	t.Run("chunked unknown length", func(t *testing.T) {
+		run(t, -1, "body_exceeds_preserve_limit")
+	})
 }
 
 // 事件携带响应状态码与来源/身份指纹：阻断按决策映射 403（阻断时输出）；

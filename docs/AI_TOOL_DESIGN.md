@@ -279,7 +279,7 @@ AI 草稿 Tool（DRAFT_ONLY）
 
 ## 8. 第三方组件许可说明
 
-Tool 层本身不直接依赖模型；模型接入层（`server/internal/aimodel`）以 OpenAI 兼容协议对接本地/远端推理端点（含 `ollama` 供应商类型）。相关组件许可证：Ollama（MIT）、Qwen2.5 系列模型（Apache-2.0），均符合项目宽松许可证要求。详见 [开源合规](OPEN_SOURCE_COMPLIANCE.md)。
+Tool 层本身不直接依赖模型；模型接入层（`server/internal/aimodel`）以 OpenAI 兼容协议对接本地/远端推理API（含 `ollama` 供应商类型）。相关组件许可证：Ollama（MIT）、Qwen2.5 系列模型（Apache-2.0），均符合项目宽松许可证要求。详见 [开源合规](OPEN_SOURCE_COMPLIANCE.md)。
 
 ## 9. 关联文档
 

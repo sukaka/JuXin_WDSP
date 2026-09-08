@@ -1,0 +1,22 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: "SSRF 命名 URL 参数指向内网检测（CUSTOM_PACK ssrf-protocols）"
+rule_id: 1001516
+tests:
+  - test_id: 1
+    desc: "callback 参数指向 192.168 内网主机"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: GET
+          port: 80
+          uri: "/get?callback=http://192.168.1.10:9000/hook"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001516]

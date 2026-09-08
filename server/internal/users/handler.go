@@ -202,6 +202,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if target.DisplayName == "" {
 		target.DisplayName = target.Username
 	}
+	// 与 Create/个人资料同一限制，避免超长输入落到数据库约束报 500
+	if len(target.DisplayName) > 128 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "显示名称过长")
+		return
+	}
 	roleChanged, err := h.store.UpdateWithRole(r.Context(), target, roleID, p.UserID)
 	if errors.Is(err, ErrVersionConflict) {
 		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict,
@@ -372,6 +377,32 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ResetTOTP 重置用户双因子认证（清空密钥与恢复码，高危操作）。
+func (h *Handler) ResetTOTP(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的用户ID")
+		return
+	}
+	target, err := h.store.GetByID(r.Context(), id)
+	if err != nil {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "用户不存在")
+		return
+	}
+	if !target.TOTPEnabled && target.TOTPPendingSecretEncrypted == nil {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "该用户未开启双因子认证")
+		return
+	}
+	if err := h.store.ClearTOTP(r.Context(), id); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "users", "totp_reset", "user", id.String(), target.Username,
+		"totp_enabled=true", "totp_cleared=true", audits.ResultSuccess, "", audits.RiskHigh)
+	response.JSON(w, r, http.StatusOK, map[string]string{"message": "该用户的双因子认证已重置"})
+}
+
 // ForceLogout 强制用户下线。
 func (h *Handler) ForceLogout(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
@@ -430,7 +461,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, before, after, result, failReason, risk string) {
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),

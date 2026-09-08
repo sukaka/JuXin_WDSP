@@ -14,20 +14,27 @@ import {
   Space,
   Tag,
   Typography,
+  Upload,
 } from 'antd'
 import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
-import { PlusOutlined, RollbackOutlined } from '@ant-design/icons'
+import { InboxOutlined, PlusOutlined, RollbackOutlined, UploadOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
-import { upgradesApi } from '../../api/upgrades'
+import { upgradesApi, type UpgradePackageResp } from '../../api/upgrades'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatBytes, formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import { truncateHash } from '../../utils/stage3'
-import { CHECK_RESULT_META, UPGRADE_STATUS_META, isTerminalUpgradeStatus } from '../../utils/stage6'
-import type { UpgradeJobItem, UpgradePackageItem, UpgradePrecheckResult } from '../../types'
+import {
+  CHECK_RESULT_META,
+  UPGRADE_PACKAGE_STATUS_META,
+  UPGRADE_STATUS_META,
+  isTerminalUpgradeStatus,
+} from '../../utils/stage6'
+import type { UpgradeJobItem, UpgradePrecheckItem, UpgradePrecheckResult } from '../../types'
 
 interface PackageFormValues {
   file_name: string
@@ -37,7 +44,12 @@ interface PackageFormValues {
   file_size: number
 }
 
-/** 系统升级：升级包登记 → 预检 → 执行升级（任务轮询）→ 失败回滚 */
+interface UploadFormValues {
+  version_from: string
+  version_to: string
+}
+
+/** 系统升级：升级包上传/登记 → 预检 → 执行升级（任务轮询）→ 失败回滚 */
 export default function SystemUpgradePage() {
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
@@ -49,11 +61,20 @@ export default function SystemUpgradePage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [registerOpen, setRegisterOpen] = useState(false)
-  // 升级包无列表查询接口，登记记录保存在本地会话状态中
-  const [packages, setPackages] = useState<UpgradePackageItem[]>([])
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [selectedPackageId, setSelectedPackageId] = useState<string>()
   const [precheck, setPrecheck] = useState<UpgradePrecheckResult | null>(null)
+  const [detailJob, setDetailJob] = useState<UpgradeJobItem | null>(null)
+  const [detailPrecheck, setDetailPrecheck] = useState<UpgradePrecheckItem | null>(null)
   const [form] = Form.useForm<PackageFormValues>()
+  const [uploadForm] = Form.useForm<UploadFormValues>()
+
+  const packagesQuery = useQuery({
+    queryKey: ['upgrade-packages'],
+    queryFn: () => upgradesApi.listPackages({ page: 1, page_size: 50 }),
+  })
+  const packages = packagesQuery.data?.items ?? []
 
   const listQuery = useQuery({
     queryKey: ['upgrades', page, pageSize],
@@ -63,19 +84,44 @@ export default function SystemUpgradePage() {
   })
 
   const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['upgrades'] })
+  const invalidatePackages = () => void queryClient.invalidateQueries({ queryKey: ['upgrade-packages'] })
   const onError = (e: unknown) => {
     message.error(e instanceof ApiError ? e.message : '操作失败')
   }
 
-  const registerMutation = useMutation({
-    mutationFn: (values: PackageFormValues) => upgradesApi.registerPackage(values),
-    onSuccess: (pkg) => {
+  // 登记/上传成功后处理：REJECTED 时后端带 message 说明原因
+  const onPackageRegistered = (resp: UpgradePackageResp) => {
+    const pkg = resp.package
+    if (resp.message) {
+      message.warning(resp.message)
+    } else {
       message.success('升级包已登记，请执行升级前检查')
-      setPackages((list) => [...list.filter((p) => p.id !== pkg.id), pkg])
+    }
+    invalidatePackages()
+    if (pkg.status !== 'REJECTED') {
       setSelectedPackageId(pkg.id)
       setPrecheck(null)
+    }
+  }
+
+  const registerMutation = useMutation({
+    mutationFn: (values: PackageFormValues) => upgradesApi.registerPackage(values),
+    onSuccess: (resp) => {
+      onPackageRegistered(resp)
       setRegisterOpen(false)
       form.resetFields()
+    },
+    onError,
+  })
+
+  const uploadMutation = useMutation({
+    mutationFn: (values: UploadFormValues & { file: File }) =>
+      upgradesApi.uploadPackage(values.file, values.version_from, values.version_to),
+    onSuccess: (resp) => {
+      onPackageRegistered(resp)
+      setUploadOpen(false)
+      setUploadFile(null)
+      uploadForm.resetFields()
     },
     onError,
   })
@@ -131,6 +177,21 @@ export default function SystemUpgradePage() {
       okButtonProps: { danger: true },
       onOk: () => rollbackMutation.mutate(record.id),
     })
+  }
+
+  const submitUpload = async () => {
+    let values: UploadFormValues
+    try {
+      values = await uploadForm.validateFields()
+    } catch {
+      // 表单校验未通过，antd 已展示错误提示
+      return
+    }
+    if (!uploadFile) {
+      message.error('请选择升级包文件')
+      return
+    }
+    uploadMutation.mutate({ ...values, file: uploadFile })
   }
 
   const columns: ColumnsType<UpgradeJobItem> = [
@@ -201,17 +262,23 @@ export default function SystemUpgradePage() {
         title="升级包与预检"
         extra={
           canExecute && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setRegisterOpen(true)}>
-              登记升级包
-            </Button>
+            <Space>
+              <Button icon={<PlusOutlined />} onClick={() => setRegisterOpen(true)}>
+                登记升级包
+              </Button>
+              <Button type="primary" icon={<UploadOutlined />} onClick={() => setUploadOpen(true)}>
+                上传升级包
+              </Button>
+            </Space>
           )
         }
       >
         <Space direction="vertical" size={16} style={{ display: 'flex' }}>
           <Space wrap>
             <Select
-              style={{ minWidth: 360 }}
-              placeholder="选择已登记的升级包"
+              style={{ minWidth: 420 }}
+              placeholder="选择升级包"
+              loading={packagesQuery.isLoading}
               value={selectedPackageId}
               onChange={(v) => {
                 setSelectedPackageId(v)
@@ -219,9 +286,10 @@ export default function SystemUpgradePage() {
               }}
               options={packages.map((p) => ({
                 value: p.id,
-                label: `${p.file_name}（${p.version_from} → ${p.version_to}，${formatBytes(p.file_size)}，哈希 ${truncateHash(p.file_hash, 8)}）`,
+                disabled: p.status === 'REJECTED',
+                label: `${p.file_name}（${p.version_from} → ${p.version_to}，${formatBytes(p.file_size)}，哈希 ${truncateHash(p.file_hash, 8)}，${UPGRADE_PACKAGE_STATUS_META[p.status]?.label ?? p.status}）`,
               }))}
-              notFoundContent="请先登记升级包"
+              notFoundContent="请先上传或登记升级包"
             />
             {canPrecheck && (
               <Button
@@ -259,6 +327,10 @@ export default function SystemUpgradePage() {
                 rowKey="name"
                 pagination={false}
                 dataSource={precheck.items ?? []}
+                onRow={(record) => ({
+                  onDoubleClick: () => setDetailPrecheck(record),
+                  style: { cursor: 'pointer' },
+                })}
                 columns={[
                   { title: '检查项', dataIndex: 'name', width: 220 },
                   {
@@ -291,6 +363,10 @@ export default function SystemUpgradePage() {
             columns={columns}
             dataSource={listQuery.data?.items}
             scroll={{ x: 1100 }}
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailJob(record),
+              style: { cursor: 'pointer' },
+            })}
             pagination={{
               current: page,
               pageSize,
@@ -307,6 +383,57 @@ export default function SystemUpgradePage() {
       </Card>
 
       <Modal
+        title="上传升级包"
+        open={uploadOpen}
+        onCancel={() => {
+          setUploadOpen(false)
+          setUploadFile(null)
+        }}
+        onOk={() => void submitUpload()}
+        okText="上传并登记"
+        confirmLoading={uploadMutation.isPending}
+        destroyOnHidden
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          升级包上传至服务端升级包目录，服务端自动计算 SHA-256 与大小后登记；上传大小上限默认 4GiB。
+        </Typography.Paragraph>
+        <Upload.Dragger
+          maxCount={1}
+          beforeUpload={(file) => {
+            setUploadFile(file)
+            return false
+          }}
+          onRemove={() => setUploadFile(null)}
+        >
+          <p className="ant-upload-drag-icon">
+            <InboxOutlined />
+          </p>
+          <p className="ant-upload-text">点击或拖拽升级包文件到此区域</p>
+          <p className="ant-upload-hint">如：jiuzhang-wdsp-offline-2.6.0-amd64.tar.gz</p>
+        </Upload.Dragger>
+        <Form<UploadFormValues> form={uploadForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Space.Compact block>
+            <Form.Item
+              name="version_from"
+              label="当前版本"
+              style={{ width: '50%', marginRight: 8 }}
+              rules={[{ required: true, message: '请输入当前版本' }, { max: 50 }]}
+            >
+              <Input placeholder="如：2.5.5" />
+            </Form.Item>
+            <Form.Item
+              name="version_to"
+              label="目标版本"
+              style={{ width: '50%' }}
+              rules={[{ required: true, message: '请输入目标版本' }, { max: 50 }]}
+            >
+              <Input placeholder="如：2.6.0" />
+            </Form.Item>
+          </Space.Compact>
+        </Form>
+      </Modal>
+
+      <Modal
         title="登记升级包"
         open={registerOpen}
         onCancel={() => setRegisterOpen(false)}
@@ -315,7 +442,8 @@ export default function SystemUpgradePage() {
         destroyOnHidden
       >
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-          升级包需经离线介质拷贝至服务端指定目录后在此登记元数据，登记时校验哈希与大小。
+          适用于升级包已拷贝至服务端升级包目录的场景：仅登记元数据，登记时校验哈希与大小格式，
+          升级前检查会核验目录中文件与登记信息一致。
         </Typography.Paragraph>
         <Form<PackageFormValues>
           form={form}
@@ -348,6 +476,19 @@ export default function SystemUpgradePage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailPrecheck !== null}
+        title="预检项详情"
+        record={detailPrecheck as Record<string, unknown> | null}
+        onClose={() => setDetailPrecheck(null)}
+      />
+      <RecordDetailDrawer
+        open={detailJob !== null}
+        title="升级任务详情"
+        record={detailJob as Record<string, unknown> | null}
+        onClose={() => setDetailJob(null)}
+      />
     </Space>
   )
 }

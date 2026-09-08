@@ -37,7 +37,7 @@ func serveOnce(t *testing.T, e *Engine, ua string) {
 		t.Fatal("observation expected")
 	}
 	w.WriteHeader(http.StatusOK)
-	e.End(r, obs)
+	e.End(r, obs, nil)
 }
 
 func mustIP(t *testing.T, s string) netip.Addr {

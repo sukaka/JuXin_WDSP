@@ -1,0 +1,21 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: Overlong UTF-8 encoded slash/backslash/dot, 3-4 byte (CUSTOM_PACK)
+rule_id: 1001624
+tests:
+  - test_id: 1
+    desc: "%e0%80%af overlong slash in URI"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+          method: GET
+          port: 80
+          uri: "/get?f=%e0%80%af.%e0%80%afetc"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001624]

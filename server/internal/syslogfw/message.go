@@ -1,6 +1,7 @@
 // Package syslogfw 提供 syslog（RFC5424）外发能力：UDP/TCP 传输、有界内存缓冲、
-// 磁盘 spool 重放与配置热读取。安全事件/访问控制事件/访问日志采集器入库成功后
-// 通过 Enqueue 非阻塞投递，由后台协程按 system_settings（logging 组）最新配置外发。
+// 磁盘 spool 重放与配置热读取。安全事件/访问控制事件/访问日志采集器与操作审计/
+// 登录日志/系统告警服务在入库成功后通过 Enqueue 非阻塞投递，
+// 由后台协程按 system_settings（logging 组）最新配置外发。
 package syslogfw
 
 import (
@@ -16,6 +17,9 @@ const (
 	KindSecurityEvent Kind = iota
 	KindAccessControlEvent
 	KindAccessLog
+	KindOperationAudit
+	KindLoginLog
+	KindSystemAlert
 	KindTest
 )
 
@@ -31,6 +35,12 @@ func (k Kind) msgID() string {
 		return "access-control-event"
 	case KindAccessLog:
 		return "access-log"
+	case KindOperationAudit:
+		return "operation-audit"
+	case KindLoginLog:
+		return "login-log"
+	case KindSystemAlert:
+		return "system-alert"
 	case KindTest:
 		return "test"
 	}
@@ -39,16 +49,21 @@ func (k Kind) msgID() string {
 
 // RFC5424 severity 数值。
 const (
-	severityError   = 3
-	severityWarning = 4
-	severityNotice  = 5
-	severityInfo    = 6
+	severityCritical = 2
+	severityError    = 3
+	severityWarning  = 4
+	severityNotice   = 5
+	severityInfo     = 6
 )
 
-// severityFor 计算消息的 severity：安全事件按事件等级映射（HIGH→3/MEDIUM→4/LOW→5/其他→6），
-// 其余类型固定 6（info）。
+// severityFor 计算消息的 severity：
+// - 安全事件按事件等级映射（HIGH→3/MEDIUM→4/LOW→5/其他→6）
+// - 系统告警按告警等级映射（CRITICAL→2/HIGH→3/MEDIUM→4/LOW→5/其他→6）
+// - 登录日志与操作审计 hint 为 "warning"（登录失败、删除/禁用类操作）时 →4
+// - 其余类型固定 6（info）
 func severityFor(kind Kind, severityHint string) int {
-	if kind == KindSecurityEvent {
+	switch kind {
+	case KindSecurityEvent:
 		switch strings.ToUpper(severityHint) {
 		case "HIGH":
 			return severityError
@@ -56,6 +71,21 @@ func severityFor(kind Kind, severityHint string) int {
 			return severityWarning
 		case "LOW":
 			return severityNotice
+		}
+	case KindSystemAlert:
+		switch strings.ToUpper(severityHint) {
+		case "CRITICAL":
+			return severityCritical
+		case "HIGH":
+			return severityError
+		case "MEDIUM":
+			return severityWarning
+		case "LOW":
+			return severityNotice
+		}
+	case KindLoginLog, KindOperationAudit:
+		if strings.EqualFold(severityHint, "warning") {
+			return severityWarning
 		}
 	}
 	return severityInfo

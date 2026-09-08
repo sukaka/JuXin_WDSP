@@ -4,6 +4,7 @@ package loginlogs
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"strings"
 	"time"
@@ -24,6 +25,8 @@ const (
 	EventPasswordChange = "PASSWORD_CHANGE"
 	EventPasswordReset  = "PASSWORD_RESET"
 	EventFirstChangePwd = "FIRST_CHANGE_PASSWORD"
+	// EventLoginTOTPChallenge 密码校验通过、等待双因子第二步验证（未创建会话）。
+	EventLoginTOTPChallenge = "LOGIN_TOTP_CHALLENGE"
 )
 
 // 结果
@@ -47,15 +50,23 @@ type Entry struct {
 	RequestID    string     `json:"request_id"`
 }
 
+// SyslogEnqueueFunc 是 syslog 外发投递函数（装配层闭包注入，本包不依赖 syslogfw，
+// 避免循环导入；模式参考 backups.AlertFunc）。nil 时跳过外发。
+type SyslogEnqueueFunc func(severityHint string, payload interface{})
+
 // Service 是登录日志服务。
 type Service struct {
-	db *pgxpool.Pool
+	db     *pgxpool.Pool
+	syslog SyslogEnqueueFunc // nil 时跳过 syslog 外发
 }
 
 // NewService 创建登录日志服务。
 func NewService(db *pgxpool.Pool) *Service {
 	return &Service{db: db}
 }
+
+// SetSyslogForwarder 设置 syslog 外发投递函数（应用装配时使用，可为 nil）。
+func (s *Service) SetSyslogForwarder(fn SyslogEnqueueFunc) { s.syslog = fn }
 
 // RecordInput 是记录登录日志的输入。
 type RecordInput struct {
@@ -72,13 +83,56 @@ type RecordInput struct {
 
 // Record 写入登录日志。日志中不得包含密码、验证码、完整会话标识。
 func (s *Service) Record(ctx context.Context, in RecordInput) error {
+	occurredAt := time.Now().UTC()
 	_, err := s.db.Exec(ctx, `
 INSERT INTO login_logs (username, user_id, source_ip, connection_ip, user_agent_summary,
                         event_type, result, failure_code, request_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		in.Username, in.UserID, nullableIP(in.SourceIP), nullableIP(in.ConnectionIP),
 		truncateUA(in.UserAgent), in.EventType, in.Result, in.FailureCode, in.RequestID)
-	return err
+	if err != nil {
+		// 写库失败必须可见：调用方多为安全审计旁路（忽略返回错误不阻断主流程），
+		// 此处 Warn 是唯一留存痕迹；不输出用户名/UA 等字段，避免泄露与刷屏。
+		slog.Warn("login log insert failed",
+			"event_type", in.EventType, "result", in.Result,
+			"failure_code", in.FailureCode, "request_id", in.RequestID, "error", err)
+		return err
+	}
+	// syslog 外发：入库成功后非阻塞投递，外发器异常（含 panic）不影响登录主流程。
+	// occurred_at 取 Record 入口时间（库内列为 default now()，二者近似相等）。
+	s.enqueueSyslog(syslogSeverityHint(in.Result), map[string]interface{}{
+		"occurred_at":   occurredAt.Format(time.RFC3339Nano),
+		"username":      in.Username,
+		"source_ip":     in.SourceIP,
+		"connection_ip": in.ConnectionIP,
+		"event_type":    in.EventType,
+		"result":        in.Result,
+		"failure_code":  in.FailureCode,
+		"request_id":    in.RequestID,
+	})
+	return nil
+}
+
+// syslogSeverityHint 计算登录日志外发的 severity 提示：失败（登录失败/锁定等）→ warning，成功 → info。
+func syslogSeverityHint(result string) string {
+	if result == ResultFailure {
+		return "warning"
+	}
+	return ""
+}
+
+// enqueueSyslog 非阻塞投递 syslog 外发；未注入投递函数时跳过，
+// 投递函数 panic 时记录错误日志而不扩散到调用方主流程。
+func (s *Service) enqueueSyslog(severityHint string, payload interface{}) {
+	if s.syslog == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("syslog enqueue panicked", "panic", r)
+		}
+	}()
+	s.syslog(severityHint, payload)
 }
 
 // ListFilter 是登录日志查询筛选。

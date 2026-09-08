@@ -1,0 +1,12 @@
+{
+  "captured_at": "2026-09-06T16:49:19Z",
+  "os": "Darwin 25.2.0 (arm64)",
+  "go": "go version go1.25.6 darwin/amd64",
+  "python": "Python 3.12.0",
+  "node": "v24.13.0",
+  "docker": "28.3.0",
+  "git_head": "3c73774",
+  "git_branch": "develop",
+  "git_dirty": true,
+  "test_infra": "一次性隔离容器 p0s3-pg(127.0.0.1:55432, postgres:16-alpine) / p0s3-valkey(127.0.0.1:56379, valkey/valkey:8.1.8-alpine)，测试库 jiuzhang_waf_test 每次重建，Valkey DB 15"
+}

@@ -16,7 +16,8 @@ import {
 } from 'antd'
 import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
-import { DownloadOutlined, SafetyOutlined } from '@ant-design/icons'
+import { SafetyOutlined } from '@ant-design/icons'
+import ExportDropdown from '../../components/ExportDropdown'
 import type dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { auditsApi } from '../../api/audits'
@@ -152,12 +153,10 @@ export default function AuditsPage() {
             </Button>
           )}
           {hasPermission(permissions, 'audits.export') && (
-            <Button
-              icon={<DownloadOutlined />}
-              onClick={() => window.open(auditsApi.exportUrl(filters), '_blank')}
-            >
-              导出 CSV
-            </Button>
+            <ExportDropdown
+              onExportFiltered={() => window.open(auditsApi.exportUrl(filters), '_blank')}
+              onExportAll={() => window.open(auditsApi.exportUrl({}), '_blank')}
+            />
           )}
         </Space>
       }
@@ -236,6 +235,10 @@ export default function AuditsPage() {
           columns={columns}
           dataSource={listQuery.data?.items}
           scroll={{ x: 1150 }}
+          onRow={(record) => ({
+            onDoubleClick: () => setSelectedId(record.id),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             current: page,
             pageSize,

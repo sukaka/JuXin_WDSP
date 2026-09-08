@@ -253,16 +253,16 @@ func (s *Store) DeleteTemplate(ctx context.Context, id uuid.UUID) error {
 
 // ---------- 报告任务 ----------
 
-const jobColumns = `id, report_type, time_range_start, time_range_end, application_ids, template_id,
-	status, progress, requested_by, requested_at, started_at, finished_at,
+const jobColumns = `id, report_type, content_scope, time_range_start, time_range_end, application_ids, template_id, schedule_id,
+	include_api_assets, page_orientation, status, progress, requested_by, requested_at, started_at, finished_at,
 	file_reference, file_hash, file_format, file_size, report_no,
 	failure_code, failure_message, request_id`
 
 func scanJob(row pgx.Row) (*Job, error) {
 	var j Job
 	var appIDs []byte
-	err := row.Scan(&j.ID, &j.ReportType, &j.Start, &j.End, &appIDs, &j.TemplateID,
-		&j.Status, &j.Progress, &j.RequestedBy, &j.RequestedAt, &j.StartedAt, &j.FinishedAt,
+	err := row.Scan(&j.ID, &j.ReportType, &j.ContentScope, &j.Start, &j.End, &appIDs, &j.TemplateID, &j.ScheduleID,
+		&j.IncludeAPIAssets, &j.PageOrientation, &j.Status, &j.Progress, &j.RequestedBy, &j.RequestedAt, &j.StartedAt, &j.FinishedAt,
 		&j.FileReference, &j.FileHash, &j.FileFormat, &j.FileSize, &j.ReportNo,
 		&j.FailureCode, &j.FailureMessage, &j.RequestID)
 	if err != nil {
@@ -293,11 +293,11 @@ func (s *Store) CreateJob(ctx context.Context, j *Job) error {
 		appIDs = b
 	}
 	return s.db.QueryRow(ctx, `
-INSERT INTO report_jobs (report_type, time_range_start, time_range_end, application_ids,
-	template_id, status, requested_by, file_format, request_id)
-VALUES ($1,$2,$3,$4,$5,'PENDING',$6,$7,$8)
+INSERT INTO report_jobs (report_type, content_scope, time_range_start, time_range_end, application_ids,
+	template_id, schedule_id, include_api_assets, page_orientation, status, requested_by, file_format, request_id)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'PENDING',$10,$11,$12)
 RETURNING id, requested_at`,
-		j.ReportType, j.Start, j.End, appIDs, j.TemplateID, j.RequestedBy, j.FileFormat, j.RequestID).
+		j.ReportType, j.ContentScope, j.Start, j.End, appIDs, j.TemplateID, j.ScheduleID, j.IncludeAPIAssets, j.PageOrientation, j.RequestedBy, j.FileFormat, j.RequestID).
 		Scan(&j.ID, &j.RequestedAt)
 }
 

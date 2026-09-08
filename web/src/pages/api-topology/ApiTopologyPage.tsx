@@ -1,9 +1,10 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Card, Col, Row, Space, Tag, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { apiGraphApi, type ApiGraphEdge, type ApiGraphNode } from '../../api/apiSecurity'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import { API_ENDPOINT_STATUS_META } from '../../utils/stage8'
 
@@ -14,8 +15,9 @@ function truncateMiddle(value: string, head = 8, tail = 4): string {
   return `${value.slice(0, head)}…${value.slice(-tail)}`
 }
 
-/** API 调用拓扑（WDSP / 阶段8）：按应用分组的端点卡片墙 + 调用边明细 */
+/** API 调用拓扑（WDSP / 阶段8）：按应用分组的接口卡片墙 + 调用边明细 */
 export default function ApiTopologyPage() {
+  const [detailRecord, setDetailRecord] = useState<ApiGraphEdge | null>(null)
   const topologyQuery = useQuery({
     queryKey: ['api-topology'],
     queryFn: () => apiGraphApi.topology(),
@@ -44,7 +46,7 @@ export default function ApiTopologyPage() {
       ),
     },
     {
-      title: '目标端点',
+      title: '目标接口',
       dataIndex: 'target_endpoint_id',
       ellipsis: true,
       render: (v: string) => {
@@ -52,13 +54,13 @@ export default function ApiTopologyPage() {
         return target ? <Typography.Text code>{target.endpoint_key}</Typography.Text> : truncateMiddle(v)
       },
     },
-    { title: '调用次数', dataIndex: 'call_count', width: 110, align: 'right' },
+    { title: '调用次数', dataIndex: 'call_count', width: 110 },
   ]
 
   return (
     <Card title="API 调用拓扑">
       <Typography.Paragraph type="secondary">
-        端点按所属应用分组展示，Tag 颜色对应资产状态（蓝=已发现、绿=已确认、灰=已忽略、橙=已废弃）；下方为运行时观测到的调用边明细。
+        接口按所属应用分组展示，Tag 颜色对应资产状态（蓝=已发现、绿=已确认、灰=已忽略、橙=已废弃）；下方为运行时观测到的调用边明细。
       </Typography.Paragraph>
       <QueryErrorAlert error={topologyQuery.error} />
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
@@ -67,7 +69,7 @@ export default function ApiTopologyPage() {
             <Card
               size="small"
               title={g.application_name || '未分配应用'}
-              extra={<Typography.Text type="secondary">{g.endpoints?.length ?? 0} 个端点</Typography.Text>}
+              extra={<Typography.Text type="secondary">{g.endpoints?.length ?? 0} 个接口</Typography.Text>}
             >
               <Space size={[8, 8]} wrap>
                 {(g.endpoints ?? []).map((n) => {
@@ -93,7 +95,17 @@ export default function ApiTopologyPage() {
         loading={topologyQuery.isLoading}
         columns={edgeColumns}
         dataSource={edges}
+        onRow={(record) => ({
+          onDoubleClick: () => setDetailRecord(record),
+          style: { cursor: 'pointer' },
+        })}
         pagination={{ pageSize: 8, showSizeChanger: false, hideOnSinglePage: true, showTotal: (t) => `共 ${t} 条` }}
+      />
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="调用边详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
       />
     </Card>
   )

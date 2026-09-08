@@ -10,7 +10,8 @@
 | 容器运行时 | Docker 24+ 与 Docker Compose v2 插件 |
 | 硬件 | 建议 4 核 CPU、8GB 内存、本地 SSD；安装脚本硬性要求内存 ≥4GB、部署目录磁盘可用 ≥20GB |
 | 端口 | 网关 80、管理 API 18081 未被占用（可用 `--gateway-port/--api-port` 调整） |
-| 依赖命令 | `docker`、`openssl`、`curl`、`jq`（账号初始化需要 jq） |
+| 依赖命令 | `docker`、`openssl`、`curl`、`jq`、`python3`、`flock`、`install`、`sha256sum`、`realpath` |
+| 服务管理 | systemd（完整安装包用于自动启用宿主机升级执行器） |
 | 时间 | 系统时间与网络时间源偏差 ≤60s（离线环境自行确认 NTP 正常） |
 
 ## 2. 快速开始
@@ -19,7 +20,7 @@
 
 ```bash
 # 1. 获取仓库并进入根目录，直接运行安装向导（推荐）
-ops/install/install.sh
+sudo bash ops/install/install.sh
 
 # 2. 或手工方式：准备环境变量后启动
 cp .env.example .env        # 然后编辑 .env，替换所有 CHANGE_ME 项
@@ -35,27 +36,29 @@ docker compose up -d
 # 目标机：
 tar -xzf jiuzhang-offline-<版本>.tar.gz && cd jiuzhang-offline-<版本>
 for f in images/*.tar; do docker load -i "$f"; done
-ops/install/install.sh
+sudo bash ops/install/install.sh
 ```
 
 完整流程（含完整性核对、检查清单、卸载）见《离线部署指南》。
 
-## 3. 初始化向导（install.sh 四步）
+## 3. 初始化向导（install.sh 八步）
 
 `ops/install/install.sh [选项]`（`-c` compose 文件、`-e` env 文件、`--api-url`、`--gateway-port`、`--api-port`、`--force`、`--skip-accounts`）依次执行：
 
-**步骤 1/4 环境检查**：docker/compose/openssl/curl 可用；网关与 API 端口空闲；内存 ≥4GB；磁盘 ≥20GB；时间偏移 ≤60s（可判定时）。
+**步骤 1/8 环境检查**：docker/compose/openssl/curl 可用；网关与 API 端口空闲；内存 ≥4GB；磁盘 ≥20GB；时间偏移 ≤60s（可判定时）。完整包还会预检 root、systemd 及升级执行器依赖，不满足时在改变系统前终止。
 
-**步骤 2/4 生成 .env**（已存在则拒绝覆盖，`--force` 除外；文件权限 600，`umask 077`）：
+**步骤 2/8 生成 .env**（已存在则拒绝覆盖，`--force` 除外；文件权限 600，`umask 077`）：
 
 - `POSTGRES_PASSWORD`、`VALKEY_PASSWORD`：`openssl rand -hex 24`；
 - `JIUZHANG_MASTER_KEY`：`openssl rand -hex 32`，**主密钥**——备份与证书私钥加密的根，生成后不回显；
 - `INITIAL_ADMIN_PASSWORD`：`openssl rand -hex 12`，系统管理员初始口令；
 - 固定项：`APP_ENV=prod`、`COOKIE_SECURE=true`、`INITIAL_ADMIN_USERNAME=jiuzhang_admin`、端口配置。
 
-**步骤 3/4 启动**：`docker compose up -d`，等待管理 API `http://127.0.0.1:18081/api/v1/health` 就绪（最长 180s，超时提示用 `ops/diagnostics/collect.sh` 收集诊断）。
+**步骤 3—6/8**：采集授权指纹、配置防火墙、安装宿主机系统控制单元，再执行 `docker compose up -d` 并等待管理 API 就绪（最长 180s）。
 
-**步骤 4/4 三权账号初始化**（可用 `--skip-accounts` 跳过）：
+**步骤 7/8 安装升级执行器**：自动安装并启用 `jiuzhang-upgrade-executor.path`/`.service`，建立 API 容器与宿主机的安全任务通道，并验证监听单元处于启用且运行状态。完整包不允许跳过此步。
+
+**步骤 8/8 三权账号初始化**（可用 `--skip-accounts` 跳过）：
 
 - 系统管理员 `jiuzhang_admin`：由 api 服务首次启动时按 `INITIAL_ADMIN_PASSWORD` 创建；
 - 安全管理员 `jiuzhang_secadmin`（角色 `SECURITY_ADMIN`）、审计管理员 `jiuzhang_auditadmin`（角色 `AUDIT_ADMIN`）：脚本以系统管理员登录后调用 `POST /api/v1/users` 创建，各返回一次性临时口令；

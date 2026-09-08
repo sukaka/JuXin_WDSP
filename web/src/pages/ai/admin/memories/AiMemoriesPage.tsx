@@ -21,7 +21,9 @@ import { aiMemoriesApi } from '../../../../api/ai'
 import type { AiMemory, AiMemoryBody } from '../../../../api/ai'
 import { ApiError } from '../../../../api/client'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
 import StatusTag from '../../../../components/StatusTag'
+import useBatchDelete from '../../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../../stores/auth'
 import { AI_MEMORY_CONFIDENCE_META, AI_MEMORY_SCOPE_META } from '../../../../utils/ai'
 import { formatDateTime } from '../../../../utils/format'
@@ -59,6 +61,7 @@ export default function AiMemoriesPage() {
   const [includeDisabled, setIncludeDisabled] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState<AiMemory | null>(null)
+  const [detailRecord, setDetailRecord] = useState<AiMemory | null>(null)
   const [createForm] = Form.useForm<CreateFormValues>()
   const [editForm] = Form.useForm<EditFormValues>()
 
@@ -66,6 +69,13 @@ export default function AiMemoriesPage() {
     queryKey: ['ai-memories', scope, includeDisabled],
     queryFn: () =>
       aiMemoriesApi.list({ scope, include_disabled: includeDisabled || undefined }),
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<AiMemory>({
+    remove: (id) => aiMemoriesApi.remove(id),
+    invalidateKeys: [['ai-memories']],
+    entityName: '记忆',
+    canDelete: canManage,
   })
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['ai-memories'] })
@@ -236,6 +246,7 @@ export default function AiMemoriesPage() {
             新建记忆
           </Button>
         )}
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -244,13 +255,25 @@ export default function AiMemoriesPage() {
         <SmartTable<AiMemory>
           storageKey="ai-admin-memories"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data}
           scroll={{ x: 1150 }}
           pagination={false}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
         />
       )}
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="记忆详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
 
       <Modal
         title="新建记忆"

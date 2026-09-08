@@ -3,6 +3,7 @@ package systemalerts
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,12 +23,18 @@ const exportLimit = 10000
 type Handler struct {
 	store  *Store
 	audits *audits.Service
+	// notifyResolved 手动解决（RESOLVED/MANUAL）成功后的通知投递函数（装配层注入，
+	// 通知层按 notify_resolved 开关决定是否外发；nil 时跳过）。
+	notifyResolved func(a Alert)
 }
 
 // NewHandler 创建处理器。
 func NewHandler(store *Store, au *audits.Service) *Handler {
 	return &Handler{store: store, audits: au}
 }
+
+// SetNotifyResolvedFunc 设置手动解决告警后的通知投递函数（可为 nil）。
+func (h *Handler) SetNotifyResolvedFunc(fn func(a Alert)) { h.notifyResolved = fn }
 
 // List 告警列表（筛选 status/severity/alert_type/component/时间范围）。
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +94,90 @@ func (h *Handler) Ignore(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// silenceRequest 静默请求体：duration_minutes 为静默时长（分钟）。
+type silenceRequest struct {
+	DurationMinutes int `json:"duration_minutes"`
+}
+
+// 静默时长合法区间：1 分钟 ~ 30 天。
+const (
+	minSilenceMinutes = 1
+	maxSilenceMinutes = 43200
+)
+
+// Silence 静默告警（W6-B / P1-08）：设置 silenced_until = now + duration_minutes。
+// 静默期间告警保持未关闭状态照常合并记录，同指纹新建告警不重复通知；
+// 重复静默视为延长。
+func (h *Handler) Silence(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的告警ID")
+		return
+	}
+	var req silenceRequest
+	if err := response.DecodeJSON(w, r, &req, 8192); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if req.DurationMinutes < minSilenceMinutes || req.DurationMinutes > maxSilenceMinutes {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+			fmt.Sprintf("静默时长须在 %d~%d 分钟之间", minSilenceMinutes, maxSilenceMinutes))
+		return
+	}
+	a, err := h.store.GetByID(r.Context(), id)
+	if err != nil {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "告警不存在")
+		return
+	}
+	until := time.Now().UTC().Add(time.Duration(req.DurationMinutes) * time.Minute)
+	if err := h.store.Silence(r.Context(), id, until); err != nil {
+		if errors.Is(err, ErrInvalidTransition) {
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "当前状态不允许该操作")
+			return
+		}
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "silence", id.String(), a.Title, audits.ResultSuccess, audits.RiskMedium)
+	updated, err := h.store.GetByID(r.Context(), id)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, updated)
+}
+
+// Resume 解除静默（W6-B / P1-08）：清除 silenced_until，恢复同指纹告警通知。
+func (h *Handler) Resume(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的告警ID")
+		return
+	}
+	a, err := h.store.GetByID(r.Context(), id)
+	if err != nil {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "告警不存在")
+		return
+	}
+	if err := h.store.Resume(r.Context(), id); err != nil {
+		if errors.Is(err, ErrInvalidTransition) {
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "当前状态不允许该操作")
+			return
+		}
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "resume", id.String(), a.Title, audits.ResultSuccess, audits.RiskMedium)
+	updated, err := h.store.GetByID(r.Context(), id)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, updated)
+}
+
 // transition 状态流转公共逻辑（确认/解决/忽略，中风险审计）。
 func (h *Handler) transition(w http.ResponseWriter, r *http.Request, action string,
 	op func(id, by uuid.UUID) error) {
@@ -114,6 +205,16 @@ func (h *Handler) transition(w http.ResponseWriter, r *http.Request, action stri
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
+	}
+	// 手动解决成功：投递 RESOLVED 事件（通知层按 notify_resolved 开关决定是否外发）；
+	// 投递函数 panic 只记日志，不影响处置主流程。
+	if action == "resolve" && h.notifyResolved != nil {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("notify resolved hook panicked", "alert_id", id, "panic", rec)
+			}
+		}()
+		h.notifyResolved(*updated)
 	}
 	response.JSON(w, r, http.StatusOK, updated)
 }
@@ -214,12 +315,24 @@ func parseListFilter(w http.ResponseWriter, r *http.Request) (ListFilter, bool) 
 		Severity:  strings.ToUpper(r.URL.Query().Get("severity")),
 		AlertType: strings.ToUpper(r.URL.Query().Get("alert_type")),
 		Component: strings.ToUpper(r.URL.Query().Get("component")),
+		View:      strings.ToUpper(r.URL.Query().Get("view")),
 		Page:      queryInt(r, "page", 1),
 		PageSize:  queryInt(r, "page_size", 20),
 	}
 	if f.Status != "" && !IsValidStatus(f.Status) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的告警状态")
 		return f, false
+	}
+	if f.View != "" {
+		if !IsValidView(f.View) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的告警视图（ACTIVE/SILENCED/HISTORY）")
+			return f, false
+		}
+		// view 与 status 口径重叠，同时提供视为参数错误（不静默忽略任一条件）
+		if f.Status != "" {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "view 与 status 参数互斥，请只提供其一")
+			return f, false
+		}
 	}
 	if f.Severity != "" && !IsValidSeverity(f.Severity) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的告警等级")
@@ -249,7 +362,7 @@ func parseListFilter(w http.ResponseWriter, r *http.Request) (ListFilter, bool) 
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID, objName, result, risk string) {
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:       &p.UserID,
 		Username:     p.Username,
 		SourceIP:     middleware.RemoteIP(r),

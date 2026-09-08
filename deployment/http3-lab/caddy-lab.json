@@ -1,0 +1,105 @@
+{
+  "admin": {
+    "listen": "unix//var/run/caddy/admin.sock"
+  },
+  "logging": {
+    "logs": {
+      "default": {
+        "writer": { "output": "file", "filename": "/var/log/caddy/caddy.log" },
+        "encoder": { "format": "json" },
+        "level": "INFO"
+      },
+      "access": {
+        "writer": { "output": "file", "filename": "/var/log/caddy/access.log" },
+        "encoder": { "format": "json" },
+        "level": "INFO"
+      }
+    }
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "srv0": {
+          "listen": [":8443"],
+          "protocols": ["h1", "h2", "h3"],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "headers",
+                  "request": {
+                    "set": { "X-Request-Id": ["{http.request.uuid}"] },
+                    "delete": []
+                  }
+                },
+                {
+                  "handler": "jiuzhang_guard",
+                  "app_id": "http3-lab-app",
+                  "app_code": "HTTP3LAB",
+                  "trusted_proxies": [],
+                  "max_proxy_chain": 2,
+                  "protected_addresses": [],
+                  "global_allow": [],
+                  "global_deny": [],
+                  "app_allow": [],
+                  "app_deny": [],
+                  "rate_limits": [],
+                  "counter_backend": "memory",
+                  "max_counter_keys": 10000,
+                  "fail_open": true,
+                  "events_log": "/var/log/caddy/guard-events.log",
+                  "gateway_node": "gateway-http3-lab",
+                  "api_dynamic_protection": true,
+                  "api_protection_mode": "OBSERVE",
+                  "api_events_log": "/var/log/caddy/api-runtime-events.log",
+                  "access_log": {
+                    "enabled": true,
+                    "capture_request_headers": false,
+                    "capture_request_body": false,
+                    "capture_response_headers": false,
+                    "capture_response_body": false,
+                    "body_limit_kb": 0,
+                    "log_path": "/var/log/caddy/access-full.jsonl"
+                  }
+                },
+                {
+                  "handler": "waf",
+                  "directives": "SecRuleEngine DetectionOnly\nInclude /etc/caddy/rules/coraza.conf\nInclude /etc/caddy/rules/crs/crs-setup.conf\nInclude /etc/caddy/rules/crs/plugins/*/plugins/*-config.conf\nInclude /etc/caddy/rules/crs/plugins/*/plugins/*-before.conf\nInclude /etc/caddy/rules/exclusions/before-crs.conf\nInclude /etc/caddy/rules/crs/rules/*.conf\nInclude /etc/caddy/rules/contrib/*/*.conf\nInclude /etc/caddy/rules/crs/plugins/*/plugins/*-after.conf\nInclude /etc/caddy/rules/exclusions/after-crs.conf\nInclude /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf\nInclude /etc/caddy/rules/jiuzhang/post-contrib-blocking.conf\n"
+                },
+                {
+                  "handler": "headers",
+                  "response": {
+                    "set": {
+                      "X-Content-Type-Options": ["nosniff"],
+                      "X-Frame-Options": ["DENY"],
+                      "Referrer-Policy": ["no-referrer"]
+                    },
+                    "delete": ["Server"]
+                  }
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{ "dial": "testorigin:8081" }]
+                }
+              ]
+            }
+          ],
+          "tls_connection_policies": [{}],
+          "automatic_https": { "disable": true },
+          "logs": { "default_logger_name": "access" }
+        }
+      }
+    },
+    "tls": {
+      "certificates": {
+        "load_files": [
+          {
+            "certificate": "/etc/caddy/lab/tls.crt",
+            "key": "/etc/caddy/lab/tls.key",
+            "tags": ["http3lab"]
+          }
+        ]
+      }
+    }
+  }
+}

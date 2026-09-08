@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: multipart boundary 含 RFC2046 bchars 之外异常字符检测（自建规则 1001318）
+rule_id: 1001318
+tests:
+  - test_id: 1
+    desc: "boundary 含百分号 abc%def"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=abc%def"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001318]
+  - test_id: 2
+    desc: "boundary 含 & 符号"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=abc&def"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001318]

@@ -4,6 +4,7 @@ package upgrades
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,6 +56,16 @@ type Facts struct {
 	LastFullBackupAt   *time.Time // 最近一次已验证 FULL 备份完成时间
 	CriticalOpenAlerts int        // CRITICAL 且 OPEN 的告警数
 	Now                time.Time  // 评估时刻
+
+	// 升级包文件完整性（登记期望 vs 采集实际）
+	PackageFileExpectedName string // 登记的文件名
+	PackageFileExpectedHash string // 登记的 SHA-256
+	PackageFileExpectedSize int64  // 登记的字节数
+	PackageFileExists       bool   // 服务端目录中文件存在且可读
+	PackageFileActualHash   string // 实际 SHA-256（不存在时为空）
+	PackageFileActualSize   int64  // 实际字节数
+	PackageArtifactVerified bool   // 固定信任根、签名与归档 manifest 均通过
+	PackageArtifactMessage  string // 验证失败原因（供预检审计与诊断使用）
 }
 
 // Evaluate 预检评估（纯函数，单测直接覆盖）。
@@ -69,6 +80,8 @@ func Evaluate(f Facts) []CheckItem {
 		checkMasterKey(f),
 		checkRecentBackup(f),
 		checkCriticalAlerts(f),
+		checkPackageFile(f),
+		checkPackageArtifact(f),
 	}
 	return items
 }
@@ -231,6 +244,53 @@ func checkCriticalAlerts(f Facts) CheckItem {
 	return it
 }
 
+// checkPackageFile 升级包文件完整性：服务端目录中文件必须存在，且大小/SHA-256 与登记一致。
+func checkPackageFile(f Facts) CheckItem {
+	it := CheckItem{Name: "package_file"}
+	if !f.PackageFileExists {
+		it.Result = CheckFail
+		it.Message = fmt.Sprintf("升级包文件 %s 不存在于服务端升级包目录或不可读", f.PackageFileExpectedName)
+		return it
+	}
+	if f.PackageFileActualSize != f.PackageFileExpectedSize {
+		it.Result = CheckFail
+		it.Message = fmt.Sprintf("升级包文件大小与登记不一致（实际 %d 字节，登记 %d 字节）",
+			f.PackageFileActualSize, f.PackageFileExpectedSize)
+		return it
+	}
+	if !strings.EqualFold(f.PackageFileActualHash, f.PackageFileExpectedHash) {
+		it.Result = CheckFail
+		it.Message = "升级包文件 SHA-256 与登记不一致，文件可能被篡改或损坏"
+		return it
+	}
+	it.Result = CheckPass
+	it.Message = fmt.Sprintf("升级包文件完整性校验通过（%s，%.1fMiB）",
+		f.PackageFileExpectedName, float64(f.PackageFileExpectedSize)/float64(1<<20))
+	return it
+}
+
+// checkPackageArtifact 要求升级包不仅摘要匹配，还必须通过固定信任根、
+// detached signature 与归档 manifest 的联合验证。
+func checkPackageArtifact(f Facts) CheckItem {
+	it := CheckItem{Name: "package_artifact"}
+	if !f.PackageFileExists {
+		it.Result = CheckFail
+		it.Message = "升级包文件不存在，无法验证签名与归档内容"
+		return it
+	}
+	if !f.PackageArtifactVerified {
+		it.Result = CheckFail
+		it.Message = "升级包签名或归档内容验证失败"
+		if f.PackageArtifactMessage != "" {
+			it.Message += "：" + truncate(f.PackageArtifactMessage, 400)
+		}
+		return it
+	}
+	it.Result = CheckPass
+	it.Message = "升级包固定信任根、签名与 manifest 内容绑定验证通过"
+	return it
+}
+
 // ---------- 事实采集 ----------
 
 // migrationFileRe 迁移文件名（取 6 位版本号）。
@@ -284,26 +344,55 @@ type Prechecker struct {
 	pingValkey    func(ctx context.Context) error
 	dataDir       string
 	migrationsDir string
+	// packagesDir 升级包存储目录；为空时 package_file 检查项按文件缺失处理。
+	packagesDir string
 	// currentVersion 为空时使用 CurrentVersion 常量；
 	// 优先读 system_settings 的 system:current_version。
 	currentVersion string
+	artifactVerifier PackageArtifactVerifier
 }
 
 // NewPrechecker 创建预检器。pingValkey 可为 nil（视为不可达）。
 func NewPrechecker(db *pgxpool.Pool, pingValkey func(ctx context.Context) error, dataDir, migrationsDir string) *Prechecker {
-	return &Prechecker{db: db, pingValkey: pingValkey, dataDir: dataDir, migrationsDir: migrationsDir}
+	return &Prechecker{
+		db:              db,
+		pingValkey:      pingValkey,
+		dataDir:         dataDir,
+		migrationsDir:   migrationsDir,
+		artifactVerifier: verifyPackageArtifact,
+	}
+}
+
+// SetPackagesDir 注入升级包存储目录（package_file 完整性检查项的数据源）。
+func (p *Prechecker) SetPackagesDir(dir string) *Prechecker { p.packagesDir = dir; return p }
+
+// SetArtifactVerifier 为隔离测试注入临时信任根；生产装配保持固定验签器。
+func (p *Prechecker) SetArtifactVerifier(verifier PackageArtifactVerifier) *Prechecker {
+	p.artifactVerifier = verifier
+	return p
+}
+
+// VerifyArtifact 在预检或执行提交前复核升级包，防止登记后文件被替换。
+func (p *Prechecker) VerifyArtifact(path string, pkg *Package) error {
+	if p == nil || p.artifactVerifier == nil {
+		return errors.New("升级包验签器未配置")
+	}
+	return p.artifactVerifier(path, pkg)
 }
 
 // Gather 采集预检事实。单项采集失败不中断，以不利值呈现（由 Evaluate 判 FAIL）。
 func (p *Prechecker) Gather(ctx context.Context, pkg *Package) Facts {
 	f := Facts{
-		PackageVersionFrom: pkg.VersionFrom,
-		PackageVersionTo:   pkg.VersionTo,
-		Now:                time.Now().UTC(),
-		MaxMigration:       MaxMigrationVersion(p.migrationsDir),
-		TargetSchema:       ManifestTargetSchema(pkg.Manifest),
-		MasterKey:          encryption.IsConfigured(),
-		DiskFreeBytes:      DiskFreeBytes(p.dataDir),
+		PackageVersionFrom:      pkg.VersionFrom,
+		PackageVersionTo:        pkg.VersionTo,
+		Now:                     time.Now().UTC(),
+		MaxMigration:            MaxMigrationVersion(p.migrationsDir),
+		TargetSchema:            ManifestTargetSchema(pkg.Manifest),
+		MasterKey:               encryption.IsConfigured(),
+		DiskFreeBytes:           DiskFreeBytes(p.dataDir),
+		PackageFileExpectedName: pkg.FileName,
+		PackageFileExpectedHash: pkg.FileHash,
+		PackageFileExpectedSize: pkg.FileSize,
 	}
 
 	f.CurrentVersion = p.currentSystemVersion(ctx)
@@ -311,6 +400,26 @@ func (p *Prechecker) Gather(ctx context.Context, pkg *Package) Facts {
 	f.PostgresReachable = p.db.Ping(ctx) == nil
 	if p.pingValkey != nil {
 		f.ValkeyReachable = p.pingValkey(ctx) == nil
+	}
+
+	if p.packagesDir != "" {
+		path := filepath.Join(p.packagesDir, filepath.Base(pkg.FileName))
+		if hash, size, err := hashFileStreaming(path); err == nil {
+			f.PackageFileExists = true
+			f.PackageFileActualHash = hash
+			f.PackageFileActualSize = size
+			if hash == pkg.FileHash && size == pkg.FileSize {
+				if err := p.VerifyArtifact(path, pkg); err == nil {
+					f.PackageArtifactVerified = true
+				} else {
+					f.PackageArtifactMessage = err.Error()
+				}
+			} else {
+				f.PackageArtifactMessage = "升级包摘要或大小与登记不一致"
+			}
+		} else {
+			f.PackageArtifactMessage = err.Error()
+		}
 	}
 
 	f.ActiveTasks = p.activeTasks(ctx)

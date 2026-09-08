@@ -246,6 +246,14 @@ func (d *Deps) runAnalyze(w http.ResponseWriter, r *http.Request, message, label
 	}, onStep)
 	durMs := int(time.Since(start).Milliseconds())
 	if err != nil {
+		if errors.Is(err, aicost.ErrQuotaExceeded) {
+			d.recordAIAudit(p, aiaudit.Record{
+				SessionID: &sess.ID, Action: "analyze", RequestSummary: trunc(message, 400),
+				ResultSummary: "高成本任务配额超限", DurationMs: durMs,
+			})
+			response.Error(w, r, http.StatusTooManyRequests, response.CodeRateLimited, "高成本任务次数已达今日上限，请明日再试或联系管理员")
+			return
+		}
 		d.recordAIAudit(p, aiaudit.Record{
 			SessionID: &sess.ID, Action: "analyze", RequestSummary: trunc(message, 400),
 			ResultSummary: "执行失败", DurationMs: durMs,
@@ -266,10 +274,10 @@ func (d *Deps) runAnalyze(w http.ResponseWriter, r *http.Request, message, label
 		DurationMs: durMs, RequestSummary: trunc(message, 400), ResultSummary: trunc(result.Answer, 800),
 	})
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
-		"task_id": result.TaskID,
-		"answer":  result.Answer,
-		"plan":    result.Plan,
-		"steps":   steps,
+		"task_id":  result.TaskID,
+		"answer":   result.Answer,
+		"plan":     result.Plan,
+		"steps":    steps,
 		"evidence": result.Evidence,
 	})
 }

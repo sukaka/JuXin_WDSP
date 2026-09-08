@@ -76,6 +76,41 @@ random_hex() {
   openssl rand -hex "${1:-32}"
 }
 
+# validate_port_list LIST —— 校验逗号分隔端口清单（每项为 1-65535 或 起点-终点 区间，
+# 区间起点<=终点）。用于 firewalld 精确放行参数校验（install.sh / install-gateway-baremetal.sh）。
+validate_port_list() {
+  local list="$1" item lo hi
+  # 先做整体形态校验（拒绝空项/尾逗号/非数字字符），再逐项校验范围
+  [[ "$list" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] || return 1
+  local old_ifs="$IFS"; IFS=','
+  read -ra _vpl_items <<< "$list"
+  IFS="$old_ifs"
+  for item in "${_vpl_items[@]}"; do
+    if [[ "$item" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+      lo="${BASH_REMATCH[1]}"; hi="${BASH_REMATCH[2]}"
+      (( 10#$lo >= 1 && 10#$hi <= 65535 && 10#$lo <= 10#$hi )) || return 1
+    elif [[ "$item" =~ ^[0-9]+$ ]]; then
+      (( 10#$item >= 1 && 10#$item <= 65535 )) || return 1
+    else
+      return 1
+    fi
+  done
+  return 0
+}
+
+# detect_arch —— 输出规范化架构名（amd64/arm64），用于离线交付包架构匹配。
+# x86_64/amd64 → amd64；aarch64/arm64 → arm64；其余架构报错退出。
+# 注：海光 C86、兆芯 KX/KH 均为 x86-64 兼容架构，按 amd64 处理（直接使用 amd64 产物，不单独出包）。
+detect_arch() {
+  local m
+  m="$(uname -m)"
+  case "$m" in
+    x86_64|amd64)  printf 'amd64\n' ;;
+    aarch64|arm64) printf 'arm64\n' ;;
+    *) die "不支持的 CPU 架构: ${m}（仅提供 amd64/arm64 产物；海光 C86、兆芯 KX/KH 等 x86-64 兼容平台请使用 amd64 包）" ;;
+  esac
+}
+
 # ---- 管理 API 助手（会话 Cookie + CSRF Token） ----
 
 JZ_COOKIE_JAR=""
@@ -102,9 +137,12 @@ api_login() {
     if [[ -n "$capid" ]]; then
       local vcont vpass
       vcont="$(docker ps --format '{{.Names}}' | grep -E 'valkey$' | head -1 || true)"
-      vpass="$(grep -E '^VALKEY_PASSWORD=' .env 2>/dev/null | cut -d= -f2 || true)"
+      # 读取调用方经 -e/--env-file 传入的 $JZ_ENV_FILE（而非硬编码 CWD 下 .env）
+      vpass="$(grep -E '^VALKEY_PASSWORD=' "$JZ_ENV_FILE" 2>/dev/null | cut -d= -f2 || true)"
       if [[ -n "$vcont" && -n "$vpass" ]]; then
-        capcode="$(docker exec "$vcont" valkey-cli -a "$vpass" --no-auth-warning GET "jiuzhang:captcha:$capid" 2>/dev/null || true)"
+        # 口令经 REDISCLI_AUTH 环境变量传入，不出现在进程命令行（同 ops/healthcheck/check.sh）
+        capcode="$(docker exec -e REDISCLI_AUTH="$vpass" "$vcont" \
+          valkey-cli --no-auth-warning GET "jiuzhang:captcha:$capid" 2>/dev/null || true)"
       fi
     fi
   fi
@@ -156,4 +194,78 @@ api_download() {
 # api_code RESP —— 提取响应 code 字段。
 api_code() {
   printf '%s' "$1" | jq -r '.code // ""'
+}
+
+# ---- 交付包完整性校验（install.sh / install-gateway-baremetal.sh 共用） ----
+
+# sha256_of FILE... —— 计算 SHA-256（GNU sha256sum 优先，BSD shasum 兜底）。
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$@"
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$@"
+  else
+    die "缺少 sha256sum/shasum，无法计算 SHA-256"
+  fi
+}
+
+# sha256_check_sidecar ARCHIVE —— 用包外旁车 <ARCHIVE>.sha256（sha256sum 文本格式：
+# "<hash>  <文件名>"，随 dist 交付）校验包文件哈希。旁车与包分离分发，是唯一能
+# 锚定 tarball 整体的哈希（包内 sha256sums/manifest 属自证，篡改者可同步重算）。
+# 返回：0=校验通过 1=校验失败（旁车格式非法或哈希不符） 2=无旁车（交由调用方降级告警）。
+sha256_check_sidecar() {
+  local archive="$1" sidecar="$1.sha256" expected actual
+  [[ -f "$sidecar" ]] || return 2
+  [[ -f "$archive" ]] || { log_err "旁车存在但包文件缺失: $archive"; return 1; }
+  expected="$(awk 'NR==1{print $1}' "$sidecar" | tr '[:upper:]' '[:lower:]')"
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || { log_err "旁车哈希格式非法: $sidecar"; return 1; }
+  actual="$(sha256_of "$archive" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
+  if [[ "$actual" == "$expected" ]]; then
+    return 0
+  fi
+  log_err "旁车哈希不匹配: ${archive}（期望 ${expected}，实际 ${actual}）"
+  return 1
+}
+
+# manifest_files_verify MANIFEST ROOT —— 按离线包 manifest.json 的 files 清单逐一
+# 校验 ROOT 下文件的存在性、大小与 SHA-256（清单路径必须是相对路径且不得含 ..）。
+# 反向核对：盘上存在但清单未收录的文件仅告警列示（重装场景 .env/runtime 等安装
+# 产物属正常），不阻断。
+# 返回：0=全部通过 1=校验失败 2=清单无 files 字段（历史包，由调用方决定降级策略）。
+manifest_files_verify() {
+  local manifest="$1" root="$2"
+  require_cmd jq
+  jq -e '.files | type == "array" and length > 0' "$manifest" >/dev/null 2>&1 || return 2
+  local sha size path f actual_size actual_sha checked=0
+  while IFS=$'\t' read -r sha size path; do
+    case "$path" in
+      /*|*..*) log_err "manifest.files 含非法路径: $path"; return 1 ;;
+    esac
+    f="$root/$path"
+    [[ -f "$f" ]] || { log_err "包内文件缺失: $path"; return 1; }
+    actual_size="$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")"
+    [[ "$actual_size" == "$size" ]] || { log_err "包内文件大小不符: ${path}（期望 ${size}B，实际 ${actual_size}B）"; return 1; }
+    actual_sha="$(sha256_of "$f" | awk '{print $1}')"
+    [[ "$actual_sha" == "$sha" ]] || { log_err "包内文件 SHA-256 不符: $path"; return 1; }
+    checked=$((checked + 1))
+  done < <(jq -er '.files[] | [.sha256, (.size | tostring), .path] | @tsv' "$manifest")
+  log_info "manifest.files 完整性校验通过（${checked} 个文件）"
+
+  # 反向核对（仅告警）：盘上多出清单未收录的文件可能意味着投递夹带
+  local listed extra=0 rel
+  listed="$(mktemp "${TMPDIR:-/tmp}/jzmanifest.XXXXXX")"
+  jq -r '.files[].path' "$manifest" > "$listed"
+  while IFS= read -r f; do
+    rel="${f#"$root"/}"
+    [[ "$rel" == "manifest.json" ]] && continue
+    grep -Fxq "$rel" "$listed" 2>/dev/null && continue
+    if (( extra == 0 )); then
+      log_warn "以下文件不在 manifest.files 清单内（重装产物属正常，首次安装出现请核对投递来源）:"
+    fi
+    extra=$((extra + 1))
+    (( extra <= 5 )) && log_warn "  未收录: $rel"
+  done < <(find "$root" -type f | LC_ALL=C sort)
+  (( extra > 5 )) && log_warn "  ……另有 $((extra - 5)) 个未收录文件"
+  rm -f "$listed"
+  return 0
 }

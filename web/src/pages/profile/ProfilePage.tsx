@@ -21,10 +21,13 @@ import { ApiError } from '../../api/client'
 import { authApi } from '../../api/auth'
 import { profileApi } from '../../api/profile'
 import ChangePasswordForm from '../../components/ChangePasswordForm'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import type { LoginLogEntry, SessionItem } from '../../types'
+import TotpPanel from './TotpPanel'
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   LOGIN_SUCCESS: '登录成功',
@@ -37,6 +40,37 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   PASSWORD_CHANGE: '修改密码',
   PASSWORD_RESET: '重置密码',
   FIRST_CHANGE_PASSWORD: '首次改密',
+}
+
+/** 权限模块中文名（permissions.module → 中文；未知模块原样显示） */
+const PERMISSION_MODULE_LABELS: Record<string, string> = {
+  access_control: '访问控制',
+  access_logs: '访问日志',
+  ai: '智能运营',
+  analytics: '统计分析',
+  api: '接口防护',
+  applications: '应用管理',
+  audits: '操作审计',
+  backup: '备份恢复',
+  certificates: '证书管理',
+  custom_rules: '自定义规则',
+  dashboard: '工作台',
+  delivery: '交付检查',
+  exceptions: '例外策略',
+  gateway: '网关管理',
+  login_logs: '登录日志',
+  monitoring: '运行监控',
+  policies: '防护策略',
+  profile: '个人中心',
+  reports: '安全报表',
+  roles: '角色权限',
+  security_events: '安全事件',
+  sessions: '会话管理',
+  system: '系统管理',
+  upgrade: '系统升级',
+  upstreams: '源站管理',
+  users: '用户管理',
+  waf_rules: '防护规则',
 }
 
 function ProfilePanel() {
@@ -69,12 +103,23 @@ function ProfilePanel() {
 
   const profile = profileQuery.data
   const permissionGroups = useMemo(() => {
-    const map = new Map<string, string[]>()
-    for (const code of profile?.permissions ?? []) {
-      const module = code.split('.')[0] || 'other'
-      const arr = map.get(module) ?? []
-      arr.push(code)
-      map.set(module, arr)
+    // 优先用服务端返回的中文权限明细；无明细时回退为权限码原样分组
+    const details = profile?.permission_details
+    const map = new Map<string, { code: string; label: string }[]>()
+    if (details && details.length > 0) {
+      for (const d of details) {
+        const module = PERMISSION_MODULE_LABELS[d.module] ?? d.module
+        const arr = map.get(module) ?? []
+        arr.push({ code: d.code, label: d.name })
+        map.set(module, arr)
+      }
+    } else {
+      for (const code of profile?.permissions ?? []) {
+        const module = code.split('.')[0] || 'other'
+        const arr = map.get(module) ?? []
+        arr.push({ code, label: code })
+        map.set(module, arr)
+      }
     }
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b))
   }, [profile])
@@ -130,13 +175,15 @@ function ProfilePanel() {
 
       <Card title="我的权限" loading={profileQuery.isLoading}>
         <Space direction="vertical" style={{ width: '100%' }}>
-          {permissionGroups.map(([module, codes]) => (
+          {permissionGroups.map(([module, items]) => (
             <div key={module}>
               <Typography.Text strong>{module}</Typography.Text>
               <div style={{ marginTop: 8 }}>
                 <Space wrap>
-                  {codes.map((code) => (
-                    <Tag key={code}>{code}</Tag>
+                  {items.map((p) => (
+                    <Tag key={p.code} title={p.code}>
+                      {p.label}
+                    </Tag>
                   ))}
                 </Space>
               </div>
@@ -174,6 +221,16 @@ function SessionsPanel() {
   const { message } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const sessionsQuery = useQuery({ queryKey: ['my-sessions'], queryFn: authApi.sessions })
+  const [detailRecord, setDetailRecord] = useState<SessionItem | null>(null)
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<SessionItem>({
+    remove: (id) => authApi.revokeSession(id),
+    invalidateKeys: [['my-sessions']],
+    entityName: '会话',
+    canDelete: true,
+    // 当前会话与已结束会话不可勾选（避免批量操作把自己踢下线），与行内「结束会话」显隐口径一致
+    rowDisabled: (record) => record.is_current || !!record.revoked_at,
+  })
 
   const revokeMutation = useMutation({
     mutationFn: (id: string) => authApi.revokeSession(id),
@@ -229,20 +286,37 @@ function SessionsPanel() {
   }
 
   return (
-    <SmartTable<SessionItem>
-      storageKey="profile"
-      rowKey="id"
-      loading={sessionsQuery.isLoading}
-      columns={columns}
-      dataSource={sessionsQuery.data?.items}
-      pagination={false}
-    />
+    <>
+      <Space style={{ marginBottom: 16 }} wrap>
+        {batchDeleteButton}
+      </Space>
+      <SmartTable<SessionItem>
+        storageKey="profile"
+        rowKey="id"
+        rowSelection={rowSelection}
+        loading={sessionsQuery.isLoading}
+        columns={columns}
+        dataSource={sessionsQuery.data?.items}
+        pagination={false}
+        onRow={(record) => ({
+          onDoubleClick: () => setDetailRecord(record),
+          style: { cursor: 'pointer' },
+        })}
+      />
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="会话详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
+    </>
   )
 }
 
 function MyLoginLogsPanel() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
+  const [detailRecord, setDetailRecord] = useState<LoginLogEntry | null>(null)
   const logsQuery = useQuery({
     queryKey: ['my-login-logs', page, pageSize],
     queryFn: () => profileApi.loginLogs(page, pageSize),
@@ -279,24 +353,36 @@ function MyLoginLogsPanel() {
   }
 
   return (
-    <SmartTable<LoginLogEntry>
-      storageKey="profile-login-logs"
-      rowKey="id"
-      loading={logsQuery.isLoading}
-      columns={columns}
-      dataSource={logsQuery.data?.items}
-      pagination={{
-        current: page,
-        pageSize,
-        total: logsQuery.data?.total ?? 0,
-        showSizeChanger: true,
-        showTotal: (t) => `共 ${t} 条`,
-        onChange: (p, ps) => {
-          setPage(p)
-          setPageSize(ps)
-        },
-      }}
-    />
+    <>
+      <SmartTable<LoginLogEntry>
+        storageKey="profile-login-logs"
+        rowKey="id"
+        loading={logsQuery.isLoading}
+        columns={columns}
+        dataSource={logsQuery.data?.items}
+        pagination={{
+          current: page,
+          pageSize,
+          total: logsQuery.data?.total ?? 0,
+          showSizeChanger: true,
+          showTotal: (t) => `共 ${t} 条`,
+          onChange: (p, ps) => {
+            setPage(p)
+            setPageSize(ps)
+          },
+        }}
+        onRow={(record) => ({
+          onDoubleClick: () => setDetailRecord(record),
+          style: { cursor: 'pointer' },
+        })}
+      />
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="登录记录详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
+    </>
   )
 }
 
@@ -313,6 +399,7 @@ export default function ProfilePage() {
             label: '修改密码',
             children: <ChangePasswordForm onSuccess={() => navigate('/login', { replace: true })} />,
           },
+          { key: 'totp', label: '双因子认证', children: <TotpPanel /> },
           { key: 'sessions', label: '登录会话', children: <SessionsPanel /> },
           { key: 'logs', label: '我的登录记录', children: <MyLoginLogsPanel /> },
         ]}

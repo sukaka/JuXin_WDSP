@@ -86,7 +86,8 @@ type Repository interface {
 }
 
 // DefaultHeaderConfig 返回未配置时的默认头合规对象（与迁移默认值一致，
-// 行为等价于既有静态头版本）。
+// 行为等价于既有静态头版本）。XffOverwrite 默认开启（LOW-G3），与网关生成器
+// 无配置记录时的 XFF 上一跳覆盖行为及迁移 000123 列默认值一致。
 func DefaultHeaderConfig() *gatewayconfig.AppHeaderConfig {
 	return &gatewayconfig.AppHeaderConfig{
 		ServerAction:     "keep",
@@ -95,6 +96,7 @@ func DefaultHeaderConfig() *gatewayconfig.AppHeaderConfig {
 		XFrameOptions:    "default",
 		HstsMaxAge:       31536000,
 		CspMode:          "off",
+		XffOverwrite:     true,
 	}
 }
 

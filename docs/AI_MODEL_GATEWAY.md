@@ -42,7 +42,7 @@
                               ┌─────────────▼──────────────┐
                               │ 模型运行时                   │
                               │ 本地 Ollama（ollama:11434）  │
-                              │ 或任意 OpenAI 兼容端点        │
+                              │ 或任意 OpenAI 兼容API        │
                               └────────────────────────────┘
 ```
 
@@ -57,7 +57,7 @@
 | id | UUID PK | 默认 `gen_random_uuid()` |
 | name | VARCHAR(100) | 供应商名称，唯一索引 `ux_ai_model_providers_name` |
 | provider_type | VARCHAR(30) | `openai_compatible` / `anthropic` / `ollama` / `local`（接口层白名单校验） |
-| base_url | VARCHAR(255) | OpenAI 兼容端点根地址（不含 `/v1/...` 路径） |
+| base_url | VARCHAR(255) | OpenAI 兼容API根地址（不含 `/v1/...` 路径） |
 | api_key_reference | VARCHAR(100) | 密钥引用名，密文存 `ai_provider_secrets`；本地供应商为空串 |
 | status | VARCHAR(20) | `ENABLED` / `DISABLED`，默认 `ENABLED` |
 | created_at / updated_at | TIMESTAMPTZ | 创建/更新时间 |
@@ -123,7 +123,7 @@
 
 - 按 `\n\n` 切事件、按行匹配 `data:` 前缀，`[DONE]` 跳过；
 - 逐 chunk 提取 `choices[].delta.content` 拼接全文，并经 `StreamCallback(delta, done=false)` 实时外推；`finish_reason` 归一化记录；
-- 部分实现（含 Ollama 兼容端点）在末尾 chunk 携带 `usage`，客户端予以采纳；
+- 部分实现（含 Ollama 兼容API）在末尾 chunk 携带 `usage`，客户端予以采纳；
 - 流式无 `usage` 时按字符估算 Token：`estimateTokens` 中 CJK 字符按 2/3 token/字、其余按 1/4 token/字符近似（粗略估算，仅用于用量兜底）；
 - 结束时回调 `cb("", true, result)` 送出聚合结果；错误响应读取上限 1MiB。
 

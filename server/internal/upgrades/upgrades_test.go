@@ -1,6 +1,10 @@
 package upgrades
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +148,14 @@ func baseFacts() Facts {
 		MasterKey:          true,
 		LastFullBackupAt:   &backupAt,
 		Now:                time.Now().UTC(),
+
+		PackageFileExpectedName: "jiuzhang-offline-2.1.0.tar.gz",
+		PackageFileExpectedHash: strings.Repeat("b", 64),
+		PackageFileExpectedSize: 1024,
+		PackageFileExists:       true,
+		PackageFileActualHash:   strings.Repeat("b", 64),
+		PackageFileActualSize:   1024,
+		PackageArtifactVerified: true,
 	}
 }
 
@@ -158,8 +170,8 @@ func itemByName(items []CheckItem, name string) CheckItem {
 
 func TestEvaluateAllPass(t *testing.T) {
 	items := Evaluate(baseFacts())
-	if len(items) != 9 {
-		t.Fatalf("预检项数 = %d, want 9", len(items))
+	if len(items) != 11 {
+		t.Fatalf("预检项数 = %d, want 11", len(items))
 	}
 	for _, it := range items {
 		if it.Result != CheckPass {
@@ -280,9 +292,59 @@ func TestEvaluateCriticalAlerts(t *testing.T) {
 	}
 }
 
+func TestEvaluatePackageFile(t *testing.T) {
+	// 文件缺失 → FAIL
+	f := baseFacts()
+	f.PackageFileExists = false
+	f.PackageFileActualHash = ""
+	f.PackageFileActualSize = 0
+	if got := itemByName(Evaluate(f), "package_file"); got.Result != CheckFail {
+		t.Errorf("文件缺失 = %s, want FAIL", got.Result)
+	}
+	// 大小不一致 → FAIL
+	f = baseFacts()
+	f.PackageFileActualSize = 2048
+	if got := itemByName(Evaluate(f), "package_file"); got.Result != CheckFail {
+		t.Errorf("大小不一致 = %s, want FAIL", got.Result)
+	}
+	// 哈希不一致 → FAIL
+	f = baseFacts()
+	f.PackageFileActualHash = strings.Repeat("c", 64)
+	if got := itemByName(Evaluate(f), "package_file"); got.Result != CheckFail {
+		t.Errorf("哈希不一致 = %s, want FAIL", got.Result)
+	}
+	// 一致 → PASS
+	if got := itemByName(Evaluate(baseFacts()), "package_file"); got.Result != CheckPass {
+		t.Errorf("完整性一致 = %s, want PASS", got.Result)
+	}
+}
+
+func TestHashFileStreaming(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pkg.tar.gz")
+	content := []byte("upgrade package content")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, size, err := hashFileStreaming(path)
+	if err != nil {
+		t.Fatalf("hashFileStreaming 意外失败: %v", err)
+	}
+	want := sha256.Sum256(content)
+	if hash != hex.EncodeToString(want[:]) {
+		t.Errorf("hash = %s, want %x", hash, want)
+	}
+	if size != int64(len(content)) {
+		t.Errorf("size = %d, want %d", size, len(content))
+	}
+	if _, _, err := hashFileStreaming(filepath.Join(dir, "missing")); err == nil {
+		t.Error("缺失文件应报错")
+	}
+}
+
 // ---------- 登记校验 ----------
 
-func TestBuildPackageVerified(t *testing.T) {
+func TestBuildPackageRegistered(t *testing.T) {
 	req := &registerPackageRequest{
 		FileName:    "jiuzhang-offline-2.1.0.tar.gz",
 		VersionFrom: "2.0.0",
@@ -295,8 +357,8 @@ func TestBuildPackageVerified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildPackage 意外失败: %v", err)
 	}
-	if pkg.Status != PackageVerified {
-		t.Errorf("状态 = %s, want VERIFIED", pkg.Status)
+	if pkg.Status != PackageRegistered {
+		t.Errorf("状态 = %s, want REGISTERED", pkg.Status)
 	}
 }
 

@@ -3,12 +3,14 @@ package applications
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/authz"
+	"github.com/jiuzhang-waf/server/internal/license"
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/response"
 	"github.com/jiuzhang-waf/server/internal/validation"
@@ -20,6 +22,12 @@ type Handler struct {
 	audits *audits.Service
 	// certBinder 证书绑定能力（避免循环依赖，以接口注入）
 	certBinder CertBinder
+	// maxAppsProvider 授权应用数量配额提供者（装配层闭包读取 license 内存状态，无 IO；
+	// nil 或返回 0 = 不限制——授权无效时装配层返回 0，管理面已被授权门控锁定，此处不重复强制）
+	maxAppsProvider func(ctx context.Context) int64
+	// countApps 应用计数（默认 store.Count；单测注入 fake——Store 为 PG 具体实现无法伪造，
+	// 与 license handler 的 auditRecorder 同一测试纪律）
+	countApps func(ctx context.Context) (int64, error)
 }
 
 // CertBinder 是证书绑定接口（由 certificates.Store 实现）。
@@ -30,7 +38,13 @@ type CertBinder interface {
 
 // NewHandler 创建应用管理处理器。
 func NewHandler(store *Store, au *audits.Service, binder CertBinder) *Handler {
-	return &Handler{store: store, audits: au, certBinder: binder}
+	return &Handler{store: store, audits: au, certBinder: binder, countApps: store.Count}
+}
+
+// SetMaxApplicationsProvider 注入授权应用数量配额（0=不限制）。
+func (h *Handler) SetMaxApplicationsProvider(fn func(ctx context.Context) int64) *Handler {
+	h.maxAppsProvider = fn
+	return h
 }
 
 // ---------- 应用 ----------
@@ -65,6 +79,7 @@ type createAppRequest struct {
 	BusinessOwner  string `json:"business_owner"`
 	TechnicalOwner string `json:"technical_owner"`
 	ProtectionMode string `json:"protection_mode"`
+	DeploymentMode string `json:"deployment_mode"`
 }
 
 // Create 创建应用。
@@ -87,7 +102,25 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		TechnicalOwner: req.TechnicalOwner,
 		Status:         StatusDraft,
 		ProtectionMode: defaultMode(req.ProtectionMode),
+		DeploymentMode: defaultStr(req.DeploymentMode, DeployModeReverseProxy),
 		CreatedBy:      &p.UserID,
+	}
+	// 授权应用配额强制：quota>0 且当前总数已达配额 → 403（LICENSE_QUOTA_EXCEEDED）+ 审计；
+	// 配额值来自 license 内存状态（无 IO），计数失败如实 500（不静默放行）
+	if h.maxAppsProvider != nil {
+		if quota := h.maxAppsProvider(r.Context()); quota > 0 {
+			count, err := h.countApps(r.Context())
+			if err != nil {
+				response.InternalError(w, r, err)
+				return
+			}
+			if count >= quota {
+				h.recordQuotaDeniedAudit(r, p, req.Code, quota)
+				response.Error(w, r, http.StatusForbidden, license.CodeLicenseQuotaExceeded,
+					fmt.Sprintf("应用数量已达授权配额上限（%d），请联系厂家扩容", quota))
+				return
+			}
+		}
 	}
 	if err := h.store.Create(r.Context(), a); err != nil {
 		if errors.Is(err, ErrCodeExists) {
@@ -129,6 +162,7 @@ type updateAppRequest struct {
 	BusinessOwner  string `json:"business_owner"`
 	TechnicalOwner string `json:"technical_owner"`
 	ProtectionMode string `json:"protection_mode"`
+	DeploymentMode string `json:"deployment_mode"`
 	Version        int    `json:"version"`
 }
 
@@ -162,12 +196,19 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.ProtectionMode != "" {
 		a.ProtectionMode = defaultMode(req.ProtectionMode)
 	}
+	if req.DeploymentMode != "" {
+		if !validDeploymentMode(req.DeploymentMode) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的部署模式")
+			return
+		}
+		a.DeploymentMode = req.DeploymentMode
+	}
 	if err := h.store.Update(r.Context(), a); err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
 	risk := audits.RiskLow
-	if req.ProtectionMode != "" {
+	if req.ProtectionMode != "" || req.DeploymentMode != "" {
 		risk = audits.RiskHigh
 	}
 	h.recordAudit(r, p, "applications", "update", "application", id.String(), a.Code, before, appSummary(a), audits.ResultSuccess, risk)
@@ -236,6 +277,7 @@ func (h *Handler) Copy(w http.ResponseWriter, r *http.Request) {
 		TechnicalOwner: src.TechnicalOwner,
 		Status:         StatusDraft,
 		ProtectionMode: src.ProtectionMode,
+		DeploymentMode: src.DeploymentMode,
 		CreatedBy:      &p.UserID,
 	}
 	if err := h.store.Create(r.Context(), newApp); err != nil {
@@ -706,7 +748,7 @@ func applyUpstreamRequest(u *Upstream, req *upstreamRequest) {
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, before, after, result, risk string) {
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),
@@ -725,11 +767,35 @@ func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, actio
 	})
 }
 
+// recordQuotaDeniedAudit 记录授权配额拒绝审计（FAILURE + RiskMedium + 中文原因；
+// audits 未接线或主体为空时安全跳过——仅测试场景；写入失败走兜底日志/计数，与 recordAudit 同一纪律）。
+func (h *Handler) recordQuotaDeniedAudit(r *http.Request, p *authz.Principal, code string, quota int64) {
+	if h.audits == nil || p == nil {
+		return
+	}
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
+		UserID:        &p.UserID,
+		Username:      p.Username,
+		SourceIP:      middleware.RemoteIP(r),
+		ConnectionIP:  middleware.ConnectionIP(r),
+		UserAgent:     r.UserAgent(),
+		Module:        "applications",
+		Action:        "create",
+		ObjectType:    "application",
+		ObjectName:    code,
+		Result:        audits.ResultFailure,
+		FailureReason: fmt.Sprintf("应用数量已达授权配额上限（%d）", quota),
+		RiskLevel:     audits.RiskMedium,
+		RequestID:     response.RequestIDFrom(r),
+	})
+}
+
 func appItem(a *Application, domainCount, upstreamCount int) map[string]interface{} {
 	return map[string]interface{}{
 		"id": a.ID, "code": a.Code, "name": a.Name, "description": a.Description,
 		"business_owner": a.BusinessOwner, "technical_owner": a.TechnicalOwner,
 		"status": a.Status, "protection_mode": a.ProtectionMode,
+		"deployment_mode":   a.DeploymentMode,
 		"deployment_status": a.DeploymentStatus, "health_status": a.HealthStatus,
 		"current_version_id": a.CurrentVersionID, "last_publish_at": a.LastPublishAt,
 		"last_publish_result": a.LastPublishResult,
@@ -739,7 +805,7 @@ func appItem(a *Application, domainCount, upstreamCount int) map[string]interfac
 }
 
 func appSummary(a *Application) string {
-	return `{"code":"` + a.Code + `","name":"` + a.Name + `","status":"` + a.Status + `","mode":"` + a.ProtectionMode + `"}`
+	return `{"code":"` + a.Code + `","name":"` + a.Name + `","status":"` + a.Status + `","mode":"` + a.ProtectionMode + `","deployment_mode":"` + a.DeploymentMode + `"}`
 }
 
 func domainSummary(d *Domain) string {
@@ -751,7 +817,7 @@ func upstreamSummary(u *Upstream) string {
 }
 
 func defaultMode(m string) string {
-	if m == ModeOff || m == ModeObserve || m == ModeProtect {
+	if validProtectionMode(m) {
 		return m
 	}
 	return ModeObserve

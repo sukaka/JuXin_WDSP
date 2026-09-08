@@ -29,8 +29,10 @@ import { ApiError } from '../../api/client'
 import { accessRulesApi } from '../../api/accessRules'
 import type { ImportAccessRulesBody } from '../../api/accessRules'
 import { applicationsApi } from '../../api/applications'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { PublishTaskProgress } from '../config-publish/ConfigPublishPage'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
@@ -133,6 +135,7 @@ export default function AccessRulesPage() {
   const [importOpen, setImportOpen] = useState(false)
   const [preview, setPreview] = useState<AccessRuleImportResult | null>(null)
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const [detailRecord, setDetailRecord] = useState<AccessRuleItem | null>(null)
   const [form] = Form.useForm<RuleFormValues>()
   const [extendForm] = Form.useForm<ExtendFormValues>()
   const [importForm] = Form.useForm<ImportFormValues>()
@@ -140,6 +143,13 @@ export default function AccessRulesPage() {
   const listQuery = useQuery({
     queryKey: ['access-rules', filters, page, pageSize],
     queryFn: () => accessRulesApi.list({ ...filters, page, page_size: pageSize }),
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<AccessRuleItem>({
+    remove: (id) => accessRulesApi.remove(id),
+    invalidateKeys: [['access-rules']],
+    entityName: '黑白名单规则',
+    canDelete: canManage,
   })
 
   const appsQuery = useQuery({
@@ -368,7 +378,7 @@ export default function AccessRulesPage() {
       width: 150,
       render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
     },
-    { title: '优先级', dataIndex: 'priority', width: 80, align: 'right' },
+    { title: '优先级', dataIndex: 'priority', width: 80 },
     {
       title: '状态',
       dataIndex: 'status',
@@ -381,7 +391,7 @@ export default function AccessRulesPage() {
       width: 200,
       render: (_, record) => <ValidityCell record={record} />,
     },
-    { title: '命中数', dataIndex: 'hit_count', width: 80, align: 'right' },
+    { title: '命中数', dataIndex: 'hit_count', width: 80 },
     {
       title: '来源',
       dataIndex: 'source_type',
@@ -554,6 +564,7 @@ export default function AccessRulesPage() {
             setPage(1)
           }}
         />
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -567,10 +578,15 @@ export default function AccessRulesPage() {
         <SmartTable<AccessRuleItem>
           storageKey="access-rules"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
           scroll={{ x: 1500 }}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             current: page,
             pageSize,
@@ -951,6 +967,13 @@ export default function AccessRulesPage() {
           />
         )}
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="规则详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

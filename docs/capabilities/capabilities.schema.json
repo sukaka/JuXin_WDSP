@@ -1,0 +1,175 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://jiuzhang.local/schemas/capabilities.schema.json",
+  "title": "WDSP 版本能力清单（capabilities.json）",
+  "description": "P0-01 任务书 §4.1 的能力条目结构契约。capabilities.json 是唯一手工维护的能力数据源；verification_status 由证据计算，禁止手填覆盖为与证据不一致的值（校验器会拒绝）。列表成员排序保持稳定，能力 ID 一经发布不得复用给另一能力。",
+  "type": "object",
+  "required": ["schema_version", "catalog_id", "capabilities"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "初始为 1；破坏性改变必须升级版本，并保留旧版本读取或明确拒绝策略。"
+    },
+    "catalog_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "清单稳定标识。"
+    },
+    "description": {
+      "type": "string"
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "description": "能力条目列表；id 不得重复，顺序保持稳定。",
+      "items": { "$ref": "#/$defs/capability" }
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "owner_module",
+        "product_lines",
+        "deployment_modes",
+        "implementation_status",
+        "integration_status",
+        "verification_status",
+        "implementation_refs",
+        "required_test_ids",
+        "prerequisites",
+        "limitations",
+        "evidence_refs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "稳定机器 ID，一经发布不得复用。"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "中文能力名。"
+        },
+        "owner_module": {
+          "type": "string",
+          "minLength": 1,
+          "description": "实现模块（仓库内归属模块名）。"
+        },
+        "product_lines": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["WAF", "WDSP", "API"] },
+          "description": "适用产品线，按仓库实际授权和产品路由核实。"
+        },
+        "deployment_modes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["REVERSE_PROXY", "MIRROR", "AGENT", "APM_PROBE"] },
+          "description": "实际适用的部署模式；不支持的不得填写。"
+        },
+        "implementation_status": {
+          "enum": ["NOT_STARTED", "PARTIAL", "IMPLEMENTED"],
+          "description": "来自代码核查，必须有 implementation_refs 支撑。"
+        },
+        "integration_status": {
+          "enum": ["NOT_CONNECTED", "PARTIAL", "CONNECTED"],
+          "description": "是否已接入真实请求链/服务接线，来自代码核查。"
+        },
+        "verification_status": {
+          "enum": ["NOT_RUN", "PASS", "FAIL", "BLOCKED"],
+          "description": "由证据计算（P0-01 §4.3），禁止手填覆盖；初始一律 NOT_RUN。"
+        },
+        "implementation_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/implementation_ref" },
+          "description": "仓库相对路径与符号名；校验器验证路径存在且限定在仓库根内，符号定位留给代码核查。"
+        },
+        "required_test_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/test_id" },
+          "description": "必须实际运行的验收测试 ID（EVD/BENCH/JWT/DEC/EXC 系列）。空集合永远无法获得 PASS。存在 scenarios 时，必须等于各场景 required_test_ids 的并集。"
+        },
+        "scenarios": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/scenario" },
+          "description": "分场景验证要求（如单节点反向代理、HA 双节点、APM 探针）。缺省时等价于一个强制 default 场景，使用顶层 required_test_ids。汇总状态取强制场景的最差结果。"
+        },
+        "prerequisites": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "授权、采集、协议、数据保留、环境等前提。"
+        },
+        "limitations": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "如实记录的限制；未完成项不得隐藏。"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "对应证据 manifest 中的测试记录 ID；为空表示未验证。校验器检查引用存在（断链报错）。"
+        }
+      }
+    },
+    "implementation_ref": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "仓库相对路径（文件或目录）；禁止绝对路径、越界 .. 与远程 URL。"
+        },
+        "symbol": {
+          "type": "string",
+          "minLength": 1,
+          "description": "可选符号名（函数/类型），定位留给代码核查。"
+        }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "required": ["id", "name", "deployment_mode", "mandatory", "required_test_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "deployment_mode": {
+          "enum": ["REVERSE_PROXY", "MIRROR", "AGENT", "APM_PROBE"]
+        },
+        "mandatory": {
+          "type": "boolean",
+          "description": "强制场景参与汇总（取最差结果）；非强制场景仅作信息展示。"
+        },
+        "required_test_ids": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/test_id" }
+        },
+        "note": {
+          "type": "string",
+          "description": "场景级前提或说明，例如「APM 入口性能不等于代码级观测」。"
+        }
+      }
+    },
+    "test_id": {
+      "type": "string",
+      "pattern": "^(EVD|BENCH|JWT|DEC|EXC)-\\d{2}$",
+      "description": "任务书验收编号，见 docs/tasks/wdsp-p0/ 各任务书 §7。"
+    }
+  }
+}

@@ -1,0 +1,131 @@
+# 片段：攻击活动会话 Attack Session（WDSP AI 自动化渗透防护增强 阶段4，服务端）
+# 路由源：server/internal/app/app.go「攻击活动」注册段
+# 数据源：attacksessions 聚合器 60s 一轮异步维护（设计 #16/#31.3；表见迁移 000103，
+# 权限种子见 000104）——同身份 30 分钟不活跃间隔滑动窗聚合 identity_behavior_events（主锚）、
+# access_control_events（details identity_key）、api_runtime_events / security_events
+# （request_id 关联或 identity_ip_history IP 反查唯一归属）四类事件。
+paths:
+  # ==================== 攻击活动会话 ====================
+  /security/attack-sessions:
+    get:
+      operationId: attackSessionList
+      tags: [attack-sessions]
+      summary: 攻击活动会话分页列表
+      description: 按攻击阶段/风险等级/会话状态/活动时间窗筛选攻击活动会话，默认 end_time（最近事件时间）DESC。会话由聚合器 60s 一轮异步维护：同身份 30 分钟不活跃间隔滑动窗内事件并入同一会话，超龄 OPEN 会话自动收口 CLOSED。权限：`attack_sessions.read`
+      parameters:
+        - { name: stage, in: query, schema: { type: string, enum: [RECON, DISCOVERY, AUTH_PROBE, AUTHORIZATION_PROBE, EXPLOIT, DATA_ACCESS, PERSISTENCE, UNKNOWN] }, description: 按攻击阶段筛选（会话阶段取成员事件最高值；PERSISTENCE 仅枚举占位） }
+        - { name: risk_level, in: query, schema: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }, description: 按风险等级筛选（20/40/70 档） }
+        - { name: status, in: query, schema: { type: string, enum: [OPEN, CLOSED] }, description: 按会话状态筛选 }
+        - { name: from, in: query, schema: { type: string, format: date-time }, description: 活动时间下界（end_time >= from，RFC3339） }
+        - { name: to, in: query, schema: { type: string, format: date-time }, description: 活动时间上界（start_time <= to，RFC3339） }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页攻击活动会话列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttackSessionListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security/attack-sessions/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 会话 ID
+    get:
+      operationId: attackSessionGet
+      tags: [attack-sessions]
+      summary: 攻击活动会话详情
+      description: 会话全字段 + 成员事件时间序（occurred_at ASC）。成员事件经 attack_session_event 关联表挂载（UNIQUE(source_table, source_id) 幂等）；WDSP 双落去重——Coraza SQLi 同落 security_events 与 api_runtime_events waf 明细时按 request_id 只计一次，故成员事件数恒等于 event_count。权限：`attack_sessions.read`
+      responses:
+        '200':
+          description: 攻击活动会话详情与成员事件
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttackSessionDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    # ==================== 攻击活动会话 ====================
+    AttackSession:
+      type: object
+      description: 攻击活动会话（attack_session；30 分钟不活跃间隔滑动窗聚合，设计 #16.1）
+      required: [id, session_key, identity_id, identity_key, start_time, end_time, request_count, event_count, risk_score, risk_level, attack_stage, status, automation_suspected, automation_basis, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        session_key: { type: string, description: 稳定会话键（sha256(identity_id | 首事件 30min 桶起点) hex，聚合幂等用） }
+        identity_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 归属身份（client_identity.id；身份删除时置空保留会话证据）
+        identity_key: { type: string, description: 归属身份键（冗余便于展示） }
+        start_time: { type: string, format: date-time, description: 会话首事件时间 }
+        end_time: { type: string, format: date-time, description: 会话最近事件时间（last_event_at；滑动窗与收口判定基准） }
+        request_count: { type: integer, format: int64, description: 去重请求数（成员事件按 request_id 去重，空 request_id 按事件计） }
+        event_count: { type: integer, format: int64, description: 成员事件数（WDSP 双落按 request_id 去重后口径） }
+        risk_score: { type: integer, minimum: 0, maximum: 100, description: "成员事件分求和截断 [0,100]" }
+        risk_level: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL], description: 风险等级（20/40/70 档，与 client_identity 同口径） }
+        attack_stage:
+          type: string
+          enum: [RECON, DISCOVERY, AUTH_PROBE, AUTHORIZATION_PROBE, EXPLOIT, DATA_ACCESS, PERSISTENCE, UNKNOWN]
+          description: 攻击阶段（成员事件阶段最高值：RECON<DISCOVERY<AUTH_PROBE<AUTHORIZATION_PROBE<EXPLOIT<DATA_ACCESS；PERSISTENCE 仅枚举占位）
+        status: { type: string, enum: [OPEN, CLOSED], description: 会话状态（OPEN 聚集中 / CLOSED 超 30 分钟无新事件收口） }
+        automation_suspected:
+          type: boolean
+          description: 疑似自动化攻击派生标注（有效阶段≥3 且命中无头/枚举/低慢类指示信号；单调 false→true，设计 #45）
+        automation_basis:
+          type: string
+          description: 标注判定依据（stages=命中阶段集;indicator=首个指示信号；未标注时仅阶段集，可解释展示用）
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AttackSessionEvent:
+      type: object
+      description: 会话成员事件（attack_session_event 关联行，occurred_at 时间序）
+      required: [source_table, source_id, request_id, occurred_at, stage]
+      properties:
+        source_table:
+          type: string
+          enum: [identity_behavior_events, access_control_events, security_events, api_runtime_events]
+          description: 事件来源表
+        source_id: { type: string, description: 源表行 ID（UUID 文本；api_runtime_events 用行 UUID） }
+        request_id: { type: string, description: 网关请求 ID（可空串；双落去重与请求数口径依据） }
+        occurred_at: { type: string, format: date-time, description: 事件发生时间 }
+        stage:
+          type: string
+          enum: [RECON, DISCOVERY, AUTH_PROBE, AUTHORIZATION_PROBE, EXPLOIT, DATA_ACCESS, PERSISTENCE, UNKNOWN]
+          description: 该事件的攻击阶段（规则推断，stage.go 有序规则表）
+
+    AttackSessionListResponse:
+      type: object
+      description: 攻击活动会话分页响应（统一分页结构）
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AttackSession' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, format: int64, description: 总条数 }
+
+    AttackSessionDetailResponse:
+      type: object
+      required: [session, events]
+      properties:
+        session: { $ref: '#/components/schemas/AttackSession' }
+        events:
+          type: array
+          description: 成员事件（occurred_at 时间序；数量恒等于 session.event_count）
+          items: { $ref: '#/components/schemas/AttackSessionEvent' }

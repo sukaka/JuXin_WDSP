@@ -5,6 +5,7 @@ import type {
   AppPathRoute,
   ApplicationDetail,
   ApplicationItem,
+  DeploymentMode,
   DomainItem,
   PageResult,
   ProtectionMode,
@@ -27,6 +28,7 @@ export interface CreateApplicationBody {
   business_owner: string
   technical_owner: string
   protection_mode: ProtectionMode
+  deployment_mode?: DeploymentMode
 }
 
 export interface UpdateApplicationBody {
@@ -35,6 +37,7 @@ export interface UpdateApplicationBody {
   business_owner: string
   technical_owner: string
   protection_mode: ProtectionMode
+  deployment_mode?: DeploymentMode
   version: number
 }
 

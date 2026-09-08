@@ -273,7 +273,7 @@ VALUES ($1,$2,'SUCCESS',$3,$4,now())`, runID, setID, score, detailsJSON); err !=
 		SessionID: &sess.ID, Action: "evaluation_run",
 		RequestSummary: "运行评估集 " + setCode,
 		ResultSummary:  fmt.Sprintf("score=%.2f passed=%d/%d", score, passed, len(cases)),
-		InputTokens: inTok, OutputTokens: outTok,
+		InputTokens:    inTok, OutputTokens: outTok,
 	})
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"run": map[string]interface{}{

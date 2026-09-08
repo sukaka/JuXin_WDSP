@@ -1,0 +1,282 @@
+# P0-02 隔离安全与性能基准编排（S2 新增）
+#
+# 与 deployment/docker-compose.stage5.yml 的关键区别：
+#   - 无 `name:`、无 `container_name:`：项目名由运行器以 `-p p0bench-<run_id>` 注入，
+#     容器/网络/卷名全部由 compose project 前缀派生，两个不同 run_id 可同时共存互不影响（BENCH-01）。
+#   - 不发布生产固定端口：所有对外端口绑定 127.0.0.1，P0B_*_PORT 缺省为空即由 Docker 分配随机端口。
+#   - 镜像版本锁定：第三方镜像沿用仓库现有 compose 的 tag+digest；禁止 latest。
+#   - 本文件从不与 stage5 叠加使用；运行器禁止操作任何其他 project 的资源。
+#
+# 日志接收：沿用真实架构——api 的采集器经只读卷 gateway-logs 消费网关日志
+# （coraza-audit / guard-events / api-runtime-events / access-full 等），
+# 不引入与生产不一致的独立日志接收器假实现。
+#
+# 用法（由 test/performance/p0/run.sh 调用，不手工直接 up）：
+#   docker compose -p p0bench-<run_id> -f deployment/docker-compose.p0-benchmark.yml \
+#       --env-file <run 目录>/env up -d
+
+services:
+  postgres:
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jiuzhang_waf}
+      POSTGRES_USER: ${POSTGRES_USER:-jiuzhang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${P0B_POSTGRES_PORT-}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jiuzhang} -d ${POSTGRES_DB:-jiuzhang_waf}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+    networks:
+      - bench-net
+
+  valkey:
+    image: valkey/valkey:8.1.8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --requirepass
+      - ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    volumes:
+      - valkey-data:/data
+    ports:
+      - "127.0.0.1:${P0B_VALKEY_PORT-}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+    networks:
+      - bench-net
+
+  api:
+    image: jiuzhang-server:p0-benchmark
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jiuzhang_waf}
+      POSTGRES_USER: ${POSTGRES_USER:-jiuzhang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      VALKEY_HOST: valkey
+      VALKEY_PORT: 6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+      COOKIE_SECURE: "false"
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?INITIAL_ADMIN_PASSWORD is required}
+      JIUZHANG_MASTER_KEY: ${JIUZHANG_MASTER_KEY:?JIUZHANG_MASTER_KEY is required}
+      # 离线授权：验签公钥随正式构建内嵌；这里只配置宿主机指纹文件路径
+      LICENSE_HOST_FINGERPRINT_FILE: ${LICENSE_HOST_FINGERPRINT_FILE:-/app/runtime/license/host_fingerprint}
+      MANAGEMENT_TRUSTED_PROXY_CIDRS: ${MANAGEMENT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
+      CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
+      GATEWAY_DATA_DIR: /app/runtime
+      MIGRATIONS_DIR: /app/migrations
+      WAF_CRS_DIR: /etc/caddy/rules/crs/rules
+      WAF_CRS_VERSION: 4.28.0
+      WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
+      GATEWAY_NODE_NAME: ${P0B_GATEWAY_NODE_NAME:-gateway-p0bench-01}
+      WAF_GUARD_EVENTS_LOG: /var/log/caddy-audit/guard-events.log
+      GATEWAY_GUARD_EVENTS_LOG: /var/log/caddy/guard-events.log
+      WAF_NODE_IFACES_LOG: /var/log/caddy-audit/node-interfaces.jsonl
+      GUARD_FAIL_OPEN: ${GUARD_FAIL_OPEN:-true}
+      WAF_ACCESS_LOG: /var/log/caddy-audit/access.log
+      REPORT_FONT_PATH: /app/assets/fonts/NotoSansCJKsc-VF.ttf
+      PRODUCT_EDITION: ${PRODUCT_EDITION:-wdsp}
+      API_DYNAMIC_PROTECTION_ENABLED: ${API_DYNAMIC_PROTECTION_ENABLED:-true}
+      APM_ENABLED: ${APM_ENABLED:-false}
+      APM_CLICKHOUSE_DSN: ${APM_CLICKHOUSE_DSN:-}
+      API_PROTECTION_MODE: ${API_PROTECTION_MODE:-OBSERVE}
+      WAF_API_EVENTS_LOG: /var/log/caddy-audit/api-runtime-events.log
+      GATEWAY_API_EVENTS_LOG: /var/log/caddy/api-runtime-events.log
+      WAF_IDENTITY_EVENTS_LOG: /var/log/caddy-audit/identity-events.log
+      GATEWAY_IDENTITY_EVENTS_LOG: /var/log/caddy/identity-events.log
+      WAF_SITE_DISCOVERY_LOG: /var/log/caddy-audit/site-discovery.jsonl
+      WAF_ACCESS_FULL_LOG: /var/log/caddy-audit/access-full.jsonl
+      GATEWAY_ACCESS_FULL_LOG: /var/log/caddy/access-full.jsonl
+      WAF_COLLECTOR_FLUSH_BATCH: ${WAF_COLLECTOR_FLUSH_BATCH:-2000}
+      WAF_COLLECTOR_FLUSH_INTERVAL: ${WAF_COLLECTOR_FLUSH_INTERVAL:-2s}
+      API_MAX_BODY_PARSE_BYTES: ${API_MAX_BODY_PARSE_BYTES:-1048576}
+      API_MAX_BODY_SAMPLE_BYTES: ${API_MAX_BODY_SAMPLE_BYTES:-65536}
+      API_MAX_JSON_DEPTH: ${API_MAX_JSON_DEPTH:-32}
+      API_MAX_FIELD_COUNT: ${API_MAX_FIELD_COUNT:-2048}
+      HOSTCTL_DIR: /app/runtime/hostctl
+    ports:
+      - "127.0.0.1:${P0B_API_PORT-}:8080"
+    volumes:
+      - gateway-admin:/var/run/caddy
+      - gateway-logs:/var/log/caddy-audit:ro
+      - ../gateway/rules:/etc/caddy/rules:ro
+      - ../docs:/app/docs:ro
+      - ../THIRD_PARTY_NOTICES.md:/app/THIRD_PARTY_NOTICES.md:ro
+      - bench-runtime:/app/runtime
+      - ../runtime/license:/app/runtime/license:ro
+      - ../runtime/hostctl:/app/runtime/hostctl
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      gateway:
+        condition: service_started
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+    networks:
+      - bench-net
+
+  gateway:
+    image: jiuzhang-gateway:p0-benchmark
+    build:
+      context: ../gateway
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      SEC_RULE_ENGINE: ${P0B_SEC_RULE_ENGINE:-On}
+      XDG_CONFIG_HOME: /config
+      XDG_DATA_HOME: /data
+    command: ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--resume"]
+    ports:
+      - "127.0.0.1:${P0B_GATEWAY_PORT-}:8080"
+      - "127.0.0.1:${P0B_SITE_HTTP_PORT-}:81"
+      - "127.0.0.1:${P0B_SITE_HTTPS_PORT-}:443"
+    volumes:
+      - ../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      - ../gateway/rules:/etc/caddy/rules:ro
+      - gateway-logs:/var/log/caddy
+      - gateway-admin:/var/run/caddy
+      - gateway-config:/config
+      - gateway-config:/data
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      testorigin:
+        condition: service_healthy
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+    networks:
+      - bench-net
+
+  logrotator:
+    image: jiuzhang-logrotator:p0-benchmark
+    build:
+      context: ../gateway/images/logrotator
+    restart: unless-stopped
+    volumes:
+      - gateway-logs:/var/log/caddy
+    depends_on:
+      gateway:
+        condition: service_started
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+    networks:
+      - bench-net
+
+  testorigin:
+    build:
+      context: ../deployment/stage1/testorigin
+      dockerfile: Dockerfile
+    image: jiuzhang-testorigin:p0-benchmark
+    restart: unless-stopped
+    expose:
+      - "8081"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+    networks:
+      - bench-net
+
+volumes:
+  postgres-data:
+    driver: local
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+  valkey-data:
+    driver: local
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+  gateway-admin:
+    driver: local
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+  gateway-logs:
+    driver: local
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+  gateway-config:
+    driver: local
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+  bench-runtime:
+    driver: local
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}
+
+networks:
+  bench-net:
+    driver: bridge
+    labels:
+      p0bench.run_id: ${P0B_RUN_ID:?P0B_RUN_ID is required}

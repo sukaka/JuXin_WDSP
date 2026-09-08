@@ -2,6 +2,7 @@ package tests
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -9,6 +10,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/backups"
+	"github.com/jiuzhang-waf/server/internal/encryption"
+	"github.com/jiuzhang-waf/server/internal/reports"
 )
 
 // readBodyBytes 读取响应体字节。
@@ -45,6 +51,27 @@ func (e *testEnv) s6WaitStatus(t *testing.T, path string, cookies []*http.Cookie
 	return ""
 }
 
+// s6RunBackupWorker 同步执行全部待处理备份任务。
+// 测试环境不启动 StartStage6Workers 后台循环（仅 main.go 调用），与报告用例同纪律改为同步驱动；
+// 要求测试先 t.Setenv("JIUZHANG_MASTER_KEY", ...) 固定主密钥，与应用侧加解密保持一致。
+func s6RunBackupWorker(t *testing.T, env *testEnv) {
+	t.Helper()
+	enc, err := encryption.NewFromEnv()
+	if err != nil {
+		t.Fatalf("encryption: %v", err)
+	}
+	worker := backups.NewWorker(backups.NewStore(env.db), backups.NewExporter(env.db, enc, env.cfg.Gateway.DataDir), nil)
+	for {
+		claimed, err := worker.ProcessOnce(context.Background())
+		if err != nil {
+			t.Fatalf("backup worker: %v", err)
+		}
+		if !claimed {
+			return
+		}
+	}
+}
+
 // TestStage6DashboardRBAC 态势接口三权边界与结构。
 func TestStage6DashboardRBAC(t *testing.T) {
 	env := setupTestEnv(t)
@@ -64,9 +91,9 @@ func TestStage6DashboardRBAC(t *testing.T) {
 	// 系统管理员：运行态势 200
 	resp = env.get(t, "/api/v1/dashboard/runtime-overview", sysCookies)
 	s5OK(t, resp, "runtime overview")
-	// 审计管理员：审计态势 200；运行态势 403
+	// 审计管理员：000100 收紧为纯审计角色，审计态势 403（dashboard.audit.read 移除）；运行态势 403
 	resp = env.get(t, "/api/v1/dashboard/audit-overview", audCookies)
-	s5OK(t, resp, "audit overview")
+	s5Expect(t, resp, http.StatusForbidden, "audit overview")
 	resp = env.get(t, "/api/v1/dashboard/runtime-overview", audCookies)
 	s5Expect(t, resp, http.StatusForbidden, "audit runtime overview")
 }
@@ -97,9 +124,9 @@ func TestStage6Analytics(t *testing.T) {
 		resp := env.get(t, "/api/v1/analytics/request-trend"+q, secCookies)
 		s5Expect(t, resp, http.StatusBadRequest, "analytics bad params "+q)
 	}
-	// 审计管理员：处置统计 200，安全统计 403
+	// 审计管理员：000100 纯审计角色，处置统计 403（analytics.disposition.read 移除），安全统计 403
 	resp := env.get(t, "/api/v1/analytics/disposition-overview", audCookies)
-	s5OK(t, resp, "disposition overview")
+	s5Expect(t, resp, http.StatusForbidden, "disposition overview")
 	resp = env.get(t, "/api/v1/analytics/request-trend", audCookies)
 	s5Expect(t, resp, http.StatusForbidden, "audit request-trend")
 }
@@ -112,7 +139,8 @@ func TestStage6ReportsLifecycle(t *testing.T) {
 
 	start := time.Now().AddDate(0, 0, -7).UTC().Format(time.RFC3339)
 	end := time.Now().UTC().Format(time.RFC3339)
-	body := fmt.Sprintf(`{"report_type":"CUSTOM","start_time":%q,"end_time":%q,"format":"html"}`, start, end)
+	// 内容范围显式 WAF：000086+ 内容范围门禁下，WAF 产品形态拒绝缺省 WAF_API 范围
+	body := fmt.Sprintf(`{"report_type":"CUSTOM","content_scope":"WAF","start_time":%q,"end_time":%q,"format":"html"}`, start, end)
 	resp := env.post(t, "/api/v1/reports", body, secCookies, secCSRF)
 	result := s5OK(t, resp, "create report")
 	job := s5Obj(t, result, "report")
@@ -123,10 +151,16 @@ func TestStage6ReportsLifecycle(t *testing.T) {
 	// 非法时间范围
 	resp = env.post(t, "/api/v1/reports", `{"report_type":"CUSTOM","start_time":"2020-01-01T00:00:00Z","end_time":"2026-01-01T00:00:00Z"}`, secCookies, secCSRF)
 	s5Expect(t, resp, http.StatusBadRequest, "create report bad range")
-	// 轮询至 SUCCESS
-	st := env.s6WaitStatus(t, "/api/v1/reports/"+reportID, secCookies, map[string]bool{"SUCCESS": true, "FAILED": true}, 120*time.Second)
-	if st != "SUCCESS" {
-		t.Fatalf("report status = %s", st)
+	// 驱动真实生成管线：测试环境不启动后台 Worker（StartStage6Workers 仅 main.go
+	// 调用，纪律同 stage8 API 报告用例），直接同步调用同一 Generate 后确认 SUCCESS。
+	jobUUID, err := uuid.Parse(reportID)
+	if err != nil {
+		t.Fatalf("parse report id: %v", err)
+	}
+	gen := reports.NewGenerator(reports.NewStore(env.db), env.db, nil,
+		env.cfg.Gateway.DataDir, reports.DefaultFontPath(), nil)
+	if err := gen.Generate(context.Background(), jobUUID); err != nil {
+		t.Fatalf("generate report: %v", err)
 	}
 	// 详情含 64 位哈希
 	resp = env.get(t, "/api/v1/reports/"+reportID, secCookies)
@@ -147,16 +181,29 @@ func TestStage6ReportsLifecycle(t *testing.T) {
 	if !strings.Contains(string(data[:200]), "<") {
 		t.Errorf("download not html")
 	}
-	// 审计管理员可下载（download_audit），创建 403
+	// 审计管理员：000100 移除 reports.download_audit → 下载 403，创建 403
 	resp = env.get(t, "/api/v1/reports/"+reportID+"/download", audCookies)
-	s5Expect(t, resp, http.StatusOK, "audit download")
+	s5Expect(t, resp, http.StatusForbidden, "audit download")
 	resp = env.post(t, "/api/v1/reports", body, audCookies, audCSRF)
 	s5Expect(t, resp, http.StatusForbidden, "audit create report")
 	// 系统管理员 403
 	sysCookies, _ := env.s5Login(t, "s6sys", "SYSTEM_ADMIN")
 	resp = env.get(t, "/api/v1/reports", sysCookies)
 	s5Expect(t, resp, http.StatusForbidden, "sysadmin list reports")
-	// 删除
+	// 审计管理员删除（无 reports.delete_own）→ 403（路由层拒绝）
+	resp = env.do(t, http.MethodDelete, "/api/v1/reports/"+reportID, "", audCookies, audCSRF)
+	s5Expect(t, resp, http.StatusForbidden, "audit delete report")
+	// 另一安全管理员删除他人报告：reports.delete_all（000084）放行 → 200
+	resp = env.post(t, "/api/v1/reports", body, secCookies, secCSRF)
+	job2 := s5Obj(t, s5OK(t, resp, "create report 2"), "report")
+	report2ID, _ := job2["id"].(string)
+	if report2ID == "" {
+		t.Fatal("no report 2 id")
+	}
+	sec2Cookies, sec2CSRF := env.s5Login(t, "s6sec2", "SECURITY_ADMIN")
+	resp = env.do(t, http.MethodDelete, "/api/v1/reports/"+report2ID, "", sec2Cookies, sec2CSRF)
+	s5Expect(t, resp, http.StatusOK, "delete_all admin deletes others report")
+	// 删除（本人）
 	req, _ := http.NewRequest(http.MethodDelete, env.server.URL+"/api/v1/reports/"+reportID, nil)
 	for _, c := range secCookies {
 		req.AddCookie(c)
@@ -196,9 +243,10 @@ func TestStage6ReportTemplates(t *testing.T) {
 	if tplID == "" {
 		t.Fatal("no template id")
 	}
-	// 内置模板禁改禁删
-	resp = env.do(t, http.MethodPut, "/api/v1/report-templates/"+builtinID, `{"name":"改名","version":1}`, secCookies, secCSRF)
-	s5Expect(t, resp, http.StatusForbidden, "modify builtin template")
+	// 内置模板禁改禁删：契约 400 INVALID_ARGUMENT「内置模板不允许修改或删除」
+	// （templateRequest 无 version 字段，请求体不得携带，否则 DecodeJSON 未知字段 400）
+	resp = env.do(t, http.MethodPut, "/api/v1/report-templates/"+builtinID, `{"name":"改名"}`, secCookies, secCSRF)
+	s5Expect(t, resp, http.StatusBadRequest, "modify builtin template")
 	// 删除自定义模板
 	req, _ := http.NewRequest(http.MethodDelete, env.server.URL+"/api/v1/report-templates/"+tplID, nil)
 	for _, c := range secCookies {
@@ -270,6 +318,8 @@ func TestStage6SystemAlerts(t *testing.T) {
 
 // TestStage6BackupsLifecycle 备份全生命周期。
 func TestStage6BackupsLifecycle(t *testing.T) {
+	// 固定主密钥：测试侧同步驱动备份执行器需与应用使用同一密钥加解密备份文件。
+	t.Setenv("JIUZHANG_MASTER_KEY", strings.Repeat("ab", 32))
 	env := setupTestEnv(t)
 	sysCookies, sysCSRF := env.s5Login(t, "s6sys", "SYSTEM_ADMIN")
 	secCookies, secCSRF := env.s5Login(t, "s6sec", "SECURITY_ADMIN")
@@ -282,8 +332,10 @@ func TestStage6BackupsLifecycle(t *testing.T) {
 	result := s5OK(t, resp, "create backup")
 	job := s5Obj(t, result, "job")
 	backupID, _ := job["id"].(string)
+	// 测试环境不启动 StartStage6Workers 后台循环（仅 main.go 调用），同步驱动备份执行器。
+	s6RunBackupWorker(t, env)
 	st := env.s6WaitStatus(t, "/api/v1/backups/"+backupID, sysCookies,
-		map[string]bool{"SUCCESS": true, "FAILED": true}, 300*time.Second)
+		map[string]bool{"SUCCESS": true, "FAILED": true}, 10*time.Second)
 	if st != "SUCCESS" {
 		t.Fatalf("backup status = %s", st)
 	}
@@ -311,7 +363,7 @@ func TestStage6BackupsLifecycle(t *testing.T) {
 	rJob := s5Obj(t, result, "job")
 	restoreID, _ := rJob["id"].(string)
 	st = env.s6WaitStatus(t, "/api/v1/restores/"+restoreID, sysCookies,
-		map[string]bool{"AWAITING_CONFIRM": true, "FAILED": true}, 300*time.Second)
+		map[string]bool{"AWAITING_CONFIRM": true, "FAILED": true}, 60*time.Second)
 	if st != "AWAITING_CONFIRM" {
 		t.Fatalf("restore status = %s", st)
 	}
@@ -335,8 +387,8 @@ func TestStage6BackupsLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	impResult := s5OK(t, impResp, "import backup")
-	impJob := s5Obj(t, impResult, "job")
-	impID, _ := impJob["id"].(string)
+	// 导入接口直接返回任务对象（response.JSON(job)，不包 "job" 键）
+	impID, _ := impResult.Data["id"].(string)
 	if impID == "" {
 		t.Fatal("import no id")
 	}
@@ -361,8 +413,9 @@ func TestStage6BackupsLifecycle(t *testing.T) {
 	result = s5OK(t, resp, "create config backup")
 	job2 := s5Obj(t, result, "job")
 	cfgBackupID, _ := job2["id"].(string)
+	s6RunBackupWorker(t, env)
 	env.s6WaitStatus(t, "/api/v1/backups/"+cfgBackupID, sysCookies,
-		map[string]bool{"SUCCESS": true, "FAILED": true}, 300*time.Second)
+		map[string]bool{"SUCCESS": true, "FAILED": true}, 10*time.Second)
 	req3, _ := http.NewRequest(http.MethodDelete, env.server.URL+"/api/v1/backups/"+cfgBackupID, nil)
 	for _, c := range sysCookies {
 		req3.AddCookie(c)
@@ -384,18 +437,24 @@ func TestStage6UpgradePrecheck(t *testing.T) {
 	resp := env.post(t, "/api/v1/upgrades/packages",
 		fmt.Sprintf(`{"file_name":"p.tar.gz","version_from":"2.0.0","version_to":"2.0.1","file_hash":%q,"file_size":1}`, hash), secCookies, secCSRF)
 	s5Expect(t, resp, http.StatusForbidden, "sec admin register package")
-	// 非法哈希
+	// 非法哈希：契约（UPGRADE_ROLLBACK_DESIGN）为 200 + REJECTED 登记留证并返回失败原因
 	resp = env.post(t, "/api/v1/upgrades/packages",
 		`{"file_name":"p.tar.gz","version_from":"2.0.0","version_to":"2.0.1","file_hash":"xyz","file_size":1}`, sysCookies, sysCSRF)
-	s5Expect(t, resp, http.StatusBadRequest, "register bad hash")
-	// 非法版本
+	result := s5OK(t, resp, "register bad hash")
+	if pkg := s5Obj(t, result, "package"); pkg["status"] != "REJECTED" {
+		t.Errorf("bad hash package status = %v, want REJECTED", pkg["status"])
+	}
+	// 非法版本：同样 200 + REJECTED 留证
 	resp = env.post(t, "/api/v1/upgrades/packages",
 		fmt.Sprintf(`{"file_name":"p.tar.gz","version_from":"x.y","version_to":"2.0.1","file_hash":%q,"file_size":1}`, hash), sysCookies, sysCSRF)
-	s5Expect(t, resp, http.StatusBadRequest, "register bad version")
+	result = s5OK(t, resp, "register bad version")
+	if pkg := s5Obj(t, result, "package"); pkg["status"] != "REJECTED" {
+		t.Errorf("bad version package status = %v, want REJECTED", pkg["status"])
+	}
 	// 正常登记 + 预检
 	resp = env.post(t, "/api/v1/upgrades/packages",
 		fmt.Sprintf(`{"file_name":"jiuzhang-2.0.1.tar.gz","version_from":"2.0.0","version_to":"2.0.1","file_hash":%q,"file_size":1024}`, hash), sysCookies, sysCSRF)
-	result := s5OK(t, resp, "register package")
+	result = s5OK(t, resp, "register package")
 	pkg := s5Obj(t, result, "package")
 	pkgID, _ := pkg["id"].(string)
 	resp = env.post(t, "/api/v1/upgrades/precheck", fmt.Sprintf(`{"package_id":%q}`, pkgID), sysCookies, sysCSRF)
@@ -435,9 +494,9 @@ func TestStage6DeliveryCheck(t *testing.T) {
 	default:
 		t.Errorf("overall_result = %q", overall)
 	}
-	// 审计管理员只读可 GET、不可 run
+	// 审计管理员：000100 移除 delivery_checks.read → GET/run 均 403
 	resp = env.get(t, "/api/v1/delivery-checks", audCookies)
-	s5Expect(t, resp, http.StatusOK, "audit list checks")
+	s5Expect(t, resp, http.StatusForbidden, "audit list checks")
 	resp = env.post(t, "/api/v1/delivery-checks/run", ``, audCookies, audCSRF)
 	s5Expect(t, resp, http.StatusForbidden, "audit run check")
 }

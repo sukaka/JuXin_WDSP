@@ -6,8 +6,9 @@ import (
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 )
 
-// 行为基线：identity 指纹（或客户端 IP）+ endpoint_key 维度的进程内 1 分钟窗口计数。
-// 纯内存实现（单节点限制，见 window.go 注释）；无外部存储依赖。
+// 行为基线：identity 指纹（或客户端 IP）+ endpoint_key 维度的 1 分钟窗口计数。
+// 默认进程内存实现（单节点限制，见 window.go 注释）；存储可插拔，装配层可按
+// behavior_store 配置注入 Valkey 实现（见 store.go）。
 const (
 	behaviorMaxKeys       = 10000 // LRU 容量上限
 	behaviorMinHistory    = 5     // 判定所需最少历史窗口样本数
@@ -24,7 +25,7 @@ func CheckBehavior(ctx *dsctx.RequestContext, identity, endpointKey string) {
 	if ctx == nil || identity == "" || endpointKey == "" {
 		return
 	}
-	count, history := defaultBehaviorTracker.add(identity + "|" + endpointKey)
+	count, history := behaviorCounts(ctx, identity+"|"+endpointKey)
 	threshold, ok := behaviorSpikeThreshold(count, history)
 	if !ok {
 		return

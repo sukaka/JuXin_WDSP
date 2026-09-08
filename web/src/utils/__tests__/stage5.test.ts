@@ -97,10 +97,14 @@ describe('展示元数据完整性', () => {
     expect(ACCESS_RULE_TYPE_META.DENY.color).toBe('red')
   })
 
-  it('访问控制事件类型覆盖后端全部 11 种', () => {
-    expect(Object.keys(AC_EVENT_TYPE_META)).toHaveLength(11)
+  it('访问控制事件类型覆盖后端全部 15 种（含 L7_RULE_* 四种）', () => {
+    expect(Object.keys(AC_EVENT_TYPE_META)).toHaveLength(15)
     expect(AC_EVENT_TYPE_META.CC_THRESHOLD_EXCEEDED.label).toBe('频率超阈值')
     expect(AC_EVENT_TYPE_META.IP_ALLOW_MATCH.label).toBe('命中白名单')
+    expect(AC_EVENT_TYPE_META.L7_RULE_ALLOW.label).toBe('L7规则放行')
+    expect(AC_EVENT_TYPE_META.L7_RULE_BLOCK.label).toBe('L7规则阻断')
+    expect(AC_EVENT_TYPE_META.L7_RULE_REDIRECT.label).toBe('L7规则重定向')
+    expect(AC_EVENT_TYPE_META.L7_RULE_CUSTOM.label).toBe('L7自定义页面')
   })
 
   it('CC 动作与临时封禁状态元数据', () => {

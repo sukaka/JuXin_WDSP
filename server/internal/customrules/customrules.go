@@ -3,6 +3,7 @@ package customrules
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -50,6 +51,11 @@ var allowedVariables = map[string]bool{
 	"REQUEST_PROTOCOL": true, "REQUEST_LINE": true,
 }
 
+// 检测变量形态白名单：变量名[:选择器]，整体限定字符集。
+// GenerateSecLang 将变量以 | 原样拼接进 SecRule 首参，不转义——
+// 必须在此拒绝引号、空白与一切控制字符，否则可注入独立指令行（如 SecAction ctl:ruleEngine=Off）。
+var variablePattern = regexp.MustCompile(`^[A-Z_]+(:[A-Za-z0-9_.-]+)?$`)
+
 // 允许的动作
 var allowedActions = map[string]bool{
 	"LOG": true, "OBSERVE": true, "BLOCK": true,
@@ -69,23 +75,23 @@ var dangerousPatterns = []*regexp.Regexp{
 
 // CustomRule 是自定义规则。
 type CustomRule struct {
-	ID             uuid.UUID  `json:"id"`
-	RuleID         int        `json:"rule_id"`
-	Name           string     `json:"name"`
-	Description    string     `json:"description"`
-	AttackType     string     `json:"attack_type"`
-	Severity       string     `json:"severity"`
-	Phase          int        `json:"phase"`
-	Operator       string     `json:"operator"`
-	OperatorValue  string     `json:"operator_value"`
+	ID              uuid.UUID `json:"id"`
+	RuleID          int       `json:"rule_id"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description"`
+	AttackType      string    `json:"attack_type"`
+	Severity        string    `json:"severity"`
+	Phase           int       `json:"phase"`
+	Operator        string    `json:"operator"`
+	OperatorValue   string    `json:"operator_value"`
 	TargetVariables []string  `json:"target_variables"`
-	Action         string     `json:"action"`
-	Tags           []string   `json:"tags"`
-	Status         string     `json:"status"`
-	ScopeType      string     `json:"scope_type"`
-	ScopeIDs       []string   `json:"scope_ids"`
-	GeneratedRule  string     `json:"generated_rule"`
-	Version        int        `json:"version"`
+	Action          string    `json:"action"`
+	Tags            []string  `json:"tags"`
+	Status          string    `json:"status"`
+	ScopeType       string    `json:"scope_type"`
+	ScopeIDs        []string  `json:"scope_ids"`
+	GeneratedRule   string    `json:"generated_rule"`
+	Version         int       `json:"version"`
 }
 
 // ValidateInput 校验自定义规则输入并生成 SecLang。
@@ -109,8 +115,8 @@ func ValidateInput(r *CustomRule) (generated string, err error) {
 			return "", fmt.Errorf("%w: 操作符 %q 需要匹配内容", ErrInvalidRule, op)
 		}
 	}
-	// 危险内容检测
-	fullText := r.OperatorValue + " " + r.Name + " " + r.Description
+	// 危险内容检测（覆盖全部进入 SecLang 的自由文本面，含检测变量）
+	fullText := r.OperatorValue + " " + r.Name + " " + r.Description + " " + strings.Join(r.TargetVariables, " ")
 	for _, dp := range dangerousPatterns {
 		if dp.MatchString(fullText) {
 			return "", fmt.Errorf("%w: 规则包含禁止内容（命令执行/文件读取/危险引用）", ErrDangerousContent)
@@ -127,6 +133,10 @@ func ValidateInput(r *CustomRule) (generated string, err error) {
 		return "", fmt.Errorf("%w: 至少选择一个检测变量", ErrInvalidRule)
 	}
 	for _, v := range r.TargetVariables {
+		// 先校验整体形态（拒绝控制字符/引号/管道符等 SecLang 元字符），再查白名单
+		if !variablePattern.MatchString(v) {
+			return "", fmt.Errorf("%w: 检测变量格式非法 %q（仅允许 变量名[:选择器]）", ErrInvalidRule, v)
+		}
 		base := strings.Split(v, ":")[0]
 		if !allowedVariables[base] && !allowedVariables[v] {
 			return "", fmt.Errorf("%w: 不支持的检测变量 %q", ErrInvalidRule, v)
@@ -432,16 +442,12 @@ func mustJSON(v []string) string {
 	if len(v) == 0 {
 		return "[]"
 	}
-	var b strings.Builder
-	b.WriteString("[")
-	for i, s := range v {
-		if i > 0 {
-			b.WriteString(",")
-		}
-		b.WriteString(`"` + strings.ReplaceAll(s, `"`, `\"`) + `"`)
+	data, err := json.Marshal(v)
+	if err != nil {
+		// []string 序列化不会失败；兜底返回空数组而非损坏数据
+		return "[]"
 	}
-	b.WriteString("]")
-	return b.String()
+	return string(data)
 }
 
 func fromJSON(data []byte) []string {
@@ -449,13 +455,8 @@ func fromJSON(data []byte) []string {
 		return nil
 	}
 	var out []string
-	s := string(data)
-	s = strings.Trim(s, "[]")
-	for _, part := range strings.Split(s, ",") {
-		part = strings.Trim(part, ` "`)
-		if part != "" {
-			out = append(out, part)
-		}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
 	}
 	return out
 }

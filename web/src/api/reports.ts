@@ -1,5 +1,5 @@
 import { buildUrl, request } from './client'
-import type { PageResult, ReportArchiveItem, ReportJobItem, ReportType } from '../types'
+import type { PageResult, ReportArchiveItem, ReportContentScope, ReportJobItem, ReportType } from '../types'
 
 export interface ReportListParams {
   report_type?: string
@@ -10,11 +10,14 @@ export interface ReportListParams {
 
 export interface CreateReportBody {
   report_type: ReportType
+  content_scope?: ReportContentScope
+  include_api_assets?: boolean
+  page_orientation?: 'P' | 'L'
   start_time?: string
   end_time?: string
   application_ids?: string[]
   template_id?: string
-  format: 'html' | 'pdf'
+  format: 'html' | 'pdf' | 'docx'
 }
 
 /** 报告任务（reports.read / reports.create / reports.download / reports.delete_own） */

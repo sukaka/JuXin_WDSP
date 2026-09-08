@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: zip 内容含脚本文件名检测（PK 头后文件名区域出现 .php/.jsp 等，自建规则 1001312）
+rule_id: 1001312
+tests:
+  - test_id: 1
+    desc: "urlencoded 提交 zip 本地文件头文件名区域含 evil.php"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/x-www-form-urlencoded"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "file=PK%03%04abcdefghijklmnopqrstuvwxyzevil.php"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001312]
+  - test_id: 2
+    desc: "urlencoded 提交 zip 内含路径前缀的脚本文件名 WEB-INF/cmd.jsp"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/x-www-form-urlencoded"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "file=PK%03%04abcdefghijklmnopqrstuvwxyzWEB-INF/cmd.jsp"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001312]

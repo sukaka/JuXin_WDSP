@@ -26,7 +26,7 @@ jiuzhang-offline-<version>/
 │   └── valkey.tar           # valkey/valkey:8.1.8-alpine@sha256:94365b27…（摘要锁定）
 ├── docker-compose.yml       # 生产编排模板（口令经 .env 注入；name: jiuzhang-waf）
 ├── .env.example             # 配置模板
-├── ops/                     # 运维脚本（install/upgrade/backup/restore/healthcheck/diagnostics/lib）
+├── ops/                     # 运维脚本（含自动安装的宿主机升级执行器）
 ├── licenses/                # 第三方许可证归档
 ├── docs/                    # SBOM.spdx.json / SBOM.cyclonedx.json（若已生成）、
 │                            # THIRD_PARTY_NOTICES.md、DEPENDENCIES.md（若存在）
@@ -56,7 +56,7 @@ jq -r '.files_manifest_sha256' manifest.json
 |---|--------|----------------|
 | 1 | CPU 架构 | `uname -m`：与镜像构建架构一致（如 `x86_64`/`aarch64`） |
 | 2 | 操作系统 | `cat /etc/os-release`：推荐 Ubuntu 22.04+ / CentOS 8+ 等主流 Linux |
-| 3 | Docker 和 Compose | `docker --version`（24+）、`docker compose version`（v2 插件） |
+| 3 | Docker、Compose 和 systemd | `docker --version`（24+）、`docker compose version`（v2 插件）；完整包必须由 systemd 管理升级执行器 |
 | 4 | CPU、内存和磁盘 | 建议 4 核/8GB/SSD；install.sh 硬性要求内存 ≥4GB、当前目录磁盘可用 ≥20GB（`df -P -k .`） |
 | 5 | 端口 | 网关 80、管理 API 18081（可用 `--gateway-port/--api-port` 调整）未被占用：`lsof -nP -iTCP:80 -sTCP:LISTEN` |
 | 6 | 时间同步 | `timedatectl` 确认 NTP；install.sh 对比网络时间源，偏移 >60s 阻断（离线环境自行确认 NTP 正常） |
@@ -78,8 +78,8 @@ tar -xzf jiuzhang-offline-<version>.tar.gz && cd jiuzhang-offline-<version>
 for f in images/*.tar; do docker load -i "$f"; done
 docker images | grep -E 'jiuzhang|postgres|valkey'   # 确认 4 个镜像在位
 
-# 3. 运行安装向导（环境检查 → 生成 .env → 启动 → 三权账号引导）
-ops/install/install.sh
+# 3. 运行安装向导（包含宿主机升级执行器，必须使用 root）
+sudo bash ops/install/install.sh
 # 端口/compose 文件非默认时：--gateway-port/--api-port/-c/-e；
 # .env 已存在需覆盖时加 --force（覆盖前自行备份）；仅装环境不建账号用 --skip-accounts
 ```
@@ -89,7 +89,8 @@ install.sh 自动完成：
 1. 环境检查（docker/compose/openssl/curl、端口、内存 ≥4GB、磁盘 ≥20GB、时间同步）；
 2. 生成 `.env`（随机 `POSTGRES_PASSWORD`、`VALKEY_PASSWORD`、`JIUZHANG_MASTER_KEY`、`INITIAL_ADMIN_PASSWORD`，文件权限 600）；
 3. `docker compose up -d` 启动并等待管理 API 健康（最长 180s）；
-4. 初始化三权账号：系统管理员 `jiuzhang_admin`（初始口令来自 .env）、安全管理员 `jiuzhang_secadmin`、审计管理员 `jiuzhang_auditadmin`（经 `POST /api/v1/users` 创建并返回临时口令）。
+4. 自动安装并启用宿主机 `jiuzhang-upgrade-executor.path`/`.service`，并验证监听单元运行；
+5. 初始化三权账号：系统管理员 `jiuzhang_admin`（初始口令来自 .env）、安全管理员 `jiuzhang_secadmin`、审计管理员 `jiuzhang_auditadmin`（经 `POST /api/v1/users` 创建并返回临时口令）。
 
 **初始/临时口令仅在终端打印一次，不写入任何日志文件**，请立即记录并妥善保管；首次登录后必须修改。
 

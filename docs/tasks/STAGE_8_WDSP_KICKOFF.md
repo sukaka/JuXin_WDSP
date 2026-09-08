@@ -17,9 +17,9 @@
 - [x] `PRODUCT_EDITION` / `API_DYNAMIC_PROTECTION_ENABLED` 配置骨架  
 - [x] `gateway/dynamic_security/context`：`RequestContext` 类型与最小化约束  
 - [x] Wave A：parse/normalize/classifier/decision/pipeline；外部 WAF match 写入上下文；API 关 skip  
-- [x] Wave B：端点发现/确认 API + 迁移 + 前端页  
+- [x] Wave B：API发现/确认 API + 迁移 + 前端页  
 - [x] Wave C：学习候选/冻结 + schema 偏离 + 主事件多明细  
-- [ ] Wave D：阶段7 AI Tool 接入（`api_*`，依赖 Tool 底座；列为遗留）  
+- [x] Wave D：阶段7 AI Tool 接入（`api_*` 已落地：aitools/api_tools.go 10 个 + api_ops_tools.go 5 个，全部 READ_ONLY 且仅 WDSP 形态注册）  
 
 ---
 
@@ -36,7 +36,7 @@
 
 ### Wave B — API 资产与学习
 
-- 识别、路径归一、端点表、参数/Schema 微模型、版本/确认/冻结  
+- 识别、路径归一、API表、参数/Schema 微模型、版本/确认/冻结  
 
 ### Wave C — 运行时检测与统一决策
 

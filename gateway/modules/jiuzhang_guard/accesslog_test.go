@@ -3,12 +3,16 @@ package jiuzhang_guard
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 )
 
 // newAccessLogTestGuard 构建开启全量访问日志的测试 Guard。
@@ -122,8 +126,8 @@ func TestAccessLogCapturesRequestAndResponse(t *testing.T) {
 	if rec0.ResponseBody != `{"ok":true}` {
 		t.Errorf("response body wrong: %q", rec0.ResponseBody)
 	}
-	if rec0.WAFAction != "" {
-		t.Errorf("waf_action should be empty for 200, got %q", rec0.WAFAction)
+	if rec0.WAFAction != "ALLOW" {
+		t.Errorf("waf_action should be ALLOW for 200, got %q", rec0.WAFAction)
 	}
 }
 
@@ -144,6 +148,11 @@ func TestAccessLogBodyTruncation(t *testing.T) {
 		Enabled: true, CaptureRequestBody: true, CaptureResponseBody: true, BodyLimitKB: 1,
 	})
 	next := caddyHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		// 留痕截断不得影响业务：下游必须仍能读到完整请求体（已读前缀 + 剩余流拼回）
+		body, _ := io.ReadAll(r.Body)
+		if len(body) != 4096 {
+			t.Errorf("downstream body len = %d, want 4096", len(body))
+		}
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(strings.Repeat("b", 4096)))
@@ -204,11 +213,12 @@ func TestAccessLogSkipsSSEResponseBody(t *testing.T) {
 	}
 }
 
-func TestAccessLogWAFActionBlockOn403(t *testing.T) {
+func TestAccessLogOrigin403NotMarkedWAFBlock(t *testing.T) {
+	// 源站自返 403（错误链无 WAF 归属证据）：如实记录状态码，不得误标 WAF 拦截（回落 ALLOW）
 	g, logPath := newAccessLogTestGuard(t, &accessLogJSON{Enabled: true})
 	next := caddyHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte("blocked"))
+		_, _ = w.Write([]byte("blocked by origin"))
 		return nil
 	})
 	rec := httptest.NewRecorder()
@@ -216,8 +226,72 @@ func TestAccessLogWAFActionBlockOn403(t *testing.T) {
 		t.Fatal(err)
 	}
 	recs := readAccessLogRecords(t, logPath)
-	if len(recs) != 1 || recs[0].WAFAction != "BLOCK" || recs[0].ResponseStatus != 403 {
-		t.Fatalf("waf_action inference wrong: %+v", recs)
+	if len(recs) != 1 || recs[0].ResponseStatus != 403 || recs[0].WAFAction != "ALLOW" {
+		t.Fatalf("origin 403 must not be marked as WAF block: %+v", recs)
+	}
+}
+
+func TestAccessLogWAFActionAttribution(t *testing.T) {
+	// waf_action 仅当错误链确证 WAF 归属（coraza 中断哨兵 / guard API 防护管线阻断）才记 BLOCK
+	cases := []struct {
+		name        string
+		writeStatus int // >0 时处理器先写状态码再返回错误（模拟 Coraza 响应体相位阻断）
+		handlerErr  error
+		wantAction  string
+		wantStatus  int
+	}{
+		{"coraza request-phase interruption", 0,
+			caddyhttp.Error(http.StatusForbidden, errors.New(corazaInterruptionMessage)), "BLOCK", 403},
+		{"coraza response-phase interruption", http.StatusForbidden,
+			caddyhttp.Error(http.StatusForbidden, errors.New(corazaInterruptionMessage)), "BLOCK", 403},
+		{"guard api protection block", 0,
+			caddyhttp.Error(http.StatusForbidden, errors.New("request blocked by api protection")), "BLOCK", 403},
+		{"guard api rate limit", 0,
+			caddyhttp.Error(http.StatusTooManyRequests, errors.New("api request rate limited")), "BLOCK", 429},
+		{"guard api temp block", 0,
+			caddyhttp.Error(http.StatusForbidden, errors.New("api client temporarily blocked")), "BLOCK", 403},
+		{"non-waf handler error 403", 0,
+			caddyhttp.Error(http.StatusForbidden, errors.New("upstream rejected")), "ALLOW", 403},
+		{"non-waf handler error 502", 0,
+			caddyhttp.Error(http.StatusBadGateway, errors.New("dial tcp 10.0.0.1:80: connect refused")), "ALLOW", 502},
+		{"plain error keeps zero status", 0, errors.New("boom"), "ALLOW", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			g, logPath := newAccessLogTestGuard(t, &accessLogJSON{Enabled: true})
+			next := caddyHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+				if c.writeStatus > 0 {
+					w.WriteHeader(c.writeStatus)
+				}
+				return c.handlerErr
+			})
+			rec := httptest.NewRecorder()
+			if err := g.ServeHTTP(rec, req("203.0.113.66:1234", nil), next); err == nil {
+				t.Fatal("expected downstream error to propagate")
+			}
+			recs := readAccessLogRecords(t, logPath)
+			if len(recs) != 1 {
+				t.Fatalf("expected 1 record, got %d", len(recs))
+			}
+			if recs[0].WAFAction != c.wantAction || recs[0].ResponseStatus != c.wantStatus {
+				t.Fatalf("attribution wrong: action=%q status=%d, want %q/%d",
+					recs[0].WAFAction, recs[0].ResponseStatus, c.wantAction, c.wantStatus)
+			}
+		})
+	}
+}
+
+func TestAccessLogStatusNormalizedWhenNoExplicitWrite(t *testing.T) {
+	// 处理器未显式写状态码且正常返回：与 API 捕获侧 outcome() 同口径归一为 200
+	g, logPath := newAccessLogTestGuard(t, &accessLogJSON{Enabled: true})
+	next := caddyHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) error { return nil })
+	rec := httptest.NewRecorder()
+	if err := g.ServeHTTP(rec, req("203.0.113.66:1234", nil), next); err != nil {
+		t.Fatal(err)
+	}
+	recs := readAccessLogRecords(t, logPath)
+	if len(recs) != 1 || recs[0].ResponseStatus != http.StatusOK || recs[0].WAFAction != "ALLOW" {
+		t.Fatalf("status normalization wrong: %+v", recs)
 	}
 }
 
@@ -265,13 +339,34 @@ func TestMaskAccessLogHeaders(t *testing.T) {
 }
 
 func TestMaskAccessLogBody(t *testing.T) {
-	cases := []struct{ name, in, wantGone, wantHas string }{
-		{"form", "username=u&password=p123&x=1", "p123", "password=masked"},
-		{"json compact", `{"password":"p123","u":"x"}`, "p123", `"password":"masked"`},
-		{"json spaced", `{"token": "t123"}`, "t123", `"token": "masked"`},
+	cases := []struct{ name, ct, in, wantGone, wantHas string }{
+		{"form", "application/x-www-form-urlencoded",
+			"username=u&password=p123&x=1", "p123", "password=masked"},
+		{"form url-encoded key", "application/x-www-form-urlencoded",
+			"pass%77ord=p%40ss&x=1", "p%40ss", "pass%77ord=masked"},
+		{"form url-encoded value", "application/x-www-form-urlencoded",
+			"password=a%26b%3Dc&x=1", "a%26b%3Dc", "password=masked"},
+		{"json compact", "application/json",
+			`{"password":"p123","u":"x"}`, "p123", `"password":"masked"`},
+		{"json space before colon", "application/json",
+			`{"token" : "t123"}`, "t123", `"token":"masked"`},
+		{"json nested", "application/json",
+			`{"a":{"password":"p123"}}`, "p123", `"password":"masked"`},
+		{"json escaped quotes in value", "application/json",
+			`{"password":"a\"b\"c"}`, `a\"b\"c`, `"password":"masked"`},
+		// 截断残片走启发式兜底：任意空白形态 + 转义感知（残片无收尾引号，掩码保持残片形态）
+		{"json truncated space form", "application/json",
+			`{"token" : "abc`, "abc", `"token" : "masked`},
+		{"json truncated escaped quote", "application/json",
+			`{"password":"a\"b`, `a\"b`, `"password":"masked`},
+		// 未知/非 JSON 类型：两种启发式保守兜底
+		{"unknown text form shape", "text/plain",
+			"user password=hunter2 logged", "hunter2", "password=masked"},
+		{"unknown json shape", "",
+			`{"secret":"s3cr3t"}`, "s3cr3t", `"secret":"masked"`},
 	}
 	for _, c := range cases {
-		got := maskAccessLogBody(c.in)
+		got := maskAccessLogBody(c.in, c.ct)
 		if strings.Contains(got, c.wantGone) {
 			t.Errorf("%s: sensitive value leaked: %s", c.name, got)
 		}
@@ -279,7 +374,7 @@ func TestMaskAccessLogBody(t *testing.T) {
 			t.Errorf("%s: expected %q in %q", c.name, c.wantHas, got)
 		}
 	}
-	if maskAccessLogBody("") != "" {
+	if maskAccessLogBody("", "application/json") != "" {
 		t.Error("empty body should stay empty")
 	}
 }
@@ -294,6 +389,19 @@ func TestMaskAccessLogQuery(t *testing.T) {
 	}
 	if got := maskAccessLogURI("/p?token=abc"); !strings.HasPrefix(got, "/p?token=masked") {
 		t.Errorf("uri mask wrong: %s", got)
+	}
+	// URL 编码的参数名必须解码后比对：pass%77ord= / %74oken= 不得绕过掩码，
+	// 命中后保留参数名原始编码形态、仅掩码值
+	got = maskAccessLogQuery("pass%77ord=Secret123&%74oken=t0k&x=1")
+	if strings.Contains(got, "Secret123") || strings.Contains(got, "t0k") {
+		t.Errorf("url-encoded sensitive keys bypassed mask: %s", got)
+	}
+	if !strings.Contains(got, "pass%77ord=masked") || !strings.Contains(got, "%74oken=masked") {
+		t.Errorf("encoded keys should keep original form with masked value: %s", got)
+	}
+	// 非法 % 转义的键解码失败：保持原样不过掩（无法确证敏感）
+	if got := maskAccessLogQuery("pass%zzord=Secret123"); got != "pass%zzord=Secret123" {
+		t.Errorf("undecodable key should stay untouched, got %s", got)
 	}
 }
 
@@ -329,6 +437,74 @@ func TestCaptureResponseWriterStatusAndBytes(t *testing.T) {
 	}
 	if rec.Code != 201 || rec.Body.Len() != 28 {
 		t.Errorf("downstream response changed: code=%d len=%d", rec.Code, rec.Body.Len())
+	}
+}
+
+// headerSeqRecorder 记录全部 WriteHeader 调用序列（httptest.ResponseRecorder 只记首个，
+// 无法验证 1xx 透传纪律）。
+type headerSeqRecorder struct {
+	header http.Header
+	codes  []int
+}
+
+func (r *headerSeqRecorder) Header() http.Header         { return r.header }
+func (r *headerSeqRecorder) Write(p []byte) (int, error) { return len(p), nil }
+func (r *headerSeqRecorder) WriteHeader(code int)        { r.codes = append(r.codes, code) }
+
+func TestCaptureResponseWriterIgnoresInformationalStatus(t *testing.T) {
+	// 1xx 信息响应（103 Early Hints）不落定最终状态、不触发采体决策、不提前结算 TTFB；
+	// 全部状态码透传下游（与 identitybehavior statusWriter 同一纪律）
+	rec := &headerSeqRecorder{header: make(http.Header)}
+	tracker := &ttfbTracker{}
+	tracker.markDownstreamEntry()
+	cw := &captureResponseWriter{ResponseWriter: rec, cfg: &accessLogJSON{CaptureResponseBody: true}, bodyLimit: 16, tracker: tracker}
+	cw.Header().Set("Link", "</style.css>; rel=preload")
+	cw.WriteHeader(http.StatusEarlyHints)
+	if cw.status != 0 || cw.decided || tracker.settled {
+		t.Fatalf("1xx must not settle: status=%d decided=%v ttfb_settled=%v", cw.status, cw.decided, tracker.settled)
+	}
+	cw.Header().Set("Content-Type", "application/json")
+	cw.WriteHeader(http.StatusOK)
+	if cw.status != http.StatusOK {
+		t.Fatalf("final status = %d, want 200", cw.status)
+	}
+	if !tracker.settled {
+		t.Fatal("final response should settle TTFB")
+	}
+	if len(rec.codes) != 2 || rec.codes[0] != http.StatusEarlyHints || rec.codes[1] != http.StatusOK {
+		t.Fatalf("downstream should receive both 103 and 200: %v", rec.codes)
+	}
+	if !cw.captureBody {
+		t.Error("textual final response should enable body capture")
+	}
+}
+
+func TestAccessLogClientIPBehindTrustedProxy(t *testing.T) {
+	// 可信 LB 后：client_ip 必须记真实客户端 IP 而非 LB 连接源地址（与安全事件
+	// ClientIP 口径一致）；client_port 保持原始连接端口
+	g, logPath := newAPMLogGuard(t, Guard{
+		AppID:          "app1",
+		TrustedProxies: []proxyJSON{{Name: "lb", CIDR: "10.0.0.1", HeaderType: "X_FORWARDED_FOR", Priority: 1}},
+	})
+	next := caddyHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+	r := httptest.NewRequest("GET", "http://waf-test.local/echo", nil)
+	r.RemoteAddr = "10.0.0.1:5555" // LB 连接源
+	r.Header.Set("X-Forwarded-For", "198.51.100.9")
+	if err := g.ServeHTTP(httptest.NewRecorder(), r, next); err != nil {
+		t.Fatal(err)
+	}
+	recs := readAccessLogRecords(t, logPath)
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+	if recs[0].ClientIP != "198.51.100.9" {
+		t.Errorf("client_ip should be real client behind trusted LB, got %q", recs[0].ClientIP)
+	}
+	if recs[0].ClientPort != 5555 {
+		t.Errorf("client_port should be original connection port, got %d", recs[0].ClientPort)
 	}
 }
 

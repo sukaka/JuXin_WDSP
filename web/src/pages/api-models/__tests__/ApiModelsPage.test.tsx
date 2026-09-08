@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -141,5 +141,186 @@ describe('ApiModelsPage', () => {
     await screen.findByText('候选')
     expect(screen.getByRole('button', { name: /创\s*建\s*候\s*选/ })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /确\s*认\s*冻\s*结/ })).toHaveLength(1)
+  })
+
+  it('生命周期按钮按权限与状态显隐：候选行可评审/拒绝，正式行可激活/归档', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_model.read', 'api_model.review', 'api_model.activate', 'api_model.archive']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await screen.findByText('候选')
+    // m1 为 CANDIDATE：提交评审/拒绝各 1；m2 为 FORMAL：激活/归档各 1
+    expect(screen.getAllByRole('button', { name: /提\s*交\s*评\s*审/ })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /^拒\s*绝$/ })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /^激\s*活$/ })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /^归\s*档$/ })).toHaveLength(1)
+    // 无 api_learning.start 权限：不显示「重新学习」
+    expect(screen.queryByRole('button', { name: /重\s*新\s*学\s*习/ })).not.toBeInTheDocument()
+  })
+
+  it('提交评审：弹窗填写意见后 POST submit-review（携带 comment）', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_model.read', 'api_model.review']),
+      csrfToken: null,
+      initialized: true,
+    })
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api-security/models/m1/submit-review')) {
+        return Promise.resolve(
+          jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { version: {}, message: '已提交评审' } }),
+        )
+      }
+      if (url.includes('/api-security/endpoints/e1/models')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+      }
+      if (url.includes('/api-security/endpoints')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: endpointsData }))
+      }
+      return Promise.reject(new Error(`unexpected url: ${url}`))
+    })
+    renderPage()
+    await screen.findByText('候选')
+    fireEvent.click(screen.getByRole('button', { name: /提\s*交\s*评\s*审/ }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: '请复核字段' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /提\s*交\s*评\s*审/ }))
+    await waitFor(() => {
+      const call = (fetch as Mock).mock.calls.find((c) => String(c[0]).includes('/api-security/models/m1/submit-review'))
+      expect(call).toBeTruthy()
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ comment: '请复核字段' })
+    })
+  })
+
+  it('激活：二次确认后 POST activate', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_model.read', 'api_model.activate']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await screen.findByText('正式')
+    fireEvent.click(screen.getByRole('button', { name: /^激\s*活$/ }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /^O\s*K$|^确\s*定$/ }))
+    await waitFor(() => {
+      const call = (fetch as Mock).mock.calls.find((c) => String(c[0]).includes('/api-security/models/m2/activate'))
+      expect(call).toBeTruthy()
+    })
+  })
+
+  it('对比抽屉：选择对比版本后展示字段级差异', async () => {
+    useAuthStore.setState({ user: makeUser(['api_model.read']), csrfToken: null, initialized: true })
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api-security/models/m1/diff/m2')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: {
+              id: 'd1',
+              model_version_id: 'm1',
+              other_version_id: 'm2',
+              diff: { added: ['name'], removed: [], type_changed: [{ field: 'id', from: 'number', to: 'string' }] },
+              created_at: '2026-07-21T02:00:00Z',
+            },
+          }),
+        )
+      }
+      if (url.includes('/api-security/endpoints/e1/models')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+      }
+      if (url.includes('/api-security/endpoints')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: endpointsData }))
+      }
+      return Promise.reject(new Error(`unexpected url: ${url}`))
+    })
+    renderPage()
+    await screen.findByText('候选')
+    fireEvent.click(screen.getAllByRole('button', { name: /^对\s*比$/ })[0])
+    const drawer = await screen.findByText('版本对比：v3（POST /v1/orders/{id}）')
+    expect(drawer).toBeInTheDocument()
+    const drawerEl = document.querySelector('.ant-drawer') as HTMLElement
+    fireEvent.mouseDown(within(drawerEl).getByRole('combobox'))
+    fireEvent.click(await screen.findByText('v2 · 正式 · 00112233'))
+    await waitFor(() => {
+      expect(
+        (fetch as Mock).mock.calls.some((c) => String(c[0]).includes('/api-security/models/m1/diff/m2')),
+      ).toBe(true)
+    })
+    expect(await within(drawerEl).findByText('新增字段')).toBeInTheDocument()
+    expect(within(drawerEl).getByText('name')).toBeInTheDocument()
+    expect(within(drawerEl).getByText('类型变化')).toBeInTheDocument()
+  })
+
+  it('策略溯源抽屉：展示该模型版本编译产生的运行时策略', async () => {
+    useAuthStore.setState({ user: makeUser(['api_model.read']), csrfToken: null, initialized: true })
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api-security/models/m2/runtime')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: {
+              items: [
+                {
+                  id: 'rp1',
+                  endpoint_id: 'e1',
+                  endpoint_key: 'POST /v1/orders/{id}',
+                  source_model_version_id: 'm2',
+                  runtime_version: 'v1',
+                  compiler_version: 'v1',
+                  content_hash: '9988776655443322',
+                  status: 'ACTIVE',
+                  created_at: '2026-07-19T03:00:00Z',
+                },
+              ],
+            },
+          }),
+        )
+      }
+      if (url.includes('/api-security/endpoints/e1/models')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+      }
+      if (url.includes('/api-security/endpoints')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: endpointsData }))
+      }
+      return Promise.reject(new Error(`unexpected url: ${url}`))
+    })
+    renderPage()
+    await screen.findByText('正式')
+    fireEvent.click(screen.getAllByRole('button', { name: /策\s*略\s*溯\s*源/ })[1])
+    expect(await screen.findByText('策略溯源：v2（POST /v1/orders/{id}）')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(
+        (fetch as Mock).mock.calls.some((c) => String(c[0]).includes('/api-security/models/m2/runtime')),
+      ).toBe(true)
+    })
+    expect(await screen.findByText('v1')).toBeInTheDocument()
+    expect(screen.getByText('生效中')).toBeInTheDocument()
+  })
+
+  it('重新学习：有 api_learning.start 权限时显示，确认后 POST learning/start', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_model.read', 'api_learning.start']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await screen.findByText('候选')
+    fireEvent.click(screen.getByRole('button', { name: /重\s*新\s*学\s*习/ }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /^O\s*K$|^确\s*定$/ }))
+    await waitFor(() => {
+      const call = (fetch as Mock).mock.calls.find((c) =>
+        String(c[0]).includes('/api-security/endpoints/e1/learning/start'),
+      )
+      expect(call).toBeTruthy()
+      expect(call?.[1]?.method).toBe('POST')
+    })
   })
 })

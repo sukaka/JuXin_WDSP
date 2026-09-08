@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ var (
 const (
 	DiffMissingInRuntime = "MISSING_IN_RUNTIME" // 规范有而运行时无
 	DiffMissingInSpec    = "MISSING_IN_SPEC"    // 运行时有而规范无
+	DiffChanged          = "CHANGED"            // 同名跨版本参数/类型/required 变化（W3-C）
 )
 
 // openAPI3Methods OpenAPI 3 Path Item 支持的 HTTP 方法（小写键）。
@@ -107,15 +109,24 @@ func HashSpecContent(content []byte) string {
 // ---------- 规范存储 ----------
 
 // ImportSpec 导入的规范（api_import_specs）。
+// W3-C 起带版本状态机：name 为版本链标识，version_no 链内自增，
+// status 为 DRAFT/ACTIVE/HISTORICAL/INVALID/ARCHIVED（同名唯一 ACTIVE）。
 type ImportSpec struct {
 	ID            uuid.UUID       `json:"id"`
+	Name          string          `json:"name"`
+	VersionNo     int             `json:"version_no"`
+	Status        string          `json:"status"`
+	ParentID      *uuid.UUID      `json:"parent_id,omitempty"`
+	ActivatedAt   *time.Time      `json:"activated_at,omitempty"`
 	Format        string          `json:"format"`
 	FileName      string          `json:"file_name"`
 	ContentHash   string          `json:"content_hash"`
 	SpecJSON      json.RawMessage `json:"spec_json,omitempty"`
 	EndpointCount int             `json:"endpoint_count"`
 	ImportedBy    *uuid.UUID      `json:"imported_by,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
+	// Source 规范来源（UPLOAD/URL/SOURCE_CODE…，迁移 000072；SOURCE_CODE 由 apisrc 源码扫描工具产出）
+	Source    string    `json:"source"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // SpecDiff 规范与运行时对比结果（api_spec_diffs）。
@@ -128,21 +139,50 @@ type SpecDiff struct {
 	CreatedAt   time.Time       `json:"created_at"`
 }
 
-// ImportSpecWithDiffs 事务写入规范及对比结果。
-func (s *Store) ImportSpecWithDiffs(ctx context.Context, spec *ImportSpec, diffs []SpecDiff) error {
+// ImportSpecWithDiffs 事务写入规范新版本、对比结果并登记规范端点：
+//   - 同名版本链加锁，version_no = 链内最大值 + 1，parent_id 指向原最高版本；
+//   - 原 ACTIVE 版本降为 HISTORICAL，新版本以 ACTIVE 落库（activated_at=now）；
+//   - diffs 含运行时键集对比（MISSING_*）与跨版本 CHANGED 明细；
+//   - registerOps（MISSING_IN_RUNTIME 端点）幂等登记为 api_endpoints 候选。
+//
+// 任一失败整体回滚。返回新登记的端点数量。
+func (s *Store) ImportSpecWithDiffs(ctx context.Context, spec *ImportSpec, diffs []SpecDiff, registerOps []SpecOperation) (int, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// 版本链加锁，分配新版本号并降级旧 ACTIVE（并发重名导入由 (name, version_no) 唯一索引兜底）
+	var prevID uuid.UUID
+	var prevVersionNo int
 	err = tx.QueryRow(ctx, `
-INSERT INTO api_import_specs (format, file_name, content_hash, spec_json, endpoint_count, imported_by)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, created_at`,
-		spec.Format, spec.FileName, spec.ContentHash, spec.SpecJSON, spec.EndpointCount, spec.ImportedBy).
-		Scan(&spec.ID, &spec.CreatedAt)
+SELECT id, version_no FROM api_import_specs WHERE name = $1 ORDER BY version_no DESC LIMIT 1 FOR UPDATE`,
+		spec.Name).Scan(&prevID, &prevVersionNo)
+	if err != nil && !isNoRows(err) {
+		return 0, err
+	}
+	if err == nil {
+		spec.ParentID = &prevID
+		spec.VersionNo = prevVersionNo + 1
+		if _, err := tx.Exec(ctx, `
+UPDATE api_import_specs SET status = $2 WHERE name = $1 AND status = 'ACTIVE'`,
+			spec.Name, SpecStatusHistorical); err != nil {
+			return 0, err
+		}
+	} else {
+		spec.VersionNo = 1
+	}
+	spec.Status = SpecStatusActive
+	err = tx.QueryRow(ctx, `
+INSERT INTO api_import_specs (name, version_no, status, parent_id, activated_at,
+  format, file_name, content_hash, spec_json, endpoint_count, imported_by, source)
+VALUES ($1, $2, 'ACTIVE', $3, now(), $4, $5, $6, $7, $8, $9, COALESCE(NULLIF($10,''),'UPLOAD'))
+RETURNING id, created_at, activated_at`,
+		spec.Name, spec.VersionNo, spec.ParentID,
+		spec.Format, spec.FileName, spec.ContentHash, spec.SpecJSON, spec.EndpointCount, spec.ImportedBy, spec.Source).
+		Scan(&spec.ID, &spec.CreatedAt, &spec.ActivatedAt)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for i := range diffs {
 		detail := diffs[i].Detail
@@ -155,27 +195,44 @@ VALUES ($1, $2, $3, $4)
 RETURNING id, created_at`,
 			spec.ID, diffs[i].DiffType, diffs[i].EndpointKey, detail).
 			Scan(&diffs[i].ID, &diffs[i].CreatedAt); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return tx.Commit(ctx)
+	registered, err := registerSpecEndpointsTx(ctx, tx, registerOps)
+	if err != nil {
+		return 0, err
+	}
+	return registered, tx.Commit(ctx)
 }
 
-// ListSpecs 规范导入列表（分页，不含 spec_json 大字段）。
-func (s *Store) ListSpecs(ctx context.Context, page, pageSize int) ([]ImportSpec, int64, error) {
+// ListSpecs 规范导入列表（分页，不含 spec_json 大字段；支持 name/status 过滤）。
+func (s *Store) ListSpecs(ctx context.Context, name, status string, page, pageSize int) ([]ImportSpec, int64, error) {
 	if page <= 0 {
 		page = 1
 	}
 	if pageSize <= 0 {
 		pageSize = 20
 	}
-	total, err := s.countQuery(ctx, "api_import_specs", nil)
-	if err != nil {
+	where := "1=1"
+	args := []any{}
+	if name != "" {
+		args = append(args, name)
+		where += fmt.Sprintf(" AND name = $%d", len(args))
+	}
+	if status != "" {
+		args = append(args, status)
+		where += fmt.Sprintf(" AND status = $%d", len(args))
+	}
+	var total int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM api_import_specs WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.db.Query(ctx, `
-SELECT id, format, file_name, content_hash, endpoint_count, imported_by, created_at
-FROM api_import_specs ORDER BY created_at DESC LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := s.db.Query(ctx, fmt.Sprintf(`
+SELECT id, name, version_no, status, parent_id, activated_at, format, file_name, content_hash,
+       endpoint_count, imported_by, created_at, source
+FROM api_import_specs WHERE %s ORDER BY created_at DESC LIMIT $%d OFFSET $%d`,
+		where, len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -183,8 +240,9 @@ FROM api_import_specs ORDER BY created_at DESC LIMIT $1 OFFSET $2`, pageSize, (p
 	out := []ImportSpec{}
 	for rows.Next() {
 		var it ImportSpec
-		if err := rows.Scan(&it.ID, &it.Format, &it.FileName, &it.ContentHash,
-			&it.EndpointCount, &it.ImportedBy, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.Name, &it.VersionNo, &it.Status, &it.ParentID, &it.ActivatedAt,
+			&it.Format, &it.FileName, &it.ContentHash,
+			&it.EndpointCount, &it.ImportedBy, &it.CreatedAt, &it.Source); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, it)
@@ -196,9 +254,11 @@ FROM api_import_specs ORDER BY created_at DESC LIMIT $1 OFFSET $2`, pageSize, (p
 func (s *Store) GetSpec(ctx context.Context, id uuid.UUID) (*ImportSpec, error) {
 	var it ImportSpec
 	err := s.db.QueryRow(ctx, `
-SELECT id, format, file_name, content_hash, endpoint_count, imported_by, created_at
+SELECT id, name, version_no, status, parent_id, activated_at, format, file_name, content_hash,
+       endpoint_count, imported_by, created_at, source
 FROM api_import_specs WHERE id = $1`, id).
-		Scan(&it.ID, &it.Format, &it.FileName, &it.ContentHash, &it.EndpointCount, &it.ImportedBy, &it.CreatedAt)
+		Scan(&it.ID, &it.Name, &it.VersionNo, &it.Status, &it.ParentID, &it.ActivatedAt,
+			&it.Format, &it.FileName, &it.ContentHash, &it.EndpointCount, &it.ImportedBy, &it.CreatedAt, &it.Source)
 	if err != nil {
 		if isNoRows(err) {
 			return nil, ErrNotFound

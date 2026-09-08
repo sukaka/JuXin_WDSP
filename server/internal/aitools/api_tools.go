@@ -78,8 +78,8 @@ type apiTools struct {
 func NewAPITools(r *Registry, endpoints APIEndpointReader, models APIModelReader, security APISecurityReader) {
 	g := &apiTools{endpoints: endpoints, models: models, security: security}
 	r.Register(&apiAssetSearch{baseTool: baseTool{meta: toolMeta{
-		code: "api_asset.search", name: "API端点搜索", version: "1.0",
-		description: "按关键字/资产状态/学习状态搜索API端点",
+		code: "api_asset.search", name: "API接口搜索", version: "1.0",
+		description: "按关键字/资产状态/学习状态搜索API接口",
 		risk:        RiskReadOnly, permission: "api_asset.read", timeout: 15, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"keyword":         sch("string", "归一化路径关键字（可选）"),
@@ -89,11 +89,11 @@ func NewAPITools(r *Registry, endpoints APIEndpointReader, models APIModelReader
 			"limit":           sch("integer", "每页数量（默认20，上限50）"),
 		})}}, g: g})
 	r.Register(&apiAssetGet{baseTool: baseTool{meta: toolMeta{
-		code: "api_asset.get", name: "API端点详情", version: "1.0",
-		description: "按端点ID获取详情（含业务维度扩展与当前模型版本号）",
+		code: "api_asset.get", name: "API接口详情", version: "1.0",
+		description: "按接口ID获取详情（含业务维度扩展与当前模型版本号）",
 		risk:        RiskReadOnly, permission: "api_asset.read", timeout: 10, maxResults: 1,
 		schema: obj(map[string]interface{}{
-			"endpoint_id": sch("string", "端点ID"),
+			"endpoint_id": sch("string", "接口ID"),
 		})}}, g: g})
 	r.Register(&apiModelGet{baseTool: baseTool{meta: toolMeta{
 		code: "api_model.get", name: "API模型版本详情", version: "1.0",
@@ -126,7 +126,7 @@ func NewAPITools(r *Registry, endpoints APIEndpointReader, models APIModelReader
 		})}}, g: g})
 	r.Register(&apiRuntimeStatistics{baseTool: baseTool{meta: toolMeta{
 		code: "api_runtime.statistics", name: "API运行时统计", version: "1.0",
-		description: "API运行时事件总量、最终动作/风险级别分布与Top端点",
+		description: "API运行时事件总量、最终动作/风险级别分布与Top接口",
 		risk:        RiskReadOnly, permission: "api_runtime.read", timeout: 20, maxResults: 1,
 		schema: obj(map[string]interface{}{})}}, g: g})
 	r.Register(&apiRiskSearch{baseTool: baseTool{meta: toolMeta{
@@ -142,17 +142,17 @@ func NewAPITools(r *Registry, endpoints APIEndpointReader, models APIModelReader
 		})}}, g: g})
 	r.Register(&apiLearningStatus{baseTool: baseTool{meta: toolMeta{
 		code: "api_learning.status", name: "API学习状态", version: "1.0",
-		description: "按端点ID查询学习状态、最近学习任务与样本统计",
+		description: "按接口ID查询学习状态、最近学习任务与样本统计",
 		risk:        RiskReadOnly, permission: "api_learning.read", timeout: 10, maxResults: 1,
 		schema: obj(map[string]interface{}{
-			"endpoint_id": sch("string", "端点ID"),
+			"endpoint_id": sch("string", "接口ID"),
 		})}}, g: g})
 	r.Register(&apiClassificationExplain{baseTool: baseTool{meta: toolMeta{
 		code: "api_classification.explain", name: "API分类解释", version: "1.0",
-		description: "按端点ID返回分类维度及来源/置信度（解释API用途）",
+		description: "按接口ID返回分类维度及来源/置信度（解释API用途）",
 		risk:        RiskReadOnly, permission: "api_classification.read", timeout: 10, maxResults: 50,
 		schema: obj(map[string]interface{}{
-			"endpoint_id": sch("string", "端点ID"),
+			"endpoint_id": sch("string", "接口ID"),
 		})}}, g: g})
 }
 
@@ -181,7 +181,7 @@ func pageLimit(m map[string]interface{}, defLimit, maxLimit int) (page, limit in
 	return page, limit
 }
 
-// endpointSummary 端点列表项摘要。
+// endpointSummary 接口列表项摘要。
 func endpointSummary(e apiassets.Endpoint) map[string]interface{} {
 	return map[string]interface{}{
 		"endpoint_id":              e.ID,
@@ -469,7 +469,7 @@ func (t *apiGraphQuery) Run(ctx context.Context, input json.RawMessage) (interfa
 				kept[n.ID] = true
 			}
 		}
-		// 保留目标端点在过滤结果内的调用边（谁调用了该应用的端点）
+		// 保留目标接口在过滤结果内的调用边（谁调用了该应用的接口）
 		filteredEdges := []apisecurity.GraphEdge{}
 		for _, e := range edges {
 			if kept[e.TargetEndpointID] {

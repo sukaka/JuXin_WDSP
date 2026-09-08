@@ -2,6 +2,7 @@ package accesscontrolevents
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -42,7 +43,7 @@ const eventColumns = `
 SELECT id, request_id, occurred_at, application_id, application_code, client_ip, connection_ip,
   domain, request_method, request_path, event_type, action, policy_id, access_rule_id,
   current_count, limit_value, window_seconds, block_expires_at, response_status, gateway_node_id,
-  message, created_at
+  message, proto, details, created_at
 FROM access_control_events`
 
 // buildWhere 构造筛选条件与参数。
@@ -137,10 +138,12 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Event, error) {
 func scanEvent(row pgx.Row) (*Event, error) {
 	var e Event
 	var cip, connIP *netip.Addr
+	var proto *string
+	var details []byte
 	err := row.Scan(&e.ID, &e.RequestID, &e.OccurredAt, &e.ApplicationID, &e.ApplicationCode,
 		&cip, &connIP, &e.Domain, &e.RequestMethod, &e.RequestPath, &e.EventType, &e.Action,
 		&e.PolicyID, &e.AccessRuleID, &e.CurrentCount, &e.LimitValue, &e.WindowSeconds,
-		&e.BlockExpiresAt, &e.ResponseStatus, &e.GatewayNodeID, &e.Message, &e.CreatedAt)
+		&e.BlockExpiresAt, &e.ResponseStatus, &e.GatewayNodeID, &e.Message, &proto, &details, &e.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("access control event not found")
@@ -152,6 +155,15 @@ func scanEvent(row pgx.Row) (*Event, error) {
 	}
 	if connIP != nil {
 		e.ConnectionIP = connIP.String()
+	}
+	if proto != nil {
+		e.Proto = *proto
+	}
+	e.Details = map[string]interface{}{}
+	if len(details) > 0 {
+		if err := json.Unmarshal(details, &e.Details); err != nil {
+			return nil, fmt.Errorf("decode event details: %w", err)
+		}
 	}
 	return &e, nil
 }
@@ -170,16 +182,21 @@ func (s *Store) Insert(ctx context.Context, batch []Event) (int, error) {
 	b := &pgx.Batch{}
 	for i := range batch {
 		e := &batch[i]
+		details, err := marshalDetails(e.Details)
+		if err != nil {
+			return 0, fmt.Errorf("marshal event details: %w", err)
+		}
 		b.Queue(`
 INSERT INTO access_control_events (request_id, occurred_at, application_id, application_code,
   client_ip, connection_ip, domain, request_method, request_path, event_type, action,
   policy_id, access_rule_id, current_count, limit_value, window_seconds, block_expires_at,
-  response_status, gateway_node_id, message)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+  response_status, gateway_node_id, message, proto, details)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
 			e.RequestID, e.OccurredAt, e.ApplicationID, e.ApplicationCode,
 			e.ClientIP, nullableIP(e.ConnectionIP), e.Domain, e.RequestMethod, e.RequestPath,
 			e.EventType, e.Action, e.PolicyID, e.AccessRuleID, e.CurrentCount, e.LimitValue,
-			e.WindowSeconds, e.BlockExpiresAt, e.ResponseStatus, e.GatewayNodeID, e.Message)
+			e.WindowSeconds, e.BlockExpiresAt, e.ResponseStatus, e.GatewayNodeID, e.Message,
+			nullableProto(e.Proto), details)
 	}
 	br := tx.SendBatch(ctx, b)
 	for range batch {
@@ -269,4 +286,20 @@ func nullableIP(ip string) interface{} {
 		return nil
 	}
 	return ip
+}
+
+// nullableProto 空串协议版本落 NULL（旧版网关未上报的缺失容忍口径）。
+func nullableProto(proto string) interface{} {
+	if proto == "" {
+		return nil
+	}
+	return proto
+}
+
+// marshalDetails 证据载荷序列化（nil/空 → 空对象，列恒非 NULL 与表默认值口径一致）。
+func marshalDetails(d map[string]interface{}) ([]byte, error) {
+	if len(d) == 0 {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(d)
 }

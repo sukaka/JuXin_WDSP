@@ -724,6 +724,18 @@ paths:
       operationId: startEndpointLearning
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sample_target:
+                  type: integer
+                  minimum: 10
+                  maximum: 100000
+                  description: 有效样本目标（缺省 100）；0 或越界返回 400
       responses:
         '200':
           description: 学习任务已启动
@@ -740,7 +752,7 @@ paths:
                       job: { $ref: '#/components/schemas/ApiLearningJob' }
                       message: { type: string }
                   request_id: { type: string, format: uuid }
-        '400': { description: 无效的端点ID }
+        '400': { description: 无效的端点ID或样本目标越界 }
         '401': { description: 未登录或会话失效 }
         '403': { description: 无权限 }
         '404': { description: 端点不存在 }

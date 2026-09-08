@@ -10,13 +10,16 @@ import {
   CHECK_RESULT_META,
   COMPONENT_NAME_META,
   COMPONENT_STATUS_META,
+  CONTENT_SCOPE_META,
   REPORT_FORMAT_META,
   REPORT_SECTION_OPTIONS,
   REPORT_STATUS_META,
   REPORT_TYPE_META,
   RESTORE_SCOPE_META,
   RESTORE_STATUS_META,
+  SEARCH_RANGE_OPTIONS,
   TREND_RANGE_OPTIONS,
+  UPGRADE_PACKAGE_STATUS_META,
   UPGRADE_STATUS_META,
   formatUptime,
   isTerminalBackupStatus,
@@ -24,11 +27,18 @@ import {
   isTerminalReportStatus,
   isTerminalRestoreStatus,
   isTerminalUpgradeStatus,
+  summarizeCheckResult,
 } from '../stage6'
 
 describe('阶段6 展示元数据完整性', () => {
   it('报告类型覆盖 DAILY/WEEKLY/MONTHLY/CUSTOM', () => {
     expect(Object.keys(REPORT_TYPE_META)).toEqual(['DAILY', 'WEEKLY', 'MONTHLY', 'CUSTOM'])
+  })
+
+  it('报告内容范围元数据可用', () => {
+    expect(CONTENT_SCOPE_META.WAF_API.label).toBe('Web + API')
+    expect(CONTENT_SCOPE_META.WAF).toBeDefined()
+    expect(CONTENT_SCOPE_META.API).toBeDefined()
   })
 
   it('报告任务状态覆盖任务书全部 7 个状态', () => {
@@ -120,7 +130,10 @@ describe('阶段6 展示元数据完整性', () => {
     expect(RESTORE_SCOPE_META.FULL.label).toBe('全系统恢复')
     expect(REPORT_FORMAT_META.html).toBeDefined()
     expect(REPORT_FORMAT_META.pdf).toBeDefined()
+    expect(REPORT_FORMAT_META.docx.label).toBe('Word 文档')
     expect(TREND_RANGE_OPTIONS.map((o) => o.value)).toEqual(['1h', '24h', '7d', '30d'])
+    // 检索类接口（调用链/SQL/异常/依赖/运行时）后端限窗 24h，快捷档位不含 7d/30d
+    expect(SEARCH_RANGE_OPTIONS.map((o) => o.value)).toEqual(['1h', '24h'])
   })
 
   it('报告章节选项值不重复且含结论章节', () => {
@@ -215,5 +228,28 @@ describe('formatUptime 运行时长格式化', () => {
     expect(formatUptime(3661)).toBe('1 小时 1 分钟')
     expect(formatUptime(61)).toBe('1 分钟')
     expect(formatUptime(-5)).toBe('-')
+  })
+})
+
+describe('升级包状态元数据', () => {
+  it('覆盖后端升级包状态枚举', () => {
+    for (const s of ['REGISTERED', 'VERIFIED', 'REJECTED']) {
+      expect(UPGRADE_PACKAGE_STATUS_META[s]).toBeDefined()
+    }
+  })
+})
+
+describe('summarizeCheckResult 预检整体结果汇总', () => {
+  it('任一 FAIL → FAIL', () => {
+    expect(summarizeCheckResult([{ result: 'PASS' }, { result: 'FAIL' }])).toBe('FAIL')
+  })
+
+  it('无 FAIL 但任一 WARNING → WARNING', () => {
+    expect(summarizeCheckResult([{ result: 'PASS' }, { result: 'WARNING' }])).toBe('WARNING')
+  })
+
+  it('全部 PASS 或空列表 → PASS', () => {
+    expect(summarizeCheckResult([{ result: 'PASS' }])).toBe('PASS')
+    expect(summarizeCheckResult([])).toBe('PASS')
   })
 })

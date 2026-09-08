@@ -56,7 +56,29 @@ func TestLoadInvalidAPIOverrideFailsClosed(t *testing.T) {
 	}
 }
 
-func TestAPIDynamicProtectionEnabledRequiresWDSPAndFlag(t *testing.T) {
+func TestLoadAPIEdition(t *testing.T) {
+	t.Setenv("PRODUCT_EDITION", "api")
+	t.Setenv("API_DYNAMIC_PROTECTION_ENABLED", "")
+	t.Setenv("WEB_WAF_ENABLED", "")
+	s := Load()
+	if !s.IsAPI() {
+		t.Fatalf("edition=%s want api", s.Edition)
+	}
+	if !s.APIDynamicProtection {
+		t.Fatal("api edition should enable API dynamic protection by default")
+	}
+	if s.WebWAFEnabled {
+		t.Fatal("api edition should disable Web WAF delivery by default")
+	}
+	if !s.APIDynamicProtectionEnabled() {
+		t.Fatal("APIDynamicProtectionEnabled should be true for api edition")
+	}
+	if s.WebWAFProtectionEnabled() {
+		t.Fatal("WebWAFProtectionEnabled should be false for api edition")
+	}
+}
+
+func TestAPIDynamicProtectionEnabledRequiresWDSPOrAPIAndFlag(t *testing.T) {
 	tests := []struct {
 		name string
 		in   Settings
@@ -64,6 +86,8 @@ func TestAPIDynamicProtectionEnabledRequiresWDSPAndFlag(t *testing.T) {
 	}{
 		{name: "wdsp enabled", in: Settings{Edition: EditionWDSP, APIDynamicProtection: true}, want: true},
 		{name: "wdsp disabled", in: Settings{Edition: EditionWDSP, APIDynamicProtection: false}, want: false},
+		{name: "api enabled", in: Settings{Edition: EditionAPI, APIDynamicProtection: true}, want: true},
+		{name: "api disabled", in: Settings{Edition: EditionAPI, APIDynamicProtection: false}, want: false},
 		{name: "waf flag ignored", in: Settings{Edition: EditionWAF, APIDynamicProtection: true}, want: false},
 	}
 	for _, tt := range tests {

@@ -1,6 +1,13 @@
 // 阶段7 AI 安全运营中心 API 封装：会话/消息（SSE 流式）、一次性分析、草稿、
 // 模型/Agent/Tool/Prompt/记忆/审计/用量/评估。字段与 server/internal/aihandlers 对齐。
-import { ApiError, buildUrl, getCsrfToken, request } from './client'
+import {
+  ApiError,
+  buildUrl,
+  getCsrfToken,
+  notifyLicenseInvalid,
+  notifySessionExpired,
+  request,
+} from './client'
 import type { PageResult } from '../types'
 
 /* ==================== 会话与消息 ==================== */
@@ -21,7 +28,7 @@ export interface AiMessage {
 
 /** SSE 事件（data: {"type":...,"text":...,"payload":...}） */
 export interface AiSseEvent {
-  type: string // plan / agent_start / agent_done / error / compressed / done
+  type: string // plan / agent_start / agent_done / composing / degraded / error / compressed / done
   text?: string
   payload?: unknown
 }
@@ -79,6 +86,11 @@ async function streamPostSSE(
     if (e instanceof DOMException && e.name === 'AbortError') throw e
     throw new ApiError('网络异常，请检查网络连接后重试', 'NETWORK_ERROR', 0)
   }
+
+  // SSE 为独立 fetch 封装（流式响应无法走 request() 的全量读取），
+  // 401/423 全局处置须与 request() 同一纪律，显式触发全局回调
+  if (resp.status === 401) notifySessionExpired()
+  if (resp.status === 423) notifyLicenseInvalid()
 
   if (!resp.ok || !resp.body) {
     // 非流式错误响应：按统一信封提取错误信息
@@ -161,29 +173,9 @@ export const aiChatApi = {
     streamPostSSE(`/ai/sessions/${sessionId}/continue`, {}, onEvent, signal),
 }
 
-/** 会话重命名（PATCH 方法，client.request 不支持，单独实现） */
+/** 会话重命名（PATCH 方法，走 request() 统一纪律：CSRF、401/423 全局回调、业务信封校验） */
 export async function renameAiSession(id: string, title: string): Promise<void> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  const csrf = getCsrfToken()
-  if (csrf) headers['X-CSRF-Token'] = csrf
-  const resp = await fetch(buildUrl(`/ai/sessions/${id}`), {
-    method: 'PATCH',
-    headers,
-    credentials: 'include',
-    body: JSON.stringify({ title }),
-  })
-  if (!resp.ok) {
-    let code = 'HTTP_ERROR'
-    let message = `请求失败（HTTP ${resp.status}）`
-    try {
-      const env = (await resp.json()) as { code?: string; message?: string } | null
-      if (env && typeof env.code === 'string') code = env.code
-      if (env && typeof env.message === 'string') message = env.message
-    } catch {
-      // 保留默认错误信息
-    }
-    throw new ApiError(message, code, resp.status)
-  }
+  await request<unknown>(`/ai/sessions/${id}`, { method: 'PATCH', body: { title } })
 }
 
 /* ==================== 任务记录 ==================== */
@@ -238,24 +230,27 @@ export interface AiAnalyzeResult {
   evidence?: AiEvidenceItem[] | null
 }
 
+/** 一次性分析服务端编排上限 120s、写期限放宽至 10 分钟（server analyze_handler runAnalyze），客户端留 1 分钟余量 */
+const AI_ANALYZE_TIMEOUT_MS = 660_000
+
 /** AI 分析端点（各自权限点，见路由注册） */
 export const aiAnalyzeApi = {
   event: (body: AiAnalyzeBody) =>
-    request<AiAnalyzeResult>('/ai/analyze/event', { method: 'POST', body }),
+    request<AiAnalyzeResult>('/ai/analyze/event', { method: 'POST', body, timeoutMs: AI_ANALYZE_TIMEOUT_MS }),
   falsePositive: (body: AiAnalyzeBody) =>
-    request<AiAnalyzeResult>('/ai/analyze/false-positive', { method: 'POST', body }),
+    request<AiAnalyzeResult>('/ai/analyze/false-positive', { method: 'POST', body, timeoutMs: AI_ANALYZE_TIMEOUT_MS }),
   attackProfile: (body: AiAnalyzeBody) =>
-    request<AiAnalyzeResult>('/ai/analyze/attack-profile', { method: 'POST', body }),
+    request<AiAnalyzeResult>('/ai/analyze/attack-profile', { method: 'POST', body, timeoutMs: AI_ANALYZE_TIMEOUT_MS }),
   attackChain: (body: AiAnalyzeBody) =>
-    request<AiAnalyzeResult>('/ai/analyze/attack-chain', { method: 'POST', body }),
+    request<AiAnalyzeResult>('/ai/analyze/attack-chain', { method: 'POST', body, timeoutMs: AI_ANALYZE_TIMEOUT_MS }),
   policyRecommendation: (body: AiAnalyzeBody) =>
-    request<AiAnalyzeResult>('/ai/analyze/policy-recommendation', { method: 'POST', body }),
+    request<AiAnalyzeResult>('/ai/analyze/policy-recommendation', { method: 'POST', body, timeoutMs: AI_ANALYZE_TIMEOUT_MS }),
   whatIf: (body: AiAnalyzeBody) =>
-    request<AiAnalyzeResult>('/ai/analyze/what-if', { method: 'POST', body }),
+    request<AiAnalyzeResult>('/ai/analyze/what-if', { method: 'POST', body, timeoutMs: AI_ANALYZE_TIMEOUT_MS }),
   rootCause: (body: AiAnalyzeBody) =>
-    request<AiAnalyzeResult>('/ai/analyze/root-cause', { method: 'POST', body }),
+    request<AiAnalyzeResult>('/ai/analyze/root-cause', { method: 'POST', body, timeoutMs: AI_ANALYZE_TIMEOUT_MS }),
   reportSummary: (body: AiAnalyzeBody) =>
-    request<AiAnalyzeResult>('/ai/analyze/report-summary', { method: 'POST', body }),
+    request<AiAnalyzeResult>('/ai/analyze/report-summary', { method: 'POST', body, timeoutMs: AI_ANALYZE_TIMEOUT_MS }),
 }
 
 /* ==================== 草稿 ==================== */
@@ -375,9 +370,12 @@ export const aiModelsApi = {
     request<{ message: string }>(`/ai/models/${id}/enable`, { method: 'POST' }),
   disableModel: (id: string) =>
     request<{ message: string }>(`/ai/models/${id}/disable`, { method: 'POST' }),
-  /** 连通性健康检查（后端权限 ai.models.read，只读探测） */
+  /** 连通性健康检查（后端权限 ai.models.read，只读探测；模型自身 timeout_seconds 默认 60s，留一倍余量） */
   testModel: (id: string) =>
-    request<{ ok: boolean; message: string }>(`/ai/models/${id}/test`, { method: 'POST' }),
+    request<{ ok: boolean; message: string }>(`/ai/models/${id}/test`, {
+      method: 'POST',
+      timeoutMs: 120_000,
+    }),
   getRoutes: async () =>
     (
       await request<{ routes: AiModelRoutes; loaded_models: number }>('/ai/models/routes')
@@ -386,7 +384,7 @@ export const aiModelsApi = {
     request<{ message: string }>('/ai/models/routes', { method: 'PUT', body }),
 }
 
-/** 供应商更新（PATCH 方法，单独实现；空字段服务端忽略） */
+/** 供应商更新（PATCH 方法；空字段服务端忽略） */
 export async function patchAiProvider(
   id: string,
   body: Partial<AiProviderBody & { status?: string }>,
@@ -410,29 +408,9 @@ export async function patchAiTool(
   await patchJSON(`/ai/tools/${id}`, body)
 }
 
-/** PATCH 请求小封装（client.request 当前不支持 PATCH） */
+/** PATCH 请求小封装：收敛回 request() 统一纪律（CSRF、401/423 全局回调、业务信封校验） */
 async function patchJSON(path: string, body: unknown): Promise<void> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  const csrf = getCsrfToken()
-  if (csrf) headers['X-CSRF-Token'] = csrf
-  const resp = await fetch(buildUrl(path), {
-    method: 'PATCH',
-    headers,
-    credentials: 'include',
-    body: JSON.stringify(body ?? {}),
-  })
-  if (!resp.ok) {
-    let code = 'HTTP_ERROR'
-    let message = `请求失败（HTTP ${resp.status}）`
-    try {
-      const env = (await resp.json()) as { code?: string; message?: string } | null
-      if (env && typeof env.code === 'string') code = env.code
-      if (env && typeof env.message === 'string') message = env.message
-    } catch {
-      // 保留默认错误信息
-    }
-    throw new ApiError(message, code, resp.status)
-  }
+  await request<unknown>(path, { method: 'PATCH', body })
 }
 
 /* ==================== Agent / Tool 管理 ==================== */
@@ -844,11 +822,13 @@ export const aiEvaluationsApi = {
     })
     return { ...data, items: data.items ?? [] }
   },
+  /** 触发评估运行（服务端逐条串行上限 10 分钟，evalRunTimeout；客户端留 1 分钟余量） */
   run: async (evaluationSetId: string) =>
     (
       await request<{ run: AiEvalRunResult }>('/ai/evaluations/run', {
         method: 'POST',
         body: { evaluation_set_id: evaluationSetId },
+        timeoutMs: 660_000,
       })
     ).run,
 }

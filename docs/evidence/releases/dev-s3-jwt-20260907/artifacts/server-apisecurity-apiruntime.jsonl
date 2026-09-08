@@ -1,0 +1,569 @@
+{"Time":"2026-09-07T01:55:55.945904+08:00","Action":"start","Package":"github.com/jiuzhang-waf/server/internal/apisecurity"}
+{"Time":"2026-09-07T01:55:55.965343+08:00","Action":"start","Package":"github.com/jiuzhang-waf/server/internal/apiruntime"}
+{"Time":"2026-09-07T01:55:57.471759+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentityQualityScore"}
+{"Time":"2026-09-07T01:55:57.471843+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentityQualityScore","Output":"=== RUN   TestIdentityQualityScore\n"}
+{"Time":"2026-09-07T01:55:57.473005+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentityQualityScore","Output":"--- PASS: TestIdentityQualityScore (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.473018+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentityQualityScore","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.47331+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentityLikelihood"}
+{"Time":"2026-09-07T01:55:57.473325+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentityLikelihood","Output":"=== RUN   TestIdentityLikelihood\n"}
+{"Time":"2026-09-07T01:55:57.473662+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentityLikelihood","Output":"--- PASS: TestIdentityLikelihood (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.473688+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentityLikelihood","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.473697+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentitySeverity"}
+{"Time":"2026-09-07T01:55:57.473702+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentitySeverity","Output":"=== RUN   TestIdentitySeverity\n"}
+{"Time":"2026-09-07T01:55:57.473721+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentitySeverity","Output":"--- PASS: TestIdentitySeverity (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.473729+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIdentitySeverity","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.473735+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestAssessIdentityRisk"}
+{"Time":"2026-09-07T01:55:57.473739+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestAssessIdentityRisk","Output":"=== RUN   TestAssessIdentityRisk\n"}
+{"Time":"2026-09-07T01:55:57.474357+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestAssessIdentityRisk","Output":"--- PASS: TestAssessIdentityRisk (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.474368+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestAssessIdentityRisk","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.474373+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestListFindingsFilterValidation"}
+{"Time":"2026-09-07T01:55:57.474392+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestListFindingsFilterValidation","Output":"=== RUN   TestListFindingsFilterValidation\n"}
+{"Time":"2026-09-07T01:55:57.484562+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestListFindingsFilterValidation","Output":"--- PASS: TestListFindingsFilterValidation (0.01s)\n"}
+{"Time":"2026-09-07T01:55:57.484624+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestListFindingsFilterValidation","Elapsed":0.01}
+{"Time":"2026-09-07T01:55:57.484921+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIsValidRiskFindingType"}
+{"Time":"2026-09-07T01:55:57.484952+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIsValidRiskFindingType","Output":"=== RUN   TestIsValidRiskFindingType\n"}
+{"Time":"2026-09-07T01:55:57.484969+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIsValidRiskFindingType","Output":"--- PASS: TestIsValidRiskFindingType (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.484974+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIsValidRiskFindingType","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.484997+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIsValidRiskSeverity"}
+{"Time":"2026-09-07T01:55:57.485001+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIsValidRiskSeverity","Output":"=== RUN   TestIsValidRiskSeverity\n"}
+{"Time":"2026-09-07T01:55:57.485007+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIsValidRiskSeverity","Output":"--- PASS: TestIsValidRiskSeverity (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.485011+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestIsValidRiskSeverity","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.485015+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveParameterMaturity"}
+{"Time":"2026-09-07T01:55:57.485018+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveParameterMaturity","Output":"=== RUN   TestDeriveParameterMaturity\n"}
+{"Time":"2026-09-07T01:55:57.485029+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveParameterMaturity","Output":"--- PASS: TestDeriveParameterMaturity (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.485033+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveParameterMaturity","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.485036+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveIdentityMaturity"}
+{"Time":"2026-09-07T01:55:57.485039+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveIdentityMaturity","Output":"=== RUN   TestDeriveIdentityMaturity\n"}
+{"Time":"2026-09-07T01:55:57.485043+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveIdentityMaturity","Output":"--- PASS: TestDeriveIdentityMaturity (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.485047+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveIdentityMaturity","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.485051+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveAccessEnvMaturity"}
+{"Time":"2026-09-07T01:55:57.485054+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveAccessEnvMaturity","Output":"=== RUN   TestDeriveAccessEnvMaturity\n"}
+{"Time":"2026-09-07T01:55:57.485058+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveAccessEnvMaturity","Output":"--- PASS: TestDeriveAccessEnvMaturity (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.485061+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveAccessEnvMaturity","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.485065+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveAccessObjectMaturity"}
+{"Time":"2026-09-07T01:55:57.485068+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveAccessObjectMaturity","Output":"=== RUN   TestDeriveAccessObjectMaturity\n"}
+{"Time":"2026-09-07T01:55:57.485078+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveAccessObjectMaturity","Output":"--- PASS: TestDeriveAccessObjectMaturity (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.485082+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDeriveAccessObjectMaturity","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.485085+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestQueryPageSizeClamped"}
+{"Time":"2026-09-07T01:55:57.485096+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestQueryPageSizeClamped","Output":"=== RUN   TestQueryPageSizeClamped\n"}
+{"Time":"2026-09-07T01:55:57.485111+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestQueryPageSizeClamped","Output":"--- PASS: TestQueryPageSizeClamped (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.485116+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestQueryPageSizeClamped","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.485119+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPolicyRoutesPermission"}
+{"Time":"2026-09-07T01:55:57.485122+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPolicyRoutesPermission","Output":"=== RUN   TestPolicyRoutesPermission\n"}
+{"Time":"2026-09-07T01:55:57.486975+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPolicyRoutesPermission","Output":"--- PASS: TestPolicyRoutesPermission (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.487017+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPolicyRoutesPermission","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.487024+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSensitiveFieldsValidation"}
+{"Time":"2026-09-07T01:55:57.487028+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSensitiveFieldsValidation","Output":"=== RUN   TestSensitiveFieldsValidation\n"}
+{"Time":"2026-09-07T01:55:57.487304+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSensitiveFieldsValidation","Output":"--- PASS: TestSensitiveFieldsValidation (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.48732+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSensitiveFieldsValidation","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.487326+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSensitiveFieldsBatchDeleteValidation"}
+{"Time":"2026-09-07T01:55:57.48733+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSensitiveFieldsBatchDeleteValidation","Output":"=== RUN   TestSensitiveFieldsBatchDeleteValidation\n"}
+{"Time":"2026-09-07T01:55:57.490186+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSensitiveFieldsBatchDeleteValidation","Output":"--- PASS: TestSensitiveFieldsBatchDeleteValidation (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.490228+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSensitiveFieldsBatchDeleteValidation","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.490243+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestGetPolicy"}
+{"Time":"2026-09-07T01:55:57.490248+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestGetPolicy","Output":"=== RUN   TestGetPolicy\n"}
+{"Time":"2026-09-07T01:55:57.493776+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestGetPolicy","Output":"2026/09/07 01:55:57 ERROR internal error request_id=test-rid method=GET path=/api/v1/api-security/policy error=\"db down\"\n"}
+{"Time":"2026-09-07T01:55:57.493848+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestGetPolicy","Output":"--- PASS: TestGetPolicy (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.493857+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestGetPolicy","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.493863+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPutPolicy"}
+{"Time":"2026-09-07T01:55:57.493868+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPutPolicy","Output":"=== RUN   TestPutPolicy\n"}
+{"Time":"2026-09-07T01:55:57.494942+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPutPolicy","Output":"--- PASS: TestPutPolicy (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.494958+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPutPolicy","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.494963+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPublishPolicy"}
+{"Time":"2026-09-07T01:55:57.494968+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPublishPolicy","Output":"=== RUN   TestPublishPolicy\n"}
+{"Time":"2026-09-07T01:55:57.496221+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPublishPolicy","Output":"2026/09/07 01:55:57 ERROR internal error request_id=test-rid method=POST path=/api/v1/api-security/policy/publish error=\"gateway unreachable\"\n"}
+{"Time":"2026-09-07T01:55:57.496251+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPublishPolicy","Output":"--- PASS: TestPublishPolicy (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.496256+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestPublishPolicy","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.496261+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskRoutesPermission"}
+{"Time":"2026-09-07T01:55:57.496265+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskRoutesPermission","Output":"=== RUN   TestRiskRoutesPermission\n"}
+{"Time":"2026-09-07T01:55:57.497175+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskRoutesPermission","Output":"--- PASS: TestRiskRoutesPermission (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.49721+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskRoutesPermission","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.497218+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskUnavailable"}
+{"Time":"2026-09-07T01:55:57.497223+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskUnavailable","Output":"=== RUN   TestRiskUnavailable\n"}
+{"Time":"2026-09-07T01:55:57.497504+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskUnavailable","Output":"--- PASS: TestRiskUnavailable (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.497519+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskUnavailable","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.497525+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionValidation"}
+{"Time":"2026-09-07T01:55:57.497529+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionValidation","Output":"=== RUN   TestRiskTransitionValidation\n"}
+{"Time":"2026-09-07T01:55:57.498669+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionValidation","Output":"--- PASS: TestRiskTransitionValidation (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.498727+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionValidation","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.498734+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskLifecycleHTTP"}
+{"Time":"2026-09-07T01:55:57.498749+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskLifecycleHTTP","Output":"=== RUN   TestRiskLifecycleHTTP\n"}
+{"Time":"2026-09-07T01:55:57.501115+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskLifecycleHTTP","Output":"--- PASS: TestRiskLifecycleHTTP (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.501147+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskLifecycleHTTP","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.501153+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskSummaryHTTP"}
+{"Time":"2026-09-07T01:55:57.501157+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskSummaryHTTP","Output":"=== RUN   TestRiskSummaryHTTP\n"}
+{"Time":"2026-09-07T01:55:57.502333+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskSummaryHTTP","Output":"--- PASS: TestRiskSummaryHTTP (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.502355+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskSummaryHTTP","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.50236+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskDetailHTTP"}
+{"Time":"2026-09-07T01:55:57.502365+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskDetailHTTP","Output":"=== RUN   TestRiskDetailHTTP\n"}
+{"Time":"2026-09-07T01:55:57.502795+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskDetailHTTP","Output":"--- PASS: TestRiskDetailHTTP (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.502803+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskDetailHTTP","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.502811+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionMatrix"}
+{"Time":"2026-09-07T01:55:57.502816+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionMatrix","Output":"=== RUN   TestRiskTransitionMatrix\n"}
+{"Time":"2026-09-07T01:55:57.502825+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionMatrix","Output":"--- PASS: TestRiskTransitionMatrix (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.50283+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionMatrix","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.502834+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionMatrixSpotCheck"}
+{"Time":"2026-09-07T01:55:57.502838+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionMatrixSpotCheck","Output":"=== RUN   TestRiskTransitionMatrixSpotCheck\n"}
+{"Time":"2026-09-07T01:55:57.502846+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionMatrixSpotCheck","Output":"--- PASS: TestRiskTransitionMatrixSpotCheck (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.502852+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskTransitionMatrixSpotCheck","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.502857+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskStatusHelpers"}
+{"Time":"2026-09-07T01:55:57.502873+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskStatusHelpers","Output":"=== RUN   TestRiskStatusHelpers\n"}
+{"Time":"2026-09-07T01:55:57.502881+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskStatusHelpers","Output":"--- PASS: TestRiskStatusHelpers (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.502884+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskStatusHelpers","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.502889+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemTransition"}
+{"Time":"2026-09-07T01:55:57.502894+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemTransition","Output":"=== RUN   TestRiskMemTransition\n"}
+{"Time":"2026-09-07T01:55:57.504484+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemTransition","Output":"--- PASS: TestRiskMemTransition (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.504494+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemTransition","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.504499+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemSummary"}
+{"Time":"2026-09-07T01:55:57.504503+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemSummary","Output":"=== RUN   TestRiskMemSummary\n"}
+{"Time":"2026-09-07T01:55:57.505219+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemSummary","Output":"--- PASS: TestRiskMemSummary (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.505243+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemSummary","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.505248+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemRelatedRequestIDs"}
+{"Time":"2026-09-07T01:55:57.505252+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemRelatedRequestIDs","Output":"=== RUN   TestRiskMemRelatedRequestIDs\n"}
+{"Time":"2026-09-07T01:55:57.505416+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemRelatedRequestIDs","Output":"--- PASS: TestRiskMemRelatedRequestIDs (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.505446+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRiskMemRelatedRequestIDs","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.505454+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRuntimeEventJWTVerificationProjection"}
+{"Time":"2026-09-07T01:55:57.505458+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRuntimeEventJWTVerificationProjection","Output":"=== RUN   TestRuntimeEventJWTVerificationProjection\n"}
+{"Time":"2026-09-07T01:55:57.505945+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRuntimeEventJWTVerificationProjection","Output":"--- PASS: TestRuntimeEventJWTVerificationProjection (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.505972+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRuntimeEventJWTVerificationProjection","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.50598+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSourceCodeSpecAcceptedByParser"}
+{"Time":"2026-09-07T01:55:57.505986+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSourceCodeSpecAcceptedByParser","Output":"=== RUN   TestSourceCodeSpecAcceptedByParser\n"}
+{"Time":"2026-09-07T01:55:57.506993+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSourceCodeSpecAcceptedByParser","Output":"--- PASS: TestSourceCodeSpecAcceptedByParser (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.507027+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSourceCodeSpecAcceptedByParser","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.507034+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDetectSpecSource"}
+{"Time":"2026-09-07T01:55:57.507038+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDetectSpecSource","Output":"=== RUN   TestDetectSpecSource\n"}
+{"Time":"2026-09-07T01:55:57.507318+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDetectSpecSource","Output":"--- PASS: TestDetectSpecSource (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.50733+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDetectSpecSource","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.507338+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSourceCodeSpecForImport"}
+{"Time":"2026-09-07T01:55:57.507342+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSourceCodeSpecForImport","Output":"=== RUN   TestSourceCodeSpecForImport\n"}
+{"Time":"2026-09-07T01:55:57.507542+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSourceCodeSpecForImport","Output":"--- PASS: TestSourceCodeSpecForImport (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.50755+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSourceCodeSpecForImport","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.507556+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3Basic"}
+{"Time":"2026-09-07T01:55:57.507559+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3Basic","Output":"=== RUN   TestParseOpenAPI3Basic\n"}
+{"Time":"2026-09-07T01:55:57.507834+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3Basic","Output":"--- PASS: TestParseOpenAPI3Basic (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.507842+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3Basic","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.507846+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3MethodCaseInsensitive"}
+{"Time":"2026-09-07T01:55:57.50785+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3MethodCaseInsensitive","Output":"=== RUN   TestParseOpenAPI3MethodCaseInsensitive\n"}
+{"Time":"2026-09-07T01:55:57.507942+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3MethodCaseInsensitive","Output":"--- PASS: TestParseOpenAPI3MethodCaseInsensitive (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.507949+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3MethodCaseInsensitive","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.507953+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3RejectNonV3"}
+{"Time":"2026-09-07T01:55:57.507957+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3RejectNonV3","Output":"=== RUN   TestParseOpenAPI3RejectNonV3\n"}
+{"Time":"2026-09-07T01:55:57.508071+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3RejectNonV3","Output":"--- PASS: TestParseOpenAPI3RejectNonV3 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.508078+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3RejectNonV3","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.508094+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3RejectBadPaths"}
+{"Time":"2026-09-07T01:55:57.508098+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3RejectBadPaths","Output":"=== RUN   TestParseOpenAPI3RejectBadPaths\n"}
+{"Time":"2026-09-07T01:55:57.508286+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3RejectBadPaths","Output":"--- PASS: TestParseOpenAPI3RejectBadPaths (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.50831+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseOpenAPI3RejectBadPaths","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.508319+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffEndpointKeys"}
+{"Time":"2026-09-07T01:55:57.508324+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffEndpointKeys","Output":"=== RUN   TestDiffEndpointKeys\n"}
+{"Time":"2026-09-07T01:55:57.508832+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffEndpointKeys","Output":"--- PASS: TestDiffEndpointKeys (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.50885+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffEndpointKeys","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.508854+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffEndpointKeysEmpty"}
+{"Time":"2026-09-07T01:55:57.508858+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffEndpointKeysEmpty","Output":"=== RUN   TestDiffEndpointKeysEmpty\n"}
+{"Time":"2026-09-07T01:55:57.509023+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffEndpointKeysEmpty","Output":"--- PASS: TestDiffEndpointKeysEmpty (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.509029+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffEndpointKeysEmpty","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.509033+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestHashSpecContent"}
+{"Time":"2026-09-07T01:55:57.509036+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestHashSpecContent","Output":"=== RUN   TestHashSpecContent\n"}
+{"Time":"2026-09-07T01:55:57.509426+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestHashSpecContent","Output":"--- PASS: TestHashSpecContent (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.509438+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestHashSpecContent","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.509443+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRegisterRoutesNoPanic"}
+{"Time":"2026-09-07T01:55:57.509447+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRegisterRoutesNoPanic","Output":"=== RUN   TestRegisterRoutesNoPanic\n"}
+{"Time":"2026-09-07T01:55:57.509629+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRegisterRoutesNoPanic","Output":"--- PASS: TestRegisterRoutesNoPanic (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.509657+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestRegisterRoutesNoPanic","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.509662+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecOperationsOAS3"}
+{"Time":"2026-09-07T01:55:57.509666+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecOperationsOAS3","Output":"=== RUN   TestParseSpecOperationsOAS3\n"}
+{"Time":"2026-09-07T01:55:57.510112+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecOperationsOAS3","Output":"--- PASS: TestParseSpecOperationsOAS3 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.51012+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecOperationsOAS3","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.510124+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecOperationsRefAndBadItems"}
+{"Time":"2026-09-07T01:55:57.510128+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecOperationsRefAndBadItems","Output":"=== RUN   TestParseSpecOperationsRefAndBadItems\n"}
+{"Time":"2026-09-07T01:55:57.510298+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecOperationsRefAndBadItems","Output":"--- PASS: TestParseSpecOperationsRefAndBadItems (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.510305+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecOperationsRefAndBadItems","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.510309+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestConvertSwagger2Basic"}
+{"Time":"2026-09-07T01:55:57.510312+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestConvertSwagger2Basic","Output":"=== RUN   TestConvertSwagger2Basic\n"}
+{"Time":"2026-09-07T01:55:57.511296+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestConvertSwagger2Basic","Output":"--- PASS: TestConvertSwagger2Basic (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.511303+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestConvertSwagger2Basic","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.511307+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestConvertSwagger2BodyAndFormData"}
+{"Time":"2026-09-07T01:55:57.511321+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestConvertSwagger2BodyAndFormData","Output":"=== RUN   TestConvertSwagger2BodyAndFormData\n"}
+{"Time":"2026-09-07T01:55:57.511576+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestConvertSwagger2BodyAndFormData","Output":"--- PASS: TestConvertSwagger2BodyAndFormData (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.511584+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestConvertSwagger2BodyAndFormData","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.511596+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecDocumentRejectBadDocs"}
+{"Time":"2026-09-07T01:55:57.51161+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecDocumentRejectBadDocs","Output":"=== RUN   TestParseSpecDocumentRejectBadDocs\n"}
+{"Time":"2026-09-07T01:55:57.511849+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecDocumentRejectBadDocs","Output":"--- PASS: TestParseSpecDocumentRejectBadDocs (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.511856+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestParseSpecDocumentRejectBadDocs","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.51186+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDetectSpecFormat"}
+{"Time":"2026-09-07T01:55:57.511864+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDetectSpecFormat","Output":"=== RUN   TestDetectSpecFormat\n"}
+{"Time":"2026-09-07T01:55:57.511975+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDetectSpecFormat","Output":"--- PASS: TestDetectSpecFormat (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.511982+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDetectSpecFormat","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.511985+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffSpecOperationsChanged"}
+{"Time":"2026-09-07T01:55:57.511988+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffSpecOperationsChanged","Output":"=== RUN   TestDiffSpecOperationsChanged\n"}
+{"Time":"2026-09-07T01:55:57.512848+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffSpecOperationsChanged","Output":"--- PASS: TestDiffSpecOperationsChanged (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.512856+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestDiffSpecOperationsChanged","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.51286+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestValidateSpecFetchURLDenyMatrix"}
+{"Time":"2026-09-07T01:55:57.512864+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestValidateSpecFetchURLDenyMatrix","Output":"=== RUN   TestValidateSpecFetchURLDenyMatrix\n"}
+{"Time":"2026-09-07T01:55:57.525755+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestValidateSpecFetchURLDenyMatrix","Output":"--- PASS: TestValidateSpecFetchURLDenyMatrix (0.01s)\n"}
+{"Time":"2026-09-07T01:55:57.525811+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestValidateSpecFetchURLDenyMatrix","Elapsed":0.01}
+{"Time":"2026-09-07T01:55:57.52582+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestCheckPublicIPMatrix"}
+{"Time":"2026-09-07T01:55:57.525825+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestCheckPublicIPMatrix","Output":"=== RUN   TestCheckPublicIPMatrix\n"}
+{"Time":"2026-09-07T01:55:57.525915+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestCheckPublicIPMatrix","Output":"--- PASS: TestCheckPublicIPMatrix (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.525922+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestCheckPublicIPMatrix","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.525928+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestFetchSpecDocumentDenyLoopback"}
+{"Time":"2026-09-07T01:55:57.525932+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestFetchSpecDocumentDenyLoopback","Output":"=== RUN   TestFetchSpecDocumentDenyLoopback\n"}
+{"Time":"2026-09-07T01:55:57.529236+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestFetchSpecDocumentDenyLoopback","Output":"--- PASS: TestFetchSpecDocumentDenyLoopback (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.529283+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestFetchSpecDocumentDenyLoopback","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.529293+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestResolveSpecName"}
+{"Time":"2026-09-07T01:55:57.529298+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestResolveSpecName","Output":"=== RUN   TestResolveSpecName\n"}
+{"Time":"2026-09-07T01:55:57.529866+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestResolveSpecName","Output":"--- PASS: TestResolveSpecName (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.529886+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestResolveSpecName","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.52989+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSpecDirectoryOf"}
+{"Time":"2026-09-07T01:55:57.529894+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSpecDirectoryOf","Output":"=== RUN   TestSpecDirectoryOf\n"}
+{"Time":"2026-09-07T01:55:57.5299+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSpecDirectoryOf","Output":"--- PASS: TestSpecDirectoryOf (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.529904+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Test":"TestSpecDirectoryOf","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.530946+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Output":"PASS\n"}
+{"Time":"2026-09-07T01:55:57.532935+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Output":"ok  \tgithub.com/jiuzhang-waf/server/internal/apisecurity\t1.586s\n"}
+{"Time":"2026-09-07T01:55:57.533062+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apisecurity","Elapsed":1.587}
+{"Time":"2026-09-07T01:55:57.940179+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_EndToEndConsistent"}
+{"Time":"2026-09-07T01:55:57.940229+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_EndToEndConsistent","Output":"=== RUN   TestBatchTxIntegration_EndToEndConsistent\n"}
+{"Time":"2026-09-07T01:55:57.943929+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_EndToEndConsistent","Output":"    collector_batchtx_integration_test.go:151: APIRUNTIME_TEST_PG_DSN not set, skipping PG integration test\n"}
+{"Time":"2026-09-07T01:55:57.943997+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_EndToEndConsistent","Output":"--- SKIP: TestBatchTxIntegration_EndToEndConsistent (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.944038+08:00","Action":"skip","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_EndToEndConsistent","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.944396+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_ReplaySafe"}
+{"Time":"2026-09-07T01:55:57.944404+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_ReplaySafe","Output":"=== RUN   TestBatchTxIntegration_ReplaySafe\n"}
+{"Time":"2026-09-07T01:55:57.944906+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_ReplaySafe","Output":"    collector_batchtx_integration_test.go:224: APIRUNTIME_TEST_PG_DSN not set, skipping PG integration test\n"}
+{"Time":"2026-09-07T01:55:57.944922+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_ReplaySafe","Output":"--- SKIP: TestBatchTxIntegration_ReplaySafe (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.944938+08:00","Action":"skip","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_ReplaySafe","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.944943+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_PoisonRecordRolledBack"}
+{"Time":"2026-09-07T01:55:57.944947+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_PoisonRecordRolledBack","Output":"=== RUN   TestBatchTxIntegration_PoisonRecordRolledBack\n"}
+{"Time":"2026-09-07T01:55:57.945114+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_PoisonRecordRolledBack","Output":"    collector_batchtx_integration_test.go:271: APIRUNTIME_TEST_PG_DSN not set, skipping PG integration test\n"}
+{"Time":"2026-09-07T01:55:57.945143+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_PoisonRecordRolledBack","Output":"--- SKIP: TestBatchTxIntegration_PoisonRecordRolledBack (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.94515+08:00","Action":"skip","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_PoisonRecordRolledBack","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.945155+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_DeadTxRollback"}
+{"Time":"2026-09-07T01:55:57.945159+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_DeadTxRollback","Output":"=== RUN   TestBatchTxIntegration_DeadTxRollback\n"}
+{"Time":"2026-09-07T01:55:57.945169+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_DeadTxRollback","Output":"    collector_batchtx_integration_test.go:327: APIRUNTIME_TEST_PG_DSN not set, skipping PG integration test\n"}
+{"Time":"2026-09-07T01:55:57.946086+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_DeadTxRollback","Output":"--- SKIP: TestBatchTxIntegration_DeadTxRollback (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.946107+08:00","Action":"skip","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestBatchTxIntegration_DeadTxRollback","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.946123+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_CommitsPerFlush"}
+{"Time":"2026-09-07T01:55:57.946129+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_CommitsPerFlush","Output":"=== RUN   TestCollectOnce_BatchTx_CommitsPerFlush\n"}
+{"Time":"2026-09-07T01:55:57.958057+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_CommitsPerFlush","Output":"--- PASS: TestCollectOnce_BatchTx_CommitsPerFlush (0.01s)\n"}
+{"Time":"2026-09-07T01:55:57.95809+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_CommitsPerFlush","Elapsed":0.01}
+{"Time":"2026-09-07T01:55:57.958098+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_SaveFailureRollbackCheckpointHeld"}
+{"Time":"2026-09-07T01:55:57.958108+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_SaveFailureRollbackCheckpointHeld","Output":"=== RUN   TestCollectOnce_BatchTx_SaveFailureRollbackCheckpointHeld\n"}
+{"Time":"2026-09-07T01:55:57.961341+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_SaveFailureRollbackCheckpointHeld","Output":"--- PASS: TestCollectOnce_BatchTx_SaveFailureRollbackCheckpointHeld (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.961362+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_SaveFailureRollbackCheckpointHeld","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.961371+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_CommitFailureReplayIdempotent"}
+{"Time":"2026-09-07T01:55:57.961375+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_CommitFailureReplayIdempotent","Output":"=== RUN   TestCollectOnce_BatchTx_CommitFailureReplayIdempotent\n"}
+{"Time":"2026-09-07T01:55:57.963213+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_CommitFailureReplayIdempotent","Output":"--- PASS: TestCollectOnce_BatchTx_CommitFailureReplayIdempotent (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.963242+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_CommitFailureReplayIdempotent","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.963251+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_SideEffectFailureKeepsBatch"}
+{"Time":"2026-09-07T01:55:57.963257+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_SideEffectFailureKeepsBatch","Output":"=== RUN   TestCollectOnce_BatchTx_SideEffectFailureKeepsBatch\n"}
+{"Time":"2026-09-07T01:55:57.968212+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_SideEffectFailureKeepsBatch","Output":"2026/09/07 01:55:57 ERROR upsert api endpoint discovery failed collector=test-batchtx-sideeffect endpoint_key=\"GET /v1/flush/{id}\" error=\"injected discovery failure\"\n"}
+{"Time":"2026-09-07T01:55:57.968739+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_SideEffectFailureKeepsBatch","Output":"--- PASS: TestCollectOnce_BatchTx_SideEffectFailureKeepsBatch (0.01s)\n"}
+{"Time":"2026-09-07T01:55:57.968753+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_SideEffectFailureKeepsBatch","Elapsed":0.01}
+{"Time":"2026-09-07T01:55:57.968766+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_HeartbeatOpensNoTx"}
+{"Time":"2026-09-07T01:55:57.968771+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_HeartbeatOpensNoTx","Output":"=== RUN   TestCollectOnce_BatchTx_HeartbeatOpensNoTx\n"}
+{"Time":"2026-09-07T01:55:57.970286+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_HeartbeatOpensNoTx","Output":"--- PASS: TestCollectOnce_BatchTx_HeartbeatOpensNoTx (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.970303+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_HeartbeatOpensNoTx","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.970309+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_BeginFailure"}
+{"Time":"2026-09-07T01:55:57.970313+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_BeginFailure","Output":"=== RUN   TestCollectOnce_BatchTx_BeginFailure\n"}
+{"Time":"2026-09-07T01:55:57.971397+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_BeginFailure","Output":"--- PASS: TestCollectOnce_BatchTx_BeginFailure (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.971409+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_BatchTx_BeginFailure","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.971416+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FlushBatchCheckpointsMidScan"}
+{"Time":"2026-09-07T01:55:57.971421+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FlushBatchCheckpointsMidScan","Output":"=== RUN   TestCollectOnce_FlushBatchCheckpointsMidScan\n"}
+{"Time":"2026-09-07T01:55:57.973455+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FlushBatchCheckpointsMidScan","Output":"--- PASS: TestCollectOnce_FlushBatchCheckpointsMidScan (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.973495+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FlushBatchCheckpointsMidScan","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.973512+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FlushIntervalCheckpointsMidScan"}
+{"Time":"2026-09-07T01:55:57.973517+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FlushIntervalCheckpointsMidScan","Output":"=== RUN   TestCollectOnce_FlushIntervalCheckpointsMidScan\n"}
+{"Time":"2026-09-07T01:55:57.97524+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FlushIntervalCheckpointsMidScan","Output":"--- PASS: TestCollectOnce_FlushIntervalCheckpointsMidScan (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.975274+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FlushIntervalCheckpointsMidScan","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.975281+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSetFlushPolicy"}
+{"Time":"2026-09-07T01:55:57.975285+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSetFlushPolicy","Output":"=== RUN   TestSetFlushPolicy\n"}
+{"Time":"2026-09-07T01:55:57.976052+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSetFlushPolicy","Output":"--- PASS: TestSetFlushPolicy (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.976072+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSetFlushPolicy","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.97608+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatTolerance"}
+{"Time":"2026-09-07T01:55:57.976083+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatTolerance","Output":"=== RUN   TestCollectOnce_HeartbeatTolerance\n"}
+{"Time":"2026-09-07T01:55:57.97964+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatTolerance","Output":"--- PASS: TestCollectOnce_HeartbeatTolerance (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.979659+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatTolerance","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.979666+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatWithoutRecorder"}
+{"Time":"2026-09-07T01:55:57.97967+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatWithoutRecorder","Output":"=== RUN   TestCollectOnce_HeartbeatWithoutRecorder\n"}
+{"Time":"2026-09-07T01:55:57.980655+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatWithoutRecorder","Output":"--- PASS: TestCollectOnce_HeartbeatWithoutRecorder (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.9807+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatWithoutRecorder","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.98071+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatRecorderErrorTolerated"}
+{"Time":"2026-09-07T01:55:57.980714+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatRecorderErrorTolerated","Output":"=== RUN   TestCollectOnce_HeartbeatRecorderErrorTolerated\n"}
+{"Time":"2026-09-07T01:55:57.981022+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatRecorderErrorTolerated","Output":"2026/09/07 01:55:57 ERROR record api node heartbeat failed collector=test-hb-err gateway_node=gw-1 error=\"db down\"\n"}
+{"Time":"2026-09-07T01:55:57.981599+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatRecorderErrorTolerated","Output":"--- PASS: TestCollectOnce_HeartbeatRecorderErrorTolerated (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.981611+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatRecorderErrorTolerated","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.981617+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatWithoutNodeSkipped"}
+{"Time":"2026-09-07T01:55:57.981622+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatWithoutNodeSkipped","Output":"=== RUN   TestCollectOnce_HeartbeatWithoutNodeSkipped\n"}
+{"Time":"2026-09-07T01:55:57.982415+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatWithoutNodeSkipped","Output":"2026/09/07 01:55:57 WARN api node heartbeat without gateway_node, skipped collector=test-hb-nonode request_id=hb-x\n"}
+{"Time":"2026-09-07T01:55:57.983057+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatWithoutNodeSkipped","Output":"--- PASS: TestCollectOnce_HeartbeatWithoutNodeSkipped (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.983074+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_HeartbeatWithoutNodeSkipped","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.983081+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_LicenseQuotaExceeded"}
+{"Time":"2026-09-07T01:55:57.983091+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_LicenseQuotaExceeded","Output":"=== RUN   TestCollectOnce_LicenseQuotaExceeded\n"}
+{"Time":"2026-09-07T01:55:57.98437+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_LicenseQuotaExceeded","Output":"2026/09/07 01:55:57 WARN api endpoint discovery rejected by license quota collector=test-quota endpoint_key=\"GET /v1/new-endpoint\"\n"}
+{"Time":"2026-09-07T01:55:57.984986+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_LicenseQuotaExceeded","Output":"--- PASS: TestCollectOnce_LicenseQuotaExceeded (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.984997+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_LicenseQuotaExceeded","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.985004+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_Ingests"}
+{"Time":"2026-09-07T01:55:57.985008+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_Ingests","Output":"=== RUN   TestCollectOnce_Ingests\n"}
+{"Time":"2026-09-07T01:55:57.986992+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_Ingests","Output":"--- PASS: TestCollectOnce_Ingests (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.987006+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_Ingests","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.987012+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_RotationRereads"}
+{"Time":"2026-09-07T01:55:57.987016+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_RotationRereads","Output":"=== RUN   TestCollectOnce_RotationRereads\n"}
+{"Time":"2026-09-07T01:55:57.988249+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_RotationRereads","Output":"2026/09/07 01:55:57 INFO api runtime event log rotated, resetting offset collector=test-02 old_offset=640 new_size=1280\n"}
+{"Time":"2026-09-07T01:55:57.989644+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_RotationRereads","Output":"--- PASS: TestCollectOnce_RotationRereads (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.989674+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_RotationRereads","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.98968+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine"}
+{"Time":"2026-09-07T01:55:57.989685+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine","Output":"=== RUN   TestParseRecordLine\n"}
+{"Time":"2026-09-07T01:55:57.989823+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine","Output":"--- PASS: TestParseRecordLine (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.989832+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.989836+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLineJWTVerification"}
+{"Time":"2026-09-07T01:55:57.98984+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLineJWTVerification","Output":"=== RUN   TestParseRecordLineJWTVerification\n"}
+{"Time":"2026-09-07T01:55:57.990113+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLineJWTVerification","Output":"--- PASS: TestParseRecordLineJWTVerification (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.990135+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLineJWTVerification","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.990142+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_IdentityFieldsPropagate"}
+{"Time":"2026-09-07T01:55:57.990146+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_IdentityFieldsPropagate","Output":"=== RUN   TestCollectOnce_IdentityFieldsPropagate\n"}
+{"Time":"2026-09-07T01:55:57.991635+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_IdentityFieldsPropagate","Output":"--- PASS: TestCollectOnce_IdentityFieldsPropagate (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.991663+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_IdentityFieldsPropagate","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.991671+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_ResolvesSiteAndDomain"}
+{"Time":"2026-09-07T01:55:57.991675+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_ResolvesSiteAndDomain","Output":"=== RUN   TestCollectOnce_ResolvesSiteAndDomain\n"}
+{"Time":"2026-09-07T01:55:57.993121+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_ResolvesSiteAndDomain","Output":"--- PASS: TestCollectOnce_ResolvesSiteAndDomain (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.993149+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_ResolvesSiteAndDomain","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.993156+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_WithoutResolverLeavesUnassigned"}
+{"Time":"2026-09-07T01:55:57.993161+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_WithoutResolverLeavesUnassigned","Output":"=== RUN   TestCollectOnce_WithoutResolverLeavesUnassigned\n"}
+{"Time":"2026-09-07T01:55:57.994226+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_WithoutResolverLeavesUnassigned","Output":"--- PASS: TestCollectOnce_WithoutResolverLeavesUnassigned (0.00s)\n"}
+{"Time":"2026-09-07T01:55:57.994242+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_WithoutResolverLeavesUnassigned","Elapsed":0}
+{"Time":"2026-09-07T01:55:57.994252+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestAppendError_RotatesWhenOversize"}
+{"Time":"2026-09-07T01:55:57.994255+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestAppendError_RotatesWhenOversize","Output":"=== RUN   TestAppendError_RotatesWhenOversize\n"}
+{"Time":"2026-09-07T01:55:58.015301+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestAppendError_RotatesWhenOversize","Output":"--- PASS: TestAppendError_RotatesWhenOversize (0.02s)\n"}
+{"Time":"2026-09-07T01:55:58.015339+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestAppendError_RotatesWhenOversize","Elapsed":0.02}
+{"Time":"2026-09-07T01:55:58.015351+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestAppendError_NoRotationBelowLimit"}
+{"Time":"2026-09-07T01:55:58.015356+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestAppendError_NoRotationBelowLimit","Output":"=== RUN   TestAppendError_NoRotationBelowLimit\n"}
+{"Time":"2026-09-07T01:55:58.017682+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestAppendError_NoRotationBelowLimit","Output":"--- PASS: TestAppendError_NoRotationBelowLimit (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.017708+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestAppendError_NoRotationBelowLimit","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.017715+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_EnrichmentFields"}
+{"Time":"2026-09-07T01:55:58.017719+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_EnrichmentFields","Output":"=== RUN   TestParseRecordLine_EnrichmentFields\n"}
+{"Time":"2026-09-07T01:55:58.017832+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_EnrichmentFields","Output":"--- PASS: TestParseRecordLine_EnrichmentFields (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.017838+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_EnrichmentFields","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.017851+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_EnrichmentFieldsPropagate"}
+{"Time":"2026-09-07T01:55:58.017855+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_EnrichmentFieldsPropagate","Output":"=== RUN   TestCollectOnce_EnrichmentFieldsPropagate\n"}
+{"Time":"2026-09-07T01:55:58.018726+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_EnrichmentFieldsPropagate","Output":"--- PASS: TestCollectOnce_EnrichmentFieldsPropagate (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.018737+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_EnrichmentFieldsPropagate","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.018743+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestNullConversions"}
+{"Time":"2026-09-07T01:55:58.018746+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestNullConversions","Output":"=== RUN   TestNullConversions\n"}
+{"Time":"2026-09-07T01:55:58.019096+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestNullConversions","Output":"--- PASS: TestNullConversions (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.019103+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestNullConversions","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.019108+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestClassifyFileSensitivity"}
+{"Time":"2026-09-07T01:55:58.019112+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestClassifyFileSensitivity","Output":"=== RUN   TestClassifyFileSensitivity\n"}
+{"Time":"2026-09-07T01:55:58.019132+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestClassifyFileSensitivity","Output":"--- PASS: TestClassifyFileSensitivity (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.019138+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestClassifyFileSensitivity","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.019143+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMaskClientIP"}
+{"Time":"2026-09-07T01:55:58.019146+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMaskClientIP","Output":"=== RUN   TestMaskClientIP\n"}
+{"Time":"2026-09-07T01:55:58.019163+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMaskClientIP","Output":"--- PASS: TestMaskClientIP (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.019169+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMaskClientIP","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.019173+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FileObservationsWired"}
+{"Time":"2026-09-07T01:55:58.019176+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FileObservationsWired","Output":"=== RUN   TestCollectOnce_FileObservationsWired\n"}
+{"Time":"2026-09-07T01:55:58.020114+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FileObservationsWired","Output":"2026/09/07 01:55:58 INFO api runtime event log rotated, resetting offset collector=test-fileobs-nil old_offset=1484 new_size=807\n"}
+{"Time":"2026-09-07T01:55:58.020813+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FileObservationsWired","Output":"--- PASS: TestCollectOnce_FileObservationsWired (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.020826+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FileObservationsWired","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.020839+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_LegacyWithoutFileObs"}
+{"Time":"2026-09-07T01:55:58.020843+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_LegacyWithoutFileObs","Output":"=== RUN   TestParseRecordLine_LegacyWithoutFileObs\n"}
+{"Time":"2026-09-07T01:55:58.020881+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_LegacyWithoutFileObs","Output":"--- PASS: TestParseRecordLine_LegacyWithoutFileObs (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.020911+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_LegacyWithoutFileObs","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.020918+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFileObservationJSONContract"}
+{"Time":"2026-09-07T01:55:58.020922+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFileObservationJSONContract","Output":"=== RUN   TestFileObservationJSONContract\n"}
+{"Time":"2026-09-07T01:55:58.021267+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFileObservationJSONContract","Output":"--- PASS: TestFileObservationJSONContract (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.021283+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFileObservationJSONContract","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.021288+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingTypeOf"}
+{"Time":"2026-09-07T01:55:58.021292+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingTypeOf","Output":"=== RUN   TestFindingTypeOf\n"}
+{"Time":"2026-09-07T01:55:58.021429+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingTypeOf","Output":"--- PASS: TestFindingTypeOf (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.021435+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingTypeOf","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.021441+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMaterializable"}
+{"Time":"2026-09-07T01:55:58.021444+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMaterializable","Output":"=== RUN   TestMaterializable\n"}
+{"Time":"2026-09-07T01:55:58.021451+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMaterializable","Output":"--- PASS: TestMaterializable (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.021455+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMaterializable","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.02146+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingSubject"}
+{"Time":"2026-09-07T01:55:58.021483+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingSubject","Output":"=== RUN   TestFindingSubject\n"}
+{"Time":"2026-09-07T01:55:58.02149+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingSubject","Output":"--- PASS: TestFindingSubject (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.021495+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingSubject","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.021501+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSanitizeEvidence"}
+{"Time":"2026-09-07T01:55:58.021504+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSanitizeEvidence","Output":"=== RUN   TestSanitizeEvidence\n"}
+{"Time":"2026-09-07T01:55:58.021677+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSanitizeEvidence","Output":"--- PASS: TestSanitizeEvidence (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.021682+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSanitizeEvidence","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.021687+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestDedupFingerprint"}
+{"Time":"2026-09-07T01:55:58.02169+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestDedupFingerprint","Output":"=== RUN   TestDedupFingerprint\n"}
+{"Time":"2026-09-07T01:55:58.022032+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestDedupFingerprint","Output":"--- PASS: TestDedupFingerprint (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.022037+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestDedupFingerprint","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.022055+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordFindings"}
+{"Time":"2026-09-07T01:55:58.02206+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordFindings","Output":"=== RUN   TestRecordFindings\n"}
+{"Time":"2026-09-07T01:55:58.022483+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordFindings","Output":"--- PASS: TestRecordFindings (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.02249+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordFindings","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.022499+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FindingsHook"}
+{"Time":"2026-09-07T01:55:58.022502+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FindingsHook","Output":"=== RUN   TestCollectOnce_FindingsHook\n"}
+{"Time":"2026-09-07T01:55:58.023905+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FindingsHook","Output":"2026/09/07 01:55:58 ERROR save api runtime findings failed collector=test-fh-err endpoint_key=\"GET /v1/orders\" request_id=r-fh-1 error=\"permission denied\"\n"}
+{"Time":"2026-09-07T01:55:58.024366+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FindingsHook","Output":"--- PASS: TestCollectOnce_FindingsHook (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.024374+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_FindingsHook","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.02438+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingInputDetailSerializable"}
+{"Time":"2026-09-07T01:55:58.024383+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingInputDetailSerializable","Output":"=== RUN   TestFindingInputDetailSerializable\n"}
+{"Time":"2026-09-07T01:55:58.024771+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingInputDetailSerializable","Output":"--- PASS: TestFindingInputDetailSerializable (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.02478+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestFindingInputDetailSerializable","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.024814+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_ParserAmbiguityFinding"}
+{"Time":"2026-09-07T01:55:58.024819+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_ParserAmbiguityFinding","Output":"=== RUN   TestCollectOnce_ParserAmbiguityFinding\n"}
+{"Time":"2026-09-07T01:55:58.027218+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_ParserAmbiguityFinding","Output":"--- PASS: TestCollectOnce_ParserAmbiguityFinding (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.027242+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_ParserAmbiguityFinding","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.027251+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMergeResponseSchema"}
+{"Time":"2026-09-07T01:55:58.027256+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMergeResponseSchema","Output":"=== RUN   TestMergeResponseSchema\n"}
+{"Time":"2026-09-07T01:55:58.027931+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMergeResponseSchema","Output":"--- PASS: TestMergeResponseSchema (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.027946+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestMergeResponseSchema","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.027954+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordResponseObservations_Guards"}
+{"Time":"2026-09-07T01:55:58.027957+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordResponseObservations_Guards","Output":"=== RUN   TestRecordResponseObservations_Guards\n"}
+{"Time":"2026-09-07T01:55:58.027965+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordResponseObservations_Guards","Output":"--- PASS: TestRecordResponseObservations_Guards (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.027969+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordResponseObservations_Guards","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.027973+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollector_RespSchemaRecording"}
+{"Time":"2026-09-07T01:55:58.027976+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollector_RespSchemaRecording","Output":"=== RUN   TestCollector_RespSchemaRecording\n"}
+{"Time":"2026-09-07T01:55:58.029319+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollector_RespSchemaRecording","Output":"2026/09/07 01:55:58 ERROR record response observations failed collector=test-resp-2 endpoint_key=\"GET /v1/users/{id}\" error=\"db down\"\n"}
+{"Time":"2026-09-07T01:55:58.029779+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollector_RespSchemaRecording","Output":"--- PASS: TestCollector_RespSchemaRecording (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.029797+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollector_RespSchemaRecording","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.029804+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_ResponseObservationsOptional"}
+{"Time":"2026-09-07T01:55:58.029808+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_ResponseObservationsOptional","Output":"=== RUN   TestParseRecordLine_ResponseObservationsOptional\n"}
+{"Time":"2026-09-07T01:55:58.029875+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_ResponseObservationsOptional","Output":"--- PASS: TestParseRecordLine_ResponseObservationsOptional (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.029887+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLine_ResponseObservationsOptional","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.029896+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic"}
+{"Time":"2026-09-07T01:55:58.0299+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic","Output":"=== RUN   TestSampleVerdict_ScannerTraffic\n"}
+{"Time":"2026-09-07T01:55:58.029921+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/放行扫描流量"}
+{"Time":"2026-09-07T01:55:58.029926+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/放行扫描流量","Output":"=== RUN   TestSampleVerdict_ScannerTraffic/放行扫描流量\n"}
+{"Time":"2026-09-07T01:55:58.029934+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/放行扫描流量","Output":"--- PASS: TestSampleVerdict_ScannerTraffic/放行扫描流量 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.02994+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/放行扫描流量","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030461+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/被阻断的扫描流量"}
+{"Time":"2026-09-07T01:55:58.030468+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/被阻断的扫描流量","Output":"=== RUN   TestSampleVerdict_ScannerTraffic/被阻断的扫描流量\n"}
+{"Time":"2026-09-07T01:55:58.030473+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/被阻断的扫描流量","Output":"--- PASS: TestSampleVerdict_ScannerTraffic/被阻断的扫描流量 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030477+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/被阻断的扫描流量","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030481+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/扫描流量叠加WAF命中"}
+{"Time":"2026-09-07T01:55:58.030485+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/扫描流量叠加WAF命中","Output":"=== RUN   TestSampleVerdict_ScannerTraffic/扫描流量叠加WAF命中\n"}
+{"Time":"2026-09-07T01:55:58.030491+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/扫描流量叠加WAF命中","Output":"--- PASS: TestSampleVerdict_ScannerTraffic/扫描流量叠加WAF命中 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030495+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/扫描流量叠加WAF命中","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030498+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/5xx扫描流量"}
+{"Time":"2026-09-07T01:55:58.030501+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/5xx扫描流量","Output":"=== RUN   TestSampleVerdict_ScannerTraffic/5xx扫描流量\n"}
+{"Time":"2026-09-07T01:55:58.030509+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/5xx扫描流量","Output":"--- PASS: TestSampleVerdict_ScannerTraffic/5xx扫描流量 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030523+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic/5xx扫描流量","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030531+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic","Output":"--- PASS: TestSampleVerdict_ScannerTraffic (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030534+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict_ScannerTraffic","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030538+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict"}
+{"Time":"2026-09-07T01:55:58.030542+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict","Output":"=== RUN   TestSampleVerdict\n"}
+{"Time":"2026-09-07T01:55:58.030563+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/放行通行"}
+{"Time":"2026-09-07T01:55:58.030567+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/放行通行","Output":"=== RUN   TestSampleVerdict/放行通行\n"}
+{"Time":"2026-09-07T01:55:58.030575+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/放行通行","Output":"--- PASS: TestSampleVerdict/放行通行 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030579+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/放行通行","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030705+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/状态码未知跳过状态规则"}
+{"Time":"2026-09-07T01:55:58.030709+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/状态码未知跳过状态规则","Output":"=== RUN   TestSampleVerdict/状态码未知跳过状态规则\n"}
+{"Time":"2026-09-07T01:55:58.030717+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/状态码未知跳过状态规则","Output":"--- PASS: TestSampleVerdict/状态码未知跳过状态规则 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030721+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/状态码未知跳过状态规则","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030726+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/401"}
+{"Time":"2026-09-07T01:55:58.030729+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/401","Output":"=== RUN   TestSampleVerdict/401\n"}
+{"Time":"2026-09-07T01:55:58.030734+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/401","Output":"--- PASS: TestSampleVerdict/401 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030749+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/401","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030753+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/403"}
+{"Time":"2026-09-07T01:55:58.030756+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/403","Output":"=== RUN   TestSampleVerdict/403\n"}
+{"Time":"2026-09-07T01:55:58.030801+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/403","Output":"--- PASS: TestSampleVerdict/403 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030807+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/403","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030897+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/429"}
+{"Time":"2026-09-07T01:55:58.030903+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/429","Output":"=== RUN   TestSampleVerdict/429\n"}
+{"Time":"2026-09-07T01:55:58.03091+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/429","Output":"--- PASS: TestSampleVerdict/429 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030913+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/429","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030916+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/500"}
+{"Time":"2026-09-07T01:55:58.03092+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/500","Output":"=== RUN   TestSampleVerdict/500\n"}
+{"Time":"2026-09-07T01:55:58.030927+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/500","Output":"--- PASS: TestSampleVerdict/500 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030934+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/500","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030937+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/502"}
+{"Time":"2026-09-07T01:55:58.03094+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/502","Output":"=== RUN   TestSampleVerdict/502\n"}
+{"Time":"2026-09-07T01:55:58.030947+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/502","Output":"--- PASS: TestSampleVerdict/502 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030951+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/502","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030954+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/499不参与"}
+{"Time":"2026-09-07T01:55:58.030957+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/499不参与","Output":"=== RUN   TestSampleVerdict/499不参与\n"}
+{"Time":"2026-09-07T01:55:58.030967+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/499不参与","Output":"--- PASS: TestSampleVerdict/499不参与 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.03097+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/499不参与","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030975+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/BLOCK"}
+{"Time":"2026-09-07T01:55:58.030978+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/BLOCK","Output":"=== RUN   TestSampleVerdict/BLOCK\n"}
+{"Time":"2026-09-07T01:55:58.030985+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/BLOCK","Output":"--- PASS: TestSampleVerdict/BLOCK (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.030989+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/BLOCK","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.030994+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/RATE_LIMIT按CC超限排除"}
+{"Time":"2026-09-07T01:55:58.031+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/RATE_LIMIT按CC超限排除","Output":"=== RUN   TestSampleVerdict/RATE_LIMIT按CC超限排除\n"}
+{"Time":"2026-09-07T01:55:58.031007+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/RATE_LIMIT按CC超限排除","Output":"--- PASS: TestSampleVerdict/RATE_LIMIT按CC超限排除 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.031029+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/RATE_LIMIT按CC超限排除","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.031135+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/TEMP_BLOCK"}
+{"Time":"2026-09-07T01:55:58.03114+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/TEMP_BLOCK","Output":"=== RUN   TestSampleVerdict/TEMP_BLOCK\n"}
+{"Time":"2026-09-07T01:55:58.031147+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/TEMP_BLOCK","Output":"--- PASS: TestSampleVerdict/TEMP_BLOCK (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.03115+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/TEMP_BLOCK","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.031154+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/OBSERVE放行"}
+{"Time":"2026-09-07T01:55:58.031161+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/OBSERVE放行","Output":"=== RUN   TestSampleVerdict/OBSERVE放行\n"}
+{"Time":"2026-09-07T01:55:58.031175+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/OBSERVE放行","Output":"--- PASS: TestSampleVerdict/OBSERVE放行 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.031179+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/OBSERVE放行","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.031182+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/WAF命中"}
+{"Time":"2026-09-07T01:55:58.031186+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/WAF命中","Output":"=== RUN   TestSampleVerdict/WAF命中\n"}
+{"Time":"2026-09-07T01:55:58.031192+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/WAF命中","Output":"--- PASS: TestSampleVerdict/WAF命中 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.031196+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/WAF命中","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.031201+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/schema偏离"}
+{"Time":"2026-09-07T01:55:58.031205+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/schema偏离","Output":"=== RUN   TestSampleVerdict/schema偏离\n"}
+{"Time":"2026-09-07T01:55:58.03121+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/schema偏离","Output":"--- PASS: TestSampleVerdict/schema偏离 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.031214+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/schema偏离","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.031218+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/WAF优先于schema"}
+{"Time":"2026-09-07T01:55:58.031222+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/WAF优先于schema","Output":"=== RUN   TestSampleVerdict/WAF优先于schema\n"}
+{"Time":"2026-09-07T01:55:58.03123+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/WAF优先于schema","Output":"--- PASS: TestSampleVerdict/WAF优先于schema (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.031234+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/WAF优先于schema","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.031238+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/认证明细不排除"}
+{"Time":"2026-09-07T01:55:58.031241+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/认证明细不排除","Output":"=== RUN   TestSampleVerdict/认证明细不排除\n"}
+{"Time":"2026-09-07T01:55:58.031248+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/认证明细不排除","Output":"--- PASS: TestSampleVerdict/认证明细不排除 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.031252+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/认证明细不排除","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.031257+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/敏感数据明细不排除"}
+{"Time":"2026-09-07T01:55:58.031261+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/敏感数据明细不排除","Output":"=== RUN   TestSampleVerdict/敏感数据明细不排除\n"}
+{"Time":"2026-09-07T01:55:58.031267+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/敏感数据明细不排除","Output":"--- PASS: TestSampleVerdict/敏感数据明细不排除 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.03127+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/敏感数据明细不排除","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.031274+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/决策优先于状态码"}
+{"Time":"2026-09-07T01:55:58.031277+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/决策优先于状态码","Output":"=== RUN   TestSampleVerdict/决策优先于状态码\n"}
+{"Time":"2026-09-07T01:55:58.031284+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/决策优先于状态码","Output":"--- PASS: TestSampleVerdict/决策优先于状态码 (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.031287+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict/决策优先于状态码","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.031292+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict","Output":"--- PASS: TestSampleVerdict (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.031297+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestSampleVerdict","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.031301+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_RecordsLearningSamples"}
+{"Time":"2026-09-07T01:55:58.031304+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_RecordsLearningSamples","Output":"=== RUN   TestCollectOnce_RecordsLearningSamples\n"}
+{"Time":"2026-09-07T01:55:58.032211+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_RecordsLearningSamples","Output":"--- PASS: TestCollectOnce_RecordsLearningSamples (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.032228+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_RecordsLearningSamples","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.032232+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_SampleRecorderErrorDoesNotBreak"}
+{"Time":"2026-09-07T01:55:58.032237+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_SampleRecorderErrorDoesNotBreak","Output":"=== RUN   TestCollectOnce_SampleRecorderErrorDoesNotBreak\n"}
+{"Time":"2026-09-07T01:55:58.032534+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_SampleRecorderErrorDoesNotBreak","Output":"2026/09/07 01:55:58 ERROR record learning sample failed collector=test endpoint_key=\"GET /v1/a\" request_id=r-1 error=\"db down\"\n"}
+{"Time":"2026-09-07T01:55:58.032977+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_SampleRecorderErrorDoesNotBreak","Output":"--- PASS: TestCollectOnce_SampleRecorderErrorDoesNotBreak (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.032985+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_SampleRecorderErrorDoesNotBreak","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.03299+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_NoSampleRecorder"}
+{"Time":"2026-09-07T01:55:58.032994+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_NoSampleRecorder","Output":"=== RUN   TestCollectOnce_NoSampleRecorder\n"}
+{"Time":"2026-09-07T01:55:58.033712+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_NoSampleRecorder","Output":"--- PASS: TestCollectOnce_NoSampleRecorder (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.033732+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_NoSampleRecorder","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.033739+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_TrafficBuckets"}
+{"Time":"2026-09-07T01:55:58.033743+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_TrafficBuckets","Output":"=== RUN   TestCollectOnce_TrafficBuckets\n"}
+{"Time":"2026-09-07T01:55:58.035817+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_TrafficBuckets","Output":"--- PASS: TestCollectOnce_TrafficBuckets (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.035841+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_TrafficBuckets","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.035847+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_TrafficRecorderFailureDoesNotStop"}
+{"Time":"2026-09-07T01:55:58.035851+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_TrafficRecorderFailureDoesNotStop","Output":"=== RUN   TestCollectOnce_TrafficRecorderFailureDoesNotStop\n"}
+{"Time":"2026-09-07T01:55:58.036226+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_TrafficRecorderFailureDoesNotStop","Output":"2026/09/07 01:55:58 ERROR record traffic bucket failed collector=test-traffic-fail endpoint_key=\"GET /v1/items/{id}\" error=\"db down\"\n"}
+{"Time":"2026-09-07T01:55:58.036758+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_TrafficRecorderFailureDoesNotStop","Output":"--- PASS: TestCollectOnce_TrafficRecorderFailureDoesNotStop (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.036766+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_TrafficRecorderFailureDoesNotStop","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.036782+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_DiscoveryFailureSkipsTraffic"}
+{"Time":"2026-09-07T01:55:58.036786+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_DiscoveryFailureSkipsTraffic","Output":"=== RUN   TestCollectOnce_DiscoveryFailureSkipsTraffic\n"}
+{"Time":"2026-09-07T01:55:58.037117+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_DiscoveryFailureSkipsTraffic","Output":"2026/09/07 01:55:58 ERROR upsert api endpoint discovery failed collector=test-traffic-disc-fail endpoint_key=\"GET /v1/items/{id}\" error=\"db down\"\n"}
+{"Time":"2026-09-07T01:55:58.037689+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_DiscoveryFailureSkipsTraffic","Output":"--- PASS: TestCollectOnce_DiscoveryFailureSkipsTraffic (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.037703+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_DiscoveryFailureSkipsTraffic","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.037709+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_WithoutTrafficRecorder"}
+{"Time":"2026-09-07T01:55:58.037713+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_WithoutTrafficRecorder","Output":"=== RUN   TestCollectOnce_WithoutTrafficRecorder\n"}
+{"Time":"2026-09-07T01:55:58.038737+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_WithoutTrafficRecorder","Output":"--- PASS: TestCollectOnce_WithoutTrafficRecorder (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.038744+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestCollectOnce_WithoutTrafficRecorder","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.038749+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordViolationsFiltersSchemaMatches"}
+{"Time":"2026-09-07T01:55:58.038753+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordViolationsFiltersSchemaMatches","Output":"=== RUN   TestRecordViolationsFiltersSchemaMatches\n"}
+{"Time":"2026-09-07T01:55:58.040465+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordViolationsFiltersSchemaMatches","Output":"--- PASS: TestRecordViolationsFiltersSchemaMatches (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.04048+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordViolationsFiltersSchemaMatches","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.040486+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordViolationsSkips"}
+{"Time":"2026-09-07T01:55:58.04049+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordViolationsSkips","Output":"=== RUN   TestRecordViolationsSkips\n"}
+{"Time":"2026-09-07T01:55:58.043085+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordViolationsSkips","Output":"--- PASS: TestRecordViolationsSkips (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.043115+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestRecordViolationsSkips","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.043123+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestViolationHelpers"}
+{"Time":"2026-09-07T01:55:58.043127+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestViolationHelpers","Output":"=== RUN   TestViolationHelpers\n"}
+{"Time":"2026-09-07T01:55:58.043136+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestViolationHelpers","Output":"--- PASS: TestViolationHelpers (0.00s)\n"}
+{"Time":"2026-09-07T01:55:58.04314+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestViolationHelpers","Elapsed":0}
+{"Time":"2026-09-07T01:55:58.044035+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Output":"PASS\n"}
+{"Time":"2026-09-07T01:55:58.046798+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Output":"ok  \tgithub.com/jiuzhang-waf/server/internal/apiruntime\t2.079s\n"}
+{"Time":"2026-09-07T01:55:58.046853+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Elapsed":2.082}

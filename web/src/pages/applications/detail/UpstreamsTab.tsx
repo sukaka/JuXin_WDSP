@@ -20,7 +20,9 @@ import { ExperimentOutlined, PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import { upstreamsApi } from '../../../api/applications'
 import type { UpstreamBody, UpstreamTestBody } from '../../../api/applications'
+import RecordDetailDrawer from '../../../components/RecordDetailDrawer'
 import SmartTable from '../../../components/SmartTable'
+import useBatchDelete from '../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../stores/auth'
 import { hasPermission } from '../../../utils/permission'
 import type { UpstreamItem, UpstreamTestResult } from '../../../types'
@@ -137,6 +139,7 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const [editing, setEditing] = useState<UpstreamItem | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
+  const [detailRecord, setDetailRecord] = useState<UpstreamItem | null>(null)
   const [testing, setTesting] = useState<UpstreamItem | null>(null)
   const [testResult, setTestResult] = useState<UpstreamTestResult | null>(null)
   const [allowPrivate, setAllowPrivate] = useState(false)
@@ -194,6 +197,13 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
     onError,
   })
 
+  const { rowSelection, batchDeleteButton } = useBatchDelete<UpstreamItem>({
+    remove: (id) => upstreamsApi.remove(id),
+    invalidateKeys: [['upstreams']],
+    entityName: '上游',
+    canDelete: hasPermission(permissions, 'upstreams.delete'),
+  })
+
   const testMutation = useMutation({
     mutationFn: (body: UpstreamTestBody) => upstreamsApi.test(body),
     onSuccess: (data) => setTestResult(data),
@@ -227,8 +237,8 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
         </span>
       ),
     },
-    { title: '权重', dataIndex: 'weight', width: 80, align: 'right' },
-    { title: '优先级', dataIndex: 'priority', width: 80, align: 'right' },
+    { title: '权重', dataIndex: 'weight', width: 80 },
+    { title: '优先级', dataIndex: 'priority', width: 80 },
     {
       title: '健康检查',
       dataIndex: 'health_check_enabled',
@@ -349,6 +359,7 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
             新增源站
           </Button>
         )}
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -362,10 +373,15 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
         <SmartTable<UpstreamItem>
           storageKey="applications-upstreams"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
           pagination={false}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
         />
       )}
 
@@ -515,6 +531,13 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
           </div>
         )}
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="源站详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </>
   )
 }

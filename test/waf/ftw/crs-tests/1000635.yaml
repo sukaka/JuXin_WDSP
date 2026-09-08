@@ -1,0 +1,38 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "Shiro rememberMe oversized base64 value, 200-255 chars band (1000635)"
+rule_id: 1000635
+tests:
+  - test_id: 1
+    desc: "rememberMe cookie with 220-char base64 value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Cookie: "rememberMe=QUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJD"
+          method: GET
+          port: 80
+          uri: "/get"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000635]
+  - test_id: 2
+    desc: "short rememberMe cookie must not trigger"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Cookie: "rememberMe=QUJDQUJDQUJDQUJD"
+          method: GET
+          port: 80
+          uri: "/get"
+          version: HTTP/1.1
+        output:
+          log:
+            no_expect_ids: [1000635]

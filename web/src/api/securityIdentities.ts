@@ -2,7 +2,7 @@ import { request } from './client'
 import type { PageResult } from '../types'
 
 /** 身份类型（与 server 端 security/identities 词表一致） */
-export type IdentityType = 'UNKNOWN' | 'HUMAN' | 'BOT' | 'APPLICATION' | 'SERVICE' | 'MACHINE' | 'AGENT'
+export type IdentityType = 'UNKNOWN' | 'HUMAN' | 'BOT' | 'APPLICATION' | 'SERVICE' | 'AGENT'
 
 /** 身份风险等级 */
 export type IdentityRiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'

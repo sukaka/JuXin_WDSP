@@ -20,10 +20,10 @@ func NewEventTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&eventSearch{baseTool: baseTool{meta: toolMeta{
 		code: "security_event.search", name: "安全事件查询", version: "1.0",
 		description: "按时间/攻击类型/严重级别/IP/应用/动作分页查询安全事件",
-		risk: RiskReadOnly, permission: "security_events.read", timeout: 20, maxResults: 50,
+		risk:        RiskReadOnly, permission: "security_events.read", timeout: 20, maxResults: 50,
 		schema: obj(map[string]interface{}{
-			"start_time": sch("string", "起始时间 RFC3339（默认最近24小时）"),
-			"end_time":   sch("string", "结束时间"),
+			"start_time":  sch("string", "起始时间 RFC3339（默认最近24小时）"),
+			"end_time":    sch("string", "结束时间"),
 			"attack_type": sch("string", "攻击类型（可选）"),
 			"severity":    sch("string", "严重级别（可选）"),
 			"client_ip":   sch("string", "客户端IP（可选）"),
@@ -34,17 +34,17 @@ func NewEventTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&eventGet{baseTool: baseTool{meta: toolMeta{
 		code: "security_event.get", name: "安全事件详情", version: "1.0",
 		description: "按事件ID获取完整详情（含匹配规则，载荷脱敏）",
-		risk: RiskReadOnly, permission: "security_events.read", timeout: 10, maxResults: 1,
+		risk:        RiskReadOnly, permission: "security_events.read", timeout: 10, maxResults: 1,
 		schema: obj(map[string]interface{}{"event_id": sch("string", "事件ID")})}}, db: db})
 	r.Register(&eventRelated{baseTool: baseTool{meta: toolMeta{
 		code: "security_event.related", name: "关联事件", version: "1.0",
 		description: "查询事件关联事件（同RequestID/同IP近邻）",
-		risk: RiskReadOnly, permission: "security_events.read", timeout: 15, maxResults: 20,
+		risk:        RiskReadOnly, permission: "security_events.read", timeout: 15, maxResults: 20,
 		schema: obj(map[string]interface{}{"event_id": sch("string", "事件ID")})}}, db: db})
 	r.Register(&eventStats{baseTool: baseTool{meta: toolMeta{
 		code: "security_event.statistics", name: "事件统计", version: "1.0",
 		description: "按维度统计安全事件（类型/级别/动作/来源IP/应用）",
-		risk: RiskReadOnly, permission: "security_events.read", timeout: 30, maxResults: 100,
+		risk:        RiskReadOnly, permission: "security_events.read", timeout: 30, maxResults: 100,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"),
 			"end_time":   sch("string", "结束时间"),
@@ -53,7 +53,7 @@ func NewEventTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&eventDisposition{baseTool: baseTool{meta: toolMeta{
 		code: "security_event.disposition_summary", name: "事件处置摘要", version: "1.0",
 		description: "事件处置状态分布与未处置统计",
-		risk: RiskReadOnly, permission: "security_events.read", timeout: 15, maxResults: 10,
+		risk:        RiskReadOnly, permission: "security_events.read", timeout: 15, maxResults: 10,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"),
 			"end_time":   sch("string", "结束时间"),
@@ -291,7 +291,7 @@ func (t *eventStats) Run(ctx context.Context, input json.RawMessage) (interface{
 	dim := StrField(m, "dimension", 30)
 	col := map[string]string{
 		"attack_type": "attack_type", "severity": "severity", "action": "action",
-		"client_ip":   "host(client_ip)", "application": "COALESCE(application_name_snapshot,'unknown')",
+		"client_ip": "host(client_ip)", "application": "COALESCE(application_name_snapshot,'unknown')",
 	}[dim]
 	if col == "" {
 		return nil, fmt.Errorf("%w: invalid dimension", ErrInvalidInput)

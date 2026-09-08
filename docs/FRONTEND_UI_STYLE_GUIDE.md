@@ -357,7 +357,7 @@ export const ENABLE_STATUS_META: Record<string, { color: string; label: string }
 
 | 规则 | 示例 |
 |------|------|
-| 菜单、Card 标题、列名全中文 | 「接口端点资产」不是 `API Endpoints` |
+| 菜单、Card 标题、列名全中文 | 「接口API资产」不是 `API Endpoints` |
 | 按钮动词中文 | 新建 / 编辑 / 删除 / 发布 / 确认 |
 | 状态中文 | 成功 / 失败 / 启用 |
 | 协议字面量可保留 | `GET` `POST` `HTTP` |

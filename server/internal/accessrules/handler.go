@@ -613,7 +613,7 @@ func (h *Handler) writeStoreError(w http.ResponseWriter, r *http.Request, err er
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID, objName,
 	before, after, result, failureReason, risk string) {
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,
 		SourceIP:      middleware.RemoteIP(r),

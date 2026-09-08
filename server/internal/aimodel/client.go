@@ -34,29 +34,29 @@ const (
 
 // Provider 供应商配置。
 type Provider struct {
-	ID          uuid.UUID
-	Name        string
-	Type        ProviderType
-	BaseURL     string
+	ID           uuid.UUID
+	Name         string
+	Type         ProviderType
+	BaseURL      string
 	KeyReference string
-	Status      string
+	Status       string
 }
 
 // Model 模型配置。
 type Model struct {
-	ID               uuid.UUID
-	ProviderID       uuid.UUID
-	Code             string
-	DisplayName      string
-	ContextWindow    int
-	MaxOutputTokens  int
-	SupportsTools    bool
+	ID                uuid.UUID
+	ProviderID        uuid.UUID
+	Code              string
+	DisplayName       string
+	ContextWindow     int
+	MaxOutputTokens   int
+	SupportsTools     bool
 	SupportsStreaming bool
-	TimeoutSeconds   int
-	CostInputUnit    float64 // 每千输入Token
-	CostOutputUnit   float64
-	Priority         int
-	Status           string
+	TimeoutSeconds    int
+	CostInputUnit     float64 // 每千输入Token
+	CostOutputUnit    float64
+	Priority          int
+	Status            string
 }
 
 // ChatMessage 对话消息。

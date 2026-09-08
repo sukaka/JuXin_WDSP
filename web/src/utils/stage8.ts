@@ -1,4 +1,4 @@
-/* ==================== 阶段8 / WDSP：接口动态防护 展示元数据 ==================== */
+/* ==================== 阶段8 / WDSP：API 动态防护 展示元数据 ==================== */
 
 import type { TreeDataNode } from 'antd'
 
@@ -77,7 +77,7 @@ export function buildDirectoryTree(flat: DirectoryFlatItem[]): TreeDataNode[] {
   return roots
 }
 
-/** 接口端点资产状态（与 server/internal/apiassets 状态枚举一致） */
+/** API 接口资产状态（与 server/internal/apiassets 状态枚举一致） */
 export const API_ENDPOINT_STATUS_META: Record<string, { color: string; label: string }> = {
   DISCOVERED: { color: 'blue', label: '已发现' },
   CONFIRMED: { color: 'green', label: '已确认' },
@@ -85,7 +85,7 @@ export const API_ENDPOINT_STATUS_META: Record<string, { color: string; label: st
   DEPRECATED: { color: 'orange', label: '已废弃' },
 }
 
-/** 接口端点学习状态（与 server/internal/apiassets 学习状态枚举一致） */
+/** API 接口学习状态（与 server/internal/apiassets 学习状态枚举一致） */
 export const API_LEARNING_STATUS_META: Record<string, { color: string; label: string }> = {
   NOT_STARTED: { color: 'default', label: '未开始' },
   LEARNING: { color: 'processing', label: '学习中' },
@@ -93,7 +93,7 @@ export const API_LEARNING_STATUS_META: Record<string, { color: string; label: st
   LEARNED: { color: 'green', label: '已完成' },
 }
 
-/** 接口模型版本状态（与 server/internal/apimodels 状态枚举一致） */
+/** API 模型版本状态（与 server/internal/apimodels 状态枚举一致） */
 export const API_MODEL_VERSION_STATUS_META: Record<string, { color: string; label: string }> = {
   CANDIDATE: { color: 'blue', label: '候选' },
   IN_REVIEW: { color: 'purple', label: '评审中' },
@@ -122,13 +122,14 @@ export const API_FINDING_SEVERITY_META: Record<string, { color: string; label: s
   MEDIUM: { color: 'orange', label: '中' },
   LOW: { color: 'blue', label: '低' },
   INFO: { color: 'default', label: '信息' },
+  NONE: { color: 'default', label: '无' },
 }
 
 /** 风险发现类型 */
 export const API_FINDING_TYPE_META: Record<string, { color: string; label: string }> = {
-  SHADOW: { color: 'volcano', label: '影子接口' },
-  ZOMBIE: { color: 'magenta', label: '僵尸接口' },
-  DEPRECATED: { color: 'orange', label: '已下线接口' },
+  SHADOW: { color: 'volcano', label: '影子 API' },
+  ZOMBIE: { color: 'magenta', label: '僵尸 API' },
+  DEPRECATED: { color: 'orange', label: '已下线 API' },
   BOLA: { color: 'red', label: '对象级越权' },
   BFLA: { color: 'red', label: '功能级越权' },
   SCHEMA_DEVIATION: { color: 'orange', label: '模型偏离' },
@@ -137,12 +138,18 @@ export const API_FINDING_TYPE_META: Record<string, { color: string; label: strin
   BEHAVIOR_ANOMALY: { color: 'volcano', label: '行为异常' },
 }
 
-/** 风险发现处置状态 */
+/**
+ * 风险发现处置状态（七态状态机，与 server 端 risk.go / 迁移 000042 词表一致）；
+ * 未命中时 StatusTag 原样展示后端返回值。
+ */
 export const API_FINDING_STATUS_META: Record<string, { color: string; label: string }> = {
-  OPEN: { color: 'red', label: '待处置' },
-  ACKNOWLEDGED: { color: 'gold', label: '已知晓' },
+  NEW: { color: 'red', label: '待确认' },
+  CONFIRMED: { color: 'blue', label: '已确认' },
+  IN_PROGRESS: { color: 'processing', label: '处理中' },
   RESOLVED: { color: 'green', label: '已解决' },
   FALSE_POSITIVE: { color: 'default', label: '误报' },
+  IGNORED: { color: 'default', label: '已忽略' },
+  ARCHIVED: { color: 'default', label: '已归档' },
 }
 
 /** Schema 违例类型 */
@@ -165,4 +172,127 @@ export const API_PROTECTION_MODE_META: Record<string, { color: string; label: st
   OFF: { color: 'default', label: '关闭' },
   OBSERVE: { color: 'gold', label: '观察' },
   PROTECT: { color: 'green', label: '防护' },
+}
+
+/** 三微模型成熟度阶段（与 server 端模型成熟度状态机一致）：配色按成熟度递进京蓝→金→绿 */
+export const MODEL_MATURITY_STAGE_META: Record<string, { color: string; label: string }> = {
+  LEARNING: { color: 'geekblue', label: '学习中' },
+  CANDIDATE: { color: 'gold', label: '候选' },
+  CONFIRMED: { color: 'green', label: '已确认' },
+  ENFORCING: { color: '#237804', label: '已生效' },
+}
+
+/** 运行时处置动作（final_action / action_taken，与 server/internal/apiruntime 一致） */
+export const API_ACTION_META: Record<string, { color: string; label: string }> = {
+  ALLOW: { color: 'green', label: '放行' },
+  BLOCK: { color: 'red', label: '阻断' },
+  TEMP_BLOCK: { color: 'red', label: '临时封禁' },
+  LOG: { color: 'default', label: '仅记录' },
+  OBSERVE: { color: 'gold', label: '仅观察' },
+}
+
+/** 产品形态（apisecurity 策略接口 edition 字段；ENTERPRISE/STANDARD 为兼容值） */
+export const API_POLICY_EDITION_META: Record<string, { color: string; label: string }> = {
+  waf: { color: 'blue', label: 'WAF 版' },
+  wdsp: { color: 'purple', label: 'Web 动态防护版' },
+  api: { color: 'geekblue', label: 'API 安全版' },
+  ENTERPRISE: { color: 'purple', label: '企业版' },
+  STANDARD: { color: 'blue', label: '标准版' },
+}
+
+/** 认证类型（身份画像 auth_type，与 server/internal/apiassets 词表一致） */
+export const API_AUTH_TYPE_META: Record<string, { color: string; label: string }> = {
+  bearer_or_basic: { color: 'blue', label: '令牌/基本认证' },
+  api_key: { color: 'geekblue', label: 'API Key' },
+  cookie_session: { color: 'purple', label: 'Cookie 会话' },
+}
+
+/** 运行时检测器（details.detector，与 server 端 dsctx.DetectorMatch 一致） */
+export const API_DETECTOR_META: Record<string, { color: string; label: string }> = {
+  waf: { color: 'red', label: 'WAF 检测' },
+  api_schema: { color: 'orange', label: '模型校验' },
+  sensitive: { color: 'magenta', label: '敏感数据' },
+  sensitive_data: { color: 'magenta', label: '敏感数据' },
+  identity: { color: 'blue', label: '身份检测' },
+  authentication: { color: 'geekblue', label: '认证检测' },
+  lifecycle: { color: 'gold', label: '生命周期' },
+  scanner: { color: 'volcano', label: '扫描器' },
+  llm: { color: 'purple', label: 'LLM 检测' },
+}
+
+/** 风险主体类型（finding.subject_type，与 server/internal/apiruntime 一致） */
+export const API_SUBJECT_TYPE_META: Record<string, { color: string; label: string }> = {
+  IDENTITY: { color: 'blue', label: '认证身份' },
+  IP: { color: 'geekblue', label: 'IP 主体' },
+}
+
+/** 参数语义类型（与 server/internal/apimodels 语义推断词表一致） */
+export const API_SEMANTIC_TYPE_META: Record<string, { color: string; label: string }> = {
+  id: { color: 'blue', label: 'ID' },
+  uuid: { color: 'blue', label: 'UUID' },
+  email: { color: 'orange', label: '邮箱' },
+  phone: { color: 'volcano', label: '手机号' },
+  token: { color: 'magenta', label: '令牌' },
+  secret: { color: 'magenta', label: '口令' },
+  money: { color: 'gold', label: '金额' },
+}
+
+/** 接口协议类型（api_endpoints.protocol_type，与网关分类器打标词表一致；协议名为专有名词保持英文） */
+export const API_PROTOCOL_META: Record<string, { color: string; label: string }> = {
+  REST: { color: 'blue', label: 'REST' },
+  GRPC: { color: 'geekblue', label: 'gRPC' },
+  GRAPHQL: { color: 'purple', label: 'GraphQL' },
+  SOAP: { color: 'volcano', label: 'SOAP' },
+  WEBSOCKET: { color: 'cyan', label: 'WebSocket' },
+}
+
+/** 参数方向（api_parameter_models.direction，与 server 端词表一致） */
+export const API_PARAM_DIRECTION_META: Record<string, { color: string; label: string }> = {
+  REQUEST: { color: 'blue', label: '请求' },
+  RESPONSE: { color: 'purple', label: '响应' },
+}
+
+/** 参数位置（api_parameter_models.location，与 server 端词表一致） */
+export const API_PARAM_LOCATION_META: Record<string, { color: string; label: string }> = {
+  QUERY: { color: 'geekblue', label: '查询参数' },
+  HEADER: { color: 'gold', label: '请求头' },
+  BODY: { color: 'volcano', label: '请求体' },
+  PATH: { color: 'green', label: '路径参数' },
+  COOKIE: { color: 'cyan', label: 'Cookie' },
+}
+
+/** 参数基础类型（模型扁平 Schema 类型词表） */
+export const API_BASE_TYPE_META: Record<string, { color: string; label: string }> = {
+  string: { color: 'blue', label: '字符串' },
+  number: { color: 'geekblue', label: '数字' },
+  integer: { color: 'geekblue', label: '整数' },
+  bool: { color: 'gold', label: '布尔' },
+  boolean: { color: 'gold', label: '布尔' },
+  array: { color: 'orange', label: '数组' },
+  object: { color: 'purple', label: '对象' },
+}
+
+/** 常见国家/地区码（ISO 3166-1 alpha-2）；未覆盖的码原样展示 */
+export const API_COUNTRY_META: Record<string, { color: string; label: string }> = {
+  CN: { color: 'default', label: '中国' },
+  HK: { color: 'default', label: '中国香港' },
+  MO: { color: 'default', label: '中国澳门' },
+  TW: { color: 'default', label: '中国台湾' },
+  US: { color: 'default', label: '美国' },
+  JP: { color: 'default', label: '日本' },
+  KR: { color: 'default', label: '韩国' },
+  SG: { color: 'default', label: '新加坡' },
+  MY: { color: 'default', label: '马来西亚' },
+  TH: { color: 'default', label: '泰国' },
+  VN: { color: 'default', label: '越南' },
+  ID: { color: 'default', label: '印度尼西亚' },
+  IN: { color: 'default', label: '印度' },
+  RU: { color: 'default', label: '俄罗斯' },
+  DE: { color: 'default', label: '德国' },
+  FR: { color: 'default', label: '法国' },
+  GB: { color: 'default', label: '英国' },
+  NL: { color: 'default', label: '荷兰' },
+  CA: { color: 'default', label: '加拿大' },
+  AU: { color: 'default', label: '澳大利亚' },
+  BR: { color: 'default', label: '巴西' },
 }

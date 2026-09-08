@@ -1,0 +1,43 @@
+# 九章 netmgrd 网络执行组件 lab 实验编排（privileged 容器内真实执行验证）
+# 组件契约：/var/run/caddy/sidecars/network.json → network-status.json
+#
+# 说明：本编排因并行开发边界约束（本子任务仅限 gateway/ 下文件）置于
+# gateway/netmgrd/lab/，风格对齐 deployment/docker-compose.*-lab.yml 系列；
+# 产品化落地时可平移到 deployment/ 同族位置。
+#
+# 单 privileged 容器、network_mode: none——拓扑（veth/桥/sysctl）全在容器
+# 独立 netns 内自建，不触碰宿主机与任何真实网络（网络配置属高危操作，
+# 实验环境必须零外溢）。
+#
+# 用法（仓库根目录）：
+#   # 1) 构建 netmgrd 二进制与镜像（Dockerfile 头部有同样说明）
+#   cd gateway && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+#     -ldflags="-s -w" -o netmgrd/lab/bin/netmgrd ./cmd/netmgrd && cd ..
+#   docker compose -f gateway/netmgrd/lab/docker-compose.netmgr-lab.yml build
+#   # 2) 起实验、跑验证、清理
+#   docker compose -f gateway/netmgrd/lab/docker-compose.netmgr-lab.yml up -d
+#   bash gateway/netmgrd/lab/netmgr-lab-tests.sh
+#   docker compose -f gateway/netmgrd/lab/docker-compose.netmgr-lab.yml down -v
+
+name: netmgrlab
+
+services:
+  lab:
+    image: jiuzhang-netmgr-lab:poc
+    build:
+      # 需先按 Dockerfile 头部说明在宿主机产出 netmgrd 静态二进制（bin/netmgrd）
+      context: .
+      dockerfile: Dockerfile
+    container_name: netmgrlab-lab
+    restart: unless-stopped
+    # veth/bridge/sysctl 全在容器内独立 netns 自建，需要特权
+    privileged: true
+    # 不接入任何 docker 网络：实验面仅容器内自建拓扑，杜绝外溢
+    network_mode: none
+    healthcheck:
+      # 拓扑就绪判据：空闲口与带 IP 管理口均已建好
+      test: ["CMD-SHELL", "ip link show eth2 >/dev/null 2>&1 && ip link show eth4 >/dev/null 2>&1 && ip addr show mgmt0 2>/dev/null | grep -q 192.168.50.1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s

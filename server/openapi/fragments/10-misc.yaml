@@ -1,0 +1,85 @@
+paths:
+  /health:
+    get:
+      operationId: systemHealthCheck
+      tags: [system]
+      summary: 服务健康检查
+      description: >-
+        返回管理服务自身及其关键依赖（PostgreSQL、Valkey）的存活状态，供负载均衡/运维探活使用。
+        权限：无（公开）。
+        注意：该接口不使用统一响应信封，直接返回扁平 JSON；依赖探测带 3 秒超时，
+        且无论依赖是否可用均返回 HTTP 200，整体状态以 status 字段为准（ok / degraded）。
+        environment/product 字段与 X-Jiuzhang-Environment 响应头构成环境指纹（P-T1），
+        供独立测试工程门禁在登录前识别目标环境（值为 test 才允许执行，prod/缺失一律终止）。
+      responses:
+        '200':
+          description: 服务及依赖状态（status 为 ok 或 degraded）
+          headers:
+            X-Jiuzhang-Environment:
+              description: 环境标识（取值 APP_ENV，如 dev/test/prod）；全部 API 响应均携带
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemHealthResponse'
+
+  /product/edition:
+    get:
+      operationId: systemProductEdition
+      tags: [system]
+      summary: 产品形态与能力探测
+      description: >-
+        返回当前产品 edition（waf / wdsp）及 API 动态防护能力开关与请求体解析/采样上限，
+        供前端控制 WDSP 菜单与能力展示。权限：登录即可访问。
+      responses:
+        '200':
+          description: 产品形态与能力信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemProductEditionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  schemas:
+    SystemHealthResponse:
+      type: object
+      required: [status, postgres, valkey, environment, product]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+          description: 整体状态；任一依赖不可用时为 degraded（HTTP 状态码仍为 200）
+        postgres:
+          type: boolean
+          description: PostgreSQL 连接是否可用
+        valkey:
+          type: boolean
+          description: Valkey（缓存）连接是否可用
+        environment:
+          type: string
+          description: 环境标识（取值 APP_ENV，如 dev/test/prod）；环境指纹 P-T1 组成部分
+        product:
+          type: string
+          enum: [waf, wdsp, api]
+          description: 产品形态（环境指纹 P-T1 组成部分）
+
+    SystemProductEditionResponse:
+      type: object
+      required: [edition, api_dynamic_protection, max_body_parse_bytes, max_body_sample_bytes]
+      properties:
+        edition:
+          type: string
+          enum: [waf, wdsp]
+          description: 产品形态；wdsp 表示启用统一 Web 与 API 动态防护
+        api_dynamic_protection:
+          type: boolean
+          description: API 动态防护能力是否可用（仅 wdsp 形态且开关启用时为 true）
+        max_body_parse_bytes:
+          type: integer
+          description: API 请求体结构化解析上限，单位 bytes（默认 1048576）
+        max_body_sample_bytes:
+          type: integer
+          description: API 请求体采样保留上限，单位 bytes（默认 65536）

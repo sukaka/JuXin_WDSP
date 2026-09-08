@@ -7,11 +7,15 @@ package aihandlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/aiorchestrator"
 	"github.com/jiuzhang-waf/server/internal/aitools"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/response"
@@ -66,27 +70,72 @@ ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.descri
 }
 
 // ToolEnabledChecker Tool 启停检查（未入库默认启用；执行路径每次实时查库保证即时生效）。
+// DB 出错时拒绝执行（fail-closed）：停用状态在 DB 抖动时被架空属于安全事故，宁可暂不可用。
 func ToolEnabledChecker(db *pgxpool.Pool) aitools.EnabledChecker {
 	return func(ctx context.Context, code string) bool {
 		var status string
-		if err := db.QueryRow(ctx, `SELECT status FROM ai_tools WHERE code=$1`, code).Scan(&status); err != nil {
-			return true
+		err := db.QueryRow(ctx, `SELECT status FROM ai_tools WHERE code=$1`, code).Scan(&status)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return true // 未入库（尚未同步/已下线）：默认启用语义不变
+			}
+			slog.Warn("ai tool enabled check failed, deny execution", "tool", code, "error", err)
+			return false
 		}
 		return status == "ENABLED"
 	}
 }
 
 // AgentEnabledChecker Agent 启停检查（dispatcher 为编排器内置能力，恒启用）。
+// 与 ToolEnabledChecker 同纪律：仅未入库放行，DB 出错拒绝调度（fail-closed）。
 func AgentEnabledChecker(db *pgxpool.Pool) func(ctx context.Context, code string) bool {
 	return func(ctx context.Context, code string) bool {
 		if code == "dispatcher" {
 			return true
 		}
 		var status string
-		if err := db.QueryRow(ctx, `SELECT status FROM ai_agents WHERE code=$1`, code).Scan(&status); err != nil {
-			return true
+		err := db.QueryRow(ctx, `SELECT status FROM ai_agents WHERE code=$1`, code).Scan(&status)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return true
+			}
+			slog.Warn("ai agent enabled check failed, deny scheduling", "agent", code, "error", err)
+			return false
 		}
 		return status == "ENABLED"
+	}
+}
+
+// AgentToolChecker Agent→Tool 白名单检查（编排器 CallTool 执行点强制）。
+// 语义：allowed_tool_ids 非空数组时仅白名单内 Tool 放行；NULL/空数组 = 未配置不限制；
+// Agent 未入库（ErrNoRows）视为未配置；DB 出错或配置损坏时拒绝（fail-closed，不静默放宽）。
+func AgentToolChecker(db *pgxpool.Pool) aiorchestrator.AgentToolChecker {
+	return func(ctx context.Context, agentCode, toolCode string) bool {
+		var raw []byte
+		err := db.QueryRow(ctx, `SELECT allowed_tool_ids FROM ai_agents WHERE code=$1`, agentCode).Scan(&raw)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return true
+			}
+			slog.Warn("ai agent allowed_tool_ids check failed, deny tool call", "agent", agentCode, "tool", toolCode, "error", err)
+			return false
+		}
+		var ids []string
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &ids); err != nil {
+				slog.Warn("ai agent allowed_tool_ids corrupted, deny tool call", "agent", agentCode, "tool", toolCode, "error", err)
+				return false
+			}
+		}
+		if len(ids) == 0 {
+			return true // 未配置白名单：不限制
+		}
+		for _, id := range ids {
+			if id == toolCode {
+				return true
+			}
+		}
+		return false
 	}
 }
 

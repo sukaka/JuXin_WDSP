@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/encryption"
 )
@@ -33,29 +34,43 @@ func NewStore(db *pgxpool.Pool, enc *encryption.Service) *Store {
 // ---------- 供应商 ----------
 
 // CreateProvider 创建供应商（可选同时保存密钥）。
+// 携带密钥时：enc 未装配直接报错（不得静默丢弃用户密钥）；供应商行与密钥密文
+// 同一事务落库，密钥保存失败整体回滚——不得建出「有引用无密文」的残缺供应商
+// （运行期 401 静默切备用模型会掩盖配置故障，见审查 LOW-S11）。
 func (s *Store) CreateProvider(ctx context.Context, p *Provider, plainKey string) error {
+	if plainKey != "" && s.enc == nil {
+		return fmt.Errorf("encryption service unavailable")
+	}
 	p.ID = uuid.New()
-	_, err := s.db.Exec(ctx, `
-INSERT INTO ai_model_providers (id, name, provider_type, base_url, api_key_reference, status)
-VALUES ($1,$2,$3,$4,$5,$6)`,
-		p.ID, p.Name, string(p.Type), p.BaseURL, p.KeyReference, p.Status)
+	if plainKey != "" && p.KeyReference == "" {
+		p.KeyReference = "provider-" + p.ID.String()[:8]
+	}
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if plainKey != "" && s.enc != nil {
-		if p.KeyReference == "" {
-			p.KeyReference = "provider-" + p.ID.String()[:8]
-			if _, err := s.db.Exec(ctx, `UPDATE ai_model_providers SET api_key_reference=$1 WHERE id=$2`, p.KeyReference, p.ID); err != nil {
-				return err
-			}
-		}
-		return s.saveSecret(ctx, p.KeyReference, plainKey)
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+INSERT INTO ai_model_providers (id, name, provider_type, base_url, api_key_reference, status)
+VALUES ($1,$2,$3,$4,$5,$6)`,
+		p.ID, p.Name, string(p.Type), p.BaseURL, p.KeyReference, p.Status); err != nil {
+		return err
 	}
-	return nil
+	if plainKey != "" {
+		if err := s.saveSecret(ctx, tx, p.KeyReference, plainKey); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
-// saveSecret 加密保存密钥。
-func (s *Store) saveSecret(ctx context.Context, reference, plainKey string) error {
+// execer 抽象 *pgxpool.Pool 与 pgx.Tx 的 Exec（saveSecret 事务内外复用）。
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error)
+}
+
+// saveSecret 加密保存密钥（enc 未装配返回错误，调用方不得静默降级）。
+func (s *Store) saveSecret(ctx context.Context, ex execer, reference, plainKey string) error {
 	if s.enc == nil {
 		return fmt.Errorf("encryption service unavailable")
 	}
@@ -63,7 +78,7 @@ func (s *Store) saveSecret(ctx context.Context, reference, plainKey string) erro
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(ctx, `
+	_, err = ex.Exec(ctx, `
 INSERT INTO ai_provider_secrets (reference, encrypted_key, rotated_at)
 VALUES ($1,$2,now())
 ON CONFLICT (reference) DO UPDATE SET encrypted_key = EXCLUDED.encrypted_key, rotated_at = now()`,
@@ -152,7 +167,7 @@ func (s *Store) RotateKey(ctx context.Context, id uuid.UUID, plainKey string) er
 			return err
 		}
 	}
-	return s.saveSecret(ctx, ref, plainKey)
+	return s.saveSecret(ctx, s.db, ref, plainKey)
 }
 
 // CountModelsByProvider 统计供应商下模型数量。

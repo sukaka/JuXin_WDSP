@@ -56,7 +56,6 @@ func TestParseObservationIdentityTypes(t *testing.T) {
 		IdentityTypeBot,
 		IdentityTypeApplication,
 		IdentityTypeService,
-		IdentityTypeMachine,
 		IdentityTypeAgent,
 		IdentityTypeUnknown,
 	} {
@@ -188,13 +187,13 @@ func TestClampRiskScore(t *testing.T) {
 	}
 }
 
-func TestParseMachineIdentity(t *testing.T) {
+func TestParseRemovedMachineIdentityAsUnknown(t *testing.T) {
 	line := `{"record_type":"identity_observation","occurred_at":"2026-09-01T10:00:00Z","identity_key":"legacy-machine","identity_type":"MACHINE","identity_confidence":80,"identity_evidence":["browser_fingerprint"]}`
 	rec, err := parseRecordLine([]byte(line))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.IdentityType != IdentityTypeMachine || rec.IdentityConfidence != 80 || len(rec.IdentityEvidence) != 1 || rec.IdentityEvidence[0] != "browser_fingerprint" {
-		t.Fatalf("machine identity parsing did not preserve evidence: type=%s confidence=%d evidence=%v", rec.IdentityType, rec.IdentityConfidence, rec.IdentityEvidence)
+	if rec.IdentityType != IdentityTypeUnknown || rec.IdentityConfidence != 80 || len(rec.IdentityEvidence) != 1 || rec.IdentityEvidence[0] != "browser_fingerprint" {
+		t.Fatalf("removed machine identity must normalize to UNKNOWN: type=%s confidence=%d evidence=%v", rec.IdentityType, rec.IdentityConfidence, rec.IdentityEvidence)
 	}
 }

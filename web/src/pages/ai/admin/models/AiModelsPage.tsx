@@ -27,7 +27,9 @@ import type {
   AiModelRoutes,
 } from '../../../../api/ai'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
 import StatusTag from '../../../../components/StatusTag'
+import useBatchDelete from '../../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../../stores/auth'
 import { AI_PROVIDER_TYPE_META } from '../../../../utils/ai'
 import { hasPermission } from '../../../../utils/permission'
@@ -75,6 +77,22 @@ export default function AiModelsPage() {
   })
   const modelsQuery = useQuery({ queryKey: ['ai-models'], queryFn: aiModelsApi.listModels })
 
+  /* ---------- 批量删除（勾选 + 二次确认由 useBatchDelete 封装） ---------- */
+  const { rowSelection: providerRowSelection, batchDeleteButton: providerBatchDeleteButton } =
+    useBatchDelete<AiModelProvider>({
+      remove: (id) => aiModelsApi.deleteProvider(id),
+      invalidateKeys: [['ai-model-providers']],
+      entityName: '模型提供方',
+      canDelete: canManage,
+    })
+  const { rowSelection: modelRowSelection, batchDeleteButton: modelBatchDeleteButton } =
+    useBatchDelete<AiModel>({
+      remove: (id) => aiModelsApi.deleteModel(id),
+      invalidateKeys: [['ai-models']],
+      entityName: '模型',
+      canDelete: canManage,
+    })
+
   /* ---------- 路由档位（受控，getRoutes 成功后同步） ---------- */
   const [routes, setRoutes] = useState<AiModelRoutes>({ simple: '', standard: '', high: '' })
   useEffect(() => {
@@ -92,6 +110,10 @@ export default function AiModelsPage() {
   const [modelOpen, setModelOpen] = useState(false)
   const [editingModel, setEditingModel] = useState<AiModel | null>(null)
   const [modelForm] = Form.useForm<ModelFormValues>()
+
+  /* ---------- 行详情（双击查看） ---------- */
+  const [detailProvider, setDetailProvider] = useState<AiModelProvider | null>(null)
+  const [detailModel, setDetailModel] = useState<AiModel | null>(null)
 
   const invalidateProviders = () =>
     queryClient.invalidateQueries({ queryKey: ['ai-model-providers'] })
@@ -380,8 +402,8 @@ export default function AiModelsPage() {
       ellipsis: true,
       render: (v: string) => providerNameMap.get(v) ?? '-',
     },
-    { title: '上下文窗口', dataIndex: 'context_window', width: 110, align: 'right' },
-    { title: '最大输出', dataIndex: 'max_output_tokens', width: 100, align: 'right' },
+    { title: '上下文窗口', dataIndex: 'context_window', width: 110 },
+    { title: '最大输出', dataIndex: 'max_output_tokens', width: 100 },
     {
       title: '能力',
       key: 'capabilities',
@@ -394,13 +416,12 @@ export default function AiModelsPage() {
         </Space>
       ),
     },
-    { title: '优先级', dataIndex: 'priority', width: 80, align: 'right' },
-    { title: '超时(s)', dataIndex: 'timeout_seconds', width: 90, align: 'right' },
+    { title: '优先级', dataIndex: 'priority', width: 80 },
+    { title: '超时(s)', dataIndex: 'timeout_seconds', width: 90 },
     {
       title: '成本（输入/输出）',
       key: 'cost',
       width: 150,
-      align: 'right',
       render: (_, record) => `${record.cost_input_unit} / ${record.cost_output_unit}`,
     },
     {
@@ -514,9 +535,12 @@ export default function AiModelsPage() {
         title="模型供应商"
         extra={
           canManage && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateProvider}>
-              新建供应商
-            </Button>
+            <Space>
+              {providerBatchDeleteButton}
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreateProvider}>
+                新建供应商
+              </Button>
+            </Space>
           )
         }
       >
@@ -526,11 +550,16 @@ export default function AiModelsPage() {
           <SmartTable<AiModelProvider>
             storageKey="ai-admin-models"
             rowKey="id"
+            rowSelection={providerRowSelection}
             loading={providersQuery.isLoading}
             columns={providerColumns}
             dataSource={providersQuery.data}
             scroll={{ x: 1000 }}
             pagination={false}
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailProvider(record),
+              style: { cursor: 'pointer' },
+            })}
           />
         )}
       </Card>
@@ -539,9 +568,12 @@ export default function AiModelsPage() {
         title="模型"
         extra={
           canManage && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModel}>
-              新建模型
-            </Button>
+            <Space>
+              {modelBatchDeleteButton}
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModel}>
+                新建模型
+              </Button>
+            </Space>
           )
         }
       >
@@ -551,14 +583,33 @@ export default function AiModelsPage() {
           <SmartTable<AiModel>
             storageKey="ai-admin-models-2"
             rowKey="id"
+            rowSelection={modelRowSelection}
             loading={modelsQuery.isLoading}
             columns={modelColumns}
             dataSource={modelsQuery.data}
             scroll={{ x: 1450 }}
             pagination={false}
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailModel(record),
+              style: { cursor: 'pointer' },
+            })}
           />
         )}
       </Card>
+
+      <RecordDetailDrawer
+        open={detailProvider !== null}
+        title="模型供应商详情"
+        record={detailProvider as Record<string, unknown> | null}
+        onClose={() => setDetailProvider(null)}
+      />
+
+      <RecordDetailDrawer
+        open={detailModel !== null}
+        title="模型详情"
+        record={detailModel as Record<string, unknown> | null}
+        onClose={() => setDetailModel(null)}
+      />
 
       <Modal
         title={editingProvider ? '编辑供应商' : '新建供应商'}
@@ -585,13 +636,13 @@ export default function AiModelsPage() {
               { max: 100, message: '不超过 100 个字符' },
             ]}
           >
-            <Input placeholder="如：自建推理集群 / 公有云兼容端点" />
+            <Input placeholder="如：自建推理集群 / 公有云兼容 API" />
           </Form.Item>
           <Form.Item
             name="provider_type"
             label="类型"
             rules={[{ required: true, message: '请选择类型' }]}
-            extra="开放兼容协议 / 本地推理服务 / 本地模型均走标准对话补全接口"
+            extra="开放兼容协议 / 本地推理服务 / 本地模型均走标准对话补全 API"
           >
             <Select options={PROVIDER_TYPE_OPTIONS} placeholder="选择供应商类型" />
           </Form.Item>
@@ -602,7 +653,7 @@ export default function AiModelsPage() {
               { required: true, message: '请输入服务地址' },
               { max: 255, message: '不超过 255 个字符' },
             ]}
-            extra="填写服务根地址即可（不要带对话补全路径）。例如：http://ollama:11434 或公有云接口根地址"
+            extra="填写服务根地址即可（不要带对话补全路径）。例如：http://ollama:11434 或公有云 API 根地址"
           >
             <Input placeholder="http://host:port 或 https://api.example.com" autoComplete="off" />
           </Form.Item>
@@ -620,7 +671,7 @@ export default function AiModelsPage() {
               />
             </Form.Item>
           ) : (
-            <Form.Item name="api_key" label="接口密钥（可选）">
+            <Form.Item name="api_key" label="API 密钥（可选）">
               <Input.Password
                 placeholder="本地推理服务可留空；公有云必填，仅创建时写入且不回显"
                 autoComplete="new-password"
@@ -654,7 +705,7 @@ export default function AiModelsPage() {
             label="新密钥"
             rules={[{ required: true, message: '请输入新密钥' }]}
           >
-            <Input.Password placeholder="输入新的 接口密钥" autoComplete="new-password" />
+            <Input.Password placeholder="输入新的 API 密钥" autoComplete="new-password" />
           </Form.Item>
         </Form>
       </Modal>

@@ -1,0 +1,4 @@
+2026/09/08 02:11:39 INFO mirrorsrc 镜像接收器已启动 addr=/run/wdsp/mirror.sock source_instance=nginx-e2e tls_terminated=true body_enabled=true max_conns=64 max_body_bytes=4096
+2026/09/08 02:11:39 adapter 就绪 instance=nginx-e2e tls_terminated=true body=true
+2026/09/08 02:11:59 INFO mirrorsrc 镜像接收器已启动 addr=/run/wdsp/mirror.sock source_instance=nginx-e2e tls_terminated=true body_enabled=true max_conns=64 max_body_bytes=4096
+2026/09/08 02:11:59 adapter 就绪 instance=nginx-e2e tls_terminated=true body=true

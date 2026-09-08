@@ -43,5 +43,7 @@ export const usersApi = {
     request<{ temporary_password: string; notice?: string }>(`/users/${id}/reset-password`, {
       method: 'POST',
     }),
+  /** 管理员重置用户双因子认证（users.update 权限）：清除密钥与恢复码 */
+  resetTotp: (id: string) => request<null>(`/users/${id}/totp/reset`, { method: 'POST' }),
   forceLogout: (id: string) => request<null>(`/users/${id}/sessions`, { method: 'DELETE' }),
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
 )
 
 // 攻击类型映射
@@ -102,6 +103,55 @@ type NormalizedEvent struct {
 	ResponseBody          string
 	ResponseBodyTruncated bool
 	Matches               []MatchInfo
+	// JWTVerification JWT 信任链验证摘要（WDSP P0-03；可选）。
+	// 当前唯一来源 Coraza 审计日志不携带 JWT 验证数据，本字段恒为 nil——
+	// 预留给 JWT 感知的事件来源（JWT 处置事件走 access_control_events.details，
+	// 见 accesscontrolevents；API 主事件走 api_runtime_events.jwt_verification，
+	// 迁移 000127）。历史事件为空，不回填；不落原始 Token/payload/明文 sub/tenant。
+	JWTVerification *dsevents.JWTVerification
+	// FinalDecision 请求最终处置上下文的 WAF 侧重建（WDSP P0-04，final_decision
+	// schema_version=1；迁移 000132 security_events.final_decision JSONB，可空，
+	// 历史不回填）：从审计事务事实（中断标记/响应码/命中规则/例外 exc: tag）构建，
+	// 与 guard 内存态处置上下文（access_control_events.details.final_decision）经
+	// request_id 关联；去重命中时按「已确认拦截优先」条件补全（契约
+	// S4_DESIGN_BASELINE §2：先到先得 + 终止动作优先，PENDING_CORRELATION 允许被
+	// 真实证据幂等更新）
+	FinalDecision *FinalDecision
+}
+
+// FinalDecision final_decision（WDSP P0-04，schema_version=1）的 server 侧视图。
+// 与网关 disposition.go / gateway eventparser 输出同构的事实子集——审计行可诚实
+// 提供的维度；identity_verification/effective_config/steps 等仅 guard 内存态可知
+// 的维度缺省（omitempty 省略），由事件详情合并展示时按 request_id 关联补齐。
+type FinalDecision struct {
+	SchemaVersion     int                    `json:"schema_version"`
+	RequestID         string                 `json:"request_id"`
+	ApplicationID     string                 `json:"application_id,omitempty"`
+	GatewayNode       string                 `json:"gateway_node"`
+	CompletionStatus  string                 `json:"completion_status"`
+	SecurityAction    string                 `json:"security_action"`
+	ExecutorModule    string                 `json:"executor_module"`
+	ResponseSource    string                 `json:"response_source"`
+	HTTPStatus        int                    `json:"http_status,omitempty"`
+	ResponseCommitted bool                   `json:"response_committed"`
+	RuleRefs          []FinalDecisionRuleRef `json:"rule_refs,omitempty"`
+	MatchedExceptions []FinalDecisionMatch   `json:"matched_exceptions,omitempty"`
+	FinalizedAt       string                 `json:"finalized_at"`
+}
+
+// FinalDecisionRuleRef final_decision.rule_refs 条目。
+type FinalDecisionRuleRef struct {
+	Module string `json:"module"`
+	RuleID string `json:"rule_id"`
+}
+
+// FinalDecisionMatch final_decision.matched_exceptions 条目（WAF 侧经效果规则
+// exc:/excv: tag 反查 exception_id/version；契约 §5 两规则标记法）。
+type FinalDecisionMatch struct {
+	ExceptionID string   `json:"exception_id"`
+	Version     int      `json:"version"`
+	Target      string   `json:"target"` // WAF
+	RuleRefs    []string `json:"rule_refs,omitempty"`
 }
 
 // MatchInfo 是规则匹配信息。
@@ -211,10 +261,22 @@ func ParseAuditLine(line []byte, gatewayNode string) (*NormalizedEvent, error) {
 	maxSevRank := -1
 	evt.Severity = "INFO"
 	bestTypeRank := -1
+	var matchedExceptions []FinalDecisionMatch
 	for _, m := range entry.Messages {
 		mi := parseMessage(m.ErrorMessage)
 		if mi.RuleID == 0 {
 			continue
+		}
+		// WDSP P0-04：受限例外效果规则命中（契约 §5 两规则标记法——规则 ID 落在
+		// jiuzhang 例外段 8000001-8004000 且携带 exc:<uuid> tag，excv:<version> 配版）：
+		// 转入 final_decision.matched_exceptions，不算攻击命中（不进 Matches/
+		// AttackType/Severity）——仅标记命中无攻击的事件 Matches 为空，采集端
+		// 按无攻击命中过滤（例外命中不是攻击）
+		if mi.RuleID >= exceptionRuleIDMin && mi.RuleID <= exceptionRuleIDMax {
+			if excID, excVer, ok := exceptionTagInfo(mi.Tags); ok {
+				matchedExceptions = appendFinalDecisionMatch(matchedExceptions, excID, excVer, mi.RuleID)
+				continue
+			}
 		}
 		mi.RuleSource = ruleSource
 		mi.RuleVersion = ruleVersion
@@ -243,7 +305,94 @@ func ParseAuditLine(line []byte, gatewayNode string) (*NormalizedEvent, error) {
 	if evt.AttackType == "" {
 		evt.AttackType = "OTHER"
 	}
+	evt.FinalDecision = buildFinalDecision(tx.IsInterrupted, tx.Response.Status, requestID, gatewayNode, occurred, evt.Matches, matchedExceptions)
 	return evt, nil
+}
+
+// 例外规则 ID 段（契约 §5：marker=8000001+2i、effect=8000002+2i，容量 2000 条）。
+const (
+	exceptionRuleIDMin = 8000001
+	exceptionRuleIDMax = 8004000
+)
+
+// exceptionTagInfo 从命中 tag 列表提取例外锚点（exc:<uuid> 必须，excv:<version> 配版）。
+func exceptionTagInfo(tags []string) (id string, version int, ok bool) {
+	for _, t := range tags {
+		if strings.HasPrefix(t, "exc:") {
+			id = strings.TrimPrefix(t, "exc:")
+		} else if strings.HasPrefix(t, "excv:") {
+			if v, err := strconv.Atoi(strings.TrimPrefix(t, "excv:")); err == nil {
+				version = v
+			}
+		}
+	}
+	return id, version, id != ""
+}
+
+// appendFinalDecisionMatch 追加例外命中（同 exception_id 合并 rule_refs，保持先入序）。
+func appendFinalDecisionMatch(list []FinalDecisionMatch, id string, version, ruleID int) []FinalDecisionMatch {
+	ruleRef := strconv.Itoa(ruleID)
+	for i := range list {
+		if list[i].ExceptionID == id {
+			dup := false
+			for _, r := range list[i].RuleRefs {
+				if r == ruleRef {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				list[i].RuleRefs = append(list[i].RuleRefs, ruleRef)
+			}
+			return list
+		}
+	}
+	return append(list, FinalDecisionMatch{
+		ExceptionID: id,
+		Version:     version,
+		Target:      "WAF",
+		RuleRefs:    []string{ruleRef},
+	})
+}
+
+// buildFinalDecision 从审计事务事实构建 final_decision 的 WAF 侧视图（P0-04）：
+// interrupted → ABORTED/BLOCK/WAF/GATEWAY；否则 COMPLETED/NONE/NONE/ORIGIN。
+// 规则引用取真实攻击命中（例外命中已分流至 matched_exceptions）。
+// 与 gateway eventparser buildFinalDecision 同逻辑（两模块各自独立实现，现有
+// parseMessage 等即如此重复——跨 Go module 边界不共享代码）。
+func buildFinalDecision(isInterrupted bool, respStatus int, requestID, node string, occurred time.Time, matches []MatchInfo, matchedExceptions []FinalDecisionMatch) *FinalDecision {
+	fd := &FinalDecision{
+		SchemaVersion: 1,
+		RequestID:     requestID,
+		GatewayNode:   node,
+		FinalizedAt:   occurred.UTC().Format(time.RFC3339),
+	}
+	if isInterrupted {
+		fd.CompletionStatus = "ABORTED"
+		fd.SecurityAction = "BLOCK"
+		fd.ExecutorModule = "WAF"
+		fd.ResponseSource = "GATEWAY"
+		fd.HTTPStatus = 403
+		// 响应相位（phase 4）中断码已先行写出——response.status 有效 4xx/5xx 取之
+		if respStatus >= 400 && respStatus <= 599 {
+			fd.HTTPStatus = respStatus
+		}
+		fd.ResponseCommitted = true
+	} else {
+		fd.CompletionStatus = "COMPLETED"
+		fd.SecurityAction = "NONE"
+		fd.ExecutorModule = "NONE"
+		fd.ResponseSource = "ORIGIN"
+		if respStatus > 0 {
+			fd.HTTPStatus = respStatus
+		}
+		fd.ResponseCommitted = true
+	}
+	for _, m := range matches {
+		fd.RuleRefs = append(fd.RuleRefs, FinalDecisionRuleRef{Module: "WAF", RuleID: strconv.Itoa(m.RuleID)})
+	}
+	fd.MatchedExceptions = matchedExceptions
+	return fd
 }
 
 // parseRuleSetMetadata 从 Coraza producer.rulesets 提取规则来源与版本。
@@ -335,7 +484,9 @@ func firstHeader(headers map[string][]string, name string) string {
 	return ""
 }
 
-// maskURI 对 URI 查询串敏感参数脱敏。
+// maskURI 对 URI 查询串敏感参数脱敏：参数名先 URL 解码再比对敏感名单（pass%77ord=
+// 等编码键亦可命中），命中以 "masked" 替换原始（未解码）值；解码失败（非法 % 转义）
+// 保持原样不过掩（无法确证敏感）。
 func maskURI(uri string) string {
 	qIdx := strings.Index(uri, "?")
 	if qIdx < 0 {
@@ -348,8 +499,11 @@ func maskURI(uri string) string {
 		if eq < 0 {
 			continue
 		}
-		name := strings.ToLower(p[:eq])
-		if sensitiveParams[name] {
+		name, err := url.QueryUnescape(p[:eq])
+		if err != nil {
+			continue
+		}
+		if sensitiveParams[strings.ToLower(name)] {
 			parts[i] = p[:eq+1] + "masked"
 		}
 	}
@@ -365,6 +519,8 @@ func splitURI(uri string) (path, querySummary string) {
 	return truncate(uri[:qIdx], 512), truncate(maskQuery(uri[qIdx+1:]), 512)
 }
 
+// maskQuery 对查询摘要脱敏（与 maskURI 同一口径）：参数名先 URL 解码再比对敏感名单，
+// pass%77ord= 等编码键亦可命中；解码失败（非法 % 转义）保持原样不过掩（无法确证敏感）。
 func maskQuery(query string) string {
 	parts := strings.Split(query, "&")
 	for i, p := range parts {
@@ -372,8 +528,11 @@ func maskQuery(query string) string {
 		if eq < 0 {
 			continue
 		}
-		name := strings.ToLower(p[:eq])
-		if sensitiveParams[name] {
+		name, err := url.QueryUnescape(p[:eq])
+		if err != nil {
+			continue
+		}
+		if sensitiveParams[strings.ToLower(name)] {
 			parts[i] = p[:eq+1] + "masked"
 		}
 	}

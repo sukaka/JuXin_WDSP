@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "CUSTOM_PACK 1001714: bash brace expansion with absolute path"
+rule_id: 1001714
+tests:
+  - test_id: 1
+    desc: "{cat,/etc/passwd} brace expansion"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "JiuZhang CUSTOM_PACK test agent"
+            Accept: "*/*"
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "var={cat,/etc/passwd}"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001714]

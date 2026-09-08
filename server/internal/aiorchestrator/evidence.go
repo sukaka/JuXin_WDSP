@@ -87,7 +87,22 @@ func (s *EvidenceSet) ComposeEvidenceBlock() string {
 	var b strings.Builder
 	b.WriteString("\n\n**证据引用**\n")
 	for _, it := range s.items {
-		b.WriteString(fmt.Sprintf("- [%s] %s：%s\n", it.ID, it.Source, it.Summary))
+		b.WriteString(fmt.Sprintf("- [%s] %s：%s\n", it.ID, evidenceSourceDisplayName(it.Source), it.Summary))
 	}
 	return b.String()
+}
+
+func evidenceSourceDisplayName(source string) string {
+	names := map[string]string{
+		"security_event.get":           "安全事件详情",
+		"security_event.search":        "安全事件查询",
+		"security_event.statistics":    "安全事件统计",
+		"statistics.security_overview": "安全态势概览",
+		"statistics.top_source_ips":    "攻击源 IP 排行",
+		"log.query":                    "日志查询",
+	}
+	if name, ok := names[source]; ok {
+		return name
+	}
+	return source
 }

@@ -2,13 +2,13 @@
 
 ## 一、目的与范围
 
-每个 API 端点的防护基准以**模型版本**形式管理：候选版本经人工评审确认后冻结为
+每个 API的防护基准以**模型版本**形式管理：候选版本经人工评审确认后冻结为
 正式版本（FORMAL），正式版本不可变，经发布通道下发网关作为 Schema 偏离检测的
 基准。本文覆盖：
 
 - 版本状态机与迁移规则（`server/internal/apimodels/store.go`）；
 - 版本号、内容哈希、差异对比；
-- 确认（Confirm）、激活（Activate）与端点当前模型指针；
+- 确认（Confirm）、激活（Activate）与API当前模型指针；
 - 发布下发（`ListFormalSchemas` → 网关 `api_formal_schemas`）；
 - 网关侧同语义的内存原型（`gateway/dynamic_security/learning/version.go`）。
 
@@ -49,18 +49,18 @@ CANDIDATE / IN_REVIEW ──Reject──► REJECTED ──Archive──► ARCH
 迁移规则与校验：
 
 - `Confirm`（`store.go:158-199`）：仅 CANDIDATE/IN_REVIEW 可确认
-  （否则 `ErrNotCandidate`）；同事务内把同端点旧 FORMAL 降级 SUPERSEDED，
-  `version_number` 取同端点 `MAX+1`，记录 `confirmed_by/confirmed_at/activated_at`；
+  （否则 `ErrNotCandidate`）；同事务内把同API旧 FORMAL 降级 SUPERSEDED，
+  `version_number` 取同API `MAX+1`，记录 `confirmed_by/confirmed_at/activated_at`；
 - `SubmitReview` / `Reject`（`store.go:202-250`）：状态迁移同时写
   `api_model_reviews`（action=SUBMIT/REJECT，含评审人与评论）；
-- `Activate`（`store.go:254-284`）：仅 FORMAL；刷新 `activated_at` 并把端点
+- `Activate`（`store.go:254-284`）：仅 FORMAL；刷新 `activated_at` 并把API
   `current_model_version_id` 指向本版本；
 - `Archive`（`store.go:287-315`）：FORMAL/SUPERSEDED/REJECTED 可归档；
 - 非法迁移统一 `ErrInvalidTransition`，HTTP 层映射 409（`handler.go:410-427`）。
 
 ## 三、版本号与内容哈希
 
-- **版本号**：确认时按端点内 `MAX(version_number)+1` 赋值（`store.go:176-180`）；
+- **版本号**：确认时按API内 `MAX(version_number)+1` 赋值（`store.go:176-180`）；
   候选期 `version_number` 为迁移默认值 1，确认后才获得真实序号——版本号表达
   「第几个被确认的正式版本」。
 - **内容哈希**：`sha256(endpoint_key + 排序后的字段-类型对)`（`store.go:476-493`），
@@ -102,7 +102,7 @@ SchemaDiff{ added[], removed[], type_changed[{field, from, to}] }
 
 ```text
 管理员 Confirm（FORMAL 冻结）
-  → （可选）Activate（端点 current_model_version_id 指向该版本）
+  → （可选）Activate（API current_model_version_id 指向该版本）
   → 触发配置发布（API 策略页发布按钮 / 既有发布通道）
   → guardconfig.BuildGuardConfig 调 ListFormalSchemas（store.go:497-520）：
       SELECT DISTINCT ON (endpoint_key) endpoint_key, schema_json
@@ -147,7 +147,7 @@ SchemaDiff{ added[], removed[], type_changed[{field, from, to}] }
 2. **版本号在确认时分配**。候选可以随意创建/废弃，只有被确认的才占用序号，
    版本号序列直接反映「正式基准的演进史」。
 3. **状态迁移全部事务化 + 行锁**。Confirm 同时改两行（旧降级、新升级），
-   并发确认同一端点的两个候选不会产生双 FORMAL（`store.go:159-198`）。
+   并发确认同一API的两个候选不会产生双 FORMAL（`store.go:159-198`）。
 4. **下发读 status 而非指针**。`ListFormalSchemas` 以 FORMAL 状态为准，
    避免指针字段被误改后直接改变网关防护基准；指针（Activate）是管理面导航
    语义，防护语义由状态保证。

@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: Trailing parent-directory path probe (CUSTOM_PACK)
+rule_id: 1001627
+tests:
+  - test_id: 1
+    desc: "Parameter value ending with /.."
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "x=/var/www/.."
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001627]
+  - test_id: 2
+    desc: "Benign text ending with two dots must not match"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "comment=please%20wait.."
+          version: HTTP/1.1
+        output:
+          log:
+            no_expect_ids: [1001627]

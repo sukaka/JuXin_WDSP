@@ -1,0 +1,2 @@
+ALTER TABLE agent_http_events DROP COLUMN IF EXISTS k8s;
+ALTER TABLE agent_flow_events DROP COLUMN IF EXISTS k8s;

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import LoginPage from '../LoginPage'
 import { useAuthStore } from '../../../stores/auth'
@@ -24,11 +24,16 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
-function renderLogin() {
+function renderLogin(initialEntry: string | { pathname: string; state?: unknown } = '/login') {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialEntry as never]}>
       <AntdApp>
-        <LoginPage />
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/dashboard" element={<div>dashboard-page</div>} />
+          <Route path="/users" element={<div>users-page</div>} />
+          <Route path="/ha-groups" element={<div>ha-groups-page</div>} />
+        </Routes>
       </AntdApp>
     </MemoryRouter>,
   )
@@ -145,5 +150,73 @@ describe('LoginPage', () => {
     expect((screen.getByPlaceholderText('密码') as HTMLInputElement).value).toBe('')
     expect((screen.getByPlaceholderText('用户名') as HTMLInputElement).value).toBe('admin')
     expect(useAuthStore.getState().user).toBeNull()
+  })
+
+  /** 登录请求 mock：验证码关闭 + 登录成功 + 产品能力探测 */
+  function stubLoginSuccess(user: CurrentUser) {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const url = String(input)
+      if (url.includes('/auth/captcha')) {
+        return Promise.resolve(
+          jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { enabled: false } }),
+        )
+      }
+      if (url.includes('/auth/login')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { user, csrf_token: 'csrf-login' },
+          }),
+        )
+      }
+      if (url.includes('/product/edition') || url.includes('/license')) {
+        return Promise.resolve(
+          jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { edition: 'waf' } }),
+        )
+      }
+      return Promise.reject(new Error(`unexpected url: ${url}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+  }
+
+  async function submitLogin() {
+    fireEvent.change(await screen.findByPlaceholderText('用户名'), { target: { value: 'admin' } })
+    fireEvent.change(screen.getByPlaceholderText('密码'), { target: { value: 'Secret@123456' } })
+    fireEvent.click(screen.getByRole('button', { name: /登 录/ }))
+  }
+
+  it('登录后回跳：from 是当前账号可见的菜单页时按 from 跳转', async () => {
+    stubLoginSuccess(fakeUser) // SYSTEM_ADMIN
+    renderLogin({ pathname: '/login', state: { from: '/users' } })
+    await submitLogin()
+    expect(await screen.findByText('users-page')).toBeInTheDocument()
+  })
+
+  it('登录后回跳：from 属于其他角色页面时回退工作台（账号切换 403 回归）', async () => {
+    stubLoginSuccess(fakeUser) // SYSTEM_ADMIN 不可见 /applications（SECURITY_ADMIN）
+    renderLogin({ pathname: '/login', state: { from: '/applications' } })
+    await submitLogin()
+    expect(await screen.findByText('dashboard-page')).toBeInTheDocument()
+  })
+
+  it('登录后回跳：角色码不匹配但持有权限点时按 from 跳转（与路由守卫口径一致）', async () => {
+    // AUDIT_ADMIN 不在 /ha-groups 菜单角色列表，但持有 ha.read（路由守卫按权限点放行）
+    const auditUser: CurrentUser = {
+      ...fakeUser,
+      roles: [{ code: 'AUDIT_ADMIN', name: '审计管理员' }],
+      permissions: ['ha.read'],
+    }
+    stubLoginSuccess(auditUser)
+    renderLogin({ pathname: '/login', state: { from: '/ha-groups' } })
+    await submitLogin()
+    expect(await screen.findByText('ha-groups-page')).toBeInTheDocument()
+  })
+
+  it('登录后回跳：from 为根路径时静默进入工作台', async () => {
+    stubLoginSuccess(fakeUser)
+    renderLogin({ pathname: '/login', state: { from: '/' } })
+    await submitLogin()
+    expect(await screen.findByText('dashboard-page')).toBeInTheDocument()
   })
 })

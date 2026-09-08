@@ -22,9 +22,9 @@ parser.ParseRequest
 pipeline.Process（pipeline.go:97）
   ▼
 detectors.CheckResourceAccess(ctx, parsed, identity)   （resource.go:42）
-  ├─ objectSegment：归一化路径首个对象段 → (类型, 原始值)
-  │    无对象段 → 直接返回
-  ├─ ctx.SetExtension("api.object_id_type", 类型)       （始终写入）
+  ├─ objectRefs：路径对象段逐段提取 + Query 参数值形态识别 → (来源, 类型, 原始值)
+  │    无对象标识 → 直接返回
+  ├─ ctx.SetExtension("api.object_id_type" / "api.object_id_types", 类型事实)（始终写入）
   ├─ hasCredential（authorization / x-api-key 存在性）→ 有凭据则返回
   └─ 无凭据 → resource.unauthenticated_object_access（OBSERVE/MEDIUM）
        └─ 升档：numeric + 写方法 + 同一 identity+endpoint 连续数字 ID
@@ -54,11 +54,15 @@ API 流量（pipeline.go:98-105）。
 
 ### 3.2 对象类型提取
 
-`objectSegment`（resource.go:83-105）将归一化路径与原始路径按 `/` 对齐切分，
-返回**首个**对象段的类型与原始值：`{id}`→`numeric`、`{uuid}`→`uuid`、
-`{hex}`→`hex`；无对象段返回空。命中后对象类型始终写入上下文扩展
-`api.object_id_type`（resource.go:50），供事件明细与后续消费方使用——即使请求
-带有凭据、不产生 match，对象类型事实也保留在上下文中。
+`objectRefs`（resource.go）将归一化路径与原始路径按 `/` 对齐切分，**逐段**提取
+全部对象段的类型与原始值：`{id}`→`numeric`、`{uuid}`→`uuid`、
+`{hex}`→`hex`；Query 参数值套用同一套形态识别（`normalizer.IdentifierShape`，
+只认形态不认语义，不按参数名猜测），来源记为 query、以参数名为维度；无对象标识
+返回空。命中后对象类型事实始终写入上下文扩展 `api.object_id_type`（首路径对象段
+类型，兼容既有消费方）与 `api.object_id_types`（全部来源列表，`source:维度:类型`），
+供事件明细与后续消费方使用——即使请求带有凭据、不产生 match，对象类型事实也保留在
+上下文中。原始值只活在进程内存（连续枚举判定），证据只含 source 与段位置/参数名，
+值绝不入证据。JSON Body 字段本批次不纳入，留待参数模型 `semantic_type` 联动。
 
 ## 四、无凭据对象访问检测与升档规则
 
@@ -68,12 +72,13 @@ API 流量（pipeline.go:98-105）。
 
 - 凭据存在性 `hasCredential`（resource.go:108-114）只看解析层头集合中
   `authorization` / `x-api-key` 键是否存在（值已是 `[redacted]` 标记）；
-- 对象段存在且无凭据 → 追加 match：
+- 对象标识存在且无凭据 → 逐段/逐参数各追加一条 match：
 
 ```text
 RuleID:   resource.unauthenticated_object_access
 Category: OBSERVE    Severity: MEDIUM    ScoreDelta: 15
-Evidence: object_type（numeric/uuid/hex）、method
+Evidence: object_type（numeric/uuid/hex）、method、source（path/query）、
+          segment（路径段位置）或 param（Query 参数名）
 ```
 
 ### 4.2 升档规则（连续数字 ID 枚举）
@@ -84,19 +89,20 @@ Evidence: object_type（numeric/uuid/hex）、method
 2. 写方法（`IsWriteMethod`：POST / PUT / PATCH / DELETE，
    `detectors/ratelimit.go:22-29`）；
 3. 调用方身份键非空（`IdentityKey`，见 docs/API_IDENTITY_SECURITY.md）；
-4. 原始对象 ID 可解析为 int64，且与同一 `identity + endpoint_key` 维度上一次
-   记录的对象 ID **紧邻**（`id == prev + 1`，`objectTracker.consecutive`，
-   resource.go:27-36）。
+4. 原始对象 ID 可解析为 int64，且与同一 `identity + endpoint_key + 段位置/参数名`
+   维度上一次记录的对象 ID **紧邻**（`id == prev + 1`，`objectTracker.consecutive`）。
 
 升档后：`Category=BLOCK`、`Severity=HIGH`、`ScoreDelta=30`，Evidence 增加
 `pattern=sequential_numeric_id`，Message 改为
 `sequential numeric object id on write without credential`。
 
-游标实现：包级 `defaultObjectTracker`（resource.go:19），键为
-`identity|endpoint_key`，值为上一数字对象 ID，LRU 定容 10000 键
-（`objectTrackerMaxKeys`，resource.go:15），与行为滑窗共用同一套进程内 LRU
-基础设施（`detectors/window.go`）。决策引擎对 BLOCK 类 match 在 PROTECT 模式下
-输出 `ActionBlock`、OBSERVE 模式下降为观察（`decision/engine.go:62-83`）。
+游标实现：包级 `defaultObjectTracker`（resource.go），键为
+`identity|endpoint_key|source:段位置/参数名`，值为上一数字对象 ID，LRU 定容
+10000 键（`objectTrackerMaxKeys`），与行为滑窗共用同一套进程内 LRU
+基础设施（`detectors/window.go`）；第三批起可经 StoreOverrides 注入 Valkey
+实现（见 docs/API_BEHAVIOR_ANALYSIS.md §八）。决策引擎对 BLOCK 类 match 在
+PROTECT 模式下输出 `ActionBlock`、OBSERVE 模式下降为观察
+（`decision/engine.go:62-83`）。
 
 ## 五、api_object_models 表结构
 
@@ -104,7 +110,7 @@ Evidence: object_type（numeric/uuid/hex）、method
 
 | 列 | 说明 |
 |----|------|
-| `endpoint_id` | 端点，FK 级联删除 |
+| `endpoint_id` | API，FK 级联删除 |
 | `object_segment` | 归一化段位置或参数名 |
 | `identifier_type` | 标识符形态：`numeric` / `uuid` / `hash` / `mixed`，默认 `unknown` |
 | `example_hash` | 样本哈希（不落明文） |
@@ -126,8 +132,8 @@ Evidence: object_type（numeric/uuid/hex）、method
    不同身份的递增不互相污染。
 4. **游标定容有界**。对象游标与滑窗同为 LRU 定容（10000 键），防随机键耗尽
    内存，与阶段5 计数器同一纪律。
-5. **证据不含对象 ID 明文**。Evidence 只有 `object_type` 与 `method`（升档时加
-   `pattern`），连续游标中的 ID 不出进程内存。
+5. **证据不含对象 ID 明文**。Evidence 只有 `object_type`、`method` 与来源结构信息
+   （`source`、`segment`/`param`；升档时加 `pattern`），连续游标中的 ID 不出进程内存。
 
 ## 七、当前实现范围与限制
 
@@ -137,17 +143,20 @@ Evidence: object_type（numeric/uuid/hex）、method
 - **连续 id 枚举的跨身份判定在演进中**。游标按 `identity + endpoint` 隔离，
   同一身份换 IP（无凭据时回退 IP 键）即换维度；多身份协同枚举、慢速低频枚举
   （隔天继续 +1）当前识别不到。
-- **只取首个对象段**。多对象段路径（如 `/orgs/{id}/users/{id}`）只分析第一个；
-  Query / JSON Body 中的对象标识不纳入对象段识别（任务书四十章的 Query 参数、
-  JSON 字段候选来源未实现）。
+- **多对象段与 Query 已纳入（第二批，2026-08）**。多对象段路径（如
+  `/orgs/{id}/users/{id}`）逐段评估，升档游标键含段位置；Query 参数值按路径
+  同一套形态识别（数字/UUID/长 hex）产出对象访问信号（证据 source=query 与
+  参数名，值不入证据）。JSON Body 字段仍未纳入——留待参数模型 `semantic_type`
+  联动（任务书四十章的 JSON 字段候选来源）。
 - **api_object_models 仅建表**。对象模型的持久化（段位置、identifier_type、
   熵估计）无写入方与查询接口。
 - **BFLA 与字段级越权未实现**。任务书第四十一章的角色-功能偏离、第四十二章的
   只读/管理字段标记与 Mass Assignment 检测均无对应代码；用途分类的
   `PURPOSE=ADMIN` 标签（见 docs/API_CLASSIFICATION_DESIGN.md）是当前唯一的
   功能级信号，未接入检测规则。
-- **升档依赖进程内游标**。与滑窗同一单节点限制：多网关部署各节点游标独立，
-  进程重启清零（`detectors/window.go:9-12`）。
+- **升档默认依赖进程内游标**。与滑窗同一单节点限制：多网关部署各节点游标独立，
+  进程重启清零（`detectors/window.go:9-12`）；第三批起可配置 `behavior_store=valkey`
+  注入 Valkey 游标存储（见 docs/API_BEHAVIOR_ANALYSIS.md §八）。
 
 ## 八、与任务书对应章节
 

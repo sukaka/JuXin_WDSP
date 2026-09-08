@@ -48,7 +48,7 @@ func (j *Jobs) aggregateEventsMinute(ctx context.Context, bucket time.Time) (int
 	rows, err := db.Query(ctx, `
 SELECT COALESCE(a.code,'unknown'), e.attack_type, e.severity, e.action, count(*)
 FROM security_events e LEFT JOIN applications a ON a.id = e.application_id
-WHERE m.event_occurred_at >= $1 AND m.event_occurred_at < $2
+WHERE e.occurred_at >= $1 AND e.occurred_at < $2
 GROUP BY 1,2,3,4`, start, end)
 	if err != nil {
 		return 0, fmt.Errorf("waf events: %w", err)

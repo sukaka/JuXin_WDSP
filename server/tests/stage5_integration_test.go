@@ -702,13 +702,14 @@ func TestStage5AccessRuleValidate(t *testing.T) {
 	}
 }
 
-// TestStage5RBACBoundary 阶段5 RBAC 边界：审计管理员只读、系统管理员仅可信代理/保护地址。
+// TestStage5RBACBoundary 阶段5 RBAC 边界：审计管理员（000100 纯审计角色）读写均 403、
+// 系统管理员 000100 移交 trusted_proxies/protected_addresses 后写操作同样 403。
 func TestStage5RBACBoundary(t *testing.T) {
 	env := setupTestEnv(t)
 	auditCookies, auditCSRF := env.s5Login(t, "s5aud", "AUDIT_ADMIN")
 	sysCookies, sysCSRF := env.s5Login(t, "s5sys", "SYSTEM_ADMIN")
 
-	// 审计管理员 GET 全部 5 类列表 → 200
+	// 审计管理员 GET 全部 5 类列表 → 403（000100 不再持有 trusted_proxies/l7rules 等读权限点）
 	for _, path := range []string{
 		"/api/v1/trusted-proxies",
 		"/api/v1/protected-addresses",
@@ -717,7 +718,7 @@ func TestStage5RBACBoundary(t *testing.T) {
 		"/api/v1/temporary-blocks",
 	} {
 		resp := env.get(t, path, auditCookies)
-		s5Expect(t, resp, http.StatusOK, "audit admin GET "+path)
+		s5Expect(t, resp, http.StatusForbidden, "audit admin GET "+path)
 	}
 	// 审计管理员创建 trusted-proxy / access-rule / rate-limit → 403
 	resp := env.post(t, "/api/v1/trusted-proxies",
@@ -731,11 +732,12 @@ func TestStage5RBACBoundary(t *testing.T) {
 			`"requests_limit":100,"window_seconds":60,"action":"REJECT"}`, auditCookies, auditCSRF)
 	s5Expect(t, resp, http.StatusForbidden, "audit admin POST rate-limit-policies")
 
-	// 系统管理员：trusted-proxies 可写（200），业务规则/CC策略不可写（403）
+	// 系统管理员：000100 移交 trusted_proxies.manage 后 trusted-proxies 不可写（403），
+	// 业务规则/CC 策略保持不可写（403）
 	resp = env.post(t, "/api/v1/trusted-proxies",
 		`{"name":"sys-tp-`+s5Rand()+`","cidr":"192.168.0.0/16","header_type":"X_REAL_IP","priority":50}`,
 		sysCookies, sysCSRF)
-	s5Expect(t, resp, http.StatusOK, "system admin POST trusted-proxies")
+	s5Expect(t, resp, http.StatusForbidden, "system admin POST trusted-proxies")
 	resp = env.post(t, "/api/v1/access-rules",
 		`{"name":"x","rule_type":"DENY","scope_type":"GLOBAL","address":"203.0.113.121"}`, sysCookies, sysCSRF)
 	s5Expect(t, resp, http.StatusForbidden, "system admin POST access-rules")
@@ -772,6 +774,14 @@ VALUES ('203.0.113.231', NULL, 'CC_AUTO', now() - interval '1 minute', 'ACTIVE')
 		t.Fatalf("insert temp block: %v", err)
 	}
 
+	// MED-7 回归：模拟网关同步后的 Valkey 封禁 field，到期清扫必须 HDel 清除，
+	// 否则 jiuzhang:guard:tempblocks 哈希只增不减（网关每秒 HGETALL 全量拉取）
+	blockField := temporaryblocks.BlockFieldKey("203.0.113.231", "")
+	if err := env.cache.Redis().HSet(context.Background(), temporaryblocks.HashKey, blockField,
+		`{"id":"seed","client_ip":"203.0.113.231","application_id":"","expires_at":"2000-01-01T00:00:00Z","auto":true}`).Err(); err != nil {
+		t.Fatalf("seed tempblock hash field: %v", err)
+	}
+
 	// 等待临时规则到期后执行一次清扫
 	time.Sleep(3 * time.Second)
 	rulesStore := accessrules.NewStore(env.db)
@@ -799,6 +809,15 @@ VALUES ('203.0.113.231', NULL, 'CC_AUTO', now() - interval '1 minute', 'ACTIVE')
 		`SELECT status FROM temporary_blocks WHERE client_ip='203.0.113.231'`).Scan(&st)
 	if err != nil || st != "EXPIRED" {
 		t.Errorf("block status = %s, err=%v, want EXPIRED", st, err)
+	}
+
+	// MED-7 回归：到期封禁的 Valkey field 已被 HDel 清除
+	exists, err := env.cache.Redis().HExists(context.Background(), temporaryblocks.HashKey, blockField).Result()
+	if err != nil {
+		t.Fatalf("check tempblock hash field: %v", err)
+	}
+	if exists {
+		t.Errorf("expired tempblock field %s still present in %s, want HDel'ed", blockField, temporaryblocks.HashKey)
 	}
 
 	// 系统审计已记录

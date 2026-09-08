@@ -75,7 +75,7 @@ else
     err "SBOM 中发现禁用许可证: $(printf '%s' "$forbidden" | sort -u | tr '\n' ' ')"
   fi
   # 允许的许可证标识（宽松许可证 + NOASSERTION）
-  allowed_re='^(Apache-2\.0|MIT|BSD-2-Clause|BSD-3-Clause|ISC|PostgreSQL|OFL-1\.1|curl|CC0-1\.0|NOASSERTION)$'
+  allowed_re='^(Apache-2\.0|MIT|BSD-2-Clause|BSD-3-Clause|ISC|PostgreSQL|OFL-1\.1|FTL|curl|CC0-1\.0|NOASSERTION)$'
   unknown="$(jq -r '.packages[].licenseConcluded' "$SPDX" | sort -u | grep -Ev "$allowed_re" || true)"
   if [[ -n "$unknown" ]]; then
     err "SBOM 中发现未在允许清单的许可证: $(printf '%s' "$unknown" | tr '\n' ' ')"
@@ -90,7 +90,7 @@ fi
 
 # ---- 4. 必备归档组件核对 ----
 echo "== 4. 必备归档组件核对 =="
-required=(caddy coraza coraza-caddy owasp-crs xcaddy go-ftw curl postgresql valkey valkey-go noto-fonts gofpdf echarts)
+required=(caddy coraza coraza-caddy owasp-crs xcaddy go-ftw curl postgresql valkey valkey-go noto-fonts gofpdf echarts godocx go-charts go-chart freetype-go clickhouse clickhouse-go ch-go opentelemetry-go opentelemetry-go-contrib otel-collector-contrib)
 for comp in "${required[@]}"; do
   if [[ -d "$LICENSES_DIR/$comp" ]] && find "$LICENSES_DIR/$comp" -type f -print -quit | grep -q .; then
     ok "$comp 已归档"

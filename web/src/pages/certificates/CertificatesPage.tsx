@@ -24,6 +24,7 @@ import { certificatesApi } from '../../api/certificates'
 import type { UploadCertificateBody } from '../../api/certificates'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -134,12 +135,28 @@ export default function CertificatesPage() {
     onError,
   })
 
+  const { rowSelection, batchDeleteButton } = useBatchDelete<CertificateItem>({
+    remove: (id) => certificatesApi.remove(id),
+    invalidateKeys: [['certificates']],
+    entityName: '证书',
+    canDelete: hasPermission(permissions, 'certificates.delete'),
+  })
+
   const columns: ColumnsType<CertificateItem> = [
     {
       title: '名称',
       dataIndex: 'name',
       width: 180,
-      render: (v: string, record) => <a onClick={() => setDetailId(record.id)}>{v}</a>,
+      render: (v: string, record) => (
+        <Button
+          type="link"
+          size="small"
+          style={{ padding: 0, height: 'auto' }}
+          onClick={() => setDetailId(record.id)}
+        >
+          {v}
+        </Button>
+      ),
     },
     { title: '通用名称(CN)', dataIndex: 'common_name', width: 180 },
     {
@@ -196,7 +213,6 @@ export default function CertificatesPage() {
       title: '使用应用数',
       dataIndex: 'usage_count',
       width: 100,
-      align: 'right',
     },
     {
       title: '操作',
@@ -269,6 +285,7 @@ export default function CertificatesPage() {
             setPage(1)
           }}
         />
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -282,9 +299,14 @@ export default function CertificatesPage() {
         <SmartTable<CertificateItem>
           storageKey="certificates"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailId(record.id),
+            style: { cursor: 'pointer' },
+          })}
           scroll={{ x: 1250 }}
           pagination={{
             current: page,
@@ -313,7 +335,7 @@ export default function CertificatesPage() {
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="粘贴 PEM 文本上传，私钥仅用于服务端校验并加密存储，不会在任何接口中返回"
+          message="粘贴 PEM 文本上传，私钥仅用于服务端校验并加密存储，不会在任何 API 中返回"
         />
         <Form
           form={uploadForm}

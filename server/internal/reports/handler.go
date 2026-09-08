@@ -15,17 +15,20 @@ import (
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/middleware"
+	"github.com/jiuzhang-waf/server/internal/notify"
+	"github.com/jiuzhang-waf/server/internal/product"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
-// Handler 报告系统处理器（模板 + 报告任务）。
+// Handler 报告系统处理器（模板 + 报告任务 + 定时计划）。
 type Handler struct {
-	store   *Store
-	db      *pgxpool.Pool
-	agg     *aggregations.Store
-	audits  *audits.Service
-	dataDir string
-	gen     *Generator
+	store     *Store
+	db        *pgxpool.Pool
+	agg       *aggregations.Store
+	audits    *audits.Service
+	dataDir   string
+	gen       *Generator
+	scheduler *Scheduler
 }
 
 // NewHandler 创建报告处理器。
@@ -33,13 +36,19 @@ type Handler struct {
 func NewHandler(store *Store, db *pgxpool.Pool, aggStore *aggregations.Store, auditSvc *audits.Service, dataDir string) *Handler {
 	fontPath := DefaultFontPath()
 	return &Handler{
-		store:   store,
-		db:      db,
-		agg:     aggStore,
-		audits:  auditSvc,
-		dataDir: dataDir,
-		gen:     NewGenerator(store, db, aggStore, dataDir, fontPath),
+		store:     store,
+		db:        db,
+		agg:       aggStore,
+		audits:    auditSvc,
+		dataDir:   dataDir,
+		gen:       NewGenerator(store, db, aggStore, dataDir, fontPath, auditSvc),
+		scheduler: NewScheduler(store, auditSvc),
 	}
+}
+
+// SetNotifyStore 注入通知存储（定时计划邮件发送用，app 装配时调用）。
+func (h *Handler) SetNotifyStore(ns *notify.Store) {
+	h.gen.SetNotifyStore(ns)
 }
 
 // Generator 返回内部生成器（供 main.go 启动 Worker）。
@@ -47,8 +56,9 @@ func (h *Handler) Generator() *Generator {
 	return h.gen
 }
 
-// Run 启动报告生成 Worker（供 main.go 后台 goroutine 调用）。
+// Run 启动报告生成 Worker 与定时计划调度器（供 main.go 后台 goroutine 调用）。
 func (h *Handler) Run(ctx context.Context, interval time.Duration) {
+	go h.scheduler.Run(ctx)
 	h.gen.Run(ctx, interval)
 }
 
@@ -73,6 +83,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, authChain func(http.Handler
 	mux.Handle("GET /api/v1/reports/{id}/preview", authChain(reportRead(http.HandlerFunc(h.Preview))))
 	mux.Handle("GET /api/v1/reports/{id}/download", authChain(requireAnyPermission("reports.download", "reports.download_audit")(http.HandlerFunc(h.Download))))
 	mux.Handle("DELETE /api/v1/reports/{id}", authChain(middleware.RequirePermission("reports.delete_own")(http.HandlerFunc(h.Delete))))
+
+	// 定时报告计划（读：reports.read/read_audit；写：reports.create）
+	mux.Handle("GET /api/v1/report-schedules", authChain(reportRead(http.HandlerFunc(h.ScheduleList))))
+	mux.Handle("POST /api/v1/report-schedules", authChain(middleware.RequirePermission("reports.create")(http.HandlerFunc(h.ScheduleCreate))))
+	mux.Handle("GET /api/v1/report-schedules/{id}", authChain(reportRead(http.HandlerFunc(h.ScheduleGet))))
+	mux.Handle("PUT /api/v1/report-schedules/{id}", authChain(middleware.RequirePermission("reports.create")(http.HandlerFunc(h.ScheduleUpdate))))
+	mux.Handle("DELETE /api/v1/report-schedules/{id}", authChain(middleware.RequirePermission("reports.create")(http.HandlerFunc(h.ScheduleDelete))))
+	mux.Handle("POST /api/v1/report-schedules/{id}/run-now", authChain(middleware.RequirePermission("reports.create")(http.HandlerFunc(h.ScheduleRunNow))))
 }
 
 // requireAnyPermission 要求拥有任一权限点（路由层权限控制）。
@@ -236,15 +254,19 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 type createReportRequest struct {
-	ReportType     string      `json:"report_type"`
-	StartTime      *string     `json:"start_time"`
-	EndTime        *string     `json:"end_time"`
-	ApplicationIDs []uuid.UUID `json:"application_ids"`
-	TemplateID     *uuid.UUID  `json:"template_id"`
-	Format         string      `json:"format"`
+	ReportType       string      `json:"report_type"`
+	ContentScope     string      `json:"content_scope"`
+	IncludeAPIAssets bool        `json:"include_api_assets"`
+	PageOrientation  string      `json:"page_orientation"`
+	StartTime        *string     `json:"start_time"`
+	EndTime          *string     `json:"end_time"`
+	ApplicationIDs   []uuid.UUID `json:"application_ids"`
+	TemplateID       *uuid.UUID  `json:"template_id"`
+	Format           string      `json:"format"`
 }
 
-// Create 创建报告任务（DAILY=昨天全天 / WEEKLY=上周一至周日 / MONTHLY=上月 / CUSTOM 需起止）。
+// Create 创建报告任务（DAILY=昨天全天 / WEEKLY=上周一至周日 / MONTHLY=上月 / CUSTOM 需起止；
+// content_scope 内容范围 WAF/API/WAF_API，缺省 WAF_API）。
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	var req createReportRequest
@@ -253,7 +275,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validReportType(req.ReportType) {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的报告类型（DAILY/WEEKLY/MONTHLY/CUSTOM）")
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的报告类型（DAILY/WEEKLY/MONTHLY/CUSTOM/API_ASSET/API_RISK/API_WEAK/API_SENS）")
 		return
 	}
 	format := req.Format
@@ -261,7 +283,20 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		format = FormatHTML
 	}
 	if !validFormat(format) {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的导出格式（html/pdf）")
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的导出格式（html/pdf/docx）")
+		return
+	}
+	if !validContentScope(req.ContentScope) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的内容范围（WAF/API/WAF_API）")
+		return
+	}
+	scope := NormalizeContentScope(req.ContentScope)
+	if !validPageOrientation(req.PageOrientation) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的纸张方向（P 竖向 / L 横向）")
+		return
+	}
+	if ContentScopeIncludesAPI(scope) && !product.Load().APIDynamicProtectionEnabled() {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "当前环境未启用 API 动态防护，内容范围不能包含 API")
 		return
 	}
 	start, end, err := parseTimeRange(req.ReportType, req.StartTime, req.EndTime)
@@ -276,15 +311,18 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	job := &Job{
-		ReportType:     req.ReportType,
-		Start:          start,
-		End:            end,
-		ApplicationIDs: req.ApplicationIDs,
-		TemplateID:     req.TemplateID,
-		Status:         StatusPending,
-		FileFormat:     format,
-		RequestedBy:    &p.UserID,
-		RequestID:      response.RequestIDFrom(r),
+		ReportType:       req.ReportType,
+		ContentScope:     scope,
+		IncludeAPIAssets: req.IncludeAPIAssets,
+		PageOrientation:  NormalizePageOrientation(req.PageOrientation),
+		Start:            start,
+		End:              end,
+		ApplicationIDs:   req.ApplicationIDs,
+		TemplateID:       req.TemplateID,
+		Status:           StatusPending,
+		FileFormat:       format,
+		RequestedBy:      &p.UserID,
+		RequestID:        response.RequestIDFrom(r),
 	}
 	if err := h.store.CreateJob(r.Context(), job); err != nil {
 		h.storeError(w, r, err)
@@ -354,18 +392,32 @@ func (h *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "任务已重新排队"})
 }
 
+// canAccessReportFile 报告文件归属校验（Preview/Download 共用）：仅创建者本人或
+// reports.download_audit 权限者可读取报告文件内容，防越权读取他人报告全文。
+func canAccessReportFile(job *Job, p *authz.Principal) bool {
+	isOwner := job.RequestedBy != nil && p != nil && *job.RequestedBy == p.UserID
+	return isOwner || p.HasPermission("reports.download_audit")
+}
+
 // Preview 预览报告（SUCCESS 状态返回 HTML 内容；PDF 报告提示使用下载接口）。
+// 与 Download 同一归属边界：仅本人或 reports.download_audit 权限者。
 func (h *Handler) Preview(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
 	job, ok := h.loadJob(w, r)
 	if !ok {
+		return
+	}
+	// 归属校验：仅创建者本人或审计下载权限者（与 Download 一致）
+	if !canAccessReportFile(job, p) {
+		response.Error(w, r, http.StatusForbidden, response.CodePermissionDenied, "仅可预览本人创建的报告")
 		return
 	}
 	if job.Status != StatusSuccess {
 		response.Error(w, r, http.StatusConflict, response.CodeInvalidArgument, "报告尚未生成完成")
 		return
 	}
-	if job.FileFormat == FormatPDF {
-		response.JSON(w, r, http.StatusOK, map[string]string{"message": "PDF 报告请使用下载接口获取"})
+	if job.FileFormat == FormatPDF || job.FileFormat == FormatDOCX {
+		response.JSON(w, r, http.StatusOK, map[string]string{"message": "PDF/Word 报告请使用下载接口获取"})
 		return
 	}
 	if !ValidateReportFileName(job.FileReference, job.ID, job.FileFormat) {
@@ -393,8 +445,7 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 归属校验：仅创建者本人或审计下载权限者
-	isOwner := job.RequestedBy != nil && *job.RequestedBy == p.UserID
-	if !isOwner && !p.HasPermission("reports.download_audit") {
+	if !canAccessReportFile(job, p) {
 		response.Error(w, r, http.StatusForbidden, response.CodePermissionDenied, "仅可下载本人创建的报告")
 		return
 	}
@@ -421,8 +472,11 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	contentType := "text/html; charset=utf-8"
-	if job.FileFormat == FormatPDF {
+	switch job.FileFormat {
+	case FormatPDF:
 		contentType = "application/pdf"
+	case FormatDOCX:
+		contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, job.FileReference))
@@ -432,14 +486,16 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	h.recordAudit(r, p, "download", job.ID.String(), reportObjectName(job), audits.ResultSuccess, audits.RiskMedium, "report_job")
 }
 
-// Delete 删除报告（仅本人，reports.delete_own；同时删除报告文件并审计）。
+// Delete 删除报告（本人，或持 reports.delete_all 的管理者；同时删除报告文件并审计）。
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	job, ok := h.loadJob(w, r)
 	if !ok {
 		return
 	}
-	if job.RequestedBy == nil || *job.RequestedBy != p.UserID {
+	// 归属校验：创建者本人或 delete_all 管理权限者（与 Download 的 download_audit 升级模式一致）
+	isOwner := job.RequestedBy != nil && *job.RequestedBy == p.UserID
+	if !isOwner && !p.HasPermission("reports.delete_all") {
 		response.Error(w, r, http.StatusForbidden, response.CodePermissionDenied, "仅可删除本人创建的报告")
 		return
 	}

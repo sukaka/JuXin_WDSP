@@ -1,0 +1,27 @@
+============================================================
+九章 W18-PERF 性能基线实测  2026-08-20 09:15:46（UTC 01:15:46）
+环境: Darwin 25.2.0 arm64  gateway=http://127.0.0.1:18080 api=http://127.0.0.1:18081
+参数: 并发=20 计量=30s/臂 预热=5s ab=-k（长连接） 单URL读方法GET
+镜像: api=sha256:edec8af1d0ad gateway=sha256:145e27c98420
+原始数据目录: /tmp/w18-perf-1787188546
+============================================================
+[setup] app=12b463d1-ad61-46b3-9bf5-5f16fd94b6c4
+[setup] 策略现状: wdsp True OBSERVE db
+[idle] jiuzhang-stage5-api avg_cpu=0.87% max_cpu=1.68% max_mem=201.7MiB samples=2 jiuzhang-stage5-gateway avg_cpu=0.86% max_cpu=1.57% max_mem=131.9MiB samples=2 jiuzhang-stage5-postgres avg_cpu=0.23% max_cpu=0.27% max_mem=166.4MiB samples=2 jiuzhang-stage5-valkey avg_cpu=0.43% max_cpu=0.52% max_mem=13.5MiB samples=2 
+[baseline] 重建 api 容器（不带 wdsp 覆盖 → API_DYNAMIC_PROTECTION_ENABLED=false）
+[baseline] 容器环境校验 API_DYNAMIC_PROTECTION_ENABLED=false 通过
+[baseline] 发布完成，网关代理自检 GET / -> 200
+[baseline] complete=160150 failed=0 non2xx=160150 qps=5337.35 mean_ms=3.747 p50=3 p95=9 p99=17 max=75
+[full] 恢复 api 容器为 wdsp 形态（API_DYNAMIC_PROTECTION_ENABLED=true）
+[full] 策略确认: wdsp True OBSERVE db
+[full] 管线活性探针事件数=20（>0 才计量）
+[full] complete=106225 failed=0 non2xx=106225 qps=3539.67 mean_ms=5.650 p50=4 p95=13 p99=24 max=1211
+[verify] full 臂事件=20/106225（含探针20，阈值≥90%）  baseline 臂事件=0（必须=0）
+============================================================
+资源消耗（压测窗口 docker stats 采样汇总）
+[idle]     jiuzhang-stage5-api avg_cpu=0.87% max_cpu=1.68% max_mem=201.7MiB samples=2;jiuzhang-stage5-gateway avg_cpu=0.86% max_cpu=1.57% max_mem=131.9MiB samples=2;jiuzhang-stage5-postgres avg_cpu=0.23% max_cpu=0.27% max_mem=166.4MiB samples=2;jiuzhang-stage5-valkey avg_cpu=0.43% max_cpu=0.52% max_mem=13.5MiB samples=2;
+[baseline] jiuzhang-stage5-api avg_cpu=51.42% max_cpu=64.10% max_mem=126.8MiB samples=9;jiuzhang-stage5-gateway avg_cpu=198.22% max_cpu=314.22% max_mem=176.5MiB samples=9;jiuzhang-stage5-postgres avg_cpu=41.47% max_cpu=68.74% max_mem=144.4MiB samples=9;jiuzhang-stage5-valkey avg_cpu=1.89% max_cpu=13.75% max_mem=13.2MiB samples=9;
+[full]     jiuzhang-stage5-api avg_cpu=61.42% max_cpu=92.55% max_mem=92.2MiB samples=8;jiuzhang-stage5-gateway avg_cpu=288.53% max_cpu=372.32% max_mem=204.5MiB samples=8;jiuzhang-stage5-postgres avg_cpu=62.05% max_cpu=68.35% max_mem=157.0MiB samples=8;jiuzhang-stage5-valkey avg_cpu=1.16% max_cpu=3.36% max_mem=13.2MiB samples=8;
+[delta] QPS: baseline=5337.35 full=3539.67 开销=33.7%  p95: baseline=9ms full=13ms 增量=4ms
+============================================================
+完成。原始 ab 输出与 stats 采样保留于 /tmp/w18-perf-1787188546

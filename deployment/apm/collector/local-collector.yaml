@@ -1,0 +1,123 @@
+# 九章 APM 阶段2 —— 本地 OTel Collector（业务宿主机/容器侧）
+# 适配版本：otel/opentelemetry-collector-contrib:0.154.0
+#   （镜像 tag + digest 锁定见 deployment/docker-compose.apm.yml 与 docs/DEPENDENCIES.md）
+# 角色（设计 §5.1）：接收 OTLP、补充宿主/容器属性、内存队列、批处理、重试、首层脱敏。
+#   不保存长期数据，不持有管理面数据库凭据。
+# fail-open 纪律（设计 §19.4/§20）：本组件任何故障不得影响业务与 WAF 转发——
+#   内存限幅、有界队列、有界重试，超容量即丢弃并计数，绝不无限占用业务主机磁盘/内存。
+
+receivers:
+  otlp:
+    protocols:
+      # 仅绑定本机回环：Agent/SDK 只允许连接 127.0.0.1 或本机 Unix socket（设计 §19.1）。
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+      # Unix socket 约定（裸机高密度部署可选，容器内不适用）：
+      #   grpc.endpoint: unix:///run/jiuzhang-apm/otlp.sock
+      # 目录由部署脚本创建并 chmod 0660，属主为业务进程所在组；禁用 TCP 回环端口时用此项。
+
+processors:
+  # 内存限幅必须放在 pipeline 第一位，防止遥测洪泛拖垮业务主机。
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 70        # 相对容器 cgroup 上限（compose 中 mem_limit 512m）
+    spike_limit_percentage: 20
+
+  # 补充宿主/容器属性（system 提供 host.name/os 等；env 从 OTEL_RESOURCE_ATTRIBUTES 注入；
+  # docker 仅在挂载 /var/run/docker.sock 时启用，默认不启用）。
+  resourcedetection:
+    detectors: [env, system]
+    timeout: 5s
+    override: false             # 不覆盖 Agent 自报的 service.name 等资源属性
+
+  # 首层脱敏（设计 §12.1 默认禁止采集清单）：源头删除禁止字段。
+  # 该清单必须与中央网关 attributes/forbidden 保持同步（二层重复删除），
+  # 任一变更须经安全评审并同步 docs/BUSINESS_PERFORMANCE_APM_DESIGN.md §12.1。
+  attributes/forbidden:
+    actions:
+      # 凭据与会话类
+      - {key: authorization, action: delete}
+      - {key: http.request.header.authorization, action: delete}
+      - {key: http.request.header.proxy-authorization, action: delete}
+      - {key: cookie, action: delete}
+      - {key: http.request.header.cookie, action: delete}
+      - {key: set-cookie, action: delete}
+      - {key: http.response.header.set-cookie, action: delete}
+      - {key: http.request.header.x-api-key, action: delete}
+      - {key: api_key, action: delete}
+      - {key: jwt, action: delete}
+      - {key: client_cert.private_key, action: delete}
+      # 正文类
+      - {key: http.request.body, action: delete}
+      - {key: http.response.body, action: delete}
+      - {key: messaging.message.body, action: delete}
+      # SQL 绑定值与连接串（db.statement 须已由 Agent 归一化，bind values 一律删除）
+      - {key: db.statement.bind_values, action: delete}
+      - {key: db.connection_string, action: delete}
+      # 高基数/敏感标识：原始查询串只保留到 url.query 之外的路由模板；
+      # 环境变量与命令行中的秘密
+      - {key: url.query, action: delete}
+      - {key: http.target, action: delete}
+      - {key: process.command_line, action: delete}
+      - {key: process.command_args, action: delete}
+      - {key: process.environment_variable, action: delete}
+
+  # 属性基数护栏（§13.3"每 span 限制属性数、事件数、值长"）由二层 redaction 的
+  # allowed_keys 收敛实现；首层保持最小删除，避免误删排障必需字段。
+
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024   # 防单批次过大导致中央网关内存尖峰
+
+exporters:
+  # 出口到中央 Collector Gateway（OTLP/HTTP + mTLS）。
+  # 证书占位路径：由部署侧签发并挂载，私钥权限 0600；证书身份绑定租户（§12.3），
+  # 不得复用其他用途证书；rotate 流程见 docs/APM_DATA_PLANE_DEPLOYMENT.md。
+  otlphttp/central:
+    endpoint: https://apm-central-gateway.internal:4318   # 占位，按实际内网域名修改
+    tls:
+      cert_file: /etc/jiuzhang-apm/tls/client.crt         # 占位：客户端证书
+      key_file: /etc/jiuzhang-apm/tls/client.key          # 占位：客户端私钥
+      ca_file: /etc/jiuzhang-apm/tls/ca.crt               # 占位：私有 CA
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 60s
+      max_elapsed_time: 300s   # 有界重试：5 分钟后放弃，由队列丢弃计数兜底
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 2000         # 有界内存队列；满即丢弃并计入 otelcol_exporter_queue 指标
+      # 不使用 file_storage 磁盘持久队列：禁止无限磁盘队列填满业务主机（§19.4）。
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133   # compose 仅映射到回环；外部健康检查探测该端口
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, attributes/forbidden, batch]
+      exporters: [otlphttp/central]
+    # 运行时指标管道（阶段3）：与 traces 同一接收/脱敏/转发纪律
+    # （内存限幅首位、首层脱敏、有界批量转发中央网关）。
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, attributes/forbidden, batch]
+      exporters: [otlphttp/central]
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1    # 本地自监控，仅回环
+                port: 9888
+    logs:
+      level: info

@@ -16,6 +16,7 @@ import { ApiError } from '../../../../api/client'
 import { aiEvaluationsApi } from '../../../../api/ai'
 import type { AiEvalRun, AiEvalSet } from '../../../../api/ai'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
 import { formatDateTime } from '../../../../utils/format'
 import { useAuthStore } from '../../../../stores/auth'
 import { hasPermission } from '../../../../utils/permission'
@@ -27,6 +28,8 @@ export default function AiEvaluationsPage() {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canRun = hasPermission(permissions, 'ai.evaluations.run')
   const [createOpen, setCreateOpen] = useState(false)
+  const [detailSet, setDetailSet] = useState<AiEvalSet | null>(null)
+  const [detailRun, setDetailRun] = useState<AiEvalRun | null>(null)
   const [form] = Form.useForm<{
     code: string
     name: string
@@ -168,6 +171,10 @@ export default function AiEvaluationsPage() {
             columns={setColumns}
             dataSource={setsQuery.data ?? []}
             pagination={false}
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailSet(record),
+              style: { cursor: 'pointer' },
+            })}
           />
         )}
       </Card>
@@ -184,9 +191,27 @@ export default function AiEvaluationsPage() {
             columns={runColumns}
             dataSource={runsQuery.data?.items ?? []}
             pagination={false}
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailRun(record),
+              style: { cursor: 'pointer' },
+            })}
           />
         )}
       </Card>
+
+      <RecordDetailDrawer
+        open={detailSet !== null}
+        title="评估集详情"
+        record={detailSet as Record<string, unknown> | null}
+        onClose={() => setDetailSet(null)}
+      />
+
+      <RecordDetailDrawer
+        open={detailRun !== null}
+        title="评估运行详情"
+        record={detailRun as Record<string, unknown> | null}
+        onClose={() => setDetailRun(null)}
+      />
 
       <Modal
         title="新建评估集"

@@ -17,6 +17,8 @@ import { PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
 import { reportTemplatesApi } from '../../api/reportTemplates'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
@@ -63,6 +65,7 @@ export default function ReportTemplatesPage() {
   const [pageSize, setPageSize] = useState(20)
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<ReportTemplateItem | null>(null)
+  const [detailRecord, setDetailRecord] = useState<ReportTemplateItem | null>(null)
   const [form] = Form.useForm<TemplateFormValues>()
 
   const listQuery = useQuery({
@@ -100,6 +103,13 @@ export default function ReportTemplatesPage() {
       invalidate()
     },
     onError,
+  })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<ReportTemplateItem>({
+    remove: (id) => reportTemplatesApi.remove(id),
+    invalidateKeys: [['report-templates']],
+    entityName: '报表模板',
+    canDelete: canManage,
   })
 
   const openCreate = () => {
@@ -190,9 +200,12 @@ export default function ReportTemplatesPage() {
       title="报告模板"
       extra={
         canManage && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新建模板
-          </Button>
+          <Space>
+            {batchDeleteButton}
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建模板
+            </Button>
+          </Space>
         )
       }
     >
@@ -202,9 +215,14 @@ export default function ReportTemplatesPage() {
         <SmartTable<ReportTemplateItem>
           storageKey="report-templates"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
           scroll={{ x: 1200 }}
           pagination={{
             current: page,
@@ -284,6 +302,13 @@ export default function ReportTemplatesPage() {
           </Form.Item>
         </Form>
       </Drawer>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="模板详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

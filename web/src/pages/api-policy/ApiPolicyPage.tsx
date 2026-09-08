@@ -9,7 +9,7 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatBytes } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { API_PROTECTION_MODE_META } from '../../utils/stage8'
+import { API_POLICY_EDITION_META, API_PROTECTION_MODE_META } from '../../utils/stage8'
 
 /** 防护模式来源（后端 env/db/default → 中文） */
 const MODE_SOURCE_META: Record<string, string> = {
@@ -61,7 +61,7 @@ export default function ApiPolicyPage() {
       title: '修改防护模式',
       content:
         `确定将防护模式从「${from}」切换为「${to}」吗？保存后仅写入数据库，需执行「发布到网关」下发后才在防护网关生效。` +
-        (modeDraft === 'PROTECT' ? '防护模式会对偏离模型的请求执行阻断动作，请确认接口模型已充分学习。' : ''),
+        (modeDraft === 'PROTECT' ? '防护模式会对偏离模型的请求执行阻断动作，请确认 API 模型已充分学习。' : ''),
       okText: '确认保存',
       onOk: () => updateModeMut.mutate(modeDraft),
     })
@@ -94,13 +94,13 @@ export default function ApiPolicyPage() {
       }
     >
       <Typography.Paragraph type="secondary">
-        API 动态防护基于接口学习模型检测偏离行为：关闭不检测，观察仅记录风险发现，防护对偏离请求执行阻断。修改模式保存后需发布到网关生效。
+        API 动态防护基于 API 学习模型检测偏离行为：关闭不检测，观察仅记录风险发现，防护对偏离请求执行阻断。修改模式保存后需发布到网关生效。
       </Typography.Paragraph>
       <QueryErrorAlert error={policyQuery.error} />
       <Spin spinning={policyQuery.isLoading}>
         <Descriptions column={2} size="small" style={{ marginBottom: 16 }}>
           <Descriptions.Item label="产品形态">
-            {policy ? <Tag>{policy.edition}</Tag> : '-'}
+            {policy ? <StatusTag value={policy.edition} map={API_POLICY_EDITION_META} /> : '-'}
           </Descriptions.Item>
           <Descriptions.Item label="API 动态防护">
             {policy ? (

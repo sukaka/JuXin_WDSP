@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App as AntdApp, Button, Card, Drawer, Form, Input, Select, Space, Tag, Typography } from 'antd'
+import { App as AntdApp, Button, Card, Drawer, Form, Input, Select, Space, Tag, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { apiEndpointsApi } from '../../api/apiAssets'
 import { apiClassificationsApi, type ApiClassificationItem } from '../../api/apiSecurity'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
@@ -21,7 +22,27 @@ interface EndpointClassificationFormValues {
   dimensions?: { dimension: string; value: string }[]
 }
 
-/** 用途分类（WDSP / 阶段8）：维护分类体系，并为端点设置维度键值对分类 */
+/** 维度名中文映射（系统内置维度为英文编码，自定义维度已是中文则原样显示） */
+const DIMENSION_LABELS: Record<string, string> = {
+  PURPOSE: '用途',
+  ACCESS: '访问类型',
+  DATA_TYPE: '数据类型',
+  DATA_LEVEL: '数据级别',
+  EXPOSURE: '暴露范围',
+  OPERATION: '操作类型',
+  LIFECYCLE: '生命周期',
+  DIRECTION: '调用方向',
+  AUTH_TYPE: '认证方式',
+  ENV: '环境',
+  BU: '业务单元',
+  BUSINESS_DOMAIN: '业务域',
+  COMPLIANCE_SCOPE: '合规范围',
+  CRITICALITY: '重要级别',
+  OWNER_TEAM: '负责团队',
+  DATA_CROSS_BORDER: '数据跨境',
+}
+
+/** 用途分类（WDSP / 阶段8）：维护分类体系，并为接口设置维度键值对分类 */
 export default function ApiClassificationsPage() {
   const { message } = AntdApp.useApp()
   const qc = useQueryClient()
@@ -29,6 +50,7 @@ export default function ApiClassificationsPage() {
   const canManage = hasPermission(permissions, 'api_classification.manage')
 
   const [createOpen, setCreateOpen] = useState(false)
+  const [detailRecord, setDetailRecord] = useState<ApiClassificationItem | null>(null)
   const [endpointId, setEndpointId] = useState<string | undefined>()
   const [createForm] = Form.useForm<CreateFormValues>()
   const [endpointForm] = Form.useForm<EndpointClassificationFormValues>()
@@ -38,7 +60,7 @@ export default function ApiClassificationsPage() {
     queryFn: () => apiClassificationsApi.list(),
   })
 
-  /** 端点选择器数据源（端点分类按端点设置） */
+  /** 接口选择器数据源（接口分类按接口设置） */
   const endpointsQuery = useQuery({
     queryKey: ['api-endpoints', 'options'],
     queryFn: () => apiEndpointsApi.list({ page: 1, page_size: 100 }),
@@ -59,14 +81,14 @@ export default function ApiClassificationsPage() {
     mutationFn: (dimensions: { dimension: string; value: string }[]) =>
       apiClassificationsApi.setEndpointClassification(endpointId as string, dimensions),
     onSuccess: (r) => {
-      message.success(r.message || '端点分类已保存')
+      message.success(r.message || '接口分类已保存')
     },
     onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '保存失败'),
   })
 
   const handleSaveEndpoint = (v: EndpointClassificationFormValues) => {
     if (!endpointId) {
-      message.warning('请先选择端点')
+      message.warning('请先选择接口')
       return
     }
     const dimensions = (v.dimensions ?? [])
@@ -76,8 +98,28 @@ export default function ApiClassificationsPage() {
   }
 
   const columns: ColumnsType<ApiClassificationItem> = [
-    { title: '维度', dataIndex: 'dimension', width: 200 },
-    { title: '取值', dataIndex: 'value', width: 200 },
+    {
+      title: '维度',
+      dataIndex: 'dimension',
+      width: 200,
+      render: (v: string) => DIMENSION_LABELS[v] ?? v,
+    },
+    {
+      title: '取值',
+      dataIndex: 'value',
+      width: 200,
+      render: (v: string, record) =>
+        record.is_builtin && record.code ? (
+          <span>
+            {v}
+            <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+              {record.code}
+            </Typography.Text>
+          </span>
+        ) : (
+          v
+        ),
+    },
     {
       title: '说明',
       dataIndex: 'description',
@@ -104,7 +146,7 @@ export default function ApiClassificationsPage() {
       }
     >
       <Typography.Paragraph type="secondary">
-        分类体系定义可用的维度与取值（如业务域、数据等级）；在下方为具体端点设置维度键值对，用于分类统计与防护策略匹配。
+        分类体系定义可用的维度与取值（如业务域、数据等级）；在下方为具体接口设置维度键值对，用于分类统计与防护策略匹配。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error ?? endpointsQuery.error} />
       <SmartTable<ApiClassificationItem>
@@ -114,6 +156,10 @@ export default function ApiClassificationsPage() {
         columns={columns}
         dataSource={listQuery.data ?? []}
         scroll={{ x: 800 }}
+        onRow={(record) => ({
+          onDoubleClick: () => setDetailRecord(record),
+          style: { cursor: 'pointer' },
+        })}
         pagination={{
           pageSize: 20,
           showSizeChanger: true,
@@ -121,11 +167,11 @@ export default function ApiClassificationsPage() {
         }}
       />
 
-      <Card size="small" title="端点分类设置" style={{ marginTop: 16 }}>
+      <Card size="small" title="接口分类设置" style={{ marginTop: 16 }}>
         <Form<EndpointClassificationFormValues> form={endpointForm} layout="vertical" onFinish={handleSaveEndpoint}>
-          <Form.Item label="目标端点" required>
+          <Form.Item label="目标接口" required>
             <Select
-              placeholder="选择端点"
+              placeholder="选择接口"
               showSearch
               optionFilterProp="label"
               style={{ width: 320 }}
@@ -152,7 +198,17 @@ export default function ApiClassificationsPage() {
                     <Form.Item name={[field.name, 'value']} rules={[{ required: true, message: '请输入取值' }]}>
                       <Input placeholder="取值，如 finance" style={{ width: 240 }} autoComplete="off" />
                     </Form.Item>
-                    {canManage ? <MinusCircleOutlined onClick={() => remove(field.name)} /> : null}
+                    {canManage ? (
+                      <Tooltip title="删除此分类维度">
+                        <Button
+                          type="text"
+                          danger
+                          icon={<MinusCircleOutlined />}
+                          aria-label="删除此分类维度"
+                          onClick={() => remove(field.name)}
+                        />
+                      </Tooltip>
+                    ) : null}
                   </Space>
                 ))}
                 {canManage ? (
@@ -203,6 +259,13 @@ export default function ApiClassificationsPage() {
           </Form.Item>
         </Form>
       </Drawer>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="分类详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

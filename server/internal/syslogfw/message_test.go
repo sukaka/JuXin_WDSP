@@ -21,6 +21,18 @@ func TestSeverityFor(t *testing.T) {
 		{KindAccessLog, "", 6},
 		{KindAccessLog, "HIGH", 6}, // 非安全事件忽略 hint
 		{KindAccessControlEvent, "", 6},
+		{KindSystemAlert, "CRITICAL", 2},
+		{KindSystemAlert, "HIGH", 3},
+		{KindSystemAlert, "MEDIUM", 4},
+		{KindSystemAlert, "LOW", 5},
+		{KindSystemAlert, "INFO", 6},
+		{KindSystemAlert, "", 6},
+		{KindLoginLog, "warning", 4}, // 登录失败
+		{KindLoginLog, "WARNING", 4},
+		{KindLoginLog, "", 6},              // 登录成功 → info
+		{KindOperationAudit, "warning", 4}, // 删除/禁用类操作
+		{KindOperationAudit, "", 6},
+		{KindOperationAudit, "HIGH", 6}, // 仅识别 warning 提示
 		{KindTest, "", 6},
 	}
 	for _, c := range cases {
@@ -68,6 +80,22 @@ func TestBuildMessageKindsAndPri(t *testing.T) {
 	msg = string(BuildMessage(1, 6, "h", "1", KindAccessControlEvent, []byte(`{}`)))
 	if !strings.Contains(msg, " access-control-event ") {
 		t.Errorf("access control 消息错误: %s", msg)
+	}
+	// 新增三类 msgid
+	for k, want := range map[Kind]string{
+		KindOperationAudit: "operation-audit",
+		KindLoginLog:       "login-log",
+		KindSystemAlert:    "system-alert",
+	} {
+		msg = string(BuildMessage(1, 6, "h", "1", k, []byte(`{}`)))
+		if !strings.Contains(msg, " "+want+" ") {
+			t.Errorf("kind %v msgid 错误: %s", k, msg)
+		}
+	}
+	// 系统告警 CRITICAL → severity 2 → pri=1*8+2=10
+	msg = string(BuildMessage(1, severityFor(KindSystemAlert, "CRITICAL"), "h", "1", KindSystemAlert, []byte(`{}`)))
+	if !strings.HasPrefix(msg, "<10>1 ") {
+		t.Errorf("CRITICAL 告警 pri 错误: %s", msg)
 	}
 	// facility 越界回退 1
 	msg = string(BuildMessage(99, 6, "h", "1", KindTest, []byte(`{}`)))

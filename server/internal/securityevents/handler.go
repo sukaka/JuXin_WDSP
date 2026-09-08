@@ -3,6 +3,7 @@ package securityevents
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -132,9 +133,18 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "事件不存在")
 		return
 	}
-	notes, _ := h.store.ListNotes(r.Context(), id)
-	actions, _ := h.store.ListActions(r.Context(), id)
-	related, _ := h.store.RelatedEvents(r.Context(), evt, 10)
+	notes, err := h.store.ListNotes(r.Context(), id)
+	if err != nil {
+		slog.Warn("event detail: list notes failed", "event_id", id, "error", err)
+	}
+	actions, err := h.store.ListActions(r.Context(), id)
+	if err != nil {
+		slog.Warn("event detail: list actions failed", "event_id", id, "error", err)
+	}
+	related, err := h.store.RelatedEvents(r.Context(), evt, 10)
+	if err != nil {
+		slog.Warn("event detail: list related events failed", "event_id", id, "error", err)
+	}
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"event":   evt,
 		"matches": matches,
@@ -385,7 +395,16 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(b.String()))
 }
 
+// csvEscape CSV 字段转义：=、+、-、@ 开头前加 ' 防公式注入（domain/URI 等攻击者可控）；
+// 含逗号/引号/换行的字段加双引号并双写内部引号。（与 accessrules/csv.go 同一实现）
 func csvEscape(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@':
+		s = "'" + s
+	}
 	if strings.ContainsAny(s, ",\"\n\r") {
 		return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
 	}
@@ -393,7 +412,7 @@ func csvEscape(s string) string {
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, result, risk string) {
-	_ = h.audits.Record(r.Context(), audits.RecordInput{
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:       &p.UserID,
 		Username:     p.Username,
 		SourceIP:     middleware.RemoteIP(r),

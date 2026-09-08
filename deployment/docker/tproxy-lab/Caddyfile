@@ -1,0 +1,134 @@
+# 九章阶段D 透明串接（透明代理）PoC 实验 Caddy 配置
+# 设计依据：docs/NETWORK_MODES_DESIGN.md §4.3
+#
+# 与 gateway/configs/Caddyfile（stage5 静态配置）的差异仅两处，规则链与处理
+# 顺序逐条保持一致：
+#   1. listener 挂 proxy_protocol wrapper——tproxyd 牵引进程以 PROXY v1 上报
+#      真实五元组（真实源 IP/端口 + 原始目的），日志/事件 client_ip 即真实客户端；
+#   2. reverse_proxy 指向实验拓扑 origin 命名空间地址 192.168.50.20:8081。
+#
+# HTTPS SNI 分流实验（tproxyd ProtectHosts=www.test.com）：
+#   - :8080 明文站点（通配 Host）——既有 HTTP 牵引路径；
+#   - https://www.test.com:8443 TLS 站点（tproxyd TargetTLS）——清单内域名的
+#     TLS 连接被嗅探分流到此终结检测，证书为实验自签名（entrypoint 生成）；
+#   - 清单外域名（如 www.test1.com）由 tproxyd 按原始目的端到端透传回源站，
+#     不经过本进程，故本配置无需也不应携带 test1.com 证书。
+{
+	# Admin API 仅绑定 Unix Socket，禁止暴露 TCP 端口
+	admin unix//var/run/caddy/admin.sock
+
+	# POC 使用自签名证书显式配置，禁用自动 HTTPS（不签发、不改写端口）
+	auto_https off
+
+	# 中间件顺序与 stage5 静态配置一致：headers -> waf -> 业务 handler
+	order coraza_waf after request_header
+
+	# 网关自身运行日志（非访问日志）
+	log {
+		output file /var/log/caddy/caddy.log
+		format json
+		level INFO
+	}
+
+	# 协议层限制：请求头总大小上限（超出由 HTTP 层拒绝，返回 431/400）；
+	# 透明牵引入口：listener 挂 proxy_protocol wrapper（本构建的 Caddyfile 适配器
+	# 仅支持在全局 servers 块配置 listener_wrappers，站点块内无该指令）——
+	# tproxyd 牵引进程以 PROXY v1 上报真实五元组（真实源 IP/端口 + 原始目的），
+	# 日志/事件 client_ip 即真实客户端；仅信任 loopback 来源，防止伪造源地址。
+	#
+	# 顺序关键：`tls` 占位符必须位于 proxy_protocol 之后——Caddy 默认把全部
+	# wrapper 排在 TLS 握手之后（见 caddyhttp/app.go 的 tlsPlaceholderWrapper
+	# 逻辑），显式把 tls 放后面才能让 proxy_protocol 在 TLS 握手之前剥离
+	# PROXY 头；否则 Caddy 会把 PROXY 行当作 TLS 记录解析，握手直接失败。
+	servers {
+		max_header_size 64KB
+		listener_wrappers {
+			proxy_protocol {
+				allow 127.0.0.1/32
+			}
+			tls
+		}
+	}
+}
+
+# 检测与回源链（明文/TLS 两站点共用，保证规则链逐条一致、无漂移）
+(waf_chain) {
+	# 结构化访问日志（JSON，含 X-Request-Id 请求头）
+	log {
+		output file /var/log/caddy/access.log
+		format json
+		level INFO
+	}
+
+	# 生成唯一 Request ID 并强制覆盖客户端传入值，不信任客户端自带标识
+	request_header X-Request-Id {http.request.uuid}
+
+	# 默认安全响应头
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	coraza_waf {
+		# 加载顺序与配置发布生成器（gatewayconfig）保持一致：
+		# 插件 config/before → before-crs → crs/rules → contrib → 插件 after
+		# → after-crs → jiuzhang-custom → post-contrib-blocking（必须最后）。
+		directives `
+			SecRuleEngine {$SEC_RULE_ENGINE:On}
+			Include /etc/caddy/rules/coraza.conf
+			Include /etc/caddy/rules/crs/crs-setup.conf
+			Include /etc/caddy/rules/crs/plugins/*/plugins/*-config.conf
+			Include /etc/caddy/rules/crs/plugins/*/plugins/*-before.conf
+			Include /etc/caddy/rules/exclusions/before-crs.conf
+			Include /etc/caddy/rules/crs/rules/*.conf
+			Include /etc/caddy/rules/contrib/*/*.conf
+			Include /etc/caddy/rules/crs/plugins/*/plugins/*-after.conf
+			Include /etc/caddy/rules/exclusions/after-crs.conf
+			Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf
+			Include /etc/caddy/rules/jiuzhang/post-contrib-blocking.conf
+		`
+	}
+
+	# 实验拓扑 origin（独立网络命名空间，经 br0 桥地址回源）
+	reverse_proxy http://192.168.50.20:8081
+
+	# Coraza 阻断时返回 caddyhttp.HandlerError，由 handle_errors 统一接管，
+	# 返回九章自定义阻断页面，不向客户端暴露规则细节（与 stage5 一致）。
+	handle_errors {
+		@blocked expression `{err.status_code} == 403`
+		handle @blocked {
+			header Content-Type "text/html; charset=utf-8"
+			templates
+			rewrite * /blockpage.html
+			file_server {
+				root /srv/jiuzhang
+			}
+		}
+		# 其他错误返回通用响应，不暴露内部细节
+		handle {
+			respond "{err.status_code} {err.status_text}" {err.status_code}
+		}
+	}
+}
+
+# 仅绑定 loopback：外部流量只能经 tproxyd 牵引（PROXY v1 上报五元组）进入，
+# 杜绝绕过牵引进程直连 Caddy 的通道
+:8080 {
+	# 仅绑定 loopback（站点地址保持 :8080 通配 Host——客户端 Host 为源站地址；
+	# Caddy 站点地址的主机部分是 Host 匹配器而非绑定地址，绑定由 bind 控制）
+	bind 127.0.0.1
+
+	import waf_chain
+}
+
+# SNI 防护清单内域名的 TLS 终结站点（tproxyd TargetTLS=127.0.0.1:8443）：
+# 实验自签名证书由 entrypoint 生成；Host 匹配器限定 www.test.com
+https://www.test.com:8443 {
+	bind 127.0.0.1
+
+	tls /etc/caddy/certs/www.test.com.crt /etc/caddy/certs/www.test.com.key
+
+	import waf_chain
+}

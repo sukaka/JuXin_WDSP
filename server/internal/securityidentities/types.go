@@ -10,7 +10,7 @@ import (
 // 身份风险等级/类型/状态合法值（查询筛选校验用；写侧由采集器/网关契约产生）。
 var (
 	validRiskLevels = map[string]bool{"LOW": true, "MEDIUM": true, "HIGH": true, "CRITICAL": true}
-	validTypes      = map[string]bool{"HUMAN": true, "BOT": true, "APPLICATION": true, "SERVICE": true, "MACHINE": true, "AGENT": true, "UNKNOWN": true}
+	validTypes      = map[string]bool{"HUMAN": true, "BOT": true, "APPLICATION": true, "SERVICE": true, "AGENT": true, "UNKNOWN": true}
 	validSignals    = map[string]bool{
 		"URI_ENUMERATION": true, "NOT_FOUND_ENUMERATION": true, "SENSITIVE_PATH_PROBE": true,
 		"METHOD_ENUMERATION": true, "PARAMETER_MUTATION": true, "AUTH_FAIL_PROBE": true, "LOW_SLOW_RECON": true,

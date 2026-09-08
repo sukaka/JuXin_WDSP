@@ -19,18 +19,18 @@ func DefaultThresholds() CompressionThresholds {
 
 // ContextState 会话上下文状态。
 type ContextState struct {
-	Summary       string // 历史摘要（压缩产物）
-	RecentCount   int    // 最近保留消息数
-	TokenCount    int    // 当前估算 Token
-	Compressed    int    // 已压缩次数
+	Summary     string // 历史摘要（压缩产物）
+	RecentCount int    // 最近保留消息数
+	TokenCount  int    // 当前估算 Token
+	Compressed  int    // 已压缩次数
 }
 
 // BudgetResult 预算检查结果。
 type BudgetResult struct {
-	Usage     float64 // 当前使用比例
-	NeedWarn  bool
+	Usage        float64 // 当前使用比例
+	NeedWarn     bool
 	NeedCompress bool
-	NeedTrim  bool
+	NeedTrim     bool
 }
 
 // CheckBudget 检查上下文使用是否触发阈值。
@@ -62,12 +62,12 @@ func EstimateTokens(s string) int {
 
 // CompressResult 压缩结果。
 type CompressResult struct {
-	Summary            string
-	BeforeTokens       int
-	AfterTokens        int
-	PreservedRefs      []string
-	DroppedMessages    int
-	RetainedMessages   int
+	Summary          string
+	BeforeTokens     int
+	AfterTokens      int
+	PreservedRefs    []string
+	DroppedMessages  int
+	RetainedMessages int
 }
 
 // Compress 确定性压缩：保留最近 keepRecent 条消息与全部证据引用，旧消息生成摘要。

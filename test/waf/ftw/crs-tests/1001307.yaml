@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: GIF 魔数图片马检测（GIF89a/GIF87a 后紧跟 <?php/<?=/<%，REQUEST_BODY 可达通道，自建规则 1001307）
+rule_id: 1001307
+tests:
+  - test_id: 1
+    desc: "urlencoded 提交 GIF89a 后紧跟 ASP <% 标签"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/x-www-form-urlencoded"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "file=GIF89a%3C%25x"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001307]
+  - test_id: 2
+    desc: "urlencoded 提交 GIF87a 后紧跟 PHP 短标签 <?="
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/x-www-form-urlencoded"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "file=GIF87a%3C%3D+x+%3F%3E"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001307]

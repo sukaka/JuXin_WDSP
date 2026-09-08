@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/aiorchestrator"
 	"github.com/jiuzhang-waf/server/internal/aitools"
+	"github.com/jiuzhang-waf/server/internal/reports"
 )
 
 // 通用 Agent 基座。
@@ -36,6 +37,28 @@ func callTool(ctx context.Context, in *aiorchestrator.AnalyzeInput, p *aitools.P
 // fmtKV 键值文本。
 func fmtKV(k string, v interface{}) string {
 	return fmt.Sprintf("- %s：%v\n", k, v)
+}
+
+func attackTypeDisplayName(value interface{}) string {
+	return reports.AttackTypeName(fmt.Sprint(value))
+}
+
+func formatChineseDateTime(value time.Time) string {
+	return value.Format("2006年01月02日 15:04:05")
+}
+
+func queryTimeRange(in *aiorchestrator.AnalyzeInput) aiorchestrator.QueryTimeRange {
+	if !in.TimeRange.Start.IsZero() && !in.TimeRange.End.IsZero() {
+		return in.TimeRange
+	}
+	return aiorchestrator.ParseQueryTimeRange(in.Message, time.Now())
+}
+
+func withTimeRange(in *aiorchestrator.AnalyzeInput, input map[string]interface{}) (map[string]interface{}, aiorchestrator.QueryTimeRange) {
+	rangeValue := queryTimeRange(in)
+	input["start_time"] = rangeValue.Start.Format(time.RFC3339)
+	input["end_time"] = rangeValue.End.Format(time.RFC3339)
+	return input, rangeValue
 }
 
 // ---------- 安全事件 Agent ----------
@@ -109,18 +132,20 @@ func (a *SecurityEventAgent) analyzeEvent(ctx context.Context, in *aiorchestrato
 		}
 	} else {
 		// 批量归纳
+		statsInput, rangeValue := withTimeRange(in, map[string]interface{}{"dimension": "attack_type"})
 		res, ref, err := callTool(ctx, in, in.Principal, "security_event.statistics",
-			map[string]interface{}{"dimension": "attack_type"}, "攻击类型分布（24h）")
+			statsInput, "攻击类型分布（%s）", rangeValue.Label)
 		if err != nil {
 			return nil, err
 		}
-		b.WriteString("\n最近 24 小时攻击类型分布：\n")
+		b.WriteString(fmt.Sprintf("\n%s攻击类型分布：\n", rangeValue.Label))
 		for _, it := range res.(map[string]interface{})["items"].([]map[string]interface{}) {
 			b.WriteString(fmt.Sprintf("- %s：%v 次\n", it["key"], it["count"]))
 		}
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+		topIPInput, _ := withTimeRange(in, map[string]interface{}{"limit": 5})
 		res2, ref2, err := callTool(ctx, in, in.Principal, "statistics.top_source_ips",
-			map[string]interface{}{"limit": 5}, "攻击源IP TOP5（24h）")
+			topIPInput, "攻击源IP TOP5（%s）", rangeValue.Label)
 		if err == nil {
 			b.WriteString("\n攻击源 IP TOP5：\n")
 			for _, it := range res2.(map[string]interface{})["items"].([]map[string]interface{}) {
@@ -144,30 +169,36 @@ func blockedText(action interface{}) string {
 func (a *SecurityEventAgent) analyzeProfile(ctx context.Context, in *aiorchestrator.AnalyzeInput) (*aiorchestrator.AnalyzeResult, error) {
 	var b strings.Builder
 	b.WriteString("**攻击画像**\n")
+	rangeValue := queryTimeRange(in)
 	ip := ""
 	if len(in.IPs) > 0 {
 		ip = in.IPs[0]
 	}
 	if ip != "" {
+		searchInput, _ := withTimeRange(in, map[string]interface{}{"client_ip": ip, "page": 1})
 		res, ref, err := callTool(ctx, in, in.Principal, "security_event.search",
-			map[string]interface{}{"client_ip": ip, "page": 1}, "IP %s 事件（30天）", ip)
+			searchInput, "IP %s 事件（%s）", ip, rangeValue.Label)
 		if err != nil {
 			return nil, err
 		}
 		data := res.(map[string]interface{})
 		b.WriteString(fmtKV("画像对象", "IP "+ip))
-		b.WriteString(fmtKV("事件总数（30天）", data["total"]))
+		b.WriteString(fmtKV("事件总数（"+rangeValue.Label+"）", data["total"]))
+		eventTotal, _ := data["total"].(int64)
 		// 首次/最近出现
 		var firstAt, lastAt time.Time
-		_ = a.db.QueryRow(ctx, `SELECT min(occurred_at), max(occurred_at) FROM security_events WHERE client_ip = $1::inet`, ip).Scan(&firstAt, &lastAt)
-		if !firstAt.IsZero() {
+		_ = a.db.QueryRow(ctx, `SELECT COALESCE(min(occurred_at), 'epoch'::timestamptz), COALESCE(max(occurred_at), 'epoch'::timestamptz) FROM security_events
+WHERE client_ip = $1::inet AND occurred_at >= $2 AND occurred_at < $3`, ip, rangeValue.Start, rangeValue.End).Scan(&firstAt, &lastAt)
+		if eventTotal > 0 {
 			b.WriteString(fmtKV("首次出现", firstAt.Format("2006-01-02 15:04")))
 			b.WriteString(fmtKV("最近出现", lastAt.Format("2006-01-02 15:04")))
 		}
 		// 攻击类型与目标
 		var types string
 		rows, err := a.db.Query(ctx, `
-SELECT attack_type, count(*) FROM security_events WHERE client_ip = $1::inet GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, ip)
+SELECT attack_type, count(*) FROM security_events
+WHERE client_ip = $1::inet AND occurred_at >= $2 AND occurred_at < $3
+GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, ip, rangeValue.Start, rangeValue.End)
 		if err == nil {
 			defer rows.Close()
 			var parts []string
@@ -182,11 +213,6 @@ SELECT attack_type, count(*) FROM security_events WHERE client_ip = $1::inet GRO
 		if types != "" {
 			b.WriteString(fmtKV("攻击类型", types))
 		}
-		// 封禁情况
-		var blocks string
-		_ = a.db.QueryRow(ctx, `
-SELECT count(*), count(*) FILTER (WHERE status='ACTIVE' AND block_expires_at > now())
-FROM temporary_blocks WHERE client_ip = $1::inet`, ip).Scan(&blocks, new(int64))
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 		res2, ref2, err := callTool(ctx, in, in.Principal, "temporary_block.search",
 			map[string]interface{}{"client_ip": ip}, "IP %s 封禁记录", ip)
@@ -196,35 +222,35 @@ FROM temporary_blocks WHERE client_ip = $1::inet`, ip).Scan(&blocks, new(int64))
 			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref2))
 		}
 	} else if uri := extractProfileURI(in.Message); uri != "" {
-		// URI 画像（请求路径维度，30 天窗口）
+		// URI 画像（请求路径维度）
 		var total int64
 		var firstAt, lastAt time.Time
 		err := a.db.QueryRow(ctx, `
-SELECT count(*), min(occurred_at), max(occurred_at) FROM security_events
-WHERE request_path = $1 AND occurred_at > now() - interval '30 days'`, uri).Scan(&total, &firstAt, &lastAt)
+SELECT count(*), COALESCE(min(occurred_at), 'epoch'::timestamptz), COALESCE(max(occurred_at), 'epoch'::timestamptz) FROM security_events
+WHERE request_path = $1 AND occurred_at >= $2 AND occurred_at < $3`, uri, rangeValue.Start, rangeValue.End).Scan(&total, &firstAt, &lastAt)
 		if err != nil {
 			return nil, fmt.Errorf("query uri profile: %w", err)
 		}
 		b.WriteString(fmtKV("画像对象", "URI "+uri))
-		b.WriteString(fmtKV("事件总数（30天）", total))
+		b.WriteString(fmtKV("事件总数（"+rangeValue.Label+"）", total))
 		if total == 0 {
-			b.WriteString("该 URI 近 30 天无安全事件记录，数据不足，无法确认。\n")
+			b.WriteString(fmt.Sprintf("该 URI 在%s无安全事件记录，数据不足，无法确认。\n", rangeValue.Label))
 		} else {
 			b.WriteString(fmtKV("首次出现", firstAt.Format("2006-01-02 15:04")))
 			b.WriteString(fmtKV("最近出现", lastAt.Format("2006-01-02 15:04")))
 			b.WriteString(fmtKV("攻击类型", a.topGroup(ctx, `SELECT attack_type, count(*) FROM security_events
-WHERE request_path = $1 AND occurred_at > now() - interval '30 days' GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, uri)))
+				WHERE request_path = $1 AND occurred_at >= $2 AND occurred_at < $3 GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, uri, rangeValue.Start, rangeValue.End)))
 			b.WriteString(fmtKV("主要来源 IP", a.topGroup(ctx, `SELECT client_ip::text, count(*) FROM security_events
-WHERE request_path = $1 AND occurred_at > now() - interval '30 days' GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, uri)))
+				WHERE request_path = $1 AND occurred_at >= $2 AND occurred_at < $3 GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, uri, rangeValue.Start, rangeValue.End)))
 		}
-		ref := in.Evidence.Add("security_event.search", fmt.Sprintf("URI %s 事件（30天）", uri), map[string]interface{}{"uri": uri, "total": total})
+		ref := in.Evidence.Add("security_event.search", fmt.Sprintf("URI %s 事件（%s）", uri, rangeValue.Label), map[string]interface{}{"uri": uri, "total": total})
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 	} else if appID, appName := a.matchApplication(ctx, in.Message); appID != "" {
-		// 应用画像（应用维度，30 天窗口）
+		// 应用画像（应用维度）
 		var total, blocked int64
 		err := a.db.QueryRow(ctx, `
 SELECT count(*), count(*) FILTER (WHERE action IN ('BLOCKED','BLOCK')) FROM security_events
-WHERE application_id = $1 AND occurred_at > now() - interval '30 days'`, appID).Scan(&total, &blocked)
+WHERE application_id = $1 AND occurred_at >= $2 AND occurred_at < $3`, appID, rangeValue.Start, rangeValue.End).Scan(&total, &blocked)
 		if err != nil {
 			return nil, fmt.Errorf("query application profile: %w", err)
 		}
@@ -233,25 +259,26 @@ WHERE application_id = $1 AND occurred_at > now() - interval '30 days'`, appID).
 		b.WriteString(fmtKV("画像对象", "应用 "+appName))
 		b.WriteString(fmtKV("防护模式", mode))
 		b.WriteString(fmtKV("应用状态", status))
-		b.WriteString(fmtKV("事件总数（30天）", total))
-		b.WriteString(fmtKV("阻断数（30天）", blocked))
+		b.WriteString(fmtKV("事件总数（"+rangeValue.Label+"）", total))
+		b.WriteString(fmtKV("阻断数（"+rangeValue.Label+"）", blocked))
 		if total == 0 {
-			b.WriteString("该应用近 30 天无安全事件记录，数据不足，无法确认。\n")
+			b.WriteString(fmt.Sprintf("该应用在%s无安全事件记录，数据不足，无法确认。\n", rangeValue.Label))
 		} else {
 			b.WriteString(fmtKV("攻击类型", a.topGroup(ctx, `SELECT attack_type, count(*) FROM security_events
-WHERE application_id = $1 AND occurred_at > now() - interval '30 days' GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, appID)))
+				WHERE application_id = $1 AND occurred_at >= $2 AND occurred_at < $3 GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, appID, rangeValue.Start, rangeValue.End)))
 			b.WriteString(fmtKV("主要来源 IP", a.topGroup(ctx, `SELECT client_ip::text, count(*) FROM security_events
-WHERE application_id = $1 AND occurred_at > now() - interval '30 days' GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, appID)))
+				WHERE application_id = $1 AND occurred_at >= $2 AND occurred_at < $3 GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, appID, rangeValue.Start, rangeValue.End)))
 		}
-		ref := in.Evidence.Add("security_event.search", fmt.Sprintf("应用 %s 事件（30天）", appName), map[string]interface{}{"application_id": appID, "total": total, "blocked": blocked})
+		ref := in.Evidence.Add("security_event.search", fmt.Sprintf("应用 %s 事件（%s）", appName, rangeValue.Label), map[string]interface{}{"application_id": appID, "total": total, "blocked": blocked})
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 	} else {
+		topIPInput, rangeValue := withTimeRange(in, map[string]interface{}{"limit": 10})
 		res, ref, err := callTool(ctx, in, in.Principal, "statistics.top_source_ips",
-			map[string]interface{}{"limit": 10}, "攻击源 TOP10（7天）")
+			topIPInput, "攻击源 TOP10（%s）", rangeValue.Label)
 		if err != nil {
 			return nil, err
 		}
-		b.WriteString("\n攻击源 IP TOP10（默认 7 天统计区间）：\n")
+		b.WriteString(fmt.Sprintf("\n攻击源 IP TOP10（%s）：\n", rangeValue.Label))
 		for _, it := range res.(map[string]interface{})["items"].([]map[string]interface{}) {
 			b.WriteString(fmt.Sprintf("- %s：%v 次（阻断 %v）\n", it["ip"], it["events"], it["blocks"]))
 		}
@@ -333,6 +360,38 @@ ORDER BY occurred_at LIMIT 20`, ip)
 func (a *SecurityEventAgent) analyzeStats(ctx context.Context, in *aiorchestrator.AnalyzeInput) (*aiorchestrator.AnalyzeResult, error) {
 	var b strings.Builder
 	b.WriteString("**统计问答**\n")
+	rangeValue := queryTimeRange(in)
+	if rangeValue.Explicit {
+		statsInput, _ := withTimeRange(in, map[string]interface{}{"dimension": "attack_type"})
+		res, ref, err := callTool(ctx, in, in.Principal, "security_event.statistics",
+			statsInput, "攻击类型分布（%s）", rangeValue.Label)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(fmt.Sprintf("统计区间：%s（%s 至 %s）\n", rangeValue.Label,
+			formatChineseDateTime(rangeValue.Start),
+			formatChineseDateTime(rangeValue.End)))
+		items := res.(map[string]interface{})["items"].([]map[string]interface{})
+		var total int64
+		for _, item := range items {
+			count, _ := item["count"].(int64)
+			total += count
+			b.WriteString(fmt.Sprintf("- %s：%v 次\n", attackTypeDisplayName(item["key"]), item["count"]))
+		}
+		b.WriteString(fmtKV("安全事件合计", total))
+		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+
+		topIPInput, _ := withTimeRange(in, map[string]interface{}{"limit": 5})
+		if topIPs, topRef, topErr := callTool(ctx, in, in.Principal, "statistics.top_source_ips",
+			topIPInput, "攻击源 IP TOP5（%s）", rangeValue.Label); topErr == nil {
+			b.WriteString("\n攻击源 IP TOP5：\n")
+			for _, item := range topIPs.(map[string]interface{})["items"].([]map[string]interface{}) {
+				b.WriteString(fmt.Sprintf("- %v：%v 次（阻断 %v）\n", item["ip"], item["events"], item["blocks"]))
+			}
+			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", topRef))
+		}
+		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
+	}
 	res, ref, err := callTool(ctx, in, in.Principal, "statistics.security_overview",
 		map[string]interface{}{}, "今日安全概览")
 	if err != nil {
@@ -379,8 +438,8 @@ func extractProfileURI(msg string) string {
 }
 
 // topGroup 通用分组统计查询（col, count 两列），返回 "值(次数)、..." 拼接，失败或空集返回空串。
-func (a *SecurityEventAgent) topGroup(ctx context.Context, query, arg string) string {
-	rows, err := a.db.Query(ctx, query, arg)
+func (a *SecurityEventAgent) topGroup(ctx context.Context, query string, args ...interface{}) string {
+	rows, err := a.db.Query(ctx, query, args...)
 	if err != nil {
 		return ""
 	}

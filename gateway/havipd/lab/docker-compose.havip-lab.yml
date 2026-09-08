@@ -1,0 +1,31 @@
+# 九章 havipd 主备 VIP 组件 lab 实验编排（privileged 容器内真实 keepalived 验证）
+# 组件契约：/var/run/caddy/sidecars/ha-vip.json → ha-vip-status.json
+#
+# 用法（仓库根目录）：
+#   # 1) 构建 havipd 二进制与镜像
+#   cd gateway && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+#     -ldflags="-s -w" -o havipd/lab/bin/havipd ./cmd/havipd && cd ..
+#   docker compose -f gateway/havipd/lab/docker-compose.havip-lab.yml build
+#   # 2) 起实验、跑验证、清理
+#   docker compose -f gateway/havipd/lab/docker-compose.havip-lab.yml up -d
+#   bash gateway/havipd/lab/havip-lab-tests.sh
+#   docker compose -f gateway/havipd/lab/docker-compose.havip-lab.yml down -v
+
+name: haviplab
+
+services:
+  lab:
+    image: jiuzhang-havip-lab:poc
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: haviplab-lab
+    restart: unless-stopped
+    # keepalived 绑 VIP/收发 VRRP 需要特权（容器内 docker bridge，不触碰宿主机网络配置）
+    privileged: true
+    healthcheck:
+      test: ["CMD-SHELL", "ip -4 -o addr show eth0 | grep -q inet"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s

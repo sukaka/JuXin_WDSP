@@ -98,3 +98,126 @@ func TestContentHashDiffers(t *testing.T) {
 		t.Error("hash format invalid")
 	}
 }
+
+// 无 msg 的 THIRD_PARTY 排除规则：名称/消息取正上方注释块（跳过分隔线与版权行），
+// 攻击类型按文件名兜底为 EXCLUSION。
+func TestParseThirdPartyExclusionRule(t *testing.T) {
+	content := `
+# ------------------------------------------------------------------------
+# OWASP CRS Plugin
+# Copyright (c) 2022-2026 CRS project. All rights reserved.
+# ------------------------------------------------------------------------
+
+# Fix FP with requesttoken used for various requests in Nextcloud.
+# Fix FP with timezone
+SecRule REQUEST_FILENAME "@unconditionalMatch" \
+    "id:9508510,\
+    phase:1,\
+    pass,\
+    nolog,\
+    ctl:ruleRemoveById=942130"
+`
+	rules, failed, err := ParseCRSRules(content, "nextcloud-rule-exclusions-before.conf", SourceThirdParty)
+	if err != nil {
+		t.Fatalf("ParseCRSRules: %v", err)
+	}
+	if len(failed) > 0 {
+		t.Fatalf("unexpected parse failures: %v", failed)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("parsed %d rules, want 1", len(rules))
+	}
+	r := rules[0]
+	wantName := "Fix FP with requesttoken used for various requests in Nextcloud. Fix FP with timezone"
+	if r.Name != wantName {
+		t.Errorf("name = %q, want %q", r.Name, wantName)
+	}
+	if r.Message != wantName {
+		t.Errorf("message = %q, want %q", r.Message, wantName)
+	}
+	if r.AttackType != "EXCLUSION" {
+		t.Errorf("attack_type = %q, want EXCLUSION", r.AttackType)
+	}
+}
+
+// 无 msg 且无注释时：名称兜底为「文件名去扩展名 规则 <id>」。
+func TestParseFallbackNameWithoutComment(t *testing.T) {
+	rules, _, _ := ParseCRSRules(`
+SecRule REQUEST_FILENAME "@unconditionalMatch" "id:9508511,phase:1,pass,nolog,ctl:ruleRemoveById=942130"
+`, "wordpress-rule-exclusions-before.conf", SourceThirdParty)
+	if len(rules) != 1 {
+		t.Fatalf("parsed %d rules, want 1", len(rules))
+	}
+	want := "wordpress-rule-exclusions-before 规则 9508511"
+	if rules[0].Name != want {
+		t.Errorf("name = %q, want %q", rules[0].Name, want)
+	}
+	if rules[0].AttackType != "EXCLUSION" {
+		t.Errorf("attack_type = %q, want EXCLUSION", rules[0].AttackType)
+	}
+}
+
+// 新增标签映射：attack-ssrf/attack-xxe 与 webshell/ 前缀。
+func TestParseNewAttackTypeTags(t *testing.T) {
+	rules, _, _ := ParseCRSRules(`
+SecRule ARGS "@rx gopher://" "id:1002001,phase:2,block,msg:'SSRF attempt',tag:'attack-ssrf',severity:'CRITICAL'"
+
+SecRule REQUEST_FILENAME "@rx \\.jsp$" "id:1002002,phase:2,block,msg:'webshell upload',tag:'webshell/upload',severity:'CRITICAL'"
+
+SecRule ARGS "@rx <!ENTITY" "id:1002003,phase:2,block,msg:'XXE',tag:'attack-xxe',severity:'ERROR'"
+`, "TEST.conf", SourceCustomPack)
+	if len(rules) != 3 {
+		t.Fatalf("parsed %d rules, want 3", len(rules))
+	}
+	wants := []string{"SSRF", "WEBSHELL", "XXE_INJECTION"}
+	for i, want := range wants {
+		if rules[i].AttackType != want {
+			t.Errorf("rule %d attack_type = %q, want %q", rules[i].RuleID, rules[i].AttackType, want)
+		}
+	}
+}
+
+// 标签无法识别时按文件名兜底（自建包文件）。
+func TestParseFileFallbackAttackType(t *testing.T) {
+	rules, _, _ := ParseCRSRules(`
+SecRule REQUEST_URI "@rx ^/internal" "id:1003001,phase:1,block,msg:'unauth access',severity:'ERROR'"
+`, "unauth-access.conf", SourceCustomPack)
+	if len(rules) != 1 {
+		t.Fatalf("parsed %d rules, want 1", len(rules))
+	}
+	if rules[0].AttackType != "INFORMATION_DISCLOSURE" {
+		t.Errorf("attack_type = %q, want INFORMATION_DISCLOSURE", rules[0].AttackType)
+	}
+}
+
+// CRS 初始化类规则（无 attack 标签、非兜底文件）保持 OTHER；
+// 无 msg 时同样按注释块兜底命名。
+func TestParseCRSInitRuleStaysOther(t *testing.T) {
+	rules, _, _ := ParseCRSRules(`
+# Initialize anomaly score variables.
+SecRule TX:anomaly_score "@eq 0" "id:901001,phase:1,pass,nolog,setvar:tx.inbound_anomaly_score=0"
+`, "REQUEST-901-INITIALIZATION.conf", SourceCRS)
+	if len(rules) != 1 {
+		t.Fatalf("parsed %d rules, want 1", len(rules))
+	}
+	if rules[0].AttackType != "OTHER" {
+		t.Errorf("attack_type = %q, want OTHER", rules[0].AttackType)
+	}
+	if rules[0].Name != "Initialize anomaly score variables." {
+		t.Errorf("name = %q", rules[0].Name)
+	}
+}
+
+// msg 优先原则：有 msg 时名称不受上方注释影响。
+func TestMsgPreferredOverComment(t *testing.T) {
+	rules, _, _ := ParseCRSRules(`
+# 注释描述不应作为名称
+SecRule ARGS "@rx x" "id:1004001,phase:2,block,msg:'真实消息',tag:'attack-xss'"
+`, "TEST.conf", SourceCustomPack)
+	if len(rules) != 1 {
+		t.Fatalf("parsed %d rules, want 1", len(rules))
+	}
+	if rules[0].Name != "真实消息" {
+		t.Errorf("name = %q, want 真实消息", rules[0].Name)
+	}
+}

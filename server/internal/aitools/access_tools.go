@@ -15,7 +15,7 @@ func NewAccessTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&accessRuleSearch{baseTool: baseTool{meta: toolMeta{
 		code: "access_rule.search", name: "黑白名单查询", version: "1.0",
 		description: "按类型/范围/状态查询IP黑白名单规则",
-		risk: RiskReadOnly, permission: "access_rules.read", timeout: 15, maxResults: 50,
+		risk:        RiskReadOnly, permission: "access_rules.read", timeout: 15, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"rule_type": sch("string", "ALLOW/DENY（可选）"), "scope_type": sch("string", "GLOBAL/APPLICATION（可选）"),
 			"status": sch("string", "状态（可选）"), "page": sch("integer", "页码"),
@@ -23,7 +23,7 @@ func NewAccessTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&tempBlockSearch{baseTool: baseTool{meta: toolMeta{
 		code: "temporary_block.search", name: "临时封禁查询", version: "1.0",
 		description: "按状态/IP查询临时封禁",
-		risk: RiskReadOnly, permission: "temporary_blocks.read", timeout: 15, maxResults: 50,
+		risk:        RiskReadOnly, permission: "temporary_blocks.read", timeout: 15, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"status": sch("string", "状态（可选）"), "client_ip": sch("string", "IP（可选）"),
 			"page": sch("integer", "页码"),
@@ -31,7 +31,7 @@ func NewAccessTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&ccPolicySearch{baseTool: baseTool{meta: toolMeta{
 		code: "rate_limit_policy.search", name: "CC策略查询", version: "1.0",
 		description: "按范围/状态/动作查询CC防护策略",
-		risk: RiskReadOnly, permission: "rate_limits.read", timeout: 15, maxResults: 50,
+		risk:        RiskReadOnly, permission: "rate_limits.read", timeout: 15, maxResults: 50,
 		schema: obj(map[string]interface{}{
 			"scope_type": sch("string", "范围（可选）"), "status": sch("string", "状态（可选）"),
 			"action": sch("string", "动作（可选）"), "page": sch("integer", "页码"),
@@ -39,17 +39,17 @@ func NewAccessTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&trustedProxySummary{baseTool: baseTool{meta: toolMeta{
 		code: "trusted_proxy.get_summary", name: "可信代理摘要", version: "1.0",
 		description: "可信代理数量与启停摘要",
-		risk: RiskReadOnly, permission: "trusted_proxies.read", timeout: 10, maxResults: 10,
+		risk:        RiskReadOnly, permission: "trusted_proxies.read", timeout: 10, maxResults: 10,
 		schema: obj(map[string]interface{}{})}}, db: db})
 	r.Register(&securityOverview{baseTool: baseTool{meta: toolMeta{
 		code: "statistics.security_overview", name: "安全概览统计", version: "1.0",
 		description: "今日请求/事件/阻断/CC/黑名单命中与未处置统计",
-		risk: RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 1,
+		risk:        RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 1,
 		schema: obj(map[string]interface{}{})}}, db: db})
 	r.Register(&attackTrend{baseTool: baseTool{meta: toolMeta{
 		code: "statistics.attack_trend", name: "攻击趋势统计", version: "1.0",
 		description: "按时间桶统计攻击事件趋势",
-		risk: RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 200,
+		risk:        RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 200,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 			"bucket": sch("string", "hour|day"),
@@ -57,7 +57,7 @@ func NewAccessTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&topSourceIPs{baseTool: baseTool{meta: toolMeta{
 		code: "statistics.top_source_ips", name: "攻击源IP排行", version: "1.0",
 		description: "按时间范围统计攻击源IP排行",
-		risk: RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 20,
+		risk:        RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 20,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 			"limit": sch("integer", "数量"),
@@ -65,7 +65,7 @@ func NewAccessTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&topRules{baseTool: baseTool{meta: toolMeta{
 		code: "statistics.top_rules", name: "规则命中排行", version: "1.0",
 		description: "按时间范围统计规则命中与误报排行",
-		risk: RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 20,
+		risk:        RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 20,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 			"limit": sch("integer", "数量"),
@@ -73,7 +73,7 @@ func NewAccessTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&topApplications{baseTool: baseTool{meta: toolMeta{
 		code: "statistics.top_applications", name: "应用攻击排行", version: "1.0",
 		description: "按时间范围统计受攻击应用排行",
-		risk: RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 20,
+		risk:        RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 20,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 			"limit": sch("integer", "数量"),
@@ -81,7 +81,7 @@ func NewAccessTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&topURIs{baseTool: baseTool{meta: toolMeta{
 		code: "statistics.top_uris", name: "URI攻击排行", version: "1.0",
 		description: "按时间范围统计高风险URI排行",
-		risk: RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 20,
+		risk:        RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 20,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 			"limit": sch("integer", "数量"),
@@ -89,14 +89,14 @@ func NewAccessTools(r *Registry, db *pgxpool.Pool) {
 	r.Register(&falsePositiveStats{baseTool: baseTool{meta: toolMeta{
 		code: "statistics.false_positive", name: "误报统计", version: "1.0",
 		description: "按时间范围统计误报数量与占比",
-		risk: RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 10,
+		risk:        RiskReadOnly, permission: "analytics.security.read", timeout: 30, maxResults: 10,
 		schema: obj(map[string]interface{}{
 			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
 		})}}, db: db})
 	r.Register(&runtimeStats{baseTool: baseTool{meta: toolMeta{
 		code: "statistics.runtime", name: "运行统计", version: "1.0",
 		description: "组件健康快照与发布/报告成功率统计",
-		risk: RiskReadOnly, permission: "dashboard.runtime.read", timeout: 20, maxResults: 20,
+		risk:        RiskReadOnly, permission: "dashboard.runtime.read", timeout: 20, maxResults: 20,
 		schema: obj(map[string]interface{}{})}}, db: db})
 }
 
@@ -558,6 +558,6 @@ ORDER BY component, taken_at DESC`)
 	_ = t.db.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE status='SUCCESS') FROM gateway_publish_tasks WHERE requested_at > now() - interval '30 days'`).Scan(&total, &success)
 	return map[string]interface{}{
 		"components": comps,
-		"publish": map[string]interface{}{"total_30d": total, "success_30d": success},
+		"publish":    map[string]interface{}{"total_30d": total, "success_30d": success},
 	}, rows.Err()
 }

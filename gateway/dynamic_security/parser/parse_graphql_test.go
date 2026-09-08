@@ -85,3 +85,36 @@ func TestParseRequestGraphQLNegative(t *testing.T) {
 		t.Fatalf("must not detect graphql: op=%q vars=%v", p.GraphQLOperation, p.GraphQLVariables)
 	}
 }
+
+// TestParseRequestGraphQLMalformedFields 一次解析复用后的畸形字段容忍口径：
+// variables/operationName 类型不符按缺失处理（query 有效仍识别操作）；query 非字符串不识别。
+func TestParseRequestGraphQLMalformedFields(t *testing.T) {
+	// variables 非对象：操作仍识别，variables 为空（旧窄结构 Unmarshal 失败会整体跳过，
+	// 复用根值后按缺失容忍——OBSERVE 级观测可接受，见 parse_graphql.go 注释）
+	r, err := http.NewRequest(http.MethodPost, "http://x/graphql",
+		strings.NewReader(`{"query":"mutation DoIt($x: Int) { do(x: $x) }","variables":"oops"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Content-Type", "application/json")
+	p, err := ParseRequest(r, dsctx.New("", dsctx.DefaultParseLimits()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.GraphQLOperation != "mutation" || p.GraphQLOperationName != "DoIt" || len(p.GraphQLVariables) != 0 {
+		t.Fatalf("malformed variables tolerated: op=%q name=%q vars=%v", p.GraphQLOperation, p.GraphQLOperationName, p.GraphQLVariables)
+	}
+	// query 非字符串：不识别为 GraphQL
+	r2, err := http.NewRequest(http.MethodPost, "http://x/graphql", strings.NewReader(`{"query":123}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Header.Set("Content-Type", "application/json")
+	p2, err := ParseRequest(r2, dsctx.New("", dsctx.DefaultParseLimits()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2.GraphQLOperation != "" || len(p2.GraphQLVariables) != 0 {
+		t.Fatalf("non-string query must not detect graphql: op=%q vars=%v", p2.GraphQLOperation, p2.GraphQLVariables)
+	}
+}

@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: Twig string-callable filter RCE (CUSTOM_PACK ssti-injection)
+rule_id: 1001810
+tests:
+  - test_id: 1
+    desc: "Twig array filter with string callable system"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'var={{["id"]|filter("system")}}'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001810]
+  - test_id: 2
+    desc: "Twig map filter with string callable phpinfo"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'var={{["x"]|map("phpinfo")}}'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001810]

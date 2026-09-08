@@ -20,6 +20,7 @@ import { ApiError } from '../../../../api/client'
 import { aiAgentsToolsApi, patchAiAgent } from '../../../../api/ai'
 import type { AiAgent } from '../../../../api/ai'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
+import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
 import StatusTag from '../../../../components/StatusTag'
 import { useAuthStore } from '../../../../stores/auth'
 import { hasPermission } from '../../../../utils/permission'
@@ -34,6 +35,7 @@ export default function AiAgentsPage() {
 
   const [configTarget, setConfigTarget] = useState<AiAgent | null>(null)
   const [configForm] = Form.useForm<{ allowed_tool_ids: string[] }>()
+  const [detailRecord, setDetailRecord] = useState<AiAgent | null>(null)
 
   const agentsQuery = useQuery({ queryKey: ['ai-agents'], queryFn: aiAgentsToolsApi.listAgents })
   const toolsQuery = useQuery({ queryKey: ['ai-tools'], queryFn: aiAgentsToolsApi.listTools })
@@ -160,9 +162,20 @@ export default function AiAgentsPage() {
             dataSource={agentsQuery.data}
             scroll={{ x: 1000 }}
             pagination={false}
+            onRow={(record) => ({
+              onDoubleClick: () => setDetailRecord(record),
+              style: { cursor: 'pointer' },
+            })}
           />
         )}
       </Space>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="智能体详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
 
       <Modal
         title={`配置 Agent：${configTarget?.name ?? ''}`}

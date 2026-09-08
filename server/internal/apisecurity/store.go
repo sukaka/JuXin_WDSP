@@ -189,6 +189,9 @@ type GraphNode struct {
 	AssetStatus    string     `json:"asset_status"`
 	LearningStatus string     `json:"learning_status"`
 	HitCount       int64      `json:"hit_count"`
+	// 未闭环风险发现数（活动状态 NEW/CONFIRMED/IN_PROGRESS，000042 七态词表，
+	// 口径与 GetPosture 一致；W6-A 图谱/拓扑节点风险计数）
+	OpenFindingsCount int64 `json:"open_findings_count"`
 }
 
 // GraphEdge 调用边（api_call_edges）。
@@ -198,8 +201,11 @@ type GraphEdge struct {
 	SourceEndpointID  *uuid.UUID `json:"source_endpoint_id,omitempty"`
 	TargetEndpointID  uuid.UUID  `json:"target_endpoint_id"`
 	CallCount         int64      `json:"call_count"`
-	FirstSeenAt       time.Time  `json:"first_seen_at"`
-	LastSeenAt        time.Time  `json:"last_seen_at"`
+	// 走过该边的 distinct 身份数（近似下界；000067 起，派生口径见
+	// aggregations/call_edges.go 文件头：首见身份计 1，同身份重复经过不增）
+	IdentityCount int64     `json:"identity_count"`
+	FirstSeenAt   time.Time `json:"first_seen_at"`
+	LastSeenAt    time.Time `json:"last_seen_at"`
 }
 
 // Graph 调用图谱（节点 + 调用边）。
@@ -208,12 +214,36 @@ type Graph struct {
 	Edges []GraphEdge `json:"edges"`
 }
 
-// ListGraph 全量节点与调用边。
+// EdgeFilter 调用边过滤（W6-A 图谱/拓扑读接口增强）。零值 = 不过滤（全量边）。
+// 时间窗按「边在窗口内有观测」语义匹配：last_seen_at >= Start 且 first_seen_at <= End。
+type EdgeFilter struct {
+	Start    *time.Time // 边活跃窗口下界（last_seen_at 不早于 Start）
+	End      *time.Time // 边活跃窗口上界（first_seen_at 不晚于 End）
+	MinCount int64      // 最小调用次数（call_count >= MinCount）
+}
+
+// activeFindingsJoin 未闭环 findings 计数子查询（活动状态口径同 GetPosture），
+// 供图谱/拓扑节点 LEFT JOIN 附带 open_findings_count。
+const activeFindingsJoin = `
+LEFT JOIN (
+    SELECT endpoint_id, count(*) AS open_count FROM api_runtime_findings
+    WHERE status IN ('NEW','CONFIRMED','IN_PROGRESS') GROUP BY endpoint_id
+) f ON f.endpoint_id = e.id`
+
+// ListGraph 全量节点与调用边（不过滤；aitools.APISecurityReader 契约保持无参形态）。
 func (s *Store) ListGraph(ctx context.Context) (*Graph, error) {
+	return s.ListGraphFiltered(ctx, EdgeFilter{})
+}
+
+// ListGraphFiltered 全量节点 + 按 EdgeFilter 过滤后的调用边（节点始终全量返回，
+// 过滤只作用于边）。
+func (s *Store) ListGraphFiltered(ctx context.Context, f EdgeFilter) (*Graph, error) {
 	g := &Graph{Nodes: []GraphNode{}, Edges: []GraphEdge{}}
 	rows, err := s.db.Query(ctx, `
-SELECT id, endpoint_key, http_method, normalized_path, application_id, asset_status, learning_status, hit_count
-FROM api_endpoints ORDER BY endpoint_key`)
+SELECT e.id, e.endpoint_key, e.http_method, e.normalized_path, e.application_id,
+       e.asset_status, e.learning_status, e.hit_count, COALESCE(f.open_count, 0)
+FROM api_endpoints e`+activeFindingsJoin+`
+ORDER BY e.endpoint_key`)
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +251,7 @@ FROM api_endpoints ORDER BY endpoint_key`)
 	for rows.Next() {
 		var n GraphNode
 		if err := rows.Scan(&n.ID, &n.EndpointKey, &n.HTTPMethod, &n.NormalizedPath,
-			&n.ApplicationID, &n.AssetStatus, &n.LearningStatus, &n.HitCount); err != nil {
+			&n.ApplicationID, &n.AssetStatus, &n.LearningStatus, &n.HitCount, &n.OpenFindingsCount); err != nil {
 			return nil, err
 		}
 		g.Nodes = append(g.Nodes, n)
@@ -230,7 +260,7 @@ FROM api_endpoints ORDER BY endpoint_key`)
 		return nil, err
 	}
 
-	edges, err := s.listEdges(ctx)
+	edges, err := s.listEdges(ctx, f)
 	if err != nil {
 		return nil, err
 	}
@@ -251,13 +281,18 @@ type Topology struct {
 	Edges        []GraphEdge     `json:"edges"`
 }
 
-// ListTopology 端点按应用分组，附调用边。
+// ListTopology 端点按应用分组，附调用边（不过滤；契约同 ListGraph）。
 func (s *Store) ListTopology(ctx context.Context) (*Topology, error) {
+	return s.ListTopologyFiltered(ctx, EdgeFilter{})
+}
+
+// ListTopologyFiltered 端点按应用分组（节点附未闭环风险计数），边按 EdgeFilter 过滤。
+func (s *Store) ListTopologyFiltered(ctx context.Context, f EdgeFilter) (*Topology, error) {
 	rows, err := s.db.Query(ctx, `
 SELECT e.id, e.endpoint_key, e.http_method, e.normalized_path, e.application_id,
-       e.asset_status, e.learning_status, e.hit_count, COALESCE(a.name, '')
+       e.asset_status, e.learning_status, e.hit_count, COALESCE(a.name, ''), COALESCE(f.open_count, 0)
 FROM api_endpoints e
-LEFT JOIN applications a ON a.id = e.application_id
+LEFT JOIN applications a ON a.id = e.application_id`+activeFindingsJoin+`
 ORDER BY e.application_id NULLS LAST, e.endpoint_key`)
 	if err != nil {
 		return nil, err
@@ -271,7 +306,7 @@ ORDER BY e.application_id NULLS LAST, e.endpoint_key`)
 		var n GraphNode
 		var appName string
 		if err := rows.Scan(&n.ID, &n.EndpointKey, &n.HTTPMethod, &n.NormalizedPath,
-			&n.ApplicationID, &n.AssetStatus, &n.LearningStatus, &n.HitCount, &appName); err != nil {
+			&n.ApplicationID, &n.AssetStatus, &n.LearningStatus, &n.HitCount, &appName, &n.OpenFindingsCount); err != nil {
 			return nil, err
 		}
 		key := "none"
@@ -298,7 +333,7 @@ ORDER BY e.application_id NULLS LAST, e.endpoint_key`)
 		return nil, err
 	}
 
-	edges, err := s.listEdges(ctx)
+	edges, err := s.listEdges(ctx, f)
 	if err != nil {
 		return nil, err
 	}
@@ -306,11 +341,25 @@ ORDER BY e.application_id NULLS LAST, e.endpoint_key`)
 	return t, nil
 }
 
-// listEdges 全量调用边。
-func (s *Store) listEdges(ctx context.Context) ([]GraphEdge, error) {
+// listEdges 按 EdgeFilter 过滤的调用边（条件由白名单拼接，值一律参数化）。
+func (s *Store) listEdges(ctx context.Context, f EdgeFilter) ([]GraphEdge, error) {
+	where := "TRUE"
+	args := []any{}
+	if f.Start != nil {
+		args = append(args, *f.Start)
+		where += fmt.Sprintf(" AND last_seen_at >= $%d", len(args))
+	}
+	if f.End != nil {
+		args = append(args, *f.End)
+		where += fmt.Sprintf(" AND first_seen_at <= $%d", len(args))
+	}
+	if f.MinCount > 0 {
+		args = append(args, f.MinCount)
+		where += fmt.Sprintf(" AND call_count >= $%d", len(args))
+	}
 	rows, err := s.db.Query(ctx, `
-SELECT id, caller_fingerprint, source_endpoint_id, target_endpoint_id, call_count, first_seen_at, last_seen_at
-FROM api_call_edges ORDER BY call_count DESC`)
+SELECT id, caller_fingerprint, source_endpoint_id, target_endpoint_id, call_count, identity_count, first_seen_at, last_seen_at
+FROM api_call_edges WHERE `+where+` ORDER BY call_count DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -319,7 +368,7 @@ FROM api_call_edges ORDER BY call_count DESC`)
 	for rows.Next() {
 		var e GraphEdge
 		if err := rows.Scan(&e.ID, &e.CallerFingerprint, &e.SourceEndpointID,
-			&e.TargetEndpointID, &e.CallCount, &e.FirstSeenAt, &e.LastSeenAt); err != nil {
+			&e.TargetEndpointID, &e.CallCount, &e.IdentityCount, &e.FirstSeenAt, &e.LastSeenAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

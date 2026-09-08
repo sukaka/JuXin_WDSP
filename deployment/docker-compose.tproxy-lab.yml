@@ -1,0 +1,74 @@
+# 九章阶段D 透明串接（透明代理）部署模式 PoC 实验编排
+# 设计依据：docs/NETWORK_MODES_DESIGN.md §4.3
+#
+# 透明串接实验拓扑（全部在单个 privileged 容器内部自建，Docker 网桥间无法真
+# 二层桥接，故用 network namespace 模拟，这是无交换机环境的标准做法）：
+#
+#   client ns(192.168.50.10/24) ──veth── br0 ──veth── origin ns(192.168.50.20/24)
+#                                            │ bridge-nf-call-iptables=1
+#                                            │ nat/PREROUTING REDIRECT tcp/8081 + tcp/443
+#                                            ▼
+#                              tproxyd(0.0.0.0:15000，SO_ORIGINAL_DST 取原始目的；
+#                              TLS 连接嗅探 ClientHello SNI 分流：清单内 www.test.com
+#                              → Caddy TLS 终结检测；清单外 www.test1.com → 端到端透传)
+#                                            │ PROXY protocol v1（真实五元组）
+#                                            ▼
+#                     Caddy(127.0.0.1:8080 明文 + 127.0.0.1:8443 TLS，
+#                           coraza On → reverse_proxy 源站)
+#
+# - 客户端与源站同网段，客户端零代理配置、按普通直连访问源站，五元组对网络层
+#   透明；WAF 终结 TCP/HTTP 完成检测与 403 阻断（透明代理语义）；
+# - 看门狗 fail-open：tproxyd/caddy 任一死亡即 flush 牵引链，桥接恢复二层直通；
+#   恢复由编排/运维重启容器完成（docker restart）；
+# - 访问日志与 Coraza 审计日志落宿主机卷，测试脚本直读断言（PoC 自包含）。
+#
+# 用法（仓库根目录）：
+#   # 1) 构建牵引进程二进制与镜像（Dockerfile 头部有同样说明）
+#   cd gateway && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+#     -ldflags="-s -w" -o ../deployment/docker/tproxy-lab/tproxyd ./cmd/tproxyd && cd ..
+#   docker compose -f deployment/docker-compose.tproxy-lab.yml build
+#   # 2) 起实验、跑验证、清理
+#   docker compose -f deployment/docker-compose.tproxy-lab.yml up -d
+#   bash test/waf/scripts/transparent-lab-tests.sh
+#   docker compose -f deployment/docker-compose.tproxy-lab.yml down -v
+#
+# 镜像版本锁定说明：与 docker-compose.mirror-lab.yml 相同——Docker Hub 在本实验
+# 环境不可达，基础镜像与二进制来源镜像统一按本机已有镜像的 RepoDigest 锁定
+# （见 deployment/docker/tproxy-lab/Dockerfile），保证可复现。
+
+name: tproxylab
+
+services:
+  lab:
+    image: jiuzhang-tproxy-lab:stageD-poc
+    build:
+      # 需先按 Dockerfile 头部说明在宿主机产出 tproxyd 静态二进制
+      context: docker/tproxy-lab
+      dockerfile: Dockerfile
+    container_name: tproxylab-lab
+    restart: unless-stopped
+    # 拓扑（netns/veth/bridge）、内核参数、iptables 全部容器内自建，需要特权
+    privileged: true
+    # 不接入任何 docker 网络：业务面仅容器内自建桥接拓扑，杜绝绕行通道干扰实验结论
+    network_mode: none
+    environment:
+      SEC_RULE_ENGINE: ${SEC_RULE_ENGINE:-On}
+      TPROXY_STATS_INTERVAL: "5" # PoC 缩短统计周期，便于用例 t6 断言
+      WATCHDOG_INTERVAL: "5"     # 看门狗探测周期（秒）
+    volumes:
+      # 与网关完全一致的 Coraza/CRS 规则链（只读挂载）
+      - ../gateway/rules:/etc/caddy/rules:ro
+      # 实验 Caddy 配置（proxy_protocol wrapper + 与 stage5 一致的规则链）
+      - ./docker/tproxy-lab/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      # 访问日志与 Coraza 审计日志落宿主机，供用例 t3 校验真实客户端 IP
+      - ../runtime/logs/tproxy-lab:/var/log/caddy
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    healthcheck:
+      # tproxyd 与 caddy 均在活即健康；fail-open（看门狗清规则后驻留）时为不健康
+      test: ["CMD", "sh", "-c", "pidof tproxyd >/dev/null && pidof caddy >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 30s

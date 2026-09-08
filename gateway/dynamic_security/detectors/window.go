@@ -10,6 +10,8 @@ import (
 //
 // 单节点限制：状态仅存在于本网关进程内存，多网关部署时各节点独立计数，
 // 不共享基线；配置重载不重置，进程重启清零。
+// 演进：计数存储已抽象为可插拔接口（store.go），默认仍为本文件内存实现；
+// Valkey 实现见 jiuzhang_guard/behaviorstore。
 
 // windowSize 行为/限速统计窗口。
 const windowSize = time.Minute

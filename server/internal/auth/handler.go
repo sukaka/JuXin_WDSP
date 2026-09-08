@@ -100,7 +100,20 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 签发 CSRF Token
+	if result.TOTPRequired {
+		// 已开启双因子认证：不下发会话，返回一次性挑战令牌进入第二步验证
+		response.JSONWithCode(w, r, http.StatusOK, response.CodeTOTPRequired, "账号已开启双因子认证，请完成动态令牌验证", map[string]interface{}{
+			"challenge_token": result.ChallengeToken,
+		})
+		return
+	}
+
+	// 签发 CSRF Token 并下发会话 Cookie（与 TOTP 第二步验证共用同一出口）
+	h.writeLoginSuccess(w, r, result)
+}
+
+// writeLoginSuccess 签发 CSRF Token、设置会话 Cookie 并输出登录结果。
+func (h *Handler) writeLoginSuccess(w http.ResponseWriter, r *http.Request, result *LoginResult) {
 	csrfToken, err := h.svc.IssueCSRFToken(r.Context(), result.Session.ID)
 	if err != nil {
 		response.InternalError(w, r, errors.Join(err, h.svc.Logout(r.Context(), result.Session.ID)))
@@ -116,6 +129,155 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		"password_expiring":   result.PasswordExpiring,
 		"password_expires_at": result.PasswordExpiresAt,
 	})
+}
+
+type totpVerifyRequest struct {
+	ChallengeToken string `json:"challenge_token"`
+	Code           string `json:"code"`
+}
+
+// TOTPVerify 登录第二步：校验挑战令牌与动态令牌/恢复码，通过后建立会话。
+func (h *Handler) TOTPVerify(w http.ResponseWriter, r *http.Request) {
+	var req totpVerifyRequest
+	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if req.ChallengeToken == "" || req.Code == "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "挑战令牌与验证码不能为空")
+		return
+	}
+
+	result, err := h.svc.VerifyTOTPLogin(r.Context(), TOTPVerifyInput{
+		ChallengeToken: req.ChallengeToken,
+		Code:           req.Code,
+		SourceIP:       middleware.RemoteIP(r),
+		ConnectionIP:   middleware.ConnectionIP(r),
+		UserAgent:      r.UserAgent(),
+		RequestID:      response.RequestIDFrom(r),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrTOTPChallengeInvalid):
+			response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthenticated, "验证会话已过期，请重新登录")
+		case errors.Is(err, ErrAccountUnavailable):
+			response.Error(w, r, http.StatusForbidden, response.CodeAccountLocked, "账号不可用，请联系管理员")
+		case errors.Is(err, ErrTOTPInvalid):
+			// 动态令牌/恢复码错误：挑战令牌在 TTL 内仍有效，可重试；连续失败由服务层计入账号锁定
+			response.Error(w, r, http.StatusUnauthorized, response.CodeTOTPInvalid, "动态令牌或恢复码错误")
+		default:
+			response.InternalError(w, r, err)
+		}
+		return
+	}
+
+	// 与登录一致的 CSRF 签发与 Cookie 下发
+	h.writeLoginSuccess(w, r, result)
+}
+
+// TOTPSetup 生成待启用 TOTP 密钥与恢复码（明文仅此一次返回）。
+func (h *Handler) TOTPSetup(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	if p == nil {
+		response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthenticated, "未登录")
+		return
+	}
+	result, err := h.svc.SetupTOTP(r.Context(), h.totpSelfInput(r, p, ""))
+	if err != nil {
+		if errors.Is(err, ErrTOTPAlreadyEnabled) {
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "已开启双因子认证，请先关闭后再重新设置")
+			return
+		}
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{
+		"secret":         result.Secret,
+		"otpauth_url":    result.OTPAuthURL,
+		"recovery_codes": result.RecoveryCodes,
+		"notice":         "密钥与恢复码仅本次显示，请立即妥善保存",
+	})
+}
+
+type totpCodeRequest struct {
+	Code string `json:"code"`
+}
+
+// TOTPEnable 用待启用密钥验证动态令牌，通过后正式开启双因子认证。
+func (h *Handler) TOTPEnable(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	if p == nil {
+		response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthenticated, "未登录")
+		return
+	}
+	var req totpCodeRequest
+	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if !security.IsTOTPCodeFormat(req.Code) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "动态令牌为 6 位数字")
+		return
+	}
+	err := h.svc.EnableTOTP(r.Context(), h.totpSelfInput(r, p, req.Code))
+	if err != nil {
+		switch {
+		case errors.Is(err, users.ErrNoTOTPPending):
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "请先生成双因子密钥")
+		case errors.Is(err, ErrTOTPAlreadyEnabled):
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "已开启双因子认证")
+		case errors.Is(err, ErrTOTPInvalid):
+			response.Error(w, r, http.StatusBadRequest, response.CodeTOTPInvalid, "动态令牌错误或已过期")
+		default:
+			response.InternalError(w, r, err)
+		}
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]string{"message": "双因子认证已开启"})
+}
+
+// TOTPDisable 验证动态令牌或恢复码后关闭双因子认证（高危操作）。
+func (h *Handler) TOTPDisable(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	if p == nil {
+		response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthenticated, "未登录")
+		return
+	}
+	var req totpCodeRequest
+	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if req.Code == "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "验证码不能为空")
+		return
+	}
+	err := h.svc.DisableTOTP(r.Context(), h.totpSelfInput(r, p, req.Code))
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrTOTPNotEnabled):
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "未开启双因子认证")
+		case errors.Is(err, ErrTOTPInvalid):
+			response.Error(w, r, http.StatusBadRequest, response.CodeTOTPInvalid, "动态令牌或恢复码错误")
+		default:
+			response.InternalError(w, r, err)
+		}
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]string{"message": "双因子认证已关闭"})
+}
+
+// totpSelfInput 组装双因子自助管理输入（含审计上下文）。
+func (h *Handler) totpSelfInput(r *http.Request, p *authz.Principal, code string) TOTPSelfInput {
+	return TOTPSelfInput{
+		UserID:       p.UserID,
+		Username:     p.Username,
+		Code:         code,
+		SourceIP:     middleware.RemoteIP(r),
+		ConnectionIP: middleware.ConnectionIP(r),
+		UserAgent:    r.UserAgent(),
+		RequestID:    response.RequestIDFrom(r),
+	}
 }
 
 // Logout 处理退出。
@@ -145,8 +307,17 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusUnauthorized, response.CodeUnauthenticated, "会话无效")
 		return
 	}
-	roles, _ := h.users.GetRoles(r.Context(), p.UserID)
-	perms, _ := h.users.GetPermissions(r.Context(), p.UserID)
+	// 角色/权限查询失败如实返回 500：若吞错返回空权限，前端会误判为无权限而把用户踢出。
+	roles, err := h.users.GetRoles(r.Context(), p.UserID)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	perms, err := h.users.GetPermissions(r.Context(), p.UserID)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
 
 	// 检查密码过期
 	policy := h.svc.settings.PasswordPolicy(r.Context())
@@ -199,7 +370,6 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		SourceIP:     middleware.RemoteIP(r),
 		ConnectionIP: middleware.ConnectionIP(r),
 		RequestID:    response.RequestIDFrom(r),
-		SessionID:    p.SessionID,
 	})
 	if err != nil {
 		switch {
@@ -218,7 +388,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 服务层已持久化撤销当前会话。
+	// 服务层已在改密事务中吊销含当前会话在内的全部会话（持久化 + Valkey 缓存清理）。
 	h.clearSessionCookie(w)
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"message":          "密码修改成功，请重新登录",
@@ -324,6 +494,7 @@ func buildUserResponse(u *users.User, roles []users.RoleInfo, perms []string) ma
 		"roles":                roleList,
 		"permissions":          perms,
 		"must_change_password": u.MustChangePassword,
+		"totp_enabled":         u.TOTPEnabled,
 		"last_login_at":        u.LastLoginAt,
 		"last_login_ip":        u.LastLoginIP,
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,7 +20,10 @@ import (
 // ---------- 校验逻辑单元测试（不依赖DB） ----------
 
 func TestAppCodeValidation(t *testing.T) {
-	cases := []struct{ code string; wantErr bool }{
+	cases := []struct {
+		code    string
+		wantErr bool
+	}{
 		{"portal-system", false}, {"finance-api", false}, {"ab", true},
 		{"A-Upper", true}, {"double--dash", true}, {"with_underscore", true},
 	}
@@ -197,6 +201,62 @@ func TestStage3DomainValidation(t *testing.T) {
 	r4.Body.Close()
 	if r4.StatusCode != http.StatusBadRequest {
 		t.Errorf("protocol domain status = %d, want 400", r4.StatusCode)
+	}
+}
+
+// TestStage3DomainUpdateSelfNoConflict MED-18 回归：更新自身 ACTIVE 域名不得与自己冲突；
+// 跨应用同域名同端口仍必须报冲突。
+func TestStage3DomainUpdateSelfNoConflict(t *testing.T) {
+	env := setupTestEnv(t)
+	env.createUserDirect(t, "sec_s3_dupd", "SecS3@Test2026!", "SECURITY_ADMIN")
+	cookies, csrf := env.login(t, "sec_s3_dupd", "SecS3@Test2026!")
+
+	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
+	host := "upd-" + suffix + ".example.com"
+
+	resp := env.post(t, "/api/v1/applications",
+		fmt.Sprintf(`{"code":"dom-upd-%s","name":"域名更新测试","protection_mode":"OBSERVE"}`, suffix), cookies, csrf)
+	var result apiResp
+	readJSON(t, resp, &result)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create app status = %d", resp.StatusCode)
+	}
+	appID, _ := result.Data["id"].(string)
+
+	// 添加 ACTIVE 域名（AddDomain 默认 status=ACTIVE）
+	resp = env.post(t, fmt.Sprintf("/api/v1/applications/%s/domains", appID),
+		fmt.Sprintf(`{"hostname":%q,"is_primary":true,"http_enabled":true,"http_port":8080}`, host), cookies, csrf)
+	readJSON(t, resp, &result)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("add domain status = %d, data=%v", resp.StatusCode, result.Data)
+	}
+	domainID, _ := result.Data["id"].(string)
+	if domainID == "" {
+		t.Fatalf("no domain id in response: %+v", result.Data)
+	}
+
+	// 更新自身：同域名同端口仅改跳转开关，不得报与自身冲突（修复前 excludeID 未生效会 409）
+	resp = env.request(t, http.MethodPut, fmt.Sprintf("/api/v1/applications/%s/domains/%s", appID, domainID),
+		fmt.Sprintf(`{"hostname":%q,"is_primary":true,"http_enabled":true,"http_port":8080,"redirect_http_to_https":false}`, host),
+		cookies, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("update own domain status = %d, want 200（不得与自身冲突）", resp.StatusCode)
+	}
+
+	// 跨应用冲突仍须检出：另一应用添加同域名同端口
+	resp = env.post(t, "/api/v1/applications",
+		fmt.Sprintf(`{"code":"dom-upd-b-%s","name":"域名冲突方","protection_mode":"OBSERVE"}`, suffix), cookies, csrf)
+	readJSON(t, resp, &result)
+	resp.Body.Close()
+	appID2, _ := result.Data["id"].(string)
+	resp = env.post(t, fmt.Sprintf("/api/v1/applications/%s/domains", appID2),
+		fmt.Sprintf(`{"hostname":%q,"http_enabled":true,"http_port":8080}`, host), cookies, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("cross-app domain conflict status = %d, want 409", resp.StatusCode)
 	}
 }
 

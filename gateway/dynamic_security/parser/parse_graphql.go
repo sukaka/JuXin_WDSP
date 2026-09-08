@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"encoding/json"
 	"sort"
 	"strings"
 )
@@ -14,25 +13,29 @@ func (p *Parsed) extractGraphQLQuery(query string) {
 
 // extractGraphQLJSON 处理 /graphql 路径上的 JSON 请求体：含 query 字段时提取
 // 操作类型、operationName 与 variables 顶层键名（不存变量值；键名排序保证确定性）。
-func (p *Parsed) extractGraphQLJSON(raw []byte) {
+// v 为 JSON 一次解析的解码根值（extractJSONFields 产物复用，不再二次 Unmarshal）；
+// 字段类型不符按缺失容忍（与窄结构 Unmarshal 失败的整体跳过口径差异：畸形字段不影响
+// 其余字段提取，OBSERVE 级观测可接受）。
+func (p *Parsed) extractGraphQLJSON(v any) {
 	if !strings.Contains(strings.ToLower(p.RawPath), "/graphql") {
 		return
 	}
-	var g struct {
-		Query         string         `json:"query"`
-		OperationName string         `json:"operationName"`
-		Variables     map[string]any `json:"variables"`
-	}
-	if err := json.Unmarshal(raw, &g); err != nil || g.Query == "" {
+	obj, ok := v.(map[string]any)
+	if !ok {
 		return
 	}
-	p.GraphQLOperation = graphQLOperationType(g.Query)
-	p.GraphQLOperationName = g.OperationName
-	if p.GraphQLOperationName == "" {
-		p.GraphQLOperationName = graphQLOperationName(g.Query)
+	query, _ := obj["query"].(string)
+	if query == "" {
+		return
 	}
-	vars := make([]string, 0, len(g.Variables))
-	for k := range g.Variables {
+	p.GraphQLOperation = graphQLOperationType(query)
+	p.GraphQLOperationName, _ = obj["operationName"].(string)
+	if p.GraphQLOperationName == "" {
+		p.GraphQLOperationName = graphQLOperationName(query)
+	}
+	variables, _ := obj["variables"].(map[string]any)
+	vars := make([]string, 0, len(variables))
+	for k := range variables {
 		vars = append(vars, k)
 	}
 	sort.Strings(vars)

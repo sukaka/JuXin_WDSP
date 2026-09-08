@@ -20,6 +20,7 @@ import dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { temporaryBlocksApi } from '../../api/temporaryBlocks'
 import { applicationsApi } from '../../api/applications'
+import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
@@ -59,6 +60,7 @@ export default function TemporaryBlocksPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [extending, setExtending] = useState<TemporaryBlockItem | null>(null)
+  const [detailRecord, setDetailRecord] = useState<TemporaryBlockItem | null>(null)
   const [extendForm] = Form.useForm<ExtendFormValues>()
 
   const listQuery = useQuery({
@@ -171,7 +173,7 @@ export default function TemporaryBlocksPage() {
         </Space>
       ),
     },
-    { title: '命中数', dataIndex: 'hit_count', width: 80, align: 'right' },
+    { title: '命中数', dataIndex: 'hit_count', width: 80 },
     {
       title: '操作',
       key: 'actions',
@@ -259,6 +261,10 @@ export default function TemporaryBlocksPage() {
           columns={columns}
           dataSource={listQuery.data?.items}
           scroll={{ x: 1250 }}
+          onRow={(record) => ({
+            onDoubleClick: () => setDetailRecord(record),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             current: page,
             pageSize,
@@ -317,6 +323,13 @@ export default function TemporaryBlocksPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <RecordDetailDrawer
+        open={detailRecord !== null}
+        title="封禁详情"
+        record={detailRecord as Record<string, unknown> | null}
+        onClose={() => setDetailRecord(null)}
+      />
     </Card>
   )
 }

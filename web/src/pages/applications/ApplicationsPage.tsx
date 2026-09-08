@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -23,10 +23,15 @@ import type { CreateApplicationBody } from '../../api/applications'
 import ProtectionModeTag from '../../components/ProtectionModeTag'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
+import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { APP_STATUS_META, DEPLOYMENT_STATUS_META } from '../../utils/stage3'
+import {
+  APP_STATUS_META,
+  DEPLOYMENT_MODE_META,
+  DEPLOYMENT_STATUS_META,
+} from '../../utils/stage3'
 import type { ApplicationItem, ProtectionMode } from '../../types'
 
 interface Filters {
@@ -46,6 +51,18 @@ function validateCode(value: string): string | null {
   return null
 }
 
+/** 非默认部署模式说明：选中 ROUTED/MIRROR/TRANSPARENT 时展示在「部署模式」表单项下方 */
+const DEPLOYMENT_MODE_HINTS: Record<string, string> = {
+  ROUTED:
+    '路由牵引：流量经三层路由送达本网关节点后转发源站；该模式下按直连对端识别真实客户端 IP，需在宿主机开启 ip_forward 并配置路由（见部署文档）',
+  MIRROR:
+    '镜像旁路：流量副本经镜像口到达节点，只检测不阻断。需在节点部署 mirrorcap 组件，并在『系统运维 → 网口管理』把镜像口角色设为「镜像」。',
+  TRANSPARENT:
+    '透明串接：二层桥接串接 + 流量牵引到本节点检测，可正常阻断。需先完成桥接与牵引安装（见部署文档），客户端与源站均无需改配置。' +
+    'HTTPS 多虚拟主机说明：网关按 TLS SNI 域名自动分流，防护清单即本应用的域名，无需额外配置——仅本应用域名在网关上终结检测（需为本应用上传证书）；' +
+    '若源站同一 IP 上还运行未纳入管理的其它站点，其加密流量端到端透传、不检测，也无需在网关部署它们的证书。',
+}
+
 export default function ApplicationsPage() {
   const { message, modal } = AntdApp.useApp()
   const navigate = useNavigate()
@@ -59,13 +76,24 @@ export default function ApplicationsPage() {
   const [editing, setEditing] = useState<ApplicationItem | null>(null)
   const [createForm] = Form.useForm<CreateApplicationBody>()
   const [editForm] = Form.useForm<Omit<CreateApplicationBody, 'code'>>()
+  const createDeploymentMode = Form.useWatch('deployment_mode', createForm)
+  const editDeploymentMode = Form.useWatch('deployment_mode', editForm)
 
   const listQuery = useQuery({
     queryKey: ['applications', filters, page, pageSize],
-    queryFn: () => applicationsApi.list({ ...filters, page, page_size: pageSize }),
+    queryFn: () =>
+      applicationsApi.list({ ...filters, page, page_size: pageSize }),
   })
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['applications'] })
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ['applications'] })
+
+  const { rowSelection, batchDeleteButton } = useBatchDelete<ApplicationItem>({
+    remove: applicationsApi.remove,
+    invalidateKeys: [['applications']],
+    entityName: '应用',
+    canDelete: hasPermission(permissions, 'applications.delete'),
+  })
 
   const onError = (e: unknown) => {
     if (e instanceof ApiError && e.code === 'RESOURCE_CONFLICT') {
@@ -88,8 +116,13 @@ export default function ApplicationsPage() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Omit<CreateApplicationBody, 'code'> & { version: number } }) =>
-      applicationsApi.update(id, body),
+    mutationFn: ({
+      id,
+      body,
+    }: {
+      id: string
+      body: Omit<CreateApplicationBody, 'code'> & { version: number }
+    }) => applicationsApi.update(id, body),
     onSuccess: () => {
       setEditing(null)
       message.success('保存成功')
@@ -99,7 +132,13 @@ export default function ApplicationsPage() {
   })
 
   const actionMutation = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: 'enable' | 'disable' | 'delete' | 'copy' }) => {
+    mutationFn: ({
+      id,
+      action,
+    }: {
+      id: string
+      action: 'enable' | 'disable' | 'delete' | 'copy'
+    }) => {
       const map: Record<typeof action, (id: string) => Promise<unknown>> = {
         enable: applicationsApi.enable,
         disable: applicationsApi.disable,
@@ -109,15 +148,25 @@ export default function ApplicationsPage() {
       return map[action](id)
     },
     onSuccess: (_data, vars) => {
-      message.success(vars.action === 'copy' ? '应用已复制（含域名与源站）' : '操作成功')
+      message.success(
+        vars.action === 'copy' ? '应用已复制（含域名与源站）' : '操作成功',
+      )
       void invalidate()
     },
     onError,
   })
 
-  const runAction = (action: 'enable' | 'disable' | 'delete' | 'copy', record: ApplicationItem) => {
+  const runAction = (
+    action: 'enable' | 'disable' | 'delete' | 'copy',
+    record: ApplicationItem,
+  ) => {
     const exec = () => actionMutation.mutate({ id: record.id, action })
-    const confirms: Partial<Record<typeof action, { title: string; content: string; danger?: boolean }>> = {
+    const confirms: Partial<
+      Record<
+        typeof action,
+        { title: string; content: string; danger?: boolean }
+      >
+    > = {
       disable: {
         title: '停用确认',
         content: `确定停用应用「${record.name}」吗？停用后该应用的防护与转发将失效。`,
@@ -146,19 +195,25 @@ export default function ApplicationsPage() {
     }
   }
 
-  const actionMenuItems = (record: ApplicationItem): NonNullable<MenuProps['items']> => {
+  const actionMenuItems = (
+    record: ApplicationItem,
+  ): NonNullable<MenuProps['items']> => {
     const items: NonNullable<MenuProps['items']> = []
     if (hasPermission(permissions, 'applications.create')) {
       items.push({ key: 'copy', label: '复制' })
     }
     if (hasPermission(permissions, 'applications.disable')) {
-      if (record.status === 'ACTIVE') items.push({ key: 'disable', label: '停用', danger: true })
+      if (record.status === 'ACTIVE')
+        items.push({ key: 'disable', label: '停用', danger: true })
       if (record.status === 'DRAFT' || record.status === 'DISABLED') {
         items.push({ key: 'enable', label: '启用' })
       }
     }
     if (hasPermission(permissions, 'applications.delete')) {
-      items.push({ type: 'divider' }, { key: 'delete', label: '删除', danger: true })
+      items.push(
+        { type: 'divider' },
+        { key: 'delete', label: '删除', danger: true },
+      )
     }
     return items
   }
@@ -169,13 +224,23 @@ export default function ApplicationsPage() {
       title: '名称',
       dataIndex: 'name',
       width: 180,
-      render: (v: string, record) => <a onClick={() => navigate(`/applications/${record.id}`)}>{v}</a>,
+      render: (v: string, record) => (
+        <Link to={`/applications/${record.id}`}>{v}</Link>
+      ),
     },
     {
       title: '防护模式',
       dataIndex: 'protection_mode',
       width: 130,
       render: (v: string) => <ProtectionModeTag mode={v} />,
+    },
+    {
+      title: '部署模式',
+      dataIndex: 'deployment_mode',
+      width: 110,
+      render: (v: string | undefined) => (
+        <StatusTag value={v || 'REVERSE_PROXY'} map={DEPLOYMENT_MODE_META} />
+      ),
     },
     {
       title: '状态',
@@ -187,13 +252,11 @@ export default function ApplicationsPage() {
       title: '域名数',
       dataIndex: 'domain_count',
       width: 90,
-      align: 'right',
     },
     {
       title: '源站数',
       dataIndex: 'upstream_count',
       width: 90,
-      align: 'right',
     },
     {
       title: '健康状态',
@@ -212,7 +275,9 @@ export default function ApplicationsPage() {
       title: '部署状态',
       dataIndex: 'deployment_status',
       width: 110,
-      render: (v: string) => <StatusTag value={v} map={DEPLOYMENT_STATUS_META} />,
+      render: (v: string) => (
+        <StatusTag value={v} map={DEPLOYMENT_STATUS_META} />
+      ),
     },
     {
       title: '最后发布',
@@ -221,8 +286,16 @@ export default function ApplicationsPage() {
       render: (_, record) => (
         <span>
           {formatDateTime(record.last_publish_at)}
-          {record.last_publish_result === 'SUCCESS' && <Tag color="green" style={{ marginLeft: 4 }}>成功</Tag>}
-          {record.last_publish_result === 'FAILED' && <Tag color="red" style={{ marginLeft: 4 }}>失败</Tag>}
+          {record.last_publish_result === 'SUCCESS' && (
+            <Tag color="green" style={{ marginLeft: 4 }}>
+              成功
+            </Tag>
+          )}
+          {record.last_publish_result === 'FAILED' && (
+            <Tag color="red" style={{ marginLeft: 4 }}>
+              失败
+            </Tag>
+          )}
         </span>
       ),
     },
@@ -235,7 +308,11 @@ export default function ApplicationsPage() {
         const menuItems = actionMenuItems(record)
         return (
           <Space>
-            <Button type="link" size="small" onClick={() => navigate(`/applications/${record.id}`)}>
+            <Button
+              type="link"
+              size="small"
+              onClick={() => navigate(`/applications/${record.id}`)}
+            >
               详情
             </Button>
             {hasPermission(permissions, 'applications.update') && (
@@ -250,6 +327,7 @@ export default function ApplicationsPage() {
                     business_owner: record.business_owner,
                     technical_owner: record.technical_owner,
                     protection_mode: record.protection_mode,
+                    deployment_mode: record.deployment_mode ?? 'REVERSE_PROXY',
                   })
                 }}
               >
@@ -260,7 +338,11 @@ export default function ApplicationsPage() {
               <Dropdown
                 menu={{
                   items: menuItems,
-                  onClick: ({ key }) => runAction(key as 'enable' | 'disable' | 'delete' | 'copy', record),
+                  onClick: ({ key }) =>
+                    runAction(
+                      key as 'enable' | 'disable' | 'delete' | 'copy',
+                      record,
+                    ),
                 }}
               >
                 <Button type="link" size="small">
@@ -278,14 +360,45 @@ export default function ApplicationsPage() {
     { value: 'OFF', label: '关闭' },
     { value: 'OBSERVE', label: '观察' },
     { value: 'PROTECT', label: '防护' },
+    { value: 'BYPASS', label: '透传（排障/应急）' },
   ]
+
+  const deploymentModeOptions = [
+    { value: 'REVERSE_PROXY', label: '反向代理' },
+    { value: 'ROUTED', label: '路由牵引' },
+    { value: 'MIRROR', label: '镜像' },
+    { value: 'TRANSPARENT', label: '透明串接' },
+  ]
+
+  /** BYPASS 透传模式提交前二次确认（全量流量直通、全部检测失效），确认后才执行提交 */
+  const submitWithBypassConfirm = (
+    mode: string | undefined,
+    exec: () => void,
+  ) => {
+    if (mode !== 'BYPASS') {
+      exec()
+      return
+    }
+    modal.confirm({
+      title: '开启透传（BYPASS）确认',
+      content:
+        '开启后该应用全部流量直接透传至源站，WAF 检测、访问控制、CC 防护与 API 动态防护全部失效，请仅用于排障/应急。确定开启吗？',
+      okText: '确认开启',
+      okButtonProps: { danger: true },
+      onOk: exec,
+    })
+  }
 
   return (
     <Card
       title="网站应用"
       extra={
         hasPermission(permissions, 'applications.create') && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setCreateOpen(true)}
+          >
             新建应用
           </Button>
         )
@@ -325,6 +438,7 @@ export default function ApplicationsPage() {
             setPage(1)
           }}
         />
+        {batchDeleteButton}
       </Space>
 
       {listQuery.isError ? (
@@ -332,16 +446,25 @@ export default function ApplicationsPage() {
           type="error"
           showIcon
           message="加载应用列表失败"
-          description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
+          description={
+            listQuery.error instanceof ApiError
+              ? listQuery.error.message
+              : undefined
+          }
         />
       ) : (
         <SmartTable<ApplicationItem>
           storageKey="applications"
           rowKey="id"
+          rowSelection={rowSelection}
           loading={listQuery.isLoading}
           columns={columns}
           dataSource={listQuery.data?.items}
           scroll={{ x: 1300 }}
+          onRow={(record) => ({
+            onDoubleClick: () => navigate(`/applications/${record.id}`),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             current: page,
             pageSize,
@@ -367,8 +490,15 @@ export default function ApplicationsPage() {
         <Form
           form={createForm}
           layout="vertical"
-          initialValues={{ protection_mode: 'OBSERVE' }}
-          onFinish={(values) => createMutation.mutate(values)}
+          initialValues={{
+            protection_mode: 'OBSERVE',
+            deployment_mode: 'REVERSE_PROXY',
+          }}
+          onFinish={(values) =>
+            submitWithBypassConfirm(values.protection_mode, () =>
+              createMutation.mutate(values),
+            )
+          }
         >
           <Form.Item
             name="code"
@@ -379,7 +509,9 @@ export default function ApplicationsPage() {
                 validator: (_, v: string) => {
                   if (!v) return Promise.resolve()
                   const err = validateCode(v)
-                  return err ? Promise.reject(new Error(err)) : Promise.resolve()
+                  return err
+                    ? Promise.reject(new Error(err))
+                    : Promise.resolve()
                 },
               },
             ]}
@@ -406,8 +538,20 @@ export default function ApplicationsPage() {
           <Form.Item name="technical_owner" label="技术负责人">
             <Input placeholder="可选" />
           </Form.Item>
-          <Form.Item name="protection_mode" label="防护模式" rules={[{ required: true }]}>
+          <Form.Item
+            name="protection_mode"
+            label="防护模式"
+            rules={[{ required: true }]}
+          >
             <Select options={modeOptions} />
+          </Form.Item>
+          <Form.Item
+            name="deployment_mode"
+            label="部署模式"
+            rules={[{ required: true }]}
+            extra={DEPLOYMENT_MODE_HINTS[createDeploymentMode ?? '']}
+          >
+            <Select options={deploymentModeOptions} />
           </Form.Item>
         </Form>
       </Modal>
@@ -425,17 +569,20 @@ export default function ApplicationsPage() {
           layout="vertical"
           onFinish={(values) => {
             if (!editing) return
-            updateMutation.mutate({
-              id: editing.id,
-              body: {
-                name: values.name,
-                description: values.description ?? '',
-                business_owner: values.business_owner ?? '',
-                technical_owner: values.technical_owner ?? '',
-                protection_mode: values.protection_mode as ProtectionMode,
-                version: editing.version,
-              },
-            })
+            submitWithBypassConfirm(values.protection_mode, () =>
+              updateMutation.mutate({
+                id: editing.id,
+                body: {
+                  name: values.name,
+                  description: values.description ?? '',
+                  business_owner: values.business_owner ?? '',
+                  technical_owner: values.technical_owner ?? '',
+                  protection_mode: values.protection_mode as ProtectionMode,
+                  deployment_mode: values.deployment_mode,
+                  version: editing.version,
+                },
+              }),
+            )
           }}
         >
           <Form.Item
@@ -457,8 +604,20 @@ export default function ApplicationsPage() {
           <Form.Item name="technical_owner" label="技术负责人">
             <Input placeholder="可选" />
           </Form.Item>
-          <Form.Item name="protection_mode" label="防护模式" rules={[{ required: true }]}>
+          <Form.Item
+            name="protection_mode"
+            label="防护模式"
+            rules={[{ required: true }]}
+          >
             <Select options={modeOptions} />
+          </Form.Item>
+          <Form.Item
+            name="deployment_mode"
+            label="部署模式"
+            rules={[{ required: true }]}
+            extra={DEPLOYMENT_MODE_HINTS[editDeploymentMode ?? '']}
+          >
+            <Select options={deploymentModeOptions} />
           </Form.Item>
         </Form>
       </Modal>

@@ -6,13 +6,17 @@
 同源的 API 写限速信号、`api_behavior_profiles` 表结构，以及单节点限制与后续
 Valkey 化的演进方向。
 
-行为检测回答一个问题：**同一身份在同一端点上的调用速率是否显著偏离其自身基线**。
-它不依赖任何跨端点、跨身份的全局阈值，基线完全来自该身份-端点维度的历史窗口。
+行为检测回答一个问题：**同一身份在同一API上的调用速率是否显著偏离其自身基线**。
+它不依赖任何跨API、跨身份的全局阈值，基线完全来自该身份-API维度的历史窗口。
 
 覆盖代码：`gateway/dynamic_security/detectors/window.go`（滑窗与 LRU）、
 `gateway/dynamic_security/detectors/behavior.go`（RATE_SPIKE）、
 `gateway/dynamic_security/detectors/ratelimit.go`（写限速信号）、
-迁移 000018 `api_behavior_profiles`。
+`gateway/dynamic_security/detectors/store.go`（计数存储可插拔接口与默认内存实现）、
+`gateway/modules/jiuzhang_guard/behaviorstore`（Valkey 实现，可选）、
+迁移 000018 `api_behavior_profiles`、迁移 000030（hour_dist / response_status）、
+`server/internal/aggregations/behavior.go`（管理面离线画像写入方）、
+`server/internal/apisecurity/behavior.go`（画像只读接口）。
 
 ## 二、架构与数据流
 
@@ -82,9 +86,9 @@ decision.Decide：OBSERVE → ActionObserve；RATE_LIMIT → ActionRateLimit
 
 规则要点：
 
-- **双门槛防冷启动误报**：历史不足 5 个窗口一律不判，新端点/新身份的学习期
+- **双门槛防冷启动误报**：历史不足 5 个窗口一律不判，新API/新身份的学习期
   不产生突增告警；
-- **绝对下限 20**：低频端点（均值 1-2 次/分）上 5 次请求不构成"突增 3 倍"，
+- **绝对下限 20**：低频API（均值 1-2 次/分）上 5 次请求不构成"突增 3 倍"，
   `max(20, 3×均值)` 避免低基数抖动淹没事件；
 - **OBSERVE 不定案**：突增只抬高风险分与事件，阻断由策略与决策引擎决定；
 - 对应任务书第四十三章"正式行为基线同样需要确认或明确策略阈值，不能无限
@@ -108,22 +112,31 @@ ratelimit.go:14；可经 `pipeline.Config.APIWriteRatePerMinute` 覆盖）→
 
 | 列 | 说明 |
 |----|------|
-| `endpoint_id` | 端点，FK 级联删除 |
-| `identity_fingerprint` | 身份指纹（空串表示端点级聚合） |
+| `endpoint_id` | API，FK 级联删除 |
+| `identity_fingerprint` | 身份指纹（空串表示API级聚合） |
 | `window_seconds` | 窗口长度，默认 3600 |
 | `request_count` | 窗口内累计请求数 |
 | `avg_rate` | 平均速率 |
 | `status_code_dist` | 状态码分布（JSONB） |
+| `hour_dist` | 调用时段分布（JSONB，UTC 小时桶 "0"-"23" 计数；迁移 000030 加列） |
 | `updated_at` | 更新时间 |
 
 约束：`UNIQUE (endpoint_id, identity_fingerprint, window_seconds)`——
-端点 × 身份 × 窗口三维聚合，对应任务书第四十三章调用频率、成功失败比
+API × 身份 × 窗口三维聚合，对应任务书第四十三章调用频率、成功失败比
 （status_code_dist）等基线的持久化载体。
+
+写入方（第二批，2026-08）：`server/internal/aggregations/behavior.go` 离线画像任务，
+按小时调度从 `api_runtime_events` 回看窗口重算并 UPSERT：`request_count`/`avg_rate`/
+`status_code_dist` 描述最近 3600s 速率窗口，`hour_dist` 按 24h 回看累计 UTC 小时桶
+（单速率窗口只覆盖 1-2 个小时桶，时段基线需要完整日周期）。身份口径与边界规则不变：
+匿名事件（空串指纹）只汇入API级聚合行；未匹配 `api_endpoints` 的事件跳过并计数告警。
+查询接口：`GET /api/v1/api-security/behavior-profiles`（`api_runtime.read`，
+`server/internal/apisecurity/behavior.go`）。
 
 ## 七、关键设计决策
 
-1. **基线相对自身，不设全局阈值**。突增判定只用同身份同端点的历史窗口，
-   避免热门端点与冷门端点共用阈值造成的系统性误报。
+1. **基线相对自身，不设全局阈值**。突增判定只用同身份同API的历史窗口，
+   避免热门API与冷门API共用阈值造成的系统性误报。
 2. **活跃窗口归档、空窗不补零**。基线反映"活跃时的强度"，低频但规律的调用
    模式不会因静默期被稀释后误判突增。
 3. **冷启动免判**。少于 5 个历史窗口不出结论——学习期不产生任何行为告警，
@@ -135,17 +148,27 @@ ratelimit.go:14；可经 `pipeline.Config.APIWriteRatePerMinute` 覆盖）→
 
 ## 八、当前实现范围与限制
 
-- **单节点限制（核心限制）**。计数与基线只在单网关进程内存：多节点部署各算各的，
-  全局视角的突增可能每节点都不超阈；进程重启基线清零，需重新积累 5 个窗口。
-  **演进方向**：将窗口计数与历史样本迁往 Valkey（哈希键 + TTL），复用阶段5
-  CC 防护已建立的 Valkey 键纪律（sha256 键、TTL 自动过期、Fail-open/Fail-closed
-  策略），实现跨节点共享基线；迁移前 `api_behavior_profiles` 可作为离线聚合的
-  落库形态。
-- **api_behavior_profiles 仅建表**。无写入方与查询接口；行为基线当前完全是
-  网关进程内状态，管理面不可见。
-- **仅速率维度**。任务书第四十三章的调用时段、调用顺序、单次对象数量、
-  单次数据量、设备地域变化、Token 使用模式均未实现；`status_code_dist`
-  列无生产方。
+- **单节点限制已有可选解（第三批，2026-08）**。默认仍为进程内存：计数与基线只在
+  单网关进程内存，多节点部署各算各的，全局视角的突增可能每节点都不超阈；进程重启
+  基线清零，需重新积累 5 个窗口。**Valkey 可插拔存储已落地**：`detectors/store.go`
+  定义 WindowStore/ObjectCursorStore/IPSpreadStore/ConcurrencyStore 接口与
+  StoreOverrides 注入点（默认内存实现零行为变化），Valkey 实现
+  `jiuzhang_guard/behaviorstore` 复用阶段5 CC 防护键纪律（Lua 原子计数、键
+  `jiuzhang:guard:api:<ns>:<sha256截断>`、TTL 内置下限、Fail-open 降级内存并以
+  zap Warn 节流告警）；配置 `behavior_store=valkey`（默认 `memory`，
+  `behavior_store_ttl_seconds` 可调 TTL）即跨节点共享基线，多节点盲区的消除路径
+  已通。管理面离线画像（`api_behavior_profiles`）与网关实时滑窗各自独立，
+  Valkey 化只影响后者。
+- **api_behavior_profiles 已有管理面写入方与只读接口**（第二批，2026-08）：离线画像任务
+  按 endpoint × 身份 × 3600s 窗口聚合 `api_runtime_events`（含 hour_dist 时段分布，
+  迁移 000030），行为基线在管理面可见；网关侧实时滑窗仍为进程内存，两者互不依赖。
+  数据口径注意：事件表只收「含检测明细或动作非 ALLOW」的请求（采集端 notable()），
+  request_count 为值得关注请求量级而非全量流量（全量在 access_logs，但无 endpoint/身份
+  维度，路径归一化仅在网关侧，服务端不复刻、不混入）。
+- **仅速率+时段维度**。任务书第四十三章的调用顺序、单次对象数量、
+  单次数据量、设备地域变化、Token 使用模式均未实现；调用时段分布
+  （hour_dist）与状态码分布（status_code_dist）已由离线画像任务产出（见第六节），
+  但时段/分布异常的实时检测信号尚未接入。
 - **业务流程偏离未实现**。任务书第四十四章的候选流程识别、跳步/逆序/重复提交
   检测无对应代码。
 - **均值整数化**。历史均值用整数除法（behavior.go:56），小均值场景阈值粒度粗；

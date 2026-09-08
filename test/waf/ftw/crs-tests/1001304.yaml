@@ -1,0 +1,44 @@
+---
+meta:
+  author: "JiuZhang"
+  description: X-Filename 头双扩展名伪装（脚本在前，如 evil.jsp.png，自建规则 1001304）
+rule_id: 1001304
+tests:
+  - test_id: 1
+    desc: "X-Filename 头 shell.jsp.png"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/octet-stream"
+            X-Filename: "shell.jsp.png"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001304]
+  - test_id: 2
+    desc: "X-Filename 头 shell.aspx.gif"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/octet-stream"
+            X-Filename: "shell.aspx.gif"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001304]

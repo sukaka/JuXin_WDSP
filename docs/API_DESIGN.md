@@ -292,7 +292,7 @@ POST   /api/v1/access-control/versions/{id}/rollback
 
 **一次性 AI 分析**
 
-8 个端点共用请求体字段 `event_id`（UUID 形态校验）、`rule_id`、`ip`（net.ParseIP 校验）、`question`、`period`，各端点按需取用；均为非流式执行，响应 200 返回 `{task_id, answer, plan, steps, evidence}`（`steps` 为执行步骤，上限 100 条），执行失败返回 500 且不暴露内部错误细节；均使用一次性会话（用完即删，不污染会话列表）。
+8 个API共用请求体字段 `event_id`（UUID 形态校验）、`rule_id`、`ip`（net.ParseIP 校验）、`question`、`period`，各API按需取用；均为非流式执行，响应 200 返回 `{task_id, answer, plan, steps, evidence}`（`steps` 为执行步骤，上限 100 条），执行失败返回 500 且不暴露内部错误细节；均使用一次性会话（用完即删，不污染会话列表）。
 
 | 方法 | 路径 | 权限点 | 说明 |
 |------|------|--------|------|
@@ -400,7 +400,7 @@ POST   /api/v1/access-control/versions/{id}/rollback
 
 **流式输出（SSE）与长连接**
 
-`POST /api/v1/ai/sessions/{id}/messages`、`/retry`、`/continue` 三个端点以 SSE 流式输出执行过程与结果：
+`POST /api/v1/ai/sessions/{id}/messages`、`/retry`、`/continue` 三个API以 SSE 流式输出执行过程与结果：
 
 - 响应头：`Content-Type: text/event-stream; charset=utf-8`、`Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`；
 - 事件格式：每条事件为单行 JSON 加空行，逐条 flush：
@@ -417,7 +417,7 @@ data: {"type":"plan|agent_start|agent_done|answer|error|compressed|done","text":
   - `compressed`：会话上下文超阈值已自动压缩；
   - `error`：整轮执行失败（`text` 为通用提示，不暴露内部错误细节）；
   - `done`：结束事件，正常完成时 `payload` 含 `task_id`、`message_id`、`finish_reason`；用户主动停止时 `finish_reason=cancelled`。
-- 长连接处理：服务器默认 WriteTimeout（30s）会掐断 LLM 推理期间的长静默流，上述 SSE 端点与一次性分析端点将本连接写期限放宽至 10 分钟，评估运行放宽至 15 分钟；编排本身单任务上限 120 秒。
+- 长连接处理：服务器默认 WriteTimeout（30s）会掐断 LLM 推理期间的长静默流，上述 SSE API与一次性分析API将本连接写期限放宽至 10 分钟，评估运行放宽至 15 分钟；编排本身单任务上限 120 秒。
 
 ## 安全要求
 
@@ -437,18 +437,18 @@ data: {"type":"plan|agent_start|agent_done|answer|error|compressed|done","text":
 
 > 仅在 `PRODUCT_EDITION=wdsp` 且 `API_DYNAMIC_PROTECTION_ENABLED=true` 时注册；纯 WAF 形态下整组路由不存在（404）。统一响应信封、分页参数（`page`/`page_size`）、错误码与既有接口一致；全部写操作记录操作审计。OpenAPI 定义见 `server/openapi/openapi.yaml`（tag: `api-security`）。
 
-### 端点资产与学习
+### API资产与学习
 
 | 方法与路径 | 权限点 | 说明 |
 |---|---|---|
-| `GET /api/v1/api-security/endpoints` | `api_asset.read` | 端点列表（asset_status/learning_status/keyword/application_id/unassigned/directory_path 过滤，带出站点与目录） |
+| `GET /api/v1/api-security/endpoints` | `api_asset.read` | API列表（asset_status/learning_status/keyword/application_id/unassigned/directory_path 过滤，带出站点与目录） |
 | `POST /api/v1/api-security/endpoints/confirm` | `api_asset.confirm` | 批量确认为正式资产 `{ids:[]}` |
-| `GET /api/v1/api-security/endpoints/site-summary` | `api_asset.read` | 各站点端点计数 + 未归属计数 |
-| `GET /api/v1/api-security/endpoints/directory-tree` | `api_asset.read` | 目录聚合端点计数（前端组装目录树） |
-| `GET /api/v1/api-security/endpoints/{id}` | `api_asset.read` | 端点详情（含 api_assets 扩展字段） |
+| `GET /api/v1/api-security/endpoints/site-summary` | `api_asset.read` | 各站点API计数 + 未归属计数 |
+| `GET /api/v1/api-security/endpoints/directory-tree` | `api_asset.read` | 目录聚合API计数（前端组装目录树） |
+| `GET /api/v1/api-security/endpoints/{id}` | `api_asset.read` | API详情（含 api_assets 扩展字段） |
 | `PATCH /api/v1/api-security/endpoints/{id}` | `api_asset.edit` | 编辑资产属性（用途/暴露面/负责人/标签） |
-| `POST /api/v1/api-security/endpoints/{id}/merge` | `api_asset.merge` | 合并端点（别名归档、命中累加，事务） |
-| `POST /api/v1/api-security/endpoints/{id}/split` | `api_asset.split` | 拆分端点 |
+| `POST /api/v1/api-security/endpoints/{id}/merge` | `api_asset.merge` | 合并API（别名归档、命中累加，事务） |
+| `POST /api/v1/api-security/endpoints/{id}/split` | `api_asset.split` | 拆分API |
 | `POST /api/v1/api-security/endpoints/{id}/ignore` | `api_asset.ignore` | 标记忽略 |
 | `POST /api/v1/api-security/endpoints/{id}/classify` | `api_asset.edit` | 触发自动分类（source=AUTO） |
 | `GET /api/v1/api-security/endpoints/{id}/lifecycle-events` | `api_asset.read` | 生命周期事件（合并/拆分/状态变更轨迹） |
@@ -461,14 +461,14 @@ data: {"type":"plan|agent_start|agent_done|answer|error|compressed|done","text":
 
 | 方法与路径 | 权限点 | 说明 |
 |---|---|---|
-| `GET /api/v1/api-security/endpoints/{id}/models` | `api_model.read` | 端点模型版本列表 |
+| `GET /api/v1/api-security/endpoints/{id}/models` | `api_model.read` | API模型版本列表 |
 | `POST /api/v1/api-security/endpoints/{id}/models` | `api_model.edit` | 创建候选版本 |
 | `GET /api/v1/api-security/models/{id}` | `api_model.read` | 版本详情 |
 | `GET /api/v1/api-security/models/{id}/diff/{other_id}` | `api_model.read` | 版本差异（added/removed/type_changed） |
 | `POST /api/v1/api-security/models/{id}/submit-review` | `api_model.review` | 提交评审（CANDIDATE→IN_REVIEW） |
 | `POST /api/v1/api-security/models/{id}/confirm` | `api_model.confirm` | 确认冻结（FORMAL，旧版 SUPERSEDED，事务） |
 | `POST /api/v1/api-security/models/{id}/reject` | `api_model.review` | 评审拒绝 |
-| `POST /api/v1/api-security/models/{id}/activate` | `api_model.activate` | 激活（端点 current_model_version_id） |
+| `POST /api/v1/api-security/models/{id}/activate` | `api_model.activate` | 激活（API current_model_version_id） |
 | `POST /api/v1/api-security/models/{id}/archive` | `api_model.archive` | 归档 |
 | `GET /api/v1/api-security/models/{id}/parameters` | `api_parameter.read` | 版本参数列表 |
 | `GET /api/v1/api-security/parameters/{id}` | `api_parameter.read` | 参数详情 |
@@ -483,7 +483,7 @@ data: {"type":"plan|agent_start|agent_done|answer|error|compressed|done","text":
 |---|---|---|
 | `GET /api/v1/api-security/classifications` | `api_classification.read` | 内置 + 自定义分类 |
 | `POST /api/v1/api-security/classifications` | `api_classification.manage` | 新增自定义分类 |
-| `PUT /api/v1/api-security/endpoints/{id}/classification` | `api_classification.manage` | 设置端点分类维度（source=MANUAL 并锁定） |
+| `PUT /api/v1/api-security/endpoints/{id}/classification` | `api_classification.manage` | 设置API分类维度（source=MANUAL 并锁定） |
 | `GET /api/v1/api-security/graph` | `api_graph.read` | 图谱（节点 + 调用边） |
 | `GET /api/v1/api-security/topology` | `api_graph.read` | 拓扑（按应用分组 + 调用边） |
 | `POST /api/v1/api-security/specs/import` | `api_spec.import` | 导入 OpenAPI 3（JSON），生成与运行时的差异 |
@@ -497,7 +497,7 @@ data: {"type":"plan|agent_start|agent_done|answer|error|compressed|done","text":
 | `GET /api/v1/api-security/findings` | `api_runtime.read` | 风险发现（类型/级别/状态过滤） |
 | `GET /api/v1/api-security/violations` | `api_runtime.read` | Schema 违例记录 |
 | `GET /api/v1/api-security/posture` | `api_runtime.read` | 安全态势聚合（覆盖率/冻结率/开放发现） |
-| `GET /api/v1/api-security/runtime/statistics` | `api_runtime.read` | 运行时统计（动作/风险分布、热点端点） |
+| `GET /api/v1/api-security/runtime/statistics` | `api_runtime.read` | 运行时统计（动作/风险分布、热点API） |
 | `GET /api/v1/api-security/runtime/events` | `api_runtime.read` | 统一运行时主事件（request_id 幂等） |
 | `GET /api/v1/api-security/sensitive-fields` | `api_runtime.read` | 敏感字段识别结果 |
 | `GET /api/v1/api-security/policy` | `api_policy.read` | 当前策略（模式/来源/解析限制） |

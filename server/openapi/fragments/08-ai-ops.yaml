@@ -1,0 +1,1967 @@
+# AI 安全运营域：会话与消息、任务记录、一次性分析、草稿与推荐、质量评估、AI 自动降噪。
+# 路由源：server/internal/aihandlers/handler.go 第 72-108 行与第 166-181 行。
+# 说明：成功响应 schema 描述统一信封 {code,message,data,request_id} 中的 data 载荷。
+paths:
+  /ai/sessions:
+    get:
+      operationId: aiSessionList
+      tags: [ai-assistant]
+      summary: AI 会话列表
+      description: 当前登录用户的 AI 会话分页列表（按更新时间倒序，默认不含已归档）。权限：`ai.sessions.read_own`（仅本人会话，属主隔离）。
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数（超过 100 按 20 处理）
+        - name: include_archived
+          in: query
+          schema: { type: boolean, default: false }
+          description: 是否包含已归档会话（true/1/yes 视为真）
+      responses:
+        '200':
+          description: 会话分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiSessionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: aiSessionCreate
+      tags: [ai-assistant]
+      summary: 创建 AI 会话
+      description: 创建一个新会话（title 可选，缺省为「新会话」，最长 200 字；允许空请求体）。权限：`ai.chat.use`。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiSessionCreateRequest'
+      responses:
+        '200':
+          description: 创建成功，返回新会话
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiSessionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/sessions/{id}:
+    get:
+      operationId: aiSessionGet
+      tags: [ai-assistant]
+      summary: AI 会话详情
+      description: 获取单个会话详情。权限：`ai.sessions.read_own`；非属主一律返回 404（不泄露存在性）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 会话 ID
+      responses:
+        '200':
+          description: 会话详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiSessionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: aiSessionRename
+      tags: [ai-assistant]
+      summary: 重命名 AI 会话
+      description: 重命名会话（title 必填，最长 200 字）。权限：`ai.chat.use`；非属主一律返回 404。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 会话 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiSessionUpdateRequest'
+      responses:
+        '200':
+          description: 会话已重命名
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: aiSessionDelete
+      tags: [ai-assistant]
+      summary: 删除 AI 会话
+      description: 删除会话（消息与任务级联删除；删除前自动停止正在运行的任务）。权限：`ai.sessions.delete_own`；非属主一律返回 404。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 会话 ID
+      responses:
+        '200':
+          description: 会话已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/sessions/{id}/archive:
+    post:
+      operationId: aiSessionArchive
+      tags: [ai-assistant]
+      summary: 归档 AI 会话
+      description: 归档会话（归档后不可继续对话，发送消息将返回 409）。权限：`ai.chat.use`；非属主一律返回 404。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 会话 ID
+      responses:
+        '200':
+          description: 会话已归档
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/sessions/{id}/messages:
+    get:
+      operationId: aiMessageList
+      tags: [ai-assistant]
+      summary: 会话消息列表
+      description: 返回会话最近 N 条消息（按时间正序）。权限：`ai.sessions.read_own`；非属主一律返回 404。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 会话 ID
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 100 }
+          description: 返回条数（默认 50，最大 100；越界值由服务端重置）
+      responses:
+        '200':
+          description: 消息列表（正序）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiSessionMessageListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: aiMessageSend
+      tags: [ai-assistant]
+      summary: 发送消息（SSE 流式）
+      description: |-
+        发送用户消息并执行一轮 AI 编排分析。成功时响应为 SSE 流式输出（`Content-Type: text/event-stream`），
+        每个事件为一行 `data: {"type":...,"text":...,"payload":...}`，事件序列通常为
+        plan → agent_start/agent_done/tool → composing → answer → done（done 的 payload 含 task_id/message_id/finish_reason），
+        中途可能出现 compressed（上下文自动压缩）或 error 事件。
+        请求校验失败（400/404/409/429）发生在流开始前，按统一错误信封返回一次性 JSON。
+        限流：AI 用量配额超限返回 429；同一会话同时只运行一个任务，新任务会取消旧任务。
+        权限：`ai.chat.use`；非属主一律返回 404。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 会话 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiSessionMessageSendRequest'
+      responses:
+        '200':
+          description: 'SSE 事件流（text/event-stream，逐行 `data: {json}`）'
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/AiSessionStepEvent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 会话已归档，无法继续对话
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/sessions/{id}/stop:
+    post:
+      operationId: aiMessageStop
+      tags: [ai-assistant]
+      summary: 停止会话当前任务
+      description: 向会话正在运行的任务发送停止信号（无运行中任务时返回 409）。权限：`ai.chat.use`；非属主一律返回 404。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 会话 ID
+      responses:
+        '200':
+          description: 已发送停止信号
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 当前会话没有正在运行的分析任务
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/sessions/{id}/retry:
+    post:
+      operationId: aiMessageRetry
+      tags: [ai-assistant]
+      summary: 重试最后一问（SSE 流式）
+      description: 取会话最后一条用户消息重新执行（不重复落库用户消息），响应为 SSE 流式输出（同发送消息）；会话中没有用户消息时返回 409。权限：`ai.chat.use`；非属主一律返回 404。限流：配额超限返回 429（流开始前 JSON 错误）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 会话 ID
+      responses:
+        '200':
+          description: SSE 事件流（text/event-stream）
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/AiSessionStepEvent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 会话中没有可重试的用户消息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/sessions/{id}/continue:
+    post:
+      operationId: aiMessageContinue
+      tags: [ai-assistant]
+      summary: 继续输出（SSE 流式）
+      description: 最后一条助手回复中断时以「请继续」续跑，响应为 SSE 流式输出（同发送消息）；仅当最后一条消息为 assistant 角色时可用，否则 409。权限：`ai.chat.use`；非属主一律返回 404。限流：配额超限返回 429（流开始前 JSON 错误）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 会话 ID
+      responses:
+        '200':
+          description: SSE 事件流（text/event-stream）
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/AiSessionStepEvent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 仅最后一条助手回复后可继续输出
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/messages/{id}/feedback:
+    post:
+      operationId: aiMessageFeedback
+      tags: [ai-assistant]
+      summary: 消息反馈（点赞/点踩）
+      description: 对助手消息提交反馈（comment 服务端截断至 500 字）。权限：`ai.chat.use`；消息所属会话非本人时返回 404。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 消息 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiSessionMessageFeedbackRequest'
+      responses:
+        '200':
+          description: 反馈已记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/tasks:
+    get:
+      operationId: aiTaskList
+      tags: [ai-assistant]
+      summary: AI 任务记录列表
+      description: 当前登录用户的 AI 编排任务分页列表（按创建时间倒序）。权限：`ai.sessions.read_own`（仅本人，经会话归属过滤）。
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数
+        - name: status
+          in: query
+          schema: { type: string, enum: [RUNNING, SUCCESS, PARTIAL_SUCCESS, FAILED, CANCELLED] }
+          description: 按任务状态过滤
+        - name: task_type
+          in: query
+          schema: { type: string }
+          description: 按任务类型过滤（如 EVENT_ANALYSIS，取值见 AiAnalyzePlan.task_type）
+      responses:
+        '200':
+          description: 任务分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiTaskListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/tasks/{id}:
+    get:
+      operationId: aiTaskGet
+      tags: [ai-assistant]
+      summary: AI 任务记录详情
+      description: 获取单个任务记录。权限：`ai.sessions.read_own`；非属主一律返回 404。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 任务 ID
+      responses:
+        '200':
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiTaskResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/analyze/event:
+    post:
+      operationId: aiAnalyzeEvent
+      tags: [ai-analysis]
+      summary: 安全事件 AI 分析
+      description: |-
+        触发一次性安全事件分析（同步执行、非流式；单次最长约 120 秒，服务端放宽本请求写期限至 10 分钟）。
+        分析在一次性会话中执行，用完即删，不出现在会话列表；响应一次性返回 answer/plan/steps/evidence。
+        请求需满足：event_id（须为 UUID）与 question 至少提供一个，event_id 优先。
+        限流：AI 用量配额超限返回 429。权限：`ai.event_analysis.use`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAnalyzeRequest'
+      responses:
+        '200':
+          description: 分析结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAnalyzeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/analyze/false-positive:
+    post:
+      operationId: aiAnalyzeFalsePositive
+      tags: [ai-analysis]
+      summary: 误报 AI 研判
+      description: |-
+        触发一次性误报研判（同步执行、非流式，行为同 /ai/analyze/event）。
+        请求需满足：event_id（须为 UUID）与 rule_id（>0）至少提供一个，可同时提供。
+        限流：AI 用量配额超限返回 429。权限：`ai.false_positive_analysis.use`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAnalyzeRequest'
+      responses:
+        '200':
+          description: 分析结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAnalyzeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/analyze/attack-profile:
+    post:
+      operationId: aiAnalyzeAttackProfile
+      tags: [ai-analysis]
+      summary: 攻击画像分析
+      description: |-
+        触发一次性攻击画像分析（同步执行、非流式，行为同 /ai/analyze/event）。
+        请求需满足：ip（须为合法 IP 地址）与 question 至少提供一个，ip 优先。
+        限流：AI 用量配额超限返回 429。权限：`ai.attack_profile.use`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAnalyzeRequest'
+      responses:
+        '200':
+          description: 分析结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAnalyzeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/analyze/attack-chain:
+    post:
+      operationId: aiAnalyzeAttackChain
+      tags: [ai-analysis]
+      summary: 攻击链关联分析
+      description: |-
+        触发一次性攻击链关联分析（同步执行、非流式，行为同 /ai/analyze/event）。
+        请求需满足：ip（须为合法 IP 地址）与 event_id（须为 UUID）至少提供一个，ip 优先。
+        限流：AI 用量配额超限返回 429。权限：`ai.attack_chain.use`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAnalyzeRequest'
+      responses:
+        '200':
+          description: 分析结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAnalyzeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/analyze/policy-recommendation:
+    post:
+      operationId: aiAnalyzePolicyRecommendation
+      tags: [ai-analysis]
+      summary: 策略优化建议
+      description: |-
+        基于最近事件与误报统计生成 WAF 策略优化建议（同步执行、非流式，行为同 /ai/analyze/event；
+        不会建议直接关闭高风险规则）。question 可选，用于指定关注点；允许空请求体。
+        限流：AI 用量配额超限返回 429。权限：`ai.policy_recommendation.use`。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAnalyzeRequest'
+      responses:
+        '200':
+          description: 分析结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAnalyzeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/analyze/what-if:
+    post:
+      operationId: aiAnalyzeWhatIf
+      tags: [ai-analysis]
+      summary: What-If 策略模拟
+      description: |-
+        模拟关闭指定规则的影响（基于历史数据估算受影响请求、误报减少与漏拦风险；
+        同步执行、非流式，行为同 /ai/analyze/event）。rule_id 必填且 >0。
+        限流：AI 用量配额超限返回 429。权限：`ai.what_if.use`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAnalyzeRequest'
+      responses:
+        '200':
+          description: 分析结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAnalyzeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/analyze/root-cause:
+    post:
+      operationId: aiAnalyzeRootCause
+      tags: [ai-analysis]
+      summary: 运行异常根因分析
+      description: |-
+        结合组件健康、系统告警与最近发布记录做根因分析（同步执行、非流式，行为同 /ai/analyze/event）。
+        question 可选，缺省分析「当前系统运行状态」；允许空请求体。
+        限流：AI 用量配额超限返回 429。权限：`ai.root_cause.use`。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAnalyzeRequest'
+      responses:
+        '200':
+          description: 分析结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAnalyzeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/analyze/report-summary:
+    post:
+      operationId: aiAnalyzeReportSummary
+      tags: [ai-analysis]
+      summary: AI 报告总结
+      description: |-
+        生成指定周期的安全运营报告总结（事件、阻断、主要攻击类型、攻击源、误报与建议；
+        同步执行、非流式，行为同 /ai/analyze/event）。period 可选（如「近7天」「日报」「本周」），缺省为「近7天」；允许空请求体。
+        限流：AI 用量配额超限返回 429。权限：`ai.report_summary.use`。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiAnalyzeRequest'
+      responses:
+        '200':
+          description: 分析结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAnalyzeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: AI 用量配额超限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/drafts:
+    get:
+      operationId: aiDraftList
+      tags: [ai-drafts]
+      summary: AI 草稿列表
+      description: AI 生成的配置草稿分页列表（数据源 ai_recommendations，按创建时间倒序）。权限：任一 `ai.draft.exception` / `ai.draft.blacklist` / `ai.draft.cc_policy` / `ai.draft.custom_rule`。
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数
+        - name: recommendation_type
+          in: query
+          schema: { type: string, enum: [EXCEPTION, BLACKLIST, CC_POLICY, CUSTOM_RULE, POLICY_CHANGE, REPORT_SUMMARY] }
+          description: 按草稿类型过滤（白名单校验，非法值 400）
+        - name: status
+          in: query
+          schema: { type: string, enum: [DRAFT, PENDING_REVIEW, ACCEPTED, REJECTED, EXPIRED] }
+          description: 按草稿状态过滤（白名单校验，非法值 400）
+      responses:
+        '200':
+          description: 草稿分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiDraftListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  # 注：Go 路由将 POST 注册为 /ai/drafts/{type}（类型 slug），此处与 GET 合并到同一 {id} 路径项，
+  # 避免 OpenAPI 等价模板路径冲突；POST 的路径段语义为草稿类型。
+  /ai/drafts/{id}:
+    get:
+      operationId: aiDraftGet
+      tags: [ai-drafts]
+      summary: AI 草稿详情
+      description: 获取单个草稿详情。权限：任一 `ai.draft.exception` / `ai.draft.blacklist` / `ai.draft.cc_policy` / `ai.draft.custom_rule`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 草稿 ID
+      responses:
+        '200':
+          description: 草稿详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiDraftResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: aiDraftCreateByTool
+      tags: [ai-drafts]
+      summary: 通过 Tool 创建草稿
+      description: |-
+        以草稿类型 slug 为路径段调用对应草稿 Tool 创建草稿（Go 路由注册为 `/ai/drafts/{type}`）。
+        请求体为对应 Tool 的输入 JSON（最大 32KB，允许空体等价 {}），字段由 Tool 的 input schema 定义并做完整校验。
+        创建产物始终为 DRAFT，绝不直接发布/生效。权限：任一 `ai.draft.exception` / `ai.draft.blacklist` / `ai.draft.cc_policy` / `ai.draft.custom_rule`；
+        Tool 内部还会按类型校验对应权限点，校验失败返回 400/403。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, enum: [exception, blacklist, cc-policy, custom-rule] }
+          description: 草稿类型 slug（分别映射 draft.exception.create / draft.blacklist.create / draft.cc_policy.create / draft.custom_rule.create 工具）
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 对应草稿 Tool 的输入参数（如例外草稿的路径/规则、黑名单的 IP 等）
+              additionalProperties: true
+      responses:
+        '200':
+          description: 草稿创建结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiDraftCreateByToolResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/drafts/{id}/discard:
+    post:
+      operationId: aiDraftDiscard
+      tags: [ai-drafts]
+      summary: 废弃 AI 草稿
+      description: 逻辑废弃草稿（状态置为 REJECTED，不删除记录，不触碰草稿指向的业务配置）；已处理的草稿返回 409。权限：任一 `ai.draft.exception` / `ai.draft.blacklist` / `ai.draft.cc_policy` / `ai.draft.custom_rule`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 草稿 ID
+      responses:
+        '200':
+          description: 草稿已废弃
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 草稿已处理，无法废弃
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/recommendations:
+    get:
+      operationId: aiRecommendationList
+      tags: [ai-drafts]
+      summary: AI 推荐列表（同草稿列表）
+      description: 与 GET /ai/drafts 等价（同一 handler，数据源 ai_recommendations）。权限：任一 `ai.draft.exception` / `ai.draft.blacklist` / `ai.draft.cc_policy` / `ai.draft.custom_rule`。
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数
+        - name: recommendation_type
+          in: query
+          schema: { type: string, enum: [EXCEPTION, BLACKLIST, CC_POLICY, CUSTOM_RULE, POLICY_CHANGE, REPORT_SUMMARY] }
+          description: 按推荐类型过滤（白名单校验，非法值 400）
+        - name: status
+          in: query
+          schema: { type: string, enum: [DRAFT, PENDING_REVIEW, ACCEPTED, REJECTED, EXPIRED] }
+          description: 按推荐状态过滤（白名单校验，非法值 400）
+      responses:
+        '200':
+          description: 推荐分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiDraftListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/recommendations/{id}:
+    get:
+      operationId: aiRecommendationGet
+      tags: [ai-drafts]
+      summary: AI 推荐详情（同草稿详情）
+      description: 与 GET /ai/drafts/{id} 等价（同一 handler）。权限：任一 `ai.draft.exception` / `ai.draft.blacklist` / `ai.draft.cc_policy` / `ai.draft.custom_rule`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 推荐 ID
+      responses:
+        '200':
+          description: 推荐详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiDraftResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/recommendations/{id}/accept:
+    post:
+      operationId: aiRecommendationAccept
+      tags: [ai-drafts]
+      summary: 接受 AI 推荐
+      description: 标记推荐为 ACCEPTED（仅进入人工草稿流程，不发布不生效；生效须走对应业务页面的人工校验发布流程）；已处理的推荐返回 409。权限：任一 `ai.draft.exception` / `ai.draft.blacklist` / `ai.draft.cc_policy` / `ai.draft.custom_rule`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 推荐 ID
+      responses:
+        '200':
+          description: 推荐已接受（message 提示前往对应业务页面完成人工校验与发布）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 草稿已处理，无法操作
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/recommendations/{id}/reject:
+    post:
+      operationId: aiRecommendationReject
+      tags: [ai-drafts]
+      summary: 拒绝 AI 推荐
+      description: 标记推荐为 REJECTED（不删除记录）；已处理的推荐返回 409。权限：任一 `ai.draft.exception` / `ai.draft.blacklist` / `ai.draft.cc_policy` / `ai.draft.custom_rule`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 推荐 ID
+      responses:
+        '200':
+          description: 推荐已拒绝
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 草稿已处理，无法操作
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/evaluation-sets:
+    get:
+      operationId: aiEvalSetList
+      tags: [ai-evaluations]
+      summary: 评估集列表
+      description: 评估集列表（按 code 排序，最多返回 200 条，不分页）。权限：任一 `ai.evaluations.run` / `ai.usage.read` / `ai.audits.read`。
+      responses:
+        '200':
+          description: 评估集列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiEvalSetListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: aiEvalSetCreate
+      tags: [ai-evaluations]
+      summary: 创建评估集
+      description: 创建评估集（code 唯一，冲突返回 409；用例数量 1-50 条，每条问题不超过 1000 字符）。权限：`ai.evaluations.run`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiEvalSetCreateRequest'
+      responses:
+        '200':
+          description: 评估集已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 评估集编码已存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/evaluation-runs:
+    get:
+      operationId: aiEvalRunList
+      tags: [ai-evaluations]
+      summary: 评估运行记录列表
+      description: 评估运行记录分页列表（按开始时间倒序）。权限：任一 `ai.evaluations.run` / `ai.usage.read` / `ai.audits.read`。
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数（上限 100）
+      responses:
+        '200':
+          description: 评估运行分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiEvalRunListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/evaluations/run:
+    post:
+      operationId: aiEvalRunExecute
+      tags: [ai-evaluations]
+      summary: 执行评估
+      description: |-
+        对指定评估集逐条串行执行用例（每条问题过一次 AI 编排器），按 expected_contains 包含匹配计分并落库。
+        同步执行、非流式：单次运行整体超时 10 分钟，服务端放宽本请求写期限至 15 分钟；单次最多执行 20 条用例（超出截断，truncated=true）。
+        评估过程使用一次性会话，用完即删，不出现在会话列表。权限：`ai.evaluations.run`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiEvalRunRequest'
+      responses:
+        '200':
+          description: 评估运行结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiEvalRunExecuteResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 评估集不存在
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /ai/noise/clusters:
+    get:
+      operationId: aiNoiseClusterList
+      tags: [ai-noise]
+      summary: 降噪簇列表
+      description: AI 自动降噪簇分页查询（按 last_seen 倒序）。权限：`ai.noise_reduction.use`。降噪模块未装配时返回 503。
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数
+        - name: source
+          in: query
+          schema: { type: string, enum: [WAF, API] }
+          description: 事件来源过滤（非法值 400）
+        - name: status
+          in: query
+          schema: { type: string, enum: [ACTIVE, SUPPRESSED, RESOLVED] }
+          description: 簇状态过滤（非法值 400）
+        - name: verdict
+          in: query
+          schema: { type: string, enum: [TRUE_POSITIVE, LIKELY_FALSE_POSITIVE, UNKNOWN] }
+          description: AI 判定过滤（非法值 400）
+        - name: start_time
+          in: query
+          schema: { type: string, format: date-time }
+          description: last_seen 下界（RFC3339，非法值 400）
+        - name: end_time
+          in: query
+          schema: { type: string, format: date-time }
+          description: last_seen 上界（RFC3339，非法值 400）
+      responses:
+        '200':
+          description: 降噪簇分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiNoiseClusterListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: AI 降噪模块未装配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /ai/noise/clusters/{id}:
+    get:
+      operationId: aiNoiseClusterGet
+      tags: [ai-noise]
+      summary: 降噪簇详情
+      description: 簇详情及簇内事件关联（最多 20 条，代表事件在前）。权限：`ai.noise_reduction.use`。降噪模块未装配时返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 簇 ID
+      responses:
+        '200':
+          description: 簇详情与事件关联
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiNoiseClusterDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: AI 降噪模块未装配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /ai/noise/clusters/{id}/suppress:
+    post:
+      operationId: aiNoiseClusterSuppress
+      tags: [ai-noise]
+      summary: 抑制降噪簇
+      description: 簇状态流转 ACTIVE → SUPPRESSED（仅改簇状态，不触碰事件处置/封禁/例外）；当前状态不允许时返回 409。写操作记录 AI 审计。权限：`ai.noise_reduction.use`。降噪模块未装配时返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 簇 ID
+      responses:
+        '200':
+          description: 流转后的簇
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiNoiseCluster'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 当前簇状态不允许该操作
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: AI 降噪模块未装配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /ai/noise/clusters/{id}/resolve:
+    post:
+      operationId: aiNoiseClusterResolve
+      tags: [ai-noise]
+      summary: 解决降噪簇
+      description: 簇状态流转 ACTIVE/SUPPRESSED → RESOLVED（仅改簇状态，不触碰事件处置/封禁/例外）；当前状态不允许时返回 409。写操作记录 AI 审计。权限：`ai.noise_reduction.use`。降噪模块未装配时返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 簇 ID
+      responses:
+        '200':
+          description: 流转后的簇
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiNoiseCluster'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 当前簇状态不允许该操作
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: AI 降噪模块未装配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /ai/noise/clusters/{id}/draft-rule:
+    post:
+      operationId: aiNoiseClusterDraftRule
+      tags: [ai-noise]
+      summary: 从降噪簇生成自定义规则草稿
+      description: |-
+        基于簇的归一化 URI 生成自定义规则草稿（闭环：事件→聚类→草稿→人工审核）。
+        产出为 DISABLED 状态的自定义规则（规则 ID 自动分配，号段 7100000-7199999）+ ai_recommendations 记录，AI 不自动启用/发布。
+        簇缺少可用 URI 模式（空或 "/"）时返回 400；自定义规则 ID 段已满返回 409。写操作记录 AI 审计。
+        权限：`ai.draft.custom_rule`。降噪模块或工具注册表未装配时返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 簇 ID
+      responses:
+        '200':
+          description: 规则草稿已生成（默认停用）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiNoiseDraftRuleResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 自定义规则 ID 段已满
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: AI 降噪模块/工具注册表未装配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /ai/noise/stats:
+    get:
+      operationId: aiNoiseStatsGet
+      tags: [ai-noise]
+      summary: 降噪面板统计
+      description: 降噪面板统计（活跃簇数/折叠事件总数/疑似误报簇数/已抑制簇数）。权限：`ai.noise_reduction.use`。降噪模块未装配时返回 503。
+      responses:
+        '200':
+          description: 统计数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiNoiseStats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: AI 降噪模块未装配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /ai/noise/sweeps:
+    get:
+      operationId: aiNoiseSweepList
+      tags: [ai-noise]
+      summary: 降噪扫描历史
+      description: 降噪扫描运行记录分页列表（按开始时间倒序）。权限：`ai.noise_reduction.use`。降噪模块未装配时返回 503。
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数
+      responses:
+        '200':
+          description: 扫描历史分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiNoiseSweepRunListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: AI 降噪模块未装配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: aiNoiseSweepTrigger
+      tags: [ai-noise]
+      summary: 手动触发降噪扫描
+      description: 同步执行一次降噪扫描并返回统计（事件聚类按指纹幂等，重复扫描不重复计数）。写操作记录 AI 审计。权限：`ai.noise_reduction.manage`。降噪扫描器未装配时返回 503。
+      responses:
+        '200':
+          description: 本次扫描统计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiNoiseSweepResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: AI 降噪扫描器未装配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /ai/noise/settings:
+    get:
+      operationId: aiNoiseSettingsGet
+      tags: [ai-noise]
+      summary: 读取降噪设置
+      description: 读取降噪生效配置（含默认值回退）。权限：`ai.noise_reduction.manage`。系统设置服务未装配时返回 503。
+      responses:
+        '200':
+          description: 降噪生效配置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiNoiseSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: 系统设置服务未装配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    put:
+      operationId: aiNoiseSettingsUpdate
+      tags: [ai-noise]
+      summary: 更新降噪设置
+      description: 部分更新降噪设置（仅更新请求中出现的字段；先校验全部取值再落库，非法值 400 不产生部分写入）。写操作记录 AI 审计。权限：`ai.noise_reduction.manage`。系统设置服务未装配时返回 503。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AiNoiseSettingsUpdateRequest'
+      responses:
+        '200':
+          description: 更新后的生效配置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiNoiseSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: 系统设置服务未装配
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  schemas:
+    AiSession:
+      type: object
+      description: AI 会话
+      properties:
+        id: { type: string, format: uuid, description: 会话 ID }
+        title: { type: string, description: 会话标题 }
+        status:
+          type: string
+          enum: [ACTIVE, ARCHIVED]
+          description: 会话状态（ARCHIVED 后不可继续对话）
+        context_token_count: { type: integer, description: 当前上下文 Token 估算数 }
+    AiSessionListResponse:
+      type: object
+      description: 会话分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AiSession' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+    AiSessionCreateRequest:
+      type: object
+      properties:
+        title: { type: string, maxLength: 200, description: 会话标题（可选，缺省「新会话」） }
+    AiSessionUpdateRequest:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, maxLength: 200, description: 新会话标题（必填，去空白后不能为空） }
+    AiSessionResponse:
+      type: object
+      properties:
+        session: { $ref: '#/components/schemas/AiSession' }
+    AiSessionMessage:
+      type: object
+      description: 会话消息
+      properties:
+        id: { type: string, format: uuid, description: 消息 ID }
+        role:
+          type: string
+          enum: [user, assistant]
+          description: 消息角色
+        content: { type: string, description: '消息内容（assistant 回复含 [Ex] 证据引用标记）' }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+    AiSessionMessageListResponse:
+      type: object
+      description: 消息列表响应（非分页，正序）
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AiSessionMessage' }
+    AiSessionMessageSendRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string, maxLength: 4000, description: 消息内容（必填，去空白后不能为空，最长 4000 字） }
+        task_type:
+          type: string
+          description: 预留字段；任务类型由服务端意图分类判定，不采信前端声明
+    AiSessionMessageFeedbackRequest:
+      type: object
+      required: [rating]
+      properties:
+        rating:
+          type: integer
+          enum: [1, -1]
+          description: 1=有用，-1=无用
+        feedback_type:
+          type: string
+          enum: [GENERAL, WRONG_FACT, MISSING_EVIDENCE, HALLUCINATION, OTHER]
+          default: GENERAL
+          description: 反馈类型（缺省 GENERAL）
+        comment: { type: string, description: 反馈备注（服务端截断至 500 字） }
+    AiSessionStepEvent:
+      type: object
+      description: |-
+        流式步骤事件。SSE 场景为每行 `data:` 后的 JSON；一次性分析场景为 steps 数组元素。
+        done 事件 payload 含 task_id / message_id / finish_reason（finish_reason=stop 正常结束，cancelled 用户停止）；
+        plan 事件 payload 为 AiAnalyzePlan。
+      properties:
+        type:
+          type: string
+          enum: [plan, agent_start, tool, agent_done, composing, answer, evidence, error, done, compressed]
+          description: 事件类型
+        text: { type: string, description: 展示文本 }
+        payload: { type: object, nullable: true, description: 附加载荷（结构随 type 而定） }
+    AiTask:
+      type: object
+      description: AI 任务记录（一次编排执行）
+      properties:
+        id: { type: string, format: uuid, description: 任务 ID }
+        session_id: { type: string, format: uuid, description: 所属会话 ID }
+        session_title: { type: string, description: 所属会话标题 }
+        task_type: { type: string, description: 任务类型（取值见 AiAnalyzePlan.task_type） }
+        status:
+          type: string
+          enum: [RUNNING, SUCCESS, PARTIAL_SUCCESS, FAILED, CANCELLED]
+          description: 任务状态
+        risk_level:
+          type: string
+          enum: [LOW, MEDIUM]
+          description: 风险等级
+        plan_summary: { type: string, description: 任务计划摘要 }
+        started_at: { type: string, format: date-time, nullable: true, description: 开始时间 }
+        finished_at: { type: string, format: date-time, nullable: true, description: 结束时间 }
+        failure_code: { type: string, description: 失败代码（无失败为空串） }
+        failure_message: { type: string, description: 失败信息（无失败为空串） }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+    AiTaskListResponse:
+      type: object
+      description: 任务分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AiTask' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+    AiTaskResponse:
+      type: object
+      properties:
+        task: { $ref: '#/components/schemas/AiTask' }
+    AiAnalyzeRequest:
+      type: object
+      description: 一次性分析请求（各端点按需取用字段，必需组合见各端点 description）
+      properties:
+        event_id: { type: string, description: 安全事件 ID（须为 UUID，最长 64 字符） }
+        rule_id: { type: integer, description: 规则 ID（>0 生效） }
+        ip: { type: string, description: 客户端 IP（须为合法 IP 地址） }
+        question: { type: string, maxLength: 1000, description: 自由文本问题/关注点（最长 1000 字） }
+        period: { type: string, maxLength: 50, description: 统计周期描述（如「近7天」，最长 50 字符） }
+    AiAnalyzePlan:
+      type: object
+      description: 任务计划摘要（plan 事件 payload / 分析结果 plan 字段）
+      properties:
+        task_type:
+          type: string
+          enum: [EVENT_ANALYSIS, FALSE_POSITIVE_ANALYSIS, RULE_EXPLANATION, ATTACK_PROFILE, ATTACK_CHAIN, ROOT_CAUSE_ANALYSIS, LOG_QUERY, STATISTICS_QUERY, POLICY_RECOMMENDATION, WHAT_IF_ANALYSIS, REPORT_SUMMARY, GENERAL_SECURITY_QA]
+          description: 意图分类任务类型
+        agents:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: 调度的 Agent code 列表（如 security_event / waf_policy；问候类为 null）
+        risk_level:
+          type: string
+          enum: [LOW, MEDIUM]
+          description: 风险等级
+        summary: { type: string, description: 计划摘要（含调度信息） }
+    AiAnalyzeEvidenceItem:
+      type: object
+      description: 证据引用项（回答中 [Ex] 编号对应）
+      properties:
+        id: { type: string, description: 引用编号（E1..En） }
+        source: { type: string, description: 来源（Tool code / 查询描述） }
+        summary: { type: string, description: 一句话摘要 }
+        detail: { nullable: true, description: 结构化明细 }
+    AiAnalyzeResponse:
+      type: object
+      description: 一次性分析结果（非流式，同步返回）
+      properties:
+        task_id: { type: string, format: uuid, description: 任务 ID }
+        answer: { type: string, description: 最终回答（含证据引用块） }
+        plan: { $ref: '#/components/schemas/AiAnalyzePlan' }
+        steps:
+          type: array
+          items: { $ref: '#/components/schemas/AiSessionStepEvent' }
+          description: 执行过程事件快照（最多 100 条）
+        evidence:
+          type: array
+          items: { $ref: '#/components/schemas/AiAnalyzeEvidenceItem' }
+    AiDraft:
+      type: object
+      description: AI 草稿/推荐（ai_recommendations；始终 DRAFT 语义，不直接生效）
+      properties:
+        id: { type: string, format: uuid, description: 草稿 ID }
+        task_id: { type: string, format: uuid, nullable: true, description: 来源任务 ID }
+        recommendation_type:
+          type: string
+          enum: [EXCEPTION, BLACKLIST, CC_POLICY, CUSTOM_RULE, POLICY_CHANGE, REPORT_SUMMARY, NOISE_REDUCTION]
+          description: 草稿类型（NOISE_REDUCTION 由降噪模块产生，不作为列表过滤值）
+        target_type: { type: string, description: 目标对象类型 }
+        target_id: { type: string, description: 目标对象标识 }
+        summary: { type: string, description: 草稿摘要 }
+        evidence_references:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: 证据引用列表
+        risk_level: { type: string, description: 风险等级 }
+        status:
+          type: string
+          enum: [DRAFT, PENDING_REVIEW, ACCEPTED, REJECTED, EXPIRED]
+          description: 草稿状态
+        draft_reference: { type: string, description: 草稿指向的业务记录引用 }
+        created_by_ai: { type: boolean, description: 是否由 AI 创建 }
+        reviewed_by: { type: string, format: uuid, nullable: true, description: 审核人 ID }
+        reviewed_at: { type: string, format: date-time, nullable: true, description: 审核时间 }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+    AiDraftListResponse:
+      type: object
+      description: 草稿分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AiDraft' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+    AiDraftResponse:
+      type: object
+      properties:
+        draft: { $ref: '#/components/schemas/AiDraft' }
+    AiDraftCreateByToolResponse:
+      type: object
+      properties:
+        result: { description: Tool 执行输出（结构随草稿类型而定，通常含草稿/业务记录标识） }
+        tool_ref: { type: string, description: Tool 引用标识（审计追溯用） }
+    AiEvalCase:
+      type: object
+      description: 评估用例
+      required: [question]
+      properties:
+        question: { type: string, maxLength: 1000, description: 用例问题（必填，最长 1000 字符） }
+        expected_contains: { type: string, description: 期望回答包含的子串（大小写不敏感；为空视为通过） }
+    AiEvalSet:
+      type: object
+      description: 评估集
+      properties:
+        id: { type: string, format: uuid, description: 评估集 ID }
+        code: { type: string, description: 评估集编码（唯一） }
+        name: { type: string, description: 评估集名称 }
+        description: { type: string, description: 描述 }
+        cases:
+          type: array
+          nullable: true
+          items: { $ref: '#/components/schemas/AiEvalCase' }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+    AiEvalSetListResponse:
+      type: object
+      description: 评估集列表响应（非分页，最多 200 条）
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AiEvalSet' }
+    AiEvalSetCreateRequest:
+      type: object
+      required: [code, name, cases]
+      properties:
+        code: { type: string, maxLength: 50, description: 评估集编码（必填，唯一，≤50 字符） }
+        name: { type: string, maxLength: 100, description: 评估集名称（必填，≤100 字符） }
+        description: { type: string, description: 描述（服务端截断至 500 字符） }
+        cases:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { $ref: '#/components/schemas/AiEvalCase' }
+          description: 测试用例（1-50 条）
+    AiEvalRun:
+      type: object
+      description: 评估运行记录
+      properties:
+        id: { type: string, format: uuid, description: 运行 ID }
+        evaluation_set_id: { type: string, format: uuid, description: 评估集 ID }
+        set_code: { type: string, description: 评估集编码 }
+        status: { type: string, description: 运行状态（如 SUCCESS） }
+        score: { type: number, nullable: true, description: 得分（0-100，保留两位小数） }
+        details:
+          type: object
+          nullable: true
+          description: 运行明细（含 total/passed/truncated/cases 数组，cases 元素含 question/expected_contains/passed/answer_excerpt/error）
+        started_at: { type: string, format: date-time, description: 开始时间 }
+        finished_at: { type: string, format: date-time, nullable: true, description: 结束时间 }
+    AiEvalRunListResponse:
+      type: object
+      description: 评估运行分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AiEvalRun' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+    AiEvalRunRequest:
+      type: object
+      required: [evaluation_set_id]
+      properties:
+        evaluation_set_id: { type: string, format: uuid, description: 评估集 ID }
+    AiEvalRunResult:
+      type: object
+      properties:
+        id: { type: string, format: uuid, description: 运行 ID }
+        evaluation_set_id: { type: string, format: uuid, description: 评估集 ID }
+        status: { type: string, description: 运行状态（SUCCESS） }
+        score: { type: number, description: 得分（0-100，保留两位小数） }
+        total: { type: integer, description: 实际执行用例数（≤20，超出截断） }
+        passed: { type: integer, description: 通过用例数 }
+        truncated: { type: boolean, description: 用例数超 20 被截断时为 true }
+    AiEvalRunExecuteResponse:
+      type: object
+      properties:
+        run: { $ref: '#/components/schemas/AiEvalRunResult' }
+    AiNoiseCluster:
+      type: object
+      description: AI 降噪簇（同源指纹事件聚合）
+      properties:
+        id: { type: string, format: uuid, description: 簇 ID }
+        source:
+          type: string
+          enum: [WAF, API]
+          description: 事件来源（WAF 安全事件 / API 运行时事件）
+        fingerprint_hash: { type: string, description: 聚类指纹哈希 }
+        application_id: { type: string, format: uuid, nullable: true, description: 关联应用 ID }
+        host: { type: string, description: 目标 Host }
+        normalized_uri: { type: string, description: 归一化 URI }
+        rule_id: { type: integer, nullable: true, description: 命中规则 ID（API 来源为 null） }
+        detector_code: { type: string, description: 检测器编码（API 来源） }
+        client_ip: { type: string, description: 客户端 IP }
+        event_count: { type: integer, description: 折叠事件数 }
+        first_seen: { type: string, format: date-time, description: 首次出现时间 }
+        last_seen: { type: string, format: date-time, description: 最近出现时间 }
+        status:
+          type: string
+          enum: [ACTIVE, SUPPRESSED, RESOLVED]
+          description: 簇状态
+        ai_verdict:
+          type: string
+          enum: [TRUE_POSITIVE, LIKELY_FALSE_POSITIVE, UNKNOWN]
+          description: AI 误报判定
+        ai_confidence: { type: number, nullable: true, description: AI 判定置信度（0-1） }
+        ai_summary: { type: string, description: AI 判定摘要 }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+        updated_at: { type: string, format: date-time, description: 更新时间 }
+    AiNoiseClusterListResponse:
+      type: object
+      description: 降噪簇分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AiNoiseCluster' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+    AiNoiseClusterEvent:
+      type: object
+      description: 簇内事件关联
+      properties:
+        event_id: { type: string, format: uuid, description: 事件 ID }
+        source:
+          type: string
+          enum: [WAF, API]
+          description: 事件来源
+        is_representative: { type: boolean, description: 是否为代表事件 }
+        created_at: { type: string, format: date-time, description: 关联时间 }
+    AiNoiseClusterDetailResponse:
+      type: object
+      properties:
+        cluster: { $ref: '#/components/schemas/AiNoiseCluster' }
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/AiNoiseClusterEvent' }
+          description: 簇内事件（最多 20 条，代表事件在前）
+    AiNoiseStats:
+      type: object
+      description: 降噪面板统计
+      properties:
+        active_clusters: { type: integer, description: 活跃簇数 }
+        folded_events: { type: integer, description: 活跃簇折叠的事件总数 }
+        likely_false_positive_clusters: { type: integer, description: 疑似误报的活跃簇数 }
+        suppressed_clusters: { type: integer, description: 已抑制簇数 }
+    AiNoiseSweepResult:
+      type: object
+      description: 手动触发扫描的同步返回
+      properties:
+        started_at: { type: string, format: date-time, description: 开始时间 }
+        finished_at: { type: string, format: date-time, description: 结束时间 }
+        scanned_events: { type: integer, description: 扫描事件数 }
+        new_clusters: { type: integer, description: 新建簇数 }
+        updated_clusters: { type: integer, description: 更新簇数 }
+        llm_calls: { type: integer, description: LLM 调用次数 }
+        tokens_used: { type: integer, description: 消耗 Token 数（估算） }
+        recommendations: { type: integer, description: 生成的降噪推荐数 }
+        status:
+          type: string
+          enum: [SUCCESS, FAILED, PARTIAL]
+          description: 扫描状态
+        error: { type: string, description: 错误信息（无错误时缺省） }
+    AiNoiseSweepRun:
+      type: object
+      description: 降噪扫描运行记录
+      properties:
+        id: { type: string, format: uuid, description: 运行 ID }
+        started_at: { type: string, format: date-time, description: 开始时间 }
+        finished_at: { type: string, format: date-time, nullable: true, description: 结束时间 }
+        scanned_events: { type: integer, description: 扫描事件数 }
+        new_clusters: { type: integer, description: 新建簇数 }
+        updated_clusters: { type: integer, description: 更新簇数 }
+        llm_calls: { type: integer, description: LLM 调用次数 }
+        tokens_used: { type: integer, description: 消耗 Token 数（估算） }
+        status:
+          type: string
+          enum: [SUCCESS, FAILED, PARTIAL]
+          description: 扫描状态
+        error: { type: string, description: 错误信息（无错误为空串） }
+    AiNoiseSweepRunListResponse:
+      type: object
+      description: 扫描历史分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AiNoiseSweepRun' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+    AiNoiseSettings:
+      type: object
+      description: 降噪设置（生效值，含默认回退）
+      properties:
+        enabled: { type: boolean, description: 降噪总开关 }
+        interval_seconds: { type: integer, minimum: 30, maximum: 86400, description: 后台扫描间隔（秒，30-86400） }
+        sweep_window_minutes: { type: integer, minimum: 1, maximum: 1440, description: 单次扫描回溯窗口（分钟，1-1440） }
+        min_events_threshold: { type: integer, minimum: 1, maximum: 100000, description: 簇进入 LLM 误报评分的最小事件数阈值（1-100000） }
+        llm_verdict_enabled: { type: boolean, description: LLM 误报评分开关 }
+    AiNoiseSettingsUpdateRequest:
+      type: object
+      description: 降噪设置更新（仅出现的字段被更新）
+      properties:
+        enabled: { type: boolean, description: 降噪总开关 }
+        interval_seconds: { type: integer, minimum: 30, maximum: 86400, description: 后台扫描间隔（秒，30-86400） }
+        sweep_window_minutes: { type: integer, minimum: 1, maximum: 1440, description: 单次扫描回溯窗口（分钟，1-1440） }
+        min_events_threshold: { type: integer, minimum: 1, maximum: 100000, description: 簇最小事件数阈值（1-100000） }
+        llm_verdict_enabled: { type: boolean, description: LLM 误报评分开关 }
+    AiNoiseDraftRuleResponse:
+      type: object
+      properties:
+        message: { type: string, description: 提示信息（草稿默认停用，需人工审核启用） }
+        rule_id: { type: integer, description: 分配的自定义规则 ID（7100000-7199999） }
+        draft: { description: 草稿 Tool 执行输出（含 DISABLED 自定义规则与 ai_recommendations 记录信息） }

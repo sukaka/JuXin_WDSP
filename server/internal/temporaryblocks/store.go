@@ -407,6 +407,9 @@ func (s *Store) MarkExpired(ctx context.Context, now time.Time) (int, error) {
 }
 
 // MarkExpiredReturning 到期标记并返回被过期的记录（供写入 CC_TEMP_BLOCK_EXPIRED 事件）。
+// DB 置 EXPIRED 后同步 HDel Valkey 封禁 field（与 Release/ConvertToPermanent 同口径），
+// 否则 jiuzhang:guard:tempblocks 哈希只增不减。逐条清理并聚合错误：
+// 部分 HDel 失败不影响其余条目，记录随错误一并返回，由调用方继续补写事件后上抛。
 func (s *Store) MarkExpiredReturning(ctx context.Context, now time.Time) ([]Block, error) {
 	rows, err := s.db.Query(ctx, `
 UPDATE temporary_blocks SET status=$1, release_type=$2, released_at=$3
@@ -431,7 +434,16 @@ RETURNING id, host(client_ip), application_id, block_expires_at, trigger_type`,
 		b.ReleaseType = ReleaseTypeAutoExpire
 		out = append(out, b)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var delErrs []error
+	for i := range out {
+		if err := s.cacheDel(ctx, &out[i]); err != nil {
+			delErrs = append(delErrs, fmt.Errorf("hdel expired tempblock %s: %w", out[i].ID, err))
+		}
+	}
+	return out, errors.Join(delErrs...)
 }
 
 // cachePut 写入/更新 Valkey 封禁值。reason 为空时保留已有 reason。

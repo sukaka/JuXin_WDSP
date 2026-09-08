@@ -1,0 +1,3 @@
+# 运行产物（证据与密码文件）不入库：runs/<run_id>/{env,ports.env,traffic.jsonl,...}
+runs/
+__pycache__/

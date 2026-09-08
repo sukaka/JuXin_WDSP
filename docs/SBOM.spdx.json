@@ -5,7 +5,7 @@
   "name": "jiuzhang-waf-sbom",
   "documentNamespace": "https://jiuzhang.example/sbom/jiuzhang-waf-sbom",
   "creationInfo": {
-    "created": "2026-07-21T14:15:53+08:00",
+    "created": "2026-09-03T07:49:43+08:00",
     "creators": [
       "Tool: scripts/generate-sbom.sh"
     ]
@@ -60,9 +60,21 @@
       "comment": "node:web"
     },
     {
+      "SPDXID": "SPDXRef-Package--ip-location-db-geo-whois-asn-country-mmdb",
+      "name": "@ip-location-db/geo-whois-asn-country-mmdb",
+      "versionInfo": "2.3.2026061719",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "node:web"
+    },
+    {
       "SPDXID": "SPDXRef-Package--playwright-test",
       "name": "@playwright/test",
-      "versionInfo": "1.50.1",
+      "versionInfo": "1.62.1",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -74,7 +86,7 @@
     {
       "SPDXID": "SPDXRef-Package--tanstack-react-query",
       "name": "@tanstack/react-query",
-      "versionInfo": "5.101.3",
+      "versionInfo": "5.102.8",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -98,7 +110,19 @@
     {
       "SPDXID": "SPDXRef-Package--testing-library-react",
       "name": "@testing-library/react",
-      "versionInfo": "16.3.2",
+      "versionInfo": "16.3.3",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "node:web"
+    },
+    {
+      "SPDXID": "SPDXRef-Package--types-d3-geo",
+      "name": "@types/d3-geo",
+      "versionInfo": "3.1.1",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -132,9 +156,21 @@
       "comment": "node:web"
     },
     {
+      "SPDXID": "SPDXRef-Package--types-topojson-client",
+      "name": "@types/topojson-client",
+      "versionInfo": "3.1.5",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "node:web"
+    },
+    {
       "SPDXID": "SPDXRef-Package--typescript-eslint-eslint-plugin",
       "name": "@typescript-eslint/eslint-plugin",
-      "versionInfo": "8.64.0",
+      "versionInfo": "8.68.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -146,7 +182,7 @@
     {
       "SPDXID": "SPDXRef-Package--typescript-eslint-parser",
       "name": "@typescript-eslint/parser",
-      "versionInfo": "8.64.0",
+      "versionInfo": "8.68.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -170,11 +206,23 @@
     {
       "SPDXID": "SPDXRef-Package-antd",
       "name": "antd",
-      "versionInfo": "6.5.1",
+      "versionInfo": "6.6.2",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",
       "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "node:web"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-buffer",
+      "name": "buffer",
+      "versionInfo": "6.0.3",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "node:web"
@@ -189,7 +237,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-cloud.google.com-go",
@@ -237,7 +285,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-cloud.google.com-go-iam",
@@ -336,6 +384,18 @@
       "comment": "core:gateway"
     },
     {
+      "SPDXID": "SPDXRef-Package-core---clickhouse",
+      "name": "core://clickhouse",
+      "versionInfo": "25.8",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "core:apm"
+    },
+    {
       "SPDXID": "SPDXRef-Package-core---coraza",
       "name": "core://coraza",
       "versionInfo": "v3.7.0",
@@ -396,6 +456,18 @@
       "comment": "core:report"
     },
     {
+      "SPDXID": "SPDXRef-Package-core---otel-collector-contrib",
+      "name": "core://otel-collector-contrib",
+      "versionInfo": "0.154.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "core:apm"
+    },
+    {
       "SPDXID": "SPDXRef-Package-core---owasp-crs",
       "name": "core://owasp-crs",
       "versionInfo": "v4.28.0",
@@ -444,6 +516,18 @@
       "comment": "core:build"
     },
     {
+      "SPDXID": "SPDXRef-Package-d3-geo",
+      "name": "d3-geo",
+      "versionInfo": "3.1.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "node:web"
+    },
+    {
       "SPDXID": "SPDXRef-Package-dario.cat-mergo",
       "name": "dario.cat/mergo",
       "versionInfo": "v1.0.2",
@@ -453,12 +537,12 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-dayjs",
       "name": "dayjs",
-      "versionInfo": "1.11.21",
+      "versionInfo": "1.11.23",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",
@@ -499,6 +583,18 @@
       "filesAnalyzed": false,
       "licenseConcluded": "Apache-2.0",
       "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "node:web"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-echarts-gl",
+      "name": "echarts-gl",
+      "versionInfo": "2.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "node:web"
@@ -720,6 +816,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-Azure-go-ansiterm",
+      "name": "github.com/Azure/go-ansiterm",
+      "versionInfo": "v0.0.0-20250102033503-faa5f7b0171c",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-AzureAD-microsoft-authentication-library-for-go",
       "name": "github.com/AzureAD/microsoft-authentication-library-for-go",
       "versionInfo": "v1.6.0",
@@ -742,6 +850,30 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-ClickHouse-ch-go",
+      "name": "github.com/ClickHouse/ch-go",
+      "versionInfo": "v0.74.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-ClickHouse-clickhouse-go-v2",
+      "name": "github.com/ClickHouse/clickhouse-go/v2",
+      "versionInfo": "v2.48.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-DeRuina-timberjack",
@@ -777,7 +909,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-KimMachineGun-automemlimit",
@@ -826,6 +958,18 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-Microsoft-go-winio",
+      "name": "github.com/Microsoft/go-winio",
+      "versionInfo": "v0.6.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-MirrexOne-unqueryvet",
@@ -996,6 +1140,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-andybalholm-brotli",
+      "name": "github.com/andybalholm/brotli",
+      "versionInfo": "v1.2.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-anmitsu-go-shlex",
       "name": "github.com/anmitsu/go-shlex",
       "versionInfo": "v0.0.0-20200514113438-38f4b401e2be",
@@ -1017,7 +1173,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-antlr4-go-antlr-v4",
@@ -1545,7 +1701,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-cenkalti-backoff-v5",
@@ -1557,7 +1713,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-cespare-xxhash",
@@ -1574,18 +1730,6 @@
     {
       "SPDXID": "SPDXRef-Package-github.com-cespare-xxhash-v2",
       "name": "github.com/cespare/xxhash/v2",
-      "versionInfo": "v2.2.0",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "supplier": "NOASSERTION",
-      "comment": "go:server"
-    },
-    {
-      "SPDXID": "SPDXRef-Package-github.com-cespare-xxhash-v2",
-      "name": "github.com/cespare/xxhash/v2",
       "versionInfo": "v2.3.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
@@ -1593,7 +1737,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-charithe-durationcheck",
@@ -1737,7 +1881,55 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-containerd-errdefs",
+      "name": "github.com/containerd/errdefs",
+      "versionInfo": "v1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-containerd-errdefs-pkg",
+      "name": "github.com/containerd/errdefs/pkg",
+      "versionInfo": "v0.3.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-containerd-log",
+      "name": "github.com/containerd/log",
+      "versionInfo": "v0.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-containerd-platforms",
+      "name": "github.com/containerd/platforms",
+      "versionInfo": "v0.2.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-coreos-etcd",
@@ -1798,6 +1990,18 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-cpuguy83-dockercfg",
+      "name": "github.com/cpuguy83/dockercfg",
+      "versionInfo": "v0.3.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-cpuguy83-go-md2man",
@@ -1956,6 +2160,18 @@
       "comment": "go:server"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-distribution-reference",
+      "name": "github.com/distribution/reference",
+      "versionInfo": "v0.6.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-dlclark-regexp2",
       "name": "github.com/dlclark/regexp2",
       "versionInfo": "v1.12.0",
@@ -1966,6 +2182,18 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-dmarkham-enumer",
+      "name": "github.com/dmarkham/enumer",
+      "versionInfo": "v1.6.3",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-dnephin-pflag",
@@ -1980,16 +2208,52 @@
       "comment": "go:jiuzhang_guard"
     },
     {
-      "SPDXID": "SPDXRef-Package-github.com-dustin-go-humanize",
-      "name": "github.com/dustin/go-humanize",
-      "versionInfo": "v1.0.1",
+      "SPDXID": "SPDXRef-Package-github.com-docker-go-connections",
+      "name": "github.com/docker/go-connections",
+      "versionInfo": "v0.7.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-docker-go-units",
+      "name": "github.com/docker/go-units",
+      "versionInfo": "v0.5.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-dustin-go-humanize",
+      "name": "github.com/dustin/go-humanize",
+      "versionInfo": "v1.0.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-ebitengine-purego",
+      "name": "github.com/ebitengine/purego",
+      "versionInfo": "v0.10.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-envoyproxy-go-control-plane",
@@ -2001,7 +2265,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-envoyproxy-go-control-plane-envoy",
@@ -2013,7 +2277,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-envoyproxy-go-control-plane-ratelimit",
@@ -2025,7 +2289,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-envoyproxy-protoc-gen-validate",
@@ -2037,7 +2301,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-ettle-strcase",
@@ -2085,7 +2349,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-firefart-nonamedreturns",
@@ -2208,6 +2472,30 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-go-faster-city",
+      "name": "github.com/go-faster/city",
+      "versionInfo": "v1.0.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-go-faster-errors",
+      "name": "github.com/go-faster/errors",
+      "versionInfo": "v0.7.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-go-jose-go-jose-v3",
       "name": "github.com/go-jose/go-jose/v3",
       "versionInfo": "v3.0.5",
@@ -2229,7 +2517,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-go-logr-logr",
@@ -2241,7 +2529,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-go-logr-stdr",
@@ -2253,7 +2541,19 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-go-ole-go-ole",
+      "name": "github.com/go-ole/go-ole",
+      "versionInfo": "v1.3.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-go-piv-piv-go-v2",
@@ -2433,7 +2733,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-golang-jwt-jwt-v5",
@@ -2448,6 +2748,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-golang-freetype",
+      "name": "github.com/golang/freetype",
+      "versionInfo": "v0.0.0-20170609003504-e2365dfdc4a0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "FTL",
+      "licenseDeclared": "FTL",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-golang-glog",
       "name": "github.com/golang/glog",
       "versionInfo": "v1.2.5",
@@ -2457,7 +2769,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-golang-groupcache",
@@ -2481,7 +2793,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-golang-snappy",
@@ -2640,6 +2952,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-gomutex-godocx",
+      "name": "github.com/gomutex/godocx",
+      "versionInfo": "v0.1.5",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-google-btree",
       "name": "github.com/google/btree",
       "versionInfo": "v1.1.2",
@@ -2685,7 +3009,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-google-go-pkcs11",
@@ -2832,6 +3156,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-gorilla-websocket",
+      "name": "github.com/gorilla/websocket",
+      "versionInfo": "v1.4.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-gostaticanalysis-analysisutil",
       "name": "github.com/gostaticanalysis/analysisutil",
       "versionInfo": "v0.7.1",
@@ -2873,11 +3209,23 @@
       "versionInfo": "v2.28.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-grpc-ecosystem-grpc-gateway-v2",
+      "name": "github.com/grpc-ecosystem/grpc-gateway/v2",
+      "versionInfo": "v2.29.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-hashicorp-errwrap",
@@ -3034,6 +3382,18 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-hashicorp-go-version",
+      "name": "github.com/hashicorp/go-version",
+      "versionInfo": "v1.9.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-hashicorp-golang-lru-v2",
@@ -3240,6 +3600,30 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-jiuzhang-waf-gateway-dynamic-security",
+      "name": "github.com/jiuzhang-waf/gateway/dynamic_security",
+      "versionInfo": "v0.0.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-jiuzhang-waf-gateway-dynamic-security",
+      "name": "github.com/jiuzhang-waf/gateway/dynamic_security",
+      "versionInfo": "v0.0.0-00010101000000-000000000000",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-jjti-go-spancheck",
       "name": "github.com/jjti/go-spancheck",
       "versionInfo": "v0.6.5",
@@ -3389,11 +3773,23 @@
       "versionInfo": "v1.18.6",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-klauspost-compress",
+      "name": "github.com/klauspost/compress",
+      "versionInfo": "v1.19.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-klauspost-cpuid-v2",
@@ -3410,18 +3806,6 @@
     {
       "SPDXID": "SPDXRef-Package-github.com-kr-pretty",
       "name": "github.com/kr/pretty",
-      "versionInfo": "v0.3.0",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "supplier": "NOASSERTION",
-      "comment": "go:server"
-    },
-    {
-      "SPDXID": "SPDXRef-Package-github.com-kr-pretty",
-      "name": "github.com/kr/pretty",
       "versionInfo": "v0.3.1",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
@@ -3429,7 +3813,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-kr-pty",
@@ -3453,7 +3837,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-kulti-thelper",
@@ -3624,6 +4008,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-lufia-plan9stats",
+      "name": "github.com/lufia/plan9stats",
+      "versionInfo": "v0.0.0-20260330125221-c963978e514e",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-macabu-inamedparam",
       "name": "github.com/macabu/inamedparam",
       "versionInfo": "v0.2.0",
@@ -3634,6 +4030,18 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-magiconair-properties",
+      "name": "github.com/magiconair/properties",
+      "versionInfo": "v1.8.10",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-magiconair-properties",
@@ -3888,6 +4296,126 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-mkevac-debugcharts",
+      "name": "github.com/mkevac/debugcharts",
+      "versionInfo": "v0.0.0-20191222103121-ae1c48aa8615",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-moby-docker-image-spec",
+      "name": "github.com/moby/docker-image-spec",
+      "versionInfo": "v1.3.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-moby-go-archive",
+      "name": "github.com/moby/go-archive",
+      "versionInfo": "v0.2.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-moby-moby-api",
+      "name": "github.com/moby/moby/api",
+      "versionInfo": "v1.55.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-moby-moby-client",
+      "name": "github.com/moby/moby/client",
+      "versionInfo": "v0.5.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-moby-patternmatcher",
+      "name": "github.com/moby/patternmatcher",
+      "versionInfo": "v0.6.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-moby-sys-sequential",
+      "name": "github.com/moby/sys/sequential",
+      "versionInfo": "v0.6.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-moby-sys-user",
+      "name": "github.com/moby/sys/user",
+      "versionInfo": "v0.4.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-moby-sys-userns",
+      "name": "github.com/moby/sys/userns",
+      "versionInfo": "v0.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-moby-term",
+      "name": "github.com/moby/term",
+      "versionInfo": "v0.5.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-modern-go-concurrent",
       "name": "github.com/modern-go/concurrent",
       "versionInfo": "v0.0.0-20180306012644-bacd9c7ef1dd",
@@ -4068,6 +4596,66 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-opencontainers-go-digest",
+      "name": "github.com/opencontainers/go-digest",
+      "versionInfo": "v1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-opencontainers-image-spec",
+      "name": "github.com/opencontainers/image-spec",
+      "versionInfo": "v1.1.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-pascaldekloe-name",
+      "name": "github.com/pascaldekloe/name",
+      "versionInfo": "v1.0.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-paulmach-orb",
+      "name": "github.com/paulmach/orb",
+      "versionInfo": "v0.13.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-paulmach-protoscan",
+      "name": "github.com/paulmach/protoscan",
+      "versionInfo": "v0.2.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-pbnjay-memory",
       "name": "github.com/pbnjay/memory",
       "versionInfo": "v0.0.0-20210728143218-7b4eea64cf58",
@@ -4116,6 +4704,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-pierrec-lz4-v4",
+      "name": "github.com/pierrec/lz4/v4",
+      "versionInfo": "v4.1.27",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-pires-go-proxyproto",
       "name": "github.com/pires/go-proxyproto",
       "versionInfo": "v0.12.0",
@@ -4161,12 +4761,24 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-pmezard-go-difflib",
       "name": "github.com/pmezard/go-difflib",
       "versionInfo": "v1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-pmezard-go-difflib",
+      "name": "github.com/pmezard/go-difflib",
+      "versionInfo": "v1.0.1-0.20181226105442-5d4384ee4fb2",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -4186,6 +4798,18 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-power-devops-perfstat",
+      "name": "github.com/power-devops/perfstat",
+      "versionInfo": "v0.0.0-20240221224432-82ca36839d55",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-prashantv-gostub",
@@ -4413,7 +5037,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-rogpeppe-go-internal",
@@ -4425,7 +5049,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-rs-xid",
@@ -4572,6 +5196,42 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-segmentio-asm",
+      "name": "github.com/segmentio/asm",
+      "versionInfo": "v1.2.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-shirou-gopsutil",
+      "name": "github.com/shirou/gopsutil",
+      "versionInfo": "v3.21.11+incompatible",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-shirou-gopsutil-v4",
+      "name": "github.com/shirou/gopsutil/v4",
+      "versionInfo": "v4.26.5",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-shopspring-decimal",
       "name": "github.com/shopspring/decimal",
       "versionInfo": "v1.4.0",
@@ -4581,7 +5241,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-shurcooL-sanitized-anchor-name",
@@ -4605,7 +5265,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-sivchari-containedctx",
@@ -4869,7 +5529,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-ssgreg-nlreturn-v2",
@@ -4941,18 +5601,6 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
-    },
-    {
-      "SPDXID": "SPDXRef-Package-github.com-stretchr-testify",
-      "name": "github.com/stretchr/testify",
-      "versionInfo": "v1.8.1",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "supplier": "NOASSERTION",
       "comment": "go:server"
     },
     {
@@ -4990,6 +5638,18 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-testcontainers-testcontainers-go",
+      "name": "github.com/testcontainers/testcontainers-go",
+      "versionInfo": "v0.43.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-tetafro-godot",
@@ -5038,6 +5698,30 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-tklauser-go-sysconf",
+      "name": "github.com/tklauser/go-sysconf",
+      "versionInfo": "v0.4.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-tklauser-numcpus",
+      "name": "github.com/tklauser/numcpus",
+      "versionInfo": "v0.12.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-tomarrell-wrapcheck-v2",
@@ -5148,6 +5832,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-vicanso-go-charts-v2",
+      "name": "github.com/vicanso/go-charts/v2",
+      "versionInfo": "v2.6.10",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-vishvananda-netlink",
       "name": "github.com/vishvananda/netlink",
       "versionInfo": "v1.3.1",
@@ -5170,6 +5866,18 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-github.com-wcharczuk-go-chart-v2",
+      "name": "github.com/wcharczuk/go-chart/v2",
+      "versionInfo": "v2.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-github.com-x448-float16",
@@ -5232,6 +5940,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-xyproto-randomstring",
+      "name": "github.com/xyproto/randomstring",
+      "versionInfo": "v1.0.5",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-yagipy-maintidx",
       "name": "github.com/yagipy/maintidx",
       "versionInfo": "v1.0.0",
@@ -5292,6 +6012,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-github.com-yusufpapurcu-wmi",
+      "name": "github.com/yusufpapurcu/wmi",
+      "versionInfo": "v1.2.4",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-github.com-zeebo-assert",
       "name": "github.com/zeebo/assert",
       "versionInfo": "v1.1.0",
@@ -5342,7 +6074,7 @@
     {
       "SPDXID": "SPDXRef-Package-globals",
       "name": "globals",
-      "versionInfo": "17.7.0",
+      "versionInfo": "17.11.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -5424,6 +6156,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-go.mongodb.org-mongo-driver-v2",
+      "name": "go.mongodb.org/mongo-driver/v2",
+      "versionInfo": "v2.5.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-go.opencensus.io",
       "name": "go.opencensus.io",
       "versionInfo": "v0.24.0",
@@ -5441,11 +6185,11 @@
       "versionInfo": "v1.2.1",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-contrib-bridges-prometheus",
@@ -5453,8 +6197,8 @@
       "versionInfo": "v0.68.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5465,11 +6209,11 @@
       "versionInfo": "v1.42.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-contrib-exporters-autoexport",
@@ -5477,8 +6221,8 @@
       "versionInfo": "v0.68.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5489,8 +6233,8 @@
       "versionInfo": "v0.67.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5501,11 +6245,35 @@
       "versionInfo": "v0.68.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-contrib-instrumentation-net-http-otelhttp",
+      "name": "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp",
+      "versionInfo": "v0.69.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-contrib-instrumentation-runtime",
+      "name": "go.opentelemetry.io/contrib/instrumentation/runtime",
+      "versionInfo": "v0.69.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-contrib-propagators-autoprop",
@@ -5513,8 +6281,8 @@
       "versionInfo": "v0.68.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5525,8 +6293,8 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5537,8 +6305,8 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5549,8 +6317,8 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5561,8 +6329,8 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5573,11 +6341,23 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel",
+      "name": "go.opentelemetry.io/otel",
+      "versionInfo": "v1.44.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-exporters-otlp-otlplog-otlploggrpc",
@@ -5585,8 +6365,8 @@
       "versionInfo": "v0.19.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5597,8 +6377,8 @@
       "versionInfo": "v0.19.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5609,8 +6389,8 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5621,11 +6401,23 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-exporters-otlp-otlpmetric-otlpmetrichttp",
+      "name": "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp",
+      "versionInfo": "v1.44.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-exporters-otlp-otlptrace",
@@ -5633,11 +6425,23 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-exporters-otlp-otlptrace",
+      "name": "go.opentelemetry.io/otel/exporters/otlp/otlptrace",
+      "versionInfo": "v1.44.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-exporters-otlp-otlptrace-otlptracegrpc",
@@ -5645,8 +6449,8 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5657,11 +6461,23 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-exporters-otlp-otlptrace-otlptracehttp",
+      "name": "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp",
+      "versionInfo": "v1.44.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-exporters-prometheus",
@@ -5669,8 +6485,8 @@
       "versionInfo": "v0.65.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5681,8 +6497,8 @@
       "versionInfo": "v0.19.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5693,8 +6509,8 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5705,8 +6521,8 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5717,8 +6533,8 @@
       "versionInfo": "v0.19.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5729,11 +6545,35 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-metric",
+      "name": "go.opentelemetry.io/otel/metric",
+      "versionInfo": "v1.44.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-metric-x",
+      "name": "go.opentelemetry.io/otel/metric/x",
+      "versionInfo": "v0.66.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-sdk",
@@ -5741,11 +6581,23 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-sdk",
+      "name": "go.opentelemetry.io/otel/sdk",
+      "versionInfo": "v1.44.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-sdk-log",
@@ -5753,8 +6605,8 @@
       "versionInfo": "v0.19.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5765,8 +6617,8 @@
       "versionInfo": "v0.19.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -5777,11 +6629,23 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-sdk-metric",
+      "name": "go.opentelemetry.io/otel/sdk/metric",
+      "versionInfo": "v1.44.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-trace",
@@ -5789,11 +6653,23 @@
       "versionInfo": "v1.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-go.opentelemetry.io-otel-trace",
+      "name": "go.opentelemetry.io/otel/trace",
+      "versionInfo": "v1.44.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.opentelemetry.io-proto-otlp",
@@ -5801,11 +6677,11 @@
       "versionInfo": "v1.10.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.step.sm-crypto",
@@ -5841,7 +6717,7 @@
       "licenseDeclared": "MIT",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.uber.org-mock",
@@ -5865,7 +6741,7 @@
       "licenseDeclared": "MIT",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.uber.org-zap",
@@ -5877,7 +6753,7 @@
       "licenseDeclared": "MIT",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-go.uber.org-zap-exp",
@@ -5913,18 +6789,6 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
-    },
-    {
-      "SPDXID": "SPDXRef-Package-golang.org-x-crypto",
-      "name": "golang.org/x/crypto",
-      "versionInfo": "v0.36.0",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "licenseConcluded": "BSD-3-Clause",
-      "licenseDeclared": "BSD-3-Clause",
-      "copyrightText": "NOASSERTION",
-      "supplier": "NOASSERTION",
       "comment": "go:server"
     },
     {
@@ -5938,6 +6802,18 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-golang.org-x-crypto",
+      "name": "golang.org/x/crypto",
+      "versionInfo": "v0.54.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-golang.org-x-crypto-x509roots-fallback",
@@ -5976,9 +6852,9 @@
       "comment": "go:jiuzhang_guard"
     },
     {
-      "SPDXID": "SPDXRef-Package-golang.org-x-mod",
-      "name": "golang.org/x/mod",
-      "versionInfo": "v0.17.0",
+      "SPDXID": "SPDXRef-Package-golang.org-x-image",
+      "name": "golang.org/x/image",
+      "versionInfo": "v0.0.0-20200927104501-e162460cd6b5",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "BSD-3-Clause",
@@ -6000,9 +6876,9 @@
       "comment": "go:jiuzhang_guard"
     },
     {
-      "SPDXID": "SPDXRef-Package-golang.org-x-net",
-      "name": "golang.org/x/net",
-      "versionInfo": "v0.21.0",
+      "SPDXID": "SPDXRef-Package-golang.org-x-mod",
+      "name": "golang.org/x/mod",
+      "versionInfo": "v0.37.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "BSD-3-Clause",
@@ -6024,21 +6900,21 @@
       "comment": "go:jiuzhang_guard"
     },
     {
-      "SPDXID": "SPDXRef-Package-golang.org-x-oauth2",
-      "name": "golang.org/x/oauth2",
-      "versionInfo": "v0.36.0",
+      "SPDXID": "SPDXRef-Package-golang.org-x-net",
+      "name": "golang.org/x/net",
+      "versionInfo": "v0.57.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "BSD-3-Clause",
       "licenseDeclared": "BSD-3-Clause",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
-      "SPDXID": "SPDXRef-Package-golang.org-x-sync",
-      "name": "golang.org/x/sync",
-      "versionInfo": "v0.12.0",
+      "SPDXID": "SPDXRef-Package-golang.org-x-oauth2",
+      "name": "golang.org/x/oauth2",
+      "versionInfo": "v0.36.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "BSD-3-Clause",
@@ -6060,9 +6936,9 @@
       "comment": "go:jiuzhang_guard"
     },
     {
-      "SPDXID": "SPDXRef-Package-golang.org-x-sys",
-      "name": "golang.org/x/sys",
-      "versionInfo": "v0.31.0",
+      "SPDXID": "SPDXRef-Package-golang.org-x-sync",
+      "name": "golang.org/x/sync",
+      "versionInfo": "v0.22.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "BSD-3-Clause",
@@ -6084,6 +6960,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-golang.org-x-sys",
+      "name": "golang.org/x/sys",
+      "versionInfo": "v0.47.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-golang.org-x-telemetry",
       "name": "golang.org/x/telemetry",
       "versionInfo": "v0.0.0-20260409153401-be6f6cb8b1fa",
@@ -6098,18 +6986,6 @@
     {
       "SPDXID": "SPDXRef-Package-golang.org-x-term",
       "name": "golang.org/x/term",
-      "versionInfo": "v0.30.0",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "licenseConcluded": "BSD-3-Clause",
-      "licenseDeclared": "BSD-3-Clause",
-      "copyrightText": "NOASSERTION",
-      "supplier": "NOASSERTION",
-      "comment": "go:server"
-    },
-    {
-      "SPDXID": "SPDXRef-Package-golang.org-x-term",
-      "name": "golang.org/x/term",
       "versionInfo": "v0.43.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
@@ -6120,9 +6996,9 @@
       "comment": "go:jiuzhang_guard"
     },
     {
-      "SPDXID": "SPDXRef-Package-golang.org-x-text",
-      "name": "golang.org/x/text",
-      "versionInfo": "v0.23.0",
+      "SPDXID": "SPDXRef-Package-golang.org-x-term",
+      "name": "golang.org/x/term",
+      "versionInfo": "v0.45.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "BSD-3-Clause",
@@ -6144,6 +7020,18 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-golang.org-x-text",
+      "name": "golang.org/x/text",
+      "versionInfo": "v0.40.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
+    },
+    {
       "SPDXID": "SPDXRef-Package-golang.org-x-time",
       "name": "golang.org/x/time",
       "versionInfo": "v0.15.0",
@@ -6158,18 +7046,6 @@
     {
       "SPDXID": "SPDXRef-Package-golang.org-x-tools",
       "name": "golang.org/x/tools",
-      "versionInfo": "v0.21.1-0.20240508182429-e35e4ccd0d2d",
-      "downloadLocation": "NOASSERTION",
-      "filesAnalyzed": false,
-      "licenseConcluded": "BSD-3-Clause",
-      "licenseDeclared": "BSD-3-Clause",
-      "copyrightText": "NOASSERTION",
-      "supplier": "NOASSERTION",
-      "comment": "go:server"
-    },
-    {
-      "SPDXID": "SPDXRef-Package-golang.org-x-tools",
-      "name": "golang.org/x/tools",
       "versionInfo": "v0.44.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
@@ -6178,6 +7054,18 @@
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-golang.org-x-tools",
+      "name": "golang.org/x/tools",
+      "versionInfo": "v0.47.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-golang.org-x-tools-go-expect",
@@ -6273,7 +7161,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-google.golang.org-api",
@@ -6317,11 +7205,23 @@
       "versionInfo": "v0.0.0-20260406210006-6f92a3bedf2d",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-google.golang.org-genproto-googleapis-api",
+      "name": "google.golang.org/genproto/googleapis/api",
+      "versionInfo": "v0.0.0-20260526163538-3dc84a4a5aaa",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-google.golang.org-genproto-googleapis-bytestream",
@@ -6329,8 +7229,8 @@
       "versionInfo": "v0.0.0-20260427160629-7cedc36a6bc4",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
@@ -6341,11 +7241,23 @@
       "versionInfo": "v0.0.0-20260427160629-7cedc36a6bc4",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-google.golang.org-genproto-googleapis-rpc",
+      "name": "google.golang.org/genproto/googleapis/rpc",
+      "versionInfo": "v0.0.0-20260526163538-3dc84a4a5aaa",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-google.golang.org-grpc",
@@ -6353,11 +7265,23 @@
       "versionInfo": "v1.81.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
       "comment": "go:jiuzhang_guard"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-google.golang.org-grpc",
+      "name": "google.golang.org/grpc",
+      "versionInfo": "v1.81.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-google.golang.org-grpc-cmd-protoc-gen-go-grpc",
@@ -6381,7 +7305,7 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "supplier": "NOASSERTION",
-      "comment": "go:jiuzhang_guard"
+      "comment": "go:server"
     },
     {
       "SPDXID": "SPDXRef-Package-gopkg.in-check.v1",
@@ -6492,9 +7416,21 @@
       "comment": "go:jiuzhang_guard"
     },
     {
+      "SPDXID": "SPDXRef-Package-i18n-iso-countries",
+      "name": "i18n-iso-countries",
+      "versionInfo": "7.14.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "node:web"
+    },
+    {
       "SPDXID": "SPDXRef-Package-ioredis",
       "name": "ioredis",
-      "versionInfo": "5.4.2",
+      "versionInfo": "5.11.1",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -6507,6 +7443,18 @@
       "SPDXID": "SPDXRef-Package-jsdom",
       "name": "jsdom",
       "versionInfo": "25.0.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "node:web"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-mmdb-lib",
+      "name": "mmdb-lib",
+      "versionInfo": "3.0.3",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -6590,7 +7538,7 @@
     {
       "SPDXID": "SPDXRef-Package-prettier",
       "name": "prettier",
-      "versionInfo": "3.9.5",
+      "versionInfo": "3.9.6",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -6626,7 +7574,19 @@
     {
       "SPDXID": "SPDXRef-Package-react-router-dom",
       "name": "react-router-dom",
-      "versionInfo": "7.18.1",
+      "versionInfo": "7.18.3",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "node:web"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-topojson-client",
+      "name": "topojson-client",
+      "versionInfo": "3.1.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -6650,7 +7610,7 @@
     {
       "SPDXID": "SPDXRef-Package-typescript-eslint",
       "name": "typescript-eslint",
-      "versionInfo": "8.64.0",
+      "versionInfo": "8.68.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -6684,9 +7644,21 @@
       "comment": "node:web"
     },
     {
+      "SPDXID": "SPDXRef-Package-world-atlas",
+      "name": "world-atlas",
+      "versionInfo": "2.0.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "supplier": "NOASSERTION",
+      "comment": "node:web"
+    },
+    {
       "SPDXID": "SPDXRef-Package-zustand",
       "name": "zustand",
-      "versionInfo": "5.0.14",
+      "versionInfo": "5.0.15",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",

@@ -1,0 +1,254 @@
+============================================================
+P0-04 受限例外与最终处置 真实网关冒烟  api=http://127.0.0.1:18081  gateway=http://127.0.0.1:18080
+============================================================
+[build] 从当前工作树构建 api/gateway/testorigin 镜像 ...
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.14kB done
+#1 DONE 0.0s
+
+#2 [api internal] load build definition from Dockerfile
+#2 transferring dockerfile: 3.50kB done
+#2 DONE 0.0s
+
+#3 [testorigin internal] load build definition from Dockerfile
+#3 transferring dockerfile: 762B done
+#3 DONE 0.0s
+
+#4 [gateway internal] load build definition from Dockerfile
+#4 transferring dockerfile: 4.43kB done
+#4 DONE 0.0s
+
+#5 [testorigin internal] load metadata for docker.io/library/alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+#5 DONE 0.0s
+
+#6 [api internal] load metadata for docker.io/library/golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587
+#6 DONE 0.0s
+
+#7 [testorigin internal] load .dockerignore
+#7 transferring context: 2B done
+#7 DONE 0.0s
+
+#8 [gateway internal] load .dockerignore
+#8 transferring context: 2B done
+#8 DONE 0.0s
+
+#9 [api internal] load .dockerignore
+#9 transferring context: 2B done
+#9 DONE 0.0s
+
+#10 [testorigin builder 1/4] FROM docker.io/library/golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587
+#10 resolve docker.io/library/golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 0.0s done
+#10 DONE 0.0s
+
+#11 [testorigin stage-1 1/3] FROM docker.io/library/alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+#11 resolve docker.io/library/alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b 0.0s done
+#11 DONE 0.0s
+
+#12 [testorigin internal] load build context
+#12 transferring context: 54B done
+#12 DONE 0.0s
+
+#13 [testorigin builder 4/4] RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/testorigin .
+#13 CACHED
+
+#14 [testorigin stage-1 2/3] RUN addgroup -S origin && adduser -S -G origin origin
+#14 CACHED
+
+#15 [testorigin builder 2/4] WORKDIR /build
+#15 CACHED
+
+#16 [testorigin builder 3/4] COPY main.go go.mod ./
+#16 CACHED
+
+#17 [testorigin stage-1 3/3] COPY --from=builder /out/testorigin /usr/local/bin/testorigin
+#17 CACHED
+
+#18 [gateway internal] load build context
+#18 transferring context: 18.90kB 0.0s done
+#18 DONE 0.0s
+
+#19 [gateway builder 4/5] COPY dynamic_security /src/dynamic_security
+#19 CACHED
+
+#20 [gateway builder 2/5] RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
+#20 CACHED
+
+#21 [gateway builder 5/5] RUN CGO_ENABLED=0 GOAMD64=v1 GOOS=linux GOARCH=arm64 xcaddy build v2.11.4     --with github.com/corazawaf/coraza-caddy/v2@v2.5.0     --with github.com/jiuzhang-waf/gateway/dynamic_security=/src/dynamic_security     --with github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard=/src/modules/jiuzhang_guard     --output /usr/bin/caddy
+#21 CACHED
+
+#22 [gateway stage-1 3/4] COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+#22 CACHED
+
+#23 [gateway stage-1 2/4] RUN addgroup -g 1000 -S caddy && adduser -u 1000 -S -G caddy -h /var/lib/caddy caddy     && mkdir -p /etc/caddy /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data     && chown -R caddy:caddy /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data
+#23 CACHED
+
+#24 [gateway builder 3/5] COPY modules /src/modules
+#24 CACHED
+
+#25 [gateway stage-1 4/4] COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+#25 CACHED
+
+#26 [api internal] load build context
+#26 transferring context: 95.13kB 0.1s done
+#26 DONE 0.1s
+
+#27 [testorigin] exporting to image
+#27 exporting layers done
+#27 exporting manifest sha256:fdedaf83e3f64ef677356d9fe0e8678c045ac9ac174a1a0b00b3a50af443d0cf done
+#27 exporting config sha256:f19efa73d62a0a2356ba44baa4f52ece681a68e673f987a8e4f2572d82857f81 done
+#27 exporting attestation manifest sha256:50e750c73903fa828a72a64878bac52d4350c41a0841ee01e2b19a679eefa487 0.0s done
+#27 exporting manifest list sha256:5a9b447fc6b2b253df4e384b50601e2dcdf9064dbac5ae8c640ff8f854a8069c 0.0s done
+#27 naming to docker.io/library/jiuzhang-testorigin:stage1 done
+#27 unpacking to docker.io/library/jiuzhang-testorigin:stage1 done
+#27 DONE 0.1s
+
+#28 [gateway] exporting to image
+#28 exporting layers done
+#28 exporting manifest sha256:71dcbd75466a876423b6863574c3a8edb0a82e2b4cc220e9fee4e9001975a65d done
+#28 exporting config sha256:5317c5904a457d42e6909145001ee0981698381ca4cb0721aff25538ea09670f done
+#28 exporting attestation manifest sha256:0749508e067fa839cfc050af95ae17378b90d967f3972b9a4cbc6c63349f76ca 0.0s done
+#28 exporting manifest list sha256:cef4176e4b38ac5915a0399749eec506bee906fbe2d5a5ba839e81d85fe82564 0.0s done
+#28 naming to docker.io/library/jiuzhang-gateway:stage5 done
+#28 unpacking to docker.io/library/jiuzhang-gateway:stage5
+#28 unpacking to docker.io/library/jiuzhang-gateway:stage5 0.0s done
+#28 DONE 0.1s
+
+#29 [api stage-1 2/6] RUN addgroup -g 1000 -S jiuzhang && adduser -u 1000 -S -G jiuzhang jiuzhang     && mkdir -p /app/migrations /app/runtime && chown -R jiuzhang:jiuzhang /app
+#29 CACHED
+
+#30 [api builder 4/7] COPY gateway/dynamic_security/ /build/gateway/dynamic_security/
+#30 CACHED
+
+#31 [api builder 6/7] COPY server/ ./
+#31 CACHED
+
+#32 [api builder 5/7] RUN go mod download
+#32 CACHED
+
+#33 [api stage-1 3/6] COPY --from=builder /out/jiuzhang-api /usr/local/bin/jiuzhang-api
+#33 CACHED
+
+#34 [api builder 2/7] WORKDIR /build/server
+#34 CACHED
+
+#35 [api builder 7/7] RUN if [ "1" = "1" ]; then       CGO_ENABLED=0 GOAMD64=v1 GOOS=linux GOARCH=arm64 go build -tags wdsp_testkeys -trimpath -ldflags="-s -w" -o /out/jiuzhang-api ./cmd/api;     else       CGO_ENABLED=0 GOAMD64=v1 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /out/jiuzhang-api ./cmd/api;     fi
+#35 CACHED
+
+#36 [api stage-1 5/6] COPY --chown=jiuzhang:jiuzhang server/assets/ /app/assets/
+#36 CACHED
+
+#37 [api stage-1 4/6] COPY --chown=jiuzhang:jiuzhang server/migrations/ /app/migrations/
+#37 CACHED
+
+#38 [api builder 3/7] COPY server/go.mod server/go.sum ./
+#38 CACHED
+
+#39 [api stage-1 6/6] WORKDIR /app
+#39 CACHED
+
+#40 [api] exporting to image
+#40 exporting layers done
+#40 exporting manifest sha256:b840a218d1ab16b336aa5a56fe15bce7b6cbfd464fa38ebeb9b786f78cfea624 done
+#40 exporting config sha256:a49d28d3182095e313673a813ca2590c76b83a163d4364d1b14fccda5f9093f9 done
+#40 exporting attestation manifest sha256:0a15f0f7fe412e1e9ba9b675068691228053543147390c4fc99e89dd94ce78a5 0.0s done
+#40 exporting manifest list sha256:d8302598a172aed6e4cbe3e7421ce720214ddda9ed074f3195a0e48fcbe31eff 0.0s done
+#40 naming to docker.io/library/jiuzhang-server:stage5 done
+#40 unpacking to docker.io/library/jiuzhang-server:stage5 0.0s done
+#40 DONE 0.2s
+
+#41 [testorigin] resolving provenance for metadata file
+#41 DONE 0.0s
+
+#42 [gateway] resolving provenance for metadata file
+#42 DONE 0.0s
+
+#43 [api] resolving provenance for metadata file
+#43 DONE 0.0s
+ api  Built
+ gateway  Built
+ testorigin  Built
+[up] 启动 postgres/valkey/testorigin/gateway/api ...
+ Network jiuzhang-stage5_stage5-net  Creating
+ Network jiuzhang-stage5_stage5-net  Created
+ Volume "jiuzhang-stage5_stage5-valkey-data"  Creating
+ Volume "jiuzhang-stage5_stage5-valkey-data"  Created
+ Volume "jiuzhang-stage5_stage5-runtime"  Creating
+ Volume "jiuzhang-stage5_stage5-runtime"  Created
+ Volume "jiuzhang-stage5_stage5-gateway-logs"  Creating
+ Volume "jiuzhang-stage5_stage5-gateway-logs"  Created
+ Volume "jiuzhang-stage5_stage5-gateway-admin"  Creating
+ Volume "jiuzhang-stage5_stage5-gateway-admin"  Created
+ Volume "jiuzhang-stage5_stage5-gateway-config"  Creating
+ Volume "jiuzhang-stage5_stage5-gateway-config"  Created
+ Volume "jiuzhang-stage5_stage5-postgres-data"  Creating
+ Volume "jiuzhang-stage5_stage5-postgres-data"  Created
+ Container jiuzhang-stage5-postgres  Creating
+ Container jiuzhang-stage5-valkey  Creating
+ Container jiuzhang-stage5-testorigin  Creating
+ Container jiuzhang-stage5-testorigin  Created
+ Container jiuzhang-stage5-gateway  Creating
+ Container jiuzhang-stage5-valkey  Created
+ Container jiuzhang-stage5-postgres  Created
+ Container jiuzhang-stage5-gateway  Created
+ Container jiuzhang-stage5-api  Creating
+ Container jiuzhang-stage5-api  Created
+ Container jiuzhang-stage5-valkey  Starting
+ Container jiuzhang-stage5-postgres  Starting
+ Container jiuzhang-stage5-testorigin  Starting
+ Container jiuzhang-stage5-testorigin  Started
+ Container jiuzhang-stage5-postgres  Started
+ Container jiuzhang-stage5-testorigin  Waiting
+ Container jiuzhang-stage5-valkey  Started
+ Container jiuzhang-stage5-testorigin  Healthy
+ Container jiuzhang-stage5-gateway  Starting
+ Container jiuzhang-stage5-gateway  Started
+ Container jiuzhang-stage5-postgres  Waiting
+ Container jiuzhang-stage5-valkey  Waiting
+ Container jiuzhang-stage5-valkey  Healthy
+ Container jiuzhang-stage5-postgres  Healthy
+ Container jiuzhang-stage5-api  Starting
+ Container jiuzhang-stage5-api  Started
+PASS  api 健康检查通过
+PASS  系统管理员登录（含强制改密）
+PASS  导入 CI 临时 wdsp 授权
+PASS  product/edition=wdsp 且授权生效
+PASS  安全管理员就绪
+PASS  创建 PROTECT 应用
+[setup] app=128f4c69-022a-486a-9116-6fb45c6c29d5 host=exc-smoke.local
+PASS  身份指纹盐（identity_salt）播种
+PASS  基线配置发布成功
+[gw] 网关已应答（Host=exc-smoke.local status=200）
+PASS  基线发布后网关可达
+PASS  基线：无例外 comment 字段 SQLi → 403（对照组）
+PASS  创建 WAF 例外草稿（DRAFT）
+PASS  预览：VALID + 指纹 + 942100 引用 + 保护模块清单 + 不可估量为 null
+PASS  启用 WAF 例外（门禁通过）
+PASS  例外配置发布成功
+PASS  EXC-01 例外字段（comment）SQLi → 到达源站 200
+PASS  EXC-02 目标外字段（name）SQLi → 403
+PASS  EXC-08 范围外路径 SQLi → 403
+PASS  EXC-08 范围外方法（GET）SQLi → 403
+PASS  创建并启用 exc2
+PASS  创建并启用 exc3
+PASS  创建并启用 exc4
+PASS  时间窗/XFF/API 例外发布成功
+PASS  EXC-09 未来生效例外当前不生效 → 403
+PASS  EXC-08 伪造 XFF 不命中 source_ips 例外 → 403
+PASS  API 例外范围内重复参数请求放行（200）
+PASS  API 例外范围外重复参数请求（对照，源站 404）
+PASS  DEC-05 素材：API 路径 SQLi → WAF 403
+PASS  EXC-13 引擎侧：Coraza 审计日志含 exc:<uuid> 命中标记
+  [event] security_events final_decision（WAF 拦截） => ABORTED|BLOCK|WAF|GATEWAY|403|true|true
+PASS  DEC-03/04+EXC-13 WAF 事件 final_decision 全字段（含 942100 与例外 uuid）
+  [event] api_runtime_events dup 行（源站归因 + 豁免打标） => COMPLETED|NONE|ORIGIN|200|true|true
+PASS  DEC-02 源站 200 归因（COMPLETED/NONE/ORIGIN/200）
+PASS  EXC-11/13 API OBSERVE_RULE 豁免打标 + matched_exceptions（范围内）
+  [event] api_runtime_events（API 决策不改写 + WAF BLOCK 同请求） => BLOCK|WAF|BLOCK|403|OBSERVED
+PASS  DEC-05 API 决策不改写，final_decision 归 WAF/BLOCK
+  [event] 跨侧 request_id 关联计数 => 1
+PASS  DEC-01 跨侧 request_id 关联（security_events ⋈ api_runtime_events）
+  [event] API 例外范围外 finding 不打标 => f
+PASS  EXC-08 API 例外范围外 finding 不打标（对照）
+============================================================
+P0-04 受限例外与最终处置 真实网关冒烟汇总: 总用例 34 通过 34 失败 0
+============================================================

@@ -14,6 +14,15 @@ export const ATTACK_TYPE_META: Record<string, { color: string; label: string }> 
   SCANNER_DETECTION: { color: 'cyan', label: '扫描器探测' },
   INFORMATION_DISCLOSURE: { color: 'blue', label: '信息泄露' },
   REMOTE_CODE_EXECUTION: { color: 'red', label: '远程代码执行' },
+  SSRF: { color: 'volcano', label: 'SSRF' },
+  XXE_INJECTION: { color: 'purple', label: 'XXE注入' },
+  WEBSHELL: { color: 'red', label: 'WebShell' },
+  FILE_UPLOAD: { color: 'magenta', label: '文件上传攻击' },
+  DESERIALIZATION: { color: 'geekblue', label: '反序列化' },
+  SSTI: { color: 'purple', label: '模板注入' },
+  DOS: { color: 'orange', label: '拒绝服务' },
+  MASS_ASSIGNMENT: { color: 'gold', label: '批量赋值' },
+  EXCLUSION: { color: 'green', label: '应用白名单排除' },
   OTHER: { color: 'default', label: '其他' },
 }
 
@@ -56,13 +65,14 @@ export const DISPOSITION_STATUS_META: Record<string, { color: string; label: str
   RESOLVED: { color: 'green', label: '已处置' },
 }
 
-/** 例外策略动作 */
+/** 例外策略动作（P0-04：LOG_ONLY/ADJUST_SCORE 为历史动作，不支持新启用；OBSERVE_RULE 仅 API 引擎） */
 export const EXCEPTION_ACTION_META: Record<string, { color: string; label: string }> = {
   REMOVE_RULE: { color: 'red', label: '移除指定规则' },
   REMOVE_RULE_TAG: { color: 'volcano', label: '移除规则标签' },
   REMOVE_VAR_DETECTION: { color: 'orange', label: '移除变量检测' },
   ADJUST_SCORE: { color: 'gold', label: '调整异常评分' },
   LOG_ONLY: { color: 'blue', label: '仅记录不阻断' },
+  OBSERVE_RULE: { color: 'purple', label: 'API 规则仅观察' },
 }
 
 /** 例外策略状态 */

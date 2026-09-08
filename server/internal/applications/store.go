@@ -37,7 +37,28 @@ const (
 	ModeOff     = "OFF"
 	ModeObserve = "OBSERVE"
 	ModeProtect = "PROTECT"
+	// ModeBypass 数据透传：跳过全部检测（WAF/访问控制/CC/API动态防护），仅用于排障与应急直通
+	ModeBypass = "BYPASS"
 )
+
+// validProtectionMode 校验防护模式是否合法（OFF/OBSERVE/PROTECT/BYPASS）。
+func validProtectionMode(m string) bool {
+	return m == ModeOff || m == ModeObserve || m == ModeProtect || m == ModeBypass
+}
+
+// 部署模式（docs/NETWORK_MODES_DESIGN.md §4；MIRROR/TRANSPARENT 见 §4.2/§4.3）
+const (
+	DeployModeReverseProxy = "REVERSE_PROXY"
+	DeployModeRouted       = "ROUTED"
+	DeployModeMirror       = "MIRROR"
+	DeployModeTransparent  = "TRANSPARENT"
+)
+
+// validDeploymentMode 校验部署模式是否合法（REVERSE_PROXY/ROUTED/MIRROR/TRANSPARENT）。
+func validDeploymentMode(m string) bool {
+	return m == DeployModeReverseProxy || m == DeployModeRouted ||
+		m == DeployModeMirror || m == DeployModeTransparent
+}
 
 // 部署状态
 const (
@@ -59,6 +80,7 @@ type Application struct {
 	TechnicalOwner    string     `json:"technical_owner"`
 	Status            string     `json:"status"`
 	ProtectionMode    string     `json:"protection_mode"`
+	DeploymentMode    string     `json:"deployment_mode"`
 	DeploymentStatus  string     `json:"deployment_status"`
 	HealthStatus      string     `json:"health_status"`
 	CurrentVersionID  *uuid.UUID `json:"current_version_id"`
@@ -135,13 +157,13 @@ func (s *Store) DB() *pgxpool.Pool {
 // ---------- 应用 ----------
 
 const appColumns = `id, code, name, description, business_owner, technical_owner, status,
-protection_mode, deployment_status, health_status, current_version_id, last_publish_at,
+protection_mode, deployment_mode, deployment_status, health_status, current_version_id, last_publish_at,
 last_publish_result, created_by, created_at, updated_at, version`
 
 func (s *Store) scanApp(row pgx.Row) (*Application, error) {
 	var a Application
 	err := row.Scan(&a.ID, &a.Code, &a.Name, &a.Description, &a.BusinessOwner, &a.TechnicalOwner,
-		&a.Status, &a.ProtectionMode, &a.DeploymentStatus, &a.HealthStatus, &a.CurrentVersionID,
+		&a.Status, &a.ProtectionMode, &a.DeploymentMode, &a.DeploymentStatus, &a.HealthStatus, &a.CurrentVersionID,
 		&a.LastPublishAt, &a.LastPublishResult, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.Version)
 	if err != nil {
 		return nil, err
@@ -157,14 +179,17 @@ func (s *Store) Create(ctx context.Context, a *Application) error {
 	if a.Name == "" || len(a.Name) > 128 {
 		return fmt.Errorf("应用名称不能为空且不超过128字符")
 	}
-	if a.ProtectionMode != ModeOff && a.ProtectionMode != ModeObserve && a.ProtectionMode != ModeProtect {
+	if !validProtectionMode(a.ProtectionMode) {
 		return fmt.Errorf("无效的防护模式")
 	}
+	if !validDeploymentMode(a.DeploymentMode) {
+		return fmt.Errorf("无效的部署模式")
+	}
 	err := s.db.QueryRow(ctx, `
-INSERT INTO applications (code, name, description, business_owner, technical_owner, status, protection_mode, created_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+INSERT INTO applications (code, name, description, business_owner, technical_owner, status, protection_mode, deployment_mode, created_by)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 RETURNING id, created_at, updated_at, version`,
-		a.Code, a.Name, a.Description, a.BusinessOwner, a.TechnicalOwner, a.Status, a.ProtectionMode, a.CreatedBy,
+		a.Code, a.Name, a.Description, a.BusinessOwner, a.TechnicalOwner, a.Status, a.ProtectionMode, a.DeploymentMode, a.CreatedBy,
 	).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt, &a.Version)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_applications_code") {
@@ -199,6 +224,13 @@ func (s *Store) GetByCode(ctx context.Context, code string) (*Application, error
 		return nil, err
 	}
 	return a, nil
+}
+
+// Count 应用总数（不含软删除；授权配额强制与授权状态页配额用量展示共用口径）。
+func (s *Store) Count(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(ctx, `SELECT count(*) FROM applications WHERE deleted_at IS NULL`).Scan(&n)
+	return n, err
 }
 
 // ListFilter 是应用列表筛选。
@@ -252,7 +284,7 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Application, int64, e
 	for rows.Next() {
 		var a Application
 		if err := rows.Scan(&a.ID, &a.Code, &a.Name, &a.Description, &a.BusinessOwner, &a.TechnicalOwner,
-			&a.Status, &a.ProtectionMode, &a.DeploymentStatus, &a.HealthStatus, &a.CurrentVersionID,
+			&a.Status, &a.ProtectionMode, &a.DeploymentMode, &a.DeploymentStatus, &a.HealthStatus, &a.CurrentVersionID,
 			&a.LastPublishAt, &a.LastPublishResult, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.Version); err != nil {
 			return nil, 0, err
 		}
@@ -263,11 +295,21 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Application, int64, e
 
 // Update 更新应用（乐观锁）。
 func (s *Store) Update(ctx context.Context, a *Application) error {
+	if a.Name == "" || len(a.Name) > 128 {
+		return fmt.Errorf("应用名称不能为空且不超过128字符")
+	}
+	// 与 Create 同口径校验：非法模式发布后会在 generator modeToRuleEngine 静默回落 DetectionOnly
+	if !validProtectionMode(a.ProtectionMode) {
+		return fmt.Errorf("无效的防护模式")
+	}
+	if !validDeploymentMode(a.DeploymentMode) {
+		return fmt.Errorf("无效的部署模式")
+	}
 	res, err := s.db.Exec(ctx, `
 UPDATE applications SET name=$1, description=$2, business_owner=$3, technical_owner=$4,
-  protection_mode=$5, updated_at=now(), version=version+1
-WHERE id=$6 AND version=$7 AND deleted_at IS NULL`,
-		a.Name, a.Description, a.BusinessOwner, a.TechnicalOwner, a.ProtectionMode, a.ID, a.Version)
+  protection_mode=$5, deployment_mode=$6, updated_at=now(), version=version+1
+WHERE id=$7 AND version=$8 AND deleted_at IS NULL`,
+		a.Name, a.Description, a.BusinessOwner, a.TechnicalOwner, a.ProtectionMode, a.DeploymentMode, a.ID, a.Version)
 	if err != nil {
 		return err
 	}
@@ -362,13 +404,14 @@ RETURNING id, created_at, updated_at`,
 }
 
 // checkDomainConflict 检测域名监听冲突，返回冲突描述（空表示无冲突）。
+// excludeID 排除自身（更新场景；新增传 uuid.Nil，不匹配任何行）。
 func (s *Store) checkDomainConflict(ctx context.Context, d *Domain, excludeID uuid.UUID) (string, error) {
 	rows, err := s.db.Query(ctx, `
 SELECT ad.normalized_hostname, ad.http_port, ad.https_port, ad.http_enabled, ad.https_enabled, a.code
 FROM application_domains ad
 JOIN applications a ON a.id = ad.application_id
-WHERE ad.normalized_hostname = $1 AND ad.status = 'ACTIVE' AND a.deleted_at IS NULL AND a.status <> 'DELETED'`,
-		d.NormalizedHostname)
+WHERE ad.normalized_hostname = $1 AND ad.id <> $2 AND ad.status = 'ACTIVE' AND a.deleted_at IS NULL AND a.status <> 'DELETED'`,
+		d.NormalizedHostname, excludeID)
 	if err != nil {
 		return "", err
 	}
@@ -578,6 +621,10 @@ func (s *Store) UpdateUpstream(ctx context.Context, u *Upstream) error {
 	}
 	if err := validation.ValidatePort(u.Port); err != nil {
 		return err
+	}
+	// 与 AddUpstream 同口径校验协议，防写入任意值进入发布配置
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("源站协议仅支持 http 或 https")
 	}
 	if u.Weight < 1 || u.Weight > 100 {
 		return fmt.Errorf("源站权重必须在1至100之间")

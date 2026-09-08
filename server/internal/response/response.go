@@ -25,6 +25,9 @@ const (
 	CodeCSRFInvalid            = "CSRF_INVALID"
 	CodeInternalError          = "INTERNAL_ERROR"
 	CodeServiceUnavailable     = "SERVICE_UNAVAILABLE"
+	// TOTP_REQUIRED 是登录成功响应的业务分支码（HTTP 200，密码已通过、待第二步验证），非错误。
+	CodeTOTPRequired = "TOTP_REQUIRED"
+	CodeTOTPInvalid  = "TOTP_INVALID"
 )
 
 // Body 是统一响应结构。
@@ -62,6 +65,17 @@ func JSON(w http.ResponseWriter, r *http.Request, status int, data interface{}) 
 	write(w, r, status, Body{
 		Code:      CodeSuccess,
 		Message:   "操作成功",
+		Data:      data,
+		RequestID: RequestIDFrom(r),
+	})
+}
+
+// JSONWithCode 输出带自定义业务码的分支响应（HTTP 200 但 code 非 SUCCESS，
+// 如登录时账号已开启双因子认证返回 TOTP_REQUIRED，客户端按 code 切换流程）。
+func JSONWithCode(w http.ResponseWriter, r *http.Request, status int, code, message string, data interface{}) {
+	write(w, r, status, Body{
+		Code:      code,
+		Message:   message,
 		Data:      data,
 		RequestID: RequestIDFrom(r),
 	})

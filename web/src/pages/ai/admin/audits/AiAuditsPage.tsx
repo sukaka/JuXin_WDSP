@@ -104,14 +104,12 @@ export default function AiAuditsPage() {
       title: '令牌用量',
       key: 'tokens',
       width: 110,
-      align: 'right',
       render: (_, record) => `${record.input_tokens}+${record.output_tokens}`,
     },
     {
       title: '耗时',
       dataIndex: 'duration_ms',
       width: 100,
-      align: 'right',
       render: (v: number) => `${v} 毫秒`,
     },
     {
@@ -186,6 +184,10 @@ export default function AiAuditsPage() {
           columns={columns}
           dataSource={listQuery.data?.items}
           scroll={{ x: 1250 }}
+          onRow={(record) => ({
+            onDoubleClick: () => setSelected(record),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             current: page,
             pageSize,
