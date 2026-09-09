@@ -1,0 +1,6 @@
+- main:
+  - heading "安全验证" [level=1]
+  - status: 需要手动操作
+  - paragraph: 网络异常，请检查连接后重试。
+  - button "重试"
+  - paragraph: 请求编号：b549ccc9-deb5-4554-b45b-ca2da88dd6c9

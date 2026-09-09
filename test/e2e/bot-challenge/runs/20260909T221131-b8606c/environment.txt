@@ -1,0 +1,48 @@
+date: 2026-09-09T14:11:33Z
+uname: Darwin 25.2.0 arm64
+ProductName:		macOS
+ProductVersion:		26.2
+BuildVersion:		25C56
+docker: server=28.3.0
+git HEAD: 69503b820df6e0286068142c52f9029ad2aaa764
+git 工作树状态（他人未提交改动随镜像进入，如实记录）：
+ M docs/DEVELOPMENT_STATUS.md
+ M docs/tasks/AUTHZ_BOLA_BFLA_OBSERVE_DECISION.md
+ M gateway/dynamic_security/events/event.go
+ M gateway/dynamic_security/jwtverify/types.go
+ M gateway/dynamic_security/jwtverify/verifier.go
+ M gateway/dynamic_security/jwtverify/verifier_test.go
+ M gateway/dynamic_security/pipeline/pipeline.go
+ M gateway/modules/jiuzhang_guard/apievents/apievents.go
+ M gateway/modules/jiuzhang_guard/apievents/apievents_test.go
+ M gateway/modules/jiuzhang_guard/apiprotect.go
+ M gateway/modules/jiuzhang_guard/events/events.go
+ M gateway/modules/jiuzhang_guard/jwt_trust.go
+ M gateway/modules/jiuzhang_guard/jwt_trust_test.go
+ M gateway/modules/jiuzhang_guard/module.go
+ M server/cmd/api/main.go
+ M server/internal/apiauthz/handler.go
+ M server/internal/apiauthz/handler_test.go
+ M server/internal/apiauthz/mem_store.go
+ M server/internal/apiauthz/types.go
+ M server/internal/apiruntime/collector.go
+ M server/internal/apiruntime/collector_test.go
+ M server/internal/apiruntime/events.go
+ M server/internal/app/app.go
+ M server/internal/gatewayconfig/config_secrets.go
+ M server/internal/gatewayconfig/guard.go
+ M server/internal/gatewayconfig/publisher.go
+ M server/internal/guardconfig/apiruntime.go
+ M server/internal/guardconfig/authz_rules.go
+ M server/internal/guardconfig/provider.go
+ M server/internal/settings/settings.go
+ M server/openapi/fragments/07-api-security.yaml
+ M server/openapi/wdsp-api.yaml
+ M test/e2e/bot-challenge/playwright.config.ts
+ M test/e2e/bot-challenge/run.sh
+ M test/e2e/bot-challenge/specs/challenge-flow.spec.ts
+ M test/regression/p1/p1reg/__pycache__/cli.cpython-312.pyc
+ M test/regression/p1/p1reg/__pycache__/corpus.cpython-312.pyc
+ M test/regression/p1/p1reg/__pycache__/judge.cpython-312.pyc
+ M test/regression/p1/p1reg/__pycache__/vocab.cpython-312.pyc
+ M test/regression/p1/tests/__pycache__/test_cli.cpython-312.pyc

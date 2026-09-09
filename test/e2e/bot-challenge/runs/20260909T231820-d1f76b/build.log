@@ -1,0 +1,165 @@
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.07kB done
+#1 DONE 0.0s
+
+#2 [api internal] load build definition from Dockerfile
+#2 transferring dockerfile: 3.51kB done
+#2 DONE 0.0s
+
+#3 [testorigin internal] load build definition from Dockerfile
+#3 transferring dockerfile: 762B done
+#3 DONE 0.0s
+
+#4 [gateway internal] load build definition from Dockerfile
+#4 transferring dockerfile: 4.46kB done
+#4 DONE 0.0s
+
+#5 [gateway internal] load metadata for docker.io/library/golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587
+#5 DONE 0.9s
+
+#6 [gateway internal] load metadata for docker.io/library/alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+#6 DONE 1.3s
+
+#7 [testorigin internal] load .dockerignore
+#7 transferring context: 2B done
+#7 DONE 0.0s
+
+#8 [gateway internal] load .dockerignore
+#8 transferring context: 2B done
+#8 DONE 0.0s
+
+#9 [api internal] load .dockerignore
+#9 transferring context: 2B done
+#9 DONE 0.0s
+
+#10 [gateway stage-1 1/3] FROM docker.io/library/alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+#10 resolve docker.io/library/alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b 0.0s done
+#10 DONE 0.0s
+
+#11 [gateway builder 1/4] FROM docker.io/library/golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587
+#11 resolve docker.io/library/golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 0.0s done
+#11 DONE 0.0s
+
+#12 [testorigin internal] load build context
+#12 transferring context: 54B done
+#12 DONE 0.0s
+
+#13 [gateway internal] load build context
+#13 transferring context: 19.16kB 0.0s done
+#13 DONE 0.0s
+
+#14 [testorigin builder 3/4] COPY main.go go.mod ./
+#14 CACHED
+
+#15 [testorigin builder 2/4] WORKDIR /build
+#15 CACHED
+
+#16 [testorigin builder 4/4] RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/testorigin .
+#16 CACHED
+
+#17 [testorigin stage-1 2/3] RUN addgroup -S origin && adduser -S -G origin origin
+#17 CACHED
+
+#18 [testorigin stage-1 3/3] COPY --from=builder /out/testorigin /usr/local/bin/testorigin
+#18 CACHED
+
+#19 [gateway builder 3/5] COPY modules /src/modules
+#19 CACHED
+
+#20 [gateway stage-1 2/4] RUN addgroup -g 1000 -S caddy && adduser -u 1000 -S -G caddy -h /var/lib/caddy caddy     && mkdir -p /etc/caddy/certs /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data     && chown -R caddy:caddy /etc/caddy/certs /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data
+#20 CACHED
+
+#21 [gateway builder 4/5] COPY dynamic_security /src/dynamic_security
+#21 CACHED
+
+#22 [gateway builder 2/5] RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@v0.4.5
+#22 CACHED
+
+#23 [gateway stage-1 3/4] COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+#23 CACHED
+
+#24 [gateway builder 5/5] RUN CGO_ENABLED=0 GOAMD64=v1 GOOS=linux GOARCH=arm64 xcaddy build v2.11.4     --with github.com/corazawaf/coraza-caddy/v2@v2.5.0     --with github.com/jiuzhang-waf/gateway/dynamic_security=/src/dynamic_security     --with github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard=/src/modules/jiuzhang_guard     --output /usr/bin/caddy
+#24 CACHED
+
+#25 [gateway stage-1 4/4] COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+#25 CACHED
+
+#26 [api internal] load build context
+#26 transferring context: 96.64kB 0.1s done
+#26 DONE 0.1s
+
+#27 [gateway] exporting to image
+#27 exporting layers done
+#27 exporting manifest sha256:159bfe30d6cfe31b05ed8c98acddea681590c97cafb1ef4efd66357dc5b1197d done
+#27 exporting config sha256:4dc63b046c499ace29aba5cbeee8f74ed22db3b18e5355c72f7989aaf6afc5fa done
+#27 exporting attestation manifest sha256:43fefe3bdad334f54003b0624df797db5137287f5fa6ac5c1faf984ef7933c1b
+#27 exporting attestation manifest sha256:43fefe3bdad334f54003b0624df797db5137287f5fa6ac5c1faf984ef7933c1b 0.0s done
+#27 exporting manifest list sha256:6eb3265555e1a15252e30b7c0ed75fe11e4cd2380e1e5d01226c8776e21cd8cc 0.0s done
+#27 naming to docker.io/library/jiuzhang-gateway:stage5 done
+#27 unpacking to docker.io/library/jiuzhang-gateway:stage5 done
+#27 DONE 0.1s
+
+#28 [api stage-1 2/6] RUN addgroup -g 1000 -S jiuzhang && adduser -u 1000 -S -G jiuzhang jiuzhang     && mkdir -p /app/migrations /app/runtime/certificates && chown -R jiuzhang:jiuzhang /app
+#28 CACHED
+
+#29 [api builder 4/7] COPY gateway/dynamic_security/ /build/gateway/dynamic_security/
+#29 CACHED
+
+#30 [api stage-1 4/6] COPY --chown=jiuzhang:jiuzhang server/migrations/ /app/migrations/
+#30 CACHED
+
+#31 [api stage-1 3/6] COPY --from=builder /out/jiuzhang-api /usr/local/bin/jiuzhang-api
+#31 CACHED
+
+#32 [api builder 6/7] COPY server/ ./
+#32 CACHED
+
+#33 [api builder 5/7] RUN go mod download
+#33 CACHED
+
+#34 [api builder 3/7] COPY server/go.mod server/go.sum ./
+#34 CACHED
+
+#35 [api stage-1 5/6] COPY --chown=jiuzhang:jiuzhang server/assets/ /app/assets/
+#35 CACHED
+
+#36 [api builder 7/7] RUN if [ "1" = "1" ]; then       CGO_ENABLED=0 GOAMD64=v1 GOOS=linux GOARCH=arm64 go build -tags wdsp_testkeys -trimpath -ldflags="-s -w" -o /out/jiuzhang-api ./cmd/api;     else       CGO_ENABLED=0 GOAMD64=v1 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /out/jiuzhang-api ./cmd/api;     fi
+#36 CACHED
+
+#37 [api builder 2/7] WORKDIR /build/server
+#37 CACHED
+
+#38 [api stage-1 6/6] WORKDIR /app
+#38 CACHED
+
+#39 [testorigin] exporting to image
+#39 exporting layers done
+#39 exporting manifest sha256:fefffc7558aafc24a01ed958da511ffc1449161ebc4065604f7ea0020ed26f4d done
+#39 exporting config sha256:a84fbe730e856655b24c02d4bd95357f8f7b7e89dd5536cb35a71fa79b1706f1 done
+#39 exporting attestation manifest sha256:d6d73e2522d256d0bea23f486201475b4919e3b7ec5c454296cf5859f113a03a 0.0s done
+#39 exporting manifest list sha256:05ce6028e332fe2921b6215dd2ee82826b1c7ad8db6af6a68cc9844c08cd0227 0.0s done
+#39 naming to docker.io/library/jiuzhang-testorigin:stage1 done
+#39 unpacking to docker.io/library/jiuzhang-testorigin:stage1 done
+#39 DONE 0.1s
+
+#40 [api] exporting to image
+#40 exporting layers done
+#40 exporting manifest sha256:ae78dfe62a65db5be6d2d48a8c878039c597514d8045a6fb84488befd4b79546 done
+#40 exporting config sha256:e7b11b067006658e2e3c32448ce7d474ef824ab7474e5a6ebfff1cd434592302 done
+#40 exporting attestation manifest sha256:a996fbaad0550200b8f805fe3f7be07d14b80f8c5c95a007d42fa011e139dcbc 0.0s done
+#40 exporting manifest list sha256:c47cc4d45f31f19de3cc0f73d42ba413f0fa71508816798d53ca904d3cdd11da done
+#40 naming to docker.io/library/jiuzhang-server:stage5 done
+#40 unpacking to docker.io/library/jiuzhang-server:stage5 done
+#40 DONE 0.1s
+
+#41 [testorigin] resolving provenance for metadata file
+#41 DONE 0.0s
+
+#42 [gateway] resolving provenance for metadata file
+#42 DONE 0.0s
+
+#43 [api] resolving provenance for metadata file
+#43 DONE 0.0s
+ api  Built
+ gateway  Built
+ testorigin  Built

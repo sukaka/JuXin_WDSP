@@ -1,0 +1,12 @@
+{
+  "group": "browser",
+  "channel": "mobile-chrome",
+  "nav_attempts_before_challenge": 3,
+  "challenge_seen": true,
+  "solve_ms": 107,
+  "final_status": 200,
+  "final_reached_origin": true,
+  "clearance_cookie": true,
+  "webdriver": true,
+  "user_agent": "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.8010.12 Mobile Safari/537.36"
+}

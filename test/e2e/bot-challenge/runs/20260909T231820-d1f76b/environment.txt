@@ -1,0 +1,28 @@
+date: 2026-09-09T15:18:21Z
+uname: Darwin 25.2.0 arm64
+ProductName:		macOS
+ProductVersion:		26.2
+BuildVersion:		25C56
+hw: MacBookPro18,3 mem=17179869184
+docker: server=28.3.0
+note: 开发机 macOS arm64 + Docker Desktop（Linux VM），非专用压测硬件；所有数字为本环境实测值。
+git HEAD: 69503b820df6e0286068142c52f9029ad2aaa764
+git 工作树状态（他人未提交改动随镜像进入，如实记录）：
+ M test/e2e/bot-challenge/playwright.config.ts
+ M test/e2e/bot-challenge/run.sh
+ M test/e2e/bot-challenge/specs/challenge-flow.spec.ts
+?? test/e2e/bot-challenge/flood-bench.sh
+?? test/e2e/bot-challenge/run-browsers.sh
+?? test/e2e/bot-challenge/runs/20260909T222712-384310/
+?? test/e2e/bot-challenge/runs/20260909T223230-88c2be/
+?? test/e2e/bot-challenge/runs/20260909T223505-fc6dd4/
+?? test/e2e/bot-challenge/runs/20260909T224253-3040ab/
+?? test/e2e/bot-challenge/runs/20260909T224857-c18ef3/
+?? test/e2e/bot-challenge/runs/20260909T225551-dadd32/
+?? test/e2e/bot-challenge/runs/20260909T230156-7ccf57/
+?? test/e2e/bot-challenge/runs/20260909T230853-8f0152/
+?? test/e2e/bot-challenge/runs/20260909T231820-d1f76b/
+?? test/e2e/bot-challenge/specs/challenge-a11y.spec.ts
+?? test/e2e/bot-challenge/specs/helpers.ts
+?? web/node_modules
+note: 栈镜像构建自 HEAD 干净 worktree（69503b8=wdsp-v1.1.2 基线）：主工作树 wdsp-v1.1.2 后他人未提交的 server/internal/guardconfig/authz_decision.go（untracked）引用不存在列 ep.method，publish 全部 GUARD_SNAPSHOT_FAILED（SQLSTATE 42703，实证 runs/20260909T221713-8e02d4/publish-tasks.json），无法从主工作树建栈；Bot 挑战产品代码在 HEAD 与主工作树一致（他人改动为 AUTHZ/JWT 线在研代码）。本脚本副本与主工作树一致（已修 nclear grep pipefail 竞态）。

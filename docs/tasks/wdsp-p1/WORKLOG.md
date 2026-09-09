@@ -1,6 +1,6 @@
 # WDSP P1 开发接续与记忆文件
 
-更新时间：2026-09-06（S0 实施核实完成，进入 S1）。
+更新时间：2026-09-09（S3 增补：BOT-004/006/018 真实环境补证完成，验收矩阵 PASS 23/PARTIAL 1）。
 
 ## 当前用户目标
 
@@ -59,7 +59,7 @@
 | S0 实施现状核实与契约冻结 | PASS | 2026-09-06 完成四项现状核实与共享契约冻结，详见「S0 记录」；代码行为未改动 |
 | S1 回放基础与改动前基线 | PASS（工具层） | 2026-09-06 完成 P1-04 R1：语料契约+判定/对比+run.sh 增量+174 单测全绿；真实网关回放 BLOCKED_ENV（无隔离栈，不假 PASS）。详见「S1 记录」 |
 | S2 安全与 APM | PASS（APMD-017 除外） | 2026-09-07 A1/A2/A3、2026-09-08 A4（真实产品栈联调四场景 PASS）完成，见四条 S2 记录；APMD-017 用户耗时验证 BLOCKED（无未参与者人员条件，任务脚本已固化待执行） |
-| S3 Bot 挑战 | PASS（4 项 PARTIAL 如实披露） | 2026-09-07 B0+B1+B2、2026-09-08 B3 预备+B3 请求链接入（真实 Caddy/Valkey 集成测试 PASS）+B4（管理页+基准 27/27）+B5（升级/关闭/回退演练 23/23）完成，见 S3 各记录；验收矩阵 BOT-001~024 PASS 20/PARTIAL 4/FAIL 0（docs/WDSP_BOT_CHALLENGE_ACCEPTANCE_MATRIX.md） |
+| S3 Bot 挑战 | PASS（1 项 PARTIAL 如实披露） | 2026-09-07 B0+B1+B2、2026-09-08 B3 预备+B3 请求链接入（真实 Caddy/Valkey 集成测试 PASS）+B4（管理页+基准 27/27）+B5（升级/关闭/回退演练 23/23）完成，见 S3 各记录；2026-09-09 增补补证 BOT-004/006/018（多浏览器 23/23、洪峰实测 25/25），见「S3 增补记录」；验收矩阵 BOT-001~024 PASS 23/PARTIAL 1/FAIL 0（docs/WDSP_BOT_CHALLENGE_ACCEPTANCE_MATRIX.md） |
 | S4 Agent 协议与 K8s | PASS（AGT-021/022 BLOCKED_ENV） | 2026-09-08 G0-G5 全部完成（含 G5 兼容升级回退+完整矩阵回归复跑），见 S4 各记录与 docs/agents/WDSP_AGENT_P1_SUPPORT_MATRIX.md；真实 K8s 证据 BLOCKED_ENV（本机无集群，组件级断言已覆盖） |
 | S5 持续门禁与回退 | PASS | 2026-09-08 R3（CI 分层+证据登记+发布门禁，迁移 000134/135，stage 5/5）、R2（全量回放 24 例语料，基线 48/48、候选对比精准捕获唯一预期内丢失检测、性能关联）、2026-09-09 R4b（ENFORCE 端到端+误报/故障回退全相位 PASS 无 BLOCKED）与 R4a（回归管理界面+页面 E2E 11/11）完成，见 S5 各记录与 docs/evidence/regressions/ 两份终验报告 |
 | S6 最终交付 | PASS | 2026-09-09 汇总交付证据与客户说明 docs/tasks/wdsp-p1/DELIVERY_SUMMARY.md；最终全量验证扫尾全绿（gateway 根+子模块、server build+vet+internal 全包、wdsp-agent、web 113 文件/858 用例、p1reg 201 单测） |
@@ -474,6 +474,15 @@ E2E（test/e2e/security-regression/，stage5 真实栈+vite dev+Playwright）：
 最终全量验证扫尾（主代理实跑，exit 0）：`gateway` 根模块 build+test 全绿（仅 tproxyd 良性日志）、`gateway/modules/jiuzhang_guard` 全包绿、`server` build+vet+`./internal/...` 全包绿、`wdsp-agent` 22 包绿、`python3 -m unittest discover -s test/regression/p1/tests` Ran 201 OK、web typecheck+lint+vitest **113 文件/858 用例全绿**。
 WORKLOG 阶段状态表已同步：S0-S6 全部 PASS（如实保留 APMD-017 BLOCKED、AGT-021/022 BLOCKED_ENV、BOT 四项 PARTIAL 披露）。
 **P1 全部六个阶段至此完成。**
+
+## S3 增补记录（2026-09-09，P1-02 BOT-004/006/018 补证：多浏览器/慢设备键盘/洪峰实测）
+
+执行时间：2026-09-09 深夜；操作者：主代理指派的补证子任务；构建基线：**栈镜像构建自 HEAD 干净 worktree（`/tmp/jz-bot-bench-head`，HEAD=69503b8=wdsp-v1.1.2 基线，git worktree --detach，跑完已 remove）**。原因（真实缺陷，单独登记）：主工作树 wdsp-v1.1.2 之后他人未提交的 `server/internal/guardconfig/authz_decision.go`（untracked，AUTHZ 线在研代码）SQL 引用不存在列 `ep.method`（迁移 000136 亦不含该列），导致任何 publish 报 `GUARD_SNAPSHOT_FAILED: compile authz object models: ERROR: column ep.method does not exist (SQLSTATE 42703)`，主工作树无法建栈发布——实证 run `20260909T221713-8e02d4` publish-tasks.json（保留作缺陷证据）。Bot 挑战产品代码在 HEAD 与主工作树一致，补证口径不受影响，各 run environment.txt 已写明。
+实现文件（均为测试夹具新增/修改，未改任何产品代码）：`test/e2e/bot-challenge/run-browsers.sh`（新：stage5 夹具+第二域名+五通道 @browser + @a11y 组+channels-summary.json）、`flood-bench.sh`（新：洪峰A 签发 c50×200/c200×400、洪峰B 验证洪峰三类伪造 120 并发、洪峰C 慢请求、影响对比、资源采样）、`playwright.config.ts`（5 projects；chromium 保留 --host-resolver-rules 对照通道，firefox/webkit/mobile-safari(iPhone 14)/mobile-chrome(Pixel 7) 走第二域名 bot-bench.localhost 系统解析）、`specs/helpers.ts`（新：navigateUntilChallenged/navigateUntil403/registerVerifyListener）、`specs/challenge-flow.spec.ts`（按 project 落盘 group-browser.<project>.result.json）、`specs/challenge-a11y.spec.ts`（新 @a11y：慢设备 CDP CPU 6× 节流+页内 setTimeout(0) 主线程探针、键盘焦点/Tab 循环/Enter 重试链路）、`run.sh`（Playwright 调用固定 --project=chromium 保持 B4 基线口径）。夹具迭代中修复三处测试侧竞态（非产品问题）：403 body 读取与自动刷新竞态、CDP evaluate 探针与求解窗口竞态（改 addInitScript 页内探针）、Firefox 终态导航 "interrupted by another navigation"（显式重试一次）；另修复 flood-bench.sh 一处 `grep | wc -l` 在 pipefail 下零匹配静默退出（第四轮 run `20260909T230853-8f0152` 因此中断，修复后复跑）。
+测试与结果：①`run-browsers.sh` 最终轮 run `20260909T224253-3040ab` **23/23 PASS、verdict=PASS**——五通道均 nav_attempts_before_challenge=3 精确达阈、页内求解 2–107ms、verify 204、clearance 落 Cookie、终态 200 REACHED_ORIGIN（channels-summary.json 逐通道留证）；慢设备：CPU 6× 节流下求解 102ms、挑战页主线程探针最大 gap 91ms（预算 2000ms）；键盘：焦点自动落 #wdsp-retry、焦点环 outline auto 1px 可见、Tab/Shift+Tab 循环、Enter 重试→verify 204→REACHED_ORIGIN、aria snapshot 落盘。②`flood-bench.sh` 最终轮 run `20260909T231820-d1f76b` **25/25 PASS、verdict=PASS**——洪峰A c50 档 429×39 受控拒绝（签发三维限速生效）；洪峰B 三类伪造零 204 零 clearance、无 5xx、无 panic（bad-solution 429/409/403 分布与会话维 12/分钟+max_attempts=3 语义自洽，伪造会话 30×403 SESSION_INVALID）；洪峰C 慢速 body 6.02s 有界 400、chunked 滴注 2.04s 有界 400（verifyReadTimeout=2s 对 HTTP/1.1 确定生效）；洪峰期间合法 clearance 20/20、POST /login 10/10 全 200；资源采样 37 行、Valkey bot 键数峰值 60（<<10000）、网关 RestartCount=0/OOMKilled=false。证据目录已拷回主仓库 `test/e2e/bot-challenge/runs/`（两 run）；栈退出 compose down -v 无残留（docker ps 实证）。
+验收映射更新：BOT-004 PARTIAL→PASS（Firefox/WebKit/移动双通道补齐）；BOT-006 PARTIAL→PASS（慢设备+键盘实测补齐，**读屏实测仍 NOT_RUN 残留**）；BOT-018 PARTIAL→PASS（洪峰/影响/资源实测补齐）。矩阵计数改 **PASS 23 / PARTIAL 1**（仅 BOT-013 移动网络实测保持 PARTIAL/BLOCKED_ENV）。
+限制如实披露：洪峰A c200 档未再触发 429（400 请求全 200）——身份行为窗口计数在洪峰中演化（known_uri_ratio→1.0），信号不再达阈故不再进入签发限速路径，非限速失效（c50 档已实证 60/IP/分钟）；503 容量语义本环境未触发（IP 维限速先行，组件层 TestOfferCapacityExceeded 覆盖）；压测环境为开发机 macOS arm64 + Docker Desktop（Linux VM），非专用压测硬件，数字为本环境实测值；读屏维度无辅助技术环境，建议立项人工审计。另观察到：`web/node_modules` 的 @playwright/test 实际版本 1.63.0（package.json 声明 ^1.50.1，被并发 npm install 升级），本轮五通道实跑基于 1.63.0 + 浏览器二进制 chromium-1243/firefox-1543/webkit-2359。
+文档同步：`docs/WDSP_BOT_CHALLENGE_ACCEPTANCE_MATRIX.md`（BOT-004/006/018 格翻 PASS+顶部计数+§2 缺口表+§3 索引）、`test/e2e/bot-challenge/README.md`（已知限制/用法/实测状态）、`DELIVERY_SUMMARY.md` §1/§2/§3。
 
 ## 每阶段更新模板
 

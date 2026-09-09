@@ -47,8 +47,9 @@ p0bench 一致）、`preflight.json`、`group-http-script/*`（原始响应与�
 
 ## 已知限制
 
-- BOT-004 的 Firefox/Safari/移动浏览器维度本基准不覆盖（Playwright 仅 Chromium
-  通道；WebKit/Firefox 通道可后续扩展同一 spec），在报告中按 NOT_RUN 处理。
+- run.sh 基准的 browser 组固定 Chromium 通道（`--project=chromium`）；Firefox/
+  WebKit/移动浏览器维度由 run-browsers.sh 覆盖（见下节），慢设备/键盘维度由
+  run-browsers.sh 的 @a11y 组覆盖；读屏（屏幕阅读器）实测仍 NOT_RUN。
 - 信号判定依赖 identity_behavior 窗口计数，run.sh 已启用全局行为策略；
   若 B3 网关接入（bot_step）尚未合入，挑战不触发，相关断言如实 FAIL 并注明缺口。
 
@@ -72,3 +73,48 @@ PoW）：A 工作树正式构建镜像升级栈 → B PROTECT 基线挑战与完
 历史 BOT 事件 API 可读 → D 回退 PROTECT 挑战恢复、旧 clearance 按 policy_epoch
 代次撤销不复活。三次发布的任务状态/节点结果 JSON 全量留证。
 最终轮 run `20260908T185148-7b707a`：23/23 PASS（证据 `runs/20260908T185148-7b707a/`）。
+
+## BOT-004/006 多浏览器与无障碍补证（run-browsers.sh）
+
+```bash
+bash test/e2e/bot-challenge/run-browsers.sh
+```
+
+同一 stage5 真实栈夹具，基准应用额外登记第二域名 `bot-bench.localhost`
+（macOS/Linux 系统解析器将 `*.localhost` 解析到 127.0.0.1；Chromium 通道另以
+`--host-resolver-rules` 对照）：
+
+- 五通道 @browser 组（BOT-004）：chromium / firefox / webkit /
+  mobile-safari（iPhone 14 视口+UA）/ mobile-chrome（Pixel 7 视口+UA），
+  逐通道记录 nav 达阈次数、求解耗时、verify/clearance/REACHED_ORIGIN，
+  汇总落盘 `channels-summary.json`。
+- @a11y 组（BOT-006，chromium 通道）：慢设备（CDP CPU 6× 节流，页内
+  setTimeout(0) 主线程探针经 sessionStorage 采样）与键盘导航（自动聚焦重试、
+  焦点环可见、Tab/Shift+Tab 循环、Enter 重试→verify 204→源站，aria snapshot 落盘）。
+
+依赖 firefox/webkit 浏览器二进制（`cd web && npx playwright install`）。
+最终轮 run `20260909T224253-3040ab`：23/23 PASS（证据
+`runs/20260909T224253-3040ab/`）。
+
+## BOT-018 洪峰与资源受控实测（flood-bench.sh）
+
+```bash
+bash test/e2e/bot-challenge/flood-bench.sh
+```
+
+同一 stage5 真实栈夹具（curl + xargs 并发，不依赖 Playwright）：
+
+- 洪峰A 签发洪峰：c50×200 / c200×400 合格导航，断言三维限速受控拒绝（429）
+  或无 5xx、服务存活。
+- 洪峰B 验证洪峰 + 假会话制造：120 并发三类伪造（合法会话+错误解答 /
+  伪造会话 / 未知 challenge_id），断言零 204、零 clearance 签发、无 5xx、
+  网关日志无 panic。
+- 洪峰C 慢请求：HTTP/1.1 慢速 body 与 chunked 滴注，断言请求时限有界（≤8s，
+  verifyReadTimeout=2s 对 h1 确定生效）且不签发通行。
+- 影响对比：洪峰期间合法 clearance 通行与选择器外 POST /login 逐条计时，
+  与基线对比落盘 `impact/impact-summary.json`。
+- 资源：全程 2s 周期采样 docker stats + Valkey dbsize + bot 键数
+  （`resource-samples.tsv`），断言键数峰值 << 在途上限 10000、网关零重启零 OOM。
+
+最终轮 run `20260909T231820-d1f76b`：25/25 PASS（证据
+`runs/20260909T231820-d1f76b/`）。

@@ -531,8 +531,10 @@ else
   for GROUP in browser automation-js; do
     echo "[pw] 运行组：$GROUP"
     set +e
+    # 固定 chromium 通道：B4 基线口径不变（多通道补证由 run-browsers.sh 承担）
     (cd web && npx playwright test \
       --config ../test/e2e/bot-challenge/playwright.config.ts \
+      --project=chromium \
       --grep "@$GROUP" \
       --reporter=json > "$REPO_ROOT/$EVIDENCE_DIR/group-$GROUP.playwright.json" 2>&1)
     pw_rc=$?

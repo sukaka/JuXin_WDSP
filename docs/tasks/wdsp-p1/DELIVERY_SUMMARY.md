@@ -7,7 +7,7 @@
 | 任务 | 验收清单 | 状态 | 权威证据 |
 |---|---|---|---|
 | P1-01 安全+APM 演示 | APMD-001～018 | 17 项 PASS；**APMD-017 BLOCKED**（用户任务耗时验证需未参与开发的人员，条件不具备；任务脚本已固化待执行） | WORKLOG S2 四条记录；A4 真实产品栈联调四场景 PASS |
-| P1-02 Bot 挑战 | BOT-001～024 | **PASS 20 / PARTIAL 4 / FAIL 0** | docs/WDSP_BOT_CHALLENGE_ACCEPTANCE_MATRIX.md（逐项证据映射） |
+| P1-02 Bot 挑战 | BOT-001～024 | **PASS 23 / PARTIAL 1 / FAIL 0**（2026-09-09 BOT-004/006/018 真实环境补证完成；仅 BOT-013 移动网络实测 PARTIAL/BLOCKED_ENV） | docs/WDSP_BOT_CHALLENGE_ACCEPTANCE_MATRIX.md（逐项证据映射） |
 | P1-03 Agent 网关协议 | AGT-001～028 | **26 项 PASS；AGT-021/022 BLOCKED_ENV**（无真实 K8s 集群；组件级等价断言已由 11 个单测覆盖） | docs/agents/WDSP_AGENT_P1_SUPPORT_MATRIX.md |
 | P1-04 规则模型回归 | REG-001～026 | 工具层/后端/门禁/回退全部实证通过；真实环境项均在 stage5 真实栈执行 | docs/evidence/regressions/P1-04-R2-FINAL-REPORT.md、P1-04-R4B-DRILL-REPORT.md |
 
@@ -17,6 +17,8 @@
 |---|---|---|
 | Bot 浏览器与自动化基准（BOT-004/005/021） | test/e2e/bot-challenge/runs/20260908T184056-940230 | 27/27 PASS |
 | Bot 升级/关闭/回退演练（BOT-024） | test/e2e/bot-challenge/runs/20260908T185148-7b707a | 23/23 PASS |
+| Bot 多浏览器+无障碍补证（BOT-004/006） | test/e2e/bot-challenge/runs/20260909T224253-3040ab | 23/23 PASS |
+| Bot 洪峰与资源受控实测（BOT-018） | test/e2e/bot-challenge/runs/20260909T231820-d1f76b | 25/25 PASS |
 | Agent Nginx mirror E2E | test/wdsp-agent-e2e/mirror/runs/20260908T151957-2396b3 | 11/11 PASS |
 | Agent Envoy tap E2E（h2/gRPC/WS） | test/wdsp-agent-e2e/envoy-tap/runs/20260908T152129-c4a655 | 11/11 PASS |
 | 回归全量回放 基线/候选对比 | docs/evidence/regressions/compare-20260908T222932-46b792 | 基线 48/48；候选精准捕获唯一预期内丢失检测，如实 FAIL |
@@ -27,10 +29,9 @@
 
 - **APMD-017**（用户任务耗时验证）：BLOCKED，需未参与开发人员执行，脚本已固化。
 - **AGT-021/022**（真实 K8s Pod 变更与 RBAC 最小权限实证）：BLOCKED_ENV，需具备真实集群的环境补做；组件级断言已覆盖。
-- **BOT-004**：仅 Chromium 通道实测；Firefox/Safari/移动浏览器 NOT_RUN（Playwright spec 可扩展复用）。
-- **BOT-006**：慢设备节流、读屏与键盘导航实测 NOT_RUN（设计已防主线程长阻塞，无辅助技术环境证据）。
+- **BOT-006**：读屏（屏幕阅读器）实测 NOT_RUN（慢设备 CPU 节流与键盘导航已于 2026-09-09 实测 PASS；读屏需辅助技术环境，建议立项人工审计）。
 - **BOT-013**：移动网络 IP 变化实测 BLOCKED_ENV。
-- **BOT-018**：签发/验证洪峰压测 NOT_RUN。
+- **BOT-018**：503 容量语义真实栈未触发（IP 维限速先行，组件层已覆盖）；洪峰压测在开发机 macOS arm64 Docker Desktop 执行，非专用压测硬件。
 - 范围外能力（NOT_SUPPORTED，不得以转码/镜像冒充）：原生旁路 HTTP/2 HPACK 帧解析、WebSocket 帧正文解析、HTTP/3/QUIC、gRPC Protobuf 正文解码、AF_XDP、Agent 在线阻断。
 - Bot 信号：method_ratio 恒 UNAVAILABLE（无每方法计数源）；identity_behavior 未启用时行为组不可用、PROTECT 不挑战（部署配套要求见运维手册）。
 - 回归语料：JWT/Agent/APM 类用例仍缺口（manifest 已标注）；WAF-BEN-EDGE-001 关联 CUSTOM_PACK 1001012 存在非确定命中 flake（10 轮 2 轮），已如实披露。

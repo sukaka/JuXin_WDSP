@@ -1,0 +1,237 @@
+{
+  "config": {
+    "argv": [
+      "/Users/zhanglei/.nvm/versions/node/v24.13.0/bin/node",
+      "/private/tmp/jz-bot-bench-head/web/node_modules/.bin/playwright",
+      "test",
+      "--config",
+      "../test/e2e/bot-challenge/playwright.config.ts",
+      "--project=chromium",
+      "--grep",
+      "@a11y",
+      "--reporter=json"
+    ],
+    "configFile": "/private/tmp/jz-bot-bench-head/test/e2e/bot-challenge/playwright.config.ts",
+    "rootDir": "/private/tmp/jz-bot-bench-head/test/e2e/bot-challenge/specs",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/private/tmp/jz-bot-bench-head/web/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "/private/tmp/jz-bot-bench-head/test/e2e/bot-challenge/specs",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      },
+      {
+        "outputDir": "/private/tmp/jz-bot-bench-head/web/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "firefox",
+        "name": "firefox",
+        "testDir": "/private/tmp/jz-bot-bench-head/test/e2e/bot-challenge/specs",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      },
+      {
+        "outputDir": "/private/tmp/jz-bot-bench-head/web/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "webkit",
+        "name": "webkit",
+        "testDir": "/private/tmp/jz-bot-bench-head/test/e2e/bot-challenge/specs",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      },
+      {
+        "outputDir": "/private/tmp/jz-bot-bench-head/web/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "mobile-safari",
+        "name": "mobile-safari",
+        "testDir": "/private/tmp/jz-bot-bench-head/test/e2e/bot-challenge/specs",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      },
+      {
+        "outputDir": "/private/tmp/jz-bot-bench-head/web/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "mobile-chrome",
+        "name": "mobile-chrome",
+        "testDir": "/private/tmp/jz-bot-bench-head/test/e2e/bot-challenge/specs",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "json"
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.63.0",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "challenge-a11y.spec.ts",
+      "file": "challenge-a11y.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "BOT-006 慢设备与键盘导航实测 @a11y",
+          "file": "challenge-a11y.spec.ts",
+          "line": 23,
+          "column": 6,
+          "specs": [
+            {
+              "title": "慢设备（CPU 6x 节流）完成求解且主线程无长阻塞",
+              "ok": true,
+              "tags": [
+                "a11y"
+              ],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 534,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "[a11y-slow-device] metrics= {\"group\":\"a11y-slow-device\",\"channel\":\"chromium\",\"cpu_throttle_rate\":6,\"nav_attempts_before_challenge\":1,\"challenge_seen\":true,\"solve_ms\":102,\"verify_status\":204,\"main_thread_probes\":[{\"gap\":2,\"challenge\":false},{\"gap\":80,\"challenge\":true},{\"gap\":91,\"challenge\":true},{\"gap\":12,\"challenge\":true},{\"gap\":6,\"challenge\":true},{\"gap\":4,\"challenge\":true},{\"gap\":15,\"challenge\":false},{\"gap\":0,\"challenge\":false},{\"gap\":2,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":0,\"challenge\":false},{\"gap\":0,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":4,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":4,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":6,\"challenge\":false},{\"gap\":4,\"challenge\":false},{\"gap\":5,\"challenge\":false},{\"gap\":4,\"challenge\":false},{\"gap\":4,\"challenge\":false},{\"gap\":0,\"challenge\":false},{\"gap\":2,\"challenge\":false},{\"gap\":4,\"challenge\":false},{\"gap\":2,\"challenge\":false},{\"gap\":1,\"challenge\":false},{\"gap\":31,\"challenge\":false},{\"gap\":10,\"challenge\":false}],\"challenge_window_gaps_ms\":[80,91,12,6,4],\"challenge_window_gap_max_ms\":91,\"final_reached_origin\":true}\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-09-09T14:43:31.002Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "2eb196776f8dd37015c8-7161c587a59e93b0c1b7",
+              "file": "challenge-a11y.spec.ts",
+              "line": 24,
+              "column": 7
+            },
+            {
+              "title": "键盘导航：失败态可读、仅键盘重试并通行、焦点可见",
+              "ok": true,
+              "tags": [
+                "a11y"
+              ],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 335,
+                      "errors": [],
+                      "stdout": [
+                        {
+                          "text": "[a11y-keyboard] metrics= {\"group\":\"a11y-keyboard\",\"channel\":\"chromium\",\"nav_attempts_before_challenge\":1,\"failure_state_readable\":true,\"status_text\":\"需要手动操作\",\"reason_text\":\"网络异常，请检查连接后重试。\",\"focus_on_retry_auto\":true,\"focus_outline_programmatic\":{\"style\":\"auto\",\"width\":\"1px\"},\"focus_outline_keyboard\":{\"style\":\"auto\",\"width\":\"1px\"},\"tab_moves_away_from_retry\":true,\"shift_tab_returns_to_retry\":true,\"verify_status_after_keyboard_retry\":204,\"final_reached_origin\":true}\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-09-09T14:43:31.677Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "2eb196776f8dd37015c8-376f34e6c9b86e225cf3",
+              "file": "challenge-a11y.spec.ts",
+              "line": 124,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-09-09T14:43:30.770Z",
+    "duration": 1272.751,
+    "expected": 2,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

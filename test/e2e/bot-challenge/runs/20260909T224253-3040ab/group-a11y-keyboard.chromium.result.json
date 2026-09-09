@@ -1,0 +1,21 @@
+{
+  "group": "a11y-keyboard",
+  "channel": "chromium",
+  "nav_attempts_before_challenge": 1,
+  "failure_state_readable": true,
+  "status_text": "需要手动操作",
+  "reason_text": "网络异常，请检查连接后重试。",
+  "focus_on_retry_auto": true,
+  "focus_outline_programmatic": {
+    "style": "auto",
+    "width": "1px"
+  },
+  "focus_outline_keyboard": {
+    "style": "auto",
+    "width": "1px"
+  },
+  "tab_moves_away_from_retry": true,
+  "shift_tab_returns_to_retry": true,
+  "verify_status_after_keyboard_retry": 204,
+  "final_reached_origin": true
+}
