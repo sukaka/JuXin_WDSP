@@ -1,0 +1,11 @@
+S6 再冻结：干净构建输入快照来源记录（2026-09-09）
+命令：
+  git worktree add --detach /tmp/wdsp-v1.1.2-clean wdsp-v1.1.2
+  python3 - <<'EOF'  # 调用 tools/capability_evidence.py 的 build_file_manifest + canonical_snapshot
+结果：
+  commit          = 3f6f6f83d992dfd5f6ed2595b03b179d6fe60ef6（tag wdsp-v1.1.2，提交信息 chore(release): WDSP 1.1.2）
+  dirty           = false（快照取自 tag 的干净 worktree 检出，非当前工作树）
+  file_manifest   = 3653 个构建输入文件（排除 .git/node_modules/dist/runtime/docs/evidence/.env*）
+  snapshot_sha256 = 8c4503057db78ea9d2fe4251323b78b5cf16e841b2a215992d20262870dad57d
+说明：当前工作树在 1.1.2 提交后又出现新的未提交改动（他人 WIP），故冻结绑定 tag 而非工作树；
+      工作树后续改动不影响本快照的有效性，亦不被本快照覆盖。

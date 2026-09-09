@@ -1,6 +1,6 @@
 # WDSP P0 实施接续记录
 
-更新日期：2026-09-08。
+更新日期：2026-09-09（S6 再冻结：干净构建输入绑定 tag wdsp-v1.1.2）。
 
 ## 当前任务
 
@@ -28,7 +28,7 @@
 | S3 JWT | PASS | 2026-09-07 完成：JWT-01～17 PASS、JWT-18 BLOCKED（ENVIRONMENT_UNAVAILABLE）；证据 `docs/evidence/releases/dev-s3-jwt-20260907/`；详见「S3 记录」 |
 | S4 最终处置和例外 | PASS | 2026-09-08 收尾：EXC-01～15、DEC-01～06 全 PASS（第八轮真实网关冒烟 34/34；DEC-01/02/05 经素材 is_api 修复与 E3 期望契约修正后通过）；证据 `docs/evidence/releases/dev-s4-dec-exc-20260907/`；详见「S4 记录」 |
 | S5 最终基准与长稳恢复 | PARTIAL | 2026-09-08 收尾：BENCH-01/02/05/06/07 PASS（工具层 123 单测 + 真实预检）；BENCH-03/04/08/09/10 BLOCKED、BENCH-11/12 BLOCKED（均 ENVIRONMENT_UNAVAILABLE，需专用隔离硬件）；证据 `docs/evidence/releases/dev-s5-bench-20260908/`；详见「S5 记录」 |
-| S6 发布证据冻结 | PARTIAL | 2026-09-08 收尾：63 条强制验收项全部可定位（PASS 49 / BLOCKED 13 / NOT_APPLICABLE 1）；EVD-01～09 PASS、EVD-10 NOT_APPLICABLE、EVD-11/12 BLOCKED（无干净构建输入与锁定镜像）；`--release` 门槛实测拒绝（rc=1）；证据 `docs/evidence/releases/dev-s6-freeze-20260908/`；详见「S6 记录」 |
+| S6 发布证据冻结 | PARTIAL | 2026-09-08 收尾：63 条强制验收项全部可定位（PASS 49 / BLOCKED 13 / NOT_APPLICABLE 1）；EVD-01～09 PASS、EVD-10 NOT_APPLICABLE、EVD-11/12 BLOCKED（无干净构建输入与锁定镜像）；`--release` 门槛实测拒绝（rc=1）；证据 `docs/evidence/releases/dev-s6-freeze-20260908/`；详见「S6 记录」。2026-09-09 再冻结：干净构建输入绑定 tag wdsp-v1.1.2 干净检出（dirty=false + 3653 文件快照与清单），`--release` 拒绝理由由 11 项收窄至 8 项；EVD-11/12 仍 BLOCKED；证据 `docs/evidence/releases/dev-s6-refreeze-1.1.2-20260909/`，详见「S6 增补记录」 |
 
 ## 本轮文档校验记录
 
@@ -305,6 +305,42 @@
 
 下一步：无后续阶段；等待硬件/构建条件具备后按差距清单补证。
 
+## S6 增补记录（2026-09-09，再冻结：绑定 wdsp-v1.1.2 干净构建输入）
+
+阶段/任务书版本：S6 增补，P0-01 任务书 §7 + 总纲 S6 行（最终构建与证据一致；限制与未完成项如实保留）。
+
+时间、分支、commit、工作树摘要：2026-09-09 晚；`develop`；发布提交 `3f6f6f8`（tag `wdsp-v1.1.2`，chore(release): WDSP 1.1.2）已落地。快照取自该 tag 的隔离 worktree 干净检出（/tmp/wdsp-v1.1.2-clean，用后已移除）；当前工作树在发布提交后又出现新的未提交改动（他人 WIP），与本增补无关，未纳入快照。
+
+本阶段目标与改动文件：
+- 干净构建输入冻结：3653 个构建输入文件逐一 sha256（排除 .git/node_modules/dist/runtime/docs/evidence/.env*），`canonical_snapshot = 8c4503057db78ea9d2fe4251323b78b5cf16e841b2a215992d20262870dad57d`；source.commit 为 40 位完整哈希、dirty=false。
+- 新证据包 `docs/evidence/releases/dev-s6-refreeze-1.1.2-20260909/`（manifest.json + artifacts 4 份：capability-tool-tests.log、snapshot-source.log、freeze-coverage-check.log、capability-check.log）。
+- 新最终合并视图 `docs/evidence/merged-check-final-20260909.manifest.json`（S3+S4+S5+S6-refreeze 四包 63 条，无缺失无多余无重复；source 绑定 tag 干净检出）；旧 S6 包与三份旧合并视图全部保留不覆盖。
+- `docs/capabilities/CAPABILITIES.md` 自新合并视图重生成（产品版本 1.1.2、源码提交 dirty=否、发布状态 DEVELOPMENT）。
+- `tools/tests/test_capability_evidence.py` 仓库冒烟合并逻辑：同一验收 ID 被后续包重新冻结时以排序靠后的新包记录为准（否则新旧 S6 包的 EVD 重复 ID 触发校验器重复拒绝）；38 单测全绿。
+
+与任务书的差异及理由：
+- 自引用工件处理：capability-check.log 记录的是回填自身哈希前一次 check rc=0 / --release rc=1 运行，回填后已再跑 check 复核 rc=0（日志内已注明，避免自引用循环）；capability-tool-tests.log 采用「先跑临时文件、后落盘回填哈希」，否则套件运行中读取半写入的自身日志必致哈希不符。
+- EVD-11 阻塞面收窄：干净构建输入条件已满足（绑定 tag），剩余为无第二套干净环境执行重建、部署、重跑必测集与异机复跑。
+
+数据库迁移/配置兼容/回退方式：无。
+
+实际执行命令与环境标识：同 S6 开发机（macOS 25.2.0 arm64，Go 1.25.6、Python 3.12.0）；`git worktree add --detach /tmp/wdsp-v1.1.2-clean wdsp-v1.1.2`；python3 调用 tools/capability_evidence.py 的 build_file_manifest/canonical_snapshot；check 与 --release 完整输出见 `artifacts/capability-check.log`。
+
+验收 ID → 状态 → 证据：
+- EVD-01～09 → PASS（38 单测全绿）→ `docs/evidence/releases/dev-s6-refreeze-1.1.2-20260909/manifest.json`。
+- EVD-10 → NOT_APPLICABLE（本轮再冻结无 HTTP/UI 交付面变更）→ 同 manifest。
+- EVD-11/12 → BLOCKED（ENVIRONMENT_UNAVAILABLE）→ 同 manifest + freeze-coverage-check.log + snapshot-source.log。
+- 汇总校验：新合并视图 check rc=0；`--release` rc=1，拒绝理由由 11 项收窄至 8 项（source.dirty / snapshot_sha256 / file_manifest 三项已消解；剩余 images 为空、config_fingerprint 为空、6 项能力 BLOCKED）。
+
+未完成事项、依赖和限制（出 RELEASE_VERIFIED 剩余差距清单）：
+1. images：按架构锁定 digest 的真实镜像（需实际构建/拉取）。
+2. config_fingerprint：一次真实部署的有效配置指纹。
+3. JWT-18 与 BENCH-03/04/08/09/10/11/12：专用隔离硬件 + 72 小时长稳窗口（连带六项 BLOCKED 能力）。
+4. EVD-11/12：干净环境重建 + 异机复跑。
+5. 上述全部消解前，四项 P0 总状态保持未完成，发布状态保持 DEVELOPMENT。
+
+下一步：等待镜像构建、真实部署与专用硬件条件具备后按上述清单补证。
+
 ## 开发阶段记录模板
 
 每完成一个阶段追加一条，保留失败与重测历史；不要覆盖旧证据。
@@ -323,4 +359,4 @@
 
 ## 下次接续
 
-S0～S6 全部收尾（S5/S6 为 PARTIAL，阻塞项均为环境与构建条件，非代码缺口；S4 已全 PASS）。当前冻结事实：63 条强制验收项全部可定位（PASS 52 / BLOCKED 10 / NOT_APPLICABLE 1）；能力清单 PASS 9 / BLOCKED 6；发布状态 DEVELOPMENT，`--release` 门槛实测拒绝。出 RELEASE_VERIFIED 的差距清单见「S6 记录」末节（干净构建输入、锁定镜像、测量硬件/72h 长稳、EVD-11/12 重建复跑）。开始前重新读取当前代码，不能把本文件的代码观察视为永久事实。禁止将文档验收状态与功能验收状态混为一谈。
+S0～S6 全部收尾（S5/S6 为 PARTIAL，阻塞项均为环境与构建条件，非代码缺口；S4 已全 PASS）。2026-09-09 S6 再冻结：发布提交 `3f6f6f8`（tag `wdsp-v1.1.2`）已作为干净构建输入冻结（dirty=false、3653 文件快照 `8c450305…dad57d`、文件清单入 manifest），最终合并视图 `docs/evidence/merged-check-final-20260909.manifest.json` check rc=0。当前冻结事实：63 条强制验收项全部可定位（PASS 52 / BLOCKED 10 / NOT_APPLICABLE 1）；能力清单 PASS 9 / BLOCKED 6；发布状态 DEVELOPMENT，`--release` 门槛实测拒绝（剩余 8 项理由）。出 RELEASE_VERIFIED 的剩余差距清单见「S6 增补记录」末节（锁定镜像、有效配置指纹、测量硬件/72h 长稳、EVD-11/12 重建复跑）。开始前重新读取当前代码，不能把本文件的代码观察视为永久事实。禁止将文档验收状态与功能验收状态混为一谈。

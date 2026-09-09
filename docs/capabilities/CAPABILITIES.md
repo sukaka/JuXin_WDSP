@@ -3,10 +3,10 @@
 > 本文件由 `tools/capability_evidence.py render` 自动生成，禁止手工修改状态。
 > 重新生成：`python3 tools/capability_evidence.py render --catalog capabilities.json --manifest <manifest> --output CAPABILITIES.md`
 
-- 构建：dev-final-merged-20260908
-- 产品版本：unresolved
-- 源码提交：3c73774（dirty=是）
-- 报告日期：2026-09-08
+- 构建：dev-final-merged-20260909
+- 产品版本：1.1.2
+- 源码提交：3f6f6f83d992dfd5f6ed2595b03b179d6fe60ef6（dirty=否）
+- 报告日期：2026-09-09
 - 发布状态：DEVELOPMENT
 - 说明：本报告不构成发布验收通过证明；无证据能力一律显示未验证，不展示通过徽标。
 

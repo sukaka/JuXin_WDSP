@@ -643,7 +643,9 @@ class TestRealRepoCatalog(unittest.TestCase):
         # 清单按阶段累计引用多个证据包（如 jwt-verification→S3 包、waf-exceptions→S4 包），
         # 而校验器只接受单个 manifest 且要求 evidence_refs 在其中闭合；故将全部真实证据包的
         # tests 合并为临时视图（工件路径相对 docs/evidence/ 重写，sha256 原样沿用）再校验。
+        # 同一验收 ID 被后续包重新冻结（如 S6 refreeze 绑定新构建）时，以排序靠后的新包记录为准。
         merged_tests = []
+        merged_index = {}
         latest = None
         for manifest_path in candidates:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -655,7 +657,11 @@ class TestRealRepoCatalog(unittest.TestCase):
                      "sha256": art["sha256"]}
                     for art in rec.get("artifacts", [])
                 ]
-                merged_tests.append(rec)
+                if rec["id"] in merged_index:
+                    merged_tests[merged_index[rec["id"]]] = rec
+                else:
+                    merged_index[rec["id"]] = len(merged_tests)
+                    merged_tests.append(rec)
         merged = {k: v for k, v in latest.items() if k != "tests"}
         merged["build_id"] = "merged-check-view"
         merged["tests"] = merged_tests
