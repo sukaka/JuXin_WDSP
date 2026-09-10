@@ -109,6 +109,10 @@ type Provider struct {
 	// 行，列由迁移 000130 建立；仅 WDSP 开启时下发 api_exceptions 段；读取失败中止
 	// 发布——fail-hard，与 jwt_trust 同一口径；nil 时不下发该段，网关零行为变化）
 	apiExceptions APIExceptionLister
+	// AUTHZ-01：只下发已确认的对象模型、OWNER 关系与 VERIFIED 角色基线；
+	// 对象引用 HMAC 密钥单独从加密设置读取，禁止进入版本快照。
+	authzSnapshot      AuthzSnapshotLister
+	authzObjectHMACKey AuthzObjectHMACKeyLoader
 }
 
 // AccessLogSettings 是 logging 组系统设置（全量访问日志开关快照）。
@@ -481,6 +485,32 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		// W4-GW：授权基线随发布下发（表由迁移 000043/000044 建立；缺失/失败 Warn 跳过）
 		cfg.APIRoleBaselines = p.loadAPIRoleBaselines(ctx)
 		cfg.APIFieldPermissions = p.loadAPIFieldPermissions(ctx)
+		// AUTHZ-01：授权事实编译采用 fail-hard。存在可发布对象模型时，关系、
+		// VERIFIED 角色基线及专用 HMAC 密钥必须形成同一份有期限快照。
+		authzModels, authzRelations, authzRoles, authzKeyHex, err := p.loadAPIAuthzSnapshot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		cfg.APIAuthzModels = authzModels
+		cfg.APIAuthzRelations = authzRelations
+		cfg.APIAuthzRoleBaselines = authzRoles
+		cfg.APIAuthzObjectHMACKeyHex = authzKeyHex
+		if len(authzModels) > 0 && authzModels[0].SnapshotExpiresAt != nil {
+			expiresAt := authzModels[0].SnapshotExpiresAt.UTC()
+			cfg.APIAuthzSnapshotExpiresAt = &expiresAt
+		}
+		// AUTHZ-01：只从最近一次 SUCCESS 版本保留上一授权快照。
+		// 快照有效期沿用原版本，由网关在请求时决定是否仍可回退。
+		previousValid, err := p.loadLatestSuccessfulAuthzSnapshot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		authzKeyHex, err = p.ensureAuthzSnapshotKey(ctx, authzKeyHex, len(authzModels) > 0, previousValid)
+		if err != nil {
+			return nil, err
+		}
+		cfg.APIAuthzObjectHMACKeyHex = authzKeyHex
+		cfg.APIAuthzPreviousValid = previousValid
 		// W9-GW：扫描签名密钥随发布下发（system_settings 密文解密；未配置不下发，
 		// 读取/解密失败中止发布——降级为仅按头存在性识别会放行伪造扫描头投毒学习样本；
 		// 快照脱敏，回滚时按当前设置重新注入）
@@ -578,6 +608,18 @@ func RedactGuardConfig(cfg *gatewayconfig.GuardConfig) *gatewayconfig.GuardConfi
 	if cfg.TLSSessionTicketKey != "" {
 		cp.TLSSessionTicketKey = "***"
 	}
+	if cfg.APIAuthzObjectHMACKeyHex != "" {
+		cp.APIAuthzObjectHMACKeyHex = "***"
+	}
+	// api_authz_previous_valid.object_hmac_key_hex 同样是秘密材料；上一快照
+	// 只保存事实与版本信息，渲染时由 gatewayconfig 按当前密钥重新注入。
+	if cfg.APIAuthzPreviousValid != nil {
+		previous := *cfg.APIAuthzPreviousValid
+		if previous.ObjectHMACKeyHex != "" {
+			previous.ObjectHMACKeyHex = "***"
+		}
+		cp.APIAuthzPreviousValid = &previous
+	}
 	// api_scan_verification.key_hex 为扫描签名密钥明文，快照脱敏（同一纪律）；
 	// 回滚发布时由 GetVersionConfig 按当前设置重新解密注入
 	if cfg.APIScanVerification != nil {
@@ -657,9 +699,10 @@ func (p *Provider) SaveVersionSnapshot(ctx context.Context, cfg *gatewayconfig.G
 		return uuid.Nil, err
 	}
 	sum := sha256.Sum256(data)
-	var prevID *uuid.UUID
-	if latest, err := p.versions.GetLatest(ctx); err == nil && latest != nil {
-		prevID = &latest.ID
+	latest, err := p.versions.GetLatestSuccessful(ctx)
+	prevID, err := latestSuccessfulVersionID(latest, err)
+	if err != nil {
+		return uuid.Nil, err
 	}
 	summary := fmt.Sprintf("可信代理%d 保护地址%d 全局白%d 全局黑%d 应用规则组%d 全局CC%d",
 		len(cfg.TrustedProxies), len(cfg.ProtectedAddresses), len(cfg.GlobalAllow), len(cfg.GlobalDeny),
@@ -703,8 +746,8 @@ func (p *Provider) GetVersionConfig(ctx context.Context, versionID uuid.UUID) (*
 	if err != nil {
 		return nil, err
 	}
-	var cfg gatewayconfig.GuardConfig
-	if err := json.Unmarshal(v.Config, &cfg); err != nil {
+	cfg, err := decodeGuardConfigSnapshot(v.Config)
+	if err != nil {
 		return nil, fmt.Errorf("decode version config: %w", err)
 	}
 	p.InjectRuntimeSecrets(&cfg)
@@ -768,6 +811,14 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 		}
 		cfg.BotSigningKeys = botKeys
 	}
+	// AUTHZ-01 对象引用 HMAC 密钥快照已脱敏，按当前加密设置重新注入。
+	keyHex, err := p.ensureAuthzSnapshotKey(ctx, "", len(cfg.APIAuthzModels) > 0, cfg.APIAuthzPreviousValid)
+	if err != nil {
+		return err
+	}
+	if len(cfg.APIAuthzModels) > 0 || keyHex != "" {
+		cfg.APIAuthzObjectHMACKeyHex = keyHex
+	}
 	// P0-03 回滚门禁：快照含 PROTECT JWT 信任策略而当前身份指纹密钥未配置时，
 	// 回滚发布必然被网关 fail-closed 拒载——提前以可读原因失败（与 loadJWTTrust 同一口径），
 	// 不静默降级为无密钥配置
@@ -804,6 +855,30 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 		}
 	}
 	return nil
+}
+
+// ensureAuthzSnapshotKey supplies the current runtime key whenever either the
+// current snapshot or its PreviousValid fallback contains object models.
+// Historical snapshots intentionally omit secrets, including the case where
+// the current snapshot is BFLA-only and therefore has no key of its own.
+func (p *Provider) ensureAuthzSnapshotKey(ctx context.Context, currentKey string, currentNeedsKey bool, previous *gatewayconfig.GuardAuthzSnapshot) (string, error) {
+	if currentKey != "" && currentKey != redactPlaceholder {
+		return currentKey, nil
+	}
+	if !currentNeedsKey && (previous == nil || len(previous.Models) == 0) {
+		return "", nil
+	}
+	if p.authzObjectHMACKey == nil {
+		return "", fmt.Errorf("authz snapshot requires dedicated object HMAC key loader")
+	}
+	keyHex, err := p.authzObjectHMACKey(ctx)
+	if err != nil {
+		return "", err
+	}
+	if keyHex == "" {
+		return "", fmt.Errorf("authz snapshot requires api_authz.object_hmac_key")
+	}
+	return keyHex, nil
 }
 
 // formatTime RFC3339 格式化（nil → 空串）。

@@ -118,6 +118,76 @@ export interface ApiBolaEvaluateResult {
   evaluated_at: string
 }
 
+export type ApiAuthzCandidateStatus = 'PENDING' | 'REJECTED' | 'FROZEN' | 'CONFIRMED'
+export type ApiAuthzDecisionValue = 'ALLOW' | 'OBSERVE_VIOLATION' | 'UNKNOWN'
+
+export interface ApiAuthzRelationCandidate {
+  id: string
+  application_id: string
+  endpoint_id?: string | null
+  object_type: string
+  object_ref: string
+  principal_id?: string | null
+  tenant_id?: string | null
+  legacy_identity_fingerprint?: string | null
+  source: string
+  status: ApiAuthzCandidateStatus
+  source_count: number
+  observation_count: number
+  confidence_inputs: Record<string, unknown>
+  evidence_ref?: string | null
+  reject_reason?: string | null
+  first_seen: string
+  last_seen: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ApiAuthzObjectRelation {
+  id: string
+  application_id: string
+  object_type: string
+  object_ref: string
+  principal_id: string
+  tenant_id?: string | null
+  relation: 'OWNER'
+  source: 'MANUAL' | 'IMPORT' | 'CREATE_BINDING'
+  status: 'CONFIRMED' | 'REVOKED' | 'EXPIRED'
+  valid_from: string
+  valid_until?: string | null
+  evidence_ref?: string | null
+  confirmed_by: string
+  confirmed_at: string
+  reason: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ApiAuthzDecision {
+  id: string
+  decision_id: string
+  application_id?: string | null
+  endpoint_key: string
+  policy_version: string
+  decision: ApiAuthzDecisionValue
+  checks: unknown[]
+  evidence?: Record<string, unknown>
+  occurred_at: string
+}
+
+export interface ApiAuthzCoverage {
+  application_id?: string | null
+  pending_candidates: number
+  confirmed_relations: number
+  decisions: number
+  unknown_decisions: number
+  observe_violations: number
+  verified_identity_rate: number
+  model_coverage_rate: number
+  confirmed_relation_rate: number
+  unknown_rate: number
+}
+
 export const apiAuthzApi = {
   /** 角色基线分页列表（过滤 endpoint_id/role/method/source/confirmed） */
   listRoleBaselines: async (params: {
@@ -190,4 +260,23 @@ export const apiAuthzApi = {
   /** BOLA 五档评估（只读；identity 可空 = 匿名身份，只走对象侧信号） */
   evaluate: (params: { endpoint_id: string; identity?: string; object_id: string }) =>
     request<ApiBolaEvaluateResult>('/api-security/authz/evaluate', { query: { ...params } }),
+
+  listRelationCandidates: async (params: { application_id: string; status?: string; page: number; page_size: number }) => {
+    const data = await request<PageResult<ApiAuthzRelationCandidate>>('/api-security/authz/relations/candidates', { query: { ...params } })
+    return { ...data, items: data.items ?? [] }
+  },
+  confirmRelationCandidate: (id: string, body: { relation: 'OWNER'; reason: string; valid_until?: string }) =>
+    request<ApiAuthzObjectRelation>(`/api-security/authz/relations/candidates/${id}/confirm`, { method: 'POST', body }),
+  rejectRelationCandidate: (id: string, reason: string) =>
+    request<ApiAuthzRelationCandidate>(`/api-security/authz/relations/candidates/${id}/reject`, { method: 'POST', body: { reason } }),
+  listObjectRelations: async (params: { application_id: string; object_type?: string; status?: string; page: number; page_size: number }) => {
+    const data = await request<PageResult<ApiAuthzObjectRelation>>('/api-security/authz/relations', { query: { ...params } })
+    return { ...data, items: data.items ?? [] }
+  },
+  listAuthorizationDecisions: async (params: { application_id: string; decision?: string; page: number; page_size: number }) => {
+    const data = await request<PageResult<ApiAuthzDecision>>('/api-security/authz/decisions', { query: { ...params } })
+    return { ...data, items: data.items ?? [] }
+  },
+  getAuthorizationCoverage: (application_id: string) =>
+    request<ApiAuthzCoverage>('/api-security/authz/coverage', { query: { application_id } }),
 }

@@ -72,6 +72,24 @@ type fakeCaddyAdmin struct {
 	loadBody []string
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+type truncatedResponseBody struct {
+	done bool
+}
+
+func (b *truncatedResponseBody) Read(p []byte) (int, error) {
+	if b.done {
+		return 0, io.ErrUnexpectedEOF
+	}
+	b.done = true
+	return copy(p, `{"ok":`), nil
+}
+
 func (f *fakeCaddyAdmin) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /load", func(w http.ResponseWriter, r *http.Request) {
@@ -193,5 +211,68 @@ func TestCaddyClientLoadErrorPropagated(t *testing.T) {
 	}
 	if !strings.Contains(loadErr.Message, "load rejected") {
 		t.Fatalf("LoadError message = %q", loadErr.Message)
+	}
+}
+
+// TestCaddyClientLoadConfigRejectsInterruptedResponseBody 防止 /load 已返回 200
+// 但响应体传输中断时被误判为成功；该错误必须回到节点同步结果，供后续恢复重试。
+func TestCaddyClientLoadConfigRejectsInterruptedResponseBody(t *testing.T) {
+	client := &CaddyClient{
+		baseURL: "http://admin",
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(&truncatedResponseBody{}),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		})},
+	}
+
+	err := client.LoadConfig(context.Background(), `{"apps":{}}`)
+	if err == nil || !strings.Contains(err.Error(), "load config response body") {
+		t.Fatalf("LoadConfig error = %v, want interrupted response-body error", err)
+	}
+}
+
+// TestCaddyClientGetCurrentConfigRejectsInterruptedResponseBody 防止读取当前配置
+// 时的传输中断被上层误判为无上下文的普通错误。
+func TestCaddyClientGetCurrentConfigRejectsInterruptedResponseBody(t *testing.T) {
+	client := &CaddyClient{
+		baseURL: "http://admin",
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(&truncatedResponseBody{}),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		})},
+	}
+
+	_, err := client.GetCurrentConfig(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "get config response body") {
+		t.Fatalf("GetCurrentConfig error = %v, want interrupted response-body context", err)
+	}
+}
+
+// TestCaddyClientPingRejectsInterruptedResponseBody 防止 /config/ 响应体中途
+// 断开时 Ping 仍把节点判定为健康，导致发布/恢复链路跳过真实故障。
+func TestCaddyClientPingRejectsInterruptedResponseBody(t *testing.T) {
+	client := &CaddyClient{
+		baseURL: "http://admin",
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(&truncatedResponseBody{}),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		})},
+	}
+
+	err := client.Ping(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "admin api response body") {
+		t.Fatalf("Ping error = %v, want interrupted response-body context", err)
 	}
 }

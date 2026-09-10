@@ -132,6 +132,10 @@ type App struct {
 	noiseWorker *ainoise.Worker
 	// 阶段8 / WDSP：API 专项指标采集器（仅 API 动态防护开启时装配，StartAPIMetrics 启动）
 	apiMetrics *metrics.APICollector
+	// AUTHZ-01：旧权属安全迁移与可信 JWT 候选关系生成。
+	authzStore   *apiauthz.Store
+	authzKeyHex  string
+	authzPublish apiauthz.PublishFunc
 	// 阶段8 / WDSP：API 主动扫描工人（仅 API 动态防护开启时装配，StartStage6Workers 内启动）
 	scanWorker *apiscan.Worker
 	// 阶段8 / WDSP：数据出境 GeoIP 读取器（文件缺失时 nil 降级，看板 geo_enabled=false）
@@ -445,6 +449,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			// 授权基线（api_role_baselines confirmed 行 / api_field_permissions 行）随发布下发；表缺失/失败时 Warn 跳过
 			guardProvider.SetRoleBaselineLister(guardconfig.NewRoleBaselineStore(db))
 			guardProvider.SetFieldPermissionLister(guardconfig.NewFieldPermissionStore(db))
+			guardProvider.SetAuthzSnapshotLister(guardconfig.NewAuthzSnapshotStore(db))
+			guardProvider.SetAuthzObjectHMACKeyLoader(guardconfig.NewAuthzObjectHMACKeyLoader(settingsSvc.GetString, encSvc.Decrypt))
 			// 响应基线（api_response_schemas 学习行）与扫描签名密钥随发布下发（P1-07 隔离闭环/P0-06 偏离检测）；
 			// 密钥经加密服务解密，快照明文脱敏，缺失/失败时 Warn 跳过
 			guardProvider.SetResponseBaselineLister(guardconfig.NewResponseBaselineStore(db))
@@ -1262,6 +1268,13 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 
 	// ---- 阶段8 / WDSP：API 动态防护（任务书 /api/v1/api-security 命名空间）----
 	if cfg.Product.APIDynamicProtectionEnabled() {
+		authzStore := apiauthz.NewStore(db)
+		authzKeyHex, authzKeyErr := apiauthz.LoadOrCreateObjectHMACKey(context.Background(), settingsSvc, encSvc)
+		if authzKeyErr != nil {
+			return nil, fmt.Errorf("initialize API authorization object key: %w", authzKeyErr)
+		}
+		a.authzStore = authzStore
+		a.authzKeyHex = authzKeyHex
 		apiEndpointHandler := apiassets.NewHandler(apiassets.NewStore(db), auditSvc)
 		apiassets.RegisterRoutes(mux, authz, apiEndpointHandler)
 		apiModelHandler := apimodels.NewHandler(apimodels.NewStore(db), auditSvc)
@@ -1292,7 +1305,19 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		apiweakness.RegisterRoutes(mux, authz, apiweakness.NewHandler(apiweakness.NewStore(db), auditSvc))
 		apidata.RegisterRoutes(mux, authz, apidata.NewHandler(apidata.NewStore(db), auditSvc))
 		// 授权基线（P0-15/16/17）：角色基线/对象权属/字段权限/BOLA 评估（种子见迁移 000048）
-		apiauthz.RegisterRoutes(mux, authz, apiauthz.NewHandler(apiauthz.NewStore(db), auditSvc))
+		authzHandler := apiauthz.NewHandler(authzStore, auditSvc)
+		// 可信对象关系确认进入既有整站配置发布链；发布任务创建失败仅记录日志，
+		// 已确认关系保留在数据库中，后续发布可重试带上最新授权快照。
+		if publisher != nil {
+			authzPublish := func(ctx context.Context, uid uuid.UUID, rid string) {
+				if _, err := publisher.Publish(ctx, gatewayconfig.PublishInput{RequestedBy: uid, RequestID: rid}); err != nil {
+					slog.Error("authorization relation publish trigger failed", "error", err)
+				}
+			}
+			authzHandler.SetPublishFunc(authzPublish)
+			a.authzPublish = authzPublish
+		}
+		apiauthz.RegisterRoutes(mux, authz, authzHandler)
 		// gRPC 描述符集（W14-DESC / P2-05 深化）：protoset 上传/列表/删除（权限复用 api_spec.manage，表见迁移 000076）
 		apigrpcdesc.RegisterRoutes(mux, authz, apigrpcdesc.NewHandler(apigrpcdesc.NewStore(db), auditSvc))
 		// API 主动扫描（P1-07）：目标/授权/任务/发现 + 复测桥接弱点中心（权限种子见迁移 000056）；
@@ -1719,6 +1744,66 @@ func (a *App) StartStage6Workers(ctx context.Context) {
 	}
 	if a.apiNodesSweeper != nil {
 		go a.apiNodesSweeper.Run(ctx)
+	}
+	if a.authzStore != nil {
+		go func() {
+			if a.authzKeyHex != "" {
+				if n, err := a.authzStore.MigrateLegacyOwnershipOnce(ctx, a.authzKeyHex); err != nil {
+					slog.Warn("api authz legacy ownership migration failed", "error", err)
+				} else if n > 0 {
+					slog.Info("api authz legacy ownership migration completed", "rows", n)
+				}
+			}
+			run := func() {
+				if a.authzKeyHex == "" {
+					return
+				}
+				for {
+					res, err := a.authzStore.SweepRelationCandidatesOnce(ctx, a.authzKeyHex)
+					if err != nil {
+						slog.Warn("api authz candidate sweep failed", "error", err)
+						return
+					}
+					if res == nil || !res.HasMore {
+						return
+					}
+				}
+			}
+			run()
+			expire := func() {
+				relations, err := a.authzStore.ExpireObjectRelations(ctx, time.Now().UTC())
+				if err != nil {
+					slog.Warn("api authz relation expiration failed", "error", err)
+					return
+				}
+				if len(relations) == 0 {
+					return
+				}
+				requestID := "authz-expire-" + time.Now().UTC().Format("20060102T150405Z")
+				for _, rel := range relations {
+					audits.RecordWithFallback(ctx, a.auditSvc, audits.RecordInput{
+						Module: "api_authorization", Action: "expire_object_relation", ObjectType: "api_object_relation",
+						ObjectID: rel.ID.String(), BeforeSummary: `{"status":"CONFIRMED"}`,
+						AfterSummary: `{"status":"EXPIRED"}`, Result: "SUCCESS", RiskLevel: "HIGH", RequestID: requestID,
+					})
+				}
+				if a.authzPublish != nil {
+					a.authzPublish(ctx, uuid.Nil, requestID)
+				}
+			}
+			expire()
+			t := time.NewTicker(5 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					run()
+					expire()
+				}
+			}
+		}()
 	}
 	// 离线授权周期复核（60s：到期/指纹变化翻转 → 告警 + 触发整站重发布；ctx 取消即退出）
 	if a.licenseSvc != nil {

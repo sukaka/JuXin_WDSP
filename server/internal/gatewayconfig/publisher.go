@@ -44,6 +44,22 @@ var (
 	errPreviousConfigRead = errors.New("read previous gateway config")
 )
 
+// publishRollbackFailureCode 将发布主流程失败与回滚结果归一化为任务失败码。
+// 回滚失败优先级最高；回滚成功时保留调用方对应的已回滚失败码。
+func publishRollbackFailureCode(operationCode string, rollbackErr error) string {
+	if rollbackErr != nil {
+		return "ROLLBACK_FAILED"
+	}
+	switch operationCode {
+	case "VERIFY_FAILED":
+		return "VERIFY_FAILED_ROLLED_BACK"
+	case "SET_CURRENT_VERSION_FAILED":
+		return "SET_CURRENT_VERSION_FAILED_ROLLED_BACK"
+	default:
+		return operationCode
+	}
+}
+
 // PublishTask 是发布任务。
 type PublishTask struct {
 	ID                uuid.UUID  `json:"id"`
@@ -164,6 +180,12 @@ type NodeSyncStore interface {
 	ListSyncTargets(ctx context.Context) ([]SyncTarget, error)
 	// RecordSyncResult 回填单节点 last_sync_*（result 取 NodeSync* 词表）。
 	RecordSyncResult(ctx context.Context, nodeID uuid.UUID, result, errMsg string, versionID uuid.UUID) error
+}
+
+// failedNodeSyncStore 是可选的恢复查询扩展。旧的 NodeSyncStore 实现仍可只提供
+// 全量目标查询；实现该扩展的持久化仓储可以把版本级恢复收敛到本次版本实际失败的节点。
+type failedNodeSyncStore interface {
+	ListFailedSyncTargets(ctx context.Context, versionID uuid.UUID) ([]SyncTarget, error)
 }
 
 // SyncAlerter 次要节点同步失败告警出口（装配侧以 *systemalerts.Engine 适配实现；
@@ -524,11 +546,11 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		p.markVersionResult(ctx, version.ID, "VERIFY_FAILED")
 		markAC("FAILED")
 		if rollbackErr != nil {
-			p.finishTask(ctx, taskID, TaskFailed, "ROLLBACK_FAILED",
+			p.finishTask(ctx, taskID, TaskFailed, publishRollbackFailureCode("VERIFY_FAILED", rollbackErr),
 				fmt.Sprintf("验证失败(%s)且回滚失败(%s)", verifyErr.Error(), rollbackErr.Error()), &version.ID)
 			return
 		}
-		p.finishTask(ctx, taskID, TaskFailed, "VERIFY_FAILED_ROLLED_BACK",
+		p.finishTask(ctx, taskID, TaskFailed, publishRollbackFailureCode("VERIFY_FAILED", nil),
 			"发布后验证失败，已自动回滚: "+verifyErr.Error(), &version.ID)
 		return
 	}
@@ -539,11 +561,11 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		p.markVersionResult(ctx, version.ID, "ACTIVATION_FAILED")
 		markAC("FAILED")
 		if rollbackErr != nil {
-			p.finishTask(ctx, taskID, TaskFailed, "ROLLBACK_FAILED",
+			p.finishTask(ctx, taskID, TaskFailed, publishRollbackFailureCode("SET_CURRENT_VERSION_FAILED", rollbackErr),
 				fmt.Sprintf("切换当前版本失败(%s)且网关回滚失败(%s)", err.Error(), rollbackErr.Error()), &version.ID)
 			return
 		}
-		p.finishTask(ctx, taskID, TaskFailed, "SET_CURRENT_VERSION_FAILED_ROLLED_BACK",
+		p.finishTask(ctx, taskID, TaskFailed, publishRollbackFailureCode("SET_CURRENT_VERSION_FAILED", nil),
 			"激活版本状态失败，网关已自动回滚: "+err.Error(), &version.ID)
 		return
 	}
@@ -584,32 +606,133 @@ func (p *Publisher) allowsLicensePublish(ctx context.Context) (bool, string) {
 //     告警类型复用 CONFIG_PUBLISH_FAILED / CONFIG_HASH_MISMATCH）；
 //   - 主节点失败按既有回滚语义处理，不进入本函数。
 func (p *Publisher) SyncConfigToNodes(ctx context.Context, configJSON string, versionID uuid.UUID) {
+	_ = p.syncConfigToNodes(ctx, configJSON, versionID)
+}
+
+// nodeSyncOutcome 是一次扇出的可持久化结果汇总。普通发布继续忽略该结果，
+// 但显式回滚必须据此决定任务是否可以进入 SUCCESS，避免主节点恢复而次节点
+// 仍停留在旧配置时产生错误的成功状态。
+type nodeSyncOutcome struct {
+	attempted      int
+	succeeded      int
+	failed         int
+	recordFailures int
+	queryErr       error
+	hashErr        error
+	contextErr     error
+}
+
+// rollbackFailure 返回显式回滚扇出未完成时要落库的任务失败码和消息。
+func (o nodeSyncOutcome) rollbackFailure(versionID uuid.UUID) (code, message string, incomplete bool) {
+	if o.queryErr != nil {
+		return "ROLLBACK_NODE_SYNC_FAILED",
+			fmt.Sprintf("主节点已回滚到版本 %s，但次要节点目标查询失败：%s", versionID, sanitizeCaddyError(o.queryErr)), true
+	}
+	if o.hashErr != nil {
+		return "ROLLBACK_NODE_SYNC_FAILED",
+			fmt.Sprintf("主节点已回滚到版本 %s，但次要节点同步内容校验失败：%s", versionID, sanitizeCaddyError(o.hashErr)), true
+	}
+	if o.failed > 0 {
+		return "ROLLBACK_NODE_SYNC_FAILED",
+			fmt.Sprintf("主节点已回滚到版本 %s，但次要节点同步不完整：%d/%d 个节点失败，可重试", versionID, o.failed, o.attempted), true
+	}
+	if o.recordFailures > 0 {
+		return "ROLLBACK_NODE_SYNC_STATE_PERSIST_FAILED",
+			fmt.Sprintf("主节点已回滚到版本 %s，但次要节点同步结果未能完整落库：%d 条记录失败，可重试", versionID, o.recordFailures), true
+	}
+	return "", "", false
+}
+
+// syncConfigToNodes 执行一次扇出并返回结果汇总。普通发布由公开包装方法
+// 保持既有的失败不阻断语义；显式回滚直接消费该汇总以持久化准确终态。
+func (p *Publisher) syncConfigToNodes(ctx context.Context, configJSON string, versionID uuid.UUID) nodeSyncOutcome {
+	var outcome nodeSyncOutcome
 	if p.nodeSync == nil {
-		return
+		return outcome
 	}
 	targets, err := p.nodeSync.ListSyncTargets(ctx)
 	if err != nil {
 		slog.Error("list gateway node sync targets failed", "version", versionID, "error", err)
-		return
+		outcome.queryErr = err
+		return outcome
 	}
 	if len(targets) == 0 {
-		return
+		return outcome
+	}
+	return p.syncConfigToTargets(ctx, configJSON, versionID, targets)
+}
+
+// syncConfigToTargets 将同一份已验证配置同步到给定节点集合。
+// 目标集合由调用方决定：正常发布使用全部启用节点，版本恢复可使用持久化失败筛选。
+func (p *Publisher) syncConfigToTargets(ctx context.Context, configJSON string, versionID uuid.UUID, targets []SyncTarget) nodeSyncOutcome {
+	var outcome nodeSyncOutcome
+	if err := ctx.Err(); err != nil {
+		outcome.contextErr = err
+		return outcome
 	}
 	wantHash, err := CanonicalConfigHash(configJSON)
 	if err != nil {
 		slog.Error("hash fanout config failed", "version", versionID, "error", err)
-		return
+		outcome.hashErr = err
+		return outcome
 	}
 	for _, t := range targets {
+		if err := ctx.Err(); err != nil {
+			outcome.contextErr = err
+			break
+		}
+		outcome.attempted++
 		result, errMsg := syncConfigToNode(ctx, t, configJSON, wantHash)
+		// 节点管理通道的瞬时 5xx/连接中断不应立即把一次发布标记为永久失败。
+		// 只重试一次，并仅保留最终结果，避免重复写入同步状态和重复告警；配置原文
+		// 始终来自本次已验证快照，恢复入口仍可继续处理最终失败节点。
+		if result == NodeSyncFailed && isRetryableNodeSyncError(errMsg) {
+			if err := waitNodeSyncRetry(ctx); err == nil {
+				result, errMsg = syncConfigToNode(ctx, t, configJSON, wantHash)
+			}
+		}
+		if result == NodeSyncSuccess {
+			outcome.succeeded++
+		} else {
+			outcome.failed++
+		}
 		// 回填用背景 ctx：请求取消不丢同步事实（与 markAC 同一纪律）
 		if err := p.nodeSync.RecordSyncResult(context.Background(), t.NodeID, result, errMsg, versionID); err != nil {
 			slog.Error("record node sync result failed", "node", t.NodeName, "version", versionID, "error", err)
+			outcome.recordFailures++
 		}
 		if result != NodeSyncSuccess {
 			p.notifyNodeSyncFailure(t, result, errMsg, versionID)
 		}
+		if err := ctx.Err(); err != nil {
+			outcome.contextErr = err
+			break
+		}
 	}
+	return outcome
+}
+
+func waitNodeSyncRetry(ctx context.Context) error {
+	timer := time.NewTimer(25 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func isRetryableNodeSyncError(errMsg string) bool {
+	msg := strings.ToLower(errMsg)
+	return strings.Contains(msg, "status 500") ||
+		strings.Contains(msg, "status 502") ||
+		strings.Contains(msg, "status 503") ||
+		strings.Contains(msg, "status 504") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "eof")
 }
 
 // syncConfigToNode 推送配置到单节点并验证哈希一致性，返回（结果词表，错误摘要）。
@@ -924,6 +1047,14 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 			"切换当前版本失败，网关已恢复原配置: "+err.Error(), nil)
 		return p.GetTask(ctx, task.ID)
 	}
+	// 显式回退也必须把已验证的恢复配置扇出到次要节点；否则主节点已切回旧版本，
+	// 次要节点仍可能继续提供被回退的版本。扇出沿用发布成功后的逐节点记录/告警语义，
+	// 且使用独立上下文，避免回退请求取消后丢失节点水位更新。
+	syncOutcome := p.syncConfigToNodes(context.Background(), rollbackJSON, in.VersionID)
+	if code, message, incomplete := syncOutcome.rollbackFailure(in.VersionID); incomplete {
+		p.finishTask(ctx, task.ID, TaskFailed, code, message, &in.VersionID)
+		return p.GetTask(ctx, task.ID)
+	}
 	p.finishTask(ctx, task.ID, TaskSuccess, "", "回滚成功", &in.VersionID)
 	return p.GetTask(ctx, task.ID)
 }
@@ -990,6 +1121,11 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.APIMaskRules = nil
 	cp.APISensitiveValueRules = nil
 	cp.APIRoleBaselines = nil
+	cp.APIAuthzModels = nil
+	cp.APIAuthzRelations = nil
+	cp.APIAuthzRoleBaselines = nil
+	cp.APIAuthzObjectHMACKeyHex = ""
+	cp.APIAuthzPreviousValid = nil
 	cp.APIFieldPermissions = nil
 	cp.APIScanVerification = nil
 	cp.APIResponseBaselines = nil

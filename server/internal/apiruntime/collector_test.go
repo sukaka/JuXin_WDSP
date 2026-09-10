@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 )
 
@@ -173,12 +174,35 @@ func TestParseRecordLine(t *testing.T) {
 	}
 }
 
+func TestCollectOncePersistsAllowAuthorizationDecision(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "api-runtime-events.log")
+	cpPath := filepath.Join(dir, "checkpoint")
+	rec := Record{
+		RequestID: "r-authz-allow", EndpointKey: "GET /orders/{id}", Method: "GET",
+		PathTemplate: "/orders/{id}", FinalAction: "ALLOW", OccurredAt: time.Now().UTC(),
+		AuthzDecision: &events.AuthorizationDecisionGroup{
+			DecisionID: uuid.NewString(), Decision: events.AuthorizationAllow,
+			Checks: []events.AuthorizationCheck{{Type: "BOLA", Decision: events.AuthorizationAllow}},
+		},
+	}
+	writeLines(t, logPath, []string{mustJSON(t, rec)})
+	saver := &fakeSaver{}
+	c := NewCollector(saver, "authz-allow", logPath, cpPath, "node-1")
+	if _, err := c.CollectOnce(context.Background()); err != nil {
+		t.Fatalf("CollectOnce: %v", err)
+	}
+	if len(saver.saved) != 1 || saver.saved[0].AuthzDecision == nil {
+		t.Fatalf("ALLOW authz decision was not persisted: %+v", saver.saved)
+	}
+}
+
 // TestParseRecordLineJWTVerification jwt_verification 可选对象（WDSP P0-03）：
 // 新版网关上报时解析进 Record；旧版网关事件缺该键时为 nil（JWT-17 兼容，不回填）。
 func TestParseRecordLineJWTVerification(t *testing.T) {
-	rec, err := parseRecordLine([]byte(`{"request_id":"r-jwt","endpoint_key":"GET /a","jwt_verification":{`+
-		`"status":"VERIFIED","reason_code":"VALID","policy_version":"3","issuer_config_id":"iss-1",`+
-		`"keyset_version":"ks-v2","verified_principal_id":"fp-001","verified_tenant_id":"fp-t1",`+
+	rec, err := parseRecordLine([]byte(`{"request_id":"r-jwt","endpoint_key":"GET /a","jwt_verification":{` +
+		`"status":"VERIFIED","reason_code":"VALID","policy_version":"3","issuer_config_id":"iss-1",` +
+		`"keyset_version":"ks-v2","verified_principal_id":"fp-001","verified_tenant_id":"fp-t1",` +
 		`"evaluated_at":"2026-09-06T12:00:00Z"}}`))
 	if err != nil {
 		t.Fatalf("record with jwt_verification rejected: %v", err)

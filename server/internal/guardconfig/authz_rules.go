@@ -36,7 +36,7 @@ func (s *RoleBaselineStore) ListConfirmedRoleBaselines(ctx context.Context) ([]g
 SELECT ep.endpoint_key, rb.role, rb.method, rb.action, rb.allowed
 FROM api_role_baselines rb
 JOIN api_endpoints ep ON ep.id = rb.endpoint_id
-WHERE rb.confirmed
+WHERE rb.confirmed AND rb.identity_assurance = 'VERIFIED'
 ORDER BY ep.endpoint_key, rb.role, rb.method, rb.action`)
 	if err != nil {
 		return nil, err

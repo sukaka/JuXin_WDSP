@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .metrics import NA, compute_truth_metrics, merged_samples_quantile
+from .metrics import NA, compute_truth_metrics, merged_samples_quantile, nearest_rank_quantile
 from .plan import JWT_PAIR_PROFILES, PROFILES, check_corpus_hash, load_plan, validate_plan
 
 TEST_STATUSES = ("PASS", "FAIL", "SKIP", "BLOCKED", "NOT_RUN", "NOT_APPLICABLE")
@@ -26,6 +26,90 @@ DISPLAY_PROFILES = PROFILES + JWT_PAIR_PROFILES
 
 class ReportError(Exception):
     """run 目录结构不完整，无法生成报告。"""
+
+
+def _resource_for_profile(run: dict, name: str) -> dict | None:
+    """Combine container-memory and optional ``<profile>-rss`` evidence."""
+    docs = [run["resources"].get(name), run["resources"].get(f"{name}-rss")]
+    docs = [doc for doc in docs if doc is not None]
+    if not docs:
+        return None
+    return {
+        "container_mem_peak_bytes": max(
+            (doc["container_mem_peak_bytes"] for doc in docs
+             if doc["container_mem_peak_bytes"] is not None), default=None,
+        ),
+        "container_mem_sample_count": sum(doc["container_mem_sample_count"] for doc in docs),
+        "rss_peak_bytes": max(
+            (doc["rss_peak_bytes"] for doc in docs if doc["rss_peak_bytes"] is not None),
+            default=None,
+        ),
+        "rss_sample_count": sum(doc["rss_sample_count"] for doc in docs),
+        "memory_scope": "+".join(sorted({doc["memory_scope"] for doc in docs})),
+    }
+
+
+def _validate_longrun_contract(run: dict) -> None:
+    """Reject PASS artifacts that omit the evidence needed for re-review."""
+    for name, rec in run["soak"].items():
+        if not isinstance(rec, dict):
+            run["integrity_errors"].append(f"soak/{name}.json 必须是 JSON 对象")
+            continue
+        status = rec.get("status")
+        if status not in TEST_STATUSES:
+            run["integrity_errors"].append(f"soak/{name}.json 状态非法: {status!r}")
+            continue
+        if status == "BLOCKED" and not isinstance(rec.get("reason"), str):
+            run["integrity_errors"].append(f"soak/{name}.json BLOCKED 缺 reason")
+        if status != "PASS":
+            continue
+        duration = rec.get("duration_minutes")
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
+            run["integrity_errors"].append(f"soak/{name}.json PASS 缺有效 duration_minutes")
+        for field in ("started_at", "ended_at"):
+            if not isinstance(rec.get(field), str) or not rec[field]:
+                run["integrity_errors"].append(f"soak/{name}.json PASS 缺 {field}")
+        resource = _resource_for_profile(run, name)
+        if resource is None:
+            run["integrity_errors"].append(f"soak/{name}.json PASS 缺同名资源报告")
+        else:
+            if resource["container_mem_sample_count"] <= 0:
+                run["integrity_errors"].append(f"soak/{name}.json PASS 缺容器内存样本")
+            if resource["rss_sample_count"] <= 0:
+                run["integrity_errors"].append(f"soak/{name}.json PASS 缺进程 RSS 样本")
+
+    recovery = run.get("recovery")
+    if recovery is None:
+        return
+    if not isinstance(recovery, dict):
+        run["integrity_errors"].append("recovery.json 必须是 JSON 对象")
+        return
+    status = recovery.get("status")
+    if status not in TEST_STATUSES:
+        run["integrity_errors"].append(f"recovery.json 状态非法: {status!r}")
+        return
+    if status == "BLOCKED" and not isinstance(recovery.get("reason"), str):
+        run["integrity_errors"].append("recovery.json BLOCKED 缺 reason")
+    if status == "BLOCKED":
+        return
+    for field in ("scenario", "fault_injected_at"):
+        if not isinstance(recovery.get(field), str) or not recovery[field]:
+            run["integrity_errors"].append(f"recovery.json 缺 {field}")
+    elapsed = recovery.get("recovery_time_seconds")
+    limit = recovery.get("limit_seconds")
+    if not isinstance(elapsed, (int, float)) or isinstance(elapsed, bool) or elapsed < 0:
+        run["integrity_errors"].append("recovery.json recovery_time_seconds 无效")
+    if not isinstance(limit, (int, float)) or isinstance(limit, bool) or limit <= 0:
+        run["integrity_errors"].append("recovery.json limit_seconds 无效")
+    if status == "PASS":
+        if not isinstance(recovery.get("gateway_healthy_at"), str) or not recovery["gateway_healthy_at"]:
+            run["integrity_errors"].append("recovery.json PASS 缺 gateway_healthy_at")
+        if recovery.get("catchup_verified") is not True:
+            run["integrity_errors"].append("recovery.json PASS 缺 catchup_verified=true")
+        if isinstance(elapsed, (int, float)) and isinstance(limit, (int, float)) and elapsed > limit:
+            run["integrity_errors"].append("recovery.json PASS 但恢复时间超过 limit_seconds")
+    elif status == "FAIL" and isinstance(elapsed, (int, float)) and isinstance(limit, (int, float)) and elapsed <= limit:
+        run["integrity_errors"].append("recovery.json FAIL 但恢复时间未超过 limit_seconds")
 
 
 def _load_json(path: Path):
@@ -44,6 +128,7 @@ def load_run(run_dir: str | Path, repo_root: str | Path) -> dict:
         "statuses": {},
         "truth_metrics": {},
         "perf": {},
+        "resources": {},
         "reconciliation": None,
         "soak": {},
         "recovery": None,
@@ -138,6 +223,36 @@ def load_run(run_dir: str | Path, repo_root: str | Path) -> dict:
         except json.JSONDecodeError as exc:
             run["integrity_errors"].append(f"reconciliation.json 解析失败: {exc}")
 
+    resources_dir = run_dir / "resources"
+    if resources_dir.is_dir():
+        for f in sorted(resources_dir.glob("*.json")):
+            try:
+                resource_doc = _load_json(f)
+            except json.JSONDecodeError as exc:
+                run["integrity_errors"].append(f"resources/{f.name} 解析失败: {exc}")
+                continue
+            records = resource_doc.get("records") if isinstance(resource_doc, dict) else None
+            if not isinstance(records, list):
+                run["integrity_errors"].append(f"resources/{f.name} 缺少 records 数组")
+                continue
+            memory = [r.get("mem_usage_bytes") for r in records
+                      if isinstance(r, dict) and isinstance(r.get("mem_usage_bytes"), (int, float))]
+            rss = [r.get("rss_bytes") for r in records
+                   if isinstance(r, dict) and isinstance(r.get("rss_bytes"), (int, float))]
+            run["resources"][f.stem] = {
+                "source": resource_doc.get("source", "unknown"),
+                "sample_count": len(records),
+                "container_mem_peak_bytes": max(memory) if memory else None,
+                "container_mem_sample_count": len(memory),
+                "rss_peak_bytes": max(rss) if rss else None,
+                "rss_sample_count": len(rss),
+                "memory_scope": "container_memory" if memory and not rss else (
+                    "process_rss" if rss and not memory else "container_memory+process_rss"
+                    if memory and rss else "unknown"
+                ),
+                "platform_note": resource_doc.get("platform_note", ""),
+            }
+
     soak_dir = run_dir / "soak"
     if soak_dir.is_dir():
         for f in sorted(soak_dir.glob("*.json")):
@@ -152,6 +267,8 @@ def load_run(run_dir: str | Path, repo_root: str | Path) -> dict:
             run["recovery"] = _load_json(recovery_path)
         except json.JSONDecodeError as exc:
             run["integrity_errors"].append(f"recovery.json 解析失败: {exc}")
+
+    _validate_longrun_contract(run)
 
     return run
 
@@ -171,6 +288,25 @@ def aggregate_perf(points: list[dict]) -> dict:
             error_classes[cls] = error_classes.get(cls, 0) + int(n)
     unexpected = error_classes.get("unexpected_error", 0)
     unexpected_rate = (unexpected / completed) if completed else NA
+    throughput_samples = [
+        float(p["requests_per_second"])
+        for p in points
+        if isinstance(p.get("requests_per_second"), (int, float)) and p["requests_per_second"] >= 0
+    ]
+    throughput_sources = sorted({
+        str((p.get("throughput_evidence") or {}).get("source"))
+        for p in points
+        if (p.get("throughput_evidence") or {}).get("source")
+    })
+    throughput_scopes = {
+        str((p.get("throughput_evidence") or {}).get("scope"))
+        for p in points
+        if (p.get("throughput_evidence") or {}).get("scope")
+    }
+    end_to_end_throughput = (
+        bool(throughput_sources)
+        and "end_to_end_loadgen" in throughput_scopes
+    )
 
     def q(quantile):
         if any(sample_groups):
@@ -190,6 +326,18 @@ def aggregate_perf(points: list[dict]) -> dict:
         "p50_ms": q(0.50),
         "p95_ms": q(0.95),
         "p99_ms": q(0.99),
+        "throughput_rps": (
+            {"p50": nearest_rank_quantile(throughput_samples, 0.50),
+             "p95": nearest_rank_quantile(throughput_samples, 0.95),
+             "p99": nearest_rank_quantile(throughput_samples, 0.99)}
+            if throughput_samples else None
+        ),
+        "throughput_evidence": {
+            "status": "MEASURED" if throughput_samples else "NOT_AVAILABLE",
+            "scope": "end_to_end_loadgen" if end_to_end_throughput else "unknown",
+            "sample_count": len(throughput_samples),
+            "sources": throughput_sources,
+        },
         "error_classes": error_classes,
         "unexpected_error_rate": unexpected_rate,
     }
@@ -280,26 +428,39 @@ def render_markdown(run: dict) -> str:
 
     add("## 七模式性能矩阵")
     add("")
-    add("| Profile | 重复数 | offered | completed | P50(ms) | P95(ms) | P99(ms) | 预期403/429 | 非预期错误率 |")
-    add("|---|---|---|---|---|---|---|---|---|")
+    add("| Profile | 重复数 | offered | completed | P50(ms) | P95(ms) | P99(ms) | 吞吐P50/P95/P99(RPS) | 预期403/429 | 非预期错误率 |")
+    add("|---|---|---|---|---|---|---|---|---|---|")
     for profile in profiles:
         perf = run["perf"].get(profile)
         if perf is None:
             status = "NOT_RUN"
             st = run["statuses"].get(f"matrix:{profile}")
+            st = st or run["statuses"].get("matrix:formal_environment")
             if st and st["status"] == "BLOCKED":
                 status = "BLOCKED"
-            add(f"| {profile} | {status} | - | - | - | - | - | - | - |")
+            add(f"| {profile} | {status} | - | - | - | - | - | - | - | - |")
             continue
         sec = perf["error_classes"].get("expected_security", 0)
+        throughput = perf.get("throughput_rps")
+        throughput_text = (
+            f"{throughput['p50']:.2f}/{throughput['p95']:.2f}/{throughput['p99']:.2f}"
+            if throughput else "N/A"
+        )
         add(
             f"| {profile} | {perf['repeats']} | {perf['offered']} | {perf['completed']} "
             f"| {_fmt_ms(perf['p50_ms'])} | {_fmt_ms(perf['p95_ms'])} | {_fmt_ms(perf['p99_ms'])} "
-            f"| {sec} | {_fmt_rate(perf['unexpected_error_rate'])} |"
+            f"| {throughput_text} | {sec} | {_fmt_rate(perf['unexpected_error_rate'])} |"
         )
     add("")
     add("说明：分位数为各重复原始样本连接后的最近秩重算（或同 bin 直方图合并），不做跨运行平均；"
         "闭环并发工具（ab）的结果不伪称固定到达率。")
+    measured_sources = sorted({
+        source
+        for perf in run["perf"].values()
+        for source in (perf.get("throughput_evidence") or {}).get("sources", [])
+    })
+    add("吞吐证据：end_to_end_loadgen 的压测器 requests_per_second 样本"
+        + (f"（来源 {', '.join(measured_sources)}）。" if measured_sources else "（当前无可用样本）。"))
     if pair_shown:
         add("jwt_off/jwt_protect 为 JWT-18 配对 profile（同构建同基础配置，仅 JWT 信任链 "
             "OFF vs PROTECT 静态 JWKS），不属于七模式主基线；与无 JWT 旧结果对比时不得直接归因代码回归。")
@@ -360,13 +521,28 @@ def render_markdown(run: dict) -> str:
     add("## 长稳与恢复（§6.3）")
     add("")
     if not run["soak"]:
-        add("- 长稳: NOT_RUN（无 soak/ 记录；72 小时 combined_protect 不得以短测顶替）")
+        st = run["statuses"].get("soak:formal_environment")
+        if st and st["status"] == "BLOCKED":
+            add(f"- 长稳: BLOCKED（{st['reason'] or '正式环境不可用'}）")
+        else:
+            add("- 长稳: NOT_RUN（无 soak/ 记录；72 小时 combined_protect 不得以短测顶替）")
     else:
         for name, rec in sorted(run["soak"].items()):
+            resource = _resource_for_profile(run, name)
+            if resource and resource["container_mem_peak_bytes"] is not None:
+                memory_text = f"；容器内存峰值 {resource['container_mem_peak_bytes']:.0f} bytes"
+            else:
+                memory_text = "；容器内存峰值 N/A"
+            if resource and resource["rss_peak_bytes"] is not None:
+                memory_text += f"；进程 RSS 峰值 {resource['rss_peak_bytes']:.0f} bytes"
             add(f"- 长稳 {name}: {rec.get('status', '未知')}"
-                f"（时长 {rec.get('duration_minutes', '?')} 分钟）")
+                f"（时长 {rec.get('duration_minutes', '?')} 分钟{memory_text}）")
     if run.get("recovery") is None:
-        add("- 恢复: NOT_RUN（无 recovery.json）")
+        st = run["statuses"].get("recovery:formal_environment")
+        if st and st["status"] == "BLOCKED":
+            add(f"- 恢复: BLOCKED（{st['reason'] or '正式环境不可用'}）")
+        else:
+            add("- 恢复: NOT_RUN（无 recovery.json）")
     else:
         rec = run["recovery"]
         add(f"- 恢复: {rec.get('status', '未知')}"

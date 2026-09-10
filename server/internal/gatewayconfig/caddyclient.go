@@ -214,7 +214,9 @@ func (c *CaddyClient) Ping(ctx context.Context) error {
 		return fmt.Errorf("admin socket unreachable: %w", err)
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)); err != nil {
+		return fmt.Errorf("admin api response body failed: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("admin api returned %d", resp.StatusCode)
 	}
@@ -235,7 +237,10 @@ func (c *CaddyClient) LoadConfig(ctx context.Context, configJSON string) error {
 		return fmt.Errorf("load config request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if err != nil {
+		return fmt.Errorf("load config response body failed: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return &LoadError{
 			StatusCode: resp.StatusCode,
@@ -268,7 +273,7 @@ func (c *CaddyClient) GetCurrentConfig(ctx context.Context) (string, error) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // 4MB 上限
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("get config response body failed: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("get config returned %d", resp.StatusCode)

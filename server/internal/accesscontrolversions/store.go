@@ -24,9 +24,10 @@ const (
 
 // 错误
 var (
-	ErrNotFound         = errors.New("access control version not found")
-	ErrInvalidInput     = errors.New("invalid version input")
-	ErrInvalidPubResult = errors.New("invalid publish result")
+	ErrNotFound          = errors.New("access control version not found")
+	ErrInvalidInput      = errors.New("invalid version input")
+	ErrInvalidPubResult  = errors.New("invalid publish result")
+	ErrInvalidTransition = errors.New("invalid publish result transition")
 )
 
 // Version 是访问控制配置版本。
@@ -153,6 +154,18 @@ func (s *Store) GetLatest(ctx context.Context) (*Version, error) {
 	return scanVersion(row)
 }
 
+// GetLatestSuccessful 查询最近一次发布成功的版本。
+// PENDING/FAILED 版本可能尚未在网关生效，不能作为上一有效配置的来源。
+// 没有成功版本时返回 nil, nil。
+func (s *Store) GetLatestSuccessful(ctx context.Context) (*Version, error) {
+	row := s.db.QueryRow(ctx, versionColumns+` WHERE publish_result = $1 ORDER BY version_no DESC LIMIT 1`, PublishSuccess)
+	v, err := scanVersion(row)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	return v, err
+}
+
 // SetResult 更新发布结果。
 func (s *Store) SetResult(ctx context.Context, id uuid.UUID, publishResult string) error {
 	switch publishResult {
@@ -160,15 +173,37 @@ func (s *Store) SetResult(ctx context.Context, id uuid.UUID, publishResult strin
 	default:
 		return fmt.Errorf("%w: %s", ErrInvalidPubResult, publishResult)
 	}
+	// PENDING is the only mutable state. Terminal results are idempotent, but
+	// a successful or failed version must never be rewritten into another
+	// result by a late publisher callback.
 	res, err := s.db.Exec(ctx,
-		`UPDATE access_control_versions SET publish_result=$1 WHERE id=$2`, publishResult, id)
+		`UPDATE access_control_versions SET publish_result=$1
+WHERE id=$2 AND (publish_result='PENDING' OR publish_result=$1)`, publishResult, id)
 	if err != nil {
 		return err
 	}
-	if res.RowsAffected() == 0 {
-		return ErrNotFound
+	if res.RowsAffected() > 0 {
+		return nil
 	}
-	return nil
+
+	var current string
+	if err := s.db.QueryRow(ctx,
+		`SELECT publish_result FROM access_control_versions WHERE id=$1`, id).Scan(&current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if publishResultTransitionAllowed(current, publishResult) {
+		// The UPDATE may have raced with a terminal transition. An idempotent
+		// retry is still safe; the guarded UPDATE above is the source of truth.
+		return nil
+	}
+	return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current, publishResult)
+}
+
+func publishResultTransitionAllowed(current, next string) bool {
+	return current == next || current == PublishPending
 }
 
 func scanVersion(row pgx.Row) (*Version, error) {

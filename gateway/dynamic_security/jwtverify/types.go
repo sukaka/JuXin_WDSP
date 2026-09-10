@@ -77,16 +77,20 @@ const (
 
 // 产品限制（§5.2，可测试）。
 const (
-	MaxTokenBytes    = 16 * 1024  // Token 上限
-	MaxKidBytes      = 256        // kid 上限
-	MaxJWKSBytes     = 256 * 1024 // 单份 JWKS 上限
-	MaxJWKSKeys      = 32         // 单份 JWKS 公钥数上限
-	MaxSubjectBytes  = 256        // sub 上限
-	MaxIssuerBytes   = 512        // issuer 精确值上限
-	MaxIssuers       = 8          // 单策略 issuer 数上限
-	MaxAudiences     = 16         // 单 issuer audience 数上限
-	MaxAudienceBytes = 256
-	MaxTenantBytes   = 256
+	MaxTokenBytes     = 16 * 1024  // Token 上限
+	MaxKidBytes       = 256        // kid 上限
+	MaxJWKSBytes      = 256 * 1024 // 单份 JWKS 上限
+	MaxJWKSKeys       = 32         // 单份 JWKS 公钥数上限
+	MaxSubjectBytes   = 256        // sub 上限
+	MaxIssuerBytes    = 512        // issuer 精确值上限
+	MaxIssuers        = 8          // 单策略 issuer 数上限
+	MaxAudiences      = 16         // 单 issuer audience 数上限
+	MaxAudienceBytes  = 256
+	MaxTenantBytes    = 256
+	MaxRoleClaims     = 8
+	MaxRoleClaimBytes = 64
+	MaxVerifiedRoles  = 32
+	MaxRoleBytes      = 128
 
 	DefaultClockSkewSeconds = 30
 	MaxClockSkewSeconds     = 120
@@ -105,8 +109,11 @@ type VerificationResult struct {
 	KeysetVersion       string
 	VerifiedPrincipalID string
 	VerifiedTenantID    string
-	EvaluatedAt         string // RFC3339 UTC
-	EnforceAction       EnforceAction
+	// VerifiedRoles is populated only after the JWT signature and all claims
+	// required by the trust policy have been verified.
+	VerifiedRoles []string
+	EvaluatedAt   string // RFC3339 UTC
+	EnforceAction EnforceAction
 }
 
 // Selector 请求范围选择器；path_exact 与 path_prefix 二选一。
@@ -129,6 +136,7 @@ type IssuerConfig struct {
 	RemoteAllowCIDRs []string // REMOTE_JWKS：管理员显式登记的允许 CIDR（仍禁元数据/链路本地）
 	ClockSkewSeconds int      // 0 表示默认 30；范围 0~120
 	TenantClaim      string   // 可选，单一受信 tenant 声明名，仅在 VERIFIED 后读取
+	RoleClaims       []string // 可选，显式受信 role 声明名，仅在 VERIFIED 后读取
 }
 
 // Policy JWT 信任策略（按应用）。
@@ -242,6 +250,19 @@ func (p *Policy) Validate() error {
 			if len(iss.TenantClaim) > 64 || strings.ContainsAny(iss.TenantClaim, " \t\r\n\"\\.") {
 				return policyErr("issuer %q tenant_claim 名称非法", iss.Issuer)
 			}
+		}
+		if len(iss.RoleClaims) > MaxRoleClaims {
+			return policyErr("issuer %q role_claims 最多 %d 项", iss.Issuer, MaxRoleClaims)
+		}
+		seenRoleClaim := make(map[string]struct{}, len(iss.RoleClaims))
+		for _, claim := range iss.RoleClaims {
+			if claim == "" || len(claim) > MaxRoleClaimBytes || strings.ContainsAny(claim, " \t\r\n\"\\.") {
+				return policyErr("issuer %q role_claim 名称非法", iss.Issuer)
+			}
+			if _, dup := seenRoleClaim[claim]; dup {
+				return policyErr("issuer %q role_claim 重复", iss.Issuer)
+			}
+			seenRoleClaim[claim] = struct{}{}
 		}
 		if iss.ID == "" {
 			iss.ID = derivedIssuerConfigID(iss.Issuer)

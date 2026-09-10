@@ -19,6 +19,20 @@ import re
 from .metrics import classify_error
 
 _AB_PERCENTILE_RE = re.compile(r"^\s*(\d+)%\s+(\d+)\s*$")
+_MEMORY_RE = re.compile(r"^\s*(?P<value>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>[KMGTPE]?i?B)\s*$", re.I)
+_MEMORY_UNITS = {
+    "b": 1,
+    "kb": 1000,
+    "mb": 1000**2,
+    "gb": 1000**3,
+    "tb": 1000**4,
+    "pb": 1000**5,
+    "kib": 1024,
+    "mib": 1024**2,
+    "gib": 1024**3,
+    "tib": 1024**4,
+    "pib": 1024**5,
+}
 
 
 class CollectorError(Exception):
@@ -109,6 +123,16 @@ def parse_curl_tsv_line(line: str) -> dict:
     }
 
 
+def _memory_bytes(value: str) -> float | None:
+    if not value:
+        return None
+    match = _MEMORY_RE.match(value)
+    if match is None:
+        raise CollectorError(f"docker stats 内存用量不可解析: {value!r}")
+    unit = match.group("unit").lower()
+    return float(match.group("value")) * _MEMORY_UNITS[unit]
+
+
 def summarize_curl_tsv(lines, expected_statuses=None) -> dict:
     """逐请求时序汇总：offered/completed、延迟样本、错误分类（预期 403/429 单列）。"""
     expected = set(expected_statuses or ())
@@ -170,9 +194,49 @@ def parse_docker_stats_jsonl(lines) -> list[dict]:
                 "cpu_percent": cpu,
                 "mem_percent": mem,
                 "mem_usage": mem_usage.split("/")[0].strip() if mem_usage else None,
+                # docker stats exposes container memory usage, not a process RSS
+                # value. Keep the numeric value for peak reporting without
+                # relabeling it as host/process RSS.
+                "mem_usage_bytes": _memory_bytes(mem_usage.split("/")[0].strip()) if mem_usage else None,
                 "net_io": row.get("NetIO"),
                 "block_io": row.get("BlockIO"),
                 "pids": row.get("PIDs"),
+            }
+        )
+    return records
+
+
+def parse_proc_rss_jsonl(lines) -> list[dict]:
+    """Parse normalized Linux ``/proc/<pid>/status`` RSS samples.
+
+    The runner emits one JSON object per sample after reading ``VmRSS`` from
+    the target process.  Keeping this source separate from docker stats makes
+    the report's container-memory and process-RSS scopes auditable.
+    """
+    records: list[dict] = []
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise CollectorError(f"/proc RSS 第 {i + 1} 行 JSON 解析失败: {exc}") from exc
+        container = row.get("container")
+        pid = row.get("pid")
+        rss_kib = row.get("rss_kib")
+        if not isinstance(container, str) or not container:
+            raise CollectorError(f"/proc RSS 第 {i + 1} 行缺少 container")
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            raise CollectorError(f"/proc RSS 第 {i + 1} 行 pid 无效")
+        if isinstance(rss_kib, bool) or not isinstance(rss_kib, (int, float)) or rss_kib < 0:
+            raise CollectorError(f"/proc RSS 第 {i + 1} 行 rss_kib 无效")
+        records.append(
+            {
+                "seq": i,
+                "container": container,
+                "pid": pid,
+                "rss_kib": rss_kib,
+                "rss_bytes": rss_kib * 1024,
             }
         )
     return records

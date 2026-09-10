@@ -237,6 +237,7 @@ ORDER BY a.code`)
 				Algorithms:       is2.Algorithms,
 				ClockSkewSeconds: is2.ClockSkewSeconds,
 				TenantClaim:      is2.TenantClaim,
+				RoleClaims:       append([]string(nil), is2.RoleClaims...),
 				KeySourceType:    is2.KeySource.Type,
 			}
 			switch is2.KeySource.Type {

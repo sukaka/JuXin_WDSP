@@ -19,9 +19,11 @@
 // POLICY_CONFIRMED / HIGH_CONFIDENCE / LIKELY / POSSIBLE / INSUFFICIENT_EVIDENCE，
 // 规则与「不仅凭 ID 变化定罪」纪律见 evaluate.go。
 //
-// 装配（集成方）：NewStore(db) → NewHandler(store, auditSvc) →
-// RegisterRoutes(mux, authz, h)；周期任务挂 store.SweepOnce 与
-// store.SweepObjectModelsOnce（HasMore 排空模式同其他 sweep）。
+// 可信对象关系与 OBSERVE 决策控制面补充候选清扫、legacy 迁移、确认/拒绝、
+// 详情证据读取和覆盖率查询；候选清扫由集成方按固定周期调用，确认关系才可
+// 进入网关快照。装配（集成方）：NewStore(db) → NewHandler(store, auditSvc) →
+// RegisterRoutes(mux, authz, h)；原有 SweepOnce 与 SweepObjectModelsOnce 周期任务
+// 继续保留，不能替代可信候选清扫任务。
 // 权限点 api_authorization.read / api_authorization.manage 的种子迁移由集成方
 // 统一登记（本包只引用常量）。
 package apiauthz

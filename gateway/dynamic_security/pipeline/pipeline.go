@@ -11,6 +11,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/grpcdesc"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 )
@@ -79,6 +80,10 @@ type Config struct {
 	// Excepted，其 ScoreDelta 与执法类别从本次定案排除后按既有优先级重算——
 	// 契约 S4_DESIGN_BASELINE §6/§10）
 	Exceptions []decision.ExceptionRef
+	// Authorization is the independent, confirmed AUTHZ-01 model snapshot.
+	// JWTVerification must come from the completed local trust-chain verifier.
+	Authorization   detectors.AuthorizationConfig
+	JWTVerification *jwtverify.VerificationResult
 }
 
 // Result 管线输出。
@@ -281,6 +286,13 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		// 不挂 api.IsAPI 分类门槛——有 confirmed 基线的端点即 API 端点，分类漏判不应关掉授权基线
 		if len(cfg.RoleBaselines) > 0 {
 			detectors.CheckRoleBaseline(ctx, r, ek, parsed.Method, cfg.RoleBaselines)
+		}
+		if len(cfg.Authorization.Models) > 0 || len(cfg.Authorization.RoleBaselines) > 0 {
+			azCfg := cfg.Authorization
+			if azCfg.EndpointKey == "" {
+				azCfg.EndpointKey = ek
+			}
+			detectors.EvaluateAuthorization(ctx, parsed, azCfg, cfg.JWTVerification)
 		}
 		if len(cfg.FieldPermissions) > 0 {
 			detectors.CheckFieldPermissions(ctx, r, ek, cfg.FieldPermissions, parsed)

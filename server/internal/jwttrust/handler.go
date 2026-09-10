@@ -118,6 +118,7 @@ type issuerRequest struct {
 	KeySource        KeySource `json:"key_source"`
 	ClockSkewSeconds *int      `json:"clock_skew_seconds"`
 	TenantClaim      string    `json:"tenant_claim"`
+	RoleClaims       []string  `json:"role_claims"`
 }
 
 // putRequest PUT 请求体（全量草稿 + 乐观锁 + 变更理由）。
@@ -157,6 +158,7 @@ func (r *putRequest) toPolicy(appID uuid.UUID) *Policy {
 			KeySource:        is.KeySource,
 			ClockSkewSeconds: skew,
 			TenantClaim:      is.TenantClaim,
+			RoleClaims:       append([]string(nil), is.RoleClaims...),
 		})
 	}
 	return p
@@ -575,6 +577,7 @@ type auditIssuerDigest struct {
 	RemoteURL        string   `json:"remote_url,omitempty"`
 	ClockSkewSeconds int      `json:"clock_skew_seconds"`
 	TenantClaim      string   `json:"tenant_claim,omitempty"`
+	RoleClaims       []string `json:"role_claims,omitempty"`
 }
 
 func summarizePolicy(p *Policy, reason string) auditSummary {
@@ -594,6 +597,7 @@ func summarizePolicy(p *Policy, reason string) auditSummary {
 			RemoteURL:        is.KeySource.URL,
 			ClockSkewSeconds: is.ClockSkewSeconds,
 			TenantClaim:      is.TenantClaim,
+			RoleClaims:       append([]string(nil), is.RoleClaims...),
 		}
 		if is.KeySource.Type == KeySourceStaticJWKS && is.KeySource.JWKS != "" {
 			if v, err := KeysetVersion(is.KeySource.JWKS); err == nil {

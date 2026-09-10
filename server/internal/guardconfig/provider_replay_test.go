@@ -14,6 +14,43 @@ import (
 	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
 )
 
+func TestEnsureAuthzSnapshotKeyReinjectsPreviousValidForBFLAOnlyCurrent(t *testing.T) {
+	const currentKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	loads := 0
+	p := &Provider{authzObjectHMACKey: func(context.Context) (string, error) {
+		loads++
+		return currentKey, nil
+	}}
+	previous := &gatewayconfig.GuardAuthzSnapshot{
+		Models:           []gatewayconfig.GuardAuthzObjectModel{{ApplicationID: "app-1", EndpointKey: "GET /orders/{id}"}},
+		ObjectHMACKeyHex: redactPlaceholder,
+	}
+	got, err := p.ensureAuthzSnapshotKey(context.Background(), "", false, previous)
+	if err != nil || got != currentKey {
+		t.Fatalf("previous-valid key = %q, err = %v; want current runtime key", got, err)
+	}
+	if loads != 1 {
+		t.Fatalf("object HMAC loader calls = %d, want 1", loads)
+	}
+}
+
+func TestReplayRuntimeSecretsReinjectsAuthzKeyForPreviousValidOnly(t *testing.T) {
+	const currentKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	p := &Provider{authzObjectHMACKey: func(context.Context) (string, error) { return currentKey, nil }}
+	cfg := &gatewayconfig.GuardConfig{
+		APIAuthzPreviousValid: &gatewayconfig.GuardAuthzSnapshot{
+			Models:           []gatewayconfig.GuardAuthzObjectModel{{ApplicationID: "app-1", EndpointKey: "GET /orders/{id}"}},
+			ObjectHMACKeyHex: redactPlaceholder,
+		},
+	}
+	if err := p.replayRuntimeSecrets(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIAuthzObjectHMACKeyHex != currentKey {
+		t.Fatalf("current authz key = %q, want runtime key", cfg.APIAuthzObjectHMACKeyHex)
+	}
+}
+
 // snapshotWithRuntimeSecrets 模拟反序列化后的历史快照：脱敏占位 + 已删除设置的旧值。
 func snapshotWithRuntimeSecrets() *gatewayconfig.GuardConfig {
 	return &gatewayconfig.GuardConfig{

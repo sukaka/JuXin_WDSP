@@ -7,6 +7,7 @@ import EndpointSelect from './EndpointSelect'
 import FieldPermissionsTab from './FieldPermissionsTab'
 import { API_BOLA_VERDICT_META } from './meta'
 import OwnershipTab from './OwnershipTab'
+import ObjectAuthorizationTab from './ObjectAuthorizationTab'
 import RoleBaselinesTab from './RoleBaselinesTab'
 
 interface EvaluateFormValues {
@@ -16,8 +17,8 @@ interface EvaluateFormValues {
 }
 
 /**
- * API 授权管理（WDSP / 阶段8）：角色基线（BFLA）、对象权属（BOLA 基线）、字段权限三合一，
- * 附 BOLA 五档评估小工具。权限点：api_authorization.read（查询/评估）、api_authorization.manage（增删改/确认）。
+ * API 授权管理（WDSP / 阶段8）：可信对象关系、角色基线（BFLA）、对象权属观测与字段权限，
+ * 附 BOLA 五档评估工具。各写操作按服务端定义的细粒度权限控制。
  */
 export default function ApiAuthzPage() {
   const { message } = AntdApp.useApp()
@@ -34,8 +35,8 @@ export default function ApiAuthzPage() {
   return (
     <Card title="API 授权管理">
       <Typography.Paragraph type="secondary">
-        维护接口级授权基线：角色基线覆盖功能级越权（BFLA），对象权属支撑对象级越权（BOLA）研判，字段权限约束字段级读写；
-        评估工具按五档阶梯给出 BOLA 结论，不仅凭 ID 变化定罪。
+        维护可信对象关系与接口级授权基线：对象授权面板用于确认 OWNER 关系并查看 OBSERVE 决策链，角色基线覆盖功能级越权（BFLA），
+        对象权属观测支撑 BOLA 人工研判，字段权限约束字段级读写；评估工具按五档阶梯给出结论，不仅凭 ID 变化定罪。
       </Typography.Paragraph>
 
       <Card type="inner" title="BOLA 评估工具" style={{ marginBottom: 16 }}>
@@ -96,7 +97,9 @@ export default function ApiAuthzPage() {
       </Card>
 
       <Tabs
+        defaultActiveKey="baselines"
         items={[
+          { key: 'object-authorization', label: '对象授权', children: <ObjectAuthorizationTab /> },
           { key: 'baselines', label: '角色基线（BFLA）', children: <RoleBaselinesTab /> },
           { key: 'ownership', label: '对象权属（BOLA）', children: <OwnershipTab /> },
           { key: 'field-permissions', label: '字段权限', children: <FieldPermissionsTab /> },

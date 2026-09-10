@@ -3,11 +3,14 @@
 package apiauthz
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
@@ -16,21 +19,47 @@ import (
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
+// PublishFunc 触发现有网关配置发布链。回调由 app 装配层注入，避免授权包
+// 直接依赖 gatewayconfig 形成发布通道；nil 表示发布通道暂不可用。
+type PublishFunc func(ctx context.Context, uid uuid.UUID, requestID string)
+
 // 请求体上限。
 const (
 	baselineBodyMaxBytes  = 16 << 10 // 单条角色基线
 	fieldPermBodyMaxBytes = 16 << 10 // 单条字段权限
+	relationBodyMaxBytes  = 16 << 10 // 候选审核与可信关系
 )
 
 // Handler 授权实体层处理器。
 type Handler struct {
-	store  Repository
-	audits *audits.Service
+	store   Repository
+	audits  *audits.Service
+	publish PublishFunc
 }
 
 // NewHandler 创建处理器（构造注入审计服务，语义同 apidata）。
 func NewHandler(store Repository, audit *audits.Service) *Handler {
 	return &Handler{store: store, audits: audit}
+}
+
+// SetPublishFunc 注入现有配置发布链。
+// 候选确认先提交授权关系，再异步创建发布任务；发布失败时保留已确认关系，
+// 由后续发布重试带上最新状态，与其他策略变更保持一致。
+func (h *Handler) SetPublishFunc(fn PublishFunc) { h.publish = fn }
+
+// triggerPublish starts the existing gateway publication chain after a
+// confirmed relation mutation has committed. The relation remains durable if
+// the publication channel is unavailable; a later publication can include it.
+func (h *Handler) triggerPublish(r *http.Request, p *authz.Principal) {
+	if h.publish == nil {
+		slog.Warn("authorization relation changed but publish channel unavailable, gateway sync deferred")
+		return
+	}
+	uid := uuid.Nil
+	if p != nil {
+		uid = p.UserID
+	}
+	h.publish(context.Background(), uid, response.RequestIDFrom(r))
 }
 
 // RegisterRoutes 注册路由（统一 /api/v1/api-security/authz 前缀；权限点
@@ -66,6 +95,26 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 	// BOLA 五档评估（只读）
 	mux.Handle("GET /api/v1/api-security/authz/evaluate",
 		authz(middleware.RequirePermission(PermAuthzRead)(http.HandlerFunc(h.EvaluateBOLA))))
+	// 可信对象关系控制面（候选不会直接参与网关决策）。
+	mux.Handle("GET /api/v1/api-security/authz/relations/candidates",
+		authz(middleware.RequirePermission(PermAuthzRead)(http.HandlerFunc(h.ListRelationCandidates))))
+	mux.Handle("POST /api/v1/api-security/authz/relations/candidates/{id}/confirm",
+		authz(middleware.RequirePermission(PermRelationManage)(http.HandlerFunc(h.ConfirmRelationCandidate))))
+	mux.Handle("POST /api/v1/api-security/authz/relations/candidates/{id}/reject",
+		authz(middleware.RequirePermission(PermRelationManage)(http.HandlerFunc(h.RejectRelationCandidate))))
+	mux.Handle("GET /api/v1/api-security/authz/relations",
+		authz(middleware.RequirePermission(PermAuthzRead)(http.HandlerFunc(h.ListObjectRelations))))
+	mux.Handle("POST /api/v1/api-security/authz/relations",
+		authz(middleware.RequirePermission(PermRelationManage)(http.HandlerFunc(h.CreateObjectRelation))))
+	mux.Handle("POST /api/v1/api-security/authz/relations/{id}/revoke",
+		authz(middleware.RequirePermission(PermRelationManage)(http.HandlerFunc(h.RevokeObjectRelation))))
+	mux.Handle("GET /api/v1/api-security/authz/decisions",
+		authz(middleware.RequirePermission(PermAuthzRead)(http.HandlerFunc(h.ListAuthorizationDecisions))))
+	mux.Handle("GET /api/v1/api-security/authz/decisions/{id}",
+		authz(middleware.RequirePermission(PermAuthzRead)(
+			middleware.RequirePermission(PermEvidenceRead)(http.HandlerFunc(h.GetAuthorizationDecision)))))
+	mux.Handle("GET /api/v1/api-security/authz/coverage",
+		authz(middleware.RequirePermission(PermAuthzRead)(http.HandlerFunc(h.GetAuthorizationCoverage))))
 }
 
 // ---------- 角色基线 ----------
@@ -666,6 +715,385 @@ func (h *Handler) EvaluateBOLA(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, result)
 }
 
+// ---------- 可信对象关系与 OBSERVE 决策 ----------
+
+func (h *Handler) relationStore(w http.ResponseWriter, r *http.Request) (RelationRepository, bool) {
+	store, ok := h.store.(RelationRepository)
+	if !ok {
+		response.InternalError(w, r, errors.New("对象授权关系仓储未配置"))
+	}
+	return store, ok
+}
+
+func parseOptionalApplicationID(w http.ResponseWriter, r *http.Request) (*uuid.UUID, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("application_id"))
+	if raw == "" {
+		return nil, true
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 application_id")
+		return nil, false
+	}
+	return &id, true
+}
+
+func validCandidateStatus(v string) bool {
+	switch v {
+	case "", CandidateStatusPending, CandidateStatusRejected, CandidateStatusFrozen, CandidateStatusConfirmed:
+		return true
+	}
+	return false
+}
+
+func validRelationStatus(v string) bool {
+	switch v {
+	case "", RelationStatusConfirmed, RelationStatusRevoked, RelationStatusExpired:
+		return true
+	}
+	return false
+}
+
+func validDecision(v string) bool {
+	return v == "" || v == "ALLOW" || v == "OBSERVE_VIOLATION" || v == "UNKNOWN"
+}
+
+func (h *Handler) ListRelationCandidates(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.relationStore(w, r)
+	if !ok {
+		return
+	}
+	appID, ok := parseOptionalApplicationID(w, r)
+	if !ok {
+		return
+	}
+	status := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("status")))
+	if !validCandidateStatus(status) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的候选状态")
+		return
+	}
+	page, pageSize := queryInt(r, "page", 1), queryPageSize(r, 20)
+	items, total, err := store.ListRelationCandidates(r.Context(), CandidateFilter{
+		ApplicationID: appID, Status: status, Page: page, PageSize: pageSize,
+	})
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, items, total, page, pageSize)
+}
+
+type reviewCandidateRequest struct {
+	Relation   string     `json:"relation"`
+	Reason     string     `json:"reason"`
+	ValidUntil *time.Time `json:"valid_until"`
+}
+
+func (h *Handler) ConfirmRelationCandidate(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.relationStore(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的候选ID")
+		return
+	}
+	var req reviewCandidateRequest
+	if err := response.DecodeJSON(w, r, &req, relationBodyMaxBytes); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	req.Relation = strings.ToUpper(strings.TrimSpace(req.Relation))
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.Relation != RelationOwner || req.Reason == "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "首期 relation 仅允许 OWNER，且 reason 必填")
+		return
+	}
+	p := authz.PrincipalFrom(r.Context())
+	confirmedBy := ""
+	if p != nil {
+		confirmedBy = p.Username
+	}
+	rel, err := store.ConfirmRelationCandidate(r.Context(), id, ConfirmCandidateInput{
+		Relation: req.Relation, Reason: req.Reason, ConfirmedBy: confirmedBy, ValidUntil: req.ValidUntil,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "候选不存在")
+		case errors.Is(err, ErrCandidateNotConfirmable), errors.Is(err, ErrRelationConflict):
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "候选不是可确认的可信主体，或关系已存在")
+		default:
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		}
+		return
+	}
+	h.recordAudit(r, p, "confirm_relation_candidate", "api_object_relation_candidate", id.String(), "",
+		authzAuditSummary(map[string]any{"status": CandidateStatusPending}),
+		authzAuditSummary(map[string]any{"status": CandidateStatusConfirmed, "relation": rel.Relation, "source": rel.Source, "reason": rel.Reason}),
+		"SUCCESS", "HIGH")
+	h.triggerPublish(r, p)
+	response.JSON(w, r, http.StatusOK, rel)
+}
+
+type rejectCandidateRequest struct {
+	Reason string `json:"reason"`
+}
+
+func (h *Handler) RejectRelationCandidate(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.relationStore(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的候选ID")
+		return
+	}
+	var req rejectCandidateRequest
+	if err := response.DecodeJSON(w, r, &req, relationBodyMaxBytes); err != nil || strings.TrimSpace(req.Reason) == "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "reason 必填")
+		return
+	}
+	p := authz.PrincipalFrom(r.Context())
+	reviewedBy := ""
+	if p != nil {
+		reviewedBy = p.Username
+	}
+	candidate, err := store.RejectRelationCandidate(r.Context(), id, req.Reason, reviewedBy)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "候选不存在")
+		} else if errors.Is(err, ErrCandidateNotConfirmable) {
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "候选已经完成审核")
+		} else {
+			response.InternalError(w, r, err)
+		}
+		return
+	}
+	h.recordAudit(r, p, "reject_relation_candidate", "api_object_relation_candidate", id.String(), "",
+		authzAuditSummary(map[string]any{"status": CandidateStatusPending}),
+		authzAuditSummary(map[string]any{"status": candidate.Status, "reason": candidate.RejectReason}),
+		"SUCCESS", "HIGH")
+	response.JSON(w, r, http.StatusOK, candidate)
+}
+
+func (h *Handler) ListObjectRelations(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.relationStore(w, r)
+	if !ok {
+		return
+	}
+	appID, ok := parseOptionalApplicationID(w, r)
+	if !ok {
+		return
+	}
+	status := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("status")))
+	if !validRelationStatus(status) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的关系状态")
+		return
+	}
+	page, pageSize := queryInt(r, "page", 1), queryPageSize(r, 20)
+	items, total, err := store.ListObjectRelations(r.Context(), RelationFilter{
+		ApplicationID: appID, ObjectType: strings.TrimSpace(r.URL.Query().Get("object_type")),
+		Status: status, Page: page, PageSize: pageSize,
+	})
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, items, total, page, pageSize)
+}
+
+type createRelationRequest struct {
+	ApplicationID string     `json:"application_id"`
+	ObjectType    string     `json:"object_type"`
+	ObjectRef     string     `json:"object_ref"`
+	PrincipalID   string     `json:"principal_id"`
+	TenantID      *string    `json:"tenant_id"`
+	Relation      string     `json:"relation"`
+	Source        string     `json:"source"`
+	ValidFrom     *time.Time `json:"valid_from"`
+	ValidUntil    *time.Time `json:"valid_until"`
+	EvidenceRef   *string    `json:"evidence_ref"`
+	Reason        string     `json:"reason"`
+}
+
+func (h *Handler) CreateObjectRelation(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.relationStore(w, r)
+	if !ok {
+		return
+	}
+	var req createRelationRequest
+	if err := response.DecodeJSON(w, r, &req, relationBodyMaxBytes); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	appID, err := uuid.Parse(strings.TrimSpace(req.ApplicationID))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 application_id")
+		return
+	}
+	p := authz.PrincipalFrom(r.Context())
+	confirmedBy := ""
+	if p != nil {
+		confirmedBy = p.Username
+	}
+	validFrom := time.Now().UTC()
+	if req.ValidFrom != nil {
+		validFrom = req.ValidFrom.UTC()
+	}
+	rel := &ObjectRelation{
+		ApplicationID: appID, ObjectType: strings.TrimSpace(req.ObjectType), ObjectRef: strings.TrimSpace(req.ObjectRef),
+		PrincipalID: strings.TrimSpace(req.PrincipalID), TenantID: optionalString(req.TenantID),
+		Relation: strings.ToUpper(strings.TrimSpace(req.Relation)), Source: strings.ToUpper(strings.TrimSpace(req.Source)),
+		Status: RelationStatusConfirmed, ValidFrom: validFrom, ValidUntil: req.ValidUntil,
+		EvidenceRef: optionalString(req.EvidenceRef), ConfirmedBy: confirmedBy, Reason: strings.TrimSpace(req.Reason),
+	}
+	if rel.Source == "" {
+		rel.Source = RelationSourceManual
+	}
+	if rel.Source == RelationSourceCreateBinding {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "CREATE_BINDING 仅允许由候选确认流程生成")
+		return
+	}
+	if err := validateObjectRelation(rel); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	if err := store.CreateObjectRelation(r.Context(), rel); err != nil {
+		if errors.Is(err, ErrRelationConflict) {
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "对象关系已存在")
+		} else if errors.Is(err, ErrNotFound) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "应用不存在")
+		} else {
+			response.InternalError(w, r, err)
+		}
+		return
+	}
+	h.recordAudit(r, p, "create_object_relation", "api_object_relation", rel.ID.String(), "", "{}",
+		authzAuditSummary(map[string]any{
+			"application_id": rel.ApplicationID, "object_type": rel.ObjectType, "object_ref": rel.ObjectRef,
+			"principal_id": rel.PrincipalID, "relation": rel.Relation, "source": rel.Source,
+			"status": rel.Status, "valid_from": rel.ValidFrom, "valid_until": rel.ValidUntil, "reason": rel.Reason,
+		}), "SUCCESS", "HIGH")
+	h.triggerPublish(r, p)
+	response.JSON(w, r, http.StatusOK, rel)
+}
+
+type revokeRelationRequest struct {
+	Reason string `json:"reason"`
+}
+
+func (h *Handler) RevokeObjectRelation(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.relationStore(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的关系ID")
+		return
+	}
+	var req revokeRelationRequest
+	if err := response.DecodeJSON(w, r, &req, relationBodyMaxBytes); err != nil || strings.TrimSpace(req.Reason) == "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "reason 必填")
+		return
+	}
+	p := authz.PrincipalFrom(r.Context())
+	rel, err := store.RevokeObjectRelation(r.Context(), id)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "关系不存在")
+		case errors.Is(err, ErrRelationConflict):
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "关系已撤销或过期")
+		default:
+			response.InternalError(w, r, err)
+		}
+		return
+	}
+	h.recordAudit(r, p, "revoke_object_relation", "api_object_relation", id.String(), "",
+		authzAuditSummary(map[string]any{"status": RelationStatusConfirmed}),
+		authzAuditSummary(map[string]any{"status": rel.Status, "reason": strings.TrimSpace(req.Reason)}),
+		"SUCCESS", "HIGH")
+	h.triggerPublish(r, p)
+	response.JSON(w, r, http.StatusOK, rel)
+}
+
+func (h *Handler) ListAuthorizationDecisions(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.relationStore(w, r)
+	if !ok {
+		return
+	}
+	appID, ok := parseOptionalApplicationID(w, r)
+	if !ok {
+		return
+	}
+	decision := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("decision")))
+	if !validDecision(decision) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 decision")
+		return
+	}
+	p := authz.PrincipalFrom(r.Context())
+	page, pageSize := queryInt(r, "page", 1), queryPageSize(r, 20)
+	items, total, err := store.ListAuthorizationDecisions(r.Context(), DecisionFilter{
+		ApplicationID: appID, Decision: decision, IncludeEvidence: p != nil && p.HasPermission(PermEvidenceRead),
+		Page: page, PageSize: pageSize,
+	})
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, items, total, page, pageSize)
+}
+
+// GetAuthorizationDecision returns one decision with its redacted evidence
+// chain. The route requires both the general read permission and evidence_read;
+// an application mismatch is deliberately returned as 404 by the repository.
+func (h *Handler) GetAuthorizationDecision(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.relationStore(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的决策ID")
+		return
+	}
+	appID, ok := parseOptionalApplicationID(w, r)
+	if !ok {
+		return
+	}
+	decision, err := store.GetAuthorizationDecision(r.Context(), id, appID, true)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "授权决策不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, decision)
+}
+
+func (h *Handler) GetAuthorizationCoverage(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.relationStore(w, r)
+	if !ok {
+		return
+	}
+	appID, ok := parseOptionalApplicationID(w, r)
+	if !ok {
+		return
+	}
+	coverage, err := store.GetAuthorizationCoverage(r.Context(), appID)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, coverage)
+}
+
 // ---------- 通用 ----------
 
 // parseOptionalEndpointID 可空端点过滤参数（空 = 不过滤；非法即 400 并写响应）。
@@ -717,6 +1145,14 @@ func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objTy
 		RiskLevel:     risk,
 		RequestID:     response.RequestIDFrom(r),
 	})
+}
+
+func authzAuditSummary(v map[string]any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 // queryPageSize 分页大小（夹取 ≤100，非法回退默认值；与 store normPage 口径一致）。

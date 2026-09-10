@@ -664,6 +664,11 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 			}
 		}
 	}
+	var jwtVerification *jwtverify.VerificationResult
+	if jwtRes, ok := jwtResultFrom(r.Context()); ok {
+		jwtCopy := jwtRes
+		jwtVerification = &jwtCopy
+	}
 	cfg := pipeline.Config{
 		Enabled:               true,
 		Mode:                  apiDecisionMode(g.APIProtectionMode),
@@ -702,6 +707,20 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 		GRPCDescriptors: g.apiGRPCRegistry,
 		// API 受限例外（WDSP P0-04）：上方范围筛选结果；nil = 无适用例外，零行为变化
 		Exceptions: apiExcRefs,
+		Authorization: detectors.AuthorizationConfig{
+			ApplicationID:     g.AppID,
+			EndpointKey:       ek,
+			Models:            g.APIAuthzModels,
+			Relations:         g.APIAuthzRelations,
+			RelationIndex:     g.apiAuthzRelationIndex,
+			RoleBaselines:     g.APIAuthzRoleBaselines,
+			ObjectRefHMACKey:  g.APIAuthzObjectHMACKey,
+			PolicyVersion:     g.APIPolicyVersion,
+			Stale:             g.APIAuthzSnapshotStale,
+			SnapshotExpiresAt: g.APIAuthzSnapshotExpiresAt,
+			PreviousValid:     g.apiAuthzPreviousValid,
+		},
+		JWTVerification: jwtVerification,
 	}
 	res, err := pipeline.Process(r, cfg, nil)
 	if err != nil {
@@ -902,6 +921,7 @@ func (g *Guard) emitAPIEvent(r *http.Request, res *pipeline.Result, tail *apiEve
 		RiskLevel:     pe.RiskLevel,
 		FinalAction:   pe.FinalAction,
 		Details:       pe.Details,
+		AuthzDecision: pe.AuthzDecision,
 		IsAPI:         res.API.IsAPI,
 		APIConfidence: res.API.Confidence,
 		// 策略版本戳原样透传；FORMAL 模型版本按端点命中（未下发则省略）
@@ -993,6 +1013,15 @@ func (g *Guard) emitAPIEvent(r *http.Request, res *pipeline.Result, tail *apiEve
 	// 不落原始 Token/payload/明文 sub/tenant——tenant 为加盐指纹）
 	if jwtRes, ok := jwtResultFrom(r.Context()); ok && jwtRes.Status != jwtverify.StatusUnverified {
 		rec.JWTVerification = g.jwtEventDetail(jwtRes)
+		// 候选关系只接受“可信 JWT 主体 + HUMAN 观测身份”。identity_behavior 是
+		// 可选能力，关闭时统一 RequestContext 没有身份类型，因此这里按同一解析器
+		// 补算请求类型；该类型只用于候选防投毒筛选，不提升 JWT 信任等级。
+		if id := identitybehavior.IdentityFrom(r.Context()); id != nil {
+			rec.JWTVerification.VerifiedIdentityType = id.Type
+		} else {
+			clientIP := res.Context.ClientIP.String()
+			rec.JWTVerification.VerifiedIdentityType = identitybehavior.ResolveIdentity(r, g.IdentitySalt, clientIP).Type
+		}
 	}
 	// 请求最终处置上下文（WDSP P0-04）：仅处置事实已确定（终止/源站完成/错误）时挂载——
 	// 响应前输出（非 API 命中、体未保全跳过等）请求仍在途，提前 Finalize 会落 UNKNOWN

@@ -44,6 +44,7 @@ func Normalize(p *Policy) {
 	for i := range p.Issuers {
 		p.Issuers[i].Audiences = normalizeStrings(p.Issuers[i].Audiences, false)
 		p.Issuers[i].Algorithms = normalizeStrings(p.Issuers[i].Algorithms, true)
+		p.Issuers[i].RoleClaims = normalizeStrings(p.Issuers[i].RoleClaims, false)
 	}
 }
 
@@ -175,6 +176,19 @@ func ValidateStructure(p *Policy) []FieldError {
 		}
 		if is.TenantClaim != "" && !tenantClaimPattern.MatchString(is.TenantClaim) {
 			add(prefix+".tenant_claim", "非法声明名（字母/数字/下划线/短横线，字母或下划线开头）")
+		}
+		if len(is.RoleClaims) > MaxRoleClaims {
+			add(prefix+".role_claims", fmt.Sprintf("role_claims 数量不能超过 %d", MaxRoleClaims))
+		}
+		seenRoleClaim := map[string]bool{}
+		for _, claim := range is.RoleClaims {
+			if claim == "" || len(claim) > MaxRoleClaimLen || !tenantClaimPattern.MatchString(claim) {
+				add(prefix+".role_claims", "非法角色声明名（字母/数字/下划线/短横线，字母或下划线开头）")
+			}
+			if seenRoleClaim[claim] {
+				add(prefix+".role_claims", "角色声明名不得重复: "+claim)
+			}
+			seenRoleClaim[claim] = true
 		}
 		algSet := map[string]bool{}
 		for _, a := range is.Algorithms {

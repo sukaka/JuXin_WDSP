@@ -81,6 +81,7 @@ var SensitiveSettingKeys = map[string]bool{
 	// 文件签名密钥 / 扫描签名密钥 / Agent CA 材料（密文，由轮换/签发接口运行期写入）
 	"gateway_runtime:api_file_signature_key": true,
 	"api_scan:signing_key":                   true,
+	"api_authz:object_hmac_key":              true,
 	"apm_agent:ca_material":                  true,
 	"traffic_agent_ca:ca_material":           true,
 }

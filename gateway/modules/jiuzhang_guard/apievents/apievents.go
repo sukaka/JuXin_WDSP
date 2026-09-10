@@ -3,6 +3,7 @@
 package apievents
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,6 +83,9 @@ type Record struct {
 	// 零变化。不落原始 Token/payload/明文 sub/tenant，tenant 为加盐指纹），
 	// 供管理面落 api_runtime_events.jwt_verification（迁移 000127）。
 	JWTVerification *dsevents.JWTVerification `json:"jwt_verification,omitempty"`
+	// AuthzDecision request-level BOLA/BFLA decision group. ObjectRef values
+	// are HMAC references produced by the gateway detector.
+	AuthzDecision *dsevents.AuthorizationDecisionGroup `json:"authz_decision,omitempty"`
 	// FinalDecision 请求最终处置上下文（WDSP P0-04，final_decision JSON
 	// schema_version=1）：仅处置事实已确定（终止/源站完成/错误）时由 emitAPIEvent
 	// 挂载（Settled 门禁），采集端落 api_runtime_events.final_decision（迁移 000131）；
@@ -101,14 +105,15 @@ type Record struct {
 
 // 字段长度上限（防超大输入撑爆日志）。
 const (
-	maxEndpointKeyLen = 560
-	maxPathLen        = 512
-	maxDomainLen      = 255
-	maxClientIPLen    = 64
-	maxVersionLen     = 128
-	maxLLMModelLen    = 128
-	maxProtoLen       = 32
-	maxTraceIDLen     = 32
+	maxEndpointKeyLen    = 560
+	maxPathLen           = 512
+	maxDomainLen         = 255
+	maxClientIPLen       = 64
+	maxVersionLen        = 128
+	maxLLMModelLen       = 128
+	maxProtoLen          = 32
+	maxTraceIDLen        = 32
+	authzObjectRefHexLen = 64
 )
 
 // 有界积压队列与异步异常上报节流参数（code-review MED-6）。
@@ -135,15 +140,17 @@ type Logger struct {
 	node string
 	f    *os.File
 
-	writeTok chan struct{}  // 容量 1 写令牌：持令牌者独占文件写（快路径与后台补写互斥）
-	queue    chan []byte    // 有界积压队列（已序列化含换行记录）
-	notify   chan struct{}  // 容量 1 唤醒信号（入队后触发后台补写）
-	done     chan struct{}  // Close 关闭信号（唤醒后台排空后退出）
-	drainWg  sync.WaitGroup // 后台落盘 goroutine 生命周期
-	inflight sync.WaitGroup // 在途 Emit（Close 等其完成后再封队列）
+	writeTok  chan struct{}  // 容量 1 写令牌：持令牌者独占文件写（快路径与后台补写互斥）
+	queue     chan []byte    // 有界积压队列（已序列化含换行记录）
+	notify    chan struct{}  // 容量 1 唤醒信号（入队后触发后台补写）
+	done      chan struct{}  // Close 关闭信号（唤醒后台排空后退出）
+	closeDone chan struct{}  // 首次 Close 完成信号（后续 Close 等待并复用结果）
+	drainWg   sync.WaitGroup // 后台落盘 goroutine 生命周期
+	inflight  sync.WaitGroup // 在途 Emit（Close 等其完成后再封队列）
 
 	mu         sync.Mutex // 生命周期与异步异常账本（绝不持锁做磁盘 IO）
 	closed     bool
+	closeErr   error
 	dropped    int64     // 队列满累计丢弃数（上报后清零）
 	writeErr   error     // 后台落盘最近未上报错误（上报后清零）
 	lastReport time.Time // 上次异步异常上报时刻
@@ -159,12 +166,13 @@ func NewLogger(path, gatewayNode string) (*Logger, error) {
 		return nil, fmt.Errorf("open api events log: %w", err)
 	}
 	l := &Logger{
-		f:        f,
-		node:     gatewayNode,
-		writeTok: make(chan struct{}, 1),
-		queue:    make(chan []byte, eventQueueSize),
-		notify:   make(chan struct{}, 1),
-		done:     make(chan struct{}),
+		f:         f,
+		node:      gatewayNode,
+		writeTok:  make(chan struct{}, 1),
+		queue:     make(chan []byte, eventQueueSize),
+		notify:    make(chan struct{}, 1),
+		done:      make(chan struct{}),
+		closeDone: make(chan struct{}),
 	}
 	l.writeTok <- struct{}{}
 	l.drainWg.Add(1)
@@ -215,7 +223,11 @@ func (l *Logger) Emit(e Record) error {
 		e.JWTVerification.KeysetVersion = sanitize(e.JWTVerification.KeysetVersion, maxVersionLen)
 		e.JWTVerification.VerifiedPrincipalID = sanitize(e.JWTVerification.VerifiedPrincipalID, maxVersionLen)
 		e.JWTVerification.VerifiedTenantID = sanitize(e.JWTVerification.VerifiedTenantID, maxVersionLen)
+		e.JWTVerification.VerifiedIdentityType = sanitize(e.JWTVerification.VerifiedIdentityType, maxProtoLen)
 		e.JWTVerification.EvaluatedAt = sanitize(e.JWTVerification.EvaluatedAt, 64)
+	}
+	if e.AuthzDecision != nil {
+		sanitizeAuthzDecision(e.AuthzDecision)
 	}
 	if e.Details == nil {
 		e.Details = []dsctx.DetectorMatch{}
@@ -264,6 +276,44 @@ func (l *Logger) Emit(e Record) error {
 		dropped = true // 队列满：丢新事件，计数随节流窗口汇总上报
 	}
 	return l.asyncReport(dropped)
+}
+
+func sanitizeAuthzDecision(g *dsevents.AuthorizationDecisionGroup) {
+	g.DecisionID = sanitize(g.DecisionID, maxVersionLen)
+	g.PolicyVersion = sanitize(g.PolicyVersion, maxVersionLen)
+	if len(g.Checks) > 32 {
+		g.Checks = g.Checks[:32]
+	}
+	for i := range g.Checks {
+		c := &g.Checks[i]
+		c.Type = sanitize(c.Type, maxProtoLen)
+		c.Decision = dsevents.AuthorizationDecision(sanitize(string(c.Decision), maxProtoLen))
+		c.ReasonCode = sanitize(c.ReasonCode, maxProtoLen)
+		c.RelationState = sanitize(c.RelationState, maxProtoLen)
+		c.ObjectType = sanitize(c.ObjectType, maxVersionLen)
+		c.ObjectRef = sanitizeObjectRef(c.ObjectRef)
+		// Role claim values are never part of the event contract, even when a
+		// Record is assembled by a caller outside the detector package.
+		c.Role = ""
+		c.RoleSource = sanitize(c.RoleSource, maxProtoLen)
+		c.TenantState = sanitize(c.TenantState, maxProtoLen)
+		c.PolicyVersion = sanitize(c.PolicyVersion, maxVersionLen)
+		c.ModelVersion = sanitize(c.ModelVersion, maxVersionLen)
+	}
+}
+
+// sanitizeObjectRef keeps the event contract closed over gateway-generated
+// HMAC references. A caller cannot accidentally turn an object ID into an
+// event field by constructing a Record directly.
+func sanitizeObjectRef(ref string) string {
+	ref = sanitize(ref, maxVersionLen)
+	if len(ref) != len("objref:")+authzObjectRefHexLen || !strings.HasPrefix(ref, "objref:") {
+		return ""
+	}
+	if _, err := hex.DecodeString(ref[len("objref:"):]); err != nil {
+		return ""
+	}
+	return ref
 }
 
 // asyncReport 异步异常账本（队列满丢弃 / 后台落盘失败）节流上报：超窗口返回聚合错误
@@ -343,8 +393,12 @@ func (l *Logger) isClosed() bool {
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	if l.closed {
+		closeDone := l.closeDone
 		l.mu.Unlock()
-		return nil
+		<-closeDone
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return l.closeErr
 	}
 	l.closed = true
 	l.mu.Unlock()
@@ -357,14 +411,21 @@ func (l *Logger) Close() error {
 	dropped := l.dropped
 	l.dropped = 0
 	l.mu.Unlock()
+	var closeErr error
 	if err := l.f.Close(); err != nil {
-		return fmt.Errorf("close api events log: %w", err)
+		closeErr = fmt.Errorf("close api events log: %w", err)
 	}
+	var reportErr error
 	switch {
 	case werr != nil:
-		return fmt.Errorf("api events background write: %w", werr)
+		reportErr = fmt.Errorf("api events background write: %w", werr)
 	case dropped > 0:
-		return fmt.Errorf("api events queue full: dropped %d event(s) before close", dropped)
+		reportErr = fmt.Errorf("api events queue full: dropped %d event(s) before close", dropped)
 	}
-	return nil
+	err := errors.Join(closeErr, reportErr)
+	l.mu.Lock()
+	l.closeErr = err
+	close(l.closeDone)
+	l.mu.Unlock()
+	return err
 }

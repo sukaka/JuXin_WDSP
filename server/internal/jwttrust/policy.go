@@ -41,6 +41,8 @@ const (
 	MaxSelectorPathLen   = 512        // path_exact/path_prefix 长度上限
 	MaxSelectorMethods   = 16         // 单 selector 方法数上限
 	MaxTenantClaimLen    = 64         // tenant_claim 长度上限
+	MaxRoleClaims        = 8          // 单 issuer role_claims 上限
+	MaxRoleClaimLen      = 64         // 单 role claim 名称长度上限
 	MaxReasonLen         = 500        // 变更理由长度上限
 	MaxKIDBytes          = 256        // kid 上限（字节，任务书 §5.2）
 	MaxJWKSKeys          = 32         // 单份 JWKS 公钥上限
@@ -81,6 +83,8 @@ type Issuer struct {
 	ClockSkewSeconds int       `json:"clock_skew_seconds"`
 	// TenantClaim 可选、管理员选定的单一受信声明名；只在 VERIFIED 后读取，不自动猜测。
 	TenantClaim string `json:"tenant_claim,omitempty"`
+	// RoleClaims 可选、管理员显式选定的受信角色声明名；只在 VERIFIED 后读取。
+	RoleClaims []string `json:"role_claims,omitempty"`
 }
 
 // Policy 应用 JWT 信任策略（当前草稿；与 jwt_trust_policies 表列对应）。

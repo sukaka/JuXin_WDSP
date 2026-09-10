@@ -402,17 +402,24 @@ func TestVerifierConfigValidation(t *testing.T) {
 		}
 	})
 	t.Run("OBSERVE 缺身份密钥可运行但不产可信主体", func(t *testing.T) {
-		v, err := NewVerifier(VerifierConfig{Policy: testPolicy(ModeObserve, staticIssuerCfg(jwks)), Clock: clock})
+		iss := staticIssuerCfg(jwks)
+		iss.RoleClaims = []string{"roles"}
+		v, err := NewVerifier(VerifierConfig{Policy: testPolicy(ModeObserve, iss), Clock: clock})
 		if err != nil {
 			t.Fatalf("OBSERVE 空密钥应可构造: %v", err)
 		}
-		token := signToken(t, key, jose.RS256, "rsa-1", validClaims(clock, testIssuer), nil)
+		claims := validClaims(clock, testIssuer)
+		claims["roles"] = []string{"admin"}
+		token := signToken(t, key, jose.RS256, "rsa-1", claims, nil)
 		res := v.Verify(bearer(token), "GET", "/api/orders")
 		if res.Status != StatusVerified {
 			t.Fatalf("OBSERVE 空密钥验签应照常 VERIFIED: %+v", res)
 		}
 		if res.VerifiedPrincipalID != "" || res.VerifiedTenantID != "" {
 			t.Fatalf("空密钥不得产出可信主体: %+v", res)
+		}
+		if len(res.VerifiedRoles) != 0 {
+			t.Fatalf("空密钥不得产出可信角色: %+v", res)
 		}
 	})
 	t.Run("OFF 允许无密钥", func(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -310,19 +311,73 @@ func (v *Verifier) validateClaims(parsed *parsedToken, ir *issuerRuntime, keyset
 			}
 		}
 	}
+	// 角色只在签名及注册声明验证完成后读取；即使没有身份指纹密钥，也不能
+	// 从未验证 claims 产生角色信号。
+	res := v.result(StatusVerified, ReasonValid, ir, keysetVersion, "")
+	res.VerifiedRoles = verifiedRoles(claims.raw, ir.cfg.RoleClaims)
 	// 空身份密钥（仅 OBSERVE 可达）：验签结论照常返回 VERIFIED，但不产出
 	// 可信主体/tenant——无可信身份指纹密钥时禁止冒充已建立身份信任链（§5.1）。
 	if len(v.secret) == 0 {
-		return v.result(StatusVerified, ReasonValid, ir, keysetVersion, "")
+		// 角色基线只接受可信主体信号；没有主体指纹时，角色也不能进入
+		// 后续授权决策，即使 JWT 本身已经通过签名校验。
+		res.VerifiedRoles = nil
+		return res
 	}
 	principal, err := PrincipalID(v.secret, v.policy.ApplicationID, claims.issuer, claims.subject, tenant, tenantPresent)
 	if err != nil {
 		return v.result(StatusUnavailable, ReasonVerifierError, ir, keysetVersion, "")
 	}
-	res := v.result(StatusVerified, ReasonValid, ir, keysetVersion, "")
 	res.VerifiedPrincipalID = principal
 	res.VerifiedTenantID = tenant
+	if strings.TrimSpace(res.VerifiedPrincipalID) == "" {
+		res.VerifiedRoles = nil
+	}
 	return res
+}
+
+// verifiedRoles reads only explicitly configured role claims, and is called
+// after signature and registered claim validation has completed. Invalid or
+// overlong role values are ignored so they cannot influence authorization.
+func verifiedRoles(raw map[string]json.RawMessage, claimNames []string) []string {
+	if len(raw) == 0 || len(claimNames) == 0 {
+		return nil
+	}
+	roles := make([]string, 0, len(claimNames))
+	seen := make(map[string]struct{})
+	for _, name := range claimNames {
+		value, ok := raw[name]
+		if !ok {
+			continue
+		}
+		var single string
+		if json.Unmarshal(value, &single) == nil {
+			appendVerifiedRole(&roles, seen, single)
+			continue
+		}
+		var many []string
+		if json.Unmarshal(value, &many) != nil {
+			continue
+		}
+		for _, role := range many {
+			appendVerifiedRole(&roles, seen, role)
+			if len(roles) >= MaxVerifiedRoles {
+				return roles
+			}
+		}
+	}
+	return roles
+}
+
+func appendVerifiedRole(roles *[]string, seen map[string]struct{}, role string) {
+	role = strings.TrimSpace(role)
+	if role == "" || len(role) > MaxRoleBytes {
+		return
+	}
+	if _, ok := seen[role]; ok {
+		return
+	}
+	seen[role] = struct{}{}
+	*roles = append(*roles, role)
 }
 
 // result 构造结果基座：填充策略/issuer/密钥版本、评估时间与模式处置动作。

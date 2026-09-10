@@ -3,6 +3,7 @@ package jwttrust
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -54,6 +55,7 @@ func TestNormalize(t *testing.T) {
 		Issuers: []Issuer{{
 			Audiences:  []string{" a ", "a", "b"},
 			Algorithms: []string{"rs256", "RS256", "es256"},
+			RoleClaims: []string{" roles ", "groups", "roles"},
 		}},
 	}
 	Normalize(p)
@@ -67,12 +69,39 @@ func TestNormalize(t *testing.T) {
 	if len(p.Issuers[0].Algorithms) != 2 || p.Issuers[0].Algorithms[1] != "ES256" {
 		t.Errorf("algorithms = %v", p.Issuers[0].Algorithms)
 	}
+	if got := p.Issuers[0].RoleClaims; len(got) != 2 || got[0] != "roles" || got[1] != "groups" {
+		t.Errorf("role claims = %v", got)
+	}
 }
 
 // TestValidateStructureBaseline 合法策略通过。
 func TestValidateStructureBaseline(t *testing.T) {
 	if errs := ValidateStructure(basePolicy(t)); len(errs) > 0 {
 		t.Fatalf("valid policy rejected: %+v", errs)
+	}
+}
+
+// TestRoleClaimsJSONContract verifies that the management DTO/domain JSON and
+// the publishable policy retain the explicit role declaration names end to end.
+func TestRoleClaimsJSONContract(t *testing.T) {
+	p := basePolicy(t)
+	p.Issuers[0].RoleClaims = []string{"roles", "groups"}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal policy: %v", err)
+	}
+	var roundTrip Policy
+	if err := json.Unmarshal(b, &roundTrip); err != nil {
+		t.Fatalf("unmarshal policy: %v", err)
+	}
+	if got := roundTrip.Issuers[0].RoleClaims; len(got) != 2 || got[0] != "roles" || got[1] != "groups" {
+		t.Fatalf("round-tripped role claims = %v", got)
+	}
+
+	req := putRequest{Issuers: []issuerRequest{{RoleClaims: []string{"roles", "groups"}}}}
+	converted := req.toPolicy(uuid.New())
+	if got := converted.Issuers[0].RoleClaims; len(got) != 2 || got[0] != "roles" || got[1] != "groups" {
+		t.Fatalf("request role claims = %v", got)
 	}
 }
 
@@ -105,6 +134,10 @@ func TestValidateStructureMatrix(t *testing.T) {
 		{"时钟偏移越上限", func(p *Policy) { p.Issuers[0].ClockSkewSeconds = 121 }, "issuers[0].clock_skew_seconds"},
 		{"时钟偏移负值", func(p *Policy) { p.Issuers[0].ClockSkewSeconds = -1 }, "issuers[0].clock_skew_seconds"},
 		{"tenant_claim非法", func(p *Policy) { p.Issuers[0].TenantClaim = "1bad claim" }, "issuers[0].tenant_claim"},
+		{"role_claim非法", func(p *Policy) { p.Issuers[0].RoleClaims = []string{"1bad"} }, "issuers[0].role_claims"},
+		{"role_claim过多", func(p *Policy) {
+			p.Issuers[0].RoleClaims = []string{"r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"}
+		}, "issuers[0].role_claims"},
 		{"STATIC缺jwks", func(p *Policy) { p.Issuers[0].KeySource.JWKS = "" }, "issuers[0].key_source.jwks"},
 		{"STATIC带url", func(p *Policy) { p.Issuers[0].KeySource.URL = "https://x.example.com/jwks" }, "issuers[0].key_source.url"},
 		{"REMOTE缺url", func(p *Policy) {

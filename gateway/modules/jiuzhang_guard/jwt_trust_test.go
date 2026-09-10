@@ -747,6 +747,7 @@ func TestJWTTrust_APIMainEventCarriesVerification(t *testing.T) {
 	r.Header.Set("X-Request-Id", "jwt-pass-1")
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Accept", "application/json")
+	r.Header.Set("User-Agent", "Mozilla/5.0")
 	r.Header.Set("Authorization", "Bearer "+jwtSignRS256(t, key, "k1", claims))
 	called := false
 	rec := httptest.NewRecorder()
@@ -761,7 +762,7 @@ func TestJWTTrust_APIMainEventCarriesVerification(t *testing.T) {
 			jv := ev.JWTVerification
 			if jv == nil || jv.Status != string(jwtverify.StatusVerified) || jv.ReasonCode != string(jwtverify.ReasonValid) ||
 				jv.PolicyVersion != "3" || jv.IssuerConfigID != "iss-test-1" || jv.VerifiedPrincipalID == "" ||
-				jv.EvaluatedAt == "" {
+				jv.VerifiedIdentityType != "HUMAN" || jv.EvaluatedAt == "" {
 				t.Fatalf("API 主事件应携带完整验证摘要: %+v", jv)
 			}
 			if jv.VerifiedTenantID == "" || jv.VerifiedTenantID == "acme" {

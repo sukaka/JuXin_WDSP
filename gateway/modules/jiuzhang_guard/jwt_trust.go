@@ -41,12 +41,12 @@ const jwtTrustSchemaVersion = 1
 // jwtTrustJSON 发布通道下发 jwt_trust 处理器段（json tag 为跨分片契约，不得改动；
 // 与 server/internal/gatewayconfig.GuardJWTTrustPolicy 同形）。
 type jwtTrustJSON struct {
-	SchemaVersion int                  `json:"schema_version"`
-	ApplicationID string               `json:"application_id"`
-	Mode          string               `json:"mode"` // OFF | OBSERVE | PROTECT
-	Version       int                  `json:"version"`
-	Selectors     []jwtSelectorJSON    `json:"selectors"`
-	Issuers       []jwtIssuerJSON      `json:"issuers"`
+	SchemaVersion int               `json:"schema_version"`
+	ApplicationID string            `json:"application_id"`
+	Mode          string            `json:"mode"` // OFF | OBSERVE | PROTECT
+	Version       int               `json:"version"`
+	Selectors     []jwtSelectorJSON `json:"selectors"`
+	Issuers       []jwtIssuerJSON   `json:"issuers"`
 }
 
 type jwtSelectorJSON struct {
@@ -63,8 +63,9 @@ type jwtIssuerJSON struct {
 	Algorithms       []string        `json:"algorithms"`
 	ClockSkewSeconds int             `json:"clock_skew_seconds"`
 	TenantClaim      string          `json:"tenant_claim,omitempty"`
+	RoleClaims       []string        `json:"role_claims,omitempty"`
 	KeySourceType    string          `json:"key_source_type"` // STATIC_JWKS | REMOTE_JWKS
-	JWKS             json.RawMessage `json:"jwks,omitempty"` // STATIC_JWKS：公钥集（公钥非秘密）
+	JWKS             json.RawMessage `json:"jwks,omitempty"`  // STATIC_JWKS：公钥集（公钥非秘密）
 	RemoteURL        string          `json:"remote_url,omitempty"`
 	KeysetVersion    string          `json:"keyset_version,omitempty"` // 溯源标识；运行期版本由验证器按密钥材料派生
 }
@@ -152,6 +153,7 @@ func (g *Guard) buildJWTVerifier(sec *jwtTrustJSON) (*jwtverify.Verifier, error)
 			Audiences:        is.Audiences,
 			ClockSkewSeconds: is.ClockSkewSeconds,
 			TenantClaim:      is.TenantClaim,
+			RoleClaims:       append([]string(nil), is.RoleClaims...),
 			KeySource:        jwtverify.KeySource(is.KeySourceType), // 未知取值由 Validate 拒绝
 		}
 		for _, a := range is.Algorithms {

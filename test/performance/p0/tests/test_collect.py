@@ -13,6 +13,7 @@ from p0bench.collectors import (  # noqa: E402
     CollectorError,
     parse_ab_output,
     parse_docker_stats_jsonl,
+    parse_proc_rss_jsonl,
     summarize_curl_tsv,
 )
 from p0bench.reconcile import permanent_loss, reconcile_events  # noqa: E402
@@ -102,10 +103,27 @@ class TestDockerStats(unittest.TestCase):
         self.assertEqual(recs[0]["container"], "p0bench-x-gateway-1")
         self.assertAlmostEqual(recs[0]["cpu_percent"], 12.5)
         self.assertEqual(recs[0]["mem_usage"], "128MiB")
+        self.assertEqual(recs[0]["mem_usage_bytes"], 128 * 1024 * 1024)
 
     def test_bad_line_raises(self):
         with self.assertRaises(CollectorError):
             parse_docker_stats_jsonl(["{bad json\n"])
+
+
+class TestProcRSS(unittest.TestCase):
+    def test_parse_normalized_samples(self):
+        records = parse_proc_rss_jsonl([
+            '{"container":"gateway-1","pid":1,"rss_kib":64}\n',
+            '{"container":"gateway-1","pid":1,"rss_kib":128}\n',
+        ])
+        self.assertEqual(records[0]["rss_bytes"], 64 * 1024)
+        self.assertEqual(records[1]["rss_kib"], 128)
+
+    def test_rejects_invalid_pid_or_rss(self):
+        with self.assertRaises(CollectorError):
+            parse_proc_rss_jsonl(['{"container":"gateway-1","pid":0,"rss_kib":1}\n'])
+        with self.assertRaises(CollectorError):
+            parse_proc_rss_jsonl(['{"container":"gateway-1","pid":1,"rss_kib":-1}\n'])
 
 
 class TestReconcile(unittest.TestCase):

@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -229,6 +230,17 @@ type Guard struct {
 	// 角色功能级基线（发布通道下发 api_role_baselines；对应管理面 api_role_baselines 表 confirmed 行；
 	// nil/空 = 无端点基线，BFLA 检测零行为）
 	APIRoleBaselines []detectors.RoleBaseline `json:"api_role_baselines,omitempty"`
+	// AUTHZ-01 对象授权快照（发布通道下发；仅 gateway 侧 OBSERVE 判定）。
+	// 模型/关系中的对象标识仅用于运行时匹配，事件只保留 HMAC objref。
+	APIAuthzModels            []detectors.ObjectModel          `json:"api_authz_models,omitempty"`
+	APIAuthzRelations         []detectors.ObjectRelation       `json:"api_authz_relations,omitempty"`
+	APIAuthzRoleBaselines     []detectors.VerifiedRoleBaseline `json:"api_authz_role_baselines,omitempty"`
+	APIAuthzObjectHMACKeyHex  string                           `json:"api_authz_object_hmac_key_hex,omitempty"`
+	APIAuthzObjectHMACKey     []byte                           `json:"-"`
+	APIAuthzSnapshotStale     bool                             `json:"api_authz_snapshot_stale,omitempty"`
+	APIAuthzSnapshotExpiresAt *time.Time                       `json:"api_authz_snapshot_expires_at,omitempty"`
+	APIAuthzPreviousValid     *authzSnapshotJSON               `json:"api_authz_previous_valid,omitempty"`
+	apiAuthzPreviousValid     *detectors.AuthorizationConfig   `json:"-"`
 	// 字段权限（发布通道下发 api_field_permissions；对应管理面 api_field_permissions 表行；
 	// nil/空 = 无字段权限基线，Mass Assignment 检测零行为；响应方向行本波运行时不判定）
 	APIFieldPermissions []detectors.FieldPermission `json:"api_field_permissions,omitempty"`
@@ -353,44 +365,59 @@ type Guard struct {
 	RedirectPortRewrite int `json:"redirect_port_rewrite,omitempty"` // 0=关闭；>0 改写 302 Location 显式端口为该值；80=剥离端口
 
 	// 运行时
-	logger    *zap.Logger
-	resolver  clientip.Resolver
-	proxies   *trustedproxy.Set
-	protected *cidr.Matcher
-	allowG    *accesscontrol.RuleSet
-	allowA    *accesscontrol.RuleSet
-	denyG     *accesscontrol.RuleSet
-	denyA     *accesscontrol.RuleSet
-	policies  []*compiledPolicy
-	l7        *l7rules.Engine // L7 访问控制编译结果（nil = 未配置）
-	events    *events.Logger
-	apiEvents *apievents.Logger
-	accessLog *accessLogWriter
-	engine    *sharedEngine
-	failOpen  bool             // 本实例故障策略（Provision 时确定，配置重载即可切换）
-	heartbeat *heartbeatRunner // 节点心跳（nil = 关闭；Cleanup 停止并等待退出）
+	logger         *zap.Logger
+	resolver       clientip.Resolver
+	proxies        *trustedproxy.Set
+	protected      *cidr.Matcher
+	allowG         *accesscontrol.RuleSet
+	allowA         *accesscontrol.RuleSet
+	denyG          *accesscontrol.RuleSet
+	denyA          *accesscontrol.RuleSet
+	policies       []*compiledPolicy
+	l7             *l7rules.Engine // L7 访问控制编译结果（nil = 未配置）
+	events         *events.Logger
+	apiEvents      *apievents.Logger
+	apiEventsClose func() error // 测试注入钩子；生产路径为空时直接关闭 apiEvents
+	accessLog      *accessLogWriter
+	engine         *sharedEngine
+	failOpen       bool             // 本实例故障策略（Provision 时确定，配置重载即可切换）
+	heartbeat      *heartbeatRunner // 节点心跳（nil = 关闭；Cleanup 停止并等待退出）
 
-	behaviorStores    *detectors.StoreOverrides // 按 BehaviorStore 构建（nil = 进程内默认内存）
-	ibh               *identitybehavior.Engine  // 身份与行为防护引擎（nil = 未启用，请求链路零变化）
-	risk              *riskengine.Engine        // 身份风险引擎（nil = risk_policy 未启用，请求链路零变化）
-	cleaned           bool                      // Cleanup 幂等标记（只关资源不置 nil 字段，见 Cleanup 注释）
-	cleanupErr        error
-	apiMaskRules      map[string][]response.MaskRule          // 按 APIMaskRules 编译（endpoint_key 归组；nil = 无规则）
-	apiRoleBaselines  map[string][]detectors.RoleBaseline     // 按 APIRoleBaselines 归组（endpoint_key；nil = 无基线）
-	apiFieldPerms     map[string][]detectors.FieldPermission  // 按 APIFieldPermissions 归组（endpoint_key；nil = 无权限行）
-	apiScanKey        []byte                                  // 按 APIScanVerification 解码（nil = 未下发，仅存在性识别；秘密材料不落日志）
-	apiRespBaselines  map[string][]detectors.ResponseBaseline // 按 APIResponseBaselines 归组（endpoint_key；nil = 无基线，偏离检测零行为）
-	apiParamRelations map[string][]detectors.ParamRelation    // 按 APIParameterRelations 归组（endpoint_key；nil = 无关系，关系检测零行为）
-	apiFileWatermark  *response.FileWatermarkConfig           // 按 APIFileWatermark 编译（nil = 未下发/未启用，响应侧零行为变化）
-	apiFileSignature  *response.FileSignatureConfig           // 按 APIFileSignature 编译（nil = 未下发/未启用，响应侧零行为变化；密钥为秘密材料不落日志）
-	apiFileCompliance *detectors.FileComplianceRuleSet        // 按 APIFileComplianceRules 编译（nil = 无规则，合规检测零行为）
-	apiGRPCRegistry   *grpcdesc.Registry                      // 按 APIGRPCDescriptors 编译（nil = 无描述符，gRPC 与 v1 一致）
-	jwtVerifier       *jwtverify.Verifier                     // 按 JWTTrust 装配（nil = 未下发/OFF，请求链路零变化）
-	apiExceptions     map[string][]APIException               // 按 APIExceptions 装配（nil = 未下发，请求链路零变化）
-	jwtFetcher        *jwtverify.Fetcher                      // 测试注入钩子（nil = 存在 REMOTE_JWKS 时装配期建默认受限获取器）
-	jwtCancel         context.CancelFunc                      // 远程 JWKS 后台刷新取消（nil = 未启动；Cleanup 调用）
-	botPolicy         *botPolicyJSON                          // 按 BotPolicy 装配（nil = 未下发；OFF 也保留段内容以维持 verify 命名空间墓碑；B3 起请求链经 serveNextViaBot 消费）
-	botSvc            *botchallenge.Service                   // Bot 挑战服务（nil = OFF/未下发/OBSERVE 依赖缺失降级；PROTECT 依赖缺失在装配期 fail-closed 拒载）
+	behaviorStores        *detectors.StoreOverrides // 按 BehaviorStore 构建（nil = 进程内默认内存）
+	ibh                   *identitybehavior.Engine  // 身份与行为防护引擎（nil = 未启用，请求链路零变化）
+	risk                  *riskengine.Engine        // 身份风险引擎（nil = risk_policy 未启用，请求链路零变化）
+	cleaned               bool                      // Cleanup 幂等标记（只关资源不置 nil 字段，见 Cleanup 注释）
+	cleanupErr            error
+	apiMaskRules          map[string][]response.MaskRule          // 按 APIMaskRules 编译（endpoint_key 归组；nil = 无规则）
+	apiRoleBaselines      map[string][]detectors.RoleBaseline     // 按 APIRoleBaselines 归组（endpoint_key；nil = 无基线）
+	apiAuthzRelationIndex map[string][]detectors.ObjectRelation   // 按应用/对象类型/对象引用索引（nil = 无关系）
+	apiFieldPerms         map[string][]detectors.FieldPermission  // 按 APIFieldPermissions 归组（endpoint_key；nil = 无权限行）
+	apiScanKey            []byte                                  // 按 APIScanVerification 解码（nil = 未下发，仅存在性识别；秘密材料不落日志）
+	apiRespBaselines      map[string][]detectors.ResponseBaseline // 按 APIResponseBaselines 归组（endpoint_key；nil = 无基线，偏离检测零行为）
+	apiParamRelations     map[string][]detectors.ParamRelation    // 按 APIParameterRelations 归组（endpoint_key；nil = 无关系，关系检测零行为）
+	apiFileWatermark      *response.FileWatermarkConfig           // 按 APIFileWatermark 编译（nil = 未下发/未启用，响应侧零行为变化）
+	apiFileSignature      *response.FileSignatureConfig           // 按 APIFileSignature 编译（nil = 未下发/未启用，响应侧零行为变化；密钥为秘密材料不落日志）
+	apiFileCompliance     *detectors.FileComplianceRuleSet        // 按 APIFileComplianceRules 编译（nil = 无规则，合规检测零行为）
+	apiGRPCRegistry       *grpcdesc.Registry                      // 按 APIGRPCDescriptors 编译（nil = 无描述符，gRPC 与 v1 一致）
+	jwtVerifier           *jwtverify.Verifier                     // 按 JWTTrust 装配（nil = 未下发/OFF，请求链路零变化）
+	apiExceptions         map[string][]APIException               // 按 APIExceptions 装配（nil = 未下发，请求链路零变化）
+	jwtFetcher            *jwtverify.Fetcher                      // 测试注入钩子（nil = 存在 REMOTE_JWKS 时装配期建默认受限获取器）
+	jwtCancel             context.CancelFunc                      // 远程 JWKS 后台刷新取消（nil = 未启动；Cleanup 调用）
+	botPolicy             *botPolicyJSON                          // 按 BotPolicy 装配（nil = 未下发；OFF 也保留段内容以维持 verify 命名空间墓碑；B3 起请求链经 serveNextViaBot 消费）
+	botSvc                *botchallenge.Service                   // Bot 挑战服务（nil = OFF/未下发/OBSERVE 依赖缺失降级；PROTECT 依赖缺失在装配期 fail-closed 拒载）
+}
+
+// authzSnapshotJSON is the explicit hand-off contract for the last known
+// usable authorization snapshot. It is injected by the publish coordinator;
+// Guard does not infer or persist history across independent processes.
+type authzSnapshotJSON struct {
+	Models            []detectors.ObjectModel          `json:"models,omitempty"`
+	Relations         []detectors.ObjectRelation       `json:"relations,omitempty"`
+	RoleBaselines     []detectors.VerifiedRoleBaseline `json:"role_baselines,omitempty"`
+	ObjectHMACKeyHex  string                           `json:"object_hmac_key_hex,omitempty"`
+	PolicyVersion     string                           `json:"policy_version,omitempty"`
+	Stale             bool                             `json:"stale,omitempty"`
+	SnapshotExpiresAt *time.Time                       `json:"snapshot_expires_at,omitempty"`
 }
 
 // compiledPolicy 编译后的 CC 策略。
@@ -555,6 +582,39 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	}
 	g.resolver = clientip.NewResolver(g.MaxProxyChain)
 	g.failOpen = g.FailOpen == nil || *g.FailOpen
+	if strings.TrimSpace(g.APIAuthzObjectHMACKeyHex) != "" {
+		key, err := hex.DecodeString(strings.TrimSpace(g.APIAuthzObjectHMACKeyHex))
+		if err != nil || len(key) != 32 {
+			return fmt.Errorf("api_authz_object_hmac_key_hex must be 32-byte hex")
+		}
+		g.APIAuthzObjectHMACKey = key
+	}
+	if len(g.APIAuthzModels) > 0 && len(g.APIAuthzObjectHMACKey) != 32 {
+		return fmt.Errorf("api_authz_object_hmac_key_hex is required when api_authz_models is configured")
+	}
+	if g.APIAuthzPreviousValid != nil {
+		previous := g.APIAuthzPreviousValid
+		key := []byte(nil)
+		if strings.TrimSpace(previous.ObjectHMACKeyHex) != "" {
+			decoded, err := hex.DecodeString(strings.TrimSpace(previous.ObjectHMACKeyHex))
+			if err != nil || len(decoded) != 32 {
+				return fmt.Errorf("api_authz_previous_valid.object_hmac_key_hex must be 32-byte hex")
+			}
+			key = decoded
+		}
+		if len(previous.Models) > 0 && len(key) != 32 {
+			return fmt.Errorf("api_authz_previous_valid.object_hmac_key_hex is required when models are configured")
+		}
+		g.apiAuthzPreviousValid = &detectors.AuthorizationConfig{
+			ApplicationID: g.AppID,
+			Models:        previous.Models, Relations: previous.Relations,
+			RelationIndex: detectors.BuildAuthorizationRelationIndex(previous.Relations),
+			RoleBaselines: previous.RoleBaselines, ObjectRefHMACKey: key,
+			PolicyVersion: previous.PolicyVersion, Stale: previous.Stale,
+			SnapshotExpiresAt: previous.SnapshotExpiresAt,
+		}
+	}
+	g.apiAuthzRelationIndex = detectors.BuildAuthorizationRelationIndex(g.APIAuthzRelations)
 
 	// 可信代理
 	proxies := make([]trustedproxy.Proxy, 0, len(g.TrustedProxies))
@@ -1020,13 +1080,18 @@ func (g *Guard) cleanup() error {
 	if g.accessLog != nil {
 		_ = g.accessLog.close()
 	}
+	var closeErr error
 	if g.apiEvents != nil {
-		_ = g.apiEvents.Close()
+		if g.apiEventsClose != nil {
+			closeErr = g.apiEventsClose()
+		} else {
+			closeErr = g.apiEvents.Close()
+		}
 	}
 	if g.events != nil {
-		return g.events.Close()
+		closeErr = errors.Join(closeErr, g.events.Close())
 	}
-	return nil
+	return closeErr
 }
 
 // parseAPIScanVerificationKey 解码 api_scan_verification.key_hex（hex 解码 + 32 字节校验）：

@@ -61,7 +61,7 @@ func redactMapSecret(m mapT, key string) {
 
 // RedactConfigSecrets 脱敏配置 JSON 中的 guard 段密钥类字段（版本表存储用）：
 // valkey.password、identity_salt、api_scan_verification.key_hex、
-// api_file_signature.key_hex、TLS 会话票据 keys_hex 以 "***" 占位；
+// api_file_signature.key_hex、api_authz_object_hmac_key_hex、TLS 会话票据 keys_hex 以 "***" 占位；
 // 非密钥字段（地址、kid、开关等）原样保留，供版本对比与审计。
 func RedactConfigSecrets(configJSON string) (string, error) {
 	root, err := parseConfigJSON(configJSON)
@@ -71,6 +71,10 @@ func RedactConfigSecrets(configJSON string) (string, error) {
 	walkConfigMaps(root, func(m mapT) {
 		if isGuardHandlerNode(m) {
 			redactMapSecret(m, "identity_salt")
+			redactMapSecret(m, "api_authz_object_hmac_key_hex")
+			if v, ok := m["api_authz_previous_valid"].(mapT); ok {
+				redactMapSecret(v, "object_hmac_key_hex")
+			}
 			if v, ok := m["valkey"].(mapT); ok {
 				redactMapSecret(v, "password")
 			}
@@ -100,15 +104,16 @@ func RedactConfigSecrets(configJSON string) (string, error) {
 
 // configSecretNeeds 记录历史配置中出现的密钥类字段（决定回滚需从当前设置取哪些值）。
 type configSecretNeeds struct {
-	valkey        bool
-	identitySalt  bool
-	scanVerify    bool
-	fileSignature bool
-	tlsTicketKey  bool
+	valkey         bool
+	identitySalt   bool
+	scanVerify     bool
+	fileSignature  bool
+	authzObjectKey bool
+	tlsTicketKey   bool
 }
 
 func (n *configSecretNeeds) any() bool {
-	return n.valkey || n.identitySalt || n.scanVerify || n.fileSignature || n.tlsTicketKey
+	return n.valkey || n.identitySalt || n.scanVerify || n.fileSignature || n.authzObjectKey || n.tlsTicketKey
 }
 
 // reinjectConfigSecrets 回滚重放前将历史配置 JSON 中 guard 段密钥类字段替换为当前设置值
@@ -135,6 +140,14 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 			}
 			if _, ok := m["api_file_signature"]; ok {
 				needs.fileSignature = true
+			}
+			if _, ok := m["api_authz_object_hmac_key_hex"]; ok {
+				needs.authzObjectKey = true
+			}
+			if v, ok := m["api_authz_previous_valid"].(mapT); ok {
+				if _, exists := v["object_hmac_key_hex"]; exists {
+					needs.authzObjectKey = true
+				}
 			}
 		}
 		if isTLSTicketKeySourceNode(m) {
@@ -164,6 +177,9 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 	if needs.fileSignature && (cur.APIFileSignature == nil || cur.APIFileSignature.KeyHex == "") {
 		return "", fmt.Errorf("回滚重注入当前密钥失败：历史配置含 api_file_signature，但当前未配置文件签名密钥")
 	}
+	if needs.authzObjectKey && cur.APIAuthzObjectHMACKeyHex == "" {
+		return "", fmt.Errorf("回滚重注入当前密钥失败：历史配置含 api_authz_object_hmac_key_hex，但当前未配置对象引用 HMAC 密钥")
+	}
 	if needs.tlsTicketKey && cur.TLSSessionTicketKey == "" {
 		return "", fmt.Errorf("回滚重注入当前密钥失败：历史配置含 TLS 会话票据键，但当前 gateway_runtime 设置未配置 tls_session_ticket_key")
 	}
@@ -182,6 +198,14 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 			}
 			if _, ok := m["api_file_signature"]; ok {
 				m["api_file_signature"] = cur.APIFileSignature
+			}
+			if _, ok := m["api_authz_object_hmac_key_hex"]; ok {
+				m["api_authz_object_hmac_key_hex"] = cur.APIAuthzObjectHMACKeyHex
+			}
+			if v, ok := m["api_authz_previous_valid"].(mapT); ok {
+				if _, exists := v["object_hmac_key_hex"]; exists {
+					v["object_hmac_key_hex"] = cur.APIAuthzObjectHMACKeyHex
+				}
 			}
 		}
 		if isTLSTicketKeySourceNode(m) {

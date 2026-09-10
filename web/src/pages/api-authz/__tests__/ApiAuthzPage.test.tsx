@@ -125,6 +125,34 @@ const evaluateResult = {
   evaluated_at: '2026-08-17T01:00:00Z',
 }
 
+const applicationOptions = {
+  items: [{ id: 'app1', code: 'SHOP', name: '商城应用' }],
+  page: 1,
+  page_size: 100,
+  total: 1,
+}
+
+const relationCandidates = [
+  {
+    id: 'candidate1',
+    application_id: 'app1',
+    endpoint_id: 'e1',
+    object_type: 'order',
+    object_ref: 'objref:01abcdef0123456789',
+    principal_id: 'principal:01abcdef0123456789',
+    tenant_id: 'tenant-a',
+    source: 'OBSERVED_ACCESS',
+    status: 'PENDING',
+    source_count: 1,
+    observation_count: 5,
+    confidence_inputs: {},
+    first_seen: '2026-09-08T01:00:00Z',
+    last_seen: '2026-09-09T01:00:00Z',
+    created_at: '2026-09-08T01:00:00Z',
+    updated_at: '2026-09-09T01:00:00Z',
+  },
+]
+
 /** 各用例可覆盖的列表内容 */
 let baselineItems: Record<string, unknown>[]
 let fieldPermItems: Record<string, unknown>[]
@@ -157,6 +185,31 @@ describe('ApiAuthzPage', () => {
         const method = init?.method ?? 'GET'
         if (url.includes('/api-security/authz/evaluate')) {
           return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: evaluateResult }))
+        }
+        if (url.includes('/applications?')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: applicationOptions }))
+        }
+        if (url.includes('/api-security/authz/coverage')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: {
+            application_id: 'app1', pending_candidates: 1, confirmed_relations: 0, decisions: 0,
+            unknown_decisions: 0, observe_violations: 0, verified_identity_rate: 0.8,
+            model_coverage_rate: 0.6, confirmed_relation_rate: 0.4, unknown_rate: 0.1,
+          } }))
+        }
+        if (url.includes('/api-security/authz/relations/candidates')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: {
+            items: relationCandidates, page: 1, page_size: 20, total: 1,
+          } }))
+        }
+        if (url.includes('/api-security/authz/relations')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: {
+            items: [], page: 1, page_size: 20, total: 0,
+          } }))
+        }
+        if (url.includes('/api-security/authz/decisions')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: {
+            items: [], page: 1, page_size: 20, total: 0,
+          } }))
         }
         if (method === 'POST' && url.includes('/api-security/authz/role-baselines/b1/confirm')) {
           confirmBodies.push(JSON.parse(String(init?.body)))
@@ -220,6 +273,23 @@ describe('ApiAuthzPage', () => {
     // 接口列按 endpoint_id 映射为接口键展示
     expect(screen.getByText('POST /v1/orders')).toBeInTheDocument()
     expect(screen.getByText('共 2 条')).toBeInTheDocument()
+  })
+
+  it('对象授权 Tab：按应用展示覆盖率和候选，read 权限不能确认关系', async () => {
+    useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
+    renderPage()
+    fireEvent.click(screen.getByRole('tab', { name: /^对象授权$/ }))
+    const applicationSelect = (await screen.findByText('选择应用后查看对象授权')).closest('.ant-select') as HTMLElement
+    fireEvent.mouseDown(within(applicationSelect).getByRole('combobox'))
+    fireEvent.click(await screen.findByText('商城应用（SHOP）'))
+    expect(await screen.findByText('VERIFIED 身份占比')).toBeInTheDocument()
+    expect(screen.getByText('对象模型覆盖')).toBeInTheDocument()
+    expect(screen.getByText('已确认关系占比')).toBeInTheDocument()
+    expect(screen.getByText('UNKNOWN 率')).toBeInTheDocument()
+    expect(await screen.findByText('order')).toBeInTheDocument()
+    expect(screen.getByText('tenant-a')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^确\s*认$/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^拒\s*绝$/ })).not.toBeInTheDocument()
   })
 
   it('无 manage 权限：不显示「新建基线」与行内编辑/确认/删除', async () => {

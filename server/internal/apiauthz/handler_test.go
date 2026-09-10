@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,7 +19,7 @@ import (
 )
 
 // testPerms 本端点组全部权限点。
-var testPerms = []string{PermAuthzRead, PermAuthzManage}
+var testPerms = []string{PermAuthzRead, PermAuthzManage, PermRelationManage, PermEvidenceRead}
 
 // injectPrincipal 模拟认证链：注入持有全部权限点的主体与 Request ID。
 func injectPrincipal(next http.Handler) http.Handler {
@@ -39,6 +41,26 @@ func noPerms(next http.Handler) http.Handler {
 		p := &authz.Principal{UserID: uuid.New(), Username: "outsider", PermsSet: map[string]bool{}}
 		next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), p)))
 	})
+}
+
+func authzReadOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := &authz.Principal{UserID: uuid.New(), Username: "reader", PermsSet: map[string]bool{PermAuthzRead: true}}
+		next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), p)))
+	})
+}
+
+func principalWithPerms(perms ...string) func(http.Handler) http.Handler {
+	set := map[string]bool{}
+	for _, perm := range perms {
+		set[perm] = true
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p := &authz.Principal{UserID: uuid.New(), Username: "matrix", PermsSet: set}
+			next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), p)))
+		})
+	}
 }
 
 func newTestMux(h *Handler) *http.ServeMux {
@@ -69,18 +91,23 @@ func doJSON(t *testing.T, mux http.Handler, method, url string, body any) *httpt
 // decodeData 解码统一响应的 data 字段。
 func decodeData(t *testing.T, rr *httptest.ResponseRecorder, dst any) {
 	t.Helper()
+	decodeEnvelopeData(t, rr.Body.Bytes(), dst)
+}
+
+func decodeEnvelopeData(t *testing.T, body []byte, dst any) {
+	t.Helper()
 	var env struct {
 		Code string          `json:"code"`
 		Data json.RawMessage `json:"data"`
 	}
-	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
-		t.Fatalf("decode: %v body=%s", err, rr.Body.String())
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
 	}
 	if env.Code != "SUCCESS" {
-		t.Fatalf("code=%s body=%s", env.Code, rr.Body.String())
+		t.Fatalf("code=%s body=%s", env.Code, body)
 	}
 	if err := json.Unmarshal(env.Data, dst); err != nil {
-		t.Fatalf("decode data: %v body=%s", err, rr.Body.String())
+		t.Fatalf("decode data: %v body=%s", err, body)
 	}
 }
 
@@ -102,6 +129,14 @@ func TestPermissionGuard(t *testing.T) {
 		{http.MethodGet, "/api/v1/api-security/authz/field-permissions"},
 		{http.MethodPost, "/api/v1/api-security/authz/field-permissions"},
 		{http.MethodGet, "/api/v1/api-security/authz/evaluate?endpoint_id=" + uuid.NewString() + "&object_id=1"},
+		{http.MethodGet, "/api/v1/api-security/authz/relations/candidates"},
+		{http.MethodPost, "/api/v1/api-security/authz/relations/candidates/" + uuid.NewString() + "/confirm"},
+		{http.MethodPost, "/api/v1/api-security/authz/relations/candidates/" + uuid.NewString() + "/reject"},
+		{http.MethodPost, "/api/v1/api-security/authz/relations"},
+		{http.MethodPost, "/api/v1/api-security/authz/relations/" + uuid.NewString() + "/revoke"},
+		{http.MethodGet, "/api/v1/api-security/authz/decisions"},
+		{http.MethodGet, "/api/v1/api-security/authz/decisions/" + uuid.NewString()},
+		{http.MethodGet, "/api/v1/api-security/authz/coverage"},
 	} {
 		rr := doJSON(t, mux, tc.method, tc.url, map[string]any{})
 		if rr.Code != http.StatusForbidden {
@@ -109,6 +144,514 @@ func TestPermissionGuard(t *testing.T) {
 		}
 	}
 }
+
+func TestRevokeRelationRequiresPermissionAuditsAndPublishes(t *testing.T) {
+	store := NewMemStore()
+	appID := uuid.New()
+	now := time.Now().UTC()
+	rel := &ObjectRelation{ID: uuid.New(), ApplicationID: appID, ObjectType: "invoice", ObjectRef: "objref:test", PrincipalID: "user-1", Relation: RelationOwner, Source: RelationSourceManual, Status: RelationStatusConfirmed, ValidFrom: now.Add(-time.Hour), ConfirmedBy: "seed", ConfirmedAt: now, Reason: "seed", CreatedAt: now, UpdatedAt: now}
+	store.relations[rel.ID] = rel
+	var published int
+	h := NewHandler(store, nil)
+	h.SetPublishFunc(func(context.Context, uuid.UUID, string) { published++ })
+	rr := doJSON(t, newTestMux(h), http.MethodPost, "/api/v1/api-security/authz/relations/"+rel.ID.String()+"/revoke", map[string]any{"reason": "ticket-42"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("revoke status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var got ObjectRelation
+	decodeData(t, rr, &got)
+	if got.Status != RelationStatusRevoked || published != 1 {
+		t.Fatalf("relation=%+v published=%d", got, published)
+	}
+	if _, err := store.RevokeObjectRelation(context.Background(), rel.ID); !errors.Is(err, ErrRelationConflict) {
+		t.Fatalf("second revoke err=%v, want conflict", err)
+	}
+}
+
+func TestExpireRelationsUsesLocalTimeAndIsIdempotent(t *testing.T) {
+	store := NewMemStore()
+	appID := uuid.New()
+	now := time.Now().UTC()
+	for _, until := range []time.Time{now.Add(-time.Second), now.Add(time.Second)} {
+		id := uuid.New()
+		store.relations[id] = &ObjectRelation{ID: id, ApplicationID: appID, ObjectType: "invoice", ObjectRef: "objref:" + id.String(), PrincipalID: "user-1", Relation: RelationOwner, Source: RelationSourceManual, Status: RelationStatusConfirmed, ValidFrom: now.Add(-time.Hour), ValidUntil: &until, ConfirmedBy: "seed", ConfirmedAt: now, Reason: "seed", CreatedAt: now, UpdatedAt: now}
+	}
+	expired, err := store.ExpireObjectRelations(context.Background(), now)
+	if err != nil || len(expired) != 1 || expired[0].Status != RelationStatusExpired {
+		t.Fatalf("expired=%+v err=%v", expired, err)
+	}
+	if expired, err = store.ExpireObjectRelations(context.Background(), now); err != nil || len(expired) != 0 {
+		t.Fatalf("second expiration=%+v err=%v", expired, err)
+	}
+}
+
+func TestAuthorizationPermissionMatrix(t *testing.T) {
+	request := func(t *testing.T, auth func(http.Handler) http.Handler, method, path string, body any) int {
+		t.Helper()
+		mux := http.NewServeMux()
+		RegisterRoutes(mux, auth, NewHandler(NewMemStore(), nil))
+		return doJSON(t, mux, method, path, body).Code
+	}
+
+	// relation_manage is deliberately separate from the generic read/manage
+	// permissions: a reviewer may list candidates but cannot mutate relations.
+	relationCreate := "/api/v1/api-security/authz/relations"
+	candidateConfirm := "/api/v1/api-security/authz/relations/candidates/" + uuid.NewString() + "/confirm"
+	if code := request(t, principalWithPerms(PermAuthzRead), http.MethodPost, relationCreate, map[string]any{}); code != http.StatusForbidden {
+		t.Fatalf("authz_read must not create relation: status=%d", code)
+	}
+	if code := request(t, principalWithPerms(PermAuthzManage), http.MethodPost, candidateConfirm, map[string]any{"relation": "OWNER"}); code != http.StatusForbidden {
+		t.Fatalf("authz_manage must not confirm relation candidate: status=%d", code)
+	}
+	if code := request(t, principalWithPerms(PermRelationManage), http.MethodPost, relationCreate, map[string]any{}); code == http.StatusForbidden {
+		t.Fatalf("relation_manage should pass relation route permission: status=%d", code)
+	}
+
+	// evidence_read alone cannot bypass the generic decision read gate.
+	detail := "/api/v1/api-security/authz/decisions/" + uuid.NewString()
+	if code := request(t, principalWithPerms(PermEvidenceRead), http.MethodGet, detail, nil); code != http.StatusForbidden {
+		t.Fatalf("evidence_read alone must not read decision detail: status=%d", code)
+	}
+	if code := request(t, principalWithPerms(PermAuthzRead), http.MethodGet, detail, nil); code != http.StatusForbidden {
+		t.Fatalf("authz_read alone must not read decision evidence: status=%d", code)
+	}
+}
+
+func TestAuthorizationApplicationFiltersCoverRelationsCandidatesAndCoverage(t *testing.T) {
+	store := NewMemStore()
+	appA, appB := uuid.New(), uuid.New()
+	store.addRelationCandidate(RelationCandidate{ApplicationID: appA, ObjectType: "invoice", ObjectRef: "objref:a"})
+	store.addRelationCandidate(RelationCandidate{ApplicationID: appB, ObjectType: "invoice", ObjectRef: "objref:b"})
+	store.relations[uuid.New()] = &ObjectRelation{
+		ApplicationID: appA, ObjectType: "invoice", ObjectRef: "objref:a", PrincipalID: "principal-a",
+		Relation: RelationOwner, Source: RelationSourceManual, Status: RelationStatusConfirmed,
+		ValidFrom: time.Now().UTC(), CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	store.relations[uuid.New()] = &ObjectRelation{
+		ApplicationID: appB, ObjectType: "invoice", ObjectRef: "objref:b", PrincipalID: "principal-b",
+		Relation: RelationOwner, Source: RelationSourceManual, Status: RelationStatusConfirmed,
+		ValidFrom: time.Now().UTC(), CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	mux := newTestMux(NewHandler(store, nil))
+
+	for _, tc := range []struct {
+		path string
+		want int64
+	}{
+		{"/api/v1/api-security/authz/relations/candidates?application_id=" + appA.String(), 1},
+		{"/api/v1/api-security/authz/relations?application_id=" + appA.String(), 1},
+	} {
+		var page struct {
+			Total int64 `json:"total"`
+		}
+		rr := doJSON(t, mux, http.MethodGet, tc.path, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("filtered list %s status=%d body=%s", tc.path, rr.Code, rr.Body.String())
+		}
+		decodeData(t, rr, &page)
+		if page.Total != tc.want {
+			t.Fatalf("filtered list %s total=%d want %d", tc.path, page.Total, tc.want)
+		}
+	}
+
+	rr := doJSON(t, mux, http.MethodGet, "/api/v1/api-security/authz/coverage?application_id="+appA.String(), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("filtered coverage status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var coverage AuthorizationCoverage
+	decodeData(t, rr, &coverage)
+	if coverage.ApplicationID == nil || *coverage.ApplicationID != appA || coverage.PendingCandidates != 1 || coverage.ConfirmedRelations != 1 {
+		t.Fatalf("filtered coverage=%+v", coverage)
+	}
+}
+
+func TestAuthorizationDecisionDetailPermissionAndApplicationIsolation(t *testing.T) {
+	store := NewMemStore()
+	appA, appB := uuid.New(), uuid.New()
+	d := store.addAuthorizationDecision(AuthorizationDecision{
+		ApplicationID: &appA, EndpointKey: "GET /v1/invoices/{id}", PolicyVersion: "authz-v1",
+		Decision: "OBSERVE_VIOLATION", Checks: []any{"identity", "OWNER"},
+		Evidence: map[string]any{"object_ref": "hmac:abc", "principal": "hmac:p1"},
+	})
+
+	fullMux := newTestMux(NewHandler(store, nil))
+	rr := doJSON(t, fullMux, http.MethodGet,
+		"/api/v1/api-security/authz/decisions/"+d.ID.String()+"?application_id="+appA.String(), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var got AuthorizationDecision
+	decodeData(t, rr, &got)
+	if got.ID != d.ID || got.ApplicationID == nil || *got.ApplicationID != appA || got.Evidence["object_ref"] != "hmac:abc" {
+		t.Fatalf("detail=%+v", got)
+	}
+	var fullPage struct {
+		Items []AuthorizationDecision `json:"items"`
+		Total int64                   `json:"total"`
+	}
+	rr = doJSON(t, fullMux, http.MethodGet,
+		"/api/v1/api-security/authz/decisions?application_id="+appA.String(), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("full list status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	decodeData(t, rr, &fullPage)
+	if fullPage.Total != 1 || len(fullPage.Items) != 1 || fullPage.Items[0].Evidence["principal"] != "hmac:p1" {
+		t.Fatalf("full list=%+v", fullPage)
+	}
+
+	readOnlyMux := http.NewServeMux()
+	RegisterRoutes(readOnlyMux, authzReadOnly, NewHandler(store, nil))
+	var redactedPage struct {
+		Items []AuthorizationDecision `json:"items"`
+		Total int64                   `json:"total"`
+	}
+	rr = doJSON(t, readOnlyMux, http.MethodGet,
+		"/api/v1/api-security/authz/decisions?application_id="+appA.String(), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("read-only list status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	decodeData(t, rr, &redactedPage)
+	if redactedPage.Total != 1 || len(redactedPage.Items) != 1 || redactedPage.Items[0].Evidence != nil {
+		t.Fatalf("read-only list=%+v", redactedPage)
+	}
+	rr = doJSON(t, readOnlyMux, http.MethodGet, "/api/v1/api-security/authz/decisions/"+d.ID.String(), nil)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("without evidence_read status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// A caller asking for another application must not learn whether the row exists.
+	rr = doJSON(t, fullMux, http.MethodGet,
+		"/api/v1/api-security/authz/decisions/"+d.ID.String()+"?application_id="+appB.String(), nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("cross-application status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	rr = doJSON(t, fullMux, http.MethodGet, "/api/v1/api-security/authz/decisions/"+uuid.NewString(), nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("unknown decision status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestAuthorizationHTTPPermissionAndApplicationIsolation exercises the
+// management routes through a real HTTP server/client boundary. The in-process
+// route tests above catch handler behavior; this test also verifies that
+// middleware, path matching, JSON encoding, and application scoping remain
+// intact after crossing the HTTP boundary.
+func TestAuthorizationHTTPPermissionAndApplicationIsolation(t *testing.T) {
+	store := NewMemStore()
+	appA, appB := uuid.New(), uuid.New()
+	principalID := "principal-http-a"
+	candidate := store.addRelationCandidate(RelationCandidate{
+		ApplicationID: appA, ObjectType: "invoice", ObjectRef: "objref:http-a",
+		PrincipalID: &principalID, Source: CandidateSourceObserved,
+	})
+	candidateB := store.addRelationCandidate(RelationCandidate{
+		ApplicationID: appB, ObjectType: "invoice", ObjectRef: "objref:http-b",
+		PrincipalID: &principalID, Source: CandidateSourceObserved,
+	})
+	decision := store.addAuthorizationDecision(AuthorizationDecision{
+		ApplicationID: &appA, EndpointKey: "GET /v1/invoices/{id}", PolicyVersion: "authz-v1",
+		Decision: "OBSERVE_VIOLATION", Checks: []any{"BOLA"},
+		Evidence: map[string]any{"object_ref": "hmac:http-object"},
+	})
+
+	newServer := func(auth func(http.Handler) http.Handler) *httptest.Server {
+		mux := http.NewServeMux()
+		RegisterRoutes(mux, auth, NewHandler(store, nil))
+		return httptest.NewServer(mux)
+	}
+	request := func(t *testing.T, client *http.Client, baseURL, method, path string, body any) (int, []byte) {
+		t.Helper()
+		var payload io.Reader
+		if body != nil {
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload = bytes.NewReader(raw)
+		}
+		req, err := http.NewRequest(method, baseURL+path, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		responseBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, responseBody
+	}
+
+	fullServer := newServer(injectPrincipal)
+	defer fullServer.Close()
+	client := fullServer.Client()
+	status, body := request(t, client, fullServer.URL, http.MethodGet,
+		"/api/v1/api-security/authz/relations/candidates?application_id="+appA.String(), nil)
+	if status != http.StatusOK {
+		t.Fatalf("candidate list status=%d body=%s", status, body)
+	}
+	var candidates struct {
+		Total int64 `json:"total"`
+	}
+	decodeEnvelopeData(t, body, &candidates)
+	if candidates.Total != 1 {
+		t.Fatalf("candidate list total=%d want 1", candidates.Total)
+	}
+
+	status, body = request(t, client, fullServer.URL, http.MethodPost,
+		"/api/v1/api-security/authz/relations/candidates/"+candidate.ID.String()+"/confirm",
+		map[string]any{"relation": "OWNER", "reason": "http boundary review"})
+	if status != http.StatusOK {
+		t.Fatalf("candidate confirm status=%d body=%s", status, body)
+	}
+	status, body = request(t, client, fullServer.URL, http.MethodGet,
+		"/api/v1/api-security/authz/relations?application_id="+appA.String(), nil)
+	if status != http.StatusOK {
+		t.Fatalf("relation list status=%d body=%s", status, body)
+	}
+	var relations struct {
+		Total int64 `json:"total"`
+	}
+	decodeEnvelopeData(t, body, &relations)
+	if relations.Total != 1 {
+		t.Fatalf("relation list total=%d want 1", relations.Total)
+	}
+
+	status, body = request(t, client, fullServer.URL, http.MethodGet,
+		"/api/v1/api-security/authz/decisions/"+decision.ID.String()+"?application_id="+appA.String(), nil)
+	if status != http.StatusOK || !bytes.Contains(body, []byte(`"object_ref":"hmac:http-object"`)) {
+		t.Fatalf("same-application detail status=%d body=%s", status, body)
+	}
+	status, body = request(t, client, fullServer.URL, http.MethodGet,
+		"/api/v1/api-security/authz/decisions/"+decision.ID.String()+"?application_id="+appB.String(), nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("cross-application detail status=%d body=%s", status, body)
+	}
+	relationServer := newServer(principalWithPerms(PermRelationManage))
+	defer relationServer.Close()
+	status, body = request(t, relationServer.Client(), relationServer.URL, http.MethodPost,
+		"/api/v1/api-security/authz/relations/candidates/"+candidateB.ID.String()+"/confirm",
+		map[string]any{"relation": "OWNER", "reason": "relation manager review"})
+	if status != http.StatusOK {
+		t.Fatalf("relation_manage candidate confirm status=%d body=%s", status, body)
+	}
+
+	readOnlyServer := newServer(authzReadOnly)
+	defer readOnlyServer.Close()
+	status, body = request(t, readOnlyServer.Client(), readOnlyServer.URL, http.MethodGet,
+		"/api/v1/api-security/authz/decisions?application_id="+appA.String(), nil)
+	if status != http.StatusOK {
+		t.Fatalf("read-only decision list status=%d body=%s", status, body)
+	}
+	var readOnlyPage struct {
+		Items []AuthorizationDecision `json:"items"`
+	}
+	decodeEnvelopeData(t, body, &readOnlyPage)
+	if len(readOnlyPage.Items) != 1 || readOnlyPage.Items[0].Evidence != nil {
+		t.Fatalf("read-only decision list=%+v", readOnlyPage)
+	}
+	status, body = request(t, readOnlyServer.Client(), readOnlyServer.URL, http.MethodGet,
+		"/api/v1/api-security/authz/decisions/"+decision.ID.String(), nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("read-only decision detail status=%d body=%s", status, body)
+	}
+
+	readServer := newServer(principalWithPerms(PermAuthzRead))
+	defer readServer.Close()
+	status, body = request(t, readServer.Client(), readServer.URL, http.MethodPost,
+		"/api/v1/api-security/authz/relations", map[string]any{})
+	if status != http.StatusForbidden {
+		t.Fatalf("authz_read relation create status=%d body=%s", status, body)
+	}
+	manageServer := newServer(principalWithPerms(PermAuthzManage))
+	defer manageServer.Close()
+	status, body = request(t, manageServer.Client(), manageServer.URL, http.MethodPost,
+		"/api/v1/api-security/authz/relations/candidates/"+uuid.NewString()+"/confirm",
+		map[string]any{"relation": "OWNER", "reason": "must be forbidden"})
+	if status != http.StatusForbidden {
+		t.Fatalf("authz_manage candidate confirm status=%d body=%s", status, body)
+	}
+}
+
+func TestTrustedRelationWorkflow(t *testing.T) {
+	store := NewMemStore()
+	appID := uuid.New()
+	legacy := store.addRelationCandidate(RelationCandidate{
+		ApplicationID: appID, ObjectType: "invoice", ObjectRef: "objref:legacy",
+		LegacyIdentityFingerprint: strPtr("old-fingerprint"), Source: CandidateSourceObserved,
+	})
+	principal := "principal-hmac-a"
+	verified := store.addRelationCandidate(RelationCandidate{
+		ApplicationID: appID, ObjectType: "invoice", ObjectRef: "objref:verified",
+		PrincipalID: &principal, Source: CandidateSourceObserved,
+	})
+	mux := newTestMux(NewHandler(store, nil))
+
+	rr := doJSON(t, mux, http.MethodPost, "/api/v1/api-security/authz/relations/candidates/"+legacy.ID.String()+"/confirm",
+		map[string]any{"relation": "OWNER", "reason": "reviewed evidence"})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("legacy confirm status=%d want 409 body=%s", rr.Code, rr.Body.String())
+	}
+
+	rr = doJSON(t, mux, http.MethodPost, "/api/v1/api-security/authz/relations/candidates/"+verified.ID.String()+"/confirm",
+		map[string]any{"relation": "OWNER", "reason": "verified create binding"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("verified confirm status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var rel ObjectRelation
+	decodeData(t, rr, &rel)
+	if rel.PrincipalID != principal || rel.Status != RelationStatusConfirmed || rel.Relation != RelationOwner {
+		t.Fatalf("relation=%+v", rel)
+	}
+
+	// 并发/重复确认必须冲突，不得重复创建 confirmed 关系。
+	rr = doJSON(t, mux, http.MethodPost, "/api/v1/api-security/authz/relations/candidates/"+verified.ID.String()+"/confirm",
+		map[string]any{"relation": "OWNER", "reason": "retry"})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("repeat confirm status=%d want 409", rr.Code)
+	}
+
+	var page struct {
+		Items []ObjectRelation `json:"items"`
+		Total int64            `json:"total"`
+	}
+	rr = doJSON(t, mux, http.MethodGet, "/api/v1/api-security/authz/relations?application_id="+appID.String(), nil)
+	decodeData(t, rr, &page)
+	if page.Total != 1 || len(page.Items) != 1 {
+		t.Fatalf("relations=%+v", page)
+	}
+}
+
+func TestTrustedRelationConfirmationTriggersConfiguredPublish(t *testing.T) {
+	store := NewMemStore()
+	appID := uuid.New()
+	legacy := store.addRelationCandidate(RelationCandidate{
+		ApplicationID: appID, ObjectType: "invoice", ObjectRef: "objref:legacy-publish",
+		LegacyIdentityFingerprint: strPtr("legacy-fingerprint"), Source: CandidateSourceObserved,
+	})
+	principal := "principal-hmac-publish"
+	verified := store.addRelationCandidate(RelationCandidate{
+		ApplicationID: appID, ObjectType: "invoice", ObjectRef: "objref:verified-publish",
+		PrincipalID: &principal, Source: CandidateSourceObserved,
+	})
+
+	var calls int
+	var callbackContext context.Context
+	var callbackUID uuid.UUID
+	var callbackRequestID string
+	h := NewHandler(store, nil)
+	h.SetPublishFunc(func(ctx context.Context, uid uuid.UUID, requestID string) {
+		calls++
+		callbackContext = ctx
+		callbackUID = uid
+		callbackRequestID = requestID
+	})
+	mux := newTestMux(h)
+
+	rr := doJSON(t, mux, http.MethodPost, "/api/v1/api-security/authz/relations/candidates/"+legacy.ID.String()+"/confirm",
+		map[string]any{"relation": "OWNER", "reason": "legacy must remain unconfirmed"})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("legacy confirm status=%d want 409 body=%s", rr.Code, rr.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("publish calls after rejected confirmation=%d want 0", calls)
+	}
+
+	rr = doJSON(t, mux, http.MethodPost, "/api/v1/api-security/authz/relations/candidates/"+verified.ID.String()+"/confirm",
+		map[string]any{"relation": "OWNER", "reason": "verified binding reviewed"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("verified confirm status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("publish calls after confirmed relation=%d want 1", calls)
+	}
+	if callbackContext == nil || callbackUID == uuid.Nil || callbackRequestID != "test-rid" {
+		t.Fatalf("publish callback context=%v uid=%s request_id=%q", callbackContext, callbackUID, callbackRequestID)
+	}
+}
+
+func TestManualRelationCreationTriggersConfiguredPublish(t *testing.T) {
+	store := NewMemStore()
+	var calls int
+	var callbackUID uuid.UUID
+	var callbackRequestID string
+	h := NewHandler(store, nil)
+	h.SetPublishFunc(func(_ context.Context, uid uuid.UUID, requestID string) {
+		calls++
+		callbackUID = uid
+		callbackRequestID = requestID
+	})
+	mux := newTestMux(h)
+
+	appID := uuid.New()
+	principalID := "principal-manual-publish"
+	rr := doJSON(t, mux, http.MethodPost, "/api/v1/api-security/authz/relations", map[string]any{
+		"application_id": appID.String(), "object_type": "invoice", "object_ref": "objref:manual-publish",
+		"principal_id": principalID, "relation": "OWNER", "source": "MANUAL", "reason": "approved ticket",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("manual relation status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("publish calls after manual relation=%d want 1", calls)
+	}
+	if callbackUID == uuid.Nil || callbackRequestID != "test-rid" {
+		t.Fatalf("publish callback uid=%s request_id=%q", callbackUID, callbackRequestID)
+	}
+
+	// 校验失败不得触发发布，也不得留下关系。
+	rr = doJSON(t, mux, http.MethodPost, "/api/v1/api-security/authz/relations", map[string]any{
+		"application_id": appID.String(), "object_type": "invoice", "object_ref": "raw-id",
+		"principal_id": principalID, "relation": "OWNER", "source": "MANUAL", "reason": "invalid ref",
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid manual relation status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("publish calls after rejected manual relation=%d want 1", calls)
+	}
+}
+
+func TestManualRelationRejectsReservedKindsAndRawRefs(t *testing.T) {
+	store := NewMemStore()
+	mux := newTestMux(NewHandler(store, nil))
+	body := map[string]any{
+		"application_id": uuid.NewString(), "object_type": "invoice", "object_ref": "12345",
+		"principal_id": "principal-a", "relation": "SHARED_WITH", "source": "MANUAL", "reason": "ticket-1",
+	}
+	rr := doJSON(t, mux, http.MethodPost, "/api/v1/api-security/authz/relations", body)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("reserved/raw relation status=%d want 400 body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestMemStoreRelationDefaultsValidFromBeforeValidityCheck(t *testing.T) {
+	store := NewMemStore()
+	validUntil := time.Now().UTC().Add(time.Minute)
+	relation := &ObjectRelation{
+		ApplicationID: uuid.New(), ObjectType: "invoice", ObjectRef: "objref:validity",
+		PrincipalID: "principal-a", Relation: RelationOwner, Source: RelationSourceManual,
+		Reason: "ticket-1", ValidUntil: &validUntil,
+	}
+
+	if err := store.CreateObjectRelation(context.Background(), relation); err != nil {
+		t.Fatalf("create relation: %v", err)
+	}
+	if relation.ValidFrom.IsZero() {
+		t.Fatal("valid_from must be defaulted before validation")
+	}
+	if relation.ValidUntil == nil || !relation.ValidUntil.After(relation.ValidFrom) {
+		t.Fatalf("validity window=%+v", relation)
+	}
+}
+
+func strPtr(v string) *string { return &v }
 
 // TestBaselineCRUD 创建（候选）→ 读取 → 列表过滤 → 编辑 → 确认 → 删除；冲突与校验。
 func TestBaselineCRUD(t *testing.T) {

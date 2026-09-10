@@ -193,6 +193,7 @@ func (l *Logger) Emit(e Event) error {
 		e.JWT.KeysetVersion = sanitize(e.JWT.KeysetVersion, maxVerLen)
 		e.JWT.VerifiedPrincipalID = sanitize(e.JWT.VerifiedPrincipalID, maxVerLen)
 		e.JWT.VerifiedTenantID = sanitize(e.JWT.VerifiedTenantID, maxVerLen)
+		e.JWT.VerifiedIdentityType = sanitize(e.JWT.VerifiedIdentityType, 32)
 		e.JWT.EvaluatedAt = sanitize(e.JWT.EvaluatedAt, 64)
 	}
 	if e.Bot != nil {

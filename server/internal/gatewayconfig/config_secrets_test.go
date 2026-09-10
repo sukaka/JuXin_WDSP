@@ -131,11 +131,22 @@ func TestRedactConfigSecretsWithoutGuard(t *testing.T) {
 
 // 回滚重注入：脱敏快照中的占位统一替换为当前设置值（两条回滚路径同口径的核心）。
 func TestReinjectConfigSecretsRedactedSnapshot(t *testing.T) {
-	stored, err := RedactConfigSecrets(generateGuardJSON(t, secretTestGuardConfig("old")))
+	oldCfg := secretTestGuardConfig("old")
+	oldCfg.APIAuthzObjectHMACKeyHex = strings.Repeat("a", 64)
+	oldCfg.APIAuthzModels = []GuardAuthzObjectModel{{ApplicationID: "app-1", EndpointKey: "GET /v1/orders/{id}", ObjectType: "ORDER"}}
+	oldCfg.APIAuthzPreviousValid = &GuardAuthzSnapshot{
+		Models:           oldCfg.APIAuthzModels,
+		ObjectHMACKeyHex: oldCfg.APIAuthzObjectHMACKeyHex,
+		PolicyVersion:    "previous-v1",
+	}
+	stored, err := RedactConfigSecrets(generateGuardJSON(t, oldCfg))
 	if err != nil {
 		t.Fatalf("RedactConfigSecrets: %v", err)
 	}
-	fake := &fakeGuardProvider{buildCfg: secretTestGuardConfig("new")}
+	newCfg := secretTestGuardConfig("new")
+	newCfg.APIAuthzObjectHMACKeyHex = strings.Repeat("b", 64)
+	newCfg.APIAuthzModels = oldCfg.APIAuthzModels
+	fake := &fakeGuardProvider{buildCfg: newCfg}
 	p := &Publisher{guard: fake}
 	out, err := p.reinjectConfigSecrets(context.Background(), stored)
 	if err != nil {
@@ -153,6 +164,10 @@ func TestReinjectConfigSecretsRedactedSnapshot(t *testing.T) {
 	}
 	if strings.Contains(out, `"***"`) {
 		t.Error("重注入产物不得残留脱敏占位")
+	}
+	if strings.Contains(out, oldCfg.APIAuthzObjectHMACKeyHex) ||
+		!strings.Contains(out, newCfg.APIAuthzObjectHMACKeyHex) {
+		t.Error("AUTHZ 当前与上一快照均必须使用当前对象引用 HMAC 密钥")
 	}
 	if !strings.Contains(out, "new-kid") {
 		t.Error("文件签名 kid 应随当前设置重注入")

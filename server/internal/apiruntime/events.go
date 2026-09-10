@@ -3,8 +3,10 @@ package apiruntime
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,10 +46,18 @@ func (s *Store) SavePrimary(ctx context.Context, ev *PrimaryEvent) error {
 	if ev == nil {
 		return nil
 	}
+	if ev.AuthzDecision != nil {
+		if _, err := validateAuthorizationDecision(ev.AuthzDecision); err != nil {
+			return err
+		}
+	}
 	if ev.ID == "" {
 		ev.ID = uuid.New().String()
 	}
-	raw, _ := json.Marshal(ev.Details)
+	raw, err := json.Marshal(ev.Details)
+	if err != nil {
+		return fmt.Errorf("marshal event details: %w", err)
+	}
 	id, err := uuid.Parse(ev.ID)
 	if err != nil {
 		id = uuid.New()
@@ -96,9 +106,90 @@ WHERE request_id = NULLIF($1::varchar, '')
            AND COALESCE(final_decision->>'security_action', 'NONE') NOT IN ('BLOCK','TEMP_BLOCK','RATE_LIMIT','MASK_RESPONSE','CHALLENGE')
            AND $3 IN ('COMPLETED','ABORTED')))`,
 			ev.RequestID, fdRaw, fdCompletion)
+		if err != nil {
+			return err
+		}
+	}
+	return s.saveAuthorizationDecision(ctx, ev)
+}
+
+func (s *Store) saveAuthorizationDecision(ctx context.Context, ev *PrimaryEvent) error {
+	decision := ev.AuthzDecision
+	if decision == nil {
+		return nil
+	}
+	decisionID, err := validateAuthorizationDecision(decision)
+	if err != nil {
 		return err
 	}
-	return nil
+	checks, err := json.Marshal(decision.Checks)
+	if err != nil {
+		return fmt.Errorf("marshal authz_decision checks: %w", err)
+	}
+	var applicationID any
+	if ev.ApplicationID != "" {
+		parsed, parseErr := uuid.Parse(ev.ApplicationID)
+		if parseErr != nil {
+			return fmt.Errorf("authz_decision.application_id: invalid UUID: %w", parseErr)
+		}
+		applicationID = parsed
+	}
+	_, err = s.db.Exec(ctx, `INSERT INTO api_authorization_decisions
+		(decision_id, application_id, endpoint_key, policy_version, decision, checks, evidence, occurred_at)
+		VALUES ($1,$2,$3,$4,$5,$6,'{}'::jsonb,$7)
+		ON CONFLICT (decision_id) DO NOTHING`, decisionID, applicationID, ev.EndpointKey,
+		decision.PolicyVersion, decision.Decision, checks, ev.OccurredAt)
+	return err
+}
+
+const authzObjectRefHexLen = 64
+
+// validateAuthorizationDecision closes the server-side event boundary over the
+// same redacted contract enforced by the gateway logger. Runtime events can be
+// forwarded by an older or independently deployed collector, so relying only on
+// gateway-side sanitization would allow raw object IDs or role claims to reach
+// the audit table. Validation happens before the primary event INSERT to avoid
+// leaving a partial event behind when a producer violates the contract.
+func validateAuthorizationDecision(decision *events.AuthorizationDecisionGroup) (uuid.UUID, error) {
+	decisionID, err := uuid.Parse(decision.DecisionID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("authz_decision.decision_id: invalid UUID: %w", err)
+	}
+	if !validAuthorizationDecision(decision.Decision) {
+		return uuid.Nil, fmt.Errorf("authz_decision.decision: invalid value %q", decision.Decision)
+	}
+	if len(decision.Checks) > 32 {
+		return uuid.Nil, fmt.Errorf("authz_decision.checks: too many checks (%d > 32)", len(decision.Checks))
+	}
+	for i, check := range decision.Checks {
+		if !validAuthorizationDecision(check.Decision) {
+			return uuid.Nil, fmt.Errorf("authz_decision.checks[%d].decision: invalid value %q", i, check.Decision)
+		}
+		if check.Role != "" {
+			return uuid.Nil, fmt.Errorf("authz_decision.checks[%d].role: raw role claims are not allowed", i)
+		}
+		if check.ObjectRef != "" && !validAuthorizationObjectRef(check.ObjectRef) {
+			return uuid.Nil, fmt.Errorf("authz_decision.checks[%d].object_ref: must be a redacted HMAC reference", i)
+		}
+	}
+	return decisionID, nil
+}
+
+func validAuthorizationDecision(decision events.AuthorizationDecision) bool {
+	switch decision {
+	case events.AuthorizationAllow, events.AuthorizationObserveViolation, events.AuthorizationUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func validAuthorizationObjectRef(ref string) bool {
+	if !strings.HasPrefix(ref, "objref:") || len(ref) != len("objref:")+authzObjectRefHexLen {
+		return false
+	}
+	_, err := hex.DecodeString(ref[len("objref:"):])
+	return err == nil
 }
 
 // nullIfEmpty 空串转 NULL（可空审计列：未上报与空值语义一致，统一落 NULL）。

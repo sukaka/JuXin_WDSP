@@ -69,12 +69,46 @@ class TestAggregatePerf(unittest.TestCase):
         agg = aggregate_perf(
             [
                 {"offered": 100, "completed": 100, "latency_ms_samples": [10.0] * 100},
-                {"offered": 100, "completed": 100, "latency_ms_samples": [1000.0] * 100},
+                {"offered": 100, "completed": 100, "requests_per_second": 100.0,
+                 "latency_ms_samples": [1000.0] * 100},
             ]
         )
         self.assertEqual(agg["p99_ms"], 1000.0)
         self.assertEqual(agg["repeats"], 2)
         self.assertEqual(agg["offered"], 200)
+
+    def test_throughput_quantiles_use_raw_points(self):
+        agg = aggregate_perf([
+            {"requests_per_second": 100.0},
+            {"requests_per_second": 300.0},
+            {"requests_per_second": 200.0},
+        ])
+        self.assertEqual(agg["throughput_rps"], {"p50": 200.0, "p95": 300.0, "p99": 300.0})
+        self.assertEqual(agg["throughput_evidence"]["scope"], "unknown")
+
+    def test_throughput_evidence_keeps_end_to_end_loadgen_source(self):
+        agg = aggregate_perf([
+            {
+                "requests_per_second": 100.0,
+                "throughput_evidence": {
+                    "source": "ab.requests_per_second",
+                    "scope": "end_to_end_loadgen",
+                },
+            },
+            {
+                "requests_per_second": 200.0,
+                "throughput_evidence": {
+                    "source": "ab.requests_per_second",
+                    "scope": "end_to_end_loadgen",
+                },
+            },
+        ])
+        self.assertEqual(agg["throughput_evidence"], {
+            "status": "MEASURED",
+            "scope": "end_to_end_loadgen",
+            "sample_count": 2,
+            "sources": ["ab.requests_per_second"],
+        })
 
     def test_unexpected_error_rate(self):
         agg = aggregate_perf(
@@ -153,6 +187,7 @@ class TestReportRendering(RunDirFixture):
         self.assertIn("| waf_protect | BLOCKED |", md)
         self.assertIn("| api_observe | NOT_RUN |", md)
         self.assertIn("combined_protect", md)
+        self.assertIn("吞吐P50/P95/P99(RPS)", md)
         # 72h 长稳缺失必须显示 NOT_RUN
         self.assertIn("NOT_RUN（无 soak/ 记录", md)
 
@@ -188,6 +223,61 @@ class TestReportRendering(RunDirFixture):
         self.add_status("BENCH-05", "PASS")
         run = load_run(self.run, self.repo)
         self.assertEqual(render_markdown(run), render_markdown(run))
+
+    def test_resource_peak_is_reported_as_container_memory(self):
+        self.add_status("BENCH-05", "PASS")
+        _write(self.run / "soak" / "proxy.json", {
+            "status": "BLOCKED", "reason": "RSS fixture omitted", "duration_minutes": 30,
+        })
+        _write(self.run / "resources" / "proxy.json", {
+            "source": "docker_stats",
+            "platform_note": "Docker Desktop VM scope",
+            "records": [{"mem_usage_bytes": 100}, {"mem_usage_bytes": 250}],
+        })
+        run = load_run(self.run, self.repo)
+        md = render_markdown(run)
+        self.assertIn("容器内存峰值 250 bytes", md)
+        self.assertNotIn("RSS 峰值 250", md)
+
+    def test_pass_soak_requires_and_reports_process_rss(self):
+        self.add_status("BENCH-05", "PASS")
+        _write(self.run / "soak" / "proxy.json", {
+            "status": "PASS", "duration_minutes": 30,
+            "started_at": "2026-09-10T00:00:00Z", "ended_at": "2026-09-10T00:30:00Z",
+        })
+        _write(self.run / "resources" / "proxy.json", {
+            "source": "docker_stats", "records": [{"mem_usage_bytes": 100}],
+        })
+        _write(self.run / "resources" / "proxy-rss.json", {
+            "source": "proc_rss", "records": [{"rss_bytes": 200}, {"rss_bytes": 400}],
+        })
+        run = load_run(self.run, self.repo)
+        self.assertFalse(run["integrity_errors"])
+        md = render_markdown(run)
+        self.assertIn("RSS 峰值 400 bytes", md)
+
+    def test_pass_recovery_requires_explicit_catchup_evidence(self):
+        self.add_status("BENCH-05", "PASS")
+        _write(self.run / "recovery.json", {
+            "status": "PASS", "scenario": "gateway_restart",
+            "fault_injected_at": "2026-09-10T00:00:00Z",
+            "gateway_healthy_at": "2026-09-10T00:00:01Z",
+            "recovery_time_seconds": 1, "limit_seconds": 30,
+            "catchup_verified": False,
+        })
+        run = load_run(self.run, self.repo)
+        self.assertTrue(any("catchup_verified=true" in e for e in run["integrity_errors"]))
+
+    def test_command_scoped_formal_block_is_visible(self):
+        self.add_status("BENCH-11", "BLOCKED", reason="formal env missing")
+        self.add_status("matrix:formal_environment", "BLOCKED", reason="formal env missing")
+        self.add_status("soak:formal_environment", "BLOCKED", reason="formal env missing")
+        self.add_status("recovery:formal_environment", "BLOCKED", reason="formal env missing")
+        run = load_run(self.run, self.repo)
+        md = render_markdown(run)
+        self.assertIn("| proxy | BLOCKED |", md)
+        self.assertIn("- 长稳: BLOCKED（formal env missing）", md)
+        self.assertIn("- 恢复: BLOCKED（formal env missing）", md)
 
 
 class TestJwtPairRendering(RunDirFixture):

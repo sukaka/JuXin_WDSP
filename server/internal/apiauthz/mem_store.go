@@ -28,26 +28,32 @@ type memRuntimeEvent struct {
 
 // MemStore 进程内仓储。
 type MemStore struct {
-	mu           sync.Mutex
-	baselines    map[uuid.UUID]*RoleBaseline
-	fieldPerms   map[uuid.UUID]*FieldPermission
-	ownership    map[string]*ObjectOwnership // endpoint|identity|type|object → 权属行
-	objectModels map[string]*ObjectModel     // endpoint|segment → 对象模型行
-	seq          map[uuid.UUID]int           // 插入序号（模拟 created_at 稳定排序）
-	seqNext      int
-	endpoints    map[string]*memEndpoint // endpoint_key → 端点（sweep 解析/评估端点存在性）
-	events       []memRuntimeEvent       // 运行时事件（sweep/评估数据源）
+	mu                 sync.Mutex
+	baselines          map[uuid.UUID]*RoleBaseline
+	fieldPerms         map[uuid.UUID]*FieldPermission
+	ownership          map[string]*ObjectOwnership // endpoint|identity|type|object → 权属行
+	objectModels       map[string]*ObjectModel     // endpoint|segment → 对象模型行
+	relationCandidates map[uuid.UUID]*RelationCandidate
+	relations          map[uuid.UUID]*ObjectRelation
+	decisions          map[uuid.UUID]*AuthorizationDecision
+	seq                map[uuid.UUID]int // 插入序号（模拟 created_at 稳定排序）
+	seqNext            int
+	endpoints          map[string]*memEndpoint // endpoint_key → 端点（sweep 解析/评估端点存在性）
+	events             []memRuntimeEvent       // 运行时事件（sweep/评估数据源）
 }
 
 // NewMemStore 创建空内存仓储。
 func NewMemStore() *MemStore {
 	return &MemStore{
-		baselines:    map[uuid.UUID]*RoleBaseline{},
-		fieldPerms:   map[uuid.UUID]*FieldPermission{},
-		ownership:    map[string]*ObjectOwnership{},
-		objectModels: map[string]*ObjectModel{},
-		seq:          map[uuid.UUID]int{},
-		endpoints:    map[string]*memEndpoint{},
+		baselines:          map[uuid.UUID]*RoleBaseline{},
+		fieldPerms:         map[uuid.UUID]*FieldPermission{},
+		ownership:          map[string]*ObjectOwnership{},
+		objectModels:       map[string]*ObjectModel{},
+		relationCandidates: map[uuid.UUID]*RelationCandidate{},
+		relations:          map[uuid.UUID]*ObjectRelation{},
+		decisions:          map[uuid.UUID]*AuthorizationDecision{},
+		seq:                map[uuid.UUID]int{},
+		endpoints:          map[string]*memEndpoint{},
 	}
 }
 

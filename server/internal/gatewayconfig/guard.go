@@ -4,6 +4,7 @@ package gatewayconfig
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/jiuzhang-waf/server/internal/applications"
 )
@@ -114,6 +115,69 @@ type GuardRoleBaseline struct {
 	Method      string `json:"method"`       // HTTP 方法（大写）
 	Action      string `json:"action"`       // 业务动作（READ/WRITE/DELETE/EXPORT…）
 	Allowed     bool   `json:"allowed"`      // 允许/显式拒绝
+}
+
+// GuardAuthzObjectIdentifier describes the single request location used to
+// extract an authorization object identifier.
+type GuardAuthzObjectIdentifier struct {
+	Location string `json:"location"`
+	Name     string `json:"name"`
+	Primary  bool   `json:"primary,omitempty"`
+}
+
+// GuardAuthzObjectModel is the publishable OWNER-only object model consumed by
+// the gateway's OBSERVE authorization evaluator.
+type GuardAuthzObjectModel struct {
+	ApplicationID          string                       `json:"application_id"`
+	EndpointKey            string                       `json:"endpoint_key"`
+	Method                 string                       `json:"method,omitempty"`
+	PathTemplate           string                       `json:"path_template,omitempty"`
+	ObjectType             string                       `json:"object_type"`
+	Identifiers            []GuardAuthzObjectIdentifier `json:"identifiers"`
+	RequiredRelation       string                       `json:"required_relation"`
+	OwnerExclusive         bool                         `json:"owner_exclusive"`
+	Publishable            bool                         `json:"publishable"`
+	UniqueEndpointTemplate bool                         `json:"unique_endpoint_template"`
+	PolicyVersion          string                       `json:"policy_version,omitempty"`
+	ModelVersion           string                       `json:"model_version,omitempty"`
+	SnapshotExpiresAt      *time.Time                   `json:"snapshot_expires_at,omitempty"`
+	Stale                  bool                         `json:"stale,omitempty"`
+}
+
+type GuardAuthzObjectRelation struct {
+	ApplicationID string     `json:"application_id"`
+	PrincipalID   string     `json:"principal_id"`
+	ObjectType    string     `json:"object_type"`
+	ObjectRef     string     `json:"object_ref"`
+	Relation      string     `json:"relation"`
+	Status        string     `json:"status"`
+	TenantID      string     `json:"tenant_id,omitempty"`
+	ValidFrom     *time.Time `json:"valid_from,omitempty"`
+	ValidUntil    *time.Time `json:"valid_until,omitempty"`
+}
+
+type GuardAuthzRoleBaseline struct {
+	ApplicationID string `json:"application_id"`
+	EndpointKey   string `json:"endpoint_key"`
+	Method        string `json:"method,omitempty"`
+	Role          string `json:"role"`
+	Action        string `json:"action,omitempty"`
+	Allowed       bool   `json:"allowed"`
+	Confirmed     bool   `json:"confirmed"`
+}
+
+// GuardAuthzSnapshot is an immutable authorization snapshot. PreviousValid
+// is supplied by the publish coordinator when the current snapshot is known
+// to be stale; it is deliberately explicit because this config package does
+// not persist gateway runtime state by itself.
+type GuardAuthzSnapshot struct {
+	Models            []GuardAuthzObjectModel    `json:"models,omitempty"`
+	Relations         []GuardAuthzObjectRelation `json:"relations,omitempty"`
+	RoleBaselines     []GuardAuthzRoleBaseline   `json:"role_baselines,omitempty"`
+	ObjectHMACKeyHex  string                     `json:"object_hmac_key_hex,omitempty"`
+	PolicyVersion     string                     `json:"policy_version,omitempty"`
+	Stale             bool                       `json:"stale,omitempty"`
+	SnapshotExpiresAt *time.Time                 `json:"snapshot_expires_at,omitempty"`
 }
 
 // GuardFieldPermission 字段权限（下发网关，对应 api_field_permissions 表行；
@@ -333,6 +397,7 @@ type GuardJWTIssuer struct {
 	Algorithms       []string        `json:"algorithms"` // RS256/ES256 非空子集
 	ClockSkewSeconds int             `json:"clock_skew_seconds"`
 	TenantClaim      string          `json:"tenant_claim,omitempty"`
+	RoleClaims       []string        `json:"role_claims,omitempty"`
 	KeySourceType    string          `json:"key_source_type"` // STATIC_JWKS | REMOTE_JWKS
 	JWKS             json.RawMessage `json:"jwks,omitempty"`  // STATIC_JWKS：公钥集（已校验无私钥/对称密钥）
 	RemoteURL        string          `json:"remote_url,omitempty"`
@@ -504,6 +569,15 @@ type GuardConfig struct {
 	// 表由迁移 000043 建立，表缺失/查询失败时发布侧 Warn 跳过不下发；
 	// 不下发时网关 BFLA 基线检测零行为，与历史版本一致）
 	APIRoleBaselines []GuardRoleBaseline `json:"api_role_baselines,omitempty"`
+	// AUTHZ-01 trusted authorization snapshot. The HMAC key is redacted from
+	// stored versions and re-injected from the current encrypted setting.
+	APIAuthzModels            []GuardAuthzObjectModel    `json:"api_authz_models,omitempty"`
+	APIAuthzRelations         []GuardAuthzObjectRelation `json:"api_authz_relations,omitempty"`
+	APIAuthzRoleBaselines     []GuardAuthzRoleBaseline   `json:"api_authz_role_baselines,omitempty"`
+	APIAuthzObjectHMACKeyHex  string                     `json:"api_authz_object_hmac_key_hex,omitempty"`
+	APIAuthzSnapshotStale     bool                       `json:"api_authz_snapshot_stale,omitempty"`
+	APIAuthzSnapshotExpiresAt *time.Time                 `json:"api_authz_snapshot_expires_at,omitempty"`
+	APIAuthzPreviousValid     *GuardAuthzSnapshot        `json:"api_authz_previous_valid,omitempty"`
 	// APIFieldPermissions 字段权限（api_field_permissions 表行；表由迁移 000044 建立，
 	// 表缺失/查询失败时发布侧 Warn 跳过不下发；不下发时网关字段权限检测零行为）
 	APIFieldPermissions []GuardFieldPermission `json:"api_field_permissions,omitempty"`
@@ -756,6 +830,31 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		// 角色功能级基线（api_role_baselines 表 confirmed 行；仅 WDSP 开启且非空时注入）
 		if len(g.APIRoleBaselines) > 0 {
 			h["api_role_baselines"] = g.APIRoleBaselines
+		}
+		if len(g.APIAuthzModels) > 0 || len(g.APIAuthzRoleBaselines) > 0 {
+			if len(g.APIAuthzModels) > 0 {
+				h["api_authz_models"] = g.APIAuthzModels
+				h["api_authz_relations"] = g.APIAuthzRelations
+				h["api_authz_object_hmac_key_hex"] = g.APIAuthzObjectHMACKeyHex
+			}
+			if len(g.APIAuthzRoleBaselines) > 0 {
+				h["api_authz_role_baselines"] = g.APIAuthzRoleBaselines
+			}
+		}
+		if g.APIAuthzSnapshotStale {
+			h["api_authz_snapshot_stale"] = true
+		}
+		if g.APIAuthzSnapshotExpiresAt != nil {
+			h["api_authz_snapshot_expires_at"] = g.APIAuthzSnapshotExpiresAt
+		}
+		if g.APIAuthzPreviousValid != nil {
+			// The HMAC key is runtime secret material. It is injected from the
+			// current setting by config_secrets, just like the current snapshot.
+			previous := *g.APIAuthzPreviousValid
+			if len(previous.Models) > 0 {
+				previous.ObjectHMACKeyHex = g.APIAuthzObjectHMACKeyHex
+			}
+			h["api_authz_previous_valid"] = previous
 		}
 		// 字段权限（api_field_permissions 表行；仅 WDSP 开启且非空时注入）
 		if len(g.APIFieldPermissions) > 0 {

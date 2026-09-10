@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/apiruntime"
 	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
@@ -236,14 +237,49 @@ WHERE sync_enabled = TRUE AND admin_addr <> '' ORDER BY node_name`)
 	return out, rows.Err()
 }
 
+// ListFailedSyncTargets 返回指定配置版本最近一次同步失败或哈希不一致的节点。
+// 仅选择当前仍启用且登记了管理地址的节点，供发布恢复入口定向重试；没有记录该版本
+// 的节点不在结果中，避免把尚未参与该版本发布的节点误当作失败节点。
+func (s *Store) ListFailedSyncTargets(ctx context.Context, versionID uuid.UUID) ([]gatewayconfig.SyncTarget, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT id, node_name, admin_addr FROM api_gateway_nodes
+WHERE sync_enabled = TRUE AND admin_addr <> ''
+  AND last_sync_version_id = $1
+  AND last_sync_result IN ($2, $3)
+ORDER BY node_name`, versionID, gatewayconfig.NodeSyncFailed, gatewayconfig.NodeSyncHashMismatch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []gatewayconfig.SyncTarget{}
+	for rows.Next() {
+		var t gatewayconfig.SyncTarget
+		if err := rows.Scan(&t.NodeID, &t.NodeName, &t.AdminAddr); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // RecordSyncResult 回填单节点同步结果（last_sync_* + 本次版本；versionID 为
 // 同步尝试的配置版本，成功与失败均如实记录）。
 func (s *Store) RecordSyncResult(ctx context.Context, nodeID uuid.UUID, result, errMsg string, versionID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
+	res, err := s.db.Exec(ctx, `
 UPDATE api_gateway_nodes
 SET last_sync_at=now(), last_sync_result=$2, last_sync_error=$3, last_sync_version_id=$4, updated_at=now()
 WHERE id=$1`, nodeID, result, errMsg, versionID)
-	return err
+	if err != nil {
+		return err
+	}
+	return ensureNodeUpdate(res)
+}
+
+func ensureNodeUpdate(tag pgconn.CommandTag) error {
+	if tag.RowsAffected() == 0 {
+		return ErrNodeNotFound
+	}
+	return nil
 }
 
 // UpdateNodeStatus 刷新单节点状态（WHERE status<>$2 避免无变化触行）。

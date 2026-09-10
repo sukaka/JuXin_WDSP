@@ -115,6 +115,11 @@ components:
         key_source: { $ref: '#/components/schemas/JwtTrustKeySource' }
         clock_skew_seconds: { type: integer, minimum: 0, maximum: 120, description: 时钟偏移宽限（秒，缺省 30） }
         tenant_claim: { type: string, description: 可选：单一受信 tenant 声明名（仅 VERIFIED 后读取，不自动猜测） }
+        role_claims:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 64 }
+          description: 可选：显式受信角色声明名列表（仅 VERIFIED 后读取；不自动猜测；最多 8 项）
 
     JwtTrustPolicy:
       type: object

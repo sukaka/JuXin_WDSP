@@ -248,7 +248,7 @@ func run() error {
 		// 资产生命周期作业（Zombie 判定/价值评分回填）：周期扫描；失败仅告警，不影响采集主流程
 		weaknessSweeper := apiweakness.NewSweeper(db)
 		sensitiveStore := apidata.NewStore(db)
-		authzStore := apiauthz.NewStore(db)
+		authzModelStore := apiauthz.NewStore(db)
 		assetSweeper := apiassets.NewSweeper(apiAssetStore, apiassets.SweepOptions{})
 		geoSweeper := apigeo.NewSweeper(apigeo.NewStore(db), application.APIGeoLookup(), settings.NewService(db))
 		// 文件风险 v1（§107 子集）：同身份批量下载 → FILE_BULK_DOWNLOAD 风险发现
@@ -275,20 +275,9 @@ func run() error {
 							break
 						}
 					}
-					// 对象权属：从事件 raw_path 按端点路径模板提取对象标识（HasMore 排空）
-					for {
-						res, err := authzStore.SweepOnce(collectorCtx)
-						if err != nil {
-							slog.Warn("api authz ownership sweep failed", "error", err)
-							break
-						}
-						if res == nil || !res.HasMore {
-							break
-						}
-					}
 					// 对象模型：端点对象面候选（路径占位段/Query 对象参数形态；HasMore 排空）
 					for {
-						res, err := authzStore.SweepObjectModelsOnce(collectorCtx)
+						res, err := authzModelStore.SweepObjectModelsOnce(collectorCtx)
 						if err != nil {
 							slog.Warn("api object model sweep failed", "error", err)
 							break

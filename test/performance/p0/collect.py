@@ -25,6 +25,7 @@ from p0bench.collectors import (  # noqa: E402
     CollectorError,
     parse_ab_output,
     parse_docker_stats_jsonl,
+    parse_proc_rss_jsonl,
     parse_wrk_json,
     summarize_curl_tsv,
 )
@@ -114,7 +115,16 @@ def cmd_loadgen(args) -> int:
     except CollectorError as exc:
         print(f"采集失败: {exc}", file=sys.stderr)
         return 2
-    rec.update({"profile": args.profile, "repeat": args.repeat, "offered_rps": args.point})
+    rec.update({
+        "profile": args.profile,
+        "repeat": args.repeat,
+        "offered_rps": args.point,
+        "throughput_evidence": {
+            "source": f"{args.tool}.requests_per_second",
+            "scope": "end_to_end_loadgen",
+            "value_rps": rec.get("requests_per_second"),
+        },
+    })
     out = Path(args.run_dir) / "perf" / args.profile / f"r{args.repeat}-{args.point}rps-{args.tool}.json"
     _write_json(out, rec)
     print(f"已写入 {out}")
@@ -136,7 +146,17 @@ def cmd_curltsv(args) -> int:
 
 def cmd_resources(args) -> int:
     try:
-        records = parse_docker_stats_jsonl(_read_lines(args.file))
+        if args.source == "docker_stats":
+            records = parse_docker_stats_jsonl(_read_lines(args.file))
+            source = "docker_stats"
+            platform_note = (
+                "macOS/Windows 下 docker stats 为 Docker Desktop 虚拟机口径，"
+                "与宿主真实 CPU/内存存在偏差；Linux 可用 /proc 补充。"
+            )
+        else:
+            records = parse_proc_rss_jsonl(_read_lines(args.file))
+            source = "proc_rss"
+            platform_note = "Linux /proc VmRSS 进程口径；不包含容器 page cache，也不等同于容器内存上限。"
     except CollectorError as exc:
         print(f"采集失败: {exc}", file=sys.stderr)
         return 2
@@ -144,9 +164,8 @@ def cmd_resources(args) -> int:
     _write_json(
         out,
         {
-            "source": "docker_stats",
-            "platform_note": "macOS/Windows 下 docker stats 为 Docker Desktop 虚拟机口径，"
-            "与宿主真实 CPU/内存存在偏差；Linux 可用 /proc 补充。",
+            "source": source,
+            "platform_note": platform_note,
             "records": records,
         },
     )
@@ -208,10 +227,11 @@ def main(argv=None) -> int:
     p.add_argument("--expected-status", type=int, action="append", default=[])
     p.set_defaults(func=cmd_curltsv)
 
-    p = sub.add_parser("resources", help="解析 docker stats JSON 快照行")
+    p = sub.add_parser("resources", help="解析 docker stats 或 Linux /proc RSS JSON 快照行")
     p.add_argument("--run-dir", required=True)
     p.add_argument("--name", required=True)
     p.add_argument("--file", required=True)
+    p.add_argument("--source", choices=("docker_stats", "proc_rss"), default="docker_stats")
     p.set_defaults(func=cmd_resources)
 
     p = sub.add_parser("events", help="事件对账")

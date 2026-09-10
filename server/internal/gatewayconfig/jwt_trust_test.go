@@ -19,6 +19,7 @@ func testJWTPolicy() *GuardJWTTrustPolicy {
 				Audiences:        []string{"shop-api"},
 				Algorithms:       []string{"RS256"},
 				ClockSkewSeconds: 30,
+				RoleClaims:       []string{"roles", "groups"},
 				KeySourceType:    "STATIC_JWKS",
 				JWKS:             []byte(`{"keys":[{"kty":"RSA","kid":"k1","n":"x","e":"AQAB"}]}`),
 				KeysetVersion:    "deadbeef",
@@ -49,6 +50,9 @@ func TestBuildGuardHandlerJWTTrust(t *testing.T) {
 	}
 	if len(pol.Issuers) != 1 || pol.Issuers[0].IssuerConfigID == "" || pol.Issuers[0].KeysetVersion != "deadbeef" {
 		t.Errorf("jwt_trust issuers = %+v", pol.Issuers)
+	}
+	if got := pol.Issuers[0].RoleClaims; len(got) != 2 || got[0] != "roles" || got[1] != "groups" {
+		t.Errorf("jwt_trust role claims = %v", got)
 	}
 }
 

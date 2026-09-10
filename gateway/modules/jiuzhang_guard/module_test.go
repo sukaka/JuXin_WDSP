@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -510,6 +511,31 @@ func TestCleanupClosesWithoutNilifying(t *testing.T) {
 	}
 	if err := g.Cleanup(); err != nil {
 		t.Fatalf("second cleanup must be safe: %v", err)
+	}
+}
+
+// API 事件记录器关闭时的后台落盘错误必须由 Guard.Cleanup 返回，避免网关
+// 配置重载/退出吞掉授权决策事件的持久化失败。
+func TestCleanupReportsAPIEventPersistenceFailure(t *testing.T) {
+	dir := t.TempDir()
+	apiLog, err := apievents.NewLogger(filepath.Join(dir, "api-events.log"), "test-node")
+	if err != nil {
+		t.Fatalf("new api events logger: %v", err)
+	}
+	t.Cleanup(func() { _ = apiLog.Close() })
+
+	evLog, err := events.NewLogger(filepath.Join(dir, "events.log"), "test-node")
+	if err != nil {
+		t.Fatalf("new events logger: %v", err)
+	}
+	g := &Guard{
+		logger:         zap.NewNop(),
+		apiEvents:      apiLog,
+		events:         evLog,
+		apiEventsClose: func() error { return errors.New("api events background write failed") },
+	}
+	if err := g.Cleanup(); err == nil || !strings.Contains(err.Error(), "api events background write failed") {
+		t.Fatalf("cleanup error = %v, want API event persistence failure", err)
 	}
 }
 

@@ -1,6 +1,9 @@
 package jiuzhang_guard
 
 import (
+	"bytes"
+	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,9 +13,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/apievents"
 	"go.uber.org/zap"
 )
@@ -132,6 +138,234 @@ func TestServeNext_ObserveModeRecordsDeviation(t *testing.T) {
 	}
 	if rec.FinalAction == "BLOCK" {
 		t.Fatal("OBSERVE mode must not finalize BLOCK")
+	}
+}
+
+// AUTHZ-01 组合验收：真实 Guard → API 管线 → API 事件出口。
+// BOLA 观测命中必须放行下游，并且事件只保留 HMAC 对象引用。
+func TestServeNext_AuthzBOLAObserveRecordsHMACAndPassthrough(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	rawObjectID := "order-78231"
+	objectRef := detectors.ObjectRefHMAC(key, rawObjectID)
+	g, logPath := newAPITestGuard(t, "OBSERVE", nil)
+	g.APIPolicyVersion = "authz-v3"
+	g.APIAuthzObjectHMACKey = key
+	g.APIAuthzModels = []detectors.ObjectModel{{
+		ApplicationID:          "app-1",
+		EndpointKey:            "GET /v1/orders/{id}",
+		PathTemplate:           "/v1/orders/{orderId}",
+		ObjectType:             "ORDER",
+		Identifiers:            []detectors.ObjectIdentifier{{Location: "path", Name: "orderId", Primary: true}},
+		RequiredRelation:       "OWNER",
+		OwnerExclusive:         true,
+		Publishable:            true,
+		UniqueEndpointTemplate: true,
+		ModelVersion:           "model-v7",
+	}}
+	g.APIAuthzRelations = []detectors.ObjectRelation{{
+		ApplicationID: "app-1",
+		PrincipalID:   "user-owner",
+		ObjectType:    "ORDER",
+		ObjectRef:     objectRef,
+		Relation:      "OWNER",
+		Status:        "CONFIRMED",
+	}}
+
+	called := false
+	next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+		called = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "origin-ok")
+		return nil
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/orders/"+rawObjectID, nil)
+	req.Header.Set("X-Request-Id", "req-authz-bola-1")
+	verified := jwtverify.VerificationResult{
+		Status:              jwtverify.StatusVerified,
+		VerifiedPrincipalID: "user-other",
+		PolicyVersion:       "authz-v3",
+	}
+	*req = *req.WithContext(context.WithValue(req.Context(), jwtResultKey{}, verified))
+	res := httptest.NewRecorder()
+	if err := g.serveNext(res, req, next); err != nil {
+		t.Fatalf("serveNext: %v", err)
+	}
+	if !called {
+		t.Fatal("OBSERVE BOLA violation must pass through to origin")
+	}
+	if res.Code != http.StatusOK || res.Body.String() != "origin-ok" {
+		t.Fatalf("unexpected origin response: status=%d body=%q", res.Code, res.Body.String())
+	}
+
+	recs := readAPIRecords(t, logPath)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 api event, got %d", len(recs))
+	}
+	decision := recs[0].AuthzDecision
+	if decision == nil || decision.Decision != detectors.AuthorizationObserveViolation || len(decision.Checks) != 1 {
+		t.Fatalf("unexpected authz decision: %+v", decision)
+	}
+	check := decision.Checks[0]
+	if check.Type != "BOLA" || check.ReasonCode != "AUTHZ-BOLA-001" || check.ObjectRef != objectRef {
+		t.Fatalf("unexpected BOLA check: %+v", check)
+	}
+	if check.ObjectRef == rawObjectID {
+		t.Fatal("authz event must not retain the raw object identifier")
+	}
+	decisionJSON, err := json.Marshal(decision)
+	if err != nil {
+		t.Fatalf("marshal authz decision: %v", err)
+	}
+	if strings.Contains(string(decisionJSON), rawObjectID) {
+		t.Fatalf("authz decision contains raw object identifier: %s", decisionJSON)
+	}
+}
+
+// Provider/Guard/网关 PreviousValid 端到端验收：发布器下发的 JSON 经 Guard
+// Provision 解码后，当前快照过期时应选用上一份可用快照完成 BOLA 观测。
+// 该测试不直接注入 Guard 的内部字段，覆盖发布配置序列化、装配和真实 API 管线。
+func TestProvisionedGuard_AuthzPreviousValidFallbackE2E(t *testing.T) {
+	currentKey := []byte("01234567890123456789012345678901")
+	previousKey := []byte("12345678901234567890123456789012")
+	rawObjectID := "order-previous-valid-1"
+	previousRef := detectors.ObjectRefHMAC(previousKey, rawObjectID)
+	expired := time.Now().UTC().Add(-time.Minute)
+
+	model := func(version string) detectors.ObjectModel {
+		return detectors.ObjectModel{
+			ApplicationID:          "app-1",
+			EndpointKey:            "GET /v1/orders/{id}",
+			PathTemplate:           "/v1/orders/{orderId}",
+			ObjectType:             "ORDER",
+			Identifiers:            []detectors.ObjectIdentifier{{Location: "path", Name: "orderId", Primary: true}},
+			RequiredRelation:       "OWNER",
+			OwnerExclusive:         true,
+			Publishable:            true,
+			UniqueEndpointTemplate: true,
+			ModelVersion:           version,
+		}
+	}
+
+	// Marshal/unmarshal 模拟 Provider 生成并交给 Guard 的配置 JSON；当前快照只
+	// 作为过期快照存在，PreviousValid 才包含可匹配的已确认关系。
+	input := &Guard{
+		AppID:                     "app-1",
+		EventsLog:                 filepath.Join(t.TempDir(), "events.log"),
+		GatewayNode:               "gateway-e2e",
+		CounterBackend:            "memory",
+		APIDynamicProtection:      true,
+		APIProtectionMode:         "OBSERVE",
+		APIPolicyVersion:          "current-policy",
+		APIAuthzModels:            []detectors.ObjectModel{model("current-model")},
+		APIAuthzObjectHMACKeyHex:  hex.EncodeToString(currentKey),
+		APIAuthzSnapshotExpiresAt: &expired,
+		APIAuthzPreviousValid: &authzSnapshotJSON{
+			Models: []detectors.ObjectModel{model("previous-model")},
+			Relations: []detectors.ObjectRelation{{
+				ApplicationID: "app-1",
+				PrincipalID:   "user-owner",
+				ObjectType:    "ORDER",
+				ObjectRef:     previousRef,
+				Relation:      "OWNER",
+				Status:        "CONFIRMED",
+			}},
+			ObjectHMACKeyHex: hex.EncodeToString(previousKey),
+			PolicyVersion:    "previous-policy",
+		},
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal provider config: %v", err)
+	}
+	var g Guard
+	if err := json.Unmarshal(raw, &g); err != nil {
+		t.Fatalf("unmarshal provider config: %v", err)
+	}
+	resetSharedEngineForTest()
+	t.Cleanup(resetSharedEngineForTest)
+	if err := g.Provision(caddy.Context{Context: context.Background()}); err != nil {
+		t.Fatalf("provision provider config: %v", err)
+	}
+	t.Cleanup(func() { _ = g.Cleanup() })
+	if g.apiAuthzPreviousValid == nil || !bytes.Equal(g.apiAuthzPreviousValid.ObjectRefHMACKey, previousKey) {
+		t.Fatalf("previous valid snapshot was not decoded: %+v", g.apiAuthzPreviousValid)
+	}
+
+	called := false
+	next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+		called = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "origin-ok")
+		return nil
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/orders/"+rawObjectID, nil)
+	req.Header.Set("X-Request-Id", "req-authz-previous-valid-e2e")
+	verified := jwtverify.VerificationResult{
+		Status:              jwtverify.StatusVerified,
+		VerifiedPrincipalID: "user-owner",
+		PolicyVersion:       "current-policy",
+	}
+	*req = *req.WithContext(context.WithValue(req.Context(), jwtResultKey{}, verified))
+	res := httptest.NewRecorder()
+	if err := g.serveNext(res, req, next); err != nil {
+		t.Fatalf("serveNext: %v", err)
+	}
+	if !called || res.Code != http.StatusOK || res.Body.String() != "origin-ok" {
+		t.Fatalf("previous-valid OBSERVE request must reach origin: called=%v status=%d body=%q", called, res.Code, res.Body.String())
+	}
+	recs := readAPIRecords(t, filepath.Join(filepath.Dir(g.EventsLog), "api-runtime-events.log"))
+	if len(recs) != 1 || recs[0].AuthzDecision == nil {
+		t.Fatalf("want one API event with authz decision, got %+v", recs)
+	}
+	decision := recs[0].AuthzDecision
+	if decision.PolicyVersion != "current-policy" {
+		t.Fatalf("decision policy version = %q, want current-policy", decision.PolicyVersion)
+	}
+	var policyUnknown, bolaAllow bool
+	for _, check := range decision.Checks {
+		if check.Type == "POLICY" && check.ReasonCode == "AUTHZ-POLICY-002" && check.Decision == detectors.AuthorizationUnknown {
+			policyUnknown = true
+		}
+		if check.Type == "BOLA" && check.ModelVersion == "previous-model" && check.PolicyVersion == "previous-policy" && check.Decision == detectors.AuthorizationAllow && check.ObjectRef == previousRef {
+			bolaAllow = true
+		}
+	}
+	if !policyUnknown || !bolaAllow {
+		t.Fatalf("fallback checks missing policy_unknown=%v bola_allow=%v: %+v", policyUnknown, bolaAllow, decision.Checks)
+	}
+}
+
+func TestProvisionAuthzPreviousValidRejectsMissingOrInvalidHMAC(t *testing.T) {
+	model := detectors.ObjectModel{
+		ApplicationID: "app-1", EndpointKey: "GET /v1/orders/{id}", ObjectType: "ORDER",
+		Identifiers:      []detectors.ObjectIdentifier{{Location: "path", Name: "id", Primary: true}},
+		RequiredRelation: "OWNER", Publishable: true, UniqueEndpointTemplate: true,
+	}
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{name: "invalid hex", key: "not-hex", want: "api_authz_previous_valid.object_hmac_key_hex must be 32-byte hex"},
+		{name: "missing key", want: "api_authz_previous_valid.object_hmac_key_hex is required when models are configured"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &Guard{
+				AppID:                "app-1",
+				AppCode:              "shop",
+				EventsLog:            filepath.Join(t.TempDir(), "events.log"),
+				APIDynamicProtection: true,
+				APIAuthzPreviousValid: &authzSnapshotJSON{
+					Models:           []detectors.ObjectModel{model},
+					ObjectHMACKeyHex: tt.key,
+				},
+			}
+			err := g.Provision(caddy.Context{Context: context.Background()})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Provision error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

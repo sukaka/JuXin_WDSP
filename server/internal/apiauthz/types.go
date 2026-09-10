@@ -25,8 +25,25 @@ var ErrEndpointNotFound = errors.New("api endpoint not found")
 
 // 权限点常量（种子迁移由集成方登记，本包只引用）。
 const (
-	PermAuthzRead   = "api_authorization.read"
-	PermAuthzManage = "api_authorization.manage"
+	PermAuthzRead      = "api_authorization.read"
+	PermAuthzManage    = "api_authorization.manage"
+	PermRelationManage = "api_authorization.relation_manage"
+	PermEvidenceRead   = "api_authorization.evidence_read"
+)
+
+const (
+	CandidateSourceObserved     = "OBSERVED_ACCESS"
+	CandidateStatusPending      = "PENDING"
+	CandidateStatusRejected     = "REJECTED"
+	CandidateStatusFrozen       = "FROZEN"
+	CandidateStatusConfirmed    = "CONFIRMED"
+	RelationOwner               = "OWNER"
+	RelationStatusConfirmed     = "CONFIRMED"
+	RelationStatusRevoked       = "REVOKED"
+	RelationStatusExpired       = "EXPIRED"
+	RelationSourceManual        = "MANUAL"
+	RelationSourceImport        = "IMPORT"
+	RelationSourceCreateBinding = "CREATE_BINDING"
 )
 
 // 基线来源（api_role_baselines.source CHECK 对齐）。
@@ -114,6 +131,78 @@ type ObjectOwnership struct {
 	FirstSeen           time.Time `json:"first_seen"`
 	LastSeen            time.Time `json:"last_seen"`
 	AccessCount         int64     `json:"access_count"`
+}
+
+// RelationCandidate is observation evidence. It never participates in gateway decisions.
+type RelationCandidate struct {
+	ID                        uuid.UUID      `json:"id"`
+	ApplicationID             uuid.UUID      `json:"application_id"`
+	EndpointID                *uuid.UUID     `json:"endpoint_id,omitempty"`
+	ObjectType                string         `json:"object_type"`
+	ObjectRef                 string         `json:"object_ref"`
+	PrincipalID               *string        `json:"principal_id,omitempty"`
+	TenantID                  *string        `json:"tenant_id,omitempty"`
+	LegacyIdentityFingerprint *string        `json:"legacy_identity_fingerprint,omitempty"`
+	Source                    string         `json:"source"`
+	Status                    string         `json:"status"`
+	SourceCount               int            `json:"source_count"`
+	ObservationCount          int64          `json:"observation_count"`
+	ConfidenceInputs          map[string]any `json:"confidence_inputs"`
+	EvidenceRef               *string        `json:"evidence_ref,omitempty"`
+	RejectReason              *string        `json:"reject_reason,omitempty"`
+	FirstSeen                 time.Time      `json:"first_seen"`
+	LastSeen                  time.Time      `json:"last_seen"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+}
+
+// ObjectRelation is an approved, HMAC-addressed authorization relation.
+type ObjectRelation struct {
+	ID            uuid.UUID  `json:"id"`
+	ApplicationID uuid.UUID  `json:"application_id"`
+	ObjectType    string     `json:"object_type"`
+	ObjectRef     string     `json:"object_ref"`
+	PrincipalID   string     `json:"principal_id"`
+	TenantID      *string    `json:"tenant_id,omitempty"`
+	Relation      string     `json:"relation"`
+	Source        string     `json:"source"`
+	Status        string     `json:"status"`
+	ValidFrom     time.Time  `json:"valid_from"`
+	ValidUntil    *time.Time `json:"valid_until,omitempty"`
+	EvidenceRef   *string    `json:"evidence_ref,omitempty"`
+	ConfirmedBy   string     `json:"confirmed_by"`
+	ConfirmedAt   time.Time  `json:"confirmed_at"`
+	Reason        string     `json:"reason"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+
+func validateObjectRelation(r *ObjectRelation) error {
+	if r.ApplicationID == uuid.Nil {
+		return errors.New("application_id 必填")
+	}
+	if strings.TrimSpace(r.ObjectType) == "" || len(r.ObjectType) > maxObjectType {
+		return errors.New("object_type 必填且过长")
+	}
+	if !strings.HasPrefix(r.ObjectRef, "objref:") || len(r.ObjectRef) > 160 {
+		return errors.New("object_ref 必须是 objref: HMAC 引用")
+	}
+	if strings.TrimSpace(r.PrincipalID) == "" || len(r.PrincipalID) > maxIdentity {
+		return errors.New("principal_id 必填且过长")
+	}
+	if r.Relation != RelationOwner {
+		return errors.New("首期仅允许 OWNER 关系")
+	}
+	if r.Source != RelationSourceManual && r.Source != RelationSourceImport && r.Source != RelationSourceCreateBinding {
+		return errors.New("无效的 source")
+	}
+	if strings.TrimSpace(r.Reason) == "" {
+		return errors.New("reason 必填")
+	}
+	if r.ValidUntil != nil && !r.ValidUntil.After(r.ValidFrom) {
+		return errors.New("valid_until 必须晚于 valid_from")
+	}
+	return nil
 }
 
 // ObjectModel 对象模型候选（api_object_models，BOLA 实体画像；

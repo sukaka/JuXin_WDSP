@@ -23,6 +23,11 @@ type migration struct {
 	downSQL string
 }
 
+// migrationAdvisoryNamespace keeps schema migration locks separate from
+// application-level advisory locks. The second key is the migration version,
+// so different migrations may still be applied independently.
+const migrationAdvisoryNamespace int32 = 0x4a5a5741
+
 // Migrate 执行数据库迁移。
 // direction 仅支持 "up"（应用全部未执行迁移）或 "down"（回滚一个版本）。
 // 迁移文件从 dir 读取，执行记录保存在 schema_migrations 表。
@@ -181,6 +186,20 @@ func applyOne(ctx context.Context, pool *pgxpool.Pool, m migration) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// Migrate() reads applied versions before opening this transaction. A
+	// second control-plane instance can therefore arrive here with the same
+	// stale snapshot. The transaction-scoped lock serializes that migration,
+	// and the recheck below makes the losing runner a safe no-op.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, migrationAdvisoryNamespace, m.version); err != nil {
+		return fmt.Errorf("lock migration %06d: %w", m.version, err)
+	}
+	var alreadyApplied bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, m.version).Scan(&alreadyApplied); err != nil {
+		return fmt.Errorf("recheck migration %06d: %w", m.version, err)
+	}
+	if alreadyApplied {
+		return tx.Commit(ctx)
+	}
 	if _, err := tx.Exec(ctx, m.upSQL); err != nil {
 		return err
 	}
@@ -197,6 +216,16 @@ func rollbackOne(ctx context.Context, pool *pgxpool.Pool, m migration) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, migrationAdvisoryNamespace, m.version); err != nil {
+		return fmt.Errorf("lock migration %06d rollback: %w", m.version, err)
+	}
+	var stillApplied bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, m.version).Scan(&stillApplied); err != nil {
+		return fmt.Errorf("recheck migration %06d rollback: %w", m.version, err)
+	}
+	if !stillApplied {
+		return tx.Commit(ctx)
+	}
 	if _, err := tx.Exec(ctx, m.downSQL); err != nil {
 		return err
 	}

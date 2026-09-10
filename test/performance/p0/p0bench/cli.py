@@ -6,6 +6,7 @@
   check-target    --url U --allow E ...    目标/重定向允许判定（BENCH-02）
   owns            --run-id R               从 stdin 读 "name<TAB>labels" 行，全部归属才退出 0
   env-fingerprint --machine-id S --hostname S
+  formal-gate     --plan F --ready V --environment-id ID --evidence F
   gen-requests    --manifest F [--profile P]   语料确定性回放请求（JSONL）
   shuffle-profiles --seed N [--jwt-pair]   固定种子随机化执行顺序（默认七模式；--jwt-pair 输出 JWT 配对）
   jwt-jwks        --key PEM --kid K        由本 run 私钥导出静态 JWKS（仅公钥，stdout）
@@ -19,6 +20,7 @@ import argparse
 import sys
 
 from . import corpus as corpus_mod
+from . import formal_gate
 from . import isolation
 from . import replay
 from .plan import PROFILES, PlanError, load_plan, validate_plan
@@ -85,6 +87,22 @@ def _cmd_owns(args) -> int:
 
 def _cmd_env_fingerprint(args) -> int:
     print(isolation.compute_environment_fingerprint(args.machine_id, args.hostname))
+    return 0
+
+
+def _cmd_formal_gate(args) -> int:
+    try:
+        plan = load_plan(args.plan)
+    except PlanError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    result = formal_gate.evaluate(plan, args.ready, args.environment_id)
+    formal_gate.write_evidence(args.evidence, result)
+    print(result["status"])
+    if result["status"] == "BLOCKED":
+        for detail in result["details"]:
+            print(f"FORMAL_ENVIRONMENT_BLOCKED: {detail}", file=sys.stderr)
+        return formal_gate.BLOCKED_EXIT_CODE
     return 0
 
 
@@ -214,6 +232,13 @@ def main(argv=None) -> int:
     p.add_argument("--machine-id", required=True)
     p.add_argument("--hostname", required=True)
     p.set_defaults(func=_cmd_env_fingerprint)
+
+    p = sub.add_parser("formal-gate", help="核对正式环境显式声明与冻结计划")
+    p.add_argument("--plan", required=True)
+    p.add_argument("--ready", default="0", help="P0B_FORMAL_ENVIRONMENT_READY 的值")
+    p.add_argument("--environment-id", default="", help="P0B_FORMAL_ENV_ID 的值")
+    p.add_argument("--evidence", required=True, help="门禁证据 JSON 输出路径")
+    p.set_defaults(func=_cmd_formal_gate)
 
     p = sub.add_parser("gen-requests", help="按语料生成确定性回放请求（JSONL）")
     p.add_argument("--manifest", required=True)

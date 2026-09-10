@@ -230,6 +230,9 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		MaskRules           []gatewayconfig.GuardMaskRule                   `json:"api_mask_rules"`
 		SensitiveValueRules []gatewayconfig.GuardSensitiveValueRule         `json:"api_sensitive_value_rules"`
 		RoleBaselines       []gatewayconfig.GuardRoleBaseline               `json:"api_role_baselines"`
+		AuthzModels         []gatewayconfig.GuardAuthzObjectModel           `json:"api_authz_models,omitempty"`
+		AuthzRelations      []gatewayconfig.GuardAuthzObjectRelation        `json:"api_authz_relations,omitempty"`
+		AuthzRoleBaselines  []gatewayconfig.GuardAuthzRoleBaseline          `json:"api_authz_role_baselines,omitempty"`
 		FieldPermissions    []gatewayconfig.GuardFieldPermission            `json:"api_field_permissions"`
 		ResponseBaselines   []gatewayconfig.GuardResponseBaseline           `json:"api_response_baselines"`
 		Relations           []gatewayconfig.GuardParamRelation              `json:"api_parameter_relations"`
@@ -260,7 +263,9 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		Schemas: cfg.APIFormalSchemas, Constraints: cfg.APIParameterConstraints,
 		MaskRules: cfg.APIMaskRules, SensitiveValueRules: cfg.APISensitiveValueRules,
 		RoleBaselines: cfg.APIRoleBaselines, FieldPermissions: cfg.APIFieldPermissions,
-		ResponseBaselines: cfg.APIResponseBaselines, Relations: cfg.APIParameterRelations,
+		AuthzModels: cfg.APIAuthzModels, AuthzRelations: cfg.APIAuthzRelations,
+		AuthzRoleBaselines: cfg.APIAuthzRoleBaselines,
+		ResponseBaselines:  cfg.APIResponseBaselines, Relations: cfg.APIParameterRelations,
 		FileComplianceRules: cfg.APIFileComplianceRules, GRPCDescriptors: cfg.APIGRPCDescriptors,
 		ProtectionMode: cfg.APIProtectionMode, EventsLog: cfg.APIEventsLog,
 		ModelVersions: cfg.APIFormalModelVersions, KnownEndpoints: cfg.APIKnownEndpoints,

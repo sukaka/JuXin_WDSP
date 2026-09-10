@@ -130,6 +130,9 @@ type Record struct {
 	// 同一 JSON 契约，旧版网关事件缺该键时为 nil，采集全程容忍缺失；
 	// 不落原始 Token/payload/明文 sub/tenant）。
 	JWTVerification *events.JWTVerification `json:"jwt_verification"`
+	// AuthzDecision 是 BOLA/BFLA OBSERVE 判定组。即使最终动作为 ALLOW，也必须
+	// 落授权决策表，以便覆盖率和误报复核不丢失允许样本。
+	AuthzDecision *events.AuthorizationDecisionGroup `json:"authz_decision"`
 	// FinalDecision 请求最终处置上下文（WDSP P0-04，final_decision JSON
 	// schema_version=1；旧版网关事件缺该键时为 nil，采集全程容忍缺失）。
 	// 仅网关处置事实已确定（终止/源站完成/错误）的事件携带；
@@ -139,7 +142,7 @@ type Record struct {
 
 // notable 是否需要写入主事件表（有检测明细或动作非 ALLOW；纯通行的 API 请求只喂发现）。
 func (r *Record) notable() bool {
-	return len(r.Details) > 0 || (r.FinalAction != "" && r.FinalAction != "ALLOW")
+	return r.AuthzDecision != nil || len(r.Details) > 0 || (r.FinalAction != "" && r.FinalAction != "ALLOW")
 }
 
 // Heartbeat 网关节点心跳（W17-HB，任务书 §201 活性+版本上报升级）：
@@ -555,6 +558,7 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 							RiskLevel:     rec.RiskLevel,
 							FinalAction:   rec.FinalAction,
 							Details:       rec.Details,
+							AuthzDecision: rec.AuthzDecision,
 						},
 						IdentityFingerprint: rec.IdentityFingerprint,
 						AuthType:            rec.AuthType,

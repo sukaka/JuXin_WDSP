@@ -38,7 +38,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/deployment/docker-compose.p0-benchmark.yml"
-EVIDENCE_ROOT="$REPO_ROOT/docs/evidence/benchmarks"
+EVIDENCE_ROOT="${P0B_EVIDENCE_ROOT:-$REPO_ROOT/docs/evidence/benchmarks}"
 # P1-04 回归（严格增量）：工具与语料位于 test/regression/p1，证据根独立
 REG_DIR="$REPO_ROOT/test/regression/p1"
 REG_PROFILES_DIR="$REG_DIR/profiles"
@@ -110,6 +110,9 @@ usage() {
 
 说明: correctness/matrix/soak/recovery 在计划缺必填字段时拒绝启动；
       smoke 可带缺字段计划运行，但报告只能标记 smoke。
+      matrix/soak/recovery 还要求 P0B_FORMAL_ENVIRONMENT_READY=1 且
+      P0B_FORMAL_ENV_ID 与冻结计划 environment.environment_id 一致；否则
+      生成 BLOCKED/ENVIRONMENT_UNAVAILABLE 证据并返回 3，不启动 Docker 栈。
       计划声明 config.jwt_pair 时，correctness/matrix/soak 在七模式主基线之外
       追加 JWT-18 配对 profile（jwt_off/jwt_protect，静态 JWKS + 运行期测试密钥）。
 EOF
@@ -174,6 +177,33 @@ set_status() { # set_status <id> <status> [reason] [--optional]
   [ "${4:-}" = "--optional" ] && opt="--optional"
   p0b set-status --run-dir "$RUN_DIR" --test-id "$tid" --status "$st" \
       --reason "$reason" --evidence "$RUN_DIR" $opt >/dev/null
+}
+
+formal_environment_gate() { # $1 = mandatory status id, $2 = command scope
+  local tid="$1" scope="${2:-}" rc=0
+  p0b formal-gate --plan "$RUN_DIR/plan.json" \
+      --ready "${P0B_FORMAL_ENVIRONMENT_READY:-0}" \
+      --environment-id "${P0B_FORMAL_ENV_ID:-}" \
+      --evidence "$RUN_DIR/formal-environment.json" || rc=$?
+  case "$rc" in
+    0)
+      log "正式环境门禁通过（环境 ID 与冻结计划一致）"
+      ;;
+    3)
+    set_status "$tid" BLOCKED \
+        "ENVIRONMENT_UNAVAILABLE：缺少正式隔离环境的显式就绪声明或环境 ID 不匹配"
+      if [ -n "$scope" ]; then
+        set_status "${scope}:formal_environment" BLOCKED \
+          "ENVIRONMENT_UNAVAILABLE：缺少正式隔离环境的显式就绪声明或环境 ID 不匹配"
+      fi
+      PYTHONPATH="$SCRIPT_DIR" python3 "$SCRIPT_DIR/report.py" --run-dir "$RUN_DIR" >/dev/null || true
+      log "正式环境门禁阻断；未启动 Docker 栈，证据: $RUN_DIR"
+      exit 3
+      ;;
+    *)
+      die "正式环境门禁执行失败（退出码 $rc）"
+      ;;
+  esac
 }
 
 make_env_file() {
@@ -718,8 +748,11 @@ run_jwt_pair_loop() {
           set_status "matrix:$profile" BLOCKED "JWT 配对模式切换/生效验证失败（该轮无效）"
           continue
         fi
-        matrix_ladder "$profile"
-        set_status "matrix:$profile" PASS "JWT 配对矩阵完成（ab 闭环并发不带 Token；带 Token 逐请求延迟见 correctness 回放）"
+        if matrix_ladder "$profile"; then
+          set_status "matrix:$profile" PASS "JWT 配对矩阵完成（ab 闭环并发不带 Token；带 Token 逐请求延迟见 correctness 回放）"
+        else
+          set_status "matrix:$profile" BLOCKED "负载点执行或吞吐证据不完整，未生成 PASS 结论"
+        fi
         ;;
       soak)
         if ! switch_profile "$profile"; then
@@ -787,16 +820,23 @@ matrix_ladder() { # $1=profile：负载阶梯 × 重复（ab 闭环并发，如�
       out="$RUN_DIR/ab-$profile-r$repeat-$rps.txt"
       log "matrix: profile=$profile rps=$rps repeat=$repeat"
       # ab 闭环并发：并发数≈目标 rps × 预估延迟，如实记录模型限制
-      ab -k -c "$rps" -t "$(json_get "$RUN_DIR/plan.json" load.steady_point_seconds)" \
-         "http://$(port_of gateway 81)/" > "$out" 2>&1 || true
+      if ! ab -k -c "$rps" -t "$(json_get "$RUN_DIR/plan.json" load.steady_point_seconds)" \
+         "http://$(port_of gateway 81)/" > "$out" 2>&1; then
+        log "matrix: profile=$profile rps=$rps repeat=$repeat 压测器失败，拒绝生成 PASS 证据"
+        return 1
+      fi
       PYTHONPATH="$SCRIPT_DIR" python3 "$SCRIPT_DIR/collect.py" loadgen --run-dir "$RUN_DIR" \
-          --profile "$profile" --repeat "$repeat" --point "$rps" --tool ab --file "$out" >/dev/null || true
+          --profile "$profile" --repeat "$repeat" --point "$rps" --tool ab --file "$out" >/dev/null || {
+        log "matrix: profile=$profile rps=$rps repeat=$repeat 吞吐输出不可解析，拒绝生成 PASS 证据"
+        return 1
+      }
     done
   done
 }
 
 cmd_matrix() {
   new_run; write_manifest
+  formal_environment_gate BENCH-11 matrix
   preflight_checks strict
   stack_up
   local model tool
@@ -813,8 +853,11 @@ cmd_matrix() {
       set_status "matrix:$profile" BLOCKED "模式切换/生效验证失败（该轮无效）"
       continue
     fi
-    matrix_ladder "$profile"
-    set_status "matrix:$profile" PASS "矩阵完成（闭环并发，ab 版本见 manifest）"
+    if matrix_ladder "$profile"; then
+      set_status "matrix:$profile" PASS "矩阵完成（闭环并发，ab 版本见 manifest）"
+    else
+      set_status "matrix:$profile" BLOCKED "负载点执行或吞吐证据不完整，未生成 PASS 结论"
+    fi
   done <<< "$order"
   run_jwt_pair_loop matrix
   PYTHONPATH="$SCRIPT_DIR" python3 "$SCRIPT_DIR/report.py" --run-dir "$RUN_DIR" >/dev/null
@@ -822,23 +865,87 @@ cmd_matrix() {
 }
 
 soak_profile() { # $1=profile：单 profile 稳定性采集（仅本 project 容器）
-  local profile="$1" minutes end stats
+  local profile="$1" minutes end stats rss_file started_at ended_at gateway_id rss_kib
   minutes="$(json_get "$RUN_DIR/plan.json" load.soak.per_profile_minutes)"
   end=$(( $(date +%s) + minutes * 60 ))
   stats="$RUN_DIR/stats-$profile.jsonl"
+  rss_file="$RUN_DIR/rss-$profile.jsonl"
+  started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   while [ "$(date +%s)" -lt "$end" ]; do
     # 仅采集本 project 容器（--filter 限定），不输出完整 inspect
-    docker stats --no-stream --format json \
-        $(docker ps --filter "label=com.docker.compose.project=$PROJECT" -q) >> "$stats" 2>/dev/null || true
+    gateway_id="$(docker ps --filter "label=com.docker.compose.project=$PROJECT" \
+      --filter "label=com.docker.compose.service=gateway" -q | head -1)"
+    if [ -n "$gateway_id" ]; then
+      docker stats --no-stream --format json "$gateway_id" >> "$stats" 2>/dev/null || true
+      # Linux containers expose process RSS; this is intentionally a separate
+      # evidence stream because docker stats is container memory, not RSS.
+      rss_kib="$(docker exec "$gateway_id" sh -c \
+        "grep '^VmRSS:' /proc/1/status 2>/dev/null | tr -s ' ' | cut -d ' ' -f2" \
+        2>/dev/null || true)"
+      case "$rss_kib" in
+        ''|*[!0-9]*) ;;
+        *) printf '{"container":"%s","pid":1,"rss_kib":%s}\n' \
+             "$gateway_id" "$rss_kib" >> "$rss_file" ;;
+      esac
+    fi
     sleep 30
   done
-  PYTHONPATH="$SCRIPT_DIR" python3 "$SCRIPT_DIR/collect.py" resources --run-dir "$RUN_DIR" \
-      --name "$profile" --file "$stats" >/dev/null || true
+  ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [ ! -s "$stats" ]; then
+    set_status "soak:$profile" BLOCKED "容器内存样本缺失（无 docker stats 快照）"
+    python3 - "$RUN_DIR/soak/$profile.json" "$minutes" "$started_at" "$ended_at" \
+      "容器内存样本缺失（无 docker stats 快照）" <<'PYEOF'
+import json, sys
+out, minutes, started, ended, reason = sys.argv[1:]
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump({"status": "BLOCKED", "reason": reason, "duration_minutes": int(minutes),
+               "started_at": started, "ended_at": ended}, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+PYEOF
+    return 0
+  fi
+  if ! PYTHONPATH="$SCRIPT_DIR" python3 "$SCRIPT_DIR/collect.py" resources --run-dir "$RUN_DIR" \
+      --name "$profile" --file "$stats" >/dev/null; then
+    set_status "soak:$profile" BLOCKED "RSS/容器内存采集失败"
+    python3 - "$RUN_DIR/soak/$profile.json" "$minutes" "$started_at" "$ended_at" \
+      "容器内存采集失败" <<'PYEOF'
+import json, sys
+out, minutes, started, ended, reason = sys.argv[1:]
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump({"status": "BLOCKED", "reason": reason, "duration_minutes": int(minutes),
+               "started_at": started, "ended_at": ended}, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+PYEOF
+    return 0
+  fi
+  if [ ! -s "$rss_file" ] || ! PYTHONPATH="$SCRIPT_DIR" python3 "$SCRIPT_DIR/collect.py" resources \
+      --run-dir "$RUN_DIR" --name "${profile}-rss" --source proc_rss --file "$rss_file" >/dev/null; then
+    set_status "soak:$profile" BLOCKED "进程 RSS 样本缺失（Linux /proc VmRSS 不可用）"
+    python3 - "$RUN_DIR/soak/$profile.json" "$minutes" "$started_at" "$ended_at" \
+      "进程 RSS 样本缺失（Linux /proc VmRSS 不可用）" <<'PYEOF'
+import json, sys
+out, minutes, started, ended, reason = sys.argv[1:]
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump({"status": "BLOCKED", "reason": reason, "duration_minutes": int(minutes),
+               "started_at": started, "ended_at": ended}, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+PYEOF
+    return 0
+  fi
+  python3 - "$RUN_DIR/soak/$profile.json" "$minutes" "$started_at" "$ended_at" <<'PYEOF'
+import json, sys
+out, minutes, started, ended = sys.argv[1:]
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump({"status": "PASS", "duration_minutes": int(minutes),
+               "started_at": started, "ended_at": ended}, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+PYEOF
   set_status "soak:$profile" PASS "稳定运行 ${minutes}min"
 }
 
 cmd_soak() {
   new_run; write_manifest
+  formal_environment_gate BENCH-11 soak
   preflight_checks strict
   stack_up
   log "soak：长稳运行（七模式 ≥30min + combined_protect ≥72h），故障与恢复见 recovery"
@@ -855,20 +962,24 @@ cmd_soak() {
 
 cmd_recovery() {
   new_run; write_manifest
+  formal_environment_gate BENCH-09 recovery
   preflight_checks strict
   stack_up
   local limit
   limit="$(json_get "$RUN_DIR/plan.json" thresholds.recovery_time_seconds_max)"
   log "recovery：故障注入仅限本 project=${PROJECT}，恢复时限 ${limit}s（plan 冻结值）"
   assert_ownership
-  local t0 t1
+  local t0 t1 fault_injected_at gateway_healthy_at catchup_verified=0 healthy=0
   t0="$(date +%s)"
+  fault_injected_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   compose_cmd stop gateway >/dev/null
   compose_cmd start gateway >/dev/null
   # 等待健康
   local deadline=$(( $(date +%s) + limit ))
   while :; do
     if compose_cmd ps gateway --format json 2>/dev/null | grep -q '"Healthy": *true\|healthy'; then
+      healthy=1
+      gateway_healthy_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       break
     fi
     [ "$(date +%s)" -ge "$deadline" ] && break
@@ -876,18 +987,34 @@ cmd_recovery() {
   done
   t1="$(date +%s)"
   local elapsed=$(( t1 - t0 ))
-  python3 - "$RUN_DIR/recovery.json" "$elapsed" "$limit" <<'PYEOF'
+  if [ "${P0B_RECOVERY_CATCHUP_VERIFIED:-0}" = "1" ]; then
+    catchup_verified=1
+  fi
+  python3 - "$RUN_DIR/recovery.json" "$elapsed" "$limit" "$fault_injected_at" \
+      "${gateway_healthy_at:-}" "$healthy" "$catchup_verified" <<'PYEOF'
 import json, sys
-out, elapsed, limit = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+out, elapsed, limit, fault_at, healthy_at, healthy, catchup = sys.argv[1:]
+elapsed, limit = int(elapsed), int(limit)
+healthy, catchup = int(healthy), int(catchup)
+status = "PASS" if healthy and catchup and elapsed <= limit else "BLOCKED" if healthy else "FAIL"
+reason = "" if status == "PASS" else (
+    "EVENT_CATCHUP_UNVERIFIED" if healthy and not catchup else "GATEWAY_HEALTHCHECK_TIMEOUT"
+)
 doc = {"scenario": "gateway_restart", "recovery_time_seconds": elapsed,
        "limit_seconds": limit,
-       "status": "PASS" if elapsed <= limit else "FAIL"}
+       "fault_injected_at": fault_at,
+       "gateway_healthy_at": healthy_at or None,
+       "catchup_verified": bool(catchup),
+       "evidence_scope": "gateway_health_plus_operator_catchup_assertion",
+       "status": status, "reason": reason}
 with open(out, "w", encoding="utf-8") as fh:
     json.dump(doc, fh, ensure_ascii=False, indent=2, sort_keys=True)
     fh.write("\n")
 PYEOF
-  if [ "$elapsed" -le "$limit" ]; then
+  if [ "$healthy" -eq 1 ] && [ "$catchup_verified" -eq 1 ] && [ "$elapsed" -le "$limit" ]; then
     set_status BENCH-09 PASS "网关重启恢复 ${elapsed}s ≤ ${limit}s"
+  elif [ "$healthy" -eq 1 ]; then
+    set_status BENCH-09 BLOCKED "网关已恢复但事件追平未获得显式证据（设置 P0B_RECOVERY_CATCHUP_VERIFIED=1 后重跑）"
   else
     set_status BENCH-09 FAIL "网关重启恢复 ${elapsed}s > ${limit}s"
   fi
