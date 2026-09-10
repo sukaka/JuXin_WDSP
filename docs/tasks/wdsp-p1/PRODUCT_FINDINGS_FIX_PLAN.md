@@ -1,6 +1,8 @@
-# P1 产品发现修复计划（13 条）
+# P1 产品发现修复计划（13 条 + R 系列增补）
 
 日期：2026-09-09。来源：P1 R2/R4b 真实栈演练发现（证据：docs/evidence/regressions/P1-04-R2-FINAL-REPORT.md「产品发现」节、P1-04-R4B-DRILL-REPORT.md「产品发现」节、docs/tasks/wdsp-p1/WORKLOG.md S3/S6 记录）。外加 B3 期间记录的 1 条关联风险（counters.Eval），合计 14 条登记，其中 2 条已在 P1 期间修复或定性为非缺陷，本计划覆盖剩余 12 条。
+
+2026-09-10 增补：全仓六域代码审查新发现 25 项（高 3 / 中 9 / 低 13 组），以 R-1~R-12 与 R-C 清单登记于 §5，验收总口径同 §4。
 
 ## 0. 总览与批次
 
@@ -114,6 +116,56 @@
 | F3 调查与设计（#7~#11） | 约 4~5 天（实现另估） |
 | F4 文档 | 约 0.5 天 |
 | 合计（不含 F3 实现） | 约 10~11 天 |
+
+## 5. 增补：2026-09-10 全仓代码审查发现（R 编号）
+
+来源：六域并行只读审查（jiuzhang_guard / dynamic_security / server / wdsp-agent / web / 横向安全与交付面），各域 `go vet` 与 `go test -race` 基线全绿。与 #1~#13 及 DELIVERY_SUMMARY §3 已知项无重复。编号 R-1~R-12 为高/中危明细，R-L 为低危清单。
+
+### R-A 批次：高危（建议立即）
+
+**R-1 JWT selector 用未规范化原始路径匹配，PROTECT 存在绕过面（待验证触发链）**
+- 现象：`jwt_trust.go:212` 直传原始 `URL.Path`，被调方契约（`jwtverify/types.go:346`）要求已规范路径。`//api/admin`、`/foo/../api/admin` 不满足前缀匹配 → OUT_OF_SCOPE → PROTECT 下不验证、不拦截、无事件。源站归一化后仍路由到受保护 API 时（nginx merge_slashes/.NET），JWT 强制失效。
+- 修法：Verify 前确定性清洗（合并重复斜杠、解析 `.`/`..`）或与路由口径统一；补 `//`/`..`/大小写变体集成测试。同文件 PathExact 同受影响。
+- 验收：真实栈上 `//`与`..` 形态请求在 PROTECT 下被 401/403 且事件落库。工作量：约 1 天。
+
+**R-2 Agent 补传公平预算桶「突发量 < 批大小」，断线补传永久静默停滞**
+- 现象：`agent/agent.go:1106-1119` + `ratelimit/ratelimit.go:44-48`：令牌桶 burst=1 秒配额（默认 100Mbps×30%≈3.75MB），补传按 500 条/批整批 `Allow`——含 Body 的批次数学上永远超限；`buffer/buffer.go:363-369` 吞掉 errReplayThrottled，无日志无指标，每秒空转；缓存涨破 512MB 硬上限后 FIFO 淘汰丢数据。at-least-once 承诺被架空。实时通道 `outbound_mbps < ~64` 时同病。`agent_p1_test.go:TestReplayFairnessBudget` 把该行为固化为预期（微缩尺度未暴露生产默认值死锁）。
+- 修法：公平预算按实际发送单元（≤8MB 子批）扣减；Allow 支持超 burst 批次的欠账/摊还语义；errReplayThrottled 出 WARN 与停滞指标。
+- 验收：默认参数下积 100MB 含 Body 记录断网恢复后补传持续推进（指标可见）；低速率档位实时大批可发。工作量：约 1.5 天。
+
+**R-3 tapsrc 分帧器切片别名，负载下 tap 记录批量丢失且误计 ParseErrors**
+- 现象：`tapsrc/scan.go:186-213`：帧闭合 `append(sc.buf, ...)` 复用底层数组，`sc.buf[:0]` 保留容量后同读块内下一帧覆写已交付帧 → json.Unmarshal 失败计入 ParseErrors，排障方向被误导。现有测试只断言帧条数不断言内容，恰好绕过。
+- 修法：交付帧拷贝独立数组（bytes.Clone）；补「跨块帧+同块后续帧逐字节相等」回归测试。
+- 验收：构造跨 32KB 块多帧输入断言内容完整；ParseErrors 不再含此类误计。工作量：约 0.5 天。
+
+### R-B 批次：中危
+
+**R-4 人工全局封禁被同 IP 自动封禁遮蔽并随白名单绕过**：`temporaryblock/temporaryblock.go:252-267` `Blocked` 返回首个命中不分人工/自动（`module.go:1417-1434`）；CC 自动封禁在前时管理员全局人工封禁失效，且自动封禁可被白名单/L7 allow 绕过。修法：命中收集后人工恒优先，或写入人工封禁时 HDel 同 IP 自动条目。工作量：约 0.5 天。
+
+**R-5 响应捕获 wrapper 不跳过 1xx，上游 103 锁死最终状态码**：`apiresponse.go:99-108` 无 `code<100||code>=200` 判定（库内其余三个 wrapper 均有），103 锁存后最终 200 被丢弃，缓冲模式向客户端写协议级残缺响应。修法：1xx 直接透传不锁存不 decide。工作量：约 0.5 天（含真实上游 103 复现确认）。
+
+**R-6 发布分布式锁 TTL/释放竞态**：`gatewayconfig/publisher.go:324-342`：SetNX+TTL 120s，扇出在锁内且单节点最坏 60s+，≥2 不可达节点即超 TTL 并发进入；releaseLock 为 GET→比较→DEL 非原子，旧持有者可删新锁。后果：管理面显示版本 A 生效而网关跑 B。修法：Lua compare-and-del、看门狗续约或扇出移出临界区、执行前 fencing 重校验。与 #1 同源（单实例语义在 HA 下的一致性），建议并入 F1/F2。工作量：约 1 天。
+
+**R-7 LoadOrCreate 密钥读-改-写竞态，HA 双节点首启静默分叉**：`apiauthz/candidate_sweep.go:77-106`、`apiscan/sign.go:129`：读空→各自生成→ON CONFLICT 覆盖写；进程内存与 DB 分叉，objref HMAC 失锚（数据级）。修法：ON CONFLICT DO NOTHING RETURNING 抢建或 advisory lock。工作量：约 0.5 天。与 R-6 同批。
+
+**R-8 证书轮换 CA 写失败回滚制造「旧 key+新 cert」死状态**：`cert/manager.go:113-130`：CA 写失败只回滚 key，重启后 LoadIdentity 校验失败静默降级 Bearer。修法：CA 失败 key+cert 一起回滚（备份旧 cert）或保留新组合让旧 CA 继续可用。工作量：约 0.5 天。
+
+**R-9 httpsensor 待配对请求 Body 无全局内存上限（待验证）**：`httpsensor/conn.go:140` 单连接 128 条×256KB≈32MB，连接表 4096，已解析 Body 不受重组器 15MB 页上限约束；流水线 POST 不读响应可秒级推高 RSS，selfmon 兜底需 20-30s，存在 OOM 窗口（L2+ 采集等级暴露）。修法：全局待配对 Body 字节预算纳入背压。工作量：约 1 天。
+
+**R-10 AI 供应商 BaseURL 无 SSRF 防护且解密 Key 随请求外发**：`aihandlers/models_handler.go:110`（仅校验非空/长度）、`aimodel/client.go:136-153`（裸 http.Client，Bearer key 发往 baseURL，错误带 200 字符回显）。`ai.models.manage` 角色可指向攻击者服务器收密钥或打内网。对比 `apisecurity/spec_version.go` 已有完整 dial 时重解析。修法：scheme 白名单+私网/元数据段拒绝+dial 时重解析+密钥 Host 绑定。工作量：约 1 天。
+
+**R-11 登录限速键 IPAndUsernameKey 名不副实且未接线**：`middleware/ratelimit.go:93-96` 实现只返回 RemoteIP，全仓无调用方；login/totp-verify 用 IPKey（`app.go:890-900`），单账户撞库仅靠账户锁定兜底。修法：实现真实 IP+用户名复合键（用户名归一化防键膨胀）接线登录链，或删除死代码并文档化。工作量：约 0.5 天。
+
+**R-12 gzip/deflate 解压超限截断不标 truncated**：`httpsensor/body.go:139-146` 多读 1B 探测后丢弃信号，`body_truncated=false` 的残缺 Body 冒充完整内容，下游取证误判。修法：截断标记透传。工作量：约 0.5 天。
+
+### R-C 批次：低危清单（随 R-A/R-B 批次顺带，不单独排期）
+
+- 网关：`pipeline/response.go:255` 响应相位 Decide 不传 Exceptions（注册表扩展到响应相位即出现「配置不生效」静默缺口，演进隐患）；`apiexceptions.go:233` uri_prefix 尾斜杠不归一化（配置 `/api/` 永不命中且无报错，fail-safe 方向）；`module.go:462` engineFingerprint 不含 temp_block_poll_interval（仅改间隔的发布静默不生效）；`bot_step.go:113` OBSERVE 下 reChallenge 分支不落事件；`apiprotect.go:541/611` FAIL_CLOSED/合规阻断抑制响应携带上游响应头（与「不含上游任何内容」声明矛盾）。
+- eventparser：`parser.go:533` 查询串脱敏不匹配 URL 编码参数名；`:516` 审计时间解析失败静默回退 time.Now()；`:557` maskMatchedData 先遮蔽后截断有 CPU 放大面（旁路组件，影响有限）。
+- server 认证/会话：`auth/service.go:433` CSRF 比较非常量时间（subtle.ConstantTimeCompare）；登录链无 Origin 校验（login CSRF 纵深缺口）；CSRF 键注销后残留（固定 8h TTL）；账号停用/锁定 403 与密码错误 401 可区分枚举（与文件头注释矛盾）；TOTP 同时间步可重用（建议记 last_used_timestep）；`ErrPasswordReused` 被密码过期复用；`audits/handler.go:110` queryInt 无溢出防护；`settings.go:77` gateway_runtime:bot_signing_keys 未入 SensitiveSettingKeys（与 #6 同批处理）；`exceptions.go:1054` Create 两段写非事务（重试产重复草稿）。
+- 部署：`deployment/docker-compose.stage5.yml:88` MANAGEMENT_TRUSTED_PROXY_CIDRS 默认 172.16.0.0/12 过宽（需核实生产离线包 compose 是否同默认；解析时「整链皆可信」应回退直接连接 IP）。
+- wdsp-agent：`mirrorsrc/mirror.go:356` 连接信号量未挂 ConnState（本机连入无界）；`agent.go:1080` 补传反序列化失败静默跳过不计数（段被当成功删除）；`agent.go:827` flows 通道不尊重 429/Retry-After；`cmd/agent/main.go:88` enroll --token 走命令行可经 /proc 读取；`agent.go:227` buffer 目录不受 --state-dir 覆盖（自定义 state-dir 静默降级无缓存）；`transport.go:34` 响应 4MB 截断无明确错误；`pop.go:63` expiredWarned 轮换后不重置；`agent/mirror.go:240` 补传路径 v2 未协商误记分账。
+- web：`ApmTraceDrawer.tsx:100` trace() 无 `?? []` 归一化（同 gate_assessment 白屏类隐患）；`securityRegression.ts:102` 可用性预判不区分门禁模式（OFF/OBSERVE 下红色「不可用」表述过重）；`Date.parse` NaN 无兜底（显示「NaN 天前」）；`api/apm.ts:168` trace 路径参数未 encodeURIComponent；`web/src/eddt-head-tmp.tsx` 0 字节临时文件（1.1.0 混入）应删。
 
 ## 4. 验收总口径
 
