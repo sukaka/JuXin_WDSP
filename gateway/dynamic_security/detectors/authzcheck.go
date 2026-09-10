@@ -1,5 +1,5 @@
 // authzcheck.go 授权基线运行时检测（W4-GW，P0-16 BFLA / P0-17 字段权限；W11-RAUTHZ 补响应侧）：
-//   - 角色提取：JWT Bearer 未验签 claims 的 role/roles 自定义 claim（字符串或数组），无凭据 = 匿名；
+//   - BFLA 角色提取：JWT Bearer 未验签 claims 的 role/roles 自定义 claim（字符串或数组），无凭据 = 匿名；
 //   - BFLA：端点存在 confirmed 角色基线时，请求角色无匹配 allowed 基线 / 匿名访问产生观察明细；
 //   - 字段权限（请求侧）：请求 JSON BODY 字段命中 FORBIDDEN / READ_ONLY / SERVER_GENERATED /
 //     ADMIN_WRITABLE 基线时产出明细；
@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 )
 
@@ -200,8 +201,9 @@ func CheckRoleBaseline(ctx *dsctx.RequestContext, r *http.Request, endpointKey, 
 // 命中语义：FORBIDDEN → authz.forbidden_field（BLOCK 类：PROTECT 定案阻断，OBSERVE 维持观察）；
 // SERVER_GENERATED → authz.server_generated_write（OBSERVE）；READ_ONLY → authz.readonly_write（OBSERVE）；
 // ADMIN_WRITABLE 且请求角色不含行内指定角色 → authz.readonly_write（OBSERVE）。
+// 字段权限的角色仅消费 JWT 信任链产出的 VerifiedRoles，未验签声明不参与 FORBIDDEN BLOCK。
 // 证据只含字段名/属性/角色名，绝不落请求值。
-func CheckFieldPermissions(ctx *dsctx.RequestContext, r *http.Request, endpointKey string, perms []FieldPermission, p *parser.Parsed) {
+func CheckFieldPermissions(ctx *dsctx.RequestContext, jwt *jwtverify.VerificationResult, endpointKey string, perms []FieldPermission, p *parser.Parsed) {
 	if ctx == nil || p == nil || len(perms) == 0 || len(p.JSONFields) == 0 {
 		return
 	}
@@ -222,34 +224,43 @@ func CheckFieldPermissions(ctx *dsctx.RequestContext, r *http.Request, endpointK
 	if len(byField) == 0 {
 		return
 	}
-	roles := ExtractRequestRoles(r)
+	roles := verifiedRequestRoles(jwt)
 	// 稳定遍历序（map 乱序会让事件明细序抖动）
 	paths := make([]string, 0, len(p.JSONFields))
 	for path := range p.JSONFields {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	n := 0
+	findings := make([]dsctx.DetectorMatch, 0, maxAuthzFieldMatches)
 	for _, path := range paths {
 		rows := byField["json."+path]
 		if len(rows) == 0 {
 			continue
 		}
-		if evaluateFieldPermission(ctx, endpointKey, path, rows, roles) {
-			n++
-			if n >= maxAuthzFieldMatches {
-				return
-			}
+		// 先完整评估所有字段的安全属性，再按优先级裁剪明细；不能跳过后续
+		// FORBIDDEN，否则攻击者可用字段数量绕过权限判定。
+		if finding, ok := evaluateFieldPermission(endpointKey, path, rows, roles); ok {
+			findings = retainSecurityFinding(findings, finding, maxAuthzFieldMatches)
 		}
+	}
+	for _, finding := range findings {
+		ctx.AddMatch(finding)
 	}
 }
 
-// evaluateFieldPermission 对单字段的可判定权限行求值，命中时写一条 match 并返回 true。
+func verifiedRequestRoles(jwt *jwtverify.VerificationResult) []string {
+	if jwt == nil || jwt.Status != jwtverify.StatusVerified {
+		return nil
+	}
+	return append([]string(nil), jwt.VerifiedRoles...)
+}
+
+// evaluateFieldPermission 对单字段的可判定权限行求值，命中时返回一条 match。
 // 优先级：FORBIDDEN > SERVER_GENERATED > READ_ONLY > ADMIN_WRITABLE（每字段至多一条明细）。
 // 行适用性：默认行（role 空）对全部角色生效；角色覆盖行仅对行内角色生效。
 // ADMIN_WRITABLE 例外：行的 role 为「指定可写角色」，请求角色不含它即违例，
 // 故其判定不要求行适用；role 为空的 ADMIN_WRITABLE 默认行未指定可写角色，运行时不可判定，跳过。
-func evaluateFieldPermission(ctx *dsctx.RequestContext, endpointKey, path string, rows []FieldPermission, roles []string) bool {
+func evaluateFieldPermission(endpointKey, path string, rows []FieldPermission, roles []string) (dsctx.DetectorMatch, bool) {
 	var forbidden, serverGenerated, readOnly bool
 	var adminRoles []string
 	for _, row := range rows {
@@ -286,7 +297,7 @@ func evaluateFieldPermission(ctx *dsctx.RequestContext, endpointKey, path string
 	}
 	switch {
 	case forbidden:
-		ctx.AddMatch(dsctx.DetectorMatch{
+		return dsctx.DetectorMatch{
 			Detector:   "api_authz",
 			RuleID:     "authz.forbidden_field",
 			Category:   "BLOCK",
@@ -294,10 +305,9 @@ func evaluateFieldPermission(ctx *dsctx.RequestContext, endpointKey, path string
 			Message:    "forbidden field present in request body (mass assignment)",
 			Evidence:   ev(fieldAttributeForbidden),
 			ScoreDelta: 40,
-		})
-		return true
+		}, true
 	case serverGenerated:
-		ctx.AddMatch(dsctx.DetectorMatch{
+		return dsctx.DetectorMatch{
 			Detector:   "api_authz",
 			RuleID:     "authz.server_generated_write",
 			Category:   "OBSERVE",
@@ -305,10 +315,9 @@ func evaluateFieldPermission(ctx *dsctx.RequestContext, endpointKey, path string
 			Message:    "server-generated field provided by client",
 			Evidence:   ev(fieldAttributeServerGenerated),
 			ScoreDelta: 15,
-		})
-		return true
+		}, true
 	case readOnly:
-		ctx.AddMatch(dsctx.DetectorMatch{
+		return dsctx.DetectorMatch{
 			Detector:   "api_authz",
 			RuleID:     "authz.readonly_write",
 			Category:   "OBSERVE",
@@ -316,17 +325,16 @@ func evaluateFieldPermission(ctx *dsctx.RequestContext, endpointKey, path string
 			Message:    "read-only field written in request body",
 			Evidence:   ev(fieldAttributeReadOnly),
 			ScoreDelta: 15,
-		})
-		return true
+		}, true
 	default:
 		// ADMIN_WRITABLE：存在指定可写角色且请求角色均不匹配 → 越权写入嫌疑
 		for _, designated := range adminRoles {
 			if roleIn(designated, roles) {
-				return false // 指定角色本人写入：允许
+				return dsctx.DetectorMatch{}, false // 指定角色本人写入：允许
 			}
 		}
 		if len(adminRoles) > 0 {
-			ctx.AddMatch(dsctx.DetectorMatch{
+			return dsctx.DetectorMatch{
 				Detector:   "api_authz",
 				RuleID:     "authz.readonly_write",
 				Category:   "OBSERVE",
@@ -334,10 +342,9 @@ func evaluateFieldPermission(ctx *dsctx.RequestContext, endpointKey, path string
 				Message:    "admin-only field written by non-designated role",
 				Evidence:   ev(fieldAttributeAdminWritable),
 				ScoreDelta: 15,
-			})
-			return true
+			}, true
 		}
-		return false
+		return dsctx.DetectorMatch{}, false
 	}
 }
 

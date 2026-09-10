@@ -108,6 +108,8 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 		authz(middleware.RequirePermission(PermRelationManage)(http.HandlerFunc(h.CreateObjectRelation))))
 	mux.Handle("POST /api/v1/api-security/authz/relations/{id}/revoke",
 		authz(middleware.RequirePermission(PermRelationManage)(http.HandlerFunc(h.RevokeObjectRelation))))
+	mux.Handle("POST /api/v1/api-security/authz/relations/{id}/reauthorize",
+		authz(middleware.RequirePermission(PermRelationManage)(http.HandlerFunc(h.ReauthorizeObjectRelation))))
 	mux.Handle("GET /api/v1/api-security/authz/decisions",
 		authz(middleware.RequirePermission(PermAuthzRead)(http.HandlerFunc(h.ListAuthorizationDecisions))))
 	mux.Handle("GET /api/v1/api-security/authz/decisions/{id}",
@@ -1016,6 +1018,64 @@ func (h *Handler) RevokeObjectRelation(w http.ResponseWriter, r *http.Request) {
 	h.recordAudit(r, p, "revoke_object_relation", "api_object_relation", id.String(), "",
 		authzAuditSummary(map[string]any{"status": RelationStatusConfirmed}),
 		authzAuditSummary(map[string]any{"status": rel.Status, "reason": strings.TrimSpace(req.Reason)}),
+		"SUCCESS", "HIGH")
+	h.triggerPublish(r, p)
+	response.JSON(w, r, http.StatusOK, rel)
+}
+
+type reauthorizeRelationRequest struct {
+	Reason     string     `json:"reason"`
+	ValidFrom  *time.Time `json:"valid_from"`
+	ValidUntil *time.Time `json:"valid_until"`
+}
+
+func (h *Handler) ReauthorizeObjectRelation(w http.ResponseWriter, r *http.Request) {
+	store, ok := h.relationStore(w, r)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的关系ID")
+		return
+	}
+	var req reauthorizeRelationRequest
+	if err := response.DecodeJSON(w, r, &req, relationBodyMaxBytes); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if req.ValidFrom == nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "valid_from 必填")
+		return
+	}
+	in := ReauthorizeRelationInput{Reason: strings.TrimSpace(req.Reason), ValidFrom: req.ValidFrom.UTC(), ValidUntil: req.ValidUntil}
+	if p := authz.PrincipalFrom(r.Context()); p != nil {
+		in.ConfirmedBy = p.Username
+	}
+	if err := validateReauthorizeInput(in); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	p := authz.PrincipalFrom(r.Context())
+	rel, err := store.ReauthorizeObjectRelation(r.Context(), id, in)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "关系不存在")
+		case errors.Is(err, ErrRelationConflict):
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "仅已撤销或已过期关系允许重新授权")
+		default:
+			response.InternalError(w, r, err)
+		}
+		return
+	}
+	beforeStatus := rel.PreviousStatus
+	if beforeStatus == "" {
+		beforeStatus = "REVOKED_OR_EXPIRED"
+	}
+	h.recordAudit(r, p, "reauthorize_object_relation", "api_object_relation", id.String(), "",
+		authzAuditSummary(map[string]any{"status": beforeStatus}),
+		authzAuditSummary(map[string]any{"status": rel.Status, "valid_from": rel.ValidFrom, "valid_until": rel.ValidUntil, "reason": rel.Reason}),
 		"SUCCESS", "HIGH")
 	h.triggerPublish(r, p)
 	response.JSON(w, r, http.StatusOK, rel)

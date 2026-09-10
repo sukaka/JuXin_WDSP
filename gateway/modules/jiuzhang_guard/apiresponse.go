@@ -97,6 +97,14 @@ func (c *apiResponseCapture) Header() http.Header { return c.base.Header() }
 
 // WriteHeader 捕获状态码并按响应头决定捕获模式（直通模式立即透传，缓冲/抑制模式扣留状态行）。
 func (c *apiResponseCapture) WriteHeader(code int) {
+	// Informational responses are provisional and may be followed by the final
+	// response status. Forward each one before a final status is captured.
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		if c.status == 0 {
+			c.base.WriteHeader(code)
+		}
+		return
+	}
 	if c.status != 0 {
 		return // 与 net/http 一致：忽略重复 WriteHeader
 	}

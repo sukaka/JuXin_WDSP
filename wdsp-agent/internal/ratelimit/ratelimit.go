@@ -64,6 +64,13 @@ func (b *Bucket) Mbps() float64 {
 	return b.rate * 8 / 1e6
 }
 
+// Burst 当前令牌桶容量（字节）；不限速时返回 0。
+func (b *Bucket) Burst() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return int(b.burst)
+}
+
 // Allow 尝试消费 n 字节；不限速或余额足够返回 true。
 func (b *Bucket) Allow(n int) bool {
 	b.mu.Lock()

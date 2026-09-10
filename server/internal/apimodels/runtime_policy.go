@@ -309,6 +309,23 @@ type RuntimePolicyRollback struct {
 	// RestoredModel 恢复为 FORMAL 的模型版本（发布内容源随之回到旧模型；
 	// 幂等重试时其已是 FORMAL，原样返回）。
 	RestoredModel *Version
+	// PreviousFormalModelID 用于发布失败后幂等恢复模型的 FORMAL 指针。
+	PreviousFormalModelID uuid.UUID
+}
+
+// newRuntimePolicyRollback records the model that was FORMAL before the
+// rollback. The restored target is the successful path's source; the prior
+// model is needed only if publishing that target fails.
+func newRuntimePolicyRollback(current *RuntimePolicy, draft *RuntimePolicy, restored *Version) *RuntimePolicyRollback {
+	var previousFormalModelID uuid.UUID
+	if current != nil {
+		previousFormalModelID = current.SourceModelVersionID
+	}
+	return &RuntimePolicyRollback{
+		Draft:                 draft,
+		RestoredModel:         restored,
+		PreviousFormalModelID: previousFormalModelID,
+	}
 }
 
 // RollbackToKnownGood 将端点回退到上一已知良好版本（单事务 + FOR UPDATE）：
@@ -369,7 +386,7 @@ RETURNING `+policyColumns+`, (SELECT endpoint_key FROM api_endpoints WHERE id=$1
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return &RuntimePolicyRollback{Draft: draft, RestoredModel: restored}, nil
+	return newRuntimePolicyRollback(cur, draft, restored), nil
 }
 
 // restoreFormalModelTx 受控模型恢复通道（仅回滚路径可达 SUPERSEDED→FORMAL，事务内）：
@@ -387,6 +404,12 @@ func (s *Store) restoreFormalModelTx(ctx context.Context, tx pgx.Tx, endpointID,
 	}
 	switch v.Status {
 	case StatusFormal: // 幂等：模型已恢复（上次回滚发布未成功前的重试）
+		// FORMAL 是发布内容源的事实依据；即使模型状态已在上一次尝试中
+		// 恢复，也必须补写端点指针，避免状态与发布源分离。
+		if _, err := tx.Exec(ctx, `
+UPDATE api_endpoints SET current_model_version_id=$1, updated_at=now() WHERE id=$2`, targetID, endpointID); err != nil {
+			return nil, err
+		}
 		return v, nil
 	case StatusSuperseded:
 	default:
@@ -423,4 +446,31 @@ func (s *Store) MarkRuntimePolicyFailed(ctx context.Context, id uuid.UUID, reaso
 UPDATE api_runtime_policies SET status=$2, error=$3
 WHERE id=$1 AND status = ANY($4)`, id, PolicyStatusFailed, reason, pendingPolicyStatuses)
 	return err
+}
+
+// FinalizeRuntimePolicyRollbackFailure 原子收尾回滚发布失败：策略进入 FAILED，且恢复模型
+// 仍保持 FORMAL。发布实现可能已经回写失败，也可能在网关调用前直接返回错误，因此这里
+// 对策略状态和模型指针都做幂等处理，避免留下孤儿 DRAFT 或错误的发布内容源。
+func (s *Store) FinalizeRuntimePolicyRollbackFailure(ctx context.Context, rollback *RuntimePolicyRollback, reason string) error {
+	if rollback == nil || rollback.Draft == nil {
+		return fmt.Errorf("rollback failure outcome is nil")
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	finalizableStatuses := append(append([]string{}, pendingPolicyStatuses...), PolicyStatusFailed)
+	if _, err := tx.Exec(ctx, `
+UPDATE api_runtime_policies SET status=$2, error=$3
+WHERE id=$1 AND status = ANY($4)`, rollback.Draft.ID, PolicyStatusFailed, reason, finalizableStatuses); err != nil {
+		return err
+	}
+	if rollback.PreviousFormalModelID != uuid.Nil {
+		if _, err := s.restoreFormalModelTx(ctx, tx, rollback.Draft.EndpointID,
+			rollback.PreviousFormalModelID, uuid.Nil); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }

@@ -57,6 +57,28 @@ func TestFrameScannerMultiAndSeparator(t *testing.T) {
 	}
 }
 
+// R16：已交付帧必须拥有独立字节所有权；后续 feed 复用扫描器缓冲区时，
+// 不能改写调用方仍在使用的前一帧。
+func TestFrameScannerFrameOwnership(t *testing.T) {
+	sc := newFrameScanner(1 << 20)
+	first := `{"a":1}`
+	second := `{"b":2}`
+
+	if got := sc.feed([]byte(first[:3])); len(got) != 0 {
+		t.Fatalf("半帧不应提前交付: %d", len(got))
+	}
+	frames := sc.feed([]byte(first[3:] + second))
+	if len(frames) != 2 {
+		t.Fatalf("应交付两帧: %d", len(frames))
+	}
+	if string(frames[0]) != first {
+		t.Fatalf("第一帧在后续读取后被覆写: got=%q want=%q", frames[0], first)
+	}
+	if string(frames[1]) != second {
+		t.Fatalf("第二帧内容错误: got=%q want=%q", frames[1], second)
+	}
+}
+
 func TestFrameScannerOversize(t *testing.T) {
 	sc := newFrameScanner(64)
 	// 超限帧（>64B）+ 后续正常帧：超限丢弃且状态机恢复同步

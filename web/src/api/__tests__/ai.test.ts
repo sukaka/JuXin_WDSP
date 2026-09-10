@@ -84,9 +84,10 @@ describe('ai.ts 自制封装收敛与全局回调纪律', () => {
 
   it('patchAiProvider / patchAiAgent / patchAiTool：PATCH 到对应端点', async () => {
     fetchMock.mockImplementation(() =>
-      Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: null })),
+      Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { provider: { id: 'p1', name: 'n' } } })),
     )
-    await patchAiProvider('p1', { name: 'n' })
+    const provider = await patchAiProvider('p1', { name: 'n' })
+    expect(provider).toEqual({ id: 'p1', name: 'n' })
     await patchAiAgent('a1', { enabled: false })
     await patchAiTool('t1', { timeout_seconds: 30 })
     const urls = fetchMock.mock.calls.map((c) => String(c[0]))

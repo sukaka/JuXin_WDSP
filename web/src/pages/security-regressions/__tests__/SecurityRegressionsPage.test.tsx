@@ -202,6 +202,13 @@ describe('SecurityRegressionsPage', () => {
     expect(screen.getByText('QUEUED_X')).toBeTruthy()
   })
 
+  it('登记时间非法时新鲜度降级为占位符，页面不出现 NaN（L29）', async () => {
+    vi.stubGlobal('fetch', mockFetch({ runs: [makeRun({ created_at: 'not-a-date' })] }))
+    renderPage()
+    expect(await screen.findByText('ci-run-20260908-01')).toBeTruthy()
+    expect(screen.queryByText(/NaN/)).toBeNull()
+  })
+
   it('证据不可用时列出文字原因而非绿色百分比', async () => {
     vi.stubGlobal(
       'fetch',

@@ -195,18 +195,43 @@ func CheckFileCompliance(ctx *dsctx.RequestContext, obs []dsctx.FileObservation,
 				ScoreDelta: 5,
 			})
 		}
-		n := 0
+		findings := make([]dsctx.DetectorMatch, 0, maxFileComplianceFindingsPerFile)
 		for _, rule := range dirRules {
-			if n >= maxFileComplianceFindingsPerFile {
-				break
-			}
 			if !fileComplianceRuleHits(rule, o) {
 				continue
 			}
-			addFileComplianceFinding(ctx, rule, o, mode)
-			n++
+			// 先完整求值，再按优先级裁剪明细；不能在达到容量后跳过规则，
+			// 否则后续 BLOCK 可被大量观察规则遮蔽。
+			findings = retainSecurityFinding(findings, fileComplianceFinding(rule, o, mode), maxFileComplianceFindingsPerFile)
+		}
+		for _, finding := range findings {
+			ctx.AddMatch(finding)
 		}
 	}
+}
+
+// retainSecurityFinding 在完整求值过程中保持有界明细，同时优先保留 BLOCK 类结果。
+// 满容量后遇到 BLOCK 时替换最早的非阻断明细；若已有明细全为 BLOCK，则丢弃当前重复阻断
+// 明细，但不影响最终阻断语义。调用方只将返回切片写入上下文，避免临时结果放大。
+func retainSecurityFinding(retained []dsctx.DetectorMatch, finding dsctx.DetectorMatch, limit int) []dsctx.DetectorMatch {
+	if limit <= 0 {
+		return retained
+	}
+	if len(retained) < limit {
+		return append(retained, finding)
+	}
+	if finding.Category != "BLOCK" {
+		return retained
+	}
+	for i, prior := range retained {
+		if prior.Category == "BLOCK" {
+			continue
+		}
+		copy(retained[i:], retained[i+1:])
+		retained[len(retained)-1] = finding
+		return retained
+	}
+	return retained
 }
 
 // rulesFor 取方向匹配的规则（规则数受 maxFileComplianceRules 护栏，线性筛选开销可忽略）。
@@ -236,10 +261,10 @@ func fileComplianceRuleHits(rule compiledFileComplianceRule, o dsctx.FileObserva
 	}
 }
 
-// addFileComplianceFinding 合规命中明细：BLOCK 动作 PROTECT 升级 BLOCK 类（上传决策 403、
+// fileComplianceFinding 合规命中明细：BLOCK 动作 PROTECT 升级 BLOCK 类（上传决策 403、
 // 下载挂点抑制 403），其余模式维持 OBSERVE/MEDIUM（would-block）；OBSERVE 动作恒 OBSERVE/LOW。
 // 证据只含方向/文件名/扩展名/MIME/规则描述（match+value+reason），不落内容。
-func addFileComplianceFinding(ctx *dsctx.RequestContext, rule compiledFileComplianceRule, o dsctx.FileObservation, mode decision.Mode) {
+func fileComplianceFinding(rule compiledFileComplianceRule, o dsctx.FileObservation, mode decision.Mode) dsctx.DetectorMatch {
 	evidence := map[string]string{
 		"direction": o.Direction,
 		"filename":  o.FileName,
@@ -257,7 +282,7 @@ func addFileComplianceFinding(ctx *dsctx.RequestContext, rule compiledFileCompli
 	}
 	message := fmt.Sprintf("file compliance rule matched (%s %q)", rule.Match, rule.Value)
 	if rule.Action == FileComplianceActionBlock && mode == decision.ModeProtect {
-		ctx.AddMatch(dsctx.DetectorMatch{
+		return dsctx.DetectorMatch{
 			Detector:   "file",
 			RuleID:     "file.compliance_violation",
 			Category:   "BLOCK",
@@ -266,12 +291,11 @@ func addFileComplianceFinding(ctx *dsctx.RequestContext, rule compiledFileCompli
 			Evidence:   evidence,
 			Confidence: 1.0, // 确定性规则匹配
 			ScoreDelta: 40,
-		})
-		return
+		}
 	}
 	if rule.Action == FileComplianceActionBlock {
 		// would-block（OBSERVE/OFF 模式不执行阻断，与 addRelationViolation 同一语义）
-		ctx.AddMatch(dsctx.DetectorMatch{
+		return dsctx.DetectorMatch{
 			Detector:   "file",
 			RuleID:     "file.compliance_violation",
 			Category:   "OBSERVE",
@@ -280,10 +304,9 @@ func addFileComplianceFinding(ctx *dsctx.RequestContext, rule compiledFileCompli
 			Evidence:   evidence,
 			Confidence: 1.0,
 			ScoreDelta: 15,
-		})
-		return
+		}
 	}
-	ctx.AddMatch(dsctx.DetectorMatch{
+	return dsctx.DetectorMatch{
 		Detector:   "file",
 		RuleID:     "file.compliance_violation",
 		Category:   "OBSERVE",
@@ -292,7 +315,7 @@ func addFileComplianceFinding(ctx *dsctx.RequestContext, rule compiledFileCompli
 		Evidence:   evidence,
 		Confidence: 1.0,
 		ScoreDelta: 5,
-	})
+	}
 }
 
 // doubleExtensionStemExt 双扩展名判定：最终扩展名之外，去尾段后的词干仍带可识别扩展名时

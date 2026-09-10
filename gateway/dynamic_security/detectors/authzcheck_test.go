@@ -3,13 +3,20 @@ package detectors
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 )
+
+func verifiedRoles(roles ...string) *jwtverify.VerificationResult {
+	return &jwtverify.VerificationResult{Status: jwtverify.StatusVerified, VerifiedRoles: roles}
+}
 
 // makeUnsignedJWT 拼装未验签 JWT（header.payload.sig；仅测试用，payload 为任意 claims）。
 func makeUnsignedJWT(t *testing.T, claims map[string]any) string {
@@ -162,7 +169,7 @@ func TestCheckFieldPermissionsForbidden(t *testing.T) {
 	// 默认行 FORBIDDEN：任意角色命中 → BLOCK/HIGH
 	ctx := dsctx.New("t", dsctx.DefaultParseLimits())
 	perms := []FieldPermission{{EndpointKey: "POST /v1/orders", FieldPath: "json.role", Direction: "REQUEST", Attribute: "FORBIDDEN"}}
-	CheckFieldPermissions(ctx, bearerReq(t, map[string]any{"role": "ops"}), "POST /v1/orders", perms, parsed)
+	CheckFieldPermissions(ctx, verifiedRoles("ops"), "POST /v1/orders", perms, parsed)
 	m := findMatch(ctx, "authz.forbidden_field")
 	if m == nil {
 		t.Fatalf("expected forbidden_field, got %+v", ctx.CopyMatches())
@@ -173,18 +180,71 @@ func TestCheckFieldPermissionsForbidden(t *testing.T) {
 	// 角色覆盖行：行内角色命中才判
 	ctx = dsctx.New("t2", dsctx.DefaultParseLimits())
 	perms = []FieldPermission{{EndpointKey: "POST /v1/orders", FieldPath: "json.role", Direction: "REQUEST", Attribute: "FORBIDDEN", Role: "guest"}}
-	CheckFieldPermissions(ctx, bearerReq(t, map[string]any{"role": "ops"}), "POST /v1/orders", perms, parsed)
+	CheckFieldPermissions(ctx, verifiedRoles("ops"), "POST /v1/orders", perms, parsed)
 	if ctx.MatchCount() != 0 {
 		t.Fatalf("role-scoped FORBIDDEN must not fire for other roles, got %+v", ctx.CopyMatches())
 	}
 	ctx = dsctx.New("t3", dsctx.DefaultParseLimits())
-	CheckFieldPermissions(ctx, bearerReq(t, map[string]any{"role": "guest"}), "POST /v1/orders", perms, parsed)
+	CheckFieldPermissions(ctx, verifiedRoles("guest"), "POST /v1/orders", perms, parsed)
 	if findMatch(ctx, "authz.forbidden_field") == nil {
 		t.Fatal("role-scoped FORBIDDEN must fire for the scoped role")
 	}
 	// 未授权字段（note 无权限行）不报：上例仅 json.role 一条
 	if n := ctx.MatchCount(); n != 1 {
 		t.Fatalf("exactly one field match expected, got %d", n)
+	}
+}
+
+func TestCheckFieldPermissionsUsesOnlyVerifiedRoles(t *testing.T) {
+	parsed := &parser.Parsed{JSONFields: map[string]string{"role": "string"}}
+	perms := []FieldPermission{{EndpointKey: "POST /v1/orders", FieldPath: "json.role", Direction: "REQUEST", Attribute: "FORBIDDEN", Role: "ops"}}
+
+	ctx := dsctx.New("unverified", dsctx.DefaultParseLimits())
+	CheckFieldPermissions(ctx, &jwtverify.VerificationResult{
+		Status: jwtverify.StatusInvalid, VerifiedRoles: []string{"ops"},
+	}, "POST /v1/orders", perms, parsed)
+	if ctx.MatchCount() != 0 {
+		t.Fatalf("unverified roles must not cause BLOCK: %+v", ctx.CopyMatches())
+	}
+
+	ctx = dsctx.New("verified", dsctx.DefaultParseLimits())
+	CheckFieldPermissions(ctx, verifiedRoles("ops"), "POST /v1/orders", perms, parsed)
+	if findMatch(ctx, "authz.forbidden_field") == nil {
+		t.Fatalf("verified role must enforce FORBIDDEN: %+v", ctx.CopyMatches())
+	}
+}
+
+func TestCheckFieldPermissionsEvaluatesForbiddenBeyondFindingCapacity(t *testing.T) {
+	blockRuleCount := 3
+	fields := make(map[string]string, maxAuthzFieldMatches+blockRuleCount)
+	perms := make([]FieldPermission, 0, maxAuthzFieldMatches+blockRuleCount)
+	for i := 0; i < maxAuthzFieldMatches; i++ {
+		path := fmt.Sprintf("field%02d", i)
+		fields[path] = "string"
+		perms = append(perms, FieldPermission{
+			EndpointKey: "POST /v1/orders", FieldPath: "json." + path,
+			Direction: "REQUEST", Attribute: "READ_ONLY",
+		})
+	}
+	for i := 0; i < blockRuleCount; i++ {
+		path := fmt.Sprintf("z-block-%02d", i)
+		fields[path] = "string"
+		perms = append(perms, FieldPermission{
+			EndpointKey: "POST /v1/orders", FieldPath: "json." + path,
+			Direction: "REQUEST", Attribute: "FORBIDDEN",
+		})
+	}
+
+	ctx := dsctx.New("field-cap", dsctx.DefaultParseLimits())
+	CheckFieldPermissions(ctx, verifiedRoles("ops"), "POST /v1/orders", perms, &parser.Parsed{JSONFields: fields})
+	if ctx.MatchCount() != maxAuthzFieldMatches {
+		t.Fatalf("field details must stay within hard capacity: got %d, want %d; matches=%+v", ctx.MatchCount(), maxAuthzFieldMatches, ctx.CopyMatches())
+	}
+	if got := len(matchesByRule(ctx, "authz.forbidden_field")); got != blockRuleCount {
+		t.Fatalf("all FORBIDDEN findings beyond detail capacity must be retained: got %d, want %d; matches=%+v", got, blockRuleCount, ctx.CopyMatches())
+	}
+	if action := decision.Decide(ctx, decision.Input{Mode: decision.ModeProtect}); action != dsctx.ActionBlock {
+		t.Fatalf("retained FORBIDDEN findings must still produce final block: %s", action)
 	}
 }
 
@@ -196,7 +256,7 @@ func TestCheckFieldPermissionsAttributes(t *testing.T) {
 	// READ_ONLY 写入 → readonly_write（OBSERVE/MEDIUM）
 	ctx := dsctx.New("t", dsctx.DefaultParseLimits())
 	perms := []FieldPermission{{EndpointKey: "POST /v1/x", FieldPath: "json.note", Direction: "REQUEST", Attribute: "READ_ONLY"}}
-	CheckFieldPermissions(ctx, bearerReq(t, map[string]any{"role": "ops"}), "POST /v1/x", perms, newParsed())
+	CheckFieldPermissions(ctx, verifiedRoles("ops"), "POST /v1/x", perms, newParsed())
 	m := findMatch(ctx, "authz.readonly_write")
 	if m == nil || m.Category != "OBSERVE" || m.Severity != "MEDIUM" {
 		t.Fatalf("readonly_write = %+v", m)
@@ -204,7 +264,7 @@ func TestCheckFieldPermissionsAttributes(t *testing.T) {
 	// SERVER_GENERATED 客户端提供 → server_generated_write（OBSERVE/MEDIUM）
 	ctx = dsctx.New("t2", dsctx.DefaultParseLimits())
 	perms = []FieldPermission{{EndpointKey: "POST /v1/x", FieldPath: "json.id", Direction: "REQUEST", Attribute: "SERVER_GENERATED"}}
-	CheckFieldPermissions(ctx, bearerReq(t, map[string]any{"role": "ops"}), "POST /v1/x", perms, newParsed())
+	CheckFieldPermissions(ctx, verifiedRoles("ops"), "POST /v1/x", perms, newParsed())
 	m = findMatch(ctx, "authz.server_generated_write")
 	if m == nil || m.Category != "OBSERVE" || m.Severity != "MEDIUM" {
 		t.Fatalf("server_generated_write = %+v", m)
@@ -212,12 +272,12 @@ func TestCheckFieldPermissionsAttributes(t *testing.T) {
 	// ADMIN_WRITABLE：指定角色本人写入 → 无明细；其他角色写入 → readonly_write（attribute=ADMIN_WRITABLE）
 	perms = []FieldPermission{{EndpointKey: "POST /v1/x", FieldPath: "json.level", Direction: "REQUEST", Attribute: "ADMIN_WRITABLE", Role: "admin"}}
 	ctx = dsctx.New("t3", dsctx.DefaultParseLimits())
-	CheckFieldPermissions(ctx, bearerReq(t, map[string]any{"role": "admin"}), "POST /v1/x", perms, newParsed())
+	CheckFieldPermissions(ctx, verifiedRoles("admin"), "POST /v1/x", perms, newParsed())
 	if ctx.MatchCount() != 0 {
 		t.Fatalf("designated admin must not match, got %+v", ctx.CopyMatches())
 	}
 	ctx = dsctx.New("t4", dsctx.DefaultParseLimits())
-	CheckFieldPermissions(ctx, bearerReq(t, map[string]any{"role": "ops"}), "POST /v1/x", perms, newParsed())
+	CheckFieldPermissions(ctx, verifiedRoles("ops"), "POST /v1/x", perms, newParsed())
 	m = findMatch(ctx, "authz.readonly_write")
 	if m == nil || m.Evidence["attribute"] != "ADMIN_WRITABLE" {
 		t.Fatalf("admin writable mismatch = %+v", m)
@@ -225,14 +285,14 @@ func TestCheckFieldPermissionsAttributes(t *testing.T) {
 	// ADMIN_WRITABLE 默认行（role 空）：未指定可写角色，运行时不可判定 → 无明细
 	ctx = dsctx.New("t5", dsctx.DefaultParseLimits())
 	perms = []FieldPermission{{EndpointKey: "POST /v1/x", FieldPath: "json.level", Direction: "REQUEST", Attribute: "ADMIN_WRITABLE"}}
-	CheckFieldPermissions(ctx, bearerReq(t, map[string]any{"role": "ops"}), "POST /v1/x", perms, newParsed())
+	CheckFieldPermissions(ctx, verifiedRoles("ops"), "POST /v1/x", perms, newParsed())
 	if ctx.MatchCount() != 0 {
 		t.Fatalf("default ADMIN_WRITABLE row must be skipped, got %+v", ctx.CopyMatches())
 	}
 	// WRITABLE（允许语义）→ 无明细
 	ctx = dsctx.New("t6", dsctx.DefaultParseLimits())
 	perms = []FieldPermission{{EndpointKey: "POST /v1/x", FieldPath: "json.note", Direction: "REQUEST", Attribute: "WRITABLE"}}
-	CheckFieldPermissions(ctx, bearerReq(t, map[string]any{"role": "ops"}), "POST /v1/x", perms, newParsed())
+	CheckFieldPermissions(ctx, verifiedRoles("ops"), "POST /v1/x", perms, newParsed())
 	if ctx.MatchCount() != 0 {
 		t.Fatalf("WRITABLE must not match, got %+v", ctx.CopyMatches())
 	}
@@ -274,7 +334,7 @@ func TestCheckFieldPermissionsEvidenceNoValues(t *testing.T) {
 		JSONValues: map[string]string{"role": secret},
 	}
 	perms := []FieldPermission{{EndpointKey: "POST /v1/x", FieldPath: "json.role", Direction: "REQUEST", Attribute: "FORBIDDEN"}}
-	CheckFieldPermissions(ctx, bearerReq(t, map[string]any{"role": "ops"}), "POST /v1/x", perms, parsed)
+	CheckFieldPermissions(ctx, verifiedRoles("ops"), "POST /v1/x", perms, parsed)
 	m := findMatch(ctx, "authz.forbidden_field")
 	if m == nil {
 		t.Fatal("expected forbidden_field")

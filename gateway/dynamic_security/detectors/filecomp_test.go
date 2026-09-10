@@ -144,6 +144,43 @@ func TestCheckFileComplianceMIME(t *testing.T) {
 	}
 }
 
+func TestCheckFileComplianceEvaluatesBlockBeyondFindingCapacity(t *testing.T) {
+	blockRuleCount := 3
+	rules := make([]FileComplianceRule, 0, maxFileComplianceFindingsPerFile+blockRuleCount)
+	for i := 0; i < maxFileComplianceFindingsPerFile; i++ {
+		rules = append(rules, FileComplianceRule{
+			Direction: "UPLOAD", Match: "FILENAME_REGEX", Value: `(?i)\.exe$`, Action: "OBSERVE",
+		})
+	}
+	for i := 0; i < blockRuleCount; i++ {
+		rules = append(rules, FileComplianceRule{
+			Direction: "UPLOAD", Match: "MIME", Value: "application/octet-stream", Action: "BLOCK",
+		})
+	}
+	set := fileCompCompile(t, rules)
+	ctx := dsctx.New("req-file-cap", dsctx.DefaultParseLimits())
+	CheckFileCompliance(ctx, []dsctx.FileObservation{
+		fileCompTestObs("UPLOAD", "evil.exe", "application/octet-stream"),
+	}, set, decision.ModeProtect)
+
+	ms := matchesByRule(ctx, "file.compliance_violation")
+	if len(ms) != maxFileComplianceFindingsPerFile || ctx.MatchCount() != maxFileComplianceFindingsPerFile {
+		t.Fatalf("compliance details must stay within hard capacity: got %d details / %d total, want %d", len(ms), ctx.MatchCount(), maxFileComplianceFindingsPerFile)
+	}
+	blockCount := 0
+	for _, m := range ms {
+		if m.Category == "BLOCK" {
+			blockCount++
+		}
+	}
+	if blockCount != blockRuleCount {
+		t.Fatalf("all BLOCK findings beyond detail capacity must be retained: got %d, want %d; matches=%+v", blockCount, blockRuleCount, ms)
+	}
+	if action := decision.Decide(ctx, decision.Input{Mode: decision.ModeProtect}); action != dsctx.ActionBlock {
+		t.Fatalf("retained BLOCK findings must still produce final block: %s", action)
+	}
+}
+
 // TestCheckFileComplianceFilenameRegex 文件名正则（RE2）：命中/不命中；大小写标记可用。
 func TestCheckFileComplianceFilenameRegex(t *testing.T) {
 	set := fileCompCompile(t, []FileComplianceRule{

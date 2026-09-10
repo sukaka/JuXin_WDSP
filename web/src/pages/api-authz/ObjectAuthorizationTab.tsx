@@ -32,6 +32,7 @@ import SmartTable from '../../components/SmartTable'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
+import { validateReauthorizationWindow } from './reauthorization'
 
 const candidateStatus = {
   PENDING: { color: 'gold', label: '待确认' },
@@ -46,6 +47,12 @@ const decisionStatus = {
   UNKNOWN: { color: 'gold', label: '证据不足' },
 } as const
 
+const relationStatus = {
+  CONFIRMED: { color: 'green', label: '已确认' },
+  REVOKED: { color: 'red', label: '已撤销' },
+  EXPIRED: { color: 'default', label: '已过期' },
+} as const
+
 function shortRef(value?: string | null) {
   if (!value) return '-'
   return value.length > 28 ? `${value.slice(0, 15)}…${value.slice(-8)}` : value
@@ -57,6 +64,12 @@ function percent(value?: number) {
 
 interface ReviewValues {
   reason: string
+  valid_until?: { toISOString: () => string }
+}
+
+interface ReauthorizeValues {
+  reason: string
+  valid_from: { toISOString: () => string }
   valid_until?: { toISOString: () => string }
 }
 
@@ -74,12 +87,15 @@ export default function ObjectAuthorizationTab() {
   const canReadEvidence = hasPermission(permissions, 'api_authorization.evidence_read')
   const [applicationId, setApplicationId] = useState<string>()
   const [candidateStatusFilter, setCandidateStatusFilter] = useState('PENDING')
+  const [relationStatusFilter, setRelationStatusFilter] = useState('')
   const [decisionFilter, setDecisionFilter] = useState<string>()
   const [candidatePage, setCandidatePage] = useState(1)
   const [relationPage, setRelationPage] = useState(1)
   const [decisionPage, setDecisionPage] = useState(1)
   const [reviewing, setReviewing] = useState<{ candidate: ApiAuthzRelationCandidate; action: 'confirm' | 'reject' } | null>(null)
+  const [reauthorizing, setReauthorizing] = useState<ApiAuthzObjectRelation | null>(null)
   const [form] = Form.useForm<ReviewValues>()
+  const [reauthForm] = Form.useForm<ReauthorizeValues>()
 
   const applicationsQuery = useQuery({
     queryKey: ['applications', 'api-authz-options'],
@@ -101,8 +117,8 @@ export default function ObjectAuthorizationTab() {
     enabled: Boolean(applicationId),
   })
   const relationsQuery = useQuery({
-    queryKey: ['api-authz', 'object-relations', applicationId, relationPage],
-    queryFn: () => apiAuthzApi.listObjectRelations({ application_id: applicationId!, status: 'CONFIRMED', page: relationPage, page_size: 20 }),
+    queryKey: ['api-authz', 'object-relations', applicationId, relationStatusFilter, relationPage],
+    queryFn: () => apiAuthzApi.listObjectRelations({ application_id: applicationId!, status: relationStatusFilter || undefined, page: relationPage, page_size: 20 }),
     enabled: Boolean(applicationId),
   })
   const decisionsQuery = useQuery({
@@ -134,6 +150,22 @@ export default function ObjectAuthorizationTab() {
     onError: (error: unknown) => message.error(error instanceof ApiError ? error.message : '审核失败'),
   })
 
+  const reauthorizeMutation = useMutation<ApiAuthzObjectRelation, unknown, { relation: ApiAuthzObjectRelation; values: ReauthorizeValues }>({
+    mutationFn: ({ relation, values }) =>
+      apiAuthzApi.reauthorizeObjectRelation(relation.id, {
+        reason: values.reason.trim(),
+        valid_from: values.valid_from.toISOString(),
+        valid_until: values.valid_until?.toISOString(),
+      }),
+    onSuccess: () => {
+      message.success('关系已重新授权')
+      setReauthorizing(null)
+      reauthForm.resetFields()
+      invalidate()
+    },
+    onError: (error: unknown) => message.error(error instanceof ApiError ? error.message : '重新授权失败'),
+  })
+
   const candidateColumns: ColumnsType<ApiAuthzRelationCandidate> = [
     { title: '状态', dataIndex: 'status', width: 100, render: (value: keyof typeof candidateStatus) => <Tag color={candidateStatus[value]?.color}>{candidateStatus[value]?.label ?? value}</Tag> },
     { title: '对象类型', dataIndex: 'object_type', width: 140, ellipsis: true },
@@ -156,6 +188,7 @@ export default function ObjectAuthorizationTab() {
     },
   ]
   const relationColumns: ColumnsType<ApiAuthzObjectRelation> = [
+    { title: '状态', dataIndex: 'status', width: 100, render: (value: keyof typeof relationStatus) => <Tag color={relationStatus[value]?.color}>{relationStatus[value]?.label ?? value}</Tag> },
     { title: '对象类型', dataIndex: 'object_type', width: 140 },
     { title: '对象引用', dataIndex: 'object_ref', width: 230, render: (value: string) => <Typography.Text code title={value}>{shortRef(value)}</Typography.Text> },
     { title: '主体', dataIndex: 'principal_id', width: 210, render: (value: string) => <Typography.Text code title={value}>{shortRef(value)}</Typography.Text> },
@@ -165,6 +198,13 @@ export default function ObjectAuthorizationTab() {
     { title: '生效时间', dataIndex: 'valid_from', width: 170, render: formatDateTime },
     { title: '失效时间', dataIndex: 'valid_until', width: 170, render: formatDateTime },
     { title: '确认原因', dataIndex: 'reason', width: 220, ellipsis: true },
+    {
+      title: '操作', key: 'actions', width: 110, fixed: 'right',
+      render: (_, record) =>
+        canManage && (record.status === 'REVOKED' || record.status === 'EXPIRED') ? (
+          <Button type="link" size="small" onClick={() => { reauthForm.resetFields(); setReauthorizing(record) }}>重新授权</Button>
+        ) : null
+    },
   ]
   const decisionColumns: ColumnsType<ApiAuthzDecision> = [
     { title: '结论', dataIndex: 'decision', width: 130, render: (value: keyof typeof decisionStatus) => <Tag color={decisionStatus[value]?.color}>{decisionStatus[value]?.label ?? value}</Tag> },
@@ -210,9 +250,10 @@ export default function ObjectAuthorizationTab() {
               </>,
             },
             {
-              key: 'relations', label: `已确认关系（${coverage?.confirmed_relations ?? 0}）`, children: <>
-                <QueryErrorAlert error={relationsQuery.error} message="加载已确认关系失败" />
-                <SmartTable<ApiAuthzObjectRelation> rowKey="id" storageKey="api-authz-object-relations" columns={relationColumns} dataSource={relationsQuery.data?.items ?? []} loading={relationsQuery.isLoading} pagination={{ current: relationPage, pageSize: 20, total: relationsQuery.data?.total ?? 0, showSizeChanger: false, onChange: setRelationPage }} scroll={{ x: 1450 }} locale={{ emptyText: '暂无已确认关系' }} />
+              key: 'relations', label: `对象关系（已确认 ${coverage?.confirmed_relations ?? 0}）`, children: <>
+                <Space style={{ marginBottom: 12 }}><Select value={relationStatusFilter} style={{ width: 150 }} options={[{ value: '', label: '全部状态' }, ...Object.entries(relationStatus).map(([value, meta]) => ({ value, label: meta.label }))]} onChange={(value) => { setRelationStatusFilter(value); setRelationPage(1) }} /></Space>
+                <QueryErrorAlert error={relationsQuery.error} message="加载对象关系失败" />
+                <SmartTable<ApiAuthzObjectRelation> rowKey="id" storageKey="api-authz-object-relations" columns={relationColumns} dataSource={relationsQuery.data?.items ?? []} loading={relationsQuery.isLoading} pagination={{ current: relationPage, pageSize: 20, total: relationsQuery.data?.total ?? 0, showSizeChanger: false, onChange: setRelationPage }} scroll={{ x: 1650 }} locale={{ emptyText: '暂无对象关系' }} />
               </>,
             },
             {
@@ -238,6 +279,36 @@ export default function ObjectAuthorizationTab() {
           {reviewing?.action === 'confirm' ? <Form.Item label="关系"><Input value="OWNER" disabled /></Form.Item> : null}
           <Form.Item name="reason" label="审核原因" rules={[{ required: true, whitespace: true, message: '请填写审核原因' }, { max: 500, message: '最多 500 字符' }]}><Input.TextArea rows={3} /></Form.Item>
           {reviewing?.action === 'confirm' ? <Form.Item name="valid_until" label="失效时间（可选）"><DatePicker showTime style={{ width: '100%' }} /></Form.Item> : null}
+        </Form>
+      </Modal>
+      <Modal
+        open={reauthorizing !== null}
+        title="重新授权 OWNER 关系"
+        okText="确认重新授权"
+        confirmLoading={reauthorizeMutation.isPending}
+        onCancel={() => setReauthorizing(null)}
+        onOk={() => reauthForm.validateFields().then((values) => reauthorizing && reauthorizeMutation.mutate({ relation: reauthorizing, values }), () => { /* 校验失败由表单内联提示 */ })}
+      >
+        <Typography.Paragraph type="secondary">
+          仅已撤销/已过期的关系可重新授权；提交后按新的生效窗口恢复为已确认关系。
+        </Typography.Paragraph>
+        <Form form={reauthForm} layout="vertical">
+          <Form.Item name="reason" label="授权原因" rules={[{ required: true, whitespace: true, message: '请填写授权原因' }, { max: 512, message: '最多 512 字符' }]}><Input.TextArea rows={3} /></Form.Item>
+          <Form.Item name="valid_from" label="生效时间" rules={[{ required: true, message: '请选择生效时间' }]}><DatePicker showTime style={{ width: '100%' }} /></Form.Item>
+          <Form.Item
+            name="valid_until"
+            label="失效时间（可选）"
+            dependencies={['valid_from']}
+            rules={[({ getFieldValue }) => ({
+              validator: (_, value?: { toISOString: () => string }) => {
+                const from = getFieldValue('valid_from') as { toISOString: () => string } | undefined
+                const error = validateReauthorizationWindow(from, value)
+                return error ? Promise.reject(new Error(error)) : Promise.resolve()
+              },
+            })]}
+          >
+            <DatePicker showTime style={{ width: '100%' }} />
+          </Form.Item>
         </Form>
       </Modal>
     </Space>

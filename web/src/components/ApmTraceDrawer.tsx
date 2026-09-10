@@ -95,10 +95,14 @@ function TraceDetailContent({
   const canSqlDrill = hasPermission(permissions, 'apm.sql.read')
   const canExceptionDrill = hasPermission(permissions, 'apm.traces.read')
 
-  const spans = trace.otel_spans ?? []
+  // 运行时归一化：旧数据结构/异常载荷中 access_logs、security_events、otel_spans 可能为 null/缺失，
+  // 一律归一为空数组，避免渲染崩溃（L27）
+  const spans = Array.isArray(trace.otel_spans) ? trace.otel_spans : []
+  const accessLogs = Array.isArray(trace.access_logs) ? trace.access_logs : []
+  const securityEvents = Array.isArray(trace.security_events) ? trace.security_events : []
   const hasSpans = spans.length > 0
-  const hasLogs = trace.access_logs.length > 0
-  const hasEvents = trace.security_events.length > 0
+  const hasLogs = accessLogs.length > 0
+  const hasEvents = securityEvents.length > 0
   const dsMeta = APM_TRACE_DATA_SOURCE_META[trace.data_source ?? 'agentless']
 
   // 下钻 SQL/异常携带相同 trace_id 与时间窗（无上下文窗口时下钻页按默认时间窗自查）
@@ -179,12 +183,12 @@ function TraceDetailContent({
           )}
           {hasLogs && (
             <div>
-              <Typography.Title level={5}>访问记录（{trace.access_logs.length}）</Typography.Title>
+              <Typography.Title level={5}>访问记录（{accessLogs.length}）</Typography.Title>
               <Table<ApmTraceAccessLog>
                 size="small"
                 rowKey="id"
                 pagination={false}
-                dataSource={trace.access_logs}
+                dataSource={accessLogs}
                 columns={TRACE_LOG_COLUMNS}
                 scroll={{ x: 1000 }}
               />
@@ -193,14 +197,14 @@ function TraceDetailContent({
           {(hasEvents || !hasSpans) && (
             <div>
               <Typography.Title level={5}>
-                关联 WAF 事件（{trace.security_events.length}）
+                关联 WAF 事件（{securityEvents.length}）
               </Typography.Title>
               {hasEvents ? (
                 <Table<ApmTraceSecurityEvent>
                   size="small"
                   rowKey="id"
                   pagination={false}
-                  dataSource={trace.security_events}
+                  dataSource={securityEvents}
                   columns={TRACE_EVENT_COLUMNS}
                 />
               ) : (

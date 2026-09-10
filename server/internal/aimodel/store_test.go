@@ -25,3 +25,29 @@ func TestSaveSecretWithoutEncFails(t *testing.T) {
 		t.Fatal("enc 缺失时 saveSecret 应返回错误")
 	}
 }
+
+func TestProviderOriginChanged(t *testing.T) {
+	tests := []struct {
+		name       string
+		oldOrigin  string
+		oldBaseURL string
+		newOrigin  string
+		want       bool
+	}{
+		{name: "same persisted origin", oldOrigin: "https://api.example.com:443", newOrigin: "https://api.example.com:443"},
+		{name: "path change keeps credential", oldOrigin: "https://api.example.com:443", newOrigin: "https://api.example.com:443"},
+		{name: "host change invalidates credential", oldOrigin: "https://api.example.com:443", newOrigin: "https://other.example.com:443", want: true},
+		{name: "legacy row derives origin", oldBaseURL: "HTTPS://API.EXAMPLE.COM/v1", newOrigin: "https://api.example.com:443"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := providerOriginChanged(tt.oldOrigin, tt.oldBaseURL, tt.newOrigin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("changed=%v, want %v", got, tt.want)
+			}
+		})
+	}
+}

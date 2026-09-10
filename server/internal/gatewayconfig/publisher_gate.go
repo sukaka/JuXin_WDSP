@@ -14,6 +14,7 @@ package gatewayconfig
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 )
@@ -68,4 +69,15 @@ func (p *Publisher) evaluateRegressionGate(ctx context.Context, taskID, versionI
 	}
 	return false, "REGRESSION_GATE_REJECTED",
 		"安全回归证据不满足发布门禁: " + out.Message
+}
+
+// evaluateRollbackRegressionGate hashes the exact post-secret-reinjection
+// candidate before it is sent to Caddy. Recovery-channel semantics are kept
+// explicit so the gate may waive only the rules allowed for known-good restore.
+func (p *Publisher) evaluateRollbackRegressionGate(ctx context.Context, taskID, versionID uuid.UUID, configJSON string) (bool, string, string) {
+	fingerprint, err := CanonicalConfigHash(configJSON)
+	if err != nil {
+		return false, "ROLLBACK_CONFIG_HASH_FAILED", fmt.Sprintf("计算回滚候选配置哈希失败: %v", err)
+	}
+	return p.evaluateRegressionGate(ctx, taskID, versionID, "cfgfpv1:"+fingerprint, true)
 }

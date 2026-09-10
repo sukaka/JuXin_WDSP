@@ -40,7 +40,18 @@ interface ProviderFormValues {
   provider_type: string
   base_url: string
   api_key?: string
+  allowed_targets?: string[]
   status?: string
+}
+
+/** 出站目标白名单提交前归一化：trim、去空、去重（保序） */
+function normalizeTargets(values?: string[]): string[] {
+  const seen = new Set<string>()
+  for (const raw of values ?? []) {
+    const target = raw.trim()
+    if (target) seen.add(target)
+  }
+  return [...seen]
 }
 
 interface ModelFormValues {
@@ -142,26 +153,34 @@ export default function AiModelsPage() {
 
   /* ---------- 供应商写操作 ---------- */
   const saveProviderMutation = useMutation({
-    mutationFn: async (values: ProviderFormValues) => {
+    mutationFn: async (values: ProviderFormValues): Promise<AiModelProvider | undefined> => {
+      const allowedTargets = normalizeTargets(values.allowed_targets)
       if (editingProvider) {
-        await patchAiProvider(editingProvider.id, {
+        return patchAiProvider(editingProvider.id, {
           name: values.name,
           provider_type: values.provider_type,
           base_url: values.base_url,
+          allowed_targets: allowedTargets,
           status: values.status,
         })
-      } else {
-        await aiModelsApi.createProvider({
-          name: values.name,
-          provider_type: values.provider_type,
-          base_url: values.base_url,
-          api_key: values.api_key || undefined,
-          status: values.status || 'ENABLED',
-        })
       }
+      await aiModelsApi.createProvider({
+        name: values.name,
+        provider_type: values.provider_type,
+        base_url: values.base_url,
+        api_key: values.api_key || undefined,
+        allowed_targets: allowedTargets,
+        status: values.status || 'ENABLED',
+      })
+      return undefined
     },
-    onSuccess: () => {
-      message.success(editingProvider ? '供应商已更新' : '供应商已创建')
+    onSuccess: (provider) => {
+      // 规范 origin 变化时后端原子清除密钥：以 PATCH 响应的 api_key_reference 为准提示重新录入
+      if (editingProvider && editingProvider.api_key_reference && provider && !provider.api_key_reference) {
+        message.warning('供应商已更新：原密钥已失效，请立即通过「轮换密钥」重新录入')
+      } else {
+        message.success(editingProvider ? '供应商已更新' : '供应商已创建')
+      }
       setProviderOpen(false)
       setEditingProvider(null)
       providerForm.resetFields()
@@ -170,6 +189,24 @@ export default function AiModelsPage() {
     },
     onError,
   })
+
+  /** 编辑场景修改 BaseURL 且原记录已配置密钥时，须先确认密钥失效风险再发送 PATCH */
+  const submitProviderForm = (values: ProviderFormValues) => {
+    const baseUrlChanged =
+      editingProvider !== null && values.base_url.trim() !== editingProvider.base_url
+    if (baseUrlChanged && editingProvider?.api_key_reference) {
+      modal.confirm({
+        title: '确认修改服务地址？',
+        content:
+          '服务地址的规范 origin（协议+主机+端口）若发生变化，已配置的旧密钥会立即失效，保存后可能需要重新录入密钥。确定保存吗？',
+        okText: '确认保存',
+        cancelText: '取消',
+        onOk: () => saveProviderMutation.mutate(values),
+      })
+      return
+    }
+    saveProviderMutation.mutate(values)
+  }
 
   const deleteProviderMutation = useMutation({
     mutationFn: (id: string) => aiModelsApi.deleteProvider(id),
@@ -267,6 +304,7 @@ export default function AiModelsPage() {
       name: record.name,
       provider_type: record.provider_type,
       base_url: record.base_url,
+      allowed_targets: record.allowed_targets ?? [],
       status: record.status,
     })
     setProviderOpen(true)
@@ -341,11 +379,37 @@ export default function AiModelsPage() {
     },
     { title: '服务地址', dataIndex: 'base_url', ellipsis: true },
     {
-      title: '密钥引用',
-      dataIndex: 'api_key_reference',
-      width: 200,
+      title: '规范 Origin',
+      dataIndex: 'canonical_origin',
+      width: 210,
       ellipsis: true,
-      render: (v: string) => v || '未配置',
+      render: (v: string) => (
+        <Typography.Text code style={{ fontSize: 12 }}>
+          {v || '-'}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: '目标白名单',
+      dataIndex: 'allowed_targets',
+      width: 220,
+      ellipsis: true,
+      render: (targets: string[]) =>
+        targets?.length ? (
+          <Space size={4} wrap>
+            {targets.map((t) => (
+              <Tag key={t}>{t}</Tag>
+            ))}
+          </Space>
+        ) : (
+          '-'
+        ),
+    },
+    {
+      title: '密钥状态',
+      dataIndex: 'api_key_reference',
+      width: 100,
+      render: (v: string) => (v ? <Tag color="green">已配置</Tag> : <Tag>未配置</Tag>),
     },
     {
       title: '状态',
@@ -554,7 +618,7 @@ export default function AiModelsPage() {
             loading={providersQuery.isLoading}
             columns={providerColumns}
             dataSource={providersQuery.data}
-            scroll={{ x: 1000 }}
+            scroll={{ x: 1400 }}
             pagination={false}
             onRow={(record) => ({
               onDoubleClick: () => setDetailProvider(record),
@@ -626,7 +690,7 @@ export default function AiModelsPage() {
           form={providerForm}
           layout="vertical"
           initialValues={{ provider_type: 'openai_compatible', status: 'ENABLED' }}
-          onFinish={(values) => saveProviderMutation.mutate(values)}
+          onFinish={submitProviderForm}
         >
           <Form.Item
             name="name"
@@ -656,6 +720,13 @@ export default function AiModelsPage() {
             extra="填写服务根地址即可（不要带对话补全路径）。例如：http://ollama:11434 或公有云 API 根地址"
           >
             <Input placeholder="http://host:port 或 https://api.example.com" autoComplete="off" />
+          </Form.Item>
+          <Form.Item
+            name="allowed_targets"
+            label="附加出站目标白名单（可选）"
+            extra="回车添加，origin 形式（如 https://api.example.com:8443）。私网目标必须在此显式授权才可访问；云 metadata 地址（如 169.254.169.254）不允许授权。"
+          >
+            <Select mode="tags" open={false} tokenSeparators={[',']} placeholder="输入出站目标后回车添加" />
           </Form.Item>
           {editingProvider ? (
             <Form.Item

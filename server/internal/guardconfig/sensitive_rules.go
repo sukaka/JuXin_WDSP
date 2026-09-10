@@ -65,16 +65,27 @@ func (p *Provider) SetSensitiveValueRuleLister(l SensitiveValueRuleLister) { p.s
 // Warn 并跳过，不阻断发布主流程（与脱敏规则同一纪律：增量能力，缺失时保持发布通道既有行为，
 // 网关无规则下发时关闭值级检测，行为与历史版本一致）。
 func (p *Provider) loadAPISensitiveValueRules(ctx context.Context) []gatewayconfig.GuardSensitiveValueRule {
+	rules, err := p.loadAPISensitiveValueRulesStrict(ctx)
+	if err != nil {
+		slog.Warn("list api sensitive value rules failed, skip api_sensitive_value_rules", "error", err)
+	}
+	return rules
+}
+
+func (p *Provider) loadAPISensitiveValueRulesStrict(ctx context.Context) ([]gatewayconfig.GuardSensitiveValueRule, error) {
 	if p.sensitiveValueRules == nil {
-		return nil
+		return nil, nil
 	}
 	rules, err := p.sensitiveValueRules.ListEnabledSensitiveValueRules(ctx)
 	if err != nil {
-		slog.Warn("list api sensitive value rules failed, skip api_sensitive_value_rules", "error", err)
-		return nil
+		if isMissingLegacyTableError(err, "api_sensitive_data_types") {
+			slog.Warn("optional legacy table api_sensitive_data_types is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("api_sensitive_data_types", err)
 	}
 	if len(rules) == 0 {
-		return nil
+		return nil, nil
 	}
-	return rules
+	return rules, nil
 }

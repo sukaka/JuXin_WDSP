@@ -166,7 +166,7 @@ export const apmApi = {
   /** GET /apm/traces/{trace_id}：按 trace_id 检索访问记录/OTel span 并关联 WAF 事件；
    *  可选 start_time/end_time 限窗（P1-01 A3：详情查询携带时间窗上下文，两者需同时提供） */
   trace: (traceId: string, params?: ApmTraceDetailParams) =>
-    request<ApmTraceDetail>(`/apm/traces/${traceId}`, { query: { ...params } }),
+    request<ApmTraceDetail>(`/apm/traces/${encodeURIComponent(traceId)}`, { query: { ...params } }),
   /** GET /apm/trace-search：调用链检索（DSN 未配置时返回空 list + data_source=agentless） */
   traceSearch: async (params: ApmTraceSearchParams) => {
     const data = await request<ApmTraceSearchPage>('/apm/trace-search', {

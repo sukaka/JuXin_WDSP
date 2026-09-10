@@ -80,6 +80,8 @@ type Endpoint struct {
 	ApplicationName       string     `json:"application_name,omitempty"`   // 列表 LEFT JOIN applications 带出
 	ApplicationDomain     string     `json:"application_domain,omitempty"` // 主域名（application_domains 主记录）
 	DomainID              *uuid.UUID `json:"domain_id,omitempty"`
+	ApplicationBindingID  *uuid.UUID `json:"application_binding_id,omitempty"`
+	Host                  string     `json:"host,omitempty"`
 	HTTPMethod            string     `json:"http_method"`
 	NormalizedPath        string     `json:"normalized_path"`
 	RawPathExample        string     `json:"raw_path_example"`
@@ -191,7 +193,7 @@ type ListFilter struct {
 }
 
 // endpointColumns 接口全列（扫描顺序固定）。
-const endpointColumns = `id, application_id, domain_id, http_method, normalized_path, raw_path_example,
+const endpointColumns = `id, application_id, domain_id, application_binding_id, host, http_method, normalized_path, raw_path_example,
 	endpoint_key, api_confidence, asset_status, protocol_type, learning_status,
 	current_model_version_id, classification_locked, is_api, hit_count,
 	first_seen_at, last_seen_at, confirmed_at, directory_path,
@@ -212,7 +214,7 @@ func scanEndpoint(rs rowScanner, extra ...any) (*Endpoint, error) {
 	// 000045 新增列可空：经中间变量转换（NULL → 零值）
 	var assetValue *string
 	var assetValueExplain []byte
-	dests := []any{&e.ID, &e.ApplicationID, &e.DomainID, &e.HTTPMethod, &e.NormalizedPath,
+	dests := []any{&e.ID, &e.ApplicationID, &e.DomainID, &e.ApplicationBindingID, &e.Host, &e.HTTPMethod, &e.NormalizedPath,
 		&e.RawPathExample, &e.EndpointKey, &e.APIConfidence, &e.AssetStatus, &e.ProtocolType,
 		&e.LearningStatus, &e.CurrentModelVersionID, &e.ClassificationLocked, &e.IsAPI,
 		&e.HitCount, &e.FirstSeenAt, &e.LastSeenAt, &e.ConfirmedAt, &e.DirectoryPath,
@@ -297,12 +299,18 @@ type DiscoveryInput struct {
 	IsAPI         bool
 	ApplicationID *uuid.UUID // 可为 nil（未归属）
 	DomainID      *uuid.UUID // 可为 nil
+	// ApplicationBindingID 是已验证的应用绑定作用域。
+	ApplicationBindingID *uuid.UUID
+	// ScopeKey 保留兼容旧调用方；它只用于内存仓储的临时作用域隔离。
+	ScopeKey string
+	// Host 是发现记录的归一化主机作用域。
+	Host string
 	// ProtocolType 协议类型（REST/GRPC…；空串回落 REST）。
 	// 仅首次发现写入，命中时不覆盖（允许后续人工修正）。
 	ProtocolType string
 }
 
-// UpsertDiscovery 发现/命中接口（按 endpoint_key 幂等）。
+// UpsertDiscovery 发现/命中接口（按应用、域名、绑定、Host、协议和 runtime endpoint_key 作用域幂等）。
 // application_id / domain_id / directory_path 仅首次发现写入；命中时不覆盖（允许后续人工改属）。
 // 首插（xmax = 0 判插入，命中走 DO UPDATE）同事务派生 api_endpoint_path_segments
 // 段形——normalized_path 不可变，命中重放不重写段形（一致性方案见 segments.go）。
@@ -334,20 +342,23 @@ func (s *Store) upsertDiscovery(ctx context.Context, q DBTX, in DiscoveryInput) 
 	if method == "" || pathTemplate == "" {
 		return nil, fmt.Errorf("method and path_template required")
 	}
-	key := method + " " + pathTemplate
+	key := discoveryEndpointKey(method, pathTemplate, in.Host, in.ScopeKey, in.ApplicationID, in.DomainID, in.ProtocolType)
+	host := normalizeDiscoveryHost(in.Host)
+	protocol := protocolOrDefault(strings.ToUpper(strings.TrimSpace(in.ProtocolType)))
 	var inserted bool
 	e, err := scanEndpoint(q.QueryRow(ctx, `
-INSERT INTO api_endpoints (application_id, domain_id, http_method, normalized_path, raw_path_example,
-  directory_path, endpoint_key, api_confidence, is_api, hit_count, asset_status, protocol_type)
-VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,1,'DISCOVERED',COALESCE(NULLIF($9,''),'REST'))
-ON CONFLICT (endpoint_key) DO UPDATE SET
+INSERT INTO api_endpoints (application_id, domain_id, application_binding_id, host,
+  http_method, normalized_path, raw_path_example, directory_path, endpoint_key,
+  api_confidence, is_api, hit_count, asset_status, protocol_type)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,1,'DISCOVERED',$11)
+ON CONFLICT (application_id, domain_id, application_binding_id, host, endpoint_key, protocol_type) DO UPDATE SET
   hit_count = api_endpoints.hit_count + 1,
   last_seen_at = now(),
   api_confidence = GREATEST(api_endpoints.api_confidence, EXCLUDED.api_confidence),
   updated_at = now()
 RETURNING `+endpointColumns+`, (xmax = 0) AS inserted`,
-		in.ApplicationID, in.DomainID, method, pathTemplate, DirectoryOf(pathTemplate), key, in.Confidence, in.IsAPI,
-		in.ProtocolType,
+		in.ApplicationID, in.DomainID, in.ApplicationBindingID, host, method, pathTemplate,
+		DirectoryOf(pathTemplate), key, in.Confidence, in.IsAPI, protocol,
 	), &inserted)
 	if err != nil {
 		return nil, err
@@ -450,7 +461,7 @@ WHERE %s ORDER BY e.last_seen_at DESC LIMIT $%d OFFSET $%d`,
 		// 000045 新增列可空：经中间变量转换（NULL → 零值）
 		var assetValue *string
 		var assetValueExplain []byte
-		if err := rows.Scan(&e.ID, &e.ApplicationID, &e.DomainID, &e.HTTPMethod, &e.NormalizedPath,
+		if err := rows.Scan(&e.ID, &e.ApplicationID, &e.DomainID, &e.ApplicationBindingID, &e.Host, &e.HTTPMethod, &e.NormalizedPath,
 			&e.RawPathExample, &e.EndpointKey, &e.APIConfidence, &e.AssetStatus, &e.ProtocolType,
 			&e.LearningStatus, &e.CurrentModelVersionID, &e.ClassificationLocked, &e.IsAPI,
 			&e.HitCount, &e.FirstSeenAt, &e.LastSeenAt, &e.ConfirmedAt, &e.DirectoryPath,
@@ -683,14 +694,16 @@ func (s *Store) Split(ctx context.Context, id uuid.UUID, newPaths []string, acto
 		if p == "" {
 			return nil, fmt.Errorf("拆分路径不能为空")
 		}
-		key := src.HTTPMethod + " " + p
+		key := discoveryEndpointKey(src.HTTPMethod, p, src.Host, "", src.ApplicationID, src.DomainID, src.ProtocolType)
 		e, err := scanEndpoint(tx.QueryRow(ctx, `
-INSERT INTO api_endpoints (application_id, domain_id, http_method, normalized_path, raw_path_example,
-  directory_path, endpoint_key, api_confidence, asset_status, protocol_type, is_api)
-VALUES ($1,$2,$3,$4,$4,$5,$6,$7,'DISCOVERED',$8,$9)
-ON CONFLICT (endpoint_key) DO NOTHING
+INSERT INTO api_endpoints (application_id, domain_id, application_binding_id, host,
+  http_method, normalized_path, raw_path_example, directory_path, endpoint_key,
+  api_confidence, asset_status, protocol_type, is_api)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,'DISCOVERED',$10,$11)
+ON CONFLICT (application_id, domain_id, application_binding_id, host, endpoint_key, protocol_type) DO NOTHING
 RETURNING `+endpointColumns,
-			src.ApplicationID, src.DomainID, src.HTTPMethod, p, DirectoryOf(p), key, src.APIConfidence, src.ProtocolType, src.IsAPI))
+			src.ApplicationID, src.DomainID, src.ApplicationBindingID, normalizeDiscoveryHost(src.Host), src.HTTPMethod, p,
+			DirectoryOf(p), key, src.APIConfidence, protocolOrDefault(strings.ToUpper(strings.TrimSpace(src.ProtocolType))), src.IsAPI))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("%w: %s", ErrEndpointConflict, key)
 		}

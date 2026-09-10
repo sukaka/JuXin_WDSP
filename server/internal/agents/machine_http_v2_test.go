@@ -513,8 +513,58 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 		if len(upserter.inputs) != 2 {
 			t.Errorf("不同 Host 不得合并: upsert %d 次, want 2", len(upserter.inputs))
 		}
+		if len(upserter.inputs) == 2 &&
+			(upserter.inputs[0].Host != "api.example.com" || upserter.inputs[1].Host != "other.example.com") {
+			t.Errorf("Host 作用域未传入资产 upsert: %+v", upserter.inputs)
+		}
 		if len(store.assetSources) != 2 {
 			t.Errorf("来源关系应两行: %+v", store.assetSources)
+		}
+	})
+
+	t.Run("去重键含协议：同 Host/method/path 的 REST 与 GRPC 各自 upsert", func(t *testing.T) {
+		store := newFakeMachineStore()
+		agentID := uuid.New()
+		cred := registerAgentV2(store, agentID)
+		upserter := &fakeDiscoveryUpserter{}
+		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
+		rest := withBinding(validHTTPRecordV2())
+		grpc := withBinding(validHTTPRecordV2())
+		grpc.EventID = "01J0EXAMPLE0000000000000000E"
+		grpc.GRPC = &GRPCMeta{Service: "pkg.UserService", Method: "GetUser", StreamState: GRPCStreamClosed}
+		grpc.ObservedHTTPVersion = HTTPVersion2
+		rr := doMachine(t, mux, http.MethodPost, path(agentID), httpRecordsV2JSON(t, rest, grpc), cred)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202 (body=%s)", rr.Code, rr.Body.String())
+		}
+		if len(upserter.inputs) != 2 || upserter.inputs[0].ProtocolType != "REST" || upserter.inputs[1].ProtocolType != "GRPC" {
+			t.Errorf("REST 与 GRPC 不得合并: %+v", upserter.inputs)
+		}
+	})
+
+	t.Run("去重键含绑定作用域：同 Host/method/path 的不同绑定各自 upsert", func(t *testing.T) {
+		store := newFakeMachineStore()
+		agentID := uuid.New()
+		cred := registerAgentV2(store, agentID)
+		upserter := &fakeDiscoveryUpserter{}
+		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
+		bindingA, bindingB := uuid.New().String(), uuid.New().String()
+		versionA, versionB := int64(1), int64(2)
+		recA := validHTTPRecordV2()
+		recA.ApplicationBindingID, recA.BindingVersion = &bindingA, &versionA
+		recB := validHTTPRecordV2()
+		recB.EventID = "01J0EXAMPLE0000000000000000F"
+		recB.ApplicationBindingID, recB.BindingVersion = &bindingB, &versionB
+		rr := doMachine(t, mux, http.MethodPost, path(agentID), httpRecordsV2JSON(t, recA, recB), cred)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202 (body=%s)", rr.Code, rr.Body.String())
+		}
+		if len(upserter.inputs) != 2 {
+			t.Fatalf("不同绑定不得合并: upsert %d 次, want 2", len(upserter.inputs))
+		}
+		if upserter.inputs[0].ApplicationBindingID == nil || upserter.inputs[1].ApplicationBindingID == nil ||
+			*upserter.inputs[0].ApplicationBindingID == *upserter.inputs[1].ApplicationBindingID {
+			t.Errorf("绑定作用域未参与端点键: %+v", upserter.inputs)
 		}
 	})
 

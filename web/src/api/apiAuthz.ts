@@ -163,6 +163,13 @@ export interface ApiAuthzObjectRelation {
   updated_at: string
 }
 
+/** 重新授权请求（POST /authz/relations/{id}/reauthorize；仅 REVOKED/EXPIRED 关系允许） */
+export interface ApiAuthzReauthorizeBody {
+  reason: string
+  valid_from: string
+  valid_until?: string
+}
+
 export interface ApiAuthzDecision {
   id: string
   decision_id: string
@@ -273,6 +280,9 @@ export const apiAuthzApi = {
     const data = await request<PageResult<ApiAuthzObjectRelation>>('/api-security/authz/relations', { query: { ...params } })
     return { ...data, items: data.items ?? [] }
   },
+  /** 显式重新授权（仅 REVOKED/EXPIRED 关系；权限 api_authorization.relation_manage） */
+  reauthorizeObjectRelation: (id: string, body: ApiAuthzReauthorizeBody) =>
+    request<ApiAuthzObjectRelation>(`/api-security/authz/relations/${id}/reauthorize`, { method: 'POST', body }),
   listAuthorizationDecisions: async (params: { application_id: string; decision?: string; page: number; page_size: number }) => {
     const data = await request<PageResult<ApiAuthzDecision>>('/api-security/authz/decisions', { query: { ...params } })
     return { ...data, items: data.items ?? [] }

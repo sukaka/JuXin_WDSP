@@ -3409,6 +3409,36 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /api-security/authz/relations/{id}/reauthorize:
+    post:
+      operationId: apiSecAuthzObjectRelationReauthorize
+      tags: [api-security]
+      summary: 重新授权对象授权关系
+      description: 仅允许 REVOKED/EXPIRED 关系显式恢复为 CONFIRMED；刷新确认人和有效期，写入操作审计并触发授权配置重新发布。普通创建和重复导入不会自动恢复关系；权限：`api_authorization.relation_manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecAuthzRelationReauthorizeRequest' }
+      responses:
+        '200':
+          description: 已重新授权的对象关系
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzObjectRelation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 关系当前状态不允许重新授权
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /api-security/authz/decisions:
     get:
       operationId: apiSecAuthzDecisionList
@@ -7522,6 +7552,14 @@ components:
       required: [reason]
       properties:
         reason: { type: string, minLength: 1, maxLength: 512, description: 撤销原因 }
+
+    ApiSecAuthzRelationReauthorizeRequest:
+      type: object
+      required: [reason, valid_from]
+      properties:
+        valid_from: { type: string, format: date-time, description: 重新授权生效时间 }
+        valid_until: { type: string, format: date-time, nullable: true, description: 可选的重新授权失效时间 }
+        reason: { type: string, minLength: 1, maxLength: 512, description: 重新授权原因 }
 
     ApiSecAuthzDecision:
       type: object

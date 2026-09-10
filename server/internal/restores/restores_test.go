@@ -42,8 +42,14 @@ func TestScopeTablesSelection(t *testing.T) {
 			t.Error("audit archive must never be restored")
 		}
 	}
-	if len(full) != len(backups.Tables)-1 {
-		t.Errorf("FULL scope tables = %d, want %d", len(full), len(backups.Tables)-1)
+	auditCount := 0
+	for _, td := range backups.Tables {
+		if td.Group == backups.GroupAudit {
+			auditCount++
+		}
+	}
+	if len(full) != len(backups.Tables)-auditCount {
+		t.Errorf("FULL scope tables = %d, want %d", len(full), len(backups.Tables)-auditCount)
 	}
 
 	cert, err := ScopeTables(ScopeCertificate, avail)
@@ -106,6 +112,35 @@ func TestScopeTablesAvailableFilter(t *testing.T) {
 	}
 	if len(cert) != 0 {
 		t.Error("CERTIFICATE scope without certificates table should be empty")
+	}
+}
+
+func TestScopeTablesForRestoreIncludesCurrentTablesWhenLegacyBackupOmitsThem(t *testing.T) {
+	legacy := map[string]bool{"applications": true, "api_endpoints": true}
+	available, err := ScopeTables(ScopeConfig, legacy)
+	if err != nil {
+		t.Fatalf("ScopeTables() error = %v", err)
+	}
+	if len(available) != 1 || available[0] != "api_endpoints" {
+		t.Fatalf("legacy available tables = %v, want only api_endpoints", available)
+	}
+	current, err := ScopeTablesForRestore(ScopeConfig)
+	if err != nil {
+		t.Fatalf("ScopeTablesForRestore() error = %v", err)
+	}
+	pos := map[string]int{}
+	for i, name := range current {
+		pos[name] = i
+	}
+	for child, parent := range map[string]string{
+		"application_policies": "applications",
+		"api_endpoints":        "applications",
+		"api_model_versions":   "api_endpoints",
+		"api_response_schemas": "api_model_versions",
+	} {
+		if pos[parent] >= pos[child] {
+			t.Fatalf("%s must be restored before %s: %v", parent, child, current)
+		}
 	}
 }
 

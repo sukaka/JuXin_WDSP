@@ -36,22 +36,26 @@ func injectRuntimePrincipal(next http.Handler) http.Handler {
 
 // fakeRuntimeStore 内存版 RuntimePolicyStore（记录调用，可注入错误路径）。
 type fakeRuntimeStore struct {
-	list           []RuntimePolicy
-	total          int64
-	byModel        []RuntimePolicy
-	byID           *RuntimePolicy
-	listErr        error
-	getErr         error
-	rollbackOut    *RuntimePolicyRollback
-	rollbackErr    error
-	lastFilter     RuntimePolicyFilter
-	rollbackCalls  int
-	lastOperator   uuid.UUID
-	markCalls      int
-	lastMarkID     uuid.UUID
-	lastMarkReason string
-	markErr        error
-	seq            []string // 调用顺序（内容源一致性：模型恢复必先于发布触发）
+	list            []RuntimePolicy
+	total           int64
+	byModel         []RuntimePolicy
+	byID            *RuntimePolicy
+	listErr         error
+	getErr          error
+	rollbackOut     *RuntimePolicyRollback
+	rollbackErr     error
+	lastFilter      RuntimePolicyFilter
+	rollbackCalls   int
+	lastOperator    uuid.UUID
+	markCalls       int
+	lastMarkID      uuid.UUID
+	lastMarkReason  string
+	markErr         error
+	finalizeCalls   int
+	lastFinalize    *RuntimePolicyRollback
+	finalizeCtxErr  error
+	finalizeCtxDone bool
+	seq             []string // 调用顺序（内容源一致性：模型恢复必先于发布触发）
 }
 
 func (f *fakeRuntimeStore) ListRuntimePolicies(ctx context.Context, filter RuntimePolicyFilter) ([]RuntimePolicy, int64, error) {
@@ -101,6 +105,18 @@ func (f *fakeRuntimeStore) MarkRuntimePolicyFailed(ctx context.Context, id uuid.
 	return f.markErr
 }
 
+func (f *fakeRuntimeStore) FinalizeRuntimePolicyRollbackFailure(ctx context.Context, rollback *RuntimePolicyRollback, reason string) error {
+	f.finalizeCtxErr = ctx.Err()
+	f.finalizeCtxDone = ctx.Done() != nil
+	f.finalizeCalls++
+	f.lastFinalize = rollback
+	if rollback != nil && rollback.Draft != nil {
+		f.lastMarkID = rollback.Draft.ID
+	}
+	f.lastMarkReason = reason
+	return f.markErr
+}
+
 func newRuntimeTestMux(h *Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	RegisterRoutes(mux, injectRuntimePrincipal, h)
@@ -137,6 +153,22 @@ func testPolicy(status string) *RuntimePolicy {
 		SourceModelVersionID: uuid.New(), RuntimeVersion: "v2", CompilerVersion: CompilerVersion,
 		Content: json.RawMessage(`{"endpoint_key":"POST /v1/orders/{id}"}`), ContentHash: "abc",
 		Status: status, CreatedAt: now, ActivatedAt: &now,
+	}
+}
+
+func TestRollbackOutcomeKeepsPreRollbackFormalModelForFailureRecovery(t *testing.T) {
+	previousFormalID := uuid.New()
+	restoredTargetID := uuid.New()
+	current := &RuntimePolicy{SourceModelVersionID: previousFormalID}
+	draft := &RuntimePolicy{SourceModelVersionID: restoredTargetID}
+	restored := &Version{ID: restoredTargetID, Status: StatusFormal}
+
+	outcome := newRuntimePolicyRollback(current, draft, restored)
+	if outcome.PreviousFormalModelID != previousFormalID {
+		t.Fatalf("failure recovery model = %s, want pre-rollback model %s", outcome.PreviousFormalModelID, previousFormalID)
+	}
+	if outcome.Draft.SourceModelVersionID != restoredTargetID || outcome.RestoredModel.ID != restoredTargetID {
+		t.Fatalf("successful rollback target must remain distinct from failure recovery model: %+v", outcome)
 	}
 }
 
@@ -280,7 +312,12 @@ func TestRollbackRuntimePolicy(t *testing.T) {
 	draft := testPolicy(PolicyStatusDraft)
 	draft.RuntimeVersion = "v3"
 	restored := &Version{ID: draft.SourceModelVersionID, VersionNumber: 1, Status: StatusFormal}
-	outcome := &RuntimePolicyRollback{Draft: draft, RestoredModel: restored}
+	preRollbackFormalID := uuid.New()
+	outcome := &RuntimePolicyRollback{
+		Draft:                 draft,
+		RestoredModel:         restored,
+		PreviousFormalModelID: preRollbackFormalID,
+	}
 	var gotRid string
 	fs = &fakeRuntimeStore{byID: active, rollbackOut: outcome}
 	mux = newMuxWith(fs, func(ctx context.Context, uid uuid.UUID, rid string) (*RuntimePolicyPublishResult, error) {
@@ -304,8 +341,8 @@ func TestRollbackRuntimePolicy(t *testing.T) {
 	if len(fs.seq) != 2 || fs.seq[0] != "rollback" || fs.seq[1] != "publish" {
 		t.Fatalf("model restore must precede publish trigger: seq=%v", fs.seq)
 	}
-	if fs.markCalls != 0 {
-		t.Fatalf("mark failed must not run on success: %d", fs.markCalls)
+	if fs.finalizeCalls != 0 {
+		t.Fatalf("failure finalizer must not run on success: %d", fs.finalizeCalls)
 	}
 	data := decodeRuntimeData(t, rr)
 	if data["status"] != "SUCCESS" || data["task_id"] == "" {
@@ -327,8 +364,11 @@ func TestRollbackRuntimePolicy(t *testing.T) {
 	if rr := doRuntimeReq(t, mux, http.MethodPost, "/api/v1/api-security/runtime-policies/"+active.ID.String()+"/rollback"); rr.Code != http.StatusInternalServerError {
 		t.Fatalf("publish err status=%d", rr.Code)
 	}
-	if fs.markCalls != 1 || fs.lastMarkID != draft.ID {
-		t.Fatalf("rollback draft must be marked FAILED: calls=%d id=%s", fs.markCalls, fs.lastMarkID)
+	if fs.finalizeCalls != 1 || fs.lastMarkID != draft.ID {
+		t.Fatalf("rollback failure must be finalized: calls=%d id=%s", fs.finalizeCalls, fs.lastMarkID)
+	}
+	if fs.lastFinalize == nil || fs.lastFinalize.PreviousFormalModelID != preRollbackFormalID {
+		t.Fatalf("rollback failure must restore pre-rollback FORMAL model %s, got %+v", preRollbackFormalID, fs.lastFinalize)
 	}
 	if fs.lastMarkReason == "" || !strings.Contains(fs.lastMarkReason, "gateway unreachable") {
 		t.Fatalf("mark reason must carry publish error: %q", fs.lastMarkReason)
@@ -352,8 +392,37 @@ func TestRollbackRuntimePolicy(t *testing.T) {
 	if rr.Code != http.StatusBadGateway {
 		t.Fatalf("publish failed task status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	if fs.markCalls != 0 {
-		t.Fatalf("writeback settles FAILED, single mark must not run: %d", fs.markCalls)
+	if fs.finalizeCalls != 1 {
+		t.Fatalf("failed task must still be finalized: %d", fs.finalizeCalls)
+	}
+}
+
+func TestRollbackRuntimePolicyFinalizerSurvivesCanceledRequest(t *testing.T) {
+	active := testPolicy(PolicyStatusActive)
+	draft := testPolicy(PolicyStatusDraft)
+	outcome := &RuntimePolicyRollback{
+		Draft:                 draft,
+		RestoredModel:         &Version{ID: draft.SourceModelVersionID, Status: StatusFormal},
+		PreviousFormalModelID: uuid.New(),
+	}
+	fs := &fakeRuntimeStore{byID: active, rollbackOut: outcome}
+	h := NewHandler(nil, nil)
+	h.SetRuntimePolicyStore(fs)
+	h.SetRuntimePolicyPublishFunc(func(context.Context, uuid.UUID, string) (*RuntimePolicyPublishResult, error) {
+		return nil, errors.New("gateway unreachable")
+	})
+	mux := newRuntimeTestMux(h)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/api-security/runtime-policies/"+active.ID.String()+"/rollback", nil)
+	requestCtx, cancel := context.WithCancel(req.Context())
+	cancel()
+	req = req.WithContext(requestCtx)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("canceled publish error status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if fs.finalizeCalls != 1 || fs.finalizeCtxErr != nil || !fs.finalizeCtxDone {
+		t.Fatalf("finalizer must receive a live bounded context: calls=%d err=%v done=%v", fs.finalizeCalls, fs.finalizeCtxErr, fs.finalizeCtxDone)
 	}
 }
 

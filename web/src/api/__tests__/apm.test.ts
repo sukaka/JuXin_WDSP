@@ -113,6 +113,15 @@ describe('apmApi', () => {
     expect(url).toContain('end_time=2026-08-30T00%3A35%3A00.000Z')
   })
 
+  it('trace：trace_id 路径参数做 URL 编码（L30）', async () => {
+    const traceId = 'trace/with?special chars#1'
+    const fetchMock = stubFetch({ trace_id: traceId, access_logs: [], security_events: [] })
+    await apmApi.trace(traceId)
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      `/api/v1/apm/traces/${encodeURIComponent(traceId)}`,
+    )
+  })
+
   it('traceSearch：GET /api/v1/apm/trace-search 携带全部筛选参数；list 缺省补空数组', async () => {
     const fetchMock = stubFetch({ total: 0, page: 1, page_size: 20, data_source: 'agentless' })
     const data = await apmApi.traceSearch({

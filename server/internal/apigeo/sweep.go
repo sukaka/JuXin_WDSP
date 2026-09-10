@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -57,6 +58,12 @@ type Sweeper struct {
 
 // NewSweeper 创建生产方。sweepStore 为窄接口（*Store 满足；测试注入内存实现）。
 func NewSweeper(store sweepStore, lookup CountryLookup, settings SettingsReader) *Sweeper {
+	if lookup != nil {
+		v := reflect.ValueOf(lookup)
+		if (v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface || v.Kind() == reflect.Map || v.Kind() == reflect.Func || v.Kind() == reflect.Slice) && v.IsNil() {
+			lookup = nil
+		}
+	}
 	return &Sweeper{store: store, lookup: lookup, settings: settings}
 }
 

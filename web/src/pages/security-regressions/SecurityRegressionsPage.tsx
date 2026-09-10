@@ -60,9 +60,13 @@ const GATE_MODE_OPTIONS = Object.entries(REG_GATE_MODE_META).map(([value, m]) =>
   label: m.label,
 }))
 
-/** 证据新鲜度：登记时长 + 相对门禁有效期是否超期（未知有效期按不过期处理） */
+/** 证据新鲜度：登记时长 + 相对门禁有效期是否超期（未知有效期按不过期处理；登记时间缺失/非法时按未知处理，不展示 NaN） */
 function freshnessOf(run: SecurityRegressionRun, maxAgeSeconds: number | undefined, nowMs: number) {
-  const ageSeconds = Math.max(0, Math.floor((nowMs - Date.parse(run.created_at)) / 1000))
+  const createdMs = Date.parse(run.created_at)
+  if (!Number.isFinite(createdMs)) {
+    return { ageSeconds: undefined, expired: false }
+  }
+  const ageSeconds = Math.max(0, Math.floor((nowMs - createdMs) / 1000))
   const expired = !!maxAgeSeconds && maxAgeSeconds > 0 && ageSeconds > maxAgeSeconds
   return { ageSeconds, expired }
 }
@@ -271,7 +275,7 @@ export default function SecurityRegressionsPage() {
           return (
             <Space size={4}>
               <Typography.Text type={expired ? 'danger' : 'secondary'}>
-                {formatAge(ageSeconds)}
+                {ageSeconds === undefined ? '-' : formatAge(ageSeconds)}
               </Typography.Text>
               {expired && <StatusTag value="EXPIRED" map={{ EXPIRED: { color: 'red', label: '已超期' } }} />}
             </Space>

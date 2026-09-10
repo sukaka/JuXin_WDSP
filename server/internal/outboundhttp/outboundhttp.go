@@ -65,6 +65,14 @@ var deniedCIDRs = mustParseCIDRs([]string{
 	"fd00:ec2::254/128",  // 云元数据（AWS IPv6，ULA 内）
 })
 
+// hardDeniedCIDRs remain blocked even when an administrator allowlists a
+// private range or hostname. Cloud instance metadata is never a valid
+// application-level outbound destination.
+var hardDeniedCIDRs = mustParseCIDRs([]string{
+	"169.254.169.254/32",
+	"fd00:ec2::254/128",
+})
+
 func mustParseCIDRs(list []string) []*net.IPNet {
 	out := make([]*net.IPNet, 0, len(list))
 	for _, s := range list {
@@ -116,6 +124,9 @@ func (p *Policy) CheckIP(ip net.IP) error {
 	}
 	if v4 := ip.To4(); v4 != nil {
 		ip = v4
+	}
+	if hardDenyIP(ip) {
+		return fmt.Errorf("%w: 敏感基础设施地址 %s", ErrDenied, ip)
 	}
 	for _, n := range p.allowCIDRs {
 		if n.Contains(ip) {
@@ -180,6 +191,15 @@ func (p *Policy) ValidateURL(ctx context.Context, raw string) (*url.URL, error) 
 // checkHost 校验主机地址：字面量 IP 直接 CheckIP；域名解析全部记录逐一校验。
 func (p *Policy) checkHost(ctx context.Context, host string) error {
 	if p.hostAllowed(host) {
+		ips, err := p.resolver.LookupIP(ctx, "ip", host)
+		if err != nil || len(ips) == 0 {
+			return fmt.Errorf("%w: 主机名 %s 解析失败", ErrDenied, host)
+		}
+		for _, ip := range ips {
+			if hardDenyIP(ip) {
+				return fmt.Errorf("%w: 主机名 %s 解析到敏感基础设施地址", ErrDenied, host)
+			}
+		}
 		return nil
 	}
 	if ip := net.ParseIP(host); ip != nil {
@@ -214,6 +234,11 @@ func (p *Policy) Transport() *http.Transport {
 				if err != nil || len(ips) == 0 {
 					return nil, fmt.Errorf("%w: 主机名 %s 解析失败", ErrDenied, host)
 				}
+				for _, ip := range ips {
+					if hardDenyIP(ip) {
+						return nil, fmt.Errorf("%w: 主机名 %s 解析到敏感基础设施地址", ErrDenied, host)
+					}
+				}
 				return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 			}
 			if ip := net.ParseIP(host); ip != nil {
@@ -234,6 +259,18 @@ func (p *Policy) Transport() *http.Transport {
 			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 		},
 	}
+}
+
+func hardDenyIP(ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	for _, network := range hardDeniedCIDRs {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // Client 构造防护 HTTP 客户端：防护 Transport + 整体超时 + 重定向策略

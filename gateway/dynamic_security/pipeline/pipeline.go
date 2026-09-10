@@ -295,7 +295,7 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 			detectors.EvaluateAuthorization(ctx, parsed, azCfg, cfg.JWTVerification)
 		}
 		if len(cfg.FieldPermissions) > 0 {
-			detectors.CheckFieldPermissions(ctx, r, ek, cfg.FieldPermissions, parsed)
+			detectors.CheckFieldPermissions(ctx, cfg.JWTVerification, ek, cfg.FieldPermissions, parsed)
 		}
 		// 文件合规检测（W13-GW / P2-03 上传方向，任务书 §44 子集）：multipart 文件 part
 		// 元数据按下发规则评估（EXT 精确/MIME 前缀/文件名 RE2；BLOCK 动作 PROTECT 升级

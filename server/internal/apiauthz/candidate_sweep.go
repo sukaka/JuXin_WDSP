@@ -20,8 +20,8 @@ const (
 )
 
 type SettingsKV interface {
-	GetString(context.Context, string, string, string) string
-	UpsertString(context.Context, string, string, string, string, uuid.UUID) error
+	GetStringWithSource(context.Context, string, string) (string, bool, error)
+	CreateStringIfAbsent(context.Context, string, string, string, string, uuid.UUID) (bool, error)
 }
 
 type Encryptor interface {
@@ -78,16 +78,30 @@ func LoadOrCreateObjectHMACKey(ctx context.Context, kv SettingsKV, enc Encryptor
 	if kv == nil || enc == nil {
 		return "", fmt.Errorf("api authz object HMAC key dependencies are not configured")
 	}
-	if cipherText := strings.TrimSpace(kv.GetString(ctx, objectKeySettingsGroup, objectKeySettingsKey, "")); cipherText != "" {
+	load := func() (string, bool, error) {
+		cipherText, found, err := kv.GetStringWithSource(ctx, objectKeySettingsGroup, objectKeySettingsKey)
+		if err != nil {
+			return "", false, fmt.Errorf("read api authz object HMAC key: %w", err)
+		}
+		if !found {
+			return "", false, nil
+		}
+		cipherText = strings.TrimSpace(cipherText)
+		if cipherText == "" {
+			return "", false, fmt.Errorf("api authz object HMAC key setting is empty")
+		}
 		plain, err := enc.Decrypt(cipherText)
 		if err != nil {
-			return "", fmt.Errorf("decrypt api authz object HMAC key: %w", err)
+			return "", false, fmt.Errorf("decrypt api authz object HMAC key: %w", err)
 		}
 		key, err := decodeObjectHMACKey(plain)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
-		return hex.EncodeToString(key), nil
+		return hex.EncodeToString(key), true, nil
+	}
+	if key, found, err := load(); err != nil || found {
+		return key, err
 	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -98,11 +112,24 @@ func LoadOrCreateObjectHMACKey(ctx context.Context, kv SettingsKV, enc Encryptor
 	if err != nil {
 		return "", fmt.Errorf("encrypt api authz object HMAC key: %w", err)
 	}
-	if err := kv.UpsertString(ctx, objectKeySettingsGroup, objectKeySettingsKey, cipherText,
-		"API 对象授权引用 HMAC 密钥（密文存储）", uuid.Nil); err != nil {
+	created, err := kv.CreateStringIfAbsent(ctx, objectKeySettingsGroup, objectKeySettingsKey, cipherText,
+		"API 对象授权引用 HMAC 密钥（密文存储）", uuid.Nil)
+	if err != nil {
 		return "", fmt.Errorf("store api authz object HMAC key: %w", err)
 	}
-	return plain, nil
+	if created {
+		return plain, nil
+	}
+	// Another initializer won the insert. Reload its encrypted value so all
+	// callers use the same key, even when they generated different candidates.
+	winner, found, err := load()
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("api authz object HMAC key missing after concurrent create")
+	}
+	return winner, nil
 }
 
 func objectReference(key []byte, objectID string) string {

@@ -3,11 +3,13 @@ package apiauthz
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/encryption"
 )
 
 func TestObjectReferenceIsDomainSeparatedAndOpaque(t *testing.T) {
@@ -31,6 +33,73 @@ func TestDecodeObjectHMACKeyRequires32ByteHex(t *testing.T) {
 	}
 	if _, err := decodeObjectHMACKey(strings.Repeat("01", 32)); err != nil {
 		t.Fatalf("valid key rejected: %v", err)
+	}
+}
+
+type objectKeyWinnerSettingsKV struct {
+	winner  string
+	found   bool
+	readErr error
+}
+
+func (f *objectKeyWinnerSettingsKV) GetString(context.Context, string, string, string) string {
+	return ""
+}
+
+func (f *objectKeyWinnerSettingsKV) UpsertString(context.Context, string, string, string, string, uuid.UUID) error {
+	return nil
+}
+
+func (f *objectKeyWinnerSettingsKV) GetStringWithSource(context.Context, string, string) (string, bool, error) {
+	if f.readErr != nil {
+		return "", false, f.readErr
+	}
+	return f.winner, f.found || f.winner != "", nil
+}
+
+func (f *objectKeyWinnerSettingsKV) CreateStringIfAbsent(context.Context, string, string, string, string, uuid.UUID) (bool, error) {
+	return false, nil
+}
+
+func TestLoadOrCreateObjectHMACKeyUsesDatabaseWinnerAfterAtomicCreateRace(t *testing.T) {
+	master := make([]byte, 32)
+	enc, err := encryption.NewWithKey(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winnerKey := strings.Repeat("cd", 32)
+	winnerCipher, err := enc.Encrypt(winnerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadOrCreateObjectHMACKey(context.Background(), &objectKeyWinnerSettingsKV{winner: winnerCipher}, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != winnerKey {
+		t.Fatal("losing initializer must use the database winner")
+	}
+}
+
+func TestLoadOrCreateObjectHMACKeyDoesNotTreatReadFailureAsMissing(t *testing.T) {
+	master := make([]byte, 32)
+	enc, err := encryption.NewWithKey(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrCreateObjectHMACKey(context.Background(), &objectKeyWinnerSettingsKV{readErr: errors.New("settings unavailable")}, enc); err == nil {
+		t.Fatal("settings read failure must be returned")
+	}
+}
+
+func TestLoadOrCreateObjectHMACKeyDoesNotTreatEmptyStoredValueAsMissing(t *testing.T) {
+	master := make([]byte, 32)
+	enc, err := encryption.NewWithKey(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrCreateObjectHMACKey(context.Background(), &objectKeyWinnerSettingsKV{found: true}, enc); err == nil {
+		t.Fatal("empty stored object HMAC key must be rejected")
 	}
 }
 

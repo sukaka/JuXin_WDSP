@@ -64,6 +64,7 @@ paths:
       description: |
         权限：ai.models.manage。
         api_key 可选，仅创建时以明文入参，服务端即加密存储（ai_provider_secrets），任何响应不回传。
+        canonical_origin 由服务端根据 BaseURL 的 scheme/host/port 生成；allowed_targets 用于显式授权私网目标。
         创建成功后写入 AI 审计（model_provider_create）。AI 模块全局关闭时本接口返回 503。
       requestBody:
         required: true
@@ -94,7 +95,8 @@ paths:
       summary: 更新模型供应商
       description: |
         权限：ai.models.manage。
-        仅更新名称/类型/BaseURL/状态，空字段忽略；body 中 api_key 字段被忽略，密钥变更须走 rotate-key。
+        更新名称/类型/BaseURL/目标白名单/状态，空标量字段忽略；body 中 api_key 字段被忽略，密钥变更须走 rotate-key。
+        BaseURL 的规范来源（scheme/host/port）发生变化时，服务端原子删除旧密钥并清空密钥引用，管理员必须重新录入密钥。
         供应商状态/BaseURL 影响路由，变更后热生效；写入 AI 审计（model_provider_update）。
         AI 模块全局关闭时本接口返回 503。
       parameters:
@@ -1419,7 +1421,7 @@ components:
     AiProvider:
       type: object
       description: 模型供应商（绝不含密钥明文/密文，仅引用名）
-      required: [id, name, provider_type, base_url, api_key_reference, status]
+      required: [id, name, provider_type, base_url, canonical_origin, allowed_targets, api_key_reference, status]
       properties:
         id:
           type: string
@@ -1435,6 +1437,16 @@ components:
         base_url:
           type: string
           description: API 基础地址（≤255 字符）
+        canonical_origin:
+          type: string
+          description: 服务端持久化的凭据绑定来源（scheme://host:port）；来源变化会使旧密钥失效
+        allowed_targets:
+          type: array
+          maxItems: 32
+          description: 允许访问的私网主机名或 CIDR；敏感基础设施目标仍禁止
+          items:
+            type: string
+            maxLength: 253
         api_key_reference:
           type: string
           description: 密钥引用名（密文存于 ai_provider_secrets，任何响应不回传密钥本体）
@@ -1459,6 +1471,13 @@ components:
           type: string
           maxLength: 255
           description: API 基础地址（必填）
+        allowed_targets:
+          type: array
+          maxItems: 32
+          description: 允许访问的私网主机名或 CIDR（可选；敏感基础设施目标仍禁止）
+          items:
+            type: string
+            maxLength: 253
         api_key:
           type: string
           format: password
@@ -1483,7 +1502,14 @@ components:
         base_url:
           type: string
           maxLength: 255
-          description: API 基础地址
+          description: API 基础地址；规范来源变化会使旧密钥失效并要求重新录入
+        allowed_targets:
+          type: array
+          maxItems: 32
+          description: 完整替换允许访问的私网主机名或 CIDR；空数组清空白名单
+          items:
+            type: string
+            maxLength: 253
         status:
           type: string
           enum: [ENABLED, DISABLED]

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,7 @@ func TestPermissionGuard(t *testing.T) {
 		{http.MethodPost, "/api/v1/api-security/authz/relations/candidates/" + uuid.NewString() + "/reject"},
 		{http.MethodPost, "/api/v1/api-security/authz/relations"},
 		{http.MethodPost, "/api/v1/api-security/authz/relations/" + uuid.NewString() + "/revoke"},
+		{http.MethodPost, "/api/v1/api-security/authz/relations/" + uuid.NewString() + "/reauthorize"},
 		{http.MethodGet, "/api/v1/api-security/authz/decisions"},
 		{http.MethodGet, "/api/v1/api-security/authz/decisions/" + uuid.NewString()},
 		{http.MethodGet, "/api/v1/api-security/authz/coverage"},
@@ -142,6 +144,68 @@ func TestPermissionGuard(t *testing.T) {
 		if rr.Code != http.StatusForbidden {
 			t.Fatalf("%s %s status=%d want 403", tc.method, tc.url, rr.Code)
 		}
+	}
+}
+
+func TestReauthorizeRelationIsExplicitAuditedAndPublishes(t *testing.T) {
+	store := NewMemStore()
+	appID := uuid.New()
+	now := time.Now().UTC()
+	oldConfirmed := now.Add(-time.Hour)
+	rel := &ObjectRelation{ID: uuid.New(), ApplicationID: appID, ObjectType: "invoice", ObjectRef: "objref:reauthorize", PrincipalID: "user-1", Relation: RelationOwner, Source: RelationSourceManual, Status: RelationStatusRevoked, ValidFrom: now.Add(-2 * time.Hour), ConfirmedBy: "old", ConfirmedAt: oldConfirmed, Reason: "old", CreatedAt: oldConfirmed, UpdatedAt: oldConfirmed}
+	store.relations[rel.ID] = rel
+	var published int
+	h := NewHandler(store, nil)
+	h.SetPublishFunc(func(context.Context, uuid.UUID, string) { published++ })
+	validFrom, validUntil := now.Add(time.Minute), now.Add(time.Hour)
+	rr := doJSON(t, newTestMux(h), http.MethodPost, "/api/v1/api-security/authz/relations/"+rel.ID.String()+"/reauthorize", map[string]any{"reason": "ticket-reauthorize", "valid_from": validFrom, "valid_until": validUntil})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("reauthorize status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var got ObjectRelation
+	decodeData(t, rr, &got)
+	if got.Status != RelationStatusConfirmed || got.ConfirmedBy != "tester" || got.Reason != "ticket-reauthorize" || published != 1 || !got.ConfirmedAt.After(oldConfirmed) {
+		t.Fatalf("relation=%+v published=%d", got, published)
+	}
+	if got.ValidFrom.UTC() != validFrom.UTC() || got.ValidUntil == nil || !got.ValidUntil.Equal(validUntil) {
+		t.Fatalf("validity=%v/%v want %v/%v", got.ValidFrom, got.ValidUntil, validFrom, validUntil)
+	}
+	if rel.PreviousStatus != RelationStatusRevoked {
+		t.Fatalf("audit trace previous status=%q, want %q", rel.PreviousStatus, RelationStatusRevoked)
+	}
+	rr = doJSON(t, newTestMux(h), http.MethodPost, "/api/v1/api-security/authz/relations/"+rel.ID.String()+"/reauthorize", map[string]any{"reason": "must-conflict", "valid_from": validFrom})
+	if rr.Code != http.StatusConflict || published != 1 {
+		t.Fatalf("confirmed retry status=%d published=%d body=%s", rr.Code, published, rr.Body.String())
+	}
+}
+
+func TestReauthorizeExpiredAndCreateRemainExplicit(t *testing.T) {
+	store := NewMemStore()
+	appID := uuid.New()
+	now := time.Now().UTC()
+	until := now.Add(-time.Minute)
+	rel := &ObjectRelation{ID: uuid.New(), ApplicationID: appID, ObjectType: "invoice", ObjectRef: "objref:expired", PrincipalID: "user-1", Relation: RelationOwner, Source: RelationSourceManual, Status: RelationStatusExpired, ValidFrom: now.Add(-time.Hour), ValidUntil: &until, ConfirmedBy: "seed", ConfirmedAt: now, Reason: "expired", CreatedAt: now, UpdatedAt: now}
+	store.relations[rel.ID] = rel
+	duplicate := *rel
+	duplicate.ID = uuid.Nil
+	duplicate.Status = ""
+	if err := store.CreateObjectRelation(context.Background(), &duplicate); !errors.Is(err, ErrRelationConflict) {
+		t.Fatalf("ordinary create after expiry err=%v, want conflict", err)
+	}
+	if _, err := store.ReauthorizeObjectRelation(context.Background(), rel.ID, ReauthorizeRelationInput{Reason: "", ValidFrom: now}); err == nil {
+		t.Fatal("empty reason accepted")
+	}
+	if _, err := store.ReauthorizeObjectRelation(context.Background(), rel.ID, ReauthorizeRelationInput{
+		Reason: strings.Repeat("界", maxReauthorizeReasonRunes+1), ValidFrom: now, ConfirmedBy: "operator",
+	}); err == nil {
+		t.Fatal("reason exceeding the 512-rune limit must be rejected")
+	}
+	reauthorized, err := store.ReauthorizeObjectRelation(context.Background(), rel.ID, ReauthorizeRelationInput{Reason: "renewed", ValidFrom: now, ConfirmedBy: "operator"})
+	if err != nil || reauthorized.Status != RelationStatusConfirmed {
+		t.Fatalf("reauthorized=%+v err=%v", reauthorized, err)
+	}
+	if reauthorized.PreviousStatus != RelationStatusExpired {
+		t.Fatalf("audit trace previous status=%q, want %q", reauthorized.PreviousStatus, RelationStatusExpired)
 	}
 }
 

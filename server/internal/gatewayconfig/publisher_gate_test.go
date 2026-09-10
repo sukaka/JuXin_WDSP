@@ -68,3 +68,32 @@ func TestRegressionGateUnavailableMapsCode(t *testing.T) {
 		t.Fatal("unavailable message empty")
 	}
 }
+
+func TestRollbackRegressionGateHashesReinjectedCandidateAndUsesRecoveryChannel(t *testing.T) {
+	p := &Publisher{}
+	g := &fakeRegressionGate{outcome: RegressionGateOutcome{Allowed: true}}
+	p.SetRegressionGate(g)
+	taskID, versionID := uuid.New(), uuid.New()
+	ok, code, msg := p.evaluateRollbackRegressionGate(context.Background(), taskID, versionID, `{"servers":{}}`)
+	if !ok || code != "" || msg != "" {
+		t.Fatalf("rollback gate should allow: ok=%t code=%s msg=%s", ok, code, msg)
+	}
+	if g.gotInput == nil || !g.gotInput.RestoreChannel || g.gotInput.TaskID != taskID || g.gotInput.VersionID != versionID {
+		t.Fatalf("rollback gate input missing recovery channel or ids: %+v", g.gotInput)
+	}
+	want, err := CanonicalConfigHash(`{"servers":{}}`)
+	if err != nil {
+		t.Fatalf("hash candidate: %v", err)
+	}
+	if g.gotInput.Fingerprint != "cfgfpv1:"+want {
+		t.Fatalf("fingerprint = %q, want cfgfpv1:%s", g.gotInput.Fingerprint, want)
+	}
+}
+
+func TestRollbackRegressionGateRejectsInvalidCandidateBeforeLoad(t *testing.T) {
+	p := &Publisher{}
+	ok, code, msg := p.evaluateRollbackRegressionGate(context.Background(), uuid.New(), uuid.New(), "not-json")
+	if ok || code != "ROLLBACK_CONFIG_HASH_FAILED" || msg == "" {
+		t.Fatalf("invalid rollback candidate: ok=%t code=%s msg=%s", ok, code, msg)
+	}
+}

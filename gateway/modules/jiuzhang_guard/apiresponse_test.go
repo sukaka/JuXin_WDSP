@@ -1,6 +1,7 @@
 package jiuzhang_guard
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,51 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	"go.uber.org/zap"
 )
+
+type apiResponseStatusWriter struct {
+	header http.Header
+	codes  []int
+	body   bytes.Buffer
+}
+
+func (w *apiResponseStatusWriter) Header() http.Header { return w.header }
+
+func (w *apiResponseStatusWriter) WriteHeader(code int) { w.codes = append(w.codes, code) }
+
+func (w *apiResponseStatusWriter) Write(p []byte) (int, error) { return w.body.Write(p) }
+
+func TestAPIResponseCaptureInformationalStatusDoesNotLockFinalStatus(t *testing.T) {
+	for _, final := range []int{http.StatusOK, http.StatusBadRequest} {
+		t.Run(strconv.Itoa(final), func(t *testing.T) {
+			base := &apiResponseStatusWriter{header: make(http.Header)}
+			capture := newAPIResponseCapture(base, 1024, false, false, nil, false, "GET /status", "req-1", zap.NewNop())
+			capture.WriteHeader(103)
+			capture.WriteHeader(final)
+
+			status, _ := capture.outcome()
+			if status != final {
+				t.Fatalf("final status = %d, want %d", status, final)
+			}
+			if len(base.codes) != 1 || base.codes[0] != 103 {
+				t.Fatalf("informational status should be forwarded while final status remains captured: %+v", base.codes)
+			}
+		})
+	}
+}
+
+func TestAPIResponseCaptureKeepsSwitchingProtocolsFinal(t *testing.T) {
+	base := &apiResponseStatusWriter{header: make(http.Header)}
+	capture := newAPIResponseCapture(base, 1024, false, false, nil, false, "GET /ws", "req-101", zap.NewNop())
+	capture.WriteHeader(http.StatusSwitchingProtocols)
+
+	status, _ := capture.outcome()
+	if status != http.StatusSwitchingProtocols {
+		t.Fatalf("101 status = %d, want %d", status, http.StatusSwitchingProtocols)
+	}
+	if len(base.codes) != 1 || base.codes[0] != http.StatusSwitchingProtocols {
+		t.Fatalf("101 must be forwarded as the final status: %+v", base.codes)
+	}
+}
 
 // newAPIResponseTestGuard 构造启用响应侧能力的测试 Guard（编译脱敏规则，绕过 Provision）。
 func newAPIResponseTestGuard(t *testing.T, mode string, rules []maskRuleJSON) (*Guard, string) {

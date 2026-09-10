@@ -20,6 +20,19 @@ type fakeAuthzSnapshotLister struct {
 	expiresAt   time.Time
 }
 
+func TestListPublishableAuthzModelsUsesCurrentEndpointColumns(t *testing.T) {
+	for _, want := range []string{"ep.http_method", "ep.normalized_path", "ep.asset_status"} {
+		if !strings.Contains(listPublishableAuthzModelsQuery, want) {
+			t.Errorf("query does not reference %s: %s", want, listPublishableAuthzModelsQuery)
+		}
+	}
+	for _, stale := range []string{"ep.method", "ep.path_template", "ep.status"} {
+		if strings.Contains(listPublishableAuthzModelsQuery, stale) {
+			t.Errorf("query still references removed endpoint column %s: %s", stale, listPublishableAuthzModelsQuery)
+		}
+	}
+}
+
 func (f *fakeAuthzSnapshotLister) ListPublishableAuthzModels(_ context.Context, expires time.Time) ([]gatewayconfig.GuardAuthzObjectModel, error) {
 	f.expiresAt = expires
 	return f.models, f.err

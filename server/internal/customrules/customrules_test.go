@@ -191,10 +191,30 @@ func TestSecLangEscaping(t *testing.T) {
 	}
 }
 
+func TestSecLangRegexEscapingPreservesBackslashesAndRejectsInjection(t *testing.T) {
+	r := validRule()
+	r.OperatorValue = `^hello\s+world$`
+	gen, err := ValidateInput(r)
+	if err != nil {
+		t.Fatalf("ValidateInput: %v", err)
+	}
+	if !strings.Contains(gen, `@rx ^hello\s+world$`) {
+		t.Fatalf("regex backslash semantics changed: %s", gen)
+	}
+	if strings.Contains(gen, `\\s`) {
+		t.Fatalf("regex backslash was doubled: %s", gen)
+	}
+
+	r.OperatorValue = "safe\"\nSecAction id:999"
+	if _, err := ValidateInput(r); err == nil {
+		t.Fatal("operator value with quote/newline must be rejected")
+	}
+}
+
 func TestGenerateActions(t *testing.T) {
 	actions := map[string]string{
 		"BLOCK":   "deny",
-		"OBSERVE": "DetectionOnly",
+		"OBSERVE": "pass",
 		"LOG":     "log",
 	}
 	for action, expect := range actions {
@@ -206,6 +226,9 @@ func TestGenerateActions(t *testing.T) {
 		}
 		if !strings.Contains(gen, expect) {
 			t.Errorf("action %s should contain %q: %s", action, expect, gen)
+		}
+		if action == "OBSERVE" && strings.Contains(gen, "ctl:ruleEngine=DetectionOnly") {
+			t.Errorf("OBSERVE must not disable the whole transaction: %s", gen)
 		}
 	}
 }

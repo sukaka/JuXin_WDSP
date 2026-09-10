@@ -61,16 +61,27 @@ func (p *Provider) SetFileComplianceRuleLister(l FileComplianceRuleLister) { p.f
 // Warn 并跳过，不阻断发布主流程（与脱敏规则同一纪律：增量能力，缺失时保持发布通道既有行为，
 // 网关无规则下发时合规检测零行为，与历史版本一致）。
 func (p *Provider) loadAPIFileComplianceRules(ctx context.Context) []gatewayconfig.GuardFileComplianceRule {
+	rules, err := p.loadAPIFileComplianceRulesStrict(ctx)
+	if err != nil {
+		slog.Warn("list api file compliance rules failed, skip api_file_compliance_rules", "error", err)
+	}
+	return rules
+}
+
+func (p *Provider) loadAPIFileComplianceRulesStrict(ctx context.Context) ([]gatewayconfig.GuardFileComplianceRule, error) {
 	if p.fileComplianceRules == nil {
-		return nil
+		return nil, nil
 	}
 	rules, err := p.fileComplianceRules.ListEnabledFileComplianceRules(ctx)
 	if err != nil {
-		slog.Warn("list api file compliance rules failed, skip api_file_compliance_rules", "error", err)
-		return nil
+		if isMissingLegacyTableError(err, "api_file_compliance_rules") {
+			slog.Warn("optional legacy table api_file_compliance_rules is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("api_file_compliance_rules", err)
 	}
 	if len(rules) == 0 {
-		return nil
+		return nil, nil
 	}
-	return rules
+	return rules, nil
 }

@@ -92,7 +92,7 @@ func ValidScope(s string) bool {
 func ScopeGroups(scope string) []string {
 	switch scope {
 	case ScopeFull:
-		return []string{backups.GroupDatabase, backups.GroupCertificate, backups.GroupConfig}
+		return []string{backups.GroupDatabase, backups.GroupCertificate, backups.GroupConfig, backups.GroupLearning, backups.GroupFact}
 	case ScopeConfig:
 		return []string{backups.GroupConfig}
 	case ScopeDatabase:
@@ -112,7 +112,29 @@ func ScopeTables(scope string, available map[string]bool) ([]string, error) {
 	}
 	var names []string
 	for _, n := range backups.TablesForGroups(groups...) {
+		td, _ := backups.TableByName(n)
+		if td.Group == backups.GroupAudit {
+			continue // 审计归档只导出，永不恢复
+		}
 		if available[n] {
+			names = append(names, n)
+		}
+	}
+	return backups.RestoreOrder(names)
+}
+
+// ScopeTablesForRestore 返回当前版本中该范围的完整表集合（拓扑序）。
+// 它与 ScopeTables 的备份可用表过滤分开：旧格式备份可以缺少后来新增的
+// 表，但正式恢复仍需清理这些当前表，避免新旧数据在同一数据库中混用。
+func ScopeTablesForRestore(scope string) ([]string, error) {
+	groups := ScopeGroups(scope)
+	if groups == nil {
+		return nil, ErrInvalidScope
+	}
+	var names []string
+	for _, n := range backups.TablesForGroups(groups...) {
+		td, _ := backups.TableByName(n)
+		if td.Group != backups.GroupAudit {
 			names = append(names, n)
 		}
 	}

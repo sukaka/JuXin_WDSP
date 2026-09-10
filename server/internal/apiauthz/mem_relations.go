@@ -251,6 +251,36 @@ func (m *MemStore) RevokeObjectRelation(_ context.Context, id uuid.UUID) (*Objec
 	return cloneRelation(r), nil
 }
 
+func (m *MemStore) ReauthorizeObjectRelation(_ context.Context, id uuid.UUID, in ReauthorizeRelationInput) (*ObjectRelation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := validateReauthorizeInput(in); err != nil {
+		return nil, err
+	}
+	r, ok := m.relations[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if r.Status != RelationStatusRevoked && r.Status != RelationStatusExpired {
+		return nil, ErrRelationConflict
+	}
+	r.PreviousStatus = r.Status
+	now := time.Now().UTC()
+	r.Status = RelationStatusConfirmed
+	r.ValidFrom = in.ValidFrom.UTC()
+	if in.ValidUntil == nil {
+		r.ValidUntil = nil
+	} else {
+		until := in.ValidUntil.UTC()
+		r.ValidUntil = &until
+	}
+	r.ConfirmedBy = strings.TrimSpace(in.ConfirmedBy)
+	r.ConfirmedAt = now
+	r.Reason = strings.TrimSpace(in.Reason)
+	r.UpdatedAt = now
+	return cloneRelation(r), nil
+}
+
 func (m *MemStore) ExpireObjectRelations(_ context.Context, now time.Time) ([]ObjectRelation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

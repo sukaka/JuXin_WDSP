@@ -120,6 +120,43 @@ func TestCacheBlocked(t *testing.T) {
 	}
 }
 
+func TestBlockedManualPriorityAcrossScopesAndAutoReappearance(t *testing.T) {
+	now := time.Now()
+	c := NewCache(nil, 0)
+	c.now = func() time.Time { return now }
+	ip := netip.MustParseAddr("203.0.113.60")
+
+	// 应用自动封禁不得遮蔽全局人工封禁。
+	if err := c.PutLocal(context.Background(), Block{ID: "auto-app", ClientIP: ip.String(), AppID: "app1", Auto: true, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PutLocal(context.Background(), Block{ID: "manual-global", ClientIP: ip.String(), AppID: "", Auto: false, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := c.Blocked(ip, "app1"); !ok || got.ID != "manual-global" {
+		t.Fatalf("global manual block must win over app auto block: %+v ok=%v", got, ok)
+	}
+
+	// 自动封禁并发重现后，人工封禁仍保持优先级。
+	if err := c.PutLocal(context.Background(), Block{ID: "auto-app-renewed", ClientIP: ip.String(), AppID: "app1", Auto: true, ExpiresAt: now.Add(2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := c.Blocked(ip, "app1"); !ok || got.ID != "manual-global" {
+		t.Fatalf("renewed app auto block must not hide manual global block: %+v ok=%v", got, ok)
+	}
+
+	// 应用人工封禁同样优先于全局自动封禁，并保留应用作用域优先级。
+	if err := c.PutLocal(context.Background(), Block{ID: "auto-global", ClientIP: ip.String(), AppID: "", Auto: true, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.PutLocal(context.Background(), Block{ID: "manual-app", ClientIP: ip.String(), AppID: "app1", Auto: false, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := c.Blocked(ip, "app1"); !ok || got.ID != "manual-app" {
+		t.Fatalf("app manual block must win over global auto block: %+v ok=%v", got, ok)
+	}
+}
+
 func TestCacheRefresh(t *testing.T) {
 	ctx := context.Background()
 	fk := newFake()

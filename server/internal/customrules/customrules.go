@@ -115,6 +115,10 @@ func ValidateInput(r *CustomRule) (generated string, err error) {
 			return "", fmt.Errorf("%w: 操作符 %q 需要匹配内容", ErrInvalidRule, op)
 		}
 	}
+	// 操作值嵌入双引号 SecLang 参数；引号和换行会改变指令边界，必须拒绝。
+	if strings.ContainsAny(r.OperatorValue, "\"\r\n") {
+		return "", fmt.Errorf("%w: 操作值包含非法 SecLang 控制字符", ErrInvalidRule)
+	}
 	// 危险内容检测（覆盖全部进入 SecLang 的自由文本面，含检测变量）
 	fullText := r.OperatorValue + " " + r.Name + " " + r.Description + " " + strings.Join(r.TargetVariables, " ")
 	for _, dp := range dangerousPatterns {
@@ -182,7 +186,7 @@ func GenerateSecLang(ruleID int, name string, variables []string, operator, oper
 	case "BLOCK":
 		actionParts = append(actionParts, "deny", "status:403", "log")
 	case "OBSERVE":
-		actionParts = append(actionParts, "pass", "log", "ctl:ruleEngine=DetectionOnly")
+		actionParts = append(actionParts, "pass", "log")
 	default: // LOG
 		actionParts = append(actionParts, "pass", "log")
 	}
@@ -201,8 +205,8 @@ func GenerateSecLang(ruleID int, name string, variables []string, operator, oper
 
 // escapeSecLangArg 转义 SecLang 操作值参数（防注入）。
 func escapeSecLangArg(s string) string {
-	// 操作值用双引号包裹，转义内部双引号与反斜杠
-	s = strings.ReplaceAll(s, `\`, `\\`)
+	// 正则反斜杠是语义的一部分，不能像普通字符串那样加倍；引号由输入校验拒绝，
+	// 这里保留转义以保证直接调用 GenerateSecLang 时仍不会打开参数边界。
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	return s
 }

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -75,6 +76,15 @@ type ConfirmCandidateInput struct {
 	ValidUntil  *time.Time
 }
 
+type ReauthorizeRelationInput struct {
+	Reason      string
+	ConfirmedBy string
+	ValidFrom   time.Time
+	ValidUntil  *time.Time
+}
+
+const maxReauthorizeReasonRunes = 512
+
 type RelationRepository interface {
 	ListRelationCandidates(context.Context, CandidateFilter) ([]RelationCandidate, int64, error)
 	ConfirmRelationCandidate(context.Context, uuid.UUID, ConfirmCandidateInput) (*ObjectRelation, error)
@@ -82,10 +92,27 @@ type RelationRepository interface {
 	ListObjectRelations(context.Context, RelationFilter) ([]ObjectRelation, int64, error)
 	CreateObjectRelation(context.Context, *ObjectRelation) error
 	RevokeObjectRelation(context.Context, uuid.UUID) (*ObjectRelation, error)
+	ReauthorizeObjectRelation(context.Context, uuid.UUID, ReauthorizeRelationInput) (*ObjectRelation, error)
 	ExpireObjectRelations(context.Context, time.Time) ([]ObjectRelation, error)
 	ListAuthorizationDecisions(context.Context, DecisionFilter) ([]AuthorizationDecision, int64, error)
 	GetAuthorizationDecision(context.Context, uuid.UUID, *uuid.UUID, bool) (*AuthorizationDecision, error)
 	GetAuthorizationCoverage(context.Context, *uuid.UUID) (*AuthorizationCoverage, error)
+}
+
+func validateReauthorizeInput(in ReauthorizeRelationInput) error {
+	if in.ValidFrom.IsZero() {
+		return errors.New("valid_from 必填")
+	}
+	if strings.TrimSpace(in.Reason) == "" {
+		return errors.New("reason 必填")
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(in.Reason)) > maxReauthorizeReasonRunes {
+		return errors.New("reason 不能超过 512 个字符")
+	}
+	if in.ValidUntil != nil && !in.ValidUntil.After(in.ValidFrom) {
+		return errors.New("valid_until 必须晚于 valid_from")
+	}
+	return nil
 }
 
 var (
@@ -342,6 +369,42 @@ func (s *Store) RevokeObjectRelation(ctx context.Context, id uuid.UUID) (*Object
 		return nil, ErrRelationConflict
 	}
 	return r, err
+}
+
+// ReauthorizeObjectRelation is the explicit audited state transition for a
+// historical relation. Ordinary create/confirm paths intentionally remain
+// conflict-only for retained REVOKED/EXPIRED rows.
+func (s *Store) ReauthorizeObjectRelation(ctx context.Context, id uuid.UUID, in ReauthorizeRelationInput) (*ObjectRelation, error) {
+	if err := validateReauthorizeInput(in); err != nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck -- commit decides the transaction outcome
+	var previousStatus string
+	if err := tx.QueryRow(ctx, `SELECT status FROM api_object_relations WHERE id=$1 FOR UPDATE`, id).Scan(&previousStatus); errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if previousStatus != "REVOKED" && previousStatus != "EXPIRED" {
+		return nil, ErrRelationConflict
+	}
+	r, err := scanRelation(tx.QueryRow(ctx, `UPDATE api_object_relations
+		SET status='CONFIRMED', valid_from=$2, valid_until=$3, confirmed_by=$4,
+			confirmed_at=now(), reason=$5, updated_at=now()
+		WHERE id=$1
+		RETURNING `+relationCols, id, in.ValidFrom.UTC(), in.ValidUntil, strings.TrimSpace(in.ConfirmedBy), strings.TrimSpace(in.Reason)))
+	if err != nil {
+		return nil, err
+	}
+	r.PreviousStatus = previousStatus
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // ExpireObjectRelations atomically marks due confirmed relations expired and

@@ -54,16 +54,24 @@ func (f *fakeMachineStore) CertFingerprintUsable(_ context.Context, agentID uuid
 }
 
 // RotateAgentCert 模拟契约 §9 事务语义：出示指纹须==当前指纹，旧指纹入宽限，当前指纹/到期换新。
-func (f *fakeMachineStore) RotateAgentCert(_ context.Context, in RotateCertInput) error {
+func (f *fakeMachineStore) RotateAgentCert(_ context.Context, in RotateCertInput) (*RotateCertResult, error) {
+	f.rotateCalls++
 	if f.rotateErr != nil {
-		return f.rotateErr
+		return nil, f.rotateErr
+	}
+	if f.rotateResult == nil {
+		f.rotateResult = map[string]RotateCertResult{}
+	}
+	key := in.OldFingerprint + ":" + in.PublicKeyHash
+	if result, ok := f.rotateResult[key]; ok {
+		return &result, nil
 	}
 	a, ok := f.agentsByID[in.AgentID]
 	if !ok {
-		return ErrAgentNotFound
+		return nil, ErrAgentNotFound
 	}
 	if a.CertFingerprint == nil || *a.CertFingerprint != in.OldFingerprint {
-		return ErrCertFingerprintMismatch
+		return nil, ErrCertFingerprintMismatch
 	}
 	f.graceFP[in.OldFingerprint] = in.GraceUntil
 	newFP := in.NewFingerprint
@@ -72,7 +80,9 @@ func (f *fakeMachineStore) RotateAgentCert(_ context.Context, in RotateCertInput
 	a.CertNotAfter = &newNA
 	cp := in
 	f.rotateIn = &cp
-	return nil
+	result := RotateCertResult{AgentCertPEM: in.AgentCertPEM, CACertPEM: in.CACertPEM, CertExpiresAt: in.NewNotAfter}
+	f.rotateResult[key] = result
+	return &result, nil
 }
 
 // ---------- 测试辅助：真实 CA / 密钥 / CSR / 签名请求 ----------
@@ -493,6 +503,32 @@ func TestRotateCert(t *testing.T) {
 		}
 		if !in.OldNotBefore.Equal(fx.cert.NotBefore) {
 			t.Errorf("not_before = %v, want 旧证书 NotBefore %v", in.OldNotBefore, fx.cert.NotBefore)
+		}
+	})
+	t.Run("响应丢失后同 CSR 重试返回同一已签发身份且不重复推进", func(t *testing.T) {
+		fx := newPopFixture(t)
+		newKey := newAgentKey(t)
+		body, _ := json.Marshal(map[string]string{"csr_pem": testCSR(t, newKey, "")})
+		path := "/api/v1/agents/" + fx.agentID.String() + "/rotate-cert"
+		first := doPoP(t, fx.mux, fx.key, fx.cert, http.MethodPost, path, popTS(fx.now), string(body), "")
+		if first.Code != http.StatusOK {
+			t.Fatalf("first status = %d (body=%s)", first.Code, first.Body.String())
+		}
+		second := doPoP(t, fx.mux, fx.key, fx.cert, http.MethodPost, path, popTS(fx.now), string(body), "")
+		if second.Code != http.StatusOK {
+			t.Fatalf("retry status = %d (body=%s)", second.Code, second.Body.String())
+		}
+		if second.Body.String() != first.Body.String() {
+			t.Fatalf("retry response changed:\nfirst=%s\nretry=%s", first.Body.String(), second.Body.String())
+		}
+		if fx.store.rotateCalls != 2 {
+			t.Fatalf("store calls = %d, want 2 idempotent lookups", fx.store.rotateCalls)
+		}
+		if fx.store.rotateIn == nil || fx.store.rotateIn.NewFingerprint == "" {
+			t.Fatal("first rotation did not advance fingerprint")
+		}
+		if got := *fx.store.agentsByID[fx.agentID].CertFingerprint; got != fx.store.rotateIn.NewFingerprint {
+			t.Fatalf("retry advanced fingerprint: got %q want %q", got, fx.store.rotateIn.NewFingerprint)
 		}
 	})
 	t.Run("Bearer 调用 401", func(t *testing.T) {

@@ -253,6 +253,9 @@ func (c *Cache) Blocked(ip netip.Addr, appID string) (Block, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	now := c.now()
+	var manual Block
+	var automatic Block
+	manualFound, automaticFound := false, false
 	for _, key := range []string{FieldKey(ip.String(), appID), FieldKey(ip.String(), "")} {
 		b, ok := c.items[key]
 		if !ok {
@@ -261,7 +264,21 @@ func (c *Cache) Blocked(ip netip.Addr, appID string) (Block, bool) {
 		if !b.ExpiresAt.IsZero() && !now.Before(b.ExpiresAt) {
 			continue // 已过期
 		}
-		return b, true
+		if b.Auto {
+			if !automaticFound {
+				automatic, automaticFound = b, true
+			}
+			continue
+		}
+		if !manualFound {
+			manual, manualFound = b, true
+		}
+	}
+	if manualFound {
+		return manual, true
+	}
+	if automaticFound {
+		return automatic, true
 	}
 	return Block{}, false
 }

@@ -246,6 +246,13 @@ func (a *Agent) replayV2Batch(recs []events.HTTPRecordV2) error {
 	if a.httpRetryWait() > 0 {
 		return errReplayBackoff
 	}
+	data, err := json.Marshal(events.HTTPRequestV2{SchemaVersion: events.HTTPRecordSchemaVersion, Records: recs})
+	if err != nil {
+		return err
+	}
+	if !a.replayAllow(len(data)) {
+		return errReplayThrottled
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	accepted, duplicate, invalid, err := a.client.PostHTTPV2(ctx, a.cfg.AgentID, recs)
 	cancel()
@@ -275,6 +282,7 @@ func (a *Agent) replayV2Batch(recs []events.HTTPRecordV2) error {
 	if duplicate > 0 {
 		a.metrics.Duplicate.Add(uint64(duplicate))
 	}
+	a.metrics.ForwardBytes.Add(uint64(len(data)))
 	return nil
 }
 

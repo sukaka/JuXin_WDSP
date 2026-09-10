@@ -67,7 +67,8 @@ func (m *MemStore) UpsertDiscovery(ctx context.Context, in DiscoveryInput) (*End
 	if method == "" || pathTemplate == "" {
 		return nil, errRequired
 	}
-	key := method + " " + pathTemplate
+	runtimeKey := discoveryEndpointKey(method, pathTemplate, in.Host, in.ScopeKey, in.ApplicationID, in.DomainID, in.ProtocolType)
+	key := discoveryScopeKey(method, pathTemplate, in.Host, in.ScopeKey, in.ApplicationID, in.DomainID, in.ApplicationBindingID, in.ProtocolType)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if id, ok := m.byKey[key]; ok {
@@ -90,8 +91,9 @@ func (m *MemStore) UpsertDiscovery(ctx context.Context, in DiscoveryInput) (*End
 	e := &Endpoint{
 		ID: id, ApplicationID: in.ApplicationID, DomainID: in.DomainID,
 		HTTPMethod: method, NormalizedPath: pathTemplate, RawPathExample: pathTemplate,
-		DirectoryPath: DirectoryOf(pathTemplate),
-		EndpointKey:   key, APIConfidence: in.Confidence, AssetStatus: "DISCOVERED",
+		DirectoryPath:        DirectoryOf(pathTemplate),
+		ApplicationBindingID: in.ApplicationBindingID, Host: normalizeDiscoveryHost(in.Host),
+		EndpointKey: runtimeKey, APIConfidence: in.Confidence, AssetStatus: "DISCOVERED",
 		ProtocolType: protocolOrDefault(in.ProtocolType), LearningStatus: "NOT_STARTED", IsAPI: in.IsAPI, HitCount: 1,
 		FirstSeenAt: now, LastSeenAt: now,
 	}
@@ -262,7 +264,7 @@ func (m *MemStore) Merge(ctx context.Context, primaryID, otherID uuid.UUID, acto
 		primary.LastSeenAt = other.LastSeenAt
 	}
 	delete(m.byID, otherID)
-	delete(m.byKey, other.EndpointKey)
+	delete(m.byKey, endpointScopeKey(other))
 	delete(m.assets, otherID)
 	delete(m.dims, otherID)
 	delete(m.segments, otherID) // 段形随端点删除清理（对应 SQL 侧 ON DELETE CASCADE）
@@ -296,7 +298,8 @@ func (m *MemStore) Split(ctx context.Context, id uuid.UUID, newPaths []string, a
 		if p == "" {
 			return nil, fmt.Errorf("拆分路径不能为空")
 		}
-		key := src.HTTPMethod + " " + p
+		key := discoveryScopeKey(src.HTTPMethod, p, src.Host, "", src.ApplicationID, src.DomainID, src.ApplicationBindingID, src.ProtocolType)
+		runtimeKey := discoveryEndpointKey(src.HTTPMethod, p, src.Host, "", src.ApplicationID, src.DomainID, src.ProtocolType)
 		if _, dup := m.byKey[key]; dup {
 			return nil, fmt.Errorf("%w: %s", ErrEndpointConflict, key)
 		}
@@ -305,8 +308,9 @@ func (m *MemStore) Split(ctx context.Context, id uuid.UUID, newPaths []string, a
 		e := &Endpoint{
 			ID: nid, ApplicationID: src.ApplicationID, DomainID: src.DomainID,
 			HTTPMethod: src.HTTPMethod, NormalizedPath: p, RawPathExample: p,
-			DirectoryPath: DirectoryOf(p),
-			EndpointKey:   key, APIConfidence: src.APIConfidence, AssetStatus: "DISCOVERED",
+			DirectoryPath:        DirectoryOf(p),
+			ApplicationBindingID: src.ApplicationBindingID, Host: src.Host,
+			EndpointKey: runtimeKey, APIConfidence: src.APIConfidence, AssetStatus: "DISCOVERED",
 			ProtocolType: src.ProtocolType, LearningStatus: "NOT_STARTED", IsAPI: src.IsAPI,
 			FirstSeenAt: now, LastSeenAt: now,
 		}
@@ -775,6 +779,10 @@ func cloneEP(e *Endpoint) *Endpoint {
 		v := *e.DomainID
 		cp.DomainID = &v
 	}
+	if e.ApplicationBindingID != nil {
+		v := *e.ApplicationBindingID
+		cp.ApplicationBindingID = &v
+	}
 	if e.CurrentModelVersionID != nil {
 		v := *e.CurrentModelVersionID
 		cp.CurrentModelVersionID = &v
@@ -783,6 +791,11 @@ func cloneEP(e *Endpoint) *Endpoint {
 		cp.Asset = cloneAsset(e.Asset)
 	}
 	return &cp
+}
+
+func endpointScopeKey(e *Endpoint) string {
+	return discoveryScopeKey(e.HTTPMethod, e.NormalizedPath, e.Host, "", e.ApplicationID,
+		e.DomainID, e.ApplicationBindingID, e.ProtocolType)
 }
 
 func cloneAsset(a *Asset) *Asset {

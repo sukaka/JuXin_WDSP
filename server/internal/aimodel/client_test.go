@@ -11,6 +11,14 @@ import (
 	"testing"
 )
 
+func scopedTestProvider(baseURL string) *Provider {
+	return &Provider{
+		Type:           ProviderOpenAICompatible,
+		BaseURL:        baseURL,
+		AllowedTargets: []string{"127.0.0.0/8", "::1/128"},
+	}
+}
+
 // TestChatSuccess 正常对话：请求路径/鉴权/参数与响应解析。
 func TestChatSuccess(t *testing.T) {
 	var gotPath, gotAuth string
@@ -26,7 +34,7 @@ func TestChatSuccess(t *testing.T) {
 	defer srv.Close()
 
 	c := NewOpenAIClient()
-	res, err := c.Chat(context.Background(), srv.URL, "sk-test", "test-model", ChatRequest{
+	res, err := c.ChatProvider(context.Background(), scopedTestProvider(srv.URL), "sk-test", "test-model", ChatRequest{
 		Messages:  []ChatMessage{{Role: "user", Content: "你好"}},
 		MaxTokens: 100,
 		JSONMode:  true,
@@ -68,7 +76,7 @@ func TestChatNoAPIKey(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewOpenAIClient()
-	if _, err := c.Chat(context.Background(), srv.URL, "", "m", ChatRequest{
+	if _, err := c.ChatProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", ChatRequest{
 		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 	}); err != nil {
 		t.Fatalf("Chat() error = %v", err)
@@ -93,7 +101,7 @@ func TestChatFinishReasonNormalize(t *testing.T) {
 			io.WriteString(w, `{"choices":[{"message":{"content":"x"},"finish_reason":`+quote(in)+`}],"usage":{}}`)
 		}))
 		c := NewOpenAIClient()
-		res, err := c.Chat(context.Background(), srv.URL, "", "m", ChatRequest{
+		res, err := c.ChatProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", ChatRequest{
 			Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 		})
 		srv.Close()
@@ -126,7 +134,7 @@ func TestChatErrors(t *testing.T) {
 	t.Run("http 500", func(t *testing.T) {
 		srv := serve(500, `{"error":{"message":"internal"}}`)
 		defer srv.Close()
-		_, err := c.Chat(context.Background(), srv.URL, "", "m", req)
+		_, err := c.ChatProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", req)
 		if !errors.Is(err, ErrModelDown) {
 			t.Errorf("err = %v, want ErrModelDown", err)
 		}
@@ -137,15 +145,15 @@ func TestChatErrors(t *testing.T) {
 	t.Run("api error body", func(t *testing.T) {
 		srv := serve(200, `{"error":{"message":"quota exceeded"}}`)
 		defer srv.Close()
-		_, err := c.Chat(context.Background(), srv.URL, "", "m", req)
-		if !errors.Is(err, ErrModelDown) || !strings.Contains(err.Error(), "quota exceeded") {
+		_, err := c.ChatProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", req)
+		if !errors.Is(err, ErrModelDown) || strings.Contains(err.Error(), "quota exceeded") {
 			t.Errorf("err = %v", err)
 		}
 	})
 	t.Run("empty choices", func(t *testing.T) {
 		srv := serve(200, `{"choices":[]}`)
 		defer srv.Close()
-		_, err := c.Chat(context.Background(), srv.URL, "", "m", req)
+		_, err := c.ChatProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", req)
 		if !errors.Is(err, ErrModelDown) {
 			t.Errorf("err = %v, want ErrModelDown", err)
 		}
@@ -153,7 +161,7 @@ func TestChatErrors(t *testing.T) {
 	t.Run("invalid json", func(t *testing.T) {
 		srv := serve(200, `not-json`)
 		defer srv.Close()
-		_, err := c.Chat(context.Background(), srv.URL, "", "m", req)
+		_, err := c.ChatProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", req)
 		if err == nil || !strings.Contains(err.Error(), "invalid model response") {
 			t.Errorf("err = %v", err)
 		}
@@ -164,7 +172,7 @@ func TestChatErrors(t *testing.T) {
 	t.Run("unreachable", func(t *testing.T) {
 		srv := serve(200, `{}`)
 		srv.Close() // 立即关闭，连接被拒绝
-		_, err := c.Chat(context.Background(), srv.URL, "", "m", req)
+		_, err := c.ChatProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", req)
 		if !errors.Is(err, ErrModelDown) {
 			t.Errorf("err = %v, want ErrModelDown", err)
 		}
@@ -201,7 +209,7 @@ func TestChatStreamSuccess(t *testing.T) {
 		return nil
 	}
 	c := NewOpenAIClient()
-	res, err := c.ChatStream(context.Background(), srv.URL, "", "m", ChatRequest{
+	res, err := c.ChatStreamProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", ChatRequest{
 		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 	}, cb)
 	if err != nil {
@@ -229,7 +237,7 @@ func TestChatStreamTokenEstimate(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewOpenAIClient()
-	res, err := c.ChatStream(context.Background(), srv.URL, "", "m", ChatRequest{
+	res, err := c.ChatStreamProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", ChatRequest{
 		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 	}, func(string, bool, *ChatResult) error { return nil })
 	if err != nil {
@@ -254,7 +262,7 @@ func TestChatStreamErrors(t *testing.T) {
 			io.WriteString(w, `{"error":{"message":"overloaded"}}`)
 		}))
 		defer srv.Close()
-		_, err := c.ChatStream(context.Background(), srv.URL, "", "m", req, func(string, bool, *ChatResult) error { return nil })
+		_, err := c.ChatStreamProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", req, func(string, bool, *ChatResult) error { return nil })
 		if !errors.Is(err, ErrModelDown) {
 			t.Errorf("err = %v, want ErrModelDown", err)
 		}
@@ -266,7 +274,7 @@ func TestChatStreamErrors(t *testing.T) {
 		}))
 		defer srv.Close()
 		cbErr := errors.New("客户端中断")
-		_, err := c.ChatStream(context.Background(), srv.URL, "", "m", req, func(delta string, done bool, res *ChatResult) error {
+		_, err := c.ChatStreamProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", req, func(delta string, done bool, res *ChatResult) error {
 			return cbErr
 		})
 		if !errors.Is(err, cbErr) {
@@ -283,15 +291,29 @@ func TestHealthCheck(t *testing.T) {
 		io.WriteString(w, `{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}],"usage":{}}`)
 	}))
 	defer okSrv.Close()
-	if err := c.HealthCheck(context.Background(), okSrv.URL, "", "m"); err != nil {
+	if err := c.HealthCheckProvider(context.Background(), scopedTestProvider(okSrv.URL), "", "m"); err != nil {
 		t.Errorf("HealthCheck() error = %v", err)
 	}
 	badSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 	}))
 	defer badSrv.Close()
-	if err := c.HealthCheck(context.Background(), badSrv.URL, "", "m"); err == nil {
+	if err := c.HealthCheckProvider(context.Background(), scopedTestProvider(badSrv.URL), "", "m"); err == nil {
 		t.Error("后端 500 时 HealthCheck 应返回错误")
+	}
+}
+
+func TestLegacyClientDoesNotAutoAllowPrivateTarget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("fail-closed legacy call must not reach private target")
+	}))
+	defer srv.Close()
+
+	_, err := NewOpenAIClient().Chat(context.Background(), srv.URL, "", "m", ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if !errors.Is(err, ErrInvalidProviderEndpoint) {
+		t.Fatalf("err=%v, want ErrInvalidProviderEndpoint", err)
 	}
 }
 

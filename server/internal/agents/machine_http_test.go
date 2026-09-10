@@ -75,7 +75,7 @@ func TestHTTPEventsEndpoint(t *testing.T) {
 			t.Errorf("URI 模板化异常（数字段应归一化为 {id}）: %+v", upserter.inputs[1])
 		}
 		for _, in := range upserter.inputs {
-			if !in.IsAPI || in.Confidence != agentDiscoveryConfidence {
+			if !in.IsAPI || in.Confidence != agentDiscoveryConfidence || in.Host != "api.example.com" {
 				t.Errorf("联动输入异常: %+v", in)
 			}
 		}

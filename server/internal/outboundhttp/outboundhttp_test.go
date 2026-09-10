@@ -99,6 +99,21 @@ func TestNewPolicyBadAllowlist(t *testing.T) {
 	}
 }
 
+func TestAllowlistCannotAuthorizeMetadataAddress(t *testing.T) {
+	p := mustPolicy(t, Options{Allowlist: "169.254.0.0/16"})
+	if err := p.CheckIP(net.ParseIP("169.254.169.254")); !errors.Is(err, ErrDenied) {
+		t.Fatalf("metadata IP must remain denied through CIDR allowlist, err=%v", err)
+	}
+
+	resolver := staticResolver(map[string][]net.IP{
+		"provider.internal": {net.ParseIP("169.254.169.254")},
+	})
+	p = mustPolicy(t, Options{Resolver: resolver, Allowlist: "provider.internal"})
+	if _, err := p.ValidateURL(context.Background(), "http://provider.internal/v1"); !errors.Is(err, ErrDenied) {
+		t.Fatalf("metadata IP must remain denied through hostname allowlist, err=%v", err)
+	}
+}
+
 // TestParseURLMatrix scheme/host/端口/内嵌凭据校验。
 func TestParseURLMatrix(t *testing.T) {
 	deny := []string{

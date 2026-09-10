@@ -105,33 +105,55 @@ func (p *Provider) SetFieldPermissionLister(l FieldPermissionLister) { p.fieldPe
 // Warn 并跳过，不阻断发布主流程（与脱敏规则同一纪律：增量能力，缺失时保持发布通道既有行为，
 // 网关无基线下发时 BFLA 检测零行为，行为与历史版本一致）。
 func (p *Provider) loadAPIRoleBaselines(ctx context.Context) []gatewayconfig.GuardRoleBaseline {
+	rules, err := p.loadAPIRoleBaselinesStrict(ctx)
+	if err != nil {
+		slog.Warn("list api role baselines failed, skip api_role_baselines", "error", err)
+	}
+	return rules
+}
+
+func (p *Provider) loadAPIRoleBaselinesStrict(ctx context.Context) ([]gatewayconfig.GuardRoleBaseline, error) {
 	if p.roleBaselines == nil {
-		return nil
+		return nil, nil
 	}
 	rules, err := p.roleBaselines.ListConfirmedRoleBaselines(ctx)
 	if err != nil {
-		slog.Warn("list api role baselines failed, skip api_role_baselines", "error", err)
-		return nil
+		if isMissingLegacyTableError(err, "api_role_baselines") {
+			slog.Warn("optional legacy table api_role_baselines is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("api_role_baselines", err)
 	}
 	if len(rules) == 0 {
-		return nil
+		return nil, nil
 	}
-	return rules
+	return rules, nil
 }
 
 // loadAPIFieldPermissions 读取字段权限；未注入或查询失败（如迁移 000044 表尚未建立）
 // Warn 并跳过，不阻断发布主流程（纪律同 loadAPIRoleBaselines）。
 func (p *Provider) loadAPIFieldPermissions(ctx context.Context) []gatewayconfig.GuardFieldPermission {
+	perms, err := p.loadAPIFieldPermissionsStrict(ctx)
+	if err != nil {
+		slog.Warn("list api field permissions failed, skip api_field_permissions", "error", err)
+	}
+	return perms
+}
+
+func (p *Provider) loadAPIFieldPermissionsStrict(ctx context.Context) ([]gatewayconfig.GuardFieldPermission, error) {
 	if p.fieldPermissions == nil {
-		return nil
+		return nil, nil
 	}
 	perms, err := p.fieldPermissions.ListFieldPermissions(ctx)
 	if err != nil {
-		slog.Warn("list api field permissions failed, skip api_field_permissions", "error", err)
-		return nil
+		if isMissingLegacyTableError(err, "api_field_permissions") {
+			slog.Warn("optional legacy table api_field_permissions is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("api_field_permissions", err)
 	}
 	if len(perms) == 0 {
-		return nil
+		return nil, nil
 	}
-	return perms
+	return perms, nil
 }

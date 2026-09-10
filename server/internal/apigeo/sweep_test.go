@@ -42,6 +42,18 @@ func newTestSweeper(store *MemStore, byIP map[string]string, settings SettingsRe
 	return NewSweeper(store, fakeLookup{byIP: byIP}, settings)
 }
 
+func TestNewSweeperTreatsTypedNilMMDBAsDisabled(t *testing.T) {
+	var lookup *MMDB
+	sweeper := NewSweeper(NewMemStore(), lookup, fakeSettings{})
+	res, err := sweeper.SweepOnce(context.Background())
+	if err != nil {
+		t.Fatalf("SweepOnce() error = %v", err)
+	}
+	if res.GeoEnabled {
+		t.Fatalf("GeoEnabled = true for typed nil lookup: %+v", res)
+	}
+}
+
 // TestSweepOnceClassifyAndInsert 首次全量回填：仅境外来源落库；
 // 本土/内网/未知/非法 IP 逐一跳过并计数。
 func TestSweepOnceClassifyAndInsert(t *testing.T) {

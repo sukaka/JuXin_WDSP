@@ -16,6 +16,15 @@ import (
 
 const authzRelationsPerObjectType = 200000
 
+const listPublishableAuthzModelsQuery = `
+SELECT ep.application_id, ep.endpoint_key, ep.http_method, ep.normalized_path, om.object_segment,
+       om.required_relation, om.owner_exclusive, om.updated_at
+FROM api_object_models om
+JOIN api_endpoints ep ON ep.id=om.endpoint_id
+WHERE om.publishable AND om.required_relation='OWNER' AND om.owner_exclusive
+  AND ep.asset_status='CONFIRMED'
+ORDER BY ep.endpoint_key, om.object_segment`
+
 // AuthzSnapshotLister compiles only approved authorization facts. Candidate
 // evidence and OBSERVED role claims are intentionally outside this interface.
 type AuthzSnapshotLister interface {
@@ -29,14 +38,7 @@ type AuthzSnapshotStore struct{ db *pgxpool.Pool }
 func NewAuthzSnapshotStore(db *pgxpool.Pool) *AuthzSnapshotStore { return &AuthzSnapshotStore{db: db} }
 
 func (s *AuthzSnapshotStore) ListPublishableAuthzModels(ctx context.Context, expires time.Time) ([]gatewayconfig.GuardAuthzObjectModel, error) {
-	rows, err := s.db.Query(ctx, `
-SELECT ep.application_id, ep.endpoint_key, ep.method, ep.path_template, om.object_segment,
-       om.required_relation, om.owner_exclusive, om.updated_at
-FROM api_object_models om
-JOIN api_endpoints ep ON ep.id=om.endpoint_id
-WHERE om.publishable AND om.required_relation='OWNER' AND om.owner_exclusive
-  AND ep.status='CONFIRMED'
-ORDER BY ep.endpoint_key, om.object_segment`)
+	rows, err := s.db.Query(ctx, listPublishableAuthzModelsQuery)
 	if err != nil {
 		return nil, err
 	}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -34,12 +35,17 @@ const (
 
 // Provider 供应商配置。
 type Provider struct {
-	ID           uuid.UUID
-	Name         string
-	Type         ProviderType
-	BaseURL      string
-	KeyReference string
-	Status       string
+	ID      uuid.UUID
+	Name    string
+	Type    ProviderType
+	BaseURL string
+	// CanonicalOrigin binds credentials to the endpoint authority. It is
+	// persisted by Store and must change when BaseURL's origin changes.
+	CanonicalOrigin string
+	// AllowedTargets is the provider-scoped exception list for private hosts.
+	AllowedTargets []string
+	KeyReference   string
+	Status         string
 }
 
 // Model 模型配置。
@@ -134,6 +140,20 @@ type oaiResponse struct {
 
 // Chat 非流式对话。
 func (c *OpenAIClient) Chat(ctx context.Context, baseURL, apiKey, modelCode string, req ChatRequest) (*ChatResult, error) {
+	p, err := legacyProvider(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return c.ChatProvider(ctx, p, apiKey, modelCode, req)
+}
+
+// ChatProvider performs a guarded request using the provider's persisted
+// origin and target scope.
+func (c *OpenAIClient) ChatProvider(ctx context.Context, p *Provider, apiKey, modelCode string, req ChatRequest) (*ChatResult, error) {
+	httpClient, endpoint, err := c.prepareProviderRequest(ctx, p, "/v1/chat/completions")
+	if err != nil {
+		return nil, err
+	}
 	body := oaiRequest{
 		Model:       modelCode,
 		Messages:    req.Messages,
@@ -145,8 +165,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, baseURL, apiKey, modelCode stri
 		body.Format = &oaiFormat{Type: "json_object"}
 	}
 	data, _ := json.Marshal(body)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(baseURL, "/")+"/v1/chat/completions", bytes.NewReader(data))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -154,9 +173,9 @@ func (c *OpenAIClient) Chat(ctx context.Context, baseURL, apiKey, modelCode stri
 	if apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrModelDown, err)
+		return nil, fmt.Errorf("%w: provider request failed", ErrModelDown)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
@@ -164,14 +183,14 @@ func (c *OpenAIClient) Chat(ctx context.Context, baseURL, apiKey, modelCode stri
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: status %d: %s", ErrModelDown, resp.StatusCode, truncate(string(raw), 200))
+		return nil, fmt.Errorf("%w: status %d", ErrModelDown, resp.StatusCode)
 	}
 	var out oaiResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, fmt.Errorf("invalid model response: %w", err)
 	}
 	if out.Error != nil {
-		return nil, fmt.Errorf("%w: %s", ErrModelDown, out.Error.Message)
+		return nil, fmt.Errorf("%w: provider returned an error", ErrModelDown)
 	}
 	if len(out.Choices) == 0 {
 		return nil, fmt.Errorf("%w: empty choices", ErrModelDown)
@@ -187,6 +206,19 @@ func (c *OpenAIClient) Chat(ctx context.Context, baseURL, apiKey, modelCode stri
 
 // ChatStream 流式对话（SSE）。
 func (c *OpenAIClient) ChatStream(ctx context.Context, baseURL, apiKey, modelCode string, req ChatRequest, cb StreamCallback) (*ChatResult, error) {
+	p, err := legacyProvider(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	return c.ChatStreamProvider(ctx, p, apiKey, modelCode, req, cb)
+}
+
+// ChatStreamProvider performs a guarded streaming request.
+func (c *OpenAIClient) ChatStreamProvider(ctx context.Context, p *Provider, apiKey, modelCode string, req ChatRequest, cb StreamCallback) (*ChatResult, error) {
+	httpClient, endpoint, err := c.prepareProviderRequest(ctx, p, "/v1/chat/completions")
+	if err != nil {
+		return nil, err
+	}
 	body := oaiRequest{
 		Model:       modelCode,
 		Messages:    req.Messages,
@@ -195,8 +227,7 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, baseURL, apiKey, modelCod
 		Stream:      true,
 	}
 	data, _ := json.Marshal(body)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(baseURL, "/")+"/v1/chat/completions", bytes.NewReader(data))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -205,14 +236,14 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, baseURL, apiKey, modelCod
 	if apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrModelDown, err)
+		return nil, fmt.Errorf("%w: provider request failed", ErrModelDown)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return nil, fmt.Errorf("%w: status %d: %s", ErrModelDown, resp.StatusCode, truncate(string(raw), 200))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("%w: status %d", ErrModelDown, resp.StatusCode)
 	}
 
 	var full strings.Builder
@@ -303,13 +334,60 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, baseURL, apiKey, modelCod
 
 // HealthCheck 模型健康检查（列模型或短对话）。
 func (c *OpenAIClient) HealthCheck(ctx context.Context, baseURL, apiKey, modelCode string) error {
+	p, err := legacyProvider(baseURL)
+	if err != nil {
+		return err
+	}
+	return c.HealthCheckProvider(ctx, p, apiKey, modelCode)
+}
+
+// HealthCheckProvider performs a guarded health check through the same
+// outbound policy as chat requests.
+func (c *OpenAIClient) HealthCheckProvider(ctx context.Context, p *Provider, apiKey, modelCode string) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	_, err := c.Chat(ctx, baseURL, apiKey, modelCode, ChatRequest{
+	_, err := c.ChatProvider(ctx, p, apiKey, modelCode, ChatRequest{
 		Messages:  []ChatMessage{{Role: "user", Content: "ping"}},
 		MaxTokens: 5,
 	})
 	return err
+}
+
+func (c *OpenAIClient) prepareProviderRequest(ctx context.Context, p *Provider, suffix string) (*http.Client, *url.URL, error) {
+	if err := ValidateProviderEndpoint(ctx, p); err != nil {
+		return nil, nil, err
+	}
+	if err := validatePersistedOrigin(p); err != nil {
+		return nil, nil, err
+	}
+	policy, err := providerPolicy(p)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrInvalidProviderEndpoint, err)
+	}
+	httpClient := policy.Client()
+	if c != nil && c.httpClient != nil {
+		httpClient.Timeout = c.httpClient.Timeout
+	}
+	u, err := providerURL(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + suffix
+	u.RawQuery = ""
+	u.Fragment = ""
+	return httpClient, u, nil
+}
+
+// legacyProvider keeps the historical client methods fail-closed. Callers that
+// intentionally use a private endpoint must use the Provider methods and pass a
+// persisted provider-scoped allowlist.
+func legacyProvider(baseURL string) (*Provider, error) {
+	p := &Provider{BaseURL: baseURL}
+	_, err := providerURL(p)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 func normalizeFinish(s string) string {

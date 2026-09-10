@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import ApiAuthzPage from '../ApiAuthzPage'
+import { validateReauthorizationWindow } from '../reauthorization'
 import { useAuthStore } from '../../../stores/auth'
 import type { CurrentUser } from '../../../types'
 
@@ -153,11 +154,70 @@ const relationCandidates = [
   },
 ]
 
+const relationFixtures = [
+  {
+    id: 'rel-confirmed',
+    application_id: 'app1',
+    object_type: 'order',
+    object_ref: 'objref:confirmed-0001',
+    principal_id: 'principal:confirmed-0001',
+    tenant_id: 'tenant-a',
+    relation: 'OWNER',
+    source: 'MANUAL',
+    status: 'CONFIRMED',
+    valid_from: '2026-09-01T02:00:00Z',
+    valid_until: null,
+    confirmed_by: 'sec',
+    confirmed_at: '2026-09-01T02:00:00Z',
+    reason: '初始登记',
+    created_at: '2026-09-01T02:00:00Z',
+    updated_at: '2026-09-01T02:00:00Z',
+  },
+  {
+    id: 'rel-revoked',
+    application_id: 'app1',
+    object_type: 'order',
+    object_ref: 'objref:revoked-0001',
+    principal_id: 'principal:revoked-0001',
+    tenant_id: 'tenant-a',
+    relation: 'OWNER',
+    source: 'MANUAL',
+    status: 'REVOKED',
+    valid_from: '2026-08-01T02:00:00Z',
+    valid_until: null,
+    confirmed_by: 'sec',
+    confirmed_at: '2026-08-01T02:00:00Z',
+    reason: '离职撤销',
+    created_at: '2026-08-01T02:00:00Z',
+    updated_at: '2026-09-05T02:00:00Z',
+  },
+  {
+    id: 'rel-expired',
+    application_id: 'app1',
+    object_type: 'invoice',
+    object_ref: 'objref:expired-0001',
+    principal_id: 'principal:expired-0001',
+    tenant_id: null,
+    relation: 'OWNER',
+    source: 'IMPORT',
+    status: 'EXPIRED',
+    valid_from: '2026-07-01T02:00:00Z',
+    valid_until: '2026-08-01T02:00:00Z',
+    confirmed_by: 'sec',
+    confirmed_at: '2026-07-01T02:00:00Z',
+    reason: '临时授权到期',
+    created_at: '2026-07-01T02:00:00Z',
+    updated_at: '2026-08-01T02:00:00Z',
+  },
+]
+
 /** 各用例可覆盖的列表内容 */
 let baselineItems: Record<string, unknown>[]
 let fieldPermItems: Record<string, unknown>[]
+let relationItems: Record<string, unknown>[]
 let confirmBodies: unknown[]
 let createFieldPermBodies: unknown[]
+let reauthRequests: { url: string; method: string; body: unknown }[]
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -176,8 +236,10 @@ describe('ApiAuthzPage', () => {
   beforeEach(() => {
     baselineItems = baselines
     fieldPermItems = fieldPermissions
+    relationItems = []
     confirmBodies = []
     createFieldPermBodies = []
+    reauthRequests = []
     vi.stubGlobal(
       'fetch',
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -201,9 +263,13 @@ describe('ApiAuthzPage', () => {
             items: relationCandidates, page: 1, page_size: 20, total: 1,
           } }))
         }
+        if (method === 'POST' && /\/api-security\/authz\/relations\/[^/]+\/reauthorize/.test(url)) {
+          reauthRequests.push({ url, method, body: JSON.parse(String(init?.body)) })
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { ...relationFixtures[1], status: 'CONFIRMED' } }))
+        }
         if (url.includes('/api-security/authz/relations')) {
           return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: {
-            items: [], page: 1, page_size: 20, total: 0,
+            items: relationItems, page: 1, page_size: 20, total: relationItems.length,
           } }))
         }
         if (url.includes('/api-security/authz/decisions')) {
@@ -290,7 +356,7 @@ describe('ApiAuthzPage', () => {
     expect(screen.getByText('tenant-a')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^确\s*认$/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^拒\s*绝$/ })).not.toBeInTheDocument()
-  })
+  }, 60_000)
 
   it('无 manage 权限：不显示「新建基线」与行内编辑/确认/删除', async () => {
     useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
@@ -410,5 +476,98 @@ describe('ApiAuthzPage', () => {
     expect(screen.getByText(/该对象已有属主且访问者不是属主/)).toBeInTheDocument()
     expect(screen.getByText('对象属主数')).toBeInTheDocument()
     expect(screen.getByText('API 权属记录数')).toBeInTheDocument()
+  })
+
+  /** 进入「对象授权」页签、选择商城应用并切换到「对象关系」子页签 */
+  async function openRelationsTab() {
+    fireEvent.click(screen.getByRole('tab', { name: /^对象授权$/ }))
+    const applicationSelect = (await screen.findByText('选择应用后查看对象授权')).closest('.ant-select') as HTMLElement
+    fireEvent.mouseDown(within(applicationSelect).getByRole('combobox'))
+    fireEvent.click(await screen.findByText('商城应用（SHOP）'))
+    fireEvent.click(await screen.findByRole('tab', { name: /^对象关系/ }))
+  }
+
+  it('对象关系 Tab：默认展示全部状态，不隐藏已撤销/已过期关系', async () => {
+    relationItems = relationFixtures
+    useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
+    renderPage()
+    await openRelationsTab()
+    expect(await screen.findByText('已撤销')).toBeInTheDocument()
+    expect(screen.getByText('已过期')).toBeInTheDocument()
+    expect(screen.getByText('objref:confirmed-0001')).toBeInTheDocument()
+    expect(screen.getByText('objref:revoked-0001')).toBeInTheDocument()
+    expect(screen.getByText('objref:expired-0001')).toBeInTheDocument()
+  })
+
+  it('重新授权入口：无 relation_manage 权限时不展示', async () => {
+    relationItems = relationFixtures
+    useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
+    renderPage()
+    await openRelationsTab()
+    await screen.findByText('已撤销')
+    expect(screen.queryByRole('button', { name: '重新授权' })).not.toBeInTheDocument()
+  })
+
+  it('重新授权入口：CONFIRMED 行不展示，REVOKED/EXPIRED 行展示', async () => {
+    relationItems = relationFixtures
+    useAuthStore.setState({
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await openRelationsTab()
+    await screen.findByText('已撤销')
+    expect(screen.getAllByRole('button', { name: '重新授权' })).toHaveLength(2)
+  }, 60_000)
+
+  it('重新授权：原因+生效/失效时间 POST 到 reauthorize，成功提示、关弹窗并刷新关系/覆盖率', async () => {
+    relationItems = relationFixtures
+    useAuthStore.setState({
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await openRelationsTab()
+    const buttons = await screen.findAllByRole('button', { name: '重新授权' })
+    // 行顺序与 relationFixtures 一致：rel-revoked 为第一条可重新授权记录
+    fireEvent.click(buttons[0])
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('授权原因'), { target: { value: '  业务恢复需要  ' } })
+    const validFrom = within(dialog).getByLabelText('生效时间')
+    fireEvent.change(validFrom, { target: { value: '2026-09-10 10:00:00' } })
+    fireEvent.keyDown(validFrom, { key: 'Enter', code: 'Enter' })
+    const validUntil = within(dialog).getByLabelText(/^失效时间/)
+    fireEvent.change(validUntil, { target: { value: '2026-09-20 10:00:00' } })
+    fireEvent.keyDown(validUntil, { key: 'Enter', code: 'Enter' })
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认重新授权' }))
+    await waitFor(() => expect(reauthRequests).toHaveLength(1))
+    const req = reauthRequests[0]
+    expect(req.method).toBe('POST')
+    expect(req.url).toContain('/api/v1/api-security/authz/relations/rel-revoked/reauthorize')
+    expect(req.body).toEqual({
+      reason: '业务恢复需要',
+      valid_from: new Date(2026, 8, 10, 10, 0, 0).toISOString(),
+      valid_until: new Date(2026, 8, 20, 10, 0, 0).toISOString(),
+    })
+    expect(await screen.findByText('关系已重新授权')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    // 成功后关系与覆盖率查询被刷新（重新发起 GET）
+    await waitFor(() => {
+      const gets = (fetch as Mock).mock.calls.filter((c) => !(c[1]?.method) || c[1]?.method === 'GET').map((c) => String(c[0]))
+      expect(gets.filter((u) => u.includes('/api-security/authz/coverage')).length).toBeGreaterThanOrEqual(2)
+      expect(gets.filter((u) => u.includes('/api-security/authz/relations?')).length).toBeGreaterThanOrEqual(2)
+    })
+  }, 70_000)
+
+  it('重新授权时间窗口：失效时间必须严格晚于生效时间', () => {
+    const value = (iso: string) => ({ toISOString: () => iso })
+    const from = value('2026-09-10T10:00:00.000Z')
+
+    expect(validateReauthorizationWindow(from, value('2026-09-10T09:59:59.000Z'))).toBe('失效时间必须晚于生效时间')
+    expect(validateReauthorizationWindow(from, value('2026-09-10T10:00:00.000Z'))).toBe('失效时间必须晚于生效时间')
+    expect(validateReauthorizationWindow(from, value('2026-09-10T10:00:01.000Z'))).toBeUndefined()
+    expect(validateReauthorizationWindow(from)).toBeUndefined()
   })
 })

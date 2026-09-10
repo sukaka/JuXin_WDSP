@@ -158,23 +158,24 @@ type RelationCandidate struct {
 
 // ObjectRelation is an approved, HMAC-addressed authorization relation.
 type ObjectRelation struct {
-	ID            uuid.UUID  `json:"id"`
-	ApplicationID uuid.UUID  `json:"application_id"`
-	ObjectType    string     `json:"object_type"`
-	ObjectRef     string     `json:"object_ref"`
-	PrincipalID   string     `json:"principal_id"`
-	TenantID      *string    `json:"tenant_id,omitempty"`
-	Relation      string     `json:"relation"`
-	Source        string     `json:"source"`
-	Status        string     `json:"status"`
-	ValidFrom     time.Time  `json:"valid_from"`
-	ValidUntil    *time.Time `json:"valid_until,omitempty"`
-	EvidenceRef   *string    `json:"evidence_ref,omitempty"`
-	ConfirmedBy   string     `json:"confirmed_by"`
-	ConfirmedAt   time.Time  `json:"confirmed_at"`
-	Reason        string     `json:"reason"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID             uuid.UUID  `json:"id"`
+	ApplicationID  uuid.UUID  `json:"application_id"`
+	ObjectType     string     `json:"object_type"`
+	ObjectRef      string     `json:"object_ref"`
+	PrincipalID    string     `json:"principal_id"`
+	TenantID       *string    `json:"tenant_id,omitempty"`
+	Relation       string     `json:"relation"`
+	Source         string     `json:"source"`
+	Status         string     `json:"status"`
+	ValidFrom      time.Time  `json:"valid_from"`
+	ValidUntil     *time.Time `json:"valid_until,omitempty"`
+	EvidenceRef    *string    `json:"evidence_ref,omitempty"`
+	ConfirmedBy    string     `json:"confirmed_by"`
+	ConfirmedAt    time.Time  `json:"confirmed_at"`
+	Reason         string     `json:"reason"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	PreviousStatus string     `json:"-"`
 }
 
 func validateObjectRelation(r *ObjectRelation) error {

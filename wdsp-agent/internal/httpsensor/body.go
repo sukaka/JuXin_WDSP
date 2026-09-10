@@ -56,7 +56,7 @@ func processBody(raw []byte, wireSize int64, truncated bool, headers map[string]
 	if enc := strings.ToLower(strings.TrimSpace(headers["content-encoding"])); enc != "" && enc != "identity" {
 		switch enc {
 		case "gzip", "deflate":
-			decoded, err := decompress(data, enc, int64(pol.MaxBodySize))
+			decoded, decodeTruncated, err := decompress(data, enc, int64(pol.MaxBodySize))
 			if err != nil {
 				res.body = ""
 				res.truncated = false
@@ -64,6 +64,7 @@ func processBody(raw []byte, wireSize int64, truncated bool, headers map[string]
 				return res
 			}
 			data = decoded
+			res.truncated = res.truncated || decodeTruncated
 		default:
 			// br 及其他编码：不解压直接 skipped（契约 §4）
 			res.body = ""
@@ -122,7 +123,8 @@ func bodyTypeAllowed(mt string) bool {
 }
 
 // decompress gzip/deflate 解码；输出钳制在 max（防解压炸弹驻留内存）。
-func decompress(data []byte, encoding string, max int64) ([]byte, error) {
+// 返回值中的 truncated 表示解码输出超过 max，供调用方并入 BodyTruncated。
+func decompress(data []byte, encoding string, max int64) ([]byte, bool, error) {
 	var rc io.ReadCloser
 	var err error
 	switch encoding {
@@ -132,18 +134,19 @@ func decompress(data []byte, encoding string, max int64) ([]byte, error) {
 		rc, err = zlib.NewReader(bytes.NewReader(data))
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rc.Close()
-	// 多读 1 字节探测超限；超限截断（上游以 truncated 语义呈现时另行标记）
+	// 多读 1 字节探测超限；输出仍钳在 max，避免解压炸弹驻留内存。
 	out, err := io.ReadAll(io.LimitReader(rc, max+1))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if int64(len(out)) > max {
+	truncated := int64(len(out)) > max
+	if truncated {
 		out = out[:max]
 	}
-	return out, nil
+	return out, truncated, nil
 }
 
 // multipartSummary 提取 multipart 字段与文件元数据摘要（契约 §4/§35）。

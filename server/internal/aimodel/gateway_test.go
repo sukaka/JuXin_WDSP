@@ -49,7 +49,10 @@ func testModel(priority int) *Model {
 }
 
 func testProvider(baseURL, keyRef string) *Provider {
-	return &Provider{ID: uuid.New(), Name: "test", Type: ProviderOpenAICompatible, BaseURL: baseURL, KeyReference: keyRef}
+	return &Provider{
+		ID: uuid.New(), Name: "test", Type: ProviderOpenAICompatible,
+		BaseURL: baseURL, AllowedTargets: []string{"127.0.0.0/8", "::1/128"}, KeyReference: keyRef,
+	}
 }
 
 // routeEntry 构造路由项（与 SetRoutes 参数匿名结构一致）。

@@ -291,21 +291,30 @@ func evaluateBFLA(cfg AuthorizationConfig, jwt *jwtverify.VerificationResult) (A
 	base.RoleSource = "VERIFIED"
 	roles := make(map[string]bool, len(jwt.VerifiedRoles))
 	for _, role := range jwt.VerifiedRoles {
-		roles[role] = true
+		roles[strings.TrimSpace(role)] = true
 	}
 	if len(roles) == 0 {
 		base.Decision, base.ReasonCode = AuthorizationUnknown, "AUTHZ-ROLE-001"
 		return base, true
 	}
+	allowed, denied := false, false
 	for _, b := range matched {
-		if roles[b.Role] {
-			if b.Allowed {
-				base.Decision = AuthorizationAllow
-				return base, true
-			}
-			base.Decision, base.ReasonCode = AuthorizationObserveViolation, "AUTHZ-BFLA-001"
-			return base, true
+		if !roles[strings.TrimSpace(b.Role)] {
+			continue
 		}
+		if b.Allowed {
+			allowed = true
+		} else {
+			denied = true
+		}
+	}
+	if allowed {
+		base.Decision = AuthorizationAllow
+		return base, true
+	}
+	if denied {
+		base.Decision, base.ReasonCode = AuthorizationObserveViolation, "AUTHZ-BFLA-001"
+		return base, true
 	}
 	base.Decision, base.ReasonCode = AuthorizationObserveViolation, "AUTHZ-BFLA-001"
 	return base, true
@@ -375,13 +384,23 @@ func evaluateBOLA(parsed *parser.Parsed, cfg AuthorizationConfig, jwt *jwtverify
 		check.Decision, check.ReasonCode, check.RelationState = AuthorizationUnknown, "AUTHZ-RELATION-001", "NONE"
 		return check, true
 	}
-	identityTenant := jwt.VerifiedTenantID
-	objectTenant := model.TenantID
+	identityTenant := strings.TrimSpace(jwt.VerifiedTenantID)
+	tenantIDs := make(map[string]struct{}, len(rels)+1)
+	if tenant := strings.TrimSpace(model.TenantID); tenant != "" {
+		tenantIDs[tenant] = struct{}{}
+	}
 	for _, r := range rels {
-		if r.TenantID != "" {
-			objectTenant = r.TenantID
-			break
+		if tenant := strings.TrimSpace(r.TenantID); tenant != "" {
+			tenantIDs[tenant] = struct{}{}
 		}
+	}
+	if len(tenantIDs) > 1 {
+		check.Decision, check.ReasonCode, check.TenantState = AuthorizationUnknown, "AUTHZ-TENANT-002", "CONFLICT"
+		return check, true
+	}
+	objectTenant := ""
+	for tenant := range tenantIDs {
+		objectTenant = tenant
 	}
 	if identityTenant != "" && objectTenant != "" && identityTenant != objectTenant {
 		check.Decision, check.ReasonCode, check.TenantState = AuthorizationObserveViolation, "AUTHZ-TENANT-001", "MISMATCH"

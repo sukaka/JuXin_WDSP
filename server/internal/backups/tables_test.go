@@ -73,7 +73,11 @@ func TestTopoCycleDetected(t *testing.T) {
 func TestTablesForBackup(t *testing.T) {
 	full := TablesForBackup(TypeFull)
 	foundAudit := false
+	auditCount := 0
 	for _, td := range full {
+		if td.Group == GroupAudit {
+			auditCount++
+		}
 		if td.Name == "operation_audits" {
 			foundAudit = true
 			if td.RecentLimit != AuditExportLimit {
@@ -90,8 +94,84 @@ func TestTablesForBackup(t *testing.T) {
 			t.Error("CONFIG_ONLY backup must not include audit archive")
 		}
 	}
-	if len(cfg) != len(full)-1 {
-		t.Errorf("CONFIG_ONLY tables = %d, want %d", len(cfg), len(full)-1)
+	if len(cfg) != len(full)-auditCount {
+		t.Errorf("CONFIG_ONLY tables = %d, want %d", len(cfg), len(full)-auditCount)
+	}
+}
+
+func TestTablesIncludeWDSPStateAndRestoreDependencies(t *testing.T) {
+	required := []string{
+		"application_policies", "jwt_trust_policies", "jwt_trust_policy_versions",
+		"bot_policies", "bot_policy_versions", "api_endpoints", "api_model_versions",
+		"api_runtime_policies", "api_runtime_events", "api_runtime_findings",
+		"api_schema_violations", "api_object_models", "api_object_relations",
+		"api_authorization_decisions", "api_role_baselines", "api_object_ownership",
+		"api_field_permissions",
+		"api_assets", "api_parameter_models", "api_parameter_statistics",
+		"api_parameter_relations", "api_request_schemas", "api_response_schemas",
+		"api_masking_rules", "api_sensitive_data_types", "api_file_compliance_rules",
+		"api_grpc_descriptors",
+	}
+	seen := map[string]bool{}
+	for _, td := range Tables {
+		seen[td.Name] = true
+	}
+	for _, name := range required {
+		if !seen[name] {
+			t.Errorf("WDSP table %q is missing from backup scope", name)
+		}
+	}
+	order, err := RestoreOrder([]string{"applications", "application_policies", "api_endpoints", "api_model_versions", "api_runtime_policies"})
+	if err != nil {
+		t.Fatalf("RestoreOrder() error = %v", err)
+	}
+	pos := map[string]int{}
+	for i, name := range order {
+		pos[name] = i
+	}
+	for child, parent := range map[string]string{
+		"application_policies": "applications",
+		"api_endpoints":        "applications",
+		"api_model_versions":   "api_endpoints",
+		"api_runtime_policies": "api_model_versions",
+	} {
+		if pos[parent] >= pos[child] {
+			t.Errorf("%s must restore before %s: %v", parent, child, order)
+		}
+	}
+}
+
+func TestAllWDSPMigrationTablesHaveRestoreClassification(t *testing.T) {
+	// 该清单对应 server/migrations 中 WDSP/API 表；新增迁移表时必须在这里
+	// 选择 CONFIG、LEARNING、FACT 或 AUDIT，避免只在导出逻辑中漏掉一张表。
+	required := []string{
+		"api_endpoints", "api_endpoint_aliases", "api_endpoint_path_segments", "api_assets",
+		"api_learning_jobs", "api_learning_samples", "api_parameter_models", "api_parameter_statistics",
+		"api_parameter_relations", "api_parameter_value_obs", "api_request_schemas", "api_response_schemas",
+		"api_classifications", "api_classification_dimensions", "api_custom_taxonomies", "api_identity_profiles",
+		"api_object_models", "api_behavior_profiles", "api_call_edges", "api_sensitive_fields",
+		"api_runtime_findings", "api_schema_violations", "api_lifecycle_events", "api_model_reviews",
+		"api_model_diffs", "api_import_specs", "api_spec_diffs", "api_runtime_events", "api_runtime_policies",
+		"api_weaknesses", "api_weakness_actions", "api_endpoint_traffic_buckets", "api_scan_targets",
+		"api_scan_authorizations", "api_scan_jobs", "api_scan_findings", "api_file_assets",
+		"api_cross_border_events", "api_cross_border_state", "api_ai_schedules", "api_ai_schedule_runs",
+		"api_llm_observations", "api_object_relation_candidates", "api_authz_candidate_event_receipts",
+		"api_authz_migration_state", "api_authorization_decisions", "api_object_relations", "api_role_baselines",
+		"api_object_ownership", "api_field_permissions", "api_masking_rules", "api_sensitive_data_types",
+		"api_file_compliance_rules", "api_grpc_descriptors", "api_gateway_nodes",
+	}
+	allowed := map[string]bool{
+		GroupConfig: true, GroupLearning: true, GroupFact: true, GroupAudit: true,
+	}
+	for _, name := range required {
+		td, ok := TableByName(name)
+		if !ok {
+			t.Errorf("WDSP migration table %q is missing from backup scope", name)
+			continue
+		}
+		if !allowed[td.Group] {
+			t.Errorf("WDSP table %q has invalid classification %q", name, td.Group)
+		}
 	}
 }
 

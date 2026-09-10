@@ -144,9 +144,11 @@ type csrIssuingClient struct {
 	t                   *testing.T
 	notBefore, notAfter time.Time
 	out                 *[]byte
+	gotCSR              string
 }
 
 func (c *csrIssuingClient) RotateCert(_ context.Context, _, csrPEM string) (*transport.RotateCertResponse, error) {
+	c.gotCSR = csrPEM
 	block, _ := pemDecode(csrPEM)
 	csr, err := x509.ParseCertificateRequest(block)
 	if err != nil {

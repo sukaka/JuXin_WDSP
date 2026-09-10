@@ -330,16 +330,27 @@ func (p *Provider) SetMaskRuleLister(l MaskRuleLister) { p.maskRules = l }
 // Warn 并跳过，不阻断发布主流程（与 L7/约束段的「失败中止」纪律不同：脱敏为增量能力，
 // 缺失时保持发布通道既有行为）。
 func (p *Provider) loadAPIMaskRules(ctx context.Context) []gatewayconfig.GuardMaskRule {
+	rules, err := p.loadAPIMaskRulesStrict(ctx)
+	if err != nil {
+		slog.Warn("list api masking rules failed, skip api_mask_rules", "error", err)
+	}
+	return rules
+}
+
+func (p *Provider) loadAPIMaskRulesStrict(ctx context.Context) ([]gatewayconfig.GuardMaskRule, error) {
 	if p.maskRules == nil {
-		return nil
+		return nil, nil
 	}
 	rules, err := p.maskRules.ListEnabledMaskRules(ctx)
 	if err != nil {
-		slog.Warn("list api masking rules failed, skip api_mask_rules", "error", err)
-		return nil
+		if isMissingLegacyTableError(err, "api_masking_rules") {
+			slog.Warn("optional legacy table api_masking_rules is unavailable", "error", err)
+			return nil, nil
+		}
+		return nil, wrapLegacyLoaderError("api_masking_rules", err)
 	}
 	if len(rules) == 0 {
-		return nil
+		return nil, nil
 	}
-	return rules
+	return rules, nil
 }

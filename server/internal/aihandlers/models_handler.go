@@ -20,18 +20,22 @@ import (
 
 // providerDTO 供应商输出（绝不含密钥明文/密文，仅引用名）。
 type providerDTO struct {
-	ID           uuid.UUID `json:"id"`
-	Name         string    `json:"name"`
-	ProviderType string    `json:"provider_type"`
-	BaseURL      string    `json:"base_url"`
-	KeyReference string    `json:"api_key_reference"`
-	Status       string    `json:"status"`
+	ID              uuid.UUID `json:"id"`
+	Name            string    `json:"name"`
+	ProviderType    string    `json:"provider_type"`
+	BaseURL         string    `json:"base_url"`
+	CanonicalOrigin string    `json:"canonical_origin"`
+	AllowedTargets  []string  `json:"allowed_targets"`
+	KeyReference    string    `json:"api_key_reference"`
+	Status          string    `json:"status"`
 }
 
 func toProviderDTO(p *aimodel.Provider) providerDTO {
 	return providerDTO{
 		ID: p.ID, Name: p.Name, ProviderType: string(p.Type),
-		BaseURL: p.BaseURL, KeyReference: p.KeyReference, Status: p.Status,
+		BaseURL: p.BaseURL, CanonicalOrigin: p.CanonicalOrigin,
+		AllowedTargets: append([]string{}, p.AllowedTargets...),
+		KeyReference:   p.KeyReference, Status: p.Status,
 	}
 }
 
@@ -82,11 +86,12 @@ func (d *Deps) ProviderList(w http.ResponseWriter, r *http.Request) {
 }
 
 type providerRequest struct {
-	Name         string `json:"name"`
-	ProviderType string `json:"provider_type"`
-	BaseURL      string `json:"base_url"`
-	APIKey       string `json:"api_key"`
-	Status       string `json:"status"`
+	Name           string    `json:"name"`
+	ProviderType   string    `json:"provider_type"`
+	BaseURL        string    `json:"base_url"`
+	AllowedTargets *[]string `json:"allowed_targets"`
+	APIKey         string    `json:"api_key"`
+	Status         string    `json:"status"`
 }
 
 // ProviderCreate 创建供应商（api_key 可选，明文入参即加密存储）。
@@ -123,8 +128,11 @@ func (d *Deps) ProviderCreate(w http.ResponseWriter, r *http.Request) {
 		Name: req.Name, Type: aimodel.ProviderType(req.ProviderType),
 		BaseURL: req.BaseURL, Status: status,
 	}
+	if req.AllowedTargets != nil {
+		prov.AllowedTargets = append([]string{}, (*req.AllowedTargets)...)
+	}
 	if err := d.Models.CreateProvider(r.Context(), prov, req.APIKey); err != nil {
-		response.InternalError(w, r, err)
+		d.modelError(w, r, err)
 		return
 	}
 	d.recordAIAudit(p, aiaudit.Record{
@@ -151,6 +159,7 @@ func (d *Deps) ProviderPatch(w http.ResponseWriter, r *http.Request) {
 		d.modelError(w, r, err)
 		return
 	}
+	previousKeyReference := prov.KeyReference
 	if req.Name != "" {
 		if len(req.Name) > 100 {
 			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "供应商名称不超过 100 字符")
@@ -166,11 +175,15 @@ func (d *Deps) ProviderPatch(w http.ResponseWriter, r *http.Request) {
 		prov.Type = aimodel.ProviderType(req.ProviderType)
 	}
 	if req.BaseURL != "" {
-		if len(req.BaseURL) > 255 {
-			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "Base URL 不超过 255 字符")
+		baseURL := strings.TrimSpace(req.BaseURL)
+		if baseURL == "" || len(baseURL) > 255 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "Base URL 不能为空且不超过 255 字符")
 			return
 		}
-		prov.BaseURL = strings.TrimSpace(req.BaseURL)
+		prov.BaseURL = baseURL
+	}
+	if req.AllowedTargets != nil {
+		prov.AllowedTargets = append([]string{}, (*req.AllowedTargets)...)
 	}
 	if req.Status != "" {
 		if req.Status != "ENABLED" && req.Status != "DISABLED" {
@@ -189,9 +202,17 @@ func (d *Deps) ProviderPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.recordAIAudit(p, aiaudit.Record{
-		Action: "model_provider_update", RequestSummary: "更新供应商 " + prov.Name, ResultSummary: "SUCCESS",
+		Action: "model_provider_update", RequestSummary: "更新供应商 " + prov.Name,
+		ResultSummary: providerUpdateResult(previousKeyReference, prov.KeyReference),
 	})
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"provider": toProviderDTO(prov)})
+}
+
+func providerUpdateResult(previousKeyReference, currentKeyReference string) string {
+	if previousKeyReference != "" && currentKeyReference == "" {
+		return "SUCCESS_KEY_INVALIDATED"
+	}
+	return "SUCCESS"
 }
 
 // ProviderRotateKey 轮换供应商密钥（明文仅入参，加密覆盖存储）。
@@ -596,6 +617,10 @@ func (d *Deps) ReloadRoutes(ctx context.Context) error {
 
 // modelError 模型仓储错误映射。
 func (d *Deps) modelError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, aimodel.ErrInvalidProviderEndpoint) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "模型供应商地址或目标白名单不符合安全策略")
+		return
+	}
 	if errors.Is(err, aimodel.ErrNotFound) {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "资源不存在")
 		return

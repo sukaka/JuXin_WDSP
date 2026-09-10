@@ -54,8 +54,7 @@ func TestManagerRotateRollbackRestoresOldKey(t *testing.T) {
 	}
 }
 
-// 回滚本身失败（旧私钥备份损坏）：错误须显式携带 ErrRollbackFailed，
-// 由调用方 Error 级上报（不得静默留下钥证不匹配死状态）。
+// 旧私钥备份损坏时，应在提交前拒绝轮换，避免进入需要回滚的混搭状态。
 func TestManagerRotateRollbackFailureReported(t *testing.T) {
 	m, _, _ := setupManager(t, nil)
 	// 破坏旧私钥备份 → 回滚时 ParseKeyPEM 失败
@@ -71,7 +70,41 @@ func TestManagerRotateRollbackFailureReported(t *testing.T) {
 	if err == nil {
 		t.Fatal("证书写失败应返回错误")
 	}
-	if !errors.Is(err, ErrRollbackFailed) {
-		t.Fatalf("回滚失败须显式上报 ErrRollbackFailed: %v", err)
+	if errors.Is(err, ErrRollbackFailed) {
+		t.Fatalf("提交前校验失败不应伪装成回滚失败: %v", err)
+	}
+	if got := string(mustRead(t, m.KeyPath)); got != "not a pem" {
+		t.Fatal("提交前失败不得改写损坏的旧私钥")
+	}
+}
+
+// CA 写入失败时，密钥、客户端证书和 CA 必须仍然组成同一旧 bundle。
+func TestManagerRotateCAWriteFailureLeavesCompleteOldBundle(t *testing.T) {
+	m, oldKey, oldCertPEM := setupManager(t, nil)
+	oldCAKey, _ := GenerateKey()
+	oldCAPEM := selfSignedCert(t, oldCAKey, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour))
+	if err := SaveCertificatePEM(m.CAPath, oldCAPEM); err != nil {
+		t.Fatal(err)
+	}
+	m.CAPath = certPathAsDir(t)
+	var issued []byte
+	issuing := &csrIssuingClient{t: t, notBefore: time.Now().Add(-time.Hour),
+		notAfter: time.Now().Add(90 * 24 * time.Hour), out: &issued}
+
+	if err := m.Rotate(context.Background(), issuing, "agent-1"); err == nil {
+		t.Fatal("CA 写失败应返回错误")
+	}
+	key, err := LoadKey(m.KeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.D.Cmp(oldKey.D) != 0 {
+		t.Fatal("失败后私钥应保持旧件")
+	}
+	if got := string(mustRead(t, m.CertPath)); got != string(oldCertPEM) {
+		t.Fatal("失败后客户端证书应保持旧件")
+	}
+	if got := string(mustRead(t, filepath.Join(filepath.Dir(m.KeyPath), CAFileName))); got != string(oldCAPEM) {
+		t.Fatal("失败后 CA 应保持旧件")
 	}
 }

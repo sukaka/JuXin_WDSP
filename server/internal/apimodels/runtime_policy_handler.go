@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
@@ -23,10 +24,19 @@ type RuntimePolicyStore interface {
 	GetRuntimePolicyByID(ctx context.Context, id uuid.UUID) (*RuntimePolicy, error)
 	RollbackToKnownGood(ctx context.Context, id, operatorID uuid.UUID) (*RuntimePolicyRollback, error)
 	MarkRuntimePolicyFailed(ctx context.Context, id uuid.UUID, reason string) error
+	FinalizeRuntimePolicyRollbackFailure(ctx context.Context, rollback *RuntimePolicyRollback, reason string) error
 }
 
 // publishStatusSuccess 发布任务成功状态（镜像 gatewayconfig.TaskSuccess，本包不反引发布包）。
 const publishStatusSuccess = "SUCCESS"
+
+const runtimePolicyRollbackFinalizeTimeout = 5 * time.Second
+
+func finalizeRuntimePolicyRollbackFailure(runtime RuntimePolicyStore, rollback *RuntimePolicyRollback, reason string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), runtimePolicyRollbackFinalizeTimeout)
+	defer cancel()
+	return runtime.FinalizeRuntimePolicyRollbackFailure(ctx, rollback, reason)
+}
 
 // RuntimePolicyPublishResult 发布触发结果摘要。
 type RuntimePolicyPublishResult struct {
@@ -147,10 +157,10 @@ func (h *Handler) RollbackRuntimePolicy(w http.ResponseWriter, r *http.Request) 
 		"(FORMAL) 并创建回滚策略 " + outcome.Draft.RuntimeVersion
 	result, err := h.runtimePublish(r.Context(), operatorID(p), response.RequestIDFrom(r))
 	if err != nil {
-		// 发布触发失败：草稿落 FAILED（操作者可见终态），记失败审计；标记失败仅 Warn 不掩盖原始错误
+		// 发布触发失败：草稿落 FAILED 并恢复 FORMAL 模型指针，避免留下不可发布的内容源。
 		reason := "回滚发布触发失败: " + err.Error()
-		if merr := h.runtime.MarkRuntimePolicyFailed(r.Context(), outcome.Draft.ID, reason); merr != nil {
-			slog.Warn("mark rollback draft failed", "policy", outcome.Draft.ID, "error", merr)
+		if merr := finalizeRuntimePolicyRollbackFailure(h.runtime, outcome, reason); merr != nil {
+			slog.Warn("finalize rollback after publish trigger failure failed", "policy", outcome.Draft.ID, "error", merr)
 		}
 		h.recordAuditOutcome(r, p, "rollback", "api_runtime_policy", id.String(), before.EndpointKey,
 			beforeSummary, afterSummary+"，发布触发失败", audits.ResultFailure, reason, audits.RiskHigh)
@@ -158,10 +168,14 @@ func (h *Handler) RollbackRuntimePolicy(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if result.Status != publishStatusSuccess {
-		// 发布执行失败：MarkRuntimePoliciesPublishResult 已将待发布集合落 FAILED，记失败审计
+		// 发布执行失败：无论发布实现是否已回写，都由回滚收尾保证草稿终态和 FORMAL 指针一致。
+		reason := "回滚发布任务状态: " + result.Status
+		if merr := finalizeRuntimePolicyRollbackFailure(h.runtime, outcome, reason); merr != nil {
+			slog.Warn("finalize rollback after failed publish task failed", "policy", outcome.Draft.ID, "error", merr)
+		}
 		h.recordAuditOutcome(r, p, "rollback", "api_runtime_policy", id.String(), before.EndpointKey,
 			beforeSummary, afterSummary+"，发布任务状态 "+result.Status, audits.ResultFailure,
-			"发布任务状态: "+result.Status, audits.RiskHigh)
+			reason, audits.RiskHigh)
 		response.Error(w, r, http.StatusBadGateway, response.CodeInternalError,
 			"回滚发布失败（任务状态 "+result.Status+"），回滚策略已标记失败，可重新激活后再次发布")
 		return

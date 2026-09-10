@@ -4,6 +4,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -211,6 +212,117 @@ func TestReplayFairnessBudget(t *testing.T) {
 	}
 	if !a2.bucket.Allow(60 << 10) {
 		t.Fatal("实时预算不应被补传耗尽")
+	}
+}
+
+// R15：缓存回调批次可能大于令牌桶 burst，但可拆成多个服务端批次逐个发送。
+// 每个发送单元都必须先获得令牌，不能因为整段缓存一次性超过 burst 而永久停滞。
+func TestReplaySplitsBatchBelowTokenBurst(t *testing.T) {
+	var calls atomic.Int64
+	var received atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var req events.FlowsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("flows 请求体解析: %v", err)
+		}
+		received.Add(int64(len(req.Events)))
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(events.FlowsResponse{Accepted: len(req.Events)})
+	}))
+	defer srv.Close()
+
+	oldAttempts, oldInterval := replayWaitAttempts, replayWaitInterval
+	replayWaitAttempts, replayWaitInterval = 120, 10*time.Millisecond
+	t.Cleanup(func() { replayWaitAttempts, replayWaitInterval = oldAttempts, oldInterval })
+
+	buf, err := buffer.Open(t.TempDir(), 0, 0, time.Hour, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newTestAgent(t, srv.URL)
+	a.buf = buf
+	// 0.5 Mbps 的 burst 受 64 KiB 下限约束；缓存回调批次约 80 KiB，
+	// 需要拆分为多个小于 burst 的 flows 请求。
+	const n = 80
+	for i := 0; i < n; i++ {
+		ev := events.FlowEvent{
+			EventType: events.TypeFlowEnd, FlowID: "r15-" + strings.Repeat("x", 800),
+			Timestamp: time.Now().Unix(), SrcIP: "10.0.0.1", SrcPort: uint16(1000 + i),
+			DstIP: "10.0.0.2", DstPort: 8080, Protocol: "tcp", Direction: "ingress",
+			HTTPHost: "h", TLSVisibility: events.VisibilityPlaintext,
+		}
+		data, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := buf.Write(append([]byte{bufTagFlow}, data...)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.replayBucket = ratelimit.New(0.5)
+	a.replayBuffer()
+
+	if calls.Load() < 2 {
+		t.Fatalf("超过 burst 的缓存批次应拆成至少两个请求: calls=%d", calls.Load())
+	}
+	if got := received.Load(); got != n {
+		t.Fatalf("拆分补传不应丢失记录: got=%d want=%d", got, n)
+	}
+	if a.buf.Bytes() != 0 {
+		t.Fatalf("拆分补传成功后应清空缓存: %d bytes", a.buf.Bytes())
+	}
+}
+
+// R15：现有 HTTP 批次上限高于低速令牌桶 burst 时，也必须进一步拆分，
+// 且每个实际 HTTP 请求单元都单独获取补传预算。
+func TestReplayHTTPSplitsBatchBelowTokenBurst(t *testing.T) {
+	var calls atomic.Int64
+	var received atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var req events.HTTPRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("http 请求体解析: %v", err)
+		}
+		received.Add(int64(len(req.Records)))
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(events.HTTPAcceptedResponse{Accepted: len(req.Records)})
+	}))
+	defer srv.Close()
+
+	oldAttempts, oldInterval := replayWaitAttempts, replayWaitInterval
+	replayWaitAttempts, replayWaitInterval = 120, 10*time.Millisecond
+	t.Cleanup(func() { replayWaitAttempts, replayWaitInterval = oldAttempts, oldInterval })
+
+	buf, err := buffer.Open(t.TempDir(), 0, 0, time.Hour, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newTestAgent(t, srv.URL)
+	a.buf = buf
+	const n = 100
+	for i := 0; i < n; i++ {
+		rec := p1Record("/r15-" + strings.Repeat("x", 900) + fmt.Sprint(i))
+		data, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := buf.Write(append([]byte{bufTagHTTP}, data...)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.replayBucket = ratelimit.New(0.5)
+	a.replayBuffer()
+
+	if calls.Load() < 2 {
+		t.Fatalf("超过 burst 的 HTTP 缓存批次应拆成至少两个请求: calls=%d", calls.Load())
+	}
+	if got := received.Load(); got != n {
+		t.Fatalf("HTTP 拆分补传不应丢失记录: got=%d want=%d", got, n)
+	}
+	if a.buf.Bytes() != 0 {
+		t.Fatalf("HTTP 拆分补传成功后应清空缓存: %d bytes", a.buf.Bytes())
 	}
 }
 

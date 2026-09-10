@@ -409,6 +409,12 @@ func (s *Service) Confirm(ctx context.Context, id uuid.UUID, confirmedBy uuid.UU
 	if err != nil || len(tables) == 0 {
 		return fail(FailEmptyScope, ErrEmptyScope)
 	}
+	// 删除集合按当前 schema 推导，插入集合仍按备份实际包含的表推导。
+	// 这样旧格式备份缺少新增 WDSP 表时不会把恢复前的数据遗留在库中。
+	deleteTables, err := ScopeTablesForRestore(job.RestoreScope)
+	if err != nil || len(deleteTables) == 0 {
+		return fail(FailEmptyScope, ErrEmptyScope)
+	}
 	schema := StagingSchema(id)
 
 	tx, err := s.db.Begin(ctxT)
@@ -427,10 +433,10 @@ func (s *Service) Confirm(ctx context.Context, id uuid.UUID, confirmedBy uuid.UU
 		return fail(FailPrivilege, fmt.Errorf("disable triggers (superuser required): %w", err))
 	}
 	// 先删（child → parent）
-	for i := len(tables) - 1; i >= 0; i-- {
+	for i := len(deleteTables) - 1; i >= 0; i-- {
 		if _, err := tx.Exec(ctxT,
-			fmt.Sprintf(`DELETE FROM %s`, pgx.Identifier{"public", tables[i]}.Sanitize())); err != nil {
-			return fail(FailRestore, fmt.Errorf("truncate table %s: %w", tables[i], err))
+			fmt.Sprintf(`DELETE FROM %s`, pgx.Identifier{"public", deleteTables[i]}.Sanitize())); err != nil {
+			return fail(FailRestore, fmt.Errorf("truncate table %s: %w", deleteTables[i], err))
 		}
 	}
 	// 再插（parent → child），保留原主键，关联关系不失
@@ -598,9 +604,9 @@ func (s *Service) insertFromFile(ctx context.Context, schema, table string, cols
 
 // postVerify 恢复后验证：核心表可读且计数合理。
 func (s *Service) postVerify(ctx context.Context, scope string) (map[string]int64, error) {
-	checks := []string{"users", "applications", "system_settings"}
-	if scope == ScopeCertificate {
-		checks = []string{"certificates"}
+	checks, err := ScopeTablesForRestore(scope)
+	if err != nil {
+		return nil, err
 	}
 	summary := map[string]int64{}
 	for _, t := range checks {

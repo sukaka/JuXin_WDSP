@@ -22,9 +22,10 @@ import (
 
 // 状态目录内固定文件名（契约 §12）。
 const (
-	KeyFileName  = "agent.key"
-	CertFileName = "agent.crt"
-	CAFileName   = "ca.crt"
+	KeyFileName             = "agent.key"
+	CertFileName            = "agent.crt"
+	CAFileName              = "ca.crt"
+	PendingRotationFileName = "agent.rotate.pending"
 )
 
 // GenerateKey 生成 ECDSA P-256 私钥。

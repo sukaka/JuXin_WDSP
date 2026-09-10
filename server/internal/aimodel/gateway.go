@@ -175,9 +175,9 @@ func (g *Gateway) chatWith(ctx context.Context, complexity TaskComplexity, req C
 		var res *ChatResult
 		var err error
 		if cb != nil && c.model.SupportsStreaming {
-			res, err = g.client.ChatStream(callCtx, c.provider.BaseURL, key, c.model.Code, req, cb)
+			res, err = g.client.ChatStreamProvider(callCtx, c.provider, key, c.model.Code, req, cb)
 		} else {
-			res, err = g.client.Chat(callCtx, c.provider.BaseURL, key, c.model.Code, req)
+			res, err = g.client.ChatProvider(callCtx, c.provider, key, c.model.Code, req)
 		}
 		cancel()
 		g.recordResult(c.model.ID, err)
@@ -209,7 +209,7 @@ func (g *Gateway) HealthCheckAll(ctx context.Context) map[uuid.UUID]error {
 			out[id] = err // 密钥配置故障如实上报（健康检查面板暴露）
 			continue
 		}
-		out[id] = g.client.HealthCheck(ctx, c.provider.BaseURL, key, c.model.Code)
+		out[id] = g.client.HealthCheckProvider(ctx, c.provider, key, c.model.Code)
 	}
 	return out
 }
@@ -220,7 +220,7 @@ func (g *Gateway) HealthCheckModel(ctx context.Context, m *Model, p *Provider) e
 	if err != nil {
 		return err
 	}
-	return g.client.HealthCheck(ctx, p.BaseURL, key, m.Code)
+	return g.client.HealthCheckProvider(ctx, p, key, m.Code)
 }
 
 // ModelCount 已注册模型数。

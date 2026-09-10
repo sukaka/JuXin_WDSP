@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,6 +42,9 @@ func (s *Store) CreateProvider(ctx context.Context, p *Provider, plainKey string
 	if plainKey != "" && s.enc == nil {
 		return fmt.Errorf("encryption service unavailable")
 	}
+	if err := prepareProviderForSave(ctx, p); err != nil {
+		return err
+	}
 	p.ID = uuid.New()
 	if plainKey != "" && p.KeyReference == "" {
 		p.KeyReference = "provider-" + p.ID.String()[:8]
@@ -51,9 +55,10 @@ func (s *Store) CreateProvider(ctx context.Context, p *Provider, plainKey string
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `
-INSERT INTO ai_model_providers (id, name, provider_type, base_url, api_key_reference, status)
-VALUES ($1,$2,$3,$4,$5,$6)`,
-		p.ID, p.Name, string(p.Type), p.BaseURL, p.KeyReference, p.Status); err != nil {
+INSERT INTO ai_model_providers
+  (id, name, provider_type, base_url, canonical_origin, allowed_targets, api_key_reference, status)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		p.ID, p.Name, string(p.Type), p.BaseURL, p.CanonicalOrigin, p.AllowedTargets, p.KeyReference, p.Status); err != nil {
 		return err
 	}
 	if plainKey != "" {
@@ -102,7 +107,8 @@ func (s *Store) DecryptSecret(ctx context.Context, reference string) (string, er
 // ListProviders 列出供应商（不含密钥）。
 func (s *Store) ListProviders(ctx context.Context) ([]Provider, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT id, name, provider_type, base_url, api_key_reference, status FROM ai_model_providers ORDER BY name`)
+SELECT id, name, provider_type, base_url, canonical_origin, allowed_targets, api_key_reference, status
+FROM ai_model_providers ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -111,13 +117,25 @@ SELECT id, name, provider_type, base_url, api_key_reference, status FROM ai_mode
 	for rows.Next() {
 		var p Provider
 		var t string
-		if err := rows.Scan(&p.ID, &p.Name, &t, &p.BaseURL, &p.KeyReference, &p.Status); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &t, &p.BaseURL, &p.CanonicalOrigin, &p.AllowedTargets, &p.KeyReference, &p.Status); err != nil {
 			return nil, err
 		}
 		p.Type = ProviderType(t)
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	// Release the result cursor before lazily backfilling legacy bindings. This
+	// also works with a pool configured with a single connection.
+	for i := range out {
+		if err := s.persistLegacyProviderBinding(ctx, &out[i]); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // GetProvider 查询供应商（不含密钥）。
@@ -125,8 +143,9 @@ func (s *Store) GetProvider(ctx context.Context, id uuid.UUID) (*Provider, error
 	var p Provider
 	var t string
 	err := s.db.QueryRow(ctx, `
-SELECT id, name, provider_type, base_url, api_key_reference, status FROM ai_model_providers WHERE id=$1`, id).
-		Scan(&p.ID, &p.Name, &t, &p.BaseURL, &p.KeyReference, &p.Status)
+SELECT id, name, provider_type, base_url, canonical_origin, allowed_targets, api_key_reference, status
+FROM ai_model_providers WHERE id=$1`, id).
+		Scan(&p.ID, &p.Name, &t, &p.BaseURL, &p.CanonicalOrigin, &p.AllowedTargets, &p.KeyReference, &p.Status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
@@ -134,21 +153,68 @@ SELECT id, name, provider_type, base_url, api_key_reference, status FROM ai_mode
 		return nil, err
 	}
 	p.Type = ProviderType(t)
+	if err := s.persistLegacyProviderBinding(ctx, &p); err != nil {
+		return nil, err
+	}
 	return &p, nil
 }
 
 // UpdateProvider 更新供应商基本信息（不含密钥；密钥走 RotateKey）。
 func (s *Store) UpdateProvider(ctx context.Context, p *Provider) error {
-	tag, err := s.db.Exec(ctx, `
-UPDATE ai_model_providers SET name=$2, provider_type=$3, base_url=$4, status=$5, updated_at=now()
-WHERE id=$1`, p.ID, p.Name, string(p.Type), p.BaseURL, p.Status)
+	if err := prepareProviderForSave(ctx, p); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var oldOrigin, oldBaseURL, oldReference string
+	err = tx.QueryRow(ctx, `
+SELECT canonical_origin, base_url, api_key_reference
+FROM ai_model_providers WHERE id=$1 FOR UPDATE`, p.ID).Scan(&oldOrigin, &oldBaseURL, &oldReference)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	originChanged, err := providerOriginChanged(oldOrigin, oldBaseURL, p.CanonicalOrigin)
+	if err != nil {
+		return err
+	}
+	if originChanged && oldReference != "" {
+		if _, err := tx.Exec(ctx, `DELETE FROM ai_provider_secrets WHERE reference=$1`, oldReference); err != nil {
+			return err
+		}
+		p.KeyReference = ""
+	} else {
+		p.KeyReference = oldReference
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE ai_model_providers
+SET name=$2, provider_type=$3, base_url=$4, canonical_origin=$5, allowed_targets=$6,
+    api_key_reference=$7, status=$8, updated_at=now()
+WHERE id=$1`, p.ID, p.Name, string(p.Type), p.BaseURL, p.CanonicalOrigin,
+		p.AllowedTargets, p.KeyReference, p.Status)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit(ctx)
+}
+
+func providerOriginChanged(oldOrigin, oldBaseURL, newOrigin string) (bool, error) {
+	if oldOrigin == "" {
+		var err error
+		oldOrigin, err = CanonicalOrigin(oldBaseURL)
+		if err != nil {
+			return false, err
+		}
+	}
+	return oldOrigin != newOrigin, nil
 }
 
 // RotateKey 轮换供应商密钥（明文仅入参，加密落库；引用名缺省时自动生成并回写）。
@@ -156,18 +222,77 @@ func (s *Store) RotateKey(ctx context.Context, id uuid.UUID, plainKey string) er
 	if plainKey == "" {
 		return fmt.Errorf("plain key required")
 	}
-	p, err := s.GetProvider(ctx, id)
+	if s.enc == nil {
+		return fmt.Errorf("encryption service unavailable")
+	}
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var p Provider
+	var providerType string
+	err = tx.QueryRow(ctx, `
+SELECT id, name, provider_type, base_url, canonical_origin, allowed_targets, api_key_reference, status
+FROM ai_model_providers WHERE id=$1 FOR UPDATE`, id).Scan(
+		&p.ID, &p.Name, &providerType, &p.BaseURL, &p.CanonicalOrigin,
+		&p.AllowedTargets, &p.KeyReference, &p.Status,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	p.Type = ProviderType(providerType)
+	if err := prepareProviderForSave(ctx, &p); err != nil {
 		return err
 	}
 	ref := p.KeyReference
 	if ref == "" {
 		ref = "provider-" + p.ID.String()[:8]
-		if _, err := s.db.Exec(ctx, `UPDATE ai_model_providers SET api_key_reference=$1, updated_at=now() WHERE id=$2`, ref, p.ID); err != nil {
-			return err
-		}
 	}
-	return s.saveSecret(ctx, s.db, ref, plainKey)
+	if err := s.saveSecret(ctx, tx, ref, plainKey); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE ai_model_providers
+SET api_key_reference=$1, canonical_origin=$2, allowed_targets=$3, updated_at=now()
+WHERE id=$4`, ref, p.CanonicalOrigin, p.AllowedTargets, p.ID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func prepareProviderForSave(ctx context.Context, p *Provider) error {
+	origin, err := CanonicalOrigin(p.BaseURL)
+	if err != nil {
+		return err
+	}
+	p.CanonicalOrigin = origin
+	for i := range p.AllowedTargets {
+		p.AllowedTargets[i] = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(p.AllowedTargets[i]), "."))
+	}
+	return ValidateProviderEndpoint(ctx, p)
+}
+
+// persistLegacyProviderBinding upgrades rows created before the origin-binding
+// columns existed. The conditional update keeps concurrent readers harmless.
+func (s *Store) persistLegacyProviderBinding(ctx context.Context, p *Provider) error {
+	if p.CanonicalOrigin != "" {
+		return nil
+	}
+	origin, err := CanonicalOrigin(p.BaseURL)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(ctx, `
+UPDATE ai_model_providers SET canonical_origin=$1, updated_at=now()
+WHERE id=$2 AND canonical_origin=''`, origin, p.ID); err != nil {
+		return err
+	}
+	p.CanonicalOrigin = origin
+	return nil
 }
 
 // CountModelsByProvider 统计供应商下模型数量。

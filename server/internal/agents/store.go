@@ -71,10 +71,20 @@ type RotateCertInput struct {
 	AgentID        uuid.UUID
 	OldFingerprint string    // 出示（当前生效）证书指纹；与库中当前指纹不一致 → ErrCertFingerprintMismatch
 	OldNotBefore   time.Time // 旧证书生效起点（revocations.not_before）
+	PublicKeyHash  string    // CSR 公钥 SHA-256；与旧指纹共同构成幂等键
 	NewFingerprint string
 	NewNotAfter    time.Time
 	GraceUntil     time.Time // 旧指纹宽限截止（now+24h）
 	Now            time.Time
+	AgentCertPEM   string // 已签发身份，和状态推进在同一事务持久化
+	CACertPEM      string
+}
+
+// RotateCertResult 是轮换响应的持久化副本。响应丢失后的同请求重试直接返回它。
+type RotateCertResult struct {
+	AgentCertPEM  string
+	CACertPEM     string
+	CertExpiresAt time.Time
 }
 
 // AgentFilter 管理端列表过滤（status 为派生状态过滤；q 匹配 hostname/ip/agent_id）。
@@ -120,9 +130,9 @@ type MachineRepository interface {
 	// CertFingerprintUsable 证书指纹可用性（契约 §10：== agents 当前指纹，
 	// 或存在于 revocations 且 grace_until > now——宽限中；立即撤销 grace_until=NULL 不可用）。
 	CertFingerprintUsable(ctx context.Context, agentID uuid.UUID, fingerprint string, now time.Time) (bool, error)
-	// RotateAgentCert 证书轮换（契约 §9）：校验出示指纹==当前指纹（否则
-	// ErrCertFingerprintMismatch）→ 旧指纹入撤销表（24h 宽限）→ 当前指纹/到期换新；同一事务。
-	RotateAgentCert(ctx context.Context, in RotateCertInput) error
+	// RotateAgentCert 证书轮换（契约 §9）：同一 agent+旧指纹+CSR 公钥重试返回已签发身份；
+	// 首次请求将响应和状态推进在同一事务提交，避免响应丢失后无法恢复。
+	RotateAgentCert(ctx context.Context, in RotateCertInput) (*RotateCertResult, error)
 	// ActiveCaptureOverrides 未过期定向采集规则全量（Phase 4 契约 §2.4 config 下发）。
 	ActiveCaptureOverrides(ctx context.Context, agentID uuid.UUID, now time.Time) ([]CaptureOverride, error)
 }
@@ -458,36 +468,61 @@ SELECT EXISTS(SELECT 1 FROM agents WHERE agent_id=$1 AND agent_cert_fingerprint=
 
 // RotateAgentCert 证书轮换（契约 §9）：行锁校验出示指纹==当前指纹 → 旧指纹入撤销表
 // （grace_until=now+24h 宽限，not_before 取旧证书生效起点）→ 当前指纹/到期换新；同一事务。
-func (s *Store) RotateAgentCert(ctx context.Context, in RotateCertInput) error {
+// 已提交的相同 agent+旧指纹+CSR 公钥请求在状态校验前重放，避免响应丢失后重复签发/推进。
+func (s *Store) RotateAgentCert(ctx context.Context, in RotateCertInput) (*RotateCertResult, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
 	var current *string
 	err = tx.QueryRow(ctx,
 		`SELECT agent_cert_fingerprint FROM agents WHERE agent_id=$1 FOR UPDATE`, in.AgentID).Scan(&current)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrAgentNotFound
+		return nil, ErrAgentNotFound
 	}
 	if err != nil {
-		return err
+		return nil, err
+	}
+	var replay RotateCertResult
+	err = tx.QueryRow(ctx, `
+SELECT agent_cert_pem, ca_cert_pem, new_not_after
+FROM agent_cert_rotations
+WHERE agent_id=$1 AND old_fingerprint=$2 AND public_key_sha256=$3`,
+		in.AgentID, in.OldFingerprint, in.PublicKeyHash).Scan(&replay.AgentCertPEM, &replay.CACertPEM, &replay.CertExpiresAt)
+	if err == nil {
+		return &replay, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
 	}
 	if current == nil || *current != in.OldFingerprint {
-		return ErrCertFingerprintMismatch
+		return nil, ErrCertFingerprintMismatch
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO agent_cert_revocations (agent_id, fingerprint, revoked_at, not_before, grace_until, reason)
 VALUES ($1,$2,$3,$4,$5,'rotate')`,
 		in.AgentID, in.OldFingerprint, in.Now.UTC(), in.OldNotBefore.UTC(), in.GraceUntil.UTC()); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `
 UPDATE agents SET agent_cert_fingerprint=$2, agent_cert_not_after=$3, updated_at=$4
 WHERE agent_id=$1`, in.AgentID, in.NewFingerprint, in.NewNotAfter.UTC(), in.Now.UTC()); err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Commit(ctx)
+	if _, err := tx.Exec(ctx, `
+INSERT INTO agent_cert_rotations
+ (agent_id, old_fingerprint, public_key_sha256, new_fingerprint, agent_cert_pem, ca_cert_pem,
+  old_not_before, grace_until, new_not_after, created_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		in.AgentID, in.OldFingerprint, in.PublicKeyHash, in.NewFingerprint, in.AgentCertPEM, in.CACertPEM,
+		in.OldNotBefore.UTC(), in.GraceUntil.UTC(), in.NewNotAfter.UTC(), in.Now.UTC()); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &RotateCertResult{AgentCertPEM: in.AgentCertPEM, CACertPEM: in.CACertPEM, CertExpiresAt: in.NewNotAfter}, nil
 }
 
 // ---------- 管理端：注册令牌 ----------

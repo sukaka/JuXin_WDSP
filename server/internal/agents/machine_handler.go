@@ -17,7 +17,9 @@
 package agents
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -617,26 +619,35 @@ func (h *MachineHandler) RotateCert(w http.ResponseWriter, r *http.Request) {
 		machineError(w, http.StatusBadRequest, mcInvalidArgument, err.Error())
 		return
 	}
+	// 出示证书（PoP 已验）即旧证书：取其指纹与 NotBefore 落撤销行。
+	oldCert, err := ParseAgentCertHeader(r.Header.Get(popCertHeader))
+	if err != nil {
+		machineInternal(w, r, err)
+		return
+	}
+	pubDER, err := x509.MarshalPKIXPublicKey(csr.PublicKey)
+	if err != nil {
+		machineInternal(w, r, err)
+		return
+	}
+	pubHash := sha256.Sum256(pubDER)
 	now := h.now().UTC()
 	certPEM, fingerprint, notAfter, err := h.ca.IssueCertificate(csr, agent.AgentID.String(), now)
 	if err != nil {
 		machineInternal(w, r, err)
 		return
 	}
-	// 出示证书（PoP 已验）即旧证书：取其指纹与 NotBefore 落撤销行
-	oldCert, err := ParseAgentCertHeader(r.Header.Get(popCertHeader))
-	if err != nil {
-		machineInternal(w, r, err)
-		return
-	}
-	err = h.store.RotateAgentCert(r.Context(), RotateCertInput{
+	result, err := h.store.RotateAgentCert(r.Context(), RotateCertInput{
 		AgentID:        agent.AgentID,
 		OldFingerprint: CertFingerprint(oldCert),
 		OldNotBefore:   oldCert.NotBefore,
+		PublicKeyHash:  hex.EncodeToString(pubHash[:]),
 		NewFingerprint: fingerprint,
 		NewNotAfter:    notAfter,
 		GraceUntil:     now.Add(rotateGracePeriod),
 		Now:            now,
+		AgentCertPEM:   string(certPEM),
+		CACertPEM:      h.ca.CertPEM(),
 	})
 	if err != nil {
 		switch {
@@ -649,9 +660,13 @@ func (h *MachineHandler) RotateCert(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if result == nil {
+		machineInternal(w, r, errors.New("证书轮换仓储返回空结果"))
+		return
+	}
 	machineJSON(w, http.StatusOK, map[string]interface{}{
-		"agent_cert_pem":  certPEM,
-		"ca_cert_pem":     h.ca.CertPEM(),
-		"cert_expires_at": notAfter.UTC().Format(time.RFC3339),
+		"agent_cert_pem":  result.AgentCertPEM,
+		"ca_cert_pem":     result.CACertPEM,
+		"cert_expires_at": result.CertExpiresAt.UTC().Format(time.RFC3339),
 	})
 }

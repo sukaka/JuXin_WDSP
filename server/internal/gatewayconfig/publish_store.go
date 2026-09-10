@@ -32,6 +32,113 @@ type ConfigVersion struct {
 	PublishedAt       *time.Time `json:"published_at"`
 }
 
+// publishApplicationState 保存 activatePublishedVersion 会覆盖的应用字段，
+// 使激活后失去发布租约时可以原子恢复数据库指针与发布状态。
+type publishApplicationState struct {
+	id                uuid.UUID
+	deploymentStatus  string
+	lastPublishResult string
+	currentVersionID  *uuid.UUID
+	lastPublishAt     *time.Time
+	updatedAt         time.Time
+	version           int
+}
+
+type publishActivationState struct {
+	currentVersionID *uuid.UUID
+	applications     []publishApplicationState
+}
+
+func (p *Publisher) snapshotCurrentVersionState(ctx context.Context) (*publishActivationState, error) {
+	state := &publishActivationState{}
+	var currentID uuid.UUID
+	if err := p.db.QueryRow(ctx, `SELECT id FROM gateway_config_versions WHERE is_current = TRUE LIMIT 1`).Scan(&currentID); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("snapshot current gateway version: %w", err)
+		}
+	} else {
+		state.currentVersionID = &currentID
+	}
+	return state, nil
+}
+
+// snapshotActivationState 必须在激活前读取。appIDs 为空时与激活 SQL 使用完全
+// 相同的 ACTIVE 且未删除条件，避免恢复集合与实际被激活集合不一致。
+func (p *Publisher) snapshotActivationState(ctx context.Context, appIDs []uuid.UUID) (*publishActivationState, error) {
+	state, err := p.snapshotCurrentVersionState(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+SELECT id, deployment_status, last_publish_result, current_version_id, last_publish_at, updated_at, version
+FROM applications WHERE status='ACTIVE' AND deleted_at IS NULL`
+	args := []interface{}{}
+	if len(appIDs) > 0 {
+		query = `
+SELECT id, deployment_status, last_publish_result, current_version_id, last_publish_at, updated_at, version
+FROM applications WHERE id = ANY($1) AND deleted_at IS NULL`
+		args = append(args, appIDs)
+	}
+	rows, err := p.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot application publish state: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var app publishApplicationState
+		if err := rows.Scan(&app.id, &app.deploymentStatus, &app.lastPublishResult,
+			&app.currentVersionID, &app.lastPublishAt, &app.updatedAt, &app.version); err != nil {
+			return nil, fmt.Errorf("scan application publish state: %w", err)
+		}
+		state.applications = append(state.applications, app)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read application publish state: %w", err)
+	}
+	return state, nil
+}
+
+// restoreActivationState 在一个事务中恢复版本 current 标记和所有受影响应用的
+// current_version_id/发布字段，避免租约丢失后留下 DB 与网关分裂状态。
+func (p *Publisher) restoreActivationState(ctx context.Context, state *publishActivationState) error {
+	if state == nil {
+		return nil
+	}
+	tx, err := p.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `UPDATE gateway_config_versions SET is_current = FALSE WHERE is_current = TRUE`); err != nil {
+		return err
+	}
+	if state.currentVersionID != nil {
+		res, err := tx.Exec(ctx, `UPDATE gateway_config_versions SET is_current = TRUE WHERE id = $1`, *state.currentVersionID)
+		if err != nil {
+			return err
+		}
+		if res.RowsAffected() != 1 {
+			return fmt.Errorf("previous gateway config version %s not found during restore", *state.currentVersionID)
+		}
+	}
+	for _, app := range state.applications {
+		res, err := tx.Exec(ctx, `
+UPDATE applications
+SET deployment_status=$1, last_publish_result=$2, current_version_id=$3,
+  last_publish_at=$4, updated_at=$5, version=$6
+WHERE id=$7`, app.deploymentStatus, app.lastPublishResult, app.currentVersionID,
+			app.lastPublishAt, app.updatedAt, app.version, app.id)
+		if err != nil {
+			return err
+		}
+		if res.RowsAffected() != 1 {
+			return fmt.Errorf("application %s not found during activation restore", app.id)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // createTask 创建发布任务。
 func (p *Publisher) createTask(ctx context.Context, taskType string, requestedBy uuid.UUID, requestID, idempotencyKey string) (*PublishTask, error) {
 	task := &PublishTask{

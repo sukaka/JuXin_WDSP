@@ -1064,18 +1064,11 @@ func (a *Agent) sendPacketBatch(b *events.PacketBatcher) {
 // 遇 400/413/422 永久非法 → 二分隔离丢弃非法记录（其余照常补传）；
 // 遇 429 → 尊重 Retry-After 暂停本轮。
 func (a *Agent) replayBuffer() {
-	// 公平预算桶（P1-03 §5.5）；nil 兜底兼容手工装配的测试 Agent
-	bucket := a.replayBucket
-	if bucket == nil {
-		bucket = a.bucket
-	}
 	_, err := a.buf.Replay(events.MaxEventsPerBatch, func(recs [][]byte) error {
 		evs := make([]events.FlowEvent, 0, len(recs))
 		var https []events.HTTPRecord
 		var mirrors []events.HTTPRecordV2
-		size := 0
 		for _, r := range recs {
-			size += len(r)
 			switch {
 			case len(r) > 1 && r[0] == bufTagMirror:
 				var rec events.HTTPRecordV2
@@ -1102,30 +1095,10 @@ func (a *Agent) replayBuffer() {
 		if len(evs) == 0 && len(https) == 0 && len(mirrors) == 0 {
 			return nil
 		}
-		// 公平预算限速等待：最多等 ~5s；循环结束后必须复查——否则 50 次
-		// Allow 全部失败后会落入正常发送（不限速照发）。仍不满足则返回错误
-		// 暂停补传（本批保留在缓存，下轮继续）。补传消耗独立份额桶，
-		// 不占用实时流量预算（§5.5 公平预算）。
-		allowed := false
-		for i := 0; i < replayWaitAttempts; i++ {
-			if bucket.Allow(size) {
-				allowed = true
-				break
-			}
-			time.Sleep(replayWaitInterval)
-		}
-		if !allowed {
-			return errReplayThrottled
-		}
 		if len(evs) > 0 {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			accepted, err := a.client.PostFlows(ctx, a.cfg.AgentID, evs)
-			cancel()
-			if err != nil {
+			if err := a.replayFlowRecords(evs); err != nil {
 				return err
 			}
-			a.metrics.Forwarded.Add(uint64(len(evs)))
-			a.metrics.Accepted.Add(uint64(accepted))
 		}
 		// HTTP 记录按契约上限重新分批
 		batcher := events.NewHTTPBatcher(func(reason string) {
@@ -1134,13 +1107,13 @@ func (a *Agent) replayBuffer() {
 		})
 		for _, rec := range https {
 			if !batcher.Add(rec) {
-				if err := a.replayHTTPBatch(batcher.Flush()); err != nil {
+				if err := a.replayHTTPRecords(batcher.Flush()); err != nil {
 					return err
 				}
 				batcher.Add(rec) //nolint:errcheck // 新批次首条必成功（超限已在 Add 内缩减/丢弃）
 			}
 		}
-		if err := a.replayHTTPBatch(batcher.Flush()); err != nil {
+		if err := a.replayHTTPRecords(batcher.Flush()); err != nil {
 			return err
 		}
 		// 镜像 v2 记录按 ≤100 条重新分批补传（不降级 v1，避免来源误标）
@@ -1149,17 +1122,152 @@ func (a *Agent) replayBuffer() {
 			if n > events.MaxHTTPRecordsPerBatch {
 				n = events.MaxHTTPRecordsPerBatch
 			}
-			if err := a.replayMirrorBatch(mirrors[:n]); err != nil {
+			if err := a.replayV2Records(mirrors[:n]); err != nil {
 				return err
 			}
 			mirrors = mirrors[n:]
 		}
-		a.metrics.ForwardBytes.Add(uint64(size))
 		return nil
 	})
 	if err != nil {
 		a.log.Warn("缓存补传中断", "err", err)
 	}
+}
+
+// replayAllow 按一次实际网络请求体获取补传预算。超过 burst 的单元直接暂停，
+// 避免在固定等待窗口内反复请求一个永远不可能被令牌桶接纳的大小。
+func (a *Agent) replayAllow(size int) bool {
+	bucket := a.replayBucket
+	if bucket == nil {
+		bucket = a.bucket
+	}
+	if burst := bucket.Burst(); burst > 0 && size > burst {
+		return false
+	}
+	for i := 0; i < replayWaitAttempts; i++ {
+		if bucket.Allow(size) {
+			return true
+		}
+		time.Sleep(replayWaitInterval)
+	}
+	return false
+}
+
+func (a *Agent) replayFlowRecords(evs []events.FlowEvent) error {
+	var batch []events.FlowEvent
+	for _, ev := range evs {
+		candidate := append(batch, ev)
+		data, err := json.Marshal(events.FlowsRequest{Events: candidate})
+		if err != nil {
+			return err
+		}
+		if len(batch) > 0 {
+			if burst := a.replayBurst(); burst > 0 && len(data) > burst {
+				if err := a.replayFlowUnit(batch); err != nil {
+					return err
+				}
+				batch = batch[:0]
+				candidate = append(batch, ev)
+				data, err = json.Marshal(events.FlowsRequest{Events: candidate})
+				if err != nil {
+					return err
+				}
+			}
+		}
+		if burst := a.replayBurst(); burst > 0 && len(data) > burst {
+			return errReplayThrottled
+		}
+		batch = append(batch, ev)
+	}
+	return a.replayFlowUnit(batch)
+}
+
+func (a *Agent) replayFlowUnit(evs []events.FlowEvent) error {
+	if len(evs) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(events.FlowsRequest{Events: evs})
+	if err != nil {
+		return err
+	}
+	if !a.replayAllow(len(data)) {
+		return errReplayThrottled
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	accepted, err := a.client.PostFlows(ctx, a.cfg.AgentID, evs)
+	cancel()
+	if err != nil {
+		return err
+	}
+	a.metrics.Forwarded.Add(uint64(len(evs)))
+	a.metrics.Accepted.Add(uint64(accepted))
+	a.metrics.ForwardBytes.Add(uint64(len(data)))
+	return nil
+}
+
+func (a *Agent) replayBurst() int {
+	bucket := a.replayBucket
+	if bucket == nil {
+		bucket = a.bucket
+	}
+	return bucket.Burst()
+}
+
+func (a *Agent) replayHTTPRecords(recs []events.HTTPRecord) error {
+	for len(recs) > 0 {
+		n := len(recs)
+		for n > 1 {
+			size, err := a.replayHTTPPayloadSize(recs[:n])
+			if err != nil {
+				return err
+			}
+			if burst := a.replayBurst(); burst <= 0 || size <= burst {
+				break
+			}
+			n /= 2
+		}
+		if err := a.replayHTTPBatch(recs[:n]); err != nil {
+			return err
+		}
+		recs = recs[n:]
+	}
+	return nil
+}
+
+func (a *Agent) replayHTTPPayloadSize(recs []events.HTTPRecord) (int, error) {
+	if a.httpV2.Load() {
+		return marshalSize(events.NewHTTPBatchV2(a.cfg.AgentID, recs, a.sourceRef()))
+	}
+	return marshalSize(events.HTTPRequest{Records: recs})
+}
+
+func (a *Agent) replayV2Records(recs []events.HTTPRecordV2) error {
+	for len(recs) > 0 {
+		n := len(recs)
+		for n > 1 {
+			size, err := marshalSize(events.HTTPRequestV2{SchemaVersion: events.HTTPRecordSchemaVersion, Records: recs[:n]})
+			if err != nil {
+				return err
+			}
+			if burst := a.replayBurst(); burst <= 0 || size <= burst {
+				break
+			}
+			n /= 2
+		}
+		if err := a.replayMirrorBatch(recs[:n]); err != nil {
+			return err
+		}
+		recs = recs[n:]
+	}
+	return nil
+}
+
+func marshalSize(v any) (int, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return 0, err
+	}
+	return len(data), nil
 }
 
 // replayHTTPBatch 补传一批 HTTP 记录。返回 nil 表示本批已了结（全部接受，
@@ -1178,6 +1286,13 @@ func (a *Agent) replayHTTPBatch(recs []events.HTTPRecord) error {
 	}
 	if a.httpRetryWait() > 0 {
 		return errReplayBackoff // 429 退避窗口内暂停补传（本批保留）
+	}
+	data, err := a.replayHTTPPayload(recs)
+	if err != nil {
+		return err
+	}
+	if !a.replayAllow(len(data)) {
+		return errReplayThrottled
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	accepted, duplicate, invalid, err := a.postHTTP(ctx, recs, a.httpV2.Load())
@@ -1224,7 +1339,15 @@ func (a *Agent) replayHTTPBatch(recs []events.HTTPRecord) error {
 	if duplicate > 0 {
 		a.metrics.Duplicate.Add(uint64(duplicate))
 	}
+	a.metrics.ForwardBytes.Add(uint64(len(data)))
 	return nil
+}
+
+func (a *Agent) replayHTTPPayload(recs []events.HTTPRecord) ([]byte, error) {
+	if a.httpV2.Load() {
+		return json.Marshal(events.NewHTTPBatchV2(a.cfg.AgentID, recs, a.sourceRef()))
+	}
+	return json.Marshal(events.HTTPRequest{Records: recs})
 }
 
 // replayIsolateByIndex 补传批次按 v2 invalid_records 索引隔离（v2 契约 §4.4）：

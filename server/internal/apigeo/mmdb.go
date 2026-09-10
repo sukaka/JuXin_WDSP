@@ -139,6 +139,9 @@ func ParseMMDB(buf []byte) (*MMDB, error) {
 // LookupCountry 查询 IP 的 ISO 3166-1 alpha-2 国家码。
 // 未收录/版本不匹配返回 ("", nil)；数据损坏返回错误（调用方不静默吞错）。
 func (m *MMDB) LookupCountry(ip netip.Addr) (string, error) {
+	if m == nil {
+		return "", nil
+	}
 	ip = ip.Unmap() // ::ffff:x.y 归一为 IPv4
 	var raw []byte
 	node := 0

@@ -361,7 +361,7 @@ func TestBrotliSkipped(t *testing.T) {
 	f.closeBoth()
 
 	recs := rec.waitN(t, 1)
-	if recs[0].Response.BodySkippedReason != "encoding" {
+	if recs[0].Response.BodySkippedReason != "encoding" || recs[0].Response.BodyTruncated {
 		t.Fatalf("br 应 skipped=encoding: %+v", recs[0].Response)
 	}
 }

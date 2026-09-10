@@ -478,13 +478,25 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		if err := p.applyGatewayRuntime(ctx, cfg); err != nil {
 			return nil, err
 		}
-		// P0-07 前置：响应脱敏规则随发布下发（表由迁移 000040 建立；缺失/失败 Warn 跳过）
-		cfg.APIMaskRules = p.loadAPIMaskRules(ctx)
-		// W3-E：值级敏感检测规则随发布下发（表由迁移 000040 建立；缺失/失败 Warn 跳过）
-		cfg.APISensitiveValueRules = p.loadAPISensitiveValueRules(ctx)
-		// W4-GW：授权基线随发布下发（表由迁移 000043/000044 建立；缺失/失败 Warn 跳过）
-		cfg.APIRoleBaselines = p.loadAPIRoleBaselines(ctx)
-		cfg.APIFieldPermissions = p.loadAPIFieldPermissions(ctx)
+		// WDSP 规则读取对旧格式仅容忍明确缺失的 legacy 表；真实查询错误必须中止
+		// 候选发布，避免把读取失败误当成空策略发布到网关。
+		var loaderErr error
+		cfg.APIMaskRules, loaderErr = p.loadAPIMaskRulesStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
+		cfg.APISensitiveValueRules, loaderErr = p.loadAPISensitiveValueRulesStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
+		cfg.APIRoleBaselines, loaderErr = p.loadAPIRoleBaselinesStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
+		cfg.APIFieldPermissions, loaderErr = p.loadAPIFieldPermissionsStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
 		// AUTHZ-01：授权事实编译采用 fail-hard。存在可发布对象模型时，关系、
 		// VERIFIED 角色基线及专用 HMAC 密钥必须形成同一份有期限快照。
 		authzModels, authzRelations, authzRoles, authzKeyHex, err := p.loadAPIAuthzSnapshot(ctx)
@@ -521,8 +533,11 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		cfg.APIScanVerification = scanVerification
 		// W9-GW：响应结构基线随发布下发（表由迁移 000018/000051 建立；缺失/失败 Warn 跳过）
 		cfg.APIResponseBaselines = p.loadAPIResponseBaselines(ctx)
-		// W13-GW / P2-03：文件合规规则随发布下发（表由另一分片迁移建立；缺失/失败 Warn 跳过）
-		cfg.APIFileComplianceRules = p.loadAPIFileComplianceRules(ctx)
+		// W13-GW / P2-03：旧格式缺表可兼容，真实查询错误中止候选发布。
+		cfg.APIFileComplianceRules, loaderErr = p.loadAPIFileComplianceRulesStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
 		// W13-GW / P2-02：文件签名密钥随发布下发（system_settings 密文解密；未配置不下发，
 		// 读取/解密失败中止发布——静默停用签名会让管理面显示与网关行为不一致；
 		// 快照脱敏，回滚时按当前设置重新注入；秘密材料不参与版本戳）

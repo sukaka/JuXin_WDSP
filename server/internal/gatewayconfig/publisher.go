@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +14,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/applications"
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/certificates"
+	"github.com/redis/go-redis/v9"
 )
 
 // 发布任务状态
@@ -229,6 +231,8 @@ type Publisher struct {
 	// gatewayTracing 网关原生 OTel tracing 下发开关（装配侧从 GATEWAY_TRACING_ENABLED
 	// 注入，默认 false；见 GenerateInput.GatewayTracing）
 	gatewayTracing bool
+	// lockBackend 仅用于测试注入；生产路径由 cache.Redis() 构造 Redis 后端。
+	lockBackend publishLockBackend
 }
 
 type gatewayConfigLoader interface {
@@ -323,21 +327,202 @@ func (p *Publisher) SetLicensePublishAllowedProvider(fn func(ctx context.Context
 
 const publishLockKey = "jiuzhang:gateway:publish_lock"
 const publishLockTTL = 120 * time.Second
+const publishLockRecoveryTimeout = 5 * time.Second
+
+type publishLockBackend interface {
+	Acquire(ctx context.Context, key, token string, ttl time.Duration) (bool, error)
+	Renew(ctx context.Context, key, token string, ttl time.Duration) (bool, error)
+	Release(ctx context.Context, key, token string) error
+}
+
+type redisPublishLockBackend struct{ rdb redisCmdable }
+
+// redisCmdable 是发布锁所需的最小 Redis 客户端接口，避免锁语义依赖整个客户端接口。
+type redisCmdable interface {
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd
+	Eval(ctx context.Context, script string, keys []string, args ...interface{}) *redis.Cmd
+}
+
+func (b redisPublishLockBackend) Acquire(ctx context.Context, key, token string, ttl time.Duration) (bool, error) {
+	return b.rdb.SetNX(ctx, key, token, ttl).Result()
+}
+
+const renewPublishLockScript = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end`
+const releasePublishLockScript = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`
+
+func (b redisPublishLockBackend) Renew(ctx context.Context, key, token string, ttl time.Duration) (bool, error) {
+	n, err := b.rdb.Eval(ctx, renewPublishLockScript, []string{key}, token, ttl.Milliseconds()).Int64()
+	return n == 1, err
+}
+
+func (b redisPublishLockBackend) Release(ctx context.Context, key, token string) error {
+	_, err := b.rdb.Eval(ctx, releasePublishLockScript, []string{key}, token).Int64()
+	return err
+}
+
+type publishLockLease struct {
+	backend     publishLockBackend
+	key         string
+	token       string
+	ttl         time.Duration
+	stop        chan struct{}
+	done        chan struct{}
+	lost        chan struct{}
+	stopOnce    sync.Once
+	lostOnce    sync.Once
+	releaseOnce sync.Once
+}
+
+func (l *publishLockLease) markLost() {
+	l.lostOnce.Do(func() { close(l.lost) })
+}
+
+func (l *publishLockLease) start() {
+	go func() {
+		defer close(l.done)
+		interval := l.ttl / 3
+		if interval <= 0 {
+			interval = time.Millisecond
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-l.stop:
+				return
+			case <-ticker.C:
+				ok, err := l.backend.Renew(context.Background(), l.key, l.token, l.ttl)
+				if err != nil || !ok {
+					l.markLost()
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (l *publishLockLease) ensure(ctx context.Context) error {
+	select {
+	case <-l.lost:
+		return ErrPublishLockLost
+	default:
+	}
+	ok, err := l.backend.Renew(ctx, l.key, l.token, l.ttl)
+	if err != nil {
+		l.markLost()
+		return fmt.Errorf("renew publish lock: %w", err)
+	}
+	if !ok {
+		l.markLost()
+		return ErrPublishLockLost
+	}
+	return nil
+}
+
+// restoreConfigAfterPublishLockLoss uses a request-independent bounded context.
+// Losing the lease must stop all configuration application, while still allowing
+// the already loaded previous config to be restored after the request is canceled.
+func (p *Publisher) restoreConfigAfterPublishLockLoss(configJSON string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), publishLockRecoveryTimeout)
+	defer cancel()
+	if err := p.rollbackToConfig(ctx, configJSON); err != nil {
+		return err
+	}
+	_, err := WriteActiveConfig(p.dataDir, "current", configJSON)
+	return err
+}
+
+// restoreAfterPublishLockLoss 执行失锁后的双重补偿。网关恢复失败时仍继续恢复
+// 数据库状态，最终将两个错误一起返回给任务收尾逻辑。
+func restoreAfterPublishLockLoss(restoreGateway, restoreDatabase func(context.Context) error) error {
+	var gatewayErr, databaseErr error
+	if restoreGateway != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), publishLockRecoveryTimeout)
+		gatewayErr = restoreGateway(ctx)
+		cancel()
+	}
+	if restoreDatabase != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), publishLockRecoveryTimeout)
+		databaseErr = restoreDatabase(ctx)
+		cancel()
+	}
+	return errors.Join(gatewayErr, databaseErr)
+}
+
+func (p *Publisher) restorePublishStateAfterPublishLockLoss(configJSON string, state *publishActivationState) error {
+	return restoreAfterPublishLockLoss(
+		func(ctx context.Context) error {
+			if err := p.rollbackToConfig(ctx, configJSON); err != nil {
+				return err
+			}
+			_, err := WriteActiveConfig(p.dataDir, "current", configJSON)
+			return err
+		},
+		func(ctx context.Context) error { return p.restoreActivationState(ctx, state) },
+	)
+}
+
+// ensureLeaseAfterConfigLoad closes the post-/load ownership gap. A lost lease
+// restores the previous gateway config and returns before any verification,
+// activation, or fan-out callback can run.
+func ensureLeaseAfterConfigLoad(ctx context.Context, lease *publishLockLease, restore func(context.Context) error) error {
+	if err := lease.ensure(ctx); err != nil {
+		recoveryCtx, cancel := context.WithTimeout(context.Background(), publishLockRecoveryTimeout)
+		defer cancel()
+		if restoreErr := restore(recoveryCtx); restoreErr != nil {
+			return fmt.Errorf("%w; restore previous config: %v", err, restoreErr)
+		}
+		return err
+	}
+	return nil
+}
+
+func (l *publishLockLease) release(ctx context.Context) {
+	l.releaseOnce.Do(func() {
+		l.stopOnce.Do(func() { close(l.stop) })
+		<-l.done
+		if err := l.backend.Release(ctx, l.key, l.token); err != nil {
+			slog.Warn("release publish lock failed", "error", err)
+		}
+	})
+}
+
+// ErrPublishLockLost 表示发布期间租约失去所有权，调用方必须停止配置应用。
+var ErrPublishLockLost = errors.New("publish lock ownership lost")
 
 // acquireLock 获取发布锁（同一时间仅一个发布任务）。
-func (p *Publisher) acquireLock(ctx context.Context, owner string) (bool, error) {
-	ok, err := p.cache.Redis().SetNX(ctx, publishLockKey, owner, publishLockTTL).Result()
-	if err != nil {
-		return false, err
+func (p *Publisher) acquireLock(ctx context.Context, owner string) (*publishLockLease, error) {
+	return p.acquireLockWithTTL(ctx, owner, publishLockTTL)
+}
+
+func (p *Publisher) acquireLockWithTTL(ctx context.Context, owner string, ttl time.Duration) (*publishLockLease, error) {
+	backend := p.lockBackend
+	if backend == nil {
+		if p.cache == nil {
+			return nil, errors.New("publish lock backend is not configured")
+		}
+		backend = redisPublishLockBackend{rdb: p.cache.Redis()}
 	}
-	return ok, nil
+	token := owner + ":" + uuid.NewString()
+	ok, err := backend.Acquire(ctx, publishLockKey, token, ttl)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	lease := &publishLockLease{
+		backend: backend, key: publishLockKey, token: token, ttl: ttl,
+		stop: make(chan struct{}), done: make(chan struct{}), lost: make(chan struct{}),
+	}
+	lease.start()
+	return lease, nil
 }
 
 // releaseLock 释放发布锁（仅持有者可释放）。
-func (p *Publisher) releaseLock(ctx context.Context, owner string) {
-	val, err := p.cache.Redis().Get(ctx, publishLockKey).Result()
-	if err == nil && val == owner {
-		_ = p.cache.Redis().Del(ctx, publishLockKey).Err()
+func (p *Publisher) releaseLock(ctx context.Context, lease *publishLockLease) {
+	if lease != nil {
+		lease.release(ctx)
 	}
 }
 
@@ -397,12 +582,12 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	}
 	lockOwner := taskID.String()
 	// 获取发布锁
-	ok, err := p.acquireLock(ctx, lockOwner)
-	if err != nil || !ok {
+	lease, err := p.acquireLock(ctx, lockOwner)
+	if err != nil || lease == nil {
 		p.finishTask(ctx, taskID, TaskFailed, "LOCK_BUSY", "其他发布任务正在执行，请稍后重试", nil)
 		return
 	}
-	defer p.releaseLock(context.Background(), lockOwner)
+	defer p.releaseLock(context.Background(), lease)
 
 	// 步骤1：读取业务数据快照
 	p.updateTaskStep(ctx, taskID, TaskGenerating, "读取业务数据快照", 10)
@@ -523,6 +708,12 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 
 	// 步骤5：发布到 Caddy
 	p.updateTaskStep(ctx, taskID, TaskPublishing, "发布到网关", 60)
+	if err := lease.ensure(ctx); err != nil {
+		p.markVersionResult(ctx, version.ID, "FAILED")
+		markAC("FAILED")
+		p.finishTask(ctx, taskID, TaskFailed, "LOCK_LOST", err.Error(), &version.ID)
+		return
+	}
 	prevConfig, err := loadGatewayConfig(ctx, p.caddy, gen.JSON)
 	if err != nil {
 		p.markVersionResult(ctx, version.ID, "FAILED")
@@ -533,6 +724,14 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 			return
 		}
 		p.finishTask(ctx, taskID, TaskFailed, "PUBLISH_FAILED", sanitizeCaddyError(err), &version.ID)
+		return
+	}
+	if err := ensureLeaseAfterConfigLoad(ctx, lease, func(recoveryCtx context.Context) error {
+		return p.rollbackToConfig(recoveryCtx, prevConfig)
+	}); err != nil {
+		p.markVersionResult(ctx, version.ID, "FAILED")
+		markAC("FAILED")
+		p.finishTask(ctx, taskID, TaskFailed, "LOCK_LOST", err.Error(), &version.ID)
 		return
 	}
 
@@ -555,6 +754,35 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		return
 	}
 
+	// 激活数据库版本前再次确认租约，避免校验耗时期间锁已被接管。
+	if err := lease.ensure(ctx); err != nil {
+		if restoreErr := p.restoreConfigAfterPublishLockLoss(prevConfig); restoreErr != nil {
+			err = fmt.Errorf("%w; restore previous config: %v", err, restoreErr)
+		}
+		p.markVersionResult(ctx, version.ID, "FAILED")
+		markAC("FAILED")
+		p.finishTask(ctx, taskID, TaskFailed, "LOCK_LOST", err.Error(), &version.ID)
+		return
+	}
+	activationState, err := p.snapshotActivationState(ctx, in.AppIDs)
+	if err != nil {
+		if restoreErr := p.restoreConfigAfterPublishLockLoss(prevConfig); restoreErr != nil {
+			err = fmt.Errorf("snapshot activation state: %v; restore previous config: %v", err, restoreErr)
+		}
+		p.markVersionResult(ctx, version.ID, "FAILED")
+		markAC("FAILED")
+		p.finishTask(ctx, taskID, TaskFailed, "ACTIVATION_STATE_SNAPSHOT_FAILED", err.Error(), &version.ID)
+		return
+	}
+	if err := lease.ensure(ctx); err != nil {
+		if restoreErr := p.restoreConfigAfterPublishLockLoss(prevConfig); restoreErr != nil {
+			err = fmt.Errorf("%w; restore previous config: %v", err, restoreErr)
+		}
+		p.markVersionResult(ctx, version.ID, "FAILED")
+		markAC("FAILED")
+		p.finishTask(ctx, taskID, TaskFailed, "LOCK_LOST", err.Error(), &version.ID)
+		return
+	}
 	// 成功
 	if err := p.activatePublishedVersion(ctx, version.ID, in.AppIDs); err != nil {
 		rollbackErr := p.rollbackToConfig(ctx, prevConfig)
@@ -569,9 +797,27 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 			"激活版本状态失败，网关已自动回滚: "+err.Error(), &version.ID)
 		return
 	}
+	if err := lease.ensure(ctx); err != nil {
+		if restoreErr := p.restorePublishStateAfterPublishLockLoss(prevConfig, activationState); restoreErr != nil {
+			err = fmt.Errorf("%w; restore previous config: %v", err, restoreErr)
+		}
+		p.markVersionResult(ctx, version.ID, "FAILED")
+		markAC("FAILED")
+		p.finishTask(ctx, taskID, TaskFailed, "LOCK_LOST", err.Error(), &version.ID)
+		return
+	}
 	markAC("SUCCESS")
 	if _, err := WriteActiveConfig(p.dataDir, "current", gen.JSON); err != nil {
 		slog.Warn("write active gateway config failed", "version", version.ID, "error", err)
+	}
+	if err := lease.ensure(ctx); err != nil {
+		if restoreErr := p.restorePublishStateAfterPublishLockLoss(prevConfig, activationState); restoreErr != nil {
+			err = fmt.Errorf("%w; restore previous config: %v", err, restoreErr)
+		}
+		p.markVersionResult(ctx, version.ID, "FAILED")
+		markAC("FAILED")
+		p.finishTask(ctx, taskID, TaskFailed, "LOCK_LOST", err.Error(), &version.ID)
+		return
 	}
 	// 镜像/透明边车配置（附加产物：写失败只记日志，不回滚已加载的 Caddy 配置）
 	p.writeSidecarConfigs(ctx, appsData)
@@ -986,12 +1232,12 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 		return nil, err
 	}
 	lockOwner := task.ID.String()
-	ok, err := p.acquireLock(ctx, lockOwner)
-	if err != nil || !ok {
+	lease, err := p.acquireLock(ctx, lockOwner)
+	if err != nil || lease == nil {
 		p.finishTask(ctx, task.ID, TaskFailed, "LOCK_BUSY", "其他发布任务正在执行", nil)
 		return p.GetTask(ctx, task.ID)
 	}
-	defer p.releaseLock(context.Background(), lockOwner)
+	defer p.releaseLock(context.Background(), lease)
 
 	// 读取目标版本
 	version, err := p.getVersion(ctx, in.VersionID)
@@ -1013,8 +1259,16 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 		p.finishTask(ctx, task.ID, TaskFailed, "ROLLBACK_SECRET_REINJECT_FAILED", err.Error(), nil)
 		return p.GetTask(ctx, task.ID)
 	}
+	if ok, code, message := p.evaluateRollbackRegressionGate(ctx, task.ID, version.ID, rollbackJSON); !ok {
+		p.finishTask(ctx, task.ID, TaskFailed, code, message, &version.ID)
+		return p.GetTask(ctx, task.ID)
+	}
 
 	p.updateTaskStep(ctx, task.ID, TaskPublishing, "回滚发布", 50)
+	if err := lease.ensure(ctx); err != nil {
+		p.finishTask(ctx, task.ID, TaskFailed, "LOCK_LOST", err.Error(), &in.VersionID)
+		return p.GetTask(ctx, task.ID)
+	}
 	prevConfig, err := loadGatewayConfig(ctx, p.caddy, rollbackJSON)
 	if err != nil {
 		if errors.Is(err, errPreviousConfigRead) {
@@ -1023,6 +1277,12 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 			return p.GetTask(ctx, task.ID)
 		}
 		p.finishTask(ctx, task.ID, TaskFailed, "ROLLBACK_PUBLISH_FAILED", sanitizeCaddyError(err), nil)
+		return p.GetTask(ctx, task.ID)
+	}
+	if err := ensureLeaseAfterConfigLoad(ctx, lease, func(recoveryCtx context.Context) error {
+		return p.rollbackToConfig(recoveryCtx, prevConfig)
+	}); err != nil {
+		p.finishTask(ctx, task.ID, TaskFailed, "LOCK_LOST", err.Error(), &in.VersionID)
 		return p.GetTask(ctx, task.ID)
 	}
 
@@ -1037,6 +1297,28 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 		return p.GetTask(ctx, task.ID)
 	}
 
+	if err := lease.ensure(ctx); err != nil {
+		if restoreErr := p.restoreConfigAfterPublishLockLoss(prevConfig); restoreErr != nil {
+			err = fmt.Errorf("%w; restore previous config: %v", err, restoreErr)
+		}
+		p.finishTask(ctx, task.ID, TaskFailed, "LOCK_LOST", err.Error(), &in.VersionID)
+		return p.GetTask(ctx, task.ID)
+	}
+	activationState, err := p.snapshotCurrentVersionState(ctx)
+	if err != nil {
+		if restoreErr := p.restoreConfigAfterPublishLockLoss(prevConfig); restoreErr != nil {
+			err = fmt.Errorf("snapshot current version state: %v; restore previous config: %v", err, restoreErr)
+		}
+		p.finishTask(ctx, task.ID, TaskFailed, "ACTIVATION_STATE_SNAPSHOT_FAILED", err.Error(), &in.VersionID)
+		return p.GetTask(ctx, task.ID)
+	}
+	if err := lease.ensure(ctx); err != nil {
+		if restoreErr := p.restoreConfigAfterPublishLockLoss(prevConfig); restoreErr != nil {
+			err = fmt.Errorf("%w; restore previous config: %v", err, restoreErr)
+		}
+		p.finishTask(ctx, task.ID, TaskFailed, "LOCK_LOST", err.Error(), &in.VersionID)
+		return p.GetTask(ctx, task.ID)
+	}
 	if err := p.setCurrentVersion(ctx, in.VersionID); err != nil {
 		if restoreErr := p.rollbackToConfig(ctx, prevConfig); restoreErr != nil {
 			p.finishTask(ctx, task.ID, TaskFailed, "ROLLBACK_FAILED",
@@ -1045,6 +1327,13 @@ func (p *Publisher) Rollback(ctx context.Context, in RollbackInput) (*PublishTas
 		}
 		p.finishTask(ctx, task.ID, TaskFailed, "SET_CURRENT_VERSION_FAILED_ROLLED_BACK",
 			"切换当前版本失败，网关已恢复原配置: "+err.Error(), nil)
+		return p.GetTask(ctx, task.ID)
+	}
+	if err := lease.ensure(ctx); err != nil {
+		if restoreErr := p.restorePublishStateAfterPublishLockLoss(prevConfig, activationState); restoreErr != nil {
+			err = fmt.Errorf("%w; restore previous config: %v", err, restoreErr)
+		}
+		p.finishTask(ctx, task.ID, TaskFailed, "LOCK_LOST", err.Error(), &in.VersionID)
 		return p.GetTask(ctx, task.ID)
 	}
 	// 显式回退也必须把已验证的恢复配置扇出到次要节点；否则主节点已切回旧版本，

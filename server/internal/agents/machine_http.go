@@ -28,6 +28,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
@@ -197,12 +198,12 @@ func (h *MachineHandler) linkHTTPAssets(ctx context.Context, agentID uuid.UUID, 
 		return
 	}
 	now := h.now().UTC()
-	seenEndpoint := map[string]uuid.UUID{} // host+method+tpl → 已 upsert 的端点（批内去重）
+	seenEndpoint := map[string]uuid.UUID{} // scope+host+method+tpl+protocol → 已 upsert 的端点（批内去重）
 	seenProvenance := map[string]bool{}    // 完整来源键（含来源三元组）→ 批内去重
 	for i := range items {
 		item := &items[i]
 		tpl := normalizer.NormalizePath(item.URI)
-		endpointKey := item.Host + "\x00" + item.Method + "\x00" + tpl
+		endpointKey := agentEndpointBatchKey(item.BindingID, item.Host, item.Method, tpl, item.ProtocolType)
 		provenanceKey := endpointKey + "\x00" + item.SourceType + "\x00" + item.SourceInstance
 		if seenProvenance[provenanceKey] {
 			continue
@@ -223,11 +224,13 @@ func (h *MachineHandler) linkHTTPAssets(ctx context.Context, agentID uuid.UUID, 
 			endpointID, linked := seenEndpoint[endpointKey]
 			if !linked {
 				ep, err := h.discovery.UpsertDiscovery(ctx, apiassets.DiscoveryInput{
-					Method:       item.Method,
-					PathTemplate: tpl,
-					Confidence:   agentDiscoveryConfidence,
-					IsAPI:        true,
-					ProtocolType: item.ProtocolType,
+					Method:               item.Method,
+					PathTemplate:         tpl,
+					ApplicationBindingID: item.BindingID,
+					Host:                 item.Host,
+					Confidence:           agentDiscoveryConfidence,
+					IsAPI:                true,
+					ProtocolType:         item.ProtocolType,
 				})
 				switch {
 				case err == nil:
@@ -257,6 +260,27 @@ func (h *MachineHandler) linkHTTPAssets(ctx context.Context, agentID uuid.UUID, 
 				"agent_id", agentID, "endpoint_key", endpointKey, "error", err)
 		}
 	}
+}
+
+// agentEndpointBatchKey mirrors the scope dimensions used by apiassets discovery.
+// Protocol is part of endpoint identity, so REST and GRPC records in one batch
+// must not share the first successful upsert.
+func agentEndpointBatchKey(scopeID *uuid.UUID, host, method, pathTemplate, protocol string) string {
+	scope := uuidString(scopeID)
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	method = strings.ToUpper(strings.TrimSpace(method))
+	protocol = strings.ToUpper(strings.TrimSpace(protocol))
+	if protocol == "" {
+		protocol = "REST"
+	}
+	return scope + "\x00" + host + "\x00" + method + "\x00" + pathTemplate + "\x00" + protocol
+}
+
+func uuidString(id *uuid.UUID) string {
+	if id == nil {
+		return ""
+	}
+	return id.String()
 }
 
 // truncateErr 关联失败原因截断入库（≤255 字符；不泄露内部细节以外的内容——err 文本

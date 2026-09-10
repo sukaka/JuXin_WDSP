@@ -4,9 +4,15 @@ package cert
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -18,8 +24,7 @@ type RotateClient interface {
 	RotateCert(ctx context.Context, agentID, csrPEM string) (*transport.RotateCertResponse, error)
 }
 
-// ErrRollbackFailed 证书轮换中途失败且旧私钥回滚也失败：磁盘上可能留下
-// 新私钥+旧证书的不匹配死状态（需管理员触发重新注册）。调用方须 Error 级上报。
+// ErrRollbackFailed 证书轮换失败后无法恢复完整旧 bundle。
 var ErrRollbackFailed = errors.New("证书轮换回滚失败")
 
 // Manager 管理 agent.key/agent.crt/ca.crt 三件套的加载与原子轮换。
@@ -33,6 +38,10 @@ type Manager struct {
 
 	mu sync.Mutex
 	id *Identity // 当前身份（nil=Bearer 模式）
+
+	// persistBundleFn is injectable only for failure-path tests; production uses
+	// the complete bundle implementation below.
+	persistBundleFn func(string, string, string, *ecdsa.PrivateKey, []byte, []byte) error
 }
 
 // NewManager 创建管理器；now 为 nil 时用 time.Now。
@@ -40,14 +49,40 @@ func NewManager(keyPath, certPath, caPath string, now func() time.Time) *Manager
 	if now == nil {
 		now = time.Now
 	}
-	return &Manager{KeyPath: keyPath, CertPath: certPath, CAPath: caPath, Now: now}
+	return &Manager{KeyPath: keyPath, CertPath: certPath, CAPath: caPath, Now: now, persistBundleFn: persistBundle}
 }
 
 // Load 从磁盘加载现有身份；两文件均缺失返回 (nil, nil)。
 func (m *Manager) Load() (*Identity, error) {
+	pending, pendingErr := loadPendingRotation(m.pendingRotationPath())
+	if pendingErr != nil {
+		return nil, pendingErr
+	}
 	id, err := LoadIdentity(m.KeyPath, m.CertPath)
 	if err != nil {
-		return nil, err
+		if pending == nil || pending.AgentCertPEM == "" {
+			return nil, err
+		}
+		// A process may have exited between the individual compatibility-path
+		// renames. The signed pending bundle is the recovery source of truth.
+		if err := persistCompleteBundle(m.KeyPath, m.CertPath, m.CAPath, pending.PrivateKeyPEM, []byte(pending.AgentCertPEM), []byte(pending.CACertPEM)); err != nil {
+			return nil, fmt.Errorf("恢复待轮换 bundle: %w", err)
+		}
+		id, err = LoadIdentity(m.KeyPath, m.CertPath)
+		if err != nil {
+			return nil, fmt.Errorf("校验恢复后的身份: %w", err)
+		}
+	}
+	if pending != nil && pending.AgentCertPEM != "" {
+		pendingCert, parseErr := ParseCertificatePEM([]byte(pending.AgentCertPEM))
+		if parseErr != nil {
+			return nil, fmt.Errorf("待轮换新证书: %w", parseErr)
+		}
+		if certFingerprint(id.Cert) == certFingerprint(pendingCert) {
+			if err := clearPendingRotation(m.pendingRotationPath()); err != nil {
+				return nil, err
+			}
+		}
 	}
 	m.mu.Lock()
 	m.id = id
@@ -77,7 +112,7 @@ func (m *Manager) Due() bool {
 	return id.Due(m.Now())
 }
 
-// Rotate 执行一次轮换。失败返回错误且本地文件与内存身份保持不变。
+// Rotate 执行一次轮换。失败返回错误且本地三件套与内存身份保持不变。
 func (m *Manager) Rotate(ctx context.Context, c RotateClient, agentID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -88,13 +123,48 @@ func (m *Manager) Rotate(ctx context.Context, c RotateClient, agentID string) er
 		return errors.New("当前证书已过期，无法自举轮换（需管理员重新注册）")
 	}
 
-	newKey, err := GenerateKey()
+	oldFingerprint := certFingerprint(m.id.Cert)
+	pending, err := loadPendingRotation(m.pendingRotationPath())
 	if err != nil {
 		return err
 	}
-	csr, err := NewCSR(newKey)
-	if err != nil {
-		return err
+	if pending != nil && pending.AgentID != agentID {
+		return errors.New("待轮换身份属于其他 Agent")
+	}
+	if pending != nil && pending.OldFingerprint != oldFingerprint {
+		// A completed rotation whose cleanup was interrupted leaves a stale
+		// marker. The current certificate proves it is safe to discard it.
+		if err := clearPendingRotation(m.pendingRotationPath()); err != nil {
+			return err
+		}
+		pending = nil
+	}
+
+	var newKey *ecdsa.PrivateKey
+	var csr []byte
+	if pending != nil {
+		newKey, err = ParseKeyPEM([]byte(pending.PrivateKeyPEM))
+		if err != nil {
+			return fmt.Errorf("待轮换私钥: %w", err)
+		}
+		csr = []byte(pending.CSRPEM)
+	} else {
+		newKey, err = GenerateKey()
+		if err != nil {
+			return err
+		}
+		csr, err = NewCSR(newKey)
+		if err != nil {
+			return err
+		}
+		keyPEM, err := MarshalKeyPEM(newKey)
+		if err != nil {
+			return err
+		}
+		pending = &pendingRotation{AgentID: agentID, OldFingerprint: oldFingerprint, PrivateKeyPEM: string(keyPEM), CSRPEM: string(csr)}
+		if err := savePendingRotation(m.pendingRotationPath(), pending); err != nil {
+			return err
+		}
 	}
 	resp, err := c.RotateCert(ctx, agentID, string(csr))
 	if err != nil {
@@ -108,43 +178,235 @@ func (m *Manager) Rotate(ctx context.Context, c RotateClient, agentID string) er
 	if !ok || !pub.Equal(newKey.Public()) {
 		return errors.New("新证书公钥与新私钥不匹配（服务端响应异常）")
 	}
+	// Durably record the signed response before replacing any compatibility
+	// path, allowing Load to finish a commit interrupted by process death.
+	pending.AgentCertPEM = resp.AgentCertPEM
+	pending.CACertPEM = resp.CACertPEM
+	if err := savePendingRotation(m.pendingRotationPath(), pending); err != nil {
+		return err
+	}
 
-	// 原子替换：先密钥后证书；证书/CA 写失败时回滚密钥，避免钥证不匹配的死状态。
-	oldKeyPEM, _ := os.ReadFile(m.KeyPath)
-	if err := SaveKey(m.KeyPath, newKey); err != nil {
+	// 先校验并备份三件套，再按完整 bundle 提交；任一步失败都恢复已替换的全部文件。
+	if err := m.persistBundleFn(m.KeyPath, m.CertPath, m.CAPath, newKey, []byte(resp.AgentCertPEM), []byte(resp.CACertPEM)); err != nil {
 		return err
-	}
-	if err := SaveCertificatePEM(m.CertPath, []byte(resp.AgentCertPEM)); err != nil {
-		if rerr := m.rollbackKey(oldKeyPEM); rerr != nil {
-			return fmt.Errorf("保存新证书: %w；回滚旧私钥亦失败（%w: %v），磁盘可能处于钥证不匹配状态，需重新注册", err, ErrRollbackFailed, rerr)
-		}
-		return err
-	}
-	if resp.CACertPEM != "" {
-		if err := SaveCertificatePEM(m.CAPath, []byte(resp.CACertPEM)); err != nil {
-			if rerr := m.rollbackKey(oldKeyPEM); rerr != nil {
-				return fmt.Errorf("保存新 CA: %w；回滚旧私钥亦失败（%w: %v），磁盘可能处于钥证不匹配状态，需重新注册", err, ErrRollbackFailed, rerr)
-			}
-			return err
-		}
 	}
 
 	m.id = &Identity{Key: newKey, Cert: newCert, CertPEM: []byte(resp.AgentCertPEM)}
+	if err := clearPendingRotation(m.pendingRotationPath()); err != nil {
+		return fmt.Errorf("轮换已提交但清理待轮换状态失败: %w", err)
+	}
 	return nil
 }
 
-// rollbackKey 轮换中途失败时恢复旧私钥；回滚本身失败返回错误（不得静默——
-// 失败意味着磁盘上钥证不匹配的死状态，调用方必须显式上报）。
-func (m *Manager) rollbackKey(oldKeyPEM []byte) error {
-	if len(oldKeyPEM) == 0 {
-		return errors.New("旧私钥备份为空，无法回滚")
-	}
-	key, err := ParseKeyPEM(oldKeyPEM)
+func (m *Manager) pendingRotationPath() string {
+	return filepath.Join(filepath.Dir(m.KeyPath), PendingRotationFileName)
+}
+
+func certFingerprint(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func savePendingRotation(path string, pending *pendingRotation) error {
+	data, err := json.Marshal(pending)
 	if err != nil {
-		return fmt.Errorf("解析旧私钥: %w", err)
+		return fmt.Errorf("编码待轮换状态: %w", err)
 	}
-	if err := SaveKey(m.KeyPath, key); err != nil {
-		return fmt.Errorf("回写旧私钥: %w", err)
+	if err := writeFileAtomic(path, data, 0o600); err != nil {
+		return fmt.Errorf("保存待轮换状态: %w", err)
+	}
+	return nil
+}
+
+func loadPendingRotation(path string) (*pendingRotation, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("读取待轮换状态: %w", err)
+	}
+	var pending pendingRotation
+	if err := json.Unmarshal(data, &pending); err != nil {
+		return nil, fmt.Errorf("解析待轮换状态: %w", err)
+	}
+	if pending.AgentID == "" || pending.OldFingerprint == "" || pending.PrivateKeyPEM == "" || pending.CSRPEM == "" {
+		return nil, errors.New("待轮换状态不完整")
+	}
+	key, err := ParseKeyPEM([]byte(pending.PrivateKeyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("待轮换私钥无效: %w", err)
+	}
+	block, _ := pem.Decode([]byte(pending.CSRPEM))
+	if block == nil || (block.Type != "CERTIFICATE REQUEST" && block.Type != "NEW CERTIFICATE REQUEST") {
+		return nil, errors.New("待轮换 CSR 无效")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("解析待轮换 CSR: %w", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("待轮换 CSR 签名无效: %w", err)
+	}
+	pub, ok := csr.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !pub.Equal(key.Public()) {
+		return nil, errors.New("待轮换 CSR 公钥与私钥不匹配")
+	}
+	if pending.AgentCertPEM != "" {
+		cert, err := ParseCertificatePEM([]byte(pending.AgentCertPEM))
+		if err != nil {
+			return nil, fmt.Errorf("待轮换新证书无效: %w", err)
+		}
+		certPub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+		if !ok || !certPub.Equal(key.Public()) {
+			return nil, errors.New("待轮换新证书公钥与私钥不匹配")
+		}
+		if pending.CACertPEM != "" {
+			if _, err := ParseCertificatePEM([]byte(pending.CACertPEM)); err != nil {
+				return nil, fmt.Errorf("待轮换 CA 无效: %w", err)
+			}
+		}
+	}
+	return &pending, nil
+}
+
+type pendingRotation struct {
+	AgentID        string `json:"agent_id"`
+	OldFingerprint string `json:"old_fingerprint"`
+	PrivateKeyPEM  string `json:"private_key_pem"`
+	CSRPEM         string `json:"csr_pem"`
+	AgentCertPEM   string `json:"agent_cert_pem,omitempty"`
+	CACertPEM      string `json:"ca_cert_pem,omitempty"`
+}
+
+func clearPendingRotation(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("删除待轮换状态: %w", err)
+	}
+	return nil
+}
+
+type bundleFile struct {
+	path   string
+	data   []byte
+	exists bool
+	perm   os.FileMode
+}
+
+// persistCompleteBundle finishes a signed pending rotation without relying on
+// the old on-disk pair. It is deliberately idempotent: after a crash, Load can
+// repeat these atomic compatibility-path writes until the pair is complete.
+func persistCompleteBundle(keyPath, certPath, caPath, keyPEM string, certPEM, caPEM []byte) error {
+	key, err := ParseKeyPEM([]byte(keyPEM))
+	if err != nil {
+		return fmt.Errorf("待轮换私钥无效: %w", err)
+	}
+	cert, err := ParseCertificatePEM(certPEM)
+	if err != nil {
+		return fmt.Errorf("待轮换证书无效: %w", err)
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !pub.Equal(key.Public()) {
+		return errors.New("待轮换证书公钥与私钥不匹配")
+	}
+	if len(caPEM) > 0 {
+		if _, err := ParseCertificatePEM(caPEM); err != nil {
+			return fmt.Errorf("待轮换 CA 无效: %w", err)
+		}
+	}
+	keyData, err := MarshalKeyPEM(key)
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(keyPath, keyData, 0o600); err != nil {
+		return fmt.Errorf("恢复私钥: %w", err)
+	}
+	if err := writeFileAtomic(certPath, certPEM, 0o644); err != nil {
+		return fmt.Errorf("恢复证书: %w", err)
+	}
+	if len(caPEM) > 0 {
+		if err := writeFileAtomic(caPath, caPEM, 0o644); err != nil {
+			return fmt.Errorf("恢复 CA: %w", err)
+		}
+	}
+	return nil
+}
+
+// persistBundle stages and commits key/cert/CA as one logical identity. The files
+// retain their compatibility paths; rollback covers every file already replaced.
+func persistBundle(keyPath, certPath, caPath string, key *ecdsa.PrivateKey, certPEM, caPEM []byte) error {
+	oldKey, err := os.ReadFile(keyPath)
+	if err != nil {
+		return fmt.Errorf("读取旧私钥: %w", err)
+	}
+	oldCert, err := os.ReadFile(certPath)
+	if err != nil {
+		return fmt.Errorf("读取旧证书: %w", err)
+	}
+	// Validate the old pair before touching any path. This prevents a damaged
+	// on-disk identity from being used as a rollback source.
+	if _, err := ParseKeyPEM(oldKey); err != nil {
+		return fmt.Errorf("旧私钥无效: %w", err)
+	}
+	oldCertParsed, err := ParseCertificatePEM(oldCert)
+	if err != nil {
+		return fmt.Errorf("旧证书无效: %w", err)
+	}
+	oldKeyParsed, _ := ParseKeyPEM(oldKey)
+	oldPub, ok := oldCertParsed.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !oldPub.Equal(oldKeyParsed.Public()) {
+		return errors.New("旧证书公钥与私钥不匹配")
+	}
+	if _, err := ParseCertificatePEM(certPEM); err != nil {
+		return fmt.Errorf("新证书无效: %w", err)
+	}
+	if caPEM != nil && len(caPEM) > 0 {
+		if _, err := ParseCertificatePEM(caPEM); err != nil {
+			return fmt.Errorf("新 CA 无效: %w", err)
+		}
+	}
+	oldCA, caErr := os.ReadFile(caPath)
+	if caErr != nil && !errors.Is(caErr, os.ErrNotExist) {
+		return fmt.Errorf("读取旧 CA: %w", caErr)
+	}
+	files := []bundleFile{
+		{path: keyPath, data: oldKey, exists: true, perm: 0o600},
+		{path: certPath, data: oldCert, exists: true, perm: 0o644},
+		{path: caPath, data: oldCA, exists: caErr == nil, perm: 0o644},
+	}
+	newData := [][]byte{nil, certPEM, caPEM}
+	keyData, err := MarshalKeyPEM(key)
+	if err != nil {
+		return err
+	}
+	newData[0] = keyData
+	changed := 0
+	for i, file := range files {
+		if i == 2 && len(caPEM) == 0 {
+			continue
+		}
+		if err := writeFileAtomic(file.path, newData[i], file.perm); err != nil {
+			for j := changed - 1; j >= 0; j-- {
+				if rerr := restoreBundleFile(files[j]); rerr != nil {
+					return fmt.Errorf("保存证书 bundle: %w；恢复旧 bundle 失败（%w: %v）", err, ErrRollbackFailed, rerr)
+				}
+			}
+			return fmt.Errorf("保存证书 bundle: %w", err)
+		}
+		changed++
+	}
+	return nil
+}
+
+func restoreBundleFile(file bundleFile) error {
+	if file.exists {
+		if err := writeFileAtomic(file.path, file.data, file.perm); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := os.Remove(file.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return nil
 }

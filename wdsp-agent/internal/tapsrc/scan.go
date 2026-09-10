@@ -186,9 +186,11 @@ func (sc *frameScanner) feed(chunk []byte) [][]byte {
 					if !sc.dropping {
 						var frame []byte
 						if frameStart >= 0 {
-							frame = append(sc.buf, chunk[frameStart:i+1]...)
+							frame = append([]byte(nil), sc.buf...)
+							frame = append(frame, chunk[frameStart:i+1]...)
 						} else {
-							frame = append(sc.buf, chunk[:i+1]...) // 跨块帧：前段在 buf
+							frame = append([]byte(nil), sc.buf...)
+							frame = append(frame, chunk[:i+1]...) // 跨块帧：前段在 buf
 						}
 						if int64(len(frame)) > sc.max {
 							sc.overflow++

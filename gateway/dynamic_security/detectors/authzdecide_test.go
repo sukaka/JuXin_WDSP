@@ -2,6 +2,7 @@ package detectors
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -343,6 +344,88 @@ func TestEvaluateAuthorizationTenantCompletenessMatrix(t *testing.T) {
 			check := group.Checks[0]
 			if check.Decision != tc.wantDecision || check.ReasonCode != tc.wantReason || check.TenantState != tc.wantTenant {
 				t.Fatalf("check=%+v want decision=%s reason=%s tenant=%s", check, tc.wantDecision, tc.wantReason, tc.wantTenant)
+			}
+		})
+	}
+}
+
+func TestEvaluateAuthorizationBOLAConflictingTenantsIsOrderIndependent(t *testing.T) {
+	now := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	key := []byte("bola-tenant-order-key")
+	ref := ObjectRefHMAC(key, "7")
+	model := ObjectModel{
+		EndpointKey: "GET /orders/{id}", ObjectType: "ORDER", PathTemplate: "/orders/{id}",
+		Identifiers:      []ObjectIdentifier{{Location: "path", Name: "id", Primary: true}},
+		RequiredRelation: "OWNER", OwnerExclusive: true, Publishable: true, UniqueEndpointTemplate: true,
+	}
+	request, err := http.NewRequest(http.MethodGet, "https://example.test/orders/7", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwt := &jwtverify.VerificationResult{Status: jwtverify.StatusVerified, VerifiedPrincipalID: "u1", VerifiedTenantID: "tenant-a"}
+	orders := [][]ObjectRelation{
+		{
+			{PrincipalID: "u1", ObjectType: "ORDER", ObjectRef: ref, Relation: "OWNER", Status: "CONFIRMED", TenantID: "tenant-a"},
+			{PrincipalID: "u2", ObjectType: "ORDER", ObjectRef: ref, Relation: "OWNER", Status: "CONFIRMED", TenantID: "tenant-b"},
+		},
+		{
+			{PrincipalID: "u2", ObjectType: "ORDER", ObjectRef: ref, Relation: "OWNER", Status: "CONFIRMED", TenantID: "tenant-b"},
+			{PrincipalID: "u1", ObjectType: "ORDER", ObjectRef: ref, Relation: "OWNER", Status: "CONFIRMED", TenantID: "tenant-a"},
+		},
+	}
+	for i, relations := range orders {
+		t.Run("order-"+strconv.Itoa(i), func(t *testing.T) {
+			ctx := dsctx.New("req-bola-tenant-order", dsctx.DefaultParseLimits())
+			parsed, err := parser.ParseRequest(request, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			group := EvaluateAuthorization(ctx, parsed, AuthorizationConfig{
+				EndpointKey: "GET /orders/7", Models: []ObjectModel{model}, Relations: relations,
+				ObjectRefHMACKey: key, Now: func() time.Time { return now },
+			}, jwt)
+			if group == nil || len(group.Checks) != 1 {
+				t.Fatalf("group=%+v", group)
+			}
+			check := group.Checks[0]
+			if check.Decision != AuthorizationUnknown || check.ReasonCode != "AUTHZ-TENANT-002" || check.TenantState != "CONFLICT" {
+				t.Fatalf("check=%+v; conflicting tenant relations must be indeterminate", check)
+			}
+		})
+	}
+}
+
+func TestEvaluateAuthorizationBFLAMultipleRolesAreOrderIndependent(t *testing.T) {
+	base := AuthorizationConfig{
+		EndpointKey: "GET /admin/users",
+	}
+	jwt := &jwtverify.VerificationResult{Status: jwtverify.StatusVerified, VerifiedPrincipalID: "u1", VerifiedRoles: []string{"reader", "auditor"}}
+	request, err := http.NewRequest(http.MethodGet, "https://example.test/admin/users", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orders := [][]VerifiedRoleBaseline{
+		{
+			{EndpointKey: "GET /admin/users", Role: "reader", Allowed: true, Confirmed: true},
+			{EndpointKey: "GET /admin/users", Role: "auditor", Allowed: false, Confirmed: true},
+		},
+		{
+			{EndpointKey: "GET /admin/users", Role: "auditor", Allowed: false, Confirmed: true},
+			{EndpointKey: "GET /admin/users", Role: "reader", Allowed: true, Confirmed: true},
+		},
+	}
+	for i, baselines := range orders {
+		t.Run("order-"+strconv.Itoa(i), func(t *testing.T) {
+			ctx := dsctx.New("req-bfla-role-order", dsctx.DefaultParseLimits())
+			parsed, err := parser.ParseRequest(request, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := base
+			cfg.RoleBaselines = baselines
+			group := EvaluateAuthorization(ctx, parsed, cfg, jwt)
+			if group == nil || len(group.Checks) != 1 || group.Checks[0].Decision != AuthorizationAllow {
+				t.Fatalf("multiple verified roles with an allowed role must allow independent of row order: %+v", group)
 			}
 		})
 	}

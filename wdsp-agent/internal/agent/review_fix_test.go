@@ -5,7 +5,6 @@
 package agent
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -97,17 +96,13 @@ func TestReplayBufferRespectsRateLimit(t *testing.T) {
 	replayWaitAttempts, replayWaitInterval = 3, time.Millisecond
 	t.Cleanup(func() { replayWaitAttempts, replayWaitInterval = oldAttempts, oldInterval })
 
-	// 单批 500 条（约 200KB），超过令牌桶最小突发 64KB → Allow 恒失败
-	evs := make([]events.FlowEvent, 0, 500)
-	for i := 0; i < 500; i++ {
-		evs = append(evs, events.FlowEvent{
-			EventType: events.TypeFlowEnd, FlowID: fmt.Sprintf("a1-f-%d", i),
-			Timestamp: time.Now().Unix(), SrcIP: "10.0.0.1", SrcPort: uint16(1000 + i),
-			DstIP: "10.0.0.2", DstPort: 8080, Protocol: "tcp", Direction: "ingress",
-			HTTPHost: strings.Repeat("h", 200), TLSVisibility: events.VisibilityPlaintext,
-		})
-	}
-	a.bufferEvents(evs)
+	// 单条发送单元本身（约 200KB）超过令牌桶最小突发 64KB → Allow 恒失败。
+	a.bufferEvents([]events.FlowEvent{{
+		EventType: events.TypeFlowEnd, FlowID: "a1-f-oversized",
+		Timestamp: time.Now().Unix(), SrcIP: "10.0.0.1", SrcPort: 1000,
+		DstIP: "10.0.0.2", DstPort: 8080, Protocol: "tcp", Direction: "ingress",
+		HTTPHost: strings.Repeat("h", 200<<10), TLSVisibility: events.VisibilityPlaintext,
+	}})
 	if a.buf.Bytes() == 0 {
 		t.Fatal("缓存应有积压")
 	}

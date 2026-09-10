@@ -53,11 +53,13 @@ type fakeMachineStore struct {
 	heartbeatSchemas []int16
 
 	// Phase 2-B：PoP 认证与证书轮换 fake 状态
-	agentsByID map[uuid.UUID]*Agent
-	graceFP    map[string]time.Time // 宽限中指纹 → grace_until（模拟 revocations 宽限行）
-	revokedFP  map[string]bool      // 立即撤销指纹（模拟 revocations grace_until=NULL / disable 清空当前指纹后状态）
-	rotateIn   *RotateCertInput
-	rotateErr  error
+	agentsByID   map[uuid.UUID]*Agent
+	graceFP      map[string]time.Time // 宽限中指纹 → grace_until（模拟 revocations 宽限行）
+	revokedFP    map[string]bool      // 立即撤销指纹（模拟 revocations grace_until=NULL / disable 清空当前指纹后状态）
+	rotateIn     *RotateCertInput
+	rotateErr    error
+	rotateResult map[string]RotateCertResult
+	rotateCalls  int
 
 	// Phase 4：定向采集规则 fake 状态（config 下发）
 	overrides []CaptureOverride

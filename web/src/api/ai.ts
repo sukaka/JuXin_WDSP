@@ -297,6 +297,11 @@ export interface AiModelProvider {
   name: string
   provider_type: string // openai_compatible / anthropic / ollama / local
   base_url: string
+  /** 服务端按 BaseURL 规范化出的 scheme://host:port（前端不自行推导） */
+  canonical_origin: string
+  /** 管理员显式授权的附加出站目标（返回值保证为数组） */
+  allowed_targets: string[]
+  /** 非空 = 已配置密钥（仅存引用，不回显明文；规范 origin 变化时后端原子清除） */
   api_key_reference: string
   status: string // ENABLED / DISABLED
 }
@@ -306,6 +311,8 @@ export interface AiProviderBody {
   provider_type: string
   base_url: string
   api_key?: string
+  /** 附加出站目标白名单（提交前需 trim/去空/去重） */
+  allowed_targets?: string[]
   status?: string
 }
 
@@ -384,12 +391,16 @@ export const aiModelsApi = {
     request<{ message: string }>('/ai/models/routes', { method: 'PUT', body }),
 }
 
-/** 供应商更新（PATCH 方法；空字段服务端忽略） */
+/** 供应商更新（PATCH 方法；空字段服务端忽略；成功响应 { provider }，以响应中的 canonical_origin/api_key_reference 为准） */
 export async function patchAiProvider(
   id: string,
   body: Partial<AiProviderBody & { status?: string }>,
-): Promise<void> {
-  await patchJSON(`/ai/models/providers/${id}`, body)
+): Promise<AiModelProvider> {
+  const data = await request<{ provider: AiModelProvider }>(`/ai/models/providers/${id}`, {
+    method: 'PATCH',
+    body,
+  })
+  return data.provider
 }
 
 /** Agent 配置更新（PATCH） */
