@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-09-10
+
+> 本版本无产品代码变更：内容为 P0 发布证据再冻结与 Bot 挑战验收补证（文档与测试证据）。
+
+### 新增（P0-01：S6 发布证据再冻结，绑定 wdsp-v1.1.2 干净构建输入）
+
+- 发布提交 `3f6f6f8`（tag `wdsp-v1.1.2`）作为干净构建输入冻结：3653 个构建输入文件逐一 sha256、快照摘要与文件清单入 manifest、dirty=false；新证据包 `docs/evidence/releases/dev-s6-refreeze-1.1.2-20260909/` 与最终合并视图 `docs/evidence/merged-check-final-20260909.manifest.json`（check rc=0）。
+- `--release` 门槛拒绝理由由 11 项收窄至 8 项（source.dirty / snapshot_sha256 / file_manifest 消解）；剩余：锁定镜像、有效配置指纹、测量硬件/72h 长稳、EVD-11/12 重建复跑，发布状态保持 DEVELOPMENT。
+- 能力证据仓库冒烟合并逻辑支持同一验收 ID 被后续包再冻结（以新包记录为准）；CAPABILITIES.md 重生成（产品版本 1.1.2）。
+
+### 新增（P1-02：Bot 挑战 BOT-004/006/018 真实环境补证）
+
+- 验收矩阵 BOT-001~024 由 PASS 20 / PARTIAL 4 变为 **PASS 23 / PARTIAL 1**（FAIL 0），仅 BOT-013（移动网络/NAT 实测）保持环境阻塞。
+- **BOT-004 多浏览器挑战链 PASS**（run `20260909T224253-3040ab`，23/23）：Chromium/Firefox/WebKit/移动 Safari/移动 Chrome 五通道全部走通 挑战→页内求解（2–107ms）→verify 204→clearance→源站 200；跨浏览器解析经第二域名 `bot-bench.localhost`，不依赖 Chromium 专有参数。新增 `run-browsers.sh` 与五通道 Playwright projects。
+- **BOT-006 降级可读与无障碍 PASS**：CPU 6× 节流下挑战 102ms 完成、主线程探针最大 gap 91ms；纯键盘完成挑战全流程、焦点可见、aria snapshot 落盘。读屏实测仍 NOT_RUN（无辅助技术环境，已登记）。
+- **BOT-018 洪峰与资源受控 PASS**（run `20260909T231820-d1f76b`，25/25）：新增 `flood-bench.sh`；签发洪峰 429 受控、验证洪峰 120 并发三类伪造零 clearance 零 panic、慢请求 2s 读超时截断、洪峰期间合法请求 30/30 全 200、Valkey 键数峰值 60 远低于上限、网关零重启零 OOM。环境如实标注为开发机非专用硬件。
+
+### 披露（非本版本修复）
+
+- 他人在研未提交代码 `server/internal/guardconfig/authz_decision.go` 引用不存在列 `ep.method`，主工作树下配置发布必失败（SQLSTATE 42703）；本轮证据栈构建自 HEAD 干净 worktree 规避，缺陷归 AUTHZ 线所有者（证据 `test/e2e/bot-challenge/runs/20260909T221713-8e02d4/`）。
+
 ## [1.1.2] - 2026-09-09
 
 ### 新增（P1-01：安全与 APM 标准客户演示）
