@@ -1,6 +1,6 @@
 # 九章 WDSP
 
-**统一 Web 与 API 动态防护平台 · 当前版本 1.1.6**
+**统一 Web 与 API 动态防护平台 · 当前版本 1.2.0**
 
 九章 WDSP 部署在业务入口，对 HTTP/HTTPS 请求与响应进行统一接入、解析、检测、决策和审计。平台在传统 Web 应用防火墙能力之上，进一步理解 API 资产、调用身份、参数结构和业务行为，面向政府、企事业单位、数据接口平台及内部业务系统提供动态防护能力。
 
@@ -50,6 +50,7 @@
 - AI 安全运营、攻击画像、对抗提示词门禁和会话自动续跑；
 - APM、分布式流量 Agent、多节点发布与主备高可用能力；
 - amd64/arm64 离线交付、Ed25519 包签名、离线授权和升级预检。
+- 提供面向 openEuler 与兆芯 KX/KH 的 amd64 自解压 `.run` 安装包，自动检查依赖并可选执行安全的宿主机性能调优与服务精简。
 
 ## 系统架构
 
@@ -90,7 +91,7 @@ Caddy + Coraza/CRS + jiuzhang_guard
 sudo bash ops/install/install.sh
 ```
 
-初始口令只显示一次；首次登录后必须立即修改。生产部署、离线安装和安装后核验请阅读 [安装向导](docs/INSTALLATION_GUIDE.md) 与 [部署文档](docs/DEPLOYMENT.md)。
+初始口令只显示一次；首次登录后必须立即修改。生产部署、离线安装和安装后核验请阅读 [安装向导](docs/INSTALLATION_GUIDE.md)、[openEuler / 兆芯安装与优化](docs/OPENEULER_ZHAOXIN_INSTALLATION.md) 与 [部署文档](docs/DEPLOYMENT.md)。
 
 ### 开发环境
 
@@ -161,7 +162,7 @@ docs/          产品、架构、能力设计、任务书与运维文档
 
 - 阶段 0—7 已完成：工程基线、网关、管理基础、应用接入、WAF 策略、访问控制、报表交付和 AI 安全运营；
 - 阶段 8 已形成统一 Web/API 动态防护主线，并持续完善 API 资产、模型、身份授权、行为分析、响应安全和分布式采集能力；
-- 当前 WDSP 发布版本为 **1.1.6**，发布标签为 **`wdsp-v1.1.6`**。
+- 当前 WDSP 发布版本为 **1.2.0**，发布标签为 **`wdsp-v1.2.0`**。
 
 详细完成项及验收证据见 [开发状态](docs/DEVELOPMENT_STATUS.md)、[阶段8任务书](docs/tasks/STAGE_8_UNIFIED_WEB_API_DYNAMIC_PROTECTION.md) 和 [变更记录](CHANGELOG.md)。
 
@@ -179,6 +180,7 @@ docs/          产品、架构、能力设计、任务书与运维文档
 - [Bot 挑战运维手册](docs/BOT_CHALLENGE_OPERATIONS.md)
 - [分布式 Agent 设计](docs/agents/WDSP_DISTRIBUTED_AGENT_DESIGN.md)
 - [安装向导](docs/INSTALLATION_GUIDE.md)
+- [openEuler / 兆芯 `.run` 安装与主机优化](docs/OPENEULER_ZHAOXIN_INSTALLATION.md)
 - [高可用运维](docs/HA_OPERATIONS_GUIDE.md)
 - [开源合规](docs/OPEN_SOURCE_COMPLIANCE.md)
 - [第三方组件清单](THIRD_PARTY_NOTICES.md)
