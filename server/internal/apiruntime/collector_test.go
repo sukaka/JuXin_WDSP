@@ -28,11 +28,14 @@ type discoveryCall struct {
 	in apiassets.DiscoveryInput
 }
 
-type fakeDiscovery struct{ calls []discoveryCall }
+type fakeDiscovery struct {
+	calls       []discoveryCall
+	endpointKey string
+}
 
 func (f *fakeDiscovery) UpsertDiscovery(_ context.Context, in apiassets.DiscoveryInput) (*apiassets.Endpoint, error) {
 	f.calls = append(f.calls, discoveryCall{in})
-	return &apiassets.Endpoint{}, nil
+	return &apiassets.Endpoint{EndpointKey: f.endpointKey}, nil
 }
 
 func writeLines(t *testing.T, path string, lines []string) {
@@ -290,6 +293,31 @@ func TestCollectOnce_ResolvesSiteAndDomain(t *testing.T) {
 	}
 	if in.DomainID == nil || *in.DomainID != domID {
 		t.Fatalf("domain not resolved: %+v", in)
+	}
+}
+
+// 发现存储返回的作用域键是后续观测写入的权威键；不能继续使用网关事件中的全局旧键。
+func TestCollectOnce_UsesResolvedEndpointKeyForPrimaryEvent(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "api-runtime-events.log")
+	cpPath := filepath.Join(dir, "checkpoint")
+	rec := Record{
+		RequestID: "r-scoped-key", EndpointKey: "GET /orders/{id}", Method: "GET",
+		PathTemplate: "/orders/{id}", IsAPI: true, FinalAction: "BLOCK", RiskLevel: "HIGH",
+		OccurredAt: time.Now().UTC(),
+	}
+	writeLines(t, logPath, []string{mustJSON(t, rec)})
+
+	saver := &fakeSaver{}
+	disc := &fakeDiscovery{endpointKey: "ep:application-scoped"}
+	c := NewCollector(saver, "test-scoped-key", logPath, cpPath, "node-1")
+	c.SetDiscoveryUpserter(disc)
+
+	if _, err := c.CollectOnce(context.Background()); err != nil {
+		t.Fatalf("CollectOnce: %v", err)
+	}
+	if len(saver.saved) != 1 || saver.saved[0].EndpointKey != "ep:application-scoped" {
+		t.Fatalf("primary event did not use resolved endpoint key: %+v", saver.saved)
 	}
 }
 

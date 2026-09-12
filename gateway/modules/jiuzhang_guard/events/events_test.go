@@ -143,3 +143,70 @@ func TestEmitBotDetail(t *testing.T) {
 		t.Errorf("non-bot event must omit bot key: %s", lines[1])
 	}
 }
+
+// 阶段5 §6.5：client_ip_source/trusted_proxy_used/forwarded_chain_summary
+// 三字段随事件输出（截断 + 控制字符剥离）；空值键缺省（omitempty，旧采集端兼容）。
+func TestEmitRealClientIPFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.log")
+	l, err := NewLogger(path, "node-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+
+	if err := l.Emit(Event{
+		RequestID:             "req-ip-1",
+		ClientIP:              "198.51.100.9",
+		ConnectionIP:          "10.0.0.1",
+		EventType:             IPDenyMatch,
+		ClientIPSource:        "X_FORWARDED_FOR",
+		TrustedProxyUsed:      "lb-1",
+		ForwardedChainSummary: strings.Repeat("9.9.9.9, ", 40) + "\nINJECT",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 直连事件：source 恒有（CONNECTION），其余两键缺省
+	if err := l.Emit(Event{
+		RequestID:      "req-ip-2",
+		ClientIP:       "203.0.113.5",
+		ConnectionIP:   "203.0.113.5",
+		EventType:      IPAllowMatch,
+		ClientIPSource: "CONNECTION",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("lines: %d", len(lines))
+	}
+	var got Event
+	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+		t.Fatalf("event not json: %v", err)
+	}
+	if got.ClientIPSource != "X_FORWARDED_FOR" || got.TrustedProxyUsed != "lb-1" {
+		t.Errorf("real client ip fields: %+v", got)
+	}
+	if len(got.ForwardedChainSummary) > 256 || strings.Contains(got.ForwardedChainSummary, "INJECT") {
+		t.Errorf("chain summary not sanitized/truncated: len=%d", len(got.ForwardedChainSummary))
+	}
+	if !strings.Contains(lines[0], `"client_ip_source"`) {
+		t.Errorf("client_ip_source key missing: %s", lines[0])
+	}
+	// 空值键缺省（旧采集端 JSON 兼容）
+	if strings.Contains(lines[1], `"trusted_proxy_used"`) || strings.Contains(lines[1], `"forwarded_chain_summary"`) {
+		t.Errorf("empty real-client-ip keys must be omitted: %s", lines[1])
+	}
+	var direct Event
+	if err := json.Unmarshal([]byte(lines[1]), &direct); err != nil {
+		t.Fatalf("event not json: %v", err)
+	}
+	if direct.ClientIPSource != "CONNECTION" {
+		t.Errorf("direct connection source = %q, want CONNECTION", direct.ClientIPSource)
+	}
+}

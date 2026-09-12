@@ -100,6 +100,8 @@ services:
       WAF_NODE_IFACES_LOG: /var/log/caddy-audit/node-interfaces.jsonl
       # 阶段5：CC 计数引擎故障策略（true=Fail-open / false=Fail-closed）
       GUARD_FAIL_OPEN: ${GUARD_FAIL_OPEN:-true}
+      # 发布后冒烟探针拨号地址：api 容器内 127.0.0.1 是自身，必须显式指向网关数据面
+      GATEWAY_PUBLISH_SMOKE_ADDR: ${GATEWAY_PUBLISH_SMOKE_ADDR:-http://gateway:8080}
       # 阶段6：Caddy 访问日志（请求指标采集）
       WAF_ACCESS_LOG: /var/log/caddy-audit/access.log
       # 阶段6：报告 PDF 字体

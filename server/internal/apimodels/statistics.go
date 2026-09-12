@@ -2,18 +2,24 @@
 // 学习样本离线聚合 → api_parameter_statistics（parameter_id 1:1 UPSERT，幂等可重算），
 // 并依画像经纯函数重算 observed/recommended 约束（规则见 recommended.go）。
 //
-// 数据源（2026-08 三微模型增强批）：
-//   - accepted 学习样本 → sample_count / example_hashes；
-//   - api_parameter_value_obs（网关脱敏观测：length/hash/num）→ min/max_length、
-//     min/max_value、distinct_count 回填；无观测行时对应列保持 NULL 不虚构。
+// 数据源（2026-08 三微模型增强批；2026-09 §16/§17 统计增强批）：
+//   - accepted 学习样本 → sample_count / example_hashes / presence_rate 分母；
+//   - api_parameter_value_obs（网关脱敏观测：length/hash/num/null 标记/蓄水池/
+//     字符直方图/前后缀计数）→ min/max_length、min/max_value、distinct_count 回填，
+//     以及 presence_rate/null_rate、长度/数值分位数、字符熵、前后缀 TopN、
+//     数值离群计数（步骤 1b2，算法见 statistics_stream.go）；
+//     无观测行时对应列保持 NULL 不虚构。
 package apimodels
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // RefreshParameterStatistics 全量重算参数统计画像（幂等：重复执行结果一致，可安全周期调用）。
@@ -118,6 +124,13 @@ WHERE st.parameter_id = p.id AND st.parameter_id = ANY($1)`, parameterIDs); err 
 		return 0, fmt.Errorf("merge value observations into statistics: %w", err)
 	}
 
+	// 1b2. 扩展统计回填（阶段8 §16/§17）：presence/null 比率、长度/数值分位数、
+	// 字符熵、前后缀 TopN、数值离群计数。数据源同 1b（api_parameter_value_obs
+	// 扩展列，000145 起）；观测列为空（旧版网关未上报）时对应统计列保持 NULL/空，不虚构。
+	if err := s.refreshExtendedStats(ctx, tx, parameterIDs); err != nil {
+		return 0, err
+	}
+
 	// 1c. 语义类型推断：空 semantic_type 时按参数名/路径启发式填充（不覆盖人工已设）。
 	// 分支顺序敏感：captcha 必须先于 token/key 类（captchaKey 等不得误判为 token）。
 	if _, err := tx.Exec(ctx, `
@@ -161,9 +174,10 @@ WHERE id = ANY($1) AND semantic_type IN ('secret','token','email','phone','uuid'
 		return 0, fmt.Errorf("normalize string-semantic base_type: %w", err)
 	}
 
-	// 2. 读回画像（含值观测回填的长度/值域/基数字段），逐参数重算约束。
+	// 2. 读回画像（含值观测回填的长度/值域/基数与扩展统计的 P95 字段），逐参数重算约束。
 	profiles, err := tx.Query(ctx, `
 SELECT st.parameter_id, st.sample_count, st.min_length, st.max_length, st.min_value, st.max_value, st.distinct_count,
+       st.length_p95, st.value_p95,
        p.parameter_name, p.structured_path, COALESCE(p.semantic_type,'')
 FROM api_parameter_statistics st
 JOIN api_parameter_models p ON p.id = st.parameter_id
@@ -182,6 +196,7 @@ WHERE st.parameter_id = ANY($1)`, parameterIDs)
 		if err := profiles.Scan(&r.id, &r.profile.SampleCount,
 			&r.profile.MinLength, &r.profile.MaxLength,
 			&r.profile.MinValue, &r.profile.MaxValue, &r.profile.DistinctCount,
+			&r.profile.P95Length, &r.profile.P95Value,
 			&name, &path, &sem); err != nil {
 			profiles.Close()
 			return 0, err
@@ -195,6 +210,7 @@ WHERE st.parameter_id = ANY($1)`, parameterIDs)
 		if isStringOnlySemantic(sem) {
 			r.profile.MinValue = nil
 			r.profile.MaxValue = nil
+			r.profile.P95Value = nil
 		}
 		list = append(list, r)
 	}
@@ -222,4 +238,132 @@ WHERE id=$1 AND observed_constraints <> $2::jsonb`, r.id, raw); err != nil {
 		}
 	}
 	return len(parameterIDs), tx.Commit(ctx)
+}
+
+// refreshExtendedStats 扩展统计回填（RefreshParameterStatistics 步骤 1b2，阶段8 §16/§17）：
+// 按 endpoint_key×location×path×name 匹配 api_parameter_value_obs（连接条件同步骤 1b，
+// 观测唯一键保证 1:1），在 Go 侧用 statistics_stream.go 纯函数重算扩展统计并覆盖写入：
+//   - presence_rate = 观测样本数 / 端点 accepted 样本数（钳制 [0,1]，分母为 0 保持 NULL）；
+//   - null_rate = null_count / 观测样本数；
+//   - 长度/数值分位数：蓄水池排序副本 → P50/P90/P95/P99（长度四舍五入取整）；
+//   - string_entropy：256 桶字符直方图 → 香农熵；
+//   - common_prefixes/suffixes：脱敏哈希计数 TopN（AffixTopNLimit）；
+//   - numeric_outlier_count：数值蓄水池 IQR 栅栏计数（观测不足保持 NULL）。
+//
+// 合并语义与整窗重算一致：每轮从观测源整体重算覆盖，幂等可重复执行；
+// 观测源扩展列为空（旧版网关未上报）时对应统计列写 NULL/空数组，不虚构。
+func (s *Store) refreshExtendedStats(ctx context.Context, tx pgx.Tx, parameterIDs []uuid.UUID) error {
+	rows, err := tx.Query(ctx, `
+SELECT st.parameter_id, st.sample_count, o.sample_count, o.null_count,
+       o.length_reservoir, o.value_reservoir, o.char_histogram,
+       o.prefix_counts, o.suffix_counts
+FROM api_parameter_statistics st
+JOIN api_parameter_models p ON p.id = st.parameter_id
+JOIN api_model_versions v ON v.id = p.model_version_id
+JOIN api_parameter_value_obs o ON o.endpoint_key = v.endpoint_key
+  AND o.location = p.location
+  AND o.parameter_name = p.parameter_name
+  AND (o.structured_path = p.structured_path OR (o.structured_path = '' AND p.structured_path = '')
+       OR (p.location = 'BODY' AND o.structured_path = p.structured_path))
+WHERE st.parameter_id = ANY($1)`, parameterIDs)
+	if err != nil {
+		return fmt.Errorf("load extended value observations: %w", err)
+	}
+	type extRow struct {
+		parameterID     uuid.UUID
+		endpointSamples int
+		obsSamples      int64
+		nullCount       int64
+		lengthReservoir []float64
+		valueReservoir  []float64
+		charHistogram   []int64
+		prefixCounts    map[string]int64
+		suffixCounts    map[string]int64
+	}
+	list := []extRow{}
+	for rows.Next() {
+		var r extRow
+		var lenRaw, valRaw, histRaw, prefixRaw, suffixRaw []byte
+		if err := rows.Scan(&r.parameterID, &r.endpointSamples, &r.obsSamples, &r.nullCount,
+			&lenRaw, &valRaw, &histRaw, &prefixRaw, &suffixRaw); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan extended value observations: %w", err)
+		}
+		// 观测列 JSONB 兜底为空集：解析失败视为无观测（列保持 NULL），不让脏数据阻断整轮。
+		_ = json.Unmarshal(lenRaw, &r.lengthReservoir)
+		_ = json.Unmarshal(valRaw, &r.valueReservoir)
+		_ = json.Unmarshal(histRaw, &r.charHistogram)
+		_ = json.Unmarshal(prefixRaw, &r.prefixCounts)
+		_ = json.Unmarshal(suffixRaw, &r.suffixCounts)
+		list = append(list, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, r := range list {
+		var presenceRate, nullRate *float64
+		if r.endpointSamples > 0 && r.obsSamples > 0 {
+			v := math.Min(float64(r.obsSamples)/float64(r.endpointSamples), 1.0)
+			presenceRate = &v
+		}
+		if r.obsSamples > 0 {
+			v := float64(r.nullCount) / float64(r.obsSamples)
+			nullRate = &v
+		}
+
+		var lenP50, lenP90, lenP95, lenP99 *int
+		if lq := QuantilesOf(r.lengthReservoir); lq.P50 != nil {
+			lenP50 = roundPtr(*lq.P50)
+			lenP90 = roundPtr(*lq.P90)
+			lenP95 = roundPtr(*lq.P95)
+			lenP99 = roundPtr(*lq.P99)
+		}
+		vq := QuantilesOf(r.valueReservoir)
+
+		var entropy *float64
+		if h, ok := ShannonEntropy(r.charHistogram); ok {
+			entropy = &h
+		}
+
+		prefixes, _ := json.Marshal(TopNCounts(r.prefixCounts, AffixTopNLimit))
+		suffixes, _ := json.Marshal(TopNCounts(r.suffixCounts, AffixTopNLimit))
+
+		var outlierCount *int64
+		if len(r.valueReservoir) > 0 {
+			sorted := make([]float64, len(r.valueReservoir))
+			copy(sorted, r.valueReservoir)
+			sort.Float64s(sorted)
+			if c, ok := OutlierCountIQR(sorted, OutlierIQRFactor); ok {
+				outlierCount = &c
+			}
+		}
+
+		if _, err := tx.Exec(ctx, `
+UPDATE api_parameter_statistics SET
+  presence_rate = $2,
+  null_rate = $3,
+  length_p50 = $4, length_p90 = $5, length_p95 = $6, length_p99 = $7,
+  value_p50 = $8, value_p90 = $9, value_p95 = $10, value_p99 = $11,
+  string_entropy = $12,
+  common_prefixes = $13::jsonb,
+  common_suffixes = $14::jsonb,
+  numeric_outlier_count = $15,
+  updated_at = now()
+WHERE parameter_id = $1`,
+			r.parameterID, presenceRate, nullRate,
+			lenP50, lenP90, lenP95, lenP99,
+			vq.P50, vq.P90, vq.P95, vq.P99,
+			entropy, string(prefixes), string(suffixes), outlierCount); err != nil {
+			return fmt.Errorf("refresh extended statistics: %w", err)
+		}
+	}
+	return nil
+}
+
+// roundPtr 分位数浮点结果四舍五入取整（长度分位数列为 INTEGER）。
+func roundPtr(v float64) *int {
+	i := int(math.Round(v))
+	return &i
 }

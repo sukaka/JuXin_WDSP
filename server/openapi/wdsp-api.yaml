@@ -4138,6 +4138,143 @@ components:
           type: string
           maxLength: 500
           description: 原因说明
+        source_type:
+          type: string
+          enum:
+          - MANUAL
+          - SECURITY_EVENT
+          default: MANUAL
+          description: 来源类型（缺省 MANUAL；SECURITY_EVENT 用于安全事件联动创建，必须携带 source_event_id；IMPORT/AUTO_BLOCK/SYSTEM 为内部通道写入，API
+            不接受）
+        source_event_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 来源安全事件 ID（仅 source_type=SECURITY_EVENT 时必填，事件必须存在；其他来源不允许携带）
+    BlacklistPrefillHitRule:
+      type: object
+      description: 近 24h 同 IP 命中规则统计
+      properties:
+        rule_id:
+          type: integer
+          description: 规则 ID
+        rule_name:
+          type: string
+          description: 规则名称
+        hits:
+          type: integer
+          format: int64
+          description: 命中次数
+    BlacklistPrefillSharedEgress:
+      type: object
+      description: 共享出口/代理迹象（无任何身份数据时该字段整体省略，不编造）
+      properties:
+        identity_count:
+          type: integer
+          format: int64
+          description: 近 24h 同 IP 关联的不同身份数
+        suspected:
+          type: boolean
+          description: 身份数 ≥2 视为疑似共享出口/代理
+    BlacklistPrefillExistingRule:
+      type: object
+      description: 同地址已存在的黑名单规则（提示避免重复封禁）
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+          - DRAFT
+          - ACTIVE
+          - DISABLED
+          - EXPIRED
+          - DELETED
+        validity_type:
+          type: string
+          enum:
+          - PERMANENT
+          - TEMPORARY
+        effective_until:
+          type: string
+          format: date-time
+          nullable: true
+    BlacklistPrefill:
+      type: object
+      description: 事件→黑名单预填数据（阶段5 §十一；均为建议值，需管理员确认后才创建）
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          description: 来源事件 ID
+        address:
+          type: string
+          description: 事件客户端 IP（规范化后）
+        rule_type:
+          type: string
+          enum:
+          - DENY
+          description: 固定 DENY
+        suggested_name:
+          type: string
+          description: 建议规则名称
+        suggested_reason:
+          type: string
+          description: 建议封禁原因
+        application_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 事件所属应用 ID
+        application_name:
+          type: string
+          description: 事件所属应用名称快照
+        attack_type:
+          type: string
+          description: 攻击类型
+        severity:
+          type: string
+          enum:
+          - HIGH
+          - MEDIUM
+          - LOW
+          - INFO
+          description: 事件严重度
+        related_event_count_24h:
+          type: integer
+          format: int64
+          description: 近 24h 同 IP 相关事件数
+        last_attack_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近攻击时间
+        hit_rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/BlacklistPrefillHitRule'
+          description: 近 24h 命中规则（按命中次数降序，最多 10 条）
+        suggested_duration_hours:
+          type: integer
+          description: 建议封禁时长（小时；分档规则见接口描述，上限 72h）
+        protected_hit:
+          type: boolean
+          description: 是否命中保护地址（命中时创建将被拒绝，仅作管理员提示）
+        protected_name:
+          type: string
+          description: 命中的保护地址名称
+        shared_egress_hint:
+          $ref: '#/components/schemas/BlacklistPrefillSharedEgress'
+        existing_deny_rule:
+          $ref: '#/components/schemas/BlacklistPrefillExistingRule'
+    BlacklistPrefillResponse:
+      type: object
+      properties:
+        prefill:
+          $ref: '#/components/schemas/BlacklistPrefill'
     AccessRuleUpdateRequest:
       type: object
       required:
@@ -4322,6 +4459,11 @@ components:
         imported:
           type: integer
           description: 实际导入条数（仅正式导入返回）
+        status:
+          type: string
+          enum:
+          - DRAFT
+          description: 导入规则统一落 DRAFT 草稿状态（仅正式导入返回）；草稿不参与发布快照，需逐条启用进入 ACTIVE
         preview:
           type: array
           items:
@@ -6364,6 +6506,27 @@ components:
               type: number
               format: double
           description: 序列集合（键见各接口说明，如 requests/events/blocks/observes/p50_ms 等）
+        method_distribution:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnalyticsKV'
+          description: 请求方法分布（仅 /analytics/request-trend 返回，值降序最多 20 项）
+        content_type_distribution:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnalyticsKV'
+          description: 请求 Content-Type 主类型分布（仅 /analytics/request-trend 返回，值降序最多 20 项）
+        client_ip_source_distribution:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnalyticsKV'
+          description: 客户端 IP 识别来源分布（仅 /analytics/request-trend 返回；CONNECTION/X_FORWARDED_FOR/X_REAL_IP/FORWARDED/CUSTOM_HEADER，空值归入“(未知)”，值降序最多
+            20 项）
+        trusted_proxy_distribution:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnalyticsKV'
+          description: 可信代理来源分布（仅 /analytics/request-trend 返回；键为命中的可信代理名，未经过可信代理归入“(直连)”，值降序最多 20 项）
     AnalyticsKV:
       type: object
       description: 键值对分布项（值降序、键升序，确定性排序）
@@ -6837,6 +7000,7 @@ components:
           - CONFIG_HASH_MISMATCH
           - DISK_SPACE_LOW
           - DATABASE_CAPACITY_HIGH
+          - FD_USAGE_HIGH
           - BACKUP_FAILED
           - RESTORE_VALIDATION_FAILED
           - REPORT_FAILED
@@ -6845,7 +7009,7 @@ components:
           - API_CRITICAL_FINDING
           - API_FINDING_SPIKE
           - API_MASK_FAILURE
-          description: 告警类型（API_* 三型为 API 安全告警：严重风险发现/发现激增/响应脱敏失败，组件为 API_SECURITY）
+          description: 告警类型（FD_USAGE_HIGH=API 组件文件句柄使用率超阈；API_* 三型为 API 安全告警：严重风险发现/发现激增/响应脱敏失败，组件为 API_SECURITY）
         severity:
           type: string
           enum:
@@ -6993,6 +7157,153 @@ components:
           minimum: 1
           maximum: 43200
           description: 静默时长（分钟，1~43200 即最长 30 天；重复静默视为延长）
+    SysAlertMaintenanceWindow:
+      type: object
+      description: 告警维护窗口（阶段6 §11.5）
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 窗口 ID
+        name:
+          type: string
+          description: 名称（≤100 字符）
+        description:
+          type: string
+          description: 描述（≤500 字符）
+        scope:
+          type: string
+          enum:
+          - ALL
+          - CUSTOM
+          description: 作用范围（ALL 全部告警 / CUSTOM 按类型与组件过滤）
+        alert_types:
+          type: array
+          items:
+            type: string
+          description: 告警类型过滤（scope=CUSTOM 生效；空数组=该维度通配）
+        components:
+          type: array
+          items:
+            type: string
+          description: 组件过滤（scope=CUSTOM 生效；空数组=该维度通配）
+        recurrence:
+          type: string
+          enum:
+          - ONCE
+          - DAILY
+          description: 周期（ONCE 一次性 / DAILY 日期跨度内每日时段）
+        starts_at:
+          type: string
+          format: date-time
+          description: 窗口生效起点（含）
+        ends_at:
+          type: string
+          format: date-time
+          description: 窗口生效终点（含，须晚于 starts_at）
+        daily_start_minute:
+          type: integer
+          minimum: 0
+          maximum: 1439
+          nullable: true
+          description: DAILY 日内开始分钟（UTC）
+        daily_end_minute:
+          type: integer
+          minimum: 0
+          maximum: 1439
+          nullable: true
+          description: DAILY 日内结束分钟（UTC；<= start 表示跨零点）
+        enabled:
+          type: boolean
+          description: 是否启用
+        suppressed_count:
+          type: integer
+          format: int64
+          description: 窗口内被抑制的告警评估次数（抑制可观测）
+        last_suppressed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 最近一次抑制时刻
+        created_by:
+          type: string
+          format: uuid
+          nullable: true
+          description: 创建人用户 ID
+        created_at:
+          type: string
+          format: date-time
+          description: 创建时间
+    SysAlertMaintenanceWindowCreateRequest:
+      type: object
+      required:
+      - name
+      - starts_at
+      - ends_at
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: 名称
+        description:
+          type: string
+          maxLength: 500
+          description: 描述
+        scope:
+          type: string
+          enum:
+          - ALL
+          - CUSTOM
+          default: ALL
+          description: 作用范围（缺省 ALL；CUSTOM 须至少指定 alert_types 或 components）
+        alert_types:
+          type: array
+          items:
+            type: string
+          maxItems: 50
+          description: 告警类型过滤（须在 SysAlert.alert_type 枚举内，大小写不敏感）
+        components:
+          type: array
+          items:
+            type: string
+          maxItems: 50
+          description: 组件过滤（大小写不敏感）
+        recurrence:
+          type: string
+          enum:
+          - ONCE
+          - DAILY
+          default: ONCE
+          description: 周期（缺省 ONCE）
+        starts_at:
+          type: string
+          format: date-time
+          description: 窗口生效起点（RFC3339）
+        ends_at:
+          type: string
+          format: date-time
+          description: 窗口生效终点（RFC3339，须晚于 starts_at）
+        daily_start_minute:
+          type: integer
+          minimum: 0
+          maximum: 1439
+          description: DAILY 必填：日内开始分钟（UTC）
+        daily_end_minute:
+          type: integer
+          minimum: 0
+          maximum: 1439
+          description: DAILY 必填：日内结束分钟（UTC；与 start 不相等，<= start 表示跨零点）
+    SysAlertMaintenanceWindowListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SysAlertMaintenanceWindow'
+        total:
+          type: integer
+          description: 总条数
     AnalyticsSiteTrendPoint:
       type: object
       description: 单个时间桶的请求计数点
@@ -10939,6 +11250,36 @@ components:
           type: string
           format: date-time
           description: 发生时间
+        api_level:
+          type: string
+          nullable: true
+          enum:
+          - CONFIRMED_API
+          - PROBABLE_API
+          - POSSIBLE_API
+          - NON_API
+          description: §8.2 四级识别标签（迁移 000149；来自统一上下文扩展 api.classification，与 api_confidence 同源不同口径：离散四级标签）。旧版网关事件未上报或管线未写 api.classification（合成结果/fail-open
+            旁路）时为 NULL，历史事件不回填，消费端必须容忍缺失。
+        device_fingerprint:
+          type: string
+          nullable: true
+          description: 设备指纹（任务书 §7，迁移 000150；UA 族加盐 HMAC-SHA256 32 位 hex，与身份行为观测同口径同盐）。未上报（空 UA/旧版网关/fail-open 旁路）时为 NULL，历史事件不回填。
+        object_identifiers:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              source:
+                type: string
+                description: 标识来源（如 path/query/body）
+              param:
+                type: string
+                description: 参数名
+              value_hash:
+                type: string
+                description: 对象标识值脱敏哈希（不记原文）
+          description: 对象标识集合（任务书 §7，迁移 000150；只记加盐哈希不记原文，条数封顶）。空集合与未上报同语义落 NULL。
         jwt_verification:
           type: object
           nullable: true
@@ -11610,6 +11951,14 @@ components:
           - REQUIRES
           - MUTEX
           - EXCLUDES
+          - EQUALS
+          - NOT_EQUALS
+          - GREATER_THAN
+          - LESS_THAN
+          - TIME_BEFORE
+          - TIME_AFTER
+          - COUNT_MATCHES
+          - SUM_MATCHES
           description: 关系类型
         confidence:
           type: number
@@ -15972,6 +16321,285 @@ components:
         total:
           type: integer
           description: 总数（不分页）
+    ApiFlowStep:
+      type: object
+      description: 流程步骤（api_flow_baseline_steps；endpoint_key 由 api_endpoints 关联带出）
+      required:
+      - step_id
+      - endpoint_id
+      - sequence
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 步骤行 ID（仅出参）
+        step_id:
+          type: string
+          maxLength: 128
+          description: 步骤标识（同一流程内唯一）
+        endpoint_id:
+          type: string
+          format: uuid
+          description: 绑定端点（api_endpoints.id）
+        endpoint_key:
+          type: string
+          description: 端点键（仅出参；METHOD + 空格 + 路径模板）
+        sequence:
+          type: integer
+          description: 流程内单调序号（逆序判定基准）
+        predecessors:
+          type: array
+          items:
+            type: string
+          description: 期望前置步骤 step_id 列表（AND 语义；空 = 无前置约束）
+        terminal:
+          type: boolean
+          description: 是否流程终点（描述性字段）
+        state_from:
+          type: string
+          maxLength: 64
+          description: 要求的对象前置状态（空 = 不参与状态机判定）
+        state_to:
+          type: string
+          maxLength: 64
+          description: 步骤完成后的对象状态（空 = 不推进状态记录）
+        max_per_window:
+          type: integer
+          minimum: 0
+          default: 0
+          description: 步骤级短窗调用上限（>0 启用 rapid_batch 步骤级判定；0 = 不判定，向后兼容）
+        rate_window_seconds:
+          type: integer
+          minimum: 0
+          maximum: 600
+          default: 0
+          description: 步骤级短窗秒数（>0 覆盖缺省 60s；上限 600s = 会话 TTL）
+        cancels_flow:
+          type: boolean
+          default: false
+          description: 取消语义声明（true = 本步骤执行后流程视为已取消；post_cancel_operation 判定的唯一来源）
+    ApiFlowBaseline:
+      type: object
+      description: 业务流程基线（api_flow_baselines；含步骤明细）
+      properties:
+        id:
+          type: string
+          format: uuid
+        flow_id:
+          type: string
+          maxLength: 128
+          description: 流程标识（全局唯一，发布契约键）
+        name:
+          type: string
+          description: 展示名
+        description:
+          type: string
+        enabled:
+          type: boolean
+          description: 仅启用行进入发布载荷
+        version:
+          type: integer
+          description: 乐观锁版本戳（编辑 +1）
+        max_per_window:
+          type: integer
+          minimum: 0
+          default: 0
+          description: 流程级短窗调用上限（任意步骤合计；>0 启用 rapid_batch 流程级判定；0 = 不判定）
+        rate_window_seconds:
+          type: integer
+          minimum: 0
+          maximum: 600
+          default: 0
+          description: 流程级短窗秒数（>0 覆盖缺省 60s；上限 600s = 会话 TTL）
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiFlowStep'
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ApiFlowBaselineSummary:
+      type: object
+      description: 流程基线列表行（不含步骤明细，带步骤数）
+      properties:
+        id:
+          type: string
+          format: uuid
+        flow_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        version:
+          type: integer
+        step_count:
+          type: integer
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ApiFlowBaselineListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiFlowBaselineSummary'
+        total:
+          type: integer
+          description: 总数（不分页）
+    ApiFlowBaselineUpsertRequest:
+      type: object
+      description: 流程基线创建/整体替换请求（校验口径与网关 detectors.ValidateFlowBaselines 一致）
+      required:
+      - flow_id
+      - steps
+      properties:
+        flow_id:
+          type: string
+          maxLength: 128
+          description: 流程标识（唯一；冲突 409）
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 1024
+        enabled:
+          type: boolean
+          description: 缺省 true
+        max_per_window:
+          type: integer
+          minimum: 0
+          default: 0
+          description: 流程级短窗调用上限（0 = 不判定）
+        rate_window_seconds:
+          type: integer
+          minimum: 0
+          maximum: 600
+          default: 0
+          description: 流程级短窗秒数（0 = 缺省 60s；上限 600s = 会话 TTL）
+        steps:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/ApiFlowStep'
+        expected_version:
+          type: integer
+          description: 乐观锁版本（仅 PUT 必填；冲突 409）
+    ApiRevokedCredential:
+      type: object
+      description: 已吊销凭据（api_revoked_credentials；指纹级，无凭据明文）
+      properties:
+        id:
+          type: string
+          format: uuid
+        credential_type:
+          type: string
+          enum:
+          - auth
+          - key
+          - sess
+          description: 凭据来源上下文（与网关身份指纹前缀一致：auth=Authorization / key=X-API-Key / sess=Cookie）
+        fingerprint:
+          type: string
+          pattern: ^[0-9a-f]{32}$
+          description: 加盐 HMAC-SHA256 截断 16 字节 hex（32 位，不含前缀）
+        reason:
+          type: string
+          description: 吊销原因
+        revoked_by:
+          type: string
+          description: 吊销人（服务端取自登录主体）
+        effective_from:
+          type: string
+          format: date-time
+          description: 生效时间
+        effective_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: 到期时间（空 = 永久吊销）
+        created_by:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ApiRevokedCredentialListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApiRevokedCredential'
+        total:
+          type: integer
+          description: 总数（不分页）
+    ApiRevokedCredentialCreateRequest:
+      type: object
+      description: 登记吊销凭据请求（指纹校验与迁移 000156 CHECK 同口径）
+      required:
+      - credential_type
+      - fingerprint
+      - reason
+      properties:
+        credential_type:
+          type: string
+          enum:
+          - auth
+          - key
+          - sess
+        fingerprint:
+          type: string
+          pattern: ^[0-9a-f]{32}$
+          description: 32 位 hex 加盐指纹（大小写不敏感，入库归一为小写）
+        reason:
+          type: string
+          maxLength: 512
+          description: 吊销原因（必填）
+        effective_from:
+          type: string
+          format: date-time
+          description: 生效时间（缺省当前时间）
+        effective_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: 到期时间（空 = 永久吊销；须晚于 effective_from）
+    ApiRevokedCredentialUpdateRequest:
+      type: object
+      description: 调整吊销凭据请求（仅原因与生效窗口可变；吊销对象身份不可变更）
+      required:
+      - reason
+      - effective_from
+      properties:
+        reason:
+          type: string
+          maxLength: 512
+        effective_from:
+          type: string
+          format: date-time
+        effective_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: 空 = 永久吊销；须晚于 effective_from
     AiSession:
       type: object
       description: AI 会话
@@ -16223,6 +16851,63 @@ components:
           type: string
           maxLength: 50
           description: 统计周期描述（如「近7天」，最长 50 字符）
+        time_range:
+          type: string
+          enum:
+          - 1h
+          - 6h
+          - 24h
+          - 7d
+          - 30d
+          description: 统计区间预设（事件维度过滤/URI画像/应用画像/What-If 估算用；各端点缺省见 description）
+        application_id:
+          type: string
+          format: uuid
+          description: 应用 ID（事件应用维度过滤，或画像端点的应用画像对象）
+        uri:
+          type: string
+          maxLength: 200
+          description: 请求路径（须以 / 开头，长度 2-200；事件 URI 维度过滤，或画像端点的 URI 画像对象）
+        request_id:
+          type: string
+          maxLength: 64
+          description: 网关 Request ID（事件维度过滤）
+        scenario:
+          type: string
+          enum:
+          - disable_rule
+          - enable_rule
+          - anomaly_threshold
+          - pl_switch
+          - add_exception
+          - remove_exception
+          - cc_threshold
+          - block_duration
+          description: What-If 模拟场景（§19.1 八种，缺省 disable_rule）
+        cc_threshold:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+          description: What-If cc_threshold 场景：模拟的新 CC 阈值（次/窗口）
+        block_duration_seconds:
+          type: integer
+          minimum: 60
+          maximum: 2592000
+          description: What-If block_duration 场景：模拟的新封禁时长（秒）
+        anomaly_threshold:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: What-If anomaly_threshold 场景：模拟的入站异常阈值
+        paranoia_level:
+          type: integer
+          minimum: 1
+          maximum: 4
+          description: What-If pl_switch 场景：模拟的 CRS 执行等级
+        exception_id:
+          type: string
+          format: uuid
+          description: What-If remove_exception 场景：模拟删除的例外 ID
     AiAnalyzePlan:
       type: object
       description: 任务计划摘要（plan 事件 payload / 分析结果 plan 字段）
@@ -16561,6 +17246,12 @@ components:
       properties:
         run:
           $ref: '#/components/schemas/AiEvalRunResult'
+    AiEvalRunResponse:
+      type: object
+      description: 评估运行详情响应
+      properties:
+        run:
+          $ref: '#/components/schemas/AiEvalRun'
     AiNoiseCluster:
       type: object
       description: AI 降噪簇（同源指纹事件聚合）
@@ -17272,6 +17963,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AiAgent'
+    AiAgentResponse:
+      type: object
+      required:
+      - agent
+      properties:
+        agent:
+          $ref: '#/components/schemas/AiAgent'
     AiAgentPatchRequest:
       type: object
       description: enabled 与 allowed_tool_ids 至少提供一项（全不提供返回 400）
@@ -17382,6 +18080,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AiTool'
+    AiToolResponse:
+      type: object
+      required:
+      - tool
+      properties:
+        tool:
+          $ref: '#/components/schemas/AiTool'
     AiToolPatchRequest:
       type: object
       description: 三个字段至少提供一项（全不提供返回 400）
@@ -17562,6 +18267,8 @@ components:
       - content_hash
       - change_summary
       - test_result
+      - adversarial_result
+      - adversarial_detail
       - created_at
       - published_at
       - is_current
@@ -17592,7 +18299,19 @@ components:
           - ''
           - PASSED
           - FAILED
-          description: 静态测试结果（空字符串 = 未测试；仅 PASSED 可发布）
+          description: 静态/回归测试结果（空字符串 = 未测试；发布门要求 PASSED）
+        adversarial_result:
+          type: string
+          enum:
+          - ''
+          - ADVERSARIAL_PASSED
+          - ADVERSARIAL_FAILED
+          description: 对抗测试结论（空字符串 = 未执行；发布门要求 ADVERSARIAL_PASSED）
+        adversarial_detail:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiPromptAdversarialCase'
+          description: 对抗测试逐样本判定明细（未执行为空数组；失败样本 reason 如实给出原因）
         created_at:
           type: string
           format: date-time
@@ -17673,6 +18392,49 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AiPromptTestCheck'
+    AiPromptAdversarialCase:
+      type: object
+      required:
+      - id
+      - category
+      - attack
+      - passed
+      properties:
+        id:
+          type: string
+          description: 样本标识（类别-序号，如 inj-01）
+        category:
+          type: string
+          enum:
+          - PROMPT_INJECTION
+          - PRIVILEGE_ESCALATION
+          - DATA_EXFILTRATION
+          description: 攻击类别（提示注入/越权诱导/数据泄露诱导）
+        attack:
+          type: string
+          description: 对抗输入（模拟攻击者注入的指令）
+        passed:
+          type: boolean
+          description: 该样本是否通过
+        reason:
+          type: string
+          description: 未通过时的如实原因（命中顺从指令 / 未声明该类防御）
+    AiPromptVersionAdversarialTestResponse:
+      type: object
+      required:
+      - adversarial_result
+      - cases
+      properties:
+        adversarial_result:
+          type: string
+          enum:
+          - ADVERSARIAL_PASSED
+          - ADVERSARIAL_FAILED
+          description: 对抗测试综合结论（已回写版本 adversarial_result 与 adversarial_detail）
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiPromptAdversarialCase'
     AiPromptDiffSide:
       type: object
       required:
@@ -17945,6 +18707,25 @@ components:
         confirm_result:
           type: string
           description: 确认结果（列表接口不返回该列，恒为空字符串）
+    AiAuditDetail:
+      description: AI 审计详情（列表项字段 + 记录 ID；详情接口补查 prompt_version/confirm_result 两列）
+      allOf:
+      - $ref: '#/components/schemas/AiAuditRecord'
+      - type: object
+        required:
+        - id
+        properties:
+          id:
+            type: string
+            format: uuid
+            description: 审计记录 ID
+    AiAuditResponse:
+      type: object
+      required:
+      - audit
+      properties:
+        audit:
+          $ref: '#/components/schemas/AiAuditDetail'
     AiAuditListResponse:
       type: object
       required:
@@ -23791,6 +24572,12 @@ paths:
           - session
           - display
           - logging
+          - api_learning
+          - block_response
+          - notify
+          - apm_alert
+          - apm_diagnostics
+          - gateway_runtime
         description: 按设置分组过滤（缺省返回全部）
       responses:
         '200':
@@ -23808,8 +24595,11 @@ paths:
       tags:
       - system-settings
       summary: 更新系统设置（乐观锁）
-      description: 更新单条系统设置。权限：system_settings.update。 需 CSRF：请求头须携带 X-CSRF-Token。 仅允许白名单内的设置键（password/login/session/display/logging
-        组）；setting_value 的 JSON 类型 须与该设置的 value_type 一致，否则返回 400。乐观锁：version 须与当前一致，否则返回 409。 更新成功会写入操作审计（模块 system_settings）。
+      description: 更新单条系统设置。权限：system_settings.update。 需 CSRF：请求头须携带 X-CSRF-Token。 仅允许白名单内的设置键（password/login/session/display/logging/api_learning/block_response
+        等组）； block_response 组（html_title/html_body/json_code/json_message）为自定义 429/阻断响应页面， 字符串长度有上限（128/4096/128/512 字节），超限返回
+        400，保存后随下次配置发布下发网关生效。 gateway_runtime 组限流阈值键（api_quota_per_hour/api_quota_per_day/object_rate_per_minute/ max_page_size/max_batch_size）为字符串数值，空串或
+        0 表示不启用，保存后随下次配置发布 下发网关生效；非数字或负数值在发布时校验失败。 setting_value 的 JSON 类型 须与该设置的 value_type 一致，否则返回 400。乐观锁：version 须与当前一致，否则返回
+        409。 更新成功会写入操作审计（模块 system_settings）。
       requestBody:
         required: true
         content:
@@ -28435,7 +29225,9 @@ paths:
 
         ALL_OR_NOTHING 模式存在错误行时整体不导入并返回 400（details 为行级错误）；
 
-        SKIP_ERRORS 模式跳过错误行逐条插入。记录审计（含保护地址错误时高风险）。权限：`access_rules.import`
+        SKIP_ERRORS 模式跳过错误行逐条插入。正式导入成功的规则统一落 DRAFT 草稿状态：不参与发布快照、
+
+        不在网关生效，需逐条调用启用接口进入 ACTIVE。记录审计（含保护地址错误时高风险）。权限：`access_rules.import`
 
         '
       requestBody:
@@ -28676,6 +29468,106 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 04-access-control.yaml
+  /access-rules/{id}/events:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: 规则 ID
+    get:
+      operationId: accessRuleEvents
+      tags:
+      - access-rules
+      summary: 规则关联事件分页列表
+      description: '查询该规则命中的访问控制事件（按 access_control_events.access_rule_id 过滤：
+
+        IP 黑白名单命中 IP_ALLOW_MATCH/IP_DENY_MATCH 与 L7 规则命中 L7_RULE_* 事件均写入规则 ID）。
+
+        支持通用事件筛选参数（时间范围/事件类型/动作/客户端IP 等），规则不存在时返回空分页（列表过滤语义）。
+
+        记录低风险审计。权限：`access_rules.read`
+
+        '
+      parameters:
+      - name: start_time
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: 起始时间（RFC3339）
+      - name: end_time
+        in: query
+        schema:
+          type: string
+          format: date-time
+        description: 截止时间（RFC3339，必须晚于 start_time）
+      - name: application_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+        description: 按应用筛选
+      - name: client_ip
+        in: query
+        schema:
+          type: string
+        description: 按客户端 IP 筛选
+      - name: event_type
+        in: query
+        schema:
+          type: string
+        description: 按事件类型筛选
+      - name: action
+        in: query
+        schema:
+          type: string
+          enum:
+          - LOG
+          - OBSERVE
+          - REJECT
+          - TEMP_BLOCK
+        description: 按动作筛选
+      - name: request_id
+        in: query
+        schema:
+          type: string
+        description: 按请求 ID 筛选
+      - name: gateway_node_id
+        in: query
+        schema:
+          type: string
+        description: 按网关节点筛选
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+        description: 页码
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          default: 20
+        description: 每页条数（最大 100）
+      responses:
+        '200':
+          description: 分页事件列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ACEventListResponse'
+        '400':
+          description: 参数错误（规则 ID 非法、时间格式无效或时间范围颠倒）
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 04-access-control.yaml
   /access-rules/{id}/enable:
     parameters:
     - name: id
@@ -28690,7 +29582,11 @@ paths:
       tags:
       - access-rules
       summary: 启用规则
-      description: 将规则置为 ACTIVE。记录低风险审计。权限：`access_rules.manage`
+      description: '将规则置为 ACTIVE。合法来源状态：DRAFT（草稿启用）/ DISABLED（重新启用）/ ACTIVE（幂等）；
+
+        EXPIRED 规则需先延期再启用，非法流转返回 400。记录低风险审计。权限：`access_rules.manage`
+
+        '
       responses:
         '200':
           description: 操作成功
@@ -28723,7 +29619,11 @@ paths:
       tags:
       - access-rules
       summary: 停用规则
-      description: 将规则置为 DISABLED。记录低风险审计。权限：`access_rules.manage`
+      description: '将规则置为 DISABLED。合法来源状态：ACTIVE / DISABLED（幂等）/ EXPIRED；
+
+        DRAFT 草稿尚未生效不可停用（可启用或删除），非法流转返回 400。记录低风险审计。权限：`access_rules.manage`
+
+        '
       responses:
         '200':
           description: 操作成功
@@ -28846,6 +29746,45 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: 相同范围下已存在同地址同类型规则
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 04-access-control.yaml
+  /security-events/{id}/blacklist-prefill:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: 安全事件 ID
+    get:
+      operationId: securityEventBlacklistPrefill
+      tags:
+      - access-rules
+      summary: 从安全事件预填「加入黑名单」数据
+      description: '只读不落库、不审计。按事件 client_ip 聚合近 24h 相关事件数/最近攻击时间/命中规则（Top10），
+
+        检查该 IP 是否命中保护地址、是否疑似共享出口/代理（同 IP 近 24h 关联身份数 ≥2；无任何身份数据时省略该项），
+
+        并给出建议封禁时长（HIGH→24h、MEDIUM→6h、LOW→2h、INFO→1h；相关事件 ≥10 升一档、≥50 直接 72h；上限 72h）。
+
+        管理员确认后走 POST /access-rules 并携带 source_type=SECURITY_EVENT + source_event_id。权限：`access_rules.manage`'
+      responses:
+        '200':
+          description: 预填数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlacklistPrefillResponse'
+        '400':
+          description: 事件 ID 无效或事件无客户端 IP
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 04-access-control.yaml
@@ -30892,8 +31831,11 @@ paths:
       tags:
       - analytics
       summary: 请求趋势
-      description: 请求量与耗时分位数趋势。series 键：requests（总量）、status_2xx/status_4xx/status_5xx（按状态分类）、 p50_ms/p95_ms/p99_ms（毫秒）。start_time/end_time
-        均缺省时取最近 24 小时；仅给 end_time 时向前推 24 小时； 跨度上限 366 天。权限：analytics.security.read。
+      description: 请求量与耗时分位数趋势。series 键：requests（总量）、status_2xx/status_4xx/status_5xx（按状态分类）、 p50_ms/p95_ms/p99_ms（毫秒）。另含
+        method_distribution（请求方法分布）、 content_type_distribution（请求 Content-Type 主类型分布，去参数小写化，空值归入“(无)”）、 client_ip_source_distribution（客户端
+        IP 识别来源分布，口径 CONNECTION/X_FORWARDED_FOR/X_REAL_IP/FORWARDED/CUSTOM_HEADER，空值归入“(未知)”）与 trusted_proxy_distribution（可信代理来源分布，键为命中的可信代理名，未经过可信代理归入“(直连)”），
+        数据源为全量访问日志 access_logs 实时聚合（来源两列为迁移 000144 起由网关上报），值降序各最多 20 项。 start_time/end_time 均缺省时取最近 24 小时；仅给 end_time 时向前推
+        24 小时； 跨度上限 366 天。权限：analytics.security.read。
       parameters:
       - name: start_time
         in: query
@@ -31670,6 +32612,94 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 05-events-analytics.yaml
+  /system-alerts/export:
+    get:
+      operationId: sysAlertExport
+      tags:
+      - system-alerts
+      summary: 导出系统告警 CSV
+      description: 按筛选条件导出告警 CSV（含表头，防公式注入：= + - @ 制表符前导字符加单引号，最多 10000 条）， 列为 id,alert_type,severity,component,title,message,status,occurrence_count,first_seen_at,
+        last_seen_at,resolved_at,resolve_type。响应头 Content-Disposition 附件文件名为 system-alerts.csv。 限流：每 IP 5 次/分钟（导出类接口共享）。记录低风险审计。
+        权限：system_alerts.read / system_alerts.read_security / system_alerts.read_audit 任一。
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - OPEN
+          - ACKNOWLEDGED
+          - RESOLVED
+          - IGNORED
+        description: 告警状态（大小写不敏感，服务端统一转大写）
+      - name: view
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - ACTIVE
+          - SILENCED
+          - HISTORY
+        description: 三态视图（与 status 互斥，同传返回 400）
+      - name: severity
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - CRITICAL
+          - HIGH
+          - MEDIUM
+          - LOW
+          - INFO
+        description: 告警等级
+      - name: alert_type
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 告警类型
+      - name: component
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 组件名
+      - name: start_time
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 按 last_seen_at 过滤的起始时间（RFC3339）
+      - name: end_time
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 按 last_seen_at 过滤的结束时间（RFC3339，含边界）
+      responses:
+        '200':
+          description: CSV 文件流（text/csv; charset=utf-8）
+          content:
+            text/csv:
+              schema:
+                type: string
+                description: CSV 文本（含表头）
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: 导出频率超限（每 IP 5 次/分钟）
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 05-events-analytics.yaml
   /system-alerts/{id}:
     get:
       operationId: sysAlertGet
@@ -31946,6 +32976,90 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 05-events-analytics.yaml
+  /system-alerts/maintenance-windows:
+    get:
+      operationId: sysAlertMaintenanceWindowList
+      tags:
+      - system-alerts
+      summary: 告警维护窗口列表
+      description: 返回全部维护窗口（按创建时间倒序），含 suppressed_count/last_suppressed_at 抑制计数 （窗口内被抑制的告警评估次数，可观测不静默）。 权限：system_alerts.read
+        / system_alerts.read_security / system_alerts.read_audit 任一。
+      responses:
+        '200':
+          description: 维护窗口列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SysAlertMaintenanceWindowListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: sysAlertMaintenanceWindowCreate
+      tags:
+      - system-alerts
+      summary: 创建告警维护窗口
+      description: 创建维护窗口（阶段6 §11.5）：窗口生效且 scope 匹配期间，评估引擎跳过匹配告警的新建与合并， 抑制计入 suppressed_count 并写日志。校验：名称 1~100 字符；ends_at
+        必须晚于 starts_at； recurrence=DAILY 必须提供 0~1439 且不相等的 daily_start_minute/daily_end_minute（UTC 日内分钟， end<=start 表示跨零点）；scope=CUSTOM
+        须至少指定一类告警类型或组件（各 ≤50 项，类型须在枚举内）。 权限：system_alerts.acknowledge / system_alerts.acknowledge_security 任一。记录操作审计（中风险）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SysAlertMaintenanceWindowCreateRequest'
+      responses:
+        '200':
+          description: 创建后的维护窗口
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SysAlertMaintenanceWindow'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 05-events-analytics.yaml
+  /system-alerts/maintenance-windows/{id}:
+    delete:
+      operationId: sysAlertMaintenanceWindowDelete
+      tags:
+      - system-alerts
+      summary: 删除告警维护窗口
+      description: 删除维护窗口，删除后立即恢复相关告警评估。不存在返回 404。 权限：system_alerts.acknowledge / system_alerts.acknowledge_security 任一。记录操作审计（中风险）。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 维护窗口 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 05-events-analytics.yaml
@@ -35673,6 +36787,16 @@ paths:
                   enum:
                   - REQUIRES
                   - MUTEX
+                  - EQUALS
+                  - NOT_EQUALS
+                  - GREATER_THAN
+                  - LESS_THAN
+                  - TIME_BEFORE
+                  - TIME_AFTER
+                  - COUNT_MATCHES
+                  - SUM_MATCHES
+                  description: 关系类型（手工新建词表；CO_OCCURS 由统计候选产生不开放手工新建；COUNT_MATCHES 数量一致=A 整数须等于 B 数组长度，SUM_MATCHES 汇总=A 数值须等于
+                    B 数组元素数值和，B 均须为 BODY 数组路径）
       responses:
         '200':
           description: 创建成功（data 为 {relation, message}）
@@ -41272,6 +42396,349 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 07-api-security.yaml
+  /api-security/flow-baselines:
+    get:
+      operationId: apiFlowBaselineList
+      tags:
+      - api-security
+      summary: 流程基线列表
+      description: 列出业务流程基线（阶段8 §44；不含步骤明细，带步骤数）。enabled 过滤可选。 权限：`api_flow.read`。
+      parameters:
+      - name: enabled
+        in: query
+        required: false
+        schema:
+          type: boolean
+        description: 按启用状态过滤
+      responses:
+        '200':
+          description: 流程基线列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiFlowBaselineListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: apiFlowBaselineCreate
+      tags:
+      - api-security
+      summary: 创建流程基线
+      description: 创建业务流程基线（流程粒度：一个 flow 含多个步骤，步骤绑定端点 endpoint_id）。 校验口径与网关 detectors.ValidateFlowBaselines 一致：flow_id 非空唯一；step_id
+        流程内唯一；前置步骤须指向同流程已声明步骤且不得自引用。flow_id 冲突 409。 创建即按 enabled（缺省 true）进入下次发布载荷（网关装配期校验后按端点归组， 全部明细 OBSERVE 级只记录不阻断）。写操作审计。权限：`api_flow.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiFlowBaselineUpsertRequest'
+      responses:
+        '201':
+          description: 创建成功，返回完整基线（含步骤）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiFlowBaseline'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
+  /api-security/flow-baselines/{id}:
+    get:
+      operationId: apiFlowBaselineGet
+      tags:
+      - api-security
+      summary: 流程基线详情
+      description: 读取单条流程基线（含步骤明细，步骤按 sequence 排序，endpoint_key 关联带出）。权限：`api_flow.read`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 流程基线 ID
+      responses:
+        '200':
+          description: 流程基线详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiFlowBaseline'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: apiFlowBaselineUpdate
+      tags:
+      - api-security
+      summary: 整体替换流程基线
+      description: 整体替换流程基线（含步骤全量替换）。expected_version 必填做乐观锁：与当前 version 不一致返回 409；成功后 version +1。flow_id 冲突 409。写操作审计。 权限：`api_flow.manage`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 流程基线 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiFlowBaselineUpsertRequest'
+      responses:
+        '200':
+          description: 更新成功，返回完整基线（version 已递增）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiFlowBaseline'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: apiFlowBaselineDelete
+      tags:
+      - api-security
+      summary: 删除流程基线
+      description: 删除流程基线（步骤级联删除，删除即退出下次发布载荷；不存在的 ID 返回 404）。写操作审计。权限：`api_flow.manage`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 流程基线 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    description: 固定为 deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
+  /api-security/revoked-credentials:
+    get:
+      operationId: apiRevokedCredentialList
+      tags:
+      - api-security
+      summary: 已吊销凭据列表
+      description: 列出已吊销凭据清单（阶段8 §35「已吊销凭据使用」数据源；指纹级，无凭据明文）。 credential_type / active（当前生效窗口内）过滤可选。权限：`api_credential.read`。
+      parameters:
+      - name: credential_type
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - auth
+          - key
+          - sess
+        description: 按凭据来源上下文过滤
+      - name: active
+        in: query
+        required: false
+        schema:
+          type: boolean
+        description: 按当前生效窗口过滤
+      responses:
+        '200':
+          description: 已吊销凭据列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiRevokedCredentialListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: apiRevokedCredentialCreate
+      tags:
+      - api-security
+      summary: 登记吊销凭据
+      description: 登记一条已吊销凭据（指纹级，不存凭据明文）。凭据身份沿用项目统一口径： credential_type 与网关身份指纹前缀（auth:/key:/sess:）一致，fingerprint 为 加盐 HMAC-SHA256
+        截断 16 字节的 32 位 hex（不含前缀）。吊销人由服务端取自 登录主体。同类型同指纹重复登记 409；同指纹不同来源类型允许分别登记。 登记即进入下次发布载荷（当前生效窗口内的行才下发网关）。写操作审计。 权限：`api_credential.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiRevokedCredentialCreateRequest'
+      responses:
+        '201':
+          description: 登记成功，返回完整记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiRevokedCredential'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
+  /api-security/revoked-credentials/{id}:
+    get:
+      operationId: apiRevokedCredentialGet
+      tags:
+      - api-security
+      summary: 已吊销凭据详情
+      description: 读取单条已吊销凭据记录。权限：`api_credential.read`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 吊销记录 ID
+      responses:
+        '200':
+          description: 已吊销凭据详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiRevokedCredential'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: apiRevokedCredentialUpdate
+      tags:
+      - api-security
+      summary: 调整吊销凭据
+      description: 调整吊销原因与生效窗口。吊销对象身份（credential_type + fingerprint）不可变更， 变更身份 = 删除后重新登记。effective_from 必填；effective_until
+        为空 = 永久吊销， 且须晚于 effective_from。写操作审计。权限：`api_credential.manage`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 吊销记录 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiRevokedCredentialUpdateRequest'
+      responses:
+        '200':
+          description: 更新成功，返回完整记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiRevokedCredential'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: apiRevokedCredentialDelete
+      tags:
+      - api-security
+      summary: 移除吊销凭据
+      description: 移除吊销记录（移除即退出下次发布载荷，等于解除吊销；不存在的 ID 返回 404）。写操作审计。权限：`api_credential.manage`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 吊销记录 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    description: 固定为 deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 07-api-security.yaml
   /ai/sessions:
     get:
       operationId: aiSessionList
@@ -41844,7 +43311,13 @@ paths:
 
         分析在一次性会话中执行，用完即删，不出现在会话列表；响应一次性返回 answer/plan/steps/evidence。
 
-        请求需满足：event_id（须为 UUID）与 question 至少提供一个，event_id 优先。
+        请求需满足以下任一：event_id（须为 UUID）、question、或至少一个结构化过滤维度
+
+        （application_id/ip/uri/rule_id/request_id，可组合，time_range 指定统计区间、缺省 24h）。
+
+        结构化维度：后端按维度查询真实事件数据（security_events/access_control_events）组装分析上下文，
+
+        维度组合下无数据时如实返回「数据不足」口径，不做推测。
 
         限流：AI 用量配额超限返回 429。权限：`ai.event_analysis.use`。'
       requestBody:
@@ -41922,7 +43395,13 @@ paths:
       summary: 攻击画像分析
       description: '触发一次性攻击画像分析（同步执行、非流式，行为同 /ai/analyze/event）。
 
-        请求需满足：ip（须为合法 IP 地址）与 question 至少提供一个，ip 优先。
+        请求需满足：ip / uri / application_id / question 至少提供一个，优先级 ip > uri > application_id > question。
+
+        uri（须以 / 开头的请求路径）：URI 画像，后端真实 SQL 聚合该 URI 的事件分布、攻击类型、来源 IP 与命中规则 Top；
+
+        application_id（须为 UUID）：应用画像，应用维度同理（含防护模式与状态）；
+
+        两者支持 time_range 指定统计区间（缺省 7d）；画像对象在区间内无事件时如实返回「数据不足」口径。
 
         限流：AI 用量配额超限返回 429。权限：`ai.attack_profile.use`。'
       requestBody:
@@ -42037,11 +43516,15 @@ paths:
       tags:
       - ai-analysis
       summary: What-If 策略模拟
-      description: '模拟关闭指定规则的影响（基于历史数据估算受影响请求、误报减少与漏拦风险；
-
-        同步执行、非流式，行为同 /ai/analyze/event）。rule_id 必填且 >0。
-
-        限流：AI 用量配额超限返回 429。权限：`ai.what_if.use`。'
+      description: "What-If 策略模拟（同步执行、非流式，行为同 /ai/analyze/event）。scenario 缺省为 disable_rule：\n- disable_rule：模拟停用指定规则（rule_id\
+        \ 必填且 >0），估算受影响请求、误报减少与漏拦风险；\n- enable_rule：模拟启用指定规则（rule_id 必填且 >0），基于规则历史命中与同攻击类型事件量\n  估算可能新增的处置动作上界（规则关闭期间不产生命中记录，支持\
+        \ time_range，缺省 30d）；\n- anomaly_threshold：模拟修改入站异常阈值（anomaly_threshold 必填，1-10000），基于\n  security_events 事件级异常评分分布估算新阈值下新增/解除的阻断数（支持\
+        \ time_range，缺省 7d）；\n- pl_switch：模拟切换 CRS 执行等级（paranoia_level 必填，1-4），按事件严重级别分布给出\n  低级别段可能新增/减少命中的参考量（支持 time_range，缺省\
+        \ 30d）；\n- add_exception：模拟新增例外（rule_id 必填，可选 application_id/uri 收敛范围），按范围\n  过滤历史事件估算不再发生的阻断与误报减少候选（支持 time_range，缺省\
+        \ 30d）；\n- remove_exception：模拟删除例外（exception_id 必填），按例外范围过滤历史事件估算重新\n  受检的请求量与可能回归的误报（支持 time_range，缺省 30d）；\n- cc_threshold：模拟修改\
+        \ CC 阈值（cc_threshold 必填，次/窗口），基于 access_control_events 历史\n  超阈事件的触发时刻窗口计数离线估算新阈值下不会触发的次数与涉及 IP；\n- block_duration：模拟调整封禁时长（block_duration_seconds\
+        \ 必填，60-2592000 秒），基于历史\n  临时封禁事件的发生间隔离线估算新时长下被吞并的重复封禁次数。\ncc_threshold / block_duration 支持 time_range 指定历史数据区间（缺省\
+        \ 7d）。\n口径：全部为历史事件数据的纯统计估算，非逐请求回放引擎，不代表未来确定结果。\n限流：AI 用量配额超限返回 429。权限：`ai.what_if.use`。"
       requestBody:
         required: true
         content:
@@ -42636,6 +44119,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 08-ai-ops.yaml
+  /ai/evaluations/{id}:
+    get:
+      operationId: aiEvalRunGet
+      tags:
+      - ai-evaluations
+      summary: 评估运行详情
+      description: 获取单条评估运行记录（字段口径同评估运行列表项，含评估集编码与运行明细 details）。权限：任一 `ai.evaluations.run` / `ai.usage.read` / `ai.audits.read`。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 评估运行 ID
+      responses:
+        '200':
+          description: 评估运行详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiEvalRunResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 08-ai-ops.yaml
@@ -43357,6 +44873,41 @@ paths:
           $ref: '#/components/responses/InternalError'
     x-source: 09-ai-admin.yaml
   /ai/models/{id}:
+    get:
+      operationId: aiModelGet
+      tags:
+      - ai-models
+      summary: 模型详情
+      description: '权限：ai.models.read。
+
+        返回字段口径同模型列表项（不含任何密钥材料）。AI 模块全局关闭时本接口返回 503。
+
+        '
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 模型 ID
+      responses:
+        '200':
+          description: 模型详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiModelResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
     put:
       operationId: aiModelUpdate
       tags:
@@ -43643,6 +45194,41 @@ paths:
           $ref: '#/components/responses/InternalError'
     x-source: 09-ai-admin.yaml
   /ai/agents/{id}:
+    get:
+      operationId: aiAgentGet
+      tags:
+      - ai-agents
+      summary: Agent 详情
+      description: '权限：ai.agents.read。
+
+        返回字段口径同 Agent 列表项（含 in_registry 标记）。AI 模块全局关闭时本接口返回 503。
+
+        '
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Agent ID
+      responses:
+        '200':
+          description: Agent 详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAgentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
     patch:
       operationId: aiAgentPatch
       tags:
@@ -43756,6 +45342,41 @@ paths:
           $ref: '#/components/responses/InternalError'
     x-source: 09-ai-admin.yaml
   /ai/tools/{id}:
+    get:
+      operationId: aiToolGet
+      tags:
+      - ai-tools
+      summary: Tool 详情
+      description: '权限：ai.tools.read。
+
+        返回字段口径同 Tool 列表项（含 in_registry 标记）。AI 模块全局关闭时本接口返回 503。
+
+        '
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Tool ID
+      responses:
+        '200':
+          description: Tool 详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiToolResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
     patch:
       operationId: aiToolPatch
       tags:
@@ -44156,7 +45777,9 @@ paths:
 
         执行静态检查（非空与长度 ≤50000 字符、禁止内容扫描），并将结果回写版本 test_result（PASSED/FAILED）；
 
-        仅 PASSED 的版本可发布。写入 AI 审计（prompt_test）。AI 模块全局关闭时本接口返回 503。
+        发布门要求本测试 PASSED 且对抗测试 ADVERSARIAL_PASSED 齐备。
+
+        写入 AI 审计（prompt_test）。AI 模块全局关闭时本接口返回 503。
 
         '
       parameters:
@@ -44185,6 +45808,51 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 09-ai-admin.yaml
+  /ai/prompts/versions/{versionId}/adversarial-test:
+    post:
+      operationId: aiPromptVersionAdversarialTest
+      tags:
+      - ai-prompts
+      summary: Prompt 版本对抗测试
+      description: '权限：ai.prompts.test。
+
+        对版本内容跑内置对抗样本集（提示注入/越权诱导/数据泄露诱导，每类 3 条，样本结合本系统
+
+        AI 安全运营助手真实场景），逐样本判定并回写版本 adversarial_result
+
+        （ADVERSARIAL_PASSED/ADVERSARIAL_FAILED）与明细 adversarial_detail；
+
+        失败样本在 cases[].reason 中如实给出原因。发布门要求 ADVERSARIAL_PASSED。
+
+        写入 AI 审计（prompt_adversarial_test）。AI 模块全局关闭时本接口返回 503。
+
+        '
+      parameters:
+      - name: versionId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: Prompt 版本 ID
+      responses:
+        '200':
+          description: 对抗测试结论与逐样本明细
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiPromptVersionAdversarialTestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 09-ai-admin.yaml
   /ai/prompts/{id}/publish:
     post:
       operationId: aiPromptPublish
@@ -44193,7 +45861,9 @@ paths:
       summary: 发布 Prompt 版本
       description: '权限：ai.prompts.publish。
 
-        仅静态测试通过（PASSED）的版本可发布（否则返回 400，store 层强制）；
+        发布门（store 层强制）：静态安全检查 + 测试集回归 PASSED + 对抗测试 ADVERSARIAL_PASSED
+
+        三者齐备方可发布，否则返回 400 并在消息中给出两个门槛的当前状态；发布动作本身即人工审核。
 
         发布后该版本成为当前版本（is_current），Prompt 状态置为 ACTIVE。
 
@@ -44572,6 +46242,47 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 09-ai-admin.yaml
+  /ai/audits/{id}:
+    get:
+      operationId: aiAuditGet
+      tags:
+      - ai-audits
+      summary: AI 审计详情
+      description: '权限：ai.audits.read。
+
+        返回字段口径同审计列表项并附记录 ID；与列表不同，详情补查 prompt_version/confirm_result 两列。
+
+        审计正文在写入时已脱敏：不保存密钥/密码/私钥/完整载荷与模型私有思维链。
+
+        AI 模块全局关闭时本接口返回 503。
+
+        '
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 审计记录 ID
+      responses:
+        '200':
+          description: 审计记录详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAuditResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 09-ai-admin.yaml

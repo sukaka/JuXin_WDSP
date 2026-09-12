@@ -16,13 +16,17 @@ import (
 // APM 阶段1 新增 trace_id/span_id/endpoint_key/path_template/ttfb_ms（ADR D6/D7/D8）：
 // 旧网关不携带这些字段，解析后为空值，入库为 NULL（迁移 000088 新列全部 nullable）。
 type LogEntry struct {
-	OccurredAt            time.Time           `json:"occurred_at"`
-	RequestID             string              `json:"request_id"`
-	ApplicationID         string              `json:"application_id"`
-	Domain                string              `json:"domain"`
-	GatewayNodeID         string              `json:"gateway_node_id"`
-	ClientIP              string              `json:"client_ip"`
-	ClientPort            int                 `json:"client_port"`
+	OccurredAt    time.Time `json:"occurred_at"`
+	RequestID     string    `json:"request_id"`
+	ApplicationID string    `json:"application_id"`
+	Domain        string    `json:"domain"`
+	GatewayNodeID string    `json:"gateway_node_id"`
+	ClientIP      string    `json:"client_ip"`
+	ClientPort    int       `json:"client_port"`
+	// 阶段5 §6.5 真实 IP 识别日志字段（旧网关不携带，缺省为空入库为 NULL）
+	ClientIPSource        string              `json:"client_ip_source"`
+	TrustedProxyUsed      string              `json:"trusted_proxy_used"`
+	ForwardedChainSummary string              `json:"forwarded_chain_summary"`
 	RequestMethod         string              `json:"request_method"`
 	RequestURI            string              `json:"request_uri"`
 	RequestPath           string              `json:"request_path"`
@@ -64,6 +68,9 @@ const (
 	maxSpanIDLen       = 32 // W3C span_id 为 16 hex
 	maxEndpointKeyLen  = 255
 	maxPathTemplateLen = 512
+	maxIPSourceLen     = 32
+	maxProxyNameLen    = 128
+	maxChainSummaryLen = 256
 	maxBodyColumnLen   = 1 << 20 // text 列兜底 1MB
 )
 
@@ -96,6 +103,9 @@ func ParseLine(line []byte) (*LogEntry, error) {
 	e.SpanID = truncateStr(e.SpanID, maxSpanIDLen)
 	e.EndpointKey = truncateStr(e.EndpointKey, maxEndpointKeyLen)
 	e.PathTemplate = truncateStr(e.PathTemplate, maxPathTemplateLen)
+	e.ClientIPSource = truncateStr(e.ClientIPSource, maxIPSourceLen)
+	e.TrustedProxyUsed = truncateStr(e.TrustedProxyUsed, maxProxyNameLen)
+	e.ForwardedChainSummary = truncateStr(stripNUL(e.ForwardedChainSummary), maxChainSummaryLen)
 	// ttfb_ms 列为 integer（int32）：负数/超界为脏数据，置 nil 防插入失败整行丢失
 	if e.TTFBMs != nil && (*e.TTFBMs < 0 || *e.TTFBMs > 2147483647) {
 		e.TTFBMs = nil

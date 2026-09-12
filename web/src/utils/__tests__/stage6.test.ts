@@ -61,7 +61,7 @@ describe('阶段6 展示元数据完整性', () => {
     expect(Object.keys(ALERT_STATUS_META)).toEqual(['OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'IGNORED'])
   })
 
-  it('系统告警类型覆盖任务书全部 18 类', () => {
+  it('系统告警类型覆盖全部 19 类（含 FD_USAGE_HIGH）', () => {
     expect(Object.keys(ALERT_TYPE_META).sort()).toEqual(
       [
         'GATEWAY_DOWN',
@@ -70,6 +70,7 @@ describe('阶段6 展示元数据完整性', () => {
         'VALKEY_UNAVAILABLE',
         'EVENT_COLLECTOR_LAG',
         'EVENT_PARSE_FAILURE_RATE_HIGH',
+        'FD_USAGE_HIGH',
         'SOURCE_UNHEALTHY',
         'CERTIFICATE_EXPIRING',
         'CERTIFICATE_EXPIRED',

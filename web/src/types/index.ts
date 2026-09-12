@@ -375,6 +375,8 @@ export interface ConfigVersionItem {
   previous_version_id?: string | null
   publish_task_id?: string | null
   publish_result: '' | 'SUCCESS' | 'FAILED' | 'VERIFY_FAILED'
+  /** 发布后流量验证结果（阶段5 §十七；'' = 历史版本未执行冒烟） */
+  validation_result?: '' | 'SMOKE_PASS' | 'SMOKE_FAIL' | 'SMOKE_SKIPPED'
   is_current: boolean
   created_by?: string | null
   created_at: string
@@ -1026,6 +1028,56 @@ export interface AccessRuleImportResult {
   errors: AccessRuleImportRowError[]
   preview?: AccessRuleImportPreviewRow[]
   imported?: number
+  /** 正式导入返回：导入规则统一落 DRAFT 草稿状态 */
+  status?: string
+}
+
+/** 事件→黑名单预填：近 24h 同 IP 命中规则统计 */
+export interface BlacklistPrefillHitRule {
+  rule_id: number
+  rule_name: string
+  hits: number
+}
+
+/** 共享出口/代理迹象（无任何身份数据时后端整体省略该字段） */
+export interface BlacklistPrefillSharedEgress {
+  identity_count: number
+  suspected: boolean
+}
+
+/** 同地址已存在的黑名单规则（提示避免重复封禁） */
+export interface BlacklistPrefillExistingRule {
+  id: string
+  name: string
+  status: AccessRuleItem['status']
+  validity_type: 'PERMANENT' | 'TEMPORARY'
+  effective_until?: string | null
+}
+
+/** 事件→黑名单预填数据（阶段5 §十一；均为建议值，需管理员确认后才创建） */
+export interface BlacklistPrefill {
+  event_id: string
+  address: string
+  rule_type: 'DENY'
+  suggested_name: string
+  suggested_reason: string
+  application_id?: string | null
+  application_name: string
+  attack_type: string
+  severity: string
+  related_event_count_24h: number
+  last_attack_at?: string | null
+  hit_rules: BlacklistPrefillHitRule[]
+  suggested_duration_hours: number
+  protected_hit: boolean
+  protected_name?: string
+  shared_egress_hint?: BlacklistPrefillSharedEgress | null
+  existing_deny_rule?: BlacklistPrefillExistingRule | null
+}
+
+/** 预填接口响应 */
+export interface BlacklistPrefillResult {
+  prefill: BlacklistPrefill
 }
 
 /** CC 防护（限速）策略 */
@@ -1462,6 +1514,14 @@ export interface AnalyticsTrendData {
   granularity: string
   times?: string[] | null
   series?: Record<string, number[]> | null
+  /** 请求方法分布（仅 request-trend 返回，值降序最多 20 项） */
+  method_distribution?: KeyValue[] | null
+  /** 请求 Content-Type 主类型分布（仅 request-trend 返回，值降序最多 20 项） */
+  content_type_distribution?: KeyValue[] | null
+  /** 客户端 IP 识别来源分布（仅 request-trend 返回；空值归入"(未知)"，值降序最多 20 项） */
+  client_ip_source_distribution?: KeyValue[] | null
+  /** 可信代理来源分布（仅 request-trend 返回；未经过可信代理归入"(直连)"，值降序最多 20 项） */
+  trusted_proxy_distribution?: KeyValue[] | null
 }
 
 /** 排行/分布响应包装 */
@@ -1910,6 +1970,40 @@ export interface SystemAlertNote {
 export interface SystemAlertDetail {
   alert: SystemAlertItem
   notes?: SystemAlertNote[] | null
+}
+
+/** 告警维护窗口（阶段6 §11.5）：窗口内匹配告警评估抑制，suppressed_count 记录抑制次数 */
+export interface SystemAlertMaintenanceWindow {
+  id: string
+  name: string
+  description?: string
+  scope: 'ALL' | 'CUSTOM'
+  alert_types?: string[] | null
+  components?: string[] | null
+  recurrence: 'ONCE' | 'DAILY'
+  starts_at: string
+  ends_at: string
+  daily_start_minute?: number | null
+  daily_end_minute?: number | null
+  enabled: boolean
+  suppressed_count: number
+  last_suppressed_at?: string | null
+  created_by?: string | null
+  created_at: string
+}
+
+/** 创建维护窗口请求 */
+export interface SystemAlertMaintenanceWindowCreateInput {
+  name: string
+  description?: string
+  scope?: 'ALL' | 'CUSTOM'
+  alert_types?: string[]
+  components?: string[]
+  recurrence?: 'ONCE' | 'DAILY'
+  starts_at: string
+  ends_at: string
+  daily_start_minute?: number
+  daily_end_minute?: number
 }
 
 /* ---------- 告警通知 ---------- */

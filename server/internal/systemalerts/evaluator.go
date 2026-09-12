@@ -52,6 +52,12 @@ type EngineStore interface {
 	HasActiveSilence(ctx context.Context, alertType, component string) (bool, error)
 }
 
+// MaintenanceStore 是维护窗口源（阶段6 §11.5）：查询生效窗口并记录抑制事实。
+type MaintenanceStore interface {
+	FindActiveMaintenanceWindows(ctx context.Context, now time.Time, alertType, component string) ([]MaintenanceWindow, error)
+	RecordMaintenanceSuppression(ctx context.Context, ids []uuid.UUID, now time.Time) error
+}
+
 // ParseStatsStore 提供解析失败率统计（EVENT_PARSE_FAILURE_RATE_HIGH 评估）。
 type ParseStatsStore interface {
 	ParseFailureRate(ctx context.Context, window time.Duration) (failures, processed int64, err error)
@@ -96,6 +102,9 @@ type EngineOptions struct {
 	APMEnabled func(ctx context.Context) bool
 	// Settings 评估规则配置源（api_alert 组）；nil 时全部取默认值
 	Settings SettingsReader
+	// Maintenance 告警维护窗口源（阶段6 §11.5）；nil 时无维护窗口抑制。
+	// Raise 命中生效窗口时跳过新建/合并，抑制事实计入窗口 suppressed_count 并写日志。
+	Maintenance MaintenanceStore
 }
 
 // SyslogEnqueueFunc 是 syslog 外发投递函数（装配层闭包注入，本包不依赖 syslogfw，
@@ -128,6 +137,7 @@ type Engine struct {
 	ingestLag      IngestLagStatsStore
 	apmEnabled     func(ctx context.Context) bool
 	settings       SettingsReader
+	maintenance    MaintenanceStore
 
 	flaps *flapTracker
 	// msgUpdated 记录各去重键最近一次 message 更新时间（冷却判定）
@@ -156,6 +166,7 @@ func NewEngine(store EngineStore, opts EngineOptions) *Engine {
 		ingestLag:      opts.IngestLag,
 		apmEnabled:     opts.APMEnabled,
 		settings:       opts.Settings,
+		maintenance:    opts.Maintenance,
 		msgUpdated:     map[string]time.Time{},
 	}
 	if e.now == nil {
@@ -249,6 +260,27 @@ func (e *Engine) Raise(ctx context.Context, req RaiseRequest) (*Alert, error) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidSeverity, severity)
 	}
 	now := e.now()
+	// 维护窗口抑制（阶段6 §11.5）：命中生效窗口时不新建也不合并告警，
+	// 但抑制事实必须可观测——窗口 suppressed_count+1、刷新 last_suppressed_at 并写日志；
+	// 查询/记账失败如实返回错误，不退化为放行（避免维护窗口失效时悄悄丢告警）。
+	if e.maintenance != nil {
+		wins, err := e.maintenance.FindActiveMaintenanceWindows(ctx, now, req.AlertType, req.Component)
+		if err != nil {
+			return nil, fmt.Errorf("check maintenance windows: %w", err)
+		}
+		if len(wins) > 0 {
+			ids := make([]uuid.UUID, len(wins))
+			for i, w := range wins {
+				ids[i] = w.ID
+			}
+			if err := e.maintenance.RecordMaintenanceSuppression(ctx, ids, now); err != nil {
+				return nil, fmt.Errorf("record maintenance suppression: %w", err)
+			}
+			slog.Info("alert suppressed by maintenance window",
+				"alert_type", req.AlertType, "component", req.Component, "windows", len(wins))
+			return nil, nil
+		}
+	}
 	existing, err := e.store.FindOpen(ctx, req.AlertType, req.Component)
 	if err != nil {
 		return nil, err
@@ -417,13 +449,21 @@ func (e *Engine) Evaluate(ctx context.Context, snaps []runtimehealth.Snapshot) e
 			recover(s.Component, TypeGatewayDown)
 		}
 	}
-	// API → MANAGEMENT_API_DOWN
+	// API → MANAGEMENT_API_DOWN / FD_USAGE_HIGH（阶段6 §10.2 挂接：
+	// 采集器 fd_usage_percent 达阈判 API 组件 DEGRADED，同 DISK_SPACE_LOW 模式）
 	if s, ok := byComp[runtimehealth.ComponentAPI]; ok {
 		switch s.Status {
 		case runtimehealth.StatusDown:
 			raise(RaiseRequest{TypeManagementAPIDown, s.Component, "管理 API 不可用", msgOr(s.Message, "管理 API 进程异常"), ""})
+		case runtimehealth.StatusDegraded:
+			// 降级且带句柄使用率指标 → FD_USAGE_HIGH；指标缺失（非 Linux/采集失败）不判级
+			if pct, ok := metricFloat(s.Metrics, runtimehealth.MetricFDUsagePercent); ok {
+				raise(RaiseRequest{TypeFDUsageHigh, s.Component, "文件句柄使用率过高",
+					msgOr(s.Message, fmt.Sprintf("文件句柄使用率 %.1f%%", pct)), ""})
+			}
 		case runtimehealth.StatusUp:
 			recover(s.Component, TypeManagementAPIDown)
+			recover(s.Component, TypeFDUsageHigh)
 		}
 	}
 	// POSTGRES → DATABASE_UNAVAILABLE / DATABASE_CAPACITY_HIGH

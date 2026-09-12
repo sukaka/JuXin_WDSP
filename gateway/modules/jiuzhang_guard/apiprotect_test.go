@@ -17,8 +17,10 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/pipeline"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/apievents"
 	"go.uber.org/zap"
 )
@@ -766,5 +768,55 @@ func TestServeNext_CredentialConcurrency(t *testing.T) {
 		t.Fatalf("serveNext must release its in-flight slot, acquired count=%d (want 2 = manual + this probe)", n)
 	} else {
 		rel()
+	}
+}
+
+// §8.2 四级识别标签随事件上报：OBSERVE 模式 JSON 写请求经真实管线产出
+// CONFIRMED_API；api_confidence 沿用既有 0..1 口径（与 confidence100 同源同分）。
+func TestServeNext_APILevelEmitted(t *testing.T) {
+	g, logPath := newAPITestGuard(t, "OBSERVE", nil)
+	next := nextFunc(func(w http.ResponseWriter, r *http.Request) error { return nil })
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders", strings.NewReader(`{"id":"abc"}`))
+	req.Header.Set("Content-Type", "application/json")
+	if err := g.serveNext(httptest.NewRecorder(), req, next); err != nil {
+		t.Fatalf("serveNext: %v", err)
+	}
+	recs := readAPIRecords(t, logPath)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 api event, got %d", len(recs))
+	}
+	rec := recs[0]
+	if rec.APILevel != "CONFIRMED_API" {
+		t.Fatalf("api_level = %q, want CONFIRMED_API: %+v", rec.APILevel, rec)
+	}
+	if rec.APIConfidence != 0.9 {
+		t.Fatalf("api_confidence = %v, want 0.9", rec.APIConfidence)
+	}
+}
+
+// 管线未写 api.classification（合成结果 / fail-open 旁路）：api_level 省略，不编造。
+func TestEmitAPIEvent_APILevelOmittedWithoutExtension(t *testing.T) {
+	g, logPath := newAPITestGuard(t, "OBSERVE", nil)
+	syn := httptest.NewRequest(http.MethodGet, "http://waf-test.local/ping", nil)
+	syn.RemoteAddr = "203.0.113.10:0"
+	res := &pipeline.Result{Context: dsctx.New("req-noext", dsctx.DefaultParseLimits())}
+	res.Context.AddMatch(dsctx.DetectorMatch{
+		Detector: "waf", RuleID: "waf.downstream_intercept", Category: "BLOCK",
+		Severity: "HIGH", ScoreDelta: 50, Message: "synthetic",
+	})
+	g.emitAPIEvent(syn, res, nil)
+	recs := readAPIRecords(t, logPath)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 api event, got %d", len(recs))
+	}
+	if recs[0].APILevel != "" {
+		t.Fatalf("api_level must stay empty without extension: %+v", recs[0])
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if strings.Contains(string(data), "api_level") {
+		t.Fatalf("api_level key must be omitted: %s", data)
 	}
 }

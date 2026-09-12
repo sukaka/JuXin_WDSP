@@ -5,6 +5,7 @@ package pipeline
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
@@ -12,6 +13,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/grpcdesc"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/metrics"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 )
@@ -36,6 +38,11 @@ type Config struct {
 	// ParamRelations 本端点已确认参数条件关系（装配层按端点解析；发布通道下发
 	// api_parameter_relations，仅管理面 confirmed 行）；nil/空 = 无端点关系，关系检测零行为
 	ParamRelations []detectors.ParamRelation
+	// FlowBaselines 本端点适用业务流程基线（§44；装配层按命中端点经
+	// detectors.GroupFlowBaselines 解析后传入；发布通道下发 api_flow_baselines，
+	// 加载前须经 detectors.ValidateFlowBaselines 校验）；nil/空 = 无端点流程基线，
+	// 流程偏离检测零行为（基线缺失不判，不编造基线）。全部明细 OBSERVE 级只记录不阻断
+	FlowBaselines []detectors.FlowBaseline
 	// APIWriteRatePerMinute 写方法 API 每分钟限速（≤0 用 detectors.DefaultAPIWriteRatePerMinute）
 	APIWriteRatePerMinute int
 	// SensitivePatterns 敏感字段名模式（nil 用内置默认表；编译失败返回错误）
@@ -49,6 +56,32 @@ type Config struct {
 	CredentialIPSpreadLimit int
 	// CredentialConcurrencyLimit 同凭据并发 in-flight 阈值（≤0 用 detectors.DefaultCredentialConcurrencyLimit）
 	CredentialConcurrencyLimit int
+	// ApplicationID 本请求所属应用 ID（装配层取自 Guard.AppID；空 = 应用未识别，
+	// 凭据跨应用检测跳过——不凭空捏造应用归属）
+	ApplicationID string
+	// CredentialCrossAppLimit 同凭据滑窗 distinct 应用阈值（≤0 用 detectors.DefaultCredentialCrossAppLimit）
+	CredentialCrossAppLimit int
+	// CredentialDeviceSpreadLimit 同凭据滑窗 distinct UA 族阈值（≤0 用 detectors.DefaultCredentialDeviceSpreadLimit）
+	CredentialDeviceSpreadLimit int
+	// RevokedCredentials 已吊销凭据清单（发布通道下发 api_revoked_credentials，§35 第10项；
+	// 装配层经 detectors.ValidateRevokedCredentials 校验后传入）；nil/空 = 无吊销清单，
+	// 吊销检测零行为。比对口径：请求凭据键（auth:/key:/sess: + 指纹）与清单
+	// credential_type + ":" + fingerprint 全等；expires_at 已过期条目不判定
+	RevokedCredentials []detectors.RevokedCredential
+	// 配额/对象/分页/批量上限（§36 可行子集）。发布通道已下发（system_settings
+	// gateway_runtime 组 api_quota_per_hour/api_quota_per_day/object_rate_per_minute/
+	// max_page_size/max_batch_size 五键，迁移 000152 种子）；语义「配置未到 = 不启用」
+	// 不变——≤0 时管线不调用对应检测器，不走引擎默认值冒充已配置。
+	// APIQuotaPerHour 身份+端点每小时配额（定窗，>0 启用）
+	APIQuotaPerHour int
+	// APIQuotaPerDay 身份+端点每日配额（UTC 自然日定窗，>0 启用）
+	APIQuotaPerDay int
+	// ObjectRatePerMinute 同身份对同对象每分钟上限（>0 启用）
+	ObjectRatePerMinute int
+	// MaxPageSize 分页大小上限（>0 启用）
+	MaxPageSize int
+	// MaxBatchSize 批量数量上限（>0 启用）
+	MaxBatchSize int
 	// Stores 检测器计数存储覆盖（装配层按 behavior_store 配置注入；nil = 进程内默认内存）。
 	// Process 将它绑定到本次请求的上下文，各 Guard 实例互不影响。
 	Stores *detectors.StoreOverrides
@@ -132,6 +165,15 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 	if err != nil {
 		return nil, err
 	}
+	// §7 标识字段在管线内落 ctx（device_fingerprint/object_identifiers）：请求相位检测器
+	// 自此可读（对象维度限速直接消费 ctx.ObjectIdentifiers）；产出为 parser 纯函数、
+	// 与挂点侧 enrichContextIdentifiers 同口径同盐，仅空值写入——挂点侧幂等回填不覆盖
+	if r != nil && ctx.DeviceFingerprint == "" {
+		ctx.DeviceFingerprint = parser.DeriveDeviceFingerprint(cfg.IdentitySalt, r.Header)
+	}
+	if parsed != nil && len(ctx.ObjectIdentifiers) == 0 {
+		ctx.SetObjectIdentifiers(parser.ExtractObjectIdentifiers(parsed, cfg.IdentitySalt))
+	}
 	// external (WAF/guard) matches only recorded — never finalize here
 	for _, m := range externalMatches {
 		ctx.AddMatch(m)
@@ -142,6 +184,10 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		ctx.SetExtension("api.is_api", true)
 		ctx.SetExtension("api.signals", api.Signals)
 	}
+	// §8.2 四级识别标签 + 0-100 置信度（与 IsAPI/Confidence 同源同分，仅量纲/粒度不同；
+	// 扩展留存供事件与端点发现链路消费，不参与决策）
+	ctx.SetExtension("api.classification", api.Level)
+	ctx.SetExtension("api.confidence100", api.Confidence100)
 	// 值级敏感规则编译产物（gRPC 描述符扫描与下方 CheckSensitiveData/CheckMCP 共享；
 	// 编译经 detectors 并发安全缓存：同一配置装配期单次编译，热路径为缓存查找；
 	// 发布通道下发，编译失败为配置错误如实返回，不静默吞错）
@@ -173,19 +219,18 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 			}
 		}
 		detectors.CheckGRPC(ctx, parsed, cfg.GRPCAllowCompression, scan)
-	} else if classifier.ClassifyWebSocket(parsed) {
-		// WebSocket 升级握手（RFC 6455）：Upgrade/Connection 双头确认。
-		// 仅标注握手；升级后的帧不是 HTTP，不在本管线覆盖范围。
-		ctx.SetExtension("api.protocol", "WEBSOCKET")
-	} else if classifier.ClassifyGraphQL(parsed) {
-		// GraphQL：解析层已双重确认（application/graphql 或 /graphql+JSON query 字段）。
-		// 端点键仍按路径归一化——按 operationName 拆端点属更大语义变更，本波不做。
-		ctx.SetExtension("api.protocol", "GRAPHQL")
-	} else if classifier.ClassifySOAP(parsed) {
-		// SOAP：application/soap+xml，或 text/xml|application/xml + SOAPAction 头。
-		ctx.SetExtension("api.protocol", "SOAP")
+	} else if proto := classifier.ClassifyProtocol(parsed, api.IsAPI); proto != "" {
+		// 协议类型打标（任务书 §9 词表，13 值）：逐值判定规则见 classifier.ClassifyProtocol；
+		// 结构性协议（WEBSOCKET_HANDSHAKE/GRAPHQL/SOAP/RPC/SSE/文件传输/WEBHOOK）不挂
+		// api.IsAPI 分类门槛（分类漏判不应关掉协议标注）；通用 REST 族仅 API 分类命中时
+		// 打标，非 API 普通 Web 流量不带扩展（采集端缺省 REST 口径，事件零变化）。
+		ctx.SetExtension("api.protocol", proto)
 	}
 	ctx.SetExtension("api.endpoint_key", ek)
+
+	// 检测耗时埋点（§54 进程内指标：覆盖下方检测段全程含统一决策，错误路径同样计入；
+	// 与 parser 解析耗时埋点同一 Track 模式，热路径零网络 IO）
+	defer metrics.Track(metrics.DetectDuration)()
 
 	// 扫描流量识别（W9-GW）：X-JiuZhang-Scan 头签名校验/存在性打标；
 	// 不挂 api.IsAPI 分类门槛（扫描探针目标即 API 端点，分类漏判不应关掉识别）。
@@ -247,6 +292,21 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		detectors.CheckCredentialConcurrency(ctx, credKey, cfg.CredentialConcurrencyLimit)
 		detectors.CheckCredentialUnusualHour(ctx, credKey)
 		detectors.CheckCredentialUAChange(ctx, r, credKey)
+		// 凭据异常补充（§35：跨应用/多设备窗口计数/URL 明文凭据位置；匿名跳过，
+		// OBSERVE 级只 AddMatch；须在 CheckEnvAnomalyStack 之前产出，叠加统计才含新信号）
+		detectors.CheckCredentialCrossApp(ctx, credKey, cfg.ApplicationID, cfg.CredentialCrossAppLimit)
+		detectors.CheckCredentialDeviceSpread(ctx, r, credKey, cfg.CredentialDeviceSpreadLimit)
+		detectors.CheckCredentialLocationAnomaly(ctx, r)
+		// 已吊销凭据使用（§35 第10项；发布通道下发清单，nil/空零行为，匿名跳过；
+		// 集合查找 O(1)，过期条目自行失效；索引编译失败为配置错误如实返回，不静默吞错；
+		// OBSERVE 级只 AddMatch，须在 CheckEnvAnomalyStack 之前产出）
+		if len(cfg.RevokedCredentials) > 0 {
+			revokedIdx, err := detectors.IndexRevokedCredentials(cfg.RevokedCredentials)
+			if err != nil {
+				return nil, fmt.Errorf("index revoked credentials: %w", err)
+			}
+			detectors.CheckCredentialRevoked(ctx, credKey, revokedIdx, time.Now())
+		}
 		detectors.CheckEnvAnomalyStack(ctx)
 		// 敏感字段名（编译经 detectors 并发安全缓存，热路径为缓存查找；
 		// 自定义模式编译失败为配置错误，不静默吞错）
@@ -281,6 +341,23 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 			if detectors.IsWriteMethod(parsed.Method) {
 				detectors.CheckAPIWriteRate(ctx, tracking, ek, cfg.APIWriteRatePerMinute)
 			}
+			// 小时/日配额与对象/分页/批量上限（§36；发布通道下发阈值，>0 才启用——
+			// 下发配置面当前无对应字段，配置未到不启用，不走引擎默认值冒充已配置）
+			if cfg.APIQuotaPerHour > 0 {
+				detectors.CheckAPIHourlyQuota(ctx, tracking, ek, cfg.APIQuotaPerHour)
+			}
+			if cfg.APIQuotaPerDay > 0 {
+				detectors.CheckAPIDailyQuota(ctx, tracking, ek, cfg.APIQuotaPerDay)
+			}
+			if cfg.ObjectRatePerMinute > 0 {
+				detectors.CheckObjectRate(ctx, parsed, tracking, ek, cfg.IdentitySalt, cfg.ObjectRatePerMinute)
+			}
+			if cfg.MaxPageSize > 0 {
+				detectors.CheckPaginationSize(ctx, parsed, cfg.MaxPageSize)
+			}
+			if cfg.MaxBatchSize > 0 {
+				detectors.CheckBatchSize(ctx, parsed, cfg.MaxBatchSize)
+			}
 		}
 		// 授权基线运行时检测（BFLA/字段权限；发布通道下发，仅端点有基线时判定）：
 		// 不挂 api.IsAPI 分类门槛——有 confirmed 基线的端点即 API 端点，分类漏判不应关掉授权基线
@@ -306,6 +383,13 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		}
 		// 行为基线（tracking+endpoint 进程内滑窗）
 		detectors.CheckBehavior(ctx, tracking, ek)
+		// 业务流程偏离（§44 首批四类：跳过前置/重复提交/逆序/非法状态转换；
+		// 发布通道下发流程基线，nil/空零行为；全部 OBSERVE 级只 AddMatch 不定案；
+		// 不挂 api.IsAPI 分类门槛——配置了流程基线即表观测意图，分类漏判不应关掉检测。
+		// 会话键含主体指纹+流程标识（流程绑定端点集合），须随行为检测同段执行以共享 tracking）
+		if len(cfg.FlowBaselines) > 0 {
+			detectors.CheckFlowDeviation(ctx, r, tracking, ek, cfg.IdentitySalt, cfg.FlowBaselines)
+		}
 	}
 
 	act := decision.Decide(ctx, decision.Input{Mode: mode, Exceptions: cfg.Exceptions})

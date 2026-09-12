@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// 参数条件关系类型词表（与迁移 000068 CHECK 一致）。
+// 参数条件关系类型词表（与迁移 000068 + 000147 + 000154 + 000159 CHECK 一致）。
 const (
 	// RelationRequires A 存在要求 B 必须存在（单向：source → target）。
 	RelationRequires = "REQUIRES"
@@ -23,7 +23,42 @@ const (
 	RelationCoOccurs = "CO_OCCURS"
 	// RelationExcludes 历史词表（000018 注释记载，语义同 MUTEX；不开放手工新建）。
 	RelationExcludes = "EXCLUDES"
+	// RelationEquals 等值：两端值字符串相等（000147，任务书 §23）。
+	RelationEquals = "EQUALS"
+	// RelationNotEquals 不等值：两端值字符串须不相等（000154；EQUALS 严格对偶，字符串比较无类型要求）。
+	RelationNotEquals = "NOT_EQUALS"
+	// RelationGreaterThan A 值数值严格大于 B 值（可解析为数值才判定）。
+	RelationGreaterThan = "GREATER_THAN"
+	// RelationLessThan A 值数值严格小于 B 值（可解析为数值才判定）。
+	RelationLessThan = "LESS_THAN"
+	// RelationTimeBefore A 值时间严格早于 B 值（可解析为时间才判定）。
+	RelationTimeBefore = "TIME_BEFORE"
+	// RelationTimeAfter A 值时间严格晚于 B 值（可解析为时间才判定）。
+	RelationTimeAfter = "TIME_AFTER"
+	// RelationCountMatches 数量一致：A 整数值须等于 B 数组长度（000159，任务书 §23；
+	// B 须为 BODY 数组路径，网关数组长度留存，截断/类型不符不判定）。
+	RelationCountMatches = "COUNT_MATCHES"
+	// RelationSumMatches 汇总关系：A 数值须等于 B 数组元素数值和（000159，任务书 §23；
+	// B 须为 BODY 数组元素数值路径，浮点混合容差 1e-9，截断/超聚合预算不判定）。
+	RelationSumMatches = "SUM_MATCHES"
 )
+
+// manualRelationTypes 开放手工新建的关系类型（CO_OCCURS 由统计候选产生、EXCLUDES 为历史词表，
+// 均不开放手工新建；值比较六类与数组聚合两类语义明确、可确定性判定，任务书 §23 支持人工确认；
+// §23 其余三类——父子对象/租户/所有者——请求内无可判定证据，不纳入词表，
+// 降级论证见 gateway detectors/relationvalue.go 头注释）。
+var manualRelationTypes = map[string]bool{
+	RelationRequires:     true,
+	RelationMutex:        true,
+	RelationEquals:       true,
+	RelationNotEquals:    true,
+	RelationGreaterThan:  true,
+	RelationLessThan:     true,
+	RelationTimeBefore:   true,
+	RelationTimeAfter:    true,
+	RelationCountMatches: true,
+	RelationSumMatches:   true,
+}
 
 var (
 	// ErrRelationNotFound 参数关系不存在。
@@ -32,7 +67,7 @@ var (
 	ErrRelationAlreadyConfirmed = errors.New("parameter relation already confirmed")
 	// ErrRelationNotConfirmed 关系未确认（仅已确认关系可撤回）。
 	ErrRelationNotConfirmed = errors.New("parameter relation not confirmed")
-	// ErrRelationInvalidType 手工新建仅支持 REQUIRES / MUTEX。
+	// ErrRelationInvalidType 手工新建仅支持 manualRelationTypes 词表（REQUIRES/MUTEX + 值比较六类 + 数组聚合两类）。
 	ErrRelationInvalidType = errors.New("invalid relation type for manual creation")
 	// ErrRelationParamMismatch 关系两端参数必须为同一模型版本内不同的请求侧参数。
 	ErrRelationParamMismatch = errors.New("relation parameters must be distinct request parameters of the same model version")
@@ -130,12 +165,12 @@ RETURNING `+relationColumns, id))
 	return r, nil
 }
 
-// CreateParameterRelation 手工新建 REQUIRES / MUTEX 关系（初始为候选 confirmed=false，
+// CreateParameterRelation 手工新建关系（manualRelationTypes 词表；初始为候选 confirmed=false，
 // 确认走 confirm 接口，与 apiauthz 角色基线同一纪律）。
 // 校验：两端参数必须存在、同属于给定模型版本、为请求侧（REQUEST）且互不相同；
 // 同版本同参数对同类型重复新建返回 ErrRelationDuplicate。
 func (s *Store) CreateParameterRelation(ctx context.Context, versionID, srcID, tgtID uuid.UUID, relationType string) (*ParameterRelation, error) {
-	if relationType != RelationRequires && relationType != RelationMutex {
+	if !manualRelationTypes[relationType] {
 		return nil, ErrRelationInvalidType
 	}
 	if srcID == tgtID {
@@ -249,7 +284,7 @@ type ParamRelationRef struct {
 // ParamRelation 已确认参数条件关系（发布通道下发网关；endpoint_key 由 FORMAL 版本解析）。
 type ParamRelation struct {
 	EndpointKey  string           `json:"endpoint_key"`
-	RelationType string           `json:"relation_type"` // REQUIRES / MUTEX / CO_OCCURS（词表见迁移 000068）
+	RelationType string           `json:"relation_type"` // REQUIRES / MUTEX / CO_OCCURS + 值比较六类 + 数组聚合两类（词表见迁移 000068/000147/000154/000159）
 	ParamA       ParamRelationRef `json:"param_a"`
 	ParamB       ParamRelationRef `json:"param_b"`
 }

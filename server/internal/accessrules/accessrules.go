@@ -4,6 +4,7 @@ package accessrules
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,7 +24,7 @@ const (
 
 // 规则状态
 const (
-	StatusDraft    = "DRAFT"    // 草稿（保留给导入草稿，本阶段不强制使用）
+	StatusDraft    = "DRAFT"    // 草稿（导入/AI 草稿产生；不参与发布快照，需显式启用进入 ACTIVE）
 	StatusActive   = "ACTIVE"   // 生效
 	StatusDisabled = "DISABLED" // 停用
 	StatusExpired  = "EXPIRED"  // 临时规则已过期
@@ -131,4 +132,29 @@ type ListFilter struct {
 	Address       string // 地址精确匹配（会先规范化）
 	Page          int
 	PageSize      int
+}
+
+// ValidateStatusTransition 校验规则状态流转（启用/停用操作用）。
+// 合法流转：DRAFT/DISABLED/ACTIVE → ACTIVE（启用，ACTIVE 幂等）；
+// ACTIVE/DISABLED/EXPIRED → DISABLED（停用，DISABLED 幂等）。
+// EXPIRED → ACTIVE 不允许（已过期规则需先延期再启用）；
+// DRAFT → DISABLED 不允许（草稿尚未生效，可启用或直接删除）。
+func ValidateStatusTransition(from, to string) error {
+	switch to {
+	case StatusActive:
+		switch from {
+		case StatusDraft, StatusDisabled, StatusActive:
+			return nil
+		case StatusExpired:
+			return fmt.Errorf("%w: 已过期规则请先延期再启用", ErrInvalidState)
+		}
+	case StatusDisabled:
+		switch from {
+		case StatusActive, StatusDisabled, StatusExpired:
+			return nil
+		case StatusDraft:
+			return fmt.Errorf("%w: 草稿规则尚未生效，无需停用（可启用或删除）", ErrInvalidState)
+		}
+	}
+	return fmt.Errorf("%w: 不允许的状态流转 %s → %s", ErrInvalidState, from, to)
 }

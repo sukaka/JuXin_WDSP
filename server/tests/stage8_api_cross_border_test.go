@@ -225,7 +225,23 @@ func TestStage8CrossBorderSweepOnce(t *testing.T) {
 	if len(dash.ByCountryType) != 3 { // id_card / email / phone 各 1
 		t.Fatalf("by_country_type=%+v", dash.ByCountryType)
 	}
-	if len(dash.Trend) != 7 || dash.Trend[6].EventCount != 3 {
+	if len(dash.Trend) != 7 {
+		t.Fatalf("trend=%+v", dash.Trend)
+	}
+	// 趋势按 UTC 日期分桶：base=now-1h 在 UTC 零点后一小时内运行会落在昨日桶，
+	// 故断言总量与允许日期而非固定"今天"桶。
+	var trendTotal int64
+	wantDates := map[string]bool{
+		base.UTC().Format("2006-01-02"):                      true,
+		base.Add(6 * time.Minute).UTC().Format("2006-01-02"): true,
+	}
+	for _, d := range dash.Trend {
+		trendTotal += d.EventCount
+		if d.EventCount > 0 && !wantDates[d.Date] {
+			t.Fatalf("trend date %s unexpected: %+v", d.Date, dash.Trend)
+		}
+	}
+	if trendTotal != 3 {
 		t.Fatalf("trend=%+v", dash.Trend)
 	}
 	// 明细过滤（SQL 白名单拼接路径）

@@ -1,7 +1,8 @@
 // api_collector.go API 专项指标采集器（阶段8 / 补全任务书 §158 口径）。
 //
-// 周期从 DB 聚合 15 项 API 专项指标为「当前值」快照（gauge 语义），经
-// Snapshot()/Render() 输出（Render 为 Prometheus 文本 exposition）。
+// 周期从 DB 聚合 21 项 API 专项指标为「当前值」快照（gauge 语义；速率/耗时类为
+// float gauge，见 APISnapshot.Floats），经 Snapshot()/Render() 输出（Render 为
+// Prometheus 文本 exposition）。
 // 采集调度遵循 runtimehealth.Collector 既有模式：Run 启动即采一轮 + ticker 周期，
 // 单轮单源失败只记录错误并保留该源旧值，不影响其他指标源与后续轮次（不静默吞错：
 // 错误累计进 CollectErrors 并随 Render 的 api_metrics_collect_errors_total 暴露）。
@@ -20,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,12 +38,19 @@ const apiQueryTimeout = 10 * time.Second
 // apiAssetsNewWindow 「新端点」窗口（api_assets_new）：近 24 小时首次发现。
 const apiAssetsNewWindow = 24 * time.Hour
 
-// APISnapshot 一轮 API 专项指标快照（UTC；Values 键为本包指标名枚举）。
+// apiDiscoveryRateWindow 「每秒识别量」统计窗口：近 60s 新识别端点数 / 窗口秒数。
+const apiDiscoveryRateWindow = time.Minute
+
+// apiLearningLatencyWindow 学习延迟统计窗口：近 24h 完成（COMPLETED）的学习任务。
+const apiLearningLatencyWindow = 24 * time.Hour
+
+// APISnapshot 一轮 API 专项指标快照（UTC；Values/Floats 键为本包指标名枚举）。
 type APISnapshot struct {
-	CollectedAt   time.Time        `json:"collected_at"`
-	Values        map[string]int64 `json:"values"`
-	CollectErrors int              `json:"collect_errors"`       // 累计采集错误次数
-	LastError     string           `json:"last_error,omitempty"` // 最近一次错误摘要
+	CollectedAt   time.Time          `json:"collected_at"`
+	Values        map[string]int64   `json:"values"`
+	Floats        map[string]float64 `json:"floats,omitempty"` // 速率/耗时类 float gauge
+	CollectErrors int                `json:"collect_errors"`   // 累计采集错误次数
+	LastError     string             `json:"last_error,omitempty"`
 }
 
 // APICollector API 专项指标采集器（周期 DB 聚合 + 内存快照）。
@@ -51,6 +60,7 @@ type APICollector struct {
 
 	mu          sync.RWMutex
 	values      map[string]int64
+	floats      map[string]float64
 	collectedAt time.Time
 	collectErrs int
 	lastError   string
@@ -62,6 +72,7 @@ func NewAPICollector(db *pgxpool.Pool) *APICollector {
 		db:     db,
 		now:    func() time.Time { return time.Now().UTC() },
 		values: map[string]int64{},
+		floats: map[string]float64{},
 	}
 }
 
@@ -99,6 +110,10 @@ func (c *APICollector) CollectOnce(ctx context.Context) error {
 	values := make(map[string]int64, len(c.values)+len(apiMetricDocs))
 	for k, v := range c.values {
 		values[k] = v
+	}
+	floats := make(map[string]float64, len(c.floats)+len(apiFloatMetricDocs))
+	for k, v := range c.floats {
+		floats[k] = v
 	}
 	c.mu.RUnlock()
 
@@ -198,8 +213,77 @@ FROM api_learning_samples`).Scan(&samples, &excluded)
 		values[MaskResponseTotal] = maskTotal
 	}
 
+	// 8. Shadow 数（api_runtime_findings）：未关闭的 SHADOW 发现
+	// （状态词表见迁移 000042；口径同 reports.findingOpenStatuses）
+	var shadowTotal int64
+	qCtx, cancel = context.WithTimeout(ctx, apiQueryTimeout)
+	err = c.db.QueryRow(qCtx, `
+SELECT count(*) FROM api_runtime_findings
+WHERE finding_type = 'SHADOW' AND status IN ('NEW','CONFIRMED','IN_PROGRESS')`).Scan(&shadowTotal)
+	cancel()
+	if err != nil {
+		fail("api_shadow_findings", err)
+	} else {
+		values[APIShadowTotal] = shadowTotal
+	}
+
+	// 9. Zombie 数与识别速率（api_endpoints）：ZOMBIE 资产计数 + 近 60s 新识别 / 窗口秒数
+	var zombieTotal, discovered int64
+	qCtx, cancel = context.WithTimeout(ctx, apiQueryTimeout)
+	err = c.db.QueryRow(qCtx, `
+SELECT count(*) FILTER (WHERE asset_status = 'ZOMBIE'),
+       count(*) FILTER (WHERE first_seen_at >= $1)
+FROM api_endpoints WHERE is_api = TRUE`, c.now().Add(-apiDiscoveryRateWindow)).Scan(&zombieTotal, &discovered)
+	cancel()
+	if err != nil {
+		fail("api_endpoints_zombie", err)
+	} else {
+		values[APIZombieTotal] = zombieTotal
+		floats[APIDiscoveryPerSecond] = DiscoveryPerSecond(discovered, apiDiscoveryRateWindow)
+	}
+
+	// 10. 学习延迟（api_learning_jobs）：近 24h COMPLETED 任务平均时长（秒）；
+	// 窗口内无完成任务时为 0（无样本即无延迟读数，不外推旧值口径——旧值随快照保留纪律
+	// 仅适用于采集失败；采集成功但无样本时 0 是真实当前值）
+	var learnLatency float64
+	qCtx, cancel = context.WithTimeout(ctx, apiQueryTimeout)
+	err = c.db.QueryRow(qCtx, `
+SELECT COALESCE(avg(EXTRACT(EPOCH FROM (stopped_at - started_at))), 0)
+FROM api_learning_jobs
+WHERE status = 'COMPLETED' AND stopped_at IS NOT NULL AND stopped_at >= $1`,
+		c.now().Add(-apiLearningLatencyWindow)).Scan(&learnLatency)
+	cancel()
+	if err != nil {
+		fail("api_learning_latency", err)
+	} else {
+		floats[APILearningLatencySeconds] = learnLatency
+	}
+
+	// 11. 图谱边（api_call_edges）：调用边全表计数
+	var edgeTotal int64
+	qCtx, cancel = context.WithTimeout(ctx, apiQueryTimeout)
+	err = c.db.QueryRow(qCtx, `SELECT count(*) FROM api_call_edges`).Scan(&edgeTotal)
+	cancel()
+	if err != nil {
+		fail("api_call_edges", err)
+	} else {
+		values[APIGraphEdgesTotal] = edgeTotal
+	}
+
+	// 12. AI Tool 调用量（ai_tool_calls）：全表计数
+	var aiToolCalls int64
+	qCtx, cancel = context.WithTimeout(ctx, apiQueryTimeout)
+	err = c.db.QueryRow(qCtx, `SELECT count(*) FROM ai_tool_calls`).Scan(&aiToolCalls)
+	cancel()
+	if err != nil {
+		fail("ai_tool_calls", err)
+	} else {
+		values[AIToolCallsTotal] = aiToolCalls
+	}
+
 	c.mu.Lock()
 	c.values = values
+	c.floats = floats
 	c.collectedAt = c.now()
 	c.collectErrs += len(errs)
 	if len(errs) > 0 {
@@ -230,7 +314,7 @@ func (c *APICollector) queryCounts(ctx context.Context, sql string) (map[string]
 	return out, rows.Err()
 }
 
-// Snapshot 返回最新快照（Values 为拷贝，调用方可安全持有）。
+// Snapshot 返回最新快照（Values/Floats 为拷贝，调用方可安全持有）。
 func (c *APICollector) Snapshot() APISnapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -238,9 +322,14 @@ func (c *APICollector) Snapshot() APISnapshot {
 	for k, v := range c.values {
 		values[k] = v
 	}
+	floats := make(map[string]float64, len(c.floats))
+	for k, v := range c.floats {
+		floats[k] = v
+	}
 	return APISnapshot{
 		CollectedAt:   c.collectedAt,
 		Values:        values,
+		Floats:        floats,
 		CollectErrors: c.collectErrs,
 		LastError:     c.lastError,
 	}
@@ -271,10 +360,23 @@ var apiMetricDocs = []struct {
 	{SensitiveFindings, "敏感数据类风险发现数（数据源 api_runtime_findings，finding_type 前缀 SENSITIVE_）"},
 	{BehaviorFindings, "行为类风险发现数（数据源 api_runtime_findings，finding_type 前缀 BEHAVIOR）"},
 	{MaskResponseTotal, "响应脱敏决策累计数（数据源 api_runtime_events，final_action=MASK_RESPONSE）"},
+	{APIShadowTotal, "未关闭 Shadow 发现数（数据源 api_runtime_findings，finding_type=SHADOW 且 NEW/CONFIRMED/IN_PROGRESS）"},
+	{APIZombieTotal, "Zombie 端点数（数据源 api_endpoints，asset_status=ZOMBIE 且 is_api=TRUE）"},
+	{APIGraphEdgesTotal, "API 图谱调用边总数（数据源 api_call_edges）"},
+	{AIToolCallsTotal, "AI Tool 调用累计数（数据源 ai_tool_calls）"},
+}
+
+// apiFloatMetricDocs float gauge 输出顺序与 HELP 文案（固定顺序；指标名只允许本包枚举）。
+var apiFloatMetricDocs = []struct {
+	name string
+	help string
+}{
+	{APIDiscoveryPerSecond, "每秒 API 识别量（数据源 api_endpoints.first_seen_at，近 60s 新识别数/60）"},
+	{APILearningLatencySeconds, "学习延迟秒数（数据源 api_learning_jobs，近 24h COMPLETED 任务平均时长）"},
 }
 
 // RenderAPISnapshot 渲染快照为 Prometheus 文本 exposition（纯函数，便于测试与装配复用）。
-// 15 项专项指标恒输出（无值取 0，保证抓取方时序连续）；附带采集器自指标
+// 21 项专项指标恒输出（无值取 0，保证抓取方时序连续）；附带采集器自指标
 // api_metrics_collect_errors_total / api_metrics_last_collect_timestamp_seconds。
 func RenderAPISnapshot(s APISnapshot) string {
 	var b strings.Builder
@@ -282,6 +384,11 @@ func RenderAPISnapshot(s APISnapshot) string {
 		b.WriteString("# HELP " + d.name + " " + d.help + "\n")
 		b.WriteString("# TYPE " + d.name + " gauge\n")
 		fmt.Fprintf(&b, "%s %d\n", d.name, s.Values[d.name])
+	}
+	for _, d := range apiFloatMetricDocs {
+		b.WriteString("# HELP " + d.name + " " + d.help + "\n")
+		b.WriteString("# TYPE " + d.name + " gauge\n")
+		fmt.Fprintf(&b, "%s %s\n", d.name, strconv.FormatFloat(s.Floats[d.name], 'f', -1, 64))
 	}
 	b.WriteString("# HELP api_metrics_collect_errors_total API 专项指标采集累计错误次数\n")
 	b.WriteString("# TYPE api_metrics_collect_errors_total counter\n")
@@ -293,6 +400,14 @@ func RenderAPISnapshot(s APISnapshot) string {
 }
 
 // ---------- 聚合纯函数（造数可测） ----------
+
+// DiscoveryPerSecond 窗口内新识别端点数 → 每秒识别量（非正窗口防御性返回 0）。
+func DiscoveryPerSecond(discovered int64, window time.Duration) float64 {
+	if window <= 0 {
+		return 0
+	}
+	return float64(discovered) / window.Seconds()
+}
 
 // FindingGroup 运行时发现分组（finding_type → 指标维度）。
 // 前缀口径与生产方 apiruntime/findings.go 的 findingTypeOf 映射一致：

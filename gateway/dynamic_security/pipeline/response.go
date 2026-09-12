@@ -4,14 +4,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/metrics"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/response"
 )
 
@@ -100,6 +103,14 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 		limits = dsctx.DefaultParseLimits()
 	}
 
+	// §7.2 响应体采样比例归一：有效区间 [0,1]，非法值（<0 / >1 / NaN）归一为 1
+	// （全量解析，保持现行为）；0 = 不解析响应体（IsJSON 保持 false，下游敏感字段/
+	// transform plan/结构观测自然零行为，与非 JSON 同口径；错误签名与体哈希不受影响）。
+	sampleRatio := limits.ResponseSampleRatio
+	if sampleRatio < 0 || sampleRatio > 1 || math.IsNaN(sampleRatio) {
+		sampleRatio = 1
+	}
+
 	// 防护模式提前解析（文件合规 BLOCK 动作升级的判定依据；与决策定案同一模式）
 	mode := cfg.Mode
 	if mode == "" {
@@ -109,8 +120,20 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 	// 1. JSON 解析（仅完整捕获的 JSON 族响应；截断/流式无法安全解析与改写）
 	// jsonRoot 复用首次解析产物，供 LLM 观测窄提取（任务书原则 2.1：同一响应只解析一次）
 	var jsonRoot any
-	if !in.Truncated && !in.Streamed && len(in.Body) > 0 && response.IsJSONContentType(in.ContentType, in.Body) {
-		fields, root, isJSON := response.ParseJSON(in.Body, limits)
+	if !in.Truncated && !in.Streamed && len(in.Body) > 0 && sampleRatio > 0 && response.IsJSONContentType(in.ContentType, in.Body) {
+		// §7.2 超大响应采样：比例 <1 且体长超 MaxBodyParseBytes 时，确定性截断到
+		// ceil(ratio×MaxBodyParseBytes) 字节前缀再解析（有界、可重现；前缀非完整
+		// JSON 则按不可解析处理，不产出部分 schema——与请求侧截断体同一纪律）；
+		// 体长未超限时全量解析，非超大响应不受采样比例影响。
+		parseBody := in.Body
+		if sampleRatio < 1 && len(in.Body) > limits.MaxBodyParseBytes {
+			budget := int(math.Ceil(sampleRatio * float64(limits.MaxBodyParseBytes)))
+			if budget < len(parseBody) {
+				parseBody = parseBody[:budget]
+			}
+		}
+		parseDone := metrics.Track(metrics.ResponseParseDuration) // §54 响应解析耗时埋点（仅真实解析时计入）
+		fields, root, isJSON := response.ParseJSON(parseBody, limits)
 		rc.IsJSON = isJSON
 		if isJSON {
 			rc.ParsedBody = fields
@@ -119,6 +142,7 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 			// 只含路径与类型不落值，随主事件 response_observations 上报
 			rc.Observation = response.BuildObservation(in.Status, in.ContentType, in.BodySize, fields)
 		}
+		parseDone()
 	}
 
 	// 1c. 文件下载观测（P1-04 文件资产生产方）：Content-Disposition 携带 filename 的
@@ -135,6 +159,12 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 	}
 	if fo := response.BuildDownloadFileObservation(cd, ct, in.BodySize); fo != nil {
 		rc.FileObservation = fo
+		// §9 词表 FILE_DOWNLOAD 响应侧升级：Content-Disposition 携带 filename 的附件
+		// 下载是强信号，优先于请求相位按请求形态打的通用 REST 族/UNKNOWN 标签；
+		// 已落结构性协议（GRAPHQL/SOAP/RPC/SSE/WS/GRPC 等）时不覆盖。
+		if cur, _ := ctx.GetExtension("api.protocol"); cur == nil || classifier.IsGenericProtocol(cur) {
+			ctx.SetExtension("api.protocol", classifier.ProtocolFileDownload)
+		}
 	}
 
 	// 1d. 文件合规检测（W13-GW / P2-03 下载方向，任务书 §44 子集）：Content-Disposition

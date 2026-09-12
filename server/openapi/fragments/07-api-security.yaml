@@ -1164,7 +1164,7 @@ paths:
               properties:
                 source_parameter_id: { type: string, format: uuid, description: 源参数 ID（A） }
                 target_parameter_id: { type: string, format: uuid, description: 目标参数 ID（B） }
-                relation_type: { type: string, enum: [REQUIRES, MUTEX] }
+                relation_type: { type: string, enum: [REQUIRES, MUTEX, EQUALS, NOT_EQUALS, GREATER_THAN, LESS_THAN, TIME_BEFORE, TIME_AFTER, COUNT_MATCHES, SUM_MATCHES], description: 关系类型（手工新建词表；CO_OCCURS 由统计候选产生不开放手工新建；COUNT_MATCHES 数量一致=A 整数须等于 B 数组长度，SUM_MATCHES 汇总=A 数值须等于 B 数组元素数值和，B 均须为 BODY 数组路径） }
       responses:
         '200':
           description: 创建成功（data 为 {relation, message}）
@@ -5336,6 +5336,237 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /api-security/flow-baselines:
+    get:
+      operationId: apiFlowBaselineList
+      tags: [api-security]
+      summary: 流程基线列表
+      description: >-
+        列出业务流程基线（阶段8 §44；不含步骤明细，带步骤数）。enabled 过滤可选。
+        权限：`api_flow.read`。
+      parameters:
+        - { name: enabled, in: query, required: false, schema: { type: boolean }, description: 按启用状态过滤 }
+      responses:
+        '200':
+          description: 流程基线列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiFlowBaselineListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiFlowBaselineCreate
+      tags: [api-security]
+      summary: 创建流程基线
+      description: >-
+        创建业务流程基线（流程粒度：一个 flow 含多个步骤，步骤绑定端点 endpoint_id）。
+        校验口径与网关 detectors.ValidateFlowBaselines 一致：flow_id 非空唯一；step_id
+        流程内唯一；前置步骤须指向同流程已声明步骤且不得自引用。flow_id 冲突 409。
+        创建即按 enabled（缺省 true）进入下次发布载荷（网关装配期校验后按端点归组，
+        全部明细 OBSERVE 级只记录不阻断）。写操作审计。权限：`api_flow.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiFlowBaselineUpsertRequest' }
+      responses:
+        '201':
+          description: 创建成功，返回完整基线（含步骤）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiFlowBaseline' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/flow-baselines/{id}:
+    get:
+      operationId: apiFlowBaselineGet
+      tags: [api-security]
+      summary: 流程基线详情
+      description: 读取单条流程基线（含步骤明细，步骤按 sequence 排序，endpoint_key 关联带出）。权限：`api_flow.read`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 流程基线 ID }
+      responses:
+        '200':
+          description: 流程基线详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiFlowBaseline' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apiFlowBaselineUpdate
+      tags: [api-security]
+      summary: 整体替换流程基线
+      description: >-
+        整体替换流程基线（含步骤全量替换）。expected_version 必填做乐观锁：与当前
+        version 不一致返回 409；成功后 version +1。flow_id 冲突 409。写操作审计。
+        权限：`api_flow.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 流程基线 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiFlowBaselineUpsertRequest' }
+      responses:
+        '200':
+          description: 更新成功，返回完整基线（version 已递增）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiFlowBaseline' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiFlowBaselineDelete
+      tags: [api-security]
+      summary: 删除流程基线
+      description: 删除流程基线（步骤级联删除，删除即退出下次发布载荷；不存在的 ID 返回 404）。写操作审计。权限：`api_flow.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 流程基线 ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, description: 固定为 deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/revoked-credentials:
+    get:
+      operationId: apiRevokedCredentialList
+      tags: [api-security]
+      summary: 已吊销凭据列表
+      description: >-
+        列出已吊销凭据清单（阶段8 §35「已吊销凭据使用」数据源；指纹级，无凭据明文）。
+        credential_type / active（当前生效窗口内）过滤可选。权限：`api_credential.read`。
+      parameters:
+        - { name: credential_type, in: query, required: false, schema: { type: string, enum: [auth, key, sess] }, description: 按凭据来源上下文过滤 }
+        - { name: active, in: query, required: false, schema: { type: boolean }, description: 按当前生效窗口过滤 }
+      responses:
+        '200':
+          description: 已吊销凭据列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiRevokedCredentialListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiRevokedCredentialCreate
+      tags: [api-security]
+      summary: 登记吊销凭据
+      description: >-
+        登记一条已吊销凭据（指纹级，不存凭据明文）。凭据身份沿用项目统一口径：
+        credential_type 与网关身份指纹前缀（auth:/key:/sess:）一致，fingerprint 为
+        加盐 HMAC-SHA256 截断 16 字节的 32 位 hex（不含前缀）。吊销人由服务端取自
+        登录主体。同类型同指纹重复登记 409；同指纹不同来源类型允许分别登记。
+        登记即进入下次发布载荷（当前生效窗口内的行才下发网关）。写操作审计。
+        权限：`api_credential.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiRevokedCredentialCreateRequest' }
+      responses:
+        '201':
+          description: 登记成功，返回完整记录
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiRevokedCredential' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/revoked-credentials/{id}:
+    get:
+      operationId: apiRevokedCredentialGet
+      tags: [api-security]
+      summary: 已吊销凭据详情
+      description: 读取单条已吊销凭据记录。权限：`api_credential.read`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 吊销记录 ID }
+      responses:
+        '200':
+          description: 已吊销凭据详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiRevokedCredential' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apiRevokedCredentialUpdate
+      tags: [api-security]
+      summary: 调整吊销凭据
+      description: >-
+        调整吊销原因与生效窗口。吊销对象身份（credential_type + fingerprint）不可变更，
+        变更身份 = 删除后重新登记。effective_from 必填；effective_until 为空 = 永久吊销，
+        且须晚于 effective_from。写操作审计。权限：`api_credential.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 吊销记录 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiRevokedCredentialUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功，返回完整记录
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiRevokedCredential' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiRevokedCredentialDelete
+      tags: [api-security]
+      summary: 移除吊销凭据
+      description: 移除吊销记录（移除即退出下次发布载荷，等于解除吊销；不存在的 ID 返回 404）。写操作审计。权限：`api_credential.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 吊销记录 ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, description: 固定为 deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
 components:
   schemas:
     # ---------- 接口资产（apiassets） ----------
@@ -6500,6 +6731,25 @@ components:
           items: { type: object }
           description: 检测明细（各检测器命中详情数组）
         occurred_at: { type: string, format: date-time, description: 发生时间 }
+        api_level:
+          type: string
+          nullable: true
+          enum: [CONFIRMED_API, PROBABLE_API, POSSIBLE_API, NON_API]
+          description: "§8.2 四级识别标签（迁移 000149；来自统一上下文扩展 api.classification，与 api_confidence 同源不同口径：离散四级标签）。旧版网关事件未上报或管线未写 api.classification（合成结果/fail-open 旁路）时为 NULL，历史事件不回填，消费端必须容忍缺失。"
+        device_fingerprint:
+          type: string
+          nullable: true
+          description: "设备指纹（任务书 §7，迁移 000150；UA 族加盐 HMAC-SHA256 32 位 hex，与身份行为观测同口径同盐）。未上报（空 UA/旧版网关/fail-open 旁路）时为 NULL，历史事件不回填。"
+        object_identifiers:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              source: { type: string, description: 标识来源（如 path/query/body） }
+              param: { type: string, description: 参数名 }
+              value_hash: { type: string, description: 对象标识值脱敏哈希（不记原文） }
+          description: "对象标识集合（任务书 §7，迁移 000150；只记加盐哈希不记原文，条数封顶）。空集合与未上报同语义落 NULL。"
         jwt_verification:
           type: object
           nullable: true
@@ -6869,7 +7119,7 @@ components:
         model_version_id: { type: string, format: uuid, description: 所属模型版本 ID }
         source_parameter_id: { type: string, format: uuid, description: 源参数 ID }
         target_parameter_id: { type: string, format: uuid, description: 目标参数 ID }
-        relation_type: { type: string, enum: [CO_OCCURS, REQUIRES, MUTEX, EXCLUDES], description: 关系类型 }
+        relation_type: { type: string, enum: [CO_OCCURS, REQUIRES, MUTEX, EXCLUDES, EQUALS, NOT_EQUALS, GREATER_THAN, LESS_THAN, TIME_BEFORE, TIME_AFTER, COUNT_MATCHES, SUM_MATCHES], description: 关系类型 }
         confidence: { type: number, format: double, description: 置信度（0-1，候选默认 0.3） }
         condition: { type: object, description: "关系条件（候选为 {}）" }
         confirmed: { type: boolean, description: 是否已确认（确认后随发布下发网关） }
@@ -8960,3 +9210,129 @@ components:
           type: array
           items: { $ref: '#/components/schemas/ApiGrpcDescriptor' }
         total: { type: integer, description: 总数（不分页） }
+
+    # ---------- 业务流程基线（apiflows，阶段8 §44） ----------
+    ApiFlowStep:
+      type: object
+      description: 流程步骤（api_flow_baseline_steps；endpoint_key 由 api_endpoints 关联带出）
+      required: [step_id, endpoint_id, sequence]
+      properties:
+        id: { type: string, format: uuid, description: 步骤行 ID（仅出参） }
+        step_id: { type: string, maxLength: 128, description: 步骤标识（同一流程内唯一） }
+        endpoint_id: { type: string, format: uuid, description: 绑定端点（api_endpoints.id） }
+        endpoint_key: { type: string, description: 端点键（仅出参；METHOD + 空格 + 路径模板） }
+        sequence: { type: integer, description: 流程内单调序号（逆序判定基准） }
+        predecessors:
+          type: array
+          items: { type: string }
+          description: 期望前置步骤 step_id 列表（AND 语义；空 = 无前置约束）
+        terminal: { type: boolean, description: 是否流程终点（描述性字段） }
+        state_from: { type: string, maxLength: 64, description: 要求的对象前置状态（空 = 不参与状态机判定） }
+        state_to: { type: string, maxLength: 64, description: 步骤完成后的对象状态（空 = 不推进状态记录） }
+        max_per_window: { type: integer, minimum: 0, default: 0, description: 步骤级短窗调用上限（>0 启用 rapid_batch 步骤级判定；0 = 不判定，向后兼容） }
+        rate_window_seconds: { type: integer, minimum: 0, maximum: 600, default: 0, description: 步骤级短窗秒数（>0 覆盖缺省 60s；上限 600s = 会话 TTL） }
+        cancels_flow: { type: boolean, default: false, description: 取消语义声明（true = 本步骤执行后流程视为已取消；post_cancel_operation 判定的唯一来源） }
+
+    ApiFlowBaseline:
+      type: object
+      description: 业务流程基线（api_flow_baselines；含步骤明细）
+      properties:
+        id: { type: string, format: uuid }
+        flow_id: { type: string, maxLength: 128, description: 流程标识（全局唯一，发布契约键） }
+        name: { type: string, description: 展示名 }
+        description: { type: string }
+        enabled: { type: boolean, description: 仅启用行进入发布载荷 }
+        version: { type: integer, description: 乐观锁版本戳（编辑 +1） }
+        max_per_window: { type: integer, minimum: 0, default: 0, description: 流程级短窗调用上限（任意步骤合计；>0 启用 rapid_batch 流程级判定；0 = 不判定） }
+        rate_window_seconds: { type: integer, minimum: 0, maximum: 600, default: 0, description: 流程级短窗秒数（>0 覆盖缺省 60s；上限 600s = 会话 TTL） }
+        steps:
+          type: array
+          items: { $ref: '#/components/schemas/ApiFlowStep' }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiFlowBaselineSummary:
+      type: object
+      description: 流程基线列表行（不含步骤明细，带步骤数）
+      properties:
+        id: { type: string, format: uuid }
+        flow_id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        enabled: { type: boolean }
+        version: { type: integer }
+        step_count: { type: integer }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiFlowBaselineListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiFlowBaselineSummary' }
+        total: { type: integer, description: 总数（不分页） }
+
+    ApiFlowBaselineUpsertRequest:
+      type: object
+      description: 流程基线创建/整体替换请求（校验口径与网关 detectors.ValidateFlowBaselines 一致）
+      required: [flow_id, steps]
+      properties:
+        flow_id: { type: string, maxLength: 128, description: 流程标识（唯一；冲突 409） }
+        name: { type: string, maxLength: 255 }
+        description: { type: string, maxLength: 1024 }
+        enabled: { type: boolean, description: 缺省 true }
+        max_per_window: { type: integer, minimum: 0, default: 0, description: 流程级短窗调用上限（0 = 不判定） }
+        rate_window_seconds: { type: integer, minimum: 0, maximum: 600, default: 0, description: 流程级短窗秒数（0 = 缺省 60s；上限 600s = 会话 TTL） }
+        steps:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: { $ref: '#/components/schemas/ApiFlowStep' }
+        expected_version: { type: integer, description: 乐观锁版本（仅 PUT 必填；冲突 409） }
+
+    # ---------- 已吊销凭据（apirevokedcreds，§35，迁移 000156） ----------
+    ApiRevokedCredential:
+      type: object
+      description: 已吊销凭据（api_revoked_credentials；指纹级，无凭据明文）
+      properties:
+        id: { type: string, format: uuid }
+        credential_type: { type: string, enum: [auth, key, sess], description: 凭据来源上下文（与网关身份指纹前缀一致：auth=Authorization / key=X-API-Key / sess=Cookie） }
+        fingerprint: { type: string, pattern: '^[0-9a-f]{32}$', description: 加盐 HMAC-SHA256 截断 16 字节 hex（32 位，不含前缀） }
+        reason: { type: string, description: 吊销原因 }
+        revoked_by: { type: string, description: 吊销人（服务端取自登录主体） }
+        effective_from: { type: string, format: date-time, description: 生效时间 }
+        effective_until: { type: string, format: date-time, nullable: true, description: 到期时间（空 = 永久吊销） }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiRevokedCredentialListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiRevokedCredential' }
+        total: { type: integer, description: 总数（不分页） }
+
+    ApiRevokedCredentialCreateRequest:
+      type: object
+      description: 登记吊销凭据请求（指纹校验与迁移 000156 CHECK 同口径）
+      required: [credential_type, fingerprint, reason]
+      properties:
+        credential_type: { type: string, enum: [auth, key, sess] }
+        fingerprint: { type: string, pattern: '^[0-9a-f]{32}$', description: 32 位 hex 加盐指纹（大小写不敏感，入库归一为小写） }
+        reason: { type: string, maxLength: 512, description: 吊销原因（必填） }
+        effective_from: { type: string, format: date-time, description: 生效时间（缺省当前时间） }
+        effective_until: { type: string, format: date-time, nullable: true, description: 到期时间（空 = 永久吊销；须晚于 effective_from） }
+
+    ApiRevokedCredentialUpdateRequest:
+      type: object
+      description: 调整吊销凭据请求（仅原因与生效窗口可变；吊销对象身份不可变更）
+      required: [reason, effective_from]
+      properties:
+        reason: { type: string, maxLength: 512 }
+        effective_from: { type: string, format: date-time }
+        effective_until: { type: string, format: date-time, nullable: true, description: 空 = 永久吊销；须晚于 effective_from }

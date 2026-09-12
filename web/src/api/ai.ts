@@ -28,7 +28,7 @@ export interface AiMessage {
 
 /** SSE 事件（data: {"type":...,"text":...,"payload":...}） */
 export interface AiSseEvent {
-  type: string // plan / agent_start / agent_done / composing / degraded / error / compressed / done
+  type: string // plan / agent_start / agent_done / composing / degraded / continued / error / compressed / done
   text?: string
   payload?: unknown
 }
@@ -54,6 +54,8 @@ export interface AiDonePayload {
   task_id?: string
   message_id?: string
   finish_reason?: string
+  /** 本轮 finish_reason=length 触发的自动续写次数 */
+  auto_continues?: number
 }
 
 export interface AiSessionListParams {
@@ -219,6 +221,34 @@ export interface AiAnalyzeBody {
   ip?: string
   question?: string
   period?: string
+  /** 统计区间预设 1h/6h/24h/7d/30d（结构化过滤与画像、What-If 估算用） */
+  time_range?: string
+  /** 应用维度过滤 / 应用画像对象 */
+  application_id?: string
+  /** URI 维度过滤 / URI 画像对象 */
+  uri?: string
+  /** 网关 Request ID 维度过滤 */
+  request_id?: string
+  /** What-If 场景（§19.1 八种，缺省 disable_rule） */
+  scenario?:
+    | 'disable_rule'
+    | 'enable_rule'
+    | 'anomaly_threshold'
+    | 'pl_switch'
+    | 'add_exception'
+    | 'remove_exception'
+    | 'cc_threshold'
+    | 'block_duration'
+  /** What-If：模拟 CC 阈值（次/窗口，1-1000000） */
+  cc_threshold?: number
+  /** What-If：模拟封禁时长（秒，60-2592000） */
+  block_duration_seconds?: number
+  /** What-If anomaly_threshold：模拟入站异常阈值（1-10000） */
+  anomaly_threshold?: number
+  /** What-If pl_switch：模拟 CRS 执行等级（1-4） */
+  paranoia_level?: number
+  /** What-If remove_exception：模拟删除的例外 ID */
+  exception_id?: string
 }
 
 /** 一次性分析结果（非流式，steps 为过程事件快照） */
@@ -478,6 +508,8 @@ export interface AiPromptVersion {
   content_hash: string
   change_summary: string
   test_result: string // '' / PASSED / FAILED
+  adversarial_result: string // '' / ADVERSARIAL_PASSED / ADVERSARIAL_FAILED
+  adversarial_detail?: AiPromptAdversarialCase[] | null
   created_at: string
   published_at?: string | null
   is_current: boolean
@@ -492,6 +524,19 @@ export interface AiPromptTestCheck {
 export interface AiPromptTestResult {
   test_result: string
   checks?: AiPromptTestCheck[] | null
+}
+
+export interface AiPromptAdversarialCase {
+  id: string
+  category: string // PROMPT_INJECTION / PRIVILEGE_ESCALATION / DATA_EXFILTRATION
+  attack: string
+  passed: boolean
+  reason?: string
+}
+
+export interface AiPromptAdversarialTestResult {
+  adversarial_result: string // ADVERSARIAL_PASSED / ADVERSARIAL_FAILED
+  cases?: AiPromptAdversarialCase[] | null
 }
 
 /** Prompt 管理（ai.prompts.*） */
@@ -514,6 +559,10 @@ export const aiPromptsApi = {
     request<{ version: AiPromptVersion }>(`/ai/prompts/${id}/versions`, { method: 'POST', body }),
   testVersion: (versionId: string) =>
     request<AiPromptTestResult>(`/ai/prompts/versions/${versionId}/test`, { method: 'POST' }),
+  adversarialTestVersion: (versionId: string) =>
+    request<AiPromptAdversarialTestResult>(`/ai/prompts/versions/${versionId}/adversarial-test`, {
+      method: 'POST',
+    }),
   publish: (id: string, versionId: string) =>
     request<{ message: string }>(`/ai/prompts/${id}/publish`, {
       method: 'POST',

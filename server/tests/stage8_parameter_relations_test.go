@@ -1,5 +1,6 @@
 // stage8_parameter_relations_test.go 参数条件关系闭环（W11-REL / P0-02 残余，任务书 §45）集成测试。
-// 覆盖：迁移 000068 列/词表 CHECK 落位；Store 手工新建校验与确认状态机；
+// 覆盖：迁移 000068 列落位与 000147/000154/000159 词表 CHECK 扩展（任务书 §23 值比较六类 + 数组聚合两类）；
+// Store 手工新建校验与确认状态机；
 // HTTP 路由（create/confirm/reject，权限 api_parameter.edit + 操作审计）；
 // 发布通道仅下发 confirmed 关系（候选不下发）、版本戳与 Caddy JSON 联动；
 // CO_OCCURS 候选「产生 → 确认 → 下发」全链。
@@ -98,7 +99,7 @@ RETURNING id`, versionID, name).Scan(&id); err != nil {
 	return versionID, bodyA, bodyB, queryA, queryB
 }
 
-// TestStage8ParameterRelationsMigration 迁移 000068 落位：确认列 / 词表 CHECK / 默认值。
+// TestStage8ParameterRelationsMigration 迁移 000068/000147/000154/000159 落位：确认列 / 词表 CHECK / 默认值。
 func TestStage8ParameterRelationsMigration(t *testing.T) {
 	env := setupStage8Env(t)
 	ctx := context.Background()
@@ -110,14 +111,18 @@ func TestStage8ParameterRelationsMigration(t *testing.T) {
 		}
 	}
 
-	// 词表 CHECK：非法 relation_type 拒绝；历史词表 REQUIRES/EXCLUDES/CO_OCCURS 与新增 MUTEX 合法
+	// 词表 CHECK：非法 relation_type 拒绝；历史词表 REQUIRES/EXCLUDES/CO_OCCURS、000068 新增 MUTEX、
+	// 000147 值比较五类 + 000154 不等值 NOT_EQUALS（任务书 §23）与 000159 数组聚合两类
+	// （COUNT_MATCHES 数量一致 / SUM_MATCHES 汇总关系）合法
 	versionID, bodyA, bodyB, _, _ := s8RelSeedModel(t, env, "POST", "/v1/rel-migration")
 	if _, err := env.db.Exec(ctx, `
 INSERT INTO api_parameter_relations (model_version_id, source_parameter_id, target_parameter_id, relation_type)
 VALUES ($1,$2,$3,'IMPLIES')`, versionID, bodyA, bodyB); err == nil {
 		t.Fatal("bad relation_type IMPLIES must be rejected by CHECK")
 	}
-	for _, typ := range []string{"REQUIRES", "MUTEX", "CO_OCCURS", "EXCLUDES"} {
+	for _, typ := range []string{"REQUIRES", "MUTEX", "CO_OCCURS", "EXCLUDES",
+		"EQUALS", "NOT_EQUALS", "GREATER_THAN", "LESS_THAN", "TIME_BEFORE", "TIME_AFTER",
+		"COUNT_MATCHES", "SUM_MATCHES"} {
 		if _, err := env.db.Exec(ctx, `
 INSERT INTO api_parameter_relations (model_version_id, source_parameter_id, target_parameter_id, relation_type)
 VALUES ($1,$2,$3,$4)`, versionID, bodyA, bodyB, typ); err != nil {
@@ -127,8 +132,8 @@ VALUES ($1,$2,$3,$4)`, versionID, bodyA, bodyB, typ); err != nil {
 	// 默认 confirmed=false（候选不生效）
 	if n := s8Count(t, env, `SELECT count(*) FROM api_parameter_relations
 		WHERE model_version_id=$1 AND confirmed=false AND confirmed_by IS NULL AND confirmed_at IS NULL`,
-		versionID); n != 4 {
-		t.Fatalf("default confirmed=false rows = %d, want 4", n)
+		versionID); n != 12 {
+		t.Fatalf("default confirmed=false rows = %d, want 12", n)
 	}
 }
 
@@ -170,6 +175,17 @@ func TestStage8ParameterRelationsStore(t *testing.T) {
 	// 同参数对不同类型（MUTEX）允许
 	if _, err := store.CreateParameterRelation(ctx, versionID, queryA, queryB, "MUTEX"); err != nil {
 		t.Fatalf("same pair different type must pass: %v", err)
+	}
+	// 值比较六类 + 数组聚合两类（任务书 §23，000147/000154/000159 词表）开放手工新建：同参数对不同类型允许
+	for _, typ := range []string{"EQUALS", "NOT_EQUALS", "GREATER_THAN", "LESS_THAN", "TIME_BEFORE", "TIME_AFTER",
+		"COUNT_MATCHES", "SUM_MATCHES"} {
+		if _, err := store.CreateParameterRelation(ctx, versionID, queryA, queryB, typ); err != nil {
+			t.Fatalf("manual %s must be accepted: %v", typ, err)
+		}
+	}
+	// 值比较类型重复新建（同版本同参数对同类型）→ 冲突
+	if _, err := store.CreateParameterRelation(ctx, versionID, queryA, queryB, "EQUALS"); err == nil {
+		t.Fatal("duplicate EQUALS must be rejected")
 	}
 
 	// 状态机：未确认不可撤回

@@ -14,6 +14,15 @@ export const TRUSTED_PROXY_SCOPE_META: Record<string, { color: string; label: st
   NODE: { color: 'blue', label: '指定节点' },
 }
 
+/** 客户端 IP 识别来源（access_logs.client_ip_source，统计分析分布展示用） */
+export const CLIENT_IP_SOURCE_META: Record<string, { color: string; label: string }> = {
+  CONNECTION: { color: 'blue', label: '直连连接' },
+  X_FORWARDED_FOR: { color: 'geekblue', label: 'X-Forwarded-For' },
+  X_REAL_IP: { color: 'cyan', label: 'X-Real-IP' },
+  FORWARDED: { color: 'purple', label: 'Forwarded' },
+  CUSTOM_HEADER: { color: 'orange', label: '自定义头' },
+}
+
 /** IP 版本 */
 export const IP_VERSION_META: Record<string, { color: string; label: string }> = {
   IPV4: { color: 'blue', label: 'IPv4' },

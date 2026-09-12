@@ -141,6 +141,7 @@ func (d *Deps) RegisterRoutes(mux *http.ServeMux, authChain func(http.Handler) h
 	mux.Handle("POST /api/v1/ai/prompts/{id}/versions", authChain(rp("ai.prompts.create")(http.HandlerFunc(d.PromptVersionCreate))))
 	mux.Handle("GET /api/v1/ai/prompts/{id}/diff", authChain(rp("ai.prompts.read")(http.HandlerFunc(d.PromptDiff))))
 	mux.Handle("POST /api/v1/ai/prompts/versions/{versionId}/test", authChain(rp("ai.prompts.test")(http.HandlerFunc(d.PromptVersionTest))))
+	mux.Handle("POST /api/v1/ai/prompts/versions/{versionId}/adversarial-test", authChain(rp("ai.prompts.test")(http.HandlerFunc(d.PromptVersionAdversarialTest))))
 	mux.Handle("POST /api/v1/ai/prompts/{id}/publish", authChain(rp("ai.prompts.publish")(http.HandlerFunc(d.PromptPublish))))
 	mux.Handle("POST /api/v1/ai/prompts/{id}/rollback", authChain(rp("ai.prompts.rollback")(http.HandlerFunc(d.PromptRollback))))
 

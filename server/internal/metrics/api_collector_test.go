@@ -1,6 +1,6 @@
 // api_collector_test.go API 专项指标单测：分组/聚合纯逻辑造数断言 +
-// Render 文本输出包含全部 15 项指标。DB 聚合 SQL 路径由集成环境验证
-// （包内单测不依赖 PG 凭据）。
+// Render 文本输出包含全部 21 项指标。DB 聚合 SQL 路径由集成环境验证
+// （server/tests/stage8_api_metrics_collector_test.go；包内单测不依赖 PG 凭据）。
 package metrics
 
 import (
@@ -121,12 +121,30 @@ func TestAggregateRuntimePolicies(t *testing.T) {
 	}
 }
 
-// 全部 15 项专项指标名（任务清单口径，防止渲染漏项）。
+// TestDiscoveryPerSecond 识别速率换算（窗口防御）。
+func TestDiscoveryPerSecond(t *testing.T) {
+	if got := DiscoveryPerSecond(120, time.Minute); got != 2 {
+		t.Errorf("DiscoveryPerSecond(120, 1m) = %v, want 2", got)
+	}
+	if got := DiscoveryPerSecond(0, time.Minute); got != 0 {
+		t.Errorf("DiscoveryPerSecond(0, 1m) = %v, want 0", got)
+	}
+	if got := DiscoveryPerSecond(10, 0); got != 0 {
+		t.Errorf("零窗口 = %v, want 0（防御）", got)
+	}
+}
+
+// 全部 19 项整型专项指标名（任务清单口径，防止渲染漏项）。
 var allAPIMetricNames = []string{
 	APIAssetsTotal, APIAssetsNew, APILearningJobs, APILearningSamples, APILearningExcluded,
 	APICandidatesCreated, APIModelsConfirmed, RuntimeCompileTotal, RuntimeCompileError,
 	SchemaFindings, AuthFindings, AuthzFindings, SensitiveFindings, BehaviorFindings,
-	MaskResponseTotal,
+	MaskResponseTotal, APIShadowTotal, APIZombieTotal, APIGraphEdgesTotal, AIToolCallsTotal,
+}
+
+// 全部 float 专项指标名（速率/耗时类）。
+var allAPIFloatMetricNames = []string{
+	APIDiscoveryPerSecond, APILearningLatencySeconds,
 }
 
 // TestRenderAPISnapshot 造快照 → 断言文本包含全部指标名、HELP/TYPE 行与正确值。
@@ -139,6 +157,11 @@ func TestRenderAPISnapshot(t *testing.T) {
 			APIAssetsNew:      3,
 			MaskResponseTotal: 7,
 			SchemaFindings:    5,
+			APIShadowTotal:    2,
+		},
+		Floats: map[string]float64{
+			APIDiscoveryPerSecond:     0.5,
+			APILearningLatencySeconds: 180.25,
 		},
 	}
 	out := RenderAPISnapshot(snap)
@@ -147,12 +170,20 @@ func TestRenderAPISnapshot(t *testing.T) {
 			t.Errorf("输出缺少 TYPE 行: %s", name)
 		}
 	}
+	for _, name := range allAPIFloatMetricNames {
+		if !strings.Contains(out, "# TYPE "+name+" gauge\n") {
+			t.Errorf("输出缺少 float TYPE 行: %s", name)
+		}
+	}
 	for _, want := range []string{
 		"api_assets_total 42\n",
 		"api_assets_new 3\n",
 		"mask_response_total 7\n",
 		"schema_findings 5\n",
+		"api_shadow_total 2\n",
 		"api_learning_jobs 0\n", // 未采集指标输出 0
+		"api_discovery_per_second 0.5\n",
+		"api_learning_latency_seconds 180.25\n",
 		"api_metrics_collect_errors_total 2\n",
 		"api_metrics_last_collect_timestamp_seconds 1755000000\n",
 	} {
@@ -170,6 +201,11 @@ func TestRenderEmptySnapshot(t *testing.T) {
 			t.Errorf("空快照缺少 %s 0", name)
 		}
 	}
+	for _, name := range allAPIFloatMetricNames {
+		if !strings.Contains(out, name+" 0\n") {
+			t.Errorf("空快照缺少 float %s 0", name)
+		}
+	}
 	if !strings.Contains(out, "api_metrics_collect_errors_total 0\n") {
 		t.Error("空快照缺少采集错误自指标")
 	}
@@ -179,20 +215,24 @@ func TestRenderEmptySnapshot(t *testing.T) {
 func TestCollectorSnapshotAndRender(t *testing.T) {
 	c := NewAPICollector(nil) // 仅快照/渲染路径，不触 DB
 	c.values[APIAssetsTotal] = 10
+	c.floats[APIDiscoveryPerSecond] = 0.25
 	c.collectedAt = time.Unix(1755000000, 0).UTC()
 	c.collectErrs = 1
 	c.lastError = "api_endpoints: boom"
 
 	snap := c.Snapshot()
-	if snap.Values[APIAssetsTotal] != 10 || snap.CollectErrors != 1 || snap.LastError == "" {
+	if snap.Values[APIAssetsTotal] != 10 || snap.Floats[APIDiscoveryPerSecond] != 0.25 ||
+		snap.CollectErrors != 1 || snap.LastError == "" {
 		t.Fatalf("快照内容不符: %+v", snap)
 	}
 	// 拷贝隔离：改快照不影响采集器内部状态
 	snap.Values[APIAssetsTotal] = 999
-	if c.values[APIAssetsTotal] != 10 {
+	snap.Floats[APIDiscoveryPerSecond] = 9
+	if c.values[APIAssetsTotal] != 10 || c.floats[APIDiscoveryPerSecond] != 0.25 {
 		t.Error("Snapshot 未做 map 拷贝，内部状态被外部修改")
 	}
-	if out := c.Render(); !strings.Contains(out, "api_assets_total 10\n") {
+	if out := c.Render(); !strings.Contains(out, "api_assets_total 10\n") ||
+		!strings.Contains(out, "api_discovery_per_second 0.25\n") {
 		t.Errorf("Render 未输出当前快照值: %q", out)
 	}
 }

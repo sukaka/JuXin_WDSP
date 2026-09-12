@@ -140,13 +140,17 @@ func markAccessLogDownstreamEntry(ctx context.Context) {
 
 // accessLogRecord 单条全量访问日志（字段与 access_logs 表一一对应）。
 type accessLogRecord struct {
-	OccurredAt            time.Time           `json:"occurred_at"`
-	RequestID             string              `json:"request_id"`
-	ApplicationID         string              `json:"application_id,omitempty"`
-	Domain                string              `json:"domain"`
-	GatewayNode           string              `json:"gateway_node_id"`
-	ClientIP              string              `json:"client_ip"`
-	ClientPort            int                 `json:"client_port"`
+	OccurredAt    time.Time `json:"occurred_at"`
+	RequestID     string    `json:"request_id"`
+	ApplicationID string    `json:"application_id,omitempty"`
+	Domain        string    `json:"domain"`
+	GatewayNode   string    `json:"gateway_node_id"`
+	ClientIP      string    `json:"client_ip"`
+	ClientPort    int       `json:"client_port"`
+	// 阶段5 §6.5 真实 IP 识别日志字段（旧网关不携带时缺省，服务端落 NULL）
+	ClientIPSource        string              `json:"client_ip_source,omitempty"`
+	TrustedProxyUsed      string              `json:"trusted_proxy_used,omitempty"`
+	ForwardedChainSummary string              `json:"forwarded_chain_summary,omitempty"`
 	Method                string              `json:"request_method"`
 	URI                   string              `json:"request_uri"`
 	Path                  string              `json:"request_path"`
@@ -421,6 +425,10 @@ func (g *Guard) captureAccessLog(w http.ResponseWriter, r *http.Request, handler
 		// 未写入场景）回落当前 RemoteAddr——放行链路此时已被改写为真实 IP，口径一致
 		if res, ok := clientIPResultFrom(r.Context()); ok && res.ClientIP.IsValid() {
 			rec.ClientIP = res.ClientIP.String()
+			// 阶段5 §6.5：识别来源/可信代理命中/代理链摘要（与事件同口径）
+			rec.ClientIPSource = sanitizeAccessLogField(string(res.Source), 32)
+			rec.TrustedProxyUsed = sanitizeAccessLogField(res.TrustedProxyUsed, 128)
+			rec.ForwardedChainSummary = sanitizeAccessLogField(res.ChainSummary, 256)
 		} else if host, _, serr := net.SplitHostPort(r.RemoteAddr); serr == nil {
 			rec.ClientIP = host
 		} else {

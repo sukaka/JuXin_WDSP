@@ -316,6 +316,41 @@ func TestStage6SystemAlerts(t *testing.T) {
 	_ = secCSRF
 }
 
+// TestStage6SystemAlertsExport 系统告警导出（§11.4）：CSV、防公式注入。
+// 权限语义按 000100 角色收敛：SYSTEM_ADMIN 保留 system_alerts.*，SECURITY_ADMIN 持
+// system_alerts.read_security，两者可导出；AUDIT_ADMIN 收紧为纯审计角色，不含任何
+// system_alerts.* 权限，导出 403。
+func TestStage6SystemAlertsExport(t *testing.T) {
+	env := setupTestEnv(t)
+	sysCookies, _ := env.s5Login(t, "s6sys", "SYSTEM_ADMIN")
+	secCookies, _ := env.s5Login(t, "s6sec", "SECURITY_ADMIN")
+	audCookies, _ := env.s5Login(t, "s6aud", "AUDIT_ADMIN")
+
+	checkExport := func(cookies []*http.Cookie, who string) {
+		t.Helper()
+		resp := env.get(t, "/api/v1/system-alerts/export", cookies)
+		body := readBodyString(t, resp)
+		ct := resp.Header.Get("Content-Type")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s export alerts status = %d, body: %s", who, resp.StatusCode, body)
+		}
+		if !strings.HasPrefix(ct, "text/csv") {
+			t.Errorf("%s export Content-Type = %q, want text/csv", who, ct)
+		}
+		if !strings.HasPrefix(body, "id,alert_type,severity,") {
+			t.Errorf("%s export 缺少表头，body 前缀: %q", who, body[:min(len(body), 64)])
+		}
+	}
+	checkExport(sysCookies, "SYSTEM_ADMIN")
+	checkExport(secCookies, "SECURITY_ADMIN")
+
+	// 000100 角色收敛：AUDIT_ADMIN 无任何 system_alerts.* 权限 → 导出 403
+	s5Expect(t, env.get(t, "/api/v1/system-alerts/export", audCookies), http.StatusForbidden, "audit admin export")
+
+	// 非法筛选参数 → 400（用有权限角色验证，避免被 403 前置拦截掩盖参数校验）
+	s5Expect(t, env.get(t, "/api/v1/system-alerts/export?severity=BOGUS", sysCookies), http.StatusBadRequest, "export with invalid severity")
+}
+
 // TestStage6BackupsLifecycle 备份全生命周期。
 func TestStage6BackupsLifecycle(t *testing.T) {
 	// 固定主密钥：测试侧同步驱动备份执行器需与应用使用同一密钥加解密备份文件。

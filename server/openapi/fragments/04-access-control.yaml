@@ -343,7 +343,8 @@ paths:
         address,rule_type,scope_type,application_code,effective_until,reason）或纯文本（每行一个地址），
         内容 ≤1MB、行数 ≤10000。`dry_run=true` 时只校验并返回前 50 条预览，不落库。
         ALL_OR_NOTHING 模式存在错误行时整体不导入并返回 400（details 为行级错误）；
-        SKIP_ERRORS 模式跳过错误行逐条插入。记录审计（含保护地址错误时高风险）。权限：`access_rules.import`
+        SKIP_ERRORS 模式跳过错误行逐条插入。正式导入成功的规则统一落 DRAFT 草稿状态：不参与发布快照、
+        不在网关生效，需逐条调用启用接口进入 ACTIVE。记录审计（含保护地址错误时高风险）。权限：`access_rules.import`
       requestBody:
         required: true
         content:
@@ -480,6 +481,44 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /access-rules/{id}/events:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 规则 ID
+    get:
+      operationId: accessRuleEvents
+      tags: [access-rules]
+      summary: 规则关联事件分页列表
+      description: |
+        查询该规则命中的访问控制事件（按 access_control_events.access_rule_id 过滤：
+        IP 黑白名单命中 IP_ALLOW_MATCH/IP_DENY_MATCH 与 L7 规则命中 L7_RULE_* 事件均写入规则 ID）。
+        支持通用事件筛选参数（时间范围/事件类型/动作/客户端IP 等），规则不存在时返回空分页（列表过滤语义）。
+        记录低风险审计。权限：`access_rules.read`
+      parameters:
+        - { name: start_time, in: query, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
+        - { name: end_time, in: query, schema: { type: string, format: date-time }, description: 截止时间（RFC3339，必须晚于 start_time） }
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按应用筛选 }
+        - { name: client_ip, in: query, schema: { type: string }, description: 按客户端 IP 筛选 }
+        - { name: event_type, in: query, schema: { type: string }, description: 按事件类型筛选 }
+        - { name: action, in: query, schema: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK] }, description: 按动作筛选 }
+        - { name: request_id, in: query, schema: { type: string }, description: 按请求 ID 筛选 }
+        - { name: gateway_node_id, in: query, schema: { type: string }, description: 按网关节点筛选 }
+        - { name: page, in: query, schema: { type: integer, default: 1 }, description: 页码 }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 }, description: 每页条数（最大 100） }
+      responses:
+        '200':
+          description: 分页事件列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ACEventListResponse' }
+        '400': { description: 参数错误（规则 ID 非法、时间格式无效或时间范围颠倒） }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /access-rules/{id}/enable:
     parameters:
       - name: id
@@ -491,7 +530,9 @@ paths:
       operationId: accessRuleEnable
       tags: [access-rules]
       summary: 启用规则
-      description: 将规则置为 ACTIVE。记录低风险审计。权限：`access_rules.manage`
+      description: |
+        将规则置为 ACTIVE。合法来源状态：DRAFT（草稿启用）/ DISABLED（重新启用）/ ACTIVE（幂等）；
+        EXPIRED 规则需先延期再启用，非法流转返回 400。记录低风险审计。权限：`access_rules.manage`
       responses:
         '200':
           description: 操作成功
@@ -515,7 +556,9 @@ paths:
       operationId: accessRuleDisable
       tags: [access-rules]
       summary: 停用规则
-      description: 将规则置为 DISABLED。记录低风险审计。权限：`access_rules.manage`
+      description: |
+        将规则置为 DISABLED。合法来源状态：ACTIVE / DISABLED（幂等）/ EXPIRED；
+        DRAFT 草稿尚未生效不可停用（可启用或删除），非法流转返回 400。记录低风险审计。权限：`access_rules.manage`
       responses:
         '200':
           description: 操作成功
@@ -604,6 +647,35 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: 相同范围下已存在同地址同类型规则 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== 事件→黑名单联动（阶段5 §十一） ====================
+  /security-events/{id}/blacklist-prefill:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 安全事件 ID
+    get:
+      operationId: securityEventBlacklistPrefill
+      tags: [access-rules]
+      summary: 从安全事件预填「加入黑名单」数据
+      description: |-
+        只读不落库、不审计。按事件 client_ip 聚合近 24h 相关事件数/最近攻击时间/命中规则（Top10），
+        检查该 IP 是否命中保护地址、是否疑似共享出口/代理（同 IP 近 24h 关联身份数 ≥2；无任何身份数据时省略该项），
+        并给出建议封禁时长（HIGH→24h、MEDIUM→6h、LOW→2h、INFO→1h；相关事件 ≥10 升一档、≥50 直接 72h；上限 72h）。
+        管理员确认后走 POST /access-rules 并携带 source_type=SECURITY_EVENT + source_event_id。权限：`access_rules.manage`
+      responses:
+        '200':
+          description: 预填数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlacklistPrefillResponse' }
+        '400': { description: 事件 ID 无效或事件无客户端 IP }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
   # ==================== CC 防护策略 ====================
@@ -1522,6 +1594,63 @@ components:
         effective_from: { type: string, format: date-time, nullable: true, description: 生效时间（支持 RFC3339 / YYYY-MM-DD HH:mm:ss / YYYY-MM-DD） }
         effective_until: { type: string, format: date-time, nullable: true, description: 失效时间（TEMPORARY 必填且须晚于当前时间；格式同 effective_from） }
         reason: { type: string, maxLength: 500, description: 原因说明 }
+        source_type: { type: string, enum: [MANUAL, SECURITY_EVENT], default: MANUAL, description: 来源类型（缺省 MANUAL；SECURITY_EVENT 用于安全事件联动创建，必须携带 source_event_id；IMPORT/AUTO_BLOCK/SYSTEM 为内部通道写入，API 不接受） }
+        source_event_id: { type: string, format: uuid, nullable: true, description: 来源安全事件 ID（仅 source_type=SECURITY_EVENT 时必填，事件必须存在；其他来源不允许携带） }
+
+    BlacklistPrefillHitRule:
+      type: object
+      description: 近 24h 同 IP 命中规则统计
+      properties:
+        rule_id: { type: integer, description: 规则 ID }
+        rule_name: { type: string, description: 规则名称 }
+        hits: { type: integer, format: int64, description: 命中次数 }
+
+    BlacklistPrefillSharedEgress:
+      type: object
+      description: 共享出口/代理迹象（无任何身份数据时该字段整体省略，不编造）
+      properties:
+        identity_count: { type: integer, format: int64, description: 近 24h 同 IP 关联的不同身份数 }
+        suspected: { type: boolean, description: 身份数 ≥2 视为疑似共享出口/代理 }
+
+    BlacklistPrefillExistingRule:
+      type: object
+      description: 同地址已存在的黑名单规则（提示避免重复封禁）
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string, enum: [DRAFT, ACTIVE, DISABLED, EXPIRED, DELETED] }
+        validity_type: { type: string, enum: [PERMANENT, TEMPORARY] }
+        effective_until: { type: string, format: date-time, nullable: true }
+
+    BlacklistPrefill:
+      type: object
+      description: 事件→黑名单预填数据（阶段5 §十一；均为建议值，需管理员确认后才创建）
+      properties:
+        event_id: { type: string, format: uuid, description: 来源事件 ID }
+        address: { type: string, description: 事件客户端 IP（规范化后） }
+        rule_type: { type: string, enum: [DENY], description: 固定 DENY }
+        suggested_name: { type: string, description: 建议规则名称 }
+        suggested_reason: { type: string, description: 建议封禁原因 }
+        application_id: { type: string, format: uuid, nullable: true, description: 事件所属应用 ID }
+        application_name: { type: string, description: 事件所属应用名称快照 }
+        attack_type: { type: string, description: 攻击类型 }
+        severity: { type: string, enum: [HIGH, MEDIUM, LOW, INFO], description: 事件严重度 }
+        related_event_count_24h: { type: integer, format: int64, description: 近 24h 同 IP 相关事件数 }
+        last_attack_at: { type: string, format: date-time, nullable: true, description: 最近攻击时间 }
+        hit_rules:
+          type: array
+          items: { $ref: '#/components/schemas/BlacklistPrefillHitRule' }
+          description: 近 24h 命中规则（按命中次数降序，最多 10 条）
+        suggested_duration_hours: { type: integer, description: 建议封禁时长（小时；分档规则见接口描述，上限 72h） }
+        protected_hit: { type: boolean, description: 是否命中保护地址（命中时创建将被拒绝，仅作管理员提示） }
+        protected_name: { type: string, description: 命中的保护地址名称 }
+        shared_egress_hint: { $ref: '#/components/schemas/BlacklistPrefillSharedEgress' }
+        existing_deny_rule: { $ref: '#/components/schemas/BlacklistPrefillExistingRule' }
+
+    BlacklistPrefillResponse:
+      type: object
+      properties:
+        prefill: { $ref: '#/components/schemas/BlacklistPrefill' }
 
     AccessRuleUpdateRequest:
       type: object
@@ -1598,6 +1727,7 @@ components:
           items: { $ref: '#/components/schemas/AccessRuleImportRowError' }
           description: 行级错误列表
         imported: { type: integer, description: 实际导入条数（仅正式导入返回） }
+        status: { type: string, enum: [DRAFT], description: 导入规则统一落 DRAFT 草稿状态（仅正式导入返回）；草稿不参与发布快照，需逐条启用进入 ACTIVE }
         preview:
           type: array
           items: { $ref: '#/components/schemas/AccessRuleImportPreviewRow' }

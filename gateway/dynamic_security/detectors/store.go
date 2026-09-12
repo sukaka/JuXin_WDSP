@@ -67,6 +67,15 @@ type WebShellC2SessionStore interface {
 	ObserveResponse(key string, o WebShellC2ResponseStat) WebShellC2SessionStats
 }
 
+// FlowSessionStore 业务流程会话状态存储（flow 流程偏离检测用；语义与 flow.go
+// 进程内存实现一致：会话空闲超 FlowSessionTTL 重置，步骤集合/对象状态/幂等键
+// 槽位定容，重复提交短窗 FlowDuplicateWindow）。
+type FlowSessionStore interface {
+	// Observe 记录一次步骤观测，返回会话快照（Before 字段为记录前状态，
+	// SeenSteps/DuplicateCount 含本次，字段语义见 FlowSessionSnapshot）。
+	Observe(key string, o FlowObservation) FlowSessionSnapshot
+}
+
 // StoreOverrides 检测器计数存储注入集合：nil 字段 = 该检测面维持进程内默认实现。
 type StoreOverrides struct {
 	BehaviorWindow    WindowStore            // behavior 行为基线滑窗
@@ -75,6 +84,7 @@ type StoreOverrides struct {
 	IPSpread          IPSpreadStore          // 同凭据跨 IP 跳变集合
 	Concurrency       ConcurrencyStore       // 同凭据 in-flight 并发计数
 	WebShellC2Session WebShellC2SessionStore // webshellc2 加密 WebShell C&C 会话统计
+	FlowSession       FlowSessionStore       // flow 业务流程会话状态（§44）
 }
 
 // storeOverridesFor 读取管线绑定到本请求的存储选择。未绑定或显式绑定 nil
@@ -151,6 +161,15 @@ func NewMemoryWebShellC2SessionStore(capacity int) WebShellC2SessionStore {
 	return newWebShellC2Tracker(capacity)
 }
 
+// NewMemoryFlowSessionStore 构造进程内流程会话存储（LRU 定容；capacity≤0 取
+// DefaultStoreCapacity；now 语义同 NewMemoryWindowStore）。
+func NewMemoryFlowSessionStore(capacity int, now func() time.Time) FlowSessionStore {
+	if capacity <= 0 {
+		capacity = DefaultStoreCapacity
+	}
+	return newFlowSessionTracker(capacity, now)
+}
+
 // ---------- 检测器调用侧路由（注入优先，默认内存兜底；各检测器仅改一行调用点） ----------
 
 // behaviorCounts 行为基线滑窗计数（behavior.go 用）。
@@ -212,4 +231,12 @@ func webShellC2ObserveResponse(ctx *dsctx.RequestContext, key string, o WebShell
 		return ov.WebShellC2Session.ObserveResponse(key, o)
 	}
 	return defaultWebShellC2Tracker.ObserveResponse(key, o)
+}
+
+// flowSessionObserve 流程会话观测记录（flow.go 用；注入优先，默认内存兜底）。
+func flowSessionObserve(ctx *dsctx.RequestContext, key string, o FlowObservation) FlowSessionSnapshot {
+	if ov := storeOverridesFor(ctx); ov != nil && ov.FlowSession != nil {
+		return ov.FlowSession.Observe(key, o)
+	}
+	return defaultFlowSessionTracker.Observe(key, o)
 }

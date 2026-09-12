@@ -237,12 +237,25 @@ export const API_SEMANTIC_TYPE_META: Record<string, { color: string; label: stri
   money: { color: 'gold', label: '金额' },
 }
 
-/** 接口协议类型（api_endpoints.protocol_type，与网关分类器打标词表一致；协议名为专有名词保持英文） */
+/** 接口协议类型（api_endpoints.protocol_type，与网关分类器打标词表一致——任务书 §9 十三值
+ *  另含历史值 REST/GRPC/WEBSOCKET；协议名为专有名词保持英文） */
 export const API_PROTOCOL_META: Record<string, { color: string; label: string }> = {
+  REST_JSON: { color: 'blue', label: 'REST/JSON' },
+  REST_XML: { color: 'geekblue', label: 'REST/XML' },
+  FORM_API: { color: 'gold', label: 'Form 表单' },
+  SOAP: { color: 'volcano', label: 'SOAP' },
+  GRAPHQL: { color: 'purple', label: 'GraphQL' },
+  JSON_RPC: { color: 'magenta', label: 'JSON-RPC' },
+  XML_RPC: { color: 'orange', label: 'XML-RPC' },
+  WEBHOOK: { color: 'lime', label: 'Webhook' },
+  FILE_UPLOAD: { color: 'green', label: '文件上传' },
+  FILE_DOWNLOAD: { color: 'cyan', label: '文件下载' },
+  WEBSOCKET_HANDSHAKE: { color: 'cyan', label: 'WebSocket 握手' },
+  SERVER_SENT_EVENTS: { color: 'geekblue', label: 'SSE' },
+  UNKNOWN_HTTP_API: { color: 'default', label: '未知 HTTP API' },
+  // 历史值（存量数据与旧版网关仍可能上报）
   REST: { color: 'blue', label: 'REST' },
   GRPC: { color: 'geekblue', label: 'gRPC' },
-  GRAPHQL: { color: 'purple', label: 'GraphQL' },
-  SOAP: { color: 'volcano', label: 'SOAP' },
   WEBSOCKET: { color: 'cyan', label: 'WebSocket' },
 }
 

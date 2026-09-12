@@ -139,7 +139,8 @@ func TestProcessGRPCMaxFrameBytesConfig(t *testing.T) {
 	}
 }
 
-// 非 gRPC 流量：不打标、端点键维持归一化、零 gRPC 明细。
+// 非 gRPC 流量：端点键维持归一化、零 gRPC 明细。
+// §9 词表扩展后 API 分类命中的 JSON 流量按 REST_JSON 打标（新行为，原为不带扩展）。
 func TestProcessNonGRPCUntouched(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodPost, "http://h/v1/orders/9", strings.NewReader(`{"id":1}`))
 	r.Header.Set("Content-Type", "application/json")
@@ -147,8 +148,8 @@ func TestProcessNonGRPCUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := res.Context.GetExtension("api.protocol"); ok {
-		t.Fatal("non-grpc traffic must not carry api.protocol")
+	if v, ok := res.Context.GetExtension("api.protocol"); !ok || v != "REST_JSON" {
+		t.Fatalf("json api traffic protocol = %v/%v, want REST_JSON", v, ok)
 	}
 	if res.EndpointKey != "POST /v1/orders/{id}" {
 		t.Fatalf("endpoint key must stay normalized: %q", res.EndpointKey)

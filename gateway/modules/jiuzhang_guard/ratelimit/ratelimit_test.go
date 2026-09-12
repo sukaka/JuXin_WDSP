@@ -173,3 +173,69 @@ func TestValkeySlidingWindowMemberNodeUnique(t *testing.T) {
 		t.Fatal("same-node members must differ by seq")
 	}
 }
+
+// Peek 只读查询：计数与 Allow 同口径、不建键、不改变后续 Allow 判定。
+func TestMemoryPeek(t *testing.T) {
+	l := NewMemoryLimiter(100)
+	now := time.Now()
+	l.now = func() time.Time { return now }
+	ctx := context.Background()
+
+	// 键不存在：found=false 且不建键
+	if n, found, err := l.Peek(ctx, "nope", TokenBucket, 3, time.Minute, 3); err != nil || found || n != 0 {
+		t.Fatalf("missing key peek = %d,%v,%v", n, found, err)
+	}
+	if l.KeysCount() != 0 {
+		t.Fatalf("Peek must not create keys, KeysCount=%d", l.KeysCount())
+	}
+
+	// 令牌桶：2 次放行后已用量 2；Peek 不消费令牌（随后第 3 次仍放行、第 4 次拒绝）
+	l.Allow(ctx, "tb", TokenBucket, 3, time.Minute, 3)
+	l.Allow(ctx, "tb", TokenBucket, 3, time.Minute, 3)
+	if n, found, _ := l.Peek(ctx, "tb", TokenBucket, 3, time.Minute, 3); !found || n != 2 {
+		t.Fatalf("tb peek = %d,%v, want 2,true", n, found)
+	}
+	if res, _ := l.Allow(ctx, "tb", TokenBucket, 3, time.Minute, 3); !res.Allowed {
+		t.Fatal("peek must not consume tokens")
+	}
+	if res, _ := l.Allow(ctx, "tb", TokenBucket, 3, time.Minute, 3); res.Allowed {
+		t.Fatal("bucket should be exhausted after 3 allows")
+	}
+
+	// 滑动窗口：5 次放行后窗口计数 5；过窗后按权重回落
+	for i := 0; i < 5; i++ {
+		l.Allow(ctx, "sw", SlidingWindow, 5, time.Minute, 0)
+	}
+	if n, found, _ := l.Peek(ctx, "sw", SlidingWindow, 5, time.Minute, 0); !found || n != 5 {
+		t.Fatalf("sw peek = %d,%v, want 5,true", n, found)
+	}
+	now = now.Add(2 * time.Minute)
+	if n, _, _ := l.Peek(ctx, "sw", SlidingWindow, 5, time.Minute, 0); n != 0 {
+		t.Fatalf("sw peek after window = %d, want 0", n)
+	}
+
+	// 非法参数与未知算法如实报错
+	if _, _, err := l.Peek(ctx, "k", TokenBucket, 0, time.Minute, 0); err == nil {
+		t.Fatal("zero limit should error")
+	}
+	if _, _, err := l.Peek(ctx, "k", "NOPE", 1, time.Minute, 0); err == nil {
+		t.Fatal("unknown algorithm should error")
+	}
+}
+
+func TestValkeyPeekParsing(t *testing.T) {
+	fk := &fakeValkey{evalOut: []interface{}{int64(1), int64(3)}}
+	l := NewValkeyLimiter(fk, "")
+	n, found, err := l.Peek(context.Background(), "k", TokenBucket, 5, time.Minute, 5)
+	if err != nil || !found || n != 3 {
+		t.Fatalf("tb peek = %d,%v,%v, want 3,true,nil", n, found, err)
+	}
+	fk.evalOut = []interface{}{int64(0), int64(0)}
+	if n, found, _ = l.Peek(context.Background(), "k", SlidingWindow, 5, time.Minute, 0); found || n != 0 {
+		t.Fatalf("missing sw key peek = %d,%v, want 0,false", n, found)
+	}
+	fk.evalErr = errors.New("valkey down")
+	if _, _, err := l.Peek(context.Background(), "k", TokenBucket, 5, time.Minute, 5); err == nil {
+		t.Fatal("error should propagate (fail strategy by caller)")
+	}
+}

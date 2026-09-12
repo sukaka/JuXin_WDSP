@@ -68,12 +68,15 @@ type CompiledEndpointPolicy struct {
 }
 
 // deriveContentType 由端点协议类型推导请求体 content_type：
-// REST（含空值缺省）与 GRAPHQL（over HTTP 主体即 JSON）按 JSON 学习 → application/json；
-// 其余协议（GRPC/SOAP/WEBSOCKET 等）本波不约束（空串）。
+// REST（历史值，含空值缺省）/REST_JSON/JSON_RPC 与 GRAPHQL（over HTTP 主体即 JSON）
+// 按 JSON 学习 → application/json；FORM_API → application/x-www-form-urlencoded；
+// 其余协议（GRPC/SOAP/REST_XML/XML_RPC/WEBSOCKET_HANDSHAKE/文件传输/SSE 等）本波不约束（空串）。
 func deriveContentType(protocolType string) string {
 	switch strings.ToUpper(strings.TrimSpace(protocolType)) {
-	case "", "REST", "GRAPHQL":
+	case "", "REST", "REST_JSON", "JSON_RPC", "GRAPHQL":
 		return "application/json"
+	case "FORM_API":
+		return "application/x-www-form-urlencoded"
 	default:
 		return ""
 	}

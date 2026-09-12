@@ -37,6 +37,12 @@ type TrendData struct {
 	Granularity string               `json:"granularity"`
 	Times       []time.Time          `json:"times"`
 	Series      map[string][]float64 `json:"series"`
+	// 请求方法/Content-Type/客户端 IP 来源/可信代理来源分布仅 RequestTrend 返回
+	// （数据源 access_logs 实时聚合），其余趋势接口不产出，空时序列化省略。
+	MethodDistribution         []KV `json:"method_distribution,omitempty"`
+	ContentTypeDistribution    []KV `json:"content_type_distribution,omitempty"`
+	ClientIPSourceDistribution []KV `json:"client_ip_source_distribution,omitempty"`
+	TrustedProxyDistribution   []KV `json:"trusted_proxy_distribution,omitempty"`
 }
 
 // CountPoint 计数趋势点。
@@ -305,6 +311,64 @@ func (s *Store) percentileSeries(ctx context.Context, r Range, appCode string, t
 		p99[i] = metrics.PercentileFromBuckets(counts, 0.99)
 	}
 	return p50, p95, p99, nil
+}
+
+// ---------- 请求方法 / Content-Type 分布 ----------
+
+// distributionLimit 单维分布返回项数上限（值降序）。
+const distributionLimit = 20
+
+// requestDistribution 按 access_logs 单列实时聚合分布（col 仅允许代码内常量列名，
+// 不接受用户输入）；键经 normalize 归一合并后按值降序取前 distributionLimit 项。
+func (s *Store) requestDistribution(ctx context.Context, r Range, appID *uuid.UUID, col string, normalize func(string) string) ([]KV, error) {
+	where := "occurred_at >= $1 AND occurred_at < $2"
+	args := []interface{}{r.Start, r.End}
+	if appID != nil {
+		where += fmt.Sprintf(" AND application_id = $%d", len(args)+1)
+		args = append(args, *appID)
+	}
+	rows, err := s.db.Query(ctx, fmt.Sprintf(
+		`SELECT %s, count(*) FROM access_logs WHERE %s GROUP BY 1`, col, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	merged := map[string]float64{}
+	for rows.Next() {
+		var raw string
+		var n int64
+		if err := rows.Scan(&raw, &n); err != nil {
+			return nil, err
+		}
+		merged[normalize(raw)] += float64(n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return TopN(SortKVsDesc(merged), distributionLimit), nil
+}
+
+// MethodDistribution 请求方法分布（数据源：全量访问日志 access_logs.request_method）。
+func (s *Store) MethodDistribution(ctx context.Context, r Range, appID *uuid.UUID) ([]KV, error) {
+	return s.requestDistribution(ctx, r, appID, "request_method", normalizeMethod)
+}
+
+// ContentTypeDistribution 请求 Content-Type 主类型分布（数据源：access_logs.content_type，
+// 网关写入侧已脱敏截断，这里只取规范化主类型，不涉及请求体）。
+func (s *Store) ContentTypeDistribution(ctx context.Context, r Range, appID *uuid.UUID) ([]KV, error) {
+	return s.requestDistribution(ctx, r, appID, "content_type", NormalizeContentType)
+}
+
+// ClientIPSourceDistribution 客户端 IP 识别来源分布（数据源：access_logs.client_ip_source，
+// 迁移 000144 起由网关上报；NULL = 旧版网关未上报，归入“(未知)”）。
+func (s *Store) ClientIPSourceDistribution(ctx context.Context, r Range, appID *uuid.UUID) ([]KV, error) {
+	return s.requestDistribution(ctx, r, appID, "COALESCE(client_ip_source, '')", NormalizeClientIPSource)
+}
+
+// TrustedProxyDistribution 可信代理来源分布（数据源：access_logs.trusted_proxy_used，
+// 迁移 000144 起由网关上报；NULL/空 = 未经过可信代理解析，归入“(直连)”）。
+func (s *Store) TrustedProxyDistribution(ctx context.Context, r Range, appID *uuid.UUID) ([]KV, error) {
+	return s.requestDistribution(ctx, r, appID, "COALESCE(trusted_proxy_used, '')", normalizeTrustedProxy)
 }
 
 // ---------- 安全事件趋势 ----------

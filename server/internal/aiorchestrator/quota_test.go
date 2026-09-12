@@ -94,7 +94,7 @@ func composeTestGateway(t *testing.T, maxTokensSeen *int64, hits *int32) *aimode
 
 	gw := aimodel.NewGateway(nil)
 	m := &aimodel.Model{ID: uuid.New(), Code: "test-model", TimeoutSeconds: 5, Status: "ACTIVE"}
-	p := &aimodel.Provider{ID: uuid.New(), Name: "test", Type: aimodel.ProviderOpenAICompatible, BaseURL: srv.URL}
+	p := &aimodel.Provider{ID: uuid.New(), Name: "test", Type: aimodel.ProviderOpenAICompatible, BaseURL: srv.URL, AllowedTargets: []string{"127.0.0.1/32"}}
 	gw.SetRoutes(map[aimodel.TaskComplexity][]struct {
 		Model    *aimodel.Model
 		Provider *aimodel.Provider

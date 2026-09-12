@@ -201,3 +201,18 @@ func TestGenerateGuardRoutedDeploymentMode(t *testing.T) {
 		}
 	}
 }
+
+// debug_cc_counter 下发：true 显式注入，false/缺省与历史版本逐字节一致。
+func TestBuildGuardHandlerDebugCCCounter(t *testing.T) {
+	app := AppData{AppID: "app-x", Code: "shop", ProtectionMode: applications.ModeProtect}
+	off := buildGuardHandler(testGuardConfig(), app, 8080)
+	if _, ok := off["debug_cc_counter"]; ok {
+		t.Fatal("debug_cc_counter must be absent when disabled")
+	}
+	on := testGuardConfig()
+	on.DebugCCCounter = true
+	h := buildGuardHandler(on, app, 8080)
+	if h["debug_cc_counter"] != true {
+		t.Fatalf("debug_cc_counter = %v, want true", h["debug_cc_counter"])
+	}
+}

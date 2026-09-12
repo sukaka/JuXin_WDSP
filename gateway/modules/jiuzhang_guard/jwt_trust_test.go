@@ -542,6 +542,37 @@ func TestJWTTrust_WhitelistDoesNotBypassProtect(t *testing.T) {
 
 // ---------- JWT-12：VERIFIED 不产生全局放行 ----------
 
+// 阶段5 §6.5 收口：JWT_* 事件携带真实 IP 识别三字段（client_ip_source/
+// trusted_proxy_used/forwarded_chain_summary，与 eventBase 同口径）。
+func TestJWTTrust_EventCarriesRealClientIPFields(t *testing.T) {
+	key := jwtTestRSA(t)
+	g := newJWTGuard(t, jwtStaticSection("PROTECT", true, jwtTestJWKS(t, &key.PublicKey, "k1")),
+		func(g *Guard) {
+			g.proxies = mustProxySet(t, []proxyJSON{{Name: "lb", CIDR: "10.0.0.1", HeaderType: "X_FORWARDED_FOR", Priority: 1}})
+		})
+	r := jwtReq("GET", "/api/orders", "10.0.0.1:5555", "")
+	r.Header.Set("X-Forwarded-For", "198.51.100.9")
+	r.Header.Set("X-Request-Id", "jwt-fields-1")
+	rec, called, err := jwtServe(t, g, r)
+	if err != nil || called || rec.Code != http.StatusUnauthorized {
+		t.Fatalf("缺必需 Bearer 应 401: err=%v called=%v code=%d", err, called, rec.Code)
+	}
+	var jwtEv *events.Event
+	evs := g.readEvents(t)
+	for i := range evs {
+		if evs[i].EventType == events.JWTAuthFailed && evs[i].RequestID == "jwt-fields-1" {
+			jwtEv = &evs[i]
+		}
+	}
+	if jwtEv == nil {
+		t.Fatal("应产 JWT_AUTH_FAILED 事件")
+	}
+	if jwtEv.ClientIP != "198.51.100.9" || jwtEv.ClientIPSource != "X_FORWARDED_FOR" ||
+		jwtEv.TrustedProxyUsed != "lb" || jwtEv.ForwardedChainSummary != "198.51.100.9" {
+		t.Fatalf("JWT 事件应携带真实 IP 三字段: %+v", jwtEv)
+	}
+}
+
 // VERIFIED JWT + CC 超限：最终处置仍为 CC 模块 429（JWT 不放行其他防护）。
 func TestJWTTrust_VerifiedDoesNotBypassCC(t *testing.T) {
 	key := jwtTestRSA(t)

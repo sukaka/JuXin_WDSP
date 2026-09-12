@@ -1,5 +1,6 @@
 import { buildUrl, request } from './client'
 import type {
+  BlacklistPrefillResult,
   CreateExceptionFromEventResult,
   EventRemediationResult,
   PageResult,
@@ -90,6 +91,11 @@ export const securityEventsApi = {
     request<CreateExceptionFromEventResult>(`/security-events/${id}/create-exception`, {
       method: 'POST',
     }),
+  /** 事件→黑名单预填（阶段5 §十一；只读不落库，权限 access_rules.manage） */
+  blacklistPrefill: async (id: string) => {
+    const data = await request<BlacklistPrefillResult>(`/security-events/${id}/blacklist-prefill`)
+    return { ...data.prefill, hit_rules: data.prefill.hit_rules ?? [] }
+  },
   /** 导出 CSV（后端仅支持 start_time/end_time/domain/attack_type/severity 过滤） */
   exportUrl: (
     params: Pick<

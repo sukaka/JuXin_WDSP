@@ -80,6 +80,23 @@ func (g *Guard) bridgeRequestContext(r *http.Request, rc *dsctx.RequestContext) 
 	}
 }
 
+// enrichContextIdentifiers 填充统一上下文 §7 字段：device_fingerprint（被动 UA/Accept
+// 族指纹）与 object_identifiers（路径位置参数 + body 主键字段的对象标识哈希）。
+// 产出为 parser 纯函数：热路径零网络 IO，定长 HMAC + 条数/值长双封顶。
+// parsed 为 nil（体未保全等场景）时仅产出来自头部的设备指纹与路径侧对象标识
+// （调用方可用最小 Parsed{RawPath, NormalizedPath} 供给路径侧）。
+func (g *Guard) enrichContextIdentifiers(r *http.Request, rc *dsctx.RequestContext, parsed *parser.Parsed) {
+	if rc == nil || r == nil {
+		return
+	}
+	if rc.DeviceFingerprint == "" {
+		rc.DeviceFingerprint = parser.DeriveDeviceFingerprint(g.IdentitySalt, r.Header)
+	}
+	if parsed != nil && len(rc.ObjectIdentifiers) == 0 {
+		rc.SetObjectIdentifiers(parser.ExtractObjectIdentifiers(parsed, g.IdentitySalt))
+	}
+}
+
 // apiDecisionMode 解析防护模式；启用但模式未配置时默认 OBSERVE（fail-safe，不放任阻断）。
 func apiDecisionMode(s string) decision.Mode {
 	switch decision.Mode(s) {
@@ -677,7 +694,13 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 		ParamConstraints:      g.APIParameterConstraints[ek],
 		KnownEndpoints:        g.APIKnownEndpoints,
 		APIWriteRatePerMinute: g.APIWriteRatePerMinute,
-		IdentitySalt:          g.IdentitySalt,
+		// §36 限流下发面（发布通道下发；0 = 不启用，不走引擎默认值）
+		APIQuotaPerHour:     g.APIQuotaPerHour,
+		APIQuotaPerDay:      g.APIQuotaPerDay,
+		ObjectRatePerMinute: g.ObjectRatePerMinute,
+		MaxPageSize:         g.MaxPageSize,
+		MaxBatchSize:        g.MaxBatchSize,
+		IdentitySalt:        g.IdentitySalt,
 		// 值级敏感检测规则（发布通道下发；空 = 关闭值级检测，零行为变化）
 		SensitiveValueRules: g.APISensitiveValueRules,
 		// 授权基线（发布通道下发；按端点选取，nil = 无端点基线，BFLA/字段权限检测零行为）
@@ -685,9 +708,17 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 		FieldPermissions: g.apiFieldPerms[ek],
 		// 已确认参数条件关系（发布通道下发；按端点选取，nil = 无端点关系，关系检测零行为）
 		ParamRelations: g.apiParamRelations[ek],
+		// 业务流程基线（发布通道下发 api_flow_baselines，§44；Provision 按端点归组后选取，
+		// nil = 无端点流程基线，流程偏离检测零行为，不编造基线；全部明细 OBSERVE 级）
+		FlowBaselines: g.apiFlowBaselines[ek],
+		// 已吊销凭据清单（发布通道下发 api_revoked_credentials，§35 第10项；Provision 已校验；
+		// nil = 无吊销清单，吊销检测零行为；运行期按请求凭据键集合比对，过期条目自行失效）
+		RevokedCredentials: g.APIRevokedCredentials,
 		// 同凭据环境异常阈值（≤0 由引擎默认值兜底）
 		CredentialIPSpreadLimit:    g.CredentialIPSpreadLimit,
 		CredentialConcurrencyLimit: g.CredentialConcurrencyLimit,
+		// 应用标识（同凭据跨应用检测；空 = 应用未识别，该项检测跳过）
+		ApplicationID: g.AppID,
 		// 行为计数存储（nil = 进程内默认内存；valkey 时跨节点共享，故障自动 Fail-open 回内存）
 		Stores: g.behaviorStores,
 		// 版本快照（Finding 逐条盖章 model_version/policy_version，溯源"当时生效哪版"）
@@ -753,6 +784,8 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 
 	// APM 阶段1（D6）：桥接请求级关联字段进统一 RequestContext（原死字段填充）
 	g.bridgeRequestContext(r, res.Context)
+	// 任务书 §7：设备指纹与对象标识哈希进统一上下文（parser 纯函数，零网络 IO）
+	g.enrichContextIdentifiers(r, res.Context, res.Parsed)
 
 	// 统一上下文随请求传递，供下游复用
 	*r = *r.WithContext(context.WithValue(r.Context(), requestContextKey{}, res.Context))
@@ -888,6 +921,8 @@ func (g *Guard) noteAPIBodyPreserveSkipped(r *http.Request, start time.Time, rea
 		EndpointKey: normalizer.EndpointKey(r.Method, r.URL.Path),
 		FinalAction: dsctx.ActionObserve,
 	}
+	// §7 字段：体未保全不影响头部设备指纹与路径侧对象标识产出
+	g.enrichContextIdentifiers(r, rc, res.Parsed)
 	g.emitAPIEvent(r, res, &apiEventTail{latencyMS: time.Since(start).Milliseconds()})
 }
 
@@ -927,6 +962,9 @@ func (g *Guard) emitAPIEvent(r *http.Request, res *pipeline.Result, tail *apiEve
 		// 策略版本戳原样透传；FORMAL 模型版本按端点命中（未下发则省略）
 		PolicyVersion: g.APIPolicyVersion,
 		ModelVersion:  g.APIFormalModelVersions[res.EndpointKey],
+		// 任务书 §7：被动设备指纹与对象标识哈希（统一上下文快照；空值经 omitempty 省略）
+		DeviceFingerprint: pe.DeviceFingerprint,
+		ObjectIdentifiers: pe.ObjectIdentifiers,
 	}
 	if res.Parsed != nil {
 		rec.Method = res.Parsed.Method
@@ -934,8 +972,9 @@ func (g *Guard) emitAPIEvent(r *http.Request, res *pipeline.Result, tail *apiEve
 		rec.RawPath = res.Parsed.RawPath // 归一化前路径、不含 query（Emit 时封顶 512 字符）
 	}
 	// 协议可见性（W14-GW）：proto 记录 HTTP 协议版本（r.Proto 原样：HTTP/1.1/2.0/3，
-	// 空 = 不可得省略）；protocol 记录应用层协议族（gRPC 识别命中 = GRPC，其余省略
-	// 保持事件零变化，采集端按缺省 REST 口径消费）。
+	// 空 = 不可得省略）；protocol 记录应用层协议族（§9 词表：GRPC/GRAPHQL/SOAP/JSON_RPC/
+	// SSE/FILE_UPLOAD/FILE_DOWNLOAD/WEBHOOK/REST_JSON 等；非 API 普通流量省略保持事件
+	// 零变化，采集端按缺省 REST 口径消费）。
 	rec.Proto = r.Proto
 	if v, ok := res.Context.GetExtension("api.protocol"); ok {
 		if s, ok := v.(string); ok {
@@ -944,6 +983,13 @@ func (g *Guard) emitAPIEvent(r *http.Request, res *pipeline.Result, tail *apiEve
 			if s == "GRPC" && res.Parsed != nil {
 				rec.PathTemplate = res.Parsed.RawPath
 			}
+		}
+	}
+	// §8.2 四级识别标签：取管线写入的 ctx 扩展 api.classification（与 is_api/api_confidence
+	// 同源同分）；未写（fail-open 旁路等）则保持空值经 omitempty 省略，不编造。
+	if v, ok := res.Context.GetExtension("api.classification"); ok {
+		if s, ok := v.(string); ok {
+			rec.APILevel = s
 		}
 	}
 	rec.Domain = requestHost(r)
@@ -979,9 +1025,12 @@ func (g *Guard) emitAPIEvent(r *http.Request, res *pipeline.Result, tail *apiEve
 		patterns, perr := detectors.CompileSensitivePatterns(nil)
 		valueRules, verr := detectors.CompileSensitiveValueRules(g.APISensitiveValueRules)
 		if perr == nil && verr == nil {
-			rec.ParamObservations = detectors.CollectParamObservationsSecure(res.Parsed, g.IdentitySalt, patterns, valueRules)
+			rec.ParamObservations = apievents.ExtendParamObservations(
+				detectors.CollectParamObservationsSecure(res.Parsed, g.IdentitySalt, patterns, valueRules),
+				res.Parsed, g.IdentitySalt)
 		} else {
-			rec.ParamObservations = detectors.CollectParamObservations(res.Parsed)
+			rec.ParamObservations = apievents.ExtendParamObservations(
+				detectors.CollectParamObservations(res.Parsed), res.Parsed, g.IdentitySalt)
 		}
 	}
 	// 响应结构观测（P0-06）：仅 API 流量且响应相位已产出（捕获到合法 JSON）时挂事件；

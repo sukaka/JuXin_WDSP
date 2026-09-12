@@ -20,6 +20,11 @@ func TestApplyGatewayRuntimeSettings(t *testing.T) {
 		"credential_ip_spread_limit":    "5",
 		"credential_concurrency_limit":  "10",
 		"api_write_rate_per_minute":     "120",
+		"api_quota_per_hour":            "3600",
+		"api_quota_per_day":             "50000",
+		"object_rate_per_minute":        "60",
+		"max_page_size":                 "500",
+		"max_batch_size":                "200",
 		"unknown_future_key":            "ignored", // 未识别键忽略（前向兼容）
 		"behavior_store_empty_fallback": "",
 	})
@@ -28,7 +33,9 @@ func TestApplyGatewayRuntimeSettings(t *testing.T) {
 	}
 	if cfg.BehaviorStore != "valkey" || cfg.BehaviorStoreTTLSeconds != 720 ||
 		cfg.IdentitySalt != "s3cret" || cfg.CredentialIPSpreadLimit != 5 ||
-		cfg.CredentialConcurrencyLimit != 10 || cfg.APIWriteRatePerMinute != 120 {
+		cfg.CredentialConcurrencyLimit != 10 || cfg.APIWriteRatePerMinute != 120 ||
+		cfg.APIQuotaPerHour != 3600 || cfg.APIQuotaPerDay != 50000 ||
+		cfg.ObjectRatePerMinute != 60 || cfg.APIMaxPageSize != 500 || cfg.APIMaxBatchSize != 200 {
 		t.Fatalf("cfg = %+v", cfg)
 	}
 
@@ -38,7 +45,9 @@ func TestApplyGatewayRuntimeSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	if empty.BehaviorStore != "" || empty.IdentitySalt != "" || empty.BehaviorStoreTTLSeconds != 0 ||
-		empty.CredentialIPSpreadLimit != 0 || empty.CredentialConcurrencyLimit != 0 || empty.APIWriteRatePerMinute != 0 {
+		empty.CredentialIPSpreadLimit != 0 || empty.CredentialConcurrencyLimit != 0 || empty.APIWriteRatePerMinute != 0 ||
+		empty.APIQuotaPerHour != 0 || empty.APIQuotaPerDay != 0 || empty.ObjectRatePerMinute != 0 ||
+		empty.APIMaxPageSize != 0 || empty.APIMaxBatchSize != 0 {
 		t.Fatalf("empty settings must leave zero values: %+v", empty)
 	}
 
@@ -76,10 +85,15 @@ func TestApplyGatewayRuntimeSettingsTicketKey(t *testing.T) {
 // TestApplyGatewayRuntimeSettingsInvalid 非法取值如实报错（枚举外词汇/非数字/负数）。
 func TestApplyGatewayRuntimeSettingsInvalid(t *testing.T) {
 	cases := map[string]map[string]string{
-		"非法枚举": {"behavior_store": "redis"},
-		"非数字":  {"behavior_store_ttl_seconds": "abc"},
-		"负数":   {"credential_ip_spread_limit": "-1"},
-		"浮点":   {"api_write_rate_per_minute": "1.5"},
+		"非法枚举":    {"behavior_store": "redis"},
+		"非数字":     {"behavior_store_ttl_seconds": "abc"},
+		"负数":      {"credential_ip_spread_limit": "-1"},
+		"浮点":      {"api_write_rate_per_minute": "1.5"},
+		"配额负数":    {"api_quota_per_hour": "-10"},
+		"日配额非数字":  {"api_quota_per_day": "many"},
+		"对象限速浮点":  {"object_rate_per_minute": "2.5"},
+		"分页上限负数":  {"max_page_size": "-1"},
+		"批量上限非数字": {"max_batch_size": "abc"},
 	}
 	for name, kv := range cases {
 		if err := applyGatewayRuntimeSettings(&gatewayconfig.GuardConfig{}, kv); err == nil {
@@ -175,6 +189,11 @@ func TestComputeAPIPolicyVersion(t *testing.T) {
 		"credential_ip_spread_limit":     func(c *gatewayconfig.GuardConfig) { c.CredentialIPSpreadLimit = 5 },
 		"credential_concurrency_limit":   func(c *gatewayconfig.GuardConfig) { c.CredentialConcurrencyLimit = 10 },
 		"api_write_rate_per_minute":      func(c *gatewayconfig.GuardConfig) { c.APIWriteRatePerMinute = 120 },
+		"api_quota_per_hour":             func(c *gatewayconfig.GuardConfig) { c.APIQuotaPerHour = 3600 },
+		"api_quota_per_day":              func(c *gatewayconfig.GuardConfig) { c.APIQuotaPerDay = 50000 },
+		"object_rate_per_minute":         func(c *gatewayconfig.GuardConfig) { c.ObjectRatePerMinute = 60 },
+		"max_page_size":                  func(c *gatewayconfig.GuardConfig) { c.APIMaxPageSize = 500 },
+		"max_batch_size":                 func(c *gatewayconfig.GuardConfig) { c.APIMaxBatchSize = 200 },
 		"api_response_fail_policy":       func(c *gatewayconfig.GuardConfig) { c.APIResponseFailPolicy = "FAIL_CLOSED" },
 		"api_response_capture_max_bytes": func(c *gatewayconfig.GuardConfig) { c.APIResponseCaptureMaxBytes = 4096 },
 		"api_llm_allowed_models":         func(c *gatewayconfig.GuardConfig) { c.APILLMAllowedModels = []string{"gpt-x"} },

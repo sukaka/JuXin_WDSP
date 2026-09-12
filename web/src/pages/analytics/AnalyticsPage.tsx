@@ -15,6 +15,7 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { hasAnyPermission, hasPermission } from '../../utils/permission'
 import { ATTACK_TYPE_META, DISPOSITION_STATUS_META, EVENT_SEVERITY_META } from '../../utils/stage4'
+import { CLIENT_IP_SOURCE_META } from '../../utils/stage5'
 import { TREND_RANGE_OPTIONS } from '../../utils/stage6'
 import type { CountPoint, KeyValue } from '../../types'
 
@@ -158,6 +159,26 @@ export default function AnalyticsPage() {
     }
   }, [requestTrendQuery.data])
 
+  const methodDistOption = useMemo<EChartOption>(
+    () => kvBarOption(requestTrendQuery.data?.method_distribution ?? EMPTY_KV, undefined, '#1677ff'),
+    [requestTrendQuery.data],
+  )
+
+  const contentTypeDistOption = useMemo<EChartOption>(
+    () => kvBarOption(requestTrendQuery.data?.content_type_distribution ?? EMPTY_KV, undefined, '#722ed1'),
+    [requestTrendQuery.data],
+  )
+
+  const clientIPSourceDistOption = useMemo<EChartOption>(
+    () => kvBarOption(requestTrendQuery.data?.client_ip_source_distribution ?? EMPTY_KV, CLIENT_IP_SOURCE_META, '#13c2c2'),
+    [requestTrendQuery.data],
+  )
+
+  const trustedProxyDistOption = useMemo<EChartOption>(
+    () => kvBarOption(requestTrendQuery.data?.trusted_proxy_distribution ?? EMPTY_KV, undefined, '#fa8c16'),
+    [requestTrendQuery.data],
+  )
+
   const eventTrendOption = useMemo<EChartOption>(() => {
     const data = eventTrendQuery.data
     const times = (data?.times ?? []).map((t) => dayjs(t).format('MM-DD HH:mm'))
@@ -191,7 +212,33 @@ export default function AnalyticsPage() {
             children: requestTrendQuery.isError ? (
               <QueryErrorAlert error={requestTrendQuery.error} message="加载请求趋势失败" />
             ) : (
-              <EChart option={requestOption} height={360} ariaLabel="请求趋势" />
+              <Space direction="vertical" size={16} style={{ display: 'flex' }}>
+                <EChart option={requestOption} height={360} ariaLabel="请求趋势" />
+                <Row gutter={16}>
+                  <Col xs={24} md={12}>
+                    <Card size="small" title="请求方法分布">
+                      <EChart option={methodDistOption} height={280} ariaLabel="请求方法分布" />
+                    </Card>
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <Card size="small" title="Content-Type 分布">
+                      <EChart option={contentTypeDistOption} height={280} ariaLabel="Content-Type 分布" />
+                    </Card>
+                  </Col>
+                </Row>
+                <Row gutter={16}>
+                  <Col xs={24} md={12}>
+                    <Card size="small" title="客户端 IP 来源分布">
+                      <EChart option={clientIPSourceDistOption} height={280} ariaLabel="客户端 IP 来源分布" />
+                    </Card>
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <Card size="small" title="可信代理来源分布">
+                      <EChart option={trustedProxyDistOption} height={280} ariaLabel="可信代理来源分布" />
+                    </Card>
+                  </Col>
+                </Row>
+              </Space>
             ),
           },
           {

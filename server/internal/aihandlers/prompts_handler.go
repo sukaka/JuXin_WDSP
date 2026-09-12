@@ -1,8 +1,10 @@
-// prompts_handler.go Prompt 管理：创建/版本/静态测试/发布/回滚。
-// 版本不可变；仅静态检查通过（PASSED）的版本可发布（store.Publish 强制，本层先给出友好错误）。
+// prompts_handler.go Prompt 管理：创建/版本/静态测试/对抗测试/发布/回滚。
+// 版本不可变；发布门（store.Publish 强制，本层先给出友好错误）：
+// 静态安全检查 + 测试集回归 PASSED + 对抗测试 ADVERSARIAL_PASSED 齐备方可发布，人工审核为发布动作本身。
 package aihandlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -185,6 +187,40 @@ func (d *Deps) PromptVersionTest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// PromptVersionAdversarialTest 版本对抗测试（§24.4）：
+// 对版本内容跑内置对抗样本集（提示注入/越权诱导/数据泄露诱导），逐样本判定并回写
+// adversarial_result（ADVERSARIAL_PASSED/ADVERSARIAL_FAILED）与明细；失败原因如实返回。
+func (d *Deps) PromptVersionAdversarialTest(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	vid, err := uuid.Parse(r.PathValue("versionId"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的版本ID")
+		return
+	}
+	v, err := d.Prompts.GetVersion(r.Context(), vid)
+	if err != nil {
+		d.promptError(w, r, err)
+		return
+	}
+	result, cases := aiprompts.RunAdversarial(v.Content)
+	detailJSON, err := json.Marshal(cases)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	if err := d.Prompts.MarkAdversarialResult(r.Context(), vid, result, detailJSON); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	d.recordAIAudit(p, aiaudit.Record{
+		Action: "prompt_adversarial_test", PromptVersion: fmt.Sprint(v.VersionNumber),
+		RequestSummary: "对抗测试 Prompt 版本 " + vid.String(), ResultSummary: result,
+	})
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{
+		"adversarial_result": result, "cases": cases,
+	})
+}
+
 // PromptDiff 比较两个版本内容差异摘要（行级统计 + 截断预览）。
 func (d *Deps) PromptDiff(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -263,7 +299,7 @@ func (d *Deps) PromptDiff(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// PromptPublish 发布版本（仅测试 PASSED 可发布，store 层强制）。
+// PromptPublish 发布版本（人工审核动作；发布门：回归测试 PASSED + 对抗测试 ADVERSARIAL_PASSED，store 层强制）。
 func (d *Deps) PromptPublish(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -288,8 +324,17 @@ func (d *Deps) PromptPublish(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "Prompt 或版本不存在")
 			return
 		}
-		if strings.Contains(err.Error(), "must pass regression test") {
-			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "仅静态测试通过（PASSED）的版本可发布")
+		var gateErr *aiprompts.PublishGateError
+		if errors.As(err, &gateErr) {
+			gateState := func(s string) string {
+				if s == "" {
+					return "未执行"
+				}
+				return s
+			}
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+				fmt.Sprintf("仅回归测试 PASSED 且对抗测试 ADVERSARIAL_PASSED 的版本可发布（当前：回归测试=%s，对抗测试=%s）",
+					gateState(gateErr.TestResult), gateState(gateErr.AdversarialResult)))
 			return
 		}
 		response.InternalError(w, r, err)

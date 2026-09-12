@@ -4,6 +4,7 @@
 #   2. 归档许可证文本禁止出现 GPL/AGPL/SSPL 字样（AGENTS.md 红线）
 #   3. SBOM 组件许可证必须在允许清单内（NOASSERTION 计警告，需人工复核）
 #   4. 必备归档组件逐一核对（与 docs/DEPENDENCIES.md / THIRD_PARTY_NOTICES.md 一致）
+#   5. docs/DEPENDENCY_LICENSES.md 与 licenses/ 同步核对（双向）
 # 退出码：0=通过 1=失败 2=用法错误
 set -euo pipefail
 
@@ -15,6 +16,7 @@ usage() {
   - licenses/ 归档完整性与禁用许可证（GPL/AGPL/SSPL）扫描
   - docs/SBOM.spdx.json / docs/SBOM.cyclonedx.json 许可证清单审计
   - 必备组件归档核对
+  - docs/DEPENDENCY_LICENSES.md 与 licenses/ 双向同步核对
 
 选项:
   -h, --help   显示帮助
@@ -99,7 +101,30 @@ for comp in "${required[@]}"; do
   fi
 done
 
-echo
+# ---- 5. DEPENDENCY_LICENSES.md 与 licenses/ 同步核对 ----
+echo "== 5. DEPENDENCY_LICENSES.md 与 licenses/ 同步核对 =="
+DEPLIC="$DOCS_DIR/DEPENDENCY_LICENSES.md"
+if [[ ! -s "$DEPLIC" ]]; then
+  err "docs/DEPENDENCY_LICENSES.md 不存在（阶段6 §十七 必备文档）"
+else
+  # 5.1 每个 licenses/ 组件目录必须在清单中登记
+  for dir in "$LICENSES_DIR"/*/; do
+    comp="$(basename "$dir")"
+    if grep -q "licenses/$comp/" "$DEPLIC"; then
+      ok "licenses/$comp/ 已在 DEPENDENCY_LICENSES.md 登记"
+    else
+      err "licenses/$comp/ 未在 docs/DEPENDENCY_LICENSES.md 登记"
+    fi
+  done
+  # 5.2 清单引用的归档路径必须真实存在
+  while IFS= read -r ref; do
+    if [[ -d "$REPO_ROOT/$ref" ]]; then
+      ok "$ref 存在"
+    else
+      err "DEPENDENCY_LICENSES.md 引用的归档路径不存在: $ref"
+    fi
+  done < <(grep -oE 'licenses/[A-Za-z0-9._-]+/' "$DEPLIC" | sort -u)
+fi
 if [[ "$FAIL" -ne 0 ]]; then
   echo "许可证审计未通过" >&2
   exit 1

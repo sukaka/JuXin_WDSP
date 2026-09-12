@@ -441,6 +441,10 @@ func (e *errLimiter) Allow(_ context.Context, _ string, _ ratelimit.Algorithm, _
 	return ratelimit.Result{}, errEngine
 }
 
+func (e *errLimiter) Peek(_ context.Context, _ string, _ ratelimit.Algorithm, _ int64, _ time.Duration, _ int64) (int64, bool, error) {
+	return 0, false, errEngine
+}
+
 // fakeValkeyClient Valkey 测试替身：仅记录 Close 调用（命令方法不支持，调用即错）。
 type fakeValkeyClient struct{ closed bool }
 
@@ -581,6 +585,71 @@ func TestGetEngineFailedRebuildKeepsOldEngine(t *testing.T) {
 	res, lerr := old.limiter.Allow(context.Background(), "k", ratelimit.TokenBucket, 1, time.Minute, 1)
 	if lerr != nil || !res.Allowed {
 		t.Fatalf("old engine must remain functional: %v %+v", lerr, res)
+	}
+}
+
+// M-13：启动首刷失败（fail-open 默认）——Error 日志之外产节流事件，不阻断引擎初始化；
+// 同一引擎一分钟内重复失败只产一条（与请求路径 emitEngineErrorThrottled 同节流口径）。
+func TestInitialBlockRefreshFailOpenEmitsThrottledEvent(t *testing.T) {
+	g := newTestGuard(t, Guard{AppID: "app1"})
+	eng := &sharedEngine{
+		failOpen:    true,
+		blockCache:  temporaryblock.NewCache(temporaryblock.NewStore(&fakeValkeyClient{}, ""), time.Second),
+		lastErrEmit: map[string]time.Time{},
+	}
+	eng.mu.Lock()
+	err := eng.initialBlockRefresh(g, context.Background())
+	eng.mu.Unlock()
+	if err != nil {
+		t.Fatalf("fail-open 首刷失败不得阻断: %v", err)
+	}
+	// 节流：一分钟内第二次失败不再产事件
+	eng.mu.Lock()
+	err = eng.initialBlockRefresh(g, context.Background())
+	eng.mu.Unlock()
+	if err != nil {
+		t.Fatalf("fail-open 重复首刷失败不得阻断: %v", err)
+	}
+	var engineErrs []events.Event
+	for _, e := range g.readEvents(t) {
+		if e.EventType == events.RateLimitEngineError {
+			engineErrs = append(engineErrs, e)
+		}
+	}
+	if len(engineErrs) != 1 {
+		t.Fatalf("节流事件应恰好一条, got %d", len(engineErrs))
+	}
+	if !strings.Contains(engineErrs[0].Message, "tempblock initial refresh failed") {
+		t.Fatalf("事件 message 应含首刷失败说明: %q", engineErrs[0].Message)
+	}
+	if engineErrs[0].Action != "ENGINE_ERROR" {
+		t.Fatalf("action = %q, want ENGINE_ERROR", engineErrs[0].Action)
+	}
+}
+
+// M-13：fail-closed 下首刷失败拒绝加载（返回错误，上层回收半成品并拒绝新配置）；
+// 事件仍产出可观测。
+func TestInitialBlockRefreshFailClosedRejected(t *testing.T) {
+	g := newTestGuard(t, Guard{AppID: "app1"})
+	eng := &sharedEngine{
+		failOpen:    false,
+		blockCache:  temporaryblock.NewCache(temporaryblock.NewStore(&fakeValkeyClient{}, ""), time.Second),
+		lastErrEmit: map[string]time.Time{},
+	}
+	eng.mu.Lock()
+	err := eng.initialBlockRefresh(g, context.Background())
+	eng.mu.Unlock()
+	if err == nil || !strings.Contains(err.Error(), "tempblock initial refresh") {
+		t.Fatalf("fail-closed 首刷失败应拒绝加载: %v", err)
+	}
+	found := false
+	for _, e := range g.readEvents(t) {
+		if e.EventType == events.RateLimitEngineError {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("fail-closed 首刷失败也应产 RATE_LIMIT_ENGINE_ERROR 事件")
 	}
 }
 

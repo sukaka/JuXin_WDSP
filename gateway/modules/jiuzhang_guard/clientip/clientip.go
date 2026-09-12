@@ -38,6 +38,7 @@ type Result struct {
 	ChainSummary     string // 截断的代理链摘要（日志用）
 	HeaderInvalid    bool   // 代理头非法（触发 FORWARDED_HEADER_INVALID 事件）
 	ChainTooLong     bool   // 代理链超限（触发 FORWARDED_CHAIN_TOO_LONG 事件）
+	ChainAllTrusted  bool   // 全链可信：最左端声明可被客户端注入而不采信，回落连接源（触发 TRUSTED_PROXY_INVALID 事件，action=CONNECTION_FALLBACK）
 }
 
 // Resolver 真实IP解析器。
@@ -141,19 +142,26 @@ func (rs Resolver) Resolve(r *http.Request, proxies *trustedproxy.Set) Result {
 	}
 
 	res.ChainSummary = truncate(joinAddrs(values), 128)
-	res.ClientIP = rs.walkChain(values, proxies)
+	if client, allTrusted := rs.walkChain(values, proxies); allTrusted {
+		// 全链可信：最左端声明可能由客户端注入（前置可信代理追加而非覆盖），
+		// 保守回落连接源并标记（M-26/S11）
+		res.ChainAllTrusted = true
+		res.Source = SourceConnection
+	} else {
+		res.ClientIP = client
+	}
 	return res
 }
 
 // walkChain 从右向左跳过连续可信代理，第一个非可信地址为客户端；
-// 全链可信时取最左端声明。
-func (rs Resolver) walkChain(values []netip.Addr, proxies *trustedproxy.Set) netip.Addr {
+// 全链可信时返回 allTrusted=true（最左端声明不可采信，由调用方回落连接源）。
+func (rs Resolver) walkChain(values []netip.Addr, proxies *trustedproxy.Set) (netip.Addr, bool) {
 	for i := len(values) - 1; i >= 0; i-- {
 		if !proxies.Trusted(values[i]) {
-			return values[i]
+			return values[i], false
 		}
 	}
-	return values[0]
+	return values[0], true
 }
 
 // parseIPList 解析逗号分隔 IP 列表（X-Forwarded-For 语义）。

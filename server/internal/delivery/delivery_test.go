@@ -1,8 +1,11 @@
 package delivery
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------- 整体结果判定 ----------
@@ -87,7 +90,7 @@ func TestRegistryCompleteness(t *testing.T) {
 	for _, key := range []string{
 		"components_up", "https_config", "three_role_accounts", "password_policy",
 		"caddy_admin_socket", "postgres_bind", "valkey_bind", "config_version_exists",
-		"waf_detection", "backup_available", "audit_chain",
+		"waf_detection", "backup_available", "audit_chain", "vulnerability_scan",
 	} {
 		if !keys[key] {
 			t.Errorf("缺少必备检查项: %s", key)
@@ -164,4 +167,141 @@ func TestItemMessageTruncation(t *testing.T) {
 	if got := c.fail(long, nil); len(got.Message) != 500 {
 		t.Errorf("message 长度 = %d, want 500", len(got.Message))
 	}
+}
+
+// ---------- 漏洞扫描检查项（§十六） ----------
+
+// setupVulnScanRepo 构造最小可用仓库结构：可执行扫描脚本 + 合法 SBOM + 高危登记表。
+func setupVulnScanRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, s := range []string{"generate-sbom.sh", "license-audit.sh"} {
+		p := filepath.Join(root, "scripts", s)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "SBOM.spdx.json"), []byte(`{"spdxVersion":"SPDX-2.3"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := filepath.Join(root, "docs", "VULN_KNOWN_HIGH.md")
+	if err := os.WriteFile(reg, []byte("# 登记表\n\n当前无未修复的高危漏洞发现。\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestCheckVulnerabilityScan(t *testing.T) {
+	t.Run("PASS：能力齐备且无未修复发现", func(t *testing.T) {
+		got := checkVulnerabilityScan(&RunContext{RepoRoot: setupVulnScanRepo(t)})
+		if got.Result != ResultPass {
+			t.Errorf("result=%s(%s), want PASS", got.Result, got.Message)
+		}
+		if !got.Critical {
+			t.Error("漏洞扫描应为关键检查项")
+		}
+	})
+
+	t.Run("PASS：已修复条目不计数", func(t *testing.T) {
+		root := setupVulnScanRepo(t)
+		reg := filepath.Join(root, "docs", "VULN_KNOWN_HIGH.md")
+		content := "# 登记表\n\n- [x] CVE-2024-0001 某组件 已修复\n"
+		if err := os.WriteFile(reg, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := checkVulnerabilityScan(&RunContext{RepoRoot: root})
+		if got.Result != ResultPass {
+			t.Errorf("result=%s(%s), want PASS", got.Result, got.Message)
+		}
+	})
+
+	t.Run("FAIL：扫描脚本缺失", func(t *testing.T) {
+		root := setupVulnScanRepo(t)
+		if err := os.Remove(filepath.Join(root, "scripts", "license-audit.sh")); err != nil {
+			t.Fatal(err)
+		}
+		got := checkVulnerabilityScan(&RunContext{RepoRoot: root})
+		if got.Result != ResultFail {
+			t.Errorf("result=%s(%s), want FAIL", got.Result, got.Message)
+		}
+	})
+
+	t.Run("FAIL：扫描脚本不可执行", func(t *testing.T) {
+		root := setupVulnScanRepo(t)
+		if err := os.Chmod(filepath.Join(root, "scripts", "generate-sbom.sh"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := checkVulnerabilityScan(&RunContext{RepoRoot: root})
+		if got.Result != ResultFail {
+			t.Errorf("result=%s(%s), want FAIL", got.Result, got.Message)
+		}
+	})
+
+	t.Run("FAIL：SBOM 非法", func(t *testing.T) {
+		root := setupVulnScanRepo(t)
+		if err := os.WriteFile(filepath.Join(root, "docs", "SBOM.spdx.json"), []byte("not-json"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := checkVulnerabilityScan(&RunContext{RepoRoot: root})
+		if got.Result != ResultFail {
+			t.Errorf("result=%s(%s), want FAIL", got.Result, got.Message)
+		}
+	})
+
+	t.Run("FAIL：存在未修复高危发现", func(t *testing.T) {
+		root := setupVulnScanRepo(t)
+		reg := filepath.Join(root, "docs", "VULN_KNOWN_HIGH.md")
+		content := "# 登记表\n\n- [ ] CVE-2025-1111 组件A v1 未修复\n- [ ] CVE-2025-2222 组件B v2 未修复\n- [x] CVE-2024-0001 组件C 已修复\n"
+		if err := os.WriteFile(reg, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := checkVulnerabilityScan(&RunContext{RepoRoot: root})
+		if got.Result != ResultFail {
+			t.Errorf("result=%s(%s), want FAIL", got.Result, got.Message)
+		}
+		if n, ok := got.Details["unresolved_findings"].(int); !ok || n != 2 {
+			t.Errorf("unresolved_findings=%v, want 2", got.Details["unresolved_findings"])
+		}
+	})
+
+	t.Run("WARNING：登记表缺失", func(t *testing.T) {
+		root := setupVulnScanRepo(t)
+		if err := os.Remove(filepath.Join(root, "docs", "VULN_KNOWN_HIGH.md")); err != nil {
+			t.Fatal(err)
+		}
+		got := checkVulnerabilityScan(&RunContext{RepoRoot: root})
+		if got.Result != ResultWarning {
+			t.Errorf("result=%s(%s), want WARNING", got.Result, got.Message)
+		}
+	})
+
+	t.Run("WARNING：登记表过期（>90天未更新）", func(t *testing.T) {
+		root := setupVulnScanRepo(t)
+		reg := filepath.Join(root, "docs", "VULN_KNOWN_HIGH.md")
+		stale := time.Now().Add(-120 * 24 * time.Hour)
+		if err := os.Chtimes(reg, stale, stale); err != nil {
+			t.Fatal(err)
+		}
+		got := checkVulnerabilityScan(&RunContext{RepoRoot: root})
+		if got.Result != ResultWarning {
+			t.Errorf("result=%s(%s), want WARNING", got.Result, got.Message)
+		}
+	})
+
+	t.Run("真实仓库自检PASS", func(t *testing.T) {
+		root, err := filepath.Abs(filepath.Join("..", "..", ".."))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := checkVulnerabilityScan(&RunContext{RepoRoot: root})
+		if got.Result != ResultPass {
+			t.Errorf("真实仓库 result=%s(%s), want PASS", got.Result, got.Message)
+		}
+	})
 }

@@ -19,16 +19,37 @@ const GROUP_TABS = [
   { key: 'session', label: '会话管理' },
   { key: 'display', label: '界面显示' },
   { key: 'logging', label: '日志记录' },
+  { key: 'block_response', label: '阻断响应页面' },
   { key: 'api_learning', label: 'API 学习' },
   { key: 'apm', label: 'APM 性能监控' },
 ]
 
 /** 设置项前端扩展元数据：中文说明覆盖、数值范围约束与枚举选项（键为 setting_group:setting_key）。
- *  numeric 标记字符串型数值（后端 value_type='string'、内容为数字）使用数值输入框编辑。 */
+ *  numeric 标记字符串型数值（后端 value_type='string'、内容为数字）使用数值输入框编辑。
+ *  multiline/maxLength 用于长文本设置项（如自定义阻断页面正文）。 */
 const SETTING_META: Record<
   string,
-  { description?: string; min?: number; max?: number; step?: number; numeric?: boolean; options?: { label: string; value: string }[]; placeholder?: string }
+  { description?: string; min?: number; max?: number; step?: number; numeric?: boolean; options?: { label: string; value: string }[]; placeholder?: string; multiline?: boolean; maxLength?: number }
 > = {
+  // block_response 组：自定义 429/阻断响应页面（阶段5 §5.1，随发布下发网关生效；
+  // 长度上限与后端 settingStringMaxLen 同口径）
+  'block_response:html_title': {
+    description: '429/阻断响应页面标题（留空使用内置默认「请求过于频繁」，渲染时整串转义）',
+    maxLength: 128,
+  },
+  'block_response:html_body': {
+    description: '429/阻断响应页面正文（留空使用内置默认；仅支持基础排版标签且无属性，其余内容自动转义）',
+    multiline: true,
+    maxLength: 4096,
+  },
+  'block_response:json_code': {
+    description: 'JSON 错误响应的错误码（留空使用内置默认 too_many_requests；仅允许字母数字与 _ . -）',
+    maxLength: 128,
+  },
+  'block_response:json_message': {
+    description: 'JSON 错误响应的文案（留空使用内置默认「请求过于频繁，请稍后重试」）',
+    maxLength: 512,
+  },
   // api_learning 组：学习采样达标条件（消费侧 server/internal/learningjobs/conditions.go，
   // 数值范围与其校验区间一致，越界值后端会回落默认并告警）
   'api_learning:min_valid_samples': {
@@ -331,10 +352,23 @@ function SettingGroupPanel({ group }: { group: string }) {
         />
       )
     }
+    if (meta?.multiline) {
+      return (
+        <Input.TextArea
+          value={value}
+          placeholder={meta?.placeholder}
+          maxLength={meta?.maxLength}
+          rows={5}
+          onChange={(e) => setValue(e.target.value)}
+          style={{ width: 480 }}
+        />
+      )
+    }
     return (
       <Input
         value={value}
         placeholder={meta?.placeholder}
+        maxLength={meta?.maxLength}
         onChange={(e) => setValue(e.target.value)}
         style={{ width: 280 }}
       />
@@ -413,6 +447,14 @@ function SettingGroupPanel({ group }: { group: string }) {
           showIcon
           style={{ marginBottom: 16 }}
           message="开启请求/响应体记录会显著增加存储占用，建议仅在排障时临时开启，用完及时关闭。"
+        />
+      )}
+      {group === 'block_response' && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="自定义 CC 限速（429）/阻断时的响应页面与 JSON 错误文案，全部留空时使用内置默认。保存后需在「配置发布」执行发布才下发网关生效；HTML 正文仅保留基础排版标签（自动过滤脚本与属性），请求编号与 Retry-After 行为不变。"
         />
       )}
       {group === 'api_learning' && (

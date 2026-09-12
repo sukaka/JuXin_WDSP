@@ -79,6 +79,8 @@ type Options struct {
 	EventLagDegradedSeconds float64
 	// DiskLowFreePercent 磁盘剩余不足降级阈值（默认 10%）
 	DiskLowFreePercent float64
+	// FDUsageHighPercent 文件句柄使用率降级阈值（默认 80%）
+	FDUsageHighPercent float64
 	// CertExpiringDays 证书临期阈值（默认 30 天）
 	CertExpiringDays int
 	// Now 时钟（测试注入）
@@ -113,6 +115,9 @@ func (o *Options) withDefaults() Options {
 	}
 	if out.DiskLowFreePercent <= 0 {
 		out.DiskLowFreePercent = defaultDiskLowFreePercent
+	}
+	if out.FDUsageHighPercent <= 0 {
+		out.FDUsageHighPercent = defaultFDUsageHighPercent
 	}
 	if out.CertExpiringDays <= 0 {
 		out.CertExpiringDays = 30
@@ -306,7 +311,7 @@ func (c *Collector) probeAPI() *Snapshot {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	now := c.opts.Now()
-	return &Snapshot{
+	snap := &Snapshot{
 		Component: ComponentAPI,
 		Status:    StatusUp,
 		Message:   "进程运行中",
@@ -317,6 +322,18 @@ func (c *Collector) probeAPI() *Snapshot {
 			MetricUptimeSeconds:  int64(now.Sub(startedAt).Seconds()),
 		},
 	}
+	// 文件句柄（阶段6 §10.2）：采集不可用（非 Linux / 读取失败）时不产出指标、不判级
+	if open, max, ok := fdUsage(); ok {
+		usage := fdUsagePercent(open, max)
+		snap.Metrics[MetricFDOpenFiles] = open
+		snap.Metrics[MetricFDMaxOpenFiles] = max
+		snap.Metrics[MetricFDUsagePercent] = usage
+		if fdStatus(usage, c.opts.FDUsageHighPercent) == StatusDegraded {
+			snap.Status = StatusDegraded
+			snap.Message = fmt.Sprintf("文件句柄使用率 %.1f%%（阈值 %.0f%%）", usage, c.opts.FDUsageHighPercent)
+		}
+	}
+	return snap
 }
 
 // ---------- POSTGRES ----------

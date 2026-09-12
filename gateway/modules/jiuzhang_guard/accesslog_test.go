@@ -512,3 +512,81 @@ func TestAccessLogClientIPBehindTrustedProxy(t *testing.T) {
 type caddyHTTPHandlerFunc func(http.ResponseWriter, *http.Request) error
 
 func (f caddyHTTPHandlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) error { return f(w, r) }
+
+// 阶段5 §6.5：访问日志补 client_ip_source/trusted_proxy_used/forwarded_chain_summary
+// 三字段（与安全事件同口径；可信代理链场景全量产出，直连场景 source=CONNECTION、
+// 其余两键缺省 omitempty）。
+func TestAccessLogRealClientIPFields(t *testing.T) {
+	g, logPath := newAPMLogGuard(t, Guard{
+		AppID:          "app1",
+		TrustedProxies: []proxyJSON{{Name: "lb", CIDR: "10.0.0.1", HeaderType: "X_FORWARDED_FOR", Priority: 1}},
+	})
+	next := caddyHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+	// 可信 LB 后：三字段全量
+	r := httptest.NewRequest("GET", "http://waf-test.local/echo", nil)
+	r.RemoteAddr = "10.0.0.1:5555"
+	r.Header.Set("X-Forwarded-For", "198.51.100.9")
+	if err := g.ServeHTTP(httptest.NewRecorder(), r, next); err != nil {
+		t.Fatal(err)
+	}
+	// 直连：仅 source=CONNECTION
+	r2 := httptest.NewRequest("GET", "http://waf-test.local/echo", nil)
+	r2.RemoteAddr = "203.0.113.7:6666"
+	if err := g.ServeHTTP(httptest.NewRecorder(), r2, next); err != nil {
+		t.Fatal(err)
+	}
+	recs := readAccessLogRecords(t, logPath)
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(recs))
+	}
+	if recs[0].ClientIPSource != "X_FORWARDED_FOR" {
+		t.Errorf("client_ip_source = %q, want X_FORWARDED_FOR", recs[0].ClientIPSource)
+	}
+	if recs[0].TrustedProxyUsed != "lb" {
+		t.Errorf("trusted_proxy_used = %q, want lb", recs[0].TrustedProxyUsed)
+	}
+	if recs[0].ForwardedChainSummary != "198.51.100.9" {
+		t.Errorf("forwarded_chain_summary = %q, want 198.51.100.9", recs[0].ForwardedChainSummary)
+	}
+	if recs[1].ClientIPSource != "CONNECTION" {
+		t.Errorf("direct source = %q, want CONNECTION", recs[1].ClientIPSource)
+	}
+	if recs[1].TrustedProxyUsed != "" || recs[1].ForwardedChainSummary != "" {
+		t.Errorf("direct connection must not carry proxy fields: %+v", recs[1])
+	}
+}
+
+// 阶段5 §6.5 截断兜底：伪造的超长代理链（非法地址场景）摘要截断、控制字符剥离。
+func TestAccessLogForwardedChainSummaryTruncated(t *testing.T) {
+	g, logPath := newAPMLogGuard(t, Guard{
+		AppID:          "app1",
+		TrustedProxies: []proxyJSON{{Name: "lb", CIDR: "10.0.0.1", HeaderType: "X_FORWARDED_FOR", Priority: 1}},
+	})
+	next := caddyHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		return nil
+	})
+	r := httptest.NewRequest("GET", "http://waf-test.local/echo", nil)
+	r.RemoteAddr = "10.0.0.1:5555"
+	r.Header.Set("X-Forwarded-For", strings.Repeat("9.9.9.9, ", 30)+"bad-ip\nINJECT")
+	if err := g.ServeHTTP(httptest.NewRecorder(), r, next); err != nil {
+		t.Fatal(err)
+	}
+	recs := readAccessLogRecords(t, logPath)
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+	// 非法头：回落 CONNECTION，链摘要为原始头截断片段（clientip 截 128），不含控制字符
+	if recs[0].ClientIPSource != "CONNECTION" {
+		t.Errorf("invalid header must fall back to CONNECTION, got %q", recs[0].ClientIPSource)
+	}
+	if len(recs[0].ForwardedChainSummary) > 256 || strings.ContainsAny(recs[0].ForwardedChainSummary, "\n\r") {
+		t.Errorf("chain summary not sanitized/truncated: len=%d", len(recs[0].ForwardedChainSummary))
+	}
+	if recs[0].TrustedProxyUsed != "lb" {
+		t.Errorf("trusted_proxy_used = %q, want lb", recs[0].TrustedProxyUsed)
+	}
+}

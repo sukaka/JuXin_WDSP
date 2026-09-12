@@ -373,11 +373,18 @@ func TestParseVendorKeys(t *testing.T) {
 	}
 }
 
-func TestLoadVendorKeysEmbeddedEmpty(t *testing.T) {
-	// 内嵌 vendor_pubkey.hex 当前仅注释（机制先行）：无任何有效公钥 → fail-closed
+func TestLoadVendorKeysEmbedded(t *testing.T) {
+	// 内嵌 vendor_pubkey.hex 已登记授权中心正式密钥与 TRIAL 专用密钥；
+	// 两条都必须解析为合法 Ed25519 公钥（key_id 与授权中心登记值一致）。
 	keys := LoadVendorKeys()
-	if len(keys) != 0 {
-		t.Fatalf("内嵌公钥表应为空（真实公钥由部署方提供），got %d", len(keys))
+	for _, keyID := range []string{"key-20260808-VX1H", "trial-9fc46ec2-c7f5-4ec0-ad88-b26a10ffb33f"} {
+		pub, ok := keys[keyID]
+		if !ok {
+			t.Fatalf("内嵌公钥表缺少已登记密钥 %s", keyID)
+		}
+		if len(pub) != ed25519.PublicKeySize {
+			t.Fatalf("密钥 %s 公钥长度非法: %d", keyID, len(pub))
+		}
 	}
 }
 

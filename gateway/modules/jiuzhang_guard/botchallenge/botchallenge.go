@@ -231,6 +231,10 @@ type CallContext struct {
 	RequestID    string // X-Request-Id（链路已生成）
 	ClientIP     string // 真实客户端 IP（Guard 真实 IP 识别结果）
 	ConnectionIP string // 连接源 IP
+	// 阶段5 §6.5 三字段（Guard eventBase 同口径透传；空 = 缺省，事件 omitempty 不落键）
+	ClientIPSource        string // 真实 IP 识别来源（CONNECTION/X_FORWARDED_FOR/...）
+	TrustedProxyUsed      string // 命中的可信代理名
+	ForwardedChainSummary string // 代理链摘要（Guard 侧已截断）
 	// RecordTerminal 终止事实回调（WDSP P1-02 B3：guard disposition 挂接；
 	// nil = 跳过）。本包在挑战签发/验证的终止结局发出事件**之前**调用，
 	// 参数：security_action（CHALLENGE/RATE_LIMIT/BLOCK/NONE）、HTTP 状态码、

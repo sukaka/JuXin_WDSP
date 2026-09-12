@@ -1,5 +1,6 @@
 import { buildUrl, request } from './client'
 import type {
+  AccessControlEventItem,
   AccessRuleDetail,
   AccessRuleImportResult,
   AccessRuleItem,
@@ -33,6 +34,10 @@ export interface CreateAccessRuleBody {
   effective_from?: string | null
   effective_until?: string | null
   reason: string
+  /** 来源类型：缺省 MANUAL；事件联动创建传 SECURITY_EVENT（须携带 source_event_id） */
+  source_type?: 'MANUAL' | 'SECURITY_EVENT'
+  /** 来源安全事件 ID（仅 source_type=SECURITY_EVENT 时传） */
+  source_event_id?: string | null
 }
 
 /** 更新规则（rule_type/scope_type/application_id 不可变更，后端忽略） */
@@ -99,4 +104,11 @@ export const accessRulesApi = {
     }),
   /** 导出 CSV 下载地址（浏览器直接打开，携带会话 Cookie） */
   exportUrl: (params: AccessRuleExportParams = {}) => buildUrl('/access-rules/export', { ...params }),
+  /** 规则关联事件（按 access_rule_id 过滤访问控制事件，§8.5） */
+  listEvents: async (id: string, params: { page: number; page_size: number }) => {
+    const data = await request<PageResult<AccessControlEventItem>>(`/access-rules/${id}/events`, {
+      query: { ...params },
+    })
+    return { ...data, items: data.items ?? [] }
+  },
 }

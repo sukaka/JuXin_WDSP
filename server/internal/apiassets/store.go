@@ -235,7 +235,9 @@ func scanEndpoint(rs rowScanner, extra ...any) (*Endpoint, error) {
 
 // DirectoryOf 目录派生：normalized_path 去掉最后一段（/test/php/login → /test/php；/users/{id} → /users）。
 // 与迁移 000020 的 regexp_replace(path, '/[^/]*$', ”) 语义一致。
-// protocolOrDefault 协议类型缺省回落（发现链路：空串归 REST；与 UpsertDiscovery COALESCE 口径一致）。
+// protocolOrDefault 协议类型缺省回落（发现链路：空串归 REST 历史缺省值；与 UpsertDiscovery
+// COALESCE 口径一致）。§9 词表扩展后网关上报 13 值（REST_JSON/JSON_RPC/…），存量 REST 行
+// 不迁移改写，protocol_type 为 VARCHAR(32) 无 CHECK 约束，新值直接落库。
 func protocolOrDefault(v string) string {
 	if v == "" {
 		return "REST"
@@ -305,7 +307,9 @@ type DiscoveryInput struct {
 	ScopeKey string
 	// Host 是发现记录的归一化主机作用域。
 	Host string
-	// ProtocolType 协议类型（REST/GRPC…；空串回落 REST）。
+	// ProtocolType 协议类型（§9 词表：REST_JSON/REST_XML/FORM_API/SOAP/GRAPHQL/JSON_RPC/
+	// XML_RPC/WEBHOOK/FILE_UPLOAD/FILE_DOWNLOAD/WEBSOCKET_HANDSHAKE/SERVER_SENT_EVENTS/
+	// UNKNOWN_HTTP_API，另含历史值 REST/GRPC；空串回落 REST）。
 	// 仅首次发现写入，命中时不覆盖（允许后续人工修正）。
 	ProtocolType string
 }
@@ -862,6 +866,7 @@ UPDATE api_endpoints SET learning_status=$2, updated_at=now() WHERE id=$1`, id, 
 }
 
 // AutoClassify 按路径/方法启发式自动分类，写 api_classification_dimensions（source=AUTO）。
+// 维度：PURPOSE/EXPOSURE/ACCESS/ACTION 恒产出，BUSINESS_DOMAIN 仅领域关键词置信达标时产出。
 // 接口分类已锁定时返回 ErrClassificationLocked（事务）。
 func (s *Store) AutoClassify(ctx context.Context, id uuid.UUID) ([]ClassificationDimension, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -1086,41 +1091,4 @@ FROM api_learning_samples WHERE %s ORDER BY collected_at DESC, id LIMIT $%d OFFS
 		out = append(out, sm)
 	}
 	return out, total, rows.Err()
-}
-
-// classifyByPath 路径/方法启发式自动分类（AUTO 来源，供 SQL 与内存实现共用）。
-func classifyByPath(method, path string) []ClassificationDimension {
-	p := strings.ToLower(path)
-	purpose, pconf := "GENERAL", 0.5
-	switch {
-	case strings.Contains(p, "/login"), strings.Contains(p, "/signin"),
-		strings.Contains(p, "/auth"), strings.Contains(p, "/token"), strings.Contains(p, "/captcha"):
-		purpose, pconf = "AUTH", 0.7
-	case strings.Contains(p, "/pay"), strings.Contains(p, "/order"),
-		strings.Contains(p, "/trade"), strings.Contains(p, "/billing"):
-		purpose, pconf = "TRADE", 0.7
-	case strings.Contains(p, "/upload"), strings.Contains(p, "/file"),
-		strings.Contains(p, "/download"), strings.Contains(p, "/export"):
-		purpose, pconf = "FILE", 0.7
-	case strings.Contains(p, "/admin"), strings.Contains(p, "/manage"):
-		purpose, pconf = "ADMIN", 0.7
-	case strings.Contains(p, "/user"), strings.Contains(p, "/account"), strings.Contains(p, "/profile"):
-		purpose, pconf = "USER_MGMT", 0.6
-	case strings.Contains(p, "/search"), strings.Contains(p, "/query"), strings.Contains(p, "/list"):
-		purpose, pconf = "QUERY", 0.6
-	}
-	exposure, econf := "INTERNAL", 0.5
-	if strings.Contains(p, "/public") || strings.Contains(p, "/openapi") ||
-		strings.Contains(p, "/webhook") || strings.Contains(p, "/callback") {
-		exposure, econf = "PUBLIC", 0.7
-	}
-	access := "WRITE"
-	if strings.EqualFold(method, "GET") || strings.EqualFold(method, "HEAD") {
-		access = "READ"
-	}
-	return []ClassificationDimension{
-		{Dimension: "PURPOSE", Value: purpose, Source: "AUTO", Confidence: pconf},
-		{Dimension: "EXPOSURE", Value: exposure, Source: "AUTO", Confidence: econf},
-		{Dimension: "ACCESS", Value: access, Source: "AUTO", Confidence: 0.9},
-	}
 }

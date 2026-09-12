@@ -1,5 +1,6 @@
 # 片段：AI 能力管理（模型供应商/模型/路由档位、Agent、Tool、Prompt、记忆、审计、用量、模块状态）
-# 路由源：server/internal/aihandlers/handler.go:111-164；server/internal/app/app.go:746-763（/ai/status 与 AI 禁用降级）
+# 路由源：server/internal/aihandlers/handler.go:111-164；server/internal/aihandlers/details_handler.go
+# （5 条详情 GET，注册于 server/internal/app/app.go AI 启用分支）；app.go:746-763（/ai/status 与 AI 禁用降级）
 # 全局说明：AI 模块关闭（AI_ENABLED=false）时，除 GET /ai/status 外所有 /ai/* 接口统一返回 503（WAF 核心防护不受影响）。
 # 供应商密钥仅在创建/轮换时以明文入参，加密存储于 ai_provider_secrets，任何响应不回传密钥（仅返回 api_key_reference 引用名）。
 
@@ -259,6 +260,36 @@ paths:
           $ref: '#/components/responses/InternalError'
 
   /ai/models/{id}:
+    get:
+      operationId: aiModelGet
+      tags: [ai-models]
+      summary: 模型详情
+      description: |
+        权限：ai.models.read。
+        返回字段口径同模型列表项（不含任何密钥材料）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 模型 ID
+      responses:
+        '200':
+          description: 模型详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiModelResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
     put:
       operationId: aiModelUpdate
       tags: [ai-models]
@@ -504,6 +535,36 @@ paths:
           $ref: '#/components/responses/InternalError'
 
   /ai/agents/{id}:
+    get:
+      operationId: aiAgentGet
+      tags: [ai-agents]
+      summary: Agent 详情
+      description: |
+        权限：ai.agents.read。
+        返回字段口径同 Agent 列表项（含 in_registry 标记）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Agent ID
+      responses:
+        '200':
+          description: Agent 详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAgentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
     patch:
       operationId: aiAgentPatch
       tags: [ai-agents]
@@ -601,6 +662,36 @@ paths:
           $ref: '#/components/responses/InternalError'
 
   /ai/tools/{id}:
+    get:
+      operationId: aiToolGet
+      tags: [ai-tools]
+      summary: Tool 详情
+      description: |
+        权限：ai.tools.read。
+        返回字段口径同 Tool 列表项（含 in_registry 标记）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Tool ID
+      responses:
+        '200':
+          description: Tool 详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiToolResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
     patch:
       operationId: aiToolPatch
       tags: [ai-tools]
@@ -940,7 +1031,8 @@ paths:
       description: |
         权限：ai.prompts.test。
         执行静态检查（非空与长度 ≤50000 字符、禁止内容扫描），并将结果回写版本 test_result（PASSED/FAILED）；
-        仅 PASSED 的版本可发布。写入 AI 审计（prompt_test）。AI 模块全局关闭时本接口返回 503。
+        发布门要求本测试 PASSED 且对抗测试 ADVERSARIAL_PASSED 齐备。
+        写入 AI 审计（prompt_test）。AI 模块全局关闭时本接口返回 503。
       parameters:
         - name: versionId
           in: path
@@ -965,6 +1057,42 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  /ai/prompts/versions/{versionId}/adversarial-test:
+    post:
+      operationId: aiPromptVersionAdversarialTest
+      tags: [ai-prompts]
+      summary: Prompt 版本对抗测试
+      description: |
+        权限：ai.prompts.test。
+        对版本内容跑内置对抗样本集（提示注入/越权诱导/数据泄露诱导，每类 3 条，样本结合本系统
+        AI 安全运营助手真实场景），逐样本判定并回写版本 adversarial_result
+        （ADVERSARIAL_PASSED/ADVERSARIAL_FAILED）与明细 adversarial_detail；
+        失败样本在 cases[].reason 中如实给出原因。发布门要求 ADVERSARIAL_PASSED。
+        写入 AI 审计（prompt_adversarial_test）。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: versionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: Prompt 版本 ID
+      responses:
+        '200':
+          description: 对抗测试结论与逐样本明细
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiPromptVersionAdversarialTestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /ai/prompts/{id}/publish:
     post:
       operationId: aiPromptPublish
@@ -972,7 +1100,8 @@ paths:
       summary: 发布 Prompt 版本
       description: |
         权限：ai.prompts.publish。
-        仅静态测试通过（PASSED）的版本可发布（否则返回 400，store 层强制）；
+        发布门（store 层强制）：静态安全检查 + 测试集回归 PASSED + 对抗测试 ADVERSARIAL_PASSED
+        三者齐备方可发布，否则返回 400 并在消息中给出两个门槛的当前状态；发布动作本身即人工审核。
         发布后该版本成为当前版本（is_current），Prompt 状态置为 ACTIVE。
         写入 AI 审计（prompt_publish）。AI 模块全局关闭时本接口返回 503。
       parameters:
@@ -1287,6 +1416,40 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/audits/{id}:
+    get:
+      operationId: aiAuditGet
+      tags: [ai-audits]
+      summary: AI 审计详情
+      description: |
+        权限：ai.audits.read。
+        返回字段口径同审计列表项并附记录 ID；与列表不同，详情补查 prompt_version/confirm_result 两列。
+        审计正文在写入时已脱敏：不保存密钥/密码/私钥/完整载荷与模型私有思维链。
+        AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 审计记录 ID
+      responses:
+        '200':
+          description: 审计记录详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiAuditResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -1776,6 +1939,13 @@ components:
           items:
             $ref: '#/components/schemas/AiAgent'
 
+    AiAgentResponse:
+      type: object
+      required: [agent]
+      properties:
+        agent:
+          $ref: '#/components/schemas/AiAgent'
+
     AiAgentPatchRequest:
       type: object
       description: enabled 与 allowed_tool_ids 至少提供一项（全不提供返回 400）
@@ -1863,6 +2033,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AiTool'
+
+    AiToolResponse:
+      type: object
+      required: [tool]
+      properties:
+        tool:
+          $ref: '#/components/schemas/AiTool'
 
     AiToolPatchRequest:
       type: object
@@ -2008,7 +2185,7 @@ components:
     AiPromptVersion:
       type: object
       description: Prompt 版本（不可变）
-      required: [id, prompt_id, version_number, content, content_hash, change_summary, test_result, created_at, published_at, is_current]
+      required: [id, prompt_id, version_number, content, content_hash, change_summary, test_result, adversarial_result, adversarial_detail, created_at, published_at, is_current]
       properties:
         id:
           type: string
@@ -2033,7 +2210,16 @@ components:
         test_result:
           type: string
           enum: ['', PASSED, FAILED]
-          description: 静态测试结果（空字符串 = 未测试；仅 PASSED 可发布）
+          description: 静态/回归测试结果（空字符串 = 未测试；发布门要求 PASSED）
+        adversarial_result:
+          type: string
+          enum: ['', ADVERSARIAL_PASSED, ADVERSARIAL_FAILED]
+          description: 对抗测试结论（空字符串 = 未执行；发布门要求 ADVERSARIAL_PASSED）
+        adversarial_detail:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiPromptAdversarialCase'
+          description: 对抗测试逐样本判定明细（未执行为空数组；失败样本 reason 如实给出原因）
         created_at:
           type: string
           format: date-time
@@ -2110,6 +2296,40 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AiPromptTestCheck'
+
+    AiPromptAdversarialCase:
+      type: object
+      required: [id, category, attack, passed]
+      properties:
+        id:
+          type: string
+          description: 样本标识（类别-序号，如 inj-01）
+        category:
+          type: string
+          enum: [PROMPT_INJECTION, PRIVILEGE_ESCALATION, DATA_EXFILTRATION]
+          description: 攻击类别（提示注入/越权诱导/数据泄露诱导）
+        attack:
+          type: string
+          description: 对抗输入（模拟攻击者注入的指令）
+        passed:
+          type: boolean
+          description: 该样本是否通过
+        reason:
+          type: string
+          description: 未通过时的如实原因（命中顺从指令 / 未声明该类防御）
+
+    AiPromptVersionAdversarialTestResponse:
+      type: object
+      required: [adversarial_result, cases]
+      properties:
+        adversarial_result:
+          type: string
+          enum: [ADVERSARIAL_PASSED, ADVERSARIAL_FAILED]
+          description: 对抗测试综合结论（已回写版本 adversarial_result 与 adversarial_detail）
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiPromptAdversarialCase'
 
     AiPromptDiffSide:
       type: object
@@ -2332,6 +2552,25 @@ components:
         confirm_result:
           type: string
           description: 确认结果（列表接口不返回该列，恒为空字符串）
+
+    AiAuditDetail:
+      description: AI 审计详情（列表项字段 + 记录 ID；详情接口补查 prompt_version/confirm_result 两列）
+      allOf:
+        - $ref: '#/components/schemas/AiAuditRecord'
+        - type: object
+          required: [id]
+          properties:
+            id:
+              type: string
+              format: uuid
+              description: 审计记录 ID
+
+    AiAuditResponse:
+      type: object
+      required: [audit]
+      properties:
+        audit:
+          $ref: '#/components/schemas/AiAuditDetail'
 
     AiAuditListResponse:
       type: object

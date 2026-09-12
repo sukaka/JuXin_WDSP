@@ -188,6 +188,11 @@ type Guard struct {
 	// Valkey 后端跨节点共享，memory 后端每进程独立；超限 429（Retry-After），不产生 CC 事件
 	LicenseMaxQPS int `json:"license_max_qps,omitempty"`
 
+	// 自定义 429/阻断响应页面（阶段5 §5.1；发布通道下发 block_response 段，
+	// 全产品形态不受 WDSP 门控；nil 或全空 = 内置默认模板，与历史版本逐字节一致；
+	// 装配期校验大小硬上限并白名单净化 HTML 正文，见 blockresponse.go）
+	BlockResponse *blockResponseJSON `json:"block_response,omitempty"`
+
 	// L7 访问控制规则（发布通道下发；nil 或空 = 未配置，零行为变化）
 	L7Rules *l7rules.Config `json:"l7_rules,omitempty"`
 
@@ -222,6 +227,15 @@ type Guard struct {
 	APIKnownEndpoints map[string]string `json:"api_known_endpoints,omitempty"`
 	// 写方法 API 每分钟限速（缺省 60，由引擎默认值兜底）
 	APIWriteRatePerMinute int `json:"api_write_rate_per_minute,omitempty"`
+	// 阶段8 §36 限流下发面（发布通道下发；0/缺省 = 对应检测不启用，不走引擎默认值
+	// 冒充已配置——与上方三个限流键的默认兜底语义刻意不同）：
+	// APIQuotaPerHour 身份+端点每小时配额（定窗）；APIQuotaPerDay 每日配额（UTC 自然日定窗）；
+	// ObjectRatePerMinute 同身份对同对象每分钟上限；MaxPageSize 分页大小上限；MaxBatchSize 批量数量上限
+	APIQuotaPerHour     int `json:"api_quota_per_hour,omitempty"`
+	APIQuotaPerDay      int `json:"api_quota_per_day,omitempty"`
+	ObjectRatePerMinute int `json:"object_rate_per_minute,omitempty"`
+	MaxPageSize         int `json:"max_page_size,omitempty"`
+	MaxBatchSize        int `json:"max_batch_size,omitempty"`
 	// API 响应脱敏规则（发布通道下发；仅 API 流量 + 完整捕获的 JSON 响应生效）
 	APIMaskRules []maskRuleJSON `json:"api_mask_rules,omitempty"`
 	// 值级敏感检测规则（发布通道下发 api_sensitive_value_rules；对应管理面
@@ -253,6 +267,16 @@ type Guard struct {
 	// 已确认参数条件关系（发布通道下发 api_parameter_relations；对应管理面
 	// api_parameter_relations 表 confirmed=true 行；nil/空 = 无端点关系，关系检测零行为）
 	APIParameterRelations []detectors.ParamRelation `json:"api_parameter_relations,omitempty"`
+	// 业务流程基线（发布通道下发 api_flow_baselines，阶段8 §44；对应管理面
+	// api_flow_baselines 表 enabled 行；nil/空 = 无端点流程基线，流程偏离检测零行为；
+	// 装配期经 detectors.ValidateFlowBaselines 校验，非法基线拒绝加载，不静默吞错；
+	// 运行期全部明细 OBSERVE 级只 AddMatch 不定案）
+	APIFlowBaselines []detectors.FlowBaseline `json:"api_flow_baselines,omitempty"`
+	// 已吊销凭据清单（发布通道下发 api_revoked_credentials，阶段8 §35 第10项；对应管理面
+	// api_revoked_credentials 表当前生效行；nil/空 = 无吊销清单，吊销检测零行为；
+	// 装配期经 detectors.ValidateRevokedCredentials 校验，非法清单拒绝加载，不静默吞错；
+	// 载荷仅指纹级（类型 + 32 位 hex 指纹），无凭据明文；运行期 OBSERVE 级只 AddMatch 不定案）
+	APIRevokedCredentials []detectors.RevokedCredential `json:"api_revoked_credentials,omitempty"`
 	// LLM 授权模型名单（发布通道下发 api_llm_allowed_models；来源 system_settings
 	// gateway_runtime 组逗号分隔键；nil/空 = 不下发不判定未授权模型，
 	// 与 LLM 端点识别/观测解耦——识别与观测不依赖本名单）
@@ -364,6 +388,13 @@ type Guard struct {
 	// 模块无法观测也无需再拦截，故不提供配置项。
 	RedirectPortRewrite int `json:"redirect_port_rewrite,omitempty"` // 0=关闭；>0 改写 302 Location 显式端口为该值；80=剥离端口
 
+	// DebugCCCounter CC 计数调试回显端点开关（阶段5 §十七 发布后冒烟 CC_EXACT 探针；
+	// 见 debug_cccounter.go）：缺省 false = 零行为变化，/_wdsp/debug/v1/ 前缀不抢占
+	// 业务路径；true 时该前缀本地处理（绝不反向代理），cc-counter 仅允许本机/内网
+	// 连接源（按 TCP 连接对端判定，XFF 不可伪造），端点请求先于 CC 步骤挂接、
+	// 本身不计入 CC 计数（探针自污染防控）
+	DebugCCCounter bool `json:"debug_cc_counter,omitempty"`
+
 	// 运行时
 	logger         *zap.Logger
 	resolver       clientip.Resolver
@@ -380,8 +411,9 @@ type Guard struct {
 	apiEventsClose func() error // 测试注入钩子；生产路径为空时直接关闭 apiEvents
 	accessLog      *accessLogWriter
 	engine         *sharedEngine
-	failOpen       bool             // 本实例故障策略（Provision 时确定，配置重载即可切换）
-	heartbeat      *heartbeatRunner // 节点心跳（nil = 关闭；Cleanup 停止并等待退出）
+	failOpen       bool                   // 本实例故障策略（Provision 时确定，配置重载即可切换）
+	blockResponse  *compiledBlockResponse // 自定义 429/阻断响应（Provision 编译；nil = 内置默认模板）
+	heartbeat      *heartbeatRunner       // 节点心跳（nil = 关闭；Cleanup 停止并等待退出）
 
 	behaviorStores        *detectors.StoreOverrides // 按 BehaviorStore 构建（nil = 进程内默认内存）
 	ibh                   *identitybehavior.Engine  // 身份与行为防护引擎（nil = 未启用，请求链路零变化）
@@ -395,6 +427,7 @@ type Guard struct {
 	apiScanKey            []byte                                  // 按 APIScanVerification 解码（nil = 未下发，仅存在性识别；秘密材料不落日志）
 	apiRespBaselines      map[string][]detectors.ResponseBaseline // 按 APIResponseBaselines 归组（endpoint_key；nil = 无基线，偏离检测零行为）
 	apiParamRelations     map[string][]detectors.ParamRelation    // 按 APIParameterRelations 归组（endpoint_key；nil = 无关系，关系检测零行为）
+	apiFlowBaselines      map[string][]detectors.FlowBaseline     // 按 APIFlowBaselines 归组（endpoint_key；nil = 无基线，流程偏离检测零行为）
 	apiFileWatermark      *response.FileWatermarkConfig           // 按 APIFileWatermark 编译（nil = 未下发/未启用，响应侧零行为变化）
 	apiFileSignature      *response.FileSignatureConfig           // 按 APIFileSignature 编译（nil = 未下发/未启用，响应侧零行为变化；密钥为秘密材料不落日志）
 	apiFileCompliance     *detectors.FileComplianceRuleSet        // 按 APIFileComplianceRules 编译（nil = 无规则，合规检测零行为）
@@ -555,9 +588,11 @@ func (e *sharedEngine) init(g *Guard) error {
 		e.blockCache = temporaryblock.NewCache(e.blockStore, poll)
 		ctx, cancel := context.WithCancel(context.Background())
 		e.cancelPoll = cancel
-		if err := e.blockCache.Refresh(ctx); err != nil {
-			// 启动时同步失败不阻断（缓存可空，下一轮重试），但必须可观测
-			slog.Error("jiuzhang_guard tempblock initial refresh failed", "error", err)
+		if err := e.initialBlockRefresh(g, ctx); err != nil {
+			// fail-closed 首刷失败拒绝加载：回收半成品（关 Valkey 连接/取消 ctx），
+			// 旧引擎保持存活（HIGH-5），Caddy 拒绝新配置
+			e.shutdown()
+			return err
 		}
 		e.blockCache.Start(ctx)
 	} else {
@@ -566,6 +601,26 @@ func (e *sharedEngine) init(g *Guard) error {
 		e.limiter = e.memLimiter
 	}
 	e.initialized = true
+	return nil
+}
+
+// tempBlockRefreshErrKey 启动首刷失败告警的节流键（无策略维度，引擎级固定键）。
+const tempBlockRefreshErrKey = "__tempblock_initial_refresh__"
+
+// initialBlockRefresh 启动首刷（M-13）：失败除 Error 日志外产节流事件（与请求路径
+// emitEngineErrorThrottled 同一节流口径，共享 lastErrEmit）；fail-closed 下首刷失败
+// 返回错误拒绝加载，fail-open（默认）行为不变——空缓存启动、下一轮轮询重试。
+// 调用方须已持有 e.mu。
+func (e *sharedEngine) initialBlockRefresh(g *Guard, ctx context.Context) error {
+	if err := e.blockCache.Refresh(ctx); err != nil {
+		slog.Error("jiuzhang_guard tempblock initial refresh failed", "error", err)
+		if engineErrThrottleLocked(e, tempBlockRefreshErrKey) {
+			g.emitStartupEngineError(err)
+		}
+		if !e.failOpen {
+			return fmt.Errorf("tempblock initial refresh: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -674,6 +729,14 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("license_max_qps must be non-negative, got %d", g.LicenseMaxQPS)
 	}
 
+	// 自定义 429/阻断响应页面（block_response 段）：装配期校验 + 白名单净化；
+	// 非法配置拒绝加载（fail-closed），nil = 内置默认模板（writeTooMany 原路径）
+	blockResponse, err := compileBlockResponse(g.BlockResponse)
+	if err != nil {
+		return err
+	}
+	g.blockResponse = blockResponse
+
 	// L7 访问控制规则（编译失败的规则整条拒绝并告警，不影响其余规则加载；
 	// 配置重载即整体原子替换，与黑白名单同一热更新路径）
 	if g.L7Rules != nil {
@@ -743,6 +806,17 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 			return err
 		}
 		g.apiParamRelations = detectors.GroupParamRelations(g.APIParameterRelations)
+		// 业务流程基线校验与按端点归组（§44；配置错误拒绝加载，不静默吞错；
+		// 运行期按命中端点 O(1) 选取，与参数关系同一模式）
+		if err := detectors.ValidateFlowBaselines(g.APIFlowBaselines); err != nil {
+			return err
+		}
+		g.apiFlowBaselines = detectors.GroupFlowBaselines(g.APIFlowBaselines)
+		// 已吊销凭据清单校验（§35 第10项；配置错误拒绝加载，不静默吞错；
+		// 运行期管线编译比对集合后按请求凭据键 O(1) 查找，过期条目自行失效不判定）
+		if err := detectors.ValidateRevokedCredentials(g.APIRevokedCredentials); err != nil {
+			return err
+		}
 		// LLM 授权模型名单归一（W10-LLM：去空白/去重/去空项；名单语义宽容，
 		// 单项非法不致配置拒绝——逐项 trim 后空项丢弃，与既有名单归一纪律一致）
 		g.APILLMAllowedModels = normalizeLLMAllowedModels(g.APILLMAllowedModels)
@@ -796,6 +870,8 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 			zap.Bool("scan_verification", len(g.apiScanKey) > 0),
 			zap.Int("response_baselines", len(g.APIResponseBaselines)),
 			zap.Int("parameter_relations", len(g.APIParameterRelations)),
+			zap.Int("flow_baselines", len(g.APIFlowBaselines)),
+			zap.Int("revoked_credentials", len(g.APIRevokedCredentials)),
 			zap.Int("llm_allowed_models", len(g.APILLMAllowedModels)),
 			zap.Bool("file_watermark", g.apiFileWatermark != nil),
 			zap.Bool("file_signature", g.apiFileSignature != nil),
@@ -900,6 +976,10 @@ func (g *Guard) Validate() error {
 	if g.MaxCounterKeys < 0 || g.MaxCounterKeys > maxCounterKeysLimit {
 		return fmt.Errorf("max_counter_keys must be between 0 and %d", maxCounterKeysLimit)
 	}
+	// 自定义 429/阻断响应页面装配期校验（caddy validate 同样拦截非法配置）
+	if err := validateBlockResponse(g.BlockResponse); err != nil {
+		return err
+	}
 	for _, p := range g.RateLimits {
 		if p.RequestsLimit <= 0 || p.WindowSeconds <= 0 {
 			return fmt.Errorf("rate limit %q: limit/window must be positive", p.ID)
@@ -921,6 +1001,16 @@ func (g *Guard) Validate() error {
 		}
 		if g.APIGRPCMaxFrameBytes < 0 || g.APIGRPCMaxFrameBytes > maxAPIGRPCMaxFrameBytes {
 			return fmt.Errorf("api_grpc_max_frame_bytes must be between 0 and %d", maxAPIGRPCMaxFrameBytes)
+		}
+		// §36 限流阈值：负数非法（0 = 不启用），装配期显式拒绝
+		for name, v := range map[string]int{
+			"api_quota_per_hour": g.APIQuotaPerHour, "api_quota_per_day": g.APIQuotaPerDay,
+			"object_rate_per_minute": g.ObjectRatePerMinute,
+			"max_page_size":          g.MaxPageSize, "max_batch_size": g.MaxBatchSize,
+		} {
+			if v < 0 {
+				return fmt.Errorf("%s must be >= 0", name)
+			}
 		}
 		// gRPC 描述符集结构校验（W14-DESC：名/体量硬违例装配期显式拒绝；
 		// FileDescriptorSet 线格式与 protodesc 语义编译失败在 Provision 逐集 Warn 跳过——
@@ -973,6 +1063,14 @@ func (g *Guard) Validate() error {
 			return err
 		}
 		if err := detectors.ValidateResponseBaselines(g.APIResponseBaselines); err != nil {
+			return err
+		}
+		// 业务流程基线装配期校验（§44；配置错误显式返回，不静默吞错）
+		if err := detectors.ValidateFlowBaselines(g.APIFlowBaselines); err != nil {
+			return err
+		}
+		// 已吊销凭据清单装配期校验（§35 第10项；配置错误显式返回，不静默吞错）
+		if err := detectors.ValidateRevokedCredentials(g.APIRevokedCredentials); err != nil {
 			return err
 		}
 		for ek, v := range g.APIFormalModelVersions {
@@ -1370,6 +1468,11 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	if res.ChainTooLong {
 		g.emit(base, events.ForwardedChainTooLong, "CONNECTION_FALLBACK", 0)
 	}
+	// 全链可信回落：最左端声明可被客户端注入，不采信并回落连接源（M-26/S11）；
+	// 复用伪造检测事件口径 TRUSTED_PROXY_INVALID + CONNECTION_FALLBACK
+	if res.ChainAllTrusted {
+		g.emit(base, events.TrustedProxyInvalid, "CONNECTION_FALLBACK", 0)
+	}
 	// 伪造检测：携带代理头但连接源不可信 → TRUSTED_PROXY_INVALID
 	if res.TrustedProxyUsed == "" && hasProxyHeaders(r) {
 		g.emit(base, events.TrustedProxyInvalid, "IGNORED", 0)
@@ -1379,6 +1482,14 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	// 下游（WAF/日志/代理）统一使用真实IP
 	r.RemoteAddr = net.JoinHostPort(clientIP.String(), "0")
 	r.Header.Set("X-Real-Ip", clientIP.String())
+
+	// 1.6 调试保留命名空间 /_wdsp/debug/v1/（debug_cc_counter 启用时；阶段5 §十七
+	// CC 精确计数探针）：真实 IP 识别之后、CC 限速之前挂接——回显请求本身不进入
+	// CC 计数（探针自污染防控），也不进入 JWT/身份观测步骤；全部结局本地响应，
+	// 结构上不可能反向代理（见 debug_cccounter.go）
+	if g.DebugCCCounter && strings.HasPrefix(r.URL.Path, debugReservedNamespace) {
+		return g.serveDebugNamespace(w, r, res)
+	}
 
 	// 1.4 JWT 信任链本地验证（WDSP P0-03；jwt_trust 段下发且非 OFF 时）。
 	// 仅计算——结果入请求上下文：身份观测（VERIFIED 可信信号）与 API 动态管线
@@ -1777,6 +1888,10 @@ func (g *Guard) setRiskResponseHeaders(w http.ResponseWriter, requestID string, 
 }
 
 // writeTooMany 429 响应（Retry-After + Request ID，不暴露内部阈值/计数/算法/节点）。
+// 自定义阻断页面（block_response 段，阶段5 §5.1）：未配置时走内置默认模板，
+// 与历史版本逐字节一致；配置后按段渲染（正文装配期已白名单净化，标题/Request ID
+// 渲染时整串转义；JSON 错误码/文案经 JSON 编码）。Retry-After 与
+// X-Jiuzhang-Request-ID 行为不随自定义改变。
 func (g *Guard) writeTooMany(w http.ResponseWriter, r *http.Request, requestID string, retryAfterSec int) {
 	if retryAfterSec <= 0 {
 		retryAfterSec = 1
@@ -1787,9 +1902,18 @@ func (g *Guard) writeTooMany(w http.ResponseWriter, r *http.Request, requestID s
 	if strings.Contains(accept, "application/json") {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusTooManyRequests)
+		errCode, errMsg := "too_many_requests", "请求过于频繁，请稍后重试"
+		if br := g.blockResponse; br != nil {
+			if br.jsonCode != "" {
+				errCode = br.jsonCode
+			}
+			if br.jsonMessage != "" {
+				errMsg = br.jsonMessage
+			}
+		}
 		bodyFields := map[string]string{
-			"error":      "too_many_requests",
-			"message":    "请求过于频繁，请稍后重试",
+			"error":      errCode,
+			"message":    errMsg,
 			"request_id": requestID,
 		}
 		if reason := w.Header().Get("X-Jiuzhang-Risk-Reason"); reason != "" {
@@ -1803,9 +1927,26 @@ func (g *Guard) writeTooMany(w http.ResponseWriter, r *http.Request, requestID s
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusTooManyRequests)
-	// 静态模板，Request ID 为服务端生成 UUID，仍做 HTML 转义（纵深防御）
-	fmt.Fprintf(w, `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>请求过于频繁</title></head>`+
-		`<body><h1>429 请求过于频繁</h1><p>请稍后重试。</p><p>请求编号：%s</p></body></html>`, html.EscapeString(requestID))
+	br := g.blockResponse
+	if br == nil || (br.title == "" && br.body == "") {
+		// 内置默认模板（未配置自定义 HTML 页面；与历史版本逐字节一致）。
+		// 静态模板，Request ID 为服务端生成 UUID，仍做 HTML 转义（纵深防御）
+		fmt.Fprintf(w, `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>请求过于频繁</title></head>`+
+			`<body><h1>429 请求过于频繁</h1><p>请稍后重试。</p><p>请求编号：%s</p></body></html>`, html.EscapeString(requestID))
+		return
+	}
+	// 自定义页面：缺省字段回落内置默认；body 装配期已白名单净化（无脚本/无属性），
+	// title 与 Request ID 渲染时整串转义；请求编号行恒保留（与响应头一致的可追溯锚点）
+	title := br.title
+	if title == "" {
+		title = "请求过于频繁"
+	}
+	body := br.body
+	if body == "" {
+		body = `<h1>429 请求过于频繁</h1><p>请稍后重试。</p>`
+	}
+	fmt.Fprintf(w, `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>%s</title></head>`+
+		`<body>%s<p>请求编号：%s</p></body></html>`, html.EscapeString(title), body, html.EscapeString(requestID))
 }
 
 // eventBase 构造事件公共字段。
@@ -1817,11 +1958,15 @@ func (g *Guard) eventBase(r *http.Request, requestID string, res clientip.Result
 		AppCode:       g.AppCode,
 		ClientIP:      res.ClientIP.String(),
 		ConnectionIP:  res.ConnectionIP.String(),
-		Domain:        r.Host,
-		Method:        r.Method,
-		Path:          r.URL.RequestURI(),
-		Proto:         r.Proto,
-		GatewayNode:   g.GatewayNode,
+		// 阶段5 §6.5 日志字段：真实 IP 识别来源/可信代理命中/代理链摘要
+		ClientIPSource:        string(res.Source),
+		TrustedProxyUsed:      res.TrustedProxyUsed,
+		ForwardedChainSummary: res.ChainSummary,
+		Domain:                r.Host,
+		Method:                r.Method,
+		Path:                  r.URL.RequestURI(),
+		Proto:                 r.Proto,
+		GatewayNode:           g.GatewayNode,
 	}
 }
 
@@ -1845,19 +1990,45 @@ func (g *Guard) emit(e events.Event, t events.Type, action string, status int) {
 	}
 }
 
+// engineErrThrottleLocked 引擎错误告警节流判定（每分钟每键最多一条，防日志洪泛）。
+// 调用方须已持有 engine.mu（请求路径与启动路径共用同一节流表 lastErrEmit）。
+func engineErrThrottleLocked(e *sharedEngine, key string) bool {
+	last, ok := e.lastErrEmit[key]
+	if ok && time.Since(last) <= time.Minute {
+		return false
+	}
+	e.lastErrEmit[key] = time.Now()
+	return true
+}
+
 // emitEngineErrorThrottled 引擎错误告警（每分钟每策略最多一条，防日志洪泛）。
 func (g *Guard) emitEngineErrorThrottled(base events.Event, p *compiledPolicy, err error) {
 	g.engine.mu.Lock()
-	last, ok := g.engine.lastErrEmit[p.cfg.ID]
-	if !ok || time.Since(last) > time.Minute {
-		g.engine.lastErrEmit[p.cfg.ID] = time.Now()
-	}
+	emit := engineErrThrottleLocked(g.engine, p.cfg.ID)
 	g.engine.mu.Unlock()
-	if ok && time.Since(last) <= time.Minute {
+	if !emit {
 		return
 	}
 	ev := withPolicy(base, p)
 	ev.Message = err.Error()
+	g.emit(ev, events.RateLimitEngineError, "ENGINE_ERROR", 0)
+}
+
+// emitStartupEngineError 启动期引擎错误事件（无请求上下文，与 RATE_LIMIT_ENGINE_ERROR
+// 同通道入 access_control_events）。client_ip 用未指定地址占位——采集端 client_ip
+// 非空且须可解析，真实错误与来源在 message 中说明。
+func (g *Guard) emitStartupEngineError(err error) {
+	if g.events == nil || g.logger == nil {
+		return
+	}
+	ev := events.Event{
+		OccurredAt:    time.Now().UTC(),
+		ApplicationID: g.AppID,
+		AppCode:       g.AppCode,
+		ClientIP:      "0.0.0.0",
+		GatewayNode:   g.GatewayNode,
+		Message:       "tempblock initial refresh failed: " + err.Error(),
+	}
 	g.emit(ev, events.RateLimitEngineError, "ENGINE_ERROR", 0)
 }
 

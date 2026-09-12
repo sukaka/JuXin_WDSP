@@ -128,6 +128,80 @@ func TestTopN(t *testing.T) {
 	}
 }
 
+func TestNormalizeMethod(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"get", "GET"},
+		{" Post ", "POST"},
+		{"", "(未知)"},
+		{"  ", "(未知)"},
+		{"VERYLONGMETHODNAME", "VERYLONGMETHODNA"}, // 截断 16 字符
+	}
+	for _, c := range cases {
+		if got := normalizeMethod(c.in); got != c.want {
+			t.Errorf("normalizeMethod(%q): got %q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestNormalizeClientIPSource(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"CONNECTION", "CONNECTION"},
+		{"x_forwarded_for", "X_FORWARDED_FOR"}, // 小写归一为大写
+		{" X-Real-Ip ", "X-REAL-IP"},           // 去空白 + 大写
+		{"", "(未知)"},                           // NULL/空 = 旧版网关未上报
+		{"   ", "(未知)"},
+	}
+	for _, c := range cases {
+		if got := NormalizeClientIPSource(c.in); got != c.want {
+			t.Errorf("NormalizeClientIPSource(%q): got %q want %q", c.in, got, c.want)
+		}
+	}
+	// 超长值截断 32 字符（列宽上限）
+	long := strings.Repeat("a", 40)
+	if got := NormalizeClientIPSource(long); len(got) != 32 {
+		t.Errorf("truncate: len %d", len(got))
+	}
+}
+
+func TestNormalizeTrustedProxy(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"edge-cdn", "edge-cdn"},
+		{" 公司入口LB ", "公司入口LB"}, // 去空白
+		{"", "(直连)"},           // NULL/空 = 未经过可信代理
+		{"  ", "(直连)"},
+	}
+	for _, c := range cases {
+		if got := normalizeTrustedProxy(c.in); got != c.want {
+			t.Errorf("normalizeTrustedProxy(%q): got %q want %q", c.in, got, c.want)
+		}
+	}
+	// 超长值截断 128 字符（列宽上限）
+	long := strings.Repeat("p", 140)
+	if got := normalizeTrustedProxy(long); len(got) != 128 {
+		t.Errorf("truncate: len %d", len(got))
+	}
+}
+
+func TestNormalizeContentType(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"application/json; charset=utf-8", "application/json"}, // 去参数
+		{" Text/HTML ", "text/html"},                            // 去空白 + 小写
+		{"", "(无)"},
+		{"   ", "(无)"},
+		{"; charset=utf-8", "(无)"}, // 主类型为空
+	}
+	for _, c := range cases {
+		if got := NormalizeContentType(c.in); got != c.want {
+			t.Errorf("NormalizeContentType(%q): got %q want %q", c.in, got, c.want)
+		}
+	}
+	// 超长值截断 64 字符
+	long := strings.Repeat("a", 100)
+	if got := NormalizeContentType(long); len(got) != 64 {
+		t.Errorf("truncate: len %d", len(got))
+	}
+}
+
 func TestMergeCounts(t *testing.T) {
 	dst := MergeCounts([]int{1, 2}, []int{3, 4, 5})
 	if len(dst) != 3 || dst[0] != 4 || dst[1] != 6 || dst[2] != 5 {

@@ -47,6 +47,13 @@ export const PUBLISH_RESULT_META: Record<string, { color: string; label: string 
   VERIFY_FAILED: { color: 'red', label: '验证失败' },
 }
 
+/** 发布后流量验证（冒烟）结果展示（阶段5 §十七） */
+export const SMOKE_RESULT_META: Record<string, { color: string; label: string }> = {
+  SMOKE_PASS: { color: 'green', label: '通过' },
+  SMOKE_FAIL: { color: 'red', label: '未通过' },
+  SMOKE_SKIPPED: { color: 'gold', label: '已降级' },
+}
+
 export const TASK_STATUS_META: Record<string, { color: string; label: string }> = {
   PENDING: { color: 'default', label: '等待中' },
   VALIDATING: { color: 'processing', label: '校验中' },

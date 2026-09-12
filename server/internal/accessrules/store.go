@@ -85,8 +85,17 @@ func (s *Store) CreateDraft(ctx context.Context, in CreateInput, createdBy uuid.
 	return r, nil
 }
 
-// CreateBatch 在一个事务中批量创建（导入 ALL_OR_NOTHING 模式），任一条失败整体回滚。
+// CreateBatch 在一个事务中批量创建（状态 ACTIVE），任一条失败整体回滚。
 func (s *Store) CreateBatch(ctx context.Context, inputs []CreateInput, createdBy uuid.UUID) error {
+	return s.createBatch(ctx, inputs, createdBy, StatusActive)
+}
+
+// CreateBatchDraft 在一个事务中批量创建草稿（导入落 DRAFT，不进入网关生效集），任一条失败整体回滚。
+func (s *Store) CreateBatchDraft(ctx context.Context, inputs []CreateInput, createdBy uuid.UUID) error {
+	return s.createBatch(ctx, inputs, createdBy, StatusDraft)
+}
+
+func (s *Store) createBatch(ctx context.Context, inputs []CreateInput, createdBy uuid.UUID, status string) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -98,6 +107,7 @@ func (s *Store) CreateBatch(ctx context.Context, inputs []CreateInput, createdBy
 		if err != nil {
 			return err
 		}
+		r.Status = status
 		if err := insertRuleChecked(ctx, tx, r, createdBy, nil); err != nil {
 			return err
 		}

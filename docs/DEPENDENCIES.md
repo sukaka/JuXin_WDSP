@@ -178,6 +178,12 @@ ops/offline-package/build-all.sh -v 2.0.0 --arches amd64
 |------|---------|--------|------|
 | google.golang.org/protobuf | v1.36.11 | BSD-3-Clause | gRPC 描述符级消息解析（protodesc/dynamicpb 动态注册表，server 端，迁移 000076；由间接依赖转直接启用，既有锁定版本，零新增外部库） |
 
+阶段8 §33 规范导入扩展启用的 Go 依赖（许可证文本归档于 licenses/yaml/）：
+
+| 依赖 | 锁定版本 | 许可证 | 用途 |
+|------|---------|--------|------|
+| gopkg.in/yaml.v3 | v3.0.1 | MIT + Apache-2.0（双许可） | OpenAPI/Swagger/JSON Schema/Postman 规范文档的 YAML 解析（server/internal/apisecurity/spec_formats.go，安全解码：自定义标签拒绝 + 节点/深度预算防炸弹） |
+
 ## APM 阶段2 数据面新增组件
 
 | 组件名称 | 版本号 | 许可证 | 项目地址 | 用途 | 是否修改 |

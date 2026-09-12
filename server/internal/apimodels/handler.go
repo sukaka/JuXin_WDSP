@@ -470,7 +470,7 @@ func (h *Handler) ListParameterRelations(w http.ResponseWriter, r *http.Request)
 }
 
 // CreateParameterRelation POST /api/v1/api-security/models/{id}/parameter-relations
-// body: {"source_parameter_id":"uuid","target_parameter_id":"uuid","relation_type":"REQUIRES|MUTEX"}
+// body: {"source_parameter_id":"uuid","target_parameter_id":"uuid","relation_type":"REQUIRES|MUTEX|EQUALS|NOT_EQUALS|GREATER_THAN|LESS_THAN|TIME_BEFORE|TIME_AFTER"}
 // 新建为候选（confirmed=false），确认走 confirm 接口（只有 confirmed 关系进入强制检测）。
 func (h *Handler) CreateParameterRelation(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())

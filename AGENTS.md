@@ -72,6 +72,7 @@ Caddy 中间件顺序必须经过集成测试验证，不得凭经验随意调�
 - [产品线与分支策略（WAF/WDSP/API）](docs/BRANCHING_AND_PRODUCT_LINES.md)
 - [阶段8/WDSP 开工说明](docs/tasks/STAGE_8_WDSP_KICKOFF.md)
 - [阶段8 任务书](docs/tasks/STAGE_8_UNIFIED_WEB_API_DYNAMIC_PROTECTION.md)
+- [阶段4–8 任务书未完成项审计清单](docs/tasks/STAGE_4_8_PENDING_ITEMS.md)
 - [三微模型统一维度框架](docs/API_MICRO_MODELS.md)
 - [API 安全能力现状盘点](docs/API_SECURITY_CURRENT_STATE.md)
 - [API 统一 Finding 与统一决策设计](docs/API_UNIFIED_FINDING_DECISION.md)

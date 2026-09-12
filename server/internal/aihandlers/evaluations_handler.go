@@ -116,6 +116,18 @@ ON CONFLICT (code) DO NOTHING`,
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "评估集已创建"})
 }
 
+// evalRunDTO 评估运行输出（列表项与详情共用同一字段口径）。
+type evalRunDTO struct {
+	ID              uuid.UUID       `json:"id"`
+	EvaluationSetID uuid.UUID       `json:"evaluation_set_id"`
+	SetCode         string          `json:"set_code"`
+	Status          string          `json:"status"`
+	Score           *float64        `json:"score"`
+	Details         json.RawMessage `json:"details"`
+	StartedAt       time.Time       `json:"started_at"`
+	FinishedAt      *time.Time      `json:"finished_at"`
+}
+
 // EvalRunList 评估运行记录（分页）。
 func (d *Deps) EvalRunList(w http.ResponseWriter, r *http.Request) {
 	page := queryInt(r, "page", 1)
@@ -137,19 +149,9 @@ ORDER BY r.started_at DESC LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
 		return
 	}
 	defer rows.Close()
-	type runDTO struct {
-		ID              uuid.UUID       `json:"id"`
-		EvaluationSetID uuid.UUID       `json:"evaluation_set_id"`
-		SetCode         string          `json:"set_code"`
-		Status          string          `json:"status"`
-		Score           *float64        `json:"score"`
-		Details         json.RawMessage `json:"details"`
-		StartedAt       time.Time       `json:"started_at"`
-		FinishedAt      *time.Time      `json:"finished_at"`
-	}
-	out := make([]runDTO, 0, pageSize)
+	out := make([]evalRunDTO, 0, pageSize)
 	for rows.Next() {
-		var run runDTO
+		var run evalRunDTO
 		if err := rows.Scan(&run.ID, &run.EvaluationSetID, &run.SetCode, &run.Status,
 			&run.Score, &run.Details, &run.StartedAt, &run.FinishedAt); err != nil {
 			response.InternalError(w, r, err)

@@ -407,5 +407,6 @@ func (d *Deps) runStream(w http.ResponseWriter, r *http.Request, sess *aiorchest
 	})
 	_ = writeSSE(w, flusher, sseEvent{Type: "done", Payload: map[string]interface{}{
 		"task_id": result.TaskID, "message_id": msgID, "finish_reason": result.FinishReason,
+		"auto_continues": result.AutoContinues,
 	}})
 }

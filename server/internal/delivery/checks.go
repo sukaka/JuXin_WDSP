@@ -98,6 +98,7 @@ func Registry() []Check {
 		{Key: "third_party_notices", Name: "THIRD_PARTY_NOTICES.md 存在且非空", Category: CategoryCompliance, Critical: false, Run: checkThirdPartyNotices},
 		{Key: "sbom_exists", Name: "SBOM 文件存在（docs/SBOM.spdx.json）", Category: CategoryCompliance, Critical: false, Run: checkSBOMExists},
 		{Key: "docs_present", Name: "交付关键文档齐备", Category: CategoryCompliance, Critical: false, Run: checkDocsPresent},
+		{Key: "vulnerability_scan", Name: "漏洞扫描无未修复高危发现", Category: CategorySecurity, Critical: true, Run: checkVulnerabilityScan},
 		{Key: "no_default_password", Name: "无默认/硬编码初始口令", Category: CategorySecurity, Critical: false, Run: checkNoDefaultPassword},
 		{Key: "no_debug_endpoints", Name: "无调试接口暴露（/debug/pprof）", Category: CategorySecurity, Critical: true, Run: checkNoDebugEndpoints},
 		{Key: "no_placeholder_secrets", Name: "无占位口令/Mock 标记配置", Category: CategoryQuality, Critical: false, Run: checkNoPlaceholderSecrets},
@@ -413,6 +414,58 @@ func checkDocsPresent(rc *RunContext) ItemResult {
 		return c.warn("缺少文档："+strings.Join(missing, "、"), map[string]interface{}{"missing": missing})
 	}
 	return c.pass(fmt.Sprintf("关键文档 %d 项齐备", len(requiredDocs)), nil)
+}
+
+// checkVulnerabilityScan 漏洞扫描闭环（§十六「高危漏洞扫描」）：
+//  1. 扫描能力存在：scripts/generate-sbom.sh 与 scripts/license-audit.sh 存在、非空且可执行；
+//  2. 扫描输入齐备：docs/SBOM.spdx.json 存在且为合法 JSON；
+//  3. 无未修复高危：docs/VULN_KNOWN_HIGH.md 登记表中无未修复条目（约定："- [ ]" 行 = 未修复）；
+//     登记表缺失或超过 90 天未更新 → WARNING（扫描结论不可信，须重新扫描建档）。
+func checkVulnerabilityScan(rc *RunContext) ItemResult {
+	c := findCheck("vulnerability_scan")
+	var broken []string
+	for _, s := range []string{"generate-sbom.sh", "license-audit.sh"} {
+		p := filepath.Join(rc.RepoRoot, "scripts", s)
+		info, err := os.Stat(p)
+		if err != nil || info.Size() == 0 {
+			broken = append(broken, s+"(缺失)")
+			continue
+		}
+		if info.Mode()&0o111 == 0 {
+			broken = append(broken, s+"(不可执行)")
+		}
+	}
+	if len(broken) > 0 {
+		return c.fail("漏洞扫描能力不可用："+strings.Join(broken, "、"),
+			map[string]interface{}{"broken_scripts": broken})
+	}
+	sbom := filepath.Join(rc.RepoRoot, "docs", "SBOM.spdx.json")
+	if b, err := os.ReadFile(sbom); err != nil || len(b) == 0 || !json.Valid(b) {
+		return c.fail("SBOM 缺失或非法，漏洞扫描输入不齐备："+sbom, nil)
+	}
+	reg := filepath.Join(rc.RepoRoot, "docs", "VULN_KNOWN_HIGH.md")
+	info, err := os.Stat(reg)
+	if err != nil {
+		return c.warn("无高危漏洞发现登记表（docs/VULN_KNOWN_HIGH.md），交付前须执行漏洞扫描并建档登记结果", nil)
+	}
+	b, err := os.ReadFile(reg)
+	if err != nil {
+		return c.failErr("读取高危漏洞登记表失败", err)
+	}
+	unresolved := 0
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "- [ ]") {
+			unresolved++
+		}
+	}
+	details := map[string]interface{}{"register": reg, "unresolved_findings": unresolved}
+	if unresolved > 0 {
+		return c.fail(fmt.Sprintf("存在 %d 条未修复高危漏洞发现，须修复并复扫后方可交付", unresolved), details)
+	}
+	if age := rc.now().Sub(info.ModTime()); age > 90*24*time.Hour {
+		return c.warn(fmt.Sprintf("高危漏洞登记表已 %.0f 天未更新，交付前须重新扫描并刷新登记", age.Hours()/24), details)
+	}
+	return c.pass("扫描能力齐备，高危漏洞登记无未修复发现", details)
 }
 
 // checkNoDefaultPassword INITIAL_ADMIN_PASSWORD 不应在交付环境中注入（初始口令仅首次打印）。

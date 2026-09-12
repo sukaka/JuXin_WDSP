@@ -20,7 +20,7 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { PUBLISH_RESULT_META, parseBusinessSnapshot, truncateHash } from '../../utils/stage3'
+import { PUBLISH_RESULT_META, SMOKE_RESULT_META, parseBusinessSnapshot, truncateHash } from '../../utils/stage3'
 import { PublishTaskProgress, SnapshotTable } from '../config-publish/ConfigPublishPage'
 import type { ConfigVersionItem } from '../../types'
 
@@ -90,6 +90,13 @@ export default function ConfigVersionsPage() {
       dataIndex: 'publish_result',
       width: 100,
       render: (v: string) => <StatusTag value={v} map={PUBLISH_RESULT_META} />,
+    },
+    {
+      title: '流量验证',
+      dataIndex: 'validation_result',
+      width: 100,
+      render: (v: string | undefined) =>
+        v ? <StatusTag value={v} map={SMOKE_RESULT_META} /> : '-',
     },
     { title: '变更摘要', dataIndex: 'change_summary', ellipsis: true, render: (v: string) => v || '-' },
     {

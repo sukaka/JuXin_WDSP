@@ -389,7 +389,8 @@ func CheckEnvAnomalyStack(ctx *dsctx.RequestContext) {
 	for _, m := range ctx.Matches {
 		switch m.RuleID {
 		case "auth.credential_ip_spread", "auth.credential_concurrency",
-			"auth.credential_unusual_hour", "auth.credential_ua_change":
+			"auth.credential_unusual_hour", "auth.credential_ua_change",
+			"auth.credential_cross_app", "auth.credential_device_spread":
 			n++
 		}
 	}

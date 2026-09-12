@@ -68,7 +68,7 @@ endpoint_key = 大写HTTP方法 + 单个空格 + NormalizePath(rawPath)
 |--------|------|------|
 | 管线 | `pipeline/pipeline.go:73-74` | 写扩展 `api.endpoint_key`，供生命周期/限速检测 |
 | guard 挂点 | `apiprotect.go:68` | 按键查 `api_formal_schemas` 选冻结模型 |
-| 发现入库 | `apiassets/store.go:204-212` | `ON CONFLICT (endpoint_key)` 幂等 upsert |
+| 发现入库 | `apiassets/store.go:323-365` | `ON CONFLICT (application_id, domain_id, application_binding_id, host, endpoint_key, protocol_type)` 复合作用域幂等 upsert（迁移 000137 uq_api_endpoints_scope） |
 | 基线下发 | `apiassets/store.go:272`（`ListKeyStatus`） | `endpoint_key → asset_status`，生命周期检测 |
 | 模型下发 | `apimodels/store.go:497`（`ListFormalSchemas`） | `endpoint_key → 字段类型表` |
 | 模型版本 | `apimodels/store.go:130` | 内容哈希输入之一（endpoint+schema） |

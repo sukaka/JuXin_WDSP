@@ -42,6 +42,14 @@ func (s *Store) WithDB(db DBTX) *Store { return &Store{db: db} }
 // final_decision IS NULL，或现有行为 PENDING_CORRELATION 且未被确认执法
 // （security_action 不在 BLOCK/TEMP_BLOCK/RATE_LIMIT/MASK_RESPONSE）且 incoming
 // completion_status ∈ (COMPLETED, ABORTED) 时更新——已确认拦截不被晚到观察覆盖。
+// device_fingerprint/object_identifiers（任务书 §7 统一上下文字段）列定义见迁移
+// 000150：旧版网关事件缺字段落 NULL；入库前经 validateObjectIdentifiers 校验
+// 「只记哈希」形态（value_hash 必须恰为 32 位小写 hex），不合形态显式报错不落库
+// ——与 authz_decision 同一纪律：服务端边界不相信上游脱敏自觉。
+// api_level（§8.2 四级识别标签）列定义见迁移 000149：词表
+// CONFIRMED_API/PROBABLE_API/POSSIBLE_API/NON_API，词表之外显式报错不落库
+// （chk_api_runtime_events_api_level CHECK 约束兜底，Go 侧先校验报错更清晰）；
+// 空串（未上报/管线未写 api.classification）落 NULL，历史事件不回填。
 func (s *Store) SavePrimary(ctx context.Context, ev *PrimaryEvent) error {
 	if ev == nil {
 		return nil
@@ -50,6 +58,15 @@ func (s *Store) SavePrimary(ctx context.Context, ev *PrimaryEvent) error {
 		if _, err := validateAuthorizationDecision(ev.AuthzDecision); err != nil {
 			return err
 		}
+	}
+	if err := validateObjectIdentifiers(ev.ObjectIdentifiers); err != nil {
+		return err
+	}
+	if err := validateDeviceFingerprint(ev.DeviceFingerprint); err != nil {
+		return err
+	}
+	if err := validateAPILevel(ev.APILevel); err != nil {
+		return err
 	}
 	if ev.ID == "" {
 		ev.ID = uuid.New().String()
@@ -85,14 +102,24 @@ func (s *Store) SavePrimary(ctx context.Context, ev *PrimaryEvent) error {
 		fdRaw = []byte(ev.FinalDecision)
 		fdCompletion = probe.CompletionStatus
 	}
+	// object_identifiers：空集合落 NULL（与未上报同语义，不伪造空数组）
+	var objIDsRaw any
+	if len(ev.ObjectIdentifiers) > 0 {
+		b, merr := json.Marshal(ev.ObjectIdentifiers)
+		if merr != nil {
+			return fmt.Errorf("marshal object_identifiers: %w", merr)
+		}
+		objIDsRaw = b
+	}
 	ct, err := s.db.Exec(ctx, `
-INSERT INTO api_runtime_events (id, request_id, endpoint_key, risk_score, risk_level, final_action, details_json, occurred_at, identity_fingerprint, auth_type, response_status, client_ip, method, raw_path, latency_ms, model_version, policy_version, gateway_node, jwt_verification, final_decision)
-SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
+INSERT INTO api_runtime_events (id, request_id, endpoint_key, risk_score, risk_level, final_action, details_json, occurred_at, identity_fingerprint, auth_type, response_status, client_ip, method, raw_path, latency_ms, model_version, policy_version, gateway_node, jwt_verification, final_decision, device_fingerprint, object_identifiers, api_level)
+SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23
 WHERE NOT EXISTS (SELECT 1 FROM api_runtime_events WHERE request_id = NULLIF($2::varchar, ''))`,
 		id, ev.RequestID, ev.EndpointKey, ev.RiskScore, ev.RiskLevel, ev.FinalAction, raw, ev.OccurredAt,
 		ev.IdentityFingerprint, ev.AuthType, ev.ResponseStatus,
 		nullIfEmpty(ev.ClientIP), nullIfEmpty(ev.Method), nullIfEmpty(ev.RawPath), nullIfNonPositive(ev.LatencyMs),
-		nullIfEmpty(ev.ModelVersion), nullIfEmpty(ev.PolicyVersion), nullIfEmpty(ev.GatewayNode), jwtRaw, fdRaw)
+		nullIfEmpty(ev.ModelVersion), nullIfEmpty(ev.PolicyVersion), nullIfEmpty(ev.GatewayNode), jwtRaw, fdRaw,
+		nullIfEmpty(ev.DeviceFingerprint), objIDsRaw, nullIfEmpty(ev.APILevel))
 	if err != nil {
 		return err
 	}
@@ -192,6 +219,68 @@ func validAuthorizationObjectRef(ref string) bool {
 	return err == nil
 }
 
+// fingerprintHexLen §7 指纹/哈希形态：HMAC-SHA256 截断 16 字节 hex（32 字符）。
+const fingerprintHexLen = 32
+
+// validateDeviceFingerprint 服务端边界校验：device_fingerprint 必须为空（未上报）
+// 或恰为 32 位小写 hex——其他形态说明上游把非哈希内容塞进了指纹字段，拒绝落库。
+func validateDeviceFingerprint(fp string) error {
+	if fp == "" {
+		return nil
+	}
+	if len(fp) != fingerprintHexLen || !isLowerHex(fp) {
+		return fmt.Errorf("device_fingerprint: must be a %d-char hex fingerprint", fingerprintHexLen)
+	}
+	return nil
+}
+
+// validateObjectIdentifiers 服务端边界校验「只记哈希不落明文」契约：
+// 条数有界（dsctx.MaxObjectIdentifiers）；source 限定枚举；param 非空有界；
+// value_hash 必须恰为 32 位小写 hex（拒绝任何明文形态值入库）。
+// 事件可能经旧版/独立部署采集器转发，不能只依赖网关侧 sanitize。
+func validateObjectIdentifiers(ids []dsctx.ObjectIdentifier) error {
+	if len(ids) > dsctx.MaxObjectIdentifiers {
+		return fmt.Errorf("object_identifiers: too many entries (%d > %d)", len(ids), dsctx.MaxObjectIdentifiers)
+	}
+	for i, oi := range ids {
+		switch oi.Source {
+		case "path", "body_json", "body_form":
+		default:
+			return fmt.Errorf("object_identifiers[%d].source: invalid value %q", i, oi.Source)
+		}
+		if oi.Param == "" || len(oi.Param) > 128 {
+			return fmt.Errorf("object_identifiers[%d].param: must be 1..128 chars", i)
+		}
+		if len(oi.ValueHash) != fingerprintHexLen || !isLowerHex(oi.ValueHash) {
+			return fmt.Errorf("object_identifiers[%d].value_hash: must be a redacted %d-char hex fingerprint", i, fingerprintHexLen)
+		}
+	}
+	return nil
+}
+
+// validateAPILevel 服务端边界校验：api_level 必须为空（未上报）或 §8.2 四级词表
+// 之一——词表之外的值说明上游把非分类内容塞进了标签字段，拒绝落库（与
+// device_fingerprint/authz_decision 同一纪律，数据库 CHECK 约束兜底）。
+func validateAPILevel(level string) error {
+	switch level {
+	case "", "CONFIRMED_API", "PROBABLE_API", "POSSIBLE_API", "NON_API":
+		return nil
+	default:
+		return fmt.Errorf("api_level: invalid value %q", level)
+	}
+}
+
+// isLowerHex 判定字符串为纯小写 hex（网关指纹输出形态；大写/非 hex 一律拒绝）。
+func isLowerHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // nullIfEmpty 空串转 NULL（可空审计列：未上报与空值语义一致，统一落 NULL）。
 func nullIfEmpty(s string) any {
 	if s == "" {
@@ -222,7 +311,7 @@ func (s *Store) List(ctx context.Context, page, pageSize int) ([]map[string]any,
 	}
 	rows, err := s.db.Query(ctx, `
 SELECT id, request_id, endpoint_key, risk_score, risk_level, final_action, details_json, occurred_at, identity_fingerprint, auth_type,
-       client_ip, method, raw_path, latency_ms, model_version, policy_version, jwt_verification
+       client_ip, method, raw_path, latency_ms, model_version, policy_version, jwt_verification, device_fingerprint, object_identifiers, api_level
 FROM api_runtime_events ORDER BY occurred_at DESC LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, 0, err
@@ -240,8 +329,14 @@ FROM api_runtime_events ORDER BY occurred_at DESC LIMIT $1 OFFSET $2`, pageSize,
 		var latencyMs *int64
 		// jwt_verification 可空（迁移 000127；历史事件 NULL，不回填）
 		var jwtRaw []byte
+		// §7 列可空（迁移 000150；旧版网关事件未上报即 NULL）
+		var deviceFP *string
+		var objIDsRaw []byte
+		// api_level 可空（迁移 000149；未上报/管线未写 api.classification 即 NULL）
+		var apiLevel *string
 		if err := rows.Scan(&id, &reqID, &ek, &score, &rl, &fa, &details, &at, &idfp, &authType,
-			&clientIP, &method, &rawPath, &latencyMs, &modelVersion, &policyVersion, &jwtRaw); err != nil {
+			&clientIP, &method, &rawPath, &latencyMs, &modelVersion, &policyVersion, &jwtRaw,
+			&deviceFP, &objIDsRaw, &apiLevel); err != nil {
 			return nil, 0, err
 		}
 		var det []dsctx.DetectorMatch
@@ -253,6 +348,10 @@ FROM api_runtime_events ORDER BY occurred_at DESC LIMIT $1 OFFSET $2`, pageSize,
 				jwt = jv
 			}
 		}
+		var objIDs []dsctx.ObjectIdentifier
+		if len(objIDsRaw) > 0 {
+			_ = json.Unmarshal(objIDsRaw, &objIDs)
+		}
 		out = append(out, map[string]any{
 			"id": id, "request_id": reqID, "endpoint_key": ek,
 			"risk_score": score, "risk_level": rl, "final_action": fa,
@@ -260,7 +359,9 @@ FROM api_runtime_events ORDER BY occurred_at DESC LIMIT $1 OFFSET $2`, pageSize,
 			"identity_fingerprint": idfp, "auth_type": authType,
 			"client_ip": clientIP, "method": method, "raw_path": rawPath,
 			"latency_ms": latencyMs, "model_version": modelVersion, "policy_version": policyVersion,
-			"jwt_verification": jwt,
+			"jwt_verification":   jwt,
+			"device_fingerprint": deviceFP, "object_identifiers": objIDs,
+			"api_level": apiLevel,
 		})
 	}
 	if out == nil {

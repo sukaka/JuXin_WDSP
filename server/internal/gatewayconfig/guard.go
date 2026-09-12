@@ -66,6 +66,18 @@ type GuardAccessLog struct {
 	LogPath                string `json:"log_path"`
 }
 
+// GuardBlockResponse 自定义 429/阻断响应页面（阶段5 §5.1；下发网关 block_response 段）。
+// 四字段均可选：空串 = 该项使用网关内置默认（HTML 默认模板/默认错误码与文案）；
+// 大小上限由发布侧 LoadBlockResponse 与网关装配期同口径校验，HTML 正文由网关
+// 白名单式净化（仅放行基础排版标签且无属性，其余内容转义，防注入 XSS）。
+// json tag 为跨分片契约，不得改动。
+type GuardBlockResponse struct {
+	HTMLTitle   string `json:"html_title,omitempty"`   // HTML 页面标题（渲染时整串转义）
+	HTMLBody    string `json:"html_body,omitempty"`    // HTML 页面正文（受限 HTML，网关净化）
+	JSONCode    string `json:"json_code,omitempty"`    // JSON 错误响应 error 错误码
+	JSONMessage string `json:"json_message,omitempty"` // JSON 错误响应 message 文案
+}
+
 // GuardAppRules 单应用视角的规则与策略。
 type GuardAppRules struct {
 	Allow    []GuardRule   `json:"allow"`
@@ -278,15 +290,62 @@ type GuardParamRef struct {
 }
 
 // GuardParamRelation 已确认参数条件关系（下发网关，对应 api_parameter_relations 表
-// confirmed=true 行；该表由迁移 000018 建立、000068 补确认列）。
+// confirmed=true 行；该表由迁移 000018 建立、000068 补确认列，000147/000154 扩词表）。
 // 网关运行时按存在性判定：REQUIRES：A 存在 B 必须存在（缺失违例）；MUTEX/EXCLUDES：
-// A 与 B 互斥（同现违例）；CO_OCCURS：统计共现偏离仅观察（不阻断）。
-// 证据只含参数名/路径/位置，不落值。json tag 为跨分片契约，不得改动。
+// A 与 B 互斥（同现违例）；CO_OCCURS：统计共现偏离仅观察（不阻断）；
+// 值比较六类（EQUALS/NOT_EQUALS/GREATER_THAN/LESS_THAN/TIME_BEFORE/TIME_AFTER）违例只产
+// OBSERVE 级信号，任何模式下不阻断。
+// 证据只含参数名/路径/位置（值比较加脱敏指纹），不落值。json tag 为跨分片契约，不得改动。
 type GuardParamRelation struct {
 	EndpointKey  string        `json:"endpoint_key"`  // 作用端点（METHOD + 空格 + 路径模板）
-	RelationType string        `json:"relation_type"` // REQUIRES / MUTEX / EXCLUDES / CO_OCCURS
+	RelationType string        `json:"relation_type"` // REQUIRES / MUTEX / EXCLUDES / CO_OCCURS + 值比较六类
 	ParamA       GuardParamRef `json:"param_a"`
 	ParamB       GuardParamRef `json:"param_b"`
+}
+
+// GuardFlowStep 流程步骤（下发网关，对应 api_flow_baseline_steps 表行；
+// 该表由迁移 000155 建立，endpoint_key 经 api_endpoints 关联解析）。
+// 与网关 detectors.FlowStep 字段一一对应。json tag 为跨分片契约，不得改动。
+type GuardFlowStep struct {
+	StepID       string   `json:"step_id"`              // 步骤标识（同一流程内唯一）
+	EndpointKey  string   `json:"endpoint_key"`         // 绑定端点（METHOD + 空格 + 路径模板）
+	Sequence     int      `json:"sequence"`             // 流程内单调序号（逆序判定基准）
+	Predecessors []string `json:"predecessors"`         // 期望前置步骤 step_id 列表（AND 语义；空 = 无前置约束）
+	Terminal     bool     `json:"terminal"`             // 是否流程终点（描述性字段）
+	StateFrom    string   `json:"state_from,omitempty"` // 要求的对象前置状态（空 = 不参与状态判定）
+	StateTo      string   `json:"state_to,omitempty"`   // 步骤完成后的对象状态（空 = 不推进状态记录）
+	// MaxPerWindow 步骤级短窗调用上限（>0 启用 rapid_batch 步骤级判定；0 = 不判定）。
+	MaxPerWindow int `json:"max_per_window,omitempty"`
+	// RateWindowSeconds 步骤级短窗秒数（>0 覆盖缺省 FlowRateWindow；有效窗口不得超会话 TTL）。
+	RateWindowSeconds int `json:"rate_window_seconds,omitempty"`
+	// CancelsFlow 取消语义声明（post_cancel_operation 判定的唯一来源，不编造词表）。
+	CancelsFlow bool `json:"cancels_flow,omitempty"`
+}
+
+// GuardFlowBaseline 业务流程基线（阶段8 §44；下发网关，对应 api_flow_baselines 表
+// enabled 行；该表由迁移 000155 建立）。网关装配期经 detectors.ValidateFlowBaselines
+// 校验后按端点 GroupFlowBaselines 归组，全部明细 OBSERVE 级只记录不阻断。
+// json tag 为跨分片契约，不得改动。
+type GuardFlowBaseline struct {
+	FlowID string          `json:"flow_id"` // 流程标识（网关会话键组成部分）
+	Steps  []GuardFlowStep `json:"steps"`
+	// MaxPerWindow 流程级短窗调用上限（同主体对本流程任意步骤的合计调用；
+	// >0 启用 rapid_batch 流程级判定；0 = 不判定）。
+	MaxPerWindow int `json:"max_per_window,omitempty"`
+	// RateWindowSeconds 流程级短窗秒数（语义同步骤级）。
+	RateWindowSeconds int `json:"rate_window_seconds,omitempty"`
+}
+
+// GuardRevokedCredential 已吊销凭据（阶段8 §35「已吊销凭据使用」；下发网关，对应
+// api_revoked_credentials 表当前生效窗口内的行；该表由迁移 000156 建立）。
+// 指纹级载荷（credential_type + 32 位 hex 加盐 HMAC 指纹），无凭据明文；网关按
+// credential_type + ":" + fingerprint 与请求身份指纹（detectors.CredentialKey 口径：
+// auth:/key:/sess: 前缀 + 指纹）比对。expires_at 供网关在发布间隙按时间自行失效。
+// json tag 为跨分片契约，不得改动。
+type GuardRevokedCredential struct {
+	CredentialType string `json:"credential_type"`      // auth / key / sess（与身份指纹前缀一致）
+	Fingerprint    string `json:"fingerprint"`          // 加盐 HMAC-SHA256 截断 16 字节 hex（32 位，不含前缀）
+	ExpiresAt      string `json:"expires_at,omitempty"` // RFC3339；空 = 永久吊销
 }
 
 // ---------- L7 访问控制（契约一 l7_rules 段；仅 WAF/WDSP 下发） ----------
@@ -530,6 +589,10 @@ type GuardConfig struct {
 	FailOpen           bool                      `json:"fail_open"`
 	EventsLog          string                    `json:"events_log"`
 	GatewayNode        string                    `json:"gateway_node"`
+	// DebugCCCounter 网关 CC 计数调试回显端点开关（debug_cc_counter 段；阶段5 §十七
+	// 发布后冒烟 CC_EXACT 探针依赖）。缺省 false 不下发 = 网关端点关闭、零行为变化，
+	// CC_EXACT 探针如实 SKIP；网关侧端点仅本机/内网连接源可访问且不反向代理
+	DebugCCCounter bool `json:"debug_cc_counter,omitempty"`
 	// 阶段8 / WDSP：API 动态防护（默认关闭，关闭时下发 JSON 与纯 WAF 完全一致）
 	APIDynamicProtection bool   `json:"api_dynamic_protection,omitempty"`
 	APIProtectionMode    string `json:"api_protection_mode,omitempty"` // OFF | OBSERVE | PROTECT
@@ -558,6 +621,13 @@ type GuardConfig struct {
 	CredentialIPSpreadLimit    int    `json:"credential_ip_spread_limit,omitempty"`
 	CredentialConcurrencyLimit int    `json:"credential_concurrency_limit,omitempty"`
 	APIWriteRatePerMinute      int    `json:"api_write_rate_per_minute,omitempty"`
+	// 阶段8 §36 限流下发面：身份+端点小时/日配额、对象维度限速、分页/批量上限
+	// （gateway_runtime 组字符串数值；0/缺省不下发=网关对应检测不启用，不走引擎默认值）
+	APIQuotaPerHour     int `json:"api_quota_per_hour,omitempty"`
+	APIQuotaPerDay      int `json:"api_quota_per_day,omitempty"`
+	ObjectRatePerMinute int `json:"object_rate_per_minute,omitempty"`
+	APIMaxPageSize      int `json:"max_page_size,omitempty"`
+	APIMaxBatchSize     int `json:"max_batch_size,omitempty"`
 	// APIMaskRules 响应脱敏规则（api_masking_rules 表 enabled 规则；表由迁移 000040 建立，
 	// 表缺失/查询失败时发布侧 Warn 跳过不下发）
 	APIMaskRules []GuardMaskRule `json:"api_mask_rules,omitempty"`
@@ -593,6 +663,15 @@ type GuardConfig struct {
 	// 表由迁移 000018/000068 建立；仅 FORMAL 端点的 confirmed 关系下发，
 	// 未确认候选不下发不生效；不下发时网关关系检测零行为，与历史版本一致）
 	APIParameterRelations []GuardParamRelation `json:"api_parameter_relations,omitempty"`
+	// APIFlowBaselines 业务流程基线（阶段8 §44；api_flow_baselines 表 enabled 行，
+	// 表由迁移 000155 建立，表缺失/查询失败时发布侧 Warn 跳过不下发；
+	// 不下发时网关流程偏离检测零行为，与历史版本一致；内容纳入 api_policy_version 版本戳）
+	APIFlowBaselines []GuardFlowBaseline `json:"api_flow_baselines,omitempty"`
+	// APIRevokedCredentials 已吊销凭据清单（阶段8 §35；api_revoked_credentials 表
+	// 当前生效窗口内的行，表由迁移 000156 建立，表缺失/查询失败时发布侧 Warn 跳过
+	// 不下发；不下发时网关吊销凭据检测零行为，与历史版本一致；指纹级载荷无凭据明文；
+	// 内容纳入 api_policy_version 版本戳）
+	APIRevokedCredentials []GuardRevokedCredential `json:"api_revoked_credentials,omitempty"`
 	// APILLMAllowedModels LLM 授权模型名单（W10-LLM / P2-04；来源 system_settings
 	// gateway_runtime 组 api_llm_allowed_models 逗号分隔键；缺省/空不下发=网关不判定
 	// 未授权模型，与 LLM 端点识别/观测解耦——识别与观测不依赖本名单）
@@ -678,6 +757,11 @@ type GuardConfig struct {
 	// LicenseMaxQPS 授权配额全局限速（每秒请求数，0=不限制；授权有效且配额 max_qps>0 时
 	// 由发布侧注入，网关对所有请求做全局限速，超限 429）
 	LicenseMaxQPS int `json:"license_max_qps,omitempty"`
+	// BlockResponse 自定义 429/阻断响应页面（阶段5 §5.1；system_settings block_response
+	// 组经发布侧 LoadBlockResponse 读取校验后注入；nil = 未配置，网关渲染内置默认模板，
+	// 与历史版本逐字节一致；全产品形态能力，不受 WDSP 门控、不参与 api_policy_version；
+	// 非秘密材料——快照不脱敏，回滚随历史版本内容恢复）
+	BlockResponse *GuardBlockResponse `json:"block_response,omitempty"`
 }
 
 // buildGuardHandler 构建单应用路由的 jiuzhang_guard 处理器 JSON。
@@ -750,6 +834,11 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 	if g.TraceInjectUpstream {
 		h["trace_inject_upstream"] = true
 	}
+	// CC 计数调试回显端点（debug_cc_counter 段，阶段5 §十七 CC_EXACT 探针）：
+	// 沿用「true 显式下发」模式，false/缺省不下发 = 网关端点关闭、与历史版本逐字节一致
+	if g.DebugCCCounter {
+		h["debug_cc_counter"] = true
+	}
 	// L7 访问控制（契约一 l7_rules 段）：非 nil 时注入，位于每个应用的 guard 处理器配置内
 	// （与 global_allow 等全局段同级，网关按 priority 首中即停评估）
 	if g.L7Rules != nil {
@@ -774,6 +863,11 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 	// 授权配额全局限速（LicenseMaxQPS > 0 时注入；0=不限制不下发，网关零行为变化）
 	if g.LicenseMaxQPS > 0 {
 		h["license_max_qps"] = g.LicenseMaxQPS
+	}
+	// 自定义 429/阻断响应页面（阶段5 §5.1 block_response 段）：非 nil 时注入——
+	// 全产品形态能力，不受 WDSP 门控；nil = 网关内置默认模板，与历史版本逐字节一致
+	if g.BlockResponse != nil {
+		h["block_response"] = g.BlockResponse
 	}
 	// 阶段8：仅在 WDSP 开启时注入 API 动态防护配置（关闭时 JSON 与纯 WAF 一致）
 	if g.APIDynamicProtection {
@@ -818,6 +912,22 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		}
 		if g.APIWriteRatePerMinute > 0 {
 			h["api_write_rate_per_minute"] = g.APIWriteRatePerMinute
+		}
+		// 阶段8 §36 限流下发面（>0 才下发；0/缺省 = 网关对应检测不启用）
+		if g.APIQuotaPerHour > 0 {
+			h["api_quota_per_hour"] = g.APIQuotaPerHour
+		}
+		if g.APIQuotaPerDay > 0 {
+			h["api_quota_per_day"] = g.APIQuotaPerDay
+		}
+		if g.ObjectRatePerMinute > 0 {
+			h["object_rate_per_minute"] = g.ObjectRatePerMinute
+		}
+		if g.APIMaxPageSize > 0 {
+			h["max_page_size"] = g.APIMaxPageSize
+		}
+		if g.APIMaxBatchSize > 0 {
+			h["max_batch_size"] = g.APIMaxBatchSize
 		}
 		// 响应脱敏规则（api_masking_rules 表 enabled 规则）
 		if len(g.APIMaskRules) > 0 {
@@ -871,6 +981,16 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		// 已确认参数条件关系（api_parameter_relations 表 confirmed 行；仅 WDSP 开启且非空时注入）
 		if len(g.APIParameterRelations) > 0 {
 			h["api_parameter_relations"] = g.APIParameterRelations
+		}
+		// 业务流程基线（阶段8 §44：api_flow_baselines 表 enabled 行；
+		// 仅 WDSP 开启且非空时注入，未配置=网关流程偏离检测零行为）
+		if len(g.APIFlowBaselines) > 0 {
+			h["api_flow_baselines"] = g.APIFlowBaselines
+		}
+		// 已吊销凭据清单（阶段8 §35：api_revoked_credentials 表当前生效行；
+		// 仅 WDSP 开启且非空时注入，未配置=网关吊销凭据检测零行为；指纹级载荷无凭据明文）
+		if len(g.APIRevokedCredentials) > 0 {
+			h["api_revoked_credentials"] = g.APIRevokedCredentials
 		}
 		// LLM 授权模型名单（gateway_runtime 组 api_llm_allowed_models；仅 WDSP 开启且非空时注入，
 		// 缺省不下发=网关不判定未授权模型）

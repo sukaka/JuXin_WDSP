@@ -44,6 +44,11 @@ type FindingInput struct {
 	RiskLevel     string         // 事件级风险等级
 	ModelVersion  string         // 判定所用模型版本（未上报空串 → NULL）
 	PolicyVersion string         // 判定所运行策略版本（未上报空串 → NULL）
+	// DeviceFingerprint/ObjectIdentifiers 主事件 §7 上下文快照冗余（迁移 000149，
+	// docs/API_UNIFIED_FINDING_DECISION.md：消费端按发现查询免回连事件表）。
+	// 从主事件记录原样拷贝不重新计算；空值 → NULL（主事件缺字段的发现）。
+	DeviceFingerprint string
+	ObjectIdentifiers []dsctx.ObjectIdentifier
 }
 
 // 风险等级词表与排序（INFO < LOW < MEDIUM < HIGH < CRITICAL；NONE 视同 INFO，
@@ -193,6 +198,9 @@ func (c *Collector) recordFindings(ctx context.Context, rec *Record) {
 			RiskLevel:     rec.RiskLevel,
 			ModelVersion:  rec.ModelVersion,
 			PolicyVersion: rec.PolicyVersion,
+			// §7 上下文快照冗余：从主事件记录原样拷贝（不重新计算）
+			DeviceFingerprint: rec.DeviceFingerprint,
+			ObjectIdentifiers: rec.ObjectIdentifiers,
 		})
 	}
 	if len(in) == 0 {
@@ -249,26 +257,44 @@ func (s *Store) SaveFindings(ctx context.Context, in []FindingInput) error {
 	}
 	for i := range in {
 		f := in[i]
+		// §7 冗余列与主事件同一边界纪律：物化发生在 SavePrimary 校验之前，
+		// 此处须独立校验「只记哈希」形态，不合形态显式报错（由调用方记日志）。
+		if err := validateDeviceFingerprint(f.DeviceFingerprint); err != nil {
+			return fmt.Errorf("finding %s: %w", f.FindingType, err)
+		}
+		if err := validateObjectIdentifiers(f.ObjectIdentifiers); err != nil {
+			return fmt.Errorf("finding %s: %w", f.FindingType, err)
+		}
 		endpointID, err := resolve(f.EndpointKey)
 		if err != nil {
 			return err
 		}
 		detail, _ := json.Marshal(f.Detail)
 		evidence, _ := json.Marshal(f.Evidence)
+		var objIDsRaw any
+		if len(f.ObjectIdentifiers) > 0 {
+			b, merr := json.Marshal(f.ObjectIdentifiers)
+			if merr != nil {
+				return fmt.Errorf("finding %s: marshal object_identifiers: %w", f.FindingType, merr)
+			}
+			objIDsRaw = b
+		}
 		fp := dedupFingerprint(endpointID, f.EndpointKey, f.FindingType, f.SubjectID)
 		if _, err := s.db.Exec(ctx, `
 INSERT INTO api_runtime_findings
   (endpoint_id, request_id, finding_type, severity, status, title, detail,
    subject_type, subject_id, risk_score, risk_level, count, evidence_json,
-   model_version, policy_version, updated_at, dedup_fingerprint)
-VALUES ($1,$2,$3,$4,'NEW',$5,$6,$7,$8,$9,$10,1,$11,$12,$13,now(),$14)
+   model_version, policy_version, updated_at, dedup_fingerprint,
+   device_fingerprint, object_identifiers)
+VALUES ($1,$2,$3,$4,'NEW',$5,$6,$7,$8,$9,$10,1,$11,$12,$13,now(),$14,$15,$16)
 ON CONFLICT (dedup_fingerprint) DO UPDATE SET
   count = api_runtime_findings.count + 1,
   last_seen_at = now(),
   updated_at = now()`,
 			endpointID, f.RequestID, f.FindingType, f.Severity, f.Title, detail,
 			nullIfEmpty(f.SubjectType), nullIfEmpty(f.SubjectID), f.RiskScore, nullIfEmpty(f.RiskLevel), evidence,
-			nullIfEmpty(f.ModelVersion), nullIfEmpty(f.PolicyVersion), fp); err != nil {
+			nullIfEmpty(f.ModelVersion), nullIfEmpty(f.PolicyVersion), fp,
+			nullIfEmpty(f.DeviceFingerprint), objIDsRaw); err != nil {
 			return fmt.Errorf("upsert finding %s: %w", f.FindingType, err)
 		}
 	}

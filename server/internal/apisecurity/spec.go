@@ -46,7 +46,7 @@ type SpecEndpoint struct {
 
 // ParseOpenAPI3 解析 OpenAPI 3 文档（JSON 反序列化后的对象），
 // 提取 paths 下每个 method 生成端点列表（按 endpoint_key 排序，保证确定性）。
-// YAML 不在此支持：HTTP 层在 json.Unmarshal 失败时直接返回 400。
+// YAML 输入由 spec_formats.go 的 ParseSpecContent 统一入口先解码为对象。
 func ParseOpenAPI3(doc map[string]any) ([]SpecEndpoint, error) {
 	// 版本校验：openapi 字段必须为 3.x
 	version, _ := doc["openapi"].(string)

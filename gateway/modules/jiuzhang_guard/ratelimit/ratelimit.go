@@ -42,6 +42,10 @@ type Result struct {
 // Limiter 限速器接口。
 type Limiter interface {
 	Allow(ctx context.Context, key string, algo Algorithm, limit int64, window time.Duration, burst int64) (Result, error)
+	// Peek 只读查询指定键当前用量（与 Allow 的 Result.Current 同口径）：
+	// 不建键、不消费令牌、不写存储；键不存在 found=false。
+	// 供调试回显端点（阶段5 §十七 CC 精确计数探针）使用，非请求热路径。
+	Peek(ctx context.Context, key string, algo Algorithm, limit int64, window time.Duration, burst int64) (count int64, found bool, err error)
 }
 
 // ---------- 内存后端 ----------
@@ -95,6 +99,57 @@ func (m *MemoryLimiter) Allow(_ context.Context, key string, algo Algorithm, lim
 		return m.slidingWindow(key, limit, window), nil
 	default:
 		return Result{}, fmt.Errorf("unknown algorithm %q", algo)
+	}
+}
+
+// Peek 内存只读查询：不建键、不消费、不写回（计数快照与 Allow 同口径近似）。
+func (m *MemoryLimiter) Peek(_ context.Context, key string, algo Algorithm, limit int64, window time.Duration, burst int64) (int64, bool, error) {
+	if limit <= 0 || window <= 0 {
+		return 0, false, fmt.Errorf("invalid limit/window")
+	}
+	if burst <= 0 {
+		burst = limit
+	}
+	switch algo {
+	case TokenBucket:
+		v, ok := m.buckets.Get("tb:" + key)
+		if !ok {
+			return 0, false, nil
+		}
+		b := v.(*memBucket)
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		rate := float64(limit) / window.Seconds() // 令牌/秒
+		tokens := b.tokens + m.now().Sub(b.last).Seconds()*rate
+		if tokens > float64(burst) {
+			tokens = float64(burst)
+		}
+		used := burst - int64(tokens)
+		if used < 0 {
+			used = 0
+		}
+		return used, true, nil
+	case SlidingWindow:
+		v, ok := m.windows.Get("sw:" + key)
+		if !ok {
+			return 0, false, nil
+		}
+		w := v.(*memWindow)
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		elapsed := m.now().Sub(w.currStart)
+		curr, prev := w.curr, w.prev
+		switch {
+		case elapsed >= 2*window:
+			curr, prev, elapsed = 0, 0, 0
+		case elapsed >= window:
+			prev, curr = curr, 0
+			elapsed -= window
+		}
+		weight := 1 - elapsed.Seconds()/window.Seconds()
+		return curr + int64(float64(prev)*weight), true, nil
+	default:
+		return 0, false, fmt.Errorf("unknown algorithm %q", algo)
 	}
 }
 
@@ -203,6 +258,32 @@ end
 return {allowed, count, retry}
 `
 
+// peekTokenBucketLua 只读令牌桶查询（纯 HMGET，不写不过期）：返回 {exists, used}，
+// used = burst - floor(refill 后令牌数)，与 Allow 的 Current（已用量近似）同口径。
+const peekTokenBucketLua = `
+local data = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(data[1])
+local ts = tonumber(data[2])
+if tokens == nil or ts == nil then return {0, 0} end
+local burst = tonumber(ARGV[1])
+local rate = tonumber(ARGV[2])  -- 令牌/毫秒
+local now = tonumber(ARGV[3])
+tokens = math.min(burst, tokens + (now - ts) * rate)
+local used = burst - math.floor(tokens)
+if used < 0 then used = 0 end
+return {1, used}
+`
+
+// peekSlidingWindowLua 只读滑动窗口查询（EXISTS + ZCOUNT，不清理过期成员）：
+// 返回 {exists, 窗口内计数}。
+const peekSlidingWindowLua = `
+local exists = redis.call('EXISTS', KEYS[1])
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local count = redis.call('ZCOUNT', KEYS[1], now - window, now)
+return {exists, count}
+`
+
 // ValkeyLimiter Valkey 限速器（多进程共享）。
 type ValkeyLimiter struct {
 	cli    counters.ValkeyClient
@@ -279,6 +360,42 @@ func (v *ValkeyLimiter) Allow(ctx context.Context, key string, algo Algorithm, l
 		}, nil
 	default:
 		return Result{}, fmt.Errorf("unknown algorithm %q", algo)
+	}
+}
+
+// Peek Valkey 只读查询（只读 Lua 脚本，不改变任何键内容）。
+func (v *ValkeyLimiter) Peek(ctx context.Context, key string, algo Algorithm, limit int64, window time.Duration, burst int64) (int64, bool, error) {
+	if limit <= 0 || window <= 0 {
+		return 0, false, fmt.Errorf("invalid limit/window")
+	}
+	if burst <= 0 {
+		burst = limit
+	}
+	fullKey := v.keyPfx + ":" + key
+	nowMs := v.now().UnixMilli()
+	switch algo {
+	case TokenBucket:
+		ratePerMs := float64(limit) / float64(window.Milliseconds())
+		out, err := v.cli.Eval(ctx, peekTokenBucketLua, []string{fullKey}, []string{
+			strconv.FormatInt(burst, 10),
+			strconv.FormatFloat(ratePerMs, 'f', -1, 64),
+			strconv.FormatInt(nowMs, 10),
+		})
+		if err != nil {
+			return 0, false, err
+		}
+		return toInt64(out[1]), toInt64(out[0]) == 1, nil
+	case SlidingWindow:
+		out, err := v.cli.Eval(ctx, peekSlidingWindowLua, []string{fullKey}, []string{
+			strconv.FormatInt(nowMs, 10),
+			strconv.FormatInt(window.Milliseconds(), 10),
+		})
+		if err != nil {
+			return 0, false, err
+		}
+		return toInt64(out[1]), toInt64(out[0]) == 1, nil
+	default:
+		return 0, false, fmt.Errorf("unknown algorithm %q", algo)
 	}
 }
 

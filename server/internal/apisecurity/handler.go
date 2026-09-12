@@ -2,6 +2,7 @@
 package apisecurity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -286,23 +287,93 @@ func (h *Handler) Topology(w http.ResponseWriter, r *http.Request) {
 
 // ---------- 51.5 规范导入（W3-C：版本状态机 / URL 导入 / Swagger 2.0 / CHANGED diff / 端点回写） ----------
 
-// decodeSpecBody JSON 解码规范文档；YAML 等非 JSON 输入明确 400
-// （YAML 支持依赖 gopkg.in/yaml.v3，go.mod 未引入，标记为后续支持）。
-func decodeSpecBody(w http.ResponseWriter, r *http.Request, body []byte) (map[string]any, bool) {
-	var doc map[string]any
-	if err := json.Unmarshal(body, &doc); err != nil {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
-			"仅支持 JSON 格式文档（OpenAPI 3 / Swagger 2.0；YAML 暂不支持，后续版本提供）")
-		return nil, false
+// decodeSpecImport 解析规范导入请求体：
+// 直接文档（JSON / YAML / GraphQL SDL，由 ParseSpecContent 统一入口处理）或
+// 兼容包装形式 {"spec": <对象或字符串>, "file_name": "...", "name": "..."}（仅 JSON 外壳）。
+// 失败写出 400（原因明确）并返回 ok=false。
+func decodeSpecImport(w http.ResponseWriter, r *http.Request, body []byte) (format string, doc map[string]any, ops []SpecOperation, fileName, reqName string, ok bool) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		if jsonDepthExceeded(trimmed) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "规范文档嵌套深度超出安全限制")
+			return "", nil, nil, "", "", false
+		}
+		var wrap map[string]any
+		if err := json.Unmarshal(trimmed, &wrap); err == nil && wrap != nil && detectExtendedSpecFormat(wrap) == "" {
+			if raw, has := wrap["spec"]; has {
+				if fn, isStr := wrap["file_name"].(string); isStr {
+					fileName = strings.TrimSpace(fn)
+				}
+				if n, isStr := wrap["name"].(string); isStr {
+					reqName = strings.TrimSpace(n)
+				}
+				var err error
+				switch inner := raw.(type) {
+				case map[string]any:
+					format, doc, ops, err = parseSpecJSONDoc(inner)
+				case string:
+					format, doc, ops, err = ParseSpecContent([]byte(inner))
+				default:
+					response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "spec 字段必须为 JSON 对象或字符串")
+					return "", nil, nil, "", "", false
+				}
+				if err != nil {
+					writeSpecParseError(w, r, err)
+					return "", nil, nil, "", "", false
+				}
+				return format, doc, ops, fileName, reqName, true
+			}
+		}
 	}
-	return doc, true
+	format, doc, ops, err := ParseSpecContent(body)
+	if err != nil {
+		writeSpecParseError(w, r, err)
+		return "", nil, nil, "", "", false
+	}
+	return format, doc, ops, "", "", true
+}
+
+// writeSpecParseError 规范解析错误统一映射为 400（原因明确）；非解析类错误走 500。
+func writeSpecParseError(w http.ResponseWriter, r *http.Request, err error) {
+	detail := func(sentinel error) string {
+		return strings.TrimPrefix(err.Error(), sentinel.Error()+": ")
+	}
+	switch {
+	case errors.Is(err, ErrSpecTooLarge):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "规范文档超过大小上限（16MiB）")
+	case errors.Is(err, ErrSpecTooComplex):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "规范文档结构超出安全限制（嵌套深度/节点数）："+detail(ErrSpecTooComplex))
+	case errors.Is(err, ErrSpecInvalidJSON):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "JSON 解析失败："+detail(ErrSpecInvalidJSON))
+	case errors.Is(err, ErrSpecInvalidYAML):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "YAML 解析失败（不允许自定义标签/别名循环/多文档）："+detail(ErrSpecInvalidYAML))
+	case errors.Is(err, ErrSpecExternalRef):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "不允许外部 $ref 引用（仅支持 #/ 开头的文档内引用）："+detail(ErrSpecExternalRef))
+	case errors.Is(err, ErrSpecUnsupportedPostmanVersion):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "仅支持 Postman Collection v2.1："+detail(ErrSpecUnsupportedPostmanVersion))
+	case errors.Is(err, ErrSpecUnsupportedJSONSchemaDraft):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "仅支持 JSON Schema draft-07 与 2020-12："+detail(ErrSpecUnsupportedJSONSchemaDraft))
+	case errors.Is(err, ErrSpecInvalidJSONSchema):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "JSON Schema 无效："+detail(ErrSpecInvalidJSONSchema))
+	case errors.Is(err, ErrSpecInvalidGraphQL):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "GraphQL SDL 解析失败："+detail(ErrSpecInvalidGraphQL))
+	case errors.Is(err, ErrSpecNotOpenAPI3):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "OpenAPI 文档缺少 openapi: 3.x 版本声明")
+	case errors.Is(err, ErrSpecNoPaths):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "规范文档缺少有效的 paths/请求项定义")
+	case errors.Is(err, ErrSpecUnsupportedFormat):
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+			"不支持的规范格式；支持 OpenAPI 3.x / Swagger 2.0 / JSON Schema（draft-07、2020-12）/ Postman Collection v2.1 / GraphQL SDL（JSON 或 YAML 格式）")
+	default:
+		response.InternalError(w, r, err)
+	}
 }
 
 // ImportSpec POST /api/v1/api-security/specs/import
-// body 为 OpenAPI 3 / Swagger 2.0 JSON 文档或 {"spec": {...}, "file_name": "...", "name": "..."}；
-// 仅支持 JSON（YAML 返回 400）。同名再导入 version_no 自增、旧版降 HISTORICAL，
-// 与运行时接口对比生成 MISSING_* 差异，同名跨版本生成 CHANGED 差异，
-// 规范端点幂等登记为 api_endpoints 候选。
+// body 为规范文档（OpenAPI 3.x / Swagger 2.0 / JSON Schema / Postman Collection v2.1 /
+// GraphQL SDL；JSON 或 YAML 格式）或 {"spec": ..., "file_name": "...", "name": "..."} 包装。
+// 同名再导入 version_no 自增、旧版降 HISTORICAL，与运行时接口对比生成 MISSING_* 差异，
+// 同名跨版本生成 CHANGED 差异，规范端点幂等登记为 api_endpoints 候选。
 func (h *Handler) ImportSpec(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, specImportMaxBytes))
@@ -310,33 +381,11 @@ func (h *Handler) ImportSpec(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求体过大或读取失败（上限16MiB）")
 		return
 	}
-	doc, ok := decodeSpecBody(w, r, body)
+	format, specDoc, ops, fileName, reqName, ok := decodeSpecImport(w, r, body)
 	if !ok {
 		return
 	}
-	// 兼容 {spec: {...}, file_name: "...", name: "..."} 包装形式
-	fileName := ""
-	reqName := ""
-	specDoc := doc
-	_, hasOpenAPI := doc["openapi"]
-	_, hasSwagger := doc["swagger"]
-	if !hasOpenAPI && !hasSwagger {
-		if raw, hasSpec := doc["spec"]; hasSpec {
-			inner, ok := raw.(map[string]any)
-			if !ok {
-				response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "spec 字段必须为 JSON 对象")
-				return
-			}
-			specDoc = inner
-			if fn, ok := doc["file_name"].(string); ok {
-				fileName = strings.TrimSpace(fn)
-			}
-			if n, ok := doc["name"].(string); ok {
-				reqName = strings.TrimSpace(n)
-			}
-		}
-	}
-	h.importSpecCore(w, r, p, specDoc, fileName, reqName, SpecSourceUpload)
+	h.importSpecCore(w, r, p, format, specDoc, ops, fileName, reqName, SpecSourceUpload)
 }
 
 // ImportSpecURL POST /api/v1/api-security/specs/import-url
@@ -381,7 +430,7 @@ func (h *Handler) ImportSpecURL(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadGateway, response.CodeServiceUnavailable, "拉取规范文档失败，请确认目标地址可访问且返回内容正常")
 		return
 	}
-	doc, ok := decodeSpecBody(w, r, body)
+	format, doc, ops, ok := parseSpecContentResponse(w, r, body)
 	if !ok {
 		return
 	}
@@ -393,24 +442,22 @@ func (h *Handler) ImportSpecURL(w http.ResponseWriter, r *http.Request) {
 			fileName = ""
 		}
 	}
-	h.importSpecCore(w, r, p, doc, fileName, strings.TrimSpace(req.Name), SpecSourceURL)
+	h.importSpecCore(w, r, p, format, doc, ops, fileName, strings.TrimSpace(req.Name), SpecSourceURL)
 }
 
-// importSpecCore 粘贴/URL 导入共享流水线：格式识别（Swagger 2.0 先转换）→ 解析 →
-// 运行时键集对比 + 同名跨版本 CHANGED 对比 → 版本化落库 → 规范端点登记 → 审计。
-func (h *Handler) importSpecCore(w http.ResponseWriter, r *http.Request, p *authz.Principal, specDoc map[string]any, fileName, reqName, defaultSource string) {
-	format, normalized, ops, err := ParseSpecDocument(specDoc)
+// parseSpecContentResponse 调用统一解析入口并把解析错误写成 400 响应。
+func parseSpecContentResponse(w http.ResponseWriter, r *http.Request, body []byte) (string, map[string]any, []SpecOperation, bool) {
+	format, doc, ops, err := ParseSpecContent(body)
 	if err != nil {
-		switch {
-		case errors.Is(err, ErrSpecNotOpenAPI3):
-			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "仅支持 OpenAPI 3.x 或 Swagger 2.0 文档（缺少 openapi: 3.x / swagger: \"2.0\" 版本声明）")
-		case errors.Is(err, ErrSpecNoPaths):
-			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "规范文档缺少有效的 paths 定义")
-		default:
-			response.InternalError(w, r, err)
-		}
-		return
+		writeSpecParseError(w, r, err)
+		return "", nil, nil, false
 	}
+	return format, doc, ops, true
+}
+
+// importSpecCore 粘贴/URL 导入共享流水线：解析产物（格式 + 规范化文档 + 操作清单）→
+// 运行时键集对比 + 同名跨版本 CHANGED 对比 → 版本化落库 → 规范端点登记 → 审计。
+func (h *Handler) importSpecCore(w http.ResponseWriter, r *http.Request, p *authz.Principal, format string, normalized map[string]any, ops []SpecOperation, fileName, reqName, defaultSource string) {
 	// 来源识别（P2-07 源码发现接入）：文档自带标记优先（SOURCE_CODE），否则按入口记缺省来源；
 	// 落库前剥离 x-apisrc 采集元数据（含本机扫描路径，不宜入库）
 	source := DetectSpecSource(normalized)

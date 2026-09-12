@@ -454,7 +454,13 @@ paths:
       summary: 请求趋势
       description: >-
         请求量与耗时分位数趋势。series 键：requests（总量）、status_2xx/status_4xx/status_5xx（按状态分类）、
-        p50_ms/p95_ms/p99_ms（毫秒）。start_time/end_time 均缺省时取最近 24 小时；仅给 end_time 时向前推 24 小时；
+        p50_ms/p95_ms/p99_ms（毫秒）。另含 method_distribution（请求方法分布）、
+        content_type_distribution（请求 Content-Type 主类型分布，去参数小写化，空值归入“(无)”）、
+        client_ip_source_distribution（客户端 IP 识别来源分布，口径
+        CONNECTION/X_FORWARDED_FOR/X_REAL_IP/FORWARDED/CUSTOM_HEADER，空值归入“(未知)”）与
+        trusted_proxy_distribution（可信代理来源分布，键为命中的可信代理名，未经过可信代理归入“(直连)”），
+        数据源为全量访问日志 access_logs 实时聚合（来源两列为迁移 000144 起由网关上报），值降序各最多 20 项。
+        start_time/end_time 均缺省时取最近 24 小时；仅给 end_time 时向前推 24 小时；
         跨度上限 366 天。权限：analytics.security.read。
       parameters:
         - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339），必须早于 end_time }
@@ -838,6 +844,37 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /system-alerts/export:
+    get:
+      operationId: sysAlertExport
+      tags: [system-alerts]
+      summary: 导出系统告警 CSV
+      description: >-
+        按筛选条件导出告警 CSV（含表头，防公式注入：= + - @ 制表符前导字符加单引号，最多 10000 条），
+        列为 id,alert_type,severity,component,title,message,status,occurrence_count,first_seen_at,
+        last_seen_at,resolved_at,resolve_type。响应头 Content-Disposition 附件文件名为 system-alerts.csv。
+        限流：每 IP 5 次/分钟（导出类接口共享）。记录低风险审计。
+        权限：system_alerts.read / system_alerts.read_security / system_alerts.read_audit 任一。
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [OPEN, ACKNOWLEDGED, RESOLVED, IGNORED] }, description: 告警状态（大小写不敏感，服务端统一转大写） }
+        - { name: view, in: query, required: false, schema: { type: string, enum: [ACTIVE, SILENCED, HISTORY] }, description: 三态视图（与 status 互斥，同传返回 400） }
+        - { name: severity, in: query, required: false, schema: { type: string, enum: [CRITICAL, HIGH, MEDIUM, LOW, INFO] }, description: 告警等级 }
+        - { name: alert_type, in: query, required: false, schema: { type: string }, description: 告警类型 }
+        - { name: component, in: query, required: false, schema: { type: string }, description: 组件名 }
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 按 last_seen_at 过滤的起始时间（RFC3339） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 按 last_seen_at 过滤的结束时间（RFC3339，含边界） }
+      responses:
+        '200':
+          description: CSV 文件流（text/csv; charset=utf-8）
+          content:
+            text/csv:
+              schema: { type: string, description: CSV 文本（含表头） }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { description: 导出频率超限（每 IP 5 次/分钟） }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /system-alerts/{id}:
     get:
       operationId: sysAlertGet
@@ -1029,6 +1066,72 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-alerts/maintenance-windows:
+    get:
+      operationId: sysAlertMaintenanceWindowList
+      tags: [system-alerts]
+      summary: 告警维护窗口列表
+      description: >-
+        返回全部维护窗口（按创建时间倒序），含 suppressed_count/last_suppressed_at 抑制计数
+        （窗口内被抑制的告警评估次数，可观测不静默）。
+        权限：system_alerts.read / system_alerts.read_security / system_alerts.read_audit 任一。
+      responses:
+        '200':
+          description: 维护窗口列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SysAlertMaintenanceWindowListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: sysAlertMaintenanceWindowCreate
+      tags: [system-alerts]
+      summary: 创建告警维护窗口
+      description: >-
+        创建维护窗口（阶段6 §11.5）：窗口生效且 scope 匹配期间，评估引擎跳过匹配告警的新建与合并，
+        抑制计入 suppressed_count 并写日志。校验：名称 1~100 字符；ends_at 必须晚于 starts_at；
+        recurrence=DAILY 必须提供 0~1439 且不相等的 daily_start_minute/daily_end_minute（UTC 日内分钟，
+        end<=start 表示跨零点）；scope=CUSTOM 须至少指定一类告警类型或组件（各 ≤50 项，类型须在枚举内）。
+        权限：system_alerts.acknowledge / system_alerts.acknowledge_security 任一。记录操作审计（中风险）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SysAlertMaintenanceWindowCreateRequest' }
+      responses:
+        '200':
+          description: 创建后的维护窗口
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SysAlertMaintenanceWindow' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /system-alerts/maintenance-windows/{id}:
+    delete:
+      operationId: sysAlertMaintenanceWindowDelete
+      tags: [system-alerts]
+      summary: 删除告警维护窗口
+      description: >-
+        删除维护窗口，删除后立即恢复相关告警评估。不存在返回 404。
+        权限：system_alerts.acknowledge / system_alerts.acknowledge_security 任一。记录操作审计（中风险）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 维护窗口 ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
   # ==================== 告警通知渠道 ====================
@@ -1612,6 +1715,22 @@ components:
           type: object
           additionalProperties: { type: array, items: { type: number, format: double } }
           description: 序列集合（键见各接口说明，如 requests/events/blocks/observes/p50_ms 等）
+        method_distribution:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsKV' }
+          description: 请求方法分布（仅 /analytics/request-trend 返回，值降序最多 20 项）
+        content_type_distribution:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsKV' }
+          description: 请求 Content-Type 主类型分布（仅 /analytics/request-trend 返回，值降序最多 20 项）
+        client_ip_source_distribution:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsKV' }
+          description: 客户端 IP 识别来源分布（仅 /analytics/request-trend 返回；CONNECTION/X_FORWARDED_FOR/X_REAL_IP/FORWARDED/CUSTOM_HEADER，空值归入“(未知)”，值降序最多 20 项）
+        trusted_proxy_distribution:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsKV' }
+          description: 可信代理来源分布（仅 /analytics/request-trend 返回；键为命中的可信代理名，未经过可信代理归入“(直连)”，值降序最多 20 项）
 
     AnalyticsKV:
       type: object
@@ -1821,8 +1940,8 @@ components:
         id: { type: string, format: uuid, description: 告警 ID }
         alert_type:
           type: string
-          enum: [GATEWAY_DOWN, MANAGEMENT_API_DOWN, DATABASE_UNAVAILABLE, VALKEY_UNAVAILABLE, EVENT_COLLECTOR_LAG, EVENT_PARSE_FAILURE_RATE_HIGH, SOURCE_UNHEALTHY, CERTIFICATE_EXPIRING, CERTIFICATE_EXPIRED, CONFIG_PUBLISH_FAILED, CONFIG_HASH_MISMATCH, DISK_SPACE_LOW, DATABASE_CAPACITY_HIGH, BACKUP_FAILED, RESTORE_VALIDATION_FAILED, REPORT_FAILED, UPGRADE_FAILED, AUDIT_INTEGRITY_FAILED, API_CRITICAL_FINDING, API_FINDING_SPIKE, API_MASK_FAILURE]
-          description: 告警类型（API_* 三型为 API 安全告警：严重风险发现/发现激增/响应脱敏失败，组件为 API_SECURITY）
+          enum: [GATEWAY_DOWN, MANAGEMENT_API_DOWN, DATABASE_UNAVAILABLE, VALKEY_UNAVAILABLE, EVENT_COLLECTOR_LAG, EVENT_PARSE_FAILURE_RATE_HIGH, SOURCE_UNHEALTHY, CERTIFICATE_EXPIRING, CERTIFICATE_EXPIRED, CONFIG_PUBLISH_FAILED, CONFIG_HASH_MISMATCH, DISK_SPACE_LOW, DATABASE_CAPACITY_HIGH, FD_USAGE_HIGH, BACKUP_FAILED, RESTORE_VALIDATION_FAILED, REPORT_FAILED, UPGRADE_FAILED, AUDIT_INTEGRITY_FAILED, API_CRITICAL_FINDING, API_FINDING_SPIKE, API_MASK_FAILURE]
+          description: 告警类型（FD_USAGE_HIGH=API 组件文件句柄使用率超阈；API_* 三型为 API 安全告警：严重风险发现/发现激增/响应脱敏失败，组件为 API_SECURITY）
         severity: { type: string, enum: [CRITICAL, HIGH, MEDIUM, LOW, INFO], description: 告警等级 }
         component: { type: string, description: 来源组件 }
         title: { type: string, description: 标题（≤200 字符） }
@@ -1875,6 +1994,48 @@ components:
       required: [duration_minutes]
       properties:
         duration_minutes: { type: integer, minimum: 1, maximum: 43200, description: 静默时长（分钟，1~43200 即最长 30 天；重复静默视为延长） }
+
+    SysAlertMaintenanceWindow:
+      type: object
+      description: 告警维护窗口（阶段6 §11.5）
+      properties:
+        id: { type: string, format: uuid, description: 窗口 ID }
+        name: { type: string, description: 名称（≤100 字符） }
+        description: { type: string, description: 描述（≤500 字符） }
+        scope: { type: string, enum: [ALL, CUSTOM], description: 作用范围（ALL 全部告警 / CUSTOM 按类型与组件过滤） }
+        alert_types: { type: array, items: { type: string }, description: 告警类型过滤（scope=CUSTOM 生效；空数组=该维度通配） }
+        components: { type: array, items: { type: string }, description: 组件过滤（scope=CUSTOM 生效；空数组=该维度通配） }
+        recurrence: { type: string, enum: [ONCE, DAILY], description: 周期（ONCE 一次性 / DAILY 日期跨度内每日时段） }
+        starts_at: { type: string, format: date-time, description: 窗口生效起点（含） }
+        ends_at: { type: string, format: date-time, description: 窗口生效终点（含，须晚于 starts_at） }
+        daily_start_minute: { type: integer, minimum: 0, maximum: 1439, nullable: true, description: DAILY 日内开始分钟（UTC） }
+        daily_end_minute: { type: integer, minimum: 0, maximum: 1439, nullable: true, description: DAILY 日内结束分钟（UTC；<= start 表示跨零点） }
+        enabled: { type: boolean, description: 是否启用 }
+        suppressed_count: { type: integer, format: int64, description: 窗口内被抑制的告警评估次数（抑制可观测） }
+        last_suppressed_at: { type: string, format: date-time, nullable: true, description: 最近一次抑制时刻 }
+        created_by: { type: string, format: uuid, nullable: true, description: 创建人用户 ID }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+
+    SysAlertMaintenanceWindowCreateRequest:
+      type: object
+      required: [name, starts_at, ends_at]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100, description: 名称 }
+        description: { type: string, maxLength: 500, description: 描述 }
+        scope: { type: string, enum: [ALL, CUSTOM], default: ALL, description: 作用范围（缺省 ALL；CUSTOM 须至少指定 alert_types 或 components） }
+        alert_types: { type: array, items: { type: string }, maxItems: 50, description: 告警类型过滤（须在 SysAlert.alert_type 枚举内，大小写不敏感） }
+        components: { type: array, items: { type: string }, maxItems: 50, description: 组件过滤（大小写不敏感） }
+        recurrence: { type: string, enum: [ONCE, DAILY], default: ONCE, description: 周期（缺省 ONCE） }
+        starts_at: { type: string, format: date-time, description: 窗口生效起点（RFC3339） }
+        ends_at: { type: string, format: date-time, description: 窗口生效终点（RFC3339，须晚于 starts_at） }
+        daily_start_minute: { type: integer, minimum: 0, maximum: 1439, description: DAILY 必填：日内开始分钟（UTC） }
+        daily_end_minute: { type: integer, minimum: 0, maximum: 1439, description: DAILY 必填：日内结束分钟（UTC；与 start 不相等，<= start 表示跨零点） }
+
+    SysAlertMaintenanceWindowListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SysAlertMaintenanceWindow' } }
+        total: { type: integer, description: 总条数 }
 
     # ==================== 网站访问趋势 ====================
     AnalyticsSiteTrendPoint:

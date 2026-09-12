@@ -21,6 +21,11 @@ func TestBuildGuardHandlerRuntimeKeys(t *testing.T) {
 		g.CredentialIPSpreadLimit = 5
 		g.CredentialConcurrencyLimit = 10
 		g.APIWriteRatePerMinute = 120
+		g.APIQuotaPerHour = 3600
+		g.APIQuotaPerDay = 50000
+		g.ObjectRatePerMinute = 60
+		g.APIMaxPageSize = 500
+		g.APIMaxBatchSize = 200
 		g.APIMaskRules = []GuardMaskRule{{
 			EndpointKey: "POST /v1/orders", FieldPath: "buyer.phone", DataType: "PHONE",
 			Algorithm: "MASK", Params: map[string]any{"keep_head": 3},
@@ -46,6 +51,11 @@ func TestBuildGuardHandlerRuntimeKeys(t *testing.T) {
 		`"credential_ip_spread_limit":5`,
 		`"credential_concurrency_limit":10`,
 		`"api_write_rate_per_minute":120`,
+		`"api_quota_per_hour":3600`,
+		`"api_quota_per_day":50000`,
+		`"object_rate_per_minute":60`,
+		`"max_page_size":500`,
+		`"max_batch_size":200`,
 		`"api_mask_rules"`, `"endpoint_key":"POST /v1/orders"`, `"field_path":"buyer.phone"`,
 		`"data_type":"PHONE"`, `"algorithm":"MASK"`, `"params":{"keep_head":3}`,
 		`"api_sensitive_value_rules"`, `"data_type":"phone"`, `"regex":"^1[3-9]\\d{9}$"`,
@@ -65,6 +75,7 @@ func TestBuildGuardHandlerRuntimeKeys(t *testing.T) {
 		"api_policy_version", "behavior_store", "behavior_store_ttl_seconds", "identity_salt",
 		"credential_ip_spread_limit", "credential_concurrency_limit", "api_write_rate_per_minute", "api_mask_rules",
 		"api_sensitive_value_rules",
+		"api_quota_per_hour", "api_quota_per_day", "object_rate_per_minute", "max_page_size", "max_batch_size",
 	} {
 		if strings.Contains(j, `"`+key+`"`) {
 			t.Errorf("%s must not be injected when api dynamic protection disabled", key)
@@ -80,6 +91,7 @@ func TestBuildGuardHandlerRuntimeKeys(t *testing.T) {
 		"api_policy_version", "behavior_store", "behavior_store_ttl_seconds", "identity_salt",
 		"credential_ip_spread_limit", "credential_concurrency_limit", "api_write_rate_per_minute", "api_mask_rules",
 		"api_sensitive_value_rules",
+		"api_quota_per_hour", "api_quota_per_day", "object_rate_per_minute", "max_page_size", "max_batch_size",
 	} {
 		if strings.Contains(j, `"`+key+`"`) {
 			t.Errorf("%s must be omitted when zero value", key)

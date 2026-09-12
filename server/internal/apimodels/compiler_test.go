@@ -151,7 +151,8 @@ func TestCompileHashChanges(t *testing.T) {
 	}
 }
 
-// TestDeriveContentType 协议类型 → content_type 映射（REST/空/GRAPHQL → JSON；其余不约束）。
+// TestDeriveContentType 协议类型 → content_type 映射（REST/REST_JSON/JSON_RPC/空/GRAPHQL → JSON；
+// FORM_API → urlencoded；其余不约束）。
 func TestDeriveContentType(t *testing.T) {
 	for _, tt := range []struct{ in, want string }{
 		{"REST", "application/json"},
@@ -159,9 +160,16 @@ func TestDeriveContentType(t *testing.T) {
 		{" rest ", "application/json"},
 		{"GRAPHQL", "application/json"},
 		{"graphql", "application/json"},
+		{"REST_JSON", "application/json"},
+		{"JSON_RPC", "application/json"},
+		{"FORM_API", "application/x-www-form-urlencoded"},
 		{"GRPC", ""},
 		{"SOAP", ""},
 		{"WEBSOCKET", ""},
+		{"WEBSOCKET_HANDSHAKE", ""},
+		{"REST_XML", ""},
+		{"XML_RPC", ""},
+		{"UNKNOWN_HTTP_API", ""},
 	} {
 		if got := deriveContentType(tt.in); got != tt.want {
 			t.Errorf("deriveContentType(%q)=%q want %q", tt.in, got, tt.want)

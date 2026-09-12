@@ -163,3 +163,51 @@ func TestParseLineAPMFields(t *testing.T) {
 		}
 	})
 }
+
+// TestParseLineRealClientIPFields 阶段5 §6.5 字段合同：新格式行携带
+// client_ip_source/trusted_proxy_used/forwarded_chain_summary；旧格式行全部缺省
+// （空串，入库为 NULL），两种行都必须可解析；超长字段截断、NUL 剥离。
+func TestParseLineRealClientIPFields(t *testing.T) {
+	t.Run("new format with real client ip fields", func(t *testing.T) {
+		line := `{"occurred_at":"2026-09-10T10:00:00Z","request_id":"req-ip-1",` +
+			`"client_ip":"198.51.100.9","client_ip_source":"X_FORWARDED_FOR",` +
+			`"trusted_proxy_used":"lb-1","forwarded_chain_summary":"198.51.100.9, 10.0.0.1"}`
+		e, err := ParseLine([]byte(line))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.ClientIPSource != "X_FORWARDED_FOR" || e.TrustedProxyUsed != "lb-1" ||
+			e.ForwardedChainSummary != "198.51.100.9, 10.0.0.1" {
+			t.Errorf("real client ip fields wrong: %+v", e)
+		}
+	})
+	t.Run("old format without real client ip fields", func(t *testing.T) {
+		e, err := ParseLine([]byte(`{"occurred_at":"2026-09-10T10:00:00Z","request_id":"req-old-ip"}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if e.ClientIPSource != "" || e.TrustedProxyUsed != "" || e.ForwardedChainSummary != "" {
+			t.Errorf("old line must leave real client ip fields empty: %+v", e)
+		}
+	})
+	t.Run("overlong truncated", func(t *testing.T) {
+		// NUL 剥离不在此断言：原始 NUL 即非法 JSON，在解码期即被拒（网关写盘前已剥离）
+		line := `{"occurred_at":"2026-09-10T10:00:00Z","request_id":"req-ip-2",` +
+			`"client_ip_source":"` + strings.Repeat("S", 64) + `",` +
+			`"trusted_proxy_used":"` + strings.Repeat("p", 200) + `",` +
+			`"forwarded_chain_summary":"` + strings.Repeat("9.9.9.9, ", 60) + `"}`
+		e, err := ParseLine([]byte(line))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(e.ClientIPSource) != 32 {
+			t.Errorf("client_ip_source not truncated: len=%d", len(e.ClientIPSource))
+		}
+		if len(e.TrustedProxyUsed) != 128 {
+			t.Errorf("trusted_proxy_used not truncated: len=%d", len(e.TrustedProxyUsed))
+		}
+		if len(e.ForwardedChainSummary) != 256 {
+			t.Errorf("forwarded_chain_summary not truncated: len=%d", len(e.ForwardedChainSummary))
+		}
+	})
+}

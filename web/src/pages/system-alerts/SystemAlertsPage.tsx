@@ -12,6 +12,7 @@ import {
   Timeline,
   Typography,
 } from 'antd'
+import { DownloadOutlined, FieldTimeOutlined } from '@ant-design/icons'
 import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../api/client'
@@ -23,6 +24,7 @@ import { formatDateTime } from '../../utils/format'
 import { hasAnyPermission } from '../../utils/permission'
 import { ALERT_SEVERITY_META, ALERT_STATUS_META, ALERT_TYPE_META, COMPONENT_NAME_META } from '../../utils/stage6'
 import type { SystemAlertItem } from '../../types'
+import MaintenanceWindowsDrawer from './MaintenanceWindowsDrawer'
 
 interface Filters {
   status?: string
@@ -45,6 +47,7 @@ export default function SystemAlertsPage() {
   const [pageSize, setPageSize] = useState(20)
   const [detailId, setDetailId] = useState<string | null>(null)
   const [noteText, setNoteText] = useState('')
+  const [maintOpen, setMaintOpen] = useState(false)
 
   const listQuery = useQuery({
     queryKey: ['system-alerts', filters, page, pageSize],
@@ -168,7 +171,32 @@ export default function SystemAlertsPage() {
   const notes = detail?.notes ?? []
 
   return (
-    <Card title="系统告警">
+    <Card
+      title="系统告警"
+      extra={
+        <Space>
+          <Button icon={<FieldTimeOutlined />} onClick={() => setMaintOpen(true)}>
+            维护窗口
+          </Button>
+          <Button
+            icon={<DownloadOutlined />}
+            onClick={() =>
+              window.open(
+                systemAlertsApi.exportUrl({
+                  status: filters.status,
+                  severity: filters.severity,
+                  alert_type: filters.alert_type,
+                  component: filters.component,
+                }),
+                '_blank',
+              )
+            }
+          >
+            导出
+          </Button>
+        </Space>
+      }
+    >
       <Space style={{ marginBottom: 16 }} wrap>
         <Select
           placeholder="等级"
@@ -313,6 +341,8 @@ export default function SystemAlertsPage() {
           <Typography.Text type="secondary">加载中…</Typography.Text>
         )}
       </Drawer>
+
+      <MaintenanceWindowsDrawer open={maintOpen} canManage={canAcknowledge} onClose={() => setMaintOpen(false)} />
     </Card>
   )
 }

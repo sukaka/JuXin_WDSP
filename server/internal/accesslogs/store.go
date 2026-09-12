@@ -46,15 +46,17 @@ INSERT INTO access_logs (occurred_at, request_id, application_id, domain, gatewa
   http_version, content_type, user_agent_summary, referer_summary,
   response_status, bytes_in, bytes_out, duration_ms, waf_action,
   trace_id, span_id, endpoint_key, path_template, ttfb_ms,
+  client_ip_source, trusted_proxy_used, forwarded_chain_summary,
   request_headers, request_body, request_body_truncated,
   response_headers, response_body, response_body_truncated)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
 ON CONFLICT (request_id) WHERE request_id <> '' DO NOTHING`,
 		e.OccurredAt, e.RequestID, appID, e.Domain, e.GatewayNodeID,
 		nullableIP(e.ClientIP), e.ClientPort, e.RequestMethod, e.RequestURI, e.RequestPath, e.QuerySummary,
 		e.HTTPVersion, e.ContentType, e.UserAgentSummary, e.RefererSummary,
 		e.ResponseStatus, e.BytesIn, e.BytesOut, e.DurationMS, NormalizeWAFAction(e.WAFAction),
 		nullStr(e.TraceID), nullStr(e.SpanID), nullStr(e.EndpointKey), nullStr(e.PathTemplate), nullInt64(e.TTFBMs),
+		nullStr(e.ClientIPSource), nullStr(e.TrustedProxyUsed), nullStr(e.ForwardedChainSummary),
 		nonNilHeaders(e.RequestHeaders), e.RequestBody, e.RequestBodyTruncated,
 		nonNilHeaders(e.ResponseHeaders), e.ResponseBody, e.ResponseBodyTruncated)
 	if err != nil {
@@ -85,27 +87,31 @@ func (s *Store) InsertFailure(ctx context.Context, collectorID, rawLine, reason 
 
 // AccessLog 是一条全量访问日志（API 输出）。
 type AccessLog struct {
-	ID                    uuid.UUID           `json:"id"`
-	OccurredAt            time.Time           `json:"occurred_at"`
-	RequestID             string              `json:"request_id"`
-	ApplicationID         *uuid.UUID          `json:"application_id"`
-	Domain                string              `json:"domain"`
-	GatewayNodeID         string              `json:"gateway_node_id"`
-	ClientIP              string              `json:"client_ip"`
-	ClientPort            int                 `json:"client_port"`
-	RequestMethod         string              `json:"request_method"`
-	RequestURI            string              `json:"request_uri"`
-	RequestPath           string              `json:"request_path"`
-	QuerySummary          string              `json:"query_summary"`
-	HTTPVersion           string              `json:"http_version"`
-	ContentType           string              `json:"content_type"`
-	UserAgentSummary      string              `json:"user_agent_summary"`
-	RefererSummary        string              `json:"referer_summary"`
-	ResponseStatus        int                 `json:"response_status"`
-	BytesIn               int64               `json:"bytes_in"`
-	BytesOut              int64               `json:"bytes_out"`
-	DurationMS            int                 `json:"duration_ms"`
-	WAFAction             string              `json:"waf_action"`
+	ID               uuid.UUID  `json:"id"`
+	OccurredAt       time.Time  `json:"occurred_at"`
+	RequestID        string     `json:"request_id"`
+	ApplicationID    *uuid.UUID `json:"application_id"`
+	Domain           string     `json:"domain"`
+	GatewayNodeID    string     `json:"gateway_node_id"`
+	ClientIP         string     `json:"client_ip"`
+	ClientPort       int        `json:"client_port"`
+	RequestMethod    string     `json:"request_method"`
+	RequestURI       string     `json:"request_uri"`
+	RequestPath      string     `json:"request_path"`
+	QuerySummary     string     `json:"query_summary"`
+	HTTPVersion      string     `json:"http_version"`
+	ContentType      string     `json:"content_type"`
+	UserAgentSummary string     `json:"user_agent_summary"`
+	RefererSummary   string     `json:"referer_summary"`
+	ResponseStatus   int        `json:"response_status"`
+	BytesIn          int64      `json:"bytes_in"`
+	BytesOut         int64      `json:"bytes_out"`
+	DurationMS       int        `json:"duration_ms"`
+	WAFAction        string     `json:"waf_action"`
+	// 阶段5 §6.5 真实 IP 识别日志字段（迁移 000144；旧数据为 NULL）
+	ClientIPSource        string              `json:"client_ip_source"`
+	TrustedProxyUsed      string              `json:"trusted_proxy_used"`
+	ForwardedChainSummary string              `json:"forwarded_chain_summary"`
 	RequestHeaders        map[string][]string `json:"request_headers,omitempty"`
 	RequestBody           string              `json:"request_body,omitempty"`
 	RequestBodyTruncated  bool                `json:"request_body_truncated,omitempty"`
@@ -173,7 +179,8 @@ func buildListWhere(f ListFilter) (string, []interface{}) {
 const listColumns = `id, occurred_at, request_id, application_id, domain, gateway_node_id,
   host(client_ip), COALESCE(client_port, 0), request_method, request_uri, request_path, query_summary,
   http_version, content_type, user_agent_summary, referer_summary,
-  response_status, bytes_in, bytes_out, duration_ms, waf_action`
+  response_status, bytes_in, bytes_out, duration_ms, waf_action,
+  client_ip_source, trusted_proxy_used, forwarded_chain_summary`
 
 const payloadColumns = `, request_headers, request_body, request_body_truncated,
   response_headers, response_body, response_body_truncated`
@@ -216,15 +223,20 @@ func (s *Store) list(ctx context.Context, f ListFilter, maxPageSize int) ([]Acce
 	for rows.Next() {
 		var e AccessLog
 		var cip *string
+		var ipSource, proxyUsed, chainSummary *string
 		if err := rows.Scan(&e.ID, &e.OccurredAt, &e.RequestID, &e.ApplicationID, &e.Domain, &e.GatewayNodeID,
 			&cip, &e.ClientPort, &e.RequestMethod, &e.RequestURI, &e.RequestPath, &e.QuerySummary,
 			&e.HTTPVersion, &e.ContentType, &e.UserAgentSummary, &e.RefererSummary,
-			&e.ResponseStatus, &e.BytesIn, &e.BytesOut, &e.DurationMS, &e.WAFAction); err != nil {
+			&e.ResponseStatus, &e.BytesIn, &e.BytesOut, &e.DurationMS, &e.WAFAction,
+			&ipSource, &proxyUsed, &chainSummary); err != nil {
 			return nil, 0, err
 		}
 		if cip != nil {
 			e.ClientIP = *cip
 		}
+		e.ClientIPSource = strOrEmpty(ipSource)
+		e.TrustedProxyUsed = strOrEmpty(proxyUsed)
+		e.ForwardedChainSummary = strOrEmpty(chainSummary)
 		out = append(out, e)
 	}
 	return out, total, rows.Err()
@@ -239,10 +251,12 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*AccessLog, error) {
 		`SELECT `+listColumns+payloadColumns+` FROM access_logs WHERE id = $1`, id)
 	var e AccessLog
 	var cip *string
+	var ipSource, proxyUsed, chainSummary *string
 	err := row.Scan(&e.ID, &e.OccurredAt, &e.RequestID, &e.ApplicationID, &e.Domain, &e.GatewayNodeID,
 		&cip, &e.ClientPort, &e.RequestMethod, &e.RequestURI, &e.RequestPath, &e.QuerySummary,
 		&e.HTTPVersion, &e.ContentType, &e.UserAgentSummary, &e.RefererSummary,
 		&e.ResponseStatus, &e.BytesIn, &e.BytesOut, &e.DurationMS, &e.WAFAction,
+		&ipSource, &proxyUsed, &chainSummary,
 		&e.RequestHeaders, &e.RequestBody, &e.RequestBodyTruncated,
 		&e.ResponseHeaders, &e.ResponseBody, &e.ResponseBodyTruncated)
 	if err != nil {
@@ -254,7 +268,18 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*AccessLog, error) {
 	if cip != nil {
 		e.ClientIP = *cip
 	}
+	e.ClientIPSource = strOrEmpty(ipSource)
+	e.TrustedProxyUsed = strOrEmpty(proxyUsed)
+	e.ForwardedChainSummary = strOrEmpty(chainSummary)
 	return &e, nil
+}
+
+// strOrEmpty 可空字符串列取值（NULL → 空串，API 输出不占 nil 指针）。
+func strOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 func nullableIP(ip string) interface{} {

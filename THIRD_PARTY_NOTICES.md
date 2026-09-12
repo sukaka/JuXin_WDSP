@@ -97,6 +97,7 @@
 | protobuf-go | https://github.com/protocolbuffers/protobuf-go | v1.36.11 | BSD-3-Clause | 否 | gRPC 描述符级消息解析（protodesc/dynamicpb，管理后端；由间接依赖转直接启用） | 上游仓库 LICENSE（SBOM 收录，见文末声明） |
 | go-humanize | https://github.com/dustin/go-humanize | v1.0.1 | MIT | 否 | godocx 间接依赖（报告导出） | 上游仓库 LICENSE（SBOM 收录，见文末声明） |
 | x/image | https://github.com/golang/image | v0.0.0-20200927104501-e162460cd6b5 | BSD-3-Clause | 否 | 图表绘制（go-chart 间接依赖） | 上游仓库 LICENSE（SBOM 收录，见文末声明） |
+| yaml.v3 | https://github.com/go-yaml/yaml | v3.0.1 | MIT + Apache-2.0（双许可） | 否 | 规范导入 YAML 解析（OpenAPI/Swagger/JSON Schema/Postman，管理后端，阶段8 §33） | [licenses/yaml/LICENSE](licenses/yaml/LICENSE) |
 
 ## APM 阶段2 数据面新增组件
 

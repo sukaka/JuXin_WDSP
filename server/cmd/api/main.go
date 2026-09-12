@@ -17,6 +17,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/accesslogs"
 	"github.com/jiuzhang-waf/server/internal/accessrules"
 	"github.com/jiuzhang-waf/server/internal/aggregations"
+	"github.com/jiuzhang-waf/server/internal/aiaudit"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/apiauthz"
 	"github.com/jiuzhang-waf/server/internal/apidata"
@@ -39,6 +40,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/identityevents"
 	"github.com/jiuzhang-waf/server/internal/learningjobs"
 	"github.com/jiuzhang-waf/server/internal/nodeinterfaces"
+	"github.com/jiuzhang-waf/server/internal/protectedaddresses"
 	"github.com/jiuzhang-waf/server/internal/security"
 	"github.com/jiuzhang-waf/server/internal/securityevents"
 	"github.com/jiuzhang-waf/server/internal/settings"
@@ -117,6 +119,31 @@ func run() error {
 	// 注意：checkpoint 必须落在可写数据目录（日志卷以只读方式挂载，不能存放断点）
 	acEventStore := accesscontrolevents.NewStore(db)
 	acTempBlocks := temporaryblocks.NewStore(db, cacheClient)
+	// 阶段5 §十五：CC 自动封禁前的共享出口（NAT）风险检查——命中疑似共享出口
+	// 降档缩短封禁时长并写 CC_TEMP_BLOCK_DOWNGRADED 审计事件（配置走
+	// system_settings cc_auto_block 组，种子见迁移 000153）。
+	acTempBlocks.SetNATGuardSettings(settings.NewService(db))
+	acTempBlocks.SetNATDowngradeEmitter(func(ctx context.Context, b *temporaryblocks.Block, d temporaryblocks.NATDowngrade) {
+		if b == nil {
+			return
+		}
+		expiresAt := b.BlockExpiresAt
+		ev := accesscontrolevents.Event{
+			OccurredAt:     time.Now().UTC(),
+			ApplicationID:  b.ApplicationID,
+			ClientIP:       b.ClientIP,
+			EventType:      accesscontrolevents.EventTypeCCTempBlockDowngraded,
+			Action:         accesscontrolevents.ActionTempBlock,
+			AccessRuleID:   b.ID.String(),
+			BlockExpiresAt: &expiresAt,
+			Message:        "自动封禁命中共享出口（NAT）风险，降档缩短封禁时长",
+			GatewayNodeID:  "management-api",
+			Details:        map[string]interface{}{"nat_guard": d},
+		}
+		if _, err := acEventStore.Insert(ctx, []accesscontrolevents.Event{ev}); err != nil {
+			slog.Error("write CC_TEMP_BLOCK_DOWNGRADED event failed", "error", err, "block_id", b.ID)
+		}
+	})
 	acRules := accessrules.NewStore(db)
 	acCollector := accesscontrolevents.NewCollector(acEventStore, "ac-collector-01",
 		cfg.WAF.GuardEventsLog, filepath.Join(cfg.Gateway.DataDir, "guard-events.checkpoint"), cfg.WAF.GatewayNodeName)
@@ -132,6 +159,17 @@ func run() error {
 	})
 	exceptionStoreForJanitor := exceptions.NewStore(db)
 	go guardjanitor.RunFull(collectorCtx, time.Minute, acRules, acTempBlocks, exceptionStoreForJanitor, auditSvcForJanitor, acEventStore)
+
+	// 阶段5 §七：保护地址自动维护（系统自动登记；启动时一次 + 周期刷新，
+	// 周期由 PROTECTED_ADDRESS_REFRESH_INTERVAL 配置，默认 1 小时；
+	// 单次刷新失败仅记错误日志，不阻断启动与后续调度；手动刷新端点保留）
+	go protectedaddresses.NewRefresher(protectedaddresses.NewStore(db),
+		protectedaddresses.RefreshIntervalFromEnv(os.Getenv)).Run(collectorCtx)
+
+	// 阶段7 §26.4：AI 数据保留清理（会话/Tool 调用/草稿/用量分批限量清理 + 系统审计；
+	// 审计表哈希链只校验不删除；保留天数经 system_settings ai 组配置，默认 90/90/90/180/365 天）
+	aiRetentionCleaner := guardjanitor.NewAIRetentionCleaner(db, settings.NewService(db), auditSvcForJanitor, aiaudit.NewService(db))
+	go aiRetentionCleaner.Run(collectorCtx, guardjanitor.DefaultAIRetentionInterval)
 
 	// 阶段6：访问日志采集器与数据聚合任务
 	aggStore := aggregations.NewStore(db)

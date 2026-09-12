@@ -3,7 +3,7 @@
 适用版本：九章WEB应用智能防护系统 V2.0（阶段6 交付版）
 适用对象：交付验收组（建设方、实施方、监理/审计代表）
 
-本指南约定验收前准备、系统内置交付检查 22 项逐项说明与通过标准、性能与安全验收项、文档清单核对、验收记录表模板及 FAIL/WARNING 处置规则。
+本指南约定验收前准备、系统内置交付检查 23 项逐项说明与通过标准、性能与安全验收项、文档清单核对、验收记录表模板及 FAIL/WARNING 处置规则。
 
 ## 1. 验收前准备
 
@@ -28,7 +28,7 @@
 - 至少一份已验证的 FULL 备份（backup_available 关键项）；至少一次成功恢复演练记录（restore_drill 项）。
 - 至少生成过一份安全报告（report_generation 项；有模板时为 WARNING，建议试生成一份）。
 
-## 2. 交付检查 22 项逐项说明
+## 2. 交付检查 23 项逐项说明
 
 执行入口：系统管理员登录 → 「系统运维 → 交付检查」（`/delivery-check`）→ 执行检查（`POST /api/v1/delivery-checks/run`）。结果查询 `GET /api/v1/delivery-checks/{id}`，导出 `GET /api/v1/delivery-checks/{id}/export`。审计管理员只读查看。
 
@@ -54,10 +54,11 @@
 | 16 | third_party_notices | THIRD_PARTY_NOTICES 存在 | 合规交付 | 否 | 文件存在且非空 |
 | 17 | sbom_exists | SBOM 文件存在 | 合规交付 | 否 | `docs/SBOM.spdx.json` 存在且为合法 JSON |
 | 18 | docs_present | 交付关键文档齐备 | 合规交付 | 否 | 8 份文档齐备（见 5.1）；缺失为 WARNING |
-| 19 | no_default_password | 无默认/硬编码初始口令 | 安全配置 | 否 | `INITIAL_ADMIN_PASSWORD` 未在环境注入；残留为 WARNING |
-| 20 | no_debug_endpoints | 无调试接口暴露 | 安全配置 | 是 | 本机探测 `/debug/pprof/` 不返回 200 |
-| 21 | no_placeholder_secrets | 无占位口令/Mock 标记配置 | 质量保障 | 否 | `POSTGRES_PASSWORD`/`VALKEY_PASSWORD`/`JIUZHANG_MASTER_KEY` 均已设置且非弱口令占位值 |
-| 22 | test_reports | 阶段测试报告存在 | 质量保障 | 否 | `docs/STAGE*_TEST_REPORT.md` 至少一份 |
+| 19 | vulnerability_scan | 漏洞扫描无未修复高危发现 | 安全配置 | 是 | 扫描脚本（generate-sbom.sh/license-audit.sh）齐备可执行且 SBOM 合法；`docs/VULN_KNOWN_HIGH.md` 登记表无未修复条目；登记表缺失或超 90 天未更新为 WARNING |
+| 20 | no_default_password | 无默认/硬编码初始口令 | 安全配置 | 否 | `INITIAL_ADMIN_PASSWORD` 未在环境注入；残留为 WARNING |
+| 21 | no_debug_endpoints | 无调试接口暴露 | 安全配置 | 是 | 本机探测 `/debug/pprof/` 不返回 200 |
+| 22 | no_placeholder_secrets | 无占位口令/Mock 标记配置 | 质量保障 | 否 | `POSTGRES_PASSWORD`/`VALKEY_PASSWORD`/`JIUZHANG_MASTER_KEY` 均已设置且非弱口令占位值 |
+| 23 | test_reports | 阶段测试报告存在 | 质量保障 | 否 | `docs/STAGE*_TEST_REPORT.md` 至少一份 |
 
 > 检查项实现见 `server/internal/delivery/checks.go`，判定规则见 `server/internal/delivery/delivery.go`。验收时以系统实际输出为准，本表为解释说明。
 
@@ -82,10 +83,10 @@
 - 管理面 HTTPS 与 Cookie 安全：prod 强制 `COOKIE_SECURE`（检查项 2）；CSRF 三重防护（SameSite Cookie + Token + Origin）。
 - 认证与会话：图形验证码、登录失败 5 次锁 15 分钟、统一错误提示防枚举、会话空闲 30 分钟/绝对 8 小时。
 - 三权分立：互斥角色后端强制；系统管理员访问业务接口返回 403（阶段5 集成测试 RBAC 边界用例可复跑）。
-- 网络安全：Caddy Admin 仅 Unix Socket；PostgreSQL/Valkey 不公网暴露（检查项 5/6/7）；无 `/debug/pprof`（检查项 20）。
+- 网络安全：Caddy Admin 仅 Unix Socket；PostgreSQL/Valkey 不公网暴露（检查项 5/6/7）；无 `/debug/pprof`（检查项 21）。
 - 数据安全：私钥 AES-256-GCM 加密存储不回显；审计脱敏 + 哈希链 + 数据库 RULE 禁改删（检查项 15）；备份加密导出。
 - 注入与导出安全：CSV 公式注入转义、日志注入单行化、SSRF 源站校验（阶段4/5 安全测试脚本 `test/security/` 可复跑）。
-- 口令安全：无默认口令、无占位口令（检查项 19/21）。
+- 口令安全：无默认口令、无占位口令（检查项 20/22）。
 
 ## 5. 文档清单核对
 
@@ -105,7 +106,7 @@
 | 验收项 | 依据 | 结果（PASS/WARNING/FAIL） | 证据/备注 | 验收人 |
 |--------|------|--------------------------|-----------|--------|
 | 交付检查整体结果 | 第 2 节（系统导出） | | 检查 ID： | |
-| 关键项 1-9、13、15、20 | 第 2 节逐项 | | | |
+| 关键项 1-9、13、15、19、21 | 第 2 节逐项 | | | |
 | 非关键项复核 | 第 2 节逐项 | | | |
 | 性能抽测 | 第 3 节 | | 复跑脚本/数据： | |
 | 安全验收项 | 第 4 节 | | | |
@@ -119,7 +120,7 @@
 
 ## 7. FAIL / WARNING 处置规则
 
-1. **关键项 FAIL 不得交付**：components_up、https_config、three_role_accounts、password_policy、caddy_admin_socket、postgres_bind、valkey_bind、config_version_exists、waf_detection、backup_available、audit_chain、no_debug_endpoints 共 12 项为关键项，任一 FAIL 整体 FAIL，必须整改后重新执行交付检查至 PASS。
+1. **关键项 FAIL 不得交付**：components_up、https_config、three_role_accounts、password_policy、caddy_admin_socket、postgres_bind、valkey_bind、config_version_exists、waf_detection、backup_available、audit_chain、vulnerability_scan、no_debug_endpoints 共 13 项为关键项，任一 FAIL 整体 FAIL，必须整改后重新执行交付检查至 PASS。
 2. **非关键 FAIL 按 WARNING 处理**：不阻断交付，但须逐项登记整改计划（责任人/期限），复验时确认闭环。
 3. **WARNING 处置**：逐条评估是否可现场消除（如试生成报告、补恢复演练、移除 INITIAL_ADMIN_PASSWORD）；不能现场消除的记入验收记录"遗留问题"栏，明确整改期限。
 4. **AUDIT_INTEGRITY_FAILED 特例**：哈希链不一致属重大完整性事件，除不得交付外，立即按《运维手册》告警处置流程保全取证。
@@ -127,7 +128,7 @@
 
 ## 8. 运行环境检查与版本能力证据的区别
 
-本文档第 2 节的 22 项交付检查（`server/internal/delivery/`，页面入口「系统运维 → 交付检查」）回答的是"**此运行环境**当前是否满足交付基线"：组件在线、端口未暴露、账号齐备、备份有效等，针对的是部署现场，结果随环境变化。
+本文档第 2 节的 23 项交付检查（`server/internal/delivery/`，页面入口「系统运维 → 交付检查」）回答的是"**此运行环境**当前是否满足交付基线"：组件在线、端口未暴露、账号齐备、备份有效等，针对的是部署现场，结果随环境变化。
 
 **版本能力证据**回答的是另一个问题："**此构建**实际具备哪些能力、哪些经过验证、证据在哪里"。它由 P0-01 工具链承载，与交付检查相互独立、互为补充：
 

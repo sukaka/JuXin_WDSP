@@ -20,6 +20,28 @@ func TestSameOrigin(t *testing.T) {
 		{"http://evil.com", "waf.example.com", false},
 		{"https://waf.example.com/path", "waf.example.com", true},
 		{"http://waf.example.com.evil.com", "waf.example.com", false},
+		// 默认端口归一：省略端口与显式默认端口等价
+		{"https://waf.example.com", "waf.example.com:443", true},
+		{"https://waf.example.com:443", "waf.example.com", true},
+		{"https://waf.example.com:443", "waf.example.com:443", true},
+		{"http://waf.example.com", "waf.example.com:80", true},
+		{"http://waf.example.com:80", "waf.example.com", true},
+		// scheme 默认端口不匹配对端显式默认端口
+		{"https://waf.example.com", "waf.example.com:80", false},
+		{"http://waf.example.com", "waf.example.com:443", false},
+		{"http://waf.example.com:80", "waf.example.com:443", false},
+		// 非默认端口必须精确匹配
+		{"https://waf.example.com:8443", "waf.example.com:8443", true},
+		{"https://waf.example.com:8443", "waf.example.com", false},
+		{"https://waf.example.com", "waf.example.com:8443", false},
+		{"https://waf.example.com:8443", "waf.example.com:443", false},
+		// 畸形 Origin 一律拒绝
+		{"https://", "waf.example.com", false},
+		{"https:///path", "waf.example.com", false},
+		{"://waf.example.com", "waf.example.com", false},
+		{"javascript://waf.example.com", "waf.example.com", false},
+		{"ftp://waf.example.com", "waf.example.com", false},
+		{"HTTPS://WAF.EXAMPLE.COM:443", "waf.example.com", true},
 	}
 	for _, c := range cases {
 		if got := sameOrigin(c.origin, c.host); got != c.want {
@@ -200,5 +222,41 @@ func TestCSRFProtectValidToken(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("valid csrf status = %d, want 200", rec.Code)
+	}
+}
+
+func TestCSRFProtectOriginDefaultPortNormalization(t *testing.T) {
+	handler := CSRFProtect(func(r *http.Request, token string) bool {
+		return token == "valid-token"
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	cases := []struct {
+		name   string
+		origin string
+		host   string
+		want   int
+	}{
+		{"Origin无端口Host显式443", "https://waf.example.com", "waf.example.com:443", http.StatusOK},
+		{"Origin显式443Host无端口", "https://waf.example.com:443", "waf.example.com", http.StatusOK},
+		{"http默认端口等价", "http://waf.example.com", "waf.example.com:80", http.StatusOK},
+		{"默认端口交叉不匹配", "http://waf.example.com", "waf.example.com:443", http.StatusForbidden},
+		{"非默认端口精确匹配", "https://waf.example.com:8443", "waf.example.com:8443", http.StatusOK},
+		{"非默认端口不匹配", "https://waf.example.com:8443", "waf.example.com", http.StatusForbidden},
+		{"畸形Origin拒绝", "javascript://waf.example.com", "waf.example.com", http.StatusForbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/x", nil)
+			req.Host = c.host
+			req.Header.Set("Origin", c.origin)
+			req.Header.Set("X-CSRF-Token", "valid-token")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != c.want {
+				t.Errorf("Origin %q Host %q status = %d, want %d", c.origin, c.host, rec.Code, c.want)
+			}
+		})
 	}
 }

@@ -26,6 +26,7 @@ interface EndpointClassificationFormValues {
 const DIMENSION_LABELS: Record<string, string> = {
   PURPOSE: '用途',
   ACCESS: '访问类型',
+  ACTION: '操作动作',
   DATA_TYPE: '数据类型',
   DATA_LEVEL: '数据级别',
   EXPOSURE: '暴露范围',

@@ -291,6 +291,10 @@ func (g *Guard) jwtEventBase(r *http.Request, res jwtverify.VerificationResult) 
 	if cres, ok := clientIPResultFrom(r.Context()); ok {
 		ev.ClientIP = cres.ClientIP.String()
 		ev.ConnectionIP = cres.ConnectionIP.String()
+		// 阶段5 §6.5 三字段（与 eventBase 同口径）
+		ev.ClientIPSource = string(cres.Source)
+		ev.TrustedProxyUsed = cres.TrustedProxyUsed
+		ev.ForwardedChainSummary = cres.ChainSummary
 	}
 	return ev
 }
