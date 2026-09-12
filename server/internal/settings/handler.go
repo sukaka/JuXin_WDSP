@@ -44,7 +44,9 @@ type updateSettingRequest struct {
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	var req updateSettingRequest
-	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+	// 上限 16384：block_response 组自定义阻断页面正文（html_body ≤ 4096 字节）经
+	// JSON 转义后可能超过原 4096 上限；其余设置项体量远小于此
+	if err := response.DecodeJSON(w, r, &req, 16384); err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
 		return
 	}

@@ -68,6 +68,10 @@ type PrimaryEvent struct {
 	// FinalDecision 请求最终处置上下文（WDSP P0-04；nil = 网关未上报/处置事实
 	// 未确定，入库落 NULL——列定义见迁移 000131，历史事件不回填）。
 	FinalDecision json.RawMessage
+	// APILevel §8.2 四级识别标签（CONFIRMED_API/PROBABLE_API/POSSIBLE_API/NON_API；
+	// 空串 = 旧版网关事件未上报或管线未写 api.classification，入库落 NULL——
+	// 列定义见迁移 000149，历史事件不回填）。
+	APILevel string
 }
 
 // PrimarySaver 主事件入库接口（*Store 实现，测试可注入内存实现）。
@@ -101,6 +105,14 @@ type Record struct {
 	SourceFingerprint   string                `json:"source_fingerprint"`
 	IdentityFingerprint string                `json:"identity_fingerprint"`
 	AuthType            string                `json:"auth_type"` // bearer_or_basic / api_key / cookie_session / 空（匿名）
+	// 以下两个 §7 字段为后补（迁移 000150）：旧版网关事件不含这些键，
+	// json 缺省解析为零值，采集与落库全程容忍（缺失即 NULL）。
+	// DeviceFingerprint 被动客户端指纹（UA/Accept 族 HMAC 哈希，
+	// 低熵群体特征非设备唯一标识）。
+	DeviceFingerprint string `json:"device_fingerprint"`
+	// ObjectIdentifiers 对象标识哈希集合（dsctx.ObjectIdentifier 同一 JSON 契约，
+	// 只记哈希不落明文；入库前经 validateObjectIdentifiers 校验形态）。
+	ObjectIdentifiers []dsctx.ObjectIdentifier `json:"object_identifiers"`
 	// 以下审计维度字段为后补（迁移 000035）：旧版网关事件不含这些键，
 	// json 缺省解析为零值，采集与落库全程容忍（缺失即 NULL）。
 	ClientIP          string             `json:"client_ip"`
@@ -121,7 +133,8 @@ type Record struct {
 	LLMObservation *apillm.LLMObservation `json:"llm_observation"`
 	// Proto HTTP 协议版本（HTTP/1.1/2/3，W14 起网关上报；缺失为空串，容忍）。
 	Proto string `json:"proto"`
-	// Protocol 协议类型标注（GRPC 等；缺失为空串回落 REST 语义，容忍）。
+	// Protocol 协议类型标注（§9 词表：REST_JSON/GRAPHQL/JSON_RPC/SSE/FILE_UPLOAD 等，
+	// 另含历史值 GRPC；缺失为空串回落 REST 语义，容忍）。
 	Protocol string `json:"protocol"`
 	// Heartbeat 合成心跳标记（W17-HB：网关节点活性/版本周期上报；缺失为 false，
 	// 旧版网关事件零变化，容忍）。
@@ -133,6 +146,10 @@ type Record struct {
 	// AuthzDecision 是 BOLA/BFLA OBSERVE 判定组。即使最终动作为 ALLOW，也必须
 	// 落授权决策表，以便覆盖率和误报复核不丢失允许样本。
 	AuthzDecision *events.AuthorizationDecisionGroup `json:"authz_decision"`
+	// APILevel §8.2 四级识别标签（CONFIRMED_API/PROBABLE_API/POSSIBLE_API/NON_API；
+	// 来自统一上下文扩展 api.classification，omitempty：缺键/空串为零值，采集与
+	// 落库全程容忍，缺失即 NULL——列定义见迁移 000149）。
+	APILevel string `json:"api_level"`
 	// FinalDecision 请求最终处置上下文（WDSP P0-04，final_decision JSON
 	// schema_version=1；旧版网关事件缺该键时为 nil，采集全程容忍缺失）。
 	// 仅网关处置事实已确定（终止/源站完成/错误）的事件携带；
@@ -559,6 +576,9 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 							FinalAction:   rec.FinalAction,
 							Details:       rec.Details,
 							AuthzDecision: rec.AuthzDecision,
+							// 任务书 §7：设备指纹与对象标识哈希透传（落库见 SavePrimary）
+							DeviceFingerprint: rec.DeviceFingerprint,
+							ObjectIdentifiers: rec.ObjectIdentifiers,
 						},
 						IdentityFingerprint: rec.IdentityFingerprint,
 						AuthType:            rec.AuthType,
@@ -572,6 +592,7 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 						GatewayNode:         rec.GatewayNode,
 						JWTVerification:     rec.JWTVerification,
 						FinalDecision:       rec.FinalDecision,
+						APILevel:            rec.APILevel,
 					})
 				}
 				c.processedCount++
@@ -670,12 +691,17 @@ func (c *Collector) recordHeartbeat(ctx context.Context, rec *Record) {
 // 失败返回 nil（错误已记日志，不中断采集）。
 func (c *Collector) upsertDiscovery(ctx context.Context, rec *Record) *apiassets.Endpoint {
 	var appID, domID *uuid.UUID
+	if rec.ApplicationID != "" {
+		if id, err := uuid.Parse(rec.ApplicationID); err == nil {
+			appID = &id
+		}
+	}
 	if c.resolver != nil && rec.AppCode != "" {
 		id, err := c.resolver.ResolveApplication(ctx, rec.AppCode)
 		if err != nil {
 			slog.Error("resolve application failed",
 				"collector", c.collectorID, "app_code", rec.AppCode, "error", err)
-		} else {
+		} else if id != nil {
 			appID = id
 		}
 		if appID != nil && rec.Domain != "" {
@@ -695,6 +721,7 @@ func (c *Collector) upsertDiscovery(ctx context.Context, rec *Record) *apiassets
 		IsAPI:         rec.IsAPI,
 		ApplicationID: appID,
 		DomainID:      domID,
+		Host:          rec.Domain,
 		ProtocolType:  rec.Protocol,
 	})
 	if err != nil {
@@ -712,6 +739,11 @@ func (c *Collector) upsertDiscovery(ctx context.Context, rec *Record) *apiassets
 		slog.Error("upsert api endpoint discovery failed",
 			"collector", c.collectorID, "endpoint_key", rec.EndpointKey, "error", err)
 		return nil
+	}
+	if ep != nil && ep.EndpointKey != "" {
+		// All downstream runtime stores key observations by endpoint_key. The
+		// discovery result is authoritative because it includes resolved scope.
+		rec.EndpointKey = ep.EndpointKey
 	}
 	return ep
 }

@@ -8,6 +8,7 @@ require (
 	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0
 	github.com/valkey-io/valkey-go v1.0.76
 	go.uber.org/zap v1.28.0
+	golang.org/x/net v0.58.0
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -175,7 +176,6 @@ require (
 	golang.org/x/crypto/x509roots/fallback v0.0.0-20260213171211-a408498e5541 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/mod v0.40.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

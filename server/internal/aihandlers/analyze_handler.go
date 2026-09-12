@@ -1,5 +1,7 @@
 // analyze_handler.go 一次性 AI 分析端点：构造模板消息调编排器（非流式），
 // 使用一次性会话（用完即删，不污染会话列表）；事件/规则/IP 经消息文本由 ExtractIDs 提取。
+// 结构化维度入参（时间范围/应用/IP/URI/规则/Request ID、画像对象、What-If 场景）的校验、
+// 真实数据聚合与离线估算在 analyze_context.go。
 package aihandlers
 
 import (
@@ -26,6 +28,17 @@ type analyzeRequest struct {
 	IP       string `json:"ip"`
 	Question string `json:"question"`
 	Period   string `json:"period"`
+	// 阶段7 §12.1/§15/§19 结构化扩展（全部可选，逐一校验见 validateAnalyzeStructured）
+	TimeRange            string `json:"time_range"`             // 统计区间预设 1h/6h/24h/7d/30d
+	ApplicationID        string `json:"application_id"`         // 应用维度过滤 / 应用画像
+	URI                  string `json:"uri"`                    // URI 维度过滤 / URI 画像
+	RequestID            string `json:"request_id"`             // 网关 Request ID 维度过滤
+	Scenario             string `json:"scenario"`               // What-If 场景（§19.1 八种，见 analyze_context.go 白名单）
+	CCThreshold          int64  `json:"cc_threshold"`           // What-If：模拟 CC 阈值（次/窗口）
+	BlockDurationSeconds int64  `json:"block_duration_seconds"` // What-If：模拟封禁时长（秒）
+	AnomalyThreshold     int64  `json:"anomaly_threshold"`      // What-If：模拟入站异常阈值
+	ParanoiaLevel        int    `json:"paranoia_level"`         // What-If：模拟 CRS 执行等级（1-4）
+	ExceptionID          string `json:"exception_id"`           // What-If remove_exception：模拟删除的例外 ID
 }
 
 func decodeAnalyze(w http.ResponseWriter, r *http.Request) (*analyzeRequest, bool) {
@@ -38,6 +51,15 @@ func decodeAnalyze(w http.ResponseWriter, r *http.Request) (*analyzeRequest, boo
 	req.Question = trunc(strings.TrimSpace(req.Question), 1000)
 	req.IP = strings.TrimSpace(req.IP)
 	req.Period = trunc(strings.TrimSpace(req.Period), 50)
+	req.TimeRange = trunc(strings.TrimSpace(req.TimeRange), 10)
+	req.ApplicationID = trunc(strings.TrimSpace(req.ApplicationID), 64)
+	req.URI = trunc(strings.TrimSpace(req.URI), 200)
+	if i := strings.IndexByte(req.URI, '?'); i >= 0 {
+		req.URI = req.URI[:i]
+	}
+	req.RequestID = trunc(strings.TrimSpace(req.RequestID), 64)
+	req.Scenario = trunc(strings.TrimSpace(req.Scenario), 32)
+	req.ExceptionID = trunc(strings.TrimSpace(req.ExceptionID), 64)
 	return &req, true
 }
 
@@ -47,24 +69,37 @@ func validEventID(s string) bool {
 	return err == nil
 }
 
-// AnalyzeEvent 安全事件 AI 分析。
+// AnalyzeEvent 安全事件 AI 分析（§12.1：支持时间范围/应用/IP/URI/规则/Request ID 维度入参）。
 func (d *Deps) AnalyzeEvent(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodeAnalyze(w, r)
 	if !ok {
 		return
 	}
+	if verr := validateAnalyzeStructured(req); verr != "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, verr)
+		return
+	}
 	msg := ""
 	switch {
-	case req.EventID != "":
-		if !validEventID(req.EventID) {
-			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的事件ID")
+	case hasEventFilter(req):
+		// 结构化维度过滤：按维度查询真实数据组装分析上下文；缺数据如实返回"数据不足"口径
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "24h", time.Now())
+		summary, err := d.queryEventFilterSummary(r.Context(), req, start, end)
+		if err != nil {
+			slog.Error("ai analyze event filter query failed", "error", err)
+			response.InternalError(w, r, err)
 			return
 		}
+		msg = buildEventFilterContext(req, label, summary)
+		if req.EventID != "" {
+			msg += "\n另请结合事件 " + req.EventID + " 的详情做关联分析"
+		}
+	case req.EventID != "":
 		msg = "请分析安全事件 " + req.EventID + "，给出攻击类型、命中规则、风险等级、是否阻断与处置建议"
 	case req.Question != "":
 		msg = "请分析安全事件：" + req.Question
 	default:
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供事件ID或分析问题")
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供事件ID、过滤维度（时间范围/应用/IP/URI/规则/Request ID）或分析问题")
 		return
 	}
 	d.runAnalyze(w, r, msg, "安全事件分析")
@@ -95,24 +130,50 @@ func (d *Deps) AnalyzeFalsePositive(w http.ResponseWriter, r *http.Request) {
 	d.runAnalyze(w, r, msg, "误报研判")
 }
 
-// AnalyzeAttackProfile 攻击画像（IP/URI/应用）。
+// AnalyzeAttackProfile 攻击画像（IP/URI/应用；§15.2/§15.3 URI 画像与应用画像为一等结构化入参）。
 func (d *Deps) AnalyzeAttackProfile(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodeAnalyze(w, r)
 	if !ok {
 		return
 	}
+	if verr := validateAnalyzeStructured(req); verr != "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, verr)
+		return
+	}
 	msg := ""
 	switch {
 	case req.IP != "":
-		if net.ParseIP(req.IP) == nil {
-			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的IP地址")
+		msg = "请对 IP " + req.IP + " 做攻击画像分析，给出首次/最近出现、攻击类型、目标、阻断与封禁情况及处置建议"
+	case req.URI != "":
+		// URI 画像：真实 SQL 聚合（事件分布/攻击类型/来源 IP/命中规则 Top）
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "7d", time.Now())
+		profile, err := d.queryURIProfile(r.Context(), req.URI, start, end)
+		if err != nil {
+			slog.Error("ai uri profile query failed", "error", err)
+			response.InternalError(w, r, err)
 			return
 		}
-		msg = "请对 IP " + req.IP + " 做攻击画像分析，给出首次/最近出现、攻击类型、目标、阻断与封禁情况及处置建议"
+		msg = buildURIProfileContext(label, profile)
+		if req.Question != "" {
+			msg += "\n分析侧重点：" + req.Question
+		}
+	case req.ApplicationID != "":
+		// 应用画像：真实 SQL 聚合（应用维度同理）
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "7d", time.Now())
+		profile, err := d.queryAppProfile(r.Context(), req.ApplicationID, start, end)
+		if err != nil {
+			slog.Error("ai application profile query failed", "error", err)
+			response.InternalError(w, r, err)
+			return
+		}
+		msg = buildAppProfileContext(label, profile)
+		if req.Question != "" {
+			msg += "\n分析侧重点：" + req.Question
+		}
 	case req.Question != "":
 		msg = "请做攻击画像分析：" + req.Question
 	default:
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供IP或画像问题")
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供IP、URI、应用ID或画像问题")
 		return
 	}
 	d.runAnalyze(w, r, msg, "攻击画像")
@@ -158,17 +219,135 @@ func (d *Deps) AnalyzePolicyRecommendation(w http.ResponseWriter, r *http.Reques
 	d.runAnalyze(w, r, msg, "策略优化建议")
 }
 
-// AnalyzeWhatIf What-If 策略模拟（基于历史数据估算）。
+// AnalyzeWhatIf What-If 策略模拟（§19 八种场景：停用/启用规则、异常阈值、PL 切换、
+// 新增/删除例外、CC 阈值、封禁时长；均基于历史事件数据离线统计估算，非逐请求回放引擎）。
 func (d *Deps) AnalyzeWhatIf(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodeAnalyze(w, r)
 	if !ok {
 		return
 	}
-	if req.RuleID <= 0 {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供要模拟的规则ID")
+	if verr := validateAnalyzeStructured(req); verr != "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, verr)
 		return
 	}
-	msg := "如果关闭规则 " + itoa(req.RuleID) + " 会有什么影响？请做 What-If 模拟，估算受影响请求、误报减少与漏拦风险"
+	scenario := req.Scenario
+	if scenario == "" {
+		scenario = whatIfScenarioDisableRule
+	}
+	msg := ""
+	switch scenario {
+	case whatIfScenarioDisableRule:
+		if req.RuleID <= 0 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供要模拟的规则ID")
+			return
+		}
+		msg = "如果关闭规则 " + itoa(req.RuleID) + " 会有什么影响？请做 What-If 模拟，估算受影响请求、误报减少与漏拦风险"
+	case whatIfScenarioEnableRule:
+		if req.RuleID <= 0 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供要模拟启用的规则ID")
+			return
+		}
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "30d", time.Now())
+		s, err := d.queryRuleEnableSummary(r.Context(), req.RuleID, start, end)
+		if err != nil {
+			slog.Error("ai what-if enable rule query failed", "error", err)
+			response.InternalError(w, r, err)
+			return
+		}
+		msg = buildEnableRuleContext(label, s)
+	case whatIfScenarioAnomalyThreshold:
+		if req.AnomalyThreshold <= 0 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供模拟的异常阈值（anomaly_threshold，1-10000）")
+			return
+		}
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "7d", time.Now())
+		data, err := d.queryAnomalyThresholdData(r.Context(), start, end)
+		if err != nil {
+			slog.Error("ai what-if anomaly samples query failed", "error", err)
+			response.InternalError(w, r, err)
+			return
+		}
+		msg = buildAnomalyThresholdContext(label, req.AnomalyThreshold, data.RefMin, data.RefMax,
+			estimateAnomalyThreshold(data.Samples, req.AnomalyThreshold))
+	case whatIfScenarioPLSwitch:
+		if req.ParanoiaLevel < 1 || req.ParanoiaLevel > 4 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供模拟的执行等级（paranoia_level，1-4）")
+			return
+		}
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "30d", time.Now())
+		s, err := d.queryPLSwitchSummary(r.Context(), start, end)
+		if err != nil {
+			slog.Error("ai what-if pl summary query failed", "error", err)
+			response.InternalError(w, r, err)
+			return
+		}
+		msg = buildPLSwitchContext(label, req.ParanoiaLevel, s)
+	case whatIfScenarioAddException:
+		if req.RuleID <= 0 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供例外目标规则ID（rule_id，可选 application_id/uri 收敛范围）")
+			return
+		}
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "30d", time.Now())
+		where, args := eventFilterWhere(req, start, end)
+		s, err := d.queryExceptionImpact(r.Context(), where, args, req.URI == "", req.ApplicationID == "")
+		if err != nil {
+			slog.Error("ai what-if add exception query failed", "error", err)
+			response.InternalError(w, r, err)
+			return
+		}
+		msg = buildAddExceptionContext(label, describeEventFilterDims(req), s)
+	case whatIfScenarioRemoveException:
+		if req.ExceptionID == "" {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供要模拟删除的例外ID（exception_id）")
+			return
+		}
+		exc, err := d.queryExceptionScope(r.Context(), req.ExceptionID)
+		if err != nil {
+			slog.Error("ai what-if exception scope query failed", "error", err)
+			response.InternalError(w, r, err)
+			return
+		}
+		if !exc.Found {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "例外不存在或已删除")
+			return
+		}
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "30d", time.Now())
+		where, args := exceptionScopeWhere(exc, start, end)
+		s, err := d.queryExceptionImpact(r.Context(), where, args, exc.URIExact == "" && exc.URIPrefix == "", exc.AppID == "")
+		if err != nil {
+			slog.Error("ai what-if remove exception query failed", "error", err)
+			response.InternalError(w, r, err)
+			return
+		}
+		msg = buildRemoveExceptionContext(label, exc, s)
+	case whatIfScenarioCCThreshold:
+		if req.CCThreshold <= 0 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供模拟的 CC 阈值（cc_threshold，次/窗口）")
+			return
+		}
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "7d", time.Now())
+		samples, err := d.queryCCThresholdSamples(r.Context(), start, end)
+		if err != nil {
+			slog.Error("ai what-if cc samples query failed", "error", err)
+			response.InternalError(w, r, err)
+			return
+		}
+		msg = buildCCThresholdContext(label, req.CCThreshold, estimateCCThreshold(samples, req.CCThreshold))
+	case whatIfScenarioBlockDuration:
+		if req.BlockDurationSeconds < 60 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供模拟的封禁时长（block_duration_seconds，60-2592000 秒）")
+			return
+		}
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "7d", time.Now())
+		samples, err := d.queryBlockSamples(r.Context(), start, end)
+		if err != nil {
+			slog.Error("ai what-if block samples query failed", "error", err)
+			response.InternalError(w, r, err)
+			return
+		}
+		msg = buildBlockDurationContext(label, time.Duration(req.BlockDurationSeconds)*time.Second,
+			estimateBlockDuration(samples, time.Duration(req.BlockDurationSeconds)*time.Second))
+	}
 	d.runAnalyze(w, r, msg, "What-If 模拟")
 }
 

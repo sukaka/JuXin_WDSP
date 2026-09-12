@@ -96,6 +96,7 @@ export const ALERT_TYPE_META: Record<string, { color: string; label: string }> =
   CONFIG_HASH_MISMATCH: { color: 'orange', label: '配置哈希不一致' },
   DISK_SPACE_LOW: { color: 'orange', label: '磁盘空间不足' },
   DATABASE_CAPACITY_HIGH: { color: 'orange', label: '数据库容量高' },
+  FD_USAGE_HIGH: { color: 'orange', label: '文件句柄使用率高' },
   BACKUP_FAILED: { color: 'volcano', label: '备份失败' },
   RESTORE_VALIDATION_FAILED: { color: 'volcano', label: '恢复校验失败' },
   REPORT_FAILED: { color: 'orange', label: '报告生成失败' },

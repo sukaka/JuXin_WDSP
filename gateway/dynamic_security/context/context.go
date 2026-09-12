@@ -56,6 +56,15 @@ type ParseLimits struct {
 	// MaxGRPCFrameBytes gRPC 单帧声明长度上限（P2-05 帧结构校验；≤0 由
 	// DefaultGRPCMaxFrameBytes 兜底，发布通道经 api_grpc_max_frame_bytes 下发覆盖）
 	MaxGRPCFrameBytes int
+	// ResponseSampleRatio 响应体采样比例（任务书 §7.2，取值 0..1）：
+	// 1 = 全量解析（默认，保持现行为）；0 = 不解析响应体；
+	// (0,1) 仅对超过 MaxBodyParseBytes 的超大响应生效——确定性截断到
+	// ceil(ratio×MaxBodyParseBytes) 字节前缀后尝试解析，前缀非完整 JSON 按
+	// 不可解析处理（与请求侧截断体不产出部分 schema 同一纪律）；
+	// 非法值（<0 / >1 / NaN）由消费方归一为 1。
+	// 下发面现状：发布通道暂无本字段下发项，挂点侧（apiprotect.go）使用
+	// DefaultParseLimits（=1 全量），字段与行为本次仅在引擎层实现。
+	ResponseSampleRatio float64
 }
 
 // DefaultGRPCMaxFrameBytes gRPC 单帧声明长度默认上限（4 MiB，与常见 gRPC 服务端
@@ -65,13 +74,14 @@ const DefaultGRPCMaxFrameBytes = 4 << 20
 // DefaultParseLimits 安全默认值。
 func DefaultParseLimits() ParseLimits {
 	return ParseLimits{
-		MaxBodyParseBytes:  1 << 20, // 1 MiB
-		MaxBodySampleBytes: 64 << 10,
-		MaxJSONDepth:       32,
-		MaxXMLDepth:        32,
-		MaxFieldCount:      2048,
-		MaxFileMetaCount:   64,
-		MaxGRPCFrameBytes:  DefaultGRPCMaxFrameBytes,
+		MaxBodyParseBytes:   1 << 20, // 1 MiB
+		MaxBodySampleBytes:  64 << 10,
+		MaxJSONDepth:        32,
+		MaxXMLDepth:         32,
+		MaxFieldCount:       2048,
+		MaxFileMetaCount:    64,
+		MaxGRPCFrameBytes:   DefaultGRPCMaxFrameBytes,
+		ResponseSampleRatio: 1, // §7.2 默认全量解析（保持现行为）
 	}
 }
 
@@ -130,6 +140,18 @@ type ResponseContext struct {
 	FileObservation *FileObservation `json:"file_observation,omitempty"`
 }
 
+// ObjectIdentifier 请求对象标识（任务书 §7 object_identifiers）：归一化路径模板的
+// 位置参数值与请求体主键字段值的脱敏引用。只记来源/参数名/值哈希，绝不落明文值；
+// ValueHash 为 HMAC-SHA256 截断指纹（hex 32 字符，盐来自 identity_salt）。
+type ObjectIdentifier struct {
+	Source    string `json:"source"`     // path | body_json | body_form
+	Param     string `json:"param"`      // 路径占位符名（id/uuid/hex）或 body 字段路径
+	ValueHash string `json:"value_hash"` // HMAC 指纹，非明文
+}
+
+// MaxObjectIdentifiers 单请求对象标识上限（防超大报文/深路径撑爆上下文与事件体积）。
+const MaxObjectIdentifiers = 16
+
 // DetectorMatch 单条检测结论（WAF/API/敏感数据等写入同一列表）。
 type DetectorMatch struct {
 	Detector   string            `json:"detector"` // waf / api_schema / auth / ...
@@ -170,6 +192,7 @@ var defaultConfidenceByDetector = map[string]float64{
 	"api_authz":       0.7, // 基线成员判定（人工确认基线，但角色取自未验签 JWT 声明，保守取值）
 	"llm":             0.7, // 词表匹配与名单成员判定（OBSERVE 信号级）
 	"grpc":            1.0, // 帧结构事实（5 字节前缀逐帧校验，不解消息内容）
+	"api_flow":        0.5, // 会话轨迹重建推断（基线成员为配置事实，但窗口状态为观测近似）
 }
 
 // defaultConfidenceFallback 未列出检测器的置信度兜底（中性 0.5，不高估）。
@@ -242,6 +265,16 @@ type RequestContext struct {
 	APIKeyFingerprint  string
 	SessionFingerprint string
 	TenantFingerprint  string
+	// DeviceFingerprint 被动客户端指纹（任务书 §7 device_fingerprint）：UA/Accept 族
+	// 请求头的 HMAC 哈希（产出点 parser.DeriveDeviceFingerprint，与 identitybehavior
+	// BrowserFingerprint 同口径）。粒度限制：纯被动头部指纹是低熵群体特征——同型号
+	// 浏览器+同语言环境的大量客户端共享同一指纹，不是设备唯一标识；不做客户端采集
+	// （无 JS/Canvas），不得用作封禁/归因的唯一依据。空 = UA 缺失未计算。
+	DeviceFingerprint string
+	// ObjectIdentifiers 对象标识哈希集合（任务书 §7 object_identifiers；产出点
+	// parser.ExtractObjectIdentifiers；只记哈希不落明文，条数经 SetObjectIdentifiers
+	// 封顶 MaxObjectIdentifiers）。空 = 请求未携带可识别对象标识。
+	ObjectIdentifiers []ObjectIdentifier
 
 	// --- 解析限制与截断标记 ---
 	Limits           ParseLimits
@@ -310,6 +343,36 @@ func (c *RequestContext) SetIdentity(identityType string, confidence int, eviden
 	c.IdentityType = identityType
 	c.IdentityConfidence = uint8(confidence)
 	c.IdentityEvidence = append([]string(nil), evidence...)
+}
+
+// SetObjectIdentifiers 写入对象标识集合（任务书 §7 object_identifiers）：
+// 拷贝并封顶 MaxObjectIdentifiers（防无界膨胀；调用方保证值已脱敏为哈希）。
+// nil/空入参清空为 nil（事件经 omitempty 省略，保持零变化）。
+func (c *RequestContext) SetObjectIdentifiers(ids []ObjectIdentifier) {
+	if c == nil {
+		return
+	}
+	if len(ids) > MaxObjectIdentifiers {
+		ids = ids[:MaxObjectIdentifiers]
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ObjectIdentifiers = append([]ObjectIdentifier(nil), ids...)
+}
+
+// CopyObjectIdentifiers 返回 ObjectIdentifiers 副本（事件装配与测试用）。
+func (c *RequestContext) CopyObjectIdentifiers() []ObjectIdentifier {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.ObjectIdentifiers) == 0 {
+		return nil
+	}
+	out := make([]ObjectIdentifier, len(c.ObjectIdentifiers))
+	copy(out, c.ObjectIdentifiers)
+	return out
 }
 
 // New 创建上下文；limits 为零值时使用 DefaultParseLimits。

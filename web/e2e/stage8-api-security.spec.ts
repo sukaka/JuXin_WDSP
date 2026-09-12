@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { test, expect, type Page } from '@playwright/test'
 import { loginViaAPI, createUserViaAPI, changePasswordViaAPI, API_URL } from './helpers'
 
@@ -10,10 +11,16 @@ import { loginViaAPI, createUserViaAPI, changePasswordViaAPI, API_URL } from './
  * - 用例4 策略页（模式持久化）            ← 防护模式 db 覆盖生效验证
  * - 用例5 学习中心（启动/停止）           ← 场景二「动态参数学习」的入口操作
  * - 用例6 审计管理员只读                  ← 场景七「独立API权限」的 UI 显隐部分
+ * - 用例8 参数学习闭环                    ← 场景二「动态参数学习」（学习完成→参数模型类型/置信度）
+ * - 用例9 模型冻结+偏离                   ← 场景四「模型冻结」（偏离出事件、正式模型不变、偏离不进学习）
+ * - 用例10 重新学习分支对比               ← 场景五「重新学习」（正式模型持续检测、学习分支、对比、确认激活）
+ * - 用例11 统一事件单主事件多明细         ← 场景六「统一事件」（WAF+Schema 偏离同请求一主事件多明细）
  * - 用例7 WAF 形态（test.skip）           ← 产品形态边界，需 waf 形态环境单独执行
- * 场景五「重新学习」需学习完成后对比学习分支（依赖流量积累与候选生成），
- * 场景六「统一事件」主事件/检测明细为网关侧断言（已由 test/waf/scripts/stage8-gateway-tests.sh 覆盖），
- * 均不在本 UI 规格的可达子集内。
+ *
+ * 真实环境复跑说明：用例8-11 依赖 stage5+wdsp 真实栈（网关流量采集 2s 轮询、学习调度默认 30s 周期、
+ * testorigin 上游），本机无后端时不可用 npx playwright test 实跑，应在集成环境按
+ * Makefile stage8-test-e2e 口径复跑；学习完成等待上限 240s，如调度间隔被 system_settings
+ * 调大需同步放宽。
  *
  * 环境依赖（与 Makefile stage8-test-e2e 一致）：
  * - stage5 编排 + wdsp 覆盖（PRODUCT_EDITION=wdsp 且 API_DYNAMIC_PROTECTION_ENABLED=true，
@@ -459,5 +466,475 @@ test.describe('阶段8：接口动态防护（WDSP）', () => {
     await expect(page.locator('.ant-menu-submenu-title', { hasText: '接口防护' })).toHaveCount(0)
     await page.goto('/api-endpoints')
     await expect(page).toHaveURL(/\/404/)
+  })
+
+  /* ==================== 8. 动态参数学习（任务书场景二） ==================== */
+
+  test('参数学习：学习完成后参数模型呈现字符串/数字/数组/对象与置信度', async ({ page }) => {
+    test.setTimeout(420_000)
+    await loginViaAPI(page, SEC_USER, SEC_PWD)
+    await ensureWdspEnv(page)
+    const tag = randTag()
+    const ep = await discoverEndpoint(page, tag)
+
+    // 启动学习（样本目标取下限 10 加速完成；默认条件 min_valid_samples=10、min_unique_ips=1）
+    await page.goto('/api-learning')
+    await expect(page.locator('.ant-card-head-title', { hasText: 'API 学习中心' })).toBeVisible()
+    await selectEndpointByKey(page, ep.endpointKey)
+    await page.getByRole('button', { name: '启动学习' }).click()
+    const startModal = page.locator('.ant-modal')
+    await startModal.locator('.ant-input-number input').fill('10')
+    await startModal.getByRole('button', { name: /确 ?定/ }).click()
+    await expect(page.locator('.ant-tag', { hasText: '学习中' })).toBeVisible({ timeout: 10000 })
+
+    // 发送 12 组同字段不同取值流量（字符串/数字/数组/对象各一），唯一 X-Request-Id 防样本幂等键碰撞
+    for (let i = 1; i <= 12; i++) {
+      await page.request.post(`${GATEWAY_URL}/e2e/api/${tag}/orders/${100 + i}`, {
+        headers: {
+          Host: HOST,
+          'Content-Type': 'application/json',
+          'X-Request-Id': randomUUID(),
+        },
+        data: { name: `widget-${i}`, amount: i * 10 + 0.5, tags: ['e2e', `t${i}`], meta: { channel: 'e2e' } },
+      })
+    }
+
+    // 等待学习完成（采集 2s 轮询 + 学习调度默认 30s 周期）
+    let learned = false
+    const deadline = Date.now() + 240_000
+    while (Date.now() < deadline) {
+      const st = await page.request.get(`${API_URL}/api-security/endpoints/${ep.id}/learning/status`)
+      const data = (await st.json())?.data
+      if (data?.learning_status === 'LEARNED' || data?.job?.status === 'COMPLETED') {
+        learned = true
+        break
+      }
+      await page.waitForTimeout(3000)
+    }
+    expect(learned, '学习应在 240s 内完成（有效样本达 10）').toBeTruthy()
+
+    // 学习中心 UI：任务已完成、样本目标/已采集可见；有效样本数经 API 复核达标
+    await page.reload()
+    const jobCard = page
+      .locator('.ant-card')
+      .filter({ has: page.locator('.ant-card-head-title', { hasText: '学习任务' }) })
+    await expect(jobCard.getByText('已完成')).toBeVisible({ timeout: 15000 })
+    await expect(jobCard.getByText('样本目标')).toBeVisible()
+    const stResp = await page.request.get(`${API_URL}/api-security/endpoints/${ep.id}/learning/status`)
+    const job = (await stResp.json())?.data?.job
+    expect(job?.valid_count, '有效样本数应达到样本目标 10').toBeGreaterThanOrEqual(10)
+
+    // 参数模型页：选择接口（版本选择器自动选中学习生成的候选），验证字段类型模型与置信度
+    await page.goto('/api-parameters')
+    await expect(page.locator('.ant-card-head-title', { hasText: '参数模型' })).toBeVisible()
+    await page.locator('.ant-select', { hasText: '选择接口' }).click()
+    await page.locator('.ant-select-item-option').first().waitFor()
+    await page.keyboard.type(ep.endpointKey)
+    await page.locator('.ant-select-item-option', { hasText: ep.endpointKey }).click()
+    // 逐字段断言基础类型（类型模型而非具体取值/字段名单）
+    for (const [param, typeLabel] of [
+      ['name', '字符串'],
+      ['amount', '数字'],
+      ['tags', '数组'],
+      ['meta', '对象'],
+    ] as const) {
+      const prow = page
+        .locator('tbody tr')
+        .filter({ has: page.locator('code', { hasText: new RegExp(`^${param}$`) }) })
+      await expect(prow, `参数 ${param} 应出现在参数模型中`).toHaveCount(1, { timeout: 15000 })
+      await expect(prow.getByText(typeLabel)).toBeVisible()
+    }
+    // 置信度列呈现百分比
+    await expect(page.locator('tbody').getByText(/\d+%/).first()).toBeVisible()
+  })
+
+  /* ==================== 9. 模型冻结 + 偏离不进学习（任务书场景四） ==================== */
+
+  test('模型冻结：偏离请求产生模型校验事件、正式模型不变且偏离样本不进学习', async ({ page }) => {
+    test.setTimeout(480_000)
+    await loginViaAPI(page, SEC_USER, SEC_PWD)
+    await ensureWdspEnv(page)
+    await setApiPolicyMode(page, 'OBSERVE')
+    const tag = randTag()
+    const ep = await discoverEndpoint(page, tag)
+
+    // 1. 确认参数范围：创建候选 {id:number} → 确认冻结 → 激活 → 发布（正式模型下发网关）
+    await page.goto('/api-models')
+    await selectEndpointByKey(page, ep.endpointKey)
+    await page.getByRole('button', { name: '创建候选' }).click()
+    const createDrawer = page.locator('.ant-drawer', { hasText: '创建候选版本' })
+    await expect(createDrawer).toBeVisible()
+    await createDrawer.locator('#schema_json').fill('{"id":"number"}')
+    await createDrawer.getByRole('button', { name: /创 ?建/ }).click()
+    const row = page.locator('tr', { hasText: ep.endpointKey.replace(/^[A-Z]+ /, '') })
+    await expect(row.getByText('候选')).toBeVisible({ timeout: 10000 })
+    await row.getByRole('button', { name: '确认冻结' }).click()
+    await page.locator('.ant-modal').getByRole('button', { name: /确 ?定/ }).click()
+    await expect(row.getByText('正式')).toBeVisible({ timeout: 10000 })
+    // 记录正式模型哈希与版本数（偏离后比对「正式模型未变化」）
+    const listModels = async () => {
+      const resp = await page.request.get(
+        `${API_URL}/api-security/endpoints/${ep.id}/models?page=1&page_size=50`,
+      )
+      expect(resp.status(), 'list model versions').toBe(200)
+      return ((await resp.json())?.data?.items ?? []) as Array<{
+        status: string
+        content_hash: string
+        version_number: number
+      }>
+    }
+    const before = await listModels()
+    const formalBefore = before.filter((m) => m.status === 'FORMAL')
+    expect(formalBefore).toHaveLength(1)
+    await row.getByRole('button', { name: '激活' }).click()
+    await page.locator('.ant-modal').getByRole('button', { name: /确 ?定/ }).click()
+    await expect(page.getByText(/已激活/).first()).toBeVisible({ timeout: 10000 })
+    await publishGatewayConfigAndWait(page)
+
+    // 2. 发送超出参数范围请求（id 应为 number，实发 string → schema.type_mismatch）
+    for (let i = 0; i < 3; i++) {
+      await page.request.post(`${GATEWAY_URL}/e2e/api/${tag}/orders/${200 + i}`, {
+        headers: {
+          Host: HOST,
+          'Content-Type': 'application/json',
+          'X-Request-Id': randomUUID(),
+        },
+        data: { id: `not-a-number-${i}` },
+      })
+    }
+    // 3. 验证生成风险事件：统一事件含 api_schema（模型校验）明细
+    let hasSchemaEvent = false
+    const evDeadline = Date.now() + 60_000
+    while (Date.now() < evDeadline) {
+      const resp = await page.request.get(
+        `${API_URL}/api-security/runtime/events?endpoint_key=${encodeURIComponent(ep.endpointKey)}&page=1&page_size=20`,
+      )
+      expect(resp.status(), 'list runtime events').toBe(200)
+      const items = ((await resp.json())?.data?.items ?? []) as Array<{
+        details?: Array<{ detector?: string }> | null
+      }>
+      if (items.some((e) => (e.details ?? []).some((d) => d.detector === 'api_schema'))) {
+        hasSchemaEvent = true
+        break
+      }
+      await page.waitForTimeout(2000)
+    }
+    expect(hasSchemaEvent, '偏离请求应在 60s 内产生含模型校验明细的统一事件').toBeTruthy()
+
+    // UI：运行时事件详情呈现模型校验明细
+    await page.goto('/api-runtime-events')
+    await page.getByPlaceholder(/接口键/).fill(ep.endpointKey)
+    await page.keyboard.press('Enter')
+    const firstRow = page.locator('tbody tr').first()
+    await expect(firstRow).toBeVisible({ timeout: 10000 })
+    await firstRow.getByRole('button', { name: '详情' }).click()
+    const evDrawer = page.locator('.ant-drawer-content')
+    await expect(evDrawer.getByText('检测明细（details）')).toBeVisible({ timeout: 10000 })
+    await expect(evDrawer.getByText('模型校验').first()).toBeVisible()
+    await expect(evDrawer.getByText(/type mismatch/).first()).toBeVisible()
+    await page.keyboard.press('Escape')
+
+    // 4. 正式模型未变化：版本数与 FORMAL 哈希均不变（偏离不自动扩宽）
+    const after = await listModels()
+    expect(after.length, '偏离不得产生新模型版本').toBe(before.length)
+    expect(after.find((m) => m.status === 'FORMAL')?.content_hash).toBe(formalBefore[0].content_hash)
+
+    // 5. 异常请求未进入学习：启动学习后偏离流量全部排除（schema_deviation），无一采纳
+    const start = await page.request.post(`${API_URL}/api-security/endpoints/${ep.id}/learning/start`, {
+      data: { sample_target: 10 },
+      headers: { 'X-CSRF-Token': await csrfToken(page) },
+    })
+    expect(start.status(), `start learning: ${await start.text()}`).toBe(200)
+    for (let i = 0; i < 2; i++) {
+      await page.request.post(`${GATEWAY_URL}/e2e/api/${tag}/orders/${300 + i}`, {
+        headers: {
+          Host: HOST,
+          'Content-Type': 'application/json',
+          'X-Request-Id': randomUUID(),
+        },
+        data: { id: `still-not-a-number-${i}` },
+      })
+    }
+    let excludedSeen = false
+    const sampleDeadline = Date.now() + 60_000
+    while (Date.now() < sampleDeadline) {
+      const resp = await page.request.get(
+        `${API_URL}/api-security/endpoints/${ep.id}/learning/samples?accepted=false&page=1&page_size=20`,
+      )
+      const items = ((await resp.json())?.data?.items ?? []) as Array<{ exclude_reason?: string }>
+      if (items.some((s) => s.exclude_reason === 'schema_deviation')) {
+        excludedSeen = true
+        break
+      }
+      await page.waitForTimeout(2000)
+    }
+    expect(excludedSeen, '偏离请求应以 schema_deviation 排除在学习样本之外').toBeTruthy()
+    const accepted = await page.request.get(
+      `${API_URL}/api-security/endpoints/${ep.id}/learning/samples?accepted=true&page=1&page_size=1`,
+    )
+    expect(
+      (await accepted.json())?.data?.total ?? 0,
+      '偏离请求不得进入有效学习样本',
+    ).toBe(0)
+
+    // UI 学习中心：已排除样本可见排除原因；随后停止学习恢复现场
+    await page.goto('/api-learning')
+    await selectEndpointByKey(page, ep.endpointKey)
+    await page.locator('.ant-select', { hasText: '样本状态' }).click()
+    await page
+      .locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option', {
+        hasText: '已排除',
+      })
+      .click()
+    await expect(page.locator('tbody').getByText('schema_deviation').first()).toBeVisible({
+      timeout: 10000,
+    })
+    await page.getByRole('button', { name: '停止学习' }).click()
+    await page.locator('.ant-modal').getByRole('button', { name: /确 ?定/ }).click()
+    await expect(page.locator('.ant-tag', { hasText: '已暂停' })).toBeVisible({ timeout: 10000 })
+  })
+
+  /* ==================== 10. 重新学习分支对比（任务书场景五） ==================== */
+
+  test('重新学习：正式模型持续检测偏离，学习分支完成后对比并确认激活新版本', async ({ page }) => {
+    test.setTimeout(600_000)
+    await loginViaAPI(page, SEC_USER, SEC_PWD)
+    await ensureWdspEnv(page)
+    await setApiPolicyMode(page, 'OBSERVE')
+    const tag = randTag()
+    const ep = await discoverEndpoint(page, tag)
+    const csrf = await csrfToken(page)
+
+    // 1. 准备正式模型 v1（API 快速建：创建/冻结/激活的 UI 全流程已由用例3/用例9 覆盖）
+    const create = await page.request.post(`${API_URL}/api-security/endpoints/${ep.id}/models`, {
+      data: { schema: { id: 'number' }, change_summary: 'E2E 场景五 v1' },
+      headers: { 'X-CSRF-Token': csrf },
+    })
+    expect(create.status(), `create candidate: ${await create.text()}`).toBe(200)
+    const v1 = (await create.json())?.data?.version
+    expect(v1?.id).toBeTruthy()
+    const confirm1 = await page.request.post(`${API_URL}/api-security/models/${v1.id}/confirm`, {
+      data: {},
+      headers: { 'X-CSRF-Token': csrf },
+    })
+    expect(confirm1.status(), `confirm v1: ${await confirm1.text()}`).toBe(200)
+    const activate1 = await page.request.post(`${API_URL}/api-security/models/${v1.id}/activate`, {
+      data: {},
+      headers: { 'X-CSRF-Token': csrf },
+    })
+    expect(activate1.status(), `activate v1: ${await activate1.text()}`).toBe(200)
+    await publishGatewayConfigAndWait(page)
+
+    // 2. 正式版本继续检测：带未定义字段 remark 的流量 → schema.undefined_field 偏离事件
+    for (let i = 0; i < 2; i++) {
+      await page.request.post(`${GATEWAY_URL}/e2e/api/${tag}/orders/${400 + i}`, {
+        headers: {
+          Host: HOST,
+          'Content-Type': 'application/json',
+          'X-Request-Id': randomUUID(),
+        },
+        data: { id: 400 + i, remark: `new-field-${i}` },
+      })
+    }
+    let deviationSeen = false
+    const devDeadline = Date.now() + 60_000
+    while (Date.now() < devDeadline) {
+      const resp = await page.request.get(
+        `${API_URL}/api-security/runtime/events?endpoint_key=${encodeURIComponent(ep.endpointKey)}&page=1&page_size=20`,
+      )
+      const items = ((await resp.json())?.data?.items ?? []) as Array<{
+        details?: Array<{ rule_id?: string }> | null
+      }>
+      if (items.some((e) => (e.details ?? []).some((d) => d.rule_id === 'schema.undefined_field'))) {
+        deviationSeen = true
+        break
+      }
+      await page.waitForTimeout(2000)
+    }
+    expect(deviationSeen, '重新学习前正式模型应持续检测未定义字段偏离').toBeTruthy()
+
+    // 3. 从正式版本启动重新学习（UI 入口）
+    await page.goto('/api-models')
+    await selectEndpointByKey(page, ep.endpointKey)
+    await page.getByRole('button', { name: '重新学习' }).click()
+    await page.locator('.ant-modal').getByRole('button', { name: /确 ?定/ }).click()
+    await expect(page.getByText(/学习任务已启动/).first()).toBeVisible({ timeout: 10000 })
+
+    // 4. 新业务流量：与正式模型同形状的字段才进学习（偏离流量被排除，见用例9）
+    for (let i = 1; i <= 12; i++) {
+      await page.request.post(`${GATEWAY_URL}/e2e/api/${tag}/orders/${500 + i}`, {
+        headers: {
+          Host: HOST,
+          'Content-Type': 'application/json',
+          'X-Request-Id': randomUUID(),
+        },
+        data: { id: 500 + i },
+      })
+    }
+    let relearned = false
+    const learnDeadline = Date.now() + 240_000
+    while (Date.now() < learnDeadline) {
+      const st = await page.request.get(`${API_URL}/api-security/endpoints/${ep.id}/learning/status`)
+      const data = (await st.json())?.data
+      if (data?.learning_status === 'LEARNED' || data?.job?.status === 'COMPLETED') {
+        relearned = true
+        break
+      }
+      await page.waitForTimeout(3000)
+    }
+    expect(relearned, '重新学习应在 240s 内完成').toBeTruthy()
+
+    // 5. 对比学习分支：学习达标自动生成 v2（自动提交评审），与 v1 字段级对比
+    await page.reload()
+    await page.locator('.ant-select').first().click()
+    await page.locator('.ant-select-item-option').first().waitFor()
+    await page.keyboard.type(ep.endpointKey)
+    await page.locator('.ant-select-item-option', { hasText: ep.endpointKey }).click()
+    const rows = page.locator('tbody tr', { hasText: ep.endpointKey.replace(/^[A-Z]+ /, '') })
+    await expect(rows, '学习完成后应存在 v1/v2 两个版本').toHaveCount(2, { timeout: 15000 })
+    const v2row = page.locator('tbody tr', { hasText: 'v2' })
+    await expect(v2row.getByText('评审中')).toBeVisible()
+    await v2row.getByRole('button', { name: '对比' }).click()
+    const diffDrawer = page.locator('.ant-drawer-content')
+    await expect(diffDrawer.getByText(/版本对比：v2/)).toBeVisible()
+    await diffDrawer.locator('.ant-select').click()
+    await page
+      .locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option', {
+        hasText: 'v1 · 正式',
+      })
+      .click()
+    // 差异分区渲染（新业务流量与正式模型同形状：新增/移除/类型变化均应为「无」）
+    await expect(diffDrawer.getByText('新增字段')).toBeVisible()
+    await expect(diffDrawer.getByText('移除字段')).toBeVisible()
+    await expect(diffDrawer.getByText('类型变化')).toBeVisible()
+    await expect(diffDrawer.getByText('无').first()).toBeVisible({ timeout: 10000 })
+    await page.keyboard.press('Escape')
+
+    // 6. 确认新版本并激活：v2 冻结为正式（v1 已被取代），再激活为当前模型
+    await v2row.getByRole('button', { name: '确认冻结' }).click()
+    await page.locator('.ant-modal').getByRole('button', { name: /确 ?定/ }).click()
+    await expect(v2row.getByText('正式')).toBeVisible({ timeout: 10000 })
+    const v1row = page.locator('tbody tr', { hasText: 'v1' })
+    await expect(v1row.getByText('已被取代')).toBeVisible({ timeout: 10000 })
+    await v2row.getByRole('button', { name: '激活' }).click()
+    await page.locator('.ant-modal').getByRole('button', { name: /确 ?定/ }).click()
+    await expect(page.getByText(/已激活/).first()).toBeVisible({ timeout: 10000 })
+  })
+
+  /* ==================== 11. 统一事件：单主事件多明细（任务书场景六） ==================== */
+
+  test('统一事件：同请求同时命中WAF与Schema偏离只生成一个主事件且含多条检测明细', async ({ page }) => {
+    test.setTimeout(600_000)
+    await loginViaAPI(page, SEC_USER, SEC_PWD)
+    await ensureWdspEnv(page)
+    await setApiPolicyMode(page, 'OBSERVE')
+    await ensureAppPublished(page)
+
+    // 将测试应用防护模式临时切为观察（WAF 检测不阻断，保证请求走完统一管线）；
+    // 结束后恢复 OFF 并重新发布（不污染环境）。
+    const appList = await page.request.get(
+      `${API_URL}/applications?keyword=${APP_CODE}&page=1&page_size=100`,
+    )
+    const app = ((await appList.json())?.data?.items ?? []).find(
+      (a: { code: string }) => a.code === APP_CODE,
+    ) as { id: string } | undefined
+    if (!app) throw new Error('测试应用应存在')
+    const appDetailResp = await page.request.get(`${API_URL}/applications/${app.id}`)
+    const appDetail = (await appDetailResp.json())?.data
+    const setProtectionMode = async (mode: 'OFF' | 'OBSERVE') => {
+      const csrfNow = await csrfToken(page)
+      const resp = await page.request.put(`${API_URL}/applications/${app.id}`, {
+        data: {
+          name: appDetail.name,
+          description: appDetail.description,
+          business_owner: appDetail.business_owner,
+          technical_owner: appDetail.technical_owner,
+          protection_mode: mode,
+          version: appDetail.version,
+        },
+        headers: { 'X-CSRF-Token': csrfNow },
+      })
+      expect(resp.status(), `set protection_mode ${mode}: ${await resp.text()}`).toBe(200)
+      appDetail.version += 1
+      await publishGatewayConfigAndWait(page)
+    }
+    await setProtectionMode('OBSERVE')
+
+    try {
+      // 准备正式模型 {id:number} 并发布（Schema 偏离检测生效）
+      const tag = randTag()
+      const ep = await discoverEndpoint(page, tag)
+      const csrf = await csrfToken(page)
+      const create = await page.request.post(`${API_URL}/api-security/endpoints/${ep.id}/models`, {
+        data: { schema: { id: 'number' }, change_summary: 'E2E 场景六' },
+        headers: { 'X-CSRF-Token': csrf },
+      })
+      expect(create.status(), `create candidate: ${await create.text()}`).toBe(200)
+      const v1 = (await create.json())?.data?.version
+      for (const action of ['confirm', 'activate']) {
+        const r = await page.request.post(`${API_URL}/api-security/models/${v1.id}/${action}`, {
+          data: {},
+          headers: { 'X-CSRF-Token': csrf },
+        })
+        expect(r.status(), `${action} v1: ${await r.text()}`).toBe(200)
+      }
+      await publishGatewayConfigAndWait(page)
+
+      // 构造同时命中 WAF（SQLi 特征）与 Schema 偏离（id 类型不匹配）的请求，唯一请求 ID 便于断言单主事件
+      const requestId = randomUUID()
+      await page.request.post(`${GATEWAY_URL}/e2e/api/${tag}/orders/999`, {
+        headers: {
+          Host: HOST,
+          'Content-Type': 'application/json',
+          'X-Request-Id': requestId,
+        },
+        data: { id: "1' OR '1'='1" },
+      })
+
+      // 断言：该请求仅一个主事件，且明细同时含 waf 与 api_schema
+      interface RuntimeEventItem {
+        request_id?: string
+        details?: Array<{ detector?: string }> | null
+      }
+      let mainEvent: RuntimeEventItem | null = null
+      let mainCount = 0
+      const deadline = Date.now() + 60_000
+      while (Date.now() < deadline) {
+        const resp = await page.request.get(
+          `${API_URL}/api-security/runtime/events?endpoint_key=${encodeURIComponent(ep.endpointKey)}&page=1&page_size=50`,
+        )
+        expect(resp.status(), 'list runtime events').toBe(200)
+        const items = ((await resp.json())?.data?.items ?? []) as RuntimeEventItem[]
+        const mine = items.filter((e) => e.request_id === requestId)
+        if (
+          mine.length === 1 &&
+          (mine[0].details ?? []).some((d) => d.detector === 'waf') &&
+          (mine[0].details ?? []).some((d) => d.detector === 'api_schema')
+        ) {
+          mainCount = mine.length
+          mainEvent = mine[0]
+          break
+        }
+        await page.waitForTimeout(2000)
+      }
+      expect(mainCount, '同一请求只应生成一个统一主事件').toBe(1)
+      expect(mainEvent, '主事件应同时含 WAF 与模型校验明细').toBeTruthy()
+
+      // UI：运行时事件详情抽屉呈现多条检测明细（WAF 检测 + 模型校验）
+      await page.goto('/api-runtime-events')
+      await page.getByPlaceholder(/接口键/).fill(ep.endpointKey)
+      await page.keyboard.press('Enter')
+      const firstRow = page.locator('tbody tr').first()
+      await expect(firstRow).toBeVisible({ timeout: 10000 })
+      await firstRow.getByRole('button', { name: '详情' }).click()
+      const evDrawer = page.locator('.ant-drawer-content')
+      await expect(evDrawer.getByText('运行时事件详情')).toBeVisible({ timeout: 10000 })
+      await expect(evDrawer.getByText(requestId)).toBeVisible()
+      await expect(evDrawer.getByText('检测明细（details）')).toBeVisible()
+      await expect(evDrawer.getByText('WAF 检测').first()).toBeVisible()
+      await expect(evDrawer.getByText('模型校验').first()).toBeVisible()
+    } finally {
+      await setProtectionMode('OFF')
+    }
   })
 })

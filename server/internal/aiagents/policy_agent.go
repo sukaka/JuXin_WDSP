@@ -214,6 +214,23 @@ FROM security_events WHERE occurred_at > now() - interval '30 days'`).Scan(&crit
 		b.WriteString("\n> 基于历史数据估算，不代表未来确定结果。\n")
 		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
 	}
+	// 模拟调整封禁时长：给出近 7 天临时封禁统计作为参考（先于 CC 关键词分支，消息含「封禁时长」时命中）
+	if strings.Contains(msg, "封禁时长") {
+		var blocks, ips int64
+		var avgSec float64
+		_ = a.db.QueryRow(ctx, `
+SELECT count(*), count(DISTINCT client_ip),
+  COALESCE(avg(EXTRACT(EPOCH FROM (block_expires_at - occurred_at))) FILTER (WHERE block_expires_at IS NOT NULL), 0)
+FROM access_control_events WHERE occurred_at > now() - interval '7 days' AND event_type='CC_TEMP_BLOCK_CREATED'`).Scan(&blocks, &ips, &avgSec)
+		b.WriteString("\n**模拟：调整 CC 临时封禁时长（参考）**\n")
+		b.WriteString(fmtKV("近7天临时封禁事件", blocks))
+		b.WriteString(fmtKV("涉及来源 IP", ips))
+		b.WriteString(fmtKV("当前平均封禁时长", fmt.Sprintf("%.0f 秒", avgSec)))
+		b.WriteString("- 时长调长：同一 IP 重复触发减少、告警噪声下降，但误伤时影响面同步扩大；调短反之。\n")
+		b.WriteString("- 建议：结合误报率与人工解封记录评估，调整需走 CC 策略编辑 + 配置发布流程。\n")
+		b.WriteString("\n> 基于历史数据估算，不代表未来确定结果。\n")
+		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
+	}
 	// 模拟修改 CC：给出近期 CC 事件量
 	if strings.Contains(msg, "cc") || strings.Contains(msg, "限速") || strings.Contains(msg, "频率") {
 		var ccTotal, ccReject int64
@@ -231,8 +248,61 @@ FROM access_control_events WHERE occurred_at > now() - interval '7 days' AND eve
 	if len(in.RuleIDs) > 0 {
 		ruleID = in.RuleIDs[0]
 	}
+	// 模拟「启用规则」：历史命中 + 同攻击类型事件上界（先于关闭兜底分支，避免误标方向）
+	if strings.Contains(msg, "启用") {
+		if ruleID == 0 {
+			b.WriteString("\n请提供要模拟启用的规则 ID（如：如果启用 942100 会怎样）。")
+			return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
+		}
+		var hits, blocks, sameType int64
+		_ = a.db.QueryRow(ctx, `
+SELECT count(*), count(*) FILTER (WHERE e.action='BLOCK')
+FROM security_event_matches m JOIN security_events e ON e.id = m.event_id
+WHERE m.rule_id = $1 AND e.occurred_at > now() - interval '30 days'`, ruleID).Scan(&hits, &blocks)
+		_ = a.db.QueryRow(ctx, `
+SELECT count(*) FROM security_events
+WHERE attack_type = (SELECT attack_type FROM waf_rules WHERE rule_id = $1 ORDER BY crs_version DESC LIMIT 1)
+  AND occurred_at > now() - interval '30 days'`, ruleID).Scan(&sameType)
+		b.WriteString(fmt.Sprintf("\n模拟：启用规则 %d（近 30 天历史回放）\n", ruleID))
+		b.WriteString(fmtKV("该规则历史命中", fmt.Sprintf("%d（阻断 %d）", hits, blocks)))
+		b.WriteString(fmtKV("同攻击类型事件上界", sameType))
+		b.WriteString("- 说明：规则关闭期间不产生命中记录，同类型事件量为可能新增处置的上界参考；启用只可能增加检测与告警。\n")
+		b.WriteString("- 建议：先 OBSERVE 观察 1 周，确认误报可控后再保持启用。\n")
+		b.WriteString("\n> 基于历史数据估算，不代表未来确定结果。\n")
+		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
+	}
+	// 模拟「新增/删除例外」：给出当前生效例外事实，估算由结构化端点（add_exception/remove_exception）承载
+	if strings.Contains(msg, "例外") {
+		b.WriteString("\n**模拟：例外增删（参考）**\n")
+		res, ref, err := callTool(ctx, in, in.Principal, "exception.search",
+			map[string]interface{}{"status": "ENABLED"}, "当前生效例外")
+		if err == nil {
+			items := res.(map[string]interface{})["items"].([]map[string]interface{})
+			b.WriteString(fmtKV("当前生效例外数", len(items)))
+			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+		}
+		b.WriteString("- 说明：新增例外按范围（应用+URI+规则）放行匹配流量，可能放行真实攻击；删除例外后范围内请求重新按规则评估，历史误报可能回归。\n")
+		b.WriteString("- 建议：使用 What-If 结构化场景 add_exception（rule_id 必填，可选 application_id/uri）或 remove_exception（exception_id）获取范围内历史事件估算；例外变更需人工审核后生效。\n")
+		b.WriteString("\n> 基于历史数据估算，不代表未来确定结果。\n")
+		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
+	}
+	// 模拟「修改异常阈值」：给出带评分事件的阻断分布作为参考
+	if strings.Contains(msg, "异常阈值") {
+		var total, blocked int64
+		var avgScore float64
+		_ = a.db.QueryRow(ctx, `
+SELECT count(*), count(*) FILTER (WHERE action='BLOCK'), COALESCE(avg(anomaly_score), 0)
+FROM security_events WHERE occurred_at > now() - interval '30 days' AND anomaly_score > 0`).Scan(&total, &blocked, &avgScore)
+		b.WriteString("\n**模拟：修改入站异常阈值（参考）**\n")
+		b.WriteString(fmtKV("近30天带评分事件", total))
+		b.WriteString(fmtKV("其中阻断", blocked))
+		b.WriteString(fmtKV("平均异常评分", fmt.Sprintf("%.1f", avgScore)))
+		b.WriteString("- 说明：阈值调低增加拦截与误报风险，调高反之；精确影响估算请使用结构化场景 anomaly_threshold（按事件评分分布估算新增/解除阻断）。\n")
+		b.WriteString("\n> 基于历史数据估算，不代表未来确定结果。\n")
+		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
+	}
 	if ruleID == 0 {
-		b.WriteString("\n请提供要模拟的规则 ID（如：如果关闭 942100 会怎样），或说明要模拟的 PL/CC 变更。")
+		b.WriteString("\n请提供要模拟的规则 ID（如：如果关闭 942100 会怎样），或说明要模拟的 PL/异常阈值/CC/例外变更。")
 		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
 	}
 	// 模拟「关闭该规则」对近 30 天历史请求的影响

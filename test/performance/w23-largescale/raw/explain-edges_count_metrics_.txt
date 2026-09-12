@@ -1,0 +1,13 @@
+Finalize Aggregate  (cost=13078.47..13078.48 rows=1 width=8) (actual time=38.634..43.909 rows=1 loops=1)
+  Buffers: shared hit=1230
+  ->  Gather  (cost=13078.26..13078.47 rows=2 width=8) (actual time=38.474..43.903 rows=3 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        Buffers: shared hit=1230
+        ->  Partial Aggregate  (cost=12078.26..12078.27 rows=1 width=8) (actual time=28.316..28.316 rows=1 loops=3)
+              Buffers: shared hit=1230
+              ->  Parallel Index Only Scan using idx_api_call_edges_target on api_call_edges  (cost=0.42..11349.09 rows=291667 width=0) (actual time=0.058..16.373 rows=233333 loops=3)
+                    Heap Fetches: 0
+                    Buffers: shared hit=1230
+Planning Time: 0.086 ms
+Execution Time: 44.101 ms

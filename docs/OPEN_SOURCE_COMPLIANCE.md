@@ -35,6 +35,7 @@
 - [ ] 记录是否修改组件源代码；
 - [ ] 记录使用方式（直接引用 / 修改后引用 / 仅运行时使用）；
 - [ ] 更新 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)；
+- [ ] 更新 [DEPENDENCY_LICENSES.md](DEPENDENCY_LICENSES.md)（依赖许可证清单，license-audit.sh 第 5 步校验其与 licenses/ 同步）；
 - [ ] 扫描已知 CVE；
 - [ ] 在 `licenses/` 目录归档许可证原文。
 

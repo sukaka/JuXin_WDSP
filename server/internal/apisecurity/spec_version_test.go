@@ -1,6 +1,6 @@
 // spec_version_test.go W3-C 规范中心增强单元测试（不依赖数据库）：
 // 解析矩阵（OAS3 参数 / Swagger 2.0 转换 / 坏文档）、CHANGED 级跨版本对比、
-// SSRF 拦截矩阵、规范名解析。YAML 未支持（go.mod 无 yaml.v3），HTTP 层 400 拒绝。
+// SSRF 拦截矩阵、规范名解析。YAML 及扩展格式（JSON Schema/Postman/GraphQL）见 spec_formats_test.go。
 package apisecurity
 
 import (

@@ -43,9 +43,11 @@ import {
   ACCESS_RULE_STATUS_META,
   ACCESS_RULE_TYPE_META,
   ACCESS_RULE_VALIDITY_META,
+  AC_EVENT_ACTION_META,
+  AC_EVENT_TYPE_META,
   validateIPOrCIDR,
 } from '../../utils/stage5'
-import type { AccessRuleImportResult, AccessRuleItem } from '../../types'
+import type { AccessControlEventItem, AccessRuleImportResult, AccessRuleItem } from '../../types'
 
 interface Filters {
   rule_type?: string
@@ -136,6 +138,9 @@ export default function AccessRulesPage() {
   const [preview, setPreview] = useState<AccessRuleImportResult | null>(null)
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [detailRecord, setDetailRecord] = useState<AccessRuleItem | null>(null)
+  const [eventsRule, setEventsRule] = useState<AccessRuleItem | null>(null)
+  const [eventsPage, setEventsPage] = useState(1)
+  const [eventsPageSize, setEventsPageSize] = useState(20)
   const [form] = Form.useForm<RuleFormValues>()
   const [extendForm] = Form.useForm<ExtendFormValues>()
   const [importForm] = Form.useForm<ImportFormValues>()
@@ -143,6 +148,13 @@ export default function AccessRulesPage() {
   const listQuery = useQuery({
     queryKey: ['access-rules', filters, page, pageSize],
     queryFn: () => accessRulesApi.list({ ...filters, page, page_size: pageSize }),
+  })
+
+  // 规则关联事件（§8.5）：抽屉内按规则 ID 过滤访问控制事件
+  const ruleEventsQuery = useQuery({
+    queryKey: ['access-rule-events', eventsRule?.id, eventsPage, eventsPageSize],
+    queryFn: () => accessRulesApi.listEvents(eventsRule!.id, { page: eventsPage, page_size: eventsPageSize }),
+    enabled: eventsRule !== null,
   })
 
   const { rowSelection, batchDeleteButton } = useBatchDelete<AccessRuleItem>({
@@ -264,7 +276,7 @@ export default function AccessRulesPage() {
       if (vars.dry_run) {
         setPreview(data)
       } else {
-        message.success(`导入完成：成功 ${data.imported ?? 0} 条，失败 ${data.invalid} 条`)
+        message.success(`导入完成：成功 ${data.imported ?? 0} 条（草稿状态，需启用后才生效），失败 ${data.invalid} 条`)
         setImportOpen(false)
         setPreview(null)
         importForm.resetFields()
@@ -327,7 +339,9 @@ export default function AccessRulesPage() {
   ) => {
     const typeLabel = ACCESS_RULE_TYPE_META[record.rule_type]?.label ?? record.rule_type
     const contentMap: Record<typeof action, string> = {
-      enable: `确定启用${typeLabel}规则「${record.name}」吗？启用后立即参与访问控制判定。`,
+      enable: `确定启用${typeLabel}规则「${record.name}」吗？启用后立即参与访问控制判定。${
+        record.status === 'DRAFT' ? '（当前为导入/AI 生成的草稿，启用后进入生效状态）' : ''
+      }`,
       disable: `确定停用${typeLabel}规则「${record.name}」吗？停用后该规则不再生效。`,
       release: `确定解封临时规则「${record.name}」（${record.address}）吗？解封后该地址的访问限制立即解除。`,
       copy: `确定复制规则「${record.name}」吗？将创建一条同配置的手工规则副本。`,
@@ -401,10 +415,20 @@ export default function AccessRulesPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 260,
+      width: 320,
       fixed: 'right',
       render: (_, record) => (
         <Space size={0} wrap>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => {
+              setEventsRule(record)
+              setEventsPage(1)
+            }}
+          >
+            关联事件
+          </Button>
           {canManage && (
             <>
               <Button type="link" size="small" onClick={() => openEdit(record)}>
@@ -813,6 +837,12 @@ export default function AccessRulesPage() {
           layout="vertical"
           initialValues={{ format: 'csv', rule_type: 'DENY', scope_type: 'GLOBAL' }}
         >
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="导入成功的规则为「草稿」状态，不随发布生效，需在列表中逐条启用后才参与访问控制判定"
+          />
           <Space.Compact block>
             <Form.Item name="format" label="格式" style={{ width: '24%', marginRight: 8 }} rules={[{ required: true }]}>
               <Select
@@ -967,6 +997,76 @@ export default function AccessRulesPage() {
           />
         )}
       </Modal>
+
+      <Drawer
+        title={`关联事件${eventsRule ? `：${eventsRule.name}（${eventsRule.address}）` : ''}`}
+        open={eventsRule !== null}
+        onClose={() => setEventsRule(null)}
+        width={900}
+        destroyOnHidden
+      >
+        {ruleEventsQuery.isError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="加载规则关联事件失败"
+            description={ruleEventsQuery.error instanceof ApiError ? ruleEventsQuery.error.message : undefined}
+          />
+        ) : (
+          <SmartTable<AccessControlEventItem>
+            storageKey="access-rule-events"
+            rowKey="id"
+            loading={ruleEventsQuery.isLoading}
+            dataSource={ruleEventsQuery.data?.items}
+            scroll={{ x: 860 }}
+            columns={[
+              {
+                title: '时间',
+                dataIndex: 'occurred_at',
+                width: 165,
+                render: (v: string) => formatDateTime(v),
+              },
+              {
+                title: '事件类型',
+                dataIndex: 'event_type',
+                width: 150,
+                render: (v: string) => <StatusTag value={v} map={AC_EVENT_TYPE_META} />,
+              },
+              {
+                title: '客户端IP',
+                dataIndex: 'client_ip',
+                width: 130,
+                render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
+              },
+              {
+                title: '应用',
+                dataIndex: 'application_code',
+                width: 120,
+                ellipsis: true,
+                render: (v: string) => v || '全局',
+              },
+              { title: '路径', dataIndex: 'request_path', ellipsis: true, render: (v: string) => v || '-' },
+              {
+                title: '动作',
+                dataIndex: 'action',
+                width: 90,
+                render: (v: string) => <StatusTag value={v} map={AC_EVENT_ACTION_META} />,
+              },
+            ]}
+            pagination={{
+              current: eventsPage,
+              pageSize: eventsPageSize,
+              total: ruleEventsQuery.data?.total ?? 0,
+              showSizeChanger: true,
+              showTotal: (t) => `共 ${t} 条`,
+              onChange: (p, ps) => {
+                setEventsPage(p)
+                setEventsPageSize(ps)
+              },
+            }}
+          />
+        )}
+      </Drawer>
 
       <RecordDetailDrawer
         open={detailRecord !== null}

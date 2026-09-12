@@ -61,6 +61,8 @@ export default function AssistantPage() {
   const [input, setInput] = useState('')
   const [stream, setStream] = useState<StreamState | null>(null)
   const [feedbackGiven, setFeedbackGiven] = useState<Record<string, 1 | -1>>({})
+  /** 最近一轮 done 结果（流收起后保留截断/自动续写提示；新一轮发送或切换会话时清除） */
+  const [doneInfo, setDoneInfo] = useState<{ finishReason: string; autoContinues: number } | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -107,8 +109,16 @@ export default function AssistantPage() {
     const controller = new AbortController()
     abortRef.current = controller
     setStream({ pendingUserText, events: [], errorText: null, finishReason: null })
+    setDoneInfo(null)
     runner(
-      (e) =>
+      (e) => {
+        if (e.type === 'done') {
+          const payload = e.payload as AiDonePayload | undefined
+          const fr = payload?.finish_reason ?? null
+          const ac = payload?.auto_continues ?? 0
+          // 截断（length）或发生过自动续写时保留提示；cancelled/正常结束不提示
+          setDoneInfo(fr && (fr === 'length' || ac > 0) ? { finishReason: fr, autoContinues: ac } : null)
+        }
         setStream((prev) =>
           prev
             ? {
@@ -121,7 +131,8 @@ export default function AssistantPage() {
                     : prev.finishReason,
               }
             : prev,
-        ),
+        )
+      },
       controller.signal,
     )
       .catch((e: unknown) => {
@@ -206,6 +217,7 @@ export default function AssistantPage() {
       const sess = await aiChatApi.createSession()
       void queryClient.invalidateQueries({ queryKey: ['ai-sessions'] })
       setSessionId(sess.id)
+      setDoneInfo(null)
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '创建会话失败')
     }
@@ -346,7 +358,11 @@ export default function AssistantPage() {
                 dataSource={sessions}
                 renderItem={(sess) => (
                   <List.Item
-                    onClick={() => !stream && setSessionId(sess.id)}
+                    onClick={() => {
+                      if (stream) return
+                      setSessionId(sess.id)
+                      setDoneInfo(null)
+                    }}
                     style={{
                       cursor: 'pointer',
                       padding: '10px 12px',
@@ -602,6 +618,16 @@ export default function AssistantPage() {
               <Button size="small" disabled={!canRetryOrContinue} onClick={handleContinue}>
                 继续输出
               </Button>
+              {doneInfo && (
+                <Typography.Text
+                  type={doneInfo.finishReason === 'length' ? 'warning' : 'secondary'}
+                  style={{ fontSize: 12 }}
+                >
+                  {doneInfo.finishReason === 'length'
+                    ? `输出达到长度上限${doneInfo.autoContinues > 0 ? `，已自动续写 ${doneInfo.autoContinues} 次仍未完` : ''}，可点击「继续输出」`
+                    : `输出较长，已自动续写 ${doneInfo.autoContinues} 次`}
+                </Typography.Text>
+              )}
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 回答仅供辅助决策，涉及生产变更请走既有审核发布流程
               </Typography.Text>

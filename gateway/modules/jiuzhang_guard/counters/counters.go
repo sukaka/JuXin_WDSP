@@ -78,6 +78,19 @@ func (m *MemoryMap) GetOrCreate(key string, factory func() interface{}) interfac
 	return v
 }
 
+// Get 只读获取键值（不建键、不淘汰；命中刷新 LRU 位置与 GetOrCreate 同口径）。
+// 供调试回显等只读路径使用，键不存在返回 ok=false。
+func (m *MemoryMap) Get(key string) (interface{}, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	el, ok := m.items[key]
+	if !ok {
+		return nil, false
+	}
+	m.lru.MoveToFront(el)
+	return el.Value.(*lruEntry).value, true
+}
+
 // Len 当前键数量（指标）。
 func (m *MemoryMap) Len() int {
 	m.mu.Lock()

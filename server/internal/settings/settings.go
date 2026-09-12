@@ -63,11 +63,31 @@ func (s *Service) GetStringWithSource(ctx context.Context, group, key string) (v
 		}
 		return "", false, err
 	}
-	var str string
-	if err := json.Unmarshal(v, &str); err != nil {
+	str, err := scalarString(v)
+	if err != nil {
 		return "", false, err
 	}
 	return str, true, nil
+}
+
+// scalarString 将 JSON 标量转为字符串：字符串原样；布尔/数值按 JSON 文本返回
+// （gateway_runtime 的 debug_cc_counter 等布尔开关以 value_type=boolean 落库，
+// 发布通道按字符串消费）；对象/数组等复合值如实报错。
+func scalarString(v json.RawMessage) (string, error) {
+	var str string
+	if err := json.Unmarshal(v, &str); err == nil {
+		return str, nil
+	}
+	var scalar interface{}
+	if err := json.Unmarshal(v, &scalar); err != nil {
+		return "", fmt.Errorf("setting value is not a scalar: %w", err)
+	}
+	switch scalar.(type) {
+	case bool, float64:
+		return string(v), nil
+	default:
+		return "", fmt.Errorf("setting value is not a string or scalar")
+	}
 }
 
 // SensitiveSettingKeys 秘密材料设置键清单（group:key）。
@@ -96,6 +116,25 @@ func isSensitiveSetting(group, key string, rowSensitive bool) bool {
 // 命中 SensitiveSettingKeys 的键强制按敏感行写入（等价 UpsertSensitiveString）。
 func (s *Service) UpsertString(ctx context.Context, group, key, value, description string, operatorID uuid.UUID) error {
 	return s.upsertString(ctx, group, key, value, description, false, operatorID)
+}
+
+// CreateStringIfAbsent 原子地创建字符串设置；若设置已存在则保留现值并返回 false。
+// 用于并发首次初始化：只有返回 true 的调用方可以使用自己生成的值，竞争失败者必须重新读取数据库赢家。
+func (s *Service) CreateStringIfAbsent(ctx context.Context, group, key, value, description string, operatorID uuid.UUID) (bool, error) {
+	sensitive := SensitiveSettingKeys[group+":"+key]
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return false, err
+	}
+	result, err := s.db.Exec(ctx, `
+INSERT INTO system_settings (setting_group, setting_key, setting_value, value_type, is_sensitive, description, updated_by)
+VALUES ($1, $2, $3::jsonb, 'string', $4, $5, $6)
+ON CONFLICT (setting_group, setting_key) DO NOTHING`,
+		group, key, string(raw), sensitive, description, operatorID)
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() == 1, nil
 }
 
 // UpsertSensitiveString 覆盖写入敏感字符串设置（is_sensitive=true，List 接口脱敏
@@ -320,6 +359,9 @@ func (s *Service) Update(ctx context.Context, group, key string, value json.RawM
 	if err := validateValueRange(group, key, valueType, value); err != nil {
 		return false, err
 	}
+	if err := validateStringLen(group, key, valueType, value); err != nil {
+		return false, err
+	}
 	res, err := s.db.Exec(ctx, `
 UPDATE system_settings SET setting_value = $1, updated_by = $2, updated_at = now(), version = version + 1
 WHERE setting_group = $3 AND setting_key = $4 AND version = $5`,
@@ -351,6 +393,9 @@ var settingValueRanges = map[string][2]int{
 	"session:max_sessions_per_user":  {1, 100},
 	"logging:body_limit_kb":          {1, 1024},
 	"logging:retention_days":         {1, 3650},
+	// 阶段5 §十五：CC 自动封禁共享出口（NAT）风险检查（temporaryblocks/natguard.go 消费侧另有默认回落）
+	"cc_auto_block:nat_identity_threshold": {2, 1000},
+	"cc_auto_block:nat_block_minutes":      {1, 1440},
 }
 
 // validateValueRange 校验数值类安全策略的取值范围（仅命中 settingValueRanges 的整数键；
@@ -366,6 +411,33 @@ func validateValueRange(group, key, valueType string, value json.RawMessage) err
 	}
 	if n < r[0] || n > r[1] {
 		return fmt.Errorf("value must be in range [%d, %d]（%s:%s）", r[0], r[1], group, key)
+	}
+	return nil
+}
+
+// settingStringMaxLen 字符串类设置的取值长度上限（字节，group:key → max）。
+// 防超大文本落库（如自定义阻断页面正文）；发布侧（gatewayconfig）与网关装配期
+// 另有同口径硬上限校验，本表为保存期前置校验，给操作者即时 400 反馈。
+var settingStringMaxLen = map[string]int{
+	"block_response:html_title":   128,
+	"block_response:html_body":    4096,
+	"block_response:json_code":    128,
+	"block_response:json_message": 512,
+}
+
+// validateStringLen 校验字符串设置的取值长度上限（仅命中 settingStringMaxLen 的字符串键；
+// 错误信息含 "value must be"，handler 据此映射 400）。
+func validateStringLen(group, key, valueType string, value json.RawMessage) error {
+	maxLen, ok := settingStringMaxLen[group+":"+key]
+	if !ok || valueType != "string" {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(value, &s); err != nil {
+		return fmt.Errorf("value must be string")
+	}
+	if len(s) > maxLen {
+		return fmt.Errorf("value must be at most %d bytes（%s:%s）", maxLen, group, key)
 	}
 	return nil
 }
@@ -448,12 +520,24 @@ var AllowedSettingKeys = map[string]bool{
 	"gateway_runtime:api_grpc_max_frame_bytes": true, "gateway_runtime:api_grpc_allow_compression": true,
 	"gateway_runtime:api_file_watermark_enabled": true, "gateway_runtime:api_file_watermark_template": true,
 	"gateway_runtime:api_file_watermark_content_types": true, "gateway_runtime:api_file_watermark_json_key": true,
+	// 阶段8 §36 限流下发面：配额/对象/分页/批量阈值（种子见迁移 000152；
+	// 字符串数值，空串 = 不启用不下发，发布侧 guardconfig 解析校验，非法值中止发布）
+	"gateway_runtime:api_quota_per_hour": true, "gateway_runtime:api_quota_per_day": true,
+	"gateway_runtime:object_rate_per_minute": true, "gateway_runtime:max_page_size": true,
+	"gateway_runtime:max_batch_size": true,
+	// 阶段5 §十七 CC_EXACT 探针：CC 计数调试回显端点开关（种子见迁移 000157；
+	// 端点仅回环/内网可访问且不回显键材料，缺省 true 使发布后冒烟开箱可用）
+	"gateway_runtime:debug_cc_counter": true,
 	// 阶段8 / WDSP：数据出境本土地区配置（apigeo 消费侧校验）
 	"api_data:home_regions": true,
 	// 阶段8 / WDSP：文件批量下载风险阈值（apifiles 风险规则）
 	"api_data:file_bulk_download_threshold": true,
 	// 阶段8 / WDSP：文件签名验证时间窗（apifiles 签名验证）
 	"api_data:file_signature_max_age_days": true,
+	// 阶段5 §5.1：自定义 429/阻断响应页面（发布通道下发网关 block_response 段；
+	// 字符串长度上限见 settingStringMaxLen，空串 = 网关内置默认模板）
+	"block_response:html_title": true, "block_response:html_body": true,
+	"block_response:json_code": true, "block_response:json_message": true,
 	// APM 端点性能告警阈值（systemalerts/endpoint_perf.go 消费侧带区间校验与默认回落；种子见迁移 000089）
 	"apm_alert:endpoint_p95_ms": true, "apm_alert:endpoint_error_rate": true,
 	"apm_alert:min_requests": true, "apm_alert:sustain_minutes": true,
@@ -462,4 +546,8 @@ var AllowedSettingKeys = map[string]bool{
 	// APM 深度诊断 kill switch（阶段4；种子见迁移 000093——专用接口
 	// POST /apm/diagnostics/kill-switch 之外，允许经系统设置 Update API 在线调整）
 	"apm_diagnostics:kill_switch": true,
+	// 阶段5 §十五：CC 自动封禁共享出口（NAT）风险检查（种子见迁移 000153；
+	// 消费侧 temporaryblocks/natguard.go 带默认值与区间回落）
+	"cc_auto_block:nat_guard_enabled": true, "cc_auto_block:nat_identity_threshold": true,
+	"cc_auto_block:nat_block_minutes": true,
 }

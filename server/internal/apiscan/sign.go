@@ -114,8 +114,8 @@ func (s *Signer) verifyAt(value string, now time.Time) (uuid.UUID, bool) {
 
 // SettingsKV 设置读写接口（*settings.Service 实现；密钥密文落系统设置）。
 type SettingsKV interface {
-	GetString(ctx context.Context, group, key, def string) string
-	UpsertString(ctx context.Context, group, key, value, description string, operatorID uuid.UUID) error
+	GetStringWithSource(ctx context.Context, group, key string) (value string, found bool, err error)
+	CreateStringIfAbsent(ctx context.Context, group, key, value, description string, operatorID uuid.UUID) (bool, error)
 }
 
 // Encryptor 加解密接口（*encryption.Service 实现；密钥密文不落明文）。
@@ -130,16 +130,34 @@ func LoadOrCreateSigner(ctx context.Context, kv SettingsKV, enc Encryptor) (*Sig
 	if kv == nil || enc == nil {
 		return nil, errors.New("apiscan: settings/encryption 未装配，无法加载扫描签名密钥")
 	}
-	if raw := strings.TrimSpace(kv.GetString(ctx, signingKeySettingsGroup, signingKeySettingsKey, "")); raw != "" {
+	load := func() (*Signer, bool, error) {
+		raw, found, err := kv.GetStringWithSource(ctx, signingKeySettingsGroup, signingKeySettingsKey)
+		if err != nil {
+			return nil, false, fmt.Errorf("apiscan: 读取扫描签名密钥失败: %w", err)
+		}
+		if !found {
+			return nil, false, nil
+		}
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return nil, false, errors.New("apiscan: 扫描签名密钥设置为空")
+		}
 		plain, err := enc.Decrypt(raw)
 		if err != nil {
-			return nil, fmt.Errorf("apiscan: 解密扫描签名密钥失败: %w", err)
+			return nil, false, fmt.Errorf("apiscan: 解密扫描签名密钥失败: %w", err)
 		}
-		key, err := hex.DecodeString(plain)
+		key, err := hex.DecodeString(strings.TrimSpace(plain))
 		if err != nil {
-			return nil, fmt.Errorf("apiscan: 扫描签名密钥格式非法: %w", err)
+			return nil, false, fmt.Errorf("apiscan: 扫描签名密钥格式非法: %w", err)
 		}
-		return NewSigner(key)
+		signer, err := NewSigner(key)
+		if err != nil {
+			return nil, false, err
+		}
+		return signer, true, nil
+	}
+	if signer, found, err := load(); err != nil || found {
+		return signer, err
 	}
 	key, err := GenerateSigningKey()
 	if err != nil {
@@ -149,9 +167,21 @@ func LoadOrCreateSigner(ctx context.Context, kv SettingsKV, enc Encryptor) (*Sig
 	if err != nil {
 		return nil, fmt.Errorf("apiscan: 加密扫描签名密钥失败: %w", err)
 	}
-	if err := kv.UpsertString(ctx, signingKeySettingsGroup, signingKeySettingsKey, cipherText,
-		"API 主动扫描流量隔离签名密钥（HMAC，密文存储）", uuid.Nil); err != nil {
+	created, err := kv.CreateStringIfAbsent(ctx, signingKeySettingsGroup, signingKeySettingsKey, cipherText,
+		"API 主动扫描流量隔离签名密钥（HMAC，密文存储）", uuid.Nil)
+	if err != nil {
 		return nil, fmt.Errorf("apiscan: 落库扫描签名密钥失败: %w", err)
 	}
-	return NewSigner(key)
+	if created {
+		return NewSigner(key)
+	}
+	// Another initializer won the insert; use its value to avoid divergent signers.
+	winner, found, err := load()
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, errors.New("apiscan: 扫描签名密钥在并发创建后仍不存在")
+	}
+	return winner, nil
 }

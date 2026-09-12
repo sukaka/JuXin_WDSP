@@ -1203,7 +1203,7 @@ paths:
       parameters:
         - name: group
           in: query
-          schema: { type: string, enum: [password, login, session, display, logging] }
+          schema: { type: string, enum: [password, login, session, display, logging, api_learning, block_response, notify, apm_alert, apm_diagnostics, gateway_runtime] }
           description: 按设置分组过滤（缺省返回全部）
       responses:
         '200':
@@ -1223,7 +1223,13 @@ paths:
       description: >-
         更新单条系统设置。权限：system_settings.update。
         需 CSRF：请求头须携带 X-CSRF-Token。
-        仅允许白名单内的设置键（password/login/session/display/logging 组）；setting_value 的 JSON 类型
+        仅允许白名单内的设置键（password/login/session/display/logging/api_learning/block_response 等组）；
+        block_response 组（html_title/html_body/json_code/json_message）为自定义 429/阻断响应页面，
+        字符串长度有上限（128/4096/128/512 字节），超限返回 400，保存后随下次配置发布下发网关生效。
+        gateway_runtime 组限流阈值键（api_quota_per_hour/api_quota_per_day/object_rate_per_minute/
+        max_page_size/max_batch_size）为字符串数值，空串或 0 表示不启用，保存后随下次配置发布
+        下发网关生效；非数字或负数值在发布时校验失败。
+        setting_value 的 JSON 类型
         须与该设置的 value_type 一致，否则返回 400。乐观锁：version 须与当前一致，否则返回 409。
         更新成功会写入操作审计（模块 system_settings）。
       requestBody:

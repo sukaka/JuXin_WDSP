@@ -133,6 +133,7 @@ export const AI_STEP_META: Record<string, { color: string; label: string }> = {
   agent_done: { color: 'green', label: '智能体完成' },
   composing: { color: 'processing', label: '生成回答' },
   degraded: { color: 'orange', label: '模型降级' },
+  continued: { color: 'blue', label: '自动续写' },
   tool: { color: 'cyan', label: '工具调用' },
   error: { color: 'red', label: '错误' },
   compressed: { color: 'orange', label: '上下文压缩' },

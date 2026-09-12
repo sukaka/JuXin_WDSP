@@ -13,7 +13,8 @@
 	stage7-test-performance stage7-test-security stage7-test-all \
 	stage7-up stage7-down stage7-status stage7-test-tools stage7-test-agents \
 	stage7-test-memory stage7-test-context stage7-test-injection stage7-test-hallucination \
-	stage7-test-cost ai-build ai-migrate ai-seed ai-evaluation \
+	stage7-test-cost stage7-test-rag ai-build ai-migrate ai-seed ai-evaluation \
+	ai-model-test ai-tool-test ai-agent-test ai-prompt-test \
 	stage8-build stage8-migrate stage8-seed stage8-up stage8-status stage8-down \
 	stage8-test-unit stage8-test-api stage8-test-discovery stage8-test-learning \
 	stage8-test-versioning stage8-test-schema stage8-test-classification \
@@ -382,11 +383,39 @@ ai-evaluation:
 	@echo "运行评估集成测试子集..."
 	cd server && go test ./tests -run 'TestStage7Evaluation' -count=1 -v
 
+ai-model-test:
+	@echo "AI 模型管理（客户端/网关/出网控制/模型管理接口）测试..."
+	cd server && go test ./internal/aimodel/ -count=1 -v
+	cd server && go test ./tests -run 'TestStage7ModelManagement' -count=1 -v
+
+ai-tool-test:
+	@echo "AI 工具（Tool 注册/执行/停用恢复）测试..."
+	cd server && go test ./internal/aitools/ -count=1 -v
+	cd server && go test ./tests -run 'TestStage7AgentToolManagement' -count=1 -v
+
+ai-agent-test:
+	@echo "AI Agent（编排器/各 Agent/分析接口）测试..."
+	cd server && go test ./internal/aiagents/ ./internal/aiorchestrator/ -count=1 -v
+	cd server && go test ./tests -run 'TestStage7AnalyzeEndpoints' -count=1 -v
+
+ai-prompt-test:
+	@echo "AI Prompt（版本/发布/回滚/注入防护）测试..."
+	cd server && go test ./internal/aiprompts/ -count=1 -v
+	cd server && go test ./tests -run 'TestStage7PromptManagement|TestStage7PromptInjection' -count=1 -v
+
 stage7-test-tools:
 	cd server && go test ./internal/aitools/ -count=1 -v
 
 stage7-test-agents:
 	cd server && go test ./internal/aiagents/ ./internal/aiorchestrator/ -count=1 -v
+
+# 口径说明：任务书 §23 的 RAG 文档库（文档分级/索引/引用）尚未实现，本目标不冒充 RAG；
+# 仅运行 KnowledgeAgent 现有检索能力的真实测试：aiagents 单元测试 +
+# 评估集成测试（知识问答经编排器路由到 KnowledgeAgent，断言「知识解答」标题与 score，需 postgres+valkey）。
+stage7-test-rag:
+	@echo "知识库 Agent 现有检索能力测试（RAG 文档库未实现，口径见上方注释）..."
+	cd server && go test ./internal/aiagents/ -count=1 -v
+	cd server && go test ./tests -run 'TestStage7Evaluation' -count=1 -v
 
 stage7-test-memory:
 	cd server && go test ./internal/aimemory/ ./tests -run 'TestStage7Memories' -count=1 -v

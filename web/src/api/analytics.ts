@@ -53,7 +53,7 @@ function toQuery(params: AnalyticsParams): Record<string, string> {
 
 /** 统计分析接口（analytics.security.read / analytics.disposition.read） */
 export const analyticsApi = {
-  /** 请求趋势（series: requests/p50_ms/p95_ms/p99_ms） */
+  /** 请求趋势（series: requests/p50_ms/p95_ms/p99_ms；另含请求方法、Content-Type 主类型、客户端 IP 来源与可信代理来源分布） */
   requestTrend: (params: AnalyticsParams) =>
     request<AnalyticsTrendData>('/analytics/request-trend', { query: toQuery(params) }),
   /** 安全事件趋势（series: events/blocks/observes） */

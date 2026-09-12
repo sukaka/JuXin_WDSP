@@ -477,3 +477,26 @@ func TestCrossNodeConcurrentVerify(t *testing.T) {
 		t.Fatalf("verify_success events across nodes: %d", got)
 	}
 }
+
+// 阶段5 §6.5 收口：BOT_* 事件携带真实 IP 识别三字段（CallContext 由 Guard
+// 真实 IP 识别结果透传，与 eventBase 同口径）。
+func TestEmitCarriesRealClientIPFields(t *testing.T) {
+	sink := &captureSink{}
+	svc, _ := newTestService(t, nil, nil, sink, testServiceOpts{})
+	r := httptest.NewRequest("GET", "https://shop.example.com/x", nil)
+	cc := CallContext{
+		RequestID: "bot-fields-1", ClientIP: "198.51.100.9", ConnectionIP: "10.0.0.1",
+		ClientIPSource: "X_FORWARDED_FOR", TrustedProxyUsed: "lb", ForwardedChainSummary: "198.51.100.9",
+	}
+	svc.emit(r, cc, events.BotChallengeOffered, "CHALLENGE", http.StatusForbidden,
+		&events.BotDetail{Reason: "POLICY_OFFER"})
+	evs := sink.byType(events.BotChallengeOffered)
+	if len(evs) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(evs))
+	}
+	ev := evs[0]
+	if ev.ClientIPSource != "X_FORWARDED_FOR" || ev.TrustedProxyUsed != "lb" ||
+		ev.ForwardedChainSummary != "198.51.100.9" {
+		t.Fatalf("BOT 事件应携带真实 IP 三字段: %+v", ev)
+	}
+}

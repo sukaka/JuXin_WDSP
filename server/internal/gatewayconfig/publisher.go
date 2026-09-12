@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -231,6 +232,11 @@ type Publisher struct {
 	// gatewayTracing 网关原生 OTel tracing 下发开关（装配侧从 GATEWAY_TRACING_ENABLED
 	// 注入，默认 false；见 GenerateInput.GatewayTracing）
 	gatewayTracing bool
+	// 阶段5 §十七 发布后流量验证（publisher_smoke.go）：smokeDialAddr 为显式数据面
+	// 拨号地址（空 = 读 GATEWAY_PUBLISH_SMOKE_ADDR，仍空 = 127.0.0.1:应用端口）；
+	// smokeClient 为测试注入的 HTTP 客户端（nil = 按目标构造）。
+	smokeDialAddr string
+	smokeClient   *http.Client
 	// lockBackend 仅用于测试注入；生产路径由 cache.Redis() 构造 Redis 后端。
 	lockBackend publishLockBackend
 }
@@ -323,6 +329,14 @@ func (p *Publisher) SetLicenseStateProvider(fn func(ctx context.Context) (valid 
 // 明确失败，不读取业务快照、不生成候选配置，也不改写当前网关配置。
 func (p *Publisher) SetLicensePublishAllowedProvider(fn func(ctx context.Context) (allowed bool, reason string)) {
 	p.licensePublishAllowed = fn
+}
+
+// SetSmokeProbe 注入发布后流量验证的显式数据面拨号地址与 HTTP 客户端
+// （阶段5 §十七；测试与特殊部署用。生产零值即可：拨号地址读
+// GATEWAY_PUBLISH_SMOKE_ADDR，仍空时默认 127.0.0.1:应用端口）。
+func (p *Publisher) SetSmokeProbe(dialAddr string, client *http.Client) {
+	p.smokeDialAddr = dialAddr
+	p.smokeClient = client
 }
 
 const publishLockKey = "jiuzhang:gateway:publish_lock"
@@ -636,6 +650,19 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		}
 	}
 
+	// 阶段5 §5.1：自定义 429/阻断响应页面（system_settings block_response 组）随发布注入；
+	// 读取/校验失败中止发布（不静默回退——避免管理面显示与网关行为不一致）；
+	// 回滚覆盖（GuardOverride）按快照历史内容回放，不以当前设置重放（非秘密材料，
+	// 与 InjectRuntimeSecrets 的秘密材料重放纪律相反——页面内容应回到历史版本）
+	if guardCfg != nil && in.GuardOverride == nil {
+		blockResponse, brErr := LoadBlockResponse(ctx, p.db)
+		if brErr != nil {
+			p.finishTask(ctx, taskID, TaskFailed, "BLOCK_RESPONSE_SNAPSHOT_FAILED", brErr.Error(), nil)
+			return
+		}
+		guardCfg.BlockResponse = blockResponse
+	}
+
 	// 离线授权门控：无效授权强制纯透传（Guard=nil、全部应用 BYPASS）；
 	// 有效授权注入 max_qps 全局限速配额（license 内存状态，发布路径无额外 IO）
 	licenseValid, licenseMaxQPS := true, int64(0)
@@ -738,6 +765,15 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	// 步骤6：发布验证
 	p.updateTaskStep(ctx, taskID, TaskVerifying, "发布验证", 80)
 	verifyErr := p.verifyPublish(ctx, gen, appsData)
+	var smoke *smokeReport
+	if verifyErr == nil {
+		// 阶段5 §十七：配置一致性通过后执行数据面功能性冒烟（真实IP→黑名单→CC
+		// 合成探针）；探针不可用时降级并如实记录，只有响应与预期不符的正面证据才判 FAIL
+		smoke = p.runPublishSmoke(ctx, taskID, version.ID, appsData, guardCfg)
+		if smoke.failed() {
+			verifyErr = fmt.Errorf("发布后流量验证未通过：%s", smoke.failureDetail())
+		}
+	}
 	if verifyErr != nil {
 		// 发布验证失败：自动回滚到上一配置
 		p.updateTaskStep(ctx, taskID, TaskRollingBack, "验证失败，自动回滚", 90)
@@ -824,7 +860,11 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	// W18-SYNC §200：主节点全链路成功后，同一份最终配置扇出到登记次要节点
 	// （逐节点回填 last_sync_*；次要节点失败不阻断主发布——记录并告警）。
 	p.SyncConfigToNodes(ctx, gen.JSON, version.ID)
-	p.finishTask(ctx, taskID, TaskSuccess, "", "发布成功", &version.ID)
+	successMsg := "发布成功"
+	if smoke != nil {
+		successMsg += "；" + smoke.summary()
+	}
+	p.finishTask(ctx, taskID, TaskSuccess, "", successMsg, &version.ID)
 }
 
 func (p *Publisher) allowsLicensePublish(ctx context.Context) (bool, string) {
@@ -1407,6 +1447,11 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.CredentialIPSpreadLimit = 0
 	cp.CredentialConcurrencyLimit = 0
 	cp.APIWriteRatePerMinute = 0
+	cp.APIQuotaPerHour = 0
+	cp.APIQuotaPerDay = 0
+	cp.ObjectRatePerMinute = 0
+	cp.APIMaxPageSize = 0
+	cp.APIMaxBatchSize = 0
 	cp.APIMaskRules = nil
 	cp.APISensitiveValueRules = nil
 	cp.APIRoleBaselines = nil
@@ -1419,6 +1464,10 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.APIScanVerification = nil
 	cp.APIResponseBaselines = nil
 	cp.APIParameterRelations = nil
+	// 阶段8 §44：流程基线随 API 动态防护门控下发，一并剥除
+	cp.APIFlowBaselines = nil
+	// 阶段8 §35：已吊销凭据清单随 API 动态防护门控下发，一并剥除
+	cp.APIRevokedCredentials = nil
 	cp.APILLMAllowedModels = nil
 	cp.APIFileWatermark = nil
 	cp.APIFileSignature = nil

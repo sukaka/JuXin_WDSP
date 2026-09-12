@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -35,6 +36,15 @@ func NewAccessTools(r *Registry, db *pgxpool.Pool) {
 		schema: obj(map[string]interface{}{
 			"scope_type": sch("string", "范围（可选）"), "status": sch("string", "状态（可选）"),
 			"action": sch("string", "动作（可选）"), "page": sch("integer", "页码"),
+		})}}, db: db})
+	r.Register(&rateLimitStatistics{baseTool: baseTool{meta: toolMeta{
+		code: "rate_limit_statistics.get", name: "CC频率限制统计", version: "1.0",
+		description: "按时间范围/应用维度聚合CC频率限制与临时封禁统计（总数/趋势/应用分布）",
+		risk:        RiskReadOnly, permission: "rate_limits.read", timeout: 30, maxResults: 200,
+		schema: obj(map[string]interface{}{
+			"start_time": sch("string", "起始时间"), "end_time": sch("string", "结束时间"),
+			"application_id": sch("string", "应用ID（可选）"),
+			"bucket":         sch("string", "趋势分桶 hour|day"),
 		})}}, db: db})
 	r.Register(&trustedProxySummary{baseTool: baseTool{meta: toolMeta{
 		code: "trusted_proxy.get_summary", name: "可信代理摘要", version: "1.0",
@@ -260,6 +270,129 @@ FROM rate_limit_policies WHERE `+where+` ORDER BY priority LIMIT $`+fmt.Sprint(i
 		})
 	}
 	return map[string]interface{}{"page": page, "items": items}, rows.Err()
+}
+
+// parseRateLimitStatsInput 解析 CC 统计入参：时间范围（默认最近24小时，最长90天）、可选应用ID、趋势分桶。
+func parseRateLimitStatsInput(m map[string]interface{}) (start, end time.Time, appID *uuid.UUID, bucket string, err error) {
+	start, end, err = parseTimeRange(m)
+	if err != nil {
+		return start, end, nil, "", err
+	}
+	if v := StrField(m, "application_id", 64); v != "" {
+		id, perr := uuid.Parse(v)
+		if perr != nil {
+			return start, end, nil, "", fmt.Errorf("%w: invalid application_id", ErrInvalidInput)
+		}
+		appID = &id
+	}
+	bucket = StrField(m, "bucket", 10)
+	if bucket != "day" {
+		bucket = "hour"
+	}
+	return start, end, appID, bucket, nil
+}
+
+// rateLimitStatsWhere 构造 access_control_events CC 类事件过滤条件与参数。
+func rateLimitStatsWhere(start, end time.Time, appID *uuid.UUID) (string, []interface{}) {
+	where := "event_type LIKE 'CC%' AND occurred_at >= $1 AND occurred_at < $2"
+	args := []interface{}{start, end}
+	if appID != nil {
+		where += " AND application_id = $3"
+		args = append(args, *appID)
+	}
+	return where, args
+}
+
+type rateLimitStatistics struct {
+	baseTool
+	db *pgxpool.Pool
+}
+
+func (t *rateLimitStatistics) Run(ctx context.Context, input json.RawMessage) (interface{}, error) {
+	var m map[string]interface{}
+	if err := Decode(input, &m); err != nil {
+		return nil, err
+	}
+	start, end, appID, bucket, err := parseRateLimitStatsInput(m)
+	if err != nil {
+		return nil, err
+	}
+	where, args := rateLimitStatsWhere(start, end, appID)
+
+	// 总量：按事件类型 FILTER 聚合
+	var thresholdExceeded, rejected, blocksCreated, blocksExpired, blocksReleased int64
+	if err := t.db.QueryRow(ctx, `
+SELECT count(*) FILTER (WHERE event_type='CC_THRESHOLD_EXCEEDED'),
+  count(*) FILTER (WHERE event_type='CC_REQUEST_REJECTED'),
+  count(*) FILTER (WHERE event_type='CC_TEMP_BLOCK_CREATED'),
+  count(*) FILTER (WHERE event_type='CC_TEMP_BLOCK_EXPIRED'),
+  count(*) FILTER (WHERE event_type='CC_TEMP_BLOCK_RELEASED')
+FROM access_control_events WHERE `+where, args...).Scan(
+		&thresholdExceeded, &rejected, &blocksCreated, &blocksExpired, &blocksReleased); err != nil {
+		return nil, err
+	}
+
+	// 趋势：按时间桶统计超阈与拒绝
+	rows, err := t.db.Query(ctx, fmt.Sprintf(`
+SELECT date_trunc('%s', occurred_at) AS b,
+  count(*) FILTER (WHERE event_type='CC_THRESHOLD_EXCEEDED'),
+  count(*) FILTER (WHERE event_type='CC_REQUEST_REJECTED')
+FROM access_control_events WHERE %s GROUP BY b ORDER BY b`, bucket, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	trend := []map[string]interface{}{}
+	for rows.Next() {
+		var b time.Time
+		var te, rj int64
+		if err := rows.Scan(&b, &te, &rj); err != nil {
+			return nil, err
+		}
+		trend = append(trend, map[string]interface{}{
+			"time": b, "threshold_exceeded": te, "requests_rejected": rj,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := map[string]interface{}{
+		"totals": map[string]interface{}{
+			"threshold_exceeded": thresholdExceeded, "requests_rejected": rejected,
+			"temp_blocks_created": blocksCreated, "temp_blocks_expired": blocksExpired,
+			"temp_blocks_released": blocksReleased,
+		},
+		"bucket": bucket, "trend": trend,
+		"range": map[string]string{"start": start.Format(time.RFC3339), "end": end.Format(time.RFC3339)},
+	}
+
+	// 未按应用过滤时给出应用分布 Top10
+	if appID == nil {
+		arows, err := t.db.Query(ctx, `
+SELECT COALESCE(NULLIF(application_code,''), application_id::text, 'global'), count(*),
+  count(*) FILTER (WHERE event_type='CC_REQUEST_REJECTED')
+FROM access_control_events WHERE `+where+`
+GROUP BY 1 ORDER BY 2 DESC LIMIT 10`, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer arows.Close()
+		apps := []map[string]interface{}{}
+		for arows.Next() {
+			var app string
+			var e, rj int64
+			if err := arows.Scan(&app, &e, &rj); err != nil {
+				return nil, err
+			}
+			apps = append(apps, map[string]interface{}{"application": app, "events": e, "requests_rejected": rj})
+		}
+		if err := arows.Err(); err != nil {
+			return nil, err
+		}
+		out["applications"] = apps
+	}
+	return out, nil
 }
 
 type trustedProxySummary struct {

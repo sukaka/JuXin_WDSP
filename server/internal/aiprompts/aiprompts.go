@@ -1,10 +1,13 @@
-// Package aiprompts Prompt 管理：不可变版本、静态安全检查、测试/发布/回滚。
+// Package aiprompts Prompt 管理：不可变版本、静态安全检查、对抗测试、测试/发布/回滚。
+// 发布门（§24.4）：静态安全检查 + 测试集回归 PASSED + 对抗测试 ADVERSARIAL_PASSED 齐备方可发布，
+// 人工审核为发布动作本身（Publish 由具备 ai.prompts.publish 权限的人员显式触发）。
 package aiprompts
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,16 +31,18 @@ type Prompt struct {
 
 // Version Prompt 版本。
 type Version struct {
-	ID            uuid.UUID  `json:"id"`
-	PromptID      uuid.UUID  `json:"prompt_id"`
-	VersionNumber int        `json:"version_number"`
-	Content       string     `json:"content"`
-	ContentHash   string     `json:"content_hash"`
-	ChangeSummary string     `json:"change_summary"`
-	TestResult    string     `json:"test_result"`
-	CreatedAt     time.Time  `json:"created_at"`
-	PublishedAt   *time.Time `json:"published_at"`
-	IsCurrent     bool       `json:"is_current"`
+	ID                uuid.UUID       `json:"id"`
+	PromptID          uuid.UUID       `json:"prompt_id"`
+	VersionNumber     int             `json:"version_number"`
+	Content           string          `json:"content"`
+	ContentHash       string          `json:"content_hash"`
+	ChangeSummary     string          `json:"change_summary"`
+	TestResult        string          `json:"test_result"`
+	AdversarialResult string          `json:"adversarial_result"`
+	AdversarialDetail json.RawMessage `json:"adversarial_detail"`
+	CreatedAt         time.Time       `json:"created_at"`
+	PublishedAt       *time.Time      `json:"published_at"`
+	IsCurrent         bool            `json:"is_current"`
 }
 
 // ErrNotFound 不存在。
@@ -164,7 +169,7 @@ SELECT id, code, name, prompt_type, status, current_version_id, created_at FROM 
 // ListVersions 列出版本。
 func (s *Store) ListVersions(ctx context.Context, promptID uuid.UUID) ([]Version, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT id, prompt_id, version_number, content, content_hash, change_summary, test_result, created_at, published_at, is_current
+SELECT id, prompt_id, version_number, content, content_hash, change_summary, test_result, adversarial_result, adversarial_detail, created_at, published_at, is_current
 FROM ai_prompt_versions WHERE prompt_id = $1 ORDER BY version_number DESC LIMIT 50`, promptID)
 	if err != nil {
 		return nil, err
@@ -174,7 +179,7 @@ FROM ai_prompt_versions WHERE prompt_id = $1 ORDER BY version_number DESC LIMIT 
 	for rows.Next() {
 		var v Version
 		if err := rows.Scan(&v.ID, &v.PromptID, &v.VersionNumber, &v.Content, &v.ContentHash,
-			&v.ChangeSummary, &v.TestResult, &v.CreatedAt, &v.PublishedAt, &v.IsCurrent); err != nil {
+			&v.ChangeSummary, &v.TestResult, &v.AdversarialResult, &v.AdversarialDetail, &v.CreatedAt, &v.PublishedAt, &v.IsCurrent); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -182,22 +187,23 @@ FROM ai_prompt_versions WHERE prompt_id = $1 ORDER BY version_number DESC LIMIT 
 	return out, rows.Err()
 }
 
-// Publish 发布版本（须先通过测试标记 PASSED）。
+// Publish 发布版本（发布门：测试集回归 PASSED + 对抗测试 ADVERSARIAL_PASSED 齐备）。
+// 门未通过时返回 *PublishGateError（errors.Is 匹配 ErrNotPublishable），携带两个门槛的当前状态。
 func (s *Store) Publish(ctx context.Context, promptID, versionID uuid.UUID, publishedBy *uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var testResult string
-	if err := tx.QueryRow(ctx, `SELECT test_result FROM ai_prompt_versions WHERE id=$1 AND prompt_id=$2`, versionID, promptID).Scan(&testResult); err != nil {
+	var testResult, adversarialResult string
+	if err := tx.QueryRow(ctx, `SELECT test_result, adversarial_result FROM ai_prompt_versions WHERE id=$1 AND prompt_id=$2`, versionID, promptID).Scan(&testResult, &adversarialResult); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		return err
 	}
-	if testResult != "PASSED" {
-		return fmt.Errorf("version must pass regression test before publish (current: %q)", testResult)
+	if err := CheckPublishable(testResult, adversarialResult); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE ai_prompt_versions SET is_current = FALSE WHERE prompt_id = $1`, promptID); err != nil {
 		return err
@@ -220,14 +226,29 @@ func (s *Store) MarkTestResult(ctx context.Context, versionID uuid.UUID, result 
 	return err
 }
 
+// MarkAdversarialResult 标记版本对抗测试结果与逐样本明细（detail 为 JSON 数组，失败原因如实落库）。
+func (s *Store) MarkAdversarialResult(ctx context.Context, versionID uuid.UUID, result string, detail []byte) error {
+	if result != AdversarialPassed && result != AdversarialFailed {
+		return fmt.Errorf("invalid adversarial test result")
+	}
+	if len(detail) == 0 {
+		detail = []byte("[]")
+	}
+	if !json.Valid(detail) {
+		return fmt.Errorf("invalid adversarial detail json")
+	}
+	_, err := s.db.Exec(ctx, `UPDATE ai_prompt_versions SET adversarial_result=$2, adversarial_detail=$3 WHERE id=$1`, versionID, result, detail)
+	return err
+}
+
 // GetVersion 查询单个版本（测试/发布前校验用）。
 func (s *Store) GetVersion(ctx context.Context, versionID uuid.UUID) (*Version, error) {
 	var v Version
 	err := s.db.QueryRow(ctx, `
-SELECT id, prompt_id, version_number, content, content_hash, change_summary, test_result, created_at, published_at, is_current
+SELECT id, prompt_id, version_number, content, content_hash, change_summary, test_result, adversarial_result, adversarial_detail, created_at, published_at, is_current
 FROM ai_prompt_versions WHERE id = $1`, versionID).Scan(
 		&v.ID, &v.PromptID, &v.VersionNumber, &v.Content, &v.ContentHash,
-		&v.ChangeSummary, &v.TestResult, &v.CreatedAt, &v.PublishedAt, &v.IsCurrent)
+		&v.ChangeSummary, &v.TestResult, &v.AdversarialResult, &v.AdversarialDetail, &v.CreatedAt, &v.PublishedAt, &v.IsCurrent)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound

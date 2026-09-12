@@ -12,7 +12,7 @@
 | GATEWAY | Caddy Admin Socket Ping + 读配置哈希 | 不可达 DOWN；可达但读配置失败 DEGRADED | `config_hash`（Ping 耗时入快照 `latency_ms` 字段） |
 | CORAZA | 间接判定（嵌入网关进程） | 跟随 GATEWAY | - |
 | GUARD | 间接判定 + guard 事件日志 mtime | 网关 DOWN 则 DOWN；日志停滞 >5min 判 DEGRADED；日志未生成视为正常 | `guard_log_stale_seconds` |
-| API | 进程自测 | 恒 UP | `goroutines`、`heap_alloc_bytes`、`memory_sys_bytes`、`uptime_seconds` |
+| API | 进程自测 | 恒 UP；文件句柄使用率 ≥80%（`FDUsageHighPercent` 可配）判 DEGRADED | `goroutines`、`heap_alloc_bytes`、`memory_sys_bytes`、`uptime_seconds`、`fd_open_files`、`fd_max_open_files`、`fd_usage_percent`（fd_* 为 Linux /proc 采集，非 Linux/采集失败不产出指标、不判级） |
 | POSTGRES | Ping + 容量查询 | 不可达 DOWN；指标查询失败 DEGRADED | `database_size_bytes`、`db_connections`、`db_capacity_percent`（库容量/磁盘总量，同卷假设） |
 | VALKEY | INFO memory/clients + DBSize | 不可达 DOWN；DBSize 失败 DEGRADED | `used_memory_bytes`、`connected_clients`、`dbsize_keys` |
 | EVENT_COLLECTOR | 3 个 checkpoint 滞后：安全事件（DB 表 `event_collector_checkpoints`）、访问控制事件与 access-log（文件 mtime） | 全部缺失 UNKNOWN；最大滞后 >120s DEGRADED | `max_lag_seconds`、`checkpoints`（逐 checkpoint 明细） |
@@ -32,7 +32,7 @@
 | GET /api/v1/system-health/components | 各组件最新快照 |
 | GET /api/v1/system-health/storage | PG 容量与连接数、TOP10 表容量、Valkey 内存、报告/备份目录占用（遍历上限 20 万项）、磁盘空间 |
 
-## 告警类型与等级矩阵（18 类）
+## 告警类型与等级矩阵（19 类）
 
 等级枚举：`CRITICAL / HIGH / MEDIUM / LOW / INFO`；类型→默认等级为静态映射（`severityRules`），证书临期按剩余天数动态定级。
 
@@ -40,6 +40,7 @@
 |----------|------|--------|
 | GATEWAY_DOWN | CRITICAL | GATEWAY 快照 DOWN |
 | MANAGEMENT_API_DOWN | HIGH | API 快照 DOWN |
+| FD_USAGE_HIGH | HIGH | API 快照 DEGRADED 且携带 `fd_usage_percent`（指标缺失不判级）；恢复 UP 自动 RESOLVED |
 | DATABASE_UNAVAILABLE | CRITICAL | POSTGRES 快照 DOWN |
 | VALKEY_UNAVAILABLE | HIGH | VALKEY 快照 DOWN |
 | EVENT_COLLECTOR_LAG | MEDIUM | EVENT_COLLECTOR 快照 DEGRADED/DOWN |
@@ -77,6 +78,14 @@
 
 `flapTracker` 为内存实现，进程重启后重新计数（可接受的近似）。
 
+## 维护窗口（阶段6 §11.5，迁移 000142）
+
+表 `system_alert_maintenance_windows`：`scope=ALL` 抑制全部告警，`scope=CUSTOM` 按 `alert_types`/`components` 非空维度过滤（空数组维度通配）；周期 `ONCE`（起止时刻 `[starts_at, ends_at]`）或 `DAILY`（日期跨度内每日 UTC 日内时段，`end<=start` 表示跨零点）。
+
+`Engine.Raise` 在合并/新建前检查生效窗口：命中则不新建也不合并，但抑制事实可观测——命中窗口 `suppressed_count+1`、刷新 `last_suppressed_at` 并写日志；窗口查询/记账失败如实返回错误，不退化为放行。
+
+接口（读 `system_alerts.read` 系、写 `system_alerts.acknowledge` 系，写操作记审计）：`GET/POST /api/v1/system-alerts/maintenance-windows`、`DELETE /api/v1/system-alerts/maintenance-windows/{id}`；前端在系统告警页提供维护窗口管理。
+
 ## 处置操作与审计
 
 | 接口 | 权限（任一） | 审计 |
@@ -92,7 +101,7 @@
 ## CSV 导出防注入
 
 `Export` 处理器已实现：导出行上限 10000；`csvCell` 转义——`\r`/`\n` 替换为空格，前导 `= + - @ \t` 加单引号防公式注入，含逗号/引号的单元格加双引号并双写引号；导出动作记审计。
-实现现状说明：`Export` 处理器存在于 `systemalerts/handler.go`，当前 `app.go` 未挂载对应路由（无 `GET /api/v1/system-alerts/export`），待后续版本开放。
+路由已挂载（2026-09-10）：`GET /api/v1/system-alerts/export`（读权限 + 导出限流）。
 
 ## 验证
 

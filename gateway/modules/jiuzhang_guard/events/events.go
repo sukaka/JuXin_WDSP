@@ -58,26 +58,34 @@ const (
 
 // Event 访问控制/CC 事件（字段与数据库 access_control_events 对应）。
 type Event struct {
-	RequestID      string     `json:"request_id"`
-	OccurredAt     time.Time  `json:"occurred_at"`
-	ApplicationID  string     `json:"application_id,omitempty"`
-	AppCode        string     `json:"application_code,omitempty"`
-	ClientIP       string     `json:"client_ip"`
-	ConnectionIP   string     `json:"connection_ip"`
-	Domain         string     `json:"domain,omitempty"`
-	Method         string     `json:"request_method,omitempty"`
-	Path           string     `json:"request_path,omitempty"`
-	EventType      Type       `json:"event_type"`
-	Action         string     `json:"action,omitempty"`
-	PolicyID       string     `json:"policy_id,omitempty"`
-	AccessRuleID   string     `json:"access_rule_id,omitempty"`
-	CurrentCount   int64      `json:"current_count,omitempty"`
-	LimitValue     int64      `json:"limit_value,omitempty"`
-	WindowSeconds  int        `json:"window_seconds,omitempty"`
-	BlockExpiresAt *time.Time `json:"block_expires_at,omitempty"`
-	ResponseStatus int        `json:"response_status,omitempty"`
-	GatewayNode    string     `json:"gateway_node_id"`
-	Message        string     `json:"message,omitempty"`
+	RequestID     string    `json:"request_id"`
+	OccurredAt    time.Time `json:"occurred_at"`
+	ApplicationID string    `json:"application_id,omitempty"`
+	AppCode       string    `json:"application_code,omitempty"`
+	ClientIP      string    `json:"client_ip"`
+	ConnectionIP  string    `json:"connection_ip"`
+	// ClientIPSource 真实客户端 IP 识别来源（阶段5 §6.5；CONNECTION/X_FORWARDED_FOR/
+	// X_REAL_IP/FORWARDED/CUSTOM_HEADER；旧网关不携带时缺省，采集端落 NULL）
+	ClientIPSource string `json:"client_ip_source,omitempty"`
+	// TrustedProxyUsed 命中的可信代理名（未经过可信代理解析时为空缺省）
+	TrustedProxyUsed string `json:"trusted_proxy_used,omitempty"`
+	// ForwardedChainSummary 截断的代理链摘要（网关 clientip 已截断 128；伪造头场景
+	// 为原始头值截断片段）
+	ForwardedChainSummary string     `json:"forwarded_chain_summary,omitempty"`
+	Domain                string     `json:"domain,omitempty"`
+	Method                string     `json:"request_method,omitempty"`
+	Path                  string     `json:"request_path,omitempty"`
+	EventType             Type       `json:"event_type"`
+	Action                string     `json:"action,omitempty"`
+	PolicyID              string     `json:"policy_id,omitempty"`
+	AccessRuleID          string     `json:"access_rule_id,omitempty"`
+	CurrentCount          int64      `json:"current_count,omitempty"`
+	LimitValue            int64      `json:"limit_value,omitempty"`
+	WindowSeconds         int        `json:"window_seconds,omitempty"`
+	BlockExpiresAt        *time.Time `json:"block_expires_at,omitempty"`
+	ResponseStatus        int        `json:"response_status,omitempty"`
+	GatewayNode           string     `json:"gateway_node_id"`
+	Message               string     `json:"message,omitempty"`
 	// Proto HTTP 协议版本（r.Proto 原样 HTTP/1.1 / HTTP/2.0 / HTTP/3；
 	// 空 = 不可得省略，采集端容忍缺失落 NULL）。
 	Proto string `json:"proto,omitempty"`
@@ -135,11 +143,14 @@ type BotDetail struct {
 
 // 字段长度上限（防超大输入撑爆日志）。
 const (
-	maxPathLen   = 512
-	maxDomainLen = 255
-	maxMsgLen    = 512
-	maxProtoLen  = 32
-	maxVerLen    = 128
+	maxPathLen         = 512
+	maxDomainLen       = 255
+	maxMsgLen          = 512
+	maxProtoLen        = 32
+	maxVerLen          = 128
+	maxSourceLen       = 32
+	maxProxyNameLen    = 128
+	maxChainSummaryLen = 256
 )
 
 // Logger JSON Lines 事件记录器（并发安全）。
@@ -185,6 +196,9 @@ func (l *Logger) Emit(e Event) error {
 	e.Domain = sanitize(e.Domain, maxDomainLen)
 	e.Message = sanitize(e.Message, maxMsgLen)
 	e.Proto = sanitize(e.Proto, maxProtoLen)
+	e.ClientIPSource = sanitize(e.ClientIPSource, maxSourceLen)
+	e.TrustedProxyUsed = sanitize(e.TrustedProxyUsed, maxProxyNameLen)
+	e.ForwardedChainSummary = sanitize(e.ForwardedChainSummary, maxChainSummaryLen)
 	if e.JWT != nil {
 		e.JWT.Status = sanitize(e.JWT.Status, 32)
 		e.JWT.ReasonCode = sanitize(e.JWT.ReasonCode, 32)

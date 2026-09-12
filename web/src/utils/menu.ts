@@ -327,6 +327,14 @@ export const MENU_ITEMS: MenuDef[] = [
     group: 'API 防护',
   },
   {
+    key: '/api-flow-baselines',
+    label: '流程基线',
+    roles: ['SECURITY_ADMIN'],
+    permissions: ['api_flow.read'],
+    capability: 'api_dynamic_protection',
+    group: 'API 防护',
+  },
+  {
     key: '/api-scan',
     label: '主动扫描',
     roles: ['SECURITY_ADMIN'],

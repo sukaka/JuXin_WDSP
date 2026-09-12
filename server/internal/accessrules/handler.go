@@ -60,6 +60,8 @@ type ruleRequest struct {
 	EffectiveFrom  *string    `json:"effective_from"`
 	EffectiveUntil *string    `json:"effective_until"`
 	Reason         string     `json:"reason"`
+	SourceType     string     `json:"source_type"`
+	SourceEventID  *uuid.UUID `json:"source_event_id"`
 }
 
 // toCreateInput 转换并解析时间字段。
@@ -72,6 +74,8 @@ func (req *ruleRequest) toCreateInput() (CreateInput, error) {
 		Address:       req.Address,
 		ValidityType:  req.ValidityType,
 		Reason:        req.Reason,
+		SourceType:    req.SourceType,
+		SourceEventID: req.SourceEventID,
 	}
 	if req.Priority != nil {
 		in.Priority = *req.Priority
@@ -109,6 +113,21 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if err := ValidateInput(&in, time.Now()); err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
+	}
+	if err := validateAPISource(&in); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	if in.SourceType == SourceSecurityEvent {
+		exists, err := h.store.EventExists(r.Context(), *in.SourceEventID)
+		if err != nil {
+			response.InternalError(w, r, err)
+			return
+		}
+		if !exists {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "来源安全事件不存在")
+			return
+		}
 	}
 	norm, _, _ := NormalizeAddress(in.Address)
 	if err := CheckProtected(r.Context(), h.checker, in.RuleType, norm); err != nil {
@@ -230,6 +249,10 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, status, acti
 	p := authz.PrincipalFrom(r.Context())
 	rule, ok := h.getRule(w, r)
 	if !ok {
+		return
+	}
+	if err := ValidateStatusTransition(rule.Status, status); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
 	if err := h.store.SetStatus(r.Context(), rule.ID, status, p.UserID); err != nil {
@@ -382,6 +405,7 @@ type importRequest struct {
 }
 
 // Import 批量导入规则（CSV 或纯文本）。
+// 正式导入成功的规则统一落 DRAFT 草稿状态：不参与发布快照、不在网关生效，需逐条启用后进入 ACTIVE。
 func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	var req importRequest
@@ -481,7 +505,7 @@ func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 		for _, row := range valid {
 			inputs = append(inputs, row.Input)
 		}
-		if err := h.store.CreateBatch(r.Context(), inputs, p.UserID); err != nil {
+		if err := h.store.CreateBatchDraft(r.Context(), inputs, p.UserID); err != nil {
 			if errors.Is(err, ErrConflict) {
 				h.recordAudit(r, p, "import", "", "批量导入", "",
 					importSummary(len(records), 0, 0, mode), audits.ResultFailure, err.Error(), audits.RiskMedium)
@@ -495,7 +519,7 @@ func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// SKIP_ERRORS：逐条插入，冲突/失败记为行错误
 		for _, row := range valid {
-			if _, err := h.store.Create(r.Context(), row.Input, p.UserID); err != nil {
+			if _, err := h.store.CreateDraft(r.Context(), row.Input, p.UserID); err != nil {
 				code := ImportErrInvalid
 				if errors.Is(err, ErrConflict) {
 					code = ImportErrConflict
@@ -513,6 +537,7 @@ func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 	h.recordAudit(r, p, "import", "", "批量导入", "",
 		importSummary(len(records), imported, len(records)-imported, mode), audits.ResultSuccess, "", risk)
 	result["imported"] = imported
+	result["status"] = StatusDraft
 	result["errors"] = rowErrs
 	result["invalid"] = len(rowErrs)
 	response.JSON(w, r, http.StatusOK, result)
@@ -654,7 +679,8 @@ func listFilterFrom(r *http.Request) ListFilter {
 
 func ruleSummary(r *Rule) string {
 	return `{"name":"` + r.Name + `","rule_type":"` + r.RuleType + `","scope_type":"` + r.ScopeType +
-		`","address":"` + r.Address + `","status":"` + r.Status + `","validity_type":"` + r.ValidityType + `"}`
+		`","address":"` + r.Address + `","status":"` + r.Status + `","validity_type":"` + r.ValidityType +
+		`","source_type":"` + r.SourceType + `"}`
 }
 
 func importSummary(total, imported, invalid int, mode string) string {

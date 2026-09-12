@@ -3,6 +3,7 @@ package apiscan
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +87,97 @@ func (f *fakeSettingsKV) UpsertString(_ context.Context, group, key, value, _ st
 	}
 	f.kv[group+"/"+key] = value
 	return nil
+}
+
+func (f *fakeSettingsKV) GetStringWithSource(_ context.Context, group, key string) (string, bool, error) {
+	v, ok := f.kv[group+"/"+key]
+	return v, ok, nil
+}
+
+func (f *fakeSettingsKV) CreateStringIfAbsent(_ context.Context, group, key, value, _ string, _ uuid.UUID) (bool, error) {
+	if f.kv == nil {
+		f.kv = map[string]string{}
+	}
+	fullKey := group + "/" + key
+	if _, ok := f.kv[fullKey]; ok {
+		return false, nil
+	}
+	f.kv[fullKey] = value
+	return true, nil
+}
+
+type winnerSettingsKV struct {
+	fakeSettingsKV
+	winner  string
+	found   bool
+	readErr error
+}
+
+func (f *winnerSettingsKV) GetStringWithSource(_ context.Context, _, _ string) (string, bool, error) {
+	if f.readErr != nil {
+		return "", false, f.readErr
+	}
+	return f.winner, f.found || f.winner != "", nil
+}
+
+func (f *winnerSettingsKV) CreateStringIfAbsent(_ context.Context, group, key, _ string, _ string, _ uuid.UUID) (bool, error) {
+	if f.winner != "" {
+		if f.kv == nil {
+			f.kv = map[string]string{}
+		}
+		f.kv[group+"/"+key] = f.winner
+		return false, nil
+	}
+	return true, nil
+}
+
+func TestLoadOrCreateSignerUsesDatabaseWinnerAfterAtomicCreateRace(t *testing.T) {
+	master := make([]byte, 32)
+	enc, err := encryption.NewWithKey(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winnerKey := strings.Repeat("ab", 32)
+	winnerCipher, err := enc.Encrypt(winnerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv := &winnerSettingsKV{winner: winnerCipher}
+	signer, err := LoadOrCreateSigner(context.Background(), kv, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner, err := NewSigner([]byte(strings.Repeat("\xab", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID := uuid.New()
+	if signer.Sign(jobID) != winner.Sign(jobID) {
+		t.Fatal("losing initializer must use the database winner")
+	}
+}
+
+func TestLoadOrCreateSignerDoesNotTreatReadFailureAsMissing(t *testing.T) {
+	master := make([]byte, 32)
+	enc, err := encryption.NewWithKey(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv := &winnerSettingsKV{readErr: errors.New("settings unavailable")}
+	if _, err := LoadOrCreateSigner(context.Background(), kv, enc); err == nil {
+		t.Fatal("settings read failure must be returned")
+	}
+}
+
+func TestLoadOrCreateSignerDoesNotTreatEmptyStoredValueAsMissing(t *testing.T) {
+	master := make([]byte, 32)
+	enc, err := encryption.NewWithKey(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrCreateSigner(context.Background(), &winnerSettingsKV{found: true}, enc); err == nil {
+		t.Fatal("empty stored signing key must be rejected")
+	}
 }
 
 // TestLoadOrCreateSigner 首次生成并加密落库（密文不含密钥明文 hex），二次加载一致。

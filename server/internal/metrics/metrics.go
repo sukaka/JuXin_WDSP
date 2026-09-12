@@ -25,10 +25,13 @@ const (
 )
 
 // API 专项指标（阶段8 / 补全任务书 §158 口径；仅实现有真实数据源者，数据源见各注释）。
-// 均为 DB 周期聚合的 gauge（当前值快照），由 APICollector 采集，见 api_collector.go。
-// 无数据源而未实现的指标（不造假）：api_discovery_qps（每秒识别量，网关未上报识别速率）、
-// api_parse_latency（请求/响应解析耗时，无分项耗时数据源）、学习延迟、事件积压、
-// 图谱边数量、AI Tool 调用量（均无计数载体）。
+// 均为 DB 周期聚合的 gauge（当前值快照），由 APICollector 采集，见 api_collector.go；
+// 速率/耗时类为 float gauge（APISnapshot.Floats）。
+// 网关进程侧指标（检测/解析耗时、内存占用）在 gateway/dynamic_security/metrics
+// 进程内指标包（ParseRequest 已埋点，内存经 runtime.ReadMemStats 实时采样）；
+// 仍无数据源而未实现的指标（不造假）：API 检测耗时与响应解析耗时（计时挂点在
+// pipeline 请求/响应相位，本波 pipeline 归其他任务）、事件积压（apiruntime 采集器
+// 断点-文件大小差值，需装配层把采集器实例接进 APICollector）。
 const (
 	APIAssetsTotal       = "api_assets_total"       // 数据源：api_endpoints 全表计数（is_api=TRUE）
 	APIAssetsNew         = "api_assets_new"         // 数据源：api_endpoints.first_seen_at 近 24h 新发现
@@ -45,6 +48,14 @@ const (
 	SensitiveFindings    = "sensitive_findings"     // 数据源：api_runtime_findings finding_type 前缀 SENSITIVE_
 	BehaviorFindings     = "behavior_findings"      // 数据源：api_runtime_findings finding_type 前缀 BEHAVIOR
 	MaskResponseTotal    = "mask_response_total"    // 数据源：api_runtime_events final_action='MASK_RESPONSE'
+	APIShadowTotal       = "api_shadow_total"       // 数据源：api_runtime_findings finding_type='SHADOW' 且未关闭（NEW/CONFIRMED/IN_PROGRESS，口径同 reports findingOpenStatuses）
+	APIZombieTotal       = "api_zombie_total"       // 数据源：api_endpoints asset_status='ZOMBIE'（is_api=TRUE，口径同 reports is_zombie）
+	APIGraphEdgesTotal   = "api_graph_edges_total"  // 数据源：api_call_edges 全表计数
+	AIToolCallsTotal     = "ai_tool_calls_total"    // 数据源：ai_tool_calls 全表计数
+
+	// float gauge（速率/耗时类；整型 map 装不下的小数口径）
+	APIDiscoveryPerSecond     = "api_discovery_per_second"     // 数据源：api_endpoints.first_seen_at 近 60s 新识别数 / 60
+	APILearningLatencySeconds = "api_learning_latency_seconds" // 数据源：api_learning_jobs 近 24h COMPLETED 任务平均时长（stopped_at-started_at）
 )
 
 // APM 阶段1 端点级 RED 指标（ADR docs/APM_STAGE0_ADR.md D7/D9；数据源：access_logs 全量

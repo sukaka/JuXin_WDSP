@@ -18,6 +18,12 @@ const (
 	EventTypeCCTempBlockReleased = "CC_TEMP_BLOCK_RELEASED"
 	EventTypeCCThresholdExceeded = "CC_THRESHOLD_EXCEEDED"
 	EventTypeCCRequestRejected   = "CC_REQUEST_REJECTED"
+	// EventTypeCCTempBlockDowngraded 阶段5 §十五：管理面共享出口（NAT）风险检查
+	// 命中后对 CC 自动封禁降档缩短时长的审计事件（temporaryblocks 产生，
+	// 证据载荷 identity_count/threshold/block_minutes/原与降档到期时间/valkey_synced
+	// 落 details.nat_guard；非 CC 拦截动作，不计入 CC 统计——isRejected 精确匹配
+	// CC_REQUEST_REJECTED/CC_TEMP_BLOCK_CREATED，本类型天然不落入）。
+	EventTypeCCTempBlockDowngraded = "CC_TEMP_BLOCK_DOWNGRADED"
 )
 
 // L7 访问控制命中事件类型（网关 jiuzhang_guard L7 规则引擎产生，access_rule_id 存 L7 规则 ID）
@@ -107,20 +113,24 @@ type Event struct {
 	ApplicationCode string     `json:"application_code"`
 	ClientIP        string     `json:"client_ip"`
 	ConnectionIP    string     `json:"connection_ip"`
-	Domain          string     `json:"domain"`
-	RequestMethod   string     `json:"request_method"`
-	RequestPath     string     `json:"request_path"`
-	EventType       string     `json:"event_type"`
-	Action          string     `json:"action"`
-	PolicyID        string     `json:"policy_id"`
-	AccessRuleID    string     `json:"access_rule_id"`
-	CurrentCount    *int64     `json:"current_count"`
-	LimitValue      *int64     `json:"limit_value"`
-	WindowSeconds   *int       `json:"window_seconds"`
-	BlockExpiresAt  *time.Time `json:"block_expires_at"`
-	ResponseStatus  *int       `json:"response_status"`
-	GatewayNodeID   string     `json:"gateway_node_id"`
-	Message         string     `json:"message"`
+	// 阶段5 §6.5 真实 IP 识别日志字段（迁移 000144；旧数据为 NULL，读取侧归一空串）
+	ClientIPSource        string     `json:"client_ip_source"`
+	TrustedProxyUsed      string     `json:"trusted_proxy_used"`
+	ForwardedChainSummary string     `json:"forwarded_chain_summary"`
+	Domain                string     `json:"domain"`
+	RequestMethod         string     `json:"request_method"`
+	RequestPath           string     `json:"request_path"`
+	EventType             string     `json:"event_type"`
+	Action                string     `json:"action"`
+	PolicyID              string     `json:"policy_id"`
+	AccessRuleID          string     `json:"access_rule_id"`
+	CurrentCount          *int64     `json:"current_count"`
+	LimitValue            *int64     `json:"limit_value"`
+	WindowSeconds         *int       `json:"window_seconds"`
+	BlockExpiresAt        *time.Time `json:"block_expires_at"`
+	ResponseStatus        *int       `json:"response_status"`
+	GatewayNodeID         string     `json:"gateway_node_id"`
+	Message               string     `json:"message"`
 	// Proto HTTP 协议版本（HTTP/1.1/2/3，W20 起网关上报；缺失为空串，容忍，落库为 NULL）。
 	Proto string `json:"proto"`
 	// Details 证据载荷（风险处置事件 RISK_POLICY_*：identity_key/score/risk_level/
@@ -133,27 +143,32 @@ type Event struct {
 
 // rawEvent 是网关 guard 事件 JSONL 行结构。
 type rawEvent struct {
-	RequestID       string     `json:"request_id"`
-	OccurredAt      string     `json:"occurred_at"`
-	ApplicationID   string     `json:"application_id"`
-	ApplicationCode string     `json:"application_code"`
-	ClientIP        string     `json:"client_ip"`
-	ConnectionIP    string     `json:"connection_ip"`
-	Domain          string     `json:"domain"`
-	RequestMethod   string     `json:"request_method"`
-	RequestPath     string     `json:"request_path"`
-	EventType       string     `json:"event_type"`
-	Action          string     `json:"action"`
-	PolicyID        string     `json:"policy_id"`
-	AccessRuleID    string     `json:"access_rule_id"`
-	CurrentCount    *int64     `json:"current_count"`
-	LimitValue      *int64     `json:"limit_value"`
-	WindowSeconds   *int       `json:"window_seconds"`
-	BlockExpiresAt  *time.Time `json:"block_expires_at"`
-	ResponseStatus  *int       `json:"response_status"`
-	GatewayNodeID   string     `json:"gateway_node_id"`
-	Message         string     `json:"message"`
-	Proto           string     `json:"proto"`
+	RequestID       string `json:"request_id"`
+	OccurredAt      string `json:"occurred_at"`
+	ApplicationID   string `json:"application_id"`
+	ApplicationCode string `json:"application_code"`
+	ClientIP        string `json:"client_ip"`
+	ConnectionIP    string `json:"connection_ip"`
+	// 阶段5 §6.5 真实 IP 识别日志字段（网关事件 omitempty 键；旧网关/历史事件
+	// 无此键，缺省容忍，不回填）
+	ClientIPSource        string     `json:"client_ip_source"`
+	TrustedProxyUsed      string     `json:"trusted_proxy_used"`
+	ForwardedChainSummary string     `json:"forwarded_chain_summary"`
+	Domain                string     `json:"domain"`
+	RequestMethod         string     `json:"request_method"`
+	RequestPath           string     `json:"request_path"`
+	EventType             string     `json:"event_type"`
+	Action                string     `json:"action"`
+	PolicyID              string     `json:"policy_id"`
+	AccessRuleID          string     `json:"access_rule_id"`
+	CurrentCount          *int64     `json:"current_count"`
+	LimitValue            *int64     `json:"limit_value"`
+	WindowSeconds         *int       `json:"window_seconds"`
+	BlockExpiresAt        *time.Time `json:"block_expires_at"`
+	ResponseStatus        *int       `json:"response_status"`
+	GatewayNodeID         string     `json:"gateway_node_id"`
+	Message               string     `json:"message"`
+	Proto                 string     `json:"proto"`
 	// 身份风险处置事件扩展字段（RISK_POLICY_* 契约：网关将证据载荷嵌套在 "risk"
 	// 对象下，见 events.RiskPolicyDetail 线格式；其余事件类型不出现，缺省容忍）。
 	Risk *rawRiskDetail `json:"risk"`
@@ -259,27 +274,30 @@ func ParseEventLine(line []byte, defaultNode string) (*Event, error) {
 	}
 
 	evt := &Event{
-		RequestID:       truncate(raw.RequestID, 64),
-		OccurredAt:      occurredAt.UTC(),
-		ApplicationID:   appID,
-		ApplicationCode: truncate(raw.ApplicationCode, 64),
-		ClientIP:        clientIP.String(),
-		ConnectionIP:    connIP,
-		Domain:          truncate(raw.Domain, 255),
-		RequestMethod:   truncate(raw.RequestMethod, 10),
-		RequestPath:     truncate(raw.RequestPath, 512),
-		EventType:       truncate(raw.EventType, 40),
-		Action:          truncate(raw.Action, 20),
-		PolicyID:        truncate(raw.PolicyID, 64),
-		AccessRuleID:    truncate(raw.AccessRuleID, 64),
-		CurrentCount:    raw.CurrentCount,
-		LimitValue:      raw.LimitValue,
-		WindowSeconds:   raw.WindowSeconds,
-		BlockExpiresAt:  raw.BlockExpiresAt,
-		ResponseStatus:  raw.ResponseStatus,
-		GatewayNodeID:   truncate(raw.GatewayNodeID, 100),
-		Message:         truncate(raw.Message, 512),
-		Proto:           truncate(raw.Proto, 32),
+		RequestID:             truncate(raw.RequestID, 64),
+		OccurredAt:            occurredAt.UTC(),
+		ApplicationID:         appID,
+		ApplicationCode:       truncate(raw.ApplicationCode, 64),
+		ClientIP:              clientIP.String(),
+		ConnectionIP:          connIP,
+		ClientIPSource:        truncate(raw.ClientIPSource, 32),
+		TrustedProxyUsed:      truncate(raw.TrustedProxyUsed, 128),
+		ForwardedChainSummary: truncate(raw.ForwardedChainSummary, 256),
+		Domain:                truncate(raw.Domain, 255),
+		RequestMethod:         truncate(raw.RequestMethod, 10),
+		RequestPath:           truncate(raw.RequestPath, 512),
+		EventType:             truncate(raw.EventType, 40),
+		Action:                truncate(raw.Action, 20),
+		PolicyID:              truncate(raw.PolicyID, 64),
+		AccessRuleID:          truncate(raw.AccessRuleID, 64),
+		CurrentCount:          raw.CurrentCount,
+		LimitValue:            raw.LimitValue,
+		WindowSeconds:         raw.WindowSeconds,
+		BlockExpiresAt:        raw.BlockExpiresAt,
+		ResponseStatus:        raw.ResponseStatus,
+		GatewayNodeID:         truncate(raw.GatewayNodeID, 100),
+		Message:               truncate(raw.Message, 512),
+		Proto:                 truncate(raw.Proto, 32),
 	}
 	if evt.GatewayNodeID == "" {
 		evt.GatewayNodeID = defaultNode

@@ -5,26 +5,20 @@ import {
   App as AntdApp,
   Button,
   Card,
-  DatePicker,
   Descriptions,
-  Divider,
-  Drawer,
   Form,
   Input,
   InputNumber,
   Modal,
   Select,
   Space,
-  Switch,
   Tag,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { CloudUploadOutlined, ExperimentOutlined, PlusOutlined } from '@ant-design/icons'
-import dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { rateLimitPoliciesApi } from '../../api/rateLimitPolicies'
-import type { RateLimitPolicyBody } from '../../api/rateLimitPolicies'
 import { applicationsApi } from '../../api/applications'
 import SmartTable from '../../components/SmartTable'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
@@ -43,6 +37,9 @@ import {
   isValidIPLiteral,
 } from '../../utils/stage5'
 import type { RateLimitPolicyItem, RateLimitTestResult } from '../../types'
+import RateLimitWizardDrawer from './RateLimitWizardDrawer'
+import { buildPolicyBody, optionsOf } from './wizard'
+import type { PolicyFormValues } from './wizard'
 
 interface Filters {
   scope_type?: string
@@ -51,33 +48,11 @@ interface Filters {
   keyword?: string
 }
 
-interface PolicyFormValues {
-  name: string
-  description?: string
-  scope_type: string
-  application_id?: string
-  uri_match_type: string
-  uri_pattern?: string
-  dimension: string
-  algorithm: string
-  requests_limit: number
-  window_seconds: number
-  burst_capacity?: number
-  action: string
-  block_duration_seconds?: number
-  observe_only?: boolean
-  priority: number
-  effective_range?: [dayjs.Dayjs | null, dayjs.Dayjs | null]
-}
-
 interface TestFormValues {
   requests: number
   client_ips?: string[]
   uri?: string
 }
-
-const optionsOf = (meta: Record<string, { label: string }>) =>
-  Object.entries(meta).map(([value, m]) => ({ value, label: m.label }))
 
 export default function RateLimitPage() {
   const { message, modal } = AntdApp.useApp()
@@ -95,7 +70,6 @@ export default function RateLimitPage() {
   const [testResult, setTestResult] = useState<RateLimitTestResult | null>(null)
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [detailRecord, setDetailRecord] = useState<RateLimitPolicyItem | null>(null)
-  const [form] = Form.useForm<PolicyFormValues>()
   const [testForm] = Form.useForm<TestFormValues>()
 
   const listQuery = useQuery({
@@ -131,26 +105,7 @@ export default function RateLimitPage() {
 
   const saveMutation = useMutation({
     mutationFn: (values: PolicyFormValues) => {
-      const [from, until] = values.effective_range ?? [null, null]
-      const body: RateLimitPolicyBody = {
-        name: values.name,
-        description: values.description ?? '',
-        scope_type: values.scope_type,
-        application_id: values.scope_type === 'GLOBAL' ? null : values.application_id,
-        uri_match_type: values.uri_match_type,
-        uri_pattern: values.uri_match_type === 'ALL' ? '' : (values.uri_pattern ?? ''),
-        dimension: values.dimension,
-        algorithm: values.algorithm,
-        requests_limit: values.requests_limit,
-        window_seconds: values.window_seconds,
-        burst_capacity: values.burst_capacity ?? 0,
-        action: values.action,
-        block_duration_seconds: values.action === 'TEMP_BLOCK' ? (values.block_duration_seconds ?? 0) : 0,
-        observe_only: values.observe_only ?? false,
-        priority: values.priority,
-        effective_from: from ? from.toISOString() : null,
-        effective_until: until ? until.toISOString() : null,
-      }
+      const body = buildPolicyBody(values)
       return editing
         ? rateLimitPoliciesApi.update(editing.id, { ...body, version: editing.version })
         : rateLimitPoliciesApi.create(body)
@@ -159,7 +114,6 @@ export default function RateLimitPage() {
       message.success(editing ? '策略已更新' : '策略已创建')
       setFormOpen(false)
       setEditing(null)
-      form.resetFields()
       void invalidate()
     },
     onError,
@@ -210,33 +164,11 @@ export default function RateLimitPage() {
 
   const openCreate = () => {
     setEditing(null)
-    form.resetFields()
     setFormOpen(true)
   }
 
   const openEdit = (record: RateLimitPolicyItem) => {
     setEditing(record)
-    form.setFieldsValue({
-      name: record.name,
-      description: record.description || undefined,
-      scope_type: record.scope_type,
-      application_id: record.application_id ?? undefined,
-      uri_match_type: record.uri_match_type,
-      uri_pattern: record.uri_pattern || undefined,
-      dimension: record.dimension,
-      algorithm: record.algorithm,
-      requests_limit: record.requests_limit,
-      window_seconds: record.window_seconds,
-      burst_capacity: record.burst_capacity,
-      action: record.action,
-      block_duration_seconds: record.block_duration_seconds || undefined,
-      observe_only: record.observe_only,
-      priority: record.priority,
-      effective_range: [
-        record.effective_from ? dayjs(record.effective_from) : null,
-        record.effective_until ? dayjs(record.effective_until) : null,
-      ],
-    })
     setFormOpen(true)
   }
 
@@ -465,193 +397,18 @@ export default function RateLimitPage() {
         />
       )}
 
-      <Drawer
-        title={editing ? '编辑CC策略' : '新建CC策略'}
+      <RateLimitWizardDrawer
         open={formOpen}
+        editing={editing}
+        saving={saveMutation.isPending}
+        apps={appsQuery.data?.items ?? []}
+        appsLoading={appsQuery.isLoading}
         onClose={() => {
           setFormOpen(false)
           setEditing(null)
         }}
-        width={600}
-        destroyOnHidden
-        footer={
-          <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <Button onClick={() => setFormOpen(false)}>取消</Button>
-            <Button type="primary" loading={saveMutation.isPending} onClick={() => form.submit()}>
-              {editing ? '保存' : '创建'}
-            </Button>
-          </Space>
-        }
-      >
-        <Form<PolicyFormValues>
-          form={form}
-          layout="vertical"
-          initialValues={{
-            scope_type: 'GLOBAL',
-            uri_match_type: 'ALL',
-            dimension: 'CLIENT_IP',
-            algorithm: 'TOKEN_BUCKET',
-            requests_limit: 100,
-            window_seconds: 60,
-            burst_capacity: 0,
-            action: 'REJECT',
-            observe_only: false,
-            priority: 100,
-          }}
-          onFinish={(values) => saveMutation.mutate(values)}
-        >
-          <Divider titlePlacement="start" plain>
-            基本信息
-          </Divider>
-          <Form.Item
-            name="name"
-            label="策略名称"
-            rules={[
-              { required: true, message: '请输入策略名称' },
-              { max: 200, message: '不超过 200 个字符' },
-            ]}
-          >
-            <Input placeholder="如：登录 API 防爆破" />
-          </Form.Item>
-          <Form.Item name="description" label="描述" rules={[{ max: 500 }]}>
-            <Input.TextArea rows={2} placeholder="策略用途说明（可选）" />
-          </Form.Item>
-          <Space.Compact block>
-            <Form.Item name="priority" label="优先级（数值小者优先）" style={{ width: '50%', marginRight: 8 }} rules={[{ required: true, message: '请输入优先级' }]}>
-              <InputNumber min={0} max={10000} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item name="observe_only" label="仅观察（不阻断）" style={{ width: '50%' }} valuePropName="checked">
-              <Switch checkedChildren="是" unCheckedChildren="否" />
-            </Form.Item>
-          </Space.Compact>
-          <Form.Item name="effective_range" label="生效 / 失效时间（留空长期生效）">
-            <DatePicker.RangePicker showTime style={{ width: '100%' }} />
-          </Form.Item>
-
-          <Divider titlePlacement="start" plain>
-            匹配范围
-          </Divider>
-          <Form.Item name="scope_type" label="作用范围" rules={[{ required: true }]}>
-            <Select options={optionsOf(RATE_LIMIT_SCOPE_META)} />
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.scope_type !== cur.scope_type}>
-            {({ getFieldValue }) =>
-              getFieldValue('scope_type') !== 'GLOBAL' && (
-                <Form.Item
-                  name="application_id"
-                  label="目标应用"
-                  rules={[{ required: true, message: '应用/路径范围必须选择应用' }]}
-                >
-                  <Select
-                    showSearch
-                    optionFilterProp="label"
-                    placeholder="选择应用"
-                    loading={appsQuery.isLoading}
-                    options={(appsQuery.data?.items ?? []).map((a) => ({
-                      value: a.id,
-                      label: `${a.name}（${a.code}）`,
-                    }))}
-                  />
-                </Form.Item>
-              )
-            }
-          </Form.Item>
-          <Form.Item name="uri_match_type" label="路径匹配方式" rules={[{ required: true }]}>
-            <Select options={optionsOf(RATE_LIMIT_URI_MATCH_META)} />
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.uri_match_type !== cur.uri_match_type}>
-            {({ getFieldValue }) => {
-              const mt = getFieldValue('uri_match_type')
-              if (mt === 'ALL') return null
-              return (
-                <>
-                  {mt === 'REGEX' && (
-                    <Alert
-                      type="warning"
-                      showIcon
-                      style={{ marginBottom: 16 }}
-                      message="正则匹配基于 RE2 引擎（线性时间，天然防 ReDoS），不支持回溯引用与环视语法"
-                    />
-                  )}
-                  <Form.Item
-                    name="uri_pattern"
-                    label="路径匹配模式"
-                    rules={[
-                      { required: true, message: '请填写路径匹配模式' },
-                      { max: 256, message: '不超过 256 个字符' },
-                      ...(mt === 'EXACT' || mt === 'PREFIX'
-                        ? [{ pattern: /^\//, message: '必须以 / 开头' }]
-                        : []),
-                    ]}
-                  >
-                    <Input
-                      placeholder={mt === 'REGEX' ? '^/api/v\\d+/login$' : '/api/login'}
-                      autoComplete="off"
-                    />
-                  </Form.Item>
-                </>
-              )
-            }}
-          </Form.Item>
-
-          <Divider titlePlacement="start" plain>
-            限速参数
-          </Divider>
-          <Form.Item name="dimension" label="统计维度" rules={[{ required: true }]}>
-            <Select options={optionsOf(RATE_LIMIT_DIMENSION_META)} />
-          </Form.Item>
-          <Form.Item name="algorithm" label="限速算法" rules={[{ required: true }]}>
-            <Select
-              options={[
-                { value: 'TOKEN_BUCKET', label: '令牌桶（匀速补充，允许突发）' },
-                { value: 'SLIDING_WINDOW', label: '滑动窗口（双窗口加权近似）' },
-              ]}
-            />
-          </Form.Item>
-          <Space.Compact block>
-            <Form.Item
-              name="requests_limit"
-              label="请求数阈值"
-              style={{ width: '33%', marginRight: 8 }}
-              rules={[{ required: true, message: '请输入请求数阈值' }]}
-            >
-              <InputNumber min={1} max={1000000} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item
-              name="window_seconds"
-              label="统计窗口（秒）"
-              style={{ width: '33%', marginRight: 8 }}
-              rules={[{ required: true, message: '请输入统计窗口' }]}
-            >
-              <InputNumber min={1} max={86400} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item name="burst_capacity" label="突发容量（0=取阈值）" style={{ width: '34%' }}>
-              <InputNumber min={0} style={{ width: '100%' }} />
-            </Form.Item>
-          </Space.Compact>
-
-          <Divider titlePlacement="start" plain>
-            触发动作
-          </Divider>
-          <Form.Item name="action" label="超阈值动作" rules={[{ required: true }]}>
-            <Select options={optionsOf(RATE_LIMIT_ACTION_META)} />
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.action !== cur.action}>
-            {({ getFieldValue }) =>
-              getFieldValue('action') === 'TEMP_BLOCK' && (
-                <Form.Item
-                  name="block_duration_seconds"
-                  label="临时封禁时长（秒）"
-                  rules={[{ required: true, message: '临时封禁必须设置封禁时长' }]}
-                  extra="最短 60 秒，最长 30 天（2592000 秒）；超阈值客户端将被临时封禁"
-                >
-                  <InputNumber min={60} max={2592000} style={{ width: '100%' }} />
-                </Form.Item>
-              )
-            }
-          </Form.Item>
-        </Form>
-      </Drawer>
+        onSubmit={(values) => saveMutation.mutate(values)}
+      />
 
       <Modal
         title={`模拟测试「${testing?.name ?? ''}」`}

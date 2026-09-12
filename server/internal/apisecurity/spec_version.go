@@ -3,8 +3,9 @@
 // 操作级参数提取（CHANGED 级跨版本对比）、版本状态机存储与 URL 导入（SSRF 防护）。
 // 解析/转换/对比为纯逻辑（不依赖 DB），由 spec_version_test.go 覆盖。
 //
-// YAML 说明：server/go.mod 未引入 gopkg.in/yaml.v3（本波不新增第三方依赖），
-// YAML 文档在 HTTP 层 JSON 解码失败时明确 400 拒绝，标记为后续支持。
+// 扩展格式（阶段8 §33）：YAML 及 JSON Schema / Postman Collection v2.1 / GraphQL SDL
+// 由 spec_formats.go / spec_postman.go / spec_jsonschema.go / spec_graphql.go 处理，
+// 统一入口为 ParseSpecContent。
 package apisecurity
 
 import (
@@ -859,6 +860,9 @@ RETURNING id, name, version_no, status, parent_id, activated_at, format, file_na
 // registerSpecEndpointsTx 将规范端点登记为 api_endpoints 候选（来源：规范导入）。
 // 语义对齐 apiassets.UpsertDiscovery 的插入分支，但冲突时不做任何更新
 // （不增加 hit_count、不覆盖已有资产状态），仅补 MISSING_IN_RUNTIME 的登记。
+// 冲突键为迁移 000137 的复合唯一索引 uq_api_endpoints_scope（NULLS NOT DISTINCT）：
+// 归属四列未显式提供，取默认值 application_id/domain_id/application_binding_id=NULL、
+// host=”，protocol_type='REST'，规范登记的端点在统一归属（空）维度下按 endpoint_key 幂等。
 // 返回实际新登记数量。
 func registerSpecEndpointsTx(ctx context.Context, tx pgx.Tx, ops []SpecOperation) (int, error) {
 	registered := 0
@@ -867,7 +871,7 @@ func registerSpecEndpointsTx(ctx context.Context, tx pgx.Tx, ops []SpecOperation
 INSERT INTO api_endpoints (http_method, normalized_path, raw_path_example,
   directory_path, endpoint_key, api_confidence, is_api, hit_count, asset_status)
 VALUES ($1, $2, $2, $3, $4, 1, TRUE, 0, 'DISCOVERED')
-ON CONFLICT (endpoint_key) DO NOTHING`,
+ON CONFLICT (application_id, domain_id, application_binding_id, host, endpoint_key, protocol_type) DO NOTHING`,
 			op.Method, op.Path, specDirectoryOf(op.Path), op.Key)
 		if err != nil {
 			return registered, err
@@ -911,11 +915,23 @@ func boolOf(raw any) bool {
 }
 
 // parseStoredSpecOperations 从落库的规范化文档重新解析操作列表（CHANGED 对比/跨版本 diff 用）。
-// 落库内容必为 OAS3（导入时已规范化），解析失败视为内部数据异常。
+// openapi3/swagger2 落库内容已规范化为 OAS3，直接 ParseSpecOperations；
+// jsonschema/postman 落库为源文档，按 format 调对应解析器；graphql 从包装文档取 sdl。
+// 解析失败视为内部数据异常。
 func parseStoredSpecOperations(spec *ImportSpec) ([]SpecOperation, error) {
 	var doc map[string]any
 	if err := json.Unmarshal(spec.SpecJSON, &doc); err != nil {
 		return nil, fmt.Errorf("已存规范文档反序列化失败: %w", err)
 	}
-	return ParseSpecOperations(doc)
+	switch spec.Format {
+	case SpecFormatPostman:
+		return ParsePostmanCollection(doc)
+	case SpecFormatJSONSchema:
+		return ParseJSONSchema(doc)
+	case SpecFormatGraphQL:
+		sdl, _ := doc["sdl"].(string)
+		return ParseGraphQLSDL(sdl)
+	default:
+		return ParseSpecOperations(doc)
+	}
 }

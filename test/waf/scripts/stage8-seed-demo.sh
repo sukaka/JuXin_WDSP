@@ -114,19 +114,25 @@ for (m, p, app, dom, st, lst, hits, ago) in EPS:
     key = m + " " + p
     directory = p.rsplit("/", 1)[0] if "/" in p[1:] else ""
     confirmed = "now() - interval '%d days'" % ago if st == "CONFIRMED" else "NULL"
+    # 真实发现管道可能已建有同 endpoint_key 的 NULL 应用行（唯一键 NULL 互异，
+    # ON CONFLICT 不命中），用 IS NOT DISTINCT FROM 存在性守卫保证幂等。
     print(f"""INSERT INTO api_endpoints (id, application_id, domain_id, http_method, normalized_path,
   raw_path_example, directory_path, endpoint_key, api_confidence, asset_status, learning_status,
   is_api, hit_count, first_seen_at, last_seen_at, confirmed_at)
-VALUES ({q(eid)}, {q(app)}, {q(dom)}, {q(m)}, {q(p)}, {q(p)}, {q(directory)}, {q(key)},
+SELECT {q(eid)}, {q(app)}, {q(dom)}, {q(m)}, {q(p)}, {q(p)}, {q(directory)}, {q(key)},
   {0.62 + (len(p) % 30) / 100.0:.2f}, {q(st)}, {q(lst)}, TRUE, {hits},
-  now() - interval '{ago} days', now() - interval '{max(ago-1,0)} days', {confirmed})
-ON CONFLICT (endpoint_key) DO UPDATE SET
+  now() - interval '{ago} days', now() - interval '{max(ago-1,0)} days', {confirmed}
+WHERE NOT EXISTS (SELECT 1 FROM api_endpoints e WHERE e.endpoint_key={q(key)}
+  AND e.application_id IS NOT DISTINCT FROM {q(app)}::uuid
+  AND e.domain_id IS NOT DISTINCT FROM {q(dom)}::uuid)
+ON CONFLICT (application_id, domain_id, application_binding_id, host, endpoint_key, protocol_type) DO UPDATE SET
   application_id = EXCLUDED.application_id, domain_id = EXCLUDED.domain_id,
   directory_path = EXCLUDED.directory_path, asset_status = EXCLUDED.asset_status,
   learning_status = EXCLUDED.learning_status, hit_count = EXCLUDED.hit_count,
   confirmed_at = EXCLUDED.confirmed_at, updated_at = now();""")
 
-E = lambda k: "(SELECT id FROM api_endpoints WHERE endpoint_key=" + q(k) + ")"
+# 同 endpoint_key 可能并存发现管道的 NULL 应用行：优先取已绑定应用的种子行，恒单行。
+E = lambda k: "(SELECT id FROM api_endpoints WHERE endpoint_key=" + q(k) + " ORDER BY application_id NULLS LAST, created_at ASC LIMIT 1)"
 
 # ---------- 模型版本（orders 与 users 的 FORMAL 由真实 API 创建，这里造其余状态） ----------
 # (endpoint, version, status, schema, reason, days_ago)
@@ -294,26 +300,26 @@ ON CONFLICT (id) DO NOTHING;""")
 # ---------- 风险发现 ----------
 # (endpoint|None, type, severity, status, title, detail, days_ago)
 FDS = [
-    (E("GET /openapi/v2/status"), "SHADOW", "MEDIUM", "OPEN", "未登记的接口 /openapi/v2/status", {"signal":"lifecycle.new_endpoint"}, 1),
-    (E("GET /v1/ghost/ping"), "SHADOW", "HIGH", "OPEN", "未知来源调用 /v1/ghost/ping", {"signal":"no_known_endpoint"}, 1),
-    (E("POST /internal/debug/vars"), "SHADOW", "CRITICAL", "ACKNOWLEDGED", "疑似调试端点暴露", {"signal":"debug_path"}, 0),
+    (E("GET /openapi/v2/status"), "SHADOW", "MEDIUM", "NEW", "未登记的接口 /openapi/v2/status", {"signal":"lifecycle.new_endpoint"}, 1),
+    (E("GET /v1/ghost/ping"), "SHADOW", "HIGH", "NEW", "未知来源调用 /v1/ghost/ping", {"signal":"no_known_endpoint"}, 1),
+    (E("POST /internal/debug/vars"), "SHADOW", "CRITICAL", "IN_PROGRESS", "疑似调试端点暴露", {"signal":"debug_path"}, 0),
     (E("GET /v1/sitecheck/health"), "SHADOW", "LOW", "RESOLVED", "健康检查端点未登记", {}, 3),
-    (E("GET /v1/legacy/report"), "ZOMBIE", "MEDIUM", "OPEN", "废弃 45 天仍有调用", {"last_seen_days":45}, 2),
-    (E("GET /v1/sessions/{id}"), "ZOMBIE", "LOW", "ACKNOWLEDGED", "旧会话接口低频存活", {}, 5),
-    (E("GET /v1/legacy/report"), "DEPRECATED", "MEDIUM", "OPEN", "已标记 DEPRECATED 仍被调用", {"hits":5}, 2),
+    (E("GET /v1/legacy/report"), "ZOMBIE", "MEDIUM", "NEW", "废弃 45 天仍有调用", {"last_seen_days":45}, 2),
+    (E("GET /v1/sessions/{id}"), "ZOMBIE", "LOW", "IN_PROGRESS", "旧会话接口低频存活", {}, 5),
+    (E("GET /v1/legacy/report"), "DEPRECATED", "MEDIUM", "NEW", "已标记 DEPRECATED 仍被调用", {"hits":5}, 2),
     (E("POST /v1/auth/refresh"), "DEPRECATED", "LOW", "RESOLVED", "刷新令牌旧版本", {}, 6),
-    (E("GET /v1/users/{id}"), "BOLA", "HIGH", "OPEN", "无凭据访问对象段 /users/{id}", {"rule":"resource.unauthenticated_object_access"}, 1),
-    (E("GET /v1/users/{id}"), "BOLA", "MEDIUM", "ACKNOWLEDGED", "连续数字 ID 枚举疑似", {"id_range":"1001-1020"}, 2),
-    (E("GET /v1/inventory/{id}"), "BOLA", "MEDIUM", "OPEN", "库存对象跨身份访问", {}, 1),
-    (E("GET /v1/users/profile"), "BFLA", "HIGH", "OPEN", "低权限身份调用管理功能", {}, 1),
+    (E("GET /v1/users/{id}"), "BOLA", "HIGH", "NEW", "无凭据访问对象段 /users/{id}", {"rule":"resource.unauthenticated_object_access"}, 1),
+    (E("GET /v1/users/{id}"), "BOLA", "MEDIUM", "IN_PROGRESS", "连续数字 ID 枚举疑似", {"id_range":"1001-1020"}, 2),
+    (E("GET /v1/inventory/{id}"), "BOLA", "MEDIUM", "NEW", "库存对象跨身份访问", {}, 1),
+    (E("GET /v1/users/profile"), "BFLA", "HIGH", "NEW", "低权限身份调用管理功能", {}, 1),
     (E("GET /v1/metrics"), "BFLA", "MEDIUM", "FALSE_POSITIVE", "监控端点功能级越权误报", {}, 4),
-    (E("POST /v1/orders/{id}"), "SCHEMA_DEVIATION", "MEDIUM", "OPEN", "undefined field: coupon_ext", {"rule":"schema.undefined_field"}, 1),
-    (E("POST /v1/orders/{id}"), "SCHEMA_DEVIATION", "HIGH", "OPEN", "type mismatch: total(string)", {"rule":"schema.type_mismatch"}, 1),
-    (E("POST /v1/users/login"), "SCHEMA_DEVIATION", "LOW", "ACKNOWLEDGED", "missing field: captcha", {"rule":"schema.missing_field"}, 2),
+    (E("POST /v1/orders/{id}"), "SCHEMA_DEVIATION", "MEDIUM", "NEW", "undefined field: coupon_ext", {"rule":"schema.undefined_field"}, 1),
+    (E("POST /v1/orders/{id}"), "SCHEMA_DEVIATION", "HIGH", "NEW", "type mismatch: total(string)", {"rule":"schema.type_mismatch"}, 1),
+    (E("POST /v1/users/login"), "SCHEMA_DEVIATION", "LOW", "IN_PROGRESS", "missing field: captcha", {"rule":"schema.missing_field"}, 2),
     (E("GET /v1/users/{id}"), "SCHEMA_DEVIATION", "MEDIUM", "RESOLVED", "undefined field: avatar_url", {}, 3),
-    (E("GET /v1/users/{id}"), "SENSITIVE_LEAK", "HIGH", "OPEN", "响应明文返回手机号", {"field":"phone"}, 1),
-    (E("GET /v1/users/profile"), "SENSITIVE_LEAK", "CRITICAL", "OPEN", "响应明文返回身份证号", {"field":"id_card"}, 0),
-    (E("POST /v1/orders/{id}"), "BEHAVIOR_ANOMALY", "MEDIUM", "ACKNOWLEDGED", "单一身份突发高频调用（3x 基线）", {"rule":"behavior.rate_spike"}, 2),
+    (E("GET /v1/users/{id}"), "SENSITIVE_LEAK", "HIGH", "NEW", "响应明文返回手机号", {"field":"phone"}, 1),
+    (E("GET /v1/users/profile"), "SENSITIVE_LEAK", "CRITICAL", "NEW", "响应明文返回身份证号", {"field":"id_card"}, 0),
+    (E("POST /v1/orders/{id}"), "BEHAVIOR_ANOMALY", "MEDIUM", "IN_PROGRESS", "单一身份突发高频调用（3x 基线）", {"rule":"behavior.rate_spike"}, 2),
 ]
 for (ep, ftype, sev, st, title, detail, ago) in FDS:
     print(f"""INSERT INTO api_runtime_findings (id, endpoint_id, request_id, finding_type, severity, status,

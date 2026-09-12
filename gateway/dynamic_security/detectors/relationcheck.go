@@ -5,6 +5,10 @@
 //	MUTEX / EXCLUDES：A 与 B 互斥（同现 → schema.relation_mutex）；
 //	CO_OCCURS：统计共现（单侧出现 → schema.relation_cooccurs，仅 INFO 观察，决策引擎忽略，永不阻断）。
 //
+// 值比较关系（EQUALS/NOT_EQUALS/GREATER_THAN/LESS_THAN/TIME_BEFORE/TIME_AFTER）与数组聚合关系
+// （COUNT_MATCHES 数量一致 / SUM_MATCHES 汇总关系；任务书 §23 扩展，词表迁移 000147/000154/000159）
+// 由同包 relationvalue.go 实现：违例只产 OBSERVE 级信号，任何模式下不阻断。
+//
 // REQUIRES/MUTEX 违例在 PROTECT 升级 BLOCK 类（可定案阻断），OBSERVE/OFF 维持 OBSERVE 级观察
 // （与 schema.param_required 的类别语义一致——类别描述违例等级，模式决定是否执行）。
 // 证据只含参数名/路径/位置/关系类型，永不写原始值。
@@ -29,12 +33,12 @@ type ParamRelationRef struct {
 // ParamRelation 已确认参数条件关系（发布通道下发；server apimodels.ParamRelation 镜像）。
 type ParamRelation struct {
 	EndpointKey  string           `json:"endpoint_key"`  // 作用端点（METHOD + 空格 + 路径模板）
-	RelationType string           `json:"relation_type"` // REQUIRES / MUTEX / EXCLUDES / CO_OCCURS
+	RelationType string           `json:"relation_type"` // REQUIRES / MUTEX / EXCLUDES / CO_OCCURS / EQUALS / NOT_EQUALS / GREATER_THAN / LESS_THAN / TIME_BEFORE / TIME_AFTER / COUNT_MATCHES / SUM_MATCHES
 	ParamA       ParamRelationRef `json:"param_a"`
 	ParamB       ParamRelationRef `json:"param_b"`
 }
 
-// 关系类型词表（与发布侧迁移 000068 CHECK 一致）。
+// 存在性关系类型词表（与发布侧迁移 000068 CHECK 一致；值比较词表见 relationvalue.go，迁移 000147/000154）。
 const (
 	RelationTypeRequires = "REQUIRES"
 	RelationTypeMutex    = "MUTEX"
@@ -66,7 +70,9 @@ func ValidateParamRelations(rels []ParamRelation) error {
 		switch strings.ToUpper(r.RelationType) {
 		case RelationTypeRequires, RelationTypeMutex, RelationTypeExcludes, RelationTypeCoOccurs:
 		default:
-			return &RelationConfigError{Index: i, Reason: "未知 relation_type: " + r.RelationType}
+			if !valueRelationTypes[strings.ToUpper(r.RelationType)] {
+				return &RelationConfigError{Index: i, Reason: "未知 relation_type: " + r.RelationType}
+			}
 		}
 		if strings.TrimSpace(r.ParamA.Name) == "" || strings.TrimSpace(r.ParamB.Name) == "" {
 			return &RelationConfigError{Index: i, Reason: "参数引用 name 为空"}
@@ -121,6 +127,13 @@ func CheckParamRelations(ctx *dsctx.RequestContext, p *parser.Parsed, rels []Par
 					Evidence: relationEvidence(rel),
 				})
 			}
+		case RelationTypeEquals, RelationTypeNotEquals, RelationTypeGreaterThan, RelationTypeLessThan,
+			RelationTypeTimeBefore, RelationTypeTimeAfter:
+			// 值比较关系（relationvalue.go）：违例只产 OBSERVE 级信号，不阻断
+			checkValueRelation(ctx, p, rel)
+		case RelationTypeCountMatches, RelationTypeSumMatches:
+			// 数组聚合关系（relationvalue.go）：缺失/截断/类型不符不判定，违例仅 OBSERVE 级
+			checkAggregateRelation(ctx, p, rel)
 		default:
 			// 未知关系类型忽略（读取侧宽容）
 		}

@@ -21,7 +21,8 @@
         链解析（从右向左跳过连续可信代理，第一个非可信地址为客户端）
           ├─ 任一元素非法 → 回退连接源 + FORWARDED_HEADER_INVALID 事件
           ├─ 链长 > 16（可配）→ 回退连接源 + FORWARDED_CHAIN_TOO_LONG 事件
-          └─ 全链可信 → 取最左端声明
+          └─ 全链可信 → 最左端声明可被客户端注入（前置可信代理追加而非覆盖），
+             不采信，保守回落连接源 + TRUSTED_PROXY_INVALID 事件（action=CONNECTION_FALLBACK）
 ```
 
 ## 头解析细则
@@ -38,10 +39,14 @@
 - `X-Real-Ip` 强制覆盖为真实 IP（客户端传入值不被信任）；
 - 连接源 IP 保留于事件 `connection_ip` 字段。
 
-## 日志字段（访问控制事件）
+## 日志字段（访问控制事件与访问日志）
 
-`client_ip`、`connection_ip`、（事件内链摘要通过 message/截断值呈现）、`client_ip_source`
-来源枚举：`CONNECTION / X_FORWARDED_FOR / X_REAL_IP / FORWARDED / CUSTOM_HEADER`（体现在事件动作与伪造事件中）。
+`client_ip`、`connection_ip`，以及结构化三字段（网关 `events.Event` 与 `accessLogRecord` 上报，
+omitempty + 长度截断；服务端落 `access_control_events` 与 `access_logs`，迁移 000144）：
+
+- `client_ip_source`：识别来源枚举 `CONNECTION / X_FORWARDED_FOR / X_REAL_IP / FORWARDED / CUSTOM_HEADER`；
+- `trusted_proxy_used`：命中的可信代理名（未经可信代理解析时为空）；
+- `forwarded_chain_summary`：截断的代理链摘要（伪造/非法头场景为原始头值截断片段）。
 
 ## 测试（真实网关实测）
 

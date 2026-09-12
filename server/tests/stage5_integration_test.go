@@ -471,6 +471,78 @@ func TestStage5AccessRuleImport(t *testing.T) {
 	}
 }
 
+// TestStage5AccessRuleDraftWorkflow §8.1 DRAFT 状态：导入落 DRAFT、不参与 ACTIVE 生效集、
+// 非法流转 400（草稿停用）、显式启用后进入 ACTIVE。
+func TestStage5AccessRuleDraftWorkflow(t *testing.T) {
+	env := setupTestEnv(t)
+	cookies, csrf := env.s5Login(t, "s5draft", "SECURITY_ADMIN")
+
+	listByStatus := func(address, status string) apiRespPage5 {
+		resp := env.get(t, "/api/v1/access-rules?address="+address+"&status="+status, cookies)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("list rules status=%s http = %d", status, resp.StatusCode)
+		}
+		var page apiRespPage5
+		readJSON(t, resp, &page)
+		return page
+	}
+
+	// 文本导入 2 个地址（ALL_OR_NOTHING）→ 全部落 DRAFT
+	addr1, addr2 := "203.0.113.140", "203.0.113.141"
+	resp := env.post(t, "/api/v1/access-rules/import",
+		fmt.Sprintf(`{"content":"%s\n%s\n","format":"text","mode":"ALL_OR_NOTHING","rule_type":"DENY","scope_type":"GLOBAL"}`,
+			addr1, addr2), cookies, csrf)
+	result := s5OK(t, resp, "import draft rules")
+	if s5Num(t, result.Data, "imported") != 2 {
+		t.Fatalf("imported = %v, want 2", result.Data["imported"])
+	}
+	if result.Data["status"] != "DRAFT" {
+		t.Errorf("import result status = %v, want DRAFT", result.Data["status"])
+	}
+
+	// DRAFT 可过滤、ACTIVE 生效集不含导入规则（发布快照只取 ACTIVE）
+	page := listByStatus(addr1, "DRAFT")
+	if page.Data.Total != 1 || len(page.Data.Items) != 1 {
+		t.Fatalf("status=DRAFT list total = %d, want 1", page.Data.Total)
+	}
+	rule := page.Data.Items[0]
+	if rule["status"] != "DRAFT" || rule["source_type"] != "IMPORT" {
+		t.Errorf("imported rule status=%v source_type=%v, want DRAFT/IMPORT", rule["status"], rule["source_type"])
+	}
+	ruleID, _ := rule["id"].(string)
+	if ruleID == "" {
+		t.Fatal("draft rule id empty")
+	}
+	if page := listByStatus(addr1, "ACTIVE"); page.Data.Total != 0 {
+		t.Errorf("status=ACTIVE list total = %d, want 0（DRAFT 不进生效集）", page.Data.Total)
+	}
+
+	// 非法流转：DRAFT → DISABLED → 400
+	resp = env.post(t, "/api/v1/access-rules/"+ruleID+"/disable", "", cookies, csrf)
+	s5Expect(t, resp, http.StatusBadRequest, "disable draft rule")
+
+	// 显式启用 → ACTIVE，进入生效集
+	resp = env.post(t, "/api/v1/access-rules/"+ruleID+"/enable", "", cookies, csrf)
+	s5Expect(t, resp, http.StatusOK, "enable draft rule")
+	resp = env.get(t, "/api/v1/access-rules/"+ruleID, cookies)
+	result = s5OK(t, resp, "get enabled draft rule")
+	if s5Obj(t, result, "rule")["status"] != "ACTIVE" {
+		t.Errorf("status after enable = %v, want ACTIVE", s5Obj(t, result, "rule")["status"])
+	}
+	if page := listByStatus(addr1, "ACTIVE"); page.Data.Total != 1 {
+		t.Errorf("status=ACTIVE list total after enable = %d, want 1", page.Data.Total)
+	}
+
+	// 审计：enable 操作已记录（低风险）
+	var auditCount int
+	if err := env.db.QueryRow(context.Background(),
+		`SELECT count(*) FROM operation_audits WHERE module='access_control' AND action='enable' AND object_id=$1`,
+		ruleID).Scan(&auditCount); err != nil || auditCount < 1 {
+		t.Errorf("enable audit count = %d, err=%v, want >=1", auditCount, err)
+	}
+}
+
 // TestStage5AccessRuleExport 规则导出 CSV：表头、Content-Type 与公式注入转义。
 func TestStage5AccessRuleExport(t *testing.T) {
 	env := setupTestEnv(t)
@@ -661,6 +733,43 @@ func TestStage5AccessControlEventsList(t *testing.T) {
 	if body == "" {
 		t.Errorf("events export body empty (should at least contain header)")
 	}
+}
+
+// TestStage5AccessRuleEvents 规则关联事件（§8.5）：GET /api/v1/access-rules/{id}/events。
+func TestStage5AccessRuleEvents(t *testing.T) {
+	env := setupTestEnv(t)
+	cookies, csrf := env.s5Login(t, "s5sec", "SECURITY_ADMIN")
+	sysCookies, _ := env.s5Login(t, "s5sys", "SYSTEM_ADMIN")
+
+	// 建一条规则作为关联键
+	resp := env.post(t, "/api/v1/access-rules",
+		`{"name":"关联事件测试规则","rule_type":"DENY","scope_type":"GLOBAL","address":"203.0.113.77","validity_type":"PERMANENT","reason":"关联事件测试"}`,
+		cookies, csrf)
+	created := s5OK(t, resp, "create rule for events")
+	rule, _ := created.Data["rule"].(map[string]interface{})
+	id, _ := rule["id"].(string)
+	if id == "" {
+		t.Fatalf("rule id missing: %v", created.Data)
+	}
+
+	// 关联事件分页结构（无事件时为空列表）
+	resp = env.get(t, "/api/v1/access-rules/"+id+"/events", cookies)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list rule events status = %d, body: %s", resp.StatusCode, readBodyString(t, resp))
+	}
+	var page apiRespPage5
+	readJSON(t, resp, &page)
+	if page.Code != "SUCCESS" || page.Data.Page != 1 || page.Data.PageSize != 20 {
+		t.Errorf("page struct code=%s page=%d page_size=%d", page.Code, page.Data.Page, page.Data.PageSize)
+	}
+
+	// 非法规则 ID → 400；非法时间参数 → 400
+	s5Expect(t, env.get(t, "/api/v1/access-rules/not-a-uuid/events", cookies), http.StatusBadRequest, "rule events invalid id")
+	s5Expect(t, env.get(t, "/api/v1/access-rules/"+id+"/events?start_time=bad", cookies), http.StatusBadRequest, "rule events invalid start_time")
+
+	// 系统管理员无 access_rules.read → 403
+	s5Expect(t, env.get(t, "/api/v1/access-rules/"+id+"/events", sysCookies), http.StatusForbidden, "system admin rule events")
 }
 
 // TestStage5VersionsList 访问控制配置版本列表分页结构。
@@ -886,4 +995,93 @@ func TestStage5CertificateBindUnbind(t *testing.T) {
 	resp = env.post(t, fmt.Sprintf("/api/v1/certificates/%s/unbind", certID),
 		fmt.Sprintf(`{"application_id":%q}`, appID), cookies, csrf)
 	s5OK(t, resp, "unbind certificate")
+}
+
+// TestS5BlacklistFromEvent §十一：事件→黑名单全链路——预填聚合 + SECURITY_EVENT 来源创建。
+func TestS5BlacklistFromEvent(t *testing.T) {
+	env := setupTestEnv(t)
+	ctx := context.Background()
+	cookies, csrf := env.s5Login(t, "s5blk", "SECURITY_ADMIN")
+
+	// 种子事件：client_ip 198.51.100.77，HIGH 严重度 + 一条规则匹配
+	eventID := uuid.New()
+	if _, err := env.db.Exec(ctx, `INSERT INTO security_events
+(id, request_id, occurred_at, domain, client_ip, request_method, request_uri, request_path,
+ attack_type, severity, action, rule_match_count)
+VALUES ($1, $2, now(), 'shop.example.com', '198.51.100.77'::inet, 'POST', '/api/orders',
+ '/api/orders', 'SQL_INJECTION', 'HIGH', 'BLOCK', 1)`, eventID, "req-"+s5Rand()); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	if _, err := env.db.Exec(ctx, `INSERT INTO security_event_matches
+(event_id, event_occurred_at, rule_id, rule_name)
+VALUES ($1, (SELECT occurred_at FROM security_events WHERE id=$1), 942100, 'SQL Injection Attack')`, eventID); err != nil {
+		t.Fatalf("insert match: %v", err)
+	}
+
+	// 预填：聚合字段与建议时长（HIGH 单事件 → 24h）
+	result := s5OK(t, env.get(t,
+		"/api/v1/security-events/"+eventID.String()+"/blacklist-prefill", cookies), "blacklist prefill")
+	prefill := s5Obj(t, result, "prefill")
+	if prefill["address"] != "198.51.100.77" || prefill["rule_type"] != "DENY" {
+		t.Errorf("prefill address/rule_type = %v/%v", prefill["address"], prefill["rule_type"])
+	}
+	if s5Num(t, prefill, "related_event_count_24h") != 1 {
+		t.Errorf("related_event_count_24h = %v, want 1", prefill["related_event_count_24h"])
+	}
+	if s5Num(t, prefill, "suggested_duration_hours") != 24 {
+		t.Errorf("suggested_duration_hours = %v, want 24（HIGH 基础档）", prefill["suggested_duration_hours"])
+	}
+	if hitRules, _ := prefill["hit_rules"].([]interface{}); len(hitRules) != 1 {
+		t.Errorf("hit_rules = %v, want 1 条", hitRules)
+	}
+	if prefill["protected_hit"] != false {
+		t.Errorf("protected_hit = %v, want false", prefill["protected_hit"])
+	}
+	if _, exists := prefill["shared_egress_hint"]; exists {
+		t.Errorf("无身份数据时 shared_egress_hint 应省略（不编造），实际为 %v", prefill["shared_egress_hint"])
+	}
+
+	// 事件不存在 → 404；无效 ID → 400
+	s5Expect(t, env.get(t, "/api/v1/security-events/"+uuid.NewString()+"/blacklist-prefill", cookies),
+		http.StatusNotFound, "prefill missing event")
+	s5Expect(t, env.get(t, "/api/v1/security-events/not-a-uuid/blacklist-prefill", cookies),
+		http.StatusBadRequest, "prefill invalid id")
+
+	// 确认创建：source_type=SECURITY_EVENT + source_event_id 落库
+	until := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	resp := env.post(t, "/api/v1/access-rules",
+		fmt.Sprintf(`{"name":"事件封禁-198.51.100.77","rule_type":"DENY","scope_type":"GLOBAL",
+"address":"198.51.100.77","validity_type":"TEMPORARY","effective_until":%q,"reason":"安全事件联动封禁",
+"source_type":"SECURITY_EVENT","source_event_id":%q}`, until, eventID.String()), cookies, csrf)
+	result = s5OK(t, resp, "create deny rule from event")
+	rule := s5Obj(t, result, "rule")
+	if rule["source_type"] != "SECURITY_EVENT" || rule["source_event_id"] != eventID.String() {
+		t.Errorf("rule source = %v/%v, want SECURITY_EVENT/%s",
+			rule["source_type"], rule["source_event_id"], eventID)
+	}
+
+	// 白名单：伪造内部来源 IMPORT 拒绝；SECURITY_EVENT 缺 source_event_id 拒绝；事件不存在拒绝
+	s5Expect(t, env.post(t, "/api/v1/access-rules",
+		fmt.Sprintf(`{"name":"x-%s","rule_type":"DENY","address":"203.0.113.1","reason":"t","source_type":"IMPORT"}`, s5Rand()),
+		cookies, csrf), http.StatusBadRequest, "forge IMPORT source rejected")
+	s5Expect(t, env.post(t, "/api/v1/access-rules",
+		fmt.Sprintf(`{"name":"x-%s","rule_type":"DENY","address":"203.0.113.2","reason":"t","source_type":"SECURITY_EVENT"}`, s5Rand()),
+		cookies, csrf), http.StatusBadRequest, "SECURITY_EVENT without event id rejected")
+	s5Expect(t, env.post(t, "/api/v1/access-rules",
+		fmt.Sprintf(`{"name":"x-%s","rule_type":"DENY","address":"203.0.113.3","reason":"t","source_type":"SECURITY_EVENT","source_event_id":%q}`,
+			s5Rand(), uuid.NewString()), cookies, csrf),
+		http.StatusBadRequest, "SECURITY_EVENT with missing event rejected")
+	// MANUAL 不允许携带 source_event_id
+	s5Expect(t, env.post(t, "/api/v1/access-rules",
+		fmt.Sprintf(`{"name":"x-%s","rule_type":"DENY","address":"203.0.113.4","reason":"t","source_type":"MANUAL","source_event_id":%q}`,
+			s5Rand(), eventID.String()), cookies, csrf),
+		http.StatusBadRequest, "MANUAL with event id rejected")
+	// 预填接口权限：无 access_rules.manage 权限角色 → 403（角色表无 AUDITOR 种子，自建无权限角色）
+	if _, err := env.db.Exec(context.Background(),
+		`INSERT INTO roles (code, name, description) VALUES ('S5_NOPERM','无权限角色','事件联动权限测试') ON CONFLICT (code) DO NOTHING`); err != nil {
+		t.Fatalf("seed noperm role: %v", err)
+	}
+	roCookies, _ := env.s5Login(t, "s5blkro", "S5_NOPERM")
+	s5Expect(t, env.get(t, "/api/v1/security-events/"+eventID.String()+"/blacklist-prefill", roCookies),
+		http.StatusForbidden, "prefill without access_rules.manage")
 }

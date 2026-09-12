@@ -13,8 +13,8 @@ import (
 	"time"
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
-	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
+	dsmetrics "github.com/jiuzhang-waf/gateway/dynamic_security/metrics"
 )
 
 // Record 统一运行时主事件 + 端点发现信息（采集端据此写 api_runtime_events 并 upsert 端点资产）。
@@ -40,13 +40,16 @@ type Record struct {
 	// 采集端按缺省 REST 口径消费 api_endpoints.protocol_type）。
 	Protocol string `json:"protocol,omitempty"`
 	// ClientIP guard 识别的真实客户端 IP（入口已改写 RemoteAddr；空 = 不可得）。
-	ClientIP      string                `json:"client_ip,omitempty"`
-	IsAPI         bool                  `json:"is_api"`
-	APIConfidence float64               `json:"api_confidence,omitempty"`
-	RiskScore     int                   `json:"risk_score"`
-	RiskLevel     string                `json:"risk_level"`
-	FinalAction   string                `json:"final_action"`
-	Details       []dsctx.DetectorMatch `json:"details"`
+	ClientIP      string  `json:"client_ip,omitempty"`
+	IsAPI         bool    `json:"is_api"`
+	APIConfidence float64 `json:"api_confidence,omitempty"`
+	// APILevel §8.2 四级识别标签（CONFIRMED_API/PROBABLE_API/POSSIBLE_API/NON_API；
+	// 与 IsAPI/APIConfidence 同源同分、仅粒度不同；空 = 管线未产出分类，键省略零变化）。
+	APILevel    string                `json:"api_level,omitempty"`
+	RiskScore   int                   `json:"risk_score"`
+	RiskLevel   string                `json:"risk_level"`
+	FinalAction string                `json:"final_action"`
+	Details     []dsctx.DetectorMatch `json:"details"`
 	// ResponseStatus 响应状态码：API 流量事件在响应完成后输出，为真实状态码；
 	// 阻断类动作按决策映射 403/429；非 API 命中事件仍在响应前输出，置 0（未采集）。
 	ResponseStatus int `json:"response_status"`
@@ -62,10 +65,18 @@ type Record struct {
 	// IP 属环境维度，不得冒充身份（docs/API_MICRO_MODELS.md §2.2）。
 	IdentityFingerprint string `json:"identity_fingerprint,omitempty"`
 	// AuthType 认证方式（bearer_or_basic / api_key / cookie_session；空 = 匿名或未识别）。
-	AuthType    string `json:"auth_type,omitempty"`
-	GatewayNode string `json:"gateway_node_id"`
-	// ParamObservations 参数值脱敏观测（length/hash/num；无明文），供管理面回填 statistics。
-	ParamObservations []detectors.ParamObservation `json:"param_observations,omitempty"`
+	AuthType string `json:"auth_type,omitempty"`
+	// DeviceFingerprint 被动客户端指纹（任务书 §7：UA/Accept 族 HMAC 哈希，
+	// 低熵群体特征非设备唯一标识；空 = UA 缺失未计算，键省略零变化）。
+	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
+	// ObjectIdentifiers 对象标识哈希集合（任务书 §7：路径位置参数 + body 主键字段；
+	// 只记哈希不落明文，Emit 时封顶 dsctx.MaxObjectIdentifiers）。
+	ObjectIdentifiers []dsctx.ObjectIdentifier `json:"object_identifiers,omitempty"`
+	GatewayNode       string                   `json:"gateway_node_id"`
+	// ParamObservations 参数值脱敏观测（length/hash/num + §16/§17 扩展：null 标记/
+	// 字符直方图增量/前后缀脱敏哈希；无明文），供管理面回填 api_parameter_value_obs
+	// 与 statistics。扩展字段 omitempty，旧版网关上报与新版采集端互相容忍。
+	ParamObservations []ParamObservation `json:"param_observations,omitempty"`
 	// ResponseObservations 响应结构观测（P0-06：一级字段路径→类型 + status/content_type/
 	// body_size；不落值），供管理面按 端点×状态码 合并学习 api_response_schemas；
 	// 仅 API 流量且捕获到合法 JSON 时携带，无观测时键省略（事件零变化）。
@@ -113,6 +124,7 @@ const (
 	maxLLMModelLen       = 128
 	maxProtoLen          = 32
 	maxTraceIDLen        = 32
+	maxObjIDParamLen     = 128
 	authzObjectRefHexLen = 64
 )
 
@@ -212,6 +224,16 @@ func (l *Logger) Emit(e Record) error {
 	e.Domain = sanitize(e.Domain, maxDomainLen)
 	e.Proto = sanitize(e.Proto, maxProtoLen)
 	e.Protocol = sanitize(e.Protocol, maxProtoLen)
+	e.APILevel = sanitize(e.APILevel, maxProtoLen)
+	e.DeviceFingerprint = sanitize(e.DeviceFingerprint, maxVersionLen)
+	if len(e.ObjectIdentifiers) > dsctx.MaxObjectIdentifiers {
+		e.ObjectIdentifiers = e.ObjectIdentifiers[:dsctx.MaxObjectIdentifiers]
+	}
+	for i := range e.ObjectIdentifiers {
+		e.ObjectIdentifiers[i].Source = sanitize(e.ObjectIdentifiers[i].Source, maxProtoLen)
+		e.ObjectIdentifiers[i].Param = sanitize(e.ObjectIdentifiers[i].Param, maxObjIDParamLen)
+		e.ObjectIdentifiers[i].ValueHash = sanitize(e.ObjectIdentifiers[i].ValueHash, maxVersionLen)
+	}
 	if e.LLMObservation != nil {
 		e.LLMObservation.Model = sanitize(e.LLMObservation.Model, maxLLMModelLen)
 	}
@@ -275,6 +297,7 @@ func (l *Logger) Emit(e Record) error {
 	default:
 		dropped = true // 队列满：丢新事件，计数随节流窗口汇总上报
 	}
+	dsmetrics.SetEventBacklog(int64(len(l.queue)))
 	return l.asyncReport(dropped)
 }
 
@@ -360,6 +383,7 @@ func (l *Logger) writer() {
 			case data := <-l.queue:
 				_, err := l.f.Write(data)
 				l.writeTok <- struct{}{}
+				dsmetrics.SetEventBacklog(int64(len(l.queue)))
 				if err != nil {
 					l.mu.Lock()
 					l.writeErr = err
@@ -374,6 +398,7 @@ func (l *Logger) writer() {
 			}
 		}
 	drained:
+		dsmetrics.SetEventBacklog(0)
 		select {
 		case <-l.notify:
 		case <-l.done:

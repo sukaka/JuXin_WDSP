@@ -108,6 +108,13 @@ func checkAuthorization(ctx *dsctx.RequestContext, v string) {
 	scheme := parts[0]
 	token := strings.TrimSpace(parts[1])
 	if !reAuthScheme.MatchString(scheme) {
+		// HMAC 签名识别（任务书 §35 识别项「HMAC签名」）：AWS SigV4 / Hawk / 通用 HMAC
+		// 的凭据为结构化签名参数而非 Base64 token，属合法认证形态，不判 malformed，
+		// 改记 INFO 识别明细并精确化 AuthenticationType。
+		if isHMACSignatureScheme(scheme) {
+			checkHMACSignatureCredential(ctx, clipScheme(strings.ToLower(scheme)), token)
+			return
+		}
 		malformed("unsupported_scheme", clipScheme(scheme))
 		return
 	}
@@ -247,6 +254,54 @@ func claimUnix(v any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// isHMACSignatureScheme 识别 HMAC 签名类 Authorization scheme（AWS SigV4
+// "AWS4-HMAC-SHA256"、Hawk、通用 "HMAC"；大小写不敏感）。
+func isHMACSignatureScheme(scheme string) bool {
+	s := strings.ToLower(strings.TrimSpace(scheme))
+	return s == "hawk" || s == "hmac" || strings.HasPrefix(s, "aws4-hmac-")
+}
+
+// checkHMACSignatureCredential HMAC 签名凭据结构检查与识别打标：
+// 空凭据 → 弱凭据；凭据非 k=v 结构化参数（签名方案均为逗号分隔 k=v 对）→ 弱凭据；
+// 结构正常 → INFO 识别明细（决策引擎忽略 INFO，不影响定案），并把
+// AuthenticationType 从粗粒度 bearer_or_basic 精确化为 hmac_signature。
+// 凭据值（含 Signature/mac 参数）不出本函数作用域，证据只含 scheme。
+func checkHMACSignatureCredential(ctx *dsctx.RequestContext, scheme, token string) {
+	if token == "" {
+		ctx.AddMatch(dsctx.DetectorMatch{
+			Detector:   "authentication",
+			RuleID:     "auth.weak_credential",
+			Category:   "OBSERVE",
+			Severity:   "LOW",
+			Message:    "weak credential",
+			Evidence:   map[string]string{"header": "authorization", "scheme": scheme, "length_bucket": lengthBucket(0), "reason": "empty_token"},
+			ScoreDelta: 5,
+		})
+		return
+	}
+	if !strings.Contains(token, "=") {
+		ctx.AddMatch(dsctx.DetectorMatch{
+			Detector:   "authentication",
+			RuleID:     "auth.weak_credential",
+			Category:   "OBSERVE",
+			Severity:   "LOW",
+			Message:    "weak credential",
+			Evidence:   map[string]string{"header": "authorization", "scheme": scheme, "length_bucket": lengthBucket(len(token)), "reason": "not_key_value_pairs"},
+			ScoreDelta: 5,
+		})
+		return
+	}
+	ctx.AuthenticationType = "hmac_signature"
+	ctx.AddMatch(dsctx.DetectorMatch{
+		Detector: "identity",
+		RuleID:   "identity.hmac_signature_present",
+		Category: "INFO",
+		Severity: "INFO",
+		Message:  "hmac signature credential present",
+		Evidence: map[string]string{"header": "authorization", "scheme": scheme},
+	})
 }
 
 // clipScheme scheme 截断（异常输入可能极长，证据侧只留前缀）。

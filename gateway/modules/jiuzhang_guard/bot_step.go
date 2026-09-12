@@ -46,6 +46,10 @@ func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next cad
 		RequestID:    base.RequestID,
 		ClientIP:     res.ClientIP.String(),
 		ConnectionIP: res.ConnectionIP.String(),
+		// 阶段5 §6.5 三字段（与 eventBase 同口径）
+		ClientIPSource:        string(res.Source),
+		TrustedProxyUsed:      res.TrustedProxyUsed,
+		ForwardedChainSummary: res.ChainSummary,
 	}
 	cc.RecordTerminal = func(action string, status int, committed bool, reasons []string) {
 		dispo.RecordTerminal(ExecutorBot, action, status, committed, reasons,

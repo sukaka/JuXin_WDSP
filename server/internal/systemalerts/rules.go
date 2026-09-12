@@ -4,19 +4,23 @@ package systemalerts
 
 // 告警类型（任务书 §11.1）
 const (
-	TypeGatewayDown             = "GATEWAY_DOWN"
-	TypeManagementAPIDown       = "MANAGEMENT_API_DOWN"
-	TypeDatabaseUnavailable     = "DATABASE_UNAVAILABLE"
-	TypeValkeyUnavailable       = "VALKEY_UNAVAILABLE"
-	TypeEventCollectorLag       = "EVENT_COLLECTOR_LAG"
-	TypeParseFailureRateHigh    = "EVENT_PARSE_FAILURE_RATE_HIGH"
-	TypeSourceUnhealthy         = "SOURCE_UNHEALTHY"
-	TypeCertificateExpiring     = "CERTIFICATE_EXPIRING"
-	TypeCertificateExpired      = "CERTIFICATE_EXPIRED"
-	TypeConfigPublishFailed     = "CONFIG_PUBLISH_FAILED"
-	TypeConfigHashMismatch      = "CONFIG_HASH_MISMATCH"
-	TypeDiskSpaceLow            = "DISK_SPACE_LOW"
-	TypeDatabaseCapacityHigh    = "DATABASE_CAPACITY_HIGH"
+	TypeGatewayDown          = "GATEWAY_DOWN"
+	TypeManagementAPIDown    = "MANAGEMENT_API_DOWN"
+	TypeDatabaseUnavailable  = "DATABASE_UNAVAILABLE"
+	TypeValkeyUnavailable    = "VALKEY_UNAVAILABLE"
+	TypeEventCollectorLag    = "EVENT_COLLECTOR_LAG"
+	TypeParseFailureRateHigh = "EVENT_PARSE_FAILURE_RATE_HIGH"
+	TypeSourceUnhealthy      = "SOURCE_UNHEALTHY"
+	TypeCertificateExpiring  = "CERTIFICATE_EXPIRING"
+	TypeCertificateExpired   = "CERTIFICATE_EXPIRED"
+	TypeConfigPublishFailed  = "CONFIG_PUBLISH_FAILED"
+	TypeConfigHashMismatch   = "CONFIG_HASH_MISMATCH"
+	TypeDiskSpaceLow         = "DISK_SPACE_LOW"
+	TypeDatabaseCapacityHigh = "DATABASE_CAPACITY_HIGH"
+	// 文件句柄使用率告警（阶段6 §10.2 补齐）：runtimehealth 采集器按
+	// Options.FDUsageHighPercent（默认 80%）判 API 组件降级并产出 fd_usage_percent
+	// 指标；快照→告警映射挂接在评估器（同 DISK_SPACE_LOW 模式）。
+	TypeFDUsageHigh             = "FD_USAGE_HIGH"
 	TypeBackupFailed            = "BACKUP_FAILED"
 	TypeRestoreValidationFailed = "RESTORE_VALIDATION_FAILED"
 	TypeReportFailed            = "REPORT_FAILED"
@@ -129,6 +133,7 @@ var severityRules = map[string]string{
 	TypeConfigHashMismatch:      SeverityMedium,
 	TypeDiskSpaceLow:            SeverityHigh,
 	TypeDatabaseCapacityHigh:    SeverityMedium,
+	TypeFDUsageHigh:             SeverityHigh, // 句柄耗尽直接拒绝新连接，参照 DISK_SPACE_LOW 档
 	TypeBackupFailed:            SeverityHigh,
 	TypeRestoreValidationFailed: SeverityHigh,
 	TypeReportFailed:            SeverityMedium,

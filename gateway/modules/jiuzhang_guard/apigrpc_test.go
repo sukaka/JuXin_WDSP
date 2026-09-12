@@ -173,7 +173,9 @@ func TestServeNext_GRPCCompressionObserve(t *testing.T) {
 	t.Fatalf("grpc.unexpected_compression missing: %+v", recs[0].Details)
 }
 
-// 非 gRPC 事件：protocol 字段省略、proto 字段存在（HTTP/1.1）。
+// 非 gRPC 事件：proto 字段存在（HTTP/1.1）；§9 词表扩展后 API 分类命中的 JSON
+// 流量按 REST_JSON 落 protocol（原断言为省略——彼时仅 GRPC 等结构性协议打标，
+// 通用 REST 族打标为词表扩展后的新行为）。
 func TestServeNext_NonGRPCProtoVisibility(t *testing.T) {
 	g, logPath := newAPITestGuard(t, "OBSERVE", map[string]map[string]string{"POST /v1/orders": {"id": "number"}})
 
@@ -191,8 +193,8 @@ func TestServeNext_NonGRPCProtoVisibility(t *testing.T) {
 	if len(recs) != 1 {
 		t.Fatalf("want 1 api event, got %d", len(recs))
 	}
-	if recs[0].Protocol != "" {
-		t.Fatalf("non-grpc event must omit protocol, got %q", recs[0].Protocol)
+	if recs[0].Protocol != "REST_JSON" {
+		t.Fatalf("json api event protocol = %q, want REST_JSON", recs[0].Protocol)
 	}
 	if recs[0].Proto != "HTTP/1.1" {
 		t.Fatalf("proto = %q, want HTTP/1.1", recs[0].Proto)

@@ -211,7 +211,7 @@ WHERE tablename='api_runtime_findings' AND indexname='idx_api_runtime_findings_d
 	if _, err := env.db.Exec(ctx, `
 INSERT INTO api_endpoints (endpoint_key, http_method, normalized_path, api_confidence, is_api, asset_status)
 VALUES ($1, 'GET', '/s8`+rid+`/shadow/{id}', 0.9, true, 'DISCOVERED')
-ON CONFLICT (endpoint_key) DO NOTHING`, epKey); err != nil {
+ON CONFLICT (application_id, domain_id, application_binding_id, host, endpoint_key, protocol_type) DO NOTHING`, epKey); err != nil {
 		t.Fatalf("seed endpoint: %v", err)
 	}
 

@@ -58,11 +58,13 @@ apiruntime.Collector.CollectOnce（collector.go:198；2s 轮询、断点续传�
        SavePrimary → api_runtime_events（按 request_id 幂等）
 ```
 
-`UpsertDiscovery`（`apiassets/store.go:197-219`）以 `endpoint_key =
-METHOD + 空格 + path_template` 为幂等键：
+`UpsertDiscovery`（`apiassets/store.go:323-365`）以 `endpoint_key =
+METHOD + 空格 + path_template` 为身份键，配合复合作用域唯一索引
+`uq_api_endpoints_scope`（迁移 000137）幂等入库：
 
 - 首次：`INSERT ... asset_status='DISCOVERED', hit_count=1`；
-- 再次命中：`ON CONFLICT (endpoint_key) DO UPDATE`——`hit_count+1`、
+- 再次命中：`ON CONFLICT (application_id, domain_id, application_binding_id,
+  host, endpoint_key, protocol_type) DO UPDATE`——`hit_count+1`、
   `last_seen_at=now()`、`api_confidence` 取两者较大值；
 - 采集器重放、多网关节点上报同一键均不产生重复API。
 

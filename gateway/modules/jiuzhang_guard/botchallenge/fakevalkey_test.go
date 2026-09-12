@@ -225,6 +225,11 @@ func (l *fakeLimiter) Allow(_ context.Context, key string, _ ratelimit.Algorithm
 	return ratelimit.Result{Allowed: true}, nil
 }
 
+// Peek 调试回显只读查询的替身实现（botchallenge 测试不消费，固定返回不存在）。
+func (l *fakeLimiter) Peek(_ context.Context, _ string, _ ratelimit.Algorithm, _ int64, _ time.Duration, _ int64) (int64, bool, error) {
+	return 0, false, nil
+}
+
 // denyAll 让所有携带指定维度子串的键拒绝（如 "iss-sess" / "vfy-ip"）。
 func (l *fakeLimiter) deny(substr string) { l.denyKeys[substr] = true }
 

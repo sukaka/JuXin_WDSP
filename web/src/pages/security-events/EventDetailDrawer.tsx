@@ -24,6 +24,7 @@ import { useProductStore } from '../../stores/product'
 import { buildEventApmTraceHref } from '../../utils/apm'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
+import BlacklistFromEventModal from './BlacklistFromEventModal'
 import {
   ATTACK_TYPE_META,
   DISPOSITION_STATUS_META,
@@ -417,6 +418,7 @@ export default function EventDetailDrawer({
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canDispose = hasPermission(permissions, 'security_events.disposition')
   const canManageExceptions = hasPermission(permissions, 'exceptions.manage')
+  const canManageAccessRules = hasPermission(permissions, 'access_rules.manage')
   const canAiAnalyze = hasPermission(permissions, 'ai.event_analysis.use')
   const canAiFp = hasPermission(permissions, 'ai.false_positive_analysis.use')
   const canNoiseReduction = hasPermission(permissions, 'ai.noise_reduction.use')
@@ -424,6 +426,7 @@ export default function EventDetailDrawer({
   const apmEnabled = useProductStore((s) => s.apmEnabled)
   const canApmTraces = apmEnabled && hasPermission(permissions, 'apm.traces.read')
   const [noteText, setNoteText] = useState('')
+  const [blacklistOpen, setBlacklistOpen] = useState(false)
 
   const detailQuery = useQuery({
     queryKey: ['security-event', eventId],
@@ -813,7 +816,7 @@ export default function EventDetailDrawer({
             />
           )}
 
-          {(canDispose || canManageExceptions) && (
+          {(canDispose || canManageExceptions || canManageAccessRules) && (
             <>
               <Typography.Title level={5}>处置操作</Typography.Title>
               <Space direction="vertical" style={{ width: '100%' }}>
@@ -887,11 +890,20 @@ export default function EventDetailDrawer({
                     从事件创建例外草稿
                   </Button>
                 )}
+                {canManageAccessRules && evt.client_ip && (
+                  <Button danger onClick={() => setBlacklistOpen(true)}>
+                    加入黑名单
+                  </Button>
+                )}
               </Space>
             </>
           )}
         </>
       ) : null}
+      <BlacklistFromEventModal
+        eventId={blacklistOpen ? eventId : null}
+        onClose={() => setBlacklistOpen(false)}
+      />
     </Drawer>
   )
 }

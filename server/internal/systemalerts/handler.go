@@ -292,6 +292,57 @@ func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(b.String()))
 }
 
+// ListMaintenanceWindows 维护窗口列表（阶段6 §11.5）。
+func (h *Handler) ListMaintenanceWindows(w http.ResponseWriter, r *http.Request) {
+	list, err := h.store.ListMaintenanceWindows(r.Context())
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{"items": list, "total": len(list)})
+}
+
+// CreateMaintenanceWindow 创建维护窗口：参数校验 + 中风险审计。
+func (h *Handler) CreateMaintenanceWindow(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	var req maintenanceWindowInput
+	if err := response.DecodeJSON(w, r, &req, 8192); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, msg)
+		return
+	}
+	mw := req.toWindow(p.UserID)
+	if err := h.store.CreateMaintenanceWindow(r.Context(), mw); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAuditObj(r, p, "create", "system_alert_maintenance_window", mw.ID.String(), mw.Name, audits.ResultSuccess, audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, mw)
+}
+
+// DeleteMaintenanceWindow 删除维护窗口（中风险审计）。
+func (h *Handler) DeleteMaintenanceWindow(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的维护窗口ID")
+		return
+	}
+	if err := h.store.DeleteMaintenanceWindow(r.Context(), id); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "维护窗口不存在")
+			return
+		}
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAuditObj(r, p, "delete", "system_alert_maintenance_window", id.String(), "maintenance_window", audits.ResultSuccess, audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]string{"message": "维护窗口已删除"})
+}
+
 // csvCell CSV 单元格转义 + 公式注入防护（= + - @ 前导字符加单引号）。
 func csvCell(s string) string {
 	s = strings.ReplaceAll(s, "\r", " ")
@@ -362,6 +413,10 @@ func parseListFilter(w http.ResponseWriter, r *http.Request) (ListFilter, bool) 
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID, objName, result, risk string) {
+	h.recordAuditObj(r, p, action, "system_alert", objID, objName, result, risk)
+}
+
+func (h *Handler) recordAuditObj(r *http.Request, p *authz.Principal, action, objType, objID, objName, result, risk string) {
 	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:       &p.UserID,
 		Username:     p.Username,
@@ -370,7 +425,7 @@ func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID
 		UserAgent:    r.UserAgent(),
 		Module:       "system_alerts",
 		Action:       action,
-		ObjectType:   "system_alert",
+		ObjectType:   objType,
 		ObjectID:     objID,
 		ObjectName:   objName,
 		Result:       result,

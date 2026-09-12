@@ -30,6 +30,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/pipeline"
 )
 
@@ -127,6 +128,9 @@ func (d *Detector) HandleRequest(req *http.Request, meta FlowMeta, bodyTruncated
 	if res == nil || res.Skipped {
 		return
 	}
+	// 任务书 §7：设备指纹与对象标识哈希进统一上下文（parser 纯函数，零网络 IO）
+	res.Context.DeviceFingerprint = parser.DeriveDeviceFingerprint(d.cfg.IdentitySalt, req.Header)
+	res.Context.SetObjectIdentifiers(parser.ExtractObjectIdentifiers(res.Parsed, d.cfg.IdentitySalt))
 	d.emit(req, meta, res, bodyTruncated, time.Since(start))
 }
 
@@ -237,6 +241,9 @@ func (d *Detector) emit(req *http.Request, meta FlowMeta, res *pipeline.Result, 
 		// 镜像只还原请求侧：无真实响应状态码（契约 0 = 未采集）
 		ResponseStatus: 0,
 		LatencyMS:      elapsed.Milliseconds(),
+		// 任务书 §7：被动设备指纹与对象标识哈希（统一上下文快照，经 BuildPrimary 透传）
+		DeviceFingerprint: pe.DeviceFingerprint,
+		ObjectIdentifiers: pe.ObjectIdentifiers,
 	}
 	// 镜像来源标注：INFO 级明细注入首位（决策引擎跳过 INFO；消费方透传存储，零冲突）
 	rec.Details = append([]dsctx.DetectorMatch{
@@ -259,9 +266,12 @@ func (d *Detector) emit(req *http.Request, meta FlowMeta, res *pipeline.Result, 
 		// 隐私增强接线：值指纹 HMAC 加盐（MIRROR_IDENTITY_SALT）+ 默认敏感键名
 		// 抑制原值/哈希；旁路无发布通道值级规则（nil），编译失败保守回退兼容入口
 		if patterns, err := detectors.CompileSensitivePatterns(nil); err == nil {
-			rec.ParamObservations = detectors.CollectParamObservationsSecure(res.Parsed, d.cfg.IdentitySalt, patterns, nil)
+			rec.ParamObservations = apievents.ExtendParamObservations(
+				detectors.CollectParamObservationsSecure(res.Parsed, d.cfg.IdentitySalt, patterns, nil),
+				res.Parsed, d.cfg.IdentitySalt)
 		} else {
-			rec.ParamObservations = detectors.CollectParamObservations(res.Parsed)
+			rec.ParamObservations = apievents.ExtendParamObservations(
+				detectors.CollectParamObservations(res.Parsed), res.Parsed, d.cfg.IdentitySalt)
 		}
 	}
 	if err := d.events.Emit(rec); err != nil {

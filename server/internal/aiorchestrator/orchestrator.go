@@ -23,6 +23,12 @@ import (
 // 总结仅为可选润色，事实正文已由 Agent 确定性产出；超时立即降级，保证数秒内可返回。
 const composeLLMTimeout = 20 * time.Second
 
+// defaultMaxAutoContinues finish_reason=length 自动续写默认次数上限（TaskLimits.MaxAutoContinues=0 时生效）。
+const defaultMaxAutoContinues = 2
+
+// continueInstruction 自动续写指令：只追加剩余内容，不重复已输出部分。
+const continueInstruction = "刚才的回答因长度限制被截断，请直接从截断处继续输出剩余内容，不要重复已输出部分，不要重新总结。"
+
 // AnswerSummaryPromptCode 是回答总结器使用的已发布 Prompt 编码。
 // 未配置该 Prompt 时继续使用内置安全默认规则。
 const AnswerSummaryPromptCode = "orchestrator_answer_summary"
@@ -141,13 +147,15 @@ type TaskLimits struct {
 	MaxInputTokens int
 	// MaxOutputTokens 单次 LLM 调用输出上限（≤0 时回退默认值 256）。
 	MaxOutputTokens int
+	// MaxAutoContinues finish_reason=length 自动续写次数上限：0 取默认值 2，<0 关闭自动续写。
+	MaxAutoContinues int
 }
 
 // DefaultLimits 默认限制。
 func DefaultLimits() TaskLimits {
 	return TaskLimits{
 		MaxAgents: 4, MaxToolCalls: 20, MaxDuration: 120 * time.Second,
-		MaxInputTokens: 12000, MaxOutputTokens: 4096,
+		MaxInputTokens: 12000, MaxOutputTokens: 4096, MaxAutoContinues: defaultMaxAutoContinues,
 	}
 }
 
@@ -161,6 +169,12 @@ type CostRecorder interface {
 type HighCostQuotaChecker interface {
 	IsHighCostTask(taskType string, estimatedTokens int) bool
 	CheckHighCostQuota(ctx context.Context, userID uuid.UUID) error
+}
+
+// ContinueQuotaChecker 自动续写配额检查（可选能力，由 aicost.Recorder 实现）。
+// finish_reason=length 触发自动续写时逐次校验会话配额，超限即停止续写（不绕过 aicost 配额检查）。
+type ContinueQuotaChecker interface {
+	CheckQuota(ctx context.Context, userID uuid.UUID, roleCode string, estimatedInput int) error
 }
 
 // New 创建编排器。
@@ -205,7 +219,7 @@ func (o *Orchestrator) SetPromptLoader(f func(ctx context.Context, code string) 
 
 // Step 流式步骤（前端渲染任务过程）。
 type Step struct {
-	Kind    string      `json:"kind"` // plan / agent_start / tool / agent_done / composing / degraded / answer / evidence / error / done / compressed
+	Kind    string      `json:"kind"` // plan / agent_start / tool / agent_done / composing / degraded / continued / answer / evidence / error / done / compressed
 	Text    string      `json:"text"`
 	Payload interface{} `json:"payload,omitempty"`
 }
@@ -231,7 +245,10 @@ type RunResult struct {
 	Plan         Plan
 	Compressed   bool
 	InvalidCites []string
+	// FinishReason 模型真实结束原因（stop / length / cancelled 等）；length 表示达自动续写上限仍被截断，前端「继续输出」接管
 	FinishReason string
+	// AutoContinues 本轮 finish_reason=length 触发的自动续写次数（0 表示未续写）
+	AutoContinues int
 }
 
 // Run 执行一轮对话（含流式步骤）。
@@ -366,6 +383,9 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput, onStep StepFunc) (*
 		factText = "当前数据不足，无法确认。"
 	}
 	var answer string
+	// finishReason 透传模型真实结束原因（不再硬编码 stop）；autoContinues 记录自动续写次数
+	finishReason := "stop"
+	autoContinues := 0
 	if skipLLMCompose {
 		// 能力介绍等确定性模板无需 LLM 润色（避免本地慢模型拖慢秒回场景）
 		answer = factText
@@ -373,12 +393,14 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput, onStep StepFunc) (*
 		// 可选 LLM 润色：推送 composing 步骤，避免前端在 Agent 完成后长时间静默像卡死
 		_ = o.emit(onStep, Step{Kind: "composing", Text: "正在生成回答"})
 		var composeErr error
-		answer, composeErr = o.composeAnswer(ctx, plan, in.Message, factText, recent, sess.ContextSummary, o.loadMemories(ctx, in.UserID))
+		answer, finishReason, autoContinues, composeErr = o.composeAnswer(ctx, plan, in.Message, factText, recent, sess.ContextSummary, o.loadMemories(ctx, in.UserID), in.UserID, firstRoleCode(in.RoleCodes))
 		if composeErr != nil {
 			taskStatus = "PARTIAL_SUCCESS"
 			taskFailMsg = "模型总结不可用，已返回确定性事实"
 			slog.Warn("ai answer compose degraded", "task_id", taskID, "error", composeErr)
 			_ = o.emit(onStep, Step{Kind: "degraded", Text: "模型总结暂不可用，已降级为确定性事实回答"})
+		} else if autoContinues > 0 {
+			_ = o.emit(onStep, Step{Kind: "continued", Text: fmt.Sprintf("输出达到长度上限，已自动续写 %d 次", autoContinues)})
 		}
 	}
 
@@ -407,7 +429,7 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput, onStep StepFunc) (*
 
 	return &RunResult{
 		TaskID: taskID, Answer: answer, Evidence: evidence.Items(), Plan: plan,
-		InvalidCites: invalid, FinishReason: "stop",
+		InvalidCites: invalid, FinishReason: finishReason, AutoContinues: autoContinues,
 	}, nil
 }
 
@@ -433,10 +455,26 @@ func (o *Orchestrator) checkHighCostTaskQuota(ctx context.Context, userID uuid.U
 // llmCompose LLM 摘要（严格证据约束；失败回退模板）。
 // 使用独立短超时，避免本地慢模型拖满编排总时限导致前端长时间「正在分析」。
 func (o *Orchestrator) llmCompose(ctx context.Context, system, user string) (string, error) {
+	res, err := o.llmChat(ctx, []aimodel.ChatMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: user},
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(res.Content), nil
+}
+
+// llmChat 编排层统一 LLM 呼叫：输入上限强制 + 独立短超时 + 网关路由，返回完整结果（含 finish_reason）。
+func (o *Orchestrator) llmChat(ctx context.Context, msgs []aimodel.ChatMessage) (*aimodel.ChatResult, error) {
 	// 输入上限：呼叫前估算，超限拒绝本次 LLM 呼叫（上层降级为确定性事实回答）
 	if o.limits.MaxInputTokens > 0 {
-		if est := EstimateTokens(system) + EstimateTokens(user); est > o.limits.MaxInputTokens {
-			return "", fmt.Errorf("%w: compose input ~%d tokens > limit %d", ErrLLMInputLimitExceeded, est, o.limits.MaxInputTokens)
+		est := 0
+		for _, m := range msgs {
+			est += EstimateTokens(m.Content)
+		}
+		if est > o.limits.MaxInputTokens {
+			return nil, fmt.Errorf("%w: compose input ~%d tokens > limit %d", ErrLLMInputLimitExceeded, est, o.limits.MaxInputTokens)
 		}
 	}
 	// 总结器只需数句引导语；过大 max_tokens 会让 CPU 推理拖很久（未配置时保持 256）
@@ -446,43 +484,101 @@ func (o *Orchestrator) llmCompose(ctx context.Context, system, user string) (str
 	}
 	cctx, cancel := context.WithTimeout(ctx, composeLLMTimeout)
 	defer cancel()
-	res, err := o.gateway.Chat(cctx, aimodel.ComplexityStandard, aimodel.ChatRequest{
-		Messages: []aimodel.ChatMessage{
-			{Role: "system", Content: system},
-			{Role: "user", Content: user},
-		},
+	return o.gateway.Chat(cctx, aimodel.ComplexityStandard, aimodel.ChatRequest{
+		Messages:    msgs,
 		MaxTokens:   maxOut,
 		Temperature: 0.2,
 	})
-	if err != nil {
-		return "", err
+}
+
+// checkContinueQuota 自动续写配额强制点：成本记录器实现 ContinueQuotaChecker 时每次续写前校验会话配额，
+// 配额超限/校验失败即停止续写（已生成部分保留，finish_reason 维持 length 交给前端手动「继续」）。
+func (o *Orchestrator) checkContinueQuota(ctx context.Context, userID uuid.UUID, roleCode string, msgs []aimodel.ChatMessage) bool {
+	qc, ok := o.cost.(ContinueQuotaChecker)
+	if !ok {
+		return true
 	}
-	return strings.TrimSpace(res.Content), nil
+	// 估算口径与 handler 的 CheckQuota 一致（消息估算 + 512 系统余量）
+	est := 512
+	for _, m := range msgs {
+		est += EstimateTokens(m.Content)
+	}
+	if err := qc.CheckQuota(ctx, userID, roleCode, est); err != nil {
+		slog.Warn("ai answer auto-continue blocked by quota", "user_id", userID, "error", err)
+		return false
+	}
+	return true
 }
 
 // composeAnswer 组装最终回答：确定性事实为主，LLM 仅做受约束的语言总结（可降级）。
 // memories 为用户自维护的背景记忆，仅作为上下文参考注入（不是事实来源，也不是指令）。
-func (o *Orchestrator) composeAnswer(ctx context.Context, plan Plan, question, factText string, recent []Message, summary string, memories []string) (string, error) {
+// 返回回答文本、模型真实 finish_reason、自动续写次数；finish_reason=length 时按
+// limits.MaxAutoContinues 自动续写（默认 2 次，<0 关闭），续写内容拼接进同一条回答，
+// 每次续写前受会话配额（ContinueQuotaChecker）与编排总时限约束；达上限仍截断时保留 length，
+// 由前端「继续输出」按钮走手动 continue 端点接管。
+func (o *Orchestrator) composeAnswer(ctx context.Context, plan Plan, question, factText string, recent []Message, summary string, memories []string, userID uuid.UUID, roleCode string) (string, string, int, error) {
 	// 事实优先：回答主体为确定性事实（含引用），LLM 只在其前加一段引导性总结（失败则省略）。
-	if len(factText) > 0 {
-		publishedPrompt := ""
-		if o.promptLoader != nil {
-			var err error
-			publishedPrompt, err = o.promptLoader(ctx, AnswerSummaryPromptCode)
-			if err != nil {
-				slog.Warn("load published ai prompt failed", "code", AnswerSummaryPromptCode, "error", err)
-			}
-		}
-		sys, user := buildComposePrompts(plan, question, factText, recent, summary, memories, publishedPrompt)
-		llmSummary, err := o.llmCompose(ctx, sys, user)
+	if len(factText) == 0 {
+		return factText, "stop", 0, nil
+	}
+	publishedPrompt := ""
+	if o.promptLoader != nil {
+		var err error
+		publishedPrompt, err = o.promptLoader(ctx, AnswerSummaryPromptCode)
 		if err != nil {
-			return factText, err
-		}
-		if llmSummary != "" {
-			return llmSummary + "\n\n" + factText, nil
+			slog.Warn("load published ai prompt failed", "code", AnswerSummaryPromptCode, "error", err)
 		}
 	}
-	return factText, nil
+	sys, user := buildComposePrompts(plan, question, factText, recent, summary, memories, publishedPrompt)
+	res, err := o.llmChat(ctx, []aimodel.ChatMessage{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: user},
+	})
+	if err != nil {
+		return factText, "stop", 0, err
+	}
+	llmSummary := strings.TrimSpace(res.Content)
+	finish := res.FinishReason
+	if llmSummary == "" {
+		return factText, finish, 0, nil
+	}
+	// finish_reason=length 自动续写：逐次携带已生成摘要继续，超限/超时/配额拦截即停止续写
+	max := o.limits.MaxAutoContinues
+	if max == 0 {
+		max = defaultMaxAutoContinues
+	}
+	continues := 0
+	for finish == "length" && continues < max && max > 0 {
+		if ctx.Err() != nil {
+			break
+		}
+		msgs := []aimodel.ChatMessage{
+			{Role: "system", Content: sys},
+			{Role: "user", Content: user},
+			{Role: "assistant", Content: llmSummary},
+			{Role: "user", Content: continueInstruction},
+		}
+		if !o.checkContinueQuota(ctx, userID, roleCode, msgs) {
+			break
+		}
+		res, err = o.llmChat(ctx, msgs)
+		if err != nil {
+			slog.Warn("ai answer auto-continue failed", "continues", continues, "error", err)
+			break
+		}
+		continues++
+		llmSummary += strings.TrimSpace(res.Content)
+		finish = res.FinishReason
+	}
+	return llmSummary + "\n\n" + factText, finish, continues, nil
+}
+
+// firstRoleCode 取首个角色编码（配额检查口径与 handler firstRole 一致）。
+func firstRoleCode(codes []string) string {
+	if len(codes) > 0 {
+		return codes[0]
+	}
+	return ""
 }
 
 // buildComposePrompts 只把已核实事实作为事实源；摘要、最近对话、记忆和发布 Prompt

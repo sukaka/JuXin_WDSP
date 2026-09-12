@@ -36,6 +36,12 @@ type PrimaryEvent struct {
 	FinalAction   string                      `json:"final_action"`
 	Details       []dsctx.DetectorMatch       `json:"details"`
 	AuthzDecision *AuthorizationDecisionGroup `json:"authz_decision,omitempty"`
+	// DeviceFingerprint 被动客户端指纹（任务书 §7；UA/Accept 族 HMAC 哈希，
+	// 低熵群体特征非设备唯一标识；空 = UA 缺失未计算，键省略零变化）。
+	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
+	// ObjectIdentifiers 对象标识哈希集合（任务书 §7；只记哈希不落明文，
+	// 条数有界 dsctx.MaxObjectIdentifiers；空 = 无可识别对象标识，键省略零变化）。
+	ObjectIdentifiers []dsctx.ObjectIdentifier `json:"object_identifiers,omitempty"`
 }
 
 // BuildPrimary 从统一上下文构建主事件（多 detector 明细）。
@@ -58,6 +64,9 @@ func BuildPrimary(eventID string, ctx *dsctx.RequestContext, endpointKey string)
 		FinalAction:   string(ctx.GetFinalAction()),
 		Details:       details,
 		AuthzDecision: authzDecisionFromContext(ctx),
+		// §7 字段快照（拷贝，事件不随上下文后续写回变化）
+		DeviceFingerprint: ctx.DeviceFingerprint,
+		ObjectIdentifiers: ctx.CopyObjectIdentifiers(),
 	}
 }
 

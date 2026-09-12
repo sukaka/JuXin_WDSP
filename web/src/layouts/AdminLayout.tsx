@@ -150,6 +150,7 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/api-runtime-events': <MonitorOutlined />,
   '/api-runtime-policies': <DeploymentUnitOutlined />,
   '/api-authz': <SafetyCertificateOutlined />,
+  '/api-flow-baselines': <NodeIndexOutlined />,
   '/api-scan': <ScanOutlined />,
   '/api-ai-ops': <RobotOutlined />,
   '/api-llm': <BulbOutlined />,

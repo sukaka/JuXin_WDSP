@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"strings"
 
@@ -93,11 +94,73 @@ func isSafeMethod(m string) bool {
 }
 
 // sameOrigin 校验 Origin 与 Host 是否同源。
+// 比较前对双方做默认端口归一：https 默认 443、http 默认 80，
+// 显式默认端口与省略端口等价；非默认端口必须精确匹配。
 func sameOrigin(origin, host string) bool {
-	origin = strings.TrimPrefix(origin, "http://")
-	origin = strings.TrimPrefix(origin, "https://")
-	if i := strings.Index(origin, "/"); i >= 0 {
-		origin = origin[:i]
+	scheme, originHost, ok := parseOrigin(origin)
+	if !ok {
+		return false
 	}
-	return strings.EqualFold(origin, host)
+	originName, originPort := splitHostPort(originHost)
+	if originName == "" {
+		return false
+	}
+	if originPort == "" {
+		originPort = defaultPort(scheme)
+	}
+	hostName, hostPort := splitHostPort(host)
+	if hostName == "" || !strings.EqualFold(originName, hostName) {
+		return false
+	}
+	switch {
+	case originPort == "" && hostPort == "":
+		return true
+	case originPort == "":
+		// Origin 未声明端口，无法与显式端口 Host 判定同源
+		return false
+	case hostPort == "":
+		// Host 未带端口，仅当 Origin 使用默认端口时视为同源
+		return originPort == "80" || originPort == "443"
+	default:
+		return originPort == hostPort
+	}
+}
+
+// parseOrigin 拆解 Origin 为 scheme 与 host（不含路径）。
+// scheme 仅接受 http/https；Origin 无 host 或 scheme 非法时视为畸形并拒绝。
+func parseOrigin(origin string) (scheme, host string, ok bool) {
+	rest := origin
+	if i := strings.Index(origin, "://"); i >= 0 {
+		scheme = strings.ToLower(origin[:i])
+		if scheme != "http" && scheme != "https" {
+			return "", "", false
+		}
+		rest = origin[i+3:]
+	}
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		rest = rest[:i]
+	}
+	if rest == "" {
+		return "", "", false
+	}
+	return scheme, rest, true
+}
+
+// splitHostPort 拆分 host[:port]；无端口时 port 返回空串。
+func splitHostPort(s string) (host, port string) {
+	if h, p, err := net.SplitHostPort(s); err == nil {
+		return h, p
+	}
+	return s, ""
+}
+
+// defaultPort 返回 scheme 对应的默认端口。
+func defaultPort(scheme string) string {
+	switch scheme {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
 }

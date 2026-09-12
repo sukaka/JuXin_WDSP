@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/metrics"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 )
 
@@ -72,7 +73,20 @@ type Parsed struct {
 	// JSONValues 可选标量值留存（path -> 截断 256 的标量值；仅当 ParseLimits.RetainJSONScalarValues
 	// 为 true 时填充，值只在请求内存活，供参数约束检测取值，禁止写入事件/日志）
 	JSONValues map[string]string
-	FormFields map[string]string // urlencoded 表单字段名 -> type: string|number|bool
+	// JSONArrayLen JSON 数组长度登记（path -> 元素个数；每数组 O(1) 一次 map 写，
+	// 条目数受 FieldCount 配额约束——数组本身已占一个字段计数；无条件登记，
+	// 不随 RetainJSONScalarValues 开关，供数量一致关系（COUNT_MATCHES）判定）
+	JSONArrayLen map[string]int
+	// JSONNumAgg 数组子孙数值标量的聚合留存（path -> sum/count 聚合量，绝不存全体元素值；
+	// 仅当 RetainJSONScalarValues 为 true 时由独立聚合趟填充，供汇总关系（SUM_MATCHES）
+	// 判定；聚合量只在请求内存活，禁止写入事件/日志）。
+	// 口径：只登记路径含 "[]" 段的数值标量（数组元素及其子孙）；单数组超
+	// maxArrayAggElements 个元素时只聚合前 N 个并置该路径 Truncated；聚合趟总步数超
+	// maxNumAggOps 时置全局 NumAggCapped。截断/超预算时汇总关系一律不判定（防误判）。
+	JSONNumAgg map[string]NumArrayAgg
+	// NumAggCapped 聚合趟总步数超 maxNumAggOps 已截断（本请求 SUM_MATCHES 全部不判定）
+	NumAggCapped bool
+	FormFields   map[string]string // urlencoded 表单字段名 -> type: string|number|bool
 	// FormValues 可选表单标量值留存（字段名 -> 截断 256 的值；仅当 ParseLimits.RetainFormScalarValues
 	// 为 true 时填充，值只在请求内存活，供值级敏感检测取值，禁止写入事件/日志）
 	FormValues     map[string]string
@@ -104,10 +118,20 @@ type Parsed struct {
 	Ambiguities []ParamAmbiguity
 	// AmbiguityCapped 歧义记录数超 maxAmbiguities 已截断
 	AmbiguityCapped bool
+	// numAggOps 聚合趟剩余步数预算（未导出；aggregateArrayNumerics 入口初始化）
+	numAggOps int
+}
+
+// NumArrayAgg 数组子孙数值标量的聚合量（sum/count；Truncated 标记来源数组超上限）。
+type NumArrayAgg struct {
+	Sum       float64 // 数值元素累计和（仅前 maxArrayAggElements 个元素内的数值标量）
+	Count     int     // 参与聚合的数值标量个数
+	Truncated bool    // 来源数组长度超 maxArrayAggElements：只聚合前 N 个，汇总关系不判定
 }
 
 // ParseRequest 解析 HTTP 请求并填充 RequestContext 的请求侧字段。
 func ParseRequest(r *http.Request, ctx *dsctx.RequestContext) (*Parsed, error) {
+	defer metrics.Track(metrics.ParseRequestDuration)() // §54 请求解析耗时埋点（进程内指标，不产出网络 IO）
 	if r == nil {
 		return nil, nil
 	}
@@ -123,6 +147,8 @@ func ParseRequest(r *http.Request, ctx *dsctx.RequestContext) (*Parsed, error) {
 		Headers:        map[string]string{},
 		JSONFields:     map[string]string{},
 		JSONValues:     map[string]string{},
+		JSONArrayLen:   map[string]int{},
+		JSONNumAgg:     map[string]NumArrayAgg{},
 		FormFields:     map[string]string{},
 		FormValues:     map[string]string{},
 		XMLFields:      map[string]string{},
@@ -219,6 +245,9 @@ func ParseRequest(r *http.Request, ctx *dsctx.RequestContext) (*Parsed, error) {
 				// 一次解析：解码根值复用于 GraphQL 提取（任务书原则 2.1，禁止重复解析）
 				if v, ok := extractJSONFields(raw, "", p, limits); ok {
 					p.extractGraphQLJSON(v)
+					// 数值聚合趟（汇总关系判定原料）：复用同一解码根值，不重解析；
+					// 仅 RetainJSONScalarValues 时执行，有界口径见 JSONNumAgg 注释
+					p.aggregateArrayNumerics(v, limits)
 				}
 			case mediaType == "application/x-www-form-urlencoded":
 				p.extractFormFields(raw, limits)
@@ -458,6 +487,8 @@ func walkJSON(v any, path string, depth int, p *Parsed, limits dsctx.ParseLimits
 	case []any:
 		p.JSONFields[path] = "array"
 		p.FieldCount++
+		// 数组长度登记：每数组 O(1) 一次 map 写（数量一致关系 COUNT_MATCHES 判定原料）
+		p.JSONArrayLen[path] = len(t)
 		if len(t) > 0 {
 			walkJSON(t[0], path+"[]", depth+1, p, limits)
 		}
@@ -494,6 +525,68 @@ func truncateScalarValue(s string) string {
 		return s
 	}
 	return string([]rune(s)[:maxScalarValueLen])
+}
+
+// maxArrayAggElements 单数组聚合下探元素上限：超上限只聚合前 N 个并置 Truncated
+// （汇总关系对截断数组不判定，避免半份求和误判；N 取 64 与常见分页大小同量级）。
+const maxArrayAggElements = 64
+
+// maxNumAggOps 单请求聚合趟总步数上限（防深层嵌套数组扇出：每层数组各自 ≤64 元素，
+// 乘性展开须由全局预算截断；超预算置 NumAggCapped，本请求汇总关系全部不判定）。
+const maxNumAggOps = 2048
+
+// aggregateArrayNumerics 数值聚合趟入口：仅 RetainJSONScalarValues 时执行；
+// 只留存 sum/count 聚合量（不存全体元素值），口径与上限见 Parsed.JSONNumAgg 注释。
+// 独立成趟（不复用 walkJSON 首元素下探）：数组全体元素聚合与 schema 首元素登记
+// 语义不同，混在一趟会使嵌套数组被重复累计。
+func (p *Parsed) aggregateArrayNumerics(root any, limits dsctx.ParseLimits) {
+	if !limits.RetainJSONScalarValues {
+		return
+	}
+	p.numAggOps = maxNumAggOps
+	p.aggregateNumericNode(root, "", 0, limits, false)
+}
+
+// aggregateNumericNode 聚合下探：路径含 "[]" 段的数值标量累加进 JSONNumAgg[path]；
+// trunc 表示祖先数组已超 maxArrayAggElements（只记前 N 个）。聚合预算耗尽置
+// NumAggCapped 并停止下探（本请求 SUM_MATCHES 全部不判定，防半份求和误判）。
+func (p *Parsed) aggregateNumericNode(v any, path string, depth int, limits dsctx.ParseLimits, trunc bool) {
+	if p.NumAggCapped || depth > limits.MaxJSONDepth {
+		return
+	}
+	if p.numAggOps <= 0 {
+		p.NumAggCapped = true
+		return
+	}
+	p.numAggOps--
+	switch t := v.(type) {
+	case float64:
+		if !strings.Contains(path, "[]") {
+			return // 非数组子孙数值：JSONValues 已承载，聚合趟不重复登记
+		}
+		agg := p.JSONNumAgg[path]
+		agg.Sum += t
+		agg.Count++
+		agg.Truncated = agg.Truncated || trunc
+		p.JSONNumAgg[path] = agg
+	case map[string]any:
+		for k, child := range t {
+			np := k
+			if path != "" {
+				np = path + "." + k
+			}
+			p.aggregateNumericNode(child, np, depth+1, limits, trunc)
+		}
+	case []any:
+		n := len(t)
+		tr := trunc || n > maxArrayAggElements
+		if n > maxArrayAggElements {
+			n = maxArrayAggElements
+		}
+		for i := 0; i < n; i++ {
+			p.aggregateNumericNode(t[i], path+"[]", depth+1, limits, tr)
+		}
+	}
 }
 
 func shortHash(b []byte) string {

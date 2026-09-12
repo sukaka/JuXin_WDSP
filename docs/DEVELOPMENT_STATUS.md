@@ -228,7 +228,7 @@
 - [x] 菜单「访问控制」分组 + 路由权限守卫（系统管理员仅可信代理，审计管理员只读）
 - [x] stage5 工具元数据与校验 14 单测
 
-## 阶段6完成内容（进行中）
+## 阶段6完成内容
 
 详见 [SECURITY_DASHBOARD_DESIGN.md](SECURITY_DASHBOARD_DESIGN.md)、[METRICS_DATA_DICTIONARY.md](METRICS_DATA_DICTIONARY.md)、
 [REPORTING_DESIGN.md](REPORTING_DESIGN.md)、[MONITORING_ALERTING_DESIGN.md](MONITORING_ALERTING_DESIGN.md)、
@@ -285,6 +285,7 @@
 - [x] M-22 例外策略 PUT 更新（乐观锁 version）
 - [x] M-23 AI draft 全量 ValidateInput / Store.Create 对齐（created_by 取自 Principal）
 - [x] M-24 CC 到期/解封事件（CC_TEMP_BLOCK_EXPIRED / RELEASED）
+- [x] M-26 可信代理链全 trusted 时回落连接源 IP（复用 TRUSTED_PROXY_INVALID 事件，action=CONNECTION_FALLBACK）；CSRF Origin 默认端口归一化（https→443/http→80）（2026-09-10）
 
 ## 阶段7完成内容
 
@@ -537,6 +538,15 @@
 - **实况验收修复两处**（stage5 实测）：① 阶段推断检测器名对齐网关实名（authentication/resource_access，原 auth/resource 永不命中致 AUTH/AUTHORIZATION_PROBE 丢为 UNKNOWN）；② `sensitive_data` 字段名命中（sensitive.field/in_query——正常登录携带 password 字段即触发）不再抬升 DATA_ACCESS，仅 sensitive.value 实值命中保留（文档 §44 演示链含登录失败步骤，原映射会使会话阶段永远停在 DATA_ACCESS）。
 - **疑似自动化攻击标注（阶段4 补充，迁移 000106）**：`attack_session.automation_suspected` + `automation_basis` 两列——会话内有效阶段（非 UNKNOWN）≥3 且命中自动化指示信号（HEADLESS/URI枚举/404枚举/敏感路径/方法枚举/参数变异/低慢/对象枚举；AUTH_FAIL_PROBE 刻意不收防误标）即派生标注，单调 false→true 且 basis 冻结于判定时刻（`stages=命中阶段集;indicator=首个指示信号`，跨 Sweep 增量状态载体兼前端 tooltip 展示）；事件挂载路径随行维护（行为事件 signal 列驱动），历史会话不追溯；列表/详情 API 带字段，前端攻击活动两页红色徽标「疑似自动化攻击」+ 判定依据展示。stage5 实况：§44 链新会话 suspected=true、basis 含 SENSITIVE_PATH_PROBE。
 - **验证（含文档 §44 最终验收场景）**：server 单测+集成测试 4 套件 PASS（验收链六类事件跨源单会话 event_count=9/EXPLOIT、迁移种子、business_type 全链路、Business 三判定器）；前端 171 用例绿；stage5 实况——/swagger+/.git+/.env+/admin → 系统判 RECON；3 次登录失败 → AUTH_PROBE；/api/user/1001~1003 枚举 → AUTHORIZATION_PROBE；SQLi（Coraza 403）→ EXPLOIT；四阶段跨源事件聚成**单一 Attack Session**（9 请求 10 事件、CRITICAL、阶段 EXPLOIT、事件时间线逐级推进可查）；配套风险引擎 OBSERVE would_block（score=100/8 信号）与 PROTECT blocked（403+REJECT 落库）同链可复现。
+
+### 阶段4–8 任务书审计清单补齐（2026-09-10，三波并行开发）
+
+审计清单与逐条证据见 [STAGE_4_8_PENDING_ITEMS.md](tasks/STAGE_4_8_PENDING_ITEMS.md)；以下为本会话实际落地项（迁移编号对应 `server/migrations/`）：
+
+- **阶段5**：事件→黑名单（§十一：accessrules 预填接口 8 字段 + Create 支持 source_type=SECURITY_EVENT + 前端确认 Modal，实库集成测试 18 用例通过）；访问控制日志三字段（§6.5，迁移 000144：`client_ip_source`/`trusted_proxy_used`/`forwarded_chain_summary` 经网关事件与访问日志全链落库读回；遗留：JWT_*/BOT_* 事件发射点不经 eventBase 未携带）；CC 配置分步向导（§二十一：RateLimitPage 四步 Steps，分步校验 + 末步摘要 + 编辑回填）；规则关联事件（§8.5：`GET /api/v1/access-rules/{id}/events` + 前端规则页抽屉）。
+- **阶段6**：文件句柄监控（§10.2：API 组件 `fd_open_files`/`fd_max_open_files`/`fd_usage_percent` 三指标，阈值 80% 可配，FD_USAGE_HIGH 告警 DEGRADED→raise/UP→recover 已挂接）；告警维护窗口（§11.5，迁移 000142：`system_alert_maintenance_windows`，Raise 前抑制且 suppressed_count/last_suppressed_at 可观测，异常不放行）；请求统计补方法/Content-Type 分布（§7.1）与可信代理来源分布（§7.3；保护地址拦截统计待网关事件）；告警导出接线（§11.4：`GET /api/v1/system-alerts/export` 挂载，读权限 + 导出限流）；交付检查新增漏洞扫描项（§十六：`vulnerability_scan` 关键项，检查项 22→23，详见 [DELIVERY_ACCEPTANCE_GUIDE.md](DELIVERY_ACCEPTANCE_GUIDE.md)）；依赖许可证清单 [DEPENDENCY_LICENSES.md](DEPENDENCY_LICENSES.md)（§十七）+ license-audit 强制 licenses/ 双向同步。
+- **阶段7**：AI 数据保留清理（§26.4，迁移 000141：guardjanitor 分表保留配置 + 分批限量 sweep + 引用保护，审计表因哈希链约束只归档不删）；AI 工具 `rate_limit_statistics.get`（§10.5，READ_ONLY，Tool 总数 61）；Makefile 五自动化目标（§37：ai-model-test/ai-tool-test/ai-agent-test/ai-prompt-test/stage7-test-rag）；输出截断自动续写（§11.4：finish_reason 透传 + 自动续写默认上限 2 次可配）；事件分析结构化入参（§12.1：时间/应用/IP/URI/规则/Request ID 等 7 个可选维度逐一校验）与画像结构化分支（§15.2/15.3：ip>uri>application_id 优先级真实 SQL 聚合，零数据如实"数据不足"）；What-If 扩至 3 场景（§19：disable_rule + cc_threshold/block_duration 离线统计估算，全矩阵回放引擎仍为遗留）；评估集种子（§34.1，迁移 000143：12 类×3 用例幂等，实库迁移与首轮评估运行待有库/有模型环境终验）。
+- **阶段8**：规范导入五格式（§33：OpenAPI3/Swagger2/JSON Schema/Postman v2.1/GraphQL SDL，JSON/YAML 双编码，YAML 安全解码 + 外部 $ref 拒绝 + 深度/大小限制）；参数微模型统计服务端层（§16/§17，迁移 000145：观测 6 列 + 画像 14 列，蓄水池分位数/字符直方图熵/前后缀 TopN/IQR 离群 + P95 画像读回；待挂接：网关 ParamObservation 上报扩展与 apiruntime 合并写入）。
 
 ### 其他
 

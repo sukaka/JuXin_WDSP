@@ -71,6 +71,8 @@ func queryLimit(r *http.Request, def int) int {
 }
 
 // RequestTrend GET /api/v1/analytics/request-trend
+// 响应除趋势序列外附带请求方法分布、Content-Type 主类型分布、客户端 IP 来源分布与
+// 可信代理来源分布（access_logs 实时聚合）。
 func (h *Handler) RequestTrend(w http.ResponseWriter, r *http.Request) {
 	pq, ok := h.parseQuery(w, r)
 	if !ok {
@@ -78,6 +80,22 @@ func (h *Handler) RequestTrend(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := h.store.RequestTrend(r.Context(), pq.r, pq.appCode)
 	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	if data.MethodDistribution, err = h.store.MethodDistribution(r.Context(), pq.r, pq.appID); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	if data.ContentTypeDistribution, err = h.store.ContentTypeDistribution(r.Context(), pq.r, pq.appID); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	if data.ClientIPSourceDistribution, err = h.store.ClientIPSourceDistribution(r.Context(), pq.r, pq.appID); err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	if data.TrustedProxyDistribution, err = h.store.TrustedProxyDistribution(r.Context(), pq.r, pq.appID); err != nil {
 		response.InternalError(w, r, err)
 		return
 	}

@@ -126,6 +126,10 @@ type Store struct {
 	db          *pgxpool.Pool
 	cache       *cache.Client // 可为 nil（nil 时跳过 Valkey 同步）
 	ruleCreator PermanentRuleCreator
+	// 阶段5 §十五 共享出口（NAT）风险检查（见 natguard.go；均为可选注入）
+	natSettings SettingsReader
+	natCounter  natIdentityCounter
+	natEmitter  NATDowngradeEmitter
 }
 
 // NewStore 创建临时封禁仓储。creators 为可选的永久规则创建器（构造注入）。
@@ -358,6 +362,10 @@ func (s *Store) UpsertFromEvent(ctx context.Context, b *Block) error {
 		b.TriggerType = TriggerCCAuto
 	}
 
+	// 阶段5 §十五：自动封禁落库前的共享出口（NAT）风险检查——命中疑似共享出口
+	// 降档缩短封禁时长（b.BlockExpiresAt 被就地夹紧），DB 与 Valkey 同口径缩短。
+	downgrade := s.applyNATGuard(ctx, b, time.Now())
+
 	var existingID uuid.UUID
 	err := s.db.QueryRow(ctx, `
 SELECT id FROM temporary_blocks
@@ -368,15 +376,23 @@ ORDER BY block_expires_at DESC LIMIT 1`,
 		return err
 	}
 	if err == nil {
-		// 已存在 ACTIVE：更新到期时间（取较大者）+ 命中数 +1
+		// 已存在 ACTIVE：更新到期时间（取较大者）+ 命中数 +1；
+		// 降档时改为取较小者，避免存量较长到期时间抵消本次降档（与 Valkey 回写同口径）。
+		op := "GREATEST"
+		if downgrade != nil {
+			op = "LEAST"
+		}
 		_, err = s.db.Exec(ctx, `
-UPDATE temporary_blocks SET block_expires_at = GREATEST(block_expires_at, $1), hit_count = hit_count + 1
+UPDATE temporary_blocks SET block_expires_at = `+op+`(block_expires_at, $1), hit_count = hit_count + 1
 WHERE id = $2`, b.BlockExpiresAt, existingID)
 		if err != nil {
 			return err
 		}
 		b.ID = existingID
 		b.Status = StatusActive
+		if downgrade != nil {
+			s.afterNATDowngrade(ctx, b, downgrade)
+		}
 		return nil
 	}
 
@@ -396,6 +412,9 @@ RETURNING id, block_started_at, created_at`,
 		return err
 	}
 	b.Status = StatusActive
+	if downgrade != nil {
+		s.afterNATDowngrade(ctx, b, downgrade)
+	}
 	return nil
 }
 

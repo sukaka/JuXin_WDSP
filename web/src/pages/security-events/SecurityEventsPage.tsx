@@ -29,8 +29,8 @@ import {
   EVENT_SEVERITY_META,
 } from '../../utils/stage4'
 import EventDetailDrawer from './EventDetailDrawer'
+import BlacklistFromEventModal from './BlacklistFromEventModal'
 import type { SecurityEventItem } from '../../types'
-
 interface Filters {
   start_time?: string
   end_time?: string
@@ -58,6 +58,8 @@ export default function SecurityEventsPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [blacklistId, setBlacklistId] = useState<string | null>(null)
+  const canManageAccessRules = hasPermission(permissions, 'access_rules.manage')
 
   const listQuery = useQuery({
     queryKey: ['security-events', filters, page, pageSize],
@@ -125,12 +127,19 @@ export default function SecurityEventsPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 80,
+      width: 130,
       fixed: 'right',
       render: (_, record) => (
-        <Button type="link" size="small" onClick={() => setSelectedId(record.id)}>
-          详情
-        </Button>
+        <Space size={0}>
+          <Button type="link" size="small" onClick={() => setSelectedId(record.id)}>
+            详情
+          </Button>
+          {canManageAccessRules && record.client_ip && (
+            <Button type="link" size="small" danger onClick={() => setBlacklistId(record.id)}>
+              加黑
+            </Button>
+          )}
+        </Space>
       ),
     },
   ]
@@ -270,6 +279,7 @@ export default function SecurityEventsPage() {
         onClose={() => setSelectedId(null)}
         onSelectEvent={(id) => setSelectedId(id)}
       />
+      <BlacklistFromEventModal eventId={blacklistId} onClose={() => setBlacklistId(null)} />
     </Card>
   )
 }

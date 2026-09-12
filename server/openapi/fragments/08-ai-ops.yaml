@@ -1,5 +1,6 @@
 # AI 安全运营域：会话与消息、任务记录、一次性分析、草稿与推荐、质量评估、AI 自动降噪。
-# 路由源：server/internal/aihandlers/handler.go 第 72-108 行与第 166-181 行。
+# 路由源：server/internal/aihandlers/handler.go 第 72-108 行与第 166-181 行；
+# 评估运行详情 GET /ai/evaluations/{id} 见 details_handler.go（注册于 server/internal/app/app.go AI 启用分支）。
 # 说明：成功响应 schema 描述统一信封 {code,message,data,request_id} 中的 data 载荷。
 paths:
   /ai/sessions:
@@ -491,7 +492,10 @@ paths:
       description: |-
         触发一次性安全事件分析（同步执行、非流式；单次最长约 120 秒，服务端放宽本请求写期限至 10 分钟）。
         分析在一次性会话中执行，用完即删，不出现在会话列表；响应一次性返回 answer/plan/steps/evidence。
-        请求需满足：event_id（须为 UUID）与 question 至少提供一个，event_id 优先。
+        请求需满足以下任一：event_id（须为 UUID）、question、或至少一个结构化过滤维度
+        （application_id/ip/uri/rule_id/request_id，可组合，time_range 指定统计区间、缺省 24h）。
+        结构化维度：后端按维度查询真实事件数据（security_events/access_control_events）组装分析上下文，
+        维度组合下无数据时如实返回「数据不足」口径，不做推测。
         限流：AI 用量配额超限返回 429。权限：`ai.event_analysis.use`。
       requestBody:
         required: true
@@ -563,7 +567,10 @@ paths:
       summary: 攻击画像分析
       description: |-
         触发一次性攻击画像分析（同步执行、非流式，行为同 /ai/analyze/event）。
-        请求需满足：ip（须为合法 IP 地址）与 question 至少提供一个，ip 优先。
+        请求需满足：ip / uri / application_id / question 至少提供一个，优先级 ip > uri > application_id > question。
+        uri（须以 / 开头的请求路径）：URI 画像，后端真实 SQL 聚合该 URI 的事件分布、攻击类型、来源 IP 与命中规则 Top；
+        application_id（须为 UUID）：应用画像，应用维度同理（含防护模式与状态）；
+        两者支持 time_range 指定统计区间（缺省 7d）；画像对象在区间内无事件时如实返回「数据不足」口径。
         限流：AI 用量配额超限返回 429。权限：`ai.attack_profile.use`。
       requestBody:
         required: true
@@ -670,8 +677,24 @@ paths:
       tags: [ai-analysis]
       summary: What-If 策略模拟
       description: |-
-        模拟关闭指定规则的影响（基于历史数据估算受影响请求、误报减少与漏拦风险；
-        同步执行、非流式，行为同 /ai/analyze/event）。rule_id 必填且 >0。
+        What-If 策略模拟（同步执行、非流式，行为同 /ai/analyze/event）。scenario 缺省为 disable_rule：
+        - disable_rule：模拟停用指定规则（rule_id 必填且 >0），估算受影响请求、误报减少与漏拦风险；
+        - enable_rule：模拟启用指定规则（rule_id 必填且 >0），基于规则历史命中与同攻击类型事件量
+          估算可能新增的处置动作上界（规则关闭期间不产生命中记录，支持 time_range，缺省 30d）；
+        - anomaly_threshold：模拟修改入站异常阈值（anomaly_threshold 必填，1-10000），基于
+          security_events 事件级异常评分分布估算新阈值下新增/解除的阻断数（支持 time_range，缺省 7d）；
+        - pl_switch：模拟切换 CRS 执行等级（paranoia_level 必填，1-4），按事件严重级别分布给出
+          低级别段可能新增/减少命中的参考量（支持 time_range，缺省 30d）；
+        - add_exception：模拟新增例外（rule_id 必填，可选 application_id/uri 收敛范围），按范围
+          过滤历史事件估算不再发生的阻断与误报减少候选（支持 time_range，缺省 30d）；
+        - remove_exception：模拟删除例外（exception_id 必填），按例外范围过滤历史事件估算重新
+          受检的请求量与可能回归的误报（支持 time_range，缺省 30d）；
+        - cc_threshold：模拟修改 CC 阈值（cc_threshold 必填，次/窗口），基于 access_control_events 历史
+          超阈事件的触发时刻窗口计数离线估算新阈值下不会触发的次数与涉及 IP；
+        - block_duration：模拟调整封禁时长（block_duration_seconds 必填，60-2592000 秒），基于历史
+          临时封禁事件的发生间隔离线估算新时长下被吞并的重复封禁次数。
+        cc_threshold / block_duration 支持 time_range 指定历史数据区间（缺省 7d）。
+        口径：全部为历史事件数据的纯统计估算，非逐请求回放引擎，不代表未来确定结果。
         限流：AI 用量配额超限返回 429。权限：`ai.what_if.use`。
       requestBody:
         required: true
@@ -1166,6 +1189,35 @@ paths:
                 $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalError'
+  /ai/evaluations/{id}:
+    get:
+      operationId: aiEvalRunGet
+      tags: [ai-evaluations]
+      summary: 评估运行详情
+      description: 获取单条评估运行记录（字段口径同评估运行列表项，含评估集编码与运行明细 details）。权限：任一 `ai.evaluations.run` / `ai.usage.read` / `ai.audits.read`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 评估运行 ID
+      responses:
+        '200':
+          description: 评估运行详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiEvalRunResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /ai/noise/clusters:
     get:
       operationId: aiNoiseClusterList
@@ -1658,6 +1710,16 @@ components:
         ip: { type: string, description: 客户端 IP（须为合法 IP 地址） }
         question: { type: string, maxLength: 1000, description: 自由文本问题/关注点（最长 1000 字） }
         period: { type: string, maxLength: 50, description: 统计周期描述（如「近7天」，最长 50 字符） }
+        time_range: { type: string, enum: ['1h', '6h', '24h', '7d', '30d'], description: 统计区间预设（事件维度过滤/URI画像/应用画像/What-If 估算用；各端点缺省见 description） }
+        application_id: { type: string, format: uuid, description: 应用 ID（事件应用维度过滤，或画像端点的应用画像对象） }
+        uri: { type: string, maxLength: 200, description: 请求路径（须以 / 开头，长度 2-200；事件 URI 维度过滤，或画像端点的 URI 画像对象） }
+        request_id: { type: string, maxLength: 64, description: 网关 Request ID（事件维度过滤） }
+        scenario: { type: string, enum: [disable_rule, enable_rule, anomaly_threshold, pl_switch, add_exception, remove_exception, cc_threshold, block_duration], description: What-If 模拟场景（§19.1 八种，缺省 disable_rule） }
+        cc_threshold: { type: integer, minimum: 1, maximum: 1000000, description: What-If cc_threshold 场景：模拟的新 CC 阈值（次/窗口） }
+        block_duration_seconds: { type: integer, minimum: 60, maximum: 2592000, description: What-If block_duration 场景：模拟的新封禁时长（秒） }
+        anomaly_threshold: { type: integer, minimum: 1, maximum: 10000, description: What-If anomaly_threshold 场景：模拟的入站异常阈值 }
+        paranoia_level: { type: integer, minimum: 1, maximum: 4, description: What-If pl_switch 场景：模拟的 CRS 执行等级 }
+        exception_id: { type: string, format: uuid, description: What-If remove_exception 场景：模拟删除的例外 ID }
     AiAnalyzePlan:
       type: object
       description: 任务计划摘要（plan 事件 payload / 分析结果 plan 字段）
@@ -1829,6 +1891,11 @@ components:
       type: object
       properties:
         run: { $ref: '#/components/schemas/AiEvalRunResult' }
+    AiEvalRunResponse:
+      type: object
+      description: 评估运行详情响应
+      properties:
+        run: { $ref: '#/components/schemas/AiEvalRun' }
     AiNoiseCluster:
       type: object
       description: AI 降噪簇（同源指纹事件聚合）

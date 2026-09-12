@@ -542,7 +542,8 @@ func (h *Handler) ServiceAssets(w http.ResponseWriter, r *http.Request) {
 }
 
 // Classify POST /api/v1/api-security/endpoints/{id}/classify
-// 按路径/方法启发式自动分类，写 api_classification_dimensions（source=AUTO）。
+// 按路径/方法启发式自动分类（含 §34 操作动作 ACTION 与业务领域 BUSINESS_DOMAIN 维度），
+// 写 api_classification_dimensions（source=AUTO）。
 func (h *Handler) Classify(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	id, ok := parsePathID(w, r)

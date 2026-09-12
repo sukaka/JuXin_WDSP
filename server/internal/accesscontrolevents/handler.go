@@ -96,6 +96,34 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"event": evt})
 }
 
+// ListByRule 按访问控制规则查询关联事件（access_rule_id = 规则 ID；
+// IP 黑白名单命中 IP_ALLOW_MATCH/IP_DENY_MATCH 与 L7 规则命中事件均写该列）。
+// 规则不存在时返回空分页（列表过滤语义，不单独 404）。记录低风险审计。
+func (h *Handler) ListByRule(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	ruleID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的规则ID")
+		return
+	}
+	f, err := parseFilter(r)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	f.AccessRuleID = ruleID.String()
+	list, total, err := h.store.List(r.Context(), f)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	if list == nil {
+		list = []Event{}
+	}
+	h.recordAudit(r, p, "list_rule_events", ruleID.String(), "access_rule", audits.ResultSuccess, audits.RiskLow)
+	response.Page(w, r, list, total, f.Page, f.PageSize)
+}
+
 // Export 导出事件（CSV，记录导出审计）。
 func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())

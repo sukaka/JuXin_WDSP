@@ -1,0 +1,20 @@
+Gather Merge  (cost=54322.96..121618.66 rows=576780 width=83) (actual time=133.508..314.568 rows=692008 loops=1)
+  Workers Planned: 2
+  Workers Launched: 2
+  Buffers: shared hit=6314 read=3483, temp read=8044 written=8065
+  ->  Sort  (cost=53322.93..54043.91 rows=288390 width=83) (actual time=119.284..153.728 rows=230669 loops=3)
+        Sort Key: call_count DESC
+        Sort Method: external merge  Disk: 24808kB
+        Buffers: shared hit=6314 read=3483, temp read=8044 written=8065
+        Worker 0:  Sort Method: external merge  Disk: 21136kB
+        Worker 1:  Sort Method: external merge  Disk: 18408kB
+        ->  Parallel Seq Scan on api_call_edges  (cost=0.00..13368.83 rows=288390 width=83) (actual time=9.383..48.472 rows=230669 loops=3)
+              Filter: (call_count >= '1000'::bigint)
+              Rows Removed by Filter: 2664
+              Buffers: shared hit=6240 read=3483
+Planning Time: 0.709 ms
+JIT:
+  Functions: 12
+  Options: Inlining false, Optimization false, Expressions true, Deforming true
+  Timing: Generation 2.776 ms, Inlining 0.000 ms, Optimization 4.839 ms, Emission 22.843 ms, Total 30.457 ms
+Execution Time: 344.858 ms

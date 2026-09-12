@@ -64,6 +64,7 @@ const ApiViolationsPage = lazy(() => import('../pages/api-violations/ApiViolatio
 const ApiRuntimeEventsPage = lazy(() => import('../pages/api-runtime-events/ApiRuntimeEventsPage'))
 const ApiRuntimePoliciesPage = lazy(() => import('../pages/api-runtime-policies/ApiRuntimePoliciesPage'))
 const ApiAuthzPage = lazy(() => import('../pages/api-authz/ApiAuthzPage'))
+const ApiFlowBaselinesPage = lazy(() => import('../pages/api-flow-baselines/ApiFlowBaselinesPage'))
 const ApiScanPage = lazy(() => import('../pages/api-scan/ApiScanPage'))
 const ApiPosturePage = lazy(() => import('../pages/api-posture/ApiPosturePage'))
 const ApiAIOpsPage = lazy(() => import('../pages/api-ai-ops/ApiAIOpsPage'))
@@ -760,6 +761,16 @@ export default function AppRoutes() {
             <RequireAPIDynamicProtection>
               <RequirePermission permission="api_authorization.read">
                 <ApiAuthzPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-flow-baselines"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_flow.read">
+                <ApiFlowBaselinesPage />
               </RequirePermission>
             </RequireAPIDynamicProtection>
           }

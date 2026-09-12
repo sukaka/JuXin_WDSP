@@ -17,7 +17,7 @@ import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { aiPromptsApi } from '../../../../api/ai'
-import type { AiPrompt, AiPromptVersion } from '../../../../api/ai'
+import type { AiPrompt, AiPromptAdversarialCase, AiPromptVersion } from '../../../../api/ai'
 import { ApiError } from '../../../../api/client'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
@@ -33,6 +33,58 @@ const PROMPT_TYPE_OPTIONS = Object.entries(AI_PROMPT_TYPE_META).map(([value, met
   label: meta.label,
 }))
 
+/** 对抗测试结论三态（'' = 未执行） */
+const ADVERSARIAL_RESULT_META: Record<string, { color: string; label: string }> = {
+  ADVERSARIAL_PASSED: { color: 'green', label: '对抗通过' },
+  ADVERSARIAL_FAILED: { color: 'red', label: '对抗失败' },
+}
+
+const ADVERSARIAL_CATEGORY_LABEL: Record<string, string> = {
+  PROMPT_INJECTION: '提示注入',
+  PRIVILEGE_ESCALATION: '越权诱导',
+  DATA_EXFILTRATION: '数据泄露诱导',
+}
+
+/** 发布门两个门槛的状态标签（发布门错误文案中的取值：PASSED/ADVERSARIAL_* /FAILED/未执行） */
+function gateStateTag(state: string) {
+  if (state === 'PASSED' || state === 'ADVERSARIAL_PASSED') return <Tag color="green">{state}</Tag>
+  if (state === '未执行') return <Tag>未执行</Tag>
+  return <Tag color="red">{state || '未知'}</Tag>
+}
+
+/** 解析发布门结构化错误文案（服务端：…（当前：回归测试=X，对抗测试=Y）），未命中返回 null */
+function parsePublishGateMessage(message: string): { testResult: string; adversarialResult: string } | null {
+  const m = message.match(/回归测试=([^，）]+)，对抗测试=([^，）]+)/)
+  if (!m) return null
+  return { testResult: m[1], adversarialResult: m[2] }
+}
+
+/** 对抗测试逐样本判定列表（失败样本如实展示原因） */
+function AdversarialCaseList({ cases }: { cases: AiPromptAdversarialCase[] }) {
+  if (cases.length === 0) {
+    return <Typography.Text type="secondary">暂无逐样本明细</Typography.Text>
+  }
+  return (
+    <div>
+      {cases.map((c) => (
+        <div key={c.id} style={{ marginBottom: 10 }}>
+          <Typography.Text type={c.passed ? 'success' : 'danger'}>
+            {c.passed ? '✓' : '✗'}
+          </Typography.Text>{' '}
+          <Typography.Text code>{c.id}</Typography.Text>{' '}
+          {ADVERSARIAL_CATEGORY_LABEL[c.category] ?? c.category}
+          <div style={{ fontSize: 12, color: '#888' }}>对抗输入：{c.attack}</div>
+          {c.reason ? (
+            <Typography.Text type="danger" style={{ fontSize: 12 }}>
+              原因：{c.reason}
+            </Typography.Text>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 interface CreateFormValues {
   code: string
   name: string
@@ -46,7 +98,7 @@ interface VersionFormValues {
   change_summary?: string
 }
 
-/** 提示词版本管理抽屉：版本列表 + 查看/测试/发布/回滚 + 新建版本 */
+/** 提示词版本管理抽屉：版本列表 + 查看/测试/对抗测试/发布/回滚 + 新建版本 */
 function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => void }) {
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
@@ -58,6 +110,7 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
 
   const [createOpen, setCreateOpen] = useState(false)
   const [viewing, setViewing] = useState<AiPromptVersion | null>(null)
+  const [adversarialDetail, setAdversarialDetail] = useState<AiPromptVersion | null>(null)
   const [form] = Form.useForm<VersionFormValues>()
 
   const versionsQuery = useQuery({
@@ -97,13 +150,48 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
     onError,
   })
 
+  const adversarialMutation = useMutation({
+    mutationFn: (versionId: string) => aiPromptsApi.adversarialTestVersion(versionId),
+    onSuccess: (data) => {
+      modal.info({
+        title:
+          data.adversarial_result === 'ADVERSARIAL_PASSED' ? '对抗测试通过' : '对抗测试未通过',
+        width: 640,
+        content: <AdversarialCaseList cases={data.cases ?? []} />,
+      })
+      invalidate()
+    },
+    onError,
+  })
+
   const publishMutation = useMutation({
     mutationFn: (versionId: string) => aiPromptsApi.publish(prompt.id, versionId),
     onSuccess: () => {
       message.success('版本已发布')
       invalidate()
     },
-    onError,
+    onError: (e) => {
+      // 发布门结构化错误：如实展示回归/对抗两个门槛的当前状态
+      const gate = e instanceof ApiError ? parsePublishGateMessage(e.message) : null
+      if (gate) {
+        modal.warning({
+          title: '发布门未通过',
+          content: (
+            <div>
+              <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                仅回归测试 PASSED 且对抗测试 ADVERSARIAL_PASSED 的版本可发布。
+              </Typography.Paragraph>
+              <Space direction="vertical" size={4}>
+                <span>回归测试：{gateStateTag(gate.testResult)}</span>
+                <span>对抗测试：{gateStateTag(gate.adversarialResult)}</span>
+              </Space>
+            </div>
+          ),
+        })
+        return
+      }
+      onError(e)
+    },
   })
 
   const rollbackMutation = useMutation({
@@ -180,6 +268,27 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
         ),
     },
     {
+      title: '对抗测试',
+      dataIndex: 'adversarial_result',
+      width: 100,
+      render: (v: string, record) => {
+        if (v === 'ADVERSARIAL_FAILED') {
+          // 失败可点击查看逐样本原因
+          return (
+            <Tag
+              color="red"
+              style={{ cursor: 'pointer' }}
+              onClick={() => setAdversarialDetail(record)}
+            >
+              对抗失败
+            </Tag>
+          )
+        }
+        if (!v) return <Tag>未执行</Tag>
+        return <StatusTag value={v} map={ADVERSARIAL_RESULT_META} />
+      },
+    },
+    {
       title: '变更摘要',
       dataIndex: 'change_summary',
       ellipsis: true,
@@ -194,7 +303,7 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
     {
       title: '操作',
       key: 'actions',
-      width: 220,
+      width: 280,
       fixed: 'right',
       render: (_, record) => (
         <Space size={0}>
@@ -211,11 +320,29 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
               测试
             </Button>
           )}
+          {canTest && (
+            <Button
+              type="link"
+              size="small"
+              loading={
+                adversarialMutation.isPending && adversarialMutation.variables === record.id
+              }
+              onClick={() => adversarialMutation.mutate(record.id)}
+            >
+              对抗测试
+            </Button>
+          )}
           {canPublish && (
             <Button
               type="link"
               size="small"
-              disabled={!(record.test_result === 'PASSED' && !record.is_current)}
+              disabled={
+                !(
+                  record.test_result === 'PASSED' &&
+                  record.adversarial_result === 'ADVERSARIAL_PASSED' &&
+                  !record.is_current
+                )
+              }
               onClick={() => confirmPublish(record)}
             >
               发布
@@ -241,7 +368,7 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
       title={`版本管理 - ${prompt.name}`}
       open
       onClose={onClose}
-      width={720}
+      width={820}
       destroyOnHidden
       extra={
         canCreate && (
@@ -260,7 +387,7 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
     >
       <Space direction="vertical" size={12} style={{ display: 'flex' }}>
         <Typography.Text type="secondary">
-          版本不可变；仅静态测试通过（PASSED）的版本可发布。
+          版本不可变；仅回归测试通过（PASSED）且对抗测试通过（ADVERSARIAL_PASSED）的版本可发布。
         </Typography.Text>
         {versionsQuery.isError ? (
           <QueryErrorAlert error={versionsQuery.error} message="加载版本列表失败" />
@@ -272,7 +399,7 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
             loading={versionsQuery.isLoading}
             columns={columns}
             dataSource={versionsQuery.data}
-            scroll={{ x: 860 }}
+            scroll={{ x: 980 }}
             pagination={false}
             onRow={(record) => ({
               onDoubleClick: () => setViewing(record),
@@ -333,6 +460,18 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
         >
           {viewing?.content}
         </pre>
+      </Modal>
+
+      <Modal
+        title={
+          adversarialDetail ? `对抗测试明细 - v${adversarialDetail.version_number}` : '对抗测试明细'
+        }
+        open={adversarialDetail !== null}
+        onCancel={() => setAdversarialDetail(null)}
+        footer={null}
+        width={640}
+      >
+        <AdversarialCaseList cases={adversarialDetail?.adversarial_detail ?? []} />
       </Modal>
     </Drawer>
   )

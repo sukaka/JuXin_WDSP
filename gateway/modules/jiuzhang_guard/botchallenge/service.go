@@ -75,13 +75,17 @@ func (s *Service) emit(r *http.Request, cc CallContext, t events.Type, action st
 		AppCode:       s.cfg.AppCode,
 		ClientIP:      cc.ClientIP,
 		ConnectionIP:  cc.ConnectionIP,
-		Method:        r.Method,
-		Path:          r.URL.RequestURI(),
-		Proto:         r.Proto,
-		GatewayNode:   s.cfg.Node,
-		EventType:     t,
-		Action:        action,
-		Bot:           detail,
+		// 阶段5 §6.5 三字段（CallContext 透传 Guard 真实 IP 识别结果）
+		ClientIPSource:        cc.ClientIPSource,
+		TrustedProxyUsed:      cc.TrustedProxyUsed,
+		ForwardedChainSummary: cc.ForwardedChainSummary,
+		Method:                r.Method,
+		Path:                  r.URL.RequestURI(),
+		Proto:                 r.Proto,
+		GatewayNode:           s.cfg.Node,
+		EventType:             t,
+		Action:                action,
+		Bot:                   detail,
 	}
 	if cc.FinalDecision != nil {
 		ev.FinalDecision = cc.FinalDecision()

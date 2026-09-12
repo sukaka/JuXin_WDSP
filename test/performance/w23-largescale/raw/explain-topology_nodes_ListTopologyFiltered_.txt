@@ -1,0 +1,39 @@
+Gather Merge  (cost=16214.07..25937.05 rows=83334 width=174) (actual time=163.478..210.040 rows=100000 loops=1)
+  Workers Planned: 2
+  Workers Launched: 2
+  Buffers: shared hit=7070, temp read=2108 written=2111
+  ->  Sort  (cost=15214.05..15318.22 rows=41667 width=174) (actual time=142.477..149.561 rows=33333 loops=3)
+        Sort Key: e.application_id, e.endpoint_key
+        Sort Method: external merge  Disk: 6632kB
+        Buffers: shared hit=7070, temp read=2108 written=2111
+        Worker 0:  Sort Method: external merge  Disk: 5024kB
+        Worker 1:  Sort Method: external merge  Disk: 5208kB
+        ->  Hash Left Join  (cost=4240.12..8453.81 rows=41667 width=174) (actual time=47.733..72.704 rows=33333 loops=3)
+              Hash Cond: (e.id = f.endpoint_id)
+              Buffers: shared hit=7040
+              ->  Hash Left Join  (cost=11.12..4115.43 rows=41667 width=408) (actual time=0.046..11.582 rows=33333 loops=3)
+                    Hash Cond: (e.application_id = a.id)
+                    Buffers: shared hit=3572
+                    ->  Parallel Seq Scan on api_endpoints e  (cost=0.00..3985.67 rows=41667 width=134) (actual time=0.011..6.800 rows=33333 loops=3)
+                          Buffers: shared hit=3569
+                    ->  Hash  (cost=10.50..10.50 rows=50 width=290) (actual time=0.018..0.019 rows=10 loops=3)
+                          Buckets: 1024  Batches: 1  Memory Usage: 9kB
+                          Buffers: shared hit=3
+                          ->  Seq Scan on applications a  (cost=0.00..10.50 rows=50 width=290) (actual time=0.008..0.010 rows=10 loops=3)
+                                Buffers: shared hit=3
+              ->  Hash  (cost=3479.00..3479.00 rows=60000 width=24) (actual time=47.465..47.469 rows=60000 loops=3)
+                    Buckets: 65536  Batches: 1  Memory Usage: 3794kB
+                    Buffers: shared hit=3468
+                    ->  Subquery Scan on f  (cost=2279.00..3479.00 rows=60000 width=24) (actual time=26.837..38.252 rows=60000 loops=3)
+                          Buffers: shared hit=3468
+                          ->  HashAggregate  (cost=2279.00..2879.00 rows=60000 width=24) (actual time=26.835..33.272 rows=60000 loops=3)
+                                Group Key: api_runtime_findings.endpoint_id
+                                Batches: 1  Memory Usage: 6929kB
+                                Buffers: shared hit=3468
+                                Worker 0:  Batches: 1  Memory Usage: 6929kB
+                                Worker 1:  Batches: 1  Memory Usage: 6929kB
+                                ->  Seq Scan on api_runtime_findings  (cost=0.00..1979.00 rows=60000 width=16) (actual time=0.033..10.266 rows=60000 loops=3)
+                                      Filter: ((status)::text = ANY ('{NEW,CONFIRMED,IN_PROGRESS}'::text[]))
+                                      Buffers: shared hit=3468
+Planning Time: 0.620 ms
+Execution Time: 214.502 ms

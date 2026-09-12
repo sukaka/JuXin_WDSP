@@ -69,6 +69,11 @@ type Provider struct {
 	roleBaselines RoleBaselineLister
 	// 字段权限读取（api_field_permissions 表，迁移 000044；nil 或查询失败时 Warn 跳过）
 	fieldPermissions FieldPermissionLister
+	// 流程基线读取（api_flow_baselines 表 enabled 行，迁移 000155；nil 或查询失败时 Warn 跳过）
+	flowBaselines FlowBaselineLister
+	// 已吊销凭据清单读取（api_revoked_credentials 表当前生效行，迁移 000156；
+	// nil 或查询失败时 Warn 跳过，与 FlowBaselineLister 同一模式）
+	revokedCredentials RevokedCredentialLister
 	// 扫描签名密钥读取（system_settings api_scan.signing_key 密文解密；nil/未配置时
 	// 不下发 api_scan_verification；读取/解密失败中止发布——降级为仅按头存在性识别
 	// 会放行伪造扫描头投毒学习样本，不静默降级）
@@ -497,6 +502,19 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		if loaderErr != nil {
 			return nil, loaderErr
 		}
+		// 阶段8 §44 发布下发面：流程基线随发布下发（表由迁移 000155 建立；
+		// 缺表容忍 Warn 跳过，真实查询错误中止候选发布——纪律同授权基线）
+		cfg.APIFlowBaselines, loaderErr = p.loadAPIFlowBaselinesStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
+		// 阶段8 §35 凭据异常「已吊销凭据使用」数据源：当前生效吊销指纹清单随发布下发
+		// （表由迁移 000156 建立；缺表容忍 Warn 跳过，真实查询错误中止候选发布——
+		// 纪律同流程基线；指纹级载荷，无凭据明文）
+		cfg.APIRevokedCredentials, loaderErr = p.loadAPIRevokedCredentialsStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
 		// AUTHZ-01：授权事实编译采用 fail-hard。存在可发布对象模型时，关系、
 		// VERIFIED 角色基线及专用 HMAC 密钥必须形成同一份有期限快照。
 		authzModels, authzRelations, authzRoles, authzKeyHex, err := p.loadAPIAuthzSnapshot(ctx)
@@ -789,6 +807,11 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 		cfg.CredentialIPSpreadLimit = 0
 		cfg.CredentialConcurrencyLimit = 0
 		cfg.APIWriteRatePerMinute = 0
+		cfg.APIQuotaPerHour = 0
+		cfg.APIQuotaPerDay = 0
+		cfg.ObjectRatePerMinute = 0
+		cfg.APIMaxPageSize = 0
+		cfg.APIMaxBatchSize = 0
 		cfg.APIResponseFailPolicy = ""
 		cfg.APIResponseCaptureMaxBytes = 0
 		cfg.APILLMAllowedModels = nil

@@ -105,6 +105,48 @@ func applyGatewayRuntimeSettings(cfg *gatewayconfig.GuardConfig, kv map[string]s
 				return err
 			}
 			cfg.APIWriteRatePerMinute = n
+		// 阶段8 §36 限流下发面：0/空串视同缺省不启用（>0 才下发，不走引擎默认值冒充已配置）
+		case "api_quota_per_hour":
+			n, err := parseNonNegativeInt("api_quota_per_hour", v)
+			if err != nil {
+				return err
+			}
+			cfg.APIQuotaPerHour = n
+		case "api_quota_per_day":
+			n, err := parseNonNegativeInt("api_quota_per_day", v)
+			if err != nil {
+				return err
+			}
+			cfg.APIQuotaPerDay = n
+		case "object_rate_per_minute":
+			n, err := parseNonNegativeInt("object_rate_per_minute", v)
+			if err != nil {
+				return err
+			}
+			cfg.ObjectRatePerMinute = n
+		case "max_page_size":
+			n, err := parseNonNegativeInt("max_page_size", v)
+			if err != nil {
+				return err
+			}
+			cfg.APIMaxPageSize = n
+		case "max_batch_size":
+			n, err := parseNonNegativeInt("max_batch_size", v)
+			if err != nil {
+				return err
+			}
+			cfg.APIMaxBatchSize = n
+		case "debug_cc_counter":
+			// 阶段5 §十七 CC_EXACT 探针：CC 计数调试回显端点开关（迁移 000157 种子缺省 true；
+			// 端点安全约束内建于网关侧——仅回环/内网、不回显键材料、自身不计数）
+			switch strings.ToLower(v) {
+			case "true":
+				cfg.DebugCCCounter = true
+			case "false":
+				cfg.DebugCCCounter = false
+			default:
+				return fmt.Errorf("gateway_runtime.debug_cc_counter 非法取值 %q（仅支持 true|false）", raw)
+			}
 		case "api_response_fail_policy":
 			switch strings.ToUpper(v) {
 			case "FAIL_OPEN", "FAIL_CLOSED":
@@ -213,7 +255,7 @@ func parseLLMAllowedModels(v string) ([]string, error) {
 
 // computeAPIPolicyVersion 计算 api_policy_version（本次发布 API 防护内容版本戳）：
 // 冻结模型 + 确认参数约束 + 脱敏规则 + 值级敏感检测规则 + 角色基线 + 字段权限 + 响应结构基线
-// + 已确认参数条件关系 + 文件合规规则 + gRPC 描述符集 + 防护模式/事件日志/已知端点/模型版本号
+// + 已确认参数条件关系 + 流程基线 + 已吊销凭据清单（§35，指纹级非密钥）+ 文件合规规则 + gRPC 描述符集 + 防护模式/事件日志/已知端点/模型版本号
 // + JWT 信任策略段（P0-03，策略内容非密钥）+ Bot 挑战策略段（P1-02，策略内容非密钥）
 // + API 引擎受限例外段（P0-04，exception_id/version 与规则引用，非密钥）
 // + 非密钥 gateway_runtime 行为键 的规范序列化
@@ -236,6 +278,8 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		FieldPermissions    []gatewayconfig.GuardFieldPermission            `json:"api_field_permissions"`
 		ResponseBaselines   []gatewayconfig.GuardResponseBaseline           `json:"api_response_baselines"`
 		Relations           []gatewayconfig.GuardParamRelation              `json:"api_parameter_relations"`
+		FlowBaselines       []gatewayconfig.GuardFlowBaseline               `json:"api_flow_baselines,omitempty"`
+		RevokedCredentials  []gatewayconfig.GuardRevokedCredential          `json:"api_revoked_credentials,omitempty"`
 		FileComplianceRules []gatewayconfig.GuardFileComplianceRule         `json:"api_file_compliance_rules"`
 		GRPCDescriptors     []gatewayconfig.GuardGRPCDescriptor             `json:"api_grpc_descriptors,omitempty"`
 		// 以下为本次补齐的已下发未进哈希段（对齐 guard.go 下发面；omitempty 保持缺省零变化）
@@ -247,6 +291,11 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		CredentialIPSpread    int                               `json:"credential_ip_spread_limit,omitempty"`
 		CredentialConcurrency int                               `json:"credential_concurrency_limit,omitempty"`
 		WriteRatePerMinute    int                               `json:"api_write_rate_per_minute,omitempty"`
+		QuotaPerHour          int                               `json:"api_quota_per_hour,omitempty"`
+		QuotaPerDay           int                               `json:"api_quota_per_day,omitempty"`
+		ObjectRatePerMinute   int                               `json:"object_rate_per_minute,omitempty"`
+		MaxPageSize           int                               `json:"max_page_size,omitempty"`
+		MaxBatchSize          int                               `json:"max_batch_size,omitempty"`
 		ResponseFailPolicy    string                            `json:"api_response_fail_policy,omitempty"`
 		ResponseCaptureMax    int                               `json:"api_response_capture_max_bytes,omitempty"`
 		LLMAllowedModels      []string                          `json:"api_llm_allowed_models,omitempty"`
@@ -266,11 +315,16 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		AuthzModels: cfg.APIAuthzModels, AuthzRelations: cfg.APIAuthzRelations,
 		AuthzRoleBaselines: cfg.APIAuthzRoleBaselines,
 		ResponseBaselines:  cfg.APIResponseBaselines, Relations: cfg.APIParameterRelations,
+		FlowBaselines:       cfg.APIFlowBaselines,
+		RevokedCredentials:  cfg.APIRevokedCredentials,
 		FileComplianceRules: cfg.APIFileComplianceRules, GRPCDescriptors: cfg.APIGRPCDescriptors,
 		ProtectionMode: cfg.APIProtectionMode, EventsLog: cfg.APIEventsLog,
 		ModelVersions: cfg.APIFormalModelVersions, KnownEndpoints: cfg.APIKnownEndpoints,
 		BehaviorStore: cfg.BehaviorStore, CredentialIPSpread: cfg.CredentialIPSpreadLimit,
 		CredentialConcurrency: cfg.CredentialConcurrencyLimit, WriteRatePerMinute: cfg.APIWriteRatePerMinute,
+		QuotaPerHour: cfg.APIQuotaPerHour, QuotaPerDay: cfg.APIQuotaPerDay,
+		ObjectRatePerMinute: cfg.ObjectRatePerMinute, MaxPageSize: cfg.APIMaxPageSize,
+		MaxBatchSize:       cfg.APIMaxBatchSize,
 		ResponseFailPolicy: cfg.APIResponseFailPolicy, ResponseCaptureMax: cfg.APIResponseCaptureMaxBytes,
 		LLMAllowedModels: cfg.APILLMAllowedModels, FileWatermark: cfg.APIFileWatermark,
 		GRPCMaxFrameBytes: cfg.APIGRPCMaxFrameBytes, GRPCAllowCompression: cfg.APIGRPCAllowCompression,

@@ -35,12 +35,15 @@ type ListFilter struct {
 	PolicyID      string
 	RequestID     string
 	GatewayNodeID string
-	Page          int
-	PageSize      int
+	// AccessRuleID 按命中规则过滤（access_rule_id 列；IP 黑白名单/L7 规则命中事件写入规则 ID）。
+	AccessRuleID string
+	Page         int
+	PageSize     int
 }
 
 const eventColumns = `
 SELECT id, request_id, occurred_at, application_id, application_code, client_ip, connection_ip,
+  client_ip_source, trusted_proxy_used, forwarded_chain_summary,
   domain, request_method, request_path, event_type, action, policy_id, access_rule_id,
   current_count, limit_value, window_seconds, block_expires_at, response_status, gateway_node_id,
   message, proto, details, created_at
@@ -82,6 +85,9 @@ func buildWhere(f ListFilter) (string, []interface{}) {
 	}
 	if f.GatewayNodeID != "" {
 		add("gateway_node_id = $%d", f.GatewayNodeID)
+	}
+	if f.AccessRuleID != "" {
+		add("access_rule_id = $%d", f.AccessRuleID)
 	}
 	return where, args
 }
@@ -138,10 +144,11 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Event, error) {
 func scanEvent(row pgx.Row) (*Event, error) {
 	var e Event
 	var cip, connIP *netip.Addr
-	var proto *string
+	var ipSource, proxyUsed, chainSummary, proto *string
 	var details []byte
 	err := row.Scan(&e.ID, &e.RequestID, &e.OccurredAt, &e.ApplicationID, &e.ApplicationCode,
-		&cip, &connIP, &e.Domain, &e.RequestMethod, &e.RequestPath, &e.EventType, &e.Action,
+		&cip, &connIP, &ipSource, &proxyUsed, &chainSummary,
+		&e.Domain, &e.RequestMethod, &e.RequestPath, &e.EventType, &e.Action,
 		&e.PolicyID, &e.AccessRuleID, &e.CurrentCount, &e.LimitValue, &e.WindowSeconds,
 		&e.BlockExpiresAt, &e.ResponseStatus, &e.GatewayNodeID, &e.Message, &proto, &details, &e.CreatedAt)
 	if err != nil {
@@ -155,6 +162,15 @@ func scanEvent(row pgx.Row) (*Event, error) {
 	}
 	if connIP != nil {
 		e.ConnectionIP = connIP.String()
+	}
+	if ipSource != nil {
+		e.ClientIPSource = *ipSource
+	}
+	if proxyUsed != nil {
+		e.TrustedProxyUsed = *proxyUsed
+	}
+	if chainSummary != nil {
+		e.ForwardedChainSummary = *chainSummary
 	}
 	if proto != nil {
 		e.Proto = *proto
@@ -188,12 +204,15 @@ func (s *Store) Insert(ctx context.Context, batch []Event) (int, error) {
 		}
 		b.Queue(`
 INSERT INTO access_control_events (request_id, occurred_at, application_id, application_code,
-  client_ip, connection_ip, domain, request_method, request_path, event_type, action,
+  client_ip, connection_ip, client_ip_source, trusted_proxy_used, forwarded_chain_summary,
+  domain, request_method, request_path, event_type, action,
   policy_id, access_rule_id, current_count, limit_value, window_seconds, block_expires_at,
   response_status, gateway_node_id, message, proto, details)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
 			e.RequestID, e.OccurredAt, e.ApplicationID, e.ApplicationCode,
-			e.ClientIP, nullableIP(e.ConnectionIP), e.Domain, e.RequestMethod, e.RequestPath,
+			e.ClientIP, nullableIP(e.ConnectionIP), nullableProto(e.ClientIPSource),
+			nullableProto(e.TrustedProxyUsed), nullableProto(e.ForwardedChainSummary),
+			e.Domain, e.RequestMethod, e.RequestPath,
 			e.EventType, e.Action, e.PolicyID, e.AccessRuleID, e.CurrentCount, e.LimitValue,
 			e.WindowSeconds, e.BlockExpiresAt, e.ResponseStatus, e.GatewayNodeID, e.Message,
 			nullableProto(e.Proto), details)

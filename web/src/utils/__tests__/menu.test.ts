@@ -96,6 +96,7 @@ describe('filterMenusByRoles', () => {
       '/api-runtime-events',
       '/api-runtime-policies',
       '/api-authz',
+      '/api-flow-baselines',
       '/api-scan',
       '/api-ai-ops',
       '/api-llm',

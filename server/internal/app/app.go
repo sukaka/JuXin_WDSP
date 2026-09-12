@@ -38,12 +38,14 @@ import (
 	"github.com/jiuzhang-waf/server/internal/apiauthz"
 	"github.com/jiuzhang-waf/server/internal/apidata"
 	"github.com/jiuzhang-waf/server/internal/apifiles"
+	"github.com/jiuzhang-waf/server/internal/apiflows"
 	"github.com/jiuzhang-waf/server/internal/apigeo"
 	"github.com/jiuzhang-waf/server/internal/apigrpcdesc"
 	"github.com/jiuzhang-waf/server/internal/apillm"
 	"github.com/jiuzhang-waf/server/internal/apimodels"
 	"github.com/jiuzhang-waf/server/internal/apinodes"
 	"github.com/jiuzhang-waf/server/internal/apiops"
+	"github.com/jiuzhang-waf/server/internal/apirevokedcreds"
 	"github.com/jiuzhang-waf/server/internal/apiscan"
 	"github.com/jiuzhang-waf/server/internal/apisecurity"
 	"github.com/jiuzhang-waf/server/internal/apiweakness"
@@ -429,6 +431,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 				for _, key := range []string{
 					"behavior_store", "behavior_store_ttl_seconds", "identity_salt", "tls_session_ticket_key",
 					"credential_ip_spread_limit", "credential_concurrency_limit", "api_write_rate_per_minute",
+					"api_quota_per_hour", "api_quota_per_day", "object_rate_per_minute",
+					"max_page_size", "max_batch_size", "debug_cc_counter",
 					"api_response_fail_policy", "api_response_capture_max_bytes", "api_llm_allowed_models",
 					"api_grpc_max_frame_bytes", "api_grpc_allow_compression",
 					"api_file_watermark_enabled", "api_file_watermark_template",
@@ -449,6 +453,10 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			// 授权基线（api_role_baselines confirmed 行 / api_field_permissions 行）随发布下发；表缺失/失败时 Warn 跳过
 			guardProvider.SetRoleBaselineLister(guardconfig.NewRoleBaselineStore(db))
 			guardProvider.SetFieldPermissionLister(guardconfig.NewFieldPermissionStore(db))
+			// 流程基线（api_flow_baselines 表 enabled 行，§44）随发布下发；表缺失/失败时 Warn 跳过
+			guardProvider.SetFlowBaselineLister(guardconfig.NewFlowBaselineStore(db))
+			// 已吊销凭据清单（api_revoked_credentials 表当前生效行，§35）随发布下发；表缺失/失败时 Warn 跳过
+			guardProvider.SetRevokedCredentialLister(guardconfig.NewRevokedCredentialStore(db))
 			guardProvider.SetAuthzSnapshotLister(guardconfig.NewAuthzSnapshotStore(db))
 			guardProvider.SetAuthzObjectHMACKeyLoader(guardconfig.NewAuthzObjectHMACKeyLoader(settingsSvc.GetString, encSvc.Decrypt))
 			// 响应基线（api_response_schemas 学习行）与扫描签名密钥随发布下发（P1-07 隔离闭环/P0-06 偏离检测）；
@@ -578,6 +586,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		SLOBreach: apm.NewSLOStore(db),
 		// APM 数据面采集滞后读数源：manager 适配（无连接时 ok=false，评估自然空转）
 		IngestLag: apm.NewIngestLagSource(chManager),
+		// 告警维护窗口（阶段6 §11.5）：窗口内匹配告警评估抑制（suppressed_count 可观测）
+		Maintenance: alertStore,
 	}
 	alertEngine := systemalerts.NewEngine(alertStore, alertEngineOpts)
 	auditSvc.SetFallbackHooks(
@@ -1096,6 +1106,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("POST /api/v1/security-events/{id}/resolve", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.Resolve))))
 	mux.Handle("POST /api/v1/security-events/{id}/mark-analyzing", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.MarkAnalyzing))))
 	mux.Handle("POST /api/v1/security-events/{id}/create-exception", authz(middleware.RequirePermission("exceptions.manage")(http.HandlerFunc(eventHandler.CreateException))))
+	// 阶段5 §十一：事件→黑名单预填（只读；确认创建走 POST /access-rules 携带 source_type=SECURITY_EVENT）
+	mux.Handle("GET /api/v1/security-events/{id}/blacklist-prefill", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(accessRuleHandler.BlacklistPrefill))))
 
 	// 全量访问日志（二期）
 	accessLogHandler := accesslogs.NewHandler(accesslogs.NewStore(db), auditSvc)
@@ -1134,6 +1146,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("POST /api/v1/access-rules/import", authz(middleware.RequirePermission("access_rules.import")(http.HandlerFunc(accessRuleHandler.Import))))
 	mux.Handle("GET /api/v1/access-rules/export", authz(exportRate(middleware.RequirePermission("access_rules.read")(http.HandlerFunc(accessRuleHandler.Export)))))
 	mux.Handle("POST /api/v1/access-rules/validate", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(accessRuleHandler.Validate))))
+	// 规则关联事件（阶段5 §8.5）：按 access_rule_id 过滤访问控制事件
+	mux.Handle("GET /api/v1/access-rules/{id}/events", authz(middleware.RequirePermission("access_rules.read")(http.HandlerFunc(acEventHandler.ListByRule))))
 	if gatewayHandler != nil {
 		mux.Handle("POST /api/v1/access-rules/publish", authz(middleware.RequirePermission("access_rules.publish")(http.HandlerFunc(gatewayHandler.Publish))))
 		mux.Handle("POST /api/v1/rate-limit-policies/publish", authz(middleware.RequirePermission("rate_limits.publish")(http.HandlerFunc(gatewayHandler.Publish))))
@@ -1231,6 +1245,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	alertRead := requireAnyPerm("system_alerts.read", "system_alerts.read_security", "system_alerts.read_audit")
 	alertWrite := requireAnyPerm("system_alerts.acknowledge", "system_alerts.acknowledge_security")
 	mux.Handle("GET /api/v1/system-alerts", authz(alertRead(http.HandlerFunc(alertHandler.List))))
+	// 告警导出（CSV，防公式注入，上限 10000 条；导出类接口共享限流）
+	mux.Handle("GET /api/v1/system-alerts/export", authz(exportRate(alertRead(http.HandlerFunc(alertHandler.Export)))))
 	mux.Handle("GET /api/v1/system-alerts/{id}", authz(alertRead(http.HandlerFunc(alertHandler.Get))))
 	mux.Handle("POST /api/v1/system-alerts/{id}/acknowledge", authz(alertWrite(http.HandlerFunc(alertHandler.Acknowledge))))
 	mux.Handle("POST /api/v1/system-alerts/{id}/resolve", authz(alertWrite(http.HandlerFunc(alertHandler.Resolve))))
@@ -1239,6 +1255,10 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// 告警静默/恢复（P1-08）：静默期内同指纹告警仍记录但不重复外发
 	mux.Handle("POST /api/v1/system-alerts/{id}/silence", authz(alertWrite(http.HandlerFunc(alertHandler.Silence))))
 	mux.Handle("POST /api/v1/system-alerts/{id}/resume", authz(alertWrite(http.HandlerFunc(alertHandler.Resume))))
+	// 告警维护窗口（阶段6 §11.5）：窗口内匹配告警评估抑制，抑制计入 suppressed_count 可观测
+	mux.Handle("GET /api/v1/system-alerts/maintenance-windows", authz(alertRead(http.HandlerFunc(alertHandler.ListMaintenanceWindows))))
+	mux.Handle("POST /api/v1/system-alerts/maintenance-windows", authz(alertWrite(http.HandlerFunc(alertHandler.CreateMaintenanceWindow))))
+	mux.Handle("DELETE /api/v1/system-alerts/maintenance-windows/{id}", authz(alertWrite(http.HandlerFunc(alertHandler.DeleteMaintenanceWindow))))
 	// 告警通知外发（一期）：渠道 CRUD / 发送测试 / 元数据
 	mux.Handle("GET /api/v1/notification-meta", authz(middleware.RequirePermission("notification.read")(http.HandlerFunc(notifyHandler.Meta))))
 	mux.Handle("GET /api/v1/notification-channels", authz(middleware.RequirePermission("notification.read")(http.HandlerFunc(notifyHandler.List))))
@@ -1320,6 +1340,28 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		apiauthz.RegisterRoutes(mux, authz, authzHandler)
 		// gRPC 描述符集（W14-DESC / P2-05 深化）：protoset 上传/列表/删除（权限复用 api_spec.manage，表见迁移 000076）
 		apigrpcdesc.RegisterRoutes(mux, authz, apigrpcdesc.NewHandler(apigrpcdesc.NewStore(db), auditSvc))
+		// 业务流程基线（§44 发布下发面）：CRUD（权限 api_flow.read/manage，种子见迁移 000155）；
+		// 基线变更触发现有整站发布链热生效（发布失败仅记日志，基线已落库可随后续发布重试）
+		flowHandler := apiflows.NewHandler(apiflows.NewStore(db), auditSvc)
+		if publisher != nil {
+			flowHandler.SetPublishFunc(func(ctx context.Context, uid uuid.UUID, rid string) {
+				if _, err := publisher.Publish(ctx, gatewayconfig.PublishInput{RequestedBy: uid, RequestID: rid}); err != nil {
+					slog.Error("api flow baseline publish trigger failed", "error", err)
+				}
+			})
+		}
+		apiflows.RegisterRoutes(mux, authz, flowHandler)
+		// 已吊销凭据（§35 凭据异常数据源）：CRUD（权限 api_credential.read/manage，种子见迁移 000156）；
+		// 吊销时效敏感，变更同样触发整站发布链热生效（口径同上）
+		revokedHandler := apirevokedcreds.NewHandler(apirevokedcreds.NewStore(db), auditSvc)
+		if publisher != nil {
+			revokedHandler.SetPublishFunc(func(ctx context.Context, uid uuid.UUID, rid string) {
+				if _, err := publisher.Publish(ctx, gatewayconfig.PublishInput{RequestedBy: uid, RequestID: rid}); err != nil {
+					slog.Error("revoked credential publish trigger failed", "error", err)
+				}
+			})
+		}
+		apirevokedcreds.RegisterRoutes(mux, authz, revokedHandler)
 		// API 主动扫描（P1-07）：目标/授权/任务/发现 + 复测桥接弱点中心（权限种子见迁移 000056）；
 		// 签名密钥不可用时探针降级为不带签名头（WARN 记录），不阻断装配
 		scanStore := apiscan.NewStore(db)
@@ -1476,6 +1518,12 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// ---- 阶段7：AI 安全运营（可独立启停，关闭不影响 WAF 核心）----
 	if cfg.AI.Enabled {
 		aiDeps.RegisterRoutes(mux, authz)
+		// 详情 GET（阶段7 §30 路径对齐）：权限跟随对应列表接口现有读权限模式，handler 实现见 aihandlers/details_handler.go
+		mux.Handle("GET /api/v1/ai/models/{id}", authz(middleware.RequirePermission("ai.models.read")(http.HandlerFunc(aiDeps.ModelGet))))
+		mux.Handle("GET /api/v1/ai/agents/{id}", authz(middleware.RequirePermission("ai.agents.read")(http.HandlerFunc(aiDeps.AgentGet))))
+		mux.Handle("GET /api/v1/ai/tools/{id}", authz(middleware.RequirePermission("ai.tools.read")(http.HandlerFunc(aiDeps.ToolGet))))
+		mux.Handle("GET /api/v1/ai/audits/{id}", authz(middleware.RequirePermission("ai.audits.read")(http.HandlerFunc(aiDeps.AuditGet))))
+		mux.Handle("GET /api/v1/ai/evaluations/{id}", authz(requireAnyPerm("ai.evaluations.run", "ai.usage.read", "ai.audits.read")(http.HandlerFunc(aiDeps.EvalRunGet))))
 		// 模块状态探测（任意已登录用户可查，用于前端降级提示）
 		mux.Handle("GET /api/v1/ai/status", authz(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			response.JSON(w, r, http.StatusOK, map[string]interface{}{

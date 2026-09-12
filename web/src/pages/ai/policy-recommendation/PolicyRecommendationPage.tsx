@@ -21,6 +21,7 @@ import { SearchOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import { aiAnalyzeApi, aiDraftsApi } from '../../../api/ai'
 import type { AiAnalyzeResult, AiDraft } from '../../../api/ai'
+import { exceptionsApi } from '../../../api/exceptions'
 import AnalyzeResultView from '../../../components/ai/AnalyzeResultView'
 import QueryErrorAlert from '../../../components/QueryErrorAlert'
 import StatusTag from '../../../components/StatusTag'
@@ -28,11 +29,22 @@ import { useAuthStore } from '../../../stores/auth'
 import { formatDateTime, formatJson } from '../../../utils/format'
 import { hasAnyPermission, hasPermission } from '../../../utils/permission'
 import { AI_DRAFT_STATUS_META, AI_DRAFT_TYPE_META, AI_RISK_META } from '../../../utils/ai'
+import {
+  WHAT_IF_PARANOIA_LEVEL_OPTIONS,
+  WHAT_IF_SCENARIO_OPTIONS,
+  WHAT_IF_TIME_RANGE_OPTIONS,
+  buildWhatIfBody,
+  whatIfSupportsTimeRange,
+} from './whatIf'
+import type { WhatIfFormValues, WhatIfScenario } from './whatIf'
 
 interface DraftFilters {
   status?: string
   recommendation_type?: string
 }
+
+/** remove_exception 例外下拉拉取条数上限（例外量级有限，一次拉取供选择） */
+const WHAT_IF_EXCEPTION_PAGE_SIZE = 200
 
 /** AI 草稿查看权限点（任一即可） */
 const DRAFT_VIEW_PERMISSIONS = [
@@ -71,23 +83,37 @@ export default function PolicyRecommendationPage() {
   }
 
   /* ---------- What-If 策略模拟 ---------- */
-  const [whatIfForm] = Form.useForm<{ rule_id: number }>()
+  const [whatIfForm] = Form.useForm<WhatIfFormValues>()
+  const [whatIfScenario, setWhatIfScenario] = useState<WhatIfScenario>('disable_rule')
   const [whatIfLoading, setWhatIfLoading] = useState(false)
   const [whatIfResult, setWhatIfResult] = useState<AiAnalyzeResult | null>(null)
 
+  // remove_exception 场景例外下拉（拉既有例外列表接口）
+  const whatIfExceptionsQuery = useQuery({
+    queryKey: ['what-if-exceptions'],
+    queryFn: () => exceptionsApi.list({ page: 1, page_size: WHAT_IF_EXCEPTION_PAGE_SIZE }),
+    enabled: canWhatIf && whatIfScenario === 'remove_exception',
+  })
+
   const onWhatIfAnalyze = async () => {
-    let ruleId: number
+    let v: WhatIfFormValues
     try {
-      const v = await whatIfForm.validateFields()
-      ruleId = v.rule_id
+      v = await whatIfForm.validateFields()
     } catch {
       // 表单校验未通过，antd 已展示错误提示
+      return
+    }
+    let body
+    try {
+      body = buildWhatIfBody(v)
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '参数校验失败')
       return
     }
     setWhatIfLoading(true)
     setWhatIfResult(null)
     try {
-      setWhatIfResult(await aiAnalyzeApi.whatIf({ rule_id: ruleId }))
+      setWhatIfResult(await aiAnalyzeApi.whatIf(body))
     } catch (e) {
       message.error(e instanceof ApiError ? e.message : '分析执行失败')
     } finally {
@@ -230,16 +256,111 @@ export default function PolicyRecommendationPage() {
       {canWhatIf && (
         <Card title="情景策略模拟">
           <Typography.Paragraph type="secondary">
-            输入规则 ID，模拟启用/调整该规则对历史请求的影响。模拟基于历史数据估算，仅供参考。
+            选择模拟场景：关闭/启用规则、修改异常阈值、切换 CRS 执行等级、新增/删除例外、修改 CC
+            阈值或调整封禁时长。模拟基于历史事件数据离线统计估算（非逐请求回放），仅供参考。
           </Typography.Paragraph>
-          <Form form={whatIfForm} layout="inline" style={{ rowGap: 8 }}>
-            <Form.Item
-              name="rule_id"
-              label="规则 ID"
-              rules={[{ required: true, message: '请输入规则 ID' }]}
-            >
-              <InputNumber placeholder="如 942100" style={{ width: 200 }} min={1} precision={0} />
+          <Form
+            form={whatIfForm}
+            layout="inline"
+            style={{ rowGap: 8 }}
+            initialValues={{ scenario: 'disable_rule', time_range: '7d' }}
+          >
+            <Form.Item name="scenario" label="模拟场景" rules={[{ required: true }]}>
+              <Select
+                style={{ width: 190 }}
+                options={WHAT_IF_SCENARIO_OPTIONS}
+                onChange={(v: WhatIfScenario) => setWhatIfScenario(v)}
+              />
             </Form.Item>
+            {(whatIfScenario === 'disable_rule' ||
+              whatIfScenario === 'enable_rule' ||
+              whatIfScenario === 'add_exception') && (
+              <Form.Item
+                name="rule_id"
+                label="规则 ID"
+                rules={[{ required: true, message: '请输入规则 ID' }]}
+              >
+                <InputNumber placeholder="如 942100" style={{ width: 200 }} min={1} precision={0} />
+              </Form.Item>
+            )}
+            {whatIfScenario === 'anomaly_threshold' && (
+              <Form.Item
+                name="anomaly_threshold"
+                label="新异常阈值"
+                rules={[{ required: true, message: '请输入模拟的异常阈值' }]}
+              >
+                <InputNumber
+                  placeholder="1-10000，如 5"
+                  style={{ width: 200 }}
+                  min={1}
+                  max={10000}
+                  precision={0}
+                />
+              </Form.Item>
+            )}
+            {whatIfScenario === 'pl_switch' && (
+              <Form.Item
+                name="paranoia_level"
+                label="CRS 执行等级"
+                rules={[{ required: true, message: '请选择 CRS 执行等级' }]}
+              >
+                <Select style={{ width: 260 }} options={WHAT_IF_PARANOIA_LEVEL_OPTIONS} />
+              </Form.Item>
+            )}
+            {whatIfScenario === 'remove_exception' && (
+              <Form.Item
+                name="exception_id"
+                label="例外"
+                rules={[{ required: true, message: '请选择要模拟删除的例外' }]}
+              >
+                <Select
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="选择例外"
+                  style={{ width: 320 }}
+                  loading={whatIfExceptionsQuery.isLoading}
+                  options={(whatIfExceptionsQuery.data?.items ?? []).map((e) => ({
+                    value: e.id,
+                    label: `${e.name}（${e.id.slice(0, 8)}）`,
+                  }))}
+                />
+              </Form.Item>
+            )}
+            {whatIfScenario === 'cc_threshold' && (
+              <Form.Item
+                name="cc_threshold"
+                label="新 CC 阈值"
+                rules={[{ required: true, message: '请输入模拟的 CC 阈值' }]}
+              >
+                <InputNumber
+                  placeholder="次/窗口，如 200"
+                  style={{ width: 200 }}
+                  min={1}
+                  max={1000000}
+                  precision={0}
+                />
+              </Form.Item>
+            )}
+            {whatIfScenario === 'block_duration' && (
+              <Form.Item
+                name="block_duration_seconds"
+                label="新封禁时长"
+                rules={[{ required: true, message: '请输入模拟的封禁时长（秒）' }]}
+              >
+                <InputNumber
+                  placeholder="秒，如 3600"
+                  style={{ width: 200 }}
+                  min={60}
+                  max={2592000}
+                  precision={0}
+                />
+              </Form.Item>
+            )}
+            {whatIfSupportsTimeRange(whatIfScenario) && (
+              <Form.Item name="time_range" label="历史数据区间">
+                <Select style={{ width: 140 }} options={WHAT_IF_TIME_RANGE_OPTIONS} />
+              </Form.Item>
+            )}
             <Form.Item>
               <Button
                 type="primary"

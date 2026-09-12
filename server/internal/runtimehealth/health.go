@@ -64,6 +64,10 @@ const (
 	MetricDiskFreeBytes     = "disk_free_bytes"
 	MetricDiskFreePercent   = "disk_free_percent"
 	MetricGuardLogStaleSecs = "guard_log_stale_seconds"
+	// 文件句柄指标（阶段6 §10.2）：API 组件自测产出；非 Linux 平台不可用时不产出
+	MetricFDOpenFiles       = "fd_open_files"
+	MetricFDMaxOpenFiles    = "fd_max_open_files"
+	MetricFDUsagePercent    = "fd_usage_percent"
 	MetricDBCapacityPercent = "db_capacity_percent"
 	MetricAPILastEventAt    = "api_last_event_at"
 	MetricAPIEventStaleSecs = "api_event_stale_seconds"
