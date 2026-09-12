@@ -14,6 +14,12 @@ import (
 
 // ---------- 版本号解析与比较 ----------
 
+func TestCurrentVersion(t *testing.T) {
+	if CurrentVersion != "1.2.0" {
+		t.Fatalf("CurrentVersion = %q, want 1.2.0", CurrentVersion)
+	}
+}
+
 func TestParseVersion(t *testing.T) {
 	cases := []struct {
 		in      string
