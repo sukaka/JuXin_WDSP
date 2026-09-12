@@ -1,0 +1,25 @@
+[driver] api healthy
+[driver] license imported, users provisioned
+[e2e setup] cleared 3 rate limit keys
+[e2e setup] login rate limit set to 100000 (status=400)
+
+Running 6 tests using 1 worker
+
+[1A[2K(node:62499) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+[1A[2K(node:62499) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+[1A[2K[1/6] [chromium] › e2e/jwt-trust.spec.ts:146:3 › JWT-15：JWT 信任策略页面流程 › 新建应用空态：未配置/默认关闭与版本字段可见
+[1A[2K[2/6] [chromium] › e2e/jwt-trust.spec.ts:169:3 › JWT-15：JWT 信任策略页面流程 › 保存 OBSERVE 草稿：提示草稿已保存且状态为草稿待发布（未生效）
+[1A[2K[3/6] [chromium] › e2e/jwt-trust.spec.ts:197:3 › JWT-15：JWT 信任策略页面流程 › 静态 JWKS 粘贴私钥材料：立即拒绝并清空，不回显已粘贴内容
+[1A[2K[4/6] [chromium] › e2e/jwt-trust.spec.ts:221:3 › JWT-15：JWT 信任策略页面流程 › 发布预检：结果区域列出各检查项及状态
+[1A[2K[5/6] [chromium] › e2e/jwt-trust.spec.ts:261:3 › JWT-15：JWT 信任策略页面流程 › 审计管理员：策略 API 可读、写与预检 403；应用详情路由跳无权限页
+[1A[2K[6/6] [chromium] › e2e/jwt-trust.spec.ts:316:3 › JWT-15：JWT 信任策略页面流程 › 事件详情：携带 jwt_verification 的事件展示 JWT 验证区块
+[e2e teardown] login rate limit restored to 10
+[1A[2K  1 skipped
+  5 passed (13.4s)
+[driver] playwright exit=0

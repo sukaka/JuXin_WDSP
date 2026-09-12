@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "case_id": "WAF-ATK-SQLI-001",
+  "case_version": 1,
+  "family": "waf",
+  "tags": ["sqli", "union-select", "crs-declared"],
+  "criticality": "MANDATORY",
+  "truth": "ATTACK",
+  "truth_reason": "GET 查询内 UNION SELECT 注入探测，自研合成的通用注入模式（不来自任何第三方语料库）；属项目 CRS 声明检测范围（SQL 注入）",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成攻击样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "waf.crs.sqli",
+    "applications": ["p1reg-echo-site"],
+    "protocols": ["http/1.1"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin", "waf_event_pipeline"],
+    "notes": "判定需安全事件与最终处置证据对账"
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/search",
+        "query": "q=%27%20UNION%20SELECT%20username%2C%20password%20FROM%20users--",
+        "headers": {}
+      },
+      "wait": null,
+      "assert": []
+    }
+  ],
+  "seed": 2001,
+  "reset_plan": {"scope": "none", "actions": ["none"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "coraza_crs", "rule_family": "sqli"},
+      "expected_final_action": "DETECT_PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "waf_security_event", "rule_family": "sqli"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "coraza_crs", "rule_family": "sqli"},
+      "expected_final_action": "BLOCK_403",
+      "expected_origin": "not_reached",
+      "expected_events": [{"type": "waf_security_event", "rule_family": "sqli"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": true,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "VALIDATION"
+}

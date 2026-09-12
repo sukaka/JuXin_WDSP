@@ -1,0 +1,53 @@
+# 九章 TLS 会话票据主备共享 lab（docs/HA_ACTIVE_STANDBY_DESIGN.md §7.2）
+# 三容器：node-a/node-b 同一份票据密钥（模拟主备双节点同一份发布 JSON），
+# node-c 不同密钥（对照组，跨节点恢复必须失败回退全握手）。
+#
+# ⚠ 安全警告：config-a/b/c.json 中的 session_tickets keys_hex 是公开的 lab 占位密钥
+# （已提交进仓库，视为已泄漏），仅用于本 lab 验证票据共享语义。生产环境的 STEK
+# 必须由密钥管理系统/配置发布链路按节点下发，严禁复制本目录的密钥值到任何真实部署。
+#
+# 用法：
+#   docker compose -f gateway/stek-lab/docker-compose.stek-lab.yml up -d
+#   bash gateway/stek-lab/stek-lab-tests.sh
+#   docker compose -f gateway/stek-lab/docker-compose.stek-lab.yml down -v
+
+name: steklab
+
+services:
+  node-a:
+    image: jiuzhang-gateway:stek-lab
+    container_name: steklab-node-a
+    command: ["run", "--config", "/etc/caddy/caddy.json"]
+    volumes:
+      - ./config-a.json:/etc/caddy/caddy.json:ro
+      - ./certs:/certs:ro
+    networks: [stek-net]
+
+  node-b:
+    image: jiuzhang-gateway:stek-lab
+    container_name: steklab-node-b
+    command: ["run", "--config", "/etc/caddy/caddy.json"]
+    volumes:
+      - ./config-b.json:/etc/caddy/caddy.json:ro
+      - ./certs:/certs:ro
+    networks: [stek-net]
+
+  node-c:
+    image: jiuzhang-gateway:stek-lab
+    container_name: steklab-node-c
+    command: ["run", "--config", "/etc/caddy/caddy.json"]
+    volumes:
+      - ./config-c.json:/etc/caddy/caddy.json:ro
+      - ./certs:/certs:ro
+    networks: [stek-net]
+
+  # openssl 客户端（alpine 自带 busybox 无 s_client，安装 openssl）
+  client:
+    image: alpine:3.21
+    container_name: steklab-client
+    command: sh -c "apk add --no-cache openssl >/dev/null 2>&1 && sleep infinity"
+    networks: [stek-net]
+
+networks:
+  stek-net:
+    driver: bridge

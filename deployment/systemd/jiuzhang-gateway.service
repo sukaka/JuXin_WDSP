@@ -1,0 +1,83 @@
+# jiuzhang-gateway.service —— 九章 WAF 裸机网关 systemd 单元（模板）
+# 本文件是【模板】：User=/Group= 使用占位符 __GW_USER__ / __WAF_GROUP__，
+# 由 ops/install/install-gateway-baremetal.sh 按实际分配的专用账号渲染后安装到
+# /etc/systemd/system/jiuzhang-gateway.service（设计文档 docs/BARE_METAL_GATEWAY_DESIGN.md 4.4）。
+# 管理标记：install/verify 脚本凭下一行识别本文件由九章安装器管理，允许覆盖。
+# jiuzhang-managed: baremetal-gateway-unit
+
+[Unit]
+Description=JiuZhang WAF Gateway (Caddy + Coraza)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+# Type=notify：与上游 Caddy 官方 unit 同款（core 内置 sd_notify）。
+# 期1 已对定制构建（v2.11.4，含 jiuzhang_guard 模块）在目标环境实测；
+# 若目标环境 sd_notify 不生效，降级为 Type=simple 并同步删除 NotifyAccess 相关依赖。
+Type=notify
+User=__GW_USER__
+Group=__WAF_GROUP__
+
+# autosave 落点固定为 /var/lib/caddy/autosave.json（实测路径 $XDG_CONFIG_HOME/caddy/autosave.json）。
+Environment=XDG_CONFIG_HOME=/var/lib/caddy
+
+# 关键约束（v2.11.4 实测）：Admin API /load 的配置会 autosave；
+# caddy run --resume 时 resume 优先（日志："ignoring --config and resuming"）。
+# 任何一次【不带 --resume】的启动都会用 bootstrap 覆盖 autosave.json，站点配置即丢失。
+# 因此 ExecStart 必须恒定携带 --resume；运维上禁止手工执行不带 --resume 的 caddy run。
+ExecStart=/opt/jiuzhang-gateway/current/caddy run --config /etc/caddy/Caddyfile.bootstrap --resume
+
+# caddy reload 不支持 --resume；按 bootstrap 重载会丢弃运行态站点配置。
+# 运维约定：reload 仅限「引导配置变更」（如 admin socket、默认日志）场景；
+# 常规站点/策略变更一律走 Admin API /load（由管理面发布链路执行）。
+ExecReload=/opt/jiuzhang-gateway/current/caddy reload --config /etc/caddy/Caddyfile.bootstrap --force
+
+UMask=0077
+RuntimeDirectory=caddy
+RuntimeDirectoryMode=0750
+# StateDirectory=caddy 会创建 /var/lib/caddy 且属主为 User= 指定用户。
+# 注意：/var/lib/caddy/config（发布存档，root:__WAF_GROUP__ 0750）由安装脚本预先创建，
+# StateDirectory 不会递归改属主，两者并存不冲突（见设计文档 4.2 表格）。
+StateDirectory=caddy
+
+# 安全基线（对应 docs/GATEWAY_SECURITY.md 容器基线的宿主机映射）：
+#   read_only rootfs      -> ProtectSystem=strict + ReadOnlyPaths/ReadWritePaths
+#   cap_drop ALL          -> CapabilityBoundingSet 仅保留 CAP_NET_BIND_SERVICE（80/443 必要最小授权）
+#   no-new-privileges     -> NoNewPrivileges=true
+#   tmpfs /tmp            -> PrivateTmp=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/caddy /var/lib/caddy /var/run/caddy
+ReadOnlyPaths=/etc/caddy /srv/jiuzhang
+ProtectHome=true
+PrivateTmp=true
+LimitNOFILE=1048576
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+
+# ---------- sandbox 增强候选（期1 逐项实测后分批开启，勿一次性全开） ----------
+# 兼容性探测由 ops/install/verify-gateway-baremetal.sh 用 systemd-analyze verify
+# 静态校验；Go runtime 敏感项已在下方单独标注，开启前必须在目标环境实测。
+#
+# PrivateDevices=true
+# ProtectKernelTunables=true
+# ProtectKernelModules=true
+# ProtectKernelLogs=true
+# ProtectControlGroups=true
+# ProtectClock=true
+# RestrictSUIDSGID=true
+# LockPersonality=true
+# RestrictRealtime=true
+# SystemCallArchitectures=native
+#
+# 以下三项对 Go runtime 敏感（W^X 内存、syscall 与地址族使用），需重点实测后定稿：
+# MemoryDenyWriteExecute=true
+# SystemCallFilter=@system-service
+# SystemCallErrorNumber=EPERM
+# RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

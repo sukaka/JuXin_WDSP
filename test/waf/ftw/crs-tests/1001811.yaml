@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: ERB eval/send code execution (CUSTOM_PACK ssti-injection)
+rule_id: 1001811
+tests:
+  - test_id: 1
+    desc: "ERB output tag with eval call"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'var=<%= eval("puts 1") %>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001811]
+  - test_id: 2
+    desc: "ERB tag with instance_eval call"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'var=<%= x.instance_eval("puts 1") %>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001811]

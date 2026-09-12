@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "case_id": "BOT-ATK-FORGE-001",
+  "case_version": 1,
+  "family": "bot",
+  "tags": ["bot-challenge", "verify-protocol", "forged-submission"],
+  "criticality": "STANDARD",
+  "truth": "ATTACK",
+  "truth_reason": "无挑战会话伪造 verify 提交：challenge_id 为攻击者编造（全零合法词形）、无会话 Cookie，属对验证协议的伪造重放探测；人工核验为协议层攻击样本（B2 固定协议：拒绝且绝不签发通行）",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成攻击样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "bot.verify.forged_reject",
+    "applications": ["p1reg-bot-site"],
+    "protocols": ["https"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin", "bot_event_pipeline"]
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "POST",
+        "path": "/_wdsp/bot/v1/verify",
+        "headers": {
+          "Content-Type": "application/json",
+          "Origin": "{site_origin}"
+        },
+        "body": "{\"challenge_id\": \"00000000000000000000000000000000\", \"solution\": \"0\"}"
+      },
+      "wait": null,
+      "assert": [
+        {"type": "http_status_in", "statuses": [403]},
+        {"type": "json_field_equals", "path": "error", "value": "SESSION_INVALID"},
+        {"type": "header_absent", "name": "set-cookie"},
+        {"type": "origin_marker_absent"}
+      ]
+    }
+  ],
+  "seed": 3104,
+  "reset_plan": {"scope": "case", "actions": ["none"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "bot", "rule_family": "verify_protocol"},
+      "expected_final_action": "BLOCK_403",
+      "expected_origin": "not_reached",
+      "expected_events": [{"type": "BOT_VERIFY_REJECTED", "reason": "SESSION_INVALID"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "bot", "rule_family": "verify_protocol"},
+      "expected_final_action": "BLOCK_403",
+      "expected_origin": "not_reached",
+      "expected_events": [{"type": "BOT_VERIFY_REJECTED", "reason": "SESSION_INVALID"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": false,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "VALIDATION"
+}

@@ -1,0 +1,39 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "Python pickle __reduce_ex__ or cPickle/dill load entry (1000641)"
+rule_id: 1000641
+tests:
+  - test_id: 1
+    desc: "__reduce_ex__ magic method in query arg"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: GET
+          port: 80
+          uri: "/get?code=__reduce_ex__"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000641]
+  - test_id: 2
+    desc: "dill.loads call in body"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "snippet=dill.loads(data)"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000641]

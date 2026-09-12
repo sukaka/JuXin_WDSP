@@ -1,0 +1,59 @@
+============================================================
+九章 W21-FLUSH 采集器 flush 修复复测  2026-08-20 12:49:48（UTC 04:49:48）
+环境: Darwin 25.2.0 arm64  gateway=http://127.0.0.1:18080 api=http://127.0.0.1:18081
+参数: 两臂并发 c=10+10 计量=30s 预热=5s ab=-k  敏感/偏离混合
+镜像: api=sha256:a4533411670e gateway=sha256:145e27c98420
+原始数据目录: /tmp/w21-flush-1787201388
+============================================================
+[pre] jiuzhang-stage5-api: running healthy
+[pre] jiuzhang-stage5-gateway: running healthy
+[pre] jiuzhang-stage5-postgres: running healthy
+[pre] jiuzhang-stage5-valkey: running healthy
+[pre] jiuzhang-stage5-testorigin: running healthy
+[pre] jiuzhang-stage5-ollama: running healthy
+[pre] api 二进制 WAF_COLLECTOR_FLUSH 出现次数=2（≥1 证明含 W21 修复）
+[pre] app=12b463d1-ad61-46b3-9bf5-5f16fd94b6c4
+[pre] 策略现状: wdsp True OBSERVE db
+[pre] 网关事件日志行数 5s 间隔两次读: 900500 / 900500（相等=无并发生产者）
+[pre] 管线活性探针入库事件数=20（>0 才计量）
+[pre] 采集器 EOF 就位: checkpoint offset=1174834168 日志大小=1174834168
+[pre] 起始 api_runtime_events 总行数=900540
+[flood] 洪峰开始 04:50:38 UTC
+[flood] 洪峰结束 04:51:08 UTC（计量窗 30s）
+[flood] dev 臂: complete=47978 failed=0 qps=1599.27 p95=15ms
+[flood] sens 臂: complete=47801 failed=0 qps=1593.36 p95=15ms
+[flood] 网关侧前缀事件总数=110751（04:52:02 UTC 稳定）；此刻已入库=17593（洪峰期间采集器并发入库）
+[restart] 追平途中 docker restart api（已入库=18453/110751，断点=1787201527 {"offset":1198675107,"inode":52947,"prefix_size":4096,"prefix_sha256":"e3878bce5fb253f758365a33f323e214e239dc5aefcf39b7a631bba55074955f"}）
+[restart] api 恢复健康 04:52:13 UTC（重启耗时 4s）
+============================================================
+结果汇总
+  A. 追平时间: 386s（洪峰结束→入库追平；含中途重启耗时 4s）
+     网关侧产出=110751  洪峰结束已入库=17593  追平段入库=93158
+     有效追平速率≈241 行/s（对照：修复前 11.5 万≈6.5 分钟≈300 行/s）
+  B. 断点更新频率: flood_window_ckpt_updates=7 median_gap_s=4 catchup_window_ckpt_updates=97 median_gap_s=4 
+  C. 重扫行为: restart 标志=1（1=已执行中途重启）
+     重启前断点: offset=1198675107 mtime=1787201527（距 kill 2s，≤2s 证明未提交尾部有界）
+     重启时日志大小=1311537316  重放窗口=112862209 字节（≤2000 行+≤2s 扫描量）
+     重启后断点不回退、计数不回退（catchup.csv 全程连续）；api 恢复 4s
+  幂等校验: 前缀行数=110751 distinct request_id=110751（相等=重放零双计）
+  总量校验: 表总行数 900540 → 1011271（净增 110731 vs 网关前缀产出 110751+探针20）
+  网关日志总行数=1011251  终态断点={"offset":1311537316,"inode":52947,"prefix_size":4096,"prefix_sha256":"e3878bce5fb253f758365a33f323e214e239dc5aefcf39b7a631bba55074955f"}
+============================================================
+终态核验
+  jiuzhang-stage5-api: running healthy
+  jiuzhang-stage5-gateway: running healthy
+  jiuzhang-stage5-postgres: running healthy
+  jiuzhang-stage5-valkey: running healthy
+  jiuzhang-stage5-testorigin: running healthy
+  jiuzhang-stage5-ollama: running healthy
+  策略: wdsp True OBSERVE db；应用 s5app=OFF；gateway_runtime 残留行=0
+  网关行为: GET / -> 200（期望200）  GET /v1/w21f1787201388-dev/1 -> 404（期望404透传）
+  数据抽查: events=1011271 endpoints=110 apps=5 users=29
+完成。原始数据：/tmp/w21-flush-1787201388（catchup.csv 全程采样、ab 原文、restart-api.log）
+
+[errata 2026-08-20] 上方 C 节「重放窗口=112862209 字节」一行措辞更正：该值为重启时刻的
+【未扫积压】（日志大小 1311537316 − 已提交断点 1198675107），属重启后的首次扫描工作量，
+并非重放。重放（已扫描未提交尾部）上界由「断点 mtime 距 kill 2s」证明 ≤2000 行+≤2s；
+实测重放尾批 ≈503 行（kill 窗口期计数 19293→19796 而断点冻结于 1198675107，新采集器自该
+断点续扫重放），request_id 幂等去重后全程 110751 行 == 110751 distinct 零双计（catchup.csv
+04:52:06-04:52:25 逐 2s 采样为证）。脚本该行措辞已修正（未扫积压 vs 重放分述），数据本身无误。

@@ -1,0 +1,90 @@
+# 九章防护网关 POC 配置（阶段1）
+# 防护模式通过环境变量 SEC_RULE_ENGINE 注入：Off / DetectionOnly / On
+# 该机制模拟后续配置发布系统生成不同 SecRuleEngine 配置的过程。
+{
+	# Admin API 仅绑定 Unix Socket，禁止暴露 TCP 端口
+	admin unix//var/run/caddy/admin.sock
+
+	# POC 使用纯 HTTP 测试，禁用自动 HTTPS
+	auto_https off
+
+	# 中间件顺序（经 adapt 实测验证）：headers -> waf -> 业务 handler。
+	# 说明：Caddy 的 order 指令 before/after 的参考指令必须是内置指令，
+	# 第三方指令 coraza_waf 只能作为主语移动，故使用 after request_header：
+	# 1. request_header 先生成/覆盖 X-Request-Id，Coraza 审计日志可记录该头；
+	# 2. coraza_waf 位于 reverse_proxy 等业务 handler 之前，满足官方 first 语义。
+	order coraza_waf after request_header
+
+	# 网关自身运行日志（非访问日志）
+	log {
+		output file /var/log/caddy/caddy.log
+		format json
+		level INFO
+	}
+
+	# 协议层限制：请求头总大小上限（超出由 HTTP 层拒绝，返回 431/400）
+	servers {
+		max_header_size 64KB
+	}
+}
+
+:8080 {
+	# 结构化访问日志（JSON，含 X-Request-Id 请求头）
+	log {
+		output file /var/log/caddy/access.log
+		format json
+		level INFO
+	}
+
+	# 生成唯一 Request ID 并强制覆盖客户端传入值，不信任客户端自带标识
+	request_header X-Request-Id {http.request.uuid}
+
+	# 默认安全响应头
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	coraza_waf {
+		# 加载顺序与配置发布生成器（gatewayconfig）保持一致：
+		# 插件 config/before → before-crs → crs/rules → contrib → 插件 after
+		# → after-crs → jiuzhang-custom → post-contrib-blocking（必须最后）。
+		directives `
+			SecRuleEngine {$SEC_RULE_ENGINE:On}
+			Include /etc/caddy/rules/coraza.conf
+			Include /etc/caddy/rules/crs/crs-setup.conf
+			Include /etc/caddy/rules/crs/plugins/*/plugins/*-config.conf
+			Include /etc/caddy/rules/crs/plugins/*/plugins/*-before.conf
+			Include /etc/caddy/rules/exclusions/before-crs.conf
+			Include /etc/caddy/rules/crs/rules/*.conf
+			Include /etc/caddy/rules/contrib/*/*.conf
+			Include /etc/caddy/rules/crs/plugins/*/plugins/*-after.conf
+			Include /etc/caddy/rules/exclusions/after-crs.conf
+			Include /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf
+			Include /etc/caddy/rules/jiuzhang/post-contrib-blocking.conf
+		`
+	}
+
+	reverse_proxy testorigin:8081
+
+	# Coraza 阻断时返回 caddyhttp.HandlerError，由 handle_errors 统一接管，
+	# 返回九章自定义阻断页面，不向客户端暴露规则细节。
+	# 注：自定义构建中无 http.matchers.status 模块，使用 expression 匹配错误码。
+	handle_errors {
+		@blocked expression `{err.status_code} == 403`
+		handle @blocked {
+			header Content-Type "text/html; charset=utf-8"
+			templates
+			rewrite * /blockpage.html
+			file_server {
+				root /srv/jiuzhang
+			}
+		}
+		# 其他错误返回通用响应，不暴露内部细节
+		handle {
+			respond "{err.status_code} {err.status_text}" {err.status_code}
+		}
+	}
+}

@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "ASP.NET ViewState present without __VIEWSTATEENCRYPTED (1000636)"
+rule_id: 1000636
+tests:
+  - test_id: 1
+    desc: "ViewState without encryption field triggers"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "__VIEWSTATE=%2FwEPDwUKLTIzNDU2Nzg5&__VIEWSTATEGENERATOR=CA0B0334&__EVENTVALIDATION=%2FwEWAgK%2B"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000636]
+  - test_id: 2
+    desc: "ViewState with __VIEWSTATEENCRYPTED present must not trigger"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "__VIEWSTATE=%2FwEPDwUKLTIzNDU2Nzg5&__VIEWSTATEENCRYPTED=ab12cd34&__EVENTVALIDATION=%2FwEWAgK%2B"
+          version: HTTP/1.1
+        output:
+          log:
+            no_expect_ids: [1000636]

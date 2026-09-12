@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "case_id": "WAF-BEN-UPLOAD-001",
+  "case_version": 1,
+  "family": "waf",
+  "tags": ["normal-business", "upload", "multipart", "false-positive-guard"],
+  "criticality": "MANDATORY",
+  "truth": "BENIGN",
+  "truth_reason": "multipart 表单上传小型纯文本文件（.txt），人工核验为正常业务上传；属任务书 §4.2 要求的上传正常样本",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "waf.core.allow_benign",
+    "applications": ["p1reg-echo-site"],
+    "protocols": ["http/1.1"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin"],
+    "notes": "上传在源站产生对象，用例结束按 reset_plan 重置本用例状态"
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "POST",
+        "path": "/upload",
+        "headers": {"Content-Type": "multipart/form-data; boundary=p1regBOUNDARY"},
+        "body": "--p1regBOUNDARY\r\nContent-Disposition: form-data; name=\"desc\"\r\n\r\np1reg 回归固定上传样本（纯文本）\r\n--p1regBOUNDARY\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\nContent-Type: text/plain\r\n\r\np1reg seeded upload content line 1\np1reg seeded upload content line 2\n0123456789 abcdefgh\n\r\n--p1regBOUNDARY--\r\n"
+      },
+      "wait": null,
+      "assert": [
+        {"type": "http_status_in", "statuses": [200]},
+        {"type": "origin_marker_present"}
+      ]
+    }
+  ],
+  "seed": 1006,
+  "reset_plan": {"scope": "case", "actions": ["reset_app_state"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "none"},
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "none"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "none"},
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "none"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": true,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "HOLDOUT"
+}

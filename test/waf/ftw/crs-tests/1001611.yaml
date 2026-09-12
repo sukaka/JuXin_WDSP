@@ -1,0 +1,21 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: XXE external entity declaration in request parameter (CUSTOM_PACK)
+rule_id: 1001611
+tests:
+  - test_id: 1
+    desc: "URL decoded ENTITY SYSTEM payload inside GET parameter"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+          method: GET
+          port: 80
+          uri: "/get?xml=%3C!ENTITY%20xxe%20SYSTEM%20%22file:///etc/passwd%22%3E"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001611]

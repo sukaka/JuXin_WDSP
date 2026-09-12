@@ -1,0 +1,49 @@
+# S6 冻结核查（2026-09-08，DEC-01/02/05 翻 PASS 后刷新）
+
+## 1) 构建一致性
+HEAD: 3c73774（各 manifest source.commit=3c73774，一致）
+工作树未提交改动: 1615 个文件 → source.dirty=true 如实标注
+锁定镜像: 无（images=[]）；config_fingerprint: null；快照: null —— 干净构建输入不存在
+
+## 2) 强制验收项可定位性（63 条全覆盖核查）
+强制验收项总数: 63；已定位: 63；缺失: 无
+状态分布: {'BLOCKED': 10, 'NOT_APPLICABLE': 1, 'PASS': 52}
+  EVD: {'BLOCKED': 2, 'NOT_APPLICABLE': 1, 'PASS': 9}
+  BENCH: {'BLOCKED': 7, 'PASS': 5}
+  JWT: {'BLOCKED': 1, 'PASS': 17}
+  DEC: {'PASS': 6}
+  EXC: {'PASS': 15}
+
+## 3) 发布门槛（--release 必须拒绝）
+$ python3 tools/capability_evidence.py check --catalog docs/capabilities/capabilities.json --manifest docs/evidence/merged-check-final-20260908.manifest.json --release
+发布门槛未满足，--release 拒绝通过：
+  - source.dirty=true：存在影响构建的未提交内容，发布证据必须绑定干净构建输入
+  - source.snapshot_sha256 为空：缺少构建输入快照摘要
+  - source.file_manifest 为空：缺少构建输入文件清单
+  - images 为空：发布证据必须记录锁定镜像
+  - config_fingerprint 为空：缺少有效配置指纹
+  - 能力 api-assets-models（API 资产与模型）验证状态为 BLOCKED（single-reverse-proxy=BLOCKED），RELEASE_VERIFIED 要求强制范围无 FAIL/BLOCKED/NOT_RUN
+  - 能力 jwt-verification（业务 JWT 验证（信任链））验证状态为 BLOCKED（single-reverse-proxy=BLOCKED），RELEASE_VERIFIED 要求强制范围无 FAIL/BLOCKED/NOT_RUN
+  - 能力 event-chain（事件链路（采集→入库→关联））验证状态为 BLOCKED（single-reverse-proxy=BLOCKED），RELEASE_VERIFIED 要求强制范围无 FAIL/BLOCKED/NOT_RUN
+  - 能力 config-release-ha（配置发布与双节点 HA）验证状态为 BLOCKED（single-node=PASS、ha-two-node=BLOCKED），RELEASE_VERIFIED 要求强制范围无 FAIL/BLOCKED/NOT_RUN
+  - 能力 apm-trace-sql-exception（APM Trace/SQL/异常（代码级观测））验证状态为 BLOCKED（apm-probe-data-plane=BLOCKED），RELEASE_VERIFIED 要求强制范围无 FAIL/BLOCKED/NOT_RUN
+  - 能力 agent-collection-forwarding（Agent 流量采集与转发）验证状态为 BLOCKED（agent-capture-forward=BLOCKED），RELEASE_VERIFIED 要求强制范围无 FAIL/BLOCKED/NOT_RUN
+清单结构有效：docs/capabilities/capabilities.json
+证据 manifest 结构有效：docs/evidence/merged-check-final-20260908.manifest.json
+  能力 waf-crs-detection: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 real-client-ip: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 access-control-cc: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 api-assets-models: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 api-request-response-detection: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 identity-behavior-observation: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 jwt-verification: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 api-unified-decision: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 request-final-disposition: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 waf-exceptions: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 event-chain: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 config-release-ha: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 apm-entry-performance: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 apm-trace-sql-exception: 实现=PARTIAL 接线=PARTIAL 验证=BLOCKED
+  能力 agent-collection-forwarding: 实现=PARTIAL 接线=PARTIAL 验证=BLOCKED
+发布状态（计算值）：DEVELOPMENT
+rc=1（门槛拒绝，符合预期：无干净构建输入/锁定镜像，6 项能力 BLOCKED）

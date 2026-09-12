@@ -1,0 +1,101 @@
+# 九章阶段1网关技术验证编排
+# 用法（仓库根目录）：
+#   docker compose -f deployment/docker-compose.stage1.yml up -d
+# 防护模式切换（Off / DetectionOnly / On）：
+#   SEC_RULE_ENGINE=DetectionOnly docker compose -f deployment/docker-compose.stage1.yml up -d
+
+name: jiuzhang-stage1
+
+services:
+  gateway:
+    image: jiuzhang-gateway:stage1
+    build:
+      context: ../gateway
+      dockerfile: Dockerfile
+    container_name: jiuzhang-stage1-gateway
+    restart: unless-stopped
+    environment:
+      # 防护模式：Off（关闭）/ DetectionOnly（观察）/ On（防护）
+      SEC_RULE_ENGINE: ${SEC_RULE_ENGINE:-On}
+    ports:
+      # 业务测试端口仅绑定回环地址
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - ../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      - ../gateway/rules:/etc/caddy/rules:ro
+      # 日志目录绑定挂载到宿主机，供事件解析器与 go-ftw 日志断言读取
+      - ../runtime/logs/stage1:/var/log/caddy
+      # Admin Socket 共享卷：供配置控制器（后端容器）访问，不暴露到宿主机
+      - stage1-gateway-admin:/var/run/caddy
+    tmpfs:
+      # read_only 根文件系统下提供可写临时目录（Coraza SecDataDir）
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      testorigin:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/bin/caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - stage1-net
+
+  testorigin:
+    build:
+      context: ./stage1/testorigin
+      dockerfile: Dockerfile
+    image: jiuzhang-testorigin:stage1
+    container_name: jiuzhang-stage1-testorigin
+    restart: unless-stopped
+    # 源站不暴露宿主机端口，仅允许内部网络经网关访问
+    expose:
+      - "8081"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - stage1-net
+
+  controller:
+    # 配置控制器角色：唯一可访问 Caddy Admin Unix Socket 的组件，
+    # 模拟后续管理后端的配置发布通道。
+    image: curlimages/curl:8.21.0@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13
+    container_name: jiuzhang-stage1-controller
+    user: "1000:1000"
+    command: ["sleep", "infinity"]
+    volumes:
+      - stage1-gateway-admin:/var/run/caddy
+      - ./stage1/config-tests:/config-tests:ro
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks:
+      - stage1-net
+
+volumes:
+  stage1-gateway-admin:
+    driver: local
+
+networks:
+  stage1-net:
+    driver: bridge

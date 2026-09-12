@@ -1,0 +1,2115 @@
+# 域片段：应用接入与配置发布（应用/域名/源站/头合规/路径转发/证书/配置发布/版本/网关状态）
+# 路由来源：server/internal/app/app.go:476-525 + server/internal/appconfigs/handler.go RegisterRoutes
+# 成功响应统一信封：{code, message, data, request_id}，下列 200 响应的 schema 均为该信封，data 为各业务负载。
+
+paths:
+  /applications:
+    get:
+      operationId: appList
+      tags: [applications]
+      summary: 应用分页列表
+      description: 按创建时间倒序返回应用列表，支持关键字（编码/名称模糊匹配）、状态、防护模式筛选；每项附带活动域名数与活动源站数统计。权限：`applications.read`
+      parameters:
+        - { name: keyword, in: query, required: false, schema: { type: string }, description: 关键字（应用编码或名称模糊匹配） }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [DRAFT, ACTIVE, DISABLED, ERROR, DELETED] }, description: 按应用状态筛选 }
+        - { name: protection_mode, in: query, required: false, schema: { type: string, enum: [OFF, OBSERVE, PROTECT, BYPASS] }, description: 按防护模式筛选 }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: 应用分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/AppListResponse' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: appCreate
+      tags: [applications]
+      summary: 创建应用
+      description: 创建 Web 应用，初始状态为 DRAFT（草稿）；应用编码唯一，重复返回 409。权限：`applications.create`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppCreateRequest' }
+      responses:
+        '200':
+          description: 创建成功，返回应用完整信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/AppApplication' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: 应用编码已存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}:
+    get:
+      operationId: appGet
+      tags: [applications]
+      summary: 应用详情
+      description: 返回应用完整信息，并附带域名列表（domains）与源站列表（upstreams）；无记录时这两个字段可能为 null。权限：`applications.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 应用详情（含域名与源站）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/AppApplicationDetail' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: appUpdate
+      tags: [applications]
+      summary: 更新应用
+      description: 全量更新应用基础信息（编码不可改），携带 version 做乐观锁校验，版本不匹配返回 409；变更 protection_mode 记高风险审计。权限：`applications.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功，返回应用完整信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/AppApplication' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 应用已被其他人修改（version 乐观锁冲突）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: appDelete
+      tags: [applications]
+      summary: 删除应用
+      description: 逻辑删除应用；已发布（PUBLISHED）且处于 ACTIVE 状态的应用需先停用并下线，否则返回 409。权限：`applications.delete`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 应用已删除 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 应用已发布且处于活动状态，需先停用并下线
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/enable:
+    post:
+      operationId: appEnable
+      tags: [applications]
+      summary: 启用应用
+      description: 将应用状态置为 ACTIVE。权限：`applications.disable`（启用/停用共用该权限点）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/disable:
+    post:
+      operationId: appDisable
+      tags: [applications]
+      summary: 停用应用
+      description: 将应用状态置为 DISABLED。权限：`applications.disable`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/copy:
+    post:
+      operationId: appCopy
+      tags: [applications]
+      summary: 复制应用
+      description: 复制应用及其域名、源站配置；新应用编码为「原编码-copy」（冲突时追加序号），名称为「原名称（副本）」，状态为 DRAFT。权限：`applications.create`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 源应用ID }
+      responses:
+        '200':
+          description: 复制成功，返回新应用完整信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/AppApplication' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/certificate:
+    post:
+      operationId: appBindCertificate
+      tags: [certificates]
+      summary: 绑定证书到应用
+      description: 为应用绑定 HTTPS 证书；应用须至少有一个启用 HTTPS 的域名，且证书 CN/SAN 须覆盖全部 HTTPS 域名，否则返回 400（域名不匹配或证书过期）。一个应用仅一个活动证书，绑定新证书会替换旧证书。权限：`certificates.bind`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppBindCertificateRequest' }
+      responses:
+        '200':
+          description: 绑定成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 证书已绑定 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503':
+          description: 证书服务未配置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      operationId: appUnbindCertificate
+      tags: [certificates]
+      summary: 解绑应用证书
+      description: 解除应用当前绑定的证书。权限：`certificates.bind`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 解绑成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 证书已解绑 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503':
+          description: 证书服务未配置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /applications/{id}/domains:
+    get:
+      operationId: appListDomains
+      tags: [applications]
+      summary: 应用域名列表
+      description: 返回应用全部域名（主域名优先、创建时间升序，不分页）。权限：`domains.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 域名列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/AppDomain' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: appAddDomain
+      tags: [applications]
+      summary: 添加应用域名
+      description: 为应用添加域名；校验域名格式与端口合法性，HTTP/HTTPS 至少启用其一；跨应用相同规范化域名+协议+端口冲突返回 409。权限：`domains.create`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppDomainRequest' }
+      responses:
+        '200':
+          description: 添加成功，返回域名完整信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/AppDomain' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 域名监听冲突（相同域名+协议+端口已被其他应用使用）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/domains/{domain_id}:
+    put:
+      operationId: appUpdateDomain
+      tags: [applications]
+      summary: 更新应用域名
+      description: 全量更新域名配置（按 domain_id 定位记录），同样做跨应用监听冲突检测。权限：`domains.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: domain_id, in: path, required: true, schema: { type: string, format: uuid }, description: 域名ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppDomainRequest' }
+      responses:
+        '200':
+          description: 更新成功，返回域名完整信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/AppDomain' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 域名监听冲突
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: appDeleteDomain
+      tags: [applications]
+      summary: 删除应用域名
+      description: 删除指定域名（物理删除）。权限：`domains.delete`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: domain_id, in: path, required: true, schema: { type: string, format: uuid }, description: 域名ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 域名已删除 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/upstreams:
+    get:
+      operationId: appListUpstreams
+      tags: [applications]
+      summary: 应用源站列表
+      description: 返回应用全部源站（priority 降序、weight 降序、创建时间升序，不分页）。权限：`upstreams.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 源站列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Upstream' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: appAddUpstream
+      tags: [applications]
+      summary: 添加应用源站
+      description: 为应用添加源站；scheme 仅支持 http/https，weight 默认 10（范围 1-100），未填 name 时取主机名。权限：`upstreams.create`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpstreamRequest' }
+      responses:
+        '200':
+          description: 添加成功，返回源站完整信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/Upstream' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /upstreams/{id}:
+    put:
+      operationId: upstreamUpdate
+      tags: [applications]
+      summary: 更新源站
+      description: 全量更新源站配置，携带 version 做乐观锁校验，版本不匹配返回 409。权限：`upstreams.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 源站ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpstreamUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功，返回源站完整信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/Upstream' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 源站已被其他人修改（version 乐观锁冲突）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: upstreamDelete
+      tags: [applications]
+      summary: 删除源站
+      description: 逻辑删除源站。权限：`upstreams.delete`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 源站ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 源站已删除 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /upstreams/{id}/enable:
+    post:
+      operationId: upstreamEnable
+      tags: [applications]
+      summary: 启用源站
+      description: 将源站状态置为 ACTIVE。权限：`upstreams.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 源站ID }
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /upstreams/{id}/disable:
+    post:
+      operationId: upstreamDisable
+      tags: [applications]
+      summary: 停用源站
+      description: 将源站状态置为 DISABLED。权限：`upstreams.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 源站ID }
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /upstreams/test:
+    post:
+      operationId: upstreamTest
+      tags: [applications]
+      summary: 源站连通性测试
+      description: 对指定源站执行 DNS 解析校验（防 DNS 重绑定与 SSRF，私网地址默认拒绝）、TCP/TLS/HTTP 探测；不跟随跳转，不返回响应体。始终返回 HTTP 200，测试结果成败以 error_code 为准（空表示成功，SSRF_BLOCKED/INVALID_HOST/INVALID_PORT/TIMEOUT/CONNECTION_REFUSED 等表示失败）。权限：`upstreams.test`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpstreamTestRequest' }
+      responses:
+        '200':
+          description: 测试执行完毕（成败看 error_code）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/UpstreamTestResult' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/header-config:
+    get:
+      operationId: appGetHeaderConfig
+      tags: [applications]
+      summary: 查询应用头合规与代理配置
+      description: 返回应用已存储的头合规与代理配置；未配置时返回默认对象且 configured=false、version=0（默认行为等价于既有静态安全头）。权限：`applications.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 头合规配置（未配置时 config 为默认对象、configured=false）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/AppHeaderConfigData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: appPutHeaderConfig
+      tags: [applications]
+      summary: 保存应用头合规与代理配置
+      description: 全量 upsert（请求体为完整配置 + version）。version=0 表示首次创建（记录已存在返回 409）；version>0 按乐观锁更新（记录不存在或版本不匹配返回 409）。校验项：action 枚举、x_frame_options 为 allow_from 时须带 URL、csp_mode 为 custom 时须带 csp_value、hsts_max_age>0、自定义规则 method/name 合法且不超过 64 条。权限：`applications.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/AppHeaderConfig'
+                - type: object
+                  required: [version]
+                  properties:
+                    version: { type: integer, description: 乐观锁版本号（0 表示首次创建） }
+      responses:
+        '200':
+          description: 保存成功（返回新 version）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/AppHeaderConfigSaveData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 配置已被其他人修改（version 乐观锁冲突）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/path-routes:
+    get:
+      operationId: appListPathRoutes
+      tags: [applications]
+      summary: 应用路径转发分页列表
+      description: 按 priority 升序、path_prefix 字典序返回应用路径粒度转发规则。权限：`applications.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: 路径转发分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/AppPathRouteListResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: appCreatePathRoute
+      tags: [applications]
+      summary: 创建应用路径转发
+      description: 新增「路径前缀 → 指定源站」的转发规则；缺省值 scheme=http、status=ENABLED、priority=100；相同路径前缀+源站的规则重复时返回 409。权限：`applications.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppPathRouteRequest' }
+      responses:
+        '200':
+          description: 创建成功（route 为完整记录）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data:
+                    type: object
+                    properties:
+                      route: { $ref: '#/components/schemas/AppPathRoute' }
+                      message: { type: string, example: 路径转发已创建 }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 相同路径前缀与源站的转发规则已存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/path-routes/{rid}:
+    patch:
+      operationId: appUpdatePathRoute
+      tags: [applications]
+      summary: 更新应用路径转发
+      description: 全量替换路径转发规则，携带 version 做乐观锁校验；版本不匹配或违反唯一约束返回 409。权限：`applications.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: rid, in: path, required: true, schema: { type: string, format: uuid }, description: 路径转发ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AppPathRouteUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功（route 为新版本记录）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data:
+                    type: object
+                    properties:
+                      route: { $ref: '#/components/schemas/AppPathRoute' }
+                      message: { type: string, example: 路径转发已更新 }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 版本冲突或相同路径前缀与源站的规则已存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: appDeletePathRoute
+      tags: [applications]
+      summary: 删除应用路径转发
+      description: 删除指定路径转发规则。权限：`applications.update`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: rid, in: path, required: true, schema: { type: string, format: uuid }, description: 路径转发ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 路径转发已删除 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /certificates:
+    get:
+      operationId: certList
+      tags: [certificates]
+      summary: 证书分页列表
+      description: 按到期时间（not_after）升序返回证书列表，支持名称/通用名模糊与状态筛选；每项附带绑定应用数（usage_count）。权限：`certificates.read`
+      parameters:
+        - { name: name, in: query, required: false, schema: { type: string }, description: 按证书名称或通用名（CN）模糊匹配 }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [VALID, EXPIRING, EXPIRED, INVALID, KEY_MISMATCH] }, description: 按证书状态筛选 }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: 证书分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/CertListResponse' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: certUpload
+      tags: [certificates]
+      summary: 上传证书
+      description: 以 JSON 方式提交 PEM 文本上传证书（非 multipart）；请求体上限 128KB，单个 PEM 上限 64KB（证书链 128KB）。服务端解析并校验证书格式、密钥强度、私钥匹配与有效期，相同指纹的证书去重（400），名称重复返回 409；私钥加密存储，任何接口均不返回明文私钥。权限：`certificates.create`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CertUploadRequest' }
+      responses:
+        '200':
+          description: 上传成功，返回证书信息（不含私钥）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/CertCertificate' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: 证书名称已存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /certificates/{id}:
+    get:
+      operationId: certGet
+      tags: [certificates]
+      summary: 证书详情
+      description: 返回证书完整信息（不含私钥），附带绑定的应用 ID 列表（application_ids）。权限：`certificates.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 证书ID }
+      responses:
+        '200':
+          description: 证书详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/CertCertificateDetail' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: certDelete
+      tags: [certificates]
+      summary: 删除证书
+      description: 逻辑删除证书；仍被应用绑定的证书禁止删除（409）。权限：`certificates.delete`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 证书ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 证书已删除 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 证书正在使用中，无法删除
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /certificates/{id}/applications:
+    get:
+      operationId: certListApplications
+      tags: [certificates]
+      summary: 证书绑定的应用列表
+      description: 返回证书绑定的应用 ID 列表与数量。权限：`certificates.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 证书ID }
+      responses:
+        '200':
+          description: 绑定的应用 ID 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data:
+                    type: object
+                    properties:
+                      application_ids:
+                        type: array
+                        items: { type: string, format: uuid }
+                        description: 绑定该证书的应用 ID 列表（无绑定时可能为 null）
+                        nullable: true
+                      count: { type: integer, description: 绑定应用数量 }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /certificates/{id}/bind:
+    post:
+      operationId: certBind
+      tags: [certificates]
+      summary: 绑定证书到应用（独立接口）
+      description: 将证书绑定到指定应用；应用须至少有一个启用 HTTPS 的域名，且证书 CN/SAN 须覆盖全部 HTTPS 域名，否则返回 400；一个应用仅一个活动证书，绑定新证书会替换旧证书。权限：`certificates.bind`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 证书ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CertBindRequest' }
+      responses:
+        '200':
+          description: 绑定成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 证书已绑定 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503':
+          description: 应用服务未配置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /certificates/{id}/unbind:
+    post:
+      operationId: certUnbind
+      tags: [certificates]
+      summary: 解绑应用证书（独立接口）
+      description: 解除指定应用的证书绑定。权限：`certificates.bind`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 证书ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CertBindRequest' }
+      responses:
+        '200':
+          description: 解绑成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 证书已解绑 }
+                  data: { $ref: '#/components/schemas/MessageResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /gateway-config/preview:
+    post:
+      operationId: gatewayConfigPreview
+      tags: [gateway-config]
+      summary: 配置预览
+      description: 基于当前全部活动应用生成候选网关配置，返回配置哈希、站点/路由统计、业务快照与完整配置文本，不下发网关。快照构建失败（如 HTTPS 应用未绑定证书）返回 400。权限：`gateway_configs.preview`
+      responses:
+        '200':
+          description: 预览生成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/GatewayConfigPreviewData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /gateway-config/validate:
+    post:
+      operationId: gatewayConfigValidate
+      tags: [gateway-config]
+      summary: 配置校验
+      description: 生成候选配置并调用网关 Admin API（Unix Socket）做合法性校验；本接口始终以 HTTP 200 返回，校验结果以 data.valid 为准，失败时 data.error 为原因（快照构建失败时返回错误体）。权限：`gateway_configs.validate`
+      responses:
+        '200':
+          description: 校验执行完毕（结果看 data.valid）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/GatewayConfigValidateData' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /gateway-config/publish:
+    post:
+      operationId: gatewayConfigPublish
+      tags: [gateway-config]
+      summary: 发布配置
+      description: 同步执行完整发布流程（快照→生成→校验→保存版本→下发网关→发布验证→激活），验证失败自动回滚到发布前配置，返回任务最终状态（同步等待完成）。idempotency_key 幂等：相同幂等键直接返回已有任务，不重复发布；全局发布锁，并发发布会以 LOCK_BUSY 失败结束。app_ids 为空表示发布全部活动应用。权限：`gateway_configs.publish`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GatewayConfigPublishRequest' }
+      responses:
+        '200':
+          description: 发布任务最终状态（status=SUCCESS/FAILED）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/PublishTask' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /gateway-config/current:
+    get:
+      operationId: gatewayConfigCurrent
+      tags: [gateway-config]
+      summary: 当前生效配置版本
+      description: 返回当前生效的网关配置版本；从未发布过时 has_current=false 且无 version 字段。权限：`config_versions.read`
+      responses:
+        '200':
+          description: 当前版本信息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/GatewayConfigCurrentData' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /publish-tasks:
+    get:
+      operationId: publishTaskList
+      tags: [gateway-config]
+      summary: 发布任务分页列表
+      description: 按请求时间倒序返回发布任务，支持按状态筛选。权限：`publish_tasks.read`
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [PENDING, VALIDATING, GENERATING, PUBLISHING, VERIFYING, SUCCESS, FAILED, ROLLING_BACK, ROLLED_BACK] }, description: 按任务状态筛选 }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: 发布任务分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/PublishTaskListResponse' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /publish-tasks/{id}:
+    get:
+      operationId: publishTaskGet
+      tags: [gateway-config]
+      summary: 发布任务详情
+      description: 返回指定发布任务的完整状态与失败信息。权限：`publish_tasks.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 发布任务ID }
+      responses:
+        '200':
+          description: 发布任务详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/PublishTask' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /config-versions:
+    get:
+      operationId: configVersionList
+      tags: [gateway-config]
+      summary: 配置版本分页列表
+      description: 按创建时间倒序返回配置版本（版本不可变，含业务快照与发布结果）。权限：`config_versions.read`
+      parameters:
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: 配置版本分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ConfigVersionListResponse' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /config-versions/{id}:
+    get:
+      operationId: configVersionGet
+      tags: [gateway-config]
+      summary: 配置版本详情
+      description: 返回指定配置版本详情（不含完整配置 JSON，仅元数据与业务快照）。权限：`config_versions.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 配置版本ID }
+      responses:
+        '200':
+          description: 配置版本详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ConfigVersion' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /config-versions/{id}/diff:
+    get:
+      operationId: configVersionDiff
+      tags: [gateway-config]
+      summary: 版本与当前配置对比
+      description: 返回目标版本与当前生效版本的对比元数据（双方版本号/配置哈希、是否一致、目标版本业务快照）。注意：当前实现返回 JSON 对比结果，不生成 unified diff 文本；same=true 表示目标版本与当前生效配置哈希一致。权限：`config_versions.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 目标配置版本ID }
+      responses:
+        '200':
+          description: 版本对比结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ConfigVersionDiffData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /config-versions/{id}/rollback:
+    post:
+      operationId: configVersionRollback
+      tags: [gateway-config]
+      summary: 回滚到历史版本
+      description: 将网关配置回滚到指定历史版本，产生一个 ROLLBACK 类型的发布任务并同步执行完成（含校验、下发、验证），返回任务最终状态。权限：`gateway_configs.rollback`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 目标配置版本ID }
+      responses:
+        '200':
+          description: 回滚任务最终状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/PublishTask' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /gateway/status:
+    get:
+      operationId: gatewayStatusGet
+      tags: [gateway-config]
+      summary: 网关运行状态
+      description: 返回网关 Admin API（Unix Socket）连通性、当前生效版本与活动应用/域名/源站统计。权限：`gateway_status.read`
+      responses:
+        '200':
+          description: 网关状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/GatewayConfigStatusData' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ---------- 节点网口管理（WDSP 阶段A） ----------
+  /gateway/interfaces:
+    get:
+      operationId: gatewayIfaceList
+      tags: [gateway-config]
+      summary: 节点网口清单
+      description: >-
+        按节点分组返回网关物理网口清单（组内按 sort_order 升序）。数据来自网关
+        node-interfaces.jsonl 全量快照采集（约 60s 周期）；present=false 表示该接口
+        已从最新快照中消失（拔卡/改名），记录保留便于运维感知。仅 WDSP 产品形态可用。
+        权限：`system_health.read`
+      parameters:
+        - name: node_name
+          in: query
+          required: false
+          schema: { type: string }
+          description: 网关节点名过滤；缺省返回全部节点
+      responses:
+        '200':
+          description: 按节点分组的网口清单
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data:
+                    type: object
+                    properties:
+                      nodes:
+                        type: array
+                        items: { $ref: '#/components/schemas/GatewayIfaceNode' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /gateway/interfaces/order:
+    put:
+      operationId: gatewayIfaceOrderUpdate
+      tags: [gateway-config]
+      summary: 保存网口排序与角色
+      description: >-
+        整体替换指定节点下所列接口的排序与角色（role 恒传，空串 = 清除角色/未分配；
+        排序仅作展示与配置引用顺序，不改写 OS 接口名）。写操作审计
+        （module=system，action=update_gateway_interface_order，风险 LOW）。
+        仅 WDSP 产品形态可用。权限：`system_settings.update`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GatewayIfaceOrderRequest' }
+      responses:
+        '200':
+          description: 保存成功，返回该节点更新后的网口清单
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data:
+                    type: object
+                    properties:
+                      nodes:
+                        type: array
+                        items: { $ref: '#/components/schemas/GatewayIfaceNode' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ---------- 页面配置网桥与路由牵引（WDSP，docs/NETWORK_MODES_DESIGN.md §七） ----------
+  /gateway/network-config:
+    get:
+      operationId: gatewayNetConfigGet
+      tags: [gateway-config]
+      summary: 查询节点网络期望配置与执行状态
+      description: >-
+        返回节点网络期望配置（desired，来自 node_network_configs 表；无记录时返回空配置，
+        bridges/routes 为空数组、updated_at 为 null）与 netmgrd 执行状态（status，原样透传
+        共享卷 sidecars/network-status.json；文件不存在/解析失败或查询非默认节点时为 null）。
+        仅 WDSP 产品形态可用。权限：`system_health.read`
+      parameters:
+        - name: node_name
+          in: query
+          required: false
+          schema: { type: string }
+          description: 网关节点名；缺省为默认节点（GATEWAY_NODE_NAME）
+      responses:
+        '200':
+          description: 期望配置与执行状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/GatewayNetConfigData' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: gatewayNetConfigUpdate
+      tags: [gateway-config]
+      summary: 保存节点网络配置（网桥/转发/路由牵引）
+      description: >-
+        整体替换节点网络期望配置：严格校验后保存 node_network_configs 表，并原子写共享卷
+        sidecars/network.json（网关节点 netmgrd 读取执行，回写 network-status.json 供 GET 透传）。
+        校验规则：桥名须匹配 br\d{1,2} 且唯一；桥成员口 ≥2，全部存在于该节点网口清单且
+        present=true；role=MANAGEMENT 的管理口禁止入桥；同一接口不得出现在两个桥（同桥内亦不
+        得重复）；routes 的 dst 必须为合法 CIDR、via 必须为合法 IP 且 dst 不得重复。node_name
+        可选、缺省为默认节点，当前仅支持默认节点（sidecar 卷属于本网关节点，写错节点即错配
+        执行端）。updated_at 由服务端生成，客户端传入将被拒绝（未知字段）。写操作审计
+        （module=system，action=update_gateway_network_config，风险 MEDIUM——网络变更）。
+        仅 WDSP 产品形态可用。权限：`system_settings.update`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GatewayNetConfigRequest' }
+      responses:
+        '200':
+          description: 保存成功，返回保存后的期望配置与当前执行状态
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/GatewayNetConfigData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    # ---------- 应用 ----------
+    AppApplication:
+      type: object
+      description: Web 应用信息（列表项与详情共用基础字段）
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, description: 应用编码（唯一，创建后不可修改） }
+        name: { type: string, description: 应用名称（不超过 128 字符） }
+        description: { type: string }
+        business_owner: { type: string, description: 业务负责人 }
+        technical_owner: { type: string, description: 技术负责人 }
+        status: { type: string, enum: [DRAFT, ACTIVE, DISABLED, ERROR, DELETED], description: 应用状态 }
+        protection_mode: { type: string, enum: [OFF, OBSERVE, PROTECT, BYPASS], description: 防护模式（关闭/观察/防护/透传；BYPASS 为数据透传，全部检测失效，仅用于排障/应急） }
+        deployment_mode: { type: string, enum: [REVERSE_PROXY, ROUTED, MIRROR, TRANSPARENT], description: 部署模式（REVERSE_PROXY 反向代理，默认；ROUTED 路由牵引——发布时不下发可信代理链，网关按直连对端识别真实客户端 IP；MIRROR 镜像旁路——不生成内联站点路由，发布时写 mirrorcap 边车配置，只检测不阻断；TRANSPARENT 透明串接——tproxyd 牵引进程经 PROXY 协议送本机网关检测，发布时写 tproxyd 边车配置） }
+        deployment_status: { type: string, enum: [NOT_PUBLISHED, PUBLISHING, PUBLISHED, PUBLISH_FAILED, ROLLING_BACK, ROLLBACK_FAILED], description: 部署状态 }
+        health_status: { type: string, description: 健康状态 }
+        current_version_id: { type: string, format: uuid, nullable: true, description: 当前生效配置版本ID }
+        last_publish_at: { type: string, format: date-time, nullable: true, description: 最近发布时间 }
+        last_publish_result: { type: string, description: 最近发布结果（如 SUCCESS/FAILED，可为空串） }
+        domain_count: { type: integer, description: 活动域名数 }
+        upstream_count: { type: integer, description: 活动源站数 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, description: 乐观锁版本号 }
+
+    AppApplicationDetail:
+      description: 应用详情（在应用基础字段上附带域名与源站列表）
+      allOf:
+        - $ref: '#/components/schemas/AppApplication'
+        - type: object
+          properties:
+            domains:
+              type: array
+              nullable: true
+              description: 域名列表（无记录时可能为 null）
+              items: { $ref: '#/components/schemas/AppDomain' }
+            upstreams:
+              type: array
+              nullable: true
+              description: 源站列表（无记录时可能为 null）
+              items: { $ref: '#/components/schemas/Upstream' }
+
+    AppCreateRequest:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, description: 应用编码（唯一，格式由服务端校验） }
+        name: { type: string, maxLength: 128, description: 应用名称 }
+        description: { type: string }
+        business_owner: { type: string, description: 业务负责人 }
+        technical_owner: { type: string, description: 技术负责人 }
+        protection_mode: { type: string, enum: [OFF, OBSERVE, PROTECT, BYPASS], default: OBSERVE, description: 防护模式（缺省 OBSERVE；BYPASS 为数据透传，仅用于排障/应急） }
+        deployment_mode: { type: string, enum: [REVERSE_PROXY, ROUTED, MIRROR, TRANSPARENT], default: REVERSE_PROXY, description: 部署模式（缺省 REVERSE_PROXY；ROUTED 路由牵引，发布时不下发可信代理链；MIRROR 镜像旁路，不生成内联站点路由，发布时写 mirrorcap 边车配置；TRANSPARENT 透明串接，发布时写 tproxyd 边车配置；非法值返回 400） }
+
+    AppUpdateRequest:
+      type: object
+      required: [name, version]
+      properties:
+        name: { type: string, maxLength: 128 }
+        description: { type: string }
+        business_owner: { type: string }
+        technical_owner: { type: string }
+        protection_mode: { type: string, enum: [OFF, OBSERVE, PROTECT, BYPASS], description: 为空则不修改；BYPASS 为数据透传，仅用于排障/应急 }
+        deployment_mode: { type: string, enum: [REVERSE_PROXY, ROUTED, MIRROR, TRANSPARENT], description: 为空则不修改；ROUTED 路由牵引（发布时不下发可信代理链）；MIRROR 镜像旁路（不生成内联站点路由，发布时写 mirrorcap 边车配置）；TRANSPARENT 透明串接（发布时写 tproxyd 边车配置）；非法值返回 400；变更记高风险审计 }
+        version: { type: integer, description: 乐观锁版本号（须与当前一致） }
+
+    AppListResponse:
+      type: object
+      description: 应用分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AppApplication' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    AppDomain:
+      type: object
+      description: 应用域名
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        hostname: { type: string, description: 原始域名 }
+        normalized_hostname: { type: string, description: 规范化域名（小写、去尾点） }
+        domain_type: { type: string, enum: [EXACT, WILDCARD], description: 域名类型（精确/泛域名） }
+        is_primary: { type: boolean, description: 是否主域名 }
+        http_enabled: { type: boolean }
+        https_enabled: { type: boolean }
+        http_port: { type: integer, nullable: true, description: HTTP 监听端口（空表示默认） }
+        https_port: { type: integer, nullable: true, description: HTTPS 监听端口（空表示默认） }
+        redirect_http_to_https: { type: boolean, description: 是否将 HTTP 重定向到 HTTPS }
+        status: { type: string, description: 状态（ACTIVE 等） }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AppDomainRequest:
+      type: object
+      required: [hostname]
+      properties:
+        hostname: { type: string, description: 域名（支持泛域名，服务端做格式校验与规范化） }
+        is_primary: { type: boolean, default: false }
+        http_enabled: { type: boolean, default: false, description: 与 https_enabled 至少一个为 true }
+        https_enabled: { type: boolean, default: false }
+        http_port: { type: integer, nullable: true, minimum: 1, maximum: 65535 }
+        https_port: { type: integer, nullable: true, minimum: 1, maximum: 65535 }
+        redirect_http_to_https: { type: boolean, default: false }
+
+    AppBindCertificateRequest:
+      type: object
+      required: [certificate_id]
+      properties:
+        certificate_id: { type: string, format: uuid, description: 待绑定的证书ID }
+
+    # ---------- 头合规与路径转发 ----------
+    AppHeaderRule:
+      type: object
+      required: [name, method]
+      description: 自定义头修改规则
+      properties:
+        name: { type: string, maxLength: 255, description: HTTP 头字段名（RFC 7230 token） }
+        method: { type: string, enum: [set, add, delete], description: 操作方式；delete 时 value 必须为空 }
+        value: { type: string }
+
+    AppHeaderConfig:
+      type: object
+      description: 应用级 HTTP 头合规与代理配置（与 app_header_configs 表一致）。下划线请求头由网关内核入口强制丢弃，始终生效、不可配置，故无该开关。
+      required: [server_action, x_author_action, x_powered_by_action, x_frame_options, csp_mode]
+      properties:
+        server_action: { type: string, enum: [keep, hide, replace], description: Server 响应头处理方式 }
+        server_value: { type: string, maxLength: 255, description: replace 时的替换值 }
+        x_author_action: { type: string, enum: [keep, hide, replace], description: X-Author 响应头处理方式 }
+        x_author_value: { type: string, maxLength: 255 }
+        x_powered_by_action: { type: string, enum: [keep, hide, replace], description: X-Powered-By 响应头处理方式 }
+        x_powered_by_value: { type: string, maxLength: 255 }
+        x_frame_options: { type: string, enum: [default, inherit, deny, sameorigin, allow_from], description: X-Frame-Options 策略；allow_from 必须提供 x_frame_options_url }
+        x_frame_options_url: { type: string, maxLength: 512 }
+        x_xss_protection: { type: boolean, description: "是否设置 X-Xss-Protection: 1; mode=block" }
+        vary_user_agent: { type: boolean, description: "是否添加 Vary: User-Agent" }
+        hsts_enabled: { type: boolean, description: 是否启用 HSTS }
+        hsts_max_age: { type: integer, minimum: 1, description: HSTS max-age（秒），须大于 0 }
+        csp_mode: { type: string, enum: [off, preset, custom], description: CSP 模式；custom 必须提供 csp_value }
+        csp_value: { type: string, description: 自定义 CSP 策略内容 }
+        response_buffering: { type: boolean, description: 是否缓冲完整响应后再下发 }
+        xff_overwrite: { type: boolean, description: 是否以直连客户端 IP 覆盖 X-Forwarded-For }
+        host_strip_port: { type: boolean, description: 转发 Host 头时是否去除端口 }
+        accept_encoding_off: { type: boolean, description: "是否强制 Accept-Encoding: identity" }
+        redirect_port_rewrite: { type: boolean, description: 重定向端口改写开关 }
+        custom_request_rules:
+          type: array
+          description: 自定义请求头规则（最多 64 条）
+          items: { $ref: '#/components/schemas/AppHeaderRule' }
+        custom_response_rules:
+          type: array
+          description: 自定义响应头规则（最多 64 条）
+          items: { $ref: '#/components/schemas/AppHeaderRule' }
+
+    AppHeaderConfigData:
+      type: object
+      description: 头合规配置查询结果
+      properties:
+        config: { $ref: '#/components/schemas/AppHeaderConfig' }
+        configured: { type: boolean, description: 是否已落库配置（false 时 config 为默认对象） }
+        version: { type: integer, description: 乐观锁版本号（未配置时为 0） }
+        updated_at: { type: string, format: date-time, description: 最近更新时间（仅 configured=true 时返回） }
+
+    AppHeaderConfigSaveData:
+      type: object
+      description: 头合规配置保存结果
+      properties:
+        config: { $ref: '#/components/schemas/AppHeaderConfig' }
+        configured: { type: boolean, example: true }
+        version: { type: integer, description: 新版本号 }
+        message: { type: string, example: 头合规配置已保存 }
+
+    AppPathRoute:
+      type: object
+      description: 路径粒度转发规则
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        path_prefix: { type: string, description: 路径前缀（以 / 开头） }
+        upstream_scheme: { type: string, enum: [http, https] }
+        upstream_host: { type: string }
+        upstream_port: { type: integer, minimum: 1, maximum: 65535 }
+        strip_prefix: { type: boolean, description: true=转发前剥离路径前缀 }
+        priority: { type: integer, description: 优先级（数值小者优先；同优先级长前缀优先） }
+        status: { type: string, enum: [ENABLED, DISABLED] }
+        description: { type: string, maxLength: 255 }
+        created_by: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, description: 乐观锁版本号 }
+
+    AppPathRouteRequest:
+      type: object
+      required: [path_prefix, upstream_host, upstream_port]
+      properties:
+        path_prefix: { type: string, maxLength: 512, description: "以 / 开头，不能包含 ?、#、.." }
+        upstream_scheme: { type: string, enum: [http, https], default: http }
+        upstream_host: { type: string, maxLength: 255 }
+        upstream_port: { type: integer, minimum: 1, maximum: 65535 }
+        strip_prefix: { type: boolean, default: false }
+        priority: { type: integer, default: 100, description: 不传时默认 100 }
+        status: { type: string, enum: [ENABLED, DISABLED], default: ENABLED }
+        description: { type: string, maxLength: 255 }
+
+    AppPathRouteUpdateRequest:
+      description: 路径转发更新请求（全量替换 + version 乐观锁）
+      allOf:
+        - $ref: '#/components/schemas/AppPathRouteRequest'
+        - type: object
+          required: [version]
+          properties:
+            version: { type: integer, description: 乐观锁版本号（须与当前一致） }
+
+    AppPathRouteListResponse:
+      type: object
+      description: 路径转发分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AppPathRoute' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    # ---------- 源站 ----------
+    Upstream:
+      type: object
+      description: 源站
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        name: { type: string, description: 源站名称（未填时取主机名） }
+        scheme: { type: string, enum: [http, https] }
+        host: { type: string }
+        normalized_host: { type: string, description: 规范化主机名（小写） }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        weight: { type: integer, minimum: 1, maximum: 100, description: 负载权重（1-100，默认 10） }
+        priority: { type: integer, description: 优先级（数值大者优先） }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        health_check_enabled: { type: boolean }
+        health_check_path: { type: string, description: 健康检查路径（默认 /health） }
+        health_check_method: { type: string, description: 健康检查方法（默认 GET） }
+        health_check_interval_seconds: { type: integer, description: 健康检查间隔（秒，默认 30） }
+        health_check_timeout_seconds: { type: integer, description: 健康检查超时（秒，默认 5） }
+        expected_status_codes: { type: string, description: 期望状态码（如 200、2xx、200-299，逗号分隔） }
+        connect_timeout_ms: { type: integer, description: 连接超时（毫秒，默认 3000） }
+        response_header_timeout_ms: { type: integer, description: 响应头超时（毫秒，默认 10000） }
+        tls_server_name: { type: string, description: TLS SNI 名称 }
+        tls_verify: { type: boolean, description: 是否校验源站证书 }
+        max_retries: { type: integer, description: 最大重试次数（默认 1） }
+        created_by: { type: string, format: uuid, description: 创建人（仅创建响应中返回） }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, description: 乐观锁版本号 }
+
+    UpstreamRequest:
+      type: object
+      required: [host, port]
+      properties:
+        name: { type: string, description: 源站名称（空则取主机名） }
+        scheme: { type: string, enum: [http, https], default: http }
+        host: { type: string, description: 主机名或 IP }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        weight: { type: integer, minimum: 1, maximum: 100, default: 10 }
+        priority: { type: integer, default: 0 }
+        health_check_enabled: { type: boolean, default: false }
+        health_check_path: { type: string, default: /health }
+        health_check_method: { type: string, default: GET }
+        health_check_interval_seconds: { type: integer, default: 30 }
+        health_check_timeout_seconds: { type: integer, default: 5 }
+        expected_status_codes: { type: string, default: '200' }
+        connect_timeout_ms: { type: integer, default: 3000 }
+        response_header_timeout_ms: { type: integer, default: 10000 }
+        tls_server_name: { type: string }
+        tls_verify: { type: boolean, default: false }
+        max_retries: { type: integer, default: 1 }
+
+    UpstreamUpdateRequest:
+      description: 源站更新请求（全量更新 + version 乐观锁）
+      allOf:
+        - $ref: '#/components/schemas/UpstreamRequest'
+        - type: object
+          required: [version]
+          properties:
+            version: { type: integer, description: 乐观锁版本号（须与当前一致） }
+
+    UpstreamTestRequest:
+      type: object
+      required: [scheme, host, port]
+      properties:
+        scheme: { type: string, enum: [http, https] }
+        host: { type: string, description: 主机名或 IP }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        health_check_path: { type: string, description: 探测路径（默认 /） }
+        tls_server_name: { type: string, description: TLS SNI 名称（空则取 host） }
+        tls_verify: { type: boolean, default: false, description: 是否校验源站证书 }
+        allow_private: { type: boolean, default: false, description: 是否允许私网/内网地址（默认拒绝，SSRF 防护） }
+
+    UpstreamTestResult:
+      type: object
+      description: 源站连通性测试结果（HTTP 200 返回，成败看 error_code）
+      properties:
+        dns_result: { type: string, enum: ['', ok, failed], description: DNS 解析结果 }
+        resolved_addresses:
+          type: array
+          nullable: true
+          items: { type: string }
+          description: 解析出的 IP 地址列表
+        tcp_connected: { type: boolean }
+        tls_handshake: { type: boolean, description: TLS 握手是否成功（仅 https） }
+        tls_verify_result: { type: string, description: TLS 校验结果（ok 或错误信息） }
+        http_status: { type: integer, description: 源站返回的 HTTP 状态码 }
+        response_time_ms: { type: integer, format: int64, description: 总耗时（毫秒） }
+        error_code: { type: string, description: 失败错误码（空串表示成功；SSRF_BLOCKED/INVALID_HOST/INVALID_PORT/INVALID_SCHEME/TIMEOUT/CONNECTION_REFUSED/NO_ROUTE/TLS_HANDSHAKE_FAILED/TLS_CERTIFICATE_ERROR/CONNECTION_FAILED/REQUEST_BUILD_FAILED） }
+        error_message: { type: string, description: 失败原因（已脱敏截断） }
+
+    # ---------- 证书 ----------
+    CertCertificate:
+      type: object
+      description: 证书信息（不含明文私钥）
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, description: 证书名称（唯一） }
+        certificate_type: { type: string, description: 证书类型（SERVER） }
+        common_name: { type: string, description: 通用名（CN） }
+        subject: { type: string, description: 主题 }
+        issuer: { type: string, description: 签发者 }
+        serial_number: { type: string, description: 序列号 }
+        not_before: { type: string, format: date-time, nullable: true, description: 生效时间 }
+        not_after: { type: string, format: date-time, nullable: true, description: 到期时间 }
+        fingerprint_sha256: { type: string, description: SHA-256 指纹 }
+        public_key_algorithm: { type: string, description: 公钥算法 }
+        public_key_bits: { type: integer, description: 公钥长度（位） }
+        signature_algorithm: { type: string, description: 签名算法 }
+        san_domains:
+          type: array
+          items: { type: string }
+          description: SAN 域名列表
+        status: { type: string, enum: [VALID, EXPIRING, EXPIRED, INVALID, KEY_MISMATCH], description: 证书状态（EXPIRING=30 天内到期） }
+        usage_count: { type: integer, description: 绑定应用数 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
+
+    CertCertificateDetail:
+      description: 证书详情（附带绑定的应用 ID 列表）
+      allOf:
+        - $ref: '#/components/schemas/CertCertificate'
+        - type: object
+          properties:
+            application_ids:
+              type: array
+              nullable: true
+              items: { type: string, format: uuid }
+              description: 绑定该证书的应用 ID 列表
+
+    CertUploadRequest:
+      type: object
+      required: [name, cert_pem, key_pem]
+      properties:
+        name: { type: string, maxLength: 128, description: 证书名称（唯一） }
+        cert_pem: { type: string, description: 证书 PEM 文本（不超过 64KB） }
+        key_pem: { type: string, description: 私钥 PEM 文本（不超过 64KB；加密存储，任何接口不返回） }
+        chain_pem: { type: string, description: 证书链 PEM 文本（可选，不超过 128KB） }
+
+    CertBindRequest:
+      type: object
+      required: [application_id]
+      properties:
+        application_id: { type: string, format: uuid, description: 目标应用ID }
+
+    CertListResponse:
+      type: object
+      description: 证书分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CertCertificate' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    # ---------- 配置发布 / 版本 / 网关状态 ----------
+    GatewayConfigBusinessSnapshot:
+      type: object
+      description: 业务数据快照（发布/预览时点的应用清单）
+      properties:
+        apps:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string, description: 应用编码 }
+              mode: { type: string, description: 防护模式 }
+              domains: { type: integer, description: 域名数 }
+              upstreams: { type: integer, description: 源站数 }
+
+    GatewayConfigPreviewData:
+      type: object
+      description: 配置预览结果
+      properties:
+        configuration_hash: { type: string, description: 候选配置内容哈希 }
+        server_count: { type: integer, description: 生成的站点（server）数量 }
+        route_count: { type: integer, description: 生成的路由数量 }
+        business_snapshot: { $ref: '#/components/schemas/GatewayConfigBusinessSnapshot' }
+        config_preview: { type: string, description: 完整候选配置文本（Caddy JSON） }
+
+    GatewayConfigValidateData:
+      type: object
+      description: 配置校验结果（本接口始终 HTTP 200，以 valid 为准）
+      properties:
+        valid: { type: boolean, description: 校验是否通过 }
+        error: { type: string, description: 校验失败原因（仅 valid=false 时返回） }
+        configuration_hash: { type: string, description: 候选配置哈希（生成成功时返回） }
+        server_count: { type: integer, description: 站点数量（校验通过时返回） }
+        route_count: { type: integer, description: 路由数量（校验通过时返回） }
+        business_snapshot: { $ref: '#/components/schemas/GatewayConfigBusinessSnapshot' }
+
+    GatewayConfigPublishRequest:
+      type: object
+      properties:
+        idempotency_key: { type: string, description: 幂等键（相同键直接返回已有任务，不重复发布） }
+        app_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: 限定发布的应用 ID（空或缺省表示全部活动应用）
+
+    GatewayConfigCurrentData:
+      type: object
+      description: 当前生效配置版本
+      properties:
+        has_current: { type: boolean, description: 是否存在已发布版本 }
+        version: { $ref: '#/components/schemas/ConfigVersion' }
+
+    GatewayConfigStatusData:
+      type: object
+      description: 网关运行状态
+      properties:
+        gateway_up: { type: boolean, description: 网关 Admin API 是否可达 }
+        gateway_error: { type: string, description: 网关不可达时的错误信息（可达时为空串） }
+        current_version: { type: string, description: 当前生效版本号（无发布记录时为空串） }
+        current_hash: { type: string, description: 当前配置哈希 }
+        last_publish_result: { type: string, description: 最近发布结果 }
+        last_publish_at: { type: string, description: 最近发布时间（格式 YYYY-MM-DD HH:mm:ss，无发布记录时为空串） }
+        application_count: { type: integer, format: int64, description: 活动应用数 }
+        domain_count: { type: integer, format: int64, description: 活动域名数 }
+        upstream_count: { type: integer, format: int64, description: 活动源站数 }
+
+    PublishTask:
+      type: object
+      description: 发布任务
+      properties:
+        id: { type: string, format: uuid }
+        task_type: { type: string, enum: [PUBLISH, ROLLBACK], description: 任务类型 }
+        status: { type: string, enum: [PENDING, VALIDATING, GENERATING, PUBLISHING, VERIFYING, SUCCESS, FAILED, ROLLING_BACK, ROLLED_BACK], description: 任务状态 }
+        requested_by: { type: string, format: uuid, nullable: true, description: 发起人 }
+        requested_at: { type: string, format: date-time, description: 发起时间 }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        target_version_id: { type: string, format: uuid, nullable: true, description: 目标配置版本ID }
+        current_step: { type: string, description: 当前步骤描述 }
+        progress: { type: integer, minimum: 0, maximum: 100, description: 进度百分比 }
+        result_summary: { type: string, description: 结果摘要 }
+        failure_code: { type: string, description: 失败错误码（如 LOCK_BUSY/VALIDATE_FAILED/PUBLISH_FAILED/VERIFY_FAILED_ROLLED_BACK，成功时为空串） }
+        failure_message: { type: string, description: 失败原因 }
+        request_id: { type: string, description: 关联的请求ID }
+
+    PublishTaskListResponse:
+      type: object
+      description: 发布任务分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PublishTask' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ConfigVersion:
+      type: object
+      description: 配置版本（不可变；列表与详情均不含完整配置 JSON）
+      properties:
+        id: { type: string, format: uuid }
+        version_number: { type: string, description: 版本号（V<UTC毫秒时间戳>-<哈希前8>） }
+        configuration_hash: { type: string, description: 配置内容哈希 }
+        business_snapshot: { type: string, description: 业务快照（JSON 字符串，结构同 GatewayConfigBusinessSnapshot） }
+        change_summary: { type: string, description: 变更摘要 }
+        previous_version_id: { type: string, format: uuid, nullable: true, description: 上一版本ID }
+        publish_task_id: { type: string, format: uuid, nullable: true, description: 关联发布任务ID }
+        publish_result: { type: string, description: 发布结果（空串/SUCCESS/FAILED/VERIFY_FAILED/ACTIVATION_FAILED） }
+        is_current: { type: boolean, description: 是否当前生效版本 }
+        created_by: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        published_at: { type: string, format: date-time, nullable: true }
+
+    ConfigVersionListResponse:
+      type: object
+      description: 配置版本分页响应
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ConfigVersion' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ConfigVersionDiffData:
+      type: object
+      description: 版本对比结果（JSON 元数据对比，非文本 diff）
+      properties:
+        target_version: { $ref: '#/components/schemas/ConfigVersion' }
+        current_version_number: { type: string, description: 当前生效版本号（无当前版本时为空串） }
+        current_hash: { type: string, description: 当前生效配置哈希 }
+        target_hash: { type: string, description: 目标版本配置哈希 }
+        same: { type: boolean, description: 目标版本与当前生效配置哈希是否一致 }
+        business_snapshot: { type: string, description: 目标版本业务快照（JSON 字符串） }
+
+    # ---------- 节点网口管理（WDSP 阶段A） ----------
+    GatewayIface:
+      type: object
+      description: 节点物理网口清单记录
+      properties:
+        id: { type: string, format: uuid }
+        node_name: { type: string, description: 网关节点名 }
+        ifname: { type: string, description: 当前接口名（如 eth0/enp3s0f0） }
+        mac: { type: string, description: MAC 地址 }
+        pci_path: { type: string, description: PCI 拓扑路径（如 0000:03:00.0） }
+        driver: { type: string, description: 驱动（igb/ixgbe/i40e…） }
+        media_type: { type: string, enum: [TP, FIBRE, UNKNOWN], description: 介质类型：TP 电口 / FIBRE 光口 / UNKNOWN 未识别 }
+        link_speed: { type: integer, format: int64, description: 链路速率（Mb/s，DOWN 为 0） }
+        operstate: { type: string, description: 接口运行状态（up/down…） }
+        sort_order: { type: integer, description: 用户排序序号 }
+        role: { type: string, enum: ['', MANAGEMENT, TRAFFIC, MIRROR], description: 用途标记（空串 = 未分配） }
+        present: { type: boolean, description: 最近一次快照中是否存在（false = 已消失/拔卡） }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+
+    GatewayIfaceNode:
+      type: object
+      description: 按节点分组的网口清单
+      properties:
+        node_name: { type: string }
+        interfaces:
+          type: array
+          items: { $ref: '#/components/schemas/GatewayIface' }
+
+    GatewayIfaceOrderItem:
+      type: object
+      description: 排序保存项（role 恒传，空串 = 清除角色/未分配）
+      required: [ifname, sort_order, role]
+      properties:
+        ifname: { type: string, description: 接口名（必须存在于该节点） }
+        sort_order: { type: integer, minimum: 0, description: 排序序号 }
+        role: { type: string, enum: ['', MANAGEMENT, TRAFFIC, MIRROR], description: 用途标记；空串 = 清除角色 }
+
+    GatewayIfaceOrderRequest:
+      type: object
+      required: [node_name, items]
+      properties:
+        node_name: { type: string, description: 网关节点名 }
+        items:
+          type: array
+          maxItems: 128
+          items: { $ref: '#/components/schemas/GatewayIfaceOrderItem' }
+
+    # ---------- 页面配置网桥与路由牵引（WDSP §七） ----------
+    GatewayNetBridge:
+      type: object
+      description: 二层桥及成员口
+      required: [name, ports]
+      properties:
+        name: { type: string, pattern: '^br\d{1,2}$', description: 桥名（br0-br99，节点内唯一） }
+        ports:
+          type: array
+          minItems: 2
+          maxItems: 32
+          items: { type: string }
+          description: 成员口（≥2；须存在于该节点网口清单且 present=true；MANAGEMENT 口禁入；跨桥唯一）
+
+    GatewayNetRoute:
+      type: object
+      description: 牵引路由（目的网段经下一跳转发）
+      required: [dst, via]
+      properties:
+        dst: { type: string, description: 目的网段（合法 CIDR，如 10.9.0.0/24；节点内不重复） }
+        via: { type: string, description: 下一跳（合法 IP，如 192.168.50.1） }
+
+    GatewayNetConfig:
+      type: object
+      description: 节点网络期望配置（bridges/routes 恒为数组，空数组而非 null）
+      properties:
+        bridges:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/GatewayNetBridge' }
+        ip_forward: { type: boolean, description: 内核 ip_forward 开关（路由牵引需开启） }
+        routes:
+          type: array
+          maxItems: 128
+          items: { $ref: '#/components/schemas/GatewayNetRoute' }
+
+    GatewayNetConfigRequest:
+      type: object
+      description: 保存请求体（契约同 network.json 配置段；updated_at 由服务端生成，客户端传入按未知字段拒绝）
+      properties:
+        node_name: { type: string, description: 网关节点名；可选，缺省为默认节点，当前仅支持默认节点 }
+        bridges:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/GatewayNetBridge' }
+        ip_forward: { type: boolean }
+        routes:
+          type: array
+          maxItems: 128
+          items: { $ref: '#/components/schemas/GatewayNetRoute' }
+
+    GatewayNetDesired:
+      type: object
+      description: 期望配置（含保存时间）
+      properties:
+        bridges:
+          type: array
+          items: { $ref: '#/components/schemas/GatewayNetBridge' }
+        ip_forward: { type: boolean }
+        routes:
+          type: array
+          items: { $ref: '#/components/schemas/GatewayNetRoute' }
+        updated_at: { type: string, format: date-time, nullable: true, description: 最近保存时间（无记录时为 null） }
+
+    GatewayNetBridgeStatus:
+      type: object
+      description: 单座桥的执行状态（netmgrd 回写）
+      properties:
+        name: { type: string }
+        state: { type: string, enum: [ok, error] }
+        message: { type: string }
+
+    GatewayNetRouteStatus:
+      type: object
+      description: 单条路由的执行状态（netmgrd 回写）
+      properties:
+        dst: { type: string }
+        via: { type: string }
+        state: { type: string, enum: [ok, error] }
+        message: { type: string }
+
+    GatewayNetStatus:
+      type: object
+      description: netmgrd 执行状态（sidecars/network-status.json 原样透传；文件不存在/解析失败或查询非默认节点时整体为 null）
+      properties:
+        applied_at: { type: string, format: date-time, description: netmgrd 执行时间 }
+        ok: { type: boolean, description: 整体执行是否成功 }
+        bridges:
+          type: array
+          items: { $ref: '#/components/schemas/GatewayNetBridgeStatus' }
+        ip_forward: { type: string, enum: [ok, error, skipped], description: ip_forward 执行结果 }
+        routes:
+          type: array
+          items: { $ref: '#/components/schemas/GatewayNetRouteStatus' }
+        message: { type: string, description: 总体说明/错误信息 }
+
+    GatewayNetConfigData:
+      type: object
+      description: GET/PUT 响应数据
+      properties:
+        desired: { $ref: '#/components/schemas/GatewayNetDesired' }
+        status: { $ref: '#/components/schemas/GatewayNetStatus', nullable: true }

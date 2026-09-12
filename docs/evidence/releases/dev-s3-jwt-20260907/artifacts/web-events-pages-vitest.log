@@ -1,0 +1,938 @@
+
+ RUN  v3.2.7 /Users/zhanglei/Documents/JiuZhang_WAF/web
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > apmEnabled 且持有 apm.traces.read 时展示「关联 Trace」，链接携带 request_id
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > apmEnabled 且持有 apm.traces.read 时展示「关联 Trace」，链接携带 request_id
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > apmEnabled 且持有 apm.traces.read 时展示「关联 Trace」，链接携带 request_id
+Warning: An update to EventDetailDrawer inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > apmEnabled 且持有 apm.traces.read 时展示「关联 Trace」，链接携带 request_id
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Warning: [antd: Alert] `message` is deprecated. Please use `title` instead.
+Warning: An update to CSSMotion inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/alert/Alert.js:68:5
+    at div
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/card/Card.js:46:16
+    at RemediationCard (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/components/RemediationCard.tsx:7:28)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to CSSMotion inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/alert/Alert.js:68:5
+    at div
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/card/Card.js:46:16
+    at RemediationCard (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/components/RemediationCard.tsx:7:28)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to EllipsisMeasure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at EllipsisMeasure (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/Ellipsis.js:78:5)
+    at h5
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Typography.js:16:16
+    at EllipsisTooltip (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/EllipsisTooltip.js:13:3)
+    at SingleObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/SingleObserver/index.js:17:5)
+    at ResizeObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/index.js:33:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/index.js:60:16
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Title.js:16:5
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to EllipsisMeasure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at EllipsisMeasure (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/Ellipsis.js:78:5)
+    at h5
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Typography.js:16:16
+    at EllipsisTooltip (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/EllipsisTooltip.js:13:3)
+    at SingleObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/SingleObserver/index.js:17:5)
+    at ResizeObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/index.js:33:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/index.js:60:16
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Title.js:16:5
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to EllipsisMeasure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at EllipsisMeasure (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/Ellipsis.js:78:5)
+    at h5
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Typography.js:16:16
+    at EllipsisTooltip (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/EllipsisTooltip.js:13:3)
+    at SingleObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/SingleObserver/index.js:17:5)
+    at ResizeObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/index.js:33:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/index.js:60:16
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Title.js:16:5
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to EllipsisMeasure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at EllipsisMeasure (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/Ellipsis.js:78:5)
+    at h5
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Typography.js:16:16
+    at EllipsisTooltip (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/EllipsisTooltip.js:13:3)
+    at SingleObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/SingleObserver/index.js:17:5)
+    at ResizeObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/index.js:33:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/index.js:60:16
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Title.js:16:5
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to Portal inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > APM 能力关闭时不渲染「关联 Trace」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > APM 能力关闭时不渲染「关联 Trace」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > 无 apm.traces.read 权限时不渲染「关联 Trace」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > 无 apm.traces.read 权限时不渲染「关联 Trace」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > 无 apm.traces.read 权限时不渲染「关联 Trace」
+Warning: An update to EventDetailDrawer inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > 无 apm.traces.read 权限时不渲染「关联 Trace」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Warning: [antd: Alert] `message` is deprecated. Please use `title` instead.
+Warning: An update to CSSMotion inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/alert/Alert.js:68:5
+    at div
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/card/Card.js:46:16
+    at RemediationCard (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/components/RemediationCard.tsx:7:28)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to CSSMotion inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/alert/Alert.js:68:5
+    at div
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/card/Card.js:46:16
+    at RemediationCard (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/components/RemediationCard.tsx:7:28)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to EllipsisMeasure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at EllipsisMeasure (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/Ellipsis.js:78:5)
+    at h5
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Typography.js:16:16
+    at EllipsisTooltip (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/EllipsisTooltip.js:13:3)
+    at SingleObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/SingleObserver/index.js:17:5)
+    at ResizeObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/index.js:33:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/index.js:60:16
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Title.js:16:5
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to EllipsisMeasure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at EllipsisMeasure (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/Ellipsis.js:78:5)
+    at h5
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Typography.js:16:16
+    at EllipsisTooltip (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/EllipsisTooltip.js:13:3)
+    at SingleObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/SingleObserver/index.js:17:5)
+    at ResizeObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/index.js:33:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/index.js:60:16
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Title.js:16:5
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to EllipsisMeasure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at EllipsisMeasure (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/Ellipsis.js:78:5)
+    at h5
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Typography.js:16:16
+    at EllipsisTooltip (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/EllipsisTooltip.js:13:3)
+    at SingleObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/SingleObserver/index.js:17:5)
+    at ResizeObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/index.js:33:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/index.js:60:16
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Title.js:16:5
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to EllipsisMeasure inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at EllipsisMeasure (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/Ellipsis.js:78:5)
+    at h5
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Typography.js:16:16
+    at EllipsisTooltip (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/EllipsisTooltip.js:13:3)
+    at SingleObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/SingleObserver/index.js:17:5)
+    at ResizeObserver (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/resize-observer/lib/index.js:33:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Base/index.js:60:16
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/typography/Title.js:16:5
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/DrawerPanel.js:19:5)
+    at div
+    at DrawerPanel (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPanel.js:18:5)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/motion/lib/CSSMotion.js:44:7
+    at div
+    at DrawerPopup (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/DrawerPopup.js:23:5)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+Warning: An update to Portal inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://reactjs.org/link/wrap-tests-with-act
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/Portal.js:35:5
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/drawer/lib/Drawer.js:18:5)
+    at NoFormStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/form/context.js:33:3)
+    at NoCompactStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/space/Compact.js:46:5)
+    at ContextIsolator (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/_util/ContextIsolator.js:15:5)
+    at Drawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/drawer/Drawer.js:40:5)
+    at EventDetailDrawer (/Users/zhanglei/Documents/JiuZhang_WAF/web/src/pages/security-events/EventDetailDrawer.tsx:200:3)
+    at Router (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7134:13)
+    at MemoryRouter (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-router/dist/development/chunk-BV7QT456.mjs:7044:3)
+    at div
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/antd/lib/app/App.js:21:16
+    at QueryClientProvider (file:///Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@tanstack/react-query/build/modern/QueryClientProvider.js:20:3)
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > 事件携带 jwt_verification 时展示状态/原因/主体指纹/策略版本
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > 事件携带 jwt_verification 时展示状态/原因/主体指纹/策略版本
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > 历史事件无 jwt_verification 字段时显示「当时未记录」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > 历史事件无 jwt_verification 字段时显示「当时未记录」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > UNVERIFIED 显示为「未验证」，不渲染为「非法用户」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer JWT 验证信息 > UNVERIFIED 显示为「未验证」，不渲染为「非法用户」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+ ❯ src/pages/security-events/__tests__/EventDetailDrawer.test.tsx (6 tests | 1 failed) 502ms
+   × EventDetailDrawer 关联 Trace 跳转 > apmEnabled 且持有 apm.traces.read 时展示「关联 Trace」，链接携带 request_id 247ms
+     → expected '/apm-traces?request_id=req-trace-1&ap…' to be '/apm-traces?request_id=req-trace-1' // Object.is equality
+   ✓ EventDetailDrawer 关联 Trace 跳转 > APM 能力关闭时不渲染「关联 Trace」 60ms
+   ✓ EventDetailDrawer 关联 Trace 跳转 > 无 apm.traces.read 权限时不渲染「关联 Trace」 62ms
+   ✓ EventDetailDrawer JWT 验证信息 > 事件携带 jwt_verification 时展示状态/原因/主体指纹/策略版本 47ms
+   ✓ EventDetailDrawer JWT 验证信息 > 历史事件无 jwt_verification 字段时显示「当时未记录」 41ms
+   ✓ EventDetailDrawer JWT 验证信息 > UNVERIFIED 显示为「未验证」，不渲染为「非法用户」 43ms
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 渲染事件列表：接口键/方法/客户端 IP/风险分/动作标签/耗时；NULL 字段显示占位符
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 渲染事件列表：接口键/方法/客户端 IP/风险分/动作标签/耗时；NULL 字段显示占位符
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 过滤：接口键搜索 / 最终动作选择 / 身份指纹搜索分别携带对应查询参数
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 过滤：接口键搜索 / 最终动作选择 / 身份指纹搜索分别携带对应查询参数
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/security-events/__tests__/SecurityEventsPage.test.tsx > SecurityEventsPage 导出提示 > 导出按钮悬停提示「导出筛选结果」生效的筛选维度
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 过滤：接口键搜索 / 最终动作选择 / 身份指纹搜索分别携带对应查询参数
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/security-events/__tests__/SecurityEventsPage.test.tsx > SecurityEventsPage 导出提示 > 导出按钮悬停提示「导出筛选结果」生效的筛选维度
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 过滤：接口键搜索 / 最终动作选择 / 身份指纹搜索分别携带对应查询参数
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 过滤：接口键搜索 / 最终动作选择 / 身份指纹搜索分别携带对应查询参数
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 过滤：接口键搜索 / 最终动作选择 / 身份指纹搜索分别携带对应查询参数
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 过滤：接口键搜索 / 最终动作选择 / 身份指纹搜索分别携带对应查询参数
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：审计维度新字段（原始路径/响应状态码/模型版本/策略版本）+ 检测明细表格化
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：审计维度新字段（原始路径/响应状态码/模型版本/策略版本）+ 检测明细表格化
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/security-events/__tests__/SecurityEventsPage.test.tsx > SecurityEventsPage 导出提示 > 无 security_events.export 权限时不展示导出按钮
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+ ✓ src/pages/security-events/__tests__/SecurityEventsPage.test.tsx (2 tests) 921ms
+   ✓ SecurityEventsPage 导出提示 > 导出按钮悬停提示「导出筛选结果」生效的筛选维度  729ms
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：审计维度新字段（原始路径/响应状态码/模型版本/策略版本）+ 检测明细表格化
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Warning: [antd: Space] `direction` is deprecated. Please use `orientation` instead.
+Warning: [antd: Table] `index` parameter of `rowKey` function is deprecated. There is no guarantee that it will work as expected.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：旧版事件（details 为 NULL）显示匿名身份与「无检测明细」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：旧版事件（details 为 NULL）显示匿名身份与「无检测明细」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：旧版事件（details 为 NULL）显示匿名身份与「无检测明细」
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Warning: [antd: Space] `direction` is deprecated. Please use `orientation` instead.
+Warning: [antd: Table] `index` parameter of `rowKey` function is deprecated. There is no guarantee that it will work as expected.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：携带 jwt_verification 的事件渲染「JWT 验证信息」区块（状态/原因/版本/主体/租户/时间）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：携带 jwt_verification 的事件渲染「JWT 验证信息」区块（状态/原因/版本/主体/租户/时间）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：携带 jwt_verification 的事件渲染「JWT 验证信息」区块（状态/原因/版本/主体/租户/时间）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Warning: [antd: Space] `direction` is deprecated. Please use `orientation` instead.
+Warning: [antd: Table] `index` parameter of `rowKey` function is deprecated. There is no guarantee that it will work as expected.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：历史事件 jwt_verification 为 NULL 时不渲染「JWT 验证信息」区块（空态不显示）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：历史事件 jwt_verification 为 NULL 时不渲染「JWT 验证信息」区块（空态不显示）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+
+stderr | src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx > ApiRuntimeEventsPage > 详情抽屉：历史事件 jwt_verification 为 NULL 时不渲染「JWT 验证信息」区块（空态不显示）
+Warning: [antd: Drawer] `width` is deprecated. Please use `size` instead.
+Warning: [antd: Space] `direction` is deprecated. Please use `orientation` instead.
+Warning: [antd: Table] `index` parameter of `rowKey` function is deprecated. There is no guarantee that it will work as expected.
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/table/lib/Table.js:401:59
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+Error: Not implemented: window.getComputedStyle(elt, pseudoElt)
+    at module.exports (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at window.getComputedStyle (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/jsdom/lib/jsdom/browser/Window.js:895:7)
+    at measureScrollbarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:35:34)
+    at getTargetScrollBarSize (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/getScrollBarSize.js:87:10)
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/portal/lib/useScrollLocker.js:22:62
+    at /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@rc-component/util/lib/hooks/useLayoutEffect.js:19:12
+    at commitHookEffectListMount (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:23189:26)
+    at commitPassiveMountOnFiber (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24970:11)
+    at commitPassiveMountEffects_complete (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24930:9)
+    at commitPassiveMountEffects_begin (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/react-dom/cjs/react-dom.development.js:24917:7) undefined
+
+ ✓ src/pages/api-runtime-events/__tests__/ApiRuntimeEventsPage.test.tsx (6 tests) 1819ms
+   ✓ ApiRuntimeEventsPage > 渲染事件列表：接口键/方法/客户端 IP/风险分/动作标签/耗时；NULL 字段显示占位符  382ms
+   ✓ ApiRuntimeEventsPage > 过滤：接口键搜索 / 最终动作选择 / 身份指纹搜索分别携带对应查询参数  310ms
+   ✓ ApiRuntimeEventsPage > 详情抽屉：审计维度新字段（原始路径/响应状态码/模型版本/策略版本）+ 检测明细表格化  328ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/pages/security-events/__tests__/EventDetailDrawer.test.tsx > EventDetailDrawer 关联 Trace 跳转 > apmEnabled 且持有 apm.traces.read 时展示「关联 Trace」，链接携带 request_id
+AssertionError: expected '/apm-traces?request_id=req-trace-1&ap…' to be '/apm-traces?request_id=req-trace-1' // Object.is equality
+
+Expected: "/apm-traces?request_id=req-trace-1"
+Received: "/apm-traces?request_id=req-trace-1&application_id=app-1&start_time=2026-08-30T00%3A25%3A00.000Z&end_time=2026-08-30T00%3A35%3A00.000Z&from=%2Fsecurity-events"
+
+ ❯ src/pages/security-events/__tests__/EventDetailDrawer.test.tsx:112:39
+    110|     const button = await screen.findByRole('button', { name: '关联 Trace…
+    111|     const link = button.closest('a')!
+    112|     expect(link.getAttribute('href')).toBe('/apm-traces?request_id=req…
+       |                                       ^
+    113|   })
+    114| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 2 passed (3)
+      Tests  1 failed | 13 passed (14)
+   Start at  01:55:58
+   Duration  4.52s (transform 212ms, setup 439ms, collect 5.07s, tests 3.24s, environment 1.44s, prepare 195ms)
+

@@ -1,0 +1,33 @@
+{
+  "run_id": "20260909T231820-d1f76b",
+  "task": "P1-02 BOT-018 洪峰与资源受控实测",
+  "environment": "开发机 macOS arm64 + Docker Desktop（Linux VM），非专用压测硬件；数字为本环境实测值",
+  "finished_at": "2026-09-09T15:20:13Z",
+  "totals": {
+    "total": 25,
+    "pass": 25,
+    "fail": 0,
+    "blocked": 0
+  },
+  "phases": {
+    "baseline": {
+      "evidence": "baseline/"
+    },
+    "flood-offer": {
+      "evidence": "flood-offer/（summary.json + 各档 distribution）"
+    },
+    "flood-verify": {
+      "evidence": "flood-verify/（三类伪造分布）"
+    },
+    "slow": {
+      "evidence": "slow/"
+    },
+    "impact": {
+      "evidence": "impact/impact-summary.json"
+    },
+    "resources": {
+      "evidence": "resource-samples.tsv（docker stats + Valkey 键数周期采样原始数据）"
+    }
+  },
+  "verdict": "PASS"
+}

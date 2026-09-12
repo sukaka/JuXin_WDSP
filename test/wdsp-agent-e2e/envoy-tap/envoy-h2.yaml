@@ -1,0 +1,104 @@
+# P1-03 G3 取证 Envoy 配置（仅测试容器内使用）。
+# 拓扑：8443 TLS(ALPN h2 唯一) → tap_h2 → gRPC/Web 源站；8080 明文 h1 → tap_h1 → WS/Web 源站。
+# Admin 仅容器内回环（127.0.0.1:9901），不发布到任何非回环地址。
+admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 9901 }
+
+static_resources:
+  listeners:
+  - name: tls_h2
+    address:
+      socket_address: { address: 0.0.0.0, port_value: 8443 }
+    filter_chains:
+    - transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+            - certificate_chain: { filename: /etc/envoy/tls/tls.crt }
+              private_key: { filename: /etc/envoy/tls/tls.key }
+            alpn_protocols: ["h2"]
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_h2
+          route_config:
+            name: h2_routes
+            virtual_hosts:
+            - name: vh
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/test.Echo/" }
+                route: { cluster: grpc_upstream }
+              - match: { prefix: "/" }
+                route: { cluster: web_upstream }
+          http_filters:
+          - name: envoy.filters.http.tap
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.tap.v3.Tap
+              common_config:
+                admin_config: { config_id: wdsp_tap }
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  - name: plain_h1
+    address:
+      socket_address: { address: 0.0.0.0, port_value: 8080 }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_h1
+          route_config:
+            name: h1_routes
+            virtual_hosts:
+            - name: vh
+              domains: ["*"]
+              routes:
+              - match: { prefix: "/ws" }
+                route:
+                  cluster: ws_upstream
+                  upgrade_configs:
+                  - upgrade_type: websocket
+              - match: { prefix: "/" }
+                route: { cluster: web_upstream }
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+  - name: web_upstream
+    type: STATIC
+    connect_timeout: 5s
+    load_assignment:
+      cluster_name: web_upstream
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: 127.0.0.1, port_value: 18090 }
+  - name: grpc_upstream
+    type: STATIC
+    connect_timeout: 5s
+    http2_protocol_options: {}
+    load_assignment:
+      cluster_name: grpc_upstream
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: 127.0.0.1, port_value: 18091 }
+  - name: ws_upstream
+    type: STATIC
+    connect_timeout: 5s
+    load_assignment:
+      cluster_name: ws_upstream
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address: { address: 127.0.0.1, port_value: 18092 }

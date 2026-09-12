@@ -1,0 +1,7 @@
+{
+  "request_id": "a2284a9a-2a63-4096-bf3c-3548955fd41f",
+  "service": "jiuzhang-test-origin",
+  "status": "ok",
+  "time": "2026-09-08T10:52:17Z",
+  "upstream_mark": "REACHED_ORIGIN"
+}

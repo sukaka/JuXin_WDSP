@@ -1,0 +1,88 @@
+{"Time":"2026-09-07T00:49:02.629815+08:00","Action":"start","Package":"github.com/jiuzhang-waf/server/internal/audits"}
+{"Time":"2026-09-07T00:49:03.647243+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON"}
+{"Time":"2026-09-07T00:49:03.647319+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON","Output":"=== RUN   TestMaskSensitiveJSON\n"}
+{"Time":"2026-09-07T00:49:03.648866+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/password_masked"}
+{"Time":"2026-09-07T00:49:03.648905+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/password_masked","Output":"=== RUN   TestMaskSensitiveJSON/password_masked\n"}
+{"Time":"2026-09-07T00:49:03.651141+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/password_masked","Output":"--- PASS: TestMaskSensitiveJSON/password_masked (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.651192+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/password_masked","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.651408+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/nested_sensitive"}
+{"Time":"2026-09-07T00:49:03.651426+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/nested_sensitive","Output":"=== RUN   TestMaskSensitiveJSON/nested_sensitive\n"}
+{"Time":"2026-09-07T00:49:03.651592+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/nested_sensitive","Output":"--- PASS: TestMaskSensitiveJSON/nested_sensitive (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.6516+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/nested_sensitive","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.651621+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/array_nested"}
+{"Time":"2026-09-07T00:49:03.651625+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/array_nested","Output":"=== RUN   TestMaskSensitiveJSON/array_nested\n"}
+{"Time":"2026-09-07T00:49:03.652203+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/array_nested","Output":"--- PASS: TestMaskSensitiveJSON/array_nested (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.652229+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/array_nested","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.652237+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/invalid_json_not_passed_through"}
+{"Time":"2026-09-07T00:49:03.652243+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/invalid_json_not_passed_through","Output":"=== RUN   TestMaskSensitiveJSON/invalid_json_not_passed_through\n"}
+{"Time":"2026-09-07T00:49:03.652421+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/invalid_json_not_passed_through","Output":"--- PASS: TestMaskSensitiveJSON/invalid_json_not_passed_through (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.652454+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/invalid_json_not_passed_through","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.652467+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/empty"}
+{"Time":"2026-09-07T00:49:03.652473+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/empty","Output":"=== RUN   TestMaskSensitiveJSON/empty\n"}
+{"Time":"2026-09-07T00:49:03.65337+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/empty","Output":"--- PASS: TestMaskSensitiveJSON/empty (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.653398+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/empty","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.653405+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/private_key_masked"}
+{"Time":"2026-09-07T00:49:03.65341+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/private_key_masked","Output":"=== RUN   TestMaskSensitiveJSON/private_key_masked\n"}
+{"Time":"2026-09-07T00:49:03.653419+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/private_key_masked","Output":"--- PASS: TestMaskSensitiveJSON/private_key_masked (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.653423+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON/private_key_masked","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.65343+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON","Output":"--- PASS: TestMaskSensitiveJSON (0.01s)\n"}
+{"Time":"2026-09-07T00:49:03.653434+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestMaskSensitiveJSON","Elapsed":0.01}
+{"Time":"2026-09-07T00:49:03.653445+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestComputeHashDeterministic"}
+{"Time":"2026-09-07T00:49:03.65345+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestComputeHashDeterministic","Output":"=== RUN   TestComputeHashDeterministic\n"}
+{"Time":"2026-09-07T00:49:03.654179+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestComputeHashDeterministic","Output":"--- PASS: TestComputeHashDeterministic (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.654194+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestComputeHashDeterministic","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.654199+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordFailureLogsWarn"}
+{"Time":"2026-09-07T00:49:03.654203+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordFailureLogsWarn","Output":"=== RUN   TestRecordFailureLogsWarn\n"}
+{"Time":"2026-09-07T00:49:03.674919+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordFailureLogsWarn","Output":"--- PASS: TestRecordFailureLogsWarn (0.02s)\n"}
+{"Time":"2026-09-07T00:49:03.674987+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordFailureLogsWarn","Elapsed":0.02}
+{"Time":"2026-09-07T00:49:03.674998+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestCSVEscape"}
+{"Time":"2026-09-07T00:49:03.675005+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestCSVEscape","Output":"=== RUN   TestCSVEscape\n"}
+{"Time":"2026-09-07T00:49:03.675487+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestCSVEscape","Output":"--- PASS: TestCSVEscape (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.675504+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestCSVEscape","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.675513+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackAuditDown"}
+{"Time":"2026-09-07T00:49:03.675517+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackAuditDown","Output":"=== RUN   TestRecordWithFallbackAuditDown\n"}
+{"Time":"2026-09-07T00:49:03.677469+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackAuditDown","Output":"--- PASS: TestRecordWithFallbackAuditDown (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.677498+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackAuditDown","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.677506+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackCountsEachFailure"}
+{"Time":"2026-09-07T00:49:03.67751+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackCountsEachFailure","Output":"=== RUN   TestRecordWithFallbackCountsEachFailure\n"}
+{"Time":"2026-09-07T00:49:03.678709+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackCountsEachFailure","Output":"--- PASS: TestRecordWithFallbackCountsEachFailure (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.678762+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackCountsEachFailure","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.67877+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackNilAndInterface"}
+{"Time":"2026-09-07T00:49:03.678774+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackNilAndInterface","Output":"=== RUN   TestRecordWithFallbackNilAndInterface\n"}
+{"Time":"2026-09-07T00:49:03.678984+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackNilAndInterface","Output":"--- PASS: TestRecordWithFallbackNilAndInterface (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.679015+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRecordWithFallbackNilAndInterface","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.679024+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestServiceQueuesFailedAuditAndRetriesExactlyOnce"}
+{"Time":"2026-09-07T00:49:03.679029+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestServiceQueuesFailedAuditAndRetriesExactlyOnce","Output":"=== RUN   TestServiceQueuesFailedAuditAndRetriesExactlyOnce\n"}
+{"Time":"2026-09-07T00:49:03.718743+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestServiceQueuesFailedAuditAndRetriesExactlyOnce","Output":"--- PASS: TestServiceQueuesFailedAuditAndRetriesExactlyOnce (0.04s)\n"}
+{"Time":"2026-09-07T00:49:03.718786+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestServiceQueuesFailedAuditAndRetriesExactlyOnce","Elapsed":0.04}
+{"Time":"2026-09-07T00:49:03.718818+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestDrainFallbackKeepsEntryWhenRetryFails"}
+{"Time":"2026-09-07T00:49:03.718824+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestDrainFallbackKeepsEntryWhenRetryFails","Output":"=== RUN   TestDrainFallbackKeepsEntryWhenRetryFails\n"}
+{"Time":"2026-09-07T00:49:03.738473+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestDrainFallbackKeepsEntryWhenRetryFails","Output":"--- PASS: TestDrainFallbackKeepsEntryWhenRetryFails (0.02s)\n"}
+{"Time":"2026-09-07T00:49:03.738532+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestDrainFallbackKeepsEntryWhenRetryFails","Elapsed":0.02}
+{"Time":"2026-09-07T00:49:03.738545+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRenderMetricsContainsAuditDeliveryState"}
+{"Time":"2026-09-07T00:49:03.738552+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRenderMetricsContainsAuditDeliveryState","Output":"=== RUN   TestRenderMetricsContainsAuditDeliveryState\n"}
+{"Time":"2026-09-07T00:49:03.738744+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRenderMetricsContainsAuditDeliveryState","Output":"--- PASS: TestRenderMetricsContainsAuditDeliveryState (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.738825+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestRenderMetricsContainsAuditDeliveryState","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.738835+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestSyslogSeverityHint"}
+{"Time":"2026-09-07T00:49:03.738841+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestSyslogSeverityHint","Output":"=== RUN   TestSyslogSeverityHint\n"}
+{"Time":"2026-09-07T00:49:03.738851+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestSyslogSeverityHint","Output":"--- PASS: TestSyslogSeverityHint (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.738858+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestSyslogSeverityHint","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.738863+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestSyslogPayloadMasked"}
+{"Time":"2026-09-07T00:49:03.738869+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestSyslogPayloadMasked","Output":"=== RUN   TestSyslogPayloadMasked\n"}
+{"Time":"2026-09-07T00:49:03.73929+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestSyslogPayloadMasked","Output":"--- PASS: TestSyslogPayloadMasked (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.739328+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestSyslogPayloadMasked","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.739339+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogNilSafe"}
+{"Time":"2026-09-07T00:49:03.739344+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogNilSafe","Output":"=== RUN   TestEnqueueSyslogNilSafe\n"}
+{"Time":"2026-09-07T00:49:03.739351+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogNilSafe","Output":"--- PASS: TestEnqueueSyslogNilSafe (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.739357+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogNilSafe","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.739361+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogDelivers"}
+{"Time":"2026-09-07T00:49:03.739365+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogDelivers","Output":"=== RUN   TestEnqueueSyslogDelivers\n"}
+{"Time":"2026-09-07T00:49:03.739373+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogDelivers","Output":"--- PASS: TestEnqueueSyslogDelivers (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.739378+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogDelivers","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.739383+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogPanicTolerated"}
+{"Time":"2026-09-07T00:49:03.739394+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogPanicTolerated","Output":"=== RUN   TestEnqueueSyslogPanicTolerated\n"}
+{"Time":"2026-09-07T00:49:03.739674+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogPanicTolerated","Output":"--- PASS: TestEnqueueSyslogPanicTolerated (0.00s)\n"}
+{"Time":"2026-09-07T00:49:03.739688+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Test":"TestEnqueueSyslogPanicTolerated","Elapsed":0}
+{"Time":"2026-09-07T00:49:03.740462+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Output":"PASS\n"}
+{"Time":"2026-09-07T00:49:03.742614+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/audits","Output":"ok  \tgithub.com/jiuzhang-waf/server/internal/audits\t1.112s\n"}
+{"Time":"2026-09-07T00:49:03.742766+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/audits","Elapsed":1.113}

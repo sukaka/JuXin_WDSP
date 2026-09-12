@@ -1,0 +1,141 @@
+# 九章 APM 阶段5 —— 中央 Collector 路由层（HA 形态前置 LB，trace ID 一致性路由）
+# 适配版本：otel/opentelemetry-collector-contrib:0.154.0
+#   （镜像 tag + digest 锁定见 deployment/apm/docker-compose.ha.yml 与 docs/DEPENDENCIES.md）
+# 角色（设计 §19.4/§13.2 硬约束）：tail_sampling 按实例内存中的 trace 状态决策，
+#   多实例部署时同一 trace 的全部 span 必须到达同一决策实例。本层为无状态路由层：
+#   终止 mTLS、按 traceID 一致性哈希转发到采样层（central-gateway.yaml 实例组），
+#   自身不做采样/脱敏/写库（二层脱敏与尾采样仍在采样层执行，单一事实来源不变）。
+# 部署纪律：
+#   - 本地 Collector / Agent 侧只对接本层地址（compose: collector-router；K8s:
+#     apm-central-router Service）；禁止绕过本层直连采样层，否则同一 trace 被拆到
+#     不同实例，尾采样决策失真（错误/慢请求可能漏保）。
+#   - 本层自身可水平扩展（无状态）；采样层扩缩容后 DNS 解析器按 interval 重解析，
+#     路由表自动收敛，收敛窗口内到达已下线实例的 span 经有界重试后丢弃并计数
+#     （fail-open，符合设计 §19.4/§20）。
+#   - metrics 信号无 trace 亲和需求：v0.154.0 loadbalancing 对 metrics 不支持
+#     traceID 路由，经独立 loadbalancing/metrics 出口按 service.name 哈希稳定分布。
+
+receivers:
+  otlp:
+    protocols:
+      # 与采样层同一 mTLS 纪律（contrib v0.154.0 configtls.ServerConfig）：
+      # 设置 client_ca_file 即强制 RequireAndVerifyClientCert。
+      grpc:
+        endpoint: 0.0.0.0:4317
+        tls:
+          cert_file: /etc/jiuzhang-apm/tls/server.crt      # 占位：服务端证书（SAN 须覆盖本层服务名）
+          key_file: /etc/jiuzhang-apm/tls/server.key       # 占位：服务端私钥（0600）
+          client_ca_file: /etc/jiuzhang-apm/tls/ca.crt     # 占位：私有 CA（设置即强制 mTLS）
+      http:
+        endpoint: 0.0.0.0:4318
+        tls:
+          cert_file: /etc/jiuzhang-apm/tls/server.crt
+          key_file: /etc/jiuzhang-apm/tls/server.key
+          client_ca_file: /etc/jiuzhang-apm/tls/ca.crt
+
+processors:
+  # 内存限幅仍在 pipeline 第一位（路由层同样可能被洪泛冲击）。
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+
+  # 小批量聚合降低下游连接压力；不做任何属性处理（脱敏单一事实来源在采样层）。
+  batch:
+    timeout: 2s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+
+exporters:
+  # trace ID 一致性路由（设计 §13.2 硬约束的实现）。contrib v0.154.0
+  # loadbalancing exporter：traces 管道用 routing_key=traceID 按 trace ID 哈希选后端。
+  loadbalancing/traces:
+    routing_key: traceID
+    protocol:
+      otlp:
+        # 采样层组内地址（gRPC）。compose 形态解析到 collector-sampler 服务别名
+        # （deploy.replicas>1 时 Docker 内嵌 DNS 返回全部副本 IP）；K8s 形态解析到
+        # apm-central-sampler-headless（clusterIP: None，返回全部 Pod IP）。
+        timeout: 10s
+        tls:
+          cert_file: /etc/jiuzhang-apm/tls/client.crt      # 占位：路由层→采样层客户端证书
+          key_file: /etc/jiuzhang-apm/tls/client.key       # 占位：私钥（0600）
+          ca_file: /etc/jiuzhang-apm/tls/ca.crt            # 占位：私有 CA
+        # 有界重试 + 有界内存队列：采样层整体不可达时限量缓存，超限丢弃并计数
+        # （fail-open，与 local/central 同一纪律；不使用磁盘队列，设计 §19.4）。
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 120s
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 1000
+    resolver:
+      dns:
+        # 采样层后端名（编排层注入，两种形态共用本文件）：
+        #   compose：LB_DNS_HOSTNAME=collector-sampler（deploy.replicas>1 时 Docker
+        #     内嵌 DNS 返回全部副本 IP）；
+        #   K8s：LB_DNS_HOSTNAME=apm-central-sampler-headless（headless Service，
+        #     clusterIP: None，同命名空间短名解析，返回全部 Pod IP）。
+        hostname: ${env:LB_DNS_HOSTNAME}
+        port: "4317"
+        interval: 10s                 # 重解析周期：副本上下线后路由表收敛窗口
+        timeout: 2s
+
+  # metrics 专用负载均衡出口：v0.154.0 loadbalancing 对 metrics 不支持 traceID 路由
+  # （无 trace 上下文），改用 service 路由——按 service.name 哈希稳定分布到采样层实例；
+  # metrics 无亲和/状态需求，仅要求有界重试与有界队列（fail-open 纪律同上）。
+  loadbalancing/metrics:
+    routing_key: service
+    protocol:
+      otlp:
+        timeout: 10s
+        tls:
+          cert_file: /etc/jiuzhang-apm/tls/client.crt
+          key_file: /etc/jiuzhang-apm/tls/client.key
+          ca_file: /etc/jiuzhang-apm/tls/ca.crt
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 120s
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 1000
+    resolver:
+      dns:
+        hostname: ${env:LB_DNS_HOSTNAME}   # 同上：compose=collector-sampler / K8s=headless 服务名
+        port: "4317"
+        interval: 10s
+        timeout: 2s
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133   # 编排层仅映射到回环；K8s readiness/liveness 探测该端口
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [loadbalancing/traces]
+    # metrics 管道（阶段3 起存在）：无 trace 亲和需求，按 service 哈希稳定分布到采样层；
+    # 采样层 metrics 管道不接 tail_sampling（全量保留，见 central-gateway.yaml 注释）。
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [loadbalancing/metrics]
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0            # 自监控 Prometheus 端口（仅暴露在内网/管理网段）
+                port: 8888
+    logs:
+      level: info

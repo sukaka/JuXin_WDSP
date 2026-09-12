@@ -1,0 +1,21 @@
+# WDSP Agent E2E 验收：Agent 宿主容器镜像。
+# 内含：wdsp-agent linux 静态二进制（CGO_ENABLED=0，由 run.sh 按 Docker 架构交叉编译后
+# 放入构建上下文）、python3（模拟业务 HTTP 服务 business_server.py）、curl（容器内发流量/排障）、iproute2。
+# 基镜像与项目锁定口径一致（docs/DEPENDENCIES.md，multi-arch index digest，
+# amd64/arm64 通用）；apk 内 python3/curl 版本随 alpine:3.24 仓库固定，见 README 已知限制。
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+
+RUN apk add --no-cache python3 curl iproute2
+
+COPY wdsp-agent /usr/local/bin/wdsp-agent
+COPY entrypoint.sh /entrypoint.sh
+COPY business_server.py /business_server.py
+COPY fake_kube_server.py /fake_kube_server.py
+COPY fake-kube.crt /fake-kube.crt
+COPY fake-kube.key /fake-kube.key
+COPY fake-kube.crt /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+COPY kube-token /var/run/secrets/kubernetes.io/serviceaccount/token
+RUN chmod 0755 /usr/local/bin/wdsp-agent /entrypoint.sh /business_server.py /fake_kube_server.py \
+    && chmod 0600 /fake-kube.key /var/run/secrets/kubernetes.io/serviceaccount/token
+
+ENTRYPOINT ["/entrypoint.sh"]

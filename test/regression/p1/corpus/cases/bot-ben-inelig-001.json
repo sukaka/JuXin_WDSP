@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "case_id": "BOT-BEN-INELIG-001",
+  "case_version": 1,
+  "family": "bot",
+  "tags": ["bot-challenge", "ineligible-request", "false-positive-guard"],
+  "criticality": "MANDATORY",
+  "truth": "BENIGN",
+  "truth_reason": "不合格挑战条件的正常请求：HEAD、JSON 客户端 GET、JSON 写操作均非浏览器文档导航，按任务书 §3.1 不得返回 HTML 挑战、不得重放业务写；人工核验为正常 API/客户端行为",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "bot.challenge.ineligible_pass",
+    "applications": ["p1reg-bot-site"],
+    "protocols": ["https"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin", "bot_event_pipeline"]
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {"method": "HEAD", "path": "/", "headers": {}},
+      "wait": null,
+      "assert": [
+        {"type": "http_status_in", "statuses": [200]},
+        {"type": "origin_marker_present"}
+      ]
+    },
+    {
+      "step_id": "s2",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {"Accept": "application/json"}
+      },
+      "wait": {"type": "previous_step_status_in", "statuses": [200]},
+      "assert": [
+        {"type": "http_status_in", "statuses": [200]},
+        {"type": "origin_marker_present"},
+        {"type": "json_field_equals", "path": "upstream_mark", "value": "REACHED_ORIGIN"}
+      ]
+    },
+    {
+      "step_id": "s3",
+      "action": "http_request",
+      "request": {
+        "method": "POST",
+        "path": "/login",
+        "headers": {"Content-Type": "application/json", "Accept": "application/json"},
+        "body": "{\"username\": \"bench\", \"password\": \"bench\"}"
+      },
+      "wait": {"type": "previous_step_status_in", "statuses": [200]},
+      "assert": [
+        {"type": "http_status_in", "statuses": [200]},
+        {"type": "origin_marker_present"},
+        {"type": "json_field_equals", "path": "upstream_mark", "value": "REACHED_ORIGIN"}
+      ]
+    }
+  ],
+  "seed": 3102,
+  "reset_plan": {"scope": "case", "actions": ["none"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "none"},
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "none"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "none"},
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "none"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": false,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "TRAIN"
+}

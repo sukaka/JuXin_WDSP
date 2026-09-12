@@ -1,0 +1,38 @@
+[envoytap-e2e 13:13:04] S1 HTTP/2 多路复用（6 流交错，X-Rid 回显配对校验）
+rid=h2-0 status=200 x-rid=h2-0 proto=HTTP/2.0
+rid=h2-3 status=200 x-rid=h2-3 proto=HTTP/2.0
+rid=h2-1 status=200 x-rid=h2-1 proto=HTTP/2.0
+rid=h2-4 status=200 x-rid=h2-4 proto=HTTP/2.0
+rid=h2-2 status=200 x-rid=h2-2 proto=HTTP/2.0
+rid=h2-5 status=200 x-rid=h2-5 proto=HTTP/2.0
+[envoytap-e2e 13:13:06] S2 gRPC unary 成功
+rid=grpc-s2 unary ok resp="ping-grpc-s2"
+[envoytap-e2e 13:13:06] S3 gRPC unary 非零状态（INVALID_ARGUMENT=3）
+rid=grpc-s3 rpc_error code=3 (synthetic-rpc-failure)
+[envoytap-e2e 13:13:07] S4 gRPC server streaming 成功（3 消息）
+rid=grpc-s4 stream msg "stream-msg-0"
+rid=grpc-s4 stream msg "stream-msg-1"
+rid=grpc-s4 stream msg "stream-msg-2"
+rid=grpc-s4 stream end recv=3 err_code=2 (EOF)
+[envoytap-e2e 13:13:08] S5 gRPC streaming 客户端取消（首消息后 cancel）
+rid=grpc-s5 stream msg "stream-msg-0"
+rid=grpc-s5 stream end recv=1 err_code=1 (rpc error: code = Canceled desc = context canceled)
+[envoytap-e2e 13:13:08] S6 gRPC streaming 截止时间（300ms deadline，服务端 2s/条）
+rid=grpc-s6 stream end recv=0 err_code=4 (rpc error: code = DeadlineExceeded desc = context deadline exceeded)
+[envoytap-e2e 13:13:09] S12 正文超 Envoy 缓冲上限（8KB > 4KB 截断）
+rid=s12 status=200 x-rid=s12 proto=HTTP/2.0
+[envoytap-e2e 13:13:09] S9 Envoy 进程重启（tap 流中断 → 适配器重连重新提交）
+rid=s9-after status=200 x-rid=s9-after proto=HTTP/2.0
+[envoytap-e2e 13:13:17] S10 适配器故障（杀死后业务照常；守护拉起恢复采集）
+rid=s10-down-1 status=200 x-rid=s10-down-1 proto=HTTP/2.0
+rid=s10-down-2 status=200 x-rid=s10-down-2 proto=HTTP/2.0
+rid=s10-down-3 status=200 x-rid=s10-down-3 proto=HTTP/2.0
+rid=s10-after status=200 x-rid=s10-after proto=HTTP/2.0
+[envoytap-e2e 13:13:27] S11 脱敏标记流量（header/query/body/trailer 合成敏感标记）
+rid=s11 status=200 x-rid=s11 proto=HTTP/2.0
+[envoytap-e2e 13:13:27] 相位切换：envoy-h1.yaml（8080 明文挂 tap）+ 断言 observed=1.1/PLAINTEXT
+[envoytap-e2e 13:13:37] S7 WebSocket 握手成功 + 单帧 echo（帧内容含合成敏感标记）
+rid=ws-s7 handshake_status=101 accept="dkKJSb/De2ohQs6AL0+9C10JJNQ="
+rid=ws-s7 echoed="ws-frame-secret-s7"
+[envoytap-e2e 13:13:38] S8 WebSocket 握手失败（/ws-deny → 403）
+rid=ws-s8 handshake_status=403 accept=""

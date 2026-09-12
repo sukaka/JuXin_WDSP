@@ -1,0 +1,23 @@
+Sort  (cost=24543.83..24793.83 rows=100000 width=142) (actual time=214.732..240.175 rows=100000 loops=1)
+  Sort Key: e.endpoint_key
+  Sort Method: external merge  Disk: 15272kB
+  Buffers: shared hit=4723, temp read=1909 written=1913
+  ->  Hash Left Join  (cost=4229.00..9060.51 rows=100000 width=142) (actual time=35.499..75.979 rows=100000 loops=1)
+        Hash Cond: (e.id = f.endpoint_id)
+        Buffers: shared hit=4723
+        ->  Seq Scan on api_endpoints e  (cost=0.00..4569.00 rows=100000 width=134) (actual time=0.017..14.697 rows=100000 loops=1)
+              Buffers: shared hit=3569
+        ->  Hash  (cost=3479.00..3479.00 rows=60000 width=24) (actual time=35.367..35.368 rows=60000 loops=1)
+              Buckets: 65536  Batches: 1  Memory Usage: 3794kB
+              Buffers: shared hit=1154
+              ->  Subquery Scan on f  (cost=2279.00..3479.00 rows=60000 width=24) (actual time=17.132..27.577 rows=60000 loops=1)
+                    Buffers: shared hit=1154
+                    ->  HashAggregate  (cost=2279.00..2879.00 rows=60000 width=24) (actual time=17.131..22.918 rows=60000 loops=1)
+                          Group Key: api_runtime_findings.endpoint_id
+                          Batches: 1  Memory Usage: 6929kB
+                          Buffers: shared hit=1154
+                          ->  Seq Scan on api_runtime_findings  (cost=0.00..1979.00 rows=60000 width=16) (actual time=0.007..6.997 rows=60000 loops=1)
+                                Filter: ((status)::text = ANY ('{NEW,CONFIRMED,IN_PROGRESS}'::text[]))
+                                Buffers: shared hit=1154
+Planning Time: 0.532 ms
+Execution Time: 246.043 ms

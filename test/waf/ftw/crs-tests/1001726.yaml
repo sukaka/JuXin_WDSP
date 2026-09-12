@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "CUSTOM_PACK 1001726: XSS clipboard/mouse/touch event handler variant"
+rule_id: 1001726
+tests:
+  - test_id: 1
+    desc: "oncopy clipboard event handler"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "JiuZhang CUSTOM_PACK test agent"
+            Accept: "*/*"
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "var=<div oncopy=alert(1)>x</div>"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001726]

@@ -1,0 +1,6 @@
+CONTAINER                    REPOSITORY            TAG                 PLATFORM            IMAGE ID            SIZE                CREATED
+jiuzhang-stage5-api          jiuzhang-server       stage5              linux/arm64         428c4e348a21        52.3MB              14 seconds ago
+jiuzhang-stage5-gateway      jiuzhang-gateway      stage5              linux/arm64         f07d9719aa26        23.8MB              14 seconds ago
+jiuzhang-stage5-postgres     postgres              <none>              linux/arm64/v8      5660c2cbfea5        98.8MB              3 hours ago
+jiuzhang-stage5-testorigin   jiuzhang-testorigin   stage1              linux/arm64         3cd31009a098        6.44MB              14 seconds ago
+jiuzhang-stage5-valkey       valkey/valkey         <none>              linux/arm64         94365b275456        17.9MB              3 hours ago

@@ -1,0 +1,2440 @@
+openapi: 3.0.3
+info:
+  title: 九章WEB应用智能防护系统 V2.0 管理API
+  description: |
+    九章管理后端 RESTful API（阶段2：身份认证、三权权限与系统基础）。
+    认证方式：HttpOnly Cookie（jiuzhang_session）+ CSRF Token（X-CSRF-Token 头）。
+  version: 2.0.0-stage2
+  contact:
+    name: 聚信得仁
+
+servers:
+  - url: /api/v1
+    description: 管理API基础路径
+
+tags:
+  - name: auth
+    description: 身份认证
+  - name: users
+    description: 用户管理
+  - name: roles
+    description: 角色权限
+  - name: login-logs
+    description: 登录日志
+  - name: audits
+    description: 操作审计
+  - name: system-settings
+    description: 系统设置
+  - name: profile
+    description: 个人中心
+  - name: api-security
+    description: API动态防护（阶段8/WDSP：端点资产、模型版本、参数、分类图谱、规范导入、风险与运行时）
+  - name: applications
+    description: Web应用管理（含应用级 HTTP 头合规与代理配置、路径粒度转发）
+
+paths:
+  /health:
+    get:
+      summary: 健康检查
+      security: []
+      responses:
+        '200':
+          description: 服务及依赖状态
+
+  /auth/captcha:
+    get:
+      summary: 获取图形验证码
+      tags: [auth]
+      security: []
+      responses:
+        '200':
+          description: 验证码ID与图片（data:image/png;base64）
+
+  /auth/login:
+    post:
+      summary: 用户登录
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, captcha_id, captcha_code]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+                captcha_id: { type: string }
+                captcha_code: { type: string }
+      responses:
+        '200':
+          description: 登录成功（Set-Cookie 下发会话，data 含 csrf_token）
+        '401':
+          description: 用户名或密码错误（统一提示）
+        '400':
+          description: 验证码错误
+
+  /auth/logout:
+    post:
+      summary: 退出登录
+      tags: [auth]
+      responses:
+        '200':
+          description: 已退出
+
+  /auth/me:
+    get:
+      summary: 当前登录用户信息
+      tags: [auth]
+      responses:
+        '200':
+          description: 用户信息 + csrf_token
+        '401':
+          description: 未登录
+
+  /auth/change-password:
+    post:
+      summary: 修改密码
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: { type: string, format: password }
+                new_password: { type: string, format: password }
+      responses:
+        '200':
+          description: 修改成功（需重新登录）
+
+  /auth/sessions:
+    get:
+      summary: 当前用户会话列表
+      tags: [auth]
+      responses:
+        '200':
+          description: 会话摘要列表
+
+  /auth/sessions/{id}:
+    delete:
+      summary: 结束指定会话
+      tags: [auth]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 会话已结束
+
+  /users:
+    get:
+      summary: 用户列表
+      tags: [users]
+      parameters:
+        - { name: username, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: role_code, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页用户列表
+    post:
+      summary: 创建用户（返回一次性临时密码）
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, display_name, role_code]
+              properties:
+                username: { type: string }
+                display_name: { type: string }
+                role_code: { type: string, enum: [SYSTEM_ADMIN, SECURITY_ADMIN, AUDIT_ADMIN] }
+      responses:
+        '200':
+          description: 创建成功（data.temporary_password 仅显示一次）
+
+  /users/{id}:
+    get:
+      summary: 用户详情
+      tags: [users]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: 用户信息 }
+        '404': { description: 用户不存在 }
+    put:
+      summary: 修改用户（乐观锁 version）
+      tags: [users]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: 修改成功 }
+        '409': { description: 版本冲突 }
+    delete:
+      summary: 删除用户（逻辑删除）
+      tags: [users]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: 已删除 }
+
+  /users/{id}/enable:
+    post: { summary: 启用用户, tags: [users], parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }
+  /users/{id}/disable:
+    post: { summary: 停用用户, tags: [users], parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }
+  /users/{id}/unlock:
+    post: { summary: 解锁用户, tags: [users], parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }
+  /users/{id}/reset-password:
+    post: { summary: 重置密码（返回临时密码）, tags: [users], parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }
+  /users/{id}/sessions:
+    delete: { summary: 强制用户下线, tags: [users], parameters: [{ name: id, in: path, required: true, schema: { type: string } }], responses: { '200': { description: OK } } }
+
+  /roles:
+    get:
+      summary: 角色列表
+      tags: [roles]
+      responses:
+        '200': { description: 角色列表 }
+
+  /roles/{id}:
+    get:
+      summary: 角色详情（含权限）
+      tags: [roles]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: 角色与权限 }
+
+  /permissions:
+    get:
+      summary: 权限清单
+      tags: [roles]
+      responses:
+        '200': { description: 权限清单 }
+
+  /login-logs:
+    get:
+      summary: 登录日志查询
+      tags: [login-logs]
+      responses:
+        '200': { description: 分页登录日志 }
+
+  /login-logs/export:
+    get:
+      summary: 导出登录日志（CSV）
+      tags: [login-logs]
+      responses:
+        '200': { description: CSV 文件, content: { text/csv: {} } }
+
+  /audits:
+    get:
+      summary: 操作审计查询
+      tags: [audits]
+      responses:
+        '200': { description: 分页操作审计 }
+
+  /audits/{id}:
+    get:
+      summary: 审计详情
+      tags: [audits]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: 审计详情 }
+
+  /audits/export:
+    get:
+      summary: 导出审计（CSV）
+      tags: [audits]
+      responses:
+        '200': { description: CSV 文件, content: { text/csv: {} } }
+
+  /audits/verify-chain:
+    post:
+      summary: 校验审计哈希链
+      tags: [audits]
+      responses:
+        '200': { description: '校验结果 {valid, mismatch_count}' }
+
+  /system-settings:
+    get:
+      summary: 系统设置列表
+      tags: [system-settings]
+      parameters:
+        - { name: group, in: query, schema: { type: string, enum: [password, login, session, display] } }
+      responses:
+        '200': { description: 设置列表（敏感值脱敏） }
+    put:
+      summary: 更新系统设置（乐观锁 version）
+      tags: [system-settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setting_group, setting_key, setting_value, version]
+              properties:
+                setting_group: { type: string }
+                setting_key: { type: string }
+                setting_value: {}
+                version: { type: integer }
+      responses:
+        '200': { description: 更新成功 }
+        '409': { description: 版本冲突 }
+
+  /profile:
+    get:
+      summary: 个人资料
+      tags: [profile]
+      responses:
+        '200': { description: 个人资料与权限 }
+    put:
+      summary: 修改个人资料（显示名）
+      tags: [profile]
+      responses:
+        '200': { description: 修改成功 }
+
+  /profile/login-logs:
+    get:
+      summary: 我的登录记录
+      tags: [profile]
+      responses:
+        '200': { description: 分页登录记录 }
+
+  /api-security/endpoints:
+    get:
+      summary: API端点分页列表
+      description: 按资产状态/学习状态/关键字/站点/目录过滤已发现的 API 端点。需要权限 api_asset.read
+      tags: [api-security]
+      operationId: listApiEndpoints
+      parameters:
+        - { name: asset_status, in: query, schema: { type: string, enum: [DISCOVERED, CONFIRMED, IGNORED, DEPRECATED] } }
+        - { name: learning_status, in: query, schema: { type: string, enum: [NOT_STARTED, LEARNING, PAUSED, LEARNED] } }
+        - { name: keyword, in: query, schema: { type: string }, description: 路径关键字（模糊匹配 normalized_path） }
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按站点（应用）过滤 }
+        - { name: unassigned, in: query, schema: { type: boolean }, description: true 时仅查未归属端点（application_id 为空） }
+        - { name: directory_path, in: query, schema: { type: string }, description: 目录前缀过滤（含子目录，如 /test 命中 /test 与 /test/php） }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页端点列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiEndpointPage' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 参数错误（无效的 application_id） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/endpoints/site-summary:
+    get:
+      summary: 站点端点计数汇总
+      description: 返回各站点（应用）的端点计数与未归属端点计数，供站点列表角标。需要权限 api_asset.read
+      tags: [api-security]
+      operationId: apiEndpointSiteSummary
+      responses:
+        '200':
+          description: 站点计数列表与未归属计数
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            application_id: { type: string, format: uuid }
+                            application_name: { type: string }
+                            endpoint_count: { type: integer }
+                      unassigned: { type: integer, description: 未归属端点数 }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/endpoints/directory-tree:
+    get:
+      summary: 目录聚合端点计数
+      description: 按目录（normalized_path 去掉最后一段）聚合端点计数，扁平返回由前端组装目录树。需要权限 api_asset.read
+      tags: [api-security]
+      operationId: apiEndpointDirectoryTree
+      parameters:
+        - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 指定站点（缺省为全部站点） }
+        - { name: unassigned, in: query, schema: { type: boolean }, description: true 时仅统计未归属端点 }
+      responses:
+        '200':
+          description: 目录计数列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            directory_path: { type: string, example: /test/php }
+                            endpoint_count: { type: integer }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 参数错误（无效的 application_id） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/endpoints/confirm:
+    post:
+      summary: 批量确认端点
+      description: 批量将端点确认为资产（asset_status=CONFIRMED），单次最多 100 个，逐项返回失败原因。需要权限 api_asset.confirm
+      tags: [api-security]
+      operationId: confirmApiEndpoints
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  items: { type: string, format: uuid }
+                  minItems: 1
+                  maxItems: 100
+      responses:
+        '200':
+          description: 批量确认结果（含逐项失败明细）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      confirmed: { type: integer }
+                      confirmed_ids:
+                        type: array
+                        items: { type: string, format: uuid }
+                      failed:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string, format: uuid }
+                            reason: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 参数错误（ids 为空或超过 100 个） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/endpoints/{id}:
+    get:
+      summary: API端点详情
+      description: 返回端点及 api_assets 业务维度扩展（asset 字段，无记录时为空）。需要权限 api_asset.read
+      tags: [api-security]
+      operationId: getApiEndpoint
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 端点详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      endpoint: { $ref: '#/components/schemas/ApiEndpoint' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+    patch:
+      summary: 更新端点资产信息
+      description: 全量替换端点的 purpose/exposure/owner/tags（至少提交一个字段）。需要权限 api_asset.edit
+      tags: [api-security]
+      operationId: updateApiEndpoint
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                purpose: { type: string, maxLength: 128 }
+                exposure: { type: string, enum: [INTERNAL, PARTNER, PUBLIC] }
+                owner: { type: string, maxLength: 128 }
+                tags:
+                  type: array
+                  items: { type: string, maxLength: 64 }
+                  maxItems: 32
+      responses:
+        '200':
+          description: 资产信息已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      endpoint: { $ref: '#/components/schemas/ApiEndpoint' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 参数错误（请求体为空或字段校验失败） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+
+  /api-security/endpoints/{id}/merge:
+    post:
+      summary: 合并端点
+      description: 将 other_id 端点并入当前端点（命中数累加、历史端点键归档、删除 other）。需要权限 api_asset.merge
+      tags: [api-security]
+      operationId: mergeApiEndpoint
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [other_id]
+              properties:
+                other_id: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 端点已合并（返回合并后的端点）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      endpoint: { $ref: '#/components/schemas/ApiEndpoint' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 参数错误（other_id 为空或合并到自身） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点或待合并端点不存在 }
+
+  /api-security/endpoints/{id}/split:
+    post:
+      summary: 拆分端点
+      description: 按给定路径从当前端点拆分出新端点（路径自动归一化，单次最多 50 个）。需要权限 api_asset.split
+      tags: [api-security]
+      operationId: splitApiEndpoint
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paths]
+              properties:
+                paths:
+                  type: array
+                  items: { type: string }
+                  minItems: 1
+                  maxItems: 50
+      responses:
+        '200':
+          description: 端点已拆分（返回新创建的端点列表）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      endpoints:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiEndpoint' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 参数错误（拆分路径为空或超过 50 个） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+        '409': { description: 拆分目标路径与现有端点冲突 }
+
+  /api-security/endpoints/{id}/ignore:
+    post:
+      summary: 忽略端点
+      description: 将端点资产状态置为 IGNORED。需要权限 api_asset.ignore
+      tags: [api-security]
+      operationId: ignoreApiEndpoint
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 端点已忽略
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      endpoint: { $ref: '#/components/schemas/ApiEndpoint' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+
+  /api-security/endpoints/{id}/classify:
+    post:
+      summary: 自动分类端点
+      description: 按路径/方法启发式自动分类，写入分类维度（source=AUTO）。需要权限 api_asset.edit
+      tags: [api-security]
+      operationId: classifyApiEndpoint
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 自动分类完成（返回分类维度）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      dimensions:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiClassificationDimension' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+        '409': { description: 分类已锁定，请先解锁后再执行自动分类 }
+
+  /api-security/endpoints/{id}/classification:
+    put:
+      summary: 手动设置端点分类
+      description: 手动覆盖端点分类维度（source=MANUAL）并锁定 classification_locked。需要权限 api_classification.manage
+      tags: [api-security]
+      operationId: putEndpointClassification
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dimensions]
+              properties:
+                dimensions:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [dimension, value]
+                    properties:
+                      dimension: { type: string, minLength: 1, maxLength: 64 }
+                      value: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        '200':
+          description: 分类已设置（返回锁定标记与分类维度）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      endpoint_id: { type: string, format: uuid }
+                      classification_locked: { type: boolean, example: true }
+                      dimensions:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiEndpointClassification' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 参数错误（dimensions 为空、重复或字段超长） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+
+  /api-security/endpoints/{id}/learning/start:
+    post:
+      summary: 启动端点学习
+      description: 创建 RUNNING 学习任务并置端点 learning_status=LEARNING。需要权限 api_learning.start
+      tags: [api-security]
+      operationId: startEndpointLearning
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sample_target:
+                  type: integer
+                  minimum: 10
+                  maximum: 100000
+                  description: 有效样本目标（缺省 100）；0 或越界返回 400
+      responses:
+        '200':
+          description: 学习任务已启动
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      job: { $ref: '#/components/schemas/ApiLearningJob' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID或样本目标越界 }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+        '409': { description: 该端点已有运行中的学习任务 }
+
+  /api-security/endpoints/{id}/learning/stop:
+    post:
+      summary: 停止端点学习
+      description: 停止运行中的学习任务（置 STOPPED），端点 learning_status=PAUSED。需要权限 api_learning.stop
+      tags: [api-security]
+      operationId: stopEndpointLearning
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 学习任务已停止
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      job: { $ref: '#/components/schemas/ApiLearningJob' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+        '409': { description: 当前没有运行中的学习任务 }
+
+  /api-security/endpoints/{id}/learning/status:
+    get:
+      summary: 端点学习状态
+      description: 返回端点学习状态、最近一次学习任务（从未学习时 job 为空）与样本统计。需要权限 api_learning.read
+      tags: [api-security]
+      operationId: getEndpointLearningStatus
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 学习状态与样本统计
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      endpoint_id: { type: string, format: uuid }
+                      learning_status: { type: string, enum: [NOT_STARTED, LEARNING, PAUSED, LEARNED] }
+                      job: { $ref: '#/components/schemas/ApiLearningJob' }
+                      samples: { $ref: '#/components/schemas/ApiSampleStats' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+
+  /api-security/endpoints/{id}/learning/samples:
+    get:
+      summary: 端点学习样本分页列表
+      description: 列出端点学习样本（仅存样本哈希，不含完整敏感值），可按 accepted 过滤。需要权限 api_learning.read
+      tags: [api-security]
+      operationId: listEndpointLearningSamples
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: accepted, in: query, schema: { type: boolean }, description: 是否被学习采纳（true/false，缺省不过滤） }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页学习样本列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiLearningSamplePage' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID或accepted取值 }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+
+  /api-security/endpoints/{id}/lifecycle-events:
+    get:
+      summary: 端点生命周期事件分页列表
+      description: 端点生命周期判定轨迹（合并/拆分/状态变更/学习启停），按 created_at 倒序。需要权限 api_asset.read
+      tags: [api-security]
+      operationId: listEndpointLifecycleEvents
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页生命周期事件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiLifecycleEventPage' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+
+  /api-security/endpoints/{id}/models:
+    get:
+      summary: 端点模型版本分页列表
+      description: 按版本列出指定端点的模型版本。需要权限 api_model.read
+      tags: [api-security]
+      operationId: listApiModels
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页模型版本列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiModelVersionPage' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+    post:
+      summary: 创建候选模型版本
+      description: 为端点手工创建候选模型（status=CANDIDATE）。需要权限 api_model.edit
+      tags: [api-security]
+      operationId: createApiModel
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [schema]
+              properties:
+                schema:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: 字段名到类型的映射（必填，不能为空）
+                change_summary: { type: string, description: 可选变更说明 }
+      responses:
+        '200':
+          description: 候选模型已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      version: { $ref: '#/components/schemas/ApiModelVersion' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 参数错误（schema 为空） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 端点不存在 }
+
+  /api-security/models/{id}:
+    get:
+      summary: 模型版本详情
+      description: 返回指定模型版本。需要权限 api_model.read
+      tags: [api-security]
+      operationId: getApiModel
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 模型版本详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiModelVersion' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的模型版本ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 模型版本不存在 }
+
+  /api-security/models/{id}/diff/{other_id}:
+    get:
+      summary: 模型版本差异对比
+      description: 对比两个模型版本的字段差异（新增/删除/类型变化）。需要权限 api_model.read
+      tags: [api-security]
+      operationId: diffApiModels
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: other_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 版本差异记录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiModelDiffRecord' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的模型版本ID或对比版本ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 模型版本不存在 }
+
+  /api-security/models/{id}/submit-review:
+    post:
+      summary: 提交模型评审
+      description: 将候选模型提交评审（status=IN_REVIEW），可附评论。需要权限 api_model.review
+      tags: [api-security]
+      operationId: submitApiModelReview
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment: { type: string }
+      responses:
+        '200':
+          description: 已提交评审
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      version: { $ref: '#/components/schemas/ApiModelVersion' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的模型版本ID或请求格式错误 }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 模型版本不存在 }
+        '409': { description: 当前状态不允许该操作 }
+
+  /api-security/models/{id}/confirm:
+    post:
+      summary: 确认模型为正式版本
+      description: 将候选或评审中的模型确认为正式版本（status=FORMAL）。需要权限 api_model.confirm
+      tags: [api-security]
+      operationId: confirmApiModel
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 模型已确认为正式版本
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      version: { $ref: '#/components/schemas/ApiModelVersion' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的模型版本ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 模型版本不存在 }
+        '409': { description: 仅候选或评审中的版本可确认为正式模型 }
+
+  /api-security/models/{id}/reject:
+    post:
+      summary: 拒绝模型版本
+      description: 拒绝评审中的模型版本（status=REJECTED），可附评论。需要权限 api_model.review
+      tags: [api-security]
+      operationId: rejectApiModel
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment: { type: string }
+      responses:
+        '200':
+          description: 模型已拒绝
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      version: { $ref: '#/components/schemas/ApiModelVersion' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的模型版本ID或请求格式错误 }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 模型版本不存在 }
+        '409': { description: 当前状态不允许该操作 }
+
+  /api-security/models/{id}/activate:
+    post:
+      summary: 激活模型版本
+      description: 将正式版本激活为端点当前模型（current_model_version_id）。需要权限 api_model.activate
+      tags: [api-security]
+      operationId: activateApiModel
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 模型已激活
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      version: { $ref: '#/components/schemas/ApiModelVersion' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的模型版本ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 模型版本不存在 }
+        '409': { description: 当前状态不允许该操作 }
+
+  /api-security/models/{id}/archive:
+    post:
+      summary: 归档模型版本
+      description: 将模型版本归档（status=ARCHIVED）。需要权限 api_model.archive
+      tags: [api-security]
+      operationId: archiveApiModel
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 模型已归档
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      version: { $ref: '#/components/schemas/ApiModelVersion' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的模型版本ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 模型版本不存在 }
+        '409': { description: 当前状态不允许该操作 }
+
+  /api-security/models/{id}/parameters:
+    get:
+      summary: 模型版本参数列表
+      description: 列出指定模型版本下的全部参数（含观测/推荐/确认约束）。需要权限 api_parameter.read
+      tags: [api-security]
+      operationId: listApiModelParameters
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 参数列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiParameter' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的模型版本ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/parameters/{id}:
+    get:
+      summary: 参数详情
+      description: 返回指定参数。需要权限 api_parameter.read
+      tags: [api-security]
+      operationId: getApiParameter
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 参数详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiParameter' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的参数ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 参数不存在 }
+    patch:
+      summary: 更新参数确认约束
+      description: 更新参数的必填/可空/允许空值/确认约束/敏感级别。需要权限 api_parameter.edit
+      tags: [api-security]
+      operationId: updateApiParameter
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                required: { type: boolean }
+                nullable: { type: boolean }
+                empty_allowed: { type: boolean }
+                confirmed_constraints: { type: object }
+                sensitivity_level: { type: string }
+      responses:
+        '200':
+          description: 参数约束已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      parameter: { $ref: '#/components/schemas/ApiParameter' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的参数ID或请求格式错误 }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 参数不存在 }
+
+  /api-security/parameters/{id}/confirm:
+    post:
+      summary: 确认参数约束
+      description: 采纳推荐约束为确认约束。需要权限 api_parameter.edit
+      tags: [api-security]
+      operationId: confirmApiParameter
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 参数约束已确认
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      parameter: { $ref: '#/components/schemas/ApiParameter' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的参数ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 参数不存在 }
+
+  /api-security/classifications:
+    get:
+      summary: 分类法列表
+      description: 内置分类（api_classifications）与自定义分类法（api_custom_taxonomies）合并返回。需要权限 api_classification.read
+      tags: [api-security]
+      operationId: listApiClassifications
+      responses:
+        '200':
+          description: 内置与自定义分类法
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      builtin:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiClassificationItem' }
+                      custom:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiCustomTaxonomyItem' }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+    post:
+      summary: 新增自定义分类法条目
+      description: 新增自定义分类法条目（api_custom_taxonomies）。需要权限 api_classification.manage
+      tags: [api-security]
+      operationId: createApiClassification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dimension, value]
+              properties:
+                dimension: { type: string, minLength: 1, maxLength: 64 }
+                value: { type: string, minLength: 1, maxLength: 128 }
+                description: { type: string }
+      responses:
+        '200':
+          description: 自定义分类法条目已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiCustomTaxonomyItem' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 参数错误（dimension/value 必填或超长） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '409': { description: 该维度下分类值已存在 }
+
+  /api-security/graph:
+    get:
+      summary: API调用图谱
+      description: 返回端点节点与调用边（节点为端点，边为调用关系）。需要权限 api_graph.read
+      tags: [api-security]
+      operationId: getApiGraph
+      responses:
+        '200':
+          description: 调用图谱（nodes + edges）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      nodes:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiGraphNode' }
+                      edges:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiGraphEdge' }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/topology:
+    get:
+      summary: API拓扑视图
+      description: 按应用分组的端点拓扑与调用边。需要权限 api_graph.read
+      tags: [api-security]
+      operationId: getApiTopology
+      responses:
+        '200':
+          description: 拓扑视图（applications + edges）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      applications:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiTopologyGroup' }
+                      edges:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiGraphEdge' }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/specs/import:
+    post:
+      summary: 导入OpenAPI规范
+      description: 导入 OpenAPI 3 JSON 文档（仅支持 JSON，请求体上限 16MiB），与运行时端点对比生成差异记录。需要权限 api_spec.import
+      tags: [api-security]
+      operationId: importApiSpec
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 'OpenAPI 3 JSON 文档原文，或包装形式 {"spec": {...}, "file_name": "..."}'
+              properties:
+                spec: { type: object, description: OpenAPI 3 文档（包装形式时必填） }
+                file_name: { type: string, description: 可选文件名 }
+      responses:
+        '200':
+          description: 导入结果（含差异计数）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      spec: { $ref: '#/components/schemas/ApiImportSpec' }
+                      missing_in_runtime: { type: integer, description: 规范有而运行时无的端点数 }
+                      missing_in_spec: { type: integer, description: 运行时有而规范无的端点数 }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 仅支持 JSON 格式的 OpenAPI 3 文档（非 JSON/缺少 openapi 3.x 声明/缺少 paths/请求体超限） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/specs:
+    get:
+      summary: 已导入规范分页列表
+      description: 分页列出已导入的 API 规范。需要权限 api_spec.read
+      tags: [api-security]
+      operationId: listApiSpecs
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页规范列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiImportSpecPage' }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/specs/{id}/diff:
+    get:
+      summary: 规范差异明细
+      description: 返回指定导入规范与运行时端点的差异明细。需要权限 api_spec.read
+      tags: [api-security]
+      operationId: getApiSpecDiff
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 规范与差异明细
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      spec: { $ref: '#/components/schemas/ApiImportSpec' }
+                      diffs:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiSpecDiff' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的规范ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 规范不存在 }
+
+  /api-security/findings:
+    get:
+      summary: 风险发现分页列表
+      description: 按类型/严重级别/状态过滤运行时风险发现。需要权限 api_runtime.read
+      tags: [api-security]
+      operationId: listApiFindings
+      parameters:
+        - { name: finding_type, in: query, schema: { type: string } }
+        - { name: severity, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页风险发现列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiFindingPage' }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/violations:
+    get:
+      summary: Schema违例分页列表
+      description: 按端点/违例类型过滤 Schema 违例记录。需要权限 api_runtime.read
+      tags: [api-security]
+      operationId: listApiViolations
+      parameters:
+        - { name: endpoint_id, in: query, schema: { type: string, format: uuid } }
+        - { name: violation_type, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页违例列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiViolationPage' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/posture:
+    get:
+      summary: API安全态势总览
+      description: 端点资产/学习覆盖/模型冻结/开放风险的整体态势指标。需要权限 api_runtime.read
+      tags: [api-security]
+      operationId: getApiPosture
+      responses:
+        '200':
+          description: 安全态势指标
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiPosture' }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/runtime/statistics:
+    get:
+      summary: 运行时事件统计
+      description: 运行时事件总量、final_action/risk_level 分布与 Top10 端点。需要权限 api_runtime.read
+      tags: [api-security]
+      operationId: getApiRuntimeStatistics
+      responses:
+        '200':
+          description: 运行时统计
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiRuntimeStatistics' }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/runtime/events:
+    get:
+      summary: 运行时事件分页列表
+      description: 按端点键/最终动作过滤运行时事件。需要权限 api_runtime.read
+      tags: [api-security]
+      operationId: listApiRuntimeEvents
+      parameters:
+        - { name: endpoint_key, in: query, schema: { type: string } }
+        - { name: final_action, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页运行时事件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiRuntimeEventPage' }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/sensitive-fields:
+    get:
+      summary: 敏感字段分页列表
+      description: 按端点/方向/数据类型过滤敏感字段识别结果（api_sensitive_fields）。需要权限 api_runtime.read
+      tags: [api-security]
+      operationId: listApiSensitiveFields
+      parameters:
+        - { name: endpoint_id, in: query, schema: { type: string, format: uuid } }
+        - { name: direction, in: query, schema: { type: string, enum: [REQUEST, RESPONSE] } }
+        - { name: data_type, in: query, schema: { type: string }, description: 如 phone / id_card / bank_card / email / credential }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页敏感字段列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiSensitiveFieldPage' }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的端点ID或direction取值 }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+
+  /api-security/policy:
+    get:
+      summary: API动态防护策略视图
+      description: 返回产品形态、能力开关、生效防护模式与来源（settings表覆盖 > 环境变量 > 内置默认）及解析限制。需要权限 api_policy.read
+      tags: [api-security]
+      operationId: getApiPolicy
+      responses:
+        '200':
+          description: 防护策略视图
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/ApiPolicy' }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+    put:
+      summary: 更新API动态防护模式
+      description: 覆盖写入 settings 表 api_protection.mode（仅接受 OFF/OBSERVE/PROTECT），发布后生效。需要权限 api_policy.edit
+      tags: [api-security]
+      operationId: updateApiPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+      responses:
+        '200':
+          description: 更新后的防护策略视图
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      policy: { $ref: '#/components/schemas/ApiPolicy' }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的防护模式 }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '503': { description: 设置服务未配置 }
+
+  /api-security/policy/publish:
+    post:
+      summary: 发布API动态防护策略
+      description: 触发一次配置发布（同步等待最终状态），使防护模式下发网关。需要权限 api_policy.publish
+      tags: [api-security]
+      operationId: publishApiPolicy
+      responses:
+        '200':
+          description: 发布任务结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      task_id: { type: string, format: uuid }
+                      status: { type: string, example: SUCCESS }
+                      message: { type: string }
+                  request_id: { type: string, format: uuid }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '503': { description: 发布能力未配置 }
+
+  /applications/{id}/header-config:
+    get:
+      summary: 查询应用头合规与代理配置
+      description: 返回应用已存储的头合规与代理配置；未配置时返回默认对象且 configured=false、version=0（默认行为等价于既有静态头版本）。需要权限 applications.read
+      tags: [applications]
+      operationId: getAppHeaderConfig
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 头合规配置（data 含 config / configured / version / updated_at）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      config: { $ref: '#/components/schemas/AppHeaderConfig' }
+                      configured: { type: boolean, description: 是否已存储配置（false 时 config 为默认对象） }
+                      version: { type: integer, description: 乐观锁版本（未配置时为 0） }
+                      updated_at: { type: string, format: date-time }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的应用ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+    put:
+      summary: 保存应用头合规与代理配置
+      description: 全量 upsert（body 为完整配置 + version）。version=0 表示首次创建（已存在报 409）；version>0 按乐观锁更新（记录不存在或版本不匹配报 409）。需要权限 applications.update
+      tags: [applications]
+      operationId: putAppHeaderConfig
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/AppHeaderConfig'
+                - type: object
+                  required: [version]
+                  properties:
+                    version: { type: integer, description: 乐观锁版本（0=创建） }
+      responses:
+        '200':
+          description: 保存成功（data 含 config / configured=true / 新 version）
+        '400': { description: 校验失败（action/x_frame_options/csp_mode/hsts_max_age/自定义规则非法） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 应用不存在 }
+        '409': { description: 版本冲突（配置已被其他人修改） }
+
+  /applications/{id}/path-routes:
+    get:
+      summary: 应用路径转发分页列表
+      description: 按 priority 升序、path_prefix 字典序返回应用全部路径转发规则。需要权限 applications.read
+      tags: [applications]
+      operationId: listAppPathRoutes
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: 分页路径转发列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/AppPathRouteRecord' }
+                      page: { type: integer }
+                      page_size: { type: integer }
+                      total: { type: integer }
+                  request_id: { type: string, format: uuid }
+        '400': { description: 无效的应用ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+    post:
+      summary: 创建应用路径转发
+      description: 新增路径前缀 → 指定源站的转发规则（缺省 scheme=http、status=ENABLED、priority=100）。需要权限 applications.update
+      tags: [applications]
+      operationId: createAppPathRoute
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path_prefix, upstream_host, upstream_port]
+              properties:
+                path_prefix: { type: string, description: "以 / 开头，不含 ?、#、.." }
+                upstream_scheme: { type: string, enum: [http, https], default: http }
+                upstream_host: { type: string }
+                upstream_port: { type: integer, minimum: 1, maximum: 65535 }
+                strip_prefix: { type: boolean, default: false, description: true=剥离前缀转发 }
+                priority: { type: integer, default: 100, description: 数值小者优先；同优先级长前缀优先 }
+                status: { type: string, enum: [ENABLED, DISABLED], default: ENABLED }
+                description: { type: string, maxLength: 255 }
+      responses:
+        '200':
+          description: 创建成功（data.route 为完整记录）
+        '400': { description: 校验失败（路径前缀/端口/scheme/status 非法） }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 应用不存在 }
+        '409': { description: 相同路径前缀与源站的规则已存在 }
+
+  /applications/{id}/path-routes/{rid}:
+    patch:
+      summary: 更新应用路径转发
+      description: 全量替换路径转发规则 + version 乐观锁（body 携带当前 version）。需要权限 applications.update
+      tags: [applications]
+      operationId: updateAppPathRoute
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: rid, in: path, required: true, schema: { type: string, format: uuid }, description: 路径转发ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path_prefix, upstream_host, upstream_port, version]
+              properties:
+                path_prefix: { type: string, description: "以 / 开头，不含 ?、#、.." }
+                upstream_scheme: { type: string, enum: [http, https], default: http }
+                upstream_host: { type: string }
+                upstream_port: { type: integer, minimum: 1, maximum: 65535 }
+                strip_prefix: { type: boolean, default: false }
+                priority: { type: integer, default: 100 }
+                status: { type: string, enum: [ENABLED, DISABLED], default: ENABLED }
+                description: { type: string, maxLength: 255 }
+                version: { type: integer, description: 乐观锁版本 }
+      responses:
+        '200':
+          description: 更新成功（data.route 为新版本记录）
+        '400': { description: 校验失败 }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 路径转发不存在 }
+        '409': { description: 版本冲突或相同路径前缀与源站的规则已存在 }
+    delete:
+      summary: 删除应用路径转发
+      description: 删除指定路径转发规则。需要权限 applications.update
+      tags: [applications]
+      operationId: deleteAppPathRoute
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+        - { name: rid, in: path, required: true, schema: { type: string, format: uuid }, description: 路径转发ID }
+      responses:
+        '200':
+          description: 删除成功
+        '400': { description: 无效的应用ID或路径转发ID }
+        '401': { description: 未登录或会话失效 }
+        '403': { description: 无权限 }
+        '404': { description: 路径转发不存在 }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: jiuzhang_session
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        code: { type: string, example: SUCCESS }
+        message: { type: string }
+        data: {}
+        request_id: { type: string, format: uuid }
+
+    ErrorResponse:
+      type: object
+      properties:
+        code: { type: string, example: PERMISSION_DENIED }
+        message: { type: string }
+        details: {}
+        request_id: { type: string, format: uuid }
+
+    AppHeaderRule:
+      type: object
+      required: [name, method]
+      properties:
+        name: { type: string, description: HTTP 头字段名（RFC 7230 token） }
+        method: { type: string, enum: [set, add, delete], description: delete 时 value 必须为空 }
+        value: { type: string }
+
+    AppHeaderConfig:
+      type: object
+      description: 应用级 HTTP 头合规与代理配置（字段与 app_header_configs 表一致）。下划线请求头由网关内核（Caddy 2.11+，GHSA-f59h-q822-g45g）入口强制丢弃，始终生效、不可配置。
+      properties:
+        server_action: { type: string, enum: [keep, hide, replace] }
+        server_value: { type: string, maxLength: 255 }
+        x_author_action: { type: string, enum: [keep, hide, replace] }
+        x_author_value: { type: string, maxLength: 255 }
+        x_powered_by_action: { type: string, enum: [keep, hide, replace] }
+        x_powered_by_value: { type: string, maxLength: 255 }
+        x_frame_options: { type: string, enum: [default, inherit, deny, sameorigin, allow_from], description: allow_from 必须带 x_frame_options_url }
+        x_frame_options_url: { type: string, maxLength: 512 }
+        x_xss_protection: { type: boolean }
+        vary_user_agent: { type: boolean }
+        hsts_enabled: { type: boolean }
+        hsts_max_age: { type: integer, minimum: 1 }
+        csp_mode: { type: string, enum: [off, preset, custom], description: custom 必须带 csp_value }
+        csp_value: { type: string }
+        response_buffering: { type: boolean, description: 响应缓冲（flush_interval=-1） }
+        xff_overwrite: { type: boolean, description: X-Forwarded-For 上一跳覆盖 }
+        host_strip_port: { type: boolean, description: Host 不包含端口 }
+        accept_encoding_off: { type: boolean, description: 关闭压缩协商 }
+        redirect_port_rewrite: { type: boolean, description: 302 Location 端口改写为接入端口 }
+        custom_request_rules:
+          type: array
+          items: { $ref: '#/components/schemas/AppHeaderRule' }
+        custom_response_rules:
+          type: array
+          items: { $ref: '#/components/schemas/AppHeaderRule' }
+
+    AppPathRouteRecord:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        path_prefix: { type: string, example: /api }
+        upstream_scheme: { type: string, enum: [http, https] }
+        upstream_host: { type: string }
+        upstream_port: { type: integer }
+        strip_prefix: { type: boolean }
+        priority: { type: integer }
+        status: { type: string, enum: [ENABLED, DISABLED] }
+        description: { type: string }
+        created_by: { type: string, format: uuid, description: 可空 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
+
+    ApiEndpoint:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid, description: 所属应用（可空） }
+        application_name: { type: string, description: 所属应用名称（列表带出，未归属为空） }
+        domain_id: { type: string, format: uuid, description: 所属域名（可空） }
+        http_method: { type: string, example: GET }
+        normalized_path: { type: string, example: '/api/users/{id}' }
+        raw_path_example: { type: string }
+        directory_path: { type: string, example: '/test/php', description: 目录（normalized_path 去掉最后一段） }
+        endpoint_key: { type: string, example: 'GET /api/users/{id}' }
+        api_confidence: { type: number, format: double }
+        asset_status: { type: string, enum: [DISCOVERED, CONFIRMED, IGNORED, DEPRECATED] }
+        protocol_type: { type: string }
+        learning_status: { type: string, enum: [NOT_STARTED, LEARNING, PAUSED, LEARNED] }
+        current_model_version_id: { type: string, format: uuid, description: 当前激活模型版本（可空） }
+        classification_locked: { type: boolean }
+        is_api: { type: boolean }
+        hit_count: { type: integer, format: int64 }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        confirmed_at: { type: string, format: date-time, description: 确认时间（可空） }
+        asset: { $ref: '#/components/schemas/ApiAsset' }
+
+    ApiAsset:
+      type: object
+      properties:
+        endpoint_id: { type: string, format: uuid }
+        purpose: { type: string }
+        exposure: { type: string, enum: [INTERNAL, PARTNER, PUBLIC] }
+        data_classification: { type: string }
+        owner: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiClassificationDimension:
+      type: object
+      properties:
+        endpoint_id: { type: string, format: uuid }
+        dimension: { type: string, example: PURPOSE }
+        value: { type: string, example: AUTH }
+        source: { type: string, enum: [AUTO, MANUAL] }
+        confidence: { type: number, format: double }
+
+    ApiEndpointClassification:
+      type: object
+      properties:
+        dimension: { type: string }
+        value: { type: string }
+        source: { type: string, enum: [AUTO, MANUAL] }
+        confidence: { type: number, format: double }
+        updated_at: { type: string, format: date-time }
+
+    ApiLearningJob:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        status: { type: string, example: RUNNING }
+        sample_target: { type: integer }
+        collected_count: { type: integer }
+        valid_count: { type: integer }
+        excluded_count: { type: integer }
+        last_error: { type: string }
+        started_at: { type: string, format: date-time }
+        stopped_at: { type: string, format: date-time, description: 停止时间（可空） }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
+    ApiSampleStats:
+      type: object
+      properties:
+        total: { type: integer, format: int64 }
+        accepted: { type: integer, format: int64 }
+        excluded: { type: integer, format: int64 }
+
+    ApiModelVersion:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        api_endpoint_id: { type: string, format: uuid }
+        endpoint_key: { type: string }
+        version_number: { type: integer }
+        parent_version_id: { type: string, format: uuid, description: 父版本（可空） }
+        request_schema_id: { type: string, format: uuid, description: 请求 Schema（可空） }
+        response_schema_set_id: { type: string, format: uuid, description: 响应 Schema 集（可空） }
+        status: { type: string, enum: [CANDIDATE, IN_REVIEW, FORMAL, REJECTED, SUPERSEDED, ARCHIVED] }
+        schema:
+          type: object
+          additionalProperties: { type: string }
+          description: 字段名到类型的映射
+        content_hash: { type: string }
+        change_summary: { type: string }
+        sample_count: { type: integer }
+        valid_sample_count: { type: integer }
+        excluded_sample_count: { type: integer }
+        confidence: { type: number, format: double }
+        created_reason: { type: string }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        confirmed_by: { type: string, format: uuid }
+        confirmed_at: { type: string, format: date-time }
+        activated_at: { type: string, format: date-time }
+
+    ApiSchemaDiff:
+      type: object
+      properties:
+        added:
+          type: array
+          items: { type: string }
+        removed:
+          type: array
+          items: { type: string }
+        type_changed:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              from: { type: string }
+              to: { type: string }
+
+    ApiModelDiffRecord:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        model_version_id: { type: string, format: uuid }
+        other_version_id: { type: string, format: uuid }
+        diff: { $ref: '#/components/schemas/ApiSchemaDiff' }
+        created_at: { type: string, format: date-time }
+
+    ApiParameter:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        model_version_id: { type: string, format: uuid }
+        direction: { type: string, example: REQUEST }
+        location: { type: string, example: QUERY }
+        structured_path: { type: string }
+        parameter_name: { type: string }
+        base_type: { type: string }
+        semantic_type: { type: string }
+        required: { type: boolean }
+        nullable: { type: boolean }
+        empty_allowed: { type: boolean }
+        observed_constraints: { type: object }
+        recommended_constraints: { type: object }
+        confirmed_constraints: { type: object }
+        sensitivity_level: { type: string }
+        confidence: { type: number, format: double }
+        created_at: { type: string, format: date-time }
+
+    ApiClassificationItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        is_builtin: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    ApiCustomTaxonomyItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        dimension: { type: string }
+        value: { type: string }
+        description: { type: string }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
+    ApiGraphNode:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        endpoint_key: { type: string }
+        http_method: { type: string }
+        normalized_path: { type: string }
+        application_id: { type: string, format: uuid, description: 所属应用（可空） }
+        asset_status: { type: string }
+        learning_status: { type: string }
+        hit_count: { type: integer, format: int64 }
+
+    ApiGraphEdge:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        caller_fingerprint: { type: string }
+        source_endpoint_id: { type: string, format: uuid, description: 调用方端点（外部调用时为空） }
+        target_endpoint_id: { type: string, format: uuid }
+        call_count: { type: integer, format: int64 }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+
+    ApiTopologyGroup:
+      type: object
+      properties:
+        application_id: { type: string, format: uuid, description: 所属应用（可空） }
+        application_name: { type: string }
+        endpoints:
+          type: array
+          items: { $ref: '#/components/schemas/ApiGraphNode' }
+
+    ApiImportSpec:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        format: { type: string, example: openapi3 }
+        file_name: { type: string }
+        content_hash: { type: string }
+        spec_json: { type: object, description: 规范化后的规范文档 }
+        endpoint_count: { type: integer }
+        imported_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
+    ApiSpecDiff:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        spec_id: { type: string, format: uuid }
+        diff_type: { type: string, enum: [MISSING_IN_RUNTIME, MISSING_IN_SPEC] }
+        endpoint_key: { type: string }
+        detail: { type: object }
+        created_at: { type: string, format: date-time }
+
+    ApiFinding:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid, description: 关联端点（可空） }
+        request_id: { type: string }
+        finding_type: { type: string }
+        severity: { type: string }
+        status: { type: string }
+        title: { type: string }
+        detail: { type: object }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    ApiViolation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid, description: 关联端点（可空） }
+        model_version_id: { type: string, format: uuid, description: 关联模型版本（可空） }
+        request_id: { type: string }
+        violation_type: { type: string }
+        field_path: { type: string }
+        expected: { type: string }
+        observed: { type: string }
+        action_taken: { type: string }
+        occurred_at: { type: string, format: date-time }
+
+    ApiPosture:
+      type: object
+      properties:
+        endpoints:
+          type: object
+          properties:
+            total: { type: integer, format: int64 }
+            by_asset_status:
+              type: object
+              additionalProperties: { type: integer }
+            by_learning_status:
+              type: object
+              additionalProperties: { type: integer }
+        findings:
+          type: object
+          properties:
+            open_total: { type: integer, format: int64 }
+            open_by_severity:
+              type: object
+              additionalProperties: { type: integer }
+        learning_coverage: { type: number, format: double, description: LEARNED 端点占比（0-1） }
+        learning_covered: { type: integer, format: int64 }
+        model_freeze_rate: { type: number, format: double, description: FORMAL 模型版本占比（0-1） }
+        model_version_total: { type: integer, format: int64 }
+        model_version_frozen: { type: integer, format: int64 }
+
+    ApiRuntimeStatistics:
+      type: object
+      properties:
+        total: { type: integer, format: int64 }
+        by_final_action:
+          type: object
+          additionalProperties: { type: integer }
+        by_risk_level:
+          type: object
+          additionalProperties: { type: integer }
+        top_endpoints:
+          type: array
+          items:
+            type: object
+            properties:
+              endpoint_key: { type: string }
+              count: { type: integer, format: int64 }
+
+    ApiRuntimeEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        request_id: { type: string }
+        endpoint_key: { type: string }
+        risk_score: { type: integer }
+        risk_level: { type: string }
+        final_action: { type: string }
+        details: { type: object }
+        occurred_at: { type: string, format: date-time }
+
+    ApiEndpointPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiEndpoint' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ApiModelVersionPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiModelVersion' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ApiImportSpecPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiImportSpec' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ApiFindingPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiFinding' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ApiViolationPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiViolation' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ApiRuntimeEventPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiRuntimeEvent' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ApiSensitiveField:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        direction: { type: string, enum: [REQUEST, RESPONSE] }
+        structured_path: { type: string, example: '$.user.phone' }
+        data_type: { type: string, example: phone }
+        confidence: { type: number, format: double }
+        detection_source: { type: string, enum: [AUTO, MANUAL] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiSensitiveFieldPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSensitiveField' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ApiLifecycleEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        from_status: { type: string }
+        to_status: { type: string, example: MERGED }
+        reason: { type: string }
+        actor: { type: string, example: system }
+        created_at: { type: string, format: date-time }
+
+    ApiLifecycleEventPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiLifecycleEvent' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ApiLearningSample:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        request_id: { type: string }
+        sample_hash: { type: string, description: 样本哈希（不存完整敏感值） }
+        source_fingerprint: { type: string }
+        identity_fingerprint: { type: string }
+        response_status: { type: integer }
+        accepted: { type: boolean }
+        exclude_reason: { type: string }
+        collected_at: { type: string, format: date-time }
+
+    ApiLearningSamplePage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiLearningSample' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    ApiPolicy:
+      type: object
+      properties:
+        edition: { type: string, enum: [waf, wdsp] }
+        api_dynamic_protection: { type: boolean }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        mode_source: { type: string, enum: [env, db, default], description: 生效模式来源（settings表覆盖 > 环境变量 > 内置默认） }
+        limits:
+          type: object
+          properties:
+            max_body_parse_bytes: { type: integer }
+            max_body_sample_bytes: { type: integer }
+            max_json_depth: { type: integer }
+            max_field_count: { type: integer }
+
+security:
+  - cookieAuth: []
+  - csrfToken: []

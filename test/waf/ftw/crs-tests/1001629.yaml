@@ -1,0 +1,21 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: Trailing null-byte truncation in parameter (CUSTOM_PACK)
+rule_id: 1001629
+tests:
+  - test_id: 1
+    desc: "file parameter ending with %00"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+          method: GET
+          port: 80
+          uri: "/get?x=/etc/passwd%00"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001629]

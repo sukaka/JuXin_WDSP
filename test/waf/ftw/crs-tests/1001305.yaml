@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: 上传文件名 %00 空字节截断检测（evil.php%00.jpg，urlDecodeUni 解码视角，自建规则 1001305）
+rule_id: 1001305
+tests:
+  - test_id: 1
+    desc: "multipart 文件名 evil.php%00.jpg"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb305"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb305\r\nContent-Disposition: form-data; name=\"file\"; filename=\"evil.php%00.jpg\"\r\nContent-Type: image/jpeg\r\n\r\nx\r\n--jzb305--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001305]
+  - test_id: 2
+    desc: "multipart 文件名 evil.jsp%00.png"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb305"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb305\r\nContent-Disposition: form-data; name=\"file\"; filename=\"evil.jsp%00.png\"\r\nContent-Type: image/png\r\n\r\nx\r\n--jzb305--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001305]

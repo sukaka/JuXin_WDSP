@@ -1,0 +1,16 @@
+{
+  "compose_project": "p0bench-20260908T083935-e58633",
+  "compose_version": "2.38.1-desktop.1",
+  "docker_version": "28.3.0",
+  "git_commit": "3c73774da8bed0a36764a4eed29e511a7de85b4a",
+  "host": {
+    "machine": "arm64",
+    "os": "macOS-26.2-arm64-arm-64bit"
+  },
+  "loadgen_versions": {
+    "ab": "This is ApacheBench, Version 2.3 <$Revision: 1913912 $>",
+    "curl": "curl 8.7.1 (x86_64-apple-darwin25.0) libcurl/8.7.1 (SecureTransport) LibreSSL/3.3.6 zlib/1.2.12 nghttp2/1.67.1"
+  },
+  "plan_file": "/Users/zhanglei/Documents/JiuZhang_WAF/test/performance/p0/run-plan.example.json",
+  "run_id": "20260908T083935-e58633"
+}

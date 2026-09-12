@@ -1,0 +1,28 @@
+{
+  "records": {
+    "corpus-validation": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T174347-f23b04",
+      "mandatory": true,
+      "reason": "语料 schema v1 与内容哈希一致: 53cfe68c299c9599…",
+      "status": "PASS"
+    },
+    "regression-execution": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T174347-f23b04",
+      "mandatory": true,
+      "reason": "ENVIRONMENT_UNAVAILABLE：S1 工具层交付，真实网关执行待隔离环境接线（P1-04 R2）；未执行任何请求（0/36），不做假 PASS",
+      "status": "BLOCKED"
+    },
+    "regression-plan": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T174347-f23b04",
+      "mandatory": true,
+      "reason": "回归 run-plan 结构校验通过",
+      "status": "PASS"
+    },
+    "replay-plan": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T174347-f23b04",
+      "mandatory": true,
+      "reason": "确定性回放计划已生成（计划样本数 36）",
+      "status": "PASS"
+    }
+  }
+}

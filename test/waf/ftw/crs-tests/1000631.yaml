@@ -1,0 +1,38 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "Java serialization magic hex/base64 in args/body/cookie, case-insensitive (1000631)"
+rule_id: 1000631
+tests:
+  - test_id: 1
+    desc: "uppercase hex magic ACED0005 in query arg"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: GET
+          port: 80
+          uri: "/get?d=ACED0005aabbccdd"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000631]
+  - test_id: 2
+    desc: "lowercase base64 magic ro0ab inside cookie value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Cookie: "prefs=ro0abxeyJ1c2VyIjoiYWRtaW4ifQ=="
+          method: GET
+          port: 80
+          uri: "/get"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000631]

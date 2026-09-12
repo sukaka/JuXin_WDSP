@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_security_events_effect_stats_disposition;
+DROP INDEX IF EXISTS idx_security_event_matches_effect_stats;

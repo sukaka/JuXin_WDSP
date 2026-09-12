@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "case_id": "BOT-UNK-SCRIPT-001",
+  "case_version": 1,
+  "family": "bot",
+  "tags": [
+    "bot-challenge",
+    "automation-client",
+    "no-javascript"
+  ],
+  "criticality": "STANDARD",
+  "truth": "UNKNOWN",
+  "truth_reason": "不能执行 JavaScript 的自动化 HTTP 客户端：按任务书 §4.2 不得将自动化客户端预标为攻击；其被挑战后的业务结局取决于客户端能力，属未声明攻击/正常二分的观测样本（不进任何分母，仍逐例判定记录）；R2 实证：OBSERVE 模式的假设挑战记录（BOT_CHALLENGE_OFFERED action=OBSERVE）仅为流程记录非检测 finding，故 OBSERVE 期望无检出、放行",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "bot.challenge.script_client",
+    "applications": [
+      "p1reg-bot-site"
+    ],
+    "protocols": [
+      "https"
+    ]
+  },
+  "prerequisites": {
+    "environment": [
+      "isolated_stack",
+      "controlled_origin",
+      "bot_event_pipeline",
+      "identity_behavior_observation"
+    ],
+    "notes": "两次基线导航后第三次评估达阈；PROTECT 期望挑战供给（403 挑战页），OBSERVE 期望只记录不实断"
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+      },
+      "wait": null,
+      "assert": [
+        {
+          "type": "http_status_in",
+          "statuses": [
+            200
+          ]
+        },
+        {
+          "type": "origin_marker_present"
+        }
+      ]
+    },
+    {
+      "step_id": "s2",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+      },
+      "wait": {
+        "type": "previous_step_status_in",
+        "statuses": [
+          200
+        ]
+      },
+      "assert": [
+        {
+          "type": "http_status_in",
+          "statuses": [
+            200
+          ]
+        },
+        {
+          "type": "origin_marker_present"
+        }
+      ]
+    },
+    {
+      "step_id": "s3",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+      },
+      "wait": {
+        "type": "previous_step_status_in",
+        "statuses": [
+          200
+        ]
+      },
+      "assert": []
+    }
+  ],
+  "seed": 3103,
+  "reset_plan": {
+    "scope": "case",
+    "actions": [
+      "none"
+    ]
+  },
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {
+        "module": "none"
+      },
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [
+        {
+          "type": "none"
+        }
+      ]
+    },
+    "PROTECT": {
+      "expected_detection": {
+        "module": "bot",
+        "rule_family": "challenge"
+      },
+      "expected_final_action": "BLOCK_403",
+      "expected_origin": "not_reached",
+      "expected_events": [
+        {
+          "type": "BOT_CHALLENGE_OFFERED",
+          "action": "CHALLENGE"
+        }
+      ]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": false,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "VALIDATION"
+}

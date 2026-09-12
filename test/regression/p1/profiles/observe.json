@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "profile_id": "OBSERVE",
+  "description": "观察模式：WAF SecRuleEngine=DetectionOnly，API 动态防护 OBSERVE，JWT 信任链与风险策略关闭。检测并记录但不在线阻断；攻击样本正确结果为 DETECT_PASS 且源站可达（观察放行不构成拦截漏报），正常样本为 PASS。",
+  "modes": {
+    "waf_engine": "DetectionOnly",
+    "api_security": "OBSERVE",
+    "jwt_trust": "OFF",
+    "risk_policy": "OFF"
+  },
+  "blocking": false
+}

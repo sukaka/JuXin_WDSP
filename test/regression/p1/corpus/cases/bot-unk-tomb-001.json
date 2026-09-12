@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "case_id": "BOT-UNK-TOMB-001",
+  "case_version": 1,
+  "family": "bot",
+  "tags": ["bot-challenge", "reserved-namespace", "tombstone"],
+  "criticality": "STANDARD",
+  "truth": "UNKNOWN",
+  "truth_reason": "保留命名空间协议探针：对固定协议端点使用错误方法、访问未知子路径，既非业务流量也非明确定性的攻击（协议健壮性观测样本，不进分母）；人工核验期望为本地墓碑处置（405/404）且绝不反向代理",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "bot.namespace.tombstone",
+    "applications": ["p1reg-bot-site"],
+    "protocols": ["https"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin", "bot_event_pipeline"],
+    "notes": "405/404 均为网关本地响应（无源站标记）；墓碑不emit访问控制事件时以响应捕获为本地处置证据"
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {"method": "GET", "path": "/_wdsp/bot/v1/verify", "headers": {}},
+      "wait": null,
+      "assert": [
+        {"type": "http_status_in", "statuses": [405]},
+        {"type": "header_present", "name": "allow"},
+        {"type": "origin_marker_absent"}
+      ]
+    },
+    {
+      "step_id": "s2",
+      "action": "http_request",
+      "request": {"method": "GET", "path": "/_wdsp/bot/v1/unknown", "headers": {}},
+      "wait": {"type": "previous_step_status_in", "statuses": [405]},
+      "assert": [
+        {"type": "http_status_in", "statuses": [404]},
+        {"type": "body_contains", "text": "404 not found"},
+        {"type": "origin_marker_absent"}
+      ]
+    }
+  ],
+  "seed": 3105,
+  "reset_plan": {"scope": "case", "actions": ["none"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "bot", "rule_family": "tombstone"},
+      "expected_final_action": "LOCAL_REJECT",
+      "expected_origin": "not_reached",
+      "expected_events": [{"type": "response_capture", "note": "本地墓碑 405/404，无源站标记"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "bot", "rule_family": "tombstone"},
+      "expected_final_action": "LOCAL_REJECT",
+      "expected_origin": "not_reached",
+      "expected_events": [{"type": "response_capture", "note": "本地墓碑 405/404，无源站标记"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": false,
+    "final_decision": false,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "VALIDATION"
+}

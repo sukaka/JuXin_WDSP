@@ -1,0 +1,19 @@
+清单结构有效：docs/capabilities/capabilities.json
+证据 manifest 结构有效：docs/evidence/releases/dev-s3-jwt-20260907/manifest.json
+  能力 waf-crs-detection: 实现=IMPLEMENTED 接线=CONNECTED 验证=NOT_RUN
+  能力 real-client-ip: 实现=IMPLEMENTED 接线=CONNECTED 验证=NOT_RUN
+  能力 access-control-cc: 实现=IMPLEMENTED 接线=CONNECTED 验证=NOT_RUN
+  能力 api-assets-models: 实现=IMPLEMENTED 接线=CONNECTED 验证=NOT_RUN
+  能力 api-request-response-detection: 实现=IMPLEMENTED 接线=CONNECTED 验证=NOT_RUN
+  能力 identity-behavior-observation: 实现=IMPLEMENTED 接线=CONNECTED 验证=NOT_RUN
+  能力 jwt-verification: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 api-unified-decision: 实现=IMPLEMENTED 接线=CONNECTED 验证=NOT_RUN
+  能力 request-final-disposition: 实现=PARTIAL 接线=PARTIAL 验证=NOT_RUN
+  能力 waf-exceptions: 实现=PARTIAL 接线=CONNECTED 验证=NOT_RUN
+  能力 event-chain: 实现=IMPLEMENTED 接线=CONNECTED 验证=NOT_RUN
+  能力 config-release-ha: 实现=IMPLEMENTED 接线=CONNECTED 验证=NOT_RUN
+  能力 apm-entry-performance: 实现=IMPLEMENTED 接线=CONNECTED 验证=NOT_RUN
+  能力 apm-trace-sql-exception: 实现=PARTIAL 接线=PARTIAL 验证=NOT_RUN
+  能力 agent-collection-forwarding: 实现=PARTIAL 接线=PARTIAL 验证=NOT_RUN
+发布状态（计算值）：DEVELOPMENT
+结构有效，未完成验收：存在未验证/未通过的能力，本结果不能作为发布验收证明。

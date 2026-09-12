@@ -1,0 +1,100 @@
+{"Time":"2026-09-08T09:10:01.04136+08:00","Action":"start","Package":"github.com/jiuzhang-waf/gateway/corazasemantics"}
+{"Time":"2026-09-08T09:10:03.228332+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics"}
+{"Time":"2026-09-08T09:10:03.228696+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics","Output":"=== RUN   TestExceptionChainSemantics\n"}
+{"Time":"2026-09-08T09:10:03.233183+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/全条件匹配"}
+{"Time":"2026-09-08T09:10:03.233236+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/全条件匹配","Output":"=== RUN   TestExceptionChainSemantics/全条件匹配\n"}
+{"Time":"2026-09-08T09:10:03.247514+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/全条件匹配","Output":"--- PASS: TestExceptionChainSemantics/全条件匹配 (0.01s)\n"}
+{"Time":"2026-09-08T09:10:03.247718+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/全条件匹配","Elapsed":0.01}
+{"Time":"2026-09-08T09:10:03.248082+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_带端口仍匹配"}
+{"Time":"2026-09-08T09:10:03.248091+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_带端口仍匹配","Output":"=== RUN   TestExceptionChainSemantics/Host_带端口仍匹配\n"}
+{"Time":"2026-09-08T09:10:03.249153+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_带端口仍匹配","Output":"--- PASS: TestExceptionChainSemantics/Host_带端口仍匹配 (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.249187+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_带端口仍匹配","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.249216+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_大小写不敏感"}
+{"Time":"2026-09-08T09:10:03.249222+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_大小写不敏感","Output":"=== RUN   TestExceptionChainSemantics/Host_大小写不敏感\n"}
+{"Time":"2026-09-08T09:10:03.250241+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_大小写不敏感","Output":"--- PASS: TestExceptionChainSemantics/Host_大小写不敏感 (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.250276+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_大小写不敏感","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.250284+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_不匹配"}
+{"Time":"2026-09-08T09:10:03.250289+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_不匹配","Output":"=== RUN   TestExceptionChainSemantics/Host_不匹配\n"}
+{"Time":"2026-09-08T09:10:03.251712+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_不匹配","Output":"--- PASS: TestExceptionChainSemantics/Host_不匹配 (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.251738+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Host_不匹配","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.251763+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/路径不匹配"}
+{"Time":"2026-09-08T09:10:03.251778+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/路径不匹配","Output":"=== RUN   TestExceptionChainSemantics/路径不匹配\n"}
+{"Time":"2026-09-08T09:10:03.252713+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/路径不匹配","Output":"--- PASS: TestExceptionChainSemantics/路径不匹配 (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.252735+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/路径不匹配","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.252743+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/方法不匹配"}
+{"Time":"2026-09-08T09:10:03.252747+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/方法不匹配","Output":"=== RUN   TestExceptionChainSemantics/方法不匹配\n"}
+{"Time":"2026-09-08T09:10:03.253813+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/方法不匹配","Output":"--- PASS: TestExceptionChainSemantics/方法不匹配 (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.253831+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/方法不匹配","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.253864+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/来源_IP_出_CIDR"}
+{"Time":"2026-09-08T09:10:03.253888+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/来源_IP_出_CIDR","Output":"=== RUN   TestExceptionChainSemantics/来源_IP_出_CIDR\n"}
+{"Time":"2026-09-08T09:10:03.254787+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/来源_IP_出_CIDR","Output":"--- PASS: TestExceptionChainSemantics/来源_IP_出_CIDR (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.254801+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/来源_IP_出_CIDR","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.25481+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/来源_IP_精确匹配"}
+{"Time":"2026-09-08T09:10:03.254816+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/来源_IP_精确匹配","Output":"=== RUN   TestExceptionChainSemantics/来源_IP_精确匹配\n"}
+{"Time":"2026-09-08T09:10:03.255847+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/来源_IP_精确匹配","Output":"--- PASS: TestExceptionChainSemantics/来源_IP_精确匹配 (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.255886+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/来源_IP_精确匹配","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.255981+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Content-Type_带参数仍匹配"}
+{"Time":"2026-09-08T09:10:03.255994+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Content-Type_带参数仍匹配","Output":"=== RUN   TestExceptionChainSemantics/Content-Type_带参数仍匹配\n"}
+{"Time":"2026-09-08T09:10:03.257326+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Content-Type_带参数仍匹配","Output":"--- PASS: TestExceptionChainSemantics/Content-Type_带参数仍匹配 (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.257341+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Content-Type_带参数仍匹配","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.257369+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Content-Type_不匹配"}
+{"Time":"2026-09-08T09:10:03.257375+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Content-Type_不匹配","Output":"=== RUN   TestExceptionChainSemantics/Content-Type_不匹配\n"}
+{"Time":"2026-09-08T09:10:03.25977+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Content-Type_不匹配","Output":"--- PASS: TestExceptionChainSemantics/Content-Type_不匹配 (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.259807+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/Content-Type_不匹配","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.259819+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/URI_带_query_仍按路径匹配"}
+{"Time":"2026-09-08T09:10:03.259827+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/URI_带_query_仍按路径匹配","Output":"=== RUN   TestExceptionChainSemantics/URI_带_query_仍按路径匹配\n"}
+{"Time":"2026-09-08T09:10:03.260677+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/URI_带_query_仍按路径匹配","Output":"--- PASS: TestExceptionChainSemantics/URI_带_query_仍按路径匹配 (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.260689+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics/URI_带_query_仍按路径匹配","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.260724+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics","Output":"--- PASS: TestExceptionChainSemantics (0.03s)\n"}
+{"Time":"2026-09-08T09:10:03.260734+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionChainSemantics","Elapsed":0.03}
+{"Time":"2026-09-08T09:10:03.260808+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTargetScoping"}
+{"Time":"2026-09-08T09:10:03.260814+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTargetScoping","Output":"=== RUN   TestExceptionTargetScoping\n"}
+{"Time":"2026-09-08T09:10:03.261864+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTargetScoping","Output":"--- PASS: TestExceptionTargetScoping (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.261885+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTargetScoping","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.261908+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionRuleScoping"}
+{"Time":"2026-09-08T09:10:03.261914+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionRuleScoping","Output":"=== RUN   TestExceptionRuleScoping\n"}
+{"Time":"2026-09-08T09:10:03.27653+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionRuleScoping","Output":"--- PASS: TestExceptionRuleScoping (0.01s)\n"}
+{"Time":"2026-09-08T09:10:03.276566+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionRuleScoping","Elapsed":0.01}
+{"Time":"2026-09-08T09:10:03.276582+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow"}
+{"Time":"2026-09-08T09:10:03.276589+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow","Output":"=== RUN   TestExceptionTimeWindow\n"}
+{"Time":"2026-09-08T09:10:03.276616+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/有效期内"}
+{"Time":"2026-09-08T09:10:03.276622+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/有效期内","Output":"=== RUN   TestExceptionTimeWindow/有效期内\n"}
+{"Time":"2026-09-08T09:10:03.277465+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/有效期内","Output":"--- PASS: TestExceptionTimeWindow/有效期内 (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.277492+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/有效期内","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.277576+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/已过期（不重新发布也恢复防护）"}
+{"Time":"2026-09-08T09:10:03.277584+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/已过期（不重新发布也恢复防护）","Output":"=== RUN   TestExceptionTimeWindow/已过期（不重新发布也恢复防护）\n"}
+{"Time":"2026-09-08T09:10:03.278256+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/已过期（不重新发布也恢复防护）","Output":"--- PASS: TestExceptionTimeWindow/已过期（不重新发布也恢复防护） (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.278267+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/已过期（不重新发布也恢复防护）","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.278277+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/未来生效（发布带下发但运行时未生效）"}
+{"Time":"2026-09-08T09:10:03.278282+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/未来生效（发布带下发但运行时未生效）","Output":"=== RUN   TestExceptionTimeWindow/未来生效（发布带下发但运行时未生效）\n"}
+{"Time":"2026-09-08T09:10:03.278881+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/未来生效（发布带下发但运行时未生效）","Output":"--- PASS: TestExceptionTimeWindow/未来生效（发布带下发但运行时未生效） (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.2789+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow/未来生效（发布带下发但运行时未生效）","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.280777+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow","Output":"--- PASS: TestExceptionTimeWindow (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.28085+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTimeWindow","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.280917+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionPrefixSegmentBoundary"}
+{"Time":"2026-09-08T09:10:03.280925+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionPrefixSegmentBoundary","Output":"=== RUN   TestExceptionPrefixSegmentBoundary\n"}
+{"Time":"2026-09-08T09:10:03.282812+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionPrefixSegmentBoundary","Output":"--- PASS: TestExceptionPrefixSegmentBoundary (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.28284+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionPrefixSegmentBoundary","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.282863+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTagsVisible"}
+{"Time":"2026-09-08T09:10:03.282869+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTagsVisible","Output":"=== RUN   TestExceptionTagsVisible\n"}
+{"Time":"2026-09-08T09:10:03.283863+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTagsVisible","Output":"--- PASS: TestExceptionTagsVisible (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.283873+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestExceptionTagsVisible","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.28388+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestNoDetectionOnlyInTemplate"}
+{"Time":"2026-09-08T09:10:03.283884+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestNoDetectionOnlyInTemplate","Output":"=== RUN   TestNoDetectionOnlyInTemplate\n"}
+{"Time":"2026-09-08T09:10:03.283931+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestNoDetectionOnlyInTemplate","Output":"--- PASS: TestNoDetectionOnlyInTemplate (0.00s)\n"}
+{"Time":"2026-09-08T09:10:03.284049+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestNoDetectionOnlyInTemplate","Elapsed":0}
+{"Time":"2026-09-08T09:10:03.284057+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestSmokePayloadCoverageSet"}
+{"Time":"2026-09-08T09:10:03.284062+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestSmokePayloadCoverageSet","Output":"=== RUN   TestSmokePayloadCoverageSet\n"}
+{"Time":"2026-09-08T09:10:04.199226+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestSmokePayloadCoverageSet","Output":"    payload_coverage_test.go:115: 基线 critical 命中（949110 前的 CRS 段）: [942100 942190 942270 942360]\n"}
+{"Time":"2026-09-08T09:10:05.293794+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestSmokePayloadCoverageSet","Output":"--- PASS: TestSmokePayloadCoverageSet (2.01s)\n"}
+{"Time":"2026-09-08T09:10:05.293832+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestSmokePayloadCoverageSet","Elapsed":2.01}
+{"Time":"2026-09-08T09:10:05.293841+08:00","Action":"run","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestHarnessSelfCheck"}
+{"Time":"2026-09-08T09:10:05.293846+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestHarnessSelfCheck","Output":"=== RUN   TestHarnessSelfCheck\n"}
+{"Time":"2026-09-08T09:10:05.294684+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestHarnessSelfCheck","Output":"    selfcheck_debug_test.go:26: write body it=\u003cnil\u003e n=18 err=\u003cnil\u003e\n"}
+{"Time":"2026-09-08T09:10:05.29477+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestHarnessSelfCheck","Output":"    selfcheck_debug_test.go:28: ProcessRequestBody interruption=\u0026{942100 deny 403 } err=\u003cnil\u003e\n"}
+{"Time":"2026-09-08T09:10:05.294891+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestHarnessSelfCheck","Output":"    selfcheck_debug_test.go:30: matched rule 942100 msg=\"SQLi found\" tags=[attack-sqli]\n"}
+{"Time":"2026-09-08T09:10:05.294967+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestHarnessSelfCheck","Output":"--- PASS: TestHarnessSelfCheck (0.00s)\n"}
+{"Time":"2026-09-08T09:10:05.294982+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Test":"TestHarnessSelfCheck","Elapsed":0}
+{"Time":"2026-09-08T09:10:05.296444+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Output":"PASS\n"}
+{"Time":"2026-09-08T09:10:06.331056+08:00","Action":"output","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Output":"ok  \tgithub.com/jiuzhang-waf/gateway/corazasemantics\t5.287s\n"}
+{"Time":"2026-09-08T09:10:06.33112+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/gateway/corazasemantics","Elapsed":5.29}

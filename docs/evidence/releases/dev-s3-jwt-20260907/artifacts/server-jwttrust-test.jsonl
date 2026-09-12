@@ -1,0 +1,64 @@
+{"Time":"2026-09-07T00:46:25.237217+08:00","Action":"start","Package":"github.com/jiuzhang-waf/server/internal/jwttrust"}
+{"Time":"2026-09-07T00:46:26.05221+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNodeChecks"}
+{"Time":"2026-09-07T00:46:26.052285+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNodeChecks","Output":"=== RUN   TestNodeChecks\n"}
+{"Time":"2026-09-07T00:46:26.053539+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNodeChecks","Output":"--- PASS: TestNodeChecks (0.00s)\n"}
+{"Time":"2026-09-07T00:46:26.053918+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNodeChecks","Elapsed":0}
+{"Time":"2026-09-07T00:46:26.054306+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestSummarizePolicyRedaction"}
+{"Time":"2026-09-07T00:46:26.054315+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestSummarizePolicyRedaction","Output":"=== RUN   TestSummarizePolicyRedaction\n"}
+{"Time":"2026-09-07T00:46:26.104978+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestSummarizePolicyRedaction","Output":"--- PASS: TestSummarizePolicyRedaction (0.05s)\n"}
+{"Time":"2026-09-07T00:46:26.105038+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestSummarizePolicyRedaction","Elapsed":0.05}
+{"Time":"2026-09-07T00:46:26.105065+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestPipelineStateFailSafe"}
+{"Time":"2026-09-07T00:46:26.105071+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestPipelineStateFailSafe","Output":"=== RUN   TestPipelineStateFailSafe\n"}
+{"Time":"2026-09-07T00:46:26.106056+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestPipelineStateFailSafe","Output":"--- PASS: TestPipelineStateFailSafe (0.00s)\n"}
+{"Time":"2026-09-07T00:46:26.106078+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestPipelineStateFailSafe","Elapsed":0}
+{"Time":"2026-09-07T00:46:26.106091+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestDefaultPolicyShape"}
+{"Time":"2026-09-07T00:46:26.106096+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestDefaultPolicyShape","Output":"=== RUN   TestDefaultPolicyShape\n"}
+{"Time":"2026-09-07T00:46:26.106107+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestDefaultPolicyShape","Output":"--- PASS: TestDefaultPolicyShape (0.00s)\n"}
+{"Time":"2026-09-07T00:46:26.106176+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestDefaultPolicyShape","Elapsed":0}
+{"Time":"2026-09-07T00:46:26.106196+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSAccept"}
+{"Time":"2026-09-07T00:46:26.106202+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSAccept","Output":"=== RUN   TestValidateJWKSAccept\n"}
+{"Time":"2026-09-07T00:46:26.247193+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSAccept","Output":"--- PASS: TestValidateJWKSAccept (0.14s)\n"}
+{"Time":"2026-09-07T00:46:26.247253+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSAccept","Elapsed":0.14}
+{"Time":"2026-09-07T00:46:26.247265+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSRejectMatrix"}
+{"Time":"2026-09-07T00:46:26.247271+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSRejectMatrix","Output":"=== RUN   TestValidateJWKSRejectMatrix\n"}
+{"Time":"2026-09-07T00:46:30.964048+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSRejectMatrix","Output":"--- PASS: TestValidateJWKSRejectMatrix (4.72s)\n"}
+{"Time":"2026-09-07T00:46:30.964284+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSRejectMatrix","Elapsed":4.72}
+{"Time":"2026-09-07T00:46:30.964301+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSAlgMatrix"}
+{"Time":"2026-09-07T00:46:30.964308+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSAlgMatrix","Output":"=== RUN   TestValidateJWKSAlgMatrix\n"}
+{"Time":"2026-09-07T00:46:31.212352+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSAlgMatrix","Output":"--- PASS: TestValidateJWKSAlgMatrix (0.25s)\n"}
+{"Time":"2026-09-07T00:46:31.212408+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateJWKSAlgMatrix","Elapsed":0.25}
+{"Time":"2026-09-07T00:46:31.212421+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestKeysetVersion"}
+{"Time":"2026-09-07T00:46:31.212426+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestKeysetVersion","Output":"=== RUN   TestKeysetVersion\n"}
+{"Time":"2026-09-07T00:46:31.567031+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestKeysetVersion","Output":"--- PASS: TestKeysetVersion (0.35s)\n"}
+{"Time":"2026-09-07T00:46:31.567087+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestKeysetVersion","Elapsed":0.35}
+{"Time":"2026-09-07T00:46:31.567098+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestKeysetVersionGatewayParity"}
+{"Time":"2026-09-07T00:46:31.567103+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestKeysetVersionGatewayParity","Output":"=== RUN   TestKeysetVersionGatewayParity\n"}
+{"Time":"2026-09-07T00:46:31.567552+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestKeysetVersionGatewayParity","Output":"--- PASS: TestKeysetVersionGatewayParity (0.00s)\n"}
+{"Time":"2026-09-07T00:46:31.567589+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestKeysetVersionGatewayParity","Elapsed":0}
+{"Time":"2026-09-07T00:46:31.567597+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNormalize"}
+{"Time":"2026-09-07T00:46:31.567603+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNormalize","Output":"=== RUN   TestNormalize\n"}
+{"Time":"2026-09-07T00:46:31.567913+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNormalize","Output":"--- PASS: TestNormalize (0.00s)\n"}
+{"Time":"2026-09-07T00:46:31.567929+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNormalize","Elapsed":0}
+{"Time":"2026-09-07T00:46:31.567936+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureBaseline"}
+{"Time":"2026-09-07T00:46:31.567943+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureBaseline","Output":"=== RUN   TestValidateStructureBaseline\n"}
+{"Time":"2026-09-07T00:46:31.653936+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureBaseline","Output":"--- PASS: TestValidateStructureBaseline (0.09s)\n"}
+{"Time":"2026-09-07T00:46:31.654+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureBaseline","Elapsed":0.09}
+{"Time":"2026-09-07T00:46:31.654031+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureMatrix"}
+{"Time":"2026-09-07T00:46:31.654036+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureMatrix","Output":"=== RUN   TestValidateStructureMatrix\n"}
+{"Time":"2026-09-07T00:46:34.497163+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureMatrix","Output":"--- PASS: TestValidateStructureMatrix (2.84s)\n"}
+{"Time":"2026-09-07T00:46:34.497214+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureMatrix","Elapsed":2.84}
+{"Time":"2026-09-07T00:46:34.497223+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureOffEmpty"}
+{"Time":"2026-09-07T00:46:34.497228+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureOffEmpty","Output":"=== RUN   TestValidateStructureOffEmpty\n"}
+{"Time":"2026-09-07T00:46:34.497237+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureOffEmpty","Output":"--- PASS: TestValidateStructureOffEmpty (0.00s)\n"}
+{"Time":"2026-09-07T00:46:34.497241+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateStructureOffEmpty","Elapsed":0}
+{"Time":"2026-09-07T00:46:34.497245+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateRemoteURLsSSRF"}
+{"Time":"2026-09-07T00:46:34.497248+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateRemoteURLsSSRF","Output":"=== RUN   TestValidateRemoteURLsSSRF\n"}
+{"Time":"2026-09-07T00:46:34.501319+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateRemoteURLsSSRF","Output":"--- PASS: TestValidateRemoteURLsSSRF (0.00s)\n"}
+{"Time":"2026-09-07T00:46:34.501364+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestValidateRemoteURLsSSRF","Elapsed":0}
+{"Time":"2026-09-07T00:46:34.501372+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNodePublishGuard"}
+{"Time":"2026-09-07T00:46:34.501377+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNodePublishGuard","Output":"=== RUN   TestNodePublishGuard\n"}
+{"Time":"2026-09-07T00:46:34.502172+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNodePublishGuard","Output":"--- PASS: TestNodePublishGuard (0.00s)\n"}
+{"Time":"2026-09-07T00:46:34.502196+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Test":"TestNodePublishGuard","Elapsed":0}
+{"Time":"2026-09-07T00:46:34.503008+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Output":"PASS\n"}
+{"Time":"2026-09-07T00:46:34.505481+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Output":"ok  \tgithub.com/jiuzhang-waf/server/internal/jwttrust\t9.267s\n"}
+{"Time":"2026-09-07T00:46:34.505553+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/jwttrust","Elapsed":9.268}

@@ -1,0 +1,60 @@
+---
+meta:
+  author: "JiuZhang"
+  description: 危险可执行扩展名上传检测（jspf/jsw/jspa/jhtml/asmx/cdx/shtml/war/jar，自建规则 1001301）
+rule_id: 1001301
+tests:
+  - test_id: 1
+    desc: "multipart 上传 shell.war 命中 FILES_NAMES"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb301"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb301\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.war\"\r\nContent-Type: application/octet-stream\r\n\r\nPK\r\n--jzb301--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001301]
+  - test_id: 2
+    desc: "表单参数 filename=view.jhtml 命中 ARGS:filename"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/x-www-form-urlencoded"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "filename=view.jhtml"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001301]
+  - test_id: 3
+    desc: "multipart 上传 shell.shtml（SSI 可执行）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb301"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb301\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.shtml\"\r\nContent-Type: text/html\r\n\r\nx\r\n--jzb301--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001301]

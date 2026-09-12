@@ -1,0 +1,12 @@
+{
+  "group": "browser",
+  "channel": "webkit",
+  "nav_attempts_before_challenge": 3,
+  "challenge_seen": true,
+  "solve_ms": 105,
+  "final_status": 200,
+  "final_reached_origin": true,
+  "clearance_cookie": true,
+  "webdriver": true,
+  "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Safari/605.1.15"
+}

@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang Security Team"
+  description: "Perl IPC::Open2/Open3 interactive process execution"
+rule_id: 1001422
+tests:
+  - test_id: 1
+    desc: "Perl IPC::Open2/Open3 interactive process execution"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'file=use IPC::Open2; open2(*R, *W, "/bin/sh");'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001422]
+  - test_id: 2
+    desc: "Perl IPC::Open2/Open3 interactive process execution"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'file=use IPC::Open3; open3($w, $r, $e, "/bin/sh");'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001422]

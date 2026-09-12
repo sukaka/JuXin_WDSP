@@ -1,0 +1,23 @@
+[mirror-e2e 10:11:41] S1 GET 元数据镜像（伪造头覆盖检查）
+s1 business=200
+[mirror-e2e 10:11:41] S2 POST JSON 正文镜像（脱敏）
+s2 business=200
+[mirror-e2e 10:11:41] S3 源站 500（镜像状态互不回填）
+s3 business=500
+[mirror-e2e 10:11:41] S4 大上传 8MB（正文截断 + 业务无损；text/plain 在脱敏白名单内以走截断路径）
+s4 business=200
+[mirror-e2e 10:11:42] S5 慢上传 200KB @ 20KB/s
+s5 business=200
+[mirror-e2e 10:11:52] S6 客户端取消（50MB 上传限速 1MB/s，2s 后中断）
+curl: (28) Operation timed out after 2000 milliseconds with 0 bytes received
+s6 business=100
+s6-after business=200
+[mirror-e2e 10:11:56] S7 适配器故障（杀死后业务照常；自拉起恢复采集）
+s7-down-1 business=200
+s7-down-2 business=200
+s7-down-3 business=200
+s7-after business=200
+[mirror-e2e 10:12:02] S8 伪造写入方（直连 socket：无/错/多令牌）
+[mirror-e2e 10:12:03] S9 socket 权限与属组
+[mirror-e2e 10:12:03] S10 默认仅元数据路径（正文不驻留）
+s10 business=200

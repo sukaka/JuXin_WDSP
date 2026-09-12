@@ -1,0 +1,43 @@
+# Envoy tap 接入片段（WDSP Agent tapsrc，P1-03 G3；仅片段示例，非完整配置）
+#
+# 用法：把 tap filter 加入每个需要采集的 listener 的 HCM http_filters 链首
+# （router 之前），所有 tapped listener 共用同一个 config_id。
+#
+# 约束（v1.35.3 实测，详见同目录 README.md）：
+#   - Envoy Admin 同时只允许一条已挂接 tap 流（第二条 POST /tap 返回 400
+#     "An attached /tap admin stream already exists."）——因此单 config_id
+#     单会话；协议/TLS 断言按会话维度配置并覆盖全部 tapped listener；
+#   - 混合协议（h1+h2）或混合 TLS/明文 listener 不能同时挂 tap（断言只能
+#     UNKNOWN/false，或拆到不同 Envoy 实例）；
+#   - tap 输出格式锁定 JSON_BODY_AS_BYTES（streaming_admin +
+#     PROTO_BINARY_LENGTH_DELIMITED 会使 Envoy 崩溃，禁用）；
+#   - tap 配置随管理流会话生命周期（admin_config，不静态常驻），Envoy 重启
+#     即失效，由适配器重连后重新提交。
+
+# ── Admin：仅本机回环，禁止绑定/发布到任何非回环地址 ──────────────
+admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 9901 }
+
+# ── listener 片段示例：HCM http_filters 链首插入 tap filter ──────
+# static_resources:
+#   listeners:
+#   - name: tls_h2
+#     ...
+#     filter_chains:
+#     - filters:
+#       - name: envoy.filters.network.http_connection_manager
+#         typed_config:
+#           "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+#           http_filters:
+http_filters_fragment:
+- name: envoy.filters.http.tap
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.tap.v3.Tap
+    common_config:
+      # 所有 tapped listener 共用同一 config_id（单管理流约束）；
+      # 必须与 agent.json tap.config_id 一致。
+      admin_config: { config_id: wdsp_tap }
+#   - name: envoy.filters.http.router
+#     typed_config:
+#       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

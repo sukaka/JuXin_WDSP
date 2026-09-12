@@ -1,0 +1,412 @@
+{
+  "schema_version": 1,
+  "build_id": "dev-s4-dec-exc-20260907",
+  "product_version": "unresolved",
+  "source": {
+    "commit": "3c73774",
+    "dirty": true,
+    "snapshot_sha256": null,
+    "file_manifest": []
+  },
+  "images": [],
+  "config_fingerprint": null,
+  "environment": {
+    "id": "dev-mac-local",
+    "os": "Darwin 25.2.0 (arm64)",
+    "go": "go1.25.6 darwin/amd64",
+    "python": "3.12.0",
+    "node": "v24.13.0",
+    "docker": "28.3.0",
+    "topology": "单节点反向代理（stage5+wdsp compose 隔离栈，test-license 覆盖构建）+ 一次性 PG/Valkey 接口测试容器",
+    "clock": "宿主机本地时钟，未做受控时钟注入",
+    "note": "开发机证据，非发布构建；dirty 工作树含大量非本任务并发改动"
+  },
+  "started_at": "2026-09-07T13:40:00+08:00",
+  "ended_at": "2026-09-08T10:35:00+08:00",
+  "tests": [
+    {
+      "id": "DEC-01",
+      "status": "PASS",
+      "capabilities": [
+        "request-final-disposition",
+        "waf-crs-detection",
+        "api-request-response-detection",
+        "api-unified-decision"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（第八轮 34/34：E4 security_events ⋈ api_runtime_events 同 request_id 关联计数=1，双侧 final_decision 均非空）",
+      "artifacts": [
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        }
+      ],
+      "note": "历史：第六轮因素材 /api/json 被分类 is_api=false 无 API 侧行而 BLOCKED；第八轮素材带 JSON CT/Accept/body（分类器 1.0 → is_api=true）后通过。"
+    },
+    {
+      "id": "DEC-02",
+      "status": "PASS",
+      "capabilities": [
+        "request-final-disposition"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（第八轮：E25 实测 COMPLETED|NONE|ORIGIN|200——源站归因为 ORIGIN、安全动作 NONE，不伪报 WAF）",
+      "artifacts": [
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        }
+      ],
+      "note": "历史：第六轮同 DEC-01 根因 BLOCKED；第八轮修复素材后通过。任务书 DEC-02 的 403/429/500 源站形态另由轮内 dump 的 /api/json2 404 行（executor=NONE/source=ORIGIN）佐证。"
+    },
+    {
+      "id": "DEC-03",
+      "status": "PASS",
+      "capabilities": [
+        "request-final-disposition",
+        "real-client-ip",
+        "access-control-cc",
+        "identity-behavior-observation"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（第八轮：WAF 拦截事件 final_decision 实测输出 ABORTED|BLOCK|WAF|GATEWAY|403|true|true，执行者/动作/来源/状态码/规则引用/例外命中全字段正确——轮内 FAIL 系脚本期望串误写 t/t 所致，已修）；cd gateway/modules/jiuzhang_guard && go test -race ./...（disposition 各终止分支 RecordTerminal/Finalize 单测）；JWT 执行者证据承 S3 包 dev-s3-jwt-20260907",
+      "artifacts": [
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        },
+        {
+          "path": "artifacts/gateway-guard.jsonl",
+          "sha256": "01f6861f62b0de800184ba1ac4899f39b59978d105384bdca9d1f45d14f869fc"
+        }
+      ]
+    },
+    {
+      "id": "DEC-04",
+      "status": "PASS",
+      "capabilities": [
+        "request-final-disposition",
+        "api-request-response-detection",
+        "api-unified-decision"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./decision/... ./context/... ./pipeline/...（观察与实际动作分离：excepted 不定案、OBSERVE 降级、MASK_RESPONSE 优先级）；bash test/e2e/exception-p0-smoke.sh（A2 事件 rule_refs 仅含真实攻击命中，例外命中分流 matched_exceptions）",
+      "artifacts": [
+        {
+          "path": "artifacts/gateway-decision-ctx-pipeline.jsonl",
+          "sha256": "7628de7d1a2a91cdd2084a9e77f85f808e6bc1a8016bf30e2cb061c573869979"
+        },
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        }
+      ]
+    },
+    {
+      "id": "DEC-05",
+      "status": "PASS",
+      "capabilities": [
+        "request-final-disposition",
+        "api-unified-decision",
+        "event-chain"
+      ],
+      "command": "cd server && go test ./tests -run 'FinalDecision'（幂等关联/已确认拦截优先条件补全 PASS）；bash test/e2e/exception-p0-smoke.sh（第八轮：E3 实测 BLOCK|WAF|BLOCK|403|OBSERVED——API 决策结果不被改写（steps 留 OBSERVED），事件 final_action 按 apicoraza.go attributeWAFIntercept 契约如实记 BLOCK，final_decision 归 WAF/BLOCK）",
+      "artifacts": [
+        {
+          "path": "artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        },
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        }
+      ],
+      "note": "历史：第六轮同 DEC-01 根因 BLOCKED；第七轮发现 E3 旧期望串（ALLOW|…）与设计契约相反（final_action=BLOCK 为既定的事实记录语义），已修正期望并补 steps 断言。"
+    },
+    {
+      "id": "DEC-06",
+      "status": "PASS",
+      "capabilities": [
+        "request-final-disposition"
+      ],
+      "command": "cd gateway/modules/jiuzhang_guard && go test -race ./...（连接劫持 outcomeHijacked/下游错误 RecordError/捕获边界分支单测）。限制如实保留：真实 SSE/gRPC 长连接端到端未专项实测，可捕获范围以组件级分支测试为准。",
+      "artifacts": [
+        {
+          "path": "artifacts/gateway-guard.jsonl",
+          "sha256": "01f6861f62b0de800184ba1ac4899f39b59978d105384bdca9d1f45d14f869fc"
+        }
+      ]
+    },
+    {
+      "id": "EXC-01",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（第八轮：例外字段 comment SQLi → 200 REACHED_ORIGIN；基线无例外 403 对照）；cd gateway && go test -race ./corazasemantics/（两规则标记法全维翻折 + 载荷覆盖集不动点：942100/942190/942270/942360+contrib 1001209 全摘除才放行）",
+      "artifacts": [
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        },
+        {
+          "path": "artifacts/gateway-corazasemantics.jsonl",
+          "sha256": "d2eb5a7ebd2cb86161c465af77955fef824b10439fe113899cc40010db331ec7"
+        }
+      ]
+    },
+    {
+      "id": "EXC-02",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（EXC-02：目标外字段 name 同载荷仍 403）；corazasemantics TestSmokePayloadCoverageSet 第 4 步（name 字段摘除过宽反证）",
+      "artifacts": [
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        },
+        {
+          "path": "artifacts/gateway-corazasemantics.jsonl",
+          "sha256": "d2eb5a7ebd2cb86161c465af77955fef824b10439fe113899cc40010db331ec7"
+        }
+      ]
+    },
+    {
+      "id": "EXC-03",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions",
+        "waf-crs-detection"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（第三轮实证：只摘 942100 时其余三条 SQLi 规则仍打分达阈阻断——例外不产生全局放行）；cd gateway/dynamic_security && go test -race ./decision/...（部分豁免重算单测）",
+      "artifacts": [
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        },
+        {
+          "path": "artifacts/gateway-decision-ctx-pipeline.jsonl",
+          "sha256": "7628de7d1a2a91cdd2084a9e77f85f808e6bc1a8016bf30e2cb061c573869979"
+        }
+      ]
+    },
+    {
+      "id": "EXC-04",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "cd server && go test ./tests -run 'Exception'（TestP0ExceptionUnsupportedActionGate：LOG_ONLY/ADJUST_SCORE 拒绝新启用）；bash artifacts/exc15-migration-trial.sh（历史 LOG_ONLY 迁移标 NEEDS_REVIEW 23/23）；E2E_BASE_URL=… npx playwright test e2e/exception-p0.spec.ts（LOG_ONLY 门禁可见性用例）",
+      "artifacts": [
+        {
+          "path": "artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        },
+        {
+          "path": "artifacts/exc15-migration-trial.log",
+          "sha256": "90a3c9799ffdf71c202dfcf16f4dcb6b55a72e6d2a5206f38259279d84d9a0f0"
+        },
+        {
+          "path": "artifacts/exception-p0-e2e.log",
+          "sha256": "49a06b68d4d3ed0ff730e2d7f2e1113f9a514c6f4550746efe1bd16ab3a41c66"
+        }
+      ]
+    },
+    {
+      "id": "EXC-05",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "corazasemantics TestExceptionChainSemantics（TIME_EPOCH 半开区间：生效前/起点/结束前/恰好结束逐点实测；运行时求值不依赖控制面在线）；bash test/e2e/exception-p0-smoke.sh（EXC-09：未来生效例外当前请求 403）",
+      "artifacts": [
+        {
+          "path": "artifacts/gateway-corazasemantics.jsonl",
+          "sha256": "d2eb5a7ebd2cb86161c465af77955fef824b10439fe113899cc40010db331ec7"
+        },
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        }
+      ]
+    },
+    {
+      "id": "EXC-06",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "cd server && go test ./internal/exceptions/（ListForPublish 2000 容量上限 + 字典序确定性）；corazasemantics 容量实测（2000 条例外规则编译/求值）；接口测试预览 409 乐观锁（版本冲突检出）",
+      "artifacts": [
+        {
+          "path": "artifacts/server-s4-unit.jsonl",
+          "sha256": "40f96a96121af083b3a5232ab73c0180986731fe45637a402e62ddca1e7c5911"
+        },
+        {
+          "path": "artifacts/gateway-corazasemantics.jsonl",
+          "sha256": "d2eb5a7ebd2cb86161c465af77955fef824b10439fe113899cc40010db331ec7"
+        },
+        {
+          "path": "artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        }
+      ]
+    },
+    {
+      "id": "EXC-07",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "cd server && go test ./tests -run 'Exception'（TestP0ExceptionFromEventDraft：绑定真实事件、缺证据 NEEDS_REVIEW 不得启用、不跨应用）",
+      "artifacts": [
+        {
+          "path": "artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        }
+      ]
+    },
+    {
+      "id": "EXC-08",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions",
+        "real-client-ip"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（EXC-08：范围外路径 403 / 范围外方法 403 / 伪造 XFF 不命中 source_ips 例外 403）；corazasemantics 链语义（REQUEST_FILENAME 不含 query、Host 端口/大小写、ipMatch 边界；E6 范围外 API finding 不打标对照）",
+      "artifacts": [
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        },
+        {
+          "path": "artifacts/gateway-corazasemantics.jsonl",
+          "sha256": "d2eb5a7ebd2cb86161c465af77955fef824b10439fe113899cc40010db331ec7"
+        }
+      ]
+    },
+    {
+      "id": "EXC-09",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "cd server && go test ./internal/exceptions/（ValidateInput/ValidateForEnable 严格校验：控制字符/引号/病态正则有界拒绝，GenerateSecLang 编译失败显式报错不注入额外规则）",
+      "artifacts": [
+        {
+          "path": "artifacts/server-s4-unit.jsonl",
+          "sha256": "40f96a96121af083b3a5232ab73c0180986731fe45637a402e62ddca1e7c5911"
+        }
+      ]
+    },
+    {
+      "id": "EXC-10",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions",
+        "api-unified-decision"
+      ],
+      "command": "cd gateway/dynamic_security && go test -race ./decision/...（OBSERVE_RULE：被豁免 Finding 保留证据打标 Excepted、ScoreDelta/类别排除后重算、其余 Finding 动作仍有效）；bash test/e2e/exception-p0-smoke.sh（第八轮：E25 定时断言范围内请求 excepted=true+exception_id+matched_exceptions 命中，E6 范围外对照不打标——素材修复后 API 侧端到端断言已通过）",
+      "artifacts": [
+        {
+          "path": "artifacts/gateway-decision-ctx-pipeline.jsonl",
+          "sha256": "7628de7d1a2a91cdd2084a9e77f85f808e6bc1a8016bf30e2cb061c573869979"
+        }
+      ]
+    },
+    {
+      "id": "EXC-11",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "cd server && go test ./internal/exceptions/（目标门禁：仅 WAF/API 引擎规则级动作，JWT/协议底线/人工封禁/CC/配额不可例外——protected_modules_unchanged 契约）；cd server && go test ./tests -run 'Exception'（UNSUPPORTED_ACTION 门禁接口测试）",
+      "artifacts": [
+        {
+          "path": "artifacts/server-s4-unit.jsonl",
+          "sha256": "40f96a96121af083b3a5232ab73c0180986731fe45637a402e62ddca1e7c5911"
+        },
+        {
+          "path": "artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        }
+      ]
+    },
+    {
+      "id": "EXC-12",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions",
+        "config-release-ha"
+      ],
+      "command": "cd server && go test ./tests -run 'Exception'（预览乐观锁 expected_version 409）；E2E 预览 409 用例 + 启用后派生状态「未发布/未知」如实翻转（无节点回执不假装已生效）。限制如实保留：单节点栈，多节点部分失败扇出未实测。",
+      "artifacts": [
+        {
+          "path": "artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        },
+        {
+          "path": "artifacts/exception-p0-e2e.log",
+          "sha256": "49a06b68d4d3ed0ff730e2d7f2e1113f9a514c6f4550746efe1bd16ab3a41c66"
+        }
+      ]
+    },
+    {
+      "id": "EXC-13",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "bash test/e2e/exception-p0-smoke.sh（EXC-13：Coraza 审计日志含 exc:<uuid>/excv:<version> 命中标记；WAF 事件 matched_exceptions 含例外 uuid）；cd server && go test ./tests -run 'Exception'（TestP0ExceptionRBAC 越权拒绝）；E2E 审计管理员只读用例",
+      "artifacts": [
+        {
+          "path": "artifacts/exception-p0-smoke-r8.log",
+          "sha256": "89c0525cb57e2f15cea298859ddb1025fee3e728af624ec9cfe73b1f0db674c0"
+        },
+        {
+          "path": "artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        },
+        {
+          "path": "artifacts/exception-p0-e2e.log",
+          "sha256": "49a06b68d4d3ed0ff730e2d7f2e1113f9a514c6f4550746efe1bd16ab3a41c66"
+        }
+      ]
+    },
+    {
+      "id": "EXC-14",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "bash test/e2e/exception-p0-e2e-driver.sh（stage5+wdsp 隔离栈 + CI 临时授权 + vite 5199 + playwright e2e/exception-p0.spec.ts 5/5：草稿→预览→启用→派生状态 / LOG_ONLY 门禁 / 预览 409 / 审计管理员只读 / 事件详情最终处置区块）",
+      "artifacts": [
+        {
+          "path": "artifacts/exception-p0-e2e.log",
+          "sha256": "49a06b68d4d3ed0ff730e2d7f2e1113f9a514c6f4550746efe1bd16ab3a41c66"
+        }
+      ]
+    },
+    {
+      "id": "EXC-15",
+      "status": "PASS",
+      "capabilities": [
+        "waf-exceptions"
+      ],
+      "command": "bash artifacts/exc15-migration-trial.sh（迁移 000130/000131/000132 up/down/幂等重跑 + security_events 分区级联 + 历史 LOG_ONLY 标 NEEDS_REVIEW，23/23 PASS）；cd server && go test ./tests -run 'Exception'（TestP0ExceptionMigrationColumns）",
+      "artifacts": [
+        {
+          "path": "artifacts/exc15-migration-trial.log",
+          "sha256": "90a3c9799ffdf71c202dfcf16f4dcb6b55a72e6d2a5206f38259279d84d9a0f0"
+        },
+        {
+          "path": "artifacts/exc15-migration-trial.sh",
+          "sha256": "94b1c0294442a70e53eb6f0a7a6e9345dc077763723bd5f9dfd8d36c9a339128"
+        },
+        {
+          "path": "artifacts/server-s4-iface.jsonl",
+          "sha256": "f7dc745852a91d7b955bd1b2b3f89d1ab94e48cf6845bc99f7b6a4dc1230fa5a"
+        }
+      ]
+    }
+  ],
+  "release_status": "DEVELOPMENT"
+}

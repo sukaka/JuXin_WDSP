@@ -1,0 +1,207 @@
+# 片段：业务 JWT 信任链策略（WDSP P0-03，服务端管理面）
+# 路由源：server/internal/app/app.go「业务 JWT 信任链」注册段（/applications/{id}/jwt-trust-policy*）
+# 数据源：jwt_trust_policies 草稿行 + jwt_trust_policy_versions 不可变版本记录（迁移 000125；
+# 权限种子 000126：jwt_trust.read 三角色全授，jwt_trust.manage 仅 SYSTEM_ADMIN/SECURITY_ADMIN）。
+# 发布：草稿保存不自动发布；发布复用既有 gateway-config 发布通道（GuardConfig jwt_trust 段，
+# 仅 WDSP 形态下发；PROTECT 策略发布前置校验 API 管线为 PROTECT 且目标节点无已知同步失败，
+# 否则拒绝发布并保留旧有效版本）。preflight 不自动发布。
+paths:
+  # ==================== JWT 信任策略 ====================
+  /applications/{id}/jwt-trust-policy:
+    get:
+      operationId: jwtTrustPolicyGet
+      tags: [jwt-trust]
+      summary: 读取应用 JWT 信任策略
+      description: 读取应用业务 JWT 信任策略当前草稿、最近成功发布的生效版本与状态摘要（state：NOT_CONFIGURED 未配置 / DRAFT_PENDING 草稿未发布或领先已发布 / PUBLISHED 草稿与最近成功发布一致；不含任何业务 Token）。历史应用无记录时返回默认 OFF 空策略（version=0）。权限：`jwt_trust.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 策略草稿与状态摘要
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JwtTrustPolicyGetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: jwtTrustPolicyUpdate
+      tags: [jwt-trust]
+      summary: 保存 JWT 信任策略草稿
+      description: 校验并全量保存草稿（expected_version 乐观锁，冲突返回 409——无草稿时必须为 0，已有草稿时必须等于当前 version；方法大写去重、path_exact/path_prefix 二选一且不含 query、prefix 按完整路径段、issuer 精确值唯一且 ≤8 项、audiences 非空、algorithms 为 RS256/ES256 非空子集、clock_skew_seconds 0~120 缺省 30、静态 JWKS 仅公钥（拒绝私钥参数/对称密钥/短 RSA/非 P-256 曲线，提交私钥立即拒绝且不回显）、REMOTE_JWKS 仅 HTTPS 且经 SSRF 校验（默认拒私网/回环/云元数据，企业内网 IdP 须经系统设置 jwt_trust:remote_jwks_allowlist 显式登记）；reason 非空进操作审计）。保存草稿不等于线上生效，发布走既有 gateway-config 发布通道。权限：`jwt_trust.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/JwtTrustPolicyUpdateRequest' }
+      responses:
+        '200':
+          description: 草稿保存成功，返回保存后的策略（version+1）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JwtTrustPolicyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 策略已被其他人修改（expected_version 乐观锁冲突），需刷新后重试 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /applications/{id}/jwt-trust-policy/preflight:
+    post:
+      operationId: jwtTrustPolicyPreflight
+      tags: [jwt-trust]
+      summary: JWT 信任策略发布预检
+      description: 对请求体候选策略（缺省为当前草稿）执行结构与静态公钥校验、REMOTE_JWKS 地址 SSRF 校验与受限连通性检查（2 秒超时、禁跳转、拨号时 DNS 复检、响应 ≤256KiB 且须为合法公钥 JWKS；管理端视角，不代表各网关节点可达）、API 动态管线门禁（PROTECT 策略要求管线已启用且为 PROTECT，防静默降级）与目标节点状态检查（已知同步失败的扇出节点阻断 PROTECT 发布）。不保存、不自动发布；publishable=false 时发布链路将以同口径拒绝。操作进入审计（低风险）。权限：`jwt_trust.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/JwtTrustPreflightRequest' }
+      responses:
+        '200':
+          description: 预检结果（逐项检查 + 整体可发布判定）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JwtTrustPreflightResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    # ==================== JWT 信任策略 ====================
+    JwtTrustSelector:
+      type: object
+      description: 请求范围选择器（不同 selector 之间 OR；重叠时 token_required 取 true 优先）
+      properties:
+        methods:
+          type: array
+          items: { type: string }
+          description: HTTP 方法集合（大写去重；如 ["GET","POST"]）
+        path_exact: { type: string, description: 精确路径（与 path_prefix 二选一；不含 query） }
+        path_prefix: { type: string, description: 路径前缀（与 path_exact 二选一；按完整路径段匹配——/api 匹配 /api 与 /api/orders，不匹配 /apix；不以 / 结尾） }
+        token_required: { type: boolean, description: 命中该选择器时是否必须携带 Bearer Token }
+
+    JwtTrustKeySource:
+      type: object
+      description: issuer 密钥来源（二选一）
+      properties:
+        type: { type: string, enum: [STATIC_JWKS, REMOTE_JWKS], description: 静态公钥集 / 远程 JWKS 地址 }
+        jwks: { type: string, description: STATIC_JWKS 必填：公钥 JWKS JSON 文本（仅公钥；≤256KiB、≤32 个公钥；RSA≥2048 位、EC 仅 P-256；拒绝私钥参数/对称密钥/x5u/jku；kid 非空且集内唯一） }
+        url: { type: string, description: 'REMOTE_JWKS 必填：HTTPS JWKS 地址（SSRF 校验：默认拒私网/回环/云元数据，内网 IdP 须经 jwt_trust:remote_jwks_allowlist 登记）' }
+
+    JwtTrustIssuer:
+      type: object
+      description: 受信发行方配置（issuer 为大小写敏感精确值，策略内唯一）
+      properties:
+        issuer: { type: string, maxLength: 512, description: issuer 精确值（不擅自去路径或末尾斜杠） }
+        audiences:
+          type: array
+          items: { type: string, maxLength: 256 }
+          description: 合法 audience 集合（非空；Token aud 字符串/数组至少匹配一项）
+        algorithms:
+          type: array
+          items: { type: string, enum: [RS256, ES256] }
+          description: 签名算法白名单（非空子集；不由 Token 扩展）
+        key_source: { $ref: '#/components/schemas/JwtTrustKeySource' }
+        clock_skew_seconds: { type: integer, minimum: 0, maximum: 120, description: 时钟偏移宽限（秒，缺省 30） }
+        tenant_claim: { type: string, description: 可选：单一受信 tenant 声明名（仅 VERIFIED 后读取，不自动猜测） }
+        role_claims:
+          type: array
+          maxItems: 8
+          items: { type: string, maxLength: 64 }
+          description: 可选：显式受信角色声明名列表（仅 VERIFIED 后读取；不自动猜测；最多 8 项）
+
+    JwtTrustPolicy:
+      type: object
+      description: 应用 JWT 信任策略（当前草稿；version 乐观锁不可变递增）
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 模式（默认 OFF——不校验 Token、不产生可信主体；OBSERVE 仅观测；PROTECT 在 API 动态管线阶段强制处置） }
+        version: { type: integer, description: 乐观锁版本（无记录应用为 0；随发布下发供溯源） }
+        selectors:
+          type: array
+          items: { $ref: '#/components/schemas/JwtTrustSelector' }
+          description: 选择器列表（OFF 可空，非 OFF 必填非空）
+        issuers:
+          type: array
+          maxItems: 8
+          items: { $ref: '#/components/schemas/JwtTrustIssuer' }
+          description: 受信发行方列表（OFF 可空，非 OFF 必填非空，≤8 项）
+        updated_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    JwtTrustStatusSummary:
+      type: object
+      description: 状态摘要（草稿 vs 最近成功发布快照中的生效版本）
+      properties:
+        state: { type: string, enum: [NOT_CONFIGURED, DRAFT_PENDING, PUBLISHED], description: 未配置 / 草稿待发布 / 已发布一致 }
+        draft_version: { type: integer, description: 当前草稿版本（0=无草稿） }
+        published_version: { type: integer, description: 最近 SUCCESS 发布快照中本应用的策略版本（0=未随发布下发；发布失败保留旧有效版本） }
+
+    JwtTrustPolicyGetResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/JwtTrustPolicy' }
+        summary: { $ref: '#/components/schemas/JwtTrustStatusSummary' }
+
+    JwtTrustPolicyDetailResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/JwtTrustPolicy' }
+
+    JwtTrustPolicyUpdateRequest:
+      type: object
+      required: [mode, expected_version, reason]
+      description: 全量保存草稿请求（expected_version 乐观锁：无草稿=0，已有草稿=当前 version；冲突 409）
+      properties:
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        expected_version: { type: integer, minimum: 0 }
+        selectors:
+          type: array
+          items: { $ref: '#/components/schemas/JwtTrustSelector' }
+        issuers:
+          type: array
+          maxItems: 8
+          items: { $ref: '#/components/schemas/JwtTrustIssuer' }
+        reason: { type: string, minLength: 1, maxLength: 500, description: 变更理由（非空，进入操作审计与不可变版本记录） }
+
+    JwtTrustPreflightRequest:
+      type: object
+      description: 预检候选策略（全部缺省时检查当前草稿；不保存、不发布）
+      properties:
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+        selectors:
+          type: array
+          items: { $ref: '#/components/schemas/JwtTrustSelector' }
+        issuers:
+          type: array
+          maxItems: 8
+          items: { $ref: '#/components/schemas/JwtTrustIssuer' }
+
+    JwtTrustPreflightCheck:
+      type: object
+      properties:
+        name: { type: string, enum: [structure, remote_url_ssrf, remote_connectivity, pipeline_gate, node_capability], description: 检查项 }
+        status: { type: string, enum: [PASS, FAIL, WARN, SKIP] }
+        message: { type: string, description: 可读原因（结构错误含字段级明细；不含任何秘密材料） }
+
+    JwtTrustPreflightResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/JwtTrustPolicy' }
+        checks:
+          type: array
+          items: { $ref: '#/components/schemas/JwtTrustPreflightCheck' }
+        publishable: { type: boolean, description: 整体可发布判定（false 时发布链路以同口径拒绝） }

@@ -1,0 +1,22 @@
+{
+  "records": {
+    "corpus-validation": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T195428-488b03",
+      "mandatory": true,
+      "reason": "语料 schema v1 与内容哈希一致: cfdaf27c0af9c370…",
+      "status": "PASS"
+    },
+    "regression-plan": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T195428-488b03",
+      "mandatory": true,
+      "reason": "回归 run-plan 结构校验通过",
+      "status": "PASS"
+    },
+    "replay-plan": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T195428-488b03",
+      "mandatory": true,
+      "reason": "确定性回放计划已生成（计划样本数 48）",
+      "status": "PASS"
+    }
+  }
+}

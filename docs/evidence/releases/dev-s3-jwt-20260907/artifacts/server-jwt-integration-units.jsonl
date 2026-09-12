@@ -1,0 +1,84 @@
+{"Time":"2026-09-07T00:46:35.981882+08:00","Action":"start","Package":"github.com/jiuzhang-waf/server/internal/guardconfig"}
+{"Time":"2026-09-07T00:46:36.363606+08:00","Action":"start","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig"}
+{"Time":"2026-09-07T00:46:36.370263+08:00","Action":"start","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents"}
+{"Time":"2026-09-07T00:46:36.373108+08:00","Action":"start","Package":"github.com/jiuzhang-waf/server/internal/apiruntime"}
+{"Time":"2026-09-07T00:46:36.791887+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustInject"}
+{"Time":"2026-09-07T00:46:36.792003+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustInject","Output":"=== RUN   TestLoadJWTTrustInject\n"}
+{"Time":"2026-09-07T00:46:36.793133+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustInject","Output":"--- PASS: TestLoadJWTTrustInject (0.00s)\n"}
+{"Time":"2026-09-07T00:46:36.793162+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustInject","Elapsed":0}
+{"Time":"2026-09-07T00:46:36.793351+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustReadErrorFailsHard"}
+{"Time":"2026-09-07T00:46:36.793388+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustReadErrorFailsHard","Output":"=== RUN   TestLoadJWTTrustReadErrorFailsHard\n"}
+{"Time":"2026-09-07T00:46:36.793646+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustReadErrorFailsHard","Output":"--- PASS: TestLoadJWTTrustReadErrorFailsHard (0.00s)\n"}
+{"Time":"2026-09-07T00:46:36.793663+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustReadErrorFailsHard","Elapsed":0}
+{"Time":"2026-09-07T00:46:36.793677+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustProtectGate"}
+{"Time":"2026-09-07T00:46:36.793684+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustProtectGate","Output":"=== RUN   TestLoadJWTTrustProtectGate\n"}
+{"Time":"2026-09-07T00:46:36.794842+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustProtectGate","Output":"--- PASS: TestLoadJWTTrustProtectGate (0.00s)\n"}
+{"Time":"2026-09-07T00:46:36.794861+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustProtectGate","Elapsed":0}
+{"Time":"2026-09-07T00:46:36.794869+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustSecretGate"}
+{"Time":"2026-09-07T00:46:36.794874+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustSecretGate","Output":"=== RUN   TestLoadJWTTrustSecretGate\n"}
+{"Time":"2026-09-07T00:46:36.795215+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustSecretGate","Output":"--- PASS: TestLoadJWTTrustSecretGate (0.00s)\n"}
+{"Time":"2026-09-07T00:46:36.795261+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustSecretGate","Elapsed":0}
+{"Time":"2026-09-07T00:46:36.795269+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustObserveNoGate"}
+{"Time":"2026-09-07T00:46:36.795275+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustObserveNoGate","Output":"=== RUN   TestLoadJWTTrustObserveNoGate\n"}
+{"Time":"2026-09-07T00:46:36.795285+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustObserveNoGate","Output":"--- PASS: TestLoadJWTTrustObserveNoGate (0.00s)\n"}
+{"Time":"2026-09-07T00:46:36.795302+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustObserveNoGate","Elapsed":0}
+{"Time":"2026-09-07T00:46:36.795306+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustNodeGuard"}
+{"Time":"2026-09-07T00:46:36.795309+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustNodeGuard","Output":"=== RUN   TestLoadJWTTrustNodeGuard\n"}
+{"Time":"2026-09-07T00:46:36.795315+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustNodeGuard","Output":"--- PASS: TestLoadJWTTrustNodeGuard (0.00s)\n"}
+{"Time":"2026-09-07T00:46:36.795318+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustNodeGuard","Elapsed":0}
+{"Time":"2026-09-07T00:46:36.795322+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustNilLister"}
+{"Time":"2026-09-07T00:46:36.795325+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustNilLister","Output":"=== RUN   TestLoadJWTTrustNilLister\n"}
+{"Time":"2026-09-07T00:46:36.795348+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustNilLister","Output":"--- PASS: TestLoadJWTTrustNilLister (0.00s)\n"}
+{"Time":"2026-09-07T00:46:36.79537+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestLoadJWTTrustNilLister","Elapsed":0}
+{"Time":"2026-09-07T00:46:36.795374+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestAPIPolicyVersionCoversJWTTrust"}
+{"Time":"2026-09-07T00:46:36.795378+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestAPIPolicyVersionCoversJWTTrust","Output":"=== RUN   TestAPIPolicyVersionCoversJWTTrust\n"}
+{"Time":"2026-09-07T00:46:36.799223+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestAPIPolicyVersionCoversJWTTrust","Output":"--- PASS: TestAPIPolicyVersionCoversJWTTrust (0.00s)\n"}
+{"Time":"2026-09-07T00:46:36.799269+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Test":"TestAPIPolicyVersionCoversJWTTrust","Elapsed":0}
+{"Time":"2026-09-07T00:46:36.80021+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Output":"PASS\n"}
+{"Time":"2026-09-07T00:46:36.801798+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Output":"ok  \tgithub.com/jiuzhang-waf/server/internal/guardconfig\t0.818s\n"}
+{"Time":"2026-09-07T00:46:36.80186+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/guardconfig","Elapsed":0.82}
+{"Time":"2026-09-07T00:46:37.49638+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrust"}
+{"Time":"2026-09-07T00:46:37.496439+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrust","Output":"=== RUN   TestBuildGuardHandlerJWTTrust\n"}
+{"Time":"2026-09-07T00:46:37.497537+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrust","Output":"--- PASS: TestBuildGuardHandlerJWTTrust (0.00s)\n"}
+{"Time":"2026-09-07T00:46:37.498396+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrust","Elapsed":0}
+{"Time":"2026-09-07T00:46:37.498943+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrustOtherApp"}
+{"Time":"2026-09-07T00:46:37.498952+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrustOtherApp","Output":"=== RUN   TestBuildGuardHandlerJWTTrustOtherApp\n"}
+{"Time":"2026-09-07T00:46:37.499244+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrustOtherApp","Output":"--- PASS: TestBuildGuardHandlerJWTTrustOtherApp (0.00s)\n"}
+{"Time":"2026-09-07T00:46:37.499261+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrustOtherApp","Elapsed":0}
+{"Time":"2026-09-07T00:46:37.499269+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrustGated"}
+{"Time":"2026-09-07T00:46:37.499273+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrustGated","Output":"=== RUN   TestBuildGuardHandlerJWTTrustGated\n"}
+{"Time":"2026-09-07T00:46:37.499389+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrustGated","Output":"--- PASS: TestBuildGuardHandlerJWTTrustGated (0.00s)\n"}
+{"Time":"2026-09-07T00:46:37.499403+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestBuildGuardHandlerJWTTrustGated","Elapsed":0}
+{"Time":"2026-09-07T00:46:37.499409+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestStripAPIGuardSectionsJWTTrust"}
+{"Time":"2026-09-07T00:46:37.499413+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestStripAPIGuardSectionsJWTTrust","Output":"=== RUN   TestStripAPIGuardSectionsJWTTrust\n"}
+{"Time":"2026-09-07T00:46:37.499582+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestStripAPIGuardSectionsJWTTrust","Output":"--- PASS: TestStripAPIGuardSectionsJWTTrust (0.00s)\n"}
+{"Time":"2026-09-07T00:46:37.499591+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Test":"TestStripAPIGuardSectionsJWTTrust","Elapsed":0}
+{"Time":"2026-09-07T00:46:37.500533+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Output":"PASS\n"}
+{"Time":"2026-09-07T00:46:37.502412+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Output":"ok  \tgithub.com/jiuzhang-waf/server/internal/gatewayconfig\t1.139s\n"}
+{"Time":"2026-09-07T00:46:37.502469+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/gatewayconfig","Elapsed":1.139}
+{"Time":"2026-09-07T00:46:37.725708+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventAuthFailed"}
+{"Time":"2026-09-07T00:46:37.726031+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventAuthFailed","Output":"=== RUN   TestParseJWTEventAuthFailed\n"}
+{"Time":"2026-09-07T00:46:37.73343+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventAuthFailed","Output":"--- PASS: TestParseJWTEventAuthFailed (0.01s)\n"}
+{"Time":"2026-09-07T00:46:37.734101+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventAuthFailed","Elapsed":0.01}
+{"Time":"2026-09-07T00:46:37.73467+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventUnavailable"}
+{"Time":"2026-09-07T00:46:37.734715+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventUnavailable","Output":"=== RUN   TestParseJWTEventUnavailable\n"}
+{"Time":"2026-09-07T00:46:37.735689+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventUnavailable","Output":"--- PASS: TestParseJWTEventUnavailable (0.00s)\n"}
+{"Time":"2026-09-07T00:46:37.735727+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventUnavailable","Elapsed":0}
+{"Time":"2026-09-07T00:46:37.735736+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventInvalid"}
+{"Time":"2026-09-07T00:46:37.735741+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventInvalid","Output":"=== RUN   TestParseJWTEventInvalid\n"}
+{"Time":"2026-09-07T00:46:37.736796+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventInvalid","Output":"--- PASS: TestParseJWTEventInvalid (0.00s)\n"}
+{"Time":"2026-09-07T00:46:37.736818+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventInvalid","Elapsed":0}
+{"Time":"2026-09-07T00:46:37.736823+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventLegacyTolerant"}
+{"Time":"2026-09-07T00:46:37.736827+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventLegacyTolerant","Output":"=== RUN   TestParseJWTEventLegacyTolerant\n"}
+{"Time":"2026-09-07T00:46:37.736915+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventLegacyTolerant","Output":"--- PASS: TestParseJWTEventLegacyTolerant (0.00s)\n"}
+{"Time":"2026-09-07T00:46:37.736922+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Test":"TestParseJWTEventLegacyTolerant","Elapsed":0}
+{"Time":"2026-09-07T00:46:37.737898+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Output":"PASS\n"}
+{"Time":"2026-09-07T00:46:37.739408+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Output":"ok  \tgithub.com/jiuzhang-waf/server/internal/accesscontrolevents\t1.366s\n"}
+{"Time":"2026-09-07T00:46:37.739473+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/accesscontrolevents","Elapsed":1.37}
+{"Time":"2026-09-07T00:46:38.386601+08:00","Action":"run","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLineJWTVerification"}
+{"Time":"2026-09-07T00:46:38.386696+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLineJWTVerification","Output":"=== RUN   TestParseRecordLineJWTVerification\n"}
+{"Time":"2026-09-07T00:46:38.393508+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLineJWTVerification","Output":"--- PASS: TestParseRecordLineJWTVerification (0.01s)\n"}
+{"Time":"2026-09-07T00:46:38.394203+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Test":"TestParseRecordLineJWTVerification","Elapsed":0.01}
+{"Time":"2026-09-07T00:46:38.395465+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Output":"PASS\n"}
+{"Time":"2026-09-07T00:46:38.396983+08:00","Action":"output","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Output":"ok  \tgithub.com/jiuzhang-waf/server/internal/apiruntime\t2.024s\n"}
+{"Time":"2026-09-07T00:46:38.397022+08:00","Action":"pass","Package":"github.com/jiuzhang-waf/server/internal/apiruntime","Elapsed":2.025}

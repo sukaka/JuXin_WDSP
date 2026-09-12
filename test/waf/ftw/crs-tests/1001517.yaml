@@ -1,0 +1,24 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: "SSRF RFC1918 URL 非锚定（请求体字段值）检测（CUSTOM_PACK ssrf-protocols）"
+rule_id: 1001517
+tests:
+  - test_id: 1
+    desc: "JSON 请求体字段值指向 10.x 内网地址"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: application/json
+          method: POST
+          port: 80
+          uri: "/post"
+          data: '{"endpoint":"proxy http://10.1.2.3/api/status"}'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001517]

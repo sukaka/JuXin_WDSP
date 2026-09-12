@@ -1,0 +1,53 @@
+============================================================
+九章 §202 性能追补矩阵实测  2026-08-20 10:51:03（UTC 02:51:03）
+环境: Darwin 25.2.0 arm64  gateway=http://127.0.0.1:18080 api=http://127.0.0.1:18081
+参数: 并发=20 计量=30s/臂 预热=5s ab=-k（长连接） 口径与 W18/§10 一致；conc100 臂 c=100×15s
+镜像: api=sha256:edec8af1d0ad gateway=sha256:145e27c98420
+原始数据目录: /tmp/w18-matrix2-1787194263
+============================================================
+[setup] app=12b463d1-ad61-46b3-9bf5-5f16fd94b6c4
+[setup] 策略现状: wdsp True OBSERVE db
+[setup] 应用 protection_mode=OFF（期望 OFF，否则不接管）
+[setup] multipart 压测体: 524459B / 1048745B（单文件 part，boundary=W18MPBOUNDARY1787194263）
+[idle] jiuzhang-stage5-api avg_cpu=46.78% max_cpu=53.07% max_mem=2.1MiB samples=2 jiuzhang-stage5-gateway avg_cpu=0.38% max_cpu=0.40% max_mem=141.6MiB samples=2 jiuzhang-stage5-postgres avg_cpu=36.15% max_cpu=37.73% max_mem=978.2MiB samples=2 jiuzhang-stage5-valkey avg_cpu=0.25% max_cpu=0.26% max_mem=12.2MiB samples=2 
+[baseline] 重建 api 容器（不带 wdsp 覆盖 → API_DYNAMIC_PROTECTION_ENABLED=false）
+[baseline] 发布完成，网关代理自检 GET / -> 200
+[baseline] Coraza 对照探针 marker 命中审计日志=0（期望 0 = engine Off 真跳过）
+[baseline] complete=156884 failed=0 non2xx=156884 qps=5229.45 mean_ms=3.824 p50=3 p95=10 p99=19 max=84
+[waf-only] 应用已切 OBSERVE（SecRuleEngine DetectionOnly）并发布
+[waf-only] 探针: marker 命中=5（DetectionOnly 条目=5，含 XSS 命中消息=5）；干净 GET -> 404（期望404透传）
+[waf-only] complete=43950 failed=0 non2xx=43950 qps=1464.97 mean_ms=13.652 p50=11 p95=28 p99=47 max=158
+[waf-only] 应用已回 OFF（待与 wdsp 重建一同发布）
+[observe-api] 恢复 api 容器为 wdsp 形态（API_DYNAMIC_PROTECTION_ENABLED=true）
+[observe-api] 管线活性探针网关侧事件数=20（>0 才计量）
+[observe-api] complete=115784 failed=0 non2xx=115784 qps=3859.46 mean_ms=5.182 p50=4 p95=13 p99=22 max=128
+[drain] observe-api 网关侧事件=124861，等待入库追平至 ≥90%（30s 轮询，上限 20 轮）…
+[drain] observe-api 入库追平: 0 (DRAIN_TIMEOUT) / 网关侧 124861
+[multipart] 临时写限速已注入（gateway_runtime/api_write_rate_per_minute=200000000，仅此一行）
+[multipart] 100×POST 探针响应分布:  100 404 （期望全 404，无 429）
+[mp-512k] complete=2944 failed=0 non2xx=2944 qps=98.09 mean_ms=203.895 p50=169 p95=384 p99=498 max=706
+[mp-1m] complete= failed= non2xx= qps= mean_ms= p50= p95= p99= max=
+[multipart] 临时限速行已删除并发布（终态：默认 60/min 写限速）
+[drain] multipart 入库追平: mp512=0 (DRAIN_TIMEOUT) / 网关侧 3433  mp1m=0 (iter=1) / 网关侧 0
+[conc100] complete=29406 failed=0 non2xx=29406 qps=1960.12 mean_ms=51.017 p50=35 p95=136 p99=212 max=775
+[verify-gw] 网关事件日志精确计数（含预热与探针）: baseline=0（必须=0） waf-only=0（必须=0，Coraza 不产 API 事件） observe-api=124861/≥115804 mp-512k=3433/≥3044 mp-1m=0/≥ conc100=34594/≥29406
+============================================================
+资源消耗（压测窗口 docker stats 采样汇总）
+[idle] jiuzhang-stage5-api avg_cpu=46.78% max_cpu=53.07% max_mem=2.1MiB samples=2;jiuzhang-stage5-gateway avg_cpu=0.38% max_cpu=0.40% max_mem=141.6MiB samples=2;jiuzhang-stage5-postgres avg_cpu=36.15% max_cpu=37.73% max_mem=978.2MiB samples=2;jiuzhang-stage5-valkey avg_cpu=0.25% max_cpu=0.26% max_mem=12.2MiB samples=2;
+[baseline] jiuzhang-stage5-api avg_cpu=51.46% max_cpu=63.42% max_mem=58.0MiB samples=9;jiuzhang-stage5-gateway avg_cpu=174.62% max_cpu=283.17% max_mem=168.0MiB samples=9;jiuzhang-stage5-postgres avg_cpu=64.49% max_cpu=216.49% max_mem=843.8MiB samples=9;jiuzhang-stage5-valkey avg_cpu=1.54% max_cpu=11.09% max_mem=12.3MiB samples=9;
+[wafonly] jiuzhang-stage5-api avg_cpu=24.36% max_cpu=58.51% max_mem=60.6MiB samples=8;jiuzhang-stage5-gateway avg_cpu=630.86% max_cpu=708.17% max_mem=229.2MiB samples=8;jiuzhang-stage5-postgres avg_cpu=19.68% max_cpu=40.06% max_mem=856.9MiB samples=8;jiuzhang-stage5-valkey avg_cpu=1.24% max_cpu=4.83% max_mem=11.9MiB samples=8;
+[observe] jiuzhang-stage5-api avg_cpu=68.16% max_cpu=83.79% max_mem=119.2MiB samples=9;jiuzhang-stage5-gateway avg_cpu=226.48% max_cpu=346.72% max_mem=171.1MiB samples=9;jiuzhang-stage5-postgres avg_cpu=118.28% max_cpu=441.96% max_mem=862.9MiB samples=9;jiuzhang-stage5-valkey avg_cpu=0.55% max_cpu=1.17% max_mem=11.9MiB samples=9;
+[mp512] jiuzhang-stage5-api avg_cpu=42.91% max_cpu=99.94% max_mem=722.5MiB samples=8;jiuzhang-stage5-gateway avg_cpu=127.98% max_cpu=153.26% max_mem=261.4MiB samples=8;jiuzhang-stage5-postgres avg_cpu=258.62% max_cpu=602.49% max_mem=1.1MiB samples=8;jiuzhang-stage5-valkey avg_cpu=2.45% max_cpu=12.61% max_mem=12.2MiB samples=8;
+[mp1m] jiuzhang-stage5-api avg_cpu=170.50% max_cpu=1009.57% max_mem=768.2MiB samples=8;jiuzhang-stage5-gateway avg_cpu=16.20% max_cpu=118.35% max_mem=248.7MiB samples=8;jiuzhang-stage5-postgres avg_cpu=44.22% max_cpu=75.74% max_mem=1.0MiB samples=8;jiuzhang-stage5-valkey avg_cpu=0.46% max_cpu=0.98% max_mem=12.2MiB samples=8;
+[conc100] jiuzhang-stage5-api avg_cpu=213.91% max_cpu=347.03% max_mem=1022.0MiB samples=4;jiuzhang-stage5-gateway avg_cpu=406.54% max_cpu=501.22% max_mem=277.1MiB samples=4;jiuzhang-stage5-postgres avg_cpu=70.20% max_cpu=163.61% max_mem=1.1MiB samples=4;jiuzhang-stage5-valkey avg_cpu=5.82% max_cpu=20.95% max_mem=12.9MiB samples=4;
+============================================================
+终态核验:
+  容器: jiuzhang-stage5-api=Up 24 minutes (healthy) jiuzhang-stage5-gateway=Up 2 hours (healthy) jiuzhang-stage5-postgres=Up 2 hours (healthy) jiuzhang-stage5-valkey=Up 2 hours (healthy) jiuzhang-stage5-testorigin=Up 2 days (healthy) jiuzhang-stage5-ollama=Up 4 days (healthy) 
+  api 容器环境: API_DYNAMIC_PROTECTION_ENABLED=true ✓
+  策略: wdsp True OBSERVE db（期望 wdsp True OBSERVE db）
+  应用 protection_mode=OFF（期望 OFF）  临时限速行残留: 0（期望0）
+  网关自检: GET / -> 200  GET obs -> 404（期望404透传）
+  写限速复核: 70×POST 分布   70 404 （期望 60×404+10×429 = 默认 60/min）
+  数据抽查: applications=5 api_endpoints=103 api_runtime_events=709297 users=29
+============================================================
+完成。原始 ab 输出与 stats 采样保留于 /tmp/w18-matrix2-1787194263

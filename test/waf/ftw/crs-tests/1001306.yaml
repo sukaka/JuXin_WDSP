@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: 上传文件名 %2500 双重编码空字节截断检测（evil.php%2500.jpg，自建规则 1001306）
+rule_id: 1001306
+tests:
+  - test_id: 1
+    desc: "multipart 文件名 evil.php%2500.jpg（双重编码）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb306"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb306\r\nContent-Disposition: form-data; name=\"file\"; filename=\"evil.php%2500.jpg\"\r\nContent-Type: image/jpeg\r\n\r\nx\r\n--jzb306--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001306]
+  - test_id: 2
+    desc: "multipart 文件名 shell.aspx%2500.gif"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb306"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb306\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.aspx%2500.gif\"\r\nContent-Type: image/gif\r\n\r\nx\r\n--jzb306--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001306]

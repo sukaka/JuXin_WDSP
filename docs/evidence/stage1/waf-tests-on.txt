@@ -1,0 +1,57 @@
+============================================================
+九章阶段1 WAF 自动化测试
+GATEWAY_URL=http://127.0.0.1:18080 EXPECT_MODE=on
+============================================================
+
+---- 1. 正常业务请求（期望 200 且到达源站） ----
+PASS  normal-get-root
+PASS  normal-get-echo
+PASS  normal-post-form
+PASS  normal-json
+PASS  normal-chinese-param
+PASS  normal-urlencoded
+PASS  normal-cookie
+PASS  normal-custom-header
+PASS  normal-login-form
+PASS  normal-file-upload
+PASS  normal-long-param
+
+---- 2. SQL 注入（期望 403） ----
+PASS  sqli-query-union
+PASS  sqli-query-tautology
+PASS  sqli-post-form
+PASS  sqli-json-field
+PASS  sqli-encoded
+
+---- 3. XSS（期望 403） ----
+PASS  xss-query-script
+PASS  xss-post-form
+PASS  xss-json-field
+PASS  xss-event-attr
+PASS  xss-encoded
+
+---- 4. 命令注入（期望 403） ----
+PASS  cmdi-semicolon
+PASS  cmdi-substitution
+PASS  cmdi-pipe-shell
+PASS  cmdi-backtick
+PASS  cmdi-encoded
+
+---- 5. 路径攻击（期望 403） ----
+PASS  path-traversal
+PASS  path-encoded
+PASS  path-double-encoded
+PASS  path-lfi-proc
+
+---- 6. 扫描器特征（期望 403） ----
+PASS  scanner-ua-sqlmap
+PASS  scanner-ua-nikto
+
+============================================================
+测试结果汇总
+总用例数: 32
+通过:     32
+失败:     0
+跳过:     0
+============================================================
+exit=0

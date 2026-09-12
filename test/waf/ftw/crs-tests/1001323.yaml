@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: 脚本文件名伪装 image/* Content-Type 检测（自建规则 1001323）
+rule_id: 1001323
+tests:
+  - test_id: 1
+    desc: "filename=shell.asmx 但 part Content-Type 为 image/jpeg"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb323"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb323\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.asmx\"\r\nContent-Type: image/jpeg\r\n\r\nGIF89a\r\n--jzb323--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001323]
+  - test_id: 2
+    desc: "filename=cmd.asmx 但 part Content-Type 为 image/png"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb323"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb323\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cmd.asmx\"\r\nContent-Type: image/png\r\n\r\nx\r\n--jzb323--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001323]

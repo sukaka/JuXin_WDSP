@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "Python pickle nt/commands/pty module opcode (1000640)"
+rule_id: 1000640
+tests:
+  - test_id: 1
+    desc: "cnt\\nsystem opcode with real newline in form body"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "p=cnt%0asystem"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000640]

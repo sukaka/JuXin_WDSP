@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "corpus_id": "p1-regression-corpus-v1",
+  "created_at": "2026-09-06T00:00:00Z",
+  "description": "P1-04 规则/模型持续回归首批固定核心语料（schema v1，R1/S1 交付）。全部为项目自研合成样本（source=self_synthetic），不复制任何第三方攻击语料库或竞品测试数据。本批次仅覆盖 WAF 类：正常样本（合法 SQL 文本、Unicode 多语言正文、复杂表单多步骤流程、普通搜索查询、嵌套 JSON、multipart 上传、协议边界）与攻击样本（CRS 声明的 SQLi/XSS/路径穿越/命令注入/协议违规，CUSTOM_PACK 声明的 WebShell 上传、云元数据 SSRF、XXE、SSTI、双编码绕过）。R2 起按同一 schema 补充 Bot 类 6 例（以 P1-02 B2/B3/B4 真实验收行为为真值依据）：正常浏览器 PoW 挑战通行（BOT-BEN-NAV-001）、不合格请求放行（BOT-BEN-INELIG-001）、无脚本自动化客户端挑战供给（BOT-UNK-SCRIPT-001，UNKNOWN 观测样本）、伪造 verify 提交拒绝（BOT-ATK-FORGE-001）、保留命名空间墓碑 405/404（BOT-UNK-TOMB-001，UNKNOWN 观测样本）、挑战通过后 WAF 仍生效（BOT-ATK-WAFSTILL-001）。API/JWT/例外/Agent/APM 类样本待对应能力产生真实证据后补充，本语料不放占位假样本。分区纪律：模型学习只消费 TRAIN；HOLDOUT 不输入自动学习、模型确认或阈值调优；truth=UNKNOWN 与 deferred=true 不进入任何准确率/检出率分母；样本语义变化必须升 case_version 并重新登记 content_sha256（REG-002）；运行后禁止自动更新 expectations 把当前结果变成新真值（§4.2）。",
+  "cases": [
+    {
+      "case_id": "BOT-ATK-FORGE-001",
+      "case_version": 1,
+      "file": "cases/bot-atk-forge-001.json",
+      "content_sha256": "549ec7d030543a432e57c61f9f44c59bf1780d5fc7698c625436dcd907ba4513"
+    },
+    {
+      "case_id": "BOT-ATK-WAFSTILL-001",
+      "case_version": 1,
+      "file": "cases/bot-atk-wafstill-001.json",
+      "content_sha256": "9ab8e5fc47c05be062a9fcc2349c6f549e505918b0a0a7794c9bf5223e916393"
+    },
+    {
+      "case_id": "BOT-BEN-INELIG-001",
+      "case_version": 1,
+      "file": "cases/bot-ben-inelig-001.json",
+      "content_sha256": "348438f8e019e9a1ff502a86ffce854216fcbc3bb60a30192ebfef80a8772e54"
+    },
+    {
+      "case_id": "BOT-BEN-NAV-001",
+      "case_version": 1,
+      "file": "cases/bot-ben-nav-001.json",
+      "content_sha256": "c749d288c3c6b6db75bdf1f5e75ed3db330cfac3d93d07038eeb3122592d727e"
+    },
+    {
+      "case_id": "BOT-UNK-SCRIPT-001",
+      "case_version": 1,
+      "file": "cases/bot-unk-script-001.json",
+      "content_sha256": "291a66da7615cc88925a2afbb70a6934281cce0a9c4553c51cda6a9a14f15f32"
+    },
+    {
+      "case_id": "BOT-UNK-TOMB-001",
+      "case_version": 1,
+      "file": "cases/bot-unk-tomb-001.json",
+      "content_sha256": "d5969dc5a4eab7ba23161cab1cc1a0aff5b30956f66ea7223db42eab45560a51"
+    },
+    {
+      "case_id": "WAF-ATK-ENC-001",
+      "case_version": 1,
+      "file": "cases/waf-atk-enc-001.json",
+      "content_sha256": "0328d95300dbc1c4f5dcbe39c4088610f4250a777437882790010b968923067a"
+    },
+    {
+      "case_id": "WAF-ATK-PATH-001",
+      "case_version": 2,
+      "file": "cases/waf-atk-path-001.json",
+      "content_sha256": "b0ce1cf814f09243db7f7523790e96717cc65c85bf1d22cd767193312a709818"
+    },
+    {
+      "case_id": "WAF-ATK-PROTO-001",
+      "case_version": 2,
+      "file": "cases/waf-atk-proto-001.json",
+      "content_sha256": "9f53abf746ee61e9c05609aba3f813260c7289bc3e9564e6573506d9f7972405"
+    },
+    {
+      "case_id": "WAF-ATK-RCE-001",
+      "case_version": 1,
+      "file": "cases/waf-atk-rce-001.json",
+      "content_sha256": "9672ea0141c1e5a577ffe8783a2268ec5a82c7ef88826edd6ebce4e8df0fbf8a"
+    },
+    {
+      "case_id": "WAF-ATK-SQLI-001",
+      "case_version": 1,
+      "file": "cases/waf-atk-sqli-001.json",
+      "content_sha256": "19ac8f94e2eab5f29517470f341e134411bf78a5513c78e6c9d58cc1e106b77f"
+    },
+    {
+      "case_id": "WAF-ATK-SQLI-002",
+      "case_version": 1,
+      "file": "cases/waf-atk-sqli-002.json",
+      "content_sha256": "f1942ccf39b9fa1375998bab9fd08073e7ef0a7050677d306d6a155df5bf3d9e"
+    },
+    {
+      "case_id": "WAF-ATK-SSRF-001",
+      "case_version": 2,
+      "file": "cases/waf-atk-ssrf-001.json",
+      "content_sha256": "41008fc486564b0a1eb04daa0df97ea76e024bba393dd8758a7466b59a95a6bf"
+    },
+    {
+      "case_id": "WAF-ATK-SSTI-001",
+      "case_version": 2,
+      "file": "cases/waf-atk-ssti-001.json",
+      "content_sha256": "04826d17568948691939ba5673e50c06528c467d39d7fcd35cd5f0177da75103"
+    },
+    {
+      "case_id": "WAF-ATK-WEBSHELL-001",
+      "case_version": 2,
+      "file": "cases/waf-atk-webshell-001.json",
+      "content_sha256": "0e5f5f11f4206cdb475a7834bf56cd3dee9b1d9f01ce3677463526de76b5941e"
+    },
+    {
+      "case_id": "WAF-ATK-XSS-001",
+      "case_version": 1,
+      "file": "cases/waf-atk-xss-001.json",
+      "content_sha256": "34778f88d877ed33003d35a8f36100d2eab150e76fecbfc1dc050f64e454d622"
+    },
+    {
+      "case_id": "WAF-ATK-XXE-001",
+      "case_version": 2,
+      "file": "cases/waf-atk-xxe-001.json",
+      "content_sha256": "774ea14f776a959c1a9dea1ebf4abfd975d75c0097252a17aa8a821def6cf59d"
+    },
+    {
+      "case_id": "WAF-BEN-EDGE-001",
+      "case_version": 1,
+      "file": "cases/waf-ben-edge-001.json",
+      "content_sha256": "22435aad29a3603674247c19db012ff81c56f546fd86d6336a671a662be7648a"
+    },
+    {
+      "case_id": "WAF-BEN-FORM-001",
+      "case_version": 2,
+      "file": "cases/waf-ben-form-001.json",
+      "content_sha256": "c25a772c2744fe58356d86a64c40f1810c51fcf4cc9dc26be7d84ea2848caba8"
+    },
+    {
+      "case_id": "WAF-BEN-JSON-001",
+      "case_version": 1,
+      "file": "cases/waf-ben-json-001.json",
+      "content_sha256": "3e2b3ee9dbf8baa29d2b7430ac847886ed67ff1cff9c2c534ed67402f70397cc"
+    },
+    {
+      "case_id": "WAF-BEN-QUERY-001",
+      "case_version": 1,
+      "file": "cases/waf-ben-query-001.json",
+      "content_sha256": "820c4d5c03077a2c3ee8fec2405ca232ac7c6fd19bfe03a632df4a646d583572"
+    },
+    {
+      "case_id": "WAF-BEN-SQL-001",
+      "case_version": 1,
+      "file": "cases/waf-ben-sql-001.json",
+      "content_sha256": "4bad633656c86a4b9c50739f0c64a6ab7a8498a95e1f4ea481225ca1033ce7f8"
+    },
+    {
+      "case_id": "WAF-BEN-UNI-001",
+      "case_version": 1,
+      "file": "cases/waf-ben-uni-001.json",
+      "content_sha256": "8f5df7e97ff874eff95c817ca2a05724bfccfd6815081e02067180ad6833809a"
+    },
+    {
+      "case_id": "WAF-BEN-UPLOAD-001",
+      "case_version": 1,
+      "file": "cases/waf-ben-upload-001.json",
+      "content_sha256": "6ba98b291f74828d1cc0e89740622f4cd426ccd8e7d4d7dc525352f7d0aec41a"
+    }
+  ]
+}

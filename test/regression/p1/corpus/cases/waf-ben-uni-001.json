@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "case_id": "WAF-BEN-UNI-001",
+  "case_version": 1,
+  "family": "waf",
+  "tags": ["normal-business", "unicode", "false-positive-guard"],
+  "criticality": "MANDATORY",
+  "truth": "BENIGN",
+  "truth_reason": "多语言 Unicode 正文（中文、日文、emoji、全角标点、组合字符），人工核验为正常内容提交；属任务书 §4.2 要求的 Unicode 正常样本",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "waf.core.allow_benign",
+    "applications": ["p1reg-echo-site"],
+    "protocols": ["http/1.1"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin"],
+    "notes": "仅需隔离栈与受控源站"
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "POST",
+        "path": "/api/json",
+        "headers": {"Content-Type": "application/json; charset=utf-8"},
+        "body": "{\"title\": \"国际化内容测试\", \"body\": \"中文段落。日本語のテキスト。Emoji: 🎉🔥✨。全角标点：，。！？【】（）。组合字符: é。\", \"tags\": [\"国际化\", \"テスト\", \"unicode\"]}"
+      },
+      "wait": null,
+      "assert": [
+        {"type": "http_status_in", "statuses": [200]},
+        {"type": "origin_marker_present"}
+      ]
+    }
+  ],
+  "seed": 1002,
+  "reset_plan": {"scope": "none", "actions": ["none"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "none"},
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "none"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "none"},
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "none"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": true,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "TRAIN"
+}

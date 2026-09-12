@@ -1,0 +1,6 @@
+S6 再冻结覆盖核查（2026-09-09，绑定 tag wdsp-v1.1.2）
+合并视图：docs/evidence/merged-check-final-20260909.manifest.json（S3+S4+S5+S6-refreeze 四包）
+强制验收项总数：63（期望 63）；缺失：无；多余：无；重复：无
+状态分布：{'PASS': 52, 'BLOCKED': 10, 'NOT_APPLICABLE': 1}
+与 2026-09-08 冻结相比变化：source.dirty true→false、snapshot_sha256 与 file_manifest 已填充（3653 文件）；
+EVD-11/12 仍 BLOCKED（无第二套环境、镜像与配置指纹仍缺）；其余记录状态不变。

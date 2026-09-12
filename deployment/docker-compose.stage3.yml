@@ -1,0 +1,197 @@
+# 九章阶段3 整合验证编排
+# 整合：PostgreSQL + Valkey + 管理API + 防护网关 + 测试源站
+# 管理API与防护网关共享 Caddy Admin Socket 卷（后端经 Unix Socket 发布配置）
+# 用法（仓库根目录）：
+#   docker compose -f deployment/docker-compose.stage3.yml --env-file .env.example up -d
+
+name: jiuzhang-stage3
+
+services:
+  postgres:
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    container_name: jiuzhang-stage3-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jiuzhang_waf}
+      POSTGRES_USER: ${POSTGRES_USER:-jiuzhang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - stage3-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jiuzhang} -d ${POSTGRES_DB:-jiuzhang_waf}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - stage3-net
+
+  valkey:
+    image: valkey/valkey:8.1.8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+    container_name: jiuzhang-stage3-valkey
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --requirepass
+      - ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    volumes:
+      - stage3-valkey-data:/data
+    ports:
+      - "127.0.0.1:${VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+    networks:
+      - stage3-net
+
+  api:
+    image: jiuzhang-server:stage3
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    container_name: jiuzhang-stage3-api
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jiuzhang_waf}
+      POSTGRES_USER: ${POSTGRES_USER:-jiuzhang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      VALKEY_HOST: valkey
+      VALKEY_PORT: 6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+      COOKIE_SECURE: "false"
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
+      JIUZHANG_MASTER_KEY: ${JIUZHANG_MASTER_KEY:-}
+      MANAGEMENT_TRUSTED_PROXY_CIDRS: ${MANAGEMENT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
+      CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
+      GATEWAY_DATA_DIR: /app/runtime
+      MIGRATIONS_DIR: /app/migrations
+      WAF_CRS_DIR: /etc/caddy/rules/crs/rules
+      WAF_CRS_VERSION: 4.28.0
+      WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
+      GATEWAY_NODE_NAME: gateway-stage3-01
+      # 采集器批量/周期 flush 阈值（W20 批量化修复；作用于 API 运行时事件与全量访问日志采集器）
+      WAF_COLLECTOR_FLUSH_BATCH: ${WAF_COLLECTOR_FLUSH_BATCH:-2000}
+      WAF_COLLECTOR_FLUSH_INTERVAL: ${WAF_COLLECTOR_FLUSH_INTERVAL:-2s}
+    ports:
+      - "127.0.0.1:${API_PORT:-18081}:8080"
+    volumes:
+      # 与防护网关共享 Admin Socket 卷（后端经 Unix Socket 发布配置）
+      - stage3-gateway-admin:/var/run/caddy
+      # 只读挂载网关日志卷（事件采集器读取 Coraza 审计日志）
+      - stage3-gateway-logs:/var/log/caddy-audit:ro
+      # 只读挂载 CRS 规则目录（CRS 元数据同步）
+      - ../gateway/rules:/etc/caddy/rules:ro
+      - stage3-runtime:/app/runtime
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      gateway:
+        condition: service_started
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - stage3-net
+
+  gateway:
+    image: jiuzhang-gateway:stage1
+    build:
+      context: ../gateway
+      dockerfile: Dockerfile
+    container_name: jiuzhang-stage3-gateway
+    restart: unless-stopped
+    environment:
+      SEC_RULE_ENGINE: On
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-18080}:8080"
+    volumes:
+      - ../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      - ../gateway/rules:/etc/caddy/rules:ro
+      - stage3-gateway-logs:/var/log/caddy
+      - stage3-gateway-admin:/var/run/caddy
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      testorigin:
+        condition: service_healthy
+    networks:
+      - stage3-net
+
+  testorigin:
+    build:
+      context: ../deployment/stage1/testorigin
+      dockerfile: Dockerfile
+    image: jiuzhang-testorigin:stage1
+    container_name: jiuzhang-stage3-testorigin
+    restart: unless-stopped
+    expose:
+      - "8081"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - stage3-net
+
+volumes:
+  stage3-postgres-data:
+    driver: local
+  stage3-valkey-data:
+    driver: local
+  stage3-gateway-admin:
+    driver: local
+  stage3-gateway-logs:
+    driver: local
+  stage3-runtime:
+    driver: local
+
+networks:
+  stage3-net:
+    driver: bridge

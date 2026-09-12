@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "build_id": "dev-s6-freeze-20260908",
+  "product_version": "unresolved",
+  "source": {
+    "commit": "3c73774",
+    "dirty": true,
+    "snapshot_sha256": null,
+    "file_manifest": []
+  },
+  "images": [],
+  "config_fingerprint": null,
+  "environment": {
+    "id": "dev-mac-local",
+    "os": "Darwin 25.2.0 (arm64)",
+    "go": "go1.25.6 darwin/amd64",
+    "python": "3.12.0",
+    "node": "v24.13.0",
+    "docker": "28.3.0",
+    "topology": "冻结核查在本机执行；无干净构建输入与锁定镜像",
+    "clock": "宿主机本地时钟",
+    "note": "发布证据冻结现状记录：RELEASE_VERIFIED 门槛不满足，本包不构成发布验收通过证明"
+  },
+  "started_at": "2026-09-08T09:45:00+08:00",
+  "ended_at": "2026-09-08T10:05:00+08:00",
+  "tests": [
+    {
+      "id": "EVD-01",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s tools/tests（条目有代码无证据 → 实现与未验证分别显示、不得 PASS 的用例组；38 用例全绿）",
+      "artifacts": [
+        {
+          "path": "artifacts/capability-tool-tests.log",
+          "sha256": "f084d4fa7b579b76e25529cb1101d1100447ecaef42be6855b6f39d865a28146"
+        }
+      ]
+    },
+    {
+      "id": "EVD-02",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s tools/tests（强制测试 SKIP → 场景 NOT_RUN、退出码 0、发布门槛失败的用例）",
+      "artifacts": [
+        {
+          "path": "artifacts/capability-tool-tests.log",
+          "sha256": "f084d4fa7b579b76e25529cb1101d1100447ecaef42be6855b6f39d865a28146"
+        }
+      ]
+    },
+    {
+      "id": "EVD-03",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s tools/tests（commit/dirty/快照/配置指纹不匹配 → 拒绝绑定并定位冲突字段的用例组）",
+      "artifacts": [
+        {
+          "path": "artifacts/capability-tool-tests.log",
+          "sha256": "f084d4fa7b579b76e25529cb1101d1100447ecaef42be6855b6f39d865a28146"
+        }
+      ]
+    },
+    {
+      "id": "EVD-04",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s tools/tests（篡改工件/删文件/重复 ID → 校验失败且错误定位到字段/文件）",
+      "artifacts": [
+        {
+          "path": "artifacts/capability-tool-tests.log",
+          "sha256": "f084d4fa7b579b76e25529cb1101d1100447ecaef42be6855b6f39d865a28146"
+        }
+      ]
+    },
+    {
+      "id": "EVD-05",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s tools/tests（越界 ../越界符号链接/URL/恶意 command → 拒绝，不发请求不执行命令）",
+      "artifacts": [
+        {
+          "path": "artifacts/capability-tool-tests.log",
+          "sha256": "f084d4fa7b579b76e25529cb1101d1100447ecaef42be6855b6f39d865a28146"
+        }
+      ]
+    },
+    {
+      "id": "EVD-06",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s tools/tests（不支持的 schema 版本/错误枚举/非法时间 → 明确失败，不按默认 PASS 容错）",
+      "artifacts": [
+        {
+          "path": "artifacts/capability-tool-tests.log",
+          "sha256": "f084d4fa7b579b76e25529cb1101d1100447ecaef42be6855b6f39d865a28146"
+        }
+      ]
+    },
+    {
+      "id": "EVD-07",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s tools/tests（同输入两次生成输出确定；注入写入失败时原文件完整——临时文件原子替换）",
+      "artifacts": [
+        {
+          "path": "artifacts/capability-tool-tests.log",
+          "sha256": "f084d4fa7b579b76e25529cb1101d1100447ecaef42be6855b6f39d865a28146"
+        }
+      ]
+    },
+    {
+      "id": "EVD-08",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s tools/tests（新增影响构建的未跟踪源码 → 快照摘要改变，旧快照证据不可继续使用的用例）",
+      "artifacts": [
+        {
+          "path": "artifacts/capability-tool-tests.log",
+          "sha256": "f084d4fa7b579b76e25529cb1101d1100447ecaef42be6855b6f39d865a28146"
+        }
+      ]
+    },
+    {
+      "id": "EVD-09",
+      "status": "PASS",
+      "capabilities": [],
+      "command": "python3 -m unittest discover -s tools/tests（分场景未实测标注前提/未验证，不宣称全能力通过）；累计清单实况：apm-trace-sql-exception 与 agent-collection-forwarding 保持 PARTIAL/BLOCKED 如实显示",
+      "artifacts": [
+        {
+          "path": "artifacts/capability-tool-tests.log",
+          "sha256": "f084d4fa7b579b76e25529cb1101d1100447ecaef42be6855b6f39d865a28146"
+        }
+      ]
+    },
+    {
+      "id": "EVD-10",
+      "status": "NOT_APPLICABLE",
+      "capabilities": [],
+      "reason": "本轮 P0-01 未改 HTTP/UI 交付面（工具+清单+文档，无新增报告导出接口或页面），权限回归无变更对象；任务书约定 EVD-10 按实际变更范围执行",
+      "command": "范围核对：P0-01 交付物为 tools/capability_evidence.py、capabilities.json/schema、CAPABILITIES.md、证据包目录，不含 HTTP/UI 变更"
+    },
+    {
+      "id": "EVD-11",
+      "status": "BLOCKED",
+      "capabilities": [],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "按证据从干净环境重建、部署并重跑必测集——当前无干净构建输入（source.dirty=true，1613 个未提交文件）、无锁定镜像、无第二套环境",
+      "artifacts": [
+        {
+          "path": "artifacts/freeze-coverage-check.log",
+          "sha256": "26198b7bddb1ad83f5ee98925c80b1649693fa4690a8e4267c9577dcf8cc0317"
+        }
+      ]
+    },
+    {
+      "id": "EVD-12",
+      "status": "BLOCKED",
+      "capabilities": [],
+      "reason": "ENVIRONMENT_UNAVAILABLE",
+      "command": "最终镜像/配置/必测结果齐全才生成 RELEASE_VERIFIED——check --release 实测拒绝（rc=1），发布门槛保持生效",
+      "artifacts": [
+        {
+          "path": "artifacts/freeze-coverage-check.log",
+          "sha256": "26198b7bddb1ad83f5ee98925c80b1649693fa4690a8e4267c9577dcf8cc0317"
+        }
+      ]
+    }
+  ],
+  "release_status": "DEVELOPMENT"
+}

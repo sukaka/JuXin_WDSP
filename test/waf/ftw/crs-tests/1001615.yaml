@@ -1,0 +1,21 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: Archive/compress/expect wrapper in request URI (CUSTOM_PACK)
+rule_id: 1001615
+tests:
+  - test_id: 1
+    desc: "phar:// wrapper inside URI path"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+          method: GET
+          port: 80
+          uri: "/download/phar://evil.phar/x"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001615]

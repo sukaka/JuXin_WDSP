@@ -1,0 +1,293 @@
+// headers.go 站点级 HTTP 头合规与代理配置 + 路径粒度转发的配置构建。
+package gatewayconfig
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/jiuzhang-waf/server/internal/applications"
+)
+
+// HeaderRule 自定义头修改规则（method: set|add|delete）。
+type HeaderRule struct {
+	Name   string `json:"name"`
+	Method string `json:"method"`
+	Value  string `json:"value,omitempty"`
+}
+
+// AppHeaderConfig 应用级头合规与代理配置（无配置时回落到默认静态头，行为与既有版本一致）。
+// 说明：下划线请求头由网关内核（Caddy 2.11+，GHSA-f59h-q822-g45g）入口强制丢弃，
+// 始终生效、不可配置，故本结构不包含该开关。
+type AppHeaderConfig struct {
+	ServerAction        string       `json:"server_action"`
+	ServerValue         string       `json:"server_value,omitempty"`
+	XAuthorAction       string       `json:"x_author_action"`
+	XAuthorValue        string       `json:"x_author_value,omitempty"`
+	XPoweredByAction    string       `json:"x_powered_by_action"`
+	XPoweredByValue     string       `json:"x_powered_by_value,omitempty"`
+	XFrameOptions       string       `json:"x_frame_options"` // default|inherit|deny|sameorigin|allow_from
+	XFrameOptionsURL    string       `json:"x_frame_options_url,omitempty"`
+	XXssProtection      bool         `json:"x_xss_protection"`
+	VaryUserAgent       bool         `json:"vary_user_agent"`
+	HstsEnabled         bool         `json:"hsts_enabled"`
+	HstsMaxAge          int          `json:"hsts_max_age,omitempty"`
+	CspMode             string       `json:"csp_mode"` // off|preset|custom
+	CspValue            string       `json:"csp_value,omitempty"`
+	ResponseBuffering   bool         `json:"response_buffering"`
+	XffOverwrite        bool         `json:"xff_overwrite"`
+	HostStripPort       bool         `json:"host_strip_port"`
+	AcceptEncodingOff   bool         `json:"accept_encoding_off"`
+	RedirectPortRewrite bool         `json:"redirect_port_rewrite"`
+	CustomRequestRules  []HeaderRule `json:"custom_request_rules,omitempty"`
+	CustomResponseRules []HeaderRule `json:"custom_response_rules,omitempty"`
+}
+
+// AppPathRoute 路径粒度转发（应用内路径前缀 → 指定源站）。
+type AppPathRoute struct {
+	PathPrefix     string `json:"path_prefix"`
+	UpstreamScheme string `json:"upstream_scheme"`
+	UpstreamHost   string `json:"upstream_host"`
+	UpstreamPort   int    `json:"upstream_port"`
+	StripPrefix    bool   `json:"strip_prefix"`
+	Priority       int    `json:"priority"`
+}
+
+// buildHeaderHandler 构建安全响应头处理器（含头合规配置与自定义返回头规则）。
+// 默认（无配置）：与既有静态行为一致（nosniff + X-Frame-Options:DENY + Referrer-Policy + 删除 Server）。
+// 说明：response 必须 deferred=true —— Caddy reverse_proxy 在回源后会删除 w.Header() 中的
+// Server（issue #6275，改用 Via），非 deferred 的 set Server 会被抹掉、delete 也压不住
+// 源站随后拷贝来的同名头；deferred 在 WriteHeader 时应用，顺序在代理拷贝之后，语义才正确。
+func buildHeaderHandler(cfg *AppHeaderConfig) mapT {
+	set := map[string][]string{}
+	del := []string{}
+	add := map[string][]string{}
+
+	if cfg == nil {
+		set["X-Content-Type-Options"] = []string{"nosniff"}
+		set["X-Frame-Options"] = []string{"DENY"}
+		set["Referrer-Policy"] = []string{"no-referrer"}
+		del = append(del, "Server")
+		return mapT{"handler": "headers", "response": mapT{"set": set, "delete": del, "deferred": true}}
+	}
+
+	// Server / X-Author / X-Powered-By
+	applyAction := func(field, action, value string) {
+		switch action {
+		case "hide":
+			del = append(del, field)
+		case "replace":
+			if value != "" {
+				set[field] = []string{value}
+			} else {
+				del = append(del, field)
+			}
+		default: // keep：不干预
+		}
+	}
+	applyAction("Server", cfg.ServerAction, cfg.ServerValue)
+	applyAction("X-Author", cfg.XAuthorAction, cfg.XAuthorValue)
+	applyAction("X-Powered-By", cfg.XPoweredByAction, cfg.XPoweredByValue)
+
+	// X-Frame-Options
+	switch cfg.XFrameOptions {
+	case "inherit":
+		// 透传源站：不设置
+	case "sameorigin":
+		set["X-Frame-Options"] = []string{"SAMEORIGIN"}
+	case "allow_from":
+		if cfg.XFrameOptionsURL != "" {
+			set["X-Frame-Options"] = []string{"ALLOW-FROM " + cfg.XFrameOptionsURL}
+		}
+	default: // default/deny
+		set["X-Frame-Options"] = []string{"DENY"}
+	}
+
+	// 固定安全基线（不因配置丢失）
+	set["X-Content-Type-Options"] = []string{"nosniff"}
+	set["Referrer-Policy"] = []string{"no-referrer"}
+	if cfg.XXssProtection {
+		set["X-Xss-Protection"] = []string{"1; mode=block"}
+	}
+	if cfg.VaryUserAgent {
+		add["Vary"] = []string{"User-Agent"}
+	}
+	if cfg.HstsEnabled {
+		maxAge := cfg.HstsMaxAge
+		if maxAge <= 0 {
+			maxAge = 31536000
+		}
+		set["Strict-Transport-Security"] = []string{fmt.Sprintf("max-age=%d; includeSubDomains", maxAge)}
+	}
+	switch cfg.CspMode {
+	case "preset":
+		set["Content-Security-Policy"] = []string{"default-src 'self'; frame-ancestors 'self'; base-uri 'self'"}
+	case "custom":
+		if cfg.CspValue != "" {
+			set["Content-Security-Policy"] = []string{cfg.CspValue}
+		}
+	}
+
+	// 自定义返回头规则
+	for _, rule := range cfg.CustomResponseRules {
+		name := strings.TrimSpace(rule.Name)
+		if name == "" {
+			continue
+		}
+		switch rule.Method {
+		case "add":
+			add[name] = append(add[name], rule.Value)
+		case "delete":
+			del = append(del, name)
+		default: // set
+			set[name] = []string{rule.Value}
+		}
+	}
+
+	resp := mapT{"set": set, "delete": del, "deferred": true}
+	if len(add) > 0 {
+		resp["add"] = add
+	}
+	return mapT{"handler": "headers", "response": resp}
+}
+
+// applyProxyOptions 把头合规中的代理配置应用到 reverse_proxy（header_up 与响应缓冲）。
+// X-Forwarded-For 上一跳覆盖默认开启（LOW-G3）：jiuzhang_guard 在处理器链前置位已将
+// RemoteAddr 改写为已解析的真实客户端 IP，{http.request.remote.host} 即真实 IP——默认
+// 覆盖客户端伪造的 XFF 左端；仅当存在头合规配置记录且显式 xff_overwrite=false 时保留
+// 入站原值（BYPASS/可信 LB 后需保留 XFF 链的场景须显式关闭）。
+func applyProxyOptions(proxy mapT, cfg *AppHeaderConfig) mapT {
+	set := map[string][]string{}
+	add := map[string][]string{}
+	del := []string{}
+	if cfg == nil || cfg.XffOverwrite {
+		set["X-Forwarded-For"] = []string{"{http.request.remote.host}"}
+	}
+	if cfg == nil {
+		if len(set) > 0 {
+			proxy["headers"] = mapT{"request": mapT{"set": set}}
+		}
+		return proxy
+	}
+	if cfg.HostStripPort {
+		set["Host"] = []string{"{http.request.host}"}
+	}
+	if cfg.AcceptEncodingOff {
+		set["Accept-Encoding"] = []string{"identity"}
+	}
+	for _, rule := range cfg.CustomRequestRules {
+		name := strings.TrimSpace(rule.Name)
+		if name == "" {
+			continue
+		}
+		switch rule.Method {
+		case "add":
+			add[name] = append(add[name], rule.Value)
+		case "delete":
+			del = append(del, name)
+		default:
+			set[name] = []string{rule.Value}
+		}
+	}
+	if len(set) > 0 || len(add) > 0 || len(del) > 0 {
+		req := mapT{}
+		if len(set) > 0 {
+			req["set"] = set
+		}
+		if len(add) > 0 {
+			req["add"] = add
+		}
+		if len(del) > 0 {
+			req["delete"] = del
+		}
+		proxy["headers"] = mapT{"request": req}
+	}
+	if cfg.ResponseBuffering {
+		// -1 表示缓冲完整响应后再下发（默认 0 为即时流式）
+		proxy["flush_interval"] = "-1"
+	}
+	return proxy
+}
+
+// pathRouteEntries 为应用+域名构建路径粒度转发路由（在默认路由之前评估）。
+// 排序：priority 升序，前缀长度降序（确定性）；strip_prefix 用 Caddy handle_path 剥离。
+// publicPort 为该批路由所在监听的接入端口。
+func pathRouteEntries(in GenerateInput, app AppData, hosts []string, publicPort int) []routeEntry {
+	if len(app.PathRoutes) == 0 {
+		return nil
+	}
+	rts := append([]AppPathRoute{}, app.PathRoutes...)
+	sort.SliceStable(rts, func(i, j int) bool {
+		if rts[i].Priority != rts[j].Priority {
+			return rts[i].Priority < rts[j].Priority
+		}
+		return len(rts[i].PathPrefix) > len(rts[j].PathPrefix)
+	})
+	var out []routeEntry
+	for _, pr := range rts {
+		prefix := pr.PathPrefix
+		if !strings.HasPrefix(prefix, "/") {
+			continue
+		}
+		upstream := applications.Upstream{
+			Scheme: pr.UpstreamScheme, NormalizedHost: pr.UpstreamHost, Port: pr.UpstreamPort,
+			Status: "ACTIVE",
+			// 路径转发无逐路由证书校验开关，跟随应用源站字段的库默认（tls_verify DEFAULT TRUE）：
+			// https 回源默认校验证书（SNI/证名取源站主机名，见 buildReverseProxy）
+			TLSVerify: true,
+		}
+		proxy := applyProxyOptions(buildReverseProxy([]applications.Upstream{upstream}), app.HeaderConfig)
+		handles := buildChainHandles(in, app, proxy, publicPort)
+		route := mapT{
+			"match":  []interface{}{mapT{"host": hosts, "path": []string{prefix + "*"}}},
+			"handle": handles,
+		}
+		if pr.StripPrefix {
+			// handle_path 的 JSON 形态：match host+path → subroute[rewrite strip_path_prefix → 处理链]
+			route = mapT{
+				"match": []interface{}{mapT{"host": hosts, "path": []string{prefix + "*"}}},
+				"handle": []interface{}{mapT{
+					"handler": "subroute",
+					"routes": []interface{}{
+						mapT{"handle": []interface{}{mapT{"handler": "rewrite", "strip_path_prefix": prefix}}},
+						mapT{"handle": handles},
+					},
+				}},
+			}
+		}
+		out = append(out, routeEntry{appCode: app.Code, route: route})
+	}
+	return out
+}
+
+// buildChainHandles 构建除反代外的通用处理链（RequestID → guard → WAF → 安全响应头）。
+// 供默认路由与路径转发路由复用；反代由调用方按路由目标构建并追加。
+// BYPASS（数据透传）模式不注入 guard 与 waf 处理器，仅保留 RequestID、安全响应头与反代。
+func buildChainHandles(in GenerateInput, app AppData, proxy mapT, publicPort int) []interface{} {
+	var handles []interface{}
+	// RequestID 请求头（供 WAF 日志与阻断页关联）；响应侧同步输出 X-Jiuzhang-Request-ID，
+	// 使正常响应（含 BYPASS 透传链）也携带请求 ID，便于客户端与日志对账。
+	handles = append(handles, mapT{
+		"handler": "headers",
+		"request": mapT{"set": mapT{"X-Request-Id": []string{"{http.request.uuid}"}},
+			"delete": []string{}},
+		"response": mapT{"set": mapT{"X-Jiuzhang-Request-ID": []string{"{http.request.header.X-Request-Id}"}}},
+	})
+	if app.ProtectionMode != applications.ModeBypass {
+		if in.Guard != nil {
+			handles = append(handles, buildGuardHandler(in.Guard, app, publicPort))
+		}
+		ruleEngine := modeToRuleEngine[app.ProtectionMode]
+		if ruleEngine == "" {
+			ruleEngine = "DetectionOnly"
+		}
+		directives := buildWAFDirectivesWithPolicy(ruleEngine, app, in.Exceptions, in.CustomRules, app.RuleOverrideSecLang)
+		handles = append(handles, mapT{
+			"handler":    "waf",
+			"directives": directives,
+		})
+	}
+	handles = append(handles, buildHeaderHandler(app.HeaderConfig))
+	handles = append(handles, proxy)
+	return handles
+}

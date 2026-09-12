@@ -1,0 +1,34 @@
+{
+  "cases_sha256": "acfeedbb56aa5a39051fc7b963367073c5f397014bd0e45b3fadd736399bc34c",
+  "env_descriptor_sha256": "294cda34b9dcbfbd75daf2e151d50a1b25e6634e3e4c7067bde3d2e1408780a9",
+  "executed_cases": 48,
+  "http_requests": 74,
+  "incomplete": 0,
+  "kind": "p1_regression_execution",
+  "perf_sha256": "d469dc68254f8a77caa7be365af34dc6a059f5da2a5b1ddbf8d4cd8d174204e5",
+  "planned": 48,
+  "run_id": "20260908T203034-c88b80",
+  "status_counts": {
+    "BLOCKED": 0,
+    "FAIL": 15,
+    "NOT_APPLICABLE": 0,
+    "NOT_RUN": 0,
+    "PASS": 33,
+    "SKIP": 0
+  },
+  "status_distribution_by_profile": {
+    "OBSERVE": {
+      "200": 32,
+      "403": 1,
+      "404": 1,
+      "405": 1
+    },
+    "PROTECT": {
+      "200": 19,
+      "204": 2,
+      "403": 16,
+      "404": 1,
+      "405": 1
+    }
+  }
+}

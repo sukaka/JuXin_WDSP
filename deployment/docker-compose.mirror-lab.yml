@@ -1,0 +1,100 @@
+# 九章阶段C 镜像（旁路）部署模式 PoC 实验编排
+# 设计依据：docs/NETWORK_MODES_DESIGN.md §4.2
+#
+# 旁路实验拓扑（全部在 Docker Linux VM 内部生效）：
+#
+#   client 172.30.30.20 ── server_net 172.30.30.0/24 ── origin 172.30.30.10:8081
+#                                                          │ network_mode: container:origin
+#                                                        mirror（共享 origin 网络命名空间，
+#                                                          在 eth0 上旁路抓包）
+#
+# - Docker 没有真实 SPAN/镜像口：mirror 容器以 network_mode=container:origin 共享
+#   origin 的网络命名空间，从而「看到」送达 origin 的全部流量——这是无交换机环境下
+#   模拟镜像口的标准做法，流量路径与真实 SPAN 等价（被动副本、只读分析）；
+# - mirror 只抓包还原检测，不向网络回注任何报文：旁路零侵入由架构保证，
+#   用例 c4 实测 client 响应与无镜像时一致；
+# - 事件输出：mirror 写 api-runtime-events JSONL 到卷（与服务端既有采集器同一契约），
+#   测试脚本直接读卷内文件断言（不依赖服务端，PoC 自包含）。
+#
+# 用法（仓库根目录）：
+#   # 1) 构建采集器二进制与镜像（Dockerfile 头部有同样说明）
+#   cd gateway && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+#     -ldflags="-s -w" -o ../deployment/docker/mirrorcap/mirrorcap ./cmd/mirrorcap && cd ..
+#   docker compose -f deployment/docker-compose.mirror-lab.yml build
+#   # 2) 起实验、跑验证、清理
+#   docker compose -f deployment/docker-compose.mirror-lab.yml up -d
+#   bash test/waf/scripts/mirror-lab-tests.sh
+#   docker compose -f deployment/docker-compose.mirror-lab.yml down -v
+#
+# 镜像版本锁定说明：与 docker-compose.routed-lab.yml 相同——Docker Hub 在本实验环境
+# 不可达，第三方/自建镜像统一按本机已有镜像的 RepoDigest 锁定，保证可复现。
+
+name: mirrorlab
+
+services:
+  origin:
+    image: jiuzhang-testorigin@sha256:670887ef1dc10268fbc9eeb3203c6791cb7fa525196b5a7e417c4bd763375149
+    container_name: mirrorlab-origin
+    restart: unless-stopped
+    expose:
+      - "8081"
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      server_net:
+        ipv4_address: 172.30.30.10
+
+  mirror:
+    image: jiuzhang-mirrorcap:stageC-poc
+    build:
+      # 需先按文件头说明在宿主机产出 mirrorcap 静态二进制
+      context: docker/mirrorcap
+      dockerfile: Dockerfile
+    container_name: mirrorlab-mirror
+    restart: unless-stopped
+    # 共享 origin 网络命名空间：mirror 的 eth0 即 origin 的 eth0，
+    # 等价于交换机把 origin 端口流量镜像到 WAF 镜像口
+    network_mode: "container:mirrorlab-origin"
+    depends_on:
+      origin:
+        condition: service_healthy
+    cap_add:
+      # AF_PACKET raw socket 需要 NET_RAW；混杂模式（真实 SPAN 场景）需要 NET_ADMIN
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      MIRROR_IFACE: eth0
+      MIRROR_PORTS: "8081"
+      MIRROR_EVENTS_LOG: /var/log/caddy/api-runtime-events.log
+      MIRROR_BODY_MAX: "65536"
+      MIRROR_RULES_DIR: /etc/caddy/rules
+      MIRROR_STATS_INTERVAL: "5" # PoC 缩短统计周期，便于用例 c5 断言
+      GATEWAY_NODE_NAME: mirrorlab-node
+    volumes:
+      # 事件 JSONL（与 jiuzhang_guard 同一契约）落宿主机卷，测试脚本直读断言
+      - ../runtime/logs/mirror-lab:/var/log/caddy
+      # 与网关完全一致的 Coraza/CRS 规则链（只读挂载）
+      - ../gateway/rules:/etc/caddy/rules:ro
+
+  client:
+    image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6
+    container_name: mirrorlab-client
+    # 常驻等待测试脚本 exec 发请求
+    command: ["sh", "-c", "exec sleep infinity"]
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks:
+      server_net:
+        ipv4_address: 172.30.30.20
+
+networks:
+  server_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.30.0/24

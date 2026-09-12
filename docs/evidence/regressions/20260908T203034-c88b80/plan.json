@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "kind": "p1_regression_run_plan",
+  "plan_id": "plan-20260908T000000-stg5r2",
+  "created_at": "2026-09-08T00:00:00Z",
+  "purpose": "BASELINE",
+  "environment": {
+    "environment_id": "p1reg-stage5-compose-local",
+    "stage5_env_descriptor": "/tmp/p1reg-env.json",
+    "isolation": {
+      "mode": "compose_project",
+      "registered_targets": [
+        "p1reg-observe.local",
+        "p1reg-protect.local"
+      ]
+    },
+    "clock": {
+      "max_skew_ms": 50
+    }
+  },
+  "build": {
+    "git_commit": "621d2e4",
+    "worktree_dirty": true
+  },
+  "corpus": {
+    "manifest_path": "test/regression/p1/corpus/manifest.json",
+    "manifest_sha256": "cfdaf27c0af9c370e85b3ee6150a65fec3c6bdbec7140fafedcb05ff0d38f088",
+    "seed": 20260908
+  },
+  "profiles": [
+    "OBSERVE",
+    "PROTECT"
+  ]
+}

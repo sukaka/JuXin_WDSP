@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang Security Team"
+  description: "JSP pageContext servlet context chain (memory shell)"
+rule_id: 1001407
+tests:
+  - test_id: 1
+    desc: "JSP pageContext servlet context chain (memory shell)"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'file=<% ServletContext sc = pageContext.getServletConfig().getServletContext(); %>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001407]
+  - test_id: 2
+    desc: "JSP pageContext servlet context chain (memory shell)"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'file=<% Object r = pageContext.getRequest(); %>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001407]

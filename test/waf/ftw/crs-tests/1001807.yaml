@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: Python dunder attribute chain without template delimiters (CUSTOM_PACK ssti-injection)
+rule_id: 1001807
+tests:
+  - test_id: 1
+    desc: "Jinja2 object graph chain __class__.__mro__ ... __subclasses__()"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "var={{x.__class__.__mro__[1].__subclasses__()}}"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001807]
+  - test_id: 2
+    desc: "Raw dunder chain without template delimiters (eval endpoint style)"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "var=x.__class__.__bases__[0].__subclasses__()"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001807]

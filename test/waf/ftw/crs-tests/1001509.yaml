@@ -1,0 +1,22 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: "SSRF 中文句号/全角句点分隔内网 IP 检测（CUSTOM_PACK ssrf-protocols）"
+rule_id: 1001509
+tests:
+  - test_id: 1
+    desc: "127。0。0。1（U+3002 句号分隔，URL 编码传输）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: GET
+          port: 80
+          uri: "/get?u=http%3A%2F%2F127%E3%80%820%E3%80%820%E3%80%821/"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001509]

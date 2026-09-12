@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: multipart part 声明可执行脚本 MIME 类型检测（application/x-httpd-php 等，自建规则 1001321）
+rule_id: 1001321
+tests:
+  - test_id: 1
+    desc: "part Content-Type 为 application/x-httpd-php"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb321"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb321\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: application/x-httpd-php\r\n\r\nx\r\n--jzb321--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001321]
+  - test_id: 2
+    desc: "part Content-Type 为 text/x-jsp"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb321"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb321\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/x-jsp\r\n\r\nx\r\n--jzb321--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001321]

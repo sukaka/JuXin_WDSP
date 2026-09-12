@@ -1,0 +1,12 @@
+# API 安全系统产品形态覆盖文件。
+# 与 docker-compose.stage5.yml（或生产 compose）叠加使用，
+# 复用同一套代码和基础设施，仅开启 API 能力边界并关闭 Web 防护专属交付。
+services:
+  api:
+    environment:
+      PRODUCT_EDITION: api
+      API_DYNAMIC_PROTECTION_ENABLED: "true"
+      WEB_WAF_ENABLED: "false"
+      # 采集器批量/周期 flush 阈值（透传 .env；作用于 API 运行时事件与全量访问日志采集器）
+      WAF_COLLECTOR_FLUSH_BATCH: ${WAF_COLLECTOR_FLUSH_BATCH:-2000}
+      WAF_COLLECTOR_FLUSH_INTERVAL: ${WAF_COLLECTOR_FLUSH_INTERVAL:-2s}

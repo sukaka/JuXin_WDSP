@@ -1,0 +1,825 @@
+// Package apiassets API 接口资产管理（阶段8/WDSP 任务书 51.1 接口组 + 学习启停）。
+package apiassets
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
+	"github.com/jiuzhang-waf/server/internal/audits"
+	"github.com/jiuzhang-waf/server/internal/authz"
+	"github.com/jiuzhang-waf/server/internal/middleware"
+	"github.com/jiuzhang-waf/server/internal/response"
+)
+
+// Handler API 接口管理。
+type Handler struct {
+	store  Repository
+	audits *audits.Service
+}
+
+// NewHandler 创建处理器（构造注入审计服务，语义同 customrules）。
+func NewHandler(store Repository, audit *audits.Service) *Handler {
+	return &Handler{store: store, audits: audit}
+}
+
+// RegisterRoutes 注册任务书 51.1 / 51.2 接口组（统一 /api/v1/api-security 前缀，
+// 权限点与任务书五十二章一致）。
+func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h *Handler) {
+	mux.Handle("GET /api/v1/api-security/endpoints", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.List))))
+	mux.Handle("GET /api/v1/api-security/endpoints/site-summary", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.SiteSummary))))
+	mux.Handle("GET /api/v1/api-security/endpoints/directory-tree", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.DirectoryTree))))
+	mux.Handle("POST /api/v1/api-security/endpoints/confirm", authz(middleware.RequirePermission("api_asset.confirm")(http.HandlerFunc(h.ConfirmBatch))))
+	mux.Handle("GET /api/v1/api-security/endpoints/{id}", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.Get))))
+	mux.Handle("GET /api/v1/api-security/endpoints/{id}/traffic-trend", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.TrafficTrend))))
+	mux.Handle("PATCH /api/v1/api-security/endpoints/{id}", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Update))))
+	mux.Handle("POST /api/v1/api-security/endpoints/{id}/merge", authz(middleware.RequirePermission("api_asset.merge")(http.HandlerFunc(h.Merge))))
+	mux.Handle("POST /api/v1/api-security/endpoints/{id}/split", authz(middleware.RequirePermission("api_asset.split")(http.HandlerFunc(h.Split))))
+	mux.Handle("POST /api/v1/api-security/endpoints/{id}/ignore", authz(middleware.RequirePermission("api_asset.ignore")(http.HandlerFunc(h.Ignore))))
+	mux.Handle("POST /api/v1/api-security/endpoints/{id}/classify", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Classify))))
+	mux.Handle("POST /api/v1/api-security/endpoints/{id}/deprecate", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Deprecate))))
+	mux.Handle("POST /api/v1/api-security/endpoints/{id}/restore", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Restore))))
+	mux.Handle("GET /api/v1/api-security/service-assets", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.ServiceAssets))))
+	mux.Handle("POST /api/v1/api-security/endpoints/{id}/learning/start", authz(middleware.RequirePermission("api_learning.start")(http.HandlerFunc(h.LearningStart))))
+	mux.Handle("POST /api/v1/api-security/endpoints/{id}/learning/stop", authz(middleware.RequirePermission("api_learning.stop")(http.HandlerFunc(h.LearningStop))))
+	mux.Handle("GET /api/v1/api-security/endpoints/{id}/learning/status", authz(middleware.RequirePermission("api_learning.read")(http.HandlerFunc(h.LearningStatus))))
+	mux.Handle("GET /api/v1/api-security/endpoints/{id}/learning/samples", authz(middleware.RequirePermission("api_learning.read")(http.HandlerFunc(h.LearningSamples))))
+	mux.Handle("GET /api/v1/api-security/endpoints/{id}/lifecycle-events", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.LifecycleEvents))))
+}
+
+// List GET /api/v1/api-security/endpoints
+// 过滤：asset_status / learning_status / keyword / application_id / unassigned / directory_path / business_type。
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := ListFilter{
+		AssetStatus:     strings.ToUpper(strings.TrimSpace(q.Get("asset_status"))),
+		LearningStatus:  strings.ToUpper(strings.TrimSpace(q.Get("learning_status"))),
+		Keyword:         strings.TrimSpace(q.Get("keyword")),
+		DirectoryPrefix: strings.TrimSpace(q.Get("directory_path")),
+		Unassigned:      q.Get("unassigned") == "true",
+		Page:            queryInt(r, "page", 1),
+		PageSize:        queryInt(r, "page_size", 20),
+	}
+	if v := strings.TrimSpace(q.Get("application_id")); v != "" {
+		appID, err := uuid.Parse(v)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的application_id")
+			return
+		}
+		f.ApplicationID = &appID
+	}
+	if v := strings.TrimSpace(q.Get("business_type")); v != "" {
+		bt := NormalizeBusinessType(v)
+		if !validBusinessTypes[bt] {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+				"无效的业务类型（LOGIN/REGISTER/PASSWORD_RESET/SMS/EMAIL/ORDER/PAYMENT/EXPORT/DOWNLOAD/SEARCH/QUERY_PERSONAL_DATA/AI_INFERENCE/OTHER）")
+			return
+		}
+		f.BusinessType = bt
+	}
+	list, total, err := h.store.List(r.Context(), f)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, list, total, f.Page, f.PageSize)
+}
+
+// SiteSummary GET /api/v1/api-security/endpoints/site-summary
+// 各站点接口计数 + 未归属计数（站点列表数据源）。
+func (h *Handler) SiteSummary(w http.ResponseWriter, r *http.Request) {
+	items, unassigned, err := h.store.SiteSummary(r.Context())
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]any{"items": items, "unassigned": unassigned})
+}
+
+// DirectoryTree GET /api/v1/api-security/endpoints/directory-tree
+// 按目录聚合接口计数（扁平列表，前端组装层级）；application_id 指定站点，unassigned=true 查未归属。
+func (h *Handler) DirectoryTree(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	var appID *uuid.UUID
+	if v := strings.TrimSpace(q.Get("application_id")); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的application_id")
+			return
+		}
+		appID = &id
+	}
+	items, err := h.store.DirectoryTree(r.Context(), appID, q.Get("unassigned") == "true")
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]any{"items": items})
+}
+
+// ConfirmBatch POST /api/v1/api-security/endpoints/confirm  {ids:[...]}
+// 批量确认 asset_status=CONFIRMED。
+func (h *Handler) ConfirmBatch(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	var req struct {
+		IDs []uuid.UUID `json:"ids"`
+	}
+	if err := response.DecodeJSON(w, r, &req, 8192); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if len(req.IDs) == 0 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "ids 不能为空")
+		return
+	}
+	if len(req.IDs) > 100 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "单次最多确认 100 个接口")
+		return
+	}
+	type failedItem struct {
+		ID     string `json:"id"`
+		Reason string `json:"reason"`
+	}
+	confirmed := []string{}
+	failed := []failedItem{}
+	for _, id := range req.IDs {
+		_, err := h.store.Confirm(r.Context(), id)
+		if errors.Is(err, ErrNotFound) {
+			failed = append(failed, failedItem{ID: id.String(), Reason: "接口不存在"})
+			continue
+		}
+		if err != nil {
+			response.InternalError(w, r, err)
+			return
+		}
+		confirmed = append(confirmed, id.String())
+	}
+	objID := ""
+	if len(req.IDs) > 0 {
+		objID = req.IDs[0].String()
+	}
+	h.recordAudit(r, p, "confirm", objID, fmt.Sprintf("批量确认 %d 个接口", len(req.IDs)),
+		summaryJSON(map[string]any{"ids": req.IDs}),
+		summaryJSON(map[string]any{"confirmed": len(confirmed), "failed": len(failed)}), audits.RiskLow)
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"confirmed":     len(confirmed),
+		"confirmed_ids": confirmed,
+		"failed":        failed,
+	})
+}
+
+// Get GET /api/v1/api-security/endpoints/{id}（含 api_assets 扩展字段）
+func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	e, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	asset, err := h.store.GetAsset(r.Context(), id)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	e.Asset = asset
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e})
+}
+
+// TrafficTrend GET /api/v1/api-security/endpoints/{id}/traffic-trend?range=1h|24h|7d
+// 单接口访问趋势波形图数据源：5 分钟桶（UTC 对齐），服务端补零、时间升序；
+// range 缺省 24h，非法值取默认；端点不存在 404。
+func (h *Handler) TrafficTrend(w http.ResponseWriter, r *http.Request) {
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.store.GetByID(r.Context(), id); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+			return
+		}
+		response.InternalError(w, r, err)
+		return
+	}
+	rangeName, dur := ParseTrafficRange(r.URL.Query().Get("range"))
+	now := time.Now().UTC()
+	from := now.Add(-dur)
+	counts, err := h.store.TrafficBuckets(r.Context(), id, from, TrafficBucketStart(now).Add(TrafficBucketSeconds*time.Second))
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	points, total := FillTrafficPoints(from, now, counts)
+	response.JSON(w, r, http.StatusOK, &TrafficTrend{
+		EndpointID:    id.String(),
+		BucketSeconds: TrafficBucketSeconds,
+		Range:         rangeName,
+		Total:         total,
+		Points:        points,
+	})
+}
+
+// Update PATCH /api/v1/api-security/endpoints/{id}
+// 编辑 api_assets：purpose/exposure/owner/tags/business_type（全量替换；
+// business_type 空值归一 OTHER，枚举校验，设计 #12.1）。
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Purpose      string   `json:"purpose"`
+		Exposure     string   `json:"exposure"`
+		Owner        string   `json:"owner"`
+		Tags         []string `json:"tags"`
+		BusinessType string   `json:"business_type"`
+	}
+	if err := response.DecodeJSON(w, r, &req, 8192); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	req.Purpose = strings.TrimSpace(req.Purpose)
+	req.Owner = strings.TrimSpace(req.Owner)
+	req.Exposure = strings.ToUpper(strings.TrimSpace(req.Exposure))
+	req.BusinessType = NormalizeBusinessType(req.BusinessType)
+	if req.Purpose == "" && req.Exposure == "" && req.Owner == "" && req.Tags == nil && req.BusinessType == "OTHER" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求体不能为空")
+		return
+	}
+	switch req.Exposure {
+	case "", "INTERNAL", "PARTNER", "PUBLIC":
+	default:
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的暴露面取值（INTERNAL/PARTNER/PUBLIC）")
+		return
+	}
+	if !validBusinessTypes[req.BusinessType] {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+			"无效的业务类型（LOGIN/REGISTER/PASSWORD_RESET/SMS/EMAIL/ORDER/PAYMENT/EXPORT/DOWNLOAD/SEARCH/QUERY_PERSONAL_DATA/AI_INFERENCE/OTHER）")
+		return
+	}
+	if len(req.Purpose) > 128 || len(req.Owner) > 128 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "purpose/owner 长度不能超过 128")
+		return
+	}
+	if len(req.Tags) > 32 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "标签数量不能超过 32")
+		return
+	}
+	for _, t := range req.Tags {
+		if len(strings.TrimSpace(t)) == 0 || len(t) > 64 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "标签不能为空且长度不能超过 64")
+			return
+		}
+	}
+	e, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	before, err := h.store.GetAsset(r.Context(), id)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	asset, err := h.store.UpsertAsset(r.Context(), id, req.Purpose, req.Exposure, req.Owner, req.Tags, req.BusinessType)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "edit", id.String(), truncateName(e.EndpointKey),
+		assetSummary(before), assetSummary(asset), audits.RiskMedium)
+	e.Asset = asset
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e, "message": "资产信息已更新"})
+}
+
+// Merge POST /api/v1/api-security/endpoints/{id}/merge  {other_id}
+func (h *Handler) Merge(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		OtherID uuid.UUID `json:"other_id"`
+	}
+	if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if req.OtherID == uuid.Nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "other_id 不能为空")
+		return
+	}
+	if req.OtherID == id {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "不能将接口合并到自身")
+		return
+	}
+	other, err := h.store.GetByID(r.Context(), req.OtherID)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "待合并接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	before, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	merged, err := h.store.Merge(r.Context(), id, req.OtherID, actorOf(p))
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "merge", id.String(), truncateName(merged.EndpointKey),
+		summaryJSON(map[string]any{"endpoint_key": before.EndpointKey, "hit_count": before.HitCount,
+			"other_id": req.OtherID.String(), "other_key": other.EndpointKey}),
+		summaryJSON(map[string]any{"endpoint_key": merged.EndpointKey, "hit_count": merged.HitCount}),
+		audits.RiskHigh)
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": merged, "message": "接口已合并"})
+}
+
+// Split POST /api/v1/api-security/endpoints/{id}/split  {paths:[...]}
+func (h *Handler) Split(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	if err := response.DecodeJSON(w, r, &req, 8192); err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+		return
+	}
+	if len(req.Paths) == 0 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "拆分路径不能为空")
+		return
+	}
+	if len(req.Paths) > 50 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "单次最多拆分 50 个路径")
+		return
+	}
+	normed := make([]string, 0, len(req.Paths))
+	for _, raw := range req.Paths {
+		if strings.TrimSpace(raw) == "" {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "拆分路径不能为空")
+			return
+		}
+		normed = append(normed, normalizer.NormalizePath(raw))
+	}
+	src, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	created, err := h.store.Split(r.Context(), id, normed, actorOf(p))
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if errors.Is(err, ErrEndpointConflict) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, err.Error())
+		return
+	}
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	h.recordAudit(r, p, "split", id.String(), truncateName(src.EndpointKey),
+		summaryJSON(map[string]any{"endpoint_key": src.EndpointKey}),
+		summaryJSON(map[string]any{"paths": normed, "created": len(created)}), audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoints": created, "message": "接口已拆分"})
+}
+
+// Ignore POST /api/v1/api-security/endpoints/{id}/ignore（asset_status=IGNORED）
+func (h *Handler) Ignore(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	before, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	e, err := h.store.SetAssetStatus(r.Context(), id, "IGNORED", actorOf(p))
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "ignore", id.String(), truncateName(e.EndpointKey),
+		summaryJSON(map[string]any{"asset_status": before.AssetStatus}),
+		summaryJSON(map[string]any{"asset_status": e.AssetStatus}), audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e, "message": "接口已忽略"})
+}
+
+// Deprecate POST /api/v1/api-security/endpoints/{id}/deprecate
+// 人工下线（DISCOVERED/CONFIRMED→DEPRECATED，任务书 §11.3）；状态不允许 409。
+func (h *Handler) Deprecate(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	before, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	e, err := h.store.Deprecate(r.Context(), id, actorOf(p))
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if errors.Is(err, ErrInvalidTransition) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, err.Error())
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "deprecate", id.String(), truncateName(e.EndpointKey),
+		summaryJSON(map[string]any{"asset_status": before.AssetStatus}),
+		summaryJSON(map[string]any{"asset_status": e.AssetStatus}), audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e, "message": "接口已标记下线"})
+}
+
+// Restore POST /api/v1/api-security/endpoints/{id}/restore
+// 人工恢复（DEPRECATED/ZOMBIE→CONFIRMED）；状态不允许 409。
+func (h *Handler) Restore(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	before, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	e, err := h.store.Restore(r.Context(), id, actorOf(p))
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if errors.Is(err, ErrInvalidTransition) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, err.Error())
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "restore", id.String(), truncateName(e.EndpointKey),
+		summaryJSON(map[string]any{"asset_status": before.AssetStatus}),
+		summaryJSON(map[string]any{"asset_status": e.AssetStatus}), audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e, "message": "接口已恢复为已确认"})
+}
+
+// ServiceAssets GET /api/v1/api-security/service-assets
+// 服务资产聚合（§14）：upstreams 主机:端口 视角反聚端点归属，分页返回。
+func (h *Handler) ServiceAssets(w http.ResponseWriter, r *http.Request) {
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 20)
+	items, total, err := h.store.ListServiceAssets(r.Context(), page, pageSize)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, items, total, page, pageSize)
+}
+
+// Classify POST /api/v1/api-security/endpoints/{id}/classify
+// 按路径/方法启发式自动分类（含 §34 操作动作 ACTION 与业务领域 BUSINESS_DOMAIN 维度），
+// 写 api_classification_dimensions（source=AUTO）。
+func (h *Handler) Classify(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	e, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	dims, err := h.store.AutoClassify(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if errors.Is(err, ErrClassificationLocked) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "分类已锁定，请先解锁后再执行自动分类")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "classify", id.String(), truncateName(e.EndpointKey), "",
+		summaryJSON(map[string]any{"dimensions": dims}), audits.RiskLow)
+	response.JSON(w, r, http.StatusOK, map[string]any{"dimensions": dims, "message": "自动分类完成"})
+}
+
+// LearningStart POST /api/v1/api-security/endpoints/{id}/learning/start
+// 可选请求体 {"sample_target": N}：N∈[10,100000]，缺省 100；0 或越界 400。无请求体按缺省。
+func (h *Handler) LearningStart(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	// 可选请求体：缺省（无体或无字段）由 store 归一为 DefaultSampleTarget
+	sampleTarget := 0
+	if r.Body != nil && r.ContentLength != 0 {
+		var req struct {
+			SampleTarget *int `json:"sample_target"`
+		}
+		if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
+			return
+		}
+		if req.SampleTarget != nil {
+			if *req.SampleTarget < MinSampleTarget || *req.SampleTarget > MaxSampleTarget {
+				response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+					fmt.Sprintf("样本目标需在 %d~%d 之间", MinSampleTarget, MaxSampleTarget))
+				return
+			}
+			sampleTarget = *req.SampleTarget
+		}
+	}
+	var createdBy *uuid.UUID
+	if p != nil {
+		uid := p.UserID
+		createdBy = &uid
+	}
+	job, err := h.store.StartLearning(r.Context(), id, sampleTarget, createdBy)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if errors.Is(err, ErrLearningRunning) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "该接口已有运行中的学习任务")
+		return
+	}
+	if errors.Is(err, ErrInvalidSampleTarget) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,
+			fmt.Sprintf("样本目标需在 %d~%d 之间", MinSampleTarget, MaxSampleTarget))
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "learning_start", id.String(), id.String(), "",
+		summaryJSON(map[string]any{"job_id": job.ID.String(), "status": job.Status, "sample_target": job.SampleTarget}), audits.RiskLow)
+	response.JSON(w, r, http.StatusOK, map[string]any{"job": job, "message": "学习任务已启动"})
+}
+
+// LearningStop POST /api/v1/api-security/endpoints/{id}/learning/stop
+func (h *Handler) LearningStop(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	job, err := h.store.StopLearning(r.Context(), id, actorOf(p))
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if errors.Is(err, ErrLearningNotRunning) {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "当前没有运行中的学习任务")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	h.recordAudit(r, p, "learning_stop", id.String(), id.String(), "",
+		summaryJSON(map[string]any{"job_id": job.ID.String(), "status": job.Status}), audits.RiskLow)
+	response.JSON(w, r, http.StatusOK, map[string]any{"job": job, "message": "学习任务已停止"})
+}
+
+// LearningStatus GET /api/v1/api-security/endpoints/{id}/learning/status
+func (h *Handler) LearningStatus(w http.ResponseWriter, r *http.Request) {
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	e, err := h.store.GetByID(r.Context(), id)
+	if errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	job, stats, err := h.store.LearningStatus(r.Context(), id)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"endpoint_id":     id,
+		"learning_status": e.LearningStatus,
+		"job":             job,
+		"samples":         stats,
+	})
+}
+
+// LifecycleEvents GET /api/v1/api-security/endpoints/{id}/lifecycle-events
+// api_lifecycle_events 按 created_at DESC 分页。
+func (h *Handler) LifecycleEvents(w http.ResponseWriter, r *http.Request) {
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.store.GetByID(r.Context(), id); errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	} else if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 20)
+	list, total, err := h.store.ListLifecycleEvents(r.Context(), id, page, pageSize)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, list, total, page, pageSize)
+}
+
+// LearningSamples GET /api/v1/api-security/endpoints/{id}/learning/samples
+// api_learning_samples 过滤 accepted（true/false，可空）+ 分页。
+func (h *Handler) LearningSamples(w http.ResponseWriter, r *http.Request) {
+	id, ok := parsePathID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := h.store.GetByID(r.Context(), id); errors.Is(err, ErrNotFound) {
+		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "接口不存在")
+		return
+	} else if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	var accepted *bool
+	if v := strings.TrimSpace(r.URL.Query().Get("accepted")); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 accepted 取值（true/false）")
+			return
+		}
+		accepted = &b
+	}
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "page_size", 20)
+	list, total, err := h.store.ListLearningSamples(r.Context(), id, accepted, page, pageSize)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.Page(w, r, list, total, page, pageSize)
+}
+
+// recordAudit 写操作审计（语义同 customrules：操作者/动作/对象/前后摘要/风险等级）。
+// 审计服务未注入（旧接线）或无操作者上下文时跳过，不影响主流程。
+func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID, objName, before, after, risk string) {
+	if h.audits == nil || p == nil {
+		return
+	}
+	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
+		UserID:        &p.UserID,
+		Username:      p.Username,
+		SourceIP:      middleware.RemoteIP(r),
+		ConnectionIP:  middleware.ConnectionIP(r),
+		UserAgent:     r.UserAgent(),
+		Module:        "api_assets",
+		Action:        action,
+		ObjectType:    "api_endpoint",
+		ObjectID:      objID,
+		ObjectName:    objName,
+		BeforeSummary: before,
+		AfterSummary:  after,
+		Result:        audits.ResultSuccess,
+		RiskLevel:     risk,
+		RequestID:     response.RequestIDFrom(r),
+	})
+}
+
+func parsePathID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的接口ID")
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func actorOf(p *authz.Principal) string {
+	if p == nil || p.Username == "" {
+		return "system"
+	}
+	return p.Username
+}
+
+// summaryJSON 生成审计摘要（合法 JSON 对象，交给审计层脱敏）。
+func summaryJSON(v map[string]any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// assetSummary 资产扩展摘要；无记录时返回空。
+func assetSummary(a *Asset) string {
+	if a == nil {
+		return ""
+	}
+	return summaryJSON(map[string]any{
+		"purpose": a.Purpose, "exposure": a.Exposure,
+		"owner": a.Owner, "tags": a.Tags,
+		"business_type": a.BusinessType,
+	})
+}
+
+// truncateName 审计 object_name 列上限 255。
+func truncateName(s string) string {
+	if len(s) > 255 {
+		return s[:255]
+	}
+	return s
+}
+
+func queryInt(r *http.Request, key string, def int) int {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}

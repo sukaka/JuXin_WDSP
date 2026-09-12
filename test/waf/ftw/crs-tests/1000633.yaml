@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "XMLDecoder java/object class payload, WebLogic style (1000633)"
+rule_id: 1000633
+tests:
+  - test_id: 1
+    desc: "XMLDecoder object class ProcessBuilder payload in form value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'x=<?xml version="1.0"?><java version="1.4.0"><object class="java.lang.ProcessBuilder"><array class="java.lang.String" length="2"><void index="0"><string>/bin/sh</string></void></array><void method="start"/></object></java>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000633]

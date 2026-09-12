@@ -1,0 +1,1700 @@
+# 域片段：APM 业务性能监控（阶段1 无 Agent 查询 + 阶段2 上半 Agent 控制面 + 阶段2 下半 ClickHouse 数据面
+# + 阶段3 第一批 SQL/异常/依赖聚合查询 + 阶段3 第二批运行时指标 metrics 信号查询
+# + 阶段4 深度诊断会话控制面 + P1-01 A2 availability 数据质量自述/correlation 关联判定
+# + trace-search application_id 应用约束 + sql/exceptions trace_id 级精确定位）
+# 路由来源：server/internal/apm/handler.go RegisterRoutes（查询）、agents_handler.go
+# RegisterAgentAdminRoutes（管理，会话+RBAC）、agentapi_handler.go RegisterAgentDataRoutes
+#（Agent 面机器端点，无会话链，一次性令牌 / CA 证书 PoP 签名认证）、
+# diagnostics_handler.go RegisterDiagnosticRoutes（深度诊断，会话+RBAC）；
+# 开关 APM_ENABLED 关闭时本组统一 503 降级。
+# 数据源：应用级复用既有聚合指标 http_requests_total / http_request_duration_ms（直方图）/
+# waf_blocks_total / waf_observes_total；端点级用 http_endpoint_requests_total /
+# http_endpoint_duration_ms（labels app/endpoint/status_class/action），仅
+# logging.access_log_enabled 开启时产出（关闭时端点级榜单/列表为空，能力如实降级）。
+# 通用约定：全部 GET；start_time/end_time 为 RFC3339（缺省最近 1 小时，窗口上限 31 天；
+# 窗口 ≤6h 读分钟聚合表，否则读小时聚合表，trend 粒度随之为分钟/小时桶）；错误率口径
+# 统一为 5xx 占比；分位数由 metrics.DurationBucketsMs 直方图线性插值估算。
+# 成功响应统一信封：{code, message, data, request_id}，下列 200 响应的 schema 均为该信封，data 为各业务负载。
+
+paths:
+  /apm/settings:
+    get:
+      operationId: apmSettingsGet
+      tags: [APM]
+      summary: 读取 APM 运行设置
+      description: 读取 APM 总开关、配置来源和 ClickHouse 连接状态；不会回显 ClickHouse DSN。该接口不受 APM 总开关门控。权限：`system_settings.read`。
+      responses:
+        '200':
+          description: APM 设置生效状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApmSettingsState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apmSettingsUpdate
+      tags: [APM]
+      summary: 更新 APM 运行设置
+      description: 字段缺省表示保持不变；clickhouse_dsn 为空串时清除数据库覆盖并回退环境配置，非空时校验后通过敏感设置通道保存。更新后立即重建 ClickHouse 连接且审计不记录 DSN 明文。权限：`system_settings.update`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                enabled: { type: boolean }
+                clickhouse_dsn: { type: string, maxLength: 4096, writeOnly: true, description: ClickHouse DSN；空串清除界面覆盖 }
+      responses:
+        '200':
+          description: 更新后的 APM 设置生效状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApmSettingsState' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /apm/overview:
+    get:
+      operationId: apmOverview
+      tags: [APM]
+      summary: APM 概览（应用级 RED + 趋势 + 榜单）
+      description: 无 Agent 模式（data_source=agentless）业务性能概览：窗口内请求总量、5xx/4xx 错误量、WAF 阻断量、错误率（5xx 占比）、p50/p95/p99 耗时估算、趋势桶序列与慢应用/错误应用/慢端点榜单。top_slow_endpoints 与 unclassified_requests 依赖端点级聚合（logging.access_log_enabled 开启才有数据，关闭时返回空数组/0，access_log_enabled 字段如实标识）。响应恒含 availability 数据质量自述（网关侧 PG 聚合口径；access_log 关闭时 reason_codes 含 ACCESS_LOG_DISABLED 且 partial=true）。权限：`apm.overview.read`
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口起点（RFC3339；缺省为 end_time 前 1 小时） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口终点（RFC3339；缺省为当前时间） }
+      responses:
+        '200':
+          description: APM 概览数据
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmOverviewData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/services:
+    get:
+      operationId: apmServiceList
+      tags: [APM]
+      summary: APM 服务（应用）列表
+      description: applications 表分页 LEFT JOIN 窗口聚合指标（无流量的应用如实返回零值与 last_seen_at=null），并关联 apm_agents/apm_services 回填 Agent 覆盖（agents_online/agents_total/observation_mode；心跳超 APM_AGENT_OFFLINE_MINUTES 判离线，REVOKED 不计）。支持 keyword 按应用名称/code 模糊匹配。响应恒含 availability 数据质量自述（窗口内有应用登记行即 READY，observed_sources 仅在确有流量观测时含 GATEWAY 且 last_collected_at 取各行 last_seen_at 最大值；无登记行为 EMPTY+NO_MATCH）。权限：`apm.services.read`
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口起点（RFC3339；缺省为 end_time 前 1 小时） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口终点（RFC3339；缺省为当前时间） }
+        - { name: keyword, in: query, required: false, schema: { type: string }, description: 关键字（应用名称或 code 模糊匹配） }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: 服务分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmServiceListResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/services/{id}:
+    get:
+      operationId: apmServiceDetail
+      tags: [APM]
+      summary: APM 服务详情
+      description: 单应用窗口 RED 详情：请求总量、错误率、p50/p95/p99、趋势、状态码类别分布、动作分布（allow/observe/block，app 级派生口径 allow=requests−block−observe）、慢端点榜单（access_log 关闭时为空数组）。响应恒含 availability 数据质量自述。应用不存在返回 404。权限：`apm.services.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口起点（RFC3339；缺省为 end_time 前 1 小时） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口终点（RFC3339；缺省为当前时间） }
+      responses:
+        '200':
+          description: 服务详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmServiceDetailData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/endpoints:
+    get:
+      operationId: apmEndpointList
+      tags: [APM]
+      summary: APM 端点列表
+      description: 端点级 RED 列表（窗口内聚合后排序分页）。__OTHER__（Top-N 之外尾端点合并桶）与 __UNCLASSIFIED__（endpoint_key 缺失治理桶）原样返回，前端负责标注。access_log 关闭时 list 为空数组且 access_log_enabled=false（端点级数据未开启，availability.reason_codes 含 ACCESS_LOG_DISABLED）。响应恒含 availability 数据质量自述。权限：`apm.services.read`
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口起点（RFC3339；缺省为 end_time 前 1 小时） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口终点（RFC3339；缺省为当前时间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 按应用过滤（应用 ID；指向不存在/已删除应用时返回空页） }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [p95, requests, error_rate], default: p95 }, description: 排序键（降序；默认 p95） }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: 端点分页对象（扩展 access_log_enabled 字段）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmEndpointListResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  # ---------- 阶段2 下半：ClickHouse 数据面（OTel trace 检索与瀑布） ----------
+
+  /apm/trace-search:
+    get:
+      operationId: apmTraceSearch
+      tags: [APM]
+      summary: APM trace 检索（ClickHouse OTel 数据面）
+      description: OTel trace 聚合检索（查询 apm.otel_traces 原始表，schema 以 deployment/apm/clickhouse/001_otel_traces.sql 为准）。强制时间窗（缺省最近 1 小时，上限 24 小时——原始表扫描必须限窗）与分页上限（page_size ≤100，超限夹紧）。trace_id 为 32 位十六进制精确直达（与 request_id 同给时 trace_id 优先）；request_id 先经 access_logs 解析 trace_id 集合再查 ClickHouse。application_id 按应用约束检索（经 apm_services 服务名集合下推 CH 与 access_logs 解析；非法 UUID 或应用不存在/已删除返回 400，不静默忽略约束；应用无映射 OTel 服务时返回如实空页 + message 说明）。耗时口径 duration_ms = trace 墙钟耗时（max(span 结束) − min(span 开始)）；根 span 取 ParentSpanId 为空且 SpanKind=Server 中耗时最长者，无 Server 根退化为任一无父根，仍无则如实返回空串。响应恒含 availability 数据质量自述（query_state/reason_codes/observed_sources/水位字段）；request_id 检索追加 correlation 关联判定（state ∈ MATCHED/AMBIGUOUS/PENDING/NOT_FOUND/NOT_EXPECTED/UNKNOWN，一对多候选全列不任取第一条；trace_id 直达不经解析链不携带）。ClickHouse 未配置（APM_CLICKHOUSE_DSN 为空）或查询失败时返回空页 + data_source=agentless + message 提示，不返回 500（遥测故障不影响管理面）。权限：`apm.traces.read`
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口起点（RFC3339；缺省为 end_time 前 1 小时，窗口上限 24 小时） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口终点（RFC3339；缺省为当前时间） }
+        - { name: service, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 服务名精确匹配（OTel service.name） }
+        - { name: trace_id, in: query, required: false, schema: { type: string, pattern: '^[0-9a-fA-F]{32}$' }, description: 32 位十六进制 trace ID 直达（非法返回 400；与 request_id 同给时优先） }
+        - { name: request_id, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 请求 ID（先经 access_logs 解析关联 trace_id 集合再查 ClickHouse；响应追加 correlation 关联判定） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 按应用约束检索（非法 UUID 或应用不存在/已删除返回 400；应用无映射 OTel 服务时返回如实空页） }
+        - { name: min_duration_ms, in: query, required: false, schema: { type: number, minimum: 0 }, description: 最小墙钟耗时过滤（毫秒，非负数值） }
+        - { name: error, in: query, required: false, schema: { type: boolean }, description: 仅含 Error span 的 trace（true/false） }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: trace 检索分页结果（CH 未配置/不可用时为空页 + agentless 提示）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmTraceSearchData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/traces/{trace_id}:
+    get:
+      operationId: apmTraceView
+      tags: [APM]
+      summary: APM trace 检索（访问记录 + 关联安全事件 + OTel 瀑布）
+      description: 按 trace_id（32 位十六进制，非法返回 400）检索 access_logs（迁移 000088 新增列），再按命中记录的 request_id 关联 security_events（仅回传必要安全字段子集，不含请求/响应头体留痕，遵循既有写入侧脱敏口径）。接入 ClickHouse 数据面后追加 otel_spans 瀑布（span 属性仅透传白名单键，db.statement/url.query/头体留痕类键严禁放出；单 trace 上限 1000 span，超出截断并置 truncated=true；CH 侧强制时间窗——入参窗口优先，缺省对齐原始表最长 TTL 层 14 天）。data_source 如实标识 agentless/otel/mixed；无 OTel span、缺根 span 或被截断时 partial=true。响应恒含 availability 数据质量自述（网关腿/OTel 腿按本次真实结果逐腿判定）与 correlation 关联判定（trace_id 直达口径，state ∈ MATCHED/NOT_EXPECTED/PENDING/NOT_FOUND/UNKNOWN；阻断动作 BLOCK 证据 → NOT_EXPECTED）。可选 start_time/end_time 限窗（需同时提供，上限 31 天；缺省不限时间——trace_id 为 128 位随机精确匹配键，走部分索引点查，单侧结果上限 100 条）。ClickHouse 未配置/不可用时降级为纯 agentless 数据，不返回 500。均无命中时 access_logs/security_events/otel_spans 返回空数组而非 404。权限：`apm.traces.read`
+      parameters:
+        - { name: trace_id, in: path, required: true, schema: { type: string, pattern: '^[0-9a-fA-F]{32}$' }, description: 32 位十六进制 trace ID }
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口起点（RFC3339；与 end_time 需同时提供） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口终点（RFC3339；与 start_time 需同时提供） }
+      responses:
+        '200':
+          description: trace 视图（无命中时为空数组）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmTraceView' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  # ---------- 阶段3 第一批：SQL 指纹聚合 / 异常指纹 / 服务依赖（ClickHouse 数据面） ----------
+
+  /apm/sql:
+    get:
+      operationId: apmSqlFingerprintList
+      tags: [APM]
+      summary: APM SQL 指纹聚合列表
+      description: SQL 指纹聚合（只出指纹不出原始 statement——设计 §11.1 首期只存指纹）。数据源优先 002 分钟聚合表 apm.apm_sql_minutes（calls/error_count/avg_ms）；p95_ms/namespace/operation/sample_trace_ids 由 apm.otel_traces 同窗派生（p95 为 quantile(0.95) 估算，示例 trace 去重上限 3），两侧以 db_system + hex(MD5(db.statement)) 指纹等值关联。trace_id 参数切换 trace 级精确定位（仅从该 trace 的 Client DB span 派生指纹，match_mode=trace_exact）；缺省窗口聚合模式 match_mode=window_aggregate（match_note 如实标注"同时间窗候选，非特定请求定位"）。响应恒含 availability 数据质量自述。强制时间窗（缺省最近 1 小时，上限 24 小时）与分页上限（page_size ≤100，超限夹紧）；sort 白名单 calls/avg_ms/p95_ms（默认 p95_ms 倒序）。ClickHouse 未配置（APM_CLICKHOUSE_DSN 为空）或查询失败时返回空页 + data_source=agentless + message 提示，不返回 500（遥测故障不影响管理面）。权限：`apm.sql.read`（迁移 000090）
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口起点（RFC3339；缺省为 end_time 前 1 小时，窗口上限 24 小时） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口终点（RFC3339；缺省为当前时间） }
+        - { name: service, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 服务名精确匹配（OTel service.name） }
+        - { name: db_system, in: query, required: false, schema: { type: string, maxLength: 64 }, description: 数据库系统精确匹配（OTel db.system，如 postgresql/mysql/redis） }
+        - { name: trace_id, in: query, required: false, schema: { type: string, pattern: '^[0-9a-fA-F]{32}$' }, description: 32 位十六进制 trace ID（切换 trace 级精确定位；非法返回 400） }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [calls, avg_ms, p95_ms], default: p95_ms }, description: 排序键（降序；默认 p95_ms） }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: SQL 指纹聚合分页结果（CH 未配置/不可用时为空页 + agentless 提示）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmSqlFingerprintData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/exceptions:
+    get:
+      operationId: apmExceptionList
+      tags: [APM]
+      summary: APM 异常指纹聚合列表
+      description: 异常指纹聚合（数据源为 002 异常指纹表 apm.apm_exception_fingerprints，由 otel_traces 的 exception 事件物化聚合；不存/不出堆栈原文）。count 为 exception 事件数（一个 span 可携带多个 exception 事件）；first_seen_at/last_seen_at 为分钟聚合桶粒度（±1 分钟）；affected_services 去重上限 16，sample_trace_ids 去重上限 3。trace_id 参数切换 trace 级精确定位（直读该 trace 的 exception 事件，结果在 trace_exceptions 且 list 为空数组；exception_message/stacktrace 为应用上报原文经凭据形态掩码 + rune 上限截断后的纯文本，截断时对应 *_truncated=true；fingerprint 与聚合表同式可对照）；缺省窗口聚合模式 match_mode=window_aggregate。响应恒含 availability 数据质量自述。强制时间窗（缺省最近 1 小时，上限 24 小时）与分页上限（page_size ≤100，超限夹紧）；按事件数倒序分页。ClickHouse 未配置或查询失败时返回空页 + data_source=agentless + message 提示，不返回 500。权限：`apm.traces.read`
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口起点（RFC3339；缺省为 end_time 前 1 小时，窗口上限 24 小时） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口终点（RFC3339；缺省为当前时间） }
+        - { name: service, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 服务名精确匹配（OTel service.name） }
+        - { name: trace_id, in: query, required: false, schema: { type: string, pattern: '^[0-9a-fA-F]{32}$' }, description: 32 位十六进制 trace ID（切换 trace 级精确定位；非法返回 400） }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: 异常指纹聚合分页结果（CH 未配置/不可用时为空页 + agentless 提示）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmExceptionData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/dependencies:
+    get:
+      operationId: apmDependencyEdges
+      tags: [APM]
+      summary: APM 服务依赖边列表
+      description: 服务依赖边（002 无依赖聚合表，从 apm.otel_traces 的 CLIENT/PRODUCER span 单视角派生：ServiceName → peer.service / db.system[/namespace] / messaging.system[/destination] / server.address；无对端 SERVER span 配对，note 如实标注"基于客户端 span 派生"；未标注 peer.service 的 HTTP 调用按 server.address 归类为 external）。强制时间窗（缺省最近 1 小时，上限 24 小时）；单页上限 500 条边，超限截断并在 note 标注。ClickHouse 未配置或查询失败时返回空边列表 + data_source=agentless + note 说明，不返回 500。权限：`apm.services.read`
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口起点（RFC3339；缺省为 end_time 前 1 小时，窗口上限 24 小时） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口终点（RFC3339；缺省为当前时间） }
+        - { name: service, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 源端服务名精确匹配（OTel service.name） }
+      responses:
+        '200':
+          description: 依赖边列表（CH 未配置/不可用时为空边列表 + agentless 说明）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmDependenciesData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/runtime:
+    get:
+      operationId: apmRuntimeMetrics
+      tags: [APM]
+      summary: APM 服务实例运行时指标
+      description: 服务实例运行时指标（metrics 信号，ClickHouse 数据面 apm.otel_metrics_gauge/sum/histogram 三类表，schema 见 deployment/apm/clickhouse/003_metrics.sql；直方图按 Sum/Count 折算均值）。实例 = service.name + service.instance.id（Agent 未上报实例 ID 时为空串，如实返回）；service/instance_id 均可选，不填列窗口内全部实例（上限 20，超限截断并在 note 标注）。每实例指标 ≤20 个（按指标名升序截取）、每指标 points ≤200（按窗口等分降采样，桶内均值、同名多序列按桶求和合并）。指标集按语言/Agent 上报原样返回，不同语言不强行统一（设计 §10.3）；description 尾部附来源 instrumentation scope 与折算口径说明。强制时间窗（缺省最近 1 小时，上限 24 小时）。ClickHouse 未配置（APM_CLICKHOUSE_DSN 为空）或查询失败时返回空实例列表 + data_source=agentless + note 提示，不返回 500（遥测故障不影响管理面）。权限：`apm.runtime.read`（迁移 000091）
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口起点（RFC3339；缺省为 end_time 前 1 小时，窗口上限 24 小时） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 窗口终点（RFC3339；缺省为当前时间） }
+        - { name: service, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 服务名精确匹配（OTel service.name） }
+        - { name: instance_id, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 实例 ID 精确匹配（OTel resource service.instance.id） }
+      responses:
+        '200':
+          description: 运行时指标数据（CH 未配置/不可用时 instances 为空 + agentless 提示）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmRuntimeData' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  # ---------- SLO 目标管理（迁移 000092；读 apm.overview.read、写 apm.settings.manage） ----------
+
+  /apm/slos:
+    get:
+      operationId: apmSLOList
+      tags: [APM]
+      summary: APM SLO 列表（定义 + 当前窗口实时评估）
+      description: 全部 SLO 定义及其实时评估结果（不分页）。评估口径：availability 只把 5xx 计为失败（v1，4xx 不计），current_value = 1 − 5xx/总请求数；latency_p95 的 current_value 为窗口内耗时直方图合并后线性插值估算的 P95 毫秒值。错误预算：availability 预算 = 1 − target，remaining = (预算 − 实际 5xx 违约率)/预算；latency_p95 以 P95 相对阈值余量表达，remaining = (target − p95)/target；统一夹紧 [−1,1]。状态机：remaining < 0 为 BREACHED（availability 即窗口达标率 < target；latency 即 P95 > 阈值），预算消耗 >80%（remaining < 0.2）为 AT_RISK，否则 OK。窗口内无数据时 current_value=null、状态保持 OK、note 说明（无失败证据不误报）。窗口聚合源固定为 metric_hour_aggregates 小时表（7d/30d 窗口不扫分钟表）。权限：`apm.overview.read`
+      responses:
+        '200':
+          description: SLO 列表（含实时评估）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmSLOListResponse' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      operationId: apmSLOCreate
+      tags: [APM]
+      summary: 创建 APM SLO
+      description: 创建 SLO 定义（service 为应用编码，对应聚合指标 app 标签；同一服务同一指标同一窗口唯一，重复定义返回 409）。校验：name ≤128 字符非空、service ≤128 字符非空、availability 的 target ∈ (0,1)、latency_p95 的 target 为毫秒正数（≤600000）、window ∈ {7d,30d}。创建即评估一次，响应为含评估结果的完整列表项。权限：`apm.settings.manage`（中风险操作审计）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmSLOUpsertRequest' }
+      responses:
+        '200':
+          description: 创建成功（含创建即时评估结果）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmSLOItem' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/slos/{id}:
+    get:
+      operationId: apmSLODetail
+      tags: [APM]
+      summary: APM SLO 详情（含达标率趋势）
+      description: 单条 SLO 定义 + 当前窗口实时评估（口径同列表）+ trend 达标率趋势（7d 窗口按小时桶、30d 窗口按天桶；零流量桶达标率计 1——无失败证据）。SLO 不存在返回 404。权限：`apm.overview.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: SLO ID }
+      responses:
+        '200':
+          description: SLO 详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmSLODetail' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    put:
+      operationId: apmSLOUpdate
+      tags: [APM]
+      summary: 全量更新 APM SLO
+      description: 全量更新 SLO 定义（字段与校验同创建；SLO 不存在返回 404；目标组合与他人定义撞唯一约束返回 409）。更新后重新评估一次，响应为含评估结果的完整列表项。权限：`apm.settings.manage`（中风险操作审计，含变更前后摘要）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: SLO ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmSLOUpsertRequest' }
+      responses:
+        '200':
+          description: 更新成功（含更新后评估结果）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmSLOItem' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    delete:
+      operationId: apmSLODelete
+      tags: [APM]
+      summary: 删除 APM SLO
+      description: 删除 SLO 定义（不存在返回 404）；其未关闭的 APM_SLO_BREACH 告警在下一轮周期评估（每分钟）自动恢复收口。权限：`apm.settings.manage`（中风险操作审计）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: SLO ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data:
+                    type: object
+                    properties:
+                      message: { type: string, example: SLO 已删除 }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  # ---------- 阶段2 上半：Agent 控制面管理接口（会话 + RBAC；变更写高风险审计） ----------
+
+  /apm/agents/enrollment-tokens:
+    post:
+      operationId: apmEnrollmentTokenCreate
+      tags: [APM]
+      summary: 创建 Agent 一次性注册令牌
+      description: 创建一次性注册令牌（绑定应用[可空]/环境/允许语言/有效期，默认 60 分钟、合法区间 5 分钟~7 天）。令牌原文仅本次响应返回一次，服务端只保留 SHA-256 不可逆摘要；使用即作废（原子置位防重放与并发复用）。权限：`apm.agents.manage`（高风险操作审计）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmEnrollmentTokenCreateRequest' }
+      responses:
+        '200':
+          description: 令牌创建成功（token 字段仅此一次出现）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmEnrollmentTokenCreated' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/agents:
+    get:
+      operationId: apmAgentList
+      tags: [APM]
+      summary: APM Agent 列表
+      description: Agent 登记列表（状态/语言/版本/心跳/证书到期）。status 为展示态——OFFLINE 由查询侧按心跳超时推导（不落库，阈值见 APM_AGENT_OFFLINE_MINUTES，默认 10 分钟）。支持 status/language/keyword/application_id 过滤。权限：`apm.agents.manage`（纯查询不审计）
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [ENROLLING, CONNECTED_BASELINE, DIAGNOSING, OFFLINE, REVOKED] }, description: 按展示态过滤 }
+        - { name: language, in: query, required: false, schema: { type: string, enum: [java, go, dotnet, nodejs, python, php] }, description: 按语言过滤 }
+        - { name: keyword, in: query, required: false, schema: { type: string }, description: 服务名/实例 ID 模糊匹配 }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 按绑定应用过滤 }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: Agent 分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmAgentListResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/agents/{id}/revoke:
+    post:
+      operationId: apmAgentRevoke
+      tags: [APM]
+      summary: 撤销 APM Agent
+      description: 撤销 Agent（终态 REVOKED）：当前证书指纹立即入撤销列表，Agent 面接口随之拒绝其一切请求。已撤销的 Agent 重复撤销返回 409。权限：`apm.agents.manage`（高风险操作审计）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: Agent ID }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmAgentRevokeRequest' }
+      responses:
+        '200':
+          description: 撤销成功（返回撤销后的登记行）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmAgentRow' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Agent 已处于撤销状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/policies/{scope}:
+    get:
+      operationId: apmPolicyGet
+      tags: [APM]
+      summary: 读取当前生效 Agent 基线策略
+      description: 读取作用域最新签名策略版本（scope 为 global 或 application:<uuid>；信封含版本号/签发与过期时间/Ed25519 签名，签名密钥为内置 CA，key_id 恒为 apm-agent-ca）。无版本返回 404。权限：`apm.settings.manage`（纯查询不审计）
+      parameters:
+        - { name: scope, in: path, required: true, schema: { type: string }, description: '策略作用域：global 或 application:<uuid>' }
+      responses:
+        '200':
+          description: 当前生效签名策略信封
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmPolicyEnvelope' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    put:
+      operationId: apmPolicyPut
+      tags: [APM]
+      summary: 发布 Agent 基线策略新版本
+      description: '发布新策略版本：版本号由服务端取当前 max+1 单调递增（拒绝回退，(scope,version) 唯一约束兜底），落库前重新签名（签名覆盖 scope/version/签发与过期时间/策略正文）。策略内容为白名单校验的基线模式（未知顶层键拒绝）。expected_version 乐观并发：声明读取基线版本，他人先发新版返回 409。权限：`apm.settings.manage`（高风险操作审计）'
+      parameters:
+        - { name: scope, in: path, required: true, schema: { type: string }, description: '策略作用域：global 或 application:<uuid>（应用须存在）' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmPolicyPutRequest' }
+      responses:
+        '200':
+          description: 新版本策略信封
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmPolicyEnvelope' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: 策略版本冲突（他人已发新版）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  # ---------- 阶段2 上半：Agent 面机器接口（无浏览器会话；一次性令牌 / CA 证书 PoP 认证） ----------
+
+  /apm/agent/register:
+    post:
+      operationId: apmAgentRegister
+      tags: [APM]
+      summary: Agent 注册（一次性令牌 + CSR）
+      description: 认证：一次性注册令牌（无会话/CSRF 面）。Agent 提交令牌与 PKCS#10 CSR（PEM；公钥支持 Ed25519/ECDSA P-256·P-384/RSA≥2048），管理面原子作废令牌并签发短期客户端证书（默认 72h，区间 24h~7d，APM_AGENT_CERT_TTL_HOURS 可配），返回 CA 证书/验签公钥、Collector 地址（空串 = 数据面未就绪）、资源属性与已签名基线策略。应用/环境归属一律取自令牌，不信任请求体自报；同服务同实例重复注册顶替存量（旧证书入撤销列表）。无效/已用/过期令牌统一 401（防枚举）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmAgentRegisterRequest' }
+      responses:
+        '200':
+          description: 注册成功（证书与策略材料）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmAgentRegisterResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: 服务已被其他应用认领
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/agent/heartbeat:
+    post:
+      operationId: apmAgentHeartbeat
+      tags: [APM]
+      summary: Agent 心跳
+      description: 认证：CA 客户端证书 PoP 签名头（X-JiuZhang-Agent-Cert / X-JiuZhang-Agent-Timestamp / X-JiuZhang-Agent-Signature，签名覆盖方法+路径+时间戳+正文 SHA-256，时间戳允许 ±5 分钟偏差）。刷新 last_heartbeat_at 与自报版本/节点信息（可选字段）；状态迁移仅 ENROLLING→CONNECTED_BASELINE，OFFLINE 由查询侧推导。已撤销 Agent 403，证书过期/未登记 401
+      parameters:
+        - { name: X-JiuZhang-Agent-Cert, in: header, required: true, schema: { type: string }, description: base64(DER) 客户端证书 }
+        - { name: X-JiuZhang-Agent-Timestamp, in: header, required: true, schema: { type: string, format: date-time }, description: RFC3339 时间戳 }
+        - { name: X-JiuZhang-Agent-Signature, in: header, required: true, schema: { type: string }, description: hex(PoP 签名) }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmAgentHeartbeatRequest' }
+      responses:
+        '200':
+          description: 心跳确认（含当前生效策略版本与证书轮换建议）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmAgentHeartbeatResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/agent/policy:
+    get:
+      operationId: apmAgentPolicyPull
+      tags: [APM]
+      summary: Agent 拉取当前生效签名策略
+      description: 认证：CA 客户端证书 PoP 签名头（同心跳）。返回该 Agent 当前生效签名策略（应用级作用域优先，未发布回退全局基线；全局基线缺省时管理面惰性创建签名默认策略 v1）。Agent 侧纪律：只接受版本递增且签名有效、未过期的策略
+      parameters:
+        - { name: X-JiuZhang-Agent-Cert, in: header, required: true, schema: { type: string }, description: base64(DER) 客户端证书 }
+        - { name: X-JiuZhang-Agent-Timestamp, in: header, required: true, schema: { type: string, format: date-time }, description: RFC3339 时间戳 }
+        - { name: X-JiuZhang-Agent-Signature, in: header, required: true, schema: { type: string }, description: hex(PoP 签名) }
+      responses:
+        '200':
+          description: 签名策略信封
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmPolicyEnvelope' }
+                  request_id: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/agent/rotate-cert:
+    post:
+      operationId: apmAgentRotateCert
+      tags: [APM]
+      summary: Agent 证书轮换
+      description: 认证：当前生效证书的 PoP 签名头（同心跳）。提交新 CSR，管理面签发新短期证书并把旧证书指纹入撤销列表（旧证书立即失效）；轮换不依赖长期注册令牌。出示证书非当前生效证书返回 409
+      parameters:
+        - { name: X-JiuZhang-Agent-Cert, in: header, required: true, schema: { type: string }, description: base64(DER) 当前客户端证书 }
+        - { name: X-JiuZhang-Agent-Timestamp, in: header, required: true, schema: { type: string, format: date-time }, description: RFC3339 时间戳 }
+        - { name: X-JiuZhang-Agent-Signature, in: header, required: true, schema: { type: string }, description: hex(PoP 签名) }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmAgentRotateRequest' }
+      responses:
+        '200':
+          description: 新证书材料
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmAgentRotateResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: 出示证书非当前生效证书
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  # ---------- 阶段4：深度诊断会话控制面（迁移 000093；权限 apm.diagnostics.manage） ----------
+
+  /apm/diagnostic-sessions:
+    post:
+      operationId: apmDiagnosticSessionCreate
+      tags: [APM]
+      summary: 创建深度诊断会话（dry_run 预估 / confirm 正式创建）
+      description: '流程（设计 §6.3）：dry_run=true 只返回预计开销不落库；正式创建要求 confirm=true（缺省 false 返回 400，前端纪律为先 dry_run 再确认）。校验与护栏：capabilities 白名单（未知 400）；sampling_rate 下界夹紧 0.1、duration_minutes 缺省/下界夹紧 15；开销护栏违反返回 422（duration>120、sampling_rate>1.0、function_probe 采样率>0.5、function_probe 未精确指定 instance_ids 或 service）；scope 未匹配到在线 Agent 422；kill switch 开启中拒绝新建 422；同一应用已有进行中会话 409（部分唯一索引兜底）。创建成功即写会话（ACTIVE）并以 application:<uuid> 作用域发布更高版本签名诊断叠加策略（复用 WP8 策略机制：版本 max+1 单调递增、Ed25519 签名；信封 expires_at=会话硬截止，Agent 失联时本地自动失效），匹配 Agent 下次拉取生效并置 DIAGNOSING。权限：`apm.diagnostics.manage`（高风险操作审计；dry_run 不落库不审计）'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmDiagnosticSessionCreateRequest' }
+      responses:
+        '200':
+          description: dry_run 返回开销预估；正式创建返回会话行（含 policy_version）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data:
+                    oneOf:
+                      - $ref: '#/components/schemas/ApmDiagnosticDryRunResult'
+                      - $ref: '#/components/schemas/ApmDiagnosticSession'
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: 同应用存在进行中会话 / 策略版本并发冲突
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: 无匹配在线 Agent / 开销护栏拦截 / kill switch 开启中
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    get:
+      operationId: apmDiagnosticSessionList
+      tags: [APM]
+      summary: 诊断会话分页列表
+      description: 状态过滤 + 分页（page 默认 1、page_size 默认 20 上限 100，越界夹紧）；响应级携带 kill_switch_enabled（全局开关实时状态）。权限：`apm.diagnostics.manage`（纯查询不审计）
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [ACTIVE, EXPIRED, STOPPED, KILLED] }, description: 状态过滤（缺省全部） }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码（默认 1） }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数（默认 20，最大 100） }
+      responses:
+        '200':
+          description: 会话分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmDiagnosticSessionListResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/diagnostic-sessions/{id}:
+    get:
+      operationId: apmDiagnosticSessionDetail
+      tags: [APM]
+      summary: 诊断会话详情（含关联操作审计）
+      description: 会话行全字段 + 关联操作审计条目（operation_audits 按 module=apm、object_type=apm_diagnostic_session、object_id=会话 ID 时间倒序，上限 50 条）。权限：`apm.diagnostics.manage`（纯查询不审计）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 会话 ID }
+      responses:
+        '200':
+          description: 会话详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmDiagnosticSessionDetail' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/diagnostic-sessions/{id}/stop:
+    post:
+      operationId: apmDiagnosticSessionStop
+      tags: [APM]
+      summary: 提前停止诊断会话
+      description: 仅 ACTIVE 可停止（终态重复停止 409）；停止即置 STOPPED（记录停止人与原因）、关联应用 DIAGNOSING Agent 回基线，并下发基线恢复策略新版本（诊断叠加剥除，信封有效期回归基线口径）；恢复发布失败由每分钟到期扫描任务对账重试，响应行 baseline_restored 如实反映。权限：`apm.diagnostics.manage`（高风险操作审计）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 会话 ID }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmDiagnosticSessionStopRequest' }
+      responses:
+        '200':
+          description: 停止后的会话行
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmDiagnosticSession' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: 会话已处于终态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /apm/diagnostics/kill-switch:
+    post:
+      operationId: apmDiagnosticsKillSwitch
+      tags: [APM]
+      summary: 深度诊断全局 kill switch
+      description: enable=true（settings 键 apm_diagnostics.kill_switch，已登记系统设置白名单可在线调整）：同事务把全部 ACTIVE 会话置 KILLED（记录停止人）并逐应用下发基线恢复策略，此后新建一律 422；enable=false 仅解除新建封锁（不回放任何诊断叠加）。会话列表响应级 kill_switch_enabled 反映实时状态。权限：`apm.diagnostics.manage`（审计：开关动作 Critical + 逐会话终止 HIGH）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApmDiagnosticsKillSwitchRequest' }
+      responses:
+        '200':
+          description: 开关状态与被终止会话数
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data: { $ref: '#/components/schemas/ApmDiagnosticsKillSwitchResponse' }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+components:
+  schemas:
+    ApmSettingsState:
+      type: object
+      required: [enabled, enabled_source, clickhouse_dsn_set, clickhouse_dsn_source, ch_connected]
+      properties:
+        enabled: { type: boolean }
+        enabled_source: { type: string, description: 生效值来源 }
+        clickhouse_dsn_set: { type: boolean, description: 是否配置了 ClickHouse DSN，不回显原值 }
+        clickhouse_dsn_source: { type: string, description: DSN 生效值来源 }
+        ch_connected: { type: boolean, description: 当前 ClickHouse 连接是否可用 }
+
+    ApmLatency:
+      type: object
+      description: 耗时/首字节分位数（毫秒，直方图桶线性插值估算；无样本时各项为 0）
+      properties:
+        p50: { type: number, description: p50（毫秒） }
+        p95: { type: number, description: p95（毫秒） }
+        p99: { type: number, description: p99（毫秒） }
+
+    ApmTrendBucket:
+      type: object
+      description: 趋势桶（窗口 ≤6h 为分钟桶，否则为小时桶）
+      properties:
+        bucket_start: { type: string, format: date-time, description: 桶起点（UTC） }
+        requests: { type: number, description: 请求数 }
+        errors: { type: number, description: 5xx 错误数 }
+        blocked: { type: number, description: WAF 阻断数 }
+        p95: { type: number, description: 桶内 p95 耗时估算（毫秒；无样本为 0） }
+
+    ApmAppRankItem:
+      type: object
+      description: 应用排行项
+      properties:
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID（聚合标签无法匹配现存应用时为 null） }
+        app: { type: string, description: 应用 code }
+        name: { type: string, description: 应用名称（无法匹配时为空串） }
+        requests: { type: number, description: 窗口内请求数 }
+        error_rate: { type: number, description: 错误率（5xx 占比，0~1） }
+        p95: { type: number, description: p95 耗时估算（毫秒） }
+
+    ApmEndpointStat:
+      type: object
+      description: 端点排行项（overview 含 app 字段；服务详情 top_endpoints 省略 app）
+      properties:
+        app: { type: string, description: 应用 code（仅 overview 榜单返回） }
+        endpoint: { type: string, description: '端点键（"METHOD /path/{id}" 或保留桶 __OTHER__/__UNCLASSIFIED__）' }
+        requests: { type: number, description: 窗口内请求数 }
+        error_rate: { type: number, description: 错误率（5xx 占比，0~1） }
+        p95: { type: number, description: p95 耗时估算（毫秒） }
+
+    ApmOverviewData:
+      type: object
+      description: APM 概览数据
+      properties:
+        data_source: { type: string, enum: [agentless], description: 数据源标识（无 Agent 模式恒为 agentless） }
+        access_log_enabled: { type: boolean, description: logging.access_log_enabled 当前状态（端点级数据可用性） }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        requests_total: { type: number, description: 窗口内请求总量 }
+        error_5xx_total: { type: number, description: 窗口内 5xx 总量 }
+        error_4xx_total: { type: number, description: 窗口内 4xx 总量 }
+        blocked_total: { type: number, description: 窗口内 WAF 阻断总量 }
+        error_rate: { type: number, description: 错误率（5xx/requests_total，0~1） }
+        latency: { $ref: '#/components/schemas/ApmLatency' }
+        trend: { type: array, items: { $ref: '#/components/schemas/ApmTrendBucket' } }
+        top_slow_applications: { type: array, items: { $ref: '#/components/schemas/ApmAppRankItem' }, description: 慢应用榜（按 p95 降序，最多 5 个） }
+        top_error_applications: { type: array, items: { $ref: '#/components/schemas/ApmAppRankItem' }, description: 错误应用榜（按 error_rate 降序，最多 5 个） }
+        top_slow_endpoints: { type: array, items: { $ref: '#/components/schemas/ApmEndpointStat' }, description: 慢端点榜（按 p95 降序，最多 5 个；access_log 关闭时为空数组） }
+        unclassified_requests: { type: integer, description: 未归类端点（__UNCLASSIFIED__）请求数（access_log 关闭时为 0） }
+        availability: { $ref: '#/components/schemas/ApmAvailability' }
+
+    ApmServiceRow:
+      type: object
+      description: APM 服务（应用）列表行
+      properties:
+        application_id: { type: string, format: uuid }
+        app: { type: string, description: 应用 code }
+        name: { type: string, description: 应用名称 }
+        observation_mode: { type: string, enum: [agentless, agent], description: 观测模式（有在线 Agent 映射到该应用为 agent，否则 agentless） }
+        agents_online: { type: integer, description: 在线 Agent 数（心跳未超 APM_AGENT_OFFLINE_MINUTES 阈值且非 REVOKED） }
+        agents_total: { type: integer, description: 登记 Agent 总数（不含 REVOKED） }
+        requests: { type: number, description: 窗口内请求数 }
+        error_rate: { type: number, description: 错误率（5xx 占比，0~1） }
+        blocked: { type: number, description: 窗口内 WAF 阻断数 }
+        p50: { type: number, description: p50 耗时估算（毫秒） }
+        p95: { type: number, description: p95 耗时估算（毫秒） }
+        p99: { type: number, description: p99 耗时估算（毫秒） }
+        last_seen_at: { type: string, format: date-time, nullable: true, description: 窗口内最后有流量的聚合桶时间（无流量为 null） }
+
+    ApmServiceListResponse:
+      type: object
+      description: 服务分页响应（统一分页结构 + availability 数据质量自述）
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ApmServiceRow' } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        availability: { $ref: '#/components/schemas/ApmAvailability' }
+
+    ApmStatusClassCount:
+      type: object
+      properties:
+        status_class: { type: string, enum: ['2xx', '4xx', '5xx'], description: 状态码类别 }
+        count: { type: number }
+
+    ApmActionCount:
+      type: object
+      properties:
+        action: { type: string, enum: [allow, observe, block], description: 动作（app 级派生口径 allow=requests−block−observe） }
+        count: { type: number }
+
+    ApmServiceDetailData:
+      type: object
+      description: APM 服务详情数据
+      properties:
+        application_id: { type: string, format: uuid }
+        app: { type: string, description: 应用 code }
+        name: { type: string, description: 应用名称 }
+        observation_mode: { type: string, enum: [agentless], description: 观测模式（恒为 agentless） }
+        requests_total: { type: number, description: 窗口内请求总量 }
+        error_rate: { type: number, description: 错误率（5xx 占比，0~1） }
+        latency: { $ref: '#/components/schemas/ApmLatency' }
+        trend: { type: array, items: { $ref: '#/components/schemas/ApmTrendBucket' } }
+        status_classes: { type: array, items: { $ref: '#/components/schemas/ApmStatusClassCount' } }
+        actions: { type: array, items: { $ref: '#/components/schemas/ApmActionCount' } }
+        top_endpoints: { type: array, items: { $ref: '#/components/schemas/ApmEndpointStat' }, description: 慢端点榜（按 p95 降序，最多 5 个；access_log 关闭时为空数组） }
+        availability: { $ref: '#/components/schemas/ApmAvailability' }
+
+    ApmEndpointRow:
+      type: object
+      description: APM 端点列表行
+      properties:
+        app: { type: string, description: 应用 code }
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID（无法匹配现存应用时为 null） }
+        endpoint: { type: string, description: '端点键（"METHOD /path/{id}" 或保留桶 __OTHER__/__UNCLASSIFIED__，原样返回）' }
+        method: { type: string, description: HTTP 方法（从端点键拆出；保留桶为空串） }
+        path_template: { type: string, description: 路径模板（从端点键拆出；保留桶为空串） }
+        requests: { type: number, description: 窗口内请求数 }
+        error_rate: { type: number, description: 错误率（5xx 占比，0~1） }
+        blocked: { type: number, description: 窗口内阻断数（action=block） }
+        p50: { type: number, description: p50 耗时估算（毫秒） }
+        p95: { type: number, description: p95 耗时估算（毫秒） }
+        p99: { type: number, description: p99 耗时估算（毫秒） }
+        last_seen_at: { type: string, format: date-time, nullable: true, description: 窗口内最后出现的聚合桶时间 }
+
+    ApmEndpointListResponse:
+      type: object
+      description: 端点分页对象（在统一分页结构上将 items 命名为 list，并扩展 access_log_enabled 与 availability）
+      properties:
+        list: { type: array, items: { $ref: '#/components/schemas/ApmEndpointRow' } }
+        total: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+        access_log_enabled: { type: boolean, description: logging.access_log_enabled 当前状态（false 时 list 恒为空数组） }
+        availability: { $ref: '#/components/schemas/ApmAvailability' }
+
+    ApmTraceAccessLog:
+      type: object
+      description: trace 关联的访问记录（安全子集，不含请求/响应头体留痕）
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { type: string, format: date-time }
+        request_id: { type: string }
+        application_id: { type: string, format: uuid, nullable: true }
+        domain: { type: string }
+        client_ip: { type: string }
+        request_method: { type: string }
+        request_uri: { type: string }
+        request_path: { type: string }
+        response_status: { type: integer }
+        duration_ms: { type: integer, description: 网关放行链路总耗时（毫秒；前置拦截为网关处理耗时，无上游阶段） }
+        ttfb_ms: { type: integer, nullable: true, description: 首字节耗时（毫秒；旧网关无此字段为 null） }
+        waf_action: { type: string, enum: [ALLOW, OBSERVE, BLOCK], description: WAF 动作三态（历史空串按 ALLOW 归一） }
+        span_id: { type: string, nullable: true, description: 16 位十六进制 span ID（旧数据为 null） }
+        endpoint_key: { type: string, nullable: true, description: 端点归一化键（旧数据为 null） }
+        path_template: { type: string, nullable: true, description: 路径模板（旧数据为 null） }
+
+    ApmTraceSecurityEvent:
+      type: object
+      description: trace 关联的安全事件（必要安全字段子集）
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { type: string, format: date-time }
+        request_id: { type: string }
+        application_id: { type: string, format: uuid, nullable: true }
+        attack_type: { type: string }
+        severity: { type: string, enum: [INFO, LOW, MEDIUM, HIGH] }
+        action: { type: string, description: 处置动作（如 OBSERVE/BLOCK） }
+        response_status: { type: integer }
+        request_method: { type: string }
+        request_uri: { type: string }
+        rule_match_count: { type: integer }
+        disposition_status: { type: string, description: 处置状态（如 UNPROCESSED/PROCESSED） }
+
+    ApmTraceView:
+      type: object
+      description: trace 视图数据（均无命中时 access_logs/security_events/otel_spans 为空数组而非 404）
+      properties:
+        trace_id: { type: string, description: 请求路径中的 trace_id（统一小写） }
+        access_logs: { type: array, items: { $ref: '#/components/schemas/ApmTraceAccessLog' } }
+        security_events: { type: array, items: { $ref: '#/components/schemas/ApmTraceSecurityEvent' } }
+        otel_spans: { type: array, items: { $ref: '#/components/schemas/ApmOTelSpan' }, description: OTel 瀑布（阶段2 下半 CH 数据面；无数据面/未命中为空数组） }
+        span_count: { type: integer, description: 返回的 span 数（截断时为上限值 1000） }
+        truncated: { type: boolean, description: span 超上限（1000）被截断时为 true }
+        data_source: { type: string, enum: [agentless, otel, mixed], description: 数据源（agentless=仅网关侧无 Agent 数据；otel=仅 OTel 数据面；mixed=两侧均有） }
+        partial: { type: boolean, description: 可能不完整 trace（无 OTel span、缺根 span 或被截断） }
+        note: { type: string, enum: [agentless, otel, mixed], description: 数据来源说明（与 data_source 同值） }
+        availability: { $ref: '#/components/schemas/ApmAvailability' }
+        correlation: { $ref: '#/components/schemas/ApmCorrelation' }
+
+    ApmOTelSpan:
+      type: object
+      description: OTel 瀑布单个 span（attributes 仅白名单键——HTTP 方法/路由/状态码、db.system/db.operation.name/db.namespace、消息与 RPC 语义键、jiuzhang.waf_action；db.statement/url.query/头体留痕类键严禁透传）
+      properties:
+        span_id: { type: string, description: 16 位十六进制 span ID }
+        parent_span_id: { type: string, description: 父 span ID（根 span 为空串） }
+        service_name: { type: string, description: OTel service.name }
+        operation_name: { type: string, description: span 操作名 }
+        span_kind: { type: string, enum: [Server, Client, Internal, Producer, Consumer], description: span 类别 }
+        start_time: { type: string, format: date-time, description: span 开始时间（UTC） }
+        duration_ms: { type: number, description: 耗时（毫秒，微秒精度 3 位小数） }
+        status_code: { type: string, enum: [Unset, Ok, Error], description: span 状态 }
+        attributes: { type: object, additionalProperties: { type: string }, description: '属性白名单键子集（无命中为 {}）' }
+
+    ApmTraceSearchItem:
+      type: object
+      description: trace 检索列表行（trace 粒度聚合）
+      properties:
+        trace_id: { type: string, description: trace ID（32 位十六进制） }
+        root_service: { type: string, description: 根 span 服务名（缺根 span 时为空串，如实返回） }
+        root_operation: { type: string, description: 根 span 操作名（同上） }
+        start_time: { type: string, format: date-time, description: trace 最早 span 开始时间（UTC） }
+        duration_ms: { type: number, description: '墙钟耗时（max(span 结束) − min(span 开始)，毫秒）' }
+        span_count: { type: integer, format: int64, description: span 总数 }
+        error_count: { type: integer, format: int64, description: Error 状态 span 数 }
+        services: { type: array, items: { type: string }, description: 参与服务名（去重，上限 32） }
+
+    ApmTraceSearchData:
+      type: object
+      description: trace 检索分页数据（ClickHouse 未配置/不可用时 list 为空、data_source=agentless 且 message 给出原因，不返回 500）
+      properties:
+        list: { type: array, items: { $ref: '#/components/schemas/ApmTraceSearchItem' } }
+        total: { type: integer, format: int64 }
+        page: { type: integer }
+        page_size: { type: integer }
+        data_source: { type: string, enum: [otel, agentless], description: 数据源（otel=数据面在线口径；agentless=CH 未配置/降级） }
+        message: { type: string, description: 降级原因提示（正常时为空串） }
+        availability: { $ref: '#/components/schemas/ApmAvailability' }
+        correlation: { $ref: '#/components/schemas/ApmCorrelation', description: 关联判定（仅 request_id 检索时携带；trace_id 直达不经解析链，字段缺省） }
+
+    # ---------- P1-01 A2：数据质量自述（availability）与关联判定（correlation） ----------
+
+    ApmAvailability:
+      type: object
+      description: 数据质量自述（reason_codes/observed_sources 恒为数组而非 null；last_collected_at/last_ingested_at 未知为 null，不以当前时间伪造；estimated_lag_ms 仅在取得可比较水位时非 null——表级 max(Timestamp) 估计值，非请求级精确延迟）
+      properties:
+        query_state: { type: string, enum: [READY, EMPTY, PARTIAL, UNAVAILABLE], description: 'READY=有实际可用数据；EMPTY=成功查询的零结果；PARTIAL=部分结果（丢 Span/单腿降级/截断）；UNAVAILABLE=存储未配置/不可用' }
+        reason_codes: { type: array, items: { type: string, enum: [STORAGE_NOT_CONFIGURED, STORAGE_UNAVAILABLE, ACCESS_LOG_DISABLED, NO_INSTRUMENTATION_CONFIRMED, NOT_SAMPLED_CONFIRMED, INGESTION_DELAY_CONFIRMED, OUTSIDE_RETENTION, NO_MATCH, UNKNOWN] }, description: 原因码（只填有依据者；NO_INSTRUMENTATION_CONFIRMED/NOT_SAMPLED_CONFIRMED 当前无证据来源、词表冻结保留但不产出） }
+        observed_sources: { type: array, items: { type: string, enum: [GATEWAY, OTEL] }, description: 本次真实查询结果观测到的数据源（Agent 心跳不构成观测证据） }
+        last_collected_at: { type: string, format: date-time, nullable: true, description: 最近实际观测到的数据时间（本次结果集内；未知为 null） }
+        last_ingested_at: { type: string, format: date-time, nullable: true, description: CH 数据面最近确认入库水位（otel_traces max(Timestamp)；未知为 null） }
+        estimated_lag_ms: { type: integer, format: int64, nullable: true, description: 采集滞后估计（now − last_ingested_at，非负；仅有水位时非 null） }
+        partial: { type: boolean, description: 丢 Span/降级/截断/关闭的腿导致部分结果 }
+
+    ApmCorrelation:
+      type: object
+      description: 关联判定（独立于数据源健康；后端不轮询，PENDING 的有界等待归前端）
+      properties:
+        state: { type: string, enum: [MATCHED, AMBIGUOUS, PENDING, NOT_FOUND, NOT_EXPECTED, UNKNOWN], description: 'MATCHED=唯一候选且已命中；AMBIGUOUS=一对多（候选全列不任取第一条）；PENDING=目标可能尚在采集/入库途中；NOT_FOUND=目标在证据范围内不存在；NOT_EXPECTED=已证实网关终止且未调用源站（BLOCK 动作证据），无 Span 为预期；UNKNOWN=证据不足不编造结论' }
+        match_basis: { type: string, enum: [request_id_to_trace_id, trace_id_direct], description: 匹配依据（request_id 经 access_logs 解析链 / trace_id 直接精确匹配） }
+        candidate_count: { type: integer, description: 候选数（与 candidates 长度一致） }
+        reason: { type: string, description: 人类可读判定解释（无附带说明为空串） }
+        candidates: { type: array, items: { $ref: '#/components/schemas/ApmCorrelationCandidate' }, description: 候选列表（无候选为空数组） }
+
+    ApmCorrelationCandidate:
+      type: object
+      description: 关联候选（一对多时逐候选返回时间/服务/匹配依据）
+      properties:
+        trace_id: { type: string, description: 候选 trace ID（32 位十六进制） }
+        occurred_at: { type: string, format: date-time, nullable: true, description: 候选时间（数据面 trace 起始或访问记录发生时间；未知为 null） }
+        services: { type: array, items: { type: string }, description: 候选涉及服务（未知为空数组，上限 16） }
+        match_basis: { type: string, enum: ['otel_traces.trace_id', 'access_logs.trace_id'], description: 候选级依据（数据面 Span 命中 / 网关访问记录解析未确认） }
+
+    # ---------- 阶段3 第一批：SQL 指纹 / 异常指纹 / 服务依赖 ----------
+
+    ApmSqlFingerprintRow:
+      type: object
+      description: SQL 指纹聚合行（只出指纹不出原始 statement；calls/error_count/avg_ms 来自 002 分钟聚合表，p95_ms/namespace/operation/sample_trace_ids 由 otel_traces 同窗派生）
+      properties:
+        sql_fingerprint: { type: string, description: SQL 指纹（hex(MD5(归一化 db.statement))，32 位十六进制） }
+        db_system: { type: string, description: 数据库系统（OTel db.system） }
+        namespace: { type: string, description: 库/Schema（db.namespace；缺失为空串） }
+        operation: { type: string, description: 操作类型（db.operation.name，如 SELECT；缺失为空串） }
+        calls: { type: integer, format: int64, description: 调用次数 }
+        error_count: { type: integer, format: int64, description: Error 状态调用数 }
+        avg_ms: { type: number, description: 平均耗时（毫秒，3 位小数） }
+        p95_ms: { type: number, description: p95 耗时（毫秒，3 位小数；原始表同窗 quantile(0.95) 估算） }
+        sample_trace_ids: { type: array, items: { type: string }, description: 示例 trace ID（去重，上限 3） }
+
+    ApmSqlFingerprintData:
+      type: object
+      description: SQL 指纹聚合分页数据（ClickHouse 未配置/不可用时 list 为空、data_source=agentless 且 message 给出原因，不返回 500）
+      properties:
+        list: { type: array, items: { $ref: '#/components/schemas/ApmSqlFingerprintRow' } }
+        total: { type: integer, format: int64 }
+        page: { type: integer }
+        page_size: { type: integer }
+        data_source: { type: string, enum: [otel, agentless], description: 数据源（otel=数据面在线口径；agentless=CH 未配置/降级） }
+        message: { type: string, description: 降级原因提示（正常时为空串） }
+        trace_id: { type: string, description: 请求侧 trace_id 回显（未提供为空串） }
+        match_mode: { type: string, enum: [trace_exact, window_aggregate], description: 定位语义（trace_exact=仅该 trace 的 DB Span 派生；window_aggregate=同时间窗候选聚合） }
+        match_note: { type: string, description: 匹配语义说明（window_aggregate 时如实标注"非特定请求定位"） }
+        availability: { $ref: '#/components/schemas/ApmAvailability' }
+
+    ApmExceptionRow:
+      type: object
+      description: 异常指纹聚合行（002 异常指纹表；不出堆栈原文；首末出现为分钟聚合桶粒度）
+      properties:
+        exception_type: { type: string, description: 异常类型（exception.type；缺失为空串） }
+        fingerprint: { type: string, description: 异常指纹（hex(MD5(归一化 exception.stacktrace))，32 位十六进制） }
+        count: { type: integer, format: int64, description: exception 事件数（一个 span 可携带多个 exception 事件） }
+        first_seen_at: { type: string, format: date-time, description: 窗口内首次出现（分钟聚合桶起点，±1 分钟） }
+        last_seen_at: { type: string, format: date-time, description: 窗口内最后出现（分钟聚合桶起点，±1 分钟） }
+        affected_services: { type: array, items: { type: string }, description: 受影响服务名（去重，上限 16） }
+        sample_trace_ids: { type: array, items: { type: string }, description: 示例 trace ID（去重，上限 3） }
+
+    ApmExceptionTraceItem:
+      type: object
+      description: trace 级异常定位行（trace_id 参数模式，从 otel_traces 的 exception 事件直接派生——精确语义，非窗口聚合候选；文本经凭据形态掩码 + rune 上限截断，截断时对应 *_truncated=true）
+      properties:
+        trace_id: { type: string, description: trace ID（32 位十六进制） }
+        span_id: { type: string, description: 16 位十六进制 span ID }
+        service_name: { type: string, description: OTel service.name }
+        occurred_at: { type: string, format: date-time, description: exception 事件时间（Events.Timestamp，UTC） }
+        exception_type: { type: string, description: 异常类型（exception.type；缺失为空串） }
+        exception_message: { type: string, description: 异常消息（掩码+截断后纯文本，上限 2048 runes） }
+        stacktrace: { type: string, description: 堆栈（掩码+截断后纯文本，上限 8192 runes） }
+        fingerprint: { type: string, description: 异常指纹（hex(MD5(exception.stacktrace 原文))，与窗口聚合行同式可对照） }
+        message_truncated: { type: boolean, description: exception_message 超上限被截断 }
+        stacktrace_truncated: { type: boolean, description: stacktrace 超上限被截断 }
+
+    ApmExceptionData:
+      type: object
+      description: 异常指纹聚合分页数据（ClickHouse 未配置/不可用时 list 为空、data_source=agentless 且 message 给出原因，不返回 500）
+      properties:
+        list: { type: array, items: { $ref: '#/components/schemas/ApmExceptionRow' } }
+        total: { type: integer, format: int64 }
+        page: { type: integer }
+        page_size: { type: integer }
+        data_source: { type: string, enum: [otel, agentless], description: 数据源（otel=数据面在线口径；agentless=CH 未配置/降级） }
+        message: { type: string, description: 降级原因提示（正常时为空串） }
+        trace_id: { type: string, description: 请求侧 trace_id 回显（未提供为空串） }
+        match_mode: { type: string, enum: [trace_exact, window_aggregate], description: 定位语义（trace_exact=仅该 trace 的 exception 事件；window_aggregate=窗口聚合候选） }
+        match_note: { type: string, description: 匹配语义说明 }
+        trace_exceptions: { type: array, items: { $ref: '#/components/schemas/ApmExceptionTraceItem' }, description: trace 级定位结果（仅 trace_exact 模式；窗口模式为空数组） }
+        availability: { $ref: '#/components/schemas/ApmAvailability' }
+
+    ApmDependencyEdge:
+      type: object
+      description: 服务依赖边（客户端 span 单视角派生，无对端 SERVER span 配对）
+      properties:
+        source: { type: string, description: 调用方服务名（CLIENT/PRODUCER span 的 ServiceName） }
+        target: { type: string, description: '对端标识（peer.service / db.system[/namespace] / messaging.system[/destination] / server.address）' }
+        target_type: { type: string, enum: [service, db, messaging, external], description: 对端类型（未标注 peer.service 的 HTTP 调用按 server.address 归类为 external） }
+        calls: { type: integer, format: int64, description: 调用次数 }
+        error_rate: { type: number, description: 错误率（Error span 占比，0~1，3 位小数） }
+        avg_ms: { type: number, description: 平均耗时（毫秒，3 位小数） }
+
+    ApmDependenciesData:
+      type: object
+      description: 服务依赖边数据（ClickHouse 未配置/不可用时 edges 为空、data_source=agentless 且 note 给出原因，不返回 500）
+      properties:
+        edges: { type: array, items: { $ref: '#/components/schemas/ApmDependencyEdge' }, description: 依赖边列表（按调用数倒序，上限 500 条，超限截断并在 note 标注） }
+        data_source: { type: string, enum: [otel, agentless], description: 数据源（otel=数据面在线口径；agentless=CH 未配置/降级） }
+        note: { type: string, description: 派生口径/截断/降级说明（正常时标注"基于客户端 span 派生"） }
+
+    # ---------- 阶段3 第二批：运行时指标（metrics 信号） ----------
+
+    ApmRuntimePoint:
+      type: object
+      description: 降采样指标点（桶内均值；同名多序列按桶求和合并）
+      properties:
+        ts: { type: string, format: date-time, description: 桶起点（窗口等分降采样，每指标 ≤200 点） }
+        value: { type: number, description: 桶内值（3 位小数） }
+
+    ApmRuntimeMetric:
+      type: object
+      description: 单实例单个指标（按上报原样返回，不同语言 Agent 指标集不强行统一）
+      properties:
+        name: { type: string, description: 指标名（OTel 语义约定原名，如 go.goroutine.count / go.memory.used / go.schedule.duration） }
+        unit: { type: string, description: 'UCUM 单位（By / {goroutine} / s 等；上报缺失为空串）' }
+        description: { type: string, description: 上报描述 + 来源说明（尾部附 instrumentation scope 与折算口径，如"直方图按 Sum/Count 折算均值"） }
+        latest_value: { type: number, description: 窗口内最新值（同名多序列各自取最新后求和） }
+        points: { type: array, items: { $ref: '#/components/schemas/ApmRuntimePoint' }, description: 降采样点序列（桶起点升序，≤200 点） }
+
+    ApmRuntimeInstance:
+      type: object
+      description: 服务实例运行时指标
+      properties:
+        instance_id: { type: string, description: 实例 ID（OTel resource service.instance.id；Agent 未上报为空串） }
+        service_name: { type: string, description: 服务名（OTel service.name） }
+        metrics: { type: array, items: { $ref: '#/components/schemas/ApmRuntimeMetric' }, description: 指标列表（按名升序，≤20 个） }
+
+    ApmRuntimeData:
+      type: object
+      description: 运行时指标数据（ClickHouse 未配置/不可用时 instances 为空、data_source=agentless 且 note 给出原因，不返回 500）
+      properties:
+        data_source: { type: string, enum: [otel, agentless], description: 数据源（otel=数据面在线口径；agentless=CH 未配置/降级） }
+        instances: { type: array, items: { $ref: '#/components/schemas/ApmRuntimeInstance' }, description: 实例列表（按服务名/实例 ID 升序，上限 20，超限截断并在 note 标注） }
+        note: { type: string, description: 口径/截断/降级说明（正常时标注降采样与折算口径） }
+
+    # ---------- SLO 目标管理（迁移 000092） ----------
+
+    ApmSLOItem:
+      type: object
+      description: SLO 定义 + 当前窗口实时评估结果。口径：availability 只把 5xx 计为失败（v1，4xx 不计），current_value = 1 − 5xx/总请求数；latency_p95 的 current_value 为窗口耗时直方图估算 P95（毫秒）。错误预算 remaining：availability = (1 − target − 实际违约率)/(1 − target)；latency_p95 = (target − p95)/target；统一夹紧 [−1,1]。状态机：remaining < 0 → BREACHED；预算消耗 >80%（remaining < 0.2）→ AT_RISK；否则 OK。窗口内无数据：current_value=null、状态 OK、note 说明
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, maxLength: 128, description: SLO 名称 }
+        service: { type: string, maxLength: 128, description: 应用编码（聚合指标 app 标签） }
+        metric_type: { type: string, enum: [availability, latency_p95] }
+        target: { type: number, description: availability 为 (0,1) 达标率；latency_p95 为毫秒阈值（≤600000） }
+        window: { type: string, enum: [7d, 30d], description: 评估窗口 }
+        current_value: { type: number, nullable: true, description: 当前值（availability 达标率 0~1 / latency_p95 毫秒；无数据为 null） }
+        compliance_ratio: { type: number, description: 达标率（availability=可用性；latency_p95=≤阈值请求占比，0~1） }
+        error_budget_remaining: { type: number, description: '错误预算剩余比（[−1,1]；0=恰好踩线，负值=已违约）' }
+        status: { type: string, enum: [OK, AT_RISK, BREACHED] }
+        note: { type: string, description: 口径说明（当前仅无数据场景非空） }
+        updated_at: { type: string, format: date-time }
+
+    ApmSLOListResponse:
+      type: object
+      description: SLO 列表响应（不分页）
+      properties:
+        list: { type: array, items: { $ref: '#/components/schemas/ApmSLOItem' } }
+        total: { type: integer, format: int64 }
+
+    ApmSLOUpsertRequest:
+      type: object
+      required: [name, service, metric_type, target, window]
+      description: SLO 创建/全量更新入参（同一服务同一指标同一窗口唯一）
+      properties:
+        name: { type: string, maxLength: 128, description: SLO 名称（非空） }
+        service: { type: string, maxLength: 128, description: 应用编码（非空；聚合指标 app 标签） }
+        metric_type: { type: string, enum: [availability, latency_p95] }
+        target: { type: number, description: availability ∈ (0,1)；latency_p95 为毫秒正数（≤600000） }
+        window: { type: string, enum: [7d, 30d] }
+
+    ApmSLOTrendPoint:
+      type: object
+      description: SLO 达标率趋势点（7d 窗口按小时桶、30d 窗口按天桶；零流量桶达标率计 1）
+      properties:
+        bucket_start: { type: string, format: date-time, description: 桶起点（UTC） }
+        compliance_ratio: { type: number, description: 桶内达标率（0~1） }
+
+    ApmSLODetail:
+      type: object
+      description: SLO 详情（ApmSLOItem 全部字段 + 窗口内达标率趋势）
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        service: { type: string }
+        metric_type: { type: string, enum: [availability, latency_p95] }
+        target: { type: number }
+        window: { type: string, enum: [7d, 30d] }
+        current_value: { type: number, nullable: true, description: 当前值（无数据为 null） }
+        compliance_ratio: { type: number }
+        error_budget_remaining: { type: number, description: '错误预算剩余比（[−1,1]）' }
+        status: { type: string, enum: [OK, AT_RISK, BREACHED] }
+        note: { type: string }
+        updated_at: { type: string, format: date-time }
+        trend: { type: array, items: { $ref: '#/components/schemas/ApmSLOTrendPoint' } }
+
+    # ---------- 阶段2 上半：Agent 控制面 ----------
+
+    ApmEnrollmentTokenCreateRequest:
+      type: object
+      description: 创建一次性注册令牌入参（全部可选；归属绑定在令牌上，注册时不可被请求体覆盖）
+      properties:
+        application_id: { type: string, format: uuid, nullable: true, description: 绑定应用（可空——空则注册服务落 UNCLAIMED 待认领；指向不存在/已删除应用返回 400） }
+        environment: { type: string, description: '环境标识（小写字母/数字/中划线，≤64；默认 "production"）' }
+        allowed_languages: { type: array, items: { type: string, enum: [java, go, dotnet, nodejs, python, php] }, description: 允许的语言（空数组 = 不限制） }
+        expires_in_minutes: { type: integer, minimum: 5, maximum: 10080, description: 有效期分钟数（默认 60，区间 5~10080） }
+        note: { type: string, description: 备注（≤200 字符，落审计摘要） }
+
+    ApmEnrollmentTokenCreated:
+      type: object
+      description: 令牌创建响应（token 原文仅此一次返回，服务端只保留 SHA-256 摘要）
+      properties:
+        token_id: { type: string, format: uuid }
+        token: { type: string, description: 令牌原文（仅此一次出现） }
+        application_id: { type: string, format: uuid, nullable: true }
+        environment: { type: string }
+        allowed_languages: { type: array, items: { type: string } }
+        expires_at: { type: string, format: date-time }
+        note: { type: string, description: 一次性提示文案 }
+
+    ApmAgentRow:
+      type: object
+      description: Agent 登记行（status 为展示态，stored_status 为库存状态；node_info 为自报信息仅展示用）
+      properties:
+        id: { type: string, format: uuid }
+        service_id: { type: string, format: uuid }
+        service_name: { type: string, description: OTel service.name }
+        environment: { type: string }
+        application_id: { type: string, format: uuid, nullable: true, description: 绑定应用（未认领为 null） }
+        instance_id: { type: string, description: OTel service.instance.id }
+        language: { type: string, enum: [java, go, dotnet, nodejs, python, php] }
+        agent_version: { type: string }
+        sdk_version: { type: string }
+        stored_status: { type: string, enum: [ENROLLING, CONNECTED_BASELINE, DIAGNOSING, REVOKED], description: 库存状态 }
+        status: { type: string, enum: [ENROLLING, CONNECTED_BASELINE, DIAGNOSING, OFFLINE, REVOKED], description: 展示态（OFFLINE 按心跳超时推导） }
+        cert_fingerprint: { type: string, description: 当前客户端证书 SHA-256 指纹（hex） }
+        cert_not_after: { type: string, format: date-time, description: 当前证书到期时间 }
+        last_heartbeat_at: { type: string, format: date-time, nullable: true, description: 最后心跳（无心跳为 null） }
+        node_info: { type: object, additionalProperties: { type: string }, description: 自报节点信息（hostname/host_ip/os/arch 等，仅展示） }
+        registered_at: { type: string, format: date-time }
+        revoked_at: { type: string, format: date-time, nullable: true }
+        revoke_reason: { type: string, description: 撤销原因（未撤销为空串） }
+
+    ApmAgentListResponse:
+      type: object
+      description: Agent 分页响应（统一分页结构）
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ApmAgentRow' } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+
+    ApmAgentRevokeRequest:
+      type: object
+      description: 撤销入参（无体/空体亦可）
+      properties:
+        reason: { type: string, description: 撤销原因（≤200 字符，落审计与登记行） }
+
+    ApmPolicyEnvelope:
+      type: object
+      description: 签名策略信封（签名覆盖 scope/version/key_id/issued_at/expires_at/policy；
+        验签公钥为注册响应下发的 ca_public_key，签名输入 = "JIUZHANG-APM-POLICY-v1\n" + 规范 JSON）
+      properties:
+        scope: { type: string, description: '作用域（global 或 application:<uuid>）' }
+        version: { type: integer, format: int64, description: 版本号（同一作用域单调递增；Agent 只接受更新版本） }
+        key_id: { type: string, description: 验签密钥标识（恒为 apm-agent-ca） }
+        issued_at: { type: string, format: date-time, description: 签发时间（UTC） }
+        expires_at: { type: string, format: date-time, description: 过期时间（过期策略 Agent 必须拒绝） }
+        policy: { type: object, description: 基线策略正文（signals/sampling_rate/attribute_allowlist/sql_mode/batch/queue/memory_limit_mib/export_timeout_seconds/diagnostics 等白名单键） }
+        signature: { type: string, description: Ed25519 签名 hex }
+
+    ApmPolicyPutRequest:
+      type: object
+      description: 发布策略新版本入参（版本号由服务端单调递增分配，请求体不含版本）
+      properties:
+        policy: { type: object, description: 基线策略正文（白名单校验，未知顶层键拒绝） }
+        expected_version: { type: integer, format: int64, nullable: true, description: 乐观并发：读取基线版本号（不一致返回 409） }
+        expires_in_hours: { type: integer, minimum: 1, maximum: 2160, description: 有效期小时数（默认 720=30 天） }
+
+    ApmAgentRegisterRequest:
+      type: object
+      description: Agent 注册入参（应用/环境归属取自令牌，请求体自报无效）
+      properties:
+        token: { type: string, description: 一次性注册令牌原文 }
+        csr: { type: string, description: PKCS#10 CSR（PEM；公钥 Ed25519/ECDSA P-256·P-384/RSA≥2048） }
+        service_name: { type: string, description: 'OTel service.name（1~128 位字母数字或 . _ : -）' }
+        instance_id: { type: string, description: OTel service.instance.id（同窗字符集） }
+        language: { type: string, enum: [java, go, dotnet, nodejs, python, php] }
+        agent_version: { type: string, description: Agent 版本（≤64 字符） }
+        sdk_version: { type: string, description: OTel SDK 版本（≤64 字符） }
+        node_info: { type: object, additionalProperties: { type: string }, description: 节点信息（白名单键 hostname/host_ip/os/arch/pod/namespace/container_id） }
+
+    ApmAgentRegisterResponse:
+      type: object
+      description: 注册成功响应（证书材料 + 资源属性 + 已签名基线策略）
+      properties:
+        agent_id: { type: string, format: uuid }
+        client_cert: { type: string, description: 客户端证书 PEM（短期，默认 72h） }
+        ca_cert: { type: string, description: 内置 CA 证书 PEM }
+        ca_public_key: { type: string, description: 策略验签公钥（Ed25519 hex） }
+        key_id: { type: string, description: 验签密钥标识（恒为 apm-agent-ca） }
+        cert_not_after: { type: string, format: date-time }
+        collector_addr: { type: string, description: OTLP Collector 地址（空串 = 数据面未就绪） }
+        resource_attributes: { type: object, description: OTel 资源属性（service.name/service.instance.id/deployment.environment/jiuzhang.application_id 等） }
+        policy: { $ref: '#/components/schemas/ApmPolicyEnvelope' }
+
+    ApmAgentHeartbeatRequest:
+      type: object
+      description: 心跳入参（全部可选；空体合法——仅刷新活性）
+      properties:
+        agent_version: { type: string, description: Agent 版本（携带才覆盖） }
+        sdk_version: { type: string, description: OTel SDK 版本（携带才覆盖） }
+        node_info: { type: object, additionalProperties: { type: string }, description: 节点信息（携带才覆盖，白名单键同上） }
+
+    ApmAgentHeartbeatResponse:
+      type: object
+      description: 心跳确认
+      properties:
+        status: { type: string, enum: [ok] }
+        server_time: { type: string, format: date-time, description: 服务端当前时间（UTC；供 Agent 校时） }
+        policy_version: { type: integer, format: int64, description: 当前生效策略版本（高于本地则应拉取） }
+        cert_not_after: { type: string, format: date-time }
+        cert_renew_recommended: { type: boolean, description: 剩余有效期不足 1/3 时为 true（建议轮换） }
+        heartbeat_interval_hint: { type: integer, description: 建议心跳间隔（秒，离线阈值的一半） }
+
+    ApmAgentRotateRequest:
+      type: object
+      description: 证书轮换入参
+      properties:
+        csr: { type: string, description: 新密钥对的 PKCS#10 CSR（PEM） }
+
+    ApmAgentRotateResponse:
+      type: object
+      description: 轮换成功响应（旧证书指纹已入撤销列表、立即失效）
+      properties:
+        agent_id: { type: string, format: uuid }
+        client_cert: { type: string, description: 新客户端证书 PEM }
+        ca_cert: { type: string, description: 内置 CA 证书 PEM }
+        cert_not_after: { type: string, format: date-time }
+
+    # ---------- 阶段4：深度诊断会话（迁移 000093） ----------
+
+    ApmDiagnosticScope:
+      type: object
+      description: 诊断会话范围（application_id 必填——诊断叠加策略按 application:<uuid> 作用域发布，范围收敛到单应用；service/environment 精确匹配，instance_ids 空 = 不限制实例）
+      properties:
+        application_id: { type: string, format: uuid }
+        service: { type: string, maxLength: 128, description: 'OTel service.name（精确匹配；字母数字与 . _ : -）' }
+        environment: { type: string, maxLength: 64, description: 部署环境（小写数字/中划线） }
+        instance_ids: { type: array, items: { type: string, maxLength: 128 }, description: 实例 ID 列表（≤64，service.instance.id） }
+
+    ApmDiagnosticSessionCreateRequest:
+      type: object
+      description: 创建诊断会话入参。dry_run=true 只返回预估不落库；正式创建须 confirm=true（先 dry_run 预估再确认为前端纪律，后端仅校验 confirm 标志）。sampling_rate 下界夹紧 0.1、duration_minutes 缺省/下界夹紧 15；开销护栏（duration>120、rate>1.0、function_probe rate>0.5 或未精确范围）返回 422
+      required: [scope, capabilities]
+      properties:
+        scope: { $ref: '#/components/schemas/ApmDiagnosticScope' }
+        capabilities:
+          type: array
+          items: { type: string, enum: [sql_detail, function_probe, thread_block, gc_detail, mq_wait] }
+          description: 诊断能力白名单（非空；function_probe=目标函数探针，最高开销）
+        sampling_rate: { type: number, minimum: 0.1, maximum: 1.0, description: 采样率（function_probe ≤0.5；下界 <0.1 夹紧为 0.1） }
+        duration_minutes: { type: integer, minimum: 15, maximum: 120, default: 15, description: 持续时间分钟（缺省 15；<15 夹紧为 15，>120 返回 422） }
+        dry_run: { type: boolean, default: false, description: 仅预估开销，不创建会话 }
+        confirm: { type: boolean, default: false, description: 正式创建确认标志（缺省 false 返回 400） }
+
+    ApmDiagnosticOverheadEstimate:
+      type: object
+      description: 预计开销（确定性启发式估算，仅创建前提示，不作性能承诺）
+      properties:
+        cpu_hint: { type: string, description: 额外 CPU 估算（单实例；含 §21.1 稳态预算线 5% 提示） }
+        spans_per_s_hint: { type: string, description: span 速率估算（匹配实例合计） }
+        data_volume_hint: { type: string, description: 会话期数据量估算（MB） }
+        risk_notes: { type: array, items: { type: string }, description: 敏感风险与预算提示（含超预算线/零匹配/kill switch 开启提示） }
+
+    ApmDiagnosticDryRunResult:
+      type: object
+      description: dry_run 响应（不落库、不审计）
+      properties:
+        estimated_overhead: { $ref: '#/components/schemas/ApmDiagnosticOverheadEstimate' }
+        effective:
+          type: object
+          description: 夹紧后的生效值（供二次确认页如实展示）
+          properties:
+            sampling_rate: { type: number }
+            duration_minutes: { type: integer }
+        matched_instances: { type: integer, description: 当前匹配的在线 Agent 数（0 时正式创建将被 422 拒绝） }
+
+    ApmDiagnosticSession:
+      type: object
+      description: 诊断会话行。状态机 ACTIVE→EXPIRED/STOPPED/KILLED（均终态）；expires_at 为硬截止（同步写入诊断策略信封，Agent 失联时本地自动失效）；baseline_restored 标记终态后基线恢复策略是否已下发（到期扫描任务对账重试）
+      properties:
+        id: { type: string, format: uuid }
+        scope: { $ref: '#/components/schemas/ApmDiagnosticScope' }
+        capabilities: { type: array, items: { type: string } }
+        sampling_rate: { type: number, description: 生效采样率（夹紧后） }
+        duration_minutes: { type: integer, description: 生效时长（分钟，夹紧后） }
+        status: { type: string, enum: [ACTIVE, EXPIRED, STOPPED, KILLED] }
+        created_by: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        stopped_at: { type: string, format: date-time, nullable: true }
+        stopped_by: { type: string, format: uuid, nullable: true }
+        stop_reason: { type: string, description: manual / expired / kill switch }
+        policy_version: { type: integer, format: int64, description: 创建时下发的诊断叠加策略版本（application:<uuid> 作用域） }
+        baseline_restored: { type: boolean, description: 终态后基线恢复策略是否已下发 }
+
+    ApmDiagnosticSessionListResponse:
+      type: object
+      description: 会话分页列表 + 响应级 kill switch 实时状态
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ApmDiagnosticSession' } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+        kill_switch_enabled: { type: boolean }
+
+    ApmDiagnosticAuditEntry:
+      type: object
+      description: 关联操作审计条目（operation_audits 摘要字段）
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { type: string, format: date-time }
+        username: { type: string }
+        action: { type: string, description: create / stop / kill }
+        object_type: { type: string }
+        object_id: { type: string }
+        before_summary: { type: string }
+        after_summary: { type: string }
+        result: { type: string, enum: [SUCCESS, FAILURE] }
+        risk_level: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+
+    ApmDiagnosticSessionDetail:
+      allOf:
+        - $ref: '#/components/schemas/ApmDiagnosticSession'
+        - type: object
+          properties:
+            audits:
+              type: array
+              items: { $ref: '#/components/schemas/ApmDiagnosticAuditEntry' }
+              description: 关联操作审计（时间倒序，上限 50 条）
+
+    ApmDiagnosticSessionStopRequest:
+      type: object
+      description: 提前停止入参（全部可选）
+      properties:
+        reason: { type: string, maxLength: 200, description: 停止原因（落审计与会话行） }
+
+    ApmDiagnosticsKillSwitchRequest:
+      type: object
+      description: kill switch 入参
+      required: [enable]
+      properties:
+        enable: { type: boolean, description: 'true=开启（终止全部 ACTIVE 会话并拒绝新建）；false=解除新建封锁' }
+
+    ApmDiagnosticsKillSwitchResponse:
+      type: object
+      description: kill switch 操作结果
+      properties:
+        kill_switch_enabled: { type: boolean }
+        killed_sessions: { type: integer, description: 本次被终止的 ACTIVE 会话数 }

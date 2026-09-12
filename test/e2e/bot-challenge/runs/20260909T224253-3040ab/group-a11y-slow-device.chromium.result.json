@@ -1,0 +1,160 @@
+{
+  "group": "a11y-slow-device",
+  "channel": "chromium",
+  "cpu_throttle_rate": 6,
+  "nav_attempts_before_challenge": 1,
+  "challenge_seen": true,
+  "solve_ms": 102,
+  "verify_status": 204,
+  "main_thread_probes": [
+    {
+      "gap": 2,
+      "challenge": false
+    },
+    {
+      "gap": 80,
+      "challenge": true
+    },
+    {
+      "gap": 91,
+      "challenge": true
+    },
+    {
+      "gap": 12,
+      "challenge": true
+    },
+    {
+      "gap": 6,
+      "challenge": true
+    },
+    {
+      "gap": 4,
+      "challenge": true
+    },
+    {
+      "gap": 15,
+      "challenge": false
+    },
+    {
+      "gap": 0,
+      "challenge": false
+    },
+    {
+      "gap": 2,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 0,
+      "challenge": false
+    },
+    {
+      "gap": 0,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 4,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 4,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 6,
+      "challenge": false
+    },
+    {
+      "gap": 4,
+      "challenge": false
+    },
+    {
+      "gap": 5,
+      "challenge": false
+    },
+    {
+      "gap": 4,
+      "challenge": false
+    },
+    {
+      "gap": 4,
+      "challenge": false
+    },
+    {
+      "gap": 0,
+      "challenge": false
+    },
+    {
+      "gap": 2,
+      "challenge": false
+    },
+    {
+      "gap": 4,
+      "challenge": false
+    },
+    {
+      "gap": 2,
+      "challenge": false
+    },
+    {
+      "gap": 1,
+      "challenge": false
+    },
+    {
+      "gap": 31,
+      "challenge": false
+    },
+    {
+      "gap": 10,
+      "challenge": false
+    }
+  ],
+  "challenge_window_gaps_ms": [
+    80,
+    91,
+    12,
+    6,
+    4
+  ],
+  "challenge_window_gap_max_ms": 91,
+  "final_reached_origin": true
+}

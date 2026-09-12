@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "fastjson TemplatesImpl _bytecodes/_tfactory payload fields (1000647)"
+rule_id: 1000647
+tests:
+  - test_id: 1
+    desc: "TemplatesImpl _bytecodes field in form value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'j={"@type":"com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl","_bytecodes":["yv66vg=="],"_name":"x","_tfactory":{}}'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000647]
+  - test_id: 2
+    desc: "_bytecodes as form parameter name"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "_bytecodes=yv66vg%3D%3D"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000647]

@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# check.sh —— 组件健康检查：容器状态 / 管理 API / 防护网关 / PostgreSQL / Valkey。
+# 退出码：0=全部健康 1=存在异常 2=用法错误
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+用法: check.sh [选项]
+
+组件健康检查（容器状态、管理 API、防护网关、PostgreSQL、Valkey）。
+
+选项:
+  -c, --compose-file FILE   docker compose 文件（默认 docker-compose.yml，或 JZ_COMPOSE_FILE）
+  -e, --env-file FILE       环境变量文件（默认 .env，或 JZ_ENV_FILE）
+      --api-url URL         管理 API 地址（默认 http://127.0.0.1:18081，或 JZ_API_BASE）
+      --gateway-url URL     网关地址（默认 http://127.0.0.1:18080，或 JZ_GATEWAY_URL）
+  -h, --help                显示帮助
+
+退出码: 0=全部健康 1=存在异常 2=用法错误
+EOF
+}
+
+GATEWAY_URL="${JZ_GATEWAY_URL:-http://127.0.0.1:18080}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c|--compose-file) JZ_COMPOSE_FILE="$2"; shift 2 ;;
+    -e|--env-file)     JZ_ENV_FILE="$2"; shift 2 ;;
+    --api-url)         JZ_API_BASE="$2"; shift 2 ;;
+    --gateway-url)     GATEWAY_URL="$2"; shift 2 ;;
+    -h|--help)         usage; exit 0 ;;
+    *) log_err "未知参数: $1"; usage; exit 2 ;;
+  esac
+done
+
+require_cmd docker
+require_cmd curl
+
+FAILED=0
+report() { # report NAME OK|FAIL DETAIL
+  local name="$1" result="$2" detail="${3:-}"
+  if [[ "$result" == "OK" ]]; then
+    printf '  [OK]   %-16s %s\n' "$name" "$detail"
+  else
+    printf '  [FAIL] %-16s %s\n' "$name" "$detail"
+    FAILED=1
+  fi
+}
+
+log_info "开始组件健康检查（compose: ${JZ_COMPOSE_FILE}）"
+
+# ---- 1. 容器状态 ----
+if [[ -f "$JZ_COMPOSE_FILE" ]]; then
+  if [[ -f "$JZ_ENV_FILE" ]]; then
+    ps_out="$(compose ps --format '{{.Name}} {{.State}}' 2>/dev/null || true)"
+  else
+    ps_out="$(docker compose -f "$JZ_COMPOSE_FILE" ps --format '{{.Name}} {{.State}}' 2>/dev/null || true)"
+  fi
+  if [[ -z "$ps_out" ]]; then
+    report "containers" FAIL "未获取到容器状态（compose 项目未启动？）"
+  else
+    bad=""
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      name="${line%% *}"
+      state="${line#* }"
+      if [[ "$state" != "running" ]]; then
+        bad="$bad $name($state)"
+      fi
+    done <<< "$ps_out"
+    if [[ -n "$bad" ]]; then
+      report "containers" FAIL "异常容器:$bad"
+    else
+      report "containers" OK "$(wc -l <<< "$ps_out" | tr -d ' ') 个容器运行中"
+    fi
+  fi
+else
+  log_warn "compose 文件 $JZ_COMPOSE_FILE 不存在，跳过容器状态检查"
+fi
+
+# ---- 2. 管理 API ----
+api_resp="$(curl -sS --max-time 5 "$JZ_API_BASE/api/v1/health" 2>/dev/null || true)"
+if printf '%s' "$api_resp" | grep -q '"status":"ok"'; then
+  report "api" OK "$JZ_API_BASE"
+elif printf '%s' "$api_resp" | grep -q '"status":"degraded"'; then
+  report "api" FAIL "API 降级: $api_resp"
+else
+  report "api" FAIL "不可达: $JZ_API_BASE"
+fi
+
+# ---- 3. 防护网关（TCP 可达性；无公开健康端点） ----
+gw_host="$(printf '%s' "$GATEWAY_URL" | sed -E 's#^[a-z]+://([^:/]+).*#\1#')"
+gw_port="$(printf '%s' "$GATEWAY_URL" | sed -E 's#^[a-z]+://[^:/]+:([0-9]+).*#\1#')"
+[[ "$gw_port" =~ ^[0-9]+$ ]] || gw_port=80
+if (exec 3<>"/dev/tcp/$gw_host/$gw_port") 2>/dev/null; then
+  exec 3>&- 3<&- || true
+  report "gateway" OK "$gw_host:$gw_port 可连接"
+else
+  report "gateway" FAIL "$gw_host:$gw_port 不可连接"
+fi
+
+# ---- 4. PostgreSQL ----
+pg_container="$(docker ps --format '{{.Names}}' | grep -E 'postgres' | head -1 || true)"
+if [[ -n "$pg_container" ]]; then
+  pg_user="${POSTGRES_USER:-jiuzhang}"
+  if docker exec "$pg_container" pg_isready -U "$pg_user" >/dev/null 2>&1; then
+    report "postgres" OK "容器 $pg_container"
+  else
+    report "postgres" FAIL "pg_isready 失败（容器 ${pg_container}）"
+  fi
+else
+  report "postgres" FAIL "未找到 postgres 容器"
+fi
+
+# ---- 5. Valkey（口令从 env 文件读取，不回显） ----
+vk_container="$(docker ps --format '{{.Names}}' | grep -E 'valkey' | head -1 || true)"
+if [[ -n "$vk_container" ]]; then
+  vk_pass=""
+  if [[ -f "$JZ_ENV_FILE" ]]; then
+    vk_pass="$(grep -E '^VALKEY_PASSWORD=' "$JZ_ENV_FILE" | head -1 | cut -d= -f2- || true)"
+  fi
+  if [[ -n "$vk_pass" ]]; then
+    if docker exec -e REDISCLI_AUTH="$vk_pass" "$vk_container" sh -c 'valkey-cli --no-auth-warning ping 2>/dev/null | grep -q PONG'; then
+      report "valkey" OK "容器 $vk_container"
+    else
+      report "valkey" FAIL "ping 失败（容器 ${vk_container}）"
+    fi
+  else
+    report "valkey" FAIL "未读取到 VALKEY_PASSWORD（${JZ_ENV_FILE}）"
+  fi
+else
+  report "valkey" FAIL "未找到 valkey 容器"
+fi
+
+if [[ "$FAILED" -eq 0 ]]; then
+  log_info "健康检查通过"
+  exit 0
+fi
+log_err "健康检查存在异常项"
+exit 1

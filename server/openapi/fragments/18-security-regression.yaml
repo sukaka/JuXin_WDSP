@@ -1,0 +1,329 @@
+# 片段：安全回归证据登记与发布门禁（WDSP P1-04 R3，服务端管理面）
+# 路由源：server/internal/app/app.go「安全回归证据登记与发布门禁」注册段
+# （/security/regressions*、/security/regression-policy、/security/regression-objects）。
+# 数据源：迁移 000134（objects/runs/cases/run_objects/policy/gate_decisions），
+# 权限种子 000135（read 三角色全授；import/policy 仅 SYSTEM_ADMIN/SECURITY_ADMIN）。
+# 信任边界：导入只接受已登记受控对象 ID（不接收 URL/路径/压缩包/shell，不执行测试命令）；
+# 报告须由仓库外受控验证服务以 Ed25519 对确定编码 manifest 字节签名，服务端独立核验
+# 签名/schema/全部必需对象哈希/执行数量/用例唯一性/结果一致性——客户端声明
+# declared_status=PASS 不直接成为后端通过状态（verification_status 才是服务端结论）。
+paths:
+  # ==================== 安全回归证据登记 ====================
+  /security/regressions:
+    get:
+      operationId: securityRegressionList
+      tags: [security-regression]
+      summary: 分页查询回归运行
+      description: 按候选指纹、时间、级别、服务端核验状态分页查询回归运行摘要（默认 page_size=20、最多 100）。返回行含 run_id、级别、声明状态、服务端核验状态、签名 key_id、候选配置指纹、语料/计划哈希、执行计数与登记时间。权限：`security_regression.read`
+      parameters:
+        - { name: fingerprint, in: query, required: false, schema: { type: string }, description: 候选配置指纹（cfgfpv1:<hex>）精确过滤 }
+        - { name: level, in: query, required: false, schema: { type: string, enum: [SMOKE, FULL, RELEASE] }, description: 运行级别 }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [PENDING, PASSED, FAILED] }, description: 服务端核验状态 }
+        - { name: since, in: query, required: false, schema: { type: string, format: date-time }, description: 登记时间下界（RFC3339） }
+        - { name: until, in: query, required: false, schema: { type: string, format: date-time }, description: 登记时间上界（RFC3339） }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        '200':
+          description: 回归运行分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityRegressionRunListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security/regressions/{id}:
+    get:
+      operationId: securityRegressionGet
+      tags: [security-regression]
+      summary: 回归运行摘要与门禁可用性评估
+      description: 返回运行摘要与按当前门禁策略实时评估的 gate_assessment（usable_for_publish、逐项理由、策略模式/要求级别/有效期/证据年龄/是否过期；只读评估，不产生判定留痕）。权限：`security_regression.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 运行内部 ID }
+      responses:
+        '200':
+          description: 运行摘要与门禁评估
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityRegressionRunDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security/regressions/{id}/cases:
+    get:
+      operationId: securityRegressionCaseList
+      tags: [security-regression]
+      summary: 回归用例索引分页
+      description: 分页返回用例索引/差异摘要（状态、family、真值、强制级别、差异摘要；不含原始请求/响应正文，禁止一次返回全部——page_size 上限 100）。权限：`security_regression.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 运行内部 ID }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [PASS, FAIL, SKIP, BLOCKED, NOT_RUN] }, description: 用例状态过滤 }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        '200':
+          description: 用例索引分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityRegressionCaseListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security/regressions/imports:
+    post:
+      operationId: securityRegressionImport
+      tags: [security-regression]
+      summary: 登记已签名的回归报告
+      description: 通过已上传的受控对象 ID 登记 manifest、签名及证据（请求上限 1 MiB；不执行测试命令）。核验顺序：manifest 确定编码与 schema → Ed25519 签名（拒绝重复 JSON 键/未知算法/未登记或已撤销 key_id）→ 幂等判定 → 全部必需对象哈希与类别限额逐块校验 → 用例唯一性与计数对账 → 单事务落库。任何失败不落任何运行记录并记失败审计；同 run_id 同 manifest 哈希重复导入幂等返回 200（idempotent=true），同 run_id 异内容返回 409。权限：`security_regression.import`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecurityRegressionImportRequest' }
+      responses:
+        '200':
+          description: 幂等命中既有登记（idempotent=true）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityRegressionImportResponse' }
+        '201':
+          description: 登记成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityRegressionImportResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: 同 run_id 已登记不同内容的报告（记失败审计）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security/regression-policy:
+    get:
+      operationId: securityRegressionPolicyGet
+      tags: [security-regression]
+      summary: 查询发布门禁策略
+      description: 返回门禁模式（OFF 默认/OBSERVE/ENFORCE）、要求级别、要求语料与证据有效期（秒，默认 604800=7 天）及乐观锁版本。权限：`security_regression.read`
+      responses:
+        '200':
+          description: 门禁策略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityRegressionPolicyResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: securityRegressionPolicyUpdate
+      tags: [security-regression]
+      summary: 修改发布门禁策略
+      description: 修改门禁模式/要求级别/语料/证据有效期（86400~2592000 秒）；expected_version 乐观锁冲突返回 409；启用与降级均为高风险审计；请求体不承接 skip_gate 等未知字段（400）。权限：`security_regression.policy`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecurityRegressionPolicyPutRequest' }
+      responses:
+        '200':
+          description: 修改后的门禁策略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityRegressionPolicyResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: 策略已被其他人修改（expected_version 冲突）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security/regression-objects:
+    post:
+      operationId: securityRegressionObjectUpload
+      tags: [security-regression]
+      summary: 受控证据对象登记上传
+      description: 受控本地存储适配器的写入登记接口（S0 契约：对象 ID 服务端生成、写入仅经受控登记、流式 sha256；调用方无法声明哈希/路径）。请求体为原始字节流，类别由 ?kind= 指定；类别限额 MANIFEST 4 MiB、CASES_CHUNK 4 MiB、REPORT 16 MiB、PERF 256 MiB（流式不全量读入内存）、LOG 64 MiB，超限 400。登记后对象只读不可改写，无删除 API。权限：`security_regression.import`
+      parameters:
+        - { name: kind, in: query, required: true, schema: { type: string, enum: [MANIFEST, CASES_CHUNK, REPORT, PERF, LOG] }, description: 对象类别 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '201':
+          description: 登记完成（sha256/size 为服务端计算值）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityRegressionObject' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    SecurityRegressionRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, description: 外部运行 ID（唯一） }
+        manifest_sha256: { type: string, description: manifest 规范形字节 sha256 }
+        level: { type: string, enum: [SMOKE, FULL, RELEASE] }
+        declared_status: { type: string, enum: [PASS, FAIL, SKIP, BLOCKED, NOT_RUN], description: 验证服务声明状态（仅登记不采信） }
+        verification_status: { type: string, enum: [PENDING, PASSED, FAILED], description: 服务端独立核验结论 }
+        verification_reasons: { type: array, items: { type: string } }
+        signature_algorithm: { type: string, description: 恒 ed25519 }
+        signature_key_id: { type: string }
+        config_fingerprint: { type: string, description: 候选配置指纹 cfgfpv1:<configuration_hash> }
+        build_digest: { type: string }
+        compiler: { type: string }
+        corpus_id: { type: string }
+        corpus_version: { type: integer }
+        corpus_sha256: { type: string }
+        plan_sha256: { type: string }
+        counts: { $ref: '#/components/schemas/SecurityRegressionCounts' }
+        run_started_at: { type: string, format: date-time, nullable: true }
+        run_finished_at: { type: string, format: date-time, nullable: true }
+        policy_version: { type: integer, description: 导入时门禁策略版本 }
+        imported_by: { type: string }
+        created_at: { type: string, format: date-time }
+
+    SecurityRegressionCounts:
+      type: object
+      properties:
+        planned: { type: integer }
+        executed: { type: integer }
+        skipped: { type: integer }
+        blocked: { type: integer }
+        not_run: { type: integer }
+        passed: { type: integer }
+        failed: { type: integer }
+        mandatory_total: { type: integer }
+        mandatory_failed: { type: integer }
+
+    SecurityRegressionRunListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SecurityRegressionRun' } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+
+    SecurityRegressionGateAssessment:
+      type: object
+      properties:
+        usable_for_publish: { type: boolean }
+        reasons: { type: array, items: { type: string } }
+        policy_mode: { type: string, enum: [OFF, OBSERVE, ENFORCE] }
+        required_level: { type: string, enum: [SMOKE, FULL, RELEASE] }
+        evidence_max_age_seconds: { type: integer }
+        age_seconds: { type: integer }
+        expired: { type: boolean }
+
+    SecurityRegressionRunDetailResponse:
+      type: object
+      properties:
+        run: { $ref: '#/components/schemas/SecurityRegressionRun' }
+        gate_assessment: { $ref: '#/components/schemas/SecurityRegressionGateAssessment' }
+
+    SecurityRegressionCase:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        case_id: { type: string }
+        case_version: { type: integer }
+        family: { type: string }
+        truth: { type: string, enum: [BENIGN, ATTACK, UNKNOWN] }
+        criticality: { type: string, enum: [MANDATORY, OPTIONAL] }
+        status: { type: string, enum: [PASS, FAIL, SKIP, BLOCKED, NOT_RUN] }
+        diff_summary: { type: object, description: 差异摘要（不含原始正文） }
+
+    SecurityRegressionCaseListResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SecurityRegressionCase' } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
+
+    SecurityRegressionSignatureEnvelope:
+      type: object
+      required: [algorithm, key_id, signature]
+      properties:
+        algorithm: { type: string, enum: [ed25519] }
+        key_id: { type: string, description: 已登记受信验签公钥 ID }
+        signature: { type: string, description: base64 签名（对 manifest 规范形字节） }
+
+    SecurityRegressionImportObjectRef:
+      type: object
+      required: [object_id, role, name]
+      properties:
+        object_id: { type: string, format: uuid, description: 已登记受控对象 ID }
+        role: { type: string, enum: [CASES_CHUNK, REPORT, PERF, LOG] }
+        name: { type: string, description: "与 manifest files[] 条目对应的文件名（不含路径）" }
+
+    SecurityRegressionImportRequest:
+      type: object
+      required: [manifest_object_id, signature, objects]
+      properties:
+        manifest_object_id: { type: string, format: uuid }
+        signature: { $ref: '#/components/schemas/SecurityRegressionSignatureEnvelope' }
+        objects: { type: array, items: { $ref: '#/components/schemas/SecurityRegressionImportObjectRef' } }
+
+    SecurityRegressionImportResponse:
+      type: object
+      properties:
+        run: { $ref: '#/components/schemas/SecurityRegressionRun' }
+        idempotent: { type: boolean }
+
+    SecurityRegressionPolicy:
+      type: object
+      properties:
+        mode: { type: string, enum: [OFF, OBSERVE, ENFORCE], description: 门禁模式（默认 OFF；ENFORCE 才拒绝不满足条件的发布） }
+        required_level: { type: string, enum: [SMOKE, FULL, RELEASE] }
+        required_corpus_id: { type: string, description: 空 = 不约束语料 }
+        evidence_max_age_seconds: { type: integer, description: 证据有效期（86400~2592000，默认 604800=7 天） }
+        version: { type: integer, description: 乐观锁版本 }
+        updated_by: { type: string }
+        updated_at: { type: string, format: date-time }
+
+    SecurityRegressionPolicyResponse:
+      type: object
+      properties:
+        policy: { $ref: '#/components/schemas/SecurityRegressionPolicy' }
+
+    SecurityRegressionPolicyPutRequest:
+      type: object
+      required: [mode, required_level, evidence_max_age_seconds, expected_version, reason]
+      properties:
+        mode: { type: string, enum: [OFF, OBSERVE, ENFORCE] }
+        required_level: { type: string, enum: [SMOKE, FULL, RELEASE] }
+        required_corpus_id: { type: string }
+        evidence_max_age_seconds: { type: integer, minimum: 86400, maximum: 2592000 }
+        expected_version: { type: integer, description: 乐观锁（必须等于当前 version） }
+        reason: { type: string, description: 变更理由（非空，进操作审计） }
+
+    SecurityRegressionObject:
+      type: object
+      properties:
+        id: { type: string, format: uuid, description: 服务端生成的对象 ID }
+        kind: { type: string, enum: [MANIFEST, CASES_CHUNK, REPORT, PERF, LOG] }
+        sha256: { type: string, description: 服务端流式计算的 sha256 }
+        size_bytes: { type: integer }
+        state: { type: string, enum: [REGISTERED, CONSUMED] }
+        uploaded_by: { type: string }
+        created_at: { type: string, format: date-time }

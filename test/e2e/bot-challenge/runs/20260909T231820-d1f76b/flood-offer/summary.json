@@ -1,0 +1,20 @@
+{
+  "c50": {
+    "status_distribution": {
+      "403": 59,
+      "429": 39,
+      "200": 102
+    },
+    "samples": 200,
+    "latency_p50_s": 0.11108,
+    "latency_p95_s": 0.144718
+  },
+  "c200": {
+    "status_distribution": {
+      "200": 400
+    },
+    "samples": 400,
+    "latency_p50_s": 0.357105,
+    "latency_p95_s": 0.56614
+  }
+}

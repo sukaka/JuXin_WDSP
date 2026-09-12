@@ -1,0 +1,42 @@
+---
+meta:
+  author: "JiuZhang"
+  description: 补充扩展名集合点号/空格结尾伪装检测（shell.war. 等，自建规则 1001322）
+rule_id: 1001322
+tests:
+  - test_id: 1
+    desc: "multipart 文件名 shell.war.（尾随点）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb322"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb322\r\nContent-Disposition: form-data; name=\"file\"; filename=\"shell.war.\"\r\n\r\nx\r\n--jzb322--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001322]
+  - test_id: 2
+    desc: "表单参数 filename=shell.asmx.（尾随点）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/x-www-form-urlencoded"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "filename=shell.asmx."
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001322]

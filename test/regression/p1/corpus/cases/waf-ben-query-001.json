@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "case_id": "WAF-BEN-QUERY-001",
+  "case_version": 1,
+  "family": "waf",
+  "tags": ["normal-business", "search-query", "pagination", "false-positive-guard"],
+  "criticality": "MANDATORY",
+  "truth": "BENIGN",
+  "truth_reason": "普通搜索查询：关键词含引号与尖括号的技术词汇（C++ \"vector<T>\"），叠加分页与排序参数，人工核验为正常站内搜索；属任务书 §4.2 要求的普通查询正常样本",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "waf.core.allow_benign",
+    "applications": ["p1reg-echo-site"],
+    "protocols": ["http/1.1"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin"]
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/search",
+        "query": "q=C%2B%2B+%22vector%3CT%3E%22+%E7%94%A8%E6%B3%95&page=2&size=50&sort=created_at%2Cdesc",
+        "headers": {}
+      },
+      "wait": null,
+      "assert": [
+        {"type": "http_status_in", "statuses": [200]},
+        {"type": "origin_marker_present"}
+      ]
+    }
+  ],
+  "seed": 1004,
+  "reset_plan": {"scope": "none", "actions": ["none"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "none"},
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "none"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "none"},
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "none"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": true,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "TRAIN"
+}

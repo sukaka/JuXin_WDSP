@@ -1,0 +1,52 @@
+Error: Cannot find module '@playwright/test'
+Require stack:
+- /Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/playwright.config.ts
+- /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/transform/transform.js
+- /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/common/esmLoaderHost.js
+- /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/runner/processHost.js
+- /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/runner/loaderHost.js
+- /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/runner/loadUtils.js
+- /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/runner/reporters.js
+- /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/runner/runner.js
+- /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/program.js
+- /Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@playwright/test/cli.js
+    at Module.<anonymous> (node:internal/modules/cjs/loader:1421:15)
+    at Module.resolveFilename [as _resolveFilename] (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/transform/transform.js:249:36)
+    at defaultResolveImpl (node:internal/modules/cjs/loader:1059:19)
+    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1064:22)
+    at Module._load (node:internal/modules/cjs/loader:1227:37)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:245:24)
+    at Module.require (node:internal/modules/cjs/loader:1504:12)
+    at require (node:internal/modules/helpers:152:16)
+    at Object.<anonymous> (/Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/playwright.config.ts:1:1)
+    at Module._compile (node:internal/modules/cjs/loader:1761:14)
+    at Module.f._compile (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/utilsBundleImpl.js:16:994)
+    at node:internal/modules/cjs/loader:1893:10
+    at Object.i.<computed>.ut._extensions.<computed> [as .ts] (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/utilsBundleImpl.js:16:1010)
+    at Module.load (node:internal/modules/cjs/loader:1481:32)
+    at Module._load (node:internal/modules/cjs/loader:1300:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:328:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:245:24)
+    at Module.require (node:internal/modules/cjs/loader:1504:12)
+    at require (node:internal/modules/helpers:152:16)
+    at requireOrImport (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/transform/transform.js:230:18)
+    at loadUserConfig (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/common/configLoader.js:94:83)
+    at loadConfig (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/common/configLoader.js:105:28)
+    at loadConfigFromFileRestartIfNeeded (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/common/configLoader.js:286:10)
+    at runTests (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/program.js:199:18)
+    at t.<anonymous> (/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/program.js:54:7) {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: [
+    '/Users/zhanglei/Documents/JiuZhang_WAF/test/e2e/bot-challenge/playwright.config.ts',
+    '/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/transform/transform.js',
+    '/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/common/esmLoaderHost.js',
+    '/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/runner/processHost.js',
+    '/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/runner/loaderHost.js',
+    '/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/runner/loadUtils.js',
+    '/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/runner/reporters.js',
+    '/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/runner/runner.js',
+    '/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/playwright/lib/program.js',
+    '/Users/zhanglei/Documents/JiuZhang_WAF/web/node_modules/@playwright/test/cli.js'
+  ]
+}

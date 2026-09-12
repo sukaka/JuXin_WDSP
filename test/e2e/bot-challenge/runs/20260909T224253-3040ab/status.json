@@ -1,0 +1,30 @@
+{
+  "run_id": "20260909T224253-3040ab",
+  "task": "P1-02 BOT-004 多浏览器通道 + BOT-006 慢设备/键盘导航补证",
+  "finished_at": "2026-09-09T14:43:32Z",
+  "totals": {
+    "total": 23,
+    "pass": 23,
+    "fail": 0,
+    "blocked": 0
+  },
+  "groups": {
+    "browser-channels": {
+      "evidence": "group-browser.<channel>.playwright.json / group-browser.<channel>.result.json",
+      "channels": [
+        "chromium",
+        "firefox",
+        "webkit",
+        "mobile-safari",
+        "mobile-chrome"
+      ]
+    },
+    "a11y": {
+      "evidence": "group-a11y.chromium.playwright.json / group-a11y-*.result.json / group-a11y-keyboard.aria-snapshot.yml"
+    },
+    "summary": {
+      "evidence": "channels-summary.json"
+    }
+  },
+  "verdict": "PASS"
+}

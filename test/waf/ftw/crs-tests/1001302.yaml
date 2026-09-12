@@ -1,0 +1,63 @@
+---
+meta:
+  author: "JiuZhang"
+  description: X-Filename 系列头危险可执行扩展名检测（asp 家族/jsp 冷门后缀/shtml/war/jar，自建规则 1001302）
+rule_id: 1001302
+tests:
+  - test_id: 1
+    desc: "X-Filename 头 shell.aspx"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/octet-stream"
+            X-Filename: "shell.aspx"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001302]
+  - test_id: 2
+    desc: "X-File-Name 头 app.jar"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/octet-stream"
+            X-File-Name: "app.jar"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001302]
+  - test_id: 3
+    desc: "X_Filename 头 shell.asmx（下划线头名变体）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/octet-stream"
+            X_Filename: "shell.asmx"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "x=1"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001302]

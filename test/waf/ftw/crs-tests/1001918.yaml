@@ -1,0 +1,24 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: CUSTOM_PACK unauth-access tests (self-developed)
+rule_id: 1001918
+tests:
+  - test_id: 1
+    desc: "MSSQL sp_OACreate OLE automation"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'sql=''; exec sp_oacreate ''wscript.shell'', @shell out; --'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001918]

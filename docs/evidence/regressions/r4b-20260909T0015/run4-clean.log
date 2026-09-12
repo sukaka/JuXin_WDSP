@@ -1,0 +1,5 @@
+[p0bench 23:50:05] regression run_id=20260908T235005-75aa77 run_dir=/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T235005-75aa77
+RUN_PLAN_OK
+[p0bench 23:50:05] regression: 真实栈执行（描述符 /tmp/p1reg-env.json），计划 48 条
+EXECUTE_DONE planned=48 executed=48 PASS=48 FAIL=0 BLOCKED=0 NOT_RUN=0 NOT_APPLICABLE=0 incomplete=0
+[p0bench 23:51:54] regression 结束（rc=0），证据: /Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/regressions/20260908T235005-75aa77

@@ -1,0 +1,316 @@
+# 九章阶段5 整合验证编排
+# 整合：PostgreSQL + Valkey + 管理API + 防护网关 + 测试源站
+# 管理API与防护网关共享 Caddy Admin Socket 卷（后端经 Unix Socket 发布配置）
+# 用法（仓库根目录）：
+#   docker compose -f deployment/docker-compose.stage5.yml --env-file .env.example up -d
+
+name: jiuzhang-stage5
+
+services:
+  postgres:
+    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    container_name: jiuzhang-stage5-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-jiuzhang_waf}
+      POSTGRES_USER: ${POSTGRES_USER:-jiuzhang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - stage5-postgres-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jiuzhang} -d ${POSTGRES_DB:-jiuzhang_waf}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - stage5-net
+
+  valkey:
+    image: valkey/valkey:8.1.8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+    container_name: jiuzhang-stage5-valkey
+    restart: unless-stopped
+    command:
+      - valkey-server
+      - --requirepass
+      - ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    volumes:
+      - stage5-valkey-data:/data
+    ports:
+      - "127.0.0.1:${VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+    networks:
+      - stage5-net
+
+  api:
+    image: jiuzhang-server:stage5
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    container_name: jiuzhang-stage5-api
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-jiuzhang_waf}
+      POSTGRES_USER: ${POSTGRES_USER:-jiuzhang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      VALKEY_HOST: valkey
+      VALKEY_PORT: 6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
+      COOKIE_SECURE: "false"
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      JIUZHANG_MASTER_KEY: ${JIUZHANG_MASTER_KEY:-}
+      # 离线授权：验签公钥随正式构建内嵌；这里只配置宿主机指纹文件路径（卷挂载见下）
+      LICENSE_HOST_FINGERPRINT_FILE: ${LICENSE_HOST_FINGERPRINT_FILE:-/app/runtime/license/host_fingerprint}
+      MANAGEMENT_TRUSTED_PROXY_CIDRS: ${MANAGEMENT_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
+      CADDY_ADMIN_SOCKET: /var/run/caddy/admin.sock
+      GATEWAY_DATA_DIR: /app/runtime
+      MIGRATIONS_DIR: /app/migrations
+      WAF_CRS_DIR: /etc/caddy/rules/crs/rules
+      WAF_CRS_VERSION: 4.28.0
+      WAF_AUDIT_LOG: /var/log/caddy-audit/coraza-audit.log
+      GATEWAY_NODE_NAME: gateway-stage5-01
+      # 阶段5：采集网关 guard 事件日志（只读卷）+ 下发网关的事件日志路径
+      WAF_GUARD_EVENTS_LOG: /var/log/caddy-audit/guard-events.log
+      GATEWAY_GUARD_EVENTS_LOG: /var/log/caddy/guard-events.log
+      # 网口管理：采集网关节点网口清单快照（只读卷，网关侧输出路径为 /var/log/caddy/ 前缀）
+      WAF_NODE_IFACES_LOG: /var/log/caddy-audit/node-interfaces.jsonl
+      # 阶段5：CC 计数引擎故障策略（true=Fail-open / false=Fail-closed）
+      GUARD_FAIL_OPEN: ${GUARD_FAIL_OPEN:-true}
+      # 发布后冒烟探针拨号地址：api 容器内 127.0.0.1 是自身，必须显式指向网关数据面
+      GATEWAY_PUBLISH_SMOKE_ADDR: ${GATEWAY_PUBLISH_SMOKE_ADDR:-http://gateway:8080}
+      # 阶段6：Caddy 访问日志（请求指标采集）
+      WAF_ACCESS_LOG: /var/log/caddy-audit/access.log
+      # 阶段6：报告 PDF 字体
+      REPORT_FONT_PATH: /app/assets/fonts/NotoSansCJKsc-VF.ttf
+      # 阶段8 / WDSP 产品形态（默认 waf；本地演示可设 wdsp）
+      PRODUCT_EDITION: ${PRODUCT_EDITION:-waf}
+      API_DYNAMIC_PROTECTION_ENABLED: ${API_DYNAMIC_PROTECTION_ENABLED:-false}
+      # APM 业务性能监控（无 Agent 模式，默认关闭）
+      APM_ENABLED: ${APM_ENABLED:-false}
+      # APM Agent 模式（OTel 数据面）ClickHouse DSN，空串 = 未接入
+      APM_CLICKHOUSE_DSN: ${APM_CLICKHOUSE_DSN:-}
+      # 阶段8：网关侧防护模式 OFF/OBSERVE/PROTECT（缺省 OBSERVE）
+      API_PROTECTION_MODE: ${API_PROTECTION_MODE:-OBSERVE}
+      # 阶段8：采集网关 API 运行时事件日志（只读卷）+ 下发网关的日志路径
+      WAF_API_EVENTS_LOG: /var/log/caddy-audit/api-runtime-events.log
+      GATEWAY_API_EVENTS_LOG: /var/log/caddy/api-runtime-events.log
+      # client_identity 体系：采集网关身份/行为事件日志（同一网关日志只读卷 stage5-gateway-logs）+ 下发网关的日志路径
+      WAF_IDENTITY_EVENTS_LOG: /var/log/caddy-audit/identity-events.log
+      GATEWAY_IDENTITY_EVENTS_LOG: /var/log/caddy/identity-events.log
+      # 站点资产发现：采集 mirrorcap 站点发现记录（只读卷；网关侧路径由 sidecar 下发）
+      WAF_SITE_DISCOVERY_LOG: /var/log/caddy-audit/site-discovery.jsonl
+      # 全量访问日志（二期）：采集网关 JSON Lines 日志（只读卷）+ 下发网关的日志路径
+      WAF_ACCESS_FULL_LOG: /var/log/caddy-audit/access-full.jsonl
+      GATEWAY_ACCESS_FULL_LOG: /var/log/caddy/access-full.jsonl
+      # 采集器批量/周期 flush 阈值（W20 批量化修复；作用于 API 运行时事件与全量访问日志采集器）
+      WAF_COLLECTOR_FLUSH_BATCH: ${WAF_COLLECTOR_FLUSH_BATCH:-2000}
+      WAF_COLLECTOR_FLUSH_INTERVAL: ${WAF_COLLECTOR_FLUSH_INTERVAL:-2s}
+      API_MAX_BODY_PARSE_BYTES: ${API_MAX_BODY_PARSE_BYTES:-1048576}
+      API_MAX_BODY_SAMPLE_BYTES: ${API_MAX_BODY_SAMPLE_BYTES:-65536}
+      API_MAX_JSON_DEPTH: ${API_MAX_JSON_DEPTH:-32}
+      API_MAX_FIELD_COUNT: ${API_MAX_FIELD_COUNT:-2048}
+      # 系统控制（重启/关机/恢复出厂）：标志文件目录，宿主机 jiuzhang-hostctl.path 单元监视并执行
+      HOSTCTL_DIR: /app/runtime/hostctl
+    ports:
+      - "127.0.0.1:${API_PORT:-18081}:8080"
+    volumes:
+      # 与防护网关共享 Admin Socket 卷（后端经 Unix Socket 发布配置）
+      - stage5-gateway-admin:/var/run/caddy
+      # 只读挂载网关日志卷（事件采集器读取 Coraza 审计日志）
+      - stage5-gateway-logs:/var/log/caddy-audit:ro
+      # 只读挂载 CRS 规则目录（CRS 元数据同步）
+      - ../gateway/rules:/etc/caddy/rules:ro
+      # 只读挂载文档与合规文件（交付检查）
+      - ../docs:/app/docs:ro
+      - ../THIRD_PARTY_NOTICES.md:/app/THIRD_PARTY_NOTICES.md:ro
+      - stage5-runtime:/app/runtime
+      # 证书下发通道：发布器写入 <dataDir>/certificates（本卷），网关侧只读挂载到
+      # /etc/caddy/certs（生成配置引用路径）。嵌套在 stage5-runtime 挂载点之下；
+      # api 与网关运行用户同为 uid/gid 1000，0600 权属数值一致可读。
+      - stage5-gateway-certs:/app/runtime/certificates
+      # 离线授权：宿主机指纹文件只读挂载（安装期 ops/install/install.sh 采集写入仓库根 runtime/license/；
+      # 叠加在命名卷 stage5-runtime 挂载点之下，容器内路径 /app/runtime/license/host_fingerprint）
+      - ../runtime/license:/app/runtime/license:ro
+      # 系统控制：标志文件目录可写挂载（api 校验通过后写 <action>-<unixts>-<requestid>.json；
+      # 宿主机 jiuzhang-hostctl.path systemd 单元监视该目录并触发 ops/system/hostctl-exec.sh 执行）
+      - ../runtime/hostctl:/app/runtime/hostctl
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      gateway:
+        condition: service_started
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - stage5-net
+
+  gateway:
+    image: jiuzhang-gateway:stage5
+    build:
+      context: ../gateway
+      dockerfile: Dockerfile
+    container_name: jiuzhang-stage5-gateway
+    restart: unless-stopped
+    environment:
+      SEC_RULE_ENGINE: On
+      # autosave 落点持久化：配合 --resume，容器重建后自动恢复最近一次发布配置
+      XDG_CONFIG_HOME: /config
+      # Caddy 存储（实例 ID、证书缓存、锁文件）持久化，消除 read_only 下的存储告警
+      XDG_DATA_HOME: /data
+    command: ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--resume"]
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-18080}:8080"
+      # 演示站点端口段：容器形态下站点监听端口须已映射（裸机形态不受此限）
+      - "${GATEWAY_SITE_HTTP_PORT:-81}:81"
+      - "${GATEWAY_SITE_HTTPS_PORT:-443}:443"
+    volumes:
+      - ../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      - ../gateway/rules:/etc/caddy/rules:ro
+      - stage5-gateway-logs:/var/log/caddy
+      - stage5-gateway-admin:/var/run/caddy
+      - stage5-gateway-config:/config
+      - stage5-gateway-config:/data
+      # 证书下发通道（与 api 侧 stage5-gateway-certs 同一卷；生成配置引用 /etc/caddy/certs）
+      - stage5-gateway-certs:/etc/caddy/certs:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      testorigin:
+        condition: service_healthy
+    networks:
+      - stage5-net
+
+  # 日志轮转 sidecar：对网关日志卷中常驻 append 写入的日志做 copytruncate 轮转
+  # （coraza-audit.log / api-runtime-events.log / guard-events.log / access-full.jsonl；
+  #  access.log 与 caddy.log 由 Caddy 自身轮转，不在此处理）
+  logrotator:
+    image: jiuzhang-logrotator:stage5
+    build:
+      context: ../gateway/images/logrotator
+    container_name: jiuzhang-stage5-logrotator
+    restart: unless-stopped
+    volumes:
+      # 读写挂载网关日志卷（轮转需写入 .N.gz 并截断原文件）
+      - stage5-gateway-logs:/var/log/caddy
+    depends_on:
+      gateway:
+        condition: service_started
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    networks:
+      - stage5-net
+
+  testorigin:
+    build:
+      context: ../deployment/stage1/testorigin
+      dockerfile: Dockerfile
+    image: jiuzhang-testorigin:stage1
+    container_name: jiuzhang-stage5-testorigin
+    restart: unless-stopped
+    expose:
+      - "8081"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - stage5-net
+
+  # 阶段7：本地大模型运行时（AI 安全运营中心；仅内网可达，不暴露公网）
+  # 模型需首次拉取：docker exec jiuzhang-stage5-ollama ollama pull qwen2.5:3b
+  ollama:
+    image: ollama/ollama:0.9.6@sha256:f478761c18fea69b1624e095bce0f8aab06825d09ccabcd0f88828db0df185ce
+    container_name: jiuzhang-stage5-ollama
+    restart: unless-stopped
+    volumes:
+      - stage5-ollama-data:/root/.ollama
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - stage5-net
+
+volumes:
+  stage5-postgres-data:
+    driver: local
+  stage5-valkey-data:
+    driver: local
+  stage5-gateway-admin:
+    driver: local
+  stage5-gateway-logs:
+    driver: local
+  stage5-gateway-config:
+    driver: local
+  stage5-runtime:
+    driver: local
+  stage5-gateway-certs:
+    driver: local
+  stage5-ollama-data:
+    driver: local
+
+networks:
+  stage5-net:
+    driver: bridge

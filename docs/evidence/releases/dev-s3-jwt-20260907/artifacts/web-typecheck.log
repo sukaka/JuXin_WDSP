@@ -1,0 +1,4 @@
+
+> jiuzhang-waf-web@1.0.1 typecheck
+> tsc -b --pretty false
+

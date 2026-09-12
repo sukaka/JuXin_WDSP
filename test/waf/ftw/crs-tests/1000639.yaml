@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "Python pickle GLOBAL opcode in JSON-escaped form (1000639)"
+rule_id: 1000639
+tests:
+  - test_id: 1
+    desc: "escaped cos\\nsystem opcode inside form value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'j={"p":"cos\nsystem","q":["id"]}'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000639]
+  - test_id: 2
+    desc: "escaped c__builtin__\\neval opcode inside form value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'j={"p":"c__builtin__\neval"}'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000639]

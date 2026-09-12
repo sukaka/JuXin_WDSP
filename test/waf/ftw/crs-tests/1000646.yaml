@@ -1,0 +1,40 @@
+---
+meta:
+  author: "JiuZhang CUSTOM_PACK"
+  description: "fastjson JdbcRowSetImpl dataSourceName JNDI scheme variant (1000646)"
+rule_id: 1000646
+tests:
+  - test_id: 1
+    desc: "dataSourceName with dns:// JNDI scheme in form value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/x-www-form-urlencoded
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'j={"@type":"com.sun.rowset.JdbcRowSetImpl","dataSourceName":"dns://10.0.0.1/probe","autoCommit":true}'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000646]
+  - test_id: 2
+    desc: "dataSourceName dns:// as JSON-parsed arg value"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/json
+          method: POST
+          port: 80
+          uri: "/post"
+          data: '{"@type":"com.sun.rowset.JdbcRowSetImpl","dataSourceName":"dns://10.0.0.1/probe"}'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1000646]

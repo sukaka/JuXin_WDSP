@@ -1,0 +1,24 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "Content-Disposition form-data 无任何参数（缺 name=）检测（自建规则 1001326）"
+rule_id: 1001326
+tests:
+  - test_id: 1
+    desc: "part 头 Content-Disposition: form-data 后无参数"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "multipart/form-data; boundary=jzb326"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "--jzb326\r\nContent-Disposition: form-data\r\n\r\nx\r\n--jzb326--\r\n"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001326]

@@ -1,0 +1,190 @@
+{
+	"admin": {
+		"listen": "unix//var/run/caddy/admin.sock"
+	},
+	"logging": {
+		"logs": {
+			"default": {
+				"writer": {
+					"filename": "/var/log/caddy/caddy.log",
+					"output": "file"
+				},
+				"encoder": {
+					"format": "json"
+				},
+				"level": "INFO",
+				"exclude": [
+					"http.log.access.log0"
+				]
+			},
+			"log0": {
+				"writer": {
+					"filename": "/var/log/caddy/access.log",
+					"output": "file"
+				},
+				"encoder": {
+					"format": "json"
+				},
+				"level": "INFO",
+				"include": [
+					"http.log.access.log0"
+				]
+			}
+		}
+	},
+	"apps": {
+		"http": {
+			"servers": {
+				"srv0": {
+					"listen": [
+						":8080"
+					],
+					"max_header_bytes": 64000,
+					"routes": [
+						{
+							"handle": [
+								{
+									"handler": "headers",
+									"response": {
+										"deferred": true,
+										"delete": [
+											"Server"
+										],
+										"set": {
+											"Referrer-Policy": [
+												"no-referrer"
+											],
+											"X-Content-Type-Options": [
+												"nosniff"
+											],
+											"X-Frame-Options": [
+												"DENY"
+											]
+										}
+									}
+								},
+								{
+									"handler": "headers",
+									"request": {
+										"set": {
+											"X-Request-Id": [
+												"{http.request.uuid}"
+											]
+										}
+									}
+								},
+								{
+									"directives": "\n\t\t\tSecRuleEngine DetectionOnly\n\t\t\tInclude /etc/caddy/rules/coraza.conf\n\t\t\tInclude /etc/caddy/rules/crs/crs-setup.conf\n\t\t\tInclude /etc/caddy/rules/exclusions/before-crs.conf\n\t\t\tInclude /etc/caddy/rules/crs/rules/*.conf\n\t\t\tInclude /etc/caddy/rules/exclusions/after-crs.conf\n\t\t\tInclude /etc/caddy/rules/jiuzhang/jiuzhang-custom.conf\n\t\t",
+									"handler": "waf",
+									"include": [],
+									"load_owasp_crs": false
+								},
+								{
+									"handler": "reverse_proxy",
+									"upstreams": [
+										{
+											"dial": "testorigin:8081"
+										}
+									]
+								}
+							]
+						}
+					],
+					"errors": {
+						"routes": [
+							{
+								"handle": [
+									{
+										"handler": "subroute",
+										"routes": [
+											{
+												"group": "group2",
+												"handle": [
+													{
+														"handler": "subroute",
+														"routes": [
+															{
+																"handle": [
+																	{
+																		"handler": "headers",
+																		"response": {
+																			"set": {
+																				"Content-Type": [
+																					"text/html; charset=utf-8"
+																				]
+																			}
+																		}
+																	}
+																]
+															},
+															{
+																"group": "group0",
+																"handle": [
+																	{
+																		"handler": "rewrite",
+																		"uri": "/blockpage.html"
+																	}
+																]
+															},
+															{
+																"handle": [
+																	{
+																		"handler": "templates"
+																	},
+																	{
+																		"handler": "file_server",
+																		"hide": [
+																			"/etc/caddy/Caddyfile"
+																		],
+																		"root": "/srv/jiuzhang"
+																	}
+																]
+															}
+														]
+													}
+												],
+												"match": [
+													{
+														"expression": {
+															"expr": "{http.error.status_code} == 403",
+															"name": "blocked"
+														}
+													}
+												]
+											},
+											{
+												"group": "group2",
+												"handle": [
+													{
+														"handler": "subroute",
+														"routes": [
+															{
+																"handle": [
+																	{
+																		"body": "{http.error.status_code} {http.error.status_text}",
+																		"handler": "static_response",
+																		"status_code": "{http.error.status_code}"
+																	}
+																]
+															}
+														]
+													}
+												]
+											}
+										]
+									}
+								]
+							}
+						]
+					},
+					"automatic_https": {
+						"disable": true
+					},
+					"logs": {
+						"default_logger_name": "log0"
+					}
+				}
+			}
+		}
+	}
+}

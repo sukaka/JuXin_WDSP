@@ -1,0 +1,126 @@
+name: Regression (Scheduled Full)
+
+# 定期完整回归层（WDSP P1-04 R3 §6.1）：cron 触发的仓库工作流，
+# 非桌面提醒。纪律：
+#   - 全量声明能力回归所需的真实隔离环境（P0 隔离栈/真实 K8s/浏览器/长稳）
+#     在 GHA 托管 runner 不可用——强制项如实标 BLOCKED，本工作流不变绿；
+#   - 「缺环境不变绿」是设计目标而非缺陷：汇总步 aggregate 在任何强制项
+#     BLOCKED/失败时非零退出；具备隔离环境的自托管 runner 复跑同一命令即可转绿；
+#   - 不可信 PR 代码不进入本工作流信任域：本工作流仅由 schedule / workflow_dispatch
+#     在受保护分支（develop）固定提交上运行，无 pull_request_target，无证据签名
+#     私钥（签名只在仓库外受控验证服务进行，本工作流不接触任何私钥）。
+on:
+  schedule:
+    # 每日 02:17 UTC（避开整点/半点 herd）
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-module-tests:
+    name: Full Go Module Tests (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - server
+          - gateway
+          - gateway/modules/jiuzhang_guard
+          - gateway/dynamic_security
+          - wdsp-agent
+          - tools/apisrc
+          - tools/regsign
+          - deployment/stage1/testorigin
+          - test/security-apm-demo/services
+          - test/wdsp-agent-e2e/poptool
+          - test/wdsp-agent-e2e/envoy-tap/harness
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-nightly-${{ hashFiles(format('{0}/go.sum', matrix.module)) }}
+          restore-keys: |
+            ${{ runner.os }}-go-nightly-
+
+      - name: go vet
+        working-directory: ./${{ matrix.module }}
+        run: go vet ./...
+
+      - name: go test (unit; integration suites self-skip without PG/Valkey)
+        working-directory: ./${{ matrix.module }}
+        run: go test -count=1 -timeout 30m ./...
+
+      - name: go build
+        working-directory: ./${{ matrix.module }}
+        run: go build ./...
+
+  corpus-and-evidence:
+    name: Corpus Validation & Evidence Chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate P1 corpus (schema v1 + content hashes)
+        run: |
+          cd test/regression/p1
+          python3 -m p1reg.cli validate-corpus --manifest corpus/manifest.json
+
+      - name: Run P1 regression tool tests
+        run: python3 -m unittest discover -s test/regression/p1/tests
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Regression evidence & gate unit tests (forgery/revocation/expiry/conflict matrix)
+        working-directory: ./server
+        run: go test -count=1 -race ./internal/regression/...
+
+      - name: Publisher gate hook tests
+        working-directory: ./server
+        run: go test -count=1 ./internal/gatewayconfig/...
+
+  full-regression:
+    name: P1 Full Regression Runner (BLOCKED without isolated env)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 真实回放需要 P0 隔离栈（独立 PG/Valkey/网关/源站）。GHA 托管 runner 不具备，
+      # run.sh 按冻结口径如实输出 BLOCKED/ENVIRONMENT_UNAVAILABLE 并非零退出——
+      # 本 job 因此恒红，直到在具备隔离环境的 runner 上执行；不允许以 smoke
+      # 结果或静态映射冒充 full 通过（任务书 REG-013/REG-014）。
+      - name: Run P1 regression (isolated environment required)
+        id: regression
+        run: |
+          bash test/performance/p0/run.sh regression --plan test/regression/p1/run-plan.example.json
+        continue-on-error: true
+
+      - name: Report regression status
+        run: |
+          echo "regression exit: ${{ steps.regression.outcome }}"
+          latest="$(ls -td docs/evidence/regressions/*/ 2>/dev/null | head -1 || true)"
+          if [ -n "$latest" ] && [ -f "$latest/status.json" ]; then
+            cat "$latest/status.json"
+          fi
+
+      - name: Aggregate gate (BLOCKED mandatory items keep workflow red)
+        run: |
+          if [ "${{ steps.regression.outcome }}" != "success" ]; then
+            echo "::error::P1 full regression not green (missing isolated environment or failing mandatory items); see status.json for BLOCKED/FAIL detail"
+            exit 1
+          fi

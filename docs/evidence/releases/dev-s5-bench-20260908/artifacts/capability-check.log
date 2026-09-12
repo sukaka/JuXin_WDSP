@@ -1,0 +1,35 @@
+# capability_evidence.py check 记录（S5 收尾，2026-09-08）
+
+## 1) 累计清单校验（S3+S4+S5 合并视图，权威结果）
+$ python3 tools/capability_evidence.py check --catalog docs/capabilities/capabilities.json --manifest docs/evidence/merged-check-s3-s4-s5.manifest.json
+清单结构有效：docs/capabilities/capabilities.json
+证据 manifest 结构有效：docs/evidence/merged-check-s3-s4-s5.manifest.json
+  能力 waf-crs-detection: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 real-client-ip: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 access-control-cc: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 api-assets-models: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 api-request-response-detection: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 identity-behavior-observation: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 jwt-verification: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 api-unified-decision: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 request-final-disposition: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 waf-exceptions: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 event-chain: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 config-release-ha: 实现=IMPLEMENTED 接线=CONNECTED 验证=BLOCKED
+  能力 apm-entry-performance: 实现=IMPLEMENTED 接线=CONNECTED 验证=PASS
+  能力 apm-trace-sql-exception: 实现=PARTIAL 接线=PARTIAL 验证=BLOCKED
+  能力 agent-collection-forwarding: 实现=PARTIAL 接线=PARTIAL 验证=BLOCKED
+发布状态（计算值）：DEVELOPMENT
+结构有效，未完成验收：存在未验证/未通过的能力，本结果不能作为发布验收证明。
+rc=0
+
+说明：校验器单 manifest 语义（cross_validate 要求全部 evidence_refs 在单一 manifest 闭合），
+S3/S4/S5 证据分属三个包，故以合并视图 docs/evidence/merged-check-s3-s4-s5.manifest.json 校验累计清单。
+合并视图 tests 为三包记录合集（51 条，ID 无冲突），工件路径相对 docs/evidence/ 重写，sha256 原样沿用。
+
+## 2) 本包单跑（预期失败，记录工具语义边界）
+$ python3 tools/capability_evidence.py check --catalog docs/capabilities/capabilities.json --manifest docs/evidence/releases/dev-s5-bench-20260908/manifest.json
+错误：/Users/zhanglei/Documents/JiuZhang_WAF/docs/capabilities/capabilities.json:capabilities[waf-crs-detection].evidence_refs: 断链：证据引用 'DEC-01' 在 /Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/releases/dev-s5-bench-20260908/manifest.json 的 tests 中不存在
+rc=2
+
+上述断链属预期：S3/S4 证据不在本 manifest；以合并视图为准。

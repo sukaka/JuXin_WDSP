@@ -1,0 +1,22 @@
+version=1
+
+# Runtime delivery files only. Build/release helpers and public release keys stay out.
+file=backup/create.sh
+file=console/install-console.sh
+file=console/netapply.sh
+file=diagnostics/collect.sh
+file=healthcheck/check.sh
+file=install/install-gateway-baremetal.sh
+file=install/install.sh
+file=install/tune-gateway-baremetal.sh
+file=install/verify-gateway-baremetal.sh
+file=lib/common.sh
+file=lib/fingerprint.sh
+file=lib/signing.sh
+file=restore/restore.sh
+file=system/factory-reset.sh
+file=system/hostctl-exec.sh
+file=upgrade/apply.sh
+file=upgrade/install-executor.sh
+file=upgrade/rollback.sh
+file=upgrade/upgrade-executor.sh

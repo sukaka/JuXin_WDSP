@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "case_id": "WAF-ATK-WEBSHELL-001",
+  "case_version": 2,
+  "family": "waf",
+  "tags": [
+    "webshell",
+    "upload",
+    "jsp",
+    "custom-pack-declared"
+  ],
+  "criticality": "MANDATORY",
+  "truth": "ATTACK",
+  "truth_reason": "WebShell 上传：multipart 投递 .jsp 可执行扩展名且内容为自研合成的一句话 JSP 形态（request.getParameter 直拼 Runtime.exec）；属 CUSTOM_PACK webshell-uploads 与 webshell-content 声明检测范围；R2 真实栈回放对齐（2026-09-08，run 20260908T203034-c88b80 实证）：multipart 文件内容在 Coraza 无变量可检（FILES 仅存临时文件路径），payload 改 urlencoded 表单字段使内容进入 ARGS；PROTECT 下 CRS 934200 命中 <% 后 949110 相位中断，7100001 不执行，检出归 coraza_crs（934→application_attack）；OBSERVE 下 7100001 命中",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成攻击样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "waf.custom_pack.webshell_uploads",
+    "applications": [
+      "p1reg-echo-site"
+    ],
+    "protocols": [
+      "http/1.1"
+    ]
+  },
+  "prerequisites": {
+    "environment": [
+      "isolated_stack",
+      "controlled_origin",
+      "waf_event_pipeline"
+    ],
+    "notes": "上传在源站产生对象，用例结束按 reset_plan 重置本用例状态"
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "POST",
+        "path": "/upload",
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        "body": "file_content=%3C%25%20if%28%22p1reg%22.equals%28request.getParameter%28%22p%22%29%29%29%7B%20out.print%28%22x%22%29%3B%20%7D%20%25%3E"
+      },
+      "wait": null,
+      "assert": []
+    }
+  ],
+  "seed": 2007,
+  "reset_plan": {
+    "scope": "case",
+    "actions": [
+      "reset_app_state"
+    ]
+  },
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {
+        "module": "custom_pack",
+        "rule_family": "webshell_uploads"
+      },
+      "expected_final_action": "DETECT_PASS",
+      "expected_origin": "reached",
+      "expected_events": [
+        {
+          "type": "waf_security_event",
+          "rule_family": "webshell_uploads"
+        }
+      ]
+    },
+    "PROTECT": {
+      "expected_detection": {
+        "module": "coraza_crs",
+        "rule_family": "application_attack"
+      },
+      "expected_final_action": "BLOCK_403",
+      "expected_origin": "not_reached",
+      "expected_events": [
+        {
+          "type": "waf_security_event",
+          "rule_family": "application_attack"
+        }
+      ]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": true,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "HOLDOUT"
+}

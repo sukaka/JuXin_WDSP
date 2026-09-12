@@ -1,0 +1,28 @@
+{
+  "service": "jiuzhang-test-origin",
+  "method": "POST",
+  "path": "/login",
+  "query": "",
+  "proto": "HTTP/1.1",
+  "request_id": "2c993b3d-9c85-4062-8d41-62fdbc2b6b48",
+  "client_ip": "172.19.0.5",
+  "headers": {
+    "Accept": "application/json",
+    "Accept-Encoding": "gzip",
+    "Content-Length": "39",
+    "Content-Type": "application/json",
+    "User-Agent": "curl/8.7.1",
+    "Via": "2.0 Caddy",
+    "X-Forwarded-For": "183.201.224.91",
+    "X-Forwarded-Host": "bot-bench.local",
+    "X-Forwarded-Proto": "https",
+    "X-Real-Ip": "183.201.224.91",
+    "X-Request-Id": "2c993b3d-9c85-4062-8d41-62fdbc2b6b48"
+  },
+  "body_sha256": "ecf03cd4184d594b55330e9616bdd610d4a98d9d85bee034f31f2db4ce0af4d6",
+  "body_preview": "{\"username\":\"bench\",\"password\":\"bench\"}",
+  "body_size": 39,
+  "content_type": "application/json",
+  "received_at": "2026-09-08T10:41:29Z",
+  "upstream_mark": "REACHED_ORIGIN"
+}

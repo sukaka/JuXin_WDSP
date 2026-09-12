@@ -1,0 +1,757 @@
+# 分布式流量采集 Agent 管理端与机器端接口。
+# 路由来源：server/internal/agents/routes.go。
+
+paths:
+  /traffic/agents/enrollment-tokens:
+    get:
+      operationId: trafficAgentEnrollmentTokenList
+      tags: [traffic-agents]
+      summary: 注册令牌列表
+      description: 返回注册令牌及派生状态，永不返回令牌明文或摘要。权限：`traffic.agents.view`。
+      responses:
+        '200': { description: 注册令牌列表, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentEnrollmentTokenList' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: trafficAgentEnrollmentTokenCreate
+      tags: [traffic-agents]
+      summary: 创建一次性注册令牌
+      description: 创建有效期为 5 至 10080 分钟的注册令牌；明文仅在本次响应返回。权限：`traffic.agents.manage`。
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentEnrollmentTokenCreate' } } } }
+      responses:
+        '201': { description: 注册令牌已创建, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentEnrollmentTokenCreated' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/enrollment-tokens/{id}/revoke:
+    post:
+      operationId: trafficAgentEnrollmentTokenRevoke
+      tags: [traffic-agents]
+      summary: 吊销注册令牌
+      description: 吊销指定注册令牌。权限：`traffic.agents.manage`。
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '204': { description: 已吊销 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/summary:
+    get:
+      operationId: trafficAgentSummary
+      tags: [traffic-agents]
+      summary: Agent 状态汇总
+      description: 按 ONLINE、DEGRADED、ERROR、OFFLINE、DISABLED 派生状态汇总。权限：`traffic.agents.view`。
+      responses:
+        '200': { description: Agent 状态汇总, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentSummary' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents:
+    get:
+      operationId: trafficAgentList
+      tags: [traffic-agents]
+      summary: Agent 列表
+      description: 分页查询 Agent，并返回派生状态和健康评分。权限：`traffic.agents.view`。
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [ONLINE, DEGRADED, ERROR, OFFLINE, DISABLED] } }
+        - { name: q, in: query, schema: { type: string, maxLength: 200 }, description: 主机名或 IP 关键字 }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: Agent 分页列表, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentList' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/{agent_id}:
+    get:
+      operationId: trafficAgentGet
+      tags: [traffic-agents]
+      summary: Agent 详情
+      description: 返回 Agent、网卡、能力声明及策略绑定详情。权限：`traffic.agents.view`。
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: Agent 详情, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgent' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: trafficAgentDelete
+      tags: [traffic-agents]
+      summary: 删除 Agent
+      description: 吊销凭据并级联删除绑定、网卡和流量事件。权限：`traffic.agents.manage`。
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '204': { description: 已删除 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/{agent_id}/disable:
+    post:
+      operationId: trafficAgentDisable
+      tags: [traffic-agents]
+      summary: 禁用 Agent
+      description: 幂等地将 Agent 期望状态设为 DISABLED。权限：`traffic.agents.manage`。
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '204': { description: 已禁用 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/{agent_id}/enable:
+    post:
+      operationId: trafficAgentEnable
+      tags: [traffic-agents]
+      summary: 启用 Agent
+      description: 幂等地将 Agent 期望状态设为 ENABLED。权限：`traffic.agents.manage`。
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '204': { description: 已启用 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/{agent_id}/events:
+    get:
+      operationId: trafficAgentFlowEventList
+      tags: [traffic-agents]
+      summary: Agent 流量事件列表
+      description: 按时间倒序分页返回 FLOW 事件。权限：`traffic.agents.view`。
+      parameters:
+        - { name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: FLOW 事件分页列表, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentEventList' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/{agent_id}/http-events:
+    get:
+      operationId: trafficAgentHttpEventList
+      tags: [traffic-agents]
+      summary: Agent HTTP 事件列表
+      description: 按时间倒序分页返回 HTTP 事件摘要。权限：`traffic.agents.view`。
+      parameters:
+        - { name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: host, in: query, schema: { type: string, maxLength: 255 } }
+        - { name: method, in: query, schema: { type: string, maxLength: 16 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: HTTP 事件分页列表, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentEventList' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/{agent_id}/http-events/{id}:
+    get:
+      operationId: trafficAgentHttpEventGet
+      tags: [traffic-agents]
+      summary: Agent HTTP 事件详情
+      description: 返回已按采集级别和脱敏策略留存的 HTTP 请求/响应详情。权限：`traffic.agents.view`。
+      parameters:
+        - { name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: HTTP 事件详情, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/{agent_id}/http-asset-sources:
+    get:
+      operationId: trafficAgentHttpAssetSourceList
+      tags: [traffic-agents]
+      summary: Agent HTTP 资产来源列表
+      description: 返回 Agent HTTP 观测与 API 资产联动的状态和失败原因。权限：`traffic.agents.view`。
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: HTTP 资产来源列表, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentEventList' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/{agent_id}/overrides:
+    get:
+      operationId: trafficAgentCaptureOverrideList
+      tags: [traffic-agents]
+      summary: 定向采集规则列表
+      description: 返回有效和已过期规则，并附派生 active 状态。权限：`traffic.agents.view`。
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: 定向采集规则列表, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentCaptureOverrideList' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: trafficAgentCaptureOverrideCreate
+      tags: [traffic-agents]
+      summary: 创建定向采集规则
+      description: 创建只升不降的临时采集规则，并递增 Agent 配置版本。权限：`traffic.agents.manage`。
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentCaptureOverrideCreate' } } } }
+      responses:
+        '201': { description: 规则已创建, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentCaptureOverride' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/{agent_id}/overrides/{override_id}:
+    delete:
+      operationId: trafficAgentCaptureOverrideDelete
+      tags: [traffic-agents]
+      summary: 删除定向采集规则
+      description: 删除规则并递增 Agent 配置版本。权限：`traffic.agents.manage`。
+      parameters:
+        - { name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: override_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '204': { description: 已删除 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/agents/{agent_id}/policy:
+    post:
+      operationId: trafficAgentPolicyBind
+      tags: [traffic-policies]
+      summary: 绑定采集策略
+      description: 将策略绑定到 Agent 并递增配置版本。权限：`traffic.agents.manage`。
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [policy_id], additionalProperties: false, properties: { policy_id: { type: string, format: uuid } } } } }
+      responses:
+        '204': { description: 已绑定 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: trafficAgentPolicyUnbind
+      tags: [traffic-policies]
+      summary: 解除采集策略绑定
+      description: 解除 Agent 的策略绑定并递增配置版本。权限：`traffic.agents.manage`。
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '204': { description: 已解除绑定 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/policies:
+    get:
+      operationId: trafficPolicyList
+      tags: [traffic-policies]
+      summary: 采集策略列表
+      description: 返回全部采集策略。权限：`traffic.agents.view`。
+      responses:
+        '200': { description: 策略列表, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficPolicyList' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: trafficPolicyCreate
+      tags: [traffic-policies]
+      summary: 创建采集策略
+      description: 创建版本为 1 的采集策略；name 必须与 config.name 一致。权限：`traffic.agents.manage`。
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficPolicyWrite' } } } }
+      responses:
+        '201': { description: 策略已创建, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficPolicy' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/policies/{id}:
+    get:
+      operationId: trafficPolicyGet
+      tags: [traffic-policies]
+      summary: 采集策略详情
+      description: 按 ID 返回采集策略。权限：`traffic.agents.view`。
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: 策略详情, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficPolicy' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: trafficPolicyUpdate
+      tags: [traffic-policies]
+      summary: 更新采集策略
+      description: 更新策略并创建不可变历史版本，已绑定 Agent 的配置版本同步递增。权限：`traffic.agents.manage`。
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficPolicyWrite' } } } }
+      responses:
+        '200': { description: 更新后的策略, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficPolicy' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: trafficPolicyDelete
+      tags: [traffic-policies]
+      summary: 删除采集策略
+      description: 删除未被 Agent 绑定的采集策略。权限：`traffic.agents.manage`。
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '204': { description: 已删除 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/policies/{id}/versions:
+    get:
+      operationId: trafficPolicyVersionList
+      tags: [traffic-policies]
+      summary: 采集策略版本历史
+      description: 返回策略的不可变版本历史。权限：`traffic.agents.view`。
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: 版本历史, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { $ref: '#/components/schemas/TrafficPolicy' } }, total: { type: integer } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /traffic/policies/{id}/rollback:
+    post:
+      operationId: trafficPolicyRollback
+      tags: [traffic-policies]
+      summary: 回滚采集策略
+      description: 以指定历史版本内容创建一个新的当前版本。权限：`traffic.agents.manage`。
+      parameters: [{ name: id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [version], additionalProperties: false, properties: { version: { type: integer, minimum: 1 } } } } }
+      responses:
+        '200': { description: 回滚后的策略, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficPolicy' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /agents/enroll:
+    post:
+      operationId: trafficAgentEnroll
+      tags: [agent-control]
+      summary: Agent 注册
+      description: 使用一次性注册令牌登记 Agent 并仅一次返回 Bearer credential；可携带 P-256 CSR 获取客户端证书。
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentEnrollRequest' } } } }
+      responses:
+        '201': { description: Agent 注册成功, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentEnrollResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /agents/{agent_id}/heartbeat:
+    post:
+      operationId: trafficAgentHeartbeat
+      tags: [agent-control]
+      summary: Agent 心跳
+      description: 刷新活性、运行状态、指标和能力声明；禁用 Agent 仍可调用以获取 desired_state。
+      security: [{ agentBearer: [] }, { agentCertificate: [], agentTimestamp: [], agentSignature: [] }]
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentHeartbeatRequest' } } } }
+      responses:
+        '200': { description: 心跳回执, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentHeartbeatResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /agents/{agent_id}/metrics:
+    post:
+      operationId: trafficAgentMetricsPush
+      tags: [agent-control]
+      summary: 上报 Agent 指标快照
+      security: [{ agentBearer: [] }, { agentCertificate: [], agentTimestamp: [], agentSignature: [] }]
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+      responses:
+        '204': { description: 指标已接收 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /agents/{agent_id}/config:
+    get:
+      operationId: trafficAgentConfigGet
+      tags: [agent-control]
+      summary: 拉取 Agent 配置
+      description: 返回期望状态、配置版本、绑定策略和未过期定向采集规则；无绑定时 policy 为 null。
+      security: [{ agentBearer: [] }, { agentCertificate: [], agentTimestamp: [], agentSignature: [] }]
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        '200': { description: Agent 配置, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentConfigResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /agents/{agent_id}/config/ack:
+    post:
+      operationId: trafficAgentConfigAck
+      tags: [agent-control]
+      summary: 确认 Agent 配置应用结果
+      description: APPLIED 时回填已应用配置版本；FAILED 必须提供错误说明。
+      security: [{ agentBearer: [] }, { agentCertificate: [], agentTimestamp: [], agentSignature: [] }]
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentConfigAckRequest' } } } }
+      responses:
+        '204': { description: ACK 已接收 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /agents/{agent_id}/flows:
+    post:
+      operationId: trafficAgentFlowsPush
+      tags: [agent-control]
+      summary: 批量上报 FLOW 事件
+      description: 每批 1 至 500 条 request/flow_end 事件。
+      security: [{ agentBearer: [] }, { agentCertificate: [], agentTimestamp: [], agentSignature: [] }]
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentFlowsRequest' } } } }
+      responses:
+        '202': { description: 事件已接收, content: { application/json: { schema: { type: object, properties: { accepted: { type: integer } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /agents/{agent_id}/http:
+    post:
+      operationId: trafficAgentHttpEventsPush
+      tags: [agent-control]
+      summary: 批量上报 HTTP 事件
+      description: 每批最多 100 条、请求体最多 8 MiB；支持契约版本对应的 HTTP 记录结构。
+      security: [{ agentBearer: [] }, { agentCertificate: [], agentTimestamp: [], agentSignature: [] }]
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [records], properties: { records: { type: array, minItems: 1, maxItems: 100, items: { type: object, additionalProperties: true } } } } } } }
+      responses:
+        '202': { description: HTTP 事件已接收, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /agents/{agent_id}/packets:
+    post:
+      operationId: trafficAgentPacketsPush
+      tags: [agent-control]
+      summary: 批量上报 RAW 数据帧
+      description: 接收最多 8 MiB 的 WDP1 二进制批次，校验后只累计计数并丢弃载荷。
+      security: [{ agentBearer: [] }, { agentCertificate: [], agentTimestamp: [], agentSignature: [] }]
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/x-wdsp-packet-batch:
+            schema: { type: string, format: binary }
+      responses:
+        '202': { description: 数据帧已接收, content: { application/json: { schema: { type: object, properties: { accepted_frames: { type: integer } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /agents/{agent_id}/rotate-cert:
+    post:
+      operationId: trafficAgentCertificateRotate
+      tags: [agent-control]
+      summary: 轮换 Agent 客户端证书
+      description: 仅接受证书 PoP 认证；签发新证书并为旧证书保留 24 小时宽限期。
+      security: [{ agentCertificate: [], agentTimestamp: [], agentSignature: [] }]
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [csr_pem], additionalProperties: false, properties: { csr_pem: { type: string, maxLength: 16384 } } } } } }
+      responses:
+        '200': { description: 新证书材料, content: { application/json: { schema: { $ref: '#/components/schemas/TrafficAgentCertificateResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    TrafficAgentEnrollmentTokenCreate:
+      type: object
+      required: [ttl_minutes]
+      additionalProperties: false
+      properties:
+        label: { type: string, maxLength: 128 }
+        ttl_minutes: { type: integer, minimum: 5, maximum: 10080 }
+    TrafficAgentEnrollmentTokenCreated:
+      type: object
+      required: [id, token, expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        token: { type: string, pattern: '^wdt_[0-9a-f]{64}$', writeOnly: true, description: 仅本次返回 }
+        expires_at: { type: string, format: date-time }
+    TrafficAgentEnrollmentTokenList:
+      type: object
+      properties:
+        items: { type: array, items: { type: object, additionalProperties: true } }
+        total: { type: integer }
+    TrafficAgentSummary:
+      type: object
+      additionalProperties: { type: integer }
+    TrafficAgent:
+      type: object
+      required: [agent_id, hostname, ip]
+      properties:
+        agent_id: { type: string, format: uuid }
+        hostname: { type: string, maxLength: 255 }
+        ip: { type: string }
+        os: { type: string }
+        kernel: { type: string }
+        arch: { type: string }
+        version: { type: string }
+        status: { type: string, enum: [ONLINE, DEGRADED, ERROR, OFFLINE, DISABLED] }
+        desired_state: { type: string, enum: [ENABLED, DISABLED] }
+        config_version: { type: integer, format: int64 }
+        applied_config_version: { type: integer, format: int64 }
+        last_seen_at: { type: string, format: date-time, nullable: true }
+        metrics: { type: object, additionalProperties: true }
+        capabilities: { type: object, additionalProperties: true }
+        interfaces: { type: array, items: { $ref: '#/components/schemas/TrafficAgentInterface' } }
+    TrafficAgentList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/TrafficAgent' } }
+        total: { type: integer }
+    TrafficAgentInterface:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 128 }
+        mac: { type: string, maxLength: 32 }
+        ipv4: { type: string }
+        ipv6: { type: string }
+        mtu: { type: integer, minimum: 0, maximum: 65535 }
+        speed_mbps: { type: integer, minimum: 0 }
+    TrafficAgentEventList:
+      type: object
+      properties:
+        items: { type: array, items: { type: object, additionalProperties: true } }
+        total: { type: integer }
+    TrafficAgentCaptureOverrideCreate:
+      type: object
+      required: [match, capture_level]
+      additionalProperties: false
+      properties:
+        match:
+          type: object
+          minProperties: 1
+          additionalProperties: false
+          properties:
+            dst_ip: { type: string, description: 单个 IPv4/IPv6 地址或 CIDR }
+            dst_port: { type: integer, minimum: 1, maximum: 65535 }
+            host: { type: string, maxLength: 255 }
+            uri_prefix: { type: string, maxLength: 512, pattern: '^/' }
+        capture_level: { type: string, enum: [L0, L1, L2, L3] }
+        ttl_minutes: { type: integer, minimum: 1, maximum: 1440, default: 30 }
+        note: { type: string, maxLength: 512 }
+    TrafficAgentCaptureOverride:
+      allOf:
+        - { $ref: '#/components/schemas/TrafficAgentCaptureOverrideCreate' }
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            agent_id: { type: string, format: uuid }
+            created_by: { type: string }
+            created_at: { type: string, format: date-time }
+            expires_at: { type: string, format: date-time }
+            active: { type: boolean }
+    TrafficAgentCaptureOverrideList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/TrafficAgentCaptureOverride' } }
+        total: { type: integer }
+    TrafficPolicyWrite:
+      type: object
+      required: [name, config]
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 128 }
+        config: { $ref: '#/components/schemas/TrafficPolicyConfig' }
+    TrafficPolicy:
+      allOf:
+        - { $ref: '#/components/schemas/TrafficPolicyWrite' }
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            version: { type: integer, minimum: 1 }
+            created_by: { type: string }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+    TrafficPolicyList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/TrafficPolicy' } }
+        total: { type: integer }
+    TrafficPolicyConfig:
+      type: object
+      required: [name, capture, capture_level, output, limits, sampling, buffer]
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 128 }
+        capture:
+          type: object
+          required: [direction, protocols, ports]
+          properties:
+            interfaces: { type: array, maxItems: 32, items: { type: string, maxLength: 128 } }
+            direction: { type: string, enum: [ingress, egress, both] }
+            protocols: { type: array, minItems: 1, items: { type: string, enum: [tcp, udp] } }
+            ports: { type: array, minItems: 1, maxItems: 64, uniqueItems: true, items: { type: integer, minimum: 1, maximum: 65535 } }
+            backend: { type: string, enum: [afpacket, ebpf, auto] }
+        capture_level: { type: string, enum: [L0, L1, L2, L3] }
+        output: { type: object, required: [mode], properties: { mode: { type: string, enum: [FLOW, RAW, FLOW_RAW] } } }
+        limits: { type: object, additionalProperties: true }
+        sampling: { type: object, additionalProperties: true }
+        buffer: { type: object, additionalProperties: true }
+        masking: { type: object, additionalProperties: true }
+    TrafficAgentEnrollRequest:
+      type: object
+      required: [enrollment_token, hostname, ip]
+      additionalProperties: false
+      properties:
+        enrollment_token: { type: string, pattern: '^wdt_[0-9a-f]{64}$', writeOnly: true }
+        hostname: { type: string, maxLength: 255 }
+        ip: { type: string }
+        os: { type: string, maxLength: 255 }
+        kernel: { type: string, maxLength: 255 }
+        arch: { type: string, maxLength: 64 }
+        version: { type: string, maxLength: 64 }
+        interfaces: { type: array, maxItems: 32, items: { $ref: '#/components/schemas/TrafficAgentInterface' } }
+        csr_pem: { type: string, maxLength: 16384, writeOnly: true }
+        capabilities: { type: object, additionalProperties: true }
+    TrafficAgentEnrollResponse:
+      type: object
+      required: [agent_id, credential, heartbeat_interval_seconds]
+      properties:
+        agent_id: { type: string, format: uuid }
+        credential: { type: string, pattern: '^wda_[0-9a-f]{64}$', writeOnly: true, description: 仅本次返回 }
+        heartbeat_interval_seconds: { type: integer, example: 15 }
+        agent_cert_pem: { type: string, nullable: true }
+        ca_cert_pem: { type: string, nullable: true }
+        cert_expires_at: { type: string, format: date-time, nullable: true }
+    TrafficAgentHeartbeatRequest:
+      type: object
+      required: [timestamp, status]
+      additionalProperties: false
+      properties:
+        timestamp: { type: integer, format: int64, description: Unix 秒 }
+        status: { type: string, enum: [ONLINE, DEGRADED, ERROR] }
+        metrics: { type: object, additionalProperties: true }
+        capabilities: { type: object, additionalProperties: true }
+    TrafficAgentHeartbeatResponse:
+      type: object
+      properties:
+        server_time: { type: string, format: date-time }
+        heartbeat_interval_seconds: { type: integer, example: 15 }
+        desired_state: { type: string, enum: [ENABLED, DISABLED] }
+        config_version: { type: integer, format: int64 }
+    TrafficAgentConfigResponse:
+      type: object
+      properties:
+        desired_state: { type: string, enum: [ENABLED, DISABLED] }
+        version: { type: integer, format: int64 }
+        policy: { $ref: '#/components/schemas/TrafficPolicyConfig', nullable: true }
+        overrides: { type: array, items: { $ref: '#/components/schemas/TrafficAgentCaptureOverride' } }
+    TrafficAgentConfigAckRequest:
+      type: object
+      required: [version, status]
+      additionalProperties: false
+      properties:
+        version: { type: integer, format: int64, minimum: 0 }
+        status: { type: string, enum: [APPLIED, FAILED] }
+        error: { type: string, maxLength: 1024 }
+    TrafficAgentFlowsRequest:
+      type: object
+      required: [events]
+      additionalProperties: false
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: object
+            required: [event_type, flow_id, timestamp, protocol]
+            properties:
+              event_type: { type: string, enum: [request, flow_end] }
+              flow_id: { type: string, maxLength: 255 }
+              timestamp: { type: integer, format: int64 }
+              src_ip: { type: string }
+              src_port: { type: integer, minimum: 0, maximum: 65535 }
+              dst_ip: { type: string }
+              dst_port: { type: integer, minimum: 0, maximum: 65535 }
+              protocol: { type: string, enum: [tcp] }
+              direction: { type: string, enum: [ingress, egress, both] }
+              bytes_in: { type: integer, format: int64, minimum: 0 }
+              bytes_out: { type: integer, format: int64, minimum: 0 }
+              http_method: { type: string, maxLength: 16 }
+              http_host: { type: string, maxLength: 255 }
+              http_uri: { type: string, maxLength: 4096 }
+              http_status: { type: integer, minimum: 0, maximum: 999 }
+    TrafficAgentCertificateResponse:
+      type: object
+      required: [agent_cert_pem, ca_cert_pem, cert_expires_at]
+      properties:
+        agent_cert_pem: { type: string }
+        ca_cert_pem: { type: string }
+        cert_expires_at: { type: string, format: date-time }

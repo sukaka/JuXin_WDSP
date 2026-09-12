@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: XXE billion-laughs recursive entity reference value (CUSTOM_PACK)
+rule_id: 1001603
+tests:
+  - test_id: 1
+    desc: "Entity declaration whose value references two or more entities (expansion signature)"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Content-Type: application/xml
+          method: POST
+          port: 80
+          uri: "/post"
+          data: '<!DOCTYPE r [<!ENTITY a "&b;&b;&b;"><!ENTITY b "z">]><r>&a;</r>'
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001603]

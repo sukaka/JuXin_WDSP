@@ -1,0 +1,32 @@
+# WDSP 产品形态覆盖文件。
+# 与 docker-compose.stage5.yml 叠加使用，复用同一套代码和基础设施，仅开启 WDSP 能力边界。
+services:
+  api:
+    environment:
+      PRODUCT_EDITION: wdsp
+      API_DYNAMIC_PROTECTION_ENABLED: "true"
+      # APM 业务性能监控（无 Agent 模式；默认关闭，透传 .env，跟随 stage5 既有开关写法）
+      APM_ENABLED: ${APM_ENABLED:-false}
+      # 采集器批量/周期 flush 阈值（透传 .env；作用于 API 运行时事件与全量访问日志采集器）
+      WAF_COLLECTOR_FLUSH_BATCH: ${WAF_COLLECTOR_FLUSH_BATCH:-2000}
+      WAF_COLLECTOR_FLUSH_INTERVAL: ${WAF_COLLECTOR_FLUSH_INTERVAL:-2s}
+      # client_identity 体系：采集网关身份/行为事件日志 + 下发网关的日志路径
+      # （与 stage5 基座显式对齐，网关日志只读卷由基座挂载）
+      WAF_IDENTITY_EVENTS_LOG: /var/log/caddy-audit/identity-events.log
+      GATEWAY_IDENTITY_EVENTS_LOG: /var/log/caddy/identity-events.log
+
+  # ---- 可选：HTTP/3（QUIC）启用（实验性，默认关闭）--------------------------
+  # Caddy 2.11 对 TLS 监听器默认即开启 HTTP/3（发布的 JSON 配置无需任何改动），
+  # 唯一缺口是编排端口发布：docker compose 的 ports 缺省仅映射 TCP，
+  # 而 QUIC 走 UDP——HTTPS 端口必须同时发布 UDP 才能被 HTTP/3 客户端拨通。
+  # 如需验证/启用，取消下方注释（端口值须与应用接入配置的 HTTPS 端口一致，
+  # 示例为 443；若使用其他 HTTPS 端口按实际替换），并参见 docs/HTTP3_SUPPORT.md：
+  #
+  # gateway:
+  #   ports:
+  #     - "443:443"       # h1/h2 回退（TCP）
+  #     - "443:443/udp"   # HTTP/3（QUIC）
+  #
+  # 注意：HTTP/3 深度解析（QUIC 层 0-RTT/连接迁移等）不在统一引擎处理面内，
+  # 引擎可见的是 QUIC 终止后的 http.Request（协议版本经事件 proto 字段可见，
+  # 见 docs/HTTP3_SUPPORT.md「能力边界」）。

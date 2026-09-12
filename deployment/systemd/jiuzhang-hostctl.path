@@ -1,0 +1,20 @@
+# jiuzhang-hostctl.path —— 九章 WAF 系统控制执行通道 systemd path 单元（模板）
+# 监视安装根目录下的 hostctl 标志目录：API 容器写入 <action>-<unixts>-<requestid>.json
+# 后触发 jiuzhang-hostctl.service（执行 ops/system/hostctl-exec.sh）。
+# 本文件是【模板】：__INSTALL_ROOT__ 为占位符，由 ops/install/install.sh 按实际
+# 安装根目录（安装时的 $PWD，如 /opt/jiuzhang）渲染后安装到
+# /etc/systemd/system/jiuzhang-hostctl.path，并 daemon-reload + enable --now。
+# 管理标记：install 脚本凭下一行识别本文件由九章安装器管理，允许覆盖。
+# jiuzhang-managed: hostctl-unit
+
+[Unit]
+Description=JiuZhang WAF Host Control Flag Watcher (reboot/shutdown/factory_reset)
+
+[Path]
+# 仅监视未处理的 .json 标志文件；hostctl-exec.sh 处理前会改名为 .done，
+# 改名后不再匹配本 glob，不会重复触发。
+PathExistsGlob=__INSTALL_ROOT__/runtime/hostctl/*.json
+Unit=jiuzhang-hostctl.service
+
+[Install]
+WantedBy=multi-user.target

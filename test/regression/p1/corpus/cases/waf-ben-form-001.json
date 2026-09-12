@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "case_id": "WAF-BEN-FORM-001",
+  "case_version": 2,
+  "family": "waf",
+  "tags": [
+    "normal-business",
+    "complex-form",
+    "multi-step",
+    "false-positive-guard"
+  ],
+  "criticality": "MANDATORY",
+  "truth": "BENIGN",
+  "truth_reason": "复杂表单两步业务流程：先取表单页再提交；字段含引号、括号、URL 编码与百分号的合法文本，人工核验无攻击意图；属任务书 §4.2 要求的复杂表单正常样本与 §4.3 多步骤流程；R2 真实栈回放对齐（2026-09-08，run 20260908T203034-c88b80 实证）：原 bio 的 ASCII 引号+括号+百分号组合被 libinjection(942100) 误报为 SQLi，改为全角标点（复杂表单语义不变，仍含中文/百分号/URL 编码/多字段）；回调字段改相对路径（绝对 URL 参数触发 contrib 1001227 RFI 变体检出，与误报防护意图无关）",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "waf.core.allow_benign",
+    "applications": [
+      "p1reg-echo-site"
+    ],
+    "protocols": [
+      "http/1.1"
+    ]
+  },
+  "prerequisites": {
+    "environment": [
+      "isolated_stack",
+      "controlled_origin"
+    ],
+    "notes": "多步骤：s2 依赖 s1 成功（previous_step_status_in）"
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/form",
+        "headers": {}
+      },
+      "wait": null,
+      "assert": [
+        {
+          "type": "http_status_in",
+          "statuses": [
+            200
+          ]
+        },
+        {
+          "type": "origin_marker_present"
+        }
+      ]
+    },
+    {
+      "step_id": "s2",
+      "action": "http_request",
+      "request": {
+        "method": "POST",
+        "path": "/submit",
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        "body": "name=%E5%BC%A0%E4%B8%89%20%28%E5%B0%8F%E5%BC%A0%29&email=user%2Bp1reg%40example.com&bio=%E4%BB%96%E8%AF%B4%EF%BC%9A%E5%AE%8C%E6%88%90%E5%BA%A6%20100%25%EF%BC%88%E5%90%AB%E5%8A%A0%E9%80%81%EF%BC%89%EF%BC%9B%E5%8F%82%E8%A7%81%20docs%2Freadme&callback=%2Fdone%3Fs%3D1"
+      },
+      "wait": {
+        "type": "previous_step_status_in",
+        "statuses": [
+          200
+        ]
+      },
+      "assert": [
+        {
+          "type": "http_status_in",
+          "statuses": [
+            200
+          ]
+        },
+        {
+          "type": "origin_marker_present"
+        }
+      ]
+    }
+  ],
+  "seed": 1003,
+  "reset_plan": {
+    "scope": "case",
+    "actions": [
+      "reset_app_state"
+    ]
+  },
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {
+        "module": "none"
+      },
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [
+        {
+          "type": "none"
+        }
+      ]
+    },
+    "PROTECT": {
+      "expected_detection": {
+        "module": "none"
+      },
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [
+        {
+          "type": "none"
+        }
+      ]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": true,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "VALIDATION"
+}

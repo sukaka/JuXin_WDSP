@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: 图片魔数后紧跟 <script> 标签的 polyglot 检测（存储型 XSS，自建规则 1001310）
+rule_id: 1001310
+tests:
+  - test_id: 1
+    desc: "urlencoded 提交 GIF89a+<script> polyglot；PROTECT 模式下 CRS 941 XSS 规则先行阻断，故断言 403（DetectionOnly 下 1001310 命中，已经引擎级测试验证）"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+            Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
+            Content-Type: "application/x-www-form-urlencoded"
+          method: POST
+          port: 80
+          uri: "/upload"
+          data: "file=GIF89a%3Cscript%3Ealert(1)%3C/script%3E"
+          version: HTTP/1.1
+        output:
+          status: [403]

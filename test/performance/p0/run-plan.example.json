@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "plan_id": "plan-20260906T000000-exampl",
+  "created_at": "2026-09-06T00:00:00Z",
+  "purpose": "BEFORE",
+  "environment": {
+    "environment_id": "p0bench-dedicated-host-EXAMPLE-0001",
+    "hardware": {
+      "cpu_model": "EXAMPLE 8-core x86_64",
+      "cpu_cores": 8,
+      "memory_gb": 32,
+      "storage": "NVMe SSD, 独立数据分区",
+      "network": "1GbE 内网，压测器与基准环境同网段"
+    },
+    "os": "Linux x86_64（EXAMPLE，填写目标硬件实际值）",
+    "docker_version": "EXAMPLE 27.x / compose v2.x（运行时采集实际值核对）",
+    "isolation": {
+      "mode": "compose_project",
+      "registered_targets": []
+    },
+    "clock": {
+      "sync_method": "chrony/ntpd 同网段 NTP",
+      "max_skew_ms": 50
+    }
+  },
+  "build": {
+    "git_commit": "3c73774",
+    "worktree_dirty": false,
+    "images": {
+      "gateway": "jiuzhang-gateway:p0-benchmark",
+      "server": "jiuzhang-server:p0-benchmark",
+      "testorigin": "jiuzhang-testorigin:p0-benchmark"
+    }
+  },
+  "config": {
+    "base_config_version": "EXAMPLE 有效配置版本号（节点回执确认后填写）",
+    "profiles": [
+      {"profile_id": "proxy", "waf_mode": "OFF", "api_mode": "OFF"},
+      {"profile_id": "waf_observe", "waf_mode": "DETECTION_ONLY", "api_mode": "OFF"},
+      {"profile_id": "waf_protect", "waf_mode": "ON", "api_mode": "OFF"},
+      {"profile_id": "api_observe", "waf_mode": "OFF", "api_mode": "OBSERVE"},
+      {"profile_id": "api_protect", "waf_mode": "OFF", "api_mode": "PROTECT"},
+      {"profile_id": "combined_observe", "waf_mode": "DETECTION_ONLY", "api_mode": "OBSERVE"},
+      {"profile_id": "combined_protect", "waf_mode": "ON", "api_mode": "PROTECT"}
+    ],
+    "toggles": {
+      "jwt": true,
+      "response_detection": true,
+      "identity_behavior": false,
+      "log_sampling": false,
+      "apm": false
+    },
+    "jwt_pair": {
+      "app_code": "p0bench-site",
+      "issuer": "https://issuer.p0bench.local",
+      "audience": "p0bench",
+      "kid": "p0bench-jwt-test-key",
+      "token_ttl_seconds": 3600,
+      "selector": {
+        "methods": ["GET", "POST"],
+        "path_prefix": "/",
+        "token_required": false
+      }
+    }
+  },
+  "corpus": {
+    "manifest_path": "test/performance/p0/corpus/manifest.json",
+    "manifest_sha256": "f16ebbf5f2c730057aad13c53043e1dd1532dab994807b3a465d5fe01c85473a",
+    "seed": 20260906
+  },
+  "load": {
+    "model": "closed_concurrency",
+    "warmup_seconds": 60,
+    "steady_point_seconds": 300,
+    "repeats": 3,
+    "rps_ladder": [100, 300, 600, 1000],
+    "loadgen": {
+      "tool": "ab",
+      "version": "EXAMPLE 运行时由 run.sh 采集（ab -V / curl --version），此处为预登记预期值",
+      "notes": "ab 为闭环并发模型：报告并发数、吞吐与协调遗漏限制，不伪称固定到达率；若改用 wrk/k6 开放模型须更新本字段并重登记"
+    },
+    "soak": {
+      "per_profile_minutes": 30,
+      "combined_protect_hours": 72,
+      "sustained_load_ratio": 0.6
+    },
+    "smoke": {
+      "duration_seconds": 30,
+      "rps": 10
+    }
+  },
+  "resource_limits": {
+    "services": {
+      "gateway": {"cpu": "4.0", "memory": "4G"},
+      "api": {"cpu": "2.0", "memory": "2G"},
+      "postgres": {"cpu": "2.0", "memory": "2G"},
+      "valkey": {"cpu": "1.0", "memory": "512m"},
+      "testorigin": {"cpu": "1.0", "memory": "512m"}
+    },
+    "steady_memory_growth_mb_per_hour_max": 32,
+    "disk_retention_max_mb": 20480,
+    "queue_growth": "bounded"
+  },
+  "thresholds": {
+    "mandatory_security_cases": "ALL_PASS",
+    "normal_unexpected_error_rate_max": 0.001,
+    "throughput_regression_min_ratio": 0.9,
+    "p99_regression": {"max_ratio": 1.15, "max_abs_ms": 2},
+    "detection_false_positive_rate_max": 0.0,
+    "block_false_positive_max": 0,
+    "persisted_event_permanent_loss_max": 0,
+    "event_visibility_latency_ms_max": 5000,
+    "recovery_time_seconds_max": 120
+  }
+}

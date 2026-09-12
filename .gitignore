@@ -1,0 +1,88 @@
+# 依赖目录
+node_modules/
+vendor/
+
+# 构建产物
+dist/
+build/
+bin/
+# 阶段C 旁路采集器镜像构建上下文中的宿主机静态二进制（按 Dockerfile 头说明产出）
+deployment/docker/mirrorcap/mirrorcap
+# 阶段D 透明串接实验镜像构建上下文中的静态二进制（按 Dockerfile 头说明产出/提取）
+deployment/docker/tproxy-lab/tproxyd
+deployment/docker/tproxy-lab/caddy
+deployment/docker/tproxy-lab/testorigin
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 测试产物
+coverage/
+*.coverprofile
+*.out
+
+# 环境文件
+.env
+.env.local
+.env.*.local
+
+# 运行时数据
+runtime/configs/*
+!runtime/configs/.gitkeep
+runtime/certificates/*
+!runtime/certificates/.gitkeep
+runtime/logs/*
+!runtime/logs/.gitkeep
+runtime/reports/*
+!runtime/reports/.gitkeep
+runtime/backups/*
+!runtime/backups/.gitkeep
+# 宿主机指纹（离线授权绑定用，主机标识信息，不入库）
+runtime/license/*
+# GeoIP 数据库（country.mmdb 约 7.5MB，部署时放置，不提交）
+runtime/geoip/
+# 系统控制标志文件（hostctl 执行通道产物，不入库）
+runtime/hostctl/*
+!runtime/hostctl/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 密钥与证书
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.tmp.mjs
+
+# Go
+*.test
+*.prof
+
+# Playwright
+playwright-report/
+test-results/
+
+# PDF 中文字体（体积大，部署时按 server/assets/fonts/README.md 放置）
+server/assets/fonts/*.ttf
+server/assets/fonts/*.otf
+server/assets/fonts/*.ttc
+
+# 文档二进制归档（源代码 docx 等体积大，不提交）
+docs/*.docx

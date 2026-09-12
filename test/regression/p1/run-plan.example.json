@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "kind": "p1_regression_run_plan",
+  "plan_id": "plan-20260906T000000-exampl",
+  "created_at": "2026-09-06T00:00:00Z",
+  "purpose": "BASELINE",
+  "environment": {
+    "environment_id": "p1reg-dedicated-host-EXAMPLE-0001",
+    "isolation": {
+      "mode": "compose_project",
+      "registered_targets": []
+    },
+    "clock": {
+      "max_skew_ms": 50
+    }
+  },
+  "build": {
+    "git_commit": "3c73774",
+    "worktree_dirty": false
+  },
+  "corpus": {
+    "manifest_path": "test/regression/p1/corpus/manifest.json",
+    "manifest_sha256": "feaadc81c3ddae79eba4eec192315f612b48856cbbbbc81615c714e5512a025b",
+    "seed": 20260906
+  },
+  "profiles": [
+    "OBSERVE",
+    "PROTECT"
+  ]
+}

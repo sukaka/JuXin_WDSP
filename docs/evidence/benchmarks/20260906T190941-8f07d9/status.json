@@ -1,0 +1,10 @@
+{
+  "records": {
+    "preflight": {
+      "evidence": "/Users/zhanglei/Documents/JiuZhang_WAF/docs/evidence/benchmarks/20260906T190941-8f07d9",
+      "mandatory": false,
+      "reason": "隔离与预检通过",
+      "status": "PASS"
+    }
+  }
+}

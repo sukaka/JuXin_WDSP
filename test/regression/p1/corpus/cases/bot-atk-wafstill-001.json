@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "case_id": "BOT-ATK-WAFSTILL-001",
+  "case_version": 1,
+  "family": "bot",
+  "tags": ["bot-challenge", "waf-still-fires", "cross-layer", "sqli"],
+  "criticality": "STANDARD",
+  "truth": "ATTACK",
+  "truth_reason": "挑战通过后仍触发其他防护（任务书 §4.2 Bot 类必覆盖）：客户端先完成真实 PoW 挑战获得通行，随后发起 UNION SELECT 注入探测；通行 Cookie 不得豁免 WAF/CRS 检测（安全底线：Bot 放行不跳过 WAF）",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成攻击样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "bot.clearance.no_waf_bypass",
+    "applications": ["p1reg-bot-site"],
+    "protocols": ["https"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin", "bot_event_pipeline", "waf_event_pipeline", "identity_behavior_observation"]
+  },
+  "client": {"bot_challenge_solve": true},
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+      },
+      "wait": null,
+      "assert": [
+        {"type": "http_status_in", "statuses": [200]},
+        {"type": "origin_marker_present"}
+      ]
+    },
+    {
+      "step_id": "s2",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+      },
+      "wait": {"type": "previous_step_status_in", "statuses": [200]},
+      "assert": [
+        {"type": "http_status_in", "statuses": [200]},
+        {"type": "origin_marker_present"}
+      ]
+    },
+    {
+      "step_id": "s3",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/",
+        "headers": {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+          "Accept-Language": "zh-CN,zh;q=0.9",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+      },
+      "wait": {"type": "previous_step_status_in", "statuses": [200]},
+      "assert": [
+        {"type": "http_status_in", "statuses": [200]},
+        {"type": "origin_marker_present"}
+      ]
+    },
+    {
+      "step_id": "s4",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/search",
+        "query": "q=%27%20UNION%20SELECT%20username%2C%20password%20FROM%20users--",
+        "headers": {
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+      },
+      "wait": {"type": "previous_step_status_in", "statuses": [200]},
+      "assert": []
+    }
+  ],
+  "seed": 3106,
+  "reset_plan": {"scope": "case", "actions": ["none"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "coraza_crs", "rule_family": "sqli"},
+      "expected_final_action": "DETECT_PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "waf_security_event", "rule_family": "sqli"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "coraza_crs", "rule_family": "sqli"},
+      "expected_final_action": "BLOCK_403",
+      "expected_origin": "not_reached",
+      "expected_events": [{"type": "waf_security_event", "rule_family": "sqli"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": true,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "VALIDATION"
+}

@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wdsp-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: wdsp-agent
+  namespace: wdsp-system
+---
+# 最小权限说明（P1-03 §6 RBAC 收敛）：
+#   - 实现只使用 list 动词（分页全量快照），不使用 watch——已去除；
+#   - endpoints 与 replicasets 由 Agent 按本节点 Pod 所在 namespace 分别查询，
+#     不做全集群分页；
+#   - apps/replicasets 用于 ReplicaSet → Deployment 的权威工作负载归属解析；
+#     缺失该权限时 Agent 降级为截尾推断并在心跳指标中显式计数（fail-open）；
+#   - 业务 namespace 无法预先枚举，故仍为 ClusterRole；禁止提升到 cluster-admin。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: wdsp-agent-metadata-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "endpoints"]
+    verbs: ["list"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: wdsp-agent-metadata-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: wdsp-agent-metadata-reader
+subjects:
+  - kind: ServiceAccount
+    name: wdsp-agent
+    namespace: wdsp-system

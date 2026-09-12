@@ -1,0 +1,1963 @@
+# 九章 WDSP 管理 API 片段：WAF 防护策略域（阶段4）
+# 路由源：server/internal/app/app.go 第 530-571 行
+# 覆盖：/protection-policies（含 /copy /applications）、/waf-rules（含 /categories /versions /sync）、
+#       /rule-overrides、/custom-rules（含 /validate /enable /disable）、/exceptions（含 /enable /disable /preview）
+
+paths:
+  # ==================== 防护策略 ====================
+  /protection-policies:
+    get:
+      operationId: policyList
+      tags: [protection-policies]
+      summary: 防护策略列表
+      description: |
+        分页查询 WAF 防护策略，支持关键字（编码/名称模糊匹配）与防护模式过滤，
+        按内置优先、创建时间倒序排列。权限：`protection_policies.read`
+      parameters:
+        - name: keyword
+          in: query
+          required: false
+          schema: { type: string }
+          description: 关键字，模糊匹配策略编码或名称
+        - name: protection_mode
+          in: query
+          required: false
+          schema: { type: string, enum: [OFF, OBSERVE, PROTECT] }
+          description: 按防护模式过滤
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码，默认 1
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数，默认 20，最大 100
+      responses:
+        '200':
+          description: 策略分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: policyCreate
+      tags: [protection-policies]
+      summary: 创建防护策略
+      description: |
+        创建 WAF 防护策略。未提供的可选字段使用服务端默认值：protection_mode=OBSERVE、
+        paranoia_level=1、inbound_anomaly_threshold=5、outbound_anomaly_threshold=4、
+        request_body_access=true、response_body_access=false；请求体/响应体大小限制、
+        解析器开关、审计日志与阻断页面等高级字段由服务端按内置基线设置（如 request_body_limit=13107200、
+        blocking_status_code=403）。策略编码全局唯一。记录操作审计（风险：中）。
+        权限：`protection_policies.create`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyUpsertRequest'
+      responses:
+        '200':
+          description: 创建成功，返回新策略（usage_count 为 0）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 策略编码已存在（RESOURCE_CONFLICT）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /protection-policies/{id}:
+    get:
+      operationId: policyGet
+      tags: [protection-policies]
+      summary: 防护策略详情
+      description: |
+        查询单个防护策略详情，附加当前绑定的应用 ID 列表（application_ids）。
+        权限：`protection_policies.read`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 策略 ID
+      responses:
+        '200':
+          description: 策略详情（含 application_ids）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: policyUpdate
+      tags: [protection-policies]
+      summary: 更新防护策略
+      description: |
+        更新防护策略，采用乐观锁：请求体 version 必须与当前版本一致，否则返回 409。
+        内置策略（is_builtin=true）不允许修改，返回 403。记录操作审计（风险：中）。
+        权限：`protection_policies.update`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 策略 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyUpsertRequest'
+      responses:
+        '200':
+          description: 更新成功，返回更新后的策略（version 已递增）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 无权限，或内置策略不允许修改（PERMISSION_DENIED）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 版本冲突，策略已被其他人修改（RESOURCE_CONFLICT）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: policyDelete
+      tags: [protection-policies]
+      summary: 删除防护策略
+      description: |
+        删除防护策略（软删除）。内置策略不可删除（403）；仍被应用引用的策略不可删除（409）。
+        记录操作审计（风险：高）。权限：`protection_policies.delete`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 策略 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 无权限，或内置策略不允许删除（PERMISSION_DENIED）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 策略正在被应用引用，无法删除（RESOURCE_CONFLICT）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /protection-policies/{id}/copy:
+    post:
+      operationId: policyCopy
+      tags: [protection-policies]
+      summary: 复制防护策略
+      description: |
+        以现有策略为模板创建副本：新编码为「原编码-copy」（冲突时追加序号），名称追加「（副本）」，
+        副本一律为非内置策略。无请求体。记录操作审计（风险：低）。
+        权限：`protection_policies.create`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 源策略 ID
+      responses:
+        '200':
+          description: 复制成功，返回新策略
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /protection-policies/{id}/applications:
+    get:
+      operationId: policyListApplications
+      tags: [protection-policies]
+      summary: 查询策略绑定的应用
+      description: |
+        返回当前绑定该策略（is_active）的应用 ID 列表与数量。
+        权限：`protection_policies.read`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 策略 ID
+      responses:
+        '200':
+          description: 应用 ID 列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyApplicationsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: policyBindApplication
+      tags: [protection-policies]
+      summary: 绑定策略到应用
+      description: |
+        将策略绑定到指定应用。一个应用同时只有一个活动策略：绑定新策略会将该应用原有绑定置为失效，
+        同一（应用, 策略）重复绑定幂等（ON CONFLICT 重新激活）。绑定后需发布配置方可生效。
+        记录操作审计（风险：中）。权限：`protection_policies.update`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 策略 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyBindRequest'
+      responses:
+        '200':
+          description: 绑定成功（提示发布配置后生效）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /protection-policies/{id}/applications/{app_id}:
+    delete:
+      operationId: policyUnbindApplication
+      tags: [protection-policies]
+      summary: 解绑应用上的防护策略
+      description: |
+        解除指定应用与该策略的绑定。仅当应用当前活动策略确为本策略时才执行解绑，
+        否则返回 404。解绑后需发布配置方可生效。记录操作审计（风险：中）。
+        权限：`protection_policies.update`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 策略 ID
+        - name: app_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 应用 ID
+      responses:
+        '200':
+          description: 解绑成功（提示发布配置后生效）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 策略不存在，或应用未绑定该策略（RESOURCE_NOT_FOUND）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== WAF 规则（元数据） ====================
+  /waf-rules:
+    get:
+      operationId: wafRuleList
+      tags: [waf-rules]
+      summary: WAF 规则列表
+      description: |
+        分页查询 WAF 规则元数据（OWASP CRS 主包/插件、第三方与自建规则包、九章内置、用户自定义），
+        按规则 ID 升序排列。权限：`waf_rules.read`
+      parameters:
+        - name: rule_id
+          in: query
+          required: false
+          schema: { type: integer }
+          description: 按 SecRule 规则 ID 精确过滤
+        - name: keyword
+          in: query
+          required: false
+          schema: { type: string }
+          description: 关键字，模糊匹配规则名称或消息
+        - name: attack_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [SQL_INJECTION, XSS, COMMAND_INJECTION, LOCAL_FILE_INCLUSION, REMOTE_FILE_INCLUSION, PHP_INJECTION, JAVA_INJECTION, PROTOCOL_VIOLATION, SESSION_FIXATION, SCANNER_DETECTION, INFORMATION_DISCLOSURE, REMOTE_CODE_EXECUTION, SSRF, XXE_INJECTION, WEBSHELL, FILE_UPLOAD, DESERIALIZATION, SSTI, DOS, MASS_ASSIGNMENT, EXCLUSION, OTHER]
+          description: 按攻击类型过滤
+        - name: severity
+          in: query
+          required: false
+          schema: { type: string, enum: [CRITICAL, ERROR, WARNING, NOTICE] }
+          description: 按严重级别过滤
+        - name: rule_source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [OWASP_CRS, CRS_PLUGIN, THIRD_PARTY, CUSTOM_PACK, JIUZHANG_BUILTIN, USER_CUSTOM]
+          description: 按规则来源过滤
+        - name: tag
+          in: query
+          required: false
+          schema: { type: string }
+          description: 按标签模糊过滤（匹配 tags JSON 文本）
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码，默认 1
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数，默认 20，最大 100
+      responses:
+        '200':
+          description: 规则分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WafRuleListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /waf-rules/categories:
+    get:
+      operationId: wafRuleCategories
+      tags: [waf-rules]
+      summary: 规则分类统计
+      description: |
+        按攻击类型统计规则数量，按数量降序排列。权限：`waf_rules.read`
+      responses:
+        '200':
+          description: 分类统计列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WafRuleCategoriesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /waf-rules/versions:
+    get:
+      operationId: wafRuleVersions
+      tags: [waf-rules]
+      summary: CRS 规则版本列表
+      description: |
+        返回已入库的 OWASP_CRS 来源规则的 crs_version 去重列表，按版本倒序排列。
+        权限：`waf_rules.read`
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WafRuleVersionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /waf-rules/{rule_id}:
+    get:
+      operationId: wafRuleGet
+      tags: [waf-rules]
+      summary: WAF 规则详情
+      description: |
+        按 SecRule 规则 ID 查询单条规则元数据；同一规则 ID 存在多个 CRS 版本时返回最新版本。
+        权限：`waf_rules.read`
+      parameters:
+        - name: rule_id
+          in: path
+          required: true
+          schema: { type: integer }
+          description: SecRule 规则 ID（非数据库主键）
+      responses:
+        '200':
+          description: 规则详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WafRule'
+        '400':
+          description: 规则 ID 格式非法（须为整数）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /waf-rules/sync:
+    post:
+      operationId: wafRuleSync
+      tags: [waf-rules]
+      summary: 同步规则元数据
+      description: |
+        从本地规则目录解析并同步规则元数据到数据库，来源包括：CRS 主包、CRS 插件目录
+        （<crs_root>/plugins/*/plugins）以及 contrib 分包目录（THIRD_PARTY、CUSTOM_PACK，
+        目录不存在时自动跳过）。按内容哈希做增量新增/更新，各来源独立去重
+        （rule_id + rule_source + crs_version 唯一）。无请求体。同步完成后需发布配置方可生效。
+        记录操作审计（风险：中）。权限：`waf_rules.sync`
+      responses:
+        '200':
+          description: 同步完成，返回同步报告
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WafRuleSyncReport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== 规则覆盖 ====================
+  /rule-overrides:
+    get:
+      operationId: ruleOverrideList
+      tags: [rule-overrides]
+      summary: 规则覆盖列表
+      description: |
+        分页查询 CRS/WAF 规则覆盖，按规则 ID、作用域类型、创建时间倒序排列。
+        权限：`rule_overrides.manage`
+      parameters:
+        - name: rule_id
+          in: query
+          required: false
+          schema: { type: integer }
+          description: 按目标规则 ID 过滤
+        - name: scope_type
+          in: query
+          required: false
+          schema: { type: string, enum: [GLOBAL, POLICY, APPLICATION] }
+          description: 按作用域类型过滤
+        - name: scope_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: 按作用域对象（策略/应用）ID 过滤；非 UUID 返回 400
+        - name: action
+          in: query
+          required: false
+          schema: { type: string, enum: [DISABLE, ENABLE, SEVERITY_OVERRIDE, ACTION_OVERRIDE] }
+          description: 按覆盖动作过滤
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码，默认 1
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数，默认 20，最大 100
+      responses:
+        '200':
+          description: 覆盖分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleOverrideListResponse'
+        '400':
+          description: scope_id 格式非法
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: ruleOverrideCreate
+      tags: [rule-overrides]
+      summary: 创建规则覆盖
+      description: |
+        创建规则覆盖。同一（rule_id + scope_type + scope_id）仅允许一条覆盖，冲突返回 409。
+        生效优先级：APPLICATION > POLICY > GLOBAL；ENABLE 可覆盖同层/下层的 DISABLE。
+        当前发布管线仅对 DISABLE 动作生成 ctl:ruleRemoveById 指令，其余动作可入库但暂不生效。
+        创建后需发布配置方可生效。记录操作审计（风险：中）。权限：`rule_overrides.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleOverrideUpsertRequest'
+      responses:
+        '200':
+          description: 创建成功（提示发布配置后生效）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleOverrideResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 同范围下该规则已有覆盖（RESOURCE_CONFLICT）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /rule-overrides/{id}:
+    get:
+      operationId: ruleOverrideGet
+      tags: [rule-overrides]
+      summary: 规则覆盖详情
+      description: |
+        查询单条规则覆盖。权限：`rule_overrides.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 覆盖 ID
+      responses:
+        '200':
+          description: 覆盖详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleOverrideDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: ruleOverrideUpdate
+      tags: [rule-overrides]
+      summary: 更新规则覆盖
+      description: |
+        更新规则覆盖。请求体 version 非 0 时启用乐观锁校验，与当前版本不一致返回 409；
+        version 为 0 或缺省时跳过校验（以后端当前版本为准）。更新后需发布配置方可生效。
+        记录操作审计（风险：中）。权限：`rule_overrides.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 覆盖 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleOverrideUpsertRequest'
+      responses:
+        '200':
+          description: 更新成功（提示发布配置后生效）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleOverrideResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 版本冲突或同范围已存在其他覆盖（RESOURCE_CONFLICT）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: ruleOverrideDelete
+      tags: [rule-overrides]
+      summary: 删除规则覆盖
+      description: |
+        删除规则覆盖（物理删除）。删除后需发布配置方可生效。
+        记录操作审计（风险：高）。权限：`rule_overrides.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 覆盖 ID
+      responses:
+        '200':
+          description: 删除成功（提示发布配置后生效）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== 自定义规则 ====================
+  /custom-rules:
+    get:
+      operationId: customRuleList
+      tags: [custom-rules]
+      summary: 自定义规则列表
+      description: |
+        分页查询九章自定义 WAF 规则，按规则 ID 升序排列。权限：`custom_rules.manage`
+      parameters:
+        - name: keyword
+          in: query
+          required: false
+          schema: { type: string }
+          description: 关键字，模糊匹配规则名称、描述或规则 ID
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [ENABLED, DISABLED] }
+          description: 按状态过滤
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码，默认 1
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数，默认 20，最大 100
+      responses:
+        '200':
+          description: 自定义规则分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomRuleListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: customRuleCreate
+      tags: [custom-rules]
+      summary: 创建自定义规则
+      description: |
+        创建自定义 WAF 规则：服务端按白名单校验操作符/检测变量/动作，禁止危险内容
+        （命令执行、文件读取、命令替换等），rx 操作符额外校验正则语法，并生成对应 SecLang 文本。
+        规则 ID 必须在 7100000-7199999 区间且全库唯一；新规则默认 ENABLED、GLOBAL 作用域。
+        创建后需发布配置方可生效。记录操作审计（风险：中）。权限：`custom_rules.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomRuleUpsertRequest'
+      responses:
+        '200':
+          description: 创建成功，返回新规则（含 generated_rule）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomRule'
+        '400':
+          description: 校验失败（含规则 ID 越界/冲突、非法操作符、危险内容、正则语法错误等）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /custom-rules/{id}:
+    get:
+      operationId: customRuleGet
+      tags: [custom-rules]
+      summary: 自定义规则详情
+      description: |
+        查询单条自定义规则。权限：`custom_rules.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 规则记录 ID（数据库主键，非 rule_id）
+      responses:
+        '200':
+          description: 规则详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: customRuleUpdate
+      tags: [custom-rules]
+      summary: 更新自定义规则
+      description: |
+        更新自定义规则，采用乐观锁：请求体 version 必须与当前版本一致，否则返回 409。
+        rule_id 不可修改（请求体中的 rule_id 被忽略）；其余字段重新校验并重新生成 SecLang。
+        更新后需发布配置方可生效。记录操作审计（风险：中）。权限：`custom_rules.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 规则记录 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomRuleUpsertRequest'
+      responses:
+        '200':
+          description: 更新成功，返回更新后的规则（version 已递增）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 版本冲突，规则已被其他人修改（RESOURCE_CONFLICT）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: customRuleDelete
+      tags: [custom-rules]
+      summary: 删除自定义规则
+      description: |
+        删除自定义规则（物理删除）。删除后需发布配置方可生效。
+        记录操作审计（风险：高）。权限：`custom_rules.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 规则记录 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /custom-rules/{id}/validate:
+    post:
+      operationId: customRuleValidate
+      tags: [custom-rules]
+      summary: 校验自定义规则（不保存）
+      description: |
+        按创建相同的规则校验请求体并试生成 SecLang，但不写库、不校验规则 ID 冲突，
+        路径中的 id 不被解析（新建场景前端可传 `new` 占位）。校验失败仍返回 200 且 valid=false。
+        权限：`custom_rules.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: 占位参数，服务端不解析；新建时传 new
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomRuleUpsertRequest'
+      responses:
+        '200':
+          description: 校验结果（valid=false 时 error 给出原因；valid=true 时 generated_rule 给出 SecLang）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomRuleValidateResult'
+        '400':
+          description: 请求体不是合法 JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /custom-rules/{id}/enable:
+    post:
+      operationId: customRuleEnable
+      tags: [custom-rules]
+      summary: 启用自定义规则
+      description: |
+        将自定义规则状态置为 ENABLED。无请求体。启用后需发布配置方可生效。
+        记录操作审计（风险：低）。权限：`custom_rules.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 规则记录 ID
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /custom-rules/{id}/disable:
+    post:
+      operationId: customRuleDisable
+      tags: [custom-rules]
+      summary: 停用自定义规则
+      description: |
+        将自定义规则状态置为 DISABLED。无请求体。停用后需发布配置方可生效。
+        记录操作审计（风险：低）。权限：`custom_rules.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 规则记录 ID
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== 例外策略 ====================
+  /exceptions:
+    get:
+      operationId: exceptionList
+      tags: [exceptions]
+      summary: 例外策略列表
+      description: |
+        分页查询 WAF 例外策略，按创建时间倒序排列。权限：`exceptions.read`
+      parameters:
+        - name: scope_type
+          in: query
+          required: false
+          schema: { type: string, enum: [GLOBAL, APPLICATION, POLICY] }
+          description: 按范围类型过滤
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [ENABLED, DISABLED, EXPIRED] }
+          description: 按状态过滤（EXPIRED 为临时例外到期自动失效）
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码，默认 1
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数，默认 20，最大 100
+      responses:
+        '200':
+          description: 例外分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExceptionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: exceptionCreate
+      tags: [exceptions]
+      summary: 创建例外策略
+      description: |
+        创建 WAF / API 例外策略。校验要点：临时例外（is_temporary=true）必须设置 effective_until；
+        source_ips 须为合法 IP/CIDR；uri_regex 须为合法正则；domain 须为合法主机名；
+        uri_exact/uri_prefix/uri_regex 同时最多配置一个；methods 最多 10 个且须为标准 HTTP 方法；
+        content_types 须为合法 MIME 主类型（不含通配符）；param_names/cookie_names/header_names
+        仅允许字母/数字/_/-/. 字符；action_target 仅可作为 REMOVE_VAR_DETECTION 的目标集合别名。
+        动作 × 引擎矩阵：WAF 引擎支持 REMOVE_RULE/REMOVE_RULE_TAG/REMOVE_VAR_DETECTION
+        （LOG_ONLY/ADJUST_SCORE 仅历史记录可保存，P0-04 起不支持新启用）；
+        API 引擎仅支持 OBSERVE_RULE 且必须使用 api_rule_refs（detector_id 限 api_schema/api_parser）。
+        不支持字段组合返回 400 并带 details.field_errors 字段级错误明细，不静默舍弃。
+        宽泛例外（见响应 is_broad）必须显式 risk_acknowledged=true，否则返回 400。
+        P0-04 起新例外默认 DRAFT（保存时自动重算 validation_status/compiled_fingerprint），
+        须经验证门禁（enable 接口）后方可启用；启用后需发布配置方可生效。
+        宽泛例外记录高风险审计，其余为中风险。权限：`exceptions.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExceptionUpsertRequest'
+      responses:
+        '200':
+          description: 创建成功，返回例外与宽泛判定
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExceptionDetailResponse'
+        '400':
+          description: 校验失败（含宽泛例外未确认风险、时间范围非法、IP/正则/域名非法等）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /exceptions/{id}:
+    get:
+      operationId: exceptionGet
+      tags: [exceptions]
+      summary: 例外策略详情
+      description: |
+        查询单个例外策略，附带宽泛判定 is_broad。权限：`exceptions.read`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 例外 ID
+      responses:
+        '200':
+          description: 例外详情（含 is_broad）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExceptionDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: exceptionUpdate
+      tags: [exceptions]
+      summary: 更新例外策略
+      description: |
+        更新例外策略，采用乐观锁：请求体 version 必填（大于 0）且与当前版本一致，
+        否则返回 400/409。状态不在本接口修改，须使用 enable/disable 接口。
+        更新后需发布配置方可生效。宽泛例外记录高风险审计，其余为中风险。
+        权限：`exceptions.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 例外 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExceptionUpsertRequest'
+      responses:
+        '200':
+          description: 更新成功，返回例外与宽泛判定（version 已递增）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExceptionDetailResponse'
+        '400':
+          description: 校验失败（含 version 缺失、宽泛例外未确认风险等）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 例外不存在或版本冲突（RESOURCE_CONFLICT）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: exceptionDelete
+      tags: [exceptions]
+      summary: 删除例外策略
+      description: |
+        删除例外策略（软删除）。删除后需发布配置方可生效。
+        记录操作审计（风险：中）。权限：`exceptions.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 例外 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /exceptions/{id}/enable:
+    post:
+      operationId: exceptionEnable
+      tags: [exceptions]
+      summary: 启用例外策略
+      description: |
+        启用例外策略（P0-04 启用门禁）。无请求体。启用前服务端执行结构化范围校验：
+        validation_status 必须为 VALID（NEEDS_REVIEW 记录须先修改达标）；必须绑定真实存在的
+        应用（scope_type=APPLICATION，GLOBAL 历史记录保留可读但禁止启用）；methods 非空且
+        全部为标准方法；uri_exact/uri_prefix 恰一（uri_regex 为历史/高级配置，另需
+        risk_acknowledged 且不超过 512 字符）；uri_prefix 不得以裸 / 为唯一范围；
+        临时例外必须有 effective_until 且满足 from < until（半开区间）；
+        必须指定目标规则（WAF：rule_ids 非空，REMOVE_RULE_TAG 的规则标签须能经规则目录
+        展开为有界规则 ID 集并在启用时冻结进 resolved_rule_ids；API：api_rule_refs 非空且
+        detector_id ∈ api_schema/api_parser）。
+        LOG_ONLY/ADJUST_SCORE（整请求仅观察/调分语义）与未注册 detector 不支持新启用，
+        返回 400 且业务码 UNSUPPORTED_ACTION，details.field_errors 携带迁移预览说明。
+        门禁通过后状态置 ENABLED、version 递增，并落库编译摘要 compiled_fingerprint。
+        启用后需发布配置方可生效。记录操作审计。权限：`exceptions.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 例外 ID
+      responses:
+        '200':
+          description: 启用成功，返回启用后的例外（status=ENABLED、version 已递增、含 compiled_fingerprint）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExceptionDetailResponse'
+        '400':
+          description: 启用门禁未通过（INVALID_ARGUMENT 或 UNSUPPORTED_ACTION，details.field_errors 含字段级错误与迁移预览）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /exceptions/{id}/disable:
+    post:
+      operationId: exceptionDisable
+      tags: [exceptions]
+      summary: 停用例外策略
+      description: |
+        将例外策略状态置为 DISABLED。无请求体。停用后需发布配置方可生效。
+        记录操作审计（风险：低）。权限：`exceptions.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 例外 ID
+      responses:
+        '200':
+          description: 操作成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /exceptions/{id}/preview:
+    post:
+      operationId: exceptionPreview
+      tags: [exceptions]
+      summary: 例外生效预览
+      description: |
+        预览例外生效范围与编译产物（P0-04 契约）：按启用门禁同一结构化校验重算
+        validation_status 与 field_errors，返回规范化范围、目标规则引用、生效窗口
+        （半开区间 from≤now<until）、不支持项及迁移预览、不受例外影响持续有效的保护
+        模块、编译摘要与必需发布目标（应用编码）。expected_version 与当前版本不符返回
+        409；预览后草稿被修改会推进 version 并改变 compiled_fingerprint，发布前重验可检出。
+        预览不启用、不发布、不回放真实请求；历史日志字段不足，
+        historical_sample_coverage 与 estimated_match_count 恒为 null（不显示零影响）。
+        记录操作审计（风险：低）。权限：`exceptions.manage`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 例外 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExceptionPreviewRequest'
+      responses:
+        '200':
+          description: 预览结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExceptionPreviewResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 版本不符（RESOURCE_CONFLICT），例外已被修改，请刷新后重试
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  schemas:
+    # ==================== 防护策略 ====================
+    Policy:
+      type: object
+      description: WAF 防护策略（列表/详情/创建/更新/复制的返回体；详情另含 application_ids，见 PolicyDetail）
+      properties:
+        id: { type: string, format: uuid, description: 策略 ID }
+        code: { type: string, maxLength: 64, description: 策略编码，全局唯一 }
+        name: { type: string, maxLength: 128, description: 策略名称 }
+        description: { type: string, description: 策略描述 }
+        is_builtin: { type: boolean, description: 是否内置策略；内置策略不可修改、删除 }
+        status: { type: string, enum: [ACTIVE], description: 策略状态，当前固定为 ACTIVE }
+        protection_mode:
+          type: string
+          enum: [OFF, OBSERVE, PROTECT]
+          description: 防护模式：OFF 关闭 / OBSERVE 仅观察记录 / PROTECT 拦截
+        paranoia_level: { type: integer, minimum: 1, maximum: 4, description: CRS 执行等级（Paranoia Level 1-4） }
+        inbound_anomaly_threshold: { type: integer, minimum: 1, maximum: 100, description: 入站异常评分阈值 }
+        outbound_anomaly_threshold: { type: integer, minimum: 1, maximum: 100, description: 出站异常评分阈值 }
+        request_body_access: { type: boolean, description: 是否启用请求体检查 }
+        response_body_access: { type: boolean, description: 是否启用响应体检查 }
+        blocking_status_code: { type: integer, minimum: 400, maximum: 599, description: 阻断时返回的 HTTP 状态码（默认 403） }
+        usage_count: { type: integer, description: 当前引用该策略的应用数量 }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+        updated_at: { type: string, format: date-time, description: 更新时间 }
+        version: { type: integer, description: 乐观锁版本号，更新时随请求体回传 }
+
+    PolicyDetail:
+      allOf:
+        - $ref: '#/components/schemas/Policy'
+        - type: object
+          properties:
+            application_ids:
+              type: array
+              items: { type: string, format: uuid }
+              description: 当前绑定该策略的应用 ID 列表
+
+    PolicyUpsertRequest:
+      type: object
+      required: [name]
+      description: 创建/更新防护策略请求体。创建时 code 必填（缺失返回 400）；更新时 code 被忽略、version 必填
+      properties:
+        code: { type: string, maxLength: 64, description: 策略编码；创建必填且全局唯一，更新时忽略 }
+        name: { type: string, maxLength: 128, description: 策略名称 }
+        description: { type: string, description: 策略描述 }
+        protection_mode:
+          type: string
+          enum: [OFF, OBSERVE, PROTECT]
+          description: 防护模式；缺省按 OBSERVE 处理，显式传入非法值返回 400
+        paranoia_level: { type: integer, minimum: 1, maximum: 4, default: 1, description: CRS 执行等级 1-4 }
+        inbound_anomaly_threshold: { type: integer, minimum: 1, maximum: 100, default: 5, description: 入站异常评分阈值 }
+        outbound_anomaly_threshold: { type: integer, minimum: 1, maximum: 100, default: 4, description: 出站异常评分阈值 }
+        request_body_access: { type: boolean, default: true, description: 是否启用请求体检查 }
+        response_body_access: { type: boolean, default: false, description: 是否启用响应体检查 }
+        version: { type: integer, description: 乐观锁版本号；更新必填且须与当前版本一致，创建时忽略 }
+
+    PolicyListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Policy'
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    PolicyApplicationsResponse:
+      type: object
+      properties:
+        application_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: 绑定该策略的应用 ID 列表
+        count: { type: integer, description: 绑定应用数量 }
+
+    PolicyBindRequest:
+      type: object
+      required: [application_id]
+      properties:
+        application_id: { type: string, format: uuid, description: 目标应用 ID }
+
+    # ==================== WAF 规则（元数据） ====================
+    WafRule:
+      type: object
+      description: WAF 规则元数据（由规则同步任务从 CRS/插件/contrib 规则文件解析入库）
+      properties:
+        id: { type: string, format: uuid, description: 记录 ID（数据库主键） }
+        rule_id: { type: integer, description: SecRule 规则 ID }
+        rule_source:
+          type: string
+          enum: [OWASP_CRS, CRS_PLUGIN, THIRD_PARTY, CUSTOM_PACK, JIUZHANG_BUILTIN, USER_CUSTOM]
+          description: 规则来源
+        file_name: { type: string, description: 来源规则文件名 }
+        name: { type: string, description: 规则名称（取规则消息前 200 字符） }
+        message: { type: string, description: 规则消息（SecRule msg） }
+        severity:
+          type: string
+          enum: [CRITICAL, ERROR, WARNING, NOTICE]
+          description: 严重级别
+        phase: { type: integer, minimum: 1, maximum: 5, description: 执行阶段 1-5 }
+        tags:
+          type: string
+          description: 规则标签。注意：后端将 jsonb 以 []byte 放入 map 序列化，实际为 base64 编码的 JSON 字符串数组（如 "WyJPV0FTUF9DUlMiXQ==" 解码后为 ["OWASP_CRS"]），前端需解码后展示
+        attack_type:
+          type: string
+          enum: [SQL_INJECTION, XSS, COMMAND_INJECTION, LOCAL_FILE_INCLUSION, REMOTE_FILE_INCLUSION, PHP_INJECTION, JAVA_INJECTION, PROTOCOL_VIOLATION, SESSION_FIXATION, SCANNER_DETECTION, INFORMATION_DISCLOSURE, REMOTE_CODE_EXECUTION, SSRF, XXE_INJECTION, WEBSHELL, FILE_UPLOAD, DESERIALIZATION, SSTI, DOS, MASS_ASSIGNMENT, EXCLUSION, OTHER]
+          description: 攻击类型（由规则标签推断，无法识别时为 OTHER）
+        default_state: { type: string, description: 默认状态，同步入库时固定为 ENABLED }
+        crs_version: { type: string, description: 所属 CRS 版本 }
+
+    WafRuleListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WafRule'
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    WafRuleCategory:
+      type: object
+      properties:
+        attack_type: { type: string, description: 攻击类型 }
+        count: { type: integer, description: 该类型下的规则数量 }
+
+    WafRuleCategoriesResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WafRuleCategory'
+
+    WafRuleVersionsResponse:
+      type: object
+      properties:
+        versions:
+          type: array
+          items: { type: string }
+          description: 已入库的 CRS 版本号列表（倒序）
+
+    WafRuleSyncReport:
+      type: object
+      description: 规则元数据同步报告（各来源合计）
+      properties:
+        total_parsed: { type: integer, description: 解析出的规则总数 }
+        total_in_db: { type: integer, description: 同步后数据库中的规则总数 }
+        added: { type: integer, description: 新增规则数 }
+        updated: { type: integer, description: 内容变更更新的规则数 }
+        unchanged: { type: integer, description: 内容未变的规则数 }
+        missing: { type: integer, description: 数据库存在但规则文件中已缺失的规则数 }
+        parse_failed: { type: integer, description: 解析失败的规则数 }
+        conflicts: { type: integer, description: 入库冲突/失败的规则数 }
+        failed_rules:
+          type: array
+          items: { type: string }
+          description: 失败明细（截断的规则文本或失败原因）
+
+    # ==================== 规则覆盖 ====================
+    RuleOverride:
+      type: object
+      description: 规则覆盖记录
+      properties:
+        id: { type: string, format: uuid, description: 覆盖 ID }
+        rule_id: { type: integer, description: 目标 SecRule 规则 ID }
+        scope_type:
+          type: string
+          enum: [GLOBAL, POLICY, APPLICATION]
+          description: 作用域类型；生效优先级 APPLICATION > POLICY > GLOBAL
+        scope_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 作用域对象 ID（策略/应用）；GLOBAL 时恒为 null
+        action:
+          type: string
+          enum: [DISABLE, ENABLE, SEVERITY_OVERRIDE, ACTION_OVERRIDE]
+          description: 覆盖动作；当前发布管线仅对 DISABLE 生成 ctl:ruleRemoveById
+        severity_override:
+          type: string
+          description: 严重级别覆盖值（CRITICAL/ERROR/WARNING/NOTICE/INFO），仅 action=SEVERITY_OVERRIDE 时有意义
+        effective_from: { type: string, format: date-time, nullable: true, description: 生效起始时间（UTC），null 表示立即生效 }
+        effective_until: { type: string, format: date-time, nullable: true, description: 生效截止时间（UTC），须晚于 effective_from，null 表示永久 }
+        reason: { type: string, maxLength: 2000, description: 覆盖原因 }
+        created_by: { type: string, format: uuid, nullable: true, description: 创建人用户 ID }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+        updated_by: { type: string, format: uuid, nullable: true, description: 最近更新人用户 ID }
+        updated_at: { type: string, format: date-time, description: 更新时间 }
+        version: { type: integer, description: 乐观锁版本号 }
+
+    RuleOverrideUpsertRequest:
+      type: object
+      required: [rule_id, scope_type, action]
+      properties:
+        rule_id: { type: integer, minimum: 1, description: 目标 SecRule 规则 ID，必须为正整数 }
+        scope_type:
+          type: string
+          enum: [GLOBAL, POLICY, APPLICATION]
+          description: 作用域类型
+        scope_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: 作用域对象 ID；scope_type 为 POLICY/APPLICATION 时必填，GLOBAL 时必须为空
+        action:
+          type: string
+          enum: [DISABLE, ENABLE, SEVERITY_OVERRIDE, ACTION_OVERRIDE]
+          description: 覆盖动作
+        severity_override:
+          type: string
+          enum: [CRITICAL, ERROR, WARNING, NOTICE, INFO]
+          description: 严重级别覆盖值；action=SEVERITY_OVERRIDE 时必填，其余动作可留空
+        effective_from: { type: string, format: date-time, nullable: true, description: 生效起始时间，RFC3339 格式 }
+        effective_until: { type: string, format: date-time, nullable: true, description: 生效截止时间，RFC3339 格式，须晚于 effective_from }
+        reason: { type: string, maxLength: 2000, description: 覆盖原因 }
+        version: { type: integer, description: 乐观锁版本号；更新时非 0 则校验，创建时忽略 }
+
+    RuleOverrideResponse:
+      type: object
+      description: 规则覆盖创建/更新响应
+      properties:
+        override:
+          $ref: '#/components/schemas/RuleOverride'
+        message: { type: string, description: 操作提示（提示发布配置后生效） }
+
+    RuleOverrideDetailResponse:
+      type: object
+      properties:
+        override:
+          $ref: '#/components/schemas/RuleOverride'
+
+    RuleOverrideListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleOverride'
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    # ==================== 自定义规则 ====================
+    CustomRule:
+      type: object
+      description: 九章自定义 WAF 规则（结构化编辑，服务端生成 SecLang）
+      properties:
+        id: { type: string, format: uuid, description: 规则记录 ID（数据库主键） }
+        rule_id: { type: integer, minimum: 7100000, maximum: 7199999, description: SecRule 规则 ID，须在 7100000-7199999 区间且全库唯一 }
+        name: { type: string, maxLength: 128, description: 规则名称 }
+        description: { type: string, description: 规则描述 }
+        attack_type: { type: string, description: 攻击类型标签（写入 SecLang tag；OTHER 或空时不写入） }
+        severity:
+          type: string
+          enum: [CRITICAL, ERROR, WARNING, NOTICE]
+          description: 严重级别；非法或缺省值落 WARNING
+        phase: { type: integer, minimum: 1, maximum: 5, description: 执行阶段 1-5 }
+        operator:
+          type: string
+          enum: [rx, pm, streq, contains, beginsWith, endsWith, eq, ne, gt, lt, ge, le, ipMatch, validateUrlEncoding, validateUtf8Encoding, detectSQLi, detectXSS]
+          description: 匹配操作符（白名单；pmFromFile 被禁止）
+        operator_value:
+          type: string
+          description: 操作符匹配内容；detectSQLi/detectXSS/validateUrlEncoding/validateUtf8Encoding 无需填写
+        target_variables:
+          type: array
+          items: { type: string }
+          description: 检测变量列表（白名单：ARGS、ARGS_GET、ARGS_POST、ARGS_NAMES、QUERY_STRING、REQUEST_URI、REQUEST_METHOD、REQUEST_HEADERS、REQUEST_HEADERS_NAMES、REQUEST_COOKIES、REQUEST_BODY、REQUEST_FILENAME、REQUEST_BASENAME、REMOTE_ADDR、HTTP_USER_AGENT、CONTENT_TYPE、REQUEST_PROTOCOL、REQUEST_LINE；支持 VAR:名称 形式）
+        action:
+          type: string
+          enum: [LOG, OBSERVE, BLOCK]
+          description: 命中动作（白名单）
+        tags:
+          type: array
+          items: { type: string }
+          description: 自定义标签（写入 SecLang tag）
+        status:
+          type: string
+          enum: [ENABLED, DISABLED]
+          description: 规则状态
+        scope_type: { type: string, description: 作用域类型，当前固定为 GLOBAL }
+        scope_ids:
+          type: array
+          items: { type: string }
+          description: 作用域对象 ID 列表（当前版本未使用）
+        generated_rule: { type: string, description: 服务端生成的 SecLang 规则文本 }
+        version: { type: integer, description: 乐观锁版本号，更新时随请求体回传 }
+
+    CustomRuleUpsertRequest:
+      type: object
+      required: [rule_id, name, phase, operator, target_variables, action]
+      properties:
+        rule_id: { type: integer, minimum: 7100000, maximum: 7199999, description: 规则 ID；创建必填，更新时被忽略（不可修改） }
+        name: { type: string, maxLength: 128, description: 规则名称 }
+        description: { type: string, description: 规则描述 }
+        attack_type: { type: string, description: 攻击类型标签 }
+        severity:
+          type: string
+          enum: [CRITICAL, ERROR, WARNING, NOTICE]
+          description: 严重级别；非法或缺省值落 WARNING
+        phase: { type: integer, minimum: 1, maximum: 5, description: 执行阶段 1-5 }
+        operator:
+          type: string
+          enum: [rx, pm, streq, contains, beginsWith, endsWith, eq, ne, gt, lt, ge, le, ipMatch, validateUrlEncoding, validateUtf8Encoding, detectSQLi, detectXSS]
+          description: 匹配操作符（白名单）
+        operator_value: { type: string, description: 操作符匹配内容；rx 操作符须为合法正则 }
+        target_variables:
+          type: array
+          items: { type: string }
+          minItems: 1
+          description: 检测变量列表（至少一个，须在白名单内，支持 VAR:名称 形式）
+        action:
+          type: string
+          enum: [LOG, OBSERVE, BLOCK]
+          description: 命中动作
+        tags:
+          type: array
+          items: { type: string }
+          description: 自定义标签
+        version: { type: integer, description: 乐观锁版本号；更新必填且须与当前版本一致，创建/校验时忽略 }
+
+    CustomRuleValidateResult:
+      type: object
+      description: 自定义规则校验结果（HTTP 200 返回，校验结论看 valid 字段）
+      properties:
+        valid: { type: boolean, description: 是否通过校验 }
+        error: { type: string, description: 校验失败原因（valid=false 时存在） }
+        generated_rule: { type: string, description: 校验通过时生成的 SecLang 文本（valid=true 时存在） }
+
+    CustomRuleListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CustomRule'
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    # ==================== 例外策略 ====================
+    Exception:
+      type: object
+      description: WAF / API 例外策略（P0-04 起含目标引擎与编译/审查扩展字段）
+      properties:
+        id: { type: string, format: uuid, description: 例外 ID }
+        name: { type: string, maxLength: 128, description: 例外名称 }
+        description: { type: string, description: 例外描述 }
+        scope_type:
+          type: string
+          enum: [GLOBAL, APPLICATION, POLICY]
+          description: 范围类型（P0-04 起新启用必须为 APPLICATION；GLOBAL 历史记录保留可读、禁止启用）
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID（scope_type=APPLICATION 时有效） }
+        policy_id: { type: string, format: uuid, nullable: true, description: 策略 ID（创建/更新请求可传入） }
+        domain: { type: string, description: 限定域名（Host 精确匹配，允许带端口、大小写不敏感） }
+        uri_exact: { type: string, description: 限定 URI（精确匹配，不含 query） }
+        uri_prefix: { type: string, description: 限定 URI（按路径段边界前缀匹配；不得以裸 / 为唯一范围） }
+        uri_regex: { type: string, description: 限定 URI（正则匹配，RE2 语法；历史/高级配置，启用需 risk_acknowledged 且 ≤512 字符） }
+        methods:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: 限定 HTTP 方法列表（启用门禁要求非空、标准化大写、≤10）
+        source_ips:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: 限定来源 IP/CIDR 列表（可信代理处理后的客户端 IP）
+        param_names:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: "限定参数名列表（编译为 ARGS: 目标排除）"
+        cookie_names:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: "限定 Cookie 名列表（编译为 REQUEST_COOKIES: 目标排除）"
+        header_names:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: "限定请求头名列表（编译为 REQUEST_HEADERS: 目标排除，统一大写）"
+        rule_ids:
+          type: array
+          items: { type: integer }
+          nullable: true
+          description: 例外作用的 WAF 规则 ID 列表（API 引擎请使用 api_rule_refs）
+        rule_tags:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: 例外作用的规则标签列表（REMOVE_RULE_TAG；启用时经规则目录展开冻结进 resolved_rule_ids）
+        attack_types:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: 例外作用的攻击类型列表（仅作事件分类/筛选，不构成运行时范围授权）
+        content_types:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: 限定 Content-Type 列表（规范化 MIME 主类型，参数分离、不含通配符）
+        exception_action:
+          type: string
+          enum: [REMOVE_RULE, REMOVE_RULE_TAG, REMOVE_VAR_DETECTION, ADJUST_SCORE, LOG_ONLY, OBSERVE_RULE]
+          description: 例外动作（WAF：REMOVE_RULE/REMOVE_RULE_TAG/REMOVE_VAR_DETECTION；LOG_ONLY/ADJUST_SCORE 仅历史记录，不支持新启用；API 引擎仅 OBSERVE_RULE）
+        action_target: { type: string, description: 例外动作目标集合别名（仅 REMOVE_VAR_DETECTION：ARGS/REQUEST_COOKIES/REQUEST_HEADERS 或指向已声明目标名） }
+        is_temporary: { type: boolean, description: 是否临时例外；临时例外必须设置 effective_until }
+        effective_from: { type: string, format: date-time, nullable: true, description: 生效起始时间（含） }
+        effective_until: { type: string, format: date-time, nullable: true, description: 失效时间（不含；半开区间，须晚于生效时间） }
+        status:
+          type: string
+          enum: [DRAFT, ENABLED, DISABLED, EXPIRED]
+          description: 状态；P0-04 起新建默认 DRAFT，须经启用门禁置 ENABLED；EXPIRED 为临时例外到期后由定时任务自动置为失效
+        risk_acknowledged: { type: boolean, description: 是否已确认风险；宽泛例外必须为 true }
+        reason: { type: string, description: 例外原因 }
+        version: { type: integer, description: 乐观锁版本号，更新时随请求体回传 }
+        target_engine:
+          type: string
+          enum: [WAF, API]
+          description: 目标引擎（默认 WAF：编译为 before-CRS SecLang；API：经 guard 配置 api_exceptions 段下发）
+        api_rule_refs:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              detector_id: { type: string, description: 检测器 ID（限 api_schema/api_parser 注册表） }
+              rule_id: { type: string, maxLength: 128, description: 规则稳定 ID（匹配 Finding 的 rule_id） }
+              model_version: { type: string, description: 模型版本（可选） }
+          description: API 引擎目标规则引用（仅 target_engine=API）
+        resolved_rule_ids:
+          type: array
+          items: { type: integer }
+          nullable: true
+          description: rule_tags 启用时经规则目录展开并冻结的有界规则 ID 集（只读，服务端维护）
+        source_event_id: { type: string, format: uuid, nullable: true, description: 来源安全事件 ID（从事件创建时服务端可信绑定，只读） }
+        validation_status:
+          type: string
+          enum: [VALID, NEEDS_REVIEW]
+          description: 校验状态（保存/更新时按启用门禁同一结构化校验重算；NEEDS_REVIEW 禁止启用）
+        compiled_fingerprint: { type: string, description: 编译摘要（sha256 hex；保存/启用/预览时重算，发布前比对防预览后篡改） }
+        unsupported_reasons:
+          type: array
+          items: { type: string }
+          nullable: true
+          description: 不支持字段/动作的可读原因（历史配置审查与预览素材）
+
+    ExceptionUpsertRequest:
+      type: object
+      required: [name, scope_type, exception_action, is_temporary, risk_acknowledged]
+      description: 创建/更新例外策略请求体。后端拒绝未知字段（DisallowUnknownFields）。P0-04 起接受 policy_id、target_engine（默认 WAF）、api_rule_refs（仅 API 引擎）；创建默认 DRAFT，启用须走 enable 门禁
+      properties:
+        name: { type: string, maxLength: 128, description: 例外名称 }
+        description: { type: string, description: 例外描述 }
+        scope_type:
+          type: string
+          enum: [GLOBAL, APPLICATION, POLICY]
+          description: 范围类型（GLOBAL 历史兼容可保存，禁止启用）
+        application_id: { type: string, format: uuid, nullable: true, description: 应用 ID（scope_type=APPLICATION 时传入） }
+        policy_id: { type: string, format: uuid, nullable: true, description: 策略 ID（P0-04 起创建/更新接受） }
+        domain: { type: string, description: 限定域名（须为合法主机名） }
+        uri_exact: { type: string, description: 限定 URI（精确匹配，不含 query） }
+        uri_prefix: { type: string, description: 限定 URI（按路径段边界前缀匹配） }
+        uri_regex: { type: string, description: 限定 URI（正则匹配，RE2 语法；历史/高级配置） }
+        methods:
+          type: array
+          items: { type: string }
+          description: 限定 HTTP 方法列表（≤10，标准方法，大小写归一）
+        source_ips:
+          type: array
+          items: { type: string }
+          description: 限定来源 IP/CIDR 列表（每项须为合法 IP 或 CIDR）
+        param_names:
+          type: array
+          items: { type: string }
+          description: 限定参数名列表（仅字母/数字/_/-/.）
+        cookie_names:
+          type: array
+          items: { type: string }
+          description: 限定 Cookie 名列表
+        header_names:
+          type: array
+          items: { type: string }
+          description: 限定请求头名列表
+        rule_ids:
+          type: array
+          items: { type: integer }
+          description: 例外作用的 WAF 规则 ID 列表（API 引擎请使用 api_rule_refs）
+        rule_tags:
+          type: array
+          items: { type: string }
+          description: 例外作用的规则标签列表（REMOVE_RULE_TAG）
+        attack_types:
+          type: array
+          items: { type: string }
+          description: 例外作用的攻击类型列表（仅作事件分类/筛选）
+        content_types:
+          type: array
+          items: { type: string }
+          description: 限定 Content-Type 列表（合法 MIME 主类型，不含通配符）
+        target_engine:
+          type: string
+          enum: [WAF, API]
+          description: 目标引擎（默认 WAF）
+        api_rule_refs:
+          type: array
+          items:
+            type: object
+            properties:
+              detector_id: { type: string, description: 检测器 ID（限 api_schema/api_parser） }
+              rule_id: { type: string, maxLength: 128, description: 规则稳定 ID }
+              model_version: { type: string, description: 模型版本（可选） }
+          description: API 引擎目标规则引用（≤64 条；仅 target_engine=API 且动作 OBSERVE_RULE）
+        exception_action:
+          type: string
+          enum: [REMOVE_RULE, REMOVE_RULE_TAG, REMOVE_VAR_DETECTION, ADJUST_SCORE, LOG_ONLY, OBSERVE_RULE]
+          description: 例外动作（WAF：REMOVE_RULE/REMOVE_RULE_TAG/REMOVE_VAR_DETECTION；API 仅 OBSERVE_RULE；LOG_ONLY/ADJUST_SCORE 仅历史记录可保存，不支持新启用）
+        action_target: { type: string, description: 例外动作目标集合别名（仅 REMOVE_VAR_DETECTION） }
+        is_temporary: { type: boolean, description: 是否临时例外；为 true 时 effective_until 必填 }
+        effective_from: { type: string, format: date-time, nullable: true, description: 生效起始时间，RFC3339 格式 }
+        effective_until: { type: string, format: date-time, nullable: true, description: 失效时间，RFC3339 格式，须晚于生效时间 }
+        risk_acknowledged: { type: boolean, description: 是否已确认风险；宽泛例外必须为 true，否则返回 400 }
+        reason: { type: string, description: 例外原因 }
+        version: { type: integer, description: 乐观锁版本号；更新必填（大于 0）且须与当前版本一致，创建时忽略 }
+
+    ExceptionDetailResponse:
+      type: object
+      description: 例外详情/创建/更新响应
+      properties:
+        exception:
+          $ref: '#/components/schemas/Exception'
+        is_broad:
+          type: boolean
+          description: 是否宽泛例外（高风险）：无具体限定条件且命中全部 SQLi/XSS/命令注入类型、全局范围，或无应用限定且规则标签含 SQLI/XSS
+
+    ExceptionListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Exception'
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    ExceptionPreviewRequest:
+      type: object
+      required: [expected_version]
+      description: 例外生效预览请求体（后端拒绝未知字段）
+      properties:
+        expected_version: { type: integer, description: 调用方持有的当前版本号；与服务端不一致返回 409 }
+
+    ExceptionPreviewResponse:
+      type: object
+      description: 例外生效预览（P0-04 契约；不启用、不发布、不回放真实请求）
+      properties:
+        validation_status:
+          type: string
+          enum: [VALID, NEEDS_REVIEW]
+          description: 按启用门禁同一结构化校验重算的校验状态（不落库）
+        field_errors:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              field: { type: string, description: 字段名 }
+              message: { type: string, description: 可读原因 }
+              code: { type: string, description: 机器可读码（如 UNSUPPORTED_ACTION） }
+          description: 字段级校验错误明细（无则为 null）
+        normalized_scope:
+          type: object
+          description: 规范化范围（方法大写排序；时间为 RFC3339）
+          properties:
+            domain: { type: string }
+            uri_exact: { type: string }
+            uri_prefix: { type: string }
+            uri_regex: { type: string }
+            methods: { type: array, items: { type: string }, nullable: true }
+            source_ips: { type: array, items: { type: string }, nullable: true }
+            content_types: { type: array, items: { type: string }, nullable: true }
+            effective_from: { type: string, format: date-time, nullable: true }
+            effective_until: { type: string, format: date-time, nullable: true }
+        resolved_rule_refs:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              engine: { type: string, enum: [WAF, API] }
+              rule_id: { type: integer, description: WAF 规则 ID（engine=WAF） }
+              detector_id: { type: string, description: API 检测器 ID（engine=API） }
+              model_version: { type: string }
+          description: 目标规则引用（WAF：rule_ids + 标签展开冻结集；API：api_rule_refs）
+        effective_window:
+          type: object
+          description: 生效窗口（半开区间 from≤now<until，到期无需再发布）
+          properties:
+            from: { type: string, format: date-time, nullable: true }
+            until: { type: string, format: date-time, nullable: true }
+            half_open: { type: boolean, enum: [true] }
+        unsupported:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              field_or_action: { type: string, description: 不支持的字段或动作（如 LOG_ONLY） }
+              migration_preview: { type: string, description: 迁移预览说明（改为精确目标排除等） }
+          description: 不支持项及迁移预览（EXC-04）
+        protected_modules_unchanged:
+          type: array
+          items: { type: string }
+          description: 不受例外影响持续有效的保护模块（JWT/ACCESS_CONTROL/CC/RATE_LIMIT_QUOTA/MANUAL_BAN/PROTOCOL_LIMITS/RISK_POLICY）
+        compiled_fingerprint: { type: string, description: 编译摘要（sha256 hex；预览后草稿被改则指纹变化） }
+        required_publish_targets:
+          type: array
+          items: { type: string }
+          description: 必需发布目标（绑定应用的编码列表）
+        historical_sample_coverage:
+          nullable: true
+          description: 历史样本覆盖率（本阶段恒 null——不显示零影响）
+        estimated_match_count:
+          nullable: true
+          description: 估计命中数（本阶段恒 null——不显示零影响）

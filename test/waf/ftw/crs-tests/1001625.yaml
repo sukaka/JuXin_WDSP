@@ -1,0 +1,21 @@
+---
+meta:
+  author: "JiuZhang WAF Team"
+  description: Fullwidth dot traversal sequence (CUSTOM_PACK)
+rule_id: 1001625
+tests:
+  - test_id: 1
+    desc: "Percent-encoded fullwidth dots and slash in URI"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "OWASP CRS test agent"
+          method: GET
+          port: 80
+          uri: "/get?x=%ef%bc%8e%ef%bc%8e%ef%bc%8fetc"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001625]

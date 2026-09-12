@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "case_id": "WAF-BEN-EDGE-001",
+  "case_version": 1,
+  "family": "waf",
+  "tags": ["normal-business", "protocol-boundary", "false-positive-guard"],
+  "criticality": "MANDATORY",
+  "truth": "BENIGN",
+  "truth_reason": "协议边界正常样本：合法多层路径 + 20 个查询参数 + 8 个自定义请求头，均在 HTTP 规范与系统解析上限内，人工核验无攻击意图（任务书 §4.2 协议边界正常侧）",
+  "source": "self_synthetic",
+  "license": "Copyright © 聚信得仁, All Rights Reserved（项目自研合成，仅授权用于本项目隔离回归）",
+  "authorization": "项目自研合成样本，仅授权在隔离回归环境对受控源站回放，禁止指向任何外部目标",
+  "scope": {
+    "capability": "waf.core.allow_benign",
+    "applications": ["p1reg-echo-site"],
+    "protocols": ["http/1.1"]
+  },
+  "prerequisites": {
+    "environment": ["isolated_stack", "controlled_origin"]
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "action": "http_request",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/tenants/t001/projects/p002/items",
+        "query": "page=1&size=20&f01=a&f02=b&f03=c&f04=d&f05=e&f06=f&f07=g&f08=h&f09=i&f10=j&f11=k&f12=l&f13=m&f14=n&f15=o&f16=p&f17=q&f18=r&f19=s&f20=t",
+        "headers": {
+          "X-Debug-01": "v01",
+          "X-Debug-02": "v02",
+          "X-Debug-03": "v03",
+          "X-Debug-04": "v04",
+          "X-Debug-05": "v05",
+          "X-Debug-06": "v06",
+          "X-Debug-07": "v07",
+          "X-Debug-08": "v08"
+        }
+      },
+      "wait": null,
+      "assert": [
+        {"type": "http_status_in", "statuses": [200]},
+        {"type": "origin_marker_present"}
+      ]
+    }
+  ],
+  "seed": 1007,
+  "reset_plan": {"scope": "none", "actions": ["none"]},
+  "expectations_by_profile": {
+    "OBSERVE": {
+      "expected_detection": {"module": "none"},
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "none"}]
+    },
+    "PROTECT": {
+      "expected_detection": {"module": "none"},
+      "expected_final_action": "PASS",
+      "expected_origin": "reached",
+      "expected_events": [{"type": "none"}]
+    }
+  },
+  "evidence_requirements": {
+    "access_log": true,
+    "security_event": true,
+    "final_decision": true,
+    "response_capture": true,
+    "origin_counters": true
+  },
+  "dataset_partition": "VALIDATION"
+}

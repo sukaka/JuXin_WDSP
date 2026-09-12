@@ -1,0 +1,23 @@
+---
+meta:
+  author: "JiuZhang"
+  description: "CUSTOM_PACK 1001717: quote-interleaved command evasion"
+rule_id: 1001717
+tests:
+  - test_id: 1
+    desc: "c'a't quote-interleaved command"
+    stages:
+      - input:
+          dest_addr: 127.0.0.1
+          headers:
+            Host: localhost
+            User-Agent: "JiuZhang CUSTOM_PACK test agent"
+            Accept: "*/*"
+          method: POST
+          port: 80
+          uri: "/post"
+          data: "var=c'a't /etc/passwd"
+          version: HTTP/1.1
+        output:
+          log:
+            expect_ids: [1001717]
