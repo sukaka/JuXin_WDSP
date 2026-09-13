@@ -32,6 +32,25 @@ type RouteStatus struct {
 	Message string    `json:"message,omitempty"`
 }
 
+// DNS/NTP 落地状态取值（network-status.json dns_status/ntp_status.state）。
+const (
+	// StateApplied 已落地到主机。
+	StateApplied = "APPLIED"
+	// StateUnsupported 主机环境无可用落地路径（如无 systemctl 且 resolv.conf
+	// 只读的容器环境）——属预期情形，不计入整体失败。
+	StateUnsupported = "UNSUPPORTED"
+	// StateFailed 存在落地路径但执行失败（计入整体失败，按周期重试自愈）。
+	StateFailed = "FAILED"
+)
+
+// ServiceStatus DNS/NTP 落地状态（字段存在即回报；omitempty 保持旧消费方兼容）。
+type ServiceStatus struct {
+	// State 落地状态（APPLIED/UNSUPPORTED/FAILED）。
+	State string `json:"state"`
+	// Message 落地方式或失败原因说明。
+	Message string `json:"message,omitempty"`
+}
+
 // 端口联动（Link-Pair）运行状态机取值（network-status.json link_pairs[].state）。
 const (
 	// LinkPairBothUp 双口正常（无故障或已恢复）。
@@ -66,7 +85,8 @@ type LinkPairStatus struct {
 // Status network-status.json 回写契约：
 // {"applied_at":"...","ok":bool,"bridges":[...],"ip_forward":"ok|error|skipped",
 //
-//	"routes":[...],"link_pairs":[...],"message":"..."}
+//	"routes":[...],"link_pairs":[...],"dns_status":{...},"ntp_status":{...},
+//	"message":"..."}
 type Status struct {
 	// AppliedAt 本次执行完成时间（UTC RFC3339）。
 	AppliedAt string `json:"applied_at"`
@@ -81,6 +101,10 @@ type Status struct {
 	// LinkPairs 启用端口联动的桥的运行状态（由联动监控器独立维护；
 	// 未启用任何联动时省略——omitempty 保持旧消费方兼容）。
 	LinkPairs []LinkPairStatus `json:"link_pairs,omitempty"`
+	// DNS DNS 服务器落地状态（仅当配置下发 dns_servers 字段时回报）。
+	DNS *ServiceStatus `json:"dns_status,omitempty"`
+	// NTP NTP 服务器落地状态（仅当配置下发 ntp_servers 字段时回报）。
+	NTP *ServiceStatus `json:"ntp_status,omitempty"`
 	// Message 汇总信息（失败原因拼接 / 只增不删提示）。
 	Message string `json:"message"`
 }

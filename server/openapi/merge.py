@@ -67,6 +67,7 @@ TAG_DESCRIPTIONS = {
     'upgrades': '系统升级',
     'delivery-checks': '交付检查',
     'system-ops': '系统控制（重启/关机/恢复出厂）',
+    'network-tools': '网络诊断工具（ping/端口探测/路由追踪/DNS 查询/抓包）',
     'api-security': 'API 动态防护（WDSP）',
     'ai-assistant': 'AI 安全助手',
     'ai-analysis': 'AI 智能分析',

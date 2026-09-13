@@ -223,6 +223,28 @@ services:
     networks:
       - stage5-net
 
+  # netmgrd 网络执行组件：与网关同网络命名空间（network_mode: service:gateway，
+  # 诊断/抓包即网关视角），轮询共享 Admin 卷上的文件契约执行网络配置
+  netmgrd:
+    image: jiuzhang-netmgrd:stage5
+    build:
+      context: ../gateway
+      dockerfile: images/netmgrd/Dockerfile
+    container_name: jiuzhang-stage5-netmgrd
+    restart: unless-stopped
+    network_mode: service:gateway
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      NODE_NAME: gateway-stage5-01
+    volumes:
+      # 与防护网关共享 Admin Socket 卷（文件契约轮询通道）
+      - stage5-gateway-admin:/var/run/caddy
+    depends_on:
+      gateway:
+        condition: service_started
+
   # 日志轮转 sidecar：对网关日志卷中常驻 append 写入的日志做 copytruncate 轮转
   # （coraza-audit.log / api-runtime-events.log / guard-events.log / access-full.jsonl；
   #  access.log 与 caddy.log 由 Caddy 自身轮转，不在此处理）

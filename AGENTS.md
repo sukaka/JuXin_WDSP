@@ -87,6 +87,7 @@ Caddy 中间件顺序必须经过集成测试验证，不得凭经验随意调�
 - [API 主动扫描设计](docs/API_ACTIVE_SCANNING.md)
 - [API AI 自动运营设计](docs/API_AI_OPERATIONS.md)
 - [多网口管理与多模式部署设计](docs/NETWORK_MODES_DESIGN.md)
+- [网络诊断工具与网络设置设计](docs/NETWORK_TOOLS_DESIGN.md)
 - [站点资产自动发现设计](docs/SITE_DISCOVERY_DESIGN.md)
 - [生产裸机网关部署设计](docs/BARE_METAL_GATEWAY_DESIGN.md)
 - [主备高可用设计（VIP 漂移 + 网桥端口联动 + 会话保持）](docs/HA_ACTIVE_STANDBY_DESIGN.md)

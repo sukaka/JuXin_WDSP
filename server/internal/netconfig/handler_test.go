@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -253,6 +254,101 @@ func TestUpdateSuccess(t *testing.T) {
 	}
 }
 
+// Update 合并系统设置 DNS/NTP 服务器：network.json 与响应 desired 含
+// dns_servers/ntp_servers；空设置字段缺省不出现；设置读取失败降级为空不阻断保存；
+// 非法设置原文防御性忽略。
+func TestUpdateMergesServersSettings(t *testing.T) {
+	readFileMap := func(t *testing.T, dir string) map[string]any {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(dir, "network.json"))
+		if err != nil {
+			t.Fatalf("network.json 未写出: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("network.json 解析: %v raw=%s", err, raw)
+		}
+		return m
+	}
+
+	// 设置非空：字段合并下发
+	h, store, dir := newTestHandler(t)
+	store.SetServers("223.5.5.5, 8.8.8.8", "pool.ntp.org,ntp.aliyun.com")
+	mux := newTestMux(h, injectPrincipal)
+	rr := doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", validBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	file := readFileMap(t, dir)
+	dns, _ := file["dns_servers"].([]any)
+	if len(dns) != 2 || dns[0] != "223.5.5.5" || dns[1] != "8.8.8.8" {
+		t.Fatalf("file dns_servers = %v", file["dns_servers"])
+	}
+	ntp, _ := file["ntp_servers"].([]any)
+	if len(ntp) != 2 || ntp[0] != "pool.ntp.org" || ntp[1] != "ntp.aliyun.com" {
+		t.Fatalf("file ntp_servers = %v", file["ntp_servers"])
+	}
+	data := decodeData(t, rr)
+	desired := data["desired"].(map[string]any)
+	if desired["dns_servers"] == nil || desired["ntp_servers"] == nil {
+		t.Fatalf("desired 缺少下发字段: %v", desired)
+	}
+
+	// dns 空串（继承宿主机）：dns_servers 不出现，ntp_servers 正常下发
+	store.SetServers("", "pool.ntp.org")
+	rr = doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", validBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	file = readFileMap(t, dir)
+	if _, ok := file["dns_servers"]; ok {
+		t.Fatalf("空 dns 设置不应出现 dns_servers 字段: %v", file)
+	}
+	if ntp, _ := file["ntp_servers"].([]any); len(ntp) != 1 || ntp[0] != "pool.ntp.org" {
+		t.Fatalf("file ntp_servers = %v", file["ntp_servers"])
+	}
+
+	// 两键均空：两字段均不出现
+	store.SetServers("", "")
+	rr = doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", validBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	file = readFileMap(t, dir)
+	if _, ok := file["dns_servers"]; ok {
+		t.Fatalf("空设置不应出现 dns_servers 字段: %v", file)
+	}
+	if _, ok := file["ntp_servers"]; ok {
+		t.Fatalf("空设置不应出现 ntp_servers 字段: %v", file)
+	}
+
+	// 设置读取失败：记日志降级，保存与下发不阻断（字段缺省）
+	store.SetServers("223.5.5.5", "pool.ntp.org")
+	store.SetServersErr(errors.New("db down"))
+	rr = doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", validBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("读取失败不应阻断保存 status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	file = readFileMap(t, dir)
+	if _, ok := file["dns_servers"]; ok {
+		t.Fatalf("读取失败降级后不应出现 dns_servers 字段: %v", file)
+	}
+
+	// 设置原文非法（绕过入库校验的脏数据）：防御性忽略该键，保存成功
+	store.SetServers("8.8.8.8; rm -rf /", "pool.ntp.org")
+	rr = doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", validBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("非法设置原文不应阻断保存 status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	file = readFileMap(t, dir)
+	if _, ok := file["dns_servers"]; ok {
+		t.Fatalf("非法 dns 原文不应下发: %v", file)
+	}
+	if ntp, _ := file["ntp_servers"].([]any); len(ntp) != 1 || ntp[0] != "pool.ntp.org" {
+		t.Fatalf("file ntp_servers = %v", file["ntp_servers"])
+	}
+}
+
 // Update 参数校验：各类非法输入一律 400（含非默认节点与未知字段）。
 func TestUpdateValidation(t *testing.T) {
 	h, _, _ := newTestHandler(t)
@@ -302,6 +398,8 @@ func TestUpdateValidation(t *testing.T) {
 		})},
 		{"non-default node", withMut(func(m map[string]any) { m["node_name"] = "gw-other" })},
 		{"client updated_at rejected", withMut(func(m map[string]any) { m["updated_at"] = "2026-08-19T00:00:00Z" })},
+		// dns/ntp 来源 system_settings，不接受客户端经本接口直传（未知字段 400）
+		{"client dns_servers rejected", withMut(func(m map[string]any) { m["dns_servers"] = []any{"8.8.8.8"} })},
 	}
 	for _, tc := range cases {
 		rr := doJSON(t, mux, http.MethodPut, "/api/v1/gateway/network-config", tc.body)

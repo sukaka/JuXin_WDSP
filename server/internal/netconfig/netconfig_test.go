@@ -156,6 +156,55 @@ func TestValidateLimits(t *testing.T) {
 	}
 }
 
+// DNS/NTP 服务器列表校验：合法列表（IP/主机名/IPv6）通过；>4 项、空项、
+// 非法主机一律报错；归一化去空白。
+func TestValidateServers(t *testing.T) {
+	cfg := validConfig()
+	cfg.DNSServers = []string{"223.5.5.5", "2001:4860:4860::8888"}
+	cfg.NTPServers = []string{"pool.ntp.org", "ntp.aliyun.com", "time.cloudflare.com", "1.1.1.1"}
+	if err := Validate(&cfg, testIfaces()); err != nil {
+		t.Fatalf("valid servers: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		mut  func(c *Config)
+		want string
+	}{
+		{"dns 超 4 项", func(c *Config) {
+			c.DNSServers = []string{"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5"}
+		}, "上限"},
+		{"ntp 超 4 项", func(c *Config) {
+			c.NTPServers = []string{"a.org", "b.org", "c.org", "d.org", "e.org"}
+		}, "上限"},
+		{"dns 空项", func(c *Config) { c.DNSServers = []string{"1.1.1.1", " "} }, "空列表项"},
+		{"dns 元字符", func(c *Config) { c.DNSServers = []string{"8.8.8.8;rm"} }, "不是合法 IP 或主机名"},
+		{"ntp 非法字符", func(c *Config) { c.NTPServers = []string{"pool.ntp.org!"} }, "不是合法 IP 或主机名"},
+		{"dns CIDR 不允许", func(c *Config) { c.DNSServers = []string{"8.8.8.8/24"} }, "不是合法 IP 或主机名"},
+	}
+	for _, tc := range cases {
+		cfg := validConfig()
+		tc.mut(&cfg)
+		err := Validate(&cfg, testIfaces())
+		if err == nil {
+			t.Fatalf("%s: 应报错", tc.name)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: 错误信息 %q 不含 %q", tc.name, err.Error(), tc.want)
+		}
+	}
+
+	// 归一化去空白
+	cfg = validConfig()
+	cfg.DNSServers = []string{" 223.5.5.5 "}
+	if err := Validate(&cfg, testIfaces()); err != nil {
+		t.Fatalf("trim: %v", err)
+	}
+	if cfg.DNSServers[0] != "223.5.5.5" {
+		t.Fatalf("dns 归一化未生效: %+v", cfg.DNSServers)
+	}
+}
+
 // MemStore 与校验联动：保存后可原样读回（切片恒为数组）。
 func TestMemStoreRoundTrip(t *testing.T) {
 	m := NewMemStore()

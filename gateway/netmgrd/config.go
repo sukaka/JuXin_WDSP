@@ -37,6 +37,22 @@ const (
 // 杜绝路径/参数注入面——本组件虽以参数数组 exec 不经 shell，高危操作仍从严）。
 var ifNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$`)
 
+// hostNameRE 合法主机名白名单（diag 目标与 DNS/NTP 服务器项共用）。
+// 注意字符集含 "-"，是否允许以 "-" 开头由 validHostOrIP 另行拦截。
+var hostNameRE = regexp.MustCompile(`^[a-zA-Z0-9.-]{1,253}$`)
+
+// validHostOrIP 判定是否为 IPv4/IPv6 字面量或合法主机名（不以 "-" 开头，
+// 杜绝被外部命令误解析为选项——纵深防御，虽一律参数数组 exec 不经 shell）。
+func validHostOrIP(s string) bool {
+	if net.ParseIP(s) != nil {
+		return true
+	}
+	return hostNameRE.MatchString(s) && !strings.HasPrefix(s, "-")
+}
+
+// maxNameServers DNS/NTP 服务器列表长度上限（与发布端契约一致）。
+const maxNameServers = 4
+
 // RouteSpec 静态路由期望（仅 IPv4，见 doc.go 已知边界）。
 type RouteSpec struct {
 	// Dst 目的网段（CIDR；加载时归一化为掩码后的网络地址）。
@@ -89,7 +105,9 @@ type BridgeSpec struct {
 // Config network.json 下发契约：
 // {"bridges":[{"name":"br0","ports":["eth2","eth3"]}],"ip_forward":true,
 //
-//	"routes":[{"dst":"10.9.0.0/24","via":"192.168.50.1"}],"updated_at":"..."}
+//	"routes":[{"dst":"10.9.0.0/24","via":"192.168.50.1"}],
+//	"dns_servers":["223.5.5.5"],"ntp_servers":["ntp.aliyun.com"],
+//	"updated_at":"..."}
 type Config struct {
 	// Bridges 期望网桥集合（顺序保留，status 按同序输出）。
 	Bridges []BridgeSpec `json:"bridges"`
@@ -98,6 +116,11 @@ type Config struct {
 	IPForward bool `json:"ip_forward"`
 	// Routes 期望静态路由集合（只增不删，最小实现）。
 	Routes []RouteSpec `json:"routes"`
+	// DNSServers 期望 DNS 服务器集合（可选；nil = 不触碰主机 DNS 配置，
+	// 非 nil 空数组 = 清空语义，同样落地）。
+	DNSServers []string `json:"dns_servers,omitempty"`
+	// NTPServers 期望 NTP 服务器集合（可选；nil = 不触碰主机 NTP 配置）。
+	NTPServers []string `json:"ntp_servers,omitempty"`
 	// UpdatedAt 发布方时间戳（信息性字段，不参与指纹与执行）。
 	UpdatedAt string `json:"updated_at"`
 }
@@ -168,7 +191,39 @@ func (c *Config) normalize() error {
 			return fmt.Errorf("routes[%d].via 非法（需 IPv4 地址）: %q", ri, r.Via)
 		}
 	}
+	var err error
+	if c.DNSServers, err = normalizeServers("dns_servers", c.DNSServers); err != nil {
+		return err
+	}
+	if c.NTPServers, err = normalizeServers("ntp_servers", c.NTPServers); err != nil {
+		return err
+	}
 	return nil
+}
+
+// normalizeServers 校验 DNS/NTP 服务器列表：每项须为合法 IP 或主机名，
+// 总数 ≤ maxNameServers，去空白去重（保序）；nil 输入保持 nil（未下发 ≠ 空列表）。
+func normalizeServers(field string, in []string) ([]string, error) {
+	if in == nil {
+		return nil, nil
+	}
+	if len(in) > maxNameServers {
+		return nil, fmt.Errorf("%s 最多 %d 项，当前 %d 项", field, maxNameServers, len(in))
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for i, s := range in {
+		s = strings.TrimSpace(s)
+		if !validHostOrIP(s) {
+			return nil, fmt.Errorf("%s[%d] 非法（需 IP 字面量或合法主机名）: %q", field, i, s)
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 // normalizeLinkPair 校验并归一化端口联动配置：Enabled=false 等价未配置；
@@ -199,14 +254,17 @@ func normalizeLinkPair(bi int, b *BridgeSpec) error {
 	return nil
 }
 
-// fingerprint 配置指纹：仅覆盖执行相关字段（bridges/ip_forward/routes），
-// updated_at 等信息性字段不参与——同一期望重复发布不触发重复执行。
+// fingerprint 配置指纹：仅覆盖执行相关字段（bridges/ip_forward/routes/
+// dns_servers/ntp_servers），updated_at 等信息性字段不参与——同一期望重复
+// 发布不触发重复执行。
 func (c Config) fingerprint() string {
 	data, _ := json.Marshal(struct {
-		Bridges   []BridgeSpec `json:"bridges"`
-		IPForward bool         `json:"ip_forward"`
-		Routes    []RouteSpec  `json:"routes"`
-	}{c.Bridges, c.IPForward, c.Routes})
+		Bridges    []BridgeSpec `json:"bridges"`
+		IPForward  bool         `json:"ip_forward"`
+		Routes     []RouteSpec  `json:"routes"`
+		DNSServers []string     `json:"dns_servers,omitempty"`
+		NTPServers []string     `json:"ntp_servers,omitempty"`
+	}{c.Bridges, c.IPForward, c.Routes, c.DNSServers, c.NTPServers})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }

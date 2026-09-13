@@ -1858,6 +1858,46 @@ export interface NetworkConfigData {
   status?: NetworkConfigStatus | null
 }
 
+/** 网络工具诊断动作（POST /network-tools/jobs 的 action 取值） */
+export type NetworkToolAction = 'ping' | 'tcp_probe' | 'traceroute' | 'dns_query' | 'capture'
+
+/** 网络工具任务状态（PENDING/RUNNING 为非终态，前端据此轮询） */
+export type NetworkToolJobStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'STOPPED' | 'TIMEOUT'
+
+/** 抓包任务解析后的单个数据包（GET /network-tools/jobs/{id} 的 capture_packets 元素） */
+export interface NetworkToolCapturePacket {
+  no: number
+  ts: string
+  src: string
+  dst: string
+  sport?: number | null
+  dport?: number | null
+  proto: string
+  flags: string
+  length: number
+  preview: string
+}
+
+/** 网络工具诊断任务（GET /network-tools/jobs；params 回显创建时的动作参数） */
+export interface NetworkToolJob {
+  id: string
+  node: string
+  action: NetworkToolAction
+  target: string
+  params: Record<string, unknown>
+  status: NetworkToolJobStatus
+  result_text: string
+  exit_code?: number | null
+  duration_ms?: number | null
+  capture_size?: number | null
+  /** 解析后的数据包列表（仅 capture 任务详情返回；非抓包或未解析为 null） */
+  capture_packets?: NetworkToolCapturePacket[] | null
+  failure_message: string
+  created_at: string
+  started_at?: string | null
+  finished_at?: string | null
+}
+
 /** 主备组成员 */
 export interface HaGroupMember {
   node_id: string

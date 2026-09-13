@@ -108,6 +108,7 @@ const ReportArchivesPage = lazy(() => import('../pages/report-archives/ReportArc
 const SystemMonitoringPage = lazy(() => import('../pages/system-monitoring/SystemMonitoringPage'))
 const NodeInterfacesPage = lazy(() => import('../pages/node-interfaces/NodeInterfacesPage'))
 const NetworkConfigPage = lazy(() => import('../pages/network-config/NetworkConfigPage'))
+const NetworkToolsPage = lazy(() => import('../pages/network-tools/NetworkToolsPage'))
 const HaGroupsPage = lazy(() => import('../pages/ha-groups/HaGroupsPage'))
 const StoragePage = lazy(() => import('../pages/storage/StoragePage'))
 const BackupRestorePage = lazy(() => import('../pages/backup-restore/BackupRestorePage'))
@@ -1117,6 +1118,14 @@ export default function AppRoutes() {
           element={
             <RequirePermission permission="system_health.read">
               <NetworkConfigPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="network-tools"
+          element={
+            <RequirePermission permission="network_tools.execute">
+              <NetworkToolsPage />
             </RequirePermission>
           }
         />

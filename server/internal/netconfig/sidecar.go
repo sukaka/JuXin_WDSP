@@ -25,12 +25,15 @@ const (
 )
 
 // networkFile 是 sidecars/network.json 内容契约（netmgrd 消费；
-// Bridges/Routes 恒为数组，空数组而非 null）。
+// Bridges/Routes 恒为数组，空数组而非 null；DNSServers/NTPServers 可选，
+// 空设置缺省不出现 = netmgrd 继承宿主机现状）。
 type networkFile struct {
-	Bridges   []Bridge `json:"bridges"`
-	IPForward bool     `json:"ip_forward"`
-	Routes    []Route  `json:"routes"`
-	UpdatedAt string   `json:"updated_at"`
+	Bridges    []Bridge `json:"bridges"`
+	IPForward  bool     `json:"ip_forward"`
+	Routes     []Route  `json:"routes"`
+	DNSServers []string `json:"dns_servers,omitempty"`
+	NTPServers []string `json:"ntp_servers,omitempty"`
+	UpdatedAt  string   `json:"updated_at"`
 }
 
 // writeNetworkJSON 原子写 network.json（同目录临时文件 + rename；目录不存在则创建）。
@@ -38,10 +41,12 @@ type networkFile struct {
 func writeNetworkJSON(dir string, cfg Config, updatedAt time.Time) error {
 	cfg.normalize()
 	payload := networkFile{
-		Bridges:   cfg.Bridges,
-		IPForward: cfg.IPForward,
-		Routes:    cfg.Routes,
-		UpdatedAt: updatedAt.UTC().Format(time.RFC3339),
+		Bridges:    cfg.Bridges,
+		IPForward:  cfg.IPForward,
+		Routes:     cfg.Routes,
+		DNSServers: cfg.DNSServers,
+		NTPServers: cfg.NTPServers,
+		UpdatedAt:  updatedAt.UTC().Format(time.RFC3339),
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("创建边车配置目录失败: %w", err)

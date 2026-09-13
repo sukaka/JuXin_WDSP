@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 新增网络诊断工具（前台「系统运维 → 网络工具」）：支持 ping、TCP 端口探测、traceroute、DNS 查询与按需抓包 pcap 下载五种动作；server 新模块 `netdiag` 经共享卷文件契约下发至 netmgrd 串行执行并落库，任务状态机 PENDING/RUNNING/SUCCESS/FAILED/STOPPED/TIMEOUT，支持手动停止；权限 `network_tools.execute`/`network_tools.download` 仅授 SYSTEM_ADMIN，执行/下载/停止全量审计。
+- 新增 NTP/DNS 网络设置（前台「系统设置 → 网络」分组）：`network.ntp_servers`/`network.dns_servers` 逐项校验后随网络配置下发，netmgrd 按 resolvectl/resolv.conf 与 timesyncd/chronyd 顺序落地，容器环境如实回报 UNSUPPORTED。
+- 网络诊断抓包结果支持页面内直接查看：server Worker 在抓包产物搬移入库后用内置纯 Go pcap 解析器（零新增依赖）解析数据包列表（Ethernet II/VLAN → IPv4/IPv6 → TCP/UDP/ICMP/ICMPv6，最多前 200 个包，含端口/TCP flags/80 字符 payload 可打印预览），存 `netdiag_jobs.capture_packets`（迁移 `000163`）并随任务详情接口带出；解析失败不阻断任务成功，字段为 null 时页面回退为仅显示下载按钮。
+- 新增 netmgrd Docker 服务与镜像（stage5 栈，与网关同网络命名空间，alpine digest 锁定）；新增数据库迁移 `000160` 至 `000162`、OpenAPI 片段 `20-network-tools.yaml`（661 路由对账零差集）及设计文档 `docs/NETWORK_TOOLS_DESIGN.md`。
+
+### 安全与质量
+
+- 诊断目标在 server 与 netmgrd 两端校验（仅 IP/合法主机名）；系统二进制以参数数组调用不经 shell；抓包过滤仅 proto/host/port 三元素固定模板、不开放自由 BPF；ping 30s/traceroute 60s/抓包 5–300s 超时硬上限、pcap ≤100MB、输出截断 64KB；pcap sha256 入库且下载时校验一致。
+
 ## [1.2.0] - 2026-09-12
 
 ### 新增

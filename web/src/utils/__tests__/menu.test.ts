@@ -15,6 +15,7 @@ describe('filterMenusByRoles', () => {
       '/system-monitoring',
       '/node-interfaces',
       '/network-config',
+      '/network-tools',
       '/ha-groups',
       '/storage',
       '/backup-restore',

@@ -1,7 +1,9 @@
 // Package netconfig 页面配置网桥与路由牵引（docs/NETWORK_MODES_DESIGN.md §七）：
 // 管理端维护节点网络期望配置（网桥/ip_forward/路由牵引），保存时整体替换入库
 // node_network_configs 并原子写共享卷 sidecars/network.json（网关节点 netmgrd
-// 读取执行）；netmgrd 回写同目录 network-status.json，本包只读透传给前端。
+// 读取执行）；保存/重写时从 system_settings network 组合并 DNS/NTP 服务器列表
+// （可选字段，空设置不下发）；netmgrd 回写同目录 network-status.json，本包只读
+// 透传给前端。
 //
 // 网络配置属高危操作，校验与安全约束必须严格执行：
 //   - 桥名必须匹配 br\d{1,2} 且唯一；
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jiuzhang-waf/server/internal/nodeinterfaces"
+	"github.com/jiuzhang-waf/server/internal/sysconsole"
 )
 
 // 防御性上限（防大包/误操作；与网口管理 items 上限 128 同量级）。
@@ -28,6 +31,9 @@ const (
 	maxBridges     = 32
 	maxBridgePorts = 32
 	maxRoutes      = 128
+	// maxServers DNS/NTP 服务器列表项数上限（与 settings.network 组校验及
+	// network.json 下发契约一致）。
+	maxServers = 4
 )
 
 // bridgeNameRe 桥名词表：br0 - br99。
@@ -72,10 +78,14 @@ type Route struct {
 
 // Config 是节点网络期望配置（node_network_configs.config 与 sidecars/network.json
 // 的配置段契约；Bridges/Routes 恒为数组，空数组而非 null）。
+// DNSServers/NTPServers 为可选下发项（来源 system_settings network 组，保存时
+// 合并；空 = 继承宿主机现状不下发，JSON 字段缺省不出现）。
 type Config struct {
-	Bridges   []Bridge `json:"bridges"`
-	IPForward bool     `json:"ip_forward"`
-	Routes    []Route  `json:"routes"`
+	Bridges    []Bridge `json:"bridges"`
+	IPForward  bool     `json:"ip_forward"`
+	Routes     []Route  `json:"routes"`
+	DNSServers []string `json:"dns_servers,omitempty"`
+	NTPServers []string `json:"ntp_servers,omitempty"`
 }
 
 // DefaultConfig 返回空期望配置（节点无记录时的展示态）。
@@ -104,6 +114,12 @@ func (c *Config) normalize() {
 	for i := range c.Routes {
 		c.Routes[i].Dst = strings.TrimSpace(c.Routes[i].Dst)
 		c.Routes[i].Via = strings.TrimSpace(c.Routes[i].Via)
+	}
+	for i := range c.DNSServers {
+		c.DNSServers[i] = strings.TrimSpace(c.DNSServers[i])
+	}
+	for i := range c.NTPServers {
+		c.NTPServers[i] = strings.TrimSpace(c.NTPServers[i])
 	}
 }
 
@@ -179,6 +195,30 @@ func Validate(cfg *Config, ifaces []nodeinterfaces.Interface) error {
 			return fmt.Errorf("路由 dst 重复: %s", rt.Dst)
 		}
 		seenDst[rt.Dst] = true
+	}
+
+	if err := validateServerList("dns_servers", cfg.DNSServers); err != nil {
+		return err
+	}
+	if err := validateServerList("ntp_servers", cfg.NTPServers); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateServerList 校验 DNS/NTP 服务器列表：各 ≤4 项，每项为合法 IP 或主机名
+// （sysconsole.ValidHost 语义，拒绝 shell 元字符）；nil/空列表合法（= 不下发）。
+func validateServerList(field string, servers []string) error {
+	if len(servers) > maxServers {
+		return fmt.Errorf("%s 数量超出上限（%d）", field, maxServers)
+	}
+	for _, s := range servers {
+		if s == "" {
+			return fmt.Errorf("%s 存在空列表项", field)
+		}
+		if !sysconsole.ValidHost(s) {
+			return fmt.Errorf("%s 列表项不是合法 IP 或主机名: %q", field, s)
+		}
 	}
 	return nil
 }

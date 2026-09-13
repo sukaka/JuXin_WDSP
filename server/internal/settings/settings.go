@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/security"
+	"github.com/jiuzhang-waf/server/internal/sysconsole"
 )
 
 // ErrNotFound 设置不存在。
@@ -362,6 +363,9 @@ func (s *Service) Update(ctx context.Context, group, key string, value json.RawM
 	if err := validateStringLen(group, key, valueType, value); err != nil {
 		return false, err
 	}
+	if err := validateServerList(group, key, valueType, value); err != nil {
+		return false, err
+	}
 	res, err := s.db.Exec(ctx, `
 UPDATE system_settings SET setting_value = $1, updated_by = $2, updated_at = now(), version = version + 1
 WHERE setting_group = $3 AND setting_key = $4 AND version = $5`,
@@ -423,6 +427,9 @@ var settingStringMaxLen = map[string]int{
 	"block_response:html_body":    4096,
 	"block_response:json_code":    128,
 	"block_response:json_message": 512,
+	// network 组 DNS/NTP 服务器列表（逗号分隔原文总长上限）
+	"network:ntp_servers": 255,
+	"network:dns_servers": 255,
 }
 
 // validateStringLen 校验字符串设置的取值长度上限（仅命中 settingStringMaxLen 的字符串键；
@@ -438,6 +445,34 @@ func validateStringLen(group, key, valueType string, value json.RawMessage) erro
 	}
 	if len(s) > maxLen {
 		return fmt.Errorf("value must be at most %d bytes（%s:%s）", maxLen, group, key)
+	}
+	return nil
+}
+
+// serverListSettingKeys 逗号分隔主机列表类设置键（group:key；network 组 DNS/NTP
+// 服务器）。列表语义：各项去空白、丢弃空项、每项须为合法 IP 或主机名
+// （sysconsole.ValidHost 语义），项数上限 maxServerListItems；总长上限登记于
+// settingStringMaxLen。空串合法（= 继承宿主机现状，不下发）。
+var serverListSettingKeys = map[string]bool{
+	"network:ntp_servers": true,
+	"network:dns_servers": true,
+}
+
+// maxServerListItems 单列表项数上限（与 netconfig/network.json 下发契约一致）。
+const maxServerListItems = 4
+
+// validateServerList 校验逗号分隔主机列表类设置（仅命中 serverListSettingKeys 的
+// 字符串键；错误信息含 "value must be"，handler 据此映射 400）。
+func validateServerList(group, key, valueType string, value json.RawMessage) error {
+	if !serverListSettingKeys[group+":"+key] || valueType != "string" {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(value, &s); err != nil {
+		return fmt.Errorf("value must be string")
+	}
+	if _, err := sysconsole.ParseHostList(s, maxServerListItems); err != nil {
+		return fmt.Errorf("value must be 逗号分隔的合法主机列表（%s:%s）: %v", group, key, err)
 	}
 	return nil
 }
@@ -546,6 +581,10 @@ var AllowedSettingKeys = map[string]bool{
 	// APM 深度诊断 kill switch（阶段4；种子见迁移 000093——专用接口
 	// POST /apm/diagnostics/kill-switch 之外，允许经系统设置 Update API 在线调整）
 	"apm_diagnostics:kill_switch": true,
+	// 节点 DNS/NTP 服务器（种子见迁移 000162；保存/重写 sidecars/network.json 时
+	// netconfig 直查合并下发；逗号分隔主机列表校验见 validateServerList，
+	// 空串 = 继承宿主机现状不下发）
+	"network:ntp_servers": true, "network:dns_servers": true,
 	// 阶段5 §十五：CC 自动封禁共享出口（NAT）风险检查（种子见迁移 000153；
 	// 消费侧 temporaryblocks/natguard.go 带默认值与区间回落）
 	"cc_auto_block:nat_guard_enabled": true, "cc_auto_block:nat_identity_threshold": true,

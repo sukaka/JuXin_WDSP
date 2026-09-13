@@ -97,7 +97,34 @@ func Apply(ctx context.Context, cfg Config, r Runner, now time.Time) Status {
 		st.Routes = append(st.Routes, rs)
 	}
 
-	// 4. 汇总
+	// 4. DNS/NTP 落地（可选字段，未下发不触碰；UNSUPPORTED 不计入整体失败，
+	//    FAILED 计入整体失败按周期重试自愈；dry-run 只标注不执行——与
+	//    ip/sysctl 的 dry-run 语义一致，绝不在计划模式变更主机）
+	_, dryRun := r.(*DryRunner)
+	if cfg.DNSServers != nil {
+		if dryRun {
+			st.DNS = &ServiceStatus{State: StateUnsupported, Message: "dry-run：DNS 落地未执行（仅计划模式）"}
+		} else {
+			st.DNS = applyDNS(ctx, cfg.DNSServers, hostTools)
+			if st.DNS.State == StateFailed {
+				st.OK = false
+				failures = append(failures, "dns: "+st.DNS.Message)
+			}
+		}
+	}
+	if cfg.NTPServers != nil {
+		if dryRun {
+			st.NTP = &ServiceStatus{State: StateUnsupported, Message: "dry-run：NTP 落地未执行（仅计划模式）"}
+		} else {
+			st.NTP = applyNTP(ctx, cfg.NTPServers, hostTools)
+			if st.NTP.State == StateFailed {
+				st.OK = false
+				failures = append(failures, "ntp: "+st.NTP.Message)
+			}
+		}
+	}
+
+	// 5. 汇总
 	switch {
 	case len(failures) > 0:
 		st.Message = "部分失败: " + strings.Join(failures, "; ")

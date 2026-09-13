@@ -553,3 +553,110 @@ describe('SystemSettingsPage · block_response 分组自定义阻断响应页面
     expect(within(row).queryByRole('button', { name: /^保\s*存$/ })).toBeNull()
   })
 })
+
+// network 分组：NTP/DNS 服务器（逗号分隔字符串，通用字符串输入框渲染）
+function networkItems(): SettingItem[] {
+  return [
+    makeItem({
+      id: 'n1',
+      setting_group: 'network',
+      setting_key: 'ntp_servers',
+      setting_value: 'pool.ntp.org',
+      value_type: 'string',
+    }),
+    makeItem({
+      id: 'n2',
+      setting_group: 'network',
+      setting_key: 'dns_servers',
+      setting_value: '',
+      value_type: 'string',
+    }),
+  ]
+}
+
+function mockNetworkFetch(items: SettingItem[]) {
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    const method = init?.method ?? 'GET'
+    if (url.includes('/system-settings') && method === 'PUT') {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      const item = items.find((i) => i.setting_key === body.setting_key)!
+      return Promise.resolve(
+        jsonResponse(200, {
+          code: 'SUCCESS',
+          message: 'ok',
+          data: { ...item, setting_value: body.setting_value, version: item.version + 1 },
+        }),
+      )
+    }
+    if (url.includes('/system-settings')) {
+      const group = new URL(url, 'http://localhost').searchParams.get('group')
+      return Promise.resolve(
+        jsonResponse(200, {
+          code: 'SUCCESS',
+          message: 'ok',
+          data: { items: group === 'network' ? items : [] },
+        }),
+      )
+    }
+    return Promise.reject(new Error(`unexpected url: ${url}`))
+  })
+}
+
+describe('SystemSettingsPage · network 分组 NTP/DNS 服务器', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockNetworkFetch(networkItems()))
+    useAuthStore.setState({
+      user: makeUser(['system_settings.update']),
+      csrfToken: null,
+      initialized: true,
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  async function openNetworkRow(settingKey: string): Promise<HTMLElement> {
+    fireEvent.click(screen.getByRole('tab', { name: '网络' }))
+    const keyCell = await screen.findByText(settingKey)
+    return keyCell.closest('tr')!
+  }
+
+  it('页签渲染 NTP/DNS 两个设置项：中文说明、当前值与占位提示', async () => {
+    renderPage()
+    const ntpRow = await openNetworkRow('ntp_servers')
+    expect(within(ntpRow).getByText('NTP 时间同步服务器，逗号分隔，最多 4 个')).toBeInTheDocument()
+    expect(within(ntpRow).getByRole('textbox')).toHaveValue('pool.ntp.org')
+
+    const dnsRow = (await screen.findByText('dns_servers')).closest('tr')!
+    expect(
+      within(dnsRow).getByText('DNS 服务器，逗号分隔，最多 4 个，留空继承宿主机'),
+    ).toBeInTheDocument()
+    expect(within(dnsRow).getByRole('textbox')).toHaveValue('')
+    expect(within(dnsRow).getByPlaceholderText('如 223.5.5.5,223.6.6.6')).toBeInTheDocument()
+  })
+
+  it('编辑 NTP 服务器后按 network 分组与键提交逗号分隔字符串', async () => {
+    renderPage()
+    const row = await openNetworkRow('ntp_servers')
+    fireEvent.change(within(row).getByRole('textbox'), {
+      target: { value: 'time.aliyun.com,pool.ntp.org' },
+    })
+    await clickSaveWhenEnabled(row)
+
+    const body = await waitForPutBody()
+    expect(body.setting_group).toBe('network')
+    expect(body.setting_key).toBe('ntp_servers')
+    expect(body.setting_value).toBe('time.aliyun.com,pool.ntp.org')
+    expect(body.version).toBe(1)
+  })
+
+  it('无 system_settings.update 权限时值为只读文本', async () => {
+    useAuthStore.setState({ user: makeUser([]) })
+    renderPage()
+    const row = await openNetworkRow('dns_servers')
+    expect(within(row).queryByRole('textbox')).toBeNull()
+    expect(within(row).queryByRole('button', { name: /^保\s*存$/ })).toBeNull()
+  })
+})

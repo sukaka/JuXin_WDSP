@@ -46,6 +46,17 @@
 //   - 失败不 crash-loop：配置解析失败保留 last-good 配置并在 status 显式报错；
 //     执行失败保留进程驻留，按轮询周期重试。
 //
+// 可选扩展契约：
+//
+//   - DNS/NTP 落地：network.json 可选 dns_servers / ntp_servers（各 ≤4 项，IP
+//     或主机名）；下发即落地（systemd-resolved→resolvectl、可写 resolv.conf→
+//     原子重写；systemd-timesyncd/chronyd→drop-in 配置+restart），无可用路径
+//     回报 UNSUPPORTED（不计入失败，容器环境属预期），结果见 status 的
+//     dns_status/ntp_status（dns_ntp.go）；
+//   - 网络诊断（diag 子契约）：<sidecarDir>/diag/ 下 request-<uuid>.json 按
+//     1s 周期扫描串行执行（ping/tcp_probe/traceroute/dns_query/capture），
+//     结果原子写 result-<uuid>.json；认领/校验/停止语义见 diag.go 文件头。
+//
 // 已知边界（最小实现）：仅 IPv4；桥已存在但非 bridge 类型时报错不接管；
 // 成员口从其他桥直接改挂（kernel re-master）不额外拦截（口上无 IP 才会走到
 // 该路径）。

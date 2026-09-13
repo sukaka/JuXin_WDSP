@@ -42,6 +42,7 @@ func run() error {
 		timeout    = flag.Int("timeout", int(netmgrd.DefaultCmdTimeout/time.Second), "单个 ip/sysctl 动作超时（秒）")
 		once       = flag.Bool("once", false, "执行一次后退出（lab/运维验证）")
 		dryRun     = flag.Bool("dry-run", false, "只打印将执行的变更命令，不执行、不写 status")
+		nodeName   = flag.String("node", os.Getenv("NODE_NAME"), "诊断请求认领节点名（缺省空=认领全部节点；也可用 NODE_NAME 环境变量）")
 	)
 	flag.Parse()
 
@@ -99,12 +100,13 @@ func run() error {
 	}
 	sup := netmgrd.NewSupervisor(*configPath, *statusPath,
 		time.Duration(*interval)*time.Second, runner)
+	sup.Diag.NodeName = *nodeName
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	log.Printf("[netmgrd] start config=%s status=%s poll=%ds cmd_timeout=%ds",
-		*configPath, *statusPath, *interval, *timeout)
+	log.Printf("[netmgrd] start config=%s status=%s poll=%ds cmd_timeout=%ds node=%q diag_dir=%s",
+		*configPath, *statusPath, *interval, *timeout, *nodeName, sup.Diag.Dir)
 
 	done := make(chan struct{})
 	go func() { sup.Run(); close(done) }()

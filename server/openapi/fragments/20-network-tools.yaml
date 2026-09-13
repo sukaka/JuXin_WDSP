@@ -1,0 +1,206 @@
+# 片段：网络诊断工具（netdiag 模块，服务端管理面）
+# 路由源：server/internal/netdiag/handler.go RegisterRoutes（/network-tools/jobs*）
+# 数据源：netdiag_jobs 任务表（迁移 000160；权限种子 000161：network_tools.execute /
+# network_tools.download 均仅授 SYSTEM_ADMIN）。
+# 执行链路：管理面校验后写共享卷 <SidecarDir>/diag/request-<jobUUID>.json（0600 原子写），
+# 网关侧 netmgrd 消费执行并回写 result-<jobUUID>.json；服务端 Worker（2s 轮询）消费结果
+# 落库终态（result_text=stdout+stderr 合并截断 128KB）、超时收割（ping 40s /
+# traceroute 70s / tcp_probe 15s / dns_query 15s / capture duration+30s 无结果判 TIMEOUT）、
+# 抓包 pcap 搬入服务端数据目录并记 sha256（NETDIAG_DATA_DIR，默认 <数据根>/netdiag），
+# 并解析数据包列表（纯 Go pcap 解析器，前 200 个包）存 capture_packets JSONB 列供页面内查看。
+# 下载：仅 capture 且 SUCCESS 且有产物的任务，发送前按入库 sha256 复核，不符返回 409。
+paths:
+  # ==================== 网络诊断工具 ====================
+  /network-tools/jobs:
+    post:
+      operationId: netdiagJobCreate
+      tags: [network-tools]
+      summary: 创建网络诊断任务
+      description: 创建 ping/端口探测/路由追踪/DNS 查询/抓包诊断任务（初始 PENDING，Worker 下发共享卷请求文件后由 netmgrd 执行）。校验：action 枚举；target 为合法 IPv4/IPv6 字面量或主机名（不以 - 开头、拒绝 shell 元字符）；tcp_probe 必须 port 1-65535；ping count 1-20 缺省 4；traceroute max_hops 1-30 缺省 30；dns_query 无额外参数；capture 必须 iface（字母数字及 ._- 最长 32）+ duration_sec 5-300 缺省 10，filter_proto 仅 tcp/udp/icmp/空、filter_port 0-65535、filter_host 可空（非空同 target 校验）；node 缺省本网关节点名。操作记操作审计（中风险）。权限：`network_tools.execute`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NetdiagJobCreateRequest' }
+      responses:
+        '201':
+          description: 任务已创建（PENDING）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NetdiagJobResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      operationId: netdiagJobList
+      tags: [network-tools]
+      summary: 分页查询网络诊断任务
+      description: 按创建时间倒序分页查询，可选 action/status 过滤（非法过滤值 400）。权限：`network_tools.execute`
+      parameters:
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码 }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 }, description: 每页条数 }
+        - { name: action, in: query, required: false, schema: { type: string, enum: [ping, tcp_probe, traceroute, dns_query, capture] }, description: 按动作过滤 }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [PENDING, RUNNING, SUCCESS, FAILED, STOPPED, TIMEOUT] }, description: 按状态过滤 }
+      responses:
+        '200':
+          description: 任务分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NetdiagJobListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /network-tools/jobs/{id}:
+    get:
+      operationId: netdiagJobGet
+      tags: [network-tools]
+      summary: 查询网络诊断任务详情
+      description: 返回任务完整详情（含 result_text 执行输出、exit_code、duration_ms、抓包产物元数据及 capture_packets 数据包解析列表——Worker 解析 pcap 产出的前 200 个包，未解析/解析失败为 null；列表接口不带该大字段）。权限：`network_tools.execute`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 任务 ID }
+      responses:
+        '200':
+          description: 任务详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NetdiagJobResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /network-tools/jobs/{id}/stop:
+    post:
+      operationId: netdiagJobStop
+      tags: [network-tools]
+      summary: 停止网络诊断任务
+      description: 仅 PENDING/RUNNING 可停止（已结束返回 409）：PENDING 直接置 STOPPED；RUNNING 写共享卷停止标记文件（stop-<jobUUID>）由 netmgrd 终止执行后回写 STOPPED 终态。操作记操作审计（低风险）。权限：`network_tools.execute`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 任务 ID }
+      responses:
+        '200':
+          description: 停止请求已受理
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 任务已结束，无法停止 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /network-tools/jobs/{id}/download:
+    get:
+      operationId: netdiagJobDownload
+      tags: [network-tools]
+      summary: 下载抓包产物（pcap）
+      description: '仅 capture 动作（非抓包任务 400）且 SUCCESS（其他状态 409）且有产物的任务可下载（无产物 404）。文件路径仅由任务 ID 派生（capture-<id>.pcap，防路径穿越），发送前按入库 sha256 复核，不一致返回 409 并记失败审计。响应头 Content-Disposition 为 attachment。操作记操作审计（中风险）。权限：`network_tools.download`'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 任务 ID }
+      responses:
+        '200':
+          description: 抓包产物文件流（application/vnd.tcpdump.pcap）
+          content:
+            application/vnd.tcpdump.pcap:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 任务未成功结束或产物完整性校验失败 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    # ==================== 网络诊断工具 ====================
+    NetdiagJobParams:
+      type: object
+      description: 动作参数（与共享卷请求文件 params 一致；未使用字段为 0/空）
+      properties:
+        count: { type: integer, minimum: 1, maximum: 20, description: ping 包数（缺省 4） }
+        port: { type: integer, minimum: 1, maximum: 65535, description: tcp_probe 目标端口（必填） }
+        max_hops: { type: integer, minimum: 1, maximum: 30, description: traceroute 最大跳数（缺省 30） }
+        duration_sec: { type: integer, minimum: 5, maximum: 300, description: capture 抓包时长（秒，缺省 10） }
+        iface: { type: string, maxLength: 32, pattern: '^[a-zA-Z0-9._-]{1,32}$', description: capture 网口名（必填） }
+        filter_proto: { type: string, enum: ['', tcp, udp, icmp], description: capture 协议过滤（空=不过滤） }
+        filter_port: { type: integer, minimum: 0, maximum: 65535, description: capture 端口过滤（0=不过滤） }
+        filter_host: { type: string, maxLength: 253, description: capture 主机过滤（空=不过滤） }
+
+    NetdiagJob:
+      type: object
+      description: 网络诊断任务
+      properties:
+        id: { type: string, format: uuid }
+        node: { type: string, description: 执行节点名 }
+        action: { type: string, enum: [ping, tcp_probe, traceroute, dns_query, capture] }
+        target: { type: string, description: 诊断目标（IP 或主机名） }
+        params: { $ref: '#/components/schemas/NetdiagJobParams' }
+        status: { type: string, enum: [PENDING, RUNNING, SUCCESS, FAILED, STOPPED, TIMEOUT], description: 任务状态 }
+        result_text: { type: string, description: 执行输出（stdout+stderr 合并，截断 128KB） }
+        exit_code: { type: integer, nullable: true, description: 进程退出码（未结束为 null） }
+        duration_ms: { type: integer, format: int64, nullable: true, description: 执行耗时（毫秒，未结束为 null） }
+        capture_file: { type: string, description: 抓包产物文件名（capture-<id>.pcap；无产物为空） }
+        capture_size: { type: integer, format: int64, nullable: true, description: 抓包产物大小（字节） }
+        capture_hash: { type: string, description: 抓包产物 sha256（hex，64 字符；无产物为空） }
+        capture_packets:
+          type: array
+          nullable: true
+          items: { $ref: '#/components/schemas/NetdiagCapturePacket' }
+          description: 抓包数据包解析列表（Worker 解析 pcap 产出，最多前 200 个；null = 非抓包任务或产物未解析/解析失败，页面回退为仅显示下载按钮；仅详情接口带出，列表不返回大字段）
+        failure_message: { type: string, description: 失败原因（成功为空） }
+        requested_by: { type: string, format: uuid, nullable: true, description: 发起人用户 ID }
+        request_id: { type: string, description: 请求 ID（链路追踪） }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    NetdiagCapturePacket:
+      type: object
+      description: 单个数据包的页面展示结构（解析层次 Ethernet II（含 802.1Q VLAN 跳过）→ IPv4/IPv6 → TCP/UDP/ICMP/ICMPv6）
+      properties:
+        no: { type: integer, minimum: 1, description: 包序号（按解析成功顺序从 1 编号） }
+        ts: { type: string, format: date-time, description: 捕获时间（RFC3339，微秒精度） }
+        src: { type: string, description: 源地址（IP；非 IP 包为源 MAC） }
+        dst: { type: string, description: 目的地址（IP；非 IP 包为目的 MAC） }
+        sport: { type: integer, nullable: true, minimum: 0, maximum: 65535, description: 源端口（仅 TCP/UDP，其余 null） }
+        dport: { type: integer, nullable: true, minimum: 0, maximum: 65535, description: 目的端口（仅 TCP/UDP，其余 null） }
+        proto: { type: string, description: 'TCP/UDP/ICMP/ICMPv6；其他 IP 协议 IP-<num>；非 IP ETH-0x<ethertype hex>' }
+        flags: { type: string, description: '仅 TCP，按 FIN,SYN,RST,PSH,ACK,URG,ECE,CWR 顺序逗号连接（无标志位缺省）' }
+        length: { type: integer, description: 线原始长度（pcap 记录 orig_len） }
+        preview: { type: string, maxLength: 80, description: 传输层 payload 可打印 ASCII 预览（非可打印字节替换为 .，截断 80 字符；无 payload 空串） }
+
+    NetdiagJobCreateRequest:
+      type: object
+      required: [action, target]
+      properties:
+        action: { type: string, enum: [ping, tcp_probe, traceroute, dns_query, capture], description: 诊断动作 }
+        target: { type: string, maxLength: 253, description: 诊断目标（IPv4/IPv6 字面量或合法主机名） }
+        port: { type: integer, minimum: 1, maximum: 65535, description: tcp_probe 必填 }
+        count: { type: integer, minimum: 1, maximum: 20, description: ping 包数（缺省 4） }
+        max_hops: { type: integer, minimum: 1, maximum: 30, description: traceroute 最大跳数（缺省 30） }
+        duration_sec: { type: integer, minimum: 5, maximum: 300, description: capture 抓包时长（秒，缺省 10） }
+        iface: { type: string, maxLength: 32, description: capture 网口名（必填，字母数字及 ._-） }
+        filter_proto: { type: string, enum: ['', tcp, udp, icmp], description: capture 协议过滤 }
+        filter_port: { type: integer, minimum: 0, maximum: 65535, description: capture 端口过滤（0=不过滤） }
+        filter_host: { type: string, maxLength: 253, description: capture 主机过滤（空=不过滤） }
+        node: { type: string, maxLength: 64, description: 执行节点名（缺省本网关节点） }
+
+    NetdiagJobResponse:
+      type: object
+      properties:
+        job: { $ref: '#/components/schemas/NetdiagJob' }
+
+    NetdiagJobListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/NetdiagJob' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }

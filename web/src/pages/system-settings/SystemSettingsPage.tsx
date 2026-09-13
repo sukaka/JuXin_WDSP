@@ -21,6 +21,7 @@ const GROUP_TABS = [
   { key: 'logging', label: '日志记录' },
   { key: 'block_response', label: '阻断响应页面' },
   { key: 'api_learning', label: 'API 学习' },
+  { key: 'network', label: '网络' },
   { key: 'apm', label: 'APM 性能监控' },
 ]
 
@@ -149,6 +150,18 @@ const SETTING_META: Record<
   },
   'logging:syslog_forward_system_alerts': {
     description: '外发系统告警到 syslog',
+  },
+  // network 组：节点基础网络服务（NTP 时间同步 / DNS 解析），值为逗号分隔字符串，
+  // 通用字符串输入框渲染，后端下发节点生效
+  'network:ntp_servers': {
+    description: 'NTP 时间同步服务器，逗号分隔，最多 4 个',
+    placeholder: '如 pool.ntp.org,time.aliyun.com',
+    maxLength: 256,
+  },
+  'network:dns_servers': {
+    description: 'DNS 服务器，逗号分隔，最多 4 个，留空继承宿主机',
+    placeholder: '如 223.5.5.5,223.6.6.6',
+    maxLength: 256,
   },
 }
 

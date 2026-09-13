@@ -548,6 +548,17 @@
 - **阶段7**：AI 数据保留清理（§26.4，迁移 000141：guardjanitor 分表保留配置 + 分批限量 sweep + 引用保护，审计表因哈希链约束只归档不删）；AI 工具 `rate_limit_statistics.get`（§10.5，READ_ONLY，Tool 总数 61）；Makefile 五自动化目标（§37：ai-model-test/ai-tool-test/ai-agent-test/ai-prompt-test/stage7-test-rag）；输出截断自动续写（§11.4：finish_reason 透传 + 自动续写默认上限 2 次可配）；事件分析结构化入参（§12.1：时间/应用/IP/URI/规则/Request ID 等 7 个可选维度逐一校验）与画像结构化分支（§15.2/15.3：ip>uri>application_id 优先级真实 SQL 聚合，零数据如实"数据不足"）；What-If 扩至 3 场景（§19：disable_rule + cc_threshold/block_duration 离线统计估算，全矩阵回放引擎仍为遗留）；评估集种子（§34.1，迁移 000143：12 类×3 用例幂等，实库迁移与首轮评估运行待有库/有模型环境终验）。
 - **阶段8**：规范导入五格式（§33：OpenAPI3/Swagger2/JSON Schema/Postman v2.1/GraphQL SDL，JSON/YAML 双编码，YAML 安全解码 + 外部 $ref 拒绝 + 深度/大小限制）；参数微模型统计服务端层（§16/§17，迁移 000145：观测 6 列 + 画像 14 列，蓄水池分位数/字符直方图熵/前后缀 TopN/IQR 离群 + P95 画像读回；待挂接：网关 ParamObservation 上报扩展与 apiruntime 合并写入）。
 
+### 网络诊断工具 + NTP/DNS 网络设置（2026-09-13，迁移 000160–000162）
+
+设计文档 [NETWORK_TOOLS_DESIGN.md](NETWORK_TOOLS_DESIGN.md)。
+
+- **网络诊断工具**（前台「系统运维 → 网络工具」）：五种动作 ping / tcp_probe / traceroute / dns_query / capture（按需抓包 pcap 下载）。server 新模块 `server/internal/netdiag/`（handler/store/worker/types）→ 共享卷 `<GATEWAY_SIDECAR_DIR>/diag/` 文件契约（request/result/stop/capture，0600 原子写）→ `gateway/netmgrd/` diag 消费端（diag.go，1s tick 串行）执行 → server Worker（2s tick）消费落库。API：POST/GET `/api/v1/network-tools/jobs`、POST `/jobs/{id}/stop`、GET `/jobs/{id}/download`；权限 `network_tools.execute`/`network_tools.download`（000161 种子仅授 SYSTEM_ADMIN）；任务表 `netdiag_jobs`（000160，状态机 PENDING/RUNNING/SUCCESS/FAILED/STOPPED/TIMEOUT）。
+- **安全模型**：目标两端校验（server + netmgrd，仅 IP/合法主机名）；tcp_probe/dns_query Go 原生，ping/traceroute/capture 系统二进制参数数组不经 shell；capture 过滤仅 proto/host/port 三元素固定模板（不开放自由 BPF）；超时硬上限（ping 30s / traceroute 60s / capture 5–300s）；pcap ≤100MB；stdout/stderr 截断 64KB；pcap 搬入 NETDIAG_DATA_DIR 并 sha256 入库，下载校验一致才放行；execute/download/stop 全量审计。
+- **NTP/DNS 网络设置**（前台「系统设置 → 网络」分组）：设置键 `network.ntp_servers`（默认 pool.ntp.org）/ `network.dns_servers`（默认空=继承宿主机），逗号分隔、各 ≤4 个、逐项 IP/主机名校验（000162 种子 + settings.go 白名单）；保存网络配置时 server 合并进 network.json 新可选字段 `dns_servers`/`ntp_servers`（omitempty 向后兼容）→ netmgrd apply 落地（DNS：resolvectl → 原子重写 resolv.conf → UNSUPPORTED；NTP：timesyncd drop-in → chronyd drop-in → UNSUPPORTED）；结果回报 network-status.json 的 `dns_status`/`ntp_status`（APPLIED/UNSUPPORTED/FAILED，FAILED 计入整体失败触发周期重试，UNSUPPORTED 不计），server 原样透传前端。
+- **部署**：`deployment/docker-compose.stage5.yml` 新增 netmgrd 服务（`network_mode: service:gateway` 同网络命名空间、cap_add NET_RAW/NET_ADMIN、挂同一 /var/run/caddy 卷、NODE_NAME 与 GATEWAY_NODE_NAME 一致）；镜像 `gateway/images/netmgrd/Dockerfile`（alpine digest 锁定 + iproute2/iputils/tcpdump/traceroute）；裸机额外需系统包 iputils/tcpdump/traceroute；根 docker-compose.yml 仅基座不含网关栈故未接入。
+- **验证**：gateway netmgrd diag 22 例 + dns_ntp 17 例；server netdiag 集成 + settings/netconfig 校验合并；前端 NetworkToolsPage 10 例 + 系统设置 3 例（全量 945 例绿）；stage5 实测——ping/traceroute SUCCESS、tcp_probe 8081 SUCCESS / 80 正确报 connection refused、dns_query 正常、10s 抓包 50 包 pcap 下载 sha256 一致、60s 抓包手动停止 STOPPED、DNS/NTP 全链路 UNSUPPORTED 回报正确、非法 DNS 值 400 拒绝、审计风险级别正确；OpenAPI `server/openapi/fragments/20-network-tools.yaml`，openapi-reconcile 661 路由零差集。
+- **诚实遗留**：diag 单节点认领（按 NODE_NAME 匹配，无跨节点编排）；capture 串行执行阻塞后续任务；容器环境 NTP/DNS 如实回报 UNSUPPORTED（该设置项面向裸机）；根 compose 未接入 netmgrd。
+
 ### 其他
 
 阶段7 收尾优先合 `main` 再同步 `develop`；可选增强：完整 RAG、策略版本快照、多租户 AI 计费、更深度的 What-If 回放与压测归档。

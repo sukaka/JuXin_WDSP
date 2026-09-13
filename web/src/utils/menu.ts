@@ -579,6 +579,12 @@ export const MENU_ITEMS: MenuDef[] = [
     group: '系统运维',
   },
   {
+    key: '/network-tools',
+    label: '网络工具',
+    roles: ['SYSTEM_ADMIN'],
+    group: '系统运维',
+  },
+  {
     key: '/ha-groups',
     label: 'HA 主备',
     roles: ['SYSTEM_ADMIN', 'SECURITY_ADMIN'],

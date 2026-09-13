@@ -17,6 +17,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -33,6 +34,9 @@ type Supervisor struct {
 	Runner Runner
 	// LinkPairs 端口联动监控器（NewSupervisor 自动创建；测试可替换参数）。
 	LinkPairs *LinkPairMonitor
+	// Diag 网络诊断服务（NewSupervisor 自动创建，目录为 <sidecarDir>/diag；
+	// NodeName 缺省空 = 认领全部节点，main 经 --node/NODE_NAME 注入）。
+	Diag *DiagService
 
 	mu       sync.Mutex
 	stopCh   chan struct{}
@@ -52,14 +56,16 @@ func NewSupervisor(configPath, statusPath string, interval time.Duration, r Runn
 		ConfigPath: configPath, StatusPath: statusPath,
 		Interval: interval, Runner: r,
 		LinkPairs: NewLinkPairMonitor(statusPath, r),
+		Diag:      NewDiagService(filepath.Join(filepath.Dir(configPath), "diag"), "", DefaultDiagInterval),
 		stopCh:    make(chan struct{}),
 	}
 }
 
 // Run 阻塞运行监督循环：启动即执行一次 tick，此后每 Interval 轮询，直到 Close。
-// 端口联动监控器以独立 goroutine 随监督循环启动/停止。
+// 端口联动监控器与诊断服务以独立 goroutine 随监督循环启动/停止。
 func (s *Supervisor) Run() {
 	go s.LinkPairs.Run()
+	go s.Diag.Run()
 	s.tick()
 	t := time.NewTicker(s.Interval)
 	defer t.Stop()
@@ -84,6 +90,7 @@ func (s *Supervisor) Close() {
 	close(s.stopCh)
 	s.mu.Unlock()
 	s.LinkPairs.Close()
+	s.Diag.Close()
 }
 
 // logOnce 同一键的日志只打一次（键变化时再打），防轮询刷屏。

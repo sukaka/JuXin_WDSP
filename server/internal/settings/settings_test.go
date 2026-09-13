@@ -117,8 +117,54 @@ func TestAPIRateLimitKeysAllowed(t *testing.T) {
 	}
 }
 
-func TestScalarString(t *testing.T) {
+// TestNetworkServerSettings 节点 DNS/NTP 服务器设置（迁移 000162 种子）回归：
+// 两键均可经设置接口修改；逗号分隔主机列表校验（去空白去空项、每项合法 IP 或
+// 主机名、≤4 项、总长 ≤255）；空串合法（= 继承宿主机现状不下发）。
+func TestNetworkServerSettings(t *testing.T) {
+	for _, key := range []string{"ntp_servers", "dns_servers"} {
+		if !AllowedSettingKeys["network:"+key] {
+			t.Errorf("network:%s 未登记 AllowedSettingKeys", key)
+		}
+		if settingStringMaxLen["network:"+key] != 255 {
+			t.Errorf("network:%s 未登记 255 字节长度上限", key)
+		}
+	}
 	cases := []struct {
+		name    string
+		key     string
+		value   string
+		wantErr bool
+	}{
+		{"单个 IP", "dns_servers", `"223.5.5.5"`, false},
+		{"单个主机名", "ntp_servers", `"pool.ntp.org"`, false},
+		{"IPv6 字面量", "dns_servers", `"2001:4860:4860::8888"`, false},
+		{"多个含空白与空项", "dns_servers", `" 223.5.5.5, ,8.8.8.8 ,"`, false},
+		{"恰好 4 项", "ntp_servers", `"a.pool.org, b.pool.org, 1.1.1.1, ntp.aliyun.com"`, false},
+		{"空串（继承宿主机）", "dns_servers", `""`, false},
+		{"全空白（视同空）", "dns_servers", `"   "`, false},
+		{"5 项超上限", "dns_servers", `"1.1.1.1,2.2.2.2,3.3.3.3,4.4.4.4,5.5.5.5"`, true},
+		{"含 shell 元字符", "dns_servers", `"8.8.8.8; rm -rf /"`, true},
+		{"含空格的主机名", "ntp_servers", `"pool. ntp.org"`, true},
+		{"非法字符下划线开头", "dns_servers", `"_dmarc.example.com"`, true},
+		{"含斜杠（CIDR 不允许）", "dns_servers", `"8.8.8.8/24"`, true},
+		{"值非字符串", "ntp_servers", `123`, true},
+	}
+	for _, c := range cases {
+		err := validateServerList("network", c.key, "string", json.RawMessage(c.value))
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: validateServerList err = %v, wantErr = %v", c.name, err, c.wantErr)
+		}
+	}
+	// 未列入清单的键与非 string 类型不校验
+	if err := validateServerList("display", "system_name", "string", json.RawMessage(`"a;b"`)); err != nil {
+		t.Errorf("未列入清单的键不应校验: %v", err)
+	}
+	if err := validateServerList("network", "dns_servers", "integer", json.RawMessage(`"a;b"`)); err != nil {
+		t.Errorf("非 string 类型不应校验: %v", err)
+	}
+}
+
+func TestScalarString(t *testing.T) {	cases := []struct {
 		raw     string
 		want    string
 		wantErr bool

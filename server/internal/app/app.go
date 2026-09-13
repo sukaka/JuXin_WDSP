@@ -78,6 +78,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/metrics"
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/netconfig"
+	"github.com/jiuzhang-waf/server/internal/netdiag"
 	"github.com/jiuzhang-waf/server/internal/nodeinterfaces"
 	"github.com/jiuzhang-waf/server/internal/notify"
 	"github.com/jiuzhang-waf/server/internal/product"
@@ -128,6 +129,7 @@ type App struct {
 	alertEngine     *systemalerts.Engine
 	reportWorker    *reports.Handler
 	backupWorker    *backups.Worker
+	netdiagWorker   *netdiag.Worker
 	upgradeSvc      *upgrades.Service
 	healthCollector *runtimehealth.Collector
 	// 阶段7 增量：AI 自动降噪后台工人（仅 AI 模块启用时启动）
@@ -778,6 +780,15 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	settingHandler := settings.NewHandler(settingsSvc, auditSvc)
 	// 系统控制（重启/关机/恢复出厂）：密码二次确认后写宿主控制标志文件（权限种子见迁移 000121）
 	systemopsHandler := systemops.NewHandler(userStore, auditSvc, cfg.SystemOps.HostctlDir)
+	// 网络诊断工具：管理面写共享卷 diag 请求文件，netmgrd 执行回写结果（权限种子见迁移 000161）；
+	// pcap 产物由 Worker 从共享卷搬入服务端数据目录（NETDIAG_DATA_DIR 可覆盖，默认 <数据根>/netdiag）
+	netdiagDataDir := os.Getenv("NETDIAG_DATA_DIR")
+	if netdiagDataDir == "" {
+		netdiagDataDir = filepath.Join(cfg.Gateway.DataDir, "netdiag")
+	}
+	netdiagStore := netdiag.NewStore(db)
+	netdiagWorker := netdiag.NewWorker(netdiagStore, cfg.WAF.SidecarDir, netdiagDataDir, cfg.WAF.GatewayNodeName)
+	netdiagHandler := netdiag.NewHandler(netdiagStore, auditSvc, cfg.WAF.SidecarDir, netdiagDataDir, cfg.WAF.GatewayNodeName)
 	// syslog 外发（三期）：spool 落在可写数据目录
 	syslogFw := syslogfw.NewForwarder(settingsSvc, cfg.Gateway.DataDir)
 	syslogHandler := syslogfw.NewHandler(syslogFw, auditSvc)
@@ -865,6 +876,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	}
 	a.reportWorker = reportHandler
 	a.backupWorker = backupWorker
+	a.netdiagWorker = netdiagWorker
 	a.upgradeSvc = upgradeSvc
 	// AI 自动降噪后台工人仅随 AI 模块启用（空转判断在 ticker 内按设置执行）
 	if cfg.AI.Enabled {
@@ -966,6 +978,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 
 	// ---- 系统控制（重启/关机/恢复出厂，高危，密码二次确认 + CRITICAL 审计） ----
 	systemopsHandler.RegisterRoutes(mux, authz)
+
+	// ---- 网络诊断工具（ping/端口探测/路由追踪/DNS 查询/抓包） ----
+	netdiagHandler.RegisterRoutes(mux, authz)
 
 	// ---- 阶段3：Web应用/域名/源站/证书/配置发布/版本/网关状态 ----
 	if encSvc != nil {
@@ -1767,6 +1782,9 @@ func (a *App) StartStage6Workers(ctx context.Context) {
 	}
 	if a.backupWorker != nil {
 		go a.backupWorker.Run(ctx)
+	}
+	if a.netdiagWorker != nil {
+		go a.netdiagWorker.Run(ctx, 2*time.Second)
 	}
 	if a.upgradeSvc != nil {
 		go a.upgradeSvc.RunResultReconciler(ctx)

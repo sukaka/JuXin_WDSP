@@ -114,6 +114,18 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := Config{Bridges: req.Bridges, IPForward: req.IPForward, Routes: req.Routes}
 
+	// 合并系统设置 network 组的 DNS/NTP 服务器（随 network.json 下发；读失败
+	// 记日志降级为空，不阻断网络配置保存；空设置 = 不写字段，netmgrd 继承宿主机现状）
+	if sr, ok := h.store.(ServersReader); ok {
+		dns, ntp, err := sr.NetworkServers(r.Context())
+		if err != nil {
+			slog.Warn("load network dns/ntp settings failed", "node", nodeName, "error", err)
+		} else {
+			cfg.DNSServers = dns
+			cfg.NTPServers = ntp
+		}
+	}
+
 	groups, err := h.ifaces.ListGrouped(r.Context(), nodeName)
 	if err != nil {
 		response.InternalError(w, r, err)
