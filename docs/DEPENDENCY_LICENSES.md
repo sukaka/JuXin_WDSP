@@ -142,6 +142,10 @@
 | 资产 | 锁定版本 | 许可证 | 用途 | 归档 |
 |------|---------|--------|------|------|
 | OWASP CRS | v4.28.0 | Apache-2.0 | 通用攻击规则集（只读挂载） | [licenses/owasp-crs/](../licenses/owasp-crs/) |
+| OWASP CRS 官方排除插件（wordpress/nextcloud/phpmyadmin/drupal/dokuwiki/xenforo）与 auto-decoding-plugin（默认禁用） | 各插件 commit PINNED（见 licenses/crs-plugins/README.md） | Apache-2.0 | 应用误报排除 / ARGS 多轮解码 | [licenses/crs-plugins/](../licenses/crs-plugins/) |
+| monperrus/crawler-user-agents | commit 9345a7ad（PINNED：tools/rulegen/crawler-ua/PINNED.txt） | MIT | 爬虫 UA 指纹数据（生成 scanner-fingerprints-ext.conf） | [licenses/crawler-user-agents/](../licenses/crawler-user-agents/) |
+| ai-robots-txt/ai.robots.txt | commit 987266f3（PINNED：tools/rulegen/ai-crawler/PINNED.txt） | MIT | AI 爬虫 UA 清单（生成 ai-crawler-control.conf） | [licenses/ai-robots-txt/](../licenses/ai-robots-txt/) |
+| vektah/gqlparser/v2 | v2.5.60（go.mod 精确锁定） | MIT | GraphQL 文档 AST 解析（NG-GQL-01，gqlast 包装层自建资源硬边界） | [licenses/gqlparser/](../licenses/gqlparser/) |
 | Noto Sans CJK | noto-cjk main（sha256 见 server/assets/fonts/README.md） | OFL-1.1 | PDF 报告内嵌中文字体 | [licenses/noto-fonts/](../licenses/noto-fonts/) |
 | 纯真 CZ88 IP 库（qqwry.dat） | 快照 2026-08-09（sha256:cd4ec244…） | 免费数据库，版权归纯真网络所有，无标准开源许可证（负责人决策引入，仅大屏可视化） | 离线 IPv4→城市归属 | [licenses/cz88-qqwry/](../licenses/cz88-qqwry/) |
 | DB-IP City Lite（city.mmdb / city-ipv6.mmdb） | 2.3.2026060513 | CC BY 4.0（署名已履行：大屏地球面板带 "IP Geolocation by DB-IP" 链接） | 离线 IP→城市归属 | [licenses/dbip-city/](../licenses/dbip-city/) |

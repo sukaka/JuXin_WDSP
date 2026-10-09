@@ -133,6 +133,10 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "事件不存在")
 		return
 	}
+	// CNNVD 兼容性 P1：matches 联查漏洞编号取现值；联查失败静默降级为空数组，不阻塞详情
+	if err := h.store.AttachVulnIDs(r.Context(), matches); err != nil {
+		slog.Warn("event detail: attach vuln ids failed", "event_id", id, "error", err)
+	}
 	notes, err := h.store.ListNotes(r.Context(), id)
 	if err != nil {
 		slog.Warn("event detail: list notes failed", "event_id", id, "error", err)
@@ -144,13 +148,16 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	related, err := h.store.RelatedEvents(r.Context(), evt, 10)
 	if err != nil {
 		slog.Warn("event detail: list related events failed", "event_id", id, "error", err)
+		related = &RelatedResult{Events: []Event{}, Mode: "none"}
 	}
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
-		"event":   evt,
-		"matches": matches,
-		"notes":   notes,
-		"actions": actions,
-		"related": related,
+		"event":              evt,
+		"matches":            matches,
+		"notes":              notes,
+		"actions":            actions,
+		"related":            related.Events,
+		"related_mode":       related.Mode,
+		"related_session_id": related.SessionID,
 	})
 }
 
@@ -198,7 +205,11 @@ func (h *Handler) Related(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
-	response.JSON(w, r, http.StatusOK, map[string]interface{}{"items": related})
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{
+		"items":      related.Events,
+		"mode":       related.Mode,
+		"session_id": related.SessionID,
+	})
 }
 
 type noteRequest struct {

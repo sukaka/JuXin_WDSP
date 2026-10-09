@@ -9,8 +9,10 @@ package apinodes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,7 +33,8 @@ type Repository interface {
 	// UpsertNode 按 node_name upsert 节点行（聚合绝对值口径 + 与心跳写入合并不回退，
 	// status 由调用方以合并后有效活性判定随写入刷新）
 	UpsertNode(ctx context.Context, agg NodeAggregate, status string, now time.Time) error
-	// RecordHeartbeat 节点心跳落活性视图（W17-HB；node_name 合并 upsert，幂等）
+	// RecordHeartbeat 节点心跳落活性视图（W17-HB；node_name 合并 upsert，幂等）。
+	// NG-AZ-02 起携带授权 ACK 字段的心跳同事务追加 upsert api_node_authz_acks。
 	RecordHeartbeat(ctx context.Context, hb apiruntime.Heartbeat) error
 	// ListNodes 全量节点列表（node_name 升序；节点基数小，不分页）
 	ListNodes(ctx context.Context) ([]Node, error)
@@ -135,12 +138,28 @@ ON CONFLICT (node_name) DO UPDATE SET
 // 版本仍由业务事件聚合维护）；event_count 不动（仅统计业务事件，由 Sweeper 聚合维护）。
 // 幂等：同一拍重复上报/采集重放仅刷新相同值；status 以来库时钟对心跳时间现算，
 // 与 Sweeper 周期重算同一 StatusFor 口径。
+//
+// NG-AZ-02 D6 起扩展为同事务两表 upsert：心跳携带授权 ACK 字段（HasAuthzAck）时
+// 同事务 upsert api_node_authz_acks——
+//   - last_ack_at 取管理面收拍时刻（now，非节点自报时间——节点时钟可漂移，D8）；
+//   - clock_skew_seconds = now − hb.OccurredAt（心跳时间戳即节点时钟直接读数，
+//     可为负：节点时钟超前）；漂移判定（|skew|>上限 → CLOCK_SKEW）在查询侧派生，
+//     本表只落实测值；
+//   - 两表同一 pgx.Tx：任一失败整体回滚，不产生「活性已推进但 ACK 丢失」的半拍
+//     （错误逐拍上抛，采集侧记日志、下一周期心跳自愈）；
+//   - 未携带授权字段（旧版网关/未启用授权快照）只写节点表——不伪造零值 ACK 行，
+//     ACK 视图如实 NEVER_ACKED。
 func (s *Store) RecordHeartbeat(ctx context.Context, hb apiruntime.Heartbeat) error {
 	if hb.NodeName == "" {
 		return fmt.Errorf("heartbeat node name required")
 	}
 	now := time.Now().UTC()
-	_, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `
 INSERT INTO api_gateway_nodes
 (node_name, first_seen_at, last_seen_at, last_policy_version, last_model_version, event_count, status, created_at, updated_at)
 VALUES ($1,$2,$2,$3,'',0,$4,$5,$5)
@@ -153,6 +172,56 @@ ON CONFLICT (node_name) DO UPDATE SET
   status              = EXCLUDED.status,
   updated_at          = EXCLUDED.updated_at`,
 		hb.NodeName, hb.OccurredAt, hb.PolicyVersion, StatusFor(now, hb.OccurredAt), now)
+	if err != nil {
+		return err
+	}
+	if hb.HasAuthzAck() {
+		if err := upsertAuthzAck(ctx, tx, hb, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// upsertAuthzAck 授权 ACK 行 upsert（RecordHeartbeat 事务内调用；水位缺失落 NULL
+// 不伪造零向量——查询侧按「缺失即零水位」口径参与比较）。
+func upsertAuthzAck(ctx context.Context, tx pgx.Tx, hb apiruntime.Heartbeat, now time.Time) error {
+	var watermarkJSON []byte
+	if hb.AuthzWatermark != nil {
+		b, err := json.Marshal(hb.AuthzWatermark)
+		if err != nil {
+			return fmt.Errorf("marshal authz watermark of node %s: %w", hb.NodeName, err)
+		}
+		watermarkJSON = b
+	}
+	var leaseSeconds *int32
+	if hb.AuthzLeaseSeconds != nil {
+		// 列型 integer（int4）：超范围值拒绝落库（int32() 直接转换会静默回绕，
+		// 整拍心跳随事务回滚、错误上抛由采集侧记日志，下一周期心跳自愈）。
+		if *hb.AuthzLeaseSeconds > math.MaxInt32 || *hb.AuthzLeaseSeconds < math.MinInt32 {
+			return fmt.Errorf("authz lease seconds of node %s out of int4 range: %d", hb.NodeName, *hb.AuthzLeaseSeconds)
+		}
+		v := int32(*hb.AuthzLeaseSeconds)
+		leaseSeconds = &v
+	}
+	// 时钟漂移实测（D8）：管理面收拍时刻 − 心跳产生时刻（节点时钟读数），可为负。
+	skewSeconds := int64(now.Sub(hb.OccurredAt) / time.Second)
+	_, err := tx.Exec(ctx, `
+INSERT INTO api_node_authz_acks
+(node_name, last_ack_at, authz_policy_version, authz_watermark, authz_snapshot_expires_at,
+ authz_applied_at, authz_lease_seconds, clock_skew_seconds, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$2)
+ON CONFLICT (node_name) DO UPDATE SET
+  last_ack_at              = EXCLUDED.last_ack_at,
+  authz_policy_version     = EXCLUDED.authz_policy_version,
+  authz_watermark          = EXCLUDED.authz_watermark,
+  authz_snapshot_expires_at = EXCLUDED.authz_snapshot_expires_at,
+  authz_applied_at         = EXCLUDED.authz_applied_at,
+  authz_lease_seconds      = EXCLUDED.authz_lease_seconds,
+  clock_skew_seconds       = EXCLUDED.clock_skew_seconds,
+  updated_at               = EXCLUDED.updated_at`,
+		hb.NodeName, now, hb.AuthzPolicyVersion, watermarkJSON, hb.AuthzSnapshotExpiresAt,
+		hb.AuthzAppliedAt, leaseSeconds, skewSeconds)
 	return err
 }
 

@@ -188,6 +188,21 @@ func apiWriteCounts(ctx *dsctx.RequestContext, key string) (int, []int) {
 	return defaultAPIWriteTracker.add(key)
 }
 
+// defaultMCPCallTracker MCP 调用预算进程内默认滑窗（mcpguard 用；
+// 与写限速同一自然分钟定窗语义——max_calls_per_minute 即当前窗口计数上限；
+// 多节点一致性以 behavior_store=valkey 共享存储为准，存储缺席按进程内如实披露）。
+var defaultMCPCallTracker = newWindowTracker(DefaultStoreCapacity, nil)
+
+// MCPCallCounts MCP 工具调用预算滑窗计数（mcpguard 导出调用点；behavior_store
+// 配置 Valkey 时经 APIWriteWindow 命名空间共享（键前缀 mcpcall| 隔离写限速键形），
+// 未配置/未绑定按进程内默认实现——与 flow 存储同纪律）。
+func MCPCallCounts(ctx *dsctx.RequestContext, key string) (int, []int) {
+	if o := storeOverridesFor(ctx); o != nil && o.APIWriteWindow != nil {
+		return o.APIWriteWindow.AddAndCount(key)
+	}
+	return defaultMCPCallTracker.add(key)
+}
+
 // objectConsecutive 对象游标连续判定（resource.go 用）。
 func objectConsecutive(ctx *dsctx.RequestContext, key string, id int64) bool {
 	if o := storeOverridesFor(ctx); o != nil && o.ObjectCursor != nil {

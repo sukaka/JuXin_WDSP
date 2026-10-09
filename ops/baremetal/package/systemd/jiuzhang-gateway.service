@@ -1,0 +1,30 @@
+# 九章 WDSP 防护网关（Caddy 2.11 + coraza-caddy + jiuzhang_guard，裸机）
+# __ROOT__/__USER__ 由 install.sh 渲染替换后安装到 /etc/systemd/system/
+[Unit]
+Description=JiuZhang WDSP Protection Gateway (Caddy + Coraza, baremetal)
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+UMask=0077
+# XDG 目录隔离网关 autosave/运行数据（与控制台 Caddy 完全分离）；
+# --resume 必须：重启后恢复 autosave.json 中最近一次 /load 的运行配置，
+# 切勿移除（否则 bootstrap 覆盖 autosave，站点配置丢失）。
+Environment=XDG_CONFIG_HOME=__ROOT__/data/caddy/config
+Environment=XDG_DATA_HOME=__ROOT__/data/caddy/data
+ExecStart=__ROOT__/bin/caddy run --config __ROOT__/gateway/Caddyfile.bootstrap --adapter caddyfile --resume
+# 绑定 80/443 特权端口（非 root 运行）
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+# /tmp/coraza：coraza.conf SecDataDir 持久化目录（/etc/tmpfiles.d/jiuzhang.conf 创建）
+ReadWritePaths=__ROOT__/data /tmp/coraza
+LimitNOFILE=1048576
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -171,6 +171,64 @@ func TestDisallowedAction(t *testing.T) {
 	}
 }
 
+// TestVulnIDsValidation CNNVD 兼容性 P1：编号格式校验矩阵（合法/非法/大小写/重复）。
+func TestVulnIDsValidation(t *testing.T) {
+	r := validRule()
+	r.CNNVDIDs = []string{"cnnvd-202401-2345", "CNNVD-202401-2345 ", "CNNVD-202402-0007"}
+	r.CVEIDs = []string{"cve-2024-0001", "CVE-2024-0001"}
+	if _, err := ValidateInput(r); err != nil {
+		t.Fatalf("valid vuln ids rejected: %v", err)
+	}
+	// 就地规范化：大写归一 + 去重保序
+	if got := strings.Join(r.CNNVDIDs, ","); got != "CNNVD-202401-2345,CNNVD-202402-0007" {
+		t.Errorf("cnnvd_ids not normalized: %v", r.CNNVDIDs)
+	}
+	if got := strings.Join(r.CVEIDs, ","); got != "CVE-2024-0001" {
+		t.Errorf("cve_ids not normalized: %v", r.CVEIDs)
+	}
+
+	badCNNVD := []string{"CNNVD-20241-2345", "CNNVD-202401-23", "CVE-2024-0001", "CNNVD_202401_2345", ""}
+	for _, v := range badCNNVD {
+		r := validRule()
+		r.CNNVDIDs = []string{v}
+		if _, err := ValidateInput(r); err == nil {
+			t.Errorf("invalid cnnvd id %q should be rejected", v)
+		}
+	}
+	badCVE := []string{"CVE-24-0001", "CVE-2024-001", "CNNVD-202401-2345", "CVE20240001"}
+	for _, v := range badCVE {
+		r := validRule()
+		r.CVEIDs = []string{v}
+		if _, err := ValidateInput(r); err == nil {
+			t.Errorf("invalid cve id %q should be rejected", v)
+		}
+	}
+	// 缺省空数组通过且不产生 null 语义
+	r = validRule()
+	if _, err := ValidateInput(r); err != nil {
+		t.Fatalf("nil vuln ids should pass: %v", err)
+	}
+	if r.CNNVDIDs == nil || r.CVEIDs == nil {
+		t.Error("normalized vuln ids must be empty slice, not nil")
+	}
+}
+
+// TestScanRuleVulnIDsNonNull 契约：编号列读出空恒为 [] 非 nil（JSON 序列化为 []）。
+func TestScanRuleVulnIDsNonNull(t *testing.T) {
+	r := &CustomRule{}
+	fillJSONFields(r, nil, nil, nil, nil, nil)
+	if r.CNNVDIDs == nil || r.CVEIDs == nil {
+		t.Error("cnnvd_ids/cve_ids must default to empty slice")
+	}
+	fillJSONFields(r, nil, nil, []byte(`["CNNVD-202401-2345"]`), []byte(`["CVE-2024-0001"]`), nil)
+	if len(r.CNNVDIDs) != 1 || r.CNNVDIDs[0] != "CNNVD-202401-2345" {
+		t.Errorf("cnnvd_ids decode wrong: %v", r.CNNVDIDs)
+	}
+	if len(r.CVEIDs) != 1 || r.CVEIDs[0] != "CVE-2024-0001" {
+		t.Errorf("cve_ids decode wrong: %v", r.CVEIDs)
+	}
+}
+
 func TestInvalidRegex(t *testing.T) {
 	r := validRule()
 	r.OperatorValue = "(?i)(unclosed"

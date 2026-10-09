@@ -1,0 +1,28 @@
+# 九章 WDSP 管理后端 API（裸机）
+# __ROOT__/__USER__ 由 install.sh 渲染替换后安装到 /etc/systemd/system/
+[Unit]
+Description=JiuZhang WDSP Management API (baremetal)
+After=jiuzhang-postgres.service jiuzhang-valkey.service jiuzhang-gateway.service
+Wants=jiuzhang-postgres.service jiuzhang-valkey.service jiuzhang-gateway.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__ROOT__
+EnvironmentFile=__ROOT__/env
+# 与 server/Dockerfile ENTRYPOINT（migrate up && exec）等价：启动前先迁移，失败则不启动
+ExecStartPre=__ROOT__/bin/jiuzhang-api migrate up
+ExecStart=__ROOT__/bin/jiuzhang-api
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=__ROOT__/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

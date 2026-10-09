@@ -30,6 +30,16 @@ type ObjectModel struct {
 	FirstSeen         time.Time `json:"first_seen"`
 	LastSeen          time.Time `json:"last_seen"`
 	UpdatedAt         time.Time `json:"updated_at"`
+	// ---- NG-AZ-02 D5/D7 发布状态字段（管理写入见 object_models_update.go）----
+	Publishable      bool   `json:"publishable"`
+	RequiredRelation string `json:"required_relation"` // 首批仅 OWNER 词表；空=未声明
+	OwnerExclusive   bool   `json:"owner_exclusive"`   // 排他所有权（VERIFIED_VIOLATION 语义前提）
+	OnLeaseExpired   string `json:"on_lease_expired"`  // 租约过期策略 strict|degraded（缺省 strict）
+	// ---- NG-AZ-03 D3 阻断开关与 §8.4 四要素（管理写入见 object_models_update.go）----
+	Enforcement      string `json:"enforcement"`       // OBSERVE|PROTECT（缺省 OBSERVE）
+	EnforcementOwner string `json:"enforcement_owner"` // 业务负责人标识（PROTECT 必填非空 ≤128）
+	EvidenceSource   string `json:"evidence_source"`   // 证据来源声明 AUTHORITY_SYNC|MANUAL_CONFIRMED
+	OnUnknown        string `json:"on_unknown"`        // UNKNOWN 处理方式（首批仅 ALLOW_UNKNOWN）
 }
 
 // ListObjectModels 对象模型分页列表（过滤 endpoint_id/object_segment/identifier_type/application_id，
@@ -87,7 +97,9 @@ SELECT m.id, m.endpoint_id, COALESCE(e.endpoint_key, ''), COALESCE(a.name, ''),
        COALESCE((SELECT d.hostname FROM application_domains d
          WHERE d.application_id = a.id ORDER BY d.is_primary DESC, d.created_at LIMIT 1), ''),
        m.object_segment, m.identifier_type,
-       m.example_hash, m.sample_count, m.first_seen, m.last_seen, m.updated_at`+joins+cond+
+       m.example_hash, m.sample_count, m.first_seen, m.last_seen, m.updated_at,
+       m.publishable, COALESCE(m.required_relation, ''), m.owner_exclusive, m.on_lease_expired,
+       m.enforcement, m.enforcement_owner, m.evidence_source, m.on_unknown`+joins+cond+
 		fmt.Sprintf(" ORDER BY m.last_seen DESC, m.id LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
@@ -98,7 +110,9 @@ SELECT m.id, m.endpoint_id, COALESCE(e.endpoint_key, ''), COALESCE(a.name, ''),
 		var m ObjectModel
 		if err := rows.Scan(&m.ID, &m.EndpointID, &m.EndpointKey, &m.ApplicationName, &m.ApplicationDomain,
 			&m.ObjectSegment, &m.IdentifierType,
-			&m.ExampleHash, &m.SampleCount, &m.FirstSeen, &m.LastSeen, &m.UpdatedAt); err != nil {
+			&m.ExampleHash, &m.SampleCount, &m.FirstSeen, &m.LastSeen, &m.UpdatedAt,
+			&m.Publishable, &m.RequiredRelation, &m.OwnerExclusive, &m.OnLeaseExpired,
+			&m.Enforcement, &m.EnforcementOwner, &m.EvidenceSource, &m.OnUnknown); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, m)

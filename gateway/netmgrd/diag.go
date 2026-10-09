@@ -45,6 +45,9 @@ const (
 	DefaultDiagInterval = 1 * time.Second
 	// diagStopPollInterval stop 文件轮询间隔。
 	diagStopPollInterval = 500 * time.Millisecond
+	// diagCaptureSizePollInterval 在 tcpdump 运行期间检查产物大小，避免仅在
+	// 退出后校验导致抓包文件无限增长。
+	diagCaptureSizePollInterval = 100 * time.Millisecond
 	// diagOutputLimit stdout/stderr 单字段截断上限（64KB）。
 	diagOutputLimit = 64 * 1024
 	// diagCaptureMaxBytes capture 产物大小上限（100MB，超限删除并报 FAILED）。
@@ -108,21 +111,24 @@ type DiagResult struct {
 
 // cmdRunOpts 外部命令执行参数。
 type cmdRunOpts struct {
-	name     string
-	args     []string
-	timeout  time.Duration
-	softKill bool   // 到期/停止时先 SIGTERM（tcpdump 需要刷盘）再 SIGKILL
-	stopFile string // 非空：执行期间轮询该文件，出现即终止（STOPPED）
+	name           string
+	args           []string
+	timeout        time.Duration
+	softKill       bool   // 到期/停止时先 SIGTERM（tcpdump 需要刷盘）再 SIGKILL
+	stopFile       string // 非空：执行期间轮询该文件，出现即终止（STOPPED）
+	capturePath    string // 非空：执行期间检查该抓包产物的大小。
+	maxOutputBytes int64  // capturePath 的运行期大小上限（<=0 表示不检查）。
 }
 
 // cmdOutcome 外部命令执行结果。
 type cmdOutcome struct {
-	stdout   string
-	stderr   string
-	exitCode int
-	timedOut bool
-	stopped  bool
-	err      error // 启动失败（含二进制不存在）
+	stdout              string
+	stderr              string
+	exitCode            int
+	timedOut            bool
+	stopped             bool
+	outputLimitExceeded bool
+	err                 error // 启动失败（含二进制不存在）
 }
 
 // DiagService 诊断请求扫描执行服务（串行，一次一个请求）。
@@ -477,7 +483,8 @@ func (d *DiagService) execTraceroute(req DiagRequest, res *DiagResult) {
 
 // execCapture tcpdump 抓包：-i <iface> -w capture-<job_id>.pcap -s 128，
 // 可选 -c <count>，过滤器固定模板 [proto] [host X] [port N]（and 连接，全部可选）。
-// duration_sec 夹紧 5-300，到期 SIGTERM（属正常结束路径）；产物 >100MB 删除并报 FAILED。
+// duration_sec 夹紧 5-300，到期 SIGTERM（属正常结束路径）；产物运行期间或
+// 退出后 >100MB 均停止、删除并报 FAILED。
 func (d *DiagService) execCapture(req DiagRequest, res *DiagResult) {
 	if !d.lookPath("tcpdump") {
 		res.Status = DiagFailed
@@ -511,10 +518,13 @@ func (d *DiagService) execCapture(req DiagRequest, res *DiagResult) {
 		args = append(args, filter)
 	}
 	out := d.runCmd(context.Background(), cmdRunOpts{
-		name: "tcpdump", args: args,
-		timeout:  time.Duration(duration) * time.Second,
-		softKill: true, // 到期 SIGTERM 让 tcpdump 刷盘，宽限后 SIGKILL
-		stopFile: d.stopFilePath(req.JobID),
+		name:           "tcpdump",
+		args:           args,
+		timeout:        time.Duration(duration) * time.Second,
+		softKill:       true, // 到期 SIGTERM 让 tcpdump 刷盘，宽限后 SIGKILL
+		stopFile:       d.stopFilePath(req.JobID),
+		capturePath:    pcapPath,
+		maxOutputBytes: diagCaptureMaxBytes,
 	})
 
 	// capture 特有意义映射：到期（抓满 duration）= 正常结束，按产物判定成败
@@ -523,29 +533,32 @@ func (d *DiagService) execCapture(req DiagRequest, res *DiagResult) {
 		res.Status = DiagFailed
 		res.Stderr = "tcpdump 启动失败: " + out.err.Error()
 		return
-	case out.stopped:
+	}
+
+	// 所有非启动失败的退出路径都必须校验产物，尤其是手工停止路径。
+	fi, statErr := os.Stat(pcapPath)
+	if out.outputLimitExceeded {
+		rejectOversizeCapture(res, pcapPath, -1)
+		return
+	}
+	if statErr == nil && fi.Size() > diagCaptureMaxBytes {
+		rejectOversizeCapture(res, pcapPath, fi.Size())
+		return
+	}
+	if out.stopped {
 		res.Status = DiagStopped
 		res.Stdout, res.Stderr, res.ExitCode = out.stdout, out.stderr, out.exitCode
 		return
-	case !out.timedOut && out.exitCode != 0:
+	}
+	if !out.timedOut && out.exitCode != 0 {
 		res.Status = DiagFailed
 		res.Stdout, res.Stderr, res.ExitCode = out.stdout, out.stderr, out.exitCode
 		return
 	}
-
-	// 到期或 tcpdump 自行退出（-c 达标）：检查产物
-	fi, statErr := os.Stat(pcapPath)
 	if statErr != nil {
 		res.Status = DiagFailed
 		res.Stdout, res.Stderr = out.stdout, out.stderr
 		res.Stderr = strings.TrimSpace(res.Stderr + "\n抓包结束但产物缺失: " + statErr.Error())
-		return
-	}
-	if fi.Size() > diagCaptureMaxBytes {
-		os.Remove(pcapPath)
-		res.Status = DiagFailed
-		res.Stdout = out.stdout
-		res.Stderr = fmt.Sprintf("pcap 大小 %d 字节超过 100MB 上限，已删除", fi.Size())
 		return
 	}
 	res.Status = DiagSuccess
@@ -553,6 +566,21 @@ func (d *DiagService) execCapture(req DiagRequest, res *DiagResult) {
 	res.Stdout, res.Stderr = out.stdout, out.stderr
 	res.CaptureFile = pcapName
 	res.CaptureSize = fi.Size()
+}
+
+func rejectOversizeCapture(res *DiagResult, pcapPath string, size int64) {
+	if err := os.Remove(pcapPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		res.Status = DiagFailed
+		res.Stderr = fmt.Sprintf("抓包文件超过 100MB 上限，但删除失败: %v", err)
+		return
+	}
+	res.Status = DiagFailed
+	res.ExitCode = -1
+	if size >= 0 {
+		res.Stderr = fmt.Sprintf("抓包文件在运行期间超过 100MB 上限（当前 %d 字节），已停止并删除", size)
+		return
+	}
+	res.Stderr = "抓包文件在运行期间超过 100MB 上限，已停止并删除"
 }
 
 // buildCaptureFilter 固定模板拼装过滤器：[proto] [host X] [port N]，and 连接，
@@ -616,8 +644,12 @@ func defaultRunCmd(ctx context.Context, opts cmdRunOpts) cmdOutcome {
 	defer timer.Stop()
 	var stopTick <-chan time.Time
 	var ticker *time.Ticker
-	if opts.stopFile != "" {
-		ticker = time.NewTicker(diagStopPollInterval)
+	if opts.stopFile != "" || (opts.capturePath != "" && opts.maxOutputBytes > 0) {
+		pollInterval := diagStopPollInterval
+		if opts.capturePath != "" && opts.maxOutputBytes > 0 {
+			pollInterval = diagCaptureSizePollInterval
+		}
+		ticker = time.NewTicker(pollInterval)
 		defer ticker.Stop()
 		stopTick = ticker.C
 	}
@@ -636,9 +668,17 @@ func defaultRunCmd(ctx context.Context, opts cmdRunOpts) cmdOutcome {
 			killAndWait()
 			return cmdOutcome{stdout: so.String(), stderr: se.String(), exitCode: -1, timedOut: true}
 		case <-stopTick:
-			if _, err := os.Stat(opts.stopFile); err == nil {
-				killAndWait()
-				return cmdOutcome{stdout: so.String(), stderr: se.String(), exitCode: -1, stopped: true}
+			if opts.capturePath != "" && opts.maxOutputBytes > 0 {
+				if fi, err := os.Stat(opts.capturePath); err == nil && fi.Size() > opts.maxOutputBytes {
+					killAndWait()
+					return cmdOutcome{stdout: so.String(), stderr: se.String(), exitCode: -1, outputLimitExceeded: true}
+				}
+			}
+			if opts.stopFile != "" {
+				if _, err := os.Stat(opts.stopFile); err == nil {
+					killAndWait()
+					return cmdOutcome{stdout: so.String(), stderr: se.String(), exitCode: -1, stopped: true}
+				}
 			}
 		case <-ctx.Done():
 			killAndWait()

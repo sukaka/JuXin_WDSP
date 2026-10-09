@@ -1,0 +1,29 @@
+# 九章 WDSP 管理控制台（Caddy 静态托管 + /api 反代，裸机）
+# __ROOT__/__USER__ 由 install.sh 渲染替换后安装到 /etc/systemd/system/
+[Unit]
+Description=JiuZhang WDSP Management Console (Caddy static hosting, baremetal)
+After=jiuzhang-api.service
+Wants=jiuzhang-api.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+UMask=0077
+# 绝不带 --resume：控制台配置完全由 install.sh 渲染生成，admin off 不接入
+# Admin API；XDG 目录与网关 autosave 体系隔离，避免互相覆盖。
+Environment=XDG_CONFIG_HOME=__ROOT__/data/caddy-console
+Environment=XDG_DATA_HOME=__ROOT__/data/caddy-console
+ExecStart=__ROOT__/bin/caddy run --config __ROOT__/console/Caddyfile --adapter caddyfile
+# WEB_PORT/WEB_HTTPS_PORT 默认 8080/8443；改 <=1024 端口时仍需 CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=__ROOT__/data
+LimitNOFILE=65536
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

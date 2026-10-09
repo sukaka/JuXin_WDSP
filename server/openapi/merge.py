@@ -34,6 +34,7 @@ TAG_DESCRIPTIONS = {
     'gateway-config': '网关配置与发布',
     'protection-policies': '防护策略',
     'waf-rules': '防护规则库',
+    'vuln-refs': 'CNNVD 漏洞档案',
     'rule-overrides': '规则覆盖',
     'custom-rules': '自定义规则',
     'exceptions': '例外策略',

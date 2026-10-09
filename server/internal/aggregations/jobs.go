@@ -388,6 +388,10 @@ func (j *Jobs) Run(ctx context.Context) {
 			if err := j.RunRuleEffectStats(ctx, time.Now()); err != nil {
 				slog.Error("rule effect statistics aggregation failed", "error", err)
 			}
+			// 站点流量日聚合（access_logs → site_traffic_daily，站点流量分析 30 天视图数据源）
+			if err := j.RunSiteTrafficDaily(ctx, time.Now()); err != nil {
+				slog.Error("site traffic daily aggregation failed", "error", err)
+			}
 			// WDSP 访问微模型：API 行为基线画像离线聚合（api_runtime_events → api_behavior_profiles）
 			if err := j.RunBehaviorProfiles(ctx, time.Now()); err != nil {
 				slog.Error("behavior profile aggregation failed", "error", err)

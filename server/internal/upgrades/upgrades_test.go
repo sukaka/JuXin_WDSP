@@ -15,8 +15,8 @@ import (
 // ---------- 版本号解析与比较 ----------
 
 func TestCurrentVersion(t *testing.T) {
-	if CurrentVersion != "1.2.0" {
-		t.Fatalf("CurrentVersion = %q, want 1.2.0", CurrentVersion)
+	if CurrentVersion != "1.3.0" {
+		t.Fatalf("CurrentVersion = %q, want 1.3.0", CurrentVersion)
 	}
 }
 
@@ -254,13 +254,13 @@ func TestEvaluateActiveTasks(t *testing.T) {
 
 func TestEvaluateMigrationCompat(t *testing.T) {
 	f := baseFacts()
-	f.TargetSchema = 12 // == MaxMigration+1 → PASS
+	f.TargetSchema = 12
 	if got := itemByName(Evaluate(f), "migration_compat"); got.Result != CheckPass {
 		t.Errorf("目标迁移号12 = %s, want PASS", got.Result)
 	}
-	f.TargetSchema = 13 // > MaxMigration+1 → FAIL
-	if got := itemByName(Evaluate(f), "migration_compat"); got.Result != CheckFail {
-		t.Errorf("目标迁移号13 = %s, want FAIL", got.Result)
+	f.TargetSchema = 23 // 目标镜像可携带跨多个版本的迁移
+	if got := itemByName(Evaluate(f), "migration_compat"); got.Result != CheckPass {
+		t.Errorf("目标迁移号23 = %s, want PASS", got.Result)
 	}
 	f.TargetSchema = 0
 	f.MaxMigration = -1 // 目录读取失败 → FAIL

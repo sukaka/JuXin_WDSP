@@ -20,7 +20,7 @@ usage() {
 选项:
   -v, --version X.Y.Z       版本号（必填）
       --offline-package F   使用已构建的 jiuzhang-wdsp-offline-*-amd64.tar.gz
-      --rpm-dir DIR         随包附带 openEuler x86-64 依赖 RPM（可选）
+      --rpm-dir DIR         随包附带 openEuler x86-64 依赖 RPM（必须含 docker-compose-plugin）
       --development         允许构建未签名 development 包，仅用于测试
       --skip-images         新建基础离线包时跳过镜像，仅用于结构测试
   -o, --output DIR          输出目录（默认 <仓库>/dist）
@@ -55,7 +55,7 @@ mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd -P)"
 
 if [[ -z "$OFFLINE_PACKAGE" ]]; then
-  build_args=(-v "$VERSION" -p wdsp -a amd64 -o "$OUTPUT_DIR")
+  build_args=(-v "$VERSION" -p wdsp -a amd64 --runtime-only -o "$OUTPUT_DIR")
   [[ "$DEVELOPMENT" != "true" ]] || build_args+=(--development)
   [[ "$SKIP_IMAGES" != "true" ]] || build_args+=(--skip-images)
   "$BASE_BUILDER" "${build_args[@]}"
@@ -73,6 +73,7 @@ if [[ "$DEVELOPMENT" != "true" ]]; then
 fi
 if [[ -n "$RPM_DIR" ]]; then
   [[ -d "$RPM_DIR" ]] || die "RPM 目录不存在：$RPM_DIR"
+  RPM_DIR="$(cd "$RPM_DIR" && pwd -P)"
 fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jiuzhang-wdsp-run-build.XXXXXX")"
@@ -92,13 +93,16 @@ if [[ -n "$RPM_DIR" ]]; then
   mkdir -p "$PAYLOAD_DIR/rpms"
   shopt -s nullglob
   rpm_files=("$RPM_DIR"/*.rpm)
+  compose_plugin_rpms=("$RPM_DIR"/docker-compose-plugin-*.rpm)
   shopt -u nullglob
   [[ ${#rpm_files[@]} -gt 0 ]] || die "RPM 目录中没有 .rpm 文件：$RPM_DIR"
+  [[ ${#compose_plugin_rpms[@]} -gt 0 ]] \
+    || die "RPM 目录缺少 docker-compose-plugin RPM：$RPM_DIR"
   cp "${rpm_files[@]}" "$PAYLOAD_DIR/rpms/"
 fi
 
 PAYLOAD="$WORK_DIR/payload.tar.gz"
-tar -czf "$PAYLOAD" -C "$PAYLOAD_DIR" .
+COPYFILE_DISABLE=1 tar -czf "$PAYLOAD" -C "$PAYLOAD_DIR" .
 OUT="$OUTPUT_DIR/jiuzhang-wdsp-openeuler-zhaoxin-${VERSION}-amd64.run"
 cp "$HEADER" "$OUT"
 cat "$PAYLOAD" >> "$OUT"

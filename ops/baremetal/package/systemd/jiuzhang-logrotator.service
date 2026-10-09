@@ -1,0 +1,21 @@
+# 九章 WDSP 日志轮转 sidecar（裸机）
+# __ROOT__/__USER__ 由 install.sh 渲染替换后安装到 /etc/systemd/system/
+[Unit]
+Description=JiuZhang WDSP Log Rotator (baremetal)
+After=jiuzhang-gateway.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+Environment=LOG_DIR=__ROOT__/data/logs/caddy
+ExecStart=/bin/sh __ROOT__/bin/logrotator.sh
+Restart=always
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=__ROOT__/data
+
+[Install]
+WantedBy=multi-user.target

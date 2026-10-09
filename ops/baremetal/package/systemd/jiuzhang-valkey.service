@@ -1,0 +1,24 @@
+# 九章 WDSP 裸机内置 Valkey 8
+# __ROOT__/__USER__ 由 install.sh 渲染替换后安装到 /etc/systemd/system/
+# valkey-server 为 sh 包装脚本（内部经 lib/ld-musl 加载 .bin），直接调用即可。
+[Unit]
+Description=JiuZhang WDSP Valkey (baremetal bundled)
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+ExecStart=__ROOT__/bin/valkey/valkey-server __ROOT__/data/valkey/valkey.conf
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=__ROOT__/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

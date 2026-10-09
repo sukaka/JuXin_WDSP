@@ -4,6 +4,7 @@ import type {
   CreateExceptionFromEventResult,
   EventRemediationResult,
   PageResult,
+  RelatedEventMode,
   SecurityEventDetail,
   SecurityEventItem,
   WafRuleEffectStatisticsPage,
@@ -64,11 +65,15 @@ export const securityEventsApi = {
       notes: data.notes ?? [],
       actions: data.actions ?? [],
       related: data.related ?? [],
+      related_mode: data.related_mode ?? 'none',
+      related_session_id: data.related_session_id ?? null,
     }
   },
   related: async (id: string) => {
-    const data = await request<{ items: SecurityEventItem[] }>(`/security-events/${id}/related`)
-    return { items: data.items ?? [] }
+    const data = await request<{ items: SecurityEventItem[]; mode?: RelatedEventMode; session_id?: string | null }>(
+      `/security-events/${id}/related`,
+    )
+    return { items: data.items ?? [], mode: data.mode ?? 'none', session_id: data.session_id ?? null }
   },
   remediation: (id: string) =>
     request<EventRemediationResult>(`/security-events/${id}/remediation`),

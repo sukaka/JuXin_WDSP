@@ -431,3 +431,166 @@ func TestAuthzMigrationPostgresFailureRetryContract(t *testing.T) {
 		t.Fatalf("probe table %s missing after retry", table)
 	}
 }
+
+// TestAuthzEnforcementMigration174PostgresContract validates 000174 against a
+// disposable PostgreSQL database: enforcement columns/defaults/CHECKs, the
+// decision vocabulary widening (VERIFIED_VIOLATION), and the one-step down/up
+// cycle. Opt-in (AUTHZ_TEST_PG_DSN) so unit runs do not require a live database.
+func TestAuthzEnforcementMigration174PostgresContract(t *testing.T) {
+	pool, ctx := openAuthzPostgres(t)
+	if err := database.Migrate(ctx, pool, "../../migrations", "up"); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	if err := database.Migrate(ctx, pool, "../../migrations", "up"); err != nil {
+		t.Fatalf("rerun migrations: %v", err)
+	}
+
+	var applied int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 174`).Scan(&applied); err != nil {
+		t.Fatalf("check migration record: %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("migration 174 records=%d, want 1", applied)
+	}
+
+	// 列存在（两表）
+	columns := map[string][]string{
+		"api_object_models":  {"enforcement", "enforcement_owner", "evidence_source", "on_unknown"},
+		"api_role_baselines": {"enforcement"},
+	}
+	for table, names := range columns {
+		for _, name := range names {
+			var exists bool
+			if err := pool.QueryRow(ctx, `SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2
+			)`, table, name).Scan(&exists); err != nil {
+				t.Fatalf("check column %s.%s: %v", table, name, err)
+			}
+			if !exists {
+				t.Fatalf("column %s.%s missing after migration", table, name)
+			}
+		}
+	}
+
+	// CHECK 约束存在
+	for _, constraint := range []string{
+		"api_object_models_enforcement_check",
+		"api_object_models_evidence_source_check",
+		"api_object_models_on_unknown_check",
+		"api_role_baselines_enforcement_check",
+		"api_authorization_decisions_decision_check",
+	} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = $1)`, constraint).Scan(&exists); err != nil {
+			t.Fatalf("check constraint %s: %v", constraint, err)
+		}
+		if !exists {
+			t.Fatalf("constraint %s missing after migration", constraint)
+		}
+	}
+
+	// 缺省值（D10：新增列全默认 OBSERVE/空值——未配置行为与历史版本一致）
+	code := fmt.Sprintf("az174-%d", time.Now().UnixNano())
+	var applicationID, endpointID string
+	if err := pool.QueryRow(ctx, `INSERT INTO applications(code,name) VALUES ($1,$2) RETURNING id`, code, code).Scan(&applicationID); err != nil {
+		t.Fatalf("insert application: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO api_endpoints(application_id,http_method,normalized_path,endpoint_key) VALUES ($1,'GET','/orders/{id}',$2) RETURNING id`, applicationID, code+":GET:/orders/{id}").Scan(&endpointID); err != nil {
+		t.Fatalf("insert endpoint: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM api_object_models WHERE endpoint_id=$1`, endpointID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM api_role_baselines WHERE endpoint_id=$1`, endpointID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM api_authorization_decisions WHERE endpoint_key LIKE $1`, code+":%")
+		_, _ = pool.Exec(context.Background(), `DELETE FROM api_endpoints WHERE id=$1`, endpointID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM applications WHERE id=$1`, applicationID)
+	})
+	var modelID string
+	if err := pool.QueryRow(ctx, `INSERT INTO api_object_models(endpoint_id,object_segment) VALUES ($1,'path:1') RETURNING id`, endpointID).Scan(&modelID); err != nil {
+		t.Fatalf("insert object model: %v", err)
+	}
+	var enforcement, owner, evidenceSource, onUnknown string
+	if err := pool.QueryRow(ctx, `SELECT enforcement,enforcement_owner,evidence_source,on_unknown FROM api_object_models WHERE id=$1`, modelID).
+		Scan(&enforcement, &owner, &evidenceSource, &onUnknown); err != nil {
+		t.Fatalf("read object model defaults: %v", err)
+	}
+	if enforcement != "OBSERVE" || owner != "" || evidenceSource != "" || onUnknown != "ALLOW_UNKNOWN" {
+		t.Fatalf("object model defaults=(%q,%q,%q,%q), want (OBSERVE,'','',ALLOW_UNKNOWN)", enforcement, owner, evidenceSource, onUnknown)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO api_role_baselines(endpoint_id,role,method,action) VALUES ($1,'ops','GET','READ')`, endpointID); err != nil {
+		t.Fatalf("insert role baseline: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT enforcement FROM api_role_baselines WHERE endpoint_id=$1`, endpointID).Scan(&enforcement); err != nil {
+		t.Fatalf("read role baseline default: %v", err)
+	}
+	if enforcement != "OBSERVE" {
+		t.Fatalf("role baseline enforcement default=%q, want OBSERVE", enforcement)
+	}
+
+	// CHECK 拒收词表外值
+	if _, err := pool.Exec(ctx, `UPDATE api_object_models SET enforcement='BLOCK' WHERE id=$1`, modelID); err == nil {
+		t.Fatal("enforcement=BLOCK must be rejected by CHECK")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE api_object_models SET evidence_source='GUESSED' WHERE id=$1`, modelID); err == nil {
+		t.Fatal("evidence_source=GUESSED must be rejected by CHECK")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE api_object_models SET on_unknown='DENY_UNKNOWN' WHERE id=$1`, modelID); err == nil {
+		t.Fatal("on_unknown=DENY_UNKNOWN must be rejected by CHECK")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE api_role_baselines SET enforcement='BLOCK' WHERE endpoint_id=$1`, endpointID); err == nil {
+		t.Fatal("role baseline enforcement=BLOCK must be rejected by CHECK")
+	}
+
+	// D1 决策词表第四值：VERIFIED_VIOLATION 落库成功；词表外仍拒收
+	if _, err := pool.Exec(ctx, `INSERT INTO api_authorization_decisions(decision_id,application_id,endpoint_key,decision) VALUES (gen_random_uuid(),$1,$2,'VERIFIED_VIOLATION')`, applicationID, code+":GET:/orders/{id}"); err != nil {
+		t.Fatalf("VERIFIED_VIOLATION decision insert: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO api_authorization_decisions(decision_id,application_id,endpoint_key,decision) VALUES (gen_random_uuid(),$1,$2,'BOGUS')`, applicationID, code+":GET:/orders/{id}"); err == nil {
+		t.Fatal("BOGUS decision must be rejected by CHECK")
+	}
+
+	// down 十二步：先回滚 000185（升级任务 executor_deadline 列，NG-REL-02 F7）与
+	// 000184/000183（NG-ID 机器身份四表）与 000182..000176（其上的 NG-MCP/NG-GRPC/
+	// NG-FLOW 各迁移）与 000175（NG-AZ-04 确认单表，本测试不覆盖其结构——175 契约
+	// 见 apiauthzwizard 包），再回滚 174 到 173 基线
+	// （先清 VERIFIED_VIOLATION 行——CHECK 回缩要求无新值行）
+	if _, err := pool.Exec(ctx, `DELETE FROM api_authorization_decisions WHERE endpoint_key LIKE $1`, code+":%"); err != nil {
+		t.Fatalf("cleanup decisions before down: %v", err)
+	}
+	for _, v := range []int{185, 184, 183, 182, 181, 180, 179, 178, 177, 176, 175, 174} {
+		if err := database.Migrate(ctx, pool, "../../migrations", "down"); err != nil {
+			t.Fatalf("migrate down %d: %v", v, err)
+		}
+	}
+	var colExists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'api_object_models' AND column_name = 'enforcement'
+	)`).Scan(&colExists); err != nil {
+		t.Fatalf("check column after down: %v", err)
+	}
+	if colExists {
+		t.Fatal("api_object_models.enforcement must be dropped after down")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO api_authorization_decisions(decision_id,application_id,endpoint_key,decision) VALUES (gen_random_uuid(),$1,$2,'VERIFIED_VIOLATION')`, applicationID, code+":GET:/orders/{id}"); err == nil {
+		t.Fatal("VERIFIED_VIOLATION must be rejected after vocabulary rollback")
+	}
+
+	// 再 up：列与词表恢复（IF NOT EXISTS 幂等）
+	if err := database.Migrate(ctx, pool, "../../migrations", "up"); err != nil {
+		t.Fatalf("migrate up again: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'api_object_models' AND column_name = 'enforcement'
+	)`).Scan(&colExists); err != nil {
+		t.Fatalf("check column after re-up: %v", err)
+	}
+	if !colExists {
+		t.Fatal("api_object_models.enforcement must exist after re-up")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO api_authorization_decisions(decision_id,application_id,endpoint_key,decision) VALUES (gen_random_uuid(),$1,$2,'VERIFIED_VIOLATION')`, applicationID, code+":GET:/orders/{id}"); err != nil {
+		t.Fatalf("VERIFIED_VIOLATION insert after re-up: %v", err)
+	}
+}

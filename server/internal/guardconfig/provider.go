@@ -71,6 +71,7 @@ type Provider struct {
 	fieldPermissions FieldPermissionLister
 	// 流程基线读取（api_flow_baselines 表 enabled 行，迁移 000155；nil 或查询失败时 Warn 跳过）
 	flowBaselines FlowBaselineLister
+	strongFlows   StrongFlowLister
 	// 已吊销凭据清单读取（api_revoked_credentials 表当前生效行，迁移 000156；
 	// nil 或查询失败时 Warn 跳过，与 FlowBaselineLister 同一模式）
 	revokedCredentials RevokedCredentialLister
@@ -86,6 +87,27 @@ type Provider struct {
 	// gRPC 描述符集读取（api_grpc_descriptors 表 ENABLED 行，迁移 000076；
 	// nil 或查询失败时 Warn 跳过，与 MaskRuleStore 同一模式）
 	grpcDescriptors GRPCDescriptorLister
+	// gRPC 描述符 per-app 绑定读取（api_grpc_bindings 表全行，迁移 000179；
+	// nil 或查询失败时 Warn 跳过（空绑定=全局可见现状语义），与 MaskRuleStore 同一模式）
+	grpcBindings GRPCBindingLister
+	// MCP 工具目录读取（mcp_tool_catalogs 表 ENABLED 行 + APPROVED 工具集，迁移 000181；
+	// nil 或查询失败时 Warn 跳过不下发 api_mcp_tool_catalogs 段，与 GRPCBindingLister 同一模式）
+	mcpCatalogs MCPToolCatalogLister
+	// MCP 目录 per-app 绑定读取（mcp_catalog_bindings 表全行，迁移 000182；
+	// nil 或查询失败时 Warn 跳过不下发 api_mcp_bindings 段——空绑定=网关 MCP 管控零行为变化）
+	mcpBindings MCPBindingLister
+	// 机器身份登记册读取（machine_identities 表 ENABLED 行+machine_identity_keys 全状态
+	// 键行，迁移 000183；nil 或查询失败时 Warn 跳过不下发 api_machine_identities 段，
+	// 与 MCPToolCatalogLister 同一模式）
+	machineIdentities MachineIdentityLister
+	// 机器身份 per-app 绑定读取（machine_identity_bindings 表全行，迁移 000184；
+	// nil 或查询失败时 Warn 跳过不下发 api_machine_identity_bindings 段——空绑定=网关
+	// 机器身份验证零行为变化）
+	machineIDBindings MachineIdentityBindingLister
+	// 机器身份元数据读取（撤销水位+登记册版本；身份或绑定任一非空才读取下发；
+	// 读取失败 → 三段整体不下发（登记册不带水位单独下发制造模糊态——网关保留旧
+	// 配置更安全），见 machine_identities.go loadAPIMachineIdentitySections）
+	machineIDMeta MachineIdentityMetaLister
 	// 文件签名密钥读取（system_settings gateway_runtime 组 api_file_signature_key 密文解密
 	// + api_file_signature_kid；nil/未配置时不下发 api_file_signature，网关零行为变化；
 	// 读取/解密失败中止发布——静默停用签名会让管理面显示与网关行为不一致）
@@ -114,6 +136,12 @@ type Provider struct {
 	// 行，列由迁移 000130 建立；仅 WDSP 开启时下发 api_exceptions 段；读取失败中止
 	// 发布——fail-hard，与 jwt_trust 同一口径；nil 时不下发该段，网关零行为变化）
 	apiExceptions APIExceptionLister
+	// API 准入策略读取（applications.api_admission_mode<>'OFF' 行 + 各应用确认集，
+	// 列由迁移 000166 建立；仅 WDSP 开启时下发 api_admission 段；读取失败中止发布——
+	// fail-hard，与 jwt_trust 同一口径；nil 时不下发该段，网关准入判定零行为变化）
+	apiAdmission APIAdmissionLister
+	// apiGraphQL GraphQL 成本预算策略读取（NG-GQL-03；nil = 不下发该段）
+	apiGraphQL APIGraphQLLister
 	// AUTHZ-01：只下发已确认的对象模型、OWNER 关系与 VERIFIED 角色基线；
 	// 对象引用 HMAC 密钥单独从加密设置读取，禁止进入版本快照。
 	authzSnapshot      AuthzSnapshotLister
@@ -508,6 +536,10 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		if loaderErr != nil {
 			return nil, loaderErr
 		}
+		// NG-FLOW-01：强流程定义（ACTIVE 行+步骤）随发布下发 api_strong_flows 段
+		// （表由迁移 000176 建立；缺表/未注入 Warn 跳过——NG-T-C01 缺省零变化，
+		// 与既有流程观察段物理隔离互不消费）
+		cfg.APIStrongFlows = p.loadAPIStrongFlows(ctx)
 		// 阶段8 §35 凭据异常「已吊销凭据使用」数据源：当前生效吊销指纹清单随发布下发
 		// （表由迁移 000156 建立；缺表容忍 Warn 跳过，真实查询错误中止候选发布——
 		// 纪律同流程基线；指纹级载荷，无凭据明文）
@@ -525,6 +557,31 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		cfg.APIAuthzRelations = authzRelations
 		cfg.APIAuthzRoleBaselines = authzRoles
 		cfg.APIAuthzObjectHMACKeyHex = authzKeyHex
+		// NG-AZ-02 v2 快照元数据（仅存在可发布授权模型时编译：schema 闸门/管理面向量水位/
+		// 决策侧排除集/编译时刻/per-app 租约；lister 未实现 v2 接口（测试/旧装配形态）时
+		// 按 v1 零行为跳过；读取失败中止发布 fail-hard 与关系编译同口径）
+		if len(authzModels) > 0 {
+			if l, ok := p.authzSnapshot.(AuthzSnapshotV2Lister); ok {
+				wm, err := l.LoadManagementRevocationWatermark(ctx)
+				if err != nil {
+					return nil, err
+				}
+				conflicts, err := l.ListOpenAuthzConflicts(ctx)
+				if err != nil {
+					return nil, err
+				}
+				lease, err := l.ListAuthzLeaseSeconds(ctx)
+				if err != nil {
+					return nil, err
+				}
+				producedAt := time.Now().UTC()
+				cfg.APIAuthzSchema = gatewayconfig.AuthzSnapshotSchemaV2
+				cfg.APIAuthzRevocationWatermark = wm
+				cfg.APIAuthzConflictedObjects = conflicts
+				cfg.APIAuthzProducedAt = &producedAt
+				cfg.APIAuthzLeaseSeconds = lease
+			}
+		}
 		if len(authzModels) > 0 && authzModels[0].SnapshotExpiresAt != nil {
 			expiresAt := authzModels[0].SnapshotExpiresAt.UTC()
 			cfg.APIAuthzSnapshotExpiresAt = &expiresAt
@@ -535,7 +592,9 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		if err != nil {
 			return nil, err
 		}
-		authzKeyHex, err = p.ensureAuthzSnapshotKey(ctx, authzKeyHex, len(authzModels) > 0, previousValid)
+		// NG-FLOW-02：含 ACTIVE 强流程定义同样需要对象 HMAC 密钥（实例键构造复用——
+		// 无授权模型且无上一快照时，强流程-only 形态也触发加载，缺失 fail-hard）
+		authzKeyHex, err = p.ensureAuthzSnapshotKey(ctx, authzKeyHex, len(authzModels) > 0 || len(cfg.APIStrongFlows) > 0, previousValid)
 		if err != nil {
 			return nil, err
 		}
@@ -567,6 +626,25 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		// W14-DESC / P2-05 深化：gRPC 描述符集随发布下发（表由迁移 000076 建立；
 		// 缺失/失败 Warn 跳过；无描述符下发时网关退化为 v1 帧结构校验）
 		cfg.APIGRPCDescriptors = p.loadAPIGRPCDescriptors(ctx)
+		// NG-GRPC G1 批次 B1：per-app 绑定随发布下发（表由迁移 000179 建立；
+		// 缺失/失败 Warn 跳过——空绑定=全局可见现状语义零变化）
+		cfg.APIGRPCBindings = p.loadAPIGRPCBindings(ctx)
+		// NG-MCP G1 批次 B1：MCP 工具目录（仅 ENABLED 目录 + APPROVED 工具行，迁移
+		// 000181）与 per-app 绑定（迁移 000182）随发布下发；缺失/失败 Warn 跳过——
+		// 空段=网关 MCP 管控零行为变化
+		cfg.APIMCPToolCatalogs = p.loadAPIMCPToolCatalogs(ctx)
+		cfg.APIMCPBindings = p.loadAPIMCPBindings(ctx)
+		// NG-ID g1 批次 B1：机器身份登记册（machine_identities ENABLED 行+全状态键行，
+		// 迁移 000183）与 per-app 绑定及撤销水位元数据（迁移 000184）随发布下发；
+		// 缺失/失败 Warn 跳过——空段=网关机器身份验证零行为变化（NG-T-C01）；
+		// meta 读取失败三段整体不下发（登记册不带水位不单独下发）
+		cfg.APIMachineIdentities, cfg.APIMachineIdentityBindings, cfg.APIMachineIdentityMeta =
+			p.loadAPIMachineIdentitySections(ctx)
+		// S7 批次 C 裁决 3（跨轨指纹域对齐，S6 偏差 1 先例）：principal_binding 发布前
+		// 换算到网关比对域（HMAC(identity_salt, "jwt-principal:"+录入值)——网关运行期
+		// 按同域指纹与 JWT VerifiedPrincipalID 比对；B1 原文透传会致合法请求
+		// MID-PRINCIPAL-MISMATCH 误拒）。须在 applyGatewayRuntime 之后（同快照盐）。
+		applyMachineIDPrincipalBindingFP(cfg)
 		// P0-03：JWT 信任策略随发布下发 jwt_trust 段（表由迁移 000125 建立；
 		// 读取失败或 PROTECT 门禁不满足时中止发布——拒绝发布并保留旧有效版本，
 		// 不静默关闭原 PROTECT；含策略版本与 issuer 配置 ID/keyset 版本标识，无秘密材料）
@@ -585,6 +663,22 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		if err := p.loadAPIExceptions(ctx, cfg); err != nil {
 			return nil, err
 		}
+		// WDSP P1：API 准入策略随发布下发 api_admission 段（列由迁移 000166 建立；
+		// key=application_id；读取失败中止发布 fail-hard——不静默丢失已 PROTECT 应用的
+		// 准入拦截；无启用行/未注入 lister 时不下发该段，网关准入判定零行为变化）
+		if err := p.loadAPIAdmission(ctx, cfg); err != nil {
+			return nil, err
+		}
+		// NG-GQL-03：GraphQL 成本预算策略随发布下发 api_graphql 段（表由迁移 000171
+		// 建立；key=application_id；读取失败中止发布 fail-hard 同上口径；无启用行/
+		// 未注入 lister 时不下发该段，网关 GraphQL 判定零行为变化）
+		if err := p.loadAPIGraphQL(ctx, cfg); err != nil {
+			return nil, err
+		}
+		// NG-MCP G1 批次 B1（§1.5/§1.14）：PROTECT MCP 绑定端点未被同应用 jwt_trust
+		// 覆盖 → 非阻断 Warn 警示（配置缺口；运行时按 COV_NO_TRUSTED_SUBJECT 放行+披露，
+		// UNKNOWN 恒不阻断——strict 组合属业务端点逐项批准，不硬失败）
+		warnMCPJWTTrustCoverage(cfg)
 		// P0-03/21：API 策略版本戳（本次发布内容哈希，恒下发供生效校验与网关回报比对；
 		// 覆盖面对齐 guard.go 实际下发面，密钥三段与 identity_salt 不参与）
 		cfg.APIPolicyVersion = computeAPIPolicyVersion(cfg)

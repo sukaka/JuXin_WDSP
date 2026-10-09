@@ -92,6 +92,15 @@ export const MENU_ITEMS: MenuDef[] = [
     capability: 'web_waf',
     group: '应用防护策略',
   },
+  // CNNVD 兼容性 P1：漏洞档案（角色码之外按权限点补显，路由按 waf_rules.read 放行）
+  {
+    key: '/waf/vuln-refs',
+    label: '漏洞档案',
+    roles: ['SECURITY_ADMIN'],
+    permissions: ['waf_rules.read'],
+    capability: 'web_waf',
+    group: '应用防护策略',
+  },
   {
     key: '/exceptions',
     label: '例外策略',
@@ -179,6 +188,14 @@ export const MENU_ITEMS: MenuDef[] = [
     capability: 'api_dynamic_protection',
     group: 'API 防护',
   },
+  // API 准入防护（docs/API_ADMISSION_CONTROL_DESIGN.md §6，读取权限 api_asset.read）
+  {
+    key: '/api-admission',
+    label: 'API 准入防护',
+    roles: ['SECURITY_ADMIN'],
+    capability: 'api_dynamic_protection',
+    group: 'API 防护',
+  },
   {
     key: '/api-models',
     label: 'API 模型版本',
@@ -239,6 +256,22 @@ export const MENU_ITEMS: MenuDef[] = [
     key: '/api-specs',
     label: '规范对比',
     roles: ['SECURITY_ADMIN'],
+    capability: 'api_dynamic_protection',
+    group: 'API 防护',
+  },
+  {
+    key: '/api-mcp',
+    label: 'MCP 工具目录',
+    roles: ['SECURITY_ADMIN'],
+    permissions: ['api_spec.read'],
+    capability: 'api_dynamic_protection',
+    group: 'API 防护',
+  },
+  {
+    key: '/api-machine-identities',
+    label: '机器身份',
+    roles: ['SECURITY_ADMIN'],
+    permissions: ['jwt_trust.read'],
     capability: 'api_dynamic_protection',
     group: 'API 防护',
   },

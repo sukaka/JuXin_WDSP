@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/backups"
 	"github.com/jiuzhang-waf/server/internal/restores"
 )
@@ -22,7 +23,27 @@ const (
 	defaultBackupWait  = 30 * time.Minute
 	defaultRestoreWait = 60 * time.Minute
 	defaultPoll        = 5 * time.Second
+	// defaultScheduleTick 定时任务到点检查周期（与 RunResultReconciler 同周期）
+	defaultScheduleTick = 3 * time.Second
 )
+
+// scheduleStore 定时升级所需的持久化能力（*Store 实现；测试可注入内存实现，
+// 同 Handler 的 packageRegistrar/upgradeExecutor 测试替换模式）。
+type scheduleStore interface {
+	GetPackage(ctx context.Context, id uuid.UUID) (*Package, error)
+	GetJob(ctx context.Context, id uuid.UUID) (*Job, error)
+	CreateScheduledJobIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID string, scheduledAt time.Time) (*Job, error)
+	ListDueScheduledJobs(ctx context.Context, now time.Time) ([]Job, error)
+	PromoteScheduledToPending(ctx context.Context, id uuid.UUID, now time.Time) error
+	CancelScheduled(ctx context.Context, id uuid.UUID) error
+}
+
+// strandedStore 滞留 APPLYING 任务兜底清扫所需的持久化能力
+// （*Store 实现；测试可注入内存实现，同 scheduleStore 模式）。
+type strandedStore interface {
+	ListExpiredApplyingJobs(ctx context.Context, cutoff time.Time, wait time.Duration) ([]Job, error)
+	MarkFailedIfStatus(ctx context.Context, id uuid.UUID, from, code string, err error) error
+}
 
 // Service 升级服务。
 type Service struct {
@@ -40,16 +61,31 @@ type Service struct {
 	backupWait  time.Duration
 	restoreWait time.Duration
 	poll        time.Duration
+	// executorWait 等待宿主机执行器终态结果的上限（进程内定时器随 API 退出丢失；
+	// 进入 APPLYING 时持久化 executor_deadline = 当前时刻 + executorWait 供重启后兜底清扫）。
+	executorWait time.Duration
+
+	// 定时升级（测试可替换的协作点，生产由 NewService 绑定默认实现）
+	schedStore   scheduleStore
+	stranded     strandedStore
+	nowFn        func() time.Time
+	startRun     func(id uuid.UUID)
+	auditFn      func(ctx context.Context, in audits.RecordInput) error
+	scheduleTick time.Duration
 }
 
 // NewService 创建升级服务。
 func NewService(db *pgxpool.Pool, store *Store, backupStore *backups.Store, restoreSvc *restores.Service,
 	prechecker *Prechecker, migrationsDir string, alertFn backups.AlertFunc) *Service {
-	return &Service{
+	s := &Service{
 		db: db, store: store, backupStore: backupStore, restores: restoreSvc,
 		prechecker: prechecker, migrationsDir: migrationsDir, alertFn: alertFn,
 		backupWait: defaultBackupWait, restoreWait: defaultRestoreWait, poll: defaultPoll,
+		executorWait: defaultExecutorWait,
+		schedStore: store, stranded: store, nowFn: time.Now, scheduleTick: defaultScheduleTick,
 	}
+	s.startRun = func(id uuid.UUID) { go s.run(id) }
+	return s
 }
 
 // SetTimeouts 覆盖等待参数（测试用）。
@@ -63,6 +99,44 @@ func (s *Service) SetTimeouts(backupWait, restoreWait, poll time.Duration) {
 	if poll > 0 {
 		s.poll = poll
 	}
+}
+
+// SetScheduleStore 为隔离测试注入内存版定时任务存储；生产装配使用 store。
+func (s *Service) SetScheduleStore(ss scheduleStore) *Service {
+	s.schedStore = ss
+	return s
+}
+
+// SetStrandedStore 为隔离测试注入内存版滞留任务存储；生产装配使用 store。
+func (s *Service) SetStrandedStore(ss strandedStore) *Service {
+	s.stranded = ss
+	return s
+}
+
+// SetNowFunc 为隔离测试注入时钟；生产默认 time.Now。
+func (s *Service) SetNowFunc(fn func() time.Time) *Service {
+	s.nowFn = fn
+	return s
+}
+
+// SetStartRunFunc 为隔离测试替换 promote 后的执行启动入口（默认异步进入正常执行流程）。
+func (s *Service) SetStartRunFunc(fn func(id uuid.UUID)) *Service {
+	s.startRun = fn
+	return s
+}
+
+// SetAuditFunc 注入定时执行 promote 的审计记录入口（装配层绑定 audits.Service.Record）。
+func (s *Service) SetAuditFunc(fn func(ctx context.Context, in audits.RecordInput) error) *Service {
+	s.auditFn = fn
+	return s
+}
+
+// SetScheduleTick 覆盖定时任务到点检查周期（测试用）。
+func (s *Service) SetScheduleTick(d time.Duration) *Service {
+	if d > 0 {
+		s.scheduleTick = d
+	}
+	return s
 }
 
 // RunPrecheck 对升级包执行预检（不落任务，供单独预检接口）。
@@ -90,6 +164,102 @@ func (s *Service) Execute(ctx context.Context, packageID, requestedBy uuid.UUID,
 	}
 	go s.run(job.ID)
 	return job, nil
+}
+
+// Schedule 创建定时升级任务（SCHEDULED），不立即启动；
+// 到点由 RunScheduler promote 为 PENDING 后进入与 Execute 相同的执行流程。
+// VERIFIED 校验与活动任务互斥语义同 Execute；scheduledAt 的合法性由上传入口
+// ParseScheduledAt 保证，此处仅落库（统一 UTC）。
+func (s *Service) Schedule(ctx context.Context, packageID, requestedBy uuid.UUID, requestID string, scheduledAt time.Time) (*Job, error) {
+	pkg, err := s.schedStore.GetPackage(ctx, packageID)
+	if err != nil {
+		return nil, err
+	}
+	if pkg.Status != PackageVerified {
+		return nil, ErrPackageNotVerified
+	}
+	return s.schedStore.CreateScheduledJobIfNoActive(ctx, packageID, &requestedBy, requestID, scheduledAt.UTC())
+}
+
+// Cancel 取消定时升级任务：仅 SCHEDULED 状态可取消（转为终态 CANCELLED）；
+// 已进入 PENDING 及以后的任务返回 ErrInvalidStatus（任务已开始，无法取消）。
+func (s *Service) Cancel(ctx context.Context, jobID, requestedBy uuid.UUID) (*Job, error) {
+	job, err := s.schedStore.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != StatusScheduled {
+		return nil, fmt.Errorf("%w: 任务已开始，无法取消（当前状态 %s）", ErrInvalidStatus, job.Status)
+	}
+	if err := s.schedStore.CancelScheduled(ctx, jobID); err != nil {
+		return nil, err
+	}
+	return s.schedStore.GetJob(ctx, jobID)
+}
+
+// RunScheduler 周期检查到点的定时升级任务并 promote 进入正常执行流程。
+func (s *Service) RunScheduler(ctx context.Context) {
+	ticker := time.NewTicker(s.scheduleTick)
+	defer ticker.Stop()
+	for {
+		s.promoteDueScheduled(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// promoteDueScheduled 将到点（SCHEDULED && scheduled_at <= now）的任务 promote 为
+// PENDING 并启动执行。promote 与取消互为乐观竞争，失败方如实记审计，不静默。
+func (s *Service) promoteDueScheduled(ctx context.Context) {
+	now := s.nowFn()
+	jobs, err := s.schedStore.ListDueScheduledJobs(ctx, now)
+	if err != nil {
+		slog.Error("list due scheduled upgrade jobs failed", "error", err)
+		return
+	}
+	for i := range jobs {
+		job := &jobs[i]
+		if err := s.schedStore.PromoteScheduledToPending(ctx, job.ID, now); err != nil {
+			slog.Error("promote scheduled upgrade job failed", "id", job.ID, "error", err)
+			s.recordScheduleAudit(ctx, job, audits.ResultFailure, err.Error())
+			continue
+		}
+		slog.Info("scheduled upgrade job promoted", "id", job.ID, "scheduled_at", job.ScheduledAt)
+		s.recordScheduleAudit(ctx, job, audits.ResultSuccess, "")
+		s.startRun(job.ID)
+	}
+}
+
+// recordScheduleAudit 定时执行 promote 审计（系统动作，操作人取任务创建人；高危）。
+func (s *Service) recordScheduleAudit(ctx context.Context, job *Job, result, failReason string) {
+	if s.auditFn == nil {
+		return
+	}
+	in := audits.RecordInput{
+		UserID:        job.RequestedBy,
+		Module:        "upgrades",
+		Action:        "scheduled_execute",
+		ObjectType:    "upgrade",
+		ObjectID:      job.ID.String(),
+		AfterSummary:  "到点自动开始定时升级（scheduled_at=" + scheduledAtText(job.ScheduledAt) + "）",
+		Result:        result,
+		FailureReason: failReason,
+		RiskLevel:     audits.RiskHigh,
+		RequestID:     job.RequestID,
+	}
+	if err := s.auditFn(ctx, in); err != nil {
+		slog.Error("record scheduled upgrade audit failed", "job_id", job.ID, "error", err)
+	}
+}
+
+func scheduledAtText(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 // run 升级主流程（异步）。任何失败落库并告警，绝不静默。
@@ -171,6 +341,12 @@ func (s *Service) run(id uuid.UUID) {
 
 	// ---- APPLYING（提交宿主机执行器；执行器负责镜像、迁移、健康检查与容器回滚） ----
 	if err := s.store.Transition(ctx, id, StatusBackup, StatusApplying); err != nil {
+		rollbackOnFail(StatusApplying, FailApply, err)
+		return
+	}
+	// 持久化执行器等待截止：进程内等待定时器随 API 重启丢失，
+	// 重启后的兜底清扫以此 deadline 终结滞留任务（F7）。
+	if err := s.store.SetExecutorDeadline(ctx, id, time.Now().UTC().Add(s.executorWait)); err != nil {
 		rollbackOnFail(StatusApplying, FailApply, err)
 		return
 	}

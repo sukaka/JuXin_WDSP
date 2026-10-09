@@ -86,3 +86,14 @@ server/assets/fonts/*.ttc
 
 # 文档二进制归档（源代码 docx 等体积大，不提交）
 docs/*.docx
+
+# 工作产出（证据、评审、视频等运行期生成物；已跟踪文件不受影响）
+output/
+
+# 测试源站/线束编译产物（按各 Dockerfile/脚本头说明产出）
+deployment/stage1/testorigin/jiuzhang-test-origin
+deployment/stage1/grpc-testorigin/grpc-testorigin
+test/wdsp-agent-e2e/envoy-tap/harness/envoytapharness
+test/wdsp-agent-e2e/poptool/wdsp-e2e-poptool
+tools/apisrc/apisrc
+tools/regsign/regsign

@@ -50,12 +50,25 @@ print(json.dumps({'name':d['name'],'description':d.get('description') or '',
 
 # 最近一条 BLOCK 事件详情中包含的规则 ID 列表（空格分隔）
 latest_block_rules() {
-  local cookie="/tmp/s5-$SEC_USER.txt" eid
-  eid=$(curl -s -b "$cookie" "$API_URL/api/v1/security-events?page_size=5" | python3 -c "
+  local cookie="/tmp/s5-$SEC_USER.txt" eid target
+  # 在近 5 条 BLOCK 事件中按内容（含 1001101 的 SSTI 探针事件）定位；
+  # 纯时序取最新在三个阻断探针并发的采集序下不稳定（selftest/sqli 探针后落库却时标更新）。
+  target=$(curl -s -b "$cookie" "$API_URL/api/v1/security-events?page_size=5" | python3 -c "
 import json,sys
 items=json.load(sys.stdin)['data'].get('items') or []
-b=[e for e in items if e.get('action')=='BLOCK']
-print(b[0]['id'] if b else '')" 2>/dev/null)
+ids=[e['id'] for e in items if e.get('action')=='BLOCK']
+print(' '.join(ids))" 2>/dev/null)
+  for eid in $target; do
+    matches=$(curl -s -b "$cookie" "$API_URL/api/v1/security-events/$eid" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['data']
+print(' '.join(str(m['rule_id']) for m in (d.get('matches') or [])))" 2>/dev/null)
+    case " $matches " in
+      *" 1001101 "*) echo "$matches"; return 0 ;;
+    esac
+  done
+  # 兜底：找不到 SSTI 事件时回退最新一条（保持失败输出可诊断）
+  eid=$(echo "$target" | awk '{print $1}')
   [ -z "$eid" ] && return 0
   curl -s -b "$cookie" "$API_URL/api/v1/security-events/$eid" | python3 -c "
 import json,sys

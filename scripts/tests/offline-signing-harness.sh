@@ -116,11 +116,12 @@ fake_pkg() { # fake_pkg OUT_TAR [evil]
     printf 'evil\n' >> "$d/gateway-linux-${HOST_ARCH}/caddy"
   fi
   printf '2.11.4 h1:fake\n' > "$d/gateway-linux-${HOST_ARCH}/VERSION"
+  printf 'development\n' > "$d/gateway-linux-${HOST_ARCH}/delivery_mode"
   printf '# fake crs\n' > "$d/gateway-linux-${HOST_ARCH}/rules/crs/crs-setup.conf"
   printf '<html>block</html>\n' > "$d/gateway-linux-${HOST_ARCH}/blockpage.html"
   cp "$REPO_ROOT/deployment/baremetal/Caddyfile.bootstrap" "$d/gateway-linux-${HOST_ARCH}/"
   cp "$REPO_ROOT/deployment/systemd/jiuzhang-gateway.service" "$d/gateway-linux-${HOST_ARCH}/"
-  (cd "$d/gateway-linux-${HOST_ARCH}" && shasum -a 256 caddy > sha256sums)
+  (cd "$d/gateway-linux-${HOST_ARCH}" && shasum -a 256 caddy delivery_mode VERSION > sha256sums)
   tar -czf "$out" -C "$d" "gateway-linux-${HOST_ARCH}"
 }
 
@@ -133,7 +134,7 @@ fake_pkg "$P_SIGNED"
   ed25519_sign_file "$TMP_ROOT/rel.key" "$P_SIGNED" "$P_SIGNED.sig"
 )
 SIGNED_OUT="$TMP_ROOT/gw-signed.out"
-if WDSP_PACKAGE_PUBLIC_KEY="$TMP_ROOT/rel.pub" bash "$BM_INSTALL" --package "$P_SIGNED" --dry-run > "$SIGNED_OUT" 2>&1 \
+if WDSP_PACKAGE_PUBLIC_KEY="$TMP_ROOT/rel.pub" bash "$BM_INSTALL" --package "$P_SIGNED" --dry-run --allow-unsigned > "$SIGNED_OUT" 2>&1 \
    && grep -q "真实性验签通过" "$SIGNED_OUT" && grep -q "整包哈希校验通过" "$SIGNED_OUT"; then
   pass "裸机包正签正验：--dry-run 通过且纵深哈希校验保留"
 else
@@ -146,7 +147,7 @@ fake_pkg "$P_TAMPER" evil
 (cd "$TMP_ROOT" && shasum -a 256 "$(basename "$P_TAMPER")" > "$(basename "$P_TAMPER").sha256")
 cp "$P_SIGNED.sig" "$P_TAMPER.sig"
 TAMPER_OUT="$TMP_ROOT/gw-tamper.out"
-if WDSP_PACKAGE_PUBLIC_KEY="$TMP_ROOT/rel.pub" bash "$BM_INSTALL" --package "$P_TAMPER" --dry-run > "$TAMPER_OUT" 2>&1; then
+if WDSP_PACKAGE_PUBLIC_KEY="$TMP_ROOT/rel.pub" bash "$BM_INSTALL" --package "$P_TAMPER" --dry-run --allow-unsigned > "$TAMPER_OUT" 2>&1; then
   fail "篡改裸机包应被验签拒绝"
 else
   if grep -q "验签失败" "$TAMPER_OUT" && ! grep -q "SHA256 校验通过" "$TAMPER_OUT"; then
@@ -183,7 +184,7 @@ mk_fake_tree() { # mk_fake_tree DIR —— 伪造解压目录 + 同级 tar.gz + 
   local dir="$1"
   rm -rf "$dir" "$dir.tar.gz" "$dir.tar.gz.sha256" "$dir.tar.gz.sig"
   mkdir -p "$dir"
-  jq -n --arg arch "$HOST_ARCH" '{product:"t", edition:"waf", version:"0.0.0", arch:$arch}' > "$dir/manifest.json"
+  jq -n --arg arch "$HOST_ARCH" '{product:"t", edition:"waf", version:"0.0.0", arch:$arch, delivery_mode:"development"}' > "$dir/manifest.json"
   printf 'fake full offline package\n' > "$TMP_ROOT/tree-payload"
   tar -czf "$dir.tar.gz" -C "$TMP_ROOT" tree-payload
   (cd "$TMP_ROOT" && shasum -a 256 "$(basename "$dir.tar.gz")" > "$(basename "$dir.tar.gz").sha256")
@@ -197,7 +198,7 @@ mk_fake_tree "$T1"
   ed25519_sign_file "$TMP_ROOT/rel.key" "$T1.tar.gz" "$T1.tar.gz.sig"
 )
 T1_OUT="$TMP_ROOT/tree-signed.out"
-( cd "$T1" && WDSP_PACKAGE_PUBLIC_KEY="$TMP_ROOT/rel.pub" bash "$INSTALL" --no-firewall --skip-accounts ) > "$T1_OUT" 2>&1
+( cd "$T1" && WDSP_PACKAGE_PUBLIC_KEY="$TMP_ROOT/rel.pub" bash "$INSTALL" --no-firewall --skip-accounts --allow-unsigned ) > "$T1_OUT" 2>&1
 if grep -q "真实性验签通过" "$T1_OUT" && grep -q "整包哈希校验通过" "$T1_OUT" \
    && grep -q "compose 文件不存在" "$T1_OUT" && ! grep -q "验签失败\|未签名" "$T1_OUT"; then
   pass "install.sh 正签正验：闸门通过且纵深校验保留（随后按预期死于 compose 检查）"
@@ -211,7 +212,7 @@ mk_fake_tree "$T2"
 cp "$T1.tar.gz.sig" "$T2.tar.gz.sig"
 printf 'tampered payload appended\n' >> "$T2.tar.gz"
 T2_OUT="$TMP_ROOT/tree-tampered.out"
-( cd "$T2" && WDSP_PACKAGE_PUBLIC_KEY="$TMP_ROOT/rel.pub" bash "$INSTALL" --no-firewall --skip-accounts ) > "$T2_OUT" 2>&1
+( cd "$T2" && WDSP_PACKAGE_PUBLIC_KEY="$TMP_ROOT/rel.pub" bash "$INSTALL" --no-firewall --skip-accounts --allow-unsigned ) > "$T2_OUT" 2>&1
 if [[ "$?" -ne 0 ]] && grep -q "验签失败" "$T2_OUT" && ! grep -q "compose 文件不存在" "$T2_OUT"; then
   pass "install.sh 篡改包：验签失败 fail-closed 中止"
 else
@@ -241,10 +242,10 @@ fi
 # ---------- 5. build.sh 签名行为 ----------
 BUILD_OUT_DIR_U="$TMP_ROOT/dist-unsigned"
 U_OUT="$TMP_ROOT/build-unsigned.out"
-if bash "$BUILD" -v 0.0.0-harness -p waf -a "$HOST_ARCH" --skip-images -o "$BUILD_OUT_DIR_U" > "$U_OUT" 2>&1; then
+if bash "$BUILD" -v 0.0.0-harness -p waf -a "$HOST_ARCH" --skip-images --development -o "$BUILD_OUT_DIR_U" > "$U_OUT" 2>&1; then
   U_PKG="$BUILD_OUT_DIR_U/jiuzhang-waf-offline-0.0.0-harness-${HOST_ARCH}.tar.gz"
   if [[ -f "$U_PKG" && ! -f "$U_PKG.sig" ]] \
-     && grep -q "产物将不签名" "$U_OUT" && grep -q "离线交付包未签名" "$U_OUT" \
+     && grep -q "开发包将不签名" "$U_OUT" && grep -q "离线交付包未签名" "$U_OUT" \
      && tar -xOf "$U_PKG" "jiuzhang-waf-offline-0.0.0-harness-${HOST_ARCH}/manifest.json" | grep -q '"signed": false'; then
     pass "build.sh 未配置私钥：跳过签名 + 醒目告警 + manifest 标记 signed=false"
   else

@@ -80,8 +80,8 @@ func materializable(m *dsctx.DetectorMatch, finalAction string) bool {
 
 // findingTypeOverrides 语义覆盖表（规则 ID → 任务书风险类型词表，见
 // api_runtime_findings.finding_type 注释：SHADOW / ZOMBIE / DEPRECATED / BOLA /
-// BFLA / SCHEMA_DEVIATION / SENSITIVE_LEAK / ...）。规则 ID 全局唯一且自带
-// 检测器前缀（如 lifecycle.new_endpoint），故键即规则 ID。
+// BFLA / SCHEMA_DEVIATION / SENSITIVE_LEAK / ADMISSION_UNCONFIRMED / ...）。
+// 规则 ID 全局唯一且自带检测器前缀（如 lifecycle.new_endpoint），故键即规则 ID。
 // 未覆盖的规则走机械映射：rule_id 大写下划线化（如 schema.param_length →
 // SCHEMA_PARAM_LENGTH）；rule_id 缺失或非字母开头（如 WAF 数字规则号）时
 // 以 detector 名兜底/加前缀，保证 finding_type 可读且稳定。
@@ -89,6 +89,14 @@ var findingTypeOverrides = map[string]string{
 	"lifecycle.new_endpoint":                 "SHADOW",
 	"lifecycle.deprecated_api_call":          "DEPRECATED",
 	"resource.unauthenticated_object_access": "BOLA_UNAUTHENTICATED_OBJECT_ACCESS",
+	// API 准入（docs/API_ADMISSION_CONTROL_DESIGN.md §4.1/§5.5，迁移 000166 词表注释）：
+	// 基线不存在的端点沿用 SHADOW（与 lifecycle.new_endpoint 同一影子 API 语义，
+	// OBSERVE/PROTECT 共用——PROTECT 实断由事件 final_action=BLOCK 与明细
+	// severity=HIGH 表达，finding_type 不按模式分叉）；
+	// 已发现未确认端点映射为新类型 ADMISSION_UNCONFIRMED，入 api_runtime_findings
+	// 活动状态（SaveFindings 插入 NEW），供风险中心跟踪确认闭环。
+	"admission.unknown_endpoint":     "SHADOW",
+	"admission.unconfirmed_endpoint": "ADMISSION_UNCONFIRMED",
 }
 
 // findingTypeOf 由 Detector+RuleID 生成 finding_type（见上表注释的映射规则）。

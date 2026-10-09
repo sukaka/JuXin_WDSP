@@ -15,7 +15,7 @@ ROTATE_KEEP="${ROTATE_KEEP:-7}"
 LOG_DIR="${LOG_DIR:-/var/log/caddy}"
 
 # 固定轮转目标清单（access.log / caddy.log 由 Caddy 自身轮转，不在此列）
-ROTATE_TARGETS="coraza-audit.log api-runtime-events.log guard-events.log access-full.jsonl site-discovery.jsonl identity-events.log"
+ROTATE_TARGETS="coraza-audit.log api-runtime-events.log guard-events.log access-full.jsonl site-discovery.jsonl identity-events.log coverage-observations.jsonl"
 
 # 输出一行带时间戳的日志到 stdout
 log() {

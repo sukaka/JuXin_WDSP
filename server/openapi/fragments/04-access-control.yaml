@@ -1,6 +1,6 @@
-# 片段：访问控制与 CC 防护（阶段5）
-# 路由源：server/internal/app/app.go 第 595-656 行
-# 域：可信代理 / 保护地址 / IP黑白名单 / CC防护策略 / 临时封禁 / 访问控制事件 / 配置版本
+# 片段：访问控制与 CC 防护（阶段5）+ 威胁情报导入（WDSP P2-C1）
+# 路由源：server/internal/app/app.go 第 1166-1232 行
+# 域：可信代理 / 保护地址 / IP黑白名单 / 威胁情报导入 / CC防护策略 / 临时封禁 / 访问控制事件 / 配置版本
 paths:
   # ==================== 可信代理 ====================
   /trusted-proxies:
@@ -412,6 +412,37 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AccessRulePublishTask' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /threat-intel/import:
+    post:
+      operationId: threatIntelImport
+      tags: [access-rules]
+      summary: 威胁情报对账导入（WDSP P2-C1，Feodo C2 → IP 黑名单）
+      description: |
+        解析情报快照（`format=text` 纯文本一行一个 IPv4、# 注释忽略、可剥 :port；`format=csv`
+        Feodo CSV，按表头自适应取 dst_ip/ip 列与 malware/c2_family 列），与本功能历史导入集合
+        （`source_type=IMPORT` 且 reason 以「威胁情报 <feed> 批次」开头的 GLOBAL DENY 行）做集合对账：
+        新 IP 新建 ACTIVE 规则（ttl_days>0 时 TEMPORARY+effective_until=now+TTL，0 为 PERMANENT）；
+        仍在册刷新有效期与 reason 批次号（EXPIRED 复活、DISABLED 人工停用不动）；本批次消失标记
+        EXPIRED 保留历史。绝不触碰 MANUAL/SECURITY_EVENT/AUTO_BLOCK/SYSTEM 及其他 reason 前缀的
+        IMPORT 行；同址已存在人工黑名单时跳过新建。content ≤1MB、有效 IP ≤5000，坏行跳过计数
+        （明细前 50 条）。生效集变化时触发网关配置发布（异步任务）。记录中风险审计。
+        权限：`access_rules.import`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ThreatIntelImportRequest' }
+      responses:
+        '200':
+          description: 对账导入结果（批次号 + 计数 + 前 50 条跳过/错误明细）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ThreatIntelImportResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1732,6 +1763,50 @@ components:
           type: array
           items: { $ref: '#/components/schemas/AccessRuleImportPreviewRow' }
           description: 有效行预览（仅 dry_run=true 返回，最多 50 条）
+
+    ThreatIntelImportRequest:
+      type: object
+      required: [content]
+      properties:
+        format: { type: string, enum: [text, csv], default: text, description: 内容格式（text=一行一个 IPv4；csv=Feodo CSV，表头自适应 dst_ip/ip 与 malware/c2_family 列） }
+        content: { type: string, description: 情报快照内容（≤1MB；# 注释行忽略；有效 IPv4 ≤5000 条，超出截断） }
+        ttl_days: { type: integer, default: 30, minimum: 0, maximum: 3650, description: 有效期天数（0=PERMANENT 永久） }
+        feed: { type: string, default: feodo, description: 情报源名（小写字母/数字开头，可含 _ -，1-32 字符） }
+
+    ThreatIntelImportConflict:
+      type: object
+      description: 跳过明细（冲突/人工停用/保护地址，最多前 50 条）
+      properties:
+        address: { type: string, description: IP 地址 }
+        reason: { type: string, description: 跳过原因 }
+
+    ThreatIntelImportRowError:
+      type: object
+      description: 行级解析错误（最多前 50 条）
+      properties:
+        line: { type: integer, description: 行号（从 1 计） }
+        content: { type: string, description: 行原始内容（截断 120 字符） }
+        error: { type: string, description: 错误信息 }
+
+    ThreatIntelImportResponse:
+      type: object
+      properties:
+        batch_id: { type: string, description: 批次号（UTC 秒级时间戳 + 随机后缀） }
+        feed: { type: string, description: 归一化后的情报源名 }
+        ttl_days: { type: integer, description: 实际生效的有效期天数 }
+        total_parsed: { type: integer, description: 解析成功且去重后的条目数 }
+        added: { type: integer, description: 新建规则数 }
+        refreshed: { type: integer, description: 在册刷新数（含 EXPIRED 复活） }
+        expired: { type: integer, description: 本批次消失标记 EXPIRED 数 }
+        skipped_conflict: { type: integer, description: 跳过数（冲突/人工停用/保护地址） }
+        invalid: { type: integer, description: 坏行总数（含明细被截断部分） }
+        truncated: { type: boolean, description: 有效条目达 5000 上限被截断 }
+        conflicts:
+          type: array
+          items: { $ref: '#/components/schemas/ThreatIntelImportConflict' }
+        invalid_entries:
+          type: array
+          items: { $ref: '#/components/schemas/ThreatIntelImportRowError' }
 
     AccessRulePublishRequest:
       type: object

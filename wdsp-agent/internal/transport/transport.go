@@ -326,7 +326,8 @@ func New(server string, insecureSkipVerify bool, version string) (*Client, error
 		agent: "wdsp-agent/" + version,
 		now:   time.Now,
 		hc: &http.Client{
-			Timeout: requestTimeout,
+			Timeout:       requestTimeout,
+			CheckRedirect: rejectControlRedirect,
 			Transport: &http.Transport{
 				TLSClientConfig:     tlsCfg,
 				MaxIdleConns:        4,
@@ -349,6 +350,22 @@ func isLoopbackHost(host string) bool {
 		return ip.IsLoopback()
 	}
 	return false
+}
+
+// rejectControlRedirect 防止携带 Bearer/PoP 凭据的控制面请求被重定向到另一主机
+// 或从 HTTPS 降级到 HTTP。http.Client 在调用此函数前不会向目标发出后续请求。
+func rejectControlRedirect(req *http.Request, via []*http.Request) error {
+	if req == nil || req.URL == nil || len(via) == 0 || via[len(via)-1].URL == nil {
+		return errors.New("拒绝控制面重定向：目标地址无效")
+	}
+	previous := via[len(via)-1].URL
+	if strings.EqualFold(previous.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https") {
+		return fmt.Errorf("拒绝控制面 HTTPS 降级重定向: %s -> %s", previous.Scheme, req.URL.Scheme)
+	}
+	if !strings.EqualFold(previous.Host, req.URL.Host) {
+		return fmt.Errorf("拒绝控制面跨主机重定向: %s -> %s", previous.Host, req.URL.Host)
+	}
+	return nil
 }
 
 // do 执行 JSON 请求；auth=true 时携带 Bearer credential，且持有有效证书时

@@ -14,6 +14,7 @@ import (
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/mcpguard"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/metrics"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/response"
 )
@@ -65,6 +66,13 @@ type ResponseConfig struct {
 	// Identity 身份追踪键（挂点侧复用 detectors.TrackingKey 提取，与请求相位同一取值口径；
 	// 空 = webshell C2 响应评估零行为）
 	Identity string
+	// MCPGuard MCP 结果检查配置（NG-MCP G1 D7；请求相位已确认 tools/call
+	// （mcp.call 上下文）时生效；nil = 无目录且无绑定零行为）
+	MCPGuard *mcpguard.Config
+	// SensitiveValueRules 值级敏感规则原文（挂点侧下发 api_sensitive_value_rules；
+	// mcpguard 结果检查经 detectors.CompileSensitiveValueRules 缓存编译复用
+	// （与请求侧同一编译产物，location=json）；nil = 值级结果检查零行为）
+	SensitiveValueRules []detectors.SensitiveValueRule
 }
 
 // 响应侧单事件敏感字段命中上限（与请求侧 maxSensitiveMatches 对齐，防超大报文撑爆事件）。
@@ -187,6 +195,20 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 	// SSE/流式响应标记 stream；非 LLM 流量零行为
 	detectors.EnrichLLMResponse(ctx, in.ContentType, in.Body, in.Truncated, in.Streamed, jsonRoot)
 
+	// 1f2. MCP 结果检查（NG-MCP G1 D7）：请求相位已确认 tools/call（mcp.call
+	// 上下文）且非流式 JSON 响应完整捕获时全量检查——output_schema 校验 + 值级
+	// 敏感规则（复用请求侧同一编译产物，location=json）；PROTECT 双闸违规 →
+	// BLOCK 明细定案（挂点侧抑制未外发响应返回 -32014 错误对象——干净阻断零
+	// 字节泄漏）；截断/流式零行为（SSE 由挂点侧逐消息链承担）；UNKNOWN 恒不阻断
+	if cfg.MCPGuard != nil && !in.Truncated && !in.Streamed && rc.IsJSON && jsonRoot != nil {
+		if call := mcpguard.CallFromContext(ctx); call != nil {
+			if resultRaw, ok := mcpguard.ExtractResultMember(jsonRoot); ok {
+				engineProtect := mode == decision.ModeProtect
+				mcpguard.EvaluateResult(ctx, call.Message, resultRaw, call.Config, compileMCPResultValueRules(cfg), engineProtect)
+			}
+		}
+	}
+
 	// 1g. webshell C2 会话行为检测（BAS 覆盖基线，响应收束评估）：请求相位已记账的会话
 	// 在此累计响应侧统计并评估四组弱特征（≥3 组命中产 webshell.c2_suspected
 	// OBSERVE/MEDIUM，ScoreDelta 20 < 50 定案线，绝不单独定案阻断）；不挂 api.IsAPI
@@ -283,4 +305,18 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 
 	// 6. 响应相位统一决策（请求侧阻断类请求不会到达本相位，优先级语义不变）
 	return decision.Decide(ctx, decision.Input{Mode: mode}), nil
+}
+
+// compileMCPResultValueRules MCP 结果检查值级规则编译（detectors 并发安全缓存——
+// 与请求侧同一编译产物；装配期已预检，理论上的编译失败保守回退 nil（fail-open，
+// 与挂点侧 emitAPIEvent 同一纪律）。
+func compileMCPResultValueRules(cfg ResponseConfig) []detectors.CompiledSensitiveValueRule {
+	if len(cfg.SensitiveValueRules) == 0 {
+		return nil
+	}
+	rules, err := detectors.CompileSensitiveValueRules(cfg.SensitiveValueRules)
+	if err != nil {
+		return nil
+	}
+	return rules
 }

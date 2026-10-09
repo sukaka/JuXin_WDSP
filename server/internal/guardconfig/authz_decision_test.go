@@ -232,3 +232,70 @@ func TestCompileObjectSegment(t *testing.T) {
 		}
 	}
 }
+
+// NG-AZ-03 D3：发布编译查询必须携带 enforcement 四列（对象模型）——
+// 列缺失意味着快照永远拿不到阻断开关（线契约断裂）。
+func TestListPublishableAuthzModelsQueryCarriesEnforcementColumns(t *testing.T) {
+	for _, want := range []string{"om.enforcement", "om.enforcement_owner", "om.evidence_source", "om.on_unknown"} {
+		if !strings.Contains(listPublishableAuthzModelsQuery, want) {
+			t.Errorf("query does not select %s: %s", want, listPublishableAuthzModelsQuery)
+		}
+	}
+}
+
+// NG-AZ-03 D3：enforcement 四要素与角色基线 enforcement 纳入 api_policy_version
+// 版本戳（列级开关与既有资格字段同生命周期——阻断资格变更必须产生新版本戳，
+// 供生效校验与网关回报比对「发布内容与实际生效」）。
+func TestComputeAPIPolicyVersionAuthzEnforcement(t *testing.T) {
+	model := gatewayconfig.GuardAuthzObjectModel{
+		ApplicationID: "app-1", EndpointKey: "GET /v1/orders/{id}", ObjectType: "orders",
+		RequiredRelation: "OWNER", OwnerExclusive: true, Publishable: true,
+		UniqueEndpointTemplate: true, ModelVersion: "mv-1",
+		Enforcement: "OBSERVE", OnUnknown: "ALLOW_UNKNOWN",
+	}
+	baseline := gatewayconfig.GuardAuthzRoleBaseline{
+		ApplicationID: "app-1", EndpointKey: "GET /v1/orders/{id}", Method: "GET",
+		Role: "ops", Action: "READ", Allowed: true, Confirmed: true, Enforcement: "OBSERVE",
+	}
+	base := computeAPIPolicyVersion(&gatewayconfig.GuardConfig{
+		APIAuthzModels:        []gatewayconfig.GuardAuthzObjectModel{model},
+		APIAuthzRoleBaselines: []gatewayconfig.GuardAuthzRoleBaseline{baseline},
+	})
+
+	// OBSERVE → PROTECT：版本戳必须变
+	protect := model
+	protect.Enforcement = "PROTECT"
+	protect.EnforcementOwner = "zhang.lei@example.com"
+	protect.EvidenceSource = "AUTHORITY_SYNC"
+	if v := computeAPIPolicyVersion(&gatewayconfig.GuardConfig{
+		APIAuthzModels:        []gatewayconfig.GuardAuthzObjectModel{protect},
+		APIAuthzRoleBaselines: []gatewayconfig.GuardAuthzRoleBaseline{baseline},
+	}); v == base {
+		t.Fatal("enforcement OBSERVE→PROTECT 必须改变 api_policy_version")
+	}
+	// 三要素内容变更（负责人换签）：版本戳必须变
+	ownerChanged := protect
+	ownerChanged.EnforcementOwner = "li.na@example.com"
+	if v := computeAPIPolicyVersion(&gatewayconfig.GuardConfig{
+		APIAuthzModels:        []gatewayconfig.GuardAuthzObjectModel{ownerChanged},
+		APIAuthzRoleBaselines: []gatewayconfig.GuardAuthzRoleBaseline{baseline},
+	}); v == base {
+		t.Fatal("enforcement_owner 变更必须改变 api_policy_version")
+	}
+	// 角色基线 enforcement 变更：版本戳必须变
+	baselineProtect := baseline
+	baselineProtect.Enforcement = "PROTECT"
+	if v := computeAPIPolicyVersion(&gatewayconfig.GuardConfig{
+		APIAuthzModels:        []gatewayconfig.GuardAuthzObjectModel{model},
+		APIAuthzRoleBaselines: []gatewayconfig.GuardAuthzRoleBaseline{baselineProtect},
+	}); v == base {
+		t.Fatal("角色基线 enforcement 变更必须改变 api_policy_version")
+	}
+	// 同内容恒同戳（含四要素字段的稳定序列化）
+	if v := computeAPIPolicyVersion(&gatewayconfig.GuardConfig{
+		APIAuthzModels:        []gatewayconfig.GuardAuthzObjectModel{model},
+		APIAuthzRoleBaselines: []gatewayconfig.GuardAuthzRoleBaseline{baseline},
+	}); v != base {
+		t.Fatal("同内容（含 enforcement 字段）版本戳必须稳定")
+	}
+}

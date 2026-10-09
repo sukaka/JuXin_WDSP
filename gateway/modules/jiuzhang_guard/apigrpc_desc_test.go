@@ -145,7 +145,7 @@ func TestServeNext_GRPCDescriptorSensitiveE2E(t *testing.T) {
 // 无描述符下发：观测证据与 v1 逐键一致（无 decoded/descriptor 键）。
 func TestServeNext_GRPCDescriptorAbsentZeroChange(t *testing.T) {
 	g, logPath := newAPITestGuard(t, "OBSERVE", nil)
-	g.APIGRPCAllowCompression = true
+	g.APIGRPCAllowCompression = boolPtr(true)
 
 	body := grpcE2EFrame(false, []byte{0x0a, 0x01})
 	next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {

@@ -409,6 +409,18 @@ func matchValueRules(value, location string, rules []CompiledSensitiveValueRule,
 	return CompiledSensitiveValueRule{}, false
 }
 
+// MatchSensitiveValueRule 单值按位置求值已编译值级规则（NG-MCP G1 mcpguard
+// 结果检查挂点导出——与请求侧 matchValueRules 同一语义：输入 4096 rune 封顶、
+// 位置过滤（结果侧 location=json）、首个命中）。
+// 返回命中 data_type/level；scans 为求值计数（调用方封顶，防 CPU 放大）。
+func MatchSensitiveValueRule(value, location string, rules []CompiledSensitiveValueRule, scans *int) (dataType, level string, hit bool) {
+	r, ok := matchValueRules(value, location, rules, scans)
+	if !ok {
+		return "", "", false
+	}
+	return r.dataType, r.level, true
+}
+
 // addValueMatch 产出值级命中明细（证据只含 data_type/location/字段名/等级，绝不落值）。
 // 置信度显式 1.0：值经正则验证，属确定性判定（区别于字段名词表匹配的 0.8 默认，
 // 见 context.go defaultConfidenceByDetector 取值纪律）。

@@ -1,0 +1,4 @@
+{"id":"HC-A03","category":"abnormal","desc":"Host 与 authority 不一致（h1 双 Host 头与 h2 伪头）","requests":[
+  {"method":"GET","path":"/v1/host-check","headers":{"X-Chain-Case":"HC-A03-dual"},"extra_raw_headers":["Host: second.invalid"]},
+  {"method":"GET","path":"/v1/host-check","headers":{"X-Chain-Case":"HC-A03-empty","Host":""}}
+],"expect":{"note":"以网关锁定的 authority 裁决为准并记录链路差异；不接受不可信来源覆盖权限/身份绑定目标"}}

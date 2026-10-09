@@ -1,0 +1,46 @@
+# 九章 WDSP 管理控制台（裸机）—— Caddyfile 模板（仅 HTTP）
+# 证书文件（console.crt/console.key）缺失时由 install.sh 选用本模板；
+# 补齐证书后重跑 install.sh 即自动切换回双栈模板。
+# 占位符与安全响应头说明见 Caddyfile.template。
+
+{
+	admin off
+	auto_https disable_redirects
+}
+
+(site) {
+	root * __ROOT__/web
+
+	# 安全响应头
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+		Cache-Control "no-store"
+		-Server
+	}
+
+	# API 反向代理到管理后端
+	handle /api/* {
+		reverse_proxy 127.0.0.1:18081
+	}
+
+	# 静态资源（带缓存指纹的 assets 长缓存；mmdb 等大文件支持预压缩 gzip）
+	handle /assets/* {
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server {
+			precompressed gzip
+		}
+	}
+
+	# SPA 路由回退到 index.html
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+:__WEB_PORT__ {
+	import site
+}

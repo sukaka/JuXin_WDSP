@@ -74,3 +74,49 @@ func TestPullConfigMalformedOverridesNonBlocking(t *testing.T) {
 		t.Fatalf("解析失败应按空数组: %+v", ovs)
 	}
 }
+
+func TestRetryPendingConfigAckRetainsStateUntilServerConfirms(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := transport.New(srv.URL, false, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := int64(7)
+	l := New(Deps{
+		Client:  client,
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		AgentID: "a1",
+		PendingConfigAckVersionFn: func() int64 {
+			return pending
+		},
+		MarkConfigAckedFn: func(version int64) error {
+			if version != 7 {
+				t.Fatalf("错误的待确认版本: %d", version)
+			}
+			pending = 0
+			return nil
+		},
+	})
+	if l.retryPendingConfigAck(context.Background()) {
+		t.Fatal("首次 ACK 失败不应清除待确认状态")
+	}
+	if pending != 7 {
+		t.Fatalf("ACK 失败后待确认版本=%d, want 7", pending)
+	}
+	if !l.retryPendingConfigAck(context.Background()) {
+		t.Fatal("服务端恢复后应重试 ACK 成功")
+	}
+	if pending != 0 || attempts != 2 {
+		t.Fatalf("ACK 重试结果不正确: pending=%d attempts=%d", pending, attempts)
+	}
+}

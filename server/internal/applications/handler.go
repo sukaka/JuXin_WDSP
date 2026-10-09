@@ -2,6 +2,7 @@ package applications
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -28,6 +29,9 @@ type Handler struct {
 	// countApps 应用计数（默认 store.Count；单测注入 fake——Store 为 PG 具体实现无法伪造，
 	// 与 license handler 的 auditRecorder 同一测试纪律）
 	countApps func(ctx context.Context) (int64, error)
+	// admissionCoverage API 准入覆盖率快照读取（apisecurity.Store.AdmissionCoverage 闭包注入；
+	// 切入 PROTECT 时把覆盖率快照记入审计 details，设计 §5.1/§8；nil 时不附加快照）
+	admissionCoverage func(ctx context.Context, appID uuid.UUID) (any, error)
 }
 
 // CertBinder 是证书绑定接口（由 certificates.Store 实现）。
@@ -44,6 +48,12 @@ func NewHandler(store *Store, au *audits.Service, binder CertBinder) *Handler {
 // SetMaxApplicationsProvider 注入授权应用数量配额（0=不限制）。
 func (h *Handler) SetMaxApplicationsProvider(fn func(ctx context.Context) int64) *Handler {
 	h.maxAppsProvider = fn
+	return h
+}
+
+// SetAdmissionCoverageProvider 注入 API 准入覆盖率快照读取（切入 PROTECT 审计用）。
+func (h *Handler) SetAdmissionCoverageProvider(fn func(ctx context.Context, appID uuid.UUID) (any, error)) *Handler {
+	h.admissionCoverage = fn
 	return h
 }
 
@@ -79,7 +89,9 @@ type createAppRequest struct {
 	BusinessOwner  string `json:"business_owner"`
 	TechnicalOwner string `json:"technical_owner"`
 	ProtectionMode string `json:"protection_mode"`
-	DeploymentMode string `json:"deployment_mode"`
+	// APIAdmissionMode API 准入模式（OFF/OBSERVE/PROTECT；缺省 OFF，非法值 400）
+	APIAdmissionMode string `json:"api_admission_mode"`
+	DeploymentMode   string `json:"deployment_mode"`
 }
 
 // Create 创建应用。
@@ -94,16 +106,21 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
+	if req.APIAdmissionMode != "" && !validAPIAdmissionMode(req.APIAdmissionMode) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的API准入模式（OFF/OBSERVE/PROTECT）")
+		return
+	}
 	a := &Application{
-		Code:           req.Code,
-		Name:           req.Name,
-		Description:    req.Description,
-		BusinessOwner:  req.BusinessOwner,
-		TechnicalOwner: req.TechnicalOwner,
-		Status:         StatusDraft,
-		ProtectionMode: defaultMode(req.ProtectionMode),
-		DeploymentMode: defaultStr(req.DeploymentMode, DeployModeReverseProxy),
-		CreatedBy:      &p.UserID,
+		Code:             req.Code,
+		Name:             req.Name,
+		Description:      req.Description,
+		BusinessOwner:    req.BusinessOwner,
+		TechnicalOwner:   req.TechnicalOwner,
+		Status:           StatusDraft,
+		ProtectionMode:   defaultMode(req.ProtectionMode),
+		APIAdmissionMode: defaultStr(req.APIAdmissionMode, AdmissionModeOff),
+		DeploymentMode:   defaultStr(req.DeploymentMode, DeployModeReverseProxy),
+		CreatedBy:        &p.UserID,
 	}
 	// 授权应用配额强制：quota>0 且当前总数已达配额 → 403（LICENSE_QUOTA_EXCEEDED）+ 审计；
 	// 配额值来自 license 内存状态（无 IO），计数失败如实 500（不静默放行）
@@ -162,8 +179,13 @@ type updateAppRequest struct {
 	BusinessOwner  string `json:"business_owner"`
 	TechnicalOwner string `json:"technical_owner"`
 	ProtectionMode string `json:"protection_mode"`
-	DeploymentMode string `json:"deployment_mode"`
-	Version        int    `json:"version"`
+	// APIAdmissionMode API 准入模式（OFF/OBSERVE/PROTECT；空串不变更，非法值 400）
+	APIAdmissionMode string `json:"api_admission_mode"`
+	DeploymentMode   string `json:"deployment_mode"`
+	// AuthzLeaseSeconds 授权快照租约秒数（NG-AZ-02 D5；null=清除不启用，
+	// 15~300=设置——指针三分态：缺省字段不变更）
+	AuthzLeaseSeconds *int `json:"authz_lease_seconds"`
+	Version           int  `json:"version"`
 }
 
 // Update 更新应用。
@@ -196,6 +218,12 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.ProtectionMode != "" {
 		a.ProtectionMode = defaultMode(req.ProtectionMode)
 	}
+	if req.APIAdmissionMode != "" {
+		if !validAPIAdmissionMode(req.APIAdmissionMode) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的API准入模式（OFF/OBSERVE/PROTECT）")
+			return
+		}
+	}
 	if req.DeploymentMode != "" {
 		if !validDeploymentMode(req.DeploymentMode) {
 			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的部署模式")
@@ -203,15 +231,51 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		a.DeploymentMode = req.DeploymentMode
 	}
+	// NG-AZ-02 D5：授权租约秒数（0=清除不启用，15~300=设置；缺省字段不变更）
+	if req.AuthzLeaseSeconds != nil {
+		if *req.AuthzLeaseSeconds != 0 && (*req.AuthzLeaseSeconds < 15 || *req.AuthzLeaseSeconds > 300) {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的授权租约秒数（0=清除不启用，或 15~300）")
+			return
+		}
+		if *req.AuthzLeaseSeconds == 0 {
+			a.AuthzLeaseSeconds = nil
+		} else {
+			a.AuthzLeaseSeconds = req.AuthzLeaseSeconds
+		}
+	}
+	// 切入 PROTECT 前计算准入覆盖率快照并记入审计 details（设计 §5.1 软门禁的审计侧：
+	// 切换动作本身不硬阻断，但必须留痕切换时刻的确认覆盖率与未确认命中面）。
+	// 快照读取失败如实 500，不静默裸切——审计缺快照会让误伤复盘失去依据。
+	var coverageSnapshot any
+	if req.APIAdmissionMode == AdmissionModeProtect && a.APIAdmissionMode != AdmissionModeProtect && h.admissionCoverage != nil {
+		snap, err := h.admissionCoverage(r.Context(), id)
+		if err != nil {
+			response.InternalError(w, r, err)
+			return
+		}
+		coverageSnapshot = snap
+	}
+	if req.APIAdmissionMode != "" {
+		a.APIAdmissionMode = req.APIAdmissionMode
+	}
 	if err := h.store.Update(r.Context(), a); err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
 	risk := audits.RiskLow
-	if req.ProtectionMode != "" || req.DeploymentMode != "" {
+	if req.ProtectionMode != "" || req.APIAdmissionMode != "" || req.DeploymentMode != "" {
 		risk = audits.RiskHigh
 	}
-	h.recordAudit(r, p, "applications", "update", "application", id.String(), a.Code, before, appSummary(a), audits.ResultSuccess, risk)
+	after := appSummary(a)
+	if coverageSnapshot != nil {
+		if b, merr := json.Marshal(map[string]any{
+			"application":            json.RawMessage(after),
+			"api_admission_coverage": coverageSnapshot,
+		}); merr == nil {
+			after = string(b)
+		}
+	}
+	h.recordAudit(r, p, "applications", "update", "application", id.String(), a.Code, before, after, audits.ResultSuccess, risk)
 	response.JSON(w, r, http.StatusOK, appItem(a, 0, 0))
 }
 
@@ -270,15 +334,16 @@ func (h *Handler) Copy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	newApp := &Application{
-		Code:           newCode,
-		Name:           src.Name + "（副本）",
-		Description:    src.Description,
-		BusinessOwner:  src.BusinessOwner,
-		TechnicalOwner: src.TechnicalOwner,
-		Status:         StatusDraft,
-		ProtectionMode: src.ProtectionMode,
-		DeploymentMode: src.DeploymentMode,
-		CreatedBy:      &p.UserID,
+		Code:             newCode,
+		Name:             src.Name + "（副本）",
+		Description:      src.Description,
+		BusinessOwner:    src.BusinessOwner,
+		TechnicalOwner:   src.TechnicalOwner,
+		Status:           StatusDraft,
+		ProtectionMode:   src.ProtectionMode,
+		APIAdmissionMode: src.APIAdmissionMode,
+		DeploymentMode:   src.DeploymentMode,
+		CreatedBy:        &p.UserID,
 	}
 	if err := h.store.Create(r.Context(), newApp); err != nil {
 		response.InternalError(w, r, err)
@@ -795,17 +860,20 @@ func appItem(a *Application, domainCount, upstreamCount int) map[string]interfac
 		"id": a.ID, "code": a.Code, "name": a.Name, "description": a.Description,
 		"business_owner": a.BusinessOwner, "technical_owner": a.TechnicalOwner,
 		"status": a.Status, "protection_mode": a.ProtectionMode,
-		"deployment_mode":   a.DeploymentMode,
-		"deployment_status": a.DeploymentStatus, "health_status": a.HealthStatus,
+		"api_admission_mode": a.APIAdmissionMode,
+		"deployment_mode":    a.DeploymentMode,
+		"deployment_status":  a.DeploymentStatus, "health_status": a.HealthStatus,
 		"current_version_id": a.CurrentVersionID, "last_publish_at": a.LastPublishAt,
 		"last_publish_result": a.LastPublishResult,
+		// NG-AZ-02 D5：授权快照租约秒数（nil=不启用）
+		"authz_lease_seconds": a.AuthzLeaseSeconds,
 		"domain_count":        domainCount, "upstream_count": upstreamCount,
 		"created_at": a.CreatedAt, "updated_at": a.UpdatedAt, "version": a.Version,
 	}
 }
 
 func appSummary(a *Application) string {
-	return `{"code":"` + a.Code + `","name":"` + a.Name + `","status":"` + a.Status + `","mode":"` + a.ProtectionMode + `","deployment_mode":"` + a.DeploymentMode + `"}`
+	return `{"code":"` + a.Code + `","name":"` + a.Name + `","status":"` + a.Status + `","mode":"` + a.ProtectionMode + `","api_admission_mode":"` + a.APIAdmissionMode + `","deployment_mode":"` + a.DeploymentMode + `"}`
 }
 
 func domainSummary(d *Domain) string {

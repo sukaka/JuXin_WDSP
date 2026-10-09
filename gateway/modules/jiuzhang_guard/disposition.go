@@ -26,6 +26,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
 )
 
 // dispositionSchemaVersion final_decision JSON 结构版本（契约 §2 冻结 schema_version=1）。
@@ -241,7 +243,11 @@ type Disposition struct {
 	MatchedExceptions    []DispositionMatchedException    `json:"matched_exceptions,omitempty"`
 	IdentityVerification *DispositionIdentityVerification `json:"identity_verification,omitempty"`
 	EvidenceRefs         []string                         `json:"evidence_refs,omitempty"`
-	FinalizedAt          *time.Time                       `json:"finalized_at,omitempty"`
+	// AuthzEnforcement NG-AZ-03 VERIFIED_VIOLATION 实断证据（§1.4 逐键冻结形状；
+	// 仅授权实断终止分支挂载，其余路径 nil 键省略零变化；随 final_decision 落
+	// api_runtime_events，不新建主表）。
+	AuthzEnforcement *dsevents.AuthzEnforcementEvidence `json:"authz_enforcement,omitempty"`
+	FinalizedAt      *time.Time                         `json:"finalized_at,omitempty"`
 
 	finalized          bool
 	terminal           *terminalRecord
@@ -352,6 +358,21 @@ func (d *Disposition) AddEvidenceRef(ref string) {
 		return
 	}
 	d.EvidenceRefs = append(d.EvidenceRefs, ref)
+}
+
+// SetAuthzEnforcement 挂载 NG-AZ-03 VERIFIED_VIOLATION 实断证据（先到先得——
+// 同一请求多条授权实断证据时保留首条，其余检查明细仍完整保留于事件
+// details/authz_decision；与既有 setter 同纪律：Finalize 后写入忽略）。
+func (d *Disposition) SetAuthzEnforcement(ev *dsevents.AuthzEnforcementEvidence) {
+	if d == nil || ev == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.finalized || d.AuthzEnforcement != nil {
+		return
+	}
+	d.AuthzEnforcement = ev
 }
 
 // RecordTerminal 记录终止分支事实（先到先得——重复调用忽略；契约 §10 冻结签名）。

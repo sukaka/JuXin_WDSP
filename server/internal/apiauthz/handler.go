@@ -756,8 +756,10 @@ func validRelationStatus(v string) bool {
 	return false
 }
 
+// validDecision decisions 查询 decision 过滤词表（NG-AZ-03 D1 加第四值
+// VERIFIED_VIOLATION——词表外取值 400 不降级猜义）。
 func validDecision(v string) bool {
-	return v == "" || v == "ALLOW" || v == "OBSERVE_VIOLATION" || v == "UNKNOWN"
+	return v == "" || v == "ALLOW" || v == "OBSERVE_VIOLATION" || v == "UNKNOWN" || v == "VERIFIED_VIOLATION"
 }
 
 func (h *Handler) ListRelationCandidates(w http.ResponseWriter, r *http.Request) {

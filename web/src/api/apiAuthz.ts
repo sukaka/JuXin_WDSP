@@ -119,7 +119,8 @@ export interface ApiBolaEvaluateResult {
 }
 
 export type ApiAuthzCandidateStatus = 'PENDING' | 'REJECTED' | 'FROZEN' | 'CONFIRMED'
-export type ApiAuthzDecisionValue = 'ALLOW' | 'OBSERVE_VIOLATION' | 'UNKNOWN'
+/** NG-AZ-03 D7：VERIFIED_VIOLATION 为第四值（资格全真且端点 PROTECT 的实断决策） */
+export type ApiAuthzDecisionValue = 'ALLOW' | 'OBSERVE_VIOLATION' | 'UNKNOWN' | 'VERIFIED_VIOLATION'
 
 export interface ApiAuthzRelationCandidate {
   id: string
@@ -151,7 +152,10 @@ export interface ApiAuthzObjectRelation {
   principal_id: string
   tenant_id?: string | null
   relation: 'OWNER'
-  source: 'MANUAL' | 'IMPORT' | 'CREATE_BINDING'
+  /** 来源词表（迁移 000172 扩 AUTHORITY_SYNC 权威同步通道） */
+  source: 'MANUAL' | 'IMPORT' | 'CREATE_BINDING' | 'AUTHORITY_SYNC'
+  /** 权威来源 ID（source=AUTHORITY_SYNC 时非空） */
+  source_id?: string | null
   status: 'CONFIRMED' | 'REVOKED' | 'EXPIRED'
   valid_from: string
   valid_until?: string | null
@@ -193,6 +197,191 @@ export interface ApiAuthzCoverage {
   model_coverage_rate: number
   confirmed_relation_rate: number
   unknown_rate: number
+}
+
+/* ==================== NG-AZ-04：态势与实断资格（docs/nextgen/NG-AZ-04-protect-wizard.md） ==================== */
+
+/** readiness 徽章词表（§1.2 冻结六态 + PROTECT_ACTIVE 展示态；服务端唯一事实源派生） */
+export type ApiAuthzEnforcementReadiness =
+  | 'READY'
+  | 'PROTECT_ACTIVE'
+  | 'NOT_PUBLISHABLE'
+  | 'BLOCKED_BY_NO_RELATION'
+  | 'BLOCKED_BY_CONFLICT'
+  | 'BLOCKED_BY_STALE'
+  | 'BLOCKED_BY_NODE'
+
+/** 端点级 readiness 行（§1.2 逐键：reasons 为全部不真因子原文，而非仅首个） */
+export interface ApiAuthzEnforcementReadinessItem {
+  endpoint_id: string
+  endpoint_key: string
+  object_segment: string
+  /** 当前 enforcement（OBSERVE/PROTECT） */
+  enforcement: string
+  readiness: ApiAuthzEnforcementReadiness | string
+  reasons: string[]
+  checked_at: string
+}
+
+/** 影响评估请求（§1.3；window_days 词表 1~30，越界 400） */
+export interface ApiAuthzEnforcementImpactRequest {
+  endpoint_id: string
+  window_days: number
+  /** 端点多对象模型行时指定（token 绑定粒度=对象模型行；恰一行可省） */
+  object_segment?: string
+}
+
+export interface ApiAuthzUnknownBucket {
+  reason_code: string
+  count: number
+}
+
+/** 脱敏样本（仅 api_authorization.evidence_read 时返回，否则整个键省略） */
+export interface ApiAuthzImpactSample {
+  occurred_at: string
+  decision: string
+  reason_code: string
+}
+
+/** 影响评估响应（§1.3 逐键；confirm_token 仅 api_authorization.manage 调用签发，一次性、15 分钟 TTL） */
+export interface ApiAuthzEnforcementImpact {
+  endpoint_id: string
+  endpoint_key: string
+  object_segment: string
+  window_days: number
+  evaluated_at: string
+  /** 切换后将被 403 的请求量近似（decision='OBSERVE_VIOLATION'） */
+  observe_violation_count: number
+  unknown_total: number
+  unknown_by_reason: ApiAuthzUnknownBucket[]
+  distinct_principal_count: number
+  /** 已实断数（PROTECT 复评时非零） */
+  verified_violation_count: number
+  recent_samples?: ApiAuthzImpactSample[]
+  readiness: ApiAuthzEnforcementReadiness | string
+  readiness_reasons: string[]
+  confirm_token?: string
+  confirm_token_expires_at?: string
+}
+
+/** 业务确认单（§1.4，迁移 000175；留存不删——历史事实） */
+export interface ApiAuthzEnforcementConfirmation {
+  id: string
+  confirm_token: string
+  application_id: string
+  endpoint_id: string
+  /** 确认粒度 = 对象模型行（端点×对象段） */
+  object_segment: string
+  window_days: number
+  /** 签署时刻影响评估摘要全量（§1.3 响应无 token 键） */
+  impact_snapshot: Record<string, unknown>
+  /** 冻结确认语义文案（含文案版本号；落库文本以 server 为准） */
+  confirm_text: string
+  enforcement_owner: string
+  evidence_source: 'AUTHORITY_SYNC' | 'MANUAL_CONFIRMED' | string
+  /** 首批唯一 UNKNOWN 处理方式：ALLOW_UNKNOWN（UNKNOWN 永不阻断） */
+  on_unknown: string
+  confirmed_by: string
+  confirmed_by_name: string
+  created_at: string
+  token_expires_at: string
+  /** 向导第 4 步签署时刻（NULL=未签署） */
+  signed_at?: string | null
+  /** PATCH 消费时刻（NULL=未消费） */
+  consumed_at?: string | null
+  consumed_audit_id: string
+}
+
+/** 确认单签署请求（向导第 4 步：四要素先签后切换） */
+export interface ApiAuthzEnforcementSignBody {
+  enforcement_owner: string
+  evidence_source: 'AUTHORITY_SYNC' | 'MANUAL_CONFIRMED' | string
+  on_unknown: string
+}
+
+/** OPEN 冲突记录（D1：列同 server ConflictRecord） */
+export interface ApiAuthzConflict {
+  id: string
+  application_id: string
+  object_type: string
+  tenant_domain: string
+  object_ref: string
+  principals: string[]
+  status: string
+  first_seen: string
+  updated_at: string
+}
+
+/** 向量水位（server apiruntime.VectorWatermark；分量比较在服务端，前端只读展示） */
+export interface ApiAuthzVectorWatermark {
+  manual_seq: number
+  sources: Record<string, number>
+}
+
+/** 单节点授权 ACK 视图行（NG-AZ-02 D6 §1.4 冻结字段集；null=「无此事实」如实呈现） */
+export interface ApiAuthzNodeAck {
+  node_name: string
+  /** 节点活性（ACTIVE/STALE/SILENT） */
+  status: string
+  /** 授权快照策略版本戳；空串 = 未上报 */
+  authz_policy_version: string
+  authz_watermark?: ApiAuthzVectorWatermark | null
+  authz_applied_at?: string | null
+  last_ack_at?: string | null
+  /** now − authz_applied_at（可为负：节点时钟超前）；null = 未应用过授权快照 */
+  staleness_seconds?: number | null
+  /** 授权租约秒数；null = 未配置租约 */
+  lease_seconds?: number | null
+  /** 五态词表：FRESH/STALE_WITHIN_LEASE/STALE_EXPIRED/NEVER_ACKED/CLOCK_SKEW */
+  ack_state: string
+}
+
+/** node-acks 顶层响应（NG-AZ-02 §1.4） */
+export interface ApiAuthzNodeAckView {
+  items: ApiAuthzNodeAck[]
+  /** 全节点最大陈旧窗口；null = 无参与节点 */
+  max_staleness_seconds?: number | null
+  management_watermark: ApiAuthzVectorWatermark
+  generated_at: string
+}
+
+/** 权威来源（api_authority_sources；管理写通道本批不做，态势区块只读） */
+export interface ApiAuthzAuthoritySource {
+  id: string
+  name: string
+  status: string
+  scopes: { tenant_domains?: string[]; object_types?: string[] }
+  max_event_age_seconds?: number | null
+  created_at: string
+  updated_at: string
+  version: number
+}
+
+export interface ApiAuthzAuthorityBatch {
+  id: string
+  source_id: string
+  mode: string
+  status: string
+  counts: { applied: number; skipped_duplicate: number; skipped_stale: number; grants: number; revokes: number; conflicts: number }
+  error?: string
+  created_by?: string | null
+  created_at: string
+}
+
+/** 权威来源状态（GET authorities/{id}/status 响应逐键） */
+export interface ApiAuthzAuthorityStatus {
+  source: ApiAuthzAuthoritySource
+  watermark: {
+    last_sequence: number
+    last_event_id: string
+    revocation_watermark: number
+    gap_from?: number | null
+    updated_at: string
+  }
+  /** OK / NO_DATA / AUTHZ_SOURCE_GAP */
+  gap_status: string
+  conflicts: ApiAuthzConflict[]
+  batches: ApiAuthzAuthorityBatch[]
 }
 
 export const apiAuthzApi = {
@@ -289,4 +478,48 @@ export const apiAuthzApi = {
   },
   getAuthorizationCoverage: (application_id: string) =>
     request<ApiAuthzCoverage>('/api-security/authz/coverage', { query: { application_id } }),
+
+  /* ==================== NG-AZ-04：态势与实断资格（§1.1~§1.4 冻结契约） ==================== */
+
+  /** 端点级实断资格徽章列表（服务端唯一事实源派生；前端只渲染不拼装。endpoint_id 单查时 application_id 可省） */
+  listEnforcementReadiness: async (params: { application_id?: string; endpoint_id?: string }) => {
+    const data = await request<{ items: ApiAuthzEnforcementReadinessItem[] }>('/api-security/authz/enforcement-readiness', {
+      query: { ...params },
+    })
+    return { ...data, items: data.items ?? [] }
+  },
+  /** 切换前影响评估（只读，POST 承载参数；manage 调用同时签发一次性 confirm_token） */
+  evaluateEnforcementImpact: (body: ApiAuthzEnforcementImpactRequest) =>
+    request<ApiAuthzEnforcementImpact>('/api-security/authz/enforcement-impact', { method: 'POST', body }),
+  /** 确认单分页查询（api_authorization.read） */
+  listEnforcementConfirmations: async (params: { application_id?: string; endpoint_id?: string; page: number; page_size: number }) => {
+    const data = await request<PageResult<ApiAuthzEnforcementConfirmation>>('/api-security/authz/enforcement-confirmations', {
+      query: { ...params },
+    })
+    return { ...data, items: data.items ?? [] }
+  },
+  /** 确认单签署（向导第 4 步；路径参数为影响评估签发的 confirm_token，签署后 signed_at 落库） */
+  signEnforcementConfirmation: (confirmToken: string, body: ApiAuthzEnforcementSignBody) =>
+    request<ApiAuthzEnforcementConfirmation>(`/api-security/authz/enforcement-confirmations/${confirmToken}/sign`, {
+      method: 'POST',
+      body,
+    }),
+  /** OPEN 冲突独立分页查询（D1；列同 ConflictRecord） */
+  listAuthzConflicts: async (params: { application_id?: string; status?: string; page: number; page_size: number }) => {
+    const data = await request<PageResult<ApiAuthzConflict>>('/api-security/authz/conflicts', { query: { ...params } })
+    return { ...data, items: data.items ?? [] }
+  },
+
+  /* ==================== 既有只读端点补 client（NG-AZ-02 D6 / NG-AZ-01 §6） ==================== */
+
+  /** 全节点授权 ACK 视图（ack_state 五态派生在服务端） */
+  listNodeAcks: () => request<ApiAuthzNodeAckView>('/api-security/authz/node-acks'),
+  /** 权威来源列表（态势 Tab「最后同步时间」区块） */
+  listAuthzAuthorities: async () => {
+    const data = await request<{ items: ApiAuthzAuthoritySource[] }>('/api-security/authz/authorities')
+    return { ...data, items: data.items ?? [] }
+  },
+  /** 权威来源状态（水位/缺口/冲突/最近批次） */
+  getAuthzAuthorityStatus: (id: string) =>
+    request<ApiAuthzAuthorityStatus>(`/api-security/authz/authorities/${id}/status`),
 }

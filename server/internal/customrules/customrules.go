@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // 规则 ID 规划
@@ -87,11 +88,15 @@ type CustomRule struct {
 	TargetVariables []string  `json:"target_variables"`
 	Action          string    `json:"action"`
 	Tags            []string  `json:"tags"`
-	Status          string    `json:"status"`
-	ScopeType       string    `json:"scope_type"`
-	ScopeIDs        []string  `json:"scope_ids"`
-	GeneratedRule   string    `json:"generated_rule"`
-	Version         int       `json:"version"`
+	// CNNVDIDs/CVEIDs 漏洞编号标注（CNNVD 兼容性 P1）：JSONB 数组列，
+	// 空恒为 [] 非 null；取信「编号 ↔ 规则 ↔ 事件」交叉关联（设计 §2.1）。
+	CNNVDIDs      []string `json:"cnnvd_ids"`
+	CVEIDs        []string `json:"cve_ids"`
+	Status        string   `json:"status"`
+	ScopeType     string   `json:"scope_type"`
+	ScopeIDs      []string `json:"scope_ids"`
+	GeneratedRule string   `json:"generated_rule"`
+	Version       int      `json:"version"`
 }
 
 // ValidateInput 校验自定义规则输入并生成 SecLang。
@@ -160,6 +165,18 @@ func ValidateInput(r *CustomRule) (generated string, err error) {
 	if sev != "CRITICAL" && sev != "ERROR" && sev != "WARNING" && sev != "NOTICE" {
 		sev = "WARNING"
 	}
+
+	// 漏洞编号标注（CNNVD 兼容性 P1）：格式校验 + 大写归一 + 去重（就地规范化落库）
+	cnnvdIDs, err := validation.NormalizeCNNVDIDs(r.CNNVDIDs)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidRule, err)
+	}
+	cveIDs, err := validation.NormalizeCVEIDs(r.CVEIDs)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidRule, err)
+	}
+	r.CNNVDIDs = cnnvdIDs
+	r.CVEIDs = cveIDs
 
 	// 生成 SecLang
 	generated = GenerateSecLang(r.RuleID, r.Name, r.TargetVariables, op, r.OperatorValue, action, sev, r.Phase, r.AttackType, r.Tags)
@@ -254,13 +271,15 @@ func (s *Store) Create(ctx context.Context, r *CustomRule, createdBy uuid.UUID) 
 	tagsJSON := mustJSON(r.Tags)
 	varsJSON := mustJSON(r.TargetVariables)
 	scopeJSON := mustJSON(r.ScopeIDs)
+	cnnvdJSON := mustJSON(r.CNNVDIDs)
+	cveJSON := mustJSON(r.CVEIDs)
 	err = s.db.QueryRow(ctx, `
 INSERT INTO custom_rules (rule_id, name, description, attack_type, severity, phase, operator,
-  operator_value, target_variables, action, tags, status, scope_type, scope_ids, generated_rule, created_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+  operator_value, target_variables, action, tags, cnnvd_ids, cve_ids, status, scope_type, scope_ids, generated_rule, created_by)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14,$15,$16,$17,$18)
 RETURNING id, version`,
 		r.RuleID, r.Name, r.Description, r.AttackType, r.Severity, r.Phase, r.Operator,
-		r.OperatorValue, varsJSON, r.Action, tagsJSON, defaultStatus(r.Status), r.ScopeType, scopeJSON, r.GeneratedRule, createdBy,
+		r.OperatorValue, varsJSON, r.Action, tagsJSON, cnnvdJSON, cveJSON, defaultStatus(r.Status), r.ScopeType, scopeJSON, r.GeneratedRule, createdBy,
 	).Scan(&r.ID, &r.Version)
 	if err != nil {
 		if strings.Contains(err.Error(), "custom_rules_rule_id_key") {
@@ -271,17 +290,20 @@ RETURNING id, version`,
 	return nil
 }
 
+// ruleColumns 规则查询列清单（与 scanRule/scanRuleRows 顺序一致）。
+const ruleColumns = `id, rule_id, name, description, attack_type, severity, phase, operator, operator_value,
+  target_variables, action, tags, cnnvd_ids, cve_ids, status, scope_type, scope_ids, generated_rule, version`
+
 // GetByID 查询规则。
 func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*CustomRule, error) {
 	row := s.db.QueryRow(ctx, `
-SELECT id, rule_id, name, description, attack_type, severity, phase, operator, operator_value,
-  target_variables, action, tags, status, scope_type, scope_ids, generated_rule, version
+SELECT `+ruleColumns+`
 FROM custom_rules WHERE id = $1`, id)
 	return scanRule(row)
 }
 
-// List 分页查询。
-func (s *Store) List(ctx context.Context, keyword, status string, page, pageSize int) ([]CustomRule, int64, error) {
+// List 分页查询。cnnvdID/cveID 非空时按编号精确反查（JSONB 包含匹配，走 GIN 索引）。
+func (s *Store) List(ctx context.Context, keyword, status, cnnvdID, cveID string, page, pageSize int) ([]CustomRule, int64, error) {
 	if page <= 0 {
 		page = 1
 	}
@@ -301,13 +323,22 @@ func (s *Store) List(ctx context.Context, keyword, status string, page, pageSize
 		args = append(args, status)
 		argIdx++
 	}
+	if cnnvdID != "" {
+		where += fmt.Sprintf(" AND cnnvd_ids @> $%d::jsonb", argIdx)
+		args = append(args, mustJSON([]string{cnnvdID}))
+		argIdx++
+	}
+	if cveID != "" {
+		where += fmt.Sprintf(" AND cve_ids @> $%d::jsonb", argIdx)
+		args = append(args, mustJSON([]string{cveID}))
+		argIdx++
+	}
 	var total int64
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM custom_rules WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	query := `
-SELECT id, rule_id, name, description, attack_type, severity, phase, operator, operator_value,
-  target_variables, action, tags, status, scope_type, scope_ids, generated_rule, version
+SELECT ` + ruleColumns + `
 FROM custom_rules WHERE ` + where + fmt.Sprintf(" ORDER BY rule_id LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := s.db.Query(ctx, query, args...)
@@ -335,12 +366,12 @@ func (s *Store) Update(ctx context.Context, r *CustomRule) error {
 	r.GeneratedRule = generated
 	res, err := s.db.Exec(ctx, `
 UPDATE custom_rules SET name=$1, description=$2, attack_type=$3, severity=$4, phase=$5,
-  operator=$6, operator_value=$7, target_variables=$8, action=$9, tags=$10, scope_type=$11,
-  scope_ids=$12, generated_rule=$13, updated_at=now(), version=version+1
-WHERE id=$14 AND version=$15`,
+  operator=$6, operator_value=$7, target_variables=$8, action=$9, tags=$10, cnnvd_ids=$11::jsonb,
+  cve_ids=$12::jsonb, scope_type=$13, scope_ids=$14, generated_rule=$15, updated_at=now(), version=version+1
+WHERE id=$16 AND version=$17`,
 		r.Name, r.Description, r.AttackType, r.Severity, r.Phase, r.Operator, r.OperatorValue,
-		mustJSON(r.TargetVariables), r.Action, mustJSON(r.Tags), r.ScopeType, mustJSON(r.ScopeIDs),
-		r.GeneratedRule, r.ID, r.Version)
+		mustJSON(r.TargetVariables), r.Action, mustJSON(r.Tags), mustJSON(r.CNNVDIDs), mustJSON(r.CVEIDs),
+		r.ScopeType, mustJSON(r.ScopeIDs), r.GeneratedRule, r.ID, r.Version)
 	if err != nil {
 		return err
 	}
@@ -404,9 +435,9 @@ func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 
 func scanRule(row pgx.Row) (*CustomRule, error) {
 	var r CustomRule
-	var vars, tags, scope []byte
+	var vars, tags, cnnvd, cve, scope []byte
 	err := row.Scan(&r.ID, &r.RuleID, &r.Name, &r.Description, &r.AttackType, &r.Severity,
-		&r.Phase, &r.Operator, &r.OperatorValue, &vars, &r.Action, &tags, &r.Status,
+		&r.Phase, &r.Operator, &r.OperatorValue, &vars, &r.Action, &tags, &cnnvd, &cve, &r.Status,
 		&r.ScopeType, &scope, &r.GeneratedRule, &r.Version)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -414,25 +445,36 @@ func scanRule(row pgx.Row) (*CustomRule, error) {
 		}
 		return nil, err
 	}
-	r.TargetVariables = fromJSON(vars)
-	r.Tags = fromJSON(tags)
-	r.ScopeIDs = fromJSON(scope)
+	fillJSONFields(&r, vars, tags, cnnvd, cve, scope)
 	return &r, nil
 }
 
 func scanRuleRows(rows pgx.Rows) (*CustomRule, error) {
 	var r CustomRule
-	var vars, tags, scope []byte
+	var vars, tags, cnnvd, cve, scope []byte
 	err := rows.Scan(&r.ID, &r.RuleID, &r.Name, &r.Description, &r.AttackType, &r.Severity,
-		&r.Phase, &r.Operator, &r.OperatorValue, &vars, &r.Action, &tags, &r.Status,
+		&r.Phase, &r.Operator, &r.OperatorValue, &vars, &r.Action, &tags, &cnnvd, &cve, &r.Status,
 		&r.ScopeType, &scope, &r.GeneratedRule, &r.Version)
 	if err != nil {
 		return nil, err
 	}
+	fillJSONFields(&r, vars, tags, cnnvd, cve, scope)
+	return &r, nil
+}
+
+// fillJSONFields 反序列化 JSONB 列；编号字段空恒为 []（冻结契约：空为 [] 非 null）。
+func fillJSONFields(r *CustomRule, vars, tags, cnnvd, cve, scope []byte) {
 	r.TargetVariables = fromJSON(vars)
 	r.Tags = fromJSON(tags)
+	r.CNNVDIDs = fromJSON(cnnvd)
+	if r.CNNVDIDs == nil {
+		r.CNNVDIDs = []string{}
+	}
+	r.CVEIDs = fromJSON(cve)
+	if r.CVEIDs == nil {
+		r.CVEIDs = []string{}
+	}
 	r.ScopeIDs = fromJSON(scope)
-	return &r, nil
 }
 
 func defaultStatus(s string) string {

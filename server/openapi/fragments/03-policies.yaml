@@ -1,7 +1,8 @@
 # 九章 WDSP 管理 API 片段：WAF 防护策略域（阶段4）
 # 路由源：server/internal/app/app.go 第 530-571 行
 # 覆盖：/protection-policies（含 /copy /applications）、/waf-rules（含 /categories /versions /sync）、
-#       /rule-overrides、/custom-rules（含 /validate /enable /disable）、/exceptions（含 /enable /disable /preview）
+#       /rule-overrides、/custom-rules（含 /validate /enable /disable）、/exceptions（含 /enable /disable /preview）、
+#       /waf/vuln-refs（CNNVD 漏洞档案，CNNVD 兼容性 P1）
 
 paths:
   # ==================== 防护策略 ====================
@@ -738,6 +739,16 @@ paths:
           required: false
           schema: { type: string, enum: [ENABLED, DISABLED] }
           description: 按状态过滤
+        - name: cnnvd_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: 按 CNNVD 编号精确反查（JSONB 包含匹配，如 CNNVD-202401-2345；大小写不敏感，格式非法返回 400）
+        - name: cve_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: 按 CVE 编号精确反查（如 CVE-2024-0001；大小写不敏感，格式非法返回 400）
         - name: page
           in: query
           required: false
@@ -990,6 +1001,184 @@ paths:
       responses:
         '200':
           description: 操作成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ==================== CNNVD 漏洞档案 ====================
+  /waf/vuln-refs:
+    get:
+      operationId: vulnRefList
+      tags: [vuln-refs]
+      summary: 漏洞档案列表
+      description: |
+        分页查询 CNNVD 漏洞条目本地档案（管理员手工维护），按 cnnvd_id 升序。
+        列表项附交叉计数：rule_count=携带该档案编号（cnnvd_id，及 cve_id 对照）的规则数
+        （custom_rules + waf_rules 目录按 rule_id 去重）；event_count_30d=近 30 天
+        命中这些规则的去重安全事件数。权限：`waf_rules.read`
+      parameters:
+        - name: keyword
+          in: query
+          required: false
+          schema: { type: string }
+          description: 关键字，模糊匹配 cnnvd_id / cve_id / 规范名称
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码，默认 1
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数，默认 20，最大 100
+      responses:
+        '200':
+          description: 漏洞档案分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnRefListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: vulnRefCreate
+      tags: [vuln-refs]
+      summary: 录入漏洞档案
+      description: |
+        录入一条漏洞档案。cnnvd_id 全局唯一（重复返回 409）；编号格式非法返回 400
+        （中文错误）。记录操作审计（风险：中）。权限：`waf_rule.vuln_ref.edit`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VulnRefUpsertRequest'
+      responses:
+        '200':
+          description: 创建成功，返回新档案
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnRef'
+        '400':
+          description: 校验失败（编号格式非法、日期格式非法、链接非法等）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 该 CNNVD 编号的档案已存在（RESOURCE_CONFLICT）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /waf/vuln-refs/{cnnvd_id}:
+    get:
+      operationId: vulnRefGet
+      tags: [vuln-refs]
+      summary: 漏洞档案详情（交叉查询）
+      description: |
+        档案条目 + 关联规则列表 + 近 30 天命中事件计数与样例（≤5 条最近）。
+        关联口径：规则 cnnvd_ids 含档案 cnnvd_id，或档案 cve_id 非空且规则 cve_ids 含之；
+        事件取 security_event_matches 命中这些 rule_id 的近 30 天去重事件。权限：`waf_rules.read`
+      parameters:
+        - name: cnnvd_id
+          in: path
+          required: true
+          schema: { type: string }
+          description: CNNVD 编号（如 CNNVD-202401-2345；大小写不敏感）
+      responses:
+        '200':
+          description: 档案详情与交叉查询结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnRefDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: vulnRefUpdate
+      tags: [vuln-refs]
+      summary: 更新漏洞档案
+      description: |
+        更新档案。cnnvd_id 为路径键不可修改（请求体携带且不一致返回 400）。
+        记录操作审计（风险：中）。权限：`waf_rule.vuln_ref.edit`
+      parameters:
+        - name: cnnvd_id
+          in: path
+          required: true
+          schema: { type: string }
+          description: CNNVD 编号
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VulnRefUpsertRequest'
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: vulnRefDelete
+      tags: [vuln-refs]
+      summary: 删除漏洞档案
+      description: |
+        删除档案（物理删除；不影响规则上的编号标注与历史事件）。
+        记录操作审计（风险：高）。权限：`waf_rule.vuln_ref.edit`
+      parameters:
+        - name: cnnvd_id
+          in: path
+          required: true
+          schema: { type: string }
+          description: CNNVD 编号
+      responses:
+        '200':
+          description: 删除成功
           content:
             application/json:
               schema:
@@ -1609,6 +1798,14 @@ components:
           type: array
           items: { type: string }
           description: 自定义标签（写入 SecLang tag）
+        cnnvd_ids:
+          type: array
+          items: { type: string }
+          description: CNNVD 编号标注数组（格式 ^CNNVD-\d{6}-\d{3,}$，服务端大写归一去重，最多 20 个；空恒为 [] 非 null）
+        cve_ids:
+          type: array
+          items: { type: string }
+          description: CVE 编号标注数组（格式 ^CVE-\d{4}-\d{4,}$，服务端大写归一去重，最多 20 个；空恒为 [] 非 null）
         status:
           type: string
           enum: [ENABLED, DISABLED]
@@ -1652,6 +1849,16 @@ components:
           type: array
           items: { type: string }
           description: 自定义标签
+        cnnvd_ids:
+          type: array
+          items: { type: string }
+          maxItems: 20
+          description: CNNVD 编号标注（可选；格式 ^CNNVD-\d{6}-\d{3,}$，大写归一去重；格式非法返回 400 中文错误）
+        cve_ids:
+          type: array
+          items: { type: string }
+          maxItems: 20
+          description: CVE 编号标注（可选；格式 ^CVE-\d{4}-\d{4,}$，大写归一去重）
         version: { type: integer, description: 乐观锁版本号；更新必填且须与当前版本一致，创建/校验时忽略 }
 
     CustomRuleValidateResult:
@@ -1672,6 +1879,93 @@ components:
         page: { type: integer, description: 当前页码 }
         page_size: { type: integer, description: 每页条数 }
         total: { type: integer, description: 总条数 }
+
+    # ==================== CNNVD 漏洞档案 ====================
+    VulnRef:
+      type: object
+      description: CNNVD 漏洞条目本地档案（手工维护；编号 → 规范名称/官方链接）
+      properties:
+        id: { type: string, format: uuid, description: 档案记录 ID }
+        cnnvd_id: { type: string, description: CNNVD 编号（全局唯一，大写归一，如 CNNVD-202401-2345） }
+        cve_id: { type: string, description: 对应 CVE 编号（可空，大写归一，如 CVE-2024-0001） }
+        title: { type: string, maxLength: 512, description: 规范中文名称 }
+        severity: { type: string, maxLength: 16, description: 危害级别（如 超危/高危/中危/低危，自由文本） }
+        published_at: { type: string, nullable: true, description: 发布日期（YYYY-MM-DD；null=未知） }
+        url: { type: string, maxLength: 1024, description: CNNVD 官方条目链接（http/https） }
+        created_at: { type: string, format: date-time, description: 创建时间 }
+        updated_at: { type: string, format: date-time, description: 更新时间 }
+
+    VulnRefListItem:
+      type: object
+      description: 漏洞档案列表项（含交叉计数）
+      allOf:
+        - $ref: '#/components/schemas/VulnRef'
+        - type: object
+          properties:
+            rule_count: { type: integer, format: int64, description: 携带该编号的规则数（custom_rules + waf_rules 目录按 rule_id 去重） }
+            event_count_30d: { type: integer, format: int64, description: 近 30 天命中这些规则的去重安全事件数 }
+
+    VulnRefUpsertRequest:
+      type: object
+      required: [cnnvd_id]
+      properties:
+        cnnvd_id:
+          type: string
+          description: 'CNNVD 编号（格式 ^CNNVD-\d{6}-\d{3,}$，大写归一；更新时不可修改，携带且与路径不一致返回 400）'
+        cve_id:
+          type: string
+          description: '对应 CVE 编号（可选；格式 ^CVE-\d{4}-\d{4,}$）'
+        title: { type: string, maxLength: 512, description: 规范中文名称 }
+        severity: { type: string, maxLength: 16, description: 危害级别 }
+        published_at: { type: string, nullable: true, description: 发布日期（YYYY-MM-DD；null/空串清除） }
+        url: { type: string, maxLength: 1024, description: CNNVD 官方条目链接（http/https） }
+
+    VulnRefRuleLink:
+      type: object
+      description: 携带某编号的规则投影
+      properties:
+        rule_id: { type: integer, description: 规则 ID }
+        rule_source: { type: string, description: 规则来源（USER_CUSTOM=自定义规则；OWASP_CRS 等=CRS 目录来源） }
+        rule_name: { type: string, description: 规则名称 }
+        description: { type: string, description: 规则描述（CRS 目录为 message） }
+        enabled: { type: boolean, description: 是否启用（自定义规则看 status；CRS 目录看 default_state，不含规则覆盖效果） }
+
+    VulnRefSampleEvent:
+      type: object
+      description: 命中事件样例（近 30 天，最多 5 条最近）
+      properties:
+        id: { type: string, format: uuid, description: 事件 ID }
+        occurred_at: { type: string, format: date-time, description: 发生时间 }
+        attack_type: { type: string, description: 攻击类型 }
+        client_ip: { type: string, description: 客户端 IP }
+        request_path: { type: string, description: 请求路径 }
+        action: { type: string, description: 处置动作 }
+
+    VulnRefListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/VulnRefListItem'
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, description: 总条数 }
+
+    VulnRefDetailResponse:
+      type: object
+      description: 漏洞档案详情交叉查询结果
+      properties:
+        ref: { $ref: '#/components/schemas/VulnRefListItem', description: 档案条目（含交叉计数） }
+        rules:
+          type: array
+          items: { $ref: '#/components/schemas/VulnRefRuleLink' }
+          description: 关联规则列表（空为 []）
+        event_count_30d: { type: integer, format: int64, description: 近 30 天去重命中事件数 }
+        sample_events:
+          type: array
+          items: { $ref: '#/components/schemas/VulnRefSampleEvent' }
+          description: 命中事件样例（≤5 条最近，空为 []）
 
     # ==================== 例外策略 ====================
     Exception:

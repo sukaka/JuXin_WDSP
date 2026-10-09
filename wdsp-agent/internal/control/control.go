@@ -26,6 +26,10 @@ type Deps struct {
 	StatusFn         func() string            // ONLINE | DEGRADED | ERROR
 	MetricsFn        func() transport.Metrics // metrics 快照
 	AppliedVersionFn func() int64             // 本地已应用配置版本
+	// PendingConfigAckVersionFn/MarkConfigAckedFn 共同维护“已持久化但控制面
+	// 未确认”的 APPLIED ACK；nil 保持与旧调用方兼容。
+	PendingConfigAckVersionFn func() int64
+	MarkConfigAckedFn         func(version int64) error
 	// ApplyConfigFn 应用并持久化配置（overrides 为 Phase 4 定向采集规则，
 	// 缺省/解析失败按空数组）。
 	ApplyConfigFn  func(policy *config.Policy, overrides []config.Override, version int64) error
@@ -112,8 +116,10 @@ func (l *Loop) Run(ctx context.Context) {
 		if l.d.SetEnabledFn != nil {
 			l.d.SetEnabledFn(resp.DesiredState != "DISABLED")
 		}
-		// 配置版本推进 → 拉取并应用
-		if resp.ConfigVersion > l.d.AppliedVersionFn() {
+		// APPLIED ACK 失败后不能只依赖“版本差”触发重试：本地版本已经推进。
+		// 先确认持久化的待 ACK 版本，确认前不拉取后续配置，避免跳过确认。
+		// ACK 仅阻止后续配置推进，不阻止独立的证书轮换维护。
+		if l.retryPendingConfigAck(ctx) && resp.ConfigVersion > l.d.AppliedVersionFn() {
 			l.pullAndApply(ctx, resp.ConfigVersion)
 		}
 		// 证书轮换检查（契约 §9：存活期过半自动轮换，内部自判时机与退避）
@@ -163,11 +169,43 @@ func (l *Loop) pullAndApply(ctx context.Context, version int64) {
 	} else {
 		log.Info("配置已应用", "version", resp.Version, "policy", policy.Name)
 	}
-	l.ack(ctx, resp.Version, "APPLIED", "")
+	if l.ack(ctx, resp.Version, "APPLIED", "") && !l.markConfigAcked(resp.Version) {
+		log.Warn("配置 ACK 已送达但本地确认状态未能持久化，下个心跳将重试", "version", resp.Version)
+	}
 }
 
-// ack 配置 ACK（失败仅记日志，下个周期由版本差再次触发）。
-func (l *Loop) ack(ctx context.Context, version int64, status, errMsg string) {
+// retryPendingConfigAck 重试崩溃或网络失败后遗留的 APPLIED ACK。
+func (l *Loop) retryPendingConfigAck(ctx context.Context) bool {
+	if l.d.PendingConfigAckVersionFn == nil || l.d.MarkConfigAckedFn == nil {
+		return true
+	}
+	version := l.d.PendingConfigAckVersionFn()
+	if version <= 0 {
+		return true
+	}
+	if !l.ack(ctx, version, "APPLIED", "") {
+		return false
+	}
+	if err := l.d.MarkConfigAckedFn(version); err != nil {
+		l.d.Log.Warn("配置 ACK 已送达但本地确认状态未能持久化", "version", version, "err", err)
+		return false
+	}
+	return true
+}
+
+func (l *Loop) markConfigAcked(version int64) bool {
+	if l.d.MarkConfigAckedFn == nil {
+		return true
+	}
+	if err := l.d.MarkConfigAckedFn(version); err != nil {
+		l.d.Log.Warn("配置 ACK 已送达但本地确认状态未能持久化", "version", version, "err", err)
+		return false
+	}
+	return true
+}
+
+// ack 配置 ACK；调用方根据返回值决定是否保留待确认状态。
+func (l *Loop) ack(ctx context.Context, version int64, status, errMsg string) bool {
 	ackCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	err := l.d.Client.AckConfig(ackCtx, l.d.AgentID, transport.AckRequest{
 		Version: version, Status: status, Error: errMsg,
@@ -175,5 +213,7 @@ func (l *Loop) ack(ctx context.Context, version int64, status, errMsg string) {
 	cancel()
 	if err != nil {
 		l.d.Log.Warn("配置 ACK 失败", "version", version, "status", status, "err", err)
+		return false
 	}
+	return true
 }

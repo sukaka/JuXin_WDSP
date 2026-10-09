@@ -15,7 +15,7 @@ source "$SCRIPT_DIR/../lib/signing.sh"
 # 指纹见 docs/DEPLOYMENT.md「离线交付包签名与验签」。生产模式禁止覆盖；
 # 仅显式开发模式允许 WDSP_PACKAGE_PUBLIC_KEY 指向测试公钥）。
 WDSP_RELEASE_PUBKEY_PEM="-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEApGM/1+Y45NHIQ9F6zv5SH0NbiEjFA5hmx22R4nDAGus=
+MCowBQYDK2VwAyEAJBzjZs04R6NVLDuKoJsViPuBEGlo70z/zpnKi6ZHq2s=
 -----END PUBLIC KEY-----"
 
 usage() {
@@ -26,11 +26,12 @@ usage() {
   1. 环境检查（docker / compose / 端口 / 内存 / 磁盘 / 时间同步）
   2. 生成 .env（随机 POSTGRES_PASSWORD / VALKEY_PASSWORD / JIUZHANG_MASTER_KEY）
   3. 采集宿主机指纹（离线授权绑定用，写入 runtime/license/host_fingerprint）
-  4. 配置宿主机 firewalld（默认仅 80/443；站点其他端口经 --site-ports 显式追加）
-  5. 安装 jiuzhang-hostctl systemd 单元（系统控制：重启/关机/恢复出厂；无 systemd 告警跳过）
-  6. 启动 compose 项目并等待健康
-  7. 安装并启用宿主机升级执行器（完整包必装，供 Web 升级调用）
-  8. 初始化三权管理员账号（安全/审计管理员经 API 创建，临时口令仅打印一次）
+  4. 生成管理控制台 HTTPS 证书（自签、100 年有效期，写入 runtime/certificates/）
+  5. 配置宿主机 firewalld（默认仅 80/443；站点其他端口经 --site-ports 显式追加）
+  6. 安装 jiuzhang-hostctl systemd 单元（系统控制：重启/关机/恢复出厂；无 systemd 告警跳过）
+  7. 启动 compose 项目并等待健康
+  8. 安装并启用宿主机升级执行器（完整包必装，供 Web 升级调用）
+  9. 初始化三权管理员账号（安全/审计管理员经 API 创建，临时口令仅打印一次）
 
 选项:
   -c, --compose-file FILE  docker compose 文件（默认 docker-compose.yml）
@@ -39,6 +40,7 @@ usage() {
       --gateway-port PORT  网关对外端口检查（默认 80）
       --api-port PORT      API 端口检查（默认 18081）
       --web-port PORT      管理控制台端口检查（默认 8080）
+      --web-https-port PORT 管理控制台 HTTPS 端口检查（默认 8443）
       --site-ports LIST    额外放行的站点端口（逗号分隔，支持区间，如 "8080,8443,9000-9010"）。
                            生产网关 network_mode: host，站点监听端口由管理面发布配置
                            动态决定，安装期无法静态枚举，须按实际发布端口精确追加。
@@ -59,6 +61,7 @@ EOF
 GATEWAY_PORT=80
 API_PORT=18081
 WEB_PORT=8080
+WEB_HTTPS_PORT=8443
 SITE_PORTS=""
 FORCE=false
 NO_FIREWALL=false
@@ -73,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --gateway-port)    GATEWAY_PORT="$2"; shift 2 ;;
     --api-port)        API_PORT="$2"; shift 2 ;;
     --web-port)        WEB_PORT="$2"; shift 2 ;;
+    --web-https-port)  WEB_HTTPS_PORT="$2"; shift 2 ;;
     --site-ports)      SITE_PORTS="$2"; shift 2 ;;
     --force)           FORCE=true; shift ;;
     --no-firewall)     NO_FIREWALL=true; shift ;;
@@ -228,7 +232,7 @@ if [[ -n "$pkg_manifest" ]]; then
 fi
 
 # ---------- 1. 环境检查 ----------
-log_info "步骤 1/8：环境检查"
+log_info "步骤 1/9：环境检查"
 
 port_in_use() { # 检查本机端口占用（lsof 优先，/dev/tcp 兜底）
   local port="$1"
@@ -240,12 +244,12 @@ port_in_use() { # 检查本机端口占用（lsof 优先，/dev/tcp 兜底）
   return 1
 }
 
-for p in "$GATEWAY_PORT" "$API_PORT" "$WEB_PORT"; do
+for p in "$GATEWAY_PORT" "$API_PORT" "$WEB_PORT" "$WEB_HTTPS_PORT"; do
   if port_in_use "$p"; then
     die "端口 $p 已被占用，请先释放（或调整端口参数）"
   fi
 done
-log_info "端口 $GATEWAY_PORT / $API_PORT / $WEB_PORT 可用"
+log_info "端口 $GATEWAY_PORT / $API_PORT / $WEB_PORT / $WEB_HTTPS_PORT 可用"
 
 # 内存 ≥4GB
 mem_gb=0
@@ -286,7 +290,7 @@ else
 fi
 
 # ---------- 2. 生成 .env ----------
-log_info "步骤 2/8：生成环境文件 $JZ_ENV_FILE"
+log_info "步骤 2/9：生成环境文件 $JZ_ENV_FILE"
 if [[ -f "$JZ_ENV_FILE" && "$FORCE" != "true" ]]; then
   die "$JZ_ENV_FILE 已存在（--force 可覆盖；覆盖前请备份）"
 fi
@@ -311,6 +315,7 @@ INITIAL_ADMIN_USERNAME=jiuzhang_admin
 INITIAL_ADMIN_PASSWORD=$INITIAL_ADMIN_PASSWORD
 API_PORT=$API_PORT
 WEB_PORT=$WEB_PORT
+WEB_HTTPS_PORT=$WEB_HTTPS_PORT
 PRODUCT_EDITION=$PKG_EDITION
 API_DYNAMIC_PROTECTION_ENABLED=$PKG_API_DYNAMIC
 WEB_WAF_ENABLED=$PKG_WEB_WAF
@@ -324,7 +329,7 @@ log_info "已生成随机口令/主密钥，并写入产品线 PRODUCT_EDITION=$
 # ./runtime/license:/app/runtime/license:ro）读取该文件，与授权文件中的
 # machine_fingerprint 比对（授权未绑定指纹时本文件不参与校验）。
 # 采集失败仅告警不中断：绑定指纹的授权在导入时才校验，可事后重新采集补齐。
-log_info "步骤 3/8：采集宿主机指纹（离线授权）"
+log_info "步骤 3/9：采集宿主机指纹（离线授权）"
 INSTALL_ROOT="$PWD"
 LICENSE_DIR="$INSTALL_ROOT/runtime/license"
 HOST_FP_FILE="$LICENSE_DIR/host_fingerprint"
@@ -343,13 +348,18 @@ else
   log_warn "宿主机指纹采集失败，跳过写入（不影响安装；导入绑定指纹的授权前可执行 bash ops/lib/fingerprint.sh 核对后手动写入 ${HOST_FP_FILE}）"
 fi
 
-# ---------- 4. firewalld ----------
+# ---------- 4. 管理控制台 HTTPS 证书 ----------
+# 幂等（证书已存在则不重新生成，永久有效不轮换）；openssl 已在前面 require_cmd。
+log_info "步骤 4/9：生成管理控制台 HTTPS 证书（自签、100 年有效期）"
+bash "$SCRIPT_DIR/console-cert.sh" --output "$INSTALL_ROOT/runtime/certificates"
+
+# ---------- 5. firewalld ----------
 # 端口收敛（LOW-O3）：默认只放行网关默认监听 80/443。生产网关 network_mode: host，
 # 站点监听端口由管理面发布配置动态决定（1024-65535 任意高位端口），安装期无法静态
 # 枚举，须由部署方按实际发布端口经 --site-ports 精确追加；安装后新增站点端口同理
 # 手工 firewall-cmd 放行。切勿图省事直接放行 1024-65535：宿主机上任何监听高位端口
 # 的无关服务都会被一并暴露到外部（历史默认行为，已按代码审查 LOW-O3 收敛）。
-log_info "步骤 4/8：配置 firewalld（80/443${SITE_PORTS:+ 与站点端口 ${SITE_PORTS}}）"
+log_info "步骤 5/9：配置 firewalld（80/443${SITE_PORTS:+ 与站点端口 ${SITE_PORTS}}）"
 if [[ "$NO_FIREWALL" == "true" ]]; then
   log_info "按 --no-firewall 跳过 firewalld 配置"
 elif command -v firewall-cmd >/dev/null 2>&1 && \
@@ -377,7 +387,7 @@ fi
 # runtime/hostctl/ 写标志文件；宿主机 path 单元监视该目录并触发 hostctl-exec.sh 执行。
 # 检测 systemd 可用才安装；不可用（容器/无 systemd 环境）或非 root 时告警跳过不阻断，
 # 届时可手工执行 ops/system/hostctl-exec.sh 处理标志文件（见 docs/DEPLOYMENT.md）。
-log_info "步骤 5/8：安装 jiuzhang-hostctl systemd 单元（系统控制）"
+log_info "步骤 6/9：安装 jiuzhang-hostctl systemd 单元（系统控制）"
 mkdir -p "$INSTALL_ROOT/runtime/hostctl"
 chmod 755 "$INSTALL_ROOT/runtime/hostctl"
 # api 容器以 uid 1000 写入标志文件：尽量调整属主（非 root 安装可能失败，届时容器写入受限）
@@ -435,14 +445,14 @@ else
 fi
 
 # ---------- 6. 启动 ----------
-log_info "步骤 6/8：启动服务（compose up -d）"
+log_info "步骤 7/9：启动服务（compose up -d）"
 compose up -d
 log_info "等待管理 API 健康检查（最长 180s）..."
 wait_http_ok "$JZ_API_BASE/api/v1/health" 180 || die "管理 API 启动超时，请用 ops/diagnostics/collect.sh 收集诊断信息"
 log_info "管理 API 已就绪"
 
 # ---------- 7. 宿主机升级执行器 ----------
-log_info "步骤 7/8：安装宿主机升级执行器"
+log_info "步骤 8/9：安装宿主机升级执行器"
 if [[ -n "$pkg_manifest" ]] || {
   [[ "$(id -u)" == "0" ]] && command -v systemctl >/dev/null 2>&1 \
     && [[ -d /run/systemd/system ]] && [[ -x "$UPGRADE_INSTALLER" ]] && [[ -x "$UPGRADE_EXECUTOR" ]]
@@ -465,7 +475,7 @@ if [[ "$SKIP_ACCOUNTS" == "true" ]]; then
   log_warn "已跳过三权账号初始化（--skip-accounts）"
   exit 0
 fi
-log_info "步骤 8/8：初始化三权管理员账号"
+log_info "步骤 9/9：初始化三权管理员账号"
 require_cmd jq
 JZ_ADMIN_PASSWORD="$INITIAL_ADMIN_PASSWORD"
 trap api_cleanup EXIT
@@ -519,4 +529,11 @@ cat <<'EOF'
 ====================================================================================
   提示: 所有初始/临时口令首次登录后必须修改；
         确认账号可用后，请从 .env 中删除 INITIAL_ADMIN_PASSWORD 并重启服务。
+EOF
+cat <<EOF
+
+  管理控制台入口：
+    HTTPS（推荐）: https://<服务器IP>:${WEB_HTTPS_PORT}/  （自签证书，首次访问浏览器告警属预期；
+                   导入 runtime/certificates/console.crt 到受信根证书可消除告警）
+    HTTP（兼容）:  http://<服务器IP>:${WEB_PORT}/
 EOF

@@ -52,7 +52,7 @@ RUN addgroup -g 1000 -S jiuzhang && adduser -u 1000 -S -G jiuzhang jiuzhang \
 COPY --from=builder /out/jiuzhang-api /usr/local/bin/jiuzhang-api
 COPY --chown=jiuzhang:jiuzhang server/migrations/ /app/migrations/
 # 报告 PDF 字体等资源（阶段6）
-COPY --chown=jiuzhang:jiuzhang server/assets/ /app/assets/
+COPY --chown=jiuzhang:jiuzhang server/assets/fonts/*.otf server/assets/fonts/*.ttf /app/assets/fonts/
 
 USER jiuzhang
 WORKDIR /app

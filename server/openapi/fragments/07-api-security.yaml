@@ -2263,6 +2263,82 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /api-security/admission/coverage:
+    get:
+      operationId: apiSecAdmissionCoverageGet
+      tags: [api-security]
+      summary: API 准入覆盖率报告
+      description: >-
+        应用级 API 准入覆盖率与影响面报告（切换 PROTECT 前评估，docs/API_ADMISSION_CONTROL_DESIGN.md
+        §5.2）：端点五态计数、确认覆盖率（confirmed/(confirmed+discovered)）、窗口内仍有命中的
+        未确认端点榜（按命中降序、上限 50）、窗口内准入拦截次数（OBSERVE 期为 0）。
+        命中统计窗口 hits_window 受 api_runtime_events 实际留存约束，超出留存的部分自然无数据。
+        权限：`api_asset.read`
+      parameters:
+        - name: application_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+          description: 应用ID；缺失或非法 UUID 返回 400
+        - name: hits_window
+          in: query
+          required: false
+          schema: { type: integer, default: 168, minimum: 1, maximum: 2160 }
+          description: 命中统计窗口（小时，1-2160，缺省 168=7 天）；非数字/越界返回 400
+      responses:
+        '200':
+          description: 准入覆盖率报告
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAdmissionCoverageReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/admission/denied:
+    get:
+      operationId: apiSecAdmissionDeniedList
+      tags: [api-security]
+      summary: API 准入拦截列表
+      description: >-
+        窗口内 PROTECT 准入拦截（403）事件按端点聚合（docs/API_ADMISSION_CONTROL_DESIGN.md §5.3）：
+        拦截次数/最近拦截时间/样本客户端 IP/端点首次发现时间，按拦截次数降序分页。
+        行操作（确认放行/忽略）复用接口资产确认接口；操作后需发布后生效。
+        权限：`api_asset.read`
+      parameters:
+        - name: application_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+          description: 应用ID；缺失或非法 UUID 返回 400
+        - name: hits_window
+          in: query
+          required: false
+          schema: { type: integer, default: 168, minimum: 1, maximum: 2160 }
+          description: 统计窗口（小时，1-2160，缺省 168=7 天）；非数字/越界返回 400
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1 }
+          description: 每页条数（上限 100）
+      responses:
+        '200':
+          description: 分页准入拦截列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAdmissionDeniedListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /api-security/behavior-profiles:
     get:
       operationId: apiSecBehaviorProfileList
@@ -2314,7 +2390,9 @@ paths:
         分页列出对象模型（api_object_models，endpoint × object_segment 一行，BOLA 实体画像，
         由 apiauthz.SweepObjectModelsOnce 扫描 api_runtime_events 按路径占位段 / Query 对象参数
         形态 upsert 产出，迁移 000018/000073），按 last_seen 倒序；观测值只落 SHA-256 示例哈希，
-        不落明文。只读接口，无写入口。权限：`api_runtime.read`
+        不落明文。发布状态字段（NG-AZ-02：publishable/required_relation/owner_exclusive/
+        on_lease_expired）随列表带出，变更走 PATCH /object-models/{id}。只读接口。
+        权限：`api_runtime.read`
       parameters:
         - name: endpoint_id
           in: query
@@ -2350,6 +2428,38 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/object-models/{id}:
+    patch:
+      operationId: apiSecObjectModelPatch
+      tags: [api-security]
+      summary: 对象模型发布状态管理
+      description: >-
+        变更对象模型发布状态（NG-AZ-02 D5/D7 管理写入路径）：publishable（发布资格）/
+        required_relation（首批仅 OWNER 词表）/ owner_exclusive（排他所有权）/
+        on_lease_expired（租约过期策略 strict|degraded，缺省 strict）。
+        全部字段三分态（缺省不变更）；词表外取值 400 不降级猜义；
+        publishable=true 时 owner_exclusive 必须同批为 true（排他所有权是发布语义前提）；
+        行不存在 404；写操作审计（高风险——发布状态变更属授权事实管理）。
+        权限：`api_authorization.manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 对象模型行 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecObjectModelPatchRequest' }
+      responses:
+        '200':
+          description: 变更后的对象模型
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecObjectModel' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
   /api-security/identity-profiles:
@@ -3443,13 +3553,15 @@ paths:
     get:
       operationId: apiSecAuthzDecisionList
       tags: [api-security]
-      summary: OBSERVE 授权决策分页列表
+      summary: 授权决策分页列表
       description: >-
-        查询 ALLOW、OBSERVE_VIOLATION、UNKNOWN 决策链。UNKNOWN 表示证据不足，不计作违规；
+        查询 ALLOW、OBSERVE_VIOLATION、UNKNOWN、VERIFIED_VIOLATION（NG-AZ-03 D1 第四值：
+        违规事实经显式资格判定成立）决策链。UNKNOWN 表示证据不足，不计作违规且永不阻断；
+        VERIFIED_VIOLATION 行的 evidence 内嵌 authz_enforcement 实断证据（仅 PROTECT 端点产生）。
         仅具有 `api_authorization.evidence_read` 的用户收到 evidence。权限：`api_authorization.read`
       parameters:
         - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
-        - { name: decision, in: query, required: false, schema: { type: string, enum: [ALLOW, OBSERVE_VIOLATION, UNKNOWN] } }
+        - { name: decision, in: query, required: false, schema: { type: string, enum: [ALLOW, OBSERVE_VIOLATION, UNKNOWN, VERIFIED_VIOLATION] } }
         - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
         - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 } }
       responses:
@@ -3467,11 +3579,11 @@ paths:
     get:
       operationId: apiSecAuthzDecisionGet
       tags: [api-security]
-      summary: 查看 OBSERVE 授权决策详情
+      summary: 查看授权决策详情
       description: >-
-        按决策 ID 查看单条授权决策及脱敏证据链。需要同时具备
-        `api_authorization.read` 与 `api_authorization.evidence_read`；指定
-        application_id 且不匹配时返回 404，避免跨应用枚举。
+        按决策 ID 查看单条授权决策及脱敏证据链（VERIFIED_VIOLATION 行含 authz_enforcement
+        实断证据）。需要同时具备 `api_authorization.read` 与 `api_authorization.evidence_read`；
+        指定 application_id 且不匹配时返回 404，避免跨应用枚举。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
@@ -3506,6 +3618,374 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  # ==================== NG-AZ-04 PROTECT 切换向导（apiauthzwizard） ====================
+  /api-security/authz/enforcement-readiness:
+    get:
+      operationId: apiSecAuthzEnforcementReadinessList
+      tags: [api-security]
+      summary: 端点级实断资格（readiness）派生
+      description: >-
+        「当前能否实断」服务端派生（NG-AZ-04 §1.2，唯一事实源——前端只渲染徽章与 reasons）：
+        READY / PROTECT_ACTIVE（展示态）/ NOT_PUBLISHABLE / BLOCKED_BY_NO_RELATION /
+        BLOCKED_BY_CONFLICT / BLOCKED_BY_STALE / BLOCKED_BY_NODE 六态，reasons 全列
+        （全部不真因子原文，而非仅首个；含 UNKNOWN 永不阻断语义注记）。派生输入：
+        对象模型资格字段、有效 OWNER 关系、OPEN 冲突、快照/租约/时钟时效、节点 ACK 与
+        能力自报（az/3）。权限：`api_authorization.read`
+      parameters:
+        - { name: application_id, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: endpoint_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: readiness 派生列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzEnforcementReadinessResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/authz/enforcement-impact:
+    post:
+      operationId: apiSecAuthzEnforcementImpactEvaluate
+      tags: [api-security]
+      summary: PROTECT 切换影响评估（切换前预览）
+      description: >-
+        只读评估（NG-AZ-04 §1.3；不产生任何写副作用，评估结果不入库）：该端点近 N 天
+        OBSERVE_VIOLATION 命中数（切换后将被 403 的请求量近似）、UNKNOWN 分桶（永不阻断）、
+        涉及主体数、最近命中样本（≤5，仅 `api_authorization.evidence_read` 返回）、
+        readiness 复用派生。window_days 词表 1~30（词表外 400 不夹紧猜义）；端点多对象模型
+        行时须指定 object_segment。`api_authorization.read` 可评估；
+        `api_authorization.manage` 评估同时签发一次性 confirm_token（15 分钟 TTL，
+        绑定端点×对象段——PATCH enforcement=PROTECT 的强制引用）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecAuthzEnforcementImpactRequest' }
+      responses:
+        '200':
+          description: 影响评估结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzEnforcementImpact' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/authz/enforcement-confirmations:
+    get:
+      operationId: apiSecAuthzEnforcementConfirmationList
+      tags: [api-security]
+      summary: 业务确认单分页查询
+      description: >-
+        PROTECT 切换业务确认单（NG-AZ-04 §1.4）查询：签发（影响评估）→ 签署 → PATCH 消费
+        全生命周期状态（signed_at/consumed_at/consumed_audit_id 溯源）。确认单留存不删
+        （历史事实，与「回滚不回退事实」同纪律）。权限：`api_authorization.read`
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: endpoint_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 } }
+      responses:
+        '200':
+          description: 确认单分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzEnforcementConfirmationListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/authz/enforcement-confirmations/{confirm_token}/sign:
+    post:
+      operationId: apiSecAuthzEnforcementConfirmationSign
+      tags: [api-security]
+      summary: 业务确认单签署
+      description: >-
+        向导第 4 步签署动作（NG-AZ-04 §1.4/§1.5）：按 confirm_token 列查找更新
+        （向导/前端只持有令牌——影响评估响应无行 id，路径参数即 confirm_token 语义）；
+        四要素随签署同批回填（enforcement_owner 非空 ≤128 / evidence_source 词表 /
+        on_unknown 首批仅 ALLOW_UNKNOWN），冻结确认文案 v1 按确认单影响摘要生成落库；
+        不存在 404，已消费/已过期/已签署 400 精确区分。权限：`api_authorization.manage`；HIGH 审计。
+      parameters:
+        - { name: confirm_token, in: path, required: true, schema: { type: string, format: uuid }, description: 一次性签署令牌（影响评估响应签发） }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecAuthzEnforcementSignRequest' }
+      responses:
+        '200':
+          description: 签署后的确认单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzEnforcementConfirmation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/authz/conflicts:
+    get:
+      operationId: apiSecAuthzConflictList
+      tags: [api-security]
+      summary: 授权冲突对象独立分页查询
+      description: >-
+        OPEN 冲突对象按应用过滤的独立分页查询（NG-AZ-04 D1 注：不再只嵌 authorities
+        status 且不受其 50 条上限约束；D7 语义——冲突不可信，UNKNOWN 不阻断）。
+        权限：`api_authorization.read`
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [OPEN, RESOLVED], default: OPEN } }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 } }
+      responses:
+        '200':
+          description: 冲突对象分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzConflictListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== NG-FLOW-01 强流程定义（strongflow） ====================
+  /api-security/strong-flows/definitions:
+    get:
+      operationId: apiSecStrongFlowDefinitionList
+      tags: [api-security]
+      summary: 强流程定义分页列表
+      description: 强流程定义（NG-FLOW-01；与既有流程观察 api_flow_baselines 物理隔离）分页查询，按 application_id/status 过滤。权限：`api_flow.read`
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [DRAFT, ACTIVE, RETIRED] } }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 } }
+      responses:
+        '200':
+          description: 定义分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecStrongFlowDefinitionListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiSecStrongFlowDefinitionCreate
+      tags: [api-security]
+      summary: 新建强流程定义（或同名新草稿版本递进）
+      description: >-
+        新建定义（同应用同名不存在 → version=1 DRAFT；已存在 → version=max+1 新草稿——
+        D1「编辑产新草稿」承载）。载荷校验逐条按 §1.1（词表外 400 不降级猜义；
+        success_rule 白名单键未知键拒收）。权限：`api_flow.manage`；HIGH 审计。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecStrongFlowDefinitionInput' }
+      responses:
+        '200':
+          description: 新建的定义（DRAFT）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecStrongFlowDefinitionDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/strong-flows/definitions/{id}:
+    get:
+      operationId: apiSecStrongFlowDefinitionGet
+      tags: [api-security]
+      summary: 强流程定义详情（含步骤）
+      description: 按 ID 读定义与步骤（sequence 升序）。权限：`api_flow.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 定义详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecStrongFlowDefinitionDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apiSecStrongFlowDefinitionUpdate
+      tags: [api-security]
+      summary: 编辑强流程定义（仅 DRAFT；激活即冻结）
+      description: >-
+        整体替换语义（步骤全量给出）；仅 DRAFT 可编辑——ACTIVE/RETIRED 409
+        （激活即冻结不可变，D1）。权限：`api_flow.manage`；HIGH 审计。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecStrongFlowDefinitionInput' }
+      responses:
+        '200':
+          description: 更新后的定义
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecStrongFlowDefinitionDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/strong-flows/definitions/{id}/activate:
+    post:
+      operationId: apiSecStrongFlowDefinitionActivate
+      tags: [api-security]
+      summary: 激活强流程定义（激活即冻结）
+      description: >-
+        activate 前全量校验（载荷重校 + 步骤端点归属核对：endpoint_key 须属于绑定前缀
+        下本应用已 CONFIRMED 端点，非法 400 不降级放行）；同事务 DRAFT→ACTIVE 且同
+        （应用,名称）旧 ACTIVE→RETIRED（恰一个 ACTIVE 由部分唯一索引兜底）。
+        权限：`api_flow.manage`；HIGH 审计。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 激活后的定义
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecStrongFlowDefinition' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/strong-flows/definitions/{id}/retire:
+    post:
+      operationId: apiSecStrongFlowDefinitionRetire
+      tags: [api-security]
+      summary: 停用强流程定义（RETIRED 单向终态）
+      description: >-
+        ACTIVE/DRAFT→RETIRED；RETIRED 单向终态（重复停用 409）。存量实例按旧版本走完
+        （NG-T-F06，实例语义属 FLOW-02）。权限：`api_flow.manage`；HIGH 审计。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 停用结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [RETIRED] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/strong-flows/instances:
+    get:
+      operationId: apiSecStrongFlowInstanceList
+      tags: [api-security]
+      summary: 强流程实例分页列表（NG-FLOW-02 最小面）
+      description: >-
+        强流程实例（api_strong_flow_instances；迁移 000177）按应用/状态/创建时间过滤分页；
+        五态 ACTIVE/CONFIRMED/INDETERMINATE/CANCELLED/FAILED（INDETERMINATE=未知待对账，
+        不显示安全通过）；instance_key 为 sfref: 前缀域隔离 HMAC 脱敏形态。详情与管理恢复
+        属 FLOW-03。权限：`api_flow.read`
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [ACTIVE, CONFIRMED, INDETERMINATE, CANCELLED, FAILED] } }
+        - { name: created_since, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 } }
+        - { name: page_size, in: query, required: false, schema: { type: integer, default: 20, minimum: 1, maximum: 100 } }
+      responses:
+        '200':
+          description: 实例分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecStrongFlowInstanceListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/strong-flows/instances/{id}:
+    get:
+      operationId: apiSecStrongFlowInstanceGet
+      tags: [api-security]
+      summary: 强流程实例详情（步骤轨迹全链 + 状态语义 + 证据按 evidence_read 裁剪）
+      description: >-
+        实例行 + 步骤事件轨迹（api_strong_flow_step_events 按 occurred_at 全链升序）+
+        状态语义字段（status_semantics/status_message：INDETERMINATE=「未知，不显示安全通过」
+        逐字不美化，§9.4 红线，前端不得映射为成功态）。证据明细档
+        （fencing_token/reason_code/request_id）仅持 `api_authorization.evidence_read`
+        者带出（无该权限键缺席——D9 零新增权限点，复用授权域已种 evidence_read）；
+        摘要档四字段（step_key/action/result/occurred_at）随读权限可见。
+        权限：`api_flow.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 实例详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecStrongFlowInstanceDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/strong-flows/instances/{id}/resolve:
+    post:
+      operationId: apiSecStrongFlowInstanceResolve
+      tags: [api-security]
+      summary: 强流程实例管理恢复（对账：CONFIRM_SUCCEEDED / CONFIRM_NOT_EXECUTED / KEEP_UNKNOWN）
+      description: >-
+        人工对账恢复（NG-FLOW-03 §1.5/D5）：CONFIRM_SUCCEEDED 确认业务已执行 → 实例推
+        CONFIRMED；CONFIRM_NOT_EXECUTED 确认未执行 → 推 FAILED（明确证据进入终态）；
+        KEEP_UNKNOWN 不推进状态（保持未知，绝不美化成通过），仅落 RESOLVE 留痕事件。
+        CONFIRM_* 推进终态并落状态事件（reason_code=FLOW-RESOLVE-001 与网关执行侧区分），
+        实例行 version+1。reason 必填（400）；expected_version 乐观锁（不匹配 409）；
+        终态实例（CONFIRMED/CANCELLED/FAILED）拒绝重复恢复（409 幂等不误伤）。
+        权限：`api_flow.manage`；HIGH 审计（after 含 action/reason/前后状态全值）。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecStrongFlowResolveInput' }
+      responses:
+        '200':
+          description: 恢复后的实例详情（证据裁剪同详情端点纪律）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecStrongFlowInstanceDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   # ==================== API 专项指标（metrics，app.go 挂载） ====================
   /api-security/metrics:
     get:
@@ -3517,6 +3997,12 @@ paths:
         五类风险发现/响应脱敏决策，详见 metrics.apiMetricDocs）及采集器自指标
         （api_metrics_collect_errors_total、api_metrics_last_collect_timestamp_seconds）的
         Prometheus 文本 exposition；无值指标取 0 以保证抓取方时序连续。
+        内嵌强流程运行指标段（NG-FLOW-04 §1.9，per-app labeled 序列）：
+        strong_flow_instances{application_id,status} 五态分桶、
+        strong_flow_indeterminate_backlog / _ratio（INDETERMINATE 当前积压与占实例比）、
+        strong_flow_indeterminate_age_avg_seconds / _max_seconds（对账滞留时延=采集时刻-updated_at 的 avg/max）、
+        strong_flow_reserve_conflict_ratio（近 24h RESERVE 动作 CONFLICT+REJECTED 占比，窗口无样本=0 不外推）；
+        无强流程实例时整段省略（无强流程活动即零输出，Prometheus absent 语义）。
         注意：本接口响应为 `text/plain; version=0.0.4`，非 JSON 统一信封。
         权限：`api_runtime.read`
       responses:
@@ -5336,6 +5822,666 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /api-security/grpc-bindings:
+    get:
+      operationId: apiGrpcBindingList
+      tags: [api-security]
+      summary: gRPC 描述符绑定列表
+      description: >-
+        gRPC 描述符 per-app 绑定列表（NG-GRPC G1 批次 B1；应用×服务×描述符集×模式；
+        空绑定=全局可见，应用存在任一绑定行时该应用深检只用其绑定集（同名服务跨应用隔离））。
+        application_id 可选过滤。权限：`api_spec.read`。
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 绑定列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiGrpcBindingListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiGrpcBindingCreate
+      tags: [api-security]
+      summary: 创建 gRPC 描述符绑定
+      description: >-
+        创建绑定（同（应用,服务）恰一条——重复 409；service 须为 pkg.Service 点路径形态
+        （^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$，≤256 字符）；descriptor_name 引用的描述符集
+        必须存在（400）；mode 缺省 OBSERVE）。HIGH 审计。权限：`api_spec.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiGrpcBindingInput' }
+      responses:
+        '200':
+          description: 创建的绑定
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiGrpcBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/grpc-bindings/undocumented-services:
+    get:
+      operationId: apiGrpcUndocumentedServiceList
+      tags: [api-security]
+      summary: 未登记 gRPC 服务清单
+      description: >-
+        流量观测到（api_endpoints protocol_type=GRPC）但按绑定语义未覆盖描述符的
+        service/method 差集（D3 红线管理面可见性——缺描述符不称完整深检）：绑定应用
+        按其绑定集判定、无绑定应用按全局 ENABLED 描述符集判定。只读。权限：`api_spec.read`。
+      responses:
+        '200':
+          description: 未登记服务清单（按应用+服务分桶）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiGrpcUndocumentedServiceListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/grpc-bindings/{id}:
+    put:
+      operationId: apiGrpcBindingUpdate
+      tags: [api-security]
+      summary: 更新 gRPC 描述符绑定
+      description: >-
+        更新绑定的 mode/descriptor_name（绑定身份维度（应用/服务）不可改——改即删建）；
+        version 乐观锁（不匹配 409）。HIGH 审计。权限：`api_spec.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiGrpcBindingUpdateInput' }
+      responses:
+        '200':
+          description: 更新后的绑定
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiGrpcBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiGrpcBindingDelete
+      tags: [api-security]
+      summary: 删除 gRPC 描述符绑定
+      description: 删除绑定（不存在 404）；删除后该应用回退全局注册表语义。HIGH 审计。权限：`api_spec.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, description: 固定为 deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/mcp/tool-catalogs:
+    post:
+      operationId: apiMcpToolCatalogCreate
+      tags: [api-security]
+      summary: 导入 MCP 工具目录
+      description: >-
+        显式导入 MCP 工具目录（NG-MCP G1 批次 B1；工具集整体提交——新工具与语义变更行
+        恒落 PENDING_REVIEW（旧审批不继承），tool_hash=五元组（名称/版本/规范化描述全文/
+        双 schema）域分隔 sha256 审批绑定不可变摘要）。同名 409。HIGH 审计。
+        权限：`api_spec.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMcpToolCatalogInput' }
+      responses:
+        '200':
+          description: 创建的目录与工具行（全部 PENDING_REVIEW）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMcpToolCatalogDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      operationId: apiMcpToolCatalogList
+      tags: [api-security]
+      summary: MCP 工具目录列表
+      description: >-
+        目录列表（含 catalog_hash 发布集摘要与审核统计（APPROVED/PENDING_REVIEW/REJECTED
+        计数））。权限：`api_spec.read`。
+      responses:
+        '200':
+          description: 目录列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMcpToolCatalogListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/mcp/tool-catalogs/{id}:
+    get:
+      operationId: apiMcpToolCatalogGet
+      tags: [api-security]
+      summary: MCP 工具目录详情
+      description: 目录详情（工具行+review_status+摘要）。权限：`api_spec.read`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 目录详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMcpToolCatalogDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apiMcpToolCatalogUpdate
+      tags: [api-security]
+      summary: 整体再导入 MCP 工具目录
+      description: >-
+        整体再导入/更新（乐观锁 version 不匹配 409；语义相等行（名称+版本+描述 digest+
+        双 schema 规范化一致）保留 tool_hash 与审核态（幂等重导不重置），语义变更/新增行
+        重算 tool_hash 并重置 PENDING_REVIEW（旧审批不继承），消失行删除）。HIGH 审计。
+        权限：`api_spec.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMcpToolCatalogInput' }
+      responses:
+        '200':
+          description: 更新后的目录与工具行
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMcpToolCatalogDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiMcpToolCatalogDelete
+      tags: [api-security]
+      summary: 删除 MCP 工具目录
+      description: >-
+        删除目录（FK 级联删工具行；被任一绑定引用时先决校验 409——先解绑再删除）。
+        HIGH 审计。权限：`api_spec.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, description: 固定为 deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/mcp/tool-catalogs/{id}/tools/{toolId}/review:
+    post:
+      operationId: apiMcpToolReview
+      tags: [api-security]
+      summary: 审核 MCP 目录工具
+      description: >-
+        审核工具行（action=APPROVED/REJECTED + 可选定级更新（risk_level/data_classification/
+        allowed_principals/roles/tenants/approval_required/max_calls_per_minute）；审核人/
+        时间落列；发布通道只下发 APPROVED 行——APPROVED 后 catalog_hash 发布集摘要即时变化）。
+        HIGH 审计。权限：`api_spec.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: toolId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMcpToolReviewInput' }
+      responses:
+        '200':
+          description: 审核后的工具行
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMcpTool' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/mcp/bindings:
+    get:
+      operationId: apiMcpBindingList
+      tags: [api-security]
+      summary: MCP 目录绑定列表
+      description: >-
+        MCP 目录 per-app 绑定列表（应用×endpoint_path×目录×模式；绑定驱动识别——请求
+        命中绑定 endpoint_path 且 POST+JSON 族才进入 MCP 工具调用评估；空绑定=零行为）。
+        application_id 可选过滤。权限：`api_spec.read`。
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 绑定列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMcpBindingListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiMcpBindingCreate
+      tags: [api-security]
+      summary: 创建 MCP 目录绑定
+      description: >-
+        创建绑定（同（应用,endpoint_path）恰一条——重复 409；endpoint_path 须为 / 开头
+        ≤1024 字符；catalog_id/application_id 引用必须存在（400）；mode 缺省 OBSERVE；
+        绑定变更触发整站发布链热生效）。HIGH 审计。权限：`api_spec.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMcpBindingInput' }
+      responses:
+        '200':
+          description: 创建的绑定
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMcpBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/mcp/bindings/{id}:
+    put:
+      operationId: apiMcpBindingUpdate
+      tags: [api-security]
+      summary: 更新 MCP 目录绑定
+      description: >-
+        更新绑定的 mode/catalog_id（绑定身份维度（应用/endpoint_path）不可改——改即删建）；
+        version 乐观锁（不匹配 409）；变更触发整站发布链热生效。HIGH 审计。
+        权限：`api_spec.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMcpBindingUpdateInput' }
+      responses:
+        '200':
+          description: 更新后的绑定
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMcpBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiMcpBindingDelete
+      tags: [api-security]
+      summary: 删除 MCP 目录绑定
+      description: >-
+        解绑（不存在 404）；解绑后该端点 MCP 工具调用评估零行为；变更触发整站发布链
+        热生效。HIGH 审计。权限：`api_spec.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, description: 固定为 deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/machine-identities:
+    post:
+      operationId: apiMachineIdentityCreate
+      tags: [api-security]
+      summary: 创建机器身份
+      description: >-
+        登记机器身份（NG-ID g1 批次 B1；HTTP Message Signatures 可信身份——identity_name
+        全局唯一（≤128，同名 409）；tenant_id 可空（跨租户共享身份为 null+显式）；
+        principal_binding 可空（声明绑定 JWT VerifiedPrincipalID 指纹值——声明即强制一致）；
+        bot_challenge_exempt 缺省 false（Bot 精确豁免前提之一）；status 缺省 ENABLED）。
+        变更触发整站发布链热生效。HIGH 审计。权限：`jwt_trust.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMachineIdentityInput' }
+      responses:
+        '200':
+          description: 创建的身份
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMachineIdentityResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      operationId: apiMachineIdentityList
+      tags: [api-security]
+      summary: 机器身份列表
+      description: >-
+        身份列表（含键状态摘要（键总数/ACTIVE/RETIRED/REVOKED 计数）与撤销水位
+        revocation_watermark（单行 seq，随列表响应带出））。权限：`jwt_trust.read`。
+      responses:
+        '200':
+          description: 身份列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMachineIdentityListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/machine-identities/{id}:
+    get:
+      operationId: apiMachineIdentityGet
+      tags: [api-security]
+      summary: 机器身份详情
+      description: >-
+        身份详情（键行含状态/重叠窗口 retire_overlap_until/revoked_seq 溯源）。
+        权限：`jwt_trust.read`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 身份详情（定义+键行）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMachineIdentityDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apiMachineIdentityUpdate
+      tags: [api-security]
+      summary: 更新机器身份
+      description: >-
+        改范围/状态/exempt/绑定主体（version 乐观锁必填——不匹配 409；同名 409）。
+        变更触发整站发布链热生效。HIGH 审计。权限：`jwt_trust.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMachineIdentityInput' }
+      responses:
+        '200':
+          description: 更新后的身份
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMachineIdentityResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiMachineIdentityDelete
+      tags: [api-security]
+      summary: 删除机器身份
+      description: >-
+        删除身份（键 FK 级联；存在任一机器身份绑定时先决校验 409——先解绑再删除身份
+        （绑定不引用身份、登记册全局生效，删除任一身份都改变全局登记册内容））。
+        变更触发整站发布链热生效。HIGH 审计。权限：`jwt_trust.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, description: 固定为 deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/machine-identities/{id}/keys:
+    post:
+      operationId: apiMachineIdentityKeyImport
+      tags: [api-security]
+      summary: 导入机器身份公钥
+      description: >-
+        公钥静态离线导入（§1.3 纪律：唯一来源=管理面静态导入；PEM 解析校验算法词表
+        （ed25519|ecdsa-p256-sha256|rsa-pss-sha512）与密钥形态——声明 alg 与 PEM 实际
+        键型不一致 400；kid 身份内唯一（重复 409）；落库即 ACTIVE）。变更触发整站发布链
+        热生效。HIGH 审计（指纹引用不落 PEM 原文）。权限：`jwt_trust.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMachineIdentityKeyInput' }
+      responses:
+        '200':
+          description: 导入的公钥行（ACTIVE+key_fingerprint 现算）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMachineIdentityKey' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/machine-identities/{id}/keys/{keyId}/rotate:
+    post:
+      operationId: apiMachineIdentityKeyRotate
+      tags: [api-security]
+      summary: 轮换机器身份公钥
+      description: >-
+        轮换（§1.6 状态机：原子=新键 ACTIVE+旧键 RETIRED+重叠窗口终点
+        retire_overlap_until（overlap_hours 缺省 24、上限 168——窗口内新旧两键均可验证，
+        窗口外旧键拒验）；仅 ACTIVE 键可轮换（否则 409）；新 kid 与身份内既有冲突 409）。
+        变更触发整站发布链热生效。HIGH 审计。权限：`jwt_trust.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: keyId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMachineIdentityKeyInput' }
+      responses:
+        '200':
+          description: 轮换结果（新键 ACTIVE+旧键 RETIRED）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMachineIdentityRotateResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/machine-identities/{id}/keys/{keyId}/revoke:
+    post:
+      operationId: apiMachineIdentityKeyRevoke
+      tags: [api-security]
+      summary: 撤销机器身份公钥
+      description: >-
+        撤销（§1.6：即时生效——撤销事实与撤销水位 seq+1 同一事务原子提交，revoked_seq
+        落键行溯源；已 REVOKED 键重复撤销 409；水位单调不下降——发布快照水位低于网关
+        已应用水位拒载 fail-closed，普通策略回滚不复活已撤销密钥）。变更触发整站发布链
+        热生效。HIGH 审计。权限：`jwt_trust.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: keyId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 撤销后的公钥行（REVOKED+revoked_seq 回填）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMachineIdentityKey' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/machine-identity-bindings:
+    get:
+      operationId: apiMachineIdentityBindingList
+      tags: [api-security]
+      summary: 机器身份绑定列表
+      description: >-
+        机器身份 per-app 绑定列表（应用×path selector×mode×proof_required；绑定驱动
+        识别——请求命中绑定路径才进入机器身份签名评估；绑定不引用身份（登记册全局生效）；
+        空绑定=零行为）。application_id 可选过滤。权限：`jwt_trust.read`。
+      parameters:
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 绑定列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMachineIdentityBindingListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiMachineIdentityBindingCreate
+      tags: [api-security]
+      summary: 创建机器身份绑定
+      description: >-
+        创建绑定（path_exact|path_prefix 二选一（jwt selector 同形——/ 开头、≤512、不含
+        query/fragment）；同（应用,path）恰一条——重复 409；application_id 引用必须存在
+        （400）；mode 缺省 OBSERVE；proof_required=true 时绑定命中且未签名请求拒绝 401）。
+        变更触发整站发布链热生效。HIGH 审计。权限：`jwt_trust.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMachineIdentityBindingInput' }
+      responses:
+        '200':
+          description: 创建的绑定
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMachineIdentityBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/machine-identity-bindings/{id}:
+    put:
+      operationId: apiMachineIdentityBindingUpdate
+      tags: [api-security]
+      summary: 更新机器身份绑定
+      description: >-
+        更新绑定的 mode/proof_required（绑定身份维度（应用/路径）不可改——改即删建）；
+        version 乐观锁（不匹配 409）；变更触发整站发布链热生效。HIGH 审计。
+        权限：`jwt_trust.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiMachineIdentityBindingUpdateInput' }
+      responses:
+        '200':
+          description: 更新后的绑定
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiMachineIdentityBinding' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiMachineIdentityBindingDelete
+      tags: [api-security]
+      summary: 删除机器身份绑定
+      description: >-
+        解绑（不存在 404）；解绑后该端点机器身份签名评估零行为；变更触发整站发布链
+        热生效。HIGH 审计。权限：`jwt_trust.manage`。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, description: 固定为 deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /api-security/flow-baselines:
     get:
       operationId: apiFlowBaselineList
@@ -5565,6 +6711,398 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/protection/coverage:
+    get:
+      operationId: apiSecProtectionCoverageGet
+      tags: [api-security]
+      summary: 统一执行覆盖查询（五态聚合 / 节点阶段计数）
+      description: >-
+        统一执行覆盖查询（NG-COV-02 查询侧，data 形状随 view）：
+        view=agg（缺省）返回窗口内 coverage_minute_agg 按维度键汇总的 Metrics 行——
+        E=FULL+PARTIAL+SKIPPED+ERROR，NOT_APPLICABLE 另计不进 E；比率查询侧计算，
+        E=0 时 no_applicable_traffic=true 且比率为 0（绝不显示 100%）；
+        data_incomplete=true 表示窗口内节点最新 cov_ingest 计数快照存在
+        agg_overflow>0 或 agg_invalid>0（统计输入不完整如实披露）。
+        view=stages 返回每节点最新一份 guard 链路阶段计数（total/rejected_*/
+        intercepted_*/reached_*，阶段集合与顺序跨仓冻结，缺失阶段补零保序输出）。
+        空数据返回空数组。窗口 window_minutes 缺省 60、上限 10080（7 天）——
+        非数字返回 400，非正数归一 60，越界夹紧 10080。rows 上限 1000。
+        权限：`api_protection.read`
+      parameters:
+        - name: application_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: 应用 ID 精确过滤（非法 UUID 返回 400）
+        - name: detector
+          in: query
+          required: false
+          schema: { type: string, maxLength: 96 }
+          description: 检测器精确过滤（如 graphql.cost_v1；超过 96 字符返回 400）
+        - name: node_id
+          in: query
+          required: false
+          schema: { type: string, maxLength: 96 }
+          description: 网关节点精确过滤（超过 96 字符返回 400）
+        - name: window_minutes
+          in: query
+          required: false
+          schema: { type: integer, default: 60, minimum: 1, maximum: 10080 }
+          description: 查询窗口（分钟，按 minute/captured_at 口径；非数字 400，非正数归一 60，越界夹紧 10080）
+        - name: view
+          in: query
+          required: false
+          schema: { type: string, enum: [agg, stages], default: agg }
+          description: 视图（agg 五态聚合 / stages 节点阶段计数；其他取值返回 400）
+      responses:
+        '200':
+          description: 覆盖查询结果（data 形状随 view 参数）
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ApiSecCoverageAggResponse'
+                  - $ref: '#/components/schemas/ApiSecCoverageStagesResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/protection/validations:
+    post:
+      operationId: apiSecProtectionValidationCreate
+      tags: [api-security]
+      summary: 创建无副作用模拟报告
+      description: >-
+        冻结策略 + 脱敏 Finding 批次在隔离决策实例内重放（NG-COV-03 / RD_PLAN §5.3），
+        产出「若启用将如何动作」的报告并与策略/语料/输入摘要绑定。
+        输入为脱敏 Finding 批次：matches 仅 detector/rule_id/category/severity/score_delta
+        等结构化字段，禁止携带 evidence 原文；批次 ≤100、matches/批 ≤200、单字段 ≤256 字符
+        （违反返回 400）；服务端不解析原始请求体/凭据。
+        模拟零副作用（不反代请求、不调用工具、不改真实状态）；
+        verdicts[].would_block 为「模拟判定，非已执行」；
+        模拟结果不是 PROTECT 实测，不能单独满足上线条件。
+        权限：`api_protection.validate`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecValidationCreateRequest' }
+      responses:
+        '200':
+          description: 完整模拟报告（创建时 status 恒 COMPLETED）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecValidationReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    get:
+      operationId: apiSecProtectionValidationList
+      tags: [api-security]
+      summary: 模拟报告分页列表
+      description: >-
+        按创建时间倒序分页列出模拟报告（data 为分页信封 items/page/page_size/total）。
+        STALE 在读出时求值：与当前策略摘要（发布链当前生效版本 configuration_hash）比较，
+        不一致则该项 status=STALE（不回写数据库）。权限：`api_protection.read`
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: 页码（非正数归一为 1）
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1 }
+          description: 每页条数（非正数归一 20，大于 100 归一 100）
+      responses:
+        '200':
+          description: 分页模拟报告列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecValidationListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/protection/validations/{id}:
+    get:
+      operationId: apiSecProtectionValidationGet
+      tags: [api-security]
+      summary: 单份模拟报告
+      description: >-
+        按 ID 读单份模拟报告。STALE 在读出时求值（策略/语料摘要与当前值比较，
+        不回写数据库——读出求值恒最新，免写路径）。id 非法 UUID 返回 400，不存在返回 404。
+        权限：`api_protection.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 报告 ID }
+      responses:
+        '200':
+          description: 单份模拟报告（读出时 STALE 求值）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecValidationReport' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/apps/{id}/graphql-policy:
+    get:
+      operationId: apiSecAppGraphQLPolicyGet
+      tags: [api-security]
+      summary: 读取应用 GraphQL 成本预算策略
+      description: >-
+        读取单应用 GraphQL 成本预算策略（NG-GQL-03，api_graphql_policies 表）。
+        无策略行时返回 enabled=false、version=0 的默认视图（「无段=关闭」语义，非 404）。
+        权限：`api_policy.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 应用 GraphQL 策略视图
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecGraphQLPolicyView' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apiSecAppGraphQLPolicyPut
+      tags: [api-security]
+      summary: 写入应用 GraphQL 成本预算策略
+      description: >-
+        写入（upsert）单应用 GraphQL 成本预算策略，version 单调 +1；写操作审计。
+        数值须非负且有上限（max_doc_bytes ≤ 64MiB，权重/预算 ≤ 2^40），
+        trusted_doc_digests 须为 32 位小写 hex（gqlast.DigestDocument 口径）；
+        应用不存在或已删除返回 404。策略经整站发布链生效（本端点只读写库，不隐式发布）。
+        权限：`api_policy.edit`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecGraphQLPolicy' }
+      responses:
+        '200':
+          description: 写入后的策略视图
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecGraphQLPolicyView' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiSecAppGraphQLPolicyDelete
+      tags: [api-security]
+      summary: 删除应用 GraphQL 成本预算策略（→ 关闭）
+      description: >-
+        删除策略行即关闭该应用 GraphQL 成本预算（目标态幂等：本无行同样成功）。
+        写操作审计。删除经整站发布链生效。权限：`api_policy.edit`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用 ID }
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, description: 固定为 deleted }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/authz/authorities:
+    get:
+      operationId: apiSecAuthzAuthorityList
+      tags: [api-security]
+      summary: 权威关系来源列表
+      description: >-
+        列出全部权威关系来源（NG-AZ-01，api_authority_sources；含状态/范围授权/最大事件年龄/版本）。
+        权限：`api_authorization.read`
+      responses:
+        '200':
+          description: 来源列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ApiSecAuthzAuthoritySource' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiSecAuthzAuthorityCreate
+      tags: [api-security]
+      summary: 登记权威关系来源
+      description: >-
+        登记权威关系来源（名称唯一；scopes 为范围授权白名单——空数组=不限该维度；
+        keys 可同时登记验签公钥（Ed25519 32 字节 hex，与发布签名密钥不混用））。
+        写操作审计。权限：`api_authorization.authority_manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecAuthzAuthorityCreateRequest' }
+      responses:
+        '200':
+          description: 登记成功的来源
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzAuthoritySource' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/authz/authorities/{id}:
+    get:
+      operationId: apiSecAuthzAuthorityGet
+      tags: [api-security]
+      summary: 权威关系来源详情（含公钥）
+      description: 单来源详情（含验签公钥列表，仅公钥——私钥不进管理面）。权限：`api_authorization.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 来源 ID }
+      responses:
+        '200':
+          description: 来源详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzAuthorityDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    patch:
+      operationId: apiSecAuthzAuthorityPatch
+      tags: [api-security]
+      summary: 变更权威关系来源（启停/范围/钥匙轮换）
+      description: >-
+        变更来源状态（ACTIVE/DISABLED）/范围授权/最大事件年龄/验签钥匙轮换
+        （add_keys 登记新公钥、retire_keys 退役旧公钥——RETIRED 键仅在轮换窗口内继续验签）。
+        乐观锁 version（冲突返回 409）。写操作审计。权限：`api_authorization.authority_manage`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 来源 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecAuthzAuthorityPatchRequest' }
+      responses:
+        '200':
+          description: 变更后的来源详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzAuthorityDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/authz/authorities/{id}/imports:
+    post:
+      operationId: apiSecAuthzAuthorityImport
+      tags: [api-security]
+      summary: 导入权威关系离线签名批次
+      description: >-
+        导入离线签名批次（NG-AZ-01 §1/§2）：批次契约
+        `{batch_id, source_id, mode: snapshot|delta, key_id, items[], batch_signature}`，
+        事件字段（含 key_id）经规范化字节（键序字典序紧凑 JSON）Ed25519 验签。
+        五步校验链（任一失败整批 REJECTED 并逐条展示原因，不部分应用）：
+        ① 来源身份验签 ② 范围权限 ③ 重放幂等（event_id 已消费跳过计数；delta sequence
+        严格大于水位且批内升序，乱序拒收；snapshot 批次最大 sequence 整体推进）
+        ④ 大小/字段白名单（未知字段拒收不忽略）⑤ 字段语义（relation 仅 OWNER——
+        共享/委托/组继承/批量对象/复合 ID 首批不支持拒收展示）。
+        snapshot 原子切换（中断一行不动，绝不把未导入对象当撤销）；
+        delta 缺口记 AUTHZ_SOURCE_GAP（补齐自动消除）；同对象两个不同有效 OWNER 记冲突
+        （不按最后到达者覆盖）。HTTP 恒 200，业务结果看 status（APPLIED/REJECTED）。
+        导入成功触发整站发布。权限：`api_authorization.authority_import`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 来源 ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecAuthzAuthorityImportRequest' }
+      responses:
+        '200':
+          description: 批次记录（status=APPLIED 带 counts / REJECTED 带逐条原因）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzAuthorityBatch' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/authz/authorities/{id}/status:
+    get:
+      operationId: apiSecAuthzAuthorityStatus
+      tags: [api-security]
+      summary: 权威来源状态（水位/缺口/冲突/批次历史）
+      description: >-
+        来源状态视图：watermark（last_sequence/last_event_id/revocation_watermark/gap_from）、
+        gap_status（NO_DATA|OK|AUTHZ_SOURCE_GAP——gap_from 非空即缺口，补齐自动消除）、
+        当前 OPEN 冲突列表、最近 20 批次历史。权限：`api_authorization.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 来源 ID }
+      responses:
+        '200':
+          description: 来源状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzAuthorityStatus' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/authz/node-acks:
+    get:
+      operationId: apiSecAuthzNodeAckList
+      tags: [api-security]
+      summary: 节点授权 ACK 视图（水位/租约/陈旧窗口/ack_state）
+      description: >-
+        全节点授权 ACK 视图（NG-AZ-02 D6，api_gateway_nodes LEFT JOIN
+        api_node_authz_acks）：每节点 ack_state 五态派生——FRESH（水位≥管理面向量水位
+        且 staleness≤lease）/ STALE_WITHIN_LEASE（staleness≤lease 或无租约但水位落后）/
+        STALE_EXPIRED（staleness>lease）/ NEVER_ACKED（无 ACK 行：旧版网关或未启用授权
+        快照，如实显示非报错）/ CLOCK_SKEW（|时钟漂移|>上限，默认 60s，系统设置
+        authz.clock_skew_max_seconds 覆盖并夹紧 10~300s——漂移节点的时效判定不可信）。
+        staleness_seconds = 视图生成时刻 − authz_applied_at（未应用过授权快照的节点为
+        null 且不参与最大陈旧窗口；可为负：节点时钟超前）。顶层附
+        max_staleness_seconds（全节点最大陈旧窗口，无参与节点为 null）与
+        management_watermark（当前管理面向量水位：api_authz_manual_revocation_seq 单行
+        manual_seq + api_authority_watermarks 逐来源 revocation_watermark 合并）。
+        「必须显示未 ACK 节点及最大陈旧窗口」（§8.3-5）的直接载体。
+        只读端点。权限：`api_authorization.read`
+      responses:
+        '200':
+          description: 全节点 ACK 视图
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecAuthzNodeAckView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
 components:
@@ -6781,6 +8319,70 @@ components:
         page_size: { type: integer, description: 每页条数 }
         total: { type: integer, format: int64, description: 总条数 }
 
+    ApiSecAdmissionEndpointCounts:
+      type: object
+      description: 应用端点按资产状态计数（五态词表）
+      properties:
+        confirmed: { type: integer, format: int64, description: 已确认端点数 }
+        discovered: { type: integer, format: int64, description: 已发现未确认端点数 }
+        ignored: { type: integer, format: int64, description: 已忽略端点数 }
+        deprecated: { type: integer, format: int64, description: 已下线端点数 }
+        zombie: { type: integer, format: int64, description: 僵尸端点数 }
+
+    ApiSecAdmissionHotEndpoint:
+      type: object
+      description: 窗口内仍有命中的未确认端点（切 PROTECT 会误伤的对象）
+      properties:
+        endpoint_key: { type: string, description: "接口键（「METHOD 路径模板」，如 `GET /v1/orders/{id}`）" }
+        http_method: { type: string, description: 请求方法 }
+        normalized_path: { type: string, description: 归一化路径模板 }
+        asset_status: { type: string, enum: [DISCOVERED, IGNORED, DEPRECATED, ZOMBIE], description: 资产状态（未确认四态） }
+        hits: { type: integer, format: int64, description: 窗口内命中次数 }
+        last_seen_at: { type: string, format: date-time, description: 窗口内最近命中时间 }
+
+    ApiSecAdmissionCoverageReport:
+      type: object
+      description: API 准入覆盖率报告（切换 PROTECT 前影响面评估）
+      properties:
+        application_id: { type: string, format: uuid }
+        mode: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 应用当前准入模式 }
+        hits_window_hours: { type: integer, description: 命中统计窗口（小时） }
+        endpoints: { $ref: '#/components/schemas/ApiSecAdmissionEndpointCounts' }
+        confirm_rate: { type: number, description: 确认覆盖率 confirmed/(confirmed+discovered)，分母为 0 时为 0 }
+        unconfirmed_hot:
+          type: array
+          description: 窗口内仍有命中的未确认端点（按 hits 降序、上限 50）
+          items: { $ref: '#/components/schemas/ApiSecAdmissionHotEndpoint' }
+        blocked: { type: integer, format: int64, description: 窗口内准入拦截次数（OBSERVE 期为 0） }
+
+    ApiSecAdmissionDeniedItem:
+      type: object
+      description: 准入拦截列表行（窗口内 PROTECT 拦截事件按端点聚合）
+      properties:
+        endpoint_key: { type: string, description: 接口键 }
+        http_method: { type: string, description: 请求方法 }
+        normalized_path: { type: string, description: 归一化路径模板 }
+        asset_status: { type: string, enum: [DISCOVERED, CONFIRMED, IGNORED, DEPRECATED, ZOMBIE], description: 资产状态 }
+        denied_count: { type: integer, format: int64, description: 窗口内拦截次数 }
+        last_denied_at: { type: string, format: date-time, description: 窗口内最近拦截时间 }
+        sample_client_ips:
+          type: array
+          description: 窗口内去重样本客户端 IP（上限 5，顺序不保证）
+          items: { type: string }
+        first_seen_at: { type: string, format: date-time, description: 端点首次发现时间 }
+
+    ApiSecAdmissionDeniedListResponse:
+      type: object
+      description: 准入拦截分页响应（统一分页结构）
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecAdmissionDeniedItem' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页条数 }
+        total: { type: integer, format: int64, description: 总条数 }
+
     ApiSecBehaviorProfile:
       type: object
       description: 行为基线画像（api_behavior_profiles；endpoint × 身份 × 窗口一行，aggregations 离线聚合写入）
@@ -6853,6 +8455,28 @@ components:
         first_seen: { type: string, format: date-time, description: 首次观测时间（事件 occurred_at，乱序取小不回头） }
         last_seen: { type: string, format: date-time, description: 末次观测时间（兼任 sweep 水位列） }
         updated_at: { type: string, format: date-time, description: 行最近更新时间 }
+        publishable: { type: boolean, description: 发布资格（NG-AZ-02 D5/D7；PATCH 可变更） }
+        required_relation: { type: string, description: 要求关系词（首批仅 OWNER 词表；空串=未声明） }
+        owner_exclusive: { type: boolean, description: 排他所有权（VERIFIED_VIOLATION 语义前提；publishable=true 要求为 true） }
+        on_lease_expired: { type: string, enum: [strict, degraded], description: 租约过期策略（NG-AZ-02 D5；缺省 strict） }
+        enforcement: { type: string, enum: [OBSERVE, PROTECT], description: 阻断开关（NG-AZ-03 D3；缺省 OBSERVE——未配置行为与历史版本一致） }
+        enforcement_owner: { type: string, maxLength: 128, description: §8.4 业务负责人标识（切换 PROTECT 必填非空；切回 OBSERVE 后保留供审计） }
+        evidence_source: { type: string, enum: ['', AUTHORITY_SYNC, MANUAL_CONFIRMED], description: §8.4 证据来源声明（切换 PROTECT 必填；空串=未声明） }
+        on_unknown: { type: string, enum: [ALLOW_UNKNOWN], description: §8.4 UNKNOWN 处理方式声明（首批仅 ALLOW_UNKNOWN——UNKNOWN 永不阻断） }
+
+    ApiSecObjectModelPatchRequest:
+      type: object
+      description: 对象模型发布状态变更（NG-AZ-02 D5/D7；全部字段三分态——缺省不变更；词表外取值 400 不降级猜义。NG-AZ-03 D3：切换 enforcement=PROTECT 必须同请求提供 enforcement_owner/evidence_source/on_unknown 三要素，缺一 400；切回 OBSERVE 无前置要求且历史值保留）
+      properties:
+        publishable: { type: boolean, description: 发布资格（为 true 时 owner_exclusive 必须同批为 true） }
+        required_relation: { type: string, enum: [OWNER, owner], description: 首批仅 OWNER 词表（其余关系词 400） }
+        owner_exclusive: { type: boolean, description: 排他所有权 }
+        on_lease_expired: { type: string, enum: [strict, degraded], description: 租约过期策略（缺省 strict） }
+        enforcement: { type: string, enum: [OBSERVE, PROTECT], description: 阻断开关（切换 PROTECT 须同请求提供三要素） }
+        enforcement_owner: { type: string, maxLength: 128, description: §8.4 业务负责人标识（PROTECT 必填非空 ≤128） }
+        evidence_source: { type: string, enum: [AUTHORITY_SYNC, MANUAL_CONFIRMED], description: §8.4 证据来源声明（PROTECT 必填） }
+        on_unknown: { type: string, enum: [ALLOW_UNKNOWN], description: §8.4 UNKNOWN 处理方式声明（PROTECT 必填；首批仅 ALLOW_UNKNOWN） }
+        confirm_token: { type: string, description: 业务确认单一次性令牌（NG-AZ-04 D4：切换 PROTECT 必填——经影响评估签发并签署，同一事务内校验+切换+消费；切回 OBSERVE 免） }
 
     ApiSecObjectModelListResponse:
       type: object
@@ -7813,7 +9437,7 @@ components:
 
     ApiSecAuthzDecision:
       type: object
-      description: 请求级 OBSERVE 授权决策；该记录只观测，不改变请求放行结果
+      description: 请求级授权决策（NG-AZ-03 起含 VERIFIED_VIOLATION 实断判定；决策值表达判定结论，请求最终动作见 api_runtime_events.final_action——OBSERVE 形态决策不改变放行结果）
       required: [id, decision_id, endpoint_key, policy_version, decision, checks, occurred_at]
       properties:
         id: { type: string, format: uuid }
@@ -7821,7 +9445,7 @@ components:
         application_id: { type: string, format: uuid, nullable: true }
         endpoint_key: { type: string }
         policy_version: { type: string }
-        decision: { type: string, enum: [ALLOW, OBSERVE_VIOLATION, UNKNOWN] }
+        decision: { type: string, enum: [ALLOW, OBSERVE_VIOLATION, UNKNOWN, VERIFIED_VIOLATION] }
         checks:
           type: array
           items: {}
@@ -7829,8 +9453,345 @@ components:
         evidence:
           type: object
           additionalProperties: true
-          description: 脱敏证据；仅 evidence_read 权限返回
+          description: 脱敏证据；仅 evidence_read 权限返回。VERIFIED_VIOLATION 实断行含 authz_enforcement 键（NG-AZ-03 D5，形状见 ApiSecAuthzEnforcementEvidence；随主事件 final_decision 内嵌原样带出，服务端只读透传不解释）
+          properties:
+            authz_enforcement: { $ref: '#/components/schemas/ApiSecAuthzEnforcementEvidence' }
         occurred_at: { type: string, format: date-time }
+
+    ApiSecAuthzEnforcementEvidence:
+      type: object
+      description: >-
+        VERIFIED_VIOLATION 实断证据（NG-AZ-03 §1.4 冻结形状；随该请求 api_runtime_events
+        主事件行 final_decision.authz_enforcement 内嵌，decisions 查询行 evidence 原样带出）——
+        含八因子逐项布尔值 + 版本/水位/租约读数 + enforcement_owner/evidence_source，
+        可完整回答「为什么这次请求被实断」
+      required: [decision, reason_code, enforced, endpoint_key, eligibility, recorded_at]
+      properties:
+        decision: { type: string, enum: [VERIFIED_VIOLATION], description: 判定结论（恒 VERIFIED_VIOLATION） }
+        reason_code: { type: string, description: 违规原因码（AUTHZ-BOLA-001 / AUTHZ-BFLA-001） }
+        enforced: { type: boolean, description: 是否实断（PROTECT 端点 true；OBSERVE 形态拟动作记录为 false） }
+        endpoint_key: { type: string, description: 端点键 }
+        model_version: { type: string, description: 对象模型版本戳 }
+        policy_version: { type: string, description: 授权快照策略版本戳 }
+        revocation_watermark:
+          type: object
+          description: 判定时刻管理面向量撤销水位（分量比较语义见 NG-AZ-02）
+          properties:
+            manual_seq: { type: integer, format: int64, description: 手工撤销通道序号 }
+            sources: { type: object, additionalProperties: { type: integer, format: int64 }, description: 逐权威来源水位 }
+        principal_source: { type: string, description: 主体来源（JWT_VERIFIED=JWT 信任链 VERIFIED 可信主体） }
+        object_ref: { type: string, description: "对象 HMAC 引用（objref: 前缀脱敏形态）" }
+        eligibility:
+          type: object
+          description: 阻断资格八因子逐项布尔值（全真才落 VERIFIED_VIOLATION；任一不真按既有 reason code 落 UNKNOWN/OBSERVE_VIOLATION，绝不阻断）
+          properties:
+            trusted_identity: { type: boolean, description: 主体可信（JWT VERIFIED 且 principal 非空） }
+            model_applicable: { type: boolean, description: 模型适用（恰一模型匹配且 publishable/OWNER/unique/未过期） }
+            relation_valid: { type: boolean, description: 关系有效（CONFIRMED 且在 valid_from/valid_until 内） }
+            no_conflict: { type: boolean, description: 无 OPEN 冲突 }
+            tenant_consistent: { type: boolean, description: 租户范围一致 }
+            evidence_fresh: { type: boolean, description: 证据新鲜（lease 未过期、无时钟漂移、水位未回退） }
+            other_owner: { type: boolean, description: 违规事实本体（请求主体 ≠ 任一有效 OWNER 且存在有效 OWNER） }
+            owner_exclusive: { type: boolean, description: 排他所有权已显式声明 }
+        lease_seconds: { type: integer, description: 判定时刻生效租约秒数 }
+        applied_at_age_seconds: { type: integer, description: 快照应用时刻距判定的秒数 }
+        enforcement_owner: { type: string, maxLength: 128, description: §8.4 业务负责人标识（切换 PROTECT 时声明值） }
+        evidence_source: { type: string, enum: [AUTHORITY_SYNC, MANUAL_CONFIRMED], description: §8.4 证据来源声明 }
+        recorded_at: { type: string, format: date-time, description: 证据记录时刻 }
+
+    # ---- NG-AZ-04 PROTECT 切换向导（apiauthzwizard） ----
+    ApiSecAuthzEnforcementReadinessItem:
+      type: object
+      description: 端点级实断资格派生行（§1.2；readiness 为服务端唯一事实源，前端只渲染）
+      required: [endpoint_id, endpoint_key, object_segment, enforcement, readiness, reasons, checked_at]
+      properties:
+        endpoint_id: { type: string, format: uuid }
+        endpoint_key: { type: string }
+        object_segment: { type: string }
+        enforcement: { type: string, enum: [OBSERVE, PROTECT] }
+        readiness:
+          type: string
+          enum: [READY, PROTECT_ACTIVE, NOT_PUBLISHABLE, BLOCKED_BY_NO_RELATION, BLOCKED_BY_CONFLICT, BLOCKED_BY_STALE, BLOCKED_BY_NODE]
+          description: 六态徽章（PROTECT_ACTIVE 为已 PROTECT 展示态；reasons 全列不真因子原文）
+        reasons: { type: array, items: { type: string }, description: 全部不真因子原文（含 UNKNOWN 永不阻断语义注记） }
+        checked_at: { type: string, format: date-time, description: 派生时刻 }
+
+    ApiSecAuthzEnforcementReadinessResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecAuthzEnforcementReadinessItem' }
+
+    ApiSecAuthzEnforcementImpactRequest:
+      type: object
+      required: [endpoint_id, window_days]
+      properties:
+        endpoint_id: { type: string, format: uuid, description: 接口 ID }
+        window_days: { type: integer, minimum: 1, maximum: 30, description: 评估窗口天数（词表 1~30，词表外 400） }
+        object_segment: { type: string, description: 端点多对象模型行时指定（缺省恰一行自动选定；token 绑定粒度=对象模型行） }
+
+    ApiSecAuthzEnforcementImpact:
+      type: object
+      description: 影响评估结果（§1.3；只读评估不入库）
+      required: [endpoint_id, endpoint_key, object_segment, window_days, evaluated_at, observe_violation_count, unknown_total, unknown_by_reason, distinct_principal_count, verified_violation_count, readiness, readiness_reasons]
+      properties:
+        endpoint_id: { type: string, format: uuid }
+        endpoint_key: { type: string }
+        object_segment: { type: string }
+        window_days: { type: integer }
+        evaluated_at: { type: string, format: date-time }
+        observe_violation_count: { type: integer, format: int64, description: 近 N 天 OBSERVE_VIOLATION 命中数（切换后将被 403 的请求量近似） }
+        unknown_total: { type: integer, format: int64, description: UNKNOWN 决策行数（UNKNOWN 永不阻断） }
+        unknown_by_reason:
+          type: array
+          description: UNKNOWN 分桶（按 checks 展开 reason_code 计数，总和可超 unknown_total）
+          items:
+            type: object
+            properties:
+              reason_code: { type: string }
+              count: { type: integer, format: int64 }
+        distinct_principal_count: { type: integer, format: int64, description: 涉及主体数（VERIFIED 主体指纹 distinct） }
+        verified_violation_count: { type: integer, format: int64, description: 已实断数（PROTECT 复评时非零） }
+        recent_samples:
+          type: array
+          description: 最近命中样本 ≤5（非 ALLOW 决策；仅 api_authorization.evidence_read 返回）
+          items:
+            type: object
+            properties:
+              occurred_at: { type: string, format: date-time }
+              decision: { type: string, enum: [OBSERVE_VIOLATION, UNKNOWN, VERIFIED_VIOLATION] }
+              reason_code: { type: string }
+        readiness: { $ref: '#/components/schemas/ApiSecAuthzEnforcementReadinessItem/properties/readiness' }
+        readiness_reasons: { type: array, items: { type: string } }
+        confirm_token: { type: string, format: uuid, description: 一次性签署令牌（仅 api_authorization.manage 调用签发；15 分钟 TTL 绑定端点×对象段） }
+        confirm_token_expires_at: { type: string, format: date-time, description: 令牌到期时刻 }
+
+    ApiSecAuthzEnforcementConfirmation:
+      type: object
+      description: PROTECT 切换业务确认单（§1.4；签发→签署→消费全生命周期，留存不删）
+      required: [id, confirm_token, application_id, endpoint_id, object_segment, window_days, impact_snapshot, on_unknown, created_at, token_expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        confirm_token: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        endpoint_key: { type: string }
+        object_segment: { type: string }
+        window_days: { type: integer }
+        impact_snapshot: { type: object, additionalProperties: true, description: 签发时刻影响评估摘要全量 }
+        confirm_text: { type: string, description: 冻结确认语义文案（签署时按 v1 模板生成落库） }
+        enforcement_owner: { type: string, maxLength: 128, description: 四要素（签署时回填；''=未签署） }
+        evidence_source: { type: string, enum: ['', AUTHORITY_SYNC, MANUAL_CONFIRMED] }
+        on_unknown: { type: string, enum: [ALLOW_UNKNOWN] }
+        confirmed_by_name: { type: string, description: 签署人 }
+        created_at: { type: string, format: date-time }
+        token_expires_at: { type: string, format: date-time }
+        signed_at: { type: string, format: date-time, nullable: true }
+        consumed_at: { type: string, format: date-time, nullable: true, description: PATCH 消费时刻（null=未消费） }
+        consumed_audit_id: { type: string, description: 消费它的切换请求 request_id（审计按 request_id 反查，溯源闭环） }
+
+    ApiSecAuthzEnforcementConfirmationListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecAuthzEnforcementConfirmation' }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, format: int64, minimum: 0 }
+
+    ApiSecAuthzEnforcementSignRequest:
+      type: object
+      required: [enforcement_owner, evidence_source, on_unknown]
+      properties:
+        enforcement_owner: { type: string, maxLength: 128, description: 业务负责人标识（非空 ≤128） }
+        evidence_source: { type: string, enum: [AUTHORITY_SYNC, MANUAL_CONFIRMED] }
+        on_unknown: { type: string, enum: [ALLOW_UNKNOWN], description: 首批仅 ALLOW_UNKNOWN——UNKNOWN 永不阻断 }
+
+    ApiSecAuthzConflictItem:
+      type: object
+      description: 授权冲突对象（api_authority_conflicts；D7 语义——冲突不可信，UNKNOWN 不阻断）
+      required: [id, application_id, object_type, object_ref, status, first_seen, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        object_type: { type: string }
+        tenant_domain: { type: string }
+        object_ref: { type: string, description: "对象 HMAC 引用（objref: 前缀脱敏形态）" }
+        principals: { type: array, items: {}, description: 涉及主体（脱敏形态） }
+        status: { type: string, enum: [OPEN, RESOLVED] }
+        first_seen: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiSecAuthzConflictListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecAuthzConflictItem' }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, format: int64, minimum: 0 }
+
+    # ---- NG-FLOW-01 强流程定义（strongflow） ----
+    ApiSecStrongFlowStep:
+      type: object
+      description: 强流程步骤（§1.1 冻结形状；success_rule 运行期解析属 FLOW-03）
+      required: [step_key, endpoint_key, sequence, success_rule, timeout_seconds, retry_semantics, lease_seconds]
+      properties:
+        step_key: { type: string, maxLength: 128, description: 步骤键（定义内唯一） }
+        endpoint_key: { type: string, description: 端点键（须属绑定前缀下本应用已 CONFIRMED 端点，activate 核对） }
+        sequence: { type: integer, minimum: 1, description: 流程内单调序号（定义内唯一；首步唯一最小） }
+        success_rule: { $ref: '#/components/schemas/ApiSecStrongFlowSuccessRule' }
+        timeout_seconds: { type: integer, minimum: 15, maximum: 600, description: 步骤超时秒数（词表外 400 不夹紧猜义） }
+        retry_semantics: { type: string, enum: [IDEMPOTENT, NOT_RETRYABLE, REQUIRES_REVIEW], description: 可重试语义 }
+        parallel_group: { type: string, maxLength: 128, description: 并行组（同组步骤 sequence 相邻连续；空=串行） }
+        lease_seconds: { type: integer, minimum: 15, maximum: 300, description: 步骤预留租约秒数（词表外 400） }
+        allows_202: { type: boolean, description: 异步受理（202=已受理待完成，不自动完成） }
+
+    ApiSecStrongFlowSuccessRule:
+      type: object
+      description: 成功判定式（§1.4 三形态可组合与；白名单键未知键拒收；至少一形态。HTTP 2xx 不是通用成功证据——判定式必须显式配置）
+      properties:
+        status_codes:
+          type: array
+          items: { type: integer, minimum: 100, maximum: 599 }
+          description: 形态一：响应状态码集合
+        body_jsonpath_equals:
+          type: object
+          description: "形态二：body JSONPath 子集等值（仅点路径 $.a.b 形态）"
+          properties:
+            path: { type: string, description: "点路径（如 $.status；仅 $.a.b 形态）" }
+            value: { description: 等值目标（JSON 标量） }
+        graphql_errors_empty: { type: boolean, description: 形态三：GraphQL errors 为空 }
+
+    ApiSecStrongFlowDefinition:
+      type: object
+      description: 强流程定义（NG-FLOW-01；版本化——编辑产新草稿 version+1、激活即冻结、RETIRED 单向终态）
+      required: [id, application_id, name, version, status, binding_path_prefix, instance_key_param, mode, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        name: { type: string, maxLength: 255 }
+        version: { type: integer, minimum: 1, description: 版本（单调递增；同名草稿 max+1） }
+        status: { type: string, enum: [DRAFT, ACTIVE, RETIRED], description: 状态（同应用同名称同时刻恰一个 ACTIVE） }
+        binding_path_prefix: { type: string, description: 端点组前缀（/ 开头纯字面） }
+        instance_key_param: { type: string, description: "实例引用来源（query:<参数名> / path:<段序>）" }
+        mode: { type: string, enum: [OBSERVE, PROTECT], description: 模式（缺省 OBSERVE——NG-T-C01；UNKNOWN 任何形态恒不阻断） }
+        created_by_name: { type: string }
+        created_at: { type: string, format: date-time }
+        activated_at: { type: string, format: date-time, nullable: true }
+
+    ApiSecStrongFlowDefinitionDetail:
+      allOf:
+        - $ref: '#/components/schemas/ApiSecStrongFlowDefinition'
+        - type: object
+          properties:
+            steps:
+              type: array
+              items: { $ref: '#/components/schemas/ApiSecStrongFlowStep' }
+
+    ApiSecStrongFlowDefinitionInput:
+      type: object
+      required: [application_id, name, binding_path_prefix, instance_key_param, steps]
+      properties:
+        application_id: { type: string, format: uuid }
+        name: { type: string, maxLength: 255 }
+        binding_path_prefix: { type: string }
+        instance_key_param: { type: string }
+        mode: { type: string, enum: [OBSERVE, PROTECT], default: OBSERVE }
+        steps:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: { $ref: '#/components/schemas/ApiSecStrongFlowStep' }
+
+    ApiSecStrongFlowDefinitionListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecStrongFlowDefinition' }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, format: int64, minimum: 0 }
+
+    ApiSecStrongFlowInstance:
+      type: object
+      description: 强流程实例（NG-FLOW-02；definition_version 实例创建时冻结——NG-T-F06 不换图；status 五态；INDETERMINATE=未知待对账不显示安全通过）
+      required: [id, application_id, definition_id, definition_version, instance_key, status, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        definition_id: { type: string, format: uuid }
+        definition_name: { type: string, description: 定义名称（LEFT JOIN 带出） }
+        definition_version: { type: integer, description: 实例创建时冻结的定义版本 }
+        instance_key: { type: string, description: "实例键（sfref: 前缀域隔离 HMAC 脱敏形态）" }
+        tenant_ref: { type: string, description: 可信租户引用（脱敏形态） }
+        principal_ref: { type: string, description: 可信主体引用（脱敏形态） }
+        status: { type: string, enum: [ACTIVE, CONFIRMED, INDETERMINATE, CANCELLED, FAILED] }
+        version: { type: integer, description: 乐观锁版本（FLOW-03 resolve 版本冲突承载） }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        terminated_at: { type: string, format: date-time, nullable: true }
+
+    ApiSecStrongFlowInstanceListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecStrongFlowInstance' }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, format: int64, minimum: 0 }
+
+    ApiSecStrongFlowStepEvent:
+      type: object
+      description: >-
+        强流程步骤轨迹条目（api_strong_flow_step_events）。摘要档四字段随读权限可见；
+        明细档（fencing_token/reason_code/request_id）仅 evidence_read 带出（键缺席=无权限，
+        非无数据）。action 词表含管理面专属 RESOLVE（迁移 000178，KEEP_UNKNOWN 留痕）。
+      required: [step_key, action, result, occurred_at]
+      properties:
+        step_key: { type: string, description: 步骤键（实例级事件为空串） }
+        action: { type: string, enum: [RESERVE, COMMIT, RELEASE, EXPIRE, INSTANCE_NEW, INSTANCE_CONFIRMED, INSTANCE_INDETERMINATE, INSTANCE_CANCELLED, INSTANCE_FAILED, RESOLVE] }
+        result: { type: string, enum: [OK, CONFLICT, REJECTED, UNKNOWN] }
+        occurred_at: { type: string, format: date-time }
+        fencing_token: { type: integer, format: int64, description: 预留 fencing 序号（明细档，evidence_read） }
+        reason_code: { type: string, description: "原因码（FLOW-RESERVE-001/FENCE-001/IDEMPOTENT-CONFLICT-001/UNKNOWN-001/FLOW-RESOLVE-001 等；明细档）" }
+        request_id: { type: string, description: 关联请求 ID（明细档） }
+
+    ApiSecStrongFlowInstanceDetail:
+      allOf:
+        - $ref: '#/components/schemas/ApiSecStrongFlowInstance'
+        - type: object
+          required: [status_semantics, status_message, steps]
+          properties:
+            status_semantics:
+              type: string
+              enum: [IN_PROGRESS, SUCCEEDED, UNKNOWN_NOT_CONFIRMED, CANCELLED, FAILED]
+              description: 状态语义词表（INDETERMINATE=UNKNOWN_NOT_CONFIRMED——未知不显示安全通过，§9.4 红线，不得映射为成功态）
+            status_message:
+              type: string
+              description: "状态语义中文文案（INDETERMINATE 固定「未知，不显示安全通过」逐字不美化）"
+            steps:
+              type: array
+              items: { $ref: '#/components/schemas/ApiSecStrongFlowStepEvent' }
+
+    ApiSecStrongFlowResolveInput:
+      type: object
+      description: 管理恢复载荷（expected_version 乐观锁与实例 version 比对；终态实例拒绝重复恢复 409）
+      required: [action, reason, expected_version]
+      properties:
+        action: { type: string, enum: [CONFIRM_SUCCEEDED, CONFIRM_NOT_EXECUTED, KEEP_UNKNOWN], description: "CONFIRM_SUCCEEDED→CONFIRMED / CONFIRM_NOT_EXECUTED→FAILED / KEEP_UNKNOWN 不推进" }
+        reason: { type: string, minLength: 1, maxLength: 512, description: 对账理由（必填非空，HIGH 审计全值在册） }
+        expected_version: { type: integer, minimum: 1, description: 乐观锁版本（与实例 version 精确比对，不匹配 409） }
 
     ApiSecAuthzDecisionListResponse:
       type: object
@@ -9211,6 +11172,384 @@ components:
           items: { $ref: '#/components/schemas/ApiGrpcDescriptor' }
         total: { type: integer, description: 总数（不分页） }
 
+    ApiGrpcBinding:
+      type: object
+      description: gRPC 描述符 per-app 绑定（api_grpc_bindings，NG-GRPC G1 批次 B1；空绑定=全局可见，绑定应用只用绑定集）
+      required: [id, application_id, service, descriptor_name, mode, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        service: { type: string, description: "gRPC 服务全名（pkg.Service 点路径形态，全小写段）" }
+        descriptor_name: { type: string, description: 引用的描述符集名（api_grpc_descriptors.name） }
+        mode: { type: string, enum: [OBSERVE, PROTECT], description: 深检处置（OBSERVE 只记录 / PROTECT 协议化执行（grpc-status trailers）） }
+        version: { type: integer, description: 乐观锁版本（写操作携带比对） }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiGrpcBindingInput:
+      type: object
+      required: [application_id, service, descriptor_name]
+      properties:
+        application_id: { type: string, format: uuid }
+        service: { type: string, pattern: '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$', maxLength: 256 }
+        descriptor_name: { type: string, maxLength: 128 }
+        mode: { type: string, enum: [OBSERVE, PROTECT], default: OBSERVE }
+
+    ApiGrpcBindingUpdateInput:
+      type: object
+      required: [descriptor_name, version]
+      properties:
+        descriptor_name: { type: string, maxLength: 128 }
+        mode: { type: string, enum: [OBSERVE, PROTECT] }
+        version: { type: integer, minimum: 1, description: 乐观锁版本（与绑定行 version 精确比对，不匹配 409） }
+
+    ApiGrpcBindingListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiGrpcBinding' }
+        total: { type: integer, description: 总数（不分页） }
+
+    ApiGrpcUndocumentedService:
+      type: object
+      description: 未登记 gRPC 服务（流量观测到但未覆盖描述符；按应用+服务分桶）
+      required: [application_id, service, methods]
+      properties:
+        application_id: { type: string, format: uuid }
+        service: { type: string }
+        methods:
+          type: array
+          items: { type: string }
+          description: 未登记方法名清单
+
+    ApiGrpcUndocumentedServiceListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiGrpcUndocumentedService' }
+        total: { type: integer, description: 总数（不分页） }
+
+    ApiMcpToolCatalog:
+      type: object
+      description: MCP 工具目录（mcp_tool_catalogs，NG-MCP G1 批次 B1；服务身份维度；发布通道只下发 ENABLED 目录的 APPROVED 工具行）
+      required: [id, name, service_identity, protocol_version, source, status, catalog_hash, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, maxLength: 128, description: 目录名（全局唯一） }
+        service_identity: { type: string, maxLength: 256, description: 服务身份（如 mcp://pay.example.com） }
+        protocol_version: { type: string, description: "MCP 协议版本（缺省 2025-11-25）" }
+        source: { type: string, enum: [MANUAL_IMPORT], description: 来源（G1 仅显式导入） }
+        status: { type: string, enum: [ENABLED, DISABLED], description: 启停（DISABLED 不下发） }
+        catalog_hash: { type: string, description: "发布集摘要（mcp-catalog-sha256:v1:+64 hex；APPROVED 工具 tool_hash 排序拼接 sha256）" }
+        version: { type: integer, description: 乐观锁版本（写操作携带比对） }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiMcpToolCatalogSummary:
+      allOf:
+        - $ref: '#/components/schemas/ApiMcpToolCatalog'
+        - type: object
+          description: 目录列表行（含审核统计）
+          properties:
+            tool_count: { type: integer }
+            approved_count: { type: integer }
+            pending_count: { type: integer }
+            rejected_count: { type: integer }
+
+    ApiMcpArgConstraint:
+      type: object
+      description: 参数范围约束（G1 两种确定性形态）
+      required: [field, kind]
+      properties:
+        field: { type: string, maxLength: 128, description: 参数字段点路径（如 path/url） }
+        kind: { type: string, enum: [path_prefix, domain_suffix] }
+        allow:
+          type: array
+          items: { type: string, maxLength: 512 }
+          description: 允许前缀/后缀集合（非空）
+
+    ApiMcpTool:
+      type: object
+      description: MCP 目录工具行（tool_hash 审批绑定不可变摘要；发布只下发 APPROVED）
+      required: [id, catalog_id, tool_name, tool_version, description_digest, tool_hash, risk_level, data_classification, approval_required, max_calls_per_minute, review_status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        catalog_id: { type: string, format: uuid }
+        tool_name: { type: string, maxLength: 128 }
+        tool_version: { type: string, maxLength: 128 }
+        description_digest: { type: string, description: 规范化描述全文 sha256（hex） }
+        description_preview: { type: string, maxLength: 512, description: 描述截断预览（仅管理面展示，永不为证据） }
+        input_schema: { type: object, nullable: true, description: 输入 JSON Schema（可空） }
+        output_schema: { type: object, nullable: true, description: 输出 JSON Schema（可空） }
+        input_schema_digest: { type: string }
+        output_schema_digest: { type: string }
+        tool_hash: { type: string, pattern: '^mcp-tool-sha256:v1:[0-9a-f]{64}$', description: 五元组（名称/版本/规范化描述全文/双 schema）域分隔 sha256 }
+        capability_tags: { type: array, items: { type: string } }
+        risk_level: { type: string, enum: [LOW, MEDIUM, HIGH], description: 导入缺省 HIGH（未定级按高风险对待） }
+        data_classification: { type: string, enum: [PUBLIC, INTERNAL, CONFIDENTIAL, UNKNOWN], description: 导入缺省 UNKNOWN }
+        allowed_principals: { type: array, items: { type: string }, description: 空=该维度不约束，非空逐维 AND }
+        allowed_roles: { type: array, items: { type: string } }
+        allowed_tenants: { type: array, items: { type: string } }
+        approval_required: { type: boolean, description: 数据前向兼容字段（G1 语义=默认拒绝同 HIGH） }
+        max_calls_per_minute: { type: integer, minimum: 0, description: 0=不限 }
+        arg_constraints:
+          type: array
+          items: { $ref: '#/components/schemas/ApiMcpArgConstraint' }
+        review_status: { type: string, enum: [PENDING_REVIEW, APPROVED, REJECTED], description: 导入与语义变更恒落 PENDING_REVIEW }
+        reviewed_by: { type: string }
+        reviewed_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiMcpToolInput:
+      type: object
+      required: [tool_name]
+      properties:
+        tool_name: { type: string, maxLength: 128 }
+        tool_version: { type: string, maxLength: 128 }
+        description: { type: string, maxLength: 65536, description: 规范化描述全文（入 tool_hash） }
+        input_schema: { type: object, nullable: true }
+        output_schema: { type: object, nullable: true }
+        capability_tags: { type: array, items: { type: string } }
+        risk_level: { type: string, enum: [LOW, MEDIUM, HIGH], default: HIGH }
+        data_classification: { type: string, enum: [PUBLIC, INTERNAL, CONFIDENTIAL, UNKNOWN], default: UNKNOWN }
+        allowed_principals: { type: array, items: { type: string } }
+        allowed_roles: { type: array, items: { type: string } }
+        allowed_tenants: { type: array, items: { type: string } }
+        approval_required: { type: boolean, default: false }
+        max_calls_per_minute: { type: integer, minimum: 0, default: 0 }
+        arg_constraints:
+          type: array
+          items: { $ref: '#/components/schemas/ApiMcpArgConstraint' }
+
+    ApiMcpToolCatalogInput:
+      type: object
+      required: [name, service_identity, tools]
+      properties:
+        name: { type: string, maxLength: 128 }
+        service_identity: { type: string, maxLength: 256 }
+        protocol_version: { type: string, maxLength: 32, default: '2025-11-25' }
+        tools:
+          type: array
+          items: { $ref: '#/components/schemas/ApiMcpToolInput' }
+          description: 工具集整体提交（整体替换语义；空数组=空目录合法）
+        version: { type: integer, minimum: 1, description: PUT 乐观锁必填（POST 忽略） }
+
+    ApiMcpToolReviewInput:
+      type: object
+      required: [action]
+      properties:
+        action: { type: string, enum: [APPROVED, REJECTED] }
+        risk_level: { type: string, enum: [LOW, MEDIUM, HIGH] }
+        data_classification: { type: string, enum: [PUBLIC, INTERNAL, CONFIDENTIAL, UNKNOWN] }
+        allowed_principals: { type: array, items: { type: string } }
+        allowed_roles: { type: array, items: { type: string } }
+        allowed_tenants: { type: array, items: { type: string } }
+        approval_required: { type: boolean }
+        max_calls_per_minute: { type: integer, minimum: 0 }
+
+    ApiMcpToolCatalogDetailResponse:
+      type: object
+      properties:
+        catalog: { $ref: '#/components/schemas/ApiMcpToolCatalog' }
+        tools:
+          type: array
+          items: { $ref: '#/components/schemas/ApiMcpTool' }
+
+    ApiMcpToolCatalogListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiMcpToolCatalogSummary' }
+        total: { type: integer, description: 总数（不分页） }
+
+    ApiMcpBinding:
+      type: object
+      description: MCP 目录 per-app 绑定（mcp_catalog_bindings；绑定驱动识别；空绑定=网关 MCP 管控零行为）
+      required: [id, application_id, endpoint_path, catalog_id, catalog_name, mode, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        endpoint_path: { type: string, maxLength: 1024, description: "MCP 端点精确路径（/ 开头，大小写敏感）" }
+        catalog_id: { type: string, format: uuid }
+        catalog_name: { type: string, description: 目录名（JOIN 带出） }
+        mode: { type: string, enum: [OBSERVE, PROTECT], description: OBSERVE 只记录 / PROTECT 协议化执行（JSON-RPC 错误对象） }
+        version: { type: integer, description: 乐观锁版本（写操作携带比对） }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiMcpBindingInput:
+      type: object
+      required: [application_id, endpoint_path, catalog_id]
+      properties:
+        application_id: { type: string, format: uuid }
+        endpoint_path: { type: string, pattern: '^/', maxLength: 1024 }
+        catalog_id: { type: string, format: uuid }
+        mode: { type: string, enum: [OBSERVE, PROTECT], default: OBSERVE }
+
+    ApiMcpBindingUpdateInput:
+      type: object
+      required: [catalog_id, version]
+      properties:
+        catalog_id: { type: string, format: uuid }
+        mode: { type: string, enum: [OBSERVE, PROTECT] }
+        version: { type: integer, minimum: 1, description: 乐观锁版本（与绑定行 version 精确比对，不匹配 409） }
+
+    ApiMcpBindingListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiMcpBinding' }
+        total: { type: integer, description: 总数（不分页） }
+
+    # ---------- 机器身份登记（apimachineid，NG-ID g1 批次 B1） ----------
+    ApiMachineIdentity:
+      type: object
+      description: 机器身份（machine_identities，NG-ID g1 批次 B1；HTTP Message Signatures 可信身份登记；发布通道只下发 ENABLED 身份）
+      required: [id, identity_name, status, bot_challenge_exempt, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        identity_name: { type: string, maxLength: 128, description: 身份名（全局唯一） }
+        tenant_id: { type: string, maxLength: 128, nullable: true, description: 租户范围（null=跨租户共享身份） }
+        principal_binding: { type: string, maxLength: 128, nullable: true, description: 绑定 JWT VerifiedPrincipalID 指纹值（声明即强制一致） }
+        status: { type: string, enum: [ENABLED, DISABLED], description: 启停（DISABLED 不下发不参与验证） }
+        bot_challenge_exempt: { type: boolean, description: Bot 精确豁免前提之一（缺省 false） }
+        version: { type: integer, description: 乐观锁版本（写操作携带比对） }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiMachineIdentitySummary:
+      allOf:
+        - $ref: '#/components/schemas/ApiMachineIdentity'
+        - type: object
+          description: 身份列表行（含键状态摘要）
+          properties:
+            key_count: { type: integer }
+            active_keys: { type: integer }
+            retired_keys: { type: integer }
+            revoked_keys: { type: integer }
+
+    ApiMachineIdentityKey:
+      type: object
+      description: 机器身份公钥（machine_identity_keys；ACTIVE/RETIRED/REVOKED 状态机+重叠窗口+revoked_seq 水位溯源；指纹管理面现算不落库）
+      required: [id, identity_id, kid, alg, public_key_pem, key_fingerprint, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        identity_id: { type: string, format: uuid }
+        kid: { type: string, maxLength: 128, description: 键标识（身份内唯一；签名 keyid 登记册精确查找） }
+        alg: { type: string, enum: [ed25519, ecdsa-p256-sha256, rsa-pss-sha512], description: 算法词表（hmac-sha256/rsa-v1_5-sha256 排除） }
+        public_key_pem: { type: string, description: 公钥 PEM（公钥非秘密，明文存储合法） }
+        key_fingerprint: { type: string, description: 公钥指纹（sha256 前 16 hex，管理面现算——管理面与事件稳定引用） }
+        status: { type: string, enum: [ACTIVE, RETIRED, REVOKED], description: ACTIVE 可签发可验证 / RETIRED 重叠窗口内仅验证 / REVOKED 立即拒验 }
+        not_before: { type: string, format: date-time, nullable: true }
+        not_after: { type: string, format: date-time, nullable: true }
+        retire_overlap_until: { type: string, format: date-time, nullable: true, description: RETIRED 重叠窗口终点（窗口外旧键拒验） }
+        revoked_seq: { type: integer, format: int64, nullable: true, description: 撤销时水位值（溯源；未撤销为 null） }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiMachineIdentityInput:
+      type: object
+      required: [identity_name]
+      properties:
+        identity_name: { type: string, maxLength: 128 }
+        tenant_id: { type: string, maxLength: 128, nullable: true }
+        principal_binding: { type: string, maxLength: 128, nullable: true }
+        status: { type: string, enum: [ENABLED, DISABLED], default: ENABLED }
+        bot_challenge_exempt: { type: boolean, default: false }
+        version: { type: integer, minimum: 1, description: PUT 乐观锁必填（POST 忽略） }
+
+    ApiMachineIdentityKeyInput:
+      type: object
+      required: [kid, alg, public_key_pem]
+      properties:
+        kid: { type: string, maxLength: 128 }
+        alg: { type: string, enum: [ed25519, ecdsa-p256-sha256, rsa-pss-sha512], description: 声明算法（与 PEM 实际键型一致性核对——不符 400） }
+        public_key_pem: { type: string, maxLength: 8192, description: 公钥 PEM（PKIX PUBLIC KEY 或 RSA PUBLIC KEY 块，恰一个公钥块） }
+        not_before: { type: string, format: date-time, nullable: true }
+        not_after: { type: string, format: date-time, nullable: true }
+        overlap_hours: { type: integer, minimum: 1, maximum: 168, nullable: true, description: 仅 rotate 消费：重叠窗口小时数（缺省 24，上限 168） }
+
+    ApiMachineIdentityResponse:
+      type: object
+      properties:
+        identity: { $ref: '#/components/schemas/ApiMachineIdentity' }
+
+    ApiMachineIdentityDetailResponse:
+      type: object
+      properties:
+        identity: { $ref: '#/components/schemas/ApiMachineIdentity' }
+        keys:
+          type: array
+          items: { $ref: '#/components/schemas/ApiMachineIdentityKey' }
+
+    ApiMachineIdentityListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiMachineIdentitySummary' }
+        total: { type: integer, description: 总数（不分页） }
+        revocation_watermark: { type: integer, format: int64, description: 撤销水位（machine_identity_revocation_watermark 单行 seq，随列表响应带出） }
+
+    ApiMachineIdentityRotateResponse:
+      type: object
+      description: 轮换结果（同一事务原子：新键 ACTIVE+旧键 RETIRED+重叠窗口）
+      properties:
+        key: { $ref: '#/components/schemas/ApiMachineIdentityKey' }
+        retired_key: { $ref: '#/components/schemas/ApiMachineIdentityKey' }
+
+    ApiMachineIdentityBinding:
+      type: object
+      description: 机器身份 per-app 绑定（machine_identity_bindings；绑定驱动识别；绑定不引用身份——登记册全局生效；空绑定=网关机器身份评估零行为）
+      required: [id, application_id, path_exact, path_prefix, mode, proof_required, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        path_exact: { type: string, description: 精确路径（与 path_prefix 二选一，缺省一侧为空串） }
+        path_prefix: { type: string, description: 路径前缀（jwt selector 同形） }
+        mode: { type: string, enum: [OBSERVE, PROTECT], description: OBSERVE 只记录 / PROTECT 验签失败与违规模态协议化执行 }
+        proof_required: { type: boolean, description: true=绑定命中且未签名请求拒绝 401；false=未签名按普通流量继续既有防护 }
+        version: { type: integer, description: 乐观锁版本（写操作携带比对） }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiMachineIdentityBindingInput:
+      type: object
+      required: [application_id]
+      properties:
+        application_id: { type: string, format: uuid }
+        path_exact: { type: string, pattern: '^/', maxLength: 512, description: 与 path_prefix 必须且仅须提供一个 }
+        path_prefix: { type: string, pattern: '^/', maxLength: 512 }
+        mode: { type: string, enum: [OBSERVE, PROTECT], default: OBSERVE }
+        proof_required: { type: boolean, default: false }
+
+    ApiMachineIdentityBindingUpdateInput:
+      type: object
+      required: [version]
+      properties:
+        mode: { type: string, enum: [OBSERVE, PROTECT] }
+        proof_required: { type: boolean }
+        version: { type: integer, minimum: 1, description: 乐观锁版本（与绑定行 version 精确比对，不匹配 409） }
+
+    ApiMachineIdentityBindingListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiMachineIdentityBinding' }
+        total: { type: integer, description: 总数（不分页） }
+
     # ---------- 业务流程基线（apiflows，阶段8 §44） ----------
     ApiFlowStep:
       type: object
@@ -9336,3 +11675,448 @@ components:
         reason: { type: string, maxLength: 512 }
         effective_from: { type: string, format: date-time }
         effective_until: { type: string, format: date-time, nullable: true, description: 空 = 永久吊销；须晚于 effective_from }
+
+    # ---------- 统一执行覆盖（coverage；NG-COV-02 查询侧） ----------
+    ApiSecCoverageAggRow:
+      type: object
+      description: 覆盖聚合行（coverage_minute_agg 维度键 + 五态计数；E=full+partial+skipped+error，not_applicable 另计不进 E；E=0 时 no_applicable_traffic=true 且比率为 0，绝不显示 100%）
+      properties:
+        application_id: { type: string, description: 应用标识（网关上报原样维度键） }
+        endpoint_key: { type: string, description: 接口键（「METHOD 路径模板」；维度超限归拢时为 other） }
+        detector: { type: string, description: 命名空间检测器（维度超限归拢时为 other） }
+        phase: { type: string, enum: [request, response] }
+        policy_version: { type: string }
+        node_id: { type: string }
+        minute: { type: string, format: date-time, description: 分钟桶起点（UTC） }
+        full: { type: integer, format: int64 }
+        partial: { type: integer, format: int64 }
+        skipped: { type: integer, format: int64 }
+        error: { type: integer, format: int64 }
+        not_applicable: { type: integer, format: int64, description: 另计，不进 E }
+        e: { type: integer, format: int64, description: 有效集合 FULL+PARTIAL+SKIPPED+ERROR }
+        full_rate: { type: number, format: double, description: 完整检查率 FULL/E（E=0 时为 0） }
+        effective_rate: { type: number, format: double, description: 有效执行率 (FULL+PARTIAL)/E（E=0 时为 0） }
+        no_applicable_traffic: { type: boolean, description: E=0（无适用流量）时 true，绝不显示 100% }
+
+    ApiSecCoverageAggResponse:
+      type: object
+      description: agg 视图响应 data
+      properties:
+        view: { type: string, enum: [agg] }
+        window_minutes: { type: integer, description: 实际生效窗口（夹紧/归一后） }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        data_incomplete: { type: boolean, description: 窗口内节点最新 cov_ingest 快照 agg_overflow>0 或 agg_invalid>0 时 true（统计输入不完整如实披露） }
+        rows:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecCoverageAggRow' }
+
+    ApiSecCoverageStageCount:
+      type: object
+      description: 单阶段计数（阶段集合与顺序跨仓冻结：gateway coverage_counters.go covStageOrder）
+      properties:
+        stage: { type: string, enum: [total, rejected_manual_ban, rejected_ip_blacklist, rejected_auto_ban, rejected_l7_acl, rejected_cc, rejected_license_quota, intercepted_bot, intercepted_waf, reached_api_pipeline, reached_upstream] }
+        count: { type: integer, format: int64 }
+
+    ApiSecCoverageNodeStages:
+      type: object
+      description: 单节点最新一份阶段计数
+      properties:
+        node_id: { type: string }
+        captured_at: { type: string, format: date-time }
+        counts:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecCoverageStageCount' }
+
+    ApiSecCoverageStagesResponse:
+      type: object
+      description: stages 视图响应 data（缺失阶段补零保序输出；空数据 nodes 为空数组）
+      properties:
+        view: { type: string, enum: [stages] }
+        window_minutes: { type: integer }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        nodes:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecCoverageNodeStages' }
+
+    # ---------- 无副作用模拟（validations；NG-COV-03） ----------
+    ApiSecValidationFindingMatch:
+      type: object
+      description: 脱敏 Finding 命中（结构化字段；禁止携带 evidence 原文——服务端拒绝）
+      required: [detector]
+      properties:
+        detector: { type: string, maxLength: 256, description: 命名空间检测器（必填，如 api_schema） }
+        rule_id: { type: string, maxLength: 256 }
+        category: { type: string, maxLength: 256 }
+        severity: { type: string, maxLength: 256 }
+        message: { type: string, maxLength: 256 }
+        score_delta: { type: integer, description: 决策分增量（正分参与阻断判定） }
+        confidence: { type: number, format: double }
+        model_version: { type: string, maxLength: 256 }
+        policy_version: { type: string, maxLength: 256 }
+
+    ApiSecValidationExceptionRef:
+      type: object
+      description: 受限例外引用（命中后证据保留、仅取消执法贡献）
+      properties:
+        exception_id: { type: string, maxLength: 256 }
+        version: { type: integer }
+        detector_id: { type: string, maxLength: 256 }
+        rule_id: { type: string, maxLength: 256 }
+        model_version: { type: string, maxLength: 256 }
+
+    ApiSecValidationFindingBatch:
+      type: object
+      description: 一批脱敏 Finding 输入（matches 为空且 missing_reason 非空 → CANNOT_REPRODUCE；两者皆空 → EVIDENCE_INSUFFICIENT）
+      required: [input_id]
+      properties:
+        input_id: { type: string, maxLength: 256, description: 输入标识（必填） }
+        matches:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/ApiSecValidationFindingMatch' }
+        exceptions:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/ApiSecValidationExceptionRef' }
+        missing_reason: { type: string, maxLength: 256, description: 缺原始输入原因（协议不可复现/证据缺失） }
+
+    ApiSecValidationCreateRequest:
+      type: object
+      description: 创建模拟报告请求（脱敏输入；上限违反返回 400）
+      required: [batches]
+      properties:
+        batches:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ApiSecValidationFindingBatch' }
+
+    ApiSecValidationVerdict:
+      type: object
+      description: 单条输入的模拟结论（would_block 为模拟判定，非已执行）
+      properties:
+        input_id: { type: string }
+        status: { type: string, enum: [EVALUATED, CANNOT_REPRODUCE, EVIDENCE_INSUFFICIENT] }
+        candidate_action: { type: string, description: 决策前候选（与最终动作分离） }
+        final_action: { type: string }
+        would_block: { type: boolean, description: 若启用将阻断（模拟判定，非已执行） }
+        exception_hit: { type: boolean, description: 命中受限例外（证据保留） }
+        notes: { type: string }
+
+    ApiSecValidationReport:
+      type: object
+      description: 模拟报告（策略/语料/输入摘要绑定；STALE 读出时求值；模拟不是 PROTECT 实测，不能单独满足上线条件）
+      properties:
+        id: { type: string, format: uuid }
+        policy_digest: { type: string, description: 创建时策略摘要（发布链当前生效版本 configuration_hash） }
+        corpus_digest: { type: string, description: 语料摘要（输入集合结构化摘要） }
+        inputs_digest: { type: string, description: 输入内容摘要（Finding 内容规范化摘要） }
+        status: { type: string, enum: [COMPLETED, STALE], description: 创建时恒 COMPLETED；读出时与当前摘要不一致即 STALE（不回写数据库） }
+        verdicts:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecValidationVerdict' }
+        resource_note: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ApiSecValidationListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecValidationReport' }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+
+    # ---------- GraphQL 成本预算策略（apigql；NG-GQL-03） ----------
+    ApiSecGraphQLLimits:
+      type: object
+      description: 解析硬边界覆盖（零值字段 = 网关引擎默认：64KiB/深度20/节点10000/alias100/fragment展开1000）
+      properties:
+        max_doc_bytes: { type: integer, minimum: 0, maximum: 67108864, description: 文档字节硬上限（≤64MiB） }
+        max_depth: { type: integer, minimum: 0, description: 选择集嵌套深度 }
+        max_nodes: { type: integer, minimum: 0, description: 展开前选择集节点预算 }
+        max_aliases: { type: integer, minimum: 0, description: alias 数上限 }
+        max_fragment_exp: { type: integer, minimum: 0, description: 单 fragment 展开次数预算 }
+
+    ApiSecGraphQLFieldWeight:
+      type: object
+      description: 字段级权重覆盖（base 与列表批准上界；0 = 用默认）
+      properties:
+        weight: { type: integer, format: int64, minimum: 0 }
+        list_bound: { type: integer, format: int64, minimum: 0 }
+
+    ApiSecGraphQLWeights:
+      type: object
+      description: 权重三层覆盖（Type.field > *.field > 默认/内省特判；Schema 缺失全走默认）
+      properties:
+        default_field_weight: { type: integer, format: int64, minimum: 0, description: 默认字段基价（0→1） }
+        default_list_bound: { type: integer, format: int64, minimum: 0, description: 默认列表批准上界（0→100） }
+        introspection_weight: { type: integer, format: int64, minimum: 0, description: 内省字段特判权重（0→50） }
+        fields:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/ApiSecGraphQLFieldWeight' }
+          description: 字段路径覆盖（键形如 Query.users 或 *.field，≤128 字符，≤4096 条）
+
+    ApiSecGraphQLBudget:
+      type: object
+      description: 单请求与时间窗预算（0 值走引擎默认：5000/60s/100000/匿名20000）
+      properties:
+        per_request_budget: { type: integer, format: int64, minimum: 0, description: 单请求结构预算 }
+        window_seconds: { type: integer, format: int64, minimum: 0, description: 时间窗长度（秒） }
+        window_budget: { type: integer, format: int64, minimum: 0, description: 主体/租户窗口预算 }
+        anonymous_budget: { type: integer, format: int64, minimum: 0, description: 匿名独立桶预算 }
+
+    ApiSecGraphQLPolicy:
+      type: object
+      description: GraphQL 成本预算策略（与发布 payload 同构；enabled=false 即关闭）
+      properties:
+        enabled: { type: boolean }
+        limits: { $ref: '#/components/schemas/ApiSecGraphQLLimits' }
+        weights: { $ref: '#/components/schemas/ApiSecGraphQLWeights' }
+        budget: { $ref: '#/components/schemas/ApiSecGraphQLBudget' }
+        trusted_doc_digests:
+          type: array
+          maxItems: 1024
+          items: { type: string, pattern: '^[0-9a-f]{32}$' }
+          description: 可信文档摘要白名单（gqlast.DigestDocument 规范化 sha256 前 16 字节 hex；APQ 摘要不自动可信）
+
+    ApiSecGraphQLPolicyView:
+      type: object
+      description: 策略视图（无策略行时 enabled=false、version=0 的默认视图，非 404）
+      allOf:
+        - $ref: '#/components/schemas/ApiSecGraphQLPolicy'
+        - type: object
+          properties:
+            application_id: { type: string, format: uuid }
+            version: { type: integer, description: 单调版本（PUT +1） }
+            updated_at: { type: string }
+            updated_by: { type: string }
+
+    # ---------- 权威关系接入（apiauthzauthority；NG-AZ-01） ----------
+    ApiSecAuthzAuthorityScopes:
+      type: object
+      description: 来源范围授权（空数组 = 不限该维度；校验链第 2 步白名单）
+      properties:
+        tenant_domains:
+          type: array
+          items: { type: string, maxLength: 128 }
+        object_types:
+          type: array
+          items: { type: string, maxLength: 128 }
+
+    ApiSecAuthzAuthorityKey:
+      type: object
+      description: 来源验签公钥（Ed25519 32 字节 hex；三把钥匙不混用；RETIRED 键仅轮换窗口内验签）
+      properties:
+        key_id: { type: string, maxLength: 64 }
+        public_key_hex: { type: string, pattern: '^[0-9a-f]{64}$' }
+        status: { type: string, enum: [ACTIVE, RETIRED] }
+        retired_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    ApiSecAuthzAuthoritySource:
+      type: object
+      description: 权威关系来源
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, maxLength: 128 }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        scopes: { $ref: '#/components/schemas/ApiSecAuthzAuthorityScopes' }
+        max_event_age_seconds: { type: integer, format: int64, nullable: true, description: 可空=不限（仅轮换窗口与陈旧判定用默认 24h） }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer, description: 乐观锁版本（PATCH 须回传） }
+
+    ApiSecAuthzAuthorityDetail:
+      allOf:
+        - $ref: '#/components/schemas/ApiSecAuthzAuthoritySource'
+        - type: object
+          properties:
+            keys:
+              type: array
+              items: { $ref: '#/components/schemas/ApiSecAuthzAuthorityKey' }
+
+    ApiSecAuthzAuthorityCreateRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 128 }
+        scopes: { $ref: '#/components/schemas/ApiSecAuthzAuthorityScopes' }
+        max_event_age_seconds: { type: integer, format: int64, nullable: true }
+        keys:
+          type: array
+          maxItems: 16
+          items:
+            type: object
+            required: [key_id, public_key_hex]
+            properties:
+              key_id: { type: string, maxLength: 64 }
+              public_key_hex: { type: string, pattern: '^[0-9a-f]{64}$' }
+
+    ApiSecAuthzAuthorityPatchRequest:
+      type: object
+      required: [version]
+      properties:
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        scopes: { $ref: '#/components/schemas/ApiSecAuthzAuthorityScopes' }
+        max_event_age_seconds: { type: integer, format: int64, nullable: true }
+        add_keys:
+          type: array
+          maxItems: 16
+          items:
+            type: object
+            required: [key_id, public_key_hex]
+            properties:
+              key_id: { type: string, maxLength: 64 }
+              public_key_hex: { type: string, pattern: '^[0-9a-f]{64}$' }
+        retire_keys:
+          type: array
+          items: { type: string, maxLength: 64 }
+        version: { type: integer }
+
+    ApiSecAuthzAuthorityEvent:
+      type: object
+      description: 权威变更事件（source_signature 为对其余字段规范化字节（键序字典序紧凑 JSON）的 Ed25519 签名 hex）
+      required: [source_id, event_id, key_id, sequence, object_type, tenant_domain, principal_ref, object_ref, relation, change_type, valid_from, issued_at, source_signature]
+      properties:
+        source_id: { type: string }
+        event_id: { type: string, maxLength: 128 }
+        key_id: { type: string, maxLength: 64 }
+        sequence: { type: integer, format: int64, minimum: 1 }
+        object_type: { type: string, maxLength: 128 }
+        tenant_domain: { type: string, maxLength: 128 }
+        principal_ref: { type: string, maxLength: 128, description: HMAC 域隔离主体引用（非明文身份） }
+        object_ref: { type: string, maxLength: 160, description: "objref: 前缀 HMAC 引用形态" }
+        relation: { type: string, enum: [OWNER], description: 首批唯一排他关系词（共享/委托/组继承不支持拒收） }
+        change_type: { type: string, enum: [GRANT, REVOKE] }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time, description: 可空=不限（必须晚于 valid_from） }
+        issued_at: { type: string, format: date-time }
+        source_signature: { type: string, pattern: '^[0-9a-f]{128}$' }
+
+    ApiSecAuthzAuthorityImportRequest:
+      type: object
+      required: [batch_id, source_id, mode, key_id, items, batch_signature]
+      properties:
+        batch_id: { type: string, maxLength: 64 }
+        source_id: { type: string, description: 须与路径来源一致 }
+        mode: { type: string, enum: [snapshot, delta] }
+        key_id: { type: string, maxLength: 64, description: 批次签名验签公钥 }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items: { $ref: '#/components/schemas/ApiSecAuthzAuthorityEvent' }
+        batch_signature: { type: string, pattern: '^[0-9a-f]{128}$', description: 对批次规范化字节的 Ed25519 签名 hex }
+
+    ApiSecAuthzAuthorityBatchCounts:
+      type: object
+      properties:
+        applied: { type: integer }
+        skipped_duplicate: { type: integer, description: event_id 已消费跳过计数 }
+        skipped_stale: { type: integer }
+        grants: { type: integer }
+        revokes: { type: integer }
+        conflicts: { type: integer, description: 冲突拒绝的 GRANT 数（不落关系行只记冲突） }
+
+    ApiSecAuthzAuthorityBatch:
+      type: object
+      description: 导入批次记录（REJECTED 批次同样留痕）
+      properties:
+        id: { type: string, format: uuid }
+        source_id: { type: string, format: uuid }
+        mode: { type: string, enum: [snapshot, delta] }
+        status: { type: string, enum: [APPLIED, REJECTED] }
+        counts: { $ref: '#/components/schemas/ApiSecAuthzAuthorityBatchCounts' }
+        error: { type: string, description: 拒绝原因（校验链步骤 + 逐条明细） }
+        created_by: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    ApiSecAuthzAuthorityWatermark:
+      type: object
+      properties:
+        last_sequence: { type: integer, format: int64 }
+        last_event_id: { type: string }
+        revocation_watermark: { type: integer, format: int64, description: 单调不下降 }
+        gap_from: { type: integer, format: int64, nullable: true, description: 非空即 AUTHZ_SOURCE_GAP（补齐自动消除） }
+        updated_at: { type: string, format: date-time }
+
+    ApiSecAuthzAuthorityConflict:
+      type: object
+      description: 冲突状态（同对象两个不同 principal 的有效 OWNER；不按最后到达者覆盖）
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        object_type: { type: string }
+        tenant_domain: { type: string }
+        object_ref: { type: string }
+        principals:
+          type: array
+          items: { type: string }
+        status: { type: string, enum: [OPEN, RESOLVED] }
+        first_seen: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiSecAuthzAuthorityStatus:
+      type: object
+      properties:
+        source: { $ref: '#/components/schemas/ApiSecAuthzAuthoritySource' }
+        watermark: { $ref: '#/components/schemas/ApiSecAuthzAuthorityWatermark' }
+        gap_status: { type: string, enum: [NO_DATA, OK, AUTHZ_SOURCE_GAP] }
+        conflicts:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecAuthzAuthorityConflict' }
+        batches:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecAuthzAuthorityBatch' }
+
+    # ---------- 节点授权 ACK（NG-AZ-02，apiauthzacks） ----------
+    ApiSecAuthzVectorWatermark:
+      type: object
+      description: >-
+        向量撤销水位（NG-AZ-02 §1.1）：管理面撤销水位是向量而非标量（各权威来源
+        sequence 编号空间互相独立）。比较语义：A≥B ⇔ A.manual_seq ≥ B.manual_seq
+        且 A.sources 对 B.sources 的每个键都有不小于的值（缺失键视为 0）。
+      properties:
+        manual_seq: { type: integer, format: int64, description: 管理面手工撤销通道单调序号（api_authz_manual_revocation_seq 单行） }
+        sources:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+          description: 各权威来源 revocation_watermark 逐来源快照（键为来源 UUID 字符串）
+    ApiSecAuthzNodeAck:
+      type: object
+      description: 单节点授权 ACK 视图行（api_gateway_nodes LEFT JOIN api_node_authz_acks + ack_state 派生）
+      properties:
+        node_name: { type: string, description: 网关节点标识 }
+        status: { type: string, enum: [ACTIVE, STALE, SILENT], description: 节点活性（api_gateway_nodes） }
+        authz_policy_version: { type: string, description: 授权快照策略版本戳（区别于全局策略版本）；空串 = 未上报 }
+        authz_watermark:
+          $ref: '#/components/schemas/ApiSecAuthzVectorWatermark'
+          nullable: true
+          description: 节点当前应用授权快照的向量水位；null = 未上报/未 ACK
+        authz_applied_at: { type: string, format: date-time, nullable: true, description: 节点应用该授权快照的时刻；null = 未应用过 }
+        last_ack_at: { type: string, format: date-time, nullable: true, description: 管理面最近收拍时刻（非节点自报时间）；null = 从未 ACK }
+        staleness_seconds: { type: integer, format: int64, nullable: true, description: 视图生成时刻 − authz_applied_at（可为负：节点时钟超前）；null = 未应用过授权快照（不参与最大陈旧窗口） }
+        lease_seconds: { type: integer, format: int64, nullable: true, description: 授权租约秒数；null = 未配置租约（不启用租约约束，无过期一说） }
+        ack_state:
+          type: string
+          enum: [FRESH, STALE_WITHIN_LEASE, STALE_EXPIRED, NEVER_ACKED, CLOCK_SKEW]
+          description: >-
+            五态派生（优先级自上而下）：NEVER_ACKED（无 ACK 行）→
+            CLOCK_SKEW（|时钟漂移|>上限，默认 60s，authz.clock_skew_max_seconds
+            覆盖夹紧 10~300s）→ STALE_EXPIRED（staleness>lease）→
+            STALE_WITHIN_LEASE（staleness≤lease 或无租约但水位落后管理面）→
+            FRESH（水位≥管理面向量水位且 staleness≤lease）
+    ApiSecAuthzNodeAckView:
+      type: object
+      description: 全节点授权 ACK 视图（node-acks 出参；统一信封 data 载荷）
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecAuthzNodeAck' }
+        max_staleness_seconds: { type: integer, format: int64, nullable: true, description: 全节点最大陈旧窗口（参与节点 staleness_seconds 最大值）；null = 无参与节点（均从未应用授权快照），不伪造 0 }
+        management_watermark: { $ref: '#/components/schemas/ApiSecAuthzVectorWatermark' }
+        generated_at: { type: string, format: date-time, description: 视图生成时刻（staleness 计算基准，管理面时钟） }

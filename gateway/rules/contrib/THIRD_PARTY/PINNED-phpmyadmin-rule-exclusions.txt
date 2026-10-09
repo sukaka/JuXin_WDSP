@@ -1,0 +1,4 @@
+source: https://github.com/coreruleset/phpmyadmin-rule-exclusions-plugin
+commit: 2057b42d8db2204838de15f80f69a3e03b2dbd3f
+date: 2026-10-02
+license: Apache-2.0

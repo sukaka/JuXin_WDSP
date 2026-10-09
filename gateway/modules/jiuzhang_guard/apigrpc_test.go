@@ -106,7 +106,7 @@ func TestServeNext_GRPCMalformedFrameBlocks(t *testing.T) {
 // 事件带帧观测（计数/体量不落内容）与 protocol/proto 标注。
 func TestServeNext_GRPCHealthyPassthrough(t *testing.T) {
 	g, logPath := newAPITestGuard(t, "OBSERVE", nil)
-	g.APIGRPCAllowCompression = true
+	g.APIGRPCAllowCompression = boolPtr(true)
 
 	body := append(grpcE2EFrame(false, []byte{0x0a, 0x01}), grpcE2EFrame(true, []byte{1})...)
 	var gotBody []byte

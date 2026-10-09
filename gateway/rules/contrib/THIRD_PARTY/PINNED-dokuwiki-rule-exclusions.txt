@@ -1,0 +1,4 @@
+source: https://github.com/coreruleset/dokuwiki-rule-exclusions-plugin
+commit: 094c5c87f049789e1228244485acb824cdafe1d1
+date: 2026-10-02
+license: Apache-2.0

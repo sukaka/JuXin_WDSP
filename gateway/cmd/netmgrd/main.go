@@ -36,15 +36,19 @@ func main() {
 
 func run() error {
 	var (
-		configPath = flag.String("config", netmgrd.DefaultConfigPath, "期望配置文件路径（network.json）")
-		statusPath = flag.String("status", netmgrd.DefaultStatusPath, "状态回写路径（network-status.json）")
-		interval   = flag.Int("interval", int(netmgrd.DefaultPollInterval/time.Second), "轮询周期（秒，daemon 模式）")
-		timeout    = flag.Int("timeout", int(netmgrd.DefaultCmdTimeout/time.Second), "单个 ip/sysctl 动作超时（秒）")
-		once       = flag.Bool("once", false, "执行一次后退出（lab/运维验证）")
-		dryRun     = flag.Bool("dry-run", false, "只打印将执行的变更命令，不执行、不写 status")
-		nodeName   = flag.String("node", os.Getenv("NODE_NAME"), "诊断请求认领节点名（缺省空=认领全部节点；也可用 NODE_NAME 环境变量）")
+		configPath  = flag.String("config", netmgrd.DefaultConfigPath, "期望配置文件路径（network.json）")
+		statusPath  = flag.String("status", netmgrd.DefaultStatusPath, "状态回写路径（network-status.json）")
+		interval    = flag.Int("interval", int(netmgrd.DefaultPollInterval/time.Second), "轮询周期（秒，daemon 模式）")
+		timeout     = flag.Int("timeout", int(netmgrd.DefaultCmdTimeout/time.Second), "单个 ip/sysctl 动作超时（秒）")
+		once        = flag.Bool("once", false, "执行一次后退出（lab/运维验证）")
+		dryRun      = flag.Bool("dry-run", false, "只打印将执行的变更命令，不执行、不写 status")
+		nodeName    = flag.String("node", os.Getenv("NODE_NAME"), "诊断请求认领节点名（缺省空=认领全部节点；也可用 NODE_NAME 环境变量）")
+		healthcheck = flag.Bool("healthcheck", false, "通过本地 Unix Socket 只读检查 daemon 就绪状态，不执行网络变更")
 	)
 	flag.Parse()
+	if *healthcheck {
+		return netmgrd.ProbeHealth(context.Background(), netmgrd.DefaultHealthSocket)
+	}
 
 	runner := netmgrd.ExecRunner{Timeout: time.Duration(*timeout) * time.Second}
 
@@ -101,6 +105,11 @@ func run() error {
 	sup := netmgrd.NewSupervisor(*configPath, *statusPath,
 		time.Duration(*interval)*time.Second, runner)
 	sup.Diag.NodeName = *nodeName
+	healthServer, err := sup.StartHealthServer(netmgrd.DefaultHealthSocket)
+	if err != nil {
+		return err
+	}
+	defer healthServer.Close()
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)

@@ -268,18 +268,20 @@ func (a *Agent) Run(ctx context.Context) error {
 	a.startTap()    // G3：Envoy tap 适配器（默认关闭；Fail-Open）
 
 	ctrl := control.New(control.Deps{
-		Client:           a.client,
-		Log:              a.log,
-		AgentID:          a.cfg.AgentID,
-		InitialInterval:  a.cfg.HeartbeatIntervalSeconds,
-		StatusFn:         a.status,
-		MetricsFn:        a.metricsSnapshot,
-		AppliedVersionFn: a.appliedVersion,
-		ApplyConfigFn:    a.applyServerConfig,
-		SetEnabledFn:     a.setEnabled,
-		OnConnectionFn:   a.onConnection,
-		CheckRotateFn:    a.checkCertRotation,
-		OnCapabilitiesFn: a.applyCapabilities,
+		Client:                    a.client,
+		Log:                       a.log,
+		AgentID:                   a.cfg.AgentID,
+		InitialInterval:           a.cfg.HeartbeatIntervalSeconds,
+		StatusFn:                  a.status,
+		MetricsFn:                 a.metricsSnapshot,
+		AppliedVersionFn:          a.appliedVersion,
+		PendingConfigAckVersionFn: a.pendingConfigAckVersion,
+		MarkConfigAckedFn:         a.markConfigAcked,
+		ApplyConfigFn:             a.applyServerConfig,
+		SetEnabledFn:              a.setEnabled,
+		OnConnectionFn:            a.onConnection,
+		CheckRotateFn:             a.checkCertRotation,
+		OnCapabilitiesFn:          a.applyCapabilities,
 	})
 
 	workers := 5
@@ -328,14 +330,29 @@ func (a *Agent) shutdown() {
 // overrides 为 Phase 4 定向采集规则（契约 §2.4），随策略一并持久化快照。
 func (a *Agent) applyServerConfig(policy *config.Policy, overrides []config.Override, version int64) error {
 	a.cfgMu.Lock()
+
+	// 配置版本只能在完整快照成功原子落盘后推进。否则控制循环会认为新配置
+	// 已应用，导致该版本既不重拉也不重试 ACK。
+	previousPolicy := a.cfg.Policy
+	previousOverrides := a.cfg.Overrides
+	previousVersion := a.cfg.AppliedConfigVersion
+	previousPendingAck := a.cfg.PendingConfigAckVersion
 	a.cfg.Policy = policy
 	a.cfg.Overrides = overrides
 	a.cfg.AppliedConfigVersion = version
+	a.cfg.PendingConfigAckVersion = version
 	err := a.cfg.Save(a.cfgPath)
-	a.cfgMu.Unlock()
 	if err != nil {
+		a.cfg.Policy = previousPolicy
+		a.cfg.Overrides = previousOverrides
+		a.cfg.AppliedConfigVersion = previousVersion
+		a.cfg.PendingConfigAckVersion = previousPendingAck
+		a.cfgMu.Unlock()
 		return fmt.Errorf("配置持久化失败: %w", err)
 	}
+	// 必须在落盘后才使运行时策略生效；这里释放锁前配置快照已经一致。
+	// applyPolicy 不读取 cfgMu 保护的数据，避免在此持锁执行抓包热更。
+	a.cfgMu.Unlock()
 	a.applyPolicy(policy)
 	return nil
 }
@@ -345,6 +362,29 @@ func (a *Agent) appliedVersion() int64 {
 	a.cfgMu.Lock()
 	defer a.cfgMu.Unlock()
 	return a.cfg.AppliedConfigVersion
+}
+
+// pendingConfigAckVersion 返回已应用但尚未被控制面确认的配置版本。
+func (a *Agent) pendingConfigAckVersion() int64 {
+	a.cfgMu.Lock()
+	defer a.cfgMu.Unlock()
+	return a.cfg.PendingConfigAckVersion
+}
+
+// markConfigAcked 在控制面成功接收 APPLIED ACK 后清除本地待确认标记。
+func (a *Agent) markConfigAcked(version int64) error {
+	a.cfgMu.Lock()
+	defer a.cfgMu.Unlock()
+	if a.cfg.PendingConfigAckVersion != version {
+		return nil
+	}
+	previousPendingAck := a.cfg.PendingConfigAckVersion
+	a.cfg.PendingConfigAckVersion = 0
+	if err := a.cfg.Save(a.cfgPath); err != nil {
+		a.cfg.PendingConfigAckVersion = previousPendingAck
+		return fmt.Errorf("配置 ACK 状态持久化失败: %w", err)
+	}
+	return nil
 }
 
 // replayShareMbps 补传公平预算折算的带宽份额（P1-03 §5.5）：

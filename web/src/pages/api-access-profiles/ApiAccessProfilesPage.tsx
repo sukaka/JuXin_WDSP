@@ -1,18 +1,25 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Descriptions, Drawer, Input, Select, Space, Tabs, Tag, Tooltip, Typography } from 'antd'
+import { Button, Card, Descriptions, Drawer, Input, Select, Space, Tabs, Tag, Tooltip, Typography } from 'antd'
 import { QuestionCircleOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { apiEndpointsApi } from '../../api/apiAssets'
+import { apiAuthzApi, type ApiAuthzEnforcementReadinessItem } from '../../api/apiAuthz'
 import {
   apiBehaviorProfilesApi,
   apiObjectModelsApi,
   type ApiBehaviorProfile,
   type ApiObjectModel,
 } from '../../api/apiSecurity'
+import { ReadinessBadge } from '../../components/AuthzEnforcement'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
+import StatusTag from '../../components/StatusTag'
+import { useAuthStore } from '../../stores/auth'
+import { ENFORCEMENT_VALUE_META } from '../../utils/authzEnforcement'
 import { formatDateTime } from '../../utils/format'
+import { hasPermission } from '../../utils/permission'
+import ProtectWizard from '../api-authz/ProtectWizard'
 
 /** 标识形态色阶与中文名（api_object_models.identifier_type 列口径） */
 const IDENTIFIER_TYPE_META: Record<string, { color: string; label: string }> = {
@@ -254,12 +261,15 @@ function BehaviorProfilesTab({ applicationId }: { applicationId?: string }) {
 
 /** 对象维度·对象模型（api_object_models：endpoint × 对象段，BOLA 实体画像） */
 function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
+  const permissions = useAuthStore((s) => s.user?.permissions)
+  const canManage = hasPermission(permissions, 'api_authorization.manage')
   const [segment, setSegment] = useState('')
   const [appliedSegment, setAppliedSegment] = useState('')
   const [identifierType, setIdentifierType] = useState<string>()
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selected, setSelected] = useState<ApiObjectModel | null>(null)
+  const [wizardPreset, setWizardPreset] = useState<{ endpoint_id: string; object_segment: string } | null>(null)
 
   // 站点过滤变化时回第一页（避免旧页码在新过滤结果中越界）
   const [prevApp, setPrevApp] = useState(applicationId)
@@ -279,6 +289,17 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
         application_id: applicationId || undefined,
       }),
   })
+  // NG-AZ-04 §1.1：对象模型表格 readiness 徽章列（服务端派生；未选站点时无资格数据，置「—」）
+  const readinessQuery = useQuery({
+    queryKey: ['api-authz', 'enforcement-readiness', applicationId],
+    queryFn: () => apiAuthzApi.listEnforcementReadiness({ application_id: applicationId! }),
+    enabled: Boolean(applicationId),
+  })
+  const readinessMap = useMemo(() => {
+    const map = new Map<string, ApiAuthzEnforcementReadinessItem>()
+    for (const item of readinessQuery.data?.items ?? []) map.set(`${item.endpoint_id}:${item.object_segment}`, item)
+    return map
+  }, [readinessQuery.data])
 
   const columns: ColumnsType<ApiObjectModel> = [
     {
@@ -299,6 +320,19 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
       dataIndex: 'object_segment',
       ellipsis: true,
       render: (v: string) => <Typography.Text code>{v}</Typography.Text>,
+    },
+    {
+      title: '能否实断',
+      key: 'readiness',
+      width: 160,
+      render: (_, r) => {
+        const item = readinessMap.get(`${r.endpoint_id}:${r.object_segment}`)
+        return item ? (
+          <ReadinessBadge readiness={item.readiness} reasons={item.reasons} />
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        )
+      },
     },
     {
       title: '标识形态',
@@ -384,43 +418,104 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
         destroyOnHidden
       >
         {selected ? (
-          <Descriptions
-            size="small"
-            column={2}
-            bordered
-            items={[
-              { key: 'ep', label: 'API', span: 2, children: <EndpointCell row={selected} /> },
-              { key: 'site', label: '站点', span: 2, children: <SiteCell row={selected} /> },
-              { key: 'seg', label: '对象段', children: <Typography.Text code>{selected.object_segment}</Typography.Text> },
-              { key: 'type', label: '标识形态', children: identifierTypeTag(selected.identifier_type) },
-              { key: 'count', label: '样本数', children: selected.sample_count },
-              { key: 'updated', label: '行更新时间', children: formatDateTime(selected.updated_at) },
-              { key: 'first', label: '首次观测', children: formatDateTime(selected.first_seen) },
-              { key: 'last', label: '末次观测', children: formatDateTime(selected.last_seen) },
-              {
-                key: 'hash',
-                label: '示例哈希',
-                span: 2,
-                children: selected.example_hash ? (
-                  <Typography.Text code copyable={{ text: selected.example_hash }}>{selected.example_hash}</Typography.Text>
-                ) : (
-                  <Typography.Text type="secondary">—</Typography.Text>
-                ),
-              },
-              {
-                key: 'note',
-                label: '脱敏说明',
-                span: 2,
-                children: (
-                  <Typography.Text type="secondary">
-                    观测原值不落库，仅保留 SHA-256 示例哈希；identifier_type 为启发式形态识别（只认形态不认语义）。
-                  </Typography.Text>
-                ),
-              },
-            ]}
-          />
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Descriptions
+              size="small"
+              column={2}
+              bordered
+              items={[
+                { key: 'ep', label: 'API', span: 2, children: <EndpointCell row={selected} /> },
+                { key: 'site', label: '站点', span: 2, children: <SiteCell row={selected} /> },
+                { key: 'seg', label: '对象段', children: <Typography.Text code>{selected.object_segment}</Typography.Text> },
+                { key: 'type', label: '标识形态', children: identifierTypeTag(selected.identifier_type) },
+                { key: 'count', label: '样本数', children: selected.sample_count },
+                { key: 'updated', label: '行更新时间', children: formatDateTime(selected.updated_at) },
+                { key: 'first', label: '首次观测', children: formatDateTime(selected.first_seen) },
+                { key: 'last', label: '末次观测', children: formatDateTime(selected.last_seen) },
+                {
+                  key: 'hash',
+                  label: '示例哈希',
+                  span: 2,
+                  children: selected.example_hash ? (
+                    <Typography.Text code copyable={{ text: selected.example_hash }}>{selected.example_hash}</Typography.Text>
+                  ) : (
+                    <Typography.Text type="secondary">—</Typography.Text>
+                  ),
+                },
+                {
+                  key: 'note',
+                  label: '脱敏说明',
+                  span: 2,
+                  children: (
+                    <Typography.Text type="secondary">
+                      观测原值不落库，仅保留 SHA-256 示例哈希；identifier_type 为启发式形态识别（只认形态不认语义）。
+                    </Typography.Text>
+                  ),
+                },
+              ]}
+            />
+            <div>
+              <Space size={8} align="center" style={{ marginBottom: 8 }}>
+                <Typography.Text strong>实断资格（NG-AZ-02/03/04）</Typography.Text>
+                <ReadinessBadge
+                  readiness={readinessMap.get(`${selected.endpoint_id}:${selected.object_segment}`)?.readiness}
+                  reasons={readinessMap.get(`${selected.endpoint_id}:${selected.object_segment}`)?.reasons}
+                />
+              </Space>
+              <Descriptions
+                size="small"
+                column={2}
+                bordered
+                items={[
+                  {
+                    key: 'enf',
+                    label: '当前 enforcement',
+                    children: <StatusTag value={selected.enforcement || 'OBSERVE'} map={ENFORCEMENT_VALUE_META} />,
+                  },
+                  {
+                    key: 'pub',
+                    label: '发布资格',
+                    children:
+                      selected.publishable === undefined ? '—' : selected.publishable ? <Tag color="green">publishable</Tag> : <Tag>未声明</Tag>,
+                  },
+                  { key: 'rel', label: '要求关系', children: selected.required_relation || '—' },
+                  {
+                    key: 'excl',
+                    label: '排他所有权',
+                    children:
+                      selected.owner_exclusive === undefined ? '—' : selected.owner_exclusive ? <Tag color="green">是</Tag> : <Tag>否</Tag>,
+                  },
+                  { key: 'lease', label: '租约过期策略', children: selected.on_lease_expired || 'strict（缺省）' },
+                  { key: 'unk', label: 'UNKNOWN 处理', children: selected.on_unknown || 'ALLOW_UNKNOWN（缺省）' },
+                  { key: 'owner', label: '业务负责人', children: selected.enforcement_owner || '—' },
+                  { key: 'evid', label: '证据来源', children: selected.evidence_source || '—' },
+                ]}
+              />
+              {canManage && selected.enforcement !== 'PROTECT' ? (
+                <Button
+                  type="primary"
+                  danger
+                  style={{ marginTop: 12 }}
+                  onClick={() => setWizardPreset({ endpoint_id: selected.endpoint_id, object_segment: selected.object_segment })}
+                >
+                  切换 PROTECT
+                </Button>
+              ) : null}
+            </div>
+          </Space>
         ) : null}
       </Drawer>
+      <ProtectWizard
+        open={wizardPreset !== null}
+        onClose={() => setWizardPreset(null)}
+        applicationId={applicationId}
+        preset={wizardPreset ?? undefined}
+        onSwitched={() => {
+          void listQuery.refetch()
+          void readinessQuery.refetch()
+          setSelected(null)
+        }}
+      />
     </>
   )
 }

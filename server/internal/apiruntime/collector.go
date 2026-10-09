@@ -39,6 +39,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/apillm"
+	"github.com/jiuzhang-waf/server/internal/strongflow"
 )
 
 // PrimaryEvent 待入库主事件：网关统一主事件 + 身份维度字段 + 响应状态码 + 审计维度字段。
@@ -155,6 +156,28 @@ type Record struct {
 	// 仅网关处置事实已确定（终止/源站完成/错误）的事件携带；
 	// 入库落 api_runtime_events.final_decision（迁移 000131）。
 	FinalDecision json.RawMessage `json:"final_decision"`
+	// StrongFlow 强流程动作数组（NG-FLOW-02；`strong_flow` JSON 数组逐键冻结——
+	// 一请求可携带多动作（首步 INSTANCE_NEW+RESERVE 同拍）；网关 flowguard 执行侧
+	// 发射，server 落 api_strong_flow_instances/step_events（迁移 000177）；
+	// 旧版网关事件缺该键时为 nil，采集全程容忍缺失。
+	// 实例标识线契约：元素 InstanceID 字段承载实例键（sfref: 前缀域隔离 HMAC）；
+	// 归属字段（application_id/tenant_ref/principal_ref/request_id）由采集侧从
+	// 宿主主事件注入（宿主行已有归属与请求 ID，事件数组元素不重复携带）。
+	StrongFlow []*strongflow.StrongFlowEvent `json:"strong_flow"`
+	// 以下授权 ACK 字段为 NG-AZ-02 §1.3 心跳扩展（仅 heartbeat=true 的合成记录携带；
+	// JSON 名与网关 apievents.Record 冻结一致，不得改名）。空载/未启用授权快照的
+	// 节点与旧版网关不携带这些键——json 缺省解析为零值，采集透传全程容忍，
+	// 零值即「未携带」（v1 节点 ack_state=NEVER_ACKED 如实呈现，不伪造 ACK 行）。
+	// AuthzPolicyVersion 授权快照策略版本戳（区别于全局 policy_version）。
+	AuthzPolicyVersion string `json:"authz_policy_version"`
+	// AuthzWatermark 节点当前应用授权快照的向量撤销水位（§1.1 对象形状）。
+	AuthzWatermark *VectorWatermark `json:"authz_watermark"`
+	// AuthzSnapshotExpiresAt 授权快照过期时刻。
+	AuthzSnapshotExpiresAt *time.Time `json:"authz_snapshot_expires_at"`
+	// AuthzLeaseSeconds 授权租约秒数（per-app 取最小者合并上报）。
+	AuthzLeaseSeconds *int `json:"authz_lease_seconds"`
+	// AuthzAppliedAt 节点应用该授权快照的时刻（陈旧窗口与漂移对账基准）。
+	AuthzAppliedAt *time.Time `json:"authz_applied_at"`
 }
 
 // notable 是否需要写入主事件表（有检测明细或动作非 ALLOW；纯通行的 API 请求只喂发现）。
@@ -162,13 +185,59 @@ func (r *Record) notable() bool {
 	return r.AuthzDecision != nil || len(r.Details) > 0 || (r.FinalAction != "" && r.FinalAction != "ALLOW")
 }
 
+// VectorWatermark 向量撤销水位（NG-AZ-02 §1.1 冻结契约）：
+// 管理面撤销水位是向量而非标量——各权威来源 sequence 编号空间互相独立，
+// 手工撤销通道（manual_seq）与权威来源（sources 逐来源 revocation_watermark）
+// 分量比较，混用即伪造单调性。JSON 形状 {"manual_seq":N,"sources":{"<uuid>":M}}。
+type VectorWatermark struct {
+	ManualSeq int64            `json:"manual_seq"`
+	Sources   map[string]int64 `json:"sources"`
+}
+
+// AtLeast 分量比较（§1.1）：w ≥ other ⇔ manual_seq 不小于 且 sources 对 other
+// 的每个键都有不小于的值（缺失键视为 0）。任何分量更小即「低于」。
+func (w VectorWatermark) AtLeast(other VectorWatermark) bool {
+	if w.ManualSeq < other.ManualSeq {
+		return false
+	}
+	for k, v := range other.Sources {
+		if w.Sources[k] < v {
+			return false
+		}
+	}
+	return true
+}
+
+// StrongFlowRecorder 强流程事件消费接口（NG-FLOW-02；事件形状唯一事实源为
+// strongflow.StrongFlowEvent（字段冻结，改名即破线契约）；StrongFlowEventStore
+// 实现。nil 时强流程事件仅计数不消费——采集链路不因此报错）。
+type StrongFlowRecorder interface {
+	RecordStrongFlow(ctx context.Context, ev *strongflow.StrongFlowEvent) error
+}
+
 // Heartbeat 网关节点心跳（W17-HB，任务书 §201 活性+版本上报升级）：
 // 网关周期写入 API 事件日志的合成记录（heartbeat=true），仅携带节点活性与版本维度。
+// NG-AZ-02 §1.3 起追加授权 ACK 扩展字段（可选；空载/未启用授权快照的节点不携带）。
 type Heartbeat struct {
 	RequestID     string    // 心跳记录请求 ID（网关按启动时间+序号生成，全局唯一）
 	NodeName      string    // 网关节点标识（事件 gateway_node_id）
-	OccurredAt    time.Time // 心跳产生时间（节点活性判定基准）
+	OccurredAt    time.Time // 心跳产生时间（节点活性判定基准；漂移对账中即节点时钟读数）
 	PolicyVersion string    // 节点当前策略版本戳（空串 = 未下发）
+	// 授权 ACK 扩展（NG-AZ-02；指针/空串零值 = 未携带，语义无猜测补全）：
+	AuthzPolicyVersion     string           // 授权快照策略版本戳
+	AuthzWatermark         *VectorWatermark // 节点当前应用快照的向量水位
+	AuthzSnapshotExpiresAt *time.Time       // 授权快照过期时刻
+	AuthzLeaseSeconds      *int             // 授权租约秒数
+	AuthzAppliedAt         *time.Time       // 节点应用该快照的时刻
+}
+
+// HasAuthzAck 心跳是否携带授权 ACK 字段（任一非零即视为携带——网关约定启用
+// 授权快照后整组发射；单字段到达也如实落库）。false 时 RecordHeartbeat 不写
+// api_node_authz_acks（纯 v1 节点在 ACK 视图中如实 NEVER_ACKED）。
+func (hb Heartbeat) HasAuthzAck() bool {
+	return hb.AuthzPolicyVersion != "" || hb.AuthzWatermark != nil ||
+		hb.AuthzSnapshotExpiresAt != nil || hb.AuthzLeaseSeconds != nil ||
+		hb.AuthzAppliedAt != nil
 }
 
 // HeartbeatRecorder 心跳消费接口（server/internal/apinodes.Store 实现；
@@ -191,6 +260,7 @@ type Collector struct {
 	llmObs         apillm.ObsRecorder // nil 时跳过 LLM 观测落库
 	traffic        TrafficRecorder    // nil 时跳过流量趋势桶计数
 	heartbeats     HeartbeatRecorder  // nil 时心跳仅计数不消费
+	strongFlows    StrongFlowRecorder // nil 时强流程事件仅计数不消费
 	collectorID    string
 	logPath        string
 	checkpointPath string
@@ -273,6 +343,9 @@ func (c *Collector) SetTrafficRecorder(r TrafficRecorder) { c.traffic = r }
 
 // SetHeartbeatRecorder 设置网关心跳消费写入（应用装配时使用；未设置时心跳仅计数不消费）。
 func (c *Collector) SetHeartbeatRecorder(r HeartbeatRecorder) { c.heartbeats = r }
+
+// SetStrongFlowRecorder 设置强流程事件消费（应用装配时使用；未设置时仅计数不消费）。
+func (c *Collector) SetStrongFlowRecorder(r StrongFlowRecorder) { c.strongFlows = r }
 
 // SetFlushPolicy 设置批量/周期 flush 阈值（W20 批量化修复；非正值保持默认）。
 // batchSize：每处理 batchSize 行触发一次 flush（主事件批次 + 断点同节奏落盘）；
@@ -648,6 +721,33 @@ func (c *Collector) handleRecord(ctx context.Context, rec *Record) {
 				"collector", c.collectorID, "endpoint_key", rec.EndpointKey, "error", err)
 		}
 	}
+	// NG-FLOW-02：强流程动作数组逐条透传消费（实例推进+步骤事件幂等落库）。
+	// 归属注入（冻结契约）：事件元素只带操作事实；request_id/application_id 取宿主
+	// 主事件，可信租户/主体引用取宿主 JWT 验证指纹（脱敏形态，不落明文）。
+	// 与其他副作用同一纪律：错误仅记录日志+计数，不阻断采集主流程、断点照常前移。
+	for _, sf := range rec.StrongFlow {
+		if sf == nil {
+			continue
+		}
+		sf.RequestID = rec.RequestID
+		sf.ApplicationID = rec.ApplicationID
+		if rec.JWTVerification != nil {
+			if sf.TenantRef == "" {
+				sf.TenantRef = rec.JWTVerification.VerifiedTenantID
+			}
+			if sf.PrincipalRef == "" {
+				sf.PrincipalRef = rec.JWTVerification.VerifiedPrincipalID
+			}
+		}
+		if c.strongFlows == nil {
+			continue
+		}
+		if err := c.strongFlows.RecordStrongFlow(ctx, sf); err != nil {
+			c.failedCount++
+			slog.Error("record strong flow event failed",
+				"collector", c.collectorID, "instance_id", sf.InstanceID, "error", err)
+		}
+	}
 	if c.llmObs != nil && rec.EndpointKey != "" && rec.LLMObservation != nil {
 		if err := c.llmObs.RecordLLMObservation(ctx, apillm.ObservationInput{
 			RequestID:           rec.RequestID,
@@ -677,10 +777,15 @@ func (c *Collector) recordHeartbeat(ctx context.Context, rec *Record) {
 		return
 	}
 	if err := c.heartbeats.RecordHeartbeat(ctx, Heartbeat{
-		RequestID:     rec.RequestID,
-		NodeName:      rec.GatewayNode,
-		OccurredAt:    rec.OccurredAt,
-		PolicyVersion: rec.PolicyVersion,
+		RequestID:              rec.RequestID,
+		NodeName:               rec.GatewayNode,
+		OccurredAt:             rec.OccurredAt,
+		PolicyVersion:          rec.PolicyVersion,
+		AuthzPolicyVersion:     rec.AuthzPolicyVersion,
+		AuthzWatermark:         rec.AuthzWatermark,
+		AuthzSnapshotExpiresAt: rec.AuthzSnapshotExpiresAt,
+		AuthzLeaseSeconds:      rec.AuthzLeaseSeconds,
+		AuthzAppliedAt:         rec.AuthzAppliedAt,
 	}); err != nil {
 		slog.Error("record api node heartbeat failed",
 			"collector", c.collectorID, "gateway_node", rec.GatewayNode, "error", err)

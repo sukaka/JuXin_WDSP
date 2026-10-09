@@ -713,6 +713,16 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		return
 	}
 
+	// 节点能力发布门（NG-COV-04 §2.1）：回归门禁之后、发往节点 /load 之前评估。
+	// required_capabilities 由本次负载特性段推导；空需求免门禁（存量发布零变化），
+	// 缺能力（CAPABILITY_MISSING）/清单缺失或过期（CAPABILITY_MANIFEST_UNAVAILABLE）
+	// 该节点发布失败并展示缺口明细，不发送 /load、不得静默降级。
+	if ok, code, msg := p.evaluateCapabilityGate(ctx, guardCfg); !ok {
+		p.markVersionResult(ctx, version.ID, "FAILED")
+		p.finishTask(ctx, taskID, TaskFailed, code, msg, &version.ID)
+		return
+	}
+
 	// 阶段5：保存访问控制配置版本快照（PENDING，结果后续回填）
 	var acVersionID uuid.UUID
 	if p.guard != nil && guardCfg != nil {
@@ -1437,6 +1447,8 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.APIFormalModelVersions = nil
 	cp.APIParameterConstraints = nil
 	cp.APIKnownEndpoints = nil
+	// WDSP P1：API 准入策略随 API 动态防护门控下发，一并剥除
+	cp.APIAdmission = nil
 	cp.APIPolicyVersion = ""
 	// P0-04：API 引擎受限例外随 API 动态防护门控下发，一并剥除
 	cp.APIExceptions = nil
@@ -1468,6 +1480,16 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.APIFlowBaselines = nil
 	// 阶段8 §35：已吊销凭据清单随 API 动态防护门控下发，一并剥除
 	cp.APIRevokedCredentials = nil
+	// NG-GQL-03：GraphQL 成本预算策略随 API 动态防护门控下发，一并剥除
+	cp.APIGraphQL = nil
+	// NG-AZ-02：v2 快照元数据随 API 动态防护门控下发，一并剥除（PreviousValid 同上口径置 nil）
+	cp.APIAuthzSchema = ""
+	cp.APIAuthzRevocationWatermark = nil
+	cp.APIAuthzConflictedObjects = nil
+	cp.APIAuthzProducedAt = nil
+	cp.APIAuthzLeaseSeconds = nil
+	cp.APIAuthzClockSkewMaxSeconds = 0
+	cp.APINodeHeartbeatSeconds = 0
 	cp.APILLMAllowedModels = nil
 	cp.APIFileWatermark = nil
 	cp.APIFileSignature = nil

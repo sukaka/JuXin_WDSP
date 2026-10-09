@@ -1,0 +1,61 @@
+# NG-ID G1 批次 C 联调 overlay：第二网关节点 gateway-b（侵入最小——新增独立
+# 服务不动既有 stage5 服务定义；mcp/grpc overlay 同纪律）。
+# 用途：I03 双节点重放矩阵（Valkey 共享重放存储跨节点互认）+ 配置收敛验证。
+# 配置收敛模型：api 只向 gateway 主节点 Admin Socket 发布；gateway-b 与主节点
+# 共享 autosave 卷（stage5-gateway-config 挂 /config，--resume），配置变更后
+# 经 `docker restart jiuzhang-stage5-gateway-b` 重 resume 收敛（run-stage5.sh
+# i03 阶段内置该步骤）。Caddy 存储（实例锁）独立 /datab 卷防双实例锁冲突；
+# Admin Socket 与日志卷各自独立（admin.sock 文件名冲突与事件归属分离）。
+# 用法（仓库根目录）：
+#   docker compose --env-file .env -f deployment/docker-compose.stage5.yml \
+#     -f deployment/docker-compose.wdsp.yml -f deployment/docker-compose.stage5-mid.yml \
+#     up -d gateway-b
+name: jiuzhang-stage5
+
+services:
+  gateway-b:
+    image: jiuzhang-gateway:stage5
+    container_name: jiuzhang-stage5-gateway-b
+    restart: unless-stopped
+    environment:
+      SEC_RULE_ENGINE: On
+      GATEWAY_NODE_NAME: gateway-stage5-02
+      COVERAGE_OBSERVATIONS_ENABLED: ${COVERAGE_OBSERVATIONS_ENABLED:-1}
+      # autosave 落点：与主节点共享卷（--resume 恢复同一发布配置）
+      XDG_CONFIG_HOME: /config
+      # Caddy 存储独立（实例 ID/证书缓存/锁文件——双实例同卷会锁冲突）
+      XDG_DATA_HOME: /datab
+    command: ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--resume"]
+    ports:
+      # 宿主 18082 在本机被其他项目（deploy-frontend）占用——缺省 18083（联调实证适配）
+      - "127.0.0.1:${GATEWAY_B_PORT:-18083}:8080"
+    volumes:
+      - ../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../gateway/configs/blockpage.html:/srv/jiuzhang/blockpage.html:ro
+      - ../gateway/rules:/etc/caddy/rules:ro
+      - stage5-gateway-b-logs:/var/log/caddy
+      - stage5-gateway-b-admin:/var/run/caddy
+      - stage5-gateway-config:/config
+      - stage5-gateway-b-data:/datab
+      # 证书下发通道（与主节点同一卷，只读）
+      - stage5-gateway-certs:/etc/caddy/certs:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      testorigin:
+        condition: service_healthy
+    networks:
+      - stage5-net
+
+volumes:
+  stage5-gateway-b-logs:
+    driver: local
+  stage5-gateway-b-admin:
+    driver: local
+  stage5-gateway-b-data:
+    driver: local

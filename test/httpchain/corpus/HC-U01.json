@@ -1,0 +1,4 @@
+{"id":"HC-U01","category":"unknown","desc":"合法但罕见方法/超大正常头集合","requests":[
+  {"method":"OPTIONS","path":"/v1/items","headers":{"X-Chain-Case":"HC-U01-options"}},
+  {"method":"GET","path":"/v1/items","headers":{"X-Chain-Case":"HC-U01-bighead","X-Pad":"__PAD_4KB__"}}
+],"expect":{"note":"如实记录覆盖状态，不误判攻击；超大头按链路限额一致处置（网关与源站口径可比）"}}

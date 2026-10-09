@@ -39,8 +39,14 @@ done
 [[ $EUID -eq 0 ]] || { printf '%s\n' '请使用 sudo 运行此脚本' >&2; exit 1; }
 [[ -n "$COMPOSE_FILE" && -n "$ENV_FILE" ]] || { usage >&2; exit 2; }
 [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { printf '%s\n' '--timeout 必须是整数' >&2; exit 2; }
-for cmd in docker systemctl jq python3 curl flock install sha256sum realpath; do
-  command -v "$cmd" >/dev/null 2>&1 || { printf '缺少命令: %s\n' "$cmd" >&2; exit 1; }
+# diff/cmp 属 diffutils：被安装的 upgrade-executor.sh 运行期必需，安装期一并核查。
+for cmd in docker systemctl jq python3 curl flock install sha256sum realpath timeout diff cmp; do
+  command -v "$cmd" >/dev/null 2>&1 && continue
+  case "$cmd" in
+    diff|cmp) printf '缺少命令: %s（diffutils 包；升级执行器文件比对必需）\n' "$cmd" >&2 ;;
+    *) printf '缺少命令: %s\n' "$cmd" >&2 ;;
+  esac
+  exit 1
 done
 [[ -f "$COMPOSE_FILE" && -f "$ENV_FILE" ]] || { printf '%s\n' 'compose 或 env 文件不存在' >&2; exit 1; }
 [[ -x "$SCRIPT_DIR/upgrade-executor.sh" ]] || { printf '%s\n' 'upgrade-executor.sh 不存在或不可执行' >&2; exit 1; }

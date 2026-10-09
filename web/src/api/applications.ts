@@ -1,5 +1,6 @@
 import { request } from './client'
 import type {
+  ApiAdmissionMode,
   AppHeaderConfig,
   AppHeaderConfigResult,
   AppPathRoute,
@@ -38,6 +39,8 @@ export interface UpdateApplicationBody {
   technical_owner: string
   protection_mode: ProtectionMode
   deployment_mode?: DeploymentMode
+  /** API 准入模式（不携带则不改变现状；准入面板切换模式时随整包更新提交） */
+  api_admission_mode?: ApiAdmissionMode
   version: number
 }
 

@@ -97,6 +97,10 @@ type Record struct {
 	// AuthzDecision request-level BOLA/BFLA decision group. ObjectRef values
 	// are HMAC references produced by the gateway detector.
 	AuthzDecision *dsevents.AuthorizationDecisionGroup `json:"authz_decision,omitempty"`
+	// StrongFlow 强流程步骤动作条目（NG-FLOW-02，docs/nextgen/NG-FLOW-strong-flow.md；
+	// 冻结字段形状见 dsevents.StrongFlowAction——server 采集轨按字段名消费落
+	// api_strong_flow_step_events，不得改名）；无强流程活动为 nil，键省略零变化。
+	StrongFlow []*dsevents.StrongFlowAction `json:"strong_flow,omitempty"`
 	// FinalDecision 请求最终处置上下文（WDSP P0-04，final_decision JSON
 	// schema_version=1）：仅处置事实已确定（终止/源站完成/错误）时由 emitAPIEvent
 	// 挂载（Settled 门禁），采集端落 api_runtime_events.final_decision（迁移 000131）；
@@ -112,6 +116,18 @@ type Record struct {
 	// FormalModelVersions FORMAL 模型版本摘要数（api_formal_model_versions 下发条目数；
 	// 仅心跳记录携带——逐端点版本号由业务事件 model_version 按命中上报，心跳不落明细）。
 	FormalModelVersions int `json:"formal_model_versions,omitempty"`
+	// ---- NG-AZ-02 D6 授权 ACK 字段（仅心跳记录携带；未启用授权快照的节点键省略——
+	// 跨代理冻结 JSON 名（采集端按此消费，不得改名）----
+	// AuthzPolicyVersion 节点当前应用授权快照版本（区别于全局 api_policy_version）。
+	AuthzPolicyVersion string `json:"authz_policy_version,omitempty"`
+	// AuthzWatermark 节点当前应用快照的向量撤销水位（D1 形状）。
+	AuthzWatermark *AuthzWatermark `json:"authz_watermark,omitempty"`
+	// AuthzSnapshotExpiresAt 当前应用快照过期时刻。
+	AuthzSnapshotExpiresAt *time.Time `json:"authz_snapshot_expires_at,omitempty"`
+	// AuthzLeaseSeconds 当前应用租约秒数（0=未启用，键省略）。
+	AuthzLeaseSeconds int `json:"authz_lease_seconds,omitempty"`
+	// AuthzAppliedAt 节点应用该快照的时刻（租约陈旧窗口判定基准）。
+	AuthzAppliedAt *time.Time `json:"authz_applied_at,omitempty"`
 }
 
 // 字段长度上限（防超大输入撑爆日志）。
@@ -453,4 +469,11 @@ func (l *Logger) Close() error {
 	close(l.closeDone)
 	l.mu.Unlock()
 	return err
+}
+
+// AuthzWatermark 向量撤销水位（NG-AZ-02 D1/D6 ACK 通道冻结形状；
+// 与 gatewayconfig.RevocationWatermark / detectors.RevocationWatermark 跨仓镜像，不得改名）。
+type AuthzWatermark struct {
+	ManualSeq int64            `json:"manual_seq"`
+	Sources   map[string]int64 `json:"sources,omitempty"`
 }

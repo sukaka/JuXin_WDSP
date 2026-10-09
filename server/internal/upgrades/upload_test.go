@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -27,7 +28,79 @@ func writeTmpPackage(t *testing.T, dir, content string) (string, string) {
 	return f.Name(), hex.EncodeToString(sum[:])
 }
 
+// TestResolveUploadVersions 版本来源优先级：包内 manifest 优先，表单交叉校验，
+// 不一致报错，旧格式包须由表单提供。
+func TestResolveUploadVersions(t *testing.T) {
+	info := &packageManifestInfo{versionFrom: "2.0.0", versionTo: "2.1.0"}
+	cases := []struct {
+		name     string
+		formFrom string
+		formTo   string
+		info     *packageManifestInfo
+		wantFrom string
+		wantTo   string
+		wantErr  bool
+	}{
+		{"仅包内", "", "", info, "2.0.0", "2.1.0", false},
+		{"仅表单（旧格式包）", "2.0.0", "2.1.0", nil, "2.0.0", "2.1.0", false},
+		{"表单与包内一致", "2.0.0", "2.1.0", info, "2.0.0", "2.1.0", false},
+		{"from 不一致", "1.9.9", "2.1.0", info, "", "", true},
+		{"to 不一致", "2.0.0", "2.2.0", info, "", "", true},
+		{"均无", "", "", nil, "", "", true},
+		{"缺 to", "2.0.0", "", nil, "", "", true},
+		{"包内仅部分字段+表单补齐", "2.0.0", "2.1.0", &packageManifestInfo{versionTo: "2.1.0"}, "2.0.0", "2.1.0", false},
+	}
+	for _, c := range cases {
+		from, to, err := resolveUploadVersions(c.formFrom, c.formTo, c.info)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("%s: 应报错", c.name)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: 意外报错: %v", c.name, err)
+			continue
+		}
+		if from != c.wantFrom || to != c.wantTo {
+			t.Errorf("%s: = %s -> %s, want %s -> %s", c.name, from, to, c.wantFrom, c.wantTo)
+		}
+	}
+}
+
+// TestMergeStoredManifest 登记 manifest 来源：包内 manifest.json 优先，
+// 表单 manifest 字段仅覆盖 target_schema_version。
+func TestMergeStoredManifest(t *testing.T) {
+	raw := []byte(`{"product":"wdsp","version":"2.1.0","target_schema_version":9}`)
+	info := &packageManifestInfo{raw: raw, targetSchema: 9}
+
+	if got := mergeStoredManifest(info, ""); string(got) != string(raw) {
+		t.Errorf("无表单时应保留包内 manifest: %s", got)
+	}
+	got := mergeStoredManifest(info, `{"target_schema_version":12}`)
+	if ManifestTargetSchema(got) != 12 {
+		t.Errorf("表单覆盖后 = %d, want 12", ManifestTargetSchema(got))
+	}
+	if !strings.Contains(string(got), `"version":"2.1.0"`) {
+		t.Errorf("覆盖不应丢弃包内其他字段: %s", got)
+	}
+	// 包内不可解析（旧客户端）：沿用表单 manifest
+	if got := mergeStoredManifest(nil, `{"target_schema_version":7}`); string(got) != `{"target_schema_version":7}` {
+		t.Errorf("包内缺失时应沿用表单: %s", got)
+	}
+	// 表单非法 JSON：原样下传，由 buildPackage 拒绝
+	if got := mergeStoredManifest(info, `{`); string(got) != `{` {
+		t.Errorf("非法表单 manifest 应原样下传: %s", got)
+	}
+	// 表单不含 target_schema_version：保持包内值
+	got = mergeStoredManifest(info, `{"note":"x"}`)
+	if ManifestTargetSchema(got) != 9 {
+		t.Errorf("未覆盖时应保持包内值 9, got %d", ManifestTargetSchema(got))
+	}
+}
+
 // TestFinalizeUpload 同名文件落盘语义：新建 rename、同哈希复用、异哈希冲突。
+
 func TestFinalizeUpload(t *testing.T) {
 	dir := t.TempDir()
 	h := NewHandler(nil, nil, nil)

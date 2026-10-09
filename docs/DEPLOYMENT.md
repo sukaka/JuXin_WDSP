@@ -28,21 +28,15 @@ docker compose up -d postgres valkey
 
 ### 3. 初始化数据库
 
-```bash
-# 待阶段2完成后提供迁移命令
-```
+数据库迁移由管理后端内置执行（`server/cmd/api` 的 `migrate` 子命令，迁移目录 `server/migrations/`），离线包安装与容器启动链路自动完成，无需手工初始化。
 
 ### 4. 启动管理服务
 
-```bash
-# 待阶段2完成后提供启动命令
-```
+生产部署使用完整离线包一键安装（见下文「离线交付包」节与 [docs/OFFLINE_DEPLOYMENT_GUIDE.md](OFFLINE_DEPLOYMENT_GUIDE.md)）；实验/开发场景编排见 `deployment/` 目录各 `docker-compose.*.yml`。
 
 ### 5. 启动防护网关
 
-```bash
-# 待阶段1完成后提供启动命令
-```
+网关随同一 compose 栈或离线包一并启动；裸机 systemd 形态见 [docs/BARE_METAL_GATEWAY_DESIGN.md](BARE_METAL_GATEWAY_DESIGN.md) 与 `ops/baremetal/`。
 
 ## 多架构部署（x86/C86/兆芯/ARM）
 
@@ -50,10 +44,10 @@ docker compose up -d postgres valkey
 
 | 目标架构 | 使用产物 | 说明 |
 |----------|----------|------|
-| x86_64（Intel/AMD） | jiuzhang-offline-{version}-amd64.tar.gz | 标准路径 |
-| 海光 C86 | jiuzhang-offline-{version}-amd64.tar.gz | C86 为 x86-64 兼容，直接使用 amd64 产物，不单独出包 |
-| 兆芯 KX/KH（含 KH-40000） | jiuzhang-offline-{version}-amd64.tar.gz | 兆芯为 x86-64 兼容，直接使用 amd64 产物，不单独出包 |
-| ARM64（鲲鹏/飞腾等） | jiuzhang-offline-{version}-arm64.tar.gz | 镜像与自研二进制均为 arm64 构建 |
+| x86_64（Intel/AMD） | jiuzhang-wdsp-offline-{version}-amd64.tar.gz | 标准路径 |
+| 海光 C86 | jiuzhang-wdsp-offline-{version}-amd64.tar.gz | C86 为 x86-64 兼容，直接使用 amd64 产物，不单独出包 |
+| 兆芯 KX/KH（含 KH-40000） | jiuzhang-wdsp-offline-{version}-amd64.tar.gz | 兆芯为 x86-64 兼容，直接使用 amd64 产物，不单独出包 |
+| ARM64（鲲鹏/飞腾等） | jiuzhang-wdsp-offline-{version}-arm64.tar.gz | 镜像与自研二进制均为 arm64 构建 |
 
 - **架构自动校验**：离线包内 manifest.json 记录 arch 字段，安装脚本执行时先与主机架构（`uname -m`）比对，不一致则中止安装并提示应使用的包，避免误装异架构镜像。
 - **第三方镜像 digest**：compose 文件中 postgres/valkey 的 digest 为 amd64 子摘要；arm64 部署需替换为对应 arm64 子摘要（获取方式见 docs/DEPENDENCIES.md「多架构镜像锁定」）。
@@ -115,6 +109,7 @@ openssl pkey -pubin -in release-signing.pub -outform DER | sha256sum
 |------|------|------|
 | 管理后端 | 8080 | 管理 API |
 | 管理前端 | 5173 | 开发环境，生产环境由 Nginx/Caddy 托管 |
+| 管理控制台（离线包） | 8080（HTTP）/ 8443（HTTPS，可用 `WEB_HTTPS_PORT` 改宿主机侧端口） | web 容器双栈托管；HTTPS 证书由安装期 `ops/install/console-cert.sh` 生成（自签、100 年有效期，SAN 覆盖宿主机全部 IPv4 与 hostname），落 `runtime/certificates/console.{crt,key}`，只读挂载进容器；证书缺失时自动退化为仅 HTTP。用户可替换为内网 CA 签发的同名文件后 `docker compose up -d web` 生效 |
 | PostgreSQL | 5432 | 仅绑定 127.0.0.1 |
 | Valkey | 6379 | 仅绑定 127.0.0.1 |
 | Caddy Admin | Unix Socket | /var/run/caddy/admin.sock |
@@ -229,11 +224,11 @@ API 健康；执行后系统回到首次安装完成前的状态，需重新初�
 
 ## 备份与恢复
 
-待阶段7补充详细备份恢复流程。
+备份与恢复脚本及流程见 `ops/backup/create.sh`、`ops/restore/restore.sh`；恢复演练编排见 `deployment/docker-compose.restore-test.yml`。
 
 ## 升级
 
-待阶段7补充升级流程。
+升级交付物口径与前台升级流程见 [docs/UPGRADE_PACKAGE_POLICY.md](UPGRADE_PACKAGE_POLICY.md)；宿主机升级执行器的安装、就绪标准与中断/超时语义见 [docs/HOST_UPGRADE_EXECUTOR.md](HOST_UPGRADE_EXECUTOR.md)。
 
 ## 附录：双节点高可用（HA）部署与验证
 

@@ -438,3 +438,142 @@ describe('EventDetailDrawer 最终处置（P0-04）', () => {
     expect(screen.getByText('FUTURE_MODULE_X')).toBeInTheDocument()
   })
 })
+
+describe('EventDetailDrawer 相关事件关联口径', () => {
+  beforeEach(() => {
+    useAuthStore.setState({
+      user: makeUser(['security_events.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    useProductStore.setState({ apmEnabled: false, initialized: true })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    useProductStore.getState().reset()
+  })
+
+  const RELATED_ITEM = {
+    id: 'evt-2',
+    request_id: 'req-2',
+    occurred_at: '2026-08-30T00:10:00Z',
+    application_id: 'app-1',
+    application_name_snapshot: '商城站点',
+    domain: 'shop.example.com',
+    gateway_node_id: 'node-1',
+    client_ip: '1.2.3.4',
+    client_port: 51001,
+    request_method: 'GET',
+    request_uri: '/v1/users/1?id=1',
+    request_path: '/v1/users/1',
+    query_summary: 'id=1',
+    http_version: 'HTTP/1.1',
+    content_type: '',
+    user_agent_summary: 'curl',
+    referer_summary: '',
+    attack_type: 'sqli',
+    severity: 'HIGH',
+    anomaly_score: 9,
+    action: 'BLOCK',
+    response_status: 403,
+    rule_match_count: 1,
+    disposition_status: 'PENDING',
+    disposition_result: '',
+    raw_log_reference: '',
+  }
+
+  it('attack_session 口径：展示「同一攻击会话」说明与攻击活动跳转链接', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch({
+        ...EVENT_DETAIL,
+        related: [RELATED_ITEM],
+        related_mode: 'attack_session',
+        related_session_id: 'sess-9',
+      }),
+    )
+    renderDrawer()
+
+    expect(await screen.findByText(/同一攻击会话 · 按攻击时间线排列/)).toBeInTheDocument()
+    const link = screen.getByRole('link', { name: '查看攻击活动' })
+    expect(link.getAttribute('href')).toBe('/attack-sessions/sess-9')
+  })
+
+  it('same_source_ip 口径：展示「同一来源 IP」说明，无会话链接', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch({
+        ...EVENT_DETAIL,
+        related: [RELATED_ITEM],
+        related_mode: 'same_source_ip',
+        related_session_id: null,
+      }),
+    )
+    renderDrawer()
+
+    expect(await screen.findByText('同一来源 IP · 前后 24 小时')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: '查看攻击活动' })).not.toBeInTheDocument()
+  })
+
+  it('无关联口径（none/缺省）：不展示口径说明', async () => {
+    vi.stubGlobal('fetch', mockFetch({ ...EVENT_DETAIL, related: [] }))
+    renderDrawer()
+
+    expect(await screen.findByText('暂无相关事件')).toBeInTheDocument()
+    expect(screen.queryByText(/同一攻击会话/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/同一来源 IP/)).not.toBeInTheDocument()
+  })
+})
+
+describe('EventDetailDrawer 命中规则 CNNVD/CVE 编号（CNNVD 兼容性 P1）', () => {
+  beforeEach(() => {
+    useProductStore.setState({ apmEnabled: false, initialized: true })
+    useAuthStore.setState({
+      user: makeUser(['security_events.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    useProductStore.getState().reset()
+  })
+
+  const MATCH = {
+    rule_id: 7100001,
+    rule_name: 'Struts2 RCE 虚拟补丁',
+    rule_source: 'CUSTOM',
+    severity: 'HIGH',
+    message: '命中虚拟补丁',
+    matched_variable: 'ARGS',
+    matched_data: 'ognl payload',
+    tags: [],
+    phase: 2,
+  }
+
+  it('match 携带编号：CNNVD 红 Tag / CVE 蓝 Tag，CNNVD 标签链接跳漏洞档案 ?focus=', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch({
+        ...EVENT_DETAIL,
+        matches: [{ ...MATCH, cnnvd_ids: ['CNNVD-202401-2345'], cve_ids: ['CVE-2024-0001'] }],
+      }),
+    )
+    renderDrawer()
+
+    expect(await screen.findByText('漏洞编号：')).toBeInTheDocument()
+    expect(screen.getByText('CVE-2024-0001')).toBeInTheDocument()
+    const cnnvdLink = screen.getByRole('link', { name: 'CNNVD-202401-2345' })
+    expect(cnnvdLink.getAttribute('href')).toBe('/waf/vuln-refs?focus=CNNVD-202401-2345')
+  })
+
+  it('match 编号缺省/为空：不渲染编号区（静默不显示）', async () => {
+    vi.stubGlobal('fetch', mockFetch({ ...EVENT_DETAIL, matches: [MATCH] }))
+    renderDrawer()
+
+    expect(await screen.findByText('命中虚拟补丁')).toBeInTheDocument()
+    expect(screen.queryByText('漏洞编号：')).not.toBeInTheDocument()
+  })
+})

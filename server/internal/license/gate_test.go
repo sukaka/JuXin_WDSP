@@ -44,12 +44,13 @@ func TestGateLocked423AndWhitelist(t *testing.T) {
 			t.Errorf("%s 应 423/%s，got %d/%s", p, CodeLicenseInvalid, code, bizCode)
 		}
 	}
-	// 白名单放行：登录/会话、健康检查、授权管理、能力探测
+	// 白名单放行：登录/会话、健康检查、授权管理、能力探测、系统升级恢复通道
 	for _, p := range []string{
 		"/api/v1/auth/login", "/api/v1/auth/captcha", "/api/v1/auth/me",
 		"/api/v1/health",
 		"/api/v1/license/status", "/api/v1/license/import", "/api/v1/license/history",
 		"/api/v1/product/edition",
+		"/api/v1/upgrades/packages", "/api/v1/upgrades/tasks", "/api/v1/upgrades/precheck",
 	} {
 		if code, _ := gateCode(t, h, p); code != http.StatusOK {
 			t.Errorf("白名单 %s 应放行，got %d", p, code)

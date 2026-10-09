@@ -722,6 +722,36 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /analytics/site-traffic:
+    get:
+      operationId: analyticsSiteTraffic
+      tags: [analytics]
+      summary: 站点流量分析
+      description: >-
+        按站点（应用）查看流量：请求数、收发字节、独立 IP 数、阻断数，含补桶后的时间序列；
+        以 applications 为准 LEFT JOIN，含零流量应用，按 total_requests 降序（相同按 app_code 升序）。
+        数据源按跨度路由：≤7 天直查 access_logs（source=access_logs，summary.unique_ips 为区间真实去重）；
+        >7 天查站点流量日聚合表 site_traffic_daily（source=site_traffic_daily，
+        summary.unique_ips 因跨天去重不可加和返回 null，items/series 中 unique_ips 为逐日去重值加和）。
+        桶粒度按跨度自适应：≤1h 分钟桶，≤7d 小时桶，更大为天桶；跨度上限 31 天（超限返回 400）。
+        summary.peak_bucket_requests 为 items 汇总序列（各站点同桶 requests 加总）的单桶最大值。
+        application_id 指定时仅返回该站点一项（未知 id 返回空 items，不报错）。
+        start_time/end_time 均缺省时取最近 24 小时。权限：analytics.security.read。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339），必须早于 end_time }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，右开区间） }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID（非法返回 400；未知 id 返回空 items） }
+      responses:
+        '200':
+          description: 站点流量分析
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsSiteTrafficData' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /analytics/disposition-overview:
     get:
       operationId: analyticsDispositionOverview
@@ -1323,6 +1353,14 @@ components:
         matched_data: { type: string, description: 命中数据（已脱敏） }
         tags: { type: array, items: { type: string }, nullable: true, description: 规则标签 }
         phase: { type: integer, description: 命中阶段（1=请求头，2=请求体，3=响应头，4=响应体） }
+        cnnvd_ids:
+          type: array
+          items: { type: string }
+          description: 命中规则的 CNNVD 编号标注（CNNVD 兼容性 P1，查询时联查 custom_rules/waf_rules 取现值；规则已删除/未标注/联查失败时为 []）
+        cve_ids:
+          type: array
+          items: { type: string }
+          description: 命中规则的 CVE 编号标注（同 cnnvd_ids 口径，缺省 []）
 
     SecEventNote:
       type: object
@@ -2061,6 +2099,51 @@ components:
         end: { type: string, format: date-time, description: 范围结束（UTC，右开） }
         granularity: { type: string, enum: [minute, hour, day], description: 桶粒度（按跨度自适应） }
         items: { type: array, items: { $ref: '#/components/schemas/AnalyticsSiteAccessTrendItem' }, description: 应用维度趋势项（按总访问量降序，相同按应用编码升序） }
+
+    AnalyticsSiteTrafficPoint:
+      type: object
+      description: 单个时间桶的站点流量点
+      properties:
+        t: { type: string, format: date-time, description: 桶起始时间（UTC） }
+        requests: { type: integer, format: int64, description: 请求数 }
+        bytes_in: { type: integer, format: int64, description: 请求字节数 }
+        bytes_out: { type: integer, format: int64, description: 响应字节数 }
+        unique_ips: { type: integer, format: int64, description: 独立客户端 IP 数（日聚合数据源时为当日去重值） }
+        blocked_requests: { type: integer, format: int64, description: 阻断请求数（waf_action=BLOCK） }
+
+    AnalyticsSiteTrafficItem:
+      type: object
+      properties:
+        application_id: { type: string, format: uuid, description: 应用 ID }
+        app_code: { type: string, description: 应用编码 }
+        app_name: { type: string, description: 应用名称 }
+        total_requests: { type: integer, format: int64, description: 时间范围内总请求数 }
+        total_bytes_in: { type: integer, format: int64, description: 时间范围内总请求字节数 }
+        total_bytes_out: { type: integer, format: int64, description: 时间范围内总响应字节数 }
+        unique_ips: { type: integer, format: int64, description: 独立 IP 数（>7 天视图为逐日去重值加和，仅供站点间相对比较） }
+        blocked_requests: { type: integer, format: int64, description: 阻断请求数 }
+        series: { type: array, items: { $ref: '#/components/schemas/AnalyticsSiteTrafficPoint' }, description: 补桶后的完整时间轴（空桶补 0） }
+
+    AnalyticsSiteTrafficSummary:
+      type: object
+      description: 全部 items 的合计
+      properties:
+        total_requests: { type: integer, format: int64, description: 总请求数 }
+        total_bytes_in: { type: integer, format: int64, description: 总请求字节数 }
+        total_bytes_out: { type: integer, format: int64, description: 总响应字节数 }
+        unique_ips: { type: integer, format: int64, nullable: true, description: 独立 IP 数；>7 天（日聚合数据源）跨天去重不可加和，固定为 null }
+        blocked_requests: { type: integer, format: int64, description: 阻断请求数合计 }
+        peak_bucket_requests: { type: integer, format: int64, description: items 汇总序列（各站点同桶 requests 加总）的单桶最大值 }
+
+    AnalyticsSiteTrafficData:
+      type: object
+      properties:
+        start: { type: string, format: date-time, description: 范围起始（UTC） }
+        end: { type: string, format: date-time, description: 范围结束（UTC，右开） }
+        granularity: { type: string, enum: [minute, hour, day], description: 桶粒度（按跨度自适应） }
+        source: { type: string, enum: [access_logs, site_traffic_daily], description: 数据源（≤7 天直查访问日志，>7 天查日聚合表） }
+        summary: { $ref: '#/components/schemas/AnalyticsSiteTrafficSummary' }
+        items: { type: array, items: { $ref: '#/components/schemas/AnalyticsSiteTrafficItem' }, description: 站点流量项（按总请求数降序，相同按应用编码升序） }
 
     AnalyticsDomainAccessTrendItem:
       type: object

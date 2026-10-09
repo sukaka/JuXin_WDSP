@@ -1,0 +1,10 @@
+f3a85a61e89e51ffecc95c89d04b6fb79b0c5176a49de30e7b8579a24ebd9a58  auto-decoding-after.conf
+e6ebc6b93c3220561f46c402d91f7fe97a9c413e51a0592acabb412b19715265  auto-decoding-before.conf
+678b32eb341501ab2df744c76d06e16ff41c551a3f3f19a526359832824e7600  auto-decoding-config.conf
+1b15ea2b656db37705e1d28ecb8b260d68eee5605e60c02de0232a2ddcb90906  LICENSE
+repo: https://github.com/coreruleset/auto-decoding-plugin
+commit: 6885a9728d3f657f0a5814fbd7349e71b186a64f
+version: 1.0.0（上游 README 标注）
+fetched: 2026-10-02
+license: Apache-2.0（见本目录 LICENSE）
+note: config.conf 已追加九章默认禁用段（见文件尾部 JIUZHANG 标记）；其余文件与上游逐字节一致（upstream-sha256 如上）

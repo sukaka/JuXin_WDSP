@@ -23,9 +23,11 @@ import { customRulesApi } from '../../api/customRules'
 import type { CustomRuleBody } from '../../api/customRules'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
+import VulnIdTags from '../../components/VulnIdTags'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
+import { CNNVD_ID_PATTERN, CVE_ID_PATTERN, findInvalidVulnIds } from '../../utils/vulnIds'
 import {
   ATTACK_TYPE_META,
   ATTACK_TYPE_OPTIONS,
@@ -38,10 +40,22 @@ import type { CustomRuleItem, CustomRuleValidateResult } from '../../types'
 interface Filters {
   keyword?: string
   status?: string
+  cnnvd_id?: string
+  cve_id?: string
 }
 
 const RULE_ID_MIN = 7100000
 const RULE_ID_MAX = 7199999
+
+/** 编号多值表单校验：非法值标红提示，提交时拦截（录入过程不拦截） */
+const vulnIdsRule = (pattern: RegExp, label: string) => ({
+  validator: (_: unknown, value?: string[]) => {
+    const bad = findInvalidVulnIds(value, pattern)
+    return bad.length === 0
+      ? Promise.resolve()
+      : Promise.reject(new Error(`${label}格式非法：${bad.join('、')}`))
+  },
+})
 
 /** 后端 customrules.allowedOperators 白名单（pmFromFile 被后端禁用，不下放） */
 const OPERATOR_OPTIONS = [
@@ -208,7 +222,15 @@ export default function CustomRulesPage() {
     form
       .validateFields()
       .then((values) => {
-        validateMutation.mutate({ id, body: { ...values, operator_value: values.operator_value ?? '' } })
+        validateMutation.mutate({
+          id,
+          body: {
+            ...values,
+            operator_value: values.operator_value ?? '',
+            cnnvd_ids: values.cnnvd_ids ?? [],
+            cve_ids: values.cve_ids ?? [],
+          },
+        })
       })
       .catch(() => {
         message.warning('请先完整填写表单再校验')
@@ -239,6 +261,8 @@ export default function CustomRulesPage() {
       target_variables: record.target_variables ?? [],
       action: record.action,
       tags: record.tags ?? [],
+      cnnvd_ids: record.cnnvd_ids ?? [],
+      cve_ids: record.cve_ids ?? [],
     })
   }
 
@@ -270,6 +294,17 @@ export default function CustomRulesPage() {
       dataIndex: 'attack_type',
       width: 150,
       render: (v: string) => <StatusTag value={v} map={ATTACK_TYPE_META} />,
+    },
+    {
+      title: '漏洞编号',
+      key: 'vuln_ids',
+      width: 200,
+      render: (_, record) =>
+        (record.cnnvd_ids ?? []).length + (record.cve_ids ?? []).length === 0 ? (
+          <Typography.Text type="secondary">-</Typography.Text>
+        ) : (
+          <VulnIdTags cnnvdIds={record.cnnvd_ids} cveIds={record.cve_ids} collapseAfter={2} />
+        ),
     },
     {
       title: '风险等级',
@@ -371,7 +406,12 @@ export default function CustomRulesPage() {
       <Form.Item name="severity" label="风险等级" rules={[{ required: true }]}>
         <Select options={SEVERITY_OPTIONS} />
       </Form.Item>
-      <Form.Item name="phase" label="执行阶段" rules={[{ required: true }]}>
+      <Form.Item
+        name="phase"
+        label="执行阶段"
+        rules={[{ required: true }]}
+        extra="阶段 2 的阻断（BLOCK）规则可能被 CRS 阻断评估抢先而无法触发；期望首命中即拦截的规则建议选阶段 1"
+      >
         <Select options={PHASE_OPTIONS} />
       </Form.Item>
       <Form.Item name="operator" label="操作符" rules={[{ required: true, message: '请选择操作符' }]}>
@@ -404,10 +444,35 @@ export default function CustomRulesPage() {
         <Select mode="multiple" options={VARIABLE_OPTIONS} placeholder="选择要检测的请求变量" />
       </Form.Item>
       <Form.Item name="action" label="动作" rules={[{ required: true }]}>
-        <Select options={ACTION_OPTIONS} />
+        <Select
+          options={ACTION_OPTIONS}
+          onChange={(v) => {
+            // BLOCK 规则默认落到阶段 1：阶段 2 会被 CRS 阻断评估（949110）抢先而永不触发；
+            // 仅在用户尚未手动改过阶段（仍为默认 2）时联动，尊重显式选择
+            if (v === 'BLOCK' && form.getFieldValue('phase') === 2) {
+              form.setFieldValue('phase', 1)
+            }
+          }}
+        />
       </Form.Item>
       <Form.Item name="tags" label="标签">
         <Select mode="tags" open={false} placeholder="输入后回车添加标签（可选）" />
+      </Form.Item>
+      <Form.Item
+        name="cnnvd_ids"
+        label="CNNVD 编号"
+        rules={[vulnIdsRule(CNNVD_ID_PATTERN, 'CNNVD 编号')]}
+        extra="格式 CNNVD-YYYYMM-NNN（如 CNNVD-202401-2345），输入后回车添加，可多个（可选）"
+      >
+        <Select mode="tags" open={false} placeholder="输入 CNNVD 编号后回车（可选）" />
+      </Form.Item>
+      <Form.Item
+        name="cve_ids"
+        label="CVE 编号"
+        rules={[vulnIdsRule(CVE_ID_PATTERN, 'CVE 编号')]}
+        extra="格式 CVE-YYYY-NNNN（如 CVE-2024-0001），输入后回车添加，可多个（可选）"
+      >
+        <Select mode="tags" open={false} placeholder="输入 CVE 编号后回车（可选）" />
       </Form.Item>
       <Form.Item label=" " colon={false}>
         <Space direction="vertical" style={{ width: '100%' }}>
@@ -468,11 +533,19 @@ export default function CustomRulesPage() {
     >
       <Space style={{ marginBottom: 16 }} wrap>
         <Input.Search
-          placeholder="搜索规则ID或名称"
+          placeholder="搜索规则ID/名称/CNNVD/CVE 编号"
           allowClear
-          style={{ width: 240 }}
+          style={{ width: 280 }}
           onSearch={(v) => {
-            setFilters((f) => ({ ...f, keyword: v || undefined }))
+            const value = v.trim()
+            setFilters((f) => {
+              // 粘贴完整编号时按前缀识别走精确筛选，其余走关键词
+              const next: Filters = { status: f.status }
+              if (/^CNNVD-/i.test(value)) next.cnnvd_id = value.toUpperCase()
+              else if (/^CVE-/i.test(value)) next.cve_id = value.toUpperCase()
+              else if (value) next.keyword = value
+              return next
+            })
             setPage(1)
           }}
         />
@@ -549,9 +622,16 @@ export default function CustomRulesPage() {
             action: 'LOG',
             target_variables: ['ARGS'],
             tags: [],
+            cnnvd_ids: [],
+            cve_ids: [],
           }}
           onFinish={(values) => {
-            createMutation.mutate({ ...values, operator_value: values.operator_value ?? '' })
+            createMutation.mutate({
+              ...values,
+              operator_value: values.operator_value ?? '',
+              cnnvd_ids: values.cnnvd_ids ?? [],
+              cve_ids: values.cve_ids ?? [],
+            })
           }}
         >
           {formFields(createForm, 'new', true)}
@@ -580,6 +660,8 @@ export default function CustomRulesPage() {
               body: {
                 ...values,
                 operator_value: values.operator_value ?? '',
+                cnnvd_ids: values.cnnvd_ids ?? [],
+                cve_ids: values.cve_ids ?? [],
                 version: editing.version,
               },
             })
@@ -649,6 +731,15 @@ export default function CustomRulesPage() {
                     (detail.tags ?? []).map((t) => <Tag key={t}>{t}</Tag>)
                   )}
                 </Space>
+              </Descriptions.Item>
+              <Descriptions.Item label="漏洞编号" span={2}>
+                {(detail.cnnvd_ids ?? []).length + (detail.cve_ids ?? []).length === 0 ? (
+                  <Typography.Text type="secondary">无</Typography.Text>
+                ) : (
+                  <Space wrap>
+                    <VulnIdTags cnnvdIds={detail.cnnvd_ids} cveIds={detail.cve_ids} linkCnnvd />
+                  </Space>
+                )}
               </Descriptions.Item>
             </Descriptions>
             <Typography.Title level={5}>生成的 SecLang 规则</Typography.Title>

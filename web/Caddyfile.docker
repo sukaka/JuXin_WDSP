@@ -1,7 +1,15 @@
 # 九章管理前端托管配置（生产容器）
 # 静态文件托管 + SPA 路由回退 + /api 反向代理到管理后端
+# HTTP :8080 与 HTTPS :8443 双栈服务；HTTPS 证书由宿主机安装期生成
+# （ops/install/console-cert.sh，自签、100 年有效期），只读挂载到
+# /etc/caddy/console-certs/。证书缺失时入口脚本改用 Caddyfile.http-only。
 
-:8080 {
+{
+	# 双栈刻意保留 HTTP 入口，禁用 Caddy 自动 HTTP→HTTPS 重定向
+	auto_https disable_redirects
+}
+
+(site) {
 	root * /usr/share/caddy
 
 	# 安全响应头
@@ -32,4 +40,13 @@
 		try_files {path} /index.html
 		file_server
 	}
+}
+
+:8080 {
+	import site
+}
+
+:8443 {
+	tls /etc/caddy/console-certs/console.crt /etc/caddy/console-certs/console.key
+	import site
 }

@@ -164,7 +164,8 @@ func TestNetworkServerSettings(t *testing.T) {
 	}
 }
 
-func TestScalarString(t *testing.T) {	cases := []struct {
+func TestScalarString(t *testing.T) {
+	cases := []struct {
 		raw     string
 		want    string
 		wantErr bool

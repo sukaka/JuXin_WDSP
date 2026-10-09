@@ -54,6 +54,19 @@ const (
 	BotChallengeExpired  Type = "BOT_CHALLENGE_EXPIRED"
 	BotStateUnavailable  Type = "BOT_STATE_UNAVAILABLE"
 	BotClearanceAccepted Type = "BOT_CLEARANCE_ACCEPTED"
+	// 机器身份事件（NG-ID G1；网关 machineid 十步验证链产生——MID_OBSERVED 为
+	// OBSERVE 模式放行记录（action=OBSERVE），MID_AUTH_FAILED 为 PROTECT 证明未
+	// 通过 401（不带 WWW-Authenticate——RFC 9421 未注册标准 challenge 方案），
+	// MID_UNAVAILABLE 为 PROTECT 依赖不可用 503/体预算 413（不伪装签名错误），
+	// MID_SCOPE_DENIED 为 PROTECT 证明通过但越界 403，MID_BOT_EXEMPT 为 Bot
+	// 挑战三重显式豁免（§1.7）。明细嵌套在 machine_id 对象下（不落签名原文/
+	// nonce 原文/公钥原文/体原文——身份为 HMAC 指纹）。
+	MIDVerified    Type = "MID_VERIFIED"
+	MIDObserved    Type = "MID_OBSERVED"
+	MIDAuthFailed  Type = "MID_AUTH_FAILED"
+	MIDUnavailable Type = "MID_UNAVAILABLE"
+	MIDScopeDenied Type = "MID_SCOPE_DENIED"
+	MIDBotExempt   Type = "MID_BOT_EXEMPT"
 )
 
 // Event 访问控制/CC 事件（字段与数据库 access_control_events 对应）。
@@ -97,11 +110,30 @@ type Event struct {
 	// Bot Bot 挑战明细（仅 BOT_* 事件携带；不落 nonce/solution/通行 Cookie/会话 Cookie/
 	// 签名材料——flow_id 为挑战 ID 的 SHA-256 截断指纹；其余事件为 nil 零变化）
 	Bot *BotDetail `json:"bot,omitempty"`
+	// MachineID 机器身份验证明细（仅 MID_* 事件携带；不落签名原文/nonce 原文/
+	// 公钥原文/体原文——身份为 HMAC 指纹，nonce 仅以 sha256 摘要参与存储与事件；
+	// 其余事件为 nil 零变化）
+	MachineID *MachineIDDetail `json:"machine_id,omitempty"`
 	// FinalDecision 请求最终处置上下文快照（WDSP P0-04，final_decision JSON
 	// schema_version=1）：仅终止分支事件挂载（RecordTerminal 后取，内容完整——
 	// 终止后不再产生新事实）；放行/观察事件不挂（请求未完成，提前 Finalize 会
 	// 落 UNKNOWN 且锁死后续记录）。采集端写入 access_control_events.details.final_decision
 	FinalDecision json.RawMessage `json:"final_decision,omitempty"`
+}
+
+// MachineIDDetail 机器身份验证明细（NG-ID G1；字段与跨分片冻结契约一致）：
+// 仅承载状态/reason 词表/身份指纹（HMAC）/kid/注册表版本/撤销水位——
+// 绝不出现签名原文/nonce 原文/公钥原文/体原文（构造处保证）。
+type MachineIDDetail struct {
+	Status          string `json:"status"` // VERIFIED|INVALID|UNAVAILABLE|NOT_PRESENT|OUT_OF_SCOPE
+	ReasonCode      string `json:"reason_code,omitempty"`
+	MachineIDFP     string `json:"machine_id_fp,omitempty"` // 身份指纹（HMAC-SHA256 截断）
+	KeyID           string `json:"key_id,omitempty"`
+	RegistryVersion int64  `json:"registry_version,omitempty"`
+	Watermark       int64  `json:"watermark,omitempty"`
+	// Detail 依赖不可用明细（仅 UNAVAILABLE 携带——dependency_unavailable 披露
+	// 语义的 access_control 事件承载；证明判定细节不落此字段）
+	Detail string `json:"detail,omitempty"`
 }
 
 // RiskSignalEntry 风险信号明细（与 riskengine.SignalEntry 同构；事件侧独立定义防循环依赖）。

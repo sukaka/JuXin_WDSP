@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/jiuzhang-waf/gateway/dynamic_security/gqlast"
 	"github.com/jiuzhang-waf/server/internal/applications"
 )
 
@@ -154,6 +155,20 @@ type GuardAuthzObjectModel struct {
 	ModelVersion           string                       `json:"model_version,omitempty"`
 	SnapshotExpiresAt      *time.Time                   `json:"snapshot_expires_at,omitempty"`
 	Stale                  bool                         `json:"stale,omitempty"`
+	// OnLeaseExpired per-endpoint 租约过期策略（NG-AZ-02 D5；strict（缺省）| degraded；
+	// omitempty 保持未下发时序列化与既有版本逐字节一致）
+	OnLeaseExpired string `json:"on_lease_expired,omitempty"`
+	// ---- NG-AZ-03 D3 阻断开关与 §8.4 四要素（线契约 A 轨冻结，B 轨只消费）----
+	// Enforcement per-endpoint 阻断开关（OBSERVE（缺省）| PROTECT；随版本戳/快照下发，
+	// 切换 PROTECT 的管理面强制前置校验在 apisecurity/object_models_update.go）
+	Enforcement string `json:"enforcement,omitempty"`
+	// EnforcementOwner §8.4 业务负责人标识（切换 PROTECT 必填非空 ≤128；omitempty 保持
+	// 未声明行序列化最小面）
+	EnforcementOwner string `json:"enforcement_owner,omitempty"`
+	// EvidenceSource §8.4 证据来源声明（AUTHORITY_SYNC|MANUAL_CONFIRMED；空=未声明）
+	EvidenceSource string `json:"evidence_source,omitempty"`
+	// OnUnknown §8.4 UNKNOWN 处理方式声明（首批仅 ALLOW_UNKNOWN——UNKNOWN 永不阻断）
+	OnUnknown string `json:"on_unknown,omitempty"`
 }
 
 type GuardAuthzObjectRelation struct {
@@ -176,6 +191,9 @@ type GuardAuthzRoleBaseline struct {
 	Action        string `json:"action,omitempty"`
 	Allowed       bool   `json:"allowed"`
 	Confirmed     bool   `json:"confirmed"`
+	// Enforcement BFLA 侧 per-角色基线阻断开关（NG-AZ-03 D3；OBSERVE（缺省）| PROTECT；
+	// 无行级配置时端点继承 object model 值——继承语义在网关消费侧实现）
+	Enforcement string `json:"enforcement,omitempty"`
 }
 
 // GuardAuthzSnapshot is an immutable authorization snapshot. PreviousValid
@@ -190,7 +208,52 @@ type GuardAuthzSnapshot struct {
 	PolicyVersion     string                     `json:"policy_version,omitempty"`
 	Stale             bool                       `json:"stale,omitempty"`
 	SnapshotExpiresAt *time.Time                 `json:"snapshot_expires_at,omitempty"`
+	// ---- NG-AZ-02 v2 快照字段（全 omitempty：缺失即 v1 快照，行为逐字节兼容 D4-3/D10）----
+	Schema              string                       `json:"schema,omitempty"`               // 恒 "authz-snap/2"（D4-3 闸门）
+	RevocationWatermark *RevocationWatermark         `json:"revocation_watermark,omitempty"` // 编译时刻管理面向量水位（D1/D2）
+	LeaseSeconds        int                          `json:"lease_seconds,omitempty"`        // 快照级租约（per-app 配置最小值；0=未启用，D5）
+	ConflictedObjects   []GuardAuthzConflictedObject `json:"conflicted_objects,omitempty"`   // 决策侧排除集（D2/D7，上限 10000）
+	ProducedAt          *time.Time                   `json:"produced_at,omitempty"`          // 快照编译时刻（漂移对账基准，D8）
 }
+
+// RevocationWatermark 管理面向量撤销水位（NG-AZ-02 §1.1 冻结形状）：
+// 手工通道序号 + 逐权威来源水位；分量比较见 RevocationWatermarkAtLeast。
+type RevocationWatermark struct {
+	ManualSeq int64            `json:"manual_seq"`
+	Sources   map[string]int64 `json:"sources,omitempty"`
+}
+
+// RevocationWatermarkAtLeast 分量比较：a ≥ b ⇔ manual_seq 与 b.sources 每键均不小于
+// （缺失键按 0 计；a.Sources 缺键同样按 0 计——D3/D4 比较语义唯一事实源）。
+func RevocationWatermarkAtLeast(a, b *RevocationWatermark) bool {
+	if b == nil {
+		return true
+	}
+	if a == nil {
+		a = &RevocationWatermark{}
+	}
+	if a.ManualSeq < b.ManualSeq {
+		return false
+	}
+	for k, bv := range b.Sources {
+		if a.Sources[k] < bv {
+			return false
+		}
+	}
+	return true
+}
+
+// GuardAuthzConflictedObject 决策侧排除对象键（NG-AZ-02 D2/D7；与
+// api_authority_conflicts 同键口径：tenant_domain 空串 = COALESCE(tenant_id,”)）。
+type GuardAuthzConflictedObject struct {
+	ApplicationID string `json:"application_id"`
+	ObjectType    string `json:"object_type"`
+	TenantDomain  string `json:"tenant_domain,omitempty"`
+	ObjectRef     string `json:"object_ref"`
+}
+
+// AuthzSnapshotSchemaV2 v2 快照 schema 闸门值（NG-AZ-02 D4-3；缺失/其他值按 v1 逐字节兼容）。
+const AuthzSnapshotSchemaV2 = "authz-snap/2"
 
 // GuardFieldPermission 字段权限（下发网关，对应 api_field_permissions 表行；
 // 该表由迁移 000044 建立）。role/tenant 空串 = 默认行（对该端点全部角色/租户生效）。
@@ -226,6 +289,116 @@ type GuardScanVerification struct {
 type GuardGRPCDescriptor struct {
 	Name          string `json:"name"`           // 描述符集名称（唯一键）
 	ContentBase64 string `json:"content_base64"` // FileDescriptorSet 字节 base64
+}
+
+// GuardGRPCBinding gRPC 描述符 per-app 绑定下发形态（NG-GRPC G1 批次 B1，设计
+// docs/nextgen/NG-GRPC-g1-unary.md §1.3/§1.9；对应 api_grpc_bindings 表（迁移 000179）；
+// json tag 为跨轨线契约（B 轨网关按 application_id 装配 per-app 注册表），不得改名）。
+type GuardGRPCBinding struct {
+	ApplicationID  string `json:"application_id"`  // 应用 ID（UUID）
+	Service        string `json:"service"`         // pkg.Service 全名（绑定粒度）
+	DescriptorName string `json:"descriptor_name"` // 引用的描述符集名（000076 name）
+	Mode           string `json:"mode"`            // OBSERVE（缺省）| PROTECT（字段结构违规协议化执行）
+}
+
+// GuardMCPArgConstraint MCP 参数范围约束行（NG-MCP §1.4：path_prefix|domain_suffix 两形态）。
+type GuardMCPArgConstraint struct {
+	Field string   `json:"field"`
+	Kind  string   `json:"kind"`
+	Allow []string `json:"allow,omitempty"`
+}
+
+// GuardMCPTool MCP 目录工具行下发形态（NG-MCP G1 批次 B1；对应 mcp_catalog_tools
+// APPROVED 行（发布通道只下发 APPROVED——PENDING/REJECTED 不出现在快照）；
+// json tag 为跨轨线契约（§5 批次 B1 逐字冻结，网关 buildMCPGuardConfig 消费），不得改名）。
+type GuardMCPTool struct {
+	ToolName           string                  `json:"tool_name"`
+	ToolVersion        string                  `json:"tool_version"`
+	ToolHash           string                  `json:"tool_hash"`
+	RiskLevel          string                  `json:"risk_level"`
+	DataClassification string                  `json:"data_classification"`
+	CapabilityTags     []string                `json:"capability_tags"`
+	AllowedPrincipals  []string                `json:"allowed_principals"`
+	AllowedRoles       []string                `json:"allowed_roles"`
+	AllowedTenants     []string                `json:"allowed_tenants"`
+	ApprovalRequired   bool                    `json:"approval_required"`
+	MaxCallsPerMinute  int                     `json:"max_calls_per_minute"`
+	InputSchema        map[string]any          `json:"input_schema"` // 无 schema 下发 null（键存在）
+	OutputSchema       map[string]any          `json:"output_schema"`
+	ArgConstraints     []GuardMCPArgConstraint `json:"arg_constraints"`
+}
+
+// GuardMCPToolCatalog MCP 工具目录下发形态（ENABLED 目录+APPROVED 工具行；
+// catalog_hash 发布时按 APPROVED tool_hash 排序拼接重算（与 DB 维护值一致——
+// 网关装配期重算比对，不符整目录拒装不误断）。
+type GuardMCPToolCatalog struct {
+	Name            string         `json:"name"`
+	ServiceIdentity string         `json:"service_identity"`
+	ProtocolVersion string         `json:"protocol_version"`
+	CatalogHash     string         `json:"catalog_hash"`
+	Tools           []GuardMCPTool `json:"tools"`
+}
+
+// GuardMCPBinding MCP 目录绑定下发形态（NG-MCP G1 批次 B1；对应 mcp_catalog_bindings
+// 表全行（迁移 000182）；json tag 为跨轨线契约（§5 批次 B1 逐字冻结），不得改名）。
+type GuardMCPBinding struct {
+	ApplicationID string `json:"application_id"` // 应用 ID（UUID）
+	EndpointPath  string `json:"endpoint_path"`  // 精确路径（大小写敏感，绑定驱动识别）
+	CatalogName   string `json:"catalog_name"`   // 引用的目录名（mcp_tool_catalogs.name）
+	Mode          string `json:"mode"`           // OBSERVE（缺省）| PROTECT（tools/call 违规协议化执行）
+}
+
+// GuardMachineIdentityKey 机器身份公钥下发形态（NG-ID g1 批次 B1，设计
+// docs/nextgen/NG-ID-g1-machine-identity.md §1.12 发布段逐字冻结——键名与顺序不得改，
+// B2 网关装配按 tag 消费）。对应 machine_identity_keys 表 ENABLED 身份的全状态键行
+// （ACTIVE/RETIRED/REVOKED 均下发——键状态机 enforcement 在网关侧：RETIRED 窗口内仅验证、
+// REVOKED 立即拒验；revoked_seq 为撤销水位溯源值）。
+// 时间为 RFC3339 字符串或 null（无 omitempty——冻结形状键恒在）。
+type GuardMachineIdentityKey struct {
+	Kid                string  `json:"kid"`
+	Alg                string  `json:"alg"` // ed25519|ecdsa-p256-sha256|rsa-pss-sha512（CHECK 词表）
+	PublicKeyPEM       string  `json:"public_key_pem"`
+	Status             string  `json:"status"` // ACTIVE|RETIRED|REVOKED
+	NotBefore          *string `json:"not_before"`
+	NotAfter           *string `json:"not_after"`
+	RetireOverlapUntil *string `json:"retire_overlap_until"`
+	RevokedSeq         *int64  `json:"revoked_seq"`
+}
+
+// GuardMachineIdentity 机器身份下发形态（NG-ID g1 §1.12 发布段逐字冻结）。
+// 只下发 ENABLED 身份（DISABLED 不出现——发布面安全语义）；keys 为该身份全状态键行
+// （kid 稳定序）。json tag 为跨轨线契约，不得改名。
+type GuardMachineIdentity struct {
+	IdentityName       string                    `json:"identity_name"`
+	TenantID           *string                   `json:"tenant_id"`         // 可空（跨租户共享身份为 null）
+	PrincipalBinding   *string                   `json:"principal_binding"` // 可空（绑定 JWT VerifiedPrincipalID 指纹值）
+	Status             string                    `json:"status"`            // ENABLED（发布面恒 ENABLED）
+	BotChallengeExempt bool                      `json:"bot_challenge_exempt"`
+	Keys               []GuardMachineIdentityKey `json:"keys"`
+}
+
+// GuardMachineIdentityBinding 机器身份 per-app 绑定下发形态（NG-ID g1 §1.12 发布段
+// 逐字冻结）。path_exact|path_prefix 二选一（jwt selector 同形——缺省一侧为空字符串，
+// 键恒在）；绑定不引用身份（登记册全局生效，请求签名 keyid 做登记册精确查找）。
+// json tag 为跨轨线契约，不得改名。
+type GuardMachineIdentityBinding struct {
+	ApplicationID string `json:"application_id"` // 应用 ID（UUID）
+	PathExact     string `json:"path_exact"`     // 精确路径（与 path_prefix 二选一）
+	PathPrefix    string `json:"path_prefix"`
+	Mode          string `json:"mode"`           // OBSERVE（缺省）| PROTECT（验签失败/未签名按绑定协议化执行）
+	ProofRequired bool   `json:"proof_required"` // true=绑定命中且未签名请求拒绝（401）；false=未签名按普通流量
+}
+
+// GuardMachineIdentityMeta 机器身份元数据段（NG-ID g1 §1.12 发布段逐字冻结——
+// 逐字：`"api_machine_identity_meta": {"revocation_watermark": 0, "registry_version": 0}`）。
+// revocation_watermark=machine_identity_revocation_watermark 单行 seq（撤销单调水位，
+// 网关 applied_watermark 比对——快照水位低于已应用水位拒载 fail-closed，§1.6）；
+// registry_version=登记册内容版本（设计未冻结推导规则——实施取身份+键两表
+// max(updated_at) 的 Unix 毫秒（空登记册=0）：同内容恒同值（确定性）、随变更墙钟递增、
+// 零新增 schema（四表冻结不破）；仅溯源用途，不参与 fail-closed 比较）。
+type GuardMachineIdentityMeta struct {
+	RevocationWatermark int64 `json:"revocation_watermark"`
+	RegistryVersion     int64 `json:"registry_version"`
 }
 
 // GuardResponseBaseline 端点响应结构基线（下发网关，对应 api_response_schemas 表
@@ -342,6 +515,43 @@ type GuardFlowBaseline struct {
 // credential_type + ":" + fingerprint 与请求身份指纹（detectors.CredentialKey 口径：
 // auth:/key:/sess: 前缀 + 指纹）比对。expires_at 供网关在发布间隙按时间自行失效。
 // json tag 为跨分片契约，不得改动。
+// GuardStrongFlowDefinition 强流程定义下发形态（NG-FLOW-01 §1.1；对应
+// api_strong_flow_definitions ACTIVE 行 + api_strong_flow_steps 步骤；
+// json tag 为跨轨线契约（B 轨网关解析装配只消费），不得改动）。
+type GuardStrongFlowDefinition struct {
+	// DefinitionID 定义行 ID（溯源用；json tag「id」对齐网关 flowguard.Definition
+	// 消费侧形状——联调裁决：定义快照域以消费侧 tag 为准；实例事件域的
+	// definition_id 键不变（两域各自自洽））
+	DefinitionID  string `json:"id"`
+	ApplicationID string `json:"application_id"`
+	Name          string `json:"name"`
+	Version       int    `json:"version"`
+	// BindingPathPrefix 端点组前缀（步骤端点归属核对已由管理面完成，网关只做匹配消费）
+	BindingPathPrefix string `json:"binding_path_prefix"`
+	// InstanceKeyParam 实例引用来源（query:<名>/path:<段序>——批准的参数提取器键）
+	InstanceKeyParam string `json:"instance_key_param"`
+	// Mode OBSERVE（缺省）| PROTECT（D6：UNKNOWN 任何形态恒不阻断）
+	Mode string `json:"mode"`
+	// Status 定义状态（ACTIVE|RETIRED；联调裁决 §8.4-1 育龄窗：存在非终态实例的
+	// RETIRED 版本随发布面下发供存量实例续跑；网关消费「ACTIVE 才可建实例」闸）
+	Status string                `json:"status"`
+	Steps  []GuardStrongFlowStep `json:"steps"`
+}
+
+// GuardStrongFlowStep 强流程步骤下发形态（success_rule 为冻结 JSON 形状原文透传——
+// 运行期解析属 FLOW-03，发布侧不展开）。
+type GuardStrongFlowStep struct {
+	StepKey        string          `json:"step_key"`
+	EndpointKey    string          `json:"endpoint_key"`
+	Sequence       int             `json:"sequence"`
+	SuccessRule    json.RawMessage `json:"success_rule"`
+	TimeoutSeconds int             `json:"timeout_seconds"`
+	RetrySemantics string          `json:"retry_semantics"`
+	ParallelGroup  string          `json:"parallel_group,omitempty"`
+	LeaseSeconds   int             `json:"lease_seconds"`
+	Allows202      bool            `json:"allows_202,omitempty"`
+}
+
 type GuardRevokedCredential struct {
 	CredentialType string `json:"credential_type"`      // auth / key / sess（与身份指纹前缀一致）
 	Fingerprint    string `json:"fingerprint"`          // 加盐 HMAC-SHA256 截断 16 字节 hex（32 位，不含前缀）
@@ -573,6 +783,40 @@ type guardBotPolicyWithKeys struct {
 	SigningKeys map[string]string `json:"signing_keys,omitempty"`
 }
 
+// GuardAPIAdmissionPolicy API 准入策略（按应用；docs/API_ADMISSION_CONTROL_DESIGN.md §4.2，
+// 迁移 000166 应用级 api_admission_mode）。随发布经 api_admission 段下发网关：
+// 网关 api_admission 检测器按本应用准入模式对未确认端点（不在 confirmed_endpoints
+// 集合内的 API 请求）执行 OBSERVE 观测 / PROTECT 403。
+type GuardAPIAdmissionPolicy struct {
+	// Mode 准入模式：OBSERVE | PROTECT（OFF 语义=不启用，不下发策略条目）
+	Mode string `json:"mode"`
+	// ConfirmedEndpoints 该应用已确认端点键集（「METHOD 空格 normalized_path」运行时契约键，
+	// 仅 asset_status=CONFIRMED；排序确定。空数组语义=无确认端点，PROTECT 下全拒绝）
+	ConfirmedEndpoints []string `json:"confirmed_endpoints"`
+}
+
+// GuardGraphQLPolicy GraphQL 成本预算策略（按应用；NG-GQL-03，迁移 000171
+// api_graphql_policies 表）。随发布经 api_graphql 段下发网关：管线对 GraphQL 分类
+// 请求执行有界解析 → 操作选择 → 成本/窗口预算（契约 docs/nextgen/NG-GQL-03-wiring.md；
+// 类型与网关 apiGraphQLPolicyJSON 线契约同构，weights/budget 直接复用 gqlast 线契约）。
+type GuardGraphQLPolicy struct {
+	Enabled           bool                 `json:"enabled"`
+	Limits            GuardGraphQLLimits   `json:"limits,omitempty"`
+	Weights           gqlast.WeightsConfig `json:"weights,omitempty"`
+	Budget            gqlast.BudgetConfig  `json:"budget,omitempty"`
+	TrustedDocDigests []string             `json:"trusted_doc_digests,omitempty"`
+}
+
+// GuardGraphQLLimits GraphQL 解析硬边界覆盖（零值字段 = 网关引擎默认；
+// gqlast.Limits 无 JSON 标签，线契约在此显式定义——与网关 apiGraphQLLimitsJSON 同构）。
+type GuardGraphQLLimits struct {
+	MaxDocBytes    int `json:"max_doc_bytes,omitempty"`
+	MaxDepth       int `json:"max_depth,omitempty"`
+	MaxNodes       int `json:"max_nodes,omitempty"`
+	MaxAliases     int `json:"max_aliases,omitempty"`
+	MaxFragmentExp int `json:"max_fragment_exp,omitempty"`
+}
+
 // GuardConfig 阶段5访问控制/CC 全量配置（全局 + 按应用）。
 // 该结构整体序列化后同时作为 access_control_versions 的快照。
 type GuardConfig struct {
@@ -606,6 +850,17 @@ type GuardConfig struct {
 	APIParameterConstraints map[string][]GuardParamConstraint `json:"api_parameter_constraints,omitempty"`
 	// APIKnownEndpoints 已知 API 端点基线（endpoint_key → asset_status），经发布通道下发网关
 	APIKnownEndpoints map[string]string `json:"api_known_endpoints,omitempty"`
+	// APIAdmission API 准入策略（application_id → 策略；applications.api_admission_mode<>'OFF'
+	// 的应用行，确认集来自 apiassets.ListConfirmedByApplication；nil/空 map 时不下发——
+	// 网关准入判定零行为变化；随 WDSP API 动态防护门控下发并纳入 api_policy_version 版本戳；
+	// 读取失败中止发布 fail-hard，与 jwt_trust 同一口径——静默丢失会让已 PROTECT 应用
+	// 在新配置中失去准入拦截）
+	APIAdmission map[string]*GuardAPIAdmissionPolicy `json:"api_admission,omitempty"`
+	// APIGraphQL GraphQL 成本预算策略（application_id → 策略；api_graphql_policies
+	// enabled=true 的应用行；迁移 000171）。随发布经 api_graphql 段下发网关
+	// （仅 WDSP 开启；无行/未启用 = 不下发，GraphQL 流量零行为变化）；
+	// 内容纳入 api_policy_version 版本戳；读取失败中止发布（fail-hard 同上口径）
+	APIGraphQL map[string]*GuardGraphQLPolicy `json:"api_graphql,omitempty"`
 	// APIPolicyVersion API 策略版本戳（本次发布 API 防护内容哈希：冻结模型+确认约束+脱敏规则），
 	// 供生效校验与网关回报比对「发布内容与实际生效」
 	APIPolicyVersion string `json:"api_policy_version,omitempty"`
@@ -648,6 +903,28 @@ type GuardConfig struct {
 	APIAuthzSnapshotStale     bool                       `json:"api_authz_snapshot_stale,omitempty"`
 	APIAuthzSnapshotExpiresAt *time.Time                 `json:"api_authz_snapshot_expires_at,omitempty"`
 	APIAuthzPreviousValid     *GuardAuthzSnapshot        `json:"api_authz_previous_valid,omitempty"`
+	// ---- NG-AZ-02 v2 快照元数据（全 omitempty；仅存在可发布授权模型时编译下发，否则不下发，
+	// 与 baselines-only/v1 行为一致；watermark/conflicted/produced_at 为事实推进非配置内容，
+	// 不参与 api_policy_version 与 configuration_hash（D1-③））----
+	// APIAuthzSchema 快照 schema 闸门（D4-3）：存在授权模型时恒 "authz-snap/2"
+	APIAuthzSchema string `json:"api_authz_schema,omitempty"`
+	// APIAuthzRevocationWatermark 编译时刻管理面向量撤销水位（D1/D2）
+	APIAuthzRevocationWatermark *RevocationWatermark `json:"api_authz_revocation_watermark,omitempty"`
+	// APIAuthzConflictedObjects 决策侧排除集（D2/D7；api_authority_conflicts OPEN 行，
+	// 上限 10000 超限发布失败 fail-hard）
+	APIAuthzConflictedObjects []GuardAuthzConflictedObject `json:"api_authz_conflicted_objects,omitempty"`
+	// APIAuthzProducedAt 快照编译时刻（D8 漂移对账基准）
+	APIAuthzProducedAt *time.Time `json:"api_authz_produced_at,omitempty"`
+	// APIAuthzLeaseSeconds per-app 租约秒数（D5；applications.authz_lease_seconds 配置值
+	// 读取侧夹紧 15~300；map 键 application_id——按应用注入 handler api_authz_lease_seconds 标量，
+	// GuardAuthzSnapshot 内取最小值；空 map = 全应用未启用）
+	APIAuthzLeaseSeconds map[string]int `json:"api_authz_lease_seconds,omitempty"`
+	// APIAuthzClockSkewMaxSeconds 时钟漂移上限秒数（D8；0=缺省 60 由网关侧兜底；
+	// gateway_runtime 组 authz_clock_skew_max_seconds 设置下发，夹紧 10~300）
+	APIAuthzClockSkewMaxSeconds int `json:"api_authz_clock_skew_max_seconds,omitempty"`
+	// APINodeHeartbeatSeconds 节点心跳周期秒数（NG-AZ-02 D6 ACK 通道前提；
+	// gateway_runtime 组 api_node_heartbeat_seconds 设置下发；0=关闭或 30~300）
+	APINodeHeartbeatSeconds int `json:"api_node_heartbeat_seconds,omitempty"`
 	// APIFieldPermissions 字段权限（api_field_permissions 表行；表由迁移 000044 建立，
 	// 表缺失/查询失败时发布侧 Warn 跳过不下发；不下发时网关字段权限检测零行为）
 	APIFieldPermissions []GuardFieldPermission `json:"api_field_permissions,omitempty"`
@@ -667,6 +944,11 @@ type GuardConfig struct {
 	// 表由迁移 000155 建立，表缺失/查询失败时发布侧 Warn 跳过不下发；
 	// 不下发时网关流程偏离检测零行为，与历史版本一致；内容纳入 api_policy_version 版本戳）
 	APIFlowBaselines []GuardFlowBaseline `json:"api_flow_baselines,omitempty"`
+	// APIStrongFlows 强流程定义（NG-FLOW-01；api_strong_flow_definitions 表 ACTIVE 行
+	// + 其步骤，表由迁移 000176 建立，表缺失/查询失败时发布侧 Warn 跳过不下发；
+	// 不下发时网关强流程检测零行为（NG-T-C01 缺省零变化），与既有流程观察段
+	// （api_flow_baselines）物理隔离互不消费；内容纳入 api_policy_version 版本戳）
+	APIStrongFlows []GuardStrongFlowDefinition `json:"api_strong_flows,omitempty"`
 	// APIRevokedCredentials 已吊销凭据清单（阶段8 §35；api_revoked_credentials 表
 	// 当前生效窗口内的行，表由迁移 000156 建立，表缺失/查询失败时发布侧 Warn 跳过
 	// 不下发；不下发时网关吊销凭据检测零行为，与历史版本一致；指纹级载荷无凭据明文；
@@ -704,6 +986,33 @@ type GuardConfig struct {
 	// ENABLED 行，表由迁移 000076 建立，表缺失/查询失败时发布侧 Warn 跳过不下发；
 	// 不下发时网关字段级解析零行为，退化为 v1 帧结构校验；内容纳入 api_policy_version 版本戳）
 	APIGRPCDescriptors []GuardGRPCDescriptor `json:"api_grpc_descriptors,omitempty"`
+	// APIGRPCBindings gRPC 描述符 per-app 绑定（NG-GRPC G1 批次 B1；api_grpc_bindings
+	// 表全行（迁移 000179），空绑定=全局可见（omitempty 保持缺省零变化）；含任一
+	// mode=PROTECT 绑定的快照能力门 required detectors.grpc.unary=grpc/2；
+	// 内容纳入 api_policy_version 版本戳）
+	APIGRPCBindings []GuardGRPCBinding `json:"api_grpc_bindings,omitempty"`
+	// APIMCPToolCatalogs MCP 工具目录（NG-MCP G1 批次 B1；mcp_tool_catalogs ENABLED
+	// 行 + 仅 APPROVED 工具行（mcp_catalog_tools review_status='APPROVED'）；
+	// catalog_hash 发布时按 APPROVED tool_hash 排序拼接重算；omitempty 保持缺省零变化）
+	APIMCPToolCatalogs []GuardMCPToolCatalog `json:"api_mcp_tool_catalogs,omitempty"`
+	// APIMCPBindings MCP 目录绑定（mcp_catalog_bindings 表全行（迁移 000182），
+	// 空绑定=不下发（零行为 NG-T-C01）；含任一 PROTECT 绑定的快照能力门 required
+	// protocols.mcp=acl_v1 + detectors.mcp.toolcall=mcp/2；内容纳入 api_policy_version 版本戳）
+	APIMCPBindings []GuardMCPBinding `json:"api_mcp_bindings,omitempty"`
+	// APIMachineIdentities 机器身份登记册（NG-ID g1 批次 B1；machine_identities 表
+	// ENABLED 行 + machine_identity_keys 全状态键行（迁移 000183）；发布段形状逐字冻结
+	// （设计 §1.12，B2 网关按 tag 消费）；omitempty 保持缺省零变化（NG-T-C01）；
+	// 内容纳入 api_policy_version 版本戳）
+	APIMachineIdentities []GuardMachineIdentity `json:"api_machine_identities,omitempty"`
+	// APIMachineIdentityBindings 机器身份 per-app 绑定（machine_identity_bindings 表
+	// 全行（迁移 000184），空绑定=不下发（零行为）；含任一 mode=PROTECT 绑定的快照
+	// 能力门 required detectors.machineid=mid/1（fail-closed——不认识机器身份段的旧
+	// 节点不得漏做签名验证）；内容纳入 api_policy_version 版本戳）
+	APIMachineIdentityBindings []GuardMachineIdentityBinding `json:"api_machine_identity_bindings,omitempty"`
+	// APIMachineIdentityMeta 机器身份元数据段（撤销水位+登记册版本；身份或绑定任一
+	// 非空即下发，两者皆空=三段全不下发（NG-T-C01 零行为）；水位单调不下降——快照
+	// 水位低于网关已应用水位拒载 fail-closed（§1.6））
+	APIMachineIdentityMeta *GuardMachineIdentityMeta `json:"api_machine_identity_meta,omitempty"`
 	// AccessLog 全量访问日志（二期；nil 或 enabled=false 时网关零行为变化）
 	AccessLog *GuardAccessLog `json:"access_log,omitempty"`
 	// TraceTrustExternal / TraceInjectUpstream W3C trace 上下文开关（APM，ADR D5/D6；
@@ -890,6 +1199,19 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		if len(g.APIKnownEndpoints) > 0 {
 			h["api_known_endpoints"] = g.APIKnownEndpoints
 		}
+		// API 准入防护（api_admission 段，WDSP P1；按应用注入本应用策略切片——
+		// 冻结契约 api_admission.policies.<application_id>，键为应用 UUID（handler 内
+		// app_id 同源），网关按自身 app_id 查表；本应用无策略（OFF）时不下发该键，
+		// 网关准入判定零行为变化；OBSERVE 且确认集为空同样下发（空数组语义=无确认端点）
+		if pol, ok := g.APIAdmission[app.AppID]; ok && pol != nil {
+			h["api_admission"] = mapT{"policies": map[string]*GuardAPIAdmissionPolicy{app.AppID: pol}}
+		}
+		// GraphQL 成本预算（api_graphql 段，NG-GQL-03；按应用注入本应用策略切片——
+		// 冻结契约 api_graphql.policies.<application_id>，与 api_admission 段同形态；
+		// 本应用无策略/未启用时不下发该键，网关 GraphQL 判定零行为变化）
+		if pol, ok := g.APIGraphQL[app.AppID]; ok && pol != nil && pol.Enabled {
+			h["api_graphql"] = mapT{"policies": map[string]*GuardGraphQLPolicy{app.AppID: pol}}
+		}
 		// API 策略版本戳（本次发布内容哈希；网关可按此回报生效版本）
 		if g.APIPolicyVersion != "" {
 			h["api_policy_version"] = g.APIPolicyVersion
@@ -945,17 +1267,45 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 			if len(g.APIAuthzModels) > 0 {
 				h["api_authz_models"] = g.APIAuthzModels
 				h["api_authz_relations"] = g.APIAuthzRelations
-				h["api_authz_object_hmac_key_hex"] = g.APIAuthzObjectHMACKeyHex
 			}
 			if len(g.APIAuthzRoleBaselines) > 0 {
 				h["api_authz_role_baselines"] = g.APIAuthzRoleBaselines
 			}
+		}
+		// NG-FLOW-02 联调修正：对象 HMAC 密钥在「有授权模型 或 有 ACTIVE 强流程定义」
+		// 时下发（强流程实例键构造复用该键——原条件仅授权模型，强流程-only 应用恒缺键）
+		if len(g.APIAuthzModels) > 0 || len(g.APIStrongFlows) > 0 {
+			h["api_authz_object_hmac_key_hex"] = g.APIAuthzObjectHMACKeyHex
 		}
 		if g.APIAuthzSnapshotStale {
 			h["api_authz_snapshot_stale"] = true
 		}
 		if g.APIAuthzSnapshotExpiresAt != nil {
 			h["api_authz_snapshot_expires_at"] = g.APIAuthzSnapshotExpiresAt
+		}
+		// NG-AZ-02 v2 快照元数据（仅授权模型存在时编译；按应用注入租约标量——
+		// D5 per-app 配置，快照级取该应用值；其余为全局单值）
+		if g.APIAuthzSchema != "" {
+			h["api_authz_schema"] = g.APIAuthzSchema
+		}
+		if g.APIAuthzRevocationWatermark != nil {
+			h["api_authz_revocation_watermark"] = g.APIAuthzRevocationWatermark
+		}
+		if len(g.APIAuthzConflictedObjects) > 0 {
+			h["api_authz_conflicted_objects"] = g.APIAuthzConflictedObjects
+		}
+		if g.APIAuthzProducedAt != nil {
+			h["api_authz_produced_at"] = g.APIAuthzProducedAt
+		}
+		if sec := g.APIAuthzLeaseSeconds[app.AppID]; sec > 0 {
+			h["api_authz_lease_seconds"] = sec
+		}
+		// NG-AZ-02 D8/D6：漂移上限与节点心跳周期（gateway_runtime 设置下发；0 不下发走网关缺省）
+		if g.APIAuthzClockSkewMaxSeconds > 0 {
+			h["api_authz_clock_skew_max_seconds"] = g.APIAuthzClockSkewMaxSeconds
+		}
+		if g.APINodeHeartbeatSeconds > 0 {
+			h["api_node_heartbeat_seconds"] = g.APINodeHeartbeatSeconds
 		}
 		if g.APIAuthzPreviousValid != nil {
 			// The HMAC key is runtime secret material. It is injected from the
@@ -986,6 +1336,11 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		// 仅 WDSP 开启且非空时注入，未配置=网关流程偏离检测零行为）
 		if len(g.APIFlowBaselines) > 0 {
 			h["api_flow_baselines"] = g.APIFlowBaselines
+		}
+		// 强流程定义（NG-FLOW-01：api_strong_flow_definitions 表 ACTIVE 行；
+		// 仅 WDSP 开启且非空时注入，未配置=网关强流程检测零行为）
+		if len(g.APIStrongFlows) > 0 {
+			h["api_strong_flows"] = g.APIStrongFlows
 		}
 		// 已吊销凭据清单（阶段8 §35：api_revoked_credentials 表当前生效行；
 		// 仅 WDSP 开启且非空时注入，未配置=网关吊销凭据检测零行为；指纹级载荷无凭据明文）
@@ -1031,6 +1386,36 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		// 仅 WDSP 开启且非空时注入，未配置=网关字段级解析零行为，与 v1 一致）
 		if len(g.APIGRPCDescriptors) > 0 {
 			h["api_grpc_descriptors"] = g.APIGRPCDescriptors
+		}
+		// gRPC 描述符 per-app 绑定（NG-GRPC G1 批次 B1：api_grpc_bindings 表全行；
+		// 空绑定=不下发（网关按全局注册表语义，零变化）；含 PROTECT 绑定的快照
+		// 能力门 required detectors.grpc.unary=grpc/2）
+		if len(g.APIGRPCBindings) > 0 {
+			h["api_grpc_bindings"] = g.APIGRPCBindings
+		}
+		// MCP 工具目录与 per-app 绑定（NG-MCP G1 批次 B1：mcp_tool_catalogs 表 ENABLED
+		// 行仅含 APPROVED 工具 + mcp_catalog_bindings 表全行；空段=不下发，网关 MCP
+		// 管控零行为变化；含 PROTECT 绑定的快照能力门 required protocols.mcp=acl_v1 +
+		// detectors.mcp.toolcall=mcp/2）
+		if len(g.APIMCPToolCatalogs) > 0 {
+			h["api_mcp_tool_catalogs"] = g.APIMCPToolCatalogs
+		}
+		if len(g.APIMCPBindings) > 0 {
+			h["api_mcp_bindings"] = g.APIMCPBindings
+		}
+		// 机器身份登记册与 per-app 绑定（NG-ID g1 批次 B1：machine_identities 表 ENABLED
+		// 行+全状态键行 + machine_identity_bindings 表全行 + 元数据段（撤销水位/登记册
+		// 版本）；空段=不下发，网关机器身份验证零行为变化（NG-T-C01）；含 PROTECT 绑定的
+		// 快照能力门 required detectors.machineid=mid/1——S5 教训「发布段 handler 映射
+		// 缺失」锚定：三段均须注入 handler 哈希映射（网关 module.go 同 tag 接收））
+		if len(g.APIMachineIdentities) > 0 {
+			h["api_machine_identities"] = g.APIMachineIdentities
+		}
+		if len(g.APIMachineIdentityBindings) > 0 {
+			h["api_machine_identity_bindings"] = g.APIMachineIdentityBindings
+		}
+		if g.APIMachineIdentityMeta != nil {
+			h["api_machine_identity_meta"] = g.APIMachineIdentityMeta
 		}
 		// 业务 JWT 信任链（P0-03 jwt_trust 段；按应用注入本应用策略——
 		// OFF 同样下发以覆盖旧配置残留，网关按 mode 关闭校验；内容含策略版本与

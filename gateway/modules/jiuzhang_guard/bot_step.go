@@ -112,6 +112,18 @@ func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next cad
 		return g.serveNext(w, r, next)
 	}
 
+	// 4.5 机器身份 Bot 豁免（NG-ID G1 §1.7/D7：三重显式——身份行
+	// bot_challenge_exempt=true ∩ 当前请求命中该身份的绑定 selector ∩ 验证链
+	// 全步通过（VERIFIED）；豁免事实进事件（MID_BOT_EXEMPT，含身份指纹与绑定
+	// 标识）；未豁免的 VERIFIED 机器照走挑战（默认不免——机器身份不产生全局放行）
+	if g.machineIDBotExempt(r) {
+		if outcome := machineIDOutcomeFrom(r.Context()); outcome != nil && outcome.Result != nil {
+			g.emitMachineIDEvent(r, events.MIDBotExempt, "OBSERVE", 0, outcome)
+			dispo.RecordStep(ExecutorBot, StepObserved, "MID-BOT-EXEMPT binding="+outcome.Result.BindingID)
+		}
+		return g.serveNext(w, r, next)
+	}
+
 	// 5. 多信号判定（§4.2：≥2 独立信号组且 ≥1 行为组；观测缺失按 UNKNOWN 处理）
 	dec := g.evaluateBotSignals(r, bp)
 	if reChallenge != "" {
@@ -215,6 +227,7 @@ func (g *Guard) serveBotNamespace(w http.ResponseWriter, r *http.Request, bp *bo
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		}
 		w.Header().Set("Cache-Control", "no-store")
+		DefaultCovCounters.Inc(StageBotIntercept)
 		dispo.RecordTerminal(ExecutorBot, DisActionNone, status, true,
 			[]string{reason}, []string{"bot-policy:v" + strconv.Itoa(bp.Version)})
 		w.WriteHeader(status)

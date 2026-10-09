@@ -10,7 +10,7 @@ tests:
       - input:
           dest_addr: 127.0.0.1
           headers:
-            Host: localhost
+            Host: shop.example.com
             User-Agent: "JiuZhang CUSTOM_PACK test agent"
             Accept: "*/*"
           method: GET

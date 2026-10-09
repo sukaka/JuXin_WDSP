@@ -44,6 +44,9 @@ type heartbeatRunner struct {
 	cancel     context.CancelFunc
 	done       chan struct{}
 	lastErr    string // 同类发射错误去重（防日志洪泛；恢复时 Info 一条）
+	// authzState NG-AZ-02 D6 授权 ACK 状态提供者（注册表合并态；nil/返回 false = 未启用
+	// 授权快照，心跳不携带 authz 字段——v1 零变化）
+	authzState func() (authzACKState, bool)
 }
 
 func newHeartbeatRunner(log *apievents.Logger, logger *zap.Logger, interval time.Duration, policyVer string, modelCount int) *heartbeatRunner {
@@ -51,6 +54,13 @@ func newHeartbeatRunner(log *apievents.Logger, logger *zap.Logger, interval time
 		log: log, logger: logger, interval: interval,
 		policyVer: policyVer, modelCount: modelCount,
 		startTime: time.Now().UTC(),
+	}
+}
+
+// SetAuthzStateProvider 注入授权 ACK 状态提供者（NG-AZ-02 D6；启动前调用，nil 忽略）。
+func (r *heartbeatRunner) SetAuthzStateProvider(fn func() (authzACKState, bool)) {
+	if fn != nil {
+		r.authzState = fn
 	}
 }
 
@@ -72,7 +82,37 @@ func (r *heartbeatRunner) emit() error {
 		UptimeSeconds:       int64(now.Sub(r.startTime).Seconds()),
 		GuardStartTime:      &r.startTime,
 	}
+	// NG-AZ-02 D6：授权 ACK 字段（注册表合并态；未启用授权快照时不携带——v1 零变化）
+	if r.authzState != nil {
+		if st, ok := r.authzState(); ok {
+			rec.AuthzPolicyVersion = st.PolicyVersion
+			rec.AuthzWatermark = authzWatermarkToEvents(st.Watermark)
+			rec.AuthzSnapshotExpiresAt = st.SnapshotExpiresAt
+			if st.LeaseSeconds > 0 {
+				rec.AuthzLeaseSeconds = st.LeaseSeconds
+			}
+			if !st.AppliedAt.IsZero() {
+				t := st.AppliedAt
+				rec.AuthzAppliedAt = &t
+			}
+		}
+	}
 	return r.log.Emit(rec)
+}
+
+// authzWatermarkToEvents 注册表水位 → apievents 水位（跨包类型转换，键值逐项拷贝不共享）。
+func authzWatermarkToEvents(w *authzWatermarkJSON) *apievents.AuthzWatermark {
+	if w == nil {
+		return nil
+	}
+	out := &apievents.AuthzWatermark{ManualSeq: w.ManualSeq}
+	if len(w.Sources) > 0 {
+		out.Sources = map[string]int64{}
+		for k, v := range w.Sources {
+			out.Sources[k] = v
+		}
+	}
+	return out
 }
 
 // tick 发射一拍；失败仅告警（同类错误去重），不影响网关主流程。
@@ -134,6 +174,8 @@ func (g *Guard) startAPINodeHeartbeat() {
 	r := newHeartbeatRunner(g.apiEvents, g.logger,
 		time.Duration(g.APINodeHeartbeatSeconds)*time.Second,
 		g.APIPolicyVersion, len(g.APIFormalModelVersions))
+	// NG-AZ-02 D6：授权 ACK 状态提供者（注册表合并态；无授权内容时返回 false，字段省略）
+	r.SetAuthzStateProvider(defaultAuthzRegistry.merged)
 	r.start()
 	g.heartbeat = r
 	g.logger.Info("api node heartbeat enabled",

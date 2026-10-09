@@ -35,15 +35,18 @@ const (
 
 // Config agent.json 持久化结构。
 type Config struct {
-	Server                   string  `json:"server"`
-	AgentID                  string  `json:"agent_id"`
-	Credential               string  `json:"credential"`
-	HeartbeatIntervalSeconds int     `json:"heartbeat_interval_seconds"`
-	InsecureSkipVerify       bool    `json:"insecure_skip_verify,omitempty"`
-	AppliedConfigVersion     int64   `json:"applied_config_version"`
-	Limits                   Limits  `json:"limits"`
-	Buffer                   Buffer  `json:"buffer"`
-	Policy                   *Policy `json:"policy,omitempty"` // 最近应用的策略快照（重启后沿用，直到服务端下发新版本）
+	Server                   string `json:"server"`
+	AgentID                  string `json:"agent_id"`
+	Credential               string `json:"credential"`
+	HeartbeatIntervalSeconds int    `json:"heartbeat_interval_seconds"`
+	InsecureSkipVerify       bool   `json:"insecure_skip_verify,omitempty"`
+	AppliedConfigVersion     int64  `json:"applied_config_version"`
+	// PendingConfigAckVersion 是已持久化且已生效、但控制面尚未确认的配置版本。
+	// 进程在 APPLIED ACK 返回前退出时，重启后必须优先重试该 ACK。
+	PendingConfigAckVersion int64   `json:"pending_config_ack_version,omitempty"`
+	Limits                  Limits  `json:"limits"`
+	Buffer                  Buffer  `json:"buffer"`
+	Policy                  *Policy `json:"policy,omitempty"` // 最近应用的策略快照（重启后沿用，直到服务端下发新版本）
 
 	// Phase 2 抓包后端（本地运维意志，优先于策略下发；见 capture.ResolveBackend）：
 	// afpacket | ebpf | auto（空=auto：先试 eBPF，失败回退 AF_PACKET，Fail-Open）。

@@ -36,6 +36,7 @@ type Job struct {
 	BackupJobID    *uuid.UUID      `json:"backup_job_id"`
 	RequestedBy    *uuid.UUID      `json:"requested_by"`
 	RequestedAt    time.Time       `json:"requested_at"`
+	ScheduledAt    *time.Time      `json:"scheduled_at"`
 	StartedAt      *time.Time      `json:"started_at"`
 	FinishedAt     *time.Time      `json:"finished_at"`
 	FailureCode    string          `json:"failure_code"`
@@ -148,7 +149,7 @@ func (s *Store) ListPackages(ctx context.Context, status string, page, pageSize 
 // ---------- 升级任务 ----------
 
 const jobColumns = `id, package_id, status, precheck, backup_job_id, requested_by, requested_at,
-started_at, finished_at, failure_code, failure_message, request_id`
+scheduled_at, started_at, finished_at, failure_code, failure_message, request_id`
 
 // upgradeJobLockKey 串行化活动升级任务的检查与创建，避免两个请求同时通过预检。
 const upgradeJobLockKey int64 = 0x4a5a574146555047
@@ -156,7 +157,7 @@ const upgradeJobLockKey int64 = 0x4a5a574146555047
 func scanJob(row pgx.Row) (*Job, error) {
 	var j Job
 	err := row.Scan(&j.ID, &j.PackageID, &j.Status, &j.Precheck, &j.BackupJobID,
-		&j.RequestedBy, &j.RequestedAt, &j.StartedAt, &j.FinishedAt,
+		&j.RequestedBy, &j.RequestedAt, &j.ScheduledAt, &j.StartedAt, &j.FinishedAt,
 		&j.FailureCode, &j.FailureMessage, &j.RequestID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -169,6 +170,17 @@ func scanJob(row pgx.Row) (*Job, error) {
 
 // CreateJobIfNoActive 在同一事务中检查并创建升级任务。
 func (s *Store) CreateJobIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID string) (*Job, error) {
+	return s.createJobIfNoActive(ctx, packageID, requestedBy, requestID, StatusPending, nil)
+}
+
+// CreateScheduledJobIfNoActive 在同一事务中检查并创建定时升级任务（SCHEDULED），
+// 到点由调度器 promote 为 PENDING 后进入正常执行流程。
+// SCHEDULED 视为活动任务（占用执行槽位，阻止其他任务创建）；CANCELLED 为终态。
+func (s *Store) CreateScheduledJobIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID string, scheduledAt time.Time) (*Job, error) {
+	return s.createJobIfNoActive(ctx, packageID, requestedBy, requestID, StatusScheduled, &scheduledAt)
+}
+
+func (s *Store) createJobIfNoActive(ctx context.Context, packageID uuid.UUID, requestedBy *uuid.UUID, requestID, status string, scheduledAt *time.Time) (*Job, error) {
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, err
@@ -181,7 +193,7 @@ func (s *Store) CreateJobIfNoActive(ctx context.Context, packageID uuid.UUID, re
 	var active bool
 	if err := tx.QueryRow(ctx, `
 SELECT EXISTS(SELECT 1 FROM upgrade_jobs
-WHERE status NOT IN ($1, $2, $3))`, StatusSuccess, StatusFailed, StatusRolledBack).Scan(&active); err != nil {
+WHERE status NOT IN ($1, $2, $3, $4))`, StatusSuccess, StatusFailed, StatusRolledBack, StatusCancelled).Scan(&active); err != nil {
 		return nil, err
 	}
 	if active {
@@ -189,9 +201,9 @@ WHERE status NOT IN ($1, $2, $3))`, StatusSuccess, StatusFailed, StatusRolledBac
 	}
 
 	job, err := scanJob(tx.QueryRow(ctx, `
-INSERT INTO upgrade_jobs (package_id, status, requested_by, request_id)
-VALUES ($1, $2, $3, $4)
-RETURNING `+jobColumns, packageID, StatusPending, requestedBy, requestID))
+INSERT INTO upgrade_jobs (package_id, status, scheduled_at, requested_by, request_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING `+jobColumns, packageID, status, scheduledAt, requestedBy, requestID))
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +257,7 @@ func (s *Store) ListJobs(ctx context.Context, status string, page, pageSize int)
 	for rows.Next() {
 		var j Job
 		if err := rows.Scan(&j.ID, &j.PackageID, &j.Status, &j.Precheck, &j.BackupJobID,
-			&j.RequestedBy, &j.RequestedAt, &j.StartedAt, &j.FinishedAt,
+			&j.RequestedBy, &j.RequestedAt, &j.ScheduledAt, &j.StartedAt, &j.FinishedAt,
 			&j.FailureCode, &j.FailureMessage, &j.RequestID); err != nil {
 			return nil, 0, err
 		}
@@ -259,8 +271,60 @@ func (s *Store) HasActiveJob(ctx context.Context) (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(ctx, `
 SELECT EXISTS(SELECT 1 FROM upgrade_jobs
-WHERE status NOT IN ($1, $2, $3))`, StatusSuccess, StatusFailed, StatusRolledBack).Scan(&exists)
+WHERE status NOT IN ($1, $2, $3, $4))`, StatusSuccess, StatusFailed, StatusRolledBack, StatusCancelled).Scan(&exists)
 	return exists, err
+}
+
+// ListDueScheduledJobs 查询到点（scheduled_at <= now）的定时任务，按计划时间升序。
+func (s *Store) ListDueScheduledJobs(ctx context.Context, now time.Time) ([]Job, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+jobColumns+` FROM upgrade_jobs
+WHERE status = $1 AND scheduled_at IS NOT NULL AND scheduled_at <= $2
+ORDER BY scheduled_at`, StatusScheduled, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Job
+	for rows.Next() {
+		var j Job
+		if err := rows.Scan(&j.ID, &j.PackageID, &j.Status, &j.Precheck, &j.BackupJobID,
+			&j.RequestedBy, &j.RequestedAt, &j.ScheduledAt, &j.StartedAt, &j.FinishedAt,
+			&j.FailureCode, &j.FailureMessage, &j.RequestID); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// PromoteScheduledToPending 到点 promote：SCHEDULED → PENDING。
+// 乐观守卫（状态与到点条件双重复核），与取消竞争时恰好一方成功。
+func (s *Store) PromoteScheduledToPending(ctx context.Context, id uuid.UUID, now time.Time) error {
+	tag, err := s.db.Exec(ctx, `
+UPDATE upgrade_jobs SET status = $2
+WHERE id = $1 AND status = $3 AND scheduled_at IS NOT NULL AND scheduled_at <= $4`,
+		id, StatusPending, StatusScheduled, now)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: 定时任务不存在、已取消或未到执行时间", ErrInvalidStatus)
+	}
+	return nil
+}
+
+// CancelScheduled 取消定时任务：SCHEDULED → CANCELLED（乐观守卫）。
+func (s *Store) CancelScheduled(ctx context.Context, id uuid.UUID) error {
+	tag, err := s.db.Exec(ctx, `
+UPDATE upgrade_jobs SET status = $2, finished_at = now()
+WHERE id = $1 AND status = $3`, id, StatusCancelled, StatusScheduled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: 任务已开始，无法取消", ErrInvalidStatus)
+	}
+	return nil
 }
 
 // Transition 状态机迁移（乐观校验：仅当当前状态匹配时才更新，防并发乱序）。
@@ -314,4 +378,50 @@ func (s *Store) MarkFinished(ctx context.Context, id uuid.UUID, status string) e
 UPDATE upgrade_jobs SET status = $2, finished_at = now(), failure_code = '', failure_message = ''
 WHERE id = $1`, id, status)
 	return err
+}
+
+// ---------- 执行器等待截止（APPLYING 持久化 deadline，F7 兜底清扫） ----------
+
+// SetExecutorDeadline 持久化执行器等待截止时刻（进入 APPLYING 时写入）。
+func (s *Store) SetExecutorDeadline(ctx context.Context, id uuid.UUID, deadline time.Time) error {
+	_, err := s.db.Exec(ctx, `UPDATE upgrade_jobs SET executor_deadline = $2 WHERE id = $1`, id, deadline)
+	return err
+}
+
+// ListExpiredApplyingJobs 查询已超执行器等待截止的 APPLYING 任务：
+// executor_deadline 列优先；旧行缺省时退化为 started_at + wait（同等待上限口径）。
+func (s *Store) ListExpiredApplyingJobs(ctx context.Context, cutoff time.Time, wait time.Duration) ([]Job, error) {
+	rows, err := s.db.Query(ctx, `SELECT `+jobColumns+` FROM upgrade_jobs
+WHERE status = $1 AND COALESCE(executor_deadline, started_at + make_interval(secs => $2)) <= $3
+ORDER BY requested_at`, StatusApplying, wait.Seconds(), cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Job
+	for rows.Next() {
+		var j Job
+		if err := rows.Scan(&j.ID, &j.PackageID, &j.Status, &j.Precheck, &j.BackupJobID,
+			&j.RequestedBy, &j.RequestedAt, &j.ScheduledAt, &j.StartedAt, &j.FinishedAt,
+			&j.FailureCode, &j.FailureMessage, &j.RequestID); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// MarkFailedIfStatus 仅当任务仍处于 from 状态时标记失败（乐观守卫，
+// 兜底清扫与执行器结果处理并发时恰好一方生效）。
+func (s *Store) MarkFailedIfStatus(ctx context.Context, id uuid.UUID, from, code string, err error) error {
+	tag, dbErr := s.db.Exec(ctx, `
+UPDATE upgrade_jobs SET status = $2, failure_code = $3, failure_message = $4, finished_at = now()
+WHERE id = $1 AND status = $5`, id, StatusFailed, code, failMsg(err), from)
+	if dbErr != nil {
+		return dbErr
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: job not in status %s", ErrInvalidStatus, from)
+	}
+	return nil
 }

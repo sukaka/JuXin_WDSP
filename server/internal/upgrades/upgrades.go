@@ -13,10 +13,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // 升级任务状态机
 const (
+	StatusScheduled   = "SCHEDULED"
 	StatusPending     = "PENDING"
 	StatusPrecheck    = "PRECHECK"
 	StatusBackup      = "BACKUP"
@@ -27,6 +29,7 @@ const (
 	StatusFailed      = "FAILED"
 	StatusRollingBack = "ROLLING_BACK"
 	StatusRolledBack  = "ROLLED_BACK"
+	StatusCancelled   = "CANCELLED"
 )
 
 // 升级包状态
@@ -44,10 +47,13 @@ const (
 	FailMigrate  = "MIGRATE_FAILED"
 	FailVerify   = "VERIFY_FAILED"
 	FailRollback = "ROLLBACK_FAILED"
+	// FailExecutorTimeout 宿主机执行器超期未返回终态结果（含 API 重启前等待时长），
+	// 滞留 APPLYING 任务由兜底清扫按中断终结（不自动重跑、不假装成功）。
+	FailExecutorTimeout = "EXECUTOR_TIMEOUT"
 )
 
 // CurrentVersion 当前系统版本（未在 system_settings 配置 system:current_version 时的兜底值）。
-const CurrentVersion = "1.2.0"
+const CurrentVersion = "1.3.0"
 
 // 错误
 var (
@@ -61,6 +67,7 @@ var (
 
 // transitions 合法状态迁移（状态机白名单）。
 var transitions = map[string][]string{
+	StatusScheduled:   {StatusPending, StatusCancelled},
 	StatusPending:     {StatusPrecheck},
 	StatusPrecheck:    {StatusBackup, StatusFailed},
 	StatusBackup:      {StatusApplying, StatusFailed},
@@ -75,7 +82,7 @@ var transitions = map[string][]string{
 // ValidStatus 校验任务状态合法。
 func ValidStatus(s string) bool {
 	_, ok := transitions[s]
-	return ok || s == StatusRolledBack
+	return ok || s == StatusRolledBack || s == StatusCancelled
 }
 
 // CanTransition 判断 from → to 是否为合法状态迁移。
@@ -90,7 +97,30 @@ func CanTransition(from, to string) bool {
 
 // TerminalStatus 判断是否为终态（不再流转）。
 func TerminalStatus(s string) bool {
-	return s == StatusSuccess || s == StatusFailed || s == StatusRolledBack
+	return s == StatusSuccess || s == StatusFailed || s == StatusRolledBack || s == StatusCancelled
+}
+
+// 定时执行时间窗边界：太近无法保证调度及时性，太远不利于变更管控。
+const (
+	MinScheduleLead    = 2 * time.Minute
+	MaxScheduleHorizon = 90 * 24 * time.Hour
+)
+
+// ParseScheduledAt 解析并校验定时执行时间：RFC3339 且必须带时区偏移；
+// 早于 now+MinScheduleLead（太近）或晚于 now+MaxScheduleHorizon（太远）一律拒绝。
+// 边界值（恰好 now+2 分钟 / 恰好 now+90 天）视为合法。
+func ParseScheduledAt(text string, now time.Time) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(text))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: 定时时间格式无效（须为 RFC3339 且带时区，如 2026-09-14T20:00:00+08:00）", ErrInvalidInput)
+	}
+	if t.Before(now.Add(MinScheduleLead)) {
+		return time.Time{}, fmt.Errorf("%w: 定时时间距离现在不足 2 分钟，请设置更晚的时间", ErrInvalidInput)
+	}
+	if t.After(now.Add(MaxScheduleHorizon)) {
+		return time.Time{}, fmt.Errorf("%w: 定时时间超过 90 天上限，请设置更近的时间", ErrInvalidInput)
+	}
+	return t.UTC(), nil
 }
 
 // versionRe 简版语义化版本号：v?MAJOR.MINOR.PATCH（可带 -prerelease 后缀，比较时忽略）。

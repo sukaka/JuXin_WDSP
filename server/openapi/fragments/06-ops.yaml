@@ -1,5 +1,5 @@
 # 报表与系统运维域：报告模板/报告任务/报告归档、备份、恢复、升级、交付检查、系统控制。
-# 路由源：server/internal/reports/handler.go（13 条）、server/internal/upgrades/handler.go（8 条）、
+# 路由源：server/internal/reports/handler.go（13 条）、server/internal/upgrades/handler.go（9 条）、
 # server/internal/delivery/handler.go（4 条）、server/internal/app/app.go 第 693-705 行（backups/restores 13 条）、
 # server/internal/systemops/handler.go（3 条）。
 
@@ -1009,42 +1009,61 @@ paths:
       tags: [upgrades]
       summary: 上传升级包
       description: >-
-        multipart 上传升级包文件（字段 `file`），服务端流式落盘到升级包目录（`UPGRADE_PACKAGES_DIR`，
-        默认数据目录下 `upgrade-packages/`）并自算 SHA-256 与大小后登记；
-        附加表单字段 `version_from`、`version_to` 必填，`manifest` 可选（JSON 字符串）。
+        multipart 上传升级包文件（仅字段 `file` 必填），服务端流式落盘到升级包目录（`UPGRADE_PACKAGES_DIR`，
+        默认数据目录下 `upgrade-packages/`）并自算 SHA-256 与大小后登记。
+        验签：包内含 `manifest.sig`（对包内 `manifest.json` 原始字节的 Ed25519 签名，base64 单行文本）时使用内嵌验签；
+        无内嵌签名时回落旧格式，要求表单 `signature`（对整包字节的 detached Ed25519 签名 base64，对应 .sig 旁车文件内容）。
+        版本：优先取包内 `manifest.json` 的 `version_from`/`version_to`（执行器协议字段）；
+        表单 `version_from`/`version_to` 与包内交叉校验，不一致返回 400；旧格式包（无版本字段）须由表单提供。
+        `target_schema_version` 优先取包内 manifest.json，表单 `manifest` 字段（JSON 字符串）可覆盖。
         上传大小上限默认 4GiB（`UPGRADE_PACKAGE_MAX_BYTES` 可覆盖）。
         同名文件已存在且内容不同、或相同哈希已登记时返回 409。
-        版本校验未通过仍以 REJECTED 状态登记（保留证据）并删除已落盘文件。写操作审计。权限：`upgrades.execute`。
+        定时执行：表单 `scheduled_at`（RFC3339 且必须带时区）可指定将来执行时间，须不早于当前时间 +2 分钟
+        且不晚于 +90 天，非法返回 400；指定后 VERIFIED 创建的执行状态为 `SCHEDULED`（带 `scheduled_at`），
+        到点由服务端调度自动进入正常执行流程（promote 记高危审计），可通过 POST /api/v1/upgrades/{id}/cancel 取消；
+        不传则 VERIFIED 后立即自动执行。
+        验签/校验未通过仍以 REJECTED 状态登记（保留证据）、删除已落盘文件并记录高危审计；
+        验证通过（VERIFIED）后自动创建升级执行（等同 POST /api/v1/upgrades），响应含 `package` 与 `execution`；
+        执行创建失败（如已有执行中任务）不影响登记：包保持 VERIFIED，`execution` 为 null 并以 `warning`
+        说明可手动执行。权限：`upgrades.execute`。
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
-              required: [file, version_from, version_to]
+              required: [file]
               properties:
                 file:
                   type: string
                   format: binary
                   description: 升级包文件（如 jiuzhang-wdsp-offline-2.6.0-amd64.tar.gz）
+                signature:
+                  type: string
+                  description: 整包 detached Ed25519 签名（base64 单行文本，对应 .sig 旁车文件内容）；包内含 manifest.sig 时忽略，否则必填
                 version_from:
                   type: string
-                  description: 起始版本（须与当前系统版本一致）
+                  description: 起始版本（须与当前系统版本一致）；包内 manifest.json 已声明时须一致，否则由表单提供
                   example: '2.5.5'
                 version_to:
                   type: string
-                  description: 目标版本（须高于起始版本）
+                  description: 目标版本（须高于起始版本）；包内 manifest.json 已声明时须一致，否则由表单提供
                   example: '2.6.0'
                 manifest:
                   type: string
-                  description: 可选 manifest（JSON 字符串，可声明 target_schema_version）
+                  description: 可选 manifest（JSON 字符串，可覆盖包内的 target_schema_version）
+                scheduled_at:
+                  type: string
+                  format: date-time
+                  description: 可选定时执行时间（RFC3339 且必须带时区偏移）；须不早于当前时间 +2 分钟且不晚于 +90 天，非法返回 400。不传则 VERIFIED 后立即自动执行
+                  example: '2026-09-14T20:00:00+08:00'
       responses:
         '200':
-          description: 上传并登记成功（校验未通过时包状态为 REJECTED 且 message 说明原因）
+          description: 上传并登记成功（校验未通过时包状态为 REJECTED 且 message 说明原因；执行创建失败时 execution 为 null 且 warning 说明）
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UpgradeRegisterPackageResponse'
+                $ref: '#/components/schemas/UpgradeUploadPackageResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1103,7 +1122,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [PENDING, PRECHECK, BACKUP, APPLYING, MIGRATING, VERIFYING, SUCCESS, FAILED, ROLLING_BACK, ROLLED_BACK]
+            enum: [SCHEDULED, PENDING, PRECHECK, BACKUP, APPLYING, MIGRATING, VERIFYING, SUCCESS, FAILED, ROLLING_BACK, ROLLED_BACK, CANCELLED]
           description: 按任务状态过滤
         - name: page
           in: query
@@ -1235,6 +1254,47 @@ paths:
                 $ref: '#/components/schemas/Error'
         '500':
           $ref: '#/components/responses/InternalError'
+
+  /upgrades/{id}/cancel:
+    post:
+      operationId: upgradeCancel
+      tags: [upgrades]
+      summary: 取消定时升级任务
+      description: >-
+        取消 SCHEDULED 状态的定时升级任务（转为终态 CANCELLED，不再到点自动执行）。
+        已进入 PENDING 及以后状态的任务返回 409「任务已开始，无法取消」。中危操作，全程审计。
+        权限：`upgrades.execute`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+          description: 升级任务 ID
+      responses:
+        '200':
+          description: 任务已取消，返回任务（status 为 CANCELLED）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpgradeJobResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 任务已开始（非 SCHEDULED 状态），无法取消
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   # ---------- 交付检查 ----------
   /delivery-checks:
@@ -2356,6 +2416,19 @@ components:
           $ref: '#/components/schemas/UpgradePackage'
         message: {type: string, description: 校验未通过时的原因说明（包以 REJECTED 状态登记）}
 
+    UpgradeUploadPackageResponse:
+      type: object
+      properties:
+        package:
+          $ref: '#/components/schemas/UpgradePackage'
+        message: {type: string, description: 验签/校验未通过时的原因说明（包以 REJECTED 状态登记，不出现 execution）}
+        execution:
+          description: 验证通过后自动创建的升级执行（创建失败时为 null）
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/UpgradeJob'
+        warning: {type: string, description: 包已 VERIFIED 但自动创建升级执行失败时的说明（execution 为 null，可手动 POST /api/v1/upgrades）}
+
     UpgradePrecheckItem:
       type: object
       properties:
@@ -2391,8 +2464,8 @@ components:
         package_id: {type: string, format: uuid, nullable: true, description: 升级包 ID}
         status:
           type: string
-          enum: [PENDING, PRECHECK, BACKUP, APPLYING, MIGRATING, VERIFYING, SUCCESS, FAILED, ROLLING_BACK, ROLLED_BACK]
-          description: 任务状态机
+          enum: [SCHEDULED, PENDING, PRECHECK, BACKUP, APPLYING, MIGRATING, VERIFYING, SUCCESS, FAILED, ROLLING_BACK, ROLLED_BACK, CANCELLED]
+          description: 任务状态机（SCHEDULED=定时待到点；CANCELLED=已取消终态）
         precheck:
           type: object
           nullable: true
@@ -2400,6 +2473,7 @@ components:
         backup_job_id: {type: string, format: uuid, nullable: true, description: 升级前自动创建的备份任务 ID（回滚依据）}
         requested_by: {type: string, format: uuid, nullable: true, description: 创建人用户 ID}
         requested_at: {type: string, format: date-time}
+        scheduled_at: {type: string, format: date-time, nullable: true, description: 定时执行时间（SCHEDULED 到点自动进入正常执行流程；立即执行为 null）}
         started_at: {type: string, format: date-time, nullable: true}
         finished_at: {type: string, format: date-time, nullable: true}
         failure_code:

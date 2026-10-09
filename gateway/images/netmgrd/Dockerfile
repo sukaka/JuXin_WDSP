@@ -56,4 +56,7 @@ RUN apk add --no-cache iproute2 iputils tcpdump traceroute
 
 COPY --from=builder /netmgrd /usr/local/bin/netmgrd
 
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+  CMD ["/usr/local/bin/netmgrd", "--healthcheck"]
+
 ENTRYPOINT ["/usr/local/bin/netmgrd"]

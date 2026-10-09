@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 PREPARE="$REPO_ROOT/ops/install/prepare-openeuler-zhaoxin.sh"
 RUN_HEADER="$REPO_ROOT/ops/install/openeuler-zhaoxin-run-header.sh"
 BUILD="$REPO_ROOT/ops/offline-package/build-openeuler-zhaoxin-run.sh"
+BASE_BUILD="$REPO_ROOT/ops/offline-package/build.sh"
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/jz-openeuler-zhaoxin.XXXXXX")"
 cleanup() {
@@ -145,6 +146,13 @@ chmod +x "$CHECK_BIN/docker"
 
 (
   source "$PREPARE"
+  PATH="/usr/bin:/bin"
+  print_report >/dev/null 2>&1
+) && pass "环境报告在 Docker 缺失时不终止准备流程" \
+  || fail "环境报告在 Docker 缺失时不终止准备流程"
+
+(
+  source "$PREPARE"
   list_minimal_services | grep -qx 'cups.service'
   ! list_minimal_services | grep -Eq 'ssh|NetworkManager|firewalld|chronyd|docker'
   ! grep -Eq 'mitigations=off|selinux=0|nosmt' "$PREPARE"
@@ -162,6 +170,16 @@ check "run header 在安装随包 RPM 前完成 Ed25519 验签" bash -c '
 check "run header 可补齐哈希与验签基础工具" \
   grep -q 'install_bootstrap_package coreutils' "$RUN_HEADER"
 check "构建器固定 wdsp/amd64 基线" grep -q 'jiuzhang-wdsp-offline-' "$BUILD"
+check "构建器要求随包 RPM 包含 Compose v2 插件" \
+  grep -q 'docker-compose-plugin-\*\.rpm' "$BUILD"
+check "宿主机仅尝试安装 Compose v2 插件" \
+  grep -q 'install_first_available docker-compose-plugin || true' "$PREPARE"
+check "宿主机不将 docker-compose 当作 Compose v2 替代" \
+  bash -c '! grep -q "install_first_available docker-compose-plugin docker-compose" "$1"' _ "$PREPARE"
+check "构建器禁止写入 macOS 扩展属性" \
+  grep -q 'COPYFILE_DISABLE=1' "$BUILD"
+check "基础离线包禁止写入 macOS 扩展属性" \
+  grep -q 'COPYFILE_DISABLE=1' "$BASE_BUILD"
 check "离线包 allowlist 包含宿主机准备脚本" \
   grep -q '^file=install/prepare-openeuler-zhaoxin.sh$' "$REPO_ROOT/ops/offline-package/allowlist.v1"
 
@@ -191,6 +209,19 @@ else
   fail "构建器生成可执行 .run"
   fail "生成的 .run 可独立显示帮助"
   fail "生成的 .run 包含自解压边界"
+fi
+
+MISSING_PLUGIN_RPM_DIR="$TMP_ROOT/rpms-without-compose-plugin"
+mkdir -p "$MISSING_PLUGIN_RPM_DIR"
+: > "$MISSING_PLUGIN_RPM_DIR/docker-ce-27.3.1-1.x86_64.rpm"
+if "$BUILD" --version 9.9.9 --offline-package "$FAKE_PACKAGE" \
+  --development --rpm-dir "$MISSING_PLUGIN_RPM_DIR" --output "$TMP_ROOT/missing-plugin-output" \
+  >"$TMP_ROOT/missing-plugin.log" 2>&1; then
+  fail "构建器拒绝缺少 Compose v2 插件的 RPM 目录"
+elif grep -q 'docker-compose-plugin' "$TMP_ROOT/missing-plugin.log"; then
+  pass "构建器拒绝缺少 Compose v2 插件的 RPM 目录"
+else
+  fail "构建器拒绝缺少 Compose v2 插件的 RPM 目录"
 fi
 
 printf '\n结果: PASS=%d FAIL=%d\n' "$PASS_COUNT" "$FAIL_COUNT"

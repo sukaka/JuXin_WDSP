@@ -27,6 +27,8 @@ import (
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/flowguard"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/mcpguard"
 	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
@@ -124,6 +126,33 @@ func buildBehaviorStores(g *Guard, eng *sharedEngine) *detectors.StoreOverrides 
 	return behaviorstore.New(eng.valkey, "", ttl, g.logger).Overrides()
 }
 
+// buildStrongFlowRuntime 强流程运行时装配（NG-FLOW-02 §1.3/D8）：未下发定义 → nil
+// （零行为 NG-T-C01）。定义存在时构建 Valkey 原子操作存储（共享引擎连接，Lua 单
+// 次原子往返，fencing=实例级 INCR）——Valkey 连接缺席或实例引用 HMAC 密钥缺席
+// 均不拒载：Runtime 内部恒 UNKNOWN 放行 + dependency_unavailable 披露（D8 红线：
+// 严格流程严禁切换本地内存，分布式唯一事实源；UNKNOWN 恒不阻断），Warn 留痕。
+func (g *Guard) buildStrongFlowRuntime(eng *sharedEngine) *flowguard.Runtime {
+	if g.apiStrongFlows == nil {
+		return nil
+	}
+	var cli flowguard.Evaluator
+	if eng != nil && eng.valkey != nil {
+		cli = eng.valkey
+	} else {
+		g.logger.Warn("api_strong_flows 已下发但共享引擎无 Valkey 连接（未配置 valkey 块或 counter_backend 非 valkey）：强流程判定恒 UNKNOWN 放行+披露（D8 不切本地内存）")
+	}
+	if len(g.APIAuthzObjectHMACKey) != 32 {
+		g.logger.Warn("api_strong_flows 已下发但 api_authz_object_hmac_key_hex 缺失/非法：实例引用无法键化，强流程判定恒 UNKNOWN 放行+披露（不阻断）")
+	}
+	return &flowguard.Runtime{
+		Store: flowguard.NewStore(cli, func(op string, err error) {
+			g.logger.Warn("strong flow valkey op failed, UNKNOWN fail-open (D8: no local fallback)",
+				zap.String("op", op), zap.Error(err))
+		}),
+		HMACKey: g.APIAuthzObjectHMACKey,
+	}
+}
+
 // serveNext 统一放行出口：先执行 API 动态防护管线，再进入下游（WAF/反向代理）。
 // 全量访问日志采集点已上移至 ServeHTTP 入口（APM 阶段1 D9，覆盖前置拦截分支），
 // 此处仅打 TTFB 下游链进入点（访问日志关闭时 no-op）。
@@ -144,8 +173,16 @@ func (g *Guard) serveNext(w http.ResponseWriter, r *http.Request, next caddyhttp
 		if handled, err := g.enforceJWTTrust(w, r); handled {
 			return err
 		}
+		// 机器身份强制处置（NG-ID G1：与 enforceJWTTrust 同段——白名单/L7 allow
+		// 不绕过（安全底线）；验证点在 serveGuard 已 compute-only 完成，此处按
+		// 结果处置：INVALID→401 固定短语（不带 WWW-Authenticate）/OUT_OF_SCOPE→
+		// 403/UNAVAILABLE→503 依赖或 413 体预算；OBSERVE 记录放行；
+		// VERIFIED/NOT_PRESENT 原样继续——不产生全局放行）
+		if handled, err := g.enforceMachineIdentity(w, r); handled {
+			return err
+		}
 		if !g.APIDynamicProtection {
-			return next.ServeHTTP(w, r)
+			return proxyAndCount(w, r, next)
 		}
 		// 同凭据并发记账：入口 +1、出口（检测+下游转发全程结束）-1；匿名不跟踪。
 		// pipeline 无请求生命周期钩子，serveNext 放行链路是最接近的真实 in-flight 埋点。
@@ -163,19 +200,33 @@ func (g *Guard) serveNext(w http.ResponseWriter, r *http.Request, next caddyhttp
 // 响应相位（仅 API 流量）→ 必要时执行 MASK_RESPONSE → 事件在响应完成后输出（真实状态码与时延）。
 func (g *Guard) serveAPIProtected(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	start := time.Now().UTC()
-	res, handled, err := g.runAPIProtection(r, start)
+	res, handled, err := g.runAPIProtection(w, r, start)
 	if handled {
 		return err
 	}
 	if res == nil || res.Skipped {
-		return next.ServeHTTP(w, r)
+		return proxyAndCount(w, r, next)
 	}
 	if !res.API.IsAPI {
-		// 非 API 流量：无响应捕获，维持响应前输出（状态码 0 语义不变）
-		if len(res.Context.CopyMatches()) > 0 {
+		// 非 API 流量：无响应捕获，维持响应前输出（状态码 0 语义不变）。
+		// 强流程（NG-FLOW-02）：命中绑定端点即产动作条目——定义绑定本身就是
+		// API 语义声明（仅 CONFIRMED 端点可入定义），条目不随分类漏判丢失
+		// （PG 事件溯源完整性），故条目存在即输出事件。
+		// 强流程响应回程（NG-FLOW-03）：成功预留存在时包装记录器，下游返回后
+		// 收口 commit/受理/INDETERMINATE，条目随下方事件一并输出。
+		// MCP SSE 逐消息检查（NG-MCP G1 D7）：tools/call 上下文存在时包装——
+		// text/event-stream 响应逐事件即检即放（非 SSE 透传零行为）
+		mw, sfMCP := g.wrapMCPSSEResponse(w, res.Context)
+		sw, sfRec := g.wrapStrongFlowResponse(mw, res.Context)
+		nextErr := proxyWithMCPSSEGuard(sw, r, next, sfMCP)
+		if sfMCP != nil {
+			sfMCP.Finish()
+		}
+		g.finalizeStrongFlow(res.Context, sfRec, nextErr != nil)
+		if len(res.Context.CopyMatches()) > 0 || len(flowguard.ActionsFromContext(res.Context)) > 0 {
 			g.emitAPIEvent(r, res, nil)
 		}
-		return next.ServeHTTP(w, r)
+		return nextErr
 	}
 	// API 流量：包装捕获响应（脱敏改写的执行前提），响应完成后进入响应相位并输出事件
 	// 水印/签名启用时传入下载改写类型判定（候选文本族下载随 JSON 族同样进入缓冲，改写需完整体）；
@@ -191,9 +242,22 @@ func (g *Guard) serveAPIProtected(w http.ResponseWriter, r *http.Request, next c
 		downloadTypes = g.apiFileSignature.AllowsContentType
 	}
 	downloadHold := g.apiFileCompliance.HasDownloadRules()
-	cw := newAPIResponseCapture(w, g.responseCaptureMax(), g.responseFailClosed(),
+	// MCP SSE 逐消息检查（NG-MCP G1 D7）：tools/call 上下文存在时包装于捕获器之下
+	// ——text/event-stream 响应逐事件即检即放（现状直通路径字节级承载；非 SSE 透传
+	// 零行为；缓冲路径不受影响——MCP 非流式结果检查在响应相位 ProcessResponse 内）
+	mw, sfMCP := g.wrapMCPSSEResponse(w, res.Context)
+	cw := newAPIResponseCapture(mw, g.responseCaptureMax(), g.responseFailClosed(),
 		len(g.apiMaskRules[res.EndpointKey]) > 0, downloadTypes, downloadHold, res.EndpointKey, res.Context.RequestID, g.logger)
-	nextErr := next.ServeHTTP(cw, r)
+	// 强流程响应回程（NG-FLOW-03）：成功预留存在时包装记录器于捕获器之上——
+	// 采样源站原始字节（脱敏/水印/签名改写之前）；下游返回后先收口
+	// （commit/受理/INDETERMINATE 条目入上下文），再进 finishAPIResponse 统一
+	// 响应相位与事件输出（条目随主事件 strong_flow 数组一并落盘）。
+	sw, sfRec := g.wrapStrongFlowResponse(cw, res.Context)
+	nextErr := proxyWithMCPSSEGuard(sw, r, next, sfMCP)
+	if sfMCP != nil {
+		sfMCP.Finish()
+	}
+	g.finalizeStrongFlow(res.Context, sfRec, nextErr != nil)
 	g.finishAPIResponse(w, cw, r, res, start, nextErr)
 	return nextErr
 }
@@ -224,6 +288,14 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 			}
 			dispo.RecordTerminal(ExecutorWAF, DisActionBlock, code, cw.status != 0, []string{"WAF_INTERCEPT"}, nil)
 			dispo.NotePendingCorrelation()
+		} else if mcpMidstreamBlocked(res.Context.CopyMatches()) {
+			// NG-MCP SSE 中途阻断（批次 C 联调修正）：流式直通路径响应相位未运行，
+			// 请求相位 final_action=ALLOW 必须按实修正——不得报告「整个调用通过」
+			//（§10.3 共用神门禁；状态码保留已外发 200 如实，已发字节在事件证据披露）
+			res.Context.SetFinalAction(dsctx.ActionBlock)
+			res.FinalAction = dsctx.ActionBlock
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, cw.status, cw.status != 0,
+				[]string{"MCP_RESULT_BLOCKED_MIDSTREAM"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 		} else {
 			// 非 WAF 归因的下游错误（反代 502 等）：ERROR，不硬映射 BLOCK（契约 §2 纪律）
 			dispo.RecordError(ExecutorAPI, "downstream error: request did not complete normally")
@@ -299,6 +371,10 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		// （与请求相位同一 TrackingKey 取值口径）；产出信号恒 OBSERVE，绝不参与定案阻断
 		Request:  r,
 		Identity: detectors.TrackingKey(r, g.IdentitySalt),
+		// mcpguard 结果检查（NG-MCP G1 D7；请求相位已确认 tools/call 时生效；
+		// nil = 无目录且无绑定零行为；值级规则下发原文经响应相位缓存编译复用）
+		MCPGuard:            g.apiMCPGuard,
+		SensitiveValueRules: g.APISensitiveValueRules,
 	})
 	if err != nil {
 		// 响应相位故障 fail-open：记录并放行原响应（不脱敏）
@@ -316,6 +392,17 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 	// 与 attributeWAFIntercept 按实修正同一纪律）。
 	if err == nil && act == dsctx.ActionBlock {
 		if kind == outcomeBuffered {
+			// MCP 结果检查实断（NG-MCP §1.7/D11）：mcpguard BLOCK 明细 → -32014
+			// JSON-RPC 错误对象（响应未外发一字节，干净阻断零泄漏；id 回显；
+			// 固定短语不泄露策略/工具细节，真实原因只落事件）
+			if mcpCode, mcpHTTP, ok := mcpguardBlockInfo(res.Context.CopyMatches()); ok {
+				dispo.RecordTerminal(ExecutorAPI, DisActionBlock, mcpHTTP, true,
+					[]string{"MCP_ERROR_" + strconv.Itoa(mcpCode)}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
+				tail.status = mcpHTTP
+				g.writeMCPErrorResponse(w, res.Context.RequestID, mcpCode, mcpHTTP, mcpRequestIDRaw(res.Context))
+				g.emitAPIEvent(r, res, tail)
+				return
+			}
 			g.writeFileComplianceBlockedResponse(w, res.Context.RequestID)
 			tail.status = http.StatusForbidden
 			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
@@ -553,8 +640,303 @@ func (g *Guard) maybeApplyFileSignature(res *pipeline.Result, r *http.Request, c
 	return out, true
 }
 
-// writeFileComplianceBlockedResponse 文件合规下载阻断抑制响应：403 + 空明细 JSON 体
-// （不含上游任何内容）。仅在不曾外发字节（缓冲模式扣留状态行）时调用。
+// admissionBlockMatched 判定本次 BLOCK 定案是否含准入拒绝贡献（未被例外豁免的
+// BLOCK 类 admission finding；WDSP P1）。存在即按准入统一 JSON 响应——准入 PROTECT
+// 短路保证其为唯一实质阻断源；与受限例外（P0-04）兼容：被豁免的 admission finding
+// 已不贡献定案，不构成本分支资格（若定案仍 BLOCK 则必有其他阻断源，走既有错误链路径）。
+func admissionBlockMatched(matches []dsctx.DetectorMatch) bool {
+	for _, m := range matches {
+		if m.Excepted || m.Detector != "admission" {
+			continue
+		}
+		if strings.EqualFold(m.Category, "BLOCK") {
+			return true
+		}
+	}
+	return false
+}
+
+// writeAPIAdmissionDeniedResponse API 准入拒绝统一响应：403 + 规范 JSON 体
+// {"code":"API_ADMISSION_DENIED","message":"该接口未开放访问","request_id":"<id>"}
+// （unknown/unconfirmed 不区分，不返回原因明细——防资产探测，设计 §4.1/§7）。
+// 键序由 encoding/json 字典序保证（code < message < request_id），响应体精确匹配测试依赖此序。
+func (g *Guard) writeAPIAdmissionDeniedResponse(w http.ResponseWriter, requestID string) {
+	h := w.Header()
+	h.Del("Content-Length")
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("X-Jiuzhang-Request-ID", requestID)
+	body, _ := json.Marshal(map[string]string{
+		"code":       "API_ADMISSION_DENIED",
+		"message":    "该接口未开放访问",
+		"request_id": requestID,
+	})
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusForbidden)
+	if _, err := w.Write(body); err != nil {
+		g.logger.Warn("api admission denied response write failed", zap.Error(err), zap.String("request_id", requestID))
+	}
+}
+
+// graphqlBlockReason 取首条 GraphQL BLOCK 明细的 reason（evidence.reason；
+// 仅未豁免明细参与——例外命中的 Finding 不驱动响应 reason）。无 GraphQL BLOCK 返回 false。
+func graphqlBlockReason(matches []dsctx.DetectorMatch) (string, bool) {
+	for _, m := range matches {
+		if m.Excepted || m.Detector != "graphql" {
+			continue
+		}
+		if !strings.EqualFold(m.Category, "BLOCK") {
+			continue
+		}
+		if r := m.Evidence["reason"]; r != "" {
+			return r, true
+		}
+		return "GQL_ADMISSION_REJECTED", true
+	}
+	return "", false
+}
+
+// writeGraphQLDeniedResponse GraphQL 拒绝统一响应：403 + GraphQL 协议错误语义 JSON
+// （{"errors":[{"message":...,"extensions":{"code":<reason>,"request_id":...}}]}；
+// GraphQL 调用方按协议消费 errors 数组，非 WAF HTML 阻断页；message 通用文案不泄露
+// 成本/预算细节，reason 经 extensions.code 传递——防探测与可排障的平衡）。
+func (g *Guard) writeGraphQLDeniedResponse(w http.ResponseWriter, requestID, reason string) {
+	h := w.Header()
+	h.Del("Content-Length")
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("X-Jiuzhang-Request-ID", requestID)
+	body, _ := json.Marshal(map[string]any{
+		"errors": []map[string]any{{
+			"message": "GraphQL request rejected by protection policy",
+			"extensions": map[string]string{
+				"code":       reason,
+				"request_id": requestID,
+			},
+		}},
+	})
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusForbidden)
+	if _, err := w.Write(body); err != nil {
+		g.logger.Warn("graphql denied response write failed", zap.Error(err), zap.String("request_id", requestID))
+	}
+}
+
+// authzBlockMatched 判定本次 BLOCK 定案是否含授权实断贡献（NG-AZ-03：未被例外
+// 豁免的 api_authz BLOCK 类明细——authzdecide 仅在八因子资格全真 + 端点
+// enforcement=PROTECT + 决策引擎 PROTECT 语义时产出 VERIFIED_VIOLATION 对应的
+// BLOCK finding）。存在即按授权拒绝统一 JSON 响应——UNKNOWN 永不映射 BLOCK
+// （红线），故本分支等价于「可信违规实断」。
+func authzBlockMatched(matches []dsctx.DetectorMatch) bool {
+	for _, m := range matches {
+		if m.Excepted || m.Detector != "api_authz" {
+			continue
+		}
+		if strings.EqualFold(m.Category, "BLOCK") {
+			return true
+		}
+	}
+	return false
+}
+
+// writeAPIAuthzDeniedResponse API 授权拒绝统一响应（NG-AZ-03 D4）：403 + 规范
+// JSON 体 {"code":"AUTHZ_VIOLATION_DENIED","message":"无权访问该对象","request_id":"<id>"}
+// ——与 admission 同形态、不泄露对象/主体细节（防探测）；真实原因（AUTHZ-BOLA-001/
+// AUTHZ-BFLA-001 与 authz_enforcement 证据）只落事件。键序由 encoding/json 字典序
+// 保证（code < message < request_id），响应体精确匹配测试依赖此序。
+func (g *Guard) writeAPIAuthzDeniedResponse(w http.ResponseWriter, requestID string) {
+	h := w.Header()
+	h.Del("Content-Length")
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("X-Jiuzhang-Request-ID", requestID)
+	body, _ := json.Marshal(map[string]string{
+		"code":       "AUTHZ_VIOLATION_DENIED",
+		"message":    "无权访问该对象",
+		"request_id": requestID,
+	})
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusForbidden)
+	if _, err := w.Write(body); err != nil {
+		g.logger.Warn("api authz denied response write failed", zap.Error(err), zap.String("request_id", requestID))
+	}
+}
+
+// flowguardBlockMatched 判定本次 BLOCK 定案是否含强流程违规实断贡献（NG-FLOW-02：
+// 未被例外豁免的 flowguard BLOCK 类明细——检测器仅在定义 PROTECT + 引擎 PROTECT
+// 双闸全真时对 REJECTED/CONFLICT 违规产出 BLOCK finding；UNKNOWN 恒 OBSERVE
+// 永不进本分支——红线）。
+func flowguardBlockMatched(matches []dsctx.DetectorMatch) bool {
+	for _, m := range matches {
+		if m.Excepted || m.Detector != "flowguard" {
+			continue
+		}
+		if strings.EqualFold(m.Category, "BLOCK") {
+			return true
+		}
+	}
+	return false
+}
+
+// writeAPIStrongFlowDeniedResponse 强流程违规拒绝统一响应（NG-FLOW-02 D6）：
+// 403 + 规范 JSON 体 {"code":"FLOW_VIOLATION_DENIED","message":"流程状态不允许该操作",
+// "request_id":"<id>"}——与 authz 同形态、不泄露实例/步骤/fencing 细节（防探测）；
+// 真实原因（FLOW-RESERVE-001/FENCE-001/IDEMPOTENT-CONFLICT-001 与 strong_flow 动作
+// 条目）只落事件。键序由 encoding/json 字典序保证，响应体精确匹配测试依赖此序。
+func (g *Guard) writeAPIStrongFlowDeniedResponse(w http.ResponseWriter, requestID string) {
+	h := w.Header()
+	h.Del("Content-Length")
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("X-Jiuzhang-Request-ID", requestID)
+	body, _ := json.Marshal(map[string]string{
+		"code":       "FLOW_VIOLATION_DENIED",
+		"message":    "流程状态不允许该操作",
+		"request_id": requestID,
+	})
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusForbidden)
+	if _, err := w.Write(body); err != nil {
+		g.logger.Warn("api strong flow denied response write failed", zap.Error(err), zap.String("request_id", requestID))
+	}
+}
+
+// grpcguardBlockStatus 判定本次 BLOCK 定案是否含 gRPC 深检实断贡献（NG-GRPC D6：
+// 未被例外豁免的 grpcguard BLOCK 类明细——双闸全真时产出），并取首个 grpc-status
+// 映射值（7/8/12；evidence.grpc_status 由检测器注入）。非 gRPC 分流返回 false。
+func grpcguardBlockStatus(matches []dsctx.DetectorMatch) (int, bool) {
+	for _, m := range matches {
+		if m.Excepted || m.Detector != "grpcguard" {
+			continue
+		}
+		if !strings.EqualFold(m.Category, "BLOCK") {
+			continue
+		}
+		if code, err := strconv.Atoi(m.Evidence["grpc_status"]); err == nil && code != 0 {
+			return code, true
+		}
+		return 8, true // 缺省 RESOURCE_EXHAUSTED（预算/畸形族——策略违规恒显式带码）
+	}
+	return 0, false
+}
+
+// grpcErrorMessages grpc-message 固定短语（D6：不泄露策略/字段细节——防探测；
+// 真实原因只落事件。ASCII 仅（gRPC percent-encoding 纪律））。
+var grpcErrorMessages = map[int]string{
+	7:  "grpc request rejected by protection policy",
+	8:  "grpc request exceeds resource budget",
+	12: "grpc encoding not implemented",
+	14: "grpc protection dependency unavailable",
+	16: "grpc request unauthenticated",
+}
+
+// writeAPIGRPCErrorResponse gRPC 协议化错误响应（NG-GRPC D6）：trailers-only
+// 形态——HTTP 200 + content-type: application/grpc + grpc-status/grpc-message
+// 响应头 + 空体（Go h2 服务在无体返回时产出单 HEADERS 携带 END_STREAM 的
+// trailers-only 语义；gRPC 调用方按协议消费 grpc-status——真实 SDK 对测属
+// stage5 E2E）。本函数直接写出 committed=true，不经 Caddy 错误链阻断页。
+func (g *Guard) writeAPIGRPCErrorResponse(w http.ResponseWriter, requestID string, grpcStatus int) {
+	msg, ok := grpcErrorMessages[grpcStatus]
+	if !ok {
+		grpcStatus = 8 // 未登记码防御归一 RESOURCE_EXHAUSTED（不编造短语）
+		msg = grpcErrorMessages[grpcStatus]
+	}
+	h := w.Header()
+	h.Del("Content-Length")
+	h.Set("Content-Type", "application/grpc")
+	h.Set("Grpc-Status", strconv.Itoa(grpcStatus))
+	h.Set("Grpc-Message", msg)
+	h.Set("X-Jiuzhang-Request-ID", requestID)
+	w.WriteHeader(http.StatusOK)
+	// 无响应体：trailers-only 语义（END_STREAM 由 h2 服务在无体返回时产出）
+}
+
+// mcpguardBlockInfo 判定本次定案是否含 MCP 检查链实断贡献（NG-MCP D11：
+// 未被例外豁免的 mcpguard BLOCK 类（检查链违规）或 RATE_LIMIT 类（调用预算）
+// 明细），并取首个错误码/HTTP 状态（mcp_error_code/mcp_http_status 证据由
+// 检测器注入——冻结表 -32010~-32014，HTTP 403/413/429 分明）。
+func mcpguardBlockInfo(matches []dsctx.DetectorMatch) (code, httpStatus int, ok bool) {
+	for _, m := range matches {
+		if m.Excepted || m.Detector != "mcpguard" {
+			continue
+		}
+		if !strings.EqualFold(m.Category, "BLOCK") && !strings.EqualFold(m.Category, "RATE_LIMIT") {
+			continue
+		}
+		code, err1 := strconv.Atoi(m.Evidence["mcp_error_code"])
+		status, err2 := strconv.Atoi(m.Evidence["mcp_http_status"])
+		if err1 != nil || code == 0 {
+			code = -32011 // 缺省 MCP_TOOL_DENIED（防御归一不编造）
+		}
+		if err2 != nil || status == 0 {
+			status = 403
+		}
+		return code, status, true
+	}
+	return 0, 0, false
+}
+
+// mcpMidstreamBlocked 判定明细含 MCP SSE 中途阻断（mcp.result_blocked_midstream；
+// finishAPIResponse 下游错误分支按实修正 final_action——流式直通响应相位未运行，
+// 不得沿用请求相位 ALLOW 冒充「整个调用通过」）。
+func mcpMidstreamBlocked(matches []dsctx.DetectorMatch) bool {
+	for _, m := range matches {
+		if m.Detector == "mcpguard" && m.RuleID == "mcp.result_blocked_midstream" {
+			return true
+		}
+	}
+	return false
+}
+
+// mcpRequestIDRaw MCP 错误对象 id 回显原文（mcp.call 上下文 Message.ID——
+// JSON-RPC 语义原文回显；未携 id/无调用上下文回显 "null"）。
+func mcpRequestIDRaw(ctx *dsctx.RequestContext) string {
+	if call := mcpguard.CallFromContext(ctx); call != nil && call.Message != nil && call.Message.HasID && len(call.Message.ID) > 0 {
+		return string(call.Message.ID)
+	}
+	return "null"
+}
+
+// mcpErrorMessages 固定短语（§1.11 冻结表——不泄露策略/工具/字段细节，
+// 防探测；真实原因只落事件。标准码不冒用：产品扩展段 -32010~-32014）。
+var mcpErrorMessages = map[int]string{
+	-32010: "mcp tool call requires verified caller",
+	-32011: "mcp tool call rejected by protection policy",
+	-32012: "mcp tool call arguments rejected",
+	-32013: "mcp request exceeds resource budget",
+	-32014: "mcp tool result blocked by protection policy",
+}
+
+// writeMCPErrorResponse MCP 协议化错误响应（NG-MCP §1.11/D11）：JSON-RPC 2.0
+// 错误对象——{"jsonrpc":"2.0","id":<回显|null>,"error":{"code":<产品扩展码>,
+// "message":<固定短语>,"data":{"source":"jiuzhang-wdsp","request_id":<id>}}}；
+// HTTP 按冻结表（403/413/429 分明——大小/速率不得一律 403，§13.3）。
+// 本函数直接写出 committed=true，不经 Caddy 错误链阻断页（MCP 调用方按
+// JSON-RPC 协议消费错误对象，非 WAF HTML 阻断页）。
+func (g *Guard) writeMCPErrorResponse(w http.ResponseWriter, requestID string, code, httpStatus int, idRaw string) {
+	msg, ok := mcpErrorMessages[code]
+	if !ok {
+		code = -32011 // 未登记码防御归一 MCP_TOOL_DENIED（不编造短语）
+		msg = mcpErrorMessages[code]
+	}
+	if httpStatus != 403 && httpStatus != 413 && httpStatus != 429 {
+		httpStatus = 403
+	}
+	if idRaw == "" {
+		idRaw = "null"
+	}
+	h := w.Header()
+	h.Del("Content-Length")
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("X-Jiuzhang-Request-ID", requestID)
+	body := []byte(`{"jsonrpc":"2.0","id":` + idRaw +
+		`,"error":{"code":` + strconv.Itoa(code) +
+		`,"message":` + strconv.Quote(msg) +
+		`,"data":{"source":"jiuzhang-wdsp","request_id":` + strconv.Quote(requestID) + `}}}`)
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(httpStatus)
+	if _, err := w.Write(body); err != nil {
+		g.logger.Warn("mcp error response write failed", zap.Error(err), zap.String("request_id", requestID))
+	}
+}
+
+// writeFileComplianceBlockedResponse 文件合规下载阻断抑制响应：403 + 空明细 JSON 体// （不含上游任何内容）。仅在不曾外发字节（缓冲模式扣留状态行）时调用。
 func (g *Guard) writeFileComplianceBlockedResponse(w http.ResponseWriter, requestID string) {
 	h := w.Header()
 	h.Del("Content-Length")
@@ -644,8 +1026,11 @@ func (g *Guard) writeFailClosedResponse(w http.ResponseWriter, requestID string)
 	}
 }
 
-// runAPIProtection 执行统一管线请求相位；handled=true 表示已按决策拦截（阻断事件在此输出），err 为 caddyhttp.Error。
-func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Result, bool, error) {
+// runAPIProtection 执行统一管线请求相位；handled=true 表示已按决策拦截（阻断事件在此输出）。
+// 拦截响应两种形态：err 为 caddyhttp.Error（响应经 Caddy 错误链渲染，阻断页）；
+// 或 err=nil 且响应已由本函数直接写出（准入拒绝统一 JSON，见 ActionBlock 准入分支——
+// w 仅供该分支直接回包使用，其余路径不触碰）。
+func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start time.Time) (*pipeline.Result, bool, error) {
 	restore, bodySample, skipReason := preserveRequestBody(r)
 	if restore == nil {
 		// 请求体读取失败或超保全上限：已尽力还原，跳过管线（fail-open）；
@@ -687,12 +1072,15 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 		jwtVerification = &jwtCopy
 	}
 	cfg := pipeline.Config{
-		Enabled:               true,
-		Mode:                  apiDecisionMode(g.APIProtectionMode),
-		Limits:                dsctx.DefaultParseLimits(),
-		FormalSchema:          g.APIFormalSchemas[ek],
-		ParamConstraints:      g.APIParameterConstraints[ek],
-		KnownEndpoints:        g.APIKnownEndpoints,
+		Enabled:          true,
+		Mode:             apiDecisionMode(g.APIProtectionMode),
+		Limits:           dsctx.DefaultParseLimits(),
+		FormalSchema:     g.APIFormalSchemas[ek],
+		ParamConstraints: g.APIParameterConstraints[ek],
+		KnownEndpoints:   g.APIKnownEndpoints,
+		// API 准入策略（WDSP P1，发布通道下发 api_admission 段；按本实例 AppID 解析，
+		// nil = 应用未识别/无策略——不判定直接放行；判定口径见 detectors/admission.go）
+		Admission:             g.apiAdmissionPolicyForApp(),
 		APIWriteRatePerMinute: g.APIWriteRatePerMinute,
 		// §36 限流下发面（发布通道下发；0 = 不启用，不走引擎默认值）
 		APIQuotaPerHour:     g.APIQuotaPerHour,
@@ -711,6 +1099,15 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 		// 业务流程基线（发布通道下发 api_flow_baselines，§44；Provision 按端点归组后选取，
 		// nil = 无端点流程基线，流程偏离检测零行为，不编造基线；全部明细 OBSERVE 级）
 		FlowBaselines: g.apiFlowBaselines[ek],
+		// 强流程定义绑定与运行时（NG-FLOW-02；Provision 装配产物；nil = 无端点强流程
+		// 定义，强流程检测零行为 NG-T-C01；与 api_flow_baselines 观察态互不消费）
+		StrongFlows:       g.apiStrongFlowIndex[ek],
+		StrongFlowRuntime: g.strongFlowRuntime,
+		// mcpguard 装配置与候选请求体（NG-MCP G1 批次 B2：Provision 装配产物；
+		// nil = 无目录且无绑定零行为 NG-T-C01；候选体为保全的完整请求体
+		// （≤4MiB 保全同源——协议专属预算不经公共 1MiB 解析上限与 256 截留））
+		MCPGuard: g.apiMCPGuard,
+		MCPBody:  bodySample,
 		// 已吊销凭据清单（发布通道下发 api_revoked_credentials，§35 第10项；Provision 已校验；
 		// nil = 无吊销清单，吊销检测零行为；运行期按请求凭据键集合比对，过期条目自行失效）
 		RevokedCredentials: g.APIRevokedCredentials,
@@ -732,12 +1129,24 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 		FileComplianceRules: g.apiFileCompliance,
 		// gRPC 帧校验配置（W14-GW / P2-05：发布通道下发 api_grpc_*；零值 = 引擎默认 4MiB/不允许压缩）
 		GRPCMaxFrameBytes:    g.APIGRPCMaxFrameBytes,
-		GRPCAllowCompression: g.APIGRPCAllowCompression,
+		GRPCAllowCompression: g.grpcCompressionAllowLegacy(),
 		// gRPC 描述符注册表（W14-DESC / P2-05 深化：Provision 装配产物；
 		// nil = 无描述符下发或全部编译失败，gRPC 处理与 v1 完全一致）
 		GRPCDescriptors: g.apiGRPCRegistry,
+		// grpcguard G1 深检执行配置与帧源（NG-GRPC 批次 B2：Provision 装配产物；
+		// nil = 无描述符且无绑定，grpcguard 零行为 NG-T-C01。帧源为保全的完整请求体
+		// （≤4MiB 保全上限，既有 fail-open 纪律），G1 协议专属读取预算不经公共 1MiB
+		// 解析上限；体 >4MiB 跳过管线（body_preserve_skipped 既有披露路径））
+		GRPCGuard: g.apiGRPCGuard,
+		GRPCBody:  bodySample,
+		// GraphQL 成本预算策略（NG-GQL-03，发布通道下发 api_graphql 段按应用解析；
+		// nil = 未配置，GraphQL 流量与历史版本零行为变化）
+		GraphQL: g.apiGraphQLPolicyForApp(),
 		// API 受限例外（WDSP P0-04）：上方范围筛选结果；nil = 无适用例外，零行为变化
 		Exceptions: apiExcRefs,
+		// 执行覆盖观测（NG-COV-01）：nil = 未启用（COVERAGE_OBSERVATIONS_ENABLED 缺省关闭），零行为
+		Coverage: coverageEmitter(),
+		NodeName: coverageNodeName(),
 		Authorization: detectors.AuthorizationConfig{
 			ApplicationID:     g.AppID,
 			EndpointKey:       ek,
@@ -750,9 +1159,20 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 			Stale:             g.APIAuthzSnapshotStale,
 			SnapshotExpiresAt: g.APIAuthzSnapshotExpiresAt,
 			PreviousValid:     g.apiAuthzPreviousValid,
+			// NG-AZ-02 v2 快照消费输入（D4-2/D5/D7/D8；零值即 v1 语义零介入——
+			// 租约应用时刻取注册表（Provision 写入），漂移上限用解析夹紧后配置值）
+			Schema:              g.APIAuthzSchema,
+			RevocationWatermark: authzWatermarkToDetectors(g.APIAuthzRevocationWatermark),
+			LeaseSeconds:        g.APIAuthzLeaseSeconds,
+			AppliedAt:           g.authzSnapshotAppliedAt(),
+			ConflictedObjects:   authzConflictsToDetectors(g.APIAuthzConflictedObjects),
+			ConflictedIndex:     detectors.BuildConflictedObjectIndex(authzConflictsToDetectors(g.APIAuthzConflictedObjects)),
+			ProducedAt:          g.APIAuthzProducedAt,
+			ClockSkewMaxSeconds: g.APIAuthzClockSkewMaxSeconds,
 		},
 		JWTVerification: jwtVerification,
 	}
+	DefaultCovCounters.Inc(StageAPIPipelineReached)
 	res, err := pipeline.Process(r, cfg, nil)
 	if err != nil {
 		g.logger.Warn("api protection pipeline error (fail-open)", zap.Error(err))
@@ -793,19 +1213,106 @@ func (g *Guard) runAPIProtection(r *http.Request, start time.Time) (*pipeline.Re
 	// 阻断类动作：事件在阻断时输出（状态码按决策映射；放行请求的事件在响应完成后输出，见 serveAPIProtected）
 	// P0-04：RecordTerminal 先于 emitBlocked——事件 final_decision 挂载需终止事实已记录
 	// （emitAPIEvent 经 Settled 门禁取 dispo.JSON()）；committed=false——caddyhttp.Error
-	// 路径响应由 Caddy 错误链写出，此处未提交；ruleRefs 取执法贡献明细（未被例外豁免）
+	// 路径响应由 Caddy 错误链写出，此处未提交（准入分支直接写出，committed=true）；
+	// ruleRefs 取执法贡献明细（未被例外豁免）
 	emitBlocked := func(status int) {
-		if res.API.IsAPI || len(res.Context.CopyMatches()) > 0 {
+		if res.API.IsAPI || len(res.Context.CopyMatches()) > 0 || len(flowguard.ActionsFromContext(res.Context)) > 0 {
 			g.emitAPIEvent(r, res, &apiEventTail{status: status, latencyMS: time.Since(start).Milliseconds()})
 		}
 	}
 	switch res.FinalAction {
 	case dsctx.ActionBlock:
+		matches := res.Context.CopyMatches()
+		// API 准入拒绝（WDSP P1）：统一 403 JSON（unknown/unconfirmed 不区分，防资产探测，
+		// 设计 §4.1/§7），本函数直接写出，不经 Caddy 错误链阻断页（API 调用方按协议消费
+		// JSON）；committed=true——响应已提交。其余 BLOCK 来源维持既有 caddyhttp.Error
+		// 路径与既有响应格式（阻断页）不变。
+		if admissionBlockMatched(matches) {
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
+				[]string{"API_ADMISSION_DENIED"}, apiEnforcementRuleRefs(matches))
+			emitBlocked(http.StatusForbidden)
+			g.writeAPIAdmissionDeniedResponse(w, res.Context.RequestID)
+			return res, true, nil
+		}
+		// GraphQL 成本/准入拒绝（NG-GQL-03）：403 + GraphQL 协议错误语义 JSON
+		// （{"errors":[...extensions.code=<reason>]}，API 调用方按 GraphQL 协议消费，
+		// 非 WAF HTML 阻断页）；committed=true。reason 取首条 BLOCK 明细的
+		// evidence.reason（GQL_ADMISSION_REJECTED/GQL_COST_EXCEEDED/GQL_WINDOW_EXCEEDED）。
+		if reason, ok := graphqlBlockReason(matches); ok {
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
+				[]string{reason}, apiEnforcementRuleRefs(matches))
+			emitBlocked(http.StatusForbidden)
+			g.writeGraphQLDeniedResponse(w, res.Context.RequestID, reason)
+			return res, true, nil
+		}
+		// API 授权实断（NG-AZ-03 VERIFIED_VIOLATION）：403 + 规范 JSON
+		// （{"code":"AUTHZ_VIOLATION_DENIED",...}，不泄露对象/主体细节——防探测；
+		// 本函数直接写出 committed=true，不经 Caddy 错误链阻断页）。authz_enforcement
+		// 证据（§1.4）先于 emitBlocked 挂 disposition——随 final_decision 落库，
+		// 「为什么被实断」可答（八因子/版本/水位/租约读数/enforcement_owner）。
+		if authzBlockMatched(matches) {
+			if ev := detectors.AuthzEnforcementEvidenceFromContext(res.Context); ev != nil {
+				dispo.SetAuthzEnforcement(ev)
+			}
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
+				[]string{"AUTHZ_VIOLATION_DENIED"}, apiEnforcementRuleRefs(matches))
+			emitBlocked(http.StatusForbidden)
+			g.writeAPIAuthzDeniedResponse(w, res.Context.RequestID)
+			return res, true, nil
+		}
+		// 强流程违规实断（NG-FLOW-02 D6）：403 统一 JSON（{"code":"FLOW_VIOLATION_DENIED",…}
+		// 不泄露实例/步骤细节——防探测；本函数直接写出 committed=true，不经 Caddy 错误链
+		// 阻断页）。UNKNOWN 恒不阻断（红线）：flowguard 的 BLOCK 明细仅可能来自
+		// REJECTED/CONFLICT 违规（flowguard.violation）；真实原因（FLOW-RESERVE-001/
+		// FENCE-001/IDEMPOTENT-CONFLICT-001）只落事件 details 与 strong_flow 条目。
+		if flowguardBlockMatched(matches) {
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
+				[]string{"FLOW_VIOLATION_DENIED"}, apiEnforcementRuleRefs(matches))
+			emitBlocked(http.StatusForbidden)
+			g.writeAPIStrongFlowDeniedResponse(w, res.Context.RequestID)
+			return res, true, nil
+		}
+		// gRPC G1 深检实断（NG-GRPC D6）：gRPC 请求按 api.protocol=GRPC 分流——
+		// trailers-only 响应（HTTP 200 + content-type: application/grpc +
+		// grpc-status/grpc-message + 无体 END_STREAM 语义），grpc-message 固定短语
+		// 不泄露策略/字段细节（防探测——AZ-03 统一体同纪律）；真实原因只落事件
+		// details 与 grpc.coverage_v1。本函数直接写出 committed=true，不经 Caddy
+		// 错误链阻断页（gRPC 调用方按协议消费 grpc-status，非 WAF HTML 阻断页）。
+		if grpcStatus, ok := grpcguardBlockStatus(matches); ok {
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusOK, true,
+				[]string{"GRPC_STATUS_" + strconv.Itoa(grpcStatus)}, apiEnforcementRuleRefs(matches))
+			emitBlocked(http.StatusOK)
+			g.writeAPIGRPCErrorResponse(w, res.Context.RequestID, grpcStatus)
+			return res, true, nil
+		}
+		// MCP G1 检查链实断（NG-MCP D11）：JSON-RPC 错误对象分流——错误码取首条
+		// BLOCK 明细的 mcp_error_code/mcp_http_status 证据（-32010~-32014 冻结表，
+		// HTTP 403/413/429 分明）；id 回显请求 id（mcp.call 上下文 Message.ID，
+		// 未携 id 回显 null）；message 固定短语不泄露策略/工具细节（防探测），
+		// 真实原因只落事件 details 与 mcp.coverage_v1。本函数直接写出
+		// committed=true，不经 Caddy 错误链阻断页（MCP 调用方按 JSON-RPC 协议消费）。
+		if mcpCode, mcpHTTP, ok := mcpguardBlockInfo(matches); ok {
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, mcpHTTP, true,
+				[]string{"MCP_ERROR_" + strconv.Itoa(mcpCode)}, apiEnforcementRuleRefs(matches))
+			emitBlocked(mcpHTTP)
+			g.writeMCPErrorResponse(w, res.Context.RequestID, mcpCode, mcpHTTP, mcpRequestIDRaw(res.Context))
+			return res, true, nil
+		}
 		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, false,
-			[]string{"API_POLICY_BLOCK"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
+			[]string{"API_POLICY_BLOCK"}, apiEnforcementRuleRefs(matches))
 		emitBlocked(http.StatusForbidden)
 		return res, true, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("request blocked by api protection"))
 	case dsctx.ActionRateLimit:
+		// MCP 调用预算实断（NG-MCP §1.4-5/-32013=429 语义）：mcpguard RATE_LIMIT
+		// 类明细分流 JSON-RPC 错误对象（committed 直写；其余限速来源维持
+		// 既有 caddyhttp.Error 429 平面）
+		if mcpCode, mcpHTTP, ok := mcpguardBlockInfo(res.Context.CopyMatches()); ok {
+			dispo.RecordTerminal(ExecutorAPI, DisActionRateLimit, mcpHTTP, true,
+				[]string{"MCP_ERROR_" + strconv.Itoa(mcpCode)}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
+			emitBlocked(mcpHTTP)
+			g.writeMCPErrorResponse(w, res.Context.RequestID, mcpCode, mcpHTTP, mcpRequestIDRaw(res.Context))
+			return res, true, nil
+		}
 		dispo.RecordTerminal(ExecutorAPI, DisActionRateLimit, http.StatusTooManyRequests, false,
 			[]string{"API_RATE_LIMIT"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 		emitBlocked(http.StatusTooManyRequests)
@@ -957,6 +1464,8 @@ func (g *Guard) emitAPIEvent(r *http.Request, res *pipeline.Result, tail *apiEve
 		FinalAction:   pe.FinalAction,
 		Details:       pe.Details,
 		AuthzDecision: pe.AuthzDecision,
+		// 强流程步骤动作条目（NG-FLOW-02；无强流程活动为 nil，事件零变化）
+		StrongFlow:    pe.StrongFlow,
 		IsAPI:         res.API.IsAPI,
 		APIConfidence: res.API.Confidence,
 		// 策略版本戳原样透传；FORMAL 模型版本按端点命中（未下发则省略）

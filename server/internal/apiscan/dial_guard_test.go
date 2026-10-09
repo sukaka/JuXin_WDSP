@@ -97,6 +97,12 @@ func TestWorkerExecuteInjectsPinnedClient(t *testing.T) {
 
 // TestWorkerUnresolvableHostFails 目标主机解析失败：任务 FAILED（fail-closed，不拨号）。
 func TestWorkerUnresolvableHostFails(t *testing.T) {
+	// 环境性前置检查：本用例依赖 RFC2606 保留域不可解析；本机/上游 DNS 若把
+	// nonexistent.invalid.jiuzhang 解析为真实 IP（如实验网通配解析），则前提不成立，
+	// 如实跳过而非误判 fail-closed 语义。
+	if ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip", "nonexistent.invalid.jiuzhang"); err == nil && len(ips) > 0 {
+		t.Skipf("本机 DNS 将保留域解析为真实 IP（%v，环境性），跳过", ips)
+	}
 	store := NewMemStore()
 	_, _, jobID := seedJob(t, store, "http://nonexistent.invalid.jiuzhang", []string{"/a"}, func(a *Authorization) {
 		a.Allowlist = []string{"nonexistent.invalid.jiuzhang"}

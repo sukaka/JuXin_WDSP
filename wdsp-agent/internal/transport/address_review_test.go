@@ -4,7 +4,11 @@
 package transport
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -20,6 +24,35 @@ func TestNewRejectsPlainHTTPNonLoopback(t *testing.T) {
 		} else if !strings.Contains(err.Error(), "https") {
 			t.Fatalf("错误信息应指向 https 要求: %v", err)
 		}
+	}
+}
+
+func TestHTTPSRedirectToHTTPIsRejectedBeforeCredentialsAreForwarded(t *testing.T) {
+	var insecureRequests atomic.Int32
+	var insecureAuthorization atomic.Bool
+	insecure := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		insecureRequests.Add(1)
+		insecureAuthorization.Store(r.Header.Get("Authorization") != "")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(insecure.Close)
+
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, insecure.URL+"/redirected", http.StatusFound)
+	}))
+	t.Cleanup(secure.Close)
+
+	client, err := New(secure.URL, true, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetCredential("test-credential")
+	_, _, err = client.do(context.Background(), http.MethodGet, "/control", nil, true, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "HTTPS 降级重定向") {
+		t.Fatalf("HTTPS 到 HTTP 重定向应被拒绝: %v", err)
+	}
+	if insecureRequests.Load() != 0 || insecureAuthorization.Load() {
+		t.Fatalf("不安全目标不应收到请求或凭据: requests=%d authorization=%t", insecureRequests.Load(), insecureAuthorization.Load())
 	}
 }
 

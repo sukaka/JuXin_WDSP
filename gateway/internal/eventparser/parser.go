@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
@@ -114,7 +116,15 @@ type ApplicationRef struct {
 type ClientInfo struct {
 	IP   string `json:"ip"`
 	Port int    `json:"port"`
+	// ConnectionIP 原始 TCP 对端地址（guard 注入的内部头回填；空 = 未上报）。
+	// 审计事务的 client_ip 经真实 IP 改写后不再携带连接层事实，由此恢复。
+	ConnectionIP string `json:"connection_ip,omitempty"`
 }
+
+// connectionAddrHeader 是 guard 注入的内部头（原始 TCP 对端 host:port；
+// gateway/modules/jiuzhang_guard/module.go connectionAddrHeader）。值由
+// ClientInfo.ConnectionIP 承接，头本身不进事件输出。
+const connectionAddrHeader = "x-jiuzhang-connection-addr"
 
 // RequestInfo 是请求概要（已脱敏）。
 type RequestInfo struct {
@@ -264,6 +274,21 @@ func ParseLine(line []byte, gatewayNode string, app ApplicationRef) (*StandardEv
 
 	matches := make([]MatchInfo, 0, len(entry.Messages))
 	attackType := "UNKNOWN"
+
+	// 连接层事实回填：guard 内部头携带原始 TCP 对端 host:port（RemoteAddr 改写后
+	// 审计事务不再携带）。头部非法时忽略，ConnectionIP 留空。
+	connIP := ""
+	clientPort := tx.ClientPort
+	if raw := firstHeader(tx.Request.Headers, connectionAddrHeader); raw != "" {
+		if host, port, err := net.SplitHostPort(strings.TrimSpace(raw)); err == nil {
+			if addr, perr := netip.ParseAddr(host); perr == nil {
+				connIP = addr.String()
+			}
+			if p, perr := strconv.Atoi(port); perr == nil && p >= 0 && p <= 65535 {
+				clientPort = p
+			}
+		}
+	}
 	maxSeverityRank := -1
 	severity := "INFO"
 	anomalyScore := 0
@@ -330,8 +355,9 @@ func ParseLine(line []byte, gatewayNode string, app ApplicationRef) (*StandardEv
 		OccurredAt:  occurred,
 		Application: app,
 		Client: ClientInfo{
-			IP:   tx.ClientIP,
-			Port: tx.ClientPort,
+			IP:           tx.ClientIP,
+			Port:         clientPort,
+			ConnectionIP: connIP,
 		},
 		Request: RequestInfo{
 			Method:      tx.Request.Method,
@@ -601,9 +627,13 @@ func unescapeQuoted(s string) string {
 }
 
 // FilterHeaders 返回剔除敏感头后的请求头副本（供需要输出头部的场景使用）。
+// 网关注入的内部头（连接层事实已由 ClientInfo 承接）一并剔除。
 func FilterHeaders(headers map[string][]string) map[string][]string {
 	out := make(map[string][]string, len(headers))
 	for k, v := range headers {
+		if strings.EqualFold(k, connectionAddrHeader) {
+			continue
+		}
 		if sensitiveHeaderNames[strings.ToLower(k)] {
 			out[k] = []string{"masked"}
 			continue

@@ -57,12 +57,41 @@ print(' '.join(i['id'] for i in items))" 2>/dev/null); do
 done
 # 说明：CC 计数键按新策略 ID 命名空间隔离，重建后无需等待旧窗口过期
 
-# 连接源 IP（经 /echo 的 X-Real-Ip 获取）
-CONN_IP=$(curl -s -H "Host: $HOST_HEADER" "$GATEWAY_URL/echo" | python3 -c "import json,sys; print(json.load(sys.stdin)['headers'].get('X-Real-Ip',''))")
+# 连接源 IP（经 /echo 的 X-Real-Ip 获取）——人工解封经轮询传播到网关有数秒延迟，
+# 轮询等待 /echo 可用；读取失败时立即中止，避免空 CONN_IP 造成级联误判
+# （历史故障：遗留 CC_AUTO 封禁致 CONN_IP 为空，deny-conn 用例全链误判）
+CONN_IP=""
+for _ in $(seq 1 15); do
+  ECHO_BODY=$(curl -s -H "Host: $HOST_HEADER" "$GATEWAY_URL/echo")
+  CONN_IP=$(echo "$ECHO_BODY" | python3 -c "import json,sys; print(json.load(sys.stdin)['headers'].get('X-Real-Ip',''))" 2>/dev/null)
+  [ -n "$CONN_IP" ] && break
+  sleep 1
+done
+if [ -z "$CONN_IP" ]; then
+  echo "ERROR: 无法从 /echo 读取连接源 IP（临时封禁未解除或网关异常），中止避免级联误判" >&2
+  exit 1
+fi
 echo "[setup] connection ip: $CONN_IP"
 # Docker 网络子网（可信代理注册用）
 SUBNET=$(docker network inspect jiuzhang-stage5_stage5-net --format '{{(index .IPAM.Config 0).Subnet}}' 2>/dev/null)
 echo "[setup] docker subnet: $SUBNET"
+# 会话性残留清理（伪造防护用例的前置条件）：删除任何覆盖连接源的可信代理——
+# 历史手工验收曾遗留覆盖 docker 子网的代理条目（DISABLED 后仍占用唯一索引
+# ux_trusted_proxies_cidr，导致本套件 docker-bridge 重建被 409 拒绝）；
+# 按 CIDR 包含关系判定（不限名称），不影响不覆盖连接源的演示种子。
+for pid in $(curl -s -b "/tmp/s5-$SEC_USER.txt" "$API_URL/api/v1/trusted-proxies?page_size=100" | CONN_IP="$CONN_IP" python3 -c "
+import json,sys,ipaddress,os
+conn = ipaddress.ip_address(os.environ['CONN_IP'])
+items = json.load(sys.stdin)['data'].get('items') or []
+for i in items:
+    try:
+        if conn in ipaddress.ip_network(i['cidr']):
+            print(i['id'])
+    except Exception:
+        pass" 2>/dev/null); do
+  curl -s -o /dev/null -b "/tmp/s5-$SEC_USER.txt" -X DELETE "$API_URL/api/v1/trusted-proxies/$pid" -H "X-CSRF-Token: $SEC_CSRF"
+  echo "[setup] 已删除覆盖连接源的可信代理残留: $pid"
+done
 
 # CC 策略（一次性创建，后续按 URI 前缀与 IP 隔离测试）
 s5_post /api/v1/rate-limit-policies "{\"name\":\"cc-reject-ip\",\"scope_type\":\"APPLICATION\",\"application_id\":\"$APP_ID\",\"uri_match_type\":\"PREFIX\",\"uri_pattern\":\"/cc/ip/\",\"dimension\":\"CLIENT_IP\",\"algorithm\":\"TOKEN_BUCKET\",\"requests_limit\":5,\"window_seconds\":60,\"burst_capacity\":5,\"action\":\"REJECT\",\"priority\":100}" "$SEC_CSRF" > /dev/null
@@ -104,6 +133,15 @@ s5_post_code "/api/v1/access-rules/$DENY_CONN_ID/disable" "{}" "$SEC_CSRF" > /de
 echo ""
 echo "---- 1. 可信代理与真实IP ----"
 s5_post /api/v1/trusted-proxies "{\"name\":\"docker-bridge\",\"cidr\":\"$SUBNET\",\"header_type\":\"X_FORWARDED_FOR\",\"priority\":100}" "$SEC_CSRF" > /dev/null
+# 校验 docker-bridge 创建成功（CIDR 唯一索引冲突等静默失败会级联误判，必须显式中止）
+DB_PROXY_ID=$(curl -s -b "/tmp/s5-$SEC_USER.txt" "$API_URL/api/v1/trusted-proxies?keyword=docker-bridge" | python3 -c "
+import json,sys
+items=json.load(sys.stdin)['data'].get('items') or []
+print(next((i['id'] for i in items if i.get('name')=='docker-bridge'),''))" 2>/dev/null)
+if [ -z "$DB_PROXY_ID" ]; then
+  echo "ERROR: docker-bridge 可信代理创建失败（CIDR 可能被残留条目占用），中止" >&2
+  exit 1
+fi
 # 优先级验证规则：全局黑 CIDR + 全局白单IP + 应用黑单IP + 应用白单IP
 s5_post /api/v1/access-rules "{\"name\":\"gd-cidr\",\"rule_type\":\"DENY\",\"scope_type\":\"GLOBAL\",\"address\":\"198.51.100.0/24\",\"priority\":100,\"validity_type\":\"PERMANENT\"}" "$SEC_CSRF" > /dev/null
 s5_post /api/v1/access-rules "{\"name\":\"ga-60\",\"rule_type\":\"ALLOW\",\"scope_type\":\"GLOBAL\",\"address\":\"198.51.100.60\",\"priority\":100,\"validity_type\":\"PERMANENT\"}" "$SEC_CSRF" > /dev/null

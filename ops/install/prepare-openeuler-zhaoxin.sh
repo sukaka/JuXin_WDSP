@@ -248,7 +248,7 @@ ensure_runtime_dependencies() {
   [[ "$DRY_RUN" == "true" ]] || command -v docker >/dev/null 2>&1 \
     || die '未找到 Docker；请配置 openEuler 官方软件源后重试'
   if [[ "$DRY_RUN" != "true" ]] && ! docker compose version >/dev/null 2>&1; then
-    install_first_available docker-compose-plugin docker-compose || true
+    install_first_available docker-compose-plugin || true
     docker compose version >/dev/null 2>&1 \
       || die 'Docker Compose v2 不可用；请在离线 RPM 目录中提供 docker-compose-plugin'
   fi
@@ -290,7 +290,12 @@ print_report() {
   log "操作系统：$(detect_os_id "$OS_RELEASE_FILE" 2>/dev/null || printf unknown)"
   log "CPU 平台：$(detect_cpu_platform "$CPUINFO_FILE")"
   log "架构：$(uname -m)"
-  command -v docker >/dev/null 2>&1 && log "Docker：$(docker --version 2>/dev/null || true)"
+  if command -v docker >/dev/null 2>&1; then
+    log "Docker：$(docker --version 2>/dev/null || true)"
+  else
+    log 'Docker：未安装，将尝试通过 dnf/yum 补齐'
+  fi
+  return 0
 }
 
 main() {

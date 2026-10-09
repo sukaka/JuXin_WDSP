@@ -10,7 +10,7 @@ tests:
       - input:
           dest_addr: 127.0.0.1
           headers:
-            Host: localhost
+            Host: shop.example.com
             User-Agent: "OWASP CRS test agent"
             Cookie: "rememberMe=QUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJDQUJD"
           method: GET
@@ -26,7 +26,7 @@ tests:
       - input:
           dest_addr: 127.0.0.1
           headers:
-            Host: localhost
+            Host: shop.example.com
             User-Agent: "OWASP CRS test agent"
             Cookie: "rememberMe=QUJDQUJDQUJDQUJD"
           method: GET

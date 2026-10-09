@@ -204,3 +204,75 @@ func TestTruncateBody(t *testing.T) {
 		t.Errorf("short body should not be truncated")
 	}
 }
+
+// 自定义/内置规则 ID 段标注规则来源（不被规则集元数据误标 OWASP_CRS）；
+// 原始攻击类型 tag（GenerateSecLang 写入）参与主类型聚合，critical 自定义规则
+// 压过 notice 级 CRS 扫描器规则。
+func TestParseAuditLineCustomRuleSourceAndAttackType(t *testing.T) {
+	scannerMsg := `[client \"192.0.2.1\"] Coraza: Warning. Scanner [id \"1000712\"] [msg \"Scanner Detected\"] [severity \"notice\"] [tag \"attack-scanner\"] [phase \"1\"]`
+	customRCE := `[client \"192.0.2.1\"] Coraza: Warning. JNDI [id \"7100101\"] [msg \"Log4j2 JNDI 注入探测拦截\"] [severity \"critical\"] [tag \"jiuzhang-custom\"] [tag \"REMOTE_CODE_EXECUTION\"]`
+	builtinMsg := `[client \"192.0.2.1\"] Coraza: Warning. Builtin [id \"7050001\"] [msg \"九章内置规则\"] [severity \"error\"] [tag \"jiuzhang-builtin\"] [tag \"WEBSHELL\"]`
+
+	evt, err := ParseAuditLine([]byte(buildAuditLine(scannerMsg, customRCE)), "node-01")
+	if err != nil {
+		t.Fatalf("ParseAuditLine: %v", err)
+	}
+	if evt.AttackType != "REMOTE_CODE_EXECUTION" {
+		t.Errorf("attack_type = %q, want REMOTE_CODE_EXECUTION（critical 自定义规则压过 notice 扫描器）", evt.AttackType)
+	}
+	if evt.Matches[1].RuleSource != "USER_CUSTOM" || evt.Matches[1].RuleVersion != "" {
+		t.Errorf("custom rule source = %q/%q, want USER_CUSTOM/空", evt.Matches[1].RuleSource, evt.Matches[1].RuleVersion)
+	}
+	if evt.Matches[0].RuleSource != "" && evt.Matches[0].RuleSource != "OWASP_CRS" {
+		// 无 rulesets 元数据时 CRS 规则来源为空（现状口径），不得误标 USER_CUSTOM
+		t.Errorf("scanner rule source = %q", evt.Matches[0].RuleSource)
+	}
+
+	evt2, err := ParseAuditLine([]byte(buildAuditLine(builtinMsg)), "node-01")
+	if err != nil {
+		t.Fatalf("ParseAuditLine: %v", err)
+	}
+	if evt2.Matches[0].RuleSource != "JIUZHANG_BUILTIN" {
+		t.Errorf("builtin rule source = %q, want JIUZHANG_BUILTIN", evt2.Matches[0].RuleSource)
+	}
+	if evt2.AttackType != "WEBSHELL" {
+		t.Errorf("attack_type = %q, want WEBSHELL（原始类型 tag 恒等映射）", evt2.AttackType)
+	}
+}
+
+func TestParseAuditLineConnectionAddr(t *testing.T) {
+	// guard 注入内部头：审计 client_ip 为改写后真实 IP，connection_ip/client_port 回填 TCP 对端
+	line := strings.Replace(sampleAudit,
+		`"x-request-id":["req-abc-123"]`,
+		`"x-request-id":["req-abc-123"],"x-jiuzhang-connection-addr":["172.19.0.1:43210"]`, 1)
+	evt, err := ParseAuditLine([]byte(line), "node-01")
+	if err != nil {
+		t.Fatalf("ParseAuditLine: %v", err)
+	}
+	if evt.ClientIP != "192.0.2.10" {
+		t.Errorf("client_ip = %q（真实 IP 不应被内部头影响）", evt.ClientIP)
+	}
+	if evt.ConnectionIP != "172.19.0.1" {
+		t.Errorf("connection_ip = %q, want 172.19.0.1", evt.ConnectionIP)
+	}
+	if evt.ClientPort != 43210 {
+		t.Errorf("client_port = %d, want 43210（内部头回填）", evt.ClientPort)
+	}
+	for k := range evt.RequestHeaders {
+		if strings.EqualFold(k, connectionAddrHeader) {
+			t.Error("内部头不得进入 request_headers 留痕")
+		}
+	}
+
+	// 非法内部头忽略：ConnectionIP 留空、端口保持审计值
+	bad := strings.Replace(sampleAudit,
+		`"x-request-id":["req-abc-123"]`,
+		`"x-request-id":["req-abc-123"],"x-jiuzhang-connection-addr":["garbage"]`, 1)
+	evt2, err := ParseAuditLine([]byte(bad), "node-01")
+	if err != nil {
+		t.Fatalf("ParseAuditLine: %v", err)
+	}
+	if evt2.ConnectionIP != "" || evt2.ClientPort != 51234 {
+		t.Errorf("invalid header must be ignored: conn=%q port=%d", evt2.ConnectionIP, evt2.ClientPort)
+	}
+}

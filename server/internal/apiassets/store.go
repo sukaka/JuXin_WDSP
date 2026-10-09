@@ -576,6 +576,31 @@ func (s *Store) ListKeyStatus(ctx context.Context) (map[string]string, error) {
 	return out, rows.Err()
 }
 
+// ListConfirmedByApplication 返回应用下 asset_status=CONFIRMED 的端点键清单
+// （endpoint_key 即「METHOD 空格 normalized_path」运行时契约键），按 endpoint_key
+// 升序保证下发内容确定。API 准入确认集数据源（docs/API_ADMISSION_CONTROL_DESIGN.md
+// §4.2：IGNORED/DEPRECATED/ZOMBIE 不下发——不在集合即拒绝，语义一致）；
+// 走 idx_api_endpoints_application（application_id）索引，无全表扫描。
+func (s *Store) ListConfirmedByApplication(ctx context.Context, appID uuid.UUID) ([]string, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT endpoint_key FROM api_endpoints
+WHERE application_id = $1 AND asset_status = 'CONFIRMED'
+ORDER BY endpoint_key`, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		out = append(out, key)
+	}
+	return out, rows.Err()
+}
+
 // Confirm 人工确认接口（asset_status=CONFIRMED）。
 func (s *Store) Confirm(ctx context.Context, id uuid.UUID) (*Endpoint, error) {
 	e, err := scanEndpoint(s.db.QueryRow(ctx, `

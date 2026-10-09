@@ -1,0 +1,4 @@
+source: https://github.com/coreruleset/xenforo-rule-exclusions-plugin
+commit: a0ef4833f6e5872a2e1a8b06b62bff0972e31007
+date: 2026-10-02
+license: Apache-2.0

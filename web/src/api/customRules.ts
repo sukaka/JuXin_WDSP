@@ -4,6 +4,10 @@ import type { CustomRuleItem, CustomRuleValidateResult, PageResult } from '../ty
 export interface CustomRuleListParams {
   keyword?: string
   status?: string
+  /** 按 CNNVD 编号精确筛选（CNNVD 兼容性 P1） */
+  cnnvd_id?: string
+  /** 按 CVE 编号精确筛选 */
+  cve_id?: string
   page: number
   page_size: number
 }
@@ -20,6 +24,8 @@ export interface CustomRuleBody {
   target_variables: string[]
   action: string
   tags: string[]
+  cnnvd_ids: string[]
+  cve_ids: string[]
 }
 
 export interface UpdateCustomRuleBody extends CustomRuleBody {

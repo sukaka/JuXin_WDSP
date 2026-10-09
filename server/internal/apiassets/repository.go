@@ -24,6 +24,8 @@ type Repository interface {
 	// 生命周期运营（ZOMBIE 状态机见 lifecycle.go）
 	Deprecate(ctx context.Context, id uuid.UUID, actor string) (*Endpoint, error)
 	Restore(ctx context.Context, id uuid.UUID, actor string) (*Endpoint, error)
+	// API 准入确认集（发布下发；CONFIRMED 端点键，排序确定）
+	ListConfirmedByApplication(ctx context.Context, appID uuid.UUID) ([]string, error)
 	// 服务资产聚合（§14，upstreams 主机:端口 视角）
 	ListServiceAssets(ctx context.Context, page, pageSize int) ([]ServiceAsset, int64, error)
 	// 业务维度扩展（api_assets）

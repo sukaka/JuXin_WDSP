@@ -353,14 +353,20 @@ func (s *Store) CreateObjectRelation(ctx context.Context, r *ObjectRelation) err
 // RevokeObjectRelation changes only an active relation. Historical rows are
 // retained so the compiler and audit views can distinguish revocation from
 // expiry and repeated requests cannot resurrect a relation.
+// NG-AZ-02 D1：撤销事实与手工水位推进（manual_seq+1）同一事务原子提交。
 func (s *Store) RevokeObjectRelation(ctx context.Context, id uuid.UUID) (*ObjectRelation, error) {
-	r, err := scanRelation(s.db.QueryRow(ctx, `UPDATE api_object_relations
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck -- commit decides the transaction outcome
+	r, err := scanRelation(tx.QueryRow(ctx, `UPDATE api_object_relations
 		SET status='REVOKED', updated_at=now()
 		WHERE id=$1 AND status='CONFIRMED'
 		RETURNING `+relationCols, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		var exists bool
-		if qerr := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_object_relations WHERE id=$1)`, id).Scan(&exists); qerr != nil {
+		if qerr := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM api_object_relations WHERE id=$1)`, id).Scan(&exists); qerr != nil {
 			return nil, qerr
 		}
 		if !exists {
@@ -368,7 +374,28 @@ func (s *Store) RevokeObjectRelation(ctx context.Context, id uuid.UUID) (*Object
 		}
 		return nil, ErrRelationConflict
 	}
-	return r, err
+	if err != nil {
+		return nil, err
+	}
+	if err := bumpManualRevocationSeq(ctx, tx); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// bumpManualRevocationSeq 手工撤销水位推进（NG-AZ-02 D1；调用方保证在撤销事实的
+// 同一事务内调用——水位与事实原子提交；单行 upsert 只增）。
+func bumpManualRevocationSeq(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `
+INSERT INTO api_authz_manual_revocation_seq (id, seq) VALUES (1, 1)
+ON CONFLICT (id) DO UPDATE SET seq = api_authz_manual_revocation_seq.seq + 1`)
+	if err != nil {
+		return fmt.Errorf("bump manual revocation seq: %w", err)
+	}
+	return nil
 }
 
 // ReauthorizeObjectRelation is the explicit audited state transition for a
@@ -409,25 +436,44 @@ func (s *Store) ReauthorizeObjectRelation(ctx context.Context, id uuid.UUID, in 
 
 // ExpireObjectRelations atomically marks due confirmed relations expired and
 // returns the changed rows. The caller owns the publication and audit hooks.
+// NG-AZ-02 D1：到期废止与手工水位推进同一事务（有行变更才推进——空扫不抬水位）。
 func (s *Store) ExpireObjectRelations(ctx context.Context, now time.Time) ([]ObjectRelation, error) {
 	now = now.UTC()
-	rows, err := s.db.Query(ctx, `UPDATE api_object_relations
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck -- commit decides the transaction outcome
+	rows, err := tx.Query(ctx, `UPDATE api_object_relations
 		SET status='EXPIRED', updated_at=$1
 		WHERE status='CONFIRMED' AND valid_until IS NOT NULL AND valid_until <= $1
 		RETURNING `+relationCols, now)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []ObjectRelation{}
 	for rows.Next() {
 		r, err := scanRelation(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out = append(out, *r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if len(out) > 0 {
+		if err := bumpManualRevocationSeq(ctx, tx); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *Store) ListAuthorizationDecisions(ctx context.Context, f DecisionFilter) ([]AuthorizationDecision, int64, error) {

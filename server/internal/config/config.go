@@ -102,6 +102,13 @@ type WAFConfig struct {
 	IdentityEventsLog string
 	// IdentityEventsLogGateway 网关容器内身份与行为事件日志路径（下发网关配置用）
 	IdentityEventsLogGateway string
+	// CoverageObsLog 执行覆盖观测日志路径（API 侧采集，NG-COV-01 摄入段；
+	// 文件未生成时采集器空转不 crash，与其他日志采集器同一缺文件行为）
+	CoverageObsLog string
+	// CoverageObsLogGateway 网关容器内覆盖观测日志路径（coverage.FileSink 装配默认）
+	CoverageObsLogGateway string
+	// CoverageSampleN 覆盖观测明细采样率 1/N（NG-COV-02：聚合不受影响；<=1 全保留）
+	CoverageSampleN int
 	// NodeIfacesLog 节点网口清单快照日志路径（API 侧采集，WDSP 阶段A；api 容器内 /var/log/caddy-audit/ 前缀）
 	NodeIfacesLog string
 	// SiteDiscoveryLog 站点资产被动发现日志路径（API 侧采集；网关 mirrorcap 按窗口聚合写入）
@@ -265,8 +272,13 @@ func Load() (*Config, error) {
 			// 网关侧路径下发 identity_events_log（与 guard-events.log 同目录推导）
 			IdentityEventsLog:        getEnv("WAF_IDENTITY_EVENTS_LOG", ""),
 			IdentityEventsLogGateway: getEnv("GATEWAY_IDENTITY_EVENTS_LOG", "/var/log/caddy/identity-events.log"),
-			NodeIfacesLog:            getEnv("WAF_NODE_IFACES_LOG", "runtime/logs/node-interfaces.jsonl"),
-			SiteDiscoveryLog:         getEnv("WAF_SITE_DISCOVERY_LOG", "runtime/logs/site-discovery.jsonl"),
+			// 执行覆盖观测（NG-COV-01 摄入段）：读侧与网关侧默认同值（同一 /var/log/caddy 卷内文件；
+			// 部署形态经 compose 把读侧改指 /var/log/caddy-audit 只读卷，本地缺文件时采集器空转不 crash）
+			CoverageObsLog:        getEnv("WAF_COVERAGE_OBS_LOG", "/var/log/caddy/coverage-observations.jsonl"),
+			CoverageObsLogGateway: getEnv("GATEWAY_COVERAGE_OBS_LOG", "/var/log/caddy/coverage-observations.jsonl"),
+			CoverageSampleN:       getEnvInt("WAF_COVERAGE_SAMPLE_N", 10),
+			NodeIfacesLog:         getEnv("WAF_NODE_IFACES_LOG", "runtime/logs/node-interfaces.jsonl"),
+			SiteDiscoveryLog:      getEnv("WAF_SITE_DISCOVERY_LOG", "runtime/logs/site-discovery.jsonl"),
 			// 采集器批量/周期 flush 阈值（W20；默认值与 apiruntime/accesslogs 采集器内建默认一致）
 			CollectorFlushBatch:    getEnvInt("WAF_COLLECTOR_FLUSH_BATCH", 2000),
 			CollectorFlushInterval: getEnvDuration("WAF_COLLECTOR_FLUSH_INTERVAL", 2*time.Second),

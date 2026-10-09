@@ -1,0 +1,4 @@
+source: https://github.com/coreruleset/drupal-rule-exclusions-plugin
+commit: 93700fdddf8909e75615ecc9c4bf17f5574b266b
+date: 2026-10-02
+license: Apache-2.0

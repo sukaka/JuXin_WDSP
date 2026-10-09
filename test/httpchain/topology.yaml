@@ -1,0 +1,43 @@
+# NG-HTTP-01 链路清单（测试拓扑注册表）
+# 每条链路：形态 / 客户端→网关段 / 网关→源站段 / 覆盖用例 / 当前状态
+# 状态枚举：untested（未验证）/ pass / fail / partial（部分覆盖）
+
+- id: direct
+  name: 客户端直连 WDSP（HTTP/1.1）
+  client_to_gw: http/1.1 plaintext
+  gw_to_origin: http/1.1（stage5 testorigin / 记录型源站）
+  cases: [HC-N01, HC-A01, HC-A02, HC-A03, HC-U01]
+  status: pass
+  verified: 2026-10-03（T1 11/11；含绝对形式/伪造转发头/双Host/CL-TE走私/连接复用不污染）
+
+- id: trusted-proxy
+  name: 前置可信代理 → WDSP
+  client_to_gw: http/1.1（可信代理转发，XFF 链）
+  gw_to_origin: http/1.1
+  cases: [TP-1, TP-2]
+  status: pass
+  verified: 2026-10-03（可信时 XFF 透传真实客户端；撤代理后 XFF 被忽略回退连接源）
+
+- id: h2-to-h1
+  name: 客户端 HTTP/2 → WDSP → HTTP/1.1 源站
+  client_to_gw: http/2（含伪头）
+  gw_to_origin: http/1.1
+  cases: [HC-N01, HC-A02, HC-A03]
+  status: untested
+  note: stage5 网关 h2 支持以实际发布配置为准；不支持时该链路记 partial 并如实披露
+
+- id: path-rewrite
+  name: 路径重写链路（网关或前置代理改写 URI）
+  client_to_gw: http/1.1
+  gw_to_origin: http/1.1（改写后 URI）
+  cases: [HC-A02]
+  status: untested
+
+- id: conn-reuse
+  name: 连接复用（同一连接多请求）
+  client_to_gw: http/1.1 keep-alive
+  gw_to_origin: 依上游连接池
+  cases: [CR-1, CR-2, CR-3]
+  status: pass
+  verified: 2026-10-03（同一连接 正常→CL/TE冲突→正常：无夹带请求、conn_seq 连续无串扰）
+  note: 重点验证异常请求不污染同连接后继请求（origin 的 conn/conn_seq 证据）

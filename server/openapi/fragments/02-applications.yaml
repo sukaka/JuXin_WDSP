@@ -91,7 +91,7 @@ paths:
       operationId: appUpdate
       tags: [applications]
       summary: 更新应用
-      description: 全量更新应用基础信息（编码不可改），携带 version 做乐观锁校验，版本不匹配返回 409；变更 protection_mode 记高风险审计。权限：`applications.update`
+      description: 全量更新应用基础信息（编码不可改），携带 version 做乐观锁校验，版本不匹配返回 409；变更 protection_mode/api_admission_mode/deployment_mode 记高风险审计（切入准入 PROTECT 时审计 details 附准入覆盖率快照）。权限：`applications.update`
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
       requestBody:
@@ -1456,8 +1456,10 @@ components:
         technical_owner: { type: string, description: 技术负责人 }
         status: { type: string, enum: [DRAFT, ACTIVE, DISABLED, ERROR, DELETED], description: 应用状态 }
         protection_mode: { type: string, enum: [OFF, OBSERVE, PROTECT, BYPASS], description: 防护模式（关闭/观察/防护/透传；BYPASS 为数据透传，全部检测失效，仅用于排障/应急） }
+        api_admission_mode: { type: string, enum: [OFF, OBSERVE, PROTECT], description: API 准入模式（迁移 000166，设计 docs/API_ADMISSION_CONTROL_DESIGN.md；OFF 不判定（默认）/ OBSERVE 未确认端点仅观测 / PROTECT 未确认端点 403；与 protection_mode 正交） }
         deployment_mode: { type: string, enum: [REVERSE_PROXY, ROUTED, MIRROR, TRANSPARENT], description: 部署模式（REVERSE_PROXY 反向代理，默认；ROUTED 路由牵引——发布时不下发可信代理链，网关按直连对端识别真实客户端 IP；MIRROR 镜像旁路——不生成内联站点路由，发布时写 mirrorcap 边车配置，只检测不阻断；TRANSPARENT 透明串接——tproxyd 牵引进程经 PROXY 协议送本机网关检测，发布时写 tproxyd 边车配置） }
         deployment_status: { type: string, enum: [NOT_PUBLISHED, PUBLISHING, PUBLISHED, PUBLISH_FAILED, ROLLING_BACK, ROLLBACK_FAILED], description: 部署状态 }
+        authz_lease_seconds: { type: integer, nullable: true, description: "授权快照租约秒数（NG-AZ-02 D5；null=不启用，15~300=启用）" }
         health_status: { type: string, description: 健康状态 }
         current_version_id: { type: string, format: uuid, nullable: true, description: 当前生效配置版本ID }
         last_publish_at: { type: string, format: date-time, nullable: true, description: 最近发布时间 }
@@ -1495,6 +1497,7 @@ components:
         business_owner: { type: string, description: 业务负责人 }
         technical_owner: { type: string, description: 技术负责人 }
         protection_mode: { type: string, enum: [OFF, OBSERVE, PROTECT, BYPASS], default: OBSERVE, description: 防护模式（缺省 OBSERVE；BYPASS 为数据透传，仅用于排障/应急） }
+        api_admission_mode: { type: string, enum: [OFF, OBSERVE, PROTECT], default: OFF, description: API 准入模式（缺省 OFF；非法值返回 400） }
         deployment_mode: { type: string, enum: [REVERSE_PROXY, ROUTED, MIRROR, TRANSPARENT], default: REVERSE_PROXY, description: 部署模式（缺省 REVERSE_PROXY；ROUTED 路由牵引，发布时不下发可信代理链；MIRROR 镜像旁路，不生成内联站点路由，发布时写 mirrorcap 边车配置；TRANSPARENT 透明串接，发布时写 tproxyd 边车配置；非法值返回 400） }
 
     AppUpdateRequest:
@@ -1506,7 +1509,9 @@ components:
         business_owner: { type: string }
         technical_owner: { type: string }
         protection_mode: { type: string, enum: [OFF, OBSERVE, PROTECT, BYPASS], description: 为空则不修改；BYPASS 为数据透传，仅用于排障/应急 }
+        api_admission_mode: { type: string, enum: [OFF, OBSERVE, PROTECT], description: 为空则不修改；非法值返回 400；切入 PROTECT 时服务端把切换时刻的准入覆盖率快照记入审计 details，变更记高风险审计 }
         deployment_mode: { type: string, enum: [REVERSE_PROXY, ROUTED, MIRROR, TRANSPARENT], description: 为空则不修改；ROUTED 路由牵引（发布时不下发可信代理链）；MIRROR 镜像旁路（不生成内联站点路由，发布时写 mirrorcap 边车配置）；TRANSPARENT 透明串接（发布时写 tproxyd 边车配置）；非法值返回 400；变更记高风险审计 }
+        authz_lease_seconds: { type: integer, nullable: true, description: "授权快照租约秒数（NG-AZ-02 D5；0=清除不启用，15~300=设置，缺省字段不变更；发布链编译进 api_authz_lease_seconds 与快照 lease_seconds）" }
         version: { type: integer, description: 乐观锁版本号（须与当前一致） }
 
     AppListResponse:

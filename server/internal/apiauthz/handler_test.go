@@ -1038,3 +1038,78 @@ func TestEvaluateEndpoint(t *testing.T) {
 		t.Fatalf("high confidence result=%+v", result)
 	}
 }
+
+// NG-AZ-03 D1/D5：decisions 查询 decision 过滤词表加第四值 VERIFIED_VIOLATION
+// （词表外取值 400 不降级猜义）；VERIFIED_VIOLATION 行 evidence 内嵌
+// authz_enforcement 实断证据原样带出（仅 evidence_read 权限可见）。
+func TestListAuthorizationDecisionsVerifiedViolationFilter(t *testing.T) {
+	store := NewMemStore()
+	appA := uuid.New()
+	vvEvidence := map[string]any{"authz_enforcement": map[string]any{
+		"decision": "VERIFIED_VIOLATION", "reason_code": "AUTHZ-BOLA-001", "enforced": true,
+		"endpoint_key": "GET /v1/orders/{id}",
+		"eligibility": map[string]any{"trusted_identity": true, "model_applicable": true,
+			"relation_valid": true, "no_conflict": true, "tenant_consistent": true,
+			"evidence_fresh": true, "other_owner": true, "owner_exclusive": true},
+		"enforcement_owner": "zhang.lei@example.com", "evidence_source": "AUTHORITY_SYNC",
+	}}
+	store.addAuthorizationDecision(AuthorizationDecision{
+		ApplicationID: &appA, EndpointKey: "GET /v1/orders/{id}", PolicyVersion: "authz-v1",
+		Decision: "OBSERVE_VIOLATION", Checks: []any{"BOLA"},
+	})
+	store.addAuthorizationDecision(AuthorizationDecision{
+		ApplicationID: &appA, EndpointKey: "GET /v1/orders/{id}", PolicyVersion: "authz-v2",
+		Decision: "VERIFIED_VIOLATION", Checks: []any{"BOLA"}, Evidence: vvEvidence,
+	})
+
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, injectPrincipal, NewHandler(store, nil))
+
+	// decision=VERIFIED_VIOLATION：200 且只返回该值行
+	rr := doJSON(t, mux, http.MethodGet, "/api/v1/api-security/authz/decisions?decision=VERIFIED_VIOLATION", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("VERIFIED_VIOLATION 过滤 status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var page struct {
+		Total int64                   `json:"total"`
+		Items []AuthorizationDecision `json:"items"`
+	}
+	decodeEnvelopeData(t, rr.Body.Bytes(), &page)
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Decision != "VERIFIED_VIOLATION" {
+		t.Fatalf("VERIFIED_VIOLATION 过滤结果=%+v", page)
+	}
+	// 证据原样带出（injectPrincipal 全权限含 evidence_read）
+	if page.Items[0].Evidence == nil {
+		t.Fatal("VERIFIED_VIOLATION 行应带出 evidence")
+	}
+	if _, ok := page.Items[0].Evidence["authz_enforcement"]; !ok {
+		t.Fatalf("evidence 应内嵌 authz_enforcement 键: %+v", page.Items[0].Evidence)
+	}
+
+	// 小写过滤值归一（handler ToUpper）
+	rr = doJSON(t, mux, http.MethodGet, "/api/v1/api-security/authz/decisions?decision=verified_violation", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("小写过滤值应归一: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// 词表外取值 400 不降级猜义
+	rr = doJSON(t, mux, http.MethodGet, "/api/v1/api-security/authz/decisions?decision=BLOCK", nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("词表外 decision 应 400: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// 无 evidence_read 权限：VERIFIED_VIOLATION 行可见但 evidence 不带出
+	readMux := http.NewServeMux()
+	RegisterRoutes(readMux, authzReadOnly, NewHandler(store, nil))
+	rr = doJSON(t, readMux, http.MethodGet, "/api/v1/api-security/authz/decisions?decision=VERIFIED_VIOLATION", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("只读主体 VERIFIED_VIOLATION 过滤 status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var readPage struct {
+		Items []AuthorizationDecision `json:"items"`
+	}
+	decodeEnvelopeData(t, rr.Body.Bytes(), &readPage)
+	if len(readPage.Items) != 1 || readPage.Items[0].Evidence != nil {
+		t.Fatalf("无 evidence_read 不得带出证据: %+v", readPage)
+	}
+}

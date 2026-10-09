@@ -19,6 +19,7 @@ import { ApiError } from '../../api/client'
 import { securityEventsApi } from '../../api/securityEvents'
 import RemediationCard from '../../components/RemediationCard'
 import StatusTag from '../../components/StatusTag'
+import VulnIdTags from '../../components/VulnIdTags'
 import { useAuthStore } from '../../stores/auth'
 import { useProductStore } from '../../stores/product'
 import { buildEventApmTraceHref } from '../../utils/apm'
@@ -345,6 +346,15 @@ function MatchCard({ match }: { match: SecurityEventMatch }) {
           {(match.tags ?? []).map((t) => (
             <Tag key={t}>{t}</Tag>
           ))}
+        </Space>
+      )}
+      {/* CNNVD 兼容性 P1：命中规则标注的漏洞编号（有编号才显示；CNNVD 标签点击跳漏洞档案） */}
+      {((match.cnnvd_ids ?? []).length > 0 || (match.cve_ids ?? []).length > 0) && (
+        <Space wrap style={{ marginTop: 8 }} size={4}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            漏洞编号：
+          </Typography.Text>
+          <VulnIdTags cnnvdIds={match.cnnvd_ids} cveIds={match.cve_ids} linkCnnvd />
         </Space>
       )}
     </div>
@@ -778,6 +788,24 @@ export default function EventDetailDrawer({
           )}
 
           <Typography.Title level={5}>相关事件（{detail?.related.length ?? 0}）</Typography.Title>
+          {detail?.related_mode === 'attack_session' && (
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+              同一攻击会话 · 按攻击时间线排列
+              {detail.related_session_id && (
+                <>
+                  {' · '}
+                  <Link to={`/attack-sessions/${detail.related_session_id}`} onClick={onClose}>
+                    查看攻击活动
+                  </Link>
+                </>
+              )}
+            </Typography.Paragraph>
+          )}
+          {detail?.related_mode === 'same_source_ip' && (
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+              同一来源 IP · 前后 24 小时
+            </Typography.Paragraph>
+          )}
           {(detail?.related ?? []).length === 0 ? (
             <Typography.Text type="secondary">暂无相关事件</Typography.Text>
           ) : (

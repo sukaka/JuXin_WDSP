@@ -374,10 +374,11 @@ func TestParseVendorKeys(t *testing.T) {
 }
 
 func TestLoadVendorKeysEmbedded(t *testing.T) {
-	// 内嵌 vendor_pubkey.hex 已登记授权中心正式密钥与 TRIAL 专用密钥；
-	// 两条都必须解析为合法 Ed25519 公钥（key_id 与授权中心登记值一致）。
+	// 内嵌 vendor_pubkey.hex 已登记授权中心正式密钥与 TRIAL 专用密钥（含 2026-09-26
+	// 轮换后的新 TRIAL 密钥，旧 TRIAL 密钥保留以支持存量未到期授权）；
+	// 三条都必须解析为合法 Ed25519 公钥（key_id 与授权中心登记值一致）。
 	keys := LoadVendorKeys()
-	for _, keyID := range []string{"key-20260808-VX1H", "trial-9fc46ec2-c7f5-4ec0-ad88-b26a10ffb33f"} {
+	for _, keyID := range []string{"key-20260808-VX1H", "trial-9fc46ec2-c7f5-4ec0-ad88-b26a10ffb33f", "trial-67b3a728-4334-4606-9366-152a3d73d925"} {
 		pub, ok := keys[keyID]
 		if !ok {
 			t.Fatalf("内嵌公钥表缺少已登记密钥 %s", keyID)

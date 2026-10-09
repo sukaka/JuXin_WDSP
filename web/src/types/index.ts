@@ -239,6 +239,8 @@ export interface ApplicationItem {
   last_publish_result: string
   domain_count: number
   upstream_count: number
+  /** API 准入模式（docs/API_ADMISSION_CONTROL_DESIGN.md §3.1；缺省按 OFF 处理） */
+  api_admission_mode?: ApiAdmissionMode
   created_at: string
   updated_at: string
   version: number
@@ -248,6 +250,55 @@ export interface ApplicationItem {
 export interface ApplicationDetail extends ApplicationItem {
   domains: DomainItem[]
   upstreams: UpstreamItem[]
+}
+
+/* ==================== API 准入防护（docs/API_ADMISSION_CONTROL_DESIGN.md §5） ==================== */
+
+/** API 准入模式（应用级）：OFF 不判定 / OBSERVE 只观测 / PROTECT 未确认即 403 */
+export type ApiAdmissionMode = 'OFF' | 'OBSERVE' | 'PROTECT'
+
+/** 窗口内仍有命中的未确认端点（覆盖率报告 unconfirmed_hot 元素；无 id，按 endpoint_key 关联资产） */
+export interface ApiAdmissionHotEndpoint {
+  endpoint_key: string
+  http_method: string
+  normalized_path: string
+  asset_status: string
+  hits: number
+  last_seen_at?: string | null
+}
+
+/** API 准入覆盖率报告（GET /api-security/admission/coverage） */
+export interface ApiAdmissionCoverage {
+  application_id: string
+  mode: ApiAdmissionMode
+  hits_window_hours: number
+  /** 各生命周期状态端点计数 */
+  endpoints: {
+    confirmed: number
+    discovered: number
+    ignored: number
+    deprecated: number
+    zombie: number
+  }
+  /** confirmed / (confirmed + discovered) */
+  confirm_rate: number
+  /** 窗口内仍有命中的未确认端点（按命中降序，切 PROTECT 会被拒绝） */
+  unconfirmed_hot: ApiAdmissionHotEndpoint[]
+  /** 窗口内 PROTECT 准入拦截次数（OBSERVE 期为 0） */
+  blocked: number
+}
+
+/** 准入拦截列表项（GET /api-security/admission/denied 的 items 元素；无 id，按 endpoint_key 关联资产） */
+export interface ApiAdmissionDeniedItem {
+  endpoint_key: string
+  http_method: string
+  normalized_path: string
+  asset_status: string
+  denied_count: number
+  last_denied_at?: string | null
+  /** 样本客户端 IP（服务端可能返回 null，api 层归一化为空数组） */
+  sample_client_ips: string[]
+  first_seen_at?: string | null
 }
 
 /** 应用域名 */
@@ -481,11 +532,58 @@ export interface CustomRuleItem {
   target_variables: string[]
   action: CustomRuleAction
   tags: string[]
+  /** CNNVD 编号数组（CNNVD 兼容性 P1，缺省 []） */
+  cnnvd_ids: string[]
+  /** CVE 编号数组（CNNVD 兼容性 P1，缺省 []） */
+  cve_ids: string[]
   status: string
   scope_type: string
   scope_ids: string[]
   generated_rule: string
   version: number
+}
+
+/** 漏洞档案条目（CNNVD 兼容性 P1，vuln_refs 表，管理员手工维护） */
+export interface VulnRefItem {
+  id: string
+  cnnvd_id: string
+  cve_id: string
+  title: string
+  severity: string
+  published_at: string
+  /** CNNVD 官方条目链接（可空） */
+  url: string
+  rule_count: number
+  event_count_30d: number
+  created_at: string
+  updated_at: string
+}
+
+/** 漏洞档案关联规则（交叉查询：编号 → 规则） */
+export interface VulnRefRule {
+  rule_id: number
+  rule_source: string
+  rule_name: string
+  description: string
+  enabled: boolean
+}
+
+/** 漏洞档案样例事件（近 30 天命中样例） */
+export interface VulnRefSampleEvent {
+  id: string
+  occurred_at: string
+  attack_type: string
+  client_ip: string
+  request_path: string
+  action: string
+}
+
+/** 漏洞档案详情（GET /waf/vuln-refs/{cnnvd_id}：条目 + 关联规则 + 近 30 天事件） */
+export interface VulnRefDetail {
+  ref: VulnRefItem
+  rules: VulnRefRule[] | null
+  event_count_30d: number
+  sample_events: VulnRefSampleEvent[] | null
 }
 
 /** 自定义规则校验结果 */
@@ -791,6 +889,10 @@ export interface SecurityEventMatch {
   matched_data: string
   tags: string[]
   phase: number
+  /** 命中规则标注的 CNNVD 编号（CNNVD 兼容性 P1，查询时现值；缺省 []，旧后端不返回） */
+  cnnvd_ids?: string[] | null
+  /** 命中规则标注的 CVE 编号（缺省 []，旧后端不返回） */
+  cve_ids?: string[] | null
 }
 
 /** 事件备注 */
@@ -809,6 +911,9 @@ export interface SecurityEventActionRecord {
   created_at: string
 }
 
+/** 相关事件关联口径：attack_session=同一攻击会话；same_source_ip=同来源IP前后24小时；none=无关联线索 */
+export type RelatedEventMode = 'attack_session' | 'same_source_ip' | 'none'
+
 /** 安全事件详情 */
 export interface SecurityEventDetail {
   event: SecurityEventItem
@@ -816,6 +921,8 @@ export interface SecurityEventDetail {
   notes: SecurityEventNote[] | null
   actions: SecurityEventActionRecord[] | null
   related: SecurityEventItem[] | null
+  related_mode?: RelatedEventMode | null
+  related_session_id?: string | null
 }
 
 /** 规则版本按日效果统计 */
@@ -1567,6 +1674,49 @@ export interface SiteAccessTrendDomainsData {
   items?: DomainAccessTrendItem[] | null
 }
 
+/** 站点流量-时间序列桶（unique_ips/blocked_requests 在日聚合口径下为 null） */
+export interface SiteTrafficPoint {
+  t: string
+  requests: number
+  bytes_in: number
+  bytes_out: number
+  unique_ips: number | null
+  blocked_requests: number | null
+}
+
+/** 站点流量-汇总（unique_ips/blocked_requests 在日聚合口径下为 null） */
+export interface SiteTrafficSummary {
+  total_requests: number
+  total_bytes_in: number
+  total_bytes_out: number
+  unique_ips: number | null
+  blocked_requests: number | null
+  peak_bucket_requests: number
+}
+
+/** 站点流量-应用项 */
+export interface SiteTrafficItem {
+  application_id: string
+  app_code: string
+  app_name: string
+  total_requests: number
+  total_bytes_in: number
+  total_bytes_out: number
+  unique_ips: number | null
+  blocked_requests: number | null
+  series?: SiteTrafficPoint[] | null
+}
+
+/** 站点流量响应（跨度 ≤7 天取 access_logs 实时聚合，>7 天取 site_traffic_daily 按日聚合） */
+export interface SiteTrafficData {
+  start: string
+  end: string
+  granularity: 'minute' | 'hour' | 'day'
+  source: 'access_logs' | 'site_traffic_daily'
+  summary?: SiteTrafficSummary | null
+  items?: SiteTrafficItem[] | null
+}
+
 /** CC 防护概览 */
 export interface CcOverviewData {
   start: string
@@ -2199,6 +2349,8 @@ export interface UpgradeJobItem {
   failure_code?: string
   failure_message?: string
   requested_by?: string | null
+  /** 定时升级的计划开始时间（RFC3339）；仅 SCHEDULED 状态任务携带，立即升级为 null */
+  scheduled_at?: string | null
   started_at?: string | null
   finished_at?: string | null
   created_at: string

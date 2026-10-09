@@ -553,6 +553,8 @@ var AllowedSettingKeys = map[string]bool{
 	"gateway_runtime:api_response_fail_policy": true, "gateway_runtime:api_response_capture_max_bytes": true,
 	"gateway_runtime:api_llm_allowed_models":   true,
 	"gateway_runtime:api_grpc_max_frame_bytes": true, "gateway_runtime:api_grpc_allow_compression": true,
+	// NG-AZ-02：节点心跳周期（0=关闭或 30~300s）与授权快照时钟漂移上限（10~300s，缺省 60）
+	"gateway_runtime:api_node_heartbeat_seconds": true, "gateway_runtime:authz_clock_skew_max_seconds": true,
 	"gateway_runtime:api_file_watermark_enabled": true, "gateway_runtime:api_file_watermark_template": true,
 	"gateway_runtime:api_file_watermark_content_types": true, "gateway_runtime:api_file_watermark_json_key": true,
 	// 阶段8 §36 限流下发面：配额/对象/分页/批量阈值（种子见迁移 000152；

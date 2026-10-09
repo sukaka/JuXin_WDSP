@@ -97,12 +97,14 @@ usage() {
   -v, --version X.Y.Z    交付版本号（必填，须与 jiuzhang-server/gateway 镜像 tag 一致）
   -p, --product PRODUCT  产品线 waf|wdsp|api（必填）
   -a, --arch ARCH        目标架构 amd64|arm64|x86|x86_64（缺省取宿主机架构）
+      --runtime-only     不携带产品文档、SBOM 与开发/测试资源（保留许可证）
       --skip-images      跳过 docker pull/save（仅打包文件清单，供无 docker 环境验证）
       --development      开发自验模式：允许未配置发布私钥，产物标记 delivery_mode=development；禁止用于正式交付
   -o, --output DIR       输出目录（默认 <仓库>/dist）
   -h, --help             显示帮助
 
 环境变量:
+  WDSP_AGENT_BINARY      可选，同架构 Linux Agent 发布二进制；随包复制至 agents/wdsp-agent。
   WDSP_SIGNING_KEY       发布签名 Ed25519 私钥路径（openssl genpkey -algorithm ED25519 生成，
                          绝不入库）。设置后对整包与内嵌裸机网关包产出旁车 .sig；
                          正式构建必需；未设置时必须显式加 --development。
@@ -144,6 +146,18 @@ normalize_arch() {
   esac
 }
 
+RUNTIME_ONLY=false
+runtime_copy() {
+  local src="$1" dst="$2"
+  mkdir -p "$dst"
+  if [[ "$RUNTIME_ONLY" == "true" ]]; then
+    COPYFILE_DISABLE=1 tar --exclude='*.md' --exclude='README*' --exclude='INSTALL' \
+      --exclude='.git*' --exclude='test' --exclude='tests' --exclude='testdata' \
+      --exclude='__tests__' --exclude='__pycache__' -cf - -C "$src" . | tar -xf - -C "$dst"
+  else
+    cp -R "$src/." "$dst/"
+  fi
+}
 VERSION=""
 PRODUCT=""
 ARCH=""
@@ -155,6 +169,7 @@ while [[ $# -gt 0 ]]; do
     -v|--version)   VERSION="$2"; shift 2 ;;
     -p|--product)   PRODUCT="$2"; shift 2 ;;
     -a|--arch)      ARCH="$2"; shift 2 ;;
+    --runtime-only) RUNTIME_ONLY=true; shift ;;
     --skip-images)  SKIP_IMAGES=true; shift ;;
     --development)  DEVELOPMENT=true; shift ;;
     -o|--output)    OUT_DIR="$2"; shift 2 ;;
@@ -231,6 +246,7 @@ WEB_IMAGE="jiuzhang-web:$VERSION"
 # 日志轮转 sidecar（本地构建镜像，与 server/gateway 同风格按版本 tag 锁定；
 # 构建上下文 gateway/images/logrotator，基础镜像 alpine:3.24 digest 在其 Dockerfile 内锁定）
 LOGROTATOR_IMAGE="jiuzhang-logrotator:$VERSION"
+NETMGRD_IMAGE="jiuzhang-netmgrd:$VERSION"
 
 if [[ "$ARCH" == "amd64" ]]; then
   POSTGRES_IMAGE="$POSTGRES_IMAGE_AMD64"
@@ -263,13 +279,15 @@ check_image_arch() {
 
 if [[ "$SKIP_IMAGES" != "true" ]]; then
   require_cmd docker
-  log_info "拉取第三方镜像（--platform linux/${ARCH}）..."
-  docker pull --platform "linux/${ARCH}" "$POSTGRES_IMAGE" || die "拉取失败: ${POSTGRES_IMAGE}"
-  docker pull --platform "linux/${ARCH}" "$VALKEY_IMAGE" || die "拉取失败: ${VALKEY_IMAGE}"
-  # APM 数据面镜像（可选能力；随包预置以免启用时无法联网拉取）
-  docker pull --platform "linux/${ARCH}" "$CLICKHOUSE_IMAGE" || die "拉取失败: ${CLICKHOUSE_IMAGE}"
-  docker pull --platform "linux/${ARCH}" "$OTEL_COLLECTOR_IMAGE" || die "拉取失败: ${OTEL_COLLECTOR_IMAGE}"
-  for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE"; do
+  log_info "准备锁定的第三方镜像（linux/${ARCH}，同摘要本地缓存优先）..."
+  for img in "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
+    if [[ "$img" == *@sha256:* ]] && docker image inspect --platform "linux/${ARCH}" "$img" >/dev/null 2>&1; then
+      log_info "复用已锁定镜像: $img"
+    else
+      docker pull --platform "linux/${ARCH}" "$img" || die "拉取失败: $img"
+    fi
+  done
+  for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE"; do
     docker image inspect "$img" >/dev/null 2>&1 \
       || die "镜像不存在: ${img}（请先用 docker buildx build --platform linux/${ARCH} 构建）"
   done
@@ -281,6 +299,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   check_image_arch "$GATEWAY_IMAGE" "请用 docker buildx build --platform linux/${ARCH} 重新构建"
   check_image_arch "$WEB_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -t ${WEB_IMAGE} web/ 重新构建"
   check_image_arch "$LOGROTATOR_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -t ${LOGROTATOR_IMAGE} gateway/images/logrotator 重新构建"
+  check_image_arch "$NETMGRD_IMAGE" "请构建 gateway/images/netmgrd/Dockerfile"
 fi
 
 PKG_BASENAME="jiuzhang-${PRODUCT}-offline-${VERSION}-${ARCH}"
@@ -289,7 +308,7 @@ DELIVERY_ID="$PKG_BASENAME"
 work="$(mktemp -d "${TMPDIR:-/tmp}/jzpkg.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 pkg_dir="$work/$PKG_BASENAME"
-mkdir -p "$pkg_dir"/{images,ops,licenses,docs}
+mkdir -p "$pkg_dir"/{images,ops,licenses}
 mkdir -p "$OUT_DIR"
 
 log_info "构建产品包: product=${PRODUCT} arch=${ARCH} version=${VERSION}"
@@ -298,25 +317,36 @@ log_info "构建产品包: product=${PRODUCT} arch=${ARCH} version=${VERSION}"
 # save_image IMAGE OUT_TAR —— 仅导出目标架构变体（containerd 存储下本地可共存多架构；
 # 老版本 docker 无 save --platform 时回退全量导出）
 save_image() {
-  local img="$1" out="$2"
+  local variable="$1" out="$2" img metadata
+  img="${!variable}"
   if ! docker save --platform "linux/${ARCH}" "$img" -o "$out" 2>/dev/null; then
     rm -f "$out"
     docker save "$img" -o "$out"
+  fi
+  if [[ "$RUNTIME_ONLY" == "true" ]]; then
+    metadata="$(python3 "$SCRIPT_DIR/runtime-image.py" "$out" "$out.runtime" \
+      --repository "jiuzhang-runtime-$(basename "$out" .tar)" --source-ref "$img")"
+    mv "$out.runtime" "$out"
+    docker load -i "$out" >&2
+    printf -v "$variable" '%s' "$(printf '%s' "$metadata" | jq -r .image)"
+    image_digests+=("$metadata")
   fi
 }
 image_digests=()
 if [[ "$SKIP_IMAGES" != "true" ]]; then
   log_info "导出镜像（docker save，linux/${ARCH}，可能需要数分钟）..."
-  save_image "$SERVER_IMAGE" "$pkg_dir/images/jiuzhang-server.tar"
-  save_image "$GATEWAY_IMAGE" "$pkg_dir/images/jiuzhang-gateway.tar"
-  save_image "$WEB_IMAGE" "$pkg_dir/images/jiuzhang-web.tar"
-  save_image "$LOGROTATOR_IMAGE" "$pkg_dir/images/jiuzhang-logrotator.tar"
-  save_image "$POSTGRES_IMAGE" "$pkg_dir/images/postgres.tar"
-  save_image "$VALKEY_IMAGE" "$pkg_dir/images/valkey.tar"
-  save_image "$CLICKHOUSE_IMAGE" "$pkg_dir/images/clickhouse.tar"
-  save_image "$OTEL_COLLECTOR_IMAGE" "$pkg_dir/images/opentelemetry-collector-contrib.tar"
+  save_image SERVER_IMAGE "$pkg_dir/images/jiuzhang-server.tar"
+  save_image GATEWAY_IMAGE "$pkg_dir/images/jiuzhang-gateway.tar"
+  save_image WEB_IMAGE "$pkg_dir/images/jiuzhang-web.tar"
+  save_image LOGROTATOR_IMAGE "$pkg_dir/images/jiuzhang-logrotator.tar"
+  save_image NETMGRD_IMAGE "$pkg_dir/images/jiuzhang-netmgrd.tar"
+  save_image POSTGRES_IMAGE "$pkg_dir/images/postgres.tar"
+  save_image VALKEY_IMAGE "$pkg_dir/images/valkey.tar"
+  save_image CLICKHOUSE_IMAGE "$pkg_dir/images/clickhouse.tar"
+  save_image OTEL_COLLECTOR_IMAGE "$pkg_dir/images/opentelemetry-collector-contrib.tar"
 fi
-for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
+if [[ "$RUNTIME_ONLY" != "true" || "$SKIP_IMAGES" == "true" ]]; then
+for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
   if [[ "$SKIP_IMAGES" != "true" ]]; then
     digest="$(docker image inspect --platform "linux/${ARCH}" "$img" --format '{{.Id}}' 2>/dev/null || docker image inspect "$img" --format '{{.Id}}')"
   else
@@ -324,6 +354,7 @@ for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$P
   fi
   image_digests+=("$(jq -n --arg image "$img" --arg digest "$digest" '{image:$image, digest:$digest}')")
 done
+fi
 
 # ---------- 1b. 裸机网关包 gateway-linux-<arch>.tar.gz ----------
 # 设计文档 4.2：从现有多架构网关镜像抽取 /usr/bin/caddy（CGO_ENABLED=0 静态编译，
@@ -350,7 +381,7 @@ build_gateway_baremetal_pkg() {
   fi
   # delivery_mode 是安装端区分正式包与开发自验包的显式边界；一并纳入包内摘要。
   printf '%s\n' "$DELIVERY_MODE" > "$gdir/delivery_mode"
-  cp -R "$REPO_ROOT/gateway/rules" "$gdir/rules"
+  runtime_copy "$REPO_ROOT/gateway/rules" "$gdir/rules"
   cp "$REPO_ROOT/gateway/configs/blockpage.html" "$gdir/blockpage.html"
   cp "$REPO_ROOT/deployment/baremetal/Caddyfile.bootstrap" "$gdir/Caddyfile.bootstrap"
   cp "$REPO_ROOT/deployment/systemd/jiuzhang-gateway.service" "$gdir/jiuzhang-gateway.service"
@@ -361,7 +392,7 @@ build_gateway_baremetal_pkg() {
   else
     (cd "$gdir" && sha256_of caddy delivery_mode VERSION > sha256sums)
   fi
-  tar -czf "$out" -C "$gtmp" "gateway-linux-${ARCH}"
+  COPYFILE_DISABLE=1 tar -czf "$out" -C "$gtmp" "gateway-linux-${ARCH}"
   gateway_scan_report="$gtmp/gateway-scan.json"
   python3 "$SCANNER_FILE" \
     --root "$out" \
@@ -454,6 +485,7 @@ services:
       VALKEY_PORT: 6379
       # 生产 gateway 使用 host 网络，guard 配置发布须连接宿主机发布的 Valkey 端口。
       GATEWAY_VALKEY_ADDR: 127.0.0.1:\${VALKEY_PORT:-6379}
+      GATEWAY_NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
       VALKEY_PASSWORD: \${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
       COOKIE_SECURE: \${COOKIE_SECURE:-true}
       INITIAL_ADMIN_USERNAME: \${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
@@ -521,8 +553,13 @@ services:
     restart: unless-stopped
     # 管理控制台入口；默认监听全部接口供管理员从内网工作站访问，
     # 如需仅本机访问改为 "127.0.0.1:\${WEB_PORT:-8080}:8080"
+    # HTTPS 8443：证书由安装期 ops/install/console-cert.sh 生成（自签、100 年有效期），
+    # 经只读卷挂载；证书缺失时 web 入口自动退化为仅 HTTP（docker-entrypoint.web.sh）
     ports:
       - "\${WEB_PORT:-8080}:8080"
+      - "\${WEB_HTTPS_PORT:-8443}:8443"
+    volumes:
+      - ./runtime/certificates:/etc/caddy/console-certs:ro
     depends_on:
       api: {condition: service_healthy}
     security_opt: [no-new-privileges:true]
@@ -559,6 +596,19 @@ services:
   # 日志轮转 sidecar：对网关日志卷中常驻 append 写入的日志做 copytruncate 轮转
   # （coraza-audit.log / api-runtime-events.log / guard-events.log / access-full.jsonl /
   #  site-discovery.jsonl；access.log 与 caddy.log 由 Caddy 自身轮转，不在此处理）
+  netmgrd:
+    image: $NETMGRD_IMAGE
+    restart: unless-stopped
+    network_mode: service:gateway
+    cap_add: [NET_RAW, NET_ADMIN]
+    environment:
+      NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
+    volumes:
+      - gateway-admin:/var/run/caddy
+    depends_on:
+      gateway: {condition: service_started}
+    security_opt: [no-new-privileges:true]
+
   logrotator:
     image: $LOGROTATOR_IMAGE
     container_name: jiuzhang-logrotator
@@ -596,6 +646,9 @@ EOF
 # ---------- 产品线（本包固定默认：${PRODUCT}）----------
 # waf=纯WAF；wdsp=WAF+API动态防护；api=API安全系统
 PRODUCT_EDITION=${PRODUCT}
+# 管理控制台 HTTPS 入口端口（容器内固定 8443；证书由安装期生成，
+# 见 runtime/certificates/console.crt，自签、100 年有效期）
+WEB_HTTPS_PORT=8443
 # API 动态防护总开关（waf 包须为 false；wdsp/api 默认 true）
 API_DYNAMIC_PROTECTION_ENABLED=${API_DYNAMIC_DEFAULT}
 # Web 防护专属交付（策略/CC/访问控制菜单；api 包默认 false）
@@ -644,19 +697,37 @@ for rel in "${ops_allowlist[@]}"; do
 done
 allowlist_sha256="$(sha256_of "$ALLOWLIST_FILE" | awk '{print $1}')"
 cp -R "$REPO_ROOT/licenses/." "$pkg_dir/licenses/"
+if [[ "$RUNTIME_ONLY" == "true" ]]; then
+  # 保留许可归属信息，但不把 Markdown 文档作为交付内容。
+  while IFS= read -r -d '' notice; do
+    mv "$notice" "${notice%.md}.NOTICE"
+  done < <(find "$pkg_dir/licenses" -type f -name '*.md' -print0)
+fi
+if [[ -n "${WDSP_AGENT_BINARY:-}" ]]; then
+  [[ -f "$WDSP_AGENT_BINARY" && ! -L "$WDSP_AGENT_BINARY" ]] || die "Agent 二进制不存在或为符号链接"
+  mkdir -p "$pkg_dir/agents"
+  cp "$WDSP_AGENT_BINARY" "$pkg_dir/agents/wdsp-agent"
+  chmod 0755 "$pkg_dir/agents/wdsp-agent"
+fi
 # 生产 compose 模板 gateway 服务的 ./gateway/* 挂载源（rules/bootstrap Caddyfile/blockpage）
 mkdir -p "$pkg_dir/gateway"
 cp "$REPO_ROOT/deployment/baremetal/Caddyfile.bootstrap" "$pkg_dir/gateway/Caddyfile"
 cp "$REPO_ROOT/gateway/configs/blockpage.html" "$pkg_dir/gateway/blockpage.html"
-cp -R "$REPO_ROOT/gateway/rules" "$pkg_dir/gateway/rules"
+runtime_copy "$REPO_ROOT/gateway/rules" "$pkg_dir/gateway/rules"
 # APM 数据面（可选能力，默认关闭；启用见 .env.example APM 节与 docker-compose.apm.yml 头注释）：
 # 独立 compose 项目（profile central/local），镜像已随 images/ 预置；apm/pki 为 mTLS 证书占位目录，
 # 由部署侧私有 CA 签发后放入（docs/APM_DATA_PLANE_DEPLOYMENT.md），仓库与包内均不含真实证书/口令。
-cp "$REPO_ROOT/deployment/docker-compose.apm.yml" "$pkg_dir/docker-compose.apm.yml"
+sed -e "s|image: clickhouse/clickhouse-server:.*|image: $CLICKHOUSE_IMAGE|" \
+    -e "s|image: otel/opentelemetry-collector-contrib:.*|image: $OTEL_COLLECTOR_IMAGE|" \
+    "$REPO_ROOT/deployment/docker-compose.apm.yml" > "$pkg_dir/docker-compose.apm.yml"
 mkdir -p "$pkg_dir/apm"
-cp -R "$REPO_ROOT/deployment/apm/clickhouse" "$pkg_dir/apm/clickhouse"
-cp -R "$REPO_ROOT/deployment/apm/collector" "$pkg_dir/apm/collector"
+runtime_copy "$REPO_ROOT/deployment/apm/clickhouse" "$pkg_dir/apm/clickhouse"
+runtime_copy "$REPO_ROOT/deployment/apm/collector" "$pkg_dir/apm/collector"
 mkdir -p "$pkg_dir/apm/pki"
+if [[ "$RUNTIME_ONLY" == "true" ]]; then
+  cp "$REPO_ROOT/THIRD_PARTY_NOTICES.md" "$pkg_dir/licenses/THIRD_PARTY_NOTICES"
+else
+mkdir -p "$pkg_dir/docs"
 for f in SBOM.spdx.json SBOM.cyclonedx.json; do
   if [[ -f "$REPO_ROOT/docs/$f" ]]; then
     cp "$REPO_ROOT/docs/$f" "$pkg_dir/docs/$f"
@@ -669,6 +740,7 @@ cp "$REPO_ROOT/THIRD_PARTY_NOTICES.md" "$pkg_dir/docs/THIRD_PARTY_NOTICES.md"
 [[ -f "$REPO_ROOT/docs/BRANCHING_AND_PRODUCT_LINES.md" ]] && cp "$REPO_ROOT/docs/BRANCHING_AND_PRODUCT_LINES.md" "$pkg_dir/docs/"
 # APM 数据面部署手册（可选能力的启用指引，manifest apm.enable 与 .env.example 均引用本文档）
 [[ -f "$REPO_ROOT/docs/APM_DATA_PLANE_DEPLOYMENT.md" ]] && cp "$REPO_ROOT/docs/APM_DATA_PLANE_DEPLOYMENT.md" "$pkg_dir/docs/"
+fi
 
 # 产品线说明
 cat > "$pkg_dir/PRODUCT.txt" <<EOF
@@ -785,7 +857,7 @@ package_files_manifest_sha256="$(jq -r '.manifest.files_manifest_sha256 // empty
 
 # ---------- 7. 打包 ----------
 out="$OUT_DIR/${PKG_BASENAME}.tar.gz"
-tar -czf "$out" -C "$work" "$PKG_BASENAME"
+COPYFILE_DISABLE=1 tar -czf "$out" -C "$work" "$PKG_BASENAME"
 
 # 对最终归档再次递归扫描，覆盖镜像层/历史层和嵌套归档；报告中的摘要
 # 是签名对象的摘要，任何扫描后修改都会在签名/交付前被拒绝。

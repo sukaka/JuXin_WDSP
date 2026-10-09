@@ -91,14 +91,19 @@ interface MockOptions {
   deleteStatus?: number
 }
 
-function mockFetch(opts: MockOptions = {}, calls: { method: string; url: string; body?: unknown }[] = []) {
+function mockFetch(
+  opts: MockOptions = {},
+  calls: { method: string; url: string; body?: unknown }[] = [],
+) {
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
     calls.push({ method, url, body })
     const ok = (status: number, data: unknown) =>
-      Promise.resolve(jsonResponse(status, { code: 'SUCCESS', message: 'ok', data }))
+      Promise.resolve(
+        jsonResponse(status, { code: 'SUCCESS', message: 'ok', data }),
+      )
     if (url.includes('/api-security/endpoints')) return ok(200, ENDPOINTS)
     if (url.includes('/api-security/flow-baselines/')) {
       if (method === 'PUT') {
@@ -111,15 +116,30 @@ function mockFetch(opts: MockOptions = {}, calls: { method: string; url: string;
             }),
           )
         }
-        return ok(200, { ...DETAIL, ...(body as object), version: DETAIL.version + 1 })
+        return ok(200, {
+          ...DETAIL,
+          ...(body as object),
+          version: DETAIL.version + 1,
+        })
       }
       if (method === 'DELETE') return ok(200, { status: 'deleted' })
       return ok(200, opts.detail ?? DETAIL)
     }
     if (url.includes('/api-security/flow-baselines')) {
-      if (method === 'POST') return ok(opts.postStatus ?? 201, { ...DETAIL, ...(body as object), id: 'f-new' })
-      const enabled = new URL(url, 'http://localhost').searchParams.get('enabled')
-      return ok(200, { items: opts.items ?? [SUMMARY], total: (opts.items ?? [SUMMARY]).length, enabled })
+      if (method === 'POST')
+        return ok(opts.postStatus ?? 201, {
+          ...DETAIL,
+          ...(body as object),
+          id: 'f-new',
+        })
+      const enabled = new URL(url, 'http://localhost').searchParams.get(
+        'enabled',
+      )
+      return ok(200, {
+        items: opts.items ?? [SUMMARY],
+        total: (opts.items ?? [SUMMARY]).length,
+        enabled,
+      })
     }
     return Promise.reject(new Error(`unexpected url: ${url}`))
   })
@@ -139,7 +159,11 @@ function renderPage() {
 }
 
 function grant(permissions: string[]) {
-  useAuthStore.setState({ user: makeUser(permissions), csrfToken: null, initialized: true })
+  useAuthStore.setState({
+    user: makeUser(permissions),
+    csrfToken: null,
+    initialized: true,
+  })
 }
 
 const READ = ['api_flow.read']
@@ -168,7 +192,9 @@ describe('ApiFlowBaselinesPage', () => {
     )
     fireEvent.click(option as HTMLElement)
     await waitFor(() => {
-      expect(calls.some((c) => c.url.includes('flow-baselines?enabled=false'))).toBe(true)
+      expect(
+        calls.some((c) => c.url.includes('flow-baselines?enabled=false')),
+      ).toBe(true)
     })
   })
 
@@ -254,7 +280,11 @@ describe('ApiFlowBaselinesPage', () => {
     await waitFor(() => {
       const post = calls.find((c) => c.method === 'POST')
       expect(post).toBeTruthy()
-      const body = post?.body as { flow_id: string; steps: Record<string, unknown>[]; expected_version?: number }
+      const body = post?.body as {
+        flow_id: string
+        steps: Record<string, unknown>[]
+        expected_version?: number
+      }
       expect(body.flow_id).toBe('new-flow')
       expect(body.steps).toHaveLength(1)
       expect(body.steps[0].step_id).toBe('create-order')
@@ -285,7 +315,10 @@ describe('ApiFlowBaselinesPage', () => {
       const put = calls.find((c) => c.method === 'PUT')
       expect(put).toBeTruthy()
       expect(put?.url).toContain('/api-security/flow-baselines/f-1')
-      const body = put?.body as { expected_version: number; steps: Record<string, unknown>[] }
+      const body = put?.body as {
+        expected_version: number
+        steps: Record<string, unknown>[]
+      }
       expect(body.expected_version).toBe(3)
       expect(body.steps).toHaveLength(2)
       // 非零字段随载荷提交；零值/未填写字段省略不发送
@@ -323,7 +356,11 @@ describe('ApiFlowBaselinesPage', () => {
     await waitFor(() => {
       const put = calls.find((c) => c.method === 'PUT')
       expect(put).toBeTruthy()
-      const body = put?.body as { enabled: boolean; expected_version: number; steps: unknown[] }
+      const body = put?.body as {
+        enabled: boolean
+        expected_version: number
+        steps: unknown[]
+      }
       expect(body.enabled).toBe(false)
       expect(body.expected_version).toBe(3)
       expect(body.steps).toHaveLength(2)

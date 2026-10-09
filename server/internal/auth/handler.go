@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -121,7 +122,7 @@ func (h *Handler) writeLoginSuccess(w http.ResponseWriter, r *http.Request, resu
 	}
 
 	// 设置会话 Cookie
-	h.setSessionCookie(w, result.Session.ID, result.Session.AbsoluteExpiry)
+	h.setSessionCookie(w, r, result.Session.ID, result.Session.AbsoluteExpiry)
 
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"user":                buildUserResponse(result.User, result.Roles, result.Permissions),
@@ -287,7 +288,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	if p != nil {
 		err = h.svc.Logout(r.Context(), p.SessionID)
 	}
-	h.clearSessionCookie(w)
+	h.clearSessionCookie(w, r)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
@@ -389,7 +390,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 服务层已在改密事务中吊销含当前会话在内的全部会话（持久化 + Valkey 缓存清理）。
-	h.clearSessionCookie(w)
+	h.clearSessionCookie(w, r)
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"message":          "密码修改成功，请重新登录",
 		"relogin_required": true,
@@ -457,28 +458,39 @@ func (h *Handler) RevokeSession(w http.ResponseWriter, r *http.Request) {
 	response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "会话不存在")
 }
 
-func (h *Handler) setSessionCookie(w http.ResponseWriter, sessionID string, expires time.Time) {
+func (h *Handler) setSessionCookie(w http.ResponseWriter, r *http.Request, sessionID string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    sessionID,
 		Path:     "/",
 		Expires:  expires,
 		HttpOnly: true,
-		Secure:   h.secure,
+		Secure:   h.secure && requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 }
 
-func (h *Handler) clearSessionCookie(w http.ResponseWriter) {
+func (h *Handler) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   h.secure,
+		Secure:   h.secure && requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+// requestIsHTTPS 判定当前请求是否经 HTTPS 到达：直连看 r.TLS，前置反代
+// （管理面 web 容器 / 网关）看其写入的 X-Forwarded-Proto。
+// 会话 Cookie 的 Secure 属性据此动态下发——纯 HTTP 部署（如离线包默认控制台）
+// 带 Secure 的 Cookie 会被浏览器静默丢弃，登录态无法保持。
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
 }
 
 func buildUserResponse(u *users.User, roles []users.RoleInfo, perms []string) map[string]interface{} {

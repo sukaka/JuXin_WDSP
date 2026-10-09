@@ -9,6 +9,7 @@ import type {
   RuleStat,
   SiteAccessTrendsData,
   SiteAccessTrendDomainsData,
+  SiteTrafficData,
   SourceIPStat,
   URIStat,
 } from '../types'
@@ -92,4 +93,7 @@ export const analyticsApi = {
   /** 网站访问趋势-域名钻取（指定应用下各域名的访问量与趋势） */
   siteAccessTrendDomains: (params: AnalyticsParams & { application_id: string }) =>
     request<SiteAccessTrendDomainsData>('/analytics/site-access-trends/domains', { query: toQuery(params) }),
+  /** 站点流量（实时/今天/近7天/近30天；跨度 ≤7 天取 access_logs，>7 天取 site_traffic_daily 日聚合） */
+  siteTraffic: (params: AnalyticsParams) =>
+    request<SiteTrafficData>('/analytics/site-traffic', { query: toQuery(params) }),
 }

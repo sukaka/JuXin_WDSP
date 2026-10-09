@@ -173,6 +173,7 @@ export const RESTORE_STATUS_META: Record<string, { color: string; label: string 
 /** 升级任务状态（与后端 upgrades 状态机一致） */
 export const UPGRADE_STATUS_META: Record<string, { color: string; label: string }> = {
   PENDING: { color: 'default', label: '排队中' },
+  SCHEDULED: { color: 'blue', label: '定时中' },
   PRECHECK: { color: 'blue', label: '升级前检查' },
   BACKUP: { color: 'cyan', label: '升级前备份' },
   APPLYING: { color: 'geekblue', label: '应用升级' },
@@ -183,6 +184,7 @@ export const UPGRADE_STATUS_META: Record<string, { color: string; label: string 
   FAILED: { color: 'red', label: '升级失败' },
   ROLLING_BACK: { color: 'orange', label: '回滚中' },
   ROLLED_BACK: { color: 'orange', label: '已回滚' },
+  CANCELLED: { color: 'default', label: '已取消' },
 }
 
 /** 升级包状态 */
@@ -218,9 +220,9 @@ export function isTerminalRestoreStatus(status: string): boolean {
   return status === 'SUCCESS' || status === 'FAILED' || status === 'CANCELLED'
 }
 
-/** 升级任务是否终态 */
+/** 升级任务是否终态（SCHEDULED 定时中为非终态，到点后转为执行态，需继续轮询） */
 export function isTerminalUpgradeStatus(status: string): boolean {
-  return status === 'SUCCESS' || status === 'FAILED' || status === 'ROLLED_BACK'
+  return status === 'SUCCESS' || status === 'FAILED' || status === 'ROLLED_BACK' || status === 'CANCELLED'
 }
 
 /** 汇总预检/检查项整体结果：任一 FAIL → FAIL，否则任一 WARNING → WARNING，全 PASS → PASS */

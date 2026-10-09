@@ -1,0 +1,7 @@
+source: https://github.com/ai-robots-txt/ai.robots.txt
+commit: 987266f3c581bc6bb71aa075051731188ab2a075
+date: 2026-10-02
+license: MIT
+file: robots.txt
+sha256: 6a785143f0cb6ba4cbdd3081d1021f4e038f7dd0be88c14055ec7ba32eea8400
+upstream_url: https://raw.githubusercontent.com/ai-robots-txt/ai.robots.txt/987266f3c581bc6bb71aa075051731188ab2a075/robots.txt

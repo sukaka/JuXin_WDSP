@@ -38,13 +38,15 @@ type Supervisor struct {
 	// NodeName 缺省空 = 认领全部节点，main 经 --node/NODE_NAME 注入）。
 	Diag *DiagService
 
-	mu       sync.Mutex
-	stopCh   chan struct{}
-	closed   bool
-	lastFP   string // 上次执行的配置指纹
-	lastOK   bool   // 上次执行是否全项成功
-	lastLog  string // 上次已记录日志的键（防每周期刷屏）
-	everSeen bool   // 配置文件曾出现（此后删除 = 收回配置，日志口径不同）
+	mu        sync.Mutex
+	stopCh    chan struct{}
+	closed    bool
+	lastFP    string // 上次执行的配置指纹
+	lastOK    bool   // 上次执行是否全项成功
+	lastLog   string // 上次已记录日志的键（防每周期刷屏）
+	everSeen  bool   // 配置文件曾出现（此后删除 = 收回配置，日志口径不同）
+	ready     bool
+	lastCheck time.Time
 }
 
 // NewSupervisor 构建监督器。
@@ -108,6 +110,8 @@ func (s *Supervisor) tick() {
 	if s.closed {
 		return
 	}
+	s.ready = false
+	defer func() { s.lastCheck = time.Now() }()
 
 	cfg, err := LoadConfig(s.ConfigPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -116,6 +120,7 @@ func (s *Supervisor) tick() {
 		} else {
 			s.logOnce("waiting", "等待配置下发: %s", s.ConfigPath)
 		}
+		s.ready = true
 		return
 	}
 	if err != nil {
@@ -141,6 +146,7 @@ func (s *Supervisor) tick() {
 
 	fp := cfg.fingerprint()
 	if fp == s.lastFP && s.lastOK {
+		s.ready = true
 		return // 指纹不变且上次成功：幂等跳过（不重写 status）
 	}
 	st := Apply(context.Background(), cfg, s.Runner, time.Now())
@@ -151,6 +157,7 @@ func (s *Supervisor) tick() {
 	}
 	s.lastFP = fp
 	s.lastOK = st.OK
+	s.ready = st.OK
 	if st.OK {
 		s.logOnce("applied:"+fp, "已生效: bridges=%d ip_forward=%s routes=%d",
 			len(cfg.Bridges), st.IPForward, len(cfg.Routes))

@@ -18,6 +18,11 @@
 | Coraza WAF | https://github.com/corazawaf/coraza | v3.7.0 (27069d06c896) | Apache-2.0 | 否 | WAF 检测引擎 | [licenses/coraza/LICENSE](licenses/coraza/LICENSE) |
 | coraza-caddy | https://github.com/corazawaf/coraza-caddy | v2.5.0 (55c03d45dc55) | Apache-2.0 | 否 | Caddy 集成模块 | [licenses/coraza-caddy/LICENSE](licenses/coraza-caddy/LICENSE) |
 | OWASP CRS | https://github.com/coreruleset/coreruleset | v4.28.0 (55b09f5acfd1) | Apache-2.0 | 否 | 通用攻击规则集 | [licenses/owasp-crs/LICENSE](licenses/owasp-crs/LICENSE) |
+| CRS 应用排除插件（wordpress/nextcloud/phpmyadmin/drupal/dokuwiki/xenforo） | https://github.com/coreruleset/plugin-registry | 各插件 commit PINNED（见 licenses/crs-plugins/README.md） | Apache-2.0 | 否 | 应用专属误报排除 | [licenses/crs-plugins/LICENSE](licenses/crs-plugins/LICENSE) |
+| CRS auto-decoding-plugin | https://github.com/coreruleset/auto-decoding-plugin | 1.0.0 (6885a9728d3f) | Apache-2.0 | 是（剔除 sqlHexDecode 两条规则与 10 行 CRS4 已删规则引用，默认禁用；见 JIUZHANG-NOTES.md） | ARGS 多轮解码抗混淆（默认禁用，按站启用） | [licenses/crs-plugins/LICENSE](licenses/crs-plugins/LICENSE) |
+| crawler-user-agents | https://github.com/monperrus/crawler-user-agents | 9345a7ad9c49 | MIT | 否（经 tools/rulegen/crawler-ua 生成规则） | 爬虫 UA 指纹标记（OBSERVE） | [licenses/crawler-user-agents/LICENSE](licenses/crawler-user-agents/LICENSE) |
+| ai.robots.txt | https://github.com/ai-robots-txt/ai.robots.txt | 987266f3c581 | MIT | 否（经 tools/rulegen/ai-crawler 生成规则） | AI 爬虫 UA 标记（OBSERVE） | [licenses/ai-robots-txt/LICENSE](licenses/ai-robots-txt/LICENSE) |
+| vektah/gqlparser | https://github.com/vektah/gqlparser | v2.5.60（go.mod 锁定） | MIT | 否 | GraphQL 文档 AST 解析（gateway/dynamic_security/gqlast 包装层带自建资源硬边界） | [licenses/gqlparser/LICENSE](licenses/gqlparser/LICENSE) |
 | xcaddy | https://github.com/caddyserver/xcaddy | v0.4.5 (328cac711a1f) | Apache-2.0 | 否 | Caddy 构建工具（仅构建期） | [licenses/xcaddy/LICENSE](licenses/xcaddy/LICENSE) |
 | go-ftw | https://github.com/coreruleset/go-ftw | v2.4.0 (23db497e3a61) | Apache-2.0 | 否 | CRS 回归测试（仅测试期） | [licenses/go-ftw/LICENSE](licenses/go-ftw/LICENSE) |
 | gopacket | https://github.com/google/gopacket | v1.1.19 | BSD-3-Clause | 否 | 镜像（旁路）采集器抓包/TCP 重组（pcapgo AF_PACKET 纯 syscall + tcpassembly，无 libpcap/cgo） | [licenses/gopacket/LICENSE](licenses/gopacket/LICENSE) |
@@ -98,6 +103,8 @@
 | go-humanize | https://github.com/dustin/go-humanize | v1.0.1 | MIT | 否 | godocx 间接依赖（报告导出） | 上游仓库 LICENSE（SBOM 收录，见文末声明） |
 | x/image | https://github.com/golang/image | v0.0.0-20200927104501-e162460cd6b5 | BSD-3-Clause | 否 | 图表绘制（go-chart 间接依赖） | 上游仓库 LICENSE（SBOM 收录，见文末声明） |
 | yaml.v3 | https://github.com/go-yaml/yaml | v3.0.1 | MIT + Apache-2.0（双许可） | 否 | 规范导入 YAML 解析（OpenAPI/Swagger/JSON Schema/Postman，管理后端，阶段8 §33） | [licenses/yaml/LICENSE](licenses/yaml/LICENSE) |
+| modelcontextprotocol/go-sdk | https://github.com/modelcontextprotocol/go-sdk | v1.8.0（go.mod 锁定） | Apache-2.0 / MIT（上游自述正由 MIT 过渡至 Apache-2.0，新代码 Apache-2.0、未授权重许可的贡献仍为 MIT） | 否 | MCP 官方 Go SDK 对测参照客户端（仅测试期 `test/waf/mcp-e2e/`，不入产物） | 上游仓库 LICENSE（SBOM 收录，见文末声明） |
+| gRPC（google.golang.org/grpc） | https://github.com/grpc/grpc-go | v1.76.0（go.mod 锁定） | Apache-2.0 | 否 | gRPC 官方 Go SDK 对测参照客户端（仅测试期 `test/waf/grpc-e2e/`，不入产物） | 上游仓库 LICENSE（SBOM 收录，见文末声明） |
 
 ## APM 阶段2 数据面新增组件
 

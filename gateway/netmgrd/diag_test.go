@@ -519,6 +519,9 @@ func TestDiagCaptureArgsAndSuccess(t *testing.T) {
 	if calls[0].timeout != 10*time.Second {
 		t.Fatalf("capture 超时应为 duration_sec: %v", calls[0].timeout)
 	}
+	if calls[0].capturePath != wantPcap || calls[0].maxOutputBytes != diagCaptureMaxBytes {
+		t.Fatalf("capture size limit not passed to runner: %+v", calls[0])
+	}
 	res, _ := readDiagResult(t, h.d.Dir, testJobID)
 	if res.Status != DiagSuccess || res.CaptureFile != "capture-"+testJobID+".pcap" || res.CaptureSize != 2048 {
 		t.Fatalf("capture 到期+产物存在应 SUCCESS 并回报产物: %+v", res)
@@ -564,6 +567,49 @@ func TestDiagCaptureOversizeDeleted(t *testing.T) {
 	}
 	if res.CaptureFile != "" {
 		t.Fatalf("失败结果不应带 capture_file: %+v", res)
+	}
+}
+
+func TestDiagCaptureOversizeStoppedDeleted(t *testing.T) {
+	h := newDiagHarness(t, "")
+	h.runFn = func(opts cmdRunOpts) cmdOutcome {
+		writePcapFromArgs(t, opts.args, diagCaptureMaxBytes+1)
+		return cmdOutcome{stopped: true, exitCode: -1}
+	}
+	writeDiagRequest(t, h.d.Dir, testJobID,
+		fmt.Sprintf(`{"version":1,"job_id":%q,"node":"","action":"capture","target":"",
+			"params":{"iface":"eth0","duration_sec":5},"timeout_sec":30}`, testJobID))
+
+	h.d.scanOnce()
+
+	res, _ := readDiagResult(t, h.d.Dir, testJobID)
+	if res.Status != DiagFailed || !strings.Contains(res.Stderr, "100MB") {
+		t.Fatalf("停止时的超限产物应 FAILED: %+v", res)
+	}
+	if fileExists(filepath.Join(h.d.Dir, "capture-"+testJobID+".pcap")) {
+		t.Fatal("停止时的超限 pcap 应删除")
+	}
+}
+
+func TestDefaultRunCmdStopsCaptureWhenOutputExceedsLimit(t *testing.T) {
+	pcapPath := filepath.Join(t.TempDir(), "capture.pcap")
+	time.AfterFunc(20*time.Millisecond, func() {
+		_ = os.WriteFile(pcapPath, make([]byte, 1025), 0o600)
+	})
+
+	started := time.Now()
+	out := defaultRunCmd(context.Background(), cmdRunOpts{
+		name:           "sleep",
+		args:           []string{"5"},
+		timeout:        2 * time.Second,
+		capturePath:    pcapPath,
+		maxOutputBytes: 1024,
+	})
+	if !out.outputLimitExceeded {
+		t.Fatalf("expected runtime capture limit rejection, got %+v", out)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("capture limit should stop command promptly, took %s", elapsed)
 	}
 }
 

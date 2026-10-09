@@ -2,6 +2,7 @@
 package upgrades
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
@@ -17,6 +19,24 @@ import (
 	"github.com/jiuzhang-waf/server/internal/middleware"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
+
+// packageRegistrar 上传登记所需的持久化能力（*Store 实现；测试可注入内存实现）。
+type packageRegistrar interface {
+	FindPackageByHash(ctx context.Context, hash string) (*Package, error)
+	CreatePackage(ctx context.Context, pkg *Package) error
+}
+
+// upgradeExecutor 上传后自动创建升级执行的入口（*Service 实现；测试可注入）。
+// Execute 立即执行；Schedule 创建定时任务（SCHEDULED，到点自动开始）。
+type upgradeExecutor interface {
+	Execute(ctx context.Context, packageID, requestedBy uuid.UUID, requestID string) (*Job, error)
+	Schedule(ctx context.Context, packageID, requestedBy uuid.UUID, requestID string, scheduledAt time.Time) (*Job, error)
+}
+
+// upgradeCanceller 取消定时升级任务的入口（*Service 实现；测试可注入）。
+type upgradeCanceller interface {
+	Cancel(ctx context.Context, jobID, requestedBy uuid.UUID) (*Job, error)
+}
 
 // Handler 升级处理器。
 type Handler struct {
@@ -32,21 +52,55 @@ type Handler struct {
 	// artifactVerifier 负责固定信任根、签名和归档内容绑定校验。
 	// 仅测试可替换；生产默认使用 verifyPackageArtifact。
 	artifactVerifier PackageArtifactVerifier
+	// registrar/executor 上传链路的登记与自动执行入口；canceller 定时任务取消入口。
+	// 仅测试可替换（同 artifactVerifier 模式）；生产由 NewHandler 绑定 store/service。
+	registrar packageRegistrar
+	executor  upgradeExecutor
+	canceller upgradeCanceller
+	// auditRecorder 仅测试可替换：非 nil 时 recordAudit 委托给它（生产为 nil，走 audits.Service）。
+	auditRecorder func(r *http.Request, p *authz.Principal, action, objID, objName, result, risk, failReason string)
 }
 
 // NewHandler 创建处理器。
 func NewHandler(store *Store, svc *Service, au *audits.Service) *Handler {
-	return &Handler{
-		store:           store,
-		service:         svc,
-		audits:          au,
+	h := &Handler{
+		store:            store,
+		service:          svc,
+		audits:           au,
 		artifactVerifier: verifyPackageArtifact,
 	}
+	if store != nil {
+		h.registrar = store
+	}
+	if svc != nil {
+		h.executor = svc
+		h.canceller = svc
+	}
+	return h
 }
 
 // SetArtifactVerifier 为隔离测试注入临时验签器；正式路径不得通过环境变量替换信任根。
 func (h *Handler) SetArtifactVerifier(verifier PackageArtifactVerifier) *Handler {
 	h.artifactVerifier = verifier
+	return h
+}
+
+// SetUploadDeps 为隔离测试注入内存版登记/执行实现；生产装配使用 store/service。
+func (h *Handler) SetUploadDeps(registrar packageRegistrar, executor upgradeExecutor) *Handler {
+	h.registrar = registrar
+	h.executor = executor
+	return h
+}
+
+// SetCanceller 为隔离测试注入内存版取消实现；生产装配使用 service。
+func (h *Handler) SetCanceller(canceller upgradeCanceller) *Handler {
+	h.canceller = canceller
+	return h
+}
+
+// SetAuditRecorder 为隔离测试捕获审计写入；生产为 nil，走 audits.Service。
+func (h *Handler) SetAuditRecorder(fn func(r *http.Request, p *authz.Principal, action, objID, objName, result, risk, failReason string)) *Handler {
+	h.auditRecorder = fn
 	return h
 }
 
@@ -73,6 +127,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, authChain func(http.Handler
 	mux.Handle("POST /api/v1/upgrades", authChain(middleware.RequirePermission("upgrades.execute")(http.HandlerFunc(h.Execute))))
 	mux.Handle("GET /api/v1/upgrades/{id}", authChain(read(http.HandlerFunc(h.Get))))
 	mux.Handle("POST /api/v1/upgrades/{id}/rollback", authChain(middleware.RequirePermission("upgrades.rollback")(http.HandlerFunc(h.Rollback))))
+	mux.Handle("POST /api/v1/upgrades/{id}/cancel", authChain(middleware.RequirePermission("upgrades.execute")(http.HandlerFunc(h.Cancel))))
 }
 
 // requireAnyPermission 要求拥有任一权限点（路由层权限控制）。
@@ -343,8 +398,41 @@ func (h *Handler) Rollback(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"job": job})
 }
 
+// Cancel 取消定时升级任务：仅 SCHEDULED 状态可取消（转为 CANCELLED）；
+// 已进入 PENDING 及以后的任务返回 409「任务已开始，无法取消」。
+func (h *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的任务ID")
+		return
+	}
+	if h.canceller == nil {
+		response.Error(w, r, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "升级执行服务未配置")
+		return
+	}
+	job, err := h.canceller.Cancel(r.Context(), id, p.UserID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "升级任务不存在")
+		case errors.Is(err, ErrInvalidStatus):
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, err.Error())
+		default:
+			response.InternalError(w, r, err)
+		}
+		return
+	}
+	h.recordAudit(r, p, "cancel", id.String(), "", audits.ResultSuccess, audits.RiskMedium, "")
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{"job": job})
+}
+
 // recordAudit 写入操作审计。
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objID, objName, result, risk, failReason string) {
+	if h.auditRecorder != nil {
+		h.auditRecorder(r, p, action, objID, objName, result, risk, failReason)
+		return
+	}
 	if err := h.audits.Record(r.Context(), audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,

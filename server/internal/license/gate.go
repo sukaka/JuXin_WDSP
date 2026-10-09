@@ -2,7 +2,10 @@
 //
 //   - 无有效授权：白名单外一律 423 Locked（code LICENSE_INVALID）；白名单 =
 //     /api/v1/auth/ 前缀（登录/会话永远可达）、/api/v1/health、/api/v1/license/ 前缀
-//     （状态查询与导入）、/api/v1/product/edition（能力探测，如实返回锁定态字段）；
+//     （状态查询与导入）、/api/v1/product/edition（能力探测，如实返回锁定态字段）、
+//     /api/v1/upgrades/ 前缀（系统升级恢复通道：信任根轮换等场景下锁定态必须仍能
+//     上传并应用签名升级包，否则「验签失败 → 无法导入 → 无法升级」死锁；
+//     该前缀仍受会话认证 + CSRF + 系统管理员角色约束，且升级包须通过发布签名校验）；
 //   - 有效授权 product=waf：/api/v1/api-security 及以下 403（code LICENSE_FEATURE_DENIED）；
 //   - 有效授权 product=api：Web 防护专属接口 403 同码——路由集合与 app.go 中
 //     cfg.Product.WebWAFProtectionEnabled() 门控的注册块一致（/api/v1/l7-rules*）。
@@ -38,6 +41,8 @@ var gateWhitelistPrefixes = []string{
 	"/api/v1/health",
 	"/api/v1/license/",
 	"/api/v1/product/edition",
+	// 系统升级恢复通道：锁定态也必须可升级（见文件头注释）；认证/CSRF/管理员角色不受影响。
+	"/api/v1/upgrades/",
 }
 
 // Gate 授权门控中间件（装配在认证链之后：session → CSRF → RequireAuth → Gate → 路由）。

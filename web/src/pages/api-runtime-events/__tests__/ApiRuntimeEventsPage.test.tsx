@@ -66,6 +66,37 @@ const eventFull = {
     verified_tenant_id: 'tenant-hmac-def456',
     evaluated_at: '2026-08-01T09:59:58Z',
   },
+  /** NG-AZ-03：VERIFIED_VIOLATION 实断事件 final_decision 内嵌 authz_enforcement 证据 */
+  final_decision: {
+    schema_version: 1,
+    completion_status: 'COMPLETED',
+    security_action: 'BLOCK',
+    authz_enforcement: {
+      decision: 'VERIFIED_VIOLATION',
+      reason_code: 'AUTHZ-BOLA-001',
+      enforced: true,
+      endpoint_key: 'GET /v1/users/{id}',
+      model_version: 'mv-3',
+      policy_version: 'pv-2',
+      principal_source: 'JWT_VERIFIED',
+      object_ref: 'objref:74a55c5af21c3efa',
+      eligibility: {
+        trusted_identity: true,
+        model_applicable: true,
+        relation_valid: true,
+        no_conflict: true,
+        tenant_consistent: true,
+        evidence_fresh: true,
+        other_owner: true,
+        owner_exclusive: true,
+      },
+      lease_seconds: 60,
+      applied_at_age_seconds: 12,
+      enforcement_owner: 'zhang.lei@example.com',
+      evidence_source: 'MANUAL_CONFIRMED',
+      recorded_at: '2026-08-01T10:00:00Z',
+    },
+  },
 }
 
 /** 旧版网关事件：审计维度列为 NULL（读取侧按可空处理） */
@@ -187,8 +218,8 @@ describe('ApiRuntimeEventsPage', () => {
     expect(within(drawer).getByText('/v1/users/1?debug=true')).toBeInTheDocument()
     expect(within(drawer).getByText('10.0.0.1')).toBeInTheDocument()
     expect(within(drawer).getByText('200')).toBeInTheDocument()
-    expect(within(drawer).getByText('mv-3')).toBeInTheDocument()
-    expect(within(drawer).getByText('pv-2')).toBeInTheDocument()
+    expect(within(drawer).getAllByText('mv-3').length).toBeGreaterThanOrEqual(1)
+    expect(within(drawer).getAllByText('pv-2').length).toBeGreaterThanOrEqual(1)
     expect(within(drawer).getByText('fp-user-1')).toBeInTheDocument()
     expect(within(drawer).getByText('API Key')).toBeInTheDocument()
     // details_json 明细表格化：检测器/规则/信息/证据键值
@@ -228,5 +259,33 @@ describe('ApiRuntimeEventsPage', () => {
     const drawer = await screen.findByRole('dialog')
     expect(within(drawer).getByText('req-101')).toBeInTheDocument()
     expect(within(drawer).queryByText('JWT 验证信息')).toBeNull()
+  })
+
+  it('详情抽屉：final_decision.authz_enforcement 渲染「授权实断证据」区块（D7：八因子逐项/已实断/四要素回执）；历史事件无此键不渲染', async () => {
+    renderPage()
+    // 含证据事件（btns[0]）
+    fireEvent.click(await screen.findAllByRole('button', { name: /^详\s*情$/ }).then((btns) => btns[0]))
+    const drawer = await screen.findByRole('dialog')
+    expect(within(drawer).getByText('授权实断证据')).toBeInTheDocument()
+    expect(within(drawer).getByText('实断证据（authz_enforcement）')).toBeInTheDocument()
+    expect(within(drawer).getByText('已实断')).toBeInTheDocument()
+    expect(within(drawer).getByText('VERIFIED_VIOLATION')).toBeInTheDocument()
+    expect(within(drawer).getByText('AUTHZ-BOLA-001')).toBeInTheDocument()
+    // 八因子逐项对错图标（中文名渲染；全真即全 success）
+    for (const label of ['可信身份', '模型适用', '关系有效', '无冲突', '租户一致', '证据新鲜', '他人属主', '排他所有权']) {
+      expect(within(drawer).getByText(label)).toBeInTheDocument()
+    }
+    // 版本/租约/四要素回执
+    expect(within(drawer).getByText('zhang.lei@example.com')).toBeInTheDocument()
+    expect(within(drawer).getByText('MANUAL_CONFIRMED')).toBeInTheDocument()
+    expect(within(drawer).getByText('objref:74a55c5af21c3efa')).toBeInTheDocument()
+  })
+
+  it('详情抽屉：历史事件 final_decision 为 NULL 时不渲染「授权实断证据」区块（空态不显示）', async () => {
+    renderPage()
+    fireEvent.click(await screen.findAllByRole('button', { name: /^详\s*情$/ }).then((btns) => btns[1]))
+    const drawer = await screen.findByRole('dialog')
+    expect(within(drawer).getByText('req-101')).toBeInTheDocument()
+    expect(within(drawer).queryByText('授权实断证据')).toBeNull()
   })
 })

@@ -230,6 +230,21 @@ func (m *MemStore) Confirm(ctx context.Context, id uuid.UUID) (*Endpoint, error)
 	return cloneEP(e), nil
 }
 
+// ListConfirmedByApplication 应用下 CONFIRMED 端点键（按 endpoint_key 升序，与 SQL 实现同口径）。
+func (m *MemStore) ListConfirmedByApplication(ctx context.Context, appID uuid.UUID) ([]string, error) {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []string{}
+	for _, e := range m.byID {
+		if e.ApplicationID != nil && *e.ApplicationID == appID && e.AssetStatus == "CONFIRMED" {
+			out = append(out, e.EndpointKey)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // GetByID 查询。
 func (m *MemStore) GetByID(ctx context.Context, id uuid.UUID) (*Endpoint, error) {
 	_ = ctx

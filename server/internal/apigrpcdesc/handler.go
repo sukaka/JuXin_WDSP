@@ -28,15 +28,20 @@ type auditRecorder interface {
 	Record(ctx context.Context, in audits.RecordInput) error
 }
 
-// Handler 描述符集管理面处理器。
+// Handler 描述符集管理面处理器（含 per-app 绑定（NG-GRPC G1 批次 B1）——
+// bindRepo 经 NewHandler 类型断言注入（Store 同时实现两接口；fake 可分别注入））。
 type Handler struct {
-	repo   Repository
-	audits auditRecorder
+	repo     Repository
+	bindRepo BindingRepository
+	audits   auditRecorder
 }
 
 // NewHandler 创建处理器（audit 为 nil 时跳过审计，不影响主流程；与 apisecurity 同一纪律）。
 func NewHandler(repo Repository, audit *audits.Service) *Handler {
 	h := &Handler{repo: repo}
+	if br, ok := repo.(BindingRepository); ok {
+		h.bindRepo = br
+	}
 	if audit != nil {
 		h.audits = audit
 	}

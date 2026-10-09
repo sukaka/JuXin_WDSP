@@ -41,8 +41,15 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/flowguard"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/grpcguard"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/machineid"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/mcpguard"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/gqlast"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/grpcdesc"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/httpsig"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/pipeline"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/response"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/accesscontrol"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/apievents"
@@ -225,6 +232,16 @@ type Guard struct {
 	APIParameterConstraints map[string][]detectors.ParamConstraint `json:"api_parameter_constraints,omitempty"`
 	// 已知 API 端点基线（发布通道下发）：endpoint_key → asset_status，供生命周期检测（新端点/DEPRECATED 调用）
 	APIKnownEndpoints map[string]string `json:"api_known_endpoints,omitempty"`
+	// API 准入策略（WDSP P1，发布通道下发 api_admission 段；nil = 未下发，准入检测零行为）。
+	// 键为 application_id（endpoint_key 非全局唯一，按应用分组规避同键冲突）；
+	// mode 词表 OFF/OBSERVE/PROTECT，词表外/缺失 fail-safe 视为 OFF（不启用不拦截——
+	// 不拦截优于误拦截；与 api_protection_mode 非法值拒载的硬校验刻意不同，故
+	// Validate 不对本段报错，归一在 Provision 编译期完成并 Warn 留痕）
+	APIAdmissionPolicies *apiAdmissionSectionJSON `json:"api_admission,omitempty"`
+	// GraphQL 成本预算策略（NG-GQL-03，发布通道下发 api_graphql 段；nil = 未下发，
+	// GraphQL 流量与历史版本零行为变化）。键为 application_id；数值非法在 Provision
+	// 归一走引擎默认并 Warn 留痕（fail-safe 与 api_admission 同形态，不拒载）
+	APIGraphQLPolicies *apiGraphQLSectionJSON `json:"api_graphql,omitempty"`
 	// 写方法 API 每分钟限速（缺省 60，由引擎默认值兜底）
 	APIWriteRatePerMinute int `json:"api_write_rate_per_minute,omitempty"`
 	// 阶段8 §36 限流下发面（发布通道下发；0/缺省 = 对应检测不启用，不走引擎默认值
@@ -254,7 +271,20 @@ type Guard struct {
 	APIAuthzSnapshotStale     bool                             `json:"api_authz_snapshot_stale,omitempty"`
 	APIAuthzSnapshotExpiresAt *time.Time                       `json:"api_authz_snapshot_expires_at,omitempty"`
 	APIAuthzPreviousValid     *authzSnapshotJSON               `json:"api_authz_previous_valid,omitempty"`
-	apiAuthzPreviousValid     *detectors.AuthorizationConfig   `json:"-"`
+	// ---- NG-AZ-02 v2 快照元数据（omitempty；缺失即 v1，D4-3 兼容）----
+	// APIAuthzSchema 快照 schema 闸门（D4-3）：存在即 "authz-snap/2"
+	APIAuthzSchema string `json:"api_authz_schema,omitempty"`
+	// APIAuthzRevocationWatermark 编译时刻管理面向量撤销水位（D1/D2；D4-1 回退拒绝输入）
+	APIAuthzRevocationWatermark *authzWatermarkJSON `json:"api_authz_revocation_watermark,omitempty"`
+	// APIAuthzConflictedObjects 决策侧排除集（D7）
+	APIAuthzConflictedObjects []authzConflictedObjectJSON `json:"api_authz_conflicted_objects,omitempty"`
+	// APIAuthzProducedAt 快照编译时刻（D8 漂移自检基准）
+	APIAuthzProducedAt *time.Time `json:"api_authz_produced_at,omitempty"`
+	// APIAuthzLeaseSeconds per-app 租约秒数（D5；0=未启用；解析夹紧 15~300）
+	APIAuthzLeaseSeconds int `json:"api_authz_lease_seconds,omitempty"`
+	// APIAuthzClockSkewMaxSeconds 时钟漂移上限秒数（D8；0=缺省 60；解析夹紧 10~300）
+	APIAuthzClockSkewMaxSeconds int                            `json:"api_authz_clock_skew_max_seconds,omitempty"`
+	apiAuthzPreviousValid       *detectors.AuthorizationConfig `json:"-"`
 	// 字段权限（发布通道下发 api_field_permissions；对应管理面 api_field_permissions 表行；
 	// nil/空 = 无字段权限基线，Mass Assignment 检测零行为；响应方向行本波运行时不判定）
 	APIFieldPermissions []detectors.FieldPermission `json:"api_field_permissions,omitempty"`
@@ -272,6 +302,14 @@ type Guard struct {
 	// 装配期经 detectors.ValidateFlowBaselines 校验，非法基线拒绝加载，不静默吞错；
 	// 运行期全部明细 OBSERVE 级只 AddMatch 不定案）
 	APIFlowBaselines []detectors.FlowBaseline `json:"api_flow_baselines,omitempty"`
+	// 强流程定义（NG-FLOW-01，docs/nextgen/NG-FLOW-strong-flow.md §1.1；发布通道下发
+	// api_strong_flows 段：定义+步骤数组随快照下发，仅 status=ACTIVE；对应管理面
+	// api_strong_flow_definitions/steps 表。nil/空数组 = 零行为（NG-T-C01：管线零行为、
+	// 无新日志、无新状态）；装配期经 flowguard.BuildRegistry 全量校验（§1.1 冻结规则
+	// 逐条，与 server 侧同口径双保险 + 版本不可变断言），非法定义拒绝加载 fail-closed，
+	// 不静默吞错；与既有流程观察（api_flow_baselines）并行共存互不消费。
+	// 本批（FLOW-01）仅解析/校验/装配，运行时判定属 FLOW-02，不接入请求链）
+	APIStrongFlows []flowguard.Definition `json:"api_strong_flows,omitempty"`
 	// 已吊销凭据清单（发布通道下发 api_revoked_credentials，阶段8 §35 第10项；对应管理面
 	// api_revoked_credentials 表当前生效行；nil/空 = 无吊销清单，吊销检测零行为；
 	// 装配期经 detectors.ValidateRevokedCredentials 校验，非法清单拒绝加载，不静默吞错；
@@ -309,13 +347,46 @@ type Guard struct {
 	// gRPC 单帧声明长度上限（W14-GW / P2-05；字节；0 = 默认 4 MiB；上限 64 MiB 防内存误配；
 	// 发布通道经 gateway_runtime 组 api_grpc_max_frame_bytes 下发）
 	APIGRPCMaxFrameBytes int `json:"api_grpc_max_frame_bytes,omitempty"`
-	// gRPC 压缩帧许可（W14-GW / P2-05；默认 false：压缩标志位置位产 grpc.unexpected_compression
-	// OBSERVE；发布通道经 gateway_runtime 组 api_grpc_allow_compression 下发）
-	APIGRPCAllowCompression bool `json:"api_grpc_allow_compression,omitempty"`
+	// gRPC 压缩帧许可（W14-GW / P2-05；发布通道经 gateway_runtime 组 api_grpc_allow_compression
+	// 下发）。指针三态（NG-GRPC G1 D5）：nil = 未下发——现状 grpc 检测器维持 false 二态
+	// （压缩标志位置位产 grpc.unexpected_compression OBSERVE 不解），grpcguard 按 G1 默认
+	// true 允许 gzip 并深检；显式 false 两检测器同维持现状二态；显式 true 允许解压深检
+	APIGRPCAllowCompression *bool `json:"api_grpc_allow_compression,omitempty"`
 	// gRPC 描述符集（W14-DESC / P2-05 深化；发布通道下发 api_grpc_descriptors；
 	// 对应管理面 api_grpc_descriptors 表 ENABLED 行；nil/空 = 无描述符，
 	// gRPC 处理与 v1 完全一致：仅帧结构校验与计数观测，不做字段级解析）
 	APIGRPCDescriptors []grpcDescriptorJSON `json:"api_grpc_descriptors,omitempty"`
+	// gRPC 描述符 per-app 绑定（NG-GRPC G1 批次 B2，发布通道下发 api_grpc_bindings；
+	// 对应管理面 api_grpc_descriptor_bindings 表行；nil/空 = 空绑定=全局生效（现状语义）。
+	// 应用存在任一绑定行时该应用只用其绑定集编译的注册表——同名服务跨应用不错配；
+	// 服务名精确匹配（大小写敏感——proto 全限定名语义；server B1 词表偏差登记备查，
+	// 消费侧不做归一化放宽）；mode 词表 OBSERVE|PROTECT 缺省 OBSERVE（词表外 fail-safe
+	// 归一 OBSERVE + Warn，与 api_admission 同纪律不拒载）；装配期经 buildGRPCGuardConfig
+	// 归一，无描述符且无绑定 = grpcguard 零行为 NG-T-C01）
+	APIGRPCBindings []grpcBindingJSON `json:"api_grpc_bindings,omitempty"`
+	// MCP 工具目录（NG-MCP G1 批次 B2，发布通道下发 api_mcp_tool_catalogs；
+	// 对应管理面 mcp_tool_catalogs/mcp_catalog_tools 表（发布段只含 APPROVED 工具行）；
+	// nil/空 = 无目录；装配期 catalog_hash 重算比对，不符即整目录拒装（Warn + 其绑定
+	// 运行期 SKIPPED(COV_NO_CATALOG) 放行不误断——不消费未验证摘要的目录）。
+	// 与 api_mcp_bindings 同缺 = mcpguard 零行为 NG-T-C01）
+	APIMCPToolCatalogs []mcpCatalogJSON `json:"api_mcp_tool_catalogs,omitempty"`
+	// MCP 绑定（发布通道下发 api_mcp_bindings；对应管理面 mcp_catalog_bindings 表行；
+	// 绑定驱动识别——endpoint_path 精确匹配大小写敏感；mode 词表 OBSERVE|PROTECT
+	// 缺省 OBSERVE（词表外 fail-safe 归一 OBSERVE + Warn）；装配期经
+	// buildMCPGuardConfig 归一）
+	APIMCPBindings []mcpBindingJSON `json:"api_mcp_bindings,omitempty"`
+	// 机器身份（NG-ID G1 批次 B2，发布通道下发三段——对应管理面 machine_identities/
+	// machine_identity_keys/machine_identity_bindings/machine_identity_revocation_watermark
+	// 表；机器身份是可选叠加能力：缺省 OFF，三段全缺 = 全链零行为 NG-T-C01。
+	// 装配 fail-safe 归一（mode 词表外→OBSERVE+Warn、字段空缺跳行+Warn、公钥 PEM
+	// 解析失败行拒装+Warn）；含 PROTECT 绑定时任何装配缺陷拒绝整体配置加载
+	// （fail-closed，jwt_trust 同纪律）；快照水位低于已应用水位拒载（§1.6）
+	APIMachineIdentities []machineIdentityJSON `json:"api_machine_identities,omitempty"`
+	// 机器身份绑定（应用×selector（path_exact|path_prefix 二选一）×mode×
+	// proof_required（true=未签名请求拒绝 401——准入策略判定非 UNKNOWN））
+	APIMachineIDBindings []machineIDBindingJSON `json:"api_machine_identity_bindings,omitempty"`
+	// 机器身份元数据（撤销水位+注册表版本——单调不下降承载）
+	APIMachineIDMeta *machineIDMetaJSON `json:"api_machine_identity_meta,omitempty"`
 	// FORMAL 模型版本（发布通道下发）：endpoint_key → 版本号；命中时写入事件 model_version
 	APIFormalModelVersions map[string]string `json:"api_formal_model_versions,omitempty"`
 	// 身份/来源指纹 HMAC 盐（identity_salt）：缺省时指纹未加盐（以固定域分隔前缀代替），启动 Warn 一次
@@ -428,12 +499,21 @@ type Guard struct {
 	apiRespBaselines      map[string][]detectors.ResponseBaseline // 按 APIResponseBaselines 归组（endpoint_key；nil = 无基线，偏离检测零行为）
 	apiParamRelations     map[string][]detectors.ParamRelation    // 按 APIParameterRelations 归组（endpoint_key；nil = 无关系，关系检测零行为）
 	apiFlowBaselines      map[string][]detectors.FlowBaseline     // 按 APIFlowBaselines 归组（endpoint_key；nil = 无基线，流程偏离检测零行为）
+	apiStrongFlows        *flowguard.Registry                     // 按 APIStrongFlows 装配（nil = 未下发/空段，强流程零行为 NG-T-C01；FLOW-02 消费入口，Provision 后只读）
+	apiStrongFlowIndex    map[string][]flowguard.BoundStep        // 按 apiStrongFlows 归组（endpoint_key；nil = 无端点绑定，强流程检测零行为）
+	strongFlowRuntime     *flowguard.Runtime                      // 强流程运行时（nil = 未下发定义，零行为；Valkey/密钥缺席时 Runtime 内部恒 UNKNOWN 放行+披露，D8 严禁本地内存回退）
 	apiFileWatermark      *response.FileWatermarkConfig           // 按 APIFileWatermark 编译（nil = 未下发/未启用，响应侧零行为变化）
 	apiFileSignature      *response.FileSignatureConfig           // 按 APIFileSignature 编译（nil = 未下发/未启用，响应侧零行为变化；密钥为秘密材料不落日志）
 	apiFileCompliance     *detectors.FileComplianceRuleSet        // 按 APIFileComplianceRules 编译（nil = 无规则，合规检测零行为）
 	apiGRPCRegistry       *grpcdesc.Registry                      // 按 APIGRPCDescriptors 编译（nil = 无描述符，gRPC 与 v1 一致）
+	apiGRPCGuard          *grpcguard.Config                       // 按 APIGRPCDescriptors+APIGRPCBindings 装配（nil = 无描述符且无绑定，grpcguard 零行为 NG-T-C01；Provision 后只读）
+	apiMCPGuard           *mcpguard.Config                        // 按 APIMCPToolCatalogs+APIMCPBindings 装配（nil = 无目录且无绑定，mcpguard 零行为 NG-T-C01；Provision 后只读）
+	apiMachineID          *machineid.Config                       // 按 APIMachineIdentities+APIMachineIDBindings+APIMachineIDMeta 装配（nil = 三段全缺，机器身份全链零行为 NG-T-C01；Provision 后只读）
+	machineIDReplay       *httpsig.ReplayStore                    // 重放原子存储（nil cli = 存储缺席——运行期 UNAVAILABLE 披露（OBSERVE 放行/PROTECT 503），严禁本机去重（§1.5 红线））
 	jwtVerifier           *jwtverify.Verifier                     // 按 JWTTrust 装配（nil = 未下发/OFF，请求链路零变化）
 	apiExceptions         map[string][]APIException               // 按 APIExceptions 装配（nil = 未下发，请求链路零变化）
+	apiAdmission          map[string]detectors.AdmissionPolicy    // 按 APIAdmissionPolicies 装配（nil = 无准入策略，准入检测零行为；Provision 后只读，热加载经实例整体替换生效）
+	apiGraphQL            map[string]*pipeline.GraphQLPolicy      // 按 APIGraphQLPolicies 装配（nil = 无 GraphQL 策略，GraphQL 流量零行为变化；同上只读）
 	jwtFetcher            *jwtverify.Fetcher                      // 测试注入钩子（nil = 存在 REMOTE_JWKS 时装配期建默认受限获取器）
 	jwtCancel             context.CancelFunc                      // 远程 JWKS 后台刷新取消（nil = 未启动；Cleanup 调用）
 	botPolicy             *botPolicyJSON                          // 按 BotPolicy 装配（nil = 未下发；OFF 也保留段内容以维持 verify 命名空间墓碑；B3 起请求链经 serveNextViaBot 消费）
@@ -451,6 +531,112 @@ type authzSnapshotJSON struct {
 	PolicyVersion     string                           `json:"policy_version,omitempty"`
 	Stale             bool                             `json:"stale,omitempty"`
 	SnapshotExpiresAt *time.Time                       `json:"snapshot_expires_at,omitempty"`
+	// ---- NG-AZ-02 v2 快照字段（omitempty；缺失即 v1 快照按 D4-3 逐字节兼容）----
+	Schema              string                      `json:"schema,omitempty"`
+	RevocationWatermark *authzWatermarkJSON         `json:"revocation_watermark,omitempty"`
+	LeaseSeconds        int                         `json:"lease_seconds,omitempty"`
+	ConflictedObjects   []authzConflictedObjectJSON `json:"conflicted_objects,omitempty"`
+	ProducedAt          *time.Time                  `json:"produced_at,omitempty"`
+}
+
+// authzWatermarkJSON 向量撤销水位（NG-AZ-02 §1.1 冻结形状；与 server 侧
+// gatewayconfig.RevocationWatermark 线契约一致——跨仓镜像，不得改名）。
+type authzWatermarkJSON struct {
+	ManualSeq int64            `json:"manual_seq"`
+	Sources   map[string]int64 `json:"sources,omitempty"`
+}
+
+// atLeast 分量比较：w ≥ other ⇔ manual_seq 与 other.sources 每键均不小于
+// （缺失键按 0 计；D3/D4 比较语义与 server 侧 RevocationWatermarkAtLeast 同口径）。
+func (w *authzWatermarkJSON) atLeast(other *authzWatermarkJSON) bool {
+	if other == nil {
+		return true
+	}
+	if w == nil {
+		w = &authzWatermarkJSON{}
+	}
+	if w.ManualSeq < other.ManualSeq {
+		return false
+	}
+	for k, ov := range other.Sources {
+		if w.Sources[k] < ov {
+			return false
+		}
+	}
+	return true
+}
+
+// authzConflictedObjectJSON 决策侧排除对象键（NG-AZ-02 D7；与 server 侧
+// GuardAuthzConflictedObject 线契约一致）。
+type authzConflictedObjectJSON struct {
+	ApplicationID string `json:"application_id"`
+	ObjectType    string `json:"object_type"`
+	TenantDomain  string `json:"tenant_domain,omitempty"`
+	ObjectRef     string `json:"object_ref"`
+}
+
+// apiAdmissionSectionJSON 发布通道 api_admission 段（WDSP P1 冻结契约）：
+// policies 键为 application_id，值为准入模式 + 已确认端点键集合（只含 CONFIRMED；
+// IGNORED/DEPRECATED/ZOMBIE 不下发——不在集合即拒绝，语义一致）。
+type apiAdmissionSectionJSON struct {
+	Policies map[string]apiAdmissionPolicyJSON `json:"policies"`
+}
+
+// apiAdmissionPolicyJSON 单应用准入策略下发物。mode 词表 OFF/OBSERVE/PROTECT；
+// 词表外/缺失 fail-safe 视为 OFF（Provision 编译期归一并 Warn 留痕，不拒载——
+// 不拦截优于误拦截）。
+type apiAdmissionPolicyJSON struct {
+	Mode               string   `json:"mode"`
+	ConfirmedEndpoints []string `json:"confirmed_endpoints"`
+}
+
+// apiGraphQLSectionJSON 发布通道 api_graphql 段（NG-GQL-03 冻结契约）：
+// policies 键为 application_id，值为该应用 GraphQL 成本预算策略（无段/无键 = 关闭，
+// 管线零行为变化）。
+type apiGraphQLSectionJSON struct {
+	Policies map[string]apiGraphQLPolicyJSON `json:"policies"`
+}
+
+// apiGraphQLPolicyJSON 单应用 GraphQL 成本预算策略下发物。
+// 数值字段非法（负值/超硬上限）在 Provision 归一为零值走引擎默认并 Warn 留痕
+// （fail-safe 与 api_admission 同形态：不拦截优于误拦截，不拒载）。
+type apiGraphQLPolicyJSON struct {
+	Enabled           bool                 `json:"enabled"`
+	Limits            apiGraphQLLimitsJSON `json:"limits,omitempty"`
+	Weights           gqlast.WeightsConfig `json:"weights,omitempty"`
+	Budget            gqlast.BudgetConfig  `json:"budget,omitempty"`
+	TrustedDocDigests []string             `json:"trusted_doc_digests,omitempty"`
+}
+
+// apiGraphQLLimitsJSON 解析硬边界覆盖（零值字段 = 引擎默认；gqlast.Limits 无 JSON
+// 标签故冻结线契约在此显式定义）。
+type apiGraphQLLimitsJSON struct {
+	MaxDocBytes    int `json:"max_doc_bytes,omitempty"`
+	MaxDepth       int `json:"max_depth,omitempty"`
+	MaxNodes       int `json:"max_nodes,omitempty"`
+	MaxAliases     int `json:"max_aliases,omitempty"`
+	MaxFragmentExp int `json:"max_fragment_exp,omitempty"`
+}
+
+// toPolicy 编译为管线策略（硬边界单项超 64MiB 归零走默认，防 OOM 配置）。
+func (p apiGraphQLPolicyJSON) toPolicy() *pipeline.GraphQLPolicy {
+	lim := gqlast.Limits{
+		MaxDocBytes:    p.Limits.MaxDocBytes,
+		MaxDepth:       p.Limits.MaxDepth,
+		MaxNodes:       p.Limits.MaxNodes,
+		MaxAliases:     p.Limits.MaxAliases,
+		MaxFragmentExp: p.Limits.MaxFragmentExp,
+	}
+	if lim.MaxDocBytes < 0 || lim.MaxDocBytes > 64<<20 {
+		lim.MaxDocBytes = 0
+	}
+	return &pipeline.GraphQLPolicy{
+		Enabled:           p.Enabled,
+		Limits:            lim,
+		Weights:           p.Weights,
+		Budget:            p.Budget,
+		TrustedDocDigests: p.TrustedDocDigests,
+	}
 }
 
 // compiledPolicy 编译后的 CC 策略。
@@ -667,9 +853,36 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 			RoleBaselines: previous.RoleBaselines, ObjectRefHMACKey: key,
 			PolicyVersion: previous.PolicyVersion, Stale: previous.Stale,
 			SnapshotExpiresAt: previous.SnapshotExpiresAt,
+			// NG-AZ-02 v2 元数据（D4-2 PreviousValid 回退二次水位校验/D7 冲突集输入；
+			// 租约与漂移上限取当前配置值（D5 per-app 配置优先于历史快照随行值），
+			// 应用时刻与当前快照同源（同一配置加载），produced_at 保留历史快照原值）
+			Schema:              previous.Schema,
+			RevocationWatermark: authzWatermarkToDetectors(previous.RevocationWatermark),
+			LeaseSeconds:        g.APIAuthzLeaseSeconds,
+			AppliedAt:           g.authzSnapshotAppliedAt(),
+			ConflictedObjects:   authzConflictsToDetectors(previous.ConflictedObjects),
+			ConflictedIndex:     detectors.BuildConflictedObjectIndex(authzConflictsToDetectors(previous.ConflictedObjects)),
+			ProducedAt:          previous.ProducedAt,
+			ClockSkewMaxSeconds: g.APIAuthzClockSkewMaxSeconds,
 		}
 	}
 	g.apiAuthzRelationIndex = detectors.BuildAuthorizationRelationIndex(g.APIAuthzRelations)
+
+	// NG-AZ-02 D5/D8 配置键夹紧（≤0 由夹紧函数归一：租约未启用=0、漂移缺省 60）
+	g.APIAuthzLeaseSeconds = clampAuthzLeaseSeconds(g.APIAuthzLeaseSeconds)
+	g.APIAuthzClockSkewMaxSeconds = clampAuthzClockSkewMax(g.APIAuthzClockSkewMaxSeconds)
+
+	// NG-AZ-02 D4-1 水位回退拒绝：新快照携带 v2 水位且低于本应用已应用水位（分量比较）
+	// 即拒绝整个配置加载——Caddy 拒绝 /load，节点保留旧配置与旧水位（fail-closed）。
+	// v1 快照（无水位字段）按 D4-3 兼容不校验；无授权内容（纯 baselines/无模型）清除注册项。
+	if err := g.checkAuthzWatermarkRegression(); err != nil {
+		return err
+	}
+	// NG-ID G1 D6：机器身份撤销水位单调不下降——快照水位低于本应用已应用水位
+	// 即拒绝该快照（fail-closed 保留旧配置；普通策略回滚不复活已撤销密钥，§1.6）
+	if err := g.checkMachineIDWatermarkRegression(); err != nil {
+		return err
+	}
 
 	// 可信代理
 	proxies := make([]trustedproxy.Proxy, 0, len(g.TrustedProxies))
@@ -812,6 +1025,15 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 			return err
 		}
 		g.apiFlowBaselines = detectors.GroupFlowBaselines(g.APIFlowBaselines)
+		// 强流程定义装配（NG-FLOW-01：§1.1 校验逐条 + 版本不可变断言，配置错误
+		// 拒绝加载 fail-closed，不静默吞错；nil/空段 BuildRegistry 返回 nil = 零行为；
+		// 本批仅装配供 FLOW-02 消费，运行时无任何判定逻辑）
+		sf, err := flowguard.BuildRegistry(g.APIStrongFlows)
+		if err != nil {
+			return err
+		}
+		g.apiStrongFlows = sf
+		g.apiStrongFlowIndex = flowguard.IndexByEndpoint(g.apiStrongFlows)
 		// 已吊销凭据清单校验（§35 第10项；配置错误拒绝加载，不静默吞错；
 		// 运行期管线编译比对集合后按请求凭据键 O(1) 查找，过期条目自行失效不判定）
 		if err := detectors.ValidateRevokedCredentials(g.APIRevokedCredentials); err != nil {
@@ -852,6 +1074,18 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 		g.apiFileCompliance = fc
 		// gRPC 描述符注册表装配（W14-DESC / P2-05 深化；语义见 buildAPIGRPCRegistry）
 		g.apiGRPCRegistry = g.buildAPIGRPCRegistry()
+		// grpcguard G1 深检装配置（NG-GRPC 批次 B2：绑定归一+per-app 注册表+
+		// content_hash 读数；无描述符且无绑定 = nil 零行为 NG-T-C01）
+		g.apiGRPCGuard = g.buildGRPCGuardConfig()
+		// mcpguard G1 装配置（NG-MCP 批次 B2：目录 hash 重算比对+绑定归一；
+		// 无目录且无绑定 = nil 零行为 NG-T-C01）
+		g.apiMCPGuard = g.buildMCPGuardConfig()
+		// API 准入策略装配（WDSP P1：fail-safe 归一——mode 词表外/缺失按 OFF 不启用并
+		// Warn 留痕，不拒载（不拦截优于误拦截）；nil 段 = 准入检测零行为）
+		g.apiAdmission = g.compileAPIAdmissionPolicies()
+		// GraphQL 成本预算策略装配（NG-GQL-03：nil 段 = GraphQL 流量零行为变化；
+		// 空 application_id 键跳过并 Warn——与准入同 fail-safe 形态）
+		g.apiGraphQL = g.compileAPIGraphQLPolicies()
 		// 参数约束 regex 预检：配置问题装配期 Warn（运行期对该约束保守 OBSERVE，见 detectors schema.go）
 		warnInvalidConstraintRegexes(g)
 		if g.IdentitySalt == "" {
@@ -863,6 +1097,7 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 			zap.Int("formal_schemas", len(g.APIFormalSchemas)),
 			zap.Int("parameter_constraints", len(g.APIParameterConstraints)),
 			zap.Int("known_endpoints", len(g.APIKnownEndpoints)),
+			zap.Int("admission_policies", len(g.apiAdmission)),
 			zap.Int("mask_rules", len(g.APIMaskRules)),
 			zap.Int("sensitive_value_rules", len(g.APISensitiveValueRules)),
 			zap.Int("role_baselines", len(g.APIRoleBaselines)),
@@ -879,9 +1114,14 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 			zap.String("response_fail_policy", g.resolvedResponseFailPolicy()),
 			zap.Int("response_capture_max_bytes", g.responseCaptureMax()),
 			zap.Int("grpc_max_frame_bytes", g.APIGRPCMaxFrameBytes),
-			zap.Bool("grpc_allow_compression", g.APIGRPCAllowCompression),
+			zap.Bool("grpc_allow_compression", g.grpcCompressionAllowLegacy()),
 			zap.Int("grpc_descriptor_sets", grpcRegistrySets(g.apiGRPCRegistry)),
 			zap.Int("grpc_descriptor_methods", grpcRegistryMethods(g.apiGRPCRegistry)))
+		// 强流程装配留痕仅在有定义时（NG-T-C01：无定义零行为——无新日志、无新状态）
+		if g.apiStrongFlows != nil {
+			g.logger.Info("api strong flow definitions assembled",
+				zap.Int("definitions", g.apiStrongFlows.Len()))
+		}
 		// 节点心跳（W17-HB：周期上报活性+策略版本，独立于业务流量；0=关闭零行为变化）
 		g.startAPINodeHeartbeat()
 	}
@@ -915,6 +1155,16 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	// 行为计数存储按 Guard 实例持有（memory/缺省 = nil，进程内默认零变化）。
 	// 请求管线显式绑定本实例选择，配置重载与同进程多实例不会互相覆盖或残留。
 	g.behaviorStores = buildBehaviorStores(g, eng)
+	// 强流程运行时装配（NG-FLOW-02：nil 定义 = 零行为；Valkey/密钥缺席不拒载——
+	// D8 运行期恒 UNKNOWN 放行+披露，严禁本地内存回退）
+	g.strongFlowRuntime = g.buildStrongFlowRuntime(eng)
+	// 机器身份重放存储装配（NG-ID G1 §1.5：共享引擎 Valkey 连接（可为 nil——
+	// 缺席语义由 Evaluate 运行期 UNAVAILABLE 承载，严禁本机去重）；装配期不拒载）
+	if eng != nil && eng.valkey != nil {
+		g.machineIDReplay = httpsig.NewReplayStore(eng.valkey)
+	} else {
+		g.machineIDReplay = httpsig.NewReplayStore(nil)
+	}
 	// 身份与行为防护装配（identity_behavior；nil/disabled = 零行为变化；装配失败 fail-open 置 nil）
 	g.provisionIdentityBehavior(eng)
 	// 身份风险策略装配（risk_policy；nil/disabled = 零行为变化；配置非法 fail-open 按 OBSERVE。
@@ -924,6 +1174,16 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	// fail-closed，已存在 PROTECT 策略不得被静默删除/降级；段缺失/OFF = 零行为变化）
 	if err := g.assembleJWTTrust(); err != nil {
 		return err
+	}
+	// 机器身份装配（NG-ID G1 批次 B2；三段全缺 = nil 零行为变化。fail-safe 归一 +
+	// 含 PROTECT 绑定时任何装配缺陷拒绝整体配置加载（fail-closed，jwt_trust 同纪律））
+	midCfg, err := g.buildMachineIDConfig()
+	if err != nil {
+		return err
+	}
+	g.apiMachineID = midCfg
+	if midCfg != nil && midCfg.Registry != nil {
+		registerMachineIDAppliedWatermark(g.AppID, midCfg.Registry.RevocationWatermark)
 	}
 	// API 受限例外装配（api_exceptions 段；与 jwt_trust 同一 fail-closed 纪律——
 	// 严格解码/校验任一失败即拒绝整体配置加载；段缺失 = 零行为变化。
@@ -945,6 +1205,13 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 		g.jwtCancel = cancel
 		g.jwtVerifier.StartBackgroundRefresh(rctx)
 	}
+	// 节点能力清单自报（NG-COV-04；默认开启，CAPABILITY_REPORT_DISABLED=1 可关——
+	// 关闭后发布门禁按「清单缺失」fail-closed；进程级单例，本次 Provision 刷新
+	// grpc 层级/max_grpc_frame_bytes 等可变输入）
+	g.provisionCapabilityReport()
+	// NG-AZ-02 D4-1/D6：登记本应用已应用授权快照状态（水位记忆与心跳合并源；
+	// 无授权内容时清除注册项——「无授权模型」即发布真相，决策自然回到无基线形态）
+	g.registerAuthzAppliedState()
 	return nil
 }
 
@@ -991,6 +1258,10 @@ func (g *Guard) Validate() error {
 		default:
 			return fmt.Errorf("api_protection_mode must be OFF, OBSERVE or PROTECT")
 		}
+		// api_admission 段刻意不做硬校验：mode 词表外/缺失 fail-safe 视为 OFF
+		// （不启用不拦截优于误拦截），归一与留痕在 Provision 编译期完成
+		// （compileAPIAdmissionPolicies）；这与 api_protection_mode 非法值拒载
+		// 的硬校验是两条刻意的不同纪律（全局模式错位影响面大，准入逐应用下发）
 		switch g.APIResponseFailPolicy {
 		case "", apiFailOpen, apiFailClosed:
 		default:
@@ -1067,6 +1338,11 @@ func (g *Guard) Validate() error {
 		}
 		// 业务流程基线装配期校验（§44；配置错误显式返回，不静默吞错）
 		if err := detectors.ValidateFlowBaselines(g.APIFlowBaselines); err != nil {
+			return err
+		}
+		// 强流程定义装配期校验（NG-FLOW-01；与 Provision 共用 flowguard.BuildRegistry——
+		// §1.1 校验逐条 + 版本不可变断言一并预检，配置错误显式返回，不静默吞错）
+		if _, err := flowguard.BuildRegistry(g.APIStrongFlows); err != nil {
 			return err
 		}
 		// 已吊销凭据清单装配期校验（§35 第10项；配置错误显式返回，不静默吞错）
@@ -1245,8 +1521,92 @@ func grpcRegistryMethods(r *grpcdesc.Registry) int {
 	return r.Methods()
 }
 
-// normalizeLLMAllowedModels LLM 授权模型名单归一：逐项去空白、去空项、去重（保序）。
-// 名单语义宽容（发布侧已做长度/条数校验），网关侧不因此拒绝配置加载。
+// compileAPIAdmissionPolicies 装配 API 准入策略（WDSP P1）：按应用归一为运行时查找结构。
+// fail-safe 纪律：mode 词表外/缺失按 OFF 不启用（Warn 留痕，不拒载——不拦截优于误拦截，
+// 与 normalizeLLMAllowedModels 的宽容归一同一哲学）；显式 OFF 策略不入库（语义=不启用，
+// 与无策略同一行为）；确认端点键逐项去空白/去空项/去重（server 与管线同一 endpoint_key
+// 口径，网关侧不再二次归一化路径，避免口径漂移）。返回 nil = 无生效策略，准入检测零行为。
+func (g *Guard) compileAPIAdmissionPolicies() map[string]detectors.AdmissionPolicy {
+	sec := g.APIAdmissionPolicies
+	if sec == nil || len(sec.Policies) == 0 {
+		return nil
+	}
+	out := make(map[string]detectors.AdmissionPolicy, len(sec.Policies))
+	for appID, p := range sec.Policies {
+		if strings.TrimSpace(appID) == "" {
+			g.logger.Warn("api_admission: 空 application_id 策略跳过")
+			continue
+		}
+		mode := strings.ToUpper(strings.TrimSpace(p.Mode))
+		if mode == "" || mode == detectors.AdmissionModeOff {
+			continue // 缺失/显式 OFF：不启用（与无策略同义，无需留痕）
+		}
+		if mode != detectors.AdmissionModeObserve && mode != detectors.AdmissionModeProtect {
+			g.logger.Warn("api_admission: 非法 mode 按 OFF 处理（不启用准入判定）",
+				zap.String("application_id", appID), zap.String("mode", p.Mode))
+			continue
+		}
+		confirmed := make(map[string]struct{}, len(p.ConfirmedEndpoints))
+		for _, ek := range p.ConfirmedEndpoints {
+			ek = strings.TrimSpace(ek)
+			if ek == "" {
+				continue
+			}
+			confirmed[ek] = struct{}{}
+		}
+		out[appID] = detectors.AdmissionPolicy{Mode: mode, Confirmed: confirmed}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// apiAdmissionPolicyForApp 解析本实例应用的准入策略。请求→应用解析与事件/访问日志同一
+// 口径：Guard 实例级 AppID 绑定（保护地址/Host 绑定在站点配置层完成，AppID 随配置下发）；
+// 应用未识别（AppID 空）或应用无策略 → nil（不判定直接放行，与 KnownEndpoints 现状一致）。
+func (g *Guard) apiAdmissionPolicyForApp() *detectors.AdmissionPolicy {
+	if len(g.apiAdmission) == 0 || g.AppID == "" {
+		return nil
+	}
+	p, ok := g.apiAdmission[g.AppID]
+	if !ok {
+		return nil
+	}
+	return &p
+}
+
+// compileAPIGraphQLPolicies 装配 GraphQL 成本预算策略（NG-GQL-03）：按应用归一为
+// 管线策略查找结构；空 application_id 键跳过并 Warn（与准入同一 fail-safe 形态）。
+func (g *Guard) compileAPIGraphQLPolicies() map[string]*pipeline.GraphQLPolicy {
+	sec := g.APIGraphQLPolicies
+	if sec == nil || len(sec.Policies) == 0 {
+		return nil
+	}
+	out := make(map[string]*pipeline.GraphQLPolicy, len(sec.Policies))
+	for appID, pol := range sec.Policies {
+		if appID == "" {
+			g.logger.Warn("api_graphql: 空 application_id 策略跳过")
+			continue
+		}
+		p := pol
+		out[appID] = p.toPolicy()
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// apiGraphQLPolicyForApp 本实例应用的 GraphQL 策略（未配置 = nil，管线零行为变化）。
+func (g *Guard) apiGraphQLPolicyForApp() *pipeline.GraphQLPolicy {
+	if len(g.apiGraphQL) == 0 || g.AppID == "" {
+		return nil
+	}
+	return g.apiGraphQL[g.AppID]
+}
+
+// normalizeLLMAllowedModels LLM 授权模型名单归一：逐项去空白、去空项、去重（保序）。// 名单语义宽容（发布侧已做长度/条数校验），网关侧不因此拒绝配置加载。
 func normalizeLLMAllowedModels(in []string) []string {
 	if len(in) == 0 {
 		return nil
@@ -1323,6 +1683,11 @@ func buildRuleSet(rules []ruleJSON) (*accesscontrol.RuleSet, error) {
 
 // maxURIPatternLen 正则/模式长度上限（配合 RE2 线性时间引擎防正则拒绝服务）。
 const maxURIPatternLen = 256
+
+// connectionAddrHeader 是 guard 注入的内部请求头（值=原始 TCP 对端 host:port），
+// 供 server 侧安全事件采集回填 connection_ip/client_port（RemoteAddr 改写后
+// Coraza 审计事务不再携带该事实）。
+const connectionAddrHeader = "X-Jiuzhang-Connection-Addr"
 
 // compilePolicies 编译 CC 策略（优先级升序）。
 func compilePolicies(in []policyJSON) ([]*compiledPolicy, error) {
@@ -1423,6 +1788,7 @@ func (g *Guard) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp
 // serveGuard 防护判定主流程（ServeHTTP 摘除 trace/访问日志入口埋点后的原处理链）。
 func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) (err error) {
 	now := time.Now().UTC()
+	DefaultCovCounters.Inc(StageTotal)
 	requestID := r.Header.Get("X-Request-Id")
 	dispo := DispositionFrom(r.Context())
 
@@ -1479,9 +1845,17 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 
 	clientIP := res.ClientIP
+	// 内部头携带原始 TCP 对端地址：RemoteAddr 改写后 Coraza 审计事务只能看到真实 IP，
+	// server 侧事件采集经此头回填 connection_ip/client_port。改写点在 guard 入口、先于
+	// 一切下游（WAF/代理），客户端注入的同名头在此被覆盖。
+	r.Header.Set(connectionAddrHeader, r.RemoteAddr)
 	// 下游（WAF/日志/代理）统一使用真实IP
 	r.RemoteAddr = net.JoinHostPort(clientIP.String(), "0")
 	r.Header.Set("X-Real-Ip", clientIP.String())
+	// coraza-caddy 审计事务优先取 {http.vars.client_ip}（accept 时固化的连接源 IP，
+	// 其 PrepareRequest 返回值被丢弃，不跟随上方 RemoteAddr 改写）；同步该变量，
+	// 保证 WAF 审计事件 client_ip 与真实 IP 识别结果一致
+	caddyhttp.SetVar(r.Context(), caddyhttp.ClientIPVarKey, clientIP.String())
 
 	// 1.6 调试保留命名空间 /_wdsp/debug/v1/（debug_cc_counter 启用时；阶段5 §十七
 	// CC 精确计数探针）：真实 IP 识别之后、CC 限速之前挂接——回显请求本身不进入
@@ -1497,6 +1871,15 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	// 或其 panic recover 均不影响 JWT 验证与执行（不经过观测的 fail-open 分支）。
 	if g.jwtVerifier != nil {
 		g.verifyJWTTrust(r)
+	}
+
+	// 1.45 机器身份本地验证（NG-ID G1：紧随 JWT 验证之后、身份观测前——
+	// compute-only 入上下文（jwt_trust 同形挂点）；纯本地热路径零网络 IO；
+	// recover → UNAVAILABLE 不 panic；VERIFIED 注入独立信号不改
+	// identity_key/identity_type 语义（AGENTS.md 红线）；机器身份是独立第二条
+	// 信任链，不替代不改写 JWT 链，同请求可双 VERIFIED）
+	if g.apiMachineID != nil {
+		g.verifyMachineIdentity(r)
 	}
 
 	// 1.5 身份与行为观测（AI 自动化渗透防护增强 阶段1；identity_behavior 启用时。
@@ -1538,6 +1921,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 			ev.FinalDecision = dispo.JSON()
 			g.emit(ev, events.CCRequestRejected, "TEMP_BLOCK", http.StatusForbidden)
 			accessLogAnnotate(r.Context(), wafActionBlock)
+			DefaultCovCounters.Inc(StageManualBan)
 			return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("temporarily blocked"))
 		}
 		b := blk
@@ -1567,6 +1951,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		ev.FinalDecision = dispo.JSON()
 		g.emit(ev, events.IPDenyMatch, "DENY", http.StatusForbidden)
 		accessLogAnnotate(r.Context(), wafActionBlock)
+		DefaultCovCounters.Inc(StageIPBlacklist)
 		return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("access denied"))
 	}
 
@@ -1589,6 +1974,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		ev.FinalDecision = dispo.JSON()
 		g.emit(ev, events.CCRequestRejected, "TEMP_BLOCK", http.StatusForbidden)
 		accessLogAnnotate(r.Context(), wafActionBlock)
+		DefaultCovCounters.Inc(StageAutoBan)
 		return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("temporarily blocked"))
 	}
 
@@ -1683,6 +2069,7 @@ func (g *Guard) executeL7(w http.ResponseWriter, r *http.Request, next caddyhttp
 		ev.FinalDecision = dispo.JSON()
 		g.emit(ev, events.L7RuleBlock, "BLOCK", http.StatusForbidden)
 		accessLogAnnotate(r.Context(), wafActionBlock)
+		DefaultCovCounters.Inc(StageL7ACL)
 		return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("l7 rule action unavailable"))
 	}
 }
@@ -1732,6 +2119,7 @@ func (g *Guard) enforceLicenseRateLimit(w http.ResponseWriter, r *http.Request, 
 		g.writeTooMany(w, r, requestID, 60)
 		dispo.RecordTerminal(ExecutorLicenseQuota, DisActionRateLimit, http.StatusTooManyRequests, true,
 			[]string{"LICENSE_QUOTA_ENGINE_ERROR_FAIL_CLOSED"}, nil)
+		DefaultCovCounters.Inc(StageLicenseQuota)
 		return true
 	}
 	if res.Allowed {
@@ -1745,6 +2133,7 @@ func (g *Guard) enforceLicenseRateLimit(w http.ResponseWriter, r *http.Request, 
 	// 记录事实；本分支无事件通道落库（已确认拦截优先去重对此无影响）
 	dispo.RecordTerminal(ExecutorLicenseQuota, DisActionRateLimit, http.StatusTooManyRequests, true,
 		[]string{"LICENSE_MAX_QPS_EXCEEDED"}, nil)
+	DefaultCovCounters.Inc(StageLicenseQuota)
 	return true
 }
 
@@ -1779,6 +2168,7 @@ func (g *Guard) enforceRateLimits(w http.ResponseWriter, r *http.Request, client
 			g.writeTooMany(w, r, base.RequestID, 60)
 			dispo.RecordTerminal(ExecutorCC, DisActionRateLimit, http.StatusTooManyRequests, true,
 				[]string{"CC_ENGINE_ERROR_FAIL_CLOSED"}, []string{p.cfg.ID})
+			DefaultCovCounters.Inc(StageCC)
 			ev := withPolicy(base, p)
 			ev.FinalDecision = dispo.JSON()
 			g.emit(ev, events.CCRequestRejected, "REJECT", http.StatusTooManyRequests)
@@ -1805,6 +2195,7 @@ func (g *Guard) enforceRateLimits(w http.ResponseWriter, r *http.Request, client
 			g.writeTooMany(w, r, base.RequestID, retrySec)
 			dispo.RecordTerminal(ExecutorCC, DisActionRateLimit, http.StatusTooManyRequests, true,
 				[]string{"CC_THRESHOLD_EXCEEDED"}, []string{p.cfg.ID})
+			DefaultCovCounters.Inc(StageCC)
 			ev.FinalDecision = dispo.JSON()
 			g.emit(ev, events.CCRequestRejected, "REJECT", http.StatusTooManyRequests)
 			accessLogAnnotate(r.Context(), wafActionBlock)
@@ -1831,6 +2222,7 @@ func (g *Guard) enforceRateLimits(w http.ResponseWriter, r *http.Request, client
 			g.writeTooMany(w, r, base.RequestID, p.cfg.BlockDurationSeconds)
 			dispo.RecordTerminal(ExecutorCC, DisActionTempBlock, http.StatusTooManyRequests, true,
 				[]string{"CC_THRESHOLD_EXCEEDED"}, []string{p.cfg.ID})
+			DefaultCovCounters.Inc(StageCC)
 			ev.FinalDecision = dispo.JSON()
 			g.emit(ev, events.CCTempBlockCreated, "TEMP_BLOCK", 0)
 			g.emit(ev, events.CCRequestRejected, "TEMP_BLOCK", http.StatusTooManyRequests)

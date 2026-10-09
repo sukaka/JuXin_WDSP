@@ -28,7 +28,24 @@ WDSP_SIGNING_KEY=/secure/path/release-private-key.pem \
   --offline-package dist/jiuzhang-wdsp-offline-1.2.0-amd64.tar.gz
 ```
 
-完全离线环境可通过 `--rpm-dir /path/to/openeuler-x86_64-rpms` 附带 Docker、Compose 等依赖 RPM。由于 `.run` 载荷本身需要 `tar`/`gzip` 展开，如果目标机缺少这两个命令，仍需可用的本地 dnf/yum 仓库；安装器会先尝试 `dnf`，再回退 `yum`。
+完整的离线交付必须传入与目标机 **同一 openEuler 版本、x86-64 架构**匹配的 RPM 目录；其顶层必须包含 `docker-compose-plugin-*.rpm`。该目录还必须包含 Docker 引擎、Docker CLI、运行时及 `docker-compose-plugin` 的所有事务依赖，不能只放一个 Compose RPM。构建器会拒绝缺少 `docker-compose-plugin` 的目录：
+
+```bash
+WDSP_SIGNING_KEY=/secure/path/release-private-key.pem \
+  ./ops/offline-package/build-openeuler-zhaoxin-run.sh \
+  --version 1.2.0 \
+  --rpm-dir /secure/openeuler-24.03-x86_64-rpms
+```
+
+使用完整运行包脚本时，`--rpm-dir` 为必填项：
+
+```bash
+WDSP_SIGNING_KEY=/secure/path/release-private-key.pem \
+  ./ops/offline-package/package-runtime-run.sh \
+  --rpm-dir /secure/openeuler-24.03-x86_64-rpms
+```
+
+由于 `.run` 载荷本身需要 `tar`/`gzip` 展开，如果目标机缺少这两个命令，仍需可用的本地 dnf/yum 仓库；安装器会先尝试 `dnf`，再回退 `yum`。
 
 仅做结构测试时可使用 `--development --skip-images`。这种包没有可运行镜像，不能用于生产部署。
 
@@ -59,7 +76,7 @@ sudo ./jiuzhang-wdsp-openeuler-zhaoxin-1.2.0-amd64.run --minimal-host
 安装器会自动完成以下检查与准备：
 
 1. 验证 root、openEuler、x86-64/兆芯 CPU 和 systemd 环境。
-2. 通过 dnf 或 yum 补齐 tar、gzip、OpenSSL、curl、jq、Python 3、Docker 与 Compose v2；Docker 会按 `docker`、`docker-engine` 顺序兼容新旧 openEuler 包名。
+2. 通过 dnf 或 yum 补齐 tar、gzip、OpenSSL、curl、jq、Python 3、Docker 与 Compose v2；Docker 会按 `docker`、`docker-engine` 顺序兼容新旧 openEuler 包名，Compose v2 仅接受 `docker-compose-plugin`，不将旧版 `docker-compose` 视为替代品。
 3. 使用自解压头内置的发布公钥校验内层离线包哈希和正式签名；通过后才安装随包 RPM、执行宿主机准备脚本和标准 WDSP 安装向导。
 4. 写入持久化 limits、sysctl 和 Docker systemd 限制。
 5. 在内核提供 cpufreq 接口时，将兆芯 CPU governor 切换为 `performance`。

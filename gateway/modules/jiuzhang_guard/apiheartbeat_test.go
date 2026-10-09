@@ -196,3 +196,81 @@ func TestValidateHeartbeatSeconds(t *testing.T) {
 		}
 	}
 }
+
+// hbACKLine 心跳 ACK 字段镜像（NG-AZ-02 D6 冻结 JSON 名断言）。
+type hbACKLine struct {
+	AuthzPolicyVersion     string          `json:"authz_policy_version"`
+	AuthzWatermark         *hbACKWatermark `json:"authz_watermark"`
+	AuthzSnapshotExpiresAt *time.Time      `json:"authz_snapshot_expires_at"`
+	AuthzLeaseSeconds      int             `json:"authz_lease_seconds"`
+	AuthzAppliedAt         *time.Time      `json:"authz_applied_at"`
+}
+
+type hbACKWatermark struct {
+	ManualSeq int64            `json:"manual_seq"`
+	Sources   map[string]int64 `json:"sources,omitempty"`
+}
+
+// D6 有：注册表有应用状态 → 心跳携带 ACK 字段（冻结 JSON 名与合并口径）。
+func TestHeartbeatAuthzACKFieldsPresent(t *testing.T) {
+	resetAuthzRegistryForTest()
+	defer resetAuthzRegistryForTest()
+	now := time.Now().UTC()
+	exp := now.Add(time.Hour)
+	defaultAuthzRegistry.put("app-1", authzAppliedEntry{
+		watermark: wmOf(9, map[string]int64{"s1": 4}), leaseSeconds: 60,
+		appliedAt: now.Add(-time.Minute), policyVersion: "authz-p9", expiresAt: &exp,
+	})
+	r, path := newHBRunner(t, time.Hour)
+	r.SetAuthzStateProvider(defaultAuthzRegistry.merged)
+	if err := r.emit(); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	lines := readHBLines(t, path)
+	if len(lines) != 1 {
+		t.Fatalf("lines=%d", len(lines))
+	}
+	ln := lines[0]
+	for _, key := range []string{`"authz_policy_version"`, `"authz_watermark"`, `"authz_snapshot_expires_at"`, `"authz_lease_seconds"`, `"authz_applied_at"`} {
+		if !strings.Contains(ln, key) {
+			t.Fatalf("心跳应携带 ACK 字段 %s: %s", key, ln)
+		}
+	}
+	var rec hbACKLine
+	if err := json.Unmarshal([]byte(ln), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.AuthzPolicyVersion != "authz-p9" || rec.AuthzLeaseSeconds != 60 {
+		t.Fatalf("ACK 字段不符: %+v", rec)
+	}
+	if rec.AuthzWatermark == nil || rec.AuthzWatermark.ManualSeq != 9 || rec.AuthzWatermark.Sources["s1"] != 4 {
+		t.Fatalf("ACK 水位不符: %+v", rec.AuthzWatermark)
+	}
+	if rec.AuthzAppliedAt == nil || rec.AuthzSnapshotExpiresAt == nil {
+		t.Fatalf("ACK 时间字段缺失: %+v", rec)
+	}
+}
+
+// D6 无：注册表为空 / 未注入 provider → 不携带任何 ACK 字段（v1 零变化）。
+func TestHeartbeatAuthzACKFieldsAbsent(t *testing.T) {
+	resetAuthzRegistryForTest()
+	defer resetAuthzRegistryForTest()
+	// 空注册表（provider 返回 false）
+	r, path := newHBRunner(t, time.Hour)
+	r.SetAuthzStateProvider(defaultAuthzRegistry.merged)
+	if err := r.emit(); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	// 未注入 provider
+	r2, path2 := newHBRunner(t, time.Hour)
+	if err := r2.emit(); err != nil {
+		t.Fatalf("emit2: %v", err)
+	}
+	for _, ln := range []string{readHBLines(t, path)[0], readHBLines(t, path2)[0]} {
+		for _, key := range []string{"authz_policy_version", "authz_watermark", "authz_snapshot_expires_at", "authz_lease_seconds", "authz_applied_at"} {
+			if strings.Contains(ln, key) {
+				t.Fatalf("未启用授权快照不得携带 ACK 字段 %s: %s", key, ln)
+			}
+		}
+	}
+}

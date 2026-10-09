@@ -201,6 +201,36 @@ export interface ApiObjectModel {
   first_seen: string
   last_seen: string
   updated_at: string
+  /** NG-AZ-02 D5/D7 发布资格（管理写入走 patch；服务端恒返回，类型置可空兼容旧调用方） */
+  publishable?: boolean
+  /** 首批仅 OWNER 词表；空=未声明 */
+  required_relation?: string
+  /** 排他所有权（VERIFIED_VIOLATION 语义前提） */
+  owner_exclusive?: boolean
+  /** 租约过期策略 strict|degraded（缺省 strict） */
+  on_lease_expired?: string
+  /** NG-AZ-03 D3 阻断开关：OBSERVE|PROTECT（缺省 OBSERVE） */
+  enforcement?: string
+  /** 业务负责人标识（PROTECT 必填非空 ≤128） */
+  enforcement_owner?: string
+  /** 证据来源声明：AUTHORITY_SYNC|MANUAL_CONFIRMED */
+  evidence_source?: string
+  /** UNKNOWN 处理方式（首批仅 ALLOW_UNKNOWN——UNKNOWN 永不阻断） */
+  on_unknown?: string
+}
+
+/** 对象模型 PATCH 请求体（字段三分态：缺省=不变更；NG-AZ-04 §1.4：enforcement=PROTECT 必须携带 confirm_token，切回 OBSERVE 免 token） */
+export interface ApiObjectModelPatch {
+  publishable?: boolean
+  required_relation?: string
+  owner_exclusive?: boolean
+  on_lease_expired?: string
+  enforcement?: 'OBSERVE' | 'PROTECT' | string
+  enforcement_owner?: string
+  evidence_source?: 'AUTHORITY_SYNC' | 'MANUAL_CONFIRMED' | string
+  on_unknown?: string
+  /** 一次性签署令牌（仅 enforcement=PROTECT 必填；服务端同事务校验+消费） */
+  confirm_token?: string
 }
 
 export const apiObjectModelsApi = {
@@ -210,6 +240,9 @@ export const apiObjectModelsApi = {
     })
     return { ...data, items: data.items ?? [] }
   },
+  /** 发布状态与 enforcement 管理写入（权限 api_authorization.manage；PROTECT 切换强制 confirm_token，NG-AZ-04 §1.4） */
+  patch: (id: string, body: ApiObjectModelPatch) =>
+    request<ApiObjectModel>(`/api-security/object-models/${id}`, { method: 'PATCH', body }),
 }
 
 /** 威胁识别指标（GB/T 31509 修订稿 5.2.3：数量 / 时间分布 / 严重程度） */

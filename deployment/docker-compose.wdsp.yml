@@ -14,6 +14,11 @@ services:
       # （与 stage5 基座显式对齐，网关日志只读卷由基座挂载）
       WAF_IDENTITY_EVENTS_LOG: /var/log/caddy-audit/identity-events.log
       GATEWAY_IDENTITY_EVENTS_LOG: /var/log/caddy/identity-events.log
+      # 执行覆盖观测（NG-COV-01 摄入段）：采集网关覆盖观测日志（同一网关日志只读卷
+      # stage5-gateway-logs）+ 网关侧 FileSink 输出路径；明细采样率透传 .env（默认 10）
+      WAF_COVERAGE_OBS_LOG: /var/log/caddy-audit/coverage-observations.jsonl
+      GATEWAY_COVERAGE_OBS_LOG: /var/log/caddy/coverage-observations.jsonl
+      WAF_COVERAGE_SAMPLE_N: ${WAF_COVERAGE_SAMPLE_N:-10}
 
   # ---- 可选：HTTP/3（QUIC）启用（实验性，默认关闭）--------------------------
   # Caddy 2.11 对 TLS 监听器默认即开启 HTTP/3（发布的 JSON 配置无需任何改动），

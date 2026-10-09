@@ -36,6 +36,10 @@ type PrimaryEvent struct {
 	FinalAction   string                      `json:"final_action"`
 	Details       []dsctx.DetectorMatch       `json:"details"`
 	AuthzDecision *AuthorizationDecisionGroup `json:"authz_decision,omitempty"`
+	// StrongFlow 强流程步骤动作条目（NG-FLOW-02；冻结形状见 strongflow.go——
+	// 采集端按冻结字段名消费落 api_strong_flow_step_events，不得改名）；
+	// 无强流程活动为 nil，键省略零变化。
+	StrongFlow []*StrongFlowAction `json:"strong_flow,omitempty"`
 	// DeviceFingerprint 被动客户端指纹（任务书 §7；UA/Accept 族 HMAC 哈希，
 	// 低熵群体特征非设备唯一标识；空 = UA 缺失未计算，键省略零变化）。
 	DeviceFingerprint string `json:"device_fingerprint,omitempty"`
@@ -64,6 +68,7 @@ func BuildPrimary(eventID string, ctx *dsctx.RequestContext, endpointKey string)
 		FinalAction:   string(ctx.GetFinalAction()),
 		Details:       details,
 		AuthzDecision: authzDecisionFromContext(ctx),
+		StrongFlow:    strongFlowActionsFromContext(ctx),
 		// §7 字段快照（拷贝，事件不随上下文后续写回变化）
 		DeviceFingerprint: ctx.DeviceFingerprint,
 		ObjectIdentifiers: ctx.CopyObjectIdentifiers(),
@@ -80,4 +85,16 @@ func authzDecisionFromContext(ctx *dsctx.RequestContext) *AuthorizationDecisionG
 		return nil
 	}
 	return g
+}
+
+// strongFlowActionsFromContext 取强流程动作条目（NG-FLOW-02；扩展键
+// "sflow.actions" 与 flowguard 检测器写入键一致——跨包镜像：detectors/flowguard
+// 写入，本包读取，类型断言失败容忍为 nil 不panic）。
+func strongFlowActionsFromContext(ctx *dsctx.RequestContext) []*StrongFlowAction {
+	v, ok := ctx.GetExtension("sflow.actions")
+	if !ok {
+		return nil
+	}
+	actions, _ := v.([]*StrongFlowAction)
+	return actions
 }

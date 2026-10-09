@@ -34,6 +34,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/config"
+	"github.com/jiuzhang-waf/server/internal/coverage"
 	"github.com/jiuzhang-waf/server/internal/database"
 	"github.com/jiuzhang-waf/server/internal/exceptions"
 	"github.com/jiuzhang-waf/server/internal/guardjanitor"
@@ -45,6 +46,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/securityevents"
 	"github.com/jiuzhang-waf/server/internal/settings"
 	"github.com/jiuzhang-waf/server/internal/sitediscovery"
+	"github.com/jiuzhang-waf/server/internal/strongflow"
 	"github.com/jiuzhang-waf/server/internal/syslogfw"
 	"github.com/jiuzhang-waf/server/internal/systemalerts"
 	"github.com/jiuzhang-waf/server/internal/temporaryblocks"
@@ -205,6 +207,17 @@ func run() error {
 		go identityCollector.Run(collectorCtx, 2*time.Second)
 	}
 
+	// 执行覆盖观测（NG-COV-01/02 摄入段）：coverage-observations.jsonl 断点续传——
+	// 明细 1/N 采样落 coverage_observations、五态聚合 upsert coverage_minute_agg、
+	// 每次 flush 落 coverage_counter_snapshots 阶段计数；checkpoint 落在可写数据目录
+	// （日志卷只读挂载）；观测日志未生成时采集器空转不 crash（与其他采集器同一缺文件行为）
+	coverageCollector := coverage.NewCollector(coverage.NewStore(db), db.Begin,
+		"coverage-obs-01", cfg.WAF.CoverageObsLog,
+		filepath.Join(cfg.Gateway.DataDir, "coverage-observations.checkpoint"), cfg.WAF.GatewayNodeName)
+	coverageCollector.SetSampleN(uint64(cfg.WAF.CoverageSampleN))
+	coverageCollector.SetFlushPolicy(cfg.WAF.CollectorFlushBatch, cfg.WAF.CollectorFlushInterval)
+	go coverageCollector.Run(collectorCtx, 2*time.Second)
+
 	// 阶段8 / WDSP：API 运行时事件采集器（仅 WDSP 且开关开启时启动；
 	// checkpoint 落在可写数据目录，日志卷只读挂载）
 	if cfg.Product.APIDynamicProtectionEnabled() {
@@ -239,6 +252,9 @@ func run() error {
 		// 节点心跳（W17-HB）：heartbeat 记录仅透传节点活性聚合（不落事件表、不产业务数据），
 		// 节点视图 ACTIVE/STALE/SILENT 不再依赖业务流量
 		apiCollector.SetHeartbeatRecorder(apinodes.NewStore(db))
+		// 强流程事件（NG-FLOW-02）：strong_flow 对象透传落实例/步骤事件表
+		// （迁移 000177；表缺失时消费报错仅记日志不阻断采集——同心跳纪律）
+		apiCollector.SetStrongFlowRecorder(strongflow.NewStrongFlowEventStore(db))
 		// 离线授权：端点发现配额强制（license 内存状态无 IO；无效授权返回 0=不限制——
 		// 无效态下网关透传无 API 事件，管理面已被授权门控锁定，此处不重复强制）
 		if licSvc := application.LicenseService(); licSvc != nil {

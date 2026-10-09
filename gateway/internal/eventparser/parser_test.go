@@ -369,3 +369,36 @@ func TestParseLinePhase4InterruptedStatus(t *testing.T) {
 		t.Errorf("final_decision = %+v", evt.FinalDecision)
 	}
 }
+
+func TestParseLineConnectionAddr(t *testing.T) {
+	// guard 注入内部头：审计 client_ip 为改写后真实 IP，connection_ip 回填 TCP 对端
+	line := strings.Replace(sampleAuditLine,
+		`"x-request-id":["612b408c-b8ad-4e78-acbe-10926c77ff22"]`,
+		`"x-request-id":["612b408c-b8ad-4e78-acbe-10926c77ff22"],"x-jiuzhang-connection-addr":["172.19.0.1:43210"]`, 1)
+	evt, err := ParseLine([]byte(line), "node", testApp())
+	if err != nil {
+		t.Fatalf("ParseLine() error = %v", err)
+	}
+	if evt.Client.ConnectionIP != "172.19.0.1" {
+		t.Errorf("connection_ip = %q, want 172.19.0.1", evt.Client.ConnectionIP)
+	}
+	if evt.Client.Port != 43210 {
+		t.Errorf("client.port = %d, want 43210（内部头回填）", evt.Client.Port)
+	}
+	filtered := FilterHeaders(map[string][]string{"X-Jiuzhang-Connection-Addr": {"1.1.1.1:1"}, "A": {"b"}})
+	if _, ok := filtered["X-Jiuzhang-Connection-Addr"]; ok {
+		t.Error("internal header must be dropped from FilterHeaders output")
+	}
+
+	// 非法内部头忽略：ConnectionIP 留空、端口保持审计值
+	bad := strings.Replace(sampleAuditLine,
+		`"x-request-id":["612b408c-b8ad-4e78-acbe-10926c77ff22"]`,
+		`"x-request-id":["612b408c-b8ad-4e78-acbe-10926c77ff22"],"x-jiuzhang-connection-addr":["not-an-addr"]`, 1)
+	evt2, err := ParseLine([]byte(bad), "node", testApp())
+	if err != nil {
+		t.Fatalf("ParseLine() error = %v", err)
+	}
+	if evt2.Client.ConnectionIP != "" || evt2.Client.Port != 51234 {
+		t.Errorf("invalid header must be ignored: conn=%q port=%d", evt2.Client.ConnectionIP, evt2.Client.Port)
+	}
+}

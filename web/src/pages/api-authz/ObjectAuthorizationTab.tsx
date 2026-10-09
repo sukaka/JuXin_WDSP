@@ -6,6 +6,8 @@ import {
   Card,
   Col,
   DatePicker,
+  Descriptions,
+  Drawer,
   Form,
   Input,
   Modal,
@@ -27,9 +29,12 @@ import {
   type ApiAuthzRelationCandidate,
 } from '../../api/apiAuthz'
 import { ApiError } from '../../api/client'
+import { AuthzEnforcementBlock } from '../../components/AuthzEnforcement'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
+import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
+import { RELATION_SOURCE_META, extractAuthzEnforcement } from '../../utils/authzEnforcement'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import { validateReauthorizationWindow } from './reauthorization'
@@ -45,6 +50,8 @@ const decisionStatus = {
   ALLOW: { color: 'green', label: '允许' },
   OBSERVE_VIOLATION: { color: 'red', label: '观测到违反' },
   UNKNOWN: { color: 'gold', label: '证据不足' },
+  // NG-AZ-03 D7：资格全真且端点 PROTECT 的实断决策
+  VERIFIED_VIOLATION: { color: 'red', label: '已验证违规（实断）' },
 } as const
 
 const relationStatus = {
@@ -52,6 +59,13 @@ const relationStatus = {
   REVOKED: { color: 'red', label: '已撤销' },
   EXPIRED: { color: 'default', label: '已过期' },
 } as const
+
+/** OBSERVE 形态降级留痕（NG-AZ-03 §1.1）：checks 中任一检查携带 proposed_decision=VERIFIED_VIOLATION */
+function hasProposedVerifiedViolation(checks: unknown[]): boolean {
+  return checks.some(
+    (c) => typeof c === 'object' && c !== null && (c as Record<string, unknown>).proposed_decision === 'VERIFIED_VIOLATION',
+  )
+}
 
 function shortRef(value?: string | null) {
   if (!value) return '-'
@@ -94,6 +108,7 @@ export default function ObjectAuthorizationTab() {
   const [decisionPage, setDecisionPage] = useState(1)
   const [reviewing, setReviewing] = useState<{ candidate: ApiAuthzRelationCandidate; action: 'confirm' | 'reject' } | null>(null)
   const [reauthorizing, setReauthorizing] = useState<ApiAuthzObjectRelation | null>(null)
+  const [decisionDetail, setDecisionDetail] = useState<ApiAuthzDecision | null>(null)
   const [form] = Form.useForm<ReviewValues>()
   const [reauthForm] = Form.useForm<ReauthorizeValues>()
 
@@ -193,7 +208,7 @@ export default function ObjectAuthorizationTab() {
     { title: '对象引用', dataIndex: 'object_ref', width: 230, render: (value: string) => <Typography.Text code title={value}>{shortRef(value)}</Typography.Text> },
     { title: '主体', dataIndex: 'principal_id', width: 210, render: (value: string) => <Typography.Text code title={value}>{shortRef(value)}</Typography.Text> },
     { title: '关系', dataIndex: 'relation', width: 90, render: () => <Tag color="blue">OWNER</Tag> },
-    { title: '来源', dataIndex: 'source', width: 130 },
+    { title: '来源', dataIndex: 'source', width: 130, render: (value: string) => <StatusTag value={value} map={RELATION_SOURCE_META} /> },
     { title: '确认人', dataIndex: 'confirmed_by', width: 130 },
     { title: '生效时间', dataIndex: 'valid_from', width: 170, render: formatDateTime },
     { title: '失效时间', dataIndex: 'valid_until', width: 170, render: formatDateTime },
@@ -260,7 +275,7 @@ export default function ObjectAuthorizationTab() {
               key: 'decisions', label: `OBSERVE 决策（${coverage?.decisions ?? 0}）`, children: <>
                 <Space style={{ marginBottom: 12 }}><Select allowClear value={decisionFilter} placeholder="全部结论" style={{ width: 170 }} options={Object.entries(decisionStatus).map(([value, meta]) => ({ value, label: meta.label }))} onChange={(value) => { setDecisionFilter(value); setDecisionPage(1) }} /></Space>
                 <QueryErrorAlert error={decisionsQuery.error} message="加载授权决策失败" />
-                <SmartTable<ApiAuthzDecision> rowKey="id" storageKey="api-authz-decisions" columns={decisionColumns} dataSource={decisionsQuery.data?.items ?? []} loading={decisionsQuery.isLoading} expandable={{ expandedRowRender: (record) => <Space direction="vertical" style={{ width: '100%' }}><Typography.Text strong>决策链</Typography.Text><Timeline items={(record.checks ?? []).map((check, index) => ({ color: record.decision === 'UNKNOWN' ? 'gray' : 'blue', children: <Typography.Text code>{`${index + 1}. ${JSON.stringify(check)}`}</Typography.Text> }))} />{canReadEvidence && record.evidence ? <><Typography.Text strong>脱敏证据</Typography.Text><Typography.Paragraph code copyable>{JSON.stringify(record.evidence, null, 2)}</Typography.Paragraph></> : null}</Space> }} pagination={{ current: decisionPage, pageSize: 20, total: decisionsQuery.data?.total ?? 0, showSizeChanger: false, onChange: setDecisionPage }} locale={{ emptyText: '暂无授权决策' }} />
+                <SmartTable<ApiAuthzDecision> rowKey="id" storageKey="api-authz-decisions" columns={decisionColumns} dataSource={decisionsQuery.data?.items ?? []} loading={decisionsQuery.isLoading} onRow={(record) => ({ onClick: () => setDecisionDetail(record), style: { cursor: 'pointer' } })} pagination={{ current: decisionPage, pageSize: 20, total: decisionsQuery.data?.total ?? 0, showSizeChanger: false, onChange: setDecisionPage }} locale={{ emptyText: '暂无授权决策' }} />
               </>,
             },
           ]} />
@@ -311,6 +326,50 @@ export default function ObjectAuthorizationTab() {
           </Form.Item>
         </Form>
       </Modal>
+      <Drawer
+        title="授权决策详情"
+        width={760}
+        open={decisionDetail !== null}
+        onClose={() => setDecisionDetail(null)}
+        destroyOnHidden
+      >
+        {decisionDetail ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Descriptions size="small" column={2} bordered>
+              <Descriptions.Item label="结论">
+                <Space size={8}>
+                  <Tag color={decisionStatus[decisionDetail.decision]?.color}>{decisionStatus[decisionDetail.decision]?.label ?? decisionDetail.decision}</Tag>
+                  {hasProposedVerifiedViolation(decisionDetail.checks ?? []) ? <Tag color="gold">拟实断（当前 OBSERVE 不实断）</Tag> : null}
+                </Space>
+              </Descriptions.Item>
+              <Descriptions.Item label="时间">{formatDateTime(decisionDetail.occurred_at)}</Descriptions.Item>
+              <Descriptions.Item label="接口" span={2}><Typography.Text code>{decisionDetail.endpoint_key}</Typography.Text></Descriptions.Item>
+              <Descriptions.Item label="策略版本">{decisionDetail.policy_version || '—'}</Descriptions.Item>
+              <Descriptions.Item label="决策 ID"><Typography.Text code copyable={{ text: decisionDetail.decision_id }}>{decisionDetail.decision_id.slice(0, 18)}…</Typography.Text></Descriptions.Item>
+            </Descriptions>
+            {(() => {
+              const enforcement = extractAuthzEnforcement(decisionDetail.evidence)
+              return enforcement ? <AuthzEnforcementBlock evidence={enforcement} /> : null
+            })()}
+            <div>
+              <Typography.Text strong>决策链</Typography.Text>
+              <Timeline
+                style={{ marginTop: 12 }}
+                items={(decisionDetail.checks ?? []).map((check, index) => ({
+                  color: decisionDetail.decision === 'UNKNOWN' ? 'gray' : decisionDetail.decision === 'VERIFIED_VIOLATION' ? 'red' : 'blue',
+                  children: <Typography.Text code>{`${index + 1}. ${JSON.stringify(check)}`}</Typography.Text>,
+                }))}
+              />
+            </div>
+            {canReadEvidence && decisionDetail.evidence && Object.keys(decisionDetail.evidence).length > 0 ? (
+              <div>
+                <Typography.Text strong>脱敏证据</Typography.Text>
+                <Typography.Paragraph code copyable>{JSON.stringify(decisionDetail.evidence, null, 2)}</Typography.Paragraph>
+              </div>
+            ) : null}
+          </Space>
+        ) : null}
+      </Drawer>
     </Space>
   )
 }

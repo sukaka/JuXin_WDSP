@@ -1,0 +1,4 @@
+{"id":"HC-N01","category":"normal","desc":"常规 GET（无体）与 POST（urlencoded 体）","requests":[
+  {"method":"GET","path":"/v1/items?page=1","headers":{"X-Chain-Case":"HC-N01-GET"}},
+  {"method":"POST","path":"/v1/items","headers":{"Content-Type":"application/x-www-form-urlencoded","X-Chain-Case":"HC-N01-POST"},"body":"name=demo&count=2"}
+],"expect":{"origin_sees_same_method_path":true,"conn_requests":"all_recorded"}}

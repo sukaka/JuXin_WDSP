@@ -14,5 +14,9 @@ FROM caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4
 
 COPY --from=builder /build/dist /usr/share/caddy
 COPY Caddyfile.docker /etc/caddy/Caddyfile
+COPY Caddyfile.docker.http-only /etc/caddy/Caddyfile.http-only
+COPY --chmod=0755 docker-entrypoint.web.sh /usr/local/bin/docker-entrypoint.web.sh
 
-EXPOSE 8080
+EXPOSE 8080 8443
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.web.sh"]

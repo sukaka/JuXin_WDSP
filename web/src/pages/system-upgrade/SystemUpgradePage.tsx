@@ -1,15 +1,19 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import dayjs, { type Dayjs } from 'dayjs'
 import {
   Alert,
   App as AntdApp,
   Button,
   Card,
+  DatePicker,
   Form,
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Progress,
+  Radio,
   Select,
   Space,
   Tag,
@@ -44,10 +48,8 @@ interface PackageFormValues {
   file_size: number
 }
 
-interface UploadFormValues {
-  version_from: string
-  version_to: string
-}
+/** 更新时机：立即更新 / 定时更新（定时需选择将来的开始时间） */
+type UpgradeTiming = 'NOW' | 'SCHEDULED'
 
 /** 系统升级：升级包上传/登记 → 预检 → 执行升级（任务轮询）→ 失败回滚 */
 export default function SystemUpgradePage() {
@@ -63,12 +65,14 @@ export default function SystemUpgradePage() {
   const [registerOpen, setRegisterOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploadTiming, setUploadTiming] = useState<UpgradeTiming>('NOW')
+  const [uploadScheduledAt, setUploadScheduledAt] = useState<Dayjs | null>(null)
+  const [uploadResult, setUploadResult] = useState<UpgradePackageResp | null>(null)
   const [selectedPackageId, setSelectedPackageId] = useState<string>()
   const [precheck, setPrecheck] = useState<UpgradePrecheckResult | null>(null)
   const [detailJob, setDetailJob] = useState<UpgradeJobItem | null>(null)
   const [detailPrecheck, setDetailPrecheck] = useState<UpgradePrecheckItem | null>(null)
   const [form] = Form.useForm<PackageFormValues>()
-  const [uploadForm] = Form.useForm<UploadFormValues>()
 
   const packagesQuery = useQuery({
     queryKey: ['upgrade-packages'],
@@ -89,7 +93,7 @@ export default function SystemUpgradePage() {
     message.error(e instanceof ApiError ? e.message : '操作失败')
   }
 
-  // 登记/上传成功后处理：REJECTED 时后端带 message 说明原因
+  // 登记成功后处理：REJECTED 时后端带 message 说明原因
   const onPackageRegistered = (resp: UpgradePackageResp) => {
     const pkg = resp.package
     if (resp.message) {
@@ -114,17 +118,43 @@ export default function SystemUpgradePage() {
     onError,
   })
 
+  // 上传弹窗关闭/提交成功后统一复位，避免下次打开残留上次选择
+  const resetUploadForm = () => {
+    setUploadFile(null)
+    setUploadTiming('NOW')
+    setUploadScheduledAt(null)
+  }
+
   const uploadMutation = useMutation({
-    mutationFn: (values: UploadFormValues & { file: File }) =>
-      upgradesApi.uploadPackage(values.file, values.version_from, values.version_to),
+    mutationFn: (vars: { file: File; scheduledAt?: string }) => upgradesApi.uploadPackage(vars.file, vars.scheduledAt),
     onSuccess: (resp) => {
-      onPackageRegistered(resp)
+      // 上传响应即最终处置：execution 非空表示验证通过且已创建升级任务
+      // （立即更新为执行态，定时更新为 SCHEDULED）；为 null 时 warning 说明原因
+      setUploadResult(resp)
       setUploadOpen(false)
-      setUploadFile(null)
-      uploadForm.resetFields()
+      resetUploadForm()
+      invalidatePackages()
+      invalidate()
+      if (resp.package.status !== 'REJECTED') {
+        setSelectedPackageId(resp.package.id)
+        setPrecheck(null)
+      }
     },
     onError,
   })
+
+  const confirmUpload = () => {
+    if (!uploadFile) return
+    if (uploadTiming === 'SCHEDULED') {
+      if (!uploadScheduledAt) {
+        message.warning('请选择升级开始时间')
+        return
+      }
+      uploadMutation.mutate({ file: uploadFile, scheduledAt: uploadScheduledAt.toISOString() })
+      return
+    }
+    uploadMutation.mutate({ file: uploadFile })
+  }
 
   const precheckMutation = useMutation({
     mutationFn: (packageId: string) => upgradesApi.precheck(packageId),
@@ -155,6 +185,15 @@ export default function SystemUpgradePage() {
     onError,
   })
 
+  const cancelMutation = useMutation({
+    mutationFn: (id: string) => upgradesApi.cancelUpgrade(id),
+    onSuccess: () => {
+      message.success('定时升级已取消')
+      invalidate()
+    },
+    onError,
+  })
+
   const precheckBlocked = (precheck?.items ?? []).some((i) => i.result === 'FAIL')
 
   const confirmExecute = () => {
@@ -177,21 +216,6 @@ export default function SystemUpgradePage() {
       okButtonProps: { danger: true },
       onOk: () => rollbackMutation.mutate(record.id),
     })
-  }
-
-  const submitUpload = async () => {
-    let values: UploadFormValues
-    try {
-      values = await uploadForm.validateFields()
-    } catch {
-      // 表单校验未通过，antd 已展示错误提示
-      return
-    }
-    if (!uploadFile) {
-      message.error('请选择升级包文件')
-      return
-    }
-    uploadMutation.mutate({ ...values, file: uploadFile })
   }
 
   const columns: ColumnsType<UpgradeJobItem> = [
@@ -229,6 +253,12 @@ export default function SystemUpgradePage() {
     },
     { title: '当前步骤', dataIndex: 'current_step', width: 160, ellipsis: true, render: (v: string) => v || '-' },
     {
+      title: '计划时间',
+      dataIndex: 'scheduled_at',
+      width: 170,
+      render: (v: string | null | undefined) => formatDateTime(v),
+    },
+    {
       title: '创建时间',
       dataIndex: 'created_at',
       width: 170,
@@ -250,6 +280,17 @@ export default function SystemUpgradePage() {
             <Button type="link" size="small" danger icon={<RollbackOutlined />} onClick={() => confirmRollback(record)}>
               回滚
             </Button>
+          )}
+          {canExecute && record.status === 'SCHEDULED' && (
+            <Popconfirm
+              title="确定取消该定时升级？"
+              okText="确定"
+              onConfirm={() => cancelMutation.mutate(record.id)}
+            >
+              <Button type="link" size="small" danger>
+                取消
+              </Button>
+            </Popconfirm>
           )}
         </Space>
       ),
@@ -274,6 +315,30 @@ export default function SystemUpgradePage() {
         }
       >
         <Space direction="vertical" size={16} style={{ display: 'flex' }}>
+          {uploadResult &&
+            (uploadResult.execution?.status === 'SCHEDULED' ? (
+              <Alert
+                type="info"
+                showIcon
+                closable
+                onClose={() => setUploadResult(null)}
+                message={`已创建定时升级：检测版本 ${uploadResult.package.version_from} → ${uploadResult.package.version_to}`}
+                description={`将于 ${formatDateTime(uploadResult.execution.scheduled_at)} 自动开始；开始升级前会自动创建全量备份`}
+              />
+            ) : (
+              <Alert
+                type={uploadResult.execution ? 'success' : 'warning'}
+                showIcon
+                closable
+                onClose={() => setUploadResult(null)}
+                message={`检测到的版本：从 ${uploadResult.package.version_from} → ${uploadResult.package.version_to}`}
+                description={
+                  uploadResult.execution
+                    ? '已开始自动升级，可在下方列表查看进度'
+                    : (uploadResult.warning ?? '可稍后手动执行升级')
+                }
+              />
+            ))}
           <Space wrap>
             <Select
               style={{ minWidth: 420 }}
@@ -362,7 +427,7 @@ export default function SystemUpgradePage() {
             loading={listQuery.isLoading}
             columns={columns}
             dataSource={listQuery.data?.items}
-            scroll={{ x: 1100 }}
+            scroll={{ x: 1270 }}
             onRow={(record) => ({
               onDoubleClick: () => setDetailJob(record),
               style: { cursor: 'pointer' },
@@ -387,19 +452,26 @@ export default function SystemUpgradePage() {
         open={uploadOpen}
         onCancel={() => {
           setUploadOpen(false)
-          setUploadFile(null)
+          resetUploadForm()
         }}
-        onOk={() => void submitUpload()}
-        okText="上传并登记"
+        onOk={confirmUpload}
+        okText="确认上传"
+        okButtonProps={{ disabled: !uploadFile }}
         confirmLoading={uploadMutation.isPending}
         destroyOnHidden
       >
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-          升级包上传至服务端升级包目录，服务端自动计算 SHA-256 与大小后登记；上传大小上限默认 4GiB。
+          升级仅可通过本页面发起。上传后系统自动校验签名与版本；选择立即更新时校验通过将自动开始升级，选择定时更新时将创建定时任务，
+          到达计划时间后自动开始；开始升级前会自动创建全量备份。上传大小上限默认 4GiB。
         </Typography.Paragraph>
         <Upload.Dragger
+          accept=".tar.gz"
           maxCount={1}
           beforeUpload={(file) => {
+            if (!file.name.toLowerCase().endsWith('.tar.gz')) {
+              message.error('仅支持 .tar.gz 格式的升级包')
+              return Upload.LIST_IGNORE
+            }
             setUploadFile(file)
             return false
           }}
@@ -409,28 +481,42 @@ export default function SystemUpgradePage() {
             <InboxOutlined />
           </p>
           <p className="ant-upload-text">点击或拖拽升级包文件到此区域</p>
-          <p className="ant-upload-hint">如：jiuzhang-wdsp-offline-2.6.0-amd64.tar.gz</p>
+          <p className="ant-upload-hint">仅支持 .tar.gz 格式，如：jiuzhang-wdsp-upgrade-1.3.0-amd64.tar.gz</p>
         </Upload.Dragger>
-        <Form<UploadFormValues> form={uploadForm} layout="vertical" style={{ marginTop: 16 }}>
-          <Space.Compact block>
-            <Form.Item
-              name="version_from"
-              label="当前版本"
-              style={{ width: '50%', marginRight: 8 }}
-              rules={[{ required: true, message: '请输入当前版本' }, { max: 50 }]}
-            >
-              <Input placeholder="如：2.5.5" />
-            </Form.Item>
-            <Form.Item
-              name="version_to"
-              label="目标版本"
-              style={{ width: '50%' }}
-              rules={[{ required: true, message: '请输入目标版本' }, { max: 50 }]}
-            >
-              <Input placeholder="如：2.6.0" />
-            </Form.Item>
-          </Space.Compact>
-        </Form>
+        <div style={{ marginTop: 16 }}>
+          <Typography.Text strong>更新时机</Typography.Text>
+          <div style={{ marginTop: 8 }}>
+            <Radio.Group
+              value={uploadTiming}
+              onChange={(e) => setUploadTiming(e.target.value as UpgradeTiming)}
+              options={[
+                { value: 'NOW', label: '立即更新' },
+                { value: 'SCHEDULED', label: '定时更新' },
+              ]}
+            />
+          </div>
+          {uploadTiming === 'SCHEDULED' && (
+            <DatePicker
+              showTime
+              format="YYYY-MM-DD HH:mm"
+              placeholder="选择升级开始时间"
+              style={{ width: '100%', marginTop: 8 }}
+              value={uploadScheduledAt}
+              onChange={(v) => setUploadScheduledAt(v)}
+              disabledDate={(current) => current.isBefore(dayjs().startOf('day'))}
+              disabledTime={(date) => {
+                // 与后端「必须是将来的时间」约束对齐：今天禁选当前时刻之前的小时/分钟
+                const now = dayjs()
+                if (!date || !date.isSame(now, 'day')) return {}
+                return {
+                  disabledHours: () => Array.from({ length: now.hour() }, (_, i) => i),
+                  disabledMinutes: (hour) =>
+                    hour === now.hour() ? Array.from({ length: now.minute() }, (_, i) => i) : [],
+                }
+              }}
+            />
+          )}
+        </div>
       </Modal>
 
       <Modal

@@ -9,13 +9,18 @@ import (
 
 	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/coverage"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/flowguard"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/grpcguard"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/mcpguard"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/grpcdesc"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/metrics"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/parser/mcprpc"
 )
 
 // Config 管线配置。
@@ -29,6 +34,10 @@ type Config struct {
 	ParamConstraints []detectors.ParamConstraint
 	// KnownEndpoints 已知端点基线（endpoint_key → asset_status，发布通道下发）；nil 关闭生命周期检测
 	KnownEndpoints map[string]string
+	// Admission 本请求所属应用的 API 准入策略（WDSP P1；装配层按 application_id 解析
+	// 发布通道 api_admission 段；nil = 应用未识别或无准入策略——不做准入判定直接放行，
+	// 与 KnownEndpoints 解析不到应用的现状行为一致）
+	Admission *detectors.AdmissionPolicy
 	// RoleBaselines 本端点 confirmed 角色功能级基线（装配层按端点解析；发布通道下发 api_role_baselines）；
 	// nil/空 = 无端点基线，BFLA 检测零行为（基线缺失不判）
 	RoleBaselines []detectors.RoleBaseline
@@ -107,6 +116,13 @@ type Config struct {
 	// GRPCDescriptors gRPC 描述符注册表（装配层 grpcdesc 编译产物；nil = 无描述符下发，
 	// gRPC 处理与 v1 完全一致：仅帧结构校验与计数观测，不做字段级解析）
 	GRPCDescriptors *grpcdesc.Registry
+	// GRPCGuard G1 unary 深检执行配置（NG-GRPC 批次 B2；装配层 buildGRPCGuardConfig
+	// 产物；nil = 无描述符且无绑定，grpcguard 零行为 NG-T-C01——与现状 grpc/grpc_desc
+	// 观测并行共存，既有观测键形不变）
+	GRPCGuard *grpcguard.Config
+	// GRPCBody gRPC 帧源（装配层保全的完整请求体——G1 协议专属读取预算，不经公共
+	// 1MiB 解析上限（§1.2）；nil/空 = 体不可得，读取器零消息如实处理）
+	GRPCBody []byte
 	// Exceptions 本请求适用的受限例外规则引用（WDSP P0-04；装配层经
 	// jiuzhang_guard FilterAPIExceptions 按应用/域名/路径/方法/可信 IP/有效期完成
 	// 范围筛选后传入；nil 与空切片等价，零行为变化。命中 Finding 保留证据并打标
@@ -117,6 +133,31 @@ type Config struct {
 	// JWTVerification must come from the completed local trust-chain verifier.
 	Authorization   detectors.AuthorizationConfig
 	JWTVerification *jwtverify.VerificationResult
+	// Coverage 执行覆盖观测发射器（NG-COV-01）：nil = 关闭，零行为变化零开销；
+	// 仅由装配层在覆盖功能启用时接入。观测永不贡献攻击分（ADR-2）。
+	Coverage *coverage.Emitter
+	// NodeName 网关节点名（GATEWAY_NODE_NAME；覆盖观测 node_id；空 = 未命名节点）
+	NodeName string
+	// GraphQL 成本预算策略（NG-GQL-03；发布通道下发 api_graphql 段按应用解析；
+	// nil/Enabled=false = 关闭，GraphQL 流量与历史版本零行为变化）
+	GraphQL *GraphQLPolicy
+	// StrongFlows 本端点命中的强流程步骤绑定（NG-FLOW-02；装配层按 endpoint_key
+	// 归组后传入；发布通道下发 api_strong_flows，加载前须经 flowguard.BuildRegistry
+	// 校验）；nil/空 = 无端点强流程定义，强流程检测零行为（NG-T-C01）。
+	// 与 FlowBaselines（观察态七类信号）并行共存互不消费。
+	StrongFlows []flowguard.BoundStep
+	// StrongFlowRuntime 强流程运行时（Valkey 原子域 + 实例引用 HMAC 密钥；
+	// nil = 未下发定义，零行为。Valkey/密钥缺席不置 nil——D8 恒 UNKNOWN 放行+披露
+	// 语义的承载在 Runtime 内部，严禁本地内存回退）
+	StrongFlowRuntime *flowguard.Runtime
+	// MCPGuard MCP 工具调用执行配置（NG-MCP G1 批次 B2；装配层 buildMCPGuardConfig
+	// 产物；nil = 无目录且无绑定，mcpguard 零行为 NG-T-C01——与现状启发式
+	// llm.mcp_* 观测并行共存，键形不变）
+	MCPGuard *mcpguard.Config
+	// MCPBody MCP 候选请求体（装配层保全的完整请求体——§1.10 协议专属预算
+	// （≤4MiB 保全同源），不经公共 1MiB 解析上限与 256 字符截留；nil/空 =
+	// 体不可得，ParseMessage 按形态不可判定 SKIPPED 如实）
+	MCPBody []byte
 }
 
 // Result 管线输出。
@@ -132,6 +173,14 @@ type Result struct {
 // Process 执行统一管线。enabled=false 时返回 Skipped=true，不设置 final action（由遗留 WAF 负责）。
 func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch) (*Result, error) {
 	if !cfg.Enabled {
+		cfg.emitCov(coverage.Observation{
+			RequestID:  requestIDOf(r),
+			Detector:   "pipeline",
+			Phase:      coverage.PhaseRequest,
+			Scope:      coverage.ScopeDeclared{Messages: 1, Direction: "request"},
+			Status:     coverage.StatusSkipped,
+			ReasonCode: coverage.ReasonPipelineDisabled,
+		})
 		return &Result{Skipped: true}, nil
 	}
 	limits := cfg.Limits
@@ -219,6 +268,20 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 			}
 		}
 		detectors.CheckGRPC(ctx, parsed, cfg.GRPCAllowCompression, scan)
+		// G1 unary 深检执行（NG-GRPC 批次 B2，grpcguard 检测器：绑定消费/结构校验/
+		// 协议化执行/覆盖五态；既有 grpc/grpc_desc 观测不变并行共存。识别为 gRPC
+		// 即进入——非 POST/codec 变体/streaming/缺描述符等形态由 grpcguard 内部分类
+		// 为 SKIPPED 五态如实覆盖；nil 配置零行为 NG-T-C01；双闸实断经 category=BLOCK
+		// 明细走统一决策，apiprotect 按 api.protocol=GRPC 分流 trailers-only）
+		if cfg.GRPCGuard != nil {
+			// 引擎 PROTECT 判定内联（mode 变量在下方统一解析——同一兜底链：
+			// 缺省 PROTECT；本段位于其前故就地求值，语义一致）
+			engineProtect := cfg.Mode == decision.ModeProtect || cfg.Mode == ""
+			if cov := grpcguard.Evaluate(ctx, parsed, grpcRes, cfg.GRPCBody, cfg.GRPCGuard, cfg.ApplicationID, engineProtect); cov != nil {
+				cov.EndpointKey = ek
+				cfg.emitCov(*cov)
+			}
+		}
 	} else if proto := classifier.ClassifyProtocol(parsed, api.IsAPI); proto != "" {
 		// 协议类型打标（任务书 §9 词表，13 值）：逐值判定规则见 classifier.ClassifyProtocol；
 		// 结构性协议（WEBSOCKET_HANDSHAKE/GRAPHQL/SOAP/RPC/SSE/文件传输/WEBHOOK）不挂
@@ -256,6 +319,32 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 	if mode == "" {
 		mode = decision.ModeProtect
 	}
+
+	// API 准入判定（WDSP P1，api_admission 发布段，设计 §4.1）：仅 API 分类流量
+	// （§4.3 决策点 4：页面/静态资源不受准入），在检测段最前执行——集合查找 O(1)。
+	// PROTECT 命中（BLOCK 类 finding 已写入上下文）时短路后续全部重检测器直达统一决策
+	// （早退优化：准入拒绝下 schema/模型/行为等重计算无意义；finding/事件/定案照常产出）。
+	// OBSERVE 命中不短路：观测 finding 与后续检测器并存，学习期需要完整信号。
+	var admissionOutcome detectors.AdmissionOutcome
+	if api.IsAPI && cfg.Admission != nil {
+		admissionOutcome = detectors.CheckAdmission(ctx, ek, *cfg.Admission, cfg.KnownEndpoints)
+	}
+	if admissionOutcome.ProtectDenied {
+		act := decision.Decide(ctx, decision.Input{Mode: mode, Exceptions: cfg.Exceptions})
+		cfg.emitCov(cfg.covScopeRecord(ctx, parsed, ek))
+		return &Result{
+			Context:     ctx,
+			Parsed:      parsed,
+			API:         api,
+			EndpointKey: ek,
+			FinalAction: act,
+		}, nil
+	}
+
+	// GraphQL 成本预算（NG-GQL-03，api_graphql 发布段）：Admission 之后、决策之前——
+	// 结构准入（五道硬边界/操作选择）→ 可信文档直通 → 单请求成本 → 时间窗预算；
+	// 仅 GraphQL 分类请求进入（非 GraphQL 直返零开销）；策略 nil/disabled 零行为变化。
+	cfg.checkGraphQL(ctx, r, parsed, mode, ek)
 
 	// schema deviation against formal model
 	if cfg.FormalSchema != nil && parsed != nil {
@@ -335,8 +424,13 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		semIDs := detectors.SemanticIDPathsFromConstraints(cfg.ParamConstraints)
 		detectors.CheckResourceAccess(ctx, parsed, tracking, ek, semIDs)
 		if api.IsAPI {
-			// 生命周期（依赖 endpoint_key；仅 API 流量，静态路径不参与基线比对）
-			detectors.CheckLifecycle(ctx, ek, cfg.KnownEndpoints)
+			// 生命周期（依赖 endpoint_key；仅 API 流量，静态路径不参与基线比对）；
+			// 准入已判 unknown（端点不在基线）时跳过 new_endpoint——两者同语义且 server 侧
+			// OBSERVE 期同映射 SHADOW finding，并存即重复（去重策略：准入覆盖后 lifecycle 跳过；
+			// deprecated_api_call 语义不同，不受 UnknownCovered 影响照常判定）
+			if !admissionOutcome.UnknownCovered {
+				detectors.CheckLifecycle(ctx, ek, cfg.KnownEndpoints)
+			}
 			// 写方法 API 限速信号
 			if detectors.IsWriteMethod(parsed.Method) {
 				detectors.CheckAPIWriteRate(ctx, tracking, ek, cfg.APIWriteRatePerMinute)
@@ -369,10 +463,52 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 			if azCfg.EndpointKey == "" {
 				azCfg.EndpointKey = ek
 			}
+			// NG-AZ-03 §1.1：决策引擎 PROTECT 语义下行（VERIFIED_VIOLATION 双闸
+			// 之一；OBSERVE 模式下资格全真也降级 OBSERVE_VIOLATION 同语义记录，
+			// 不实断——与 decision.Decide 的 BLOCK→OBSERVE 降级链双重兜底）
+			azCfg.EngineProtect = mode == decision.ModeProtect
 			detectors.EvaluateAuthorization(ctx, parsed, azCfg, cfg.JWTVerification)
 		}
 		if len(cfg.FieldPermissions) > 0 {
 			detectors.CheckFieldPermissions(ctx, cfg.JWTVerification, ek, cfg.FieldPermissions, parsed)
+		}
+		// 强流程原子预留与违规判定（NG-FLOW-02，api_strong_flows 发布段；API 管线内、
+		// 授权评估之后——实例键可信主体分量消费 JWT VERIFIED 信号，与 authz 同一信任序）。
+		// 检测器 flowguard 产决策组（ALLOW/VIOLATION/UNKNOWN + reason 词表）：
+		// 定义级 OBSERVE（缺省）只记录；PROTECT 且引擎 PROTECT 双闸全真时违规
+		// Category=BLOCK 可定案 403（统一 JSON 不泄露实例细节）；UNKNOWN 恒不阻断
+		// （Valkey 故障/密钥缺席/证据不足 → 放行+dependency_unavailable 披露，
+		// D8 严禁本地内存回退）。不挂 api.IsAPI 分类门槛——配置了定义即表强制意图，
+		// 分类漏判不应关掉强流程判定；nil 绑定/Runtime = 零行为（NG-T-C01）
+		if len(cfg.StrongFlows) > 0 && cfg.StrongFlowRuntime != nil {
+			flowguard.Evaluate(ctx, r, parsed, ek, cfg.StrongFlows, cfg.StrongFlowRuntime, cfg.JWTVerification, tracking, mode == decision.ModeProtect)
+		}
+		// MCP G1 tools/call 转发前检查链（NG-MCP 批次 B2，mcpguard 检测器：绑定驱动
+		// 识别（api_mcp_bindings endpoint_path 精确匹配）→ 候选判定 → 预算内全量解析
+		// → 固定序检查链（可信主体/白名单/ACL/Schema/范围/预算/高风险）；双闸实断经
+		// category=BLOCK 明细走统一决策，apiprotect 按 mcp_error_code 分流 JSON-RPC
+		// 错误对象；UNKNOWN 恒不阻断（目录缺失/解析失败/Schema 降级/jwt 未覆盖全
+		// SKIPPED 五态如实）。绑定缺失 = 零行为 NG-T-C01，现状 llm.mcp_* 观测并行不动）
+		if cfg.MCPGuard != nil && parsed != nil {
+			if scoped := cfg.MCPGuard.ForEndpoint(cfg.ApplicationID, r.URL.Path); scoped != nil {
+				engineProtect := mode == decision.ModeProtect
+				if candidate, cov := mcpguard.EvaluateCandidate(ctx, parsed, r, scoped, cfg.ApplicationID); cov != nil {
+					cov.EndpointKey = ek
+					cfg.emitCov(*cov)
+				} else if candidate {
+					mcpguard.NoteHeadObservations(ctx, r.Header.Get, scoped)
+					msg, perr := mcprpc.ParseMessage(cfg.MCPBody, mcprpc.DefaultBudgets())
+					if perr != nil {
+						if cov := mcpguard.HandleParseError(ctx, perr, scoped, cfg.ApplicationID, engineProtect, len(cfg.MCPBody)); cov != nil {
+							cov.EndpointKey = ek
+							cfg.emitCov(*cov)
+						}
+					} else if cov := mcpguard.Evaluate(ctx, msg, scoped, cfg.JWTVerification, cfg.ApplicationID, engineProtect); cov != nil {
+						cov.EndpointKey = ek
+						cfg.emitCov(*cov)
+					}
+				}
+			}
 		}
 		// 文件合规检测（W13-GW / P2-03 上传方向，任务书 §44 子集）：multipart 文件 part
 		// 元数据按下发规则评估（EXT 精确/MIME 前缀/文件名 RE2；BLOCK 动作 PROTECT 升级
@@ -393,6 +529,7 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 	}
 
 	act := decision.Decide(ctx, decision.Input{Mode: mode, Exceptions: cfg.Exceptions})
+	cfg.emitCov(cfg.covScopeRecord(ctx, parsed, ek))
 	return &Result{
 		Context:     ctx,
 		Parsed:      parsed,
@@ -400,4 +537,56 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		EndpointKey: ek,
 		FinalAction: act,
 	}, nil
+}
+
+// emitCov 发射覆盖观测（NG-COV-01）：cfg.Coverage 为 nil 时零开销直返；
+// 应用/策略版本/节点字段缺省从管线配置回填。观测失败只记丢弃，绝不阻断请求。
+func (cfg *Config) emitCov(o coverage.Observation) {
+	if cfg.Coverage == nil {
+		return
+	}
+	if o.ApplicationID == "" {
+		o.ApplicationID = cfg.ApplicationID
+	}
+	if o.PolicyVersion == "" {
+		o.PolicyVersion = cfg.PolicyVersion
+	}
+	if o.NodeID == "" {
+		o.NodeID = cfg.NodeName
+	}
+	cfg.Coverage.Emit(o)
+}
+
+// covScopeRecord 管线成功处理后的范围记账：体截断时如实 PARTIAL+COV_INPUT_TRUNCATED，
+// 否则 FULL（范围为本次实际检查字节与消息数，不夸大）。
+func (cfg *Config) covScopeRecord(ctx *dsctx.RequestContext, parsed *parser.Parsed, ek string) coverage.Observation {
+	o := coverage.Observation{
+		RequestID: ctx.RequestID,
+		Detector:  "pipeline",
+		Phase:     coverage.PhaseRequest,
+		Status:    coverage.StatusFull,
+		Scope:     coverage.ScopeDeclared{Messages: 1, Direction: "request"},
+	}
+	if parsed != nil {
+		o.Scope.Bytes = int64(parsed.BodySize)
+		o.BytesExamined = int64(parsed.BodySize)
+		if parsed.BodyTruncated {
+			o.Status = coverage.StatusPartial
+			o.ReasonCode = coverage.ReasonInputTruncated
+			o.Truncated = true
+		}
+	}
+	o.EndpointKey = ek
+	return o
+}
+
+// requestIDOf 提取请求关联号（与 Process 主路径同口径）。
+func requestIDOf(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if v := r.Header.Get("X-Request-Id"); v != "" {
+		return v
+	}
+	return r.Header.Get("X-Jiuzhang-Request-ID")
 }

@@ -8,6 +8,7 @@ import FieldPermissionsTab from './FieldPermissionsTab'
 import { API_BOLA_VERDICT_META } from './meta'
 import OwnershipTab from './OwnershipTab'
 import ObjectAuthorizationTab from './ObjectAuthorizationTab'
+import PostureTab from './PostureTab'
 import RoleBaselinesTab from './RoleBaselinesTab'
 
 interface EvaluateFormValues {
@@ -103,6 +104,7 @@ export default function ApiAuthzPage() {
           { key: 'baselines', label: '角色基线（BFLA）', children: <RoleBaselinesTab /> },
           { key: 'ownership', label: '对象权属（BOLA）', children: <OwnershipTab /> },
           { key: 'field-permissions', label: '字段权限', children: <FieldPermissionsTab /> },
+          { key: 'posture', label: '态势与实断资格', children: <PostureTab /> },
         ]}
       />
     </Card>

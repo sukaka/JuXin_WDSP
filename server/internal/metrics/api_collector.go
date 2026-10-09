@@ -51,6 +51,9 @@ type APISnapshot struct {
 	Floats        map[string]float64 `json:"floats,omitempty"` // 速率/耗时类 float gauge
 	CollectErrors int                `json:"collect_errors"`   // 累计采集错误次数
 	LastError     string             `json:"last_error,omitempty"`
+	// StrongFlow 强流程 per-app 指标行集（NG-FLOW-04 §1.9；无强流程实例为 nil——
+	// 渲染整段省略，观测面零变化 NG-T-C01）
+	StrongFlow []StrongFlowAppMetrics `json:"strong_flow,omitempty"`
 }
 
 // APICollector API 专项指标采集器（周期 DB 聚合 + 内存快照）。
@@ -61,6 +64,7 @@ type APICollector struct {
 	mu          sync.RWMutex
 	values      map[string]int64
 	floats      map[string]float64
+	strongFlow  []StrongFlowAppMetrics
 	collectedAt time.Time
 	collectErrs int
 	lastError   string
@@ -115,6 +119,7 @@ func (c *APICollector) CollectOnce(ctx context.Context) error {
 	for k, v := range c.floats {
 		floats[k] = v
 	}
+	strongFlow := append([]StrongFlowAppMetrics(nil), c.strongFlow...)
 	c.mu.RUnlock()
 
 	var errs []error
@@ -281,9 +286,20 @@ WHERE status = 'COMPLETED' AND stopped_at IS NOT NULL AND stopped_at >= $1`,
 		values[AIToolCallsTotal] = aiToolCalls
 	}
 
+	// 13. 强流程运行指标（NG-FLOW-04 §1.9；api_strong_flow_instances/step_events
+	// 迁移 000177 表——缺表/查询失败单源失败保留上一轮行集，不拖垮其他源）：
+	// per-app 五态分桶 + INDETERMINATE 积压与滞留时延 + 近 24h RESERVE 冲突率
+	sfRows, sfErr := c.collectStrongFlow(ctx)
+	if sfErr != nil {
+		fail("strong_flow", sfErr)
+	} else {
+		strongFlow = sfRows
+	}
+
 	c.mu.Lock()
 	c.values = values
 	c.floats = floats
+	c.strongFlow = strongFlow
 	c.collectedAt = c.now()
 	c.collectErrs += len(errs)
 	if len(errs) > 0 {
@@ -293,6 +309,75 @@ WHERE status = 'COMPLETED' AND stopped_at IS NOT NULL AND stopped_at >= $1`,
 	}
 	c.mu.Unlock()
 	return errors.Join(errs...)
+}
+
+// collectStrongFlow 强流程指标三路聚合（NG-FLOW-04 §1.9；迁移 000177 表缺表即
+// 单源失败——与既有源同纪律，不静默吞错）：
+//  1. 实例计数按五态分桶（per-app）；
+//  2. INDETERMINATE 积压与滞留时延（采集时刻 - updated_at 的 avg/max）；
+//  3. 近 24h step_events RESERVE 动作冲突率（result∈CONFLICT,REJECTED）。
+func (c *APICollector) collectStrongFlow(ctx context.Context) ([]StrongFlowAppMetrics, error) {
+	qCtx, cancel := context.WithTimeout(ctx, apiQueryTimeout)
+	defer cancel()
+	var instances []strongFlowInstanceRow
+	rows, err := c.db.Query(qCtx, `SELECT application_id, status, count(*)
+		FROM api_strong_flow_instances GROUP BY application_id, status`)
+	if err != nil {
+		return nil, fmt.Errorf("instances: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r strongFlowInstanceRow
+		if err := rows.Scan(&r.AppID, &r.Status, &r.N); err != nil {
+			return nil, err
+		}
+		instances = append(instances, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var indet []strongFlowIndeterminateRow
+	rows2, err := c.db.Query(qCtx, `SELECT application_id, count(*),
+		COALESCE(avg(EXTRACT(EPOCH FROM (now() - updated_at))), 0),
+		COALESCE(max(EXTRACT(EPOCH FROM (now() - updated_at))), 0)
+		FROM api_strong_flow_instances WHERE status='INDETERMINATE' GROUP BY application_id`)
+	if err != nil {
+		return nil, fmt.Errorf("indeterminate: %w", err)
+	}
+	defer rows2.Close()
+	for rows2.Next() {
+		var r strongFlowIndeterminateRow
+		if err := rows2.Scan(&r.AppID, &r.N, &r.AvgSec, &r.MaxSec); err != nil {
+			return nil, err
+		}
+		indet = append(indet, r)
+	}
+	if err := rows2.Err(); err != nil {
+		return nil, err
+	}
+	var reserve []strongFlowReserveRow
+	rows3, err := c.db.Query(qCtx, `SELECT i.application_id,
+		count(*) FILTER (WHERE e.action='RESERVE'),
+		count(*) FILTER (WHERE e.action='RESERVE' AND e.result IN ('CONFLICT','REJECTED'))
+		FROM api_strong_flow_step_events e
+		JOIN api_strong_flow_instances i ON i.id = e.instance_id
+		WHERE e.occurred_at >= now() - interval '24 hours'
+		GROUP BY i.application_id`)
+	if err != nil {
+		return nil, fmt.Errorf("reserve: %w", err)
+	}
+	defer rows3.Close()
+	for rows3.Next() {
+		var r strongFlowReserveRow
+		if err := rows3.Scan(&r.AppID, &r.Total, &r.Conflicts); err != nil {
+			return nil, err
+		}
+		reserve = append(reserve, r)
+	}
+	if err := rows3.Err(); err != nil {
+		return nil, err
+	}
+	return BuildStrongFlowMetrics(instances, indet, reserve), nil
 }
 
 // queryCounts 执行「键, count(*)」两列聚合查询。
@@ -314,7 +399,7 @@ func (c *APICollector) queryCounts(ctx context.Context, sql string) (map[string]
 	return out, rows.Err()
 }
 
-// Snapshot 返回最新快照（Values/Floats 为拷贝，调用方可安全持有）。
+// Snapshot 返回最新快照（Values/Floats/StrongFlow 为拷贝，调用方可安全持有）。
 func (c *APICollector) Snapshot() APISnapshot {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -332,6 +417,7 @@ func (c *APICollector) Snapshot() APISnapshot {
 		Floats:        floats,
 		CollectErrors: c.collectErrs,
 		LastError:     c.lastError,
+		StrongFlow:    append([]StrongFlowAppMetrics(nil), c.strongFlow...),
 	}
 }
 
@@ -396,6 +482,7 @@ func RenderAPISnapshot(s APISnapshot) string {
 	b.WriteString("# HELP api_metrics_last_collect_timestamp_seconds API 专项指标最近一轮采集时间（Unix 秒）\n")
 	b.WriteString("# TYPE api_metrics_last_collect_timestamp_seconds gauge\n")
 	fmt.Fprintf(&b, "api_metrics_last_collect_timestamp_seconds %d\n", s.CollectedAt.Unix())
+	b.WriteString(RenderStrongFlowSection(s.StrongFlow))
 	return b.String()
 }
 

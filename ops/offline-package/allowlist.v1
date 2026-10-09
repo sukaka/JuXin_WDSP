@@ -6,6 +6,7 @@ file=console/install-console.sh
 file=console/netapply.sh
 file=diagnostics/collect.sh
 file=healthcheck/check.sh
+file=install/console-cert.sh
 file=install/install-gateway-baremetal.sh
 file=install/install.sh
 file=install/prepare-openeuler-zhaoxin.sh

@@ -97,11 +97,19 @@ type Parsed struct {
 	GraphQLOperation     string   // query|mutation|subscription|unknown
 	GraphQLOperationName string   // operationName（缺省时从查询文本推断）
 	GraphQLVariables     []string // variables 顶层键名（排序，不存值）
-	FieldCount           int      // Body 侧字段计数（JSON/Form/XML 共用体侧配额；Query 键独立计数不占本配额）
-	BodySize             int
-	BodyHash             string
-	BodyTruncated        bool
-	FieldCapped          bool // Body 侧字段数超 MaxFieldCount 已截断（检测可见性由 parser.field_count_capped 明细承载）
+	// GraphQLQuery 查询文档原文（NG-GQL-03 成本预算输入；仅识别为 GraphQL 时填充，
+	// 体量已由 MaxBodyParseBytes 硬边界约束，gqlast.ParseBounded 再按 64KiB 硬拒；
+	// 仅请求内存活，不落事件/日志明文）
+	GraphQLQuery string
+	// GraphQLOperationNameSpecified 客户端协议字段显式指定的 operationName（NG-T-G01
+	// 操作选择准入输入；缺省/未指定为 ""——与 GraphQLOperationName 的「缺省从查询文本
+	// 推断」语义区分：推断名用于观测打标，不得冒充协议指定使多操作未命名逃逸准入）
+	GraphQLOperationNameSpecified string
+	FieldCount                    int // Body 侧字段计数（JSON/Form/XML 共用体侧配额；Query 键独立计数不占本配额）
+	BodySize                      int
+	BodyHash                      string
+	BodyTruncated                 bool
+	FieldCapped                   bool // Body 侧字段数超 MaxFieldCount 已截断（检测可见性由 parser.field_count_capped 明细承载）
 	// QueryCapped Query 键数超 MaxFieldCount 已截断（Query 独立配额：distinct query 键
 	// 先消费共享配额会把 JSONFields/JSONValues 排空——LLM 形态确认、敏感字段、schema 偏离、
 	// BODY 参数约束被静默跳过；截断事实由 parser.field_count_capped 明细进事件流）

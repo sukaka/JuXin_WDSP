@@ -14,6 +14,7 @@ import (
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
+	"github.com/jiuzhang-waf/server/internal/strongflow"
 )
 
 type fakeSaver struct{ saved []*PrimaryEvent }
@@ -426,5 +427,94 @@ func TestAppendError_NoRotationBelowLimit(t *testing.T) {
 	}
 	if _, err := os.Stat(logPath + ".errors.1"); !os.IsNotExist(err) {
 		t.Fatalf("unexpected rotation below limit: err=%v", err)
+	}
+}
+
+// NG-FLOW-02：strong_flow 事件透传消费——recorder 收到同形事件；recorder 错误
+// 计数+不阻断（failedCount+1、断点照常前移、其他记录照常处理）；未接线仅计数。
+func TestCollectorStrongFlowPassthrough(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "events.log")
+	cpPath := filepath.Join(dir, "events.offset")
+	sfLine := mustJSON(t, map[string]any{
+		"request_id": "r-sf-1", "endpoint_key": "POST /api/v1/orders", "occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
+		// NG-FLOW-02 契约 reconcile：strong_flow 为数组（一请求多动作：首步
+		// INSTANCE_NEW+RESERVE 同拍）；元素仅 10 键操作事实，归属由采集侧注入
+		"jwt_verification": map[string]any{"status": "VERIFIED", "verified_principal_id": "pref:bb", "verified_tenant_id": "tref:aa"},
+		"strong_flow": []any{
+			map[string]any{
+				"definition_id": uuid.NewString(), "definition_version": 3, "instance_id": "sfref:" + strings.Repeat("ab", 32),
+				"step_key": "", "action": "INSTANCE_NEW", "fencing_token": 0, "lease_seconds": 0,
+				"result": "OK", "reason_code": "", "occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
+			},
+			map[string]any{
+				"definition_id": uuid.NewString(), "definition_version": 3, "instance_id": "sfref:" + strings.Repeat("ab", 32),
+				"step_key": "create", "action": "RESERVE", "fencing_token": 7, "lease_seconds": 60,
+				"result": "OK", "reason_code": "", "occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
+			},
+		},
+	})
+	writeLines(t, logPath, []string{sfLine})
+
+	saver := &fakeSaver{}
+	rec := &fakeStrongFlowRecorder{}
+	c := NewCollector(saver, "test-sf", logPath, cpPath, "node-1")
+	c.SetStrongFlowRecorder(rec)
+	n, err := c.CollectOnce(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("CollectOnce=(%d,%v), want (1,nil)", n, err)
+	}
+	if len(rec.calls) != 2 {
+		t.Fatalf("recorder calls=%d want 2（INSTANCE_NEW+RESERVE 同拍逐条消费）", len(rec.calls))
+	}
+	got := rec.calls[1]
+	if got.Action != "RESERVE" || got.FencingToken != 7 || got.StepKey != "create" || !strings.HasPrefix(got.InstanceID, "sfref:") {
+		t.Fatalf("strong_flow event mismatch: %+v", got)
+	}
+	// 归属注入：request_id 取宿主主事件；tenant/principal 引用取宿主 JWT 指纹
+	if got.RequestID != "r-sf-1" || got.PrincipalRef != "pref:bb" || got.TenantRef != "tref:aa" {
+		t.Fatalf("归属注入失败: %+v", got)
+	}
+	if rec.calls[0].Action != "INSTANCE_NEW" {
+		t.Fatalf("首条应为 INSTANCE_NEW: %+v", rec.calls[0])
+	}
+}
+
+type fakeStrongFlowRecorder struct {
+	calls []strongflow.StrongFlowEvent
+	err   error
+}
+
+func (f *fakeStrongFlowRecorder) RecordStrongFlow(_ context.Context, ev *strongflow.StrongFlowEvent) error {
+	f.calls = append(f.calls, *ev)
+	return f.err
+}
+
+// recorder 错误纪律：计数+日志不阻断（断点照常前移，重放由幂等键兜底）。
+func TestCollectorStrongFlowRecorderErrorNotBlocking(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "events.log")
+	cpPath := filepath.Join(dir, "events.offset")
+	sfLine := mustJSON(t, map[string]any{
+		"request_id": "r-sf-2", "endpoint_key": "POST /api/v1/orders", "occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"strong_flow": []any{map[string]any{
+			"definition_id": uuid.NewString(), "definition_version": 1, "instance_id": "sfref:" + strings.Repeat("cd", 32),
+			"step_key": "pay", "action": "COMMIT", "fencing_token": 3, "result": "OK",
+			"occurred_at": time.Now().UTC().Format(time.RFC3339Nano),
+		}},
+	})
+	writeLines(t, logPath, []string{sfLine})
+
+	rec := &fakeStrongFlowRecorder{err: errors.New("db down")}
+	c := NewCollector(&fakeSaver{}, "test-sf-err", logPath, cpPath, "node-1")
+	c.SetStrongFlowRecorder(rec)
+	n, err := c.CollectOnce(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("recorder 错误不得阻断采集: (%d,%v)", n, err)
+	}
+	// 断点前移：重复采集无重放（失败行不滞留——与心跳同一纪律，重放安全由消费侧幂等兜底）
+	n2, err := c.CollectOnce(context.Background())
+	if err != nil || n2 != 0 {
+		t.Fatalf("second CollectOnce want (0,nil), got (%d,%v)", n2, err)
 	}
 }

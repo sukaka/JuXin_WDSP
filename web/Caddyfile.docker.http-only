@@ -1,0 +1,36 @@
+# 九章管理前端托管配置（生产容器）——仅 HTTP 退化形态
+# 由 docker-entrypoint.web.sh 在控制台 HTTPS 证书缺失时选用（兼容未生成证书的
+# 既有部署）；站点配置与 Caddyfile.docker 的 snippet 保持一致。
+
+:8080 {
+	root * /usr/share/caddy
+
+	# 安全响应头
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+		Cache-Control "no-store"
+		-Server
+	}
+
+	# API 反向代理到管理后端
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	# 静态资源（带缓存指纹的 assets 长缓存；mmdb 等大文件支持预压缩 gzip）
+	handle /assets/* {
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server {
+			precompressed gzip
+		}
+	}
+
+	# SPA 路由回退到 index.html
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -32,7 +32,7 @@ source "$SCRIPT_DIR/../lib/signing.sh"
 # 指纹见 docs/DEPLOYMENT.md「离线交付包签名与验签」。生产模式禁止覆盖；
 # 仅显式开发模式允许 WDSP_PACKAGE_PUBLIC_KEY 指向测试公钥）。
 WDSP_RELEASE_PUBKEY_PEM="-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEApGM/1+Y45NHIQ9F6zv5SH0NbiEjFA5hmx22R4nDAGus=
+MCowBQYDK2VwAyEAJBzjZs04R6NVLDuKoJsViPuBEGlo70z/zpnKi6ZHq2s=
 -----END PUBLIC KEY-----"
 
 # ---------- 常量 ----------

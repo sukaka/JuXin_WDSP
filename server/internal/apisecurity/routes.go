@@ -74,12 +74,21 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.RuntimeStatistics))))
 	mux.Handle("GET /api/v1/api-security/runtime/events",
 		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.ListRuntimeEvents))))
+	// API 准入防护（P1，docs/API_ADMISSION_CONTROL_DESIGN.md §5.2/§5.3）：
+	// 覆盖率报告（切 PROTECT 前影响面评估）与准入拦截列表；权限同 api 资产页
+	mux.Handle("GET /api/v1/api-security/admission/coverage",
+		authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.AdmissionCoverage))))
+	mux.Handle("GET /api/v1/api-security/admission/denied",
+		authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.AdmissionDenied))))
 	// 行为基线画像（WDSP 访问微模型：api_behavior_profiles 离线聚合结果只读）
 	mux.Handle("GET /api/v1/api-security/behavior-profiles",
 		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.ListBehaviorProfiles))))
 	// 对象模型（WDSP 访问微模型·对象维度：api_object_models 清扫产出只读）
 	mux.Handle("GET /api/v1/api-security/object-models",
 		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.ListObjectModels))))
+	// 对象模型发布状态管理（NG-AZ-02 D5/D7 管理写入路径；权限 api_authorization.manage + 审计）
+	mux.Handle("PATCH /api/v1/api-security/object-models/{id}",
+		authz(middleware.RequirePermission(permAuthorizationManage)(http.HandlerFunc(h.PatchObjectModel))))
 	// 身份画像（身份微模型：api_identity_profiles 离线聚合 + 质量分）
 	mux.Handle("GET /api/v1/api-security/identity-profiles",
 		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.ListIdentityProfiles))))

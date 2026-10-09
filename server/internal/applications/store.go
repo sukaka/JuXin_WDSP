@@ -46,6 +46,19 @@ func validProtectionMode(m string) bool {
 	return m == ModeOff || m == ModeObserve || m == ModeProtect || m == ModeBypass
 }
 
+// API 准入模式（api_admission_mode，迁移 000166；docs/API_ADMISSION_CONTROL_DESIGN.md §3.1）。
+// 与 protection_mode 正交：准入管「这个 API 允不允许存在」，无 BYPASS 取值。
+const (
+	AdmissionModeOff     = "OFF"
+	AdmissionModeObserve = "OBSERVE"
+	AdmissionModeProtect = "PROTECT"
+)
+
+// validAPIAdmissionMode 校验 API 准入模式是否合法（OFF/OBSERVE/PROTECT）。
+func validAPIAdmissionMode(m string) bool {
+	return m == AdmissionModeOff || m == AdmissionModeObserve || m == AdmissionModeProtect
+}
+
 // 部署模式（docs/NETWORK_MODES_DESIGN.md §4；MIRROR/TRANSPARENT 见 §4.2/§4.3）
 const (
 	DeployModeReverseProxy = "REVERSE_PROXY"
@@ -80,6 +93,7 @@ type Application struct {
 	TechnicalOwner    string     `json:"technical_owner"`
 	Status            string     `json:"status"`
 	ProtectionMode    string     `json:"protection_mode"`
+	APIAdmissionMode  string     `json:"api_admission_mode"`
 	DeploymentMode    string     `json:"deployment_mode"`
 	DeploymentStatus  string     `json:"deployment_status"`
 	HealthStatus      string     `json:"health_status"`
@@ -90,6 +104,9 @@ type Application struct {
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 	Version           int        `json:"version"`
+	// AuthzLeaseSeconds per-app 授权快照租约秒数（NG-AZ-02 D5；nil=不启用租约约束，
+	// 配置夹紧 15~300——发布链编译进 handler api_authz_lease_seconds 与快照 lease_seconds）
+	AuthzLeaseSeconds *int `json:"authz_lease_seconds"`
 }
 
 // Domain 是应用域名。
@@ -157,14 +174,14 @@ func (s *Store) DB() *pgxpool.Pool {
 // ---------- 应用 ----------
 
 const appColumns = `id, code, name, description, business_owner, technical_owner, status,
-protection_mode, deployment_mode, deployment_status, health_status, current_version_id, last_publish_at,
-last_publish_result, created_by, created_at, updated_at, version`
+protection_mode, api_admission_mode, deployment_mode, deployment_status, health_status, current_version_id, last_publish_at,
+last_publish_result, created_by, created_at, updated_at, version, authz_lease_seconds`
 
 func (s *Store) scanApp(row pgx.Row) (*Application, error) {
 	var a Application
 	err := row.Scan(&a.ID, &a.Code, &a.Name, &a.Description, &a.BusinessOwner, &a.TechnicalOwner,
-		&a.Status, &a.ProtectionMode, &a.DeploymentMode, &a.DeploymentStatus, &a.HealthStatus, &a.CurrentVersionID,
-		&a.LastPublishAt, &a.LastPublishResult, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.Version)
+		&a.Status, &a.ProtectionMode, &a.APIAdmissionMode, &a.DeploymentMode, &a.DeploymentStatus, &a.HealthStatus, &a.CurrentVersionID,
+		&a.LastPublishAt, &a.LastPublishResult, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.Version, &a.AuthzLeaseSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -182,14 +199,21 @@ func (s *Store) Create(ctx context.Context, a *Application) error {
 	if !validProtectionMode(a.ProtectionMode) {
 		return fmt.Errorf("无效的防护模式")
 	}
+	// 空准入模式归一为 OFF（缺省语义；HTTP 层已对非法非空值 400，此处防御性校验兜底）
+	if a.APIAdmissionMode == "" {
+		a.APIAdmissionMode = AdmissionModeOff
+	}
+	if !validAPIAdmissionMode(a.APIAdmissionMode) {
+		return fmt.Errorf("无效的API准入模式")
+	}
 	if !validDeploymentMode(a.DeploymentMode) {
 		return fmt.Errorf("无效的部署模式")
 	}
 	err := s.db.QueryRow(ctx, `
-INSERT INTO applications (code, name, description, business_owner, technical_owner, status, protection_mode, deployment_mode, created_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+INSERT INTO applications (code, name, description, business_owner, technical_owner, status, protection_mode, api_admission_mode, deployment_mode, created_by)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 RETURNING id, created_at, updated_at, version`,
-		a.Code, a.Name, a.Description, a.BusinessOwner, a.TechnicalOwner, a.Status, a.ProtectionMode, a.DeploymentMode, a.CreatedBy,
+		a.Code, a.Name, a.Description, a.BusinessOwner, a.TechnicalOwner, a.Status, a.ProtectionMode, a.APIAdmissionMode, a.DeploymentMode, a.CreatedBy,
 	).Scan(&a.ID, &a.CreatedAt, &a.UpdatedAt, &a.Version)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_applications_code") {
@@ -284,8 +308,8 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Application, int64, e
 	for rows.Next() {
 		var a Application
 		if err := rows.Scan(&a.ID, &a.Code, &a.Name, &a.Description, &a.BusinessOwner, &a.TechnicalOwner,
-			&a.Status, &a.ProtectionMode, &a.DeploymentMode, &a.DeploymentStatus, &a.HealthStatus, &a.CurrentVersionID,
-			&a.LastPublishAt, &a.LastPublishResult, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.Version); err != nil {
+			&a.Status, &a.ProtectionMode, &a.APIAdmissionMode, &a.DeploymentMode, &a.DeploymentStatus, &a.HealthStatus, &a.CurrentVersionID,
+			&a.LastPublishAt, &a.LastPublishResult, &a.CreatedBy, &a.CreatedAt, &a.UpdatedAt, &a.Version, &a.AuthzLeaseSeconds); err != nil {
 			return nil, 0, err
 		}
 		out = append(out, a)
@@ -302,14 +326,27 @@ func (s *Store) Update(ctx context.Context, a *Application) error {
 	if !validProtectionMode(a.ProtectionMode) {
 		return fmt.Errorf("无效的防护模式")
 	}
+	// 与 Create 同口径：空准入模式归一为 OFF（防御性校验兜底，HTTP 层已对非法非空值 400）
+	if a.APIAdmissionMode == "" {
+		a.APIAdmissionMode = AdmissionModeOff
+	}
+	if !validAPIAdmissionMode(a.APIAdmissionMode) {
+		return fmt.Errorf("无效的API准入模式")
+	}
 	if !validDeploymentMode(a.DeploymentMode) {
 		return fmt.Errorf("无效的部署模式")
 	}
+	// NG-AZ-02 D5：租约秒数校验（nil=不启用；设置时必须在 15~300——
+	// 防操作员把租约压到心跳间隔一半以下造成系统性误报）
+	if a.AuthzLeaseSeconds != nil && (*a.AuthzLeaseSeconds < 15 || *a.AuthzLeaseSeconds > 300) {
+		return fmt.Errorf("无效的授权租约秒数（须为 15~300 或留空不启用）")
+	}
 	res, err := s.db.Exec(ctx, `
 UPDATE applications SET name=$1, description=$2, business_owner=$3, technical_owner=$4,
-  protection_mode=$5, deployment_mode=$6, updated_at=now(), version=version+1
-WHERE id=$7 AND version=$8 AND deleted_at IS NULL`,
-		a.Name, a.Description, a.BusinessOwner, a.TechnicalOwner, a.ProtectionMode, a.DeploymentMode, a.ID, a.Version)
+  protection_mode=$5, api_admission_mode=$6, deployment_mode=$7, updated_at=now(), version=version+1,
+  authz_lease_seconds=$10
+WHERE id=$8 AND version=$9 AND deleted_at IS NULL`,
+		a.Name, a.Description, a.BusinessOwner, a.TechnicalOwner, a.ProtectionMode, a.APIAdmissionMode, a.DeploymentMode, a.ID, a.Version, a.AuthzLeaseSeconds)
 	if err != nil {
 		return err
 	}
@@ -539,8 +576,8 @@ func (s *Store) AddUpstream(ctx context.Context, u *Upstream) error {
 	if err := validation.ValidatePort(u.Port); err != nil {
 		return err
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("源站协议仅支持 http 或 https")
+	if u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "h2c" {
+		return fmt.Errorf("源站协议仅支持 http、https 或 h2c")
 	}
 	if u.Weight < 1 || u.Weight > 100 {
 		return fmt.Errorf("源站权重必须在1至100之间")
@@ -623,8 +660,8 @@ func (s *Store) UpdateUpstream(ctx context.Context, u *Upstream) error {
 		return err
 	}
 	// 与 AddUpstream 同口径校验协议，防写入任意值进入发布配置
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("源站协议仅支持 http 或 https")
+	if u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "h2c" {
+		return fmt.Errorf("源站协议仅支持 http、https 或 h2c")
 	}
 	if u.Weight < 1 || u.Weight > 100 {
 		return fmt.Errorf("源站权重必须在1至100之间")

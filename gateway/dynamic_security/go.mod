@@ -1,6 +1,6 @@
 module github.com/jiuzhang-waf/gateway/dynamic_security
 
-go 1.24.0
+go 1.25
 
 // google.golang.org/protobuf 由间接依赖转为直接使用（W14-DESC / P2-05 深化：
 // gRPC 描述符编译 protodesc + 动态消息 dynamicpb）。版本与仓库根 gateway/go.mod、
@@ -8,4 +8,7 @@ go 1.24.0
 // 不引入新外部库。
 require google.golang.org/protobuf v1.36.11
 
-require github.com/go-jose/go-jose/v4 v4.1.4
+require (
+	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/vektah/gqlparser/v2 v2.5.60
+)

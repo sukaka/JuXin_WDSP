@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/backups"
 )
 
@@ -128,7 +130,7 @@ func readExecutorResult(path string) (*ExecutorResult, error) {
 }
 
 func (s *Service) waitExecutorResult(ctx context.Context, id uuid.UUID) (*ExecutorResult, error) {
-	deadline := time.NewTimer(defaultExecutorWait)
+	deadline := time.NewTimer(s.executorWait)
 	defer deadline.Stop()
 	ticker := time.NewTicker(s.poll)
 	defer ticker.Stop()
@@ -214,6 +216,7 @@ func (s *Service) RunResultReconciler(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		s.reconcileResults(ctx)
+		s.reconcileExpiredApplying(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -236,5 +239,60 @@ func (s *Service) reconcileResults(ctx context.Context) {
 			continue
 		}
 		_ = s.processExecutorResult(ctx, result)
+	}
+}
+
+// reconcileExpiredApplying 兜底终结滞留 APPLYING 任务（NG-REL-02 批次 C 实证 F7）：
+// 执行器被中断（无结果文件）且 API 重启后，进程内等待定时器已丢失；以持久化
+// executor_deadline 为准，超期任务标记 FAILED/EXECUTOR_TIMEOUT 并留审计与告警。
+// 不自动重跑、不假装成功：执行器镜像/数据侧状态由人工核查，任务可经既有
+// FAILED → ROLLING_BACK 手动回滚入口处置。
+func (s *Service) reconcileExpiredApplying(ctx context.Context) {
+	if s.stranded == nil {
+		return
+	}
+	jobs, err := s.stranded.ListExpiredApplyingJobs(ctx, time.Now(), s.executorWait)
+	if err != nil {
+		slog.Error("list expired applying upgrade jobs failed", "error", err)
+		return
+	}
+	for i := range jobs {
+		job := &jobs[i]
+		// 结果文件已落盘的任务交给 reconcileResults 正常处理，不按超时终结。
+		if _, err := os.Stat(filepath.Join(s.executorDir, "results", job.ID.String()+".json")); err == nil {
+			continue
+		}
+		closeErr := fmt.Errorf("宿主机升级执行器超期（%s）未返回终态结果，任务按中断终结；不自动重跑，请人工核查执行器与镜像/数据状态后可手动回滚", s.executorWait)
+		if err := s.stranded.MarkFailedIfStatus(ctx, job.ID, StatusApplying, FailExecutorTimeout, closeErr); err != nil {
+			if !errors.Is(err, ErrInvalidStatus) {
+				slog.Error("close stranded applying upgrade job failed", "id", job.ID, "error", err)
+			}
+			continue
+		}
+		slog.Warn("stranded applying upgrade job closed", "id", job.ID, "code", FailExecutorTimeout)
+		s.recordStrandedAudit(ctx, job)
+		backups.NotifyAlert(s.alertFn, "UPGRADE_FAILED", "UPGRADE", "升级执行器超时，滞留任务已终结",
+			"升级任务 "+job.ID.String()+" 等待宿主机执行器结果超期（含 API 重启前等待），已按中断标记失败（EXECUTOR_TIMEOUT）；不自动重跑，请人工核查后处置")
+	}
+}
+
+// recordStrandedAudit 滞留任务终结审计（系统动作，操作人取任务创建人；高危）。
+func (s *Service) recordStrandedAudit(ctx context.Context, job *Job) {
+	if s.auditFn == nil {
+		return
+	}
+	in := audits.RecordInput{
+		UserID:       job.RequestedBy,
+		Module:       "upgrades",
+		Action:       "executor_timeout_close",
+		ObjectType:   "upgrade",
+		ObjectID:     job.ID.String(),
+		AfterSummary: "宿主机升级执行器超期未返回终态结果，滞留 APPLYING 任务已按中断终结（不自动重跑，可手动回滚）",
+		Result:       audits.ResultSuccess,
+		RiskLevel:    audits.RiskHigh,
+		RequestID:    job.RequestID,
+	}
+	if err := s.auditFn(ctx, in); err != nil {
+		slog.Error("record stranded upgrade audit failed", "job_id", job.ID, "error", err)
 	}
 }

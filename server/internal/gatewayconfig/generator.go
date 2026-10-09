@@ -641,6 +641,12 @@ func buildReverseProxy(upstreams []applications.Upstream) mapT {
 			"dial_timeout":            fmt.Sprintf("%dms", u.ConnectTimeoutMs),
 			"response_header_timeout": fmt.Sprintf("%dms", u.ResponseHeaderTimeoutMs),
 		}
+		// h2c 明文回源（NG-GRPC G1：gRPC 源站只讲 HTTP/2 prior knowledge——
+		// Caddy http transport 默认 versions 不含 h2c，须显式声明（协商失败即 502）；
+		// scheme=h2c 仅声明协议族，tls 段不挂（明文语义与 https 互斥）
+		if u.Scheme == "h2c" {
+			transport["versions"] = []string{"h2c"}
+		}
 		// HTTPS 回源：http transport 携带 tls 段（Caddy v2.11.4 reverseproxy
 		// httptransport.go：TLSConfig 非空即对回源连接启用 TLS）。
 		// server_name 取 TLSServerName，缺省回退源站主机名（TLS SNI 与证书校验证名）；

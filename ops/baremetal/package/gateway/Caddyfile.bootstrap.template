@@ -1,0 +1,35 @@
+# Caddyfile.bootstrap —— 九章裸机网关最小引导配置（仅首启引导）
+#
+# 用途：systemd 单元 ExecStart 的 --config 指向渲染产物
+# <安装根>/gateway/Caddyfile.bootstrap；服务启动后由管理面经
+# Admin API（unix socket）/load 接管全部站点配置，
+# 本文件【不包含任何站点】，也不要手工往本文件加站点。
+#
+# 关键约束（v2.11.4 实测）：
+#   - /load 的配置会自动 autosave 到 __ROOT__/data/caddy/config/caddy/autosave.json
+#     （XDG_CONFIG_HOME=__ROOT__/data/caddy/config，见 jiuzhang-gateway.service）；
+#   - 服务以 --resume 启动（见 jiuzhang-gateway.service），重启后自动恢复
+#     最近一次运行配置；
+#   - 【切勿】不带 --resume 启动 caddy run —— 会用本 bootstrap 覆盖
+#     autosave.json，全部站点配置立即丢失。
+#
+# __ROOT__ 由 install.sh 渲染替换（jiuzhang-managed: baremetal-bootstrap）
+{
+	# Admin API 仅绑定 Unix Socket，禁止暴露 TCP 端口（安全底线）。
+	# socket 属主 jiuzhang:jiuzhang、权限 0660 以内（unit UMask=0077）。
+	admin unix/__ROOT__/data/run/caddy/admin.sock
+
+	# 网关自身运行日志：Caddy file writer 原生 rolling（v2.11.4 实测 /load 接受
+	# 等价 JSON：roll_size_mb=100 / roll_keep=30 / roll_keep_days=90），
+	# 替代 logrotate copytruncate（安全审计类日志禁止 copytruncate）。
+	# 注意以下为 Caddyfile 指令写法，与 JSON 字段名不同：
+	log {
+		output file __ROOT__/data/logs/caddy/caddy.log {
+			roll_size 100mib
+			roll_keep 30
+			roll_keep_for 2160h
+		}
+		format json
+		level INFO
+	}
+}

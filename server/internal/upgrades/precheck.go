@@ -181,23 +181,17 @@ func checkActiveTasks(f Facts) CheckItem {
 	return it
 }
 
-// checkMigrationCompat 数据库迁移兼容：本地迁移文件可读，且 manifest 声明的目标迁移号
-// 存在或不高于本地最大号+1。
+// checkMigrationCompat 仅确认当前镜像中的迁移目录可读。升级包的目标迁移文件随
+// 已签名目标 API 镜像交付，不能用当前镜像的最大迁移号限制其目标版本。
 func checkMigrationCompat(f Facts) CheckItem {
 	it := CheckItem{Name: "migration_compat"}
 	if f.MaxMigration < 0 {
 		it.Result, it.Message = CheckFail, "无法读取本地迁移文件目录"
 		return it
 	}
-	if f.TargetSchema > 0 && f.TargetSchema > f.MaxMigration+1 {
-		it.Result = CheckFail
-		it.Message = fmt.Sprintf("升级包目标迁移号 %d 超出本地迁移文件最大号 %d（允许最大 %d）",
-			f.TargetSchema, f.MaxMigration, f.MaxMigration+1)
-		return it
-	}
 	it.Result = CheckPass
 	if f.TargetSchema > 0 {
-		it.Message = fmt.Sprintf("目标迁移号 %d，本地最大号 %d", f.TargetSchema, f.MaxMigration)
+		it.Message = fmt.Sprintf("目标迁移号 %d；当前镜像迁移最大号 %d，目标镜像启动时执行并校验", f.TargetSchema, f.MaxMigration)
 	} else {
 		it.Message = fmt.Sprintf("本地迁移文件最大号 %d（升级包未声明目标迁移号）", f.MaxMigration)
 	}
@@ -348,17 +342,17 @@ type Prechecker struct {
 	packagesDir string
 	// currentVersion 为空时使用 CurrentVersion 常量；
 	// 优先读 system_settings 的 system:current_version。
-	currentVersion string
+	currentVersion   string
 	artifactVerifier PackageArtifactVerifier
 }
 
 // NewPrechecker 创建预检器。pingValkey 可为 nil（视为不可达）。
 func NewPrechecker(db *pgxpool.Pool, pingValkey func(ctx context.Context) error, dataDir, migrationsDir string) *Prechecker {
 	return &Prechecker{
-		db:              db,
-		pingValkey:      pingValkey,
-		dataDir:         dataDir,
-		migrationsDir:   migrationsDir,
+		db:               db,
+		pingValkey:       pingValkey,
+		dataDir:          dataDir,
+		migrationsDir:    migrationsDir,
 		artifactVerifier: verifyPackageArtifact,
 	}
 }

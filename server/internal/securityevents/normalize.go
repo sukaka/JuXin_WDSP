@@ -4,6 +4,7 @@ package securityevents
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
+	"github.com/jiuzhang-waf/server/internal/customrules"
 )
 
 // 攻击类型映射
@@ -29,6 +31,33 @@ var attackTypeByTag = map[string]string{
 	"attack-scanner":           "SCANNER_DETECTION",
 	"attack-disclosure":        "INFORMATION_DISCLOSURE",
 	"attack-injection-generic": "REMOTE_CODE_EXECUTION",
+}
+
+// customRuleAttackTypes 自定义规则攻击类型词表（与前端 ATTACK_TYPE_META 一致；
+// EXCLUSION/OTHER 不产生攻击语义，不入表）。GenerateSecLang 把 attack_type 原样写成
+// tag:'<TYPE>'（customrules.GenerateSecLang），此处按同一词表做恒等映射回收攻击类型——
+// 否则自定义规则命中在事件聚合里拿不到攻击类型，会被带 attack-* 标签的 CRS 规则
+// （如扫描器探测）抢占主类型。
+var customRuleAttackTypes = map[string]bool{
+	"SQL_INJECTION": true, "XSS": true, "COMMAND_INJECTION": true,
+	"LOCAL_FILE_INCLUSION": true, "REMOTE_FILE_INCLUSION": true,
+	"PHP_INJECTION": true, "JAVA_INJECTION": true, "PROTOCOL_VIOLATION": true,
+	"SESSION_FIXATION": true, "SCANNER_DETECTION": true, "INFORMATION_DISCLOSURE": true,
+	"REMOTE_CODE_EXECUTION": true, "SSRF": true, "XXE_INJECTION": true,
+	"WEBSHELL": true, "FILE_UPLOAD": true, "DESERIALIZATION": true,
+	"SSTI": true, "DOS": true, "MASS_ASSIGNMENT": true,
+}
+
+// attackTypeFromTag 解析标签对应的攻击类型：OWASP attack-* 标签走映射表；
+// 自定义规则的原始攻击类型标签按词表恒等命中。
+func attackTypeFromTag(tag string) (string, bool) {
+	if at, ok := attackTypeByTag[tag]; ok {
+		return at, true
+	}
+	if customRuleAttackTypes[tag] {
+		return tag, true
+	}
+	return "", false
 }
 
 var severityMap = map[string]string{
@@ -75,6 +104,10 @@ type NormalizedEvent struct {
 	OccurredAt   time.Time
 	ClientIP     string
 	ClientPort   int
+	// ConnectionIP 原始 TCP 对端地址（guard 经内部头注入；空 = 旧版网关未上报，
+	// 落库回退与 client_ip 同值）。审计事务的 client_ip 经真实 IP 改写后不再携带
+	// 连接层事实，由此恢复。
+	ConnectionIP string
 	Method       string
 	URI          string
 	Path         string
@@ -166,6 +199,11 @@ type MatchInfo struct {
 	MatchedData     string   `json:"matched_data"`
 	Tags            []string `json:"tags"`
 	Phase           int      `json:"phase"`
+	// CNNVDIDs/CVEIDs 命中规则的漏洞编号标注（CNNVD 兼容性 P1）：详情查询时按
+	// rule_id+rule_source 联查 custom_rules/waf_rules 取现值（设计 §7 决策4，
+	// 非落库快照）；规则已删除/未标注/联查失败时为空数组 []（静默降级）。
+	CNNVDIDs []string `json:"cnnvd_ids"`
+	CVEIDs   []string `json:"cve_ids"`
 }
 
 var (
@@ -199,6 +237,16 @@ var sensitiveHeaders = map[string]bool{
 	"x-api-key":           true,
 }
 
+// connectionAddrHeader 是 guard 注入的内部头（原始 TCP 对端 host:port；
+// gateway/modules/jiuzhang_guard/module.go connectionAddrHeader）。值由
+// connection_ip/client_port 字段承接，头本身不进事件留痕。
+const connectionAddrHeader = "x-jiuzhang-connection-addr"
+
+// internalHeaders 是网关注入的内部头：从入库头表中剔除（值已由专门字段承接）。
+var internalHeaders = map[string]bool{
+	connectionAddrHeader: true,
+}
+
 // ParseAuditLine 解析单行 Coraza 审计日志为标准化事件（脱敏）。
 func ParseAuditLine(line []byte, gatewayNode string) (*NormalizedEvent, error) {
 	line = []byte(strings.TrimSpace(string(line)))
@@ -230,6 +278,20 @@ func ParseAuditLine(line []byte, gatewayNode string) (*NormalizedEvent, error) {
 		RuleEngine:  tx.Producer.RuleEngine,
 		GatewayNode: gatewayNode,
 		RawRef:      "coraza-audit:" + tx.ID,
+	}
+
+	// 连接层事实回填：guard 注入的内部头携带原始 TCP 对端 host:port（RemoteAddr
+	// 改写后审计事务不再携带）。头部非法（非 host:port / IP 非法 / 端口越界）时
+	// 忽略——ConnectionIP 留空，落库回退与 client_ip 同值。
+	if raw := firstHeader(tx.Request.Headers, connectionAddrHeader); raw != "" {
+		if host, port, err := net.SplitHostPort(strings.TrimSpace(raw)); err == nil {
+			if addr, perr := netip.ParseAddr(host); perr == nil {
+				evt.ConnectionIP = addr.String()
+			}
+			if p, perr := strconv.Atoi(port); perr == nil && p >= 0 && p <= 65535 {
+				evt.ClientPort = p
+			}
+		}
 	}
 
 	// URI 拆分与脱敏
@@ -278,14 +340,25 @@ func ParseAuditLine(line []byte, gatewayNode string) (*NormalizedEvent, error) {
 				continue
 			}
 		}
-		mi.RuleSource = ruleSource
-		mi.RuleVersion = ruleVersion
+		// 规则来源标注：九章内置/用户自定义规则按 ID 段识别（customrules 包常量），
+		// 不随 CRS 规则集元数据误标为 OWASP_CRS；版本号仅对 CRS 目录有意义。
+		switch {
+		case mi.RuleID >= customrules.JiuzhangBuiltinMin && mi.RuleID <= customrules.JiuzhangBuiltinMax:
+			mi.RuleSource = "JIUZHANG_BUILTIN"
+			mi.RuleVersion = ""
+		case mi.RuleID >= customrules.UserCustomMin && mi.RuleID <= customrules.UserCustomMax:
+			mi.RuleSource = "USER_CUSTOM"
+			mi.RuleVersion = ""
+		default:
+			mi.RuleSource = ruleSource
+			mi.RuleVersion = ruleVersion
+		}
 		evt.Matches = append(evt.Matches, mi)
 		// 攻击类型按「严重度优先」确定：遍历全部匹配收集可映射 tag 候选，
 		// 取 severityRank 最高者，并列取先出现者。防止 notice 级扫描器规则
 		// （phase 1，先执行）抢在 critical 级攻击规则前面把事件误标为扫描器检测。
 		for _, tag := range mi.Tags {
-			if at, ok := attackTypeByTag[tag]; ok {
+			if at, ok := attackTypeFromTag(tag); ok {
 				if rank := severityRank(mi.Severity); rank > bestTypeRank {
 					bestTypeRank = rank
 					evt.AttackType = at
@@ -572,13 +645,16 @@ func maskIP(ip string) string {
 	return ip
 }
 
-// maskHeaders 返回敏感头掩码后的头部副本。
+// maskHeaders 返回敏感头掩码后的头部副本（网关注入的内部头整体剔除）。
 func maskHeaders(headers map[string][]string) map[string][]string {
 	if len(headers) == 0 {
 		return nil
 	}
 	out := make(map[string][]string, len(headers))
 	for k, v := range headers {
+		if internalHeaders[strings.ToLower(k)] {
+			continue
+		}
 		if sensitiveHeaders[strings.ToLower(k)] {
 			masked := make([]string, len(v))
 			for i := range masked {

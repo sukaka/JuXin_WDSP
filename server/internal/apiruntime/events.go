@@ -161,11 +161,25 @@ func (s *Store) saveAuthorizationDecision(ctx context.Context, ev *PrimaryEvent)
 		}
 		applicationID = parsed
 	}
+	// NG-AZ-03 D5：VERIFIED_VIOLATION 实断证据随主事件 final_decision.authz_enforcement
+	// 内嵌上报（形状 §1.4 冻结）——决策行 evidence 原样带出该子对象（只读透传，
+	// 服务端不解释内容；无证据（OBSERVE 形态/旧版网关）落 '{}' 与历史一致）。
+	evidence := []byte("{}")
+	if len(ev.FinalDecision) > 0 {
+		var probe struct {
+			AuthzEnforcement json.RawMessage `json:"authz_enforcement"`
+		}
+		if err := json.Unmarshal(ev.FinalDecision, &probe); err == nil && len(probe.AuthzEnforcement) > 0 {
+			if b, merr := json.Marshal(map[string]json.RawMessage{"authz_enforcement": probe.AuthzEnforcement}); merr == nil {
+				evidence = b
+			}
+		}
+	}
 	_, err = s.db.Exec(ctx, `INSERT INTO api_authorization_decisions
 		(decision_id, application_id, endpoint_key, policy_version, decision, checks, evidence, occurred_at)
-		VALUES ($1,$2,$3,$4,$5,$6,'{}'::jsonb,$7)
+		VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
 		ON CONFLICT (decision_id) DO NOTHING`, decisionID, applicationID, ev.EndpointKey,
-		decision.PolicyVersion, decision.Decision, checks, ev.OccurredAt)
+		decision.PolicyVersion, decision.Decision, checks, evidence, ev.OccurredAt)
 	return err
 }
 
@@ -202,9 +216,15 @@ func validateAuthorizationDecision(decision *events.AuthorizationDecisionGroup) 
 	return decisionID, nil
 }
 
+// authzDecisionVerifiedViolation NG-AZ-03 D1 决策词表第四值（VERIFIED_VIOLATION：
+// 违规事实经显式资格判定成立）。server 侧以字面常量校验——网关 events 包新枚举
+// 由 B 轨并行落地，server 不依赖其编译期可见性（线契约为字符串值）。
+const authzDecisionVerifiedViolation = "VERIFIED_VIOLATION"
+
 func validAuthorizationDecision(decision events.AuthorizationDecision) bool {
 	switch decision {
-	case events.AuthorizationAllow, events.AuthorizationObserveViolation, events.AuthorizationUnknown:
+	case events.AuthorizationAllow, events.AuthorizationObserveViolation, events.AuthorizationUnknown,
+		events.AuthorizationDecision(authzDecisionVerifiedViolation):
 		return true
 	default:
 		return false

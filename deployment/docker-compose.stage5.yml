@@ -79,7 +79,7 @@ services:
       VALKEY_HOST: valkey
       VALKEY_PORT: 6379
       VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
-      COOKIE_SECURE: "false"
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       JIUZHANG_MASTER_KEY: ${JIUZHANG_MASTER_KEY:-}
@@ -190,6 +190,9 @@ services:
     restart: unless-stopped
     environment:
       SEC_RULE_ENGINE: On
+      GATEWAY_NODE_NAME: gateway-stage5-01
+      # 执行覆盖观测（NG-COV-01 联调开关，默认关闭；stage5 验证期显式开启）
+      COVERAGE_OBSERVATIONS_ENABLED: ${COVERAGE_OBSERVATIONS_ENABLED:-1}
       # autosave 落点持久化：配合 --resume，容器重建后自动恢复最近一次发布配置
       XDG_CONFIG_HOME: /config
       # Caddy 存储（实例 ID、证书缓存、锁文件）持久化，消除 read_only 下的存储告警

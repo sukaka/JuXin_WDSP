@@ -7,6 +7,8 @@ import type { ApiRuntimeEvent, ApiRuntimeEventDetail } from '../../api/apiSecuri
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
+import { AuthzEnforcementBlock } from '../../components/AuthzEnforcement'
+import { extractAuthzEnforcement } from '../../utils/authzEnforcement'
 import { formatDateTime } from '../../utils/format'
 import { API_DETECTOR_META } from '../../utils/stage8'
 import {
@@ -25,6 +27,9 @@ import type { JwtVerificationInfo } from '../../types'
 type RuntimeEventRecord = ApiRuntimeEvent & {
   /** JWT 信任链验证摘要（WDSP P0-03；历史事件/未评估请求为 NULL，空态不渲染） */
   jwt_verification?: JwtVerificationInfo | null
+  /** 最终处置记录（WDSP P0-04，迁移 000131 可空列；NG-AZ-03 起可内嵌
+      authz_enforcement 实断证据——空态不渲染，消费端容忍缺失） */
+  final_decision?: Record<string, unknown> | null
 }
 
 /** 最终动作展示映射（与网关决策动作枚举一致；MASK_RESPONSE 为响应脱敏动作） */
@@ -174,6 +179,7 @@ export default function ApiRuntimeEventsPage() {
 
   const details = selected?.details ?? []
   const jwt = selected?.jwt_verification
+  const authzEnforcement = extractAuthzEnforcement(selected?.final_decision)
 
   return (
     <Card title="API 运行时事件">
@@ -345,6 +351,14 @@ export default function ApiRuntimeEventsPage() {
                     {JWT_UNVERIFIED_HINT}
                   </Typography.Paragraph>
                 )}
+              </div>
+            ) : null}
+            {/* NG-AZ-03 D7：VERIFIED_VIOLATION 实断证据（final_decision.authz_enforcement
+                内嵌；BOLA 八因子/BFLA 实评键集如实呈现；历史事件无此键不渲染） */}
+            {authzEnforcement ? (
+              <div>
+                <Typography.Title level={5}>授权实断证据</Typography.Title>
+                <AuthzEnforcementBlock evidence={authzEnforcement} />
               </div>
             ) : null}
             <Typography.Title level={5} style={{ margin: 0 }}>

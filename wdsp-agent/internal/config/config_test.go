@@ -37,6 +37,8 @@ func TestSaveAndLoad(t *testing.T) {
 	cfg.Server = "https://wdsp.example.com"
 	cfg.AgentID = "a3c98f51-0000-0000-0000-000000000001"
 	cfg.Credential = "wda_abc"
+	cfg.AppliedConfigVersion = 7
+	cfg.PendingConfigAckVersion = 7
 	if err := cfg.Save(path); err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +58,9 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 	if got.HeartbeatIntervalSeconds != 15 {
 		t.Fatalf("heartbeat=%d", got.HeartbeatIntervalSeconds)
+	}
+	if got.AppliedConfigVersion != 7 || got.PendingConfigAckVersion != 7 {
+		t.Fatalf("配置版本/待 ACK 标记未持久化: %+v", got)
 	}
 }
 

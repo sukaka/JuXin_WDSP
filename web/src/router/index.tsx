@@ -34,6 +34,7 @@ const GatewayStatusPage = lazy(() => import('../pages/gateway-status/GatewayStat
 const ProtectionPoliciesPage = lazy(() => import('../pages/protection-policies/ProtectionPoliciesPage'))
 const WafRulesPage = lazy(() => import('../pages/waf-rules/WafRulesPage'))
 const CustomRulesPage = lazy(() => import('../pages/custom-rules/CustomRulesPage'))
+const VulnRefsPage = lazy(() => import('../pages/vuln-refs/VulnRefsPage'))
 const ExceptionsPage = lazy(() => import('../pages/exceptions/ExceptionsPage'))
 const TrustedProxiesPage = lazy(() => import('../pages/trusted-proxies/TrustedProxiesPage'))
 const AccessRulesPage = lazy(() => import('../pages/access-rules/AccessRulesPage'))
@@ -43,6 +44,7 @@ const TemporaryBlocksPage = lazy(() => import('../pages/temporary-blocks/Tempora
 const AccessControlEventsPage = lazy(() => import('../pages/access-control-events/AccessControlEventsPage'))
 const AccessControlVersionsPage = lazy(() => import('../pages/access-control-versions/AccessControlVersionsPage'))
 const ApiEndpointsPage = lazy(() => import('../pages/api-endpoints/ApiEndpointsPage'))
+const ApiAdmissionPage = lazy(() => import('../pages/api-admission/ApiAdmissionPage'))
 const ApiModelsPage = lazy(() => import('../pages/api-models/ApiModelsPage'))
 const ModelMaturityPage = lazy(() => import('../pages/api-model-maturity/ModelMaturityPage'))
 const ApiIdentityProfilesPage = lazy(() => import('../pages/api-identity-profiles/ApiIdentityProfilesPage'))
@@ -52,6 +54,8 @@ const ApiParametersPage = lazy(() => import('../pages/api-parameters/ApiParamete
 const ApiClassificationsPage = lazy(() => import('../pages/api-classifications/ApiClassificationsPage'))
 const ApiSensitiveFieldsPage = lazy(() => import('../pages/api-sensitive-fields/ApiSensitiveFieldsPage'))
 const ApiSpecsPage = lazy(() => import('../pages/api-specs/ApiSpecsPage'))
+const ApiMcpPage = lazy(() => import('../pages/api-mcp/ApiMcpPage'))
+const ApiMachineIdentitiesPage = lazy(() => import('../pages/api-machine-identities/ApiMachineIdentitiesPage'))
 const ApiGraphPage = lazy(() => import('../pages/api-graph/ApiGraphPage'))
 const ApiTopologyPage = lazy(() => import('../pages/api-topology/ApiTopologyPage'))
 const ApiFindingsPage = lazy(() => import('../pages/api-findings/ApiFindingsPage'))
@@ -402,6 +406,17 @@ export default function AppRoutes() {
             </RequireWebWaf>
           }
         />
+        {/* CNNVD 兼容性 P1：漏洞档案（读沿用 waf_rules.read，写 waf_rule.vuln_ref.edit 页面内控） */}
+        <Route
+          path="waf/vuln-refs"
+          element={
+            <RequireWebWaf>
+              <RequirePermission permission="waf_rules.read">
+                <VulnRefsPage />
+              </RequirePermission>
+            </RequireWebWaf>
+          }
+        />
         <Route
           path="exceptions"
           element={
@@ -545,6 +560,16 @@ export default function AppRoutes() {
           }
         />
         <Route
+          path="api-admission"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_asset.read">
+                <ApiAdmissionPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
           path="api-posture"
           element={
             <RequireAPIDynamicProtection>
@@ -642,6 +667,26 @@ export default function AppRoutes() {
             <RequireAPIDynamicProtection>
               <RequirePermission permission="api_spec.read">
                 <ApiSpecsPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-mcp"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="api_spec.read">
+                <ApiMcpPage />
+              </RequirePermission>
+            </RequireAPIDynamicProtection>
+          }
+        />
+        <Route
+          path="api-machine-identities"
+          element={
+            <RequireAPIDynamicProtection>
+              <RequirePermission permission="jwt_trust.read">
+                <ApiMachineIdentitiesPage />
               </RequirePermission>
             </RequireAPIDynamicProtection>
           }

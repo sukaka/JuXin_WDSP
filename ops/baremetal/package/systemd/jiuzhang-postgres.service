@@ -1,0 +1,26 @@
+# 九章 WDSP 裸机内置 PostgreSQL 16
+# __ROOT__/__USER__ 由 install.sh 渲染替换后安装到 /etc/systemd/system/
+[Unit]
+Description=JiuZhang WDSP PostgreSQL 16 (baremetal bundled)
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+# 随包 Debian 相对布局运行库的调用约定（见包内 bin/pg/）
+Environment=LD_LIBRARY_PATH=__ROOT__/bin/pg/syslib:__ROOT__/bin/pg/lib/postgresql/16/lib
+Environment=OPENSSL_MODULES=__ROOT__/bin/pg/syslib/ossl-modules
+ExecStart=__ROOT__/bin/pg/lib/postgresql/16/bin/postgres -D __ROOT__/data/pgdata
+Restart=always
+RestartSec=5
+TimeoutStopSec=60
+LimitNOFILE=65536
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=__ROOT__/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

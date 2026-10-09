@@ -71,6 +71,13 @@ WHERE request_id = $1 AND occurred_at = $2
 		return uuid.Nil, false, err
 	}
 
+	// connection_ip 严格取 TCP 对端（guard 内部头上报）；旧版网关未上报时回退
+	// 既有口径（与 client_ip 同值）
+	connIP := evt.ConnectionIP
+	if connIP == "" {
+		connIP = evt.ClientIP
+	}
+
 	var eventID uuid.UUID
 	err = tx.QueryRow(ctx, `
 INSERT INTO security_events (request_id, occurred_at, application_id, application_name_snapshot, domain, gateway_node_id, client_ip, connection_ip,
@@ -80,7 +87,7 @@ INSERT INTO security_events (request_id, occurred_at, application_id, applicatio
   request_headers, request_body, request_body_truncated, response_headers, response_body, response_body_truncated, final_decision)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
 RETURNING id`,
-		evt.RequestID, evt.OccurredAt, evt.ApplicationID, evt.ApplicationName, evt.Host, evt.GatewayNode, nullableIP(evt.ClientIP), nullableIP(evt.ClientIP),
+		evt.RequestID, evt.OccurredAt, evt.ApplicationID, evt.ApplicationName, evt.Host, evt.GatewayNode, nullableIP(evt.ClientIP), nullableIP(connIP),
 		evt.ClientPort, evt.Method, evt.URI, evt.Path, evt.QuerySummary, evt.HTTPVersion, evt.ContentType,
 		evt.UserAgent, evt.Referer, "coraza", evt.AttackType, evt.Severity, evt.AnomalyScore, evt.Action,
 		evt.ResponseStatus, len(evt.Matches), "UNPROCESSED", evt.RawRef,
@@ -122,34 +129,34 @@ func (s *Store) InsertFailure(ctx context.Context, collectorID, rawLine, reason 
 
 // Event 是安全事件。
 type Event struct {
-	ID                uuid.UUID           `json:"id"`
-	RequestID         string              `json:"request_id"`
-	OccurredAt        time.Time           `json:"occurred_at"`
-	ApplicationID     *uuid.UUID          `json:"application_id"`
-	AppName           string              `json:"application_name_snapshot"`
-	Domain            string              `json:"domain"`
-	GatewayNode       string              `json:"gateway_node_id"`
-	ClientIP          string              `json:"client_ip"`
-	ClientPort        int                 `json:"client_port"`
-	Method            string              `json:"request_method"`
-	URI               string              `json:"request_uri"`
-	Path              string              `json:"request_path"`
-	QuerySummary      string              `json:"query_summary"`
-	HTTPVersion       string              `json:"http_version"`
-	ContentType       string              `json:"content_type"`
-	UserAgent         string              `json:"user_agent_summary"`
-	Referer           string              `json:"referer_summary"`
-	AttackType        string              `json:"attack_type"`
-	Severity          string              `json:"severity"`
-	AnomalyScore      int                 `json:"anomaly_score"`
-	Action            string              `json:"action"`
-	ResponseStatus    int                 `json:"response_status"`
-	RuleMatchCount    int                 `json:"rule_match_count"`
-	DispositionStatus string              `json:"disposition_status"`
-	DispositionResult string              `json:"disposition_result"`
+	ID                uuid.UUID  `json:"id"`
+	RequestID         string     `json:"request_id"`
+	OccurredAt        time.Time  `json:"occurred_at"`
+	ApplicationID     *uuid.UUID `json:"application_id"`
+	AppName           string     `json:"application_name_snapshot"`
+	Domain            string     `json:"domain"`
+	GatewayNode       string     `json:"gateway_node_id"`
+	ClientIP          string     `json:"client_ip"`
+	ClientPort        int        `json:"client_port"`
+	Method            string     `json:"request_method"`
+	URI               string     `json:"request_uri"`
+	Path              string     `json:"request_path"`
+	QuerySummary      string     `json:"query_summary"`
+	HTTPVersion       string     `json:"http_version"`
+	ContentType       string     `json:"content_type"`
+	UserAgent         string     `json:"user_agent_summary"`
+	Referer           string     `json:"referer_summary"`
+	AttackType        string     `json:"attack_type"`
+	Severity          string     `json:"severity"`
+	AnomalyScore      int        `json:"anomaly_score"`
+	Action            string     `json:"action"`
+	ResponseStatus    int        `json:"response_status"`
+	RuleMatchCount    int        `json:"rule_match_count"`
+	DispositionStatus string     `json:"disposition_status"`
+	DispositionResult string     `json:"disposition_result"`
 	// FinalDecision 最终处置事实（WDSP P0-04；迁移 000132 列，nil=旧事件无此证据，
 	// 详情 API 投影——列表不投影以控制载荷）
-	FinalDecision *FinalDecision `json:"final_decision,omitempty"`
+	FinalDecision     *FinalDecision      `json:"final_decision,omitempty"`
 	RawRef            string              `json:"raw_log_reference"`
 	RequestHeaders    map[string][]string `json:"request_headers"`
 	RequestBody       string              `json:"request_body"`
@@ -331,9 +338,104 @@ FROM security_event_matches WHERE event_id = $1 ORDER BY id`, id)
 			return nil, nil, err
 		}
 		m.Tags = parseTags(tags)
+		// 编号缺省空数组（契约：[] 非 null）；现值由 AttachVulnIDs 联查填充
+		m.CNNVDIDs = []string{}
+		m.CVEIDs = []string{}
 		matches = append(matches, m)
 	}
 	return &e, matches, nil
+}
+
+// AttachVulnIDs 为事件匹配记录联查漏洞编号（CNNVD 兼容性 P1，查询时现值口径）：
+// rule_id 先查 custom_rules（自定义规则），未中查 waf_rules（CRS 目录，优先同
+// rule_source，跨 crs_version 取最新行；rule_source 缺失时退化为该 rule_id 任一
+// 来源的最新行）。规则已删除或两表均无标注时保持空数组——调用方对错误降级处理，
+// 不得因此阻塞事件详情。
+func (s *Store) AttachVulnIDs(ctx context.Context, matches []MatchInfo) error {
+	if len(matches) == 0 {
+		return nil
+	}
+	idSet := map[int]bool{}
+	ids := make([]int, 0, len(matches))
+	for _, m := range matches {
+		if m.RuleID != 0 && !idSet[m.RuleID] {
+			idSet[m.RuleID] = true
+			ids = append(ids, m.RuleID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	type vulnIDs struct{ cnnvd, cve []string }
+	scanIDs := func(rows pgx.Rows, fill func(ruleID int, ruleSource string, v vulnIDs)) error {
+		defer rows.Close()
+		for rows.Next() {
+			var ruleID int
+			var ruleSource string
+			var cnnvd, cve []byte
+			if err := rows.Scan(&ruleID, &ruleSource, &cnnvd, &cve); err != nil {
+				return err
+			}
+			fill(ruleID, ruleSource, vulnIDs{cnnvd: decodeIDArray(cnnvd), cve: decodeIDArray(cve)})
+		}
+		return rows.Err()
+	}
+
+	// 自定义规则（rule_id 全表唯一）
+	custom := map[int]vulnIDs{}
+	customRows, err := s.db.Query(ctx,
+		`SELECT rule_id, '' AS rule_source, cnnvd_ids, cve_ids FROM custom_rules WHERE rule_id = ANY($1::int[])`, ids)
+	if err != nil {
+		return err
+	}
+	if err := scanIDs(customRows, func(ruleID int, _ string, v vulnIDs) { custom[ruleID] = v }); err != nil {
+		return err
+	}
+
+	// CRS 目录（同 rule_id+rule_source 可能有多 crs_version 行，取最新）
+	catalog := map[string]vulnIDs{}
+	catalogAny := map[int]vulnIDs{}
+	catalogRows, err := s.db.Query(ctx, `
+SELECT DISTINCT ON (rule_id, rule_source) rule_id, rule_source, cnnvd_ids, cve_ids
+FROM waf_rules WHERE rule_id = ANY($1::int[])
+ORDER BY rule_id, rule_source, crs_version DESC`, ids)
+	if err != nil {
+		return err
+	}
+	if err := scanIDs(catalogRows, func(ruleID int, ruleSource string, v vulnIDs) {
+		catalog[fmt.Sprintf("%d\x00%s", ruleID, ruleSource)] = v
+		if _, ok := catalogAny[ruleID]; !ok {
+			catalogAny[ruleID] = v
+		}
+	}); err != nil {
+		return err
+	}
+
+	for i := range matches {
+		m := &matches[i]
+		v := vulnIDs{cnnvd: []string{}, cve: []string{}}
+		if c, ok := custom[m.RuleID]; ok {
+			v = c
+		} else if c, ok := catalog[fmt.Sprintf("%d\x00%s", m.RuleID, m.RuleSource)]; ok {
+			v = c
+		} else if c, ok := catalogAny[m.RuleID]; ok {
+			v = c
+		}
+		m.CNNVDIDs, m.CVEIDs = v.cnnvd, v.cve
+	}
+	return nil
+}
+
+// decodeIDArray 反序列化 JSONB 编号数组；空/损坏一律落空数组（降级语义）。
+func decodeIDArray(data []byte) []string {
+	out := []string{}
+	if len(data) == 0 {
+		return out
+	}
+	if err := json.Unmarshal(data, &out); err != nil || out == nil {
+		return []string{}
+	}
+	return out
 }
 
 // UpdateDisposition 更新事件处置状态。
@@ -419,24 +521,26 @@ func (s *Store) ListActions(ctx context.Context, eventID uuid.UUID) ([]map[strin
 	return out, rows.Err()
 }
 
-// RelatedEvents 查询相关事件。
-func (s *Store) RelatedEvents(ctx context.Context, e *Event, limit int) ([]Event, error) {
-	if limit <= 0 {
-		limit = 10
-	}
-	rows, err := s.db.Query(ctx, `
-SELECT id, request_id, occurred_at, application_id, application_name_snapshot, domain, gateway_node_id,
-  client_ip, connection_ip, COALESCE(client_port, 0), request_method, request_uri, request_path, query_summary,
-  http_version, content_type, user_agent_summary, referer_summary, attack_type, severity, anomaly_score,
-  action, COALESCE(response_status, 0), rule_match_count, disposition_status, disposition_result, raw_log_reference
-FROM security_events
-WHERE id <> $1 AND (client_ip = $2 OR attack_type = $3 OR domain = $4)
-ORDER BY occurred_at DESC LIMIT $5`,
-		e.ID, nullableIP(e.ClientIP), e.AttackType, e.Domain, limit*3)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+// RelatedResult 相关事件查询结果。
+// Mode 关联口径：attack_session=同一攻击会话（按攻击时间线升序，最有叙事价值）；
+// same_source_ip=同来源 IP ±24h 兜底（事件未入任何会话时）；none=无可用关联线索。
+// SessionID 仅 attack_session 口径时有值（前端跳转攻击活动详情）。
+type RelatedResult struct {
+	Events    []Event
+	Mode      string
+	SessionID *uuid.UUID
+}
+
+// relatedEventColumns 相关事件查询列（与 Event 字段一一对应；全部带 security_events
+// 限定符——会话关联查询 JOIN attack_session_event 后 request_id/occurred_at 等列两表
+// 同名，裸列名会报 ambiguous）。
+const relatedEventColumns = `security_events.id, security_events.request_id, security_events.occurred_at, security_events.application_id, security_events.application_name_snapshot, security_events.domain, security_events.gateway_node_id,
+  security_events.client_ip, security_events.connection_ip, COALESCE(security_events.client_port, 0), security_events.request_method, security_events.request_uri, security_events.request_path, security_events.query_summary,
+  security_events.http_version, security_events.content_type, security_events.user_agent_summary, security_events.referer_summary, security_events.attack_type, security_events.severity, security_events.anomaly_score,
+  security_events.action, COALESCE(security_events.response_status, 0), security_events.rule_match_count, security_events.disposition_status, security_events.disposition_result, security_events.raw_log_reference`
+
+// scanRelatedEvents 扫描相关事件行集合（列序与 relatedEventColumns 一致）。
+func scanRelatedEvents(rows pgx.Rows, limit int) ([]Event, error) {
 	var out []Event
 	for rows.Next() {
 		var ev Event
@@ -458,6 +562,70 @@ ORDER BY occurred_at DESC LIMIT $5`,
 		}
 	}
 	return out, rows.Err()
+}
+
+// RelatedEvents 查询相关事件：优先同一攻击会话（attack_session_event 关联，按攻击
+// 时间线升序）；事件未入会话时兜底同来源 IP ±24h（时间倒序）；IP 为空则无关联。
+func (s *Store) RelatedEvents(ctx context.Context, e *Event, limit int) (*RelatedResult, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	res := &RelatedResult{Events: []Event{}, Mode: "none"}
+
+	// 1) 攻击会话归属（聚合器 60s 一轮异步维护，新事件可能暂未入会话——走兜底）
+	var sessionID uuid.UUID
+	err := s.db.QueryRow(ctx,
+		`SELECT session_id FROM attack_session_event WHERE source_table='security_events' AND source_id=$1`,
+		e.ID.String()).Scan(&sessionID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	if err == nil {
+		rows, err := s.db.Query(ctx, `
+SELECT `+relatedEventColumns+`
+FROM security_events
+JOIN attack_session_event ase ON ase.source_table='security_events' AND ase.source_id = security_events.id::text
+WHERE ase.session_id = $1 AND security_events.id <> $2
+ORDER BY security_events.occurred_at ASC, security_events.id ASC LIMIT $3`,
+			sessionID, e.ID, limit)
+		if err != nil {
+			return nil, err
+		}
+		events, err := scanRelatedEvents(rows, limit)
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		res.Events = events
+		res.Mode = "attack_session"
+		res.SessionID = &sessionID
+		return res, nil
+	}
+
+	// 2) 兜底：同来源 IP ±24h（旧「同IP/同类型/同域名」三 OR 口径过松，域名条件会把
+	// 同站点不相关事件全部圈入，已废弃）
+	if e.ClientIP == "" {
+		return res, nil
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT `+relatedEventColumns+`
+FROM security_events
+WHERE id <> $1 AND client_ip = $2 AND occurred_at >= $3 AND occurred_at <= $4
+ORDER BY occurred_at DESC LIMIT $5`,
+		e.ID, e.ClientIP, e.OccurredAt.Add(-24*time.Hour), e.OccurredAt.Add(24*time.Hour), limit)
+	if err != nil {
+		return nil, err
+	}
+	events, err := scanRelatedEvents(rows, limit)
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	res.Events = events
+	if len(events) > 0 {
+		res.Mode = "same_source_ip"
+	}
+	return res, nil
 }
 
 func nullableIP(ip string) interface{} {

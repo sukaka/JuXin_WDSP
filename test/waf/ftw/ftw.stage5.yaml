@@ -1,0 +1,11 @@
+logfile: '/tmp/ftw-audit.log'
+logmarkerheadername: X-CRS-TEST
+maxmarkerretries: 200
+testoverride:
+  input:
+    dest_addr: 127.0.0.1
+    port: 18080
+    headers:
+      Host: shop.example.com
+    virtual_host_mode: true
+mode: "default"

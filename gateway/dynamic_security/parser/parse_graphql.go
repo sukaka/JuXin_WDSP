@@ -7,6 +7,7 @@ import (
 
 // extractGraphQLQuery 处理 application/graphql：body 即查询文档，识别操作类型与命名操作。
 func (p *Parsed) extractGraphQLQuery(query string) {
+	p.GraphQLQuery = query
 	p.GraphQLOperation = graphQLOperationType(query)
 	p.GraphQLOperationName = graphQLOperationName(query)
 }
@@ -28,8 +29,10 @@ func (p *Parsed) extractGraphQLJSON(v any) {
 	if query == "" {
 		return
 	}
+	p.GraphQLQuery = query
 	p.GraphQLOperation = graphQLOperationType(query)
-	p.GraphQLOperationName, _ = obj["operationName"].(string)
+	p.GraphQLOperationNameSpecified, _ = obj["operationName"].(string)
+	p.GraphQLOperationName = p.GraphQLOperationNameSpecified
 	if p.GraphQLOperationName == "" {
 		p.GraphQLOperationName = graphQLOperationName(query)
 	}

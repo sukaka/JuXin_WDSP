@@ -259,6 +259,29 @@ func TestTrustedProxyRealIPDeny(t *testing.T) {
 	}
 }
 
+func TestTrustedProxySyncsCaddyClientIPVar(t *testing.T) {
+	g := newTestGuard(t, Guard{
+		AppID:          "app1",
+		TrustedProxies: []proxyJSON{{Name: "lb", CIDR: "10.0.0.1", HeaderType: "X_FORWARDED_FOR", Priority: 1}},
+	})
+	r := req("10.0.0.1:1", map[string]string{"X-Forwarded-For": "198.51.100.52"})
+	// 模拟 Caddy accept 时 PrepareRequest 写入的 vars 表（client_ip 固化为连接源 IP）
+	vars := map[string]any{caddyhttp.ClientIPVarKey: "10.0.0.1"}
+	*r = *r.WithContext(context.WithValue(r.Context(), caddyhttp.VarsCtxKey, vars))
+	called := false
+	if err := g.ServeHTTP(httptest.NewRecorder(), r, nextHandler{&called}); err != nil || !called {
+		t.Fatal("clean ip should pass")
+	}
+	// coraza-caddy 审计事务优先取该变量——必须与真实 IP 识别结果一致
+	if got := caddyhttp.GetVar(r.Context(), caddyhttp.ClientIPVarKey); got != "198.51.100.52" {
+		t.Fatalf("client_ip var should be synced to real ip, got %v", got)
+	}
+	// 内部头必须携带原始 TCP 对端地址（server 侧回填 connection_ip 用）
+	if got := r.Header.Get("X-Jiuzhang-Connection-Addr"); got != "10.0.0.1:1" {
+		t.Fatalf("connection addr header = %q, want original peer 10.0.0.1:1", got)
+	}
+}
+
 func TestTempBlock(t *testing.T) {
 	g := newTestGuard(t, Guard{AppID: "app1"})
 	g.engine.blockCache.PutLocal(reqCtx(), temporaryblock.Block{

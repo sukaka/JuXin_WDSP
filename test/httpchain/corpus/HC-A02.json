@@ -1,0 +1,4 @@
+{"id":"HC-A02","category":"abnormal","desc":"绝对形式请求与伪造转发头覆盖目标","requests":[
+  {"method":"GET","absolute_uri":"http://{HOST}/v1/absolute-form","headers":{"X-Chain-Case":"HC-A02-abs"}},
+  {"method":"GET","path":"/v1/normal","headers":{"X-Chain-Case":"HC-A02-forge","X-Forwarded-Host":"evil.invalid","X-Forwarded-Prefix":"/admin","X-Original-URL":"/admin"}}
+],"expect":{"note":"安全判断与实际源站目标一致；权限/身份绑定目标不被不可信来源覆盖"}}
