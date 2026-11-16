@@ -96,6 +96,9 @@ func Generate(in GenerateInput) (*Generated, error) {
 	}
 
 	servers, routeCount := buildServers(in)
+	if in.Guard != nil && in.Guard.SoftwareBypass != nil {
+		injectConnectionMetrics(servers)
+	}
 	if len(servers) == 0 {
 		// 无应用时生成最小空配置（仅 admin 与空 servers）
 	}
@@ -170,6 +173,14 @@ func Generate(in GenerateInput) (*Generated, error) {
 // encoding/json 对 map 键自动按字典序排序，保证确定性。
 func marshalDeterministic(v interface{}) ([]byte, error) {
 	return json.Marshal(v)
+}
+
+func injectConnectionMetrics(servers map[string]interface{}) {
+	for _, raw := range servers {
+		if server, ok := raw.(mapT); ok {
+			server["listener_wrappers"] = []interface{}{mapT{"wrapper": "jiuzhang_connection_metrics"}}
+		}
+	}
 }
 
 // gatewayTracingSpanName 网关 tracing server span 名（http.handlers.tracing 的 span 字段）。
@@ -456,7 +467,7 @@ func buildTLSPolicies(in GenerateInput) []interface{} {
 	return policies
 }
 
-// buildHandles 构建请求处理链：RequestID → WAF → reverse_proxy → 错误处理。
+// buildHandles 构建请求处理链：可选软件旁路选择器包裹检测/纯透传子链，共用 reverse_proxy。
 // publicPort 为路由所在监听的接入端口（302 Location 端口改写目标）。
 func buildHandles(in GenerateInput, app AppData, d applications.Domain, publicPort int) []interface{} {
 	proxy := applyProxyOptions(buildReverseProxy(app.Upstreams), app.HeaderConfig)

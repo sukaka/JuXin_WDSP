@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   Alert,
@@ -214,7 +215,9 @@ export default function AiTasksPage() {
               </Descriptions.Item>
               <Descriptions.Item label="会话 ID" span={2}>
                 {detail.session_id ? (
-                  <Typography.Text code>{detail.session_id}</Typography.Text>
+                  <Link to={`/ai/assistant?session_id=${detail.session_id}`}>
+                    <Typography.Text code>{detail.session_id}</Typography.Text>
+                  </Link>
                 ) : (
                   '-'
                 )}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -16,6 +15,8 @@ import (
 )
 
 // CheckSchemaDeviation 对比观测字段与冻结正式模型；偏离只产生 match，不修改 formal。
+// formal schema 只承载字段集合与粗类型；参数缺失检测统一由 CheckParamConstraints
+// 按已确认 required 约束判定，避免可选/稀疏参数缺失被误报。
 func CheckSchemaDeviation(ctx *dsctx.RequestContext, observed map[string]string, formal map[string]string) {
 	if ctx == nil || formal == nil || len(formal) == 0 {
 		return
@@ -43,26 +44,6 @@ func CheckSchemaDeviation(ctx *dsctx.RequestContext, observed map[string]string,
 				Message:    fmt.Sprintf("type mismatch for %s", name),
 				Evidence:   map[string]string{"field": name, "want": want, "got": gotType},
 				ScoreDelta: 40,
-			})
-		}
-	}
-	// missing required: formal keys with empty observed
-	// 键序排序遍历：事件确定性（map 遍历序抖动使事件顺序不可重现，同 authzcheck.go sort 先例）
-	formalNames := make([]string, 0, len(formal))
-	for name := range formal {
-		formalNames = append(formalNames, name)
-	}
-	sort.Strings(formalNames)
-	for _, name := range formalNames {
-		if _, ok := observed[name]; !ok {
-			ctx.AddMatch(dsctx.DetectorMatch{
-				Detector:   "api_schema",
-				RuleID:     "schema.missing_field",
-				Category:   "OBSERVE",
-				Severity:   "LOW",
-				Message:    "missing formal field",
-				Evidence:   map[string]string{"field": name},
-				ScoreDelta: 5,
 			})
 		}
 	}

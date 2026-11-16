@@ -1,0 +1,147 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: wdsp-kafka-headless
+  namespace: jiuzhang-data
+  labels: {app.kubernetes.io/name: wdsp-kafka}
+spec:
+  clusterIP: None
+  selector: {app.kubernetes.io/name: wdsp-kafka}
+  ports:
+    - {name: broker, port: 29092, targetPort: 29092}
+    - {name: controller, port: 9093, targetPort: 9093}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wdsp-kafka
+  namespace: jiuzhang-data
+  labels: {app.kubernetes.io/name: wdsp-kafka}
+spec:
+  selector: {app.kubernetes.io/name: wdsp-kafka}
+  ports:
+    - {name: broker, port: 29092, targetPort: 29092}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: wdsp-kafka
+  namespace: jiuzhang-data
+spec:
+  serviceName: wdsp-kafka-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  updateStrategy: {type: RollingUpdate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: wdsp-kafka}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: wdsp-kafka}
+    spec:
+      terminationGracePeriodSeconds: 60
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: {app.kubernetes.io/name: wdsp-kafka}
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: kafka
+          image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
+          command: ["/bin/bash", "-ec"]
+          args:
+            - |
+              export KAFKA_NODE_ID=$(( ${HOSTNAME##*-} + 1 ))
+              export KAFKA_ADVERTISED_LISTENERS="INTERNAL://${HOSTNAME}.wdsp-kafka-headless.jiuzhang-data.svc.cluster.local:29092"
+              exec /etc/kafka/docker/run
+          env:
+            - {name: KAFKA_PROCESS_ROLES, value: broker,controller}
+            - {name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP, value: "INTERNAL:SSL,CONTROLLER:SSL"}
+            - {name: KAFKA_LISTENERS, value: "INTERNAL://:29092,CONTROLLER://:9093"}
+            - {name: KAFKA_INTER_BROKER_LISTENER_NAME, value: INTERNAL}
+            - {name: KAFKA_CONTROLLER_LISTENER_NAMES, value: CONTROLLER}
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: 1@wdsp-kafka-0.wdsp-kafka-headless.jiuzhang-data.svc.cluster.local:9093,2@wdsp-kafka-1.wdsp-kafka-headless.jiuzhang-data.svc.cluster.local:9093,3@wdsp-kafka-2.wdsp-kafka-headless.jiuzhang-data.svc.cluster.local:9093
+            - {name: KAFKA_SSL_KEYSTORE_LOCATION, value: /etc/kafka/tls/kafka.keystore.p12}
+            - name: KAFKA_SSL_KEYSTORE_PASSWORD
+              valueFrom: {secretKeyRef: {name: wdsp-kafka-tls, key: keystore-password}}
+            - name: KAFKA_SSL_KEY_PASSWORD
+              valueFrom: {secretKeyRef: {name: wdsp-kafka-tls, key: key-password}}
+            - {name: KAFKA_SSL_TRUSTSTORE_LOCATION, value: /etc/kafka/tls/kafka.truststore.p12}
+            - name: KAFKA_SSL_TRUSTSTORE_PASSWORD
+              valueFrom: {secretKeyRef: {name: wdsp-kafka-tls, key: truststore-password}}
+            - {name: KAFKA_LISTENER_NAME_INTERNAL_SSL_CLIENT_AUTH, value: required}
+            - {name: KAFKA_AUTHORIZER_CLASS_NAME, value: org.apache.kafka.metadata.authorizer.StandardAuthorizer}
+            - {name: KAFKA_SUPER_USERS, value: "User:CN=wdsp-admin"}
+            - {name: KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND, value: "false"}
+            - {name: KAFKA_DEFAULT_REPLICATION_FACTOR, value: "3"}
+            - {name: KAFKA_MIN_INSYNC_REPLICAS, value: "2"}
+            - {name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "3"}
+            - {name: KAFKA_OFFSETS_TOPIC_MIN_ISR, value: "2"}
+            - {name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "3"}
+            - {name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR, value: "2"}
+            - {name: KAFKA_AUTO_CREATE_TOPICS_ENABLE, value: "false"}
+          ports:
+            - {name: broker, containerPort: 29092}
+            - {name: controller, containerPort: 9093}
+          readinessProbe:
+            tcpSocket: {port: 29092}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: 29092}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: "2", memory: 3Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/kafka/data}
+            - {name: config, mountPath: /opt/kafka/config}
+            - {name: tls, mountPath: /etc/kafka/tls, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: config, emptyDir: {sizeLimit: 16Mi}}
+        - name: tls
+          secret: {secretName: wdsp-kafka-tls, defaultMode: 0400}
+        - {name: tmp, emptyDir: {medium: Memory, sizeLimit: 64Mi}}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 50Gi}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: wdsp-kafka
+  namespace: jiuzhang-data
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: {app.kubernetes.io/name: wdsp-kafka}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: wdsp-kafka-ingress
+  namespace: jiuzhang-data
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: wdsp-kafka}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: wdsp-kafka}
+        - podSelector:
+            matchLabels: {wdsp.jiuzhang/kafka-client: "true"}
+      ports:
+        - {protocol: TCP, port: 29092}
+        - {protocol: TCP, port: 9093}

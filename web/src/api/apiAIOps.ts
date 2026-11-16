@@ -43,6 +43,12 @@ export interface ApiAISchedule {
   last_run_at?: string | null
   last_status: string
   last_error: string
+  /** 连续失败次数（成功后清零） */
+  consecutive_failures: number
+  /** 熔断打开时间；非空 = 处于熔断态，重新启用将重置熔断计数 */
+  circuit_opened_at?: string | null
+  /** 熔断原因（熔断态时非空） */
+  circuit_reason: string
   created_by?: string | null
   created_at: string
   updated_at: string

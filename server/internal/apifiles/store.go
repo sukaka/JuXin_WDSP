@@ -68,6 +68,7 @@ func scanAsset(row interface{ Scan(...any) error }) (*FileAsset, error) {
 }
 
 // ListAssets 明细分页（过滤条件白名单拼接，值一律参数化；last_seen 倒序）。
+// SHA256 精确过滤也可供文件内容关联查询使用；空值不匹配 NULL 历史记录。
 func (s *Store) ListAssets(ctx context.Context, f AssetFilter) ([]FileAsset, int64, error) {
 	if f.Page <= 0 {
 		f.Page = 1
@@ -92,6 +93,14 @@ func (s *Store) ListAssets(ctx context.Context, f AssetFilter) ([]FileAsset, int
 	if f.EndpointKey != "" {
 		args = append(args, f.EndpointKey)
 		where = append(where, fmt.Sprintf("endpoint_key = $%d", len(args)))
+	}
+	if f.SHA256 != "" {
+		args = append(args, f.SHA256)
+		where = append(where, fmt.Sprintf("sha256 = $%d", len(args)))
+	}
+	if f.IdentityFingerprint != "" {
+		args = append(args, f.IdentityFingerprint)
+		where = append(where, fmt.Sprintf("identity_fingerprint = $%d", len(args)))
 	}
 	if f.SensitiveOnly {
 		where = append(where, `sensitive_types <> '[]'::jsonb`)

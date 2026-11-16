@@ -1,5 +1,19 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest'
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -8,7 +22,9 @@ import { useAuthStore } from '../../../stores/auth'
 import type { CurrentUser } from '../../../types'
 
 /** EChart 在 jsdom 下无法真实渲染（无 canvas），替换为捕获 option 的桩组件 */
-const chartProps = vi.hoisted(() => [] as { option: unknown; height?: number }[])
+const chartProps = vi.hoisted(
+  () => [] as { option: unknown; height?: number }[],
+)
 vi.mock('../../../components/EChart', () => ({
   default: (props: { option: unknown; height?: number }) => {
     chartProps.push(props)
@@ -46,7 +62,13 @@ function jsonResponse(status: number, body: unknown): Response {
 
 const statsData = {
   days: 7,
-  summary: { observations: 120, with_findings: 5, total_tokens: 34000, stream_calls: 12, distinct_models: 3 },
+  summary: {
+    observations: 120,
+    with_findings: 5,
+    total_tokens: 34000,
+    stream_calls: 12,
+    distinct_models: 3,
+  },
   by_model: [
     { model: 'gpt-4o', observations: 80, total_tokens: 20000, findings: 3 },
     { model: '', observations: 40, total_tokens: 14000, findings: 2 },
@@ -95,7 +117,12 @@ const obs2 = {
   created_at: '2026-08-19T09:00:01Z',
 }
 
-const observationsData = { items: [obs1, obs2], page: 1, page_size: 20, total: 2 }
+const observationsData = {
+  items: [obs1, obs2],
+  page: 1,
+  page_size: 20,
+  total: 2,
+}
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -125,18 +152,78 @@ describe('ApiLLMPage', () => {
     chartProps.length = 0
     vi.stubGlobal(
       'fetch',
-      vi.fn((input: RequestInfo | URL) => {
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input)
         if (url.includes('/api-security/llm/stats')) {
-          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: statsData }))
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: statsData,
+            }),
+          )
         }
         if (url.includes('/api-security/llm/observations')) {
-          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: observationsData }))
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: observationsData,
+            }),
+          )
+        }
+        if (url.includes('/api-security/llm/security-policies')) {
+          const policy = {
+            id: 'policy-1',
+            application_id: 'app-1',
+            name: '客服助手输入保护',
+            mode: 'OBSERVE',
+            prompt_injection_enabled: true,
+            input_content_enabled: true,
+            pii_detection_enabled: true,
+            output_content_enabled: true,
+            output_pii_enabled: true,
+            blocked_topics: ['恶意爬虫'],
+            max_prompt_bytes: 1024,
+            max_output_tokens: 2048,
+            enabled: true,
+            version: 1,
+            created_at: '2026-08-19T10:00:00Z',
+            updated_at: '2026-08-19T10:00:00Z',
+          }
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data:
+                init?.method === 'POST'
+                  ? policy
+                  : { items: [policy], total: 1 },
+            }),
+          )
+        }
+        if (url.includes('/applications')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: {
+                items: [{ id: 'app-1', name: '智能客服', code: 'ai-service' }],
+                page: 1,
+                page_size: 100,
+                total: 1,
+              },
+            }),
+          )
         }
         return Promise.reject(new Error(`unexpected url: ${url}`))
       }),
     )
-    useAuthStore.setState({ user: makeUser(['api_runtime.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({
+      user: makeUser(['api_runtime.read']),
+      csrfToken: null,
+      initialized: true,
+    })
   })
 
   afterEach(() => {
@@ -167,7 +254,9 @@ describe('ApiLLMPage', () => {
 
   it('观测列表：模型/端点/prompt 桶/tokens/流式/MCP 方法/findings 标签', async () => {
     renderPage()
-    const row1 = (await screen.findByText('POST /v1/chat/completions')).closest('tr') as HTMLElement
+    const row1 = (await screen.findByText('POST /v1/chat/completions')).closest(
+      'tr',
+    ) as HTMLElement
     expect(within(row1).getByText('gpt-4o')).toBeInTheDocument()
     expect(within(row1).getByText('257-1024')).toBeInTheDocument()
     expect(within(row1).getByText('512')).toBeInTheDocument()
@@ -199,6 +288,61 @@ describe('ApiLLMPage', () => {
     await waitFor(() => {
       const urls = (fetch as Mock).mock.calls.map((c) => String(c[0]))
       expect(urls.some((u) => u.includes('findings_only=true'))).toBe(true)
+    })
+  })
+
+  it('AI 安全策略页签展示真实策略并提交新建表单', async () => {
+    useAuthStore.setState({
+      user: makeUser([
+        'api_runtime.read',
+        'api_llm_security.read',
+        'api_llm_security.manage',
+      ]),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    fireEvent.click(screen.getByRole('tab', { name: '安全策略' }))
+    await screen.findByText('客服助手输入保护')
+    expect(screen.getByText('智能客服')).toBeInTheDocument()
+    expect(screen.getByText('恶意爬虫')).toBeInTheDocument()
+    expect(screen.getByText('2,048 Token')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '新建策略' }))
+    await screen.findByText('新建 AI 安全策略')
+    expect(screen.getByLabelText('应用')).toBeInTheDocument()
+    expect(screen.getByLabelText('策略名称')).toBeInTheDocument()
+    expect(screen.getByText('Prompt 注入攻击防护')).toBeInTheDocument()
+    fireEvent.mouseDown(screen.getByLabelText('应用'))
+    fireEvent.click(await screen.findByText('智能客服（ai-service）'))
+    fireEvent.change(screen.getByLabelText('策略名称'), {
+      target: { value: '客服助手生产策略' },
+    })
+    fireEvent.change(screen.getByLabelText('单次输出 Token 上限'), {
+      target: { value: '4096' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '保存策略' }))
+    await waitFor(() => {
+      const createCall = (fetch as Mock).mock.calls.find((call) => {
+        const init = call[1] as RequestInit | undefined
+        return (
+          String(call[0]).includes('/api-security/llm/security-policies') &&
+          init?.method === 'POST'
+        )
+      })
+      expect(createCall).toBeTruthy()
+      const body = JSON.parse(String((createCall![1] as RequestInit).body))
+      expect(body).toMatchObject({
+        application_id: 'app-1',
+        name: '客服助手生产策略',
+        mode: 'OBSERVE',
+        prompt_injection_enabled: true,
+        input_content_enabled: true,
+        pii_detection_enabled: true,
+        output_content_enabled: true,
+        output_pii_enabled: true,
+        max_prompt_bytes: 0,
+        max_output_tokens: 4096,
+      })
     })
   })
 })

@@ -45,7 +45,6 @@ score_delta  异常分增量（AddMatch 时累加进 RiskScore）
 |---|---|---|---|
 | api_schema（schema.go） | schema.undefined_field | OBSERVE/MEDIUM/+15 | BODY 字段不在 FORMAL schema |
 | | schema.type_mismatch | **BLOCK**/HIGH/+40 | BODY 字段类型偏离 FORMAL schema |
-| | schema.missing_field | OBSERVE/LOW/+5 | FORMAL schema 字段缺失 |
 | | schema.param_required | OBSERVE/LOW/+5 | confirmed required 参数缺失 |
 | | schema.param_type / param_range / param_length / param_enum | **BLOCK**/HIGH/+40 | confirmed 约束违例（type/minimum/maximum/min_length/max_length/enum） |
 | identity（schema.go，CheckIdentitySignals） | identity.token_present / identity.cookie_present | INFO/INFO/0 | 凭据存在性（纯信息，不参与定案） |
@@ -61,6 +60,12 @@ score_delta  异常分增量（AddMatch 时累加进 RiskScore）
 | | sensitive.value_in_query | **BLOCK**/HIGH/+40 | URL query 值命中值级规则（发布下发才启用，第三波） |
 | | sensitive.value | OBSERVE/MEDIUM/+15 | JSON/FORM 留存值、HEADER 非脱敏头值、PATH 原始段值命中值级规则（证据不落值） |
 | resource_access（resource.go） | resource.unauthenticated_object_access | OBSERVE/MEDIUM/+15 | 匿名访问对象级资源（BOLA 前置信号） |
+| resource_access（object_enumeration.go） | resource.object_enumeration | OBSERVE/MEDIUM~HIGH/+15~30 | 可信 JWT 主体 + 明确对象模板/语义约束；60 秒内 ≥8 个不同对象且连续步进 ≥3，或 ≥16 个不同对象；不作 BOLA 权属结论或阻断；默认有界内存，behavior_store=valkey 时 Lua 原子共享窗口（故障降级期间各节点独立计数） |
+| file（filecontent.go；需对应方向文件合规策略） | file.content_type_mismatch | OBSERVE/MEDIUM/+15 | 上传有界前缀/下载缓冲文件真实签名与声明类别冲突；不据此自动阻断，派生 FILE_CONTENT_TYPE_MISMATCH 弱点 |
+| | file.content_unrecognized | OBSERVE/LOW/+5 | 声明文件类型的签名无法识别，不等于明确冲突，不派生弱点 |
+| | file.content_not_inspected | OBSERVE/INFO/+0 | 流式、溢出或截断导致无法检查；不冒充已检测 |
+| file（filesensitive*.go；仅显式 file 位置规则） | file.sensitive_content | OBSERVE/MEDIUM/+15 | 文本/CSV 完整行或 JSON/JSONL/XML/DOCX/XLSX/PPTX 结构化内容中检出敏感值；只记录字段路径/单元格/幻灯片与备注段落/OOXML 部件来源、类型、等级与计数，派生 SENSITIVE_FILE_CONTENT 弱点 |
+| | file.sensitive_content_not_inspected | OBSERVE/INFO/+0 | 格式/编码不支持、截断不完整行或扫描预算耗尽；不宣称无敏感内容 |
 | lifecycle（lifecycle.go；仅 API 流量） | lifecycle.new_endpoint | OBSERVE/LOW/+5 | 未登记API（影子 API 信号） |
 | | lifecycle.deprecated_api_call | OBSERVE/MEDIUM/+10 | 已下线API被调用 |
 | api_ratelimit（ratelimit.go；写方法且 API） | ratelimit.api_write_rate | **RATE_LIMIT**/HIGH/+30 | 写方法每分钟超阈（默认 60） |

@@ -1027,12 +1027,18 @@ paths:
     post:
       operationId: aiPromptVersionTest
       tags: [ai-prompts]
-      summary: Prompt 版本静态测试
+      summary: Prompt 版本测试（静态检查 + 真实 Prompt 回归）
       description: |
         权限：ai.prompts.test。
-        执行静态检查（非空与长度 ≤50000 字符、禁止内容扫描），并将结果回写版本 test_result（PASSED/FAILED）；
-        发布门要求本测试 PASSED 且对抗测试 ADVERSARIAL_PASSED 齐备。
-        写入 AI 审计（prompt_test）。AI 模块全局关闭时本接口返回 503。
+        静态检查（非空与长度 ≤50000 字符、禁止内容扫描）未通过则 FAILED 且不运行回归
+        （候选内容不安全不进模型）。静态通过后执行真实 Prompt 回归：候选内容覆盖
+        orchestrator_answer_summary 已发布 Prompt（仅本次运行有效，不触碰发布存储），
+        逐集运行 eval_prompt_injection / eval_privilege_denial / eval_insufficient_data /
+        eval_api_security_analysis（安全类阈值 100%，一般阈值 80%，全部达标才 PASSED）。
+        模型不可用/评估失败如实 FAILED 并记录失败摘要。结果与逐集分数/模型/失败摘要
+        回写版本 test_result 与 test_detail；发布门要求本测试 PASSED 且对抗测试
+        ADVERSARIAL_PASSED 齐备（fail-closed）。写入 AI 审计（prompt_test）。
+        回归串行执行可能耗时数分钟（接口写期限已放宽）。AI 模块全局关闭时本接口返回 503。
       parameters:
         - name: versionId
           in: path
@@ -1571,6 +1577,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AiUsageByTaskListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /ai/feedback/summary:
+    get:
+      operationId: aiFeedbackSummary
+      tags: [ai-usage]
+      summary: AI 反馈质量聚合
+      description: |
+        权限：ai.usage.read。
+        按 feedback_type × task_type 聚合窗口内反馈：total（反馈总数）、negative（点踩数，
+        rating=-1）、negative_rate（负反馈占比，百分制两位小数）。task_type 经反馈
+        session_id 关联该会话内、反馈时刻之前最近一次 ai_tasks 任务类型，无法关联归 UNKNOWN。
+        聚合面不返回 comment 原文（反馈原文可能含用户输入）。days 缺省 7，上限夹取 90。
+        响应同时给出窗口合计 total 行。AI 模块全局关闭时本接口返回 503。
+      parameters:
+        - name: days
+          in: query
+          required: false
+          schema: { type: integer, default: 7, minimum: 1, maximum: 90 }
+          description: 统计窗口（天；非法/非正数回退 7，超过 90 夹取为 90）
+      responses:
+        '200':
+          description: 反馈聚合结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AiFeedbackSummaryResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2185,7 +2223,7 @@ components:
     AiPromptVersion:
       type: object
       description: Prompt 版本（不可变）
-      required: [id, prompt_id, version_number, content, content_hash, change_summary, test_result, adversarial_result, adversarial_detail, created_at, published_at, is_current]
+      required: [id, prompt_id, version_number, content, content_hash, change_summary, test_result, test_detail, adversarial_result, adversarial_detail, created_at, published_at, is_current]
       properties:
         id:
           type: string
@@ -2211,6 +2249,12 @@ components:
           type: string
           enum: ['', PASSED, FAILED]
           description: 静态/回归测试结果（空字符串 = 未测试；发布门要求 PASSED）
+        test_detail:
+          type: object
+          description: >-
+            回归测试明细（静态检查项 static_checks、逐评估集分数/阈值/通过数/运行记录ID
+            regression.sets、模型标识 regression.model、失败摘要 failure_summary）；
+            未执行为空对象 {}。模型不可用/评估失败如实 FAILED 并记录原因，不伪装 PASSED。
         adversarial_result:
           type: string
           enum: ['', ADVERSARIAL_PASSED, ADVERSARIAL_FAILED]
@@ -2286,16 +2330,48 @@ components:
 
     AiPromptVersionTestResponse:
       type: object
-      required: [test_result, checks]
+      required: [test_result, checks, test_detail]
       properties:
         test_result:
           type: string
           enum: [PASSED, FAILED]
-          description: 综合测试结果（已回写版本 test_result）
+          description: 综合测试结果（已回写版本 test_result；仅静态检查与真实回归全部达标时 PASSED）
         checks:
           type: array
           items:
             $ref: '#/components/schemas/AiPromptTestCheck'
+        regression:
+          $ref: '#/components/schemas/AiPromptRegressionDetail'
+        test_detail:
+          type: object
+          description: 落库的完整回归明细（同版本 test_detail 列内容）
+
+    AiPromptRegressionSetResult:
+      type: object
+      required: [code, threshold, score, passed, total, passed_count, case_errors]
+      properties:
+        code: { type: string, description: 评估集编码（如 eval_prompt_injection） }
+        threshold: { type: number, description: 通过阈值（百分制；安全类 100，一般 80） }
+        score: { type: number, description: 本次得分（百分制，两位小数） }
+        passed: { type: boolean, description: 该集是否达标（得分达阈值且无用例执行失败） }
+        total: { type: integer, description: 用例总数 }
+        passed_count: { type: integer, description: 通过用例数 }
+        case_errors: { type: integer, description: 执行失败用例数（模型不可用等，>0 即不达标） }
+        run_id: { type: string, format: uuid, description: 关联评估运行记录（ai_evaluation_runs） }
+        error: { type: string, description: 集合级失败原因（评估集未部署/评估执行失败） }
+
+    AiPromptRegressionDetail:
+      type: object
+      required: [model, sets]
+      properties:
+        model: { type: string, description: 回答总结路由档位（standard）配置的模型编码 }
+        sets:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiPromptRegressionSetResult'
+        failure_summary:
+          type: string
+          description: 失败摘要（未达标集合与原因，全部达标时缺省）
 
     AiPromptAdversarialCase:
       type: object
@@ -2725,3 +2801,38 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AiUsageByTaskItem'
+
+    # ---- 反馈质量聚合 ----
+    AiFeedbackSummaryItem:
+      type: object
+      required: [feedback_type, task_type, total, negative, negative_rate]
+      properties:
+        feedback_type:
+          type: string
+          description: 反馈类型（GENERAL / WRONG_FACT / MISSING_EVIDENCE / HALLUCINATION / OTHER）
+        task_type:
+          type: string
+          description: 关联任务类型（反馈前会话内最近一次 ai_tasks；无法关联为 UNKNOWN）
+        total: { type: integer, format: int64, description: 反馈总数 }
+        negative: { type: integer, format: int64, description: 负反馈数（rating=-1） }
+        negative_rate: { type: number, description: 负反馈占比（百分制，两位小数） }
+
+    AiFeedbackSummaryTotal:
+      type: object
+      required: [total, negative, negative_rate]
+      properties:
+        total: { type: integer, format: int64, description: 窗口内反馈总数 }
+        negative: { type: integer, format: int64, description: 窗口内负反馈总数 }
+        negative_rate: { type: number, description: 窗口整体负反馈占比（百分制，两位小数） }
+
+    AiFeedbackSummaryResponse:
+      type: object
+      required: [days, items, total]
+      properties:
+        days: { type: integer, description: 实际统计窗口（天，经夹取口径） }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AiFeedbackSummaryItem'
+        total:
+          $ref: '#/components/schemas/AiFeedbackSummaryTotal'

@@ -1,14 +1,14 @@
 // signature.go 文件下载签名 v1（W13-GW / P2-02，任务书 §110 子集：签名嵌入+文件验证+来源追踪）：
-// 与水印同一捕获路径、在水印之后执行——对文本族下载响应体（脱敏/水印产物）计算内容
-// sha256，生成来源追踪 token 并以水印同一形态嵌入文件尾注释行 / JSON 顶层 "_sig" 字段：
+// 与水印同一捕获路径、在水印之后执行——对下载响应体（脱敏/水印产物）计算内容
+// sha256，生成来源追踪 token 并嵌入文本尾注释行、JSON 顶层 "_sig" 或 OOXML ZIP 注释：
 //
 //	token = "jzsig1.{kid}.{unixts}.{hex(HMAC-SHA256(key, kid|filename|content_sha256_hex|unixts|identity_fp))}"
 //
 // kid 标识密钥版本（轮换可追踪），identity_fp 为请求身份指纹（仅凭据派生，匿名为空串）——
 // 外发文件可经管理面按 kid+filename+内容哈希+身份指纹复算验证，实现泄露来源追踪。
 //
-// v1 范围纪律（与水印一致，不引媒体处理依赖）：仅文本族（text/*）与 application/json；
-// 文本族追加 "# "/<!-- --> 注释行，JSON 顶层加 "_sig" 字段（顶层非对象或键已存在跳过不改写）。
+// 范围纪律（不引媒体处理依赖）：文本族（text/*）与 application/json 沿用注释行/顶层 "_sig"；
+// DOCX/XLSX/PPTX 使用 OOXML ZIP 注释签名，原注释经 Base64 封装以保留原始字节，见 signature_ooxml.go。
 //
 // 安全纪律：key 为秘密材料（发布通道 system_settings 密文解密下发），配置错误信息不含密钥值；
 // 证据只含 kid/filename/mime，不含密钥与完整内容哈希；签名嵌入失败一律 FAIL_OPEN 直通
@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -78,14 +79,14 @@ func NewFileSignatureConfig(enabled bool, kid, keyHex string) (*FileSignatureCon
 	return cfg, nil
 }
 
-// AllowsContentType 判定 Content-Type 是否属 v1 可嵌入文本族（text/* 与 application/json，
-// 与水印同一能力边界；无下发白名单——签名段契约仅 enabled/kid/key_hex）。
+// AllowsContentType 判定 Content-Type 是否可嵌入文本族或 OOXML 签名
+// （text/*、application/json、docx/xlsx/pptx；签名段契约仅 enabled/kid/key_hex）。
 func (c *FileSignatureConfig) AllowsContentType(contentType string) bool {
 	if c == nil || !c.Enabled {
 		return false
 	}
 	mt := fileWatermarkMediaType(contentType)
-	return mt == "application/json" || strings.HasPrefix(mt, "text/")
+	return mt == "application/json" || strings.HasPrefix(mt, "text/") || OOXMLWatermarkExtension(mt) != ""
 }
 
 // BuildFileSignatureToken 生成签名 token（纯函数，可复算验证）：
@@ -100,15 +101,22 @@ func BuildFileSignatureToken(key []byte, kid, filename, contentSHA256Hex string,
 // ApplyFileSignature 对完整捕获的下载响应体嵌入签名；返回改写后体、token、是否已嵌入、错误。
 // 签名的内容快照为传入 body（挂点侧在水印之后调用——签名覆盖脱敏/水印后的最终交付内容，
 // 与"验证外发文件实际内容"语义一致）。不嵌入的情形（applied=false, err=nil）：
-// 未启用 / 空体 / 类型超出 v1 文本族 / JSON 顶层非对象 / JSON 签名键已存在。
-// JSON 解析失败返回 err（调用方 FAIL_OPEN 直通，与水印同一纪律）。
+// 未启用 / 空体 / 不支持的类型 / JSON 顶层非对象 / JSON 签名键已存在 / OOXML 已签名。
+// JSON、OOXML 解析失败返回 err（调用方 FAIL_OPEN 直通，与水印同一纪律）。
 func ApplyFileSignature(body []byte, contentType string, cfg *FileSignatureConfig, filename, identityFP string, now time.Time) ([]byte, string, bool, error) {
 	if cfg == nil || !cfg.Enabled || len(body) == 0 || !cfg.AllowsContentType(contentType) {
 		return body, "", false, nil
 	}
 	sum := sha256.Sum256(body)
 	token := BuildFileSignatureToken(cfg.key, cfg.KID, filename, hex.EncodeToString(sum[:]), now.Unix(), identityFP)
-	switch fileWatermarkMediaType(contentType) {
+	mt := fileWatermarkMediaType(contentType)
+	if ext := OOXMLWatermarkExtension(mt); ext != "" {
+		if !strings.EqualFold(path.Ext(filename), "."+ext) {
+			return body, "", false, nil
+		}
+		return applyOOXMLFileSignature(body, token)
+	}
+	switch mt {
 	case "application/json":
 		out, applied, err := applyJSONFileWatermark(body, DefaultFileSignatureJSONKey, token)
 		return out, token, applied, err

@@ -38,7 +38,8 @@ func (e *ValidationError) Error() string {
 // mode 限定 OBSERVE/PROTECT；block/rate_limit 阈值 1-100 且 rate_limit < block
 // （限速应先于阻断触达）；rate_limit_rps 1-100000；signal_window_seconds 1-604800；
 // scores 键为合法信号类型格式、值 0-100；risk_levels 恰为 medium/high/critical
-// 三键、值 0-100 且严格递增（等级区间不得倒置/重叠）。
+// 三键、值 0-100 且严格递增（等级区间不得倒置/重叠）；shared_device_account_limit
+// 仅应用覆盖可设，0=默认3，自定义2-1000，只调整观察信号阈值。
 func Validate(p *Policy) []FieldError {
 	errs := []FieldError{}
 	add := func(field, msg string) {
@@ -65,6 +66,13 @@ func Validate(p *Policy) []FieldError {
 	}
 	if p.SignalWindowSeconds < 1 || p.SignalWindowSeconds > maxWindowSeconds {
 		add("signal_window_seconds", fmt.Sprintf("必须在 1~%d 秒之间", maxWindowSeconds))
+	}
+	if p.SharedDeviceAccountLimit != 0 {
+		if p.Scope != ScopeApplication {
+			add("shared_device_account_limit", "仅应用覆盖支持同设备账号观察阈值")
+		} else if p.SharedDeviceAccountLimit < 2 || p.SharedDeviceAccountLimit > 1000 {
+			add("shared_device_account_limit", "0 表示默认 3；自定义值必须在 2~1000 之间")
+		}
 	}
 
 	// 信号分值覆盖：键为合法信号类型格式，值 0-100

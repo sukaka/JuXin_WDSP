@@ -15,10 +15,11 @@ API 发现回答三个问题：哪些流量是 API（识别）、它们构成哪
 
 ## 二、识别：分类器信号打分
 
-任务书 §8.1 要求「不得仅依赖 URL 包含 `/api/`」。`classifier.Classify`
-（`classifier/api.go:18`）基于一次解析产物做多信号加权打分：
+任务书 §8.1 要求「不得仅依赖 URL 包含 `/api/`」。网关请求相位使用
+`classifier.Classify`（`gateway/dynamic_security/classifier/api.go`），基于一次
+请求解析产物做多信号加权打分：
 
-| 信号 | 权重 | 依据 |
+| 请求侧信号 | 权重 | 依据 |
 |------|------|------|
 | `content_type_json` | 0.35 | 请求 Content-Type 为 JSON 或体嗅探为 JSON |
 | `graphql_path` | 0.40 | 路径含 `/graphql` |
@@ -29,11 +30,22 @@ API 发现回答三个问题：哪些流量是 API（识别）、它们构成哪
 | `accept_json` | 0.15 | Accept 头要求 JSON |
 | `write_json` | 0.10 | POST/PUT/PATCH 且 JSON 体 |
 
-打分截断到 1.0；**得分 ≥ 0.35 判为 API**（`api.go:59-66`），输出
-`{IsAPI, Confidence, Signals}`。置信度与信号列表随上下文与事件保存：
-`ctx.APIConfidence`（`pipeline.go:68`）、扩展键 `api.is_api` / `api.signals`
-（`pipeline.go:70-72`）、事件字段 `api_confidence`（`apievents.go:27`），
-最终入库 `api_endpoints.api_confidence`，前端可见。
+打分截断到 1.0；**得分 ≥ 0.35 判为 API**，输出 `{IsAPI, Confidence, Signals}`。
+请求相位结果保存到 `ctx.APIConfidence`、扩展键 `api.is_api` / `api.signals` 和
+事件字段 `api_confidence`，用于网关运行时事件；该请求侧行为保持不变。
+
+Agent v2 资产联动使用同一分类器的 `ClassifyWithResponse` 入口，在完整可见响应上
+追加以下证据：
+
+| 响应侧信号 | 权重 | 依据 |
+|------|------|------|
+| `response_json` | +0.25 | 响应 Content-Type 为 JSON |
+| `response_xml` | +0.20 | 响应 Content-Type 为 XML/SOAP |
+| `response_html` | -0.35 | 2xx 成功 HTML 响应（GraphQL、SOAP/XML、gRPC 等结构性协议除外） |
+
+响应未采集、单向源、截断或流式直通时不作负向推断，保留请求侧结论；gRPC 由可信
+`grpc` 元数据直接确认（置信度 0.95，仍低于人工确认 1.0），不解析 Protobuf 正文。
+该入口只影响新观测的资产发现分类，不改变网关请求阻断决策。
 
 非互斥分类（任务书 §2.3）：分类器只回答「是不是 API、把握多大」，不把请求
 分流到另一套系统；Web 与 API 共用同一条链路与同一上下文。
@@ -58,6 +70,13 @@ apiruntime.Collector.CollectOnce（collector.go:198；2s 轮询、断点续传�
        SavePrimary → api_runtime_events（按 request_id 幂等）
 ```
 
+Agent v2 机器端点是第二条发现来源：`POST /api/v1/agents/{agent_id}/http` 完成
+校验、幂等入库后，仅对新记录执行 `linkHTTPAssets`。已绑定记录按 Host、应用绑定、
+方法和模板化路径去重后调用 `UpsertDiscovery`；v1 因兼容契约维持 `is_api=true、
+confidence=0.8`，v2 改按 `ClassifyWithResponse` 的实际证据输出 `is_api/confidence`。
+未绑定记录只落 `UNASSIGNED` 来源行，不做端点 upsert；重复事件不推进资产计数。
+普通 Web 流量可登记为 `is_api=false` 的非 API 画像，不靠丢弃事件提高表面准确率。
+
 `UpsertDiscovery`（`apiassets/store.go:323-365`）以 `endpoint_key =
 METHOD + 空格 + path_template` 为身份键，配合复合作用域唯一索引
 `uq_api_endpoints_scope`（迁移 000137）幂等入库：
@@ -72,6 +91,19 @@ API表身份列：`http_method / normalized_path / raw_path_example / endpoint_k
 api_confidence / is_api / hit_count / first_seen_at / last_seen_at`
 （迁移 000018，`apiassets/store.go:47-68`）。
 
+### API 资产导出
+
+- `GET /api/v1/api-security/endpoints/{id}/export?format=json`：单个 API 详细档案
+  （`export_version=1`），包含基础与业务归属、识别结论、分类维度、来源分类信号、
+  最近 20 个模型版本、当前版本参数、运行时响应 Schema、学习任务与最近 100 条
+  脱敏样本、最近 100 条生命周期事件、1h/24h/7d 补零流量、最多 100 条 Agent
+  来源关系，以及最近 50 条 Finding/弱点和最多 500 条敏感字段摘要。
+- `GET /api/v1/api-security/endpoints/export?format=csv`：按列表同一筛选条件导出
+  资产清单，单页 100 循环拉取、总量上限 10000，字段做公式注入转义。
+- 两个接口均要求 `api_asset.export`，共享导出限流并写操作审计；仅输出既有脱敏
+  元数据，不导出请求/响应正文、Token、密钥、样本明文或敏感参数值。模型或扩展
+  数据入口未接线时返回 503，不生成看似完整的残缺档案。
+
 ## 四、手工确认与资产操作
 
 管理面路由统一挂在 `/api/v1/api-security/endpoints`（`apiassets/handler.go:33-47`），
@@ -80,6 +112,7 @@ api_confidence / is_api / hit_count / first_seen_at / last_seen_at`
 | 操作 | 路由 / 权限点 | 语义 |
 |------|---------------|------|
 | 列表/详情 | `GET .../endpoints`（`api_asset.read`） | asset_status/learning_status/keyword/application_id 过滤；详情附 `api_assets` 业务维度 |
+| 导出 | `GET .../endpoints/export`、`GET .../{id}/export`（`api_asset.export`） | 筛选清单 CSV / 单个详细 JSON；共享导出限流并写审计，内容边界见「API 资产导出」 |
 | 批量确认 | `POST .../endpoints/confirm`（`api_asset.confirm`） | `asset_status=CONFIRMED` 并记 `confirmed_at`；单次≤100 个，逐项报告失败（handler.go:82-129） |
 | 忽略 | `POST .../{id}/ignore`（`api_asset.ignore`） | `asset_status=IGNORED`，写生命周期事件 |
 | 合并 | `POST .../{id}/merge`（`api_asset.merge`） | other 并入 primary：命中数累加、历史键归档 `api_endpoint_aliases`、写 MERGED 事件（store.go:312-383） |
@@ -148,25 +181,21 @@ NOT_STARTED ──learning/start──► LEARNING ──learning/stop──► 
 
 ## 七、当前实现范围与限制
 
-1. **发现信号集是任务书 §8.1 的裁剪子集**：未使用响应 Content-Type（响应侧未
-   解析）、Token/签名特征（认证检测独立于分类器）、调用客户端/User-Agent、
-   状态码、字段结构稳定性、重复API模式、Webhook 特征；识别结果分级
-   （CONFIRMED_API/PROBABLE_API/POSSIBLE_API/NON_API）未实现，当前为
-   布尔 + 0..1 置信度。
+1. **发现信号集仍是任务书 §8.1 的裁剪子集**：网关请求相位不使用响应；Agent v2
+   资产联动已使用响应 Content-Type，但 Token/签名特征（认证检测独立于分类器）、
+   调用客户端/User-Agent、状态码（不作为独立正向信号）、跨请求字段结构稳定性、
+   重复API模式、Webhook 特征仍未参与。四级识别结果
+   （CONFIRMED_API/PROBABLE_API/POSSIBLE_API/NON_API）已实现，并与
+   布尔 `IsAPI` + 0..1 置信度同源输出。
 2. **Zombie API 未实现**：任务书 §11.2 的「标记下线仍有流量」判定无对应状态与
    检测器；`asset_status` 白名单不含 SHADOW/ZOMBIE（Shadow 仅以检测信号与
    基线缺失表达，见第五节）。
 3. **运行时发现表无写入方**：`api_runtime_findings`（SHADOW/ZOMBIE/BOLA 等条目）
    与查询接口已建，但当前无生产写入路径；Shadow/Deprecated 线索以主事件
    `details_json` 中的 lifecycle 明细为准。
-4. ~~**协议类型粗化**~~ **已补全（协议识别波）**：`protocol_type` 词表
-   `REST / GRPC / GRAPHQL / SOAP / WEBSOCKET`。判定均在网关管线
-   （`classifier` 包，不挂 api.IsAPI 分类门槛）：
-   GRPC=Content-Type application/grpc(+proto) + /package.Service/Method 路径形态；
-   GRAPHQL=application/graphql 原始查询或 /graphql 路径 + JSON body 含 query 字段
-   （解析层已双重确认）；SOAP=application/soap+xml，或 text/xml|application/xml +
-   SOAPAction 头；WEBSOCKET=Upgrade: websocket + Connection 含 upgrade 令牌
-   （仅标注握手）。空值仍回落 REST（迁移 000018 默认值）；首写不覆盖。
+4. **协议类型按来源分层**：网关管线可标注 GRAPHQL/SOAP/WEBSOCKET 等结构协议；
+   Agent v2 资产联动当前仅按可信 `grpc` 元数据写 `GRPC`，其余仍回落 `REST`，
+   不从响应内容猜测结构协议。空值仍回落 REST（迁移 000018 默认值）；首写不覆盖。
    遗留：GraphQL 不按 operationName 拆API（API键仍按路径归一化）。
 5. **非 API也会登记**：`is_api=false` 的记录同样 upsert API（见决策 1），
    列表需以 `is_api`/置信度自行区分；当前列表接口未提供 is_api 过滤参数。

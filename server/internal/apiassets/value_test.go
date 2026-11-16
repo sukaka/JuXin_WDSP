@@ -199,13 +199,13 @@ func TestMemRefreshAssetValues(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.UpsertAsset(ctx, ep1.ID, "", "PARTNER", "", nil, ""); err != nil {
+	if _, err := store.UpsertAsset(ctx, ep1.ID, AssetProfile{Exposure: "PARTNER"}); err != nil {
 		t.Fatal(err)
 	}
 
 	// ep2：未分类端点，无 EXPOSURE 维度 → 回落 api_assets.exposure=PUBLIC；只读无流量。
 	ep2 := mustSeed(t, store, "GET", "/api/pub-"+uuid.NewString()[:8])
-	if _, err := store.UpsertAsset(ctx, ep2.ID, "", "PUBLIC", "", nil, ""); err != nil {
+	if _, err := store.UpsertAsset(ctx, ep2.ID, AssetProfile{Exposure: "PUBLIC"}); err != nil {
 		t.Fatal(err)
 	}
 

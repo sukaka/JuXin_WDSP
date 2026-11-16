@@ -175,7 +175,7 @@ func TestRuleValidation(t *testing.T) {
 	}{
 		{"空名称", func(req map[string]any) { req["name"] = "" }},
 		{"非法scope", func(req map[string]any) { req["scope"] = "TENANT" }},
-		{"非法algorithm", func(req map[string]any) { req["algorithm"] = "ENCRYPT" }},
+		{"非法algorithm", func(req map[string]any) { req["algorithm"] = "UNKNOWN" }},
 		{"无目标", func(req map[string]any) { delete(req, "field_path") }},
 		{"非法application_id", func(req map[string]any) { req["scope"] = "APPLICATION"; req["application_id"] = "x" }},
 		{"params非对象", func(req map[string]any) { req["params_json"] = []any{1} }},

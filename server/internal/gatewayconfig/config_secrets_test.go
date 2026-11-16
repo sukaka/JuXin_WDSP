@@ -46,6 +46,7 @@ func secretTestGuardConfig(tag string) *GuardConfig {
 	g.TLSSessionTicketKey = tag + "-tls-ticket-key"
 	g.APIScanVerification = &GuardScanVerification{KeyHex: tag + "-scan-key-hex"}
 	g.APIFileSignature = &GuardFileSignature{Enabled: true, KID: tag + "-kid", KeyHex: tag + "-file-sig-key-hex"}
+	g.APIMaskCrypto = &GuardMaskCrypto{KID: tag + "-mask-kid", KeyHex: tag + "-mask-crypto-key-hex"}
 	return g
 }
 
@@ -53,7 +54,7 @@ func secretTestGuardConfig(tag string) *GuardConfig {
 func secretValues(tag string) []string {
 	return []string{
 		tag + "-valkey-secret", tag + "-identity-salt", tag + "-scan-key-hex",
-		tag + "-file-sig-key-hex", tag + "-tls-ticket-key",
+		tag + "-file-sig-key-hex", tag + "-mask-crypto-key-hex", tag + "-tls-ticket-key",
 	}
 }
 
@@ -221,6 +222,7 @@ func TestReinjectConfigSecretsMissingCurrentValues(t *testing.T) {
 		{"缺扫描签名密钥", without(func(g *GuardConfig) { g.APIScanVerification = nil }), "api_scan_verification"},
 		{"扫描签名密钥为空", without(func(g *GuardConfig) { g.APIScanVerification = &GuardScanVerification{} }), "api_scan_verification"},
 		{"缺文件签名密钥", without(func(g *GuardConfig) { g.APIFileSignature = nil }), "api_file_signature"},
+		{"缺脱敏加密密钥", without(func(g *GuardConfig) { g.APIMaskCrypto = nil }), "api_mask_crypto"},
 		{"缺 TLS 票据键", without(func(g *GuardConfig) { g.TLSSessionTicketKey = "" }), "tls_session_ticket_key"},
 	}
 	for _, tc := range cases {

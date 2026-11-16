@@ -3,10 +3,9 @@
 // （去重键 endpoint_key×direction×filename×identity_fingerprint，见迁移 000061）。
 //
 // 脱敏与归一纪律：
-//   - 观测只含元数据（filename/extension/mime/size），文件内容永不经由此通路；
+//   - 观测包含元数据、敏感类型标签及完整内容指纹（content_sha256）；截断/流式内容不生成指纹，正文不经由此通路；
 //   - client_ip 按掩码纪律落库（IPv4 /24、IPv6 /64 前缀；精确关联走事件来源指纹）；
-//   - sensitive_types 由扩展名词表 v1 推导（文件内容不可达，无内容级判定；
-//     词表保守只收高置信类别，见 sensitiveFileTypeByExt 注释）。
+//   - sensitive_types 为扩展名高置信分类与内容检测数据类型标签的并集，不含匹配值。
 package apiruntime
 
 import (
@@ -26,11 +25,13 @@ import (
 // FileObservation 采集端镜像（与网关 dsctx.FileObservation JSON 字段一致）。
 // 旧版网关事件无 file_observations 键，json 缺省解析为 nil，全程容忍缺失。
 type FileObservation struct {
-	Direction string `json:"direction"`
-	FileName  string `json:"filename"`
-	Extension string `json:"extension"`
-	MIME      string `json:"mime"`
-	Size      int64  `json:"size"`
+	Direction      string   `json:"direction"`
+	FileName       string   `json:"filename"`
+	Extension      string   `json:"extension"`
+	MIME           string   `json:"mime"`
+	Size           int64    `json:"size"`
+	ContentSHA256  string   `json:"content_sha256,omitempty"`
+	SensitiveTypes []string `json:"sensitive_types,omitempty"`
 }
 
 // 文件观测列宽（迁移 000061：filename VARCHAR(128)、extension VARCHAR(16)、mime VARCHAR(128)）。
@@ -41,9 +42,9 @@ const (
 	maxFileObsMIMELen = 128
 )
 
-// sensitiveFileTypeByExt 敏感文件扩展名词表 v1（§106 敏感文件统计的判定来源）。
-// 文件内容不落网关、不可达内容级判定，v1 如实按后缀启发式粗分类；
-// 词表保守只收高置信类别：凭据材料 / 数据库备份 / 数据导出。
+// sensitiveFileTypeByExt 敏感文件扩展名词表 v1（§106 敏感文件统计的判定来源之一）。
+// 仅按后缀启发式粗分类，词表保守只收高置信类别：凭据材料 / 数据库备份 / 数据导出；
+// 内容级类型由显式 file 位置的值级规则提供，统一经 mergeFileSensitivity 合并。
 var sensitiveFileTypeByExt = map[string]string{
 	"pem":  "credential_file",
 	"key":  "credential_file",
@@ -136,25 +137,33 @@ func (s *FileObsStore) RecordFileObservations(ctx context.Context, rec *Record) 
 		}
 		ext := truncateRunes(strings.ToLower(o.Extension), maxFileObsExtLen)
 		mimeType := truncateRunes(strings.ToLower(o.MIME), maxFileObsMIMELen)
-		sensitive, _ := json.Marshal(classifyFileSensitivity(ext))
+		sensitive, _ := json.Marshal(mergeFileSensitivity(ext, o.SensitiveTypes))
 		if _, err := s.db.Exec(ctx, `
 INSERT INTO api_file_assets
   (endpoint_id, endpoint_key, direction, filename, extension, mime, size_bytes, sha256,
    identity_fingerprint, client_ip_masked, sensitive_types, first_seen, last_seen, transfer_count)
-VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,$8,$9,$10::jsonb,$11,$11,1)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11,1)
 ON CONFLICT (endpoint_key, direction, filename, identity_fingerprint) DO UPDATE SET
   endpoint_id    = COALESCE(EXCLUDED.endpoint_id, api_file_assets.endpoint_id),
   extension      = EXCLUDED.extension,
   mime           = EXCLUDED.mime,
   size_bytes     = EXCLUDED.size_bytes,
+  sha256         = COALESCE(EXCLUDED.sha256, api_file_assets.sha256),
   client_ip_masked = EXCLUDED.client_ip_masked,
-  sensitive_types = EXCLUDED.sensitive_types,
+  sensitive_types = (
+    SELECT COALESCE(jsonb_agg(label ORDER BY label), '[]'::jsonb)
+    FROM (
+      SELECT jsonb_array_elements_text(api_file_assets.sensitive_types) AS label
+      UNION
+      SELECT jsonb_array_elements_text(EXCLUDED.sensitive_types) AS label
+    ) merged
+  ),
   first_seen     = LEAST(api_file_assets.first_seen, EXCLUDED.first_seen),
   last_seen      = GREATEST(api_file_assets.last_seen, EXCLUDED.last_seen),
   transfer_count = api_file_assets.transfer_count + 1,
   updated_at     = now()`,
 			endpointID, rec.EndpointKey, dir, name, ext, mimeType, o.Size,
-			rec.IdentityFingerprint, maskedIP, string(sensitive), occurredAt); err != nil {
+			normalizedFileSHA256(o.ContentSHA256), rec.IdentityFingerprint, maskedIP, string(sensitive), occurredAt); err != nil {
 			return fmt.Errorf("upsert file asset %s %s: %w", dir, name, err)
 		}
 	}

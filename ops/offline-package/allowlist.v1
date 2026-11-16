@@ -9,6 +9,7 @@ file=healthcheck/check.sh
 file=install/console-cert.sh
 file=install/install-gateway-baremetal.sh
 file=install/install.sh
+file=install/prepare-containerops.sh
 file=install/prepare-openeuler-zhaoxin.sh
 file=install/tune-gateway-baremetal.sh
 file=install/verify-gateway-baremetal.sh

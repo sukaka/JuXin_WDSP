@@ -119,6 +119,15 @@
 | otel/sdk/metric + otlpmetrichttp（opentelemetry-go） | https://github.com/open-telemetry/opentelemetry-go | v1.44.0 | Apache-2.0 | 否 | 管理后端自埋点 metrics（阶段3）：MeterProvider + 30s 周期 OTLP/HTTP metric exporter（server/internal/apm/selftelemetry.go，server/go.mod 直接依赖） | [licenses/opentelemetry-go/LICENSE](licenses/opentelemetry-go/LICENSE) |
 | instrumentation/runtime（opentelemetry-go-contrib） | https://github.com/open-telemetry/opentelemetry-go-contrib | v0.69.0 | Apache-2.0 | 否 | Go runtime 指标采集（go.goroutine.count / go.memory.* / go.config.gogc / go.processor.limit / go.schedule.duration；与 otelhttp 同 contrib 配套版本 v0.69.0） | [licenses/opentelemetry-go-contrib/LICENSE](licenses/opentelemetry-go-contrib/LICENSE) |
 
+## 云 API Observation 事件总线新增组件
+
+| 软件名称 | 项目来源 | 锁定版本 | 许可证 | 是否修改 | 使用方式 | 许可证文件位置 |
+|---------|---------|---------|--------|---------|---------|---------------|
+| Apache Kafka | https://github.com/apache/kafka | 4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e | Apache-2.0 | 否 | 中心 API Observation 事件总线（KRaft，无 ZooKeeper） | [licenses/apache-kafka/LICENSE](licenses/apache-kafka/LICENSE) |
+| franz-go | https://github.com/twmb/franz-go | v1.21.0 | BSD-3-Clause | 否 | 管理后端 Kafka 生产者/消费者客户端 | [licenses/franz-go/LICENSE](licenses/franz-go/LICENSE) |
+| Byte Buddy | https://github.com/raphw/byte-buddy | 1.17.8 | Apache-2.0 | 否 | Java 云 API 进程内探针插桩，随 Agent Jar 分发 | [licenses/byte-buddy/LICENSE](licenses/byte-buddy/LICENSE)、[NOTICE](licenses/byte-buddy/NOTICE) |
+| Spring Framework | https://github.com/spring-projects/spring-framework | 6.2.11 | Apache-2.0 | 否 | Java 探针 Spring MVC/RestTemplate 编译 API；provided，不打入 Agent Jar | [licenses/spring-framework/LICENSE.txt](licenses/spring-framework/LICENSE.txt) |
+| OpenTelemetry Java API | https://github.com/open-telemetry/opentelemetry-java | 1.44.0 | Apache-2.0 | 否 | Java 探针读取现有 Trace Context；provided，不打入 Agent Jar | [licenses/opentelemetry-java/LICENSE](licenses/opentelemetry-java/LICENSE) |
 
 ## 许可证原文
 

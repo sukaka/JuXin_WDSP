@@ -377,7 +377,7 @@ SELECT bucket_start, labels->>'app', labels->>'endpoint', b.idx, SUM(b.cnt::int)
 FROM metric_minute_aggregates,
      LATERAL jsonb_array_elements_text(extra->'buckets') WITH ORDINALITY AS b(cnt, idx)
 WHERE metric = $1 AND bucket_start >= $2 AND bucket_start < $3
-GROUP BY 1, 2, 3`, metrics.HTTPEndpointDurationMs, start, end)
+GROUP BY 1, 2, 3, 4`, metrics.HTTPEndpointDurationMs, start, end)
 	if err != nil {
 		return nil, fmt.Errorf("endpoint duration: %w", err)
 	}

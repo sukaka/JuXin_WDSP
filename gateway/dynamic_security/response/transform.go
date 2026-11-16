@@ -17,13 +17,19 @@ import (
 type TransformResult struct {
 	Body          []byte // 重新编码后的响应体
 	AppliedFields int    // 实际执行脱敏的字段数（数组逐元素计）
-	SkippedFields int    // 目标为非标量等不适用而跳过的字段数（MASK/HASH 仅适用标量）
+	SkippedFields int    // 目标为非标量等不适用而跳过的字段数（MASK/HASH/ENCRYPT/MAP 仅适用标量）
 }
 
 // ApplyJSON 对 JSON 响应体执行 transform plan（字段级脱敏）并重新编码。
+// 旧调用不携带密钥；ENCRYPT/MAP 会明确报错，其他算法行为不变。
+func ApplyJSON(body []byte, plan []dsctx.FieldTransform) (*TransformResult, error) {
+	return ApplyJSONWithKey(body, plan, nil)
+}
+
+// ApplyJSONWithKey 对 JSON 响应体执行 transform plan，并为 ENCRYPT/MAP 提供密钥。
 // 仅处理可安全重编码的完整 JSON；解析失败返回错误（调用方按失败策略处理，不得 panic）。
 // 数字经 UseNumber 保留字面量；输出不转义 HTML（JSON API 语义不变、减小字节漂移）。
-func ApplyJSON(body []byte, plan []dsctx.FieldTransform) (*TransformResult, error) {
+func ApplyJSONWithKey(body []byte, plan []dsctx.FieldTransform, crypto *MaskCrypto) (*TransformResult, error) {
 	res := &TransformResult{}
 	if len(plan) == 0 {
 		res.Body = body
@@ -39,6 +45,24 @@ func ApplyJSON(body []byte, plan []dsctx.FieldTransform) (*TransformResult, erro
 			byPath[tr.FieldPath] = tr
 		}
 	}
+	for path, tr := range byPath {
+		switch Algorithm(tr.Algorithm) {
+		case AlgorithmEncrypt:
+			if crypto == nil || crypto.aead == nil {
+				return nil, fmt.Errorf("ENCRYPT at %s requires mask crypto", path)
+			}
+			if tr.KeyID == "" || tr.KeyID != crypto.KeyID {
+				return nil, fmt.Errorf("ENCRYPT at %s key_id does not match configured kid", path)
+			}
+		case AlgorithmMap:
+			if crypto == nil || crypto.aead == nil {
+				return nil, fmt.Errorf("MAP at %s requires mask crypto", path)
+			}
+			if tr.MapID == "" {
+				return nil, fmt.Errorf("MAP at %s requires map_id", path)
+			}
+		}
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var v any
@@ -48,7 +72,10 @@ func ApplyJSON(body []byte, plan []dsctx.FieldTransform) (*TransformResult, erro
 	if err := ensureSingleJSONValue(dec); err != nil {
 		return nil, fmt.Errorf("decode response json: %w", err)
 	}
-	out, _ := transformNode(v, "", byPath, res)
+	out, _, err := transformNode(v, "", byPath, res, crypto)
+	if err != nil {
+		return nil, err
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -76,29 +103,40 @@ func ensureSingleJSONValue(dec *json.Decoder) error {
 }
 
 // transformNode 递归执行计划；removed=true 表示该节点按 REMOVE 删除（由父容器摘除）。
-func transformNode(v any, path string, plan map[string]dsctx.FieldTransform, res *TransformResult) (out any, removed bool) {
+func transformNode(v any, path string, plan map[string]dsctx.FieldTransform, res *TransformResult, crypto *MaskCrypto) (out any, removed bool, err error) {
 	if path != "" {
 		if tr, ok := plan[path]; ok {
 			switch Algorithm(tr.Algorithm) {
 			case AlgorithmRemove:
 				res.AppliedFields++
-				return nil, true
-			case AlgorithmMask, AlgorithmHash:
+				return nil, true, nil
+			case AlgorithmMask, AlgorithmHash, AlgorithmEncrypt, AlgorithmMap:
 				s, ok := scalarString(v)
 				if !ok {
 					// 非标量目标（object/array/null）：不适用，跳过（生成期已剔除，此处兜底）
 					res.SkippedFields++
-					return v, false
+					return v, false, nil
+				}
+				var value string
+				switch Algorithm(tr.Algorithm) {
+				case AlgorithmMask:
+					value = maskValue(s, tr.KeepHead, tr.KeepTail)
+				case AlgorithmHash:
+					value = hashValue(s)
+				case AlgorithmEncrypt:
+					value, err = crypto.encrypt(tr.KeyID, s)
+				case AlgorithmMap:
+					value, err = crypto.mapValue(tr.MapID, s)
+				}
+				if err != nil {
+					return nil, false, fmt.Errorf("%s at %s: %w", tr.Algorithm, path, err)
 				}
 				res.AppliedFields++
-				if Algorithm(tr.Algorithm) == AlgorithmHash {
-					return hashValue(s), false
-				}
-				return maskValue(s, tr.KeepHead, tr.KeepTail), false
+				return value, false, nil
 			default:
 				// 未知算法（校验期已拦截，此处兜底不执行、不静默）
 				res.SkippedFields++
-				return v, false
+				return v, false, nil
 			}
 		}
 	}
@@ -109,26 +147,32 @@ func transformNode(v any, path string, plan map[string]dsctx.FieldTransform, res
 			if path != "" {
 				childPath = path + "." + k
 			}
-			newChild, rm := transformNode(child, childPath, plan, res)
+			newChild, rm, childErr := transformNode(child, childPath, plan, res, crypto)
+			if childErr != nil {
+				return nil, false, childErr
+			}
 			if rm {
 				delete(t, k)
 			} else {
 				t[k] = newChild
 			}
 		}
-		return t, false
+		return t, false, nil
 	case []any:
 		elemPath := path + "[]"
 		out := make([]any, 0, len(t))
 		for _, el := range t {
-			newEl, rm := transformNode(el, elemPath, plan, res)
+			newEl, rm, childErr := transformNode(el, elemPath, plan, res, crypto)
+			if childErr != nil {
+				return nil, false, childErr
+			}
 			if !rm {
 				out = append(out, newEl)
 			}
 		}
-		return out, false
+		return out, false, nil
 	default:
-		return v, false
+		return v, false, nil
 	}
 }
 

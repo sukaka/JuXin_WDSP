@@ -31,6 +31,8 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 		authz(middleware.RequirePermission("api_spec.read")(http.HandlerFunc(h.ListSpecs))))
 	mux.Handle("GET /api/v1/api-security/specs/{id}/diff",
 		authz(middleware.RequirePermission("api_spec.read")(http.HandlerFunc(h.GetSpecDiff))))
+	mux.Handle("GET /api/v1/api-security/specs/{id}/audit",
+		authz(middleware.RequirePermission("api_spec.read")(http.HandlerFunc(h.GetSpecAudit))))
 	mux.Handle("GET /api/v1/api-security/specs/{id}/version-diff",
 		authz(middleware.RequirePermission("api_spec.read")(http.HandlerFunc(h.GetSpecVersionDiff))))
 	mux.Handle("POST /api/v1/api-security/specs/{id}/activate",
@@ -83,6 +85,12 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 	// 行为基线画像（WDSP 访问微模型：api_behavior_profiles 离线聚合结果只读）
 	mux.Handle("GET /api/v1/api-security/behavior-profiles",
 		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.ListBehaviorProfiles))))
+	mux.Handle("GET /api/v1/api-security/group-control/shared-devices",
+		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.ListSharedDevices))))
+	mux.Handle("GET /api/v1/api-security/group-control/shared-devices/accounts",
+		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.ListSharedDeviceAccounts))))
+	mux.Handle("GET /api/v1/api-security/group-control/trends",
+		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.SharedDeviceTrend))))
 	// 对象模型（WDSP 访问微模型·对象维度：api_object_models 清扫产出只读）
 	mux.Handle("GET /api/v1/api-security/object-models",
 		authz(middleware.RequirePermission("api_runtime.read")(http.HandlerFunc(h.ListObjectModels))))

@@ -488,6 +488,64 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /agents/{agent_id}/api-observations:
+    post:
+      operationId: trafficAgentAPIObservationsPush
+      tags: [agent-control]
+      summary: 批量上报脱敏 API Observation
+      description: 每批最多 100 条、请求体最多 4 MiB。仅接收进程内采集的 API 元数据、结构化字段、数据类型、HMAC 和 Trace 关联，不接收完整 Body、Query、Header 值或凭据。202 表示已可靠进入 Kafka，不表示异步投影已完成。
+      security: [{ agentBearer: [] }, { agentCertificate: [], agentTimestamp: [], agentSignature: [] }]
+      parameters: [{ name: agent_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [schema_version, records]
+              additionalProperties: false
+              properties:
+                schema_version: { type: integer, enum: [1] }
+                records:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [event_id, occurred_at, source, service, trace, http, fields, quality]
+                    properties:
+                      event_id: { type: string, maxLength: 128 }
+                      occurred_at: { type: string, format: date-time }
+                      application_binding_id: { type: string, format: uuid, nullable: true }
+                      binding_version: { type: integer, format: int64, nullable: true }
+                      source: { type: object, additionalProperties: true }
+                      service: { type: object, additionalProperties: true }
+                      trace: { type: object, additionalProperties: true }
+                      http:
+                        type: object
+                        additionalProperties: true
+                        properties:
+                          peer_service: { type: string, maxLength: 512 }
+                          peer_address: { type: string, maxLength: 128, description: 可选的直接对端 IP（IPv4/IPv6），不含端口，不代表经过代理后的终端真实地址。 }
+                      fields: { type: array, maxItems: 256, items: { type: object, additionalProperties: true } }
+                      quality: { type: object, additionalProperties: true }
+      responses:
+        '202':
+          description: Observation 已写入 Kafka；重复事件按 Agent 与事件 ID 幂等
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted_count, duplicate_count]
+                properties:
+                  accepted_count: { type: integer, minimum: 0 }
+                  duplicate_count: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { description: 接收层过载，按 Retry-After 有界重试 }
+        '503': { description: Kafka 或接收回执暂时不可用，按事件 ID 幂等重试 }
+
   /agents/{agent_id}/packets:
     post:
       operationId: trafficAgentPacketsPush

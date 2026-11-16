@@ -3,6 +3,7 @@ module github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard
 go 1.25.6
 
 require (
+	github.com/andybalholm/brotli v1.3.0
 	github.com/caddyserver/caddy/v2 v2.11.4
 	github.com/corazawaf/coraza-caddy/v2 v2.5.0
 	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0

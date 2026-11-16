@@ -470,15 +470,16 @@ func (a *Agent) SupportsHTTPEventV2() bool {
 	return false
 }
 
-// AgentCapabilities 能力声明（契约 §3：注册/心跳可选扩展；缺省 = 仅 v1）。
+const APIObservationSchemaV1 = 1
+
+// AgentCapabilities 能力声明（既有 HTTP 能力保持不变；API Observation 未声明即不支持）。
 type AgentCapabilities struct {
-	HTTPEventSchemaVersions []int `json:"http_event_schema_versions"`
+	HTTPEventSchemaVersions      []int `json:"http_event_schema_versions"`
+	APIObservationSchemaVersions []int `json:"api_observation_schema_versions"`
 }
 
-// serverHTTPEventSchemas 服务端支持的 HTTP 事件 schema 集合（协商交集右端）。
 var serverHTTPEventSchemas = []int{1, HTTPEventSchemaV2}
 
-// ValidateCapabilities 能力声明校验（元素须为 {1,2} 子集，去重；nil/空 = 未声明）。
 func (c *AgentCapabilities) Validate() error {
 	if c == nil {
 		return nil
@@ -496,10 +497,22 @@ func (c *AgentCapabilities) Validate() error {
 		}
 		seen[v] = true
 	}
+	if len(c.APIObservationSchemaVersions) > 2 {
+		return errors.New("capabilities.api_observation_schema_versions 最多 2 个元素")
+	}
+	seen = map[int]bool{}
+	for _, v := range c.APIObservationSchemaVersions {
+		if v != APIObservationSchemaV1 {
+			return fmt.Errorf("capabilities.api_observation_schema_versions 含不支持取值 %d", v)
+		}
+		if seen[v] {
+			return errors.New("capabilities.api_observation_schema_versions 含重复取值")
+		}
+		seen[v] = true
+	}
 	return nil
 }
 
-// schemasToInt16 生效集转 smallint[]（库列类型）。
 func schemasToInt16(vs []int) []int16 {
 	out := make([]int16, 0, len(vs))
 	for _, v := range vs {
@@ -508,7 +521,6 @@ func schemasToInt16(vs []int) []int16 {
 	return out
 }
 
-// NegotiateHTTPEventSchemas 协商生效集（声明 ∩ 服务端支持集；未声明 → {1}）。
 func NegotiateHTTPEventSchemas(c *AgentCapabilities) []int {
 	if c == nil || len(c.HTTPEventSchemaVersions) == 0 {
 		return []int{1}
@@ -523,7 +535,28 @@ func NegotiateHTTPEventSchemas(c *AgentCapabilities) []int {
 		}
 	}
 	if len(out) == 0 {
-		return []int{1} // 声明全集不被支持——防御性兜底（Validate 已排除）
+		return []int{1}
 	}
 	return out
+}
+
+func NegotiateAPIObservationSchemas(c *AgentCapabilities) []int {
+	if c == nil {
+		return []int{}
+	}
+	for _, v := range c.APIObservationSchemaVersions {
+		if v == APIObservationSchemaV1 {
+			return []int{APIObservationSchemaV1}
+		}
+	}
+	return []int{}
+}
+
+func (a *Agent) SupportsAPIObservationV1() bool {
+	for _, v := range a.APIObservationSchemas {
+		if v == APIObservationSchemaV1 {
+			return true
+		}
+	}
+	return false
 }

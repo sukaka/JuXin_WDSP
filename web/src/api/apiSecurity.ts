@@ -37,12 +37,23 @@ export interface ApiLearningSample {
 
 export const apiLearningApi = {
   status: (endpointId: string) =>
-    request<ApiLearningStatus>(`/api-security/endpoints/${endpointId}/learning/status`),
+    request<ApiLearningStatus>(
+      `/api-security/endpoints/${endpointId}/learning/status`,
+    ),
   start: (endpointId: string, body?: { sample_target?: number }) =>
-    request<{ message: string }>(`/api-security/endpoints/${endpointId}/learning/start`, { method: 'POST', body }),
+    request<{ message: string }>(
+      `/api-security/endpoints/${endpointId}/learning/start`,
+      { method: 'POST', body },
+    ),
   stop: (endpointId: string) =>
-    request<{ message: string }>(`/api-security/endpoints/${endpointId}/learning/stop`, { method: 'POST' }),
-  samples: async (endpointId: string, params: { accepted?: string; page: number; page_size: number }) => {
+    request<{ message: string }>(
+      `/api-security/endpoints/${endpointId}/learning/stop`,
+      { method: 'POST' },
+    ),
+  samples: async (
+    endpointId: string,
+    params: { accepted?: string; page: number; page_size: number },
+  ) => {
     const data = await request<PageResult<ApiLearningSample>>(
       `/api-security/endpoints/${endpointId}/learning/samples`,
       { query: { ...params } },
@@ -52,7 +63,8 @@ export const apiLearningApi = {
 }
 
 /** 三微模型成熟度阶段（与 server 端模型成熟度状态机枚举一致） */
-export type ApiModelMaturityStage = 'LEARNING' | 'CANDIDATE' | 'CONFIRMED' | 'ENFORCING'
+export type ApiModelMaturityStage =
+  'LEARNING' | 'CANDIDATE' | 'CONFIRMED' | 'ENFORCING'
 
 export interface ApiModelMaturityItem {
   /** 模型标识：parameter / identity / access_env / access_object */
@@ -94,23 +106,47 @@ export interface ApiParameter {
 }
 
 export const apiParametersApi = {
-  listByModel: async (modelId: string, params: { page: number; page_size: number }) => {
-    const data = await request<PageResult<ApiParameter>>(`/api-security/models/${modelId}/parameters`, {
-      query: { ...params },
-    })
+  listByModel: async (
+    modelId: string,
+    params: { page: number; page_size: number },
+  ) => {
+    const data = await request<PageResult<ApiParameter>>(
+      `/api-security/models/${modelId}/parameters`,
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
   /** 详情 data 即参数对象本身（与 OpenAPI ApiSecParameter / 后端 GetParameter 一致） */
   get: (id: string) => request<ApiParameter>(`/api-security/parameters/${id}`),
-  update: (id: string, body: Partial<Pick<ApiParameter, 'required' | 'nullable' | 'empty_allowed' | 'sensitivity_level' | 'semantic_type'>> & { confirmed_constraints?: Record<string, unknown> }) =>
-    request<{ parameter: ApiParameter; message: string }>(`/api-security/parameters/${id}`, {
-      method: 'PATCH',
-      body,
-    }),
+  update: (
+    id: string,
+    body: Partial<
+      Pick<
+        ApiParameter,
+        | 'required'
+        | 'nullable'
+        | 'empty_allowed'
+        | 'sensitivity_level'
+        | 'semantic_type'
+      >
+    > & { confirmed_constraints?: Record<string, unknown> },
+  ) =>
+    request<{ parameter: ApiParameter; message: string }>(
+      `/api-security/parameters/${id}`,
+      {
+        method: 'PATCH',
+        body,
+      },
+    ),
   confirm: (id: string) =>
-    request<{ parameter: ApiParameter; message: string }>(`/api-security/parameters/${id}/confirm`, {
-      method: 'POST',
-    }),
+    request<{ parameter: ApiParameter; message: string }>(
+      `/api-security/parameters/${id}/confirm`,
+      {
+        method: 'POST',
+      },
+    ),
   /** 批量采纳推荐约束；ids 省略则确认该版本全部有 recommended 的参数 */
   confirmBatch: (modelId: string, ids?: string[]) =>
     request<{ confirmed: number; skipped: number; message: string }>(
@@ -118,9 +154,15 @@ export const apiParametersApi = {
       { method: 'POST', body: ids?.length ? { ids } : {} },
     ),
   listRelations: (modelId: string) =>
-    request<{ items: Array<{ id: string; relation_type: string; confidence: number; source_parameter_id: string; target_parameter_id: string }> }>(
-      `/api-security/models/${modelId}/parameter-relations`,
-    ),
+    request<{
+      items: Array<{
+        id: string
+        relation_type: string
+        confidence: number
+        source_parameter_id: string
+        target_parameter_id: string
+      }>
+    }>(`/api-security/models/${modelId}/parameter-relations`),
 }
 
 /** 身份画像（身份微模型） */
@@ -140,14 +182,26 @@ export interface ApiIdentityProfile {
 }
 
 export const apiIdentityProfilesApi = {
-  list: async (params: { page: number; page_size: number; endpoint_id?: string; identity_fingerprint?: string; application_id?: string }) => {
-    const data = await request<PageResult<ApiIdentityProfile>>(`/api-security/identity-profiles`, {
-      query: { ...params },
-    })
+  list: async (params: {
+    page: number
+    page_size: number
+    endpoint_id?: string
+    identity_fingerprint?: string
+    application_id?: string
+  }) => {
+    const data = await request<PageResult<ApiIdentityProfile>>(
+      `/api-security/identity-profiles`,
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
   detail: (params: { identity_fingerprint: string; endpoint_id: string }) =>
-    request<ApiIdentityProfileDetail>(`/api-security/identity-profiles/detail`, { query: { ...params } }),
+    request<ApiIdentityProfileDetail>(
+      `/api-security/identity-profiles/detail`,
+      { query: { ...params } },
+    ),
 }
 
 /** 行为基线画像（访问微模型·环境维度，api_behavior_profiles 离线聚合产出） */
@@ -173,10 +227,19 @@ export interface ApiBehaviorProfile {
 }
 
 export const apiBehaviorProfilesApi = {
-  list: async (params: { page: number; page_size: number; endpoint_id?: string; identity_fingerprint?: string; application_id?: string }) => {
-    const data = await request<PageResult<ApiBehaviorProfile>>(`/api-security/behavior-profiles`, {
-      query: { ...params },
-    })
+  list: async (params: {
+    page: number
+    page_size: number
+    endpoint_id?: string
+    identity_fingerprint?: string
+    application_id?: string
+  }) => {
+    const data = await request<PageResult<ApiBehaviorProfile>>(
+      `/api-security/behavior-profiles`,
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
 }
@@ -234,15 +297,28 @@ export interface ApiObjectModelPatch {
 }
 
 export const apiObjectModelsApi = {
-  list: async (params: { page: number; page_size: number; endpoint_id?: string; object_segment?: string; identifier_type?: string; application_id?: string }) => {
-    const data = await request<PageResult<ApiObjectModel>>(`/api-security/object-models`, {
-      query: { ...params },
-    })
+  list: async (params: {
+    page: number
+    page_size: number
+    endpoint_id?: string
+    object_segment?: string
+    identifier_type?: string
+    application_id?: string
+  }) => {
+    const data = await request<PageResult<ApiObjectModel>>(
+      `/api-security/object-models`,
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
   /** 发布状态与 enforcement 管理写入（权限 api_authorization.manage；PROTECT 切换强制 confirm_token，NG-AZ-04 §1.4） */
   patch: (id: string, body: ApiObjectModelPatch) =>
-    request<ApiObjectModel>(`/api-security/object-models/${id}`, { method: 'PATCH', body }),
+    request<ApiObjectModel>(`/api-security/object-models/${id}`, {
+      method: 'PATCH',
+      body,
+    }),
 }
 
 /** 威胁识别指标（GB/T 31509 修订稿 5.2.3：数量 / 时间分布 / 严重程度） */
@@ -348,11 +424,83 @@ export const apiClassificationsApi = {
     return [...builtin, ...custom] as ApiClassificationItem[]
   },
   create: (body: { dimension: string; value: string; description?: string }) =>
-    request<{ message: string }>(`/api-security/classifications`, { method: 'POST', body }),
-  setEndpointClassification: (endpointId: string, dimensions: { dimension: string; value: string }[]) =>
-    request<{ message: string }>(`/api-security/endpoints/${endpointId}/classification`, {
-      method: 'PUT',
-      body: { dimensions },
+    request<{ message: string }>(`/api-security/classifications`, {
+      method: 'POST',
+      body,
+    }),
+  setEndpointClassification: (
+    endpointId: string,
+    dimensions: { dimension: string; value: string }[],
+  ) =>
+    request<{ message: string }>(
+      `/api-security/endpoints/${endpointId}/classification`,
+      {
+        method: 'PUT',
+        body: { dimensions },
+      },
+    ),
+}
+
+/** 暴露面判定证据明细（api_exposure_assessments.evidence 元素；summary 由后端引擎直接生成中文，前端不做翻译） */
+export interface ApiExposureEvidence {
+  type: string
+  summary: string
+}
+
+/** 暴露面评估明细（api_exposure_assessments 最近一次评估记录） */
+export interface ApiExposureAssessment {
+  /** 判定结论词表：INTERNAL / PARTNER / PUBLIC / UNKNOWN */
+  verdict: string
+  /** 判定来源词表：AUTO / MANUAL / TRAFFIC_OBSERVED / CONFIG */
+  source: string
+  /** 置信度词表：LOW / MEDIUM / HIGH */
+  confidence: string
+  evidence: ApiExposureEvidence[]
+  assessed_at: string
+}
+
+/** 暴露面当前维度视图（api_classification_dimensions 实时口径；无维度行时 value/source 为空串） */
+export interface ApiExposureCurrent {
+  value: string
+  source: string
+  confidence: number
+}
+
+/** GET /api-security/endpoints/{id}/exposure 响应（当前维度 + 最近一次评估） */
+export interface ApiExposureView {
+  endpoint_id: string
+  endpoint_key: string
+  /** 分类锁定标记（锁定/人工来源时引擎不覆盖维度） */
+  locked: boolean
+  current: ApiExposureCurrent | null
+  /** null = 从未评估 */
+  assessment: ApiExposureAssessment | null
+}
+
+export const apiExposureApi = {
+  /** 暴露面判定视图（权限 api_asset.read） */
+  get: async (endpointId: string) => {
+    const data = await request<ApiExposureView>(
+      `/api-security/endpoints/${endpointId}/exposure`,
+    )
+    return data.assessment
+      ? {
+          ...data,
+          assessment: {
+            ...data.assessment,
+            evidence: data.assessment.evidence ?? [],
+          },
+        }
+      : data
+  },
+  /** 即时重评（权限 api_asset.edit）；applied=false 表示人工/锁定端点未改判定 */
+  reassess: (endpointId: string) =>
+    request<{
+      assessment: ApiExposureAssessment
+      applied: boolean
+      message: string
+    }>(`/api-security/endpoints/${endpointId}/exposure/reassess`, {
+      method: 'POST',
     }),
 }
 
@@ -378,17 +526,29 @@ export interface ApiSensitiveField {
 }
 
 export const apiSensitiveFieldsApi = {
-  list: async (params: { endpoint_id?: string; direction?: string; data_type?: string; page: number; page_size: number }) => {
-    const data = await request<PageResult<ApiSensitiveField>>(`/api-security/sensitive-fields`, {
-      query: { ...params },
-    })
+  list: async (params: {
+    endpoint_id?: string
+    direction?: string
+    data_type?: string
+    page: number
+    page_size: number
+  }) => {
+    const data = await request<PageResult<ApiSensitiveField>>(
+      `/api-security/sensitive-fields`,
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
   batchDelete: (ids: string[]) =>
-    request<{ message: string; deleted: number }>(`/api-security/sensitive-fields/batch-delete`, {
-      method: 'POST',
-      body: { ids },
-    }),
+    request<{ message: string; deleted: number }>(
+      `/api-security/sensitive-fields/batch-delete`,
+      {
+        method: 'POST',
+        body: { ids },
+      },
+    ),
 }
 
 /** 规范导入（api_import_specs；W3-C 起带版本状态机：name 为版本链标识，同名唯一 ACTIVE） */
@@ -448,9 +608,47 @@ export interface ApiSpecVersionDiff {
   changes: ApiSpecChange[]
 }
 
+export type ApiSpecAuditRuleId =
+  | 'PATH_PARAMETER_MISSING'
+  | 'PATH_PARAMETER_NOT_REQUIRED'
+  | 'PATH_PARAMETER_UNDECLARED'
+  | 'SENSITIVE_QUERY_PARAMETER'
+  | 'SUCCESS_RESPONSE_MISSING'
+  | 'ERROR_RESPONSE_MISSING'
+  | 'SECURITY_SCHEME_UNDEFINED'
+  | 'API_KEY_IN_QUERY'
+
+export interface ApiSpecAuditItem {
+  rule_id: ApiSpecAuditRuleId
+  severity: 'HIGH' | 'MEDIUM'
+  endpoint_key: string
+  param_in: string
+  param_name: string
+  message: string
+}
+
+export interface ApiSpecAudit {
+  spec_id: string
+  format: string
+  operation_count: number
+  issue_count: number
+  high_count: number
+  medium_count: number
+  items: ApiSpecAuditItem[]
+  truncated: boolean
+}
+
 export const apiSpecsApi = {
-  list: async (params: { name?: string; status?: string; page: number; page_size: number }) => {
-    const data = await request<PageResult<ApiImportSpec>>(`/api-security/specs`, { query: { ...params } })
+  list: async (params: {
+    name?: string
+    status?: string
+    page: number
+    page_size: number
+  }) => {
+    const data = await request<PageResult<ApiImportSpec>>(
+      `/api-security/specs`,
+      { query: { ...params } },
+    )
     return { ...data, items: data.items ?? [] }
   },
   import: (body: { file_name?: string; spec: Record<string, unknown> }) =>
@@ -459,21 +657,36 @@ export const apiSpecsApi = {
       body,
     }),
   /** 从 URL 拉取规范文档导入（服务端 SSRF 防护；headers 可选认证头，最多 20 个） */
-  importUrl: (body: { url: string; name?: string; headers?: Record<string, string> }) =>
+  importUrl: (body: {
+    url: string
+    name?: string
+    headers?: Record<string, string>
+  }) =>
     request<ApiSpecImportResult>(`/api-security/specs/import-url`, {
       method: 'POST',
       body,
     }),
   /** 激活指定版本：同名当前 ACTIVE 降为 HISTORICAL（已是 ACTIVE 时 409） */
   activate: (id: string) =>
-    request<{ spec: ApiImportSpec }>(`/api-security/specs/${id}/activate`, { method: 'POST' }),
+    request<{ spec: ApiImportSpec }>(`/api-security/specs/${id}/activate`, {
+      method: 'POST',
+    }),
   /** 任意两版本 CHANGED 级对比（id 为基准旧版，otherId 为目标新版；只读不落库） */
   versionDiff: (id: string, otherId: string) =>
-    request<ApiSpecVersionDiff>(`/api-security/specs/${id}/version-diff`, { query: { other: otherId } }),
+    request<ApiSpecVersionDiff>(`/api-security/specs/${id}/version-diff`, {
+      query: { other: otherId },
+    }),
+  audit: async (id: string) => {
+    const data = await request<ApiSpecAudit>(`/api-security/specs/${id}/audit`)
+    return { ...data, items: data.items ?? [] }
+  },
   diff: async (id: string, params: { page: number; page_size: number }) => {
-    const data = await request<PageResult<ApiSpecDiff>>(`/api-security/specs/${id}/diff`, {
-      query: { ...params },
-    })
+    const data = await request<PageResult<ApiSpecDiff>>(
+      `/api-security/specs/${id}/diff`,
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
 }
@@ -504,9 +717,13 @@ export interface ApiTopologyGroup {
 
 export const apiGraphApi = {
   graph: () =>
-    request<{ nodes: ApiGraphNode[]; edges: ApiGraphEdge[] }>(`/api-security/graph`),
+    request<{ nodes: ApiGraphNode[]; edges: ApiGraphEdge[] }>(
+      `/api-security/graph`,
+    ),
   topology: () =>
-    request<{ applications: ApiTopologyGroup[]; edges: ApiGraphEdge[] }>(`/api-security/topology`),
+    request<{ applications: ApiTopologyGroup[]; edges: ApiGraphEdge[] }>(
+      `/api-security/topology`,
+    ),
 }
 
 /** 风险发现与违例 */
@@ -589,8 +806,17 @@ export interface ApiFindingSummary {
 }
 
 export const apiFindingsApi = {
-  list: async (params: { finding_type?: string; severity?: string; status?: string; page: number; page_size: number }) => {
-    const data = await request<PageResult<ApiFinding>>(`/api-security/findings`, { query: { ...params } })
+  list: async (params: {
+    finding_type?: string
+    severity?: string
+    status?: string
+    page: number
+    page_size: number
+  }) => {
+    const data = await request<PageResult<ApiFinding>>(
+      `/api-security/findings`,
+      { query: { ...params } },
+    )
     return { ...data, items: data.items ?? [] }
   },
   violations: async (params: {
@@ -602,25 +828,43 @@ export const apiFindingsApi = {
     page: number
     page_size: number
   }) => {
-    const data = await request<PageResult<ApiViolation>>(`/api-security/violations`, { query: { ...params } })
+    const data = await request<PageResult<ApiViolation>>(
+      `/api-security/violations`,
+      { query: { ...params } },
+    )
     return { ...data, items: data.items ?? [] }
   },
   /** 风险汇总：主体/接口/类型三视图一次返回（权限 api_risk.read；无 group_by 参数，前端本地切换视图） */
   summary: () => request<ApiFindingSummary>(`/api-security/findings/summary`),
   /** 风险详情（权限 api_risk.read）：finding + 同端点（同身份）近期事件的近似关联 request_id 列表 */
   detail: (id: string) =>
-    request<{ finding: ApiFindingDetail; related_request_ids: string[]; related_request_note: string }>(
-      `/api-security/findings/${id}`,
-    ),
+    request<{
+      finding: ApiFindingDetail
+      related_request_ids: string[]
+      related_request_note: string
+    }>(`/api-security/findings/${id}`),
   /** 风险处置（权限 api_risk.handle）：confirm/start/ignore/archive，body 可选 {note}（≤512 字符） */
-  handle: (id: string, action: ApiFindingHandleAction, body?: { note?: string }) =>
-    request<{ finding: ApiFindingDetail }>(`/api-security/findings/${id}/${action}`, { method: 'POST', body: body ?? {} }),
+  handle: (
+    id: string,
+    action: ApiFindingHandleAction,
+    body?: { note?: string },
+  ) =>
+    request<{ finding: ApiFindingDetail }>(
+      `/api-security/findings/${id}/${action}`,
+      { method: 'POST', body: body ?? {} },
+    ),
   /** 标记已解决（权限 api_risk.handle）：body 必填 {resolution}（≤512 字符） */
   resolve: (id: string, resolution: string) =>
-    request<{ finding: ApiFindingDetail }>(`/api-security/findings/${id}/resolve`, { method: 'POST', body: { resolution } }),
+    request<{ finding: ApiFindingDetail }>(
+      `/api-security/findings/${id}/resolve`,
+      { method: 'POST', body: { resolution } },
+    ),
   /** 标记误报（权限 api_risk.handle）：body 必填 {reason}（≤512 字符） */
   falsePositive: (id: string, reason: string) =>
-    request<{ finding: ApiFindingDetail }>(`/api-security/findings/${id}/false-positive`, { method: 'POST', body: { reason } }),
+    request<{ finding: ApiFindingDetail }>(
+      `/api-security/findings/${id}/false-positive`,
+      { method: 'POST', body: { reason } },
+    ),
 }
 
 /** 运行时事件检测明细项（与网关 dsctx.DetectorMatch 序列化结构一致） */
@@ -672,7 +916,10 @@ export interface ApiLifecycleEvent {
 }
 
 export const apiLifecycleApi = {
-  events: async (endpointId: string, params: { page: number; page_size: number }) => {
+  events: async (
+    endpointId: string,
+    params: { page: number; page_size: number },
+  ) => {
     const data = await request<PageResult<ApiLifecycleEvent>>(
       `/api-security/endpoints/${endpointId}/lifecycle-events`,
       { query: { ...params } },
@@ -705,7 +952,8 @@ export interface ApiRuntimeStatistics {
 
 export const apiPostureApi = {
   posture: () => request<ApiPosture>(`/api-security/posture`),
-  runtimeStatistics: () => request<ApiRuntimeStatistics>(`/api-security/runtime/statistics`),
+  runtimeStatistics: () =>
+    request<ApiRuntimeStatistics>(`/api-security/runtime/statistics`),
 }
 
 /** API 动态防护策略 */
@@ -729,5 +977,8 @@ export const apiPolicyApi = {
       method: 'PUT',
       body: { mode },
     }),
-  publish: () => request<{ message: string }>(`/api-security/policy/publish`, { method: 'POST' }),
+  publish: () =>
+    request<{ message: string }>(`/api-security/policy/publish`, {
+      method: 'POST',
+    }),
 }

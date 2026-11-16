@@ -188,6 +188,14 @@ export const MENU_ITEMS: MenuDef[] = [
     capability: 'api_dynamic_protection',
     group: 'API 防护',
   },
+  {
+    key: '/api-endpoint-groups',
+    label: '业务功能分组',
+    roles: ['SECURITY_ADMIN'],
+    permissions: ['api_endpoint_group.read'],
+    capability: 'api_dynamic_protection',
+    group: 'API 防护',
+  },
   // API 准入防护（docs/API_ADMISSION_CONTROL_DESIGN.md §6，读取权限 api_asset.read）
   {
     key: '/api-admission',
@@ -290,6 +298,22 @@ export const MENU_ITEMS: MenuDef[] = [
     group: 'API 防护',
   },
   {
+    key: '/api-data-flow',
+    label: '数据流向',
+    roles: ['SECURITY_ADMIN'],
+    permissions: ['api_data_flow.read'],
+    capability: 'api_dynamic_protection',
+    group: 'API 防护',
+  },
+  {
+    key: '/api-group-control',
+    label: '群控分析',
+    roles: ['SECURITY_ADMIN'],
+    permissions: ['api_runtime.read'],
+    capability: 'api_dynamic_protection',
+    group: 'API 防护',
+  },
+  {
     key: '/api-findings',
     label: 'API 风险',
     roles: ['SECURITY_ADMIN'],
@@ -383,7 +407,7 @@ export const MENU_ITEMS: MenuDef[] = [
   },
   {
     key: '/api-llm',
-    label: 'LLM 观测',
+    label: 'AI 大模型安全',
     roles: ['SECURITY_ADMIN'],
     capability: 'api_dynamic_protection',
     group: 'API 防护',
@@ -413,6 +437,14 @@ export const MENU_ITEMS: MenuDef[] = [
     key: '/api-file-compliance',
     label: '文件合规',
     roles: ['SECURITY_ADMIN'],
+    capability: 'api_dynamic_protection',
+    group: 'API 防护',
+  },
+  {
+    key: '/api-file-assets',
+    label: '文件资产',
+    roles: ['SECURITY_ADMIN'],
+    permissions: ['api_data.read'],
     capability: 'api_dynamic_protection',
     group: 'API 防护',
   },
@@ -575,6 +607,13 @@ export const MENU_ITEMS: MenuDef[] = [
     roles: ['SECURITY_ADMIN', 'SYSTEM_ADMIN'],
     group: '安全态势',
   },
+  // 漏洞情报提醒（PHP 场景闭环）：读 vuln_intel.read，写 vuln_intel.manage（仅 SYSTEM_ADMIN）页面内控
+  {
+    key: '/vuln-intel',
+    label: '漏洞情报',
+    permissions: ['vuln_intel.read'],
+    group: '安全运营',
+  },
   {
     key: '/reports',
     label: '报告任务',
@@ -615,6 +654,13 @@ export const MENU_ITEMS: MenuDef[] = [
     key: '/network-tools',
     label: '网络工具',
     roles: ['SYSTEM_ADMIN'],
+    group: '系统运维',
+  },
+  {
+    key: '/system-containers',
+    label: '容器运维',
+    roles: ['SYSTEM_ADMIN'],
+    permissions: ['containers.read'],
     group: '系统运维',
   },
   {
@@ -778,6 +824,75 @@ export const MENU_ITEMS: MenuDef[] = [
   { key: '/system-settings', label: '系统设置', roles: ['SYSTEM_ADMIN'] },
   { key: '/profile', label: '个人中心' },
 ]
+
+export const CORE_MENU_KEYS = [
+  '/dashboard',
+  '/applications',
+  '/api-endpoints',
+  '/traffic-agents',
+  '/protection-policies',
+  '/api-policy',
+  '/api-posture',
+  '/api-data-flow',
+  '/security-events',
+  '/system-monitoring',
+  '/users',
+  '/system-settings',
+  '/audits',
+  '/login-logs',
+  '/license',
+  '/profile',
+] as const
+
+export function filterCoreMenus(
+  menus: MenuDef[],
+  currentKey?: string,
+): MenuDef[] {
+  const core = CORE_MENU_KEYS.flatMap((key) => {
+    const menu = menus.find((item) => item.key === key)
+    return menu ? [{ ...menu, group: undefined }] : []
+  })
+  const current = menus.find((menu) => menu.key === currentKey)
+  if (current && !core.some((menu) => menu.key === current.key)) {
+    core.push({ ...current, group: undefined })
+  }
+  return core
+}
+
+export const API_MENU_SECTIONS: Record<string, string> = {
+  '/api-endpoints': '资产与接入',
+  '/api-endpoint-groups': '资产与接入',
+  '/api-specs': '资产与接入',
+  '/api-mcp': '资产与接入',
+  '/api-service-assets': '资产与接入',
+  '/api-nodes': '资产与接入',
+  '/api-models': '模型中心',
+  '/api-model-maturity': '模型中心',
+  '/api-learning': '模型中心',
+  '/api-identity-profiles': '模型中心',
+  '/api-access-profiles': '模型中心',
+  '/api-parameters': '模型中心',
+  '/api-admission': '策略与授权',
+  '/api-machine-identities': '策略与授权',
+  '/api-policy': '策略与授权',
+  '/api-runtime-policies': '策略与授权',
+  '/api-authz': '策略与授权',
+  '/api-flow-baselines': '策略与授权',
+  '/api-classifications': '数据安全',
+  '/api-sensitive-fields': '数据安全',
+  '/api-sensitive-types': '数据安全',
+  '/api-masking-rules': '数据安全',
+  '/api-cross-border': '数据安全',
+  '/api-file-compliance': '数据安全',
+  '/api-file-assets': '数据安全',
+  '/api-graph': '关系与运行',
+  '/api-topology': '关系与运行',
+  '/api-data-flow': '关系与运行',
+  '/api-group-control': '关系与运行',
+  '/api-violations': '关系与运行',
+  '/api-runtime-events': '关系与运行',
+  '/api-llm': '关系与运行',
+}
 
 /** 按角色编码、用户权限点和产品能力过滤菜单；能力未初始化时按关闭处理。
  * 菜单可见性 = （角色码匹配 或 权限点命中）且产品能力开启，与路由 RequirePermission 口径一致 */

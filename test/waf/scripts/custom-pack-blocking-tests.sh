@@ -18,6 +18,9 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/stage5-setup.sh"
 
+TMPDIR_P2S="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_P2S"' EXIT
+
 TOTAL=0; PASS=0; FAIL=0; FAILED=()
 record() {
   local name="$1" ok="$2" detail="${3:-}"
@@ -48,12 +51,11 @@ print(json.dumps({'name':d['name'],'description':d.get('description') or '',
     -H 'Content-Type: application/json' -H "X-CSRF-Token: $SEC_CSRF" -d "$body"
 }
 
-# 最近一条 BLOCK 事件详情中包含的规则 ID 列表（空格分隔）
+# 最近一条包含指定规则 ID 的 BLOCK 事件详情规则列表（空格分隔）。
+# 纯时序取最新在多探针采集序下不稳定，故按目标规则 ID 定位。
 latest_block_rules() {
-  local cookie="/tmp/s5-$SEC_USER.txt" eid target
-  # 在近 5 条 BLOCK 事件中按内容（含 1001101 的 SSTI 探针事件）定位；
-  # 纯时序取最新在三个阻断探针并发的采集序下不稳定（selftest/sqli 探针后落库却时标更新）。
-  target=$(curl -s -b "$cookie" "$API_URL/api/v1/security-events?page_size=5" | python3 -c "
+  local wanted="$1" cookie="/tmp/s5-$SEC_USER.txt" eid target
+  target=$(curl -s -b "$cookie" "$API_URL/api/v1/security-events?page_size=10" | python3 -c "
 import json,sys
 items=json.load(sys.stdin)['data'].get('items') or []
 ids=[e['id'] for e in items if e.get('action')=='BLOCK']
@@ -64,10 +66,10 @@ import json,sys
 d=json.load(sys.stdin)['data']
 print(' '.join(str(m['rule_id']) for m in (d.get('matches') or [])))" 2>/dev/null)
     case " $matches " in
-      *" 1001101 "*) echo "$matches"; return 0 ;;
+      *" $wanted "*) echo "$matches"; return 0 ;;
     esac
   done
-  # 兜底：找不到 SSTI 事件时回退最新一条（保持失败输出可诊断）
+  # 兜底：找不到目标事件时回退最新一条（保持失败输出可诊断）
   eid=$(echo "$target" | awk '{print $1}')
   [ -z "$eid" ] && return 0
   curl -s -b "$cookie" "$API_URL/api/v1/security-events/$eid" | python3 -c "
@@ -99,6 +101,33 @@ PUB=$(s5_publish "$SEC_CSRF")
 check "custom-pack-ssti-phase2-403（核心回归）" 403 "/echo" \
   -X POST -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'payload={{7+7}}'
 
+# ---------- 2.1 PHP2Shell 应急规则（1000043-1000047） ----------
+printf 'ordinary multipart upload\n' > "$TMPDIR_P2S/normal.txt"
+# upload progress 字段入口（无害值也阻断攻击面）
+check "php2shell-upload-progress-field-403" 403 "/echo" \
+  -F 'PHP_SESSION_UPLOAD_PROGRESS=123' -F "file=@$TMPDIR_P2S/normal.txt"
+# session 投毒 payload（PHP 标签）
+check "php2shell-session-payload-403" 403 "/echo" \
+  --form-string 'PHP_SESSION_UPLOAD_PROGRESS=<?php echo 1; ?>' -F "file=@$TMPDIR_P2S/normal.txt"
+# 超长 part header OOM 探针
+python3 - "$TMPDIR_P2S/long-header.bin" <<'PY'
+import pathlib, sys
+boundary = "p2slong"
+header = ('Content-Disposition: form-data; name="file"; filename="' + 'a' * 8300 + '.txt"\r\n\r\n')
+body = ("--" + boundary + "\r\n" + header + "x\r\n--" + boundary + "--\r\n").encode()
+pathlib.Path(sys.argv[1]).write_bytes(body)
+PY
+check "php2shell-long-part-header-403" 403 "/echo" \
+  -X POST -H 'Content-Type: multipart/form-data; boundary=p2slong' \
+  --data-binary "@$TMPDIR_P2S/long-header.bin"
+# 无可信声明长度的 chunked multipart（官方 OOM 入口）
+check "php2shell-chunked-multipart-403" 403 "/echo" \
+  -H 'Transfer-Encoding: chunked' -F "file=@$TMPDIR_P2S/normal.txt"
+# 普通 multipart 上传不误伤
+check "normal-multipart-upload-200（不误伤）" 200 "/echo" \
+  -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/537.36 Chrome/131.0 Safari/537.36' \
+  -F "file=@$TMPDIR_P2S/normal.txt"
+
 # ---------- 3. 对照组 ----------
 # phase:1 直接阻断的自定义规则（jiuzhang-custom 9000001），不经过异常评分，始终 403
 check "phase1-直阻规则仍-403（对照）" 403 "/jiuzhang-rule-selftest"
@@ -113,11 +142,14 @@ check "normal-post-200（不误伤）" 200 "/echo" \
 # 最新 BLOCK 事件的匹配规则应包含 CUSTOM_PACK 1001101 与二次评估 9000104，
 # 且不含 CRS 949110/949111（证明 949 评估时分数未达阈值，阻断由后置二次评估完成）
 sleep 5
-RULES=" $(latest_block_rules) "
+RULES=" $(latest_block_rules 1001101) "
 [ "${RULES#* 1001101 }" != "$RULES" ] && record "事件含 CUSTOM_PACK 规则 1001101" 1 || record "事件含 CUSTOM_PACK 规则 1001101" 0 "rules=$RULES"
 [ "${RULES#* 9000104 }" != "$RULES" ] && record "事件含二次阻断评估规则 9000104" 1 || record "事件含二次阻断评估规则 9000104" 0 "rules=$RULES"
 [ "${RULES#* 949110 }" = "$RULES" ] && [ "${RULES#* 949111 }" = "$RULES" ] \
   && record "事件不含 CRS 949 阻断（归因正确）" 1 || record "事件不含 CRS 949 阻断（归因正确）" 0 "rules=$RULES"
+P2S_RULES=" $(latest_block_rules 1000043) "
+[ "${P2S_RULES#* 1000043 }" != "$P2S_RULES" ] && [ "${P2S_RULES#* 9000104 }" != "$P2S_RULES" ] \
+  && record "PHP2Shell 事件含 1000043 与二次评估 9000104" 1 || record "PHP2Shell 事件含 1000043 与二次评估 9000104" 0 "rules=$P2S_RULES"
 
 # ---------- 5. OBSERVE 模式：同一请求应放行（DetectionOnly 自动降级 deny） ----------
 RC=$(s5_set_mode "OBSERVE")
@@ -128,6 +160,10 @@ CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $HOST_HEADER" \
   -X POST -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'payload={{7+7}}' \
   "$GATEWAY_URL/echo")
 [ "$CODE" != "403" ] && [ "$CODE" != "429" ] && record "OBSERVE 模式同一请求放行不阻断（=${CODE}）" 1 || record "OBSERVE 模式同一请求放行不阻断" 0 "status=$CODE"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $HOST_HEADER" \
+  -F 'PHP_SESSION_UPLOAD_PROGRESS=123' -F "file=@$TMPDIR_P2S/normal.txt" \
+  "$GATEWAY_URL/echo")
+[ "$CODE" != "403" ] && [ "$CODE" != "429" ] && record "OBSERVE 模式 PHP2Shell 请求放行不阻断（=${CODE}）" 1 || record "OBSERVE 模式 PHP2Shell 请求放行不阻断" 0 "status=$CODE"
 
 # ---------- 6. 还原 OFF（stage5 其他用例假设该应用为 OFF，避免污染环境） ----------
 s5_set_mode "OFF" > /dev/null

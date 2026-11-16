@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 
@@ -99,12 +100,52 @@ func applyGatewayRuntimeSettings(cfg *gatewayconfig.GuardConfig, kv map[string]s
 				return err
 			}
 			cfg.CredentialConcurrencyLimit = n
+		case "credential_rate_per_minute":
+			n, err := parseNonNegativeInt("credential_rate_per_minute", v)
+			if err != nil {
+				return err
+			}
+			cfg.CredentialRatePerMinute = n
+		case "tenant_rate_per_minute":
+			n, err := parseNonNegativeInt("tenant_rate_per_minute", v)
+			if err != nil {
+				return err
+			}
+			cfg.TenantRatePerMinute = n
+		case "action_rate_per_minute":
+			n, err := parseNonNegativeInt("action_rate_per_minute", v)
+			if err != nil {
+				return err
+			}
+			cfg.ActionRatePerMinute = n
+		case "group_rate_per_minute":
+			n, err := parseNonNegativeInt("group_rate_per_minute", v)
+			if err != nil {
+				return err
+			}
+			cfg.GroupRatePerMinute = n
 		case "api_write_rate_per_minute":
 			n, err := parseNonNegativeInt("api_write_rate_per_minute", v)
 			if err != nil {
 				return err
 			}
 			cfg.APIWriteRatePerMinute = n
+		case "api_rate_limit_action":
+			switch strings.ToUpper(v) {
+			case "RATE_LIMIT", "BLOCK", "TEMP_BLOCK":
+				cfg.APIRateLimitAction = strings.ToUpper(v)
+			default:
+				return fmt.Errorf("gateway_runtime.api_rate_limit_action 非法取值 %q（仅支持 RATE_LIMIT|BLOCK|TEMP_BLOCK）", raw)
+			}
+		case "api_temp_block_seconds":
+			n, err := parseNonNegativeInt("api_temp_block_seconds", v)
+			if err != nil {
+				return err
+			}
+			if n < 1 || n > 86400 {
+				return fmt.Errorf("gateway_runtime.api_temp_block_seconds 须在 1~86400：%d", n)
+			}
+			cfg.APITempBlockSeconds = n
 		// 阶段8 §36 限流下发面：0/空串视同缺省不启用（>0 才下发，不走引擎默认值冒充已配置）
 		case "api_quota_per_hour":
 			n, err := parseNonNegativeInt("api_quota_per_hour", v)
@@ -164,6 +205,12 @@ func applyGatewayRuntimeSettings(cfg *gatewayconfig.GuardConfig, kv map[string]s
 				return fmt.Errorf("gateway_runtime.api_response_capture_max_bytes 超过网关硬上限 16MiB：%d", n)
 			}
 			cfg.APIResponseCaptureMaxBytes = n
+		case "api_response_sample_ratio":
+			ratio, err := parseResponseSampleRatio(v)
+			if err != nil {
+				return err
+			}
+			cfg.APIResponseSampleRatio = ratio
 		case "api_llm_allowed_models":
 			// W10-LLM / P2-04：LLM 授权模型名单（逗号分隔）；缺省/空串不下发不判定
 			models, err := parseLLMAllowedModels(v)
@@ -242,6 +289,20 @@ func parseNonNegativeInt(key, v string) (int, error) {
 	return n, nil
 }
 
+func parseResponseSampleRatio(v string) (*float64, error) {
+	ratio, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return nil, fmt.Errorf("gateway_runtime.api_response_sample_ratio 非数字取值 %q", v)
+	}
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0 || ratio > 1 {
+		return nil, fmt.Errorf("gateway_runtime.api_response_sample_ratio 须在 0~1：%q", v)
+	}
+	if ratio == 0 {
+		ratio = 0
+	}
+	return &ratio, nil
+}
+
 // api_llm_allowed_models 名单防误配护栏（条数/单项长度上限）。
 const (
 	maxLLMAllowedModels   = 256
@@ -284,7 +345,7 @@ func parseLLMAllowedModels(v string) ([]string, error) {
 // + 非密钥 gateway_runtime 行为键 的规范序列化
 // sha256（map 键序由 encoding/json 排序，同内容恒得同版本戳）；覆盖面对齐
 // gatewayconfig/guard.go 实际下发面，供生效校验与网关回报比对「发布内容与实际生效」。
-// 密钥三段（api_scan_verification、api_file_signature、tls_session_ticket_key）与
+// 密钥四段（api_scan_verification、api_file_signature、api_mask_crypto、tls_session_ticket_key）与
 // identity_salt 盐值为秘密材料，不参与版本戳计算（版本戳会随事件回报，秘密材料的哈希
 // 无需暴露；密钥轮换不视为防护内容变更）。
 // 新增段与 gRPC 描述符集字段带 omitempty：未下发时序列化与既有版本逐字节一致（版本戳零变化）。
@@ -310,28 +371,38 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		// NG-GRPC G1 批次 B1：per-app 绑定（omitempty 保持空绑定（全局可见）零变化）
 		GRPCBindings []gatewayconfig.GuardGRPCBinding `json:"api_grpc_bindings,omitempty"`
 		// 以下为本次补齐的已下发未进哈希段（对齐 guard.go 下发面；omitempty 保持缺省零变化）
-		ProtectionMode        string                            `json:"api_protection_mode,omitempty"`
-		EventsLog             string                            `json:"api_events_log,omitempty"`
-		ModelVersions         map[string]string                 `json:"api_formal_model_versions,omitempty"`
-		KnownEndpoints        map[string]string                 `json:"api_known_endpoints,omitempty"`
-		BehaviorStore         string                            `json:"behavior_store,omitempty"`
-		CredentialIPSpread    int                               `json:"credential_ip_spread_limit,omitempty"`
-		CredentialConcurrency int                               `json:"credential_concurrency_limit,omitempty"`
-		WriteRatePerMinute    int                               `json:"api_write_rate_per_minute,omitempty"`
-		QuotaPerHour          int                               `json:"api_quota_per_hour,omitempty"`
-		QuotaPerDay           int                               `json:"api_quota_per_day,omitempty"`
-		ObjectRatePerMinute   int                               `json:"object_rate_per_minute,omitempty"`
-		MaxPageSize           int                               `json:"max_page_size,omitempty"`
-		MaxBatchSize          int                               `json:"max_batch_size,omitempty"`
-		ResponseFailPolicy    string                            `json:"api_response_fail_policy,omitempty"`
-		ResponseCaptureMax    int                               `json:"api_response_capture_max_bytes,omitempty"`
-		NodeHeartbeatSeconds  int                               `json:"api_node_heartbeat_seconds,omitempty"`
-		AuthzClockSkewMax     int                               `json:"api_authz_clock_skew_max_seconds,omitempty"`
-		AuthzLeaseSeconds     map[string]int                    `json:"api_authz_lease_seconds,omitempty"`
-		LLMAllowedModels      []string                          `json:"api_llm_allowed_models,omitempty"`
-		FileWatermark         *gatewayconfig.GuardFileWatermark `json:"api_file_watermark,omitempty"`
-		GRPCMaxFrameBytes     int                               `json:"api_grpc_max_frame_bytes,omitempty"`
-		GRPCAllowCompression  bool                              `json:"api_grpc_allow_compression,omitempty"`
+		ProtectionMode        string                                 `json:"api_protection_mode,omitempty"`
+		EventsLog             string                                 `json:"api_events_log,omitempty"`
+		ModelVersions         map[string]string                      `json:"api_formal_model_versions,omitempty"`
+		KnownEndpoints        map[string]string                      `json:"api_known_endpoints,omitempty"`
+		BehaviorStore         string                                 `json:"behavior_store,omitempty"`
+		CredentialIPSpread    int                                    `json:"credential_ip_spread_limit,omitempty"`
+		CredentialConcurrency int                                    `json:"credential_concurrency_limit,omitempty"`
+		CredentialRate        int                                    `json:"credential_rate_per_minute,omitempty"`
+		TenantRate            int                                    `json:"tenant_rate_per_minute,omitempty"`
+		ActionRate            int                                    `json:"action_rate_per_minute,omitempty"`
+		EndpointActions       map[string]string                      `json:"api_endpoint_actions,omitempty"`
+		GroupRate             int                                    `json:"group_rate_per_minute,omitempty"`
+		EndpointGroups        map[string]map[string][]string         `json:"api_endpoint_groups,omitempty"`
+		WriteRatePerMinute    int                                    `json:"api_write_rate_per_minute,omitempty"`
+		RateLimitAction       string                                 `json:"api_rate_limit_action,omitempty"`
+		TempBlockSeconds      int                                    `json:"api_temp_block_seconds,omitempty"`
+		QuotaPerHour          int                                    `json:"api_quota_per_hour,omitempty"`
+		QuotaPerDay           int                                    `json:"api_quota_per_day,omitempty"`
+		ObjectRatePerMinute   int                                    `json:"object_rate_per_minute,omitempty"`
+		MaxPageSize           int                                    `json:"max_page_size,omitempty"`
+		MaxBatchSize          int                                    `json:"max_batch_size,omitempty"`
+		ResponseFailPolicy    string                                 `json:"api_response_fail_policy,omitempty"`
+		ResponseCaptureMax    int                                    `json:"api_response_capture_max_bytes,omitempty"`
+		ResponseSampleRatio   *float64                               `json:"api_response_sample_ratio,omitempty"`
+		NodeHeartbeatSeconds  int                                    `json:"api_node_heartbeat_seconds,omitempty"`
+		AuthzClockSkewMax     int                                    `json:"api_authz_clock_skew_max_seconds,omitempty"`
+		AuthzLeaseSeconds     map[string]int                         `json:"api_authz_lease_seconds,omitempty"`
+		LLMAllowedModels      []string                               `json:"api_llm_allowed_models,omitempty"`
+		LLMSecurityPolicies   []gatewayconfig.GuardLLMSecurityPolicy `json:"api_llm_security_policies,omitempty"`
+		FileWatermark         *gatewayconfig.GuardFileWatermark      `json:"api_file_watermark,omitempty"`
+		GRPCMaxFrameBytes     int                                    `json:"api_grpc_max_frame_bytes,omitempty"`
+		GRPCAllowCompression  bool                                   `json:"api_grpc_allow_compression,omitempty"`
 		// P0-03：JWT 信任策略段（按应用；策略内容非密钥——静态 JWKS 仅公钥——纳入版本戳）
 		JWTTrust map[string]*gatewayconfig.GuardJWTTrustPolicy `json:"jwt_trust,omitempty"`
 		// P1-02：Bot 挑战策略段（按应用；策略内容非密钥——key_ref 仅引用名——纳入版本戳）
@@ -350,6 +421,7 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		APIMCPBindings     []gatewayconfig.GuardMCPBinding     `json:"api_mcp_bindings,omitempty"`
 		// NG-ID g1 批次 B1：机器身份三段（登记册/绑定/元数据——公钥非秘密材料、水位与
 		// 版本为溯源整数——纳入版本戳；omitempty 保持未下发时零变化）
+		IdentityBlocks             []gatewayconfig.GuardIdentityBlock          `json:"api_identity_blocks,omitempty"`
 		APIMachineIdentities       []gatewayconfig.GuardMachineIdentity        `json:"api_machine_identities,omitempty"`
 		APIMachineIdentityBindings []gatewayconfig.GuardMachineIdentityBinding `json:"api_machine_identity_bindings,omitempty"`
 		APIMachineIdentityMeta     *gatewayconfig.GuardMachineIdentityMeta     `json:"api_machine_identity_meta,omitempty"`
@@ -367,14 +439,20 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		ProtectionMode: cfg.APIProtectionMode, EventsLog: cfg.APIEventsLog,
 		ModelVersions: cfg.APIFormalModelVersions, KnownEndpoints: cfg.APIKnownEndpoints,
 		BehaviorStore: cfg.BehaviorStore, CredentialIPSpread: cfg.CredentialIPSpreadLimit,
-		CredentialConcurrency: cfg.CredentialConcurrencyLimit, WriteRatePerMinute: cfg.APIWriteRatePerMinute,
+		CredentialConcurrency: cfg.CredentialConcurrencyLimit, CredentialRate: cfg.CredentialRatePerMinute,
+		TenantRate: cfg.TenantRatePerMinute, ActionRate: cfg.ActionRatePerMinute,
+		EndpointActions: cfg.APIEndpointActions, GroupRate: cfg.GroupRatePerMinute,
+		EndpointGroups: cfg.APIEndpointGroups, WriteRatePerMinute: cfg.APIWriteRatePerMinute,
+		RateLimitAction: cfg.APIRateLimitAction, TempBlockSeconds: cfg.APITempBlockSeconds,
 		QuotaPerHour: cfg.APIQuotaPerHour, QuotaPerDay: cfg.APIQuotaPerDay,
 		ObjectRatePerMinute: cfg.ObjectRatePerMinute, MaxPageSize: cfg.APIMaxPageSize,
 		MaxBatchSize:       cfg.APIMaxBatchSize,
 		ResponseFailPolicy: cfg.APIResponseFailPolicy, ResponseCaptureMax: cfg.APIResponseCaptureMaxBytes,
+		ResponseSampleRatio:  cfg.APIResponseSampleRatio,
 		NodeHeartbeatSeconds: cfg.APINodeHeartbeatSeconds, AuthzClockSkewMax: cfg.APIAuthzClockSkewMaxSeconds,
 		AuthzLeaseSeconds: cfg.APIAuthzLeaseSeconds,
-		LLMAllowedModels:  cfg.APILLMAllowedModels, FileWatermark: cfg.APIFileWatermark,
+		LLMAllowedModels:  cfg.APILLMAllowedModels, LLMSecurityPolicies: cfg.APILLMSecurityPolicies,
+		FileWatermark:     cfg.APIFileWatermark,
 		GRPCMaxFrameBytes: cfg.APIGRPCMaxFrameBytes, GRPCAllowCompression: cfg.APIGRPCAllowCompression,
 		JWTTrust: cfg.JWTTrust, BotPolicy: cfg.BotPolicy,
 		APIExceptions:        cfg.APIExceptions,
@@ -382,6 +460,7 @@ func computeAPIPolicyVersion(cfg *gatewayconfig.GuardConfig) string {
 		APIGraphQL:           cfg.APIGraphQL,
 		APIMCPToolCatalogs:   cfg.APIMCPToolCatalogs,
 		APIMCPBindings:       cfg.APIMCPBindings,
+		IdentityBlocks:       cfg.APIIdentityBlocks,
 		APIMachineIdentities: cfg.APIMachineIdentities, APIMachineIdentityBindings: cfg.APIMachineIdentityBindings,
 		APIMachineIdentityMeta: cfg.APIMachineIdentityMeta,
 	})

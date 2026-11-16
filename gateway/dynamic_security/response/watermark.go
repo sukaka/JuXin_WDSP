@@ -1,7 +1,8 @@
-// watermark.go 文件下载水印（W12-GW 交付文本族 v1；W14-GW 扩展 OOXML 族）：
-// 文本族下载响应（Content-Disposition 下载观测命中 + Content-Type 白名单 +
-// identity 编码完整捕获体，命中条件由挂点侧判定）在文件尾追加不可见水印标记；
-// JSON 族在顶层加 "_wm" 字段（键名可配置）。水印内容含 IP/Identity/Domain/Time
+// watermark.go 文件下载与可选内联 HTML 水印（文本族 v1；OOXML 扩展）：
+// 下载响应沿用 Content-Disposition 观测命中；include_inline_html=true 时挂点另接受
+// 无下载头的 text/html 网页。两者均要求 Content-Type 白名单与 identity 编码完整捕获体，
+// 在文件/网页尾追加不可见标记；JSON 族在顶层加 "_wm" 字段（键名可配置）。
+// 水印内容含 IP/Identity/Domain/Time
 // 占位变量（由挂点侧注入渲染），用于外发文件泄露溯源。
 //
 // 能力范围（不引媒体处理依赖）：
@@ -55,10 +56,11 @@ const (
 
 // FileWatermarkConfig 文件水印 v1 配置（发布通道下发 api_file_watermark 段）。
 type FileWatermarkConfig struct {
-	Enabled      bool
-	TextTemplate string   // 水印文本模板，支持 {ip}/{identity}/{time}/{domain} 占位
-	ContentTypes []string // 媒体类型白名单（小写主类型；空 = DefaultFileWatermarkContentTypes）
-	JSONKey      string   // JSON 顶层水印字段名（空 = DefaultFileWatermarkJSONKey）
+	Enabled           bool
+	TextTemplate      string   // 水印文本模板，支持 {ip}/{identity}/{time}/{domain} 占位
+	ContentTypes      []string // 媒体类型白名单（小写主类型；空 = DefaultFileWatermarkContentTypes）
+	JSONKey           string   // JSON 顶层水印字段名（空 = DefaultFileWatermarkJSONKey）
+	IncludeInlineHTML bool     // 显式允许无 Content-Disposition 的 text/html 网页响应
 
 	typeSet map[string]bool // ContentTypes 归一化集合（编译期构造，运行期 O(1) 判定）
 }
@@ -153,6 +155,11 @@ func fileWatermarkMediaType(contentType string) string {
 		return strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
 	}
 	return strings.ToLower(mt)
+}
+
+// IsHTMLMediaType 判定规范化 Content-Type 是否为 text/html。
+func IsHTMLMediaType(contentType string) bool {
+	return fileWatermarkMediaType(contentType) == "text/html"
 }
 
 // AllowsContentType 判定 Content-Type 是否在白名单（按主类型比对）。

@@ -70,10 +70,42 @@ type Config struct {
 	// 仅在服务端协商支持 v2 时上行；未协商时丢弃计数（不降级为 v1 以免来源误标）。
 	Mirror MirrorConfig `json:"mirror,omitempty"`
 
+	APIObservation APIObservationConfig `json:"api_observation,omitempty"`
+
 	// Tap Envoy tap 管理流适配（P1-03 §3.3，G3；本地运维意志，默认关闭）。
 	// 记录为 v2 来源（source_type=ENVOY_TAP）；适配器只出向连接本机回环
 	// Envoy Admin 读取 tap 流，不监听采集端口、不代理业务流量。
 	Tap TapConfig `json:"tap,omitempty"`
+}
+
+type APIObservationConfig struct {
+	Enabled      bool   `json:"enabled,omitempty"`
+	SocketPath   string `json:"socket_path,omitempty"`
+	SocketMode   int    `json:"socket_mode,omitempty"`
+	HMACKeyID    string `json:"hmac_key_id,omitempty"`
+	HMACKeyEnv   string `json:"hmac_key_env,omitempty"`
+	MaxBodyBytes int    `json:"max_body_bytes,omitempty"`
+}
+
+func (c APIObservationConfig) EffectiveSocketPath() string {
+	if c.SocketPath == "" {
+		return "/run/wdsp-agent/api.sock"
+	}
+	return c.SocketPath
+}
+
+func (c APIObservationConfig) EffectiveSocketMode() os.FileMode {
+	if c.SocketMode == 0 {
+		return 0o600
+	}
+	return os.FileMode(c.SocketMode)
+}
+
+func (c APIObservationConfig) EffectiveHMACKeyEnv() string {
+	if c.HMACKeyEnv == "" {
+		return "WDSP_API_OBSERVATION_HMAC_KEY"
+	}
+	return c.HMACKeyEnv
 }
 
 // TapConfig tap 适配器本地配置（装配见 internal/tapsrc 包注释；

@@ -28,6 +28,7 @@ import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import { isValidIPLiteral } from '../../utils/stage5'
+import { PRE_STYLE } from '../../utils/styles'
 import type { NetworkToolAction, NetworkToolCapturePacket, NetworkToolJob } from '../../types'
 
 /** 动作展示 */
@@ -87,20 +88,6 @@ function paramsSummary(params: Record<string, unknown>): string {
   const entries = Object.entries(params ?? {})
   if (entries.length === 0) return '-'
   return entries.map(([k, v]) => `${k}=${String(v)}`).join('  ')
-}
-
-const PRE_STYLE: CSSProperties = {
-  fontFamily: 'monospace',
-  fontSize: 12,
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
-  background: 'rgba(0, 0, 0, 0.03)',
-  border: '1px solid rgba(0, 0, 0, 0.08)',
-  borderRadius: 6,
-  padding: 12,
-  margin: '8px 0 0',
-  maxHeight: 320,
-  overflow: 'auto',
 }
 
 /** 后端最多解析并返回的数据包条数，达到该值提示可能截断 */

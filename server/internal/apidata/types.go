@@ -46,9 +46,11 @@ const (
 
 // 脱敏算法（api_masking_rules.algorithm CHECK 对齐）。
 const (
-	AlgorithmMask   = "MASK"   // 掩码（params：keep_head/keep_tail 等）
-	AlgorithmHash   = "HASH"   // 散列（params：hash_algo/salt_key 等）
-	AlgorithmRemove = "REMOVE" // 整体移除字段
+	AlgorithmMask    = "MASK"    // 掩码（params：keep_head/keep_tail 等）
+	AlgorithmHash    = "HASH"    // 散列（params：hash_algo/salt_key 等）
+	AlgorithmRemove  = "REMOVE"  // 整体移除字段
+	AlgorithmEncrypt = "ENCRYPT" // 可逆加密（运行时密钥）
+	AlgorithmMap     = "MAP"     // 显式值映射
 )
 
 // ValidatorLuhn 值校验器：银行卡号 luhn 校验（白名单可扩展，空串 = 无值校验器）。
@@ -59,7 +61,7 @@ const ValidatorLuhn = "luhn"
 // 为规划扩展面（P0-19 Known Gap：PATH/HEADER/COOKIE/RESPONSE_* 尚未覆盖），管理面先行登记。
 var validLocations = map[string]bool{
 	"query": true, "json": true, "form": true, "xml": true,
-	"header": true, "cookie": true, "path": true, "response_body": true,
+	"header": true, "cookie": true, "path": true, "response_body": true, "file": true,
 }
 
 // 输入上限（防超大定义撑爆表与请求体）。
@@ -105,7 +107,7 @@ type MaskingRule struct {
 	EndpointKey   *string         `json:"endpoint_key"`    // scope=ENDPOINT 必填（METHOD + 空格 + 路径模板）
 	FieldPath     string          `json:"field_path"`      // 目标字段路径（与 DataType 至少其一）
 	DataType      *string         `json:"data_type"`       // 目标数据类型标签（整类脱敏）
-	Algorithm     string          `json:"algorithm"`       // MASK / HASH / REMOVE
+	Algorithm     string          `json:"algorithm"`       // MASK / HASH / REMOVE / ENCRYPT / MAP
 	Params        json.RawMessage `json:"params_json"`     // 算法参数对象
 	Exclusions    json.RawMessage `json:"exclusions_json"` // 排除对象
 	CreatedBy     *string         `json:"created_by"`
@@ -138,7 +140,7 @@ func validScope(s string) bool {
 }
 
 func validAlgorithm(s string) bool {
-	return s == AlgorithmMask || s == AlgorithmHash || s == AlgorithmRemove
+	return s == AlgorithmMask || s == AlgorithmHash || s == AlgorithmRemove || s == AlgorithmEncrypt || s == AlgorithmMap
 }
 
 // checkStrList 校验字符串数组列（keywords/locations/exclude_fields 共用）。
@@ -273,7 +275,7 @@ func validateMaskingRule(r *MaskingRule) error {
 		return fmt.Errorf("endpoint_key 长度不能超过 560")
 	}
 	if !validAlgorithm(r.Algorithm) {
-		return fmt.Errorf("无效的 algorithm 取值（MASK/HASH/REMOVE）")
+		return fmt.Errorf("无效的 algorithm 取值（MASK/HASH/REMOVE/ENCRYPT/MAP）")
 	}
 	if len(r.FieldPath) > maxFieldPathLen {
 		return fmt.Errorf("field_path 长度不能超过 %d", maxFieldPathLen)
@@ -285,6 +287,9 @@ func validateMaskingRule(r *MaskingRule) error {
 		return errors.New("field_path 与 data_type 至少设置其一")
 	}
 	if _, err := validateJSONObject("params_json", r.Params); err != nil {
+		return err
+	}
+	if err := validateMaskAlgorithmParams(r.Algorithm, r.Params); err != nil {
 		return err
 	}
 	_, err := ParseMaskExclusions(r.Exclusions)

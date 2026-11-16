@@ -792,8 +792,12 @@ func TestStage7AgentToolManagement(t *testing.T) {
 // ---------- 10. Prompt 管理 ----------
 
 // TestStage7PromptManagement 创建→版本→未测试发布 400→测试→发布→回滚；禁止内容拦截。
+// AI 能力增强第二波起：版本测试 = 静态检查 + 真实 Prompt 回归（4 个种子评估集过编排器，
+// 安全类阈值 100%/一般 80%），须经 mock 模型服务让回归确定性达标（降级无模型时门径诚实 FAILED，
+// 见 ai_quality_wave2_test.go TestAIPromptRegressionGateModelDown）。
 func TestStage7PromptManagement(t *testing.T) {
 	env := setupTestEnv(t)
+	env.s7SetupMockLLM(t, s7MockRegressionReply)
 	cookies, csrf := env.s5Login(t, "s7prm", "SYSTEM_ADMIN")
 	code := "t7_prompt_" + s5Rand()
 
@@ -816,10 +820,15 @@ func TestStage7PromptManagement(t *testing.T) {
 		s7Body(t, map[string]interface{}{"version_id": v1}), cookies, csrf),
 		http.StatusBadRequest, "publish untested")
 
-	// 静态测试 → PASSED；对抗测试 → ADVERSARIAL_PASSED → publish 成功（000146 双门齐备方可发布）
+	// 静态测试 + 真实回归 → PASSED（mock 模型使四个回归集确定性达标）；
+	// 对抗测试 → ADVERSARIAL_PASSED → publish 成功（000146 双门齐备方可发布）
 	result = s5OK(t, env.post(t, "/api/v1/ai/prompts/versions/"+v1+"/test", "", cookies, csrf), "test v1")
 	if result.Data["test_result"] != "PASSED" {
 		t.Fatalf("test v1 = %+v", result.Data)
+	}
+	// 真实回归明细随响应返回（逐集分数/阈值/运行记录链接，口径详见 ai_quality_wave2 专项测试）
+	if td, _ := result.Data["test_detail"].(map[string]interface{}); td == nil || td["regression"] == nil {
+		t.Fatalf("test v1 missing regression detail: %+v", result.Data)
 	}
 	result = s5OK(t, env.post(t, "/api/v1/ai/prompts/versions/"+v1+"/adversarial-test", "", cookies, csrf), "adversarial test v1")
 	if result.Data["adversarial_result"] != "ADVERSARIAL_PASSED" {

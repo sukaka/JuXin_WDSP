@@ -7,6 +7,8 @@
 //	                                 text/plain,text/csv,application/json,text/markdown；
 //	                                 W14-GW 起另接受三个 OOXML MIME：docx/xlsx/pptx）
 //	api_file_watermark_json_key      JSON 顶层水印字段名（缺省 "_wm" 由网关侧兜底）
+//	api_file_watermark_include_inline_html  true/false（缺省 false；显式开启内联 HTML
+//	                                 不可见溯源注释，还需 content_types 包含 text/html）
 //
 // 校验失败如实报错（中止发布），不静默回退——避免管理面显示与网关行为不一致。
 // 网关侧对应实现：gateway dynamic_security/response/watermark.go（同一校验口径）。
@@ -59,6 +61,11 @@ func parseFileWatermarkSettings(kv map[string]string) (*gatewayconfig.GuardFileW
 		return nil, fmt.Errorf("gateway_runtime.api_file_watermark_template 不允许控制字符（含换行）")
 	}
 	wm := &gatewayconfig.GuardFileWatermark{Enabled: true, TextTemplate: tmpl}
+	inlineHTML, err := parseFileWatermarkBool(kv["api_file_watermark_include_inline_html"], "api_file_watermark_include_inline_html")
+	if err != nil {
+		return nil, err
+	}
+	wm.IncludeInlineHTML = inlineHTML
 	// Content-Type 白名单（逗号分隔；缺省/空 = 网关默认表，逐项 trim 小写、去空去重）
 	if raw := strings.TrimSpace(kv["api_file_watermark_content_types"]); raw != "" {
 		seen := map[string]bool{}
@@ -100,13 +107,17 @@ func parseFileWatermarkSettings(kv map[string]string) (*gatewayconfig.GuardFileW
 
 // parseFileWatermarkEnabled 解析 enabled 键（仅 true/false；缺省/空 = false）。
 func parseFileWatermarkEnabled(raw string) (bool, error) {
+	return parseFileWatermarkBool(raw, "api_file_watermark_enabled")
+}
+
+func parseFileWatermarkBool(raw, key string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "false":
 		return false, nil
 	case "true":
 		return true, nil
 	default:
-		return false, fmt.Errorf("gateway_runtime.api_file_watermark_enabled 非法取值 %q（仅支持 true|false）", raw)
+		return false, fmt.Errorf("gateway_runtime.%s 非法取值 %q（仅支持 true|false）", key, raw)
 	}
 }
 

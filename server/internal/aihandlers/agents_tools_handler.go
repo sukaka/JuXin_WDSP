@@ -28,8 +28,10 @@ type AgentMeta struct {
 	Description string
 }
 
-// AgentCatalog 8 个 Agent 目录（code 与 aiagents 注册及编排器 agentLabel 一致；
+// AgentCatalog 8 个静态 Agent 目录（code 与 aiagents 注册及编排器 agentLabel 一致；
 // dispatcher 为编排器内置总调度能力，非独立实现）。
+// 动态 Agent（如 api_security 仅在 API 动态防护形态装配）不进入本静态目录，
+// 由装配侧经 SyncRegistry 的 extraAgents 追加，纯 WAF 形态 ai_agents 表不含其记录。
 var AgentCatalog = []AgentMeta{
 	{"dispatcher", "总调度 Agent", "任务拆解、专业Agent调度、证据检查与结果合并（编排器内置，不可停用）"},
 	{"security_event", "安全事件 Agent", "单事件分析、批量归纳、攻击画像与攻击链关联"},
@@ -41,9 +43,33 @@ var AgentCatalog = []AgentMeta{
 	{"knowledge", "知识库 Agent", "OWASP CRS 与产品文档知识问答（非当前运行事实）"},
 }
 
-// SyncRegistry 启动同步：代码 registry → ai_agents/ai_tools（code 唯一 upsert，保留启停状态）。
-func SyncRegistry(ctx context.Context, db *pgxpool.Pool, tools *aitools.Registry) error {
+// mergeAgentCatalog 合并静态目录与装配侧动态追加的 Agent 元数据：
+// 静态目录原样保留；动态条目 code 为空跳过，与静态同 code 时以动态描述覆盖，新 code 追加在后。
+func mergeAgentCatalog(extraAgents []AgentMeta) []AgentMeta {
+	out := make([]AgentMeta, 0, len(AgentCatalog)+len(extraAgents))
+	index := map[string]int{}
 	for _, a := range AgentCatalog {
+		index[a.Code] = len(out)
+		out = append(out, a)
+	}
+	for _, a := range extraAgents {
+		if a.Code == "" {
+			continue
+		}
+		if i, ok := index[a.Code]; ok {
+			out[i] = a
+			continue
+		}
+		index[a.Code] = len(out)
+		out = append(out, a)
+	}
+	return out
+}
+
+// SyncRegistry 启动同步：代码 registry（静态目录 + 装配侧动态追加 Agent）→ ai_agents/ai_tools
+// （code 唯一 upsert，保留启停状态）。extraAgents 为形态相关动态 Agent（纯 WAF 形态为空）。
+func SyncRegistry(ctx context.Context, db *pgxpool.Pool, tools *aitools.Registry, extraAgents ...AgentMeta) error {
+	for _, a := range mergeAgentCatalog(extraAgents) {
 		if _, err := db.Exec(ctx, `
 INSERT INTO ai_agents (code, name, description, status) VALUES ($1,$2,$3,'ENABLED')
 ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, updated_at=now()`,

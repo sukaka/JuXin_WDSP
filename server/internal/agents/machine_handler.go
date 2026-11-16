@@ -57,8 +57,9 @@ type MachineHandler struct {
 	store MachineRepository
 	ca    *AgentCA // traffic-agent CA（Phase 2-B；nil 时 PoP/证书签发不可用——仅测试或装配缺失场景）
 	// discovery API 资产联动入口（Phase 3 契约 §6；*apiassets.Store 实现，nil 时跳过联动）。
-	discovery DiscoveryUpserter
-	now       func() time.Time
+	discovery      DiscoveryUpserter
+	apiObservation *apiObservationReceiver
+	now            func() time.Time
 }
 
 // NewMachineHandler 创建机器端点处理器。
@@ -282,6 +283,7 @@ func (h *MachineHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 	}
 	// v2 契约 §3 能力协商：声明 ∩ 服务端支持集（未声明 → {1}），生效集随注册落库。
 	schemas := NegotiateHTTPEventSchemas(req.Capabilities)
+	apiSchemas := NegotiateAPIObservationSchemas(req.Capabilities)
 	agentID := uuid.New()
 	now := h.now().UTC()
 	in := EnrollInput{
@@ -298,6 +300,7 @@ func (h *MachineHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		Now:            now,
 	}
 	in.HTTPEventSchemas = schemasToInt16(schemas)
+	in.APIObservationSchemas = schemasToInt16(apiSchemas)
 	var certPEM string
 	if csr != nil {
 		pem, fingerprint, notAfter, err := h.ca.IssueCertificate(csr, agentID.String(), now)
@@ -327,7 +330,9 @@ func (h *MachineHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		"ca_cert_pem":                nil,
 		"cert_expires_at":            nil,
 		// v2 契约 §3：回执生效能力集（旧 Agent 忽略未知响应字段不受影响）。
-		"capabilities": map[string]interface{}{"http_event_schema_versions": schemas},
+		"capabilities": map[string]interface{}{
+			"http_event_schema_versions": schemas, "api_observation_schema_versions": apiSchemas,
+		},
 	}
 	if certPEM != "" {
 		resp["agent_cert_pem"] = certPEM
@@ -374,10 +379,18 @@ func (h *MachineHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	// v2 契约 §3 能力协商：携带 capabilities 时更新生效集并回执；未携带保持库中原值，
 	// 回执当前生效集（旧 Agent 忽略未知响应字段）。
 	effective := agent.HTTPEventSchemas
+	apiEffective := agent.APIObservationSchemas
 	var schemas16 []int16
 	if req.Capabilities != nil {
 		effective = NegotiateHTTPEventSchemas(req.Capabilities)
 		schemas16 = schemasToInt16(effective)
+		apiEffective = NegotiateAPIObservationSchemas(req.Capabilities)
+		if h.apiObservation != nil && h.apiObservation.capabilities != nil {
+			if err := h.apiObservation.capabilities.UpdateAPIObservationSchemas(r.Context(), agent.AgentID, schemasToInt16(apiEffective)); err != nil {
+				machineInternal(w, r, err)
+				return
+			}
+		}
 	}
 	if len(effective) == 0 {
 		effective = []int{1}
@@ -392,11 +405,11 @@ func (h *MachineHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		desired = DesiredDisabled
 	}
 	machineJSON(w, http.StatusOK, map[string]interface{}{
-		"server_time":                now.Unix(),
-		"config_version":             cfgVersion,
-		"desired_state":              desired,
-		"heartbeat_interval_seconds": HeartbeatIntervalSeconds,
-		"capabilities":               map[string]interface{}{"http_event_schema_versions": effective},
+		"server_time": now.Unix(), "config_version": cfgVersion,
+		"desired_state": desired, "heartbeat_interval_seconds": HeartbeatIntervalSeconds,
+		"capabilities": map[string]interface{}{
+			"http_event_schema_versions": effective, "api_observation_schema_versions": apiEffective,
+		},
 	})
 }
 

@@ -1,222 +1,172 @@
 # API 响应侧安全设计（ResponseContext / 响应相位 / Response Transformer）
 
-> 对应补全任务书 §226（P0-05 ResponseContext、P0-07 MASK_RESPONSE）。本文以代码为准
-> 描述第一波交付后的真实实现：响应捕获、响应相位、字段级脱敏改写与失败策略均已落地；
-> 发布通道不下发的配置项与未实现的响应 Schema 校验如实标注。
+> 对应任务书 §226（P0-05 ResponseContext、P0-07 MASK_RESPONSE）。本文以当前代码为准，
+> 覆盖响应捕获、JSON/XML/文本/SSE 值级检测、gzip/br 解压与重编码、五类脱敏算法及密钥管理。
 
 ## 一、目的与范围
 
-API 流量的安全视野从「只看请求」扩展到「请求 + 响应」：响应捕获后统一解析，
-做敏感字段检测、错误签名提取与字段级脱敏改写（MASK/HASH/REMOVE），并让事件在
-响应完成后输出（真实 `response_status` 与 `latency_ms`）。本文覆盖：
+API 响应在返回客户端前进入统一捕获与响应相位，完成敏感检测、错误签名提取、字段级脱敏和事件输出。
+核心实现：
 
-- `ResponseContext` 响应侧上下文（`gateway/dynamic_security/context/context.go`）；
-- 响应捕获挂点与直通/缓冲/抑制策略（`gateway/modules/jiuzhang_guard/apiresponse.go`）；
-- 响应相位 `ProcessResponse`（`gateway/dynamic_security/pipeline/response.go`）；
-- 敏感字段检测与错误签名（`dynamic_security/response/fields.go`、`signatures.go`）；
-- Response Transformer（`dynamic_security/response/transform.go`）与 Content-Length 修正；
-- 压缩/流式降级、FAIL_OPEN/FAIL_CLOSED 失败策略与性能保护。
+- `ResponseContext`：`gateway/dynamic_security/context/context.go`；
+- 捕获与压缩：`gateway/modules/jiuzhang_guard/apiresponse.go`、`apiresponsecompression.go`；
+- 响应相位：`gateway/dynamic_security/pipeline/response.go`；
+- 值级检测：`dynamic_security/detectors/response_sensitive_value*.go`；
+- SSE 单事件检查：`gateway/modules/jiuzhang_guard/apiresponsesse.go`；
+- 脱敏：`dynamic_security/response/rule.go`、`transform.go`、`mask_crypto.go`。
 
-请求侧管线与统一决策见 `docs/API_UNIFIED_FINDING_DECISION.md`；脱敏规则的
-管理面（类型/规则/生效计划）见 `docs/API_SENSITIVE_DATA.md` 口径与
-`server/internal/apidata`。
+数据最小化不变：ResponseContext 不保存明文体；解码树和标量只在当前请求内存中使用。
+事件和证据只含字段路径、类型、等级、方向、规则标识等元数据，绝不含敏感原值或密钥。
 
-## 二、ResponseContext 响应侧上下文
+## 二、ResponseContext
 
-`ResponseContext`（context.go:80-93）由响应相位在**下游响应完成后写入一次**
-（`SetResponse`，仅 API 流量），挂在统一 `RequestContext.Response` 上：
+响应相位写入以下元数据：
 
 ```text
-status             响应状态码
-content_type       响应 Content-Type
-headers            响应头快照（已脱敏：set-cookie/www-authenticate 等仅标记
-                   "[redacted]"；值截断 256 字符；头数封顶 64）
-body_size          捕获/传输字节数（脱敏改写时为改写前大小）
-body_hash          捕获体 sha256 前 8 字节 hex（哈希，非明文）
-truncated          体超捕获上限，未完整解析（禁止解析与改写）
-streamed           流式/非可安全重编码直通（未缓冲）
-is_json / parsed_body   JSON 字段路径 → 类型（string|number|bool|object|array|null）
-sensitive_fields[]      敏感字段命中（证据只含字段路径与数据类型标签，绝不含值）
-error_signatures[]      错误签名标签（http_5xx / stack.* / db.*）
-transform_plan[]        字段级脱敏计划（FieldTransform：field_path/algorithm/
-                        keep_head/keep_tail；决策引擎 MASK_RESPONSE 分支依据）
+status / content_type / headers（脱敏快照）
+body_size / body_hash（sha256 前 8 字节 hex）
+truncated / streamed
+is_json / parsed_body（JSON 字段路径 → 类型）
+sensitive_fields[]（字段路径与类型标签）
+error_signatures[]
+transform_plan[]（字段路径、算法、参数及 key_id/map_id，不含密钥）
 ```
 
-数据最小化纪律与请求侧一致（context.go:78-79 注释）：**不保存响应明文体**，
-解析产物只含字段路径与类型；脱敏算法在内存中对解码后的 JSON 树执行，
-事件/证据只含字段路径与数据类型标签。
+流式响应此前已积累的 `SensitiveFields` 在最终响应相位继续保留。BodyHash 是实际用于分析的捕获体哈希；
+压缩响应分析体为解压后的内容，BodySize 仍表示源站实际传输字节数。
 
-## 三、响应捕获挂点（捕获/上限/直通策略）
+## 三、捕获策略
 
-仅 **API 流量**包装捕获（`api_dynamic_protection` 开启且判为 API；
-`apiprotect.go:115`），非 API 流量零包装零开销。捕获 writer
-`apiResponseCapture`（apiresponse.go:49）在首个 `WriteHeader` 时按响应头定模式：
+仅 API 流量包装捕获，非 API 不增加响应包装。主要分支如下：
 
-| 条件 | 模式 | 行为 |
+| 条件 | 行为 |
+|---|---|
+| JSON 族或缺失 Content-Type | 完整缓冲，响应相位后写回 |
+| XML / `text/plain` 且配置了 `response_body` 值级规则 | 完整缓冲并检测；无规则时维持原直通行为 |
+| gzip / br 且非 SSE、非升级 | 保留原始压缩字节，解压后供检测/改写；未改写时原字节交付 |
+| SSE `text/event-stream` | 单事件缓冲、即检即放，不整流缓存；MCP 活跃时由 MCP 专用 writer 独占避免重复检测 |
+| 其他显式非 JSON / 二进制 | 原路径直通，不伪造结构化解析 |
+| 101 / Upgrade / Hijack | 直通或脱离捕获，不能改写 |
+| 超过捕获上限或解压上限 | FAIL_OPEN 原样直通并 Warn；FAIL_CLOSED 且存在脱敏规则则抑制 |
+
+默认捕获上限 1 MiB，配置硬上限 16 MiB。压缩解压只允许单一 `gzip` 或 `br`，多重编码和未知编码不处理；
+解压读取严格限制为当前捕获上限 + 1，防压缩炸弹。Range/206 不做字段脱敏、水印或签名改写。
+
+## 四、响应相位与值级检测
+
+`ProcessResponse` 复用已解码内容执行：
+
+1. JSON 解析和结构观测，`UseNumber` 保留数字字面量；
+2. JSON 字段名敏感检测 `sensitive.response_field`；
+3. `response_body` 值级检测 `sensitive.response_value`；
+4. 错误签名与服务器信息泄露检测；
+5. 响应偏离、字段权限和脱敏计划；
+6. 统一决策，计划非空且 PROTECT 时执行 `MASK_RESPONSE`。
+
+### 支持的值级输入
+
+- **JSON**：复用首次解析根值，排序遍历对象并扫描全部数组元素；
+- **XML**：元素文本和属性，拒绝 DTD，限制深度、节点/路径、字段和扫描次数；
+- **`text/plain`**：按完整行扫描，证据位置使用 `text.line[N]` 等安全标签；
+- **SSE data**：JSON data 复用 JSON 树扫描，文本 data 按行扫描，keepalive 原样透传。
+
+所有上述命中均为 `sensitive_data / sensitive.response_value`（OBSERVE/MEDIUM）。
+证据只含安全字段位置、data_type、level、location=response_body 和 direction=RESPONSE。
+敏感原值不会写入事件。新检测不单独新增阻断或响应改写。
+
+非法 UTF-8、DTD、超深、超预算、未完结 SSE 尾块等产生零分值的
+`sensitive.response_body_unchecked`（带 `completion=partial` 和明确 `skip_reason`），不能把未检查当成安全。
+
+## 五、Response Transformer
+
+### 5.1 规则与计划
+
+规则来自 `api_masking_rules` enabled 行，经 `api_mask_rules` 发布到网关。
+点路径支持对象嵌套和 `[]` 数组通配，同路径首条规则生效；object/array 目标仅 REMOVE 可执行。
+字段路径最长 256，规则最多 512，JSON 重编码使用 `UseNumber` 和 `SetEscapeHTML(false)`。
+
+### 5.2 五类算法
+
+| 算法 | 参数 | 语义 |
 |---|---|---|
-| 101 升级 / `Upgrade` 头（WebSocket） | 直通 | 不缓冲，立即透传状态行 |
-| `Content-Encoding` 非 identity（gzip/br 等） | 直通或抑制 | FAIL_OPEN → 直通（有命中规则时 Warn 记录跳过脱敏）；FAIL_CLOSED 且API有规则 → 抑制 |
-| `Content-Type` 缺失或 JSON 族（`application/json`、`+json` 后缀） | 缓冲 | 缓冲完整响应，响应相位后一次性写回 |
-| 显式非 JSON（含 SSE `text/event-stream`） | 直通 | 不缓冲（避免长连接挂死与内存失控） |
-| 缓冲超 `api_response_capture_max_bytes` | 溢出/抑制 | FAIL_OPEN → 转直通溢出（spill）：已缓冲前缀 + 后续完整外发，**原响应不截断**，Warn；FAIL_CLOSED 且API有规则 → 抑制 |
-| 连接被 Hijack | 脱离捕获 | 有规则时只能 fail-open + Warn（无法向已劫持连接注入封闭响应） |
+| MASK | `keep_head` / `keep_tail` | 保留前后字符，中间按原长度替换 `*`；短值整体为 `****` |
+| HASH | 无 | 标量字符串形式取 sha256 hex，不可逆 |
+| REMOVE | 无 | 删除对象成员或数组元素 |
+| ENCRYPT | `key_id` | AES-256-GCM，输出 `enc_<kid>_<base64(nonce|ciphertext)>` |
+| MAP | `map_id` | 同密钥 HMAC-SHA256 按域、mapID 和值映射，输出 `map_<mapID>_<前8字节hex>` |
 
-**抑制（captureDiscarded）**：字节全部丢弃、原响应**一字节不外发**，最终以
-`500 + 空明细 JSON`（`{"error":"response_processing_failed","request_id":...}`）替代，
-并剥除 `Content-Length/Content-Encoding/ETag/Content-MD5`
-（`writeFailClosedResponse`，apiprotect.go:269）。
+`key_id/map_id` 均为 1–64 位 `[A-Za-z0-9_-]`，必须且只能单独出现在对应算法参数中。
+MAP 同值同结果、不可逆，不保存原值映射表；它不是可逆字典加密。ENCRYPT 的 nonce 随机生成，授权恢复必须重新解密。
 
-配置键（网关 `jiuzhang_guard` 模块级，module.go:159-166）：
+### 5.3 密钥与恢复审计
 
-- `api_response_capture_max_bytes`：捕获上限，默认 **1 MiB**，配置硬上限 **16 MiB**
-  （apiresponse.go:30-32；超限配置 Validate 拒绝加载）；
-- `api_response_fail_policy`：`FAIL_OPEN`（缺省）/ `FAIL_CLOSED`（词表外 Validate 拒绝）。
+- 运行时设置：`gateway_runtime.api_mask_encryption_kid` 与 `api_mask_encryption_key`（密文）；
+- 发布时解密并校验 32 字节 hex，向网关下发 `api_mask_crypto:{kid,key_hex}`；
+- 仅存在 ENCRYPT/MAP 规则时强制加载密钥，缺失、格式错误、解密失败或 kid 不匹配均拒绝发布/加载；
+- 密钥和 AEAD 不导出，规则、事件、计划只带 kid/mapID；快照和整站配置 JSON 脱敏，回滚按当前密钥重注入；
+- 密钥不进入 `api_policy_version`，不记录到日志。
 
-**发布通道现状（诚实标注）**：server 端 GuardConfig 当前**不下发**这两个键
-（`gatewayconfig/guard.go` 无对应字段，`gateway_runtime` 设置白名单亦无），
-网关上以默认值生效；发布下发的响应侧内容目前为 `api_mask_rules` +
-`api_policy_version` + `api_formal_model_versions`。需要 FAIL_CLOSED/调整上限时
-只能在网关配置层注入，管理面下发属后续分片。
+授权恢复接口：`POST /api/v1/api-security/masking-rules/decrypt`，权限 `api_data.manage`。
+请求只含 `ciphertext`（最长 4096），成功返回 plaintext 并记录不含明文、密文和密钥的 HIGH 审计。
+错误 kid、格式或解密失败返回不泄密的 400，未配置或不可用返回 503。MAP 不支持恢复。
 
-## 四、响应相位 ProcessResponse
+## 六、压缩与流式处理
 
-`ProcessResponse`（pipeline/response.go:49）在下游响应完成后调用一次，依次：
+### gzip / br
 
-1. **JSON 解析**：仅完整捕获（非截断/非流式）且 JSON 族/嗅探判定为 JSON 的响应；
-   `WalkJSONFields` 提取字段路径 → 类型（`UseNumber` 保留数字字面量；数组仅下钻
-   首个元素，路径记 `[]`，字段数/深度受 `ParseLimits` 上限约束）；
-2. **敏感字段检测**：复用 detectors 词表做**字段名**匹配（`cfg.SensitivePatterns`
-   为 nil 用内置默认表），命中写 `sensitive_fields` 并 AddMatch
-   （`sensitive_data` / `sensitive.response_field`，OBSERVE/MEDIUM/+10）；
-   单事件命中上限 20（`maxResponseSensitiveFindings`，与请求侧对齐）；
-3. **错误签名提取**：5xx 状态码 + 体内堆栈/数据库错误特征（§五）；
-4. **transform plan 生成**：API脱敏规则 ∩ 解析产物，仅收录字段真实存在且算法
-   可执行的项（§六）；
-5. **统一决策**：`decision.Decide` 复跑——计划非空且 PROTECT → `MASK_RESPONSE`；
-   OBSERVE 模式仅记录不执行（决策优先级语义见
-   `docs/API_UNIFIED_FINDING_DECISION.md` §决策）。
+- 捕获器始终保留源站原始压缩字节；
+- 解压后供 ProcessResponse、ApplyJSON、水印和签名使用；
+- 未发生修改时原始压缩流逐字节交付；
+- 发生脱敏、水印或签名修改时按原编码重新压缩，保留 Content-Encoding 并修正 Content-Length；
+- 解压失败、超限、多重编码：FAIL_OPEN 返回原压缩字节并 Warn，不将残片当完整 JSON；FAIL_CLOSED 且有脱敏规则时抑制。
 
-请求侧阻断类请求不会到达本相位（挂点已拦截），优先级语义不变
-（response.go:159 注释）。
+Brotli 使用 `github.com/andybalholm/brotli v1.3.0`（MIT，已锁定并归档许可证）；gzip 使用 Go 标准库。
 
-## 五、敏感字段检测与错误签名
+### SSE
 
-- **敏感字段**（响应侧）：字段名匹配，证据只含 `{field, data_type,
-  location:"response_json"}`；数据类型标签为 phone/email/id_card/bank_card/
-  credential 五类（与 `detectors/sensitive.go` 内置词表同源）。
-- **错误签名**（`signatures.go`）：固定特征子串表，命中即收录签名标签一次，
-  不提取原文——`http_5xx`（状态码 5xx）、`stack.python_traceback`、
-  `stack.go_panic`、`stack.java_trace`、`db.sqlstate`、`db.oracle`；
-  体扫描上限 **64 KiB**（`maxErrorSignatureScanBytes`）。命中 AddMatch
-  （`api_response` / `response.error_signature`，OBSERVE；5xx 时 MEDIUM，否则 LOW；+5）。
+- 单事件上限 1 MiB、单流事件数上限 4096、流字节上限 16 MiB；
+- 支持分片写入、多行 data 和 keepalive；事件检查通过即放行并 flush；
+- 预算耗尽或流尾未完结，余量原样直通并披露 partial；不整流缓存；
+- 当前仅做敏感观测，不新增中途阻断或已外发内容撤回，不承诺流式脱敏。
 
-## 六、Response Transformer（MASK/HASH/REMOVE）
-
-### 6.1 规则与计划
-
-- 规则来源：管理面 `api_masking_rules` 表 enabled 规则 → 发布通道
-  `api_mask_rules` 下发（`guardconfig/apiruntime.go:141`；表缺失/查询失败 Warn 跳过，
-  不阻断发布）→ 网关 `compileAPIMaskRules` 逐条校验并按 `endpoint_key` 归组
-  （配置错误拒绝加载，不静默吞错）。
-- 规则字段：`endpoint_key / field_path / data_type / algorithm / params`
-  （`keep_head/keep_tail`，默认 3/4，上限 64）；规则总数上限 512、字段路径 ≤256 字符。
-- `field_path` 点路径 DSL（response/rule.go:44-50）：`.` 分段；段名以 `[]` 结尾
-  表示数组通配（`users[].phone` 命中每个元素的 phone；`users[]` 命中每个标量元素）；
-  与解析产物路径同构精确匹配；**键名本身含 `.` 的字段无法寻址**（既定限制）。
-- `BuildTransformPlan`（rule.go:147）：只收录字段在解析产物中**真实存在**且算法
-  可执行的规则——object/array 目标仅 REMOVE 可执行，MASK/HASH 空转项在生成期剔除，
-  保证「plan 非空」对决策引擎是有执行含义的信号。规则顺序即计划顺序；
-  同路径多规则**首条生效**。
-- 作用域说明：发布读取按 `endpoint_key` 原样下发、网关按当前API精确命中归组规则；
-  GLOBAL/APPLICATION/ENDPOINT 三作用域的合并求值由管理面
-  `apidata.MaskPlanForEndpoint` 提供（GLOBAL < APPLICATION < ENDPOINT 覆盖），
-  发布下发链路当前不做 scope 展开。
-
-### 6.2 执行（ApplyJSON，transform.go:25）
-
-仅处理**可安全重编码的完整 JSON**（解析失败返回错误，调用方按失败策略处理）：
-
-- **MASK**：保留前 `keep_head`、后 `keep_tail` 字符，中间按原字符数替换为 `*`；
-  值长 ≤ keep_head+keep_tail 时整体替换为 `"****"`（不泄露精确长度与残留字符）；
-- **HASH**：对标量字符串形式取 sha256 hex（不可逆，可跨响应关联同一值）；
-- **REMOVE**：对象成员删键；数组元素从数组中移除；
-- MASK/HASH 仅适用标量（string/number/bool）；非标量目标跳过并计 `skipped_fields`；
-- 重编码 `UseNumber` 保留数字字面量、`SetEscapeHTML(false)`（JSON API 语义不变、
-  减小字节漂移）。
-
-### 6.3 写回与 Content-Length 修正
-
-`writeBufferedResponse`（apiprotect.go:244）：
-
-- 脱敏改写后：按新体长**重设 `Content-Length`**，同时**删除 `ETag` / `Content-MD5`**
-  （体已变化，旧校验值失效）；
-- 未改写且处理器未声明长度时：按缓冲长度补 `Content-Length`
-  （1xx/204/304 不带体）；因此 chunked 响应经缓冲写回后转为显式长度
-  （直通模式不受影响，保持原传输形态）。
-
-## 七、压缩与流式降级（gzip/br/chunked/SSE/WebSocket）
-
-- **gzip/br 等非 identity 编码**：无法安全重编码 → FAIL_OPEN 直通 + Warn
-  （API有规则时）；FAIL_CLOSED 且API有规则 → 抑制（§三）。即压缩响应在默认策略下
-  **不做脱敏**——源站对敏感API开压缩等于绕过脱敏，部署纪律上应由网关侧压缩或
-  关闭源站压缩（当前实现不在捕获层解压）。
-- **SSE / WebSocket / 显式非 JSON**：直通不缓冲；WebSocket  Hijack 后脱离捕获。
-- **chunked**：无声明长度的 JSON 族响应正常缓冲，写回时补 `Content-Length`。
-- **缓冲超限**：FAIL_OPEN 溢出直通（原响应完整外发，事件 `truncated=true`，
-  已缓冲前缀仅留作错误签名扫描，不参与解析与改写）；FAIL_CLOSED 且有规则 → 抑制。
-
-## 八、失败策略（FAIL_OPEN / FAIL_CLOSED）
+## 七、失败策略与事件
 
 | 场景 | FAIL_OPEN（默认） | FAIL_CLOSED |
 |---|---|---|
-| 缓冲超捕获上限 | 溢出直通，原响应完整外发 + Warn | API有规则 → 500 空明细抑制 |
-| 非 identity 编码 | 直通 + Warn（有规则时） | API有规则 → 抑制 |
-| Hijack | 直通 + Warn（有规则时） | 同左（已劫持连接无法注入封闭响应） |
-| 响应相位故障（如敏感词表编译失败） | 放行原响应（不脱敏）+ Warn | 同左（相位故障一律 fail-open，apiprotect.go:179） |
-| Transformer 执行失败 | 放行原响应 + Warn + 记 `response.mask_failed`（OBSERVE/HIGH） | 抑制 + 记 `response.mask_failed` |
+| 捕获/解压超限 | 原响应完整交付 + Warn | 有脱敏规则时 500 空明细抑制 |
+| 多重/未知编码或压缩数据损坏 | 原压缩字节交付 + Warn | 同上抑制 |
+| Transformer/密钥执行失败 | 原响应交付 + `response.mask_failed` + Warn | 抑制并记录失败 |
+| Hijack / 已外发内容 | 直通，不撤回 | 不能用于已外发内容 |
 
-要点：FAIL_CLOSED 仅在**API存在命中规则**（`hasMaskRules`）时进入抑制分支——
-无规则API不承受抑制风险；抑制前必须**未外发任何字节**（缓冲/抑制模式扣留状态行）。
-任何失败不 panic、不静默：Warn 必带 `endpoint_key` 与 `request_id`（每请求至多一条）。
+API 放行事件在响应完成后输出，带真实 response_status 和 latency_ms。
+`response.mask_applied` 记录应用/跳过字段数，`response.mask_failed` 记录失败，均不包含密钥或原敏感值。
 
-## 九、事件输出时机与响应后字段
+## 八、性能保护
 
-- **API 放行流量**：事件在**响应完成后输出**，携带真实 `response_status` 与
-  `latency_ms`（入口到下游响应完成），以及响应相位新增的检测明细；
-- **阻断类动作**（BLOCK/TEMP_BLOCK/RATE_LIMIT）：事件在阻断时输出，状态码按决策
-  映射 403/429；
-- **非 API 命中**：维持响应前输出，`response_status=0`（未采集语义）；
-- 脱敏执行结果以明细入账：`response.mask_applied`（INFO，含
-  applied_fields/skipped_fields）/ `response.mask_failed` / `response.fail_closed`。
+- 捕获与解压均有上限，禁止无限整流缓存；
+- JSON 深度/字段数受 ParseLimits 约束；
+- 值级规则求值上限 512、单值输入上限 4096 rune、字段名与值级命中各上限 20；
+- XML 另有深度、节点、路径和扫描预算；
+- SSE 单事件/事件数/流字节均有上限，预算耗尽明确披露；
+- 事件字段继续执行截断、控制字符清理和脱敏；
+- 响应采样比例沿用 `api_response_sample_ratio`：0 不解析，中间比例只处理可解析的采样内容。
 
-## 十、性能保护
+## 九、当前限制
 
-- 仅 API 流量包装捕获，非 API 零包装零开销；`api_dynamic_protection` 关闭时
-  纯 WAF 路径零行为变化；
-- 捕获上限默认 1 MiB、硬上限 16 MiB；超限即转直通/抑制，不整包驻留内存；
-- 敏感字段命中单事件上限 20；错误签名体扫描上限 64 KiB；
-- JSON 解析受 `ParseLimits`（深度 32 / 字段数 2048）约束；截断/流式响应不解析；
-- 规则总数 512、字段路径 256 字符上限（防超大配置撑爆内存与日志）；
-- 事件字段截断与脱敏（`apievents` sanitize：控制字符剥离 + 长度封顶）；
-- `ResponseContext.BodyHash` 只存 sha256 前 8 字节 hex，明文体不进上下文、不进事件。
+1. 多重编码、deflate 等不在当前支持范围；
+2. 压缩 SSE 不承诺检测或脱敏，SSE 只支持明文流式观测；
+3. 普通文本扩展范围为 `text/plain`，其他 `text/*`、表单和二进制不新增结构化解析；
+4. XML 必须完整可解析，非法 XML/DTD 不扫描；表单和二进制脱敏仍未实现；
+5. MAP 是确定性 HMAC 映射，不支持恢复；ENCRYPT 恢复依赖当前密钥，轮换后旧密文能否恢复取决于旧密钥是否保留；
+6. 点路径 DSL 无法寻址键名含 `.` 的字段；
+7. 当前验证以真实 serveNext、writer 边界和单元/集成测试为主，尚未完成真实 Caddy 反代、长连接浏览器互操作、压缩性能基准及实库发布验收。
 
-## 十一、限制与遗留（诚实清单）
+## 十、测试证据
 
-1. `api_response_fail_policy` / `api_response_capture_max_bytes` 不经发布通道下发
-   （§三），管理面无可配入口；
-2. 压缩（gzip/br）响应默认不脱敏（§七），依赖部署纪律；
-3. `CompiledEndpointPolicy.response_schema` 恒 null（P0-06 响应模型另一波补全），
-   响应侧**无 Schema 偏离校验**；敏感检测仅字段名级，不做值级检测（值级 regex/
-   validator 已在管理面 `api_sensitive_data_types` 落数据，待下发消费）；
-4. 非 JSON 响应（XML/表单/二进制）不解析不脱敏；
-5. 点路径 DSL 无法寻址键名含 `.` 的字段。
-
-## 十二、测试证据
-
-- `dynamic_security/pipeline/response_test.go`：响应相位（解析/敏感/签名/计划/决策）；
-- `dynamic_security/response/transform_test.go`、`rule_test.go`、`signatures_test.go`：
-  Transformer 三算法/数组通配/首条生效/短值整体遮蔽、规则校验、签名提取；
-- `jiuzhang_guard/apiresponse_test.go`：捕获模式矩阵、溢出 spill、FAIL_CLOSED 抑制、
-  Content-Length 修正、Hijack；
-- `jiuzhang_guard/apiprotect_test.go`：端到端 MASK_RESPONSE、事件响应后输出
-  （真实 response_status/latency_ms）。
+- `response/mask_crypto_test.go`：AES-GCM 可恢复、MAP 确定性、缺密钥和 kid 不匹配；
+- `apimaskcrypto_test.go`：Guard ENCRYPT/MAP 完整改写及事件无密钥/明文泄漏；
+- `apiresponsecompression_test.go`：gzip/br 检测、脱敏、重压缩、原字节保持、损坏/超限/失败策略；
+- `detectors/response_sensitive_value_text_test.go`、`pipeline/response_text_value_test.go`：XML/文本、DTD、UTF-8、深度和预算；
+- `apiresponsesse_test.go`：SSE 分片、后续事件、keepalive、预算和未完结尾块；
+- `apiresponsetextvalue_test.go`：普通 XML/文本真实 serveNext 与压缩组合；
+- 管理面 000213 静态测试及 OpenAPI 双向对账；实库密钥发布、解密和浏览器验收仍需真实环境执行。

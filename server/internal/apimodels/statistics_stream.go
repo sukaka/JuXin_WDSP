@@ -1,6 +1,6 @@
 // statistics_stream.go 参数微模型流式统计算法（阶段8 §16/§17 统计增强批）：
-// 蓄水池分位数 / 字符直方图香农熵 / 前后缀 TopN / IQR 离群计数，全部为纯函数，
-// 供 statistics.go 窗口全量重算与未来观测增量写入方（apiruntime paramobs）共用。
+// 蓄水池分位数 / 字符直方图香农熵 / 前后缀 TopN / IQR 离群计数 / 固定格式候选选择，
+// 全部为纯函数，供 statistics.go 窗口全量重算与观测增量写入方（apiruntime paramobs）共用。
 //
 // 选型说明：
 //   - 分位数：定长蓄水池（ReservoirCap）+ 排序 + 线性插值。不选 t-digest/P²：
@@ -33,6 +33,54 @@ const (
 	// outlierMinSamples IQR 离群计数的最小样本量（低于此值四分位估计不稳定）。
 	outlierMinSamples = 4
 )
+
+const (
+	// FormatCandidateMinSamples 固定格式候选所需的最小合格字符串样本数。
+	FormatCandidateMinSamples = 20
+	// FormatCandidateMinRatio 固定格式候选所需的最低占比。
+	FormatCandidateMinRatio = 0.9
+)
+
+var formatCandidateVocabulary = [...]string{"UUID", "EMAIL", "IPV4", "IPV6", "DATE", "DATETIME"}
+
+// IsFormatCandidate 只接受阶段8 §16 冻结的固定格式候选词表。
+func IsFormatCandidate(candidate string) bool {
+	for _, allowed := range formatCandidateVocabulary {
+		if candidate == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// SelectFormatCandidate 按合格字符串总样本数选择唯一最高占比候选；未知样本计入分母。
+func SelectFormatCandidate(sampleCount int64, counts map[string]int64) (string, float64, bool) {
+	if sampleCount < FormatCandidateMinSamples {
+		return "", 0, false
+	}
+	var selected string
+	var topCount int64
+	tied := false
+	for _, candidate := range formatCandidateVocabulary {
+		count := counts[candidate]
+		if count <= 0 {
+			continue
+		}
+		if count > topCount {
+			selected, topCount, tied = candidate, count, false
+		} else if count == topCount {
+			tied = true
+		}
+	}
+	if selected == "" || tied {
+		return "", 0, false
+	}
+	ratio := float64(topCount) / float64(sampleCount)
+	if ratio < FormatCandidateMinRatio || ratio > 1 {
+		return "", 0, false
+	}
+	return selected, ratio, true
+}
 
 // MergeReservoir 合并两个蓄水池，输出升序、长度 ≤ capN 的确定性样本。
 // 合并后总量不超 capN 时为全量并集排序；超限时对排序并集做等距抽样

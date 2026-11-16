@@ -6,6 +6,7 @@ import {
   Form,
   Input,
   Modal,
+  Segmented,
   Space,
   Typography,
 } from 'antd'
@@ -13,13 +14,23 @@ import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { useState } from 'react'
 import { ApiError } from '../../../../api/client'
-import { aiEvaluationsApi } from '../../../../api/ai'
-import type { AiEvalRun, AiEvalSet } from '../../../../api/ai'
+import { aiEvaluationsApi, aiFeedbackApi } from '../../../../api/ai'
+import type { AiEvalRun, AiEvalSet, AiFeedbackSummaryItem } from '../../../../api/ai'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
 import { formatDateTime } from '../../../../utils/format'
+import { AI_TASK_TYPE_META } from '../../../../utils/ai'
 import { useAuthStore } from '../../../../stores/auth'
 import { hasPermission } from '../../../../utils/permission'
+
+/** 反馈类型 → 中文标签（与 server chat_handler 允许的 feedback_type 取值一致） */
+const FEEDBACK_TYPE_LABEL: Record<string, string> = {
+  GENERAL: '一般',
+  WRONG_FACT: '事实错误',
+  MISSING_EVIDENCE: '缺少依据',
+  HALLUCINATION: '幻觉',
+  OTHER: '其他',
+}
 
 /** AI 质量评估：评估集管理 + 运行记录 */
 export default function AiEvaluationsPage() {
@@ -30,6 +41,7 @@ export default function AiEvaluationsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [detailSet, setDetailSet] = useState<AiEvalSet | null>(null)
   const [detailRun, setDetailRun] = useState<AiEvalRun | null>(null)
+  const [feedbackDays, setFeedbackDays] = useState<7 | 30>(7)
   const [form] = Form.useForm<{
     code: string
     name: string
@@ -44,6 +56,11 @@ export default function AiEvaluationsPage() {
   const runsQuery = useQuery({
     queryKey: ['ai-evaluation-runs'],
     queryFn: () => aiEvaluationsApi.listRuns({ page: 1, page_size: 20 }),
+  })
+  /** 用户反馈聚合（按任务类型 × 反馈类型；不含 comment 明细） */
+  const feedbackQuery = useQuery({
+    queryKey: ['ai-feedback-summary', feedbackDays],
+    queryFn: () => aiFeedbackApi.summary(feedbackDays),
   })
 
   const createMutation = useMutation({
@@ -123,6 +140,35 @@ export default function AiEvaluationsPage() {
     },
   ]
 
+  const feedbackColumns: ColumnsType<AiFeedbackSummaryItem> = [
+    {
+      title: '任务类型',
+      dataIndex: 'task_type',
+      width: 160,
+      render: (v: string) => AI_TASK_TYPE_META[v]?.label ?? v,
+    },
+    {
+      title: '反馈类型',
+      dataIndex: 'feedback_type',
+      width: 130,
+      render: (v: string) => FEEDBACK_TYPE_LABEL[v] ?? v,
+    },
+    { title: '反馈总数', dataIndex: 'total', width: 100 },
+    {
+      title: '负向数',
+      dataIndex: 'negative',
+      width: 100,
+      render: (v: number) =>
+        v > 0 ? <Typography.Text type="danger">{v}</Typography.Text> : v,
+    },
+    {
+      title: '负向率',
+      dataIndex: 'negative_rate',
+      width: 100,
+      render: (v: number) => `${v.toFixed(1)}%`,
+    },
+  ]
+
   const onCreate = async () => {
     const v = await form.validateFields()
     let cases: { question: string; expected_contains?: string }[] = []
@@ -195,6 +241,37 @@ export default function AiEvaluationsPage() {
               onDoubleClick: () => setDetailRun(record),
               style: { cursor: 'pointer' },
             })}
+          />
+        )}
+      </Card>
+
+      <Card
+        title="反馈质量"
+        extra={
+          <Segmented<7 | 30>
+            value={feedbackDays}
+            options={[
+              { label: '近 7 天', value: 7 },
+              { label: '近 30 天', value: 30 },
+            ]}
+            onChange={setFeedbackDays}
+          />
+        }
+      >
+        <Typography.Paragraph type="secondary">
+          按任务类型与反馈类型聚合的用户评价（有用/无用）统计，仅展示聚合计数，不含反馈原文。
+        </Typography.Paragraph>
+        {feedbackQuery.isError ? (
+          <QueryErrorAlert error={feedbackQuery.error} message="加载反馈质量统计失败" />
+        ) : (
+          <SmartTable<AiFeedbackSummaryItem>
+            storageKey="ai-admin-feedback-summary"
+            rowKey={(r) => `${r.task_type}-${r.feedback_type}`}
+            size="middle"
+            loading={feedbackQuery.isLoading}
+            columns={feedbackColumns}
+            dataSource={feedbackQuery.data ?? []}
+            pagination={false}
           />
         )}
       </Card>

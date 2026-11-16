@@ -3,7 +3,7 @@
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-09-03T07:49:43+08:00",
+    "timestamp": "2026-10-09T13:55:35+08:00",
     "tools": [
       {
         "vendor": "jiuzhang",
@@ -86,7 +86,7 @@
     {
       "type": "library",
       "name": "@playwright/test",
-      "version": "1.62.1",
+      "version": "1.50.1",
       "licenses": [],
       "properties": [
         {
@@ -98,7 +98,7 @@
     {
       "type": "library",
       "name": "@tanstack/react-query",
-      "version": "5.102.8",
+      "version": "5.101.3",
       "licenses": [],
       "properties": [
         {
@@ -122,7 +122,7 @@
     {
       "type": "library",
       "name": "@testing-library/react",
-      "version": "16.3.3",
+      "version": "16.3.2",
       "licenses": [],
       "properties": [
         {
@@ -135,6 +135,18 @@
       "type": "library",
       "name": "@types/d3-geo",
       "version": "3.1.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "node:web"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "@types/node",
+      "version": "26.4.1",
       "licenses": [],
       "properties": [
         {
@@ -182,7 +194,7 @@
     {
       "type": "library",
       "name": "@typescript-eslint/eslint-plugin",
-      "version": "8.68.0",
+      "version": "8.64.0",
       "licenses": [],
       "properties": [
         {
@@ -194,7 +206,7 @@
     {
       "type": "library",
       "name": "@typescript-eslint/parser",
-      "version": "8.68.0",
+      "version": "8.64.0",
       "licenses": [],
       "properties": [
         {
@@ -224,7 +236,7 @@
     {
       "type": "library",
       "name": "antd",
-      "version": "6.6.2",
+      "version": "6.5.1",
       "licenses": [
         {
           "license": {
@@ -236,6 +248,18 @@
         {
           "name": "jiuzhang:sources",
           "value": "node:web"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "bitbucket.org/creachadair/shell",
+      "version": "v0.0.8",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -301,6 +325,18 @@
     },
     {
       "type": "library",
+      "name": "cloud.google.com/go/compute",
+      "version": "v1.23.3",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "cloud.google.com/go/compute/metadata",
       "version": "v0.9.0",
       "licenses": [],
@@ -349,8 +385,32 @@
     },
     {
       "type": "library",
+      "name": "cloud.google.com/go/monitoring",
+      "version": "v1.16.3",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "cloud.google.com/go/security",
       "version": "v1.19.2",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "cloud.google.com/go/trace",
+      "version": "v1.10.4",
       "licenses": [],
       "properties": [
         {
@@ -392,6 +452,54 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "contrib.go.opencensus.io/exporter/stackdriver",
+      "version": "v0.13.14",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "core://apache-kafka",
+      "version": "4.1.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "core:api-observation"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "core://byte-buddy",
+      "version": "1.17.8",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "java:wdsp-api-agent"
         }
       ]
     },
@@ -523,6 +631,24 @@
     },
     {
       "type": "library",
+      "name": "core://opentelemetry-java",
+      "version": "1.44.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "java:wdsp-api-agent-provided"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "core://otel-collector-contrib",
       "version": "0.154.0",
       "licenses": [
@@ -572,6 +698,24 @@
         {
           "name": "jiuzhang:sources",
           "value": "core:infra"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "core://spring-framework",
+      "version": "6.2.11",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "java:wdsp-api-agent-provided"
         }
       ]
     },
@@ -638,7 +782,7 @@
     {
       "type": "library",
       "name": "dayjs",
-      "version": "1.11.23",
+      "version": "1.11.21",
       "licenses": [
         {
           "license": {
@@ -1033,6 +1177,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp",
+      "version": "v1.32.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/KimMachineGun/automemlimit",
       "version": "v0.7.5",
       "licenses": [],
@@ -1153,6 +1309,30 @@
     },
     {
       "type": "library",
+      "name": "github.com/agnivade/levenshtein",
+      "version": "v1.2.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/alecthomas/assert/v2",
+      "version": "v2.11.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/alecthomas/chroma/v2",
       "version": "v2.24.1",
       "licenses": [],
@@ -1179,6 +1359,18 @@
       "type": "library",
       "name": "github.com/alecthomas/kingpin/v2",
       "version": "v2.4.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/alecthomas/repr",
+      "version": "v0.5.2",
       "licenses": [],
       "properties": [
         {
@@ -1305,6 +1497,18 @@
       "type": "library",
       "name": "github.com/antlr4-go/antlr/v4",
       "version": "v4.13.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/anuraaga/go-modsecurity",
+      "version": "v0.0.0-20220824035035-b9a4099778df",
       "licenses": [],
       "properties": [
         {
@@ -1603,6 +1807,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/bgentry/speakeasy",
+      "version": "v0.1.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/bitfield/gotestdox",
       "version": "v0.2.2",
       "licenses": [],
@@ -1706,6 +1922,18 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/bufbuild/protocompile",
+      "version": "v0.6.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -1861,6 +2089,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/census-instrumentation/opencensus-proto",
+      "version": "v0.4.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/cespare/xxhash",
       "version": "v1.1.0",
       "licenses": [],
@@ -1993,6 +2233,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/cilium/ebpf",
+      "version": "v0.22.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/ckaznocha/intrange",
       "version": "v0.3.1",
       "licenses": [],
@@ -2007,6 +2259,18 @@
       "type": "library",
       "name": "github.com/cloudflare/circl",
       "version": "v1.6.3",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/cncf/udpa/go",
+      "version": "v0.0.0-20220112060539-c52dc94e7fbe",
       "licenses": [],
       "properties": [
         {
@@ -2077,6 +2341,78 @@
     },
     {
       "type": "library",
+      "name": "github.com/containerd/stargz-snapshotter/estargz",
+      "version": "v0.16.3",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/corazawaf/coraza-caddy/v2",
+      "version": "v2.5.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/corazawaf/coraza-coreruleset",
+      "version": "v0.0.0-20240226094324-415b1017abdc",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/corazawaf/coraza-coreruleset/v4",
+      "version": "v4.25.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/corazawaf/coraza/v3",
+      "version": "v3.7.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/corazawaf/libinjection-go",
+      "version": "v0.3.2",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/coreos/etcd",
       "version": "v3.3.10+incompatible",
       "licenses": [],
@@ -2114,7 +2450,7 @@
     {
       "type": "library",
       "name": "github.com/coreos/go-semver",
-      "version": "v0.2.0",
+      "version": "v0.3.1",
       "licenses": [],
       "properties": [
         {
@@ -2228,6 +2564,18 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/davecgh/go-spew",
+      "version": "v1.1.2-0.20180830191138-d8f796af33cc",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -2348,6 +2696,42 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/docker/cli",
+      "version": "v29.2.0+incompatible",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/docker/distribution",
+      "version": "v2.8.3+incompatible",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/docker/docker-credential-helpers",
+      "version": "v0.9.3",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -2527,6 +2911,30 @@
     },
     {
       "type": "library",
+      "name": "github.com/fortytw2/leaktest",
+      "version": "v1.3.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/foxcpp/go-mockdns",
+      "version": "v1.1.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/frankban/quicktest",
       "version": "v1.14.6",
       "licenses": [],
@@ -2541,6 +2949,18 @@
       "type": "library",
       "name": "github.com/fsnotify/fsnotify",
       "version": "v1.9.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/fullstorydev/grpcurl",
+      "version": "v1.8.9",
       "licenses": [],
       "properties": [
         {
@@ -2731,6 +3151,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/go-quicktest/qt",
+      "version": "v1.101.1-0.20240301121107-c6c8733fa1e6",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/go-sql-driver/mysql",
       "version": "v1.9.3",
       "licenses": [],
@@ -2863,6 +3295,30 @@
     },
     {
       "type": "library",
+      "name": "github.com/goccy/go-json",
+      "version": "v0.10.5",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/goccy/go-yaml",
+      "version": "v1.18.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/godoc-lint/godoc-lint",
       "version": "v0.10.0",
       "licenses": [],
@@ -2894,6 +3350,18 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/golang-jwt/jwt/v4",
+      "version": "v4.5.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -2943,6 +3411,18 @@
       "type": "library",
       "name": "github.com/golang/groupcache",
       "version": "v0.0.0-20210331224755-41bb18bfe9da",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/golang/mock",
+      "version": "v1.6.0",
       "licenses": [],
       "properties": [
         {
@@ -3187,6 +3667,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/google/go-containerregistry",
+      "version": "v0.20.6",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/google/go-pkcs11",
       "version": "v0.3.0",
       "licenses": [],
@@ -3283,6 +3775,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/google/trillian",
+      "version": "v1.5.4-0.20240110091238-00ca9abe023d",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/google/uuid",
       "version": "v1.6.0",
       "licenses": [
@@ -3337,6 +3841,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/gorilla/mux",
+      "version": "v1.8.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/gorilla/websocket",
       "version": "v1.4.2",
       "licenses": [],
@@ -3344,6 +3860,18 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/gorilla/websocket",
+      "version": "v1.5.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -3375,6 +3903,66 @@
       "type": "library",
       "name": "github.com/gostaticanalysis/forcetypeassert",
       "version": "v0.2.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/gotnospirit/makeplural",
+      "version": "v0.0.0-20180622080156-a5f48d94d976",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/gotnospirit/messageformat",
+      "version": "v0.0.0-20221001023931-dfe49f1eb092",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/grpc-ecosystem/go-grpc-middleware",
+      "version": "v1.4.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/grpc-ecosystem/go-grpc-prometheus",
+      "version": "v1.2.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/grpc-ecosystem/grpc-gateway",
+      "version": "v1.16.0",
       "licenses": [],
       "properties": [
         {
@@ -3787,6 +4375,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/jcchavezs/mergefs",
+      "version": "v0.1.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/jessevdk/go-flags",
       "version": "v1.4.0",
       "licenses": [],
@@ -3801,6 +4401,18 @@
       "type": "library",
       "name": "github.com/jgautheron/goconst",
       "version": "v1.8.2",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/jhump/protoreflect",
+      "version": "v1.15.3",
       "licenses": [],
       "properties": [
         {
@@ -3871,6 +4483,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/jonboulle/clockwork",
+      "version": "v0.4.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/jordanlewis/gcassert",
       "version": "v0.0.0-20250430164644-389ef753e22e",
       "licenses": [],
@@ -3883,6 +4507,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/josharian/native",
+      "version": "v1.1.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/jpillora/backoff",
       "version": "v1.0.0",
       "licenses": [],
@@ -3890,6 +4526,18 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/jsimonetti/rtnetlink/v2",
+      "version": "v2.0.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -3949,6 +4597,30 @@
     },
     {
       "type": "library",
+      "name": "github.com/kaptinlin/go-i18n",
+      "version": "v0.1.4",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/kaptinlin/jsonschema",
+      "version": "v0.4.6",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/karamaru-alpha/copyloopvar",
       "version": "v1.2.1",
       "licenses": [],
@@ -3998,7 +4670,25 @@
     {
       "type": "library",
       "name": "github.com/klauspost/compress",
-      "version": "v1.18.6",
+      "version": "v1.18.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/klauspost/compress",
+      "version": "v1.18.7",
       "licenses": [
         {
           "license": {
@@ -4225,6 +4915,30 @@
     },
     {
       "type": "library",
+      "name": "github.com/letsencrypt/pkcs11key/v4",
+      "version": "v4.0.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/lib/pq",
+      "version": "v1.10.9",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/libdns/libdns",
       "version": "v1.1.1",
       "licenses": [],
@@ -4263,6 +4977,18 @@
       "type": "library",
       "name": "github.com/macabu/inamedparam",
       "version": "v0.2.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/magefile/mage",
+      "version": "v1.17.2",
       "licenses": [],
       "properties": [
         {
@@ -4405,6 +5131,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/mattn/go-sqlite3",
+      "version": "v1.14.18",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/matttproud/golang_protobuf_extensions",
       "version": "v1.0.1",
       "licenses": [],
@@ -4412,6 +5150,54 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/matttproud/golang_protobuf_extensions/v2",
+      "version": "v2.0.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/mccutchen/go-httpbin/v2",
+      "version": "v2.18.3",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/mdlayher/netlink",
+      "version": "v1.7.2",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/mdlayher/socket",
+      "version": "v0.5.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -4813,6 +5599,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/olekukonko/tablewriter",
+      "version": "v0.0.5",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/onsi/ginkgo/v2",
       "version": "v2.28.1",
       "licenses": [],
@@ -4939,6 +5737,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/petar-dambovaliev/aho-corasick",
+      "version": "v0.0.0-20250424160509-463d218d4745",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/peterbourgon/diskv/v3",
       "version": "v3.0.1",
       "licenses": [],
@@ -5012,18 +5822,6 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "github.com/pmezard/go-difflib",
-      "version": "v1.0.0",
-      "licenses": [],
-      "properties": [
-        {
-          "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -5127,6 +5925,18 @@
       "type": "library",
       "name": "github.com/prometheus/procfs",
       "version": "v0.20.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/prometheus/prometheus",
+      "version": "v0.47.2",
       "licenses": [],
       "properties": [
         {
@@ -5311,6 +6121,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/rs/cors",
+      "version": "v1.10.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/rs/xid",
       "version": "v1.6.0",
       "licenses": [],
@@ -5395,6 +6217,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/santhosh-tekuri/jsonschema/v5",
+      "version": "v5.3.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/santhosh-tekuri/jsonschema/v6",
       "version": "v6.0.2",
       "licenses": [],
@@ -5468,6 +6302,18 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/sergi/go-diff",
+      "version": "v1.3.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -5677,6 +6523,18 @@
     },
     {
       "type": "library",
+      "name": "github.com/soheilhy/cmux",
+      "version": "v0.1.5",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/sonatard/noctx",
       "version": "v0.4.0",
       "licenses": [],
@@ -5863,6 +6721,18 @@
       "properties": [
         {
           "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/stretchr/testify",
+      "version": "v1.12.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
           "value": "go:server"
         }
       ]
@@ -5941,6 +6811,42 @@
     },
     {
       "type": "library",
+      "name": "github.com/tidwall/gjson",
+      "version": "v1.18.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/tidwall/match",
+      "version": "v1.1.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/tidwall/pretty",
+      "version": "v1.2.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/timakin/bodyclose",
       "version": "v0.0.0-20241222091800-1db5c5ca4d67",
       "licenses": [],
@@ -5989,8 +6895,32 @@
     },
     {
       "type": "library",
+      "name": "github.com/tmc/grpc-websocket-proxy",
+      "version": "v0.0.0-20220101234140-673ab2c3ae75",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/tomarrell/wrapcheck/v2",
       "version": "v2.11.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/tomasen/realip",
+      "version": "v0.0.0-20180522021738-f0c99a92ddce",
       "licenses": [],
       "properties": [
         {
@@ -6008,6 +6938,42 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/transparency-dev/merkle",
+      "version": "v0.0.2",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/twmb/franz-go",
+      "version": "v1.21.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/twmb/franz-go/pkg/kmsg",
+      "version": "v1.13.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:server"
         }
       ]
     },
@@ -6103,6 +7069,42 @@
     },
     {
       "type": "library",
+      "name": "github.com/valllabh/ocsf-schema-golang",
+      "version": "v1.0.3",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/vbatts/tar-split",
+      "version": "v0.12.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/vektah/gqlparser/v2",
+      "version": "v2.5.60",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "github.com/vicanso/go-charts/v2",
       "version": "v2.6.10",
       "licenses": [
@@ -6189,6 +7191,18 @@
       "type": "library",
       "name": "github.com/xhit/go-str2duration/v2",
       "version": "v2.1.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "github.com/xiang90/probing",
+      "version": "v0.0.0-20221125231312-a49e3df8f510",
       "licenses": [],
       "properties": [
         {
@@ -6356,7 +7370,7 @@
     {
       "type": "library",
       "name": "globals",
-      "version": "17.11.0",
+      "version": "17.7.0",
       "licenses": [],
       "properties": [
         {
@@ -6417,6 +7431,138 @@
       "type": "library",
       "name": "go.etcd.io/bbolt",
       "version": "v1.4.3",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/api/v3",
+      "version": "v3.5.11",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/client/pkg/v3",
+      "version": "v3.5.11",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/client/v2",
+      "version": "v2.305.11",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/client/v3",
+      "version": "v3.5.11",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/etcdctl/v3",
+      "version": "v3.5.11",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/etcdutl/v3",
+      "version": "v3.5.11",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/pkg/v3",
+      "version": "v3.5.11",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/raft/v3",
+      "version": "v3.5.11",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/server/v3",
+      "version": "v3.5.11",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/tests/v3",
+      "version": "v3.5.11",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.etcd.io/etcd/v3",
+      "version": "v3.5.11",
       "licenses": [],
       "properties": [
         {
@@ -6512,6 +7658,24 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "go.opentelemetry.io/contrib/detectors/gcp",
+      "version": "v1.43.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -6680,24 +7844,6 @@
     {
       "type": "library",
       "name": "go.opentelemetry.io/contrib/propagators/ot",
-      "version": "v1.43.0",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ],
-      "properties": [
-        {
-          "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "go.opentelemetry.io/otel",
       "version": "v1.43.0",
       "licenses": [
         {
@@ -7004,24 +8150,6 @@
     {
       "type": "library",
       "name": "go.opentelemetry.io/otel/metric",
-      "version": "v1.43.0",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ],
-      "properties": [
-        {
-          "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "go.opentelemetry.io/otel/metric",
       "version": "v1.44.0",
       "licenses": [
         {
@@ -7160,24 +8288,6 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "go.opentelemetry.io/otel/trace",
-      "version": "v1.43.0",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ],
-      "properties": [
-        {
-          "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -7352,7 +8462,7 @@
     {
       "type": "library",
       "name": "go.yaml.in/yaml/v3",
-      "version": "v3.0.4",
+      "version": "v3.0.5",
       "licenses": [],
       "properties": [
         {
@@ -7364,7 +8474,7 @@
     {
       "type": "library",
       "name": "golang.org/x/crypto",
-      "version": "v0.52.0",
+      "version": "v0.0.0-20191011191535-87dc89f01550",
       "licenses": [
         {
           "license": {
@@ -7375,7 +8485,7 @@
       "properties": [
         {
           "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -7394,6 +8504,24 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/crypto",
+      "version": "v0.55.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -7453,6 +8581,24 @@
     },
     {
       "type": "library",
+      "name": "golang.org/x/exp/typeparams",
+      "version": "v0.0.0-20260209203927-2842357ff358",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "golang.org/x/image",
       "version": "v0.0.0-20200927104501-e162460cd6b5",
       "licenses": [
@@ -7471,8 +8617,8 @@
     },
     {
       "type": "library",
-      "name": "golang.org/x/mod",
-      "version": "v0.35.0",
+      "name": "golang.org/x/lint",
+      "version": "v0.0.0-20200302205851-738671d3881b",
       "licenses": [
         {
           "license": {
@@ -7483,7 +8629,25 @@
       "properties": [
         {
           "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/mod",
+      "version": "v0.31.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -7507,8 +8671,8 @@
     },
     {
       "type": "library",
-      "name": "golang.org/x/net",
-      "version": "v0.55.0",
+      "name": "golang.org/x/mod",
+      "version": "v0.40.0",
       "licenses": [
         {
           "license": {
@@ -7520,6 +8684,24 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/net",
+      "version": "v0.48.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -7538,6 +8720,24 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/net",
+      "version": "v0.58.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -7573,7 +8773,7 @@
       "properties": [
         {
           "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -7609,7 +8809,7 @@
       "properties": [
         {
           "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -7634,25 +8834,7 @@
     {
       "type": "library",
       "name": "golang.org/x/telemetry",
-      "version": "v0.0.0-20260409153401-be6f6cb8b1fa",
-      "licenses": [
-        {
-          "license": {
-            "id": "BSD-3-Clause"
-          }
-        }
-      ],
-      "properties": [
-        {
-          "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "golang.org/x/term",
-      "version": "v0.43.0",
+      "version": "v0.0.0-20260811182544-a038080d80e5",
       "licenses": [
         {
           "license": {
@@ -7688,7 +8870,7 @@
     {
       "type": "library",
       "name": "golang.org/x/text",
-      "version": "v0.37.0",
+      "version": "v0.3.0",
       "licenses": [
         {
           "license": {
@@ -7699,7 +8881,7 @@
       "properties": [
         {
           "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -7718,6 +8900,24 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/text",
+      "version": "v0.41.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -7742,7 +8942,7 @@
     {
       "type": "library",
       "name": "golang.org/x/tools",
-      "version": "v0.44.0",
+      "version": "v0.40.1-0.20260108161641-ca281cf95054",
       "licenses": [
         {
           "license": {
@@ -7753,7 +8953,7 @@
       "properties": [
         {
           "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -7772,6 +8972,24 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/tools",
+      "version": "v0.49.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -7826,6 +9044,24 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "golang.org/x/xerrors",
+      "version": "v0.0.0-20191011141410-1b5146add898",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -7934,7 +9170,7 @@
     {
       "type": "library",
       "name": "google.golang.org/genproto/googleapis/api",
-      "version": "v0.0.0-20260406210006-6f92a3bedf2d",
+      "version": "v0.0.0-20260414002931-afd174a4e478",
       "licenses": [
         {
           "license": {
@@ -8024,24 +9260,6 @@
     {
       "type": "library",
       "name": "google.golang.org/grpc",
-      "version": "v1.81.0",
-      "licenses": [
-        {
-          "license": {
-            "id": "Apache-2.0"
-          }
-        }
-      ],
-      "properties": [
-        {
-          "name": "jiuzhang:sources",
-          "value": "go:jiuzhang_guard"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "name": "google.golang.org/grpc",
       "version": "v1.81.1",
       "licenses": [
         {
@@ -8054,6 +9272,24 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:server"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "google.golang.org/grpc",
+      "version": "v1.82.1",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -8095,8 +9331,32 @@
     },
     {
       "type": "library",
+      "name": "gopkg.in/cheggaaa/pb.v1",
+      "version": "v1.0.28",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "gopkg.in/ini.v1",
       "version": "v1.67.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "gopkg.in/natefinch/lumberjack.v2",
+      "version": "v2.2.1",
       "licenses": [],
       "properties": [
         {
@@ -8155,6 +9415,18 @@
     },
     {
       "type": "library",
+      "name": "gotest.tools/v3",
+      "version": "v3.5.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "gvisor.dev/gvisor",
       "version": "v0.0.0-20240423190808-9d7a357edefe",
       "licenses": [],
@@ -8174,6 +9446,18 @@
         {
           "name": "jiuzhang:sources",
           "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "honnef.co/go/tools",
+      "version": "v0.7.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:wdsp-agent"
         }
       ]
     },
@@ -8204,7 +9488,7 @@
     {
       "type": "library",
       "name": "ioredis",
-      "version": "5.11.1",
+      "version": "5.4.2",
       "licenses": [],
       "properties": [
         {
@@ -8222,6 +9506,18 @@
         {
           "name": "jiuzhang:sources",
           "value": "node:web"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "k8s.io/klog/v2",
+      "version": "v2.110.1",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
         }
       ]
     },
@@ -8312,7 +9608,7 @@
     {
       "type": "library",
       "name": "prettier",
-      "version": "3.9.6",
+      "version": "3.9.5",
       "licenses": [],
       "properties": [
         {
@@ -8371,6 +9667,30 @@
     },
     {
       "type": "library",
+      "name": "rsc.io/binaryregexp",
+      "version": "v0.2.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "sigs.k8s.io/yaml",
+      "version": "v1.4.0",
+      "licenses": [],
+      "properties": [
+        {
+          "name": "jiuzhang:sources",
+          "value": "go:jiuzhang_guard"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "name": "topojson-client",
       "version": "3.1.0",
       "licenses": [],
@@ -8402,7 +9722,7 @@
     {
       "type": "library",
       "name": "typescript-eslint",
-      "version": "8.68.0",
+      "version": "8.64.0",
       "licenses": [],
       "properties": [
         {
@@ -8456,7 +9776,7 @@
     {
       "type": "library",
       "name": "zustand",
-      "version": "5.0.15",
+      "version": "5.0.14",
       "licenses": [
         {
           "license": {

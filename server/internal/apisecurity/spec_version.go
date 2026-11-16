@@ -1,7 +1,7 @@
 // spec_version.go API 安全补全第三波（W3-C 规范中心增强，P0-12）：
 // 规范格式识别（OpenAPI 3 / Swagger 2.0）、Swagger 2.0 → OpenAPI 3 最小映射转换、
-// 操作级参数提取（CHANGED 级跨版本对比）、版本状态机存储与 URL 导入（SSRF 防护）。
-// 解析/转换/对比为纯逻辑（不依赖 DB），由 spec_version_test.go 覆盖。
+// 操作级参数、响应与认证声明提取（参数用于 CHANGED 级跨版本对比，响应/认证用于按需审计）、版本状态机存储与 URL 导入（SSRF 防护）。
+// 解析/转换/对比为纯逻辑（不依赖 DB），由 spec_version_test.go / spec_audit_test.go 覆盖。
 //
 // 扩展格式（阶段8 §33）：YAML 及 JSON Schema / Postman Collection v2.1 / GraphQL SDL
 // 由 spec_formats.go / spec_postman.go / spec_jsonschema.go / spec_graphql.go 处理，
@@ -68,12 +68,23 @@ type SpecParam struct {
 	Required bool   `json:"required"`
 }
 
-// SpecOperation 规范解析出的单个操作（端点 + 参数集合）。
+// SpecSecurityScheme 认证方案目录中供审计判定的最小声明，不包含方案参数名或凭据值。
+type SpecSecurityScheme struct {
+	Type string `json:"type,omitempty"`
+	In   string `json:"in,omitempty"`
+}
+
+// SpecOperation 规范解析出的单个操作（端点 + 参数集合 + 响应声明 + 有效认证要求）。
 type SpecOperation struct {
-	Method string      `json:"method"` // 大写 HTTP 方法
-	Path   string      `json:"path"`   // 原始路径，{param} 保留原样
-	Key    string      `json:"key"`    // METHOD + 空格 + path
-	Params []SpecParam `json:"params"` // 按 (In, Name) 排序，保证确定性
+	Method                 string                        `json:"method"` // 大写 HTTP 方法
+	Path                   string                        `json:"path"`   // 原始路径，{param} 保留原样
+	Key                    string                        `json:"key"`    // METHOD + 空格 + path
+	Params                 []SpecParam                   `json:"params"` // 按 (In, Name) 排序，保证确定性
+	ResponseStatuses       []string                      `json:"response_statuses,omitempty"`
+	ResponseSemanticsKnown bool                          `json:"response_semantics_known,omitempty"`
+	SecurityRequirements   []string                      `json:"security_requirements,omitempty"`
+	SecuritySchemes        map[string]SpecSecurityScheme `json:"security_schemes,omitempty"`
+	SecuritySemanticsKnown bool                          `json:"security_semantics_known,omitempty"`
 }
 
 // SpecChange 跨版本 CHANGED 级对比的一条变化。
@@ -115,7 +126,7 @@ func ParseSpecDocument(doc map[string]any) (format string, normalized map[string
 	default:
 		return "", nil, nil, ErrSpecNotOpenAPI3
 	}
-	ops, err = ParseSpecOperations(normalized)
+	ops, err = parseSpecOperations(normalized, format == SpecFormatOpenAPI3)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -127,7 +138,8 @@ func ParseSpecDocument(doc map[string]any) (format string, normalized map[string
 // ConvertSwagger2ToOpenAPI3 Swagger 2.0 → OpenAPI 3 最小映射转换：
 // host/basePath/schemes → servers；paths 下 query/header/path 参数的扁平 type
 // 收拢为 schema；body/formData 参数映射为 requestBody；responses.schema → content。
-// 仅保证端点/参数/响应骨架可供统一解析，不逐字段搬运（definitions 等原样忽略）。
+// 仅保证端点/参数/响应骨架可供统一解析，不逐字段搬运（definitions 等原样忽略）；
+// securityDefinitions/security 不转换，认证目录语义保持未知。
 func ConvertSwagger2ToOpenAPI3(doc map[string]any) (map[string]any, error) {
 	version, _ := doc["swagger"].(string)
 	if version != "2.0" {
@@ -352,13 +364,18 @@ func convertSwagger2Responses(responses map[string]any) map[string]any {
 	return out
 }
 
-// ---------- OpenAPI 3 操作级参数解析 ----------
+// ---------- OpenAPI 3 操作级参数、响应与认证声明解析 ----------
 
-// ParseSpecOperations 解析 OpenAPI 3 文档，提取每个 path+method 的操作及参数集合
+// ParseSpecOperations 解析 OpenAPI 3 文档，提取每个 path+method 的操作、参数集合、响应状态及有效认证要求
 // （路径级 parameters 与操作级合并，操作级同 (name,in) 覆盖路径级；requestBody
 // 首个媒体类型的 object schema 提取一级 properties 为 BODY 参数）。
+// 操作未声明 security 时继承全局声明，显式空数组表示公开操作并覆盖全局声明。
 // $ref 引用不展开（解析范围外的引用参数跳过，属文档化限制而非错误）。
 func ParseSpecOperations(doc map[string]any) ([]SpecOperation, error) {
+	return parseSpecOperations(doc, true)
+}
+
+func parseSpecOperations(doc map[string]any, securitySemanticsKnown bool) ([]SpecOperation, error) {
 	version, _ := doc["openapi"].(string)
 	if !strings.HasPrefix(version, "3.") {
 		return nil, ErrSpecNotOpenAPI3
@@ -367,6 +384,8 @@ func ParseSpecOperations(doc map[string]any) ([]SpecOperation, error) {
 	if !ok || len(paths) == 0 {
 		return nil, ErrSpecNoPaths
 	}
+	globalSecurityRequirements := parseSpecSecurityRequirements(doc["security"])
+	securitySchemes := parseSpecSecuritySchemes(doc)
 	out := make([]SpecOperation, 0, len(paths))
 	for path, itemRaw := range paths {
 		item, ok := itemRaw.(map[string]any)
@@ -388,11 +407,78 @@ func ParseSpecOperations(doc map[string]any) ([]SpecOperation, error) {
 				}
 				return params[i].Name < params[j].Name
 			})
-			out = append(out, SpecOperation{Method: m, Path: path, Key: m + " " + path, Params: params})
+			responseStatuses, responseSemanticsKnown := parseSpecResponseStatuses(op["responses"])
+			securityRequirements := globalSecurityRequirements
+			if raw, exists := op["security"]; exists {
+				securityRequirements = parseSpecSecurityRequirements(raw)
+			}
+			parsed := SpecOperation{
+				Method: m, Path: path, Key: m + " " + path, Params: params,
+				ResponseStatuses: responseStatuses, ResponseSemanticsKnown: responseSemanticsKnown,
+			}
+			if securitySemanticsKnown {
+				parsed.SecurityRequirements = securityRequirements
+				parsed.SecuritySchemes = securitySchemes
+				parsed.SecuritySemanticsKnown = true
+			}
+			out = append(out, parsed)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out, nil
+}
+
+func parseSpecSecuritySchemes(doc map[string]any) map[string]SpecSecurityScheme {
+	components, _ := doc["components"].(map[string]any)
+	rawSchemes, _ := components["securitySchemes"].(map[string]any)
+	schemes := make(map[string]SpecSecurityScheme, len(rawSchemes))
+	for name, raw := range rawSchemes {
+		var parsed SpecSecurityScheme
+		if scheme, ok := raw.(map[string]any); ok {
+			parsed.Type, _ = scheme["type"].(string)
+			parsed.In, _ = scheme["in"].(string)
+		}
+		schemes[name] = parsed
+	}
+	return schemes
+}
+
+func parseSpecSecurityRequirements(raw any) []string {
+	requirements, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	names := make(map[string]struct{})
+	for _, rawRequirement := range requirements {
+		requirement, ok := rawRequirement.(map[string]any)
+		if !ok {
+			continue
+		}
+		for name := range requirement {
+			if name != "" {
+				names[name] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(names))
+	for name := range names {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func parseSpecResponseStatuses(raw any) ([]string, bool) {
+	responses, ok := raw.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	statuses := make([]string, 0, len(responses))
+	for status := range responses {
+		statuses = append(statuses, strings.ToUpper(status))
+	}
+	sort.Strings(statuses)
+	return statuses, true
 }
 
 // parseOAS3Params 解析 OAS3 parameters 数组（$ref 参数跳过）。

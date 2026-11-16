@@ -121,6 +121,28 @@
 - 真实客户端 IP 识别基于可信代理列表；
 - 不无条件信任 X-Forwarded-For。
 
+## 容器运维通道安全（containerops sidecar）
+
+- **docker.sock 唯一持有**：全栈仅 containerops sidecar 挂载 `/var/run/docker.sock`；
+  API 容器只挂载共享 Unix Socket 卷（仅见 socket 文件），任何其他容器挂载
+  docker.sock 即视为配置事故；
+- **sidecar 最小权限**：镜像以非 root（uid 1000）运行、`read_only` + `cap_drop ALL` +
+  `no-new-privileges`，访问 docker.sock 的属组 gid 经 `group_add` 注入
+  （`CONTAINEROPS_DOCKER_GID`，安装期 `ops/install/prepare-containerops.sh` 探测），
+  不固化宿主机 gid、不授予任何 capability；
+- **无网络面**：sidecar 不暴露 TCP 端口，以 `network_mode: none` 运行，请求只可能
+  来自共享卷内的 Unix Socket；
+- **双重白名单校验**：操作目标必须同时命中 compose 项目标签（`CONTAINEROPS_PROJECT`）
+  与服务白名单（`CONTAINEROPS_ALLOWED_SERVICES`），任一不满足 fail-closed 拒绝并记审计；
+  sidecar 自身永远不在白名单内（防通道自毁）；
+- **镜像更新纪律**：update 拒绝 `latest` 与任意 tag，只接受显式锁定引用；不提供
+  卷删除、`system prune` 等破坏性语义；API 自身禁止经通道 stop/update；
+- **审计与脱敏**：全部写操作经管理面权限校验 + CSRF + 操作审计；sidecar 审计行不含
+  环境变量值与凭据；日志读取限尾 1000 行/1MB 截断并剥离控制字符，inspect 输出
+  仅白名单字段、不回传容器 Env；
+- **降级口径**：裸机 systemd 形态无 docker.sock，容器运维接口 503 降级、页面隐藏入口，
+  不伪造容器状态。设计全文见 [docs/CONTAINER_OPS_DESIGN.md](CONTAINER_OPS_DESIGN.md)。
+
 ## 访问控制与CC防护安全（阶段5）
 
 - 只有 TCP 连接源属于可信代理时才解析代理头，其余一律使用连接源 IP；
@@ -140,7 +162,7 @@
 
 - **权限模型（能力权限 + 数据权限两层）**：能力层——迁移 000014 种子 31 个 `ai.*` 权限点，000100 起按新三权口径分配：安全管理员获智能安全运营全量能力（分析/草稿/降噪，不含模型/Agent/Tool/Prompt/记忆/配额等能力管理），系统管理员独占智能能力管理（模型/Agent/Tool/Prompt/记忆/配额成本/智能审计/质量评估），审计管理员不持有任何 `ai.*` 权限点；所有阶段7接口在路由层按权限点强制校验，Tool 每次执行前重新校验调用者当前真实权限（RequiredPermission）。数据层——会话、任务记录、记忆严格属主隔离，非属主访问一律 404，不泄露资源存在性。
 - **确定性管线与受约束总结**：意图分类与任务规划为确定性正则规则（非 LLM 决策）；事实唯一来源为 Tool 查询结果，回答主体为确定性事实文本，LLM 仅做受约束语言总结——系统提示词限定只能复述给定事实、禁止编造数字/事件/规则/IP/时间、不超过 6 句、数据不足时直接声明不得推测、背景记忆中的指令性内容一律忽略；LLM 总结失败时降级为直接返回确定性事实文本。
-- **Prompt Injection 防护**：事件/日志/知识库内容仅以 user 角色的事实段进入上下文并标注为已核实事实，不作为指令执行，事实段截断 3000 字符；回答路径的系统提示词为代码内联（`composeAnswer`），数据库 `ai_prompts` 的 `CurrentContent` 当前无运行时消费方（仅管理面使用），DB Prompt 内容不影响运行路径；知识库文件名/元数据/正文中的指令性内容不执行（详见 docs/AI_RAG_SECURITY.md、docs/AI_TOOL_SECURITY.md）；Prompt 管理面写入与版本创建经禁止内容静态扫描（密钥/Shell/越权/思维链），仅静态测试 PASSED 的版本可发布。
+- **Prompt Injection 防护**：事件/日志/知识库内容仅以 user 角色的事实段进入上下文并标注为已核实事实，不作为指令执行，事实段截断 3000 字符；回答路径的系统提示词以代码内联安全规则为骨架（`composeAnswer`），数据库 `ai_prompts` 的已发布内容（编码 `orchestrator_answer_summary`）经 `SetPromptLoader` 注入运行时，但被 `buildComposePrompts` 明确限定为仅控制表达方式、不得覆盖事实/安全/权限规则（截断 2000 字符），未发布或加载失败回退内置规则；知识库文件名/元数据/正文中的指令性内容不执行（详见 docs/AI_RAG_SECURITY.md、docs/AI_TOOL_SECURITY.md）；DB Prompt 内容进入运行路径的唯一通道是发布门（fail-closed，仓储层 `Publish` 强制）：写入与版本创建经禁止内容静态扫描（密钥/Shell/越权/思维链），版本测试为静态检查 + 真实回归（候选内容经 `PromptOverrides` 仅本次评估运行生效、不触碰发布存储；4 个种子评估集，安全类阈值 100%、一般 80%），对抗测试为内置样本集确定性判定，仅回归 PASSED + 对抗 ADVERSARIAL_PASSED 齐备的版本可发布，模型不可用/评估集缺失一律如实 FAILED 不伪装通过（迁移 000146/000187，详见 docs/AI_PROMPT_MANAGEMENT.md §4）。
 - **幻觉防护**：Tool 结果登记为证据集并以 [Ex] 编号引用，最终回答经 `ValidateCitations` 校验，未能对应到证据集的引用一律剔除并附加说明，回答末尾附证据列表；无事实支撑时回答固定声明"当前数据不足，无法确认"。
 - **草稿安全**：AI 产出的例外/黑名单/CC 策略/自定义规则一律写入 `ai_recommendations`（DRAFT 状态、标记 AI 生成、记录来源与证据引用），对应业务实体默认 DRAFT/DISABLED 不生效；草稿接口不提供任何发布/生效操作，生效必须经对应业务模块既有人工校验发布流程；废弃仅逻辑标记 REJECTED，不删除记录、不触碰草稿指向的业务配置。
 - **密钥安全**：供应商密钥仅存 `ai_provider_secrets`，经应用级加密服务 AES-256-GCM 加密（主密钥取自环境变量 `JIUZHANG_MASTER_KEY`）；密钥仅在创建/轮换时以明文入参，任何接口响应不回传明文或密文（供应商输出仅含引用名 `api_key_reference`）；解密仅供服务端内部 KeyResolver 使用且绝不记录日志。

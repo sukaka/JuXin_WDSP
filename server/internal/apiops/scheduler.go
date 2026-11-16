@@ -3,6 +3,10 @@
 // 计划表存 next_run_at 游标，每轮 SweepOnce 取 next_run_at <= now 的 ENABLED 计划执行。
 // 防重入：执行前先推进 next_run_at（claim 先行），再执行；同计划存在 RUNNING 记录时跳过。
 // 全局开关 api_ai_ops.schedules_enabled（settings，默认关）门控调度与立即执行。
+// 连续失败熔断：执行结局经 RecordRunOutcome 单事务记账（成功清零、失败 +1），
+// 连续失败达 api_ai_ops.circuit_threshold（默认 3，夹取 1-10）同事务熔断停用
+// （enabled=false + 清空 next_run_at + 记录熔断原因），新熔断触发系统告警
+// （AI_OPS_SCHEDULE_CIRCUIT_OPEN，HIGH，组件 AI_OPS）与操作审计；手动启用复位熔断状态。
 package apiops
 
 import (
@@ -15,13 +19,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
+	"github.com/jiuzhang-waf/server/internal/systemalerts"
 )
 
 // settings 组与键（与 appconfigs/其他包同口径：组.键）。
 const (
-	settingsGroup          = "api_ai_ops"
-	settingsKeyEnabled     = "schedules_enabled"      // 全局开关（默认关）
-	settingsKeyIntervalSec = "sweep_interval_seconds" // 调度检查间隔（默认 60s）
+	settingsGroup               = "api_ai_ops"
+	settingsKeyEnabled          = "schedules_enabled"      // 全局开关（默认关）
+	settingsKeyIntervalSec      = "sweep_interval_seconds" // 调度检查间隔（默认 60s）
+	settingsKeyCircuitThreshold = "circuit_threshold"      // 连续失败熔断阈值（默认 3，夹取 1-10）
 )
 
 // 调度检查间隔夹取范围（默认 60s，[5s, 1h] 防误配）。
@@ -30,6 +36,16 @@ const (
 	minSweepInterval     = 5 * time.Second
 	maxSweepInterval     = time.Hour
 )
+
+// 连续失败熔断阈值夹取范围（默认 3，[1,10] 防误配）。
+const (
+	DefaultCircuitThreshold = 3
+	minCircuitThreshold     = 1
+	maxCircuitThreshold     = 10
+)
+
+// circuitComponent 熔断系统告警组件维度（固定 AI_OPS，同类型同组件告警走引擎合并/冷却）。
+const circuitComponent = "AI_OPS"
 
 // sweepBatchSize 单轮 SweepOnce 最多执行的到期计划数（防积压拖垮单轮，剩余下轮再取）。
 const sweepBatchSize = 20
@@ -58,8 +74,9 @@ type Sweeper struct {
 	store      Repository
 	source     Source
 	summarizer Summarizer       // nil 时纯模板摘要
-	audits     AuditRecorder    // 保留扩展位（计划触发审计）；nil 时跳过
-	settings   SettingsProvider // nil 时开关默认关、间隔默认 60s
+	audits     AuditRecorder    // 熔断等系统动作审计；nil 时跳过
+	settings   SettingsProvider // nil 时开关默认关、间隔/阈值默认
+	alerter    Alerter          // 熔断系统告警；nil 时跳过
 	now        func() time.Time // 测试注入固定时钟
 }
 
@@ -76,6 +93,14 @@ func (s *Sweeper) SetAudits(v AuditRecorder) *Sweeper { s.audits = v; return s }
 
 // SetSettings 设置读取（应用装配时使用）。
 func (s *Sweeper) SetSettings(v SettingsProvider) *Sweeper { s.settings = v; return s }
+
+// Alerter 熔断系统告警接口（*systemalerts.Engine 天然实现，装配时直接注入；nil 时跳过告警）。
+type Alerter interface {
+	NotifyFailure(ctx context.Context, alertType, component, title, message string) (*systemalerts.Alert, error)
+}
+
+// SetAlerter 注入系统告警引擎（应用装配时使用）。
+func (s *Sweeper) SetAlerter(a Alerter) *Sweeper { s.alerter = a; return s }
 
 // SetClock 注入时钟（测试使用）。
 func (s *Sweeper) SetClock(now func() time.Time) *Sweeper { s.now = now; return s }
@@ -102,6 +127,22 @@ func (s *Sweeper) interval(ctx context.Context) time.Duration {
 		d = maxSweepInterval
 	}
 	return d
+}
+
+// circuitThreshold 连续失败熔断阈值（每次执行结局记账时读取，运行期改设置即生效；
+// 默认 3，夹取 [1,10] 防误配）。
+func (s *Sweeper) circuitThreshold(ctx context.Context) int {
+	n := DefaultCircuitThreshold
+	if s.settings != nil {
+		n = s.settings.GetInt(ctx, settingsGroup, settingsKeyCircuitThreshold, n)
+	}
+	if n < minCircuitThreshold {
+		n = minCircuitThreshold
+	}
+	if n > maxCircuitThreshold {
+		n = maxCircuitThreshold
+	}
+	return n
 }
 
 // Run 周期调度（直到 ctx 取消）。
@@ -222,8 +263,16 @@ func (s *Sweeper) executeSchedule(ctx context.Context, sc *Schedule) (*Run, erro
 	if err := s.store.FinishRun(ctx, run.ID, status, summary, report, finishedAt); err != nil {
 		return nil, fmt.Errorf("finish run: %w", err)
 	}
-	if err := s.store.UpdateScheduleRunState(ctx, sc.ID, startedAt, status, errMsg); err != nil {
-		return nil, fmt.Errorf("update schedule run state: %w", err)
+	// 结局记账（单事务：轨迹回填 + 连续失败计数 + 达阈熔断）；熔断后视图回填 run 输出
+	updated, circuitOpened, err := s.store.RecordRunOutcome(ctx, sc.ID, startedAt, status, errMsg, s.circuitThreshold(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("record run outcome: %w", err)
+	}
+	if updated != nil {
+		*sc = *updated
+	}
+	if circuitOpened {
+		s.onCircuitOpen(ctx, sc)
 	}
 	run.Status, run.Summary, run.Report, run.FinishedAt = status, summary, report, &finishedAt
 	if runErr != nil {
@@ -232,7 +281,7 @@ func (s *Sweeper) executeSchedule(ctx context.Context, sc *Schedule) (*Run, erro
 	return run, nil
 }
 
-// recordFailedRun 执行前失败（如 cron 失效）的记录路径：FAILED run + 计划轨迹回填。
+// recordFailedRun 执行前失败（如 cron 失效）的记录路径：FAILED run + 结局记账（含熔断计数）。
 func (s *Sweeper) recordFailedRun(ctx context.Context, sc *Schedule, cause error) error {
 	startedAt := s.now()
 	run := &Run{ScheduleID: sc.ID, StartedAt: startedAt}
@@ -243,10 +292,49 @@ func (s *Sweeper) recordFailedRun(ctx context.Context, sc *Schedule, cause error
 	if err := s.store.FinishRun(ctx, run.ID, RunStatusFailed, "执行失败："+cause.Error(), json.RawMessage(`{}`), finishedAt); err != nil {
 		return fmt.Errorf("finish run: %w", err)
 	}
-	if err := s.store.UpdateScheduleRunState(ctx, sc.ID, startedAt, RunStatusFailed, cause.Error()); err != nil {
-		return fmt.Errorf("update schedule run state: %w", err)
+	updated, circuitOpened, err := s.store.RecordRunOutcome(ctx, sc.ID, startedAt, RunStatusFailed, cause.Error(), s.circuitThreshold(ctx))
+	if err != nil {
+		return fmt.Errorf("record run outcome: %w", err)
+	}
+	if updated != nil {
+		*sc = *updated
+	}
+	if circuitOpened {
+		s.onCircuitOpen(ctx, sc)
 	}
 	return nil
+}
+
+// onCircuitOpen 熔断触发后续：系统告警（AI_OPS_SCHEDULE_CIRCUIT_OPEN，HIGH，组件 AI_OPS）
+// + 操作审计（系统动作，username=system，高风险）。告警/审计失败只记日志，不影响记账结果
+// （熔断事实已落库，告警引擎侧另有自身可靠性机制）。
+func (s *Sweeper) onCircuitOpen(ctx context.Context, sc *Schedule) {
+	title := "AI 运营计划连续失败已熔断"
+	message := fmt.Sprintf("计划「%s」（%s）%s；已自动停用并清空排期游标，人工排查后经启用接口恢复",
+		sc.Name, sc.TaskType, sc.CircuitReason)
+	if s.alerter != nil {
+		if _, err := s.alerter.NotifyFailure(ctx, systemalerts.TypeAIOpsScheduleCircuitOpen, circuitComponent, title, message); err != nil {
+			slog.Error("raise ai ops circuit alert failed", "schedule_id", sc.ID, "error", err)
+		}
+	}
+	if s.audits != nil {
+		if err := s.audits.Record(ctx, audits.RecordInput{
+			Username:   "system",
+			Module:     "api_ai_ops",
+			Action:     "ai_schedule_circuit_open",
+			ObjectType: "api_ai_schedule",
+			ObjectID:   sc.ID.String(),
+			ObjectName: sc.Name,
+			AfterSummary: fmt.Sprintf("计划「%s」（%s）连续失败达阈值自动熔断停用：%s",
+				sc.Name, sc.TaskType, sc.CircuitReason),
+			Result:    audits.ResultSuccess,
+			RiskLevel: audits.RiskHigh,
+		}); err != nil {
+			slog.Error("record ai ops circuit audit failed", "schedule_id", sc.ID, "error", err)
+		}
+	}
+	slog.Warn("ai ops schedule circuit opened",
+		"schedule_id", sc.ID, "task_type", sc.TaskType, "reason", sc.CircuitReason)
 }
 
 // produce 任务产出公共路径：解析入参 → 查注册表执行任务 → 序列化报告 → LLM 润色。

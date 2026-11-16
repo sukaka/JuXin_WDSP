@@ -1,6 +1,7 @@
 package response
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -50,7 +51,7 @@ func TestBuildDownloadFileObservation(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := BuildDownloadFileObservation(c.cd, c.ct, c.size)
-		if got == nil || *got != *c.want {
+		if !reflect.DeepEqual(got, c.want) {
 			t.Fatalf("%s: got %+v, want %+v", c.name, got, c.want)
 		}
 	}

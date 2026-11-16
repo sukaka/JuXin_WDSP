@@ -48,8 +48,7 @@ func CheckParserAmbiguity(ctx *dsctx.RequestContext, p *parser.Parsed) {
 	if ctx == nil || p == nil {
 		return
 	}
-	// 排序遍历：事件确定性（query/header 采集自 map 迭代，顺序不稳定；
-	// 同 schema.go missing_field 键序排序先例）
+	// 排序遍历：事件确定性（query/header 采集自 map 迭代，顺序不稳定）
 	ambs := make([]parser.ParamAmbiguity, len(p.Ambiguities))
 	copy(ambs, p.Ambiguities)
 	sort.Slice(ambs, func(i, j int) bool {

@@ -1,5 +1,19 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest'
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -42,6 +56,7 @@ const listData = {
       hit_count: 3,
       first_seen_at: '2026-07-01T10:00:00Z',
       last_seen_at: '2026-07-22T08:30:00Z',
+      tags: ['对账', '第三方回调', '核心链路'],
     },
     {
       id: 'e2',
@@ -65,8 +80,20 @@ const listData = {
         max_total: 26,
         computed_at: '2026-07-22T00:00:00Z',
         dimensions: [
-          { name: 'business_sensitivity', score: 2, max: 3, input: 'ADMIN', reason: '管理类接口' },
-          { name: 'traffic_scale', score: 2, max: 3, input: '1200', reason: '日均流量过千' },
+          {
+            name: 'business_sensitivity',
+            score: 2,
+            max: 3,
+            input: 'ADMIN',
+            reason: '管理类接口',
+          },
+          {
+            name: 'traffic_scale',
+            score: 2,
+            max: 3,
+            input: '1200',
+            reason: '日均流量过千',
+          },
         ],
       },
     },
@@ -106,7 +133,10 @@ function renderPage() {
 
 /** 左侧站点列表项（全部 / 未归属 / 各站点均为 role=button 的 div） */
 function siteItem(name: string, index = 0): HTMLElement {
-  const el = screen.getAllByText(name).map((n) => n.closest('[role="button"]')).filter(Boolean)[index]
+  const el = screen
+    .getAllByText(name)
+    .map((n) => n.closest('[role="button"]'))
+    .filter(Boolean)[index]
   expect(el).toBeTruthy()
   return el as HTMLElement
 }
@@ -118,13 +148,40 @@ describe('ApiEndpointsPage', () => {
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input)
         if (url.includes('/api-security/endpoints/site-summary')) {
-          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: siteSummaryData,
+            }),
+          )
         }
         if (url.includes('/api-security/endpoints/directory-tree')) {
-          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: directoryTreeData,
+            }),
+          )
+        }
+        if (url.endsWith('/api-security/endpoints/e1')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: { endpoint: listData.items[0], daily_requests: 18721 },
+            }),
+          )
         }
         if (url.includes('/api-security/endpoints')) {
-          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: listData,
+            }),
+          )
         }
         return Promise.reject(new Error(`unexpected url: ${url}`))
       }),
@@ -136,7 +193,11 @@ describe('ApiEndpointsPage', () => {
   })
 
   it('渲染列表：路径模板、中文状态与学习状态 Tag、分页总数', async () => {
-    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read']),
+      csrfToken: null,
+      initialized: true,
+    })
     renderPage()
     expect(await screen.findByText('/v1/users/{id}')).toBeInTheDocument()
     expect(screen.getByText('/v1/orders')).toBeInTheDocument()
@@ -145,10 +206,18 @@ describe('ApiEndpointsPage', () => {
     expect(screen.getByText('学习中')).toBeInTheDocument()
     expect(screen.getByText('已完成')).toBeInTheDocument()
     expect(screen.getByText('共 2 条')).toBeInTheDocument()
+    // 多标签列：前两个直接展示，其余折叠为 +N（完整列表在 Tooltip）
+    expect(screen.getByText('对账')).toBeInTheDocument()
+    expect(screen.getByText('第三方回调')).toBeInTheDocument()
+    expect(screen.getByText('+1')).toBeInTheDocument()
   })
 
   it('站点列表：全部（合计）、未归属与各站点名称与接口计数角标', async () => {
-    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read']),
+      csrfToken: null,
+      initialized: true,
+    })
     renderPage()
     // 「站点A」同时出现在站点列表与表格站点列，须用 findAllByText
     await screen.findAllByText('站点A')
@@ -164,21 +233,39 @@ describe('ApiEndpointsPage', () => {
   })
 
   it('点击站点：列表与目录树请求携带 application_id，并出现可关闭过滤 Tag', async () => {
-    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read']),
+      csrfToken: null,
+      initialized: true,
+    })
     renderPage()
     fireEvent.click(await screen.findByText('站点B'))
     await waitFor(() => {
       const urls = (fetch as Mock).mock.calls.map((c) => String(c[0]))
-      expect(urls.some((u) => u.includes('/api-security/endpoints?') && u.includes('application_id=app-2'))).toBe(true)
       expect(
-        urls.some((u) => u.includes('/api-security/endpoints/directory-tree') && u.includes('application_id=app-2')),
+        urls.some(
+          (u) =>
+            u.includes('/api-security/endpoints?') &&
+            u.includes('application_id=app-2'),
+        ),
+      ).toBe(true)
+      expect(
+        urls.some(
+          (u) =>
+            u.includes('/api-security/endpoints/directory-tree') &&
+            u.includes('application_id=app-2'),
+        ),
       ).toBe(true)
     })
     expect(screen.getByText('站点：站点B')).toBeInTheDocument()
   })
 
   it('表格新增目录与站点列：目录 code 展示，站点空值显示未归属', async () => {
-    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read']),
+      csrfToken: null,
+      initialized: true,
+    })
     renderPage()
     const table = await screen.findByRole('table')
     // 表头（横向滚动下 antd 可能有辅助节点，统一按 columnheader 断言；SmartTable 表头附带列宽拖拽手柄文本，按包含匹配）
@@ -194,19 +281,68 @@ describe('ApiEndpointsPage', () => {
   })
 
   it('无 confirm/ignore 权限：不显示行内「确认」与「忽略」', async () => {
-    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read']),
+      csrfToken: null,
+      initialized: true,
+    })
     renderPage()
     await screen.findByText('/v1/users/{id}')
-    expect(screen.queryByRole('button', { name: /^确\s*认$/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^忽\s*略$/ })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /^确\s*认$/ }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /^忽\s*略$/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('无 api_asset.export 权限：不显示「导出清单」', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await screen.findByText('/v1/users/{id}')
+    expect(
+      screen.queryByRole('button', { name: /导出清单/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('导出清单：按当前站点筛选打开 CSV URL', async () => {
+    const openMock = vi.fn()
+    vi.stubGlobal('open', openMock)
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read', 'api_asset.export']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    fireEvent.click(await screen.findByText('站点B'))
+    await screen.findByText('站点：站点B')
+    fireEvent.click(screen.getByRole('button', { name: /导出清单/ }))
+    expect(openMock).toHaveBeenCalledTimes(1)
+    const [url, target] = openMock.mock.calls[0] as [string, string]
+    expect(url).toContain('/api/v1/api-security/endpoints/export?')
+    expect(url).toContain('format=csv')
+    expect(url).toContain('application_id=app-2')
+    expect(target).toBe('_blank')
   })
 
   it('无 merge/split 权限：不显示行内「合并」与「拆分」', async () => {
-    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read']),
+      csrfToken: null,
+      initialized: true,
+    })
     renderPage()
     await screen.findByText('/v1/users/{id}')
-    expect(screen.queryByRole('button', { name: /^合\s*并$/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /^拆\s*分$/ })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /^合\s*并$/ }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /^拆\s*分$/ }),
+    ).not.toBeInTheDocument()
   })
 
   it('合并弹窗：选择待并入接口后发起 POST /merge（other_id 为目标接口）', async () => {
@@ -225,7 +361,9 @@ describe('ApiEndpointsPage', () => {
     fireEvent.click(await screen.findByText('POST /v1/orders'))
     fireEvent.click(within(dialog).getByRole('button', { name: /^合\s*并$/ }))
     await waitFor(() => {
-      const call = (fetch as Mock).mock.calls.find((c) => String(c[0]).includes('/api-security/endpoints/e1/merge'))
+      const call = (fetch as Mock).mock.calls.find((c) =>
+        String(c[0]).includes('/api-security/endpoints/e1/merge'),
+      )
       expect(call).toBeTruthy()
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({ other_id: 'e2' })
     })
@@ -246,7 +384,9 @@ describe('ApiEndpointsPage', () => {
     })
     fireEvent.click(within(dialog).getByRole('button', { name: /^拆\s*分$/ }))
     await waitFor(() => {
-      const call = (fetch as Mock).mock.calls.find((c) => String(c[0]).includes('/api-security/endpoints/e1/split'))
+      const call = (fetch as Mock).mock.calls.find((c) =>
+        String(c[0]).includes('/api-security/endpoints/e1/split'),
+      )
       expect(call).toBeTruthy()
       // 空行被过滤
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({
@@ -257,7 +397,11 @@ describe('ApiEndpointsPage', () => {
 
   it('有 confirm/ignore 权限：未确认行显示「确认」，未忽略行显示「忽略」；「登记发现」已移除', async () => {
     useAuthStore.setState({
-      user: makeUser(['api_asset.read', 'api_asset.confirm', 'api_asset.ignore']),
+      user: makeUser([
+        'api_asset.read',
+        'api_asset.confirm',
+        'api_asset.ignore',
+      ]),
       csrfToken: null,
       initialized: true,
     })
@@ -265,11 +409,17 @@ describe('ApiEndpointsPage', () => {
     await screen.findByText('/v1/users/{id}')
     expect(screen.getAllByRole('button', { name: /^确\s*认$/ })).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: /^忽\s*略$/ })).toHaveLength(2)
-    expect(screen.queryByRole('button', { name: /登\s*记\s*发\s*现/ })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /登\s*记\s*发\s*现/ }),
+    ).not.toBeInTheDocument()
   })
 
   it('价值列：已评分接口展示等级 Tag，未评分显示 -；表头包含「价值」', async () => {
-    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read']),
+      csrfToken: null,
+      initialized: true,
+    })
     renderPage()
     const table = await screen.findByRole('table')
     const headers = within(table)
@@ -298,30 +448,56 @@ describe('ApiEndpointsPage', () => {
       total: 2,
     }
     const deprecateCalls: string[] = []
-    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      const method = init?.method ?? 'GET'
-      if (url.includes('/api-security/endpoints/site-summary')) {
-        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
-      }
-      if (url.includes('/api-security/endpoints/directory-tree')) {
-        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
-      }
-      if (method === 'POST' && url.includes('/api-security/endpoints/e1/deprecate')) {
-        deprecateCalls.push(url)
-        return Promise.resolve(
-          jsonResponse(200, {
-            code: 'SUCCESS',
-            message: 'ok',
-            data: { endpoint: { ...listData.items[0], asset_status: 'DEPRECATED' }, message: '接口已标记下线' },
-          }),
-        )
-      }
-      if (url.includes('/api-security/endpoints')) {
-        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: lifecycleList }))
-      }
-      return Promise.reject(new Error(`unexpected url: ${url} (${method})`))
-    })
+    ;(fetch as Mock).mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        if (url.includes('/api-security/endpoints/site-summary')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: siteSummaryData,
+            }),
+          )
+        }
+        if (url.includes('/api-security/endpoints/directory-tree')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: directoryTreeData,
+            }),
+          )
+        }
+        if (
+          method === 'POST' &&
+          url.includes('/api-security/endpoints/e1/deprecate')
+        ) {
+          deprecateCalls.push(url)
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: {
+                endpoint: { ...listData.items[0], asset_status: 'DEPRECATED' },
+                message: '接口已标记下线',
+              },
+            }),
+          )
+        }
+        if (url.includes('/api-security/endpoints')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: lifecycleList,
+            }),
+          )
+        }
+        return Promise.reject(new Error(`unexpected url: ${url} (${method})`))
+      },
+    )
     useAuthStore.setState({
       user: makeUser(['api_asset.read', 'api_asset.edit']),
       csrfToken: null,
@@ -329,22 +505,42 @@ describe('ApiEndpointsPage', () => {
     })
     renderPage()
     await screen.findByText('/v1/legacy')
-    expect(screen.getByRole('button', { name: /^下\s*线$/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /^恢\s*复$/ })).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /^下\s*线$/ }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /^恢\s*复$/ }),
+    ).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^下\s*线$/ }))
     fireEvent.click(await screen.findByRole('button', { name: /确\s*定|^OK$/ }))
     await waitFor(() => expect(deprecateCalls).toHaveLength(1))
   })
 
   it('详情抽屉：展示接口信息与参数约束（类型/必填/长度）', async () => {
-    useAuthStore.setState({ user: makeUser(['api_asset.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({
+      user: makeUser(['api_asset.read']),
+      csrfToken: null,
+      initialized: true,
+    })
     ;(fetch as Mock).mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.includes('/api-security/endpoints/site-summary')) {
-        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: siteSummaryData }))
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: siteSummaryData,
+          }),
+        )
       }
       if (url.includes('/api-security/endpoints/directory-tree')) {
-        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: directoryTreeData }))
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: directoryTreeData,
+          }),
+        )
       }
       if (url.includes('/api-security/endpoints/e1/models')) {
         return Promise.resolve(
@@ -408,7 +604,9 @@ describe('ApiEndpointsPage', () => {
         )
       }
       if (url.includes('/api-security/endpoints')) {
-        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+        return Promise.resolve(
+          jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }),
+        )
       }
       return Promise.reject(new Error(`unexpected url: ${url}`))
     })
@@ -416,13 +614,17 @@ describe('ApiEndpointsPage', () => {
     await screen.findByText('/v1/users/{id}')
     fireEvent.click(screen.getAllByRole('button', { name: /^详\s*情$/ })[0])
     // 抽屉标题与基础信息
-    expect(await screen.findByText('接口详情：GET /v1/users/{id}')).toBeInTheDocument()
+    expect(
+      await screen.findByText('接口详情：GET /v1/users/{id}'),
+    ).toBeInTheDocument()
     // 参数行：参数名、类型（base_type 经 API_BASE_TYPE_META 映射为中文标签）、必填、长度约束（推荐约束 min/max）
     expect(await screen.findByText('user_id')).toBeInTheDocument()
     expect(screen.getByText('整数')).toBeInTheDocument()
     expect(screen.getByText('1 ~ 19')).toBeInTheDocument()
     // 原始数据区块：默认展示接口记录 JSON
     expect(screen.getByText('原始数据')).toBeInTheDocument()
-    expect(screen.getByText(/"normalized_path": "\/v1\/users\/\{id\}"/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/"normalized_path": "\/v1\/users\/\{id\}"/),
+    ).toBeInTheDocument()
   })
 })

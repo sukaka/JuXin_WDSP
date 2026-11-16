@@ -281,6 +281,31 @@ func (c *CaddyClient) GetCurrentConfig(ctx context.Context) (string, error) {
 	return string(body), nil
 }
 
+// GetRuntimeSnapshot reads metrics from the admin-only gateway runtime endpoint.
+func (c *CaddyClient) GetRuntimeSnapshot(ctx context.Context) (*GatewayRuntimeSnapshot, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/jiuzhang/runtime", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get gateway runtime snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read gateway runtime snapshot: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gateway runtime endpoint returned %d: %s", resp.StatusCode, truncateString(string(body), 200))
+	}
+	var snapshot GatewayRuntimeSnapshot
+	if err := json.Unmarshal(body, &snapshot); err != nil {
+		return nil, fmt.Errorf("decode gateway runtime snapshot: %w", err)
+	}
+	return &snapshot, nil
+}
+
 // GetConfigHash 获取当前配置的规范化哈希（发布内容一致性验证与健康指标共用）。
 // 规范化指键序/空白不敏感（Go encoding/json 对 map 键排序），容忍 Caddy /config/
 // 返回与 /load 原文之间的格式差异；语义不一致（内容真实不同）才会得到不同哈希。

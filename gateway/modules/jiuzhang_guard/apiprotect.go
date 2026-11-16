@@ -109,6 +109,15 @@ func apiDecisionMode(s string) decision.Mode {
 	}
 }
 
+// apiParseLimits 统一生成请求上下文与响应相位使用的解析限制；未下发采样比例保持默认 1。
+func (g *Guard) apiParseLimits() dsctx.ParseLimits {
+	limits := dsctx.DefaultParseLimits()
+	if g.APIResponseSampleRatio != nil {
+		limits.ResponseSampleRatio = *g.APIResponseSampleRatio
+	}
+	return limits
+}
+
 // buildBehaviorStores 按 behavior_store 配置构建检测器计数存储注入集合。
 // memory（缺省）→ nil（进程内默认实现，零行为变化）；valkey → 复用共享引擎 Valkey 连接
 // （behaviorstore：sha256 键 + TTL + Lua 原子计数），连接未建立时告警并回退 nil
@@ -241,19 +250,25 @@ func (g *Guard) serveAPIProtected(w http.ResponseWriter, r *http.Request, next c
 	} else if g.apiFileSignature != nil {
 		downloadTypes = g.apiFileSignature.AllowsContentType
 	}
-	downloadHold := g.apiFileCompliance.HasDownloadRules()
-	// MCP SSE 逐消息检查（NG-MCP G1 D7）：tools/call 上下文存在时包装于捕获器之下
-	// ——text/event-stream 响应逐事件即检即放（现状直通路径字节级承载；非 SSE 透传
-	// 零行为；缓冲路径不受影响——MCP 非流式结果检查在响应相位 ProcessResponse 内）
+	// 下载合规或 file 位置的敏感值规则需要完整缓冲；未配置时不扩大捕获范围。
+	downloadHold := g.apiFileCompliance.HasDownloadRules() || detectors.HasFileSensitiveLocation(g.APISensitiveValueRules)
+	// SSE 在捕获器之下逐事件即检即放：MCP 调用由专用 writer 接管，其他响应走通用
+	// response_body writer，二者互斥避免同一 data 重复检测；非 SSE 透传零行为。
 	mw, sfMCP := g.wrapMCPSSEResponse(w, res.Context)
-	cw := newAPIResponseCapture(mw, g.responseCaptureMax(), g.responseFailClosed(),
+	vw, sfValues := g.wrapResponseBodySSEResponse(mw, res.Context, sfMCP != nil)
+	cw := newAPIResponseCapture(vw, g.responseCaptureMax(), g.responseFailClosed(),
 		len(g.apiMaskRules[res.EndpointKey]) > 0, downloadTypes, downloadHold, res.EndpointKey, res.Context.RequestID, g.logger)
+	cw.inlineHTML = g.apiFileWatermark != nil && g.apiFileWatermark.IncludeInlineHTML
+	cw.responseBodyValues = detectors.HasResponseBodySensitiveLocation(g.APISensitiveValueRules)
 	// 强流程响应回程（NG-FLOW-03）：成功预留存在时包装记录器于捕获器之上——
 	// 采样源站原始字节（脱敏/水印/签名改写之前）；下游返回后先收口
 	// （commit/受理/INDETERMINATE 条目入上下文），再进 finishAPIResponse 统一
 	// 响应相位与事件输出（条目随主事件 strong_flow 数组一并落盘）。
 	sw, sfRec := g.wrapStrongFlowResponse(cw, res.Context)
 	nextErr := proxyWithMCPSSEGuard(sw, r, next, sfMCP)
+	if sfValues != nil {
+		sfValues.Finish()
+	}
 	if sfMCP != nil {
 		sfMCP.Finish()
 	}
@@ -311,6 +326,20 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		return
 	}
 
+	decodedBody := cw.body.Bytes()
+	compressionFailed := false
+	if kind == outcomeBuffered && compressedAPIResponseEncoding(cw.contentEncoding) {
+		var decodeErr error
+		decodedBody, decodeErr = decodeAPIResponseBody(cw.contentEncoding, cw.body.Bytes(), cw.maxBytes)
+		if decodeErr != nil {
+			compressionFailed = true
+			cw.warnSkip(cw.contentEncoding + " response decode failed: " + decodeErr.Error())
+			if g.responseFailClosed() && cw.hasMaskRules {
+				kind = outcomeDiscarded
+			}
+		}
+	}
+
 	// FAIL_CLOSED 抑制：原响应未外发，以 500 空明细响应替代（防未脱敏数据泄露）
 	if kind == outcomeDiscarded {
 		res.Context.AddMatch(dsctx.DetectorMatch{
@@ -330,8 +359,7 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 	}
 
 	// 响应相位（统一引擎）：JSON 解析/敏感字段/错误签名/transform plan + 响应相位决策
-	// BodySize 口径（code-review LOW-G10）：溢出（spill）时已缓冲前缀经 bytesStreamed
-	// 外发记账，body.Len() 不再重复计入；未溢出缓冲路径 bytesStreamed=0，取缓冲全长
+	// BodySize 记录源站实际传输字节；gzip/br 仅以完整解码体供解析，解码失败按未检截断体披露。
 	bodySize := cw.bytesStreamed
 	if !cw.spilled {
 		bodySize += int64(cw.body.Len())
@@ -345,18 +373,18 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		// 观测落库的 FileName 仍由引擎侧截断 128）
 		ContentDisposition: cw.base.Header().Get("Content-Disposition"),
 		BodySize:           bodySize,
-		Truncated:          cw.spilled,
-		Streamed:           kind == outcomeStreamed,
+		Truncated:          cw.spilled || compressionFailed,
+		Streamed:           kind == outcomeStreamed || compressionFailed,
 		ContentType:        cw.base.Header().Get("Content-Type"),
 	}
-	if kind == outcomeBuffered {
-		respIn.Body = cw.body.Bytes()
+	if kind == outcomeBuffered && !compressionFailed {
+		respIn.Body = decodedBody
 	} else if cw.spilled && cw.body.Len() > 0 {
 		respIn.Body = cw.body.Bytes() // 溢出前缀（Truncated=true，不参与解析/计划）
 	}
 	act, err := pipeline.ProcessResponse(res.Context, respIn, pipeline.ResponseConfig{
 		Mode:      apiDecisionMode(g.APIProtectionMode),
-		Limits:    dsctx.DefaultParseLimits(),
+		Limits:    g.apiParseLimits(),
 		MaskRules: g.apiMaskRules[res.EndpointKey],
 		// 响应结构基线（发布通道下发，按端点选取；nil = 无基线，偏离检测零行为）
 		ResponseBaselines: g.apiRespBaselines[res.EndpointKey],
@@ -375,6 +403,7 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		// nil = 无目录且无绑定零行为；值级规则下发原文经响应相位缓存编译复用）
 		MCPGuard:            g.apiMCPGuard,
 		SensitiveValueRules: g.APISensitiveValueRules,
+		LLMSecurityPolicy:   g.llmSecurityPolicyForApp(),
 	})
 	if err != nil {
 		// 响应相位故障 fail-open：记录并放行原响应（不脱敏）
@@ -384,12 +413,19 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		res.FinalAction = act
 	}
 
-	// 文件合规下载阻断（W13-GW / P2-03）：响应相位 BLOCK 类定案仅可能来自下载方向合规规则
-	// （请求侧阻断请求不会到达本相位；OBSERVE 模式不产 BLOCK 类）——按响应失败策略语义
-	// 选 OBSERVE 优先的设计：仅完整缓冲（未外发一字节）的响应在 PROTECT 抑制为 403；
-	// 已直通/溢出的响应无法撤回，诚实降级：补记 file.download_block_unavailable 明细 + Warn
-	// （不静默），final_action 按实回落 OBSERVE（未能执行的阻断不得冒充已阻断，
-	// 与 attributeWAFIntercept 按实修正同一纪律）。
+	if compressionFailed {
+		if act == dsctx.ActionBlock || act == dsctx.ActionMaskResp {
+			res.Context.SetFinalAction(dsctx.ActionObserve)
+			res.FinalAction = dsctx.ActionObserve
+		}
+		g.writeBufferedResponse(w, cw, cw.body.Bytes(), false)
+		dispo.RecordOrigin(tail.status, true)
+		g.emitAPIEvent(r, res, tail)
+		return
+	}
+
+	// 响应侧阻断（文件合规 / MCP 结果 / LLM 输出保护）：仅完整缓冲且未外发一字节时才能
+	// 干净抑制；已直通/溢出的响应无法撤回，必须按实记录降级，不冒充已阻断。
 	if err == nil && act == dsctx.ActionBlock {
 		if kind == outcomeBuffered {
 			// MCP 结果检查实断（NG-MCP §1.7/D11）：mcpguard BLOCK 明细 → -32014
@@ -400,6 +436,14 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 					[]string{"MCP_ERROR_" + strconv.Itoa(mcpCode)}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 				tail.status = mcpHTTP
 				g.writeMCPErrorResponse(w, res.Context.RequestID, mcpCode, mcpHTTP, mcpRequestIDRaw(res.Context))
+				g.emitAPIEvent(r, res, tail)
+				return
+			}
+			if hasLLMOutputBlock(res.Context.CopyMatches()) {
+				g.writeLLMOutputBlockedResponse(w, res.Context.RequestID)
+				tail.status = http.StatusForbidden
+				dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
+					[]string{"LLM_OUTPUT_BLOCK"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
 				g.emitAPIEvent(r, res, tail)
 				return
 			}
@@ -443,7 +487,7 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 	}
 	if act == dsctx.ActionMaskResp && kind == outcomeBuffered && !partialContent {
 		if rc := res.Context.GetResponse(); rc != nil && len(rc.TransformPlan) > 0 {
-			out, terr := response.ApplyJSON(cw.body.Bytes(), rc.TransformPlan)
+			out, terr := response.ApplyJSONWithKey(decodedBody, rc.TransformPlan, g.apiMaskCrypto)
 			switch {
 			case terr != nil && g.responseFailClosed():
 				res.Context.AddMatch(dsctx.DetectorMatch{
@@ -492,7 +536,7 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 		}
 	}
 	if kind == outcomeBuffered {
-		body := cw.body.Bytes()
+		body := decodedBody
 		modified := false
 		if masked {
 			body = transformed
@@ -511,7 +555,45 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 			body = sigBody
 			modified = true
 		}
-		g.writeBufferedResponse(w, cw, body, modified)
+		deliveryBody := cw.body.Bytes()
+		if modified {
+			deliveryBody = body
+			if compressedAPIResponseEncoding(cw.contentEncoding) {
+				encodedBody, encodeErr := encodeAPIResponseBody(cw.contentEncoding, body)
+				if encodeErr != nil {
+					cw.warnSkip(cw.contentEncoding + " response re-encode failed: " + encodeErr.Error())
+					if g.responseFailClosed() && cw.hasMaskRules {
+						res.Context.AddMatch(dsctx.DetectorMatch{
+							Detector: "api_response",
+							RuleID:   "response.fail_closed",
+							Category: "OBSERVE",
+							Severity: "HIGH",
+							Message:  "response suppressed: cannot process safely under fail-closed policy",
+							Evidence: map[string]string{"endpoint_key": res.EndpointKey},
+						})
+						g.writeFailClosedResponse(w, res.Context.RequestID)
+						tail.status = http.StatusInternalServerError
+						dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusInternalServerError, true,
+							[]string{"RESPONSE_FAIL_CLOSED"}, []string{"api_response:response.fail_closed"})
+						g.emitAPIEvent(r, res, tail)
+						return
+					}
+					deliveryBody = cw.body.Bytes()
+					modified = false
+					masked = false
+					res.Context.SetFinalAction(dsctx.ActionObserve)
+					res.FinalAction = dsctx.ActionObserve
+				} else {
+					deliveryBody = encodedBody
+				}
+			}
+		}
+		if modified && res != nil && res.Context != nil {
+			if rc := res.Context.GetResponse(); rc != nil && rc.FileObservation != nil {
+				rc.FileObservation.ContentSHA256 = response.FileContentSHA256(body)
+			}
+		}
+		g.writeBufferedResponse(w, cw, deliveryBody, modified)
 	}
 	// P0-04 源站完成事实：响应脱敏实改写时 security_action=MASK_RESPONSE
 	// （response_source 仍落 ORIGIN——契约 §7）；tail.status 为实际写出码
@@ -522,10 +604,11 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 	g.emitAPIEvent(r, res, tail)
 }
 
-// maybeApplyFileWatermark 文件下载水印 v1 执行（W12-GW / P2-01 最小可行子集）：
-// 命中条件：发布通道下发且启用 + 响应相位已产 DOWNLOAD 文件观测（Content-Disposition
-// 携带 filename）+ 完整缓冲（identity 编码；非 identity/流式/溢出在捕获层已直通或抑制，
-// 到不了这里）+ 2xx 状态 + 非 Range 分段（206/Content-Range 分段体加水印会破坏断点续传重组）
+// maybeApplyFileWatermark 文件下载与可选内联 HTML 水印执行：
+// 下载路径沿用既有 DOWNLOAD 文件观测；include_inline_html=true 时另接受无下载头的
+// text/html 网页，产 file.watermark_applied 并以 delivery 区分 INLINE_HTML/DOWNLOAD。
+// 两者均需完整解码缓冲（identity 或 gzip/br；流式/溢出/解码失败不会进入改写）
+// + 2xx 状态 + 非 Range 分段（206/Content-Range 分段体加水印会破坏断点续传重组）
 // + Content-Type 白名单。命中时产 file.watermark_applied INFO 明细（证据不含水印内容）；
 // 失败 FAIL_OPEN 直通原响应并 Warn（不静默）。
 func (g *Guard) maybeApplyFileWatermark(res *pipeline.Result, r *http.Request, cw *apiResponseCapture, body []byte, status int, start time.Time) ([]byte, bool) {
@@ -534,23 +617,27 @@ func (g *Guard) maybeApplyFileWatermark(res *pipeline.Result, r *http.Request, c
 		return body, false
 	}
 	rc := res.Context.GetResponse()
-	if rc == nil || rc.FileObservation == nil || rc.FileObservation.Direction != dsctx.FileDirectionDownload {
+	ct := cw.base.Header().Get("Content-Type")
+	isDownload := rc != nil && rc.FileObservation != nil && rc.FileObservation.Direction == dsctx.FileDirectionDownload
+	isInlineHTML := cfg.IncludeInlineHTML && !isDownload && cw.base.Header().Get("Content-Disposition") == "" && response.IsHTMLMediaType(ct)
+	if !isDownload && !isInlineHTML {
 		return body, false
 	}
 	if status < 200 || status > 299 {
-		return body, false // 仅 2xx 成功下载加水印（204 无体、错误页/重定向不属文件交付）
+		return body, false // 仅 2xx 成功交付加水印（204 无体、错误页/重定向不改写）
 	}
 	if status == http.StatusPartialContent || cw.base.Header().Get("Content-Range") != "" {
 		return body, false // Range 分段体：加水印会破坏断点续传重组
 	}
-	ct := cw.base.Header().Get("Content-Type")
 	if !cfg.AllowsContentType(ct) {
 		return body, false
 	}
 	// OOXML 族（W14-GW）：Content-Type 白名单之外加 filename 扩展名双重一致门禁
 	// （防伪造扩展名绕过/误标；MIME 取观测内已归一化主类型）
-	if ext := response.OOXMLWatermarkExtension(rc.FileObservation.MIME); ext != "" && rc.FileObservation.Extension != ext {
-		return body, false
+	if isDownload {
+		if ext := response.OOXMLWatermarkExtension(rc.FileObservation.MIME); ext != "" && rc.FileObservation.Extension != ext {
+			return body, false
+		}
 	}
 	// 占位变量与 emitAPIEvent 同一取值口径：真实客户端 IP（入口已改写 RemoteAddr）、
 	// 身份指纹（仅凭据派生，匿名为空串）、请求时间（UTC RFC3339）、域名（去端口小写）
@@ -573,25 +660,29 @@ func (g *Guard) maybeApplyFileWatermark(res *pipeline.Result, r *http.Request, c
 	if !applied {
 		return body, false
 	}
+	message := "inline html watermark applied"
+	evidence := map[string]string{"endpoint_key": res.EndpointKey, "delivery": "INLINE_HTML", "mime": "text/html"}
+	if isDownload {
+		message = "download file watermark applied"
+		evidence["delivery"] = "DOWNLOAD"
+		evidence["filename"] = rc.FileObservation.FileName
+		evidence["mime"] = rc.FileObservation.MIME
+	}
 	res.Context.AddMatch(dsctx.DetectorMatch{
 		Detector: "file",
 		RuleID:   "file.watermark_applied",
 		Category: "INFO",
 		Severity: "INFO",
-		Message:  "download file watermark applied",
-		Evidence: map[string]string{
-			"endpoint_key": res.EndpointKey,
-			"filename":     rc.FileObservation.FileName,
-			"mime":         rc.FileObservation.MIME,
-		},
+		Message:  message,
+		Evidence: evidence,
 	})
 	return out, true
 }
 
 // maybeApplyFileSignature 文件签名 v1 执行（W13-GW / P2-02，任务书 §110 子集）：
 // 命中条件与水印同一口径：发布通道下发且启用 + 响应相位已产 DOWNLOAD 文件观测 +
-// 完整缓冲（identity 编码）+ 2xx 状态 + 非 Range 分段 + v1 文本族能力（text/* 与
-// application/json，契约无白名单段）。在水印之后调用——签名覆盖脱敏/水印后的最终交付内容。
+// 完整解码缓冲（identity 或 gzip/br 编码）+ 2xx 状态 + 非 Range 分段 + 文本族或 OOXML 能力（text/*、
+// application/json、docx/xlsx/pptx，契约无白名单段）。在水印之后调用——签名覆盖脱敏/水印后的最终交付内容。
 // 命中时产 file.signature_embedded INFO 明细（证据含 kid/filename/mime，不含密钥与完整内容哈希）；
 // 失败 FAIL_OPEN 直通原响应并 Warn（不静默，与水印同一纪律）。
 func (g *Guard) maybeApplyFileSignature(res *pipeline.Result, r *http.Request, cw *apiResponseCapture, body []byte, status int, start time.Time) ([]byte, bool) {
@@ -1074,7 +1165,7 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 	cfg := pipeline.Config{
 		Enabled:          true,
 		Mode:             apiDecisionMode(g.APIProtectionMode),
-		Limits:           dsctx.DefaultParseLimits(),
+		Limits:           g.apiParseLimits(),
 		FormalSchema:     g.APIFormalSchemas[ek],
 		ParamConstraints: g.APIParameterConstraints[ek],
 		KnownEndpoints:   g.APIKnownEndpoints,
@@ -1083,12 +1174,19 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 		Admission:             g.apiAdmissionPolicyForApp(),
 		APIWriteRatePerMinute: g.APIWriteRatePerMinute,
 		// §36 限流下发面（发布通道下发；0 = 不启用，不走引擎默认值）
-		APIQuotaPerHour:     g.APIQuotaPerHour,
-		APIQuotaPerDay:      g.APIQuotaPerDay,
-		ObjectRatePerMinute: g.ObjectRatePerMinute,
-		MaxPageSize:         g.MaxPageSize,
-		MaxBatchSize:        g.MaxBatchSize,
-		IdentitySalt:        g.IdentitySalt,
+		APIQuotaPerHour:         g.APIQuotaPerHour,
+		APIQuotaPerDay:          g.APIQuotaPerDay,
+		ObjectRatePerMinute:     g.ObjectRatePerMinute,
+		CredentialRatePerMinute: g.CredentialRatePerMinute,
+		TenantRatePerMinute:     g.TenantRatePerMinute,
+		ActionRatePerMinute:     g.ActionRatePerMinute,
+		APIEndpointActions:      g.APIEndpointActions,
+		GroupRatePerMinute:      g.GroupRatePerMinute,
+		APIEndpointGroups:       g.APIEndpointGroups,
+		RateLimitAction:         normalizedAPIRateLimitAction(g.APIRateLimitAction),
+		MaxPageSize:             g.MaxPageSize,
+		MaxBatchSize:            g.MaxBatchSize,
+		IdentitySalt:            g.IdentitySalt,
 		// 值级敏感检测规则（发布通道下发；空 = 关闭值级检测，零行为变化）
 		SensitiveValueRules: g.APISensitiveValueRules,
 		// 授权基线（发布通道下发；按端点选取，nil = 无端点基线，BFLA/字段权限检测零行为）
@@ -1116,6 +1214,8 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 		CredentialConcurrencyLimit: g.CredentialConcurrencyLimit,
 		// 应用标识（同凭据跨应用检测；空 = 应用未识别，该项检测跳过）
 		ApplicationID: g.AppID,
+		// 按应用覆盖的同设备多账号观察阈值；无覆盖保持默认3，只影响观察信号
+		SharedDeviceAccountLimit: g.sharedDeviceAccountLimit(),
 		// 行为计数存储（nil = 进程内默认内存；valkey 时跨节点共享，故障自动 Fail-open 回内存）
 		Stores: g.behaviorStores,
 		// 版本快照（Finding 逐条盖章 model_version/policy_version，溯源"当时生效哪版"）
@@ -1125,6 +1225,8 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 		ScanVerificationKey: g.apiScanKey,
 		// LLM 授权模型名单（nil/空 = 不下发不判定未授权模型；识别与观测不依赖名单）
 		LLMAllowedModels: g.APILLMAllowedModels,
+		// 当前应用的 LLM 输入保护策略（nil = 保持既有行为）
+		LLMSecurityPolicy: g.llmSecurityPolicyForApp(),
 		// 文件合规规则（发布通道下发 api_file_compliance_rules，上传方向；nil = 上传侧检测零行为）
 		FileComplianceRules: g.apiFileCompliance,
 		// gRPC 帧校验配置（W14-GW / P2-05：发布通道下发 api_grpc_*；零值 = 引擎默认 4MiB/不允许压缩）
@@ -1320,6 +1422,7 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 	case dsctx.ActionTempBlock:
 		dispo.RecordTerminal(ExecutorAPI, DisActionTempBlock, http.StatusForbidden, false,
 			[]string{"API_TEMP_BLOCK"}, apiEnforcementRuleRefs(res.Context.CopyMatches()))
+		g.createAPIRateLimitTempBlock(r, res.Context.RequestID, dispo.JSON())
 		emitBlocked(http.StatusForbidden)
 		return res, true, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("api client temporarily blocked"))
 	default:
@@ -1401,7 +1504,7 @@ func (g *Guard) noteAPIBodyPreserveSkipped(r *http.Request, start time.Time, rea
 	if reqID == "" {
 		reqID = r.Header.Get("X-Jiuzhang-Request-ID")
 	}
-	rc := dsctx.New(reqID, dsctx.DefaultParseLimits())
+	rc := dsctx.New(reqID, g.apiParseLimits())
 	rc.PolicyVersion = g.APIPolicyVersion
 	rc.SetFinalAction(dsctx.ActionObserve)
 	g.bridgeRequestContext(r, rc)

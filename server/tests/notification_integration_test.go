@@ -45,7 +45,7 @@ func createWecomChannel(t *testing.T, env *testEnv, cookies []*http.Cookie, csrf
 	return id
 }
 
-// TestNotificationMeta 元数据接口：固定 9 类（APM 阶段新增「业务性能」）+ 4 级。
+// TestNotificationMeta 元数据接口：固定 10 类（VULN_INTEL MVP 新增「漏洞情报」）+ 4 级。
 func TestNotificationMeta(t *testing.T) {
 	env := setupTestEnv(t)
 	cookies, _ := env.login(t, "test_sysadmin", env.adminPwd)
@@ -58,10 +58,10 @@ func TestNotificationMeta(t *testing.T) {
 	var result apiResp
 	readJSON(t, resp, &result)
 	cats, _ := result.Data["categories"].([]interface{})
-	if len(cats) != 9 {
-		t.Fatalf("categories 应为 9 类, got %d", len(cats))
+	if len(cats) != 10 {
+		t.Fatalf("categories 应为 10 类, got %d", len(cats))
 	}
-	wantCodes := []string{"infrastructure", "storage", "certificate", "collection", "config_publish", "api_security", "ops", "security_events", "apm"}
+	wantCodes := []string{"infrastructure", "storage", "certificate", "collection", "config_publish", "api_security", "ops", "security_events", "apm", "threat_intel"}
 	totalTypes := 0
 	for i, c := range cats {
 		m, _ := c.(map[string]interface{})
@@ -74,8 +74,8 @@ func TestNotificationMeta(t *testing.T) {
 		types, _ := m["alert_types"].([]interface{})
 		totalTypes += len(types)
 	}
-	if totalTypes != 36 {
-		t.Errorf("alert_types 总数应为 36, got %d", totalTypes)
+	if totalTypes != 37 {
+		t.Errorf("alert_types 总数应为 37, got %d", totalTypes)
 	}
 	sevs, _ := result.Data["severities"].([]interface{})
 	if len(sevs) != 4 || sevs[0] != "LOW" || sevs[3] != "CRITICAL" {

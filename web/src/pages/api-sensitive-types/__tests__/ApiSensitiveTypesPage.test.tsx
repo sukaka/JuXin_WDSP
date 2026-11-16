@@ -188,6 +188,29 @@ describe('ApiSensitiveTypesPage', () => {
     })
   })
 
+  it('新建类型：支持 file 文件内容检测位置', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_data.read', 'api_data.manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: /新建类型/ }))
+    await screen.findByText('新建敏感数据类型')
+    fireEvent.change(screen.getByLabelText('类型名称'), { target: { value: '导出手机号' } })
+    fireEvent.change(screen.getByLabelText('数据类型标签'), { target: { value: 'phone' } })
+    fireEvent.mouseDown(screen.getByLabelText('可能出现位置（可选）'))
+    fireEvent.click(await screen.findByText('文件内容（file）'))
+    fireEvent.change(screen.getByLabelText('值级正则（可选）'), { target: { value: '^1[3-9]\\d{9}$' } })
+    fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
+
+    await waitFor(() => expect(createBodies).toHaveLength(1))
+    expect(createBodies[0]).toEqual(
+      expect.objectContaining({ locations: ['file'], regex: '^1[3-9]\\d{9}$' }),
+    )
+  })
+
   it('行内禁用：二次确认后 PATCH status=DISABLED', async () => {
     useAuthStore.setState({
       user: makeUser(['api_data.read', 'api_data.manage']),

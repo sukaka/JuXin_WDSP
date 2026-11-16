@@ -48,6 +48,29 @@ func TestProcessUnifiedMultiMatchAndDecision(t *testing.T) {
 	}
 }
 
+func TestProcessOptionalFormalFieldAbsenceAllows(t *testing.T) {
+	body := `{"id":1}`
+	r, _ := http.NewRequest(http.MethodPost, "http://h/v1/orders/1", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer s3cr3t-token-0123456789abcdef")
+	res, err := Process(r, Config{
+		Enabled: true, Mode: "PROTECT",
+		FormalSchema: map[string]string{"id": "number", "note": "string"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.FinalAction != dsctx.ActionAllow {
+		t.Fatalf("optional formal field absence must not produce OBSERVE, got %s matches=%+v",
+			res.FinalAction, res.Context.CopyMatches())
+	}
+	for _, m := range res.Context.CopyMatches() {
+		if m.RuleID == "schema.missing_field" {
+			t.Fatalf("optional formal field absence emitted missing_field: %+v", res.Context.CopyMatches())
+		}
+	}
+}
+
 func TestProcessDisabledSkips(t *testing.T) {
 	r, _ := http.NewRequest(http.MethodGet, "http://h/", nil)
 	res, err := Process(r, Config{Enabled: false}, nil)

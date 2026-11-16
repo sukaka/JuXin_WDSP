@@ -36,7 +36,15 @@ type Result struct {
 	Confidence100 int
 }
 
-// Classify 基于解析结果打分。
+// ResponseEvidence 响应侧可见性证据。nil 或截断/流式响应不参与分类调整。
+type ResponseEvidence struct {
+	Status      int
+	ContentType string
+	Truncated   bool
+	Streamed    bool
+}
+
+// Classify 基于请求侧解析结果打分。
 func Classify(p *parser.Parsed) Result {
 	if p == nil {
 		return Result{Level: LevelNonAPI}
@@ -88,6 +96,51 @@ func Classify(p *parser.Parsed) Result {
 		Level:         classificationLevel(score),
 		Confidence100: int(math.Round(score * 100)),
 	}
+}
+
+// ClassifyWithResponse 在请求侧评分基础上纳入完整可见响应证据。响应缺失、
+// 截断或流式直通不代表非 API，保持请求侧结论；成功 HTML 只压低非结构性通用流量。
+func ClassifyWithResponse(p *parser.Parsed, resp *ResponseEvidence) Result {
+	result := Classify(p)
+	if p == nil || resp == nil || resp.Truncated || resp.Streamed {
+		return result
+	}
+	score := result.Confidence
+	signals := append([]string(nil), result.Signals...)
+	add := func(s string, w float64) {
+		signals = append(signals, s)
+		score += w
+	}
+	ct := strings.ToLower(resp.ContentType)
+	if strings.Contains(ct, "json") {
+		add("response_json", 0.25)
+	}
+	if strings.Contains(ct, "xml") || strings.Contains(ct, "soap") {
+		add("response_xml", 0.20)
+	}
+	if resp.Status >= 200 && resp.Status < 300 && strings.Contains(ct, "html") && !hasStructuralAPISignal(p) {
+		add("response_html", -0.35)
+	}
+	if score < 0 {
+		score = 0
+	}
+	if score > 1 {
+		score = 1
+	}
+	return Result{
+		IsAPI:         score >= probableThreshold,
+		Confidence:    score,
+		Signals:       signals,
+		Level:         classificationLevel(score),
+		Confidence100: int(math.Round(score * 100)),
+	}
+}
+
+func hasStructuralAPISignal(p *parser.Parsed) bool {
+	ct := strings.ToLower(p.ContentType)
+	path := strings.ToLower(p.RawPath)
+	return strings.Contains(path, "/graphql") || strings.Contains(ct, "soap") ||
+		strings.Contains(ct, "xml") || strings.Contains(ct, "grpc")
 }
 
 // classificationLevel score → §8.2 四级标签。

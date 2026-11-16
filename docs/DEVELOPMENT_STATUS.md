@@ -471,7 +471,7 @@
   - AUTHZ-01 Provider 兼容边界补充：`decodeGuardConfigSnapshot` 统一处理旧快照缺失可选字段和新快照未知授权分片，独立 Provider 测试进程通过 HTTP/受限 `control:` 协议返回归一化授权快照，跨模块控制协议门禁已通过；正式 Provider 服务、真实旧二进制节点组合和跨主机发布链路仍待集成环境。
   - 网关→管理面方向仍为单向日志采集（与既有架构一致）；**多节点遥测校验 v1 已落地**（事件携带 gateway_node/policy_version/model_version 落列聚合，见"API 安全补全第十二批"），**心跳活性（第十七批）与配置面主动同步 v2（第十八批发布扇出）已落地**，节点注册握手与全量产物分发未启动；WAF 纯形态回归以 stage5 既有测试套件为准
   - P1 残余如实声明：P1-01 态势已补齐（第九批：overview 12 指标 + trends 六曲线；**第十批：sources/targets 访问维度五榜单**，UA 族维度因 api_runtime_events 无 UA 列如实不做；Shadow 趋势未做）；AI 定时运营已落地五种任务（见第七/八批）但工作流框架/连续失败熔断/ai_recommendations 流转未做；P1-03/04/06/07/08/09/10 已落地（见第七~十一批，文件下载观测仅覆盖带 filename 的 Content-Disposition 响应、出境数据源无 ASN、报告调度器未做、通知渠道以 syslog 外发为主）
-  - P2 终态如实声明：六项已按最小可行子集交付 v1——P2-01 文件水印（文本族 + OOXML 子集，pdf 显式拒绝）、P2-02 文件签名（文本族 jzsig1）、P2-03 文件合规（双相位，下载直通诚实降级）、P2-04 LLM API 安全（观测不落原文 + MCP 内容级）、P2-05 gRPC（帧结构校验，**描述符级消息解析未做**）、P2-07 源码 API 发现（Go 四字面量形态）；**P2-06 HTTP/3 深度解析未做**（第十四批已落地协议版本可见性：事件 proto 字段）；性能最小矩阵已实测（第十八批：Baseline Proxy 5337 QPS/p95 9ms vs Full OBSERVE 3540 QPS/p95 13ms、0 失败，11.5 万事件约 6.5 分钟追平零丢失，见 docs/evidence/api-security-performance-baseline.md），多节点/大流量全矩阵仍缺，现有 stage8-test-performance 5/5 为基准测试
+  - P2 终态如实声明：六项已按最小可行子集交付 v1——P2-01 文件水印（文本族 + OOXML 子集，pdf 显式拒绝）、P2-02 文件签名（文本族 + OOXML ZIP 注释 jzsig1，见 WP2-L）、P2-03 文件合规（双相位，下载直通诚实降级）、P2-04 LLM API 安全（观测不落原文 + MCP 内容级）、P2-05 gRPC（帧结构校验，**描述符级消息解析未做**）、P2-07 源码 API 发现（Go 四字面量形态）；**P2-06 HTTP/3 深度解析未做**（第十四批已落地协议版本可见性：事件 proto 字段）；性能最小矩阵已实测（第十八批：Baseline Proxy 5337 QPS/p95 9ms vs Full OBSERVE 3540 QPS/p95 13ms、0 失败，11.5 万事件约 6.5 分钟追平零丢失，见 docs/evidence/api-security-performance-baseline.md），多节点/大流量全矩阵仍缺，现有 stage8-test-performance 5/5 为基准测试
 
 ### APM / 业务性能监控 阶段0+阶段1（2026-08-30，迁移 000088）
 
@@ -558,6 +558,457 @@
 - **部署**：`deployment/docker-compose.stage5.yml` 新增 netmgrd 服务（`network_mode: service:gateway` 同网络命名空间、cap_add NET_RAW/NET_ADMIN、挂同一 /var/run/caddy 卷、NODE_NAME 与 GATEWAY_NODE_NAME 一致）；镜像 `gateway/images/netmgrd/Dockerfile`（alpine digest 锁定 + iproute2/iputils/tcpdump/traceroute）；裸机额外需系统包 iputils/tcpdump/traceroute；根 docker-compose.yml 仅基座不含网关栈故未接入。
 - **验证**：gateway netmgrd diag 22 例 + dns_ntp 17 例；server netdiag 集成 + settings/netconfig 校验合并；前端 NetworkToolsPage 10 例 + 系统设置 3 例（全量 945 例绿）；stage5 实测——ping/traceroute SUCCESS、tcp_probe 8081 SUCCESS / 80 正确报 connection refused、dns_query 正常、10s 抓包 50 包 pcap 下载 sha256 一致、60s 抓包手动停止 STOPPED、DNS/NTP 全链路 UNSUPPORTED 回报正确、非法 DNS 值 400 拒绝、审计风险级别正确；OpenAPI `server/openapi/fragments/20-network-tools.yaml`，openapi-reconcile 661 路由零差集。
 - **诚实遗留**：diag 单节点认领（按 NODE_NAME 匹配，无跨节点编排）；capture 串行执行阻塞后续任务；容器环境 NTP/DNS 如实回报 UNSUPPORTED（该设置项面向裸机）；根 compose 未接入 netmgrd。
+
+### AI 能力增强第一波（2026-10-21，无新迁移）
+
+- **API_SECURITY_ANALYSIS 意图与 api_security Agent**（`server/internal/aiorchestrator/intent.go`、`server/internal/aiagents/api_agent.go`）：新增第 13 类任务类型 `API_SECURITY_ANALYSIS`——高信号词（shadow/zombie/BOLA/BFLA/越权/参数偏离/涉敏/敏感数据/影子/僵尸/弱点）直接命中，泛词（资产/态势/模型/风险/统计等）须与 api/接口/端点/字段 共现才路由（规则位置在事件分析/统计/日志之前，避免劫持普通 WAF 问题）；`CapabilityIntro` 能力介绍同步追加 API 安全条目与示例问法。Agent 事实全部来自 API 域 READ_ONLY Tool（api_posture.get / api_runtime.statistics / api_asset.search / api_risk.search / api_weakness.search / api_sensitive.search / api_learning.status / api_model.diff / api_parameter.get），经 `ToolCtx.CallTool` 调用并登记证据，不直查数据库；权限不足/Tool 停用/查询失败如实写入事实并降级继续，缺业务 ID 明确提示补充、不用猜测值顶替；尾部固定声明变更须走既有人工审核发布流程。
+- **动态 Agent SyncRegistry**（`server/internal/aihandlers/agents_tools_handler.go`、`app/app.go`）：`AgentCatalog` 静态 8 个 + 装配侧 extraAgents 经 `mergeAgentCatalog` 合并（同 code 覆盖、新 code 追加），`SyncRegistry` 按 code 唯一 upsert 入 `ai_agents`（保留既有启停状态）；`api_security` 仅 `APIDynamicProtectionEnabled()` 时注册装配——纯 WAF 形态编排器与 `ai_agents` 目录均不出现，意图命中未注册 Agent 编排器跳过不产伪造事实；启停（`AgentEnabledChecker`）与 `allowed_tool_ids` 白名单（`AgentToolChecker`）管理面口径与既有 Agent 完全一致。
+- **AI 定时运营任务 LLM 润色接入**（`server/internal/app/aiops_summarizer.go`）：实现 `apiops.Summarizer`，五种定时任务（API_ASSET_DIGEST/SHADOW_REVIEW/WEAKNESS_FOLLOW/RISK_DIGEST/SENSITIVE_DIGEST）摘要经模型网关低复杂度档位（`aimodel.ComplexitySimple`）润色，仅 `cfg.AI.Enabled` 时由 app.go 装配；润色只复述报告与模板草稿中的事实、输出仅展示不回灌入参；nil/失败/空输出回退模板草稿（`apiops polishSummary` 降级语义不变）。工作流框架、连续失败熔断、属主权限模型与第二批 Tool 仍为未实现缺口（docs/API_AI_OPERATIONS.md 已同步口径）。
+- **前端**（web/src/）：AI 状态横幅（`layouts/AdminLayout.tsx`——任一 AI 菜单可见时 5 分钟轮询 `GET /ai/status`，停用/降级顶部 banner 明示，登出期间停轮询）；助手页 `?session_id=` 深链定位会话（`pages/ai/assistant/AssistantPage.tsx`，未找到显式报错提示归档过滤）+ 任务详情会话 ID 跳转链接（`pages/ai/tasks/AiTasksPage.tsx` → `/ai/assistant?session_id=...`）；草稿采纳/拒绝与跳转（`pages/ai/policy-recommendation/PolicyRecommendationPage.tsx`——采纳仅标记 ACCEPTED 不落配置，成功弹层按草稿类型给出 `AI_DRAFT_TARGET_ROUTES` 对应业务页跳转按钮，拒绝标记 REJECTED；`?draft_id=` 深链直接开草稿详情）；智能审计页（`pages/ai/admin/audits/AiAuditsPage.tsx`）session_id 过滤 + 草稿引用深链至策略建议页。
+- **测试（本地实跑通过，2026-10-21）**：服务端 `go test`——aiagents `TestAPISecurityAgent*` 7 例、aiorchestrator `TestClassifyAPI*`/`TestCapabilityIntroMentionsAPI` 3 例、app `TestAIOpsSummarizer*` 4 例、apiops `TestPolishSummaryDegrade`/`TestRunNowWithSummarizer`、aihandlers `TestMergeAgentCatalog*` 3 例；前端 `vitest run`——AssistantPage/PolicyRecommendationPage/AiTasksPage/AiAuditsPage/AdminLayout 五文件 18 例（含会话深链用例）。
+- **诚实遗留**：LLM 润色仅经假网关/降级单测验证，未在真实模型环境实测润色质量（不写成已验收）；api_security Agent 已完成 stage5 真实 API/SSE 联调（意图命中、4 个 Tool 证据、无权限 fail-closed），但未做真实模型质量评估；`AI_TASK_TYPE_META`/Agent 中文名已补齐 `API_SECURITY_ANALYSIS`/`api_security`。
+
+### AI 能力增强第二波（2026-10-21，迁移000187）
+
+- **Prompt 发布门真实回归**（`server/internal/aihandlers/evaluation_runner.go`、`prompts_handler.go`；迁移 000187 新增 `ai_prompt_versions.test_detail`）：版本测试由纯静态检查升级为「静态检查 + 真实回归」两段——静态检查（非空/长度 + `ValidateContent` 禁止内容扫描）不通过则 FAILED 并跳过回归（候选内容不安全不进模型）；静态通过后将候选版本内容经 `RunInput.PromptOverrides` 覆盖编排器消费点 `orchestrator_answer_summary` 的已发布 Prompt（**仅本次评估运行有效，不读写发布存储**，正常对话入口不携带），逐集串行运行 4 个种子评估集（与 `POST /api/v1/ai/evaluations/run` 共用运行器 `executeEvalSet`，真实编排链路计分）：`eval_prompt_injection`/`eval_privilege_denial`（安全类阈值 100%，000143 种子）、`eval_insufficient_data`/`eval_api_security_analysis`（一般阈值 80%，后者为 000187 新种子，固定 UUID 幂等）。单集通过判据 `case_errors==0 && score>=阈值`；模型不可用/评估集缺失/执行失败一律如实 FAILED（失败摘要 + 逐集分数/阈值/模型/run_id 落 `test_detail`），发布门 fail-closed 不伪装通过；每集回归运行落 `ai_evaluation_runs` 并关联 `prompt_version_id` 可追溯。回归整体超时 15 分钟、接口写期限放宽至 20 分钟。
+- **发布门双门槛**：`aiprompts.Store.Publish` 经 `CheckPublishable` 强制 `test_result=PASSED` + `adversarial_result=ADVERSARIAL_PASSED` 齐备（对抗测试门槛为 000146 既有能力，本波补齐回归真实性），未过门返回 `PublishGateError` 携两门槛当前状态（接口层 400 友好文案，未执行显示"未执行"）。
+- **AI 运营计划连续失败熔断**（`server/internal/apiops/`、`server/internal/systemalerts/rules.go`；迁移 000187 新增 `consecutive_failures`/`circuit_opened_at`/`circuit_reason` 三列）：执行结局统一经 `RecordRunOutcome` 单事务记账（成功清零、失败 +1），连续失败达 `api_ai_ops.circuit_threshold`（settings，默认 3，夹取 1-10，运行期生效）且计划仍启用时同事务熔断——`enabled=false` + 清空 `next_run_at` + 记录熔断原因（500 字符截断）；仅首次触发上报（重复失败不重复告警），触发系统告警 `AI_OPS_SCHEDULE_CIRCUIT_OPEN`（HIGH，组件 AI_OPS，事件驱动 Raise）与操作审计（`ai_schedule_circuit_open`，系统动作、高风险）；手动启用为唯一恢复入口（复位计数与熔断现场，审计如实标注熔断复位）；cron 被旁路改写不可解析的执行前失败同样走熔断记账。docs/API_AI_OPERATIONS.md 缺口口径已同步（工作流框架/计划级配额/属主权限快照/第二批 Tool/监控探针仍为规划）。
+- **反馈质量聚合**（`server/internal/aihandlers/feedback_handler.go`，无新表）：`GET /api/v1/ai/feedback/summary?days=7`（权限 `ai.usage.read`，days 夹取 ≤90）按 feedback_type × task_type 聚合反馈总量/负反馈量/负反馈率（百分制两位小数）；task_type 经 LEFT JOIN LATERAL 关联反馈时刻之前最近一次 `ai_tasks`，无法关联归 UNKNOWN；聚合面不返回 comment 原文（不落用户输入明文）。
+- **OpenAPI**：`server/openapi/fragments/09-ai-admin.yaml`（版本测试接口真实回归语义 + `test_detail`/回归明细 schema + `/ai/feedback/summary`）、`07-api-security.yaml`（AI 运营计划熔断三字段 + 启用接口熔断复位语义）已同步。
+- **前端**（web/src/）：Prompt 管理页（`AiPromptsPage.tsx`）版本测试结果按 `test_detail` 分区展示「模型回归测试」（逐集卡片：分数/阈值/通过数/模型/失败原因 + 逐用例摘要折叠）与「静态检查」，旧版响应仅展示静态检查不冒充回归；发布门错误结构化解析展示两门槛当前状态；AI 运营计划页（`api-ai-ops/SchedulesTab.tsx`）列表新增连续失败计数与已熔断标记（Tooltip 展示熔断时间/原因），熔断计划启用前弹「重新启用（重置熔断计数）」确认，运行记录抽屉顶部展示熔断告警；质量评估页（`AiEvaluationsPage.tsx`）新增反馈质量卡片（近 7/30 天切换，任务类型 × 反馈类型聚合表，无 comment 列）。
+- **测试（2026-10-21 实跑）**：服务端单测 `go test` 实跑通过——aihandlers（evaluation_runner_test.go 门径聚合/词表阈值冻结/run_id 链接 5 例 + feedback_handler_test.go 未认证/越权/days 夹取 3 例）、aiorchestrator（promptoverride_test.go：PromptOverrides 仅本次运行生效）、apiops（circuit_test.go 7 例：计数/达阈熔断/阈值夹取/端到端告警审计/默认阈值/cron 失败熔断/DTO 字段）、aiprompts（test_detail JSON 校验等）；前端 `vitest run` 实跑通过 3 文件 19 例（AiPromptTestDetail 4 + ApiAIOpsPage 12 含熔断 3 例 + AiEvaluationsPage 反馈质量 3 例）。集成测试 `server/tests/ai_quality_wave2_test.go` 6 例（000187 up/down 往返与幂等重放、熔断 SQL 语义全链、test_detail 回写、反馈聚合 UNKNOWN 兜底、回归门 mock 模型 PASSED 路径、模型不可用 FAILED fail-closed 路径）与 stage7 发布门双门槛用例**本地因无 POSTGRES_PASSWORD/VALKEY_PASSWORD 按惯例 SKIP，未经本地实跑**（CI 全量执行）。
+- **诚实遗留**：回归门径语义以 mock 模型服务确定性验证，stage5 仅实测了模型不可用/回归不达标的 fail-closed 与发布 400 阻断，**未在真实可用模型（本地 Ollama/qwen2.5）环境实测**回归质量与端到端耗时（4 集串行耗时取决于模型速度）；评估集未部署的环境发布门按 fail-closed 处理（缺种子即不可发布），`eval_api_security_analysis` 种子用例未经真实模型首轮实测；熔断告警/审计接线已另经 stage5 手动 RunNow 三连失败实测（停用 + HIGH 告警 + 重新启用复位），但未做长周期真实调度运行观测；反馈质量百分制负向率已完成前后端契约修正并实机验证。
+
+### 漏洞情报提醒 MVP（2026-10-22，迁移000189）
+
+- **漏洞情报提醒闭环（PHP 场景）**（`server/internal/vulnintel/`：vulnintel.go 类型校验 / store.go 仓储 / nvd.go 同步器 / alert.go 提醒引擎 / settings.go 订阅设置 / handler.go 接口；设计 docs/VULN_INTEL_DESIGN.md 第一部分）：NVD 每日同步 PHP 相关漏洞——在线**纯下行**，目标地址硬编码 NVD API 2.0 `https://services.nvd.nist.gov/rest/json/cves/2.0`（不接受自定义 URL，无 SSRF 面）；`keywordSearch=php` 固定，首窗 48h、增量自上次窗口终点回拨 1h、2000 条/页、页间 7s 限速（无 API key）、单次 50 页保护上限；技术标签确定性提取（描述含 php 或 CPE `cpe:2.3:a:php:php`），severity 取全部 CVSS 指标最高分值派生、无指标 NONE。每日循环由 app.go 装配 `Syncer.RunDaily`（启动 1 分钟首轮、其后 24h 一轮），`vuln_intel.sync_enabled`（默认 false）热读，关闭空转、默认部署零行为变化；失败如实落 `vuln_intel_sync_state`（FAILED + failure_message，不刷新窗口终点下轮重试）。
+- **手动同步与 JSON 导入**：`POST /api/v1/vuln-intel/sync`（5 分钟超时、并发互斥 409、失败 502，不受 sync_enabled 约束）；`POST /api/v1/vuln-intel/import`（明文 JSON 数组，body ≤4MB、单批 ≤500 条逐条校验进 invalid_entries，severity 缺省按 cvss_score 派生，source 固定 MANUAL）；两者共用 cve_id 幂等 upsert 与同一提醒引擎。
+- **聚合提醒与去重**：本批新建情报按订阅过滤（settings 组 `vuln_intel`：watch_techs 默认 `["php"]` ≤10、min_severity 默认 HIGH、sync_enabled 默认 false），每技术栈合并一条 `VULN_INTEL_NEW` 系统告警（component=`vuln_intel:<tech>`，默认 HIGH、批次含 CRITICAL 升 CRITICAL；文案含最高级别/CVE 列表≤10/发布日期范围/受影响应用≤5/参考链接，1000 字符预算）；`vuln_alerted (advisory_id, tech_name)` 唯一键保证同一漏洞同一技术栈只提醒一次，提醒失败不记账、下轮重评估不漏。通知渠道固定类别 `threat_intel`（"漏洞情报"）按类别订阅接收。
+- **应用技术栈手动映射**：`application_technologies` 表 + `GET/PUT /api/v1/vuln-intel/tech-assets`（整组替换语义、单事务、≤1000 应用/单应用 ≤20 标签、应用删除级联清理）；无指纹自动识别，不维护则提醒文案如实显示"未标记使用 X 的应用"。
+- **权限与审计**：000189 种子 `vuln_intel.read`（SYSTEM_ADMIN+SECURITY_ADMIN）/ `vuln_intel.manage`（仅 SYSTEM_ADMIN）；写操作 CSRF + 操作审计（module=vuln_intel，sync/import/replace_tech_assets/update_settings，RiskMedium，同步失败 ResultFailure）。边界：只提醒，不自动创建 WAF 规则/虚拟补丁/阻断；无 KEV/EPSS/SBOM/签名情报包/license 门控（后续迭代）。
+- **API 与前端**：9 条路由（overview/advisories 列表与详情/sync/import/tech-assets GET+PUT/settings GET+PUT），OpenAPI `server/openapi/fragments/21-vuln-intel.yaml`；前端 `/vuln-intel`（菜单「安全运营 → 漏洞情报」，`web/src/pages/vuln-intel/VulnIntelPage.tsx`）概览卡（含同步状态与失败原因）/列表过滤/详情抽屉（受影响应用）/订阅设置/技术资产/导入/手动同步，写入口按 vuln_intel.manage 隐藏。
+- **测试（2026-10-23 本地实跑通过）**：服务端单测 `go test ./internal/vulnintel/`——14 个测试函数（vulnintel_test.go 校验/解析 7 例 + nvd_test.go fake NVD httptest 4 例：解析映射/首窗+增量回拨/失败落 FAILED 保留上次成功现场/并发互斥 + alert_test.go 3 例：聚合提醒/级别门槛订阅过滤/失败路径不记账）；前端 `vitest run` VulnIntelPage 13 例全绿。集成测试 `server/tests/vuln_intel_api_test.go` 5 例（TestVulnIntelAPI/APIPermissions/ImportValidation/TechAssetsReplace/Migration000189Replay）**本地因无 POSTGRES_PASSWORD/VALKEY_PASSWORD 按惯例 SKIP，未经本地实跑**（CI 全量执行）。
+- **诚实遗留**：**真实 NVD 联机同步未实测**——从未对真实 services.nvd.nist.gov 发起同步，真实出站可达性/限速表现/真实响应解析均以 fake 服务端单测代替；每日定时循环仅逻辑级单测，无长周期真实调度运行观测；技术栈映射全靠手动维护；完整能力（NVD 全量库/KEV/EPSS/SBOM 匹配/ed25519 签名情报包与防回滚/license 门控）仍后续迭代。
+
+### AI 大模型输入保护 MVP（WP3-A，迁移000195）
+
+- **策略管理**：`api_llm_security_policies` 按应用唯一配置，`api_llm_security_policy_versions` 保存每次创建/更新的不可变快照；支持 OBSERVE/PROTECT、Prompt 注入开关、PII 开关、受限话题关键词、提示词体量上限与启停；读写权限 `api_llm_security.read/manage`，安全管理员可读写、审计管理员只读，全部写操作审计。
+- **发布与网关**：启用策略经 `GuardConfig.api_llm_security_policies` 随整站发布并纳入 API 版本哈希；网关按当前 application_id 选取策略。PROTECT 下高置信注入与受限话题进入 BLOCK、超体量进入 RATE_LIMIT；OBSERVE 只记录。PII 支持邮箱/身份证号/手机号，证据只含策略 ID/版本、字段路径与数据类型，不落 Prompt 原文。
+- **接口与前端**：`apillm` 新增策略 CRUD、启停和版本列表；`/api-llm` 页面升级为「AI 大模型安全」，新增安全策略页签，保留原调用观测；保存/删除明确提示需经配置发布生效。
+- **验证**：`apillm`、guardconfig、gatewayconfig、dynamic_security detectors/pipeline 与 jiuzhang_guard 定向测试通过；前端策略页真实 API 桩覆盖列表、新建提交与既有观测回归，类型检查、ESLint、生产构建通过；OpenAPI 757 操作双向零差。真实 stage5 已确认 000195 迁移记录、两表和两权限落库，策略未认证路由返回 401。
+- **边界**：本波话题控制为关键词匹配，不冒充语义小模型；公共 parser 的多消息/数组覆盖限制仍沿用现有披露；输出内容深检、RAG 投毒防护、幻觉检测、安全代答、脱敏还原与自定义业务风险模型不在本波完成范围。
+
+### AI 大模型输出保护（WP3-B，迁移000196）
+
+- **策略扩展**：既有 LLM 安全策略新增 `output_content_enabled` / `output_pii_enabled`；迁移默认 false，已有策略需显式开启，新策略表单默认开启。版本快照、发布哈希和前端列表/表单同步覆盖两个开关。
+- **输出检测**：`llm_output.go` 复用响应相位首次 JSON 解析产物，覆盖 OpenAI 兼容 choices/output 等文本字段；有害内容采用高置信规则，PII 复用邮箱/身份证/手机号模式。OBSERVE 只记录，PROTECT 产生 BLOCK 并由独立出口返回 403 `llm_output_protection`，不携带上游原文。流式、截断或不可解析响应产 `llm.output_not_inspected` 披露，不冒充已检测。
+- **验证与边界**：detector/pipeline 覆盖正常文本、混合候选、PII、有害内容、流式披露及 PROTECT；jiuzhang_guard 真实 `serveNext` 验证 403 与事件脱敏。真实 stage5 已确认 `196|llm_output_protection` 迁移记录及两个输出开关默认 false，API/网关/ClickHouse healthy，策略未认证路由返回 401。当前为规则级输出保护，不包含语义审核模型、幻觉检测、安全代答或可逆脱敏。
+
+### AI 单次输出 Token 预算（WP3-C，迁移000197）
+
+- **策略与配置**：既有按应用 AI 安全策略新增 `max_output_tokens`，0=关闭预算检查，其他取值 1～1000000；迁移默认 0，既有策略行为不变。创建、部分更新、不可变版本快照、`GuardConfig.api_llm_security_policies` 发布与版本哈希均携带该值，沿用 `api_llm_security.read/manage` 权限及写操作审计；`/api-llm` 安全策略页提供列表展示、编辑和新建输入，保存后仍需整站发布。
+- **运行时判定**：仅检查请求显式声明的 `max_tokens`、`max_completion_tokens`、`max_output_tokens` 正整数值，超过应用预算产 `llm.output_token_budget_exceeded`。OBSERVE 记录 OBSERVE/HIGH，PROTECT 进入既有 RATE_LIMIT 决策并由 Guard 返回 HTTP 429；证据只含策略 ID/版本、字段名、声明值和预算，不包含 Prompt。字段缺失、非数值或不大于预算时不产生该明细。
+- **验证**：detectors 覆盖观察/防护、三个兼容字段、正常值、非数值、零预算与非法策略范围，定向 `-race` 通过；pipeline 验证 PROTECT 定案 RATE_LIMIT，Guard 真实 `serveNext` 验证 OBSERVE 转发及 PROTECT 429、上游未调用和事件证据；Guard 全量测试通过。`apillm`、guardconfig、gatewayconfig 测试覆盖新建、部分更新保留、版本快照和非法值；前端 5 项测试、改动文件 ESLint、typecheck 与生产构建通过，OpenAPI 758 操作双向零差。真实 PostgreSQL 回滚事务完成 000197 重复应用、down、再次 up 及默认值/非空校验，未留下字段或测试数据。
+- **边界与部署状态**：这是单次请求声明的输出 Token 预算，不是模型实际消耗量、累计配额、计费或跨会话防滥用；不宣称覆盖全部模型私有字段。RAG 按用户要求保持暂停。新增 `server/tests/llm_token_budget_live_verification_test.go`，显式启用时通过本地 Unix Admin Socket 建立隔离站点，验证超限 429、观察放行、正常值和应用隔离后清理；默认跳过且尚未实际执行。两次标准镜像构建均被 Docker 内部元数据/内容存储 I/O 错误阻断，未执行部署替换；stage5 尚未应用 000197 或重建运行节点，不将处理器级验收写成已部署生效。
+
+### AI 输入恶意内容过滤（WP3-D，迁移000198）
+
+- **策略与检测**：既有按应用 AI 安全策略新增 `input_content_enabled`，迁移默认 false，既有策略需显式开启，新策略表单默认开启。复用输出侧高置信有害内容规则，对 `messages[].content`、结构化 content、`prompt`、`input`、`system`、`instructions` 等明确 Prompt 字段检测；命中产 `llm.input_content_violation`，证据只含策略 ID/版本、字段路径与规则名，不落 Prompt 原文。
+- **处置与界面**：OBSERVE 记录 OBSERVE/MEDIUM，PROTECT 进入统一 BLOCK 决策并返回 HTTP 403，不调用上游。策略创建、部分更新、不可变快照、GuardConfig 发布及 `/api-llm` 列表/表单同步覆盖该开关，沿用 `api_llm_security.read/manage` 权限与写操作审计。
+- **验证与边界**：detectors 覆盖观察/防护、六种字段、正常防御性提问、关闭开关及旧行为，detectors 全量 `-race`、pipeline、Guard 全量与真实 `serveNext` 阻断/脱敏测试通过；apillm/guardconfig/gatewayconfig 测试、前端 5 项测试、改动文件 ESLint、typecheck、生产构建及 OpenAPI 758 操作双向零差通过。000198 迁移集成测试因未设置测试环境变量跳过，未做真实数据库回放；未进行 Docker 构建或节点部署。
+- **范围边界**：这是确定性高置信规则过滤，不冒充语义分类、完整内容合规审核或安全小模型；沿用公共 parser 的标量截断与数组覆盖边界。RAG、输入改写、幻觉检测、安全代答与可逆脱敏不在本次实现范围。
+
+### 业务弱点检测（WP1-A：凭据传输与服务器泄露）
+
+- **凭据传输**：新增 `credential_transport.go`，对 URL 中凭据字段名生成 `credential.url_password`（PROTECT 可阻断）与 `credential.cookie_sensitive`（仅 OBSERVE）；Cookie 只在请求内存中读取名称，不读取或记录 Cookie 值。既有 sensitive.in_query 规则保留，未改变历史语义。
+- **服务器泄露**：新增 `server_disclosure.go`，对 Server/X-Powered-By 等响应头产 `server.version_disclosure`，对 Java/Go/Python 堆栈及 SQLSTATE/Oracle 错误产 `server.error_disclosure`；证据不含版本原文、堆栈正文或敏感参数值。
+- **弱点闭环**：新增 CREDENTIAL_IN_URL、SENSITIVE_COOKIE、SERVER_INFO_DISCLOSURE 三类派生弱点及 PostgreSQL 聚合查询，复用 apiweakness 状态机、主动验证与整改复测。
+- **验证与边界**：detector/pipeline 覆盖正常与攻击请求，jiuzhang_guard 真实请求验证 URL 密码阻断和服务器泄露事件；弱点派生七类信号全部通过。参数遍历/BOLA 语义分析未在本切片扩大，避免仅凭数字 ID 误判攻击。
+
+### 对象枚举检测（WP1-B 首个切片）
+
+- **证据门槛**：新增 `resource.object_enumeration`，仅接受 JWT `VERIFIED` 且主体指纹非空的请求，按应用、主体、接口和对象来源/位置统计 60 秒窗口。至少 8 个不同对象且有 3 个连续递增步进，或达到 16 个不同对象时产生一次 OBSERVE 信号；正常单对象重复访问、普通列表/分页及未达到证据门槛的非连续 ID 不命中。
+- **隐私与容量**：路径模板与参数语义约束之外的普通数字查询不参与统计；原始 ID 仅用于当次规范化/HMAC，状态和证据只保留 HMAC 与计数。数字前导零、UUID/hex 大小写归一，窗口键 LRU 上限 10000、每键对象集合上限 32，超时重置，同一窗口只告警一次。
+- **弱点闭环**：新增 AUTHZ 分类和 OBJECT_ENUMERATION_RISK 派生弱点，复用 apiweakness 确认、整改、复测和归档；后端、AI 只读工具及前端分类筛选/OpenAPI 枚举同步扩展。
+- **验证与边界**：detectors/pipeline、apiweakness/aitools/app、jiuzhang_guard 全量与对象窗口并发 `-race` 测试通过；真实 `serveNext` 验证连续对象只观察、事件 HMAC、合法列表/单对象不误报。前端 5 项测试、typecheck、lint、生产构建通过；OpenAPI 757 个操作双向零差。stage5 API/网关已按现有本地环境重建，五个核心节点均 healthy，网关 HTTP 200、新分类接口未认证 HTTP 401。对象集合窗口默认单节点内存，Valkey 共享实现见下节；对象权属判定或自动阻断不在本切片完成。
+
+### 对象枚举多节点共享窗口（WP1-B 续）
+
+- **共享状态**：复用 `behavior_store=valkey` 与共享引擎连接，无新增配置项，默认 `memory` 行为不变。`objenum` 命名空间对主体/应用/接口键材料再次哈希；单个 Hash 的 Lua 原子操作完成窗口重置、HMAC 引用去重、连续步进、每窗告警去重和 TTL 刷新，键和字段均不含原始对象 ID。
+- **一致边界**：窗口仍为首次访问起 60 秒、最多 32 个对象引用，TTL 下限 2 分钟；内存与 Valkey 达阈规则一致。Valkey 故障按既有契约告警并降级到本地内存，恢复后不回灌故障期计数，降级期不冒充集群视图。
+- **验证**：两个 Store 共享真实 Valkey 完成跨节点阈值累计，64 个并发请求只告警一次；真实 API 管线跨节点检测保持 OBSERVE。覆盖窗口过期、时钟回退、容量上限、Fail-open 和 Guard 装配；behaviorstore 全量 `-race`、Guard 全量、detectors/pipeline 回归均通过。未据此宣称端到端吞吐或海量数据容量已完成验收。
+
+### 业务序列与重复提交弱点闭环（WP1-B 续）
+
+- **复用实际检测**：不另建序列检测器。既有流程基线已覆盖 `flow.step_skip`、`flow.out_of_order`、`flow.illegal_state_transition`、`flow.post_cancel_operation`、`flow.anonymous_late_entry`、`flow.duplicate_submit` 和 `flow.rapid_batch`；强流程实际违规使用 `flowguard.violation`。
+- **派生边界**：新增 `FLOW_SEQUENCE_DEVIATION`（HIGH）与 `FLOW_REPLAY_OR_BURST`（MEDIUM），均归入 AUTHZ。只有事件 Details 中存在上述有效检测明细才聚合；正常流程、未配置基线的零行为以及 `flowguard.unknown` 均不生成弱点，不把依赖缺失或证据不足当成业务攻击。
+- **验证**：覆盖同端点多信号合并、正常流程零产出、UNKNOWN 排除及既有列表 HTTP 与生命周期复用；流程检测器回归通过。真实 PostgreSQL 会话内临时表验证序列违规 2 次、批量滥用 1 次，正常流程与 UNKNOWN 不计入，事务已回滚。OpenAPI 弱点码同步扩展，保持 757 个操作双向零差；stage5 管理 API 已重建，五个核心节点 healthy，网关 HTTP 200、弱点接口未认证 HTTP 401。
+
+### 下载文件真实类型检测（WP2-A）
+
+- **签名检测**：`filecontent.go` 在已有下载合规策略启用时，对完整缓冲的下载文件进行魔数检查，覆盖 PE/ELF 可执行文件、PHP/shell 脚本、PDF、常见图片与 ZIP/OOXML/tar/gzip 等压缩格式。`file.content_type_mismatch` 仅 OBSERVE/MEDIUM，不凭签名差异自动阻断；普通文本与合法同类型文件零行为，无下载规则时也不新增行为。
+- **诚实降级**：`file.content_unrecognized` 仅 LOW 观察，不把未知格式称为明确冲突；流式、溢出无字节或截断无法识别时产 `file.content_not_inspected` INFO。截断但前缀可识别时证据限定 PREFIX_ONLY。检测只保留文件元数据、声明类别和签名类型，不落文件正文。
+- **弱点闭环**：新增 `FILE_CONTENT_TYPE_MISMATCH`（SENSITIVE/MEDIUM）及 PostgreSQL 聚合，接入既有弱点整改复测；未检查与未知签名不派生该弱点。detectors/pipeline、apiweakness/app、Guard 全量及真实 `serveNext` 下载/溢出测试通过；真实数据库临时表验证冲突计数 1，其他形态不计入，事务回滚；检测器 `-race` 通过，OpenAPI 757 个操作双向零差；stage5 API/网关已重建，五个核心节点 healthy，网关 HTTP 200、弱点接口未认证 HTTP 401。
+- **范围边界**：WP2-A 为下载侧固定魔数检查，上传有界前缀检测见 WP2-B；不解压审计、不查杀病毒，也不等同于完整文件格式校验或恶意文件定性。敏感内容文件画像、文件溯源和更多格式治理仍需后续工作包。
+
+### 上传文件前缀检测（WP2-B）
+
+- **有界采集**：multipart 保持流式解析，每个文件最多保留 512 字节前缀，按 part 记录是否完整读取；其余内容仍丢弃。前缀为 PartMeta 非导出字段，只在请求内存活，事件 JSON 不包含正文；默认单请求文件数上限 64，前缀总内存最多 32KiB，未增加整文件缓冲。
+- **检测与披露**：复用 WP2-A 的签名与声明类别比对，在上传合规策略启用时产生同一 `file.content_type_mismatch`（仅 OBSERVE），并统一进入 `FILE_CONTENT_TYPE_MISMATCH` 弱点。大文件/截断仅标 PREFIX_ONLY；总请求限额提前耗尽、未知截断签名或 part 数超限时以 `file.content_not_inspected` 如实披露，不冒充完整检查。
+- **验证**：覆盖正常 PNG/文本/可执行文件、伪装图片、512 字节边界、小文件完整读取、截断前缀可得与不可得、part 数与总前缀容量、事件脱敏及真实 `serveNext` 上传放行。parser/detectors `-race` 与 Guard 全量通过；真实 PostgreSQL 临时表验证上传与下载各 1 条冲突均聚合，未知/未检查不计入，事务回滚。
+- **范围边界**：这是文件头魔数检测，不是全文件病毒扫描、解压审计或完整内容审核；不改变既有 EXT/MIME/文件名的 OBSERVE/BLOCK 处置语义。
+
+### 文件敏感内容识别与资产标签（WP2-C）
+
+- **规则与检测**：值级敏感规则新增显式 `file` 位置，未配置该位置时零行为。`filesensitive.go` 对 CSV/TSV 字段及普通文本行/键值做规则匹配；只检查完整行，支持完整小文件与上传前缀/下载缓冲的有限覆盖。`file.sensitive_content` 仅 OBSERVE，记录数据类型、等级、计数和覆盖范围，不记录匹配值。
+- **预算与降级**：跨文件共享最多 512 次规则求值和 20 类命中明细；预算耗尽、非文本格式/编码、截断不完整行及 part 数溢出以 `file.sensitive_content_not_inspected` INFO 披露，不把未检查当作无敏感内容。
+- **资产与弱点**：`FileObservation`/`PartMeta` 增加 `sensitive_types` 标签，采集端与扩展名高置信分类合并后写入既有 `api_file_assets.sensitive_types`，无需迁移。新增 `SENSITIVE_FILE_CONTENT`（SENSITIVE/MEDIUM）弱点并复用整改复测；管理面/API/OpenAPI/前端配置均支持 `file` 位置。
+- **验证**：CSV 多字段、正常文件、截断不完整行、非法编码、跨文件预算及事件脱敏通过；真实 `serveNext` 上传/下载确认标签写入且原始值不入事件。Guard 全量与 detectors `-race`、apidata/guardconfig/apiruntime/apifiles/apiweakness 回归通过；前端 7 项测试、typecheck、lint、生产构建通过；OpenAPI 757 个操作双向零差。真实 PostgreSQL 临时表验证历史标签与新标签合并、后续未命中仍保留证据且传输次数递增，事务已回滚。
+- **范围边界**：JSON/JSONL 结构化识别见 WP2-D；当前不解析 XML/OOXML 结构、不解压、不做全文语义分类。前缀或缓冲之外的文件内容不能据此宣称无敏感信息，后续需扩展结构化文件解析和溯源。
+
+### JSON/JSONL 结构化敏感字段识别（WP2-D）
+
+- **结构化解析**：`filesensitive_json.go` 复用现有 JSON 解析器，支持嵌套对象、数组和数字/字符串标量。JSON 文档必须完整且合法；JSONL/NDJSON 仅分析完整记录。命中证据包含字段路径、数据类型、等级、计数和覆盖范围，不包含原始值；资产标签继续复用既有 `sensitive_types` 与历史并集。
+- **安全边界**：非法 JSON、重复键歧义、截断 JSON 文档及无完整 JSONL 记录时，以 `file.sensitive_content_not_inspected` 披露，不把不完整或歧义输入当作正常内容。其余 `file` 位置规则、跨文件 512 次求值/20 类明细预算及 OBSERVE 语义保持不变。
+- **验证**：嵌套对象/数组、JSONL 部分截断、非法/重复键、正常 JSON、上传/下载标签与字段路径测试通过；真实 `serveNext` 上传/下载链与 Guard 全量、detectors `-race` 通过。无新增管理 API 或数据库字段，OpenAPI 契约不变。
+- **范围边界**：XML 结构化识别见 WP2-E，DOCX 主文档识别见 WP2-F；其余 OOXML 格式、压缩包内容遍历或全文语义分析未覆盖。结构化路径证据用于定位，不等同于完整文件溯源或恶意文件定性。
+
+### XML 结构化敏感字段识别（WP2-E）
+
+- **安全解析**：`filesensitive_xml.go` 使用 Go 标准库流式 XML 解码，支持嵌套元素文本与属性值。证据采用 `contacts.contact.phone` 元素路径和 `contact.@phone` 属性路径，不保留原始文本、属性值或文件正文。资产继续写入既有 `sensitive_types` 与历史并集。
+- **安全边界**：XML 必须完整合法；DTD/自定义实体、非声明处理指令、非法/截断文档、超过 32 层嵌套、2048 个 token 或 512 字符路径均不冒充完整检查。沿用显式 `file` 规则、跨文件 512 次求值/20 类明细预算及 OBSERVE 语义。
+- **验证**：嵌套元素、属性、正常 XML、DTD、非法/超深文档、上传/下载标签与真实 `serveNext` 链通过；Guard 全量与 detectors `-race` 通过。无新增管理 API 或数据库字段，OpenAPI 契约不变。
+- **范围边界**：DOCX 主文档识别见 WP2-F；其他 OOXML 格式、压缩包内容遍历、XSLT 转换、外部实体或全文语义分析未覆盖；XML 路径用于证据定位，不等同于完整文件溯源。
+
+### DOCX 主文档敏感识别（WP2-F）
+
+- **有限结构覆盖**：`filesensitive_docx.go` 使用 Go 标准库 ZIP 读取 `word/document.xml`，复用 XML 流式检测。命中证据范围为 `DOCX_MAIN_DOCUMENT`，保留 XML 字段路径、数据类型、等级和计数，不落正文；资产标签继续复用 `sensitive_types` 与历史并集。
+- **ZIP 安全边界**：仅完整包可解析，包体最多 32 MiB、最多 64 个条目、单部件 XML 最多 8 MiB。截断包、加密包、缺主文档、异常 ZIP/XML、超限均以 `file.sensitive_content_not_inspected` 披露，不读取媒体、不解压到磁盘；WP2-I 新增的页眉页脚及聚合限制见后文，未覆盖部件不视为已检查。
+- **验证**：真实 ZIP 样本、正常文档、截断、加密标志、缺失主文档、非法包、过多条目、声明超大主文档及上传/下载标签均通过；detectors `-race` 通过。无新增管理 API 或数据库字段，OpenAPI 契约不变。
+- **范围边界**：WP2-F 为主文档基线，XLSX 单元格识别见 WP2-G，页眉页脚扩展见 WP2-I，批注/脚注/尾注扩展见 WP2-J；媒体遍历或完整文件溯源未覆盖，不把主文档命中描述为整个压缩包均已完成检测。
+
+### XLSX 共享字符串与单元格敏感识别（WP2-G）
+
+- **单元格证据**：`filesensitive_xlsx.go` 读取 `xl/workbook.xml`、工作簿关系、`xl/sharedStrings.xml` 与工作表 XML，支持共享字符串索引、富文本拼接和内联文本。命中定位到 `工作表!单元格`，只保留字段路径、类型、等级和计数，不落原始值；资产标签继续复用 `sensitive_types` 与历史并集。
+- **安全边界**：仅完整 ZIP 可解析，包体最多 32 MiB、最多 64 个条目、16 个工作表、4096 条共享字符串，单部件最多 8 MiB，相关工作表文本最多 16 MiB。非法索引、加密包、截断包、异常 XML 和超限均披露，不执行公式、不扫描媒体。
+- **验证**：共享索引、富文本、内联文本、正常单元格、无效索引、加密包、缺失工作簿、上传/下载标签及真实 `serveNext` 链通过；detectors `-race` 通过。stage5 网关已重建，五个核心节点 healthy；`server/tests/ooxml_live_verification_test.go` 通过 Caddy Unix Admin 建立隔离临时站点，真实 multipart 上传与文件下载均为 HTTP 200，双向事件包含 `Demo!B2`、观察级类型标签且不含原始标记，下载字节保持一致，临时站点已删除。该测试默认跳过，仅在显式开启时连接本地管理 Socket；无新增管理 API 或数据库字段，OpenAPI 契约不变。
+- **范围边界**：PPTX 正式幻灯片文本识别见 WP2-H；当前不支持图表/图片、批注、外部链接或完整文件溯源，仅覆盖工作簿关系可定位的工作表，不把单元格命中描述为整个压缩包已完成检测。
+
+### PPTX 幻灯片段落敏感识别（WP2-H）
+
+- **正式页与段落证据**：`filesensitive_pptx.go` 读取 `ppt/presentation.xml` 和实际 `ppt/slides/slideN.xml`，校验 `presentation`/`sld` 根元素，拼接每个 `a:p` 段落内跨文本运行的 `a:t` 文本。命中定位到 `slide页码!p段落序号`，只保留路径、类型、等级和计数，不落文本；资产继续复用 `sensitive_types` 与历史并集。
+- **解析边界**：仅完整 ZIP 可解析，包体最多 32 MiB、64 个条目，单部件最多 8 MiB，演示文稿与幻灯片 XML 合计最多 16 MiB。每份 XML 最多 32 层、2048 个 token；截断、加密、重复幻灯片/演示文稿、非法 XML、DTD 和超限均披露未检查。WP2-H 仅覆盖正式幻灯片文本，备注页见 WP2-K；不读取批注、图表、媒体、嵌入对象或外部链接。
+- **验证**：跨文本运行拼接、多幻灯片定位、正常文档、截断/加密/非法包、缺失部件、非法根元素、DTD、重复幻灯片、聚合文本超限及上传/下载标签通过；detectors/pipeline、Guard 全量与 detectors `-race` 通过。stage5 网关已重建，五个核心节点 healthy；`server/tests/ooxml_live_verification_test.go` 的 PPTX 真实上传/下载均为 HTTP 200，跨文本运行命中定位 `slide1!p1`，双向 API 事件与资产标签、脱敏证据和下载字节一致性均通过断言，临时站点已删除；XLSX 共用链路回归同时通过。测试默认跳过，仅在显式开启时连接本地管理 Socket；无新增管理 API 或数据库字段，OpenAPI 契约不变。
+- **范围边界**：WP2-H 支持 PPTX 正式幻灯片文本，备注页见 WP2-K；不支持 PPTM、图表/图片、媒体遍历、宏分析或完整文件溯源，段落命中不表示整个压缩包已完成检测。
+
+### DOCX 页眉页脚敏感识别（WP2-I）
+
+- **来源与兼容语义**：`filesensitive_docx_parts.go` 在主文档之外读取实际 `word/headerN.xml`/`footerN.xml`，沿用流式 XML 检测。主文档继续使用 `DOCX_MAIN_DOCUMENT`，页眉页脚使用 `DOCX_HEADER_FOOTER`；证据增加 `source_part`，同类敏感数据在不同部件中保留独立来源。单文件标签取各部件并集，数据库仍沿用历史标签并集。
+- **资源与完整性边界**：仅完整 ZIP 可解析，包体最多 32 MiB、64 个条目，单部件最多 8 MiB，主文档与页眉页脚 XML 合计最多 16 MiB，并在读取每个部件时执行聚合限额。重复部件、非法 XML、截断、加密和超限均披露未检查；扫描全部目标部件成功后才发出命中，不把部分 XML 解析成功冒充完整覆盖。
+- **验证**：主文档回归、页眉页脚独立来源、跨部件标签并集、仅页眉上传、非法页眉、重复主文档/页眉、部件选择、聚合超限及下载 `serveNext` 事件通过；detectors/pipeline、Guard 全量与 detectors `-race` 通过。stage5 网关已重建，五个核心节点 healthy；`server/tests/docx_live_verification_test.go` 的真实上传/下载均为 HTTP 200，事件包含 `source_part=word/header1.xml`、`DOCX_HEADER_FOOTER`、`hdr.p.r.t`、观察级类型标签且不含原始标记，下载字节一致，临时站点已删除；XLSX/PPTX 共用链路回归同时通过。测试默认跳过，无新增管理 API、数据库字段或迁移，OpenAPI 契约不变。
+- **范围边界**：WP2-I 提供主文档和页眉页脚基线，批注/脚注/尾注见 WP2-J；不扫描媒体、嵌入对象或外部链接，不执行宏，不把文本部件命中描述为整包审计或完整文件溯源。
+
+### DOCX 批注脚注尾注敏感识别（WP2-J）
+
+- **固定文本部件**：在 WP2-I 基础上增加 `word/comments.xml`、`word/footnotes.xml`、`word/endnotes.xml`，命中范围为 `DOCX_ANNOTATIONS`，并继续记录具体 `source_part` 和 XML 字段路径。不同部件的同类敏感数据保留独立证据，资产标签仍按单文件并集与历史并集处理。
+- **完整性边界**：目标文本部件共享既有 32 MiB 包体、64 条目、单部件 8 MiB、聚合 16 MiB 限额。重复注释部件、非法 XML、截断、加密和超限均披露未检查；全部目标部件扫描成功后才发出命中。只选择三个固定路径，不读取 `commentsExtended.xml`、`people.xml`、媒体、嵌入对象或宏，不推断批注作者身份。
+- **验证**：批注/脚注/尾注独立字段路径、标签并集、仅批注上传、非法批注、重复脚注、固定部件选择及下载 `serveNext` 来源证据通过；detectors/pipeline、Guard 全量与 detectors `-race` 通过。stage5 网关已重建，五个核心节点 healthy；`server/tests/docx_annotations_live_verification_test.go` 的真实上传/下载均为 HTTP 200，事件包含 `source_part=word/comments.xml`、`DOCX_ANNOTATIONS`、`comments.comment.p.r.t`、观察级类型标签且不含原始标记，下载字节一致，临时站点已删除；页眉、XLSX/PPTX 共用链路回归同时通过。测试默认跳过，无新增管理 API、数据库字段或迁移，OpenAPI 契约不变。
+- **范围边界**：只覆盖上述三类文本内容，不包含扩展评论元数据、修订语义还原、媒体遍历或完整文件溯源；不将注释命中描述为整包检测。
+
+### PPTX 备注页敏感识别（WP2-K）
+
+- **独立备注证据**：在正式幻灯片基础上读取实际 `ppt/notesSlides/notesSlideN.xml`，校验 `notes` 根元素并复用 `a:p` 内跨 `a:t` 拼接。备注命中范围为 `PPTX_NOTES`，字段为 `notesSlideN!pN`，并记录具体 `source_part`；主幻灯片继续使用 `PPTX_SLIDES` 和 `slideN!pN`，同类数据在不同备注页中保留独立来源，资产标签取并集。
+- **资源与完整性边界**：主文档、正式幻灯片与备注页共享 32 MiB 包体、64 条目、单部件 8 MiB、聚合 16 MiB 限额，读取每个部件时即检查。非法根元素、重复备注页、非法 XML、DTD、截断、加密和超限均披露未检查；全部目标文本扫描成功后才发出命中。只选择编号备注页，不读取备注母版、图表、媒体、嵌入对象、外部链接或宏。
+- **验证**：多备注页来源、跨文本运行拼接、主幻灯片回归、仅备注上传、非法根元素、非法 XML、重复备注页及下载 `serveNext` 来源证据通过；detectors/pipeline、Guard 全量与 detectors `-race` 通过。stage5 网关已重建，五个核心节点 healthy；`server/tests/pptx_notes_live_verification_test.go` 的真实上传/下载均为 HTTP 200，事件包含 `source_part=ppt/notesSlides/notesSlide1.xml`、`PPTX_NOTES`、`notesSlide1!p1`、观察级类型标签且不含原始标记，下载字节一致，临时站点已删除；主幻灯片、DOCX 批注/页眉和 XLSX 共用链路回归同时通过。测试默认跳过，无新增管理 API、数据库字段或迁移，OpenAPI 契约不变。
+- **范围边界**：只增加备注页文本，不支持备注母版语义还原、媒体遍历、宏分析或完整文件溯源；不将主幻灯片或备注命中描述为整包审计。
+
+### OOXML 文件签名与原始内容验证（WP2-L）
+
+- **同源签名与可恢复性**：`response/signature_ooxml.go` 复用 `jzsig1.{kid}.{unixts}.{hmac_hex}`，支持 DOCX/XLSX/PPTX（MIME 与扩展名一致）。仅修改 ZIP EOCD 注释长度和注释，不重压缩或改写文档部件；封装内含原注释长度、token 长度及 Base64 原注释，`RecoverOOXMLSignedContent` 可恢复签名前精确字节。签名继续覆盖脱敏/水印后的最终交付内容，密钥、轮换和身份指纹语义不变。
+- **验证与边界**：原 `/api-security/file-signature/verify` 保持哈希+token 方式，新增 `content_format=ooxml_zip` + `content_base64` 文件载荷（原始文件 ≤2 MiB，请求 ≤3 MiB），提取 token、恢复原文并复用现有 HMAC/过期/kid 校验；两种来源不得混用，文件内容不进入审计或响应。仅完整缓冲且包体 ≤32 MiB 的下载，须具备 OOXML 登记锚点，已签名幂等跳过；加密、ZIP64、异常包及注释超限返回错误并 FAIL_OPEN 直通。
+- **验证**：三种格式及原注释（含 EOCD 字样）往返恢复、重复签名、内容篡改、非法包、注释超限、ZIP64、下载 `serveNext` 与 Content-Length 修正通过；response 全量与 `-race`、Guard 全量、apifiles 真实 HTTP 正反面与输入校验通过。OpenAPI 新增可选请求字段，无新增路由/数据库迁移；Python 3.12 合并与 757 操作双向零差对账通过。stage5 网关与管理面均已重建，五个核心节点 healthy；`server/tests/ooxml_signature_live_verification_test.go` 通过 Caddy Unix Admin 隔离站点完成实际 DOCX 下载签名，HTTP 200、Content-Length 修正、ZIP 可读、签名前原始字节恢复及 `apifiles.VerifyFileToken` HMAC 校验均通过，事件含 `file.signature_embedded` 且不含 token/密钥，临时站点已删除。测试默认跳过，仅在显式开启时连接本地管理 Socket；未修改现有业务签名配置。文件合规页新增 `SignatureVerificationCard`，支持 DOCX/XLSX/PPTX 文件选择、2 MiB 限制、可选身份指纹及成功/失败元数据展示，使用原验证 API 与 `api_data.read` 权限；组件与页面共 10 项测试、改动文件 lint、typecheck 和生产构建通过。
+- **范围边界**：这是 ZIP 容器注释中的完整性/来源签名，不是 Office 原生数字签名、加密或访问控制；不支持 PDF、ZIP64、加密包及超出 API 文件载荷上限的直接验证，不声称覆盖文件全生命周期溯源。
+
+### 文件内容指纹与资产关联（WP2-M）
+
+- **完整内容指纹**：文件观测新增 `content_sha256`，仅对完整读取的文件生成小写 SHA-256，不把前缀哈希冒充完整文件。上传侧在 multipart 流式解析中同步计算，不增加正文留存；下载侧仅对完整缓冲计算，截断、溢出和流式直通保持为空。若下载发生脱敏、水印或签名改写，Guard 在最终交付内容写出前更新指纹，保证与实际交付文件一致。
+- **资产关联**：采集端将 `content_sha256` 映射到既有 `api_file_assets.sha256`，不新增表或迁移。UPSERT 使用 `COALESCE(EXCLUDED.sha256, api_file_assets.sha256)`，新观测没有完整内容时不抹除历史指纹；有完整内容时更新为最新交付文件。`GET /api-security/file-assets` 新增 `sha256` 精确过滤（64 位 hex，大小写不敏感，非法输入 400），权限与既有 `api_data.read` 不变。新增 `GET /file-assets/lineage` 按同一指纹聚合上传/下载、端点、文件名与传输时间，最多 100 条并以 `truncated` 披露超出；不包含正文，不推断所有者或业务来源。文件验证卡片在签名有效后计算所选文件 SHA-256，调用同一关联接口并由 `FileLineagePanel` 展示方向、端点、文件名、传输次数与最近观测；空结果、错误与截断如实展示，关联失败不改变签名结论。
+- **文件资产台账**：新增 `ApiFileAssetsPage` 与 `/api-file-assets` 路由，归入“API 防护 / 数据安全”，沿用 `api_data.read` 权限与 WDSP 能力门控。页面真实查询 `/file-assets` 与 `/file-assets/stats`，展示上传/下载资产与传输统计，支持方向、扩展名、敏感标签、观测天数和完整内容 SHA-256 筛选；无完整指纹的资产明确标注“未完整观测”并禁用关联入口，有指纹时可打开抽屉复用 `FileLineagePanel` 查询实际上传/下载关联，不以演示数据替代真实观测。页面、关联卡片及菜单共 26 项测试、改动文件 ESLint、typecheck 与生产构建通过；尚未进行登录态浏览器交互验收。
+- **验证**：覆盖小文件、超过 512 字节前缀的完整流式内容、请求截断、下载完整/截断/流式、最终签名内容指纹、入库参数与历史保留 SQL、资产过滤和输入校验；parser/pipeline/response、Guard 全量、apiruntime/apifiles 测试通过，关联查询权限/参数/截断用例通过，OpenAPI 758 操作双向零差；真实 PostgreSQL 回滚事务验证同指纹上传/下载聚合。stage5 网关与管理面均已重建，五个核心节点 healthy；共用 OOXML 隔离验收覆盖 DOCX 批注/页眉、XLSX、PPTX 正式页/备注的上传下载，均验证 HTTP 200、原始字节保持及 `content_sha256` 与完整内容一致；签名 DOCX 场景验证最终交付体指纹、原始内容恢复与 HMAC。真实 PostgreSQL 回滚事务验证空指纹不覆盖历史值，未留下测试资产。临时站点、样本、测试二进制与事件文件已清理。
+- **范围边界**：内容指纹用于同一字节内容的关联与检索，不证明业务所有者、创建者或文件来源真实性，也不能替代签名、权限控制或恶意文件检测；正文仍不进入文件观测或资产表。低熵文件可能受字典猜测，指纹按敏感元数据保护，不作为公开标识。
+
+### 响应 Schema 运行时观测面板（非 AI）
+
+- **真实查询与入口**：`apiModelsApi.listResponseSchemas` 消费已有 `GET /api-security/endpoints/{id}/response-schemas`，在接口详情抽屉新增 `ResponseSchemaPanel`，不新增后端路由、数据库迁移或静态演示资产。按状态码展示 Content-Type、字段数、学习样本数、最近观测、完整性与结构哈希，可展开查看字段路径和类型。
+- **权限与边界**：读取受 `api_model.read` 控制，无权限不发起请求；空结果与查询错误如实展示。仅显示运行时学习行，不包含响应值或模型版本快照，截断历史以“曾截断”标识，不把一级字段观测冒充完整响应审计。
+- **验证**：面板真实查询、字段展开、无权限零请求、空结果和错误测试通过；接口详情集成及既有回归合计 22 项测试通过，改动文件 ESLint、typecheck 与生产构建通过。本次未进行登录态浏览器验收或节点部署；大模型相关工作保持暂停。
+
+### API 专项报告定时调度（迁移000199，非 AI）
+
+- **复用既有调度**：报告计划已有每日/每周/每月 UTC 执行、到期认领、任务生成、邮件与前端 CRUD，不重复开发调度器。新增可选 `api_report_type`（`API_ASSET`/`API_RISK`/`API_WEAK`/`API_SENS`），`JobReportType` 仅在明确选择时覆盖任务内容类型；周期字段仍独立用于下次执行和统计时间范围，空值保持原普通报告行为。
+- **校验与管理面**：专项类型仅允许内容范围 API，未知值及 WAF/WAF_API 混配返回参数错误；存储创建、更新、列表和认领读取该字段，沿用既有 `reports.read`/`reports.create` 权限与操作审计。前端在内容范围为 API 时展示可选专项类型，列表同时显示周期和专项类型，编辑、启停保留该值，无专项配置时提交空串。
+- **验证与边界**：`go test ./internal/reports` 通过，覆盖四类专项、普通计划回退、非法类型和范围；前端专项提交及既有页面 5 项测试、改动文件 ESLint、typecheck、生产构建通过；OpenAPI 758 操作双向零差。000199 迁移集成测试因测试环境变量缺失跳过，未做真实数据库回放，未在运行节点部署或实际触发专项计划。大模型相关工作保持暂停。
+
+### 应用级资产价值聚合接口（非 AI，后端切片）
+
+- **真实聚合**：`Store.ApplicationAssetValue` 按应用读取非忽略接口的既有 `asset_value_explain`，返回平均分、最高分、等级分布与各评分维度平均分。只消费已回填评分；无评分时 `level` 为空，`unscored_count` 如实披露，不生成虚构应用分数。应用不存在返回 404，不查询已软删除应用。
+- **接口与权限**：新增 `GET /api/v1/api-security/applications/{id}/asset-value`，权限 `api_asset.read`；支持非法 ID 400、无权限 403、应用不存在 404、读取实现未装配 503 和存储失败 500。无需新增表、字段或迁移，不改变既有接口评分计算。
+- **前端接线**：`ApplicationDetailPage` 新增 `ApplicationAssetValueCard`，展示平均分、最高分、接口数、评分覆盖率、综合等级、等级分布及维度均值；无评分明确显示“未评分”，无 `api_asset.read` 权限时不发起查询。覆盖率展示前四舍五入至两位小数，避免浮点格式化偏差。
+- **当前边界与验证**：`go test ./internal/apiassets` 通过，覆盖 HTTP 契约、权限、异常与字段回传；前端面板、详情集成及既有应用页合计 15 项测试、改动文件 ESLint、typecheck 与生产构建通过。真实 PostgreSQL 聚合验证尚未执行（本地 PostgreSQL 容器当前未运行），未进行登录态浏览器验收或节点部署；本切片不宣称完整应用评分模型或跨应用资产治理已完成。大模型相关工作保持暂停。
+
+### 按应用风险策略覆盖（迁移000200，非大模型）
+
+- **策略与兼容**：既有 `risk_policy` 全局策略保留不变，新增 `security_risk_policy_overrides` 按应用保存完整的信号权重、风险等级、窗口、阻断/限速阈值与模式。无覆盖继承全局；显式禁用覆盖不继承全局处置。应用删除经外键级联删除覆盖，无新增权限点或外部依赖。
+- **管理与运行时**：新增 `GET/PUT/DELETE /security/risk-policy/applications/{id}`，沿用 `risk_policy.read/edit`、全字段校验、版本乐观锁、写操作审计和现有发布回调。`risk_policy_overrides` 随 GuardConfig 进入处理器；网关复用同一风险引擎，按应用选择配置并隔离计数键，未改变原执行顺序、403/429 决策或事件证据语义。
+- **前端配置**：`RiskPolicyPage` 新增 `ApplicationRiskOverridesPanel`，可选择应用、查看继承状态、按全局值新建、编辑和删除回退；新建默认观察模式，保存/删除携带版本并展示冲突与服务端校验错误。`RiskPolicyFields` 与 `riskPolicyForm` 共用输入组件、数据映射与重复信号检查，不改变原全局页面的权限、审计或提交语义。
+- **验证**：覆盖接口的未认证/越权、空继承、创建、版本冲突、更新、删除与非法 scope 测试通过；发布可选读取、失败保留全局及处理器注入测试通过；Guard 覆盖阈值、事件版本、默认继承与显式停用通过，Guard 全量回归通过。前端应用覆盖创建、编辑、删除回退和无编辑权限测试，以及原全局页面回归共 9 项通过；改动文件 ESLint、typecheck 与生产构建通过。OpenAPI 762 操作双向零差。
+- **未完成边界**：000200 的真实数据库回放因测试环境变量缺失跳过，未做节点部署、登录态浏览器验收或真实多节点集群验收。本次只提供按应用的确定性风险参数覆盖，不冒充通用语义风险建模或自定义业务规则编排。大模型相关工作保持暂停。
+
+### 同设备多账号群控观察（非大模型）
+
+- **可信输入**：`group_control.go` 只消费已完成本地信任链验证的 `JWT_VERIFIED` 主体、非空应用 ID 和被动设备指纹；缺少任一条件或 Token 未通过验证均不计数。指纹来自既有 UA/Accept 族请求头 HMAC，不新增客户端采集。
+- **观察信号**：按应用与设备指纹在自然分钟窗口内统计不同可信主体，默认达到 3 个时产生 `behavior.shared_device_accounts`，类别为 `OBSERVE`、严重度 `MEDIUM`、`ScoreDelta=10`、置信度 0.55。证据仅包含账号数量、窗口、身份可信级别与设备指纹，不包含账号标识。
+- **有界去重**：复用 `StoreOverrides.IPSpread` 的有界 distinct 集合和 `BehaviorWindow` 的自然分钟计数；同一窗口只观察一次，重复账号或超过阈值后的其他账号不重复告警，新窗口可重新观察。没有新增数据库表、管理 API、权限点或前端静态演示。
+- **验证**：`go test ./detectors ./pipeline`、群控检测器 `-race` 和 Guard 全量回归通过；覆盖前两个账号不报、阈值观察、重复去重、窗口重置、应用隔离、缺少可信输入跳过、64 并发只报一次，以及真实管线在 PROTECT 模式下不直接阻断。
+- **未完成边界**：默认内存为单节点有界近似；配置 `behavior_store=valkey` 时可复用现有共享通道，但故障降级为节点本地状态，不承诺跨节点恰好一次或全局完整群控视图。被动指纹不是唯一设备标识，共享设备不等于群控定罪，本信号不直接阻断，也不替代设备关联图谱、自定义业务风险模型或协同行为判定。尚未进行真实 Valkey、节点部署、容量压测或登录态浏览器验收，不宣称海量数据实时处理已完成。大模型与 RAG 相关工作保持暂停。
+
+### 群控共享设备只读聚合（迁移000201，非大模型）
+
+- **应用归属**：`api_runtime_events` 新增可空 `application_id` 与按应用/设备/时间的部分索引。采集端从已完成归属识别的主事件写入 UUID，非法值在落库前拒绝；旧版事件及未识别应用保持 NULL，不按同名端点猜测或回填。
+- **真实只读接口**：新增 `GET /api/v1/api-security/group-control/shared-devices`，沿用 `api_runtime.read`，支持 RFC3339 时间窗、应用、设备指纹、最少账号数和分页。默认最近 24 小时、至少 3 个账号，单次最多 31 天、每页最多 100 组；非法参数 400，未装配读取器返回 503。
+- **聚合与隐私**：按应用和被动设备指纹分组，仅统计 JWT VERIFIED 且含可信主体指纹的已采集事件，返回不同账号数、事件数、群控信号数、接口与网关覆盖和首末观测时间；不返回主体标识或原始账号。
+- **验证**：`apisecurity`/`apiruntime`/`app` 测试通过，覆盖应用 ID 写入、旧事件 NULL、非法值拒收、真实 HTTP 权限、筛选校验、默认值、分页、响应脱敏与仓储错误；000201 静态 up/down 对账通过，OpenAPI 763 操作双向零差。
+- **未完成边界**：真实 PostgreSQL 集成测试已编写，但本轮因测试环境凭据未配置而跳过，尚未完成迁移回放和聚合 SQL 实库验收。接口固定披露 `data_scope=NOTABLE_SECURITY_EVENTS`、`partial=true`，只代表已采集安全事件，不是全量流量或实际活跃账号总数；主体关联边、自定义群控规则或协同判定尚未提供，管理页面见下节。大模型与 RAG 相关工作保持暂停。
+
+### 群控分析管理页面（非大模型）
+
+- **入口与权限**：新增 `/api-group-control` 页面，归入“API 防护 / 关系与运行”；菜单同时接受安全管理员角色或 `api_runtime.read`，路由由 WDSP 能力门控与同一权限点保护，未新增权限点。
+- **真实查询**：`ApiGroupControlPage` 经 `apiGroupControlApi` 调用共享设备聚合接口，支持时间范围、应用、设备指纹、最少可信账号数、重置和服务端分页；默认近 24 小时、3 个账号。设备指纹在前端校验 32 位十六进制并归一为小写，不使用演示数据。
+- **展示与边界**：表格展示应用、设备指纹、观察账号数、群控信号、关联事件、接口与节点覆盖及首末观测。空态说明所需 JWT 信任验证与安全事件条件，接口错误显示后端消息；页面明确提示安全事件不是全量流量、被动指纹不是唯一设备标识、结果不自动封禁。
+- **验证与未完成**：页面 7 项测试与菜单 18 项测试通过，覆盖真实数据、筛选、非法指纹零新增查询、重置、分页、空态、主体关联和 503；布局与阶段8元数据回归 31 项通过，改动文件 ESLint、新增页面与 API 文件 Prettier、typecheck 和生产构建通过。尚未进行登录态浏览器或真实后端联调；真实 PostgreSQL 迁移/聚合验收仍受上节环境限制。大模型与 RAG 相关工作保持暂停。
+
+### 群控主体关联明细（非大模型）
+
+- **限定范围读取**：新增 `GET /api/v1/api-security/group-control/shared-devices/accounts`，沿用 `api_runtime.read`。应用 UUID 与设备指纹均为必填，时间窗和分页约束与分组接口一致，防止跨应用或无范围枚举；按可信主体聚合事件、群控信号、接口数与首末观测。
+- **隐私边界**：只查询 JWT VERIFIED 且主体为 32 位小写 HMAC 的记录，异常或原始账号形态不参与且不返回。响应使用 `principal_ref`，不包含原始账号、Token 或 JWT payload；主体关联列表不证明协同行为。
+- **前端抽屉**：共享设备分组新增“主体关联”入口，`SharedDeviceAccountsDrawer` 沿用当前分组的时间范围并强制携带应用与设备条件，支持分页、空态和后端错误提示。切换筛选条件或重置会关闭旧抽屉，避免混看不同范围的数据。
+- **验证与未完成**：`apisecurity`/`apiruntime`/`app` 测试通过，覆盖必填范围、权限、分页、响应和仓储错误；页面 7 项测试、改动文件 ESLint、typecheck 和生产构建通过，OpenAPI 764 操作双向零差。实库集成用例已扩展主体聚合断言，但仍因测试环境凭据未配置而跳过；未做登录态浏览器验收。当前是分组与主体明细，不是完整关系边图谱、自定义群控模型或协同行为判定。大模型与 RAG 相关工作保持暂停。
+
+### 按应用群控观察阈值（迁移000202，非大模型）
+
+- **配置与存储**：应用风险覆盖新增 `shared_device_account_limit`，0 表示默认 3 个可信账号，自定义范围 2-1000。管理接口沿用 `risk_policy.read/edit`、版本乐观锁与操作审计；全局策略不接受非零值，数据库以 CHECK 防止非法阈值。
+- **发布与网关**：字段位于 `risk_policy_overrides` 的应用覆盖项、嵌套 `policy` 之外，不修改冻结的风险引擎参数。既有发布链原样携带并纳入处理器快照；Guard 按应用解析到 `pipeline.Config.SharedDeviceAccountLimit`，无覆盖保持默认，非法值告警并回退默认。
+- **管理前端**：按应用覆盖表单新增“同设备账号观察阈值”，显示默认 0 的继承语义并拦截 1；全局表单不展示。该字段只调整 `behavior.shared_device_accounts` 的观察灵敏度，不改变风险模式，不直接阻断，也不提供通用自定义业务模型。
+- **验证**：风险策略、发布读取、迁移管理和 Guard 测试通过；检测器与真实管线覆盖自定义 2、默认回退、应用隔离、不阻断及竞态，Guard 全量回归通过。前端覆盖与全局页面 10 项测试、改动文件 ESLint、typecheck 和生产构建通过；OpenAPI 764 操作双向零差，无新增路由。
+- **未完成边界**：000202 静态 up/down 检查通过，真实 PostgreSQL 集成用例覆盖迁移重放、存储、发布读取及数据库非法值拒绝，但因测试环境凭据未配置而跳过；未做节点部署、真实发布或登录态浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 群控观察趋势（非大模型）
+
+- **只读聚合**：新增 `GET /api/v1/api-security/group-control/trends`，沿用 `api_runtime.read`。按 UTC 小时或天返回达到账号阈值的共享设备分组数、群控信号数和关联安全事件数；支持时间窗、应用、设备指纹和账号阈值筛选，每个时间桶独立应用阈值。
+- **时间桶边界**：范围不超过 48 小时默认按小时，否则按天；最大 31 天，非法 bucket 返回 400。仅返回真实观测桶，不补零，不把未采集时段表示为已确认无风险；数据源仍固定披露为 `NOTABLE_SECURITY_EVENTS`、`partial=true`。
+- **前端趋势图**：群控分析页新增 `GroupControlTrend`，复用当前筛选条件，以两条折线展示共享设备分组与观察信号；提供加载、空态、错误和可访问文字摘要，不以 Mock 图表代替接口数据。
+- **验证**：趋势参数、权限、默认时间桶、聚合错误及应用装配测试通过；页面与趋势组件 10 项测试通过，覆盖实际序列映射、无观测不生成零值及失败不绘制。改动文件 ESLint、typecheck、生产构建通过，OpenAPI 765 操作双向零差。
+- **未完成边界**：实库集成用例已增加趋势断言，但因测试环境凭据未配置而跳过，尚未验证 PostgreSQL 聚合执行、容量表现或登录态浏览器展示；本功能不提供全量流量趋势或群控协同判定。大模型与 RAG 相关工作保持暂停。
+
+### 内联 HTML 网页溯源水印（迁移000203，非大模型）
+
+- **复用现有引擎**：`api_file_watermark` 新增可选 `include_inline_html`，沿用模板 `{ip}/{identity}/{time}/{domain}`、Content-Type 白名单、完整响应缓冲及 FAIL_OPEN 纪律，不新增媒体处理依赖。网页尾部追加渲染不可见的 HTML 溯源注释，不是可见浮层。
+- **默认与发布**：迁移 000203 在 `gateway_runtime` 组新增同名布尔设置，默认 false；设置键进入更新白名单，经既有 guardconfig 校验与发布链下发。需同时启用文件水印、配置模板并把 `text/html` 加入白名单；不改变既有下载水印的默认行为。
+- **处理边界**：仅处理 API 响应处理链内 2xx、无 Content-Disposition、完整可缓冲的 `text/html`；压缩、SSE、WebSocket、Range 分段、错误状态和超限均直通原文。命中仍记 `file.watermark_applied`，新增 `delivery=INLINE_HTML/DOWNLOAD` 区分，不落实际水印文本；Content-Length 按最终体修正。
+- **验证**：响应引擎、guardconfig/gatewayconfig/settings/database 测试通过；真实 Guard `serveNext` 覆盖内联命中、默认关闭、下载兼容、非 HTML、错误/压缩/分段/SSE/超限直通，Guard 全量回归通过。无新增 API 路由，OpenAPI 操作数不变。
+- **未完成边界**：000203 的 PostgreSQL 迁移回放用例已编写，但因测试环境凭据未配置而跳过；未做真实配置发布、节点部署或浏览器渲染验收。本切片不支持可见水印、可视化模板编辑器、非 API 链全站网页或加密/压缩内容；通用设置管理入口见下节。大模型与 RAG 相关工作保持暂停。
+
+### 群控 Finding 证据与类型映射（非大模型）
+
+- **物化语义**：`behavior.shared_device_accounts` 显式映射为 `SHARED_DEVICE_ACCOUNTS`，按既有 MEDIUM 规则进入风险发现。脱敏白名单补充账号数、窗口、固定可信级别与 HMAC 设备指纹，避免物化后只剩规则名。
+- **隐私与展示**：原始账号标识不进入白名单，测试注入的原始账号值仍被剥除；设备指纹冗余列继续沿既有服务端形态校验。前端风险类型增加“同设备多账号”中文标签，筛选、汇总与详情复用既有映射。
+- **验证与边界**：`apiruntime` 全量测试及前端元数据/阶段8共 18 项测试通过，typecheck、改动文件 ESLint 和生产构建通过。无数据库迁移、接口路径或权限变更；尚未做真实数据库风险列表与登录态浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 文件与水印设置入口（迁移000204，非大模型）
+
+- **完整设置种子**：为既有 `api_file_watermark_enabled/template/content_types/json_key` 补齐默认行，分别为关闭、空模板、文本/JSON 默认白名单和 `_wm`。up 使用 `ON CONFLICT DO NOTHING` 保留用户已有值；down 只删除这四项，不误删 000203 的内联 HTML 开关。
+- **管理入口**：系统设置新增“文件与水印”页签，复用 `system_settings.read/update`、逐行保存、原生布尔/字符串值和版本冲突处理；只展示 `api_file_watermark_` 前缀，不暴露无关网关运行项。页面提示逐项保存后需通过既有配置发布生效。
+- **生效校验**：启用总开关时模板不能为空；开启内联 HTML 时白名单必须含 `text/html`，否则前端拦截且不发送 PUT。水印仍默认关闭，不引入可见浮层或新的接口路径。
+- **验证与边界**：页面 6 项测试通过，覆盖默认关闭、非水印键过滤、模板/HTML 前置校验、原生 boolean 保存及只读权限；Prettier、ESLint、typecheck、生产构建通过。000204 静态检查及 settings/database 回归通过；真实 PostgreSQL 的幂等、保留已有值和回滚用例因测试环境凭据未配置而跳过，未做登录态浏览器或真实发布验收。大模型与 RAG 相关工作保持暂停。
+
+### 群控设备主体关系图（非大模型）
+
+- **真实关系投影**：新增 `SharedDeviceRelationshipGraph`，复用现有 EChart GraphChart，以共享设备为中心节点、当前主体明细页的可信账号为关联节点；节点和边保留真实事件数、群控信号与接口覆盖，不生成演示节点。HMAC 标签与可访问摘要只显示缩短前缀。
+- **抽屉交互**：主体关联抽屉新增“明细列表 / 关系图”切换，默认明细列表。关系图仅消费当前页 `accountsQuery.data.items`，翻页后使用新页真实结果，不自动拼接其他页；加载、错误和空态均不绘制假关系。
+- **验证**：相关页面、抽屉和关系图共 13 项测试通过，覆盖真实节点/边映射、当前页传递、HMAC 缩短、空态与错误；Prettier、ESLint、typecheck 和生产构建通过。无新增 API、数据库结构或依赖。
+- **边界**：这是当前明细页的只读投影，不是全量设备关联图谱、跨页历史关系或协同行为定罪；未进行真实浏览器 Canvas 渲染、缩放或布局验收。大模型与 RAG 相关工作保持暂停。
+
+### 文件关联身份与来源证据（非大模型）
+
+- **补全既有字段**：文件关联接口的 `FileAsset` 本就返回 `identity_fingerprint` 与 `client_ip_masked`；前端 `ApiFileLineageItem` 已补齐类型，`FileLineagePanel` 新增“身份指纹”和“来源 IP（脱敏）”列。空身份显示“匿名”，空来源显示“未知”，不伪造用户姓名或来源。
+- **溯源边界**：仍按完整 SHA-256 关联实际的上传/下载资产，并展示端点、传输次数和观测时间；身份指纹是凭据派生值，同内容关联不代表业务所有者、创建者或真实人物身份。
+- **验证**：新增面板 3 项测试及关联既有回归共 11 项通过，Prettier、ESLint、typecheck 和生产构建通过。新增服务端完整 HTTP 用例覆盖上传/下载/匿名资产的身份、脱敏 IP、方向和时间，但因测试环境凭据未配置而跳过，未实际执行数据库或 HTTP 断言；未做登录态浏览器验收。无新增接口、迁移或依赖。大模型与 RAG 相关工作保持暂停。
+
+### 文件资产身份精确过滤（非大模型）
+
+- **真实查询条件**：`GET /api-security/file-assets` 新增可选 `identity_fingerprint`，trim 后空串不过滤、最长 128 字符，超长返回 400。PostgreSQL 使用参数化 `identity_fingerprint = $n`，count/list 共用条件；MemStore 同样使用大小写敏感等值匹配，不使用模糊/前缀匹配。
+- **前端检索闭环**：文件资产台账新增“身份指纹”输入，与 SHA-256、扩展名、方向和敏感筛选共同提交；查询回到第一页，重置清除该参数，空白不发送。身份保持凭据派生指纹，不解析或拼接明文账号。
+- **验证与边界**：apifiles 测试及页面 5 项测试通过，覆盖精确/前缀负例、大小写、匿名、组合过滤、分页、trim、重置和空值；Prettier、ESLint、typecheck、生产构建及 OpenAPI 765 操作双向对账通过。无新增路由、迁移、权限或依赖；真实 PostgreSQL 查询与登录态浏览器验收尚未执行。大模型与 RAG 相关工作保持暂停。
+
+### API 路径与参数规范审计（非大模型）
+
+- **按需真实审计**：新增 `GET /api-security/specs/{id}/audit`，权限 `api_spec.read`。读取当前版本的既有 `spec_json`，复用安全解析与操作模型，不落新表、不把审计写入导入主流程。覆盖路径占位缺声明、PATH 未必填、PATH 未出现在占位，以及 GET/DELETE 的保守敏感 QUERY 参数词表；只返回参数名和定位元数据。
+- **确定性结果**：按接口/规则/参数稳定排序，返回操作数、完整问题数和 HIGH/MEDIUM 分布；items 最多 500 并以 `truncated` 披露，空结果保持 `[]`。非法 ID 400、不存在 404、已存内容解析失败 500，不返回参数值或完整规范。
+- **前端管理入口**：规范列表新增“规范审计”抽屉，展示统计、中文规则标签和明细，支持空态、截断与错误提示；按版本 ID 隔离查询并校验响应，关闭清理选择，避免跨版本复用旧结果。
+- **验证**：规则、排序、敏感名归一、边界截断、解析失败及 apisecurity/app 回归通过；前端新增 5 项及既有页面共 14 项测试通过，Prettier、ESLint、typecheck、生产构建通过，OpenAPI 766 操作双向零差。真实导入后 HTTP 审计用例因测试环境凭据未配置而跳过，未做登录态浏览器验收。
+- **范围边界**：这是路径与参数的确定性审计，不是完整 OAS 合规检查、语义安全审计或运行时漏洞证明；未覆盖响应质量、认证设计、示例真实性或业务规范。大模型与 RAG 相关工作保持暂停。
+
+### 规范响应声明审计扩展（非大模型）
+
+- **新增确定性规则**：`SUCCESS_RESPONSE_MISSING`（HIGH）检查没有明确 2xx 成功响应；`ERROR_RESPONSE_MISSING`（MEDIUM）检查没有 default、4xx 或 5xx 错误响应。支持具体状态码及 2XX/4XX/5XX 类别声明；default 不计作明确成功，空 204/205 仍算成功。
+- **未知语义不误报**：`SpecOperation` 新增响应状态集合与语义已知标记；只有 responses 为对象才判定，显式空对象表示已解析但无响应。缺失、null、非对象及 Postman/JSON Schema/GraphQL 等不具备此语义的格式不产生响应规则误报。
+- **展示与边界**：审计抽屉新增“成功响应未声明 / 错误响应未声明”中文标签，继续展示真实严重级别、接口和说明。只评价响应声明完整性，不检查响应 Schema、示例真实性或实际运行时状态，不把它当作漏洞证明。
+- **验证**：覆盖成功/错误正负例、default、空响应、204/205、类别声明、未知语义、Swagger、扩展格式、排序及截断前计数；apisecurity/app 回归通过。前端新增响应规则用例后共 15 项测试通过，Prettier、ESLint、typecheck 和生产构建通过；OpenAPI 766 操作双向零差。真实导入审计用例因测试环境凭据未配置而跳过，未做浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 规范审计 CSV 导出（非大模型）
+
+- **真实结果导出**：审计抽屉新增“导出当前结果”，`specAuditCSV` 生成带 UTF-8 BOM 和标准 CRLF 行尾的 CSV，包含规范/格式、操作数、问题数、HIGH/MEDIUM、截断标记及实际返回明细。无数据、加载、错误或版本不匹配时禁用；截断时明确仅导出当前已返回部分。
+- **文件与表格安全**：逗号、双引号、换行和中文按 CSV 规则转义；危险公式开头字符前置单引号。下载文件名对规范名/版本做有界清理，Blob 使用 `text/csv;charset=utf-8`，点击后移除链接并释放 Object URL，不读取规范原文或参数值。
+- **验证与边界**：CSV 纯函数 12 项测试及页面/抽屉相关共 30 项测试通过，覆盖公式注入、中文/引号/CRLF、空态、截断、文件名、URL 释放和版本切换；Prettier、ESLint、typecheck 和生产构建通过。无新增接口、数据库结构或依赖；尚未进行真实浏览器下载及办公软件打开验收。大模型与 RAG 相关工作保持暂停。
+
+### 规范鉴权安全审计（非大模型）
+
+- **新增确定性规则**：`SECURITY_SCHEME_UNDEFINED`（HIGH）检查操作实际引用但未在 `components.securitySchemes` 定义的认证方案；`API_KEY_IN_QUERY`（HIGH）检查实际使用且定义为 `in=query` 的 `apiKey` 方案。只返回接口、规则和方案/参数定位元数据，不返回 Key 值、凭据或完整规范。
+- **继承与未知边界**：支持全局 `security` 继承及操作级 `security: []` 公开覆盖；公开操作、未配置安全要求和未使用方案不误报。Swagger 最小转换、Postman、GraphQL、JSON Schema 等目录未知或语义不适用的格式跳过鉴权规则，不把空目录当成无认证的事实。
+- **契约与展示**：沿用按需审计接口、稳定排序、完整计数和最多 500 条截断契约；前端新增“认证方案未定义 / 查询参数传递 API Key”中文标签。无新增路由、权限、数据表、迁移或依赖。
+- **验证与边界**：apisecurity/app 回归通过；规范相关前端 3 个文件共 31 项测试通过，Prettier、ESLint、typecheck 和生产构建通过；OpenAPI 601 路径、766 操作、1011 Schema 合并及双向对账零差。真实导入后 HTTP 审计用例因测试环境凭据未配置而跳过，未实际执行数据库及 HTTP 断言；未做登录态浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 响应体采样比例下发（迁移000205，非大模型）
+
+- **管理配置到网关闭环**：新增 `gateway_runtime:api_response_sample_ratio`，默认 `1`；管理面保存、发布解析和网关装配均校验 0~1，拒绝非数字、负数、超范围、NaN 与正负 Inf。使用可空指针区分未配置与显式 `0`，避免 `omitempty` 吞掉零值。
+- **真实生效语义**：统一从 `DefaultParseLimits` 生成请求/响应相位限制；`1` 保持全量解析，`0` 不解析响应体，`(0,1)` 仅对超过 `MaxBodyParseBytes` 的超大响应进行确定性前缀采样。截断落在 JSON 中间时不产出部分 Schema，原始响应体不被修改。该比例只控制 API 引擎解析，不改变访问日志捕获、gzip/br/流式响应边界。
+- **发布一致性**：比例进入 handler 映射和 `api_policy_version`，WDSP 关闭时剥除；快照、回滚重放按当前设置恢复显式 `0`。000205 种子使用 `ON CONFLICT DO NOTHING` 保留既有值，无新增路由、权限或前端依赖。
+- **验证与边界**：guardconfig/gatewayconfig/settings/app 回归通过；网关 Guard 全包及 dynamic_security context/pipeline 测试通过，覆盖默认、0、0.5、非法拒载、真实 serveNext 请求/响应与事件链路。OpenAPI 766 操作双向零差。两项 PostgreSQL/Valkey 集成用例因测试凭据未配置而跳过，未实际执行迁移往返、HTTP 设置和真实发布；未做跨进程、多节点或浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 普通 JSON 响应值级敏感检测（非大模型）
+
+- **补齐 response_body 消费**：新增独立响应规则编译入口，保留请求侧原有位置过滤与缓存语义；普通非附件 JSON 复用响应相位首次解析根值，不二次解析。排序遍历对象并扫描所有嵌套数组元素，支持字符串、数字字面量和布尔值。
+- **证据与动作**：命中产 `sensitive_data / sensitive.response_value`（OBSERVE/MEDIUM），证据只含字段路径、数据类型、等级、response_body 与 RESPONSE 方向，不保存或上报敏感值；命中写入 `SensitiveFields` 供字段权限去重，并由既有 apidata 清聚进入敏感字段台账。本规则不新增阻断或响应改写。
+- **资源与边界**：复用 RE2、单值 4096 rune、512 次规则求值和 20 条值级命中上限，同时受 JSON 深度/字段数约束。无规则、请求侧位置、非 JSON、解析失败、采样 0、截断及流式不扫描；gzip/br、XML/表单普通响应不在本次扩展内。
+- **验证**：detectors/pipeline/response 与 Guard 完整相关包测试通过；真实 serveNext 用例确认普通 JSON 主事件包含值级明细、PROTECT 下该观测不阻断、原始响应不变且序列化事件不含敏感值。无新增 API、数据库结构或依赖；未做真实 PostgreSQL 清聚和登录态浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 字符串参数固定格式候选（迁移000206，非大模型）
+
+- **真实值格式观测**：Guard 与 mirrorcap 既有观测扩展新增 `format_sample/format_candidate`，仅对非敏感、非空且带脱敏哈希的字符串按完整值识别 UUID、EMAIL、IPV4、IPV6、DATE、DATETIME；未知格式计入分母。敏感抑制、空值、数字和布尔不产出格式字段，不上报明文。
+- **保守候选聚合**：000206 为观测增加格式样本总数/候选计数，为统计画像增加候选/占比。至少 20 个合格字符串样本且唯一最高占比 ≥0.9 才生成；平手、样本不足、非法标签、旧观测及矛盾计数不生成，候选失去阈值时统计与观测约束同步撤除。
+- **只读展示**：候选与占比仅进入 `observed_constraints`，不进入 recommended/confirmed、不自动阻断。接口详情参数表新增“格式候选”中文标签与百分比，缺失、旧数据、未知或非法比例显示 `-`。
+- **验证与边界**：服务端全量 Go 测试通过，网关 apievents/Guard/mirrorcap 测试通过；前端接口详情 22 项测试、Prettier、ESLint、typecheck 和生产构建通过。真实 PostgreSQL/Valkey 集成用例因测试凭据未配置而跳过，迁移往返和实库统计重算未实际执行；未做登录态浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### API 技术协议与交互模式维度（非大模型）
+
+- **真实协议数据源**：自动分类在既有路径/方法维度之外，新增 `TECHNICAL_PROTOCOL` 与 `INTERACTION_MODE`，只消费接口已保存的 `protocol_type`；SQL Store 与 MemStore 使用同一映射，分类锁定语义不变。空协议不产出，未知协议只标 UNKNOWN_HTTP_API，不编造交互模式。
+- **交互语义**：支持请求响应、远程调用、事件回调、文件传输、服务端推送、双向流六类，覆盖 REST/JSON、XML、Form、GraphQL、RPC、SOAP、Webhook、文件、WebSocket、SSE、gRPC 及历史协议值。
+- **展示与验证**：用途分类表格和详情抽屉新增两维中文标签，协议复用现有 API_PROTOCOL_META，未知值保留原文。apiassets 测试、前端 6 项测试、Prettier、ESLint、typecheck 和生产构建通过；实库集成因测试凭据未配置跳过，未做登录态浏览器验收。
+- **范围说明**：§34 九类用途维度均已有实现，分别使用路径启发式、已确认配置或真实观测，不能据此宣称所有维度都具备同等自动化置信度或已完成实库验收。大模型与 RAG 相关工作保持暂停。
+
+### 数据敏感等级分类维度（非大模型）
+
+- **真实模型投影**：新增 `DATA_SENSITIVITY`，SQL AutoClassify 仅读取当前模型 `current_model_version_id` 对应参数行的 `sensitivity_level/confidence`，按 HIGH>MEDIUM>LOW>UNKNOWN 取最高级，置信度取该级最大值并归一到 0..1；旧候选不混入。
+- **未知与锁定边界**：无当前模型或无参数行不产出，不默认 NONE；MemStore 无此数据源时跳过。分类锁定检查先于查询和写入，查询/写入失败整体回滚。
+- **展示与验证**：用途分类表格和详情新增数据敏感等级及高/中/低/未知中文映射。apiassets 测试、前端 7 项测试、Prettier、ESLint、typecheck 和生产构建通过；实库用例因测试凭据未配置跳过，未做真实浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 身份要求分类维度（非大模型）
+
+- **真实事件观测**：新增 `IDENTITY_REQUIREMENT`，SQL AutoClassify 聚合近 30 天 `api_runtime_events` 的匿名成功（空 auth_type 且 2xx/3xx）、匿名拒绝（空 auth_type 且 401/403）与认证成功（非空 auth_type 且 2xx/3xx）。
+- **保守分类**：匿名成功+认证成功为 AUTH_OPTIONAL；无匿名成功但有匿名拒绝+认证成功为 AUTH_REQUIRED；其余分别为 ANONYMOUS_ALLOWED、ANONYMOUS_REJECTED、AUTHENTICATED_OBSERVED。仅观测到认证成功不会误判为强制认证，无有效事件不产出，MemStore 无事件源不伪造。
+- **展示与验证**：用途分类表格和详情显示需要/可选认证、允许匿名、匿名被拒及仅观测认证成功，均标明“观测”。apiassets 测试、前端 8 项测试、Prettier、ESLint、typecheck 和生产构建通过；实库因测试凭据未配置跳过，未做真实浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 业务流程阶段分类维度（非大模型）
+
+- **启用流程声明**：新增 `BUSINESS_FLOW_STAGE`，SQL AutoClassify 仅消费启用流程的真实步骤，按每个流程的最小 sequence、空前驱和 terminal 映射 START、INTERMEDIATE、TERMINAL、START_AND_TERMINAL；多流程不同角色为 MULTI_STAGE，同角色去重且不受行序影响。
+- **证据边界**：不按 step_id 或路径猜阶段名称，不将最大 sequence 自动当终点；无启用流程不产出，禁用流程不混入，MemStore 无流程数据不伪造。查询和写入失败整体回滚。
+- **展示与验证**：用途分类表格和详情新增开始/中间/终点/起止一体/多阶段中文映射。apiassets 测试、前端 9 项测试、Prettier、ESLint、typecheck 和生产构建通过；实库因测试凭据未配置跳过，未做真实浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 风险标签分类维度（非大模型）
+
+- **活动风险来源**：新增 `RISK_LABEL`，SQL AutoClassify 仅消费本端点 NEW/CONFIRMED/IN_PROGRESS 的 `api_runtime_findings`，按 CRITICAL>HIGH>MEDIUM>LOW>INFO 取最高级真实 finding_type，同级多个类型为 MULTI_RISK，开放类型仍限制规范形状与长度。
+- **闭环清理**：同事务先计算后删除旧 RISK_LABEL 再按需写入；RESOLVED/FALSE_POSITIVE/IGNORED/ARCHIVED 或无活动发现不保留旧标签，非法活动行、删除或写入失败整体回滚，分类锁定先于任何修改。
+- **展示与验证**：用途分类表格和详情新增影子/僵尸/下线、越权、模型偏离、敏感泄露、批量赋值、行为异常及多重风险中文映射，自定义类型保留原文。apiassets 测试、前端 10 项测试、Prettier、ESLint、typecheck 和生产构建通过；实库因测试凭据未配置跳过，未做真实浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 业务对象分类维度（非大模型）
+
+- **真实对象模型派生**：新增 `BUSINESS_OBJECT`，SQL AutoClassify 只读取当前端点的 `api_object_models` 与 `api_endpoint_path_segments`；path 对象要求变量段并取前一处非空静态段，无法找到回退变量名，query 对象取参数名，不直接按路径猜测。
+- **多对象与清理**：类型 trim+大写并限制 1–128 字符、排除控制字符；多个不同类型为 MULTI_OBJECT，同类型去重且不受行序影响。有效行任一 publishable 时置信度 0.9，否则 0.65；同事务删除旧值后按需写入，缺失不报错、非法形状回滚，分类锁定先于修改。
+- **展示与验证**：用途分类表格和详情新增业务对象与多重业务对象展示，自定义类型保留原文。apiassets 测试、前端 11 项测试、Prettier、ESLint、typecheck 和生产构建通过；实库因测试凭据未配置跳过，未做真实浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 凭据维度每分钟限速（迁移000207，非大模型）
+
+- **真实凭据维度**：新增 `gateway_runtime:credential_rate_per_minute`，默认空串关闭；复用管线既有加盐 `CredentialKey`，覆盖 Authorization/Token、API Key 和 Session，匿名不回退 IP，不回写原始凭据或指纹证据。
+- **阈值与处置**：有界追踪器按自然分钟计数，第 N+1 次请求产 `ratelimit.credential_rate`（RATE_LIMIT/HIGH）；OBSERVE 只记录，PROTECT 由既有决策链映射 429。证据只含凭据类别、窗口计数、阈值和窗口。
+- **发布一致性**：保存/发布/网关拒绝负数、非数字和小数；正数进入 handler 与 `api_policy_version`，WDSP 关闭时剥除，回滚按当前设置重放。000207 使用 `ON CONFLICT DO NOTHING` 保留已有设置，无新增路由或前端依赖。
+- **共享存储**：`StoreOverrides.CredentialRateWindow` 接入既有 WindowStore；`behavior_store=valkey` 时使用独立 `credrate` 命名空间与 Lua 原子窗口，键材料继续 HashParts，不与 behavior/apiwrite/mcpcall 串计数。默认 memory 或 Valkey 故障期仍是节点本地计数，故障期与恢复后不回灌样本。
+- **验证与边界**：detectors/pipeline/Guard/behaviorstore 及竞态回归通过；两个 Guard 共享存储可累计达阈，独立内存互不累计，匿名不进入存储。OpenAPI 766 操作双向零差。两项管理面实库集成因测试凭据未配置跳过；真实 Valkey 用例因 Docker 不可用跳过，未做正式多节点故障、真实发布或浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 对象限速共享存储与匿名边界（非大模型）
+
+- **共享计数**：新增 `StoreOverrides.ObjectRateWindow` 和 Valkey `objrate` 独立命名空间，复用自然分钟 Lua、TTL 与告警节流。计数键仍由凭据身份、端点、对象来源/参数和 ValueHash 组成，不含原对象值；默认内存和故障降级保持独立实例。
+- **匿名纠偏**：对象限速身份入参由通用 TrackingKey 改为真实 CredentialKey；匿名不再回退 IP 进入对象限速桶，避免 NAT/共享出口把不同访客合并。无凭据或无对象标识不记账，小时/日配额仍沿用原 TrackingKey 规则。
+- **验证与边界**：detectors/pipeline/Guard/behaviorstore 及竞态回归通过；两个 Guard 共享存储时同身份同对象跨实例达阈，不同对象/身份隔离，PROTECT 429、OBSERVE 记录。真实 Valkey 用例因 Docker 不可用跳过，未做正式多节点故障验收；分页/批量等其余资源边界不因此改变。大模型与 RAG 相关工作保持暂停。
+
+### 小时与日配额共享存储（非大模型）
+
+- **定窗共享接口**：新增 `QuotaStore`、`HourlyQuota/DailyQuota` 请求级注入及独立内存构造器；保持自然小时和 UTC 自然日，跨窗重置且不保留历史样本，默认未绑定仍使用原包级内存。
+- **原子配额键**：Valkey 使用 `quota_hour/quota_day` 独立命名空间，键哈希包含身份+端点及当前窗口起点；`INCR+PEXPIRE` 一次原子往返，TTL 下限 2 小时/48 小时，不复用分钟窗 HGETALL。独立内存降级、告警节流和恢复不回灌保持一致。
+- **验证与边界**：detectors/pipeline/Guard/behaviorstore 及竞态回归通过；两个 Guard 共享配额时 N+1 达阈，不同身份/端点隔离，PROTECT 429、OBSERVE 记录，匿名仍按原 IP tracking 规则。真实 Valkey 用例因 Docker 不可用跳过；正式多节点故障与性能未验收。大模型与 RAG 相关工作保持暂停。
+
+### 可信租户每分钟限速（迁移000208，非大模型）
+
+- **可信身份来源**：新增 `tenant_rate_per_minute`，默认空串关闭；只消费 JWT 信任链 `VERIFIED` 且非空的 `VerifiedTenantID`，不信任租户请求头或参数。未验证、验证失败、缺租户和匿名请求不进入本限速。
+- **计数与处置**：按 `Fingerprint(identity_salt, "jwt-tenant:"+tenant)` 在自然分钟窗口计数，第 N+1 次产 `ratelimit.tenant_rate`（RATE_LIMIT/HIGH），PROTECT 映射 429；事件不含租户原文或指纹。保存/发布/网关拒绝负数、非数字和小数，配置进入版本戳、WDSP 门控与回滚重放。
+- **共享存储**：`TenantRateWindow` 使用 Valkey `tenrate` 独立命名空间及原子窗口，默认内存/故障期为独立本地实例，恢复不回灌；与其他限速命名空间隔离。
+- **验证与边界**：detectors/pipeline/Guard/behaviorstore 完整测试及租户相关竞态测试通过，管理面四包回归通过；跨 Guard 共享、不可信/缺租户不触存储、租户隔离与 429 已覆盖。OpenAPI 766 操作双向零差。两项实库集成因测试凭据未配置跳过，真实 Valkey 因 Docker 不可用跳过；未做正式多节点或浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 操作动作每分钟限速（迁移000209，非大模型）
+
+- **真实 ACTION 映射**：新增 `action_rate_per_minute` 与 `api_endpoint_actions` 发布段；管理面从 `api_classification_dimensions` 的 ACTION 行连接真实 endpoint_key，不按路径猜测。动作按既有 §34.2 词表校验，同端点冲突、非法值或读取失败中止发布，不用半份配置冒充成功。
+- **计数与处置**：按应用 ID + 操作动作在自然分钟窗口计数，第 N+1 次产 `ratelimit.action_rate`（RATE_LIMIT/HIGH），PROTECT 429、OBSERVE 记录。空应用、未分类端点及关闭配置不参与，证据只含动作与窗口元数据。
+- **发布与共享**：阈值和映射进入 handler、`api_policy_version`、WDSP 门控及回滚重放；仅启用时加载映射。`ActionRateWindow` 使用 Valkey `actionrate` 独立命名空间、TTL 和独立内存降级，默认本地、恢复不回灌。
+- **验证与边界**：服务端 apiassets/settings/guardconfig/gatewayconfig/app 测试通过；网关 detectors/pipeline/Guard/behaviorstore 完整及动作竞态测试通过，覆盖应用/动作隔离、未分类、跨 Guard 429 和窗口故障边界。OpenAPI 766 操作双向零差。两项实库集成因凭据未配置跳过，真实 Valkey 因 Docker 不可用跳过；动作限速已支持内置及自定义 ACTION；自定义值统一大写，须匹配 `^[A-Z][A-Z0-9_]*$` 且不超过 64 字节，非法/超长仍拒绝。新增实库用例因 ACTION_RATE_TEST_PG_DSN 未配置而跳过。大模型与 RAG 相关工作保持暂停。
+
+### 响应涉敏未脱敏弱点派生（非大模型）
+
+- **新弱点码**：`SENSITIVE_RESPONSE_UNMASKED`（SENSITIVE/MEDIUM），近 24 小时内同端点包含 `sensitive.response_field` 或 `sensitive.response_value`，且未观察到 `response.mask_applied` 的事件达到 3 个样本后派生；复用现有 upsert、FIXED→REPRODUCED 和系统动作历史。
+- **保守证据语义**：任一事件有成功脱敏标记即整条排除；现有事件无字段级部分脱敏对账，因此不会据此声称该事件已完全脱敏。`response.mask_failed` 不会被误当成功。弱点只表示“未观察到成功脱敏”，不代表 TLS 未加密或漏洞已证实，证据不含敏感值。
+- **展示与验证**：弱点列表和详情直接展示服务端真实名称、分类、级别与既有证据摘要，页面明确观测口径。apiweakness 全量测试、前端 6 项测试、Prettier、ESLint、typecheck 和生产构建通过；实库用例因 POSTGRES_PASSWORD 未配置而跳过，未实际执行数据库断言或浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 业务功能分组与接口成员（迁移000210，非大模型）
+
+- **真实实体**：新增 `api_endpoint_groups` 与 `api_endpoint_group_members`；分组归属应用，编码在应用内唯一，接口可属于多个组。创建/更新校验编码、名称、描述、启停及成员同应用关系，成员增删和删除使用真实数据库约束/事务。
+- **管理与权限**：新增 `/api/v1/api-security/endpoint-groups` 下 8 个 CRUD/成员接口，`api_endpoint_group.read/manage` 权限，SECURITY_ADMIN 读写、AUDIT_ADMIN 只读；全部写操作审计，沿用认证、CSRF、标准分页和 400/404/409 错误语义。
+- **管理页面**：新增 `/api-endpoint-groups`，支持应用筛选、分组新建/编辑/启停/删除、成员抽屉、真实接口搜索/添加/移除和只读模式；所有成功反馈均在真实 API 成功后发生。
+- **验证与边界**：服务端全量竞态、go vet 和 API 构建通过；前端全量 171 文件/1282 项测试、lint、typecheck、生产构建通过；OpenAPI 774 操作双向零差。两项实库用例因测试凭据未配置跳过，未做真实浏览器 E2E。分组与成员数据源及后续限速发布见下节。大模型与 RAG 相关工作保持暂停。
+
+### 接口组每分钟限速（迁移000211，非大模型）
+
+- **真实组映射**：新增 `group_rate_per_minute` 与嵌套 `api_endpoint_groups`（application_id→endpoint_key→排序去重组码）；只消费启用分组的真实成员，不跨应用拍平，未分组/禁用组不参与。冲突、非法组码或读取失败中止发布。
+- **多组计数**：当前请求对每个所属组分别计数，键为应用+组码；第 N+1 次产 `ratelimit.group_rate`（RATE_LIMIT/HIGH），PROTECT 429、OBSERVE 记录，证据只含组码与窗口元数据。
+- **发布与共享**：阈值/映射进入 handler、`api_policy_version`、WDSP 门控及回滚重放，仅启用时加载。`GroupRateWindow` 使用 Valkey `grouprate` 独立命名空间、TTL 和独立内存降级，恢复不回灌。
+- **验证与边界**：服务端 apigroups/settings/guardconfig/gatewayconfig/app 测试通过；网关 detectors/pipeline/Guard/behaviorstore 完整及分组竞态测试通过，覆盖多组、多应用/端点隔离和跨 Guard 429。OpenAPI 774 操作双向零差。实库集成因凭据未配置跳过，真实 Valkey 因 Docker 不可用跳过；未做正式多节点或浏览器验收。大模型与 RAG 相关工作保持暂停。
+
+### 限速 BLOCK 与 TEMP_BLOCK 处置（迁移000212，非大模型）
+
+- **决策动作**：新增 `api_rate_limit_action`，支持 RATE_LIMIT/BLOCK/TEMP_BLOCK；空值默认 RATE_LIMIT，OBSERVE 仍只记录。BLOCK 走既有403，TEMP_BLOCK走真实封禁而非只改文案。
+- **真实封禁**：新增 `api_temp_block_seconds`（默认60，1..86400），TEMP_BLOCK 从真实IP结果写 temporaryblock.Block（Auto=true、应用归属、api_rate_limit原因和到期时间），当前请求403，后续请求由既有自动封禁入口403；发 CCTempBlockCreated，缺IP/写失败Warn不伪造创建事件。
+- **发布与验证**：设置白名单、运行时加载、版本戳、WDSP门控与回滚重放贯通；decision/pipeline/Guard及管理面四包测试通过，竞态定向通过，后续真实Blocked与120秒事件验证通过。OpenAPI 774操作双向零差；实库因凭据未配置跳过。大模型与 RAG 相关工作保持暂停。
+
+### 响应安全深化：ENCRYPT/MAP、压缩与非 JSON（迁移000213，非大模型）
+
+- **ENCRYPT/MAP**：ENCRYPT 使用 AES-256-GCM，MAP 使用同密钥 HMAC 确定性映射；规则契约统一为 key_id/map_id，密钥经密文设置解密下发，快照脱敏且回滚重注，缺失或不匹配拒绝发布。新增授权恢复接口（api_data.manage），审计不含明文/密文/密钥；MAP 不可逆不恢复。
+- **gzip/br**：捕获保留原压缩字节，限制解压大小后进入既有检测/脱敏；未修改时原字节交付，修改后按原编码重压缩并修正长度。多重编码/损坏/超限按失败策略处理，Range 不改写。Brotli 锁定 v1.3.0（MIT），依赖与许可证已登记。
+- **XML/文本/SSE**：普通 XML 元素/属性与 text/plain 完整行支持 response_body 值级观测，拒绝 DTD/非法 UTF-8并限制预算；SSE 按单事件分片检测 JSON/文本 data，支持 keepalive，单事件1MiB、事件4096、流16MiB，未完结/超预算明确partial，不整流缓存、不宣称撤回或流式脱敏。
+- **验证与边界**：dynamic_security、Guard 与 server 相关包测试通过，真实 serveNext 覆盖算法、gzip/br、XML/文本、SSE及组合；前端 12 项测试与生产构建通过，OpenAPI 775 操作双向零差。实库密钥发布/解密因测试凭据未配置跳过；未做真实 Caddy 长连接、浏览器互操作、压缩性能或许可证全量审计（既有 yaml 登记缺项仍在）。大模型与 RAG 相关工作保持暂停。
+
+### 身份手工封禁与解封（迁移000214，非大模型）
+
+- **状态与权限**：新增 `POST /security/identities/{id}/block`（reason必填≤512）和 `/unblock`，权限 `security_identities.block`（SYSTEM_ADMIN/SECURITY_ADMIN）。事务保证幂等、404和并发安全；首次封禁原因不被重复操作覆盖，HIGH审计不含身份键或原因。
+- **发布与执行**：当前 BLOCKED 名单以 `{id,identity_key}` 发布并纳入版本戳、WDSP门控与回滚重放。网关在身份观测后、保护地址/白名单前按真实身份键命中即403，Bot/API/WAF不可绕过；新 `IDENTITY_MANUAL_BLOCK` 事件含记录ID与最终处置，不含身份键或凭据。
+- **前端与解封**：身份详情按权限显示封禁/解封、原因校验、状态标签和真实错误，成功后重新获取详情；解封发布移除后放行，历史快照不会重封 NORMAL 身份。
+- **验证与边界**：管理面四包、Guard 完整测试和前端 11 项测试通过，生产构建通过；OpenAPI 777 操作双向零差。实库迁移/封禁/审计因测试凭据未配置跳过，未做真实浏览器或跨进程发布验收。大模型与 RAG 相关工作保持暂停。
 
 ### 其他
 

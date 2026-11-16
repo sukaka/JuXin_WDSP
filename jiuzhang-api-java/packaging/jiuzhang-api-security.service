@@ -1,0 +1,29 @@
+[Unit]
+Description=Jiuzhang API Security System Native Core
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=jiuzhang-api-security
+WorkingDirectory=/var/lib/jiuzhang-api-security
+EnvironmentFile=/etc/jiuzhang-api-security/security.env
+ExecStart=/usr/bin/java -jar /usr/local/share/jiuzhang-api-security/jiuzhang-api-security.jar /etc/jiuzhang-api-security/application.properties
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+LockPersonality=true
+ReadWritePaths=/var/lib/jiuzhang-api-security
+
+[Install]
+WantedBy=multi-user.target

@@ -79,7 +79,7 @@ usage() {
   arm64   ARM64
 
 包内：
-  images/             docker save 的 server/gateway/web/logrotator/postgres/valkey
+  images/             docker save 的 server/gateway/web/logrotator/netmgrd/containerops/postgres/valkey
                       及 APM 数据面镜像 clickhouse/opentelemetry-collector-contrib
   gateway-linux-<arch>.tar.gz  裸机网关包（caddy 二进制 + sha256sums + VERSION + rules +
                       blockpage + bootstrap + unit + 安装/验收脚本）
@@ -119,8 +119,8 @@ usage() {
   ops/offline-package/build-all.sh -v 2.0.0
 
 前置条件:
-  - 本机已按目标架构构建 jiuzhang-server:{version} 与 jiuzhang-gateway:{version}
-    （docker buildx build --platform linux/{arch}）
+  - 本机已按目标架构构建 jiuzhang-server/gateway/web/logrotator/netmgrd/containerops:{version}
+    （docker buildx build --platform linux/{arch}；containerops 用 -f deployment/containerops/Dockerfile，上下文=仓库根）
   - 已生成 docs/SBOM.spdx.json / docs/SBOM.cyclonedx.json（可选但建议）
 
 退出码: 0=成功 1=失败 2=用法错误
@@ -247,6 +247,9 @@ WEB_IMAGE="jiuzhang-web:$VERSION"
 # 构建上下文 gateway/images/logrotator，基础镜像 alpine:3.24 digest 在其 Dockerfile 内锁定）
 LOGROTATOR_IMAGE="jiuzhang-logrotator:$VERSION"
 NETMGRD_IMAGE="jiuzhang-netmgrd:$VERSION"
+# 容器运维 sidecar（本地构建镜像；唯一挂载 docker.sock 的组件，构建上下文=仓库根，
+# Dockerfile 为 deployment/containerops/Dockerfile，基础镜像 digest 在其文件内锁定）
+CONTAINEROPS_IMAGE="jiuzhang-containerops:$VERSION"
 
 if [[ "$ARCH" == "amd64" ]]; then
   POSTGRES_IMAGE="$POSTGRES_IMAGE_AMD64"
@@ -287,7 +290,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
       docker pull --platform "linux/${ARCH}" "$img" || die "拉取失败: $img"
     fi
   done
-  for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE"; do
+  for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$CONTAINEROPS_IMAGE"; do
     docker image inspect "$img" >/dev/null 2>&1 \
       || die "镜像不存在: ${img}（请先用 docker buildx build --platform linux/${ARCH} 构建）"
   done
@@ -300,6 +303,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   check_image_arch "$WEB_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -t ${WEB_IMAGE} web/ 重新构建"
   check_image_arch "$LOGROTATOR_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -t ${LOGROTATOR_IMAGE} gateway/images/logrotator 重新构建"
   check_image_arch "$NETMGRD_IMAGE" "请构建 gateway/images/netmgrd/Dockerfile"
+  check_image_arch "$CONTAINEROPS_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -f deployment/containerops/Dockerfile -t ${CONTAINEROPS_IMAGE} . 重新构建"
 fi
 
 PKG_BASENAME="jiuzhang-${PRODUCT}-offline-${VERSION}-${ARCH}"
@@ -340,13 +344,14 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   save_image WEB_IMAGE "$pkg_dir/images/jiuzhang-web.tar"
   save_image LOGROTATOR_IMAGE "$pkg_dir/images/jiuzhang-logrotator.tar"
   save_image NETMGRD_IMAGE "$pkg_dir/images/jiuzhang-netmgrd.tar"
+  save_image CONTAINEROPS_IMAGE "$pkg_dir/images/jiuzhang-containerops.tar"
   save_image POSTGRES_IMAGE "$pkg_dir/images/postgres.tar"
   save_image VALKEY_IMAGE "$pkg_dir/images/valkey.tar"
   save_image CLICKHOUSE_IMAGE "$pkg_dir/images/clickhouse.tar"
   save_image OTEL_COLLECTOR_IMAGE "$pkg_dir/images/opentelemetry-collector-contrib.tar"
 fi
 if [[ "$RUNTIME_ONLY" != "true" || "$SKIP_IMAGES" == "true" ]]; then
-for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
+for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$CONTAINEROPS_IMAGE" "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
   if [[ "$SKIP_IMAGES" != "true" ]]; then
     digest="$(docker image inspect --platform "linux/${ARCH}" "$img" --format '{{.Id}}' 2>/dev/null || docker image inspect "$img" --format '{{.Id}}')"
   else
@@ -522,12 +527,17 @@ services:
       # 采集器批量/周期 flush 旋钮（崩溃重扫量有界；默认值与 server config.go 一致，可经 .env 覆盖）
       WAF_COLLECTOR_FLUSH_BATCH: \${WAF_COLLECTOR_FLUSH_BATCH:-2000}
       WAF_COLLECTOR_FLUSH_INTERVAL: \${WAF_COLLECTOR_FLUSH_INTERVAL:-2s}
+      # 容器运维通道：经共享卷上的 Unix Socket 访问 containerops sidecar（API 不直接持有 docker.sock）
+      CONTAINEROPS_SOCKET: /app/runtime/containerops/containerops.sock
     ports:
       - "127.0.0.1:\${API_PORT:-18081}:8080"
     volumes:
       - gateway-admin:/var/run/caddy
       - gateway-logs:/var/log/caddy-audit:ro
       - runtime-data:/app/runtime
+      # 容器运维通道：与 containerops sidecar 共享的 Unix Socket 卷（API 仅见 socket 文件，
+      # 不挂载 /var/run/docker.sock；嵌套在 runtime-data 挂载点之下）
+      - containerops-data:/app/runtime/containerops
       # 离线授权：宿主机指纹文件（安装期 ops/install/install.sh 采集写入包根 runtime/license/）。
       # 取舍说明：命名卷 runtime-data 由 Docker 管理、无法直接承载安装目录下的宿主机文件，
       # 故在其挂载点 /app/runtime 之下叠加一个相对包根的 bind 只读挂载（Docker 支持嵌套挂载）；
@@ -537,6 +547,7 @@ services:
       postgres: {condition: service_healthy}
       valkey:   {condition: service_healthy}
       gateway:  {condition: service_started}
+      containerops: {condition: service_started}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/v1/health"]
       interval: 15s
@@ -621,6 +632,34 @@ services:
     security_opt: [no-new-privileges:true]
     networks: [jiuzhang-internal]
 
+  # 容器运维 sidecar（containeropsd）：全栈唯一挂载 /var/run/docker.sock 的组件。
+  # API 容器只挂载共享 Unix Socket 卷（containerops-data）发起受控运维请求；
+  # sidecar 校验 compose 项目标签与服务白名单后才触碰 Docker API。
+  # 不暴露任何 TCP 端口（network_mode: none）。设计与安全边界见 docs/CONTAINER_OPS_DESIGN.md。
+  containerops:
+    image: $CONTAINEROPS_IMAGE
+    container_name: jiuzhang-containerops
+    restart: unless-stopped
+    environment:
+      CONTAINEROPS_SOCKET: /run/containerops/containerops.sock
+      DOCKER_HOST: unix:///var/run/docker.sock
+      # 仅允许运维本 compose 项目内、且在白名单中的服务（双重校验，fail-closed）
+      CONTAINEROPS_PROJECT: jiuzhang-${PRODUCT}
+      CONTAINEROPS_ALLOWED_SERVICES: api,web,gateway,postgres,valkey,logrotator,netmgrd
+    volumes:
+      # 全栈唯一 docker.sock 挂载点（安全底线；严禁复制到 api 或其他服务）
+      - /var/run/docker.sock:/var/run/docker.sock
+      - containerops-data:/run/containerops
+    # docker.sock 属主组 gid 因宿主机而异，经 group_add 注入；
+    # 安装期用 ops/install/prepare-containerops.sh 探测写入 .env（CONTAINEROPS_DOCKER_GID）。
+    group_add: ["\${CONTAINEROPS_DOCKER_GID:-0}"]
+    # 无任何 TCP 面：不接入 bridge 网络（请求只经 Unix Socket 卷进出）
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:size=8m,mode=1777]
+
 volumes:
   postgres-data: {driver: local}
   valkey-data: {driver: local}
@@ -628,6 +667,7 @@ volumes:
   gateway-logs: {driver: local}
   gateway-config: {driver: local}
   runtime-data: {driver: local}
+  containerops-data: {driver: local}
 
 networks:
   jiuzhang-internal: {driver: bridge}
@@ -665,6 +705,12 @@ APM_CLICKHOUSE_DSN=
 # 安装时自行生成强口令填入 .env，禁止提交回仓库；mTLS 证书按 docs/APM_DATA_PLANE_DEPLOYMENT.md 放入 apm/pki/
 CLICKHOUSE_ADMIN_PASSWORD=
 CLICKHOUSE_APM_WRITER_PASSWORD=
+
+# ---------- 容器运维通道（containerops sidecar）----------
+# sidecar 访问 /var/run/docker.sock 所需的属组 gid（compose group_add 注入）；
+# 安装期执行 bash ops/install/prepare-containerops.sh -e .env 自动探测写入，
+# 缺省 0 适配 Docker Desktop / root-owned socket 场景
+CONTAINEROPS_DOCKER_GID=0
 EOF
 } > "$pkg_dir/.env.example"
 

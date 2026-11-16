@@ -1,17 +1,25 @@
 package apiassets
 
 import (
+	"fmt"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // 任务书 §34 用途多维识别：在既有 PURPOSE/EXPOSURE/ACCESS 三维启发式基础上扩展
 //   - ACTION：§34.2 操作动作 43 项词表（方法映射兜底 + 路径 token 规则命中）；
 //   - BUSINESS_DOMAIN：§34.1 业务领域 16 项内置种子（api_classifications，迁移 000073），
-//     关键词命中才打标，多领域并列低置信时不打标。
-// 其余维度（业务对象/交互模式/身份要求/数据敏感等级/业务流程阶段/风险标签）
-// 需要参数、响应、认证与调用顺序等观测数据，路径启发式不足以支撑，不在此编造。
+//     关键词命中才打标，多领域并列低置信时不打标；
+//   - TECHNICAL_PROTOCOL/INTERACTION_MODE：仅由 api_endpoints.protocol_type 确定性映射；
+//   - DATA_SENSITIVITY：仅由当前模型参数行的 sensitivity_level/confidence 聚合；
+//   - IDENTITY_REQUIREMENT：仅由近30天运行时事件的 auth_type/response_status 观测聚合；
+//   - BUSINESS_FLOW_STAGE：仅由启用流程基线及步骤定义确定性映射；
+//   - RISK_LABEL：仅由活动运行时发现聚合，闭环后清除旧标签；
+//   - BUSINESS_OBJECT：仅由当前端点对象模型与段形派生，缺失时跳过。
 
 // actionRule 操作动作识别规则：路径静态段 token 命中 + 可选方法约束。
 // keywords 任一命中且 andTokens 全部命中时规则命中；规则有序，先中先生效。
@@ -135,6 +143,338 @@ func classifyByPath(method, path string) []ClassificationDimension {
 		dims = append(dims, ClassificationDimension{Dimension: "BUSINESS_DOMAIN", Value: domain, Source: "AUTO", Confidence: dconf})
 	}
 	return dims
+}
+
+// classifyByProtocol 仅按 protocol_type 映射技术协议与交互模式；空协议不打标，未知协议不猜交互模式。
+func classifyByProtocol(protocolType string) []ClassificationDimension {
+	protocol := strings.ToUpper(strings.TrimSpace(protocolType))
+	if protocol == "" {
+		return nil
+	}
+
+	interaction := ""
+	switch protocol {
+	case "REST", "REST_JSON", "REST_XML", "FORM_API", "GRAPHQL":
+		interaction = "REQUEST_RESPONSE"
+	case "JSON_RPC", "XML_RPC", "SOAP", "GRPC":
+		interaction = "RPC"
+	case "WEBHOOK":
+		interaction = "EVENT_CALLBACK"
+	case "FILE_UPLOAD", "FILE_DOWNLOAD":
+		interaction = "FILE_TRANSFER"
+	case "SERVER_SENT_EVENTS":
+		interaction = "SERVER_PUSH"
+	case "WEBSOCKET_HANDSHAKE", "WEBSOCKET":
+		interaction = "BIDIRECTIONAL_STREAM"
+	case "UNKNOWN_HTTP_API":
+	default:
+		protocol = "UNKNOWN_HTTP_API"
+	}
+
+	dims := []ClassificationDimension{
+		{Dimension: "TECHNICAL_PROTOCOL", Value: protocol, Source: "AUTO", Confidence: 1},
+	}
+	if interaction != "" {
+		dims = append(dims, ClassificationDimension{Dimension: "INTERACTION_MODE", Value: interaction, Source: "AUTO", Confidence: 1})
+	}
+	return dims
+}
+
+type parameterSensitivity struct {
+	level      string
+	confidence float64
+}
+
+// classifyDataSensitivity 聚合当前模型参数敏感度：高级别优先，同级取最大置信度。
+func classifyDataSensitivity(parameters []parameterSensitivity) (ClassificationDimension, bool) {
+	bestRank := 0
+	bestLevel := ""
+	bestConfidence := 0.0
+	for _, p := range parameters {
+		level := strings.ToUpper(strings.TrimSpace(p.level))
+		rank := 1
+		switch level {
+		case "HIGH":
+			rank = 4
+		case "MEDIUM":
+			rank = 3
+		case "LOW":
+			rank = 2
+		default:
+			level = "UNKNOWN"
+		}
+		confidence := p.confidence
+		switch {
+		case math.IsNaN(confidence), confidence < 0:
+			confidence = 0
+		case confidence > 1:
+			confidence = 1
+		}
+		if rank > bestRank {
+			bestRank = rank
+			bestLevel = level
+			bestConfidence = confidence
+		} else if rank == bestRank && confidence > bestConfidence {
+			bestConfidence = confidence
+		}
+	}
+	if bestRank == 0 {
+		return ClassificationDimension{}, false
+	}
+	return ClassificationDimension{
+		Dimension: "DATA_SENSITIVITY", Value: bestLevel, Source: "AUTO", Confidence: bestConfidence,
+	}, true
+}
+
+type identityObservation struct {
+	anonymousSuccess     bool
+	anonymousRejected    bool
+	authenticatedSuccess bool
+}
+
+// classifyIdentityRequirement 按窗口事件观测归纳身份要求，不代表访问策略或全量请求事实。
+// 固定 0.7 置信度表示观测证据；AUTHENTICATED_OBSERVED 尤其不表示匿名请求必然被拒。
+func classifyIdentityRequirement(obs identityObservation) (ClassificationDimension, bool) {
+	value := ""
+	switch {
+	case obs.anonymousSuccess && obs.authenticatedSuccess:
+		value = "AUTH_OPTIONAL"
+	case !obs.anonymousSuccess && obs.anonymousRejected && obs.authenticatedSuccess:
+		value = "AUTH_REQUIRED"
+	case obs.anonymousSuccess:
+		value = "ANONYMOUS_ALLOWED"
+	case obs.anonymousRejected:
+		value = "ANONYMOUS_REJECTED"
+	case obs.authenticatedSuccess:
+		value = "AUTHENTICATED_OBSERVED"
+	default:
+		return ClassificationDimension{}, false
+	}
+	return ClassificationDimension{
+		Dimension: "IDENTITY_REQUIREMENT", Value: value, Source: "AUTO", Confidence: 0.7,
+	}, true
+}
+
+type flowStepObservation struct {
+	flowID         string
+	terminal       bool
+	minSequence    bool
+	noPredecessors bool
+}
+
+// classifyBusinessFlowStage 按流程聚合步骤角色；角色集合去重，输出不依赖行序。
+func classifyBusinessFlowStage(steps []flowStepObservation) (ClassificationDimension, bool) {
+	rolesByFlow := map[string]map[string]struct{}{}
+	for _, step := range steps {
+		start := step.minSequence && step.noPredecessors
+		role := "INTERMEDIATE"
+		switch {
+		case step.terminal && start:
+			role = "START_AND_TERMINAL"
+		case step.terminal:
+			role = "TERMINAL"
+		case start:
+			role = "START"
+		}
+		if rolesByFlow[step.flowID] == nil {
+			rolesByFlow[step.flowID] = map[string]struct{}{}
+		}
+		rolesByFlow[step.flowID][role] = struct{}{}
+	}
+	roles := map[string]struct{}{}
+	for _, flowRoles := range rolesByFlow {
+		for role := range flowRoles {
+			roles[role] = struct{}{}
+		}
+	}
+	if len(roles) == 0 {
+		return ClassificationDimension{}, false
+	}
+	value := "MULTI_STAGE"
+	if len(roles) == 1 {
+		for role := range roles {
+			value = role
+		}
+	}
+	return ClassificationDimension{
+		Dimension: "BUSINESS_FLOW_STAGE", Value: value, Source: "AUTO", Confidence: 1,
+	}, true
+}
+
+type runtimeFinding struct {
+	severity    string
+	findingType string
+}
+
+func normalizeRiskFindingType(value string) (string, bool) {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if len(value) == 0 || len(value) > 64 {
+		return "", false
+	}
+	for _, r := range value {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return "", false
+		}
+	}
+	return value, true
+}
+
+// classifyRiskLabel 聚合活动发现：最高严重级优先，同级类型集合去重且与行序无关。
+func classifyRiskLabel(findings []runtimeFinding) (ClassificationDimension, bool, error) {
+	if len(findings) == 0 {
+		return ClassificationDimension{}, false, nil
+	}
+	bestRank := 0
+	bestConfidence := 0.0
+	types := map[string]struct{}{}
+	for _, finding := range findings {
+		findingType, ok := normalizeRiskFindingType(finding.findingType)
+		if !ok {
+			return ClassificationDimension{}, false, fmt.Errorf("invalid finding_type %q", finding.findingType)
+		}
+		severity := strings.ToUpper(strings.TrimSpace(finding.severity))
+		rank := 0
+		confidence := 0.0
+		switch severity {
+		case "CRITICAL":
+			rank, confidence = 5, 1
+		case "HIGH":
+			rank, confidence = 4, 0.8
+		case "MEDIUM":
+			rank, confidence = 3, 0.6
+		case "LOW":
+			rank, confidence = 2, 0.4
+		case "INFO":
+			rank, confidence = 1, 0.2
+		default:
+			return ClassificationDimension{}, false, fmt.Errorf("invalid finding severity %q", finding.severity)
+		}
+		if rank > bestRank {
+			bestRank = rank
+			bestConfidence = confidence
+			types = map[string]struct{}{}
+		}
+		if rank == bestRank {
+			types[findingType] = struct{}{}
+		}
+	}
+	value := "MULTI_RISK"
+	if len(types) == 1 {
+		for findingType := range types {
+			value = findingType
+		}
+	}
+	return ClassificationDimension{
+		Dimension: "RISK_LABEL", Value: value, Source: "AUTO", Confidence: bestConfidence,
+	}, true, nil
+}
+
+type objectModelObservation struct {
+	segment     string
+	publishable bool
+}
+
+func normalizeBusinessObjectValue(raw string) (string, bool, error) {
+	value := strings.ToUpper(strings.TrimSpace(raw))
+	if value == "" {
+		return "", false, nil
+	}
+	if utf8.RuneCountInString(value) > 128 {
+		return "", false, fmt.Errorf("business object value exceeds 128 characters")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return "", false, fmt.Errorf("business object value contains control characters")
+		}
+	}
+	return value, true, nil
+}
+
+func businessObjectValue(model objectModelObservation, segments map[int]PathSegment) (string, bool, error) {
+	switch {
+	case strings.HasPrefix(model.segment, "path:"):
+		rawPosition := strings.TrimPrefix(model.segment, "path:")
+		if rawPosition == "" {
+			return "", false, fmt.Errorf("invalid object_segment %q", model.segment)
+		}
+		for _, r := range rawPosition {
+			if r < '0' || r > '9' {
+				return "", false, fmt.Errorf("invalid object_segment %q", model.segment)
+			}
+		}
+		position, err := strconv.Atoi(rawPosition)
+		if err != nil {
+			return "", false, fmt.Errorf("invalid object_segment %q: %w", model.segment, err)
+		}
+		target, ok := segments[position]
+		if !ok {
+			return "", false, nil
+		}
+		if !target.IsVariable {
+			return "", false, fmt.Errorf("object_segment %q does not reference a variable segment", model.segment)
+		}
+		candidate := ""
+		for i := position - 1; i >= 0; i-- {
+			segment, ok := segments[i]
+			if !ok || segment.IsVariable || strings.TrimSpace(segment.LiteralValue) == "" {
+				continue
+			}
+			candidate = segment.LiteralValue
+			break
+		}
+		if candidate == "" {
+			candidate = target.VariableName
+		}
+		return normalizeBusinessObjectValue(candidate)
+	case strings.HasPrefix(model.segment, "query:"):
+		name := strings.TrimPrefix(model.segment, "query:")
+		if strings.TrimSpace(name) == "" {
+			return "", false, fmt.Errorf("invalid object_segment %q", model.segment)
+		}
+		return normalizeBusinessObjectValue(name)
+	default:
+		return "", false, fmt.Errorf("invalid object_segment %q", model.segment)
+	}
+}
+
+// classifyBusinessObject 派生并去重对象类型；缺失段跳过，非法定位或值显式报错。
+func classifyBusinessObject(models []objectModelObservation, segments []PathSegment) (ClassificationDimension, bool, error) {
+	if len(models) == 0 {
+		return ClassificationDimension{}, false, nil
+	}
+	byPosition := make(map[int]PathSegment, len(segments))
+	for _, segment := range segments {
+		byPosition[segment.Position] = segment
+	}
+	types := map[string]struct{}{}
+	confidence := 0.0
+	for _, model := range models {
+		value, ok, err := businessObjectValue(model, byPosition)
+		if err != nil {
+			return ClassificationDimension{}, false, err
+		}
+		if !ok {
+			continue
+		}
+		types[value] = struct{}{}
+		if model.publishable {
+			confidence = 0.9
+		} else if confidence < 0.65 {
+			confidence = 0.65
+		}
+	}
+	if len(types) == 0 {
+		return ClassificationDimension{}, false, nil
+	}
+	value := "MULTI_OBJECT"
+	if len(types) == 1 {
+		for objectType := range types {
+			value = objectType
+		}
+	}
+	return ClassificationDimension{
+		Dimension: "BUSINESS_OBJECT", Value: value, Source: "AUTO", Confidence: confidence,
+	}, true, nil
 }
 
 // classifyAction §34.2 操作动作识别：先按规则表命中，未命中按方法映射兜底。

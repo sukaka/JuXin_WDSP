@@ -98,6 +98,10 @@ func (q chQuerier) Query(ctx context.Context, query string, args ...any) (CHRows
 	return q.conn.Query(ctx, query, args...)
 }
 
+func (q chQuerier) Exec(ctx context.Context, query string, args ...any) error {
+	return q.conn.Exec(ctx, query, args...)
+}
+
 // Close 关闭底层连接（CHManager DSN 热更新重建前回收旧连接）。
 func (q chQuerier) Close() error { return q.conn.Close() }
 

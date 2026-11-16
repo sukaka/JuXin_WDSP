@@ -109,12 +109,12 @@ type GuardMaskRule struct {
 
 // GuardSensitiveValueRule 值级敏感检测规则（下发网关，对应 api_sensitive_data_types 表
 // status=ENABLED 且 regex 非空的类型；该表由迁移 000040 建立）。
-// 网关对 locations 声明位置（query/json/form/header/path）的值做 RE2 匹配，
+// 网关对 locations 声明位置（query/json/form/header/path/file）的值做 RE2 匹配，
 // 证据只含 data_type/location/字段名/level，绝不落值。json tag 为跨分片契约，不得改动。
 type GuardSensitiveValueRule struct {
 	DataType  string   `json:"data_type"` // 数据类型标签（与网关 evidence.data_type 对齐）
 	Regex     string   `json:"regex"`     // 值级正则（RE2）
-	Locations []string `json:"locations"` // 可能出现位置（query/json/form/xml/header/cookie/path/response_body）
+	Locations []string `json:"locations"` // 可能出现位置（query/json/form/xml/header/cookie/path/response_body/file）
 	Level     string   `json:"level"`     // 五级敏感等级（NON_SENSITIVE/GENERAL/SENSITIVE/IMPORTANT/CORE）
 }
 
@@ -415,15 +415,16 @@ type GuardResponseBaseline struct {
 // GuardFileWatermark 文件下载水印 v1（W12-GW / P2-01 最小可行子集，任务书 §109 子集；
 // 下发网关，对应 gateway jiuzhang_guard api_file_watermark 段）。
 // 来源 system_settings gateway_runtime 组 api_file_watermark_* 键（guardconfig 校验后注入）；
-// 仅文本族（text/plain、text/csv、text/markdown）与 application/json 的
-// Content-Disposition 下载响应生效：文本族文件尾追加不可见注释行，JSON 顶层加
-// json_key 字段；网关侧失败一律 FAIL_OPEN 直通。
-// json tag 为跨分片契约，不得改动。
+// 文本族与 application/json 的 Content-Disposition 下载响应默认生效；显式
+// include_inline_html=true 时另覆盖无下载头、完整可缓冲的 text/html 响应。
+// 文本/HTML 尾追加不可见注释，JSON 顶层加 json_key；失败一律 FAIL_OPEN 直通。
+// 既有 json tag 保持不变，新增可选布尔缺省 false。
 type GuardFileWatermark struct {
-	Enabled      bool     `json:"enabled"`
-	TextTemplate string   `json:"text_template"`           // 水印文本模板（支持 {ip}/{identity}/{time}/{domain} 占位）
-	ContentTypes []string `json:"content_types,omitempty"` // 媒体类型白名单（缺省网关默认表）
-	JSONKey      string   `json:"json_key,omitempty"`      // JSON 顶层水印字段名（缺省 "_wm"）
+	Enabled           bool     `json:"enabled"`
+	TextTemplate      string   `json:"text_template"`                 // 水印文本模板（支持 {ip}/{identity}/{time}/{domain} 占位）
+	ContentTypes      []string `json:"content_types,omitempty"`       // 媒体类型白名单（缺省网关默认表）
+	JSONKey           string   `json:"json_key,omitempty"`            // JSON 顶层水印字段名（缺省 "_wm"）
+	IncludeInlineHTML bool     `json:"include_inline_html,omitempty"` // 显式允许无下载头的 HTML 网页水印
 }
 
 // GuardFileSignature 文件签名 v1（W13-GW / P2-02，任务书 §110 子集；下发网关，对应
@@ -872,10 +873,18 @@ type GuardConfig struct {
 	// tls_session_ticket_key 设置）。随发布下发到 apps.tls.session_tickets.key_source
 	// （tls.stek.jiuzhang），主备多节点共用同一份票据密钥使会话恢复跨节点可用
 	// （docs/HA_ACTIVE_STANDBY_DESIGN.md §7.2）；快照按 identity_salt 同纪律脱敏。
-	TLSSessionTicketKey        string `json:"tls_session_ticket_key,omitempty"`
-	CredentialIPSpreadLimit    int    `json:"credential_ip_spread_limit,omitempty"`
-	CredentialConcurrencyLimit int    `json:"credential_concurrency_limit,omitempty"`
-	APIWriteRatePerMinute      int    `json:"api_write_rate_per_minute,omitempty"`
+	TLSSessionTicketKey        string                         `json:"tls_session_ticket_key,omitempty"`
+	CredentialIPSpreadLimit    int                            `json:"credential_ip_spread_limit,omitempty"`
+	CredentialConcurrencyLimit int                            `json:"credential_concurrency_limit,omitempty"`
+	CredentialRatePerMinute    int                            `json:"credential_rate_per_minute,omitempty"`
+	TenantRatePerMinute        int                            `json:"tenant_rate_per_minute,omitempty"`
+	ActionRatePerMinute        int                            `json:"action_rate_per_minute,omitempty"`
+	APIEndpointActions         map[string]string              `json:"api_endpoint_actions,omitempty"`
+	GroupRatePerMinute         int                            `json:"group_rate_per_minute,omitempty"`
+	APIEndpointGroups          map[string]map[string][]string `json:"api_endpoint_groups,omitempty"`
+	APIWriteRatePerMinute      int                            `json:"api_write_rate_per_minute,omitempty"`
+	APIRateLimitAction         string                         `json:"api_rate_limit_action,omitempty"`
+	APITempBlockSeconds        int                            `json:"api_temp_block_seconds,omitempty"`
 	// 阶段8 §36 限流下发面：身份+端点小时/日配额、对象维度限速、分页/批量上限
 	// （gateway_runtime 组字符串数值；0/缺省不下发=网关对应检测不启用，不走引擎默认值）
 	APIQuotaPerHour     int `json:"api_quota_per_hour,omitempty"`
@@ -886,6 +895,8 @@ type GuardConfig struct {
 	// APIMaskRules 响应脱敏规则（api_masking_rules 表 enabled 规则；表由迁移 000040 建立，
 	// 表缺失/查询失败时发布侧 Warn 跳过不下发）
 	APIMaskRules []GuardMaskRule `json:"api_mask_rules,omitempty"`
+	// APIIdentityBlocks 当前 BLOCKED 身份；回滚按当前状态重放，避免误封 NORMAL。
+	APIIdentityBlocks []GuardIdentityBlock `json:"api_identity_blocks,omitempty"`
 	// APISensitiveValueRules 值级敏感检测规则（api_sensitive_data_types 表 status=ENABLED
 	// 且 regex 非空的类型；表由迁移 000040 建立，表缺失/查询失败时发布侧 Warn 跳过不下发；
 	// 不下发时网关关闭值级检测，行为与历史版本一致）
@@ -932,6 +943,8 @@ type GuardConfig struct {
 	// 未配置/解密失败时发布侧 Warn 跳过不下发，网关降级为仅按头存在性识别；
 	// 版本快照经 RedactGuardConfig 脱敏，回滚时按当前设置重新注入）
 	APIScanVerification *GuardScanVerification `json:"api_scan_verification,omitempty"`
+	// APIMaskCrypto ENCRYPT/MAP 密钥；快照脱敏并在回滚时按当前设置重放。
+	APIMaskCrypto *GuardMaskCrypto `json:"api_mask_crypto,omitempty"`
 	// APIResponseBaselines 响应结构基线（api_response_schemas 表 sample_count≥20 学习行；
 	// 表由迁移 000018/000051 建立，表缺失/查询失败时发布侧 Warn 跳过不下发；
 	// 不下发时网关响应偏离检测零行为，与历史版本一致）
@@ -958,6 +971,9 @@ type GuardConfig struct {
 	// gateway_runtime 组 api_llm_allowed_models 逗号分隔键；缺省/空不下发=网关不判定
 	// 未授权模型，与 LLM 端点识别/观测解耦——识别与观测不依赖本名单）
 	APILLMAllowedModels []string `json:"api_llm_allowed_models,omitempty"`
+	// APILLMSecurityPolicies LLM 输入保护策略（api_llm_security_policies 表 enabled 行；
+	// 按 application_id 消费；nil/空 = 新增策略检测零行为变化，已有 LLM 观测与模型名单不受影响）
+	APILLMSecurityPolicies []GuardLLMSecurityPolicy `json:"api_llm_security_policies,omitempty"`
 	// APIFileWatermark 文件下载水印 v1（W12-GW / P2-01 最小可行子集；来源 system_settings
 	// gateway_runtime 组 api_file_watermark_* 键，guardconfig 校验后注入；
 	// nil = 未配置/未启用，网关响应侧零行为变化）
@@ -975,6 +991,9 @@ type GuardConfig struct {
 	APIResponseFailPolicy string `json:"api_response_fail_policy,omitempty"`
 	// APIResponseCaptureMaxBytes 响应捕获上限（字节；缺省网关 1MiB，网关侧硬上限 16MiB）
 	APIResponseCaptureMaxBytes int `json:"api_response_capture_max_bytes,omitempty"`
+	// APIResponseSampleRatio 响应体采样比例（0..1；nil=未配置并由网关默认 1 兜底，
+	// 显式 0=不解析；(0,1) 仅对超过 MaxBodyParseBytes 的响应做确定性前缀采样）。
+	APIResponseSampleRatio *float64 `json:"api_response_sample_ratio,omitempty"`
 	// APIGRPCMaxFrameBytes gRPC 单帧声明长度上限（W14-GW / P2-05；字节；缺省网关 4MiB，
 	// 网关侧硬上限 64MiB；来源 gateway_runtime 组 api_grpc_max_frame_bytes）
 	APIGRPCMaxFrameBytes int `json:"api_grpc_max_frame_bytes,omitempty"`
@@ -1036,6 +1055,8 @@ type GuardConfig struct {
 	// security_risk_policy 表 GLOBAL 行，表由迁移 000101 建立；nil 时不下发——
 	// 网关风险处置零行为变化；enabled=false 时下发 enabled:false 网关零处置）
 	RiskPolicy *GuardRiskPolicy `json:"risk_policy,omitempty"`
+	// RiskPolicyOverrides 按应用覆盖风险策略；空列表保持既有全局行为。
+	RiskPolicyOverrides []GuardRiskPolicyOverride `json:"risk_policy_overrides,omitempty"`
 	// JWTTrust 业务 JWT 信任链策略（WDSP P0-03；jwt_trust_policies 表按应用行，
 	// 表由迁移 000125 建立；nil/空 map 时不下发——网关 JWT 校验零行为变化；
 	// key 为应用编码，随 WDSP API 动态防护门控下发并纳入 api_policy_version 版本戳；
@@ -1071,6 +1092,9 @@ type GuardConfig struct {
 	// 与历史版本逐字节一致；全产品形态能力，不受 WDSP 门控、不参与 api_policy_version；
 	// 非秘密材料——快照不脱敏，回滚随历史版本内容恢复）
 	BlockResponse *GuardBlockResponse `json:"block_response,omitempty"`
+	// SoftwareBypass 节点级资源阈值旁路与流量监控配置；nil = 旧版零行为变化。
+	// 非秘密材料，随访问控制版本快照保存与回滚，不受 WDSP API 动态防护门控。
+	SoftwareBypass *GuardSoftwareBypass `json:"software_bypass,omitempty"`
 }
 
 // buildGuardHandler 构建单应用路由的 jiuzhang_guard 处理器 JSON。
@@ -1169,6 +1193,9 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 	if g.RiskPolicy != nil {
 		h["risk_policy"] = g.RiskPolicy
 	}
+	if len(g.RiskPolicyOverrides) > 0 {
+		h["risk_policy_overrides"] = g.RiskPolicyOverrides
+	}
 	// 授权配额全局限速（LicenseMaxQPS > 0 时注入；0=不限制不下发，网关零行为变化）
 	if g.LicenseMaxQPS > 0 {
 		h["license_max_qps"] = g.LicenseMaxQPS
@@ -1232,8 +1259,32 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		if g.CredentialConcurrencyLimit > 0 {
 			h["credential_concurrency_limit"] = g.CredentialConcurrencyLimit
 		}
+		if g.CredentialRatePerMinute > 0 {
+			h["credential_rate_per_minute"] = g.CredentialRatePerMinute
+		}
+		if g.TenantRatePerMinute > 0 {
+			h["tenant_rate_per_minute"] = g.TenantRatePerMinute
+		}
+		if g.ActionRatePerMinute > 0 {
+			h["action_rate_per_minute"] = g.ActionRatePerMinute
+			if len(g.APIEndpointActions) > 0 {
+				h["api_endpoint_actions"] = g.APIEndpointActions
+			}
+		}
+		if g.GroupRatePerMinute > 0 {
+			h["group_rate_per_minute"] = g.GroupRatePerMinute
+			if len(g.APIEndpointGroups) > 0 {
+				h["api_endpoint_groups"] = g.APIEndpointGroups
+			}
+		}
 		if g.APIWriteRatePerMinute > 0 {
 			h["api_write_rate_per_minute"] = g.APIWriteRatePerMinute
+		}
+		if g.APIRateLimitAction != "" {
+			h["api_rate_limit_action"] = g.APIRateLimitAction
+		}
+		if g.APITempBlockSeconds > 0 {
+			h["api_temp_block_seconds"] = g.APITempBlockSeconds
 		}
 		// 阶段8 §36 限流下发面（>0 才下发；0/缺省 = 网关对应检测不启用）
 		if g.APIQuotaPerHour > 0 {
@@ -1254,6 +1305,9 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		// 响应脱敏规则（api_masking_rules 表 enabled 规则）
 		if len(g.APIMaskRules) > 0 {
 			h["api_mask_rules"] = g.APIMaskRules
+		}
+		if len(g.APIIdentityBlocks) > 0 {
+			h["api_identity_blocks"] = g.APIIdentityBlocks
 		}
 		// 值级敏感检测规则（api_sensitive_data_types 表 ENABLED 且 regex 非空类型）
 		if len(g.APISensitiveValueRules) > 0 {
@@ -1324,6 +1378,9 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		if g.APIScanVerification != nil && g.APIScanVerification.KeyHex != "" {
 			h["api_scan_verification"] = g.APIScanVerification
 		}
+		if g.APIMaskCrypto != nil && g.APIMaskCrypto.KeyHex != "" {
+			h["api_mask_crypto"] = g.APIMaskCrypto
+		}
 		// 响应结构基线（api_response_schemas 表达阈值学习行；仅 WDSP 开启且非空时注入）
 		if len(g.APIResponseBaselines) > 0 {
 			h["api_response_baselines"] = g.APIResponseBaselines
@@ -1352,6 +1409,9 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		if len(g.APILLMAllowedModels) > 0 {
 			h["api_llm_allowed_models"] = g.APILLMAllowedModels
 		}
+		if len(g.APILLMSecurityPolicies) > 0 {
+			h["api_llm_security_policies"] = g.APILLMSecurityPolicies
+		}
 		// 文件下载水印 v1（gateway_runtime 组 api_file_watermark_*；仅 WDSP 开启且配置时注入，
 		// 未配置=网关响应侧零行为变化）
 		if g.APIFileWatermark != nil {
@@ -1367,12 +1427,16 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 		if len(g.APIFileComplianceRules) > 0 {
 			h["api_file_compliance_rules"] = g.APIFileComplianceRules
 		}
-		// 响应处理失败策略与捕获上限（缺省不下发，网关 FAIL_OPEN/1MiB 兜底）
+		// 响应处理失败策略、捕获上限与采样比例（缺省不下发，由网关默认值兜底；
+		// 采样比例以指针区分未配置与显式 0，omitempty 不得吞掉 0）
 		if g.APIResponseFailPolicy != "" {
 			h["api_response_fail_policy"] = g.APIResponseFailPolicy
 		}
 		if g.APIResponseCaptureMaxBytes > 0 {
 			h["api_response_capture_max_bytes"] = g.APIResponseCaptureMaxBytes
+		}
+		if g.APIResponseSampleRatio != nil {
+			h["api_response_sample_ratio"] = *g.APIResponseSampleRatio
 		}
 		// gRPC 帧校验配置（W14-GW / P2-05：缺省不下发，网关 4MiB/不允许压缩兜底；
 		// allow_compression 为布尔开关，true 时显式下发覆盖网关默认）

@@ -61,9 +61,8 @@ type ParseLimits struct {
 	// (0,1) 仅对超过 MaxBodyParseBytes 的超大响应生效——确定性截断到
 	// ceil(ratio×MaxBodyParseBytes) 字节前缀后尝试解析，前缀非完整 JSON 按
 	// 不可解析处理（与请求侧截断体不产出部分 schema 同一纪律）；
-	// 非法值（<0 / >1 / NaN）由消费方归一为 1。
-	// 下发面现状：发布通道暂无本字段下发项，挂点侧（apiprotect.go）使用
-	// DefaultParseLimits（=1 全量），字段与行为本次仅在引擎层实现。
+	// 非法值（<0 / >1 / NaN / ±Inf）由消费方归一为 1；Guard 配置加载时显式拒绝。
+	// 挂点侧通过 api_response_sample_ratio 下发并统一装配，未下发保持默认 1。
 	ResponseSampleRatio float64
 }
 
@@ -109,13 +108,15 @@ type ResponseObservation struct {
 }
 
 // FieldTransform 响应字段级脱敏计划项（由响应相位按 api_mask_rules 与解析产物生成，
-// 由 Response Transformer 执行；Algorithm 取值 MASK | HASH | REMOVE）。
+// 由 Response Transformer 执行；Algorithm 取值 MASK | HASH | REMOVE | ENCRYPT | MAP）。
 type FieldTransform struct {
 	FieldPath string `json:"field_path"`          // 点路径，数组段以 [] 结尾（如 users[].phone）
 	DataType  string `json:"data_type,omitempty"` // 规则声明的数据类型标签（描述性，不参与匹配）
 	Algorithm string `json:"algorithm"`
 	KeepHead  int    `json:"keep_head,omitempty"` // MASK：前保留字符数（默认 3）
 	KeepTail  int    `json:"keep_tail,omitempty"` // MASK：后保留字符数（默认 4）
+	KeyID     string `json:"key_id,omitempty"`    // ENCRYPT：配置的密钥标识（不含密钥材料）
+	MapID     string `json:"map_id,omitempty"`    // MAP：映射标识（不含密钥材料）
 }
 
 // ResponseContext 响应侧上下文（仅 API 流量在下游响应完成后由响应相位填充）。

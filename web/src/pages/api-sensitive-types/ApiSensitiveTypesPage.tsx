@@ -56,6 +56,7 @@ const LOCATION_OPTIONS = [
   { value: 'cookie', label: 'Cookie（cookie）' },
   { value: 'path', label: '路径（path）' },
   { value: 'response_body', label: '响应体（response_body）' },
+  { value: 'file', label: '文件内容（file）' },
 ]
 
 interface TypeFormValues {

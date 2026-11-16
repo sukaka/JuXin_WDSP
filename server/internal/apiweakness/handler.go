@@ -56,9 +56,9 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch f.Category {
-	case "", CategoryAuthn, CategoryLifecycle, CategorySensitive, CategorySchema:
+	case "", CategoryAuthn, CategoryAuthz, CategoryLifecycle, CategorySensitive, CategorySchema:
 	default:
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 category 取值（AUTHN/LIFECYCLE/SENSITIVE/SCHEMA）")
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 category 取值（AUTHN/AUTHZ/LIFECYCLE/SENSITIVE/SCHEMA）")
 		return
 	}
 	if raw := strings.TrimSpace(q.Get("endpoint_id")); raw != "" {

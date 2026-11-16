@@ -118,6 +118,74 @@ func TestParamObservationLegacyJSONTolerant(t *testing.T) {
 	}
 }
 
+func TestParamObsMergeFormatCandidates(t *testing.T) {
+	var row paramObsRow
+	for i := 0; i < 18; i++ {
+		row.merge(ParamObservation{BaseType: "string", Length: 36, ValueHash: "uuid", FormatSample: true, FormatCandidate: "UUID"})
+	}
+	for i := 0; i < 2; i++ {
+		row.merge(ParamObservation{BaseType: "string", Length: 5, ValueHash: "unknown", FormatSample: true})
+	}
+	row.merge(ParamObservation{BaseType: "string", Length: 4, ValueHash: "invalid", FormatSample: true, FormatCandidate: "uuid"})
+	if row.formatSampleCount != 21 {
+		t.Fatalf("format samples = %d, want 21 including unknown/invalid labels", row.formatSampleCount)
+	}
+	if len(row.formatCounts) != 1 || row.formatCounts["UUID"] != 18 {
+		t.Fatalf("format counts = %v, want only UUID:18", row.formatCounts)
+	}
+}
+
+func TestParamObsMergeFormatEligibility(t *testing.T) {
+	tests := []struct {
+		name string
+		obs  ParamObservation
+	}{
+		{"未标记格式样本", ParamObservation{BaseType: "string", Length: 36, ValueHash: "h", FormatCandidate: "UUID"}},
+		{"敏感抑制无ValueHash", ParamObservation{BaseType: "string", Length: 36, FormatSample: true, FormatCandidate: "UUID"}},
+		{"空字符串", ParamObservation{BaseType: "string", ValueHash: "h", FormatSample: true, FormatCandidate: "UUID"}},
+		{"null", ParamObservation{BaseType: "string", Length: 4, ValueHash: "h", Null: true, FormatSample: true, FormatCandidate: "UUID"}},
+		{"number", ParamObservation{BaseType: "number", Length: 3, ValueHash: "h", FormatSample: true, FormatCandidate: "UUID"}},
+		{"bool", ParamObservation{BaseType: "bool", Length: 1, ValueHash: "h", FormatSample: true, FormatCandidate: "UUID"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var row paramObsRow
+			row.merge(tt.obs)
+			if row.formatSampleCount != 0 || len(row.formatCounts) != 0 {
+				t.Fatalf("ineligible observation produced format state: %+v", row)
+			}
+		})
+	}
+}
+
+func TestParamObservationFormatJSONOmitempty(t *testing.T) {
+	raw, err := json.Marshal(ParamObservation{BaseType: "string", Length: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["format_sample"]; ok {
+		t.Fatalf("false format_sample must be omitted: %s", raw)
+	}
+	if _, ok := fields["format_candidate"]; ok {
+		t.Fatalf("empty format_candidate must be omitted: %s", raw)
+	}
+
+	raw, err = json.Marshal(ParamObservation{FormatSample: true, FormatCandidate: "UUID"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["format_sample"] != true || fields["format_candidate"] != "UUID" {
+		t.Fatalf("format fields missing from JSON: %s", raw)
+	}
+}
+
 func TestMergeHashCapRing(t *testing.T) {
 	var row paramObsRow
 	for i := 0; i < valueHashCap+10; i++ {

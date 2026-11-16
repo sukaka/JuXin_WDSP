@@ -1,0 +1,327 @@
+paths:
+  /api-security/endpoint-groups:
+    get:
+      operationId: apiEndpointGroupList
+      tags: [api-security]
+      summary: 业务功能分组分页列表
+      description: >-
+        分页查询业务功能分组，endpoint_count 来自真实成员关系表；可按应用过滤。
+        权限：`api_endpoint_group.read`。
+      parameters:
+        - name: application_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: 按所属应用过滤；非法 UUID 返回 400
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, format: int32, default: 1, minimum: 1 }
+          description: 页码；非正整数返回 400
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, format: int32, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数；非正整数或大于 100 返回 400
+      responses:
+        '200':
+          description: 分组分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiEndpointGroupListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiEndpointGroupCreate
+      tags: [api-security]
+      summary: 创建业务功能分组
+      description: >-
+        在指定应用下创建分组。code 自动去空白并转为大写，同应用内唯一；enabled 缺省为 true。
+        应用不存在返回 404，编码冲突返回 409。写操作要求 CSRF 并记录审计。
+        权限：`api_endpoint_group.manage`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiEndpointGroupCreateRequest' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiEndpointGroup' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoint-groups/{id}:
+    get:
+      operationId: apiEndpointGroupGet
+      tags: [api-security]
+      summary: 业务功能分组详情
+      description: 读取单个分组及实时成员数。权限：`api_endpoint_group.read`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 分组 ID
+      responses:
+        '200':
+          description: 分组详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiEndpointGroup' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: apiEndpointGroupUpdate
+      tags: [api-security]
+      summary: 整体更新业务功能分组
+      description: >-
+        整体更新 code/name/description/enabled；application_id 不可变更，以持续保证成员与分组同应用。
+        enabled 缺省为 true。编码冲突返回 409。写操作要求 CSRF 并记录审计。
+        权限：`api_endpoint_group.manage`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 分组 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiEndpointGroupUpdateRequest' }
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiEndpointGroup' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiEndpointGroupDelete
+      tags: [api-security]
+      summary: 删除业务功能分组
+      description: >-
+        删除分组并级联删除其成员关系，不删除真实 api_endpoints；其他分组中的同一接口不受影响。
+        写操作要求 CSRF 并记录审计。权限：`api_endpoint_group.manage`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 分组 ID
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiEndpointGroupDeleteResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoint-groups/{id}/endpoints:
+    get:
+      operationId: apiEndpointGroupMemberList
+      tags: [api-security]
+      summary: 业务功能分组成员分页列表
+      description: >-
+        分页返回真实 api_endpoints 的成员视图，包含方法、规范化路径、端点键与资产状态。
+        权限：`api_endpoint_group.read`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 分组 ID
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, format: int32, default: 1, minimum: 1 }
+          description: 页码；非正整数返回 400
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, format: int32, default: 20, minimum: 1, maximum: 100 }
+          description: 每页条数；非正整数或大于 100 返回 400
+      responses:
+        '200':
+          description: 成员分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiEndpointGroupMemberListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiEndpointGroupMemberAdd
+      tags: [api-security]
+      summary: 添加真实接口到业务功能分组
+      description: >-
+        将 api_endpoints 中已存在的接口加入分组；接口必须属于分组所在应用。
+        同一接口允许加入多个组，但同组重复添加返回 409。写操作要求 CSRF 并记录审计。
+        权限：`api_endpoint_group.manage`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 分组 ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiEndpointGroupMemberAddRequest' }
+      responses:
+        '201':
+          description: 成员关系创建成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiEndpointGroupMember' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoint-groups/{id}/endpoints/{endpoint_id}:
+    delete:
+      operationId: apiEndpointGroupMemberRemove
+      tags: [api-security]
+      summary: 从业务功能分组移除接口
+      description: >-
+        仅删除当前分组的成员关系，不删除真实接口，也不影响该接口在其他分组中的关系。
+        写操作要求 CSRF 并记录审计。权限：`api_endpoint_group.manage`。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 分组 ID
+        - name: endpoint_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 真实 api_endpoints 接口 ID
+      responses:
+        '200':
+          description: 移除成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiEndpointGroupDeleteResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+components:
+  schemas:
+    ApiEndpointGroup:
+      type: object
+      required: [id, application_id, application_name, code, name, description, enabled, endpoint_count, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid, description: 分组 ID }
+        application_id: { type: string, format: uuid, description: 所属应用 ID }
+        application_name: { type: string, description: 所属应用名称，实时关联 applications }
+        code: { type: string, pattern: '^[A-Z][A-Z0-9_]*$', maxLength: 64, description: 应用内唯一的规范化分组编码 }
+        name: { type: string, maxLength: 128, description: 分组名称 }
+        description: { type: string, maxLength: 512, description: 分组说明 }
+        enabled: { type: boolean, description: 是否启用 }
+        endpoint_count: { type: integer, format: int64, minimum: 0, description: 当前真实接口成员数 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiEndpointGroupCreateRequest:
+      type: object
+      required: [application_id, code, name]
+      properties:
+        application_id: { type: string, format: uuid, description: 所属应用 ID，必填 }
+        code: { type: string, maxLength: 64, description: '分组编码；去空白并转大写后须匹配 ^[A-Z][A-Z0-9_]*$' }
+        name: { type: string, minLength: 1, maxLength: 128, description: 分组名称 }
+        description: { type: string, maxLength: 512, description: 分组说明 }
+        enabled: { type: boolean, default: true, description: 是否启用 }
+
+    ApiEndpointGroupUpdateRequest:
+      type: object
+      required: [code, name]
+      properties:
+        code: { type: string, maxLength: 64, description: '分组编码；去空白并转大写后须匹配 ^[A-Z][A-Z0-9_]*$' }
+        name: { type: string, minLength: 1, maxLength: 128, description: 分组名称 }
+        description: { type: string, maxLength: 512, description: 分组说明 }
+        enabled: { type: boolean, default: true, description: 是否启用 }
+
+    ApiEndpointGroupListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiEndpointGroup' }
+        page: { type: integer, format: int32 }
+        page_size: { type: integer, format: int32 }
+        total: { type: integer, format: int64 }
+
+    ApiEndpointGroupEndpoint:
+      type: object
+      required: [id, application_id, http_method, normalized_path, endpoint_key, asset_status, added_at]
+      properties:
+        id: { type: string, format: uuid, description: 真实 api_endpoints 接口 ID }
+        application_id: { type: string, format: uuid, nullable: true, description: 接口所属应用 ID }
+        http_method: { type: string, description: HTTP 方法 }
+        normalized_path: { type: string, description: 规范化路径模板 }
+        endpoint_key: { type: string, description: 接口唯一键 }
+        asset_status: { type: string, description: 接口资产状态 }
+        added_at: { type: string, format: date-time, description: 加入当前分组的时间 }
+
+    ApiEndpointGroupMemberListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiEndpointGroupEndpoint' }
+        page: { type: integer, format: int32 }
+        page_size: { type: integer, format: int32 }
+        total: { type: integer, format: int64 }
+
+    ApiEndpointGroupMemberAddRequest:
+      type: object
+      required: [endpoint_id]
+      properties:
+        endpoint_id: { type: string, format: uuid, description: 真实 api_endpoints 接口 ID }
+
+    ApiEndpointGroupMember:
+      type: object
+      required: [group_id, endpoint_id, created_at]
+      properties:
+        group_id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
+    ApiEndpointGroupDeleteResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [deleted] }

@@ -47,12 +47,14 @@ const WEAKNESS_STATUS_META: Record<string, { color: string; label: string }> = {
 }
 
 /** 弱点分类 */
-const WEAKNESS_CATEGORY_META: Record<string, { color: string; label: string }> = {
-  AUTHN: { color: 'red', label: '认证缺失' },
-  LIFECYCLE: { color: 'orange', label: '生命周期' },
-  SENSITIVE: { color: 'magenta', label: '敏感数据' },
-  SCHEMA: { color: 'geekblue', label: 'Schema 治理' },
-}
+const WEAKNESS_CATEGORY_META: Record<string, { color: string; label: string }> =
+  {
+    AUTHN: { color: 'red', label: '认证缺失' },
+    AUTHZ: { color: 'purple', label: '对象授权' },
+    LIFECYCLE: { color: 'orange', label: '生命周期' },
+    SENSITIVE: { color: 'magenta', label: '敏感数据' },
+    SCHEMA: { color: 'geekblue', label: 'Schema 治理' },
+  }
 
 /** 处置动作（写 api_weakness_actions.action 的取值） */
 const WEAKNESS_ACTION_META: Record<string, { color: string; label: string }> = {
@@ -71,7 +73,10 @@ const WEAKNESS_ACTION_META: Record<string, { color: string; label: string }> = {
  * 状态机可用性（与 server/internal/apiweakness transitions 迁移表一致）：
  * 操作按钮按当前状态禁用，表外组合后端一律 400。
  */
-const ACTION_ALLOWED: Record<NoteAction | 'assign' | 'retest', ApiWeaknessStatus[]> = {
+const ACTION_ALLOWED: Record<
+  NoteAction | 'assign' | 'retest',
+  ApiWeaknessStatus[]
+> = {
   confirm: ['NEW'],
   assign: ['CONFIRMED', 'TO_FIX', 'REPRODUCED'],
   fixed: ['TO_FIX'],
@@ -125,7 +130,13 @@ export default function ApiWeaknessesPage() {
   const listQuery = useQuery({
     queryKey: ['api-weaknesses', status, severity, category, page, pageSize],
     queryFn: () =>
-      apiWeaknessesApi.list({ status, severity, category, page, page_size: pageSize }),
+      apiWeaknessesApi.list({
+        status,
+        severity,
+        category,
+        page,
+        page_size: pageSize,
+      }),
   })
 
   /** 详情抽屉数据源（选中时拉取，含整改/复测历史；流转后失效刷新保证状态最新） */
@@ -154,22 +165,39 @@ export default function ApiWeaknessesPage() {
         case 'assign':
           return apiWeaknessesApi.assign(id, vars.assign as { owner: string })
         case 'retest':
-          return apiWeaknessesApi.retest(id, vars.retest as { result: ApiWeaknessRetestResult })
+          return apiWeaknessesApi.retest(
+            id,
+            vars.retest as { result: ApiWeaknessRetestResult },
+          )
         case 'confirm':
-          return apiWeaknessesApi.confirm(id, vars.note ? { note: vars.note } : undefined)
+          return apiWeaknessesApi.confirm(
+            id,
+            vars.note ? { note: vars.note } : undefined,
+          )
         case 'fixed':
-          return apiWeaknessesApi.fixed(id, vars.note ? { note: vars.note } : undefined)
+          return apiWeaknessesApi.fixed(
+            id,
+            vars.note ? { note: vars.note } : undefined,
+          )
         case 'ignore':
-          return apiWeaknessesApi.ignore(id, vars.note ? { note: vars.note } : undefined)
+          return apiWeaknessesApi.ignore(
+            id,
+            vars.note ? { note: vars.note } : undefined,
+          )
         case 'archive':
-          return apiWeaknessesApi.archive(id, vars.note ? { note: vars.note } : undefined)
+          return apiWeaknessesApi.archive(
+            id,
+            vars.note ? { note: vars.note } : undefined,
+          )
       }
     },
     onSuccess: (r, vars) => {
       // 复测结果即时反馈：PASS 归档关闭，FAIL 转为复现待重新整改
       if (vars.action === 'retest') {
         message.success(
-          r.weakness.status === 'ARCHIVED' ? '复测通过，弱点已归档关闭' : '复测未通过，弱点已转为复现',
+          r.weakness.status === 'ARCHIVED'
+            ? '复测通过，弱点已归档关闭'
+            : '复测未通过，弱点已转为复现',
         )
       } else {
         message.success('操作成功')
@@ -181,7 +209,8 @@ export default function ApiWeaknessesPage() {
       void qc.invalidateQueries({ queryKey: ['api-weaknesses'] })
       void qc.invalidateQueries({ queryKey: ['api-weakness-detail', vars.id] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '操作失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '操作失败'),
   })
 
   const openNoteAction = (action: NoteAction) => {
@@ -207,7 +236,10 @@ export default function ApiWeaknessesPage() {
     transitionMut.mutate({
       id: current.id,
       action: 'retest',
-      retest: { result: v.result, ...(v.note?.trim() ? { note: v.note.trim() } : {}) },
+      retest: {
+        result: v.result,
+        ...(v.note?.trim() ? { note: v.note.trim() } : {}),
+      },
     })
   }
 
@@ -229,13 +261,17 @@ export default function ApiWeaknessesPage() {
       title: '分类',
       dataIndex: 'category',
       width: 120,
-      render: (v: string) => <StatusTag value={v} map={WEAKNESS_CATEGORY_META} />,
+      render: (v: string) => (
+        <StatusTag value={v} map={WEAKNESS_CATEGORY_META} />
+      ),
     },
     {
       title: '严重级别',
       dataIndex: 'severity',
       width: 100,
-      render: (v: string) => <StatusTag value={v} map={API_FINDING_SEVERITY_META} />,
+      render: (v: string) => (
+        <StatusTag value={v} map={API_FINDING_SEVERITY_META} />
+      ),
     },
     {
       title: '状态',
@@ -283,7 +319,11 @@ export default function ApiWeaknessesPage() {
       width: 80,
       fixed: 'right',
       render: (_, record) => (
-        <Button type="link" size="small" onClick={() => setSelectedId(record.id)}>
+        <Button
+          type="link"
+          size="small"
+          onClick={() => setSelectedId(record.id)}
+        >
           详情
         </Button>
       ),
@@ -344,8 +384,11 @@ export default function ApiWeaknessesPage() {
   return (
     <Card title="API 弱点中心">
       <Typography.Paragraph type="secondary">
-        运行时扫描派生的 API 弱点：未认证敏感接口、已下线仍被调用、敏感数据出现在查询串、Schema
-        漂移长期存在等；按「确认 → 指派 → 整改 → 复测 → 归档」闭环处置。
+        运行时扫描派生的 API
+        弱点：未认证敏感接口、已下线仍被调用、敏感数据出现在查询串、响应涉敏未观察到成功脱敏、Schema
+        漂移长期存在等；响应涉敏未观察到成功脱敏仅是观测信号，不代表 TLS
+        未加密，也不代表漏洞已证实；按「确认 → 指派 → 整改 → 复测 →
+        归档」闭环处置。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error} />
       <Space style={{ marginBottom: 16 }} wrap>
@@ -354,10 +397,12 @@ export default function ApiWeaknessesPage() {
           allowClear
           style={{ width: 140 }}
           value={status}
-          options={Object.entries(WEAKNESS_STATUS_META).map(([value, meta]) => ({
-            value,
-            label: meta.label,
-          }))}
+          options={Object.entries(WEAKNESS_STATUS_META).map(
+            ([value, meta]) => ({
+              value,
+              label: meta.label,
+            }),
+          )}
           onChange={(v) => {
             setStatus(v)
             setPage(1)
@@ -368,10 +413,12 @@ export default function ApiWeaknessesPage() {
           allowClear
           style={{ width: 140 }}
           value={severity}
-          options={Object.entries(API_FINDING_SEVERITY_META).map(([value, meta]) => ({
-            value,
-            label: meta.label,
-          }))}
+          options={Object.entries(API_FINDING_SEVERITY_META).map(
+            ([value, meta]) => ({
+              value,
+              label: meta.label,
+            }),
+          )}
           onChange={(v) => {
             setSeverity(v)
             setPage(1)
@@ -382,10 +429,12 @@ export default function ApiWeaknessesPage() {
           allowClear
           style={{ width: 140 }}
           value={category}
-          options={Object.entries(WEAKNESS_CATEGORY_META).map(([value, meta]) => ({
-            value,
-            label: meta.label,
-          }))}
+          options={Object.entries(WEAKNESS_CATEGORY_META).map(
+            ([value, meta]) => ({
+              value,
+              label: meta.label,
+            }),
+          )}
           onChange={(v) => {
             setCategory(v)
             setPage(1)
@@ -428,15 +477,23 @@ export default function ApiWeaknessesPage() {
           <>
             {actionBar}
             <Descriptions column={2} size="small" style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="弱点名称">{current.weakness_name}</Descriptions.Item>
+              <Descriptions.Item label="弱点名称">
+                {current.weakness_name}
+              </Descriptions.Item>
               <Descriptions.Item label="弱点编码">
                 <Typography.Text code>{current.weakness_code}</Typography.Text>
               </Descriptions.Item>
               <Descriptions.Item label="分类">
-                <StatusTag value={current.category} map={WEAKNESS_CATEGORY_META} />
+                <StatusTag
+                  value={current.category}
+                  map={WEAKNESS_CATEGORY_META}
+                />
               </Descriptions.Item>
               <Descriptions.Item label="严重级别">
-                <StatusTag value={current.severity} map={API_FINDING_SEVERITY_META} />
+                <StatusTag
+                  value={current.severity}
+                  map={API_FINDING_SEVERITY_META}
+                />
               </Descriptions.Item>
               <Descriptions.Item label="状态">
                 <StatusTag value={current.status} map={WEAKNESS_STATUS_META} />
@@ -448,11 +505,15 @@ export default function ApiWeaknessesPage() {
                   '-'
                 )}
               </Descriptions.Item>
-              <Descriptions.Item label="负责人">{current.owner || '-'}</Descriptions.Item>
+              <Descriptions.Item label="负责人">
+                {current.owner || '-'}
+              </Descriptions.Item>
               <Descriptions.Item label="整改期限">
                 {formatDateTime(current.due_date)}
               </Descriptions.Item>
-              <Descriptions.Item label="触发次数">{current.trigger_count}</Descriptions.Item>
+              <Descriptions.Item label="触发次数">
+                {current.trigger_count}
+              </Descriptions.Item>
               <Descriptions.Item label="首次命中">
                 {formatDateTime(current.first_seen)}
               </Descriptions.Item>
@@ -472,7 +533,13 @@ export default function ApiWeaknessesPage() {
             <Typography.Title level={5}>派生证据（evidence）</Typography.Title>
             <Typography.Paragraph>
               <pre
-                style={{ background: '#fafafa', padding: 12, fontSize: 12, overflow: 'auto', margin: 0 }}
+                style={{
+                  background: '#fafafa',
+                  padding: 12,
+                  fontSize: 12,
+                  overflow: 'auto',
+                  margin: 0,
+                }}
               >
                 {formatJson(current.evidence)}
               </pre>
@@ -489,13 +556,18 @@ export default function ApiWeaknessesPage() {
                     children: (
                       <Space direction="vertical" size={0}>
                         <Space size={8}>
-                          <Typography.Text strong>{meta?.label ?? a.action}</Typography.Text>
+                          <Typography.Text strong>
+                            {meta?.label ?? a.action}
+                          </Typography.Text>
                           <Typography.Text type="secondary">
-                            {a.actor || 'system'} · {formatDateTime(a.created_at)}
+                            {a.actor || 'system'} ·{' '}
+                            {formatDateTime(a.created_at)}
                           </Typography.Text>
                         </Space>
                         {a.note ? (
-                          <Typography.Text type="secondary">{a.note}</Typography.Text>
+                          <Typography.Text type="secondary">
+                            {a.note}
+                          </Typography.Text>
                         ) : null}
                       </Space>
                     ),
@@ -522,7 +594,9 @@ export default function ApiWeaknessesPage() {
         confirmLoading={transitionMut.isPending}
         destroyOnHidden
       >
-        <Typography.Paragraph type="secondary">备注（可选，不超过 512 字符）</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">
+          备注（可选，不超过 512 字符）
+        </Typography.Paragraph>
         <Input.TextArea
           rows={3}
           maxLength={512}
@@ -541,7 +615,11 @@ export default function ApiWeaknessesPage() {
         confirmLoading={transitionMut.isPending}
         destroyOnHidden
       >
-        <Form<AssignFormValues> form={assignForm} layout="vertical" onFinish={submitAssign}>
+        <Form<AssignFormValues>
+          form={assignForm}
+          layout="vertical"
+          onFinish={submitAssign}
+        >
           <Form.Item
             name="owner"
             label="整改负责人"
@@ -555,7 +633,11 @@ export default function ApiWeaknessesPage() {
           <Form.Item name="due_date" label="整改期限（可选）">
             <DatePicker showTime style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="note" label="备注（可选）" rules={[{ max: 512, message: '备注不超过 512 字符' }]}>
+          <Form.Item
+            name="note"
+            label="备注（可选）"
+            rules={[{ max: 512, message: '备注不超过 512 字符' }]}
+          >
             <Input.TextArea rows={3} placeholder="整改要求、说明" />
           </Form.Item>
         </Form>
@@ -578,7 +660,11 @@ export default function ApiWeaknessesPage() {
           initialValues={{ result: 'PASS' }}
           onFinish={submitRetest}
         >
-          <Form.Item name="result" label="复测结果" rules={[{ required: true, message: '请选择复测结果' }]}>
+          <Form.Item
+            name="result"
+            label="复测结果"
+            rules={[{ required: true, message: '请选择复测结果' }]}
+          >
             <Radio.Group
               options={[
                 { value: 'PASS', label: '通过' },
@@ -586,7 +672,11 @@ export default function ApiWeaknessesPage() {
               ]}
             />
           </Form.Item>
-          <Form.Item name="note" label="备注（可选）" rules={[{ max: 512, message: '备注不超过 512 字符' }]}>
+          <Form.Item
+            name="note"
+            label="备注（可选）"
+            rules={[{ max: 512, message: '备注不超过 512 字符' }]}
+          >
             <Input.TextArea rows={3} placeholder="复测结论、依据" />
           </Form.Item>
         </Form>

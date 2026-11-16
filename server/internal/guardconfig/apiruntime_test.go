@@ -197,6 +197,9 @@ func TestComputeAPIPolicyVersion(t *testing.T) {
 		"api_response_fail_policy":       func(c *gatewayconfig.GuardConfig) { c.APIResponseFailPolicy = "FAIL_CLOSED" },
 		"api_response_capture_max_bytes": func(c *gatewayconfig.GuardConfig) { c.APIResponseCaptureMaxBytes = 4096 },
 		"api_llm_allowed_models":         func(c *gatewayconfig.GuardConfig) { c.APILLMAllowedModels = []string{"gpt-x"} },
+		"api_llm_security_policies": func(c *gatewayconfig.GuardConfig) {
+			c.APILLMSecurityPolicies = []gatewayconfig.GuardLLMSecurityPolicy{{ID: "policy-1", Version: 1, Mode: "OBSERVE"}}
+		},
 		"api_file_watermark": func(c *gatewayconfig.GuardConfig) {
 			c.APIFileWatermark = &gatewayconfig.GuardFileWatermark{Enabled: true, TextTemplate: "t"}
 		},

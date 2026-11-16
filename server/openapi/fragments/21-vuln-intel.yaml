@@ -1,0 +1,652 @@
+paths:
+  /vuln-intel/overview:
+    get:
+      operationId: vulnIntelOverview
+      tags: [vuln-intel]
+      summary: 漏洞情报概览
+      description: >-
+        返回漏洞情报统计（总数/近 7 日新增/CRITICAL/HIGH 数）、当前订阅配置与 NVD 同步状态。
+        权限：`vuln_intel.read`。
+      responses:
+        '200':
+          description: 概览数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnIntelOverviewResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /vuln-intel/advisories:
+    get:
+      operationId: vulnIntelAdvisoryList
+      tags: [vuln-intel]
+      summary: 漏洞情报列表
+      description: >-
+        分页查询漏洞情报，按发布日期倒序。支持关键字（cve_id/title/summary 模糊匹配）、
+        级别、技术标签、来源与发布日期区间过滤。权限：`vuln_intel.read`。
+      parameters:
+        - name: keyword
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 200
+          description: 关键字（cve_id/title/summary 模糊匹配）
+        - name: severity
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [CRITICAL, HIGH, MEDIUM, LOW, NONE]
+          description: 级别过滤
+        - name: tech
+          in: query
+          required: false
+          schema:
+            type: string
+          description: 技术标签过滤（如 php）
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [NVD, MANUAL]
+          description: 来源过滤
+        - name: published_start
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 发布日期下界（RFC3339，闭区间）
+        - name: published_end
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 发布日期上界（RFC3339，闭区间）
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+          description: 页码
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+            maximum: 200
+          description: 每页条数
+      responses:
+        '200':
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnIntelAdvisoryListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /vuln-intel/advisories/{cve_id}:
+    get:
+      operationId: vulnIntelAdvisoryDetail
+      tags: [vuln-intel]
+      summary: 漏洞情报详情
+      description: >-
+        按 CVE 编号查询漏洞详情，并给出各技术标签对应的受影响应用（应用技术栈映射）。
+        权限：`vuln_intel.read`。
+      parameters:
+        - name: cve_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: CVE 编号（如 CVE-2024-1234，大小写不敏感）
+      responses:
+        '200':
+          description: 漏洞详情与受影响应用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnIntelAdvisoryDetailResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /vuln-intel/sync:
+    post:
+      operationId: vulnIntelSync
+      tags: [vuln-intel]
+      summary: 手动触发 NVD 同步
+      description: >-
+        立即执行一次 NVD 同步（keywordSearch=php；首次同步最近 2 天，之后按上次窗口终点
+        回拨 1 小时）。在线同步为纯下行，目标地址硬编码 NVD API 2.0，不接受自定义 URL；
+        不受 sync_enabled 开关约束。同步失败时失败原因如实写入同步状态（overview 可见）。
+        新建且命中订阅的漏洞会触发 VULN_INTEL_NEW 系统告警（同一漏洞同一技术栈只提醒一次）。
+        权限：`vuln_intel.manage`（仅 SYSTEM_ADMIN）。CSRF：需要。
+      responses:
+        '200':
+          description: 同步结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnIntelSyncResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 已有同步任务在进行中
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: NVD 同步失败（网络/上游错误；失败原因已写入同步状态）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /vuln-intel/import:
+    post:
+      operationId: vulnIntelImport
+      tags: [vuln-intel]
+      summary: 离线导入漏洞情报
+      description: >-
+        JSON 数组导入漏洞情报（source 固定 MANUAL），按 cve_id 幂等 upsert；
+        与 NVD 同步共用提醒引擎（新建且命中订阅触发 VULN_INTEL_NEW）。
+        单批上限 500 条；逐条校验，非法条目进入 invalid_entries 明细不阻断合法条目。
+        权限：`vuln_intel.manage`（仅 SYSTEM_ADMIN）。CSRF：需要。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VulnIntelImportRequest'
+      responses:
+        '200':
+          description: 导入结果（含逐条校验失败明细）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnIntelImportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /vuln-intel/tech-assets:
+    get:
+      operationId: vulnIntelTechAssetList
+      tags: [vuln-intel]
+      summary: 应用技术栈映射列表
+      description: >-
+        列出全部未删除应用及其技术标签（无标签应用返回空数组）。
+        权限：`vuln_intel.read`。
+      responses:
+        '200':
+          description: 应用技术栈映射
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnIntelTechAssetsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: vulnIntelTechAssetReplace
+      tags: [vuln-intel]
+      summary: 整组替换应用技术栈映射
+      description: >-
+        以请求体为全量目标态整组替换应用技术栈映射：列出的应用按给定标签覆盖，
+        未列出的应用清空标签。技术名小写 1-64 字符（a-z0-9._+-），单应用上限 20 项。
+        权限：`vuln_intel.manage`（仅 SYSTEM_ADMIN）。CSRF：需要。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VulnIntelTechAssetsPutRequest'
+      responses:
+        '200':
+          description: 替换结果（应用数与标签总数）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnIntelTechAssetsPutResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /vuln-intel/settings:
+    get:
+      operationId: vulnIntelSettingsGet
+      tags: [vuln-intel]
+      summary: 读取漏洞情报订阅设置
+      description: >-
+        返回订阅技术栈、最低提醒级别与在线每日同步开关（未配置时回落默认值
+        watch_techs=["php"]、min_severity=HIGH、sync_enabled=false）。
+        权限：`vuln_intel.read`。
+      responses:
+        '200':
+          description: 订阅设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnIntelSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: vulnIntelSettingsPut
+      tags: [vuln-intel]
+      summary: 更新漏洞情报订阅设置
+      description: >-
+        覆盖写入订阅设置（system_settings vuln_intel 组三键，热生效）：
+        watch_techs（1-10 个技术名）、min_severity（LOW/MEDIUM/HIGH/CRITICAL）、
+        sync_enabled（NVD 每日在线同步开关）。
+        权限：`vuln_intel.manage`（仅 SYSTEM_ADMIN）。CSRF：需要。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VulnIntelSettings'
+      responses:
+        '200':
+          description: 更新后的订阅设置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnIntelSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  schemas:
+    VulnIntelAdvisory:
+      type: object
+      required: [id, cve_id, title, summary, severity, tech_tags, references, source, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        cve_id:
+          type: string
+          description: CVE 编号（唯一键）
+        title:
+          type: string
+        summary:
+          type: string
+          description: 漏洞描述（NVD 英文描述或导入提供）
+        severity:
+          type: string
+          enum: [CRITICAL, HIGH, MEDIUM, LOW, NONE]
+          description: 级别（按最高 CVSS 分值派生）
+        cvss_score:
+          type: number
+          nullable: true
+          description: 最高 CVSS 分值（无指标时为 null）
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_modified_at:
+          type: string
+          format: date-time
+          nullable: true
+        tech_tags:
+          type: array
+          items:
+            type: string
+          description: 确定性提取的技术标签（MVP 为 ["php"]）
+        references:
+          type: array
+          items:
+            type: string
+          description: 参考链接
+        source:
+          type: string
+          enum: [NVD, MANUAL]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    VulnIntelSyncState:
+      type: object
+      required: [source, records_upserted, status, failure_message, updated_at]
+      properties:
+        source:
+          type: string
+          description: 情报源（NVD）
+        last_sync_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 上次成功同步时刻
+        last_window_start:
+          type: string
+          format: date-time
+          nullable: true
+        last_window_end:
+          type: string
+          format: date-time
+          nullable: true
+        records_upserted:
+          type: integer
+          description: 上次同步 upsert 条数
+        status:
+          type: string
+          enum: [IDLE, SUCCESS, FAILED]
+        failure_message:
+          type: string
+          description: 最近失败原因（成功时为空串）
+        updated_at:
+          type: string
+          format: date-time
+
+    VulnIntelOverviewResponse:
+      type: object
+      required: [total, new_last_7d, critical_count, high_count, watch_techs, min_severity, sync_enabled, sync_state]
+      properties:
+        total:
+          type: integer
+          description: 漏洞总数
+        new_last_7d:
+          type: integer
+          description: 近 7 日新增（按入库时间）
+        critical_count:
+          type: integer
+        high_count:
+          type: integer
+        watch_techs:
+          type: array
+          items:
+            type: string
+          description: 订阅技术栈
+        min_severity:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+        sync_enabled:
+          type: boolean
+          description: 在线每日同步开关
+        sync_state:
+          $ref: '#/components/schemas/VulnIntelSyncState'
+
+    VulnIntelAdvisoryListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/VulnIntelAdvisory'
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+
+    VulnIntelAffectedApp:
+      type: object
+      required: [application_id, code, name, tech]
+      properties:
+        application_id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        tech:
+          type: string
+          description: 命中映射的技术标签
+
+    VulnIntelAdvisoryDetailResponse:
+      type: object
+      required: [advisory, affected_apps]
+      properties:
+        advisory:
+          $ref: '#/components/schemas/VulnIntelAdvisory'
+        affected_apps:
+          type: array
+          items:
+            $ref: '#/components/schemas/VulnIntelAffectedApp'
+
+    VulnIntelSyncResponse:
+      type: object
+      required: [source, window_start, window_end, fetched, upserted, new_advisories, alerts_raised, records_upserted]
+      properties:
+        source:
+          type: string
+        window_start:
+          type: string
+          format: date-time
+        window_end:
+          type: string
+          format: date-time
+        fetched:
+          type: integer
+          description: NVD 返回并解析成功的条数
+        upserted:
+          type: integer
+          description: 入库 upsert 条数
+        new_advisories:
+          type: integer
+          description: 其中新建条数（触发提醒评估）
+        alerts_raised:
+          type: integer
+          description: 触发提醒的技术栈数
+        records_upserted:
+          type: integer
+          description: 写入同步状态的 upsert 计数
+
+    VulnIntelImportAdvisory:
+      type: object
+      required: [cve_id, tech_tags]
+      properties:
+        cve_id:
+          type: string
+          description: CVE 编号（大小写不敏感，归一化为大写）
+        title:
+          type: string
+          maxLength: 500
+        summary:
+          type: string
+        severity:
+          type: string
+          enum: [CRITICAL, HIGH, MEDIUM, LOW, NONE]
+          description: 缺省时按 cvss_score 派生，无分值则为 NONE
+        cvss_score:
+          type: number
+          minimum: 0
+          maximum: 10
+          nullable: true
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_modified_at:
+          type: string
+          format: date-time
+          nullable: true
+        tech_tags:
+          type: array
+          items:
+            type: string
+          description: 技术标签（小写 1-64，至少 1 项）
+        references:
+          type: array
+          items:
+            type: string
+
+    VulnIntelImportRequest:
+      type: object
+      required: [advisories]
+      properties:
+        advisories:
+          type: array
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/VulnIntelImportAdvisory'
+
+    VulnIntelImportRowError:
+      type: object
+      required: [index, cve_id, reason]
+      properties:
+        index:
+          type: integer
+          description: 请求数组下标
+        cve_id:
+          type: string
+        reason:
+          type: string
+
+    VulnIntelImportResponse:
+      type: object
+      required: [received, inserted, updated, invalid, invalid_entries, alerts_raised]
+      properties:
+        received:
+          type: integer
+        inserted:
+          type: integer
+          description: 新建条数
+        updated:
+          type: integer
+          description: 冲突更新条数
+        invalid:
+          type: integer
+          description: 校验失败条数
+        invalid_entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/VulnIntelImportRowError'
+        alerts_raised:
+          type: integer
+
+    VulnIntelTechAsset:
+      type: object
+      required: [application_id, code, name, tech_tags]
+      properties:
+        application_id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        tech_tags:
+          type: array
+          items:
+            type: string
+
+    VulnIntelTechAssetsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/VulnIntelTechAsset'
+
+    VulnIntelTechAssetsPutItem:
+      type: object
+      required: [application_id, tech_tags]
+      properties:
+        application_id:
+          type: string
+          format: uuid
+        tech_tags:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+
+    VulnIntelTechAssetsPutRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/VulnIntelTechAssetsPutItem'
+
+    VulnIntelTechAssetsPutResponse:
+      type: object
+      required: [apps, tags]
+      properties:
+        apps:
+          type: integer
+          description: 覆盖的应用数
+        tags:
+          type: integer
+          description: 写入的标签总数
+
+    VulnIntelSettings:
+      type: object
+      required: [watch_techs, min_severity, sync_enabled]
+      properties:
+        watch_techs:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+          description: 订阅技术栈（小写技术名）
+        min_severity:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+          description: 最低提醒级别
+        sync_enabled:
+          type: boolean
+          description: NVD 每日在线同步开关

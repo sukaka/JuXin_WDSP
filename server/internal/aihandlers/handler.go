@@ -161,6 +161,8 @@ func (d *Deps) RegisterRoutes(mux *http.ServeMux, authChain func(http.Handler) h
 	mux.Handle("GET /api/v1/ai/usage/by-user", authChain(rp("ai.usage.read")(http.HandlerFunc(d.UsageByUser))))
 	mux.Handle("GET /api/v1/ai/usage/by-agent", authChain(rp("ai.usage.read")(http.HandlerFunc(d.UsageByAgent))))
 	mux.Handle("GET /api/v1/ai/usage/by-task", authChain(rp("ai.usage.read")(http.HandlerFunc(d.UsageByTask))))
+	// 反馈质量聚合（feedback_type × task_type；不返回 comment 原文）
+	mux.Handle("GET /api/v1/ai/feedback/summary", authChain(rp("ai.usage.read")(http.HandlerFunc(d.FeedbackSummary))))
 
 	// ---- 评估（无独立 read 权限点：评估执行者或用量/审计只读者可看）----
 	evalRead := requireAnyPerm("ai.evaluations.run", "ai.usage.read", "ai.audits.read")

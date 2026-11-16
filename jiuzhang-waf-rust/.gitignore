@@ -1,0 +1,6 @@
+/target/
+/config.local.toml
+/var/
+*.log
+/.venv-source-book/
+/dist/.preview/

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -88,6 +94,33 @@ const weaknesses: Record<string, Record<string, unknown>> = {
     created_at: '2026-08-03T02:00:00Z',
     updated_at: '2026-08-13T02:00:00Z',
   },
+  w4: {
+    id: 'w4',
+    endpoint_id: 'e4',
+    endpoint_key: 'GET /v1/customers/{id}',
+    weakness_code: 'SENSITIVE_RESPONSE_UNMASKED',
+    weakness_name: '响应敏感信息未观察到成功脱敏',
+    category: 'SENSITIVE',
+    severity: 'MEDIUM',
+    status: 'NEW',
+    evidence: {
+      rule: 'SENSITIVE_RESPONSE_UNMASKED',
+      endpoint_key: 'GET /v1/customers/{id}',
+      sample_count: 3,
+      window_hours: 24,
+      first_seen: '2026-08-13T02:00:00Z',
+      last_seen: '2026-08-14T02:00:00Z',
+    },
+    first_seen: '2026-08-13T02:00:00Z',
+    last_seen: '2026-08-14T02:00:00Z',
+    trigger_count: 1,
+    owner: '',
+    due_date: null,
+    fixed_at: null,
+    retested_at: null,
+    created_at: '2026-08-13T02:00:00Z',
+    updated_at: '2026-08-14T02:00:00Z',
+  },
 }
 
 const actionsById: Record<string, Record<string, unknown>[]> = {
@@ -140,7 +173,13 @@ describe('ApiWeaknessesPage', () => {
             jsonResponse(200, {
               code: 'SUCCESS',
               message: 'ok',
-              data: { weakness: { ...weaknesses.w2, status: 'TO_FIX', owner: 'zhangsan' } },
+              data: {
+                weakness: {
+                  ...weaknesses.w2,
+                  status: 'TO_FIX',
+                  owner: 'zhangsan',
+                },
+              },
             }),
           )
         }
@@ -161,7 +200,10 @@ describe('ApiWeaknessesPage', () => {
             jsonResponse(200, {
               code: 'SUCCESS',
               message: 'ok',
-              data: { weakness: weaknesses[id], actions: actionsById[id] ?? [] },
+              data: {
+                weakness: weaknesses[id],
+                actions: actionsById[id] ?? [],
+              },
             }),
           )
         }
@@ -196,12 +238,24 @@ describe('ApiWeaknessesPage', () => {
     const drawer = await screen.findByRole('dialog')
     await within(drawer).findByText('未认证敏感接口被调用')
 
-    expect(within(drawer).getByRole('button', { name: /确\s*认/ })).toBeEnabled()
-    expect(within(drawer).getByRole('button', { name: /忽\s*略/ })).toBeEnabled()
-    expect(within(drawer).getByRole('button', { name: /指\s*派/ })).toBeDisabled()
-    expect(within(drawer).getByRole('button', { name: '整改完成' })).toBeDisabled()
-    expect(within(drawer).getByRole('button', { name: /复\s*测/ })).toBeDisabled()
-    expect(within(drawer).getByRole('button', { name: /归\s*档/ })).toBeDisabled()
+    expect(
+      within(drawer).getByRole('button', { name: /确\s*认/ }),
+    ).toBeEnabled()
+    expect(
+      within(drawer).getByRole('button', { name: /忽\s*略/ }),
+    ).toBeEnabled()
+    expect(
+      within(drawer).getByRole('button', { name: /指\s*派/ }),
+    ).toBeDisabled()
+    expect(
+      within(drawer).getByRole('button', { name: '整改完成' }),
+    ).toBeDisabled()
+    expect(
+      within(drawer).getByRole('button', { name: /复\s*测/ }),
+    ).toBeDisabled()
+    expect(
+      within(drawer).getByRole('button', { name: /归\s*档/ }),
+    ).toBeDisabled()
   })
 
   it('指派：提交 owner，CONFIRMED → TO_FIX', async () => {
@@ -219,7 +273,9 @@ describe('ApiWeaknessesPage', () => {
 
     fireEvent.click(within(drawer).getByRole('button', { name: /指\s*派/ }))
     await screen.findByText('指派整改')
-    fireEvent.change(screen.getByLabelText('整改负责人'), { target: { value: 'zhangsan' } })
+    fireEvent.change(screen.getByLabelText('整改负责人'), {
+      target: { value: 'zhangsan' },
+    })
     fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
 
     await waitFor(() => expect(assignBodies).toHaveLength(1))
@@ -247,7 +303,48 @@ describe('ApiWeaknessesPage', () => {
     await waitFor(() => expect(retestBodies).toHaveLength(1))
     expect(retestBodies[0]).toEqual({ result: 'PASS' })
     // 复测结果即时反馈（PASS → 归档关闭）
-    expect(await screen.findByText('复测通过，弱点已归档关闭')).toBeInTheDocument()
+    expect(
+      await screen.findByText('复测通过，弱点已归档关闭'),
+    ).toBeInTheDocument()
+  })
+
+  it('按服务端字段展示响应脱敏观测弱点的列表与详情', async () => {
+    listIds = ['w4']
+    useAuthStore.setState({
+      user: makeUser(['api_weakness.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+
+    expect(
+      screen.getByText(
+        /响应涉敏未观察到成功脱敏仅是观测信号，不代表 TLS 未加密，也不代表漏洞已证实/,
+      ),
+    ).toBeInTheDocument()
+    const row = await screen.findByRole('row', {
+      name: /SENSITIVE_RESPONSE_UNMASKED/,
+    })
+    expect(
+      within(row).getByText('响应敏感信息未观察到成功脱敏'),
+    ).toBeInTheDocument()
+    expect(within(row).getByText('敏感数据')).toBeInTheDocument()
+    expect(within(row).getByText('中')).toBeInTheDocument()
+
+    fireEvent.click(within(row).getByRole('button', { name: /详\s*情/ }))
+    const drawer = await screen.findByRole('dialog')
+    await within(drawer).findByText('SENSITIVE_RESPONSE_UNMASKED')
+    expect(
+      within(drawer).getByText('弱点详情：响应敏感信息未观察到成功脱敏'),
+    ).toBeInTheDocument()
+    expect(
+      within(drawer).getByText('GET /v1/customers/{id}'),
+    ).toBeInTheDocument()
+    expect(within(drawer).getByText('敏感数据')).toBeInTheDocument()
+    expect(within(drawer).getByText('中')).toBeInTheDocument()
+    expect(
+      JSON.parse(drawer.querySelector('pre')?.textContent ?? '{}'),
+    ).toEqual(weaknesses.w4.evidence)
   })
 
   it('无 api_weakness.handle 权限：不显示处置按钮', async () => {
@@ -262,8 +359,35 @@ describe('ApiWeaknessesPage', () => {
     const drawer = await screen.findByRole('dialog')
     await within(drawer).findByText('未认证敏感接口被调用')
 
-    expect(within(drawer).queryByRole('button', { name: /确\s*认/ })).not.toBeInTheDocument()
-    expect(within(drawer).queryByRole('button', { name: /指\s*派/ })).not.toBeInTheDocument()
-    expect(within(drawer).queryByRole('button', { name: /复\s*测/ })).not.toBeInTheDocument()
+    expect(
+      within(drawer).queryByRole('button', { name: /确\s*认/ }),
+    ).not.toBeInTheDocument()
+    expect(
+      within(drawer).queryByRole('button', { name: /指\s*派/ }),
+    ).not.toBeInTheDocument()
+    expect(
+      within(drawer).queryByRole('button', { name: /复\s*测/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('支持对象授权分类筛选', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_weakness.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await screen.findByRole('button', { name: /详\s*情/ })
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[2])
+    fireEvent.click(await screen.findByText('对象授权'))
+    await waitFor(() => {
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.some(([input]) =>
+            String(input).includes('category=AUTHZ'),
+          ),
+      ).toBe(true)
+    })
   })
 })

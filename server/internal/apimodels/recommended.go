@@ -1,6 +1,5 @@
 // recommended.go 参数 observed/recommended 约束自动生成（三微模型框架 §四.5，第二批）：
-// 纯函数，输入参数统计画像（ParameterProfile），输出钉死词汇约束
-// （min_length/max_length/minimum/maximum/enum），便于单测。
+// 纯函数，输入参数统计画像（ParameterProfile），输出钉死词汇约束，便于单测。
 //
 // 保守规则（样本量分级，观测不足一律不生成、不虚构）：
 //   - 样本量 <100：不生成 recommended（观测不足以支撑建议）；
@@ -9,7 +8,7 @@
 //   - enum：有明文候选值时仅 distinct_count ≤20 且样本量 ≥100 才生成；无候选值时
 //     基数可封闭即生成「疑似枚举」推荐（enum_suspected+distinct_count，人工确认具体值）。
 //
-// observed 只承载观测事实（长度/值域区间），有哪项写哪项，无观测为空。
+// observed 只承载观测事实（长度/值域区间与达到阈值的固定格式候选），无观测为空。
 package apimodels
 
 import "sort"
@@ -28,24 +27,24 @@ const (
 	ExampleHashesCap = 20
 )
 
-// ParameterProfile 参数统计画像输入（api_parameter_statistics 行的内存形态，
-// 外加预留的 P95 分位数与枚举候选）。指针字段对应可空统计：当前学习链路无
-// 参数值数据源（见 statistics.go 数据源核对注释），相关字段为 nil，
-// 生成逻辑对缺失观测一律保守不输出对应约束键。
+// ParameterProfile 参数统计画像输入（api_parameter_statistics 行的内存形态与枚举候选）。
+// 指针字段对应可空统计；生成逻辑对缺失观测一律保守不输出对应约束键。
 type ParameterProfile struct {
-	SampleCount    int      // accepted 学习样本数
-	MinLength      *int     // 观测最小长度（字符数）
-	MaxLength      *int     // 观测最大长度（字符数）
-	P95Length      *int     // 长度 P95（预留：当前无数据源）
-	MinValue       *float64 // 观测数值下界
-	MaxValue       *float64 // 观测数值上界
-	P95Value       *float64 // 数值 P95（预留：当前无数据源）
-	DistinctCount  *int     // 去重值基数
-	EnumCandidates []string // 枚举候选值（预留：当前无数据源）
+	SampleCount          int      // accepted 学习样本数
+	MinLength            *int     // 观测最小长度（字符数）
+	MaxLength            *int     // 观测最大长度（字符数）
+	P95Length            *int     // 长度 P95
+	MinValue             *float64 // 观测数值下界
+	MaxValue             *float64 // 观测数值上界
+	P95Value             *float64 // 数值 P95
+	DistinctCount        *int     // 去重值基数
+	EnumCandidates       []string // 枚举候选值（预留：当前无数据源）
+	FormatCandidate      string   // 达到样本量与占比阈值的固定格式候选
+	FormatCandidateRatio *float64 // 固定格式候选占合格字符串样本的比例
 }
 
 // ObservedConstraints 由画像生成观测约束（学习侧事实，词汇：min_length/max_length/
-// minimum/maximum）。只写有真实观测的键；无观测返回空 map。
+// minimum/maximum/format_candidate/format_candidate_ratio）。只写有真实观测的键；无观测返回空 map。
 func ObservedConstraints(p ParameterProfile) map[string]any {
 	out := map[string]any{}
 	if p.MinLength != nil {
@@ -59,6 +58,10 @@ func ObservedConstraints(p ParameterProfile) map[string]any {
 	}
 	if p.MaxValue != nil {
 		out["maximum"] = *p.MaxValue
+	}
+	if IsFormatCandidate(p.FormatCandidate) && p.FormatCandidateRatio != nil {
+		out["format_candidate"] = p.FormatCandidate
+		out["format_candidate_ratio"] = *p.FormatCandidateRatio
 	}
 	return out
 }

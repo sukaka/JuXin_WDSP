@@ -48,6 +48,7 @@ const (
 // 弱点分类（category 列取值；新弱点码可扩展）。
 const (
 	CategoryAuthn     = "AUTHN"     // 认证缺失
+	CategoryAuthz     = "AUTHZ"     // 对象授权与业务滥用
 	CategoryLifecycle = "LIFECYCLE" // 生命周期
 	CategorySensitive = "SENSITIVE" // 敏感数据
 	CategorySchema    = "SCHEMA"    // Schema 治理
@@ -62,11 +63,20 @@ const (
 	SeverityCritical = "CRITICAL"
 )
 
-// v1 派生规则的弱点码（SweepOnce 数据源见 sweep.go）。
+// 派生规则的弱点码（SweepOnce 数据源见 sweep.go）。
 const (
 	CodeUnauthenticatedSensitiveAPI = "UNAUTHENTICATED_SENSITIVE_API"
 	CodeDeprecatedStillCalled       = "DEPRECATED_STILL_CALLED"
 	CodeSensitiveInQuery            = "SENSITIVE_IN_QUERY"
+	CodeCredentialInURL             = "CREDENTIAL_IN_URL"
+	CodeSensitiveCookie             = "SENSITIVE_COOKIE"
+	CodeServerInfoDisclosure        = "SERVER_INFO_DISCLOSURE"
+	CodeObjectEnumerationRisk       = "OBJECT_ENUMERATION_RISK"
+	CodeFlowSequenceDeviation       = "FLOW_SEQUENCE_DEVIATION"
+	CodeFlowReplayOrBurst           = "FLOW_REPLAY_OR_BURST"
+	CodeFileContentTypeMismatch     = "FILE_CONTENT_TYPE_MISMATCH"
+	CodeSensitiveFileContent        = "SENSITIVE_FILE_CONTENT"
+	CodeSensitiveResponseUnmasked   = "SENSITIVE_RESPONSE_UNMASKED"
 	CodeSchemaDriftPersistent       = "SCHEMA_DRIFT_PERSISTENT"
 )
 
@@ -79,6 +89,15 @@ var weaknessMeta = map[string]struct {
 	CodeUnauthenticatedSensitiveAPI: {"未认证敏感接口被调用", CategoryAuthn, SeverityHigh},
 	CodeDeprecatedStillCalled:       {"已下线接口仍被调用", CategoryLifecycle, SeverityMedium},
 	CodeSensitiveInQuery:            {"敏感数据出现在 URL 查询串", CategorySensitive, SeverityHigh},
+	CodeCredentialInURL:             {"URL 携带明文密码或凭据", CategoryAuthn, SeverityHigh},
+	CodeSensitiveCookie:             {"Cookie 包含敏感凭据信息", CategorySensitive, SeverityMedium},
+	CodeServerInfoDisclosure:        {"服务器版本或错误信息泄露", CategorySensitive, SeverityMedium},
+	CodeObjectEnumerationRisk:       {"对象标识批量遍历风险", CategoryAuthz, SeverityHigh},
+	CodeFlowSequenceDeviation:       {"业务访问序列异常", CategoryAuthz, SeverityHigh},
+	CodeFlowReplayOrBurst:           {"重复提交或短窗批量滥用", CategoryAuthz, SeverityMedium},
+	CodeFileContentTypeMismatch:     {"文件真实类型与声明不符", CategorySensitive, SeverityMedium},
+	CodeSensitiveFileContent:        {"文件中检出敏感内容", CategorySensitive, SeverityMedium},
+	CodeSensitiveResponseUnmasked:   {"响应敏感信息未观察到成功脱敏", CategorySensitive, SeverityMedium},
 	CodeSchemaDriftPersistent:       {"Schema 漂移长期存在", CategorySchema, SeverityMedium},
 }
 

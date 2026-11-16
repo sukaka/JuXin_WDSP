@@ -84,7 +84,7 @@ func TestComposeAnswerAutoContinueOnLength(t *testing.T) {
 	o := New(nil, gw, nil, nil, nil, nil, TaskLimits{MaxDuration: time.Minute})
 
 	answer, finish, continues, err := o.composeAnswer(context.Background(),
-		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin")
+		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin", nil)
 	if err != nil {
 		t.Fatalf("composeAnswer err = %v", err)
 	}
@@ -119,7 +119,7 @@ func TestComposeAnswerAutoContinueCap(t *testing.T) {
 	o := New(nil, gw, nil, nil, nil, nil, TaskLimits{MaxDuration: time.Minute})
 
 	answer, finish, continues, err := o.composeAnswer(context.Background(),
-		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin")
+		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin", nil)
 	if err != nil {
 		t.Fatalf("composeAnswer err = %v", err)
 	}
@@ -146,7 +146,7 @@ func TestComposeAnswerAutoContinueDisabled(t *testing.T) {
 	o := New(nil, gw, nil, nil, nil, nil, TaskLimits{MaxDuration: time.Minute, MaxAutoContinues: -1})
 
 	_, finish, continues, err := o.composeAnswer(context.Background(),
-		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin")
+		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin", nil)
 	if err != nil {
 		t.Fatalf("composeAnswer err = %v", err)
 	}
@@ -166,7 +166,7 @@ func TestComposeAnswerNoContinueOnStop(t *testing.T) {
 	o := New(nil, gw, nil, nil, nil, nil, TaskLimits{MaxDuration: time.Minute})
 
 	answer, finish, continues, err := o.composeAnswer(context.Background(),
-		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin")
+		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin", nil)
 	if err != nil {
 		t.Fatalf("composeAnswer err = %v", err)
 	}
@@ -190,7 +190,7 @@ func TestComposeAnswerAutoContinueQuotaBlocked(t *testing.T) {
 	o := New(nil, gw, nil, nil, nil, cost, TaskLimits{MaxDuration: time.Minute})
 
 	answer, finish, continues, err := o.composeAnswer(context.Background(),
-		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin")
+		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin", nil)
 	if err != nil {
 		t.Fatalf("composeAnswer err = %v", err)
 	}
@@ -219,7 +219,7 @@ func TestComposeAnswerAutoContinueQuotaOptional(t *testing.T) {
 	o := New(nil, gw, nil, nil, nil, plainCost{}, TaskLimits{MaxDuration: time.Minute})
 
 	_, finish, continues, err := o.composeAnswer(context.Background(),
-		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin")
+		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin", nil)
 	if err != nil {
 		t.Fatalf("composeAnswer err = %v", err)
 	}
@@ -253,7 +253,7 @@ func TestComposeAnswerAutoContinueModelError(t *testing.T) {
 	o := New(nil, gw, nil, nil, nil, nil, TaskLimits{MaxDuration: time.Minute})
 
 	answer, finish, continues, err := o.composeAnswer(context.Background(),
-		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin")
+		Plan{TaskType: TaskStatistics}, "统计攻击趋势", "已核实事实", nil, "", nil, uuid.New(), "admin", nil)
 	if err != nil {
 		t.Fatalf("composeAnswer err = %v（续写失败应降级保留已生成部分，不向主流程抛错）", err)
 	}

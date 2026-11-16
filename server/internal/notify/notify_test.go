@@ -30,13 +30,13 @@ func TestSeverityOrdering(t *testing.T) {
 	}
 }
 
-// TestCategoriesContract notification-meta 固定 9 类契约（APM 阶段2 起新增业务性能类）。
+// TestCategoriesContract notification-meta 固定 10 类契约（VULN_INTEL MVP 起新增漏洞情报类）。
 func TestCategoriesContract(t *testing.T) {
 	cats := Categories()
-	if len(cats) != 9 {
-		t.Fatalf("categories 应为 9 类, got %d", len(cats))
+	if len(cats) != 10 {
+		t.Fatalf("categories 应为 10 类, got %d", len(cats))
 	}
-	wantCodes := []string{"infrastructure", "storage", "certificate", "collection", "config_publish", "api_security", "ops", "security_events", "apm"}
+	wantCodes := []string{"infrastructure", "storage", "certificate", "collection", "config_publish", "api_security", "ops", "security_events", "apm", "threat_intel"}
 	total := 0
 	for i, c := range cats {
 		if c.Code != wantCodes[i] {
@@ -47,8 +47,8 @@ func TestCategoriesContract(t *testing.T) {
 		}
 		total += len(c.AlertTypes)
 	}
-	if total != 36 {
-		t.Errorf("告警类型总数应为 36, got %d", total)
+	if total != 37 {
+		t.Errorf("告警类型总数应为 37, got %d", total)
 	}
 	// CategoryOf 映射
 	if got := CategoryOf("GATEWAY_DOWN"); got != "infrastructure" {
@@ -73,6 +73,9 @@ func TestCategoriesContract(t *testing.T) {
 		if got := CategoryOf(typ); got != "security_events" {
 			t.Errorf("CategoryOf(%s) = %s, want security_events", typ, got)
 		}
+	}
+	if got := CategoryOf("VULN_INTEL_NEW"); got != "threat_intel" {
+		t.Errorf("CategoryOf(VULN_INTEL_NEW) = %s, want threat_intel", got)
 	}
 	if got := CategoryOf("NO_SUCH_TYPE"); got != "" {
 		t.Errorf("未知类型应返回空串, got %q", got)

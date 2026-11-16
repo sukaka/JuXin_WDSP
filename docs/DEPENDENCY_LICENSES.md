@@ -4,6 +4,7 @@
 
 - **Go 依赖**：以 `gateway/go.mod`、`gateway/modules/jiuzhang_guard/go.mod`（gateway 子模块）、`server/go.mod`、`wdsp-agent/go.mod` 的**直接依赖**为准逐项登记；关键间接依赖（已归档 licenses/ 或影响合规判定者）单独补登；其余传递依赖以 `docs/SBOM.spdx.json` / `docs/SBOM.cyclonedx.json` 为准（由 `scripts/generate-sbom.sh` 生成）。
 - **前端依赖**：以 `web/package.json` 的 dependencies 与 devDependencies **直接依赖全量**登记；锁定版本取 `web/package-lock.json` 实际安装版本（2026-09-10 核查 node_modules）。
+- **Java 探针**：以 `wdsp-agent/instrumentation/java/pom.xml` 的直接依赖为准，标明随 Jar 分发、provided 或仅测试；新增组件核查日期为 2026-11-06。
 - **第三方镜像**：以 `docker-compose.yml`、各级 `Dockerfile`、`deployment/docker-compose.apm.yml` 的 tag + digest 锁定值为准。
 - 同步状态由 `scripts/license-audit.sh` 第 5 步校验（licenses/ 每个组件目录必须在本清单登记，本清单引用的归档路径必须真实存在），接入 `make license-audit`。
 
@@ -25,6 +26,7 @@
 | github.com/caddyserver/caddy/v2 | v2.11.4 | Apache-2.0 | 反向代理网关基础 | [licenses/caddy/](../licenses/caddy/) |
 | github.com/corazawaf/coraza-caddy/v2 | v2.5.0 | Apache-2.0 | Coraza 的 Caddy 集成模块 | [licenses/coraza-caddy/](../licenses/coraza-caddy/) |
 | github.com/valkey-io/valkey-go | v1.0.76 | Apache-2.0 | Valkey 客户端（CC 计数/临时封禁） | [licenses/valkey-go/](../licenses/valkey-go/) |
+| github.com/andybalholm/brotli | v1.3.0 | MIT | gzip/Brotli 压缩响应的安全解压与重编码 | [licenses/brotli/](../licenses/brotli/) |
 | go.uber.org/zap | v1.28.0 | MIT | 结构化日志 | SBOM 收录，未单独归档 |
 | google.golang.org/protobuf | v1.36.11 | BSD-3-Clause | gRPC 描述符级解析（protodesc/dynamicpb） | SBOM 收录，未单独归档 |
 
@@ -47,6 +49,7 @@
 | go.opentelemetry.io/otel/sdk | v1.44.0 | Apache-2.0 | TracerProvider / BatchSpanProcessor | [licenses/opentelemetry-go/](../licenses/opentelemetry-go/) |
 | go.opentelemetry.io/otel/sdk/metric | v1.44.0 | Apache-2.0 | MeterProvider + 周期导出 | [licenses/opentelemetry-go/](../licenses/opentelemetry-go/) |
 | golang.org/x/crypto | v0.54.0 | BSD-3-Clause | 密码学原语 | SBOM 收录，未单独归档 |
+| github.com/twmb/franz-go | v1.21.0 | BSD-3-Clause | API Observation Kafka 生产者/消费者客户端 | [licenses/franz-go/](../licenses/franz-go/) |
 
 ### 1.4 wdsp-agent 模块（wdsp-agent/go.mod）
 
@@ -56,7 +59,16 @@
 | github.com/google/gopacket | v1.1.19 | BSD-3-Clause | pcapgo AF_PACKET 抓包（与 mirrorcap 同版本） | [licenses/gopacket/](../licenses/gopacket/) |
 | golang.org/x/sys | v0.45.0 | BSD-3-Clause | 系统调用封装 | SBOM 收录，未单独归档 |
 
-### 1.5 关键间接依赖补登（影响合规判定或已归档）
+### 1.5 Java 云 API 探针（wdsp-agent/instrumentation/java）
+
+| 依赖 | 锁定版本 | 许可证 | 用途 | 归档 |
+|------|---------|--------|------|------|
+| net.bytebuddy:byte-buddy | 1.17.8 | Apache-2.0 | Java 字节码插桩，随 Agent Jar 分发 | [licenses/byte-buddy/](../licenses/byte-buddy/) |
+| org.springframework:spring-webmvc / spring-web | 6.2.11 | Apache-2.0 | Spring MVC/RestTemplate 插桩编译 API（provided） | [licenses/spring-framework/](../licenses/spring-framework/) |
+| io.opentelemetry:opentelemetry-api | 1.44.0 | Apache-2.0 | Trace Context 只读关联（provided） | [licenses/opentelemetry-java/](../licenses/opentelemetry-java/) |
+| org.junit.jupiter:junit-jupiter | 5.12.2 | EPL-2.0 | Java 单元测试，不进入交付 Jar | 仅构建测试使用，无运行时传递 |
+
+### 1.6 关键间接依赖补登（影响合规判定或已归档）
 
 | 依赖 | 锁定版本 | 许可证 | 引入路径 | 归档 |
 |------|---------|--------|---------|------|
@@ -131,6 +143,7 @@
 | node | 24-alpine@sha256:a0b9bf06…c54fbfd | MIT | 前端构建阶段 | [licenses/other/](../licenses/other/) |
 | caddy | 2.11.4-alpine@sha256:5f5c8640…d58648 | Apache-2.0 | 前端静态资源托管 | [licenses/caddy/](../licenses/caddy/) |
 | clickhouse/clickhouse-server | 25.8-alpine@sha256:87e0a5b7…5e24146 | Apache-2.0 | APM 数据面存储 | [licenses/clickhouse/](../licenses/clickhouse/) |
+| apache/kafka | 4.1.2@sha256:5cc2a2fd…c3648da | Apache-2.0 | API Observation 中心事件总线（KRaft） | [licenses/apache-kafka/](../licenses/apache-kafka/) |
 | otel/opentelemetry-collector-contrib | 0.154.0@sha256:b3079f45…a17bc4cb | Apache-2.0 | APM 本地/中央 Collector | [licenses/otel-collector-contrib/](../licenses/otel-collector-contrib/) |
 | curlimages/curl | 8.21.0@sha256:7c12af72…a64bb13 | curl License（MIT/X 类） | 配置控制器/健康检查 | [licenses/curl/](../licenses/curl/) |
 | ollama/ollama | 0.9.6@sha256:f478761c…df185ce | MIT | 阶段7 AI 测试环境（仅测试，不随产品交付） | SBOM 收录，未单独归档 |
@@ -158,6 +171,7 @@
 | xcaddy | v0.4.5 | Apache-2.0 | Caddy 自定义构建 | [licenses/xcaddy/](../licenses/xcaddy/) |
 | go-ftw | v2.4.0 | Apache-2.0 | CRS 回归测试框架 | [licenses/go-ftw/](../licenses/go-ftw/) |
 | Go 工具链 | 1.25.x | BSD-3-Clause | 后端/网关编译 | [licenses/other/](../licenses/other/) |
+| Maven / Eclipse Temurin 构建镜像 | maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a…858c83d237 | Apache-2.0 / 上游镜像许可证 | Java 17 探针构建与测试，不进入运行镜像 | 构建工具链，见 docs/DEPENDENCIES.md |
 
 ## 六、合规结论
 

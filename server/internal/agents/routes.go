@@ -74,6 +74,7 @@ func RegisterMachineRoutes(mux *http.ServeMux, mh *MachineHandler) {
 	mux.Handle("POST /api/v1/agents/{agent_id}/config/ack", http.HandlerFunc(mh.ConfigAck))
 	mux.Handle("POST /api/v1/agents/{agent_id}/flows", http.HandlerFunc(mh.Flows))
 	mux.Handle("POST /api/v1/agents/{agent_id}/http", http.HandlerFunc(mh.HTTPEvents))
+	mux.Handle("POST /api/v1/agents/{agent_id}/api-observations", http.HandlerFunc(mh.APIObservations))
 	mux.Handle("POST /api/v1/agents/{agent_id}/packets", http.HandlerFunc(mh.Packets))
 	mux.Handle("POST /api/v1/agents/{agent_id}/rotate-cert", http.HandlerFunc(mh.RotateCert))
 }

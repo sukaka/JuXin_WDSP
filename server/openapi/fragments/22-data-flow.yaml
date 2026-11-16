@@ -1,0 +1,165 @@
+paths:
+  /api-security/data-flow/graph:
+    get:
+      operationId: apiDataFlowGraph
+      tags: [api-security]
+      summary: 查询业务系统 API 敏感数据流向图
+      description: >-
+        权限：api_data_flow.read。默认按业务系统聚合真实 HTTP API 调用，一条边代表一对系统关系并汇总 API 列表、请求/响应敏感字段、证据类型、置信度和样本 Trace；不混入 WDSP 内部组件、消息主题或原始敏感值。
+        service 视图仅保留有 Agent 配对证据的 SERVICE→SERVICE、OBSERVED_TRACE HTTP 边。network 视图仅用于兼容既有调用方。
+        boundary 视图仅返回 CLIENT/EXTERNAL→SERVICE 的 HTTP 边，且 boundary_type 仅为 PUBLIC_TO_INTERNAL 或 UNKNOWN，表示外部或直连来源到受监控服务端的边界观测，不代表物理网络链路。
+        公网/内网范围由 apigeo.ClassifyIPScope 对观测 IP 计算；只有客户端地址来源可信（DIRECT_PEER、TRUSTED_PROXY 或 GATEWAY）且观测范围为 PUBLIC→INTERNAL 时才标记 PUBLIC_TO_INTERNAL，地址缺失、来源不可信或无法分类时为 UNKNOWN。
+        代理、NAT 或地址证据缺失可能隐藏或改变真实终端地址，因此不能保证识别代理/NAT 场景中的所有真实内外网边界。
+      parameters:
+        - { name: start, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: end, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: method, in: query, required: false, schema: { type: string, maxLength: 16 } }
+        - { name: data_type, in: query, required: false, schema: { type: string, maxLength: 64 } }
+        - { name: max_edges, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: view, in: query, required: false, schema: { type: string, enum: [service, network, boundary], default: service }, description: service 为严格 SERVICE→SERVICE/OBSERVED_TRACE 服务视图；network 为兼容既有调用方的应用观测端点视图；boundary 仅返回 CLIENT/EXTERNAL→SERVICE 的 PUBLIC_TO_INTERNAL 或 UNKNOWN 边界观测。 }
+      responses:
+        '200': { description: 数据流图, content: { application/json: { schema: { $ref: '#/components/schemas/DataFlowGraph' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { description: ClickHouse 数据面不可用 }
+
+  /api-security/data-flow/nodes/{node_id}:
+    get:
+      operationId: apiDataFlowNode
+      tags: [api-security]
+      summary: 查询数据流节点及上下游
+      description: 权限：api_data_flow.read。node_id 支持多段路径，以兼容 Kafka 节点名称中的斜杠。
+      parameters:
+        - { name: node_id, in: path, required: true, schema: { type: string } }
+        - { name: start, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: end, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: 节点与上下游, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { description: 节点不存在 }
+
+  /api-security/data-flow/evidence:
+    get:
+      operationId: apiDataFlowEvidence
+      tags: [api-security]
+      summary: 查询数据流边脱敏证据
+      description: 权限：api_data_flow.evidence.read。只返回字段路径、类型、HMAC、证据和时间，不返回原始敏感值。读取行为记高风险审计。
+      parameters:
+        - { name: edge_id, in: query, required: true, schema: { type: string } }
+        - { name: start, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: end, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 100 } }
+      responses:
+        '200':
+          description: 脱敏证据列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/EvidenceRecord' } }
+                  total: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api-security/data-flow/quality:
+    get:
+      operationId: apiDataFlowQuality
+      tags: [api-security]
+      summary: 查询数据流采集质量
+      description: 权限：api_data_flow.read。返回 Observation 数、Trace 关联数、覆盖率、截断量和部分链路提示。
+      parameters:
+        - { name: start, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: end, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: 数据质量, content: { application/json: { schema: { $ref: '#/components/schemas/DataFlowQuality' } } } }
+        '503': { description: ClickHouse 数据面不可用 }
+
+components:
+  schemas:
+    DataFlowQuality:
+      type: object
+      required: [observations, trace_linked, trace_coverage, truncated, data_source, partial, message]
+      properties:
+        observations: { type: integer, format: int64 }
+        trace_linked: { type: integer, format: int64 }
+        trace_coverage: { type: number, format: double }
+        truncated: { type: integer, format: int64 }
+        data_source: { type: string, example: clickhouse }
+        partial: { type: boolean }
+        message: { type: string }
+    DataFlowGraph:
+      type: object
+      required: [nodes, edges, truncated, view, quality]
+      properties:
+        nodes: { type: array, items: { $ref: '#/components/schemas/DataFlowNode' } }
+        edges:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            properties:
+              id: { type: string }
+              source_id: { type: string }
+              target_id: { type: string }
+              source_name: { type: string, description: 调用方业务系统 }
+              target_name: { type: string, description: 被调用业务系统；服务视图仅保留有 Agent 配对证据的服务端，网络视图可保留可识别端点，边界视图保留受监控服务端 }
+              source_zone: { type: string, enum: [PUBLIC, INTERNAL, UNKNOWN], description: 来源网络范围；仅可信客户端地址按 apigeo.ClassifyIPScope 分类，地址缺失或来源不可信时为 UNKNOWN }
+              target_zone: { type: string, enum: [PUBLIC, INTERNAL, UNKNOWN], description: 受监控服务端地址经 apigeo.ClassifyIPScope 计算的网络范围；地址缺失或无法分类时为 UNKNOWN }
+              boundary_type: { type: string, enum: [PUBLIC_TO_INTERNAL, UNKNOWN], description: 可信观测为 PUBLIC→INTERNAL 时为 PUBLIC_TO_INTERNAL；其余情况为 UNKNOWN，不保证穿透代理或 NAT 识别真实边界 }
+              boundary_evidence: { type: string, description: 边界判定依据或降级原因，如 DIRECT_PEER、TRUSTED_PROXY、GATEWAY、MISSING_CLIENT_ADDRESS、UNTRUSTED_CLIENT_SOURCE、MISSING_SERVER_ADDRESS }
+              apis: { type: array, items: { type: string, example: 'POST /profiles/{id}' }, description: 该系统关系下实际观测到的 API，最多 100 个 }
+              data_types: { type: array, items: { type: string }, description: 请求、响应或消息中已识别的敏感数据类型合集 }
+              fields: { type: array, items: { type: object, additionalProperties: true }, description: 脱敏字段证据；side 区分 REQUEST、RESPONSE 与 MESSAGE，不包含原始敏感值 }
+        truncated: { type: boolean }
+        view: { type: string, enum: [service, network, boundary], description: 实际返回的视图；boundary 仅包含 CLIENT/EXTERNAL→SERVICE 的 PUBLIC_TO_INTERNAL 或 UNKNOWN 边 }
+        quality: { $ref: '#/components/schemas/DataFlowQuality' }
+    DataFlowNode:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string, description: SERVICE、CLIENT、KAFKA、EXTERNAL 或网络视图的 ENDPOINT }
+        network_zone: { type: string, enum: [PUBLIC, INTERNAL, UNKNOWN], description: 节点观测网络范围，由 apigeo.ClassifyIPScope 计算；证据缺失、不可信或同一节点范围冲突时为 UNKNOWN，不表示物理网络拓扑 }
+        service_name: { type: string, description: 网络视图中保留原服务名 }
+        group_name: { type: string, description: 实际环境/命名空间分组；未知时为未分区 }
+        addresses: { type: array, items: { type: string }, description: 观测到的主机地址，最多保留 10 个 }
+        environment: { type: string }
+        namespace: { type: string }
+        cluster: { type: string }
+        calls: { type: integer, format: int64 }
+        api_count: { type: integer, format: int64 }
+        avg_latency_ms: { type: number, format: double }
+        max_latency_ms: { type: integer, format: int64 }
+        error_rate: { type: number, format: double }
+        health: { type: string, enum: [HEALTHY, DEGRADED, ERROR] }
+        incoming_count: { type: integer, format: int64 }
+        outgoing_count: { type: integer, format: int64 }
+    EvidenceRecord:
+      type: object
+      required: [agent_id, event_id, edge_id, occurred_at, service_name, trace_id, span_id, fields, evidence_type, confidence]
+      properties:
+        agent_id: { type: string, format: uuid }
+        event_id: { type: string }
+        edge_id: { type: string }
+        occurred_at: { type: string, format: date-time }
+        service_name: { type: string }
+        trace_id: { type: string }
+        span_id: { type: string }
+        peer_address: { type: string, maxLength: 128, description: 可选的直接对端 IPv4/IPv6 地址，不含端口；代理场景下不等于终端客户端地址 }
+        client_address: { type: string, maxLength: 128, description: 可选的客户端观测 IPv4/IPv6 地址，不含端口；是否可用于边界分类取决于 client_address_source，代理/NAT 下不保证是真实终端地址 }
+        client_address_source: { type: string, enum: [DIRECT_PEER, TRUSTED_PROXY, GATEWAY, UNKNOWN], description: 可选的客户端地址来源；仅 DIRECT_PEER、TRUSTED_PROXY、GATEWAY 可作为可信边界分类来源 }
+        server_address: { type: string, maxLength: 128, description: 可选的受监控服务端观测 IPv4/IPv6 地址，不含端口；不保证是 NAT 前的真实服务端地址 }
+        source_zone: { type: string, enum: [PUBLIC, INTERNAL, UNKNOWN], description: 可选的来源网络范围；仅可信 client_address 经 apigeo.ClassifyIPScope 分类，缺失或来源不可信时为 UNKNOWN }
+        target_zone: { type: string, enum: [PUBLIC, INTERNAL, UNKNOWN], description: 可选的目标网络范围，由 server_address 经 apigeo.ClassifyIPScope 计算；缺失或无法分类时为 UNKNOWN }
+        boundary_type: { type: string, enum: [PUBLIC_TO_INTERNAL, UNKNOWN], description: 可选的边界判定；可信观测为 PUBLIC→INTERNAL 时为 PUBLIC_TO_INTERNAL，否则为 UNKNOWN，不保证识别代理/NAT 后的真实边界 }
+        boundary_evidence: { type: string, description: 可选的边界判定依据或降级原因，如 DIRECT_PEER、TRUSTED_PROXY、GATEWAY、MISSING_CLIENT_ADDRESS、UNTRUSTED_CLIENT_SOURCE、MISSING_SERVER_ADDRESS }
+        fields: { type: array, items: { type: object, additionalProperties: true }, description: 脱敏字段证据，不包含原始敏感值 }
+        evidence_type: { type: string }
+        confidence: { type: number, format: double, minimum: 0, maximum: 1 }

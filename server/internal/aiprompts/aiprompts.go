@@ -38,6 +38,7 @@ type Version struct {
 	ContentHash       string          `json:"content_hash"`
 	ChangeSummary     string          `json:"change_summary"`
 	TestResult        string          `json:"test_result"`
+	TestDetail        json.RawMessage `json:"test_detail"`
 	AdversarialResult string          `json:"adversarial_result"`
 	AdversarialDetail json.RawMessage `json:"adversarial_detail"`
 	CreatedAt         time.Time       `json:"created_at"`
@@ -169,7 +170,7 @@ SELECT id, code, name, prompt_type, status, current_version_id, created_at FROM 
 // ListVersions 列出版本。
 func (s *Store) ListVersions(ctx context.Context, promptID uuid.UUID) ([]Version, error) {
 	rows, err := s.db.Query(ctx, `
-SELECT id, prompt_id, version_number, content, content_hash, change_summary, test_result, adversarial_result, adversarial_detail, created_at, published_at, is_current
+SELECT id, prompt_id, version_number, content, content_hash, change_summary, test_result, test_detail, adversarial_result, adversarial_detail, created_at, published_at, is_current
 FROM ai_prompt_versions WHERE prompt_id = $1 ORDER BY version_number DESC LIMIT 50`, promptID)
 	if err != nil {
 		return nil, err
@@ -179,7 +180,7 @@ FROM ai_prompt_versions WHERE prompt_id = $1 ORDER BY version_number DESC LIMIT 
 	for rows.Next() {
 		var v Version
 		if err := rows.Scan(&v.ID, &v.PromptID, &v.VersionNumber, &v.Content, &v.ContentHash,
-			&v.ChangeSummary, &v.TestResult, &v.AdversarialResult, &v.AdversarialDetail, &v.CreatedAt, &v.PublishedAt, &v.IsCurrent); err != nil {
+			&v.ChangeSummary, &v.TestResult, &v.TestDetail, &v.AdversarialResult, &v.AdversarialDetail, &v.CreatedAt, &v.PublishedAt, &v.IsCurrent); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -217,12 +218,20 @@ func (s *Store) Publish(ctx context.Context, promptID, versionID uuid.UUID, publ
 	return tx.Commit(ctx)
 }
 
-// MarkTestResult 标记版本测试结果（回归/对抗测试后）。
-func (s *Store) MarkTestResult(ctx context.Context, versionID uuid.UUID, result string) error {
+// MarkTestResult 标记版本测试结果（静态检查 + 真实回归后）。
+// detail 为回归明细 JSON（静态检查项、逐评估集分数/阈值/模型/失败摘要），
+// 空时落 '{}'；非法 JSON 拒绝（与 adversarial_detail 同口径，明细必须可回放）。
+func (s *Store) MarkTestResult(ctx context.Context, versionID uuid.UUID, result string, detail []byte) error {
 	if result != "PASSED" && result != "FAILED" {
 		return fmt.Errorf("invalid test result")
 	}
-	_, err := s.db.Exec(ctx, `UPDATE ai_prompt_versions SET test_result=$2 WHERE id=$1`, versionID, result)
+	if len(detail) == 0 {
+		detail = []byte("{}")
+	}
+	if !json.Valid(detail) {
+		return fmt.Errorf("invalid test detail json")
+	}
+	_, err := s.db.Exec(ctx, `UPDATE ai_prompt_versions SET test_result=$2, test_detail=$3 WHERE id=$1`, versionID, result, detail)
 	return err
 }
 
@@ -245,10 +254,10 @@ func (s *Store) MarkAdversarialResult(ctx context.Context, versionID uuid.UUID, 
 func (s *Store) GetVersion(ctx context.Context, versionID uuid.UUID) (*Version, error) {
 	var v Version
 	err := s.db.QueryRow(ctx, `
-SELECT id, prompt_id, version_number, content, content_hash, change_summary, test_result, adversarial_result, adversarial_detail, created_at, published_at, is_current
+SELECT id, prompt_id, version_number, content, content_hash, change_summary, test_result, test_detail, adversarial_result, adversarial_detail, created_at, published_at, is_current
 FROM ai_prompt_versions WHERE id = $1`, versionID).Scan(
 		&v.ID, &v.PromptID, &v.VersionNumber, &v.Content, &v.ContentHash,
-		&v.ChangeSummary, &v.TestResult, &v.AdversarialResult, &v.AdversarialDetail, &v.CreatedAt, &v.PublishedAt, &v.IsCurrent)
+		&v.ChangeSummary, &v.TestResult, &v.TestDetail, &v.AdversarialResult, &v.AdversarialDetail, &v.CreatedAt, &v.PublishedAt, &v.IsCurrent)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound

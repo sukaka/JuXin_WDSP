@@ -2,10 +2,11 @@
 
 本文档描述九章 WAF V2.0 阶段7（AI 安全运营中心）的 AI 质量评估功能，与实现代码严格一致：
 
-- 评估接口层：`server/internal/aihandlers/evaluations_handler.go`（评估集与评估运行）
+- 评估接口层：`server/internal/aihandlers/evaluations_handler.go`（评估集与评估运行 HTTP 入口）
+- 共用运行器：`server/internal/aihandlers/evaluation_runner.go`（`executeEvalSet`：`EvalRun` 与 Prompt 版本真实回归（`PromptVersionTest`）共用同一条真实链路；运行明细含 `case_errors` 计数）
 - 路由与权限：`server/internal/aihandlers/handler.go`（`EvalSetList` / `EvalSetCreate` / `EvalRunList` / `EvalRun`）
-- 表结构：`server/migrations/000013_stage7.up.sql`（`ai_evaluation_sets` / `ai_evaluation_runs`）
-- 前端 API 客户端：`web/src/api/ai.ts`（`aiEvaluationsApi`）
+- 表结构：`server/migrations/000013_stage7.up.sql`（`ai_evaluation_sets` / `ai_evaluation_runs`）；种子集：`server/migrations/000143_seed_stage7_evaluation_sets.up.sql`（12 类×3 用例）+ `server/migrations/000187_ai_quality_reliability.up.sql`（`eval_api_security_analysis`）
+- 前端 API 客户端：`web/src/api/ai.ts`（`aiEvaluationsApi`）；页面：`web/src/pages/ai/admin/evaluations/AiEvaluationsPage.tsx`
 
 实现定位为**最小落地**（源码注释原文：「AI 质量评估（最小落地）」）：评估集内存测试用例（question + expected_contains），运行时逐条过编排器，按回答包含匹配计分并落库。任务书（`docs/tasks/STAGE_7_AI_SECURITY_OPERATIONS.md` 第三十四章）规划的多维指标（引用正确率、幻觉率、Tool 选择准确率等）尚未全部自动化，当前实现产出单一通过率分数，差距说明见 §9。
 
@@ -100,6 +101,7 @@
   "total": 3,
   "passed": 2,
   "truncated": false,
+  "case_errors": 1,
   "cases": [
     {"question": "...", "expected_contains": "...", "passed": true,  "answer_excerpt": "..."},
     {"question": "...", "expected_contains": "...", "passed": false, "answer_excerpt": "..."},
@@ -107,6 +109,8 @@
   ]
 }
 ```
+
+`case_errors` 为执行失败用例数（模型不可用等），>0 时对应用例计为不通过。运行记录 `status=SUCCESS` 只表示「评估过程执行完毕」，通过与否看 `score` 与调用方阈值判定。
 
 设计决策说明：
 
@@ -134,7 +138,7 @@
 | id | UUID PK | - |
 | evaluation_set_id | UUID NOT NULL REFERENCES ai_evaluation_sets(id) | 所属评估集 |
 | model_id | UUID（可空） | 预留：模型版本归因，当前实现未写入 |
-| prompt_version_id | UUID（可空） | 预留：Prompt 版本归因，当前实现未写入 |
+| prompt_version_id | UUID（可空） | Prompt 版本归因：Prompt 版本真实回归（`PromptVersionTest`）产生的运行写入该列（回归可追溯）；手工 `EvalRun` 入口不写入（NULL） |
 | status | VARCHAR(20) NOT NULL DEFAULT 'RUNNING' | RUNNING / SUCCESS / FAILED；当前实现同步执行成功后直接落 SUCCESS |
 | score | NUMERIC(5,2)（可空） | 通过率分数 0–100 |
 | details | JSONB NOT NULL DEFAULT '{}' | 运行明细（结构见 §3） |
@@ -153,7 +157,7 @@
 | `GET /api/v1/ai/evaluation-runs` | 运行记录分页（`page` / `page_size`，默认 20、上限 100，按开始时间倒序，联表返回 `set_code`） | `ai.evaluations.run` / `ai.usage.read` / `ai.audits.read` 任一 |
 | `POST /api/v1/ai/evaluations/run` | 执行评估（同步，请求体 `{"evaluation_set_id": "<uuid>"}`） | `ai.evaluations.run` |
 
-实现现状说明：任务书接口设计中的 `GET /api/v1/ai/evaluations/{id}`（单次运行详情）当前未挂载路由，运行明细需通过运行记录列表中的 `details` 字段查看。前端侧 `web/src/api/ai.ts` 已提供 `aiEvaluationsApi` 客户端（listSets / createSet / listRuns / run），专属页面组件尚未实现。
+实现现状说明：任务书接口设计中的 `GET /api/v1/ai/evaluations/{id}`（单次运行详情）当前未挂载路由，运行明细需通过运行记录列表中的 `details` 字段查看。前端侧 `web/src/api/ai.ts` 已提供 `aiEvaluationsApi` 客户端（listSets / createSet / listRuns / run），页面 `web/src/pages/ai/admin/evaluations/AiEvaluationsPage.tsx` 已实现（评估集与运行记录表格 + 反馈质量聚合卡片，挂载于路由 `ai/admin/evaluations`）。
 
 写操作审计：创建评估集记 `action=evaluation_set_create`；执行评估记 `action=evaluation_run`（`ResultSummary` 含 `score=.. passed=n/m`），均落 `ai_audit_records`。
 
@@ -168,7 +172,7 @@ score = 通过条数 × 100 / 实际执行条数     （截断保留两位小数
 - **分母是实际执行条数**：评估集超过 20 条时只执行前 20 条，分数基于这 20 条计算，明细中 `truncated=true`；
 - **单条判定**：`expected_contains` 为空 → 编排器执行成功即通过；非空 → 回答（完整文本，非摘要）与期望值各自转小写后做子串包含匹配，命中即通过；执行出错一律不通过；
 - **分数语义**：score 是「包含匹配通过率」，100 分表示每条回答都出现了预期关键词，**不代表语义正确**（见 §9）；同一评估集分数下降通常意味着模型、Prompt、Tool 数据或权限上下文发生了变化，应结合 `details.cases[].answer_excerpt` 逐条定位；
-- **分数不是门禁的充分条件**：当前无自动阈值拦截，是否放行由发布流程人工判断（回归门禁要求见任务书 §34.3）。
+- **分数阈值**：`EvalRun` 入口本身不设自动阈值拦截（分数是否放行由人工判断）；但 Prompt 版本发布门复用同一运行器做真实回归并内置阈值——安全类评估集（`eval_prompt_injection`/`eval_privilege_denial`）100%、一般集（`eval_insufficient_data`/`eval_api_security_analysis`）80%，全部达标才记 `PASSED`，详见 [Prompt 管理设计](AI_PROMPT_MANAGEMENT.md) §4。
 
 示例：评估集 5 条用例，3 条命中、1 条未命中、1 条执行失败 → passed=3，score=60.00。
 
@@ -210,7 +214,7 @@ score = 通过条数 × 100 / 实际执行条数     （截断保留两位小数
 1. **包含匹配非语义评分**：判定是字面子串匹配——回答语义正确但没出现关键词会误判不通过，回答包含关键词但整体错误会误判通过；分数只能作回归对比信号，不能当正确性证明；
 2. **维度单一**：任务书 §34.2 规划的引用正确率、幻觉率、Tool 选择准确率、平均耗时等多维指标未自动化，当前仅通过率与聚合 Token 用量；
 3. **不校验中间过程**：计分只看最终回答文本，意图分类结果（`Plan.TaskType`）、Tool 调用序列不进 `details`，意图/工具选错但回答凑巧含关键词仍会得分；
-4. **版本归因缺失**：`model_id` / `prompt_version_id` 字段已建表但当前未写入，跨版本对比分数需自行记录变更时点；
+4. **模型归因缺失、Prompt 归因部分落地**：`model_id` 字段已建表但当前未写入；`prompt_version_id` 由 Prompt 版本真实回归写入（见 §4），手工 `EvalRun` 运行仍为 NULL，跨版本对比分数需自行记录变更时点；
 5. **同步执行、无中断恢复**：请求中断或整体超时（10 分钟）则该次运行无记录；运行期间不暴露 `RUNNING` 中间态；
 6. **拒绝类判定依赖措辞**：拒绝编造/注入抵抗用例以固定拒绝措辞为期望词，系统提示词措辞变化会导致分数波动；
 7. **评估集无更新/删除接口**：用例修订需重建新编码的评估集，历史运行记录仍关联旧集。

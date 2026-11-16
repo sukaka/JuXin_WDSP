@@ -64,18 +64,18 @@ type SensitiveValueRule struct {
 	Level     string   `json:"level"` // 敏感等级（NON_SENSITIVE/GENERAL/SENSITIVE/IMPORTANT/CORE），证据透传
 }
 
-// CompiledSensitiveValueRule 编译后的值级规则（opaque，由 CompileSensitiveValueRules 产出）。
+// CompiledSensitiveValueRule 编译后的值级规则（opaque，由请求侧或响应侧编译入口产出）。
 type CompiledSensitiveValueRule struct {
 	dataType  string
 	level     string
-	locations map[string]bool // 已过滤为请求侧支持位置
+	locations map[string]bool // 已过滤为对应方向支持的位置
 	re        *regexp.Regexp
 }
 
 // sensitiveValueRequestLocations 请求侧值级检测支持的位置词表
 // （xml 无留存值、cookie 整头脱敏、response_body 属响应侧，均不在请求侧消费）。
 var sensitiveValueRequestLocations = map[string]bool{
-	"query": true, "json": true, "form": true, "header": true, "path": true,
+	"query": true, "json": true, "form": true, "header": true, "path": true, "file": true,
 }
 
 // 敏感词表/值级规则编译缓存（热路径预编译修复）：发布通道下发的同一配置逐请求
@@ -124,6 +124,10 @@ func sensitiveValueRulesCacheKey(in []SensitiveValueRule) string {
 }
 
 func compileSensitiveValueRules(in []SensitiveValueRule) ([]CompiledSensitiveValueRule, error) {
+	return compileSensitiveValueRulesForLocations(in, sensitiveValueRequestLocations)
+}
+
+func compileSensitiveValueRulesForLocations(in []SensitiveValueRule, supportedLocations map[string]bool) ([]CompiledSensitiveValueRule, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
@@ -144,12 +148,12 @@ func compileSensitiveValueRules(in []SensitiveValueRule) ([]CompiledSensitiveVal
 		}
 		locs := map[string]bool{}
 		for _, loc := range r.Locations {
-			if sensitiveValueRequestLocations[loc] {
+			if supportedLocations[loc] {
 				locs[loc] = true
 			}
 		}
 		if len(locs) == 0 {
-			continue // 无请求侧可用位置（如仅 cookie/response_body）：跳过该条
+			continue // 无当前方向可用位置：跳过该条
 		}
 		out = append(out, CompiledSensitiveValueRule{
 			dataType: r.DataType, level: r.Level, locations: locs, re: re,

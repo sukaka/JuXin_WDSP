@@ -18,6 +18,7 @@ type Type string
 const (
 	IPAllowMatch           Type = "IP_ALLOW_MATCH"
 	IPDenyMatch            Type = "IP_DENY_MATCH"
+	IdentityManualBlock    Type = "IDENTITY_MANUAL_BLOCK"
 	CCThresholdExceeded    Type = "CC_THRESHOLD_EXCEEDED"
 	CCRequestRejected      Type = "CC_REQUEST_REJECTED"
 	CCTempBlockCreated     Type = "CC_TEMP_BLOCK_CREATED"

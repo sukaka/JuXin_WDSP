@@ -4,6 +4,7 @@ import {
   App as AntdApp,
   Button,
   Card,
+  Collapse,
   Drawer,
   Form,
   Input,
@@ -17,7 +18,13 @@ import SmartTable from '../../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { aiPromptsApi } from '../../../../api/ai'
-import type { AiPrompt, AiPromptAdversarialCase, AiPromptVersion } from '../../../../api/ai'
+import type {
+  AiPrompt,
+  AiPromptAdversarialCase,
+  AiPromptTestResult,
+  AiPromptTestSetResult,
+  AiPromptVersion,
+} from '../../../../api/ai'
 import { ApiError } from '../../../../api/client'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
@@ -85,6 +92,118 @@ function AdversarialCaseList({ cases }: { cases: AiPromptAdversarialCase[] }) {
   )
 }
 
+/** 模型回归单评估集卡片：分数/阈值/通过数/模型/失败原因 + 逐用例摘要（可折叠） */
+function RegressionSetCard({ set }: { set: AiPromptTestSetResult }) {
+  const cases = set.cases ?? []
+  return (
+    <div
+      style={{
+        border: '1px solid #f0f0f0',
+        borderRadius: 6,
+        padding: 12,
+        marginBottom: 8,
+      }}
+    >
+      <Space size={8} wrap>
+        <Typography.Text strong>{set.name || set.code}</Typography.Text>
+        {set.code ? <Typography.Text code>{set.code}</Typography.Text> : null}
+        {set.passed ? <Tag color="green">通过</Tag> : <Tag color="red">未通过</Tag>}
+      </Space>
+      <div style={{ marginTop: 8, fontSize: 13 }}>
+        <Space size={16} wrap>
+          <span>
+            得分 <Typography.Text strong>{(set.score ?? 0).toFixed(2)}</Typography.Text> / 阈值{' '}
+            {(set.threshold ?? 0).toFixed(2)}
+          </span>
+          <span>
+            通过用例 {set.passed_count}/{set.total}
+          </span>
+          <span>
+            模型 <Typography.Text code>{set.model_code || '-'}</Typography.Text>
+          </span>
+        </Space>
+      </div>
+      {set.message ? (
+        <Typography.Text type="danger" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+          失败原因：{set.message}
+        </Typography.Text>
+      ) : null}
+      {cases.length > 0 ? (
+        <Collapse
+          size="small"
+          style={{ marginTop: 8 }}
+          items={[
+            {
+              key: 'cases',
+              label: `逐用例摘要（${cases.length} 条）`,
+              children: (
+                <div>
+                  {cases.map((c, i) => (
+                    <div key={c.id ?? i} style={{ marginBottom: 6 }}>
+                      <Typography.Text type={c.passed ? 'success' : 'danger'}>
+                        {c.passed ? '✓' : '✗'}
+                      </Typography.Text>{' '}
+                      {c.id ? <Typography.Text code>{c.id}</Typography.Text> : null}
+                      {c.question ? ` ${c.question}` : ''}
+                      {c.message ? (
+                        <div style={{ fontSize: 12, color: '#888' }}>{c.message}</div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ),
+            },
+          ]}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * 版本测试结果内容：带 test_detail 时按「模型回归测试 / 静态检查」分区如实展示真实回归结果，
+ * 无 test_detail（旧版响应）时仅展示静态检查清单，不将静态检查称为模型回归。
+ */
+function TestResultContent({ data }: { data: AiPromptTestResult }) {
+  const detail = data.test_detail ?? null
+  const sets = detail?.sets ?? []
+  const staticChecks = detail?.static_checks ?? data.checks ?? []
+  return (
+    <div>
+      {detail ? (
+        <div style={{ marginBottom: 16 }}>
+          <Typography.Text strong>模型回归测试</Typography.Text>
+          <div style={{ marginTop: 8 }}>
+            {sets.length === 0 ? (
+              <Typography.Text type="secondary">无回归评估集明细</Typography.Text>
+            ) : (
+              sets.map((s) => <RegressionSetCard key={s.code || s.name} set={s} />)
+            )}
+          </div>
+        </div>
+      ) : null}
+      <div>
+        <Typography.Text strong>静态检查</Typography.Text>
+        <div style={{ marginTop: 8 }}>
+          {staticChecks.length === 0 ? (
+            <Typography.Text type="secondary">无静态检查明细</Typography.Text>
+          ) : (
+            staticChecks.map((c) => (
+              <div key={c.name}>
+                <Typography.Text type={c.passed ? 'success' : 'danger'}>
+                  {c.passed ? '✓' : '✗'}
+                </Typography.Text>{' '}
+                {c.name}
+                {c.message ? `：${c.message}` : ''}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 interface CreateFormValues {
   code: string
   name: string
@@ -129,21 +248,17 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
   const testMutation = useMutation({
     mutationFn: (versionId: string) => aiPromptsApi.testVersion(versionId),
     onSuccess: (data) => {
+      const hasDetail = data.test_detail != null
       modal.info({
-        title: data.test_result === 'PASSED' ? '静态测试通过' : '静态测试未通过',
-        content: (
-          <div>
-            {(data.checks ?? []).map((c) => (
-              <div key={c.name}>
-                <Typography.Text type={c.passed ? 'success' : 'danger'}>
-                  {c.passed ? '✓' : '✗'}
-                </Typography.Text>{' '}
-                {c.name}
-                {c.message ? `：${c.message}` : ''}
-              </div>
-            ))}
-          </div>
-        ),
+        title: hasDetail
+          ? data.test_result === 'PASSED'
+            ? '测试通过'
+            : '测试未通过'
+          : data.test_result === 'PASSED'
+            ? '静态测试通过'
+            : '静态测试未通过',
+        width: hasDetail ? 720 : undefined,
+        content: <TestResultContent data={data} />,
       })
       invalidate()
     },

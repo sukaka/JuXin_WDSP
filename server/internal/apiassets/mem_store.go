@@ -147,10 +147,13 @@ func (m *MemStore) List(ctx context.Context, f ListFilter) ([]Endpoint, int64, e
 			}
 		}
 		item := cloneEP(e)
-		// 与 SQL List 一致：列表带出 business_type（无资产记录归一 OTHER）
+		// 与 SQL List 一致：列表带出 business_type（无资产记录归一 OTHER）与 tags
 		item.BusinessType = "OTHER"
-		if a, ok := m.assets[e.ID]; ok && a.BusinessType != "" {
-			item.BusinessType = a.BusinessType
+		if a, ok := m.assets[e.ID]; ok {
+			if a.BusinessType != "" {
+				item.BusinessType = a.BusinessType
+			}
+			item.Tags = append([]string{}, a.Tags...)
 		}
 		all = append(all, *item)
 	}
@@ -376,18 +379,11 @@ func (m *MemStore) GetAsset(ctx context.Context, endpointID uuid.UUID) (*Asset, 
 }
 
 // UpsertAsset 全量替换业务维度扩展。
-func (m *MemStore) UpsertAsset(ctx context.Context, endpointID uuid.UUID, purpose, exposure, owner string, tags []string, businessType string) (*Asset, error) {
+func (m *MemStore) UpsertAsset(ctx context.Context, endpointID uuid.UUID, p AssetProfile) (*Asset, error) {
 	_ = ctx
-	exposure = strings.ToUpper(strings.TrimSpace(exposure))
-	if exposure == "" {
-		exposure = "INTERNAL"
-	}
-	businessType = NormalizeBusinessType(businessType)
-	if !validBusinessTypes[businessType] {
-		return nil, fmt.Errorf("无效的业务类型：%s", businessType)
-	}
-	if tags == nil {
-		tags = []string{}
+	p, err := normalizeAssetProfile(p)
+	if err != nil {
+		return nil, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -400,11 +396,18 @@ func (m *MemStore) UpsertAsset(ctx context.Context, endpointID uuid.UUID, purpos
 		a = &Asset{EndpointID: endpointID, DataClassification: "UNKNOWN", CreatedAt: now}
 		m.assets[endpointID] = a
 	}
-	a.Purpose = purpose
-	a.Exposure = exposure
-	a.Owner = owner
-	a.Tags = append([]string{}, tags...)
-	a.BusinessType = businessType
+	a.Purpose = p.Purpose
+	a.Exposure = p.Exposure
+	a.Owner = p.Owner
+	a.Tags = append([]string{}, p.Tags...)
+	a.BusinessType = p.BusinessType
+	a.Organization = p.Organization
+	a.BusinessSystem = p.BusinessSystem
+	a.TechnicalOwner = p.TechnicalOwner
+	a.DataOwner = p.DataOwner
+	a.DataLevel = p.DataLevel
+	a.APILevel = p.APILevel
+	a.AuthType = p.AuthType
 	a.UpdatedAt = now
 	return cloneAsset(a), nil
 }
@@ -439,7 +442,9 @@ func (m *MemStore) SetLearningStatus(ctx context.Context, id uuid.UUID, status s
 	return nil
 }
 
-// AutoClassify 启发式自动分类（source=AUTO）；锁定返回 ErrClassificationLocked。
+// AutoClassify 路径/方法启发式与协议确定性自动分类（source=AUTO）；锁定返回 ErrClassificationLocked。
+// 内存实现没有当前模型参数、运行时事件、流程基线、风险发现与对象模型源，不产出
+// DATA_SENSITIVITY/IDENTITY_REQUIREMENT/BUSINESS_FLOW_STAGE/RISK_LABEL/BUSINESS_OBJECT。
 func (m *MemStore) AutoClassify(ctx context.Context, id uuid.UUID) ([]ClassificationDimension, error) {
 	_ = ctx
 	m.mu.Lock()
@@ -452,6 +457,7 @@ func (m *MemStore) AutoClassify(ctx context.Context, id uuid.UUID) ([]Classifica
 		return nil, ErrClassificationLocked
 	}
 	dims := classifyByPath(e.HTTPMethod, e.NormalizedPath)
+	dims = append(dims, classifyByProtocol(e.ProtocolType)...)
 	for i := range dims {
 		dims[i].EndpointID = id
 	}
@@ -785,6 +791,9 @@ func cloneEP(e *Endpoint) *Endpoint {
 	}
 	if e.AssetValueExplain != nil {
 		cp.AssetValueExplain = append(json.RawMessage{}, e.AssetValueExplain...)
+	}
+	if e.Tags != nil {
+		cp.Tags = append([]string{}, e.Tags...)
 	}
 	if e.ApplicationID != nil {
 		v := *e.ApplicationID

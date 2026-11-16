@@ -110,6 +110,28 @@ func (r *GeoResolver) Classify(ipRaw string) (Scope, string, error) {
 	return ScopeForeign, country, nil
 }
 
+// IPScope IP 网络范围三分词表（暴露面来源聚合用；与 api_endpoint_source_buckets.scope
+// 的 INTERNAL/PUBLIC 取值对齐，合作方 PARTNER 由引擎侧叠加出口 CIDR 判定）。
+const (
+	IPScopeInternal = "INTERNAL" // 内网/保留地址
+	IPScopePublic   = "PUBLIC"   // 公网地址
+	IPScopeInvalid  = "INVALID"  // 输入不是合法 IP（脏数据，不聚合）
+)
+
+// ClassifyIPScope IP 网络范围三分判定（暴露面判定引擎来源聚合用）。
+// 包装 isInternalAddr + netip 解析：内网/保留 → INTERNAL，公网 → PUBLIC，
+// 非法输入 → INVALID；不依赖 GeoIP 数据源（MMDB 缺失时同样可用）。
+func ClassifyIPScope(ip string) string {
+	addr, err := netip.ParseAddr(strings.TrimSpace(ip))
+	if err != nil {
+		return IPScopeInvalid
+	}
+	if isInternalAddr(addr) {
+		return IPScopeInternal
+	}
+	return IPScopePublic
+}
+
 // isInternalAddr 内网/保留地址判定（不参与出境语义）。
 // 覆盖：RFC1918、环回、链路本地、ULA、组播、未指定、CGNAT（100.64/10）、
 // 0.0.0.0/8 与 240.0.0.0/4 保留段（与前端 isPublicIp 口径对齐，见 web/src/utils/ipgeo.ts）。

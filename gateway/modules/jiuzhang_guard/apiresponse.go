@@ -2,18 +2,23 @@
 //
 // 设计约束：
 //   - 仅 API 流量包装捕获（api_dynamic_protection 开启且判为 API）；非 API 流量零包装零开销；
-//   - 可安全重编码的响应（JSON 族或缺省 Content-Type、identity 编码、非升级/非 SSE）缓冲完整响应，
-//     待响应相位与脱敏执行后一次性写回（含 Content-Length 修正）；
-//   - 文件水印/签名启用时，候选文本族 + 携带 Content-Disposition 的下载响应同样进入缓冲
+//   - 可安全重编码的响应（JSON 族或缺省 Content-Type、identity/gzip/br 编码、非升级/非 SSE）缓冲完整响应，
+//     待响应相位与脱敏执行后一次性写回（含 Content-Length 修正）；配置 response_body 规则时，
+//     完整 XML/text/plain 同样缓冲供值级检测，检测只观测不改写；
+//   - 文件水印/签名启用时，候选文本族 + 携带 Content-Disposition 的下载响应同样进入缓冲；
+//     include_inline_html=true 时仅额外缓冲 2xx、无下载头的 text/html 响应，其他网页仍直通
 //     （水印/签名需完整体重写；SSE 永不缓冲；候选超限/编码不可处理一律 FAIL_OPEN 直通 + Warn）；
 //   - 文件合规下载方向规则存在时，携带 Content-Disposition 的下载响应进入缓冲
 //     （合规评估与 PROTECT 阻断抑制的前提——已直通外发的响应无法撤回；同样 FAIL_OPEN 直通 + Warn）；
-//   - 流式/SSE/WebSocket/显式非 JSON 类型直通不缓冲（避免长连接挂死与内存失控）；
+//   - 流式/WebSocket/未启用值级检测的显式非 JSON 类型直通不缓冲（避免长连接挂死与内存失控）；
+//     SSE 不整流缓冲，由通用 response_body writer 按单事件检测，MCP 活跃时仍由专用 writer 独占；
 //   - 缓冲超 api_response_capture_max_bytes：
 //     FAIL_OPEN（默认）→ 转直通溢出（spill），已缓冲字节连同后续完整外发，原响应不截断，zap Warn；
 //     FAIL_CLOSED 且端点有命中规则 → 丢弃字节（discarded），最终以 500 空明细响应抑制
 //     （原始响应一字节不外发，防未脱敏数据泄露）；
-//   - gzip/br 等非 identity 编码无法安全重编码：FAIL_OPEN 直通 + zap Warn；FAIL_CLOSED 且端点有规则 → 同上抑制；
+//   - gzip/br 原压缩字节保留在捕获器中；完整缓冲后有界解码供检测与改写，未改写逐字节交付原体，
+//     改写后按原编码重压缩。非法或解压超限时 FAIL_OPEN 原压缩字节直通 + Warn，
+//     FAIL_CLOSED 且端点有规则则抑制；多重/未知编码仍按不可处理响应处理；
 //   - 缓冲模式声明 Trailer（公告头或 TrailerPrefix 键）的响应不强制 Content-Length：
 //     net/http 仅在分块编码下外发 Trailer，强制长度会让 Trailer 值静默丢失而公告头照发
 //     （语义漂移）；写回侧移除 Content-Length 改由分块编码保留 Trailer 语义（见 writeBufferedResponse）；
@@ -51,7 +56,7 @@ const (
 const (
 	captureUndecided   = iota
 	captureBuffered    // 缓冲（可安全重编码），完成后一次性写回
-	capturePassthrough // 直通（流式/非 JSON/非 identity 编码 FAIL_OPEN）
+	capturePassthrough // 直通（流式/非 JSON/不支持编码 FAIL_OPEN）
 	captureDiscarded   // FAIL_CLOSED 抑制：字节丢弃，最终 500 空明细响应
 )
 
@@ -67,18 +72,21 @@ type apiResponseCapture struct {
 	downloadCandidate bool // decide 判定：本响应为水印/签名候选文本族下载（缓冲依据之一）
 	// downloadHold 文件合规下载方向规则存在：携带 Content-Disposition 的下载响应进入缓冲
 	// （W13-GW / P2-03：合规评估与 PROTECT 阻断抑制的前提——已直通外发的响应无法撤回）
-	downloadHold bool
-	logger       *zap.Logger
-	endpointKey  string
-	requestID    string
+	downloadHold       bool
+	inlineHTML         bool // 显式启用的内联 HTML 水印候选（仅 2xx + text/html + 无下载头）
+	responseBodyValues bool // response_body 值级规则启用时允许完整 XML/text/plain 缓冲
+	logger             *zap.Logger
+	endpointKey        string
+	requestID          string
 
-	status        int
-	mode          int
-	body          bytes.Buffer // 缓冲模式的已捕获体（spill 后保留前缀供错误签名扫描）
-	spilled       bool         // 缓冲超限已转直通（原响应完整外发）
-	bytesStreamed int64        // 直通/溢出已外发字节数
-	hijacked      bool
-	warnedSkip    bool // 跳过原因 Warn 已发（每次请求最多一条）
+	status          int
+	mode            int
+	contentEncoding string
+	body            bytes.Buffer // 源站原始体（spill 后保留前缀供错误签名扫描）
+	spilled         bool         // 缓冲超限已转直通（原响应完整外发）
+	bytesStreamed   int64        // 直通/溢出已外发字节数
+	hijacked        bool
+	warnedSkip      bool // 跳过原因 Warn 已发（每次请求最多一条）
 }
 
 func newAPIResponseCapture(w http.ResponseWriter, maxBytes int, failClosed, hasMaskRules bool, downloadTypes func(string) bool, downloadHold bool, endpointKey, requestID string, logger *zap.Logger) *apiResponseCapture {
@@ -129,34 +137,50 @@ func (c *apiResponseCapture) decide() {
 		!strings.Contains(strings.ToLower(h.Get("Content-Type")), "text/event-stream")
 	c.downloadCandidate = isDownload && c.downloadTypes != nil && c.downloadTypes(h.Get("Content-Type"))
 	complianceHold := isDownload && c.downloadHold
-	enc := strings.ToLower(strings.TrimSpace(h.Get("Content-Encoding")))
-	if enc != "" && enc != "identity" {
-		// gzip/br 等压缩编码无法安全重编码
+	c.inlineHTML = c.inlineHTML && c.status >= 200 && c.status <= 299 &&
+		h.Get("Content-Disposition") == "" && response.IsHTMLMediaType(h.Get("Content-Type"))
+	encoding, supported := apiResponseContentEncoding(h)
+	if !supported {
 		if c.failClosed && c.hasMaskRules {
 			c.mode = captureDiscarded
-			c.warnSkip("non-identity content-encoding, response suppressed by fail-closed policy")
+			c.warnSkip("unsupported content-encoding, response suppressed by fail-closed policy")
 		} else {
 			if c.hasMaskRules {
-				c.warnSkip("non-identity content-encoding, mask transform skipped (fail-open)")
+				c.warnSkip("unsupported content-encoding, mask transform skipped (fail-open)")
 			} else if c.downloadCandidate {
-				c.warnSkip("non-identity content-encoding, file download rewrite skipped (fail-open)")
+				c.warnSkip("unsupported content-encoding, file download rewrite skipped (fail-open)")
+			} else if c.inlineHTML {
+				c.warnSkip("unsupported content-encoding, inline html watermark skipped (fail-open)")
 			} else if complianceHold {
-				c.warnSkip("non-identity content-encoding, file compliance download check degraded (fail-open)")
+				c.warnSkip("unsupported content-encoding, file compliance download check degraded (fail-open)")
 			}
 			c.mode = capturePassthrough
 		}
 		return
 	}
+	c.contentEncoding = encoding
 	ct := h.Get("Content-Type")
 	if ct == "" || response.IsJSONMediaType(ct) {
 		c.mode = captureBuffered // JSON 族或缺省类型：缓冲（缺省类型在响应相位嗅探后决定是否解析）
 		return
 	}
-	if c.downloadCandidate || complianceHold {
+	if c.responseBodyValues && responseBodyValueMediaType(ct) {
+		c.mode = captureBuffered // 配置 response_body 规则的完整 XML/text/plain：缓冲供值级检测
+		return
+	}
+	if c.downloadCandidate || c.inlineHTML || complianceHold {
 		c.mode = captureBuffered // 下载候选（水印/签名改写或合规评估/抑制）：缓冲（需完整体或字节未外发）
 		return
 	}
 	c.mode = capturePassthrough // 显式非 JSON（含 SSE text/event-stream）：直通
+}
+
+func responseBodyValueMediaType(contentType string) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	if mediaType == "text/plain" {
+		return true
+	}
+	return mediaType == "application/xml" || mediaType == "text/xml" || strings.HasSuffix(mediaType, "+xml")
 }
 
 // Write 捕获响应体；缓冲模式在上限内累积，超限按失败策略转溢出直通或抑制。
@@ -194,6 +218,8 @@ func (c *apiResponseCapture) Write(p []byte) (int, error) {
 			c.warnSkip("response body exceeds capture limit, mask transform skipped (fail-open)")
 		} else if c.downloadCandidate {
 			c.warnSkip("response body exceeds capture limit, file download rewrite skipped (fail-open)")
+		} else if c.inlineHTML {
+			c.warnSkip("response body exceeds capture limit, inline html watermark skipped (fail-open)")
 		} else if c.downloadHold {
 			// 合规下载挂留超限：已缓冲前缀连同后续字节直通外发，PROTECT 阻断无法执行——
 			// 诚实降级（不静默），挂点侧据终态补记 file.download_block_unavailable

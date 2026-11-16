@@ -1,6 +1,6 @@
 // fileobs.go 上传侧文件观测提取（P1-04 文件资产生产方）。
-// 输入为 multipart 流式解析的 part 元数据（PartMeta：文件内容经 io.Discard 丢弃，
-// 不落内存）；输出挂统一主事件 file_observations（direction=UPLOAD）。
+// 输入为 multipart 流式解析的 part 元数据（PartMeta：文件前缀有界留存供签名检测，
+// 其余内容经 io.Discard 丢弃）；输出挂统一主事件 file_observations（direction=UPLOAD），不含正文。
 package parser
 
 import (
@@ -23,14 +23,20 @@ func BuildUploadFileObservations(parts []PartMeta) []dsctx.FileObservation {
 		if full == "" {
 			continue // 归一化后无可识别文件名（如纯目录前缀），不产生观测
 		}
-		out = append(out, dsctx.FileObservation{
-			Direction: dsctx.FileDirectionUpload,
-			FileName:  dsctx.TruncateFileName(full),
-			MatchName: full,
-			Extension: dsctx.FileExtension(full),
-			MIME:      dsctx.SanitizeMIME(p.ContentType),
-			Size:      p.Size,
-		})
+		fingerprint, complete := p.ContentFingerprint()
+		obs := dsctx.FileObservation{
+			Direction:      dsctx.FileDirectionUpload,
+			FileName:       dsctx.TruncateFileName(full),
+			MatchName:      full,
+			Extension:      dsctx.FileExtension(full),
+			MIME:           dsctx.SanitizeMIME(p.ContentType),
+			Size:           p.Size,
+			SensitiveTypes: append([]string(nil), p.SensitiveTypes...),
+		}
+		if complete {
+			obs.ContentSHA256 = fingerprint
+		}
+		out = append(out, obs)
 	}
 	return out
 }

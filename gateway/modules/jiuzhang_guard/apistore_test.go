@@ -53,14 +53,15 @@ func TestBuildBehaviorStores_ValkeyWithoutClientWarnsAndFallsBack(t *testing.T) 
 	}
 }
 
-// behavior_store=valkey 且引擎已建连：注入完整五路存储覆盖。
+// behavior_store=valkey 且引擎已建连：注入包含对象枚举的完整存储覆盖。
 func TestBuildBehaviorStores_ValkeyInjectsAllOverrides(t *testing.T) {
 	g := &Guard{BehaviorStore: "valkey", logger: zap.NewNop()}
 	o := buildBehaviorStores(g, &sharedEngine{valkey: stubValkey{}})
 	if o == nil {
 		t.Fatal("valkey store must be injected")
 	}
-	if o.BehaviorWindow == nil || o.APIWriteWindow == nil || o.ObjectCursor == nil ||
+	if o.BehaviorWindow == nil || o.APIWriteWindow == nil || o.CredentialRateWindow == nil || o.ObjectRateWindow == nil ||
+		o.HourlyQuota == nil || o.DailyQuota == nil || o.ObjectCursor == nil || o.ObjectEnumeration == nil ||
 		o.IPSpread == nil || o.Concurrency == nil {
 		t.Fatalf("overrides incomplete: %+v", o)
 	}

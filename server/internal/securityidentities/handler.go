@@ -1,30 +1,46 @@
 // handler.go client_identity 体系管理面接口（WDSP AI 自动化渗透防护增强 阶段1）。
-// 路由（app.go 注册，权限点 security_identities.read）：
+// 路由（app.go 注册，读权限 security_identities.read，写权限 security_identities.block）：
 //
 //	GET /api/v1/security/identities              身份分页列表（风险等级/类型/关键字/IP/时间窗筛选）
 //	GET /api/v1/security/identities/{id}         身份详情（全字段 + IP历史 + 凭据 + 最近信号）
 //	GET /api/v1/security/identities/{id}/behavior 行为窗口统计时间序列
 //	GET /api/v1/security/identities/{id}/events  侦察信号事件分页
+//	POST /api/v1/security/identities/{id}/block  手工封禁
+//	POST /api/v1/security/identities/{id}/unblock 手工解封
 package securityidentities
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
 // Handler 是 client_identity 体系处理器。
 type Handler struct {
-	store *Store
+	store     *Store
+	audits    *audits.Service
+	publish   IdentityPublishFunc
+	blockFn   identityTransitionFunc
+	unblockFn identityTransitionFunc
 }
 
 // NewHandler 创建处理器。
 func NewHandler(store *Store) *Handler {
-	return &Handler{store: store}
+	return &Handler{
+		store: store,
+		blockFn: func(ctx context.Context, id uuid.UUID, reason string, operatorID uuid.UUID) (*Identity, bool, error) {
+			return store.Block(ctx, id, reason, operatorID)
+		},
+		unblockFn: func(ctx context.Context, id uuid.UUID, _ string, operatorID uuid.UUID) (*Identity, bool, error) {
+			return store.Unblock(ctx, id, operatorID)
+		},
+	}
 }
 
 // List 身份分页列表。

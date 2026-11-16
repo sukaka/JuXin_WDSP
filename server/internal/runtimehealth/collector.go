@@ -239,6 +239,14 @@ func (c *Collector) probeGateway(ctx context.Context) *Snapshot {
 	}
 	snap.Status = StatusUp
 	snap.Metrics[MetricConfigHash] = hash
+	runtimeSnapshot, err := c.opts.Caddy.GetRuntimeSnapshot(pingCtx)
+	if err != nil {
+		snap.Status = StatusDegraded
+		snap.Message = "网关可达但运行指标读取失败"
+		snap.Metrics[MetricRuntimeMetricsError] = err.Error()
+		return snap
+	}
+	applyGatewayRuntimeMetrics(snap, runtimeSnapshot)
 	return snap
 }
 

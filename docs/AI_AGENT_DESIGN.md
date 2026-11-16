@@ -2,11 +2,11 @@
 
 本文档描述九章 WAF V2.0 AI 安全运营中心的 Agent 设计，与实现代码严格一致：
 
-- Agent 实现：`server/internal/aiagents/`（event_agent.go / policy_agent.go / misc_agents.go）
+- Agent 实现：`server/internal/aiagents/`（event_agent.go / policy_agent.go / misc_agents.go / api_agent.go（动态 Agent，仅 WDSP 形态装配，见 §5.8））
 - 编排器（总调度）：`server/internal/aiorchestrator/`（orchestrator.go / intent.go / evidence.go）
 - Tool 注册中心：`server/internal/aitools/`（registry.go 及各类 Tool）
-- 管理面：`server/internal/aihandlers/agents_tools_handler.go`
-- 表结构：`server/migrations/000013_stage7.up.sql`（`ai_agents`）、`000015_seed_stage7_model.up.sql`（8 个 Agent 注册行）
+- 管理面：`server/internal/aihandlers/agents_tools_handler.go`（静态目录 `AgentCatalog` + 装配侧动态追加 `extraAgents`，经 `mergeAgentCatalog` 合并后由 `SyncRegistry` 同步入库）
+- 表结构：`server/migrations/000013_stage7.up.sql`（`ai_agents`）、`000015_seed_stage7_model.up.sql`（8 个静态 Agent 注册行；动态 Agent 无种子行，启动时按 code 唯一 upsert）
 
 ## 1. 设计目标与基本原则
 
@@ -21,7 +21,7 @@
 
 ## 2. 总体架构与调度链路
 
-系统共 8 个 Agent：**7 个专业 Agent**（代码实现于 `aiagents` 包）+ **1 个总调度 Agent**（`dispatcher`，编排器内置能力，非独立实现）。装配代码见 `server/internal/app/app.go`（注册 7 个专业 Agent 并设置启停检查）。
+系统静态目录共 8 个 Agent：**7 个专业 Agent**（代码实现于 `aiagents` 包）+ **1 个总调度 Agent**（`dispatcher`，编排器内置能力，非独立实现）。装配代码见 `server/internal/app/app.go`（注册 7 个专业 Agent 并设置启停检查）。此外存在**形态相关动态 Agent**：`api_security`（API 安全分析）仅在 WDSP 且 API 动态防护开启时由装配侧注册并经 `SyncRegistry` 的 extraAgents 同步入 `ai_agents`（详见 §5.8）；纯 WAF 形态编排器与 `ai_agents` 目录均不含该 Agent。
 
 ```text
 用户消息 / 一次性分析请求
@@ -120,7 +120,7 @@ DB 启停检查（ai_tools.status）→ 权限点校验（RequiredPermission，�
 
 ### 4.2 意图分类与任务类型
 
-`Classify(message)` 为**确定性正则规则**（非 LLM），按优先级首条命中返回 `Plan{TaskType, Agents, RiskLevel, Summary}`；`Plan` 是可展示的计划摘要，不保存私有思维链。任务类型共 12 种：
+`Classify(message)` 为**确定性正则规则**（非 LLM），按优先级首条命中返回 `Plan{TaskType, Agents, RiskLevel, Summary}`；`Plan` 是可展示的计划摘要，不保存私有思维链。任务类型共 13 种：
 
 | 任务类型 | 触发模式（摘要） | 调度 Agent | 风险等级 |
 |----------|------------------|------------|----------|
@@ -135,6 +135,7 @@ DB 启停检查（ai_tools.status）→ 权限点校验（RequiredPermission，�
 | `REPORT_SUMMARY` | "日报/周报/月报/总结/汇总" × "安全/攻击/运营" | `report` | LOW |
 | `LOG_QUERY` | "日志/log/请求记录" | `log_analysis` | LOW |
 | `STATISTICS_QUERY` | "统计/趋势/排行/top/多少/数量/分布" | `security_event`, `log_analysis` | LOW |
+| `API_SECURITY_ANALYSIS` | 高信号词（shadow/zombie/BOLA/BFLA/越权/参数偏离/涉敏/敏感数据/影子/僵尸/弱点）直接命中；泛词（资产/态势/模型/参数/风险/学习/统计/清单等）必须与 api/接口/端点/字段 共现才路由（规则位置在事件分析/统计/日志之前，避免把普通 WAF 统计/日志问题误路由到 API 域） | `api_security`（动态 Agent，仅 WDSP 形态注册；纯 WAF 形态编排器跳过未注册 Agent，不产生伪造事实） | LOW |
 | `GENERAL_SECURITY_QA` | 兜底（未命中任何规则） | `knowledge`, `security_event` | LOW |
 
 兜底前还有一条标识规则：消息含 UUID 形态或 6-7 位数字（规则号形态）时直接按 `EVENT_ANALYSIS` 调度 `security_event`。
@@ -236,6 +237,32 @@ DB 启停检查（ai_tools.status）→ 权限点校验（RequiredPermission，�
 
 尾部固定声明：知识解释不代表当前系统正发生对应攻击；当前运行事实以事件与统计查询为准。
 
+### 5.8 API 安全分析 Agent（api_security，动态 Agent / 阶段8 WDSP 形态专属）
+
+AI 能力增强第一波落地的动态 Agent（`api_agent.go`），是"动态 Agent"机制的首个实例：不进入静态 `AgentCatalog`，由装配侧在 `APIDynamicProtectionEnabled()` 时注册并经 `SyncRegistry` extraAgents 同步入 `ai_agents`。
+
+- **产品门控**：仅 `cfg.Product.APIDynamicProtectionEnabled()`（WDSP 形态且 API 动态防护开启）时由 `app.go` 装配（`RegisterAgent` + `agentCodes` + `extraAgentMetas`）；纯 WAF 形态编排器与 `ai_agents` 目录均不出现 `api_security`，意图命中未注册 Agent 时编排器跳过调度，不产生伪造事实；
+- **意图路由**：`API_SECURITY_ANALYSIS`（见 §4.2）调度本 Agent；`CapabilityIntro` 能力介绍同步追加 API 安全分析条目与示例问法；
+- **真实职责**（装配侧 AgentMeta 描述）：API 资产与态势、影子/僵尸接口、模型与参数偏离、BOLA/BFLA 越权风险、弱点整改与敏感数据分析——全部只读，不执行任何变更；
+- **事实来源纪律**：事实全部来自 aitools 注册中心的 READ_ONLY Tool，一律经 `ToolCtx.CallTool` 调用并登记证据（`[Ex]`），Agent 不直查数据库；
+- **确定性 Tool 选择**（按消息关键词，非 LLM 决策）：
+
+| 分支 | 调用的 Tool | 触发条件与要点 |
+|------|-------------|----------------|
+| API 安全态势（默认） | `api_posture.get` | 端点总数/资产状态分布/学习状态分布/未闭环风险/学习覆盖率/模型冻结率 |
+| API 运行时统计（默认） | `api_runtime.statistics` | 事件总量/最终动作分布/风险级别分布/Top 接口（≤5） |
+| 资产搜索 | `api_asset.search` | 影子/僵尸/资产/清单等关键词或消息含 URI；"影子/未确认"类问题自动限定 `asset_status=DISCOVERED` |
+| 风险发现 | `api_risk.search` | 关键词映射 `finding_type`（BOLA/BFLA/SHADOW/ZOMBIE/SCHEMA_DEVIATION/SENSITIVE_LEAK，按优先级取首个命中）；"未闭环"类限定 `status=OPEN` |
+| 弱点整改 | `api_weakness.search` | "整改"类限定 `status=TO_FIX` |
+| 敏感数据类型 | `api_sensitive.search` | 仅识别规则定义（名称/等级/状态），不含样本值 |
+| 学习状态 | `api_learning.status` | 需接口 ID（取消息中提取的 UUID）；未携带时明确提示补充，不用猜测值顶替 |
+| 模型版本差异 | `api_model.diff` | 需两个模型版本 ID；缺失时明确提示补充 |
+| 参数模型 | `api_parameter.get` | 需模型版本 ID；缺失时明确提示补充；列表上限截断如实标注 |
+
+- **降级纪律**：权限不足 / Tool 停用 / 查询失败如实写入事实文本（"查询未完成…不做推测"）并降级继续，不 panic、不编造；
+- **权限/启停/审计边界**：与既有 Agent 完全同口径——调度侧 `AgentEnabledChecker` 尊重 `ai_agents.status`；执行侧 Tool 启停（`ai_tools.status`）、权限点逐次重查、超时与审计（`ai_audit_records`）由 Registry 固定链路保证；`allowed_tool_ids` 白名单经 `AgentToolChecker` 在执行点强制；管理面启停/白名单配置 API 与既有 Agent 一致；
+- **输出尾部固定声明**：仅为只读分析；资产确认、模型冻结、策略发布、弱点流转等变更均需走既有人工审核与发布流程。
+
 ## 6. ai_agents 表与启停管理
 
 ### 6.1 表结构
@@ -254,13 +281,13 @@ DB 启停检查（ai_tools.status）→ 权限点校验（RequiredPermission，�
 | `version` | INTEGER | 默认 1（当前配置变更只更新 `updated_at`，不自增 version） |
 | `created_at` / `updated_at` | TIMESTAMPTZ | 时间戳 |
 
-8 个注册行（种子 `000015`，与 `aihandlers.AgentCatalog` 一致）：`dispatcher`（总调度）、`security_event`、`log_analysis`、`waf_policy`、`asset`、`ops_diagnostic`、`report`、`knowledge`。
+8 个静态注册行（种子 `000015`，与 `aihandlers.AgentCatalog` 一致）：`dispatcher`（总调度）、`security_event`、`log_analysis`、`waf_policy`、`asset`、`ops_diagnostic`、`report`、`knowledge`。动态 Agent（当前仅 `api_security`）无种子行：仅随对应产品形态装配，由 `SyncRegistry` extraAgents 按 code 唯一 upsert（无固定 UUID），纯 WAF 形态 `ai_agents` 表不含其记录。
 
 ### 6.2 启动同步与启停检查
 
 设计决策：**代码 registry 是能力来源，`ai_agents` 表只存启停与配置**；列表接口为 DB 左联代码 registry（`in_registry` 标记），管理面无法造出代码中不存在的 Agent。
 
-- **启动同步**（`SyncRegistry`，app.go 启动时执行）：把 `AgentCatalog` 与 Tool registry 按 `code` 唯一 upsert 入库（`ON CONFLICT DO UPDATE` 名称/描述等元数据，**保留既有启停状态**）；
+- **启动同步**（`SyncRegistry`，app.go 启动时执行）：把 `AgentCatalog`（静态目录）与装配侧动态追加的 `extraAgents` 经 `mergeAgentCatalog` 合并（静态目录原样保留；动态条目 code 为空跳过、同 code 以动态描述覆盖、新 code 追加在后），连同 Tool registry 按 `code` 唯一 upsert 入库（`ON CONFLICT DO UPDATE` 名称/描述等元数据，**保留既有启停状态**）；
 - **调度侧检查**（`AgentEnabledChecker`）：编排器每次调度前实时查库，`status != 'ENABLED'` 的 Agent 跳过并经流式步骤提示"已停用，跳过"；`dispatcher` 恒返回启用；未入库的 code 默认启用（容错，防同步失败导致全不可用）；
 - **执行侧联动**：Agent 被禁用只是不被调度；Tool 层另有独立的 `ai_tools` 启停检查，两层互不替代。
 
@@ -287,6 +314,8 @@ DB 启停检查（ai_tools.status）→ 权限点校验（RequiredPermission，�
 6. **启停即生效**：无需额外代码——入库后调度侧 `AgentEnabledChecker` 自动尊重 `ai_agents.status`；
 7. **Tool 依赖**：优先复用现有 Tool；确需新 Tool 时按 `aitools.Tool` 契约实现并注册（声明 `RequiredPermission`、超时、最大返回数、输入 Schema），不得绕过 `ToolCtx.CallTool` 直接访问业务数据；
 8. **自检**：`go build ./...` 通过；启动日志无 `sync ai agent/tool registry failed`；`GET /api/v1/ai/agents` 可见新 Agent 且 `in_registry=true`；`PATCH` 停用后提问对应意图，流式步骤应出现"已停用，跳过"。
+
+形态相关动态 Agent（如 `api_security`）在上述范式上有两点差异：不进入静态 `AgentCatalog`（步骤 5 改为在 `app.go` 按产品形态开关构造 `extraAgentMetas` 传入 `SyncRegistry`）；步骤 4 的注册同样以形态开关为条件——形态不满足时编排器与 `ai_agents` 目录均不出现该 Agent，意图命中时编排器跳过未注册 Agent，不得用占位实现冒充已装配。
 
 ## 8. 安全与合规约束
 

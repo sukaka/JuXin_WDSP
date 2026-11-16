@@ -1,20 +1,19 @@
-// evaluations_handler.go AI 质量评估（最小落地）：
-// 评估集内存测试用例（question + expected_contains），运行逐条过编排器，
-// 按回答包含匹配计分并落库 ai_evaluation_runs。
+// evaluations_handler.go AI 质量评估：评估集管理 + 真实回归运行 HTTP 入口。
+// 运行核心已抽至 evaluation_runner.go（executeEvalSet），供本入口与 Prompt 版本
+// 真实回归（PromptVersionTest）共用；计分口径：回答对 expected_contains 大小写不敏感包含匹配。
 package aihandlers
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/aiaudit"
-	"github.com/jiuzhang-waf/server/internal/aiorchestrator"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
@@ -24,6 +23,12 @@ type evalCase struct {
 	Question         string `json:"question"`
 	ExpectedContains string `json:"expected_contains"`
 }
+
+// errEvalSetEmpty 评估集没有有效用例（cases 为空或 JSON 非法）。
+var errEvalSetEmpty = errors.New("评估集没有有效的测试用例")
+
+// errEvalSetNotFound 评估集不存在。
+var errEvalSetNotFound = errors.New("评估集不存在")
 
 // evalRunTimeout 单次评估运行整体超时（逐条串行，防止长时间占用）。
 const evalRunTimeout = 10 * time.Minute
@@ -166,7 +171,7 @@ ORDER BY r.started_at DESC LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
 	response.Page(w, r, out, total, page, pageSize)
 }
 
-// EvalRun 执行评估：逐条用例过编排器，按 expected_contains 包含匹配计分落库。
+// EvalRun 执行评估：委托 executeEvalSet（真实回归共用运行器）逐条过编排器计分落库。
 func (d *Deps) EvalRun(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	var req struct {
@@ -181,111 +186,39 @@ func (d *Deps) EvalRun(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的评估集ID")
 		return
 	}
-	var setCode string
-	var casesJSON json.RawMessage
-	err = d.DB.QueryRow(r.Context(), `SELECT code, cases FROM ai_evaluation_sets WHERE id=$1`, setID).
-		Scan(&setCode, &casesJSON)
-	if err != nil {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "评估集不存在")
-		return
-	}
-	var cases []evalCase
-	if err := json.Unmarshal(casesJSON, &cases); err != nil || len(cases) == 0 {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "评估集没有有效的测试用例")
-		return
-	}
-	truncated := false
-	if len(cases) > evalCaseLimit {
-		cases = cases[:evalCaseLimit]
-		truncated = true
-	}
-	// 一次性会话（评估过程不污染会话列表，用完即删）
-	sess, err := d.Sessions.Create(r.Context(), p.UserID, "[评估运行] "+setCode)
-	if err != nil {
-		response.InternalError(w, r, err)
-		return
-	}
-	defer func() {
-		dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer dcancel()
-		if err := d.Sessions.Delete(dctx, sess.ID); err != nil {
-			slog.Warn("delete evaluation session failed", "session_id", sess.ID, "error", err)
-		}
-	}()
 	// 评估串行跑多个用例可能远超服务器 WriteTimeout（默认 30s），放宽本请求写期限
 	if rc := http.NewResponseController(w); rc != nil {
 		_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Minute))
 	}
 	runCtx, cancel := context.WithTimeout(r.Context(), evalRunTimeout)
 	defer cancel()
-	// 逐条执行（串行，最小实现）
-	type caseResult struct {
-		Question         string `json:"question"`
-		ExpectedContains string `json:"expected_contains"`
-		Passed           bool   `json:"passed"`
-		AnswerExcerpt    string `json:"answer_excerpt,omitempty"`
-		Error            string `json:"error,omitempty"`
-	}
-	details := make([]caseResult, 0, len(cases))
-	passed := 0
-	inTok, outTok := 0, 0
-	for _, c := range cases {
-		cr := caseResult{Question: c.Question, ExpectedContains: c.ExpectedContains}
-		inTok += aiorchestrator.EstimateTokens(c.Question)
-		result, err := d.Orch.Run(runCtx, aiorchestrator.RunInput{
-			SessionID: sess.ID, UserID: p.UserID, Username: p.Username,
-			RoleCodes: p.Roles, Permissions: p.PermsSet, Message: c.Question,
-		}, nil)
-		if err != nil {
-			cr.Error = "执行失败"
-			details = append(details, cr)
-			continue
+	outcome, err := d.executeEvalSet(runCtx, p, setID, nil, nil)
+	if err != nil {
+		switch {
+		case errors.Is(err, errEvalSetNotFound):
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, errEvalSetNotFound.Error())
+		case errors.Is(err, errEvalSetEmpty):
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, errEvalSetEmpty.Error())
+		default:
+			response.InternalError(w, r, err)
 		}
-		outTok += aiorchestrator.EstimateTokens(result.Answer)
-		cr.Passed = true
-		if c.ExpectedContains != "" {
-			cr.Passed = strings.Contains(strings.ToLower(result.Answer), strings.ToLower(c.ExpectedContains))
-		}
-		if cr.Passed {
-			passed++
-		}
-		cr.AnswerExcerpt = trunc(result.Answer, 300)
-		details = append(details, cr)
-	}
-	score := float64(passed) * 100 / float64(len(cases))
-	// 保留两位小数
-	score = float64(int(score*100)) / 100
-	detailsJSON, _ := json.Marshal(map[string]interface{}{
-		"total": len(cases), "passed": passed, "truncated": truncated, "cases": details,
-	})
-	runID := uuid.New()
-	if _, err := d.DB.Exec(r.Context(), `
-INSERT INTO ai_evaluation_runs (id, evaluation_set_id, status, score, details, finished_at)
-VALUES ($1,$2,'SUCCESS',$3,$4,now())`, runID, setID, score, detailsJSON); err != nil {
-		response.InternalError(w, r, err)
 		return
 	}
-	// 用量与审计（聚合记录一次）
-	pctx, pcancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer pcancel()
-	if uErr := d.Cost.RecordUsage(pctx, p.UserID, &sess.ID, nil, nil, inTok, outTok, 0, 0); uErr != nil {
-		slog.Error("record evaluation usage failed", "error", uErr)
-	}
 	d.recordAIAudit(p, aiaudit.Record{
-		SessionID: &sess.ID, Action: "evaluation_run",
-		RequestSummary: "运行评估集 " + setCode,
-		ResultSummary:  fmt.Sprintf("score=%.2f passed=%d/%d", score, passed, len(cases)),
-		InputTokens:    inTok, OutputTokens: outTok,
+		SessionID: &outcome.SessionID, Action: "evaluation_run",
+		RequestSummary: "运行评估集 " + outcome.SetCode,
+		ResultSummary:  fmt.Sprintf("score=%.2f passed=%d/%d", outcome.Score, outcome.Passed, outcome.Total),
+		InputTokens:    outcome.InTokens, OutputTokens: outcome.OutTokens,
 	})
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{
 		"run": map[string]interface{}{
-			"id":                runID,
-			"evaluation_set_id": setID,
+			"id":                outcome.RunID,
+			"evaluation_set_id": outcome.SetID,
 			"status":            "SUCCESS",
-			"score":             score,
-			"total":             len(cases),
-			"passed":            passed,
-			"truncated":         truncated,
+			"score":             outcome.Score,
+			"total":             outcome.Total,
+			"passed":            outcome.Passed,
+			"truncated":         outcome.Truncated,
 		},
 	})
 }

@@ -13,7 +13,7 @@ import (
 
 // 定时报告计划存储：CRUD + 到期认领（FOR UPDATE SKIP LOCKED 防重入）+ 结果回写。
 
-const scheduleColumns = `id, name, report_type, content_scope, application_ids, template_id, file_format,
+const scheduleColumns = `id, name, report_type, api_report_type, content_scope, application_ids, template_id, file_format,
 	include_api_assets, page_orientation, time_of_day, day_of_week, day_of_month, send_email, emails, enabled,
 	next_run_at, last_run_at, last_job_id, last_email_status, last_email_error,
 	created_by, created_at, updated_at`
@@ -21,7 +21,7 @@ const scheduleColumns = `id, name, report_type, content_scope, application_ids, 
 func scanSchedule(row pgx.Row) (*ReportSchedule, error) {
 	var s ReportSchedule
 	var appIDs, emails []byte
-	err := row.Scan(&s.ID, &s.Name, &s.ReportType, &s.ContentScope, &appIDs, &s.TemplateID, &s.FileFormat,
+	err := row.Scan(&s.ID, &s.Name, &s.ReportType, &s.APIReportType, &s.ContentScope, &appIDs, &s.TemplateID, &s.FileFormat,
 		&s.IncludeAPIAssets, &s.PageOrientation, &s.TimeOfDay, &s.DayOfWeek, &s.DayOfMonth, &s.SendEmail, &emails, &s.Enabled,
 		&s.NextRunAt, &s.LastRunAt, &s.LastJobID, &s.LastEmailStatus, &s.LastEmailError,
 		&s.CreatedBy, &s.CreatedAt, &s.UpdatedAt)
@@ -56,11 +56,11 @@ func (s *Store) CreateSchedule(ctx context.Context, sch *ReportSchedule, created
 	}
 	next := NextRunAt(sch.ReportType, sch.TimeOfDay, sch.DayOfWeek, sch.DayOfMonth, time.Now())
 	return s.db.QueryRow(ctx, `
-INSERT INTO report_schedules (name, report_type, content_scope, application_ids, template_id, file_format,
+INSERT INTO report_schedules (name, report_type, api_report_type, content_scope, application_ids, template_id, file_format,
 	include_api_assets, page_orientation, time_of_day, day_of_week, day_of_month, send_email, emails, enabled, next_run_at, created_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 RETURNING id, created_at, updated_at`,
-		sch.Name, sch.ReportType, sch.ContentScope, appIDs, sch.TemplateID, sch.FileFormat,
+		sch.Name, sch.ReportType, sch.APIReportType, sch.ContentScope, appIDs, sch.TemplateID, sch.FileFormat,
 		sch.IncludeAPIAssets, sch.PageOrientation, sch.TimeOfDay, sch.DayOfWeek, sch.DayOfMonth, sch.SendEmail, emails, sch.Enabled, next, createdBy).
 		Scan(&sch.ID, &sch.CreatedAt, &sch.UpdatedAt)
 }
@@ -80,11 +80,11 @@ func (s *Store) UpdateSchedule(ctx context.Context, sch *ReportSchedule) error {
 	}
 	next := NextRunAt(sch.ReportType, sch.TimeOfDay, sch.DayOfWeek, sch.DayOfMonth, time.Now())
 	res, err := s.db.Exec(ctx, `
-UPDATE report_schedules SET name=$2, report_type=$3, content_scope=$4, application_ids=$5, template_id=$6,
-	file_format=$7, include_api_assets=$8, page_orientation=$9, time_of_day=$10, day_of_week=$11, day_of_month=$12, send_email=$13, emails=$14,
-	enabled=$15, next_run_at=$16, updated_at=now()
+UPDATE report_schedules SET name=$2, report_type=$3, api_report_type=$4, content_scope=$5, application_ids=$6, template_id=$7,
+	file_format=$8, include_api_assets=$9, page_orientation=$10, time_of_day=$11, day_of_week=$12, day_of_month=$13, send_email=$14, emails=$15,
+	enabled=$16, next_run_at=$17, updated_at=now()
 WHERE id=$1`,
-		sch.ID, sch.Name, sch.ReportType, sch.ContentScope, appIDs, sch.TemplateID, sch.FileFormat,
+		sch.ID, sch.Name, sch.ReportType, sch.APIReportType, sch.ContentScope, appIDs, sch.TemplateID, sch.FileFormat,
 		sch.IncludeAPIAssets, sch.PageOrientation, sch.TimeOfDay, sch.DayOfWeek, sch.DayOfMonth, sch.SendEmail, emails, sch.Enabled, next)
 	if err != nil {
 		return err

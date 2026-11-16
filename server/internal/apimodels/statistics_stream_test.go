@@ -235,6 +235,53 @@ func TestReservoirQuantileAccuracy(t *testing.T) {
 	}
 }
 
+func TestFormatCandidateVocabulary(t *testing.T) {
+	for _, candidate := range []string{"UUID", "EMAIL", "IPV4", "IPV6", "DATE", "DATETIME"} {
+		if !IsFormatCandidate(candidate) {
+			t.Errorf("frozen candidate %q rejected", candidate)
+		}
+	}
+	for _, candidate := range []string{"", "uuid", "DATE_TIME", "REGEX", " UUID"} {
+		if IsFormatCandidate(candidate) {
+			t.Errorf("non-vocabulary candidate %q accepted", candidate)
+		}
+	}
+}
+
+func TestSelectFormatCandidate(t *testing.T) {
+	tests := []struct {
+		name       string
+		samples    int64
+		counts     map[string]int64
+		candidate  string
+		ratio      float64
+		wantSelect bool
+	}{
+		{"样本与占比恰好达阈值", 20, map[string]int64{"UUID": 18}, "UUID", 0.9, true},
+		{"高于阈值", 21, map[string]int64{"EMAIL": 19}, "EMAIL", 19.0 / 21.0, true},
+		{"样本不足", 19, map[string]int64{"UUID": 19}, "", 0, false},
+		{"占比不足", 20, map[string]int64{"UUID": 17}, "", 0, false},
+		{"最高计数平手", 40, map[string]int64{"UUID": 20, "EMAIL": 20}, "", 0, false},
+		{"旧观测无格式样本", 0, nil, "", 0, false},
+		{"未知字符串只进分母", 20, map[string]int64{}, "", 0, false},
+		{"非法标签不入选", 20, map[string]int64{"uuid": 20}, "", 0, false},
+		{"非法标签不挤占合法候选", 20, map[string]int64{"UUID": 18, "OTHER": 100}, "UUID", 0.9, true},
+		{"显式零计数不成候选", 20, map[string]int64{"UUID": 0}, "", 0, false},
+		{"矛盾计数不产比例大于1", 20, map[string]int64{"UUID": 21}, "", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate, ratio, ok := SelectFormatCandidate(tt.samples, tt.counts)
+			if ok != tt.wantSelect || candidate != tt.candidate {
+				t.Fatalf("SelectFormatCandidate=(%q,%v,%v), want (%q,%v,%v)", candidate, ratio, ok, tt.candidate, tt.ratio, tt.wantSelect)
+			}
+			if tt.wantSelect && math.Abs(ratio-tt.ratio) > 1e-12 {
+				t.Fatalf("ratio=%v want %v", ratio, tt.ratio)
+			}
+		})
+	}
+}
+
 // roundPtr：长度分位数取整。
 func TestRoundPtr(t *testing.T) {
 	if v := roundPtr(95.05); v == nil || *v != 95 {

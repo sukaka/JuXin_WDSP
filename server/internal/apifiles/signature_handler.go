@@ -23,8 +23,8 @@ import (
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
-// 验证请求体上限（filename/token 均为短串）。
-const verifyBodyMaxBytes = 16 << 10
+// 验证请求体上限（可选 Base64 OOXML 文件载荷；原始文件另限 2 MiB）。
+const verifyBodyMaxBytes = 3 << 20
 
 // 验证输入字段长度上限（filename 与身份指纹列宽对齐；token 见 signature.go）。
 const (
@@ -57,15 +57,19 @@ func RegisterSignatureRoutes(mux *http.ServeMux, authz func(http.Handler) http.H
 }
 
 // verifySignatureRequest 验证请求。identity_fp 可选：缺省空串（匿名/未绑定口径）。
+// 文件载荷与 content_sha256_hex+token 二选一，避免来源不一致。
 type verifySignatureRequest struct {
 	Filename         string `json:"filename"`
 	ContentSHA256Hex string `json:"content_sha256_hex"`
 	Token            string `json:"token"`
 	IdentityFP       string `json:"identity_fp"`
+	ContentFormat    string `json:"content_format"`
+	ContentBase64    string `json:"content_base64"`
 }
 
 // Verify POST /api/v1/api-security/file-signature/verify
-// 输入 {filename, content_sha256_hex, token, identity_fp?}；
+// 输入 {filename, content_sha256_hex, token, identity_fp?}，或
+// {filename, content_format:"ooxml_zip", content_base64, identity_fp?}；
 // 输出 {valid, kid, signed_at, identity_fp_prefix?, reason}。
 // 密钥未配置 503 如实说明；token 结论（含伪造/过期）一律 200 + valid 字段表达。
 func (h *SignatureHandler) Verify(w http.ResponseWriter, r *http.Request) {
@@ -86,11 +90,26 @@ func (h *SignatureHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	shaHex := strings.ToLower(strings.TrimSpace(req.ContentSHA256Hex))
+	token := strings.TrimSpace(req.Token)
+	if req.ContentBase64 != "" {
+		if shaHex != "" || token != "" {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "文件载荷不能与 content_sha256_hex 或 token 同时提供")
+			return
+		}
+		var err error
+		shaHex, token, err = decodeOOXMLSignaturePayload(req.ContentBase64, req.ContentFormat)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+			return
+		}
+	} else if req.ContentFormat != "" {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "使用 content_format 时 content_base64 不能为空")
+		return
+	}
 	if len(shaHex) != signatureHashHexLen || !isHex(shaHex) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "content_sha256_hex 须为 64 位 hex")
 		return
 	}
-	token := strings.TrimSpace(req.Token)
 	if token == "" || len(token) > signatureTokenMaxLen {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "token 不能为空且长度不能超过 512")
 		return

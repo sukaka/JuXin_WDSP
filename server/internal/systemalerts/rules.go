@@ -75,6 +75,17 @@ const (
 	// otel_traces 最新遥测时间与当前时间差（供给方 apm.CHHealth）触发，见
 	// ingest_lag.go；component 固定 clickhouse（数据面逻辑组件，不按表/服务放大）。
 	TypeAPMIngestLag = "APM_INGEST_LAG" // OTel 数据面采集停滞（最新遥测超阈未更新）
+
+	// AI 运营计划连续失败熔断（AI 能力增强第二波）：apiops.Sweeper 在计划连续失败
+	// 达阈（api_ai_ops.circuit_threshold，默认 3）自动熔断停用时事件驱动 Raise；
+	// component 固定 AI_OPS（同类型同组件走引擎合并/冷却，消息携带计划与原因）。
+	TypeAIOpsScheduleCircuitOpen = "AI_OPS_SCHEDULE_CIRCUIT_OPEN" // AI 运营计划熔断停用
+
+	// 漏洞情报提醒（VULN_INTEL MVP）：vulnintel.Alerter 在 NVD 同步/离线导入产生
+	// 新建情报且命中订阅（watch_techs + min_severity）时事件驱动 Raise；
+	// component 为 vuln_intel:<tech> 维度（同技术栈后续提醒走引擎合并/冷却），
+	// vuln_alerted 表保证同一漏洞同一技术栈只提醒一次。
+	TypeVulnIntelNew = "VULN_INTEL_NEW" // 订阅技术栈出现新漏洞
 )
 
 // 告警等级（任务书 §11.2）
@@ -120,47 +131,49 @@ func IsValidView(s string) bool {
 // severityRules 是告警类型→静态等级映射（任务书 §11.1/11.2）。
 // CERTIFICATE_EXPIRING 等级随剩余天数动态判定，见 SeverityForCertExpiring。
 var severityRules = map[string]string{
-	TypeGatewayDown:             SeverityCritical,
-	TypeManagementAPIDown:       SeverityHigh,
-	TypeDatabaseUnavailable:     SeverityCritical,
-	TypeValkeyUnavailable:       SeverityHigh,
-	TypeEventCollectorLag:       SeverityMedium,
-	TypeParseFailureRateHigh:    SeverityMedium,
-	TypeSourceUnhealthy:         SeverityMedium,
-	TypeCertificateExpiring:     SeverityLow, // ≤30 天；≤7 天升 MEDIUM
-	TypeCertificateExpired:      SeverityHigh,
-	TypeConfigPublishFailed:     SeverityHigh,
-	TypeConfigHashMismatch:      SeverityMedium,
-	TypeDiskSpaceLow:            SeverityHigh,
-	TypeDatabaseCapacityHigh:    SeverityMedium,
-	TypeFDUsageHigh:             SeverityHigh, // 句柄耗尽直接拒绝新连接，参照 DISK_SPACE_LOW 档
-	TypeBackupFailed:            SeverityHigh,
-	TypeRestoreValidationFailed: SeverityHigh,
-	TypeReportFailed:            SeverityMedium,
-	TypeUpgradeFailed:           SeverityHigh,
-	TypeAuditIntegrityFailed:    SeverityCritical,
-	TypeAuditWriteFailed:        SeverityHigh,
-	TypeAPICriticalFinding:      SeverityCritical,
-	TypeAPIFindingSpike:         SeverityHigh,
-	TypeAPIMaskFailure:          SeverityHigh,
-	TypeSecurityEventSpike:      SeverityHigh,
-	TypeLoginBruteForce:         SeverityMedium,
-	TypeCCBanSpike:              SeverityMedium,
-	TypeBackupVerifyFailed:      SeverityHigh,
-	TypeRestoreCleanupFailed:    SeverityMedium,
-	TypeUpgradeRollbackFailed:   SeverityCritical,
-	TypeUpgradeRolledBack:       SeverityMedium,
-	TypeLicenseInvalid:          SeverityCritical,
-	TypeLicenseExpiringSoon:     SeverityHigh,
-	TypeLicenseQuotaExceeded:    SeverityHigh,
-	TypeHAVIPFault:              SeverityHigh,
-	TypeNetworkApplyFailed:      SeverityHigh,
-	TypeLinkPairDown:            SeverityMedium,
-	TypeLinkPairSuppressed:      SeverityHigh,
-	TypeEndpointLatencyHigh:     SeverityMedium, // 端点性能劣化，参照 SOURCE_UNHEALTHY 档
-	TypeEndpointErrorRateHigh:   SeverityHigh,   // 持续 5xx 为用户可见故障，参照 SPIKE 类档
-	TypeAPMSLOBreach:            SeverityMedium, // SLO 违约（预算耗尽），参照 SOURCE_UNHEALTHY 档
-	TypeAPMIngestLag:            SeverityMedium, // 数据面采集滞后，参照 EVENT_COLLECTOR_LAG 档
+	TypeGatewayDown:              SeverityCritical,
+	TypeManagementAPIDown:        SeverityHigh,
+	TypeDatabaseUnavailable:      SeverityCritical,
+	TypeValkeyUnavailable:        SeverityHigh,
+	TypeEventCollectorLag:        SeverityMedium,
+	TypeParseFailureRateHigh:     SeverityMedium,
+	TypeSourceUnhealthy:          SeverityMedium,
+	TypeCertificateExpiring:      SeverityLow, // ≤30 天；≤7 天升 MEDIUM
+	TypeCertificateExpired:       SeverityHigh,
+	TypeConfigPublishFailed:      SeverityHigh,
+	TypeConfigHashMismatch:       SeverityMedium,
+	TypeDiskSpaceLow:             SeverityHigh,
+	TypeDatabaseCapacityHigh:     SeverityMedium,
+	TypeFDUsageHigh:              SeverityHigh, // 句柄耗尽直接拒绝新连接，参照 DISK_SPACE_LOW 档
+	TypeBackupFailed:             SeverityHigh,
+	TypeRestoreValidationFailed:  SeverityHigh,
+	TypeReportFailed:             SeverityMedium,
+	TypeUpgradeFailed:            SeverityHigh,
+	TypeAuditIntegrityFailed:     SeverityCritical,
+	TypeAuditWriteFailed:         SeverityHigh,
+	TypeAPICriticalFinding:       SeverityCritical,
+	TypeAPIFindingSpike:          SeverityHigh,
+	TypeAPIMaskFailure:           SeverityHigh,
+	TypeSecurityEventSpike:       SeverityHigh,
+	TypeLoginBruteForce:          SeverityMedium,
+	TypeCCBanSpike:               SeverityMedium,
+	TypeBackupVerifyFailed:       SeverityHigh,
+	TypeRestoreCleanupFailed:     SeverityMedium,
+	TypeUpgradeRollbackFailed:    SeverityCritical,
+	TypeUpgradeRolledBack:        SeverityMedium,
+	TypeLicenseInvalid:           SeverityCritical,
+	TypeLicenseExpiringSoon:      SeverityHigh,
+	TypeLicenseQuotaExceeded:     SeverityHigh,
+	TypeHAVIPFault:               SeverityHigh,
+	TypeNetworkApplyFailed:       SeverityHigh,
+	TypeLinkPairDown:             SeverityMedium,
+	TypeLinkPairSuppressed:       SeverityHigh,
+	TypeEndpointLatencyHigh:      SeverityMedium, // 端点性能劣化，参照 SOURCE_UNHEALTHY 档
+	TypeEndpointErrorRateHigh:    SeverityHigh,   // 持续 5xx 为用户可见故障，参照 SPIKE 类档
+	TypeAPMSLOBreach:             SeverityMedium, // SLO 违约（预算耗尽），参照 SOURCE_UNHEALTHY 档
+	TypeAPMIngestLag:             SeverityMedium, // 数据面采集滞后，参照 EVENT_COLLECTOR_LAG 档
+	TypeAIOpsScheduleCircuitOpen: SeverityHigh,   // 运营计划熔断停用 = 自动化能力丧失，参照 CONFIG_PUBLISH_FAILED 档
+	TypeVulnIntelNew:             SeverityHigh,   // 订阅技术栈新漏洞；批次含 CRITICAL 时调用方显式升 CRITICAL
 }
 
 // IsValidType 判断告警类型是否合法。

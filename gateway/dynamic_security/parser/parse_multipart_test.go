@@ -57,6 +57,9 @@ func TestParseRequestMultipartMeta(t *testing.T) {
 		file.ContentType != "application/octet-stream" || file.Size != 16 {
 		t.Fatalf("file part=%+v", file)
 	}
+	if prefix, complete := file.ContentPrefix(); !complete || string(prefix) != "file-content-123" {
+		t.Fatalf("small file prefix must be complete: len=%d complete=%v", len(prefix), complete)
+	}
 	if !p.HasFiles || p.MultipartCapped || p.BodyTruncated {
 		t.Fatalf("flags: %+v", p)
 	}

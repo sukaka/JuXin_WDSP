@@ -488,24 +488,29 @@ func TestCheckParamConstraintsEmptyAllowed(t *testing.T) {
 	}
 }
 
-// missing_field 事件确定性：formal 键序排序遍历，多次执行事件顺序一致（map 遍历序抖动修复）。
-func TestCheckSchemaDeviationMissingFieldDeterministicOrder(t *testing.T) {
-	formal := map[string]string{"zeta": "string", "alpha": "string", "mid": "number"}
-	want := []string{"alpha", "mid", "zeta"}
-	for i := 0; i < 8; i++ {
-		ctx := dsctx.New("t", dsctx.DefaultParseLimits())
-		CheckSchemaDeviation(ctx, map[string]string{}, formal)
-		ms := ctx.CopyMatches()
-		if len(ms) != 3 {
-			t.Fatalf("run %d: want 3 missing_field matches, got %+v", i, ms)
-		}
-		for j, m := range ms {
-			if m.RuleID != "schema.missing_field" {
-				t.Fatalf("run %d: unexpected rule: %+v", i, m)
-			}
-			if m.Evidence["field"] != want[j] {
-				t.Fatalf("run %d: missing_field[%d] = %q, want %q (all: %+v)", i, j, m.Evidence["field"], want[j], ms)
-			}
-		}
+func TestCheckSchemaDeviationDoesNotReportOptionalFieldAbsence(t *testing.T) {
+	formal := map[string]string{"id": "number", "note": "string", "trace": "string"}
+	ctx := dsctx.New("optional-absent", dsctx.DefaultParseLimits())
+	CheckSchemaDeviation(ctx, map[string]string{"id": "number"}, formal)
+	if n := ctx.MatchCount(); n != 0 {
+		t.Fatalf("optional formal fields must not emit missing findings, got %+v", ctx.CopyMatches())
+	}
+}
+
+func TestCheckSchemaDeviationStillDetectsObservedDeviations(t *testing.T) {
+	formal := map[string]string{"id": "number", "note": "string"}
+	observed := map[string]string{"id": "string", "extra": "bool"}
+	ctx := dsctx.New("observed-deviations", dsctx.DefaultParseLimits())
+	CheckSchemaDeviation(ctx, observed, formal)
+
+	rules := matchRules(ctx)
+	if !hasMatch(ctx, "schema.undefined_field") || !hasMatch(ctx, "schema.type_mismatch") {
+		t.Fatalf("want undefined_field and type_mismatch, got %+v", ctx.CopyMatches())
+	}
+	if hasMatch(ctx, "schema.missing_field") {
+		t.Fatalf("optional absent field must not emit missing_field: %+v", ctx.CopyMatches())
+	}
+	if len(rules) != 2 {
+		t.Fatalf("want exactly 2 findings, got %+v", ctx.CopyMatches())
 	}
 }

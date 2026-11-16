@@ -26,8 +26,11 @@ type Config struct {
 	WAF      WAFConfig
 	AI       AIConfig
 	APM      APMConfig
+	Kafka    KafkaConfig
 	// SystemOps 系统控制（重启/关机/恢复出厂）宿主控制指令配置
 	SystemOps SystemOpsConfig
+	// ContainerOps 容器运维 sidecar（containeropsd）通道配置
+	ContainerOps ContainerOpsConfig
 	// Product 产品 edition 与 WDSP/API 能力开关（阶段8）
 	Product product.Settings
 }
@@ -36,6 +39,14 @@ type Config struct {
 type SystemOpsConfig struct {
 	// HostctlDir 宿主控制指令标志文件目录；环境变量 HOSTCTL_DIR，默认 /app/runtime/hostctl
 	HostctlDir string
+}
+
+// ContainerOpsConfig 容器运维通道配置：管理 API 不挂载 docker.sock，
+// 经共享卷 Unix Socket 调用 containeropsd sidecar（docs/CONTAINER_OPS_DESIGN.md）。
+type ContainerOpsConfig struct {
+	// Socket containeropsd 本地 Unix Socket 路径；环境变量 CONTAINEROPS_SOCKET，
+	// 默认空 = 功能不可用（裸机/未部署 sidecar 形态），接口返回明确 503，不伪造空列表
+	Socket string
 }
 
 // AIConfig 阶段7 AI 模块开关（关闭时 /api/v1/ai/* 返回不可用，不影响 WAF 核心）。
@@ -69,6 +80,41 @@ type APMConfig struct {
 	// OTLPAddr 自埋点 OTLP/HTTP 导出端点（指向本地 Collector；环境变量
 	// APM_OTLP_ADDR，默认 http://127.0.0.1:4318）
 	OTLPAddr string
+}
+
+type KafkaConfig struct {
+	Enabled           bool
+	Brokers           []string
+	Topic             string
+	DLQTopic          string
+	TLSEnabled        bool
+	TLSCAFile         string
+	TLSCertFile       string
+	TLSKeyFile        string
+	TLSServerName     string
+	SASLMechanism     string
+	SASLUsername      string
+	SASLPassword      string
+	AllowInsecureSASL bool
+	ProduceTimeout    time.Duration
+	MaxBatchBytes     int
+	MaxBatchRecords   int
+}
+
+func (c KafkaConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if len(c.Brokers) == 0 {
+		return fmt.Errorf("KAFKA_BROKERS is required when KAFKA_ENABLED=true")
+	}
+	if c.Topic == "" || c.DLQTopic == "" {
+		return fmt.Errorf("Kafka observation and DLQ topics are required")
+	}
+	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
+		return fmt.Errorf("KAFKA_TLS_CERT_FILE and KAFKA_TLS_KEY_FILE must be configured together")
+	}
+	return nil
 }
 
 // WAFConfig 是 WAF 配置（阶段4）。
@@ -157,8 +203,15 @@ type HTTPConfig struct {
 	IdleTimeout  time.Duration
 }
 
-// DBConfig 是 PostgreSQL 配置。
+const (
+	DBDialectPostgres = "postgres"
+	DBDialectKingbase = "kingbase"
+	DBDialectDameng   = "dameng"
+)
+
+// DBConfig 是主业务数据库配置。空 Dialect 按 PostgreSQL 处理，兼容既有调用方。
 type DBConfig struct {
+	Dialect  string
 	Host     string
 	Port     int
 	Database string
@@ -166,6 +219,35 @@ type DBConfig struct {
 	Password string
 	SSLMode  string
 	MaxConns int32
+}
+
+// DialectName 返回归一化后的数据库方言。
+func (c DBConfig) DialectName() string {
+	if strings.TrimSpace(c.Dialect) == "" {
+		return DBDialectPostgres
+	}
+	return strings.ToLower(strings.TrimSpace(c.Dialect))
+}
+
+// Validate 校验数据库方言是否属于受支持的范围。
+func (c DBConfig) Validate() error {
+	switch c.DialectName() {
+	case DBDialectPostgres, DBDialectKingbase, DBDialectDameng:
+		return nil
+	default:
+		return fmt.Errorf("unsupported DB_DIALECT %q (want postgres, kingbase or dameng)", c.Dialect)
+	}
+}
+
+func defaultDBPort(dialect string) int {
+	switch dialect {
+	case DBDialectKingbase:
+		return 54321
+	case DBDialectDameng:
+		return 5236
+	default:
+		return 5432
+	}
 }
 
 // CacheConfig 是 Valkey 配置。
@@ -215,8 +297,32 @@ func (c HTTPConfig) HTTPAddr() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
 }
 
+func loadDBConfig(dialect string) DBConfig {
+	cfg := DBConfig{
+		Dialect:  dialect,
+		Host:     getEnv("DB_HOST", "127.0.0.1"),
+		Port:     getEnvInt("DB_PORT", defaultDBPort(dialect)),
+		Database: getEnv("DB_NAME", "jiuzhang_waf"),
+		User:     getEnv("DB_USER", "jiuzhang"),
+		Password: os.Getenv("DB_PASSWORD"),
+		SSLMode:  getEnv("DB_SSLMODE", "disable"),
+		MaxConns: int32(getEnvInt("DB_MAX_CONNS", 10)),
+	}
+	if dialect == DBDialectPostgres {
+		cfg.Host = getEnv("DB_HOST", getEnv("POSTGRES_HOST", "127.0.0.1"))
+		cfg.Port = getEnvInt("DB_PORT", getEnvInt("POSTGRES_PORT", defaultDBPort(dialect)))
+		cfg.Database = getEnv("DB_NAME", getEnv("POSTGRES_DB", "jiuzhang_waf"))
+		cfg.User = getEnv("DB_USER", getEnv("POSTGRES_USER", "jiuzhang"))
+		cfg.Password = getEnv("DB_PASSWORD", os.Getenv("POSTGRES_PASSWORD"))
+		cfg.SSLMode = getEnv("DB_SSLMODE", getEnv("POSTGRES_SSLMODE", "disable"))
+		cfg.MaxConns = int32(getEnvInt("DB_MAX_CONNS", getEnvInt("POSTGRES_MAX_CONNS", 10)))
+	}
+	return cfg
+}
+
 // Load 从环境变量加载配置。
 func Load() (*Config, error) {
+	dialect := strings.ToLower(strings.TrimSpace(getEnv("DB_DIALECT", DBDialectPostgres)))
 	cfg := &Config{
 		Env: getEnv("APP_ENV", "dev"),
 		HTTP: HTTPConfig{
@@ -226,15 +332,7 @@ func Load() (*Config, error) {
 			WriteTimeout: getEnvDuration("SERVER_WRITE_TIMEOUT", 30*time.Second),
 			IdleTimeout:  getEnvDuration("SERVER_IDLE_TIMEOUT", 60*time.Second),
 		},
-		DB: DBConfig{
-			Host:     getEnv("POSTGRES_HOST", "127.0.0.1"),
-			Port:     getEnvInt("POSTGRES_PORT", 5432),
-			Database: getEnv("POSTGRES_DB", "jiuzhang_waf"),
-			User:     getEnv("POSTGRES_USER", "jiuzhang"),
-			Password: os.Getenv("POSTGRES_PASSWORD"),
-			SSLMode:  getEnv("POSTGRES_SSLMODE", "disable"),
-			MaxConns: int32(getEnvInt("POSTGRES_MAX_CONNS", 10)),
-		},
+		DB: loadDBConfig(dialect),
 		Cache: CacheConfig{
 			Host:     getEnv("VALKEY_HOST", "127.0.0.1"),
 			Port:     getEnvInt("VALKEY_PORT", 6379),
@@ -300,13 +398,37 @@ func Load() (*Config, error) {
 			SelfTelemetryEnabled: getEnvBool("APM_SELF_TELEMETRY_ENABLED", false),
 			OTLPAddr:             getEnv("APM_OTLP_ADDR", "http://127.0.0.1:4318"),
 		},
+		Kafka: KafkaConfig{
+			Enabled: getEnvBool("KAFKA_ENABLED", false), Brokers: getEnvList("KAFKA_BROKERS"),
+			Topic:      getEnv("KAFKA_API_OBSERVATION_TOPIC", "wdsp.api.observations.v1"),
+			DLQTopic:   getEnv("KAFKA_API_OBSERVATION_DLQ_TOPIC", "wdsp.api.observations.dlq.v1"),
+			TLSEnabled: getEnvBool("KAFKA_TLS_ENABLED", false), TLSCAFile: os.Getenv("KAFKA_TLS_CA_FILE"),
+			TLSCertFile: os.Getenv("KAFKA_TLS_CERT_FILE"), TLSKeyFile: os.Getenv("KAFKA_TLS_KEY_FILE"),
+			TLSServerName: os.Getenv("KAFKA_TLS_SERVER_NAME"), SASLMechanism: os.Getenv("KAFKA_SASL_MECHANISM"),
+			SASLUsername: os.Getenv("KAFKA_SASL_USERNAME"), SASLPassword: os.Getenv("KAFKA_SASL_PASSWORD"),
+			AllowInsecureSASL: getEnvBool("KAFKA_ALLOW_INSECURE_SASL", false),
+			ProduceTimeout:    getEnvDuration("KAFKA_PRODUCE_TIMEOUT", 10*time.Second),
+			MaxBatchBytes:     getEnvInt("KAFKA_MAX_BATCH_BYTES", 4<<20), MaxBatchRecords: getEnvInt("KAFKA_MAX_BATCH_RECORDS", 100),
+		},
 		Product: product.Load(),
 		SystemOps: SystemOpsConfig{
 			HostctlDir: getEnv("HOSTCTL_DIR", "/app/runtime/hostctl"),
 		},
+		ContainerOps: ContainerOpsConfig{
+			Socket: getEnv("CONTAINEROPS_SOCKET", ""),
+		},
+	}
+	if err := cfg.DB.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Kafka.Validate(); err != nil {
+		return nil, err
 	}
 	if cfg.DB.Password == "" {
-		return nil, fmt.Errorf("POSTGRES_PASSWORD is required")
+		if cfg.DB.DialectName() == DBDialectPostgres {
+			return nil, fmt.Errorf("POSTGRES_PASSWORD is required")
+		}
+		return nil, fmt.Errorf("DB_PASSWORD is required")
 	}
 	if cfg.Cache.Password == "" {
 		return nil, fmt.Errorf("VALKEY_PASSWORD is required")

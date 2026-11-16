@@ -21,6 +21,7 @@
 |---------|--------|--------|---------|------|---------|
 | valkey-go | v1.0.76 | Apache-2.0 | https://github.com/valkey-io/valkey-go | jiuzhang_guard 模块 Valkey 客户端（CC计数/临时封禁） | 否 |
 | jiuzhang_guard | 随仓库 | 自主开发 | 本仓库 gateway/modules/jiuzhang_guard | 访问控制与CC防护 Caddy 模块（独立 go.mod，xcaddy 本地路径替换构建） | 自研 |
+| Brotli | v1.3.0 | MIT | https://github.com/andybalholm/brotli | API 压缩响应的 Brotli 解压与安全重编码（gzip 使用 Go 标准库） | 否 |
 
 ## 阶段C（镜像/旁路模式 PoC）新增组件
 
@@ -223,6 +224,31 @@ ops/offline-package/build-all.sh -v 2.0.0 --arches amd64
 > `exporter/clickhouseexporter/config.go` 为准）。
 > 升级 Collector 前必须对照上游 DDL 与配置键变更做兼容性回归，并同步更新本表。
 
+## WDSP 云 API Observation 事件总线新增组件
+
+| 组件名称 | 版本号 | 许可证 | 项目地址 | 用途 | 是否修改 |
+|---------|--------|--------|---------|------|---------|
+| Apache Kafka | 4.1.2 | Apache-2.0 | https://github.com/apache/kafka | 云 API Observation 中心事件总线（KRaft，无 ZooKeeper） | 否 |
+| franz-go | v1.21.0 | BSD-3-Clause | https://github.com/twmb/franz-go | 管理后端唯一 Kafka Go 客户端（Go 1.25.0+） | 否 |
+
+Kafka 镜像锁定：`apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e`。
+经 `docker buildx imagetools inspect` 实测，linux/amd64 子摘要为
+`sha256:d50ab7b5df612b3c303f9d8afe8fee59626a5de798addfd626fe1924e3205965`，
+linux/arm64 子摘要为 `sha256:4a07b91bf81b35fcc2aaabf3ab6e72aba68d3bb782bce95baba826270c3648da`。
+部署与协议边界见 `deployment/kafka/`、`docs/KAFKA_EVENT_BUS_ADR.md` 和
+`docs/agents/WDSP_CLOUD_API_SENSOR_CONTRACT.md`。
+
+Java 进程内探针依赖（`wdsp-agent/instrumentation/java/pom.xml`）：
+
+| 组件名称 | 版本号 | 许可证 | 项目地址 | 用途 | 是否修改 |
+|---------|--------|--------|---------|------|---------|
+| Byte Buddy | 1.17.8 | Apache-2.0 | https://github.com/raphw/byte-buddy | Java 字节码插桩，打入 Agent Jar | 否 |
+| Spring Framework（spring-webmvc / spring-web） | 6.2.11 | Apache-2.0 | https://github.com/spring-projects/spring-framework | Spring MVC/RestTemplate 插桩编译 API，provided 不随 Jar 打包 | 否 |
+| OpenTelemetry Java API | 1.44.0 | Apache-2.0 | https://github.com/open-telemetry/opentelemetry-java | 已有 Trace Context 只读关联，provided 不随 Jar 打包 | 否 |
+| JUnit Jupiter | 5.12.2 | EPL-2.0 | https://github.com/junit-team/junit-framework | Java 单元测试，不进入交付 Jar | 否 |
+
+Java 构建镜像固定为 `maven:3.9.11-eclipse-temurin-21@sha256:6fdc855a6ed81d288ca7ca37ac6ff5e9308b612485c0801d70b25a858c83d237`，编译目标 Java 17。Spring Boot `3.5.7` 仅用于 `test/cloud-agent-e2e/` 真实验收应用，不作为探针支持框架范围的替代声明。许可证归档见 `licenses/byte-buddy/`、`licenses/spring-framework/`、`licenses/opentelemetry-java/`。
+
 ## WDSP 分布式流量采集 Agent（Phase 1/2）新增组件
 
 | 组件名称 | 版本号 | 许可证 | 项目地址 | 用途 | 是否修改 |
@@ -231,6 +257,10 @@ ops/offline-package/build-all.sh -v 2.0.0 --arches amd64
 | cilium/ebpf | v0.22.0 | MIT | https://github.com/cilium/ebpf | wdsp-agent Phase 2：eBPF/TC（TCX）抓包后端，TC ingress/egress 双 hook + 端口 map + ringbuf 上送（wdsp-agent/go.mod 直接依赖；licenses/cilium-ebpf/ 已归档） | 否 |
 
 ## 更新记录
+
+- 2026-11-16：响应安全引入 Brotli v1.3.0（MIT），用于 br 有界解压与重编码；gzip 继续使用 Go 标准库。同步完成 ENCRYPT/MAP、密钥发布与恢复审计，以及 XML/text/SSE 值级检测；依赖归档已登记至 licenses/brotli/ 与 DEPENDENCY_LICENSES.md。
+
+- 2026-11-06：云 API Observation 引入 Kafka 4.1.2、franz-go v1.21.0 与 Java 17 探针；Byte Buddy 1.17.8 随 Agent Jar 分发，Spring Framework 6.2.11 与 OpenTelemetry Java API 1.44.0 为 provided。版本、镜像 digest、许可证归档及 SBOM 生成范围已同步登记。
 
 - 2026-09-02：WDSP 分布式流量采集 Agent Phase 1/2 落地（wdsp-agent 独立 Go module）：登记 gopacket v1.1.19（与 mirrorcap 同版本）与 cilium/ebpf v0.22.0（MIT，eBPF/TC 后端；licenses/cilium-ebpf/ 已归档，license-audit 通过）；eBPF 程序 bpf2go 产物随库提交，日常构建 CGO_ENABLED=0 无需 clang。
 

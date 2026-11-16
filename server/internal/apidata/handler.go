@@ -28,8 +28,9 @@ const (
 
 // Handler 敏感数据管理面处理器。
 type Handler struct {
-	store  Repository
-	audits *audits.Service
+	store      Repository
+	audits     *audits.Service
+	maskCrypto MaskCryptoLoader
 }
 
 // NewHandler 创建处理器（构造注入审计服务，语义同 apiassets）。
@@ -61,6 +62,8 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 		authz(middleware.RequirePermission(PermDataRead)(http.HandlerFunc(h.ListMaskingRules))))
 	mux.Handle("POST /api/v1/api-security/masking-rules",
 		authz(middleware.RequirePermission(PermDataManage)(http.HandlerFunc(h.CreateMaskingRule))))
+	mux.Handle("POST /api/v1/api-security/masking-rules/decrypt",
+		authz(middleware.RequirePermission(PermDataManage)(http.HandlerFunc(h.DecryptMaskingRule))))
 	mux.Handle("GET /api/v1/api-security/masking-rules/{id}",
 		authz(middleware.RequirePermission(PermDataRead)(http.HandlerFunc(h.GetMaskingRule))))
 	mux.Handle("PATCH /api/v1/api-security/masking-rules/{id}",

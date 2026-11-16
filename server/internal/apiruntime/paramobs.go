@@ -1,7 +1,7 @@
 // paramobs.go 网关参数值脱敏观测入库（三微模型参数微模型值观测通路）。
 // 事件 JSONL 中的 param_observations → UPSERT api_parameter_value_obs（按 endpoint_key×位置×路径×名）。
-// 阶段8 §16/§17 扩展（迁移 000145）：null 计数、长度/数值蓄水池、字符直方图、
-// 前后缀脱敏哈希计数，合并复用 apimodels 可合并纯函数，供 statistics.go 整窗重算覆盖。
+// 阶段8 §16/§17 扩展（迁移 000145/000206）：null 计数、长度/数值蓄水池、字符直方图、
+// 前后缀脱敏哈希计数、固定格式样本与候选计数，供 statistics.go 整窗重算覆盖。
 package apiruntime
 
 import (
@@ -18,8 +18,8 @@ import (
 )
 
 // ParamObservation 采集端镜像（与网关 apievents.ParamObservation JSON 字段一致）。
-// null/char_hist/prefix_hash/suffix_hash 为阶段8 §16/§17 扩展：旧版网关不上报这些键，
-// json 缺省解析为零值，合并写入全程容忍（零值即无扩展观测）。
+// null/char_hist/prefix_hash/suffix_hash/format_sample/format_candidate 为扩展键：
+// 旧版网关不上报时 json 缺省解析为零值，合并写入全程容忍（零值即无扩展观测）。
 type ParamObservation struct {
 	Location  string   `json:"location"`
 	Name      string   `json:"name"`
@@ -33,8 +33,10 @@ type ParamObservation struct {
 	// CharHist 字符直方图增量（稀疏桶：字节值十进制串 → 计数，仅非零桶）。
 	CharHist map[string]int64 `json:"char_hist"`
 	// PrefixHash/SuffixHash 前/后缀脱敏哈希（只落哈希，明文不出网关）。
-	PrefixHash string `json:"prefix_hash"`
-	SuffixHash string `json:"suffix_hash"`
+	PrefixHash      string `json:"prefix_hash"`
+	SuffixHash      string `json:"suffix_hash"`
+	FormatSample    bool   `json:"format_sample,omitempty"`
+	FormatCandidate string `json:"format_candidate,omitempty"`
 }
 
 // ParamObsRecorder 参数观测聚合写入接口。
@@ -59,18 +61,20 @@ func (s *ParamObsStore) WithDB(db DBTX) *ParamObsStore {
 
 const valueHashCap = 64 // 每键保留的 distinct hash 上限
 
-// paramObsRow api_parameter_value_obs 单行合并状态（扩展列对应迁移 000145）。
+// paramObsRow api_parameter_value_obs 单行合并状态（扩展列对应迁移 000145/000206）。
 type paramObsRow struct {
-	sampleCount     int64
-	minLen, maxLen  *int
-	minVal, maxVal  *float64
-	hashes          []string
-	nullCount       int64
-	lengthReservoir []float64
-	valueReservoir  []float64
-	charHistogram   []int64
-	prefixCounts    map[string]int64
-	suffixCounts    map[string]int64
+	sampleCount       int64
+	minLen, maxLen    *int
+	minVal, maxVal    *float64
+	hashes            []string
+	nullCount         int64
+	lengthReservoir   []float64
+	valueReservoir    []float64
+	charHistogram     []int64
+	prefixCounts      map[string]int64
+	suffixCounts      map[string]int64
+	formatSampleCount int64
+	formatCounts      map[string]int64
 }
 
 // merge 合并单条观测（纯函数，供 RecordParamObservations 与单测复用）：
@@ -110,6 +114,12 @@ func (r *paramObsRow) merge(o ParamObservation) {
 	}
 	if o.SuffixHash != "" {
 		r.suffixCounts = apimodels.MergeCounts(r.suffixCounts, map[string]int64{o.SuffixHash: 1})
+	}
+	if o.FormatSample && !o.Null && o.BaseType == "string" && o.Length > 0 && o.ValueHash != "" {
+		r.formatSampleCount++
+		if apimodels.IsFormatCandidate(o.FormatCandidate) {
+			r.formatCounts = apimodels.MergeCounts(r.formatCounts, map[string]int64{o.FormatCandidate: 1})
+		}
 	}
 	if o.ValueHash != "" {
 		r.hashes = mergeHash(r.hashes, o.ValueHash, valueHashCap)
@@ -157,15 +167,17 @@ func (s *ParamObsStore) RecordParamObservations(ctx context.Context, endpointKey
 		// 读取既有行再合并（简单正确；高并发下用 SQL 聚合亦可）
 		var row paramObsRow
 		var distinct *int
-		var hashesRaw, lenRaw, valRaw, histRaw, prefixRaw, suffixRaw []byte
+		var hashesRaw, lenRaw, valRaw, histRaw, prefixRaw, suffixRaw, formatRaw []byte
 		err := s.db.QueryRow(ctx, `
 SELECT sample_count, min_length, max_length, min_value, max_value, distinct_count, value_hashes,
-       null_count, length_reservoir, value_reservoir, char_histogram, prefix_counts, suffix_counts
+       null_count, length_reservoir, value_reservoir, char_histogram, prefix_counts, suffix_counts,
+       format_sample_count, format_counts
 FROM api_parameter_value_obs
 WHERE endpoint_key=$1 AND location=$2 AND structured_path=$3 AND parameter_name=$4`,
 			endpointKey, loc, path, name).Scan(&row.sampleCount, &row.minLen, &row.maxLen,
 			&row.minVal, &row.maxVal, &distinct, &hashesRaw,
-			&row.nullCount, &lenRaw, &valRaw, &histRaw, &prefixRaw, &suffixRaw)
+			&row.nullCount, &lenRaw, &valRaw, &histRaw, &prefixRaw, &suffixRaw,
+			&row.formatSampleCount, &formatRaw)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("load param obs: %w", err)
 		}
@@ -186,6 +198,9 @@ WHERE endpoint_key=$1 AND location=$2 AND structured_path=$3 AND parameter_name=
 		if err := json.Unmarshal(suffixRaw, &row.suffixCounts); len(suffixRaw) > 0 && err != nil {
 			return fmt.Errorf("decode suffix counts: %w", err)
 		}
+		if err := json.Unmarshal(formatRaw, &row.formatCounts); len(formatRaw) > 0 && err != nil {
+			return fmt.Errorf("decode format counts: %w", err)
+		}
 		row.merge(o)
 		dc := len(row.hashes)
 		distinct = &dc
@@ -195,14 +210,15 @@ WHERE endpoint_key=$1 AND location=$2 AND structured_path=$3 AND parameter_name=
 		cb, _ := json.Marshal(intsOrEmpty(row.charHistogram))
 		pb, _ := json.Marshal(countsOrEmpty(row.prefixCounts))
 		sb, _ := json.Marshal(countsOrEmpty(row.suffixCounts))
+		fb, _ := json.Marshal(countsOrEmpty(row.formatCounts))
 		_, err = s.db.Exec(ctx, `
 INSERT INTO api_parameter_value_obs
   (endpoint_key, location, structured_path, parameter_name, sample_count,
    min_length, max_length, min_value, max_value, distinct_count, value_hashes,
    null_count, length_reservoir, value_reservoir, char_histogram,
-   prefix_counts, suffix_counts, updated_at)
+   prefix_counts, suffix_counts, format_sample_count, format_counts, updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,
-        $12,$13::jsonb,$14::jsonb,$15::jsonb,$16::jsonb,$17::jsonb, now())
+        $12,$13::jsonb,$14::jsonb,$15::jsonb,$16::jsonb,$17::jsonb,$18,$19::jsonb, now())
 ON CONFLICT (endpoint_key, location, structured_path, parameter_name) DO UPDATE SET
   sample_count = EXCLUDED.sample_count,
   min_length = EXCLUDED.min_length,
@@ -217,10 +233,13 @@ ON CONFLICT (endpoint_key, location, structured_path, parameter_name) DO UPDATE 
   char_histogram = EXCLUDED.char_histogram,
   prefix_counts = EXCLUDED.prefix_counts,
   suffix_counts = EXCLUDED.suffix_counts,
+  format_sample_count = EXCLUDED.format_sample_count,
+  format_counts = EXCLUDED.format_counts,
   updated_at = now()`,
 			endpointKey, loc, path, name, row.sampleCount,
 			row.minLen, row.maxLen, row.minVal, row.maxVal, distinct, string(hb),
-			row.nullCount, string(lb), string(vb), string(cb), string(pb), string(sb))
+			row.nullCount, string(lb), string(vb), string(cb), string(pb), string(sb),
+			row.formatSampleCount, string(fb))
 		if err != nil {
 			return fmt.Errorf("upsert param obs: %w", err)
 		}

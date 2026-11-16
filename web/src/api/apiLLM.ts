@@ -73,6 +73,48 @@ export interface ApiLLMStats {
   findings_by_rule: ApiLLMFindingRuleStat[]
 }
 
+export interface ApiLLMSecurityPolicy {
+  id: string
+  application_id: string
+  name: string
+  mode: 'OBSERVE' | 'PROTECT'
+  prompt_injection_enabled: boolean
+  input_content_enabled: boolean
+  pii_detection_enabled: boolean
+  output_content_enabled: boolean
+  output_pii_enabled: boolean
+  blocked_topics: string[]
+  max_prompt_bytes: number
+  max_output_tokens: number
+  enabled: boolean
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ApiLLMSecurityPolicyInput {
+  application_id?: string
+  name?: string
+  mode?: 'OBSERVE' | 'PROTECT'
+  prompt_injection_enabled?: boolean
+  input_content_enabled?: boolean
+  pii_detection_enabled?: boolean
+  output_content_enabled?: boolean
+  output_pii_enabled?: boolean
+  blocked_topics?: string[]
+  max_prompt_bytes?: number
+  max_output_tokens?: number
+  enabled?: boolean
+}
+
+export interface ApiLLMSecurityPolicyVersion {
+  id: string
+  policy_id: string
+  version: number
+  policy_snapshot: ApiLLMSecurityPolicy
+  created_at: string
+}
+
 export const apiLLMApi = {
   /** 明细分页（model/endpoint_key 精确过滤，findings_only=true 仅命中观测；days 默认 7 上限 30） */
   listObservations: async (params: {
@@ -83,12 +125,43 @@ export const apiLLMApi = {
     page: number
     page_size: number
   }) => {
-    const data = await request<PageResult<ApiLLMObservation>>(`/api-security/llm/observations`, {
-      query: { ...params },
-    })
+    const data = await request<PageResult<ApiLLMObservation>>(
+      `/api-security/llm/observations`,
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
   /** 统计（模型分布/token 用量趋势/涉敏命中计数；days 默认 7 上限 30） */
   stats: (days?: number) =>
     request<ApiLLMStats>(`/api-security/llm/stats`, { query: { days } }),
+  listSecurityPolicies: async () => {
+    const data = await request<{
+      items: ApiLLMSecurityPolicy[]
+      total: number
+    }>(`/api-security/llm/security-policies`)
+    return { ...data, items: data.items ?? [] }
+  },
+  createSecurityPolicy: (body: ApiLLMSecurityPolicyInput) =>
+    request<ApiLLMSecurityPolicy>(`/api-security/llm/security-policies`, {
+      method: 'POST',
+      body,
+    }),
+  updateSecurityPolicy: (id: string, body: ApiLLMSecurityPolicyInput) =>
+    request<ApiLLMSecurityPolicy>(`/api-security/llm/security-policies/${id}`, {
+      method: 'PATCH',
+      body,
+    }),
+  deleteSecurityPolicy: (id: string) =>
+    request<{ status: string }>(`/api-security/llm/security-policies/${id}`, {
+      method: 'DELETE',
+    }),
+  listSecurityPolicyVersions: async (id: string) => {
+    const data = await request<{
+      items: ApiLLMSecurityPolicyVersion[]
+      total: number
+    }>(`/api-security/llm/security-policies/${id}/versions`)
+    return { ...data, items: data.items ?? [] }
+  },
 }

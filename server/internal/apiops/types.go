@@ -83,9 +83,14 @@ type Schedule struct {
 	LastRunAt  *time.Time      `json:"last_run_at"`
 	LastStatus string          `json:"last_status"`
 	LastError  string          `json:"last_error"`
-	CreatedBy  *uuid.UUID      `json:"created_by"`
-	CreatedAt  time.Time       `json:"created_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	// 连续失败熔断（迁移 000187）：失败计数（成功清零）、熔断时间与原因；
+	// 达阈同事务 enabled=false + 清空 next_run_at，手动启用时清零复位
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	CircuitOpenedAt     *time.Time `json:"circuit_opened_at"`
+	CircuitReason       string     `json:"circuit_reason"`
+	CreatedBy           *uuid.UUID `json:"created_by"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
 // Run 执行记录（每次触发一行，含手动立即执行）。
@@ -160,4 +165,13 @@ func ValidateScheduleInput(name, cronExpr string) error {
 		return err
 	}
 	return nil
+}
+
+// truncRunes 按字符截断（circuit_reason VARCHAR(500) 等定长列防溢出）。
+func truncRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }

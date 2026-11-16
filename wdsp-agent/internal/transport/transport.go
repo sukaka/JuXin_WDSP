@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jiuzhang-waf/wdsp-agent/internal/apievent"
 	"github.com/jiuzhang-waf/wdsp-agent/internal/events"
 )
 
@@ -98,7 +99,8 @@ type InterfaceInfo struct {
 // Capabilities 能力声明/回执（HTTP 事件 v2 契约 §3：注册/心跳可选扩展；
 // 旧服务端无此响应字段、旧 Agent 无此请求字段，双向忽略即为降级协商）。
 type Capabilities struct {
-	HTTPEventSchemaVersions []int `json:"http_event_schema_versions"`
+	HTTPEventSchemaVersions      []int `json:"http_event_schema_versions"`
+	APIObservationSchemaVersions []int `json:"api_observation_schema_versions"`
 }
 
 // HasSchemaVersion 能力集是否含指定 HTTP 事件 schema 版本（nil 安全：
@@ -115,10 +117,24 @@ func (c *Capabilities) HasSchemaVersion(v int) bool {
 	return false
 }
 
-// DeclaredCapabilities 本 Agent 的 HTTP 事件 schema 能力声明（v1+v2；
-// 生效集 = 声明 ∩ 服务端支持集，以服务端回执为准）。
+func (c *Capabilities) HasAPIObservationSchemaVersion(v int) bool {
+	if c == nil {
+		return false
+	}
+	for _, x := range c.APIObservationSchemaVersions {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// DeclaredCapabilities 本 Agent 的 HTTP 与 API Observation 能力声明；生效集以服务端回执为准。
 func DeclaredCapabilities() *Capabilities {
-	return &Capabilities{HTTPEventSchemaVersions: []int{1, events.HTTPRecordSchemaVersion}}
+	return &Capabilities{
+		HTTPEventSchemaVersions:      []int{1, events.HTTPRecordSchemaVersion},
+		APIObservationSchemaVersions: []int{apievent.SchemaVersion},
+	}
 }
 
 // EnrollRequest 注册请求（契约 §3.1；csr_pem 为 Phase 2-B 增量，契约 §7；
@@ -574,4 +590,20 @@ func (c *Client) RotateCert(ctx context.Context, agentID, csrPEM string) (*Rotat
 		return nil, &APIError{StatusCode: http.StatusOK, Code: "BAD_RESPONSE", Message: "轮换响应缺少 agent_cert_pem"}
 	}
 	return &out, nil
+}
+
+func (c *Client) PostAPIObservations(ctx context.Context, agentID string, records []apievent.Record) (int, int, error) {
+	data, _, err := c.do(ctx, http.MethodPost, "/api/v1/agents/"+agentID+"/api-observations",
+		apievent.Batch{SchemaVersion: apievent.SchemaVersion, Records: records}, true, "", nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	var out apievent.Response
+	if err := json.Unmarshal(data, &out); err != nil {
+		return 0, 0, fmt.Errorf("解析 API Observation 响应: %w", err)
+	}
+	if out.AcceptedCount < 0 || out.DuplicateCount < 0 || out.AcceptedCount+out.DuplicateCount != len(records) {
+		return 0, 0, fmt.Errorf("API Observation 响应计数与输入不符")
+	}
+	return out.AcceptedCount, out.DuplicateCount, nil
 }

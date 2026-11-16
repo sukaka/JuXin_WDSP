@@ -45,6 +45,9 @@ const schedule1 = {
   last_run_at: '2026-08-19T07:00:05Z',
   last_status: 'SUCCESS',
   last_error: '',
+  consecutive_failures: 0,
+  circuit_opened_at: null,
+  circuit_reason: '',
   created_by: null,
   created_at: '2026-08-01T00:00:00Z',
   updated_at: '2026-08-19T07:00:07Z',
@@ -62,12 +65,35 @@ const schedule2 = {
   last_run_at: null,
   last_status: '',
   last_error: '',
+  consecutive_failures: 0,
+  circuit_opened_at: null,
+  circuit_reason: '',
   created_by: null,
   created_at: '2026-08-01T00:00:00Z',
   updated_at: '2026-08-01T00:00:00Z',
 }
 
-const schedulesData = { items: [schedule1, schedule2], page: 1, page_size: 20, total: 2 }
+/** 熔断中的计划（连续失败 3 次被自动熔断停用） */
+const schedule3 = {
+  id: 'sch-3',
+  task_type: 'RISK_DIGEST',
+  name: '熔断计划',
+  cron_expr: '@hourly',
+  enabled: false,
+  config: {},
+  next_run_at: null,
+  last_run_at: '2026-08-19T07:00:05Z',
+  last_status: 'FAILED',
+  last_error: 'LLM 调用超时',
+  consecutive_failures: 3,
+  circuit_opened_at: '2026-08-19T07:00:07Z',
+  circuit_reason: '连续失败 3 次，自动熔断',
+  created_by: null,
+  created_at: '2026-08-01T00:00:00Z',
+  updated_at: '2026-08-19T07:00:07Z',
+}
+
+const schedulesData = { items: [schedule1, schedule2, schedule3], page: 1, page_size: 20, total: 3 }
 
 /** 成功执行记录（报告含标量指标与对象清单，验证表格化渲染） */
 const run1 = {
@@ -139,6 +165,9 @@ describe('ApiAIOpsPage', () => {
           Promise.resolve(jsonResponse(status, { code: 'SUCCESS', message: 'ok', data }))
         if (path.endsWith('/api-security/ai-ops/task-types')) return ok(taskTypesData)
         if (path.includes('/schedules/sch-1/runs')) return ok(runsData)
+        if (path.includes('/schedules/sch-3/runs')) {
+          return ok({ items: [], page: 1, page_size: 20, total: 0 })
+        }
         if (path.endsWith('/schedules/sch-1/run') && method === 'POST') {
           postPaths.push(path)
           return ok({ run: run1 })
@@ -146,6 +175,18 @@ describe('ApiAIOpsPage', () => {
         if (path.endsWith('/schedules/sch-2/enable') && method === 'POST') {
           postPaths.push(path)
           return ok({ schedule: { ...schedule2, enabled: true } })
+        }
+        if (path.endsWith('/schedules/sch-3/enable') && method === 'POST') {
+          postPaths.push(path)
+          return ok({
+            schedule: {
+              ...schedule3,
+              enabled: true,
+              consecutive_failures: 0,
+              circuit_opened_at: null,
+              circuit_reason: '',
+            },
+          })
         }
         if (path.endsWith('/schedules/sch-1') && method === 'PUT') {
           putCalls.push({ path, body: JSON.parse(String(init?.body)) })
@@ -239,6 +280,48 @@ describe('ApiAIOpsPage', () => {
       expect(postPaths.some((p) => p.endsWith('/schedules/sch-2/enable'))).toBe(true)
     })
     expect(await screen.findByText('计划「高危摘要」已启用')).toBeInTheDocument()
+  })
+
+  it('熔断计划：列表展示连续失败次数与已熔断标记', async () => {
+    renderPage()
+    const row = (await screen.findByText('熔断计划')).closest('tr') as HTMLElement
+    // 连续失败列：计数 3 + 已熔断标记
+    expect(within(row).getByText('3')).toBeInTheDocument()
+    expect(within(row).getByText('已熔断')).toBeInTheDocument()
+    // 非熔断计划不展示熔断标记
+    const row1 = (await screen.findByText('每日资产摘要')).closest('tr') as HTMLElement
+    expect(within(row1).queryByText('已熔断')).not.toBeInTheDocument()
+  })
+
+  it('熔断计划点击启用：先弹「重新启用（重置熔断计数）」确认，确认后才调 enable', async () => {
+    renderPage()
+    const row = (await screen.findByText('熔断计划')).closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByRole('switch'))
+    // 确认弹窗展示熔断上下文（antd modal 标题渲染多处，按集合断言）；确认前不发起 enable 请求
+    expect((await screen.findAllByText('重新启用（重置熔断计数）')).length).toBeGreaterThan(0)
+    const dialog = screen
+      .getAllByRole('dialog')
+      .find((d) => within(d).queryAllByText('重新启用（重置熔断计数）').length > 0)
+    if (!dialog) throw new Error('未找到重新启用确认弹窗')
+    expect(within(dialog).getByText(/已连续失败 3 次并熔断/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/熔断原因：连续失败 3 次，自动熔断/)).toBeInTheDocument()
+    expect(postPaths.some((p) => p.endsWith('/schedules/sch-3/enable'))).toBe(false)
+    fireEvent.click(within(dialog).getByRole('button', { name: /确\s*定|^OK$/ }))
+    await waitFor(() => {
+      expect(postPaths.some((p) => p.endsWith('/schedules/sch-3/enable'))).toBe(true)
+    })
+    expect(await screen.findByText('计划「熔断计划」已启用')).toBeInTheDocument()
+  })
+
+  it('熔断计划的运行记录抽屉：顶部展示熔断告警（连续失败/熔断时间/原因）', async () => {
+    renderPage()
+    const row = (await screen.findByText('熔断计划')).closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: /^运\s*行\s*记\s*录$/ }))
+    const drawer = await screen.findByRole('dialog')
+    expect(within(drawer).getByText('运行记录：熔断计划')).toBeInTheDocument()
+    expect(within(drawer).getByText('计划已熔断')).toBeInTheDocument()
+    expect(within(drawer).getByText(/连续失败 3 次/)).toBeInTheDocument()
+    expect(within(drawer).getByText(/熔断原因：连续失败 3 次，自动熔断/)).toBeInTheDocument()
   })
 
   it('立即执行：POST run 并反馈执行结果，随后可刷新执行记录', async () => {

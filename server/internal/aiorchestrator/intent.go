@@ -24,6 +24,9 @@ const (
 	TaskWhatIf          TaskType = "WHAT_IF_ANALYSIS"
 	TaskReportSummary   TaskType = "REPORT_SUMMARY"
 	TaskGeneralQA       TaskType = "GENERAL_SECURITY_QA"
+	// TaskAPISecurityAnalysis API 安全分析（阶段8 / WDSP 形态专属；调度 api_security Agent，
+	// 纯 WAF 形态该 Agent 未注册，编排器跳过未注册 Agent 不产生伪造事实）。
+	TaskAPISecurityAnalysis TaskType = "API_SECURITY_ANALYSIS"
 )
 
 // intentRule 意图规则（优先级排序）。
@@ -40,6 +43,12 @@ var intentRules = []intentRule{
 	{TaskRootCause, regexp.MustCompile(`为什么.*(延迟|失败|异常|升高|不足|错误|慢|积压|崩溃)|根因|root.?cause|怎么回事|排查`), []string{"ops_diagnostic", "log_analysis"}},
 	{TaskAttackProfile, regexp.MustCompile(`画像|谁在攻击|哪个ip|来源|攻击者`), []string{"security_event", "log_analysis"}},
 	{TaskFalsePositive, regexp.MustCompile(`误杀|误拦|误阻断`), []string{"waf_policy", "security_event"}},
+	// API 安全分析：高信号词（影子/僵尸/越权/BOLA/BFLA/参数偏离/敏感数据/弱点等）直接命中；
+	// 泛词（资产/态势/模型/风险/统计等）必须与 api|接口|端点|字段 共现才路由，
+	// 避免把普通 WAF 统计/日志问题误路由到 API 域。位置在「事件分析/统计/日志」之前。
+	{TaskAPISecurityAnalysis, regexp.MustCompile(`shadow|zombie|bola|bfla|越权|参数偏离|涉敏|敏感数据|影子|僵尸|弱点` +
+		`|(?:api|接口|端点|字段)[^。，,；;]{0,16}(?:资产|态势|模型|schema|参数|风险|学习|发现|偏离|覆盖|清单|分类|图谱|运行时|规范|敏感|统计|调用量)` +
+		`|(?:资产|态势|模型|schema|参数|风险|学习|发现|偏离|覆盖|清单|分类|图谱|运行时|规范|敏感|统计|调用量)[^。，,；;]{0,16}(?:api|接口|端点|字段)`), []string{"api_security"}},
 	{TaskEventAnalysis, regexp.MustCompile(`事件.*分析|分析.*事件|这条事件|这个事件|分析一下`), []string{"security_event"}},
 	{TaskPolicyRec, regexp.MustCompile(`策略.*(建议|优化|调整|推荐)|优化.*策略|调优|建议.*规则`), []string{"waf_policy"}},
 	{TaskWhatIf, regexp.MustCompile(`what.?if|如果.*(关掉|关闭|启用|改成|切换|调整)|模拟|假设`), []string{"waf_policy"}},
@@ -179,6 +188,7 @@ func CapabilityIntro() string {
 4. 攻击画像、攻击链关联
 5. 统计与趋势（如「最近 24 小时攻击类型分布」）
 6. 策略建议、根因排查、报告总结
+7. API 安全分析（WDSP 形态：影子/僵尸接口、模型与参数偏离、BOLA/BFLA 越权风险、弱点整改、敏感数据）
 
 **可以这样问：**
 - 统计最近 24 小时攻击类型分布
@@ -186,6 +196,7 @@ func CapabilityIntro() string {
 - 谁在攻击我的网站
 - 分析事件 <事件UUID>
 - 这条拦截是不是误报
+- 有哪些影子 API？当前是否存在越权风险
 
 > 回答仅供辅助决策；涉及生产变更请走既有审核与发布流程。
 `)
@@ -202,18 +213,19 @@ func riskOf(t TaskType) string {
 
 func summaryOf(t TaskType, agents []string) string {
 	names := map[TaskType]string{
-		TaskEventAnalysis:   "安全事件分析",
-		TaskFalsePositive:   "误报研判",
-		TaskRuleExplanation: "规则解释",
-		TaskAttackProfile:   "攻击画像",
-		TaskAttackChain:     "攻击链关联",
-		TaskRootCause:       "根因分析",
-		TaskLogQuery:        "日志查询",
-		TaskStatistics:      "统计问答",
-		TaskPolicyRec:       "策略优化建议",
-		TaskWhatIf:          "What-If 策略模拟",
-		TaskReportSummary:   "报告总结",
-		TaskGeneralQA:       "通用安全问答",
+		TaskEventAnalysis:       "安全事件分析",
+		TaskFalsePositive:       "误报研判",
+		TaskRuleExplanation:     "规则解释",
+		TaskAttackProfile:       "攻击画像",
+		TaskAttackChain:         "攻击链关联",
+		TaskRootCause:           "根因分析",
+		TaskLogQuery:            "日志查询",
+		TaskStatistics:          "统计问答",
+		TaskPolicyRec:           "策略优化建议",
+		TaskWhatIf:              "What-If 策略模拟",
+		TaskReportSummary:       "报告总结",
+		TaskGeneralQA:           "通用安全问答",
+		TaskAPISecurityAnalysis: "API 安全分析",
 	}
 	return names[t] + "（调度: " + strings.Join(agents, ", ") + "）"
 }

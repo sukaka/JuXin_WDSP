@@ -54,16 +54,17 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 // 允许前端按 GET 全量行回传，若提供则必须与当前值一致；id/updated_by/updated_at
 // 为服务端只读字段，请求体不承接）。
 type updateRequest struct {
-	Scope               string         `json:"scope"`
-	Enabled             bool           `json:"enabled"`
-	Mode                string         `json:"mode"`
-	Version             int            `json:"version"`
-	BlockThreshold      int            `json:"block_threshold"`
-	RateLimitThreshold  int            `json:"rate_limit_threshold"`
-	RateLimitRPS        int            `json:"rate_limit_rps"`
-	SignalWindowSeconds int            `json:"signal_window_seconds"`
-	Scores              map[string]int `json:"scores"`
-	RiskLevels          map[string]int `json:"risk_levels"`
+	Scope                    string         `json:"scope"`
+	Enabled                  bool           `json:"enabled"`
+	Mode                     string         `json:"mode"`
+	Version                  int            `json:"version"`
+	BlockThreshold           int            `json:"block_threshold"`
+	RateLimitThreshold       int            `json:"rate_limit_threshold"`
+	RateLimitRPS             int            `json:"rate_limit_rps"`
+	SignalWindowSeconds      int            `json:"signal_window_seconds"`
+	SharedDeviceAccountLimit int            `json:"shared_device_account_limit"`
+	Scores                   map[string]int `json:"scores"`
+	RiskLevels               map[string]int `json:"risk_levels"`
 }
 
 // Update 全量更新 GLOBAL 策略（乐观锁 + 校验 + 审计 + 触发发布）。
@@ -89,17 +90,18 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated := &Policy{
-		ID:                  before.ID,
-		Scope:               before.Scope, // scope 不可变
-		Enabled:             req.Enabled,
-		Mode:                req.Mode,
-		Version:             req.Version,
-		BlockThreshold:      req.BlockThreshold,
-		RateLimitThreshold:  req.RateLimitThreshold,
-		RateLimitRPS:        req.RateLimitRPS,
-		SignalWindowSeconds: req.SignalWindowSeconds,
-		Scores:              req.Scores,
-		RiskLevels:          req.RiskLevels,
+		ID:                       before.ID,
+		Scope:                    before.Scope, // scope 不可变
+		Enabled:                  req.Enabled,
+		Mode:                     req.Mode,
+		Version:                  req.Version,
+		BlockThreshold:           req.BlockThreshold,
+		RateLimitThreshold:       req.RateLimitThreshold,
+		RateLimitRPS:             req.RateLimitRPS,
+		SignalWindowSeconds:      req.SignalWindowSeconds,
+		SharedDeviceAccountLimit: req.SharedDeviceAccountLimit,
+		Scores:                   req.Scores,
+		RiskLevels:               req.RiskLevels,
 	}
 	if errs := Validate(updated); len(errs) > 0 {
 		response.ErrorWithDetails(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "策略校验未通过", errs)

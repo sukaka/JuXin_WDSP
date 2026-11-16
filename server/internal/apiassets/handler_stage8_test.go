@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/authz"
@@ -18,7 +19,7 @@ import (
 var allPerms = []string{
 	"api_asset.read", "api_asset.confirm", "api_asset.edit",
 	"api_asset.merge", "api_asset.split", "api_asset.ignore",
-	"api_learning.read", "api_learning.start", "api_learning.stop",
+	"api_learning.read", "api_learning.start", "api_learning.stop", "api_asset.export",
 }
 
 // injectPrincipal 模拟认证链：注入持有全部权限点的主体与 Request ID。
@@ -183,6 +184,50 @@ func TestEndpointGroupHTTP(t *testing.T) {
 	}
 	if ep.Asset == nil || ep.Asset.Purpose != "登录认证" || ep.Asset.Exposure != "PUBLIC" || len(ep.Asset.Tags) != 1 {
 		t.Fatalf("patched asset: %+v", ep.Asset)
+	}
+
+	// ---- PATCH 资产档案（多标签 + 单位/系统/负责人/等级/认证方式；非法枚举 → 400）----
+	rr = doJSON(t, mux, http.MethodPatch, "/api/v1/api-security/endpoints/"+login.ID.String(), map[string]any{
+		"purpose": "登录认证", "exposure": "PUBLIC", "owner": "张XX",
+		"tags":         []string{"对账", "第三方回调"},
+		"organization": "XX集团金融事业部", "business_system": "客户经营管理平台",
+		"technical_owner": "李XX", "data_owner": "王XX",
+		"data_level": "IMPORTANT", "api_level": "LEVEL_3", "auth_type": "TOKEN",
+	})
+	data = decodeData(t, rr)
+	epRaw, _ = json.Marshal(data["endpoint"])
+	ep = Endpoint{}
+	if err := json.Unmarshal(epRaw, &ep); err != nil {
+		t.Fatal(err)
+	}
+	if ep.Asset == nil || len(ep.Asset.Tags) != 2 ||
+		ep.Asset.Organization != "XX集团金融事业部" || ep.Asset.BusinessSystem != "客户经营管理平台" ||
+		ep.Asset.Owner != "张XX" || ep.Asset.TechnicalOwner != "李XX" || ep.Asset.DataOwner != "王XX" ||
+		ep.Asset.DataLevel != "IMPORTANT" || ep.Asset.APILevel != "LEVEL_3" || ep.Asset.AuthType != "TOKEN" {
+		t.Fatalf("patched profile: %+v", ep.Asset)
+	}
+	for _, bad := range []map[string]any{{"data_level": "TOP"}, {"api_level": "LEVEL_9"}, {"auth_type": "MAGIC"}} {
+		rr = doJSON(t, mux, http.MethodPatch, "/api/v1/api-security/endpoints/"+login.ID.String(), bad)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("bad profile enum %v status=%d", bad, rr.Code)
+		}
+	}
+	// 列表带出多标签
+	rr = doJSON(t, mux, http.MethodGet, "/api/v1/api-security/endpoints?keyword=login", nil)
+	if !strings.Contains(rr.Body.String(), "第三方回调") {
+		t.Fatalf("list should include tags: %s", rr.Body.String())
+	}
+
+	// ---- 详情日均调用量（近 7 天桶和/7；14 次 → 日均 2）----
+	for i := 0; i < 14; i++ {
+		if err := store.RecordTrafficBucket(ctx, login.ID, time.Now().UTC().Add(-time.Duration(i%7)*24*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rr = doJSON(t, mux, http.MethodGet, "/api/v1/api-security/endpoints/"+login.ID.String(), nil)
+	data = decodeData(t, rr)
+	if data["daily_requests"].(float64) != 2 {
+		t.Fatalf("daily_requests=%v body=%v", data["daily_requests"], data)
 	}
 
 	// ---- 批量确认（空 ids → 400；部分不存在 → failed）----

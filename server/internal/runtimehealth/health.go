@@ -75,7 +75,27 @@ const (
 	MetricAPILastSampleAt   = "api_last_sample_at"
 	// MetricAccessLogStaleSecs accesslog-01 全量访问日志链路断点滞后秒数
 	// （仅 logging.access_log_enabled=true 且断点存在时产出，见 accesslog_freshness.go）
-	MetricAccessLogStaleSecs = "access_log_stale_seconds"
+	MetricAccessLogStaleSecs              = "access_log_stale_seconds"
+	MetricCPUUsagePercent                 = "cpu_usage_percent"
+	MetricMemoryUsagePercent              = "memory_usage_percent"
+	MetricResourceSampledAt               = "resource_sampled_at"
+	MetricResourceSampleError             = "resource_sample_error"
+	MetricRuntimeMetricsError             = "runtime_metrics_error"
+	MetricTCPConnectionsActive            = "tcp_connections_active"
+	MetricTCPConnectionsAcceptedTotal     = "tcp_connections_accepted_total"
+	MetricTCPConnectionsAcceptedPerSecond = "tcp_connections_accepted_per_second"
+	MetricHTTPRequestsInFlight            = "http_requests_in_flight"
+	MetricHTTPRequestsTotal               = "http_requests_total"
+	MetricHTTPSessionsActive              = "http_sessions_active"
+	MetricHTTPSessionsNewTotal            = "http_sessions_new_total"
+	MetricHTTPSessionsOverflowTotal       = "http_sessions_overflow_total"
+	MetricSoftwareBypassEnabled           = "software_bypass_enabled"
+	MetricSoftwareBypassActive            = "software_bypass_active"
+	MetricSoftwareBypassReason            = "software_bypass_reason"
+	MetricSoftwareBypassCPUThreshold      = "software_bypass_cpu_threshold_percent"
+	MetricSoftwareBypassMemoryThreshold   = "software_bypass_memory_threshold_percent"
+	MetricSoftwareBypassTransitions       = "software_bypass_transitions_total"
+	MetricSoftwareBypassRequests          = "software_bypass_requests_total"
 )
 
 // AllComponents 返回采集的组件清单（固定顺序）。

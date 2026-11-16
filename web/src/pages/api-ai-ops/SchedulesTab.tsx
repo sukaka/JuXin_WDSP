@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   App as AntdApp,
+  Alert,
   Button,
   Drawer,
   Form,
@@ -10,6 +11,7 @@ import {
   Select,
   Space,
   Switch,
+  Tag,
   Tooltip,
   Typography,
 } from 'antd'
@@ -146,6 +148,40 @@ export default function SchedulesTab() {
     })
   }
 
+  /** 熔断态计划重新启用：明示将重置熔断计数，确认后才调 enable 接口 */
+  const confirmReenable = (record: ApiAISchedule) => {
+    modal.confirm({
+      title: '重新启用（重置熔断计数）',
+      content: (
+        <div>
+          <Typography.Paragraph style={{ marginBottom: 8 }}>
+            计划「{record.name}」已连续失败 {record.consecutive_failures} 次并熔断
+            {record.circuit_opened_at ? `（熔断时间：${formatDateTime(record.circuit_opened_at)}）` : ''}
+            。
+          </Typography.Paragraph>
+          {record.circuit_reason ? (
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+              熔断原因：{record.circuit_reason}
+            </Typography.Paragraph>
+          ) : null}
+          <Typography.Paragraph style={{ marginBottom: 0 }}>
+            重新启用将重置连续失败计数与熔断状态，并按 cron 表达式恢复排期。确定继续吗？
+          </Typography.Paragraph>
+        </div>
+      ),
+      onOk: () => toggleMut.mutate({ id: record.id, enabled: true }),
+    })
+  }
+
+  /** 启停开关变更：熔断态下启用需先确认（重置熔断计数） */
+  const onToggle = (record: ApiAISchedule, checked: boolean) => {
+    if (checked && record.circuit_opened_at) {
+      confirmReenable(record)
+      return
+    }
+    toggleMut.mutate({ id: record.id, enabled: checked })
+  }
+
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
@@ -196,8 +232,32 @@ export default function SchedulesTab() {
         <Switch
           checked={v}
           disabled={!canExecute || toggleMut.isPending}
-          onChange={(checked) => toggleMut.mutate({ id: record.id, enabled: checked })}
+          onChange={(checked) => onToggle(record, checked)}
         />
+      ),
+    },
+    {
+      title: '连续失败',
+      key: 'consecutive_failures',
+      width: 110,
+      render: (_, record) => (
+        <Space size={4}>
+          <Typography.Text type={record.consecutive_failures > 0 ? 'danger' : undefined}>
+            {record.consecutive_failures ?? 0}
+          </Typography.Text>
+          {record.circuit_opened_at ? (
+            <Tooltip
+              title={
+                <>
+                  <div>熔断原因：{record.circuit_reason || '-'}</div>
+                  <div>熔断时间：{formatDateTime(record.circuit_opened_at)}</div>
+                </>
+              }
+            >
+              <Tag color="red">已熔断</Tag>
+            </Tooltip>
+          ) : null}
+        </Space>
       ),
     },
     {
@@ -281,7 +341,7 @@ export default function SchedulesTab() {
         loading={listQuery.isLoading}
         columns={columns}
         dataSource={listQuery.data?.items ?? []}
-        scroll={{ x: 1200 }}
+        scroll={{ x: 1310 }}
         onRow={(record) => ({
           onDoubleClick: () => setRunsOf(record),
           style: { cursor: 'pointer' },
@@ -369,7 +429,26 @@ export default function SchedulesTab() {
         width={860}
         destroyOnHidden
       >
-        {runsOf ? <RunsPanel scheduleId={runsOf.id} /> : null}
+        {runsOf ? (
+          <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+            {runsOf.circuit_opened_at ? (
+              <Alert
+                type="error"
+                showIcon
+                message="计划已熔断"
+                description={
+                  <>
+                    连续失败 {runsOf.consecutive_failures} 次，熔断时间{' '}
+                    {formatDateTime(runsOf.circuit_opened_at)}。
+                    {runsOf.circuit_reason ? `熔断原因：${runsOf.circuit_reason}。` : ''}
+                    重新启用计划将重置熔断计数。
+                  </>
+                }
+              />
+            ) : null}
+            <RunsPanel scheduleId={runsOf.id} />
+          </Space>
+        ) : null}
       </Drawer>
     </>
   )

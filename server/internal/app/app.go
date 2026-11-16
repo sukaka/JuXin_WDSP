@@ -41,10 +41,13 @@ import (
 	"github.com/jiuzhang-waf/server/internal/apiauthzauthority"
 	"github.com/jiuzhang-waf/server/internal/apiauthzwizard"
 	"github.com/jiuzhang-waf/server/internal/apidata"
+	"github.com/jiuzhang-waf/server/internal/apidataflow"
+	"github.com/jiuzhang-waf/server/internal/apiexposure"
 	"github.com/jiuzhang-waf/server/internal/apifiles"
 	"github.com/jiuzhang-waf/server/internal/apiflows"
 	"github.com/jiuzhang-waf/server/internal/apigeo"
 	"github.com/jiuzhang-waf/server/internal/apigql"
+	"github.com/jiuzhang-waf/server/internal/apigroups"
 	"github.com/jiuzhang-waf/server/internal/apigrpcdesc"
 	"github.com/jiuzhang-waf/server/internal/apillm"
 	"github.com/jiuzhang-waf/server/internal/apimachineid"
@@ -69,6 +72,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/cache"
 	"github.com/jiuzhang-waf/server/internal/certificates"
 	"github.com/jiuzhang-waf/server/internal/config"
+	"github.com/jiuzhang-waf/server/internal/containerops"
 	"github.com/jiuzhang-waf/server/internal/coverage"
 	"github.com/jiuzhang-waf/server/internal/customrules"
 	"github.com/jiuzhang-waf/server/internal/dashboards"
@@ -79,6 +83,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/guardconfig"
 	"github.com/jiuzhang-waf/server/internal/hagroups"
 	"github.com/jiuzhang-waf/server/internal/hastatus"
+	"github.com/jiuzhang-waf/server/internal/ingest"
 	"github.com/jiuzhang-waf/server/internal/jwttrust"
 	"github.com/jiuzhang-waf/server/internal/l7rules"
 	"github.com/jiuzhang-waf/server/internal/license"
@@ -118,6 +123,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/upstreams"
 	"github.com/jiuzhang-waf/server/internal/users"
 	"github.com/jiuzhang-waf/server/internal/validations"
+	"github.com/jiuzhang-waf/server/internal/vulnintel"
 	"github.com/jiuzhang-waf/server/internal/vulnrefs"
 	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
@@ -160,7 +166,10 @@ type App struct {
 	aiOpsSweeper *apiops.Sweeper
 	// 阶段8 / WDSP：多节点版本校验聚合器（§201 遥测路径，仅 API 动态防护开启时装配）
 	apiNodesSweeper *apinodes.Sweeper
-	haStatusSweeper *hastatus.Sweeper
+	// 阶段8 / WDSP：API 网络暴露面判定引擎（仅 API 动态防护开启时装配；
+	// 10 分钟周期评估由 cmd/api/main.go sweeper 群启动）
+	apiExposureSweeper *apiexposure.Sweeper
+	haStatusSweeper    *hastatus.Sweeper
 	// 离线授权：产品侧授权服务（门控中间件/发布通道/配额强制共用其内存状态；
 	// StartStage6Workers 启动 60s 周期复核）
 	licenseSvc *license.Service
@@ -173,6 +182,12 @@ type App struct {
 	// WDSP 流量采集 Agent Phase 3：HTTP 事件保留清理器（契约 §6：每日删除
 	// created_at 早于 7 天记录；恒装配，StartStage6Workers 内启动）
 	trafficAgentSweeper *agents.HTTPEventSweeper
+	// 漏洞情报提醒（VULN_INTEL MVP）：NVD 每日同步器（恒装配；StartStage6Workers
+	// 内启动每日循环，vuln_intel.sync_enabled 关闭时每轮空转；手动同步走接口直连）
+	vulnIntelSyncer         *vulnintel.Syncer
+	kafkaBroker             *ingest.Broker
+	apiObservationProjector *apidataflow.Projector
+	dataflowWorker          *apidataflow.DataflowWorker
 }
 
 // New 装配生产应用，授权验签信任根来自二进制内嵌公钥表。
@@ -348,10 +363,11 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	acVersionHandler := accesscontrolversions.NewHandler(acVersionStore, auditSvc, nil)
 	l7RuleHandler := l7rules.NewHandler(l7RuleStore, auditSvc)
 	// client_identity 体系与行为策略处理器
-	identityHandler := securityidentities.NewHandler(identityQueryStore)
+	identityHandler := securityidentities.NewHandler(identityQueryStore).SetAudits(auditSvc)
 	behaviorPolicyHandler := behaviorpolicy.NewHandler(behaviorPolicyStore, auditSvc)
 	// 身份风险处置策略处理器
 	riskPolicyHandler := riskpolicy.NewHandler(riskPolicyStore, auditSvc)
+	riskOverrideHandler := riskpolicy.NewOverrideHandler(riskPolicyStore, auditSvc)
 	// 业务 JWT 信任链处理器：管线状态（产品开关 + settings 覆盖解析）、
 	// REMOTE_JWKS 内网 IdP 允许清单（system_settings jwt_trust:remote_jwks_allowlist）、
 	// 网关节点状态（预检/发布门禁）注入
@@ -442,7 +458,10 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		// 阶段8：冻结正式模型与已知端点基线随发布下发网关（WDSP 开启时）
 		if cfg.Product.APIDynamicProtectionEnabled() {
 			guardProvider.SetAPIModels(apimodels.NewStore(db))
-			guardProvider.SetAPIAssets(apiassets.NewStore(db))
+			apiAssetStore := apiassets.NewStore(db)
+			guardProvider.SetAPIAssets(apiAssetStore)
+			guardProvider.SetAPIEndpointActionsLister(apiAssetStore)
+			guardProvider.SetAPIEndpointGroupsLister(apigroups.NewStore(db))
 			// API 准入策略（applications.api_admission_mode<>'OFF' 行 + 各应用 CONFIRMED
 			// 确认集）随发布下发 api_admission 段（WDSP P1；读取失败中止发布 fail-hard）
 			guardProvider.SetAPIAdmissionLister(guardconfig.NewAdmissionPolicyStore(db, apiassets.NewStore(db)))
@@ -459,10 +478,12 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 				out := map[string]string{}
 				for _, key := range []string{
 					"behavior_store", "behavior_store_ttl_seconds", "identity_salt", "tls_session_ticket_key",
-					"credential_ip_spread_limit", "credential_concurrency_limit", "api_write_rate_per_minute",
+					"credential_ip_spread_limit", "credential_concurrency_limit", "credential_rate_per_minute", "tenant_rate_per_minute",
+					"action_rate_per_minute", "group_rate_per_minute", "api_write_rate_per_minute",
+					"api_rate_limit_action", "api_temp_block_seconds",
 					"api_quota_per_hour", "api_quota_per_day", "object_rate_per_minute",
 					"max_page_size", "max_batch_size", "debug_cc_counter",
-					"api_response_fail_policy", "api_response_capture_max_bytes", "api_llm_allowed_models",
+					"api_response_fail_policy", "api_response_capture_max_bytes", "api_response_sample_ratio", "api_llm_allowed_models",
 					"api_grpc_max_frame_bytes", "api_grpc_allow_compression",
 					// NG-AZ-02 D6/D8：节点心跳周期与授权漂移上限随发布下发
 					"api_node_heartbeat_seconds", "authz_clock_skew_max_seconds",
@@ -481,6 +502,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			})
 			// 响应脱敏规则（api_masking_rules 表）随发布下发；表缺失/失败时发布侧 Warn 跳过
 			guardProvider.SetMaskRuleLister(guardconfig.NewMaskRuleStore(db))
+			guardProvider.SetMaskCryptoLoader(guardconfig.NewMaskCryptoLoader(settingsSvc.GetString, encSvc.Decrypt))
 			// 授权基线（api_role_baselines confirmed 行 / api_field_permissions 行）随发布下发；表缺失/失败时 Warn 跳过
 			guardProvider.SetRoleBaselineLister(guardconfig.NewRoleBaselineStore(db))
 			guardProvider.SetFieldPermissionLister(guardconfig.NewFieldPermissionStore(db))
@@ -501,6 +523,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			guardProvider.SetFileComplianceRuleLister(guardconfig.NewFileComplianceRuleStore(db))
 			// 值级敏感检测规则（api_sensitive_data_types 表）随发布下发；表缺失/失败时发布侧 Warn 跳过
 			guardProvider.SetSensitiveValueRuleLister(guardconfig.NewSensitiveValueRuleStore(db))
+			// LLM 输入保护策略随整站发布下发；保存仅产生待发布版本，不冒充即时生效
+			guardProvider.SetLLMSecurityPolicyLister(apillm.NewStore(db))
 			// gRPC 描述符集（api_grpc_descriptors 表 ENABLED 行）随发布下发；表缺失/失败时发布侧 Warn 跳过
 			guardProvider.SetGRPCDescriptorLister(guardconfig.NewGRPCDescriptorStore(db))
 			// gRPC 描述符 per-app 绑定（api_grpc_bindings 表全行，NG-GRPC G1 批次 B1）随发布下发；表缺失/失败时发布侧 Warn 跳过（空绑定=全局可见现状语义）
@@ -526,6 +550,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		publisher.SetRegressionGate(regressionGateAdapter{
 			gate: regression.NewGate(regressionStore, settingsSvc.GetString, regEvidence),
 		})
+		guardProvider.SetIdentityBlockLister(identityQueryStore)
 		// 行为策略变更触发网关配置发布（identity_behavior 段热生效；异步发布任务，
 		// 触发失败仅记日志——策略已落库，发布任务可追踪重试，与其他策略变更同一口径）
 		behaviorPolicyHandler.SetPublishFunc(func(ctx context.Context, uid uuid.UUID, rid string) {
@@ -533,10 +558,20 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 				slog.Error("behavior policy publish trigger failed", "error", err)
 			}
 		})
+		identityHandler.SetPublishFunc(func(ctx context.Context, uid uuid.UUID, rid string) {
+			if _, err := publisher.Publish(ctx, gatewayconfig.PublishInput{RequestedBy: uid, RequestID: rid}); err != nil {
+				slog.Error("identity manual block publish trigger failed", "error", err)
+			}
+		})
 		// 风险策略变更触发网关配置发布（risk_policy 段热生效；口径同上）
 		riskPolicyHandler.SetPublishFunc(func(ctx context.Context, uid uuid.UUID, rid string) {
 			if _, err := publisher.Publish(ctx, gatewayconfig.PublishInput{RequestedBy: uid, RequestID: rid}); err != nil {
 				slog.Error("risk policy publish trigger failed", "error", err)
+			}
+		})
+		riskOverrideHandler.SetPublishFunc(func(ctx context.Context, uid uuid.UUID, rid string) {
+			if _, err := publisher.Publish(ctx, gatewayconfig.PublishInput{RequestedBy: uid, RequestID: rid}); err != nil {
+				slog.Error("risk policy override publish trigger failed", "error", err)
 			}
 		})
 		// Bot 挑战策略变更触发网关配置发布（bot_policy 段随整站快照下发；口径同上）
@@ -658,6 +693,16 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		},
 	)
 	alertHandler := systemalerts.NewHandler(alertStore, auditSvc)
+	// 漏洞情报提醒（VULN_INTEL MVP；表/权限种子见迁移 000189）：NVD 每日同步 PHP 漏洞 +
+	// 离线 JSON 导入 + 技术栈订阅去重提醒（VULN_INTEL_NEW 经系统告警引擎进入告警中心与通知链路）。
+	// 同步器 URL 硬编码 NVD API 2.0（纯下行，不接受自定义地址）；提醒引擎复用 settings
+	// vuln_intel 组订阅配置（watch_techs/min_severity/sync_enabled，界面热生效）。
+	vulnIntelStore := vulnintel.NewStore(db)
+	vulnIntelSyncer := vulnintel.NewSyncer(vulnIntelStore, nil)
+	vulnIntelAlerter := vulnintel.NewAlerter(vulnIntelStore, settingsSvc)
+	vulnIntelAlerter.SetRaiseFunc(alertEngine.Raise)
+	vulnIntelHandler := vulnintel.NewHandler(vulnIntelStore, vulnIntelSyncer, vulnIntelAlerter,
+		settingsSvc, settingsSvc, auditSvc)
 	alertFn := backups.AlertFunc(func(alertType, component, title, message string) {
 		// 归一化非标准类型（引擎仅接受规则矩阵内的类型）
 		if alertType == "RESTORE_FAILED" {
@@ -786,6 +831,21 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		aiOrch.RegisterAgent(ag)
 		agentCodes[ag.Code()] = true
 	}
+	// AI 能力增强第一波：API 安全分析 Agent 仅随 API 动态防护形态装配（纯 WAF 形态
+	// 编排器与 ai_agents 目录均不出现 api_security，意图命中时编排器跳过未注册 Agent）；
+	// extraAgentMetas 随 SyncRegistry 同步入 ai_agents（启停/白名单管理面口径与既有 Agent 一致）
+	var extraAgentMetas []aihandlers.AgentMeta
+	if cfg.Product.APIDynamicProtectionEnabled() {
+		apiSecurityAgent := aiagents.NewAPISecurityAgent(db)
+		aiOrch.RegisterAgent(apiSecurityAgent)
+		agentCodes[apiSecurityAgent.Code()] = true
+		extraAgentMetas = append(extraAgentMetas, aihandlers.AgentMeta{
+			Code: apiSecurityAgent.Code(),
+			Name: "API 安全分析 Agent",
+			Description: "API 资产与态势、影子/僵尸接口、模型与参数偏离、BOLA/BFLA 越权风险、" +
+				"弱点整改与敏感数据分析（全部 READ_ONLY Tool，不执行任何变更）",
+		})
+	}
 	// Agent 调度强制尊重 ai_agents 表启停状态
 	aiOrch.SetAgentEnabledChecker(aihandlers.AgentEnabledChecker(db))
 	// Agent→Tool 白名单（ai_agents.allowed_tool_ids）在执行路径强制（CallTool 拒绝白名单外调用）
@@ -811,8 +871,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		}
 		return content, err
 	})
-	// 启动同步：代码 registry 中的 Agent/Tool upsert 到 ai_agents/ai_tools（code 唯一，保留启停状态）
-	if err := aihandlers.SyncRegistry(context.Background(), db, aiRegistry); err != nil {
+	// 启动同步：代码 registry 中的 Agent/Tool upsert 到 ai_agents/ai_tools（code 唯一，保留启停状态）；
+	// 动态 Agent（api_security 等形态相关）经 extraAgentMetas 一并同步
+	if err := aihandlers.SyncRegistry(context.Background(), db, aiRegistry, extraAgentMetas...); err != nil {
 		slog.Warn("sync ai agent/tool registry failed", "error", err)
 	}
 	aiDeps := aihandlers.NewDeps(aihandlers.Deps{
@@ -835,6 +896,10 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	settingHandler := settings.NewHandler(settingsSvc, auditSvc)
 	// 系统控制（重启/关机/恢复出厂）：密码二次确认后写宿主控制标志文件（权限种子见迁移 000121）
 	systemopsHandler := systemops.NewHandler(userStore, auditSvc, cfg.SystemOps.HostctlDir)
+	// 容器运维（containeropsd sidecar 通道，权限种子见迁移 000186）：管理 API 不挂载 docker.sock，
+	// 经共享卷 Unix Socket 调用 containeropsd；CONTAINEROPS_SOCKET 未配置时接口 503 降级，
+	// 不影响其他功能（裸机/未部署 sidecar 形态，设计见 docs/CONTAINER_OPS_DESIGN.md）
+	containeropsHandler := containerops.NewHandler(containerops.NewClient(cfg.ContainerOps.Socket), userStore, auditSvc)
 	// 网络诊断工具：管理面写共享卷 diag 请求文件，netmgrd 执行回写结果（权限种子见迁移 000161）；
 	// pcap 产物由 Worker 从共享卷搬入服务端数据目录（NETDIAG_DATA_DIR 可覆盖，默认 <数据根>/netdiag）
 	netdiagDataDir := os.Getenv("NETDIAG_DATA_DIR")
@@ -895,6 +960,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	a.alertEngine = alertEngine
 	a.licenseSvc = licSvc
 	a.attackSessionAgg = attackSessionAgg
+	a.vulnIntelSyncer = vulnIntelSyncer
 	// 离线授权配额用量（status/import 响应 usage 字段）：应用计数经 appStore（加密服务
 	// 缺失形态下为 nil 计 0），API 端点计数经 apiassets（表由阶段8迁移建立，waf 包恒 0）
 	licHandler.SetUsageProvider(func(ctx context.Context) (int64, int64, error) {
@@ -1033,6 +1099,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 
 	// ---- 系统控制（重启/关机/恢复出厂，高危，密码二次确认 + CRITICAL 审计） ----
 	systemopsHandler.RegisterRoutes(mux, authz)
+
+	// ---- 容器运维（列表/日志 MEDIUM 审计；启停 HIGH + 密码二次确认；更新 CRITICAL + 确认文本） ----
+	containeropsHandler.RegisterRoutes(mux, authz)
 
 	// ---- 网络诊断工具（ping/端口探测/路由追踪/DNS 查询/抓包） ----
 	netdiagHandler.RegisterRoutes(mux, authz)
@@ -1226,6 +1295,18 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// 威胁情报导入（WDSP P2-C1）：Feodo C2 情报对账写入 IP 黑名单并触发发布；
 	// 权限与 accessrules 导入一致（access_rules.import），/api/v1/threat-intel/ 不在授权门控白名单（业务接口）
 	mux.Handle("POST /api/v1/threat-intel/import", authz(middleware.RequirePermission("access_rules.import")(http.HandlerFunc(threatIntelHandler.Import))))
+	// 漏洞情报提醒（VULN_INTEL MVP；表/权限种子见迁移 000189）：
+	// 读 vuln_intel.read（SYSTEM_ADMIN+SECURITY_ADMIN），写 vuln_intel.manage（仅 SYSTEM_ADMIN）；
+	// 只提醒，不自动创建 WAF 规则；在线同步为纯下行（硬编码 NVD 地址）。
+	mux.Handle("GET /api/v1/vuln-intel/overview", authz(middleware.RequirePermission("vuln_intel.read")(http.HandlerFunc(vulnIntelHandler.Overview))))
+	mux.Handle("GET /api/v1/vuln-intel/advisories", authz(middleware.RequirePermission("vuln_intel.read")(http.HandlerFunc(vulnIntelHandler.ListAdvisories))))
+	mux.Handle("GET /api/v1/vuln-intel/advisories/{cve_id}", authz(middleware.RequirePermission("vuln_intel.read")(http.HandlerFunc(vulnIntelHandler.GetAdvisory))))
+	mux.Handle("POST /api/v1/vuln-intel/sync", authz(middleware.RequirePermission("vuln_intel.manage")(http.HandlerFunc(vulnIntelHandler.Sync))))
+	mux.Handle("POST /api/v1/vuln-intel/import", authz(middleware.RequirePermission("vuln_intel.manage")(http.HandlerFunc(vulnIntelHandler.Import))))
+	mux.Handle("GET /api/v1/vuln-intel/tech-assets", authz(middleware.RequirePermission("vuln_intel.read")(http.HandlerFunc(vulnIntelHandler.ListTechAssets))))
+	mux.Handle("PUT /api/v1/vuln-intel/tech-assets", authz(middleware.RequirePermission("vuln_intel.manage")(http.HandlerFunc(vulnIntelHandler.PutTechAssets))))
+	mux.Handle("GET /api/v1/vuln-intel/settings", authz(middleware.RequirePermission("vuln_intel.read")(http.HandlerFunc(vulnIntelHandler.GetSettings))))
+	mux.Handle("PUT /api/v1/vuln-intel/settings", authz(middleware.RequirePermission("vuln_intel.manage")(http.HandlerFunc(vulnIntelHandler.PutSettings))))
 	// 规则关联事件（阶段5 §8.5）：按 access_rule_id 过滤访问控制事件
 	mux.Handle("GET /api/v1/access-rules/{id}/events", authz(middleware.RequirePermission("access_rules.read")(http.HandlerFunc(acEventHandler.ListByRule))))
 	if gatewayHandler != nil {
@@ -1282,10 +1363,13 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("GET /api/v1/security/identities/{id}", authz(middleware.RequirePermission("security_identities.read")(http.HandlerFunc(identityHandler.Get))))
 	mux.Handle("GET /api/v1/security/identities/{id}/behavior", authz(middleware.RequirePermission("security_identities.read")(http.HandlerFunc(identityHandler.Behavior))))
 	mux.Handle("GET /api/v1/security/identities/{id}/events", authz(middleware.RequirePermission("security_identities.read")(http.HandlerFunc(identityHandler.Events))))
+	mux.Handle("POST /api/v1/security/identities/{id}/block", authz(middleware.RequirePermission("security_identities.block")(http.HandlerFunc(identityHandler.Block))))
+	mux.Handle("POST /api/v1/security/identities/{id}/unblock", authz(middleware.RequirePermission("security_identities.block")(http.HandlerFunc(identityHandler.Unblock))))
 	mux.Handle("GET /api/v1/security/behavior-policy", authz(middleware.RequirePermission("behavior_policy.read")(http.HandlerFunc(behaviorPolicyHandler.Get))))
 	mux.Handle("PUT /api/v1/security/behavior-policy", authz(middleware.RequirePermission("behavior_policy.edit")(http.HandlerFunc(behaviorPolicyHandler.Update))))
 	mux.Handle("GET /api/v1/security/risk-policy", authz(middleware.RequirePermission("risk_policy.read")(http.HandlerFunc(riskPolicyHandler.Get))))
 	mux.Handle("PUT /api/v1/security/risk-policy", authz(middleware.RequirePermission("risk_policy.edit")(http.HandlerFunc(riskPolicyHandler.Update))))
+	riskpolicy.RegisterOverrideRoutes(mux, authz, riskOverrideHandler)
 	// 攻击活动（WDSP AI 自动化渗透防护增强 阶段4；表见迁移 000103，权限种子见 000104；
 	// 数据由 attacksessions 聚合器 60s 一轮异步维护，StartStage6Workers 内启动）
 	mux.Handle("GET /api/v1/security/attack-sessions", authz(middleware.RequirePermission("attack_sessions.read")(http.HandlerFunc(attackSessionHandler.List))))
@@ -1376,9 +1460,14 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		}
 		a.authzStore = authzStore
 		a.authzKeyHex = authzKeyHex
-		apiEndpointHandler := apiassets.NewHandler(apiassets.NewStore(db), auditSvc)
-		apiassets.RegisterRoutes(mux, authz, apiEndpointHandler)
-		apiModelHandler := apimodels.NewHandler(apimodels.NewStore(db), auditSvc)
+		apiEndpointStore := apiassets.NewStore(db)
+		apiModelStore := apimodels.NewStore(db)
+		apiEndpointHandler := apiassets.NewHandler(apiEndpointStore, auditSvc).
+			SetExportModelReader(apiModelStore).
+			SetExportExtrasProvider(apiEndpointStore)
+		apiassets.RegisterRoutes(mux, authz, apiEndpointHandler, exportRate)
+		apigroups.RegisterRoutes(mux, authz, apigroups.NewHandler(apigroups.NewStore(db), auditSvc))
+		apiModelHandler := apimodels.NewHandler(apiModelStore, auditSvc)
 		apimodels.RegisterRoutes(mux, authz, apiModelHandler)
 		apiSecurityHandler := apisecurity.NewHandler(apisecurity.NewStore(db), auditSvc)
 		// 策略接口：产品设置 + settings 覆盖 + 发布通道（publisher 不可用时发布接口返回 503）
@@ -1402,9 +1491,15 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			})
 		}
 		apisecurity.RegisterRoutes(mux, authz, apiSecurityHandler)
+		apidataflow.RegisterRoutes(mux, authz, apidataflow.NewHandler(
+			apidataflow.NewCHReader(chManager.ResolveQuerier)).SetAudits(auditSvc))
 		// 弱点中心（P0-13）与敏感数据管理面（P0-19）：权限点在各自路由层（种子见迁移 000041）
 		apiweakness.RegisterRoutes(mux, authz, apiweakness.NewHandler(apiweakness.NewStore(db), auditSvc))
-		apidata.RegisterRoutes(mux, authz, apidata.NewHandler(apidata.NewStore(db), auditSvc))
+		apiDataHandler := apidata.NewHandler(apidata.NewStore(db), auditSvc)
+		if encSvc != nil {
+			apiDataHandler.SetMaskCryptoLoader(apidata.MaskCryptoLoader(guardconfig.NewMaskCryptoLoader(settingsSvc.GetString, encSvc.Decrypt)))
+		}
+		apidata.RegisterRoutes(mux, authz, apiDataHandler)
 		// 授权基线（P0-15/16/17）：角色基线/对象权属/字段权限/BOLA 评估（种子见迁移 000048）
 		authzHandler := apiauthz.NewHandler(authzStore, auditSvc)
 		// 可信对象关系确认进入既有整站配置发布链；发布任务创建失败仅记录日志，
@@ -1529,8 +1624,19 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		if a.apiGeoLookup != nil {
 			apiSecurityHandler.SetGeoLookup(a.apiGeoLookup)
 		}
-		// LLM API 安全观测（P2-04）：observations/stats（权限复用 api_runtime.read）
-		apillm.RegisterRoutes(mux, authz, apillm.NewHandler(apillm.NewStore(db)))
+		// API 网络暴露面判定引擎（迁移 000190）：读复用 api_asset.read、重评复用
+		// api_asset.edit（零新增权限点）；公网 DNS 视角判定器按 settings 配置服务器
+		// 拨号；周期评估由 cmd/api/main.go sweeper 群启动；采集钩子注入见
+		// main.go apiruntime Collector SetSourceRecorder
+		exposureStore := apiexposure.NewStore(db)
+		a.apiExposureSweeper = apiexposure.NewSweeper(exposureStore, settingsSvc).
+			SetResolver(apiexposure.NewPublicResolver())
+		apiexposure.RegisterRoutes(mux, authz,
+			apiexposure.NewHandler(exposureStore, auditSvc).SetSweeper(a.apiExposureSweeper))
+		// LLM API 安全观测与输入保护策略管理
+		llmStore := apillm.NewStore(db)
+		apillm.RegisterRoutes(mux, authz, apillm.NewHandler(llmStore))
+		apillm.RegisterSecurityPolicyRoutes(mux, authz, apillm.NewSecurityPolicyHandler(llmStore, auditSvc))
 		// 多节点版本校验（§201 遥测路径）：节点列表/一致性视图 + 周期聚合（权限复用 api_runtime.read）
 		apiNodeStore := apinodes.NewStore(db)
 		a.apiNodesSweeper = apinodes.NewSweeper(apiNodeStore).SetAlerter(alertEngine)
@@ -1560,12 +1666,20 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		// 文件合规规则（P2-03 管理面）+ 文件签名验证/密钥轮换（P2-02 验证面）
 		apifiles.RegisterComplianceRoutes(mux, authz, apifiles.NewComplianceHandler(apifiles.NewComplianceStore(db), auditSvc))
 		apifiles.RegisterSignatureRoutes(mux, authz, apifiles.NewSignatureHandler(settingsSvc, encSvc, auditSvc))
-		// AI 定时运营任务（P1-02 续；表见迁移 000062，权限种子见 000063）；
-		// 全局开关 api_ai_ops.schedules_enabled（settings，默认关）门控调度与立即执行
+		// AI 定时运营任务（P1-02 续；表见迁移 000062，权限种子见 000063，熔断列见 000187）；
+		// 全局开关 api_ai_ops.schedules_enabled（settings，默认关）门控调度与立即执行；
+		// 连续失败达 api_ai_ops.circuit_threshold（默认 3）自动熔断停用，
+		// 熔断经系统告警引擎 Raise（AI_OPS_SCHEDULE_CIRCUIT_OPEN，HIGH，组件 AI_OPS）+ 操作审计
 		aiOpsStore := apiops.NewStore(db)
 		a.aiOpsSweeper = apiops.NewSweeper(aiOpsStore, apiops.NewSQLSource(db)).
 			SetSettings(settingsSvc).
-			SetAudits(auditSvc)
+			SetAudits(auditSvc).
+			SetAlerter(alertEngine)
+		// AI 能力增强第一波：AI 模块启用时接 LLM 摘要润色（模型网关低复杂度档位）；
+		// 润色失败/空输出由 apiops polishSummary 回退模板草稿，AI 关闭时不接（纯模板摘要）
+		if cfg.AI.Enabled {
+			a.aiOpsSweeper.SetSummarizer(newAIOpsSummarizer(aiGateway))
+		}
 		apiops.RegisterRoutes(mux, authz, apiops.NewHandler(aiOpsStore, auditSvc).SetRunner(a.aiOpsSweeper))
 		// API 专项指标（§158 有数据源子集）：Prometheus 文本输出（采集由 StartAPIMetrics 启动）
 		a.apiMetrics = metrics.NewAPICollector(db)
@@ -1727,8 +1841,33 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			return st.Quotas.MaxAPIEndpoints
 		})
 	}
-	agents.RegisterMachineRoutes(mux, agents.NewMachineHandler(trafficAgentStore).
-		SetCA(trafficAgentCA).SetDiscoveryUpserter(agentHTTPAssets))
+	machineHandler := agents.NewMachineHandler(trafficAgentStore).
+		SetCA(trafficAgentCA).SetDiscoveryUpserter(agentHTTPAssets)
+	if cfg.Kafka.Enabled {
+		brokerConfig := ingest.Config{
+			Brokers: cfg.Kafka.Brokers, ClientID: "jiuzhang-server",
+			TLSEnabled: cfg.Kafka.TLSEnabled, TLSCAFile: cfg.Kafka.TLSCAFile,
+			TLSCertFile: cfg.Kafka.TLSCertFile, TLSKeyFile: cfg.Kafka.TLSKeyFile,
+			TLSServerName: cfg.Kafka.TLSServerName, SASLMechanism: cfg.Kafka.SASLMechanism,
+			SASLUsername: cfg.Kafka.SASLUsername, SASLPassword: cfg.Kafka.SASLPassword,
+			AllowInsecureSASL: cfg.Kafka.AllowInsecureSASL, ProduceTimeout: cfg.Kafka.ProduceTimeout,
+			MaxBatchBytes: cfg.Kafka.MaxBatchBytes, MaxBatchRecords: cfg.Kafka.MaxBatchRecords,
+		}
+		if err := brokerConfig.Validate(); err != nil {
+			return nil, fmt.Errorf("Kafka configuration: %w", err)
+		}
+		a.kafkaBroker = ingest.NewBroker(brokerConfig)
+		machineHandler.SetAPIObservationReceiver(a.kafkaBroker, cfg.Kafka.Topic,
+			trafficAgentStore, trafficAgentStore, trafficAgentStore)
+		a.apiObservationProjector = apidataflow.NewProjector(a.kafkaBroker, a.kafkaBroker,
+			cfg.Kafka.Topic, cfg.Kafka.DLQTopic,
+			apidataflow.NewCHObservationStore(chManager.ResolveQuerier),
+			apidataflow.NewPostgresAssetProjector(db, agentHTTPAssets))
+		a.dataflowWorker = apidataflow.NewDataflowWorker(a.kafkaBroker, a.kafkaBroker,
+			cfg.Kafka.Topic, cfg.Kafka.DLQTopic,
+			apidataflow.NewCHContributionStore(chManager.ResolveQuerier))
+	}
+	agents.RegisterMachineRoutes(mux, machineHandler)
 	// Phase 3（契约 §6）：HTTP 事件保留清理（每日删 created_at 早于 7 天记录，
 	// StartStage6Workers 内启动）。
 	a.trafficAgentSweeper = agents.NewHTTPEventSweeper(trafficAgentStore)
@@ -1793,6 +1932,9 @@ func (a *App) SyslogForwarder() *syslogfw.Forwarder { return a.syslogFw }
 
 // APIGeoLookup 返回数据出境 GeoIP 读取器（nil = 数据文件缺失降级；main 装配周期 Sweep 用）。
 func (a *App) APIGeoLookup() *apigeo.MMDB { return a.apiGeoLookup }
+
+// APIExposureSweeper 返回暴露面判定评估器（nil = API 动态防护未开启；main 挂 sweeper 群用）。
+func (a *App) APIExposureSweeper() *apiexposure.Sweeper { return a.apiExposureSweeper }
 
 // NotifyDispatcher 返回告警通知调度器（main 启动其 Run 循环用）。
 func (a *App) NotifyDispatcher() *notify.Dispatcher { return a.notifyDispatcher }
@@ -1944,6 +2086,12 @@ func (a *App) StartStage6Workers(ctx context.Context) {
 	if a.scanWorker != nil {
 		go a.scanWorker.Run(ctx)
 	}
+	if a.apiObservationProjector != nil {
+		go a.apiObservationProjector.Run(ctx)
+	}
+	if a.dataflowWorker != nil {
+		go a.dataflowWorker.Run(ctx)
+	}
 	// AI 定时运营调度（P1-02 续；api_ai_ops.schedules_enabled 默认关闭时空转）
 	if a.aiOpsSweeper != nil {
 		go a.aiOpsSweeper.Run(ctx)
@@ -2093,6 +2241,14 @@ func (a *App) StartStage6Workers(ctx context.Context) {
 	// 早于 7 天记录，硬上限防无限增长；启动即清一轮，单轮失败仅 Warn 下轮重试）
 	if a.trafficAgentSweeper != nil {
 		go a.trafficAgentSweeper.Run(ctx)
+	}
+	// 漏洞情报 NVD 每日同步（VULN_INTEL MVP）：vuln_intel.sync_enabled 开启时执行
+	// （settings 热读，界面即时生效；关闭时每轮空转——默认部署零行为变化）；
+	// 手动同步经 POST /vuln-intel/sync 直连同一同步器（互斥防并发，失败原因落 sync_state）
+	if a.vulnIntelSyncer != nil {
+		go a.vulnIntelSyncer.RunDaily(ctx, func(ctx context.Context) bool {
+			return a.settings.GetBool(ctx, vulnintel.SettingsGroup, vulnintel.KeySyncEnabled, false)
+		})
 	}
 }
 

@@ -237,6 +237,8 @@ func (h *Handler) DeleteSchedule(w http.ResponseWriter, r *http.Request) {
 // ---------- 启停 ----------
 
 // setEnabled 启停公共路径（启用时按 cron 重算到期游标，停用清空）。
+// 手动启用同时复位连续失败熔断状态（计数/熔断时间/原因清零，store 层同事务），
+// 审计摘要如实标注熔断复位——熔断后的恢复动作必须可追溯。
 func (h *Handler) setEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
 	p := authz.PrincipalFrom(r.Context())
 	id, ok := parseID(w, r)
@@ -248,6 +250,8 @@ func (h *Handler) setEnabled(w http.ResponseWriter, r *http.Request, enabled boo
 		writeStoreError(w, r, err)
 		return
 	}
+	// 启用前快照熔断状态（复位事实入审计）
+	circuitWasOpen := enabled && sc.CircuitOpenedAt != nil
 	var next *time.Time
 	if enabled {
 		n, err := NextCronAfter(sc.CronExpr, time.Now())
@@ -266,8 +270,11 @@ func (h *Handler) setEnabled(w http.ResponseWriter, r *http.Request, enabled boo
 	if !enabled {
 		action, desc = "ai_schedule_disable", "停用"
 	}
-	h.recordAudit(r, p, action, id.String(), sc.Name, "",
-		desc+"AI运营计划「"+sc.Name+"」", audits.RiskLow)
+	after := desc + "AI运营计划「" + sc.Name + "」"
+	if circuitWasOpen {
+		after += "（连续失败熔断状态已复位）"
+	}
+	h.recordAudit(r, p, action, id.String(), sc.Name, "", after, audits.RiskLow)
 	response.JSON(w, r, http.StatusOK, map[string]any{"schedule": sc})
 }
 

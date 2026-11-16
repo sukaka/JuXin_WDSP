@@ -87,13 +87,13 @@
 | ~~§9 协议类型 13 种~~ | REST_JSON/JSON_RPC/XML_RPC/SSE 等 | **已完成 2026-09-11** | `classifier/protocol.go` ClassifyProtocol 13 值词表；事件上报/落库随 §8.2 一并闭环（见下）。protocol_type 列无 CHECK（既有风格对齐） |
 | ~~§8.2 四级识别标签~~ | CONFIRMED/PROBABLE/POSSIBLE/NON_API + 置信度 | **已完成 2026-09-11** | classifier 四级 Level + Confidence 落 ctx 扩展 → apievents 新增 `api_level` 上报（omitempty，fail-open/合成结果省略不编造；`api_confidence` 沿用既有 0..1 契约未改）→ 迁移 000149 api_runtime_events.api_level（词表 CHECK）+ 解析/边界校验/读回/OpenAPI schema 全链路；实库集成通过 |
 | ~~§33 规范导入~~ | OpenAPI3/Swagger2/JSON Schema/Postman/GraphQL Schema | **已完成 2026-09-10；实库 42P10 缺陷已修复 2026-09-11** | 五种格式全支持 + JSON/YAML 双编码（安全解码/外部 $ref 拒绝/深度大小限制）；18 个解析单测全绿。实库验证发现 ON CONFLICT (endpoint_key) 与迁移 000137 复合唯一索引 uq_api_endpoints_scope 不对齐（42P10），已修 spec_version.go + 测试种子 + 演示脚本共 3 处，4 个 stage8 规范导入集成用例实库通过；yaml.v3 已锁版合规登记 |
-| §16/§17 微模型统计 | P50-P99/熵/Unicode 脚本/单调性/离群值等 | 主体完成 2026-09-11（format_candidate 未做） | 迁移 000145（20 列）+ statistics_stream.go 算法 + statistics.go 回填/P95 读回 + **观测上报挂接已落地**：网关 apievents ParamObservation 扩展（null 标记/直方图/前后缀脱敏哈希，有界体积，apiprotect 与 mirrorcap 双产出点）+ apiruntime/paramobs.go 合并写入（复用 Merge* 纯函数）；全链路单测全绿 |
+| §16/§17 微模型统计 | P50-P99/熵/Unicode 脚本/单调性/离群值等 | 主体完成；format_candidate 已于 2026-11-15 补齐（实库集成待） | 迁移 000145 + 000206：脱敏观测含 null/直方图/前后缀及格式样本，固定格式候选限 UUID/EMAIL/IPV4/IPV6/DATE/DATETIME；至少20个合格字符串样本且唯一最高占比≥0.9，未知计入分母，候选只进 observed 并在详情展示。服务端全量、网关相关包及前端22项测试通过；真实 PostgreSQL/Valkey 迁移与统计集成因测试凭据未配置跳过 |
 | §22/§23 字段间关系 | 13 类关系 | 主体完成 2026-09-11（11/13 实现，2 类论证降级） | 11 类实现：9 类（截至 000154）+ COUNT_MATCHES/SUM_MATCHES（迁移 000159 词表 12 值；parser 新增数组长度登记 JSONArrayLen O(1) + 数值聚合 JSONNumAgg 只留 sum/count 聚合量，单数组 64 元素/单请求 2048 步有界截断，截断不判定；SUM 相对容差 1e-9；证据 sha256 指纹不落明文；实库 5 用例通过）。剩余 2 类（父子对象/租户所有者）维持降级归 AUTHZ/BOLA 线 |
-| §34 用途多维识别 | 9 维分类 + 40+ 动作词表 | 主体完成 2026-09-11（7 维缺口） | `apiassets/classify.go` 操作动作 43 项词表 + 业务域 16 映射，迁移 000148 种子；实库 7 用例通过。剩余 7 个识别维度缺口如实记录 |
-| §36 API 维度限流 | 16 维限流 | 主体完成 2026-09-11（下发面已通，剩余维度缺口） | `quota.go` 小时/日配额、对象维度、分页/批量上限已挂接 pipeline 且**下发面已通**（system_settings gateway_runtime 组五键 + 迁移 000152 种子 + 发布校验/版本戳/回滚重放 + 网关装配接线测试）；对象限速消费 ctx 统一标识。缺口：Token/租户/GraphQL 深度复杂度等超配置面维度 |
+| §34 用途多维识别 | 9 维分类 + 40+ 动作词表 | 九维代码已实现（实库与浏览器待验收） | 业务域16映射、操作动作43项、技术协议/交互模式、数据敏感等级、身份要求、业务流程阶段、风险标签和业务对象均已落；BUSINESS_OBJECT 从真实对象模型+段形派生，path取前静态段/变量名、query取参数名，多类型为 MULTI_OBJECT，publishable提高置信度，缺失清理且锁定不改。各维度来源和置信度不同，不以路径猜测冒充全量自动识别；实库与浏览器未验收 |
+| §36 API 维度限流 | 16 维限流 | 主体完成（已补凭据/租户/动作/接口组及共享计数，仍有维度/动作缺口） | 小时/日、对象、分页/批量（000152）+ 凭据（000207）+ 可信租户（000208）+ 操作动作（000209）+ 接口组（000210实体/000211限速）贯通保存/发布/版本戳/回滚与 Guard 429；仅消费真实 ACTION 或启用组的真实成员，应用间不拍平。并发和 GraphQL 成本预算另有既有实现。缺口：设备、通用请求成本及 TEMP_BLOCK/BLOCK 可配置动作；credrate/tenrate/objrate/actionrate/grouprate/quota_hour/quota_day 可经 Valkey 共享原子计数，默认内存/故障期为节点本地，恢复不回灌。实库、真实 Valkey 与正式多节点验收未完成 |
 | §35 凭据异常 10 项 | Token 跨应用/已吊销凭据/HMAC 签名等 | **已完成 2026-09-11（吊销端到端闭环）** | 跨应用/多设备/位置/HMAC 已挂接生效（第七波）；**吊销凭据全链路**（第十/十一波）：迁移 000156 api_revoked_credentials + CRUD（api_credential.* 权限）+ 发布下发（生效窗口过滤、版本戳、WDSP 门控）+ 变更热发布 + 网关 credrevoked.go 检测器（`credential_type:fingerprint` 全等匹配 O(1)、expires_at 过期跳过、证据不落明文、auth.credential_revoked OBSERVE/HIGH）+ module.go 校验装配；端到端经 serveNext 管线命中验证。遗留：api_revoked_credentials 未入 backups/tables.go 备份清单（小项） |
 | ~~§7 RequestContext~~ | device_fingerprint、object_identifiers 等字段 | **已完成 2026-09-11** | device_fingerprint（UA 族 HMAC，与 identitybehavior 对拍锁定口径）+ object_identifiers（只记哈希）；迁移 000150 事件两列 + 000149 findings 冗余列；pipeline.Process 检测段前落 ctx（同口径同盐幂等），检测器可直接消费；全链路透传 + 服务端边界校验 + OpenAPI schema 已补登 |
-| §7.2 响应体采样比例 | 大报文限制含响应采样比例 | 引擎层已完成 2026-09-11（下发面待） | ParseLimits.ResponseSampleRatio（默认 1=全量逐字节不变；0=不解析；(0,1) 仅超大响应确定性截断前缀，截断在 JSON 中间则不产出部分 schema，与请求侧同纪律）；8 单测全绿（边界/组合/非法归一）。发布通道暂无该字段下发项（挂点侧硬编码默认），未编造配置来源 |
+| §7.2 响应体采样比例 | 大报文限制含响应采样比例 | 引擎与下发面已实现 2026-11-15（真实环境集成待） | 迁移 000205 新增 `gateway_runtime:api_response_sample_ratio`（默认 1）；保存/发布/网关三层校验 0~1，指针保留显式 0；比例进入 handler、`api_policy_version`、WDSP 门控及回滚重放，网关请求/响应相位统一消费。管理面四包、网关 Guard 全包及 context/pipeline 回归通过；两项 PostgreSQL/Valkey 集成因测试凭据未配置跳过，真实迁移/HTTP/跨进程发布未验收 |
 | §50 api_request_schemas | 请求 Schema 权威表 | 部分完成（偏差） | 表存在但零写入方，权威来源改为 api_model_versions.schema_json |
 | §54 可观测指标 | 19 项指标 | 主体完成 2026-09-11（21 项全挂接） | 指标 15→21 项：server api_collector + 网关 `dynamic_security/metrics` + parser 埋点；第七波补齐：检测耗时/响应解析耗时 Track 已落 pipeline 双相位（非 JSON/截断不计入），事件积压 gauge 已挂接 apievents.Logger（入队/补写/排空三点 SetEventBacklog，未挂接不输出假值） |
 | §55 性能矩阵 | 10 万级 API、百万级参数等 15 项 | 主体完成 2026-09-11（阈值待定） | 大规模维度首次实测（test/performance/w23-largescale-scale-result.md，10 万端点/120 万参数/70 万边，隔离库 jiuzhang_perf 测后销毁）：下发构建五查询 P50 合计 8.54s（参数约束查询 6.0s 占大头）、产物 JSON 148MB/gzip 1.56MB、构建堆增量 256MB；图谱查询 P95：edges_timerange 1.66s、edges_mincount 1.59s（均走磁盘排序，work_mem 4MB）。§55 原文无数值目标，达标判定待产品侧定阈值回填；遗留：学习任务并发、版本对比性能两项未测 |
@@ -103,13 +103,13 @@
 
 阶段8 开工说明（STAGE_8_WDSP_KICKOFF.md）第1节 8 个勾选项经代码抽查全部属实；其 Wave D 收口指向任务书退出条件，实质未完成项同上，另 DEVELOPMENT_STATUS 自述的"诚实遗留"仍有效：
 
-- 响应侧 gzip/br/流式直通不脱敏；ENCRYPT/MAP 脱敏动作未实现
+- ~~响应侧 gzip/br/流式直通不脱敏；ENCRYPT/MAP 脱敏动作未实现~~ 已补齐 AES-GCM ENCRYPT、HMAC MAP 与授权恢复（000213）、gzip/br 有界解压重编码、XML/text/SSE 值级观测；多重编码/deflate、压缩SSE、表单/二进制脱敏和真实长连接/实库验收仍有限制
 - AuthZ 仅 OWNER 单关系，复杂租户层级未实现
-- 响应侧值级敏感检测未消费
+- ~~响应侧值级敏感检测未消费~~ 已完成 JSON/XML/text/SSE `response_body` 规则消费（OBSERVE、证据不落值）；多重编码/压缩SSE、表单/二进制及流式脱敏仍不扫描或撤回
 - 正式 P95/吞吐/RSS/长稳与 20 万关系集端到端指标仍缺
 - 真实跨进程发布/多节点编排/机器网络故障恢复未验收
 - AI 自动运营定时任务（api_ai_schedules 表与前端骨架已有，调度能力介于骨架与完整之间）
-- 身份手工封禁/解封与 CHALLENGE 动作为阶段3+ 范围
+- ~~身份手工封禁/解封为阶段3+ 范围~~ 已完成000214状态/发布/网关403/前端闭环；CHALLENGE 身份动作仍未做，实库与跨进程验收待环境
 - 请求 Schema 冻结模型的 E2E 覆盖不全（同 §62）
 
 ---

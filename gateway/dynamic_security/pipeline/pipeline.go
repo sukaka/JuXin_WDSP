@@ -72,6 +72,8 @@ type Config struct {
 	CredentialCrossAppLimit int
 	// CredentialDeviceSpreadLimit 同凭据滑窗 distinct UA 族阈值（≤0 用 detectors.DefaultCredentialDeviceSpreadLimit）
 	CredentialDeviceSpreadLimit int
+	// SharedDeviceAccountLimit 同应用同设备可信账号观察阈值（非法/零值回退检测器默认值3）
+	SharedDeviceAccountLimit int
 	// RevokedCredentials 已吊销凭据清单（发布通道下发 api_revoked_credentials，§35 第10项；
 	// 装配层经 detectors.ValidateRevokedCredentials 校验后传入）；nil/空 = 无吊销清单，
 	// 吊销检测零行为。比对口径：请求凭据键（auth:/key:/sess: + 指纹）与清单
@@ -87,6 +89,21 @@ type Config struct {
 	APIQuotaPerDay int
 	// ObjectRatePerMinute 同身份对同对象每分钟上限（>0 启用）
 	ObjectRatePerMinute int
+	// CredentialRatePerMinute 同凭据自然分钟窗口上限（>0 启用；匿名跳过，不回退 IP）
+	CredentialRatePerMinute int
+	// TenantRatePerMinute 可信 JWT 租户自然分钟窗口上限（>0 启用；未验证/缺 tenant 跳过）
+	TenantRatePerMinute int
+	// ActionRatePerMinute 应用内操作动作自然分钟窗口上限（>0 启用）
+	ActionRatePerMinute int
+	// APIEndpointActions 发布下发的 endpoint_key → ACTION 表；未分类端点不猜测、不限速
+	APIEndpointActions map[string]string
+	// GroupRatePerMinute 应用内业务功能接口组自然分钟窗口上限（>0 启用）
+	GroupRatePerMinute int
+	// APIEndpointGroups 发布下发的 application_id → endpoint_key → []group_code 嵌套表；
+	// 仅当前应用与端点的组参与计数，未分组端点不猜测、不限速
+	APIEndpointGroups map[string]map[string][]string
+	// RateLimitAction RATE_LIMIT 类处置（空/RATE_LIMIT/BLOCK/TEMP_BLOCK；由决策引擎映射）
+	RateLimitAction string
 	// MaxPageSize 分页大小上限（>0 启用）
 	MaxPageSize int
 	// MaxBatchSize 批量数量上限（>0 启用）
@@ -107,6 +124,8 @@ type Config struct {
 	// LLMAllowedModels LLM 授权模型名单（发布通道下发 api_llm_allowed_models；
 	// nil/空 = 不下发不判定未授权模型，与 LLM 端点识别/观测解耦——识别与观测恒开启）
 	LLMAllowedModels []string
+	// LLMSecurityPolicy 当前应用的输入、输出与资源预算策略（nil = 保持既有 LLM 观测与规则行为）
+	LLMSecurityPolicy *detectors.LLMSecurityPolicy
 	// GRPCMaxFrameBytes gRPC 单帧声明长度上限（发布通道下发 api_grpc_max_frame_bytes；
 	// ≤0 用 dsctx.DefaultGRPCMaxFrameBytes 4 MiB 兜底）
 	GRPCMaxFrameBytes int
@@ -310,7 +329,7 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		if llm := classifier.ClassifyLLM(parsed); llm.IsLLM {
 			llmRes = llm
 			ctx.SetExtension("api.llm_kind", string(llm.Kind))
-			detectors.CheckLLM(ctx, parsed, llm, cfg.LLMAllowedModels)
+			detectors.CheckLLMWithPolicy(ctx, parsed, llm, cfg.LLMAllowedModels, cfg.LLMSecurityPolicy)
 		}
 	}
 
@@ -330,7 +349,7 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		admissionOutcome = detectors.CheckAdmission(ctx, ek, *cfg.Admission, cfg.KnownEndpoints)
 	}
 	if admissionOutcome.ProtectDenied {
-		act := decision.Decide(ctx, decision.Input{Mode: mode, Exceptions: cfg.Exceptions})
+		act := decision.Decide(ctx, decision.Input{Mode: mode, RateLimitAction: cfg.RateLimitAction, Exceptions: cfg.Exceptions})
 		cfg.emitCov(cfg.covScopeRecord(ctx, parsed, ek))
 		return &Result{
 			Context:     ctx,
@@ -377,6 +396,12 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		detectors.CheckAuthentication(ctx, r, api.IsAPI)
 		// 同凭据环境异常（跨 IP / 并发 / 时段 / UA；匿名跳过，OBSERVE 级不定案）
 		credKey := detectors.CredentialKey(r, cfg.IdentitySalt)
+		if cfg.CredentialRatePerMinute > 0 {
+			detectors.CheckCredentialRate(ctx, credKey, cfg.CredentialRatePerMinute)
+		}
+		if cfg.TenantRatePerMinute > 0 {
+			detectors.CheckTenantRate(ctx, cfg.JWTVerification, cfg.IdentitySalt, cfg.TenantRatePerMinute)
+		}
 		detectors.CheckCredentialIPSpread(ctx, r, credKey, cfg.IdentitySalt, cfg.CredentialIPSpreadLimit)
 		detectors.CheckCredentialConcurrency(ctx, credKey, cfg.CredentialConcurrencyLimit)
 		detectors.CheckCredentialUnusualHour(ctx, credKey)
@@ -385,6 +410,7 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		// OBSERVE 级只 AddMatch；须在 CheckEnvAnomalyStack 之前产出，叠加统计才含新信号）
 		detectors.CheckCredentialCrossApp(ctx, credKey, cfg.ApplicationID, cfg.CredentialCrossAppLimit)
 		detectors.CheckCredentialDeviceSpread(ctx, r, credKey, cfg.CredentialDeviceSpreadLimit)
+		detectors.CheckSharedDeviceAccountsWithLimit(ctx, cfg.JWTVerification, cfg.ApplicationID, cfg.SharedDeviceAccountLimit)
 		detectors.CheckCredentialLocationAnomaly(ctx, r)
 		// 已吊销凭据使用（§35 第10项；发布通道下发清单，nil/空零行为，匿名跳过；
 		// 集合查找 O(1)，过期条目自行失效；索引编译失败为配置错误如实返回，不静默吞错；
@@ -413,6 +439,8 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 			valueRules = vr
 		}
 		detectors.CheckSensitiveData(ctx, parsed, patterns, valueRules)
+		// WP1-A：凭据传输弱点（URL 明文密码与敏感 Cookie 名），请求值只用于内存判定，不落事件
+		detectors.CheckCredentialTransport(ctx, r, parsed, mode)
 		// MCP 内容级检测（W12-GW / P2-04 续，任务书 §154）：method 词表核对 +
 		// tools/call 参数值敏感检测 + mcp_method 观测扩展；复用上方值级敏感规则
 		// 同一编译产物（单次编译，不重跑）；非 MCP 端点零行为
@@ -423,6 +451,9 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		// 端点键传管线统一口径 ek（gRPC 为 EndpointKeyPreserve），游标键不再内部重算
 		semIDs := detectors.SemanticIDPathsFromConstraints(cfg.ParamConstraints)
 		detectors.CheckResourceAccess(ctx, parsed, tracking, ek, semIDs)
+		// WP1-B：可信身份 + 明确对象模板 + 时间窗对象集合；只产 OBSERVE，不替代 BOLA 权属判定。
+		// 应用 ID 进入窗口和 HMAC 域，避免同主体同路径模板在不同应用间串计数。
+		detectors.CheckObjectEnumeration(ctx, parsed, cfg.JWTVerification, cfg.IdentitySalt, cfg.ApplicationID+"\x00"+ek, semIDs)
 		if api.IsAPI {
 			// 生命周期（依赖 endpoint_key；仅 API 流量，静态路径不参与基线比对）；
 			// 准入已判 unknown（端点不在基线）时跳过 new_endpoint——两者同语义且 server 侧
@@ -435,8 +466,8 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 			if detectors.IsWriteMethod(parsed.Method) {
 				detectors.CheckAPIWriteRate(ctx, tracking, ek, cfg.APIWriteRatePerMinute)
 			}
-			// 小时/日配额与对象/分页/批量上限（§36；发布通道下发阈值，>0 才启用——
-			// 下发配置面当前无对应字段，配置未到不启用，不走引擎默认值冒充已配置）
+			// 小时/日配额与对象/动作/接口组/分页/批量上限（发布通道下发阈值，>0 才启用，
+			// 配置未到不启用，不走引擎默认值冒充已配置）。
 			if cfg.APIQuotaPerHour > 0 {
 				detectors.CheckAPIHourlyQuota(ctx, tracking, ek, cfg.APIQuotaPerHour)
 			}
@@ -444,7 +475,15 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 				detectors.CheckAPIDailyQuota(ctx, tracking, ek, cfg.APIQuotaPerDay)
 			}
 			if cfg.ObjectRatePerMinute > 0 {
-				detectors.CheckObjectRate(ctx, parsed, tracking, ek, cfg.IdentitySalt, cfg.ObjectRatePerMinute)
+				detectors.CheckObjectRate(ctx, parsed, credKey, ek, cfg.IdentitySalt, cfg.ObjectRatePerMinute)
+			}
+			if cfg.ActionRatePerMinute > 0 {
+				detectors.CheckActionRate(ctx, cfg.ApplicationID, cfg.APIEndpointActions[ek], cfg.ActionRatePerMinute)
+			}
+			if cfg.GroupRatePerMinute > 0 {
+				for _, groupCode := range cfg.APIEndpointGroups[cfg.ApplicationID][ek] {
+					detectors.CheckGroupRate(ctx, cfg.ApplicationID, groupCode, cfg.GroupRatePerMinute)
+				}
 			}
 			if cfg.MaxPageSize > 0 {
 				detectors.CheckPaginationSize(ctx, parsed, cfg.MaxPageSize)
@@ -516,6 +555,16 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		// 分类漏判不应关掉检测；证据只含文件名/扩展名/MIME/规则不落内容；无下发规则零行为
 		if cfg.FileComplianceRules.HasUploadRules() && len(parsed.MultipartParts) > 0 {
 			detectors.CheckFileCompliance(ctx, parser.BuildUploadFileObservations(parsed.MultipartParts), cfg.FileComplianceRules, mode)
+			// WP2-B：只消费 multipart 有界前缀，截断或 part 数溢出明确披露，不扫描整个上传体。
+			detectors.CheckUploadFileContentTypes(ctx, parsed.MultipartParts, parsed.MultipartCapped, cfg.FileComplianceRules)
+		}
+		// WP2-C：仅 file 位置的值级规则启用文本敏感内容检测，类型标签回写文件观测。
+		if len(cfg.SensitiveValueRules) > 0 && len(parsed.MultipartParts) > 0 {
+			fileValueRules, err := detectors.CompileSensitiveValueRules(cfg.SensitiveValueRules)
+			if err != nil {
+				return nil, fmt.Errorf("compile file sensitive value rules: %w", err)
+			}
+			detectors.CheckUploadFileSensitiveContent(ctx, parsed.MultipartParts, parsed.MultipartCapped, fileValueRules)
 		}
 		// 行为基线（tracking+endpoint 进程内滑窗）
 		detectors.CheckBehavior(ctx, tracking, ek)
@@ -528,7 +577,7 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		}
 	}
 
-	act := decision.Decide(ctx, decision.Input{Mode: mode, Exceptions: cfg.Exceptions})
+	act := decision.Decide(ctx, decision.Input{Mode: mode, RateLimitAction: cfg.RateLimitAction, Exceptions: cfg.Exceptions})
 	cfg.emitCov(cfg.covScopeRecord(ctx, parsed, ek))
 	return &Result{
 		Context:     ctx,

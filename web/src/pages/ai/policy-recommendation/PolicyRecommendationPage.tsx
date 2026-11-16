@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -19,7 +20,7 @@ import SmartTable from '../../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { SearchOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
-import { aiAnalyzeApi, aiDraftsApi } from '../../../api/ai'
+import { aiAnalyzeApi, aiDraftsApi, aiRecommendationsApi } from '../../../api/ai'
 import type { AiAnalyzeResult, AiDraft } from '../../../api/ai'
 import { exceptionsApi } from '../../../api/exceptions'
 import AnalyzeResultView from '../../../components/ai/AnalyzeResultView'
@@ -28,7 +29,7 @@ import StatusTag from '../../../components/StatusTag'
 import { useAuthStore } from '../../../stores/auth'
 import { formatDateTime, formatJson } from '../../../utils/format'
 import { hasAnyPermission, hasPermission } from '../../../utils/permission'
-import { AI_DRAFT_STATUS_META, AI_DRAFT_TYPE_META, AI_RISK_META } from '../../../utils/ai'
+import { AI_DRAFT_ACTIONABLE_STATUSES, AI_DRAFT_STATUS_META, AI_DRAFT_TARGET_ROUTES, AI_DRAFT_TYPE_META, AI_RISK_META } from '../../../utils/ai'
 import {
   WHAT_IF_PARANOIA_LEVEL_OPTIONS,
   WHAT_IF_SCENARIO_OPTIONS,
@@ -58,6 +59,8 @@ const DRAFT_VIEW_PERMISSIONS = [
 export default function PolicyRecommendationPage() {
   const { message, modal } = AntdApp.useApp()
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canWhatIf = hasPermission(permissions, 'ai.what_if.use')
   const canViewDrafts = hasAnyPermission(permissions, DRAFT_VIEW_PERMISSIONS)
@@ -125,7 +128,10 @@ export default function PolicyRecommendationPage() {
   const [draftFilters, setDraftFilters] = useState<DraftFilters>({})
   const [draftPage, setDraftPage] = useState(1)
   const [draftPageSize, setDraftPageSize] = useState(20)
-  const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null)
+  // 深链 ?draft_id=xxx（智能审计等入口跳转）：直接打开对应草稿详情
+  const [selectedDraftId, setSelectedDraftId] = useState<string | null>(
+    () => searchParams.get('draft_id')?.trim() || null,
+  )
 
   const draftsQuery = useQuery({
     queryKey: ['ai-drafts', draftFilters, draftPage, draftPageSize],
@@ -150,6 +156,72 @@ export default function PolicyRecommendationPage() {
       message.error(e instanceof ApiError ? e.message : '废弃失败')
     },
   })
+
+  const acceptMutation = useMutation({
+    mutationFn: (id: string) => aiRecommendationsApi.accept(id),
+    onError: (e) => {
+      message.error(e instanceof ApiError ? e.message : '采纳失败')
+    },
+  })
+
+  const rejectMutation = useMutation({
+    mutationFn: (id: string) => aiRecommendationsApi.reject(id),
+    onError: (e) => {
+      message.error(e instanceof ApiError ? e.message : '拒绝失败')
+    },
+  })
+
+  const invalidateDrafts = (id: string) => {
+    void queryClient.invalidateQueries({ queryKey: ['ai-drafts'] })
+    void queryClient.invalidateQueries({ queryKey: ['ai-draft', id] })
+  }
+
+  /** 采纳：仅标记 ACCEPTED，不创建/发布任何配置；按草稿类型给出人工落地页面入口 */
+  const onAccept = (record: AiDraft) => {
+    modal.confirm({
+      title: '采纳草稿确认',
+      content:
+        '采纳仅将草稿标记为「已采纳」，不会自动创建或发布任何配置，仍需人工在对应页面完成创建与发布。确认采纳？',
+      okText: '采纳',
+      cancelText: '取消',
+      onOk: () =>
+        acceptMutation.mutateAsync(record.id).then(() => {
+          invalidateDrafts(record.id)
+          const target = AI_DRAFT_TARGET_ROUTES[record.recommendation_type]
+          modal.success({
+            title: '草稿已采纳（尚未生效）',
+            content: (
+              <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+                <Typography.Text>
+                  草稿已标记为「已采纳」，配置不会自动生效。请前往对应业务页面人工创建配置，并按既有流程校验发布。
+                </Typography.Text>
+                {target && (
+                  <Button type="primary" onClick={() => navigate(target.path)}>
+                    前往{target.label}页面
+                  </Button>
+                )}
+              </Space>
+            ),
+          })
+        }),
+    })
+  }
+
+  /** 拒绝：标记 REJECTED，草稿不再进入后续人工流程 */
+  const onReject = (record: AiDraft) => {
+    modal.confirm({
+      title: '拒绝草稿确认',
+      content: '拒绝后草稿标记为「已废弃」，不会生效。确认拒绝？',
+      okText: '拒绝',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () =>
+        rejectMutation.mutateAsync(record.id).then(() => {
+          message.success('草稿已拒绝')
+          invalidateDrafts(record.id)
+        }),
+    })
+  }
 
   const onDiscard = (record: AiDraft) => {
     modal.confirm({
@@ -452,6 +524,22 @@ export default function PolicyRecommendationPage() {
         open={selectedDraftId !== null}
         onClose={() => setSelectedDraftId(null)}
         width={640}
+        footer={
+          draft && AI_DRAFT_ACTIONABLE_STATUSES.includes(draft.status) ? (
+            <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button
+                type="primary"
+                loading={acceptMutation.isPending}
+                onClick={() => onAccept(draft)}
+              >
+                采纳
+              </Button>
+              <Button danger loading={rejectMutation.isPending} onClick={() => onReject(draft)}>
+                拒绝
+              </Button>
+            </Space>
+          ) : undefined
+        }
       >
         {draftDetailQuery.isLoading ? (
           <Typography.Text type="secondary">加载中...</Typography.Text>

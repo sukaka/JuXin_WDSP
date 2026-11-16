@@ -67,7 +67,7 @@ var (
 // 策略 status 复用 apimodels.ValidPolicyStatus，不再重复建表）。
 var (
 	apiWeaknessCategoryWhitelist = map[string]bool{
-		apiweakness.CategoryAuthn: true, apiweakness.CategoryLifecycle: true,
+		apiweakness.CategoryAuthn: true, apiweakness.CategoryAuthz: true, apiweakness.CategoryLifecycle: true,
 		apiweakness.CategorySensitive: true, apiweakness.CategorySchema: true,
 	}
 	apiSensitiveStatusWhitelist = map[string]bool{

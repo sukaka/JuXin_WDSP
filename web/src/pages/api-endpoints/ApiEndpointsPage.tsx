@@ -16,6 +16,7 @@ import {
   Typography,
   theme,
 } from 'antd'
+import { DownloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { apiEndpointsApi, type ApiEndpointItem } from '../../api/apiAssets'
 import { ApiError } from '../../api/client'
@@ -25,7 +26,12 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { API_ENDPOINT_STATUS_META, API_LEARNING_STATUS_META, buildDirectoryTree } from '../../utils/stage8'
+import {
+  API_ENDPOINT_STATUS_META,
+  API_LEARNING_STATUS_META,
+  apiAssetValueReasonLabel,
+  buildDirectoryTree,
+} from '../../utils/stage8'
 import EndpointDetailDrawer from './EndpointDetailDrawer'
 
 /** 资产状态展示映射（公共映射 + 本地补充 ZOMBIE 僵尸态，见 apiassets 生命周期状态机） */
@@ -72,6 +78,7 @@ export default function ApiEndpointsPage() {
   const canMerge = hasPermission(permissions, 'api_asset.merge')
   const canSplit = hasPermission(permissions, 'api_asset.split')
   const canEdit = hasPermission(permissions, 'api_asset.edit')
+  const canExport = hasPermission(permissions, 'api_asset.export')
 
   const [assetStatus, setAssetStatus] = useState<string | undefined>()
   const [learningStatus, setLearningStatus] = useState<string | undefined>()
@@ -94,7 +101,12 @@ export default function ApiEndpointsPage() {
   })
 
   const directoryTreeQuery = useQuery({
-    queryKey: ['api-endpoints', 'directory-tree', siteFilter.applicationId, siteFilter.unassigned],
+    queryKey: [
+      'api-endpoints',
+      'directory-tree',
+      siteFilter.applicationId,
+      siteFilter.unassigned,
+    ],
     queryFn: () =>
       apiEndpointsApi.directoryTree({
         application_id: siteFilter.applicationId,
@@ -137,7 +149,8 @@ export default function ApiEndpointsPage() {
       }
       void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '确认失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '确认失败'),
   })
 
   const ignoreMut = useMutation({
@@ -146,7 +159,8 @@ export default function ApiEndpointsPage() {
       message.success(r.message || '已忽略')
       void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '忽略失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '忽略失败'),
   })
 
   const deprecateMut = useMutation({
@@ -155,7 +169,8 @@ export default function ApiEndpointsPage() {
       message.success(r.message || '已标记下线')
       void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '下线失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '下线失败'),
   })
 
   const restoreMut = useMutation({
@@ -164,7 +179,8 @@ export default function ApiEndpointsPage() {
       message.success(r.message || '已恢复为已确认')
       void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '恢复失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '恢复失败'),
   })
 
   /** 合并目标候选：仅在合并弹窗打开时加载（取前 100 条，排除保留方自身） */
@@ -175,25 +191,29 @@ export default function ApiEndpointsPage() {
   })
 
   const mergeMut = useMutation({
-    mutationFn: ({ id, otherId }: { id: string; otherId: string }) => apiEndpointsApi.merge(id, otherId),
+    mutationFn: ({ id, otherId }: { id: string; otherId: string }) =>
+      apiEndpointsApi.merge(id, otherId),
     onSuccess: (r) => {
       message.success(r.message || '接口已合并')
       setMergeSource(null)
       setMergeTargetId(undefined)
       void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '合并失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '合并失败'),
   })
 
   const splitMut = useMutation({
-    mutationFn: ({ id, paths }: { id: string; paths: string[] }) => apiEndpointsApi.split(id, paths),
+    mutationFn: ({ id, paths }: { id: string; paths: string[] }) =>
+      apiEndpointsApi.split(id, paths),
     onSuccess: (r) => {
       message.success(r.message || '接口已拆分')
       setSplitSource(null)
       setSplitPaths('')
       void qc.invalidateQueries({ queryKey: ['api-endpoints'] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '拆分失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '拆分失败'),
   })
 
   const openMerge = (record: ApiEndpointItem) => {
@@ -280,22 +300,31 @@ export default function ApiEndpointsPage() {
 
   const siteItems = siteSummaryQuery.data?.items ?? []
   const unassignedCount = siteSummaryQuery.data?.unassigned ?? 0
-  const totalCount = siteItems.reduce((sum, s) => sum + s.endpoint_count, 0) + unassignedCount
+  const totalCount =
+    siteItems.reduce((sum, s) => sum + s.endpoint_count, 0) + unassignedCount
   /** 站点展示名：优先主域名/IP，无域名记录时回退应用名 */
-  const siteLabel = (s: { application_name: string; application_domain?: string }) =>
-    s.application_domain || s.application_name
+  const siteLabel = (s: {
+    application_name: string
+    application_domain?: string
+  }) => s.application_domain || s.application_name
 
   const currentSiteName = siteFilter.unassigned
     ? '未归属'
     : siteFilter.applicationId
       ? (() => {
-          const s = siteItems.find((x) => x.application_id === siteFilter.applicationId)
+          const s = siteItems.find(
+            (x) => x.application_id === siteFilter.applicationId,
+          )
           return s ? siteLabel(s) : siteFilter.applicationId
         })()
       : undefined
 
-  const treeData = useMemo(() => buildDirectoryTree(directoryTreeQuery.data ?? []), [directoryTreeQuery.data])
-  const siteKey = siteFilter.applicationId ?? (siteFilter.unassigned ? 'unassigned' : 'all')
+  const treeData = useMemo(
+    () => buildDirectoryTree(directoryTreeQuery.data ?? []),
+    [directoryTreeQuery.data],
+  )
+  const siteKey =
+    siteFilter.applicationId ?? (siteFilter.unassigned ? 'unassigned' : 'all')
 
   const siteItemStyle = (active: boolean): CSSProperties => ({
     display: 'flex',
@@ -313,7 +342,10 @@ export default function ApiEndpointsPage() {
       count={count}
       size="small"
       showZero
-      style={{ backgroundColor: token.colorFillSecondary, color: token.colorText }}
+      style={{
+        backgroundColor: token.colorFillSecondary,
+        color: token.colorText,
+      }}
     />
   )
 
@@ -330,7 +362,8 @@ export default function ApiEndpointsPage() {
       dataIndex: 'directory_path',
       width: 160,
       ellipsis: true,
-      render: (v: string) => (v ? <Typography.Text code>{v}</Typography.Text> : '-'),
+      render: (v: string) =>
+        v ? <Typography.Text code>{v}</Typography.Text> : '-',
     },
     {
       title: '站点',
@@ -339,7 +372,13 @@ export default function ApiEndpointsPage() {
       ellipsis: true,
       render: (v: string, record) =>
         v || record.application_name ? (
-          <Tooltip title={v && record.application_name && v !== record.application_name ? record.application_name : undefined}>
+          <Tooltip
+            title={
+              v && record.application_name && v !== record.application_name
+                ? record.application_name
+                : undefined
+            }
+          >
             <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
               {v || record.application_name}
             </Typography.Text>
@@ -364,7 +403,9 @@ export default function ApiEndpointsPage() {
       title: '学习状态',
       dataIndex: 'learning_status',
       width: 100,
-      render: (v: string) => <StatusTag value={v} map={API_LEARNING_STATUS_META} />,
+      render: (v: string) => (
+        <StatusTag value={v} map={API_LEARNING_STATUS_META} />
+      ),
     },
     {
       title: '价值',
@@ -374,7 +415,8 @@ export default function ApiEndpointsPage() {
         if (!v) return <Typography.Text type="secondary">-</Typography.Text>
         const tag = <StatusTag value={v} map={ASSET_VALUE_META} />
         const explain = record.asset_value_explain
-        if (!explain || !explain.dimensions || explain.dimensions.length === 0) return tag
+        if (!explain || !explain.dimensions || explain.dimensions.length === 0)
+          return tag
         return (
           <Tooltip
             title={
@@ -384,7 +426,8 @@ export default function ApiEndpointsPage() {
                 </div>
                 {explain.dimensions.map((d) => (
                   <div key={d.name}>
-                    {ASSET_VALUE_DIMENSION_LABELS[d.name] ?? d.name}：{d.score}/{d.max}（{d.reason}）
+                    {ASSET_VALUE_DIMENSION_LABELS[d.name] ?? d.name}：{d.score}/
+                    {d.max}（{apiAssetValueReasonLabel(d.reason)}）
                   </div>
                 ))}
               </div>
@@ -392,6 +435,41 @@ export default function ApiEndpointsPage() {
           >
             <span>{tag}</span>
           </Tooltip>
+        )
+      },
+    },
+    {
+      title: '标签',
+      dataIndex: 'tags',
+      width: 180,
+      render: (tags: string[] | undefined) => {
+        const items = tags ?? []
+        if (items.length === 0)
+          return <Typography.Text type="secondary">-</Typography.Text>
+        const shown = items.slice(0, 2)
+        return (
+          <Space size={4} wrap>
+            {shown.map((t) => (
+              <Tag
+                key={t}
+                style={{
+                  marginInlineEnd: 0,
+                  maxWidth: 120,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+              >
+                {t}
+              </Tag>
+            ))}
+            {items.length > shown.length && (
+              <Tooltip title={items.join('、')}>
+                <Typography.Text type="secondary">
+                  +{items.length - shown.length}
+                </Typography.Text>
+              </Tooltip>
+            )}
+          </Space>
         )
       },
     },
@@ -409,42 +487,76 @@ export default function ApiEndpointsPage() {
       fixed: 'right',
       render: (_, record) => {
         const showConfirm = canConfirm && record.asset_status === 'DISCOVERED'
-        const showIgnore = canIgnore && record.asset_status !== 'IGNORED' && record.asset_status !== 'DEPRECATED'
+        const showIgnore =
+          canIgnore &&
+          record.asset_status !== 'IGNORED' &&
+          record.asset_status !== 'DEPRECATED'
         // 生命周期：仅 DISCOVERED/CONFIRMED 可标记下线，仅 DEPRECATED/ZOMBIE 可恢复（与服务端状态机一致）
-        const showDeprecate = canEdit && (record.asset_status === 'DISCOVERED' || record.asset_status === 'CONFIRMED')
-        const showRestore = canEdit && (record.asset_status === 'DEPRECATED' || record.asset_status === 'ZOMBIE')
+        const showDeprecate =
+          canEdit &&
+          (record.asset_status === 'DISCOVERED' ||
+            record.asset_status === 'CONFIRMED')
+        const showRestore =
+          canEdit &&
+          (record.asset_status === 'DEPRECATED' ||
+            record.asset_status === 'ZOMBIE')
         return (
           <Space size={0}>
             <Button type="link" size="small" onClick={() => setDetail(record)}>
               详情
             </Button>
             {showConfirm ? (
-              <Button type="link" size="small" onClick={() => confirmEndpoint(record)}>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => confirmEndpoint(record)}
+              >
                 确认
               </Button>
             ) : null}
             {canMerge ? (
-              <Button type="link" size="small" onClick={() => openMerge(record)}>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => openMerge(record)}
+              >
                 合并
               </Button>
             ) : null}
             {canSplit ? (
-              <Button type="link" size="small" onClick={() => openSplit(record)}>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => openSplit(record)}
+              >
                 拆分
               </Button>
             ) : null}
             {showDeprecate ? (
-              <Button type="link" size="small" onClick={() => deprecateEndpoint(record)}>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => deprecateEndpoint(record)}
+              >
                 下线
               </Button>
             ) : null}
             {showRestore ? (
-              <Button type="link" size="small" onClick={() => restoreEndpoint(record)}>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => restoreEndpoint(record)}
+              >
                 恢复
               </Button>
             ) : null}
             {showIgnore ? (
-              <Button type="link" size="small" danger onClick={() => ignoreEndpoint(record)}>
+              <Button
+                type="link"
+                size="small"
+                danger
+                onClick={() => ignoreEndpoint(record)}
+              >
                 忽略
               </Button>
             ) : null}
@@ -461,7 +573,9 @@ export default function ApiEndpointsPage() {
           <div
             role="button"
             tabIndex={0}
-            style={siteItemStyle(!siteFilter.applicationId && !siteFilter.unassigned)}
+            style={siteItemStyle(
+              !siteFilter.applicationId && !siteFilter.unassigned,
+            )}
             onClick={() => selectSite({})}
           >
             <span>全部</span>
@@ -481,17 +595,26 @@ export default function ApiEndpointsPage() {
               key={s.application_id}
               role="button"
               tabIndex={0}
-              style={siteItemStyle(siteFilter.applicationId === s.application_id)}
+              style={siteItemStyle(
+                siteFilter.applicationId === s.application_id,
+              )}
               onClick={() => selectSite({ applicationId: s.application_id })}
             >
-              <Typography.Text ellipsis style={{ flex: 1 }} title={s.application_name}>
+              <Typography.Text
+                ellipsis
+                style={{ flex: 1 }}
+                title={s.application_name}
+              >
                 {siteLabel(s)}
               </Typography.Text>
               {countBadge(s.endpoint_count)}
             </div>
           ))}
           <Divider style={{ margin: '8px 0' }} />
-          <Typography.Text type="secondary" style={{ display: 'block', padding: '0 8px 4px' }}>
+          <Typography.Text
+            type="secondary"
+            style={{ display: 'block', padding: '0 8px 4px' }}
+          >
             目录
           </Typography.Text>
           {treeData.length > 0 ? (
@@ -516,7 +639,8 @@ export default function ApiEndpointsPage() {
       <div style={{ flex: 1, minWidth: 0 }}>
         <Card title="API 接口资产">
           <Typography.Paragraph type="secondary">
-            路径自动归一化（如 /users/123 → /users/&#123;id&#125;），接口由网关自动发现上报。确认后进入正式资产；学习模型见「API
+            路径自动归一化（如 /users/123 →
+            /users/&#123;id&#125;），接口由网关自动发现上报。确认后进入正式资产；学习模型见「API
             模型版本」。
           </Typography.Paragraph>
           <QueryErrorAlert error={listQuery.error} />
@@ -540,10 +664,12 @@ export default function ApiEndpointsPage() {
               allowClear
               style={{ width: 140 }}
               value={assetStatus}
-              options={Object.entries(ENDPOINT_STATUS_META).map(([value, meta]) => ({
-                value,
-                label: meta.label,
-              }))}
+              options={Object.entries(ENDPOINT_STATUS_META).map(
+                ([value, meta]) => ({
+                  value,
+                  label: meta.label,
+                }),
+              )}
               onChange={(v) => {
                 setAssetStatus(v)
                 setPage(1)
@@ -554,10 +680,12 @@ export default function ApiEndpointsPage() {
               allowClear
               style={{ width: 140 }}
               value={learningStatus}
-              options={Object.entries(API_LEARNING_STATUS_META).map(([value, meta]) => ({
-                value,
-                label: meta.label,
-              }))}
+              options={Object.entries(API_LEARNING_STATUS_META).map(
+                ([value, meta]) => ({
+                  value,
+                  label: meta.label,
+                }),
+              )}
               onChange={(v) => {
                 setLearningStatus(v)
                 setPage(1)
@@ -572,6 +700,26 @@ export default function ApiEndpointsPage() {
                 setPage(1)
               }}
             />
+            {canExport ? (
+              <Button
+                icon={<DownloadOutlined />}
+                onClick={() =>
+                  window.open(
+                    apiEndpointsApi.listExportUrl({
+                      asset_status: assetStatus,
+                      learning_status: learningStatus,
+                      keyword,
+                      application_id: siteFilter.applicationId,
+                      unassigned: siteFilter.unassigned,
+                      directory_path: directoryPath,
+                    }),
+                    '_blank',
+                  )
+                }
+              >
+                导出清单
+              </Button>
+            ) : null}
           </Space>
           <SmartTable<ApiEndpointItem>
             storageKey="api-endpoints"
@@ -606,7 +754,11 @@ export default function ApiEndpointsPage() {
         onCancel={() => setMergeSource(null)}
         onOk={handleMergeOk}
         okText="合并"
-        okButtonProps={{ danger: true, loading: mergeMut.isPending, disabled: !mergeTargetId }}
+        okButtonProps={{
+          danger: true,
+          loading: mergeMut.isPending,
+          disabled: !mergeTargetId,
+        }}
         cancelText="取消"
         destroyOnHidden
       >
@@ -614,7 +766,8 @@ export default function ApiEndpointsPage() {
           将待并入接口合并进保留方：命中数累加、历史接口键归档为别名，待并入接口随后删除。该操作不可撤销。
         </Typography.Paragraph>
         <Typography.Paragraph>
-          保留方：<Typography.Text code>{mergeSource?.endpoint_key}</Typography.Text>
+          保留方：
+          <Typography.Text code>{mergeSource?.endpoint_key}</Typography.Text>
         </Typography.Paragraph>
         <Select
           placeholder="选择待并入的接口"
@@ -644,7 +797,8 @@ export default function ApiEndpointsPage() {
           按路径段从原接口拆出新接口（每行一个路径，服务端自动归一化；新接口继承方法与站点归属，状态为已发现）。
         </Typography.Paragraph>
         <Typography.Paragraph>
-          原接口：<Typography.Text code>{splitSource?.endpoint_key}</Typography.Text>
+          原接口：
+          <Typography.Text code>{splitSource?.endpoint_key}</Typography.Text>
         </Typography.Paragraph>
         <Input.TextArea
           rows={4}

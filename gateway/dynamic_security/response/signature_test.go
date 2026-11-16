@@ -1,7 +1,7 @@
 // signature_test.go 文件签名 v1 单测（W13-GW / P2-02）：
 // 配置校验（kid/key_hex 必填与口径、未启用不强校验、错误信息不含密钥值）、
 // token 生成可复算（同输入同 token；HMAC 消息字段边界）、文本/JSON/Markdown 嵌入形态、
-// 类型能力边界（v1 文本族）、JSON 解析失败返回错误（调用方 FAIL_OPEN）、跳过情形。
+// 文本族与 OOXML 类型能力边界、JSON 解析失败返回错误（调用方 FAIL_OPEN）、跳过情形。
 package response
 
 import (

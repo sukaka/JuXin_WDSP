@@ -21,6 +21,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 	"github.com/jiuzhang-waf/server/internal/apiauthz"
 	"github.com/jiuzhang-waf/server/internal/apidata"
+	"github.com/jiuzhang-waf/server/internal/apiexposure"
 	"github.com/jiuzhang-waf/server/internal/apifiles"
 	"github.com/jiuzhang-waf/server/internal/apigeo"
 	"github.com/jiuzhang-waf/server/internal/apillm"
@@ -255,6 +256,11 @@ func run() error {
 		// 强流程事件（NG-FLOW-02）：strong_flow 对象透传落实例/步骤事件表
 		// （迁移 000177；表缺失时消费报错仅记日志不阻断采集——同心跳纪律）
 		apiCollector.SetStrongFlowRecorder(strongflow.NewStrongFlowEventStore(db))
+		// 暴露面来源聚合（迁移 000190）：每条事件按 client_ip 范围（内网/公网/合作方出口）
+		// 落自然日计数桶 + 盐化指纹去重明细；partner CIDR 分类在 apiexposure 侧读 settings
+		// 缓存完成；fail-open 仅限此聚合（失败记日志不影响主事件链路）
+		apiCollector.SetSourceRecorder(apiexposure.NewSourceRecorder(
+			apiexposure.NewStore(db), settings.NewService(db)))
 		// 离线授权：端点发现配额强制（license 内存状态无 IO；无效授权返回 0=不限制——
 		// 无效态下网关透传无 API 事件，管理面已被授权门控锁定，此处不重复强制）
 		if licSvc := application.LicenseService(); licSvc != nil {
@@ -362,6 +368,12 @@ func run() error {
 				}
 			}
 		}()
+
+		// 暴露面判定引擎（迁移 000190）：10 分钟周期评估（近窗口有流量 + 到期未评端点；
+		// 评估明细与来源聚合留存 30 天清理并入本调度；单端点失败隔离不中断批次）
+		if exposureSweeper := application.APIExposureSweeper(); exposureSweeper != nil {
+			go exposureSweeper.Run(collectorCtx)
+		}
 
 		// API 专项指标采集（§158 子集）：采集器在 app 装配（路由挂载点），此处仅启动
 		application.StartAPIMetrics(collectorCtx)

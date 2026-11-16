@@ -1,5 +1,5 @@
 // fileobs.go 文件传输观测（P1-04 文件资产生产方）共享类型与清洗助手。
-// 上传侧来自 multipart 解析元数据（parser.PartMeta，文件内容流式计数后即弃，不落内存），
+// 上传侧来自 multipart 解析元数据（parser.PartMeta，文件前缀有界留存供签名检测，其余内容流式计数后即弃），
 // 下载侧来自响应捕获头快照（Content-Disposition/Content-Type）与实际传输字节数。
 // 观测只含元数据，绝不携带文件内容。
 package context
@@ -38,11 +38,15 @@ type FileObservation struct {
 	// Size 声明/观测字节数：上传 = part 流式计数（含截断口径，见 MultipartCapped）；
 	// 下载 = 实际传输字节数（流式直通同样计数）。
 	Size int64 `json:"size"`
+	// ContentSHA256 仅对完整读取的文件内容生成小写 SHA-256 指纹；截断/流式/未知内容为空。
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 	// MatchName 规则匹配用完整文件名（basename 归一化 + 去控制字符，但不截断）：
 	// EXT 扩展名提取、FILENAME_REGEX 与双扩展名判定一律以此为准——先截断后匹配会把
 	// 超长文件名的后缀截掉（A×200.exe → 无扩展名），合规规则与双扩展名信号静默不命中。
 	// 绝不序列化（json:"-"）：事件与资产落库一律用截断后的 FileName（列宽对齐）。
 	MatchName string `json:"-"`
+	// SensitiveTypes 为命中的数据类型标签，不含匹配值或文件正文。
+	SensitiveTypes []string `json:"sensitive_types,omitempty"`
 }
 
 // MatchFileName 规则匹配口径文件名：MatchName 非空时用完整名，否则回退 FileName

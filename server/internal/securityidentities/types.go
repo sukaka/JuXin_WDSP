@@ -41,6 +41,11 @@ type Identity struct {
 	RiskLevel          string     `json:"risk_level"`
 	Status             string     `json:"status"`
 	RequestCount       int64      `json:"request_count"`
+	BlockedReason      string     `json:"blocked_reason"`
+	BlockedBy          *uuid.UUID `json:"blocked_by"`
+	BlockedAt          *time.Time `json:"blocked_at"`
+	UnblockedBy        *uuid.UUID `json:"unblocked_by"`
+	UnblockedAt        *time.Time `json:"unblocked_at"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }

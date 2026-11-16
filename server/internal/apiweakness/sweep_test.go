@@ -1,4 +1,4 @@
-// sweep_test.go 派生扫描测试：fake 信号源 + MemStore，覆盖四条 v1 规则的
+// sweep_test.go 派生扫描测试：fake 信号源 + MemStore，覆盖派生规则的
 // upsert 期望、FIXED 再触发 REPRODUCED、空表安全、证据脱敏与错误不静默。
 package apiweakness
 
@@ -18,6 +18,9 @@ type fakeSignals struct {
 	unauth []EndpointSignal
 	dep    []EndpointSignal
 	inq    []EndpointSignal
+	cred   []EndpointSignal
+	cookie []EndpointSignal
+	server []EndpointSignal
 	drift  []EndpointSignal
 	err    error
 }
@@ -50,6 +53,62 @@ func (f *fakeSignals) SensitiveInQuery(ctx context.Context, since time.Time) ([]
 	return f.inq, nil
 }
 
+func (f *fakeSignals) CredentialInURL(ctx context.Context, since time.Time) ([]EndpointSignal, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.cred, nil
+}
+
+func (f *fakeSignals) SensitiveCookie(ctx context.Context, since time.Time) ([]EndpointSignal, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.cookie, nil
+}
+
+func (f *fakeSignals) ServerInfoDisclosure(ctx context.Context, since time.Time) ([]EndpointSignal, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.server, nil
+}
+
+func (f *fakeSignals) ObjectEnumeration(ctx context.Context, since time.Time) ([]EndpointSignal, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return nil, nil
+}
+
+func (f *fakeSignals) FlowSequence(ctx context.Context, since time.Time) ([]EndpointSignal, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return nil, nil
+}
+
+func (f *fakeSignals) FlowReplayBurst(ctx context.Context, since time.Time) ([]EndpointSignal, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return nil, nil
+}
+
+func (f *fakeSignals) FileContentTypeMismatch(ctx context.Context, since time.Time) ([]EndpointSignal, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return nil, nil
+}
+
+func (f *fakeSignals) FileSensitiveContent(ctx context.Context, since time.Time) ([]EndpointSignal, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return nil, nil
+}
+
 func (f *fakeSignals) SchemaDriftPersistent(ctx context.Context, persistBefore, activeSince time.Time) ([]EndpointSignal, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -73,33 +132,37 @@ func sigFor(endpointID uuid.UUID, key string, hits int, now time.Time) EndpointS
 	}
 }
 
-// TestSweepOnceDerivesAllRules 四条规则各命中一个端点 → 四条 NEW 弱点，元数据与证据正确。
+// TestSweepOnceDerivesAllRules 七条规则各命中一个端点 → 七条 NEW 弱点，元数据与证据正确。
 func TestSweepOnceDerivesAllRules(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	ep1, ep2, ep3, ep4 := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	ep1, ep2, ep3, ep4, ep5, ep6, ep7 := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	src := &fakeSignals{
 		unauth: []EndpointSignal{
 			sigFor(ep1, "GET /api/users/{id}", 5, now),
 			sigFor(ep1, "GET /api/users/{id}", 1, now), // 低于样本量阈值，被过滤
 		},
-		dep:   []EndpointSignal{sigFor(ep2, "GET /api/old/orders", 2, now)},
-		inq:   []EndpointSignal{sigFor(ep3, "POST /api/login", 1, now)},
-		drift: []EndpointSignal{sigFor(ep4, "GET /api/items", 9, now)},
+		dep:    []EndpointSignal{sigFor(ep2, "GET /api/old/orders", 2, now)},
+		inq:    []EndpointSignal{sigFor(ep3, "POST /api/login", 1, now)},
+		cred:   []EndpointSignal{sigFor(ep5, "POST /api/signin", 1, now)},
+		cookie: []EndpointSignal{sigFor(ep6, "GET /api/profile", 1, now)},
+		server: []EndpointSignal{sigFor(ep7, "GET /api/health", 1, now)},
+		drift:  []EndpointSignal{sigFor(ep4, "GET /api/items", 9, now)},
 	}
 	mem := NewMemStore()
-	for id, key := range map[uuid.UUID]string{ep1: "GET /api/users/{id}", ep2: "GET /api/old/orders", ep3: "POST /api/login", ep4: "GET /api/items"} {
+	for id, key := range map[uuid.UUID]string{ep1: "GET /api/users/{id}", ep2: "GET /api/old/orders", ep3: "POST /api/login", ep4: "GET /api/items", ep5: "POST /api/signin", ep6: "GET /api/profile", ep7: "GET /api/health"} {
 		mem.SetEndpointKey(id, key)
 	}
 	res, err := newTestSweeper(src, mem, now).SweepOnce(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Inserted != 4 || res.Updated != 0 || res.Reproduced != 0 {
+	if res.Inserted != 7 || res.Updated != 0 || res.Reproduced != 0 {
 		t.Fatalf("result: %+v", res)
 	}
 	wantByCode := map[string]int{
 		CodeUnauthenticatedSensitiveAPI: 1, CodeDeprecatedStillCalled: 1,
-		CodeSensitiveInQuery: 1, CodeSchemaDriftPersistent: 1,
+		CodeSensitiveInQuery: 1, CodeCredentialInURL: 1, CodeSensitiveCookie: 1,
+		CodeServerInfoDisclosure: 1, CodeSchemaDriftPersistent: 1,
 	}
 	for code, want := range wantByCode {
 		if res.ByCode[code] != want {
@@ -108,7 +171,7 @@ func TestSweepOnceDerivesAllRules(t *testing.T) {
 	}
 
 	list, total, err := mem.List(context.Background(), ListFilter{Page: 1, PageSize: 20})
-	if err != nil || total != 4 {
+	if err != nil || total != 7 {
 		t.Fatalf("list total=%d err=%v", total, err)
 	}
 	byCode := map[string]Weakness{}

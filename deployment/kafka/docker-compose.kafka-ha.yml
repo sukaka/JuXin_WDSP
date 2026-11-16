@@ -1,0 +1,99 @@
+name: jiuzhang-kafka-ha
+
+x-kafka-common: &kafka-common
+  image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
+  restart: unless-stopped
+  environment: &kafka-env
+    KAFKA_PROCESS_ROLES: broker,controller
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:SSL,CONTROLLER:SSL
+    KAFKA_LISTENERS: INTERNAL://:29092,CONTROLLER://:9093
+    KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+    KAFKA_SSL_KEYSTORE_LOCATION: /etc/kafka/tls/kafka.keystore.p12
+    KAFKA_SSL_KEYSTORE_PASSWORD: ${KAFKA_SSL_KEYSTORE_PASSWORD:?required}
+    KAFKA_SSL_KEY_PASSWORD: ${KAFKA_SSL_KEY_PASSWORD:?required}
+    KAFKA_SSL_TRUSTSTORE_LOCATION: /etc/kafka/tls/kafka.truststore.p12
+    KAFKA_SSL_TRUSTSTORE_PASSWORD: ${KAFKA_SSL_TRUSTSTORE_PASSWORD:?required}
+    KAFKA_LISTENER_NAME_INTERNAL_SSL_CLIENT_AUTH: required
+    KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+    KAFKA_SUPER_USERS: ${KAFKA_SUPER_USERS:-User:CN=wdsp-admin}
+    KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+    KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+    KAFKA_MIN_INSYNC_REPLICAS: 2
+    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+    KAFKA_OFFSETS_TOPIC_MIN_ISR: 2
+    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  volumes:
+    - ./pki:/etc/kafka/tls:ro
+  networks: [kafka-cluster]
+
+services:
+  kafka-1:
+    <<: *kafka-common
+    container_name: jiuzhang-kafka-1
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:29092
+    volumes:
+      - kafka-1-data:/var/lib/kafka/data
+      - ./pki:/etc/kafka/tls:ro
+
+  kafka-2:
+    <<: *kafka-common
+    container_name: jiuzhang-kafka-2
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:29092
+    volumes:
+      - kafka-2-data:/var/lib/kafka/data
+      - ./pki:/etc/kafka/tls:ro
+
+  kafka-3:
+    <<: *kafka-common
+    container_name: jiuzhang-kafka-3
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:29092
+    volumes:
+      - kafka-3-data:/var/lib/kafka/data
+      - ./pki:/etc/kafka/tls:ro
+
+  topic-init:
+    image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
+    container_name: jiuzhang-kafka-ha-topic-init
+    depends_on:
+      - kafka-1
+      - kafka-2
+      - kafka-3
+    environment:
+      BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      API_OBSERVATION_PARTITIONS: ${API_OBSERVATION_PARTITIONS:-12}
+      TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_SSL_ENABLED: "true"
+      KAFKA_SSL_KEYSTORE_LOCATION: /etc/kafka/tls/client.keystore.p12
+      KAFKA_SSL_KEYSTORE_PASSWORD: ${KAFKA_CLIENT_KEYSTORE_PASSWORD:?required}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_CLIENT_KEY_PASSWORD:?required}
+      KAFKA_SSL_TRUSTSTORE_LOCATION: /etc/kafka/tls/kafka.truststore.p12
+      KAFKA_SSL_TRUSTSTORE_PASSWORD: ${KAFKA_SSL_TRUSTSTORE_PASSWORD:?required}
+    volumes:
+      - ./init-topics.sh:/etc/jiuzhang/init-topics.sh:ro
+      - ./pki:/etc/kafka/tls:ro
+    command: ["/bin/bash", "/etc/jiuzhang/init-topics.sh"]
+    restart: "no"
+    networks: [kafka-cluster]
+
+networks:
+  kafka-cluster:
+    driver: bridge
+    internal: true
+
+volumes:
+  kafka-1-data:
+  kafka-2-data:
+  kafka-3-data:

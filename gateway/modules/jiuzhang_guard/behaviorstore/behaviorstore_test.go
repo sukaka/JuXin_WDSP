@@ -56,9 +56,11 @@ func (f *fakeValkey) Eval(ctx context.Context, script string, keys []string, arg
 		return f.evalWindow(keys[0], args), nil
 	case cursorSetLua:
 		return f.evalCursor(keys[0], args), nil
+	case objectEnumerationObserveLua:
+		return f.evalObjectEnumeration(keys[0], args), nil
 	case spreadAddLua:
 		return f.evalSpread(keys[0], args), nil
-	case concurAcquireLua:
+	case concurAcquireLua: // quotaAddLua 常量内容相同，同走 INCR + PEXPIRE 分支。
 		f.ttls[keys[0]], _ = strconv.ParseInt(args[0], 10, 64)
 		n := f.strInt(keys[0]) + 1
 		f.strs[keys[0]] = strconv.FormatInt(n, 10)
@@ -435,8 +437,10 @@ func TestTTLFloorOverride(t *testing.T) {
 func TestOverrides_AllFieldsSet(t *testing.T) {
 	s := New(newFakeValkey(), "", 0, nil)
 	o := s.Overrides()
-	if o.BehaviorWindow == nil || o.APIWriteWindow == nil || o.ObjectCursor == nil ||
-		o.IPSpread == nil || o.Concurrency == nil {
+	if o.BehaviorWindow == nil || o.APIWriteWindow == nil || o.CredentialRateWindow == nil ||
+		o.ObjectRateWindow == nil || o.TenantRateWindow == nil || o.ActionRateWindow == nil ||
+		o.GroupRateWindow == nil || o.HourlyQuota == nil || o.DailyQuota == nil ||
+		o.ObjectCursor == nil || o.ObjectEnumeration == nil || o.IPSpread == nil || o.Concurrency == nil {
 		t.Fatalf("overrides incomplete: %+v", o)
 	}
 }

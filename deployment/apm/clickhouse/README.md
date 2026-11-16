@@ -11,6 +11,9 @@
 | `001_otel_traces.sql` | `apm.otel_traces` 原始 span 表（对齐 otel-collector-contrib v0.154.0 clickhouse exporter 官方 DDL）+ `otel_traces_trace_id_ts` 检索表与物化视图 | 正常 7 天；错误/慢(≥2s)/高风险 14 天（TTL 表达式分层）；检索表 14 天 |
 | `002_aggregates.sql` | 服务/端点/SQL 指纹分钟聚合、小时/天滚动聚合、异常指纹表（均从 `otel_traces` 物化视图派生） | 分钟 30 天、小时 180 天、天 1 年（365 天）；异常指纹 30 天 |
 | `003_metrics.sql` | 运行时指标表（阶段3）：`otel_metrics_gauge/sum/histogram/exp_histogram/summary`（对齐 v0.154.0 exporter metrics DDL 默认表名；Collector `metrics_tables` 未覆写） | 原始指标点 7 天；小时聚合留待后续阶段 |
+| `004_api_observations.sql` | 脱敏 API 观测、字段 HMAC 证据与 DLQ 表；数据流消费者按 Trace ID 从这些共享表重建跨批次关联 | 未配置 TTL |
+| `005_data_flow_contributions.sql` | 数据流贡献表；按 `(agent_id,event_id,edge_id)` 幂等去重，保存配对边及单边边修正版本 | 未配置 TTL |
+| `006_network_boundary.sql` | 观测与贡献表的网络边界地址、分区和证据列升级 | 继承对应表 |
 | `ha/001_ha_replicated.sql` | 阶段5 HA 变体：`otel_traces` 双副本（ReplicatedMergeTree + ON CLUSTER），与 `001_otel_traces.sql` 二选一；位于子目录，**不会**被 entrypoint 自动执行（见下文 HA 节） | 同 001 |
 
 ## 初始化与回滚
@@ -27,6 +30,12 @@ clickhouse-client --host <ch-host> --user default --password \
   --multiquery < 002_aggregates.sql
 clickhouse-client --host <ch-host> --user default --password \
   --multiquery < 003_metrics.sql
+clickhouse-client --host <ch-host> --user default --password \
+  --multiquery < 004_api_observations.sql
+clickhouse-client --host <ch-host> --user default --password \
+  --multiquery < 005_data_flow_contributions.sql
+clickhouse-client --host <ch-host> --user default --password \
+  --multiquery < 006_network_boundary.sql
 ```
 
 幂等性：全部语句为 `IF NOT EXISTS`，可安全重复执行；但**不会**把已建表升级到新定义

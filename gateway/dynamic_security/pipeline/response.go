@@ -70,9 +70,11 @@ type ResponseConfig struct {
 	// （mcp.call 上下文）时生效；nil = 无目录且无绑定零行为）
 	MCPGuard *mcpguard.Config
 	// SensitiveValueRules 值级敏感规则原文（挂点侧下发 api_sensitive_value_rules；
-	// mcpguard 结果检查经 detectors.CompileSensitiveValueRules 缓存编译复用
-	// （与请求侧同一编译产物，location=json）；nil = 值级结果检查零行为）
+	// 普通 JSON 响应仅消费 location=response_body，复用本相位 jsonRoot；
+	// 文件与 mcpguard 结果检查沿用各自位置编译产物；nil = 对应值级检查零行为）
 	SensitiveValueRules []detectors.SensitiveValueRule
+	// LLMSecurityPolicy 当前应用的输出保护策略（nil = LLM 输出内容检测零行为变化）
+	LLMSecurityPolicy *detectors.LLMSecurityPolicy
 }
 
 // 响应侧单事件敏感字段命中上限（与请求侧 maxSensitiveMatches 对齐，防超大报文撑爆事件）。
@@ -82,6 +84,7 @@ const maxResponseSensitiveFindings = 20
 //  1. JSON 解析（非 JSON / 截断 / 流式跳过，解析失败按非 JSON 处理），
 //     成功后提取响应结构观测（一级字段路径+类型，P0-06 学习生产方，不落值）；
 //  2. 响应敏感字段检测（复用 detectors 词表做字段名匹配，证据不含值）；
+//     JSON/XML/text/plain 按 response_body 规则做值级检测（JSON 复用 jsonRoot，证据不含值）；
 //  3. 错误签名提取（5xx / 堆栈与数据库错误特征）；
 //  4. transform plan 生成（端点脱敏规则 ∩ 解析产物，仅可执行项）；
 //  5. 响应方向字段权限判定（RESPONSE 方向 FORBIDDEN/SENSITIVE 行；与脱敏计划/敏感检测去重）；
@@ -99,6 +102,11 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 		BodySize:    in.BodySize,
 		Truncated:   in.Truncated,
 		Streamed:    in.Streamed,
+	}
+	if in.Streamed {
+		if previous := ctx.GetResponse(); previous != nil && len(previous.SensitiveFields) > 0 {
+			rc.SensitiveFields = append(rc.SensitiveFields, previous.SensitiveFields...)
+		}
 	}
 	if len(in.Body) > 0 {
 		sum := sha256.Sum256(in.Body)
@@ -166,6 +174,9 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 		ct = in.Headers["content-type"]
 	}
 	if fo := response.BuildDownloadFileObservation(cd, ct, in.BodySize); fo != nil {
+		if in.Body != nil && !in.Truncated && !in.Streamed {
+			fo.ContentSHA256 = response.FileContentSHA256(in.Body)
+		}
 		rc.FileObservation = fo
 		// §9 词表 FILE_DOWNLOAD 响应侧升级：Content-Disposition 携带 filename 的附件
 		// 下载是强信号，优先于请求相位按请求形态打的通用 REST 族/UNKNOWN 标签；
@@ -181,6 +192,15 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 	// 证据只含文件名/扩展名/MIME/规则不落内容；无下载观测/无下载方向规则零行为
 	if rc.FileObservation != nil && cfg.FileComplianceRules.HasDownloadRules() {
 		detectors.CheckFileCompliance(ctx, []dsctx.FileObservation{*rc.FileObservation}, cfg.FileComplianceRules, mode)
+		// WP2-A：真实签名与声明类型比对；沿用下载合规的缓冲门禁，不上传内容、不扩大内存捕获。
+		detectors.CheckFileContentType(ctx, *rc.FileObservation, in.Body, in.Truncated, in.Streamed, cfg.FileComplianceRules)
+	}
+	if rc.FileObservation != nil && len(cfg.SensitiveValueRules) > 0 {
+		fileValueRules, err := detectors.CompileSensitiveValueRules(cfg.SensitiveValueRules)
+		if err != nil {
+			return "", fmt.Errorf("compile file sensitive value rules: %w", err)
+		}
+		detectors.CheckFileSensitiveContent(ctx, rc.FileObservation, in.Body, !in.Truncated, in.Streamed, fileValueRules)
 	}
 
 	// 1e. 响应偏离检测（W9-GW，任务书 §64 UNKNOWN_RESPONSE/UNKNOWN_STATUS 侧）：
@@ -194,6 +214,9 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 	// （观测存在）时生效；补 model/usage.total_tokens（OpenAI 兼容字段，缺失容忍）、
 	// SSE/流式响应标记 stream；非 LLM 流量零行为
 	detectors.EnrichLLMResponse(ctx, in.ContentType, in.Body, in.Truncated, in.Streamed, jsonRoot)
+	// 1f1. LLM 输出保护（WP3-B）：复用首次 JSON 解析产物；仅完整非流式响应检测内容，
+	// 截断/流式/不可解析时披露未检测，不把缺失内容视为安全
+	detectors.CheckLLMOutputSecurity(ctx, jsonRoot, in.Truncated, in.Streamed, cfg.LLMSecurityPolicy)
 
 	// 1f2. MCP 结果检查（NG-MCP G1 D7）：请求相位已确认 tools/call（mcp.call
 	// 上下文）且非流式 JSON 响应完整捕获时全量检查——output_schema 校验 + 值级
@@ -256,6 +279,39 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 		}
 	}
 
+	// 2b. response_body 值级敏感检测：JSON 复用首次解析根值；完整 XML/text/plain
+	// 经同一编译规则与 OBSERVE 证据扫描，非法/超预算只披露 partial，不新增阻断动作。
+	valueMedia := ""
+	if !in.Truncated && !in.Streamed && len(in.Body) > 0 {
+		mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(in.ContentType, ";", 2)[0]))
+		switch {
+		case mediaType == "application/xml" || mediaType == "text/xml" || strings.HasSuffix(mediaType, "+xml"):
+			valueMedia = "XML"
+		case mediaType == "text/plain":
+			valueMedia = "TEXT"
+		}
+	}
+	if len(cfg.SensitiveValueRules) > 0 && ((rc.IsJSON && jsonRoot != nil) || valueMedia != "") {
+		valueRules, err := detectors.CompileResponseSensitiveValueRules(cfg.SensitiveValueRules)
+		if err != nil {
+			return "", fmt.Errorf("compile response sensitive value rules: %w", err)
+		}
+		if len(valueRules) > 0 {
+			if rc.IsJSON && jsonRoot != nil {
+				detectors.CheckResponseSensitiveValues(ctx, jsonRoot, valueRules, limits)
+			} else {
+				scanner := detectors.NewResponseBodyValueScanner(ctx, valueRules, limits)
+				reason := ""
+				if valueMedia == "XML" {
+					reason = scanner.ScanXML(in.Body)
+				} else {
+					reason = scanner.ScanText(in.Body, "text.")
+				}
+				detectors.NoteResponseBodyValueUnchecked(ctx, valueMedia, "", reason)
+			}
+		}
+	}
+
 	// 3. 错误签名（5xx / 堆栈特征；证据只含签名标签与状态码）
 	sigs := response.ExtractErrorSignatures(in.Status, in.Body)
 	rc.ErrorSignatures = sigs
@@ -277,6 +333,9 @@ func ProcessResponse(ctx *dsctx.RequestContext, in ResponseInput, cfg ResponseCo
 			ScoreDelta: 5,
 		})
 	}
+
+	// 3b. 服务器信息泄露（WP1-A）：响应头版本信息与错误堆栈；证据不含版本原文或响应正文
+	detectors.CheckServerDisclosure(ctx, in.Status, in.Headers, in.Body)
 
 	// 4. transform plan（仅完整 JSON 可安全改写；截断/流式由挂点侧按失败策略处理）
 	if rc.IsJSON && len(cfg.MaskRules) > 0 {

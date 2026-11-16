@@ -120,7 +120,7 @@ ListRelatedRequestIDs）有 SQL 与内存双实现（risk.go / risk_mem.go），
 ### 4.1 表结构（迁移 000039）
 
 - `api_weaknesses`：endpoint_id（API删除后弱点保留为历史）、weakness_code、
-  category（AUTHN/LIFECYCLE/SENSITIVE/SCHEMA）、severity、status、
+  category（AUTHN/AUTHZ/LIFECYCLE/SENSITIVE/SCHEMA）、severity、status、
   evidence_json（仅脱敏摘要：规则/计数/窗口/时间，不落原始请求数据）、
   first_seen/last_seen、trigger_count、owner/due_date/fixed_at/retested_at；
   派生 upsert 锚点：`(endpoint_id, weakness_code)` 唯一；
@@ -143,7 +143,7 @@ NEW ──CONFIRM──▶ CONFIRMED ──ASSIGN──▶ TO_FIX ──MARK_FIX
 trigger_count+1、刷新 last_seen 与证据；**原 FIXED 状态自动回 REPRODUCED**
 （复测未通过的自动发现通道，actor=system 落 REPRODUCED 动作）。
 
-### 4.3 四规则派生（SweepOnce）
+### 4.3 派生规则（SweepOnce）
 
 `apiweakness/sweep.go`（main.go 以 5 分钟周期挂接；数据源为
 `api_runtime_events` / `api_runtime_findings`，全部API级）：
@@ -153,7 +153,19 @@ trigger_count+1、刷新 last_seen 与证据；**原 FIXED 状态自动回 REPRO
 | `UNAUTHENTICATED_SENSITIVE_API` | 近 24h 匿名（auth_type 为空）且命中 sensitive 检测器的事件 ≥ 3（可配） | AUTHN / HIGH |
 | `DEPRECATED_STILL_CALLED` | 近 24h 存在 `lifecycle.deprecated_api_call` 命中 | LIFECYCLE / MEDIUM |
 | `SENSITIVE_IN_QUERY` | 近 24h 存在 `sensitive.in_query` 命中 | SENSITIVE / HIGH |
+| `CREDENTIAL_IN_URL` | 近 24h 存在 `credential.url_password` 命中 | AUTHN / HIGH |
+| `SENSITIVE_COOKIE` | 近 24h 存在 `credential.cookie_sensitive` 命中（只检查 Cookie 名） | SENSITIVE / MEDIUM |
+| `SERVER_INFO_DISCLOSURE` | 近 24h 存在 `server.version_disclosure` / `server.error_disclosure` 命中 | SENSITIVE / MEDIUM |
+| `OBJECT_ENUMERATION_RISK` | 近 24h 存在可信身份时间窗 `resource.object_enumeration` 命中 | AUTHZ / HIGH |
+| `FLOW_SEQUENCE_DEVIATION` | 近 24h 存在已声明流程的跳步/逆序/非法状态转换/取消后操作/匿名后置访问，或 `flowguard.violation` | AUTHZ / HIGH |
+| `FLOW_REPLAY_OR_BURST` | 近 24h 存在 `flow.duplicate_submit` 或超声明阈值的 `flow.rapid_batch` | AUTHZ / MEDIUM |
+| `FILE_CONTENT_TYPE_MISMATCH` | 近 24h 上传/下载文件真实签名与声明类型不一致（`file.content_type_mismatch`）；无法检查/未知签名不计入 | SENSITIVE / MEDIUM |
+| `SENSITIVE_FILE_CONTENT` | 近 24h 上传/下载文本、CSV、JSON/JSONL/XML/DOCX/XLSX/PPTX 中按显式 `file` 位置规则检出敏感值（`file.sensitive_content`）；未检查/不支持格式不计入 | SENSITIVE / MEDIUM |
+| `SENSITIVE_RESPONSE_UNMASKED` | 近 24h 同端点含 `sensitive.response_field`/`sensitive.response_value` 且无 `response.mask_applied` 的事件 ≥3；有成功脱敏标记即排除，表示未观察到成功脱敏，不断言 TLS 或漏洞成立 | SENSITIVE / MEDIUM |
 | `SCHEMA_DRIFT_PERSISTENT` | 同API SCHEMA% 类 finding 首现 ≥3 天且近 24h 仍在出现（仅统计未闭环状态） | SCHEMA / MEDIUM |
+
+流程规则只消费实际检测明细；正常流程、无基线零行为和 `flowguard.unknown`
+均不派生，不把依赖不可用或证据不足当成业务攻击。
 
 写入语义：任一规则取数/落库失败即返回错误（不静默吞错），已写入部分不回滚
 （幂等，可下轮重扫）；空表安全（零命中零产出）。
@@ -196,7 +208,7 @@ trigger_count+1、刷新 last_seen 与证据；**原 FIXED 状态自动回 REPRO
 
 1. Risk 物化规则为 v1（severity≥MEDIUM 或动作非 ALLOW），无例外/抑制配置；
    误报降噪靠 FALSE_POSITIVE/IGNORED 处置，非自动规则；
-2. 弱点派生仅四条规则，全部API级；无应用级/主体级弱点；
+2. 弱点派生当前十二条规则，全部API级；无应用级/主体级弱点；
 4. 弱点指派仅 owner 文本 + due_date，无通知/工单系统集成；
 5. `systemalerts` 运维告警闭环与 API 安全域仍未接线（无 API 安全告警类型/
    静默计划/通知渠道，P1-08 未实现）；

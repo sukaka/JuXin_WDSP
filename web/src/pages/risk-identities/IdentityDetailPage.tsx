@@ -1,12 +1,16 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   Alert,
+  App as AntdApp,
   Button,
   Card,
   DatePicker,
   Descriptions,
   Empty,
+  Form,
+  Input,
+  Modal,
   Select,
   Space,
   Spin,
@@ -33,21 +37,46 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
 import SmartTable from '../../components/SmartTable'
+import { useAuthStore } from '../../stores/auth'
 import { useBreadcrumbObjectName } from '../../stores/breadcrumb'
 import { formatDateTime } from '../../utils/format'
-import { IDENTITY_TYPE_META, RISK_LEVEL_META, SIGNAL_META } from '../../utils/identitySecurity'
+import {
+  IDENTITY_TYPE_META,
+  RISK_LEVEL_META,
+  SIGNAL_META,
+} from '../../utils/identitySecurity'
+import { hasPermission } from '../../utils/permission'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
 
+const IDENTITY_STATUS_META: Record<string, { color: string; label: string }> = {
+  ACTIVE: { color: 'green', label: '正常' },
+  BLOCKED: { color: 'red', label: '已封禁' },
+}
+
 const TREND_SERIES = [
-  { name: '请求数', color: '#1677ff', pick: (b: IdentityBehaviorItem) => b.request_count },
-  { name: '唯一URI数', color: '#52c41a', pick: (b: IdentityBehaviorItem) => b.unique_uri_count },
-  { name: '404数', color: '#f5222d', pick: (b: IdentityBehaviorItem) => b.status_404_count },
+  {
+    name: '请求数',
+    color: '#1677ff',
+    pick: (b: IdentityBehaviorItem) => b.request_count,
+  },
+  {
+    name: '唯一URI数',
+    color: '#52c41a',
+    pick: (b: IdentityBehaviorItem) => b.unique_uri_count,
+  },
+  {
+    name: '404数',
+    color: '#f5222d',
+    pick: (b: IdentityBehaviorItem) => b.status_404_count,
+  },
 ] as const
 
 /** 行为趋势折线：5m 窗口时间序列（请求数 / 唯一URI数 / 404数） */
 function behaviorTrendOption(items: IdentityBehaviorItem[]): EChartOption {
-  const points = [...items].sort((a, b) => (a.window_start < b.window_start ? -1 : 1))
+  const points = [...items].sort((a, b) =>
+    a.window_start < b.window_start ? -1 : 1,
+  )
   return {
     grid: { left: 48, right: 16, top: 40, bottom: 28 },
     tooltip: { trigger: 'axis' },
@@ -72,13 +101,21 @@ function behaviorTrendOption(items: IdentityBehaviorItem[]): EChartOption {
 }
 
 /** 长值（指纹/哈希）截断展示 + 完整值复制；空值占位 */
-function CopyableLongValue({ value, maxWidth = 260 }: { value?: string; maxWidth?: number }) {
+function CopyableLongValue({
+  value,
+  maxWidth = 260,
+}: {
+  value?: string
+  maxWidth?: number
+}) {
   if (!value) return <span>-</span>
   return (
     <Typography.Text
       copyable={{ text: value, tooltips: ['复制', '已复制'] }}
       style={{ fontFamily: 'monospace', fontSize: 12, maxWidth }}
-      ellipsis={{ tooltip: <span style={{ fontFamily: 'monospace' }}>{value}</span> }}
+      ellipsis={{
+        tooltip: <span style={{ fontFamily: 'monospace' }}>{value}</span>,
+      }}
     >
       {value}
     </Typography.Text>
@@ -126,6 +163,9 @@ const credentialColumns: ColumnsType<IdentityCredentialItem> = [
 export default function IdentityDetailPage() {
   const { id = '' } = useParams()
   const navigate = useNavigate()
+  const { message } = AntdApp.useApp()
+  const permissions = useAuthStore((s) => s.user?.permissions)
+  const canBlock = hasPermission(permissions, 'security_identities.block')
 
   // 行为趋势时间范围（默认最近 24 小时）
   const [trendRange, setTrendRange] = useState<[Dayjs, Dayjs]>(() => [
@@ -137,7 +177,12 @@ export default function IdentityDetailPage() {
   const [eventPage, setEventPage] = useState(1)
   const [eventPageSize, setEventPageSize] = useState(20)
   // 行双击通用详情（IP 历史 / 关联凭据 / 行为事件共用）
-  const [recordDetail, setRecordDetail] = useState<{ title: string; record: Record<string, unknown> } | null>(null)
+  const [recordDetail, setRecordDetail] = useState<{
+    title: string
+    record: Record<string, unknown>
+  } | null>(null)
+  const [blockOpen, setBlockOpen] = useState(false)
+  const [blockForm] = Form.useForm<{ reason: string }>()
 
   const detailQuery = useQuery({
     queryKey: ['security-identities', 'detail', id],
@@ -145,8 +190,47 @@ export default function IdentityDetailPage() {
     enabled: !!id,
   })
 
+  const statusMut = useMutation({
+    mutationFn: ({
+      action,
+      reason,
+    }: {
+      action: 'BLOCK' | 'UNBLOCK'
+      reason?: string
+    }) =>
+      action === 'BLOCK'
+        ? securityIdentitiesApi.block(id, reason ?? '')
+        : securityIdentitiesApi.unblock(id),
+    onSuccess: async (_result, variables) => {
+      message.success(
+        variables.action === 'BLOCK' ? '身份已封禁' : '身份已解封',
+      )
+      if (variables.action === 'BLOCK') {
+        setBlockOpen(false)
+        blockForm.resetFields()
+      }
+      await detailQuery.refetch()
+    },
+    onError: (error: unknown, variables) => {
+      const fallback = variables.action === 'BLOCK' ? '封禁失败' : '解封失败'
+      message.error(error instanceof ApiError ? error.message : fallback)
+    },
+  })
+
+  const openBlock = () => {
+    statusMut.reset()
+    blockForm.resetFields()
+    setBlockOpen(true)
+  }
+
   const behaviorQuery = useQuery({
-    queryKey: ['security-identities', 'behavior', id, trendRange[0].toISOString(), trendRange[1].toISOString()],
+    queryKey: [
+      'security-identities',
+      'behavior',
+      id,
+      trendRange[0].toISOString(),
+      trendRange[1].toISOString(),
+    ],
     queryFn: () =>
       securityIdentitiesApi.behavior(id, {
         window: '5m',
@@ -159,7 +243,14 @@ export default function IdentityDetailPage() {
   })
 
   const eventsQuery = useQuery({
-    queryKey: ['security-identities', 'events', id, eventSignal, eventPage, eventPageSize],
+    queryKey: [
+      'security-identities',
+      'events',
+      id,
+      eventSignal,
+      eventPage,
+      eventPageSize,
+    ],
     queryFn: () =>
       securityIdentitiesApi.events(id, {
         signal: eventSignal,
@@ -244,8 +335,16 @@ export default function IdentityDetailPage() {
           type="error"
           showIcon
           message="加载身份详情失败"
-          description={detailQuery.error instanceof ApiError ? detailQuery.error.message : undefined}
-          action={<Button onClick={() => navigate('/risk-identities')}>返回列表</Button>}
+          description={
+            detailQuery.error instanceof ApiError
+              ? detailQuery.error.message
+              : undefined
+          }
+          action={
+            <Button onClick={() => navigate('/risk-identities')}>
+              返回列表
+            </Button>
+          }
         />
       </Card>
     )
@@ -265,10 +364,36 @@ export default function IdentityDetailPage() {
               onClick={() => navigate('/risk-identities')}
             />
             <span>身份详情</span>
-            {detail && <StatusTag value={detail.risk_level} map={RISK_LEVEL_META} />}
+            {detail && (
+              <StatusTag value={detail.risk_level} map={RISK_LEVEL_META} />
+            )}
           </Space>
         }
-        extra={<Button onClick={() => navigate('/risk-identities')}>返回列表</Button>}
+        extra={
+          <Space>
+            {canBlock && detail ? (
+              detail.status === 'BLOCKED' ? (
+                <Button
+                  loading={statusMut.isPending}
+                  onClick={() => statusMut.mutate({ action: 'UNBLOCK' })}
+                >
+                  解封
+                </Button>
+              ) : (
+                <Button
+                  danger
+                  loading={statusMut.isPending}
+                  onClick={openBlock}
+                >
+                  封禁
+                </Button>
+              )
+            ) : null}
+            <Button onClick={() => navigate('/risk-identities')}>
+              返回列表
+            </Button>
+          </Space>
+        }
         loading={detailQuery.isLoading}
       >
         {detail && (
@@ -277,21 +402,40 @@ export default function IdentityDetailPage() {
               <CopyableLongValue value={detail.identity_key} />
             </Descriptions.Item>
             <Descriptions.Item label="类型">
-              <StatusTag value={detail.identity_type} map={IDENTITY_TYPE_META} />
+              <StatusTag
+                value={detail.identity_type}
+                map={IDENTITY_TYPE_META}
+              />
             </Descriptions.Item>
-            <Descriptions.Item label="识别置信度">{detail.identity_confidence ?? 0}%</Descriptions.Item>
+            <Descriptions.Item label="识别置信度">
+              {detail.identity_confidence ?? 0}%
+            </Descriptions.Item>
             <Descriptions.Item label="置信度依据" span={2}>
-              {detail.confidence_source.length > 0 ? detail.confidence_source.join('、') : '-'}
+              {detail.confidence_source.length > 0
+                ? detail.confidence_source.join('、')
+                : '-'}
             </Descriptions.Item>
-            <Descriptions.Item label="风险分">{detail.risk_score}</Descriptions.Item>
+            <Descriptions.Item label="风险分">
+              {detail.risk_score}
+            </Descriptions.Item>
             <Descriptions.Item label="风险等级">
               <StatusTag value={detail.risk_level} map={RISK_LEVEL_META} />
             </Descriptions.Item>
-            <Descriptions.Item label="状态">{detail.status || '-'}</Descriptions.Item>
-            <Descriptions.Item label="主IP">{detail.primary_ip || '-'}</Descriptions.Item>
-            <Descriptions.Item label="ASN">{detail.asn || '-'}</Descriptions.Item>
-            <Descriptions.Item label="设备类型">{detail.device_type || '-'}</Descriptions.Item>
-            <Descriptions.Item label="账号">{detail.account_id || '-'}</Descriptions.Item>
+            <Descriptions.Item label="状态">
+              <StatusTag value={detail.status} map={IDENTITY_STATUS_META} />
+            </Descriptions.Item>
+            <Descriptions.Item label="主IP">
+              {detail.primary_ip || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="ASN">
+              {detail.asn || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="设备类型">
+              {detail.device_type || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="账号">
+              {detail.account_id || '-'}
+            </Descriptions.Item>
             <Descriptions.Item label="JWT Subject">
               <CopyableLongValue value={detail.jwt_subject} />
             </Descriptions.Item>
@@ -307,11 +451,21 @@ export default function IdentityDetailPage() {
             <Descriptions.Item label="浏览器指纹">
               <CopyableLongValue value={detail.browser_fingerprint} />
             </Descriptions.Item>
-            <Descriptions.Item label="请求数">{detail.request_count}</Descriptions.Item>
-            <Descriptions.Item label="首次发现">{formatDateTime(detail.first_seen_at)}</Descriptions.Item>
-            <Descriptions.Item label="最近活跃">{formatDateTime(detail.last_seen_at)}</Descriptions.Item>
-            <Descriptions.Item label="创建时间">{formatDateTime(detail.created_at)}</Descriptions.Item>
-            <Descriptions.Item label="更新时间">{formatDateTime(detail.updated_at)}</Descriptions.Item>
+            <Descriptions.Item label="请求数">
+              {detail.request_count}
+            </Descriptions.Item>
+            <Descriptions.Item label="首次发现">
+              {formatDateTime(detail.first_seen_at)}
+            </Descriptions.Item>
+            <Descriptions.Item label="最近活跃">
+              {formatDateTime(detail.last_seen_at)}
+            </Descriptions.Item>
+            <Descriptions.Item label="创建时间">
+              {formatDateTime(detail.created_at)}
+            </Descriptions.Item>
+            <Descriptions.Item label="更新时间">
+              {formatDateTime(detail.updated_at)}
+            </Descriptions.Item>
           </Descriptions>
         )}
       </Card>
@@ -331,7 +485,11 @@ export default function IdentityDetailPage() {
                   loading={detailQuery.isLoading}
                   pagination={false}
                   onRow={(record) => ({
-                    onDoubleClick: () => setRecordDetail({ title: 'IP 历史详情', record: { ...record } }),
+                    onDoubleClick: () =>
+                      setRecordDetail({
+                        title: 'IP 历史详情',
+                        record: { ...record },
+                      }),
                     style: { cursor: 'pointer' },
                   })}
                 />
@@ -349,7 +507,11 @@ export default function IdentityDetailPage() {
                   loading={detailQuery.isLoading}
                   pagination={false}
                   onRow={(record) => ({
-                    onDoubleClick: () => setRecordDetail({ title: '凭据详情', record: { ...record } }),
+                    onDoubleClick: () =>
+                      setRecordDetail({
+                        title: '凭据详情',
+                        record: { ...record },
+                      }),
                     style: { cursor: 'pointer' },
                   })}
                 />
@@ -372,14 +534,26 @@ export default function IdentityDetailPage() {
                     </Typography.Text>
                   </Space>
                   {behaviorQuery.isLoading ? (
-                    <div style={{ height: 320, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <div
+                      style={{
+                        height: 320,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
                       <Spin />
                     </div>
                   ) : behaviorQuery.isError ? (
-                    <QueryErrorAlert error={behaviorQuery.error} message="加载行为趋势失败" />
+                    <QueryErrorAlert
+                      error={behaviorQuery.error}
+                      message="加载行为趋势失败"
+                    />
                   ) : (behaviorQuery.data?.items.length ?? 0) > 0 ? (
                     <EChart
-                      option={behaviorTrendOption(behaviorQuery.data?.items ?? [])}
+                      option={behaviorTrendOption(
+                        behaviorQuery.data?.items ?? [],
+                      )}
                       height={320}
                       ariaLabel="身份行为趋势（5分钟统计窗口）"
                     />
@@ -403,10 +577,12 @@ export default function IdentityDetailPage() {
                       placeholder="信号类型"
                       allowClear
                       style={{ width: 170 }}
-                      options={Object.entries(SIGNAL_META).map(([value, m]) => ({
-                        value,
-                        label: m.label,
-                      }))}
+                      options={Object.entries(SIGNAL_META).map(
+                        ([value, m]) => ({
+                          value,
+                          label: m.label,
+                        }),
+                      )}
                       onChange={(v) => {
                         setEventSignal(v)
                         setEventPage(1)
@@ -414,7 +590,10 @@ export default function IdentityDetailPage() {
                     />
                   </Space>
                   {eventsQuery.isError ? (
-                    <QueryErrorAlert error={eventsQuery.error} message="加载行为事件失败" />
+                    <QueryErrorAlert
+                      error={eventsQuery.error}
+                      message="加载行为事件失败"
+                    />
                   ) : (
                     <SmartTable<IdentityEventItem>
                       storageKey="risk-identity-events"
@@ -443,6 +622,45 @@ export default function IdentityDetailPage() {
           ]}
         />
       </Card>
+
+      <Modal
+        title="封禁身份"
+        open={blockOpen}
+        onCancel={() => {
+          setBlockOpen(false)
+          blockForm.resetFields()
+        }}
+        onOk={() => blockForm.submit()}
+        okText="确认封禁"
+        okButtonProps={{ danger: true }}
+        confirmLoading={statusMut.isPending}
+        destroyOnHidden
+      >
+        <Form<{ reason: string }>
+          form={blockForm}
+          layout="vertical"
+          onFinish={(values) =>
+            statusMut.mutate({ action: 'BLOCK', reason: values.reason.trim() })
+          }
+        >
+          <Form.Item
+            name="reason"
+            label="封禁原因（reason）"
+            rules={[
+              { required: true, message: '请输入封禁原因' },
+              { whitespace: true, message: '请输入封禁原因' },
+              { max: 512, message: '封禁原因不超过 512 字符' },
+            ]}
+          >
+            <Input.TextArea
+              rows={4}
+              maxLength={512}
+              showCount
+              placeholder="请输入封禁原因"
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <RecordDetailDrawer
         open={recordDetail !== null}

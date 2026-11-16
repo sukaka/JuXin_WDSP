@@ -16,6 +16,7 @@ import (
 type scheduleRequest struct {
 	Name             string      `json:"name"`
 	ReportType       string      `json:"report_type"`
+	APIReportType    string      `json:"api_report_type"`
 	ContentScope     string      `json:"content_scope"`
 	ApplicationIDs   []uuid.UUID `json:"application_ids"`
 	TemplateID       *uuid.UUID  `json:"template_id"`
@@ -38,6 +39,7 @@ func (req *scheduleRequest) toSchedule() *ReportSchedule {
 	return &ReportSchedule{
 		Name:             req.Name,
 		ReportType:       req.ReportType,
+		APIReportType:    req.APIReportType,
 		ContentScope:     req.ContentScope,
 		ApplicationIDs:   req.ApplicationIDs,
 		TemplateID:       req.TemplateID,

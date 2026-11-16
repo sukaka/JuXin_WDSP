@@ -85,6 +85,54 @@ export const API_ENDPOINT_STATUS_META: Record<string, { color: string; label: st
   DEPRECATED: { color: 'orange', label: '已废弃' },
 }
 
+/** API 暴露面（后端词表 INTERNAL/PARTNER/PUBLIC/UNKNOWN 不变，仅界面中文化） */
+export const API_EXPOSURE_META: Record<string, { color: string; label: string }> = {
+  INTERNAL: { color: 'blue', label: '内网' },
+  PARTNER: { color: 'purple', label: '合作方' },
+  PUBLIC: { color: 'volcano', label: '外网' },
+  UNKNOWN: { color: 'default', label: '未知' },
+}
+
+/** 分类来源（后端词表 AUTO/MANUAL/CONFIG/TRAFFIC_OBSERVED 不变，仅界面中文化） */
+export const API_CLASSIFICATION_SOURCE_META: Record<string, { color: string; label: string }> = {
+  AUTO: { color: 'cyan', label: '自动识别' },
+  MANUAL: { color: 'purple', label: '人工标记' },
+  CONFIG: { color: 'geekblue', label: '配置判定' },
+  TRAFFIC_OBSERVED: { color: 'blue', label: '流量观测' },
+}
+
+/** 暴露面中文展示（大小写/空白归一，未知值原样返回，不伪造映射） */
+export function apiExposureLabel(value: string): string {
+  const key = value.trim().toUpperCase()
+  return API_EXPOSURE_META[key]?.label ?? value
+}
+
+/** 分类来源中文展示（大小写/空白归一，未知值原样返回） */
+export function apiClassificationSourceLabel(value: string): string {
+  const key = value.trim().toUpperCase()
+  return API_CLASSIFICATION_SOURCE_META[key]?.label ?? value
+}
+
+/** 暴露面评估置信度（api_exposure_assessments.confidence 词表，与 server/internal/apiexposure 一致） */
+export const EXPOSURE_CONFIDENCE_META: Record<string, { color: string; label: string }> = {
+  LOW: { color: 'blue', label: '低' },
+  MEDIUM: { color: 'orange', label: '中' },
+  HIGH: { color: 'green', label: '高' },
+}
+
+/** 暴露面评估置信度中文展示（大小写/空白归一，未知值原样返回，不伪造映射） */
+export function exposureConfidenceLabel(value: string): string {
+  const key = value.trim().toUpperCase()
+  return EXPOSURE_CONFIDENCE_META[key]?.label ?? value
+}
+
+/** 资产价值评分理由展示：把英文词表键转换为中文，保留冒号后的中文事实说明 */
+export function apiAssetValueReasonLabel(reason: string): string {
+  return reason
+    .replace(/^exposure=([A-Za-z_]+)/, (_, raw: string) => `暴露面=${apiExposureLabel(raw)}`)
+    .replace(/^exposure(?=\s)/, '暴露面')
+}
+
 /** API 接口学习状态（与 server/internal/apiassets 学习状态枚举一致） */
 export const API_LEARNING_STATUS_META: Record<string, { color: string; label: string }> = {
   NOT_STARTED: { color: 'default', label: '未开始' },
@@ -136,6 +184,7 @@ export const API_FINDING_TYPE_META: Record<string, { color: string; label: strin
   SENSITIVE_LEAK: { color: 'magenta', label: '敏感数据泄露' },
   MASS_ASSIGNMENT: { color: 'red', label: '批量赋值' },
   BEHAVIOR_ANOMALY: { color: 'volcano', label: '行为异常' },
+  SHARED_DEVICE_ACCOUNTS: { color: 'orange', label: '同设备多账号' },
 }
 
 /**

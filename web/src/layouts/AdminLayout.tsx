@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Alert,
@@ -32,6 +33,7 @@ import {
   ClockCircleOutlined,
   CloudServerOutlined,
   CloudUploadOutlined,
+  CodeSandboxOutlined,
   CompassOutlined,
   ContainerOutlined,
   ControlOutlined,
@@ -93,13 +95,15 @@ import {
   WarningOutlined,
 } from '@ant-design/icons'
 import type { ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { authApi } from '../api/auth'
+import { aiStatusApi } from '../api/ai'
 import { queryClient } from '../api/queryClient'
 import { useAuthStore } from '../stores/auth'
 import { useBreadcrumbStore } from '../stores/breadcrumb'
 import { useLicenseStore } from '../stores/license'
 import { useProductStore } from '../stores/product'
-import { filterMenusByLicense, filterMenusByRoles } from '../utils/menu'
+import { API_MENU_SECTIONS, filterCoreMenus, filterMenusByLicense, filterMenusByRoles } from '../utils/menu'
 import { SYSTEM_NAME } from '../constants'
 
 const { Header, Sider, Content } = Layout
@@ -118,6 +122,7 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/waf-rules': <SecurityScanOutlined />,
   '/custom-rules': <ControlOutlined />,
   '/waf/vuln-refs': <BugOutlined />,
+  '/vuln-intel': <BugOutlined />,
   '/exceptions': <ExceptionOutlined />,
   '/behavior-policy': <ControlOutlined />,
   '/risk-policy': <SlidersOutlined />,
@@ -129,6 +134,7 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/access-control-events': <ProfileOutlined />,
   '/access-control-versions': <HistoryOutlined />,
   '/api-endpoints': <NodeIndexOutlined />,
+  '/api-endpoint-groups': <DeploymentUnitOutlined />,
   '/api-posture': <FundProjectionScreenOutlined />,
   '/api-models': <ExperimentOutlined />,
   '/api-model-maturity': <RiseOutlined />,
@@ -143,6 +149,9 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/api-machine-identities': <KeyOutlined />,
   '/api-graph': <ApartmentOutlined />,
   '/api-topology': <PartitionOutlined />,
+  '/api-data-flow': <ShareAltOutlined />,
+  '/api-group-control': <TeamOutlined />,
+  '/api-admission': <SafetyCertificateOutlined />,
   '/api-findings': <WarningOutlined />,
   '/api-shadow-zombie': <EyeOutlined />,
   '/api-policy': <InsuranceOutlined />,
@@ -187,7 +196,9 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/report-archives': <InboxOutlined />,
   '/system-monitoring': <MonitorOutlined />,
   '/node-interfaces': <DeploymentUnitOutlined />,
+  '/network-tools': <ToolOutlined />,
   '/network-config': <GatewayOutlined />,
+  '/system-containers': <CodeSandboxOutlined />,
   '/ha-groups': <DeploymentUnitOutlined />,
   '/storage': <DatabaseOutlined />,
   '/backup-restore': <SaveOutlined />,
@@ -220,6 +231,38 @@ const MENU_ICONS: Record<string, ReactNode> = {
   '/ai/admin/evaluations': <CheckCircleOutlined />,
 }
 
+const MENU_GROUP_ICONS: Record<string, ReactNode> = {
+  '应用防护': <AppstoreOutlined />,
+  '应用防护策略': <SafetyOutlined />,
+  '访问控制': <StopOutlined />,
+  'API 防护': <ApiOutlined />,
+  '事件中心': <AlertOutlined />,
+  '安全风险': <AimOutlined />,
+  '业务性能': <FundViewOutlined />,
+  '数据接入': <RadarChartOutlined />,
+  '安全态势': <RadarChartOutlined />,
+  '安全运营': <BugOutlined />,
+  '报表中心': <FileTextOutlined />,
+  '系统运维': <SettingOutlined />,
+  '智能安全运营': <RobotOutlined />,
+  '智能能力管理': <ToolOutlined />,
+  '资产与接入': <CloudUploadOutlined />,
+  '模型中心': <ExperimentOutlined />,
+  '策略与授权': <SafetyCertificateOutlined />,
+  '数据安全': <EyeInvisibleOutlined />,
+  '关系与运行': <ShareAltOutlined />,
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function menuIconFor(key: string): ReactNode {
+  return MENU_ICONS[key] ?? <AppstoreOutlined />
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function menuGroupIconFor(label: string): ReactNode {
+  return MENU_GROUP_ICONS[label] ?? <AppstoreOutlined />
+}
+
 export default function AdminLayout() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -235,6 +278,13 @@ export default function AdminLayout() {
   const [loggingOut, setLoggingOut] = useState(false)
   // 二级菜单默认收起，仅记录用户手动展开的分组
   const [openKeys, setOpenKeys] = useState<string[]>([])
+  const [showAllNavigation, setShowAllNavigation] = useState(() => {
+    try {
+      return localStorage.getItem('wdsp.navigation.mode') === 'full'
+    } catch {
+      return false
+    }
+  })
   // 窄屏（<768px）切换到 Drawer 导航，桌面维持 Sider
   const screens = Grid.useBreakpoint()
   const isMobile = !screens.md
@@ -258,37 +308,77 @@ export default function AdminLayout() {
     [apiDynamicProtection, webWafEnabled, apmEnabled, licenseLocked, user],
   )
 
-  // 无分组的顶层菜单在前，分组菜单按 group 聚合为分组节点
+  // AI 能力状态：仅当用户可见任一 AI 菜单时轮询（5 分钟间隔 + 5 分钟 staleTime，避免高频请求）；
+  // 停用/降级时顶部横幅明示，正常时不渲染
+  const hasAiMenu = useMemo(() => menus.some((m) => m.key.startsWith('/ai/')), [menus])
+  const aiStatusQuery = useQuery({
+    queryKey: ['ai-status'],
+    queryFn: () => aiStatusApi.get(),
+    // loggingOut：登出清空查询缓存期间禁用，避免 clear() 后活跃观察器立即重取
+    enabled: hasAiMenu && !licenseLocked && !loggingOut,
+    staleTime: 300_000,
+    refetchInterval: 300_000,
+  })
+  const aiStatus = aiStatusQuery.data
+  const aiStatusBanner = useMemo(() => {
+    if (!aiStatus || (aiStatus.enabled && !aiStatus.degraded)) return null
+    const detail = aiStatus.message ? `：${aiStatus.message}` : ''
+    return !aiStatus.enabled
+      ? `AI 能力当前不可用${detail || '，智能分析与草稿等 AI 功能暂停使用'}`
+      : `AI 能力降级运行${detail || '，部分智能分析结果可能不完整'}`
+  }, [aiStatus])
+
+  const currentMenu = menus.find((m) => location.pathname.startsWith(m.key))
+  const visibleMenus = useMemo(
+    () => showAllNavigation || licenseLocked ? menus : filterCoreMenus(menus, currentMenu?.key),
+    [showAllNavigation, licenseLocked, menus, currentMenu],
+  )
+
+  // 核心模式使用扁平导航；完整模式保留原有分组及 API 组内分类
   const menuItems = useMemo<NonNullable<MenuProps['items']>>(() => {
     const items: NonNullable<MenuProps['items']> = []
-    const groups = new Map<string, typeof menus>()
-    for (const m of menus) {
+    const groups = new Map<string, typeof visibleMenus>()
+    for (const m of visibleMenus) {
       if (!m.group) {
-        items.push({ key: m.key, icon: MENU_ICONS[m.key], label: m.label })
+        items.push({ key: m.key, icon: menuIconFor(m.key), label: m.label })
       } else {
         const arr = groups.get(m.group) ?? []
         arr.push(m)
         groups.set(m.group, arr)
       }
     }
-    for (const [label, children] of groups) {
-      items.push({
-        key: label,
-        label,
-        children: children.map((m) => ({ key: m.key, icon: MENU_ICONS[m.key], label: m.label })),
-      })
+    for (const [label, groupChildren] of groups) {
+      const children: NonNullable<MenuProps['items']> = []
+      const sections = new Map<string, { key: string; icon: ReactNode; label: string; children: NonNullable<MenuProps['items']> }>()
+      for (const m of groupChildren) {
+        const section = label === 'API 防护' ? API_MENU_SECTIONS[m.key] : undefined
+        if (!section) {
+          children.push({ key: m.key, icon: menuIconFor(m.key), label: m.label })
+          continue
+        }
+        let sectionItem = sections.get(section)
+        if (!sectionItem) {
+          sectionItem = { key: `${label}/section:${section}`, icon: menuGroupIconFor(section), label: section, children: [] }
+          sections.set(section, sectionItem)
+          children.push(sectionItem)
+        }
+        sectionItem.children.push({ key: m.key, icon: menuIconFor(m.key), label: m.label })
+      }
+      items.push({ key: label, icon: menuGroupIconFor(label), label, children })
     }
     return items
-  }, [menus])
+  }, [visibleMenus])
 
-  const currentMenu = menus.find((m) => location.pathname.startsWith(m.key))
-
-  // 直接进入某个分组下的页面时，自动展开该分组以保证选中项可见
+  // 直接进入组内分类页面时，同时展开一级分组和对应分类
   useEffect(() => {
     const group = currentMenu?.group
-    if (group) {
-      setOpenKeys((keys) => (keys.includes(group) ? keys : [...keys, group]))
-    }
+    const section = group === 'API 防护' && currentMenu ? API_MENU_SECTIONS[currentMenu.key] : undefined
+    const required = [group, section ? `${group}/section:${section}` : undefined].filter((key): key is string => Boolean(key))
+    if (required.length === 0) return
+    setOpenKeys((keys) => {
+      const missing = required.filter((key) => !keys.includes(key))
+      return missing.length > 0 ? [...keys, ...missing] : keys
+    })
   }, [currentMenu])
 
   // 窄屏下路由切换后自动收起 Drawer 导航
@@ -312,15 +402,37 @@ export default function AdminLayout() {
   }, [currentMenu, breadcrumbObjectName])
 
   const navMenu = (
-    <Menu
-      theme="dark"
-      mode="inline"
-      selectedKeys={currentMenu ? [currentMenu.key] : []}
-      openKeys={collapsed && !isMobile ? undefined : openKeys}
-      onOpenChange={(keys) => setOpenKeys(keys)}
-      items={menuItems}
-      onClick={({ key }) => navigate(key)}
-    />
+    <div>
+      <div style={{ padding: collapsed ? '0 8px 12px' : '0 16px 12px', borderBottom: '1px solid rgba(255,255,255,0.12)' }}>
+        <Button
+          type="text"
+          icon={<AppstoreOutlined />}
+          aria-label={showAllNavigation ? '切换为核心功能导航' : '查看全部功能'}
+          aria-pressed={showAllNavigation}
+          onClick={() => setShowAllNavigation((previous) => {
+            const next = !previous
+            try {
+              localStorage.setItem('wdsp.navigation.mode', next ? 'full' : 'core')
+            } catch {
+              // 浏览器禁用存储时仅保留当前会话内的模式
+            }
+            return next
+          })}
+          style={{ width: '100%', justifyContent: collapsed ? 'center' : 'flex-start', color: 'rgba(255,255,255,0.85)' }}
+        >
+          {collapsed ? '' : showAllNavigation ? '核心功能' : '全部功能'}
+        </Button>
+      </div>
+      <Menu
+        theme="dark"
+        mode="inline"
+        selectedKeys={currentMenu ? [currentMenu.key] : []}
+        openKeys={collapsed && !isMobile ? undefined : openKeys}
+        onOpenChange={(keys) => setOpenKeys(keys)}
+        items={menuItems}
+        onClick={({ key }) => navigate(key)}
+      />
+    </div>
   )
 
   const handleLogout = async () => {
@@ -333,11 +445,12 @@ export default function AdminLayout() {
       reset()
       useProductStore.getState().reset()
       useLicenseStore.getState().reset()
-      // SPA 跳转不刷新页面，必须清空查询缓存，防共享浏览器跨账号数据残留
-      queryClient.clear()
       setLoggingOut(false)
       message.success('已退出登录')
-      navigate('/login', { replace: true })
+      // SPA 跳转不刷新页面，必须清空查询缓存，防共享浏览器跨账号数据残留；
+      // 先 flushSync 完成路由卸载（摘掉活跃查询观察器），再清缓存，避免 AI 状态轮询等活跃查询在 clear 后立即重取回灌
+      flushSync(() => navigate('/login', { replace: true }))
+      queryClient.clear()
     }
   }
 
@@ -437,6 +550,9 @@ export default function AdminLayout() {
                 : '授权状态加载失败，系统已锁定。请前往授权管理页重试。'
             }
           />
+        )}
+        {!licenseLocked && aiStatusBanner && (
+          <Alert type="warning" showIcon banner message={aiStatusBanner} />
         )}
         <Content style={{ margin: isMobile ? 8 : 16 }}>
           <Outlet />

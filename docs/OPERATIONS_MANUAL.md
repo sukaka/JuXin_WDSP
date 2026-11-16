@@ -13,6 +13,7 @@
 | 缓存 | VALKEY | Valkey 8（会话/CC计数/临时封禁） | 127.0.0.1:6379 |
 | 事件采集 | EVENT_COLLECTOR | 安全事件/访问控制事件采集器（进程内 goroutine） | - |
 | 存储探针 | DISK | 数据目录磁盘占用 | - |
+| 容器运维 | CONTAINEROPS | containeropsd sidecar（唯一挂载 docker.sock；仅 Unix Socket，无 TCP 端口；裸机形态不部署） | - |
 
 运行健康快照每 30 秒采集一次，告警评估每 30 秒执行一次（`App.StartStage6Workers`）。状态取值：UP / DEGRADED / DOWN / UNKNOWN。
 
@@ -69,6 +70,7 @@
 | CONFIG_HASH_MISMATCH | MEDIUM | 比对「网关状态」（`/gateway-status`）哈希与当前版本，必要时重新发布 |
 | DATABASE_CAPACITY_HIGH | MEDIUM | 按第 8 节评估分区清理与扩容 |
 | BACKUP_FAILED / REPORT_FAILED / UPGRADE_FAILED / RESTORE_VALIDATION_FAILED | 按级别 | 查对应任务详情页错误信息，重跑或回滚 |
+| VULN_INTEL_NEW | HIGH（批次含 CRITICAL 漏洞时升 CRITICAL） | 「安全运营 → 漏洞情报」（`/vuln-intel`）查 CVE 明细与受影响应用，按级别安排修复/升级；NVD 同步状态与失败原因见概览卡（sync_state）；通知渠道订阅「漏洞情报」（`threat_intel`）类别接收此类提醒，订阅配置（watch_techs/min_severity/sync_enabled）在该页"订阅设置"维护（仅 SYSTEM_ADMIN） |
 
 ## 4. 备份策略建议
 
@@ -111,6 +113,13 @@
 - **治理手段**：按第 4 节清理过期备份与报告归档；security_events / access_control_events 按月分区，可按分区归档历史月份；清理 gateway 日志轮转产物。
 - **扩容原则**：容量周增长率 >10% 或预计 30 天内写满时启动扩容；扩容操作记录在变更单。
 
+## 8.1 容器运维通道（containerops）
+
+- **巡检**：`docker compose ps` 中 containerops 应为 running；`docker inspect jiuzhang-containerops --format '{{.State.Health.Status}}'`（离线包容器名，stage5 为 `jiuzhang-stage5-containerops`）应为 healthy。sidecar DOWN 时管理面容器运维接口返回 503，不影响防护主链路。
+- **权限边界核对**：定期确认 `/var/run/docker.sock` 仍只挂载在 containerops 服务（`docker compose config | grep -B2 docker.sock`）；任何其他服务出现该挂载即配置事故，立即回退。
+- **操作纪律**：经通道的重启/镜像更新与第 6 节发布变更同等管理（变更单 + 操作审计可查）；update 只接受显式锁定镜像引用（拒绝 `latest`）；API 自身不经通道 stop/update，其升级走 `ops/upgrade/apply.sh` 升级包通道；裸机 systemd 形态本通道不可用。
+- **gid 变更**：宿主机 docker 组 gid 变化（重装 Docker、换机）后重跑 `ops/install/prepare-containerops.sh -e .env` 并 `docker compose up -d containerops` 生效。
+
 ## 9. 日志管理
 
 - **访问/审计日志**：网关访问日志、Coraza 审计日志、guard 事件 JSONL 位于网关数据目录（`runtime/logs` 及数据卷），由采集器断点续传入库，文件按大小轮转。
@@ -128,6 +137,13 @@
 4. **根因分析**：恢复后 48 小时内完成根因报告，整改项纳入变更管理。
 5. 详细 RTO/RPO 指标、分场景恢复步骤以《灾难恢复指南》为准。
 
+### 10.1 资源阈值软件旁路
+
+- 「系统设置 → 软件旁路」提供自动旁路开关、CPU/内存阈值与最短保持时间。默认关闭自动旁路，阈值均为 80%，最短保持 10 秒；保存后必须执行「配置发布」才生效。
+- 任一资源**严格大于**触发阈值时，新请求进入纯透传，跳过访问控制、CC、Bot、API 动态防护和 WAF；请求 ID、安全响应头、反向代理与基础访问日志仍保留。资源低于恢复阈值（触发值减 5 个百分点）且达到最短保持时间后自动恢复检测。
+- 「系统运维 → 运行监控」展示 CPU/内存、当前 TCP 连接、累计新建连接、新建连接速率、HTTP 请求与会话及旁路状态。会话按应用和配置的 Cookie 去重，5 分钟空闲过期；原始 Session ID 不出现在指标或日志中。
+- 网关采样失败时不会新触发旁路；已旁路时保持旁路，避免因采样抖动恢复高负载检测。状态经 Caddy Unix Admin `/jiuzhang/runtime` 只读采集，不新增 TCP 管理端口。
+
 ## 11. 常用命令速查
 
 | 场景 | 命令 |
@@ -139,6 +155,7 @@
 | 升级回滚 | `ops/upgrade/rollback.sh`（可加 `--restore-backup`） |
 | 诊断收集 | `ops/diagnostics/collect.sh -o dist` |
 | 离线包构建 | `ops/offline-package/build.sh` |
+| 容器运维 gid 探测 | `ops/install/prepare-containerops.sh -e .env`（写入 CONTAINEROPS_DOCKER_GID） |
 | 构建前后端 | `make build` |
 | 全量测试 | `make test`（后端 `go test -race` + 前端 vitest） |
 | 网关单测 | `make guard-test` |

@@ -3,13 +3,13 @@
 -- 语义边界（任务书 §16/§106/§107 子集）：
 --   生产方为 apiruntime.FileObsStore.RecordFileObservations：消费网关统一主事件
 --   file_observations（multipart 上传 part 元数据 / Content-Disposition 下载观测，
---   仅元数据，文件内容永不落网关内存与库），按去重键 UPSERT 聚合。
+--   正文不随观测进入事件或库；仅完整读取内容可生成 SHA-256 指纹），按去重键 UPSERT 聚合。
 --
 -- 去重键设计（uq_api_file_assets_dedup）：
 --   (endpoint_key, direction, filename, identity_fingerprint) ——同一文件被不同身份
 --   传输各成一行（§107 同身份批量下载判定依赖身份维度，跨身份合并会丢失口径）；
 --   匿名流量 identity_fingerprint='' 正常参与去重（空串是值不是 NULL）。
---   sha256 不进键：网关观测不含内容哈希（文件不落内存），列预留恒 NULL。
+--   sha256 不参与去重键；完整观测内容可写入指纹，截断/流式观测保持 NULL。
 --
 -- 列说明：
 --   filename          明文截断 128（理由：资产盘点以文件名识别敏感文件流转，哈希会
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS api_file_assets (
     extension            VARCHAR(16)  NOT NULL DEFAULT '',
     mime                 VARCHAR(128) NOT NULL DEFAULT '',
     size_bytes           BIGINT       NOT NULL DEFAULT 0,
-    sha256               TEXT,                        -- 预留：网关观测不含内容哈希，当前恒 NULL
+    sha256               TEXT,                        -- 完整观测内容指纹；截断/流式观测为 NULL
     identity_fingerprint VARCHAR(128) NOT NULL DEFAULT '', -- 匿名流量为空串（口径同 api_runtime_events）
     client_ip_masked     VARCHAR(64)  NOT NULL DEFAULT '',
     sensitive_types      JSONB        NOT NULL DEFAULT '[]',

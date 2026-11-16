@@ -22,7 +22,7 @@
 
 ## 1. 总体结论
 
-1. **阶段8 主干能力真实存在且质量扎实**：统一引擎挂接请求链（`serveNext` 唯一挂点）、一次解析多协议、请求侧检测器族（schema/身份/敏感/BOLA/生命周期/行为/限速/AuthZ/关系/扫描识别/LLM/MCP/gRPC/文件合规等）、统一事件流（JSONL→采集器→`api_runtime_events` 幂等）、API自动发现、模型生命周期状态机、学习样本自动采集与阈值候选、参数值脱敏观测通路、**155 条 `/api/v1/api-security/*` 接口、41 权限点+三权、29 个前端页面、15 个 READ_ONLY AI 工具**——这些有真实代码与测试，不是空壳。
+1. **阶段8 主干能力真实存在且质量扎实**：统一引擎挂接请求链（`serveNext` 唯一挂点）、一次解析多协议、请求侧检测器族（schema/身份/敏感/BOLA/生命周期/行为/限速/AuthZ/关系/扫描识别/LLM/MCP/gRPC/文件合规等）、统一事件流（JSONL→采集器→`api_runtime_events` 幂等）、API自动发现、模型生命周期状态机、学习样本自动采集与阈值候选、参数值脱敏观测通路、**155 条 `/api/v1/api-security/*` 接口、41 权限点+三权、30 个前端页面、15 个 READ_ONLY AI 工具**——这些有真实代码与测试，不是空壳。
 2. **第一~十四波补全（2026-08-16 ~ 2026-08-20，迁移 000035-000072）全部合入**：原三大系统性断点（Finding 生产化/Runtime Compiler/响应侧）第一波即接通；第三~六波收口 Coraza 合流、AuthZ 实体层与运行时消费、响应 Schema 学习、调用边派生、API 告警静默、主动扫描 v1、AI 工具第二批；第七/八波落地数据出境、API 专项报告、敏感文件资产、AI 定时运营、扫描前端页与 E2E 扩充；第九~十一波收口扫描流量识别（学习样本排除由待命转生效）、响应偏离检测、API 态势全维度、LLM API 观测 v1、参数条件关系运行时检测、响应方向字段权限判定；第十二~十四波落地多节点版本遥测校验、MCP 内容级检测、文件水印/签名/合规 v1、gRPC 帧级校验 v1、源码 API 发现 v1（逐波明细见文末刷新说明）。
 3. **P0 全 21 项终态：2 项主干闭环（P0-03/05）、19 项部分实现、0 项仅建表、0 项未实现**——十四波推进后各项均有真实生产链路与运行时消费，残余为任务书超集口径的覆盖面缺口（逐项 Known Gap 如实标注，无"宣称完成但代码未做"项）。
 4. **P1 全 10 项终态：10 项全部落地为 IMPLEMENTED_PARTIAL 及以上**（第七/八波补齐 P1-03/04/06，第九/十波补齐 P1-01 态势全维度与前端页）；**P2 七项终态：7 项全部 v1 交付（均为最小可行子集，IMPLEMENTED_PARTIAL；P2-06 HTTP/3 于第二十波完成启用方式与端到端验证，QUIC 层深度解析保留为边界）**。
@@ -112,7 +112,7 @@
   - enum：✅ BLOCK（schema.go:235-242）
   - type：⚠️ 仅 BODY JSON 经 formal schema type_mismatch（BLOCK）；ParamConstraint 自带 base_type 不参与比较
   - required：✅ 已升级（第三波）——PROTECT 模式缺失升级 BLOCK 类可定案阻断，其余模式维持 OBSERVE/+5 分（schema.go:198-216）
-  - object_fields：⚠️ 仅 BODY undefined_field/missing_field，OBSERVE 级
+  - object_fields：⚠️ 仅 BODY undefined_field 与 confirmed required 缺失（schema.param_required）；可选字段缺失不再产生 schema.missing_field 噪声
   - regex：✅ 已落地（第三波）——RE2、≤512 字符，编译失败/超长保守产 OBSERVE 明细（schema.param_regex，不阻断）（schema.go:124/293-305）
   - nullable / empty_allowed：✅ 已落地（第三波）——nullable 仅 BODY JSON 有 null 语义、empty_allowed 空串各位置 + 空数组仅 BODY，均显式 false 才违例（schema.go:125-129/217-232）；其余位置仅存 DB 不判定
   - array_size / mime / file_size：❌ 不下发不执行
@@ -132,13 +132,13 @@
 
 ### P0-06 Response Schema
 
-- **Status**: IMPLEMENTED_PARTIAL（2026-08-18 第五波起学习链路闭环：生产→存储→查询→Confirm 快照→测试齐全；2026-08-19 第九波补齐运行时消费——响应偏离检测下发与执行；残余为 §48 全字段与前端消费）
+- **Status**: IMPLEMENTED_PARTIAL（2026-08-18 第五波起学习链路闭环：生产→存储→查询→Confirm 快照→测试齐全；2026-08-19 第九波补齐运行时消费——响应偏离检测下发与执行；接口详情观测面板已接入；残余为 §48 全字段与独立聚合视图）
 - **Code Path**: 网关观测 `gateway/dynamic_security/response/observe.go:29` `BuildObservation`（一级字段路径→类型 + status_code/content_type/body_size/truncated，只含路径与类型标签不落值）→ 响应相位装配（`pipeline/response.go:81`，仅完整捕获的合法 JSON 族响应，截断/流式不观测）→ `apiprotect.go:463` 挂主事件 → 事件契约 `apievents/apievents.go:57-60`（`response_observations`，omitempty 无观测零变化）→ 采集器 `apiruntime/collector.go:400-402` → 入库 `apiruntime/respschema.go:78` `RecordResponseObservations`（API×状态码合并 UPSERT 运行时学习行：字段并集、同路径类型冲突首次优先、truncated 任一为真即真、sample_count 累计；无状态码或无字段的观测跳过）；只读查询 `apimodels/response_schemas.go:94`（`GET /api/v1/api-security/endpoints/{id}/response-schemas`，api_model.read，按状态码升序）；Confirm 快照 `response_schemas.go:125` `snapshotResponseSchemas`（Confirm 事务内按版本物化快照行，model_version_id 关联版本；快照不参与运行时合并）
 - **Database**: `api_response_schemas`（000018:180 建表；**000051 运行时学习列补齐**：model_version_id DROP NOT NULL + endpoint_key/first_seen/last_seen/sample_count/updated_at + 运行时行部分唯一索引 `(endpoint_key, status_code) WHERE model_version_id IS NULL`）；`api_model_versions.response_schema_set_id` 仍恒 NULL（快照经 model_version_id 可溯，response_schema_set 集合概念未建）
 - **Runtime Producer**: 网关响应相位 + 采集器 UPSERT；**Runtime Consumer**: 管理面只读查询 + 模型确认版本快照；**运行时偏离检测（第九波）**：`api_response_schemas` 学习行（sample_count≥20）经发布通道 `api_response_baselines` 下发（`guardconfig/response_baselines.go`，纳入版本戳），网关响应相位 `detectors/respdeviation.go:50` `CheckResponseDeviation` 比对一级字段——基线外新字段 `response.schema_new_field`（OBSERVE/MEDIUM）、基线字段缺失 `response.schema_missing_field`（OBSERVE/LOW）、未知状态码 `response.schema_new_status`（INFO）；证据不落值；无基线零行为
-- **Frontend**: 无（response-schemas 接口暂无前端消费）
+- **Frontend**: 接口详情抽屉新增 `ResponseSchemaPanel`（`web/src/pages/api-endpoints/ResponseSchemaPanel.tsx`），真实查询运行时学习行，按状态码展示样本、最近观测、结构哈希与截断标记，可展开字段路径和类型；`api_model.read` 权限门控，无权限不查询
 - **Test**: 网关 `apiobserve_test.go`（观测发出/非 JSON 不产生观测）、`apievents_test.go`（契约形态与 omitempty）；服务端 `apiruntime/respschema_test.go`、`apimodels/response_schemas_test.go`
-- **Known Gap**: ~~响应偏离检测（对照学习基线判异）未做~~ **已落地（第九波，见上）**；§48 响应模型字段仅 field_schema/content_type 子集有数据源（status_distribution/sensitive/error_signatures 维度无）；无前端页面；`api_request_schemas` 仍零引用（请求 schema 走 model_versions.schema_json 内联）。
+- **Known Gap**: ~~响应偏离检测（对照学习基线判异）未做~~ **已落地（第九波，见上）**；§48 响应模型字段仅 field_schema/content_type 子集有数据源（status_distribution/sensitive/error_signatures 维度无）；前端仅接口详情观测面板，无独立跨接口聚合页面；`api_request_schemas` 仍零引用（请求 schema 走 model_versions.schema_json 内联）。
 
 ### P0-07 MASK_RESPONSE
 
@@ -146,7 +146,7 @@
 - **Code Path**: 决策引擎 MASK_RESPONSE 分支（`decision/engine.go:91`，transform plan 非空且 PROTECT 模式）；Response Transformer 执行字段级脱敏（`FieldTransform`：MASK 前 3 后 4 保留可配 / HASH / REMOVE，`context/context.go:70-76`）、重编码与 Content-Length 修正、ETag/Content-MD5 失效；脱敏规则经发布通道下发（`api_mask_rules`，`guardconfig/apiruntime.go`，规则源 `api_masking_rules` 表 GLOBAL<APPLICATION<ENDPOINT 优先级合并）；失败策略 `api_response_fail_policy`（FAIL_OPEN 默认 / FAIL_CLOSED 抑制为 500 空明细）
 - **Database**: `api_masking_rules`（迁移 000040）；**Frontend**: 敏感数据/脱敏规则管理面（第二波 F3 前已随 000040 批接通）
 - **Test**: `pipeline/response_test.go`、`decision/engine_test.go`（MASK_RESPONSE 断言）
-- **Known Gap**: §100-105 算法体系仅 MASK/HASH/REMOVE 三算法，ENCRYPT/MAP 与还原审计未实现；gzip/br 等非 identity 编码与流式/SSE 直通不脱敏；请求侧日志/审计脱敏仍为固定内置规则（非在线策略）。
+- **Known Gap**: ENCRYPT/MAP 已实现并支持授权恢复（000213），gzip/br 有界解压与重编码、XML/text/SSE 值级检测已接入；仍不支持多重编码/deflate、压缩 SSE、表单/二进制脱敏和流式中途脱敏。请求侧日志/审计脱敏仍为固定内置规则（非在线策略）。
 
 ### P0-08 Coraza/API 统一 Finding
 
@@ -172,7 +172,7 @@
 - **Runtime Producer**: 流量自动发现；**Runtime Consumer**: 基线下发 `ListKeyStatus`（store.go:399-414）→ lifecycle detector
 - **Frontend**: api-endpoints 页（过滤/确认/忽略）；**合并/拆分无 UI（API_ONLY）**
 - **Test**: `handler_stage8_test.go`、`store_stage8_test.go`、`handler_lifecycle_test.go`、`normalize_test.go`、`value_test.go`、`lifecycle_test.go`
-- **Known Gap**: ①资产唯一键实际只有 method+normalized_path（跨域名/应用同键合并，归属首写胜出；~~protocol_type 恒 REST~~ **已补全（协议识别波）**：REST/GRPC/GRAPHQL/SOAP/WEBSOCKET 五值打标，GraphQL 不按 operation 拆API为遗留）；②应用资产无来源枚举/确认/合并/拆分，应用级价值评分未做（评分暂为API级）；③文件资产零实现；④`api_endpoint_path_segments` TABLE_ONLY；⑤非 API 路径也入资产表（发现不过滤 is_api）；⑥~~DEPRECATED 状态无 HTTP 入口~~ **已闭环（第三波 deprecate/restore）**；⑦资产状态（DISCOVERED/CONFIRMED/IGNORED/DEPRECATED/ZOMBIE）/学习状态/模型状态三层分离真实落地 ✅。
+- **Known Gap**: ①资产唯一键实际只有 method+normalized_path（跨域名/应用同键合并，归属首写胜出；~~protocol_type 恒 REST~~ **已补全（协议识别波）**：REST/GRPC/GRAPHQL/SOAP/WEBSOCKET 五值打标，GraphQL 不按 operation 拆API为遗留）；②应用资产无来源枚举/确认/合并/拆分；应用级评分聚合接口 `GET /api-security/applications/{id}/asset-value` 已落地，聚合既有接口评分并披露未评分覆盖，前端 `ApplicationAssetValueCard` 已接入应用详情，真实 PostgreSQL 验证与登录态浏览器验收待完成；③文件资产已有真实观测、台账与同内容关联，完整文件生命周期与因果溯源仍未实现；④`api_endpoint_path_segments` TABLE_ONLY；⑤非 API 路径也入资产表（发现不过滤 is_api）；⑥~~DEPRECATED 状态无 HTTP 入口~~ **已闭环（第三波 deprecate/restore）**；⑦资产状态（DISCOVERED/CONFIRMED/IGNORED/DEPRECATED/ZOMBIE）/学习状态/模型状态三层分离真实落地 ✅。
 
 ### P0-11 Shadow / Zombie
 
@@ -232,11 +232,11 @@
 
 ### P0-18 Distributed Behavior State
 
-- **Status**: IMPLEMENTED_PARTIAL（Valkey 实现质量高，但默认 memory 且发布通道不下发该配置——生产默认仍是单节点语义）
-- **Code Path**: 可插拔接口 `detectors/store.go:30-65`（WindowStore/ObjectCursorStore/IPSpreadStore/ConcurrencyStore，注入点 atomic.Pointer）；内存实现 `window.go:74-112` 等；Valkey 实现 `behaviorstore/behaviorstore.go`（5 段 Lua 原子脚本、sha256 键纪律、TTL 下限、三层 Fail-open）；装配 `apiprotect.go:56-67`（`behavior_store` 配置，module.go:479-483 校验，**默认 memory**）
-- **对照任务书六操作**: Increment/WindowCount/GetWindow 融合于 `AddAndCount`；DistinctCount=`AddDistinct`；**SequenceAppend 不存在；Expire 为内部职责非接口方法**
-- **Test**: `behaviorstore_test.go`（436 行含故障注入）、`store_test.go`（8 用例）、`behavior_test.go`
-- **Known Gap**: ①~~发布通道不下发 behavior_store/identity_salt/阈值~~ **已闭环（第一波）**：`gateway_runtime` 组六键（behavior_store/identity_salt/behavior_store_ttl_seconds/credential_ip_spread_limit/credential_concurrency_limit/api_write_rate_per_minute）随整站发布下发（`guardconfig/apiruntime.go`），非法取值中止发布；默认仍 memory，管理面可打开；②hourHist（时段基线）与 UA 族基线两追踪器未抽象进 StoreOverrides，配了 valkey 仍单节点；③§123 A60+B60>100 场景默认配置下检测不到；④无真实 Valkey 集成测试（仅 fake 模拟）；⑤离线画像（api_behavior_profiles，学 request_rate/time_pattern/status_code_dist 三项）不回灌网关；⑥api_sequence/流程偏离/对象数量/数据量/geo/token_pattern 未实现，`api_call_edges` TABLE_ONLY；⑦降级状态仅 zap 日志无指标/事件上报；⑧故障降级（Fail-open、不 Fail Close）实现到位 ✅。
+- **Status**: IMPLEMENTED_PARTIAL（Valkey 已支持对象枚举共享窗口；默认 memory 仍为单节点，时段/UA 等部分状态尚未抽象）
+- **Code Path**: 可插拔接口 `detectors/store.go`（WindowStore/ObjectCursorStore/ObjectEnumerationStore/IPSpreadStore/ConcurrencyStore 等，按请求绑定 StoreOverrides）；内存实现 `window.go` 与 `object_enumeration.go` 等；Valkey 实现 `behaviorstore/behaviorstore.go` 与 `behaviorstore/object_enumeration.go`（Lua 原子脚本、sha256 键纪律、TTL 下限、三层 Fail-open）；装配 `apiprotect.go` `buildBehaviorStores`（`behavior_store` 配置，**默认 memory**）
+- **对照任务书六操作**: Increment/WindowCount/GetWindow 融合于 `AddAndCount`；DistinctCount=`AddDistinct`；对象序列通过 `ObserveObject` 统计；Expire 为内部职责非接口方法
+- **Test**: `behaviorstore_test.go`（含故障注入）、`object_enumeration_test.go`、`object_enumeration_integration_test.go`（真实 Valkey 与 API 管线）、`store_test.go`、`behavior_test.go`
+- **Known Gap**: ①~~发布通道不下发 behavior_store/identity_salt/阈值~~ **已闭环（第一波）**：`gateway_runtime` 组六键（behavior_store/identity_salt/behavior_store_ttl_seconds/credential_ip_spread_limit/credential_concurrency_limit/api_write_rate_per_minute）随整站发布下发（`guardconfig/apiruntime.go`），非法取值中止发布；默认仍 memory，管理面可打开；②hourHist（时段基线）与 UA 族基线两追踪器未抽象进 StoreOverrides，配了 valkey 仍单节点；③§123 A60+B60>100 场景默认配置下检测不到；④对象枚举已有真实 Valkey 集成测试（跨 Store、64 并发与真实 API 管线），仍不替代正式多主机故障与容量验收；⑤离线画像（api_behavior_profiles，学 request_rate/time_pattern/status_code_dist 三项）不回灌网关；⑥流程基线七类观察信号、强流程违规和对象枚举检测已落地，并派生 `FLOW_SEQUENCE_DEVIATION` / `FLOW_REPLAY_OR_BURST` / `OBJECT_ENUMERATION_RISK` 弱点；离线 api_sequence 画像、单次对象数量/数据量/geo/token_pattern 仍未实现，`api_call_edges` TABLE_ONLY；⑦降级状态仅 zap 日志无指标/事件上报；⑧故障降级（Fail-open、不 Fail Close）实现到位 ✅。
 
 ### P0-19 请求/响应敏感数据
 
@@ -270,9 +270,9 @@
 | P1-01 API 态势 | IMPLEMENTED_PARTIAL | `GetPosture`（`apisecurity/runtime.go:175`）聚合API/学习覆盖率/模型冻结率 + findings 活动状态计数；**第九波补齐**：`GET /posture/overview` 12 项核心指标（访问量/防护量/资产/新增/Shadow/Zombie/Deprecated/涉敏/高风险/无认证/待确认模型/24h Schema 偏离，全部真实 SQL）+ `GET /posture/trends?days=N` 六条按天趋势（UTC 日界补零）；**第十波补齐**：`GET /posture/sources`（client_ip Top 脱敏/Geo 分桶与国家 Top（复用 apigeo，缺失降级 geo_enabled=false）/身份指纹 Top 截断/auth_type 分布）+ `GET /posture/targets`（请求量/findings 双口径、应用、涉敏、高风险五榜单）；前端 ApiPosturePage（指标卡+ECharts 趋势+钻取）注册为 API 防护组首屏；大屏有 API 安全屏。残余：§6 的 Shadow 趋势与 UA 族维度（api_runtime_events 无 UA 列，如实不做） |
 | P1-02 AI 资产运营 | IMPLEMENTED_PARTIAL | 15 个 api_* AI 工具全部 READ_ONLY 闭环（10 个 `aitools/api_tools.go` + 5 个 `aitools/api_ops_tools.go`：api_weakness.search/api_sensitive.search/api_runtime_policy.get/api_spec.get/api_posture.get，输入枚举白名单 + 证据脱敏 + SyncRegistry 同步 ai_tools 表）；**第七/八波 AI 定时运营落地（迁移 000062/000063）**：apiops 包自研五段 cron 解析器（零新依赖）+ next_run_at 游标 claim 先行防重入；五种内置任务（API_ASSET_DIGEST/SHADOW_REVIEW/WEAKNESS_FOLLOW/RISK_DIGEST/SENSITIVE_DIGEST）纯确定性查询+模板化中文摘要，**只产报告不做任何变更**；LLM 润色 Summarizer 小接口（nil/失败回退模板）；全局开关 `api_ai_ops.schedules_enabled` 默认关；`/api-security/ai-ops` 11 接口 + api_ai.read/execute 权限。残余：AI 工作流框架/连续失败熔断/ai_recommendations 流转未做；§146 的 16 工具清单中 api_spec.diff/api_audit.search/api_scan.get 仍因后端能力缺失而不存在 |
 | P1-03 数据出境 | IMPLEMENTED_PARTIAL | **第七波落地（迁移 000058）**：apigeo 包自研纯 Go 只读 MMDB 解析器（零新依赖，复用已授权 country.mmdb）；出境判定五档（HOME/FOREIGN/INTERNAL/UNKNOWN/INVALID，内网/保留地址与未收录一律不记跨境，宁漏勿误）；SweepOnce 从涉敏事件增量判定落 `api_cross_border_events`（独立水位表 + (source_event_id,direction) 唯一约束双保险幂等；风险等级经 api_sensitive_data_types.level 动态推导）；`GET /api-security/cross-border` 看板（国家×敏感类型×API聚合+趋势+明细分页，geo_enabled 降级标识）；`api_data:home_regions`（默认 CN）进设置白名单；数据文件缺失 nil 降级。残余：无 ASN 维度（前端看板页已于第十五/十六波注册路由，见 §13/§14） |
-| P1-04 敏感文件 | IMPLEMENTED_PARTIAL | **第七波落地（迁移 000061）**：网关 multipart 上传/Content-Disposition 下载文件观测（文件名 basename 归一化截断 128、扩展名/mime/大小/方向，不落内容；无 filename 的 octet-stream 不判定为下载，如实声明漏报口径）经 `file_observations` 事件字段上报；采集器 UPSERT `api_file_assets`（去重键 endpoint×方向×文件名×身份指纹，transfer_count 累计、IP 脱敏）；`GET /file-assets` 与 `/file-assets/stats`（§106 双口径统计与五个 TOP）；文件风险 v1：同身份 1h 批量下载超阈（`api_data:file_bulk_download_threshold` 默认 50）→ FILE_BULK_DOWNLOAD 风险发现（dedup upsert）。残余：观测覆盖仅带 filename 的 Content-Disposition 响应；前端页未注册路由（在途） |
+| P1-04 敏感文件 | IMPLEMENTED_PARTIAL | **第七波落地（迁移 000061）**：网关 multipart 上传/Content-Disposition 下载文件观测（文件名 basename 归一化截断 128、扩展名/mime/大小/方向，不落内容；无 filename 的 octet-stream 不判定为下载，如实声明漏报口径）经 `file_observations` 事件字段上报；采集器 UPSERT `api_file_assets`（去重键 endpoint×方向×文件名×身份指纹，transfer_count 累计、IP 脱敏）；`GET /file-assets` 与 `/file-assets/stats`（§106 双口径统计与五个 TOP）；文件风险 v1：同身份 1h 批量下载超阈（`api_data:file_bulk_download_threshold` 默认 50）→ FILE_BULK_DOWNLOAD 风险发现（dedup upsert）；**WP2-M**：完整内容 `content_sha256` 指纹进入既有 `api_file_assets.sha256`，支持精确过滤，截断/流式为空且历史指纹不被抹除；stage5 实际上传/下载与真实 PostgreSQL 历史值保留验证通过；新增 `GET /file-assets/lineage` 按同一指纹关联实际上传/下载（只读、100 条上限与截断披露）；文件验证卡片在签名有效后展示同内容传输关联（`FileLineagePanel`），关联失败不改变签名结论；新增 `/api-file-assets` 文件资产台账，真实查询资产列表与统计，支持方向、扩展名、敏感标签及 SHA-256 精确筛选，并从资产行打开上传/下载关联抽屉，沿用 `api_data.read` 权限与 WDSP 能力门控。残余：观测覆盖仅带 filename 的 Content-Disposition 响应；登录态浏览器交互验收尚未进行 |
 | P1-05 高级运营（拓扑/图谱） | IMPLEMENTED_PARTIAL | 边生产方已落地（第六波 W6-A）：`aggregations/call_edges.go:154` RunCallEdges 分钟级水位增量派生（同身份相邻调用 ≤10 分钟成边，匿名排除/未解析截断/自环不成边，水位与 upsert 同事务）；graph/topology 新增 start/end/min_count 边过滤 + 节点 open_findings_count；第十一波 `api_call_edges.identity_count`（近似下界）持久化（000067）；ApiGraphPage/ApiTopologyPage 有真实数据 |
-| P1-06 API 报告 | IMPLEMENTED_PARTIAL | **第七波落地（迁移 000059）**：reports 包扩展四类型——API 资产周报（新增/确认率/Shadow/Zombie/Deprecated 计数与清单）/API 风险周报（findings 新增/关闭/类型分布/Top API与主体，七态口径对齐 000042）/弱点整改报告（状态分布/超期未修/复测记录）/敏感数据报告（类型分布/涉敏API Top/按天趋势）；全部真实 SQL 采集 + 确定性结论/建议模板 + HTML/PDF 渲染，复用既有报告管线（创建→生成→预览→下载→权限继承）；零新表（report_type 词表扩展）。残余：调度器未做（手动触发或 cron 外驱） |
+| P1-06 API 报告 | IMPLEMENTED_PARTIAL | **第七波落地（迁移 000059）**：reports 包扩展四类型——API 资产周报（新增/确认率/Shadow/Zombie/Deprecated 计数与清单）/API 风险周报（findings 新增/关闭/类型分布/Top API与主体，七态口径对齐 000042）/弱点整改报告（状态分布/超期未修/复测记录）/敏感数据报告（类型分布/涉敏API Top/按天趋势）；全部真实 SQL 采集 + 确定性结论/建议模板 + HTML/PDF 渲染，复用既有报告管线（创建→生成→预览→下载→权限继承）；零新表（report_type 词表扩展）。既有通用调度器已支持每日/每周/每月计划与到期任务生成；**000199** 增加可选 `api_report_type`，使四类 API 专项报告可直接配置到原有计划，复用权限、审计、渲染和邮件链；专项类型仅允许 API 内容范围，普通计划空值行为不变。真实数据库回放与节点部署验收尚未进行 |
 | P1-07 主动扫描 | IMPLEMENTED_PARTIAL | apiscan v1（第六波，000053/000054/000056）：目标/授权（双人分离/撤销即停/时间窗/限速并发）/任务/发现 17 接口 + 6 探针集 + X-JiuZhang-Scan 隔离签名头 + 样本脱敏 + 复测桥接弱点中心；settings api_scan.enabled 默认关；**第七/八波前端页交付**：ApiScanPage 四 Tab 注册路由；**第九波隔离链收尾**：网关识别签名头（`detectors/scanner.go`：signature_valid/signature_forged/presence_only 三态），学习样本排除规则由待命转为生效。残余：非 DAST（6 探针集词表 v1）；扫描发现不产生自动弱点（确认桥接为人工） |
 | P1-08 告警静默 | IMPLEMENTED_PARTIAL | 第六波 W6-B（000055）：systemalerts 三新型 API_CRITICAL_FINDING/API_FINDING_SPIKE/API_MASK_FAILURE（评估器周期扫 api_runtime_findings，api_alert 设置组六键可调）+ silenced_until 静默/恢复接口 + 列表 view 三态视图（ACTIVE/SILENCED/HISTORY）；第十二波复用 CONFIG_HASH_MISMATCH 承载节点版本不一致告警（自动恢复）。残余：通知渠道以 syslog 外发为主（notification_channels 渠道体系为并行运维分片，000057/000060）；静默为实例级时长（无周期静默计划） |
 | P1-09 调用拓扑 | IMPLEMENTED_PARTIAL | 同 P1-05（边生产者 RunCallEdges 落地，topology 按应用分组 + 边过滤 + identity_count） |
@@ -285,9 +285,9 @@ P0 全 21 项收口后，第十二~十四波按"最小可行子集"口径启动 
 | 条目 | Status | 交付形态与依据摘要 |
 |---|---|---|
 | P2-01 文件水印 | IMPLEMENTED_PARTIAL | **第十二波 v1**：文本族下载（text/plain/csv/markdown、application/json）不可见水印——文本尾注释行 / JSON 顶层 `_wm` 字段（{ip}/{identity}/{time}/{domain} 占位，`response/watermark.go`）；经 `gateway_runtime.api_file_watermark_*` 四键下发（`guardconfig/file_watermark.go`，默认关闭零行为）；仅 identity 编码完整捕获体改写并修正 Content-Length，206 分段跳过，失败恒 FAIL_OPEN；先 mask 后水印顺序固定；命中产 file.watermark_applied INFO 明细；**第十四波 OOXML 扩展**：docx/xlsx/pptx 经 Go 标准库 archive/zip（零新依赖）注入 docProps/custom.xml 自定义属性水印（`response/watermark_ooxml.go`，幂等锚点跳过、OPC 三处合规登记、32MiB 护栏、加密/损坏 FAIL_OPEN，三 MIME 需显式 opt-in）。残余：pdf 需媒体库显式拒绝（配置期报错不静默） |
-| P2-02 文件签名 | IMPLEMENTED_PARTIAL | **第十三波 v1**：文本族下载嵌入 `jzsig1.{kid}.{unixts}.{hmac_hex}`（HMAC-SHA256(key, kid\|filename\|content_sha256_hex\|unixts\|identity_fp)，内容哈希取脱敏/水印后最终交付体，`response/signature.go`）；密钥密文存 settings 经加密服务解密下发（Redact 脱敏覆盖）；`POST /api-security/file-signature/verify` 复算校验（max_age_days 默认 30 可配；kid 不符/伪造/过期如实结论；密钥未配置 503）+ `GET /file-signature/key`（仅 kid）+ `POST /key/rotate`（递增 kid，旧 token 即失效）；验证/轮换均审计不含密钥与完整 token。残余：仅文本族下载，OOXML/pdf 签名未做 |
-| P2-03 文件合规 | IMPLEMENTED_PARTIAL | **第十三波 v1（迁移 000071）**：`api_file_compliance_rules` 表（direction/match_type(EXT\|MIME\|FILENAME_REGEX)/action(OBSERVE\|BLOCK)，内置种子 exe/bat/sh 上传阻断与 sql/bak 下载观察）+ CRUD 接口（`apifiles/compliance_handler.go`）；规则经发布通道下发并纳入版本戳；网关双相位执行（`detectors/filecomp.go`）——上传（multipart 观测点）与下载（Content-Disposition 观测点），BLOCK 在 PROTECT 上传 403/下载缓冲抑制 403（已直通诚实降级 file.download_block_unavailable，不冒充已阻断）；双扩展名 file.double_extension OBSERVE/LOW |
-| P2-04 LLM API 安全 | IMPLEMENTED_PARTIAL | **第十波 v1（迁移 000066）**：网关 LLM API识别（OpenAI 兼容路径词表+POST+内容形态双重确认，保守精确）；请求侧观测（model/messages 存在性/prompt 长度分桶，不落原文）+ 响应侧补全（model/usage.total_tokens，SSE 置 stream）；Prompt Injection 词表 v1（8 条中英规则，仅 OBSERVE/LOW，证据只含规则名与消息序号不落原文）与未授权模型检测（`gateway_runtime.api_llm_allowed_models` 下发名单非空时判定，OBSERVE/MEDIUM 不参与阻断）（`detectors/llm.go`）；事件 `llm_observation` 字段上报 → 采集落 `api_llm_observations`（request_id 派生 UUID 幂等）；`GET /llm/observations` 与 `/llm/stats`（`apillm/handler.go`，api_runtime.read）；**第十二波 MCP 内容级（迁移 000070）**：MCP JSON-RPC 方法词表核对（词表外 llm.mcp_unknown_method OBSERVE/LOW）与 tools/call 参数值级敏感检测（复用 SensitiveValueRules → llm.mcp_sensitive_arg OBSERVE/MEDIUM，证据只含工具名/规则名不落参数与值）（`detectors/mcp.go`），mcp_method 入观测。残余：SSE 逐 chunk 内容检测未做（前端观测页已于第十五/十六波注册路由，见 §13/§14） |
+| P2-02 文件签名 | IMPLEMENTED_PARTIAL | **第十三波 v1**：文本族下载嵌入 `jzsig1.{kid}.{unixts}.{hmac_hex}`（HMAC-SHA256(key, kid\|filename\|content_sha256_hex\|unixts\|identity_fp)，内容哈希取脱敏/水印后最终交付体，`response/signature.go`）；密钥密文存 settings 经加密服务解密下发（Redact 脱敏覆盖）；`POST /api-security/file-signature/verify` 复算校验（max_age_days 默认 30 可配；kid 不符/伪造/过期如实结论；密钥未配置 503）+ `GET /file-signature/key`（仅 kid）+ `POST /key/rotate`（递增 kid，旧 token 即失效）；验证/轮换均审计不含密钥与完整 token。**WP2-L**：DOCX/XLSX/PPTX 以 ZIP 注释嵌入同源 HMAC 签名，原注释 Base64 封装，恢复签名前精确字节；验证接口新增可选 `content_format=ooxml_zip` + `content_base64`（≤2MiB），沿用原权限/密钥轮换/审计；加密、ZIP64、异常包不签名；stage5 实际下载签名、原始字节恢复与 HMAC 校验通过；文件合规页提供 OOXML 文件验证入口（`SignatureVerificationCard`）。残余：PDF 签名未做 |
+| P2-03 文件合规 | IMPLEMENTED_PARTIAL | **第十三波 v1（迁移 000071）**：`api_file_compliance_rules` 表（direction/match_type(EXT\|MIME\|FILENAME_REGEX)/action(OBSERVE\|BLOCK)，内置种子 exe/bat/sh 上传阻断与 sql/bak 下载观察）+ CRUD 接口（`apifiles/compliance_handler.go`）；规则经发布通道下发并纳入版本戳；网关双相位执行（`detectors/filecomp.go`）——上传（multipart 观测点）与下载（Content-Disposition 观测点），BLOCK 在 PROTECT 上传 403/下载缓冲抑制 403（已直通诚实降级 file.download_block_unavailable，不冒充已阻断）；双扩展名 file.double_extension OBSERVE/LOW；**WP2-A**：下载文件真实签名与声明类型比对（`detectors/filecontent.go`），`file.content_type_mismatch` 只观察并接入弱点派生；流式/溢出明确 `file.content_not_inspected`；**WP2-B**：multipart 每文件最多 512 字节前缀签名检测（`CheckUploadFileContentTypes`），非导出字段不入事件，截断/part 数溢出如实披露；不做病毒查杀、解压审计或完整内容校验；**WP2-C**：显式 `file` 位置的值级规则识别文本/CSV 敏感内容，标签合并入既有 `api_file_assets.sensitive_types` 并派生 `SENSITIVE_FILE_CONTENT` 弱点；截断不完整行/预算耗尽明确 `file.sensitive_content_not_inspected`；**WP2-D**：JSON/JSONL 结构化敏感字段识别，证据含 JSON 路径，非法/重复键/截断文档不冒充完整检查；**WP2-E**：XML 嵌套元素/属性敏感识别，流式解析并拒绝 DTD、非法/超深文档；**WP2-F**：DOCX 主 XML 敏感识别，限制包体/条目/主 XML 大小，截断/加密/异常包明确未检查；**WP2-G**：XLSX 共享字符串/内联文本与单元格证据，非法索引/加密/截断包不冒充完整检查；**WP2-H**：PPTX 正式幻灯片 `a:p` 段落内跨 `a:t` 拼接，证据定位 `slide页码!p段落序号`，媒体不扫描，非法根元素、重复部件、加密/截断包明确未检查；stage5 双向真实链路与 XLSX 回归均通过；**WP2-I**：DOCX 页眉页脚 `word/headerN.xml`/`footerN.xml` 敏感识别，`source_part` 区分来源，主文档事件语义与资产历史标签合并保持不变；stage5 双向真实链路与 XLSX/PPTX 回归均通过；**WP2-J**：DOCX 批注/脚注/尾注固定 XML 文本识别，范围 `DOCX_ANNOTATIONS` 并保留 `source_part`，不扫描扩展评论元数据、媒体或宏；stage5 双向真实链路与页眉/XLSX/PPTX 回归均通过；**WP2-K**：PPTX 备注页 `notesSlideN.xml` 段落识别，范围 `PPTX_NOTES`，证据含 `source_part` 与 `notesSlideN!pN`，主幻灯片语义保持不变；stage5 双向真实链路与主幻灯片/DOCX/XLSX 回归均通过 |
+| P2-04 LLM API 安全 | IMPLEMENTED_PARTIAL | **第十波 v1（迁移 000066）**：网关 LLM API识别（OpenAI 兼容路径词表+POST+内容形态双重确认，保守精确）；请求侧观测（model/messages 存在性/prompt 长度分桶，不落原文）+ 响应侧补全（model/usage.total_tokens，SSE 置 stream）；Prompt Injection 词表 v1（8 条中英规则，仅 OBSERVE/LOW，证据只含规则名与消息序号不落原文）与未授权模型检测（`gateway_runtime.api_llm_allowed_models` 下发名单非空时判定，OBSERVE/MEDIUM 不参与阻断）（`detectors/llm.go`）；事件 `llm_observation` 字段上报 → 采集落 `api_llm_observations`（request_id 派生 UUID 幂等）；`GET /llm/observations` 与 `/llm/stats`（`apillm/handler.go`，api_runtime.read）；**第十二波 MCP 内容级（迁移 000070）**：MCP JSON-RPC 方法词表核对（词表外 llm.mcp_unknown_method OBSERVE/LOW）与 tools/call 参数值级敏感检测（复用 SensitiveValueRules → llm.mcp_sensitive_arg OBSERVE/MEDIUM，证据只含工具名/规则名不落参数与值）（`detectors/mcp.go`），mcp_method 入观测。**WP3-C（迁移000197）**：按应用 AI 策略新增 `max_output_tokens`（0=关闭，其他取值 1～1000000），检查请求声明的 max_tokens/max_completion_tokens/max_output_tokens，OBSERVE 只记录，PROTECT 走 RATE_LIMIT/429；策略版本、发布、前端表单及真实 PostgreSQL 回滚事务验证通过。该预算不是实际 Token 用量或累计配额，stage5 尚未应用迁移或重建节点，RAG 按要求暂停。**WP3-D（迁移000198）**：新增 `input_content_enabled`，复用高置信有害内容规则检测明确 Prompt 字段，OBSERVE 记录、PROTECT 403 且不调用上游；策略版本、发布、前端表单及 Guard 脱敏测试通过。迁移默认 false，新策略默认开启；真实数据库回放与节点部署尚未进行。残余：SSE 逐 chunk 内容检测未做（前端观测页已于第十五/十六波注册路由，见 §13/§14） |
 | P2-05 gRPC 深度 | IMPLEMENTED_PARTIAL | **第十四波 v1**：识别 application/grpc(+proto) 与 /package.Service/Method 路径形态（服务/方法名全保留不归一化）；5 字节前缀帧结构校验（`detectors/grpc.go`）——声明长度>剩余体或单帧超上限（`api_grpc_max_frame_bytes` 默认 4MiB 经发布下发）→ grpc.malformed_frame（PROTECT 定案 403）、压缩标志位（默认不允许）→ grpc.unexpected_compression OBSERVE；消息计数/声明体量入观测（不落内容）；API protocol_type 标注 GRPC（发现链路透传，仅首写不覆盖）；>1MiB 大体积随既有采样护栏跳过。残余：**描述符级（protobuf 消息 schema）解析未做**——无法按字段校验消息内容 |
 | P2-06 HTTP/3 | IMPLEMENTED_PARTIAL | **第二十波已验证端到端**：HTTP/3 请求经 Caddy（QUIC 终止）→ guard 统一管线 → 源站正常，proto=HTTP/3.0 在 Caddy 访问日志/guard 全量日志/API 运行时事件三面正确记录（docs/HTTP3_SUPPORT.md）；编排侧 UDP 端口为注释可选块（deployment/docker-compose.wdsp.yml，默认关闭）；边界：QUIC 层 0-RTT/连接迁移/QPACK 帧解析未做（引擎仅见 QUIC 终止后的 http.Request） |
 | P2-07 源码 API 发现 | IMPLEMENTED_PARTIAL | **第十四波 v1（迁移 000072）**：`tools/apisrc` 独立工具（go/ast 零依赖）扫描 Go 源码路由注册（ServeMux/chi/echo/gin 字面量形态），输出 OpenAPI3 骨架（source=SOURCE_CODE 标记）→ 规范中心导入流水线天然兼容；`api_import_specs` 加 source 列（UPLOAD/URL/SOURCE_CODE 词表），导入记录来源落库。残余：仅 Go 语言四字面量形态；动态注册（变量拼接路径）不可达 |
@@ -339,7 +339,7 @@ P0 全 21 项收口后，第十二~十四波按"最小可行子集"口径启动 
 
 ### 6.2 前端
 
-**29 个已注册路由的 api-* 页面**（2026-08-21 按 `web/src/router/index.tsx` 逐条复核）+ 大屏 API 安全屏，全部真实接通后端（无 Mock 冒充）；原"页面读空表"3 处（api-findings、api-shadow-zombie、api-sensitive-fields）已随写入方落地解除；findings/weaknesses 处置操作界面已接通；第三波起累计新增 11 页注册路由（api-weaknesses/api-sensitive-types/api-masking-rules/api-violations/api-runtime-events/api-runtime-policies + api-authz 授权基线 + api-scan 主动扫描（第七/八波）+ api-posture 态势首屏（第九波）+ api-model-maturity/api-identity-profiles 早前批次）；第十五/十六波再增 6 页（api-ai-ops/api-llm/api-cross-border/api-service-assets/api-nodes/api-file-compliance），原"并行前端分片页面在途"口径自此全部解除；response-schemas 查询接口仍无前端消费。
+**30 个已注册路由的 api-* 页面**（2026-11-15 按 `web/src/router/index.tsx` 逐条复核）+ 大屏 API 安全屏，全部真实接通后端（无 Mock 冒充）；原"页面读空表"3 处（api-findings、api-shadow-zombie、api-sensitive-fields）已随写入方落地解除；findings/weaknesses 处置操作界面已接通；第三波起累计新增 11 页注册路由（api-weaknesses/api-sensitive-types/api-masking-rules/api-violations/api-runtime-events/api-runtime-policies + api-authz 授权基线 + api-scan 主动扫描（第七/八波）+ api-posture 态势首屏（第九波）+ api-model-maturity/api-identity-profiles 早前批次）；第十五/十六波再增 6 页（api-ai-ops/api-llm/api-cross-border/api-service-assets/api-nodes/api-file-compliance）；WP2-M 新增 api-file-assets 文件资产台账（真实列表/统计、SHA-256 检索与同内容上传/下载关联）；response-schemas 已由接口详情 `ResponseSchemaPanel` 消费（无独立路由，页面计数不变）。
 
 ### 6.3 测试资产
 
@@ -379,7 +379,7 @@ P0 全 21 项收口后，第十二~十四波按"最小可行子集"口径启动 
 | 5 | 只有参数表没有生产逻辑 | 未违反（生产链真实）；原"观测入库却回填不上"的 QUERY/PATH 孤儿数据变体已随 000038 物化修复 |
 | 6 | Confirmed 不下发 Runtime | **已缓解**：Confirm→编译 DRAFT→Activate VALIDATED→发布成功回写 ACTIVE（000037）；约束词汇已扩至 8 键（第三波 regex/nullable/empty_allowed + required 升级 BLOCK），array_size/mime/file_size 仍不下发 |
 | 7 | 只做请求侧 | **已解除**：响应侧三件套落地（ResponseContext/ProcessResponse/Response Transformer），见 P0-05/07 |
-| 8 | MASK_RESPONSE 只存在枚举 | **已解除**：决策分支 + Transformer 真实执行（MASK/HASH/REMOVE），ENCRYPT/MAP 未实现 |
+| 8 | MASK_RESPONSE 只存在枚举 | **已解除**：决策分支 + Transformer 真实执行（MASK/HASH/REMOVE/ENCRYPT/MAP），授权恢复审计已接入 |
 | 9 | BOLA 仅靠 ID 变化 | 未违反字面（有所有权纪律+多信号）；实体基线已建（000043 权属表 + Sweep 写入方 + 五档评估），权属运行时消费未接——检测侧仍仅靠启发式信号 |
 | 10 | BFLA 仅靠历史未见过 | 未违反；实体层已建（000043 角色基线 + 管理面确认）且运行时检测已落地（第四波 authzcheck，OBSERVE 级） |
 | 11 | Behavior 仅进程内 | **默认配置下仍违反**（Valkey 实现存在，发布通道 `gateway_runtime.behavior_store` 已可下发启用，但默认 memory） |
@@ -403,7 +403,7 @@ P0 全 21 项收口后，第十二~十四波按"最小可行子集"口径启动 
 2. **描述符级 gRPC**：protobuf 消息 schema 级解析未实现——第十四波已落地帧结构校验 v1（malformed_frame PROTECT 阻断/压缩标志 OBSERVE/protocol_type 标注，见 P2-05），无法按字段校验消息内容；
 3. ~~HTTP/3 深度解析~~ **已部分闭环（第二十波）**：启用方式（默认开启+编排 UDP 可选块）与端到端验证（h3→管线→源站→事件 proto=HTTP/3.0）完成，见 docs/HTTP3_SUPPORT.md；残余为 QUIC 层帧级解析与治理（0-RTT/连接迁移/QPACK）——与第 2 项（protobuf 描述符级解析）同为仅剩的两项协议栈级断点；
 4. **生产级性能实测**：~~多节点/大流量实测未做~~ 最小矩阵已实测（第十八波）并经第十九/二十波扩展（2026-08-20 真实数据，见 docs/evidence/api-security-performance-baseline.md §1/§10/§11）——Baseline Proxy 5337.35 QPS（p95 9ms）vs Full API Security（OBSERVE 全链路）3539.67 QPS（p95 13ms），API 动态防护开销 QPS -33.7%、p95 +4ms（+44%）、双臂 0 失败；扩展矩阵补测 PROTECT 真实阻断臂（protect-block 4405.18 QPS 比透传臂快 60.1%，403 短路省源站往返，"开阻断会更慢"不成立）与 64KiB/1KiB 大 body 分档（≈0.22µs/字节）；追补矩阵补测 **WAF Only**（Coraza DetectionOnly 全量 CRS PL1：1464.97 QPS 较纯反代 **-72.0%**、CPU 630.86%，vs API 管线 -26.2%、CPU 226.48%——**关键结论：WAF 规则评估开销约为 API 动态防护管线开销的 2.7 倍，网关水平扩展首要驱动是 Coraza 而非 API 管线**）、Multipart（体长主导 ≈68ns/字节）与 c=100 高并发观察（零失败、吞吐饱和软拐点）；单项检测器分档因检测器无独立运行期开关在架构上不可测（诚实声明不伪造）；11.5 万事件洪峰采集器约 6.5 分钟全量追平零丢失（分钟级入库时延为采集器批量化的真实依据，flush 节奏已于第二十一批修复）；残余缺口（证据文档 §8 逐项清单）：深嵌套/大数组/多API（10 万级API、百万级参数模型）规模化、WAF+API 叠加臂、高并发压垮曲线与长时稳定性、多节点大流量场景、采集器独立标定——`stage8-test-performance` 5/5 仍为基准测试而非生产级压测；
-5. 各 P0/P1/P2 项正文 Known Gap 残余（任务书超集口径的覆盖面缺口，如参数微模型 §4.2 字段、BOLA 权属运行时消费、tenant 覆盖行判定、响应侧值级敏感、ASN 维度、报告调度器、§146 工具清单余项等）——逐项如实标注，不作为新断点跟踪。
+5. 各 P0/P1/P2 项正文 Known Gap 残余（任务书超集口径的覆盖面缺口，如参数微模型 §4.2 字段、BOLA 权属运行时消费、tenant 覆盖行判定、ASN 维度、报告调度器、§146 工具清单余项等）——逐项如实标注，不作为新断点跟踪。
 
 ---
 
@@ -559,6 +559,57 @@ P0 全 21 项收口后，第十二~十四波按"最小可行子集"口径启动 
 - **HTTP/3 部分闭环（第二十波，§8 第 3 项）**：Caddy 2.11 对 TLS 监听默认开启 h1/h2/h3（发布通道零改动），编排侧 UDP 端口为注释可选块（deployment/docker-compose.wdsp.yml，默认关闭）；旁路实测（deployment/http3-lab/）h3 请求经 Caddy → guard 统一管线 → 源站正常，proto=HTTP/3.0 在 Caddy 访问日志/guard 全量日志/API 运行时事件三面正确记录，路径归一化/检测器/真实 IP 在 h3 下全部正常（docs/HTTP3_SUPPORT.md 含证据与启用方式）；残余为 QUIC 层 0-RTT/连接迁移/QPACK 帧级解析与治理（引擎仅见 QUIC 终止后的 http.Request）——**与 §8 第 2 项（protobuf 描述符级 gRPC 解析）同为仅剩的两项协议栈级断点**；
 - **采集器 flush 批量化修复（第二十一批，性能实测发现的真实缺陷，证据文档 §11.8 已标注修复）**：api 运行时事件与全量访问日志两采集器由「读到 EOF 才唯一 flush、断点仅 flush 时落盘」改为批量（默认 2000 行）/周期（默认 2s）flush 且断点同节奏落盘（`apiruntime/collector.go:474-481` 触发点、`SetFlushPolicy` collector.go:229 / `accesslogs/collector.go:58`）——崩溃/重建重扫量有界（≤2000 行 + ≤2s），中途 flush 失败断点不前移（下轮从最近成功断点重读，request_id 幂等语义不变）；`WAF_COLLECTOR_FLUSH_BATCH`/`WAF_COLLECTOR_FLUSH_INTERVAL` env 可配（`config/config.go:204-205`，main.go 接线）；顺带修正 accesslogs 断点按完整行累计错位与 EOF 落盘失败静默两处同域缺陷；测试证据：`apiruntime/collector_flush_test.go` 单测 4 项 + `tests/accesslogs_collector_flush_test.go` 真实 PG 集成 + 既有采集链路集成回归全过；
 - **访问控制/CC 事件 proto 字段全链补齐（第二十一批，迁移 000075）**：guard 事件 Record 单点填充 proto（`jiuzhang_guard/events/events.go:59`，omitempty，r.Proto 原样 HTTP/1.x/2/3）→ `access_control_events` 加 proto TEXT NULL 列（分区表 ALTER 自动传播）→ 采集解析落列（`accesscontrolevents/parse.go:68/94`，缺失容忍落 NULL）→ 读接口带出 → 前端事件页协议列（HTTP/1.x/2/3 Tag 色）；全链新旧版本互通不破坏（旧版网关缺字段落 NULL，不伪造 0 值）；
-- **§6.2 口径**：前端注册路由终态实测 **29 个 api-* 页面**（`web/src/router/index.tsx` 逐条复核，2026-08-21）——第十五/十六波 6 页（AI 运营/LLM 观测/数据出境/服务资产/节点校验/文件合规）注册后，原"并行分片页面在途"口径全部解除（P1-03/P2-04 正文"前端页在途"残余标注已同步解除）；**§6.1 口径不变**：155 条接口（apinodes 3 含 `PATCH /nodes/{id}`，§13 已补录，OpenAPI 合并产物 405 paths / 505 operations 口径不变）。
+- **§6.2 口径**：前端注册路由终态实测 **30 个 api-* 页面**（`web/src/router/index.tsx` 逐条复核，2026-11-15）——第十五/十六波 6 页（AI 运营/LLM 观测/数据出境/服务资产/节点校验/文件合规）注册后，原"并行分片页面在途"口径全部解除（P1-03/P2-04 正文"前端页在途"残余标注已同步解除）；WP2-M 新增文件资产台账页，页面测试与生产构建通过，登录态浏览器交互验收尚未进行；**§6.1 口径不变**：155 条接口（apinodes 3 含 `PATCH /nodes/{id}`，§13 已补录，OpenAPI 合并产物 405 paths / 505 operations 口径不变）。
 
 *本文件为现状盘点结论，不代表后续开发承诺；补全开发完成后应更新本文件状态列。*
+
+---
+
+## 15. 2026-10-23 能力新增说明（API 网络暴露面判定引擎，迁移 000190）
+
+新增 `apiexposure` 模块：综合**流量证据 + 配置证据 + 人工确认**自动判定每个 API 端点的暴露面
+（INTERNAL/PARTNER/PUBLIC/UNKNOWN），结果条件写入既有 `api_classification_dimensions`
+（dimension='EXPOSURE'），自动被资产价值评分消费（value.go EXPOSURE 维度优先读取，无需改动）：
+UNKNOWN 落 default 计 1 分（与"未分类"同分），语义自洽。
+
+- **证据采集（全量口径）**：apiruntime 采集器在端点发现 upsert 成功后逐事件聚合
+  `api_endpoint_source_buckets`（端点×自然日×来源范围请求计数）与 `api_endpoint_source_seen`
+  （去重来源明细，**只存网关上报的盐化指纹、不落明文 IP**，与 learning_samples 同纪律）；
+  来源范围经 `apigeo.ClassifyIPScope`（RFC1918/回环/链路本地/ULA/CGNAT/保留段，不依赖 GeoIP 库）
+  分 INTERNAL/PUBLIC，命中 `exposure_engine.partner_egress_cidrs` 合作方出口网段升级 PARTNER；
+  聚合随 W22 批次事务整批提交（断点重放不重复计数），失败仅记日志 fail-open 不影响主事件链路；
+  留存 30 天随评估调度清理。
+- **判定规则**（`apiexposure/engine.go` 纯函数，表驱动单测覆盖全分支）：MANUAL/锁定优先
+  （引擎永不覆盖人工确认，仅写评估明细）→ 流量观测（公网来源→PUBLIC；仅合作方→PARTNER；
+  仅内网且达量达日→INTERNAL；置信度按自然日数/请求量分档）→ 配置回落（域名经可配置公网 DNS
+  可解析到公网 IP→PUBLIC/LOW，NXDOMAIN/仅私网→INTERNAL/LOW；MIRROR/TRANSPARENT 旁路部署只记
+  证据不单独出判定）→ 全不足 UNKNOWN/LOW；流量与域名解析冲突时流量优先且证据注明。
+  证据明细（evidence JSONB）元素为 {type, summary}，summary 由服务端直接生成中文。
+- **配置键**（system_settings 组 `exposure_engine`，白名单+校验登记于 settings/settings.go，
+  种子见迁移 000190）：observation_days（默认 7）/ partner_egress_cidrs / public_dns_servers
+  （默认 223.5.5.5）/ min_requests（默认 50）/ min_days（默认 2）。
+- **接口**（权限零新增）：`GET /api-security/endpoints/{id}/exposure`（api_asset.read，
+  当前维度+最近一次评估明细）、`POST /api-security/endpoints/{id}/exposure/reassess`
+  （api_asset.edit + 操作审计，恒写评估明细，人工/锁定 applied=false）；OpenAPI 07 片段已补录。
+- **前置条件与如实限制**：流量证据依赖 API 动态防护管线开启（apievents 数据流），未开启时只有
+  CONFIG 级低置信判定；公网 DNS 视角取决于管理面到所配公网 DNS 的可达性，不可达时证据记
+  ERROR 不伪造结论；网关网卡是否持公网 IP（监听侧补强证据）需扩展 netcollector 采集接口 IP，
+  本次未做，列为后续项。
+
+## 16. 2026-10-26 能力新增说明（API 多标签 + 可编辑资产档案，迁移 000191）
+
+`api_assets` 扩展资产档案字段：`organization`（所属单位）、`business_system`（业务系统）、
+`technical_owner` / `data_owner`（技术/数据负责人，原 `owner` 即系统负责人）、
+`data_level`（CORE/IMPORTANT/GENERAL/UNKNOWN）、`api_level`（LEVEL_1/2/3/UNKNOWN）、
+`auth_type`（NONE/BASIC/API_KEY/TOKEN/JWT/OAUTH2/MTLS/SESSION/OTHER，空串=未标注）。
+枚举应用层校验不落 CHECK；`UpsertAsset` 入参改为 `AssetProfile` 结构体并保持全量替换语义，
+`normalizeAssetProfile` 统一归一/校验，SQL 与 MemStore 共用。
+
+- **多标签**：既有 `api_assets.tags` 多值数组能力补上前端入口——详情抽屉「资产档案」小节
+  `Select mode="tags"`（回车添加、最多 32 个），列表新增「标签」列（前两个直接展示，其余 +N 折叠）。
+- **档案编辑**：`PATCH /api-security/endpoints/{id}` 接收完整档案表单（api_asset.edit + 审计摘要含新字段）；
+  前端 `assetProfileInput` 合并已存档案后再提交，业务标签单存不再清空其他档案字段。
+- **只读派生项**：互联网暴露由暴露面判定派生（PUBLIC=是，INTERNAL/PARTNER=否，未判定=未知，
+  修改走暴露面人工确认，不双写）；日均调用量由详情接口返回 `daily_requests`
+  （近 7 天 `api_endpoint_traffic_buckets` 窗口和/7，与资产价值评分同口径）。
+- OpenAPI 07 片段（ApiSecAsset/ApiSecEndpointUpdateRequest/ApiSecEndpointResponse/列表 tags）已补录并重新 merge。

@@ -1,0 +1,31 @@
+[server]
+listen = "127.0.0.1:18080"
+admin_listen = "127.0.0.1:19090"
+upstream = "http://127.0.0.1:3000"
+request_timeout_secs = 30
+
+[protection]
+# off: skip attack signatures; observe: record only; protect: reject matches
+mode = "protect"
+max_body_bytes = 1048576
+
+[access_control]
+# Forwarded headers are trusted only when the socket peer matches this list.
+trusted_proxies = ["127.0.0.1/32", "::1/128"]
+allow = []
+deny = []
+l7_rules = []
+
+[policy]
+disabled_rules = []
+custom_rules = []
+exceptions = []
+
+[rate_limit]
+enabled = true
+requests = 120
+window_secs = 60
+max_tracked_ips = 10000
+
+[logging]
+events_path = "var/security-events.jsonl"

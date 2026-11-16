@@ -3,7 +3,7 @@
 // （jzsig1.{kid}.{unixts}.{hmac_hex}，HMAC 覆盖最终交付内容）、与水印共存顺序
 // （先水印后签名——签名盖水印产物）、file.signature_embedded INFO 明细
 // （证据含 kid/filename，不含密钥与完整哈希）、未启用/非下载/超文本族零行为、
-// JSON 解析失败 FAIL_OPEN 直通。
+// JSON 解析失败 FAIL_OPEN 直通；OOXML ZIP 注释签名见 apifilesig_ooxml_test.go。
 package jiuzhang_guard
 
 import (

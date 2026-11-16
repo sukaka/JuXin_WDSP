@@ -180,3 +180,172 @@ func TestExtendParamObservationsNilParsed(t *testing.T) {
 		t.Fatalf("nil parsed must not produce extended fields: %+v", out[0])
 	}
 }
+
+func TestDetectStringFormat(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "uuid", value: "550e8400-e29b-41d4-a716-446655440000", want: "UUID"},
+		{name: "uuid uppercase", value: "550E8400-E29B-41D4-A716-446655440000", want: "UUID"},
+		{name: "uuid missing hyphens", value: "550e8400e29b41d4a716446655440000", want: ""},
+		{name: "uuid non hex", value: "550e8400-e29b-41d4-a716-44665544000g", want: ""},
+		{name: "uuid braces", value: "{550e8400-e29b-41d4-a716-446655440000}", want: ""},
+		{name: "uuid wrong group", value: "550e8400-e29b-41d4-a716-44665544000", want: ""},
+		{name: "email", value: "alice@example.com", want: "EMAIL"},
+		{name: "email dot atom", value: "user.name+tag@example-domain.com", want: "EMAIL"},
+		{name: "email display name", value: "Alice <alice@example.com>", want: ""},
+		{name: "email two at signs", value: "alice@@example.com", want: ""},
+		{name: "email consecutive local dots", value: "alice..smith@example.com", want: ""},
+		{name: "email leading local dot", value: ".alice@example.com", want: ""},
+		{name: "email domain hyphen", value: "alice@-example.com", want: ""},
+		{name: "email domain trailing dot", value: "alice@example.com.", want: ""},
+		{name: "email whitespace", value: "alice @example.com", want: ""},
+		{name: "email missing domain", value: "alice@", want: ""},
+		{name: "ipv4", value: "192.0.2.1", want: "IPV4"},
+		{name: "ipv4 leading zero", value: "192.168.001.1", want: ""},
+		{name: "ipv4 overflow", value: "256.0.0.1", want: ""},
+		{name: "ipv4 shorthand", value: "127.1", want: ""},
+		{name: "ipv4 cidr", value: "192.0.2.1/32", want: ""},
+		{name: "ipv6", value: "2001:db8::1", want: "IPV6"},
+		{name: "ipv6 mapped", value: "::ffff:192.0.2.128", want: "IPV6"},
+		{name: "ipv6 zone", value: "fe80::1%lo0", want: ""},
+		{name: "ipv6 brackets", value: "[2001:db8::1]", want: ""},
+		{name: "ipv6 cidr", value: "2001:db8::1/128", want: ""},
+		{name: "date leap day", value: "2024-02-29", want: "DATE"},
+		{name: "date non leap day", value: "2023-02-29", want: ""},
+		{name: "date non padded", value: "2024-2-09", want: ""},
+		{name: "date invalid month", value: "2024-13-01", want: ""},
+		{name: "datetime zulu", value: "2024-02-29T12:34:56Z", want: "DATETIME"},
+		{name: "datetime fractional offset", value: "2024-02-29T12:34:56.123456789+08:00", want: "DATETIME"},
+		{name: "datetime invalid date", value: "2023-02-29T12:34:56Z", want: ""},
+		{name: "datetime lowercase", value: "2024-02-29t12:34:56z", want: ""},
+		{name: "datetime space separator", value: "2024-02-29 12:34:56Z", want: ""},
+		{name: "datetime missing zone", value: "2024-02-29T12:34:56", want: ""},
+		{name: "datetime comma fraction", value: "2024-02-29T12:34:56,123Z", want: ""},
+		{name: "datetime invalid offset hour", value: "2024-02-29T12:34:56+24:00", want: ""},
+		{name: "datetime invalid offset minute", value: "2024-02-29T12:34:56+08:60", want: ""},
+		{name: "unknown", value: "hello-world", want: ""},
+		{name: "empty", value: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := detectStringFormat(tt.value); got != tt.want {
+				t.Fatalf("detectStringFormat(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtendParamObservationsFormatSamples(t *testing.T) {
+	uuidValue := "550e8400-e29b-41d4-a716-446655440000"
+	p := &parser.Parsed{
+		Query: map[string]string{
+			"uuid_value":     uuidValue,
+			"email_value":    "alice@example.com",
+			"ipv4_value":     "192.0.2.1",
+			"ipv6_value":     "2001:db8::1",
+			"date_value":     "2024-02-29",
+			"datetime_value": "2024-02-29T12:34:56Z",
+			"unknown":        "hello-world",
+			"empty":          "",
+			"number":         "42",
+			"boolean":        "true",
+			"email":          "2024-01-01",
+			"uuid":           "not-a-uuid",
+		},
+		RawPath:        "/items/" + uuidValue,
+		NormalizedPath: "/items/{uuid}",
+	}
+	base := detectors.CollectParamObservationsSecure(p, "salt", nil, nil)
+	out := ExtendParamObservations(base, p, "salt")
+	wantCandidates := map[string]string{
+		"uuid_value":     "UUID",
+		"email_value":    "EMAIL",
+		"ipv4_value":     "IPV4",
+		"ipv6_value":     "IPV6",
+		"date_value":     "DATE",
+		"datetime_value": "DATETIME",
+		"unknown":        "",
+		"email":          "DATE",
+		"uuid":           "",
+	}
+	for name, want := range wantCandidates {
+		o := findObs(t, out, "QUERY", name, "")
+		if !o.FormatSample || o.FormatCandidate != want {
+			t.Errorf("%s format = (%t, %q), want (true, %q)", name, o.FormatSample, o.FormatCandidate, want)
+		}
+	}
+	for _, name := range []string{"empty", "number", "boolean"} {
+		o := findObs(t, out, "QUERY", name, "")
+		if o.FormatSample || o.FormatCandidate != "" {
+			t.Errorf("%s must not be a format sample: %+v", name, o)
+		}
+		data, err := json.Marshal(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), `"format_sample"`) || strings.Contains(string(data), `"format_candidate"`) {
+			t.Errorf("%s must omit format keys: %s", name, data)
+		}
+	}
+	path := findObs(t, out, "PATH", "{uuid}", "1")
+	if !path.FormatSample || path.FormatCandidate != "UUID" {
+		t.Fatalf("path format = (%t, %q), want (true, UUID)", path.FormatSample, path.FormatCandidate)
+	}
+
+	unknown := findObs(t, out, "QUERY", "unknown", "")
+	data, err := json.Marshal(unknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"format_sample":true`) || strings.Contains(string(data), `"format_candidate"`) {
+		t.Fatalf("unknown string must be sampled without a candidate: %s", data)
+	}
+	if strings.Contains(string(data), "hello-world") {
+		t.Fatalf("plaintext leaked into wire JSON: %s", data)
+	}
+}
+
+func TestExtendParamObservationsFormatSensitiveSuppressed(t *testing.T) {
+	p := &parser.Parsed{Query: map[string]string{"password": "alice@example.com"}}
+	patterns, err := detectors.CompileSensitivePatterns(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := detectors.CollectParamObservationsSecure(p, "salt", patterns, nil)
+	out := ExtendParamObservations(base, p, "salt")
+	password := findObs(t, out, "QUERY", "password", "")
+	if password.BaseType != "string" || password.ValueHash != "" {
+		t.Fatalf("test requires a suppressed string observation: %+v", password)
+	}
+	if password.FormatSample || password.FormatCandidate != "" {
+		t.Fatalf("sensitive value must not produce format fields: %+v", password)
+	}
+	data, err := json.Marshal(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"format_sample"`) || strings.Contains(string(data), `"format_candidate"`) {
+		t.Fatalf("sensitive value must omit format keys: %s", data)
+	}
+}
+
+func TestParamObservationFormatLegacyCompat(t *testing.T) {
+	old := []byte(`{"location":"QUERY","name":"q","base_type":"string","length":36,"value_hash":"ab"}`)
+	var decoded ParamObservation
+	if err := json.Unmarshal(old, &decoded); err != nil {
+		t.Fatalf("new mirror decode old JSON: %v", err)
+	}
+	if decoded.FormatSample || decoded.FormatCandidate != "" {
+		t.Fatalf("old observation must not acquire format knowledge: %+v", decoded)
+	}
+	data, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"format_sample"`) || strings.Contains(string(data), `"format_candidate"`) {
+		t.Fatalf("zero format fields must be omitted: %s", data)
+	}
+}

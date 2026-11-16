@@ -79,6 +79,17 @@ func TestHTTPEventsEndpoint(t *testing.T) {
 				t.Errorf("联动输入异常: %+v", in)
 			}
 		}
+		if len(store.assetSources) != 2 {
+			t.Fatalf("来源关系行数 = %d, want 2", len(store.assetSources))
+		}
+		for _, src := range store.assetSources {
+			if src.Classification == nil || !src.Classification.IsAPI ||
+				src.Classification.Confidence != agentDiscoveryConfidence ||
+				len(src.Classification.Signals) != 1 || src.Classification.Signals[0] != "legacy_v1_contract" ||
+				src.Classification.ClassifiedAt.IsZero() {
+				t.Errorf("v1 legacy 分类证据异常: %+v", src.Classification)
+			}
+		}
 	})
 
 	t.Run("body_skipped_reason 合法枚举 202 并透传", func(t *testing.T) {

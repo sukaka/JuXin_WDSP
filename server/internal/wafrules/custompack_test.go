@@ -76,6 +76,35 @@ func TestCustomPackAttackCoverage(t *testing.T) {
 	}
 }
 
+// TestCustomPackPHP2Shell 校验 PHP2Shell 应急规则数量、ID 与阻断分层。
+func TestCustomPackPHP2Shell(t *testing.T) {
+	rules, failed, err := ParseCRSFile(filepath.Join(customPackDir, "cve-emergency.conf"), SourceCustomPack)
+	if err != nil {
+		t.Fatalf("ParseCRSFile: %v", err)
+	}
+	if len(failed) > 0 {
+		t.Fatalf("unexpected parse failures: %v", failed)
+	}
+	got := map[int]*Rule{}
+	for _, r := range rules {
+		if r.RuleID >= 1000043 && r.RuleID <= 1000047 {
+			got[r.RuleID] = r
+		}
+	}
+	if len(got) != 5 {
+		t.Fatalf("PHP2Shell rules=%d want 5: %v", len(got), got)
+	}
+	for id := 1000043; id <= 1000046; id++ {
+		r, ok := got[id]
+		if !ok || r.Severity != "CRITICAL" || r.Message == "" {
+			t.Errorf("rule %d invalid critical metadata: %+v", id, r)
+		}
+	}
+	if r := got[1000047]; r.Severity != "WARNING" || r.Message == "" {
+		t.Errorf("rule 1000047 invalid warning metadata: %+v", r)
+	}
+}
+
 // TestCustomPackAttackVariantsEvasion 校验变种/绕过增强包数量与 ID 段。
 func TestCustomPackAttackVariantsEvasion(t *testing.T) {
 	rules, failed, err := ParseCRSFile(filepath.Join(customPackDir, "attack-variants-evasion.conf"), SourceCustomPack)

@@ -521,9 +521,38 @@ export interface AiPromptTestCheck {
   message?: string
 }
 
+/** 回归测试逐用例摘要（test_detail.sets[].cases 元素；字段均可能缺省，渲染时容错） */
+export interface AiPromptTestSetCase {
+  id?: string
+  question?: string
+  passed?: boolean
+  message?: string
+}
+
+/** 单个评估集的模型回归结果（test_detail.sets 元素，与后端冻结契约一致） */
+export interface AiPromptTestSetResult {
+  code: string
+  name: string
+  score: number
+  threshold: number
+  passed: boolean
+  total: number
+  passed_count: number
+  model_code: string
+  message?: string
+  cases?: AiPromptTestSetCase[] | null
+}
+
+/** 版本测试结构化明细：sets 为真实模型回归结果，static_checks 为静态检查（两者分区展示，不得混称） */
+export interface AiPromptTestDetail {
+  sets?: AiPromptTestSetResult[] | null
+  static_checks?: AiPromptTestCheck[] | null
+}
+
 export interface AiPromptTestResult {
   test_result: string
   checks?: AiPromptTestCheck[] | null
+  test_detail?: AiPromptTestDetail | null
 }
 
 export interface AiPromptAdversarialCase {
@@ -891,4 +920,25 @@ export const aiEvaluationsApi = {
         timeoutMs: 660_000,
       })
     ).run,
+}
+
+/* ==================== 用户反馈汇总 ==================== */
+
+/** 反馈质量聚合行（GET /ai/feedback/summary；negative_rate 为 0-100 百分制，不返回 comment 明细） */
+export interface AiFeedbackSummaryItem {
+  task_type: string
+  feedback_type: string // GENERAL / WRONG_FACT / MISSING_EVIDENCE / HALLUCINATION / OTHER
+  total: number
+  negative: number
+  negative_rate: number
+}
+
+/** 用户反馈汇总（随质量评估页展示；days 支持 7/30） */
+export const aiFeedbackApi = {
+  summary: async (days: 7 | 30) =>
+    (
+      await request<{ items: AiFeedbackSummaryItem[] }>('/ai/feedback/summary', {
+        query: { days },
+      })
+    ).items ?? [],
 }

@@ -1,11 +1,27 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App as AntdApp, Button, Card, Drawer, Form, Input, Modal, Select, Space, Tag, Typography } from 'antd'
+import {
+  Alert,
+  App as AntdApp,
+  Button,
+  Card,
+  Drawer,
+  Empty,
+  Form,
+  Input,
+  Modal,
+  Select,
+  Space,
+  Statistic,
+  Tag,
+  Typography,
+} from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { PlusOutlined } from '@ant-design/icons'
+import { DownloadOutlined, PlusOutlined } from '@ant-design/icons'
 import {
   apiSpecsApi,
   type ApiImportSpec,
+  type ApiSpecAuditItem,
   type ApiSpecChange,
   type ApiSpecDiff,
   type ApiSpecImportResult,
@@ -18,6 +34,7 @@ import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import { API_SPEC_DIFF_TYPE_META } from '../../utils/stage8'
+import { specAuditCSV } from './specAuditExport'
 
 interface ImportFormValues {
   file_name?: string
@@ -42,18 +59,49 @@ const SPEC_STATUS_META: Record<string, { color: string; label: string }> = {
 }
 
 /** 跨版本 CHANGED 级变更类型（与 apisecurity.SpecChange.change_type 枚举一致） */
-const SPEC_CHANGE_TYPE_META: Record<string, { color: string; label: string }> = {
-  ENDPOINT_ADDED: { color: 'green', label: '新增 API' },
-  ENDPOINT_REMOVED: { color: 'red', label: '移除 API' },
-  PARAM_ADDED: { color: 'blue', label: '新增参数' },
-  PARAM_REMOVED: { color: 'volcano', label: '移除参数' },
-  TYPE_CHANGED: { color: 'gold', label: '类型变更' },
-  REQUIRED_CHANGED: { color: 'orange', label: '必填变更' },
+const SPEC_CHANGE_TYPE_META: Record<string, { color: string; label: string }> =
+  {
+    ENDPOINT_ADDED: { color: 'green', label: '新增 API' },
+    ENDPOINT_REMOVED: { color: 'red', label: '移除 API' },
+    PARAM_ADDED: { color: 'blue', label: '新增参数' },
+    PARAM_REMOVED: { color: 'volcano', label: '移除参数' },
+    TYPE_CHANGED: { color: 'gold', label: '类型变更' },
+    REQUIRED_CHANGED: { color: 'orange', label: '必填变更' },
+  }
+
+const SPEC_AUDIT_RULE_META: Record<string, { color: string; label: string }> = {
+  PATH_PARAMETER_MISSING: { color: 'red', label: '路径参数缺失' },
+  PATH_PARAMETER_NOT_REQUIRED: { color: 'orange', label: '路径参数未标记必填' },
+  PATH_PARAMETER_UNDECLARED: { color: 'red', label: '路径参数未声明' },
+  SENSITIVE_QUERY_PARAMETER: { color: 'orange', label: '敏感查询参数' },
+  SUCCESS_RESPONSE_MISSING: { color: 'red', label: '成功响应未声明' },
+  ERROR_RESPONSE_MISSING: { color: 'orange', label: '错误响应未声明' },
+  SECURITY_SCHEME_UNDEFINED: { color: 'red', label: '认证方案未定义' },
+  API_KEY_IN_QUERY: { color: 'red', label: '查询参数传递 API Key' },
+}
+
+const SPEC_AUDIT_SEVERITY_META: Record<
+  string,
+  { color: string; label: string }
+> = {
+  HIGH: { color: 'red', label: 'HIGH' },
+  MEDIUM: { color: 'orange', label: 'MEDIUM' },
 }
 
 /** 导入成功提示（粘贴/URL 导入同构） */
 function importSummary(r: ApiSpecImportResult): string {
   return `导入成功：${r.spec.name} v${r.spec.version_no}（接口 ${r.spec.endpoint_count} 个）；运行时缺失 ${r.missing_in_runtime}，规范缺失 ${r.missing_in_spec}，定义变更 ${r.changed}，登记 API ${r.registered_endpoints}`
+}
+
+function auditFilenamePart(value: string, fallback: string): string {
+  const cleaned = Array.from(value.trim(), (char) => {
+    const code = char.charCodeAt(0)
+    return /[<>:"/\\|?*]/.test(char) || code <= 31 || code === 127 ? '_' : char
+  })
+    .join('')
+    .replace(/^\.+|[. ]+$/g, '')
+    .slice(0, 80)
+  return cleaned || fallback
 }
 
 /** 规范对比（WDSP / 阶段8）：导入 OpenAPI 规范并与运行时发现的接口对比差异；版本链激活与跨版本对比 */
@@ -71,6 +119,7 @@ export default function ApiSpecsPage() {
   const [diffSpec, setDiffSpec] = useState<ApiImportSpec | null>(null)
   const [diffPage, setDiffPage] = useState(1)
   const [diffPageSize, setDiffPageSize] = useState(20)
+  const [auditSpec, setAuditSpec] = useState<ApiImportSpec | null>(null)
   /** 版本对比抽屉：vdSpec 为基准版本，vdOtherId 为对比目标版本 */
   const [vdSpec, setVdSpec] = useState<ApiImportSpec | null>(null)
   const [vdOtherId, setVdOtherId] = useState<string | undefined>()
@@ -84,59 +133,85 @@ export default function ApiSpecsPage() {
 
   const diffQuery = useQuery({
     queryKey: ['api-specs', 'diff', diffSpec?.id, diffPage, diffPageSize],
-    queryFn: () => apiSpecsApi.diff(diffSpec?.id as string, { page: diffPage, page_size: diffPageSize }),
+    queryFn: () =>
+      apiSpecsApi.diff(diffSpec?.id as string, {
+        page: diffPage,
+        page_size: diffPageSize,
+      }),
     enabled: !!diffSpec,
+  })
+
+  const auditQuery = useQuery({
+    queryKey: ['api-specs', 'audit', auditSpec?.id],
+    queryFn: () => apiSpecsApi.audit(auditSpec?.id as string),
+    enabled: !!auditSpec,
   })
 
   /** 版本对比候选：同名版本链全部版本（排除基准自身） */
   const vdVersionsQuery = useQuery({
     queryKey: ['api-specs', 'versions', vdSpec?.name],
-    queryFn: () => apiSpecsApi.list({ name: vdSpec?.name, page: 1, page_size: 100 }),
+    queryFn: () =>
+      apiSpecsApi.list({ name: vdSpec?.name, page: 1, page_size: 100 }),
     enabled: !!vdSpec,
   })
 
   const versionDiffQuery = useQuery({
     queryKey: ['api-specs', 'version-diff', vdSpec?.id, vdOtherId],
-    queryFn: () => apiSpecsApi.versionDiff(vdSpec?.id as string, vdOtherId as string),
+    queryFn: () =>
+      apiSpecsApi.versionDiff(vdSpec?.id as string, vdOtherId as string),
     enabled: !!vdSpec && !!vdOtherId,
   })
 
   const importMut = useMutation({
-    mutationFn: (body: { file_name?: string; spec: Record<string, unknown> }) => apiSpecsApi.import(body),
+    mutationFn: (body: { file_name?: string; spec: Record<string, unknown> }) =>
+      apiSpecsApi.import(body),
     onSuccess: (r) => {
       message.success(importSummary(r))
       setImportOpen(false)
       form.resetFields()
       void qc.invalidateQueries({ queryKey: ['api-specs'] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '导入失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '导入失败'),
   })
 
   const importUrlMut = useMutation({
-    mutationFn: (body: { url: string; name?: string; headers?: Record<string, string> }) => apiSpecsApi.importUrl(body),
+    mutationFn: (body: {
+      url: string
+      name?: string
+      headers?: Record<string, string>
+    }) => apiSpecsApi.importUrl(body),
     onSuccess: (r) => {
       message.success(importSummary(r))
       setImportUrlOpen(false)
       urlForm.resetFields()
       void qc.invalidateQueries({ queryKey: ['api-specs'] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : 'URL 导入失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : 'URL 导入失败'),
   })
 
   const activateMut = useMutation({
     mutationFn: (id: string) => apiSpecsApi.activate(id),
     onSuccess: (r) => {
-      message.success(`已激活 ${r.spec.name} v${r.spec.version_no}，同名旧版降为历史`)
+      message.success(
+        `已激活 ${r.spec.name} v${r.spec.version_no}，同名旧版降为历史`,
+      )
       void qc.invalidateQueries({ queryKey: ['api-specs'] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '激活失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '激活失败'),
   })
 
   const handleImport = (v: ImportFormValues) => {
     let spec: Record<string, unknown>
     try {
       const parsed: unknown = JSON.parse(v.spec_json)
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      if (
+        typeof parsed !== 'object' ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
         message.error('规范内容须为 JSON 对象')
         return
       }
@@ -158,7 +233,8 @@ export default function ApiSpecsPage() {
     importUrlMut.mutate({
       url: v.url.trim(),
       name: v.name?.trim() || undefined,
-      headers: headerName && headerValue ? { [headerName]: headerValue } : undefined,
+      headers:
+        headerName && headerValue ? { [headerName]: headerValue } : undefined,
     })
   }
 
@@ -207,13 +283,19 @@ export default function ApiSpecsPage() {
       ellipsis: true,
       render: (v?: string | null) => v || '-',
     },
-    { title: '格式', dataIndex: 'format', width: 110, render: (v: string) => v || '-' },
+    {
+      title: '格式',
+      dataIndex: 'format',
+      width: 110,
+      render: (v: string) => v || '-',
+    },
     { title: '接口数', dataIndex: 'endpoint_count', width: 90 },
     {
       title: '内容哈希',
       dataIndex: 'content_hash',
       width: 140,
-      render: (v: string) => (v ? <Typography.Text code>{v.slice(0, 10)}…</Typography.Text> : '-'),
+      render: (v: string) =>
+        v ? <Typography.Text code>{v.slice(0, 10)}…</Typography.Text> : '-',
     },
     {
       title: '导入时间',
@@ -224,18 +306,29 @@ export default function ApiSpecsPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 240,
+      width: 300,
       fixed: 'right',
       render: (_, record) => (
         <Space size={0}>
           <Button type="link" size="small" onClick={() => openDiff(record)}>
             查看差异
           </Button>
-          <Button type="link" size="small" onClick={() => openVersionDiff(record)}>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => openVersionDiff(record)}
+          >
             版本对比
           </Button>
+          <Button type="link" size="small" onClick={() => setAuditSpec(record)}>
+            规范审计
+          </Button>
           {canManage && record.status && record.status !== 'ACTIVE' ? (
-            <Button type="link" size="small" onClick={() => confirmActivate(record)}>
+            <Button
+              type="link"
+              size="small"
+              onClick={() => confirmActivate(record)}
+            >
               激活
             </Button>
           ) : null}
@@ -249,14 +342,17 @@ export default function ApiSpecsPage() {
       title: '差异类型',
       dataIndex: 'diff_type',
       width: 120,
-      render: (v: string) => <StatusTag value={v} map={API_SPEC_DIFF_TYPE_META} />,
+      render: (v: string) => (
+        <StatusTag value={v} map={API_SPEC_DIFF_TYPE_META} />
+      ),
     },
     {
       title: '接口键',
       dataIndex: 'endpoint_key',
       width: 220,
       ellipsis: true,
-      render: (v: string) => (v ? <Typography.Text code>{v}</Typography.Text> : '-'),
+      render: (v: string) =>
+        v ? <Typography.Text code>{v}</Typography.Text> : '-',
     },
     {
       title: '差异明细',
@@ -266,7 +362,11 @@ export default function ApiSpecsPage() {
         const s = JSON.stringify(v)
         if (!s) return '-'
         return (
-          <Typography.Text code ellipsis={{ tooltip: s }} style={{ maxWidth: 360 }}>
+          <Typography.Text
+            code
+            ellipsis={{ tooltip: s }}
+            style={{ maxWidth: 360 }}
+          >
             {s}
           </Typography.Text>
         )
@@ -280,13 +380,16 @@ export default function ApiSpecsPage() {
       dataIndex: 'endpoint_key',
       width: 220,
       ellipsis: true,
-      render: (v: string) => (v ? <Typography.Text code>{v}</Typography.Text> : '-'),
+      render: (v: string) =>
+        v ? <Typography.Text code>{v}</Typography.Text> : '-',
     },
     {
       title: '变更类型',
       dataIndex: 'change_type',
       width: 110,
-      render: (v: string) => <StatusTag value={v} map={SPEC_CHANGE_TYPE_META} />,
+      render: (v: string) => (
+        <StatusTag value={v} map={SPEC_CHANGE_TYPE_META} />
+      ),
     },
     {
       title: '参数',
@@ -319,7 +422,71 @@ export default function ApiSpecsPage() {
     },
   ]
 
+  const auditColumns: ColumnsType<ApiSpecAuditItem> = [
+    {
+      title: '规则',
+      dataIndex: 'rule_id',
+      width: 180,
+      render: (v: string) => <StatusTag value={v} map={SPEC_AUDIT_RULE_META} />,
+    },
+    {
+      title: '严重级别',
+      dataIndex: 'severity',
+      width: 100,
+      render: (v: string) => (
+        <StatusTag value={v} map={SPEC_AUDIT_SEVERITY_META} />
+      ),
+    },
+    {
+      title: '接口',
+      dataIndex: 'endpoint_key',
+      width: 210,
+      ellipsis: true,
+      render: (v: string) =>
+        v ? <Typography.Text code>{v}</Typography.Text> : '-',
+    },
+    {
+      title: '参数位置',
+      dataIndex: 'param_in',
+      width: 100,
+      render: (v: string) => v || '-',
+    },
+    {
+      title: '参数名称',
+      dataIndex: 'param_name',
+      width: 140,
+      render: (v: string) =>
+        v ? <Typography.Text code>{v}</Typography.Text> : '-',
+    },
+    { title: '说明', dataIndex: 'message', render: (v: string) => v || '-' },
+  ]
+
   const versionDiffData = versionDiffQuery.data
+  const auditData =
+    auditQuery.data?.spec_id === auditSpec?.id ? auditQuery.data : undefined
+  const auditExportDisabled =
+    !auditData ||
+    auditData.items.length === 0 ||
+    auditQuery.isLoading ||
+    auditQuery.isFetching ||
+    !!auditQuery.error
+
+  const handleAuditExport = () => {
+    if (auditExportDisabled || !auditData || !auditSpec) return
+    const csv = specAuditCSV(auditData)
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    try {
+      link.href = url
+      link.download = `api-spec-audit-${auditFilenamePart(auditSpec.name, 'spec')}-v${auditFilenamePart(String(auditSpec.version_no), 'unknown')}.csv`
+      document.body.appendChild(link)
+      link.click()
+    } finally {
+      link.remove()
+      URL.revokeObjectURL(url)
+    }
+  }
 
   return (
     <Card
@@ -327,10 +494,17 @@ export default function ApiSpecsPage() {
       extra={
         canImport ? (
           <Space>
-            <Button icon={<PlusOutlined />} onClick={() => setImportUrlOpen(true)}>
+            <Button
+              icon={<PlusOutlined />}
+              onClick={() => setImportUrlOpen(true)}
+            >
               URL 导入
             </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setImportOpen(true)}>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => setImportOpen(true)}
+            >
               导入规范
             </Button>
           </Space>
@@ -338,8 +512,10 @@ export default function ApiSpecsPage() {
       }
     >
       <Typography.Paragraph type="secondary">
-        导入 OpenAPI 规范后，系统自动与运行时发现的接口对比：规范缺失、运行时缺失与定义变更三类差异可用于发现影子
-        API。同名再导入形成版本链（version_no 自增），同名唯一 ACTIVE 版本，可跨版本对比定义变更。
+        导入 OpenAPI
+        规范后，系统自动与运行时发现的接口对比：规范缺失、运行时缺失与定义变更三类差异可用于发现影子
+        API。同名再导入形成版本链（version_no 自增），同名唯一 ACTIVE
+        版本，可跨版本对比定义变更。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error} />
       <SmartTable<ApiImportSpec>
@@ -377,7 +553,11 @@ export default function ApiSpecsPage() {
         width={640}
         destroyOnHidden
       >
-        <Form<ImportFormValues> form={form} layout="vertical" onFinish={handleImport}>
+        <Form<ImportFormValues>
+          form={form}
+          layout="vertical"
+          onFinish={handleImport}
+        >
           <Form.Item name="file_name" label="文件名（可选）">
             <Input placeholder="如 openapi-payment.yaml" autoComplete="off" />
           </Form.Item>
@@ -386,7 +566,11 @@ export default function ApiSpecsPage() {
             label="规范内容（JSON）"
             rules={[{ required: true, message: '请输入规范内容' }]}
           >
-            <Input.TextArea rows={10} style={{ fontFamily: 'monospace' }} placeholder='{"openapi":"3.0.0",...}' />
+            <Input.TextArea
+              rows={10}
+              style={{ fontFamily: 'monospace' }}
+              placeholder='{"openapi":"3.0.0",...}'
+            />
           </Form.Item>
         </Form>
       </Modal>
@@ -403,9 +587,14 @@ export default function ApiSpecsPage() {
         destroyOnHidden
       >
         <Typography.Paragraph type="secondary">
-          服务端拉取 URL 处的 OpenAPI 3 / Swagger 2.0 JSON 文档（仅 http/https，拒绝内网/保留地址，上限 16MiB）。
+          服务端拉取 URL 处的 OpenAPI 3 / Swagger 2.0 JSON 文档（仅
+          http/https，拒绝内网/保留地址，上限 16MiB）。
         </Typography.Paragraph>
-        <Form<ImportUrlFormValues> form={urlForm} layout="vertical" onFinish={handleImportUrl}>
+        <Form<ImportUrlFormValues>
+          form={urlForm}
+          layout="vertical"
+          onFinish={handleImportUrl}
+        >
           <Form.Item
             name="url"
             label="规范文档 URL"
@@ -414,17 +603,34 @@ export default function ApiSpecsPage() {
               { max: 2048, message: 'URL 不超过 2048 字符' },
             ]}
           >
-            <Input placeholder="https://example.com/openapi.json" autoComplete="off" />
+            <Input
+              placeholder="https://example.com/openapi.json"
+              autoComplete="off"
+            />
           </Form.Item>
-          <Form.Item name="name" label="规范名称（可选，缺省取 info.title / 文件名）">
+          <Form.Item
+            name="name"
+            label="规范名称（可选，缺省取 info.title / 文件名）"
+          >
             <Input placeholder="如 payment-api" autoComplete="off" />
           </Form.Item>
           <Space.Compact block>
-            <Form.Item name="header_name" label="认证头名称（可选）" style={{ width: '40%', marginRight: 8 }}>
+            <Form.Item
+              name="header_name"
+              label="认证头名称（可选）"
+              style={{ width: '40%', marginRight: 8 }}
+            >
               <Input placeholder="Authorization" autoComplete="off" />
             </Form.Item>
-            <Form.Item name="header_value" label="认证头值" style={{ width: '60%' }}>
-              <Input.Password placeholder="Bearer xxx" autoComplete="new-password" />
+            <Form.Item
+              name="header_value"
+              label="认证头值"
+              style={{ width: '60%' }}
+            >
+              <Input.Password
+                placeholder="Bearer xxx"
+                autoComplete="new-password"
+              />
             </Form.Item>
           </Space.Compact>
         </Form>
@@ -460,6 +666,57 @@ export default function ApiSpecsPage() {
       </Drawer>
 
       <Drawer
+        title={`规范审计：${auditSpec?.name ?? '-'} v${auditSpec?.version_no ?? '-'}`}
+        open={!!auditSpec}
+        onClose={() => setAuditSpec(null)}
+        width={1000}
+        destroyOnHidden
+        extra={
+          <Button
+            aria-label="导出当前结果"
+            icon={<DownloadOutlined />}
+            disabled={auditExportDisabled}
+            onClick={handleAuditExport}
+          >
+            导出当前结果
+          </Button>
+        }
+      >
+        <QueryErrorAlert error={auditQuery.error} message="规范审计加载失败" />
+        {auditData ? (
+          <Space size="large" wrap style={{ margin: '16px 0' }}>
+            <Statistic title="操作数" value={auditData.operation_count} />
+            <Statistic title="问题数" value={auditData.issue_count} />
+            <Statistic title="HIGH" value={auditData.high_count} />
+            <Statistic title="MEDIUM" value={auditData.medium_count} />
+          </Space>
+        ) : null}
+        {auditData?.truncated ? (
+          <Alert
+            type="warning"
+            showIcon
+            title="问题明细较多，只展示前 500 条；导出仅包含当前已返回明细"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        {auditData?.items.length === 0 ? (
+          <Empty description="未发现本批规则问题" style={{ padding: 48 }} />
+        ) : (
+          <SmartTable<ApiSpecAuditItem>
+            storageKey="api-specs-audit"
+            rowKey={(r) =>
+              `${r.rule_id}|${r.endpoint_key}|${r.param_in}|${r.param_name}|${r.message}`
+            }
+            loading={auditQuery.isLoading || auditQuery.isFetching}
+            columns={auditColumns}
+            dataSource={auditData?.items ?? []}
+            scroll={{ x: 900 }}
+            pagination={false}
+          />
+        )}
+      </Drawer>
+
+      <Drawer
         title={`版本对比：${vdSpec?.name ?? '-'}`}
         open={!!vdSpec}
         onClose={() => setVdSpec(null)}
@@ -486,12 +743,16 @@ export default function ApiSpecsPage() {
         <QueryErrorAlert error={versionDiffQuery.error} />
         {versionDiffData ? (
           <Typography.Paragraph type="secondary">
-            v{versionDiffData.base.version_no} → v{versionDiffData.target.version_no}，共 {versionDiffData.changes.length} 处定义变更
+            v{versionDiffData.base.version_no} → v
+            {versionDiffData.target.version_no}，共{' '}
+            {versionDiffData.changes.length} 处定义变更
           </Typography.Paragraph>
         ) : null}
         <SmartTable<ApiSpecChange>
           storageKey="api-specs-version-diff"
-          rowKey={(r) => `${r.endpoint_key}|${r.change_type}|${r.param_name ?? ''}`}
+          rowKey={(r) =>
+            `${r.endpoint_key}|${r.change_type}|${r.param_name ?? ''}`
+          }
           loading={versionDiffQuery.isLoading || versionDiffQuery.isFetching}
           columns={changeColumns}
           dataSource={versionDiffData?.changes ?? []}

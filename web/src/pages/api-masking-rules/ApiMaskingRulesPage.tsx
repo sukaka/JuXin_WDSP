@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Alert,
   App as AntdApp,
   Button,
   Card,
@@ -49,6 +50,8 @@ const ALGORITHM_META: Record<string, { color: string; label: string }> = {
   MASK: { color: 'gold', label: '掩码' },
   HASH: { color: 'volcano', label: '散列' },
   REMOVE: { color: 'red', label: '移除' },
+  ENCRYPT: { color: 'geekblue', label: '加密' },
+  MAP: { color: 'purple', label: '映射' },
 }
 
 interface RuleFormValues {
@@ -63,6 +66,8 @@ interface RuleFormValues {
   /** MASK 算法参数（留空取网关默认 3/4） */
   keep_head?: number | null
   keep_tail?: number | null
+  key_id?: string
+  map_id?: string
   /** 排除对象（identity/role/ip 三键） */
   excl_identity?: string[]
   excl_role?: string[]
@@ -76,6 +81,8 @@ function buildBody(v: RuleFormValues): ApiMaskingRuleBody {
     if (typeof v.keep_head === 'number') params.keep_head = v.keep_head
     if (typeof v.keep_tail === 'number') params.keep_tail = v.keep_tail
   }
+  if (v.algorithm === 'ENCRYPT') params.key_id = v.key_id?.trim() ?? ''
+  if (v.algorithm === 'MAP') params.map_id = v.map_id?.trim() ?? ''
   const exclusions: ApiMaskingRuleBody['exclusions_json'] = {}
   if (v.excl_identity?.length) exclusions.identity = v.excl_identity
   if (v.excl_role?.length) exclusions.role = v.excl_role
@@ -109,7 +116,10 @@ export default function ApiMaskingRulesPage() {
   const [editing, setEditing] = useState<ApiMaskingRule | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [detailRecord, setDetailRecord] = useState<ApiMaskingRule | null>(null)
+  const [decryptOpen, setDecryptOpen] = useState(false)
+  const [plaintext, setPlaintext] = useState<string | null>(null)
   const [form] = Form.useForm<RuleFormValues>()
+  const [decryptForm] = Form.useForm<{ ciphertext: string }>()
 
   const modalOpen = createOpen || editing !== null
   /** 弹窗内当前作用域/算法（联动字段显隐） */
@@ -117,7 +127,14 @@ export default function ApiMaskingRulesPage() {
   const formAlgorithm = Form.useWatch('algorithm', form)
 
   const listQuery = useQuery({
-    queryKey: ['api-masking-rules', scope, enabledFilter, endpointKey, page, pageSize],
+    queryKey: [
+      'api-masking-rules',
+      scope,
+      enabledFilter,
+      endpointKey,
+      page,
+      pageSize,
+    ],
     queryFn: () =>
       apiMaskingRulesApi.list({
         scope,
@@ -142,10 +159,13 @@ export default function ApiMaskingRulesPage() {
     enabled: modalOpen,
   })
   const dataTypeOptions = Array.from(
-    new Set((typesQuery.data?.items ?? []).map((t) => t.data_type).filter(Boolean)),
+    new Set(
+      (typesQuery.data?.items ?? []).map((t) => t.data_type).filter(Boolean),
+    ),
   ).map((v) => ({ value: v, label: v }))
 
-  const invalidate = () => void qc.invalidateQueries({ queryKey: ['api-masking-rules'] })
+  const invalidate = () =>
+    void qc.invalidateQueries({ queryKey: ['api-masking-rules'] })
 
   const { rowSelection, batchDeleteButton } = useBatchDelete<ApiMaskingRule>({
     remove: (id) => apiMaskingRulesApi.remove(id),
@@ -161,7 +181,8 @@ export default function ApiMaskingRulesPage() {
       setCreateOpen(false)
       invalidate()
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '创建失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '创建失败'),
   })
 
   const updateMut = useMutation({
@@ -172,7 +193,8 @@ export default function ApiMaskingRulesPage() {
       setEditing(null)
       invalidate()
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '保存失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '保存失败'),
   })
 
   const deleteMut = useMutation({
@@ -181,12 +203,32 @@ export default function ApiMaskingRulesPage() {
       message.success(r.message || '已删除')
       invalidate()
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '删除失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '删除失败'),
+  })
+
+  const decryptMut = useMutation({
+    mutationFn: (ciphertext: string) => apiMaskingRulesApi.decrypt(ciphertext),
+    onSuccess: (result) => setPlaintext(result.plaintext),
   })
 
   const openCreate = () => {
     form.resetFields()
     setCreateOpen(true)
+  }
+
+  const openDecrypt = () => {
+    decryptForm.resetFields()
+    decryptMut.reset()
+    setPlaintext(null)
+    setDecryptOpen(true)
+  }
+
+  const closeDecrypt = () => {
+    setDecryptOpen(false)
+    decryptForm.resetFields()
+    decryptMut.reset()
+    setPlaintext(null)
   }
 
   const openEdit = (record: ApiMaskingRule) => {
@@ -203,8 +245,12 @@ export default function ApiMaskingRulesPage() {
       field_path: record.field_path,
       data_type: record.data_type ?? undefined,
       algorithm: record.algorithm,
-      keep_head: typeof params.keep_head === 'number' ? params.keep_head : undefined,
-      keep_tail: typeof params.keep_tail === 'number' ? params.keep_tail : undefined,
+      keep_head:
+        typeof params.keep_head === 'number' ? params.keep_head : undefined,
+      keep_tail:
+        typeof params.keep_tail === 'number' ? params.keep_tail : undefined,
+      key_id: typeof params.key_id === 'string' ? params.key_id : undefined,
+      map_id: typeof params.map_id === 'string' ? params.map_id : undefined,
       excl_identity: exclusions.identity ?? [],
       excl_role: exclusions.role ?? [],
       excl_ip: exclusions.ip ?? [],
@@ -217,7 +263,8 @@ export default function ApiMaskingRulesPage() {
       content: `确定${record.enabled ? '禁用' : '启用'}脱敏规则「${record.name}」吗？${
         record.enabled ? '禁用后该规则不再参与响应脱敏。' : ''
       }变更随配置发布下发网关后生效。`,
-      onOk: () => updateMut.mutate({ id: record.id, body: { enabled: !record.enabled } }),
+      onOk: () =>
+        updateMut.mutate({ id: record.id, body: { enabled: !record.enabled } }),
     })
   }
 
@@ -236,7 +283,8 @@ export default function ApiMaskingRulesPage() {
       title: '状态',
       dataIndex: 'enabled',
       width: 80,
-      render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>禁用</Tag>),
+      render: (v: boolean) =>
+        v ? <Tag color="green">启用</Tag> : <Tag>禁用</Tag>,
     },
     {
       title: '作用域',
@@ -280,7 +328,9 @@ export default function ApiMaskingRulesPage() {
       render: (v: string, record) => (
         <Space size={4} wrap>
           {v ? <Typography.Text code>{v}</Typography.Text> : null}
-          {record.data_type ? <StatusTag value={record.data_type} map={API_SENSITIVE_TYPE_META} /> : null}
+          {record.data_type ? (
+            <StatusTag value={record.data_type} map={API_SENSITIVE_TYPE_META} />
+          ) : null}
           {!v && !record.data_type ? '-' : null}
         </Space>
       ),
@@ -314,10 +364,19 @@ export default function ApiMaskingRulesPage() {
             <Button type="link" size="small" onClick={() => openEdit(record)}>
               编辑
             </Button>
-            <Button type="link" size="small" onClick={() => toggleEnabled(record)}>
+            <Button
+              type="link"
+              size="small"
+              onClick={() => toggleEnabled(record)}
+            >
               {record.enabled ? '禁用' : '启用'}
             </Button>
-            <Button type="link" size="small" danger onClick={() => confirmDelete(record)}>
+            <Button
+              type="link"
+              size="small"
+              danger
+              onClick={() => confirmDelete(record)}
+            >
               删除
             </Button>
           </Space>
@@ -330,14 +389,17 @@ export default function ApiMaskingRulesPage() {
       title="脱敏规则"
       extra={
         canManage ? (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新建规则
-          </Button>
+          <Space>
+            <Button onClick={openDecrypt}>恢复验证</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              新建规则
+            </Button>
+          </Space>
         ) : null
       }
     >
       <Typography.Paragraph type="secondary">
-        配置响应侧字段级脱敏：按作用域（全局/应用/接口）圈定目标字段或数据类型，选择掩码、散列或移除算法；
+        配置响应侧字段级脱敏：按作用域（全局/应用/接口）圈定目标字段或数据类型，选择掩码、散列、移除、加密或映射算法；
         排除对象（身份/角色/IP）命中的请求不脱敏。规则随配置发布下发网关后生效。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error} />
@@ -448,7 +510,11 @@ export default function ApiMaskingRulesPage() {
           <Form.Item name="enabled" label="启用状态" valuePropName="checked">
             <Switch checkedChildren="启用" unCheckedChildren="禁用" />
           </Form.Item>
-          <Form.Item name="scope" label="作用域" rules={[{ required: true, message: '请选择作用域' }]}>
+          <Form.Item
+            name="scope"
+            label="作用域"
+            rules={[{ required: true, message: '请选择作用域' }]}
+          >
             <Select
               options={Object.entries(SCOPE_META).map(([value, meta]) => ({
                 value,
@@ -484,7 +550,10 @@ export default function ApiMaskingRulesPage() {
               ]}
               extra="格式：METHOD + 空格 + 路径模板，如 GET /v1/users/{id}"
             >
-              <Input placeholder="GET /v1/users/{id}" style={{ fontFamily: 'monospace' }} />
+              <Input
+                placeholder="GET /v1/users/{id}"
+                style={{ fontFamily: 'monospace' }}
+              />
             </Form.Item>
           ) : null}
           <Form.Item
@@ -493,7 +562,10 @@ export default function ApiMaskingRulesPage() {
             rules={[{ max: 512, message: '字段路径不超过 512 字符' }]}
             extra="点路径，如 user.phone、users[].phone；与数据类型至少填写其一"
           >
-            <Input placeholder="user.phone" style={{ fontFamily: 'monospace' }} />
+            <Input
+              placeholder="user.phone"
+              style={{ fontFamily: 'monospace' }}
+            />
           </Form.Item>
           <Form.Item
             name="data_type"
@@ -508,7 +580,11 @@ export default function ApiMaskingRulesPage() {
               options={dataTypeOptions}
             />
           </Form.Item>
-          <Form.Item name="algorithm" label="脱敏算法" rules={[{ required: true, message: '请选择脱敏算法' }]}>
+          <Form.Item
+            name="algorithm"
+            label="脱敏算法"
+            rules={[{ required: true, message: '请选择脱敏算法' }]}
+          >
             <Select
               options={Object.entries(ALGORITHM_META).map(([value, meta]) => ({
                 value,
@@ -524,7 +600,13 @@ export default function ApiMaskingRulesPage() {
                 style={{ width: '50%', marginRight: 8 }}
                 extra="默认 3，0–64"
               >
-                <InputNumber min={0} max={64} precision={0} style={{ width: '100%' }} placeholder="3" />
+                <InputNumber
+                  min={0}
+                  max={64}
+                  precision={0}
+                  style={{ width: '100%' }}
+                  placeholder="3"
+                />
               </Form.Item>
               <Form.Item
                 name="keep_tail"
@@ -532,23 +614,148 @@ export default function ApiMaskingRulesPage() {
                 style={{ width: '50%' }}
                 extra="默认 4，0–64；短于 keep_head+keep_tail 的值整体替换为 ****"
               >
-                <InputNumber min={0} max={64} precision={0} style={{ width: '100%' }} placeholder="4" />
+                <InputNumber
+                  min={0}
+                  max={64}
+                  precision={0}
+                  style={{ width: '100%' }}
+                  placeholder="4"
+                />
               </Form.Item>
             </Space.Compact>
           ) : null}
+          {formAlgorithm === 'ENCRYPT' ? (
+            <Form.Item
+              name="key_id"
+              label="密钥标识（key_id）"
+              rules={[
+                { required: true, message: '请填写密钥标识' },
+                {
+                  pattern: /^[A-Za-z0-9_-]{1,64}$/,
+                  message: '密钥标识须为 1–64 位字母、数字、下划线或连字符',
+                },
+              ]}
+              extra="仅引用已登记的密钥标识，密钥材料由服务端管理"
+            >
+              <Input
+                placeholder="如 key-prod-01"
+                maxLength={64}
+                autoComplete="off"
+              />
+            </Form.Item>
+          ) : null}
+          {formAlgorithm === 'MAP' ? (
+            <Form.Item
+              name="map_id"
+              label="映射表标识（map_id）"
+              rules={[
+                { required: true, message: '请填写映射表标识' },
+                {
+                  pattern: /^[A-Za-z0-9_-]{1,64}$/,
+                  message: '映射表标识须为 1–64 位字母、数字、下划线或连字符',
+                },
+              ]}
+            >
+              <Input
+                placeholder="如 map-prod-01"
+                maxLength={64}
+                autoComplete="off"
+              />
+            </Form.Item>
+          ) : null}
           <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-            排除对象（可选）：命中的请求不脱敏（身份指纹/角色码精确匹配，IP 支持 CIDR）。
+            排除对象（可选）：命中的请求不脱敏（身份指纹/角色码精确匹配，IP 支持
+            CIDR）。
           </Typography.Paragraph>
-          <Form.Item name="excl_identity" label="身份指纹（identity，回车添加）">
-            <Select mode="tags" open={false} tokenSeparators={[',']} placeholder="身份指纹精确匹配" />
+          <Form.Item
+            name="excl_identity"
+            label="身份指纹（identity，回车添加）"
+          >
+            <Select
+              mode="tags"
+              open={false}
+              tokenSeparators={[',']}
+              placeholder="身份指纹精确匹配"
+            />
           </Form.Item>
           <Form.Item name="excl_role" label="角色码（role，回车添加）">
-            <Select mode="tags" open={false} tokenSeparators={[',']} placeholder="角色码精确匹配" />
+            <Select
+              mode="tags"
+              open={false}
+              tokenSeparators={[',']}
+              placeholder="角色码精确匹配"
+            />
           </Form.Item>
           <Form.Item name="excl_ip" label="IP / CIDR（ip，回车添加）">
-            <Select mode="tags" open={false} tokenSeparators={[',']} placeholder="如 10.0.0.8、10.0.0.0/24" />
+            <Select
+              mode="tags"
+              open={false}
+              tokenSeparators={[',']}
+              placeholder="如 10.0.0.8、10.0.0.0/24"
+            />
           </Form.Item>
         </Form>
+      </Modal>
+      <Modal
+        title="恢复验证"
+        open={decryptOpen}
+        onCancel={closeDecrypt}
+        onOk={() => decryptForm.submit()}
+        okText="验证"
+        confirmLoading={decryptMut.isPending}
+        width={560}
+        destroyOnHidden
+      >
+        <Typography.Paragraph type="secondary">
+          通过服务端接口验证密文可恢复性，页面不执行本地解密。
+        </Typography.Paragraph>
+        {decryptMut.isError ? (
+          <Alert
+            type="error"
+            showIcon
+            message={
+              decryptMut.error instanceof ApiError
+                ? decryptMut.error.message
+                : '恢复验证失败'
+            }
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
+        <Form<{ ciphertext: string }>
+          form={decryptForm}
+          layout="vertical"
+          onFinish={(values) => {
+            setPlaintext(null)
+            decryptMut.mutate(values.ciphertext.trim())
+          }}
+        >
+          <Form.Item
+            name="ciphertext"
+            label="密文（ciphertext）"
+            rules={[
+              { required: true, message: '请输入待验证密文' },
+              { whitespace: true, message: '请输入待验证密文' },
+            ]}
+          >
+            <Input.TextArea
+              rows={4}
+              placeholder="请输入待验证密文"
+              autoComplete="off"
+            />
+          </Form.Item>
+        </Form>
+        {plaintext !== null ? (
+          <div>
+            <Typography.Text strong>明文（plaintext）</Typography.Text>
+            <Input.TextArea
+              aria-label="明文（plaintext）"
+              value={plaintext}
+              readOnly
+              rows={4}
+              style={{ marginTop: 8, fontFamily: 'monospace' }}
+            />
+          </div>
+        ) : null}
       </Modal>
       <RecordDetailDrawer
         open={detailRecord !== null}

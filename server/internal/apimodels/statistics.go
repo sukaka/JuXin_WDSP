@@ -5,9 +5,9 @@
 // 数据源（2026-08 三微模型增强批；2026-09 §16/§17 统计增强批）：
 //   - accepted 学习样本 → sample_count / example_hashes / presence_rate 分母；
 //   - api_parameter_value_obs（网关脱敏观测：length/hash/num/null 标记/蓄水池/
-//     字符直方图/前后缀计数）→ min/max_length、min/max_value、distinct_count 回填，
-//     以及 presence_rate/null_rate、长度/数值分位数、字符熵、前后缀 TopN、
-//     数值离群计数（步骤 1b2，算法见 statistics_stream.go）；
+//     字符直方图/前后缀计数/格式样本与候选计数）→ min/max_length、min/max_value、
+//     distinct_count、presence_rate/null_rate、分位数、字符熵、前后缀 TopN、数值离群、
+//     固定格式候选及占比（步骤 1b/1b2，算法见 statistics_stream.go）；
 //     无观测行时对应列保持 NULL 不虚构。
 package apimodels
 
@@ -30,13 +30,12 @@ import (
 //
 // 单事务多步：
 //  1. UPSERT api_parameter_statistics：sample_count/example_hashes 重算覆盖；
-//     可空统计列（长度/值域/基数）不触碰，留给未来真实数据源写入方；
-//     1b 从 api_parameter_value_obs 回填长度/值域/基数；1c 空语义类型按词表启发式填充；
+//     1b 从 api_parameter_value_obs 回填长度/值域/基数与扩展统计；
+//     1c 空语义类型按词表启发式填充；
 //     1d 字符串语义护栏（secret/token/email/phone/uuid 强制 base_type=string）；
 //  2. 读回画像（字符串语义参数抑制数值上下界），经 RecommendedConstraints 重算
 //     recommended_constraints（系统所有，每轮全量重算，内容变化才写避免行搅动）；
-//  3. observed_constraints 仅在存在真实观测键时写入（观测事实只增不改语义，
-//     当前无值观测数据源故不动该列）。
+//  3. observed_constraints 仅在存在真实观测键时写入；固定格式候选不进入 recommended。
 //
 // confirmed_constraints 绝不触碰（人工定案与系统建议严格分离）。
 // 返回本轮 UPSERT 的统计行数。
@@ -174,10 +173,10 @@ WHERE id = ANY($1) AND semantic_type IN ('secret','token','email','phone','uuid'
 		return 0, fmt.Errorf("normalize string-semantic base_type: %w", err)
 	}
 
-	// 2. 读回画像（含值观测回填的长度/值域/基数与扩展统计的 P95 字段），逐参数重算约束。
+	// 2. 读回画像（含值观测回填的长度/值域/基数、P95 与固定格式候选），逐参数重算约束。
 	profiles, err := tx.Query(ctx, `
 SELECT st.parameter_id, st.sample_count, st.min_length, st.max_length, st.min_value, st.max_value, st.distinct_count,
-       st.length_p95, st.value_p95,
+       st.length_p95, st.value_p95, st.format_candidate, st.format_candidate_ratio,
        p.parameter_name, p.structured_path, COALESCE(p.semantic_type,'')
 FROM api_parameter_statistics st
 JOIN api_parameter_models p ON p.id = st.parameter_id
@@ -193,13 +192,17 @@ WHERE st.parameter_id = ANY($1)`, parameterIDs)
 	for profiles.Next() {
 		var r profileRow
 		var name, path, sem string
+		var formatCandidate *string
 		if err := profiles.Scan(&r.id, &r.profile.SampleCount,
 			&r.profile.MinLength, &r.profile.MaxLength,
 			&r.profile.MinValue, &r.profile.MaxValue, &r.profile.DistinctCount,
-			&r.profile.P95Length, &r.profile.P95Value,
+			&r.profile.P95Length, &r.profile.P95Value, &formatCandidate, &r.profile.FormatCandidateRatio,
 			&name, &path, &sem); err != nil {
 			profiles.Close()
 			return 0, err
+		}
+		if formatCandidate != nil {
+			r.profile.FormatCandidate = *formatCandidate
 		}
 		// 字符串语义护栏：口令/令牌类参数的数值上下界无意义（口令可能是任意复杂
 		// 字符串，观测样本恰好全为数字不应产生数值约束）；优先人工已确认语义，
@@ -227,7 +230,7 @@ UPDATE api_parameter_models SET recommended_constraints=$2
 WHERE id=$1 AND recommended_constraints <> $2::jsonb`, r.id, recommended); err != nil {
 			return 0, fmt.Errorf("refresh recommended constraints: %w", err)
 		}
-		// observed：观测事实只增不改语义——仅在存在真实观测键时写入，无观测不动该列。
+		// observed：存在真实观测键时按本轮画像覆盖，无观测不动该列。
 		if observed := ObservedConstraints(r.profile); len(observed) > 0 {
 			raw, _ := json.Marshal(observed)
 			if _, err := tx.Exec(ctx, `
@@ -248,7 +251,8 @@ WHERE id=$1 AND observed_constraints <> $2::jsonb`, r.id, raw); err != nil {
 //   - 长度/数值分位数：蓄水池排序副本 → P50/P90/P95/P99（长度四舍五入取整）；
 //   - string_entropy：256 桶字符直方图 → 香农熵；
 //   - common_prefixes/suffixes：脱敏哈希计数 TopN（AffixTopNLimit）；
-//   - numeric_outlier_count：数值蓄水池 IQR 栅栏计数（观测不足保持 NULL）。
+//   - numeric_outlier_count：数值蓄水池 IQR 栅栏计数（观测不足保持 NULL）；
+//   - format_candidate/ratio：合格字符串样本 ≥20 且唯一最高占比 ≥0.9，未知计入分母。
 //
 // 合并语义与整窗重算一致：每轮从观测源整体重算覆盖，幂等可重复执行；
 // 观测源扩展列为空（旧版网关未上报）时对应统计列写 NULL/空数组，不虚构。
@@ -256,7 +260,7 @@ func (s *Store) refreshExtendedStats(ctx context.Context, tx pgx.Tx, parameterID
 	rows, err := tx.Query(ctx, `
 SELECT st.parameter_id, st.sample_count, o.sample_count, o.null_count,
        o.length_reservoir, o.value_reservoir, o.char_histogram,
-       o.prefix_counts, o.suffix_counts
+       o.prefix_counts, o.suffix_counts, o.format_sample_count, o.format_counts
 FROM api_parameter_statistics st
 JOIN api_parameter_models p ON p.id = st.parameter_id
 JOIN api_model_versions v ON v.id = p.model_version_id
@@ -270,22 +274,24 @@ WHERE st.parameter_id = ANY($1)`, parameterIDs)
 		return fmt.Errorf("load extended value observations: %w", err)
 	}
 	type extRow struct {
-		parameterID     uuid.UUID
-		endpointSamples int
-		obsSamples      int64
-		nullCount       int64
-		lengthReservoir []float64
-		valueReservoir  []float64
-		charHistogram   []int64
-		prefixCounts    map[string]int64
-		suffixCounts    map[string]int64
+		parameterID       uuid.UUID
+		endpointSamples   int
+		obsSamples        int64
+		nullCount         int64
+		lengthReservoir   []float64
+		valueReservoir    []float64
+		charHistogram     []int64
+		prefixCounts      map[string]int64
+		suffixCounts      map[string]int64
+		formatSampleCount int64
+		formatCounts      map[string]int64
 	}
 	list := []extRow{}
 	for rows.Next() {
 		var r extRow
-		var lenRaw, valRaw, histRaw, prefixRaw, suffixRaw []byte
+		var lenRaw, valRaw, histRaw, prefixRaw, suffixRaw, formatRaw []byte
 		if err := rows.Scan(&r.parameterID, &r.endpointSamples, &r.obsSamples, &r.nullCount,
-			&lenRaw, &valRaw, &histRaw, &prefixRaw, &suffixRaw); err != nil {
+			&lenRaw, &valRaw, &histRaw, &prefixRaw, &suffixRaw, &r.formatSampleCount, &formatRaw); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan extended value observations: %w", err)
 		}
@@ -295,6 +301,7 @@ WHERE st.parameter_id = ANY($1)`, parameterIDs)
 		_ = json.Unmarshal(histRaw, &r.charHistogram)
 		_ = json.Unmarshal(prefixRaw, &r.prefixCounts)
 		_ = json.Unmarshal(suffixRaw, &r.suffixCounts)
+		_ = json.Unmarshal(formatRaw, &r.formatCounts)
 		list = append(list, r)
 	}
 	rows.Close()
@@ -340,6 +347,13 @@ WHERE st.parameter_id = ANY($1)`, parameterIDs)
 			}
 		}
 
+		var formatCandidate *string
+		var formatCandidateRatio *float64
+		if candidate, ratio, ok := SelectFormatCandidate(r.formatSampleCount, r.formatCounts); ok {
+			formatCandidate = &candidate
+			formatCandidateRatio = &ratio
+		}
+
 		if _, err := tx.Exec(ctx, `
 UPDATE api_parameter_statistics SET
   presence_rate = $2,
@@ -350,12 +364,15 @@ UPDATE api_parameter_statistics SET
   common_prefixes = $13::jsonb,
   common_suffixes = $14::jsonb,
   numeric_outlier_count = $15,
+  format_candidate = $16,
+  format_candidate_ratio = $17,
   updated_at = now()
 WHERE parameter_id = $1`,
 			r.parameterID, presenceRate, nullRate,
 			lenP50, lenP90, lenP95, lenP99,
 			vq.P50, vq.P90, vq.P95, vq.P99,
-			entropy, string(prefixes), string(suffixes), outlierCount); err != nil {
+			entropy, string(prefixes), string(suffixes), outlierCount,
+			formatCandidate, formatCandidateRatio); err != nil {
 			return fmt.Errorf("refresh extended statistics: %w", err)
 		}
 	}

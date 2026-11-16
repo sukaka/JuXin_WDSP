@@ -52,7 +52,7 @@ type sweepDetail struct {
 
 // sweepHit 从一条事件明细中提取的敏感证据命中。
 type sweepHit struct {
-	Direction      string // REQUEST / RESPONSE（证据无方向时默认 REQUEST，网关当前仅请求侧）
+	Direction      string // REQUEST / RESPONSE（证据无方向时默认 REQUEST，兼容历史请求侧明细）
 	StructuredPath string // location + "." + field（区分同名字段的不同位置）
 	DataType       string
 	RuleID         string

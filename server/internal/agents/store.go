@@ -62,8 +62,9 @@ type EnrollInput struct {
 	CertFingerprint *string
 	CertNotAfter    *time.Time
 	// HTTPEventSchemas 能力协商生效集（v2 契约 §3；nil → 库默认 {1}）。
-	HTTPEventSchemas []int16
-	Now              time.Time
+	HTTPEventSchemas      []int16
+	APIObservationSchemas []int16
+	Now                   time.Time
 }
 
 // RotateCertInput 证书轮换输入（Phase 2-B §9：旧指纹入撤销表 24h 宽限，当前指纹/到期换新）。
@@ -220,15 +221,15 @@ RETURNING id`, in.TokenHash, in.Now.UTC(), in.AgentID).Scan(&tokenID)
 	}
 	schemas := in.HTTPEventSchemas
 	if len(schemas) == 0 {
-		schemas = []int16{1} // 与库默认一致（未声明能力 = 仅 v1）
+		schemas = []int16{1}
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO agents
 (agent_id, hostname, ip, os, kernel, arch, version, credential_hash, enrollment_token_id,
- agent_cert_fingerprint, agent_cert_not_after, http_event_schemas, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)`,
+ agent_cert_fingerprint, agent_cert_not_after, http_event_schemas, api_observation_schemas, created_at, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)`,
 		in.AgentID, in.Hostname, in.IP, in.OS, in.Kernel, in.Arch, in.Version,
-		in.CredentialHash, tokenID, in.CertFingerprint, in.CertNotAfter, schemas, in.Now.UTC()); err != nil {
+		in.CredentialHash, tokenID, in.CertFingerprint, in.CertNotAfter, schemas, in.APIObservationSchemas, in.Now.UTC()); err != nil {
 		return nil, err
 	}
 	for _, ifc := range in.Interfaces {
@@ -243,44 +244,42 @@ VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		return nil, err
 	}
 	return &Agent{
-		AgentID:     in.AgentID,
-		Hostname:    in.Hostname,
-		IP:          in.IP,
-		OS:          in.OS,
-		Kernel:      in.Kernel,
-		Arch:        in.Arch,
-		Version:     in.Version,
-		LastMetrics: []byte(`{}`),
-		CreatedAt:   in.Now.UTC(),
+		AgentID: in.AgentID, Hostname: in.Hostname, IP: in.IP, OS: in.OS,
+		Kernel: in.Kernel, Arch: in.Arch, Version: in.Version,
+		LastMetrics: []byte(`{}`), CreatedAt: in.Now.UTC(),
+		HTTPEventSchemas: int16SliceToInt(schemas), APIObservationSchemas: int16SliceToInt(in.APIObservationSchemas),
 	}, nil
 }
 
-// agentCols 机器端反查/心跳共用列（含 Phase 2-B 当前证书指纹/到期——PoP 认证判定输入；
-// http_event_schemas 为 v2 契约 §3 能力协商生效集——v2 批次准入判定输入）。
 const agentCols = `agent_id, hostname, ip, os, kernel, arch, version, credential_hash,
 	disabled, enrollment_token_id, last_seen, last_status, last_metrics,
 	config_version, applied_config_version, last_clock_offset_ms, created_at,
-	agent_cert_fingerprint, agent_cert_not_after, http_event_schemas`
+	agent_cert_fingerprint, agent_cert_not_after, http_event_schemas, api_observation_schemas`
 
 type rowScanner interface {
 	Scan(dest ...interface{}) error
 }
 
-// scanAgent 按 agentCols 列序扫描单行（http_event_schemas 为 smallint[]，转 []int）。
 func scanAgent(row rowScanner, a *Agent) error {
-	var schemas []int16
+	var schemas, apiSchemas []int16
 	err := row.Scan(&a.AgentID, &a.Hostname, &a.IP, &a.OS, &a.Kernel, &a.Arch, &a.Version,
 		&a.CredentialHash, &a.Disabled, &a.EnrollmentTokenID, &a.LastSeen, &a.LastStatus,
 		&a.LastMetrics, &a.ConfigVersion, &a.AppliedConfigVersion, &a.ClockOffsetMS, &a.CreatedAt,
-		&a.CertFingerprint, &a.CertNotAfter, &schemas)
+		&a.CertFingerprint, &a.CertNotAfter, &schemas, &apiSchemas)
 	if err != nil {
 		return err
 	}
-	a.HTTPEventSchemas = make([]int, 0, len(schemas))
-	for _, v := range schemas {
-		a.HTTPEventSchemas = append(a.HTTPEventSchemas, int(v))
-	}
+	a.HTTPEventSchemas = int16SliceToInt(schemas)
+	a.APIObservationSchemas = int16SliceToInt(apiSchemas)
 	return nil
+}
+
+func int16SliceToInt(values []int16) []int {
+	out := make([]int, 0, len(values))
+	for _, value := range values {
+		out = append(out, int(value))
+	}
+	return out
 }
 
 // AgentByCredentialHash Bearer 反查（摘要 UNIQUE；未登记 → ErrAgentNotFound）。

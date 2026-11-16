@@ -1,22 +1,57 @@
 package parser
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"mime/multipart"
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 )
 
-// PartMeta multipart 单个 part 的元数据（文件内容不落内存，仅流式计数大小）。
+const maxFileContentPrefix = 512
+
+// PartMeta multipart 单个 part 的元数据。文件前缀只在请求内存活供签名检测，
+// 非导出字段不会进入事件 JSON；其余文件内容仍流式计数后丢弃。
 type PartMeta struct {
-	FieldName   string
-	FileName    string
-	ContentType string
-	Size        int64
+	FieldName       string
+	FileName        string
+	ContentType     string
+	Size            int64
+	SensitiveTypes  []string `json:"sensitive_types,omitempty"`
+	prefix          []byte
+	complete        bool
+	contentSHA256   string
+	contentComplete bool
+}
+
+// ContentPrefix 返回最多 512 字节的文件前缀，以及该 part 是否完整读取。
+// 总请求限额在 part 前耗尽时前缀可能为空，检测侧必须披露未检查。
+// 调用方只读使用，不得在请求结束后保留或写入事件。
+func (m PartMeta) ContentPrefix() ([]byte, bool) {
+	return m.prefix, m.complete
+}
+
+// ContentFingerprint 返回完整文件内容的小写 SHA-256；不完整读取时返回空值。
+// 哈希在流式读取时计算，不要求文件全文进入内存。
+func (m PartMeta) ContentFingerprint() (string, bool) {
+	return m.contentSHA256, m.contentComplete
+}
+
+type filePrefixBuffer struct {
+	data []byte
+}
+
+func (b *filePrefixBuffer) Write(p []byte) (int, error) {
+	if remaining := maxFileContentPrefix - len(b.data); remaining > 0 {
+		n := min(len(p), remaining)
+		b.data = append(b.data, p[:n]...)
+	}
+	return len(p), nil
 }
 
 // parseMultipart 流式读取 multipart/form-data：逐 part 记录元数据，
-// part 内容经 io.Discard 丢弃（不缓存进内存），TeeReader 同步累计 BodySize/BodyHash。
+// 文件仅保留有界前缀供签名检测，其余内容经 io.Discard 丢弃，TeeReader 同步累计 BodySize/BodyHash。
 // 截断：总字节超 MaxBodyParseBytes 置 BodyTruncated；part 元数据数超 MaxFileMetaCount 置 MultipartCapped。
 func (p *Parsed) parseMultipart(body io.ReadCloser, boundary string, limits dsctx.ParseLimits) {
 	defer func() { _ = body.Close() }()
@@ -45,9 +80,21 @@ func (p *Parsed) parseMultipart(body io.ReadCloser, boundary string, limits dsct
 		if remaining < 0 {
 			remaining = 0
 		}
-		n, _ := io.CopyN(io.Discard, part, remaining)
+		var reader io.Reader = part
+		var prefix filePrefixBuffer
+		hasher := sha256.New()
+		if meta.FileName != "" {
+			reader = io.TeeReader(reader, io.MultiWriter(&prefix, hasher))
+		}
+		n, readErr := io.CopyN(io.Discard, reader, remaining)
 		meta.Size = n
 		if meta.FileName != "" {
+			meta.prefix = prefix.data
+			meta.complete = readErr == io.EOF && n <= maxFileContentPrefix
+			meta.contentComplete = readErr == io.EOF
+			if meta.contentComplete {
+				meta.contentSHA256 = hex.EncodeToString(hasher.Sum(nil))
+			}
 			p.HasFiles = true
 		}
 		p.MultipartParts = append(p.MultipartParts, meta)

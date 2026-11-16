@@ -18,6 +18,11 @@ type RiskPolicyLister interface {
 	GetGuardRiskPolicy(ctx context.Context) (*gatewayconfig.GuardRiskPolicy, error)
 }
 
+// RiskPolicyOverrideLister 是可选扩展，旧实现没有该接口时保持原行为。
+type RiskPolicyOverrideLister interface {
+	ListGuardRiskPolicyOverrides(ctx context.Context) ([]gatewayconfig.GuardRiskPolicyOverride, error)
+}
+
 // SetRiskPolicyLister 注入风险策略读取（nil 时不下发 risk_policy 段）。
 func (p *Provider) SetRiskPolicyLister(l RiskPolicyLister) { p.riskPolicy = l }
 
@@ -37,4 +42,16 @@ func (p *Provider) loadRiskPolicy(ctx context.Context, cfg *gatewayconfig.GuardC
 		return
 	}
 	cfg.RiskPolicy = pol
+	lister, ok := p.riskPolicy.(RiskPolicyOverrideLister)
+	if !ok {
+		return
+	}
+	overrides, err := lister.ListGuardRiskPolicyOverrides(ctx)
+	if err != nil {
+		slog.Warn("list application risk policy overrides failed, keep global policy", "error", err)
+		return
+	}
+	if len(overrides) > 0 {
+		cfg.RiskPolicyOverrides = overrides
+	}
 }

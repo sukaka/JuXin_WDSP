@@ -1,7 +1,7 @@
 // Package response API 响应侧安全：脱敏规则（MaskRule）、transform plan 生成、
 // JSON 字段级 Response Transformer、错误签名提取。
 //
-// 数据最小化：本包不输出响应明文值；脱敏算法（MASK/HASH/REMOVE）在内存中对
+// 数据最小化：本包不输出响应明文值；脱敏算法（MASK/HASH/ENCRYPT/MAP/REMOVE）在内存中对
 // 解码后的 JSON 树执行，结果经重新编码写回，证据/事件只含字段路径与数据类型标签。
 package response
 
@@ -23,6 +23,10 @@ const (
 	AlgorithmHash Algorithm = "HASH"
 	// AlgorithmRemove 删除字段（对象成员删键；数组元素从数组中移除）。
 	AlgorithmRemove Algorithm = "REMOVE"
+	// AlgorithmEncrypt AES-256-GCM 加密，需 key_id。
+	AlgorithmEncrypt Algorithm = "ENCRYPT"
+	// AlgorithmMap 带密钥的稳定映射，需 map_id。
+	AlgorithmMap Algorithm = "MAP"
 )
 
 // MASK 算法参数默认值与上限。
@@ -55,9 +59,12 @@ type MaskRule struct {
 	Algorithm   Algorithm
 	KeepHead    int
 	KeepTail    int
+	KeyID       string // ENCRYPT 密钥标识（仅标识，不含密钥）
+	MapID       string // MAP 映射标识（仅标识，不含密钥）
 }
 
-// ParseMaskRule 解析并校验单条规则（params 支持 keep_head/keep_tail，非负整数）。
+// ParseMaskRule 解析并校验单条规则（params 支持 keep_head/keep_tail/key_id/map_id）。
+// key_id/map_id 均为 1-64 位 [A-Za-z0-9_-]；ENCRYPT 必须 key_id，MAP 必须 map_id。
 // 校验失败返回错误（配置错误必须显式暴露，不静默吞错）。
 func ParseMaskRule(endpointKey, fieldPath, dataType, algorithm string, params map[string]any) (MaskRule, error) {
 	var rule MaskRule
@@ -71,10 +78,10 @@ func ParseMaskRule(endpointKey, fieldPath, dataType, algorithm string, params ma
 		return rule, fmt.Errorf("data_type must be <= %d chars", maxDataTypeLen)
 	}
 	switch Algorithm(algorithm) {
-	case AlgorithmMask, AlgorithmHash, AlgorithmRemove:
+	case AlgorithmMask, AlgorithmHash, AlgorithmRemove, AlgorithmEncrypt, AlgorithmMap:
 		rule.Algorithm = Algorithm(algorithm)
 	default:
-		return rule, fmt.Errorf("algorithm must be MASK, HASH or REMOVE, got %q", algorithm)
+		return rule, fmt.Errorf("algorithm must be MASK, HASH, REMOVE, ENCRYPT or MAP, got %q", algorithm)
 	}
 	rule.EndpointKey = endpointKey
 	rule.FieldPath = fieldPath
@@ -96,11 +103,41 @@ func ParseMaskRule(endpointKey, fieldPath, dataType, algorithm string, params ma
 			} else {
 				rule.KeepTail = n
 			}
+		case "key_id", "map_id":
+			value, err := paramMaskIdentifier(k, v)
+			if err != nil {
+				return rule, err
+			}
+			if k == "key_id" {
+				rule.KeyID = value
+			} else {
+				rule.MapID = value
+			}
 		default:
 			return rule, fmt.Errorf("unknown params key %q", k)
 		}
 	}
+	if rule.Algorithm == AlgorithmEncrypt && rule.KeyID == "" {
+		return rule, fmt.Errorf("params.key_id is required for ENCRYPT")
+	}
+	if rule.Algorithm == AlgorithmMap && rule.MapID == "" {
+		return rule, fmt.Errorf("params.map_id is required for MAP")
+	}
 	return rule, nil
+}
+
+func paramMaskIdentifier(key string, value any) (string, error) {
+	s, ok := value.(string)
+	if !ok || len(s) == 0 || len(s) > 64 {
+		return "", fmt.Errorf("params.%s must be 1-64 chars of [A-Za-z0-9_-]", key)
+	}
+	for _, r := range s {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return "", fmt.Errorf("params.%s must be 1-64 chars of [A-Za-z0-9_-]", key)
+	}
+	return s, nil
 }
 
 // validateFieldPath 校验点路径形态：段非空、数组段以 [] 结尾、无空段。
@@ -142,7 +179,7 @@ func paramNonNegativeInt(key string, v any) (int, error) {
 
 // BuildTransformPlan 由端点规则与响应解析产物生成 transform plan：
 // 仅收录字段路径在解析产物中真实存在、且算法对该类型可执行的规则
-// （object/array 目标仅 REMOVE 可执行，MASK/HASH 空转项在生成期剔除，
+// （object/array 目标仅 REMOVE 可执行，MASK/HASH/ENCRYPT/MAP 空转项在生成期剔除，
 // 保证"plan 非空"对决策引擎是有执行含义的信号）。规则顺序即计划顺序。
 func BuildTransformPlan(rules []MaskRule, fields map[string]string) []dsctx.FieldTransform {
 	var plan []dsctx.FieldTransform
@@ -160,6 +197,8 @@ func BuildTransformPlan(rules []MaskRule, fields map[string]string) []dsctx.Fiel
 			Algorithm: string(rl.Algorithm),
 			KeepHead:  rl.KeepHead,
 			KeepTail:  rl.KeepTail,
+			KeyID:     rl.KeyID,
+			MapID:     rl.MapID,
 		})
 	}
 	return plan

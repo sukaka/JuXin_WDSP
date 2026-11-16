@@ -197,6 +197,15 @@ func placeholders(n int) string {
 
 // ---------- 资产来源关系（契约 §5） ----------
 
+// HTTPAssetClassification 来源观测时的 API 分类证据（不落敏感内容）。
+type HTTPAssetClassification struct {
+	IsAPI        bool      `json:"is_api"`
+	Confidence   float64   `json:"confidence"`
+	Level        string    `json:"level"`
+	Signals      []string  `json:"signals"`
+	ClassifiedAt time.Time `json:"classified_at"`
+}
+
 // HTTPAssetSourceInput 来源关系 upsert 输入。
 type HTTPAssetSourceInput struct {
 	AgentID              uuid.UUID
@@ -211,26 +220,28 @@ type HTTPAssetSourceInput struct {
 	BindingVersion       *int64
 	State                string // AssetLink* 枚举
 	LastError            string // FAILED/QUOTA_REJECTED 的类别原因（≤255，截断）
+	Classification       *HTTPAssetClassification
 	Now                  time.Time
 }
 
 // HTTPAssetSourceRow 来源关系行（管理端查询输出）。
 type HTTPAssetSourceRow struct {
-	ID                   int64      `json:"id"`
-	AgentID              uuid.UUID  `json:"agent_id"`
-	EndpointID           *uuid.UUID `json:"endpoint_id"`
-	Host                 string     `json:"host"`
-	Method               string     `json:"method"`
-	PathTemplate         string     `json:"path_template"`
-	SourceType           string     `json:"source_type"`
-	SourceInstance       string     `json:"source_instance"`
-	SourceEpoch          int64      `json:"source_epoch"`
-	ApplicationBindingID *uuid.UUID `json:"application_binding_id"`
-	BindingVersion       *int64     `json:"binding_version"`
-	AssociationState     string     `json:"association_state"`
-	LastError            string     `json:"last_error"`
-	FirstSeenAt          time.Time  `json:"first_seen_at"`
-	LastSeenAt           time.Time  `json:"last_seen_at"`
+	ID                   int64                    `json:"id"`
+	AgentID              uuid.UUID                `json:"agent_id"`
+	EndpointID           *uuid.UUID               `json:"endpoint_id"`
+	Host                 string                   `json:"host"`
+	Method               string                   `json:"method"`
+	PathTemplate         string                   `json:"path_template"`
+	SourceType           string                   `json:"source_type"`
+	SourceInstance       string                   `json:"source_instance"`
+	SourceEpoch          int64                    `json:"source_epoch"`
+	ApplicationBindingID *uuid.UUID               `json:"application_binding_id"`
+	BindingVersion       *int64                   `json:"binding_version"`
+	AssociationState     string                   `json:"association_state"`
+	LastError            string                   `json:"last_error"`
+	FirstSeenAt          time.Time                `json:"first_seen_at"`
+	LastSeenAt           time.Time                `json:"last_seen_at"`
+	Classification       *HTTPAssetClassification `json:"classification,omitempty"`
 }
 
 // HTTPAssetSourceFilter 管理端过滤（state 精确匹配；空=全部）。
@@ -242,13 +253,39 @@ type HTTPAssetSourceFilter struct {
 // UpsertHTTPAssetSource 来源关系 upsert（多来源各自成行；重放仅推进 last_seen_at
 // 与关联状态——endpoint_id 在关联成功时刷新，失败行不覆盖既有成功关联）。
 func (s *Store) UpsertHTTPAssetSource(ctx context.Context, in HTTPAssetSourceInput) error {
+	var classIsAPI *bool
+	var classConfidence *float64
+	classLevel := ""
+	classSignals := []byte("[]")
+	var classifiedAt *time.Time
+	if c := in.Classification; c != nil {
+		isAPI := c.IsAPI
+		confidence := c.Confidence
+		classified := c.ClassifiedAt.UTC()
+		if classified.IsZero() {
+			classified = in.Now.UTC()
+		}
+		classIsAPI = &isAPI
+		classConfidence = &confidence
+		classLevel = c.Level
+		signals := c.Signals
+		if signals == nil {
+			signals = []string{}
+		}
+		if raw, err := json.Marshal(signals); err == nil {
+			classSignals = raw
+		}
+		classifiedAt = &classified
+	}
 	_, err := s.db.Exec(ctx, `
 INSERT INTO agent_http_asset_sources
 (agent_id, endpoint_id, host, method, path_template,
  source_type, source_instance, source_epoch,
  application_binding_id, binding_version,
- association_state, last_error, first_seen_at, last_seen_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+ association_state, last_error, first_seen_at, last_seen_at,
+ classification_is_api, classification_confidence, classification_level,
+ classification_signals, classified_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14,$15,$16,$17,$18)
 ON CONFLICT (agent_id, host, method, path_template, source_type, source_instance)
 DO UPDATE SET
   endpoint_id  = COALESCE(EXCLUDED.endpoint_id, agent_http_asset_sources.endpoint_id),
@@ -257,11 +294,17 @@ DO UPDATE SET
   binding_version = COALESCE(EXCLUDED.binding_version, agent_http_asset_sources.binding_version),
   association_state = EXCLUDED.association_state,
   last_error = EXCLUDED.last_error,
-  last_seen_at = EXCLUDED.last_seen_at`,
+  last_seen_at = EXCLUDED.last_seen_at,
+  classification_is_api = COALESCE(EXCLUDED.classification_is_api, agent_http_asset_sources.classification_is_api),
+  classification_confidence = COALESCE(EXCLUDED.classification_confidence, agent_http_asset_sources.classification_confidence),
+  classification_level = CASE WHEN EXCLUDED.classified_at IS NOT NULL THEN EXCLUDED.classification_level ELSE agent_http_asset_sources.classification_level END,
+  classification_signals = CASE WHEN EXCLUDED.classified_at IS NOT NULL THEN EXCLUDED.classification_signals ELSE agent_http_asset_sources.classification_signals END,
+  classified_at = COALESCE(EXCLUDED.classified_at, agent_http_asset_sources.classified_at)`,
 		in.AgentID, in.EndpointID, in.Host, in.Method, in.PathTemplate,
 		in.SourceType, in.SourceInstance, in.SourceEpoch,
 		in.ApplicationBindingID, in.BindingVersion,
-		in.State, in.LastError, in.Now.UTC())
+		in.State, in.LastError, in.Now.UTC(),
+		classIsAPI, classConfidence, classLevel, classSignals, classifiedAt)
 	return err
 }
 
@@ -279,6 +322,8 @@ SELECT id, agent_id, endpoint_id, host, method, path_template,
        source_type, source_instance, source_epoch,
        application_binding_id, binding_version,
        association_state, last_error, first_seen_at, last_seen_at,
+       classification_is_api, classification_confidence, classification_level,
+       classification_signals, classified_at,
        count(*) OVER () AS total
 FROM agent_http_asset_sources
 WHERE `+where+`
@@ -292,11 +337,30 @@ LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)
 	var total int64
 	for rows.Next() {
 		var r HTTPAssetSourceRow
+		var classIsAPI *bool
+		var classConfidence *float64
+		var classLevel string
+		var classSignals []byte
+		var classifiedAt *time.Time
 		if err := rows.Scan(&r.ID, &r.AgentID, &r.EndpointID, &r.Host, &r.Method, &r.PathTemplate,
 			&r.SourceType, &r.SourceInstance, &r.SourceEpoch,
 			&r.ApplicationBindingID, &r.BindingVersion,
-			&r.AssociationState, &r.LastError, &r.FirstSeenAt, &r.LastSeenAt, &total); err != nil {
+			&r.AssociationState, &r.LastError, &r.FirstSeenAt, &r.LastSeenAt,
+			&classIsAPI, &classConfidence, &classLevel, &classSignals, &classifiedAt, &total); err != nil {
 			return nil, 0, err
+		}
+		if classifiedAt != nil {
+			classification := &HTTPAssetClassification{Level: classLevel, Signals: []string{}, ClassifiedAt: *classifiedAt}
+			if classIsAPI != nil {
+				classification.IsAPI = *classIsAPI
+			}
+			if classConfidence != nil {
+				classification.Confidence = *classConfidence
+			}
+			if len(classSignals) > 0 {
+				_ = json.Unmarshal(classSignals, &classification.Signals)
+			}
+			r.Classification = classification
 		}
 		out = append(out, r)
 	}

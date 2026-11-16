@@ -96,6 +96,143 @@ func TestStoreOverrides_APIWriteWindowRouted(t *testing.T) {
 	}
 }
 
+// 注入 CredentialRateWindow 后凭据限速走注入实现，且不触碰包级默认追踪器。
+func TestStoreOverrides_CredentialRateWindowRouted(t *testing.T) {
+	tracker := isolateCredentialRateTrackerForTest(t, 16, nil)
+	fake := &fakeWindowStore{count: 2}
+	const credKey = "auth:override-credential-rate"
+	ctx := contextWithOverrides(&StoreOverrides{CredentialRateWindow: fake})
+	CheckCredentialRate(ctx, credKey, 1)
+	if len(fake.calls) != 1 || fake.calls[0] != credKey {
+		t.Fatalf("credential rate window override not used: %v", fake.calls)
+	}
+	m := findMatch(ctx, "ratelimit.credential_rate")
+	if m == nil || m.Evidence["window_count"] != "2" {
+		t.Fatalf("override count must drive match, got %+v", ctx.CopyMatches())
+	}
+	if _, ok := tracker.entries.get(credKey); ok {
+		t.Fatal("default credential rate tracker must not be touched when override set")
+	}
+}
+
+// 未绑定、字段为 nil 及显式清除注入时，凭据限速均回退包级默认内存。
+func TestStoreOverrides_CredentialRateWindowMemoryDefaults(t *testing.T) {
+	tests := []struct {
+		name string
+		bind func(*dsctx.RequestContext)
+	}{
+		{name: "unbound", bind: func(*dsctx.RequestContext) {}},
+		{name: "nil field", bind: func(ctx *dsctx.RequestContext) {
+			ctx.BindDetectorStoreOverrides(&StoreOverrides{})
+		}},
+		{name: "cleared", bind: func(ctx *dsctx.RequestContext) {
+			ctx.BindDetectorStoreOverrides(&StoreOverrides{CredentialRateWindow: &fakeWindowStore{count: 2}})
+			ctx.BindDetectorStoreOverrides(nil)
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker := isolateCredentialRateTrackerForTest(t, 16, nil)
+			const credKey = "auth:default-credential-rate"
+			ctx := dsctx.New("t", dsctx.DefaultParseLimits())
+			tc.bind(ctx)
+			CheckCredentialRate(ctx, credKey, 1)
+			if _, ok := tracker.entries.get(credKey); !ok {
+				t.Fatal("default credential rate tracker must be used")
+			}
+			if ctx.MatchCount() != 0 {
+				t.Fatalf("first default-memory hit must not exceed limit: %+v", ctx.CopyMatches())
+			}
+		})
+	}
+}
+
+func isolateObjectRateTrackerForTest(t *testing.T) *windowTracker {
+	t.Helper()
+	tracker := newWindowTracker(objectRateMaxKeys, nil)
+	previous := defaultObjectRateTracker
+	defaultObjectRateTracker = tracker
+	t.Cleanup(func() { defaultObjectRateTracker = previous })
+	return tracker
+}
+
+// 注入 ObjectRateWindow 后对象限速走注入实现，键仅包含既有 ValueHash。
+func TestStoreOverrides_ObjectRateWindowRouted(t *testing.T) {
+	tracker := isolateObjectRateTrackerForTest(t)
+	fake := &fakeWindowStore{count: 2}
+	const (
+		rawObject = "918273645501"
+		identity  = "auth:object-rate-override"
+		endpoint  = "GET /v1/orders/{id}"
+		salt      = "object-rate-override-salt"
+	)
+	p := objectRateParsed("/v1/orders/"+rawObject, "/v1/orders/{id}")
+	ids := parser.ExtractObjectIdentifiers(p, salt)
+	if len(ids) != 1 {
+		t.Fatalf("want one object identifier, got %+v", ids)
+	}
+	wantKey := identity + "|" + endpoint + "|" + ids[0].Source + ":" + ids[0].Param + "|" + ids[0].ValueHash
+	ctx := contextWithOverrides(&StoreOverrides{ObjectRateWindow: fake})
+	CheckObjectRate(ctx, p, identity, endpoint, salt, 1)
+	if len(fake.calls) != 1 || fake.calls[0] != wantKey {
+		t.Fatalf("object rate window override not used with hashed object key: %v", fake.calls)
+	}
+	m := findMatch(ctx, "ratelimit.object_rate")
+	if m == nil || m.Evidence["window_count"] != "2" {
+		t.Fatalf("override count must drive match, got %+v", ctx.CopyMatches())
+	}
+	for name, value := range m.Evidence {
+		if value == rawObject {
+			t.Fatalf("raw object value leaked into evidence %s", name)
+		}
+	}
+	if tracker.entries.ll.Len() != 0 {
+		t.Fatal("default object rate tracker must not be touched when override set")
+	}
+}
+
+// 未绑定、字段为 nil 及显式清除注入时，对象限速均回退包级默认内存。
+func TestStoreOverrides_ObjectRateWindowMemoryDefaults(t *testing.T) {
+	const (
+		identity = "auth:object-rate-default"
+		endpoint = "GET /v1/orders/{id}"
+		salt     = "object-rate-default-salt"
+	)
+	p := objectRateParsed("/v1/orders/918273645502", "/v1/orders/{id}")
+	ids := parser.ExtractObjectIdentifiers(p, salt)
+	if len(ids) != 1 {
+		t.Fatalf("want one object identifier, got %+v", ids)
+	}
+	wantKey := identity + "|" + endpoint + "|" + ids[0].Source + ":" + ids[0].Param + "|" + ids[0].ValueHash
+	tests := []struct {
+		name string
+		bind func(*dsctx.RequestContext)
+	}{
+		{name: "unbound", bind: func(*dsctx.RequestContext) {}},
+		{name: "nil field", bind: func(ctx *dsctx.RequestContext) {
+			ctx.BindDetectorStoreOverrides(&StoreOverrides{})
+		}},
+		{name: "cleared", bind: func(ctx *dsctx.RequestContext) {
+			ctx.BindDetectorStoreOverrides(&StoreOverrides{ObjectRateWindow: &fakeWindowStore{count: 2}})
+			ctx.BindDetectorStoreOverrides(nil)
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker := isolateObjectRateTrackerForTest(t)
+			ctx := dsctx.New("t", dsctx.DefaultParseLimits())
+			tc.bind(ctx)
+			CheckObjectRate(ctx, p, identity, endpoint, salt, 1)
+			if _, ok := tracker.entries.get(wantKey); !ok {
+				t.Fatal("default object rate tracker must be used")
+			}
+			if ctx.MatchCount() != 0 {
+				t.Fatalf("first default-memory hit must not exceed limit: %+v", ctx.CopyMatches())
+			}
+		})
+	}
+}
+
 // 注入 ObjectCursor 后连续数字 ID 判定走注入实现（返回 true → 升 BLOCK 类）。
 func TestStoreOverrides_ObjectCursorRouted(t *testing.T) {
 	fake := &fakeObjectCursorStore{ret: true}

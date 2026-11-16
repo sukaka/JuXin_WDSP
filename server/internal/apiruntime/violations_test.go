@@ -78,7 +78,7 @@ func TestRecordViolationsSkips(t *testing.T) {
 		EndpointKey: "GET /b", Method: "GET", PathTemplate: "/b",
 		IsAPI: true, FinalAction: "OBSERVE", OccurredAt: time.Now().UTC(),
 		Details: []dsctx.DetectorMatch{
-			{Detector: "api_schema", RuleID: "schema.missing_field"},
+			{Detector: "api_schema", RuleID: "schema.param_required"},
 		},
 	}
 	collectWithViolations(t, saver, plain, noReqID)

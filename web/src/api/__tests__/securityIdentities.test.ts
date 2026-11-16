@@ -10,8 +10,12 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 function stubFetch(body: unknown, status = 200) {
-  const fn = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(() =>
-    Promise.resolve(jsonResponse(status, { code: 'SUCCESS', message: 'ok', data: body })),
+  const fn = vi.fn<
+    (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+  >(() =>
+    Promise.resolve(
+      jsonResponse(status, { code: 'SUCCESS', message: 'ok', data: body }),
+    ),
   )
   vi.stubGlobal('fetch', fn)
   return fn
@@ -30,7 +34,12 @@ describe('securityIdentitiesApi', () => {
   })
 
   it('list：筛选与分页参数拼接到查询串，items 为 null 时归一化为空数组', async () => {
-    const fetchMock = stubFetch({ items: null, page: 2, page_size: 10, total: 0 })
+    const fetchMock = stubFetch({
+      items: null,
+      page: 2,
+      page_size: 10,
+      total: 0,
+    })
     const data = await securityIdentitiesApi.list({
       risk_level: 'HIGH',
       identity_type: 'BOT',
@@ -77,7 +86,12 @@ describe('securityIdentitiesApi', () => {
   })
 
   it('behavior：window/from/to 作为查询参数传递，items 归一化', async () => {
-    const fetchMock = stubFetch({ items: null, page: 1, page_size: 500, total: 0 })
+    const fetchMock = stubFetch({
+      items: null,
+      page: 1,
+      page_size: 500,
+      total: 0,
+    })
     const data = await securityIdentitiesApi.behavior('idn-1', {
       window: '5m',
       from: '2026-08-30',
@@ -94,7 +108,12 @@ describe('securityIdentitiesApi', () => {
   })
 
   it('events：signal 与分页参数拼接，空参不传', async () => {
-    const fetchMock = stubFetch({ items: null, page: 1, page_size: 20, total: 0 })
+    const fetchMock = stubFetch({
+      items: null,
+      page: 1,
+      page_size: 20,
+      total: 0,
+    })
     await securityIdentitiesApi.events('idn-1', {
       signal: 'URI_ENUMERATION',
       page: 1,
@@ -106,5 +125,25 @@ describe('securityIdentitiesApi', () => {
     expect(url).toContain('page=1')
     expect(url).not.toContain('from=')
     expect(url).not.toContain('to=')
+  })
+
+  it('block：POST 封禁端点并提交 reason', async () => {
+    const fetchMock = stubFetch({ message: '已封禁' })
+    await securityIdentitiesApi.block('idn-1', '确认恶意扫描')
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe('/api/v1/security/identities/idn-1/block')
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({ reason: '确认恶意扫描' })
+  })
+
+  it('unblock：POST 解封端点且不伪造请求体', async () => {
+    const fetchMock = stubFetch({ message: '已解封' })
+    await securityIdentitiesApi.unblock('idn-1')
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toBe('/api/v1/security/identities/idn-1/unblock')
+    expect(init?.method).toBe('POST')
+    expect(init?.body).toBeUndefined()
   })
 })

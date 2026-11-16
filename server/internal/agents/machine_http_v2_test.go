@@ -590,6 +590,148 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 	})
 }
 
+// TestHTTPEventsV2AssetClassification v2 资产联动按请求/响应可见证据分类，
+// 不再对已绑定事件统一写死 true/0.8；v1 兼容口径由 machine_http_test.go 覆盖。
+func TestHTTPEventsV2AssetClassification(t *testing.T) {
+	path := func(id uuid.UUID) string { return "/api/v1/agents/" + id.String() + "/http" }
+	bindingID := uuid.New().String()
+	bindingVer := int64(7)
+
+	run := func(t *testing.T, rec HTTPRecordV2) apiassets.DiscoveryInput {
+		t.Helper()
+		rec.ApplicationBindingID = &bindingID
+		rec.BindingVersion = &bindingVer
+		store := newFakeMachineStore()
+		agentID := uuid.New()
+		cred := registerAgentV2(store, agentID)
+		upserter := &fakeDiscoveryUpserter{}
+		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
+		rr := doMachine(t, mux, http.MethodPost, path(agentID), httpRecordsV2JSON(t, rec), cred)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202 (body=%s)", rr.Code, rr.Body.String())
+		}
+		if len(upserter.inputs) != 1 {
+			t.Fatalf("端点 upsert 次数 = %d, want 1: %+v", len(upserter.inputs), upserter.inputs)
+		}
+		return upserter.inputs[0]
+	}
+
+	t.Run("JSON 请求与响应按证据分类", func(t *testing.T) {
+		got := run(t, validHTTPRecordV2())
+		if !got.IsAPI || got.Confidence <= 0.50 || got.Confidence >= 1 {
+			t.Fatalf("JSON API 分类异常: %+v", got)
+		}
+	})
+
+	t.Run("普通 HTML 页面不再固定登记为高置信 API", func(t *testing.T) {
+		rec := validHTTPRecordV2()
+		rec.Request.Method = "GET"
+		rec.Request.URI = "/docs"
+		rec.Request.Headers = HTTPHeaderValues{"content-type": {"text/html"}}
+		rec.Request.Body = ""
+		rec.Request.BodyQuality = HTTPBodyQuality{}
+		rec.Response.Headers = HTTPHeaderValues{"content-type": {"text/html"}}
+		rec.Response.Body = ""
+		rec.Response.BodyQuality = HTTPBodyQuality{}
+		got := run(t, rec)
+		if got.IsAPI || got.Confidence != 0 {
+			t.Fatalf("HTML 页面被误登记为 API: %+v", got)
+		}
+	})
+
+	t.Run("单向 Nginx 源缺响应不作负向推断", func(t *testing.T) {
+		rec := validHTTPRecordV2()
+		rec.EventID = "01J0EXAMPLE0000000000000000B"
+		rec.SourceType = SourceTypeNginxMirror
+		rec.TLSVisibility = TLSDecrypted
+		rec.Request.Method = "GET"
+		rec.Request.URI = "/v1/ping"
+		rec.Request.Headers = HTTPHeaderValues{"content-type": {"application/json"}}
+		rec.Request.Body = ""
+		rec.Request.BodyQuality = HTTPBodyQuality{}
+		rec.Response = nil
+		rec.ResponseTS = nil
+		rec.LatencyMS = nil
+		rec.AssociationState = AssocStateRequestOnly
+		rec.AssociationReason = AssocReasonSourceRequestOnly
+		got := run(t, rec)
+		if !got.IsAPI || got.Confidence != 0.55 {
+			t.Fatalf("请求侧 JSON 证据被响应缺失压低: %+v", got)
+		}
+	})
+
+	t.Run("Envoy 响应 JSON 相比单向源提高置信度", func(t *testing.T) {
+		rec := validHTTPRecordV2()
+		rec.EventID = "01J0EXAMPLE0000000000000000C"
+		rec.SourceType = SourceTypeEnvoyTap
+		rec.Request.Method = "GET"
+		rec.Request.URI = "/v1/ping"
+		rec.Request.Headers = HTTPHeaderValues{"content-type": {"application/json"}}
+		rec.Request.Body = ""
+		rec.Request.BodyQuality = HTTPBodyQuality{}
+		rec.Response.Body = ""
+		rec.Response.BodyQuality = HTTPBodyQuality{}
+		got := run(t, rec)
+		if !got.IsAPI || got.Confidence <= 0.35 {
+			t.Fatalf("响应 JSON 未提高置信度: %+v", got)
+		}
+	})
+
+	t.Run("gRPC 可信元数据为强 API 证据", func(t *testing.T) {
+		rec := validHTTPRecordV2()
+		rec.EventID = "01J0EXAMPLE0000000000000000D"
+		rec.SourceType = SourceTypeEnvoyTap
+		rec.ObservedHTTPVersion = HTTPVersion2
+		rec.Request.Method = "POST"
+		rec.Request.URI = "/pkg.UserService/GetUser"
+		rec.Request.Headers = HTTPHeaderValues{"content-type": {"application/grpc"}}
+		rec.Request.Body = ""
+		rec.Request.BodyQuality = HTTPBodyQuality{}
+		rec.Response.Headers = HTTPHeaderValues{"content-type": {"application/grpc"}}
+		rec.Response.Body = ""
+		rec.Response.BodyQuality = HTTPBodyQuality{}
+		grpcStatus := 0
+		rec.GRPC = &GRPCMeta{Service: "pkg.UserService", Method: "GetUser", GRPCStatus: &grpcStatus, StreamState: GRPCStreamClosed}
+		got := run(t, rec)
+		if got.ProtocolType != "GRPC" || !got.IsAPI || got.Confidence < 0.90 {
+			t.Fatalf("gRPC 分类异常: %+v", got)
+		}
+	})
+}
+
+// TestHTTPEventsV2AssetClassificationPersisted v2 分类证据随来源关系持久化，
+// 供单个 API 详细导出解释识别依据；历史行不回填。
+func TestHTTPEventsV2AssetClassificationPersisted(t *testing.T) {
+	store := newFakeMachineStore()
+	agentID := uuid.New()
+	cred := registerAgentV2(store, agentID)
+	upserter := &fakeDiscoveryUpserter{}
+	mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
+	rec := validHTTPRecordV2()
+	bindingID := uuid.New().String()
+	bindingVer := int64(7)
+	rec.ApplicationBindingID = &bindingID
+	rec.BindingVersion = &bindingVer
+	rr := doMachine(t, mux, http.MethodPost, "/api/v1/agents/"+agentID.String()+"/http",
+		httpRecordsV2JSON(t, rec), cred)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body=%s)", rr.Code, rr.Body.String())
+	}
+	if len(store.assetSources) != 1 {
+		t.Fatalf("来源关系行数 = %d, want 1", len(store.assetSources))
+	}
+	classification := store.assetSources[0].Classification
+	if classification == nil {
+		t.Fatal("v2 来源关系缺少分类证据")
+	}
+	if !classification.IsAPI || classification.Confidence <= 0.50 || classification.Level != "CONFIRMED_API" {
+		t.Fatalf("v2 分类证据异常: %+v", classification)
+	}
+	if len(classification.Signals) == 0 || classification.ClassifiedAt.IsZero() {
+		t.Fatalf("v2 分类信号/时间未持久化: %+v", classification)
+	}
+}
+
 // ---------- v2 校验矩阵（契约 §2） ----------
 
 // TestHTTPRecordV2Validate v2 字段校验矩阵。

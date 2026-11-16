@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { buildDirectoryTree } from '../stage8'
+import {
+  EXPOSURE_CONFIDENCE_META,
+  apiAssetValueReasonLabel,
+  apiClassificationSourceLabel,
+  apiExposureLabel,
+  buildDirectoryTree,
+  exposureConfidenceLabel,
+} from '../stage8'
 
 describe('buildDirectoryTree', () => {
   it('嵌套目录：/test 与 /test/php 组装为父子层级，计数写在节点标题', () => {
@@ -49,5 +56,73 @@ describe('buildDirectoryTree', () => {
 
   it('空列表返回空数组', () => {
     expect(buildDirectoryTree([])).toEqual([])
+  })
+})
+
+describe('apiExposureLabel', () => {
+  it('暴露面枚举翻译为中文', () => {
+    expect(apiExposureLabel('INTERNAL')).toBe('内网')
+    expect(apiExposureLabel('PARTNER')).toBe('合作方')
+    expect(apiExposureLabel('PUBLIC')).toBe('外网')
+    expect(apiExposureLabel('UNKNOWN')).toBe('未知')
+  })
+
+  it('大小写/空白归一后命中词表', () => {
+    expect(apiExposureLabel(' public ')).toBe('外网')
+  })
+
+  it('未知取值原样返回，不伪造映射', () => {
+    expect(apiExposureLabel('CUSTOM_X')).toBe('CUSTOM_X')
+  })
+})
+
+describe('apiClassificationSourceLabel', () => {
+  it('分类来源枚举翻译为中文', () => {
+    expect(apiClassificationSourceLabel('AUTO')).toBe('自动识别')
+    expect(apiClassificationSourceLabel('MANUAL')).toBe('人工标记')
+    expect(apiClassificationSourceLabel('CONFIG')).toBe('配置判定')
+    expect(apiClassificationSourceLabel('TRAFFIC_OBSERVED')).toBe('流量观测')
+  })
+
+  it('未知来源原样返回', () => {
+    expect(apiClassificationSourceLabel('SOMETHING_ELSE')).toBe('SOMETHING_ELSE')
+  })
+})
+
+describe('exposureConfidenceLabel / EXPOSURE_CONFIDENCE_META', () => {
+  it('评估置信度枚举翻译为中文', () => {
+    expect(exposureConfidenceLabel('LOW')).toBe('低')
+    expect(exposureConfidenceLabel('MEDIUM')).toBe('中')
+    expect(exposureConfidenceLabel('HIGH')).toBe('高')
+  })
+
+  it('词表颜色与标签：LOW 蓝 / MEDIUM 橙 / HIGH 绿', () => {
+    expect(EXPOSURE_CONFIDENCE_META.LOW).toEqual({ color: 'blue', label: '低' })
+    expect(EXPOSURE_CONFIDENCE_META.MEDIUM).toEqual({ color: 'orange', label: '中' })
+    expect(EXPOSURE_CONFIDENCE_META.HIGH).toEqual({ color: 'green', label: '高' })
+  })
+
+  it('大小写/空白归一后命中词表', () => {
+    expect(exposureConfidenceLabel(' high ')).toBe('高')
+  })
+
+  it('未知取值原样返回，不伪造映射', () => {
+    expect(exposureConfidenceLabel('VERY_HIGH')).toBe('VERY_HIGH')
+  })
+})
+
+describe('apiAssetValueReasonLabel', () => {
+  it('评分理由中的 exposure 枚举键翻译为中文', () => {
+    expect(apiAssetValueReasonLabel('exposure=PUBLIC：互联网公开可达')).toBe('暴露面=外网：互联网公开可达')
+    expect(apiAssetValueReasonLabel('exposure=PARTNER：对合作方开放')).toBe('暴露面=合作方：对合作方开放')
+    expect(apiAssetValueReasonLabel('exposure=INTERNAL：仅内网')).toBe('暴露面=内网：仅内网')
+  })
+
+  it('未分类理由的英文键名翻译为中文', () => {
+    expect(apiAssetValueReasonLabel('exposure 未分类，按内网与公开之间保守计分')).toBe('暴露面 未分类，按内网与公开之间保守计分')
+  })
+
+  it('不含 exposure 键的理由原样返回', () => {
+    expect(apiAssetValueReasonLabel('含敏感数据类型')).toBe('含敏感数据类型')
   })
 })

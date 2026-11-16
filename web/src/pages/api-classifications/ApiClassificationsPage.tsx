@@ -1,16 +1,37 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { App as AntdApp, Button, Card, Drawer, Form, Input, Select, Space, Tag, Tooltip, Typography } from 'antd'
+import {
+  App as AntdApp,
+  Button,
+  Card,
+  Drawer,
+  Form,
+  Input,
+  Select,
+  Space,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { apiEndpointsApi } from '../../api/apiAssets'
-import { apiClassificationsApi, type ApiClassificationItem } from '../../api/apiSecurity'
+import {
+  apiClassificationsApi,
+  type ApiClassificationItem,
+} from '../../api/apiSecurity'
 import { ApiError } from '../../api/client'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
+import {
+  API_CLASSIFICATION_SOURCE_META,
+  API_PROTOCOL_META,
+  apiClassificationSourceLabel,
+  apiExposureLabel,
+} from '../../utils/stage8'
 
 interface CreateFormValues {
   dimension: string
@@ -25,22 +46,130 @@ interface EndpointClassificationFormValues {
 /** 维度名中文映射（系统内置维度为英文编码，自定义维度已是中文则原样显示） */
 const DIMENSION_LABELS: Record<string, string> = {
   PURPOSE: '用途',
+  TECHNICAL_PROTOCOL: '技术协议',
+  INTERACTION_MODE: '交互模式',
   ACCESS: '访问类型',
   ACTION: '操作动作',
   DATA_TYPE: '数据类型',
   DATA_LEVEL: '数据级别',
+  DATA_SENSITIVITY: '数据敏感等级',
   EXPOSURE: '暴露范围',
   OPERATION: '操作类型',
   LIFECYCLE: '生命周期',
   DIRECTION: '调用方向',
   AUTH_TYPE: '认证方式',
+  IDENTITY_REQUIREMENT: '身份要求',
   ENV: '环境',
   BU: '业务单元',
   BUSINESS_DOMAIN: '业务域',
+  BUSINESS_FLOW_STAGE: '业务流程阶段',
+  BUSINESS_OBJECT: '业务对象',
   COMPLIANCE_SCOPE: '合规范围',
   CRITICALITY: '重要级别',
+  RISK_LABEL: '风险标签',
   OWNER_TEAM: '负责团队',
   DATA_CROSS_BORDER: '数据跨境',
+}
+
+const INTERACTION_MODE_LABELS: Record<string, string> = {
+  REQUEST_RESPONSE: '请求响应',
+  RPC: '远程调用',
+  EVENT_CALLBACK: '事件回调',
+  FILE_TRANSFER: '文件传输',
+  SERVER_PUSH: '服务端推送',
+  BIDIRECTIONAL_STREAM: '双向流',
+}
+
+const DATA_SENSITIVITY_LABELS: Record<string, string> = {
+  HIGH: '高',
+  MEDIUM: '中',
+  LOW: '低',
+  UNKNOWN: '未知',
+}
+
+const IDENTITY_REQUIREMENT_LABELS: Record<string, string> = {
+  AUTH_REQUIRED: '需要认证（观测）',
+  AUTH_OPTIONAL: '可选认证（观测）',
+  ANONYMOUS_ALLOWED: '允许匿名（观测）',
+  ANONYMOUS_REJECTED: '匿名被拒（观测）',
+  AUTHENTICATED_OBSERVED: '仅观测到认证成功',
+}
+
+const BUSINESS_FLOW_STAGE_LABELS: Record<string, string> = {
+  START: '开始',
+  INTERMEDIATE: '中间',
+  TERMINAL: '终点',
+  START_AND_TERMINAL: '起止一体',
+  MULTI_STAGE: '多阶段',
+}
+
+const RISK_LABEL_LABELS: Record<string, string> = {
+  SHADOW: '影子API',
+  ZOMBIE: '僵尸API',
+  DEPRECATED: '已下线API',
+  BOLA: '对象级越权',
+  BFLA: '功能级越权',
+  SCHEMA_DEVIATION: '模型偏离',
+  SENSITIVE_LEAK: '敏感数据泄露',
+  MASS_ASSIGNMENT: '批量赋值',
+  BEHAVIOR_ANOMALY: '行为异常',
+  MULTI_RISK: '多重风险',
+}
+
+const BUSINESS_OBJECT_LABELS: Record<string, string> = {
+  MULTI_OBJECT: '多重业务对象',
+}
+
+/** 分类取值中文展示：内置词表翻译已知枚举，未知值原样展示 */
+function classificationValueLabel(dimension: string, value: string): string {
+  const normalizedDimension = dimension.trim().toUpperCase()
+  if (normalizedDimension === 'EXPOSURE') {
+    return apiExposureLabel(value)
+  }
+  const normalizedValue = value.trim().toUpperCase()
+  if (normalizedDimension === 'TECHNICAL_PROTOCOL') {
+    return API_PROTOCOL_META[normalizedValue]?.label ?? value
+  }
+  if (normalizedDimension === 'INTERACTION_MODE') {
+    return INTERACTION_MODE_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'DATA_SENSITIVITY') {
+    return DATA_SENSITIVITY_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'IDENTITY_REQUIREMENT') {
+    return IDENTITY_REQUIREMENT_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'BUSINESS_FLOW_STAGE') {
+    return BUSINESS_FLOW_STAGE_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'RISK_LABEL') {
+    return RISK_LABEL_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'BUSINESS_OBJECT') {
+    return BUSINESS_OBJECT_LABELS[normalizedValue] ?? value
+  }
+  return value
+}
+
+/** 分类来源中文展示：内置目录仍显示内置；自定义/接口分类优先按 source 词表翻译 */
+function classificationSourceLabel(record: ApiClassificationItem): string {
+  if (record.is_builtin) return '内置'
+  const source = record.source?.trim()
+  return source ? apiClassificationSourceLabel(source) : '自定义'
+}
+
+/** 详情抽屉使用中文键名，避免通用明细直接暴露英文枚举/字段名 */
+function classificationDetailRecord(
+  record: ApiClassificationItem,
+): Record<string, unknown> {
+  return {
+    维度: DIMENSION_LABELS[record.dimension] ?? record.dimension,
+    取值: classificationValueLabel(record.dimension, record.value),
+    说明: record.description || '-',
+    来源: classificationSourceLabel(record),
+    内置: record.is_builtin ? '是' : '否',
+    创建时间: record.created_at,
+  }
 }
 
 /** 用途分类（WDSP / 阶段8）：维护分类体系，并为接口设置维度键值对分类 */
@@ -51,7 +180,8 @@ export default function ApiClassificationsPage() {
   const canManage = hasPermission(permissions, 'api_classification.manage')
 
   const [createOpen, setCreateOpen] = useState(false)
-  const [detailRecord, setDetailRecord] = useState<ApiClassificationItem | null>(null)
+  const [detailRecord, setDetailRecord] =
+    useState<ApiClassificationItem | null>(null)
   const [endpointId, setEndpointId] = useState<string | undefined>()
   const [createForm] = Form.useForm<CreateFormValues>()
   const [endpointForm] = Form.useForm<EndpointClassificationFormValues>()
@@ -75,16 +205,21 @@ export default function ApiClassificationsPage() {
       createForm.resetFields()
       void qc.invalidateQueries({ queryKey: ['api-classifications'] })
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '创建失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '创建失败'),
   })
 
   const setEndpointMut = useMutation({
     mutationFn: (dimensions: { dimension: string; value: string }[]) =>
-      apiClassificationsApi.setEndpointClassification(endpointId as string, dimensions),
+      apiClassificationsApi.setEndpointClassification(
+        endpointId as string,
+        dimensions,
+      ),
     onSuccess: (r) => {
       message.success(r.message || '接口分类已保存')
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '保存失败'),
+    onError: (e: unknown) =>
+      message.error(e instanceof ApiError ? e.message : '保存失败'),
   })
 
   const handleSaveEndpoint = (v: EndpointClassificationFormValues) => {
@@ -93,7 +228,10 @@ export default function ApiClassificationsPage() {
       return
     }
     const dimensions = (v.dimensions ?? [])
-      .map((d) => ({ dimension: d.dimension?.trim() ?? '', value: d.value?.trim() ?? '' }))
+      .map((d) => ({
+        dimension: d.dimension?.trim() ?? '',
+        value: d.value?.trim() ?? '',
+      }))
       .filter((d) => d.dimension && d.value)
     setEndpointMut.mutate(dimensions)
   }
@@ -109,17 +247,22 @@ export default function ApiClassificationsPage() {
       title: '取值',
       dataIndex: 'value',
       width: 200,
-      render: (v: string, record) =>
-        record.is_builtin && record.code ? (
+      render: (v: string, record) => {
+        const label = classificationValueLabel(record.dimension, v)
+        return record.is_builtin && record.code ? (
           <span>
-            {v}
-            <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+            {label}
+            <Typography.Text
+              type="secondary"
+              style={{ marginLeft: 8, fontSize: 12 }}
+            >
               {record.code}
             </Typography.Text>
           </span>
         ) : (
-          v
-        ),
+          label
+        )
+      },
     },
     {
       title: '说明',
@@ -130,8 +273,15 @@ export default function ApiClassificationsPage() {
     {
       title: '来源',
       dataIndex: 'is_builtin',
-      width: 100,
-      render: (v?: boolean) => (v ? <Tag color="blue">内置</Tag> : <Tag color="purple">自定义</Tag>),
+      width: 110,
+      render: (_: unknown, record) => {
+        const meta = record.is_builtin
+          ? { color: 'blue', label: '内置' }
+          : (API_CLASSIFICATION_SOURCE_META[
+              record.source?.trim().toUpperCase() ?? ''
+            ] ?? { color: 'purple', label: '自定义' })
+        return <Tag color={meta.color}>{meta.label}</Tag>
+      },
     },
   ]
 
@@ -140,7 +290,11 @@ export default function ApiClassificationsPage() {
       title="用途分类"
       extra={
         canManage ? (
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setCreateOpen(true)}
+          >
             新增分类
           </Button>
         ) : undefined
@@ -169,7 +323,11 @@ export default function ApiClassificationsPage() {
       />
 
       <Card size="small" title="接口分类设置" style={{ marginTop: 16 }}>
-        <Form<EndpointClassificationFormValues> form={endpointForm} layout="vertical" onFinish={handleSaveEndpoint}>
+        <Form<EndpointClassificationFormValues>
+          form={endpointForm}
+          layout="vertical"
+          onFinish={handleSaveEndpoint}
+        >
           <Form.Item label="目标接口" required>
             <Select
               placeholder="选择接口"
@@ -189,15 +347,30 @@ export default function ApiClassificationsPage() {
             {(fields, { add, remove }) => (
               <>
                 {fields.map((field) => (
-                  <Space key={field.key} style={{ display: 'flex', marginBottom: 8 }} align="baseline">
+                  <Space
+                    key={field.key}
+                    style={{ display: 'flex', marginBottom: 8 }}
+                    align="baseline"
+                  >
                     <Form.Item
                       name={[field.name, 'dimension']}
                       rules={[{ required: true, message: '请输入维度' }]}
                     >
-                      <Input placeholder="维度，如 business_domain" style={{ width: 240 }} autoComplete="off" />
+                      <Input
+                        placeholder="维度，如 business_domain"
+                        style={{ width: 240 }}
+                        autoComplete="off"
+                      />
                     </Form.Item>
-                    <Form.Item name={[field.name, 'value']} rules={[{ required: true, message: '请输入取值' }]}>
-                      <Input placeholder="取值，如 finance" style={{ width: 240 }} autoComplete="off" />
+                    <Form.Item
+                      name={[field.name, 'value']}
+                      rules={[{ required: true, message: '请输入取值' }]}
+                    >
+                      <Input
+                        placeholder="取值，如 finance"
+                        style={{ width: 240 }}
+                        autoComplete="off"
+                      />
                     </Form.Item>
                     {canManage ? (
                       <Tooltip title="删除此分类维度">
@@ -213,7 +386,12 @@ export default function ApiClassificationsPage() {
                   </Space>
                 ))}
                 {canManage ? (
-                  <Button block type="dashed" icon={<PlusOutlined />} onClick={() => add()}>
+                  <Button
+                    block
+                    type="dashed"
+                    icon={<PlusOutlined />}
+                    onClick={() => add()}
+                  >
                     添加维度
                   </Button>
                 ) : null}
@@ -242,17 +420,33 @@ export default function ApiClassificationsPage() {
         footer={
           <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <Button onClick={() => setCreateOpen(false)}>取消</Button>
-            <Button type="primary" loading={createMut.isPending} onClick={() => createForm.submit()}>
+            <Button
+              type="primary"
+              loading={createMut.isPending}
+              onClick={() => createForm.submit()}
+            >
               创建
             </Button>
           </Space>
         }
       >
-        <Form<CreateFormValues> form={createForm} layout="vertical" onFinish={(v) => createMut.mutate(v)}>
-          <Form.Item name="dimension" label="维度" rules={[{ required: true, message: '请输入维度' }]}>
+        <Form<CreateFormValues>
+          form={createForm}
+          layout="vertical"
+          onFinish={(v) => createMut.mutate(v)}
+        >
+          <Form.Item
+            name="dimension"
+            label="维度"
+            rules={[{ required: true, message: '请输入维度' }]}
+          >
             <Input placeholder="如 business_domain" autoComplete="off" />
           </Form.Item>
-          <Form.Item name="value" label="取值" rules={[{ required: true, message: '请输入取值' }]}>
+          <Form.Item
+            name="value"
+            label="取值"
+            rules={[{ required: true, message: '请输入取值' }]}
+          >
             <Input placeholder="如 finance" autoComplete="off" />
           </Form.Item>
           <Form.Item name="description" label="说明（可选）">
@@ -264,7 +458,7 @@ export default function ApiClassificationsPage() {
       <RecordDetailDrawer
         open={detailRecord !== null}
         title="分类详情"
-        record={detailRecord as Record<string, unknown> | null}
+        record={detailRecord ? classificationDetailRecord(detailRecord) : null}
         onClose={() => setDetailRecord(null)}
       />
     </Card>

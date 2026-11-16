@@ -42,7 +42,7 @@ type FileAsset struct {
 	Extension           string     `json:"extension"`
 	MIME                string     `json:"mime"`
 	SizeBytes           int64      `json:"size_bytes"`
-	SHA256              *string    `json:"sha256"`               // 预留：网关观测不含内容哈希，当前恒 NULL
+	SHA256              *string    `json:"sha256"`               // 完整观测内容指纹；截断/流式观测为 NULL
 	IdentityFingerprint string     `json:"identity_fingerprint"` // 匿名流量为空串
 	ClientIPMasked      string     `json:"client_ip_masked"`
 	SensitiveTypes      []string   `json:"sensitive_types"`
@@ -55,14 +55,27 @@ type FileAsset struct {
 
 // AssetFilter 列表过滤（枚举值已在 handler 层归一校验；时间窗按 last_seen 口径）。
 type AssetFilter struct {
-	Days          int
-	Direction     string
-	MIME          string // 精确匹配（入库已归一：主类型小写无参数）
-	Extension     string // 精确匹配（小写）
-	EndpointKey   string // 精确匹配
-	SensitiveOnly bool   // 仅 sensitive_types 非空的敏感文件
-	Page          int
-	PageSize      int
+	Days                int
+	Direction           string
+	MIME                string // 精确匹配（入库已归一：主类型小写无参数）
+	Extension           string // 精确匹配（小写）
+	EndpointKey         string // 精确匹配
+	SHA256              string // 完整内容 SHA-256 小写 hex 精确匹配（空 = 不过滤）
+	IdentityFingerprint string // 身份指纹精确匹配（空 = 不过滤）
+	SensitiveOnly       bool   // 仅 sensitive_types 非空的敏感文件
+	Page                int
+	PageSize            int
+}
+
+// FileLineage 同一完整内容指纹的文件传输关联。只汇总实际观测，不推断所有权或业务来源。
+type FileLineage struct {
+	SHA256         string      `json:"sha256"`
+	Days           int         `json:"days"`
+	Total          int64       `json:"total"`
+	UploadAssets   int64       `json:"upload_assets"`
+	DownloadAssets int64       `json:"download_assets"`
+	Truncated      bool        `json:"truncated"`
+	Items          []FileAsset `json:"items"`
 }
 
 // StatsSummary §106 汇总：上传/下载计数（资产数与传输次数双口径）+ 敏感文件计数。

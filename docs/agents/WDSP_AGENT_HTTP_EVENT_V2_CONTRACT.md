@@ -131,6 +131,7 @@ HTTP 事件入库成功 ≠ 资产关联成功。来源关系持久化于新表 
 | `source_type` / `source_instance` / `source_epoch` | 来源三元组 |
 | `application_binding_id` / `binding_version` | 上报时声明的绑定（可 NULL） |
 | `association_state` | `LINKED`（端点 upsert 成功）/ `UNASSIGNED`（v2 记录未声明绑定，待管理面确认，**不随意归入同名路径资产**）/ `QUOTA_REJECTED`（授权配额拒绝）/ `FAILED`（其他关联失败，`last_error` 记类别原因） |
+| `classification_*` / `classified_at` | 来源观测时的 API 分类证据（v2 多信号；v1 显式 legacy 口径；历史行可为空） |
 | `first_seen_at` / `last_seen_at` | 该来源键的首/末次观测 |
 
 语义冻结：
@@ -139,9 +140,10 @@ HTTP 事件入库成功 ≠ 资产关联成功。来源关系持久化于新表 
 2. gRPC 端点协议类型由 v2 记录的 `grpc` 子对象（可信协议元数据）决定为 `GRPC`，**不再统一写死 `REST`**；v1 记录维持 `REST` 现状。
 3. v2 未声明绑定的记录：事件照常入库，资产联动**不执行** upsert，来源关系落 `UNASSIGNED` 待确认（§3.1 不随意归入同名路径资产）；v1 记录维持既有联动行为（兼容性冻结）。
 4. 配额拒绝（`QUOTA_REJECTED`）、未绑定（`UNASSIGNED`）、关联失败（`FAILED`）均可经管理端查询（`GET /api/v1/traffic/agents/{agent_id}/http-asset-sources`，沿用 `traffic.agents.view` 权限），不只 Warn。
-5. 重复事件（duplicate）不触发资产联动与来源关系写入，`last_seen_at` 不推进——重放不得放大任何计数。
+5. 重复事件（duplicate）不触发资产联动与来源关系写入，`last_seen_at` 与 `classified_at` 不推进——重放不得放大任何计数或重写分类证据。
+6. v2 已绑定记录的资产分类按请求/响应可见证据计算 `is_api/api_confidence`：响应缺失、单向源或截断不作负向推断；成功 HTML 只压低非结构性通用流量；`grpc` 元数据为独立强证据（0.95）。普通 Web 流量可登记为 `is_api=false` 的非 API 画像。v1 维持 `is_api=true/api_confidence=0.8` 兼容口径并以 `legacy_v1_contract` 标识；历史 `api_endpoints` 不批量重标，既有 `GREATEST` 聚合语义不变。
 
-## 6. 存储映射（迁移 000133）
+## 6. 存储映射（迁移 000133 + 000188）
 
 `agent_http_events` 新增列（全部向后兼容，存量行取默认值，v1 写入路径不受 v2 校验约束）：
 
@@ -166,6 +168,11 @@ HTTP 事件入库成功 ≠ 资产关联成功。来源关系持久化于新表 
 | `tls_visibility` CHECK 扩展 `DECRYPTED` | 既有取值不变 |
 
 `agents` 新增 `http_event_schemas SMALLINT[] NOT NULL DEFAULT '{1}'`。
+
+迁移 000188 为 `agent_http_asset_sources` 增补 `classification_is_api`、
+`classification_confidence`、`classification_level`、`classification_signals`、
+`classified_at`。该组字段只表达来源观测时的分类证据：v2 写多信号结果，v1 写
+`legacy_v1_contract`，存量行可为空；不属于 Agent HTTP 事件线协议新增字段。
 
 v2 行的 headers 以数组形态 jsonb 存入既有 `request_headers`/`response_headers` 列（同列双形态：v1 为 string map、v2 为数组 map，按 `schema_version` 列区分解读）；`body_quality` 四要素同时镜像到既有 `req/resp_truncated`、`req/resp_original_size`（`original_total_size` 已知时）、`req/resp_skipped_reason` 列以保持管理端列表/详情兼容，完整对象另存 `req/resp_body_quality` jsonb（`captured_bytes` 与"未知长度"语义仅此保留）。
 
@@ -212,3 +219,5 @@ v2 行的 headers 以数组形态 jsonb 存入既有 `request_headers`/`response
 | V1.0 | 2026-09-08 | 初始冻结（G0+G1） | 三方冻结 |
 | V1.1 | 2026-09-08 | §2.1 一致性约束修订：允许 `truncated=true` 且 `original_total_size=null` 表达「截断但原始总大小未知」（原约束要求 truncated=true 必配非 null original_total_size，使该真实场景不可表达）。同步修订：`server/internal/agents/http_events_v2.go` 一致性校验与测试、`wdsp-agent/internal/mirrorsrc` 不再强行回填 `truncated=false`、附录 A 对应口径。其他条款不变，对存量合法记录无影响（仅放宽此前必被拒的组合） | 主代理批准（P1-03 G3 任务附带契约澄清） |
 | V1.1（增补） | 2026-09-08 | 新增附录 B：ENVOY_TAP 来源剖面（G3 落地）。纯增补，不改动正文与附录 A 任何冻结条款；单会话设计以 Envoy v1.35.3 实测约束（Admin 同时只允许一条已挂接 tap 流）为依据，取代原多 channel 设想 | 主代理批准（P1-03 G3 任务范围） |
+| V1.2 | 2026-10-21 | 明确 v2 资产联动分类口径：按请求/响应可见证据计算 `is_api/api_confidence`，不再统一写死 `true/0.8`；线协议、存储列、绑定/幂等语义与 v1 兼容行为均不变，历史资产不批量重标 | 用户批准（WDSP 识别精准度任务） |
+| V1.3 | 2026-10-22 | 新增来源关系分类证据存储口径：`classification_*`/`classified_at` 随 v1/v2 来源联动持久化，供单个 API 详细导出；HTTP 事件线协议与 schema_version 不变 | 用户批准（API 资产详细导出任务） |

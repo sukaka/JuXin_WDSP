@@ -1,0 +1,15 @@
+{
+  "models": {
+    "POST /login": {
+      "fields": {
+        "body:password": {"type": "STRING", "required": true, "min_length": 1, "max_length": 128},
+        "body:username": {"type": "STRING", "required": true, "min_length": 1, "max_length": 64}
+      }
+    },
+    "GET /users/{id}": {
+      "fields": {
+        "query:verbose": {"type": "STRING", "required": false}
+      }
+    }
+  }
+}

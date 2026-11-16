@@ -1,0 +1,6 @@
+/build/
+/dist/.preview/
+/.venv-source-book/
+/config.local.properties
+/var/
+*.log

@@ -2,7 +2,8 @@ import { request } from './client'
 import type { PageResult } from '../types'
 
 /** 身份类型（与 server 端 security/identities 词表一致） */
-export type IdentityType = 'UNKNOWN' | 'HUMAN' | 'BOT' | 'APPLICATION' | 'SERVICE' | 'AGENT'
+export type IdentityType =
+  'UNKNOWN' | 'HUMAN' | 'BOT' | 'APPLICATION' | 'SERVICE' | 'AGENT'
 
 /** 身份风险等级 */
 export type IdentityRiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
@@ -167,16 +168,22 @@ export interface IdentityEventListParams {
 
 export const securityIdentitiesApi = {
   list: async (params: IdentityListParams) => {
-    const data = await request<PageResult<IdentityItem>>('/security/identities', {
-      query: { ...params },
-    })
+    const data = await request<PageResult<IdentityItem>>(
+      '/security/identities',
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
   get: async (id: string) => {
     // 后端响应为 { identity, ip_history, credentials, recent_events } 包裹结构；
     // 无历史/凭据/事件时为 null（Go nil slice），统一归一化为空数组
     const data = await request<{
-      identity: Omit<IdentityDetail, 'ip_history' | 'credentials' | 'recent_events'>
+      identity: Omit<
+        IdentityDetail,
+        'ip_history' | 'credentials' | 'recent_events'
+      >
       ip_history: IdentityIpHistoryItem[] | null
       credentials: IdentityCredentialItem[] | null
       recent_events: IdentityRecentEventItem[] | null
@@ -189,6 +196,15 @@ export const securityIdentitiesApi = {
       recent_events: data.recent_events ?? [],
     }
   },
+  block: (id: string, reason: string) =>
+    request<{ message: string }>(`/security/identities/${id}/block`, {
+      method: 'POST',
+      body: { reason },
+    }),
+  unblock: (id: string) =>
+    request<{ message: string }>(`/security/identities/${id}/unblock`, {
+      method: 'POST',
+    }),
   behavior: async (id: string, params: IdentityBehaviorParams = {}) => {
     const data = await request<PageResult<IdentityBehaviorItem>>(
       `/security/identities/${id}/behavior`,
@@ -197,9 +213,12 @@ export const securityIdentitiesApi = {
     return { ...data, items: data.items ?? [] }
   },
   events: async (id: string, params: IdentityEventListParams) => {
-    const data = await request<PageResult<IdentityEventItem>>(`/security/identities/${id}/events`, {
-      query: { ...params },
-    })
+    const data = await request<PageResult<IdentityEventItem>>(
+      `/security/identities/${id}/events`,
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
 }

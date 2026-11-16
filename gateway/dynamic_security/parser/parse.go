@@ -91,7 +91,7 @@ type Parsed struct {
 	// 为 true 时填充，值只在请求内存活，供值级敏感检测取值，禁止写入事件/日志）
 	FormValues     map[string]string
 	XMLFields      map[string]string // XML 元素路径 -> 叶子类型: string|number|bool
-	MultipartParts []PartMeta        // multipart part 元数据（按出现顺序；文件内容不落内存）
+	MultipartParts []PartMeta        // multipart part 元数据（按出现顺序；文件前缀有界留存供签名检测）
 	HasFiles       bool              // multipart 中含文件 part
 	// GraphQL 识别（application/graphql 原始查询，或 /graphql 路径 + JSON body 含 query 字段）
 	GraphQLOperation     string   // query|mutation|subscription|unknown
@@ -201,7 +201,7 @@ func ParseRequest(r *http.Request, ctx *dsctx.RequestContext) (*Parsed, error) {
 	if r.Body != nil && r.Method != http.MethodGet && r.Method != http.MethodHead {
 		mediaType, params := splitMediaType(p.ContentType)
 		if mediaType == "multipart/form-data" && params["boundary"] != "" {
-			// multipart 流式解析：文件内容不落内存，仅计 part 元数据与大小
+			// multipart 流式解析：文件前缀有界留存供签名检测，仅计 part 元数据与大小
 			p.parseMultipart(r.Body, params["boundary"], limits)
 		} else {
 			limit := int64(limits.MaxBodyParseBytes) + 1

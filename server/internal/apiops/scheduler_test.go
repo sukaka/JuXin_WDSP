@@ -16,8 +16,9 @@ import (
 
 // fakeSettings 测试设置源。
 type fakeSettings struct {
-	enabled  bool
-	interval int
+	enabled          bool
+	interval         int
+	circuitThreshold int // 0 表示走默认阈值（DefaultCircuitThreshold）
 }
 
 func (f fakeSettings) GetBool(_ context.Context, group, key string, def bool) bool {
@@ -30,6 +31,9 @@ func (f fakeSettings) GetBool(_ context.Context, group, key string, def bool) bo
 func (f fakeSettings) GetInt(_ context.Context, group, key string, def int) int {
 	if group == settingsGroup && key == settingsKeyIntervalSec && f.interval > 0 {
 		return f.interval
+	}
+	if group == settingsGroup && key == settingsKeyCircuitThreshold && f.circuitThreshold != 0 {
+		return f.circuitThreshold
 	}
 	return def
 }

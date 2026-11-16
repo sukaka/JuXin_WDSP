@@ -716,7 +716,11 @@ export interface ExceptionPreviewResult {
   field_errors: ExceptionPreviewFieldError[]
   normalized_scope: ExceptionPreviewNormalizedScope
   resolved_rule_refs: ExceptionPreviewRuleRef[]
-  effective_window: { from?: string | null; until?: string | null; half_open: boolean }
+  effective_window: {
+    from?: string | null
+    until?: string | null
+    half_open: boolean
+  }
   unsupported: ExceptionPreviewUnsupported[]
   protected_modules_unchanged: string[]
   compiled_fingerprint: string
@@ -784,8 +788,21 @@ export interface FinalDecision {
   request_id?: string
   application_id?: string
   gateway_node?: string
-  completion_status?: 'COMPLETED' | 'ABORTED' | 'ERROR' | 'PENDING_CORRELATION' | 'UNKNOWN' | string
-  security_action?: 'NONE' | 'BLOCK' | 'TEMP_BLOCK' | 'RATE_LIMIT' | 'MASK_RESPONSE' | 'CHALLENGE' | string
+  completion_status?:
+    | 'COMPLETED'
+    | 'ABORTED'
+    | 'ERROR'
+    | 'PENDING_CORRELATION'
+    | 'UNKNOWN'
+    | string
+  security_action?:
+    | 'NONE'
+    | 'BLOCK'
+    | 'TEMP_BLOCK'
+    | 'RATE_LIMIT'
+    | 'MASK_RESPONSE'
+    | 'CHALLENGE'
+    | string
   executor_module?:
     | 'PROTECTED_ADDRESS'
     | 'MANUAL_BAN'
@@ -2009,10 +2026,12 @@ export interface NetworkConfigData {
 }
 
 /** 网络工具诊断动作（POST /network-tools/jobs 的 action 取值） */
-export type NetworkToolAction = 'ping' | 'tcp_probe' | 'traceroute' | 'dns_query' | 'capture'
+export type NetworkToolAction =
+  'ping' | 'tcp_probe' | 'traceroute' | 'dns_query' | 'capture'
 
 /** 网络工具任务状态（PENDING/RUNNING 为非终态，前端据此轮询） */
-export type NetworkToolJobStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'STOPPED' | 'TIMEOUT'
+export type NetworkToolJobStatus =
+  'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'STOPPED' | 'TIMEOUT'
 
 /** 抓包任务解析后的单个数据包（GET /network-tools/jobs/{id} 的 capture_packets 元素） */
 export interface NetworkToolCapturePacket {
@@ -2488,9 +2507,7 @@ export interface LicenseUsage {
  * 这些状态不能由单一的 valid 字段互相推断，缺失时前端必须保持未知。
  */
 export type LicenseProtectionForm =
-  | 'STANDARD_OFFLINE'
-  | 'CONFIDENTIAL_COMPUTING'
-  | 'UNKNOWN'
+  'STANDARD_OFFLINE' | 'CONFIDENTIAL_COMPUTING' | 'UNKNOWN'
 
 export type LicenseCommercialAuthorization =
   | 'AUTHORIZED'
@@ -2501,26 +2518,13 @@ export type LicenseCommercialAuthorization =
   | 'UNKNOWN'
 
 export type LicenseArtifactIntegrity =
-  | 'VERIFIED'
-  | 'PENDING_MIGRATION'
-  | 'UNVERIFIABLE'
-  | 'FAILED'
-  | 'UNKNOWN'
+  'VERIFIED' | 'PENDING_MIGRATION' | 'UNVERIFIABLE' | 'FAILED' | 'UNKNOWN'
 
 export type LicenseGatewayProtection =
-  | 'PROTECTED'
-  | 'BYPASS'
-  | 'UNAVAILABLE'
-  | 'PRESERVE_EXISTING'
-  | 'UNKNOWN'
+  'PROTECTED' | 'BYPASS' | 'UNAVAILABLE' | 'PRESERVE_EXISTING' | 'UNKNOWN'
 
 export type LicenseConfidentialComputing =
-  | 'DISABLED'
-  | 'VERIFIED'
-  | 'FAILED'
-  | 'UNSUPPORTED'
-  | 'UNAVAILABLE'
-  | 'UNKNOWN'
+  'DISABLED' | 'VERIFIED' | 'FAILED' | 'UNSUPPORTED' | 'UNAVAILABLE' | 'UNKNOWN'
 
 export type LicenseRecovery =
   | 'NONE'
@@ -2607,6 +2611,7 @@ export interface ReportScheduleItem {
   id: string
   name: string
   report_type: ReportType
+  api_report_type?: string
   content_scope?: ReportContentScope
   application_ids?: string[] | null
   template_id?: string | null
@@ -2810,12 +2815,7 @@ export interface ApmCorrelationCandidate {
 
 /** correlation.state 词表：MATCHED/AMBIGUOUS/PENDING/NOT_FOUND/NOT_EXPECTED/UNKNOWN */
 export type ApmCorrelationState =
-  | 'MATCHED'
-  | 'AMBIGUOUS'
-  | 'PENDING'
-  | 'NOT_FOUND'
-  | 'NOT_EXPECTED'
-  | 'UNKNOWN'
+  'MATCHED' | 'AMBIGUOUS' | 'PENDING' | 'NOT_FOUND' | 'NOT_EXPECTED' | 'UNKNOWN'
 
 /** 关联判定（独立于数据源健康；trace-search 仅 request_id 检索时携带，traces/{id} 恒携带） */
 export interface ApmCorrelation {

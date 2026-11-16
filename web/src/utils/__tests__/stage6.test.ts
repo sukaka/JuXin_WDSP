@@ -61,7 +61,7 @@ describe('阶段6 展示元数据完整性', () => {
     expect(Object.keys(ALERT_STATUS_META)).toEqual(['OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'IGNORED'])
   })
 
-  it('系统告警类型覆盖全部 19 类（含 FD_USAGE_HIGH）', () => {
+  it('系统告警类型覆盖全部 20 类（含 FD_USAGE_HIGH、VULN_INTEL_NEW）', () => {
     expect(Object.keys(ALERT_TYPE_META).sort()).toEqual(
       [
         'GATEWAY_DOWN',
@@ -83,6 +83,7 @@ describe('阶段6 展示元数据完整性', () => {
         'REPORT_FAILED',
         'UPGRADE_FAILED',
         'AUDIT_INTEGRITY_FAILED',
+        'VULN_INTEL_NEW',
       ].sort(),
     )
   })

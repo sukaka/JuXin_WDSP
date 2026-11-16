@@ -4,6 +4,7 @@ package apiops
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -139,6 +140,12 @@ func (m *MemStore) SetScheduleEnabled(_ context.Context, id uuid.UUID, enabled b
 	}
 	cur.Enabled = enabled
 	cur.NextRunAt = nextRunAt
+	// 与 SQL 侧同语义：手动启用复位熔断状态（计数清零、清空熔断时间与原因）
+	if enabled {
+		cur.ConsecutiveFailures = 0
+		cur.CircuitOpenedAt = nil
+		cur.CircuitReason = ""
+	}
 	cur.UpdatedAt = time.Now().UTC()
 	return cloneSchedule(cur), nil
 }
@@ -184,6 +191,40 @@ func (m *MemStore) UpdateScheduleRunState(_ context.Context, id uuid.UUID, lastR
 	cur.LastError = errMsg
 	cur.UpdatedAt = time.Now().UTC()
 	return nil
+}
+
+// RecordRunOutcome 与 SQL 实现同语义（互斥锁内完成，等价单事务）：
+// 轨迹回填 + 计数（成功清零/失败 +1）+ 达阈且启用中熔断（停用、清游标、记原因）。
+func (m *MemStore) RecordRunOutcome(_ context.Context, id uuid.UUID, lastRunAt time.Time, status, errMsg string, threshold int) (*Schedule, bool, error) {
+	if threshold < 1 {
+		threshold = 1
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.schedules[id]
+	if !ok {
+		return nil, false, ErrScheduleNotFound
+	}
+	cur.LastRunAt = &lastRunAt
+	cur.LastStatus = status
+	cur.LastError = errMsg
+	if status == RunStatusSuccess {
+		cur.ConsecutiveFailures = 0
+	} else {
+		cur.ConsecutiveFailures++
+	}
+	cur.UpdatedAt = time.Now().UTC()
+	circuitOpened := false
+	if status != RunStatusSuccess && cur.ConsecutiveFailures >= threshold && cur.Enabled {
+		now := time.Now().UTC()
+		cur.Enabled = false
+		cur.NextRunAt = nil
+		cur.CircuitOpenedAt = &now
+		cur.CircuitReason = truncRunes(fmt.Sprintf("连续失败 %d 次（阈值 %d），最近一次：%s", cur.ConsecutiveFailures, threshold, errMsg), 500)
+		cur.UpdatedAt = now
+		circuitOpened = true
+	}
+	return cloneSchedule(cur), circuitOpened, nil
 }
 
 func (m *MemStore) CreateRun(_ context.Context, r *Run) error {

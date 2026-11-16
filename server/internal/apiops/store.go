@@ -40,7 +40,14 @@ type Repository interface {
 	// UpdateNextRunAt 仅推进到期游标（调度 claim 先行，防下一 tick 重入）。
 	UpdateNextRunAt(ctx context.Context, id uuid.UUID, next *time.Time) error
 	// UpdateScheduleRunState 执行轨迹回填（last_run_at/last_status/last_error）。
+	// 注意：调度执行路径统一走 RecordRunOutcome（含熔断计数）；本方法保留给
+	// 不做熔断记账的场景（历史集成测试/修复工具）。
 	UpdateScheduleRunState(ctx context.Context, id uuid.UUID, lastRunAt time.Time, status, errMsg string) error
+	// RecordRunOutcome 执行结局记账（单事务）：回填执行轨迹 + 连续失败计数
+	// （成功清零、失败 +1）；失败计数达 threshold 时同事务熔断（enabled=false、
+	// 清空 next_run_at、记录 circuit_opened_at/circuit_reason）。
+	// 返回熔断后最新计划与「本次调用是否新触发熔断」（供告警/审计只报一次）。
+	RecordRunOutcome(ctx context.Context, id uuid.UUID, lastRunAt time.Time, status, errMsg string, threshold int) (*Schedule, bool, error)
 	CreateRun(ctx context.Context, r *Run) error
 	// FinishRun 终结执行记录（RUNNING → SUCCESS/FAILED；附带产物）。
 	FinishRun(ctx context.Context, id uuid.UUID, status, summary string, report json.RawMessage, finishedAt time.Time) error
@@ -65,13 +72,15 @@ type Store struct {
 func NewStore(db *pgxpool.Pool) *Store { return &Store{db: db} }
 
 // scheduleCols 计划列清单（扫描顺序与 scanSchedule 一致）。
-const scheduleCols = `id, task_type, name, cron_expr, enabled, config_json, next_run_at, last_run_at, last_status, last_error, created_by, created_at, updated_at`
+const scheduleCols = `id, task_type, name, cron_expr, enabled, config_json, next_run_at, last_run_at, last_status, last_error, consecutive_failures, circuit_opened_at, circuit_reason, created_by, created_at, updated_at`
 
 // scanSchedule 行扫描公共路径。
 func scanSchedule(row pgx.Row) (*Schedule, error) {
 	var s Schedule
 	err := row.Scan(&s.ID, &s.TaskType, &s.Name, &s.CronExpr, &s.Enabled, &s.Config,
-		&s.NextRunAt, &s.LastRunAt, &s.LastStatus, &s.LastError, &s.CreatedBy, &s.CreatedAt, &s.UpdatedAt)
+		&s.NextRunAt, &s.LastRunAt, &s.LastStatus, &s.LastError,
+		&s.ConsecutiveFailures, &s.CircuitOpenedAt, &s.CircuitReason,
+		&s.CreatedBy, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrScheduleNotFound
@@ -185,9 +194,16 @@ func (s *Store) DeleteSchedule(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// SetScheduleEnabled 启停计划（启用时写入 next_run_at，停用时清空）。
+// 手动启用同时复位熔断状态（consecutive_failures 清零、清空熔断时间与原因）——
+// 熔断后的唯一恢复入口，复位事实由 handler 层写审计。
 func (s *Store) SetScheduleEnabled(ctx context.Context, id uuid.UUID, enabled bool, nextRunAt *time.Time) (*Schedule, error) {
 	sc, err := scanSchedule(s.db.QueryRow(ctx, `
-UPDATE api_ai_schedules SET enabled=$2, next_run_at=$3, updated_at=now() WHERE id=$1 RETURNING `+scheduleCols,
+UPDATE api_ai_schedules SET enabled=$2, next_run_at=$3,
+	consecutive_failures = CASE WHEN $2 THEN 0 ELSE consecutive_failures END,
+	circuit_opened_at = CASE WHEN $2 THEN NULL ELSE circuit_opened_at END,
+	circuit_reason = CASE WHEN $2 THEN '' ELSE circuit_reason END,
+	updated_at=now() WHERE id=$1 RETURNING `+scheduleCols,
 		id, enabled, nextRunAt))
 	if err != nil {
 		return nil, fmt.Errorf("set api ai schedule enabled: %w", err)
@@ -232,6 +248,49 @@ UPDATE api_ai_schedules SET last_run_at=$2, last_status=$3, last_error=$4, updat
 		return fmt.Errorf("update api ai schedule run state: %w", err)
 	}
 	return nil
+}
+
+// RecordRunOutcome 执行结局记账（单事务）：
+//  1. 回填执行轨迹（last_run_at/last_status/last_error）+ 连续失败计数（成功清零、失败 +1）；
+//  2. 失败计数达 threshold 且计划仍启用时同事务熔断：enabled=false、清空 next_run_at、
+//     记录 circuit_opened_at/circuit_reason（VARCHAR(500) 截断）。
+//
+// 返回熔断后最新计划；circuitOpened=true 仅当本次调用实际触发熔断（已熔断/已停用重复失败
+// 不重复上报，告警与审计只报一次）。
+func (s *Store) RecordRunOutcome(ctx context.Context, id uuid.UUID, lastRunAt time.Time, status, errMsg string, threshold int) (*Schedule, bool, error) {
+	if threshold < 1 {
+		threshold = 1
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin record run outcome tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// 行锁 + 计数推进（成功清零）；并发执行由 HasRunningRun 防重入，此处仍取行锁保证计数原子
+	sc, err := scanSchedule(tx.QueryRow(ctx, `
+UPDATE api_ai_schedules SET last_run_at=$2, last_status=$3, last_error=$4,
+	consecutive_failures = CASE WHEN $5 THEN 0 ELSE consecutive_failures + 1 END,
+	updated_at=now()
+WHERE id=$1 RETURNING `+scheduleCols, id, lastRunAt, status, errMsg, status == RunStatusSuccess))
+	if err != nil {
+		return nil, false, fmt.Errorf("record run state: %w", err)
+	}
+	circuitOpened := false
+	if status != RunStatusSuccess && sc.ConsecutiveFailures >= threshold && sc.Enabled {
+		reason := truncRunes(fmt.Sprintf("连续失败 %d 次（阈值 %d），最近一次：%s", sc.ConsecutiveFailures, threshold, errMsg), 500)
+		sc, err = scanSchedule(tx.QueryRow(ctx, `
+UPDATE api_ai_schedules SET enabled=false, next_run_at=NULL,
+	circuit_opened_at=now(), circuit_reason=$2, updated_at=now()
+WHERE id=$1 RETURNING `+scheduleCols, id, reason))
+		if err != nil {
+			return nil, false, fmt.Errorf("open circuit: %w", err)
+		}
+		circuitOpened = true
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, fmt.Errorf("commit record run outcome: %w", err)
+	}
+	return sc, circuitOpened, nil
 }
 
 // runCols 执行记录列清单（扫描顺序与 scanRun 一致）。

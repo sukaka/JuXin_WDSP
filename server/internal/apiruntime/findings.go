@@ -95,8 +95,9 @@ var findingTypeOverrides = map[string]string{
 	// severity=HIGH 表达，finding_type 不按模式分叉）；
 	// 已发现未确认端点映射为新类型 ADMISSION_UNCONFIRMED，入 api_runtime_findings
 	// 活动状态（SaveFindings 插入 NEW），供风险中心跟踪确认闭环。
-	"admission.unknown_endpoint":     "SHADOW",
-	"admission.unconfirmed_endpoint": "ADMISSION_UNCONFIRMED",
+	"admission.unknown_endpoint":      "SHADOW",
+	"admission.unconfirmed_endpoint":  "ADMISSION_UNCONFIRMED",
+	"behavior.shared_device_accounts": "SHARED_DEVICE_ACCOUNTS",
 }
 
 // findingTypeOf 由 Detector+RuleID 生成 finding_type（见上表注释的映射规则）。
@@ -142,6 +143,8 @@ var safeEvidenceKeys = map[string]bool{
 	// Parser 歧义检测（detector=api_parser）：参数名/出现次数/规则码/JSON 点路径均为
 	// 元信息，原始值永不落库（raw_value/normalized_value 不在白名单，值一律丢弃）。
 	"parameter_name": true, "value_count": true, "rule_code": true, "path": true,
+	// 群控观察仅保留计数、窗口、固定可信级别与 HMAC 设备指纹；账号标识不入白名单。
+	"distinct_accounts": true, "window": true, "identity_assurance": true, "device_fingerprint": true,
 }
 
 // sanitizeEvidence 构建脱敏证据：keys 为全部证据键名（排序，便于审计知道网关

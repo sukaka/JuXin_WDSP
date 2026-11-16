@@ -102,6 +102,7 @@ export const ALERT_TYPE_META: Record<string, { color: string; label: string }> =
   REPORT_FAILED: { color: 'orange', label: '报告生成失败' },
   UPGRADE_FAILED: { color: 'red', label: '升级失败' },
   AUDIT_INTEGRITY_FAILED: { color: 'red', label: '审计完整性失败' },
+  VULN_INTEL_NEW: { color: 'volcano', label: '漏洞情报' },
 }
 
 /** 监控组件展示名 */

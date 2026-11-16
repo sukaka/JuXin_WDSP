@@ -57,6 +57,7 @@ type recorderSnapshot struct {
 	fileObs     FileObsRecorder
 	llmObs      apillm.ObsRecorder
 	traffic     TrafficRecorder
+	sourceRec   SourceRecorder
 }
 
 // enterBatchTx 快照当前 recorders 并切换为 tx 作用域浅拷贝（WithDB）。
@@ -67,6 +68,7 @@ func (c *Collector) enterBatchTx(tx pgx.Tx) *recorderSnapshot {
 		saver: c.saver, discovery: c.discovery, samples: c.samples,
 		violations: c.violations, findings: c.findings, paramObs: c.paramObs,
 		respSchemas: c.respSchemas, fileObs: c.fileObs, llmObs: c.llmObs, traffic: c.traffic,
+		sourceRec: c.sourceRec,
 	}
 	c.saver = scopedPrimarySaver(c.saver, tx)
 	c.discovery = scopedDiscovery(c.discovery, tx)
@@ -78,6 +80,7 @@ func (c *Collector) enterBatchTx(tx pgx.Tx) *recorderSnapshot {
 	c.fileObs = scopedFileObs(c.fileObs, tx)
 	c.llmObs = scopedLLMObs(c.llmObs, tx)
 	c.traffic = scopedTraffic(c.traffic, tx)
+	c.sourceRec = scopedSourceRecorder(c.sourceRec, tx)
 	return snap
 }
 
@@ -87,6 +90,7 @@ func (c *Collector) exitBatchTx(snap *recorderSnapshot) {
 	c.violations, c.findings, c.paramObs = snap.violations, snap.findings, snap.paramObs
 	c.respSchemas, c.fileObs, c.llmObs = snap.respSchemas, snap.fileObs, snap.llmObs
 	c.traffic = snap.traffic
+	c.sourceRec = snap.sourceRec
 }
 
 // handleRecordInTx 在批次事务内处理一条记录的副作用（记录级 SAVEPOINT 包裹）。
@@ -186,6 +190,16 @@ func scopedTraffic(r TrafficRecorder, tx pgx.Tx) TrafficRecorder {
 	if w, ok := r.(interface {
 		WithDB(apiassets.DBTX) *apiassets.Store
 	}); ok {
+		return w.WithDB(tx)
+	}
+	return r
+}
+
+// scopedSourceRecorder 暴露面来源聚合切换 tx 作用域：apiexposure.SourceRecorder
+// 的 WithDB 形参/出参均为本包类型（apiruntime.DBTX / apiruntime.SourceRecorder），
+// 结构匹配即切换；内存假实现等未实现 WithDB 时原样保留（autocommit，幂等键兜底）。
+func scopedSourceRecorder(r SourceRecorder, tx pgx.Tx) SourceRecorder {
+	if w, ok := r.(interface{ WithDB(DBTX) SourceRecorder }); ok {
 		return w.WithDB(tx)
 	}
 	return r

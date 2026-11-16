@@ -8,25 +8,25 @@ import (
 	"time"
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 )
 
-// 阶段8 任务书 §36 API 维度限流可行子集：小时/日配额（定窗累计+跨窗重置）、
-// 对象维度限速（复用任务书 §7 object_identifiers 提取口径，路径位置参数 + 请求体
-// 主键字段的值哈希入键）、批量/分页大小上限信号。OBSERVE/PROTECT 语义与
-// CheckAPIWriteRate 一致：
+// 阶段8 任务书 §36 API 维度限流：凭据/可信租户/操作动作/业务功能接口组每分钟限速
+// （自然分钟窗口）、小时/日配额（定窗累计+跨窗重置）、对象维度限速（复用任务书 §7
+// object_identifiers 提取口径，路径位置参数 + 请求体主键字段的值哈希入键）、批量/分页上限信号。
+// OBSERVE/PROTECT 语义与 CheckAPIWriteRate 一致：
 // RATE_LIMIT 类只 AddMatch 不定案，PROTECT 由决策引擎映射 429，OBSERVE 只记录。
 //
-// 配置面说明：发布通道已下发配额/对象/批量/分页五键（system_settings gateway_runtime 组
-// api_quota_per_hour/api_quota_per_day/object_rate_per_minute/max_page_size/max_batch_size，
-// 迁移 000152 种子）；语义「配置未到 = 不启用」不变（pipeline.Config 对应字段 >0 才调用
-// 本文件检测器，不走默认值冒充已配置）；检测器保留 ≤0 走默认值约定供直接调用方使用。
-// GraphQL 深度/复杂度、租户/设备等维度超出现有配置面与解析产物，未硬造（缺口见任务交接报告）。
+// 配置面说明：语义「配置未到 = 不启用」不变（pipeline.Config 对应字段 >0 才调用
+// 本文件检测器，不走默认值冒充已配置）；既有配额/对象等检测器保留 ≤0 走默认值约定
+// 供直接调用方使用，凭据/租户/动作/接口组限速则仅在 limit >0 时启用。
+// 动作与接口组限速仅消费发布下发表，不在检测器内做路径启发式分类。
 //
 // 计数有界：各追踪器均 LRU 定容（10000 键）；配额为定窗（自然小时/UTC 自然日），
-// 跨窗即重置不保留历史样本。存储注入（Valkey）未覆盖本文件追踪器——StoreOverrides
-// 结构在 store.go，扩展该结构属另一工作面，进程内单节点限制同 windowTracker。
+// 跨窗即重置不保留历史样本。凭据/租户/对象/动作/接口组限速与小时/日配额分别经 StoreOverrides
+// 对应字段接入存储注入，nil/未绑定回退包级内存；注入存储与默认路径保持相同窗口边界。
 
 const (
 	// DefaultAPIQuotaPerHour 身份+端点每小时配额默认值（≤0 时启用；对齐写限速 60/分钟折算）。
@@ -40,8 +40,9 @@ const (
 	// DefaultMaxBatchSize 批量数量上限默认值（≤0 时启用）。
 	DefaultMaxBatchSize = 100
 
-	quotaMaxKeys      = 10000
-	objectRateMaxKeys = 10000
+	quotaMaxKeys          = 10000
+	objectRateMaxKeys     = 10000
+	credentialRateMaxKeys = 10000
 )
 
 // fixedWindowEntry 单键定窗状态：窗口起点 + 计数。
@@ -88,10 +89,143 @@ func (t *fixedWindowTracker) add(key string) int {
 
 // 包级默认追踪器（单节点限制同 windowTracker；配置重载不重置，进程重启清零）。
 var (
-	defaultHourlyQuotaTracker = newFixedWindowTracker(time.Hour, quotaMaxKeys, nil)
-	defaultDailyQuotaTracker  = newFixedWindowTracker(24*time.Hour, quotaMaxKeys, nil)
-	defaultObjectRateTracker  = newWindowTracker(objectRateMaxKeys, nil)
+	defaultHourlyQuotaTracker    = newFixedWindowTracker(time.Hour, quotaMaxKeys, nil)
+	defaultDailyQuotaTracker     = newFixedWindowTracker(24*time.Hour, quotaMaxKeys, nil)
+	defaultObjectRateTracker     = newWindowTracker(objectRateMaxKeys, nil)
+	defaultCredentialRateTracker = newWindowTracker(credentialRateMaxKeys, nil)
 )
+
+// credentialRateType 将 CredentialKey 前缀映射为可写入证据的凭据类型。
+func credentialRateType(credKey string) (string, bool) {
+	prefix, fingerprint, ok := strings.Cut(credKey, ":")
+	if !ok || fingerprint == "" {
+		return "", false
+	}
+	switch prefix {
+	case "auth":
+		return "AUTHORIZATION", true
+	case "key":
+		return "API_KEY", true
+	case "sess":
+		return "SESSION", true
+	default:
+		return "", false
+	}
+}
+
+// CheckCredentialRate 按凭据在自然分钟窗口内计数，第 limit+1 次请求起产生限速信号。
+// 匿名、未知前缀及 limit ≤ 0 均跳过，不回退 IP；证据不含凭据键或指纹。
+func CheckCredentialRate(ctx *dsctx.RequestContext, credKey string, limit int) {
+	if ctx == nil || limit <= 0 {
+		return
+	}
+	credType, ok := credentialRateType(credKey)
+	if !ok {
+		return
+	}
+	count, _ := credentialRateCounts(ctx, credKey)
+	if count <= limit {
+		return
+	}
+	ctx.AddMatch(dsctx.DetectorMatch{
+		Detector: "api_ratelimit",
+		RuleID:   "ratelimit.credential_rate",
+		Category: "RATE_LIMIT",
+		Severity: "HIGH",
+		Message:  "credential request rate exceeded",
+		Evidence: map[string]string{
+			"credential_type": credType,
+			"window_count":    strconv.Itoa(count),
+			"limit":           strconv.Itoa(limit),
+			"window":          "1m",
+		},
+		ScoreDelta: 30,
+	})
+}
+
+// CheckTenantRate 按可信 JWT 租户在自然分钟窗口内计数，第 limit+1 次请求起产生限速信号。
+// 仅 VERIFIED 且带可信 tenant 的结果参与；limit ≤ 0 关闭，证据不含租户原文或指纹。
+func CheckTenantRate(ctx *dsctx.RequestContext, jwt *jwtverify.VerificationResult, salt string, limit int) {
+	if ctx == nil || jwt == nil || limit <= 0 || jwt.Status != jwtverify.StatusVerified || jwt.VerifiedTenantID == "" {
+		return
+	}
+	key := Fingerprint(salt, "jwt-tenant:"+jwt.VerifiedTenantID)
+	count, _ := tenantRateCounts(ctx, key)
+	if count <= limit {
+		return
+	}
+	ctx.AddMatch(dsctx.DetectorMatch{
+		Detector: "api_ratelimit",
+		RuleID:   "ratelimit.tenant_rate",
+		Category: "RATE_LIMIT",
+		Severity: "HIGH",
+		Message:  "tenant request rate exceeded",
+		Evidence: map[string]string{
+			"window_count": strconv.Itoa(count),
+			"limit":        strconv.Itoa(limit),
+			"window":       "1m",
+		},
+		ScoreDelta: 30,
+	})
+}
+
+// CheckActionRate 按应用与操作动作在自然分钟窗口内计数，第 limit+1 次请求起产生限速信号。
+// app/action 空白及 limit≤0 跳过；动作 trim 后大写归一，证据不含应用标识。
+func CheckActionRate(ctx *dsctx.RequestContext, applicationID, action string, limit int) {
+	app := strings.TrimSpace(applicationID)
+	normalizedAction := strings.ToUpper(strings.TrimSpace(action))
+	if ctx == nil || app == "" || normalizedAction == "" || limit <= 0 {
+		return
+	}
+	key := app + "|" + normalizedAction
+	count, _ := actionRateCounts(ctx, key)
+	if count <= limit {
+		return
+	}
+	ctx.AddMatch(dsctx.DetectorMatch{
+		Detector: "api_ratelimit",
+		RuleID:   "ratelimit.action_rate",
+		Category: "RATE_LIMIT",
+		Severity: "HIGH",
+		Message:  "action request rate exceeded",
+		Evidence: map[string]string{
+			"action":       normalizedAction,
+			"window_count": strconv.Itoa(count),
+			"limit":        strconv.Itoa(limit),
+			"window":       "1m",
+		},
+		ScoreDelta: 30,
+	})
+}
+
+// CheckGroupRate 按应用与业务功能接口组在自然分钟窗口内计数，第 limit+1 次请求起产生限速信号。
+// app/group 空白及 limit≤0 跳过；组码 trim 后大写归一，证据不含应用标识。
+func CheckGroupRate(ctx *dsctx.RequestContext, applicationID, groupCode string, limit int) {
+	app := strings.TrimSpace(applicationID)
+	normalizedGroup := strings.ToUpper(strings.TrimSpace(groupCode))
+	if ctx == nil || app == "" || normalizedGroup == "" || limit <= 0 {
+		return
+	}
+	key := app + "|" + normalizedGroup
+	count, _ := groupRateCounts(ctx, key)
+	if count <= limit {
+		return
+	}
+	ctx.AddMatch(dsctx.DetectorMatch{
+		Detector: "api_ratelimit",
+		RuleID:   "ratelimit.group_rate",
+		Category: "RATE_LIMIT",
+		Severity: "HIGH",
+		Message:  "group request rate exceeded",
+		Evidence: map[string]string{
+			"group_code":   normalizedGroup,
+			"window_count": strconv.Itoa(count),
+			"limit":        strconv.Itoa(limit),
+			"window":       "1m",
+		},
+		ScoreDelta: 30,
+	})
+}
 
 // CheckAPIHourlyQuota 身份+端点小时配额：定窗累计超 limit → API_HOURLY_QUOTA
 // （RATE_LIMIT 类；只 AddMatch，不定案）。limit ≤ 0 用 DefaultAPIQuotaPerHour。
@@ -103,7 +237,7 @@ func CheckAPIHourlyQuota(ctx *dsctx.RequestContext, identity, endpointKey string
 	if limit <= 0 {
 		limit = DefaultAPIQuotaPerHour
 	}
-	count := defaultHourlyQuotaTracker.add(identity + "|" + endpointKey)
+	count := hourlyQuotaCounts(ctx, identity+"|"+endpointKey)
 	if count <= limit {
 		return
 	}
@@ -131,7 +265,7 @@ func CheckAPIDailyQuota(ctx *dsctx.RequestContext, identity, endpointKey string,
 	if limit <= 0 {
 		limit = DefaultAPIQuotaPerDay
 	}
-	count := defaultDailyQuotaTracker.add(identity + "|" + endpointKey)
+	count := dailyQuotaCounts(ctx, identity+"|"+endpointKey)
 	if count <= limit {
 		return
 	}
@@ -177,7 +311,7 @@ func CheckObjectRate(ctx *dsctx.RequestContext, p *parser.Parsed, identity, endp
 	}
 	for _, id := range ids {
 		key := identity + "|" + ek + "|" + id.Source + ":" + id.Param + "|" + id.ValueHash
-		count, _ := defaultObjectRateTracker.add(key)
+		count, _ := objectRateCounts(ctx, key)
 		if count <= limit {
 			continue
 		}

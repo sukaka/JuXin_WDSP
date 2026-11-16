@@ -27,13 +27,13 @@ Include jiuzhang/post-contrib-blocking.conf    # 二次阻断评估（必须最�
 | OWASP CRS 主包 | `gateway/rules/crs/rules/` | `OWASP_CRS` | 4.28.0 全部 REQUEST/RESPONSE 规则 |
 | CRS 官方插件 | `gateway/rules/crs/plugins/` | `CRS_PLUGIN` | incubator-plugin（PINNED commit）；antivirus（`@inspectFile`）与 body-decompress（`SecRuleScript` Lua）经实测 Coraza 不支持，已移除 |
 | 第三方包 | `gateway/rules/contrib/THIRD_PARTY/` | `THIRD_PARTY` | coreruleset 应用白名单插件（wordpress/nextcloud，Apache-2.0，PINNED-* 记录来源与 commit）；Atomicorp 因许可证禁止再分发不入库 |
-| 自建包 | `gateway/rules/contrib/CUSTOM_PACK/` | `CUSTOM_PACK` | 见下表，共 **744** 条（+ 原 CRS 主包） |
+| 自建包 | `gateway/rules/contrib/CUSTOM_PACK/` | `CUSTOM_PACK` | 见下表，共 **2443** 条（+ 原 CRS 主包） |
 
 自建包明细：
 
 | 文件 | 条数 | 内容 |
 |---|---|---|
-| cve-emergency | 42 | Log4j/Spring/Confluence/ProxyShell/Struts S2 系列等应急 CVE |
+| cve-emergency | 47 | Log4j/Spring/Confluence/ProxyShell/Struts S2 系列、PHP2Shell（CVE-2026-109618/109619）等应急 CVE |
 | webshell | 34 | 一句话/冰蝎蚁剑哥斯拉基础特征 |
 | scanner-fingerprints | 30 | 扫描器 UA/payload 指纹 |
 | cloud-abuse | 30 | 云元数据 SSRF / k8s / docker |
@@ -53,6 +53,16 @@ Include jiuzhang/post-contrib-blocking.conf    # 二次阻断评估（必须最�
 | **injection-variants** | **33** | **SQLi/命令注入/XSS 绕过变种：版本注释/等价函数/盲注变形、IFS·环境变量切片·大括号扩展·八进制编码、模板标签/事件处理器/GBK 宽字节/DOM sink** |
 | **ssti-injection** | **16** | **SSTI 专项：Freemarker ?api/方括号语法、Velocity ClassTool/动态指令、Thymeleaf·SpEL 预处理变体、Jinja2 无定界符 dunder 链、Twig 字符串回调过滤器、ERB/Mako/Groovy/EL 补充、探针形态补充** |
 | **unauth-access** | **24** | **组件未授权管理面/中间件未授权访问/拖库特征（全部 OBSERVE 级叠加计分，不单条阻断）** |
+
+### PHP2Shell 应急覆盖（1000043–1000047）
+
+- `1000043`：multipart 请求存在 `PHP_SESSION_UPLOAD_PROGRESS` 字段，阻断 session upload progress 攻击入口；
+- `1000044`：该字段值含 PHP 标签或 PHP session 反序列化对象形态；
+- `1000045`：单个 multipart part header ≥8192，覆盖官方披露的 OOM 探针；
+- `1000046`：`Transfer-Encoding: chunked` 的 multipart 请求（无可信声明长度），覆盖 OOM corruption 入口；
+- `1000047`：深层嵌套 multipart 字段名，仅 WARNING 叠加，不单条阻断。
+
+链式规则的异常分数只放在链尾：父规则匹配普通 multipart 不计分，只有字段、传输形态或嵌套名确认后才进入二次阻断评估，避免误伤正常上传。该包是虚拟补丁，**不能替代 PHP 升级**；完整修复仍是升级到 PHP 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 或更高版本。暂不能升级时按 PHP 官方 advisory 评估 `session.upload_progress.enabled=0`、保守请求体限制与逐应用关闭无必要 multipart 的桥接措施。
 
 ## ID 分配
 

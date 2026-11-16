@@ -156,7 +156,7 @@ IP/凭据（明文或指纹）：
 | 能力 | 任务书条目 | 现状 |
 |------|-----------|------|
 | BFLA 功能级授权基线 | P0-16 | NOT_IMPLEMENTED：无 Role 概念、无 Role→BusinessFunction→API→Method→Action 基线表、无运行时检测；PURPOSE=ADMIN 分类标签未下发网关未接检测 |
-| 字段权限 / Mass Assignment | P0-17 | NOT_IMPLEMENTED：无 `api_field_permissions` 表；READABLE/WRITABLE 等词汇不存在；最近邻信号仅为 schema 结构符合性（undefined_field/type_mismatch/missing_field），无角色×字段可写性语义 |
+| 字段权限 / Mass Assignment | P0-17 | NOT_IMPLEMENTED：无 `api_field_permissions` 表；READABLE/WRITABLE 等词汇不存在；最近邻信号仅为 schema 结构符合性（undefined_field/type_mismatch），无角色×字段可写性语义 |
 | Token 跨应用 / 已吊销凭据 | 任务书 §67 | 未实现 |
 | 画像字段扩展（§68 全量） | P0-14 | 部分：见第四节缺口 |
 

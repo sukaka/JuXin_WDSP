@@ -1,7 +1,8 @@
 # 报表与系统运维域：报告模板/报告任务/报告归档、备份、恢复、升级、交付检查、系统控制。
 # 路由源：server/internal/reports/handler.go（13 条）、server/internal/upgrades/handler.go（9 条）、
 # server/internal/delivery/handler.go（4 条）、server/internal/app/app.go 第 693-705 行（backups/restores 13 条）、
-# server/internal/systemops/handler.go（3 条）。
+# server/internal/systemops/handler.go（3 条）、server/internal/containerops/handler.go（7 条，
+# 其中 GET /system/containers/{seg1}/{seg2} 为日志与任务状态两种形态的组合分发模式）。
 
 paths:
   # ---------- 报告模板 ----------
@@ -1999,6 +2000,285 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
 
+  # ---------- 容器运维（containerops sidecar 通道） ----------
+  /system/containers:
+    get:
+      operationId: systemContainerList
+      tags: [container-ops]
+      summary: 容器状态列表
+      description: >-
+        列出项目内纳入白名单管理的业务容器（状态/健康/镜像/启动时间/重启计数）。
+        管理 API 不挂载 docker.sock，经共享卷 Unix Socket 调用 containeropsd sidecar
+        （docs/CONTAINER_OPS_DESIGN.md）；sidecar 仅返回白名单字段，不含环境变量值。
+        CONTAINEROPS_SOCKET 未配置（裸机/未部署 sidecar 形态）时返回 503，不伪造空列表。
+        权限：`containers.read`。审计：MEDIUM。
+      responses:
+        '200':
+          description: 容器列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContainerListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: 容器运维通道未配置或不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # 两段式 GET：Go ServeMux 不允许 actions/{job_id} 与 {service}/logs 两个模式并存
+  # （同时命中 /containers/actions/logs 且互不更具体），实现侧以单一组合模式注册后按段分发，
+  # 对外契约保持 /system/containers/{service}/logs 与 /system/containers/actions/{job_id} 两种形态。
+  /system/containers/{seg1}/{seg2}:
+    get:
+      operationId: systemContainerSubresourceGet
+      tags: [container-ops]
+      summary: 容器子资源查询（日志 / 动作任务状态）
+      description: >-
+        按路径段分发两种形态：
+        - `GET /api/v1/system/containers/{service}/logs?tail&since` —— 容器日志查询
+          （权限 `containers.logs`，MEDIUM 审计）。tail 默认 200、上限 1000（超限夹紧），
+          since 为 Unix 秒；sidecar 已做控制字符剥离与 password/token/authorization/cookie
+          保守脱敏，单响应上限 256KiB（超限 truncated=true），next_since 供增量轮询。
+        - `GET /api/v1/system/containers/actions/{job_id}` —— 运维动作任务状态查询
+          （权限 `containers.read`；高频轮询，不记操作审计）。job_id 为 32 位小写 hex。
+      parameters:
+        - name: seg1
+          in: path
+          required: true
+          schema: {type: string}
+          description: 服务名（日志形态）或字面量 actions（任务状态形态）
+        - name: seg2
+          in: path
+          required: true
+          schema: {type: string}
+          description: 字面量 logs（日志形态）或任务 ID（任务状态形态）
+        - name: tail
+          in: query
+          required: false
+          schema: {type: integer, default: 200, maximum: 1000}
+          description: 日志形态：返回尾部行数（0/缺省取默认，超限夹紧）
+        - name: since
+          in: query
+          required: false
+          schema: {type: integer, format: int64, default: 0}
+          description: 日志形态：仅返回该 Unix 秒之后的日志
+      responses:
+        '200':
+          description: 日志形态返回 ContainerLogsResponse；任务状态形态返回 ContainerActionJob
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ContainerLogsResponse'
+                  - $ref: '#/components/schemas/ContainerActionJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: 容器运维通道未配置或不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /system/containers/{service}/start:
+    post:
+      operationId: systemContainerStart
+      tags: [container-ops]
+      summary: 启动容器
+      description: >-
+        启动指定服务容器。写操作：要求当前用户密码二次确认（错误返回 400 并记 FAILURE 审计），
+        受理后由 sidecar 异步执行（返回任务，经 GET /system/containers/actions/{job_id} 轮询），
+        全程 HIGH 级审计。权限：`containers.control`。
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema: {type: string}
+          description: compose 服务名（须在 sidecar 白名单内）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContainerControlRequest'
+      responses:
+        '202':
+          description: 动作已受理
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContainerActionJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: 容器运维通道未配置或不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /system/containers/{service}/stop:
+    post:
+      operationId: systemContainerStop
+      tags: [container-ops]
+      summary: 停止容器
+      description: >-
+        停止指定服务容器（sidecar 默认 10s 优雅停止超时）。写操作：密码二次确认 +
+        HIGH 级审计，异步任务执行。权限：`containers.control`。
+        注意：API 自身服务（api）按设计仅允许 restart，stop 会被 sidecar 拒绝（403）。
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema: {type: string}
+          description: compose 服务名（须在 sidecar 白名单内）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContainerControlRequest'
+      responses:
+        '202':
+          description: 动作已受理
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContainerActionJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: 容器运维通道未配置或不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /system/containers/{service}/restart:
+    post:
+      operationId: systemContainerRestart
+      tags: [container-ops]
+      summary: 重启容器
+      description: >-
+        重启指定服务容器（sidecar 默认 10s 优雅停止超时）。写操作：密码二次确认 +
+        HIGH 级审计，异步任务执行。权限：`containers.control`。
+        对 api 服务自身重启建议携带 delaySeconds 延迟执行，保证当前响应完整返回。
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema: {type: string}
+          description: compose 服务名（须在 sidecar 白名单内）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContainerControlRequest'
+      responses:
+        '202':
+          description: 动作已受理
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContainerActionJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: 容器运维通道未配置或不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /system/containers/{service}/update:
+    post:
+      operationId: systemContainerUpdate
+      tags: [container-ops]
+      summary: 更新容器
+      description: >-
+        按锁定镜像更新指定服务容器：目标镜像取 compose label
+        `com.docker.compose.image`（缺省当前 Config.Image），显式拒绝 latest 与裸仓库名；
+        sidecar 尝试拉取（离线失败可容忍）、比对镜像 ID，有变化时按 inspect 的
+        Config/HostConfig/Networking 重建（保留卷/端口/网络/环境），健康等待，失败回滚旧容器。
+        高危操作：除密码二次确认外，还要求 confirmText 严格等于「更新容器」，
+        全程 CRITICAL 级审计。权限：`containers.update`。
+        注意：API 自身服务的版本更新走升级执行器通道，本通道拒绝 api 的 update。
+      parameters:
+        - name: service
+          in: path
+          required: true
+          schema: {type: string}
+          description: compose 服务名（须在 sidecar 白名单内）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContainerUpdateRequest'
+      responses:
+        '202':
+          description: 动作已受理
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContainerActionJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: 容器运维通道未配置或不可用
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
 components:
   schemas:
     # ---------- 系统控制 ----------
@@ -2020,6 +2300,76 @@ components:
       properties:
         message: {type: string, description: 受理提示（指令已受理，系统将在数秒后执行）}
         action: {type: string, enum: [reboot, shutdown, factory_reset], description: 已受理的控制动作}
+
+    # ---------- 容器运维（containerops sidecar 通道） ----------
+    ContainerView:
+      type: object
+      description: 容器状态视图（sidecar 白名单字段，不含环境变量值）
+      properties:
+        service: {type: string, description: compose 服务名}
+        project: {type: string, description: compose 项目名}
+        id: {type: string, description: 容器完整 ID}
+        name: {type: string, description: 容器名（去斜杠）}
+        image: {type: string, description: 镜像引用（repo:tag）}
+        image_id: {type: string, description: 镜像 ID（sha256:...）}
+        state: {type: string, description: 状态（running/exited 等）}
+        status: {type: string, description: 状态描述（如 Up 2 hours）}
+        health: {type: string, description: 健康检查状态（healthy/unhealthy/starting；无健康检查为空串）}
+        running: {type: boolean, description: 是否运行中}
+        restart_count: {type: integer, description: 重启计数}
+        started_at: {type: string, description: 启动时间（RFC3339Nano；未启动过为空串）}
+
+    ContainerListResponse:
+      type: object
+      properties:
+        containers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContainerView'
+
+    ContainerLogLine:
+      type: object
+      properties:
+        timestamp: {type: string, description: RFC3339Nano 时间戳（无法解析为空串）}
+        stream: {type: string, enum: [stdout, stderr]}
+        message: {type: string, description: 日志内容（已剥离控制字符并保守脱敏）}
+
+    ContainerLogsResponse:
+      type: object
+      properties:
+        service: {type: string}
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContainerLogLine'
+        truncated: {type: boolean, description: 是否因 256KiB 输出上限截断}
+        next_since: {type: integer, format: int64, description: 增量轮询用的下一 since（Unix 秒）}
+
+    ContainerActionJob:
+      type: object
+      properties:
+        job_id: {type: string, description: 任务 ID（32 位小写 hex）}
+        service: {type: string}
+        action: {type: string, enum: [start, stop, restart, update]}
+        status: {type: string, enum: [ACCEPTED, RUNNING, SUCCESS, FAILED]}
+        message: {type: string, description: 结果/失败原因}
+        started_at: {type: string, format: date-time, description: 开始执行时间（未开始缺省）}
+        finished_at: {type: string, format: date-time, description: 终态时间（未结束缺省）}
+
+    ContainerControlRequest:
+      type: object
+      required: [password]
+      properties:
+        password: {type: string, description: 当前登录用户密码（二次确认）}
+        delaySeconds: {type: integer, minimum: 0, maximum: 300, default: 0, description: 动作延迟执行秒数（API 自身 restart 建议 >0）}
+
+    ContainerUpdateRequest:
+      type: object
+      required: [password, confirmText]
+      properties:
+        password: {type: string, description: 当前登录用户密码（二次确认）}
+        confirmText: {type: string, description: 确认文本，必须严格等于「更新容器」}
+        delaySeconds: {type: integer, minimum: 0, maximum: 300, default: 0, description: 动作延迟执行秒数}
 
     # ---------- 报告 ----------
     ReportTemplate:
@@ -2674,6 +3024,7 @@ components:
         id: {type: string, format: uuid}
         name: {type: string, description: 计划名称（≤64 字符）}
         report_type: {type: string, enum: [DAILY, WEEKLY, MONTHLY], description: 周期类型}
+        api_report_type: {type: string, enum: ['', API_ASSET, API_RISK, API_WEAK, API_SENS], description: 可选 API 专项报告类型；空串为普通周期报告，选择时内容范围必须为 API}
         content_scope: {type: string, enum: [WAF, API, WAF_API], description: 内容范围}
         application_ids:
           type: array
@@ -2709,6 +3060,7 @@ components:
       properties:
         name: {type: string, description: 计划名称（必填，≤64 字符）}
         report_type: {type: string, enum: [DAILY, WEEKLY, MONTHLY], description: 周期类型}
+        api_report_type: {type: string, enum: ['', API_ASSET, API_RISK, API_WEAK, API_SENS], description: 可选 API 专项报告类型；空串为普通周期报告，选择时内容范围必须为 API}
         content_scope: {type: string, enum: [WAF, API, WAF_API], description: 内容范围（含 API 需环境启用 API 动态防护）}
         application_ids:
           type: array

@@ -105,6 +105,8 @@ type Endpoint struct {
 	// BusinessType 业务类型（api_assets.business_type，列表经 LEFT JOIN 带出；
 	// 无资产记录时归一为 OTHER；设计 #12.1，迁移 000105）。
 	BusinessType string `json:"business_type,omitempty"`
+	// Tags 自由标签（api_assets.tags，列表经 LEFT JOIN 带出；无资产记录时为空）。
+	Tags []string `json:"tags,omitempty"`
 	// Asset 业务维度扩展（来自 api_assets，详情接口附带，无记录时为空）。
 	Asset *Asset `json:"asset,omitempty"`
 }
@@ -118,6 +120,13 @@ type Asset struct {
 	Owner              string    `json:"owner"`
 	Tags               []string  `json:"tags"`
 	BusinessType       string    `json:"business_type"`
+	Organization       string    `json:"organization"`
+	BusinessSystem     string    `json:"business_system"`
+	TechnicalOwner     string    `json:"technical_owner"`
+	DataOwner          string    `json:"data_owner"`
+	DataLevel          string    `json:"data_level"`
+	APILevel           string    `json:"api_level"`
+	AuthType           string    `json:"auth_type"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -448,7 +457,7 @@ LEFT JOIN api_assets ast ON ast.endpoint_id = e.id WHERE `+where, args...).Scan(
 SELECT %s, COALESCE(a.name,''),
   COALESCE((SELECT d.hostname FROM application_domains d
     WHERE d.application_id = a.id ORDER BY d.is_primary DESC, d.created_at LIMIT 1), ''),
-  COALESCE(ast.business_type,'OTHER')
+  COALESCE(ast.business_type,'OTHER'), ast.tags
 FROM api_endpoints e
 LEFT JOIN applications a ON a.id = e.application_id
 LEFT JOIN api_assets ast ON ast.endpoint_id = e.id
@@ -465,12 +474,13 @@ WHERE %s ORDER BY e.last_seen_at DESC LIMIT $%d OFFSET $%d`,
 		// 000045 新增列可空：经中间变量转换（NULL → 零值）
 		var assetValue *string
 		var assetValueExplain []byte
+		var tags []byte
 		if err := rows.Scan(&e.ID, &e.ApplicationID, &e.DomainID, &e.ApplicationBindingID, &e.Host, &e.HTTPMethod, &e.NormalizedPath,
 			&e.RawPathExample, &e.EndpointKey, &e.APIConfidence, &e.AssetStatus, &e.ProtocolType,
 			&e.LearningStatus, &e.CurrentModelVersionID, &e.ClassificationLocked, &e.IsAPI,
 			&e.HitCount, &e.FirstSeenAt, &e.LastSeenAt, &e.ConfirmedAt, &e.DirectoryPath,
 			&assetValue, &assetValueExplain, &e.ZombieSince,
-			&e.ApplicationName, &e.ApplicationDomain, &e.BusinessType); err != nil {
+			&e.ApplicationName, &e.ApplicationDomain, &e.BusinessType, &tags); err != nil {
 			return nil, 0, err
 		}
 		if assetValue != nil {
@@ -478,6 +488,11 @@ WHERE %s ORDER BY e.last_seen_at DESC LIMIT $%d OFFSET $%d`,
 		}
 		if assetValueExplain != nil {
 			e.AssetValueExplain = json.RawMessage(assetValueExplain)
+		}
+		if tags != nil {
+			if err := json.Unmarshal(tags, &e.Tags); err != nil {
+				return nil, 0, fmt.Errorf("解析资产标签失败：%w", err)
+			}
 		}
 		out = append(out, e)
 	}
@@ -799,18 +814,18 @@ VALUES ($1,$2,$3,'资产状态变更',$4)`, id, from, status, actor); err != nil
 	return e, nil
 }
 
-// GetAsset 读取接口业务维度扩展；无记录返回 (nil, nil)。
-func (s *Store) GetAsset(ctx context.Context, endpointID uuid.UUID) (*Asset, error) {
+// assetColumns api_assets 档案查询列（GetAsset 与 UpsertAsset RETURNING 共用顺序）。
+const assetColumns = `endpoint_id, purpose, exposure, data_classification, owner, tags, business_type,
+organization, business_system, technical_owner, data_owner, data_level, api_level, auth_type, created_at, updated_at`
+
+// scanAsset 按 assetColumns 顺序扫描；tags JSONB 经中间变量解析。
+func scanAsset(row interface{ Scan(...any) error }) (*Asset, error) {
 	var a Asset
 	var tags []byte
-	err := s.db.QueryRow(ctx, `
-SELECT endpoint_id, purpose, exposure, data_classification, owner, tags, business_type, created_at, updated_at
-FROM api_assets WHERE endpoint_id=$1`, endpointID).Scan(
-		&a.EndpointID, &a.Purpose, &a.Exposure, &a.DataClassification, &a.Owner, &tags, &a.BusinessType, &a.CreatedAt, &a.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
+	if err := row.Scan(
+		&a.EndpointID, &a.Purpose, &a.Exposure, &a.DataClassification, &a.Owner, &tags, &a.BusinessType,
+		&a.Organization, &a.BusinessSystem, &a.TechnicalOwner, &a.DataOwner, &a.DataLevel, &a.APILevel, &a.AuthType,
+		&a.CreatedAt, &a.UpdatedAt); err != nil {
 		return nil, err
 	}
 	a.Tags = []string{}
@@ -820,44 +835,45 @@ FROM api_assets WHERE endpoint_id=$1`, endpointID).Scan(
 	return &a, nil
 }
 
-// UpsertAsset 按接口 upsert 业务维度扩展（purpose/exposure/owner/tags/business_type 全量替换；
-// business_type 空值归一为 OTHER，枚举校验见 handler 层与 NormalizeBusinessType）。
-func (s *Store) UpsertAsset(ctx context.Context, endpointID uuid.UUID, purpose, exposure, owner string, tags []string, businessType string) (*Asset, error) {
-	exposure = strings.ToUpper(strings.TrimSpace(exposure))
-	if exposure == "" {
-		exposure = "INTERNAL"
+// GetAsset 读取接口业务维度扩展；无记录返回 (nil, nil)。
+func (s *Store) GetAsset(ctx context.Context, endpointID uuid.UUID) (*Asset, error) {
+	row := s.db.QueryRow(ctx, `SELECT `+assetColumns+` FROM api_assets WHERE endpoint_id=$1`, endpointID)
+	a, err := scanAsset(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
 	}
-	businessType = NormalizeBusinessType(businessType)
-	if !validBusinessTypes[businessType] {
-		return nil, fmt.Errorf("无效的业务类型：%s", businessType)
-	}
-	if tags == nil {
-		tags = []string{}
-	}
-	tagsJSON, err := json.Marshal(tags)
-	if err != nil {
-		return nil, fmt.Errorf("序列化资产标签失败：%w", err)
-	}
-	var a Asset
-	var tagsRaw []byte
-	err = s.db.QueryRow(ctx, `
-INSERT INTO api_assets (endpoint_id, purpose, exposure, owner, tags, business_type)
-VALUES ($1,$2,$3,$4,$5::jsonb,$6)
-ON CONFLICT (endpoint_id) DO UPDATE SET
-  purpose = EXCLUDED.purpose, exposure = EXCLUDED.exposure,
-  owner = EXCLUDED.owner, tags = EXCLUDED.tags, business_type = EXCLUDED.business_type,
-  updated_at = now()
-RETURNING endpoint_id, purpose, exposure, data_classification, owner, tags, business_type, created_at, updated_at`,
-		endpointID, purpose, exposure, owner, string(tagsJSON), businessType).Scan(
-		&a.EndpointID, &a.Purpose, &a.Exposure, &a.DataClassification, &a.Owner, &tagsRaw, &a.BusinessType, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
-	a.Tags = []string{}
-	if err := json.Unmarshal(tagsRaw, &a.Tags); err != nil {
-		return nil, fmt.Errorf("解析资产标签失败：%w", err)
+	return a, nil
+}
+
+// UpsertAsset 按接口 upsert 业务维度扩展（AssetProfile 全量替换；
+// 枚举归一与校验见 normalizeAssetProfile）。
+func (s *Store) UpsertAsset(ctx context.Context, endpointID uuid.UUID, p AssetProfile) (*Asset, error) {
+	p, err := normalizeAssetProfile(p)
+	if err != nil {
+		return nil, err
 	}
-	return &a, nil
+	tagsJSON, err := json.Marshal(p.Tags)
+	if err != nil {
+		return nil, fmt.Errorf("序列化资产标签失败：%w", err)
+	}
+	row := s.db.QueryRow(ctx, `
+INSERT INTO api_assets (endpoint_id, purpose, exposure, owner, tags, business_type,
+  organization, business_system, technical_owner, data_owner, data_level, api_level, auth_type)
+VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13)
+ON CONFLICT (endpoint_id) DO UPDATE SET
+  purpose = EXCLUDED.purpose, exposure = EXCLUDED.exposure,
+  owner = EXCLUDED.owner, tags = EXCLUDED.tags, business_type = EXCLUDED.business_type,
+  organization = EXCLUDED.organization, business_system = EXCLUDED.business_system,
+  technical_owner = EXCLUDED.technical_owner, data_owner = EXCLUDED.data_owner,
+  data_level = EXCLUDED.data_level, api_level = EXCLUDED.api_level, auth_type = EXCLUDED.auth_type,
+  updated_at = now()
+RETURNING `+assetColumns,
+		endpointID, p.Purpose, p.Exposure, p.Owner, string(tagsJSON), p.BusinessType,
+		p.Organization, p.BusinessSystem, p.TechnicalOwner, p.DataOwner, p.DataLevel, p.APILevel, p.AuthType)
+	return scanAsset(row)
 }
 
 // SetClassificationLocked 设置分类锁定标记。
@@ -890,8 +906,161 @@ UPDATE api_endpoints SET learning_status=$2, updated_at=now() WHERE id=$1`, id, 
 	return nil
 }
 
-// AutoClassify 按路径/方法启发式自动分类，写 api_classification_dimensions（source=AUTO）。
-// 维度：PURPOSE/EXPOSURE/ACCESS/ACTION 恒产出，BUSINESS_DOMAIN 仅领域关键词置信达标时产出。
+// currentModelDataSensitivity 读取当前模型参数行；无模型或无参数时不产出维度。
+func currentModelDataSensitivity(ctx context.Context, q DBTX, modelVersionID *uuid.UUID) (ClassificationDimension, bool, error) {
+	if modelVersionID == nil {
+		return ClassificationDimension{}, false, nil
+	}
+	rows, err := q.Query(ctx, `SELECT sensitivity_level, confidence FROM api_parameter_models WHERE model_version_id=$1`, *modelVersionID)
+	if err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	defer rows.Close()
+	var parameters []parameterSensitivity
+	for rows.Next() {
+		var p parameterSensitivity
+		if err := rows.Scan(&p.level, &p.confidence); err != nil {
+			return ClassificationDimension{}, false, err
+		}
+		parameters = append(parameters, p)
+	}
+	if err := rows.Err(); err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	dim, ok := classifyDataSensitivity(parameters)
+	return dim, ok, nil
+}
+
+// recentIdentityRequirement 聚合端点近30天运行时身份观测；无有效事件时不产出维度。
+func recentIdentityRequirement(ctx context.Context, q DBTX, endpointKey string) (ClassificationDimension, bool, error) {
+	var obs identityObservation
+	err := q.QueryRow(ctx, `
+SELECT COALESCE(bool_or(auth_type='' AND response_status BETWEEN 200 AND 399),false),
+       COALESCE(bool_or(auth_type='' AND response_status IN (401,403)),false),
+       COALESCE(bool_or(auth_type<>'' AND response_status BETWEEN 200 AND 399),false)
+FROM api_runtime_events
+WHERE endpoint_key=$1 AND occurred_at >= now()-interval '30 days'`, endpointKey).Scan(
+		&obs.anonymousSuccess, &obs.anonymousRejected, &obs.authenticatedSuccess)
+	if err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	dim, ok := classifyIdentityRequirement(obs)
+	return dim, ok, nil
+}
+
+// enabledBusinessFlowStage 读取当前端点在启用流程中的步骤；最小序号按整个流程计算。
+func enabledBusinessFlowStage(ctx context.Context, q DBTX, endpointID uuid.UUID) (ClassificationDimension, bool, error) {
+	rows, err := q.Query(ctx, `
+WITH enabled_steps AS (
+  SELECT s.flow_baseline_id, s.endpoint_id, s.sequence, s.terminal, s.predecessors,
+         min(s.sequence) OVER (PARTITION BY s.flow_baseline_id) AS min_sequence
+  FROM api_flow_baseline_steps s
+  JOIN api_flow_baselines fb ON fb.id=s.flow_baseline_id
+  WHERE fb.enabled
+)
+SELECT flow_baseline_id::text, terminal, sequence=min_sequence, cardinality(predecessors)=0
+FROM enabled_steps
+WHERE endpoint_id=$1`, endpointID)
+	if err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	defer rows.Close()
+	var steps []flowStepObservation
+	for rows.Next() {
+		var step flowStepObservation
+		if err := rows.Scan(&step.flowID, &step.terminal, &step.minSequence, &step.noPredecessors); err != nil {
+			return ClassificationDimension{}, false, err
+		}
+		steps = append(steps, step)
+	}
+	if err := rows.Err(); err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	dim, ok := classifyBusinessFlowStage(steps)
+	return dim, ok, nil
+}
+
+// activeRiskLabel 读取当前端点活动发现；非法开放 finding_type 显式报错。
+func activeRiskLabel(ctx context.Context, q DBTX, endpointID uuid.UUID) (ClassificationDimension, bool, error) {
+	rows, err := q.Query(ctx, `
+SELECT severity, finding_type FROM api_runtime_findings
+WHERE endpoint_id=$1 AND status IN ('NEW','CONFIRMED','IN_PROGRESS')`, endpointID)
+	if err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	defer rows.Close()
+	var findings []runtimeFinding
+	for rows.Next() {
+		var finding runtimeFinding
+		if err := rows.Scan(&finding.severity, &finding.findingType); err != nil {
+			return ClassificationDimension{}, false, err
+		}
+		findings = append(findings, finding)
+	}
+	if err := rows.Err(); err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	dim, ok, err := classifyRiskLabel(findings)
+	if err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	return dim, ok, nil
+}
+
+// currentBusinessObject 读取当前端点对象模型与段形；无模型时无需读取段形。
+func currentBusinessObject(ctx context.Context, q DBTX, endpointID uuid.UUID) (ClassificationDimension, bool, error) {
+	rows, err := q.Query(ctx, `SELECT object_segment, publishable FROM api_object_models WHERE endpoint_id=$1`, endpointID)
+	if err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	var models []objectModelObservation
+	for rows.Next() {
+		var model objectModelObservation
+		if err := rows.Scan(&model.segment, &model.publishable); err != nil {
+			rows.Close()
+			return ClassificationDimension{}, false, err
+		}
+		models = append(models, model)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return ClassificationDimension{}, false, err
+	}
+	rows.Close()
+	if len(models) == 0 {
+		return ClassificationDimension{}, false, nil
+	}
+
+	segmentRows, err := q.Query(ctx, `
+SELECT position, literal_value, is_variable, variable_name
+FROM api_endpoint_path_segments WHERE endpoint_id=$1`, endpointID)
+	if err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	defer segmentRows.Close()
+	var segments []PathSegment
+	for segmentRows.Next() {
+		var segment PathSegment
+		if err := segmentRows.Scan(&segment.Position, &segment.LiteralValue, &segment.IsVariable, &segment.VariableName); err != nil {
+			return ClassificationDimension{}, false, err
+		}
+		segments = append(segments, segment)
+	}
+	if err := segmentRows.Err(); err != nil {
+		return ClassificationDimension{}, false, err
+	}
+	return classifyBusinessObject(models, segments)
+}
+
+// AutoClassify 按路径/方法、接口协议、当前模型参数、运行时事件、启用流程、活动发现及对象模型自动分类，
+// 写 api_classification_dimensions（source=AUTO）。
+// 维度：PURPOSE/EXPOSURE/ACCESS/ACTION 恒产出，BUSINESS_DOMAIN 仅领域关键词置信达标时产出，
+// TECHNICAL_PROTOCOL/INTERACTION_MODE 仅由 protocol_type 确定性映射，
+// DATA_SENSITIVITY 仅聚合 current_model_version_id 对应参数行的 sensitivity_level/confidence，
+// IDENTITY_REQUIREMENT 仅聚合近30天 api_runtime_events 的 auth_type/response_status，
+// BUSINESS_FLOW_STAGE 仅由 api_flow_baselines(enabled=true) 与 api_flow_baseline_steps 映射，
+// RISK_LABEL 仅聚合活动 api_runtime_findings，并在写入新值前清除本端点旧值，
+// BUSINESS_OBJECT 仅由当前端点 api_object_models 与 api_endpoint_path_segments 派生，并先计算后替换旧值。
 // 接口分类已锁定时返回 ErrClassificationLocked（事务）。
 func (s *Store) AutoClassify(ctx context.Context, id uuid.UUID) ([]ClassificationDimension, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -911,6 +1080,48 @@ func (s *Store) AutoClassify(ctx context.Context, id uuid.UUID) ([]Classificatio
 		return nil, ErrClassificationLocked
 	}
 	dims := classifyByPath(e.HTTPMethod, e.NormalizedPath)
+	dims = append(dims, classifyByProtocol(e.ProtocolType)...)
+	sensitivity, ok, err := currentModelDataSensitivity(ctx, tx, e.CurrentModelVersionID)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		dims = append(dims, sensitivity)
+	}
+	identity, ok, err := recentIdentityRequirement(ctx, tx, e.EndpointKey)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		dims = append(dims, identity)
+	}
+	flowStage, ok, err := enabledBusinessFlowStage(ctx, tx, e.ID)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		dims = append(dims, flowStage)
+	}
+	riskLabel, ok, err := activeRiskLabel(ctx, tx, e.ID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM api_classification_dimensions WHERE endpoint_id=$1 AND dimension='RISK_LABEL'`, id); err != nil {
+		return nil, err
+	}
+	if ok {
+		dims = append(dims, riskLabel)
+	}
+	businessObject, ok, err := currentBusinessObject(ctx, tx, e.ID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM api_classification_dimensions WHERE endpoint_id=$1 AND dimension='BUSINESS_OBJECT'`, id); err != nil {
+		return nil, err
+	}
+	if ok {
+		dims = append(dims, businessObject)
+	}
 	for i := range dims {
 		dims[i].EndpointID = id
 		if _, err = tx.Exec(ctx, `

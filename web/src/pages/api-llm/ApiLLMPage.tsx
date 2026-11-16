@@ -12,9 +12,15 @@ import {
   Tag,
   Tooltip,
   Typography,
+  Tabs,
 } from 'antd'
+import SecurityPoliciesTab from './SecurityPoliciesTab'
 import type { ColumnsType } from 'antd/es/table'
-import { apiLLMApi, type ApiLLMObservation, type ApiLLMStats } from '../../api/apiLLM'
+import {
+  apiLLMApi,
+  type ApiLLMObservation,
+  type ApiLLMStats,
+} from '../../api/apiLLM'
 import EChart from '../../components/EChart'
 import type { EChartOption } from '../../components/EChart'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
@@ -46,18 +52,38 @@ function modelDistOption(stats?: ApiLLMStats): EChartOption {
     },
     yAxis: { type: 'value', minInterval: 1 },
     series: [
-      { name: '观测数', type: 'bar', data: rows.map((r) => r.observations), barMaxWidth: 32 },
-      { name: '命中观测数', type: 'bar', data: rows.map((r) => r.findings), itemStyle: { color: '#f5222d' }, barMaxWidth: 32 },
+      {
+        name: '观测数',
+        type: 'bar',
+        data: rows.map((r) => r.observations),
+        barMaxWidth: 32,
+      },
+      {
+        name: '命中观测数',
+        type: 'bar',
+        data: rows.map((r) => r.findings),
+        itemStyle: { color: '#f5222d' },
+        barMaxWidth: 32,
+      },
     ],
   }
 }
 
 /** findings 单元格：命中逐条标红（rule_id 优先，缺省 detector），多于 2 条折叠为 +N */
-function FindingsCell({ findings }: { findings: ApiLLMObservation['findings'] }) {
+function FindingsCell({
+  findings,
+}: {
+  findings: ApiLLMObservation['findings']
+}) {
   const list = findings ?? []
-  if (list.length === 0) return <Typography.Text type="secondary">-</Typography.Text>
+  if (list.length === 0)
+    return <Typography.Text type="secondary">-</Typography.Text>
   const shown = list.slice(0, 2)
-  const tip = list.map((f) => `${f.rule_id || f.detector}${f.message ? `：${f.message}` : ''}`).join('\n')
+  const tip = list
+    .map(
+      (f) => `${f.rule_id || f.detector}${f.message ? `：${f.message}` : ''}`,
+    )
+    .join('\n')
   return (
     <Tooltip title={<span style={{ whiteSpace: 'pre-line' }}>{tip}</span>}>
       <span>
@@ -85,7 +111,9 @@ export default function ApiLLMPage() {
   const [findingsOnly, setFindingsOnly] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
-  const [detailRecord, setDetailRecord] = useState<ApiLLMObservation | null>(null)
+  const [detailRecord, setDetailRecord] = useState<ApiLLMObservation | null>(
+    null,
+  )
 
   const statsQuery = useQuery({
     queryKey: ['api-llm-stats', days],
@@ -93,7 +121,15 @@ export default function ApiLLMPage() {
   })
 
   const listQuery = useQuery({
-    queryKey: ['api-llm-observations', days, appliedModel, appliedEndpointKey, findingsOnly, page, pageSize],
+    queryKey: [
+      'api-llm-observations',
+      days,
+      appliedModel,
+      appliedEndpointKey,
+      findingsOnly,
+      page,
+      pageSize,
+    ],
     queryFn: () =>
       apiLLMApi.listObservations({
         days,
@@ -119,15 +155,22 @@ export default function ApiLLMPage() {
       dataIndex: 'model',
       width: 150,
       ellipsis: true,
-      render: (v: string) => (v ? <Typography.Text code>{v}</Typography.Text> : <Tag>未声明</Tag>),
+      render: (v: string) =>
+        v ? <Typography.Text code>{v}</Typography.Text> : <Tag>未声明</Tag>,
     },
     {
       title: 'API',
       dataIndex: 'endpoint_key',
       ellipsis: true,
-      render: (v: string) => (v ? <Typography.Text code>{v}</Typography.Text> : '-'),
+      render: (v: string) =>
+        v ? <Typography.Text code>{v}</Typography.Text> : '-',
     },
-    { title: 'prompt 长度桶', dataIndex: 'prompt_len_bucket', width: 120, render: dash },
+    {
+      title: 'prompt 长度桶',
+      dataIndex: 'prompt_len_bucket',
+      width: 120,
+      render: dash,
+    },
     {
       title: 'Token 用量',
       dataIndex: 'total_tokens',
@@ -140,7 +183,13 @@ export default function ApiLLMPage() {
       width: 70,
       render: (v: boolean) => (v ? <Tag color="purple">流式</Tag> : '-'),
     },
-    { title: 'MCP 方法', dataIndex: 'mcp_method', width: 130, ellipsis: true, render: dash },
+    {
+      title: 'MCP 方法',
+      dataIndex: 'mcp_method',
+      width: 130,
+      ellipsis: true,
+      render: dash,
+    },
     {
       title: '命中项',
       key: 'findings',
@@ -150,128 +199,167 @@ export default function ApiLLMPage() {
   ]
 
   return (
-    <Card title="LLM API 观测">
-      <Typography.Paragraph type="secondary">
-        LLM 流量观测（模型/prompt 长度桶/token 用量/流式/MCP 方法）与 llm.* 检测命中；
-        原始 prompt 与响应内容不采集，统计窗口与列表明细一致（按发生时间口径）。
-      </Typography.Paragraph>
-      <QueryErrorAlert error={statsQuery.error} />
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col flex="1 1 160px">
-          <Card size="small">
-            <Statistic title="观测总数" value={summary?.observations ?? 0} loading={statsQuery.isLoading} />
-          </Card>
-        </Col>
-        <Col flex="1 1 160px">
-          <Card size="small">
-            <Statistic
-              title="命中观测"
-              value={summary?.with_findings ?? 0}
-              loading={statsQuery.isLoading}
-              valueStyle={{ color: '#cf1322' }}
-            />
-          </Card>
-        </Col>
-        <Col flex="1 1 160px">
-          <Card size="small">
-            <Statistic title="token 合计" value={summary?.total_tokens ?? 0} loading={statsQuery.isLoading} />
-          </Card>
-        </Col>
-        <Col flex="1 1 160px">
-          <Card size="small">
-            <Statistic title="流式调用" value={summary?.stream_calls ?? 0} loading={statsQuery.isLoading} />
-          </Card>
-        </Col>
-        <Col flex="1 1 160px">
-          <Card size="small">
-            <Statistic title="涉及模型" value={summary?.distinct_models ?? 0} loading={statsQuery.isLoading} />
-          </Card>
-        </Col>
-      </Row>
-
-      <Card
-        size="small"
-        title="模型分布（按观测数）"
-        style={{ marginBottom: 16 }}
-        extra={
-          <Radio.Group
-            value={days}
-            onChange={(e) => setDays(e.target.value as number)}
-            options={[
-              { value: 7, label: '7天' },
-              { value: 14, label: '14天' },
-              { value: 30, label: '30天' },
-            ]}
-            optionType="button"
-            size="small"
-          />
-        }
-      >
-        <EChart option={modelDistOption(statsQuery.data)} height={280} ariaLabel="LLM 模型调用分布" />
-      </Card>
-
-      <QueryErrorAlert error={listQuery.error} />
-      <Space style={{ marginBottom: 16 }} wrap>
-        <Input.Search
-          placeholder="模型（精确匹配，如 gpt-4o）"
-          allowClear
-          style={{ width: 260 }}
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          onSearch={(v) => {
-            setAppliedModel(v.trim())
-            setPage(1)
-          }}
-        />
-        <Input.Search
-          placeholder="API 键（精确匹配）"
-          allowClear
-          style={{ width: 320 }}
-          value={endpointKey}
-          onChange={(e) => setEndpointKey(e.target.value)}
-          onSearch={(v) => {
-            setAppliedEndpointKey(v.trim())
-            setPage(1)
-          }}
-        />
-        <Checkbox
-          checked={findingsOnly}
-          onChange={(e) => {
-            setFindingsOnly(e.target.checked)
-            setPage(1)
-          }}
-        >
-          仅看命中观测
-        </Checkbox>
-      </Space>
-      <SmartTable<ApiLLMObservation>
-        storageKey="api-llm-observations"
-        rowKey="id"
-        loading={listQuery.isLoading}
-        columns={columns}
-        dataSource={listQuery.data?.items ?? []}
-        scroll={{ x: 1200 }}
-        onRow={(record) => ({
-          onDoubleClick: () => setDetailRecord(record),
-          style: { cursor: 'pointer' },
-        })}
-        pagination={{
-          current: page,
-          pageSize,
-          total: listQuery.data?.total ?? 0,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
-          onChange: (p, ps) => {
-            setPage(p)
-            setPageSize(ps)
+    <Card title="AI 大模型安全">
+      <Tabs
+        defaultActiveKey="observations"
+        items={[
+          {
+            key: 'policies',
+            label: '安全策略',
+            children: <SecurityPoliciesTab />,
           },
-        }}
-      />
-      <RecordDetailDrawer
-        open={detailRecord !== null}
-        title="LLM 观测详情"
-        record={detailRecord as Record<string, unknown> | null}
-        onClose={() => setDetailRecord(null)}
+          {
+            key: 'observations',
+            label: '调用观测',
+            children: (
+              <>
+                <Typography.Paragraph type="secondary">
+                  LLM 流量观测（模型/prompt 长度桶/token 用量/流式/MCP 方法）与
+                  llm.* 检测命中； 原始 prompt
+                  与响应内容不采集，统计窗口与列表明细一致（按发生时间口径）。
+                </Typography.Paragraph>
+                <QueryErrorAlert error={statsQuery.error} />
+                <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+                  <Col flex="1 1 160px">
+                    <Card size="small">
+                      <Statistic
+                        title="观测总数"
+                        value={summary?.observations ?? 0}
+                        loading={statsQuery.isLoading}
+                      />
+                    </Card>
+                  </Col>
+                  <Col flex="1 1 160px">
+                    <Card size="small">
+                      <Statistic
+                        title="命中观测"
+                        value={summary?.with_findings ?? 0}
+                        loading={statsQuery.isLoading}
+                        valueStyle={{ color: '#cf1322' }}
+                      />
+                    </Card>
+                  </Col>
+                  <Col flex="1 1 160px">
+                    <Card size="small">
+                      <Statistic
+                        title="token 合计"
+                        value={summary?.total_tokens ?? 0}
+                        loading={statsQuery.isLoading}
+                      />
+                    </Card>
+                  </Col>
+                  <Col flex="1 1 160px">
+                    <Card size="small">
+                      <Statistic
+                        title="流式调用"
+                        value={summary?.stream_calls ?? 0}
+                        loading={statsQuery.isLoading}
+                      />
+                    </Card>
+                  </Col>
+                  <Col flex="1 1 160px">
+                    <Card size="small">
+                      <Statistic
+                        title="涉及模型"
+                        value={summary?.distinct_models ?? 0}
+                        loading={statsQuery.isLoading}
+                      />
+                    </Card>
+                  </Col>
+                </Row>
+
+                <Card
+                  size="small"
+                  title="模型分布（按观测数）"
+                  style={{ marginBottom: 16 }}
+                  extra={
+                    <Radio.Group
+                      value={days}
+                      onChange={(e) => setDays(e.target.value as number)}
+                      options={[
+                        { value: 7, label: '7天' },
+                        { value: 14, label: '14天' },
+                        { value: 30, label: '30天' },
+                      ]}
+                      optionType="button"
+                      size="small"
+                    />
+                  }
+                >
+                  <EChart
+                    option={modelDistOption(statsQuery.data)}
+                    height={280}
+                    ariaLabel="LLM 模型调用分布"
+                  />
+                </Card>
+
+                <QueryErrorAlert error={listQuery.error} />
+                <Space style={{ marginBottom: 16 }} wrap>
+                  <Input.Search
+                    placeholder="模型（精确匹配，如 gpt-4o）"
+                    allowClear
+                    style={{ width: 260 }}
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    onSearch={(v) => {
+                      setAppliedModel(v.trim())
+                      setPage(1)
+                    }}
+                  />
+                  <Input.Search
+                    placeholder="API 键（精确匹配）"
+                    allowClear
+                    style={{ width: 320 }}
+                    value={endpointKey}
+                    onChange={(e) => setEndpointKey(e.target.value)}
+                    onSearch={(v) => {
+                      setAppliedEndpointKey(v.trim())
+                      setPage(1)
+                    }}
+                  />
+                  <Checkbox
+                    checked={findingsOnly}
+                    onChange={(e) => {
+                      setFindingsOnly(e.target.checked)
+                      setPage(1)
+                    }}
+                  >
+                    仅看命中观测
+                  </Checkbox>
+                </Space>
+                <SmartTable<ApiLLMObservation>
+                  storageKey="api-llm-observations"
+                  rowKey="id"
+                  loading={listQuery.isLoading}
+                  columns={columns}
+                  dataSource={listQuery.data?.items ?? []}
+                  scroll={{ x: 1200 }}
+                  onRow={(record) => ({
+                    onDoubleClick: () => setDetailRecord(record),
+                    style: { cursor: 'pointer' },
+                  })}
+                  pagination={{
+                    current: page,
+                    pageSize,
+                    total: listQuery.data?.total ?? 0,
+                    showSizeChanger: true,
+                    showTotal: (t) => `共 ${t} 条`,
+                    onChange: (p, ps) => {
+                      setPage(p)
+                      setPageSize(ps)
+                    },
+                  }}
+                />
+                <RecordDetailDrawer
+                  open={detailRecord !== null}
+                  title="LLM 观测详情"
+                  record={detailRecord as Record<string, unknown> | null}
+                  onClose={() => setDetailRecord(null)}
+                />
+              </>
+            ),
+          },
+        ]}
       />
     </Card>
   )

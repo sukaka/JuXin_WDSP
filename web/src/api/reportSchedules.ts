@@ -9,6 +9,7 @@ export interface ReportScheduleListParams {
 export interface SaveReportScheduleBody {
   name: string
   report_type: string
+  api_report_type?: string
   content_scope: string
   application_ids?: string[]
   template_id?: string
@@ -26,13 +27,30 @@ export interface SaveReportScheduleBody {
 /** 定时报告计划（reports.read / reports.create） */
 export const reportSchedulesApi = {
   list: async (params: ReportScheduleListParams) => {
-    const data = await request<PageResult<ReportScheduleItem>>('/report-schedules', { query: { ...params } })
+    const data = await request<PageResult<ReportScheduleItem>>(
+      '/report-schedules',
+      { query: { ...params } },
+    )
     return { ...data, items: data.items ?? [] }
   },
   create: async (body: SaveReportScheduleBody) =>
-    (await request<{ schedule: ReportScheduleItem }>('/report-schedules', { method: 'POST', body })).schedule,
+    (
+      await request<{ schedule: ReportScheduleItem }>('/report-schedules', {
+        method: 'POST',
+        body,
+      })
+    ).schedule,
   update: (id: string, body: SaveReportScheduleBody) =>
-    request<{ message: string }>(`/report-schedules/${id}`, { method: 'PUT', body }),
-  remove: (id: string) => request<{ message: string }>(`/report-schedules/${id}`, { method: 'DELETE' }),
-  runNow: (id: string) => request<{ message: string }>(`/report-schedules/${id}/run-now`, { method: 'POST' }),
+    request<{ message: string }>(`/report-schedules/${id}`, {
+      method: 'PUT',
+      body,
+    }),
+  remove: (id: string) =>
+    request<{ message: string }>(`/report-schedules/${id}`, {
+      method: 'DELETE',
+    }),
+  runNow: (id: string) =>
+    request<{ message: string }>(`/report-schedules/${id}/run-now`, {
+      method: 'POST',
+    }),
 }

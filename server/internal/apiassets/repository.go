@@ -30,7 +30,7 @@ type Repository interface {
 	ListServiceAssets(ctx context.Context, page, pageSize int) ([]ServiceAsset, int64, error)
 	// 业务维度扩展（api_assets）
 	GetAsset(ctx context.Context, endpointID uuid.UUID) (*Asset, error)
-	UpsertAsset(ctx context.Context, endpointID uuid.UUID, purpose, exposure, owner string, tags []string, businessType string) (*Asset, error)
+	UpsertAsset(ctx context.Context, endpointID uuid.UUID, p AssetProfile) (*Asset, error)
 	// 分类与学习状态
 	SetClassificationLocked(ctx context.Context, id uuid.UUID, locked bool) error
 	SetLearningStatus(ctx context.Context, id uuid.UUID, status string) error

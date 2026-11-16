@@ -1,6 +1,6 @@
 # 07-api-security.yaml — API 动态防护域（/api-security 命名空间，阶段8/WDSP 核心 + P0/P1 补全）
 # 路由源：server/internal/apiassets/handler.go（19 条）、server/internal/apimodels/handler.go（19 条，含运行时策略版本 3 条与响应 Schema 学习查询 1 条）、
-#         server/internal/apisecurity/routes.go（34 条，含风险中心 findings summary/详情/六个处置动作，
+#         server/internal/apisecurity/routes.go（35 条，含规范路径、参数、响应与鉴权安全审计、风险中心 findings summary/详情/六个处置动作，
 #         七态状态机见迁移 000042，权限点 api_risk.read/api_risk.handle；含 W9-P101 态势补齐 posture/overview 与 posture/trends）、
 #         server/internal/apiweakness/routes.go（8 条）、
 #         server/internal/apidata/handler.go（13 条）、
@@ -8,7 +8,8 @@
 #         server/internal/apigeo/handler.go（1 条，数据出境看板+明细分页单端点，权限点 api_data.read）、
 #         server/internal/apiops/routes.go（11 条，AI 定时运营任务：类型词表/计划 CRUD/启停/立即执行/执行记录，
 #         迁移 000062/000063，权限点 api_ai.read/api_ai.execute）、
-#         server/internal/apiscan/routes.go（17 条，主动扫描 v1：目标/授权/任务/发现/复测，迁移 000053/000054/000056）。
+#         server/internal/apiscan/routes.go（17 条，主动扫描 v1：目标/授权/任务/发现/复测，迁移 000053/000054/000056）；
+#         server/internal/apillm/policy_handler.go（WP3-A：LLM 输入输出保护策略 CRUD/启停/版本快照，迁移 000195）。
 # 响应约定：所有成功响应外层为统一信封 {code, message, data, request_id}
 # （见 server/internal/response/response.go Body）；本片段 200 响应的 schema 描述的是 data 载荷本身。
 # 分页载荷统一为 {items, page, page_size, total}（response.PageData）。
@@ -83,6 +84,103 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoints/export:
+    get:
+      operationId: apiSecEndpointExportList
+      tags: [api-security]
+      summary: 导出 API 接口资产清单（CSV）
+      description: >-
+        按当前筛选条件导出 API 接口资产清单。筛选参数与分页列表一致，服务端分页拉取，
+        单次最多 10000 行；CSV 字段已做公式注入转义。共享导出限流。
+        权限：`api_asset.export`；成功导出记录操作审计。
+      parameters:
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [csv], default: csv }
+          description: 导出格式；缺省 csv
+        - name: asset_status
+          in: query
+          required: false
+          schema: { type: string, enum: [DISCOVERED, CONFIRMED, IGNORED, DEPRECATED] }
+        - name: learning_status
+          in: query
+          required: false
+          schema: { type: string, enum: [NOT_STARTED, LEARNING, PAUSED, LEARNED] }
+        - name: keyword
+          in: query
+          required: false
+          schema: { type: string }
+        - name: application_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: unassigned
+          in: query
+          required: false
+          schema: { type: boolean }
+        - name: directory_path
+          in: query
+          required: false
+          schema: { type: string }
+        - name: business_type
+          in: query
+          required: false
+          schema: { type: string, enum: [LOGIN, REGISTER, PASSWORD_RESET, SMS, EMAIL, ORDER, PAYMENT, EXPORT, DOWNLOAD, SEARCH, QUERY_PERSONAL_DATA, AI_INFERENCE, OTHER] }
+      responses:
+        '200':
+          description: CSV 文件（UTF-8，含表头）
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: attachment 文件名，形如 api-endpoints-YYYYMMDD.csv
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoints/{id}/export:
+    get:
+      operationId: apiSecEndpointExportDetail
+      tags: [api-security]
+      summary: 导出单个 API 详细档案（JSON）
+      description: >-
+        导出单个 API 的详细资产档案（export_version=1），包含基础信息、识别证据、
+        模型/参数/响应 Schema、学习、生命周期、三档流量、来源关系和安全关联数据。
+        各子集合有上限：模型 20、样本/生命周期/来源 100、Finding/弱点 50、敏感字段 500；
+        只含既有脱敏摘要，不含请求/响应正文、Token、密钥或敏感参数值。共享导出限流。
+        权限：`api_asset.export`；成功导出记录操作审计。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: API 接口 ID
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [json], default: json }
+          description: 导出格式；缺省 json
+      responses:
+        '200':
+          description: 单个 API 详细 JSON 档案
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+              description: attachment 文件名，按 Method 与路径生成
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecEndpointExportBundle' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/InternalError' }
 
   /api-security/endpoints/site-summary:
     get:
@@ -164,7 +262,8 @@ paths:
       tags: [api-security]
       summary: API 接口详情
       description: >-
-        返回接口详情，附带 api_assets 业务维度扩展（asset 字段，无记录时缺省）。
+        返回接口详情，附带 api_assets 业务维度扩展（asset 字段，无记录时缺省）
+        与近 7 天日均调用量 daily_requests（流量桶窗口和/7）。
         权限：`api_asset.read`
       parameters:
         - name: id
@@ -188,9 +287,11 @@ paths:
       tags: [api-security]
       summary: 更新接口资产信息
       description: >-
-        全量替换接口的业务维度扩展（api_assets 的 purpose/exposure/owner/tags/business_type）；
+        全量替换接口的资产档案（api_assets：purpose/exposure/owner/tags/business_type
+        及 organization/business_system/technical_owner/data_owner/data_level/api_level/auth_type）；
         至少提交一个字段，未提交的字段按空值覆盖（exposure 空值归一为 INTERNAL，
-        business_type 空值归一为 OTHER 且枚举校验，tags 空值归一空数组）。
+        business_type 空值归一为 OTHER 且枚举校验，tags 空值归一空数组，
+        data_level/api_level 空值归一 UNKNOWN，auth_type 空值为未标注）。
         写操作审计。权限：`api_asset.edit`
       parameters:
         - name: id
@@ -377,6 +478,70 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /api-security/endpoints/{id}/exposure:
+    get:
+      operationId: apiSecEndpointExposure
+      tags: [api-security]
+      summary: 查询接口暴露面判定
+      description: >-
+        返回当前 EXPOSURE 分类维度值（含来源与置信度数值）与最近一次暴露面评估明细
+        （判定结论/来源/置信度/证据数组/评估时间；evidence 元素为 {type, summary}，
+        summary 为服务端生成的中文摘要，前端直接展示）。从未评估时 assessment 为 null。
+        判定由暴露面引擎周期评估（流量观测 + 配置证据）或人工确认产生；
+        分类锁定或 MANUAL 来源时引擎不覆盖。
+        权限：`api_asset.read`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 接口 ID
+      responses:
+        '200':
+          description: 暴露面判定视图
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecEndpointExposureResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/endpoints/{id}/exposure/reassess:
+    post:
+      operationId: apiSecEndpointExposureReassess
+      tags: [api-security]
+      summary: 即时重评接口暴露面
+      description: >-
+        立即重新装配证据（观察窗内来源范围聚合 + 归属域名公网 DNS 视角 + 部署模式）执行暴露面判定，
+        恒写一条评估明细，并条件更新 EXPOSURE 分类维度：接口分类已锁定（classification_locked=true）
+        或现存维度为 MANUAL 人工来源时不覆盖（applied=false），其余来源（AUTO/TRAFFIC_OBSERVED/CONFIG）
+        被本次判定替换。无请求体。写操作审计（低风险，判定可重入）。
+        权限：`api_asset.edit`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 接口 ID
+      responses:
+        '200':
+          description: 重评完成（返回本次评估明细与维度是否被更新）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecEndpointExposureReassessResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503':
+          description: 暴露面评估器未装配（错误码 SERVICE_UNAVAILABLE）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api-security/endpoints/{id}/deprecate:
     post:
       operationId: apiSecEndpointDeprecate
@@ -468,6 +633,34 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/applications/{id}/asset-value:
+    get:
+      operationId: apiSecApplicationAssetValue
+      tags: [api-security]
+      summary: 应用级资产价值聚合
+      description: 按应用聚合非忽略接口的既有资产价值评分，返回平均/最高分、等级分布和各维度平均分；未评分接口计数披露，无评分数据时 level 为空。仅含聚合指标，不生成虚构评分。权限：api_asset.read。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 应用级资产价值聚合
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecApplicationAssetValue' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503':
+          description: 评分读取实现未装配
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api-security/service-assets:
     get:
@@ -1646,6 +1839,51 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /api-security/specs/{id}/audit:
+    get:
+      operationId: apiSecSpecAuditGet
+      tags: [api-security]
+      summary: 规范声明与鉴权安全审计
+      description: >-
+        按需读取指定规范的 spec_json，复用安全解析后只读执行八类确定性规则：
+        PATH_PARAMETER_MISSING（HIGH，路径占位缺少 PATH 参数）、
+        PATH_PARAMETER_NOT_REQUIRED（MEDIUM，PATH 参数 required 非 true）、
+        PATH_PARAMETER_UNDECLARED（MEDIUM，PATH 参数不在路径占位中）、
+        SENSITIVE_QUERY_PARAMETER（HIGH，GET/DELETE 的 QUERY 参数名为保守敏感词，
+        匹配前忽略大小写及下划线、连字符、点、空白等分隔）、
+        SUCCESS_RESPONSE_MISSING（HIGH，响应声明语义可判定时没有任何 2xx 或 2XX 声明）、
+        ERROR_RESPONSE_MISSING（MEDIUM，响应声明语义可判定时没有 default、4xx/4XX 或 5xx/5XX 声明）、
+        SECURITY_SCHEME_UNDEFINED（HIGH，操作有效安全要求引用不存在的 components.securitySchemes 方案名）、
+        API_KEY_IN_QUERY（HIGH，操作实际引用的 apiKey 方案定义为 in=query）。
+        操作未声明 security 时继承全局 security，显式 security: [] 表示公开并覆盖全局声明；
+        公开、未配置 security 及未被操作引用的方案不产生鉴权发现。鉴权规则仅适用于认证目录可判定的 OpenAPI 3；
+        Swagger 最小转换、Postman、GraphQL、JSON Schema 等目录未知或不适用的格式跳过两类规则，不把缺 components 当作空目录。
+        响应规则仅适用于可解析 responses 对象的 OpenAPI/Swagger 操作；responses 缺失或类型不支持时语义未知，
+        不产生响应规则发现，显式空对象则视为已解析但没有响应。default 仅计为错误响应，不属于明确成功响应；
+        204/205 等空响应及缺少 schema/content 不影响状态声明判定，不读取实际运行时状态。
+        结果按 endpoint_key、rule_id、param_name 稳定排序；issue_count/high_count/medium_count
+        统计完整发现集，items 最多 500 条，truncated 表示是否有超出。
+        仅返回参数名或认证方案名与定位元数据；响应规则发现的 param_in/param_name 为空字符串，
+        SECURITY_SCHEME_UNDEFINED 的 param_name 为方案名且 param_in 为空，API_KEY_IN_QUERY 的 param_name 为方案名且 param_in 为 QUERY；
+        不返回参数值、API Key 值或完整规范。权限：`api_spec.read`
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: 规范 ID
+      responses:
+        '200':
+          description: 规范声明审计结果（无问题时 items 为空数组）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecSpecAuditResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /api-security/specs/{id}/version-diff:
     get:
       operationId: apiSecSpecVersionDiff
@@ -2381,6 +2619,154 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /api-security/group-control/shared-devices:
+    get:
+      operationId: apiSecSharedDeviceGroupList
+      tags: [api-security]
+      summary: 同设备多账号群控观察聚合
+      description: >-
+        按应用与被动设备指纹聚合已采集的 API 安全事件，仅统计 JWT VERIFIED 且含可信主体指纹的事件。
+        返回观察到的不同账号数、事件数、群控信号数、接口与网关节点覆盖；不返回主体标识或原始账号。
+        data_scope=NOTABLE_SECURITY_EVENTS 且 partial=true：数据源不是全量请求，账号数不等于实际活跃账号总数。
+        被动设备指纹是低熵群体特征，不是唯一设备标识；结果是观察线索，不是群控定罪或阻断决策。
+        历史事件及未识别应用的事件没有 application_id，不参与本聚合。权限：`api_runtime.read`。
+      parameters:
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+          description: 起始时间（RFC3339，含）；缺省为当前时间前 24 小时，与 end 的最大跨度为 31 天
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+          description: 结束时间（RFC3339，不含）；缺省为当前时间，必须晚于 start
+        - name: application_id
+          in: query
+          schema: { type: string, format: uuid }
+          description: 按应用 UUID 精确过滤
+        - name: device_fingerprint
+          in: query
+          schema: { type: string, pattern: '^[0-9a-f]{32}$' }
+          description: 按 32 位小写十六进制被动设备指纹精确过滤
+        - name: min_accounts
+          in: query
+          schema: { type: integer, default: 3, minimum: 2, maximum: 1000 }
+          description: 最少观察到的不同可信账号数
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1, maximum: 1000000 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页分组数
+      responses:
+        '200':
+          description: 共享设备观察分组分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecSharedDeviceListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api-security/group-control/shared-devices/accounts:
+    get:
+      operationId: apiSecSharedDeviceAccountList
+      tags: [api-security]
+      summary: 共享设备可信主体关联明细
+      description: >-
+        在指定应用、被动设备指纹和时间范围内，按可信主体 HMAC 引用聚合已采集安全事件。
+        application_id 与 device_fingerprint 均必填，防止跨应用或无范围枚举；仅接收 32 位小写
+        十六进制 HMAC 主体记录，异常或原始账号形态不参与且不返回。权限：`api_runtime.read`。
+        返回数据仍是观察线索，不证明主体协同行为；data_scope=NOTABLE_SECURITY_EVENTS、partial=true。
+      parameters:
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+          description: 起始时间（RFC3339，含）；缺省为当前时间前 24 小时，与 end 最大跨度 31 天
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+          description: 结束时间（RFC3339，不含）；缺省为当前时间，必须晚于 start
+        - name: application_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+          description: 应用 UUID
+        - name: device_fingerprint
+          in: query
+          required: true
+          schema: { type: string, pattern: '^[0-9a-f]{32}$' }
+          description: 32 位小写十六进制被动设备指纹
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1, maximum: 1000000 }
+          description: 页码
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: 每页主体数
+      responses:
+        '200':
+          description: 共享设备主体关联分页列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecSharedDeviceAccountListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /api-security/group-control/trends:
+    get:
+      operationId: apiSecSharedDeviceTrend
+      tags: [api-security]
+      summary: 共享设备群控观察趋势
+      description: >-
+        按 UTC 小时或天聚合达到账号阈值的共享设备分组数、群控信号数及关联安全事件数。
+        账号阈值在每个时间桶内独立应用；只返回有真实观测的时间桶，不补零、不伪造历史覆盖。
+        缺省 bucket 在范围不超过 48 小时时为 hour，否则为 day；最大范围 31 天。
+        数据源仅为已采集安全事件，不是全量流量。权限：`api_runtime.read`。
+      parameters:
+        - name: start
+          in: query
+          schema: { type: string, format: date-time }
+          description: 起始时间（RFC3339，含）；缺省为当前时间前 24 小时
+        - name: end
+          in: query
+          schema: { type: string, format: date-time }
+          description: 结束时间（RFC3339，不含）；缺省为当前时间，必须晚于 start
+        - name: application_id
+          in: query
+          schema: { type: string, format: uuid }
+          description: 可选应用 UUID 过滤
+        - name: device_fingerprint
+          in: query
+          schema: { type: string, pattern: '^[0-9a-f]{32}$' }
+          description: 可选设备指纹精确过滤
+        - name: min_accounts
+          in: query
+          schema: { type: integer, default: 3, minimum: 2, maximum: 1000 }
+          description: 每个时间桶内共享设备所需的最少可信账号数
+        - name: bucket
+          in: query
+          schema: { type: string, enum: [hour, day] }
+          description: UTC 时间桶；缺省按时间范围自动选择
+      responses:
+        '200':
+          description: 有真实观测的群控趋势时间桶
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecSharedDeviceTrendResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
   /api-security/object-models:
     get:
       operationId: apiSecObjectModelList
@@ -2660,7 +3046,7 @@ paths:
         - name: category
           in: query
           required: false
-          schema: { type: string, enum: [AUTHN, LIFECYCLE, SENSITIVE, SCHEMA] }
+          schema: { type: string, enum: [AUTHN, AUTHZ, LIFECYCLE, SENSITIVE, SCHEMA] }
           description: 弱点分类过滤（自动转大写）
         - name: endpoint_id
           in: query
@@ -2960,7 +3346,7 @@ paths:
       description: >-
         新增敏感数据类型：name 与 data_type 必填（data_type 为与网关证据标签对齐的键），
         level 缺省 GENERAL、status 缺省 ENABLED；regex 需可编译，validator 仅支持空或 luhn，
-        locations 取值白名单 query/json/form/xml/header/cookie/path/response_body（小写归一）。
+        locations 取值白名单 query/json/form/xml/header/cookie/path/response_body/file（小写归一）。
         同名返回 409。写操作审计。权限：`api_data.manage`
       requestBody:
         required: true
@@ -3117,7 +3503,7 @@ paths:
       tags: [api-security]
       summary: 脱敏规则分页列表
       description: >-
-        分页列出响应脱敏规则（api_masking_rules，随发布通道下发网关执行 MASK/HASH/REMOVE），
+        分页列出响应脱敏规则（api_masking_rules，随发布通道下发网关执行 MASK/HASH/REMOVE/ENCRYPT/MAP），
         按创建时间倒序；scope 自动转大写且非白名单返回 400；application_id 非法 UUID、
         enabled 非布尔取值均返回 400。权限：`api_data.read`
       parameters:
@@ -3185,6 +3571,32 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/masking-rules/decrypt:
+    post:
+      operationId: apiSecMaskingRuleDecrypt
+      tags: [api-security]
+      summary: 还原 ENCRYPT 脱敏密文
+      description: >-
+        校验 enc_<kid>_<base64> 密文格式及当前 kid，使用运行时脱敏密钥执行 AES-256-GCM 解密。
+        kid 不符、格式或解密失败返回 400 且不泄露内部原因；密钥未配置或不可用返回 503。
+        成功记录 HIGH 审计，审计不包含 plaintext、ciphertext 或密钥。权限：`api_data.manage`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecMaskDecryptRequest' }
+      responses:
+        '200':
+          description: 解密成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecMaskDecryptResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 
   /api-security/masking-rules/{id}:
     get:
@@ -5052,21 +5464,28 @@ paths:
       tags: [api-security]
       summary: 验证文件签名 token
       description: >-
-        复算 HMAC-SHA256(key, kid|filename|content_sha256_hex|unixts|identity_fp) 校验文本族下载嵌入的
-        `jzsig1.{kid}.{unixts}.{hmac_hex}` 签名（P2-02）。结论经 valid 字段表达（伪造/kid 不符/过期均 200）；
-        有效期 api_data.file_signature_max_age_days（默认 30 天）；密钥未配置返回 503。
-        权限：`api_data.read`；验证操作审计（不含 token 与密钥材料）。
+        复算 HMAC-SHA256(key, kid|filename|content_sha256_hex|unixts|identity_fp) 校验下载文件嵌入的
+        `jzsig1.{kid}.{unixts}.{hmac_hex}` 签名（P2-02）。支持文本族哈希+token，以及
+        `content_format=ooxml_zip` + `content_base64`（原始 DOCX/XLSX/PPTX 不超过 2 MiB）直接验证；
+        文件载荷从 ZIP 注释提取 token 并恢复签名前精确字节，不能与哈希/token 混用。
+        结论经 valid 字段表达（伪造/kid 不符/过期均 200）；有效期 api_data.file_signature_max_age_days（默认 30 天）；
+        密钥未配置返回 503。权限：`api_data.read`；验证操作审计不含文件内容、token 与密钥材料。
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [filename, content_sha256_hex, token]
+              required: [filename]
+              oneOf:
+                - required: [content_sha256_hex, token]
+                - required: [content_format, content_base64]
               properties:
                 filename: { type: string, maxLength: 128, description: 文件名（签名绑定精确字节，不 trim） }
-                content_sha256_hex: { type: string, description: 文件内容 SHA-256 hex（大小写不敏感，归一小写） }
-                token: { type: string, description: "jzsig1.{kid}.{unixts}.{hmac_hex} 签名串" }
+                content_sha256_hex: { type: string, description: 文本族文件内容 SHA-256 hex（大小写不敏感，归一小写；与 token 搭配） }
+                token: { type: string, description: "jzsig1.{kid}.{unixts}.{hmac_hex} 签名串（与 content_sha256_hex 搭配）" }
+                content_format: { type: string, enum: [ooxml_zip], description: OOXML ZIP 注释签名文件；必须搭配 content_base64 }
+                content_base64: { type: string, format: byte, description: Base64 编码的 DOCX/XLSX/PPTX 文件，原始内容不超过 2 MiB；不得同时传哈希或 token }
                 identity_fp: { type: string, description: 可选：签名时身份指纹（缺省空串参与复算） }
       responses:
         '200':
@@ -5150,6 +5569,16 @@ paths:
           required: false
           schema: { type: boolean }
           description: 为 true 时仅查敏感文件（sensitive_types 非空；非法取值返回 400）
+        - name: sha256
+          in: query
+          required: false
+          schema: { type: string, minLength: 64, maxLength: 64, pattern: '^[0-9a-fA-F]{64}$' }
+          description: 完整文件内容 SHA-256 精确过滤（hex 大小写不敏感；截断/流式观测无指纹）
+        - name: identity_fingerprint
+          in: query
+          required: false
+          schema: { type: string, maxLength: 128 }
+          description: 身份指纹精确匹配（trim 后空串或缺省不过滤；超过 128 字符返回 400）
         - name: days
           in: query
           required: false
@@ -5171,6 +5600,38 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiSecFileAssetListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/file-assets/lineage:
+    get:
+      operationId: apiSecFileAssetLineage
+      tags: [api-security]
+      summary: 按文件内容指纹关联上传与下载
+      description: >-
+        按完整文件内容 SHA-256 查询相同字节内容的实际上传/下载资产，返回方向、文件名、
+        端点、时间与传输次数等既有元数据。不包含文件正文，不推断所有者或业务来源。
+        days 缺省 7、上限 30；结果最多 100 条，超出时 truncated=true 且 total 保留真实总数。
+        截断/流式观测没有内容指纹，不参与关联。只读接口。权限：`api_data.read`。
+      parameters:
+        - name: sha256
+          in: query
+          required: true
+          schema: { type: string, minLength: 64, maxLength: 64, pattern: '^[0-9a-fA-F]{64}$' }
+          description: 完整内容 SHA-256（hex 大小写不敏感；缺失或非法输入返回 400）
+        - name: days
+          in: query
+          required: false
+          schema: { type: integer, default: 7, minimum: 1, maximum: 30 }
+          description: 时间窗天数（按 last_seen 口径，缺省 7；越界归一）
+      responses:
+        '200':
+          description: 文件内容关联结果（data 含方向资产数、真实总数及截断标记）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecFileLineageResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -5435,7 +5896,8 @@ paths:
       summary: 启用 AI 运营计划
       description: >-
         启用计划并按 cron 重算 next_run_at 到期游标（cron 不可解析返回 400）。无请求体。
-        写操作审计（低风险）。权限：`api_ai.execute`
+        手动启用同时复位连续失败熔断状态（consecutive_failures 清零、清空 circuit_opened_at/circuit_reason），
+        熔断计划的复位事实写入操作审计。写操作审计（低风险）。权限：`api_ai.execute`
       parameters:
         - name: id
           in: path
@@ -5746,6 +6208,119 @@ paths:
               schema: { $ref: '#/components/schemas/ApiSecLLMStats' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ==================== LLM 输入输出保护策略（apillm WP3-A） ====================
+  /api-security/llm/security-policies:
+    get:
+      operationId: apiSecLLMSecurityPolicyList
+      tags: [api-security]
+      summary: LLM 输入输出保护策略列表
+      description: 列出全部应用的 AI 输入输出保护策略，包含模式、注入/PII 开关、受限话题、提示词体量与单次输出 Token 预算、版本。权限：api_llm_security.read。
+      responses:
+        '200':
+          description: 策略列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecLLMSecurityPolicyListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: apiSecLLMSecurityPolicyCreate
+      tags: [api-security]
+      summary: 新建 LLM 输入输出保护策略
+      description: 每应用仅允许一条策略；保存后生成 v1 快照，需经整站配置发布生效。写操作审计，权限：api_llm_security.manage。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecLLMSecurityPolicyInput' }
+      responses:
+        '200':
+          description: 新建策略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecLLMSecurityPolicy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/llm/security-policies/{id}:
+    patch:
+      operationId: apiSecLLMSecurityPolicyUpdate
+      tags: [api-security]
+      summary: 更新 LLM 输入输出保护策略
+      description: 部分更新策略并生成递增版本快照；需经整站配置发布生效。写操作审计，权限：api_llm_security.manage。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApiSecLLMSecurityPolicyInput' }
+      responses:
+        '200':
+          description: 更新后的策略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecLLMSecurityPolicy' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: apiSecLLMSecurityPolicyDelete
+      tags: [api-security]
+      summary: 删除 LLM 输入输出保护策略
+      description: 删除策略及其版本快照；删除后仍需发布配置才能停用网关策略。写操作审计，权限：api_llm_security.manage。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 删除结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [deleted] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /api-security/llm/security-policies/{id}/versions:
+    get:
+      operationId: apiSecLLMSecurityPolicyVersionList
+      tags: [api-security]
+      summary: LLM 输入输出保护策略版本快照
+      description: 按版本倒序返回不可变策略快照，不含 Prompt 或敏感内容原文。权限：api_llm_security.read。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 版本快照列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiSecLLMSecurityPolicyVersionListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
   /api-security/grpc-descriptors:
@@ -7177,14 +7752,18 @@ components:
           type: string
           enum: [LOGIN, REGISTER, PASSWORD_RESET, SMS, EMAIL, ORDER, PAYMENT, EXPORT, DOWNLOAD, SEARCH, QUERY_PERSONAL_DATA, AI_INFERENCE, OTHER]
           description: 业务类型（仅列表带出，api_assets.business_type；无资产记录归一为 OTHER）
+        tags:
+          type: array
+          items: { type: string }
+          description: 自由标签（仅列表带出，api_assets.tags；无资产记录时缺省）
         asset:
           $ref: '#/components/schemas/ApiSecAsset'
       # asset 字段仅在详情/更新响应中附带，无记录时缺省
 
     ApiSecAsset:
       type: object
-      description: 接口业务维度扩展（api_assets）
-      required: [endpoint_id, purpose, exposure, data_classification, owner, tags, business_type, created_at, updated_at]
+      description: 接口业务维度扩展（api_assets；owner 即系统负责人）
+      required: [endpoint_id, purpose, exposure, data_classification, owner, tags, business_type, organization, business_system, technical_owner, data_owner, data_level, api_level, auth_type, created_at, updated_at]
       properties:
         endpoint_id: { type: string, format: uuid, description: 接口 ID }
         purpose: { type: string, description: 业务用途说明（最长 128） }
@@ -7193,15 +7772,30 @@ components:
           enum: [INTERNAL, PARTNER, PUBLIC]
           description: 暴露面
         data_classification: { type: string, description: 数据分级（系统判定，只读） }
-        owner: { type: string, description: 负责人（最长 128） }
+        owner: { type: string, description: 系统负责人（最长 128） }
         tags:
           type: array
           items: { type: string }
-          description: 业务标签（最多 32 个，单个最长 64）
+          description: 自由标签（多值，最多 32 个，单个最长 64）
         business_type:
           type: string
           enum: [LOGIN, REGISTER, PASSWORD_RESET, SMS, EMAIL, ORDER, PAYMENT, EXPORT, DOWNLOAD, SEARCH, QUERY_PERSONAL_DATA, AI_INFERENCE, OTHER]
           description: 业务类型（敏感业务流标签，WDSP 设计 #12.1；默认 OTHER）
+        organization: { type: string, description: 所属单位 }
+        business_system: { type: string, description: 业务系统 }
+        technical_owner: { type: string, description: 技术负责人 }
+        data_owner: { type: string, description: 数据负责人 }
+        data_level:
+          type: string
+          enum: [UNKNOWN, CORE, IMPORTANT, GENERAL]
+          description: 数据等级（UNKNOWN=未标注）
+        api_level:
+          type: string
+          enum: [UNKNOWN, LEVEL_1, LEVEL_2, LEVEL_3]
+          description: API 等级（UNKNOWN=未标注）
+        auth_type:
+          type: string
+          description: 认证方式（NONE/BASIC/API_KEY/TOKEN/JWT/OAUTH2/MTLS/SESSION/OTHER；空串=未标注）
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -7256,6 +7850,191 @@ components:
         page_size: { type: integer, description: 每页条数 }
         total: { type: integer, format: int64, description: 总条数 }
 
+    ApiSecEndpointExportMeta:
+      type: object
+      required: [export_version, kind, generated_at, generated_by, endpoint_id, content_sha256]
+      properties:
+        export_version: { type: integer, description: 导出结构版本（当前恒为 1） }
+        kind: { type: string, description: 导出类型（api_endpoint_detail） }
+        generated_at: { type: string, format: date-time, description: 导出生成时间（UTC） }
+        generated_by: { type: string, description: 执行导出的用户名 }
+        endpoint_id: { type: string, format: uuid, description: API 接口 ID }
+        content_sha256: { type: string, description: 未含本字段时的档案内容 SHA-256（hex） }
+
+    ApiSecEndpointExportClassification:
+      type: object
+      required: [is_api, confidence, level, signals, classified_at]
+      properties:
+        is_api: { type: boolean, description: 来源观测是否判定为 API }
+        confidence: { type: number, format: double, description: 分类置信度（0-1） }
+        level: { type: string, description: 四级识别标签或 LEGACY_V1 }
+        signals:
+          type: array
+          items: { type: string }
+          description: 命中的分类信号（如 content_type_json、response_json、grpc_metadata）
+        classified_at: { type: string, format: date-time, description: 分类计算时间 }
+
+    ApiSecEndpointExportAgentSource:
+      type: object
+      required: [agent_id, host, method, path_template, source_type, source_instance, source_epoch, association_state, first_seen_at, last_seen_at]
+      properties:
+        agent_id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid, nullable: true }
+        host: { type: string }
+        method: { type: string }
+        path_template: { type: string }
+        source_type: { type: string, enum: [PASSIVE_HTTP1, NGINX_MIRROR, ENVOY_TAP] }
+        source_instance: { type: string }
+        source_epoch: { type: integer, format: int64 }
+        application_binding_id: { type: string, format: uuid, nullable: true }
+        binding_version: { type: integer, format: int64, nullable: true }
+        association_state: { type: string, enum: [LINKED, UNASSIGNED, QUOTA_REJECTED, FAILED] }
+        last_error: { type: string }
+        classification: { $ref: '#/components/schemas/ApiSecEndpointExportClassification' }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+
+    ApiSecEndpointExportFinding:
+      type: object
+      required: [id, request_id, finding_type, severity, status, title, detail, first_seen_at, last_seen_at]
+      properties:
+        id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid, nullable: true }
+        request_id: { type: string }
+        finding_type: { type: string }
+        severity: { type: string }
+        status: { type: string }
+        title: { type: string }
+        detail:
+          type: object
+          additionalProperties: true
+          description: 既有脱敏 Finding 摘要，不含请求正文
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+
+    ApiSecEndpointExportWeakness:
+      type: object
+      required: [id, code, name, category, severity, status, evidence, first_seen, last_seen, trigger_count]
+      properties:
+        id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid, nullable: true }
+        code: { type: string }
+        name: { type: string }
+        category: { type: string }
+        severity: { type: string }
+        status: { type: string }
+        evidence:
+          type: object
+          additionalProperties: true
+          description: 既有脱敏弱点证据摘要
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+        trigger_count: { type: integer }
+        owner: { type: string }
+
+    ApiSecEndpointExportSensitiveField:
+      type: object
+      required: [id, endpoint_id, direction, structured_path, data_type, confidence, detection_source, occurrence_count]
+      properties:
+        id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        direction: { type: string, enum: [REQUEST, RESPONSE] }
+        structured_path: { type: string, description: 字段路径（不含字段值） }
+        data_type: { type: string }
+        confidence: { type: number, format: double }
+        detection_source: { type: string }
+        first_seen: { type: string, format: date-time, nullable: true }
+        last_seen: { type: string, format: date-time, nullable: true }
+        occurrence_count: { type: integer }
+        source_detail:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: 最近一次命中摘要（规则、请求/事件 ID 等，不含值）
+
+    ApiSecEndpointExportBundle:
+      type: object
+      description: 单个 API 详细档案（各子集合有界；仅含脱敏摘要）
+      required: [meta, endpoint, classification, models, learning, lifecycle, lifecycle_total, traffic, sources, sources_total, security]
+      properties:
+        meta: { $ref: '#/components/schemas/ApiSecEndpointExportMeta' }
+        endpoint: { $ref: '#/components/schemas/ApiSecEndpoint' }
+        classification:
+          type: object
+          required: [is_api, confidence, dimensions]
+          properties:
+            is_api: { type: boolean }
+            confidence: { type: number, format: double }
+            dimensions:
+              type: array
+              items: { $ref: '#/components/schemas/ApiSecClassificationDimension' }
+        models:
+          type: object
+          required: [versions, versions_total, parameters, response_schemas]
+          properties:
+            current_version: { $ref: '#/components/schemas/ApiSecModelVersion', nullable: true }
+            versions:
+              type: array
+              maxItems: 20
+              items: { $ref: '#/components/schemas/ApiSecModelVersion' }
+            versions_total: { type: integer, format: int64 }
+            parameters:
+              type: array
+              items: { $ref: '#/components/schemas/ApiSecParameter' }
+            response_schemas:
+              type: array
+              items: { $ref: '#/components/schemas/ApiSecResponseSchema' }
+        learning:
+          type: object
+          required: [stats, recent_samples, recent_samples_total]
+          properties:
+            job: { $ref: '#/components/schemas/ApiSecLearningJob', nullable: true }
+            stats:
+              type: object
+              required: [total, accepted, excluded]
+              properties:
+                total: { type: integer, format: int64 }
+                accepted: { type: integer, format: int64 }
+                excluded: { type: integer, format: int64 }
+            recent_samples:
+              type: array
+              maxItems: 100
+              items: { $ref: '#/components/schemas/ApiSecLearningSample' }
+            recent_samples_total: { type: integer, format: int64 }
+        lifecycle:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ApiSecLifecycleEvent' }
+        lifecycle_total: { type: integer, format: int64 }
+        traffic:
+          type: object
+          description: 1h/24h/7d 三档补零流量序列
+          additionalProperties: { $ref: '#/components/schemas/ApiSecTrafficTrend' }
+        sources:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/ApiSecEndpointExportAgentSource' }
+        sources_total: { type: integer, format: int64 }
+        security:
+          type: object
+          required: [findings, findings_total, weaknesses, weaknesses_total, sensitive_fields, sensitive_fields_total]
+          properties:
+            findings:
+              type: array
+              maxItems: 50
+              items: { $ref: '#/components/schemas/ApiSecEndpointExportFinding' }
+            findings_total: { type: integer, format: int64 }
+            weaknesses:
+              type: array
+              maxItems: 50
+              items: { $ref: '#/components/schemas/ApiSecEndpointExportWeakness' }
+            weaknesses_total: { type: integer, format: int64 }
+            sensitive_fields:
+              type: array
+              maxItems: 500
+              items: { $ref: '#/components/schemas/ApiSecEndpointExportSensitiveField' }
+            sensitive_fields_total: { type: integer, format: int64 }
+
     ApiSecEndpointConfirmRequest:
       type: object
       required: [ids]
@@ -7290,9 +8069,13 @@ components:
 
     ApiSecEndpointResponse:
       type: object
-      required: [endpoint]
+      required: [endpoint, daily_requests]
       properties:
         endpoint: { $ref: '#/components/schemas/ApiSecEndpoint' }
+        daily_requests:
+          type: integer
+          format: int64
+          description: 近 7 天日均调用量（api_endpoint_traffic_buckets 窗口和/7，与资产价值评分同口径）
 
     ApiSecTrafficTrend:
       type: object
@@ -7331,16 +8114,32 @@ components:
           type: string
           enum: [INTERNAL, PARTNER, PUBLIC]
           description: 暴露面（自动转大写；空值归一为 INTERNAL）
-        owner: { type: string, maxLength: 128, description: 负责人 }
+        owner: { type: string, maxLength: 128, description: 系统负责人 }
         tags:
           type: array
           items: { type: string, maxLength: 64 }
           maxItems: 32
-          description: 业务标签（全量替换；不允许空串）
+          description: 自由标签（多值，全量替换；不允许空串）
         business_type:
           type: string
           enum: [LOGIN, REGISTER, PASSWORD_RESET, SMS, EMAIL, ORDER, PAYMENT, EXPORT, DOWNLOAD, SEARCH, QUERY_PERSONAL_DATA, AI_INFERENCE, OTHER]
           description: 业务类型（自动转大写；空值归一为 OTHER；非法值返回 400）
+        organization: { type: string, maxLength: 128, description: 所属单位（如 XX集团金融事业部） }
+        business_system: { type: string, maxLength: 128, description: 业务系统（如 客户经营管理平台） }
+        technical_owner: { type: string, maxLength: 128, description: 技术负责人 }
+        data_owner: { type: string, maxLength: 128, description: 数据负责人 }
+        data_level:
+          type: string
+          enum: [UNKNOWN, CORE, IMPORTANT, GENERAL]
+          description: 数据等级（核心/重要/一般数据；自动转大写，空值归一 UNKNOWN；非法值返回 400）
+        api_level:
+          type: string
+          enum: [UNKNOWN, LEVEL_1, LEVEL_2, LEVEL_3]
+          description: API 等级（一级/二级/三级；自动转大写，空值归一 UNKNOWN；非法值返回 400）
+        auth_type:
+          type: string
+          enum: ['', NONE, BASIC, API_KEY, TOKEN, JWT, OAUTH2, MTLS, SESSION, OTHER]
+          description: 认证方式（自动转大写；空串或 UNKNOWN 归一为未标注；非法值返回 400）
 
     ApiSecEndpointMergeRequest:
       type: object
@@ -7387,6 +8186,71 @@ components:
         dimensions:
           type: array
           items: { $ref: '#/components/schemas/ApiSecClassificationDimension' }
+        message: { type: string, description: 操作结果提示 }
+
+    # ---------- 暴露面判定（apiexposure，迁移 000190） ----------
+    ApiSecExposureEvidenceItem:
+      type: object
+      required: [type, summary]
+      properties:
+        type:
+          type: string
+          enum: [manual, traffic_public, traffic_partner, traffic_internal, traffic_insufficient, config_listen, config_dns, config_dns_error, deployment_bypass, traffic_priority, insufficient]
+          description: 证据类型
+        summary: { type: string, description: 证据中文摘要（服务端生成，前端直接展示） }
+
+    ApiSecExposureAssessment:
+      type: object
+      description: 一次暴露面评估明细（api_exposure_assessments）
+      required: [verdict, source, confidence, evidence, assessed_at]
+      properties:
+        verdict:
+          type: string
+          enum: [INTERNAL, PARTNER, PUBLIC, UNKNOWN]
+          description: 判定结论（内网 / 合作方 / 公网 / 未知）
+        source:
+          type: string
+          enum: [MANUAL, TRAFFIC_OBSERVED, CONFIG]
+          description: 判定来源（人工确认 / 流量观测 / 配置证据）
+        confidence:
+          type: string
+          enum: [LOW, MEDIUM, HIGH]
+          description: 置信度
+        evidence:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecExposureEvidenceItem' }
+          description: 证据明细（有序，首条为主证据）
+        assessed_at: { type: string, format: date-time, description: 评估时间 }
+
+    ApiSecExposureDimension:
+      type: object
+      description: 当前 EXPOSURE 分类维度（api_classification_dimensions 实时口径；无维度行时 value/source 为空串、confidence 为 0）
+      required: [value, source, confidence]
+      properties:
+        value: { type: string, description: 维度取值（INTERNAL / PARTNER / PUBLIC / UNKNOWN；空串 = 无维度行） }
+        source: { type: string, description: 维度来源（MANUAL / AUTO / TRAFFIC_OBSERVED / CONFIG；空串 = 无维度行） }
+        confidence: { type: number, format: double, description: 维度置信度数值（0-1） }
+
+    ApiSecEndpointExposureResponse:
+      type: object
+      required: [endpoint_id, endpoint_key, locked, current, assessment]
+      properties:
+        endpoint_id: { type: string, format: uuid, description: 接口 ID }
+        endpoint_key: { type: string, description: 接口键（方法 + 归一化路径） }
+        locked: { type: boolean, description: 分类是否锁定（锁定或 MANUAL 来源时引擎不覆盖） }
+        current: { $ref: '#/components/schemas/ApiSecExposureDimension' }
+        assessment:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ApiSecExposureAssessment'
+          description: 最近一次评估明细（null = 从未评估）
+
+    ApiSecEndpointExposureReassessResponse:
+      type: object
+      required: [assessment, applied, message]
+      properties:
+        assessment: { $ref: '#/components/schemas/ApiSecExposureAssessment' }
+        applied: { type: boolean, description: 维度是否被本次判定更新（人工/锁定不更新） }
         message: { type: string, description: 操作结果提示 }
 
     # ---------- 学习任务（apiassets） ----------
@@ -7737,7 +8601,7 @@ components:
         empty_allowed: { type: boolean, description: 是否允许空值 }
         observed_constraints:
           type: object
-          description: 观测约束（学习期观测，如 min_length/max_length/minimum/maximum/enum）
+          description: 观测约束（学习期观测，如 min_length/max_length/minimum/maximum/enum；固定格式候选使用 format_candidate 与 format_candidate_ratio，不进入确认约束或自动阻断）
         recommended_constraints:
           type: object
           description: 推荐约束（系统推荐，确认时整体拷贝给 confirmed_constraints）
@@ -8048,6 +8912,38 @@ components:
         diffs:
           type: array
           items: { $ref: '#/components/schemas/ApiSecSpecDiff' }
+
+    ApiSecSpecAuditItem:
+      type: object
+      description: 规范声明与鉴权安全审计发现；仅含参数名或认证方案名和定位元数据，不含参数值或 API Key 值
+      required: [rule_id, severity, endpoint_key, param_in, param_name, message]
+      properties:
+        rule_id:
+          type: string
+          enum: [PATH_PARAMETER_MISSING, PATH_PARAMETER_NOT_REQUIRED, PATH_PARAMETER_UNDECLARED, SENSITIVE_QUERY_PARAMETER, SUCCESS_RESPONSE_MISSING, ERROR_RESPONSE_MISSING, SECURITY_SCHEME_UNDEFINED, API_KEY_IN_QUERY]
+          description: 确定性审计规则 ID
+        severity: { type: string, enum: [HIGH, MEDIUM], description: 严重级别 }
+        endpoint_key: { type: string, description: 接口键（「METHOD 路径」） }
+        param_in: { type: string, enum: ['', PATH, QUERY], description: 参数位置；API_KEY_IN_QUERY 固定 QUERY，响应声明与 SECURITY_SCHEME_UNDEFINED 固定为空字符串 }
+        param_name: { type: string, description: 参数名、缺失的路径占位名或认证方案名；响应声明规则固定为空字符串 }
+        message: { type: string, description: 规则命中说明 }
+
+    ApiSecSpecAuditResponse:
+      type: object
+      required: [spec_id, format, operation_count, issue_count, high_count, medium_count, items, truncated]
+      properties:
+        spec_id: { type: string, format: uuid, description: 被审计的规范版本 ID }
+        format: { type: string, description: 导入时识别的规范格式 }
+        operation_count: { type: integer, minimum: 0, description: 重新解析得到的操作数 }
+        issue_count: { type: integer, minimum: 0, description: 完整发现总数（不受 items 截断影响） }
+        high_count: { type: integer, minimum: 0, description: 完整发现中的 HIGH 数量 }
+        medium_count: { type: integer, minimum: 0, description: 完整发现中的 MEDIUM 数量 }
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: '#/components/schemas/ApiSecSpecAuditItem' }
+          description: 按 endpoint_key、rule_id、param_name 稳定排序的发现；无问题时为空数组
+        truncated: { type: boolean, description: 完整发现数是否超过 items 的 500 条上限 }
 
     # ---------- 风险与运行时（apisecurity，51.6） ----------
     ApiSecFinding:
@@ -8429,6 +9325,86 @@ components:
         page: { type: integer, description: 当前页码 }
         page_size: { type: integer, description: 每页条数 }
         total: { type: integer, format: int64, description: 总条数 }
+
+    ApiSecSharedDeviceGroup:
+      type: object
+      description: 应用与被动设备指纹维度的安全事件聚合；仅观察线索，不作为唯一设备标识或阻断依据
+      required: [application_id, application_name, device_fingerprint, distinct_accounts, event_count, signal_count, endpoint_count, gateway_node_count, first_seen_at, last_seen_at]
+      properties:
+        application_id: { type: string, format: uuid, description: 已识别应用 ID }
+        application_name: { type: string, description: 应用名称；历史应用不存在时为空串 }
+        device_fingerprint: { type: string, pattern: '^[0-9a-f]{32}$', description: 被动设备 HMAC 指纹，非唯一设备标识 }
+        distinct_accounts: { type: integer, format: int64, description: 本查询范围内已采集事件中观察到的不同可信账号数 }
+        event_count: { type: integer, format: int64, description: 符合可信身份条件的已采集安全事件数，非全量请求数 }
+        signal_count: { type: integer, format: int64, description: 含 behavior.shared_device_accounts 明细的事件数 }
+        endpoint_count: { type: integer, format: int64, description: 已采集事件涉及的不同接口键数 }
+        gateway_node_count: { type: integer, format: int64, description: 已采集事件涉及的不同网关节点数 }
+        first_seen_at: { type: string, format: date-time, description: 查询范围内首次事件时间 }
+        last_seen_at: { type: string, format: date-time, description: 查询范围内最近事件时间 }
+
+    ApiSecSharedDeviceListResponse:
+      type: object
+      description: 共享设备群控观察分页响应
+      required: [items, page, page_size, total, partial, data_scope]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecSharedDeviceGroup' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页分组数 }
+        total: { type: integer, format: int64, description: 符合条件的分组总数 }
+        partial: { type: boolean, enum: [true], description: 恒为 true，表示仅覆盖已采集安全事件而非全量流量 }
+        data_scope: { type: string, enum: [NOTABLE_SECURITY_EVENTS], description: 实际数据源口径 }
+
+    ApiSecSharedDeviceAccount:
+      type: object
+      description: 共享设备下的可信主体观察聚合；principal_ref 为应用隔离 HMAC，不是原始账号
+      required: [principal_ref, event_count, signal_count, endpoint_count, first_seen_at, last_seen_at]
+      properties:
+        principal_ref: { type: string, pattern: '^[0-9a-f]{32}$', description: 可信主体的 32 位小写 HMAC 引用，不含原始账号 }
+        event_count: { type: integer, format: int64, description: 当前范围内该主体的已采集安全事件数，非全量请求数 }
+        signal_count: { type: integer, format: int64, description: 该主体含 behavior.shared_device_accounts 明细的事件数 }
+        endpoint_count: { type: integer, format: int64, description: 该主体在已采集事件中涉及的不同接口键数 }
+        first_seen_at: { type: string, format: date-time, description: 查询范围内首次事件时间 }
+        last_seen_at: { type: string, format: date-time, description: 查询范围内最近事件时间 }
+
+    ApiSecSharedDeviceAccountListResponse:
+      type: object
+      description: 共享设备可信主体关联分页响应
+      required: [items, page, page_size, total, partial, data_scope]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecSharedDeviceAccount' }
+        page: { type: integer, description: 当前页码 }
+        page_size: { type: integer, description: 每页主体数 }
+        total: { type: integer, format: int64, description: 符合范围的可信主体总数 }
+        partial: { type: boolean, enum: [true], description: 恒为 true，表示仅覆盖已采集安全事件 }
+        data_scope: { type: string, enum: [NOTABLE_SECURITY_EVENTS], description: 实际数据源口径 }
+
+    ApiSecSharedDeviceTrendPoint:
+      type: object
+      description: 有真实观测的 UTC 时间桶；未达到账号阈值或无采集记录的桶不返回
+      required: [bucket, group_count, signal_count, event_count]
+      properties:
+        bucket: { type: string, format: date-time, description: UTC 时间桶起点 }
+        group_count: { type: integer, format: int64, description: 桶内达到账号阈值的应用与设备分组数 }
+        signal_count: { type: integer, format: int64, description: 桶内达标分组的群控观察信号事件数 }
+        event_count: { type: integer, format: int64, description: 桶内达标分组的可信身份安全事件数，非全量请求数 }
+
+    ApiSecSharedDeviceTrendResponse:
+      type: object
+      description: 群控观察趋势响应；items 仅含真实观测时间桶
+      required: [items, start, end, bucket, partial, data_scope]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecSharedDeviceTrendPoint' }
+        start: { type: string, format: date-time, description: 查询起始时间（含） }
+        end: { type: string, format: date-time, description: 查询结束时间（不含） }
+        bucket: { type: string, enum: [hour, day], description: 实际使用的 UTC 时间桶 }
+        partial: { type: boolean, enum: [true], description: 恒为 true，表示仅覆盖已采集安全事件 }
+        data_scope: { type: string, enum: [NOTABLE_SECURITY_EVENTS], description: 实际数据源口径 }
 
     ApiSecObjectModel:
       type: object
@@ -8919,12 +9895,12 @@ components:
         endpoint_key: { type: string, description: 接口键（LEFT JOIN 带出；端点已删除时为空串） }
         weakness_code:
           type: string
-          enum: [UNAUTHENTICATED_SENSITIVE_API, DEPRECATED_STILL_CALLED, SENSITIVE_IN_QUERY, SCHEMA_DRIFT_PERSISTENT]
+          enum: [UNAUTHENTICATED_SENSITIVE_API, DEPRECATED_STILL_CALLED, SENSITIVE_IN_QUERY, CREDENTIAL_IN_URL, SENSITIVE_COOKIE, SERVER_INFO_DISCLOSURE, OBJECT_ENUMERATION_RISK, FLOW_SEQUENCE_DEVIATION, FLOW_REPLAY_OR_BURST, FILE_CONTENT_TYPE_MISMATCH, SENSITIVE_FILE_CONTENT, SCHEMA_DRIFT_PERSISTENT]
           description: 弱点码（派生规则标识，可扩展）
         weakness_name: { type: string, description: 弱点展示名 }
         category:
           type: string
-          enum: [AUTHN, LIFECYCLE, SENSITIVE, SCHEMA]
+          enum: [AUTHN, AUTHZ, LIFECYCLE, SENSITIVE, SCHEMA]
           description: 弱点分类
         severity:
           type: string
@@ -9032,7 +10008,7 @@ components:
         data_type: { type: string, description: 数据类型标签（与网关 evidence.data_type 对齐，如 phone/id_card） }
         locations:
           type: array
-          items: { type: string, enum: [query, json, form, xml, header, cookie, path, response_body] }
+          items: { type: string, enum: [query, json, form, xml, header, cookie, path, response_body, file] }
           description: 可能出现位置（小写）
         keywords:
           type: array
@@ -9065,7 +10041,7 @@ components:
         data_type: { type: string, maxLength: 64, description: 数据类型标签（与网关证据标签对齐） }
         locations:
           type: array
-          items: { type: string, enum: [query, json, form, xml, header, cookie, path, response_body] }
+          items: { type: string, enum: [query, json, form, xml, header, cookie, path, response_body, file] }
         keywords:
           type: array
           items: { type: string }
@@ -9087,7 +10063,7 @@ components:
         data_type: { type: string, maxLength: 64 }
         locations:
           type: array
-          items: { type: string, enum: [query, json, form, xml, header, cookie, path, response_body] }
+          items: { type: string, enum: [query, json, form, xml, header, cookie, path, response_body, file] }
         keywords:
           type: array
           items: { type: string }
@@ -9138,6 +10114,25 @@ components:
         created: { type: integer, description: 新建条数 }
         updated: { type: integer, description: 更新条数 }
 
+    ApiSecMaskDecryptRequest:
+      type: object
+      additionalProperties: false
+      required: [ciphertext]
+      properties:
+        ciphertext:
+          type: string
+          maxLength: 4096
+          pattern: '^enc_[A-Za-z0-9_-]+_[A-Za-z0-9+/]+={0,2}$'
+          description: ENCRYPT 密文（enc_<kid>_<base64>；kid 含下划线时按最后一个下划线分隔）
+
+    ApiSecMaskDecryptResponse:
+      type: object
+      required: [plaintext]
+      properties:
+        plaintext:
+          type: string
+          description: 解密后的明文（仅成功响应返回，不写入审计）
+
     ApiSecMaskingRule:
       type: object
       description: 响应脱敏规则（api_masking_rules；发布通道按列名读取下发网关）
@@ -9156,11 +10151,11 @@ components:
         data_type: { type: string, nullable: true, description: 目标数据类型标签（整类脱敏） }
         algorithm:
           type: string
-          enum: [MASK, HASH, REMOVE]
-          description: 脱敏算法（MASK 掩码 / HASH 散列 / REMOVE 移除字段）
+          enum: [MASK, HASH, REMOVE, ENCRYPT, MAP]
+          description: 脱敏算法（MASK 掩码 / HASH 散列 / REMOVE 移除字段 / ENCRYPT 可逆加密 / MAP 显式值映射）
         params_json:
           type: object
-          description: 算法参数对象（如 MASK 的 keep_head/keep_tail，HASH 为 sha256 hex）
+          description: 算法参数对象（ENCRYPT 必须且仅含 key_id，MAP 必须且仅含 map_id；均 1-64 位 [A-Za-z0-9_-]，其余算法沿用既有参数）
         exclusions_json:
           type: object
           description: 排除对象（仅 identity/role/ip 键；ip 项为 IP 或 CIDR）
@@ -9182,7 +10177,7 @@ components:
         endpoint_key: { type: string, maxLength: 560, description: 接口键（或空串清除） }
         field_path: { type: string, maxLength: 512 }
         data_type: { type: string, maxLength: 64, description: 数据类型标签（或空串清除） }
-        algorithm: { type: string, enum: [MASK, HASH, REMOVE] }
+        algorithm: { type: string, enum: [MASK, HASH, REMOVE, ENCRYPT, MAP] }
         params_json: { type: object, description: 算法参数对象（≤8192 字节） }
         exclusions_json: { type: object, description: 排除对象（仅 identity/role/ip 键） }
 
@@ -10001,6 +10996,35 @@ components:
         evaluated_at: { type: string, format: date-time, description: 评估时间（UTC） }
 
     # ---------- 响应 Schema 学习（apimodels，P0-06，迁移 000051） ----------
+    ApiSecApplicationValueDimension:
+      type: object
+      required: [name, average_score, max]
+      properties:
+        name: { type: string, description: 既有接口评分维度名 }
+        average_score: { type: number, format: double, description: 该维度在已评分接口上的平均分 }
+        max: { type: integer, description: 该维度原始满分 }
+
+    ApiSecApplicationAssetValue:
+      type: object
+      required: [application_id, level, average_score, max_score, max_total, endpoint_count, scored_count, unscored_count, level_distribution, dimensions, generated_at]
+      properties:
+        application_id: { type: string, format: uuid }
+        level: { type: string, enum: ['', LOW, MEDIUM, HIGH, CRITICAL], description: 已评分接口平均分映射等级；无评分数据时为空 }
+        average_score: { type: number, format: double, description: 已评分接口的平均分（保留两位小数） }
+        max_score: { type: integer, description: 已评分接口的最高分 }
+        max_total: { type: integer, description: 既有接口评分模型的理论满分 }
+        endpoint_count: { type: integer, format: int64, description: 应用下非忽略接口数 }
+        scored_count: { type: integer, format: int64, description: 已有评分明细的非忽略接口数 }
+        unscored_count: { type: integer, format: int64, description: 尚无评分明细的非忽略接口数 }
+        level_distribution:
+          type: object
+          additionalProperties: { type: integer, format: int64 }
+          description: 已评分接口的等级分布
+        dimensions:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecApplicationValueDimension' }
+        generated_at: { type: string, format: date-time }
+
     ApiSecResponseSchema:
       type: object
       description: 端点响应结构学习结果（api_response_schemas 运行时学习行，一 端点×状态码 一行；只含字段路径与类型标签，不落值）
@@ -10350,7 +11374,7 @@ components:
         sha256:
           type: string
           nullable: true
-          description: 内容哈希（预留：网关观测不含内容哈希，当前恒为 null）
+          description: 完整观测内容 SHA-256（截断/流式观测为 null；可由文件关联查询检索）
         identity_fingerprint: { type: string, description: 身份指纹（匿名流量为空串） }
         client_ip_masked: { type: string, description: 客户端 IP（掩码口径，与落库一致） }
         sensitive_types:
@@ -10374,6 +11398,27 @@ components:
         page: { type: integer, description: 当前页码 }
         page_size: { type: integer, description: 每页条数 }
         total: { type: integer, format: int64, description: 总条数 }
+
+    ApiSecFileLineage:
+      type: object
+      description: 同一完整内容指纹的文件传输关联；仅实际观测，不推断所有权或业务来源
+      required: [sha256, days, total, upload_assets, download_assets, truncated, items]
+      properties:
+        sha256: { type: string, description: 完整内容 SHA-256 小写 hex }
+        days: { type: integer, description: 实际查询时间窗天数 }
+        total: { type: integer, format: int64, description: 匹配的真实资产总数 }
+        upload_assets: { type: integer, format: int64, description: 本次返回的上传资产数 }
+        download_assets: { type: integer, format: int64, description: 本次返回的下载资产数 }
+        truncated: { type: boolean, description: 结果超过 100 条时为 true，不把部分结果描述为完整关联 }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecFileAsset' }
+
+    ApiSecFileLineageResponse:
+      type: object
+      required: [data]
+      properties:
+        data: { $ref: '#/components/schemas/ApiSecFileLineage' }
 
     ApiSecFileAssetStatsSummary:
       type: object
@@ -10695,6 +11740,9 @@ components:
         - last_run_at
         - last_status
         - last_error
+        - consecutive_failures
+        - circuit_opened_at
+        - circuit_reason
         - created_by
         - created_at
         - updated_at
@@ -10720,6 +11768,17 @@ components:
           description: 最近执行时间（从未执行为 null）
         last_status: { type: string, description: 最近执行状态（RUNNING/SUCCESS/FAILED；从未执行为空串） }
         last_error: { type: string, description: 最近失败原因（无为空串） }
+        consecutive_failures:
+          type: integer
+          description: 连续失败计数（成功清零；达 api_ai_ops.circuit_threshold 阈值自动熔断停用）
+        circuit_opened_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 熔断触发时间（未熔断为 null；手动启用后复位为 null）
+        circuit_reason:
+          type: string
+          description: 熔断原因（连续失败次数与最近错误摘要；未熔断为空串）
         created_by:
           type: string
           format: uuid
@@ -11039,6 +12098,81 @@ components:
           items: { type: string }
           description: SILENT 离线节点名（不参与判定，如实列出）
         generated_at: { type: string, format: date-time, description: 报告生成时间 }
+
+    # ---------- LLM 输入输出保护策略（apillm WP3-A） ----------
+    ApiSecLLMSecurityPolicy:
+      type: object
+      required: [id, application_id, name, mode, prompt_injection_enabled, input_content_enabled, pii_detection_enabled, output_content_enabled, output_pii_enabled, blocked_topics, max_prompt_bytes, max_output_tokens, enabled, version, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        name: { type: string, maxLength: 128 }
+        mode: { type: string, enum: [OBSERVE, PROTECT] }
+        prompt_injection_enabled: { type: boolean }
+        input_content_enabled: { type: boolean, description: 输入有害内容高置信规则检测；既有策略迁移默认关闭 }
+        pii_detection_enabled: { type: boolean }
+        output_content_enabled: { type: boolean, description: 输出有害内容规则检测；既有策略迁移默认关闭 }
+        output_pii_enabled: { type: boolean, description: 输出 PII 检测；既有策略迁移默认关闭 }
+        blocked_topics:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 64 }
+        max_prompt_bytes: { type: integer, description: 0=不限制；其他取值 512～4194304 }
+        max_output_tokens: { type: integer, minimum: 0, maximum: 1000000, description: 单次请求声明的输出 Token 上限，0=不限制；检查 max_tokens/max_completion_tokens/max_output_tokens，不是实际消耗量 }
+        enabled: { type: boolean }
+        version: { type: integer, format: int64 }
+        created_by: { type: string, format: uuid }
+        updated_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiSecLLMSecurityPolicyInput:
+      type: object
+      properties:
+        application_id: { type: string, format: uuid, description: 新建必填；编辑时不可改应用 }
+        name: { type: string, maxLength: 128 }
+        mode: { type: string, enum: [OBSERVE, PROTECT] }
+        prompt_injection_enabled: { type: boolean }
+        input_content_enabled: { type: boolean, description: 输入有害内容高置信规则检测；既有策略迁移默认关闭 }
+        pii_detection_enabled: { type: boolean }
+        output_content_enabled: { type: boolean, description: 输出有害内容规则检测；既有策略迁移默认关闭 }
+        output_pii_enabled: { type: boolean, description: 输出 PII 检测；既有策略迁移默认关闭 }
+        blocked_topics:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 64 }
+        max_prompt_bytes: { type: integer }
+        max_output_tokens: { type: integer, minimum: 0, maximum: 1000000, description: 单次请求声明的输出 Token 上限，0=不限制 }
+        enabled: { type: boolean }
+
+    ApiSecLLMSecurityPolicyListResponse:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecLLMSecurityPolicy' }
+        total: { type: integer, format: int64 }
+
+    ApiSecLLMSecurityPolicyVersion:
+      type: object
+      required: [id, policy_id, version, policy_snapshot, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        policy_id: { type: string, format: uuid }
+        version: { type: integer, format: int64 }
+        policy_snapshot: { $ref: '#/components/schemas/ApiSecLLMSecurityPolicy' }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
+    ApiSecLLMSecurityPolicyVersionListResponse:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ApiSecLLMSecurityPolicyVersion' }
+        total: { type: integer, format: int64 }
 
     # ---------- LLM API 观测（apillm，P2-04） ----------
     ApiSecLLMObservation:

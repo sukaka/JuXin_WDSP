@@ -661,6 +661,12 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 			return
 		}
 		guardCfg.BlockResponse = blockResponse
+		softwareBypass, sbErr := LoadSoftwareBypass(ctx, p.db)
+		if sbErr != nil {
+			p.finishTask(ctx, taskID, TaskFailed, "SOFTWARE_BYPASS_SNAPSHOT_FAILED", sbErr.Error(), nil)
+			return
+		}
+		guardCfg.SoftwareBypass = softwareBypass
 	}
 
 	// 离线授权门控：无效授权强制纯透传（Guard=nil、全部应用 BYPASS）；
@@ -1458,13 +1464,23 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.IdentitySalt = ""
 	cp.CredentialIPSpreadLimit = 0
 	cp.CredentialConcurrencyLimit = 0
+	cp.CredentialRatePerMinute = 0
+	cp.TenantRatePerMinute = 0
+	cp.ActionRatePerMinute = 0
+	cp.APIEndpointActions = nil
+	cp.GroupRatePerMinute = 0
+	cp.APIEndpointGroups = nil
 	cp.APIWriteRatePerMinute = 0
+	cp.APIRateLimitAction = ""
+	cp.APITempBlockSeconds = 0
 	cp.APIQuotaPerHour = 0
 	cp.APIQuotaPerDay = 0
 	cp.ObjectRatePerMinute = 0
 	cp.APIMaxPageSize = 0
 	cp.APIMaxBatchSize = 0
 	cp.APIMaskRules = nil
+	cp.APIMaskCrypto = nil
+	cp.APIIdentityBlocks = nil
 	cp.APISensitiveValueRules = nil
 	cp.APIRoleBaselines = nil
 	cp.APIAuthzModels = nil
@@ -1491,11 +1507,13 @@ func stripAPIGuardSections(g *GuardConfig) *GuardConfig {
 	cp.APIAuthzClockSkewMaxSeconds = 0
 	cp.APINodeHeartbeatSeconds = 0
 	cp.APILLMAllowedModels = nil
+	cp.APILLMSecurityPolicies = nil
 	cp.APIFileWatermark = nil
 	cp.APIFileSignature = nil
 	cp.APIFileComplianceRules = nil
 	cp.APIResponseFailPolicy = ""
 	cp.APIResponseCaptureMaxBytes = 0
+	cp.APIResponseSampleRatio = nil
 	cp.APIGRPCMaxFrameBytes = 0
 	cp.APIGRPCAllowCompression = false
 	cp.APIGRPCDescriptors = nil

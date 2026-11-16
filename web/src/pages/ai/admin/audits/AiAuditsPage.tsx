@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   App as AntdApp,
@@ -34,6 +35,9 @@ interface Filters {
 }
 
 type RangeValue = [dayjs.Dayjs | null, dayjs.Dayjs | null] | null
+
+/** 草稿引用为草稿 UUID 时可识别（后端 recordAIAudit 写入 id.String()），渲染为策略建议页深链 */
+const DRAFT_ID_PATTERN = /^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$/
 
 const TASK_TYPE_OPTIONS = Object.entries(AI_TASK_TYPE_META).map(([value, meta]) => ({
   value,
@@ -246,7 +250,17 @@ export default function AiAuditsPage() {
                 {selected.task_id || '-'}
               </Descriptions.Item>
               <Descriptions.Item label="草稿引用" span={2}>
-                {selected.draft_reference || '-'}
+                {selected.draft_reference ? (
+                  DRAFT_ID_PATTERN.test(selected.draft_reference) ? (
+                    <Link to={`/ai/policy-recommendation?draft_id=${selected.draft_reference}`}>
+                      {selected.draft_reference}
+                    </Link>
+                  ) : (
+                    selected.draft_reference
+                  )
+                ) : (
+                  '-'
+                )}
               </Descriptions.Item>
             </Descriptions>
             <Typography.Title level={5}>请求摘要</Typography.Title>

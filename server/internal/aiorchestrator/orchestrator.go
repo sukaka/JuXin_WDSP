@@ -235,6 +235,10 @@ type RunInput struct {
 	RoleCodes   []string
 	Permissions map[string]bool
 	Message     string
+	// PromptOverrides 候选 Prompt 覆盖（Prompt 编码 → 候选内容）：仅本次运行有效，
+	// 覆盖同编码的已发布 Prompt（当前消费点为 composeAnswer 的 AnswerSummaryPromptCode），
+	// 不读写发布存储；nil/空值表示不覆盖。用于 Prompt 版本真实回归（候选内容先跑评估集再决定发布）。
+	PromptOverrides map[string]string
 }
 
 // RunResult 编排结果。
@@ -393,7 +397,7 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput, onStep StepFunc) (*
 		// 可选 LLM 润色：推送 composing 步骤，避免前端在 Agent 完成后长时间静默像卡死
 		_ = o.emit(onStep, Step{Kind: "composing", Text: "正在生成回答"})
 		var composeErr error
-		answer, finishReason, autoContinues, composeErr = o.composeAnswer(ctx, plan, in.Message, factText, recent, sess.ContextSummary, o.loadMemories(ctx, in.UserID), in.UserID, firstRoleCode(in.RoleCodes))
+		answer, finishReason, autoContinues, composeErr = o.composeAnswer(ctx, plan, in.Message, factText, recent, sess.ContextSummary, o.loadMemories(ctx, in.UserID), in.UserID, firstRoleCode(in.RoleCodes), in.PromptOverrides)
 		if composeErr != nil {
 			taskStatus = "PARTIAL_SUCCESS"
 			taskFailMsg = "模型总结不可用，已返回确定性事实"
@@ -516,7 +520,7 @@ func (o *Orchestrator) checkContinueQuota(ctx context.Context, userID uuid.UUID,
 // limits.MaxAutoContinues 自动续写（默认 2 次，<0 关闭），续写内容拼接进同一条回答，
 // 每次续写前受会话配额（ContinueQuotaChecker）与编排总时限约束；达上限仍截断时保留 length，
 // 由前端「继续输出」按钮走手动 continue 端点接管。
-func (o *Orchestrator) composeAnswer(ctx context.Context, plan Plan, question, factText string, recent []Message, summary string, memories []string, userID uuid.UUID, roleCode string) (string, string, int, error) {
+func (o *Orchestrator) composeAnswer(ctx context.Context, plan Plan, question, factText string, recent []Message, summary string, memories []string, userID uuid.UUID, roleCode string, promptOverrides map[string]string) (string, string, int, error) {
 	// 事实优先：回答主体为确定性事实（含引用），LLM 只在其前加一段引导性总结（失败则省略）。
 	if len(factText) == 0 {
 		return factText, "stop", 0, nil
@@ -528,6 +532,10 @@ func (o *Orchestrator) composeAnswer(ctx context.Context, plan Plan, question, f
 		if err != nil {
 			slog.Warn("load published ai prompt failed", "code", AnswerSummaryPromptCode, "error", err)
 		}
+	}
+	// 候选 Prompt 覆盖：仅本次运行有效（真实回归用候选内容替代已发布版本评估，不触碰发布存储）
+	if ov, ok := promptOverrides[AnswerSummaryPromptCode]; ok && strings.TrimSpace(ov) != "" {
+		publishedPrompt = ov
 	}
 	sys, user := buildComposePrompts(plan, question, factText, recent, summary, memories, publishedPrompt)
 	res, err := o.llmChat(ctx, []aimodel.ChatMessage{
@@ -654,6 +662,7 @@ func agentLabel(code string) string {
 		"ops_diagnostic": "运维诊断 Agent",
 		"report":         "报告 Agent",
 		"knowledge":      "知识库 Agent",
+		"api_security":   "API 安全分析 Agent",
 		"dispatcher":     "总调度 Agent",
 	}
 	if n, ok := names[code]; ok {

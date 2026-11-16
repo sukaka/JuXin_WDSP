@@ -1,4 +1,4 @@
-// Package database 提供 PostgreSQL 连接池与数据库迁移执行器。
+// Package database 提供主业务数据库连接、方言处理与迁移执行器。
 package database
 
 import (
@@ -10,8 +10,14 @@ import (
 	"github.com/jiuzhang-waf/server/internal/config"
 )
 
-// Connect 建立 PostgreSQL 连接池并验证连通性。
+// Connect 建立数据库连接池并验证连通性。
 func Connect(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg.DialectName() != config.DBDialectPostgres {
+		return nil, fmt.Errorf("database dialect %q requires its official vendor driver, which is not included in this build", cfg.DialectName())
+	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN())
 	if err != nil {
 		return nil, fmt.Errorf("parse dsn: %w", err)

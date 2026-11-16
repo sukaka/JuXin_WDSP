@@ -1,0 +1,28 @@
+[Unit]
+Description=Jiuzhang Native HTTP Application Security Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=jiuzhang-native-waf
+WorkingDirectory=/var/lib/jiuzhang-native-waf
+ExecStart=/usr/local/bin/jiuzhang-native-waf --config /etc/jiuzhang-native-waf/config.toml
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+LockPersonality=true
+ReadWritePaths=/var/lib/jiuzhang-native-waf
+
+[Install]
+WantedBy=multi-user.target

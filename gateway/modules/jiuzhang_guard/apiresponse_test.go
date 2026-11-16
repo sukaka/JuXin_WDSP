@@ -199,7 +199,7 @@ func TestServeNext_MaskResponseObserveOnly(t *testing.T) {
 	}
 }
 
-// gzip 编码 + FAIL_OPEN：无法安全重编码，原响应直通不改写。
+// 非法 gzip 数据 + FAIL_OPEN：解码失败，原压缩字节直通且不把残片冒充已检 JSON。
 func TestServeNext_MaskSkippedNonIdentityEncoding(t *testing.T) {
 	g, logPath := newAPIResponseTestGuard(t, "PROTECT", []maskRuleJSON{
 		{EndpointKey: "POST /v1/users", FieldPath: "phone", Algorithm: "MASK"},
@@ -339,7 +339,7 @@ func TestWriteBufferedResponseHeaders(t *testing.T) {
 	}
 }
 
-// FAIL_CLOSED + 端点有规则 + 非 identity 编码：原响应被抑制，客户端收到 500 空明细体。
+// FAIL_CLOSED + 端点有规则 + 非法 gzip 数据：原响应被抑制，客户端收到 500 空明细体。
 func TestServeNext_FailClosedSuppressesUnprocessable(t *testing.T) {
 	g, logPath := newAPIResponseTestGuard(t, "PROTECT", []maskRuleJSON{
 		{EndpointKey: "POST /v1/users", FieldPath: "phone", Algorithm: "MASK"},

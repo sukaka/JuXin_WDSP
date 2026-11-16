@@ -722,7 +722,8 @@ type Agent struct {
 	// HTTPEventSchemas 能力协商生效的 HTTP 事件 schema 集合（v2 契约 §3；落库
 	// agents.http_event_schemas，json:"-" ——列表输出不变，详情经 AgentDetail 同名字段
 	// 暴露（任务书 P1-03 §4.3：管理端按能力集区分「需升级」展示）。
-	HTTPEventSchemas []int `json:"-"`
+	HTTPEventSchemas      []int `json:"-"`
+	APIObservationSchemas []int `json:"-"`
 	// 健康评分输入（不出 JSON；由仓储从绑定策略 config 提取，0 表示无限制/无绑定）
 	cpuLimitPercent float64
 	memoryLimitMB   float64

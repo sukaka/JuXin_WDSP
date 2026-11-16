@@ -33,12 +33,17 @@ import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { CONTENT_SCOPE_META, REPORT_FORMAT_META, REPORT_TYPE_META } from '../../utils/stage6'
+import {
+  CONTENT_SCOPE_META,
+  REPORT_FORMAT_META,
+  REPORT_TYPE_META,
+} from '../../utils/stage6'
 import type { ReportScheduleItem } from '../../types'
 
 interface ScheduleFormValues {
   name: string
   report_type: string
+  api_report_type?: string
   content_scope: string
   application_ids?: string[]
   template_id?: string
@@ -65,12 +70,21 @@ const WEEKDAY_OPTIONS = [
 
 const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
 
+const API_REPORT_TYPE_META: Record<string, { label: string }> = {
+  API_ASSET: { label: 'API 资产周报' },
+  API_RISK: { label: 'API 风险周报' },
+  API_WEAK: { label: 'API 弱点整改报告' },
+  API_SENS: { label: 'API 敏感数据报告' },
+}
+
 /** 周期描述（与后端 ScheduleDescription 同口径） */
 function scheduleDesc(s: ReportScheduleItem): string {
   const weekNames = ['', '一', '二', '三', '四', '五', '六', '日']
   if (s.report_type === 'DAILY') return `每天 ${s.time_of_day} UTC`
-  if (s.report_type === 'WEEKLY') return `每周${weekNames[s.day_of_week] ?? s.day_of_week} ${s.time_of_day} UTC`
-  if (s.report_type === 'MONTHLY') return `每月${s.day_of_month}号 ${s.time_of_day} UTC`
+  if (s.report_type === 'WEEKLY')
+    return `每周${weekNames[s.day_of_week] ?? s.day_of_week} ${s.time_of_day} UTC`
+  if (s.report_type === 'MONTHLY')
+    return `每月${s.day_of_month}号 ${s.time_of_day} UTC`
   return s.report_type
 }
 
@@ -85,7 +99,9 @@ export default function ReportSchedulesPanel() {
   const [pageSize, setPageSize] = useState(20)
   const [editOpen, setEditOpen] = useState(false)
   const [editing, setEditing] = useState<ReportScheduleItem | null>(null)
-  const [detailRecord, setDetailRecord] = useState<ReportScheduleItem | null>(null)
+  const [detailRecord, setDetailRecord] = useState<ReportScheduleItem | null>(
+    null,
+  )
   const [form] = Form.useForm<ScheduleFormValues>()
 
   const listQuery = useQuery({
@@ -106,7 +122,8 @@ export default function ReportSchedulesPanel() {
     retry: false,
   })
 
-  const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['report-schedules'] })
+  const invalidate = () =>
+    void queryClient.invalidateQueries({ queryKey: ['report-schedules'] })
   const onError = (e: unknown) => {
     message.error(e instanceof ApiError ? e.message : '操作失败')
   }
@@ -138,12 +155,13 @@ export default function ReportSchedulesPanel() {
     onError,
   })
 
-  const { rowSelection, batchDeleteButton } = useBatchDelete<ReportScheduleItem>({
-    remove: (id) => reportSchedulesApi.remove(id),
-    invalidateKeys: [['report-schedules']],
-    entityName: '报表调度',
-    canDelete: canManage,
-  })
+  const { rowSelection, batchDeleteButton } =
+    useBatchDelete<ReportScheduleItem>({
+      remove: (id) => reportSchedulesApi.remove(id),
+      invalidateKeys: [['report-schedules']],
+      entityName: '报表调度',
+      canDelete: canManage,
+    })
 
   const runNowMutation = useMutation({
     mutationFn: (id: string) => reportSchedulesApi.runNow(id),
@@ -159,6 +177,7 @@ export default function ReportSchedulesPanel() {
       reportSchedulesApi.update(record.id, {
         name: record.name,
         report_type: record.report_type,
+        api_report_type: record.api_report_type || '',
         content_scope: record.content_scope ?? 'WAF_API',
         application_ids: record.application_ids ?? undefined,
         template_id: record.template_id ?? undefined,
@@ -187,6 +206,7 @@ export default function ReportSchedulesPanel() {
     form.setFieldsValue({
       name: record.name,
       report_type: record.report_type,
+      api_report_type: record.api_report_type || '',
       content_scope: record.content_scope ?? 'WAF_API',
       application_ids: record.application_ids ?? undefined,
       template_id: record.template_id ?? undefined,
@@ -207,11 +227,15 @@ export default function ReportSchedulesPanel() {
     const body: SaveReportScheduleBody = {
       name: values.name,
       report_type: values.report_type,
+      api_report_type: values.api_report_type || '',
       content_scope: values.content_scope,
-      application_ids: values.application_ids?.length ? values.application_ids : undefined,
+      application_ids: values.application_ids?.length
+        ? values.application_ids
+        : undefined,
       template_id: values.template_id || undefined,
       file_format: values.file_format,
-      include_api_assets: values.content_scope !== 'WAF' ? values.include_api_assets : undefined,
+      include_api_assets:
+        values.content_scope !== 'WAF' ? values.include_api_assets : undefined,
       page_orientation: values.page_orientation,
       time_of_day: values.time_of_day.format('HH:mm'),
       day_of_week: values.day_of_week,
@@ -244,16 +268,32 @@ export default function ReportSchedulesPanel() {
     {
       title: '类型',
       dataIndex: 'report_type',
-      width: 80,
-      render: (v: string) => <StatusTag value={v} map={REPORT_TYPE_META} />,
+      width: 190,
+      render: (v: string, record) => (
+        <Space size={4} wrap>
+          <StatusTag value={v} map={REPORT_TYPE_META} />
+          {record.api_report_type && (
+            <Tag color="blue">
+              {API_REPORT_TYPE_META[record.api_report_type]?.label ??
+                record.api_report_type}
+            </Tag>
+          )}
+        </Space>
+      ),
     },
     {
       title: '内容范围',
       dataIndex: 'content_scope',
       width: 110,
-      render: (v: string) => (v ? <StatusTag value={v} map={CONTENT_SCOPE_META} /> : '-'),
+      render: (v: string) =>
+        v ? <StatusTag value={v} map={CONTENT_SCOPE_META} /> : '-',
     },
-    { title: '周期', key: 'schedule', width: 170, render: (_, r) => scheduleDesc(r) },
+    {
+      title: '周期',
+      key: 'schedule',
+      width: 170,
+      render: (_, r) => scheduleDesc(r),
+    },
     {
       title: '格式',
       dataIndex: 'file_format',
@@ -290,7 +330,8 @@ export default function ReportSchedulesPanel() {
       title: '下次执行',
       dataIndex: 'next_run_at',
       width: 160,
-      render: (v: string | null, r) => (r.enabled && v ? formatDateTime(v) : '-'),
+      render: (v: string | null, r) =>
+        r.enabled && v ? formatDateTime(v) : '-',
     },
     {
       title: '最近邮件',
@@ -298,7 +339,8 @@ export default function ReportSchedulesPanel() {
       width: 110,
       render: (_, r) => {
         if (!r.last_email_status) return '-'
-        if (r.last_email_status === 'SENT') return <Tag color="green">已发送</Tag>
+        if (r.last_email_status === 'SENT')
+          return <Tag color="green">已发送</Tag>
         return (
           <Tooltip title={r.last_email_error}>
             <Tag color="red">发送失败</Tag>
@@ -321,12 +363,20 @@ export default function ReportSchedulesPanel() {
               <Button
                 type="link"
                 size="small"
-                loading={runNowMutation.isPending && runNowMutation.variables === record.id}
+                loading={
+                  runNowMutation.isPending &&
+                  runNowMutation.variables === record.id
+                }
                 onClick={() => runNowMutation.mutate(record.id)}
               >
                 立即执行
               </Button>
-              <Button type="link" size="small" danger onClick={() => confirmDelete(record)}>
+              <Button
+                type="link"
+                size="small"
+                danger
+                onClick={() => confirmDelete(record)}
+              >
                 删除
               </Button>
             </>
@@ -338,9 +388,17 @@ export default function ReportSchedulesPanel() {
 
   return (
     <>
-      <Space style={{ marginBottom: 16, width: '100%', justifyContent: 'space-between' }} wrap>
+      <Space
+        style={{
+          marginBottom: 16,
+          width: '100%',
+          justifyContent: 'space-between',
+        }}
+        wrap
+      >
         <Typography.Text type="secondary">
-          按计划自动创建报告（UTC 时刻）；邮件发送需先在「系统告警 → 通知渠道」配置 SMTP 邮件渠道
+          按计划自动创建报告（UTC 时刻）；邮件发送需先在「系统告警 →
+          通知渠道」配置 SMTP 邮件渠道
         </Typography.Text>
         {canManage && (
           <Space wrap>
@@ -409,33 +467,74 @@ export default function ReportSchedulesPanel() {
           }}
           onFinish={submit}
         >
-          <Form.Item name="name" label="计划名称" rules={[{ required: true, max: 64, message: '必填，不超过 64 字符' }]}>
+          <Form.Item
+            name="name"
+            label="计划名称"
+            rules={[
+              { required: true, max: 64, message: '必填，不超过 64 字符' },
+            ]}
+          >
             <Input placeholder="如：安全周报（管理层）" />
           </Form.Item>
-          <Form.Item name="report_type" label="报告类型" rules={[{ required: true }]}>
+          <Form.Item
+            name="report_type"
+            label="报告类型"
+            rules={[{ required: true }]}
+          >
             <Radio.Group
-              options={Object.entries(REPORT_TYPE_META).map(([value, meta]) => ({ value, label: meta.label }))}
+              options={Object.entries(REPORT_TYPE_META).map(
+                ([value, meta]) => ({ value, label: meta.label }),
+              )}
               optionType="button"
             />
           </Form.Item>
-          <Form.Item name="content_scope" label="内容范围" rules={[{ required: true }]}>
+          <Form.Item
+            name="content_scope"
+            label="内容范围"
+            rules={[{ required: true }]}
+          >
             <Radio.Group
-              options={Object.entries(CONTENT_SCOPE_META).map(([value, meta]) => ({ value, label: meta.label }))}
+              options={Object.entries(CONTENT_SCOPE_META).map(
+                ([value, meta]) => ({ value, label: meta.label }),
+              )}
               optionType="button"
             />
           </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.content_scope !== cur.content_scope}>
-            {({ getFieldValue }) =>
-              getFieldValue('content_scope') !== 'WAF' && (
-                <Form.Item
-                  name="include_api_assets"
-                  label="API 资产清单（全量，含用途与影子/僵尸标记）"
-                  valuePropName="checked"
-                >
-                  <Switch />
-                </Form.Item>
-              )
+          <Form.Item
+            noStyle
+            shouldUpdate={(prev, cur) =>
+              prev.content_scope !== cur.content_scope
             }
+          >
+            {({ getFieldValue }) => (
+              <>
+                {getFieldValue('content_scope') === 'API' && (
+                  <Form.Item
+                    name="api_report_type"
+                    label="API 专项报告（可选）"
+                    extra="选择后由既有调度器生成对应专项报告；不选择则保持普通周期报告。"
+                    preserve={false}
+                  >
+                    <Select
+                      allowClear
+                      placeholder="普通周期报告"
+                      options={Object.entries(API_REPORT_TYPE_META).map(
+                        ([value, meta]) => ({ value, label: meta.label }),
+                      )}
+                    />
+                  </Form.Item>
+                )}
+                {getFieldValue('content_scope') !== 'WAF' && (
+                  <Form.Item
+                    name="include_api_assets"
+                    label="API 资产清单（全量，含用途与影子/僵尸标记）"
+                    valuePropName="checked"
+                  >
+                    <Switch />
+                  </Form.Item>
+                )}
+              </>
+            )}
           </Form.Item>
           <Form.Item name="application_ids" label="应用范围（留空为全部应用）">
             <Select
@@ -445,7 +544,10 @@ export default function ReportSchedulesPanel() {
               optionFilterProp="label"
               placeholder="全部应用"
               loading={appsQuery.isLoading}
-              options={(appsQuery.data?.items ?? []).map((a) => ({ value: a.id, label: `${a.name}（${a.code}）` }))}
+              options={(appsQuery.data?.items ?? []).map((a) => ({
+                value: a.id,
+                label: `${a.name}（${a.code}）`,
+              }))}
             />
           </Form.Item>
           <Form.Item name="template_id" label="报告模板（留空使用默认模板）">
@@ -453,10 +555,17 @@ export default function ReportSchedulesPanel() {
               allowClear
               placeholder="默认模板"
               loading={templatesQuery.isLoading}
-              options={(templatesQuery.data?.items ?? []).map((t) => ({ value: t.id, label: t.name }))}
+              options={(templatesQuery.data?.items ?? []).map((t) => ({
+                value: t.id,
+                label: t.name,
+              }))}
             />
           </Form.Item>
-          <Form.Item name="page_orientation" label="纸张方向（PDF/Word 生效）" rules={[{ required: true }]}>
+          <Form.Item
+            name="page_orientation"
+            label="纸张方向（PDF/Word 生效）"
+            rules={[{ required: true }]}
+          >
             <Radio.Group
               options={[
                 { value: 'P', label: '竖向 A4' },
@@ -465,29 +574,53 @@ export default function ReportSchedulesPanel() {
               optionType="button"
             />
           </Form.Item>
-          <Form.Item name="file_format" label="导出格式" rules={[{ required: true }]}>
+          <Form.Item
+            name="file_format"
+            label="导出格式"
+            rules={[{ required: true }]}
+          >
             <Radio.Group
-              options={Object.entries(REPORT_FORMAT_META).map(([value, meta]) => ({ value, label: meta.label }))}
+              options={Object.entries(REPORT_FORMAT_META).map(
+                ([value, meta]) => ({ value, label: meta.label }),
+              )}
               optionType="button"
             />
           </Form.Item>
           <Space size="large" wrap>
-            <Form.Item name="time_of_day" label="执行时刻（UTC）" rules={[{ required: true }]}>
+            <Form.Item
+              name="time_of_day"
+              label="执行时刻（UTC）"
+              rules={[{ required: true }]}
+            >
               <TimePicker format="HH:mm" minuteStep={5} allowClear={false} />
             </Form.Item>
-            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.report_type !== cur.report_type}>
+            <Form.Item
+              noStyle
+              shouldUpdate={(prev, cur) => prev.report_type !== cur.report_type}
+            >
               {({ getFieldValue }) =>
                 getFieldValue('report_type') === 'WEEKLY' && (
-                  <Form.Item name="day_of_week" label="每周期" rules={[{ required: true }]}>
+                  <Form.Item
+                    name="day_of_week"
+                    label="每周期"
+                    rules={[{ required: true }]}
+                  >
                     <Select style={{ width: 100 }} options={WEEKDAY_OPTIONS} />
                   </Form.Item>
                 )
               }
             </Form.Item>
-            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.report_type !== cur.report_type}>
+            <Form.Item
+              noStyle
+              shouldUpdate={(prev, cur) => prev.report_type !== cur.report_type}
+            >
               {({ getFieldValue }) =>
                 getFieldValue('report_type') === 'MONTHLY' && (
-                  <Form.Item name="day_of_month" label="每月日期（1-28）" rules={[{ required: true }]}>
+                  <Form.Item
+                    name="day_of_month"
+                    label="每月日期（1-28）"
+                    rules={[{ required: true }]}
+                  >
                     <InputNumber min={1} max={28} style={{ width: 100 }} />
                   </Form.Item>
                 )
@@ -497,15 +630,29 @@ export default function ReportSchedulesPanel() {
           <Form.Item name="send_email" label="发送邮件" valuePropName="checked">
             <Switch />
           </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.send_email !== cur.send_email}>
+          <Form.Item
+            noStyle
+            shouldUpdate={(prev, cur) => prev.send_email !== cur.send_email}
+          >
             {({ getFieldValue }) =>
               getFieldValue('send_email') && (
                 <Form.Item
                   name="emails"
                   label="收件邮箱（回车添加，最多 10 个）"
-                  rules={[{ required: true, message: '开启邮件发送时至少一个收件邮箱' }]}
+                  rules={[
+                    {
+                      required: true,
+                      message: '开启邮件发送时至少一个收件邮箱',
+                    },
+                  ]}
                 >
-                  <Select mode="tags" placeholder="sec@example.com" open={false} suffixIcon={null} maxCount={10} />
+                  <Select
+                    mode="tags"
+                    placeholder="sec@example.com"
+                    open={false}
+                    suffixIcon={null}
+                    maxCount={10}
+                  />
                 </Form.Item>
               )
             }

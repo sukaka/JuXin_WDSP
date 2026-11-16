@@ -21,7 +21,12 @@ import { useAuthStore } from '../../stores/auth'
 import { useBreadcrumbObjectName } from '../../stores/breadcrumb'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { APP_STATUS_META, DEPLOYMENT_MODE_META, DEPLOYMENT_STATUS_META } from '../../utils/stage3'
+import {
+  APP_STATUS_META,
+  DEPLOYMENT_MODE_META,
+  DEPLOYMENT_STATUS_META,
+} from '../../utils/stage3'
+import ApplicationAssetValueCard from './ApplicationAssetValueCard'
 import DomainsTab from './detail/DomainsTab'
 import UpstreamsTab from './detail/UpstreamsTab'
 import CertificatesTab from './detail/CertificatesTab'
@@ -44,13 +49,16 @@ export default function ApplicationDetailPage() {
 
   const toggleMutation = useMutation({
     mutationFn: (action: 'enable' | 'disable') =>
-      action === 'enable' ? applicationsApi.enable(id) : applicationsApi.disable(id),
+      action === 'enable'
+        ? applicationsApi.enable(id)
+        : applicationsApi.disable(id),
     onSuccess: () => {
       message.success('操作成功')
       void queryClient.invalidateQueries({ queryKey: ['application', id] })
       void queryClient.invalidateQueries({ queryKey: ['applications'] })
     },
-    onError: (e) => message.error(e instanceof ApiError ? e.message : '操作失败'),
+    onError: (e) =>
+      message.error(e instanceof ApiError ? e.message : '操作失败'),
   })
 
   // 面包屑注入当前应用名（卸载时自动清理）
@@ -71,7 +79,11 @@ export default function ApplicationDetailPage() {
           type="error"
           showIcon
           message="加载应用详情失败"
-          description={detailQuery.error instanceof ApiError ? detailQuery.error.message : undefined}
+          description={
+            detailQuery.error instanceof ApiError
+              ? detailQuery.error.message
+              : undefined
+          }
           action={
             <Button onClick={() => navigate('/applications')}>返回列表</Button>
           }
@@ -98,9 +110,15 @@ export default function ApplicationDetailPage() {
             </Tooltip>
             <span>{app.name}</span>
             <ProtectionModeTag mode={app.protection_mode} />
-            <StatusTag value={app.deployment_mode || 'REVERSE_PROXY'} map={DEPLOYMENT_MODE_META} />
+            <StatusTag
+              value={app.deployment_mode || 'REVERSE_PROXY'}
+              map={DEPLOYMENT_MODE_META}
+            />
             <StatusTag value={app.status} map={APP_STATUS_META} />
-            <StatusTag value={app.deployment_status} map={DEPLOYMENT_STATUS_META} />
+            <StatusTag
+              value={app.deployment_status}
+              map={DEPLOYMENT_STATUS_META}
+            />
           </Space>
         }
         extra={
@@ -120,7 +138,10 @@ export default function ApplicationDetailPage() {
               停用应用
             </Button>
           ) : (
-            <Button type="primary" onClick={() => toggleMutation.mutate('enable')}>
+            <Button
+              type="primary"
+              onClick={() => toggleMutation.mutate('enable')}
+            >
               启用应用
             </Button>
           ))
@@ -128,9 +149,15 @@ export default function ApplicationDetailPage() {
       >
         <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
           <Descriptions.Item label="应用编码">{app.code}</Descriptions.Item>
-          <Descriptions.Item label="业务负责人">{app.business_owner || '-'}</Descriptions.Item>
-          <Descriptions.Item label="技术负责人">{app.technical_owner || '-'}</Descriptions.Item>
-          <Descriptions.Item label="描述">{app.description || '-'}</Descriptions.Item>
+          <Descriptions.Item label="业务负责人">
+            {app.business_owner || '-'}
+          </Descriptions.Item>
+          <Descriptions.Item label="技术负责人">
+            {app.technical_owner || '-'}
+          </Descriptions.Item>
+          <Descriptions.Item label="描述">
+            {app.description || '-'}
+          </Descriptions.Item>
           <Descriptions.Item label="健康状态">
             {app.health_status === 'HEALTHY' ? (
               <Tag color="green">健康</Tag>
@@ -140,11 +167,19 @@ export default function ApplicationDetailPage() {
               <Tag>未知</Tag>
             )}
           </Descriptions.Item>
-          <Descriptions.Item label="最后发布时间">{formatDateTime(app.last_publish_at)}</Descriptions.Item>
-          <Descriptions.Item label="创建时间">{formatDateTime(app.created_at)}</Descriptions.Item>
-          <Descriptions.Item label="更新时间">{formatDateTime(app.updated_at)}</Descriptions.Item>
+          <Descriptions.Item label="最后发布时间">
+            {formatDateTime(app.last_publish_at)}
+          </Descriptions.Item>
+          <Descriptions.Item label="创建时间">
+            {formatDateTime(app.created_at)}
+          </Descriptions.Item>
+          <Descriptions.Item label="更新时间">
+            {formatDateTime(app.updated_at)}
+          </Descriptions.Item>
         </Descriptions>
       </Card>
+
+      <ApplicationAssetValueCard applicationId={app.id} />
 
       <Card>
         <Tabs
@@ -180,7 +215,9 @@ export default function ApplicationDetailPage() {
                   {
                     key: 'bot-policy',
                     label: 'Bot 挑战策略',
-                    children: <BotPolicyTab appId={app.id} appCode={app.code} />,
+                    children: (
+                      <BotPolicyTab appId={app.id} appCode={app.code} />
+                    ),
                   },
                 ]
               : []),

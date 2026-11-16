@@ -43,6 +43,77 @@ paths:
         '409': { description: 策略已被其他人修改（version 乐观锁冲突），需刷新后重试 }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /security/risk-policy/applications/{id}:
+    get:
+      operationId: riskPolicyApplicationOverrideGet
+      tags: [risk-policy]
+      summary: 读取应用风险策略覆盖
+      description: 查询指定应用的覆盖策略；policy=null 表示未配置并继承全局策略。权限：risk_policy.read。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 应用覆盖或继承状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RiskPolicyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      operationId: riskPolicyApplicationOverridePut
+      tags: [risk-policy]
+      summary: 创建或更新应用风险策略覆盖
+      description: 按应用保存完整的风险权重、阈值与处置模式；version=0 用于新建，更新须携带当前版本。保存后写审计并触发配置发布。权限：risk_policy.edit。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RiskPolicyOverrideRequest' }
+      responses:
+        '200':
+          description: 保存后的应用覆盖
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RiskPolicyDetailResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 版本冲突，需刷新后重试 }
+        '500': { $ref: '#/components/responses/InternalError' }
+    delete:
+      operationId: riskPolicyApplicationOverrideDelete
+      tags: [risk-policy]
+      summary: 删除应用风险策略覆盖
+      description: 删除指定版本的应用覆盖，删除后继承全局策略；写审计并触发配置发布。权限：risk_policy.edit。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: version
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200': { description: 删除成功，将继承全局策略 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: 版本冲突，需刷新后重试 }
+        '500': { $ref: '#/components/responses/InternalError' }
+
 components:
   schemas:
     # ==================== 风险策略 ====================
@@ -51,7 +122,8 @@ components:
       description: 身份风险处置全局策略（GLOBAL 单行；随网关发布下发 risk_policy 段）
       properties:
         id: { type: string, format: uuid }
-        scope: { type: string, enum: [GLOBAL], description: 作用域（当前仅 GLOBAL 单行） }
+        scope: { type: string, enum: [GLOBAL, APPLICATION], description: 全局策略或应用覆盖 }
+        application_id: { type: string, format: uuid, description: 应用覆盖对应的应用 ID；全局策略不返回 }
         enabled: { type: boolean, description: 总开关（false 时下发 enabled:false，网关风险处置零行为） }
         mode: { type: string, enum: [OBSERVE, PROTECT], description: 执行模式（OBSERVE 仅观测 / PROTECT 实际处置；默认 OBSERVE） }
         version: { type: integer, description: 乐观锁版本号（随发布下发，网关事件回报 policy_version 溯源） }
@@ -59,6 +131,7 @@ components:
         rate_limit_threshold: { type: integer, minimum: 1, maximum: 100, description: 限速风险分阈值（默认 40；须小于 block_threshold） }
         rate_limit_rps: { type: integer, minimum: 1, maximum: 100000, description: 限速速率（RPS，默认 10） }
         signal_window_seconds: { type: integer, minimum: 1, maximum: 604800, description: 信号汇总窗口（秒，默认 86400） }
+        shared_device_account_limit: { type: integer, minimum: 0, maximum: 1000, description: 应用覆盖专属：同设备可信账号观察阈值；0=默认3，自定义2-1000；仅影响观察信号，不直接阻断 }
         scores:
           type: object
           description: 各信号类型分值覆盖（键为大写 SNAKE_CASE 信号类型，值 0-100；未覆盖信号按网关内置分值）
@@ -74,7 +147,7 @@ components:
     RiskPolicyDetailResponse:
       type: object
       properties:
-        policy: { $ref: '#/components/schemas/RiskPolicy' }
+        policy: { $ref: '#/components/schemas/RiskPolicy', nullable: true }
 
     RiskPolicyUpdateRequest:
       type: object
@@ -97,3 +170,27 @@ components:
           type: object
           additionalProperties: { type: integer, minimum: 0, maximum: 100 }
           description: 风险等级阈值（恰为 medium/high/critical 三键且严格递增）
+
+
+    RiskPolicyOverrideRequest:
+      type: object
+      required: [enabled, mode, version, block_threshold, rate_limit_threshold, rate_limit_rps, signal_window_seconds, risk_levels]
+      description: 应用风险策略覆盖全量保存；version=0 新建，更新须与当前版本一致；不包含响应原文或凭据
+      properties:
+        scope: { type: string, enum: [APPLICATION], description: 可选，若提供必须为 APPLICATION }
+        enabled: { type: boolean, description: 是否启用该应用覆盖；false 时不继承全局处置 }
+        mode: { type: string, enum: [OBSERVE, PROTECT] }
+        version: { type: integer, minimum: 0, description: 新建为 0，更新为当前版本 }
+        block_threshold: { type: integer, minimum: 1, maximum: 100 }
+        rate_limit_threshold: { type: integer, minimum: 1, maximum: 100, description: 须小于 block_threshold }
+        rate_limit_rps: { type: integer, minimum: 1, maximum: 100000 }
+        signal_window_seconds: { type: integer, minimum: 1, maximum: 604800 }
+        shared_device_account_limit: { type: integer, minimum: 0, maximum: 1000, description: 同设备可信账号观察阈值；0=默认3，自定义2-1000，1及其他越界值返回400；仅影响观察信号 }
+        scores:
+          type: object
+          additionalProperties: { type: integer, minimum: 0, maximum: 100 }
+          description: 各信号类型分值覆盖，未覆盖信号按内置分值
+        risk_levels:
+          type: object
+          additionalProperties: { type: integer, minimum: 0, maximum: 100 }
+          description: 恰为 medium/high/critical 三键且阈值严格递增

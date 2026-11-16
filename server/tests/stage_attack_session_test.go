@@ -482,7 +482,7 @@ VALUES ($1, '30m', $2, 40, 12)`, id, now.Add(-time.Hour)); err != nil {
 	if err != nil {
 		t.Fatalf("UpsertDiscovery export: %v", err)
 	}
-	if _, err := assets.UpsertAsset(ctx, epExp.ID, "数据导出", "PUBLIC", "", nil, "EXPORT"); err != nil {
+	if _, err := assets.UpsertAsset(ctx, epExp.ID, apiassets.AssetProfile{Purpose: "数据导出", Exposure: "PUBLIC", BusinessType: "EXPORT"}); err != nil {
 		t.Fatalf("UpsertAsset: %v", err)
 	}
 	for i := 0; i < 20; i++ {

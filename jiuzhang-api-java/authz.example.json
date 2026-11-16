@@ -1,0 +1,12 @@
+{
+  "role_baselines": {
+    "DELETE /users/{id}": ["admin"]
+  },
+  "ownership": [
+    {
+      "endpoint": "GET /users/{id}",
+      "object": "10001",
+      "subject": "user-10001"
+    }
+  ]
+}

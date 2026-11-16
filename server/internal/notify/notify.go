@@ -82,7 +82,7 @@ func IsValidType(t string) bool {
 	return false
 }
 
-// Category 是告警类别（notification-meta 接口契约，固定 9 类）。
+// Category 是告警类别（notification-meta 接口契约，固定 10 类）。
 type Category struct {
 	Code       string   `json:"code"`
 	Name       string   `json:"name"`
@@ -111,6 +111,8 @@ var categories = []Category{
 		"SECURITY_EVENT_SPIKE", "LOGIN_BRUTE_FORCE", "CC_BAN_SPIKE"}},
 	{Code: "apm", Name: "业务性能", AlertTypes: []string{
 		"ENDPOINT_LATENCY_HIGH", "ENDPOINT_ERROR_RATE_HIGH", "APM_SLO_BREACH"}},
+	{Code: "threat_intel", Name: "漏洞情报", AlertTypes: []string{
+		"VULN_INTEL_NEW"}},
 }
 
 // Categories 返回固定类别词表（副本，防调用方修改）。
@@ -176,6 +178,7 @@ var alertTypeNames = map[string]string{
 	"SECURITY_EVENT_SPIKE":          "安全事件激增",
 	"LOGIN_BRUTE_FORCE":             "登录暴破锁定",
 	"CC_BAN_SPIKE":                  "CC封禁激增",
+	"VULN_INTEL_NEW":                "漏洞情报提醒",
 }
 
 // AlertTypeName 返回告警类型中文名；未知类型返回原 code。

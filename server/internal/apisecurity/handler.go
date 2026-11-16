@@ -42,6 +42,8 @@ type Handler struct {
 	// 准入防护仓储（*Store 自动实现，接线时机同 risk；测试可 SetAdmissionRepository
 	// 覆盖为内存假实现；见 admission.go）
 	admission AdmissionRepository
+	// 群控观察只读仓储（*Store 自动实现；测试可覆盖为内存实现）
+	groupControl GroupControlRepository
 	// 策略接口依赖（Setter 注入，保持 app.go 接线简单；见 policy.go）
 	policySource   PolicySource
 	policySettings PolicySettings
@@ -62,6 +64,7 @@ func NewHandler(store *Store, audit *audits.Service) *Handler {
 	if store != nil {
 		h.risk = store
 		h.admission = store
+		h.groupControl = store
 	}
 	return h
 }

@@ -137,6 +137,37 @@ func TestParseHomeRegions(t *testing.T) {
 	}
 }
 
+// TestClassifyIPScopeMatrix IP 网络范围三分判定矩阵（ClassifyIPScope 导出口径）。
+func TestClassifyIPScopeMatrix(t *testing.T) {
+	cases := []struct {
+		name string
+		ip   string
+		want string
+	}{
+		{"RFC1918", "10.0.0.1", IPScopeInternal},
+		{"CGNAT", "100.64.0.1", IPScopeInternal},
+		{"环回", "127.0.0.1", IPScopeInternal},
+		{"私网192", "192.168.1.1", IPScopeInternal},
+		{"保留240段", "240.0.0.1", IPScopeInternal},
+		{"v6环回", "::1", IPScopeInternal},
+		{"v6-ULA", "fc00::1", IPScopeInternal},
+		{"4-in-6私网", "::ffff:10.0.0.1", IPScopeInternal},
+		{"公网v4", "8.8.8.8", IPScopePublic},
+		{"公网v6", "2001:4860:4860::8888", IPScopePublic},
+		{"带空格归一", " 8.8.8.8 ", IPScopePublic},
+		{"坏串", "not-an-ip", IPScopeInvalid},
+		{"空串", "", IPScopeInvalid},
+		{"越界段", "999.1.1.1", IPScopeInvalid},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ClassifyIPScope(c.ip); got != c.want {
+				t.Fatalf("ClassifyIPScope(%q) = %s, want %s", c.ip, got, c.want)
+			}
+		})
+	}
+}
+
 // TestInternalAddrMatrix 内网/保留地址判定矩阵（isInternalAddr 直测）。
 func TestInternalAddrMatrix(t *testing.T) {
 	internal := []string{

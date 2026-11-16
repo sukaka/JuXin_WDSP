@@ -11,8 +11,11 @@
 //     MCP 词表外方法与 tools/call 敏感参数信号）；
 //   - 只读查询：GET /api/v1/api-security/llm/observations（过滤 model/endpoint/时间窗）
 //     与 /llm/stats（模型分布/token 用量趋势/涉敏命中计数——复用 findings 口径）。
+//   - 输入输出保护策略：security-policies CRUD 与不可变版本快照；enabled 策略经
+//     GuardConfig.api_llm_security_policies 随整站发布下发，保存不冒充即时生效；
+//     输出内容与 PII 开关由迁移 000196 增补，既有策略默认关闭。
 //
-// 权限：复用 api_runtime.read（与 apisecurity 运行时只读接口同一权限域）。
+// 权限：观测复用 api_runtime.read；策略使用 api_llm_security.read/manage（迁移 000195）。
 // 未授权模型名单经发布通道下发（guardconfig gateway_runtime 组 api_llm_allowed_models，
 // 逗号分隔；缺省不下发不判定）。
 package apillm

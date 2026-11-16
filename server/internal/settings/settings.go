@@ -6,6 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net/netip"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -366,6 +370,9 @@ func (s *Service) Update(ctx context.Context, group, key string, value json.RawM
 	if err := validateServerList(group, key, valueType, value); err != nil {
 		return false, err
 	}
+	if err := validateCIDRList(group, key, valueType, value); err != nil {
+		return false, err
+	}
 	res, err := s.db.Exec(ctx, `
 UPDATE system_settings SET setting_value = $1, updated_by = $2, updated_at = now(), version = version + 1
 WHERE setting_group = $3 AND setting_key = $4 AND version = $5`,
@@ -400,11 +407,39 @@ var settingValueRanges = map[string][2]int{
 	// 阶段5 §十五：CC 自动封禁共享出口（NAT）风险检查（temporaryblocks/natguard.go 消费侧另有默认回落）
 	"cc_auto_block:nat_identity_threshold": {2, 1000},
 	"cc_auto_block:nat_block_minutes":      {1, 1440},
+	// WDSP 暴露面判定引擎数值阈值（apiexposure/config.go 消费侧带同口径夹取回落）
+	"exposure_engine:observation_days":         {1, 30},
+	"exposure_engine:min_requests":             {1, 100000},
+	"exposure_engine:min_days":                 {1, 30},
+	"software_bypass:cpu_threshold_percent":    {1, 100},
+	"software_bypass:memory_threshold_percent": {1, 100},
+	"software_bypass:min_hold_seconds":         {1, 300},
 }
 
-// validateValueRange 校验数值类安全策略的取值范围（仅命中 settingValueRanges 的整数键；
-// 错误信息含 "value must be"，handler 据此映射 400）。
+// validateValueRange 校验数值类安全策略的取值范围（命中 settingValueRanges 的整数键，
+// 以及 gateway_runtime 的字符串数值设置；错误信息含 "value must be"，handler 据此映射 400）。
 func validateValueRange(group, key, valueType string, value json.RawMessage) error {
+	if group == "gateway_runtime" && key == "credential_rate_per_minute" {
+		return validateCredentialRatePerMinute(valueType, value)
+	}
+	if group == "gateway_runtime" && key == "tenant_rate_per_minute" {
+		return validateTenantRatePerMinute(valueType, value)
+	}
+	if group == "gateway_runtime" && key == "action_rate_per_minute" {
+		return validateActionRatePerMinute(valueType, value)
+	}
+	if group == "gateway_runtime" && key == "group_rate_per_minute" {
+		return validateGroupRatePerMinute(valueType, value)
+	}
+	if group == "gateway_runtime" && key == "api_rate_limit_action" {
+		return validateAPIRateLimitAction(valueType, value)
+	}
+	if group == "gateway_runtime" && key == "api_temp_block_seconds" {
+		return validateAPITempBlockSeconds(valueType, value)
+	}
+	if group == "gateway_runtime" && key == "api_response_sample_ratio" {
+		return validateResponseSampleRatio(valueType, value)
+	}
 	r, ok := settingValueRanges[group+":"+key]
 	if !ok || valueType != "integer" {
 		return nil
@@ -415,6 +450,139 @@ func validateValueRange(group, key, valueType string, value json.RawMessage) err
 	}
 	if n < r[0] || n > r[1] {
 		return fmt.Errorf("value must be in range [%d, %d]（%s:%s）", r[0], r[1], group, key)
+	}
+	return nil
+}
+
+func validateCredentialRatePerMinute(valueType string, value json.RawMessage) error {
+	if valueType != "string" {
+		return nil
+	}
+	var raw string
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return fmt.Errorf("value must be string")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return fmt.Errorf("value must be non-negative integer（gateway_runtime:credential_rate_per_minute）")
+	}
+	return nil
+}
+
+func validateTenantRatePerMinute(valueType string, value json.RawMessage) error {
+	if valueType != "string" {
+		return nil
+	}
+	var raw string
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return fmt.Errorf("value must be string")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return fmt.Errorf("value must be non-negative integer（gateway_runtime:tenant_rate_per_minute）")
+	}
+	return nil
+}
+
+func validateActionRatePerMinute(valueType string, value json.RawMessage) error {
+	if valueType != "string" {
+		return nil
+	}
+	var raw string
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return fmt.Errorf("value must be string")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return fmt.Errorf("value must be non-negative integer（gateway_runtime:action_rate_per_minute）")
+	}
+	return nil
+}
+
+func validateGroupRatePerMinute(valueType string, value json.RawMessage) error {
+	if valueType != "string" {
+		return nil
+	}
+	var raw string
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return fmt.Errorf("value must be string")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return fmt.Errorf("value must be non-negative integer（gateway_runtime:group_rate_per_minute）")
+	}
+	return nil
+}
+
+func validateAPIRateLimitAction(valueType string, value json.RawMessage) error {
+	if valueType != "string" {
+		return nil
+	}
+	var raw string
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return fmt.Errorf("value must be string")
+	}
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "", "RATE_LIMIT", "BLOCK", "TEMP_BLOCK":
+		return nil
+	default:
+		return fmt.Errorf("value must be one of RATE_LIMIT, BLOCK, TEMP_BLOCK（gateway_runtime:api_rate_limit_action）")
+	}
+}
+
+func validateAPITempBlockSeconds(valueType string, value json.RawMessage) error {
+	if valueType != "string" {
+		return nil
+	}
+	var raw string
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return fmt.Errorf("value must be string")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > 86400 {
+		return fmt.Errorf("value must be integer in range [1, 86400]（gateway_runtime:api_temp_block_seconds）")
+	}
+	return nil
+}
+
+func validateResponseSampleRatio(valueType string, value json.RawMessage) error {
+	if valueType != "string" {
+		return nil
+	}
+	var raw string
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return fmt.Errorf("value must be string")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	ratio, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return fmt.Errorf("value must be numeric in range [0, 1]（gateway_runtime:api_response_sample_ratio）")
+	}
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0 || ratio > 1 {
+		return fmt.Errorf("value must be in range [0, 1]（gateway_runtime:api_response_sample_ratio）")
 	}
 	return nil
 }
@@ -430,6 +598,10 @@ var settingStringMaxLen = map[string]int{
 	// network 组 DNS/NTP 服务器列表（逗号分隔原文总长上限）
 	"network:ntp_servers": 255,
 	"network:dns_servers": 255,
+	// 暴露面引擎：公网 DNS 服务器列表同口径；合作方出口网段为逗号分隔 CIDR 列表
+	"exposure_engine:public_dns_servers":   255,
+	"exposure_engine:partner_egress_cidrs": 2048,
+	"software_bypass:session_cookie_names": 512,
 }
 
 // validateStringLen 校验字符串设置的取值长度上限（仅命中 settingStringMaxLen 的字符串键；
@@ -456,6 +628,45 @@ func validateStringLen(group, key, valueType string, value json.RawMessage) erro
 var serverListSettingKeys = map[string]bool{
 	"network:ntp_servers": true,
 	"network:dns_servers": true,
+	// 暴露面引擎公网视角 DNS 服务器（与 network 组同一主机列表语义）
+	"exposure_engine:public_dns_servers": true,
+}
+
+// cidrListSettingKeys 逗号分隔 CIDR 列表类设置键（group:key）。列表语义：各项去空白、
+// 丢弃空项、每项须为合法 CIDR（netip.ParsePrefix），项数上限 maxCIDRListItems；
+// 总长上限登记于 settingStringMaxLen。空串合法（= 不配置）。
+var cidrListSettingKeys = map[string]bool{
+	"exposure_engine:partner_egress_cidrs": true,
+}
+
+// maxCIDRListItems CIDR 列表项数上限（合作方出口网段为低频维护配置，32 项充足）。
+const maxCIDRListItems = 32
+
+// validateCIDRList 校验逗号分隔 CIDR 列表（仅命中 cidrListSettingKeys 的字符串键；
+// 错误信息含 "value must be"，handler 据此映射 400）。
+func validateCIDRList(group, key, valueType string, value json.RawMessage) error {
+	if !cidrListSettingKeys[group+":"+key] || valueType != "string" {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(value, &s); err != nil {
+		return fmt.Errorf("value must be string")
+	}
+	items := 0
+	for _, part := range strings.Split(s, ",") {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		items++
+		if _, err := netip.ParsePrefix(p); err != nil {
+			return fmt.Errorf("value must be 逗号分隔的合法 CIDR 列表（%s:%s）: 第 %d 项 %q 非法", group, key, items, p)
+		}
+	}
+	if items > maxCIDRListItems {
+		return fmt.Errorf("value must be 至多 %d 项的 CIDR 列表（%s:%s）", maxCIDRListItems, group, key)
+	}
+	return nil
 }
 
 // maxServerListItems 单列表项数上限（与 netconfig/network.json 下发契约一致）。
@@ -549,14 +760,19 @@ var AllowedSettingKeys = map[string]bool{
 	"gateway_runtime:behavior_store": true, "gateway_runtime:behavior_store_ttl_seconds": true,
 	"gateway_runtime:identity_salt": true, "gateway_runtime:tls_session_ticket_key": true,
 	"gateway_runtime:credential_ip_spread_limit":   true,
-	"gateway_runtime:credential_concurrency_limit": true, "gateway_runtime:api_write_rate_per_minute": true,
+	"gateway_runtime:credential_concurrency_limit": true, "gateway_runtime:credential_rate_per_minute": true,
+	"gateway_runtime:tenant_rate_per_minute": true, "gateway_runtime:action_rate_per_minute": true,
+	"gateway_runtime:group_rate_per_minute": true, "gateway_runtime:api_write_rate_per_minute": true,
+	"gateway_runtime:api_rate_limit_action": true, "gateway_runtime:api_temp_block_seconds": true,
 	"gateway_runtime:api_response_fail_policy": true, "gateway_runtime:api_response_capture_max_bytes": true,
-	"gateway_runtime:api_llm_allowed_models":   true,
-	"gateway_runtime:api_grpc_max_frame_bytes": true, "gateway_runtime:api_grpc_allow_compression": true,
+	"gateway_runtime:api_response_sample_ratio": true,
+	"gateway_runtime:api_llm_allowed_models":    true,
+	"gateway_runtime:api_grpc_max_frame_bytes":  true, "gateway_runtime:api_grpc_allow_compression": true,
 	// NG-AZ-02：节点心跳周期（0=关闭或 30~300s）与授权快照时钟漂移上限（10~300s，缺省 60）
 	"gateway_runtime:api_node_heartbeat_seconds": true, "gateway_runtime:authz_clock_skew_max_seconds": true,
 	"gateway_runtime:api_file_watermark_enabled": true, "gateway_runtime:api_file_watermark_template": true,
 	"gateway_runtime:api_file_watermark_content_types": true, "gateway_runtime:api_file_watermark_json_key": true,
+	"gateway_runtime:api_file_watermark_include_inline_html": true,
 	// 阶段8 §36 限流下发面：配额/对象/分页/批量阈值（种子见迁移 000152；
 	// 字符串数值，空串 = 不启用不下发，发布侧 guardconfig 解析校验，非法值中止发布）
 	"gateway_runtime:api_quota_per_hour": true, "gateway_runtime:api_quota_per_day": true,
@@ -591,4 +807,14 @@ var AllowedSettingKeys = map[string]bool{
 	// 消费侧 temporaryblocks/natguard.go 带默认值与区间回落）
 	"cc_auto_block:nat_guard_enabled": true, "cc_auto_block:nat_identity_threshold": true,
 	"cc_auto_block:nat_block_minutes": true,
+	// WDSP 暴露面判定引擎（apiexposure；种子见迁移 000190。观察窗/阈值数值区间见
+	// settingValueRanges；合作方出口网段 CIDR 列表校验见 validateCIDRList；
+	// 公网 DNS 服务器主机列表校验见 validateServerList）
+	"exposure_engine:observation_days": true, "exposure_engine:partner_egress_cidrs": true,
+	"exposure_engine:public_dns_servers": true, "exposure_engine:min_requests": true,
+	"exposure_engine:min_days": true,
+	// 节点软件旁路与 HTTP 会话监控（迁移 000194；发布通道下发网关，阈值越界拒绝）
+	"software_bypass:enabled": true, "software_bypass:cpu_threshold_percent": true,
+	"software_bypass:memory_threshold_percent": true, "software_bypass:min_hold_seconds": true,
+	"software_bypass:session_cookie_names": true,
 }

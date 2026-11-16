@@ -60,6 +60,12 @@ func (m *MemStore) ListAssets(_ context.Context, f AssetFilter) ([]FileAsset, in
 		if f.EndpointKey != "" && a.EndpointKey != f.EndpointKey {
 			continue
 		}
+		if f.SHA256 != "" && (a.SHA256 == nil || *a.SHA256 != f.SHA256) {
+			continue
+		}
+		if f.IdentityFingerprint != "" && a.IdentityFingerprint != f.IdentityFingerprint {
+			continue
+		}
 		if f.SensitiveOnly && len(a.SensitiveTypes) == 0 {
 			continue
 		}

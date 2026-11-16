@@ -259,6 +259,7 @@ type Collector struct {
 	fileObs        FileObsRecorder    // nil 时跳过文件资产观测落库
 	llmObs         apillm.ObsRecorder // nil 时跳过 LLM 观测落库
 	traffic        TrafficRecorder    // nil 时跳过流量趋势桶计数
+	sourceRec      SourceRecorder     // nil 时跳过暴露面来源聚合（迁移 000190）
 	heartbeats     HeartbeatRecorder  // nil 时心跳仅计数不消费
 	strongFlows    StrongFlowRecorder // nil 时强流程事件仅计数不消费
 	collectorID    string
@@ -698,7 +699,9 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 // （错误仅记录日志，不影响主流程）。
 func (c *Collector) handleRecord(ctx context.Context, rec *Record) {
 	if c.discovery != nil && rec.Method != "" && rec.PathTemplate != "" {
-		c.recordTrafficBucket(ctx, rec, c.upsertDiscovery(ctx, rec))
+		ep := c.upsertDiscovery(ctx, rec)
+		c.recordTrafficBucket(ctx, rec, ep)
+		c.recordSourceBucket(ctx, rec, ep)
 	}
 	c.recordSample(ctx, rec)
 	c.recordViolations(ctx, rec)

@@ -4,7 +4,8 @@ import type { PageResult } from '../types'
 /* ==================== 敏感数据管理面（server/internal/apidata）：敏感数据类型 / 脱敏规则 / 敏感数据态势 ==================== */
 
 /** 五级敏感等级（api_sensitive_data_types.level CHECK 对齐） */
-export type ApiSensitiveLevel = 'NON_SENSITIVE' | 'GENERAL' | 'SENSITIVE' | 'IMPORTANT' | 'CORE'
+export type ApiSensitiveLevel =
+  'NON_SENSITIVE' | 'GENERAL' | 'SENSITIVE' | 'IMPORTANT' | 'CORE'
 
 /** 类型状态（api_sensitive_data_types.status CHECK 对齐） */
 export type ApiSensitiveTypeStatus = 'ENABLED' | 'DISABLED'
@@ -13,7 +14,7 @@ export type ApiSensitiveTypeStatus = 'ENABLED' | 'DISABLED'
 export type ApiMaskingScope = 'GLOBAL' | 'APPLICATION' | 'ENDPOINT'
 
 /** 脱敏算法（api_masking_rules.algorithm CHECK 对齐） */
-export type ApiMaskingAlgorithm = 'MASK' | 'HASH' | 'REMOVE'
+export type ApiMaskingAlgorithm = 'MASK' | 'HASH' | 'REMOVE' | 'ENCRYPT' | 'MAP'
 
 /** 敏感数据类型（api_sensitive_data_types） */
 export interface ApiSensitiveDataType {
@@ -24,7 +25,7 @@ export interface ApiSensitiveDataType {
   level: ApiSensitiveLevel
   /** 数据类型标签（与网关 evidence.data_type 对齐） */
   data_type: string
-  /** 可能出现位置（query/json/form/xml/header/cookie/path/response_body） */
+  /** 可能出现位置（query/json/form/xml/header/cookie/path/response_body/file） */
   locations: string[]
   /** 字段名词根 */
   keywords: string[]
@@ -81,26 +82,40 @@ export const apiSensitiveTypesApi = {
     page: number
     page_size: number
   }) => {
-    const data = await request<PageResult<ApiSensitiveDataType>>(`/api-security/sensitive-types`, {
-      query: { ...params },
-    })
+    const data = await request<PageResult<ApiSensitiveDataType>>(
+      `/api-security/sensitive-types`,
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
   create: (body: ApiSensitiveTypeBody) =>
-    request<ApiSensitiveDataType>(`/api-security/sensitive-types`, { method: 'POST', body }),
+    request<ApiSensitiveDataType>(`/api-security/sensitive-types`, {
+      method: 'POST',
+      body,
+    }),
   update: (id: string, body: ApiSensitiveTypeBody) =>
-    request<ApiSensitiveDataType>(`/api-security/sensitive-types/${id}`, { method: 'PATCH', body }),
+    request<ApiSensitiveDataType>(`/api-security/sensitive-types/${id}`, {
+      method: 'PATCH',
+      body,
+    }),
   remove: (id: string) =>
-    request<{ message: string }>(`/api-security/sensitive-types/${id}`, { method: 'DELETE' }),
+    request<{ message: string }>(`/api-security/sensitive-types/${id}`, {
+      method: 'DELETE',
+    }),
   /** 导出全量类型（内置 + 自定义）为 JSON 文档 */
   exportTypes: () =>
     request<ApiSensitiveTypeExport>(`/api-security/sensitive-types/export`),
   /** 导入（按 name upsert；全量校验通过后单事务应用，单次 ≤500 条） */
   importTypes: (types: ApiSensitiveTypeBody[]) =>
-    request<ApiSensitiveTypeImportResult>(`/api-security/sensitive-types/import`, {
-      method: 'POST',
-      body: { types },
-    }),
+    request<ApiSensitiveTypeImportResult>(
+      `/api-security/sensitive-types/import`,
+      {
+        method: 'POST',
+        body: { types },
+      },
+    ),
 }
 
 /** 脱敏排除对象（键白名单 identity/role/ip；ip 项须为合法 IP 或 CIDR） */
@@ -125,7 +140,7 @@ export interface ApiMaskingRule {
   /** 目标数据类型标签（整类脱敏） */
   data_type?: string | null
   algorithm: ApiMaskingAlgorithm
-  /** 算法参数对象（MASK 支持 keep_head/keep_tail，非负整数 ≤64） */
+  /** 算法参数对象：MASK=keep_head/keep_tail，ENCRYPT=key_id，MAP=map_id；不包含密钥材料 */
   params_json: Record<string, unknown>
   /** 排除对象 */
   exclusions_json: ApiMaskExclusions
@@ -151,6 +166,10 @@ export interface ApiMaskingRuleBody {
   exclusions_json?: ApiMaskExclusions
 }
 
+export interface ApiMaskingDecryptResult {
+  plaintext: string
+}
+
 export const apiMaskingRulesApi = {
   list: async (params: {
     scope?: string
@@ -160,17 +179,33 @@ export const apiMaskingRulesApi = {
     page: number
     page_size: number
   }) => {
-    const data = await request<PageResult<ApiMaskingRule>>(`/api-security/masking-rules`, {
-      query: { ...params },
-    })
+    const data = await request<PageResult<ApiMaskingRule>>(
+      `/api-security/masking-rules`,
+      {
+        query: { ...params },
+      },
+    )
     return { ...data, items: data.items ?? [] }
   },
   create: (body: ApiMaskingRuleBody) =>
-    request<ApiMaskingRule>(`/api-security/masking-rules`, { method: 'POST', body }),
+    request<ApiMaskingRule>(`/api-security/masking-rules`, {
+      method: 'POST',
+      body,
+    }),
   update: (id: string, body: ApiMaskingRuleBody) =>
-    request<ApiMaskingRule>(`/api-security/masking-rules/${id}`, { method: 'PATCH', body }),
+    request<ApiMaskingRule>(`/api-security/masking-rules/${id}`, {
+      method: 'PATCH',
+      body,
+    }),
   remove: (id: string) =>
-    request<{ message: string }>(`/api-security/masking-rules/${id}`, { method: 'DELETE' }),
+    request<{ message: string }>(`/api-security/masking-rules/${id}`, {
+      method: 'DELETE',
+    }),
+  decrypt: (ciphertext: string) =>
+    request<ApiMaskingDecryptResult>(`/api-security/masking-rules/decrypt`, {
+      method: 'POST',
+      body: { ciphertext },
+    }),
 }
 
 /** 敏感数据类型分布项 */

@@ -206,7 +206,7 @@ func seedEndpoints(t *testing.T) (*apiassets.MemStore, *apiassets.Endpoint, *api
 	if _, err := mem.Confirm(ctx, e1.ID); err != nil {
 		t.Fatalf("Confirm e1: %v", err)
 	}
-	if _, err := mem.UpsertAsset(ctx, e1.ID, "用户管理", "PUBLIC", "team-a", []string{"pii"}, ""); err != nil {
+	if _, err := mem.UpsertAsset(ctx, e1.ID, apiassets.AssetProfile{Purpose: "用户管理", Exposure: "PUBLIC", Owner: "team-a", Tags: []string{"pii"}}); err != nil {
 		t.Fatalf("UpsertAsset e1: %v", err)
 	}
 	return mem, e1, e2

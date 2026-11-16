@@ -1,18 +1,37 @@
-# API AI 自动运营设计（规划稿）
+# API AI 自动运营设计（部分已实现）
 
-> **当前状态：未实现（NOT_IMPLEMENTED）**。
+> **当前状态：部分实现（PARTIAL）**。
 > 本文档是 API 安全能力补全（对应《WDSP_API_SECURITY_COMPLETION_PLAN》§233，下称"补全任务书"）要求的
-> **设计规划稿**，描述 AI 自动运营能力的目标架构与落地方案。
+> 设计规划稿；其中"五种定时运营任务 + 模板摘要"、"LLM 润色挂点"与"连续失败熔断"已落地，
+> 工作流框架、计划级配额、属主权限模型与第二批 Tool 仍为规划（缺口见下文与 §九）。
 >
 > 现状口径（以代码为准，详见 `docs/API_SECURITY_CURRENT_STATE.md` §3 P1-02、§6.6）：
-> - **已实现**：阶段7 AI 编排器/Agent/证据引用/审计/配额全链路，阶段8 API 域
->   **10 个 READ_ONLY Tool**（`server/internal/aitools/api_tools.go`）闭环；
-> - **未实现**：AI 自动运营任务、AI 定时任务（`ai*` 各包无 Ticker/cron）、
->   AI 分类推荐写入方（`source='AI'` 全库零命中）、补全任务书 §146 清单中的
->   多个 API 域 Tool（`api_weakness.search` / `api_runtime_policy.get` / `api_spec.get/diff` /
->   `api_sensitive.search` / `api_audit.search` / `api_scan.get` 等）。
+> - **已实现**：阶段7 AI 编排器/Agent/证据引用/审计/配额全链路；阶段8 API 域
+>   15 个 READ_ONLY Tool（`server/internal/aitools/api_tools.go` ×10 +
+>   `api_ops_tools.go` ×5）闭环；`apiops` 五种内置定时运营任务
+>   （迁移 000062/000063，`server/internal/apiops/`）——确定性只读查询 +
+>   模板化中文摘要，只产报告不做任何变更；
+>   **LLM 润色已接入**（AI 能力增强第一波）：`server/internal/app/aiops_summarizer.go`
+>   实现 `apiops.Summarizer`，经现有模型网关低复杂度档位（`aimodel.ComplexitySimple`）
+>   润色五种任务摘要，仅 `cfg.AI.Enabled` 时由 app.go 装配（AI 关闭保持纯模板摘要）；
+>   润色只复述结构化报告与模板草稿中的事实（系统提示禁止编造数字/接口/时间/状态，
+>   输入截断 4000 字符、单次 30 秒超时），输出仅用于展示、不回灌为任何 Tool/任务入参；
+>   Summarizer 为 nil、润色失败或返回空白一律回退模板草稿
+>   （`apiops polishSummary` 降级语义，单测锚定）——**失败仍回退模板，降级而非失败**；
+>   **连续失败熔断已落地**（AI 能力增强第二波，迁移 000187）：执行结局经
+>   `RecordRunOutcome` 单事务记账（成功清零、失败 +1），连续失败达
+>   `api_ai_ops.circuit_threshold`（settings，默认 3，夹取 1-10，运行期改设置即生效）
+>   同事务熔断停用（`enabled=false` + 清空 `next_run_at` + 记录
+>   `circuit_opened_at`/`circuit_reason`），首次熔断触发系统告警
+>   `AI_OPS_SCHEDULE_CIRCUIT_OPEN`（HIGH，组件 AI_OPS）与操作审计
+>   （`ai_schedule_circuit_open`，系统动作、高风险），重复失败不重复上报；
+>   手动启用是唯一恢复入口（复位计数与熔断现场，复位事实写审计）；
+> - **未实现**：§五 工作流框架（`tool_call`/`transform`/`llm_summarize` 三原语注册表与
+>   §5.2 工作流清单）、§6.2 计划级配额、§6.3 属主权限实时快照模型、
+>   §7.2 推荐状态机扩展（ADOPTED/DISMISSED 规划口径）、第二批 Tool
+>   （`api_audit.search`、`api_scan.get`/`api_scan.findings` 等）、§8.3 监控探针与指标。
 >
-> 本文档所有"拟新增"内容均不存在于当前代码，不得作为功能已完成的依据；
+> 本文档"拟新增"内容除上文标注已实现者外均不存在于当前代码，不得作为功能已完成的依据；
 > 引用既有代码处均给出真实路径。
 
 ## 一、目的与范围
@@ -53,11 +72,16 @@ WAF 域既有对话式能力（见 `docs/AI_ORCHESTRATOR_DESIGN.md` / `docs/AI_T
 | 成本与配额 | `server/internal/aicost/aicost.go` | `CheckQuota` 请求前预估拦截（超限 429）、`RecordUsage` 落账、`Overview` 总览 |
 | 推荐落库 | `ai_recommendations`（迁移 000013） | DRAFT 状态、证据引用、`created_by_ai=TRUE` |
 | 周期任务模板 | `server/internal/learningjobs/janitor.go` | `SweepOnce`（可独立单测）+ `Run`（ticker）+ settings 读取间隔与阈值——Schedules 的直接结构模板 |
+| AI 定时运营任务 ×5 | `server/internal/apiops/` | 五种内置任务（API_ASSET_DIGEST/SHADOW_REVIEW/WEAKNESS_FOLLOW/RISK_DIGEST/SENSITIVE_DIGEST）确定性只读查询 + 模板化中文摘要，只产报告不做任何变更；`Sweeper.SetSummarizer` 挂接 LLM 润色（`server/internal/app/aiops_summarizer.go`，模型网关低复杂度档位 `ComplexitySimple`，仅 `cfg.AI.Enabled` 装配；nil/失败/空输出回退模板草稿）；全局开关 `api_ai_ops.schedules_enabled`（settings，默认关）；连续失败熔断（迁移 000187 三列 `consecutive_failures`/`circuit_opened_at`/`circuit_reason`，阈值 `api_ai_ops.circuit_threshold` 默认 3，达阈同事务熔断停用 + 告警 `AI_OPS_SCHEDULE_CIRCUIT_OPEN` + 审计，手动启用复位） |
 | 弱点/敏感周期派生 | `server/internal/apiweakness/sweep.go`、`server/internal/apidata`（SweepOnce） | 证明"周期派生 + 人工流转"模式已在 API 域落地 |
 
-**关键现状事实**：以上全部为"人在环中"形态——没有任何一个包含定时器驱动的
-AI 任务；`ai_classification_dimensions.source='AI'` 词表值存在但无写入方。
-本文档的 Schedules/Workflows 就是要补这一层，且必须保持"人工确认收口"不变。
+**关键现状事实**：定时任务层已落地**最小形态**——apiops Sweeper（ticker + `SweepOnce` +
+`next_run_at` 游标 claim 先行防重入）驱动五种内置任务，LLM 仅经 Summarizer 润色摘要且可降级，
+连续失败熔断已实现（迁移 000187，见 §6.2）；
+但工作流层未实现：任务清单是代码内固定注册表（非自由编排工作流），产物只有运营报告
+（尚无 recommendation/草稿产物），计划级配额与属主权限实时快照均未实现；
+`ai_classification_dimensions.source='AI'` 词表值存在但仍无写入方。
+本文档 §五~§八 继续作为工作流层的规划参考，落地必须保持"人工确认收口"不变。
 
 ## 三、总体架构（规划）
 
@@ -98,15 +122,13 @@ Tool 执行 ── 统一走 aitools.Registry.Execute（权限/启停/超时/审
 ### 4.1 分层与现状
 
 ```text
-已实现                                规划增补（依赖后端能力就绪）
+已实现                                  规划增补（依赖后端能力就绪）
 ─────────────────────────────       ─────────────────────────────
-API 域 READ_ONLY ×10（api_tools.go）  api_weakness.search      ← apiweakness（已实现，可直接补）
-WAF/运维域 READ_ONLY ×40              api_sensitive.search     ← apidata（已实现，可直接补）
-草稿 DRAFT_ONLY ×5                    api_runtime_policy.get   ← apimodels runtime_policy（已实现，可直接补）
-                                      api_spec.get / api_spec.diff   ← apisecurity spec（已实现，可直接补）
-                                      api_audit.search         ← audits 导出/查询（需只读适配）
-                                      api_scan.get / api_scan.findings ← 主动扫描（未实现，依赖扫描分片）
-                                      api_posture.get          ← GetPosture（已实现，可直接补）
+API 域 READ_ONLY ×15                  api_audit.search         ← audits 导出/查询（需只读适配）
+  api_tools.go ×10                    api_scan.get / api_scan.findings ← 主动扫描（已实现，
+  api_ops_tools.go ×5（第一批，已落地）                               依赖扫描侧只读适配）
+WAF/运维域 READ_ONLY ×40+
+草稿 DRAFT_ONLY ×5
 ```
 
 ### 4.2 增补 Tool 登记纪律（规划）
@@ -163,9 +185,19 @@ Registry 断言调用序列）。
 
 ## 六、定时任务（Schedules）
 
-### 6.1 调度器（规划）
+### 6.1 调度器（最小形态已实现，完整规划如下）
 
-拟新增包 `server/internal/apiaijobs/`，结构逐项对齐 `learningjobs` janitor：
+**已实现的最小形态**（`server/internal/apiops/`，迁移 000062/000063）：调度结构对齐
+`learningjobs` janitor（`SweepOnce` 可独立单测 + ticker `Run`），自研五段 cron 解析器
+（零新依赖）+ `next_run_at` 游标 claim 先行防重入；表为 `api_ai_schedules` /
+`api_ai_schedule_runs`（任务类型词表固定五种、属主/参数/状态/执行轨迹列与本节规划同构）；
+全局开关为 settings `api_ai_ops.schedules_enabled`（默认关），叠加产品形态开关双重门控；
+失败原因落 `last_error` 不静默吞错；`/api-security/ai-ops` CRUD/启停/立即执行/runs 接口
+（权限 `api_ai.read`/`api_ai.execute`）。连续失败熔断已实现（迁移 000187，见 §6.2）；
+**本节其余规划项（计划级配额、§6.3 属主权限实时快照）未实现**——现状任务执行为系统侧确定性查询，不经 Registry
+权限链路，权限衰减模型仍待工作流层落地。
+
+完整规划（工作流层落地时执行）：拟在最小形态基础上扩展——
 
 ```text
 Sweeper.SweepOnce(ctx)        // 取一个到期 ENABLED 计划执行一轮，可独立单测
@@ -188,14 +220,24 @@ Sweeper.Run(ctx)              // ticker 周期驱动，间隔经 settings 读取
 产物引用（report_id/recommendation_ids）、Tool 调用计数、token 用量——
 与 `ai_tool_calls` 审计互补：一个回答"做了什么"，一个回答"花了多少"。
 
-### 6.2 成本与熔断（规划）
+### 6.2 成本与熔断（配额为规划，熔断已实现）
 
-- 每计划独立配额：单次运行 `MaxToolCalls` / token 上限（默认沿用
+- 每计划独立配额（规划）：单次运行 `MaxToolCalls` / token 上限（默认沿用
   `DefaultLimits` 量级，经 settings 可调）；`aicost.CheckQuota` 对属主账号
   照常生效，**定时任务不享受配额豁免**；
-- 熔断：同一计划连续 N 次失败（默认 3）自动置 `DISABLED` 并写审计 +
-  系统告警（复用 `systemalerts` 通道），防止故障计划空转烧钱；
-- 全局开关：`api_ai_schedules.enabled`（settings，默认关）+ 产品形态开关
+- 熔断（已实现，迁移 000187）：同一计划连续 N 次失败自动熔断停用并写审计 +
+  系统告警，防止故障计划空转烧钱。执行结局统一经 `RecordRunOutcome` 单事务记账
+  （回填 `last_run_at`/`last_status`/`last_error` + `consecutive_failures` 成功清零、
+  失败 +1）；计数达 `api_ai_ops.circuit_threshold`（settings，默认 3，夹取 1-10，
+  每次记账时读取、运行期改设置即生效）且计划仍启用时，同事务熔断：
+  `enabled=false`、清空 `next_run_at`、记录 `circuit_opened_at`/`circuit_reason`
+  （500 字符截断）。`circuitOpened=true` 仅当次实际触发熔断（已熔断/已停用重复失败
+  不重复上报），触发系统告警 `AI_OPS_SCHEDULE_CIRCUIT_OPEN`（HIGH，组件 `AI_OPS`，
+  事件驱动 `Raise`，同类型同组件走引擎合并/冷却）与操作审计
+  （`ai_schedule_circuit_open`，username=system、高风险）；手动启用为唯一恢复入口
+  （`SetScheduleEnabled` 复位计数与熔断现场，复位事实由 handler 层写审计）。
+  执行前失败（如 cron 被旁路改写不可解析）同样走熔断记账路径；
+- 全局开关：`api_ai_ops.schedules_enabled`（settings，默认关）+ 产品形态开关
   `API_DYNAMIC_PROTECTION_ENABLED` 双重门控。
 
 ### 6.3 定时任务的权限模型（规划）
@@ -266,7 +308,7 @@ DISMISSED（人工驳回，需填原因）`，流转写操作审计；**ADOPTED 
 2. **Tool 启停实时生效**（已实现：`ai_tools.status` 每轮查库）；
 3. **审计全覆盖**（已实现：aiaudit 记录每次调用；规划扩展：计划触发/熔断/
    禁用同样写审计）；
-4. **成本熔断**（规划：§6.2 连续失败熔断 + 配额不豁免）；
+4. **成本熔断**（连续失败熔断已实现：§6.2，达阈自动熔断停用 + 告警 + 审计 + 手动启用复位；配额不豁免仍为规划）；
 5. **提示注入防护**（规划）：工作流 `transform` 步骤把 Tool 输出当**数据**处理，
    拼入 LLM 的内容经模板槽位隔离；LLM 输出只用于展示文本，不作为任何
    后续 Tool 入参来源（防"数据→指令"越权转换）；证据引用经 `ValidateCitations`
@@ -298,6 +340,17 @@ DISMISSED（人工驳回，需填原因）`，流转写操作审计；**ADOPTED 
 （SweepOnce 各分支：到期/未到期/熔断/属主失权）；不得为通过测试删除权限
 校验、参数校验、审计与脱敏（AGENTS.md 安全底线）。
 
+**进度注记（2026-10-21 核实）**：A1 已完成（`api_ops_tools.go` 五个 READ_ONLY Tool +
+注册同步 + 单测，差异：`api_spec.diff` 能力并入 `api_spec.get` 而非独立 Tool）；
+A3 已落地（apiops Sweeper + 两表 + 全局开关 + 立即执行 + **连续失败熔断**——
+AI 能力增强第二波（迁移 000187）：`RecordRunOutcome` 单事务记账、达阈
+（`api_ai_ops.circuit_threshold` 默认 3）同事务熔断停用、告警
+`AI_OPS_SCHEDULE_CIRCUIT_OPEN` + 审计、手动启用复位；**不含** §6.3 属主权限实时快照），
+LLM 润色挂点已由 `app/aiops_summarizer.go` 经模型网关
+低复杂度档位接入（失败回退模板）；A2（工作流框架）、A4（推荐流转扩展与运营工作台
+完整形态）、A5（监控探针/E2E/OpenAPI 收录完整项）、A6（第二批 Tool）未实现。
+现状五种任务产物仅运营报告，尚无 recommendation/草稿产物路径。
+
 ## 十、明确不做（与任务书口径一致）
 
 - 不做 AI 自动确认模型、自动发布、自动修改用途、自动关闭 API、自动封禁身份
@@ -310,5 +363,6 @@ DISMISSED（人工驳回，需填原因）`，流转写操作审计；**ADOPTED 
 
 ---
 
-*本文档为规划稿，描述目标设计而非现状；实施完成后应更新
+*本文档为"部分已实现"状态：五种定时任务、LLM 润色挂点与连续失败熔断已落地（见文首现状口径、§6.1 与 §6.2），
+其余章节仍为规划稿，描述目标设计而非现状；后续实施推进时应同步更新
 `docs/API_SECURITY_CURRENT_STATE.md` P1-02 与 §6.6 状态列。*

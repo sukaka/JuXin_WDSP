@@ -10,6 +10,7 @@ require (
 	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0-00010101000000-000000000000
 	github.com/jung-kurt/gofpdf/v2 v2.17.3
 	github.com/redis/go-redis/v9 v9.7.0
+	github.com/twmb/franz-go v1.21.0
 	github.com/vicanso/go-charts/v2 v2.6.10
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.69.0
@@ -45,6 +46,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
+	github.com/twmb/franz-go/pkg/kmsg v1.13.1 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.60 // indirect
 	github.com/wcharczuk/go-chart/v2 v2.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect

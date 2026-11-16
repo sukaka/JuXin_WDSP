@@ -88,3 +88,75 @@ func TestClassifyLevelAndConfidence100(t *testing.T) {
 		})
 	}
 }
+
+// 响应证据参与资产识别：缺失/截断不作负向推断；结构性协议不被成功 HTML 响应误判。
+func TestClassifyWithResponseEvidence(t *testing.T) {
+	closeEnough := func(got, want float64) bool {
+		const eps = 1e-9
+		return got > want-eps && got < want+eps
+	}
+
+	t.Run("JSON 请求与响应提高置信度", func(t *testing.T) {
+		p := &parser.Parsed{Method: "GET", RawPath: "/v1/orders", ContentType: "application/json"}
+		got := ClassifyWithResponse(p, &ResponseEvidence{Status: 200, ContentType: "application/json"})
+		if !got.IsAPI || !closeEnough(got.Confidence, 0.80) || got.Level != LevelConfirmedAPI {
+			t.Fatalf("unexpected result: %+v", got)
+		}
+		if !containsSignal(got.Signals, "response_json") {
+			t.Fatalf("response_json signal missing: %+v", got.Signals)
+		}
+	})
+
+	t.Run("SOAP 请求与 XML 响应", func(t *testing.T) {
+		p := &parser.Parsed{Method: "POST", RawPath: "/soap/orders", ContentType: "application/soap+xml"}
+		got := ClassifyWithResponse(p, &ResponseEvidence{Status: 200, ContentType: "text/xml"})
+		if !got.IsAPI || !closeEnough(got.Confidence, 0.45) || !containsSignal(got.Signals, "response_xml") {
+			t.Fatalf("unexpected result: %+v", got)
+		}
+	})
+
+	t.Run("普通 HTML 页面和仅 API 前缀弱信号均被成功 HTML 响应压低", func(t *testing.T) {
+		for _, p := range []*parser.Parsed{
+			{Method: "GET", RawPath: "/docs", ContentType: "text/html"},
+			{Method: "GET", RawPath: "/api/docs"},
+		} {
+			got := ClassifyWithResponse(p, &ResponseEvidence{Status: 200, ContentType: "text/html"})
+			if got.IsAPI || got.Confidence != 0 || got.Level != LevelNonAPI {
+				t.Fatalf("%s should not be API: %+v", p.RawPath, got)
+			}
+		}
+	})
+
+	t.Run("响应缺失不作负向推断", func(t *testing.T) {
+		p := &parser.Parsed{Method: "GET", RawPath: "/v1/ping", ContentType: "application/json"}
+		got := ClassifyWithResponse(p, nil)
+		if !got.IsAPI || !closeEnough(got.Confidence, 0.55) {
+			t.Fatalf("missing response changed request-only result: %+v", got)
+		}
+	})
+
+	t.Run("截断 HTML 响应不作负向推断", func(t *testing.T) {
+		p := &parser.Parsed{Method: "GET", RawPath: "/api/health"}
+		got := ClassifyWithResponse(p, &ResponseEvidence{Status: 200, ContentType: "text/html", Truncated: true})
+		if got.IsAPI || !closeEnough(got.Confidence, 0.15) || got.Level != LevelPossibleAPI {
+			t.Fatalf("truncated response should keep request evidence: %+v", got)
+		}
+	})
+
+	t.Run("GraphQL 结构协议不被成功 HTML 响应误判", func(t *testing.T) {
+		p := &parser.Parsed{Method: "POST", RawPath: "/graphql", ContentType: "application/json", IsJSON: true}
+		got := ClassifyWithResponse(p, &ResponseEvidence{Status: 200, ContentType: "text/html"})
+		if !got.IsAPI || !closeEnough(got.Confidence, 0.85) || !containsSignal(got.Signals, "graphql_path") {
+			t.Fatalf("structural protocol changed by response HTML: %+v", got)
+		}
+	})
+}
+
+func containsSignal(signals []string, want string) bool {
+	for _, signal := range signals {
+		if signal == want {
+			return true
+		}
+	}
+	return false
+}

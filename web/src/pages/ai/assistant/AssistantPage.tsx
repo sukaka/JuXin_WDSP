@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   App as AntdApp,
@@ -55,7 +56,11 @@ export default function AssistantPage() {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canDelete = hasPermission(permissions, 'ai.sessions.delete_own')
 
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [searchParams] = useSearchParams()
+  // 深链 ?session_id=xxx：定位已有会话（任务记录/审计等入口跳转）
+  const deepLinkSessionId = searchParams.get('session_id')?.trim() || null
+
+  const [sessionId, setSessionId] = useState<string | null>(deepLinkSessionId)
   const [keyword, setKeyword] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
   const [input, setInput] = useState('')
@@ -66,6 +71,8 @@ export default function AssistantPage() {
 
   const abortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  // 深链会话不在列表中时已提示过的会话 ID（避免重复弹错）
+  const deepLinkNotifiedRef = useRef<string | null>(null)
   // 组件卸载时中断进行中的流式请求
   useEffect(() => () => abortRef.current?.abort(), [])
 
@@ -73,6 +80,17 @@ export default function AssistantPage() {
     queryKey: ['ai-sessions', includeArchived],
     queryFn: () => aiChatApi.listSessions({ page: 1, page_size: 50, include_archived: includeArchived }),
   })
+
+  // 深链会话定位失败时显式报错，不静默：会话可能已删除，或因归档被默认列表过滤
+  useEffect(() => {
+    if (!deepLinkSessionId || deepLinkNotifiedRef.current === deepLinkSessionId) return
+    if (!sessionsQuery.isSuccess) return
+    const found = (sessionsQuery.data?.items ?? []).some((s) => s.id === deepLinkSessionId)
+    if (!found) {
+      deepLinkNotifiedRef.current = deepLinkSessionId
+      message.error('未找到链接指定的会话：可能已删除，或已归档（可勾选「显示已归档」后重试）')
+    }
+  }, [deepLinkSessionId, sessionsQuery.isSuccess, sessionsQuery.data, message])
 
   const messagesQuery = useQuery({
     queryKey: ['ai-messages', sessionId],
@@ -441,6 +459,13 @@ export default function AssistantPage() {
               <div style={{ textAlign: 'center', padding: 48 }}>
                 <Spin />
               </div>
+            ) : messagesQuery.isError && sessionId ? (
+              <div style={{ maxWidth: 560, margin: '48px auto 0' }}>
+                <QueryErrorAlert
+                  error={messagesQuery.error}
+                  message="加载会话消息失败，会话可能不存在或已删除"
+                />
+              </div>
             ) : messages.length === 0 && !stream ? (
               <Empty
                 description={
@@ -448,6 +473,12 @@ export default function AssistantPage() {
                     <div>向 安全助手提问，例如：</div>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       「今天为什么攻击增多？」「942100 为什么一直命中？」「哪些 IP 建议封禁？」
+                    </Typography.Text>
+                    <br />
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      「发现了哪些影子
+                      API？」「模型基线与实际调用有哪些差异？」「哪些接口参数偏离基线？」「哪些接口存在
+                      BOLA/BFLA 越权风险？」
                     </Typography.Text>
                   </>
                 }

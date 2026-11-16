@@ -113,6 +113,7 @@ func TestFileAssetsValidation(t *testing.T) {
 		"/api/v1/api-security/file-assets?extension=" + strings.Repeat("a", 17),
 		"/api/v1/api-security/file-assets?mime=" + strings.Repeat("a", 129),
 		"/api/v1/api-security/file-assets?endpoint_key=" + strings.Repeat("a", 561),
+		"/api/v1/api-security/file-assets?identity_fingerprint=" + strings.Repeat("a", 129),
 		"/api/v1/api-security/file-assets?sensitive_only=maybe",
 	} {
 		if rr := do(t, mux, url); rr.Code != http.StatusBadRequest {
@@ -183,6 +184,95 @@ func TestFileAssetsList(t *testing.T) {
 	b = decode(do(t, mux, "/api/v1/api-security/file-assets?days=30"))
 	if b.Data.Total != 4 {
 		t.Fatalf("30d window total = %d, want 4", b.Data.Total)
+	}
+}
+
+func TestFileAssetsIdentityFingerprintFilter(t *testing.T) {
+	store := NewMemStore()
+	seedAssets(store)
+	mux := newTestMux(store, injectPrincipal(apidata.PermDataRead))
+	list := func(url string) (int64, []FileAsset) {
+		t.Helper()
+		rr := do(t, mux, url)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("identity filter: status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		var body struct {
+			Data struct {
+				Total int64       `json:"total"`
+				Items []FileAsset `json:"items"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode identity filter: %v", err)
+		}
+		return body.Data.Total, body.Data.Items
+	}
+
+	total, items := list("/api/v1/api-security/file-assets?identity_fingerprint=%20auth%3Au1%20")
+	if total != 2 || len(items) != 2 {
+		t.Fatalf("trimmed exact identity filter: total=%d items=%d, want 2", total, len(items))
+	}
+	for _, item := range items {
+		if item.IdentityFingerprint != "auth:u1" {
+			t.Fatalf("identity filter returned a different identity")
+		}
+	}
+	total, items = list("/api/v1/api-security/file-assets?identity_fingerprint=auth%3Au")
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("identity prefix must not match: total=%d items=%d", total, len(items))
+	}
+	total, items = list("/api/v1/api-security/file-assets?identity_fingerprint=%20%20")
+	if total != 3 || len(items) != 3 {
+		t.Fatalf("blank identity must not filter: total=%d items=%d, want 3", total, len(items))
+	}
+	total, items = list("/api/v1/api-security/file-assets?identity_fingerprint=" + strings.Repeat("a", 128))
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("128-character identity should be accepted: total=%d items=%d", total, len(items))
+	}
+	total, items = list("/api/v1/api-security/file-assets?identity_fingerprint=auth%3Au1&sensitive_only=true")
+	if total != 1 || len(items) != 1 || items[0].FileName != "id_backup.pem" {
+		t.Fatalf("identity plus other filters: total=%d items=%d", total, len(items))
+	}
+	total, items = list("/api/v1/api-security/file-assets?identity_fingerprint=auth%3Au1&page_size=1&page=2")
+	if total != 2 || len(items) != 1 {
+		t.Fatalf("identity filter pagination: total=%d items=%d, want 2 and 1", total, len(items))
+	}
+}
+
+func TestMemStoreIdentityFingerprintExactMatch(t *testing.T) {
+	store := NewMemStore()
+	now := time.Now().UTC()
+	for _, identity := range []string{"auth:u1", "auth:u10", ""} {
+		store.addAsset(FileAsset{
+			ID: uuid.New(), Direction: DirectionDownload, IdentityFingerprint: identity,
+			LastSeen: now, SensitiveTypes: []string{},
+		})
+	}
+	for _, tc := range []struct {
+		name      string
+		filter    string
+		wantTotal int64
+	}{
+		{name: "empty disables filter", wantTotal: 3},
+		{name: "exact match", filter: "auth:u1", wantTotal: 1},
+		{name: "prefix does not match", filter: "auth:u", wantTotal: 0},
+		{name: "case sensitive", filter: "AUTH:U1", wantTotal: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			items, total, err := store.ListAssets(context.Background(), AssetFilter{
+				Days: 7, IdentityFingerprint: tc.filter, Page: 1, PageSize: 20,
+			})
+			if err != nil {
+				t.Fatalf("list assets: %v", err)
+			}
+			if total != tc.wantTotal || int64(len(items)) != tc.wantTotal {
+				t.Fatalf("identity filter: total=%d items=%d, want %d", total, len(items), tc.wantTotal)
+			}
+			if tc.filter == "auth:u1" && items[0].IdentityFingerprint != tc.filter {
+				t.Fatalf("identity filter returned a different identity")
+			}
+		})
 	}
 }
 

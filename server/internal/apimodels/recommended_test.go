@@ -33,6 +33,42 @@ func TestObservedConstraints(t *testing.T) {
 	}
 }
 
+func TestObservedConstraintsFormatCandidate(t *testing.T) {
+	got := ObservedConstraints(ParameterProfile{FormatCandidate: "UUID", FormatCandidateRatio: pfloat(0.9)})
+	if got["format_candidate"] != "UUID" || got["format_candidate_ratio"] != 0.9 {
+		t.Fatalf("format observed constraints = %v", got)
+	}
+
+	got = ObservedConstraints(ParameterProfile{FormatCandidate: "UUID", FormatCandidateRatio: pfloat(0)})
+	if ratio, ok := got["format_candidate_ratio"]; !ok || ratio != 0.0 {
+		t.Fatalf("explicit zero ratio must be preserved: %v", got)
+	}
+
+	for _, profile := range []ParameterProfile{
+		{FormatCandidate: "UUID"},
+		{FormatCandidateRatio: pfloat(0.9)},
+		{FormatCandidate: "uuid", FormatCandidateRatio: pfloat(0.9)},
+	} {
+		got = ObservedConstraints(profile)
+		if _, ok := got["format_candidate"]; ok {
+			t.Fatalf("incomplete/invalid format candidate leaked: %+v -> %v", profile, got)
+		}
+		if _, ok := got["format_candidate_ratio"]; ok {
+			t.Fatalf("orphan format ratio leaked: %+v -> %v", profile, got)
+		}
+	}
+
+	recommended := RecommendedConstraints(ParameterProfile{
+		SampleCount: RecommendTightSamples, FormatCandidate: "UUID", FormatCandidateRatio: pfloat(1),
+	})
+	if _, ok := recommended["format_candidate"]; ok {
+		t.Fatalf("format candidate must not enter recommended constraints: %v", recommended)
+	}
+	if _, ok := recommended["format_candidate_ratio"]; ok {
+		t.Fatalf("format ratio must not enter recommended constraints: %v", recommended)
+	}
+}
+
 // RecommendedConstraints 样本量分级阈值：<100 不生成（含带观测的情形）。
 func TestRecommendedConstraintsSampleThreshold(t *testing.T) {
 	full := ParameterProfile{

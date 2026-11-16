@@ -16,7 +16,8 @@ import (
 type ReportSchedule struct {
 	ID               uuid.UUID   `json:"id"`
 	Name             string      `json:"name"`
-	ReportType       string      `json:"report_type"`   // DAILY / WEEKLY / MONTHLY
+	ReportType       string      `json:"report_type"` // DAILY / WEEKLY / MONTHLY
+	APIReportType    string      `json:"api_report_type"`
 	ContentScope     string      `json:"content_scope"` // WAF / API / WAF_API
 	ApplicationIDs   []uuid.UUID `json:"application_ids"`
 	TemplateID       *uuid.UUID  `json:"template_id"`
@@ -72,6 +73,14 @@ func (s *ReportSchedule) Validate() error {
 		return fmt.Errorf("%w: 无效的内容范围（WAF/API/WAF_API）", ErrInvalidInput)
 	}
 	s.ContentScope = NormalizeContentScope(s.ContentScope)
+	if s.APIReportType != "" {
+		if !IsAPIReportType(s.APIReportType) {
+			return fmt.Errorf("%w: 无效的 API 专项报告类型", ErrInvalidInput)
+		}
+		if s.ContentScope != ScopeAPI {
+			return fmt.Errorf("%w: API 专项报告的内容范围必须为 API", ErrInvalidInput)
+		}
+	}
 	if !validFormat(s.FileFormat) {
 		return fmt.Errorf("%w: 无效的导出格式（html/pdf/docx）", ErrInvalidInput)
 	}
@@ -103,6 +112,14 @@ func (s *ReportSchedule) Validate() error {
 		}
 	}
 	return nil
+}
+
+// JobReportType 返回调度实际创建的报告任务类型；空专项类型保持普通周期报告。
+func (s *ReportSchedule) JobReportType() string {
+	if s.APIReportType != "" {
+		return s.APIReportType
+	}
+	return s.ReportType
 }
 
 // NextRunAt 计算 after 之后的下一次执行时刻（UTC，确定性纯函数）。

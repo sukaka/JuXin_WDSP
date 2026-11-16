@@ -52,7 +52,7 @@ func (s *Scheduler) fireDue(ctx context.Context) {
 		return
 	}
 	job := &Job{
-		ReportType:       sch.ReportType,
+		ReportType:       sch.JobReportType(),
 		ContentScope:     sch.ContentScope,
 		IncludeAPIAssets: sch.IncludeAPIAssets,
 		PageOrientation:  sch.PageOrientation,

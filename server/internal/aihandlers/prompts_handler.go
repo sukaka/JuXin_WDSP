@@ -4,11 +4,13 @@
 package aihandlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/aiaudit"
@@ -143,7 +145,13 @@ func (d *Deps) PromptVersionCreate(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"version": v})
 }
 
-// PromptVersionTest 版本静态测试（ValidateContent 检查 + MarkTestResult 记录）。
+// PromptVersionTest 版本测试（静态检查 + 真实 Prompt 回归）。
+// 静态检查：非空与长度 + 禁止内容扫描（不通过则 FAILED 且不跑回归——候选内容不安全不进模型）。
+// 真实回归：候选内容覆盖 orchestrator_answer_summary（仅本次运行有效，不触碰发布存储），
+// 逐集运行 eval_prompt_injection / eval_privilege_denial / eval_insufficient_data /
+// eval_api_security_analysis；安全类阈值 100%、一般阈值 80%，全部达标才 PASSED。
+// 模型不可用/评估失败如实 FAILED 并记录失败摘要（不伪装 PASSED），发布门 fail-closed 不变。
+// 结果与逐集分数/模型/失败摘要写 test_detail（ai_prompt_versions.test_detail，迁移 000187）。
 func (d *Deps) PromptVersionTest(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	vid, err := uuid.Parse(r.PathValue("versionId"))
@@ -170,11 +178,41 @@ func (d *Deps) PromptVersionTest(w http.ResponseWriter, r *http.Request) {
 		patternCheck["message"] = "命中禁止内容"
 	}
 	checks = append(checks, patternCheck)
+	staticOK := lenOK && valErr == nil
+
+	// test_detail 骨架：静态检查项恒定落库；回归段仅静态通过时执行
+	detail := map[string]interface{}{"static_checks": checks}
 	result := "PASSED"
-	if !lenOK || valErr != nil {
+	var regressionResp interface{}
+	if !staticOK {
 		result = "FAILED"
+		detail["failure_summary"] = "静态检查未通过，跳过真实回归（候选内容不安全不进模型）"
+	} else {
+		// 回归串行跑 4 个评估集可能远超服务器 WriteTimeout（默认 30s），放宽本请求写期限
+		if rc := http.NewResponseController(w); rc != nil {
+			_ = rc.SetWriteDeadline(time.Now().Add(20 * time.Minute))
+		}
+		runCtx, cancel := context.WithTimeout(r.Context(), promptRegressionTimeout)
+		defer cancel()
+		sets, model := d.runPromptRegression(runCtx, p, v)
+		allPass, failureSummary := summarizeRegression(sets)
+		regression := map[string]interface{}{"model": model, "sets": sets}
+		if failureSummary != "" {
+			regression["failure_summary"] = failureSummary
+			detail["failure_summary"] = failureSummary
+		}
+		detail["regression"] = regression
+		regressionResp = regression
+		if !allPass {
+			result = "FAILED"
+		}
 	}
-	if err := d.Prompts.MarkTestResult(r.Context(), vid, result); err != nil {
+	detailJSON, err := json.Marshal(detail)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	if err := d.Prompts.MarkTestResult(r.Context(), vid, result, detailJSON); err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
@@ -182,9 +220,13 @@ func (d *Deps) PromptVersionTest(w http.ResponseWriter, r *http.Request) {
 		Action: "prompt_test", PromptVersion: fmt.Sprint(v.VersionNumber),
 		RequestSummary: "测试 Prompt 版本 " + vid.String(), ResultSummary: result,
 	})
-	response.JSON(w, r, http.StatusOK, map[string]interface{}{
-		"test_result": result, "checks": checks,
-	})
+	resp := map[string]interface{}{
+		"test_result": result, "checks": checks, "test_detail": json.RawMessage(detailJSON),
+	}
+	if regressionResp != nil {
+		resp["regression"] = regressionResp
+	}
+	response.JSON(w, r, http.StatusOK, resp)
 }
 
 // PromptVersionAdversarialTest 版本对抗测试（§24.4）：

@@ -52,12 +52,21 @@ func newAPITestGuard(t *testing.T, mode string, schemas map[string]map[string]st
 
 func readAPIRecords(t *testing.T, path string) []apievents.Record {
 	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+	var data []byte
+	for attempt := 0; attempt < 50; attempt++ {
+		current, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			t.Fatalf("read api events log: %v", err)
 		}
-		t.Fatalf("read api events log: %v", err)
+		if len(current) > 0 && attempt > 0 && bytes.Equal(data, current) {
+			data = current
+			break
+		}
+		data = current
+		time.Sleep(5 * time.Millisecond)
 	}
 	var out []apievents.Record
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {

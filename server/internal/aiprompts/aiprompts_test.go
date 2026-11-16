@@ -84,8 +84,16 @@ func TestHashContent(t *testing.T) {
 // TestMarkTestResultInvalid 非法测试结果值拦截（DB 前）。
 func TestMarkTestResultInvalid(t *testing.T) {
 	s := NewStore(nil)
-	if err := s.MarkTestResult(context.Background(), uuid.New(), "MAYBE"); err == nil {
+	if err := s.MarkTestResult(context.Background(), uuid.New(), "MAYBE", nil); err == nil {
 		t.Error("非法测试结果应被拒绝")
+	}
+}
+
+// TestMarkTestResultDetailValidation 回归明细非法 JSON 拦截（DB 前，与 adversarial_detail 同口径）。
+func TestMarkTestResultDetailValidation(t *testing.T) {
+	s := NewStore(nil)
+	if err := s.MarkTestResult(context.Background(), uuid.New(), "PASSED", []byte("{not-json")); err == nil {
+		t.Error("非法 test detail JSON 应被拒绝")
 	}
 }
 

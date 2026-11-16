@@ -145,3 +145,134 @@ func TestLoadAPMSelfTelemetryFromEnv(t *testing.T) {
 		t.Error("Gateway.TracingEnabled should be true")
 	}
 }
+
+func TestLoadDatabaseDialectDefaultsToPostgres(t *testing.T) {
+	t.Setenv("DB_DIALECT", "")
+	t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DB.Dialect != DBDialectPostgres {
+		t.Fatalf("DB.Dialect = %q, want %q", cfg.DB.Dialect, DBDialectPostgres)
+	}
+	if cfg.DB.Port != 5432 {
+		t.Fatalf("DB.Port = %d, want 5432", cfg.DB.Port)
+	}
+}
+
+func TestLoadDatabaseDialectFromGenericEnv(t *testing.T) {
+	t.Setenv("DB_DIALECT", "Kingbase")
+	t.Setenv("DB_HOST", "kingbase.internal")
+	t.Setenv("DB_PORT", "55432")
+	t.Setenv("DB_NAME", "wdsp")
+	t.Setenv("DB_USER", "wdsp_admin")
+	t.Setenv("DB_PASSWORD", "generic-db-password")
+	t.Setenv("DB_SSLMODE", "require")
+	t.Setenv("DB_MAX_CONNS", "20")
+	t.Setenv("POSTGRES_PASSWORD", "legacy-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DB.Dialect != DBDialectKingbase {
+		t.Fatalf("DB.Dialect = %q, want %q", cfg.DB.Dialect, DBDialectKingbase)
+	}
+	if cfg.DB.Host != "kingbase.internal" || cfg.DB.Port != 55432 || cfg.DB.Database != "wdsp" {
+		t.Fatalf("unexpected DB endpoint config: %+v", cfg.DB)
+	}
+	if cfg.DB.User != "wdsp_admin" || cfg.DB.Password != "generic-db-password" {
+		t.Fatalf("unexpected DB credential config: %+v", cfg.DB)
+	}
+	if cfg.DB.SSLMode != "require" || cfg.DB.MaxConns != 20 {
+		t.Fatalf("unexpected DB pool config: %+v", cfg.DB)
+	}
+}
+
+func TestLoadDatabaseDialectDefaultPorts(t *testing.T) {
+	for _, tc := range []struct {
+		dialect string
+		want    int
+	}{
+		{dialect: DBDialectKingbase, want: 54321},
+		{dialect: DBDialectDameng, want: 5236},
+	} {
+		t.Run(tc.dialect, func(t *testing.T) {
+			t.Setenv("DB_DIALECT", tc.dialect)
+			t.Setenv("DB_PORT", "")
+			t.Setenv("POSTGRES_PORT", "5432")
+			t.Setenv("DB_PASSWORD", "test-db-password")
+			t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.DB.Port != tc.want {
+				t.Fatalf("DB.Port = %d, want %d", cfg.DB.Port, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadVendorDialectDoesNotReusePostgresEnv(t *testing.T) {
+	t.Setenv("DB_DIALECT", DBDialectDameng)
+	t.Setenv("DB_HOST", "")
+	t.Setenv("DB_NAME", "")
+	t.Setenv("DB_USER", "")
+	t.Setenv("DB_PASSWORD", "test-db-password")
+	t.Setenv("POSTGRES_HOST", "legacy-postgres.internal")
+	t.Setenv("POSTGRES_DB", "legacy_database")
+	t.Setenv("POSTGRES_USER", "legacy_user")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DB.Host != "127.0.0.1" || cfg.DB.Database != "jiuzhang_waf" || cfg.DB.User != "jiuzhang" {
+		t.Fatalf("vendor DB config reused PostgreSQL environment: %+v", cfg.DB)
+	}
+}
+
+func TestLoadRejectsUnsupportedDatabaseDialect(t *testing.T) {
+	t.Setenv("DB_DIALECT", "mysql")
+	t.Setenv("DB_PASSWORD", "test-db-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() accepted unsupported DB_DIALECT")
+	}
+}
+
+func TestLoadContainerOpsSocketDefaultsEmpty(t *testing.T) {
+	t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+	t.Setenv("CONTAINEROPS_SOCKET", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ContainerOps.Socket != "" {
+		t.Fatalf("ContainerOps.Socket default = %q, want empty（未配置=功能 503 降级）", cfg.ContainerOps.Socket)
+	}
+}
+
+func TestLoadContainerOpsSocketFromEnv(t *testing.T) {
+	t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+	t.Setenv("CONTAINEROPS_SOCKET", "/app/runtime/containerops/containerops.sock")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ContainerOps.Socket != "/app/runtime/containerops/containerops.sock" {
+		t.Fatalf("ContainerOps.Socket = %q, want /app/runtime/containerops/containerops.sock", cfg.ContainerOps.Socket)
+	}
+}

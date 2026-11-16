@@ -5,8 +5,13 @@ import { systemHealthApi } from '../../api/systemHealth'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import StatusTag from '../../components/StatusTag'
 import { formatDateTime } from '../../utils/format'
-import { COMPONENT_NAME_META, COMPONENT_STATUS_META, formatUptime } from '../../utils/stage6'
+import {
+  COMPONENT_NAME_META,
+  COMPONENT_STATUS_META,
+  formatUptime,
+} from '../../utils/stage6'
 import type { RuntimeComponent } from '../../types'
+import GatewayTrafficCard from './GatewayTrafficCard'
 
 /** 组件状态卡片 */
 function ComponentCard({ component }: { component: RuntimeComponent }) {
@@ -34,15 +39,25 @@ function ComponentCard({ component }: { component: RuntimeComponent }) {
     >
       <Space direction="vertical" size={4} style={{ display: 'flex' }}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          延迟：{component.latency_ms != null ? `${component.latency_ms} ms` : '-'}
+          延迟：
+          {component.latency_ms != null ? `${component.latency_ms} ms` : '-'}
         </Typography.Text>
         {metrics.map(([k, v]) => (
-          <Typography.Text key={k} type="secondary" style={{ fontSize: 12 }} ellipsis>
+          <Typography.Text
+            key={k}
+            type="secondary"
+            style={{ fontSize: 12 }}
+            ellipsis
+          >
             {k}：{String(v)}
           </Typography.Text>
         ))}
         {component.message && (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }} ellipsis={{ tooltip: component.message }}>
+          <Typography.Text
+            type="secondary"
+            style={{ fontSize: 12 }}
+            ellipsis={{ tooltip: component.message }}
+          >
             {component.message}
           </Typography.Text>
         )}
@@ -73,20 +88,34 @@ export default function SystemMonitoringPage() {
     retry: false,
   })
 
-  const components = componentsQuery.data?.components ?? healthQuery.data?.components ?? []
-  const checkedAt = componentsQuery.data?.checked_at ?? healthQuery.data?.checked_at
+  const components =
+    componentsQuery.data?.components ?? healthQuery.data?.components ?? []
+  const checkedAt =
+    componentsQuery.data?.checked_at ?? healthQuery.data?.checked_at
   const missing = healthQuery.data?.missing_components ?? []
   const runtime = runtimeQuery.isError ? undefined : runtimeQuery.data
 
   return (
     <Space direction="vertical" size={16} style={{ display: 'flex' }}>
+      {components.map(
+        (component) =>
+          component.component === 'GATEWAY' && (
+            <GatewayTrafficCard key={component.component} gateway={component} />
+          ),
+      )}
       <Card
         title="运行监控"
         extra={
           <Space>
-            {healthQuery.data?.status && <StatusTag value={healthQuery.data.status} map={COMPONENT_STATUS_META} />}
+            {healthQuery.data?.status && (
+              <StatusTag
+                value={healthQuery.data.status}
+                map={COMPONENT_STATUS_META}
+              />
+            )}
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {checkedAt ? `更新于 ${formatDateTime(checkedAt)}` : ''}（30 秒自动刷新）
+              {checkedAt ? `更新于 ${formatDateTime(checkedAt)}` : ''}（30
+              秒自动刷新）
             </Typography.Text>
           </Space>
         }
@@ -95,12 +124,18 @@ export default function SystemMonitoringPage() {
           <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
             <Col xs={12} md={6}>
               <Card size="small">
-                <Statistic title="网关状态" value={runtime.gateway?.status ?? 'UNKNOWN'} />
+                <Statistic
+                  title="网关状态"
+                  value={runtime.gateway?.status ?? 'UNKNOWN'}
+                />
               </Card>
             </Col>
             <Col xs={12} md={6}>
               <Card size="small">
-                <Statistic title="网关持续运行" value={formatUptime(runtime.gateway?.uptime_seconds)} />
+                <Statistic
+                  title="网关持续运行"
+                  value={formatUptime(runtime.gateway?.uptime_seconds)}
+                />
               </Card>
             </Col>
             <Col xs={12} md={6}>
@@ -124,12 +159,17 @@ export default function SystemMonitoringPage() {
         )}
 
         {componentsQuery.isError && healthQuery.isError ? (
-          <QueryErrorAlert error={componentsQuery.error} message="加载组件状态失败" />
+          <QueryErrorAlert
+            error={componentsQuery.error}
+            message="加载组件状态失败"
+          />
         ) : (
           <Row gutter={[16, 16]}>
             {components.length === 0 && !componentsQuery.isLoading ? (
               <Col span={24}>
-                <Typography.Text type="secondary">暂无组件状态数据</Typography.Text>
+                <Typography.Text type="secondary">
+                  暂无组件状态数据
+                </Typography.Text>
               </Col>
             ) : (
               components.map((c) => (
@@ -140,7 +180,13 @@ export default function SystemMonitoringPage() {
             )}
             {missing.map((name) => (
               <Col key={`missing-${name}`} xs={24} sm={12} md={8} lg={6}>
-                <ComponentCard component={{ component: name, status: 'UNKNOWN', message: '尚未采集到健康快照' }} />
+                <ComponentCard
+                  component={{
+                    component: name,
+                    status: 'UNKNOWN',
+                    message: '尚未采集到健康快照',
+                  }}
+                />
               </Col>
             ))}
           </Row>

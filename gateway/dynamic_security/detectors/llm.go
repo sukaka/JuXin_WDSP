@@ -1,20 +1,22 @@
 // llm.go LLM API 安全检测（P2-04 首批，任务书 §152-154）：
 //   - 请求侧观测：model 标识 / prompt 存在性 / 体量桶 / stream 标记（数据最小化，不落原文）；
-//   - Prompt Injection 信号 v1：user/system 消息文本词表匹配（中英常见形态，大小写不敏感；
-//     误报纪律：仅 OBSERVE/LOW，证据只含命中规则名与消息序号，不落原文）；
+//   - Prompt Injection 信号：user/system 消息文本词表匹配（中英常见形态，大小写不敏感；
+//     默认 OBSERVE/LOW；应用策略显式 PROTECT 时可升级为 BLOCK，证据不落原文）；
+//   - 应用输入保护策略：受限话题、PII 与提示词体量预算由 llm_security.go 执行；
 //   - 未授权模型：发布通道下发 api_llm_allowed_models 非空时，请求 model 不在名单
 //     → llm.unauthorized_model OBSERVE/MEDIUM（缺省不下发不判定）；
 //   - 响应侧补全：model / usage.total_tokens（OpenAI 兼容字段，缺失容忍）。
 //
 // 解析护栏说明：parser 仅留存标量值（截断 256 字符）且数组只走首个元素，
 // 词表匹配在 messages[0].content / prompt / input 等留存值上进行——
-// 数据最小化优先，v1 接受此口径下的漏检（信号级 OBSERVE，不阻断）。
+// 数据最小化优先，当前接受此口径下的漏检并在文档中明确披露。
 package detectors
 
 import (
 	"encoding/json"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
@@ -30,7 +32,7 @@ const maxLLMInjectionMatches = 5
 
 // llmInjectionRules Prompt Injection 词表 v1（编译期正则表，RE2 线性时间）。
 // 收录原则：中英常见高置信形态（指令覆盖/越狱/DAN/系统提示词窃取），
-// 宁漏勿滥——命中仅 OBSERVE/LOW 信号，误报代价可控、不落原文。
+// 宁漏勿滥——无应用策略时保持 OBSERVE/LOW，误报代价可控、不落原文。
 var llmInjectionRules = []struct {
 	name string
 	re   *regexp.Regexp
@@ -78,6 +80,10 @@ func PromptLenBucket(bodySize int) string {
 // 跑 Prompt Injection 词表与未授权模型判定。仅识别为 LLM 端点时由管线调用。
 // allowedModels 为发布通道下发名单（nil/空 = 不判定未授权模型，零行为）。
 func CheckLLM(ctx *dsctx.RequestContext, p *parser.Parsed, llm classifier.LLMResult, allowedModels []string) {
+	checkLLM(ctx, p, llm, allowedModels, nil)
+}
+
+func checkLLM(ctx *dsctx.RequestContext, p *parser.Parsed, llm classifier.LLMResult, allowedModels []string, policy *LLMSecurityPolicy) {
 	if ctx == nil || p == nil || !llm.IsLLM {
 		return
 	}
@@ -92,8 +98,9 @@ func CheckLLM(ctx *dsctx.RequestContext, p *parser.Parsed, llm classifier.LLMRes
 	}
 	ctx.SetLLMObservation(obs)
 
-	checkLLMPromptInjection(ctx, p)
+	checkLLMPromptInjection(ctx, p, policy)
 	checkLLMAllowedModel(ctx, obs.Model, allowedModels)
+	checkLLMSecurityPolicy(ctx, p, policy)
 }
 
 // llmPromptPresent prompt 形态字段存在性（messages 数组 / prompt / input 非空；只认存在性不含内容）。
@@ -115,8 +122,8 @@ func llmPromptPresent(p *parser.Parsed) bool {
 
 // checkLLMPromptInjection 对留存 prompt 标量做词表匹配（确定性顺序，命中上限 5 条；
 // 证据只含规则名/消息序号/角色，不落原文）。
-func checkLLMPromptInjection(ctx *dsctx.RequestContext, p *parser.Parsed) {
-	if len(p.JSONValues) == 0 {
+func checkLLMPromptInjection(ctx *dsctx.RequestContext, p *parser.Parsed, policy *LLMSecurityPolicy) {
+	if len(p.JSONValues) == 0 || policy != nil && !policy.PromptInjectionEnabled {
 		return
 	}
 	paths := make([]string, 0, len(p.JSONValues))
@@ -141,6 +148,10 @@ func checkLLMPromptInjection(ctx *dsctx.RequestContext, p *parser.Parsed) {
 				continue
 			}
 			evidence := map[string]string{"rule": rule.name}
+			if policy != nil {
+				evidence["policy_id"] = policy.ID
+				evidence["policy_version"] = strconv.FormatInt(policy.Version, 10)
+			}
 			if strings.HasPrefix(path, "messages[]") {
 				// parser 数组只走首元素：可见消息序号恒为 0（口径如实记录）
 				evidence["message_index"] = "0"
@@ -150,14 +161,18 @@ func checkLLMPromptInjection(ctx *dsctx.RequestContext, p *parser.Parsed) {
 			} else {
 				evidence["field"] = path
 			}
+			category, severity, score := "OBSERVE", "LOW", 5
+			if policy != nil && policy.Mode == LLMSecurityProtect {
+				category, severity, score = "BLOCK", "HIGH", 50
+			}
 			ctx.AddMatch(dsctx.DetectorMatch{
 				Detector:   "llm",
 				RuleID:     "llm.prompt_injection",
-				Category:   "OBSERVE",
-				Severity:   "LOW",
+				Category:   category,
+				Severity:   severity,
 				Message:    "prompt injection pattern observed",
 				Evidence:   evidence,
-				ScoreDelta: 5,
+				ScoreDelta: score,
 			})
 			n++
 			break // 同一文本只记首条命中规则（一词一证，防同值多规则刷屏）

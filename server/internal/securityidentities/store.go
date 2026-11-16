@@ -1,4 +1,4 @@
-// store.go client_identity 体系管理面查询（只读；写侧为 identityevents 采集器）。
+// store.go client_identity 体系管理面查询与手工封禁状态迁移。
 package securityidentities
 
 import (
@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -35,7 +34,8 @@ var validSortFields = map[string]string{
 // identityColumns 详情查询列清单（与 scanIdentity 顺序一致）。
 const identityColumns = `id, identity_key, identity_type, first_seen_at, last_seen_at, primary_ip,
   identity_confidence, confidence_source, asn, tls_fingerprint, browser_fingerprint, account_id, jwt_subject, api_key_hash, oauth_client_id,
-  device_type, risk_score, risk_level, status, request_count, created_at, updated_at`
+  device_type, risk_score, risk_level, status, request_count,
+  blocked_reason, blocked_by, blocked_at, unblocked_by, unblocked_at, created_at, updated_at`
 
 // Store 是 client_identity 体系查询仓储。
 type Store struct {
@@ -126,20 +126,7 @@ FROM client_identity WHERE ` + where +
 
 // GetByID 查询身份全字段。
 func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*Identity, error) {
-	row := s.db.QueryRow(ctx, `SELECT `+identityColumns+` FROM client_identity WHERE id = $1`, id)
-	var it Identity
-	err := row.Scan(&it.ID, &it.IdentityKey, &it.IdentityType, &it.FirstSeenAt, &it.LastSeenAt, &it.PrimaryIP,
-		&it.IdentityConfidence, &it.ConfidenceSource, &it.ASN, &it.TLSFingerprint, &it.BrowserFingerprint, &it.AccountID, &it.JWTSubject, &it.APIKeyHash,
-		&it.OAuthClientID, &it.DeviceType, &it.RiskScore, &it.RiskLevel, &it.Status, &it.RequestCount,
-		&it.CreatedAt, &it.UpdatedAt)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	it.IdentityType = normalizeIdentityType(it.IdentityType)
-	return &it, nil
+	return scanIdentity(s.db.QueryRow(ctx, `SELECT `+identityColumns+` FROM client_identity WHERE id = $1`, id))
 }
 
 // ListIPHistory 身份 IP 历史（按 last_seen_at DESC 全量）。

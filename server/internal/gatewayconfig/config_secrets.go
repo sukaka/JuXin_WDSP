@@ -1,7 +1,7 @@
 // config_secrets.go 整站配置版本的密钥语义：版本表不再保存密钥明文，回滚时重注入当前密钥。
 //
 // 背景：publisher.Rollback 直接重放历史 configuration_json 会静默恢复旧密钥
-// （valkey 密码、identity_salt、扫描/文件签名 key_hex、TLS 会话票据键）。
+// （valkey 密码、identity_salt、扫描/文件签名/脱敏加密 key_hex、TLS 会话票据键）。
 // 访问控制回滚（RollbackAccessControl 经 guardconfig.GetVersionConfig）的口径是
 // 快照脱敏存储、回滚按当前设置重注入；本文件把整站配置版本统一到同一口径：
 //   - saveVersion 写入 configuration_json 前经 RedactConfigSecrets 脱敏（"***" 占位）；
@@ -84,6 +84,9 @@ func RedactConfigSecrets(configJSON string) (string, error) {
 			if v, ok := m["api_file_signature"].(mapT); ok {
 				redactMapSecret(v, "key_hex")
 			}
+			if v, ok := m["api_mask_crypto"].(mapT); ok {
+				redactMapSecret(v, "key_hex")
+			}
 		}
 		if isTLSTicketKeySourceNode(m) {
 			if keys, ok := m["keys_hex"].([]interface{}); ok {
@@ -108,12 +111,13 @@ type configSecretNeeds struct {
 	identitySalt   bool
 	scanVerify     bool
 	fileSignature  bool
+	maskCrypto     bool
 	authzObjectKey bool
 	tlsTicketKey   bool
 }
 
 func (n *configSecretNeeds) any() bool {
-	return n.valkey || n.identitySalt || n.scanVerify || n.fileSignature || n.authzObjectKey || n.tlsTicketKey
+	return n.valkey || n.identitySalt || n.scanVerify || n.fileSignature || n.maskCrypto || n.authzObjectKey || n.tlsTicketKey
 }
 
 // reinjectConfigSecrets 回滚重放前将历史配置 JSON 中 guard 段密钥类字段替换为当前设置值
@@ -140,6 +144,9 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 			}
 			if _, ok := m["api_file_signature"]; ok {
 				needs.fileSignature = true
+			}
+			if _, ok := m["api_mask_crypto"]; ok {
+				needs.maskCrypto = true
 			}
 			if _, ok := m["api_authz_object_hmac_key_hex"]; ok {
 				needs.authzObjectKey = true
@@ -177,6 +184,9 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 	if needs.fileSignature && (cur.APIFileSignature == nil || cur.APIFileSignature.KeyHex == "") {
 		return "", fmt.Errorf("回滚重注入当前密钥失败：历史配置含 api_file_signature，但当前未配置文件签名密钥")
 	}
+	if needs.maskCrypto && (cur.APIMaskCrypto == nil || cur.APIMaskCrypto.KeyHex == "") {
+		return "", fmt.Errorf("回滚重注入当前密钥失败：历史配置含 api_mask_crypto，但当前未配置脱敏加密密钥")
+	}
 	if needs.authzObjectKey && cur.APIAuthzObjectHMACKeyHex == "" {
 		return "", fmt.Errorf("回滚重注入当前密钥失败：历史配置含 api_authz_object_hmac_key_hex，但当前未配置对象引用 HMAC 密钥")
 	}
@@ -198,6 +208,9 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 			}
 			if _, ok := m["api_file_signature"]; ok {
 				m["api_file_signature"] = cur.APIFileSignature
+			}
+			if _, ok := m["api_mask_crypto"]; ok {
+				m["api_mask_crypto"] = cur.APIMaskCrypto
 			}
 			if _, ok := m["api_authz_object_hmac_key_hex"]; ok {
 				m["api_authz_object_hmac_key_hex"] = cur.APIAuthzObjectHMACKeyHex

@@ -113,6 +113,7 @@ openssl pkey -pubin -in release-signing.pub -outform DER | sha256sum
 | PostgreSQL | 5432 | 仅绑定 127.0.0.1 |
 | Valkey | 6379 | 仅绑定 127.0.0.1 |
 | Caddy Admin | Unix Socket | /var/run/caddy/admin.sock |
+| 容器运维 sidecar | Unix Socket | containeropsd 仅监听共享卷内 `/run/containerops/containerops.sock`（API 侧经卷挂载为 `/app/runtime/containerops/containerops.sock`），不暴露 TCP；docker.sock 仅该组件挂载 |
 | 业务代理 | 默认 80/443，站点端口按发布结果精确放行 | 生产离线包网关直绑宿主机端口；安装时用 `--site-ports` 显式指定站点端口（ops/install 不再默认放行 1024-65535 全高位端口） |
 
 ## 数据目录
@@ -132,7 +133,31 @@ runtime/
 2. Caddy Admin API 仅通过 Unix Socket 访问；
 3. 管理端默认只监听内网；
 4. 生产环境必须使用 HTTPS；
-5. 定期备份 `runtime/` 目录和数据库。
+5. 定期备份 `runtime/` 目录和数据库；
+6. `/var/run/docker.sock` 仅允许 containerops sidecar 挂载，严禁挂进 api/web/gateway 等任何其他容器。
+
+## 容器运维通道（containerops sidecar）
+
+管理面的容器级运维能力（组件状态/日志查看、白名单内服务重启、锁定镜像更新）经独立
+sidecar 提供，**API 容器不直接持有 docker.sock**：
+
+- **拓扑**：API → 共享 Unix Socket 卷（stage5 为 `stage5-containerops`，离线生产包为
+  `containerops-data`，API 侧挂载点 `/app/runtime/containerops`）→ containerops sidecar →
+  `/var/run/docker.sock`。sidecar 为全栈唯一挂载 docker.sock 的组件，以
+  `network_mode: none` 运行、不暴露任何 TCP 端口；详见
+  [docs/CONTAINER_OPS_DESIGN.md](CONTAINER_OPS_DESIGN.md)。
+- **白名单**：sidecar 只运维 `CONTAINEROPS_PROJECT` 指定的 compose 项目内、且命中
+  `CONTAINEROPS_ALLOWED_SERVICES` 的服务（双重校验，fail-closed）；sidecar 自身
+  永远不可经通道操作。
+- **docker 组 gid**：sidecar 镜像以非 root（uid 1000）运行，访问 docker.sock 的属组
+  gid 由 compose `group_add: ${CONTAINEROPS_DOCKER_GID}` 注入；安装期执行
+  `bash ops/install/prepare-containerops.sh -e .env` 自动探测写入（缺省 0 适配
+  Docker Desktop/root-owned 场景）。
+- **镜像更新纪律**：update 只接受显式锁定镜像引用，拒绝 `latest` 与任意 tag；
+  数据类容器仅允许同大版本补丁更新；API 自身不允许经本通道 stop/update
+  （其版本升级走宿主机升级执行器）。
+- **不可用口径**：裸机 systemd 形态无 docker.sock，容器运维不可用，管理面接口返回
+  503 降级并隐藏入口，不伪造容器状态。
 
 ## 授权导入与管理
 

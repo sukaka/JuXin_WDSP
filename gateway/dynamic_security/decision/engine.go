@@ -31,6 +31,9 @@ type ExceptionRef struct {
 // Input 决策输入。
 type Input struct {
 	Mode Mode // 默认 PROTECT
+	// RateLimitAction RATE_LIMIT 类在 PROTECT 下的处置：空/RATE_LIMIT=429，
+	// BLOCK=403，TEMP_BLOCK=403+真实临时封禁（由 Guard 执行）；OBSERVE 仍统一降级。
+	RateLimitAction string
 	// Exceptions 本请求适用的受限例外规则引用（装配层已按应用/域名/路径/方法/来源 IP/
 	// 有效期完成范围筛选）：命中的 Finding 保留证据并打标 Excepted，其 ScoreDelta 与
 	// 执法类别从本次定案排除后按既有优先级重算；nil 与空切片等价（零行为变化）。
@@ -140,7 +143,14 @@ func Decide(ctx *dsctx.RequestContext, in Input) dsctx.FinalAction {
 	case hasTempBlock && mode == ModeProtect:
 		action = dsctx.ActionTempBlock
 	case hasRateLimit && mode == ModeProtect:
-		action = dsctx.ActionRateLimit
+		switch strings.ToUpper(strings.TrimSpace(in.RateLimitAction)) {
+		case "BLOCK":
+			action = dsctx.ActionBlock
+		case "TEMP_BLOCK":
+			action = dsctx.ActionTempBlock
+		default:
+			action = dsctx.ActionRateLimit
+		}
 	case ctx.HasTransformPlan() && mode == ModeProtect:
 		// 响应脱敏计划非空且 PROTECT：放行但改写响应体（MASK_RESPONSE）。
 		// 优先级低于一切阻断类动作（阻断请求无响应相位）；OBSERVE 模式仅记录计划，不执行。

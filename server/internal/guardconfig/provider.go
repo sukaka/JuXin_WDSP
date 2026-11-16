@@ -27,14 +27,16 @@ import (
 
 // Provider 是阶段5配置组装器（实现 gatewayconfig.GuardProvider）。
 type Provider struct {
-	proxies   *trustedproxies.Store
-	protected *protectedaddresses.Store
-	rules     *accessrules.Store
-	policies  *ratelimitpolicies.Store
-	versions  *accesscontrolversions.Store
-	apiModels *apimodels.Store // 阶段8：冻结模型下发（nil 时跳过）
-	apiAssets *apiassets.Store // 阶段8：已知端点基线下发（nil 时跳过）
-	l7Rules   *l7rules.Store   // L7 访问控制规则（nil 时不下发 l7_rules 段——API 形态零行为变化）
+	proxies            *trustedproxies.Store
+	protected          *protectedaddresses.Store
+	rules              *accessrules.Store
+	policies           *ratelimitpolicies.Store
+	versions           *accesscontrolversions.Store
+	apiModels          *apimodels.Store // 阶段8：冻结模型下发（nil 时跳过）
+	apiAssets          *apiassets.Store // 阶段8：已知端点基线下发（nil 时跳过）
+	apiEndpointActions APIEndpointActionLister
+	apiEndpointGroups  APIEndpointGroupLister
+	l7Rules            *l7rules.Store // L7 访问控制规则（nil 时不下发 l7_rules 段——API 形态零行为变化）
 
 	valkeyAddr     string
 	valkeyPassword string
@@ -62,13 +64,16 @@ type Provider struct {
 	// nil 时不下发运行时键，网关内置默认值兜底）
 	runtimeSettingsLoader GatewayRuntimeSettingsLoader
 	// 响应脱敏规则读取（api_masking_rules 表，迁移 000040；nil 或查询失败时 Warn 跳过）
-	maskRules MaskRuleLister
+	maskRules  MaskRuleLister
+	maskCrypto MaskCryptoLoader
 	// 值级敏感检测规则读取（api_sensitive_data_types 表，迁移 000040；nil 或查询失败时 Warn 跳过）
 	sensitiveValueRules SensitiveValueRuleLister
 	// 角色功能级基线读取（api_role_baselines 表 confirmed 行，迁移 000043；nil 或查询失败时 Warn 跳过）
 	roleBaselines RoleBaselineLister
 	// 字段权限读取（api_field_permissions 表，迁移 000044；nil 或查询失败时 Warn 跳过）
 	fieldPermissions FieldPermissionLister
+	// LLM 输入保护策略读取（api_llm_security_policies 表 enabled 行；nil = 不下发该段）
+	llmSecurityPolicies LLMSecurityPolicyLister
 	// 流程基线读取（api_flow_baselines 表 enabled 行，迁移 000155；nil 或查询失败时 Warn 跳过）
 	flowBaselines FlowBaselineLister
 	strongFlows   StrongFlowLister
@@ -115,6 +120,7 @@ type Provider struct {
 	// 行为策略读取（security_behavior_policy 表 GLOBAL 行，迁移 000098；nil 或查询失败时
 	// Warn 跳过不下发 identity_behavior 段，与 MaskRuleStore 同一模式）
 	behaviorPolicy BehaviorPolicyLister
+	identityBlocks IdentityBlockLister
 	// 身份与行为事件日志网关容器内路径（随 identity_behavior 段下发）
 	identityEventsLog string
 	// 风险策略读取（security_risk_policy 表 GLOBAL 行，迁移 000101；nil 或查询失败时
@@ -511,10 +517,24 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		if err := p.applyGatewayRuntime(ctx, cfg); err != nil {
 			return nil, err
 		}
+		if err := p.loadAPIEndpointActions(ctx, cfg); err != nil {
+			return nil, err
+		}
+		if err := p.loadAPIEndpointGroups(ctx, cfg); err != nil {
+			return nil, err
+		}
 		// WDSP 规则读取对旧格式仅容忍明确缺失的 legacy 表；真实查询错误必须中止
 		// 候选发布，避免把读取失败误当成空策略发布到网关。
 		var loaderErr error
+		cfg.APILLMSecurityPolicies, loaderErr = p.loadLLMSecurityPolicies(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
 		cfg.APIMaskRules, loaderErr = p.loadAPIMaskRulesStrict(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
+		cfg.APIMaskCrypto, loaderErr = p.loadAPIMaskCrypto(ctx, cfg.APIMaskRules)
 		if loaderErr != nil {
 			return nil, loaderErr
 		}
@@ -679,6 +699,10 @@ func (p *Provider) BuildGuardConfig(ctx context.Context) (*gatewayconfig.GuardCo
 		// 覆盖 → 非阻断 Warn 警示（配置缺口；运行时按 COV_NO_TRUSTED_SUBJECT 放行+披露，
 		// UNKNOWN 恒不阻断——strict 组合属业务端点逐项批准，不硬失败）
 		warnMCPJWTTrustCoverage(cfg)
+		cfg.APIIdentityBlocks, loaderErr = p.loadAPIIdentityBlocks(ctx)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
 		// P0-03/21：API 策略版本戳（本次发布内容哈希，恒下发供生效校验与网关回报比对；
 		// 覆盖面对齐 guard.go 实际下发面，密钥三段与 identity_salt 不参与）
 		cfg.APIPolicyVersion = computeAPIPolicyVersion(cfg)
@@ -755,6 +779,13 @@ func RedactGuardConfig(cfg *gatewayconfig.GuardConfig) *gatewayconfig.GuardConfi
 			v.KeyHex = "***"
 		}
 		cp.APIScanVerification = &v
+	}
+	if cfg.APIMaskCrypto != nil {
+		v := *cfg.APIMaskCrypto
+		if v.KeyHex != "" {
+			v.KeyHex = "***"
+		}
+		cp.APIMaskCrypto = &v
 	}
 	// api_file_signature.key_hex 为文件签名密钥明文，快照脱敏（同一纪律）；
 	// kid 非秘密（随 token 明文嵌入文件），保留以便快照审计；
@@ -886,8 +917,8 @@ func (p *Provider) GetVersionConfig(ctx context.Context, versionID uuid.UUID) (*
 
 // replayRuntimeSecrets 回滚重放（GetVersionConfig 快照反序列化后调用）：
 // 快照中的 gateway_runtime 运行时键与密钥段已脱敏为占位/已过期，先清零快照旧值，
-// 再按当前设置重放；读取/解密失败如实返回（回滚也是发布，与 BuildGuardConfig 同一
-// fail-hard 纪律——不下发脱敏占位、不静默降级为无密钥配置）。
+// 再按当前设置、ACTION/业务分组映射及身份封禁状态重放；读取/解密失败如实返回（回滚也是发布，
+// 与 BuildGuardConfig 同一 fail-hard 纪律——不下发脱敏占位、不静默降级为无密钥或旧映射配置）。
 // 清零清单必须覆盖 RedactGuardConfig 脱敏段与 applyGatewayRuntimeSettings 全部写入键：
 // 漏清零时快照中的 "***" 占位会被原样发布（如 tls_session_ticket_key 非 hex 致
 // Caddy /load 拒绝、回滚失败）。当前设置值为 Redact 占位符的键由
@@ -900,7 +931,15 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 		cfg.TLSSessionTicketKey = ""
 		cfg.CredentialIPSpreadLimit = 0
 		cfg.CredentialConcurrencyLimit = 0
+		cfg.CredentialRatePerMinute = 0
+		cfg.TenantRatePerMinute = 0
+		cfg.ActionRatePerMinute = 0
+		cfg.APIEndpointActions = nil
+		cfg.GroupRatePerMinute = 0
+		cfg.APIEndpointGroups = nil
 		cfg.APIWriteRatePerMinute = 0
+		cfg.APIRateLimitAction = ""
+		cfg.APITempBlockSeconds = 0
 		cfg.APIQuotaPerHour = 0
 		cfg.APIQuotaPerDay = 0
 		cfg.ObjectRatePerMinute = 0
@@ -908,11 +947,18 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 		cfg.APIMaxBatchSize = 0
 		cfg.APIResponseFailPolicy = ""
 		cfg.APIResponseCaptureMaxBytes = 0
+		cfg.APIResponseSampleRatio = nil
 		cfg.APILLMAllowedModels = nil
 		cfg.APIFileWatermark = nil
 		cfg.APIGRPCMaxFrameBytes = 0
 		cfg.APIGRPCAllowCompression = false
 		if err := p.applyGatewayRuntime(ctx, cfg); err != nil {
+			return err
+		}
+		if err := p.loadAPIEndpointActions(ctx, cfg); err != nil {
+			return err
+		}
+		if err := p.loadAPIEndpointGroups(ctx, cfg); err != nil {
 			return err
 		}
 	}
@@ -933,6 +979,16 @@ func (p *Provider) replayRuntimeSecrets(ctx context.Context, cfg *gatewayconfig.
 		}
 		cfg.APIFileSignature = fileSignature
 	}
+	maskCrypto, err := p.loadAPIMaskCrypto(ctx, cfg.APIMaskRules)
+	if err != nil {
+		return err
+	}
+	cfg.APIMaskCrypto = maskCrypto
+	identityBlocks, err := p.loadAPIIdentityBlocks(ctx)
+	if err != nil {
+		return err
+	}
+	cfg.APIIdentityBlocks = identityBlocks
 	// bot_signing_keys 快照已脱敏为占位：清零后按当前设置重新解密注入（同一纪律；
 	// 未配置 → nil 不下发，含 PROTECT 策略的快照由下方门禁以可读原因拒绝回滚发布）
 	if p.botSigningKeys != nil {

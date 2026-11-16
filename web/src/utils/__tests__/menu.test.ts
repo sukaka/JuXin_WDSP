@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { filterMenusByLicense, filterMenusByRoles } from '../menu'
+import {
+  API_MENU_SECTIONS,
+  filterCoreMenus,
+  filterMenusByLicense,
+  filterMenusByRoles,
+} from '../menu'
 
 describe('filterMenusByRoles', () => {
   it('系统管理员菜单：运维 + 智能能力管理 + 系统告警（不含六组安全功能）', () => {
@@ -16,6 +21,7 @@ describe('filterMenusByRoles', () => {
       '/node-interfaces',
       '/network-config',
       '/network-tools',
+      '/system-containers',
       '/ha-groups',
       '/storage',
       '/backup-restore',
@@ -77,6 +83,7 @@ describe('filterMenusByRoles', () => {
       '/access-control-versions',
       '/api-posture',
       '/api-endpoints',
+      '/api-endpoint-groups',
       '/api-admission',
       '/api-models',
       '/api-model-maturity',
@@ -91,6 +98,8 @@ describe('filterMenusByRoles', () => {
       '/api-machine-identities',
       '/api-graph',
       '/api-topology',
+      '/api-data-flow',
+      '/api-group-control',
       '/api-findings',
       '/api-shadow-zombie',
       '/api-policy',
@@ -109,6 +118,7 @@ describe('filterMenusByRoles', () => {
       '/api-service-assets',
       '/api-nodes',
       '/api-file-compliance',
+      '/api-file-assets',
       '/security-events',
       '/access-logs',
       '/event-statistics',
@@ -270,6 +280,96 @@ describe('filterMenusByRoles', () => {
       webWafEnabled: false,
     }).map((m) => m.key)
     expect(keys).not.toContain('/l7-rules')
+  })
+
+  it('接口组菜单按 read 权限补显，并受 API 动态防护能力门控', () => {
+    const visible = filterMenusByRoles(
+      ['CUSTOM_ROLE'],
+      ['api_endpoint_group.read'],
+      { apiDynamicProtection: true },
+    ).map((menu) => menu.key)
+    expect(visible).toContain('/api-endpoint-groups')
+
+    const manageOnly = filterMenusByRoles(
+      ['CUSTOM_ROLE'],
+      ['api_endpoint_group.manage'],
+      { apiDynamicProtection: true },
+    ).map((menu) => menu.key)
+    expect(manageOnly).not.toContain('/api-endpoint-groups')
+
+    const hidden = filterMenusByRoles(
+      ['CUSTOM_ROLE'],
+      ['api_endpoint_group.read'],
+      { apiDynamicProtection: false },
+    ).map((menu) => menu.key)
+    expect(hidden).not.toContain('/api-endpoint-groups')
+  })
+
+  it('API 防护组内分类保留全部页面，仅减少直接展示的二级入口', () => {
+    const apiMenus = filterMenusByRoles(['SECURITY_ADMIN'], [], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    }).filter((menu) => menu.group === 'API 防护')
+    const sectioned = apiMenus.filter((menu) => API_MENU_SECTIONS[menu.key])
+    const direct = apiMenus.filter((menu) => !API_MENU_SECTIONS[menu.key])
+
+    expect(apiMenus).toHaveLength(38)
+    expect(sectioned).toHaveLength(32)
+    expect(direct).toHaveLength(6)
+    expect(
+      new Set(sectioned.map((menu) => API_MENU_SECTIONS[menu.key])),
+    ).toEqual(
+      new Set([
+        '资产与接入',
+        '模型中心',
+        '策略与授权',
+        '数据安全',
+        '关系与运行',
+      ]),
+    )
+    for (const menu of sectioned) expect(menu.group).toBe('API 防护')
+  })
+
+  it('核心导航只保留安全工作流，并移除全部分组层级', () => {
+    const menus = filterMenusByRoles(['SECURITY_ADMIN'], [], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    const core = filterCoreMenus(menus)
+    expect(core.map((menu) => menu.key)).toEqual([
+      '/dashboard',
+      '/applications',
+      '/api-endpoints',
+      '/traffic-agents',
+      '/protection-policies',
+      '/api-policy',
+      '/api-posture',
+      '/api-data-flow',
+      '/security-events',
+      '/license',
+      '/profile',
+    ])
+    expect(core.every((menu) => menu.group === undefined)).toBe(true)
+    expect(core.map((menu) => menu.key)).not.toContain('/api-models')
+  })
+
+  it('高级页面直达时仅补入当前页面且不重复', () => {
+    const menus = filterMenusByRoles(['SECURITY_ADMIN'], [], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    })
+    const core = filterCoreMenus(menus, '/api-models')
+    expect(core).toHaveLength(12)
+    expect(core.filter((menu) => menu.key === '/api-models')).toHaveLength(1)
+    expect(core[core.length - 1]).toMatchObject({
+      key: '/api-models',
+      group: undefined,
+    })
+    expect(
+      filterCoreMenus(menus, '/dashboard').filter(
+        (menu) => menu.key === '/dashboard',
+      ),
+    ).toHaveLength(1)
   })
 
   it('WAF 产品对所有管理员隐藏 API 防护菜单', () => {

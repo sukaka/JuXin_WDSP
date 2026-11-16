@@ -135,6 +135,8 @@ services:
       API_MAX_FIELD_COUNT: ${API_MAX_FIELD_COUNT:-2048}
       # 系统控制（重启/关机/恢复出厂）：标志文件目录，宿主机 jiuzhang-hostctl.path 单元监视并执行
       HOSTCTL_DIR: /app/runtime/hostctl
+      # 容器运维通道：经共享卷上的 Unix Socket 访问 containerops sidecar（API 不直接持有 docker.sock）
+      CONTAINEROPS_SOCKET: /app/runtime/containerops/containerops.sock
     ports:
       - "127.0.0.1:${API_PORT:-18081}:8080"
     volumes:
@@ -158,12 +160,17 @@ services:
       # 系统控制：标志文件目录可写挂载（api 校验通过后写 <action>-<unixts>-<requestid>.json；
       # 宿主机 jiuzhang-hostctl.path systemd 单元监视该目录并触发 ops/system/hostctl-exec.sh 执行）
       - ../runtime/hostctl:/app/runtime/hostctl
+      # 容器运维通道：与 containerops sidecar 共享的 Unix Socket 卷（API 仅见 socket 文件，
+      # 不挂载 /var/run/docker.sock；嵌套在 stage5-runtime 挂载点之下）
+      - stage5-containerops:/app/runtime/containerops
     depends_on:
       postgres:
         condition: service_healthy
       valkey:
         condition: service_healthy
       gateway:
+        condition: service_started
+      containerops:
         condition: service_started
     read_only: true
     cap_drop:
@@ -273,6 +280,41 @@ services:
     networks:
       - stage5-net
 
+  # 容器运维 sidecar（containeropsd）：全栈唯一挂载 /var/run/docker.sock 的组件。
+  # API 容器只挂载共享 Unix Socket 卷（stage5-containerops）发起受控运维请求；
+  # sidecar 校验 compose 项目标签与服务白名单后才触碰 Docker API。
+  # 不暴露任何 TCP 端口（network_mode: none）。设计与安全边界见 docs/CONTAINER_OPS_DESIGN.md。
+  containerops:
+    image: jiuzhang-containerops:stage5
+    build:
+      context: ..
+      dockerfile: deployment/containerops/Dockerfile
+    container_name: jiuzhang-stage5-containerops
+    restart: unless-stopped
+    environment:
+      CONTAINEROPS_SOCKET: /run/containerops/containerops.sock
+      DOCKER_HOST: unix:///var/run/docker.sock
+      # 仅允许运维本 compose 项目内、且在白名单中的服务（双重校验，fail-closed）
+      CONTAINEROPS_PROJECT: jiuzhang-stage5
+      CONTAINEROPS_ALLOWED_SERVICES: api,gateway,postgres,valkey,logrotator,netmgrd,testorigin,ollama
+    volumes:
+      # 全栈唯一 docker.sock 挂载点（安全底线；严禁复制到 api 或其他服务）
+      - /var/run/docker.sock:/var/run/docker.sock
+      - stage5-containerops:/run/containerops
+    # docker.sock 属主组 gid 因宿主机而异（Linux 通常为 docker 组；Docker Desktop 多为 root 组 0），
+    # 经 group_add 注入；镜像本体以非 root uid 1000 运行。可用 ops/install/prepare-containerops.sh 探测。
+    group_add:
+      - "${CONTAINEROPS_DOCKER_GID:-0}"
+    # 无任何 TCP 面：不接入 bridge 网络（请求只经 Unix Socket 卷进出）
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+
   testorigin:
     build:
       context: ../deployment/stage1/testorigin
@@ -332,6 +374,8 @@ volumes:
   stage5-runtime:
     driver: local
   stage5-gateway-certs:
+    driver: local
+  stage5-containerops:
     driver: local
   stage5-ollama-data:
     driver: local

@@ -1,11 +1,29 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert, App as AntdApp, Button, Card, Input, InputNumber, Popconfirm, Select, Spin, Switch, Tabs, Tag, Typography } from 'antd'
+import {
+  Alert,
+  App as AntdApp,
+  Button,
+  Card,
+  Input,
+  InputNumber,
+  Popconfirm,
+  Select,
+  Spin,
+  Switch,
+  Tabs,
+  Tag,
+  Typography,
+} from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import SmartTable from '../../components/SmartTable'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import { ApiError } from '../../api/client'
-import { apmSettingsApi, settingsApi, type UpdateApmSettingsBody } from '../../api/settings'
+import {
+  apmSettingsApi,
+  settingsApi,
+  type UpdateApmSettingsBody,
+} from '../../api/settings'
 import { useAuthStore } from '../../stores/auth'
 import { useProductStore } from '../../stores/product'
 import { formatDateTime } from '../../utils/format'
@@ -22,6 +40,8 @@ const GROUP_TABS = [
   { key: 'block_response', label: '阻断响应页面' },
   { key: 'api_learning', label: 'API 学习' },
   { key: 'network', label: '网络' },
+  { key: 'software_bypass', label: '软件旁路' },
+  { key: 'gateway_runtime', label: '文件与水印' },
   { key: 'apm', label: 'APM 性能监控' },
 ]
 
@@ -30,49 +50,108 @@ const GROUP_TABS = [
  *  multiline/maxLength 用于长文本设置项（如自定义阻断页面正文）。 */
 const SETTING_META: Record<
   string,
-  { description?: string; min?: number; max?: number; step?: number; numeric?: boolean; options?: { label: string; value: string }[]; placeholder?: string; multiline?: boolean; maxLength?: number }
+  {
+    description?: string
+    min?: number
+    max?: number
+    step?: number
+    numeric?: boolean
+    options?: { label: string; value: string }[]
+    placeholder?: string
+    multiline?: boolean
+    maxLength?: number
+  }
 > = {
+  'gateway_runtime:api_file_watermark_enabled': {
+    description: '文件下载溯源水印总开关；启用前需填写模板，保存后需发布配置',
+  },
+  'gateway_runtime:api_file_watermark_template': {
+    description: '水印模板，支持 {ip}/{identity}/{time}/{domain} 占位变量',
+    placeholder: '例如：trace ip={ip} identity={identity} time={time}',
+    maxLength: 256,
+  },
+  'gateway_runtime:api_file_watermark_content_types': {
+    description: '允许水印的 Content-Type；内联 HTML 需显式加入 text/html',
+    maxLength: 512,
+  },
+  'gateway_runtime:api_file_watermark_json_key': {
+    description: 'JSON 顶层水印字段名，缺省为 _wm',
+    maxLength: 64,
+  },
+  'gateway_runtime:api_file_watermark_include_inline_html': {
+    description: '内联 HTML 追加不可见溯源注释；需同时启用水印并加入 text/html',
+  },
+  'software_bypass:enabled': {
+    description: '资源超阈时自动纯透传，跳过全部检测与防护；保存后需发布配置',
+  },
+  'software_bypass:cpu_threshold_percent': {
+    description: 'CPU 使用率超过该值触发旁路（%）',
+    min: 1,
+    max: 100,
+  },
+  'software_bypass:memory_threshold_percent': {
+    description: '内存使用率超过该值触发旁路（%）',
+    min: 1,
+    max: 100,
+  },
+  'software_bypass:min_hold_seconds': {
+    description: '旁路最短保持时间（秒）；恢复阈值比触发阈值低 5 个百分点',
+    min: 1,
+    max: 300,
+  },
+  'software_bypass:session_cookie_names': {
+    description: '用于 HTTP 会话统计的 Cookie 名，逗号分隔；留空关闭会话统计',
+    maxLength: 512,
+  },
   // block_response 组：自定义 429/阻断响应页面（阶段5 §5.1，随发布下发网关生效；
   // 长度上限与后端 settingStringMaxLen 同口径）
   'block_response:html_title': {
-    description: '429/阻断响应页面标题（留空使用内置默认「请求过于频繁」，渲染时整串转义）',
+    description:
+      '429/阻断响应页面标题（留空使用内置默认「请求过于频繁」，渲染时整串转义）',
     maxLength: 128,
   },
   'block_response:html_body': {
-    description: '429/阻断响应页面正文（留空使用内置默认；仅支持基础排版标签且无属性，其余内容自动转义）',
+    description:
+      '429/阻断响应页面正文（留空使用内置默认；仅支持基础排版标签且无属性，其余内容自动转义）',
     multiline: true,
     maxLength: 4096,
   },
   'block_response:json_code': {
-    description: 'JSON 错误响应的错误码（留空使用内置默认 too_many_requests；仅允许字母数字与 _ . -）',
+    description:
+      'JSON 错误响应的错误码（留空使用内置默认 too_many_requests；仅允许字母数字与 _ . -）',
     maxLength: 128,
   },
   'block_response:json_message': {
-    description: 'JSON 错误响应的文案（留空使用内置默认「请求过于频繁，请稍后重试」）',
+    description:
+      'JSON 错误响应的文案（留空使用内置默认「请求过于频繁，请稍后重试」）',
     maxLength: 512,
   },
   // api_learning 组：学习采样达标条件（消费侧 server/internal/learningjobs/conditions.go，
   // 数值范围与其校验区间一致，越界值后端会回落默认并告警）
   'api_learning:min_valid_samples': {
-    description: '学习达标条件：有效样本数全局下限，与每个任务的样本目标取较大者',
+    description:
+      '学习达标条件：有效样本数全局下限，与每个任务的样本目标取较大者',
     numeric: true,
     min: 1,
     max: 1000000,
   },
   'api_learning:min_unique_ips': {
-    description: '学习达标条件：去重来源 IP 数下限，防止单一来源刷样本（0=不要求）',
+    description:
+      '学习达标条件：去重来源 IP 数下限，防止单一来源刷样本（0=不要求）',
     numeric: true,
     min: 0,
     max: 1000000,
   },
   'api_learning:min_unique_identities': {
-    description: '学习达标条件：去重身份数下限（0=不要求；身份指纹常缺失时建议保持 0）',
+    description:
+      '学习达标条件：去重身份数下限（0=不要求；身份指纹常缺失时建议保持 0）',
     numeric: true,
     min: 0,
     max: 1000000,
   },
   'api_learning:min_learning_duration_seconds': {
-    description: '学习达标条件：最短学习时长（秒，0=不要求；起点取首次落样时间）',
+    description:
+      '学习达标条件：最短学习时长（秒，0=不要求；起点取首次落样时间）',
     numeric: true,
     min: 0,
     max: 31536000,
@@ -97,13 +176,15 @@ const SETTING_META: Record<
     description: '记录请求头（敏感头自动掩码）',
   },
   'logging:capture_request_body': {
-    description: '记录请求体（敏感键值自动脱敏，超限截断）；开启会增加存储占用，建议排障时临时开启',
+    description:
+      '记录请求体（敏感键值自动脱敏，超限截断）；开启会增加存储占用，建议排障时临时开启',
   },
   'logging:capture_response_headers': {
     description: '记录响应头（敏感头自动掩码）',
   },
   'logging:capture_response_body': {
-    description: '记录响应体（仅文本类，超限截断）；开启会增加存储占用，建议排障时临时开启',
+    description:
+      '记录响应体（仅文本类，超限截断）；开启会增加存储占用，建议排障时临时开启',
   },
   'logging:body_limit_kb': {
     description: '单条日志请求/响应头体最大记录长度（KB），超出部分截断',
@@ -175,7 +256,8 @@ function splitSyslogAddress(value: string): { host: string; port: string } {
   if (m) return { host: m[1], port: m[2] }
   // 仅含一个冒号时按 host:port 拆分；多个冒号（裸 IPv6 等）视为无端口
   const idx = v.lastIndexOf(':')
-  if (idx >= 0 && v.indexOf(':') === idx) return { host: v.slice(0, idx), port: v.slice(idx + 1) }
+  if (idx >= 0 && v.indexOf(':') === idx)
+    return { host: v.slice(0, idx), port: v.slice(idx + 1) }
   return { host: v, port: '' }
 }
 
@@ -191,7 +273,8 @@ function validateSyslogHost(raw: string): string | null {
   const v = raw.trim()
   if (!v) return '请输入 syslog 服务器地址'
   if (/\s/.test(v)) return '服务器地址不能包含空白字符'
-  if (v.includes('://') || v.includes('/')) return '服务器地址不能包含协议或路径'
+  if (v.includes('://') || v.includes('/'))
+    return '服务器地址不能包含协议或路径'
   // 允许用户输入带方括号的 IPv6，校验前去掉
   const bare = v.startsWith('[') && v.endsWith(']') ? v.slice(1, -1) : v
   if (isValidIPv4(bare) || isValidIPv6(bare)) return null
@@ -219,13 +302,21 @@ function SettingGroupPanel({ group }: { group: string }) {
     queryKey: ['settings', group],
     queryFn: () => settingsApi.list(group),
   })
+  const visibleItems = (listQuery.data?.items ?? []).filter(
+    (item) =>
+      group !== 'gateway_runtime' ||
+      item.setting_key.startsWith('api_file_watermark_'),
+  )
 
   useEffect(() => {
     setDrafts({})
   }, [group])
 
   // 草稿统一按字符串存储（Switch/Input 同构），提交时按后端 value_type 还原 JSON 类型
-  const coerceValue = (item: SettingItem, raw: string): string | number | boolean => {
+  const coerceValue = (
+    item: SettingItem,
+    raw: string,
+  ): string | number | boolean => {
     if (item.value_type === 'boolean') return raw === 'true'
     if (item.value_type === 'integer') return Number(raw)
     return raw
@@ -263,7 +354,8 @@ function SettingGroupPanel({ group }: { group: string }) {
     },
   })
 
-  const draftValue = (item: SettingItem) => drafts[item.id] ?? item.setting_value
+  const draftValue = (item: SettingItem) =>
+    drafts[item.id] ?? item.setting_value
   const isDirty = (item: SettingItem) =>
     drafts[item.id] !== undefined && drafts[item.id] !== item.setting_value
 
@@ -276,12 +368,18 @@ function SettingGroupPanel({ group }: { group: string }) {
         message.error('请输入数值')
         return
       }
-      if ((meta.min !== undefined && n < meta.min) || (meta.max !== undefined && n > meta.max)) {
+      if (
+        (meta.min !== undefined && n < meta.min) ||
+        (meta.max !== undefined && n > meta.max)
+      ) {
         message.error(`取值需在 ${meta.min ?? '-∞'}~${meta.max ?? '+∞'} 之间`)
         return
       }
     }
-    if (item.setting_group === 'logging' && item.setting_key === 'syslog_address') {
+    if (
+      item.setting_group === 'logging' &&
+      item.setting_key === 'syslog_address'
+    ) {
       const { host, port } = splitSyslogAddress(draftValue(item))
       const hostError = validateSyslogHost(host)
       if (hostError) {
@@ -292,6 +390,37 @@ function SettingGroupPanel({ group }: { group: string }) {
       if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
         message.error('端口必须为 1-65535 的整数')
         return
+      }
+    }
+    if (group === 'gateway_runtime') {
+      if (
+        item.setting_key === 'api_file_watermark_enabled' &&
+        draftValue(item) === 'true'
+      ) {
+        const template = visibleItems.find(
+          (entry) => entry.setting_key === 'api_file_watermark_template',
+        )
+        if (!template || draftValue(template).trim() === '') {
+          message.error('启用水印前请先填写水印模板')
+          return
+        }
+      }
+      if (
+        item.setting_key === 'api_file_watermark_include_inline_html' &&
+        draftValue(item) === 'true'
+      ) {
+        const contentTypes = visibleItems.find(
+          (entry) => entry.setting_key === 'api_file_watermark_content_types',
+        )
+        const allowsHTML =
+          contentTypes !== undefined &&
+          draftValue(contentTypes)
+            .split(',')
+            .some((value) => value.trim().toLowerCase() === 'text/html')
+        if (!allowsHTML) {
+          message.error('内联 HTML 需将 text/html 加入 Content-Type 白名单')
+          return
+        }
       }
     }
     updateMutation.mutate(item)
@@ -308,10 +437,20 @@ function SettingGroupPanel({ group }: { group: string }) {
       return <Typography.Text>{value}</Typography.Text>
     }
     // syslog_address 存储契约仍是 host:port，前端拆为「服务器地址 + 端口」两个控件编辑
-    if (item.setting_group === 'logging' && item.setting_key === 'syslog_address') {
+    if (
+      item.setting_group === 'logging' &&
+      item.setting_key === 'syslog_address'
+    ) {
       const { host, port } = splitSyslogAddress(value)
       return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+          }}
+        >
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             服务器地址
           </Typography.Text>
@@ -329,7 +468,9 @@ function SettingGroupPanel({ group }: { group: string }) {
             min={1}
             max={65535}
             placeholder="1-65535"
-            onChange={(v) => setValue(joinSyslogAddress(host, v === null ? '' : String(v)))}
+            onChange={(v) =>
+              setValue(joinSyslogAddress(host, v === null ? '' : String(v)))
+            }
             style={{ width: 110 }}
           />
         </div>
@@ -396,8 +537,8 @@ function SettingGroupPanel({ group }: { group: string }) {
       render: (_, item) => (
         <div>
           <div style={{ color: 'rgba(0, 0, 0, 0.88)', fontWeight: 500 }}>
-            {SETTING_META[`${item.setting_group}:${item.setting_key}`]?.description ??
-              item.description}
+            {SETTING_META[`${item.setting_group}:${item.setting_key}`]
+              ?.description ?? item.description}
             {item.is_sensitive && <Tag style={{ marginLeft: 8 }}>敏感</Tag>}
           </div>
           <div style={{ marginTop: 4 }}>
@@ -430,7 +571,10 @@ function SettingGroupPanel({ group }: { group: string }) {
                 type="link"
                 size="small"
                 disabled={item.is_sensitive || !isDirty(item)}
-                loading={updateMutation.isPending && updateMutation.variables?.id === item.id}
+                loading={
+                  updateMutation.isPending &&
+                  updateMutation.variables?.id === item.id
+                }
                 onClick={() => handleSave(item)}
               >
                 保存
@@ -447,7 +591,11 @@ function SettingGroupPanel({ group }: { group: string }) {
         type="error"
         showIcon
         message="加载系统设置失败"
-        description={listQuery.error instanceof ApiError ? listQuery.error.message : undefined}
+        description={
+          listQuery.error instanceof ApiError
+            ? listQuery.error.message
+            : undefined
+        }
       />
     )
   }
@@ -470,6 +618,14 @@ function SettingGroupPanel({ group }: { group: string }) {
           message="自定义 CC 限速（429）/阻断时的响应页面与 JSON 错误文案，全部留空时使用内置默认。保存后需在「配置发布」执行发布才下发网关生效；HTML 正文仅保留基础排版标签（自动过滤脚本与属性），请求编号与 Retry-After 行为不变。"
         />
       )}
+      {group === 'software_bypass' && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="自动旁路优先保障业务连通性：任一资源超过阈值后，新请求将跳过全部检测与防护。CPU/内存需低于各自恢复阈值（触发值减 5 个百分点）且达到最短保持时间后恢复。保存后需在「配置发布」执行发布。"
+        />
+      )}
       {group === 'api_learning' && (
         <Alert
           type="info"
@@ -487,12 +643,20 @@ function SettingGroupPanel({ group }: { group: string }) {
           发送测试消息
         </Button>
       )}
+      {group === 'gateway_runtime' && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="水印用于外发内容溯源；默认关闭。启用前需配置模板，内联 HTML 还需显式加入 text/html；逐项保存后需在「配置发布」执行发布。"
+        />
+      )}
       <SmartTable<SettingItem>
         storageKey="system-settings"
         rowKey="id"
         loading={listQuery.isLoading}
         columns={columns}
-        dataSource={listQuery.data?.items}
+        dataSource={visibleItems}
         pagination={false}
         onRow={(record) => ({
           onDoubleClick: () => setDetailRecord(record),
@@ -558,7 +722,11 @@ function ApmSettingsPanel() {
         type="error"
         showIcon
         message="加载 APM 设置失败"
-        description={settingsQuery.error instanceof ApiError ? settingsQuery.error.message : undefined}
+        description={
+          settingsQuery.error instanceof ApiError
+            ? settingsQuery.error.message
+            : undefined
+        }
       />
     )
   }
@@ -567,8 +735,10 @@ function ApmSettingsPanel() {
   }
 
   // 显式清空（当前已配置界面覆盖时）= 提交 clickhouse_dsn:"" 回退环境变量，需二次确认
-  const clearingDsn = dsnTouched && dsnDraft === '' && settings.clickhouse_dsn_set
-  const dirty = enabledDraft !== null || (dsnTouched && dsnDraft !== '') || clearingDsn
+  const clearingDsn =
+    dsnTouched && dsnDraft === '' && settings.clickhouse_dsn_set
+  const dirty =
+    enabledDraft !== null || (dsnTouched && dsnDraft !== '') || clearingDsn
 
   const handleSave = () => {
     const body: UpdateApmSettingsBody = {}
@@ -597,20 +767,34 @@ function ApmSettingsPanel() {
         style={{ marginBottom: 16 }}
         message="界面设置优先于 .env 环境变量（APM_ENABLED / APM_CLICKHOUSE_DSN）；修改立即生效，无需重启。"
       />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 560 }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+          maxWidth: 560,
+        }}
+      >
         <div>
-          <div style={{ marginBottom: 8, fontWeight: 500 }}>启用 APM 业务性能监控</div>
+          <div style={{ marginBottom: 8, fontWeight: 500 }}>
+            启用 APM 业务性能监控
+          </div>
           <Switch
             checked={enabledDraft ?? settings.enabled}
             disabled={!canUpdate}
             onChange={(checked) => setEnabledDraft(checked)}
           />
-          <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+          <Typography.Text
+            type="secondary"
+            style={{ marginLeft: 8, fontSize: 12 }}
+          >
             立即生效，无需重启服务
           </Typography.Text>
         </div>
         <div>
-          <div style={{ marginBottom: 8, fontWeight: 500 }}>ClickHouse 连接串</div>
+          <div style={{ marginBottom: 8, fontWeight: 500 }}>
+            ClickHouse 连接串
+          </div>
           <Input.Password
             value={dsnDraft}
             allowClear
@@ -626,7 +810,14 @@ function ApmSettingsPanel() {
             }}
           />
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+          }}
+        >
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             总开关来源
           </Typography.Text>
@@ -638,7 +829,11 @@ function ApmSettingsPanel() {
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             ClickHouse 状态
           </Typography.Text>
-          {settings.ch_connected ? <Tag color="success">已连接</Tag> : <Tag>未连接</Tag>}
+          {settings.ch_connected ? (
+            <Tag color="success">已连接</Tag>
+          ) : (
+            <Tag>未连接</Tag>
+          )}
         </div>
         <div>
           {clearingDsn ? (
@@ -672,7 +867,12 @@ export default function SystemSettingsPage() {
         items={tabs.map((t) => ({
           key: t.key,
           label: t.label,
-          children: t.key === 'apm' ? <ApmSettingsPanel /> : <SettingGroupPanel group={t.key} />,
+          children:
+            t.key === 'apm' ? (
+              <ApmSettingsPanel />
+            ) : (
+              <SettingGroupPanel group={t.key} />
+            ),
         }))}
       />
     </Card>

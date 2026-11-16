@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # generate-sbom.sh —— 生成 docs/SBOM.spdx.json（SPDX 2.3）与 docs/SBOM.cyclonedx.json（CycloneDX 1.5）。
 # 数据来源：
-#   Go 依赖   server/go.mod + gateway/modules/jiuzhang_guard/go.mod（go list -m -json all）
+#   Go 依赖   server/go.mod + gateway/modules/jiuzhang_guard/go.mod + wdsp-agent/go.mod
+#             （go list -m -json all）
 #   Node 依赖 web/package.json 顶层 dependencies（npm ls --depth=0 --json，失败回退 package.json）
 #   核心组件  与 docs/DEPENDENCIES.md 一致的固化清单（Caddy/Coraza/CRS/PostgreSQL/Valkey/xcaddy 等，
-#             含 APM 数据面镜像 ClickHouse/otel-collector-contrib）
+#             含 APM 数据面、Kafka 及 Java 探针直接运行/编译组件；Java 仅测试依赖不进入 SBOM）
 # 输出确定性：组件按名称排序；时间戳取 git 最近提交时间（无 git 时用固定值）。
 # 退出码：0=成功 1=失败 2=用法错误
 set -euo pipefail
@@ -47,7 +48,7 @@ mkdir -p "$OUT_DIR"
 license_of() { # license_of NAME
   local n="$1"
   case "$n" in
-    github.com/caddyserver/*|github.com/valkey-io/*|echarts|core://caddy|core://coraza|core://coraza-caddy|core://owasp-crs|core://xcaddy|core://go-ftw) echo "Apache-2.0" ;;
+    github.com/caddyserver/*|github.com/valkey-io/*|echarts|core://caddy|core://coraza|core://coraza-caddy|core://owasp-crs|core://xcaddy|core://go-ftw|core://apache-kafka|core://byte-buddy|core://spring-framework|core://opentelemetry-java) echo "Apache-2.0" ;;
     github.com/ClickHouse/*|go.opentelemetry.io/*|core://clickhouse|core://otel-collector-contrib) echo "Apache-2.0" ;; # APM 阶段2 数据面（归档见 licenses/clickhouse*/ch-go/opentelemetry-*/otel-collector-contrib/）
     github.com/jackc/*|github.com/jung-kurt/*|github.com/gomutex/*|github.com/vicanso/*|github.com/wcharczuk/*|github.com/dustin/*|go.uber.org/*|react|react-dom|antd|@ant-design/*|zustand|axios|dayjs|vite|@vitejs/*|typescript|core://gofpdf) echo "MIT" ;;
     github.com/andybalholm/brotli|github.com/go-faster/city|github.com/paulmach/orb|github.com/segmentio/asm) echo "MIT" ;; # clickhouse-go 传递依赖（已逐一对照上游 LICENSE 核实）
@@ -91,6 +92,7 @@ collect_go() { # collect_go MODULE_DIR SOURCE
 
 collect_go "$REPO_ROOT/server" "go:server"
 collect_go "$REPO_ROOT/gateway/modules/jiuzhang_guard" "go:jiuzhang_guard"
+collect_go "$REPO_ROOT/wdsp-agent" "go:wdsp-agent"
 
 # ---- Node 顶层依赖 ----
 if [[ "$OFFLINE" != "true" ]] && command -v npm >/dev/null 2>&1 && [[ -d "$REPO_ROOT/web/node_modules" ]]; then
@@ -120,6 +122,10 @@ core://noto-fonts	main	core:report
 core://curl	8.21.0	core:tool
 core://clickhouse	25.8	core:apm
 core://otel-collector-contrib	0.154.0	core:apm
+core://apache-kafka	4.1.2	core:api-observation
+core://byte-buddy	1.17.8	java:wdsp-api-agent
+core://spring-framework	6.2.11	java:wdsp-api-agent-provided
+core://opentelemetry-java	1.44.0	java:wdsp-api-agent-provided
 EOF
 
 # ---- 规范化：去重（同名同版本）+ 排序 ----

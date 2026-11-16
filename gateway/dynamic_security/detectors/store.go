@@ -7,10 +7,11 @@ import (
 )
 
 // 检测器计数存储可插拔（docs/API_MICRO_MODELS.md §四第 9 项、docs/API_BEHAVIOR_ANALYSIS.md §八）：
-// behavior/ratelimit 滑窗、resource 对象游标、envanomaly 跨 IP 集合与并发计数、
-// webshellc2 加密 WebShell C&C 会话统计
-// 默认全部为进程内 LRU 实现（行为与既有版本逐字节一致）；装配层（jiuzhang_guard）
-// 可按 behavior_store 配置注入 Valkey 实现，消除多节点计数盲区。
+// behavior/apiwrite/credrate/objrate/tenrate/actionrate/grouprate 滑窗、quota_hour/quota_day 定窗配额、resource 对象游标与对象集合、
+// envanomaly 跨 IP 集合与并发计数、webshellc2 加密 WebShell C&C 会话统计。
+// 默认全部为进程内 LRU 实现；装配层（jiuzhang_guard）可按 behavior_store 配置
+// 为已接入的存储注入 Valkey 实现。对象集合窗口使用 Valkey 时为共享原子计数；
+// memory 模式或故障降级期间各节点独立计数，不宣称这些阶段的集群级视图。
 //
 // 实现方契约：存储实现负责自身故障策略（Fail-open 时自行降级并告警，见
 // jiuzhang_guard/behaviorstore），调用方不感知后端故障——检测语义不得因存储故障中断，
@@ -24,15 +25,30 @@ const (
 	MaxHistoryWindows = maxHistoryWindows
 	// MaxSpreadIPsPerWindow 单键单窗口 distinct IP 指纹集合上限（= maxSpreadIPsPerWindow）。
 	MaxSpreadIPsPerWindow = maxSpreadIPsPerWindow
-	// DefaultStoreCapacity 内存存储默认 LRU 容量（behavior/apiwrite/object/envanomaly/webshellc2 同为 10000）。
+	// DefaultStoreCapacity 内存存储默认 LRU 容量（滑窗、配额、对象及环境异常等存储同为 10000）。
 	DefaultStoreCapacity = 10000
+	// ObjectEnumerationWindow 对象枚举滚动窗口（首次访问起 60 秒，与自然分钟窗口不同）。
+	ObjectEnumerationWindow = objectEnumerationWindow
+	// ObjectEnumerationMinObjects 连续序列信号所需最少不同对象数。
+	ObjectEnumerationMinObjects = objectEnumerationMinObjects
+	// ObjectEnumerationMinSequence 连续序列信号所需最少递增步进数。
+	ObjectEnumerationMinSequence = objectEnumerationMinSequence
+	// ObjectEnumerationHighCardinality 异常对象集合独立告警阈值。
+	ObjectEnumerationHighCardinality = objectEnumerationHighCardinality
+	// ObjectEnumerationMaxObjects 每窗口最多保留的 HMAC 对象引用数。
+	ObjectEnumerationMaxObjects = objectEnumerationMaxObjects
 )
 
-// WindowStore 滑窗计数存储（behavior 行为基线 / apiwrite 写限速共用形态）。
+// WindowStore 滑窗计数存储（behavior/apiwrite/credrate/objrate/tenrate/actionrate/grouprate 共用自然分钟窗口形态）。
 type WindowStore interface {
 	// AddAndCount 记录一次命中，返回当前窗口计数与已完成窗口样本（升序，封顶 MaxHistoryWindows；
 	// 窗口按自然分钟对齐，空窗不补零——与 windowTracker 同一纪律）。
 	AddAndCount(key string) (count int, history []int)
+}
+
+// QuotaStore 小时/日配额定窗计数存储（跨窗重置，不保留历史样本）。
+type QuotaStore interface {
+	AddAndCount(key string) int
 }
 
 // ObjectCursorStore 对象 ID 游标存储（连续数字 ID 遍历识别）。
@@ -41,7 +57,13 @@ type ObjectCursorStore interface {
 	Consecutive(key string, id int64) bool
 }
 
-// IPSpreadStore 同凭据窗口 distinct IP 指纹集合存储。
+// ObjectEnumerationStore 可信主体对象集合窗口存储。ref/nextRef 必须是已完成
+// 域分隔的 HMAC，存储不得接收原始对象标识。默认实现为单节点有界内存窗口。
+type ObjectEnumerationStore interface {
+	ObserveObject(key, ref, nextRef string) ObjectEnumerationResult
+}
+
+// IPSpreadStore 同凭据/同设备窗口 distinct 指纹集合存储。
 type IPSpreadStore interface {
 	// AddDistinct 记录一次来源指纹，返回当前窗口 distinct 数（窗口滚动即重置）。
 	AddDistinct(key, member string) int
@@ -78,13 +100,21 @@ type FlowSessionStore interface {
 
 // StoreOverrides 检测器计数存储注入集合：nil 字段 = 该检测面维持进程内默认实现。
 type StoreOverrides struct {
-	BehaviorWindow    WindowStore            // behavior 行为基线滑窗
-	APIWriteWindow    WindowStore            // apiwrite 写限速滑窗（与行为滑窗键空间须隔离）
-	ObjectCursor      ObjectCursorStore      // resource 对象 ID 游标
-	IPSpread          IPSpreadStore          // 同凭据跨 IP 跳变集合
-	Concurrency       ConcurrencyStore       // 同凭据 in-flight 并发计数
-	WebShellC2Session WebShellC2SessionStore // webshellc2 加密 WebShell C&C 会话统计
-	FlowSession       FlowSessionStore       // flow 业务流程会话状态（§44）
+	BehaviorWindow       WindowStore            // behavior 行为基线滑窗
+	APIWriteWindow       WindowStore            // apiwrite 写限速滑窗（与行为滑窗键空间须隔离）
+	CredentialRateWindow WindowStore            // 凭据每分钟限速滑窗（独立键空间）
+	ObjectRateWindow     WindowStore            // 对象每分钟限速滑窗（独立键空间）
+	TenantRateWindow     WindowStore            // 可信租户每分钟限速滑窗（独立键空间）
+	ActionRateWindow     WindowStore            // 操作动作每分钟限速滑窗（独立键空间）
+	GroupRateWindow      WindowStore            // 业务功能接口组每分钟限速滑窗（独立键空间）
+	HourlyQuota          QuotaStore             // 身份+端点自然小时配额（独立键空间）
+	DailyQuota           QuotaStore             // 身份+端点 UTC 自然日配额（独立键空间）
+	ObjectCursor         ObjectCursorStore      // resource 对象 ID 游标
+	ObjectEnumeration    ObjectEnumerationStore // resource 可信主体对象集合窗口（默认单节点内存）
+	IPSpread             IPSpreadStore          // 同凭据跨 IP 跳变集合
+	Concurrency          ConcurrencyStore       // 同凭据 in-flight 并发计数
+	WebShellC2Session    WebShellC2SessionStore // webshellc2 加密 WebShell C&C 会话统计
+	FlowSession          FlowSessionStore       // flow 业务流程会话状态（§44）
 }
 
 // storeOverridesFor 读取管线绑定到本请求的存储选择。未绑定或显式绑定 nil
@@ -102,6 +132,10 @@ func storeOverridesFor(ctx *dsctx.RequestContext) *StoreOverrides {
 type memoryWindowStore struct{ t *windowTracker }
 
 func (m memoryWindowStore) AddAndCount(key string) (int, []int) { return m.t.add(key) }
+
+type memoryQuotaStore struct{ t *fixedWindowTracker }
+
+func (m memoryQuotaStore) AddAndCount(key string) int { return m.t.add(key) }
 
 type memoryObjectCursorStore struct{ t *objectTracker }
 
@@ -126,6 +160,15 @@ func NewMemoryWindowStore(capacity int, now func() time.Time) WindowStore {
 		capacity = DefaultStoreCapacity
 	}
 	return memoryWindowStore{t: newWindowTracker(capacity, now)}
+}
+
+// NewMemoryQuotaStore 构造进程内小时/日配额定窗存储（复用 fixedWindowTracker；
+// capacity≤0 取 DefaultStoreCapacity，now 语义同 NewMemoryWindowStore）。
+func NewMemoryQuotaStore(window time.Duration, capacity int, now func() time.Time) QuotaStore {
+	if capacity <= 0 {
+		capacity = DefaultStoreCapacity
+	}
+	return memoryQuotaStore{t: newFixedWindowTracker(window, capacity, now)}
 }
 
 // NewMemoryObjectCursorStore 构造进程内对象游标存储。
@@ -188,6 +231,71 @@ func apiWriteCounts(ctx *dsctx.RequestContext, key string) (int, []int) {
 	return defaultAPIWriteTracker.add(key)
 }
 
+// credentialRateCounts 凭据每分钟限速滑窗计数（quota.go 用）。
+func credentialRateCounts(ctx *dsctx.RequestContext, key string) (int, []int) {
+	if o := storeOverridesFor(ctx); o != nil && o.CredentialRateWindow != nil {
+		return o.CredentialRateWindow.AddAndCount(key)
+	}
+	return defaultCredentialRateTracker.add(key)
+}
+
+// objectRateCounts 对象每分钟限速滑窗计数（quota.go 用）。
+func objectRateCounts(ctx *dsctx.RequestContext, key string) (int, []int) {
+	if o := storeOverridesFor(ctx); o != nil && o.ObjectRateWindow != nil {
+		return o.ObjectRateWindow.AddAndCount(key)
+	}
+	return defaultObjectRateTracker.add(key)
+}
+
+// defaultTenantRateTracker 可信租户限速的进程内默认滑窗（LRU 定容，进程重启清零）。
+var defaultTenantRateTracker = newWindowTracker(DefaultStoreCapacity, nil)
+
+// tenantRateCounts 可信租户每分钟限速滑窗计数。
+func tenantRateCounts(ctx *dsctx.RequestContext, key string) (int, []int) {
+	if o := storeOverridesFor(ctx); o != nil && o.TenantRateWindow != nil {
+		return o.TenantRateWindow.AddAndCount(key)
+	}
+	return defaultTenantRateTracker.add(key)
+}
+
+// defaultActionRateTracker 操作动作限速的进程内默认滑窗（LRU 定容，进程重启清零）。
+var defaultActionRateTracker = newWindowTracker(DefaultStoreCapacity, nil)
+
+// actionRateCounts 操作动作每分钟限速滑窗计数（quota.go 用）。
+func actionRateCounts(ctx *dsctx.RequestContext, key string) (int, []int) {
+	if o := storeOverridesFor(ctx); o != nil && o.ActionRateWindow != nil {
+		return o.ActionRateWindow.AddAndCount(key)
+	}
+	return defaultActionRateTracker.add(key)
+}
+
+// defaultGroupRateTracker 业务功能接口组限速的进程内默认滑窗（LRU 定容，进程重启清零）。
+var defaultGroupRateTracker = newWindowTracker(DefaultStoreCapacity, nil)
+
+// groupRateCounts 业务功能接口组每分钟限速滑窗计数（quota.go 用）。
+func groupRateCounts(ctx *dsctx.RequestContext, key string) (int, []int) {
+	if o := storeOverridesFor(ctx); o != nil && o.GroupRateWindow != nil {
+		return o.GroupRateWindow.AddAndCount(key)
+	}
+	return defaultGroupRateTracker.add(key)
+}
+
+// hourlyQuotaCounts 自然小时配额定窗计数（quota.go 用）。
+func hourlyQuotaCounts(ctx *dsctx.RequestContext, key string) int {
+	if o := storeOverridesFor(ctx); o != nil && o.HourlyQuota != nil {
+		return o.HourlyQuota.AddAndCount(key)
+	}
+	return defaultHourlyQuotaTracker.add(key)
+}
+
+// dailyQuotaCounts UTC 自然日配额定窗计数（quota.go 用）。
+func dailyQuotaCounts(ctx *dsctx.RequestContext, key string) int {
+	if o := storeOverridesFor(ctx); o != nil && o.DailyQuota != nil {
+		return o.DailyQuota.AddAndCount(key)
+	}
+	return defaultDailyQuotaTracker.add(key)
+}
+
 // defaultMCPCallTracker MCP 调用预算进程内默认滑窗（mcpguard 用；
 // 与写限速同一自然分钟定窗语义——max_calls_per_minute 即当前窗口计数上限；
 // 多节点一致性以 behavior_store=valkey 共享存储为准，存储缺席按进程内如实披露）。
@@ -211,7 +319,7 @@ func objectConsecutive(ctx *dsctx.RequestContext, key string, id int64) bool {
 	return defaultObjectTracker.consecutive(key, id)
 }
 
-// ipSpreadAdd 跨 IP 集合记录（envanomaly.go 用）。
+// ipSpreadAdd distinct 指纹集合记录（envanomaly/group_control 用）。
 func ipSpreadAdd(ctx *dsctx.RequestContext, key, member string) int {
 	if o := storeOverridesFor(ctx); o != nil && o.IPSpread != nil {
 		return o.IPSpread.AddDistinct(key, member)

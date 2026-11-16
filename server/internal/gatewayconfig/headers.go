@@ -260,34 +260,53 @@ func pathRouteEntries(in GenerateInput, app AppData, hosts []string, publicPort 
 	return out
 }
 
-// buildChainHandles 构建除反代外的通用处理链（RequestID → guard → WAF → 安全响应头）。
-// 供默认路由与路径转发路由复用；反代由调用方按路由目标构建并追加。
-// BYPASS（数据透传）模式不注入 guard 与 waf 处理器，仅保留 RequestID、安全响应头与反代。
+// buildChainHandles 构建除反代外的通用处理链。软件旁路启用配置存在时，正常检测链与
+// 纯透传链在同一选择器内预编译，二者共用外层 reverse_proxy；超阈时不会经过 guard/WAF。
+// BYPASS（数据透传）模式的两条链均为纯透传，保持手工应急直通的绝对优先级。
 func buildChainHandles(in GenerateInput, app AppData, proxy mapT, publicPort int) []interface{} {
-	var handles []interface{}
-	// RequestID 请求头（供 WAF 日志与阻断页关联）；响应侧同步输出 X-Jiuzhang-Request-ID，
-	// 使正常响应（含 BYPASS 透传链）也携带请求 ID，便于客户端与日志对账。
-	handles = append(handles, mapT{
+	requestID := mapT{
 		"handler": "headers",
 		"request": mapT{"set": mapT{"X-Request-Id": []string{"{http.request.uuid}"}},
 			"delete": []string{}},
 		"response": mapT{"set": mapT{"X-Jiuzhang-Request-ID": []string{"{http.request.header.X-Request-Id}"}}},
-	})
+	}
+	normal := []interface{}{requestID}
+	bypass := []interface{}{requestID}
 	if app.ProtectionMode != applications.ModeBypass {
 		if in.Guard != nil {
-			handles = append(handles, buildGuardHandler(in.Guard, app, publicPort))
+			normal = append(normal, buildGuardHandler(in.Guard, app, publicPort))
 		}
 		ruleEngine := modeToRuleEngine[app.ProtectionMode]
 		if ruleEngine == "" {
 			ruleEngine = "DetectionOnly"
 		}
 		directives := buildWAFDirectivesWithPolicy(ruleEngine, app, in.Exceptions, in.CustomRules, app.RuleOverrideSecLang)
-		handles = append(handles, mapT{
+		normal = append(normal, mapT{
 			"handler":    "waf",
 			"directives": directives,
 		})
 	}
-	handles = append(handles, buildHeaderHandler(app.HeaderConfig))
-	handles = append(handles, proxy)
-	return handles
+	headerHandler := buildHeaderHandler(app.HeaderConfig)
+	normal = append(normal, headerHandler)
+	bypass = append(bypass, headerHandler)
+	if in.Guard != nil && in.Guard.SoftwareBypass != nil {
+		cfg := in.Guard.SoftwareBypass
+		selector := mapT{
+			"handler":                  "jiuzhang_software_bypass",
+			"app_id":                   app.AppID,
+			"node":                     in.Guard.GatewayNode,
+			"enabled":                  cfg.Enabled,
+			"cpu_threshold_percent":    cfg.CPUThresholdPercent,
+			"memory_threshold_percent": cfg.MemoryThresholdPercent,
+			"min_hold_seconds":         cfg.MinHoldSeconds,
+			"session_cookie_names":     cfg.SessionCookieNames,
+			"normal":                   mapT{"routes": []interface{}{mapT{"handle": normal}}},
+			"bypass":                   mapT{"routes": []interface{}{mapT{"handle": bypass}}},
+		}
+		return []interface{}{selector, proxy}
+	}
+	if app.ProtectionMode == applications.ModeBypass {
+		return append(bypass, proxy)
+	}
+	return append(normal, proxy)
 }

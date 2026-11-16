@@ -17,6 +17,7 @@ export const AI_TASK_TYPE_META: Record<string, { color: string; label: string }>
   DRAFT_CC_POLICY: { color: 'lime', label: '频率策略草稿' },
   DRAFT_CUSTOM_RULE: { color: 'lime', label: '自定义规则草稿' },
   REPORT_SUMMARY: { color: 'green', label: '报告总结' },
+  API_SECURITY_ANALYSIS: { color: 'purple', label: 'API 安全分析' },
   GENERAL_SECURITY_QA: { color: 'blue', label: '安全问答' },
 }
 
@@ -55,6 +56,17 @@ export const AI_DRAFT_STATUS_META: Record<string, { color: string; label: string
   REJECTED: { color: 'default', label: '已废弃' },
   EXPIRED: { color: 'default', label: '已过期' },
 }
+
+/** 草稿类型 → 采纳后人工创建/发布的对应业务页面（采纳不落配置，仅给跳转入口） */
+export const AI_DRAFT_TARGET_ROUTES: Record<string, { path: string; label: string }> = {
+  EXCEPTION: { path: '/exceptions', label: '例外策略' },
+  BLACKLIST: { path: '/access-rules', label: '访问控制（黑名单）' },
+  CC_POLICY: { path: '/rate-limit', label: '频率限制' },
+  CUSTOM_RULE: { path: '/custom-rules', label: '自定义规则' },
+}
+
+/** 草稿可被采纳/拒绝的状态（与后端 ai_recommendations 状态机一致） */
+export const AI_DRAFT_ACTIONABLE_STATUSES = ['DRAFT', 'PENDING_REVIEW']
 
 export const AI_PROMPT_TYPE_META: Record<string, { color: string; label: string }> = {
   SYSTEM: { color: 'geekblue', label: '系统' },
@@ -101,6 +113,7 @@ export const AI_AGENT_NAMES: Record<string, string> = {
   ops_diagnostic: '运维诊断智能体',
   report: '报告智能体',
   knowledge: '知识库智能体',
+  api_security: 'API 安全分析智能体',
 }
 
 export const AI_NOISE_SOURCE_META: Record<string, { color: string; label: string }> = {

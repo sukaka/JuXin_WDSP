@@ -17,9 +17,10 @@
 // 关联失败均可查询，不只 Warn）。联动失败不阻断入库与 202 响应。
 //
 // v2 联动语义：gRPC 端点协议类型由记录 grpc 子对象（可信协议元数据）决定为 GRPC，
-// 不统一写死 REST；未声明来源绑定的 v2 记录落 UNASSIGNED 待确认、不执行端点 upsert
+// 不统一写死 REST；分类按请求/响应可见证据产出 IsAPI/Confidence，不再统一写死
+// true/0.8；未声明来源绑定的 v2 记录落 UNASSIGNED 待确认、不执行端点 upsert
 // （不随意归入同名路径资产）；重复事件不触发联动、不扩大资产计数。v1 记录维持既有
-// 联动行为（REST、无绑定概念）——兼容性冻结。
+// 联动行为（REST、true/0.8、无绑定概念）——兼容性冻结。
 package agents
 
 import (
@@ -31,16 +32,20 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 	"github.com/jiuzhang-waf/server/internal/apiassets"
 )
 
 // machineHTTPMaxBody http 批量请求体上限（契约 §3/§1：每批序列化后 ≤ 8MB，含转义与包络）。
 const machineHTTPMaxBody = 8 << 20
 
-// agentDiscoveryConfidence Agent 旁路镜像流量建资产的置信度常量（命中时 apiassets
-// 取 GREATEST 不降级既有端点；低于人工确认口径 1.0，与网关观测同量级）。
+// agentDiscoveryConfidence v1 旁路流量建资产的兼容置信度（v1 契约冻结，维持既有口径）。
 const agentDiscoveryConfidence = 0.8
+
+// agentGRPCDiscoveryConfidence v2 gRPC 可信元数据建资产置信度；低于人工确认口径 1.0。
+const agentGRPCDiscoveryConfidence = 0.95
 
 // DiscoveryUpserter API 资产发现 upsert 入口（*apiassets.Store 实现——复用 apiassets
 // 既有从流量事件建资产入口；nil 时跳过联动，仅测试或装配缺失场景）。
@@ -110,6 +115,11 @@ func (h *MachineHandler) httpEventsV1(w http.ResponseWriter, r *http.Request, ag
 		items = append(items, httpAssetLinkItem{
 			Host: rec.Request.Host, Method: rec.Request.Method, URI: rec.Request.URI,
 			ProtocolType: "REST", SourceType: SourceTypePassiveHTTP1,
+			Confidence: agentDiscoveryConfidence, IsAPI: true,
+			Classification: classifier.Result{
+				IsAPI: true, Confidence: agentDiscoveryConfidence, Level: "LEGACY_V1",
+				Signals: []string{"legacy_v1_contract"}, Confidence100: 80,
+			},
 		})
 	}
 	h.linkHTTPAssets(r.Context(), agent.AgentID, items)
@@ -148,6 +158,7 @@ func (h *MachineHandler) httpEventsV2(w http.ResponseWriter, r *http.Request, ag
 	items := make([]httpAssetLinkItem, 0, len(acceptedIdx))
 	for _, i := range acceptedIdx {
 		rec := &req.Records[i]
+		classification := classifyHTTPAssetV2(rec)
 		item := httpAssetLinkItem{
 			Host: rec.Request.Host, Method: rec.Request.Method, URI: rec.Request.URI,
 			ProtocolType:   "REST",
@@ -155,6 +166,9 @@ func (h *MachineHandler) httpEventsV2(w http.ResponseWriter, r *http.Request, ag
 			SourceInstance: rec.SourceInstance,
 			SourceEpoch:    rec.SourceEpoch,
 			RequireBinding: true,
+			Confidence:     classification.Confidence,
+			IsAPI:          classification.IsAPI,
+			Classification: classification,
 		}
 		if rec.GRPC != nil {
 			item.ProtocolType = "GRPC" // 可信协议元数据（grpc 子对象），不写死 REST
@@ -174,12 +188,63 @@ func (h *MachineHandler) httpEventsV2(w http.ResponseWriter, r *http.Request, ag
 	})
 }
 
+// classifyHTTPAssetV2 按 v2 可见证据分类资产。响应缺失不推断非 API；
+// gRPC 由可信协议元数据确认，不解析 Protobuf 正文。
+func classifyHTTPAssetV2(rec *HTTPRecordV2) classifier.Result {
+	if rec.GRPC != nil {
+		return classifier.Result{
+			IsAPI: true, Confidence: agentGRPCDiscoveryConfidence,
+			Signals: []string{"grpc_metadata"}, Level: classifier.LevelConfirmedAPI,
+			Confidence100: 95,
+		}
+	}
+	ct := firstHTTPHeader(rec.Request.Headers, "content-type")
+	parsed := &parser.Parsed{
+		Method:      rec.Request.Method,
+		RawPath:     rawHTTPPath(rec.Request.URI),
+		ContentType: ct,
+		IsJSON:      strings.Contains(strings.ToLower(ct), "json"),
+		Headers:     map[string]string{},
+	}
+	if accept := firstHTTPHeader(rec.Request.Headers, "accept"); accept != "" {
+		parsed.Headers["accept"] = accept
+	}
+	var response *classifier.ResponseEvidence
+	if rec.Response != nil {
+		response = &classifier.ResponseEvidence{
+			Status:      rec.Response.Status,
+			ContentType: firstHTTPHeader(rec.Response.Headers, "content-type"),
+			Truncated:   rec.Response.BodyQuality.Truncated,
+		}
+	}
+	return classifier.ClassifyWithResponse(parsed, response)
+}
+
+func firstHTTPHeader(headers HTTPHeaderValues, name string) string {
+	for key, values := range headers {
+		if strings.EqualFold(key, name) && len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
+}
+
+func rawHTTPPath(uri string) string {
+	if path, _, ok := strings.Cut(uri, "?"); ok {
+		return path
+	}
+	return uri
+}
+
 // httpAssetLinkItem 资产联动归一输入（v1/v2 共用；去重键含 Host——v2 契约 §5.1，
 // 不同 Host/应用不因 method+path 相同而合并）。
 type httpAssetLinkItem struct {
 	Host           string
 	Method         string
 	URI            string
+	Confidence     float64
+	IsAPI          bool
+	Classification classifier.Result
 	ProtocolType   string // REST/GRPC（v2 按 grpc 子对象；v1 恒 REST）
 	SourceType     string
 	SourceInstance string
@@ -214,6 +279,11 @@ func (h *MachineHandler) linkHTTPAssets(ctx context.Context, agentID uuid.UUID, 
 			AgentID: agentID, Host: item.Host, Method: item.Method, PathTemplate: tpl,
 			SourceType: item.SourceType, SourceInstance: item.SourceInstance, SourceEpoch: item.SourceEpoch,
 			ApplicationBindingID: item.BindingID, BindingVersion: item.BindingVersion,
+			Classification: &HTTPAssetClassification{
+				IsAPI: item.Classification.IsAPI, Confidence: item.Classification.Confidence,
+				Level: item.Classification.Level, Signals: append([]string(nil), item.Classification.Signals...),
+				ClassifiedAt: now,
+			},
 			Now: now,
 		}
 		switch {
@@ -228,8 +298,8 @@ func (h *MachineHandler) linkHTTPAssets(ctx context.Context, agentID uuid.UUID, 
 					PathTemplate:         tpl,
 					ApplicationBindingID: item.BindingID,
 					Host:                 item.Host,
-					Confidence:           agentDiscoveryConfidence,
-					IsAPI:                true,
+					Confidence:           item.Confidence,
+					IsAPI:                item.IsAPI,
 					ProtocolType:         item.ProtocolType,
 				})
 				switch {

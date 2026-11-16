@@ -20,8 +20,10 @@ import (
 
 // Handler API 接口管理。
 type Handler struct {
-	store  Repository
-	audits *audits.Service
+	store        Repository
+	audits       *audits.Service
+	exportModels ExportModelReader
+	exportExtras ExportExtrasProvider
 }
 
 // NewHandler 创建处理器（构造注入审计服务，语义同 customrules）。
@@ -30,13 +32,22 @@ func NewHandler(store Repository, audit *audits.Service) *Handler {
 }
 
 // RegisterRoutes 注册任务书 51.1 / 51.2 接口组（统一 /api/v1/api-security 前缀，
-// 权限点与任务书五十二章一致）。
-func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h *Handler) {
+// 权限点与任务书五十二章一致）。exportMiddleware 可选，仅包裹两个导出路由。
+func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h *Handler, exportMiddleware ...func(http.Handler) http.Handler) {
+	limiter := func(next http.Handler) http.Handler { return next }
+	if len(exportMiddleware) > 0 && exportMiddleware[0] != nil {
+		limiter = exportMiddleware[0]
+	}
+	exportRoute := func(handler http.Handler) http.Handler {
+		return authz(limiter(middleware.RequirePermission("api_asset.export")(handler)))
+	}
 	mux.Handle("GET /api/v1/api-security/endpoints", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.List))))
+	mux.Handle("GET /api/v1/api-security/endpoints/export", exportRoute(http.HandlerFunc(h.ExportList)))
 	mux.Handle("GET /api/v1/api-security/endpoints/site-summary", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.SiteSummary))))
 	mux.Handle("GET /api/v1/api-security/endpoints/directory-tree", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.DirectoryTree))))
 	mux.Handle("POST /api/v1/api-security/endpoints/confirm", authz(middleware.RequirePermission("api_asset.confirm")(http.HandlerFunc(h.ConfirmBatch))))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.Get))))
+	mux.Handle("GET /api/v1/api-security/endpoints/{id}/export", exportRoute(http.HandlerFunc(h.ExportDetail)))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}/traffic-trend", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.TrafficTrend))))
 	mux.Handle("PATCH /api/v1/api-security/endpoints/{id}", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Update))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/merge", authz(middleware.RequirePermission("api_asset.merge")(http.HandlerFunc(h.Merge))))
@@ -46,6 +57,7 @@ func RegisterRoutes(mux *http.ServeMux, authz func(http.Handler) http.Handler, h
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/deprecate", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Deprecate))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/restore", authz(middleware.RequirePermission("api_asset.edit")(http.HandlerFunc(h.Restore))))
 	mux.Handle("GET /api/v1/api-security/service-assets", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.ServiceAssets))))
+	mux.Handle("GET /api/v1/api-security/applications/{id}/asset-value", authz(middleware.RequirePermission("api_asset.read")(http.HandlerFunc(h.ApplicationAssetValue))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/learning/start", authz(middleware.RequirePermission("api_learning.start")(http.HandlerFunc(h.LearningStart))))
 	mux.Handle("POST /api/v1/api-security/endpoints/{id}/learning/stop", authz(middleware.RequirePermission("api_learning.stop")(http.HandlerFunc(h.LearningStop))))
 	mux.Handle("GET /api/v1/api-security/endpoints/{id}/learning/status", authz(middleware.RequirePermission("api_learning.read")(http.HandlerFunc(h.LearningStatus))))
@@ -174,7 +186,7 @@ func (h *Handler) ConfirmBatch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Get GET /api/v1/api-security/endpoints/{id}（含 api_assets 扩展字段）
+// Get GET /api/v1/api-security/endpoints/{id}（含 api_assets 扩展字段与近 7 天日均调用量）
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	id, ok := parsePathID(w, r)
 	if !ok {
@@ -195,7 +207,19 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e.Asset = asset
-	response.JSON(w, r, http.StatusOK, map[string]any{"endpoint": e})
+	now := time.Now().UTC()
+	buckets, err := h.store.TrafficBuckets(r.Context(), id, now.Add(-valueTrafficWindowDays*24*time.Hour), now)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	var windowTotal int64
+	for _, c := range buckets {
+		windowTotal += c
+	}
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"endpoint": e, "daily_requests": windowTotal / valueTrafficWindowDays,
+	})
 }
 
 // TrafficTrend GET /api/v1/api-security/endpoints/{id}/traffic-trend?range=1h|24h|7d
@@ -233,8 +257,7 @@ func (h *Handler) TrafficTrend(w http.ResponseWriter, r *http.Request) {
 }
 
 // Update PATCH /api/v1/api-security/endpoints/{id}
-// 编辑 api_assets：purpose/exposure/owner/tags/business_type（全量替换；
-// business_type 空值归一 OTHER，枚举校验，设计 #12.1）。
+// 编辑 api_assets 资产档案（AssetProfile 全量替换；枚举应用层校验，设计 #12.1 + 迁移 000191）。
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	id, ok := parsePathID(w, r)
@@ -242,11 +265,18 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Purpose      string   `json:"purpose"`
-		Exposure     string   `json:"exposure"`
-		Owner        string   `json:"owner"`
-		Tags         []string `json:"tags"`
-		BusinessType string   `json:"business_type"`
+		Purpose        string   `json:"purpose"`
+		Exposure       string   `json:"exposure"`
+		Owner          string   `json:"owner"`
+		Tags           []string `json:"tags"`
+		BusinessType   string   `json:"business_type"`
+		Organization   string   `json:"organization"`
+		BusinessSystem string   `json:"business_system"`
+		TechnicalOwner string   `json:"technical_owner"`
+		DataOwner      string   `json:"data_owner"`
+		DataLevel      string   `json:"data_level"`
+		APILevel       string   `json:"api_level"`
+		AuthType       string   `json:"auth_type"`
 	}
 	if err := response.DecodeJSON(w, r, &req, 8192); err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
@@ -254,9 +284,15 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Purpose = strings.TrimSpace(req.Purpose)
 	req.Owner = strings.TrimSpace(req.Owner)
+	req.Organization = strings.TrimSpace(req.Organization)
+	req.BusinessSystem = strings.TrimSpace(req.BusinessSystem)
+	req.TechnicalOwner = strings.TrimSpace(req.TechnicalOwner)
+	req.DataOwner = strings.TrimSpace(req.DataOwner)
 	req.Exposure = strings.ToUpper(strings.TrimSpace(req.Exposure))
 	req.BusinessType = NormalizeBusinessType(req.BusinessType)
-	if req.Purpose == "" && req.Exposure == "" && req.Owner == "" && req.Tags == nil && req.BusinessType == "OTHER" {
+	if req.Purpose == "" && req.Exposure == "" && req.Owner == "" && req.Tags == nil && req.BusinessType == "OTHER" &&
+		req.Organization == "" && req.BusinessSystem == "" && req.TechnicalOwner == "" && req.DataOwner == "" &&
+		req.DataLevel == "" && req.APILevel == "" && req.AuthType == "" {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求体不能为空")
 		return
 	}
@@ -271,9 +307,11 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			"无效的业务类型（LOGIN/REGISTER/PASSWORD_RESET/SMS/EMAIL/ORDER/PAYMENT/EXPORT/DOWNLOAD/SEARCH/QUERY_PERSONAL_DATA/AI_INFERENCE/OTHER）")
 		return
 	}
-	if len(req.Purpose) > 128 || len(req.Owner) > 128 {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "purpose/owner 长度不能超过 128")
-		return
+	for _, v := range []string{req.Purpose, req.Owner, req.Organization, req.BusinessSystem, req.TechnicalOwner, req.DataOwner} {
+		if len(v) > 128 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "档案文本字段长度不能超过 128")
+			return
+		}
 	}
 	if len(req.Tags) > 32 {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "标签数量不能超过 32")
@@ -284,6 +322,16 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "标签不能为空且长度不能超过 64")
 			return
 		}
+	}
+	profile, err := normalizeAssetProfile(AssetProfile{
+		Purpose: req.Purpose, Exposure: req.Exposure, Owner: req.Owner, Tags: req.Tags, BusinessType: req.BusinessType,
+		Organization: req.Organization, BusinessSystem: req.BusinessSystem,
+		TechnicalOwner: req.TechnicalOwner, DataOwner: req.DataOwner,
+		DataLevel: req.DataLevel, APILevel: req.APILevel, AuthType: req.AuthType,
+	})
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
 	}
 	e, err := h.store.GetByID(r.Context(), id)
 	if errors.Is(err, ErrNotFound) {
@@ -299,7 +347,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
-	asset, err := h.store.UpsertAsset(r.Context(), id, req.Purpose, req.Exposure, req.Owner, req.Tags, req.BusinessType)
+	asset, err := h.store.UpsertAsset(r.Context(), id, profile)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
@@ -801,6 +849,9 @@ func assetSummary(a *Asset) string {
 		"purpose": a.Purpose, "exposure": a.Exposure,
 		"owner": a.Owner, "tags": a.Tags,
 		"business_type": a.BusinessType,
+		"organization":  a.Organization, "business_system": a.BusinessSystem,
+		"technical_owner": a.TechnicalOwner, "data_owner": a.DataOwner,
+		"data_level": a.DataLevel, "api_level": a.APILevel, "auth_type": a.AuthType,
 	})
 }
 

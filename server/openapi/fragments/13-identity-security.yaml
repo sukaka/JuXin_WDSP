@@ -56,6 +56,65 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalError' }
 
+  /security/identities/{id}/block:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 身份 ID
+    post:
+      operationId: secIdentityBlock
+      tags: [security-identities]
+      summary: 手工封禁客户身份
+      description: >-
+        将 NORMAL 身份事务性切换为 BLOCKED，reason 必填且不超过 512 字符；重复 block 幂等返回
+        changed=false，不覆盖首次封禁原因，也不重复审计或发布。真实状态迁移记录 HIGH 审计并触发整站发布，
+        审计不包含 identity_key 或 reason。权限：`security_identities.block`（仅 SYSTEM_ADMIN/SECURITY_ADMIN）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecIdentityBlockRequest' }
+      responses:
+        '200':
+          description: 当前身份状态及本次是否发生状态迁移
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecIdentityTransitionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /security/identities/{id}/unblock:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: 身份 ID
+    post:
+      operationId: secIdentityUnblock
+      tags: [security-identities]
+      summary: 手工解封客户身份
+      description: >-
+        将 BLOCKED 身份事务性切换为 NORMAL，请求体必须为空；重复 unblock 幂等返回 changed=false，
+        不重复审计或发布。真实状态迁移记录 HIGH 审计并触发整站发布，回滚按当前状态重建 api_identity_blocks，
+        不会误封 NORMAL。权限：`security_identities.block`（仅 SYSTEM_ADMIN/SECURITY_ADMIN）
+      responses:
+        '200':
+          description: 当前身份状态及本次是否发生状态迁移
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecIdentityTransitionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
   /security/identities/{id}/behavior:
     parameters:
       - name: id
@@ -221,10 +280,35 @@ components:
         device_type: { type: string, description: 设备类型 }
         risk_score: { type: integer, description: 风险分（0-100） }
         risk_level: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL], description: 风险等级 }
-        status: { type: string, description: 身份状态 }
+        status: { type: string, enum: [NORMAL, BLOCKED], description: 身份状态 }
         request_count: { type: integer, description: 累计请求数 }
+        blocked_reason: { type: string, description: 首次封禁原因（空串表示未封禁） }
+        blocked_by: { type: string, format: uuid, nullable: true, description: 封禁操作者用户 ID }
+        blocked_at: { type: string, format: date-time, nullable: true, description: 首次封禁时间 }
+        unblocked_by: { type: string, format: uuid, nullable: true, description: 最近解封操作者用户 ID }
+        unblocked_at: { type: string, format: date-time, nullable: true, description: 最近解封时间 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    SecIdentityBlockRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: 封禁原因（去首尾空白后必填；不写入操作审计）
+
+    SecIdentityTransitionResponse:
+      type: object
+      required: [identity, changed]
+      properties:
+        identity: { $ref: '#/components/schemas/SecIdentity' }
+        changed:
+          type: boolean
+          description: 本次请求是否发生真实状态迁移；重复 block/unblock 为 false
 
     SecIdentityIPHistory:
       type: object

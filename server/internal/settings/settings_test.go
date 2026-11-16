@@ -117,6 +117,43 @@ func TestAPIRateLimitKeysAllowed(t *testing.T) {
 	}
 }
 
+func TestCredentialRatePerMinuteSetting(t *testing.T) {
+	const key = "gateway_runtime:credential_rate_per_minute"
+	if !AllowedSettingKeys[key] {
+		t.Fatalf("%s 未登记 AllowedSettingKeys", key)
+	}
+	if isSensitiveSetting("gateway_runtime", "credential_rate_per_minute", false) {
+		t.Fatal("credential rate must not be sensitive")
+	}
+	for _, tc := range []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "空串", value: `""`},
+		{name: "空白", value: `" \t "`},
+		{name: "零", value: `"0"`},
+		{name: "正数", value: `"120"`},
+		{name: "带空白正数", value: `" 60 "`},
+		{name: "负数", value: `"-1"`, wantErr: true},
+		{name: "非数字", value: `"many"`, wantErr: true},
+		{name: "浮点", value: `"1.5"`, wantErr: true},
+		{name: "指数", value: `"1e2"`, wantErr: true},
+		{name: "JSON 数值", value: `60`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value := json.RawMessage(tc.value)
+			err := validateValueType("string", value)
+			if err == nil {
+				err = validateValueRange("gateway_runtime", "credential_rate_per_minute", "string", value)
+			}
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validation error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestNetworkServerSettings 节点 DNS/NTP 服务器设置（迁移 000162 种子）回归：
 // 两键均可经设置接口修改；逗号分隔主机列表校验（去空白去空项、每项合法 IP 或
 // 主机名、≤4 项、总长 ≤255）；空串合法（= 继承宿主机现状不下发）。
@@ -161,6 +198,78 @@ func TestNetworkServerSettings(t *testing.T) {
 	}
 	if err := validateServerList("network", "dns_servers", "integer", json.RawMessage(`"a;b"`)); err != nil {
 		t.Errorf("非 string 类型不应校验: %v", err)
+	}
+}
+
+// TestExposureEngineSettings WDSP 暴露面判定引擎设置（迁移 000190 种子）回归：
+// 五键均登记白名单且非敏感；数值键区间校验；partner_egress_cidrs CIDR 列表校验；
+// public_dns_servers 走主机列表校验（与 network 组同口径）。
+func TestExposureEngineSettings(t *testing.T) {
+	for _, key := range []string{
+		"observation_days", "partner_egress_cidrs", "public_dns_servers", "min_requests", "min_days",
+	} {
+		if !AllowedSettingKeys["exposure_engine:"+key] {
+			t.Errorf("exposure_engine:%s 未登记 AllowedSettingKeys", key)
+		}
+		if isSensitiveSetting("exposure_engine", key, false) {
+			t.Errorf("exposure_engine:%s 不应按敏感设置处理", key)
+		}
+	}
+	// 数值区间
+	for _, c := range []struct {
+		key     string
+		value   string
+		wantErr bool
+	}{
+		{"observation_days", "7", false},
+		{"observation_days", "0", true},
+		{"observation_days", "31", true},
+		{"min_requests", "50", false},
+		{"min_requests", "0", true},
+		{"min_days", "2", false},
+		{"min_days", "-1", true},
+	} {
+		err := validateValueRange("exposure_engine", c.key, "integer", json.RawMessage(c.value))
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s=%s: validateValueRange err = %v, wantErr = %v", c.key, c.value, err, c.wantErr)
+		}
+	}
+	// CIDR 列表
+	for _, c := range []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"单个 CIDR", `"203.0.113.0/24"`, false},
+		{"多个含空白与空项", `" 203.0.113.0/24, ,2001:db8::/32 ,"`, false},
+		{"空串（不启用）", `""`, false},
+		{"裸 IP 非法（须带前缀）", `"203.0.113.1"`, true},
+		{"非法前缀长度", `"10.0.0.0/33"`, true},
+		{"非 CIDR 字符串", `"abc"`, true},
+		{"值非字符串", `123`, true},
+	} {
+		err := validateCIDRList("exposure_engine", "partner_egress_cidrs", "string", json.RawMessage(c.value))
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: validateCIDRList err = %v, wantErr = %v", c.name, err, c.wantErr)
+		}
+	}
+	// 超项数上限
+	tooMany := make([]string, 0, 33)
+	for i := 0; i < 33; i++ {
+		tooMany = append(tooMany, "10.0.0.0/8")
+	}
+	if err := validateCIDRList("exposure_engine", "partner_egress_cidrs", "string",
+		json.RawMessage(`"`+strings.Join(tooMany, ",")+`"`)); err == nil {
+		t.Error("33 项 CIDR 应超上限报错")
+	}
+	// public_dns_servers 走主机列表校验（CIDR 不允许）
+	if err := validateServerList("exposure_engine", "public_dns_servers", "string",
+		json.RawMessage(`"223.5.5.5, 8.8.8.8"`)); err != nil {
+		t.Errorf("public_dns_servers 合法列表不应报错: %v", err)
+	}
+	if err := validateServerList("exposure_engine", "public_dns_servers", "string",
+		json.RawMessage(`"8.8.8.8/24"`)); err == nil {
+		t.Error("public_dns_servers 含 CIDR 应报错")
 	}
 }
 
