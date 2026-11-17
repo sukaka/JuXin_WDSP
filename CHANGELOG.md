@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-17
+
+### 新增
+
+- **复杂对象授权关系**：支持 `OWNER` 与 `SHARED_WITH` 的 `ANY_OF` 组合关系，贯通授权向导、快照发布、网关决策、能力门和回滚校验，并补充共享关系迁移与接口回归。
+- **身份风险挑战**：风险策略新增 CHALLENGE 处置，由 Bot 步骤消费请求内待挑战事实；OBSERVE 不实断，只有实际返回挑战页才记录 `challenged`，发布能力门阻止旧网关误载。
+- **数据流证据与内外网边界**：补充运行时事件 Trace 关联和降级表达，按独立业务系统展示 API 调用与敏感字段；外网到内网依据地址范围和客户端来源证据展示，证据不足时明确标记边界未知。
+
+### 修复与加固
+
+- **Caddy 低端口监听**：新增可审计启动降权器，最终 Caddy 以 UID/GID 1000 运行，仅保留 ambient `NET_BIND_SERVICE`；Compose 保持 `cap_drop=ALL` 与 `no-new-privileges`，支持现场阈值 1024 下直接监听 82 端口。
+- **发布流量验证**：改用独立精确端点 `/_wdsp/internal/v1/publish-smoke`，每次发布生成独立 HMAC 并绑定站点、发布 ID、nonce 和时效，不再依赖 Bot 墓碑；普通源站 404、错误 Host 和无效签名继续失败回滚。
+- **升级与回滚**：完整包升级支持显式 `--new-compose-file`，旧镜像回滚使用一次性 legacy 配置；gateway 与 netmgrd 同次重建，镜像与 Compose 启动契约不符时在 retag 前拒绝。
+
+### 交付与验证
+
+- 完整运行包纳入 containerops 镜像，正式模式强制 Ed25519 签名、内容扫描、哈希与 RPM 校验；development 包必须显式声明，不能用于生产。
+- 真实 Caddy、Publisher、PostgreSQL 与源站链路验证 Bot 未配置/RELEASED 发布成功、探针不进源站、异常回滚和不可达降级；低端口测试在隔离网络命名空间固定阈值 1024，并复现旧镜像权限失败。
+- 兆芯 openEuler 实机的首次安装、1.3.0 升级/回滚、systemd、firewalld 与生产性能仍须在现场验收，不以 macOS 容器结果替代。
+- 全仓回归中，未修改的 `gateway/tproxyd` `TestRelayActivityRenewsIdleTimeout`、`gateway/modules/jiuzhang_guard/behaviorstore` 真实 Valkey 集成用例（EOF/计数不符）与 `server/internal/apifiles` `TestFileAssetLineage` 仍失败，需独立修复；不将全仓测试结果记为全绿，本次变更相关包测试另行逐项验收。
+
 ## [1.4.0] - 2026-11-16
 
 ### 新增与修复

@@ -27,7 +27,7 @@
 
 ## 请求处理顺序（网关）
 
-接收请求 → 生成 Request ID → 真实客户端 IP 识别（可信代理判断、伪造检测）→ JWT 信任链验证（WDSP，`jwt_trust` 配置缺省=关闭；真实 IP 改写后纯本地验证、热路径零网络 IO，结果入请求上下文）→ 身份解析与行为观测（Identity + Behavior，可选，`identity_behavior` 配置缺省=关闭，仅观测不拦截；消费 JWT VERIFIED 可信主体信号但不改 identity_key/identity_type 语义）→ 身份手工封禁（`api_identity_blocks` 名单内身份键优先403，随后移除即放行）→ 保护地址 → 人工临时封禁 → IP 白名单 → IP 黑名单 → L7 访问控制（首中即停）→ 自动临时封禁 → 身份风险策略处置（Risk Engine，`risk_policy` 配置缺省=关闭，OBSERVE 只记录不实断，PROTECT 达阈 403/429）→ 授权配额全局限速（可选，默认关闭）→ CC 频率限制 → Bot 挑战判定（WDSP P1-02，`bot_policy` 配置缺省=OFF；OBSERVE 只记录不实断，PROTECT 对合格的 HTTPS GET 浏览器文档导航签发 JS 挑战；保护地址/白名单/L7 allow 不跳过 Bot；保留命名空间 `/_wdsp/bot/v1/` 在本步骤最前置本地处理，verify 固定协议端点与 OFF 墓碑 404/405 均不反向代理）→ API 动态防护管线（WDSP，可选，默认关闭；入口处执行 JWT 强制处置：PROTECT 下 INVALID/缺必需 Bearer → 401 带规范 Bearer challenge，UNAVAILABLE → 503 不伪装 Token 错误，白名单/L7 allow 不绕过）→ 请求大小及协议检查 → Coraza/CRS 攻击检测 → 反向代理到源站 → 返回响应 → 记录访问日志和安全事件
+接收请求 → 生成 Request ID → 真实客户端 IP 识别（可信代理判断、伪造检测）→ JWT 信任链验证（WDSP，`jwt_trust` 配置缺省=关闭；真实 IP 改写后纯本地验证、热路径零网络 IO，结果入请求上下文）→ 身份解析与行为观测（Identity + Behavior，可选，`identity_behavior` 配置缺省=关闭，仅观测不拦截；消费 JWT VERIFIED 可信主体信号但不改 identity_key/identity_type 语义）→ 身份手工封禁（`api_identity_blocks` 名单内身份键优先403，随后移除即放行）→ 保护地址 → 人工临时封禁 → IP 白名单 → IP 黑名单 → L7 访问控制（首中即停）→ 自动临时封禁 → 身份风险策略处置（Risk Engine，`risk_policy` 配置缺省=关闭，OBSERVE 只记录不实断，PROTECT 达阈 403/429；可选 CHALLENGE 只登记待挑战，由后续 Bot 步骤执行，阈值默认 0 关闭）→ 授权配额全局限速（可选，默认关闭）→ CC 频率限制 → 发布冒烟精确端点（`/_wdsp/internal/v1/publish-smoke`，每次发布独立 HMAC，本地应答且绝不进源站，独立于 Bot 配置/保留状态）→ Bot 挑战判定（WDSP P1-02，`bot_policy` 配置缺省=OFF；OBSERVE 只记录不实断，PROTECT 对合格的 HTTPS GET 浏览器文档导航签发 JS 挑战；保护地址/白名单/L7 allow 不跳过 Bot；Bot 保留命名空间 `/_wdsp/bot/v1/` 在发布探针之后、Bot 业务判定之前本地处理，verify 固定协议端点与 OFF 墓碑 404/405 均不反向代理）→ API 动态防护管线（WDSP，可选，默认关闭；入口处执行 JWT 强制处置：PROTECT 下 INVALID/缺必需 Bearer → 401 带规范 Bearer challenge，UNAVAILABLE → 503 不伪装 Token 错误，白名单/L7 allow 不绕过）→ 请求大小及协议检查 → Coraza/CRS 攻击检测 → 反向代理到源站 → 返回响应 → 记录访问日志和安全事件
 
 以上为 `jiuzhang_guard` 模块真实实现顺序（gateway/modules/jiuzhang_guard/module.go `ServeHTTP`）：JWT 信任链由 `gateway/modules/jiuzhang_guard/jwt_trust.go` 挂接（验证点在真实 IP 改写后、身份观测前；强制处置点在 apiprotect.go `serveNext` 统一放行出口，事件落 access_control_events 与 api_runtime_events）；身份解析与行为观测由 `gateway/modules/jiuzhang_guard/identitybehavior/` 在真实 IP 改写后挂接（包装 ResponseWriter 采集状态码，fail-open，任何异常不影响请求；JWT 验证/执行不经过观测的 fail-open 分支）；Bot 挑战判定由 `gateway/modules/jiuzhang_guard/bot_step.go` 挂接（四个放行出口统一经 `serveNextViaBot`：保护地址/白名单/L7 allow 直达分支与常规 CC 后路径；挑战服务在 `botchallenge/`，信号评估只读消费身份行为窗口计数 `identitybehavior.PeekSnapshot`，不记账）；身份手工封禁由 `gateway/modules/jiuzhang_guard/apiidentityblock.go` 在身份观测后、保护地址前执行（`api_identity_blocks` 名单命中即 403，不经保护地址/白名单/Bot/API 后续放行出口）；人工临时封禁优先于白名单；白名单与 L7 allow 命中跳过黑名单、自动封禁与 CC，但不绕过 WAF、API 动态防护、Bot 挑战与 JWT PROTECT（安全底线）。
 
@@ -142,7 +142,7 @@ Caddy 中间件顺序必须经过集成测试验证，不得凭经验随意调�
 - `.gitignore` 必须排除依赖目录、编译产物、`.env`、凭据和个人 IDE 配置；不得把秘密提交到仓库。
 - 目标仓库：`https://github.com/sukaka/JuXin_WDSP.git`。是否提交、合并、打标签和推送仍以用户当次明确指令为准，不因日常修改自动执行。
 - 用户说「推送」时：先按本次改动类型确定新版本号，更新 CHANGELOG.md（从 Unreleased 归入新版本节），打 tag `wdsp-vX.Y.Z`，再 `git push origin` 分支与 tag。
-- 当前基线：`1.4.0`（WDSP 产品线自 1.0.0 起重新编号；仓库内历史 tag `wdsp-v2.5.x` 为旧基线，不再延续）。
+- 当前基线：`1.5.0`（WDSP 产品线自 1.0.0 起重新编号；仓库内历史 tag `wdsp-v2.5.x` 为旧基线，不再延续）。
 
 ## 版权
 
