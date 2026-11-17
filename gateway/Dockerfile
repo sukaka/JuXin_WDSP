@@ -51,6 +51,11 @@ RUN CGO_ENABLED=0 GOAMD64=v1 GOOS=$TARGETOS GOARCH=$TARGETARCH xcaddy build ${CA
     --with github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard=/src/modules/jiuzhang_guard \
     --output /usr/bin/caddy
 
+COPY go.mod go.sum /src/
+COPY cmd/wdsp-gateway-bind /src/cmd/wdsp-gateway-bind
+RUN cd /src && CGO_ENABLED=0 GOAMD64=v1 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -buildvcs=false -o /usr/local/bin/wdsp-gateway-bind ./cmd/wdsp-gateway-bind
+
 # ---------- 运行阶段 ----------
 # 运行阶段不加 --platform：buildx 默认即为目标平台（须运行目标架构的 caddy 二进制）
 FROM alpine:3.24${ALPINE_IMAGE_DIGEST:+@$ALPINE_IMAGE_DIGEST}
@@ -61,16 +66,17 @@ RUN addgroup -g 1000 -S caddy && adduser -u 1000 -S -G caddy -h /var/lib/caddy c
     && chown -R caddy:caddy /etc/caddy/certs /var/log/caddy /var/run/caddy /var/lib/caddy /srv/jiuzhang /tmp/coraza /config /data
 
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+COPY --from=builder /usr/local/bin/wdsp-gateway-bind /usr/local/bin/wdsp-gateway-bind
 COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# 默认以非 root 运行；POC 使用 8080 高端口，无需 NET_BIND_SERVICE
-USER caddy
+# 仅降权器瞬时以 root 运行；Caddy 使用 ambient NET_BIND_SERVICE，不携带会清空 ambient 集的文件 capability。
+USER root
 
-EXPOSE 8080
+EXPOSE 80 443 8080
 
-# 健康检查：校验当前配置可加载
+# 健康检查同样降权，校验当前配置可加载
 HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
-    CMD ["/usr/bin/caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+    CMD ["/usr/local/bin/wdsp-gateway-bind", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
 
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/wdsp-gateway-bind"]
 CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

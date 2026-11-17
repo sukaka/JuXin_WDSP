@@ -1010,6 +1010,14 @@
 - **前端与解封**：身份详情按权限显示封禁/解封、原因校验、状态标签和真实错误，成功后重新获取详情；解封发布移除后放行，历史快照不会重封 NORMAL 身份。
 - **验证与边界**：管理面四包、Guard 完整测试和前端 11 项测试通过，生产构建通过；OpenAPI 777 操作双向零差。实库迁移/封禁/审计因测试凭据未配置跳过，未做真实浏览器或跨进程发布验收。大模型与 RAG 相关工作保持暂停。
 
+### 身份风险 CHALLENGE（迁移000215，非大模型）
+
+- **策略与兼容**：全局及按应用风险策略新增 `challenge_threshold`，默认 0 关闭；开启时须满足 `rate_limit_threshold < challenge_threshold < block_threshold`。旧客户端省略字段保留原值，显式 0 正常保存、发布及回滚。启用时要求 `actions.risk_challenge` 能力，纯旧策略不增加发布门槛。
+- **决策与执行**：风险引擎按 BLOCK → CHALLENGE → RATE_LIMIT 评估；OBSERVE 只发 `RISK_POLICY_CHALLENGE/would_challenge`，PROTECT 在风险点登记请求内部待挑战上下文，继续配额、CC，再由既有 Bot 统一步骤执行。仍走 selector、clearance、请求合格性及机器身份豁免，不修改 Bot 挑战协议。
+- **安全与事件**：PROTECT 启用挑战但 Bot 缺失、OFF 或 OBSERVE 时拒绝配置；Offer 的真实 429/503 不记 challenged。只有实际 403 挑战页才记 `challenged` 并挂最终处置，采集映射 CHALLENGE 而非 REJECT。selector 范围外及不合格导航不签发 HTML，后续 JWT/API/WAF 不绕过。
+- **前端**：共用风险表单支持挑战阈值、跨字段校验、旧响应补 0、应用继承和显式停用，提示 Bot PROTECT/selector 与 HTTPS GET 文档导航前提。
+- **验证与边界**：服务端相关五包、riskengine 与 Guard 完整测试通过，前端风险策略 12 项、改动文件 ESLint、typecheck 和生产构建通过；OpenAPI 777 操作双向零差。000215 静态检查通过，真实 PostgreSQL 迁移因凭据未配置跳过；未做真实 Caddy、浏览器或多节点生产验收。
+
 ### 其他
 
 阶段7 收尾优先合 `main` 再同步 `develop`；可选增强：完整 RAG、策略版本快照、多租户 AI 计费、更深度的 What-If 回放与压测归档。

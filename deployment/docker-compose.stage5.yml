@@ -195,7 +195,10 @@ services:
       dockerfile: Dockerfile
     container_name: jiuzhang-stage5-gateway
     restart: unless-stopped
+    user: "0:0"
+    entrypoint: ["/usr/local/bin/wdsp-gateway-bind"]
     environment:
+      HOME: /var/lib/caddy
       SEC_RULE_ENGINE: On
       GATEWAY_NODE_NAME: gateway-stage5-01
       # 执行覆盖观测（NG-COV-01 联调开关，默认关闭；stage5 验证期显式开启）
@@ -207,8 +210,8 @@ services:
     command: ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile", "--resume"]
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-18080}:8080"
-      # 演示站点端口段：容器形态下站点监听端口须已映射（裸机形态不受此限）
-      - "${GATEWAY_SITE_HTTP_PORT:-81}:81"
+      # 演示站点直接监听容器 82 端口；宿主端口可用 GATEWAY_SITE_HTTP_PORT 覆盖
+      - "${GATEWAY_SITE_HTTP_PORT:-82}:82"
       - "${GATEWAY_SITE_HTTPS_PORT:-443}:443"
     volumes:
       - ../gateway/configs/Caddyfile:/etc/caddy/Caddyfile:ro
@@ -225,6 +228,11 @@ services:
     read_only: true
     cap_drop:
       - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
+      - SETPCAP
     security_opt:
       - no-new-privileges:true
     depends_on:

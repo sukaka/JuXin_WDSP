@@ -20,6 +20,7 @@ export interface RiskPolicy {
   version: number
   block_threshold: number
   rate_limit_threshold: number
+  challenge_threshold: number
   rate_limit_rps: number
   signal_window_seconds: number
   /** 应用覆盖专属：0=默认3个可信账号，自定义2-1000；只影响观察信号 */
@@ -39,6 +40,7 @@ export type RiskPolicyBody = Omit<
 function normalizeRiskPolicy(policy: RiskPolicy): RiskPolicy {
   return {
     ...policy,
+    challenge_threshold: policy.challenge_threshold ?? 0,
     shared_device_account_limit: policy.shared_device_account_limit ?? 0,
     scores: policy.scores ?? {},
     risk_levels: policy.risk_levels ?? { medium: 20, high: 40, critical: 70 },

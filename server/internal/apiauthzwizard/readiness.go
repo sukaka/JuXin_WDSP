@@ -30,9 +30,10 @@ const (
 // ReadinessInput readiness 派生输入（按对象模型行逐行；全部事实由 store 层采集，
 // 本结构不含任何 IO——派生为纯函数，测试矩阵直接构造）。
 type ReadinessInput struct {
-	// 资格字段（§1.2：publishable+OWNER+排他+端点 CONFIRMED）
+	// 资格字段（publishable + OWNER 或规范化 ANY_OF + 排他 + 端点 CONFIRMED）
 	Publishable       bool
 	RequiredRelation  string
+	RequiredRelations []string
 	OwnerExclusive    bool
 	EndpointConfirmed bool
 	// Enforcement 当前值（PROTECT → PROTECT_ACTIVE 展示态）
@@ -45,7 +46,7 @@ type ReadinessInput struct {
 	SnapshotExpired bool
 	LeaseExpired    bool
 	ClockSkew       bool
-	// 通道事实（§1.2 BLOCKED_BY_NODE：节点 ACK≠FRESH / 能力自报 < az/3）
+	// 通道事实（节点 ACK≠FRESH / 能力自报低于当前模型要求的 az/3 或 az/4）
 	NodeNotFresh      bool
 	NodeCapabilityLow bool
 	// NodeStateReasons 节点状态明细（原文随 reasons 带出，不丢信息）
@@ -64,8 +65,19 @@ func DeriveReadiness(in ReadinessInput) (string, []string) {
 		reasons = append(reasons, "publishable=false（发布资格未声明）")
 		badge = ReadinessNotPublishable
 	}
-	if strings.TrimSpace(in.RequiredRelation) != "OWNER" {
-		reasons = append(reasons, "required_relation≠OWNER（首批仅 OWNER 词表）")
+	switch strings.ToUpper(strings.TrimSpace(in.RequiredRelation)) {
+	case "OWNER":
+		if len(in.RequiredRelations) != 0 {
+			reasons = append(reasons, "OWNER 模型 required_relations 必须为空（保持旧契约）")
+			badge = ReadinessNotPublishable
+		}
+	case "ANY_OF":
+		if len(in.RequiredRelations) != 2 || in.RequiredRelations[0] != "OWNER" || in.RequiredRelations[1] != "SHARED_WITH" {
+			reasons = append(reasons, "ANY_OF 模型 required_relations 必须为规范化 [OWNER,SHARED_WITH]")
+			badge = ReadinessNotPublishable
+		}
+	default:
+		reasons = append(reasons, "required_relation≠OWNER/ANY_OF（仅支持 OWNER 或 ANY_OF）")
 		badge = ReadinessNotPublishable
 	}
 	if !in.OwnerExclusive {
@@ -107,7 +119,7 @@ func DeriveReadiness(in ReadinessInput) (string, []string) {
 		reasons = append(reasons, "存在 ACK 非 FRESH 节点（快照未应用/水位落后——实断配置未到全部节点）")
 	}
 	if in.NodeCapabilityLow {
-		reasons = append(reasons, "节点能力自报不足 az/3 或能力清单不可用（含 PROTECT 快照将被能力门 fail-closed 拒绝）")
+		reasons = append(reasons, fmt.Sprintf("节点能力自报不足 az/%d 或能力清单不可用（当前模型快照将被能力门 fail-closed 拒绝）", requiredAuthzAZ(in.RequiredRelation)))
 	}
 	reasons = append(reasons, in.NodeStateReasons...)
 
@@ -115,6 +127,13 @@ func DeriveReadiness(in ReadinessInput) (string, []string) {
 		return ReadinessProtectActive, reasons
 	}
 	return badge, reasons
+}
+
+func requiredAuthzAZ(requiredRelation string) int {
+	if strings.EqualFold(strings.TrimSpace(requiredRelation), "ANY_OF") {
+		return 4
+	}
+	return 3
 }
 
 // confirmTextV1 冻结确认语义文案（§1.4 v1 模板；占位符替换后随确认单落库）。

@@ -380,6 +380,50 @@ func TestProvisionAuthzPreviousValidRejectsMissingOrInvalidHMAC(t *testing.T) {
 	}
 }
 
+func TestProvisionAuthzPreviousValidAnyOfDeepCopy(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	previous := &authzSnapshotJSON{
+		Schema: detectors.AuthzSnapshotSchemaV2,
+		Models: []detectors.ObjectModel{{
+			ApplicationID: "app-1", EndpointKey: "GET /v1/orders/{id}", ObjectType: "ORDER",
+			Identifiers:      []detectors.ObjectIdentifier{{Location: "path", Name: "id", Primary: true}},
+			RequiredRelation: "ANY_OF", RequiredRelations: []string{"OWNER", "SHARED_WITH"},
+			OwnerExclusive: true, Publishable: true, UniqueEndpointTemplate: true,
+		}},
+		Relations: []detectors.ObjectRelation{{
+			ApplicationID: "app-1", PrincipalID: "user-owner", ObjectType: "ORDER",
+			ObjectRef: "objref:previous", Relation: "OWNER", Status: "CONFIRMED",
+		}},
+		ObjectHMACKeyHex: hex.EncodeToString(key),
+	}
+	g := &Guard{
+		AppID: "app-1", EventsLog: filepath.Join(t.TempDir(), "events.log"), CounterBackend: "memory",
+		APIDynamicProtection: true, APIProtectionMode: "OBSERVE", APIAuthzPreviousValid: previous,
+	}
+	t.Setenv(capDisabledEnv, "1")
+	resetSharedEngineForTest()
+	t.Cleanup(resetSharedEngineForTest)
+	if err := g.Provision(caddy.Context{Context: context.Background()}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	t.Cleanup(func() { _ = g.Cleanup() })
+	if g.apiAuthzPreviousValid == nil || len(g.apiAuthzPreviousValid.Models) != 1 || len(g.apiAuthzPreviousValid.Relations) != 1 {
+		t.Fatalf("previous valid was not restored: %+v", g.apiAuthzPreviousValid)
+	}
+	restored := g.apiAuthzPreviousValid
+	if restored.Schema != detectors.AuthzSnapshotSchemaV2 || restored.Models[0].RequiredRelation != "ANY_OF" ||
+		len(restored.Models[0].RequiredRelations) != 2 || restored.Models[0].RequiredRelations[1] != "SHARED_WITH" {
+		t.Fatalf("previous valid lost ANY_OF fields: %+v", restored.Models[0])
+	}
+	previous.Models[0].Identifiers[0].Name = "changed"
+	previous.Models[0].RequiredRelations[0] = "CHANGED"
+	previous.Relations[0].PrincipalID = "changed"
+	if restored.Models[0].Identifiers[0].Name != "id" || restored.Models[0].RequiredRelations[0] != "OWNER" ||
+		restored.Relations[0].PrincipalID != "user-owner" {
+		t.Fatalf("restored snapshot shares source arrays: %+v", restored)
+	}
+}
+
 // PROTECT 模式 + 类型偏离：403 拦截且事件落盘。
 func TestServeNext_ProtectModeBlocks(t *testing.T) {
 	schemas := map[string]map[string]string{"POST /v1/orders": {"id": "number"}}

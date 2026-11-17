@@ -138,8 +138,9 @@ type GuardAuthzObjectIdentifier struct {
 	Primary  bool   `json:"primary,omitempty"`
 }
 
-// GuardAuthzObjectModel is the publishable OWNER-only object model consumed by
-// the gateway's OBSERVE authorization evaluator.
+// GuardAuthzObjectModel is a publishable object model consumed by the gateway's
+// authorization evaluator. OWNER keeps required_relations empty; ANY_OF carries
+// the canonical [OWNER, SHARED_WITH] relation set.
 type GuardAuthzObjectModel struct {
 	ApplicationID          string                       `json:"application_id"`
 	EndpointKey            string                       `json:"endpoint_key"`
@@ -148,6 +149,7 @@ type GuardAuthzObjectModel struct {
 	ObjectType             string                       `json:"object_type"`
 	Identifiers            []GuardAuthzObjectIdentifier `json:"identifiers"`
 	RequiredRelation       string                       `json:"required_relation"`
+	RequiredRelations      []string                     `json:"required_relations,omitempty"`
 	OwnerExclusive         bool                         `json:"owner_exclusive"`
 	Publishable            bool                         `json:"publishable"`
 	UniqueEndpointTemplate bool                         `json:"unique_endpoint_template"`
@@ -628,9 +630,10 @@ type GuardIdentityBehavior struct {
 // GuardRiskPolicy 身份风险处置策略（WDSP AI 自动化渗透防护增强 阶段3；
 // 下发网关，对应 security_risk_policy 表 GLOBAL 行；该表由迁移 000101 建立）。
 // 网关按 signal_window_seconds 窗口聚合身份风险分（各信号分值经 scores 覆盖），
-// 达 rate_limit_threshold 限速（rate_limit_rps RPS）、达 block_threshold 阻断；
-// mode=OBSERVE 仅观测（事件 action_taken=would_block/would_rate_limit），
-// PROTECT 实际处置（blocked/rate_limited）；enabled=false 时网关风险处置零行为。
+// 达 rate_limit_threshold 限速（rate_limit_rps RPS）、达 challenge_threshold 挑战、
+// 达 block_threshold 阻断；challenge_threshold=0 时关闭挑战。
+// mode=OBSERVE 仅观测（事件 action_taken=would_block/would_challenge/would_rate_limit），
+// PROTECT 实际处置（blocked/challenged/rate_limited）；enabled=false 时网关风险处置零行为。
 // version 为策略乐观锁版本号（网关随处置事件回报 policy_version 供溯源）；
 // risk_levels 为风险等级阈值（medium/high/critical）。
 // json tag 为跨分片契约（网关并行开发已冻结），不得改动。
@@ -640,6 +643,7 @@ type GuardRiskPolicy struct {
 	Version             int            `json:"version"`
 	BlockThreshold      int            `json:"block_threshold"`
 	RateLimitThreshold  int            `json:"rate_limit_threshold"`
+	ChallengeThreshold  int            `json:"challenge_threshold"`
 	RateLimitRPS        int            `json:"rate_limit_rps"`
 	SignalWindowSeconds int            `json:"signal_window_seconds"`
 	Scores              map[string]int `json:"scores"`
@@ -818,6 +822,15 @@ type GuardGraphQLLimits struct {
 	MaxFragmentExp int `json:"max_fragment_exp,omitempty"`
 }
 
+// GuardPublishSmoke 是单次发布的独立探针认证材料。PublishID 使用发布任务 UUID，
+// KeyHex 为每次发布新生成的 32 字节随机密钥；不复用 Bot 或 API 授权密钥。
+// GuardConfig 序列化时刻意忽略整段，buildGuardHandler 仅将其渲染进运行时处理器 JSON；
+// 整站版本保存时再移除该段，避免短暂秘密进入任何不可变快照。
+type GuardPublishSmoke struct {
+	PublishID string `json:"publish_id"`
+	KeyHex    string `json:"key_hex"`
+}
+
 // GuardConfig 阶段5访问控制/CC 全量配置（全局 + 按应用）。
 // 该结构整体序列化后同时作为 access_control_versions 的快照。
 type GuardConfig struct {
@@ -838,6 +851,9 @@ type GuardConfig struct {
 	// 发布后冒烟 CC_EXACT 探针依赖）。缺省 false 不下发 = 网关端点关闭、零行为变化，
 	// CC_EXACT 探针如实 SKIP；网关侧端点仅本机/内网连接源可访问且不反向代理
 	DebugCCCounter bool `json:"debug_cc_counter,omitempty"`
+	// PublishSmoke 由 Publisher 在候选配置生成前按 taskID 新建；json:"-" 防止
+	// 单次发布秘密进入 access_control_versions，运行时下发见 buildGuardHandler。
+	PublishSmoke *GuardPublishSmoke `json:"-"`
 	// 阶段8 / WDSP：API 动态防护（默认关闭，关闭时下发 JSON 与纯 WAF 完全一致）
 	APIDynamicProtection bool   `json:"api_dynamic_protection,omitempty"`
 	APIProtectionMode    string `json:"api_protection_mode,omitempty"` // OFF | OBSERVE | PROTECT
@@ -1171,6 +1187,11 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 	// 沿用「true 显式下发」模式，false/缺省不下发 = 网关端点关闭、与历史版本逐字节一致
 	if g.DebugCCCounter {
 		h["debug_cc_counter"] = true
+	}
+	// 发布探针认证段不受 Bot/API 产品开关控制；每个 guard 应用获得同一本次发布身份，
+	// 请求签名另含 app_id/app_code/Host，因此不能跨站点或跨发布重放。
+	if g.PublishSmoke != nil {
+		h["publish_smoke"] = g.PublishSmoke
 	}
 	// L7 访问控制（契约一 l7_rules 段）：非 nil 时注入，位于每个应用的 guard 处理器配置内
 	// （与 global_allow 等全局段同级，网关按 priority 首中即停评估）

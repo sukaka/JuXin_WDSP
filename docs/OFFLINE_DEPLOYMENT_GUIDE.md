@@ -139,13 +139,25 @@ cd .. && rm -rf jiuzhang-offline-<version>
 
 ## 6. 离线环境的升级
 
-离线包同样作为升级介质：在新包目录加载镜像后，于**部署目录**执行：
+离线包同样作为升级介质：在新包目录加载镜像后，于**当前部署目录**执行。跨 gateway 启动契约的完整包升级必须同时提供当前 Compose 和新包 Compose：
 
 ```bash
-ops/upgrade/apply.sh --server-image jiuzhang-server:<新版本> \
-  --gateway-image jiuzhang-gateway:<新版本> --images-tar <新包镜像tar>
-# 失败回滚：
+ops/upgrade/apply.sh \
+  --server-image jiuzhang-server:<新版本> \
+  --gateway-image jiuzhang-gateway:<新版本> \
+  --images-tar <新包镜像tar> \
+  --compose-file docker-compose.yml \
+  --new-compose-file <新包目录>/docker-compose.yml \
+  --env-file .env
+
+# 失败回滚（默认复用状态文件记录的目标 Compose/env）：
 ops/upgrade/rollback.sh [--restore-backup]
 ```
 
-升级前脚本会强制创建并等待 FULL 加密备份验证通过，详见《升级与回滚设计》。
+职责不能互换：`--compose-file` 用于升级前预检以及读取旧镜像名/旧镜像 ID；`--new-compose-file` 用于目标镜像标签、启动和升级后健康检查。未跨启动契约且继续使用同一 Compose 时可省略 `--new-compose-file`。`--env-file` 同时供两份 Compose 使用。
+
+新 gateway 镜像使用 `/usr/local/bin/wdsp-gateway-bind` 时，目标 Compose 必须提供 `user=0:0`、`cap_drop=ALL`、恰好四项 `cap_add=NET_BIND_SERVICE/SETUID/SETGID/SETPCAP` 和 `no-new-privileges:true`。脚本按镜像实际 `Config.Entrypoint` 判定，不按版本号猜测；新启动器遇旧 Compose、未知入口或契约渲染不符时，在写状态、retag、up 之前失败关闭。
+
+回滚到旧 `/usr/local/bin/docker-entrypoint.sh` 镜像时，如果仍使用新 Compose，脚本会附带权限 600 的一次性 override：恢复原入口、改用 `1000:1000`、重置为仅 `NET_BIND_SERVICE` 并保留 no-new-privileges。对于会忽略 `!reset` 列表值的 Compose 版本，脚本只在安全形态已核验时追加同等权限的临时补值层，再重新断言最终合并结果。精确断言通过后才 retag/up；所有临时文件自动清理，用户 Compose 不会被修改，旧 Caddy 不会以 root 常驻。
+
+升级前脚本会强制创建并等待 FULL 加密备份验证通过；升级和回滚均同步 force-recreate `api/gateway/netmgrd`。详见《升级与回滚设计》。

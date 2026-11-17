@@ -11,7 +11,7 @@ import (
 )
 
 // 策略作用域与模式（GLOBAL 为全局策略，APPLICATION 为按应用覆盖；OBSERVE 仅观测——事件 action_taken
-// 为 would_block/would_rate_limit，PROTECT 实际处置——blocked/rate_limited）。
+// 为 would_block/would_challenge/would_rate_limit，PROTECT 实际处置——blocked/challenged/rate_limited）。
 const (
 	ScopeGlobal      = "GLOBAL"
 	ScopeApplication = "APPLICATION"
@@ -33,6 +33,7 @@ type Policy struct {
 	Version                  int            `json:"version"`
 	BlockThreshold           int            `json:"block_threshold"`
 	RateLimitThreshold       int            `json:"rate_limit_threshold"`
+	ChallengeThreshold       int            `json:"challenge_threshold"`
 	RateLimitRPS             int            `json:"rate_limit_rps"`
 	SignalWindowSeconds      int            `json:"signal_window_seconds"`
 	SharedDeviceAccountLimit int            `json:"shared_device_account_limit,omitempty"`

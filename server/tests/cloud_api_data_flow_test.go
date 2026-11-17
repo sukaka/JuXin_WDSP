@@ -10,12 +10,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	agentmodel "github.com/jiuzhang-waf/server/internal/agents"
+	"github.com/jiuzhang-waf/server/internal/apiruntime"
 	"github.com/jiuzhang-waf/server/internal/config"
 	"github.com/jiuzhang-waf/server/internal/product"
 )
@@ -197,6 +199,131 @@ VALUES ($1,$2,$3,$4,'prod',1)`, bindingID, enrollment.AgentID, applicationID, se
 		t.Fatalf("unexpected evidence: status=%d body=%s", resp.StatusCode, evidenceBody)
 	}
 
+	baselineGraph, _ := readCloudAPIDataFlowGraph(t, env, cookies, "max_edges=50&application_id="+applicationID.String())
+	baselineCall := requireCloudAPIDataFlowEdge(t, baselineGraph, "orders", "profile")
+	beforeCredentialGraph, _ := readCloudAPIDataFlowGraph(t, env, cookies, "max_edges=1&data_type=CREDENTIAL&application_id="+applicationID.String())
+	if len(beforeCredentialGraph.Edges) != 0 {
+		t.Fatalf("runtime event has not arrived; CREDENTIAL edges must be empty: %+v", beforeCredentialGraph.Edges)
+	}
+
+	gatewayTraceID := strings.Repeat("a", 32)
+	runtimeRequestID := "req-cdf-" + uuid.NewString()
+	unmatchedRequestID := "req-cdf-unmatched-" + uuid.NewString()
+	persistCloudAPIDataFlowRuntimeEvents(t, env, []map[string]interface{}{
+		cloudAPIDataFlowRuntimeEvent(runtimeRequestID, gatewayTraceID, applicationID, "POST /profiles/{id}", "/profiles/{id}"),
+		cloudAPIDataFlowRuntimeEvent(unmatchedRequestID, strings.Repeat("f", 32), applicationID, "POST /runtime/unpaired", "/runtime/unpaired"),
+	})
+	var storedTraceID, storedEndpointKey, storedMethod, storedPath string
+	var storedApplicationID uuid.UUID
+	var storedDetails []byte
+	if err := env.db.QueryRow(context.Background(), `
+SELECT trace_id, application_id, endpoint_key, method, raw_path, details_json
+FROM api_runtime_events WHERE request_id=$1`, runtimeRequestID).
+		Scan(&storedTraceID, &storedApplicationID, &storedEndpointKey, &storedMethod, &storedPath, &storedDetails); err != nil {
+		t.Fatalf("read persisted gateway runtime event with trace: %v", err)
+	}
+	if storedTraceID != gatewayTraceID || storedApplicationID != applicationID || storedEndpointKey != "POST /profiles/{id}" || storedMethod != "POST" || storedPath != "/profiles/{id}" {
+		t.Fatalf("runtime correlation fields were not persisted: trace=%q application=%s endpoint=%q method=%q path=%q", storedTraceID, storedApplicationID, storedEndpointKey, storedMethod, storedPath)
+	}
+	var persistedDetails []struct {
+		Detector string            `json:"detector"`
+		Evidence map[string]string `json:"evidence"`
+	}
+	if err := json.Unmarshal(storedDetails, &persistedDetails); err != nil {
+		t.Fatalf("decode persisted runtime details: %v", err)
+	}
+	if len(persistedDetails) != 1 || persistedDetails[0].Detector != "sensitive_data" ||
+		len(persistedDetails[0].Evidence) != 4 || persistedDetails[0].Evidence["field"] != "pwd" ||
+		persistedDetails[0].Evidence["location"] != "form" || persistedDetails[0].Evidence["direction"] != "REQUEST" ||
+		persistedDetails[0].Evidence["data_type"] != "credential" {
+		t.Fatalf("runtime sensitive evidence was not persisted intact: %s", storedDetails)
+	}
+	if bytes.Contains(storedDetails, []byte("value_hmac")) || bytes.Contains(storedDetails, []byte("hmac-sha256")) || bytes.Contains(storedDetails, []byte("body_base64")) {
+		t.Fatalf("runtime fixture must not invent HMAC or carry a body: %s", storedDetails)
+	}
+
+	credentialGraph, credentialGraphBody := readCloudAPIDataFlowGraph(t, env, cookies, "max_edges=1&data_type=CREDENTIAL&application_id="+applicationID.String())
+	if len(credentialGraph.Edges) != 1 || credentialGraph.Truncated {
+		t.Fatalf("gateway-only CREDENTIAL field must be filtered before LIMIT: %+v", credentialGraph)
+	}
+	credentialCall := credentialGraph.Edges[0]
+	if credentialCall.ID != callEdgeID || credentialCall.SourceName != "orders" || credentialCall.TargetName != "profile" {
+		t.Fatalf("CREDENTIAL filter selected the wrong real contribution: %+v", credentialCall)
+	}
+	wantGatewayField := cloudAPIDataFlowField{Side: "REQUEST", Path: "form.pwd", DataType: "CREDENTIAL", Match: "OBSERVED"}
+	if got := requireCloudAPIDataFlowField(t, credentialCall.Fields, "form.pwd"); got != wantGatewayField {
+		t.Fatalf("gateway field enrichment mismatch: got=%+v want=%+v", got, wantGatewayField)
+	}
+	if !cloudAPIDataFlowHasType(credentialCall.DataTypes, "CREDENTIAL") || cloudAPIDataFlowHasType(credentialCall.DataTypes, "PASSWORD") {
+		t.Fatalf("credential must remain CREDENTIAL, not be guessed as PASSWORD: %+v", credentialCall.DataTypes)
+	}
+
+	enrichedGraph, enrichedGraphBody := readCloudAPIDataFlowGraph(t, env, cookies, "max_edges=50&application_id="+applicationID.String())
+	if len(enrichedGraph.Edges) != 3 {
+		t.Fatalf("runtime enrichment must not create edges, including for unmatched events: %+v", enrichedGraph.Edges)
+	}
+	enrichedCall := requireCloudAPIDataFlowEdge(t, enrichedGraph, "orders", "profile")
+	if got := requireCloudAPIDataFlowField(t, enrichedCall.Fields, "form.pwd"); got != wantGatewayField {
+		t.Fatalf("late runtime event must be visible on a subsequent full graph query: got=%+v want=%+v", got, wantGatewayField)
+	}
+	if enrichedCall.Calls != baselineCall.Calls || enrichedCall.Calls != 1 || enrichedCall.Errors != baselineCall.Errors ||
+		enrichedCall.AvgLatencyMS != baselineCall.AvgLatencyMS || enrichedCall.MaxLatencyMS != baselineCall.MaxLatencyMS ||
+		enrichedCall.EvidenceType != baselineCall.EvidenceType || enrichedCall.Confidence != baselineCall.Confidence {
+		t.Fatalf("runtime enrichment changed real call metrics or evidence: before=%+v after=%+v", baselineCall, enrichedCall)
+	}
+	for _, edge := range enrichedGraph.Edges {
+		if edge.ID == callEdgeID {
+			continue
+		}
+		for _, field := range edge.Fields {
+			if field.Path == "form.pwd" || field.DataType == "CREDENTIAL" {
+				t.Fatalf("same-trace different endpoint or unmatched runtime event was incorrectly enriched: %+v", edge)
+			}
+		}
+	}
+	for _, body := range [][]byte{credentialGraphBody, enrichedGraphBody} {
+		if bytes.Contains(body, []byte("13800138000")) || bytes.Contains(body, []byte("body_base64")) {
+			t.Fatalf("runtime graph leaked a raw value or body: %s", body)
+		}
+	}
+
+	resp = env.get(t, "/api/v1/api-security/data-flow/evidence?edge_id="+callEdgeID+"&application_id="+applicationID.String()+"&data_type=CREDENTIAL", cookies)
+	runtimeEvidenceBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("runtime evidence status=%d body=%s", resp.StatusCode, runtimeEvidenceBody)
+	}
+	var runtimeEvidenceEnvelope struct {
+		Data struct {
+			Items []struct {
+				EventID      string                  `json:"event_id"`
+				TraceID      string                  `json:"trace_id"`
+				Fields       []cloudAPIDataFlowField `json:"fields"`
+				EvidenceType string                  `json:"evidence_type"`
+				Confidence   float64                 `json:"confidence"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(runtimeEvidenceBody, &runtimeEvidenceEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtimeEvidenceEnvelope.Data.Items) != 1 {
+		t.Fatalf("CREDENTIAL evidence must select the existing paired contribution: %s", runtimeEvidenceBody)
+	}
+	runtimeEvidence := runtimeEvidenceEnvelope.Data.Items[0]
+	if runtimeEvidence.EventID != "ev-cloud-0-client" || runtimeEvidence.TraceID != gatewayTraceID || runtimeEvidence.EvidenceType != baselineCall.EvidenceType || runtimeEvidence.Confidence != baselineCall.Confidence {
+		t.Fatalf("runtime evidence changed or lost the real Observation association: %+v", runtimeEvidence)
+	}
+	if got := requireCloudAPIDataFlowField(t, runtimeEvidence.Fields, "form.pwd"); got != wantGatewayField {
+		t.Fatalf("graph/evidence gateway field mismatch: evidence=%+v graph=%+v", got, wantGatewayField)
+	}
+	if bytes.Contains(runtimeEvidenceBody, []byte("13800138000")) || bytes.Contains(runtimeEvidenceBody, []byte("body_base64")) {
+		t.Fatalf("runtime evidence leaked a raw value or body: %s", runtimeEvidenceBody)
+	}
+
 	type boundaryEdge struct {
 		ID               string `json:"id"`
 		SourceID         string `json:"source_id"`
@@ -338,6 +465,150 @@ VALUES ($1,$2,$3,$4,'prod',1)`, bindingID, enrollment.AgentID, applicationID, se
 	}
 }
 
+type cloudAPIDataFlowField struct {
+	Side      string `json:"side"`
+	Path      string `json:"path"`
+	DataType  string `json:"data_type"`
+	ValueHMAC string `json:"value_hmac"`
+	HMACKeyID string `json:"hmac_key_id"`
+	Match     string `json:"match"`
+}
+
+type cloudAPIDataFlowEdge struct {
+	ID           string                  `json:"id"`
+	SourceName   string                  `json:"source_name"`
+	TargetName   string                  `json:"target_name"`
+	Calls        uint64                  `json:"calls"`
+	Errors       uint64                  `json:"errors"`
+	AvgLatencyMS float64                 `json:"avg_latency_ms"`
+	MaxLatencyMS int64                   `json:"max_latency_ms"`
+	DataTypes    []string                `json:"data_types"`
+	Fields       []cloudAPIDataFlowField `json:"fields"`
+	EvidenceType string                  `json:"evidence_type"`
+	Confidence   float64                 `json:"confidence"`
+}
+
+type cloudAPIDataFlowGraph struct {
+	Edges     []cloudAPIDataFlowEdge `json:"edges"`
+	Truncated bool                   `json:"truncated"`
+}
+
+func readCloudAPIDataFlowGraph(t *testing.T, env *testEnv, cookies []*http.Cookie, query string) (cloudAPIDataFlowGraph, []byte) {
+	t.Helper()
+	resp := env.get(t, "/api/v1/api-security/data-flow/graph?"+query, cookies)
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("graph status=%d body=%s", resp.StatusCode, body)
+	}
+	var envelope struct {
+		Data cloudAPIDataFlowGraph `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode graph: %v body=%s", err, body)
+	}
+	return envelope.Data, body
+}
+
+func requireCloudAPIDataFlowEdge(t *testing.T, graph cloudAPIDataFlowGraph, source, target string) cloudAPIDataFlowEdge {
+	t.Helper()
+	for _, edge := range graph.Edges {
+		if edge.SourceName == source && edge.TargetName == target {
+			return edge
+		}
+	}
+	t.Fatalf("missing real data-flow edge %s -> %s: %+v", source, target, graph.Edges)
+	return cloudAPIDataFlowEdge{}
+}
+
+func requireCloudAPIDataFlowField(t *testing.T, fields []cloudAPIDataFlowField, path string) cloudAPIDataFlowField {
+	t.Helper()
+	found := -1
+	for i, field := range fields {
+		if field.Path != path {
+			continue
+		}
+		if found >= 0 {
+			t.Fatalf("duplicate enriched field %q: %+v", path, fields)
+		}
+		found = i
+	}
+	if found < 0 {
+		t.Fatalf("missing enriched field %q: %+v", path, fields)
+	}
+	return fields[found]
+}
+
+func cloudAPIDataFlowHasType(types []string, want string) bool {
+	for _, typ := range types {
+		if typ == want {
+			return true
+		}
+	}
+	return false
+}
+
+func cloudAPIDataFlowRuntimeEvent(requestID, traceID string, applicationID uuid.UUID, endpointKey, normalizedPath string) map[string]interface{} {
+	return map[string]interface{}{
+		"request_id":      requestID,
+		"occurred_at":     time.Now().UTC().Format(time.RFC3339Nano),
+		"application_id":  applicationID.String(),
+		"trace_id":        traceID,
+		"endpoint_key":    endpointKey,
+		"method":          "POST",
+		"path_template":   normalizedPath,
+		"raw_path":        normalizedPath,
+		"is_api":          true,
+		"api_confidence":  1,
+		"risk_score":      10,
+		"risk_level":      "LOW",
+		"final_action":    "OBSERVE",
+		"response_status": http.StatusOK,
+		"details": []map[string]interface{}{{
+			"detector":    "sensitive_data",
+			"rule_id":     "sensitive.field",
+			"category":    "OBSERVE",
+			"severity":    "MEDIUM",
+			"score_delta": 10,
+			"evidence": map[string]string{
+				"field":     "pwd",
+				"location":  "form",
+				"direction": "REQUEST",
+				"data_type": "credential",
+			},
+		}},
+	}
+}
+
+func persistCloudAPIDataFlowRuntimeEvents(t *testing.T, env *testEnv, records []map[string]interface{}) {
+	t.Helper()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "api-runtime-events.jsonl")
+	var lines bytes.Buffer
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines.Write(line)
+		lines.WriteByte('\n')
+	}
+	if err := os.WriteFile(logPath, lines.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	collector := apiruntime.NewCollector(apiruntime.NewStore(env.db), "cloud-dataflow-runtime-test", logPath, filepath.Join(dir, "checkpoint"), "gw-cloud-dataflow-test")
+	processed, err := collector.CollectOnce(context.Background())
+	if err != nil {
+		t.Fatalf("collect real gateway runtime events: %v", err)
+	}
+	if processed != len(records) {
+		t.Fatalf("runtime events processed=%d want=%d", processed, len(records))
+	}
+}
+
 func cloudObservationBatch(bindings map[string]uuid.UUID) map[string]interface{} {
 	bindingVersion := int64(1)
 	base := func(eventID, traceID, service, direction, target, path string) map[string]interface{} {
@@ -354,16 +625,20 @@ func cloudObservationBatch(bindings map[string]uuid.UUID) map[string]interface{}
 		}
 	}
 	pairs := []struct {
-		source, target, path, traceID string
+		source, target, path, traceID, spanID string
 	}{
-		{"orders", "profile", "/profiles/{id}", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-		{"profile", "identity", "/identity/verify", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-		{"orders", "identity", "/identity/profile", "cccccccccccccccccccccccccccccccc"},
+		{"orders", "profile", "/profiles/{id}", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaa"},
+		{"profile", "identity", "/identity/verify", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"},
+		{"orders", "identity", "/identity/profile", "cccccccccccccccccccccccccccccccc", "cccccccccccccccc"},
 	}
 	records := []map[string]interface{}{}
 	for i, pair := range pairs {
 		client := base(fmt.Sprintf("ev-cloud-%d-client", i), pair.traceID, pair.source, "CLIENT", pair.target, pair.path)
 		server := base(fmt.Sprintf("ev-cloud-%d-server", i), pair.traceID, pair.target, "SERVER", pair.target, pair.path)
+		client["trace"].(map[string]interface{})["span_id"] = pair.spanID
+		serverTrace := server["trace"].(map[string]interface{})
+		serverTrace["span_id"] = fmt.Sprintf("%016x", i+16)
+		serverTrace["parent_span_id"] = pair.spanID
 		server["http"].(map[string]interface{})["host"] = "10.20.0.30"
 		server["fields"] = []map[string]interface{}{
 			{"side": "REQUEST", "location": "JSON_BODY", "path": "$.mobile", "data_type": "PHONE", "level": "L3", "value_hmac": "hmac-sha256:" + strings.Repeat(string(pair.traceID[0]), 64), "hmac_key_id": "key-1", "value_present": true, "truncated": false},

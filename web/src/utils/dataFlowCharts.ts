@@ -74,6 +74,7 @@ export const DATA_TYPE_LABELS: Record<string, string> = {
   PASSPORT: '护照号',
   TOKEN: '访问令牌',
   PASSWORD: '密码',
+  CREDENTIAL: '凭据口令',
 }
 
 export function dataFlowDataTypes(edge: DataFlowEdge, side?: 'REQUEST' | 'RESPONSE' | 'MESSAGE'): string[] {
@@ -84,6 +85,21 @@ export function dataFlowDataTypes(edge: DataFlowEdge, side?: 'REQUEST' | 'RESPON
     if (!ordered.includes(type)) ordered.push(type)
   }
   return ordered
+}
+
+export function dataFlowFields(edge: DataFlowEdge, side?: 'REQUEST' | 'RESPONSE' | 'MESSAGE') {
+  return (edge.fields ?? []).filter((field) => (!side || field.side === side) && field.path !== '' && field.data_type !== '')
+}
+
+function dataFlowFieldLabel(field: DataFlowEdge['fields'][number]): string {
+  return `${DATA_TYPE_LABELS[field.data_type] ?? field.data_type} · ${field.path}`
+}
+
+function dataFlowSideLabels(edge: DataFlowEdge, side: 'REQUEST' | 'RESPONSE' | 'MESSAGE'): string[] {
+  const fields = dataFlowFields(edge, side)
+  return fields.length
+    ? fields.map(dataFlowFieldLabel)
+    : dataFlowDataTypes(edge, side).map((type) => DATA_TYPE_LABELS[type] ?? type)
 }
 
 export function dataFlowNetworkZoneLabel(zone?: string): string {
@@ -455,10 +471,14 @@ export function dataFlowGraphOption(graph: DataFlowGraph, options: DataFlowLayou
         const previous = points[points.length - 2]
         const angle = Math.atan2(end[1] - previous[1], end[0] - previous[0])
         const fieldLabel = DATA_TYPE_LABELS[dataType] ?? dataType
-        const labelValue = fieldLabel || (graph.view === 'boundary' ? dataFlowBoundaryTypeLabel(datum.edge.boundary_type) : '')
+        const fieldPaths = [...new Set(dataFlowFields(datum.edge).filter((field) => field.data_type === dataType).map((field) => field.path))]
+        const fieldLabelValue = fieldPaths.length ? `${fieldLabel} · ${fieldPaths.join('、')}` : fieldLabel
+        const labelValue = fieldLabelValue || (graph.view === 'boundary' ? dataFlowBoundaryTypeLabel(datum.edge.boundary_type) : '')
+        const labelChars = Array.from(labelValue)
+        const boundedLabel = labelChars.length > 56 ? `${labelChars.slice(0, 55).join('')}…` : labelValue
         const labelPhase = 0.22 + hash(`${datum.edge.id}:${dataType}`) % 5 * 0.14
         const labelAt = trackLabelPoint(points, labelPhase)
-        const label = labelValue ? text(labelAt[0], labelAt[1], labelValue, trackLabelColor(dataType), '600 11px "PingFang SC", "Microsoft YaHei", sans-serif') : null
+        const label = boundedLabel ? text(labelAt[0], labelAt[1], boundedLabel, trackLabelColor(dataType), '600 11px "PingFang SC", "Microsoft YaHei", sans-serif') : null
         return [
           { type: 'path' as const, name: 'flow-track-hitbox', shape: { pathData }, style: { fill: 'none', stroke: 'rgba(0,0,0,0)', lineWidth: Math.max(14, lineWidth + 12), lineCap: 'round' as const, lineJoin: 'round' as const } },
           { type: 'path' as const, name: 'flow-track-casing', shape: { pathData }, style: { fill: 'none', stroke: color, lineWidth: lineWidth + 9, opacity: 0.12, lineCap: 'round' as const, lineJoin: 'round' as const }, silent: true },
@@ -571,9 +591,9 @@ export function dataFlowGraphOption(graph: DataFlowGraph, options: DataFlowLayou
         }
         if (datum?.kind === 'edge' && datum.edge) {
           const edge = datum.edge
-          const requestLabels = dataFlowDataTypes(edge, 'REQUEST').map((item) => DATA_TYPE_LABELS[item] ?? item).join('、') || '未识别'
-          const responseLabels = dataFlowDataTypes(edge, 'RESPONSE').map((item) => DATA_TYPE_LABELS[item] ?? item).join('、') || '未识别'
-          const messageLabels = dataFlowDataTypes(edge, 'MESSAGE').map((item) => DATA_TYPE_LABELS[item] ?? item).join('、')
+          const requestLabels = dataFlowSideLabels(edge, 'REQUEST').join('、') || '未识别'
+          const responseLabels = dataFlowSideLabels(edge, 'RESPONSE').join('、') || '未识别'
+          const messageLabels = dataFlowSideLabels(edge, 'MESSAGE').join('、')
           const apis = edge.apis.slice(0, 5).map(escapeHtml).join('<br/>') || '未知'
           const evidence = edge.boundary_evidence
             ? `${dataFlowBoundaryEvidenceLabel(edge.boundary_evidence)}（${edge.boundary_evidence}）`

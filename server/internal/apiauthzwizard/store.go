@@ -45,6 +45,7 @@ type ObjectModelRow struct {
 	ApplicationID     uuid.UUID `json:"application_id"`
 	Publishable       bool      `json:"publishable"`
 	RequiredRelation  string    `json:"required_relation"`
+	RequiredRelations []string  `json:"required_relations,omitempty"`
 	OwnerExclusive    bool      `json:"owner_exclusive"`
 	Enforcement       string    `json:"enforcement"`
 	EndpointConfirmed bool      `json:"endpoint_confirmed"`
@@ -81,7 +82,7 @@ func objectTypeOf(pathTemplate, segment string) string {
 const listObjectModelRowsSQL = `
 SELECT m.id, m.endpoint_id, COALESCE(e.endpoint_key, ''), m.object_segment,
        COALESCE(e.normalized_path, ''), COALESCE(e.application_id, m.endpoint_id),
-       m.publishable, COALESCE(m.required_relation, ''), m.owner_exclusive, m.enforcement,
+       m.publishable, COALESCE(m.required_relation, ''), COALESCE(m.required_relations, '{}'::TEXT[]), m.owner_exclusive, m.enforcement,
        (e.asset_status = 'CONFIRMED')
 FROM api_object_models m
 LEFT JOIN api_endpoints e ON e.id = m.endpoint_id`
@@ -92,7 +93,7 @@ func scanObjectModelRow(row pgx.Row) (ObjectModelRow, error) {
 	var pathTemplate string
 	err := row.Scan(&r.ID, &r.EndpointID, &r.EndpointKey, &r.ObjectSegment,
 		&pathTemplate, &r.ApplicationID,
-		&r.Publishable, &r.RequiredRelation, &r.OwnerExclusive, &r.Enforcement,
+		&r.Publishable, &r.RequiredRelation, &r.RequiredRelations, &r.OwnerExclusive, &r.Enforcement,
 		&r.EndpointConfirmed)
 	r.ObjectType = objectTypeOf(pathTemplate, r.ObjectSegment)
 	return r, err

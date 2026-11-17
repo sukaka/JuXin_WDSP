@@ -53,7 +53,7 @@ func riskEvents(t *testing.T, path string) []map[string]any {
 	t.Helper()
 	var out []map[string]any
 	for _, m := range readIBEvents(t, path) {
-		if m["event_type"] == "RISK_POLICY_BLOCK" || m["event_type"] == "RISK_POLICY_RATE_LIMIT" {
+		if m["event_type"] == "RISK_POLICY_BLOCK" || m["event_type"] == "RISK_POLICY_CHALLENGE" || m["event_type"] == "RISK_POLICY_RATE_LIMIT" {
 			out = append(out, m)
 		}
 	}
@@ -496,4 +496,118 @@ func TestRiskPolicyReloadNoLeak(t *testing.T) {
 		t.Fatal("gen2 must block")
 	}
 	resetSharedEngineForTest()
+}
+
+func TestRiskPolicyObserveWouldChallenge(t *testing.T) {
+	dir := t.TempDir()
+	evPath := filepath.Join(dir, "events.log")
+	g := provisionIBHTestGuard(t, Guard{
+		AppID: "app1", EventsLog: evPath, IdentitySalt: "test-salt",
+		RiskPolicy: &riskPolicyJSON{
+			Enabled: true, Mode: "OBSERVE", Version: 7,
+			RateLimitThreshold: 20, ChallengeThreshold: 40, BlockThreshold: 80,
+		},
+	})
+	key := riskKey(t, "test-salt", "203.0.113.10", "sqlmap/1.7")
+	g.risk.AddSignal(key, "WAF", 50, "seeded")
+	rec, called, err := riskServe(t, g, "203.0.113.10:1", "http://waf-test.local/", "sqlmap/1.7", http.StatusOK)
+	if err != nil || !called || rec.Code != http.StatusOK {
+		t.Fatalf("OBSERVE challenge must continue: err=%v called=%v code=%d", err, called, rec.Code)
+	}
+	evs := riskEvents(t, evPath)
+	if len(evs) != 1 || evs[0]["event_type"] != "RISK_POLICY_CHALLENGE" || evs[0]["action"] != "would_challenge" {
+		t.Fatalf("would_challenge events=%v", evs)
+	}
+	risk := evs[0]["risk"].(map[string]any)
+	if risk["action_taken"] != "would_challenge" || risk["score"].(float64) != 50 ||
+		risk["threshold"].(float64) != 40 || risk["policy_version"].(float64) != 7 {
+		t.Fatalf("risk detail=%v", risk)
+	}
+	if _, ok := evs[0]["final_decision"]; ok {
+		t.Fatalf("OBSERVE event must not carry final_decision: %v", evs[0])
+	}
+}
+
+func TestRiskPolicyChallengeBotDependencyValidation(t *testing.T) {
+	challengePolicy := func() *riskPolicyJSON {
+		return &riskPolicyJSON{
+			Enabled: true, Mode: "PROTECT", RateLimitThreshold: 20,
+			ChallengeThreshold: 40, BlockThreshold: 80,
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		botMode string
+		wantErr bool
+	}{
+		{name: "missing", botMode: "missing", wantErr: true},
+		{name: "off", botMode: botModeOff, wantErr: true},
+		{name: "observe", botMode: botModeObserve, wantErr: true},
+		{name: "protect", botMode: botModeProtect, wantErr: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := Guard{AppID: "app1", EventsLog: "events.log", RiskPolicy: challengePolicy()}
+			if tc.botMode != "missing" {
+				g.BotPolicy = mustJSON(t, botStepSection(tc.botMode))
+			}
+			err := g.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate err=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		policy *riskPolicyJSON
+	}{
+		{name: "observe_does_not_require_bot", policy: &riskPolicyJSON{Enabled: true, Mode: "OBSERVE", ChallengeThreshold: 40}},
+		{name: "default_off_does_not_require_bot", policy: &riskPolicyJSON{Enabled: true, Mode: "PROTECT"}},
+		{name: "inverted_tier_does_not_require_bot", policy: &riskPolicyJSON{Enabled: true, Mode: "PROTECT", ChallengeThreshold: 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := Guard{AppID: "app1", EventsLog: "events.log", RiskPolicy: tc.policy}
+			if err := g.Validate(); err != nil {
+				t.Fatalf("non-executing challenge configuration must remain valid: %v", err)
+			}
+		})
+	}
+}
+
+func TestRiskPolicyChallengeDependencyUsesApplicationOverride(t *testing.T) {
+	global := &riskPolicyJSON{
+		Enabled: true, Mode: "PROTECT", RateLimitThreshold: 20,
+		ChallengeThreshold: 40, BlockThreshold: 80,
+	}
+	for _, tc := range []struct {
+		name      string
+		global    *riskPolicyJSON
+		overrides []riskPolicyOverrideJSON
+		wantErr   bool
+	}{
+		{
+			name: "current_override_enables_challenge", global: &riskPolicyJSON{Enabled: true, Mode: "OBSERVE"},
+			overrides: []riskPolicyOverrideJSON{{ApplicationID: "app1", Policy: *global}}, wantErr: true,
+		},
+		{
+			name:      "current_override_disables_global_challenge",
+			global:    global,
+			overrides: []riskPolicyOverrideJSON{{ApplicationID: "app1", Policy: riskPolicyJSON{Enabled: false}}},
+		},
+		{
+			name:      "unrelated_override_does_not_reject_current_app",
+			global:    &riskPolicyJSON{Enabled: true, Mode: "OBSERVE"},
+			overrides: []riskPolicyOverrideJSON{{ApplicationID: "app2", Policy: *global}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := Guard{
+				AppID: "app1", EventsLog: "events.log", RiskPolicy: tc.global,
+				RiskPolicyOverrides: tc.overrides,
+			}
+			err := g.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate err=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
 }

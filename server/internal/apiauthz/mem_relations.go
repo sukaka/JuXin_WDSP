@@ -153,10 +153,14 @@ func (m *MemStore) ConfirmRelationCandidate(_ context.Context, id uuid.UUID, in 
 	if c.Status != CandidateStatusPending || c.PrincipalID == nil || c.LegacyIdentityFingerprint != nil {
 		return nil, ErrCandidateNotConfirmable
 	}
+	relation := strings.ToUpper(strings.TrimSpace(in.Relation))
+	if relation != RelationOwner {
+		return nil, errors.New("候选确认仅允许 OWNER 关系")
+	}
 	now := time.Now().UTC()
 	r := &ObjectRelation{
 		ID: uuid.New(), ApplicationID: c.ApplicationID, ObjectType: c.ObjectType, ObjectRef: c.ObjectRef,
-		PrincipalID: *c.PrincipalID, TenantID: c.TenantID, Relation: strings.ToUpper(strings.TrimSpace(in.Relation)),
+		PrincipalID: *c.PrincipalID, TenantID: c.TenantID, Relation: relation,
 		Source: RelationSourceCreateBinding, Status: RelationStatusConfirmed, ValidFrom: now,
 		ValidUntil: in.ValidUntil, EvidenceRef: c.EvidenceRef, ConfirmedBy: in.ConfirmedBy,
 		ConfirmedAt: now, Reason: strings.TrimSpace(in.Reason), CreatedAt: now, UpdatedAt: now,

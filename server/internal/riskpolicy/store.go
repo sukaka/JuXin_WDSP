@@ -32,7 +32,7 @@ func NewStore(db *pgxpool.Pool) *Store {
 
 // policyColumns 查询列清单（与 scanPolicy 顺序一致）。
 const policyColumns = `id, scope, enabled, mode, version,
-  block_threshold, rate_limit_threshold, rate_limit_rps, signal_window_seconds,
+  block_threshold, rate_limit_threshold, challenge_threshold, rate_limit_rps, signal_window_seconds,
   scores, risk_levels, updated_by, created_at, updated_at`
 
 // scanPolicy 扫描一行策略（JSONB 列经 json.RawMessage 中转反序列化）。
@@ -41,7 +41,7 @@ func scanPolicy(row pgx.Row) (*Policy, error) {
 	var scores, riskLevels []byte
 	var updatedBy *string
 	err := row.Scan(&p.ID, &p.Scope, &p.Enabled, &p.Mode, &p.Version,
-		&p.BlockThreshold, &p.RateLimitThreshold, &p.RateLimitRPS, &p.SignalWindowSeconds,
+		&p.BlockThreshold, &p.RateLimitThreshold, &p.ChallengeThreshold, &p.RateLimitRPS, &p.SignalWindowSeconds,
 		&scores, &riskLevels, &updatedBy, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -84,11 +84,11 @@ func (s *Store) Update(ctx context.Context, p *Policy, updatedBy string) error {
 	}
 	res, err := s.db.Exec(ctx, `
 UPDATE security_risk_policy SET enabled=$1, mode=$2,
-  block_threshold=$3, rate_limit_threshold=$4, rate_limit_rps=$5, signal_window_seconds=$6,
-  scores=$7, risk_levels=$8, updated_by=$9, updated_at=now(), version=version+1
-WHERE scope=$10 AND version=$11`,
+  block_threshold=$3, rate_limit_threshold=$4, challenge_threshold=$5, rate_limit_rps=$6, signal_window_seconds=$7,
+  scores=$8, risk_levels=$9, updated_by=$10, updated_at=now(), version=version+1
+WHERE scope=$11 AND version=$12`,
 		p.Enabled, p.Mode,
-		p.BlockThreshold, p.RateLimitThreshold, p.RateLimitRPS, p.SignalWindowSeconds,
+		p.BlockThreshold, p.RateLimitThreshold, p.ChallengeThreshold, p.RateLimitRPS, p.SignalWindowSeconds,
 		scores, riskLevels, updatedBy, ScopeGlobal, p.Version)
 	if err != nil {
 		return err
@@ -113,6 +113,7 @@ func (s *Store) GetGuardRiskPolicy(ctx context.Context) (*gatewayconfig.GuardRis
 		Version:             p.Version,
 		BlockThreshold:      p.BlockThreshold,
 		RateLimitThreshold:  p.RateLimitThreshold,
+		ChallengeThreshold:  p.ChallengeThreshold,
 		RateLimitRPS:        p.RateLimitRPS,
 		SignalWindowSeconds: p.SignalWindowSeconds,
 		Scores:              nonNilScores(p.Scores),

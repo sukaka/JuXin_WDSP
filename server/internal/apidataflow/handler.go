@@ -57,6 +57,10 @@ func (h *Handler) Graph(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	graph.Quality = quality
+	if graph.RuntimeFieldsWarning != "" {
+		graph.Quality.Partial = true
+		graph.Quality.Message = graph.RuntimeFieldsWarning
+	}
 	response.JSON(w, r, http.StatusOK, graph)
 }
 

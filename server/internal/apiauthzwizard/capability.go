@@ -1,6 +1,6 @@
 // capability.go 主节点能力检查（§1.2 BLOCKED_BY_NODE 判定输入）：
 // 读 sidecar capability.json——发布门同一事实源（gatewayconfig.LoadNodeManifest），
-// authzdecide 自报须 ≥ az/3；清单缺失/契约违规/陈旧均按能力不足处理
+// 旧模型要求 az/3，ANY_OF 要求 az/4；清单缺失/契约违规/陈旧均按能力不足处理
 // （与发布门 fail-closed 同语义——readiness 是「切 PROTECT 后能否生效」的预评估）。
 package apiauthzwizard
 
@@ -18,11 +18,12 @@ import (
 const capabilityStaleAfter = 3 * 60 * time.Second
 
 // SidecarCapabilityChecker 构造 sidecar 清单能力检查器（dir 空串用网关默认目录）。
+// requiredAZ 由模型语义决定：旧 PROTECT 为 az/3，ANY_OF（含 OBSERVE）为 az/4。
 func SidecarCapabilityChecker(dir string) CapabilityChecker {
 	if dir == "" {
 		dir = gatewayconfig.DefaultSidecarDir
 	}
-	return func(ctx context.Context) (bool, string) {
+	return func(ctx context.Context, requiredAZ int) (bool, string) {
 		manifest, err := gatewayconfig.LoadNodeManifest(dir)
 		if err != nil {
 			return false, "能力清单不可用（" + err.Error() + "）"
@@ -30,12 +31,15 @@ func SidecarCapabilityChecker(dir string) CapabilityChecker {
 		if stale, age := gatewayconfig.ManifestStale(manifest, time.Now().UTC(), capabilityStaleAfter); stale {
 			return false, fmt.Sprintf("能力清单过期（陈旧 %.0f 秒）", age.Seconds())
 		}
+		if requiredAZ < 3 {
+			requiredAZ = 3
+		}
 		for _, d := range manifest.Detectors {
 			if d.Name == "authzdecide" {
-				if azVersionAtLeast(d.Version, 3) {
+				if azVersionAtLeast(d.Version, requiredAZ) {
 					return true, ""
 				}
-				return false, "authzdecide 自报 " + d.Version + "（含 PROTECT 快照要求 az/3）"
+				return false, fmt.Sprintf("authzdecide 自报 %s（当前模型要求 az/%d）", d.Version, requiredAZ)
 			}
 		}
 		return false, "能力清单无 authzdecide 自报"

@@ -1,15 +1,14 @@
 // publisher_smoke.go 阶段5 §十七 发布后流量验证（功能性冒烟）。
 //
-// 现状缺口：verifyPublish 只做 Caddy Ping + 配置规范化哈希一致性校验，回答的是
-// 「配置被加载了吗」，回答不了「防护链对新配置真的生效了吗」。本文件在配置一致性
-// 通过之后，向网关数据面发送不会误伤的合成探针请求，按 STAGE_5 §十七 的
-// 真实IP → 黑白名单 → CC 顺序做功能性冒烟：
+// verifyPublish 的 Caddy Ping + 配置哈希校验只回答「配置被加载了吗」；本文件随后
+// 向数据面发送合成探针，按真实IP → 黑白名单 → CC 验证新配置的防护链实际生效：
 //
-//   - 探针路径固定在 Bot 保留命名空间下（/_wdsp/bot/v1/publish-smoke）：该命名空间
-//     未知子路径由 jiuzhang_guard 本地返回 404 墓碑（正文恰为 "404 not found" 且
-//     Cache-Control: no-store），结构上绝不反向代理到源站；墓碑位于 Bot 判定步骤，
-//     在真实IP/人工封禁/黑白名单/L7/自动封禁/风险/配额/CC 全部通过之后才会到达，
-//     因此收到墓碑即证明完整 guard 链路对该应用流量已生效；
+//   - 探针使用独立精确端点 /_wdsp/internal/v1/publish-smoke，不再借用 Bot 保留
+//     命名空间。端点位于 serveNextViaBot 最前面，在 REAL_IP/封禁/黑白名单/L7/风险/
+//     配额/CC 之后由 guard 本地应答；bp==nil、OFF 与 RELEASED 均可验证，绝不进源站；
+//   - 每次发布生成独立随机 HMAC 密钥并以 taskID 为发布 ID，经受控配置通道下发。
+//     请求与响应同时签名绑定 app_id/app_code/Host/发布 ID/nonce/时间戳/探针类型；
+//     固定标记头、普通源站 404、无效/过期/跨站点/跨发布响应均不能冒充 PASS；
 //   - 探针全部携带 X-Jiuzhang-Publish-Smoke 标记头，便于在访问日志中识别与过滤；
 //   - 黑名单探针使用发布快照中的真实黑名单单 IP 合成 X-Forwarded-For：仅当探针源
 //     （默认 127.0.0.1）在可信代理链内时 XFF 才会被采信并触发 403——这是可用的
@@ -33,8 +32,11 @@ package gatewayconfig
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,6 +47,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,38 +78,162 @@ const (
 )
 
 const (
-	// smokeProbePath 探针路径：Bot 保留命名空间下的未知子路径，网关本地 404 墓碑，
-	// 不反向代理、不触发挑战签发（非浏览器文档导航）。
-	smokeProbePath = "/_wdsp/bot/v1/publish-smoke"
-	// SmokeMarkerHeader 探针标记头（供访问日志识别/过滤合成流量）。
-	SmokeMarkerHeader = "X-Jiuzhang-Publish-Smoke"
-	// smokeRealIPSpoofXFF 真实 IP 探针的合成 XFF：TEST-NET-2 文档前缀（RFC 5737），
-	// 全网不可路由，绝不对应真实客户端。
-	smokeRealIPSpoofXFF = "198.51.100.77"
-	// smokeCCBurst CC 探针突发请求数：远低于任何合理 CC 阈值，仅验证计数步骤执行。
-	smokeCCBurst = 3
-	// smokeDebugCCCounterPath 网关 CC 计数调试回显端点（jiuzhang_guard
-	// debug_cc_counter 段，仅本机/内网连接源可访问；未启用时探针如实 SKIP）。
+	// smokeProbePath 是独立 WDSP 内部精确端点，与 Bot 命名空间及保留状态无关。
+	smokeProbePath = "/_wdsp/internal/v1/publish-smoke"
+	// SmokeMarkerHeader 探针标记头（供访问日志识别/过滤合成流量；不是认证依据）。
+	SmokeMarkerHeader       = "X-Jiuzhang-Publish-Smoke"
+	smokeAppIDHeader        = "X-Jiuzhang-Publish-Smoke-App-ID"
+	smokeAppCodeHeader      = "X-Jiuzhang-Publish-Smoke-App-Code"
+	smokePublishIDHeader    = "X-Jiuzhang-Publish-Smoke-Publish-ID"
+	smokeNonceHeader        = "X-Jiuzhang-Publish-Smoke-Nonce"
+	smokeTimestampHeader    = "X-Jiuzhang-Publish-Smoke-Timestamp"
+	smokeSignatureHeader    = "X-Jiuzhang-Publish-Smoke-Signature"
+	smokeMaxAge             = 30 * time.Second
+	smokeRealIPSpoofXFF     = "198.51.100.77" // RFC 5737 文档地址，绝不对应真实客户端
+	smokeCCBurst            = 3               // 远低于合理 CC 阈值，仅验证计数步骤执行
 	smokeDebugCCCounterPath = "/_wdsp/debug/v1/cc-counter"
-	// smokeCCExactMaxLimit CC_EXACT 探针可接受的策略阈值上限：N=配置阈值次合成
-	// 请求，阈值过大时不为探针打满（控制合成流量总量），如实 SKIP。
-	smokeCCExactMaxLimit = 50
-	// smokeMaxTargets 单次发布最多探针的应用数（控制发布耗时与合成流量总量）。
-	smokeMaxTargets = 3
-	// smokeRequestTimeout 单次探针请求超时。
-	smokeRequestTimeout = 3 * time.Second
-	// smokeBodyReadLimit 探针响应正文读取上限（判定只需墓碑短句）。
-	smokeBodyReadLimit = 4096
-	// smokePersistTimeout 冒烟结果落库超时（背景 ctx，与 markAC 同口径避免请求取消丢失）。
-	smokePersistTimeout = 10 * time.Second
+	smokeCCExactMaxLimit    = 50 // 不为探针打满过大阈值，超出时如实 SKIP
+	smokeMaxTargets         = 3  // 控制发布耗时与合成流量总量
+	smokeRequestTimeout     = 3 * time.Second
+	smokeBodyReadLimit      = 4096 // 足够读取签名 JSON，限制异常响应内存占用
+	smokePersistTimeout     = 10 * time.Second
 )
 
-// smokeTarget 一个可探针的应用数据面目标。
+// smokeTarget 一个可探针的应用数据面目标；认证材料只读共享本次发布配置。
 type smokeTarget struct {
-	appCode string
-	scheme  string // http / https
-	host    string // Host 头与 TLS SNI（应用域名；泛域名已替换为 smoke. 前缀）
-	port    int
+	appID        string
+	appCode      string
+	scheme       string // http / https
+	host         string // Host 头与 TLS SNI（应用域名；泛域名已替换为 smoke. 前缀）
+	port         int
+	publishSmoke *GuardPublishSmoke
+}
+
+// smokeRequestBinding 保存一次请求必须回响且验签的上下文字段。
+type smokeRequestBinding struct {
+	appID     string
+	appCode   string
+	host      string
+	publishID string
+	nonce     string
+	timestamp int64
+	probe     string
+	key       []byte
+}
+
+type smokeSignedResponse struct {
+	AppID     string `json:"app_id"`
+	AppCode   string `json:"app_code"`
+	Host      string `json:"host"`
+	PublishID string `json:"publish_id"`
+	Nonce     string `json:"nonce"`
+	Timestamp int64  `json:"timestamp"`
+	Signature string `json:"signature"`
+}
+
+// preparePublishSmoke 在候选配置生成前建立本次发布独有的认证身份。覆盖旧值是
+// 刻意行为：访问控制回滚也属于新发布，不能重放历史 taskID 或历史密钥。
+func preparePublishSmoke(taskID uuid.UUID, guardCfg *GuardConfig) error {
+	if guardCfg == nil {
+		return nil
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return fmt.Errorf("生成发布探针密钥: %w", err)
+	}
+	guardCfg.PublishSmoke = &GuardPublishSmoke{PublishID: taskID.String(), KeyHex: hex.EncodeToString(key)}
+	return nil
+}
+
+func validatePublishSmokeForTask(taskID uuid.UUID, guardCfg *GuardConfig) error {
+	if guardCfg == nil || guardCfg.PublishSmoke == nil {
+		return fmt.Errorf("本次发布缺少独立探针认证配置")
+	}
+	sec := guardCfg.PublishSmoke
+	if sec.PublishID == "" || sec.PublishID != taskID.String() {
+		return fmt.Errorf("探针发布 ID 与当前发布任务不匹配")
+	}
+	key, err := hex.DecodeString(sec.KeyHex)
+	if err != nil || len(key) != 32 {
+		return fmt.Errorf("探针 HMAC 密钥必须是 32 字节 hex")
+	}
+	return nil
+}
+
+func smokeMAC(key []byte, parts ...string) []byte {
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte("jiuzhang-wdsp-publish-smoke/v1"))
+	for _, part := range parts {
+		_, _ = mac.Write([]byte(strconv.Itoa(len(part))))
+		_, _ = mac.Write([]byte{':'})
+		_, _ = mac.Write([]byte(part))
+	}
+	return mac.Sum(nil)
+}
+
+func smokeCanonicalHost(host string) string { return strings.ToLower(host) }
+
+func newSmokeRequestBinding(t smokeTarget, probe string, now time.Time) (*smokeRequestBinding, error) {
+	if t.publishSmoke == nil {
+		return nil, fmt.Errorf("missing publish smoke authentication")
+	}
+	key, err := hex.DecodeString(t.publishSmoke.KeyHex)
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("invalid publish smoke key")
+	}
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("generate publish smoke nonce: %w", err)
+	}
+	return &smokeRequestBinding{
+		appID: t.appID, appCode: t.appCode,
+		host:      smokeCanonicalHost(net.JoinHostPort(t.host, strconv.Itoa(t.port))),
+		publishID: t.publishSmoke.PublishID, nonce: hex.EncodeToString(nonce),
+		timestamp: now.UTC().Unix(), probe: probe, key: key,
+	}, nil
+}
+
+func smokeRequestSignature(b *smokeRequestBinding) []byte {
+	return smokeMAC(b.key, "request", http.MethodGet, smokeProbePath,
+		b.appID, b.appCode, b.host, b.publishID, b.nonce,
+		strconv.FormatInt(b.timestamp, 10), b.probe)
+}
+
+func smokeResponseSignature(b *smokeRequestBinding) []byte {
+	return smokeMAC(b.key, "response", strconv.Itoa(http.StatusOK),
+		b.appID, b.appCode, b.host, b.publishID, b.nonce,
+		strconv.FormatInt(b.timestamp, 10), b.probe)
+}
+
+// validatePublishSmokeRouteConflicts 在候选生成前拒绝已知业务路由占用精确内部
+// 端点。路径转发前缀只要覆盖该 URL 即冲突；已登记 API 端点精确同名同样冲突。
+// 未登记的任意源站路径无法静态发现，但运行时精确端点仍保证绝不反向代理。
+func validatePublishSmokeRouteConflicts(appsData []AppData, guardCfg *GuardConfig) error {
+	if guardCfg == nil {
+		return nil
+	}
+	guarded := false
+	for _, app := range appsData {
+		if app.DeploymentMode == applications.DeployModeMirror || app.ProtectionMode == applications.ModeBypass {
+			continue
+		}
+		guarded = true
+		for _, route := range app.PathRoutes {
+			if route.PathPrefix != "" && strings.HasPrefix(smokeProbePath, route.PathPrefix) {
+				return fmt.Errorf("应用 %s 的路径转发前缀 %q 覆盖发布探针保留端点 %s，拒绝抢占业务 URL",
+					app.Code, route.PathPrefix, smokeProbePath)
+			}
+		}
+	}
+	if guarded {
+		for endpointKey := range guardCfg.APIKnownEndpoints {
+			_, path, ok := strings.Cut(endpointKey, " ")
+			if ok && path == smokeProbePath {
+				return fmt.Errorf("已登记业务端点 %q 与发布探针保留端点冲突，拒绝抢占业务 URL", endpointKey)
+			}
+		}
+	}
+	return nil
 }
 
 // smokeProbeResult 单条探针结果。
@@ -203,11 +330,14 @@ func resolveSmokeTargets(appsData []AppData, guardCfg *GuardConfig) ([]smokeTarg
 				continue
 			}
 			// HTTP 跳 HTTPS 时 80 端口仅返回 308 静态重定向（不经 guard），须探 HTTPS
+			target := smokeTarget{appID: app.AppID, appCode: app.Code, host: host, publishSmoke: guardCfg.PublishSmoke}
 			switch {
 			case d.HTTPSEnabled && d.HTTPSPort != nil && (d.RedirectHTTPToHTTPS || !d.HTTPEnabled || d.HTTPPort == nil):
-				targets = append(targets, smokeTarget{appCode: app.Code, scheme: "https", host: host, port: *d.HTTPSPort})
+				target.scheme, target.port = "https", *d.HTTPSPort
+				targets = append(targets, target)
 			case d.HTTPEnabled && d.HTTPPort != nil:
-				targets = append(targets, smokeTarget{appCode: app.Code, scheme: "http", host: host, port: *d.HTTPPort})
+				target.scheme, target.port = "http", *d.HTTPPort
+				targets = append(targets, target)
 			default:
 				continue
 			}
@@ -269,49 +399,73 @@ func (p *Publisher) smokeClientFor(t smokeTarget) *http.Client {
 	}
 }
 
-// smokeResponse 一次探针响应的判定要素。
+// smokeResponse 一次探针响应及其必须匹配的一次性请求绑定。
 type smokeResponse struct {
-	status int
-	header http.Header
-	body   string
+	status  int
+	header  http.Header
+	body    string
+	binding *smokeRequestBinding
 }
 
-// doSmokeRequest 发送一次合成探针请求。
+// doSmokeRequest 发送带短时 HMAC 的合成探针；标记头仅用于日志，不参与信任决策。
 func (p *Publisher) doSmokeRequest(ctx context.Context, client *http.Client, t smokeTarget, probe string, extraHeaders map[string]string) (*smokeResponse, error) {
-	reqURL := fmt.Sprintf("%s://%s%s", t.scheme, net.JoinHostPort(t.host, fmt.Sprintf("%d", t.port)), smokeProbePath)
+	binding, err := newSmokeRequestBinding(t, probe, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	reqURL := fmt.Sprintf("%s://%s%s", t.scheme, net.JoinHostPort(t.host, strconv.Itoa(t.port)), smokeProbePath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set(SmokeMarkerHeader, probe)
+	req.Host = binding.host
 	for k, v := range extraHeaders {
 		req.Header.Set(k, v)
 	}
+	req.Header.Set(SmokeMarkerHeader, probe)
+	req.Header.Set(smokeAppIDHeader, binding.appID)
+	req.Header.Set(smokeAppCodeHeader, binding.appCode)
+	req.Header.Set(smokePublishIDHeader, binding.publishID)
+	req.Header.Set(smokeNonceHeader, binding.nonce)
+	req.Header.Set(smokeTimestampHeader, strconv.FormatInt(binding.timestamp, 10))
+	req.Header.Set(smokeSignatureHeader, hex.EncodeToString(smokeRequestSignature(binding)))
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, smokeBodyReadLimit))
-	return &smokeResponse{status: resp.StatusCode, header: resp.Header, body: string(body)}, nil
+	return &smokeResponse{status: resp.StatusCode, header: resp.Header, body: string(body), binding: binding}, nil
 }
 
 // smokeVerdict 探针响应分类。
 type smokeVerdict int
 
 const (
-	verdictUnexpected     smokeVerdict = iota // 与防护链预期不符（源站响应/网关 5xx/未知形态）
-	verdictGuardTombstone                     // guard 本地 404 墓碑：完整防护链执行且未触发阻断
-	verdictGuardBlock                         // guard/WAF 主动处置（403 阻断页或 429 限速，带 Request ID）
+	verdictUnexpected         smokeVerdict = iota // 源站响应、认证失败、网关 5xx 或其他未知形态
+	verdictGuardAuthenticated                     // guard 本地 200，且站点/发布/nonce/响应 HMAC 全部匹配
+	verdictGuardBlock                             // 前置 guard/WAF 主动处置（403 或 429，带 Request ID）
 )
 
-// classifySmokeResponse 判定探针响应形态。墓碑的三重判据（保留命名路径 + 精确正文
-// + no-store）与处置响应的 Request ID 头均为网关侧不可伪造给源站的标记。
 func classifySmokeResponse(r *smokeResponse) smokeVerdict {
-	if r.status == http.StatusNotFound &&
+	if r.status == http.StatusOK && r.binding != nil &&
 		strings.Contains(r.header.Get("Cache-Control"), "no-store") &&
-		strings.TrimSpace(r.body) == "404 not found" {
-		return verdictGuardTombstone
+		r.header.Get(SmokeMarkerHeader) == r.binding.probe {
+		var body smokeSignedResponse
+		if json.Unmarshal([]byte(r.body), &body) == nil {
+			b := r.binding
+			delta := time.Since(time.Unix(b.timestamp, 0))
+			if delta < 0 {
+				delta = -delta
+			}
+			sig, sigErr := hex.DecodeString(body.Signature)
+			if delta <= smokeMaxAge && body.AppID == b.appID && body.AppCode == b.appCode &&
+				body.Host == b.host && body.PublishID == b.publishID && body.Nonce == b.nonce &&
+				body.Timestamp == b.timestamp && sigErr == nil && len(sig) == sha256.Size &&
+				hmac.Equal(sig, smokeResponseSignature(b)) {
+				return verdictGuardAuthenticated
+			}
+		}
 	}
 	if (r.status == http.StatusForbidden || r.status == http.StatusTooManyRequests) &&
 		r.header.Get("X-Jiuzhang-Request-ID") != "" {
@@ -359,9 +513,9 @@ func (p *Publisher) probeTarget(ctx context.Context, t smokeTarget, guardCfg *Gu
 		}}, false
 	}
 	switch classifySmokeResponse(realIP) {
-	case verdictGuardTombstone:
+	case verdictGuardAuthenticated:
 		results = append(results, smokeProbeResult{Probe: SmokeProbeRealIP, AppCode: t.appCode, Result: SmokeResultPass,
-			Message: "合成 XFF 探针经完整防护链处理（本地墓碑 404，未采信伪造头亦未异常）"})
+			Message: "合成 XFF 探针经完整防护链处理（独立内部端点验签应答，未采信伪造头亦未异常）"})
 	case verdictGuardBlock:
 		results = append(results, smokeProbeResult{Probe: SmokeProbeRealIP, AppCode: t.appCode, Result: SmokeResultPass,
 			Message: fmt.Sprintf("合成 XFF 探针被防护链主动处置（status=%d，伪造头防护生效）", realIP.status)})
@@ -386,7 +540,7 @@ func (p *Publisher) probeTarget(ctx context.Context, t smokeTarget, guardCfg *Gu
 		case classifySmokeResponse(bl) == verdictGuardBlock && bl.status == http.StatusForbidden:
 			results = append(results, smokeProbeResult{Probe: SmokeProbeBlacklist, AppCode: t.appCode, Result: SmokeResultPass,
 				Message: fmt.Sprintf("合成黑名单来源 %s 被 403 处置，黑名单经流量验证命中", denyIP)})
-		case classifySmokeResponse(bl) == verdictGuardTombstone:
+		case classifySmokeResponse(bl) == verdictGuardAuthenticated:
 			results = append(results, smokeProbeResult{Probe: SmokeProbeBlacklist, AppCode: t.appCode, Result: SmokeResultSkip,
 				Message: "合成 XFF 未被采信（探针源不在可信代理链或命中白名单），黑名单未经流量触发；真实 IP 防护行为正确"})
 		case classifySmokeResponse(bl) == verdictGuardBlock:
@@ -409,7 +563,7 @@ func (p *Publisher) probeTarget(ctx context.Context, t smokeTarget, guardCfg *Gu
 			break
 		}
 		switch classifySmokeResponse(cc) {
-		case verdictGuardTombstone:
+		case verdictGuardAuthenticated:
 			continue
 		case verdictGuardBlock:
 			results = append(results, smokeProbeResult{Probe: SmokeProbeCC, AppCode: t.appCode, Result: SmokeResultPass,
@@ -638,7 +792,7 @@ func (p *Publisher) probeCCExact(ctx context.Context, client *http.Client, t smo
 			return nil, result(SmokeResultFail, "CC_EXACT 第 %d 次请求失败（数据面此前可达）：%v", i, err), false
 		}
 		switch classifySmokeResponse(resp) {
-		case verdictGuardTombstone:
+		case verdictGuardAuthenticated:
 			return resp, smokeProbeResult{}, true
 		case verdictGuardBlock:
 			return resp, result(SmokeResultSkip,
@@ -693,14 +847,15 @@ func (p *Publisher) probeCCExact(ctx context.Context, client *http.Client, t smo
 	case classifySmokeResponse(resp) == verdictGuardBlock:
 		return result(SmokeResultPass,
 			"CC 策略 %s 阈值 %d 验证：第 %d 次请求被防护链处置（status=%d）", pol.ID, n, n+1, resp.status)
-	case classifySmokeResponse(resp) == verdictGuardTombstone:
+	case classifySmokeResponse(resp) == verdictGuardAuthenticated:
 		return result(SmokeResultFail, "第 %d 次（阈值 %d+1）请求仍放行，CC 阈值未生效", n+1, n)
 	default:
 		return result(SmokeResultFail, "CC_EXACT 第 %d 次请求响应与防护链预期不符（status=%d）", n+1, resp.status)
 	}
 }
 
-// runPublishSmoke 发布后流量验证入口（verifyPublish 配置一致性通过后调用）。// 返回报告永不返回 nil；FAIL 由调用方并入 verifyErr 走既有自动回滚路径。
+// runPublishSmoke 发布后流量验证入口（verifyPublish 配置一致性通过后调用）。
+// 返回报告永不返回 nil；FAIL 由调用方并入 verifyErr 走既有自动回滚路径。
 func (p *Publisher) runPublishSmoke(ctx context.Context, taskID, versionID uuid.UUID, appsData []AppData, guardCfg *GuardConfig) *smokeReport {
 	rep := &smokeReport{}
 	targets, reason := resolveSmokeTargets(appsData, guardCfg)
@@ -709,6 +864,14 @@ func (p *Publisher) runPublishSmoke(ctx context.Context, taskID, versionID uuid.
 		rep.degradeReason = reason
 		p.persistSmokeReport(taskID, versionID, rep)
 		slog.Warn("post-publish smoke degraded", "task", taskID, "version", versionID, "reason", reason)
+		return rep
+	}
+	// 认证材料缺失或跨 taskID 是本地发布一致性错误，不是数据面不可达；必须 FAIL
+	// 并走既有回滚，绝不能把不安全的固定头通道作为降级替代。
+	if err := validatePublishSmokeForTask(taskID, guardCfg); err != nil {
+		rep.probes = []smokeProbeResult{{Probe: "SMOKE", Result: SmokeResultFail, Message: err.Error()}}
+		p.persistSmokeReport(taskID, versionID, rep)
+		slog.Warn("post-publish smoke authentication invalid", "task", taskID, "version", versionID, "error", err)
 		return rep
 	}
 	available := 0

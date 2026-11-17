@@ -35,8 +35,9 @@ func (e *ValidationError) Error() string {
 }
 
 // Validate 校验策略全字段，返回字段级错误列表（空 = 通过）：
-// mode 限定 OBSERVE/PROTECT；block/rate_limit 阈值 1-100 且 rate_limit < block
-// （限速应先于阻断触达）；rate_limit_rps 1-100000；signal_window_seconds 1-604800；
+// mode 限定 OBSERVE/PROTECT；block/rate_limit 阈值 1-100 且 rate_limit < block；
+// challenge 为 0 时关闭，启用后须满足 rate_limit < challenge < block；
+// rate_limit_rps 1-100000；signal_window_seconds 1-604800；
 // scores 键为合法信号类型格式、值 0-100；risk_levels 恰为 medium/high/critical
 // 三键、值 0-100 且严格递增（等级区间不得倒置/重叠）；shared_device_account_limit
 // 仅应用覆盖可设，0=默认3，自定义2-1000，只调整观察信号阈值。
@@ -59,6 +60,14 @@ func Validate(p *Policy) []FieldError {
 		add("rate_limit_threshold", fmt.Sprintf("阈值必须在 1~%d 之间", maxThreshold))
 	} else if blockOK && p.RateLimitThreshold >= p.BlockThreshold {
 		add("rate_limit_threshold", "限速阈值必须小于阻断阈值")
+	}
+	if p.ChallengeThreshold != 0 {
+		challengeOK := p.ChallengeThreshold >= 1 && p.ChallengeThreshold <= maxThreshold
+		if !challengeOK {
+			add("challenge_threshold", fmt.Sprintf("0 表示关闭；启用时阈值必须在 1~%d 之间", maxThreshold))
+		} else if rateOK && blockOK && (p.RateLimitThreshold >= p.ChallengeThreshold || p.ChallengeThreshold >= p.BlockThreshold) {
+			add("challenge_threshold", "必须满足限速阈值 < 挑战阈值 < 阻断阈值")
+		}
 	}
 
 	if p.RateLimitRPS < 1 || p.RateLimitRPS > maxRPS {

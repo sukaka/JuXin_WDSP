@@ -298,6 +298,85 @@ func TestAuthzCandidateSweepPostgresConcurrentContract(t *testing.T) {
 	}
 }
 
+func TestAuthzSharedRelationsMigration216PostgresContract(t *testing.T) {
+	pool, ctx := openAuthzPostgres(t)
+	if err := database.Migrate(ctx, pool, "../../migrations", "up"); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	if err := database.Migrate(ctx, pool, "../../migrations", "up"); err != nil {
+		t.Fatalf("rerun migrations: %v", err)
+	}
+
+	code := fmt.Sprintf("az216-%d", time.Now().UnixNano())
+	var applicationID, endpointID, modelID string
+	if err := pool.QueryRow(ctx, `INSERT INTO applications(code,name) VALUES ($1,$2) RETURNING id`, code, code).Scan(&applicationID); err != nil {
+		t.Fatalf("insert application: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO api_endpoints(application_id,http_method,normalized_path,endpoint_key) VALUES ($1,'GET','/orders/{id}',$2) RETURNING id`, applicationID, code+":GET:/orders/{id}").Scan(&endpointID); err != nil {
+		t.Fatalf("insert endpoint: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO api_object_models(endpoint_id,object_segment,required_relation) VALUES ($1,'path:1','OWNER') RETURNING id`, endpointID).Scan(&modelID); err != nil {
+		t.Fatalf("insert legacy object model: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM api_object_models WHERE id=$1`, modelID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM api_endpoints WHERE id=$1`, endpointID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM applications WHERE id=$1`, applicationID)
+	})
+
+	var relations []string
+	var isNull bool
+	if err := pool.QueryRow(ctx, `SELECT required_relations IS NULL FROM api_object_models WHERE id=$1`, modelID).Scan(&isNull); err != nil || !isNull {
+		t.Fatalf("legacy required_relations null=%v err=%v", isNull, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE api_object_models SET required_relation='ANY_OF',required_relations=ARRAY['OWNER','SHARED_WITH']::TEXT[] WHERE id=$1`, modelID); err != nil {
+		t.Fatalf("canonical ANY_OF update: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT required_relations FROM api_object_models WHERE id=$1`, modelID).Scan(&relations); err != nil {
+		t.Fatalf("read canonical ANY_OF relations: %v", err)
+	}
+	if len(relations) != 2 || relations[0] != RelationOwner || relations[1] != RelationSharedWith {
+		t.Fatalf("canonical relations=%v", relations)
+	}
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{name: "missing shared", sql: `UPDATE api_object_models SET required_relations=ARRAY['OWNER']::TEXT[] WHERE id=$1`},
+		{name: "duplicate", sql: `UPDATE api_object_models SET required_relations=ARRAY['OWNER','OWNER','SHARED_WITH']::TEXT[] WHERE id=$1`},
+		{name: "non canonical order", sql: `UPDATE api_object_models SET required_relations=ARRAY['SHARED_WITH','OWNER']::TEXT[] WHERE id=$1`},
+		{name: "null any_of", sql: `UPDATE api_object_models SET required_relations=NULL WHERE id=$1`},
+		{name: "legacy non empty", sql: `UPDATE api_object_models SET required_relation='OWNER' WHERE id=$1`},
+		{name: "delegation", sql: `UPDATE api_object_models SET required_relations=ARRAY['OWNER','DELEGATED_TO']::TEXT[] WHERE id=$1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := pool.Exec(ctx, tc.sql, modelID); err == nil {
+				t.Fatal("invalid required_relation/required_relations pair accepted")
+			}
+		})
+	}
+	if _, err := pool.Exec(ctx, `UPDATE api_object_models SET required_relation='OWNER',required_relations=NULL WHERE id=$1`, modelID); err != nil {
+		t.Fatalf("restore legacy model before down: %v", err)
+	}
+	if err := database.Migrate(ctx, pool, "../../migrations", "down"); err != nil {
+		t.Fatalf("migrate 216 down: %v", err)
+	}
+	var columnExists bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='api_object_models' AND column_name='required_relations')`).Scan(&columnExists); err != nil || columnExists {
+		t.Fatalf("required_relations exists after down=%v err=%v", columnExists, err)
+	}
+	var requiredRelation string
+	if err := pool.QueryRow(ctx, `SELECT required_relation FROM api_object_models WHERE id=$1`, modelID).Scan(&requiredRelation); err != nil || requiredRelation != RelationOwner {
+		t.Fatalf("legacy required_relation after down=%q err=%v", requiredRelation, err)
+	}
+	if err := database.Migrate(ctx, pool, "../../migrations", "up"); err != nil {
+		t.Fatalf("reapply 216: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT required_relations IS NULL FROM api_object_models WHERE id=$1`, modelID).Scan(&isNull); err != nil || !isNull {
+		t.Fatalf("required_relations after re-up null=%v err=%v", isNull, err)
+	}
+}
+
 func mustDecodeKey(t *testing.T, keyHex string) []byte {
 	t.Helper()
 	key, err := decodeObjectHMACKey(keyHex)

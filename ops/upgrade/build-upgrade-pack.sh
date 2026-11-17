@@ -187,6 +187,19 @@ else
   COMPONENTS=("${COMPONENTS_SORTED[@]}")
 fi
 
+reject_legacy_gateway_pack() {
+  [[ "$FROM_VERSION" == "1.3.0" ]] || return 0
+  local component
+  for component in "${COMPONENTS[@]}"; do
+    if [[ "$component" == gateway ]]; then
+      die "1.3.0 的 Compose 不满足新 gateway 启动契约，镜像包无法更新宿主 Compose；拒绝生成从 1.3.0 起含 gateway 的镜像包，请先使用完整包升级"
+    fi
+  done
+}
+if [[ "$AUTO_COMPONENTS" != true ]]; then
+  reject_legacy_gateway_pack
+fi
+
 component_image() { # 组件 → 镜像名:目标版本
   case "$1" in
     api) printf 'jiuzhang-server:%s\n' "$TO_VERSION" ;;
@@ -339,6 +352,7 @@ PY
   log_info "auto 识别组件: ${COMPONENTS[*]}（基准 ${BASE_TAG}..HEAD + 工作区改动）"
 fi
 
+reject_legacy_gateway_pack
 log_info "打包计划: ${FROM_VERSION} -> ${TO_VERSION}（${CHANGE_TYPE}），架构 ${ARCH}，组件 ${COMPONENTS[*]}"
 if [[ "$PLAN_ONLY" == true ]]; then
   exit 0

@@ -6,6 +6,7 @@
 // 快照脱敏存储、回滚按当前设置重注入；本文件把整站配置版本统一到同一口径：
 //   - saveVersion 写入 configuration_json 前经 RedactConfigSecrets 脱敏（"***" 占位）；
 //   - Rollback 重放前经 reinjectConfigSecrets 按当前设置重注入，取不到则失败并明确报错；
+//   - publish_smoke 属于单次发布身份，保存时整段移除，不在回滚中重放；
 //   - 存量历史版本不动，含旧明文的 JSON 回滚时同样走重注入（旧值被当前值覆盖）。
 package gatewayconfig
 
@@ -62,7 +63,8 @@ func redactMapSecret(m mapT, key string) {
 // RedactConfigSecrets 脱敏配置 JSON 中的 guard 段密钥类字段（版本表存储用）：
 // valkey.password、identity_salt、api_scan_verification.key_hex、
 // api_file_signature.key_hex、api_authz_object_hmac_key_hex、TLS 会话票据 keys_hex 以 "***" 占位；
-// 非密钥字段（地址、kid、开关等）原样保留，供版本对比与审计。
+// publish_smoke 是单次发布身份，整段移除而不是保存或重放旧密钥；其余非密钥字段
+// （地址、kid、开关等）原样保留，供版本对比与审计。
 func RedactConfigSecrets(configJSON string) (string, error) {
 	root, err := parseConfigJSON(configJSON)
 	if err != nil {
@@ -70,6 +72,8 @@ func RedactConfigSecrets(configJSON string) (string, error) {
 	}
 	walkConfigMaps(root, func(m mapT) {
 		if isGuardHandlerNode(m) {
+			// 探针密钥只对本次发布有效；删除整段可避免旧发布身份被快照或回滚重放。
+			delete(m, "publish_smoke")
 			redactMapSecret(m, "identity_salt")
 			redactMapSecret(m, "api_authz_object_hmac_key_hex")
 			if v, ok := m["api_authz_previous_valid"].(mapT); ok {

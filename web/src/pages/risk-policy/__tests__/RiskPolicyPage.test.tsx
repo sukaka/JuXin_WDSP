@@ -103,6 +103,9 @@ describe('RiskPolicyPage', () => {
       (screen.getByLabelText('限速阈值（1-100）') as HTMLInputElement).value,
     ).toBe('60')
     expect(
+      (screen.getByLabelText('挑战阈值（0 关闭）') as HTMLInputElement).value,
+    ).toBe('0')
+    expect(
       (screen.getByLabelText('限速速率（次/秒）') as HTMLInputElement).value,
     ).toBe('5')
     expect(
@@ -156,12 +159,13 @@ describe('RiskPolicyPage', () => {
       screen.queryByRole('button', { name: '保存策略' }),
     ).not.toBeInTheDocument()
     expect(screen.getByRole('switch')).toBeDisabled()
+    expect(screen.getByLabelText('挑战阈值（0 关闭）')).toBeDisabled()
     expect(
       screen.queryByRole('button', { name: '添加信号' }),
     ).not.toBeInTheDocument()
   }, 15000)
 
-  it('PUT 成功：全量提交携带 version 并提示保存成功', async () => {
+  it('PUT 成功：显式提交 challenge_threshold=0 并携带 version', async () => {
     useAuthStore.setState({
       user: makeUser(['risk_policy.read', 'risk_policy.edit']),
       csrfToken: null,
@@ -178,7 +182,7 @@ describe('RiskPolicyPage', () => {
     await waitFor(() => expect(block.value).toBe('80'))
     // 切换为 PROTECT：出现警示文案，提交体 mode 随之变化
     fireEvent.mouseDown(screen.getByLabelText('防护模式'))
-    fireEvent.click(await screen.findByText('防护（达阈限速/阻断）'))
+    fireEvent.click(await screen.findByText('防护（达阈限速/挑战/阻断）'))
     expect(await screen.findByText('将对达阈身份实断')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '保存策略' }))
 
@@ -196,6 +200,7 @@ describe('RiskPolicyPage', () => {
     expect(body.enabled).toBe(true)
     expect(body.block_threshold).toBe(80)
     expect(body.rate_limit_threshold).toBe(60)
+    expect(body.challenge_threshold).toBe(0)
     expect(body.rate_limit_rps).toBe(5)
     expect(body.signal_window_seconds).toBe(86400)
     expect(body.scores).toEqual({ RECON: 15, WAF: 50, HEADLESS: 10 })
@@ -204,6 +209,77 @@ describe('RiskPolicyPage', () => {
     expect(body.id).toBeUndefined()
     expect(body.updated_by).toBeUndefined()
     expect(body.updated_at).toBeUndefined()
+  }, 15000)
+
+  it('挑战阈值提供 0-100 边界并拒绝不大于限速阈值的倒置配置', async () => {
+    useAuthStore.setState({
+      user: makeUser(['risk_policy.read', 'risk_policy.edit']),
+      csrfToken: null,
+      initialized: true,
+    })
+    const fetchMock = mockFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    const block = (await screen.findByLabelText(
+      '阻断阈值（1-100）',
+    )) as HTMLInputElement
+    await waitFor(() => expect(block.value).toBe('80'))
+    const challenge = screen.getByLabelText(
+      '挑战阈值（0 关闭）',
+    ) as HTMLInputElement
+    expect(challenge.value).toBe('0')
+    expect(challenge).toHaveAttribute('aria-valuemin', '0')
+    expect(challenge).toHaveAttribute('aria-valuemax', '100')
+
+    fireEvent.change(challenge, { target: { value: '60' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存策略' }))
+    expect(
+      await screen.findByText('须满足：限速阈值 < 挑战阈值 < 阻断阈值'),
+    ).toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some(
+        (call) => (call[1] as RequestInit | undefined)?.method === 'PUT',
+      ),
+    ).toBe(false)
+  }, 15000)
+
+  it('挑战阈值拒绝达到阻断阈值，严格介于限速和阻断之间的值可保存', async () => {
+    useAuthStore.setState({
+      user: makeUser(['risk_policy.read', 'risk_policy.edit']),
+      csrfToken: null,
+      initialized: true,
+    })
+    const fetchMock = mockFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    const block = (await screen.findByLabelText(
+      '阻断阈值（1-100）',
+    )) as HTMLInputElement
+    await waitFor(() => expect(block.value).toBe('80'))
+    const challenge = screen.getByLabelText(
+      '挑战阈值（0 关闭）',
+    ) as HTMLInputElement
+    fireEvent.change(challenge, { target: { value: '80' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存策略' }))
+    expect(
+      await screen.findByText('须满足：限速阈值 < 挑战阈值 < 阻断阈值'),
+    ).toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some(
+        (call) => (call[1] as RequestInit | undefined)?.method === 'PUT',
+      ),
+    ).toBe(false)
+
+    fireEvent.change(challenge, { target: { value: '61' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存策略' }))
+    expect(await screen.findByText('风险策略已保存')).toBeInTheDocument()
+    const putCall = fetchMock.mock.calls.find(
+      (call) => (call[1] as RequestInit | undefined)?.method === 'PUT',
+    )
+    const body = JSON.parse(String((putCall![1] as RequestInit).body))
+    expect(body.challenge_threshold).toBe(61)
   }, 15000)
 
   it('信号分值表重复 signal_type：提交前拦截并提示，不发起 PUT', async () => {

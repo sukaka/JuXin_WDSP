@@ -116,6 +116,18 @@ openssl pkey -pubin -in release-signing.pub -outform DER | sha256sum
 | 容器运维 sidecar | Unix Socket | containeropsd 仅监听共享卷内 `/run/containerops/containerops.sock`（API 侧经卷挂载为 `/app/runtime/containerops/containerops.sock`），不暴露 TCP；docker.sock 仅该组件挂载 |
 | 业务代理 | 默认 80/443，站点端口按发布结果精确放行 | 生产离线包网关直绑宿主机端口；安装时用 `--site-ports` 显式指定站点端口（ops/install 不再默认放行 1024-65535 全高位端口） |
 
+### 网关低端口与 82 端口
+
+- gateway 容器仅以 `user: "0:0"` 进入 `/usr/local/bin/wdsp-gateway-bind`，入口完成降权后执行 Caddy；
+  Compose 保持 `cap_drop: [ALL]`、`no-new-privileges:true`，只补入
+  `NET_BIND_SERVICE, SETUID, SETGID, SETPCAP`。不得通过修改宿主机
+  `net.ipv4.ip_unprivileged_port_start` 规避低端口权限。
+- `deployment/docker-compose.stage5.yml` 的演示 HTTP 站点由 Caddy 直接监听容器 82 端口，
+  默认映射为 `82:82`；`GATEWAY_SITE_HTTP_PORT` 只覆盖宿主机侧端口。完整离线包的生产 gateway
+  使用 host 网络，82 由站点发布配置直接监听；需要开放该站点时，安装/防火墙配置须精确加入 `82/tcp`。
+- 升级或回滚重建 gateway 时必须同次重建 `network_mode: service:gateway` 的 netmgrd，避免其继续附着
+  已删除容器的网络命名空间。`ops/upgrade/apply.sh`、`rollback.sh` 与 Web 升级执行器均遵守该约束。
+
 ## 数据目录
 
 ```text

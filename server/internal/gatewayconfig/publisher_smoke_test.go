@@ -2,11 +2,15 @@ package gatewayconfig
 
 import (
 	"context"
+	"crypto/hmac"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,17 +36,65 @@ func smokeTestApp(code, host string, port int) AppData {
 	}
 }
 
-// tombstoneGateway 模拟 guard 在链的网关数据面：保留命名空间未知子路径本地 404 墓碑。
-func tombstoneGateway() http.Handler {
+const smokeTestKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func smokeTestGuardConfig(publishID uuid.UUID) *GuardConfig {
+	return &GuardConfig{PublishSmoke: &GuardPublishSmoke{PublishID: publishID.String(), KeyHex: smokeTestKeyHex}}
+}
+
+func runSmokeTest(t *testing.T, p *Publisher, appsData []AppData, guardCfg *GuardConfig) *smokeReport {
+	t.Helper()
+	taskID := uuid.New()
+	if guardCfg != nil {
+		guardCfg.PublishSmoke = smokeTestGuardConfig(taskID).PublishSmoke
+	}
+	return p.runPublishSmoke(context.Background(), taskID, uuid.New(), appsData, guardCfg)
+}
+
+// writeAuthenticatedSmoke 模拟真实 guard：先验证请求 HMAC，再返回绑定同一请求
+// 上下文的响应 HMAC。普通 404 不再被测试替身当作成功证据。
+func writeAuthenticatedSmoke(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Path != smokeProbePath {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("404 not found"))
+		return
+	}
+	key, _ := hex.DecodeString(smokeTestKeyHex)
+	timestamp, err := strconv.ParseInt(r.Header.Get(smokeTimestampHeader), 10, 64)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	b := &smokeRequestBinding{
+		appID: r.Header.Get(smokeAppIDHeader), appCode: r.Header.Get(smokeAppCodeHeader),
+		host: smokeCanonicalHost(r.Host), publishID: r.Header.Get(smokePublishIDHeader),
+		nonce: r.Header.Get(smokeNonceHeader), timestamp: timestamp,
+		probe: r.Header.Get(SmokeMarkerHeader), key: key,
+	}
+	sig, sigErr := hex.DecodeString(r.Header.Get(smokeSignatureHeader))
+	if sigErr != nil || !hmac.Equal(sig, smokeRequestSignature(b)) {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	resp := smokeSignedResponse{
+		AppID: b.appID, AppCode: b.appCode, Host: b.host, PublishID: b.publishID,
+		Nonce: b.nonce, Timestamp: b.timestamp,
+		Signature: hex.EncodeToString(smokeResponseSignature(b)),
+	}
+	body, _ := json.Marshal(resp)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set(SmokeMarkerHeader, b.probe)
+	_, _ = w.Write(body)
+}
+
+func authenticatedSmokeGateway() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(SmokeMarkerHeader) == "" {
 			http.Error(w, "unexpected", http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte("404 not found"))
+		writeAuthenticatedSmoke(w, r)
 	})
 }
 
@@ -56,6 +108,43 @@ func newSmokeTestPublisher(t *testing.T, handler http.Handler) (*Publisher, *htt
 	return p, srv
 }
 
+func signedSmokeResponseFixture(t *testing.T) *smokeResponse {
+	t.Helper()
+	key, _ := hex.DecodeString(smokeTestKeyHex)
+	b := &smokeRequestBinding{
+		appID: "app-1", appCode: "shop", host: "shop.example.com:80",
+		publishID: uuid.NewString(), nonce: "0123456789abcdef0123456789abcdef",
+		timestamp: time.Now().Unix(), probe: SmokeProbeRealIP, key: key,
+	}
+	body, err := json.Marshal(smokeSignedResponse{
+		AppID: b.appID, AppCode: b.appCode, Host: b.host, PublishID: b.publishID,
+		Nonce: b.nonce, Timestamp: b.timestamp, Signature: hex.EncodeToString(smokeResponseSignature(b)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &smokeResponse{status: http.StatusOK, header: http.Header{
+		"Cache-Control": []string{"no-store"}, SmokeMarkerHeader: []string{b.probe},
+	}, body: string(body), binding: b}
+}
+
+func mutateSignedSmokeResponse(t *testing.T, base *smokeResponse, mutate func(*smokeSignedResponse)) *smokeResponse {
+	t.Helper()
+	cp := *base
+	cp.header = base.header.Clone()
+	var body smokeSignedResponse
+	if err := json.Unmarshal([]byte(base.body), &body); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&body)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp.body = string(raw)
+	return &cp
+}
+
 func TestClassifySmokeResponse(t *testing.T) {
 	hdr := func(kv ...string) http.Header {
 		h := http.Header{}
@@ -64,14 +153,27 @@ func TestClassifySmokeResponse(t *testing.T) {
 		}
 		return h
 	}
+	valid := signedSmokeResponseFixture(t)
+	withoutStore := *valid
+	withoutStore.header = valid.header.Clone()
+	withoutStore.header.Del("Cache-Control")
+	expired := *valid
+	expiredBinding := *valid.binding
+	expiredBinding.timestamp = time.Now().Add(-smokeMaxAge - time.Second).Unix()
+	expired.binding = &expiredBinding
 	tests := []struct {
 		name string
 		resp *smokeResponse
 		want smokeVerdict
 	}{
-		{"guard tombstone", &smokeResponse{status: 404, header: hdr("Cache-Control", "no-store"), body: "404 not found"}, verdictGuardTombstone},
-		{"tombstone without no-store is not guard", &smokeResponse{status: 404, header: hdr(), body: "404 not found"}, verdictUnexpected},
-		{"upstream style 404", &smokeResponse{status: 404, header: hdr("Cache-Control", "no-store"), body: "<html>404</html>"}, verdictUnexpected},
+		{"authenticated guard response", valid, verdictGuardAuthenticated},
+		{"ordinary upstream 404", &smokeResponse{status: 404, header: hdr("Cache-Control", "no-store"), body: "404 not found"}, verdictUnexpected},
+		{"authenticated response without no-store", &withoutStore, verdictUnexpected},
+		{"wrong host", mutateSignedSmokeResponse(t, valid, func(b *smokeSignedResponse) { b.Host = "wrong.example.com:80" }), verdictUnexpected},
+		{"cross site", mutateSignedSmokeResponse(t, valid, func(b *smokeSignedResponse) { b.AppID = "app-2" }), verdictUnexpected},
+		{"cross publish", mutateSignedSmokeResponse(t, valid, func(b *smokeSignedResponse) { b.PublishID = uuid.NewString() }), verdictUnexpected},
+		{"bad response signature", mutateSignedSmokeResponse(t, valid, func(b *smokeSignedResponse) { b.Signature = strings.Repeat("0", 64) }), verdictUnexpected},
+		{"expired binding", &expired, verdictUnexpected},
 		{"guard 403 block page", &smokeResponse{status: 403, header: hdr("X-Jiuzhang-Request-ID", "req-1")}, verdictGuardBlock},
 		{"guard 429 rate limit", &smokeResponse{status: 429, header: hdr("X-Jiuzhang-Request-ID", "req-1")}, verdictGuardBlock},
 		{"403 without request id is not guard", &smokeResponse{status: 403, header: hdr()}, verdictUnexpected},
@@ -134,9 +236,9 @@ func TestResolveSmokeTargets(t *testing.T) {
 	})
 }
 
-func TestRunPublishSmokeAllPassWithTombstone(t *testing.T) {
-	p, _ := newSmokeTestPublisher(t, tombstoneGateway())
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+func TestRunPublishSmokeAllPassWithAuthenticatedEndpoint(t *testing.T) {
+	p, _ := newSmokeTestPublisher(t, authenticatedSmokeGateway())
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, &GuardConfig{})
 	if rep.failed() || rep.degraded {
 		t.Fatalf("report = %+v, want pass", rep)
@@ -168,13 +270,11 @@ func TestRunPublishSmokeBlacklistHit(t *testing.T) {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte("404 not found"))
+		writeAuthenticatedSmoke(w, r)
 	})
 	p, _ := newSmokeTestPublisher(t, handler)
 	guard := &GuardConfig{GlobalDeny: []GuardRule{{ID: "r1", Address: denyIP}}}
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, guard)
 	if rep.failed() || rep.degraded {
 		t.Fatalf("report = %+v, want pass", rep)
@@ -187,10 +287,10 @@ func TestRunPublishSmokeBlacklistHit(t *testing.T) {
 }
 
 func TestRunPublishSmokeBlacklistNotExercisable(t *testing.T) {
-	// 探针源不在可信代理链：网关返回墓碑（XFF 未采信）→ 黑名单如实 SKIP 而非谎报 PASS
-	p, _ := newSmokeTestPublisher(t, tombstoneGateway())
+	// 探针源不在可信代理链：内部端点验签应答（XFF 未采信）→ 黑名单如实 SKIP 而非谎报 PASS
+	p, _ := newSmokeTestPublisher(t, authenticatedSmokeGateway())
 	guard := &GuardConfig{GlobalDeny: []GuardRule{{ID: "r1", Address: "10.9.9.9"}}}
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, guard)
 	if rep.failed() {
 		t.Fatalf("report = %+v, want no failure", rep)
@@ -211,12 +311,10 @@ func TestRunPublishSmokeCCRateLimited(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte("404 not found"))
+		writeAuthenticatedSmoke(w, r)
 	})
 	p, _ := newSmokeTestPublisher(t, handler)
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, &GuardConfig{})
 	if rep.failed() || rep.degraded {
 		t.Fatalf("report = %+v, want pass", rep)
@@ -234,7 +332,7 @@ func TestRunPublishSmokeUnexpectedResponseFails(t *testing.T) {
 		w.Header().Set("X-Jiuzhang-Request-ID", "req-1")
 		_, _ = w.Write([]byte("upstream ok"))
 	}))
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, &GuardConfig{})
 	if !rep.failed() {
 		t.Fatalf("report = %+v, want failed", rep)
@@ -258,7 +356,7 @@ func TestRunPublishSmokeDegradesWhenDataPlaneUnreachable(t *testing.T) {
 
 	p := &Publisher{}
 	p.SetSmokeProbe(deadAddr, nil)
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, &GuardConfig{})
 	if rep.failed() {
 		t.Fatalf("report = %+v, unreachable data plane must not fail smoke", rep)
@@ -276,7 +374,7 @@ func TestRunPublishSmokeDegradesWhenDataPlaneUnreachable(t *testing.T) {
 
 func TestRunPublishSmokeDegradesWithoutGuard(t *testing.T) {
 	p := &Publisher{}
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, nil)
 	if !rep.degraded || rep.degradeReason == "" || rep.failed() {
 		t.Fatalf("report = %+v, want degraded without failure", rep)
@@ -335,10 +433,10 @@ VALUES ('V-smoke-test', '{}', 'hash-smoke-test') RETURNING id`).Scan(&versionID)
 		t.Fatalf("insert version: %v", err)
 	}
 
-	p, _ := newSmokeTestPublisher(t, tombstoneGateway())
+	p, _ := newSmokeTestPublisher(t, authenticatedSmokeGateway())
 	p.db = pool
 	rep := p.runPublishSmoke(ctx, taskID, versionID,
-		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, &GuardConfig{})
+		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, smokeTestGuardConfig(taskID))
 	if rep.failed() || rep.degraded {
 		t.Fatalf("report = %+v, want pass", rep)
 	}
@@ -511,9 +609,7 @@ func ccExactFakeGateway(policyID string, limit int64, adoptXFF bool) http.Handle
 				return
 			}
 		}
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte("404 not found"))
+		writeAuthenticatedSmoke(w, r)
 	})
 }
 
@@ -532,7 +628,7 @@ func TestRunPublishSmokeCCExactPass(t *testing.T) {
 	policy := ccExactTestPolicy("p1", 4, 60)
 	p, _ := newSmokeTestPublisher(t, ccExactFakeGateway("p1", policy.RequestsLimit, true))
 	guard := &GuardConfig{GlobalPolicies: []GuardPolicy{policy}}
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, guard)
 	if rep.failed() || rep.degraded {
 		t.Fatalf("report = %+v, want pass", rep)
@@ -545,9 +641,9 @@ func TestRunPublishSmokeCCExactPass(t *testing.T) {
 
 // debug 回显端点未启用（墓碑 404）：如实 SKIP，不翻转发布结论。
 func TestRunPublishSmokeCCExactEndpointDisabled(t *testing.T) {
-	p, _ := newSmokeTestPublisher(t, tombstoneGateway())
+	p, _ := newSmokeTestPublisher(t, authenticatedSmokeGateway())
 	guard := &GuardConfig{GlobalPolicies: []GuardPolicy{ccExactTestPolicy("p1", 4, 60)}}
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, guard)
 	if rep.failed() {
 		t.Fatalf("report = %+v, want no failure", rep)
@@ -563,7 +659,7 @@ func TestRunPublishSmokeCCExactXFFNotAdopted(t *testing.T) {
 	policy := ccExactTestPolicy("p1", 4, 60)
 	p, _ := newSmokeTestPublisher(t, ccExactFakeGateway("p1", policy.RequestsLimit, false))
 	guard := &GuardConfig{GlobalPolicies: []GuardPolicy{policy}}
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, guard)
 	if rep.failed() {
 		t.Fatalf("report = %+v, want no failure", rep)
@@ -580,7 +676,7 @@ func TestRunPublishSmokeCCExactThresholdNotEnforced(t *testing.T) {
 	// 假网关计数但永不拦截
 	p, _ := newSmokeTestPublisher(t, ccExactFakeGateway("p1", 1<<40, true))
 	guard := &GuardConfig{GlobalPolicies: []GuardPolicy{policy}}
-	rep := p.runPublishSmoke(context.Background(), uuid.New(), uuid.New(),
+	rep := runSmokeTest(t, p,
 		[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, guard)
 	if !rep.failed() {
 		t.Fatalf("report = %+v, want failed", rep)
@@ -591,5 +687,141 @@ func TestRunPublishSmokeCCExactThresholdNotEnforced(t *testing.T) {
 	}
 	if rep.versionResult() != VersionSmokeFail {
 		t.Fatalf("versionResult = %q, want %q", rep.versionResult(), VersionSmokeFail)
+	}
+}
+
+func TestRunPublishSmokeUpstreamOrdinary404Fails(t *testing.T) {
+	p, _ := newSmokeTestPublisher(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("404 not found"))
+	}))
+	rep := runSmokeTest(t, p, []AppData{smokeTestApp("a1", "a1.example.com", 80)}, &GuardConfig{})
+	if !rep.failed() || rep.degraded || rep.versionResult() != VersionSmokeFail {
+		t.Fatalf("ordinary upstream 404 must fail, not degrade or pass: %+v", rep)
+	}
+}
+
+func TestRunPublishSmokeRejectsMissingOrCrossPublishAuthentication(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		guard func(uuid.UUID) *GuardConfig
+	}{
+		{name: "missing", guard: func(uuid.UUID) *GuardConfig { return &GuardConfig{} }},
+		{name: "cross publish", guard: func(taskID uuid.UUID) *GuardConfig {
+			return smokeTestGuardConfig(uuid.New())
+		}},
+		{name: "invalid key", guard: func(taskID uuid.UUID) *GuardConfig {
+			g := smokeTestGuardConfig(taskID)
+			g.PublishSmoke.KeyHex = "not-hex"
+			return g
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests atomic.Int32
+			p, _ := newSmokeTestPublisher(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				writeAuthenticatedSmoke(w, r)
+			}))
+			taskID := uuid.New()
+			rep := p.runPublishSmoke(context.Background(), taskID, uuid.New(),
+				[]AppData{smokeTestApp("a1", "a1.example.com", 80)}, tc.guard(taskID))
+			if !rep.failed() || rep.degraded || requests.Load() != 0 {
+				t.Fatalf("invalid local authentication must fail before requests: report=%+v requests=%d", rep, requests.Load())
+			}
+		})
+	}
+}
+
+func TestPreparePublishSmokeUniqueAndSecretsNotPersisted(t *testing.T) {
+	firstTask, secondTask := uuid.New(), uuid.New()
+	first, second := &GuardConfig{}, &GuardConfig{}
+	if err := preparePublishSmoke(firstTask, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparePublishSmoke(secondTask, second); err != nil {
+		t.Fatal(err)
+	}
+	if first.PublishSmoke == nil || second.PublishSmoke == nil ||
+		first.PublishSmoke.PublishID != firstTask.String() || second.PublishSmoke.PublishID != secondTask.String() ||
+		first.PublishSmoke.KeyHex == second.PublishSmoke.KeyHex {
+		t.Fatalf("publish identities must be fresh and task-bound: first=%+v second=%+v", first.PublishSmoke, second.PublishSmoke)
+	}
+	key, err := hex.DecodeString(first.PublishSmoke.KeyHex)
+	if err != nil || len(key) != 32 {
+		t.Fatalf("generated key must be 32-byte hex: length=%d err=%v", len(key), err)
+	}
+
+	// access_control_versions 直接序列化 GuardConfig：整段必须缺席。
+	accessSnapshot, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(accessSnapshot), first.PublishSmoke.KeyHex) || strings.Contains(string(accessSnapshot), "publish_smoke") {
+		t.Fatalf("access-control snapshot contains ephemeral publish authentication: %s", accessSnapshot)
+	}
+
+	// 运行时处理器需要秘密；整站不可变版本则移除整段，而不是重放旧发布身份。
+	app := smokeTestApp("a1", "a1.example.com", 80)
+	handlerJSON, err := json.Marshal(mapT{"handle": []interface{}{buildGuardHandler(first, app, 80)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(handlerJSON), first.PublishSmoke.KeyHex) || !strings.Contains(string(handlerJSON), `"publish_smoke"`) {
+		t.Fatalf("runtime guard handler missing publish authentication: %s", handlerJSON)
+	}
+	stored, err := RedactConfigSecrets(string(handlerJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored, first.PublishSmoke.KeyHex) || strings.Contains(stored, `"publish_smoke"`) {
+		t.Fatalf("stored config contains ephemeral publish authentication: %s", stored)
+	}
+	if first.PublishSmoke.KeyHex == "" {
+		t.Fatal("redaction must not mutate live publish config")
+	}
+}
+
+func TestPublishSmokeRouteConflictValidation(t *testing.T) {
+	for _, prefix := range []string{"/", "/_wdsp", "/_wdsp/internal/v1", smokeProbePath} {
+		t.Run("path route "+prefix, func(t *testing.T) {
+			app := smokeTestApp("a1", "a1.example.com", 80)
+			app.PathRoutes = []AppPathRoute{{PathPrefix: prefix, UpstreamHost: "127.0.0.1", UpstreamPort: 8080}}
+			if err := validatePublishSmokeRouteConflicts([]AppData{app}, &GuardConfig{}); err == nil ||
+				!strings.Contains(err.Error(), smokeProbePath) {
+				t.Fatalf("covering path route %q must conflict: %v", prefix, err)
+			}
+		})
+	}
+
+	app := smokeTestApp("a1", "a1.example.com", 80)
+	app.PathRoutes = []AppPathRoute{
+		{PathPrefix: "/api", UpstreamHost: "127.0.0.1", UpstreamPort: 8080},
+		{PathPrefix: smokeProbePath + "-business", UpstreamHost: "127.0.0.1", UpstreamPort: 8080},
+	}
+	if err := validatePublishSmokeRouteConflicts([]AppData{app}, &GuardConfig{}); err != nil {
+		t.Fatalf("adjacent/non-covering business routes must remain valid: %v", err)
+	}
+	bypass := smokeTestApp("bp", "bp.example.com", 80)
+	bypass.ProtectionMode = applications.ModeBypass
+	bypass.PathRoutes = []AppPathRoute{{PathPrefix: "/"}}
+	if err := validatePublishSmokeRouteConflicts([]AppData{bypass}, &GuardConfig{}); err != nil {
+		t.Fatalf("bypass app has no guard endpoint and must not conflict: %v", err)
+	}
+
+	registered := &GuardConfig{APIKnownEndpoints: map[string]string{"GET " + smokeProbePath: "CONFIRMED"}}
+	if err := validatePublishSmokeRouteConflicts([]AppData{smokeTestApp("a1", "a1.example.com", 80)}, registered); err == nil {
+		t.Fatal("registered business endpoint must conflict with internal exact path")
+	}
+	if err := validatePublishSmokeRouteConflicts([]AppData{app}, nil); err != nil {
+		t.Fatalf("nil guard has no internal endpoint: %v", err)
+	}
+
+	conflictApp := smokeTestApp("a1", "a1.example.com", 80)
+	conflictApp.PathRoutes = []AppPathRoute{{PathPrefix: "/", UpstreamHost: "127.0.0.1", UpstreamPort: 8080}}
+	if _, err := Generate(GenerateInput{
+		Apps: []AppData{conflictApp}, AdminSocket: "/var/run/caddy/admin.sock", Guard: &GuardConfig{},
+	}); err == nil || !strings.Contains(err.Error(), smokeProbePath) {
+		t.Fatalf("Generate must enforce route conflict validation: %v", err)
 	}
 }

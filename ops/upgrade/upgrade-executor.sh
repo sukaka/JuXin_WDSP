@@ -219,16 +219,19 @@ wait_selected_services() {
 
 declare -a SERVICES=() STABLE_IMAGES=() OLD_IDS=() NEW_SERVICES=()
 CURRENT_JOB="" CURRENT_STAGE="APPLYING" CURRENT_MESSAGE="" INSTALLED_OVERRIDE=""
+IMAGE_SWITCH_STARTED=false
 
 rollback_images() {
   local i
   declare -a existed=()
-  for i in "${!SERVICES[@]}"; do
-    if [[ -n "${OLD_IDS[$i]:-}" ]]; then
-      docker tag "${OLD_IDS[$i]}" "${STABLE_IMAGES[$i]}" >/dev/null 2>&1 || true
-      existed+=("${SERVICES[$i]}")
-    fi
-  done
+  if [[ "$IMAGE_SWITCH_STARTED" == true ]]; then
+    for i in "${!SERVICES[@]}"; do
+      if [[ -n "${OLD_IDS[$i]:-}" ]]; then
+        docker tag "${OLD_IDS[$i]}" "${STABLE_IMAGES[$i]}" >/dev/null 2>&1 || true
+        existed+=("${SERVICES[$i]}")
+      fi
+    done
+  fi
   # 新组件回滚：趁 compose 片段仍在时移除其容器，再摘除片段、删除新加载的镜像标签
   ((${#NEW_SERVICES[@]} == 0)) || compose rm -sf "${NEW_SERVICES[@]}" >/dev/null 2>&1 || true
   if [[ -n "$INSTALLED_OVERRIDE" ]]; then
@@ -238,15 +241,17 @@ rollback_images() {
   for i in "${!SERVICES[@]}"; do
     [[ -z "${OLD_IDS[$i]:-}" ]] && docker rmi "${STABLE_IMAGES[$i]}" >/dev/null 2>&1 || true
   done
-  ((${#existed[@]} == 0)) || compose up -d --no-deps "${existed[@]}" >/dev/null 2>&1 || true
-  wait_api || true
+  if [[ "$IMAGE_SWITCH_STARTED" == true ]]; then
+    ((${#existed[@]} == 0)) || compose up -d --no-deps --force-recreate "${existed[@]}" >/dev/null 2>&1 || true
+    wait_api || true
+  fi
 }
 
 process_job() {
   local job_file="$1" package_name expected_sha package version_from version_to job_id
   local work package_root manifest package_type
   CURRENT_STAGE="APPLYING"
-  SERVICES=(); STABLE_IMAGES=(); OLD_IDS=(); NEW_SERVICES=(); INSTALLED_OVERRIDE=""
+  SERVICES=(); STABLE_IMAGES=(); OLD_IDS=(); NEW_SERVICES=(); INSTALLED_OVERRIDE=""; IMAGE_SWITCH_STARTED=false
   job_id="$(jq -er '.job_id | strings' "$job_file")" || return 1
   [[ "$job_id" =~ ^[0-9a-fA-F-]{36}$ ]] || return 1
   CURRENT_JOB="$job_id"
@@ -277,7 +282,7 @@ process_job() {
   esac
 }
 
-# 运行时小补丁（bugfix，组件仅 api/web）：协议口径与 1.0.1 引入时一致，未改动。
+# 运行时小补丁（bugfix，组件 api/web/gateway）；gateway 在 retag 前执行同一启动契约门禁。
 process_runtime_patch() {
   local package_root="$1" manifest="$2" version_from="$3" version_to="$4"
   local archive archive_sha host_arch service target stable old i
@@ -287,7 +292,7 @@ process_runtime_patch() {
     .format_version == 1 and .product == "wdsp" and .package_type == "runtime-patch" and
     .change_type == "bugfix" and .version_from == $from and .version_to == $to and
     (.components | length >= 1) and
-    (all(.components[]; (.service == "api" or .service == "web") and (.image | type == "string")))
+    (all(.components[]; (.service == "api" or .service == "web" or .service == "gateway") and (.image | type == "string")))
   ' "$manifest" >/dev/null || { CURRENT_MESSAGE="升级包 manifest 不符合小补丁协议"; return 1; }
   host_arch="$(uname -m)"; [[ "$host_arch" == x86_64 ]] && host_arch=amd64; [[ "$host_arch" == aarch64 ]] && host_arch=arm64
   [[ "$(jq -r '.architecture' "$manifest")" == "$host_arch" ]] || { CURRENT_MESSAGE="升级包架构与宿主机不一致"; return 1; }
@@ -312,6 +317,13 @@ process_runtime_patch() {
   docker load -i "$archive" >/dev/null || { CURRENT_MESSAGE="加载镜像失败"; return 1; }
   for i in "${!SERVICES[@]}"; do
     docker image inspect "${targets[$i]}" >/dev/null 2>&1 || { CURRENT_MESSAGE="包内缺少镜像 ${targets[$i]}"; return 1; }
+  done
+  for i in "${!SERVICES[@]}"; do
+    [[ "${SERVICES[$i]}" == gateway ]] || continue
+    validate_gateway_start_contract "${targets[$i]}" || return 1
+  done
+  IMAGE_SWITCH_STARTED=true
+  for i in "${!SERVICES[@]}"; do
     docker tag "${targets[$i]}" "${STABLE_IMAGES[$i]}" || return 1
   done
 
@@ -324,8 +336,48 @@ process_runtime_patch() {
   return 0
 }
 
+validate_gateway_start_contract() {
+  local target="$1" image_entrypoint compose_json
+  image_entrypoint="$(docker image inspect "$target" --format '{{json .Config.Entrypoint}}' 2>/dev/null)" \
+    || { CURRENT_MESSAGE="无法读取 gateway 目标镜像入口"; return 1; }
+  case "$image_entrypoint" in
+    '["/usr/local/bin/docker-entrypoint.sh"]')
+      compose_json="$(compose config --format json 2>/dev/null)" \
+        || { CURRENT_MESSAGE="无法解析合并后的 Compose，拒绝启动旧 gateway"; return 1; }
+      if ! jq -e '
+        .services.gateway as $gateway |
+        ($gateway.user == null or $gateway.user == "1000:1000" or $gateway.user == "caddy" or $gateway.user == "caddy:caddy") and
+        ($gateway.entrypoint == null or $gateway.entrypoint == [] or $gateway.entrypoint == ["/usr/local/bin/docker-entrypoint.sh"]) and
+        ($gateway.cap_add == null or $gateway.cap_add == [] or $gateway.cap_add == ["NET_BIND_SERVICE"]) and
+        ($gateway.cap_drop == null or $gateway.cap_drop == [] or $gateway.cap_drop == ["ALL"]) and
+        ((($gateway.security_opt // []) | type) == "array") and
+        (($gateway.security_opt // []) | index("no-new-privileges:true") != null)
+      ' <<<"$compose_json" >/dev/null; then
+        CURRENT_MESSAGE="旧 gateway Compose 启动契约不安全（禁止旧 Caddy 常驻 root；要求 user 为空/1000:1000/caddy/caddy:caddy，entrypoint 为空或原入口，cap_add 为空或仅 NET_BIND_SERVICE，cap_drop 为空或 ALL，且启用 no-new-privileges）；禁止 retag/up"
+        return 1
+      fi
+      return 0
+      ;;
+    '["/usr/local/bin/wdsp-gateway-bind"]') ;;
+    *) CURRENT_MESSAGE="拒绝未知 gateway 镜像 Config.Entrypoint: $image_entrypoint"; return 1 ;;
+  esac
+  compose_json="$(compose config --format json 2>/dev/null)" \
+    || { CURRENT_MESSAGE="无法解析合并后的 Compose，拒绝启动新 gateway"; return 1; }
+  if ! jq -e '
+    .services.gateway as $gateway |
+    ($gateway.user == "0:0") and
+    ($gateway.entrypoint == ["/usr/local/bin/wdsp-gateway-bind"]) and
+    ($gateway.cap_drop == ["ALL"]) and
+    ((($gateway.cap_add // []) | sort) == (["NET_BIND_SERVICE", "SETUID", "SETGID", "SETPCAP"] | sort)) and
+    (($gateway.security_opt // []) | index("no-new-privileges:true") != null)
+  ' <<<"$compose_json" >/dev/null; then
+    CURRENT_MESSAGE="新 gateway 启动器与现有 Compose 启动契约不兼容（要求 user=0:0、entrypoint=/usr/local/bin/wdsp-gateway-bind、cap_drop=ALL、cap_add 恰好为 NET_BIND_SERVICE/SETUID/SETGID/SETPCAP、no-new-privileges）；请先使用完整包升级宿主 Compose"
+    return 1
+  fi
+}
+
 # 功能升级包（package_type=upgrade，build-upgrade-pack.sh 产物）：
-#   逐组件 images[].tar（gzip）docker load → retag 到 compose 期望标签 → compose up -d；
+#   逐组件 images[].tar（gzip）docker load 并 inspect → 启动契约检查 → 统一 retag → compose up -d；
 #   manifest.files 逐一校验（存在性/大小/SHA-256）并反查无未声明文件（口径同服务端
 #   artifact.go）；组件白名单 api/web/gateway/netmgrd；新组件（netmgrd）经包内
 #   compose/upgrade-services.yml 片段并入 compose-overrides.d 后首次创建。
@@ -471,17 +523,41 @@ process_upgrade_pack() {
     STABLE_IMAGES+=("$stable"); OLD_IDS+=("$old")
   done
 
-  for i in "${!SERVICES[@]}"; do
+  for i in "${!targets[@]}"; do
     gzip -dc "$package_root/${tars[$i]}" | docker load >/dev/null \
       || { CURRENT_MESSAGE="加载镜像失败: ${tars[$i]}"; return 1; }
+  done
+  for i in "${!targets[@]}"; do
     docker image inspect "${targets[$i]}" >/dev/null 2>&1 || { CURRENT_MESSAGE="包内缺少镜像 ${targets[$i]}"; return 1; }
+  done
+  for i in "${!targets[@]}"; do
+    [[ "${SERVICES[$i]}" == gateway ]] || continue
+    validate_gateway_start_contract "${targets[$i]}" || return 1
+  done
+
+  # gateway 重建会使 network_mode: service:gateway 的 netmgrd 失去原网络命名空间。
+  # 即使升级包不更新 netmgrd 镜像，也要把现有服务纳入同次重建、健康检查与回滚。
+  if printf '%s\n' "${SERVICES[@]}" | grep -Fxq gateway \
+    && ! printf '%s\n' "${SERVICES[@]}" | grep -Fxq netmgrd \
+    && printf '%s\n' "${compose_services[@]}" | grep -Fxq netmgrd; then
+    stable="$(compose config --format json | jq -er '.services.netmgrd.image | select(type == "string" and length > 0)')" \
+      || { CURRENT_MESSAGE="无法读取 netmgrd 的 compose 镜像"; return 1; }
+    old="$(docker image inspect "$stable" --format '{{.Id}}' 2>/dev/null)" \
+      || { CURRENT_MESSAGE="无法读取当前 netmgrd 镜像"; return 1; }
+    SERVICES+=(netmgrd)
+    STABLE_IMAGES+=("$stable")
+    OLD_IDS+=("$old")
+  fi
+
+  IMAGE_SWITCH_STARTED=true
+  for i in "${!targets[@]}"; do
     docker tag "${targets[$i]}" "${STABLE_IMAGES[$i]}" || return 1
   done
 
   # API 镜像入口会在启动服务前执行 migrate up；这里保持 MIGRATING 状态，
-  # 直到新容器成功启动，再进入健康检查阶段。
+  # 直到新容器成功启动，再进入健康检查阶段。强制重建覆盖镜像未变化的 netmgrd。
   CURRENT_STAGE="MIGRATING"
-  compose up -d --no-deps "${SERVICES[@]}" || { CURRENT_MESSAGE="启动新版本容器失败"; return 1; }
+  compose up -d --no-deps --force-recreate "${SERVICES[@]}" || { CURRENT_MESSAGE="启动新版本容器失败"; return 1; }
   CURRENT_STAGE="VERIFYING"
   wait_selected_services || return 1
   return 0
@@ -500,7 +576,12 @@ for queued in "$JOBS_DIR"/*.json; do
     rm -rf "$WORK_DIR/$CURRENT_JOB"
   else
     rollback_images
-    write_result "$CURRENT_JOB" FAILED "$CURRENT_STAGE" APPLY_FAILED "$CURRENT_MESSAGE；已尝试恢复原容器镜像"
+    if [[ "$IMAGE_SWITCH_STARTED" == true ]]; then
+      CURRENT_MESSAGE+="；已尝试恢复原容器镜像"
+    else
+      CURRENT_MESSAGE+="；未切换镜像，现有容器未重建；已清理本轮新组件/临时资源"
+    fi
+    write_result "$CURRENT_JOB" FAILED "$CURRENT_STAGE" APPLY_FAILED "$CURRENT_MESSAGE"
     mv "$processing" "${processing%.processing}.failed"
   fi
 done

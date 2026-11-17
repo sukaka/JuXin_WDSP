@@ -43,11 +43,11 @@ func clampAuthzLeaseSeconds(sec int) int {
 
 const listPublishableAuthzModelsQuery = `
 SELECT ep.application_id, ep.endpoint_key, ep.http_method, ep.normalized_path, om.object_segment,
-       om.required_relation, om.owner_exclusive, om.updated_at, om.on_lease_expired,
+       om.required_relation, COALESCE(om.required_relations, '{}'::TEXT[]), om.owner_exclusive, om.updated_at, om.on_lease_expired,
        om.enforcement, om.enforcement_owner, om.evidence_source, om.on_unknown
 FROM api_object_models om
 JOIN api_endpoints ep ON ep.id=om.endpoint_id
-WHERE om.publishable AND om.required_relation='OWNER' AND om.owner_exclusive
+WHERE om.publishable AND om.required_relation IN ('OWNER','ANY_OF') AND om.owner_exclusive
   AND ep.asset_status='CONFIRMED'
 ORDER BY ep.endpoint_key, om.object_segment`
 
@@ -81,11 +81,12 @@ func (s *AuthzSnapshotStore) ListPublishableAuthzModels(ctx context.Context, exp
 	seen := map[string]bool{}
 	for rows.Next() {
 		var applicationID, endpointKey, method, pathTemplate, segment, required string
+		var requiredRelations []string
 		var exclusive bool
 		var updated time.Time
 		var onLeaseExpired string
 		var enforcement, enforcementOwner, evidenceSource, onUnknown string
-		if err := rows.Scan(&applicationID, &endpointKey, &method, &pathTemplate, &segment, &required, &exclusive, &updated, &onLeaseExpired,
+		if err := rows.Scan(&applicationID, &endpointKey, &method, &pathTemplate, &segment, &required, &requiredRelations, &exclusive, &updated, &onLeaseExpired,
 			&enforcement, &enforcementOwner, &evidenceSource, &onUnknown); err != nil {
 			return nil, err
 		}
@@ -110,12 +111,16 @@ func (s *AuthzSnapshotStore) ListPublishableAuthzModels(ctx context.Context, exp
 		if onUnknown != "ALLOW_UNKNOWN" {
 			onUnknown = "ALLOW_UNKNOWN"
 		}
-		versionSum := sha256.Sum256([]byte(endpointKey + "\x00" + segment + "\x00" + updated.UTC().Format(time.RFC3339Nano)))
+		versionMaterial := endpointKey + "\x00" + segment + "\x00" + updated.UTC().Format(time.RFC3339Nano)
+		if required == "ANY_OF" {
+			versionMaterial += "\x00" + required + "\x00" + strings.Join(requiredRelations, "\x00")
+		}
+		versionSum := sha256.Sum256([]byte(versionMaterial))
 		out = append(out, gatewayconfig.GuardAuthzObjectModel{
 			ApplicationID: applicationID,
 			EndpointKey:   endpointKey, Method: strings.ToUpper(method), PathTemplate: pathTemplate,
 			ObjectType: objectType, Identifiers: []gatewayconfig.GuardAuthzObjectIdentifier{{Location: location, Name: name, Primary: true}},
-			RequiredRelation: required, OwnerExclusive: exclusive, Publishable: true,
+			RequiredRelation: required, RequiredRelations: requiredRelations, OwnerExclusive: exclusive, Publishable: true,
 			UniqueEndpointTemplate: true, ModelVersion: hex.EncodeToString(versionSum[:8]), SnapshotExpiresAt: &expires,
 			OnLeaseExpired: onLeaseExpired,
 			Enforcement:    enforcement, EnforcementOwner: enforcementOwner,
@@ -152,8 +157,8 @@ func compileObjectSegment(pathTemplate, segment string) (location, name, objectT
 func (s *AuthzSnapshotStore) ListConfirmedAuthzRelations(ctx context.Context) ([]gatewayconfig.GuardAuthzObjectRelation, error) {
 	rows, err := s.db.Query(ctx, `SELECT application_id, principal_id, object_type, object_ref, relation, status,
 COALESCE(tenant_id,''), valid_from, valid_until FROM api_object_relations
-WHERE status='CONFIRMED' AND relation='OWNER'
-  AND (valid_until IS NULL OR valid_until>now()) ORDER BY object_type, object_ref, principal_id`)
+WHERE status='CONFIRMED' AND relation IN ('OWNER','SHARED_WITH')
+  AND (valid_until IS NULL OR valid_until>now()) ORDER BY object_type, object_ref, principal_id, relation`)
 	if err != nil {
 		return nil, err
 	}
@@ -216,6 +221,11 @@ func (p *Provider) loadAPIAuthzSnapshot(ctx context.Context) ([]gatewayconfig.Gu
 	if err != nil {
 		return nil, nil, nil, "", fmt.Errorf("compile authz object models: %w", err)
 	}
+	for _, model := range models {
+		if err := validatePublishableAuthzModelRelations(model); err != nil {
+			return nil, nil, nil, "", fmt.Errorf("compile authz object models: %w", err)
+		}
+	}
 	// BFLA 角色基线独立于 BOLA 对象模型；即使当前没有可发布对象模型，
 	// VERIFIED 角色仍必须进入同一发布通道。
 	baselines, err := p.authzSnapshot.ListVerifiedAuthzRoleBaselines(ctx)
@@ -258,6 +268,22 @@ func (p *Provider) loadAPIAuthzSnapshot(ctx context.Context) ([]gatewayconfig.Gu
 	return models, relations, baselines, keyHex, nil
 }
 
+func validatePublishableAuthzModelRelations(model gatewayconfig.GuardAuthzObjectModel) error {
+	switch strings.TrimSpace(model.RequiredRelation) {
+	case "OWNER":
+		if len(model.RequiredRelations) != 0 {
+			return fmt.Errorf("OWNER model %s must not carry required_relations", model.EndpointKey)
+		}
+	case "ANY_OF":
+		if len(model.RequiredRelations) != 2 || model.RequiredRelations[0] != "OWNER" || model.RequiredRelations[1] != "SHARED_WITH" {
+			return fmt.Errorf("ANY_OF model %s requires canonical required_relations [OWNER,SHARED_WITH]", model.EndpointKey)
+		}
+	default:
+		return fmt.Errorf("model %s has unsupported required_relation %q", model.EndpointKey, model.RequiredRelation)
+	}
+	return nil
+}
+
 // validateConfirmedAuthzRelations is the publish boundary for the relation
 // lister contract. The SQL implementation already applies these predicates,
 // but keeping them here prevents a future cross-process/alternate lister from
@@ -268,8 +294,9 @@ func validateConfirmedAuthzRelations(relations []gatewayconfig.GuardAuthzObjectR
 		if !strings.EqualFold(strings.TrimSpace(relation.Status), "CONFIRMED") {
 			return fmt.Errorf("relation[%d] status %q is not CONFIRMED", i, relation.Status)
 		}
-		if !strings.EqualFold(strings.TrimSpace(relation.Relation), "OWNER") {
-			return fmt.Errorf("relation[%d] relation %q is not OWNER", i, relation.Relation)
+		relationKind := strings.ToUpper(strings.TrimSpace(relation.Relation))
+		if relationKind != "OWNER" && relationKind != "SHARED_WITH" {
+			return fmt.Errorf("relation[%d] relation %q is not OWNER or SHARED_WITH", i, relation.Relation)
 		}
 		if strings.TrimSpace(relation.ApplicationID) == "" || strings.TrimSpace(relation.PrincipalID) == "" || strings.TrimSpace(relation.ObjectType) == "" {
 			return fmt.Errorf("relation[%d] has an empty application, principal, or object type", i)

@@ -51,6 +51,8 @@ import (
 // （列定义见迁移 000035；旧版网关事件缺字段时为零值，入库落 NULL）。
 type PrimaryEvent struct {
 	events.PrimaryEvent
+	// TraceID W3C 链路关联键；仅接受 32 位小写 hex 且非全零，缺失或非法值落 NULL。
+	TraceID             string
 	IdentityFingerprint string
 	AuthType            string
 	ResponseStatus      int
@@ -92,6 +94,7 @@ type Record struct {
 	OccurredAt          time.Time             `json:"occurred_at"`
 	ApplicationID       string                `json:"application_id"`
 	AppCode             string                `json:"app_code"`
+	TraceID             string                `json:"trace_id"`
 	Domain              string                `json:"domain"`
 	EndpointKey         string                `json:"endpoint_key"`
 	Method              string                `json:"method"`
@@ -654,6 +657,7 @@ func (c *Collector) CollectOnce(ctx context.Context) (int, error) {
 							DeviceFingerprint: rec.DeviceFingerprint,
 							ObjectIdentifiers: rec.ObjectIdentifiers,
 						},
+						TraceID:             rec.TraceID,
 						IdentityFingerprint: rec.IdentityFingerprint,
 						AuthType:            rec.AuthType,
 						ResponseStatus:      rec.ResponseStatus,
@@ -865,6 +869,7 @@ func parseRecordLine(line []byte) (*Record, error) {
 	if rec.RequestID == "" && rec.EndpointKey == "" {
 		return nil, fmt.Errorf("missing request_id and endpoint_key")
 	}
+	rec.TraceID = normalizeTraceID(rec.TraceID)
 	return &rec, nil
 }
 

@@ -94,6 +94,9 @@ func Generate(in GenerateInput) (*Generated, error) {
 	if in.CertFileDir == "" {
 		in.CertFileDir = "/etc/caddy/certs"
 	}
+	if err := validatePublishSmokeRouteConflicts(in.Apps, in.Guard); err != nil {
+		return nil, err
+	}
 
 	servers, routeCount := buildServers(in)
 	if in.Guard != nil && in.Guard.SoftwareBypass != nil {

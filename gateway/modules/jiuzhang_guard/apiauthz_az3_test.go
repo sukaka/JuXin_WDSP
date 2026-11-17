@@ -1,5 +1,5 @@
-// apiauthz_az3_test.go NG-AZ-03 装配面测试：enforcement 线字段解析（模型四要素 +
-// 角色基线 + previous_valid 随行）、旧快照序列化零变化、az/3 能力自报、
+// apiauthz_az3_test.go 授权装配面测试：enforcement 与 ANY_OF required_relations
+// 线字段解析（含 previous_valid 随行）、旧快照序列化零变化、az/4 能力自报及兼容、
 // disposition authz_enforcement 证据挂载。
 package jiuzhang_guard
 
@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jiuzhang-waf/gateway/dynamic_security/capability"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
 )
@@ -37,7 +38,8 @@ func TestGuardConfigAPIAuthzEnforcementJSON(t *testing.T) {
 		"api_authz_previous_valid": {
 			"models": [{"endpoint_key": "GET /v1/orders/{id}", "object_type": "ORDER",
 				"identifiers": [{"location": "path", "name": "id", "primary": true}],
-				"required_relation": "OWNER", "owner_exclusive": true, "publishable": true,
+				"required_relation": "ANY_OF", "required_relations": ["SHARED_WITH", "OWNER"],
+				"owner_exclusive": true, "publishable": true,
 				"unique_endpoint_template": true, "enforcement": "OBSERVE"}],
 			"object_hmac_key_hex": "3031323334353637383930313233343536373839303132333435363738393031"
 		}
@@ -60,19 +62,23 @@ func TestGuardConfigAPIAuthzEnforcementJSON(t *testing.T) {
 	if g.APIAuthzRoleBaselines[1].Enforcement != "" {
 		t.Fatalf("无行级配置基线 enforcement 应为零值: %+v", g.APIAuthzRoleBaselines[1])
 	}
-	if g.APIAuthzPreviousValid == nil || len(g.APIAuthzPreviousValid.Models) != 1 ||
-		g.APIAuthzPreviousValid.Models[0].Enforcement != "OBSERVE" {
-		t.Fatalf("previous_valid 模型 enforcement 未随行: %+v", g.APIAuthzPreviousValid)
+	if g.APIAuthzPreviousValid == nil || len(g.APIAuthzPreviousValid.Models) != 1 {
+		t.Fatalf("previous_valid 模型未随行: %+v", g.APIAuthzPreviousValid)
+	}
+	previousModel := g.APIAuthzPreviousValid.Models[0]
+	if previousModel.Enforcement != "OBSERVE" || previousModel.RequiredRelation != "ANY_OF" ||
+		len(previousModel.RequiredRelations) != 2 || previousModel.RequiredRelations[0] != "SHARED_WITH" || previousModel.RequiredRelations[1] != "OWNER" {
+		t.Fatalf("previous_valid 模型 enforcement/required_relations 未随行: %+v", previousModel)
 	}
 
-	// 旧配置（无 enforcement 字段）：全部零值，行为不变
+	// 旧配置（无新增字段）：全部零值，行为不变
 	var legacy Guard
 	if err := json.Unmarshal([]byte(`{"app_id":"a","events_log":"/tmp/e.log","api_authz_models":[{"endpoint_key":"GET /x/{id}","object_type":"X"}]}`), &legacy); err != nil {
 		t.Fatal(err)
 	}
 	lm := legacy.APIAuthzModels[0]
-	if lm.Enforcement != "" || lm.EnforcementOwner != "" || lm.EvidenceSource != "" || lm.OnUnknown != "" {
-		t.Fatalf("旧快照 enforcement 字段必须零值: %+v", lm)
+	if lm.Enforcement != "" || lm.EnforcementOwner != "" || lm.EvidenceSource != "" || lm.OnUnknown != "" || lm.RequiredRelations != nil {
+		t.Fatalf("旧快照新增字段必须零值: %+v", lm)
 	}
 }
 
@@ -92,9 +98,9 @@ func TestGuardConfigAPIAuthzEnforcementRoundTripZeroChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{`"enforcement"`, `"enforcement_owner"`, `"evidence_source"`, `"on_unknown"`} {
+	for _, key := range []string{`"enforcement"`, `"enforcement_owner"`, `"evidence_source"`, `"on_unknown"`, `"required_relations"`} {
 		if strings.Contains(string(raw), key) {
-			t.Fatalf("零值 enforcement 字段不得出现在序列化输出: %s 含 %s", raw, key)
+			t.Fatalf("旧模型不得序列化新增零值字段: %s 含 %s", raw, key)
 		}
 	}
 	// 既有字段（on_lease_expired）不受影响照常序列化
@@ -103,9 +109,8 @@ func TestGuardConfigAPIAuthzEnforcementRoundTripZeroChange(t *testing.T) {
 	}
 }
 
-// az/3 能力自报：detectors.authzdecide 升 az/3（VERIFIED_VIOLATION 判定与实断执行
-// 是新能力——az/2 节点不认识 enforcement 资格判定与阻断执行路径，能力门 fail-closed）。
-func TestCapabilityAuthzdecideAz3(t *testing.T) {
+// az/4 能力自报包含 ANY_OF=OWNER/SHARED_WITH，并向后满足 az/1～az/3 能力要求。
+func TestCapabilityAuthzdecideAz4(t *testing.T) {
 	m := buildCapabilityManifest(capabilityInputs{NodeID: "gw-t1"}, time.Now())
 	found := ""
 	for _, d := range m.Detectors {
@@ -113,11 +118,19 @@ func TestCapabilityAuthzdecideAz3(t *testing.T) {
 			found = d.Version
 		}
 	}
-	if found != "az/3" {
-		t.Fatalf("detectors.authzdecide 应自报 az/3: %q（manifest %+v）", found, m.Detectors)
+	if found != "az/4" {
+		t.Fatalf("detectors.authzdecide 应自报 az/4: %q（manifest %+v）", found, m.Detectors)
 	}
 	if msg := m.Validate(); msg != "" {
-		t.Fatalf("az/3 清单契约校验失败: %s", msg)
+		t.Fatalf("az/4 清单契约校验失败: %s", msg)
+	}
+	required := capability.Manifest{ContractVersion: capability.ContractVersion, Detectors: []capability.DetectorCap{
+		{Name: "authzdecide", Version: "az/1"},
+		{Name: "authzdecide", Version: "az/2"},
+		{Name: "authzdecide", Version: "az/3"},
+	}}
+	if missing := capability.CheckRequirements(required, m); len(missing) != 0 {
+		t.Fatalf("az/4 必须兼容旧能力要求: %+v", missing)
 	}
 }
 

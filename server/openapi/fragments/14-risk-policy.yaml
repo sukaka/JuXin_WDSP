@@ -11,7 +11,7 @@ paths:
       operationId: riskPolicyGet
       tags: [risk-policy]
       summary: 读取风险策略
-      description: 读取身份风险处置全局策略（GLOBAL 单行，含乐观锁 version；随网关发布下发 risk_policy 段——信号窗口内身份风险分达 rate_limit_threshold 限速、达 block_threshold 阻断）。权限：`risk_policy.read`
+      description: 读取身份风险处置全局策略（GLOBAL 单行，含乐观锁 version；随网关发布下发 risk_policy 段——信号窗口内身份风险分达 rate_limit_threshold 限速、达非零 challenge_threshold 挑战、达 block_threshold 阻断）。权限：`risk_policy.read`
       responses:
         '200':
           description: 风险策略全字段
@@ -25,7 +25,7 @@ paths:
       operationId: riskPolicyUpdate
       tags: [risk-policy]
       summary: 全量更新风险策略
-      description: 全量更新全局风险策略（version 乐观锁，冲突返回 409；mode 限定 OBSERVE/PROTECT、block/rate_limit 阈值 1-100 且限速阈值必须小于阻断阈值、rate_limit_rps 1-100000、signal_window_seconds 1-604800、scores 键为大写信号类型格式且值 0-100、risk_levels 恰为 medium/high/critical 三键且严格递增）。成功后记录审计（OBSERVE→PROTECT 升级为高风险，其余中风险）并触发网关配置发布（risk_policy 段热生效；enabled=false 时网关风险处置零行为；OBSERVE 模式仅观测，事件 action_taken=would_block/would_rate_limit）。权限：`risk_policy.edit`
+      description: 全量更新全局风险策略（version 乐观锁，冲突返回 409；mode 限定 OBSERVE/PROTECT、block/rate_limit 阈值 1-100 且限速阈值必须小于阻断阈值；challenge_threshold 可选，0=关闭，启用时须满足 rate_limit_threshold < challenge_threshold < block_threshold，PUT 省略时保留原值；rate_limit_rps 1-100000、signal_window_seconds 1-604800、scores 键为大写信号类型格式且值 0-100、risk_levels 恰为 medium/high/critical 三键且严格递增）。成功后记录审计（OBSERVE→PROTECT 升级为高风险，其余中风险）并触发网关配置发布（risk_policy 段热生效；enabled=false 时网关风险处置零行为；OBSERVE 模式仅观测，事件 action_taken=would_block/would_challenge/would_rate_limit）。权限：`risk_policy.edit`
       requestBody:
         required: true
         content:
@@ -129,6 +129,7 @@ components:
         version: { type: integer, description: 乐观锁版本号（随发布下发，网关事件回报 policy_version 溯源） }
         block_threshold: { type: integer, minimum: 1, maximum: 100, description: 阻断风险分阈值（默认 80；PROTECT 模式达阈阻断） }
         rate_limit_threshold: { type: integer, minimum: 1, maximum: 100, description: 限速风险分阈值（默认 40；须小于 block_threshold） }
+        challenge_threshold: { type: integer, minimum: 0, maximum: 100, description: 挑战风险分阈值；0/缺省=关闭，1-100 启用且须满足 rate_limit_threshold < challenge_threshold < block_threshold }
         rate_limit_rps: { type: integer, minimum: 1, maximum: 100000, description: 限速速率（RPS，默认 10） }
         signal_window_seconds: { type: integer, minimum: 1, maximum: 604800, description: 信号汇总窗口（秒，默认 86400） }
         shared_device_account_limit: { type: integer, minimum: 0, maximum: 1000, description: 应用覆盖专属：同设备可信账号观察阈值；0=默认3，自定义2-1000；仅影响观察信号，不直接阻断 }
@@ -160,6 +161,7 @@ components:
         version: { type: integer, description: 乐观锁版本号（与当前版本不一致返回 409） }
         block_threshold: { type: integer, minimum: 1, maximum: 100 }
         rate_limit_threshold: { type: integer, minimum: 1, maximum: 100, description: 须小于 block_threshold }
+        challenge_threshold: { type: integer, minimum: 0, maximum: 100, description: 可选；0=关闭，1-100 启用且须大于 rate_limit_threshold、小于 block_threshold；PUT 省略时保留原值 }
         rate_limit_rps: { type: integer, minimum: 1, maximum: 100000 }
         signal_window_seconds: { type: integer, minimum: 1, maximum: 604800 }
         scores:
@@ -183,6 +185,7 @@ components:
         version: { type: integer, minimum: 0, description: 新建为 0，更新为当前版本 }
         block_threshold: { type: integer, minimum: 1, maximum: 100 }
         rate_limit_threshold: { type: integer, minimum: 1, maximum: 100, description: 须小于 block_threshold }
+        challenge_threshold: { type: integer, minimum: 0, maximum: 100, description: 可选；0=关闭，1-100 启用且须大于 rate_limit_threshold、小于 block_threshold；PUT 省略时保留原值 }
         rate_limit_rps: { type: integer, minimum: 1, maximum: 100000 }
         signal_window_seconds: { type: integer, minimum: 1, maximum: 604800 }
         shared_device_account_limit: { type: integer, minimum: 0, maximum: 1000, description: 同设备可信账号观察阈值；0=默认3，自定义2-1000，1及其他越界值返回400；仅影响观察信号 }

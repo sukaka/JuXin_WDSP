@@ -21,6 +21,7 @@ const globalPolicy: RiskPolicy = {
   version: 3,
   block_threshold: 80,
   rate_limit_threshold: 60,
+  challenge_threshold: 70,
   rate_limit_rps: 5,
   signal_window_seconds: 86400,
   scores: { RECON: 15 },
@@ -122,7 +123,7 @@ describe('ApplicationRiskOverridesPanel', () => {
     await screen.findByText('当前应用未配置覆盖，将继承全局策略')
   }
 
-  it('创建应用覆盖：从全局值初始化并携带 version=0', async () => {
+  it('创建应用覆盖：从全局值初始化挑战阈值并携带 version=0', async () => {
     renderPanel()
     await selectApplication()
     fireEvent.click(screen.getByRole('button', { name: '新建应用覆盖' }))
@@ -132,6 +133,10 @@ describe('ApplicationRiskOverridesPanel', () => {
     )) as HTMLInputElement
     expect(threshold.value).toBe('80')
     fireEvent.change(threshold, { target: { value: '90' } })
+    const challenge = (await within(drawer).findByLabelText(
+      '挑战阈值（0 关闭）',
+    )) as HTMLInputElement
+    expect(challenge.value).toBe('70')
     const sharedLimit = (await within(drawer).findByLabelText(
       '同设备账号观察阈值',
     )) as HTMLInputElement
@@ -155,6 +160,7 @@ describe('ApplicationRiskOverridesPanel', () => {
       version: 0,
       mode: 'OBSERVE',
       block_threshold: 90,
+      challenge_threshold: 70,
       shared_device_account_limit: 4,
       scores: { RECON: 15 },
       risk_levels: { medium: 20, high: 40, critical: 70 },
@@ -162,12 +168,13 @@ describe('ApplicationRiskOverridesPanel', () => {
     expect(body.application_id).toBeUndefined()
   })
 
-  it('编辑与删除均使用当前版本，删除后恢复继承提示', async () => {
+  it('停用覆盖编辑与删除均使用当前版本，删除后恢复继承提示', async () => {
     current = {
       ...globalPolicy,
       id: 'override-1',
       application_id: 'app-1',
       scope: 'APPLICATION',
+      enabled: false,
       version: 4,
     }
     renderPanel()
@@ -185,6 +192,7 @@ describe('ApplicationRiskOverridesPanel', () => {
         )) as HTMLInputElement
       ).value,
     ).toBe('80')
+    expect(within(drawer).getByRole('switch')).not.toBeChecked()
     fireEvent.click(
       within(drawer).getByRole('button', { name: '保存应用覆盖' }),
     )
@@ -194,7 +202,10 @@ describe('ApplicationRiskOverridesPanel', () => {
         .mock.calls.find(
           (entry) => (entry[1] as RequestInit | undefined)?.method === 'PUT',
         )
-      expect(JSON.parse(String((call![1] as RequestInit).body)).version).toBe(4)
+      const body = JSON.parse(String((call![1] as RequestInit).body))
+      expect(body.version).toBe(4)
+      expect(body.enabled).toBe(false)
+      expect(body.challenge_threshold).toBe(70)
     })
     fireEvent.click(
       await screen.findByRole('button', { name: '删除覆盖并继承全局' }),

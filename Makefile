@@ -2,7 +2,7 @@
 	gateway-build gateway-up gateway-down gateway-logs gateway-test waf-test ftw-test \
 	server-build server-test server-test-integration web-install web-typecheck web-lint web-test web-build \
 	stage2-up stage2-down stage2-test stage2-status \
-	guard-build guard-test trusted-proxy-test access-control-test rate-limit-test \
+	guard-build guard-test gateway-low-port-test trusted-proxy-test access-control-test rate-limit-test \
 	stage5-up stage5-down stage5-status stage5-test-unit stage5-test-api stage5-test-gateway \
 	stage5-test-performance stage5-test-e2e stage5-test-security stage5-test-all \
 	stage6-up stage6-down stage6-status metrics-aggregate reports-test monitoring-test alerts-test \
@@ -196,6 +196,10 @@ guard-build:
 guard-test:
 	@echo "运行 jiuzhang_guard 模块单元测试..."
 	cd gateway/modules/jiuzhang_guard && go test -race ./...
+
+gateway-low-port-test:
+	@echo "验证非 root 网关在最小权限下可监听 1024 以下端口..."
+	bash scripts/tests/gateway-low-port.sh
 
 trusted-proxy-test:
 	@echo "运行可信代理相关单元测试..."

@@ -75,11 +75,12 @@ type DataQuality struct {
 }
 
 type Graph struct {
-	Nodes     []Node      `json:"nodes"`
-	Edges     []Edge      `json:"edges"`
-	Truncated bool        `json:"truncated"`
-	View      string      `json:"view"`
-	Quality   DataQuality `json:"quality"`
+	Nodes                []Node      `json:"nodes"`
+	Edges                []Edge      `json:"edges"`
+	Truncated            bool        `json:"truncated"`
+	View                 string      `json:"view"`
+	Quality              DataQuality `json:"quality"`
+	RuntimeFieldsWarning string      `json:"-"`
 }
 
 type EvidenceRecord struct {

@@ -144,6 +144,8 @@ export interface ApiAuthzRelationCandidate {
   updated_at: string
 }
 
+export type ApiAuthzObjectRelationType = 'OWNER' | 'SHARED_WITH'
+
 export interface ApiAuthzObjectRelation {
   id: string
   application_id: string
@@ -151,7 +153,7 @@ export interface ApiAuthzObjectRelation {
   object_ref: string
   principal_id: string
   tenant_id?: string | null
-  relation: 'OWNER'
+  relation: ApiAuthzObjectRelationType
   /** 来源词表（迁移 000172 扩 AUTHORITY_SYNC 权威同步通道） */
   source: 'MANUAL' | 'IMPORT' | 'CREATE_BINDING' | 'AUTHORITY_SYNC'
   /** 权威来源 ID（source=AUTHORITY_SYNC 时非空） */
@@ -165,6 +167,21 @@ export interface ApiAuthzObjectRelation {
   reason: string
   created_at: string
   updated_at: string
+}
+
+export interface ApiAuthzCreateObjectRelationBody {
+  application_id: string
+  object_type: string
+  /** 服务端生成的 objref: HMAC 引用，不接受对象明文 */
+  object_ref: string
+  principal_id: string
+  tenant_id?: string
+  relation: ApiAuthzObjectRelationType
+  source?: 'MANUAL' | 'IMPORT'
+  valid_from?: string
+  valid_until?: string
+  evidence_ref?: string
+  reason: string
 }
 
 /** 重新授权请求（POST /authz/relations/{id}/reauthorize；仅 REVOKED/EXPIRED 关系允许） */
@@ -469,6 +486,12 @@ export const apiAuthzApi = {
     const data = await request<PageResult<ApiAuthzObjectRelation>>('/api-security/authz/relations', { query: { ...params } })
     return { ...data, items: data.items ?? [] }
   },
+  /** 手工登记所有者或共享关系（权限 api_authorization.relation_manage；409 原样呈现冲突） */
+  createObjectRelation: (body: ApiAuthzCreateObjectRelationBody) =>
+    request<ApiAuthzObjectRelation>('/api-security/authz/relations', { method: 'POST', body }),
+  /** 撤销有效关系并保留历史记录；reason 写入 HIGH 级操作审计 */
+  revokeObjectRelation: (id: string, body: { reason: string }) =>
+    request<ApiAuthzObjectRelation>(`/api-security/authz/relations/${id}/revoke`, { method: 'POST', body }),
   /** 显式重新授权（仅 REVOKED/EXPIRED 关系；权限 api_authorization.relation_manage） */
   reauthorizeObjectRelation: (id: string, body: ApiAuthzReauthorizeBody) =>
     request<ApiAuthzObjectRelation>(`/api-security/authz/relations/${id}/reauthorize`, { method: 'POST', body }),

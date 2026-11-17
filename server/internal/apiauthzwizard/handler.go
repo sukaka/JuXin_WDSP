@@ -34,8 +34,8 @@ type SettingsReader interface {
 }
 
 // CapabilityChecker 主节点能力检查（§1.2 BLOCKED_BY_NODE 判定输入；
-// 默认实现读 sidecar capability.json——发布门同一事实源；测试注入）。
-type CapabilityChecker func(ctx context.Context) (ok bool, reason string)
+// requiredAZ 按模型取 3 或 4；默认实现读 sidecar capability.json——发布门同一事实源）。
+type CapabilityChecker func(ctx context.Context, requiredAZ int) (ok bool, reason string)
 
 // Handler 向导处理器。
 type Handler struct {
@@ -88,16 +88,9 @@ type nodeFacts struct {
 }
 
 // collectNodeFacts 采集节点事实（ACK 视图派生复用 apiauthzacks.BuildView——
-// ack_state 五态唯一事实源不重复实现；能力经注入检查器）。
+// ack_state 五态唯一事实源不重复实现；能力版本在 readinessForRow 按模型检查）。
 func (h *Handler) collectNodeFacts(ctx context.Context, now time.Time) (nodeFacts, error) {
 	var f nodeFacts
-	if h.capability != nil {
-		ok, reason := h.capability(ctx)
-		if !ok {
-			f.capabilityLow = true
-			f.stateReasons = append(f.stateReasons, "节点能力："+reason)
-		}
-	}
 	if h.acks == nil {
 		f.nodeNotFresh = true
 		f.stateReasons = append(f.stateReasons, "节点状态：ACK 数据源未装配（保守按不可实断）")
@@ -154,9 +147,17 @@ func (h *Handler) readinessForRow(ctx context.Context, row ObjectModelRow, nf no
 	if err != nil {
 		return "", nil, err
 	}
+	if h.capability != nil {
+		ok, reason := h.capability(ctx, requiredAuthzAZ(row.RequiredRelation))
+		if !ok {
+			nf.capabilityLow = true
+			nf.stateReasons = append(nf.stateReasons, "节点能力："+reason)
+		}
+	}
 	badge, reasons := DeriveReadiness(ReadinessInput{
 		Publishable:               row.Publishable,
 		RequiredRelation:          row.RequiredRelation,
+		RequiredRelations:         row.RequiredRelations,
 		OwnerExclusive:            row.OwnerExclusive,
 		EndpointConfirmed:         row.EndpointConfirmed,
 		Enforcement:               row.Enforcement,
@@ -167,6 +168,7 @@ func (h *Handler) readinessForRow(ctx context.Context, row ObjectModelRow, nf no
 		ClockSkew:                 nf.clockSkew,
 		NodeNotFresh:              nf.nodeNotFresh,
 		NodeCapabilityLow:         nf.capabilityLow,
+		NodeStateReasons:          nf.stateReasons,
 	})
 	return badge, reasons, nil
 }

@@ -8,9 +8,14 @@
 //     结构上不可能先于它们放行）。
 //   - 有效 clearance 只通过 Bot 步骤，不绕过任何既有拒绝，也不绕过其后的
 //     API 动态防护、请求大小/协议检查与 Coraza WAF（BOT-014 集成测试实证）。
-//   - 保留命名空间 /_wdsp/bot/v1/ 在本步骤最前置本地处理（verify 固定协议端点；
-//     未知子路径本地 404、错误方法 405，均不反向代理——BOT-016）；从已启用状态
-//     关闭后保留本地 404/405 墓碑（route_reservation=RESERVED_TOMBSTONE），
+//   - 风险 CHALLENGE 经请求上下文在本步骤消费：不再要求 Bot 多信号达阈，但仍须通过
+//     selector、clearance、eligibility 与机器身份豁免；只有真实 403 才发风险 challenged。
+//   - 精确发布探针 /_wdsp/internal/v1/publish-smoke 在 Bot 策略读取之前由 guard
+//     独立验签并本地应答，先于 Bot 保留命名空间；它不属于 Bot 命名空间，OFF、
+//     bp==nil 与 RELEASED 均不影响探针，且任何结局都不进入下游。
+//   - Bot 保留命名空间 /_wdsp/bot/v1/ 在发布探针之后、Bot 业务判定之前本地处理
+//     （verify 固定协议端点；未知子路径本地 404、错误方法 405，均不反向代理——BOT-016）；
+//     从已启用状态关闭后保留本地 404/405 墓碑（route_reservation=RESERVED_TOMBSTONE），
 //     防止旧挑战提交落入业务源站；首次 OFF 且保留已解除（RELEASED）不抢占业务路径。
 //   - OFF 不初始化挑战依赖（assembleBotService 不构造 Service）；OBSERVE 只记录
 //     不实断；PROTECT 挑战/验通行依赖故障 fail-closed 503（任务书 §5.4，
@@ -33,10 +38,15 @@ import (
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/identitybehavior"
 )
 
-// serveNextViaBot Bot 步骤统一入口（任务书 §3.2：CC 之后、serveNext 之前）。
-// 保护地址/白名单/L7 allow 三个直达分支与常规链路全部经此进入——
+// serveNextViaBot 是 CC 之后、serveNext 之前的统一收口：先处理独立发布探针，
+// 再进入 Bot 步骤。保护地址/白名单/L7 allow 三个直达分支与常规链路全部经此进入——
 // 白名单/L7 allow 不隐式跳过 Bot（BOT-015）。
 func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler, base events.Event, res clientip.Result) error {
+	// 发布冒烟是独立 WDSP 内部精确端点：必须在 bp==nil 与 RELEASED 分支之前处理，
+	// 且无论认证成败都不得进入 Bot、API/WAF 或 reverse_proxy 下游。
+	if r.URL.Path == publishSmokePath {
+		return g.servePublishSmoke(w, r)
+	}
 	bp := g.botPolicy
 	if bp == nil {
 		return g.serveNext(w, r, next)
@@ -124,13 +134,19 @@ func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next cad
 		return g.serveNext(w, r, next)
 	}
 
-	// 5. 多信号判定（§4.2：≥2 独立信号组且 ≥1 行为组；观测缺失按 UNKNOWN 处理）
-	dec := g.evaluateBotSignals(r, bp)
+	// 5. 风险达阈挑战直接复用本步骤，不再要求 Bot 多信号二次达阈；
+	// 无风险待挑战事实时保持原有多信号判定（≥2 独立信号组且 ≥1 行为组）。
+	dec := botDecision{}
+	if pendingRiskChallengeFor(r) != nil {
+		dec = botDecision{challenge: true, reason: "IDENTITY_RISK_POLICY"}
+	} else {
+		dec = g.evaluateBotSignals(r, bp)
+	}
 	if reChallenge != "" {
 		// 持有过期/撤销/非法通行的合格请求：PROTECT 重新挑战（与信号判定独立——
 		// 通行曾签发说明已被判定需挑战；伪造通行在 PROTECT 下不得静默放行转业务）
 		if bp.Mode == botModeProtect {
-			svc.Offer(w, r, cc, reChallenge)
+			g.offerBotChallenge(w, r, svc, cc, base, res, reChallenge)
 			return nil
 		}
 		dispo.RecordStep(ExecutorBot, StepObserved, reChallenge)
@@ -147,8 +163,23 @@ func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next cad
 	}
 	// PROTECT：挑战（B2 语义——403 挑战页 / 429 / 503 fail-closed；
 	// 终止事实由 Offer 内经 cc.RecordTerminal 按真实结局记录）
-	svc.Offer(w, r, cc, dec.reason)
+	g.offerBotChallenge(w, r, svc, cc, base, res, dec.reason)
 	return nil
+}
+
+// offerBotChallenge 保留 Offer 的真实结局；仅实际写出 403 挑战页时补发风险
+// challenged 事件。429/503 已由 Bot 按限速/依赖故障记录，不冒充挑战成功。
+func (g *Guard) offerBotChallenge(w http.ResponseWriter, r *http.Request, svc *botchallenge.Service, cc botchallenge.CallContext, base events.Event, res clientip.Result, reason string) {
+	cw := &botStatusCapture{ResponseWriter: w}
+	svc.Offer(cw, r, cc, reason)
+	if cw.status != http.StatusForbidden {
+		return
+	}
+	pending := pendingRiskChallengeFor(r)
+	if pending == nil {
+		return
+	}
+	g.emitRiskEvent(pending.engine, r, res, base, pending.decision, events.RiskPolicyChallenge, "challenged", http.StatusForbidden)
 }
 
 // botNamespaceActive 保留命名空间是否激活（ENABLED 注册或 TOMBSTONE 墓碑保留；

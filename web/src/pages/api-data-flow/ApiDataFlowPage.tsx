@@ -22,7 +22,7 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import DataFlowCanvas from './DataFlowCanvas'
 import { EvidenceDrawer, NodeDetailDrawer } from './DataFlowDetails'
-import { DATA_TYPE_LABELS, dataFlowDataTypes } from '../../utils/dataFlowCharts'
+import { DATA_TYPE_LABELS, dataFlowDataTypes, dataFlowFields } from '../../utils/dataFlowCharts'
 import './api-data-flow.css'
 
 function percent(value: number): string {
@@ -93,9 +93,19 @@ export default function ApiDataFlowPage() {
   }
 
   const sensitiveTags = (edge: DataFlowEdge, side: 'REQUEST' | 'RESPONSE' | 'MESSAGE') => {
+    const color = side === 'MESSAGE' ? 'green' : side === 'REQUEST' ? 'gold' : 'purple'
+    const fields = dataFlowFields(edge, side)
+    if (fields.length) {
+      return <div className="data-flow-sensitive-fields">{fields.map((field, index) => (
+        <Tag key={`${field.data_type}:${field.path}:${index}`} color={color}>
+          <span>{DATA_TYPE_LABELS[field.data_type] ?? field.data_type}</span>
+          <Typography.Text code>{field.path}</Typography.Text>
+        </Tag>
+      ))}</div>
+    }
     const types = dataFlowDataTypes(edge, side)
     return types.length
-      ? types.map((value) => <Tag key={value} color={side === 'MESSAGE' ? 'green' : side === 'REQUEST' ? 'gold' : 'purple'}>{DATA_TYPE_LABELS[value] ?? value}</Tag>)
+      ? types.map((value) => <Tag key={value} color={color}>{DATA_TYPE_LABELS[value] ?? value}</Tag>)
       : <Typography.Text type="secondary">未识别</Typography.Text>
   }
   const hasMessageFields = (graph?.edges ?? []).some((edge) => dataFlowDataTypes(edge, 'MESSAGE').length > 0)

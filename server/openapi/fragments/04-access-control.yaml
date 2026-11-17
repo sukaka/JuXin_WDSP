@@ -1089,8 +1089,8 @@ paths:
         - { name: end_time, in: query, schema: { type: string, format: date-time }, description: 截止时间（RFC3339，必须晚于 start_time） }
         - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按应用筛选 }
         - { name: client_ip, in: query, schema: { type: string }, description: 按客户端 IP 筛选 }
-        - { name: event_type, in: query, schema: { type: string, enum: [CC_TEMP_BLOCK_CREATED, CC_TEMP_BLOCK_EXPIRED, CC_TEMP_BLOCK_RELEASED, CC_THRESHOLD_EXCEEDED, CC_REQUEST_REJECTED] }, description: 按事件类型筛选 }
-        - { name: action, in: query, schema: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK] }, description: 按动作筛选 }
+        - { name: event_type, in: query, schema: { type: string, enum: [CC_TEMP_BLOCK_CREATED, CC_TEMP_BLOCK_EXPIRED, CC_TEMP_BLOCK_RELEASED, CC_THRESHOLD_EXCEEDED, CC_REQUEST_REJECTED, RISK_POLICY_CHALLENGE] }, description: 按事件类型筛选 }
+        - { name: action, in: query, schema: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK, CHALLENGE] }, description: 按动作筛选 }
         - { name: policy_id, in: query, schema: { type: string }, description: 按策略 ID 筛选 }
         - { name: request_id, in: query, schema: { type: string }, description: 按请求 ID 筛选 }
         - { name: gateway_node_id, in: query, schema: { type: string }, description: 按网关节点筛选 }
@@ -1123,8 +1123,8 @@ paths:
         - { name: end_time, in: query, schema: { type: string, format: date-time }, description: 截止时间（RFC3339，必须晚于 start_time） }
         - { name: application_id, in: query, schema: { type: string, format: uuid }, description: 按应用筛选 }
         - { name: client_ip, in: query, schema: { type: string }, description: 按客户端 IP 筛选 }
-        - { name: event_type, in: query, schema: { type: string, enum: [CC_TEMP_BLOCK_CREATED, CC_TEMP_BLOCK_EXPIRED, CC_TEMP_BLOCK_RELEASED, CC_THRESHOLD_EXCEEDED, CC_REQUEST_REJECTED] }, description: 按事件类型筛选 }
-        - { name: action, in: query, schema: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK] }, description: 按动作筛选 }
+        - { name: event_type, in: query, schema: { type: string, enum: [CC_TEMP_BLOCK_CREATED, CC_TEMP_BLOCK_EXPIRED, CC_TEMP_BLOCK_RELEASED, CC_THRESHOLD_EXCEEDED, CC_REQUEST_REJECTED, RISK_POLICY_CHALLENGE] }, description: 按事件类型筛选 }
+        - { name: action, in: query, schema: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK, CHALLENGE] }, description: 按动作筛选 }
         - { name: policy_id, in: query, schema: { type: string }, description: 按策略 ID 筛选 }
         - { name: request_id, in: query, schema: { type: string }, description: 按请求 ID 筛选 }
         - { name: gateway_node_id, in: query, schema: { type: string }, description: 按网关节点筛选 }
@@ -2012,8 +2012,8 @@ components:
         domain: { type: string, description: 请求域名 }
         request_method: { type: string, description: 请求方法 }
         request_path: { type: string, description: 请求路径 }
-        event_type: { type: string, enum: [CC_TEMP_BLOCK_CREATED, CC_TEMP_BLOCK_EXPIRED, CC_TEMP_BLOCK_RELEASED, CC_THRESHOLD_EXCEEDED, CC_REQUEST_REJECTED], description: 事件类型 }
-        action: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK], description: 动作 }
+        event_type: { type: string, enum: [CC_TEMP_BLOCK_CREATED, CC_TEMP_BLOCK_EXPIRED, CC_TEMP_BLOCK_RELEASED, CC_THRESHOLD_EXCEEDED, CC_REQUEST_REJECTED, RISK_POLICY_CHALLENGE], description: 事件类型 }
+        action: { type: string, enum: [LOG, OBSERVE, REJECT, TEMP_BLOCK, CHALLENGE], description: 动作 }
         policy_id: { type: string, description: 关联策略 ID }
         access_rule_id: { type: string, description: 关联访问规则 ID }
         current_count: { type: integer, format: int64, nullable: true, description: 触发时窗口内当前计数 }

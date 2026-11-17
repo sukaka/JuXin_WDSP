@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 一键构建完整 WDSP amd64 运行组件，并封装为正式签名 openEuler / 兆芯 .run 安装包。
+# 一键构建完整 WDSP amd64 运行组件，并封装为 openEuler / 兆芯 .run 安装包。
+# 默认正式签名；--development 仅用于无生产私钥的完整产物验证。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -19,14 +20,16 @@ usage() {
   cat <<'EOF'
 用法: package-runtime-run.sh [选项]
 
-从当前工作区构建完整 WDSP linux/amd64 运行组件，并生成正式签名的
-openEuler / 兆芯 .run 安装包。交付包只包含运行时组件，不包含测试代码或产品文档。
+从当前工作区构建完整 WDSP linux/amd64 运行组件，并生成 openEuler / 兆芯 .run
+安装包。默认要求正式签名；--development 仅用于无生产私钥的完整产物验证。
+交付包只包含运行时组件，不包含测试代码或产品文档。
 
 选项:
   -v, --version X.Y.Z       交付版本；干净工作区可默认读取当前已发布版本
   -o, --output DIR          独立输出目录；默认 dist/run-YYYYmmdd-HHMMSS
       --signing-key FILE    Ed25519 发布私钥路径；也可通过 WDSP_SIGNING_KEY 提供
       --rpm-dir DIR         必填；匹配目标 openEuler x86-64 的完整离线 RPM 目录
+      --development         构建并验收未签名 development 完整包；禁止与签名参数同用
       --dry-run             仅显示将执行的构建命令，不写入文件或调用 Docker
   -h, --help                显示帮助
 
@@ -35,8 +38,10 @@ openEuler / 兆芯 .run 安装包。交付包只包含运行时组件，不包�
     bash ops/offline-package/package-runtime-run.sh --rpm-dir /secure/openeuler-rpms
   bash ops/offline-package/package-runtime-run.sh --signing-key /secure/wdsp-release.key \
     --rpm-dir /secure/openeuler-rpms -v 1.2.1
+  bash ops/offline-package/package-runtime-run.sh --development \
+    --rpm-dir /secure/openeuler-rpms -v 1.2.1 -o /tmp/wdsp-runtime-verify
 
-本脚本不会修改版本号、提交/推送 Git、部署或使用 development/unsigned 打包模式。
+本脚本不会修改版本号、提交/推送 Git 或部署。development 包不得用于生产。
 RPM 目录必须在顶层包含 docker-compose-plugin 的 x86-64 RPM 及其全部依赖。
 脚本校验 RPM 架构和文件完整性；依赖闭包仍须在干净 openEuler 测试机验收。
 EOF
@@ -48,12 +53,14 @@ OUTPUT_DIR=''
 SIGNING_KEY=''
 RPM_DIR=''
 DRY_RUN=false
+DEVELOPMENT=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -v|--version) VERSION="${2:-}"; VERSION_EXPLICIT=true; shift 2 ;;
     -o|--output) OUTPUT_DIR="${2:-}"; shift 2 ;;
     --signing-key) SIGNING_KEY="${2:-}"; shift 2 ;;
     --rpm-dir) RPM_DIR="${2:-}"; shift 2 ;;
+    --development) DEVELOPMENT=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "未知参数：$1" ;;
@@ -80,6 +87,7 @@ fi
 [[ -f "$REPO_ROOT/gateway/Dockerfile" ]] || die '缺少 gateway Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/netmgrd/Dockerfile" ]] || die '缺少 netmgrd Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/logrotator/Dockerfile" ]] || die '缺少 logrotator Dockerfile'
+[[ -f "$REPO_ROOT/deployment/containerops/Dockerfile" ]] || die '缺少 containerops Dockerfile'
 [[ -f "$REPO_ROOT/wdsp-agent/go.mod" ]] || die '缺少 wdsp-agent Go 模块'
 [[ -f "$TRUSTED_PUBLIC_KEY" ]] || die "缺少发布信任公钥：$TRUSTED_PUBLIC_KEY"
 
@@ -98,12 +106,15 @@ validate_signing_key() {
     || die '发布私钥不匹配安装器信任公钥，拒绝生成无法安装的正式包'
 }
 
+if [[ "$DEVELOPMENT" == true ]] && [[ -n "$SIGNING_KEY" || -n "${WDSP_SIGNING_KEY:-}" ]]; then
+  die '--development 禁止与 --signing-key/WDSP_SIGNING_KEY 同用，避免混用生产信任链'
+fi
 if [[ -n "$SIGNING_KEY" ]]; then
   [[ -f "$SIGNING_KEY" ]] || die '指定的发布私钥不存在'
   SIGNING_KEY="$(cd "$(dirname "$SIGNING_KEY")" && pwd -P)/$(basename "$SIGNING_KEY")"
   export WDSP_SIGNING_KEY="$SIGNING_KEY"
 fi
-if [[ "$DRY_RUN" != true && -z "${WDSP_SIGNING_KEY:-}" ]]; then
+if [[ "$DRY_RUN" != true && "$DEVELOPMENT" != true && -z "${WDSP_SIGNING_KEY:-}" ]]; then
   die '正式 .run 打包必须设置 WDSP_SIGNING_KEY 或传入 --signing-key；私钥不会进入产物'
 fi
 if [[ -n "${WDSP_SIGNING_KEY:-}" ]]; then
@@ -183,12 +194,23 @@ verify_delivery() {
   local run_file="$OUTPUT_DIR/jiuzhang-wdsp-openeuler-zhaoxin-${VERSION}-amd64.run"
   local offline_name="jiuzhang-wdsp-offline-${VERSION}-amd64.tar.gz"
   local offline_file scan_report manifest_member payload_dir rpm_file archive_listing
+  local expected_delivery_mode=production expected_signed=true verification_scope='正式签名'
   local -a packaged_rpms required_images
+  if [[ "$DEVELOPMENT" == true ]]; then
+    expected_delivery_mode=development
+    expected_signed=false
+    verification_scope='development 未签名（仅完整产物验证）'
+  fi
   [[ -x "$run_file" ]] || die "最终 .run 不存在或不可执行：$run_file"
-  [[ -f "${run_file}.sha256" && -f "${run_file}.sig" ]] || die '最终 .run 缺少哈希或签名旁车'
+  [[ -f "${run_file}.sha256" ]] || die '最终 .run 缺少哈希旁车'
   sha256_check_sidecar "$run_file" || die '最终 .run SHA-256 校验失败'
-  ed25519_verify_file "$TRUSTED_PUBLIC_KEY" "$run_file" "${run_file}.sig" \
-    || die '最终 .run Ed25519 验签失败'
+  if [[ "$DEVELOPMENT" == true ]]; then
+    [[ ! -e "${run_file}.sig" ]] || die 'development 完整包不应携带生产签名'
+  else
+    [[ -f "${run_file}.sig" ]] || die '最终 .run 缺少签名旁车'
+    ed25519_verify_file "$TRUSTED_PUBLIC_KEY" "$run_file" "${run_file}.sig" \
+      || die '最终 .run Ed25519 验签失败'
+  fi
   bash "$run_file" --help >/dev/null || die '最终 .run --help 冒烟失败'
 
   payload_dir="$WORK_DIR/final-payload"
@@ -200,11 +222,16 @@ verify_delivery() {
   tail -n "+$((marker_line + 1))" "$run_file" | tar -xzf - -C "$payload_dir" \
     || die '最终 .run 载荷无法解压'
   offline_file="$payload_dir/$offline_name"
-  [[ -f "$offline_file" && -f "${offline_file}.sha256" && -f "${offline_file}.sig" ]] \
-    || die '最终 .run 未完整嵌入基础离线包及旁车'
+  [[ -f "$offline_file" && -f "${offline_file}.sha256" ]] \
+    || die '最终 .run 未完整嵌入基础离线包及哈希旁车'
   sha256_check_sidecar "$offline_file" || die '嵌入基础离线包 SHA-256 校验失败'
-  ed25519_verify_file "$TRUSTED_PUBLIC_KEY" "$offline_file" "${offline_file}.sig" \
-    || die '嵌入基础离线包 Ed25519 验签失败'
+  if [[ "$DEVELOPMENT" == true ]]; then
+    [[ ! -e "${offline_file}.sig" ]] || die 'development 基础离线包不应携带生产签名'
+  else
+    [[ -f "${offline_file}.sig" ]] || die '嵌入基础离线包缺少签名旁车'
+    ed25519_verify_file "$TRUSTED_PUBLIC_KEY" "$offline_file" "${offline_file}.sig" \
+      || die '嵌入基础离线包 Ed25519 验签失败'
+  fi
 
   shopt -s nullglob
   packaged_rpms=("$payload_dir"/rpms/*.rpm)
@@ -227,12 +254,36 @@ verify_delivery() {
   manifest_member="$(awk '/\/manifest\.json$/{print; exit}' "$archive_listing")"
   [[ -n "$manifest_member" ]] || die '基础离线包缺少 manifest.json'
   tar -xOf "$offline_file" "$manifest_member" > "$payload_dir/manifest.json"
-  jq -e --arg version "$VERSION" \
+  jq -e --arg version "$VERSION" --arg delivery_mode "$expected_delivery_mode" \
+    --argjson expected_signed "$expected_signed" \
     '.edition == "wdsp" and .version == $version and .arch == "amd64" and
-     .delivery_mode == "production" and .signed == true and (.images | length) == 9 and
+     .delivery_mode == $delivery_mode and .signed == $expected_signed and (.images | length) == 10 and
      any(.files[]; .path == "agents/wdsp-agent")' "$payload_dir/manifest.json" >/dev/null \
-    || die '基础离线包 manifest 的版本、架构、签名、镜像或 Agent 清单不完整'
-  required_images=(jiuzhang-server jiuzhang-web jiuzhang-gateway jiuzhang-netmgrd jiuzhang-logrotator postgres valkey clickhouse opentelemetry-collector-contrib)
+    || die '基础离线包 manifest 的版本、架构、交付模式、签名、镜像或 Agent 清单不完整'
+
+  local compose_member compose_json
+  compose_member="$(awk '/\/docker-compose\.yml$/{print; exit}' "$archive_listing")"
+  [[ -n "$compose_member" ]] || die '基础离线包缺少 docker-compose.yml'
+  tar -xOf "$offline_file" "$compose_member" > "$payload_dir/docker-compose.yml" \
+    || die '基础离线包 docker-compose.yml 无法解出'
+  compose_json="$(
+    POSTGRES_PASSWORD=verify-only VALKEY_PASSWORD=verify-only JIUZHANG_MASTER_KEY=verify-only \
+      docker compose -f "$payload_dir/docker-compose.yml" --env-file /dev/null config --format json
+  )" || die '基础离线包 docker-compose.yml 无法渲染'
+  jq -e '
+    .services.gateway as $gateway | .services.netmgrd as $netmgrd |
+    ($gateway.user == "0:0") and
+    ($gateway.entrypoint == ["/usr/local/bin/wdsp-gateway-bind"]) and
+    ($gateway.environment.HOME == "/var/lib/caddy") and
+    ($gateway.cap_drop == ["ALL"]) and
+    (($gateway.cap_add | sort) == (["NET_BIND_SERVICE", "SETUID", "SETGID", "SETPCAP"] | sort)) and
+    (($gateway.security_opt // []) | index("no-new-privileges:true") != null) and
+    ($gateway.network_mode == "host") and
+    (($gateway.sysctls // {}) | has("net.ipv4.ip_unprivileged_port_start") | not) and
+    ($netmgrd.network_mode == "service:gateway")
+  ' <<<"$compose_json" >/dev/null \
+    || die '最终 .run 的 gateway 低端口入口、最小 capability 或 netmgrd 网络约束不符合交付基线'
+  required_images=(jiuzhang-server jiuzhang-web jiuzhang-gateway jiuzhang-netmgrd jiuzhang-logrotator jiuzhang-containerops postgres valkey clickhouse opentelemetry-collector-contrib)
   for image_name in "${required_images[@]}"; do
     grep -q "/images/${image_name}\.tar$" "$archive_listing" \
       || die "基础离线包缺少运行镜像：$image_name"
@@ -240,7 +291,7 @@ verify_delivery() {
   if grep -Eq '(^|/)(test|tests|__tests__|docs)(/|$)' "$archive_listing"; then
     die '基础离线包混入测试目录或产品文档目录'
   fi
-  log_info "最终验收通过：签名、哈希、9 个运行镜像、Agent、${#packaged_rpms[@]} 个 RPM、内容扫描均有效"
+  log_info "最终验收通过：${verification_scope}、哈希、10 个运行镜像（含 containerops）、Agent、${#packaged_rpms[@]} 个 RPM、内容扫描均有效"
   log_warn 'RPM 依赖闭包仍须在干净的目标 openEuler x86-64 测试机完成离线安装验收'
 }
 
@@ -280,6 +331,7 @@ build_image 'jiuzhang-web' 'web/Dockerfile' 'web'
 build_image 'jiuzhang-gateway' 'gateway/Dockerfile' 'gateway'
 build_image 'jiuzhang-netmgrd' 'gateway/images/netmgrd/Dockerfile' 'gateway'
 build_image 'jiuzhang-logrotator' 'gateway/images/logrotator/Dockerfile' 'gateway/images/logrotator'
+build_image 'jiuzhang-containerops' 'deployment/containerops/Dockerfile' '.'
 
 log_info "构建 linux/${TARGET_ARCH} WDSP Agent"
 AGENT_LDFLAGS="-s -w -X main.version=${VERSION}"
@@ -297,8 +349,10 @@ else
 fi
 
 export WDSP_AGENT_BINARY="$AGENT_BINARY"
-log_info '调用正式签名 .run 包装器（运行时裁剪、镜像历史清理、完整性校验由其执行）...'
-run_command bash "$RUN_BUILDER" --version "$VERSION" --output "$OUTPUT_DIR" --rpm-dir "$RPM_DIR"
+run_args=(--version "$VERSION" --output "$OUTPUT_DIR" --rpm-dir "$RPM_DIR")
+[[ "$DEVELOPMENT" != true ]] || run_args+=(--development)
+log_info '调用 .run 包装器（运行时裁剪、镜像历史清理、完整性校验由其执行）...'
+run_command bash "$RUN_BUILDER" "${run_args[@]}"
 
 if [[ "$DRY_RUN" == true ]]; then
   log_info '干运行完成：未构建镜像、未创建输出目录。'

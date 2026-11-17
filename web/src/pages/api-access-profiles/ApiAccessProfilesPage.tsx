@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Button, Card, Descriptions, Drawer, Input, Select, Space, Tabs, Tag, Tooltip, Typography } from 'antd'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { App as AntdApp, Button, Card, Descriptions, Drawer, Form, Input, Modal, Select, Space, Tabs, Tag, Tooltip, Typography } from 'antd'
 import { QuestionCircleOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { apiEndpointsApi } from '../../api/apiAssets'
@@ -11,6 +11,7 @@ import {
   type ApiBehaviorProfile,
   type ApiObjectModel,
 } from '../../api/apiSecurity'
+import { ApiError } from '../../api/client'
 import { ReadinessBadge } from '../../components/AuthzEnforcement'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
@@ -259,8 +260,22 @@ function BehaviorProfilesTab({ applicationId }: { applicationId?: string }) {
   )
 }
 
+const ANY_OF_RELATIONS = ['OWNER', 'SHARED_WITH'] as const
+
+function objectRelationTag(value: string) {
+  if (value === 'OWNER') return <Tag color="blue">所有者（OWNER）</Tag>
+  if (value === 'SHARED_WITH') return <Tag color="purple">共享接收人（SHARED_WITH）</Tag>
+  return <Tag>{value}</Tag>
+}
+
+function hasSupportedAnyOfRelations(model: ApiObjectModel) {
+  const relations = model.required_relations ?? []
+  return relations.length === ANY_OF_RELATIONS.length && ANY_OF_RELATIONS.every((relation) => relations.includes(relation))
+}
+
 /** 对象维度·对象模型（api_object_models：endpoint × 对象段，BOLA 实体画像） */
 function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
+  const { message } = AntdApp.useApp()
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canManage = hasPermission(permissions, 'api_authorization.manage')
   const [segment, setSegment] = useState('')
@@ -269,7 +284,9 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selected, setSelected] = useState<ApiObjectModel | null>(null)
+  const [editing, setEditing] = useState<ApiObjectModel | null>(null)
   const [wizardPreset, setWizardPreset] = useState<{ endpoint_id: string; object_segment: string } | null>(null)
+  const [relationForm] = Form.useForm<{ required_relation: 'OWNER' | 'ANY_OF' }>()
 
   // 站点过滤变化时回第一页（避免旧页码在新过滤结果中越界）
   const [prevApp, setPrevApp] = useState(applicationId)
@@ -300,6 +317,25 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
     for (const item of readinessQuery.data?.items ?? []) map.set(`${item.endpoint_id}:${item.object_segment}`, item)
     return map
   }, [readinessQuery.data])
+
+  const relationMutation = useMutation({
+    mutationFn: ({ model, requiredRelation }: { model: ApiObjectModel; requiredRelation: 'OWNER' | 'ANY_OF' }) =>
+      apiObjectModelsApi.patch(
+        model.id,
+        requiredRelation === 'ANY_OF'
+          ? { required_relation: 'ANY_OF', required_relations: [...ANY_OF_RELATIONS] }
+          : { required_relation: 'OWNER' },
+      ),
+    onSuccess: (updated) => {
+      message.success('对象要求关系已更新')
+      setSelected(updated)
+      setEditing(null)
+      relationForm.resetFields()
+      void listQuery.refetch()
+      if (applicationId) void readinessQuery.refetch()
+    },
+    onError: (error: unknown) => message.error(error instanceof ApiError ? error.message : '更新对象要求关系失败'),
+  })
 
   const columns: ColumnsType<ApiObjectModel> = [
     {
@@ -341,6 +377,14 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
       render: (v: string) => identifierTypeTag(v),
     },
     {
+      title: '要求关系',
+      key: 'required_relation',
+      width: 190,
+      render: (_, row) => row.required_relation === 'ANY_OF'
+        ? <Tag color="purple">任一关系（ANY_OF）</Tag>
+        : row.required_relation === 'OWNER' ? objectRelationTag('OWNER') : row.required_relation || '—',
+    },
+    {
       title: '样本数',
       dataIndex: 'sample_count',
       width: 100,
@@ -359,6 +403,12 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
       render: (v: string) => formatDateTime(v),
     },
   ]
+
+  const selectedRelationEditable = selected && (
+    !selected.required_relation ||
+    selected.required_relation === 'OWNER' ||
+    (selected.required_relation === 'ANY_OF' && hasSupportedAnyOfRelations(selected))
+  )
 
   return (
     <>
@@ -396,7 +446,7 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
         loading={listQuery.isLoading}
         columns={columns}
         dataSource={listQuery.data?.items ?? []}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1290 }}
         onRow={(r) => ({ onClick: () => setSelected(r), style: { cursor: 'pointer' } })}
         pagination={{
           current: page,
@@ -414,7 +464,7 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
         title="对象模型详情"
         width={720}
         open={selected !== null}
-        onClose={() => setSelected(null)}
+        onClose={() => { setSelected(null); setEditing(null) }}
         destroyOnHidden
       >
         {selected ? (
@@ -478,7 +528,20 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
                     children:
                       selected.publishable === undefined ? '—' : selected.publishable ? <Tag color="green">publishable</Tag> : <Tag>未声明</Tag>,
                   },
-                  { key: 'rel', label: '要求关系', children: selected.required_relation || '—' },
+                  {
+                    key: 'rel',
+                    label: '要求关系',
+                    children: selected.required_relation === 'ANY_OF'
+                      ? <Tag color="purple">任一关系（ANY_OF）</Tag>
+                      : selected.required_relation === 'OWNER' ? objectRelationTag('OWNER') : selected.required_relation || '—',
+                  },
+                  ...(selected.required_relation === 'ANY_OF' ? [{
+                    key: 'relations',
+                    label: '任一满足的关系',
+                    children: selected.required_relations?.length
+                      ? <Space wrap>{selected.required_relations.map((relation) => <span key={relation}>{objectRelationTag(relation)}</span>)}</Space>
+                      : '—',
+                  }] : []),
                   {
                     key: 'excl',
                     label: '排他所有权',
@@ -491,20 +554,73 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
                   { key: 'evid', label: '证据来源', children: selected.evidence_source || '—' },
                 ]}
               />
-              {canManage && selected.enforcement !== 'PROTECT' ? (
-                <Button
-                  type="primary"
-                  danger
-                  style={{ marginTop: 12 }}
-                  onClick={() => setWizardPreset({ endpoint_id: selected.endpoint_id, object_segment: selected.object_segment })}
-                >
-                  切换 PROTECT
-                </Button>
+              <Space wrap style={{ marginTop: 12 }}>
+                {canManage && selectedRelationEditable ? (
+                  <Button onClick={() => {
+                    relationForm.resetFields()
+                    relationForm.setFieldsValue({ required_relation: selected.required_relation === 'ANY_OF' ? 'ANY_OF' : 'OWNER' })
+                    setEditing(selected)
+                  }}>
+                    编辑要求关系
+                  </Button>
+                ) : null}
+                {canManage && selected.enforcement !== 'PROTECT' ? (
+                  <Button
+                    type="primary"
+                    danger
+                    onClick={() => setWizardPreset({ endpoint_id: selected.endpoint_id, object_segment: selected.object_segment })}
+                  >
+                    切换 PROTECT
+                  </Button>
+                ) : null}
+              </Space>
+              {canManage && !selectedRelationEditable ? (
+                <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+                  当前配置不属于本切片支持的 OWNER 或 ANY_OF（OWNER、SHARED_WITH），不可编辑。
+                </Typography.Paragraph>
               ) : null}
             </div>
           </Space>
         ) : null}
       </Drawer>
+      <Modal
+        open={editing !== null}
+        title="编辑对象要求关系"
+        okText="保存关系配置"
+        confirmLoading={relationMutation.isPending}
+        onCancel={() => setEditing(null)}
+        onOk={() => relationForm.validateFields().then((values) => {
+          if (editing) relationMutation.mutate({ model: editing, requiredRelation: values.required_relation })
+        }, () => { /* 校验失败由表单内联提示 */ })}
+      >
+        <Form form={relationForm} layout="vertical">
+          <Form.Item name="required_relation" label="关系匹配方式" rules={[{ required: true, message: '请选择关系匹配方式' }]}>
+            <Select options={[
+              { value: 'OWNER', label: '所有者（OWNER）' },
+              { value: 'ANY_OF', label: '任一关系（ANY_OF）' },
+            ]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(previous, current) => previous.required_relation !== current.required_relation}>
+            {({ getFieldValue }) => getFieldValue('required_relation') === 'ANY_OF' ? (
+              <>
+                <Form.Item label="任一满足的关系（固定）">
+                  <Select
+                    mode="multiple"
+                    value={[...ANY_OF_RELATIONS]}
+                    disabled
+                    options={ANY_OF_RELATIONS.map((relation) => ({ value: relation, label: relation === 'OWNER' ? '所有者（OWNER）' : '共享接收人（SHARED_WITH）' }))}
+                  />
+                </Form.Item>
+                <Typography.Paragraph type="secondary">
+                  主体只需满足任一列出的关系。本切片固定为 OWNER + SHARED_WITH，不包含委托或租户层级。
+                </Typography.Paragraph>
+              </>
+            ) : (
+              <Typography.Paragraph type="secondary">仅要求主体是对象所有者；不会提交 required_relations 字段。</Typography.Paragraph>
+            )}
+          </Form.Item>
+        </Form>
+      </Modal>
       <ProtectWizard
         open={wizardPreset !== null}
         onClose={() => setWizardPreset(null)}

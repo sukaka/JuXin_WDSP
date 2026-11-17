@@ -234,3 +234,93 @@ func TestServeNext_AuthzEngineObserveDowngradesAndPasses(t *testing.T) {
 		}
 	}
 }
+
+func az4E2EGuard(t *testing.T, mode string) (*Guard, string, string) {
+	t.Helper()
+	g, logPath, rawObjectID := az3E2EGuard(t, mode)
+	g.APIPolicyVersion = "authz-v4"
+	g.APIAuthzModels[0].RequiredRelation = "ANY_OF"
+	g.APIAuthzModels[0].RequiredRelations = []string{"SHARED_WITH", "OWNER"}
+	g.APIAuthzRelations = append(g.APIAuthzRelations, detectors.ObjectRelation{
+		ApplicationID: "app-1", PrincipalID: "user-shared", ObjectType: "ORDER",
+		ObjectRef: detectors.ObjectRefHMAC(g.APIAuthzObjectHMACKey, rawObjectID),
+		Relation:  "SHARED_WITH", Status: "CONFIRMED",
+	})
+	return g, logPath, rawObjectID
+}
+
+func TestServeNext_AuthzAnyOfSharedGuardModes(t *testing.T) {
+	cases := []struct {
+		name         string
+		mode         string
+		principal    string
+		mutate       func(*Guard)
+		wantStatus   int
+		wantOrigin   bool
+		wantDecision detectors.AuthorizationDecision
+		wantReason   string
+		wantState    string
+	}{
+		{name: "PROTECT valid share allows", mode: "PROTECT", principal: "user-shared", wantStatus: http.StatusOK, wantOrigin: true, wantDecision: detectors.AuthorizationAllow, wantState: "EFFECTIVE_SHARED_WITH"},
+		{name: "PROTECT missing recipient share blocks other owner", mode: "PROTECT", principal: "user-other", wantStatus: http.StatusForbidden, wantDecision: detectors.AuthorizationVerifiedViolation, wantReason: "AUTHZ-BOLA-001", wantState: "OTHER_OWNER"},
+		{name: "OBSERVE missing recipient share passes and records", mode: "OBSERVE", principal: "user-other", wantStatus: http.StatusOK, wantOrigin: true, wantDecision: detectors.AuthorizationObserveViolation, wantReason: "AUTHZ-BOLA-001", wantState: "OTHER_OWNER"},
+		{name: "PROTECT share without owner anchor is unknown", mode: "PROTECT", principal: "user-shared", mutate: func(g *Guard) {
+			g.APIAuthzRelations = g.APIAuthzRelations[1:]
+		}, wantStatus: http.StatusOK, wantOrigin: true, wantDecision: detectors.AuthorizationUnknown, wantReason: "AUTHZ-RELATION-001", wantState: "NONE"},
+		{name: "PROTECT malformed any_of is unknown", mode: "PROTECT", principal: "user-shared", mutate: func(g *Guard) {
+			g.APIAuthzModels[0].RequiredRelations = []string{"SHARED_WITH"}
+		}, wantStatus: http.StatusOK, wantOrigin: true, wantDecision: detectors.AuthorizationUnknown, wantReason: "AUTHZ-POLICY-001"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g, logPath, rawObjectID := az4E2EGuard(t, tc.mode)
+			if tc.mutate != nil {
+				tc.mutate(g)
+			}
+			originCalls := 0
+			next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+				originCalls++
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, "origin-ok")
+				return nil
+			})
+			req := az3Request(t, rawObjectID, "req-az4-"+string(rune('1'+i)), jwtverify.VerificationResult{
+				Status: jwtverify.StatusVerified, VerifiedPrincipalID: tc.principal, PolicyVersion: "authz-v4",
+			})
+			res := httptest.NewRecorder()
+			if err := g.serveNext(res, req, next); err != nil {
+				t.Fatalf("serveNext: %v", err)
+			}
+			if res.Code != tc.wantStatus || (originCalls > 0) != tc.wantOrigin {
+				t.Fatalf("status=%d originCalls=%d, want status=%d origin=%v", res.Code, originCalls, tc.wantStatus, tc.wantOrigin)
+			}
+			rc := RequestContextFrom(req)
+			if rc == nil {
+				t.Fatal("missing API request context")
+			}
+			rawDecision, ok := rc.GetExtension("authz.decision_group")
+			decision, ok2 := rawDecision.(*detectors.AuthorizationDecisionGroup)
+			if !ok || !ok2 || decision.Decision != tc.wantDecision || len(decision.Checks) != 1 {
+				t.Fatalf("decision=%+v, want %s", decision, tc.wantDecision)
+			}
+			check := decision.Checks[0]
+			if check.ReasonCode != tc.wantReason || check.RelationState != tc.wantState {
+				t.Fatalf("check=%+v, want reason=%s state=%s", check, tc.wantReason, tc.wantState)
+			}
+			if tc.wantDecision == detectors.AuthorizationAllow {
+				return
+			}
+			recs := readAPIRecords(t, logPath)
+			if len(recs) != 1 || recs[0].AuthzDecision == nil || recs[0].AuthzDecision.Decision != tc.wantDecision {
+				t.Fatalf("want one %s authorization event: %+v", tc.wantDecision, recs)
+			}
+			if tc.wantDecision == detectors.AuthorizationVerifiedViolation {
+				if recs[0].FinalAction != "BLOCK" {
+					t.Fatalf("verified violation must block in PROTECT: %+v", recs[0])
+				}
+			} else if recs[0].FinalAction == "BLOCK" {
+				t.Fatalf("OBSERVE/UNKNOWN must not block: %+v", recs[0])
+			}
+		})
+	}
+}

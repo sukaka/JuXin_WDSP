@@ -34,9 +34,11 @@ const (
 	L7RuleRedirect Type = "L7_RULE_REDIRECT"
 	L7RuleCustom   Type = "L7_RULE_CUSTOM"
 	// 身份风险策略处置事件（WDSP 阶段3 Risk Engine；明细写入 risk 字段——OBSERVE 模式
-	// action_taken 为 would_block/would_rate_limit（假设会处置，未实断），PROTECT 为
-	// blocked/rate_limited；reason 固定 identity_risk_policy，不伪装成规则阻断）
+	// action_taken 为 would_block/would_challenge/would_rate_limit（假设会处置，未实断），
+	// PROTECT 为 blocked/challenged/rate_limited；challenged 仅用于实际 403 挑战页；
+	// reason 固定 identity_risk_policy，不伪装成规则阻断）
 	RiskPolicyBlock     Type = "RISK_POLICY_BLOCK"
+	RiskPolicyChallenge Type = "RISK_POLICY_CHALLENGE"
 	RiskPolicyRateLimit Type = "RISK_POLICY_RATE_LIMIT"
 	// JWT 信任链事件（WDSP P0-03；网关 jwt_trust 段验证处置产生——
 	// JWT_OBSERVED 为 OBSERVE 模式的放行记录（action=OBSERVE），
@@ -155,7 +157,7 @@ type RiskPolicyDetail struct {
 	Mode          string            `json:"mode"`       // OBSERVE|PROTECT
 	PolicyVersion int               `json:"policy_version"`
 	Reason        string            `json:"reason"`       // 固定 identity_risk_policy
-	ActionTaken   string            `json:"action_taken"` // would_block|would_rate_limit|blocked|rate_limited
+	ActionTaken   string            `json:"action_taken"` // would_block|would_challenge|would_rate_limit|blocked|challenged|rate_limited
 	Signals       []RiskSignalEntry `json:"signals"`
 }
 

@@ -231,10 +231,14 @@ func (s *Store) ConfirmRelationCandidate(ctx context.Context, id uuid.UUID, in C
 	if c.Status != CandidateStatusPending || c.PrincipalID == nil || c.LegacyIdentityFingerprint != nil {
 		return nil, ErrCandidateNotConfirmable
 	}
+	relation := strings.ToUpper(strings.TrimSpace(in.Relation))
+	if relation != RelationOwner {
+		return nil, errors.New("候选确认仅允许 OWNER 关系")
+	}
 	now := time.Now().UTC()
 	rel := &ObjectRelation{
 		ApplicationID: c.ApplicationID, ObjectType: c.ObjectType, ObjectRef: c.ObjectRef,
-		PrincipalID: *c.PrincipalID, TenantID: c.TenantID, Relation: strings.ToUpper(strings.TrimSpace(in.Relation)),
+		PrincipalID: *c.PrincipalID, TenantID: c.TenantID, Relation: relation,
 		Source: RelationSourceCreateBinding, Status: RelationStatusConfirmed, ValidFrom: now,
 		ValidUntil: in.ValidUntil, EvidenceRef: c.EvidenceRef, ConfirmedBy: in.ConfirmedBy,
 		ConfirmedAt: now, Reason: strings.TrimSpace(in.Reason),
@@ -545,7 +549,7 @@ func (s *Store) GetAuthorizationCoverage(ctx context.Context, appID *uuid.UUID) 
 		),
 		models AS (
 			SELECT DISTINCT ep.id,
-				bool_or(m.publishable AND m.required_relation='OWNER' AND m.owner_exclusive) AS covered
+				bool_or(m.publishable AND m.required_relation IN ('OWNER','ANY_OF') AND m.owner_exclusive) AS covered
 			FROM api_endpoints ep
 			LEFT JOIN api_object_models m ON m.endpoint_id=ep.id
 			WHERE ep.status='CONFIRMED' AND ($1::uuid IS NULL OR ep.application_id=$1)

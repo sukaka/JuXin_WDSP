@@ -33,6 +33,7 @@ class PackageRuntimeRunTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("--signing-key", result.stdout)
         self.assertIn("--rpm-dir", result.stdout)
+        self.assertIn("--development", result.stdout)
         self.assertIn("--dry-run", result.stdout)
         self.assertIn("不包含测试代码或产品文档", result.stdout)
 
@@ -50,10 +51,35 @@ class PackageRuntimeRunTests(unittest.TestCase):
             self.assertIn("jiuzhang-gateway:9.9.9", result.stdout)
             self.assertIn("jiuzhang-netmgrd:9.9.9", result.stdout)
             self.assertIn("jiuzhang-logrotator:9.9.9", result.stdout)
+            self.assertIn("jiuzhang-containerops:9.9.9", result.stdout)
+            self.assertIn("deployment/containerops/Dockerfile", result.stdout)
             self.assertIn("GOOS=linux", result.stdout)
             self.assertIn("build-openeuler-zhaoxin-run.sh", result.stdout)
             self.assertIn("--rpm-dir", result.stdout)
             self.assertFalse(output.exists())
+
+    def test_development_dry_run_requires_no_private_key(self):
+        with tempfile.TemporaryDirectory(prefix="wdsp-runtime-run-test-") as tmp:
+            env = dict(os.environ)
+            env.pop("WDSP_SIGNING_KEY", None)
+            result = self.run_script(
+                "--development", "--dry-run", "--version", "9.9.9",
+                "--output", str(Path(tmp) / "out"),
+                "--rpm-dir", str(self.make_rpm_dir(tmp)), env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("--development", result.stdout)
+
+    def test_development_rejects_signing_parameters(self):
+        with tempfile.TemporaryDirectory(prefix="wdsp-runtime-run-test-") as tmp:
+            result = self.run_script(
+                "--development", "--dry-run", "--version", "9.9.9",
+                "--signing-key", str(Path(tmp) / "not-a-key"),
+                "--output", str(Path(tmp) / "out"),
+                "--rpm-dir", str(self.make_rpm_dir(tmp)),
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("禁止与", result.stderr)
 
     def test_dirty_workspace_requires_explicit_version(self):
         with tempfile.TemporaryDirectory(prefix="wdsp-runtime-run-test-") as tmp:

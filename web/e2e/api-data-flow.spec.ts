@@ -37,6 +37,29 @@ test('真实业务观测形成 A→B、B→C、A→C 系统 API 敏感数据流�
   expect(hasRelation('orders', 'identity')).toBe(true)
   expect(graph.edges).toHaveLength(3)
   expect(graphBody).not.toContain('kafka/customer-events')
+  type GatewayField = {
+    side: string
+    path: string
+    data_type: string
+    match: string
+    value_hmac?: string
+    hmac_key_id?: string
+  }
+  const callEdge = graph.edges.find(
+    (edge: { source_name: string; target_name: string }) =>
+      edge.source_name === 'orders' && edge.target_name === 'profile',
+  )
+  const gatewayField = callEdge?.fields?.find(
+    (field: GatewayField) => field.path === 'form.pwd',
+  ) as GatewayField | undefined
+  expect(gatewayField).toMatchObject({
+    side: 'REQUEST',
+    path: 'form.pwd',
+    data_type: 'CREDENTIAL',
+    match: 'OBSERVED',
+  })
+  expect(gatewayField?.value_hmac).toBeUndefined()
+  expect(gatewayField?.hmac_key_id).toBeUndefined()
 
   await page.goto('/api-data-flow')
   await expect(page.locator('.ant-card-head')).toContainText('数据流向')
@@ -142,6 +165,7 @@ test('真实业务观测形成 A→B、B→C、A→C 系统 API 敏感数据流�
   await expect(callRow).toContainText('POST /profiles/{id}')
   await expect(callRow).toContainText('手机号')
   await expect(callRow).toContainText('身份证号')
+  await expect(callRow).toContainText('凭据口令')
   await callRow.getByRole('button', { name: '查看详情' }).click()
   const evidenceDrawer = page.getByRole('dialog', {
     name: 'orders → profile',
@@ -151,6 +175,17 @@ test('真实业务观测形成 A→B、B→C、A→C 系统 API 敏感数据流�
   await expect(evidenceDrawer).toContainText('$.identity_no')
   await expect(evidenceDrawer).toContainText('响应：profile → orders')
   await expect(evidenceDrawer).toContainText('CORRELATED_FIELD')
+  const gatewayFieldPath = evidenceDrawer.getByText('form.pwd', {
+    exact: true,
+  })
+  await expect(gatewayFieldPath).toBeVisible()
+  const gatewayFieldEvidence = gatewayFieldPath.locator('..').locator('..')
+  await expect(gatewayFieldEvidence).toContainText('凭据口令')
+  await expect(gatewayFieldEvidence).toContainText(
+    '请求：orders → profile · OBSERVED',
+  )
+  await expect(gatewayFieldEvidence).not.toContainText('hmac-sha256')
+  await expect(gatewayFieldEvidence).not.toContainText('PASSWORD')
   await expect(evidenceDrawer).toContainText(`Trace: ${'a'.repeat(32)}`)
   await expect(evidenceDrawer).not.toContainText('13800138000')
   await expect(evidenceDrawer).not.toContainText('body_base64')

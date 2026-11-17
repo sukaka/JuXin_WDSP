@@ -77,6 +77,21 @@ if python3 "$SCRIPT_DIR/test_executor_dependencies.py"; then
 else
   fail "执行器/安装器依赖核查（diffutils 点名）回归"
 fi
+if python3 "$SCRIPT_DIR/test_gateway_network_recreate.py"; then
+  pass "gateway 升级/回滚同步重建 netmgrd 回归"
+else
+  fail "gateway 升级/回滚同步重建 netmgrd 回归"
+fi
+if python3 "$SCRIPT_DIR/test_gateway_runtime_contract.py"; then
+  pass "手动完整包双 Compose 与 legacy 回滚契约回归"
+else
+  fail "手动完整包双 Compose 与 legacy 回滚契约回归"
+fi
+if python3 "$SCRIPT_DIR/test_gateway_upgrade_executor_contract.py"; then
+  pass "Web gateway 启动契约门禁与切换前回滚回归"
+else
+  fail "Web gateway 启动契约门禁与切换前回滚回归"
+fi
 
 # ---------- 1. 用法与参数校验 ----------
 expect_exit "--help 退出码 0" 0 bash "$BUILDER" --help

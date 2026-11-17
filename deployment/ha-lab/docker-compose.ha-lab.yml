@@ -143,6 +143,11 @@ services:
     read_only: true
     cap_drop:
       - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
+      - SETPCAP
     security_opt:
       - no-new-privileges:true
     depends_on:
@@ -189,6 +194,11 @@ services:
     read_only: true
     cap_drop:
       - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
+      - SETPCAP
     security_opt:
       - no-new-privileges:true
     depends_on:

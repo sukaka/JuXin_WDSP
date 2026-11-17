@@ -139,3 +139,24 @@ func TestDataflowHandlers(t *testing.T) {
 		}
 	})
 }
+
+func TestDataflowGraphHandlerMergesRuntimeFieldWarning(t *testing.T) {
+	reader := &fakeReader{
+		graph: &Graph{
+			Nodes: []Node{}, Edges: []Edge{}, Truncated: true,
+			RuntimeFieldsWarning: "网关敏感字段未完整关联，请缩小时间窗/稍后重试",
+		},
+		quality: DataQuality{Observations: 2, TraceLinked: 2, TraceCoverage: 1, DataSource: "clickhouse", Message: "观测数据完整度以当前采集覆盖率为准"},
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/api-security/data-flow/graph", nil)
+	NewHandler(reader).Graph(rr, req)
+	body := rr.Body.String()
+	if rr.Code != http.StatusOK || !strings.Contains(body, `"partial":true`) ||
+		!strings.Contains(body, `"message":"网关敏感字段未完整关联，请缩小时间窗/稍后重试"`) || !strings.Contains(body, `"truncated":true`) {
+		t.Fatalf("runtime field degradation was not visible in final quality: %d %s", rr.Code, body)
+	}
+	if strings.Contains(body, "RuntimeFieldsWarning") || strings.Contains(body, "runtime_fields_warning") {
+		t.Fatalf("internal warning leaked as an unnecessary API field: %s", body)
+	}
+}

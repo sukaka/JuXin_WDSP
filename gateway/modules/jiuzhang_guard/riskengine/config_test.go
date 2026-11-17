@@ -1,6 +1,7 @@
 package riskengine
 
 import (
+	"fmt"
 	"testing"
 
 	"go.uber.org/zap"
@@ -100,5 +101,33 @@ func TestLevelMapping(t *testing.T) {
 		if got := c.Level(score); got != want {
 			t.Fatalf("level(%d) = %s, want %s", score, got, want)
 		}
+	}
+}
+
+func TestCompileChallengeDefaultAndInvalidOnlyDisableNewTier(t *testing.T) {
+	c, err := Compile(&Params{Enabled: true, Mode: ModeProtect}, nil)
+	if err != nil || c.ChallengeThreshold != 0 {
+		t.Fatalf("challenge must default off: %+v, err=%v", c, err)
+	}
+	for _, threshold := range []int{-1, 101, 20, 40, 80, 90} {
+		t.Run(fmt.Sprintf("threshold_%d", threshold), func(t *testing.T) {
+			core, logs := observer.New(zap.WarnLevel)
+			c, err := Compile(&Params{
+				Enabled: true, Mode: ModeProtect, BlockThreshold: 80,
+				ChallengeThreshold: threshold, RateLimitThreshold: 40, RateLimitRPS: 7,
+			}, zap.New(core))
+			if err != nil || c == nil {
+				t.Fatalf("compile: %+v, err=%v", c, err)
+			}
+			if c.ChallengeThreshold != 0 {
+				t.Fatalf("invalid/inverted challenge tier must be disabled: %+v", c)
+			}
+			if c.BlockThreshold != 80 || c.RateLimitThreshold != 40 || c.RateLimitRPS != 7 || c.Mode != ModeProtect {
+				t.Fatalf("legacy behavior must remain intact: %+v", c)
+			}
+			if logs.Len() == 0 {
+				t.Fatal("disabled invalid/inverted challenge tier must warn")
+			}
+		})
 	}
 }

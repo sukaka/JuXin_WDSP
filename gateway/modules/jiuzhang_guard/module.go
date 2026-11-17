@@ -3,9 +3,11 @@
 // 请求处理顺序（与 ServeHTTP 实现一致）：真实IP识别 → JWT 信任链本地验证（可选，仅计算入上下文）
 // → 身份解析与行为观测（可选）→ 保护地址
 // → 人工临时封禁 → 全局白 → 应用白 → 全局黑 → 应用黑 → L7 访问控制（首中即停）→ 自动临时封禁
-// → 身份风险策略处置（risk_policy，可选，OBSERVE 默认不实断）→ 授权全局限速（可选，默认关闭）
-// → CC限速 → Bot 挑战判定（bot_policy，可选，默认 OFF；OBSERVE 只记录不实断，PROTECT 挑战/verify，
-// 保护地址/白名单/L7 allow 不跳过 Bot；保留命名空间 /_wdsp/bot/v1/ 在本步骤最前置本地处理，
+// → 身份风险策略处置（risk_policy，可选，OBSERVE 默认不实断；CHALLENGE 仅登记请求内待挑战事实）
+// → 授权全局限速（可选，默认关闭）→ CC限速 → 发布冒烟精确端点
+// （/_wdsp/internal/v1/publish-smoke，独立 HMAC，本地应答且不进源站）→ Bot 挑战判定
+// （bot_policy，可选，默认 OFF；消费风险待挑战事实；OBSERVE 只记录不实断，PROTECT 挑战/verify，
+// 保护地址/白名单/L7 allow 不跳过 Bot；发布探针之后才处理 Bot 保留命名空间 /_wdsp/bot/v1/，
 // verify 固定协议端点与墓碑均不反向代理）
 // → API 动态防护管线（可选，默认关闭；JWT 强制处置在管线阶段统一放行出口 serveNext 执行，
 // 白名单/L7 allow 不绕过 JWT PROTECT）→ 下一处理器（WAF）。
@@ -81,6 +83,10 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	if g.EventsLog == "" {
 		return fmt.Errorf("events_log is required")
 	}
+	// 单次发布探针使用独立密钥；非法认证段拒绝装配，绝不退化为固定头认证。
+	if err := g.assemblePublishSmoke(); err != nil {
+		return err
+	}
 	if g.GatewayNode == "" {
 		g.GatewayNode = "gateway-unknown"
 	}
@@ -109,7 +115,7 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 		if len(previous.Models) > 0 && len(key) != 32 {
 			return fmt.Errorf("api_authz_previous_valid.object_hmac_key_hex is required when models are configured")
 		}
-		g.apiAuthzPreviousValid = &detectors.AuthorizationConfig{
+		previousCfg := detectors.CloneAuthorizationConfig(detectors.AuthorizationConfig{
 			ApplicationID: g.AppID,
 			Models:        previous.Models, Relations: previous.Relations,
 			RelationIndex: detectors.BuildAuthorizationRelationIndex(previous.Relations),
@@ -127,7 +133,8 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 			ConflictedIndex:     detectors.BuildConflictedObjectIndex(authzConflictsToDetectors(previous.ConflictedObjects)),
 			ProducedAt:          previous.ProducedAt,
 			ClockSkewMaxSeconds: g.APIAuthzClockSkewMaxSeconds,
-		}
+		})
+		g.apiAuthzPreviousValid = &previousCfg
 	}
 	g.apiAuthzRelationIndex = detectors.BuildAuthorizationRelationIndex(g.APIAuthzRelations)
 
@@ -498,6 +505,10 @@ func (g *Guard) Provision(ctx caddy.Context) error {
 	if err := g.assembleBotPolicy(); err != nil {
 		return err
 	}
+	// 风险 CHALLENGE 仅在 Bot PROTECT 就绪时可执行；OBSERVE 或非法/倒置而关闭的新档不引入依赖。
+	if err := g.validateRiskChallengeDependency(g.botPolicy); err != nil {
+		return err
+	}
 	// 远程 JWKS 后台刷新（热路径零网络 IO；装配最后一步启动，Provision 失败不泄漏 goroutine）
 	if g.jwtVerifier != nil {
 		rctx, cancel := context.WithCancel(context.Background())
@@ -538,6 +549,9 @@ const maxCounterKeysLimit = 10_000_000
 func (g *Guard) Validate() error {
 	if g.EventsLog == "" {
 		return fmt.Errorf("events_log is required")
+	}
+	if err := validatePublishSmokeConfig(g.PublishSmoke); err != nil {
+		return err
 	}
 	if g.MaxCounterKeys < 0 || g.MaxCounterKeys > maxCounterKeysLimit {
 		return fmt.Errorf("max_counter_keys must be between 0 and %d", maxCounterKeysLimit)
@@ -714,8 +728,8 @@ func (g *Guard) Validate() error {
 			return fmt.Errorf("identity_behavior: %w", err)
 		}
 	}
-	// 身份风险策略（risk_policy）装配期不硬校验：冻结契约约定任何配置缺失/非法 fail-open
-	// 按 OBSERVE（riskengine.Compile 逐项消毒 + Warn）——风险策略配置问题不得阻断整体配置加载
+	// 身份风险策略（risk_policy）自身仍逐项消毒 fail-open；唯一强制依赖例外是 PROTECT
+	// 挑战档必须搭配 Bot PROTECT，避免把已达阈挑战静默降级为放行。校验在 Bot 段解析后执行。
 	// JWT 信任链（jwt_trust 段）装配期校验：严格解码 + 完整构造预检（静态 JWKS 解析、
 	// 算法白名单、PROTECT 身份密钥门禁），任一失败显式拒绝（fail-closed，JWT-14；
 	// 与「容忍未知字段」惯例相反是本段的显式例外）
@@ -733,10 +747,16 @@ func (g *Guard) Validate() error {
 	// Bot 挑战策略（bot_policy 段）装配期校验：严格解码 + 全量结构校验，任一失败
 	// 显式拒绝（fail-closed，与 jwt_trust 同一纪律；OFF 同样校验——配置面与管理面
 	// 同口径，避免「保存合法、网关拒载」分叉）
+	var botPolicy *botPolicyJSON
 	if len(g.BotPolicy) > 0 {
-		if _, err := parseAndValidateBotPolicy(g.BotPolicy); err != nil {
+		sec, err := parseAndValidateBotPolicy(g.BotPolicy)
+		if err != nil {
 			return err
 		}
+		botPolicy = sec
+	}
+	if err := g.validateRiskChallengeDependency(botPolicy); err != nil {
+		return err
 	}
 	// API 受限例外（api_exceptions 段）装配期预检：严格解码 + 全量校验，
 	// 任一失败显式拒绝（fail-closed，与 jwt_trust 同一纪律）

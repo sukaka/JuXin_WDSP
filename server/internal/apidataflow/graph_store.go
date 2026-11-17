@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -18,11 +19,18 @@ type Reader interface {
 }
 
 type CHReader struct {
-	resolve func(context.Context) apm.CHQuerier
+	resolve       func(context.Context) apm.CHQuerier
+	runtimeFields RuntimeFieldReader
 }
 
 func NewCHReader(resolve func(context.Context) apm.CHQuerier) *CHReader {
 	return &CHReader{resolve: resolve}
+}
+
+func (s *CHReader) WithRuntimeFields(reader RuntimeFieldReader) *CHReader {
+	copy := *s
+	copy.runtimeFields = reader
+	return &copy
 }
 
 func (s *CHReader) querier(ctx context.Context) (apm.CHQuerier, error) {
@@ -44,7 +52,15 @@ func (s *CHReader) Graph(ctx context.Context, filter GraphFilter) (*Graph, error
 	if err != nil {
 		return nil, err
 	}
-	where, args := graphWhere(filter, false)
+	runtimeEnabled := s.runtimeFields != nil
+	filterRuntimeDataType := runtimeEnabled && filter.DataType != ""
+	where, args := graphWhereForRuntime(filter, false, runtimeEnabled)
+	runtimeSelect := ""
+	if runtimeEnabled {
+		runtimeSelect = fmt.Sprintf(`,
+ groupUniqArrayIf(%d)(toJSONString(tuple(latest_trace_id,latest_method,latest_path_template,ifNull(toString(app_id),''))),latest_trace_id != '') AS runtime_refs,
+ uniqExactIf(tuple(latest_trace_id,latest_method,latest_path_template,ifNull(toString(app_id),'')),latest_trace_id != '') AS runtime_ref_count`, runtimeGraphReferencesPerEdge)
+	}
 	query := `
 SELECT any(edge_id) AS id,
  latest_source_node AS source_node,
@@ -67,7 +83,7 @@ SELECT any(edge_id) AS id,
  argMax(latest_source_zone,event_time) AS source_zone,
  argMax(latest_target_zone,event_time) AS target_zone,
  argMax(latest_boundary_type,event_time) AS boundary_type,
- argMax(latest_boundary_evidence,event_time) AS boundary_evidence
+ argMax(latest_boundary_evidence,event_time) AS boundary_evidence` + runtimeSelect + `
 FROM (
  SELECT agent_id,event_id,edge_id,
   argMax(occurred_at,received_at) AS event_time,
@@ -101,14 +117,25 @@ WHERE latest_evidence_type NOT IN ('PAIRED_CLIENT','PAIRED_SERVER')
 GROUP BY edge_id,latest_source_node,latest_source_type,latest_target_node,latest_target_type,latest_protocol
 ORDER BY calls DESC,latest_source_node ASC,latest_target_node ASC
 LIMIT ?`
-	args = append(args, filter.MaxEdges+1)
+	candidateLimit := filter.MaxEdges + 1
+	if filterRuntimeDataType {
+		candidateLimit = runtimeGraphCandidateLimit + 1
+	}
+	args = append(args, candidateLimit)
 	rows, err := querier.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query dataflow graph: %w", err)
 	}
 	defer rows.Close()
-	graph := &Graph{Nodes: []Node{}, Edges: []Edge{}}
-	nodeMap := map[string]*Node{}
+	type graphCandidate struct {
+		edge       Edge
+		sourceType string
+		targetType string
+		references []RuntimeFieldReference
+	}
+	candidates := []graphCandidate{}
+	candidateTruncated := false
+	runtimeReferenceTruncated := false
 	for rows.Next() {
 		edge := Edge{}
 		var sourceType, targetType string
@@ -116,14 +143,24 @@ LIMIT ?`
 		var maxMS uint32
 		var confidence float32
 		var dataTypeSets, fieldSets, traces []string
-		if err := rows.Scan(&edge.ID, &edge.SourceName, &sourceType, &edge.TargetName, &targetType, &edge.Protocol,
+		destinations := []any{&edge.ID, &edge.SourceName, &sourceType, &edge.TargetName, &targetType, &edge.Protocol,
 			&edge.Calls, &edge.Errors, &avgMS, &maxMS, &edge.FirstSeenAt, &edge.LastSeenAt,
 			&edge.EvidenceType, &confidence, &edge.APIs, &dataTypeSets, &fieldSets, &traces,
-			&edge.SourceZone, &edge.TargetZone, &edge.BoundaryType, &edge.BoundaryEvidence); err != nil {
+			&edge.SourceZone, &edge.TargetZone, &edge.BoundaryType, &edge.BoundaryEvidence}
+		var runtimeReferenceJSON []string
+		var runtimeReferenceCount uint64
+		if runtimeEnabled {
+			destinations = append(destinations, &runtimeReferenceJSON, &runtimeReferenceCount)
+		}
+		if err := rows.Scan(destinations...); err != nil {
 			return nil, err
 		}
-		if len(graph.Edges) >= filter.MaxEdges {
-			graph.Truncated = true
+		if filterRuntimeDataType && len(candidates) >= runtimeGraphCandidateLimit {
+			candidateTruncated = true
+			break
+		}
+		if !filterRuntimeDataType && len(candidates) >= filter.MaxEdges {
+			candidateTruncated = true
 			break
 		}
 		edge.Confidence = float64(confidence)
@@ -134,12 +171,71 @@ LIMIT ?`
 		edge.DataTypes = mergeJSONStrings(dataTypeSets)
 		edge.Fields = mergeFieldEvidence(fieldSets)
 		edge.SampleTraceIDs = traces
-		graph.Edges = append(graph.Edges, edge)
-		upsertGraphNode(nodeMap, edge.SourceID, edge.SourceName, sourceType, edge, true)
-		upsertGraphNode(nodeMap, edge.TargetID, edge.TargetName, targetType, edge, false)
+		candidate := graphCandidate{edge: edge, sourceType: sourceType, targetType: targetType}
+		if runtimeEnabled {
+			uniqueReferenceJSON := []string{}
+			for _, encoded := range runtimeReferenceJSON {
+				uniqueReferenceJSON = appendUniqueString(uniqueReferenceJSON, encoded)
+			}
+			if runtimeReferenceCount != uint64(len(uniqueReferenceJSON)) {
+				if filterRuntimeDataType {
+					return nil, ErrRuntimeFieldReferenceLimit
+				}
+				runtimeReferenceTruncated = true
+			}
+			references, err := parseRuntimeFieldReferences(uniqueReferenceJSON)
+			if err != nil {
+				return nil, err
+			}
+			candidate.references = references
+		}
+		candidates = append(candidates, candidate)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if filterRuntimeDataType && candidateTruncated {
+		return nil, ErrRuntimeFieldGraphLimit
+	}
+	allReferences := []RuntimeFieldReference{}
+	for _, candidate := range candidates {
+		allReferences = append(allReferences, candidate.references...)
+	}
+	runtimeFields := map[string][]FieldEvidence{}
+	runtimeWarning := ""
+	if runtimeReferenceTruncated {
+		runtimeWarning = runtimeFieldQualityMessage
+		slog.Warn("dataflow runtime field enrichment degraded", "error", ErrRuntimeFieldReferenceLimit)
+	} else {
+		loaded, loadErr := s.loadRuntimeFields(ctx, filter, allReferences)
+		if loadErr != nil {
+			if filterRuntimeDataType {
+				return nil, loadErr
+			}
+			runtimeWarning = runtimeFieldQualityMessage
+			slog.Warn("dataflow runtime field enrichment degraded", "error", loadErr)
+		} else {
+			runtimeFields = loaded
+		}
+	}
+	graph := &Graph{Nodes: []Node{}, Edges: []Edge{}, Truncated: candidateTruncated || runtimeWarning != "", RuntimeFieldsWarning: runtimeWarning}
+	nodeMap := map[string]*Node{}
+	for _, candidate := range candidates {
+		edge := candidate.edge
+		mergeEdgeRuntimeFields(&edge, candidate.references, runtimeFields)
+		if filterRuntimeDataType && !dataTypeMatches(edge.DataTypes, edge.Fields, filter.DataType) {
+			continue
+		}
+		if len(graph.Edges) >= filter.MaxEdges {
+			graph.Truncated = true
+			break
+		}
+		graph.Edges = append(graph.Edges, edge)
+		upsertGraphNode(nodeMap, edge.SourceID, edge.SourceName, candidate.sourceType, edge, true)
+		upsertGraphNode(nodeMap, edge.TargetID, edge.TargetName, candidate.targetType, edge, false)
 	}
 	apiCounts, err := s.apiCounts(ctx, filter)
 	if err != nil {
@@ -211,7 +307,25 @@ func (s *CHReader) Evidence(ctx context.Context, edgeID string, filter GraphFilt
 	if err != nil {
 		return nil, err
 	}
-	where, args := graphWhere(filter, false)
+	runtimeEnabled := s.runtimeFields != nil
+	filterRuntimeDataType := runtimeEnabled && filter.DataType != ""
+	where, args := graphWhereForRuntime(filter, false, runtimeEnabled)
+	runtimeOuter := ""
+	runtimeInner := ""
+	if runtimeEnabled {
+		runtimeOuter = `,
+ latest_data_types_json AS runtime_data_types,
+ toJSONString(tuple(latest_trace_id,latest_method,latest_path_template,ifNull(toString(app_id),''))) AS runtime_ref`
+		runtimeInner = `,
+  argMax(application_id,received_at) AS app_id,
+  argMax(method,received_at) AS latest_method,
+  argMax(path_template,received_at) AS latest_path_template,
+  argMax(data_types_json,received_at) AS latest_data_types_json`
+	}
+	candidateLimit := limit
+	if filterRuntimeDataType {
+		candidateLimit = runtimeEvidenceCandidateLimit + 1
+	}
 	rows, err := querier.Query(ctx, `
 SELECT agent_id,event_id,edge_id,
  event_time,
@@ -228,7 +342,7 @@ SELECT agent_id,event_id,edge_id,
  latest_source_zone AS source_zone,
  latest_target_zone AS target_zone,
  latest_boundary_type AS boundary_type,
- latest_boundary_evidence AS boundary_evidence
+ latest_boundary_evidence AS boundary_evidence`+runtimeOuter+`
 FROM (
  SELECT agent_id,event_id,edge_id,
   argMax(occurred_at,received_at) AS event_time,
@@ -246,36 +360,96 @@ FROM (
   argMax(source_zone,received_at) AS latest_source_zone,
   argMax(target_zone,received_at) AS latest_target_zone,
   argMax(boundary_type,received_at) AS latest_boundary_type,
-  argMax(boundary_evidence,received_at) AS latest_boundary_evidence
+  argMax(boundary_evidence,received_at) AS latest_boundary_evidence`+runtimeInner+`
  FROM wdsp.data_flow_contributions
  WHERE `+where+` AND edge_id = ?
  GROUP BY agent_id,event_id,edge_id
 )
 WHERE latest_evidence_type NOT IN ('PAIRED_CLIENT','PAIRED_SERVER')
 ORDER BY event_time DESC
-LIMIT ?`, append(args, edgeID, limit)...)
+LIMIT ?`, append(args, edgeID, candidateLimit)...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []EvidenceRecord{}
+	type evidenceCandidate struct {
+		record    EvidenceRecord
+		reference RuntimeFieldReference
+		dataTypes []string
+	}
+	candidates := []evidenceCandidate{}
+	candidateTruncated := false
 	for rows.Next() {
 		var record EvidenceRecord
 		var fields string
 		var confidence float32
-		if err := rows.Scan(&record.AgentID, &record.EventID, &record.EdgeID, &record.OccurredAt,
+		destinations := []any{&record.AgentID, &record.EventID, &record.EdgeID, &record.OccurredAt,
 			&record.ServiceName, &record.TraceID, &record.SpanID, &fields, &record.EvidenceType, &confidence,
 			&record.PeerAddress, &record.ClientAddress, &record.ClientAddressSource, &record.ServerAddress,
-			&record.SourceZone, &record.TargetZone, &record.BoundaryType, &record.BoundaryEvidence); err != nil {
+			&record.SourceZone, &record.TargetZone, &record.BoundaryType, &record.BoundaryEvidence}
+		var dataTypesJSON, referenceJSON string
+		if runtimeEnabled {
+			destinations = append(destinations, &dataTypesJSON, &referenceJSON)
+		}
+		if err := rows.Scan(destinations...); err != nil {
 			return nil, err
+		}
+		if filterRuntimeDataType && len(candidates) >= runtimeEvidenceCandidateLimit {
+			candidateTruncated = true
+			break
 		}
 		record.Confidence = float64(confidence)
 		if err := json.Unmarshal([]byte(fields), &record.Fields); err != nil {
 			return nil, err
 		}
-		out = append(out, record)
+		candidate := evidenceCandidate{record: record}
+		if runtimeEnabled {
+			candidate.dataTypes = mergeJSONStrings([]string{dataTypesJSON})
+			references, err := parseRuntimeFieldReferences([]string{referenceJSON})
+			if err != nil {
+				return nil, err
+			}
+			if len(references) == 1 {
+				candidate.reference = references[0]
+			}
+		}
+		candidates = append(candidates, candidate)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	references := make([]RuntimeFieldReference, 0, len(candidates))
+	for _, candidate := range candidates {
+		references = append(references, candidate.reference)
+	}
+	runtimeFields, err := s.loadRuntimeFields(ctx, filter, references)
+	if err != nil {
+		return nil, err
+	}
+	out := []EvidenceRecord{}
+	for _, candidate := range candidates {
+		record := candidate.record
+		matched := runtimeFieldsForReference(runtimeFields, candidate.reference)
+		record.Fields = mergeFieldEvidenceLists(record.Fields, matched)
+		dataTypes := candidate.dataTypes
+		for _, field := range matched {
+			dataTypes = appendUniqueString(dataTypes, field.DataType)
+		}
+		if filterRuntimeDataType && !dataTypeMatches(dataTypes, record.Fields, filter.DataType) {
+			continue
+		}
+		out = append(out, record)
+		if len(out) == limit {
+			break
+		}
+	}
+	if candidateTruncated && len(out) < limit {
+		return nil, ErrRuntimeFieldEvidenceLimit
+	}
+	return out, nil
 }
 
 func (s *CHReader) Quality(ctx context.Context, filter GraphFilter) (DataQuality, error) {
@@ -339,6 +513,10 @@ func validateGraphFilter(filter *GraphFilter) error {
 }
 
 func graphWhere(filter GraphFilter, observations bool) (string, []any) {
+	return graphWhereForRuntime(filter, observations, false)
+}
+
+func graphWhereForRuntime(filter GraphFilter, observations, runtimeEnabled bool) (string, []any) {
 	table := "wdsp.data_flow_contributions"
 	if observations {
 		table = "wdsp.api_observations"
@@ -359,7 +537,7 @@ func graphWhere(filter GraphFilter, observations bool) (string, []any) {
 		where += " AND " + table + ".method = ?"
 		args = append(args, filter.Method)
 	}
-	if filter.DataType != "" && !observations {
+	if filter.DataType != "" && !observations && !runtimeEnabled {
 		where += " AND " + table + ".data_types_json LIKE ?"
 		args = append(args, "%\""+filter.DataType+"\"%")
 	}
@@ -429,20 +607,13 @@ func mergeJSONStrings(values []string) []string {
 }
 
 func mergeFieldEvidence(values []string) []FieldEvidence {
-	seen := map[string]bool{}
 	out := []FieldEvidence{}
 	for _, value := range values {
 		var items []FieldEvidence
 		if json.Unmarshal([]byte(value), &items) != nil {
 			continue
 		}
-		for _, item := range items {
-			key := item.Side + "\x00" + item.Path + "\x00" + item.DataType + "\x00" + item.ValueHMAC + "\x00" + item.Match
-			if !seen[key] {
-				seen[key] = true
-				out = append(out, item)
-			}
-		}
+		out = mergeFieldEvidenceLists(out, items)
 	}
 	return out
 }

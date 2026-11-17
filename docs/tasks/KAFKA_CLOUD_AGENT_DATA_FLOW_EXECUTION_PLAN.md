@@ -849,3 +849,15 @@ AGENTS.md                               能力实际交付后更新架构与索�
 - 菜单叶子项与一级/二级分组均补齐语义化图标，未知菜单或分组使用统一默认图标，菜单名称、权限、路由和折叠交互不变。
 
 本次实测：真实 Agent 接收两条边界 Observation，`8.8.8.8 → 统一认证系统` 形成 `PUBLIC_TO_INTERNAL`，`1.1.1.1` 保持 `UNKNOWN / UNTRUSTED_CLIENT_SOURCE`。实际页面显示 3 个节点、2 条关系；证据抽屉正确展示 client/peer/server 地址、`DIRECT_PEER`、目标 `10.20.0.30`、字段 HMAC 和 Trace，无原始敏感值。`go test ./internal/apidataflow ./internal/agents ./internal/apigeo`、Java 6 项测试、前端 30 项定向测试、菜单 13 项测试、OpenAPI 752 个操作双向对账均通过。`test/cloud-agent-e2e/run-full-stack.sh` 中 `TestCloudAPIDataFlowEndToEnd` 91.80 秒、Chromium 边界场景 33.7 秒均通过，临时容器与网络由脚本清理。
+
+### 17.11 网关敏感字段与真实 Agent 数据流读取时关联（2026-11-17）
+
+- 网关 `apievents` 已输出的 `trace_id` 现由服务端 `apiruntime.Record` / `PrimaryEvent` 透传，并经迁移 `000217_api_runtime_event_trace` 持久化到 `api_runtime_events.trace_id`。仅接受 32 位小写 hex 且非全零的 W3C Trace ID；历史事件及缺失/非法 Trace 不回填、不生成替代关联键。
+- Graph 与 Evidence 在读取时按 `trace_id + method + 规范化 path + application_id` 关联真实贡献，不使用采样 `sample_trace_ids` 充当完整关联键。仅从单次事件 `details_json` 中提取 `detector=sensitive_data` 且带 `data_type` 的 `evidence.field/location/direction`，生成 `location.field` 路径、大写数据类型和 `match=OBSERVED`；例如 `credential` 保持为 `CREDENTIAL`，不猜成 `PASSWORD`。
+- 该 enrichment 只补充已存在的真实 Agent 配对贡献，不回写 ClickHouse 贡献、不造边，也不改变 `calls/errors/latency/evidence_type/confidence`。网关补充字段不携带原值或 HMAC；无匹配贡献的事件不产生新关系，同 Trace 的不同端点不会被一并染色。
+- 关联查询按完整键去重并分批、限量读取；候选边、引用和事件行均有界。普通未按数据类型过滤的 Graph 在 runtime 关联读取失败或引用不完整时保留既有真实边，并通过 `truncated=true`、`quality.partial=true` 和质量消息显式降级；带 `data_type` 筛选的查询若无法获得完整关联结果则报错，不返回静默缺失的筛选结果。
+- 前端展示 `CREDENTIAL` 对应的 `form.pwd` 请求字段路径及 `OBSERVED`，其中类型按现有中文词表显示为“凭据口令”；该字段不显示 HMAC 或原始密码。
+
+本次执行 `bash test/cloud-agent-e2e/run-full-stack.sh` 完整通过：真实临时 PostgreSQL 执行至迁移 000217，Observation 经真实 Agent 接收接口、Kafka 和 ClickHouse 形成配对贡献，晚到 runtime 事件在第二次 Graph 查询及 Evidence 中关联成功；`data_type=CREDENTIAL&max_edges=1`、同 Trace 不同端点隔离、无匹配事件不造边及调用指标不变均通过。`TestCloudAPIDataFlowEndToEnd` 为 `PASS`（20.24 秒），真实 Chromium 场景 `1 passed`（9.7 秒），临时容器和网络已清理。
+
+边界不变：历史无 `trace_id` 的 runtime 事件无法补入数据流图；必须已经存在与网关事件共享 Trace 的真实 Agent CLIENT/SERVER 配对贡献，单纯存在敏感字段事件不足以形成边。`trace_inject_upstream` 仍默认关闭，本次验收显式构造共享 Trace，不宣称已经通过该默认开关自动接通网关与 Agent 的 Trace 链路。

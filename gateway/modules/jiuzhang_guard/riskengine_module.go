@@ -2,20 +2,22 @@
 //
 // 纪律（与 identitybehavior_module.go 同一模式）：
 //   - 配置缺省 = 零行为变化：risk_policy 段不下发或 enabled=false 时不装配引擎，
-//     请求链路无评估、无事件、无存储；
+//     请求链路无评估、无事件、无存储；challenge_threshold 缺省为 0，新挑战档关闭；
 //   - 任何配置缺失/非法 fail-open 按 OBSERVE（riskengine.Compile 逐项消毒 + Warn，
-//     装配永不失败；非法 mode 按 OBSERVE——绝不据非法配置实断）；
-//   - OBSERVE 永不实断：达阈仅记录"假设会处置"事件（action_taken=would_block/would_rate_limit）；
-//     PROTECT 按阈值实断 403/429，事件 reason 固定 identity_risk_policy，不伪装成规则阻断；
+//     装配永不失败；非法 mode 按 OBSERVE；非法/倒置挑战阈值仅关闭新档——绝不据非法配置实断）；
+//   - OBSERVE 永不实断：达阈仅记录"假设会处置"事件（含 would_challenge）；
+//     PROTECT 的 BLOCK/RATE_LIMIT 保持原位执行，CHALLENGE 只登记请求上下文并继续配额/CC，
+//     由 Bot 统一步骤实际签发；事件 reason 固定 identity_risk_policy，不伪装成规则阻断；
 //   - 白名单优先：IP 白名单/L7 allow 在执行点之前已提前放行；身份行为白名单（identitybehavior
 //     whitelist）命中在执行点显式跳过，且不累积该请求的信号（三入口同一口径）；
 //   - 执行点在 serveGuard 前置链路（自动临时封禁之后、授权限速与 CC 之前），与人工/自动
 //     临时封禁同层；不改 dynamic_security/decision 的可信 BLOCK 源（红线）；
 //   - 运行期失败 fail-open：评估/限速引擎故障仅告警放行（fail-closed 实例限速故障按既有
-//     CC 口径 429），存储故障由 riskengine 实现内回退内存——请求永不因本功能失败而失败。
+//     CC 口径 429），存储故障由 riskengine 实现内回退内存；Bot Offer 自身故障保持真实 429/503。
 package jiuzhang_guard
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -32,6 +34,50 @@ import (
 // riskPolicyJSON 发布通道下发原文（risk_policy 段，与 identity_behavior 同级；json tag
 // 为跨分片冻结契约，不得改动）。定义为 riskengine.Params 的别名，发布契约与引擎编译入参同源。
 type riskPolicyJSON = riskengine.Params
+
+// pendingRiskChallenge 仅在当前请求内传递已达阈的风险挑战决策；不写全局状态，
+// 不代表挑战已签发。Bot 只有在实际写出 403 挑战页后才发 challenged 事件。
+type pendingRiskChallenge struct {
+	engine   *riskengine.Engine
+	decision riskengine.Decision
+}
+
+type pendingRiskChallengeKey struct{}
+
+func registerRiskChallenge(r *http.Request, eng *riskengine.Engine, dec riskengine.Decision) {
+	ctx := context.WithValue(r.Context(), pendingRiskChallengeKey{}, &pendingRiskChallenge{engine: eng, decision: dec})
+	*r = *r.WithContext(ctx)
+}
+
+func pendingRiskChallengeFor(r *http.Request) *pendingRiskChallenge {
+	pending, _ := r.Context().Value(pendingRiskChallengeKey{}).(*pendingRiskChallenge)
+	return pending
+}
+
+// validateRiskChallengeDependency 校验当前应用实际生效的风险策略。仅 PROTECT 且
+// 挑战档经 Compile 消毒后仍启用时要求 Bot PROTECT；其他应用覆盖不影响本路由。
+func (g *Guard) validateRiskChallengeDependency(bp *botPolicyJSON) error {
+	policy := g.RiskPolicy
+	for _, override := range g.RiskPolicyOverrides {
+		if override.ApplicationID == g.AppID {
+			policy = &override.Policy
+		}
+	}
+	cfg, err := riskengine.Compile(policy, g.logger)
+	if err != nil {
+		return fmt.Errorf("risk_policy: compile for challenge dependency: %w", err)
+	}
+	if cfg == nil || cfg.Mode != riskengine.ModeProtect || cfg.ChallengeThreshold == 0 {
+		return nil
+	}
+	if bp == nil {
+		return fmt.Errorf("risk_policy: PROTECT challenge_threshold requires bot_policy mode=PROTECT")
+	}
+	if bp.Mode != botModeProtect {
+		return fmt.Errorf("risk_policy: PROTECT challenge_threshold requires bot_policy mode=PROTECT, got %s", bp.Mode)
+	}
+	return nil
+}
 
 // provisionRiskPolicy 装配身份风险策略：编译配置 → 选定 Store（behavior_store=valkey 且共享
 // 引擎 Valkey 连接可用 → Valkey 实现，否则进程内存实现；与 identitybehavior 同一口径）→ 建引擎
@@ -99,6 +145,17 @@ func (g *Guard) enforceRiskPolicy(w http.ResponseWriter, r *http.Request, res cl
 		g.emitRiskEvent(eng, r, res, base, dec, events.RiskPolicyBlock, "blocked", http.StatusForbidden)
 		accessLogAnnotate(r.Context(), wafActionBlock)
 		return true, caddyhttp.Error(http.StatusForbidden, fmt.Errorf("blocked by identity risk policy"))
+	case riskengine.ActionChallenge:
+		if cfg.Mode != riskengine.ModeProtect {
+			DispositionFrom(r.Context()).RecordStep(ExecutorRiskPolicy, StepObserved,
+				fmt.Sprintf("would_challenge score=%d threshold=%d", dec.Score, dec.Threshold))
+			g.emitRiskEvent(eng, r, res, base, dec, events.RiskPolicyChallenge, "would_challenge", 0)
+			return false, nil
+		}
+		DispositionFrom(r.Context()).RecordStep(ExecutorRiskPolicy, StepExecuted,
+			fmt.Sprintf("challenge pending score=%d threshold=%d", dec.Score, dec.Threshold))
+		registerRiskChallenge(r, eng, dec)
+		return false, nil
 	case riskengine.ActionRateLimit:
 		if cfg.Mode != riskengine.ModeProtect {
 			DispositionFrom(r.Context()).RecordStep(ExecutorRiskPolicy, StepObserved,
@@ -160,9 +217,9 @@ func (g *Guard) emitRiskEvent(eng *riskengine.Engine, r *http.Request, res clien
 		ActionTaken:   taken,
 		Signals:       sigs,
 	}
-	// P0-04：仅 PROTECT 实断事件挂 final_decision（would_* 观察事件不挂——
-	// 请求未终止，提前 Finalize 会锁死后续记录）
-	if taken == "blocked" || taken == "rate_limited" {
+	// P0-04：仅 PROTECT 实际终止事件挂 final_decision（would_* 观察事件不挂——
+	// 请求未终止，提前 Finalize 会锁死后续记录）；challenged 仅在 Bot 403 后调用。
+	if taken == "blocked" || taken == "challenged" || taken == "rate_limited" {
 		if d := DispositionFrom(r.Context()); d != nil {
 			ev.FinalDecision = d.JSON()
 		}

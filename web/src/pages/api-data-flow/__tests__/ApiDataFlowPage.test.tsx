@@ -138,10 +138,35 @@ describe('ApiDataFlowPage', () => {
     expect(screen.getAllByText('身份证号').length).toBeGreaterThan(0)
     expect(screen.getAllByText('邮箱').length).toBeGreaterThan(0)
     fireEvent.click(await screen.findByRole('button', { name: '查看详情' }))
-    expect(await screen.findByText('$.customer.mobile')).toBeInTheDocument()
-    expect(screen.getByText('hmac-sha256:abc')).toBeInTheDocument()
-    expect(screen.getByText(/消息：orders → profile/)).toBeInTheDocument()
-    expect(screen.getAllByText(`Trace: ${'a'.repeat(32)}`).length).toBeGreaterThan(0)
+    const drawerTitle = await screen.findByText('orders → profile', { selector: '.ant-drawer-title' })
+    const drawer = drawerTitle.closest('.data-flow-detail-drawer') as HTMLElement
+    expect(await within(drawer).findByText('$.customer.mobile')).toBeInTheDocument()
+    expect(within(drawer).getByText('hmac-sha256:abc')).toBeInTheDocument()
+    expect(within(drawer).getByText(/消息：orders → profile/)).toBeInTheDocument()
+    expect(within(drawer).getAllByText(`Trace: ${'a'.repeat(32)}`).length).toBeGreaterThan(0)
+  })
+
+  it('边明细按请求、响应和消息直接显示凭据字段路径，不改写数据类型', async () => {
+    const gatewayGraph: DataFlowGraph = {
+      ...GRAPH,
+      edges: [{
+        ...EDGE,
+        data_types: ['CREDENTIAL'],
+        fields: [
+          { side: 'REQUEST', path: 'form.pwd', data_type: 'CREDENTIAL', match: 'OBSERVED' },
+          { side: 'RESPONSE', path: 'body.result.credential', data_type: 'CREDENTIAL', match: 'OBSERVED' },
+          { side: 'MESSAGE', path: 'payload.credential', data_type: 'CREDENTIAL', match: 'OBSERVED' },
+        ],
+      }],
+    }
+    vi.stubGlobal('fetch', mockFetch(gatewayGraph))
+    renderPage()
+    await screen.findByTestId('echart-stub')
+    fireEvent.click(screen.getByRole('radio', { name: '边明细' }))
+    expect(await screen.findByRole('cell', { name: /凭据口令.*form\.pwd/ })).toBeInTheDocument()
+    expect(screen.getByRole('cell', { name: /凭据口令.*body\.result\.credential/ })).toBeInTheDocument()
+    expect(screen.getByRole('cell', { name: /凭据口令.*payload\.credential/ })).toBeInTheDocument()
+    expect(screen.queryByText('密码')).toBeNull()
   })
 
   it('纯 HTTP 主图无消息字段时不显示空消息列', async () => {

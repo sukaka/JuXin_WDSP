@@ -18,10 +18,10 @@ Caddy 会回退到默认 `127.0.0.1:2019`。后续配置生成器必须始终显
 
 | 项目 | 状态 |
 |------|------|
-| 非 root 运行 | caddy（uid 1000）/ origin（测试源站） |
+| Caddy 主进程非 root 运行 | 入口仅瞬时以 root 执行自研 Go 降权器；最终 Caddy 为 caddy（uid/gid 1000），origin（测试源站）亦非 root |
 | 只读根文件系统 | `read_only: true` + tmpfs `/tmp` |
-| Capabilities | `cap_drop: ALL`，POC 用 8080 高端口无需 NET_BIND_SERVICE |
-| no-new-privileges | 是 |
+| Capabilities | 入口仅临时持有 `NET_BIND_SERVICE`/`SETUID`/`SETGID`/`SETPCAP`；Go helper 通过 Linux syscall 降权，最终五类 capability 集合均仅含 `CAP_NET_BIND_SERVICE`（`0x400`） |
+| no-new-privileges | 是；由 Go helper 在降权前设置，最终 Caddy 进程保持 `NoNewPrivs: 1` |
 | privileged | 否 |
 | Docker Socket | 未挂载 |
 | network_mode: host | 否（独立 bridge 网络 stage1-net） |
@@ -29,6 +29,33 @@ Caddy 会回退到默认 `127.0.0.1:2019`。后续配置生成器必须始终显
 | 端口暴露 | 业务端口仅绑定 127.0.0.1；源站不暴露宿主机端口 |
 | 镜像 | 多阶段构建，运行镜像无编译工具（21MB） |
 | latest 标签 | 无（全部版本+摘要锁定） |
+
+### 1024 以下端口绑定与降权
+
+在 `no-new-privileges` 下，不能依赖 Caddy 二进制的文件 capability 获得低端口绑定权限。
+入口以 root 短暂运行 `gateway/cmd/wdsp-gateway-bind` 构建的自研 Go helper；实现不依赖外部
+降权工具或文件 capability。helper 首先通过 `runtime.LockOSThread()` 锁定 OS 线程，要求
+effective UID 为 0，随后在同一工作线程中依次执行：
+
+1. 通过 `prctl(PR_SET_NO_NEW_PRIVS, 1)` 设置 `NoNewPrivs`，并以 `setgroups(nil)` 清空补充组；
+2. 通过 `prctl(PR_SET_KEEPCAPS, 1)` 保留降权后的 permitted capabilities；
+3. 遍历 `0..cap_last_cap`，通过 `PR_CAPBSET_DROP` 丢弃 bounding set 中除
+   `CAP_NET_BIND_SERVICE` 外的所有能力；
+4. 依次调用 `setresgid(1000, 1000, 1000)`、`setresuid(1000, 1000, 1000)`，使 real、effective、
+   saved、filesystem UID/GID 全部为 1000；
+5. 通过 `capset` 将 inheritable、permitted、effective 集合都设为仅 `CAP_NET_BIND_SERVICE`，
+   再通过 `prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_BIND_SERVICE)` 提升 ambient 能力；
+6. 读取 `/proc/self/status`，逐项验证 `Uid`/`Gid` 四个值均为 1000、`Groups` 为空、
+   `CapInh`/`CapPrm`/`CapEff`/`CapBnd`/`CapAmb` 均为 `0000000000000400`（`0x400`）、
+   `NoNewPrivs` 为 `1`。缺字段、解析失败或任何值不符都会中止，不得执行后续入口；
+7. 验证及审计日志写入成功后，才通过 `syscall.Exec` 执行原入口
+   `/usr/local/bin/docker-entrypoint.sh`，原样传递参数与环境。
+
+因此最终 Caddy 主进程 UID/GID 均为 1000，五类 capability 集合均仅 `0x400`，补充组为空，
+`NoNewPrivs` 保持为 `1`；入口的 root 身份和其余三项临时能力不得遗留到 Caddy 进程。
+
+该能力只解决本机 `bind(2)` 的权限检查，不会开放防火墙，也不代表站点已外部可达。
+防火墙与 bind 权限是两层独立控制，1024 以下端口仍须按站点逐一配置并核验 firewalld。
 
 ## 3. 日志与隐私
 

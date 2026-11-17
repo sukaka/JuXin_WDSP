@@ -41,7 +41,8 @@ var L7RuleEventTypes = []string{
 
 // 身份风险处置事件类型（WDSP AI 自动化渗透防护增强 阶段3；网关 jiuzhang_guard
 // 按 security_risk_policy 处置产生——身份风险分达 block_threshold 阻断 /
-// 达 rate_limit_threshold 限速；OBSERVE 模式仅观测上报 would_* 动作）。
+// 达非零 challenge_threshold 挑战 / 达 rate_limit_threshold 限速；
+// OBSERVE 模式仅观测上报 would_* 动作，challenged 映射 CHALLENGE 而非 REJECT）。
 // 证据载荷（identity_key/score/risk_level/threshold/signals/mode/policy_version/
 // action_taken/reason）落 access_control_events.details JSONB 列（迁移 000101；
 // 表无专用列），不产生 temporary_blocks 记录、不计入 CC 统计（event_type 独立取值，
@@ -49,6 +50,7 @@ var L7RuleEventTypes = []string{
 const (
 	EventTypeRiskPolicyBlock     = "RISK_POLICY_BLOCK"
 	EventTypeRiskPolicyRateLimit = "RISK_POLICY_RATE_LIMIT"
+	EventTypeRiskPolicyChallenge = "RISK_POLICY_CHALLENGE"
 )
 
 // JWT 信任链事件类型（WDSP P0-03；网关 jiuzhang_guard jwt_trust 段验证处置产生——
@@ -88,12 +90,14 @@ var BotEventTypes = []string{
 }
 
 // 风险处置动作契约（action_taken → 事件 action 列映射；blocked/rate_limited
-// 为实际处置记 REJECT，OBSERVE 模式的 would_* 记 OBSERVE）。
+// 为实际拒绝记 REJECT，challenged 记 CHALLENGE，OBSERVE 模式的 would_* 记 OBSERVE）。
 var riskPolicyActionTaken = map[string]string{
 	"blocked":          ActionReject,
 	"rate_limited":     ActionReject,
+	"challenged":       ActionChallenge,
 	"would_block":      ActionObserve,
 	"would_rate_limit": ActionObserve,
+	"would_challenge":  ActionObserve,
 }
 
 // 动作
@@ -101,6 +105,7 @@ const (
 	ActionLog       = "LOG"
 	ActionObserve   = "OBSERVE"
 	ActionReject    = "REJECT"
+	ActionChallenge = "CHALLENGE"
 	ActionTempBlock = "TEMP_BLOCK"
 )
 
@@ -302,7 +307,7 @@ func ParseEventLine(line []byte, defaultNode string) (*Event, error) {
 	if evt.GatewayNodeID == "" {
 		evt.GatewayNodeID = defaultNode
 	}
-	if evt.EventType == EventTypeRiskPolicyBlock || evt.EventType == EventTypeRiskPolicyRateLimit {
+	if evt.EventType == EventTypeRiskPolicyBlock || evt.EventType == EventTypeRiskPolicyRateLimit || evt.EventType == EventTypeRiskPolicyChallenge {
 		if err := applyRiskPolicyEvent(evt, &raw); err != nil {
 			return nil, err
 		}
@@ -426,8 +431,8 @@ func applyRiskPolicyEvent(evt *Event, raw *rawEvent) error {
 	if !ok {
 		return fmt.Errorf("risk policy event invalid action_taken %q", risk.ActionTaken)
 	}
-	// 网关顶层 action 为动作原文（blocked/would_block/…），动作列统一映射为 REJECT/OBSERVE，
-	// 与既有访问控制事件口径一致；动作原文保留在 details.action_taken。
+	// 网关顶层 action 为动作原文（blocked/challenged/would_block/…），动作列统一映射为
+	// REJECT/CHALLENGE/OBSERVE；动作原文保留在 details.action_taken。
 	evt.Action = action
 	details := map[string]interface{}{
 		"identity_key": truncate(risk.IdentityKey, 128),

@@ -168,6 +168,29 @@ describe('dataFlowCharts', () => {
     expect(tooltip).toContain('点击查看字段与脱敏证据')
   })
 
+  it('画布轨道显示凭据字段路径，长标签有界且 tooltip 保留请求与响应完整路径', () => {
+    const edge = {
+      ...graph.edges[0],
+      data_types: ['CREDENTIAL'],
+      fields: [
+        { side: 'REQUEST' as const, path: 'form.pwd', data_type: 'CREDENTIAL', match: 'OBSERVED' },
+        { side: 'RESPONSE' as const, path: 'body.result.credential', data_type: 'CREDENTIAL', match: 'OBSERVED' },
+        { side: 'REQUEST' as const, path: 'form.confirm_password', data_type: 'CREDENTIAL', match: 'OBSERVED' },
+      ],
+    }
+    const option = dataFlowGraphOption({ ...graph, edges: [edge] })
+    const labels = renderEdge(option).children?.filter((item) => item.type === 'text').map((item) => item.style?.text) ?? []
+    expect(labels).toHaveLength(1)
+    expect(labels[0]).toContain('凭据口令')
+    expect(labels[0]).toContain('form.pwd')
+    expect(labels[0]).not.toContain('密码')
+    expect(labels[0]).toHaveLength(56)
+
+    const tooltip = (option.tooltip as { formatter: (params: unknown) => string }).formatter({ data: { kind: 'edge', edge } })
+    expect(tooltip).toContain('请求敏感数据：凭据口令 · form.pwd、凭据口令 · form.confirm_password')
+    expect(tooltip).toContain('响应敏感数据：凭据口令 · body.result.credential')
+  })
+
   it('每种敏感数据类型使用平行圆角管道，管体分层且流光沿调用方向运动', () => {
     const multitype = { ...graph, edges: [{ ...graph.edges[0], data_types: ['PHONE', 'CN_ID', 'EMAIL'] }] }
     const crossRow = dataFlowGraphOption(multitype, { positions: { 'service:orders': { x: 0, y: 0 }, 'service:profile': { x: 400, y: 180 } } })

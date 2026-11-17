@@ -209,6 +209,24 @@ const relationFixtures = [
     created_at: '2026-07-01T02:00:00Z',
     updated_at: '2026-08-01T02:00:00Z',
   },
+  {
+    id: 'rel-shared',
+    application_id: 'app1',
+    object_type: 'order',
+    object_ref: 'objref:shared-source-0001',
+    principal_id: 'principal:shared-recipient-0001',
+    tenant_id: 'tenant-a',
+    relation: 'SHARED_WITH',
+    source: 'MANUAL',
+    status: 'CONFIRMED',
+    valid_from: '2026-09-02T02:00:00Z',
+    valid_until: '2026-12-01T02:00:00Z',
+    confirmed_by: 'sec',
+    confirmed_at: '2026-09-02T02:00:00Z',
+    reason: '共享审批',
+    created_at: '2026-09-02T02:00:00Z',
+    updated_at: '2026-09-02T02:00:00Z',
+  },
 ]
 
 /** 各用例可覆盖的列表内容 */
@@ -216,8 +234,12 @@ let baselineItems: Record<string, unknown>[]
 let fieldPermItems: Record<string, unknown>[]
 let relationItems: Record<string, unknown>[]
 let confirmBodies: unknown[]
+let relationConfirmBodies: unknown[]
 let createFieldPermBodies: unknown[]
+let createRelationRequests: { url: string; method: string; body: unknown }[]
+let revokeRequests: { url: string; method: string; body: unknown }[]
 let reauthRequests: { url: string; method: string; body: unknown }[]
+let createRelationConflict: boolean
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -238,8 +260,12 @@ describe('ApiAuthzPage', () => {
     fieldPermItems = fieldPermissions
     relationItems = []
     confirmBodies = []
+    relationConfirmBodies = []
     createFieldPermBodies = []
+    createRelationRequests = []
+    revokeRequests = []
     reauthRequests = []
+    createRelationConflict = false
     vi.stubGlobal(
       'fetch',
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -258,6 +284,10 @@ describe('ApiAuthzPage', () => {
             model_coverage_rate: 0.6, confirmed_relation_rate: 0.4, unknown_rate: 0.1,
           } }))
         }
+        if (method === 'POST' && /\/api-security\/authz\/relations\/candidates\/[^/]+\/confirm/.test(url)) {
+          relationConfirmBodies.push(JSON.parse(String(init?.body)))
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: relationFixtures[0] }))
+        }
         if (url.includes('/api-security/authz/relations/candidates')) {
           return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: {
             items: relationCandidates, page: 1, page_size: 20, total: 1,
@@ -266,6 +296,18 @@ describe('ApiAuthzPage', () => {
         if (method === 'POST' && /\/api-security\/authz\/relations\/[^/]+\/reauthorize/.test(url)) {
           reauthRequests.push({ url, method, body: JSON.parse(String(init?.body)) })
           return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { ...relationFixtures[1], status: 'CONFIRMED' } }))
+        }
+        if (method === 'POST' && /\/api-security\/authz\/relations\/[^/]+\/revoke/.test(url)) {
+          revokeRequests.push({ url, method, body: JSON.parse(String(init?.body)) })
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { ...relationFixtures[3], status: 'REVOKED' } }))
+        }
+        if (method === 'POST' && /\/api-security\/authz\/relations$/.test(url)) {
+          const body = JSON.parse(String(init?.body)) as unknown
+          createRelationRequests.push({ url, method, body })
+          if (createRelationConflict) {
+            return Promise.resolve(jsonResponse(409, { code: 'RESOURCE_CONFLICT', message: '对象关系已存在', data: null }))
+          }
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: relationFixtures[3] }))
         }
         if (url.includes('/api-security/authz/relations')) {
           return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: {
@@ -487,24 +529,29 @@ describe('ApiAuthzPage', () => {
     fireEvent.click(await screen.findByRole('tab', { name: /^对象关系/ }))
   }
 
-  it('对象关系 Tab：默认展示全部状态，不隐藏已撤销/已过期关系', async () => {
+  it('对象关系 Tab：按 record.relation 展示所有者/共享接收人，不隐藏历史状态', async () => {
     relationItems = relationFixtures
     useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
     renderPage()
     await openRelationsTab()
     expect(await screen.findByText('已撤销')).toBeInTheDocument()
     expect(screen.getByText('已过期')).toBeInTheDocument()
+    expect(screen.getAllByText('所有者')).toHaveLength(3)
+    expect(screen.getByText('共享接收人')).toBeInTheDocument()
     expect(screen.getByText('objref:confirmed-0001')).toBeInTheDocument()
     expect(screen.getByText('objref:revoked-0001')).toBeInTheDocument()
     expect(screen.getByText('objref:expired-0001')).toBeInTheDocument()
+    expect(screen.getByText('objref:shared-source-0001')).toBeInTheDocument()
   })
 
-  it('重新授权入口：无 relation_manage 权限时不展示', async () => {
+  it('无 relation_manage 权限：共享登记、撤销与重新授权入口均不展示', async () => {
     relationItems = relationFixtures
     useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
     renderPage()
     await openRelationsTab()
-    await screen.findByText('已撤销')
+    await screen.findByText('共享接收人')
+    expect(screen.queryByRole('button', { name: '手工登记关系' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '撤销' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '重新授权' })).not.toBeInTheDocument()
   })
 
@@ -560,6 +607,112 @@ describe('ApiAuthzPage', () => {
       expect(gets.filter((u) => u.includes('/api-security/authz/relations?')).length).toBeGreaterThanOrEqual(2)
     })
   }, 70_000)
+
+  it('普通访问候选只能确认为 OWNER，不提供 SHARED_WITH 确认入口', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    fireEvent.click(screen.getByRole('tab', { name: /^对象授权$/ }))
+    const applicationSelect = (await screen.findByText('选择应用后查看对象授权')).closest('.ant-select') as HTMLElement
+    fireEvent.mouseDown(within(applicationSelect).getByRole('combobox'))
+    fireEvent.click(await screen.findByText('商城应用（SHOP）'))
+    fireEvent.click(await screen.findByRole('button', { name: /^确\s*认$/ }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByDisplayValue('OWNER')).toBeDisabled()
+    expect(within(dialog).queryByText(/SHARED_WITH/)).not.toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('审核原因'), { target: { value: '  候选审批通过  ' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认关系' }))
+    await waitFor(() => expect(relationConfirmBodies).toHaveLength(1))
+    expect(relationConfirmBodies[0]).toEqual({ relation: 'OWNER', reason: '候选审批通过' })
+  }, 60_000)
+
+  it('共享创建：按共享源→接收人方向提交真实 HMAC 引用、有效期与审计原因', async () => {
+    relationItems = [relationFixtures[3]]
+    useAuthStore.setState({
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await openRelationsTab()
+    fireEvent.click(await screen.findByRole('button', { name: '手工登记关系' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/共享方向：object_ref 是被共享的对象（共享源），principal_id 是共享接收人/)).toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('对象类型'), { target: { value: ' order ' } })
+    fireEvent.change(within(dialog).getByLabelText('共享源对象 HMAC 引用（object_ref）'), { target: { value: ' objref:shared-source-new ' } })
+    fireEvent.change(within(dialog).getByLabelText('共享接收人（principal_id）'), { target: { value: ' principal:shared-recipient-new ' } })
+    const validFrom = within(dialog).getByLabelText('生效时间（可选，默认立即）')
+    fireEvent.change(validFrom, { target: { value: '2026-11-20 10:00:00' } })
+    fireEvent.keyDown(validFrom, { key: 'Enter', code: 'Enter' })
+    const validUntil = within(dialog).getByLabelText('失效时间（可选）')
+    fireEvent.change(validUntil, { target: { value: '2026-11-21 10:00:00' } })
+    fireEvent.keyDown(validUntil, { key: 'Enter', code: 'Enter' })
+    fireEvent.change(within(dialog).getByLabelText('证据引用（可选）'), { target: { value: ' ticket-42 ' } })
+    fireEvent.change(within(dialog).getByLabelText('审计原因'), { target: { value: '  共享审批 TICKET-42  ' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认登记' }))
+    await waitFor(() => expect(createRelationRequests).toHaveLength(1))
+    expect(createRelationRequests[0].url).toBe('/api/v1/api-security/authz/relations')
+    expect(createRelationRequests[0].body).toEqual({
+      application_id: 'app1',
+      object_type: 'order',
+      object_ref: 'objref:shared-source-new',
+      principal_id: 'principal:shared-recipient-new',
+      relation: 'SHARED_WITH',
+      source: 'MANUAL',
+      valid_from: new Date(2026, 10, 20, 10, 0, 0).toISOString(),
+      valid_until: new Date(2026, 10, 21, 10, 0, 0).toISOString(),
+      evidence_ref: 'ticket-42',
+      reason: '共享审批 TICKET-42',
+    })
+    expect(await screen.findByText('共享关系已创建')).toBeInTheDocument()
+  }, 70_000)
+
+  it('共享创建 409：展示服务端冲突原因并保留弹窗与输入', async () => {
+    createRelationConflict = true
+    useAuthStore.setState({
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await openRelationsTab()
+    fireEvent.click(await screen.findByRole('button', { name: '手工登记关系' }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('对象类型'), { target: { value: 'order' } })
+    fireEvent.change(within(dialog).getByLabelText('共享源对象 HMAC 引用（object_ref）'), { target: { value: 'objref:duplicate-source' } })
+    fireEvent.change(within(dialog).getByLabelText('共享接收人（principal_id）'), { target: { value: 'principal:duplicate-recipient' } })
+    fireEvent.change(within(dialog).getByLabelText('审计原因'), { target: { value: '重复共享审批' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认登记' }))
+    await waitFor(() => expect(createRelationRequests).toHaveLength(1))
+    expect(await screen.findByText('对象关系已存在')).toBeInTheDocument()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText('共享源对象 HMAC 引用（object_ref）')).toHaveValue('objref:duplicate-source')
+  }, 60_000)
+
+  it('共享撤销：确认共享源与接收人方向，POST 到目标关系并提交审计原因', async () => {
+    relationItems = [relationFixtures[3]]
+    useAuthStore.setState({
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await openRelationsTab()
+    fireEvent.click(await screen.findByRole('button', { name: '撤销' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('撤销共享接收人关系')).toBeInTheDocument()
+    expect(within(dialog).getByText(/共享源对象/)).toBeInTheDocument()
+    expect(within(dialog).getByText('principal:shared-recipient-0001')).toBeInTheDocument()
+    fireEvent.change(within(dialog).getByLabelText('撤销原因'), { target: { value: '  共享审批到期  ' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认撤销' }))
+    await waitFor(() => expect(revokeRequests).toHaveLength(1))
+    expect(revokeRequests[0].url).toBe('/api/v1/api-security/authz/relations/rel-shared/revoke')
+    expect(revokeRequests[0].body).toEqual({ reason: '共享审批到期' })
+    expect(await screen.findByText('对象关系已撤销')).toBeInTheDocument()
+  }, 60_000)
 
   it('重新授权时间窗口：失效时间必须严格晚于生效时间', () => {
     const value = (iso: string) => ({ toISOString: () => iso })

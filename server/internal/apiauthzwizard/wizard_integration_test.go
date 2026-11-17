@@ -115,7 +115,7 @@ func seedDecisions(t *testing.T, pool *pgxpool.Pool, ctx context.Context, f wiza
 	}
 }
 
-func okCapability(_ context.Context) (bool, string) { return true, "" }
+func okCapability(_ context.Context, _ int) (bool, string) { return true, "" }
 
 // TestWizardMigration175PostgresContract 迁移 000175：up/up 幂等、表结构与约束、
 // down 一步回滚、再 up 恢复。

@@ -5327,6 +5327,7 @@ components:
           - CC_TEMP_BLOCK_RELEASED
           - CC_THRESHOLD_EXCEEDED
           - CC_REQUEST_REJECTED
+          - RISK_POLICY_CHALLENGE
           description: 事件类型
         action:
           type: string
@@ -5335,6 +5336,7 @@ components:
           - OBSERVE
           - REJECT
           - TEMP_BLOCK
+          - CHALLENGE
           description: 动作
         policy_id:
           type: string
@@ -13177,10 +13179,22 @@ components:
           description: 发布资格（NG-AZ-02 D5/D7；PATCH 可变更）
         required_relation:
           type: string
-          description: 要求关系词（首批仅 OWNER 词表；空串=未声明）
+          enum:
+          - ''
+          - OWNER
+          - ANY_OF
+          description: 要求关系语义；OWNER=旧排他属主，ANY_OF=required_relations 中任一关系；空串=未声明
+        required_relations:
+          type: array
+          items:
+            type: string
+            enum:
+            - OWNER
+            - SHARED_WITH
+          description: 仅 ANY_OF 返回的规范化数组 [OWNER,SHARED_WITH]；旧 OWNER 模型省略本字段
         owner_exclusive:
           type: boolean
-          description: 排他所有权（VERIFIED_VIOLATION 语义前提；publishable=true 要求为 true）
+          description: 排他所有权（VERIFIED_VIOLATION 语义前提；publishable=true 要求为 true，ANY_OF 不放松）
         on_lease_expired:
           type: string
           enum:
@@ -13211,8 +13225,8 @@ components:
           description: §8.4 UNKNOWN 处理方式声明（首批仅 ALLOW_UNKNOWN——UNKNOWN 永不阻断）
     ApiSecObjectModelPatchRequest:
       type: object
-      description: 对象模型发布状态变更（NG-AZ-02 D5/D7；全部字段三分态——缺省不变更；词表外取值 400 不降级猜义。NG-AZ-03 D3：切换 enforcement=PROTECT 必须同请求提供 enforcement_owner/evidence_source/on_unknown
-        三要素，缺一 400；切回 OBSERVE 无前置要求且历史值保留）
+      description: 对象模型发布状态变更（全部字段三分态——缺省不变更；词表外取值 400 不降级猜义。ANY_OF 必须与 required_relations 同请求提供，输入去重并规范化为 [OWNER,SHARED_WITH]；OWNER
+        不允许非空数组。切换 enforcement=PROTECT 仍须同请求提供 enforcement_owner/evidence_source/on_unknown/confirm_token，既有资格不放松）
       properties:
         publishable:
           type: boolean
@@ -13221,11 +13235,23 @@ components:
           type: string
           enum:
           - OWNER
+          - ANY_OF
           - owner
-          description: 首批仅 OWNER 词表（其余关系词 400）
+          - any_of
+          description: OWNER=旧模型；ANY_OF=对象共享复杂模型（须同请求携带 required_relations）
+        required_relations:
+          type: array
+          items:
+            type: string
+            enum:
+            - OWNER
+            - SHARED_WITH
+            - owner
+            - shared_with
+          description: 仅与 required_relation=ANY_OF 同请求使用；必须同时含 OWNER/SHARED_WITH，大小写归一、去重并固定为 [OWNER,SHARED_WITH]；OWNER 模型省略或传空数组
         owner_exclusive:
           type: boolean
-          description: 排他所有权
+          description: 排他所有权（ANY_OF/PROTECT 既有资格不放松）
         on_lease_expired:
           type: string
           enum:
@@ -15153,6 +15179,8 @@ components:
           type: string
           enum:
           - OWNER
+          - SHARED_WITH
+          description: OWNER=对象属主；SHARED_WITH=object_ref 对象共享给 principal_id 接收人
         source:
           type: string
           enum:
@@ -15245,12 +15273,15 @@ components:
           type: string
           enum:
           - OWNER
+          - SHARED_WITH
+          description: OWNER=对象属主；SHARED_WITH=object_ref 对象共享给 principal_id 接收人
         source:
           type: string
           enum:
           - MANUAL
           - IMPORT
           default: MANUAL
+          description: SHARED_WITH 仅允许 MANUAL；IMPORT 继续仅支持 OWNER
         valid_from:
           type: string
           format: date-time
@@ -26384,6 +26415,11 @@ components:
           minimum: 1
           maximum: 100
           description: 限速风险分阈值（默认 40；须小于 block_threshold）
+        challenge_threshold:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: 挑战风险分阈值；0/缺省=关闭，1-100 启用且须满足 rate_limit_threshold < challenge_threshold < block_threshold
         rate_limit_rps:
           type: integer
           minimum: 1
@@ -26466,6 +26502,11 @@ components:
           minimum: 1
           maximum: 100
           description: 须小于 block_threshold
+        challenge_threshold:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: 可选；0=关闭，1-100 启用且须大于 rate_limit_threshold、小于 block_threshold；PUT 省略时保留原值
         rate_limit_rps:
           type: integer
           minimum: 1
@@ -26527,6 +26568,11 @@ components:
           minimum: 1
           maximum: 100
           description: 须小于 block_threshold
+        challenge_threshold:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: 可选；0=关闭，1-100 启用且须大于 rate_limit_threshold、小于 block_threshold；PUT 省略时保留原值
         rate_limit_rps:
           type: integer
           minimum: 1
@@ -36773,6 +36819,7 @@ paths:
           - CC_TEMP_BLOCK_RELEASED
           - CC_THRESHOLD_EXCEEDED
           - CC_REQUEST_REJECTED
+          - RISK_POLICY_CHALLENGE
         description: 按事件类型筛选
       - name: action
         in: query
@@ -36783,6 +36830,7 @@ paths:
           - OBSERVE
           - REJECT
           - TEMP_BLOCK
+          - CHALLENGE
         description: 按动作筛选
       - name: policy_id
         in: query
@@ -36878,6 +36926,7 @@ paths:
           - CC_TEMP_BLOCK_RELEASED
           - CC_THRESHOLD_EXCEEDED
           - CC_REQUEST_REJECTED
+          - RISK_POLICY_CHALLENGE
         description: 按事件类型筛选
       - name: action
         in: query
@@ -36888,6 +36937,7 @@ paths:
           - OBSERVE
           - REJECT
           - TEMP_BLOCK
+          - CHALLENGE
         description: 按动作筛选
       - name: policy_id
         in: query
@@ -45596,8 +45646,8 @@ paths:
       - api-security
       summary: 对象模型分页列表
       description: 分页列出对象模型（api_object_models，endpoint × object_segment 一行，BOLA 实体画像， 由 apiauthz.SweepObjectModelsOnce 扫描
-        api_runtime_events 按路径占位段 / Query 对象参数 形态 upsert 产出，迁移 000018/000073），按 last_seen 倒序；观测值只落 SHA-256 示例哈希， 不落明文。发布状态字段（NG-AZ-02：publishable/required_relation/owner_exclusive/
-        on_lease_expired）随列表带出，变更走 PATCH /object-models/{id}。只读接口。 权限：`api_runtime.read`
+        api_runtime_events 按路径占位段 / Query 对象参数 形态 upsert 产出，迁移 000018/000073），按 last_seen 倒序；观测值只落 SHA-256 示例哈希， 不落明文。发布状态字段（publishable/required_relation/required_relations/owner_exclusive/
+        on_lease_expired）随列表带出；required_relations 仅 ANY_OF 返回，旧 OWNER 省略。 变更走 PATCH /object-models/{id}。只读接口。 权限：`api_runtime.read`
       parameters:
       - name: endpoint_id
         in: query
@@ -45662,9 +45712,10 @@ paths:
       tags:
       - api-security
       summary: 对象模型发布状态管理
-      description: 变更对象模型发布状态（NG-AZ-02 D5/D7 管理写入路径）：publishable（发布资格）/ required_relation（首批仅 OWNER 词表）/ owner_exclusive（排他所有权）/
-        on_lease_expired（租约过期策略 strict|degraded，缺省 strict）。 全部字段三分态（缺省不变更）；词表外取值 400 不降级猜义； publishable=true 时 owner_exclusive
-        必须同批为 true（排他所有权是发布语义前提）； 行不存在 404；写操作审计（高风险——发布状态变更属授权事实管理）。 权限：`api_authorization.manage`
+      description: 变更对象模型发布状态：publishable（发布资格）/ required_relation（OWNER|ANY_OF）/ required_relations（ANY_OF 必填，去重并规范化为 [OWNER,SHARED_WITH]）/
+        owner_exclusive（排他所有权）/ on_lease_expired（strict|degraded，缺省 strict）。 全部字段三分态（缺省不变更）；OWNER 模型不带非空 required_relations；
+        ANY_OF 的 required_relation 与 required_relations 必须同请求变更，词表外取值 400； publishable=true 时 owner_exclusive 必须同批为 true，ANY_OF/PROTECT
+        既有资格不放松； 行不存在 404；写操作审计（高风险——发布状态变更属授权事实管理）。 权限：`api_authorization.manage`
       parameters:
       - name: id
         in: path
@@ -47082,7 +47133,8 @@ paths:
       tags:
       - api-security
       summary: 人工创建可信对象授权关系
-      description: 首期仅允许 OWNER；对象引用必须为服务端 HMAC 脱敏引用。权限：`api_authorization.relation_manage`
+      description: 人工创建 OWNER 或 SHARED_WITH；SHARED_WITH 方向为 object_ref 对象共享给 principal_id 接收人，且仅 source=MANUAL；候选确认与权威导入不支持共享。对象引用必须为服务端
+        HMAC 脱敏引用。权限：`api_authorization.relation_manage`
       requestBody:
         required: true
         content:
@@ -58769,8 +58821,8 @@ paths:
       tags:
       - risk-policy
       summary: 读取风险策略
-      description: 读取身份风险处置全局策略（GLOBAL 单行，含乐观锁 version；随网关发布下发 risk_policy 段——信号窗口内身份风险分达 rate_limit_threshold 限速、达 block_threshold
-        阻断）。权限：`risk_policy.read`
+      description: 读取身份风险处置全局策略（GLOBAL 单行，含乐观锁 version；随网关发布下发 risk_policy 段——信号窗口内身份风险分达 rate_limit_threshold 限速、达非零 challenge_threshold
+        挑战、达 block_threshold 阻断）。权限：`risk_policy.read`
       responses:
         '200':
           description: 风险策略全字段
@@ -58789,9 +58841,10 @@ paths:
       tags:
       - risk-policy
       summary: 全量更新风险策略
-      description: 全量更新全局风险策略（version 乐观锁，冲突返回 409；mode 限定 OBSERVE/PROTECT、block/rate_limit 阈值 1-100 且限速阈值必须小于阻断阈值、rate_limit_rps
-        1-100000、signal_window_seconds 1-604800、scores 键为大写信号类型格式且值 0-100、risk_levels 恰为 medium/high/critical 三键且严格递增）。成功后记录审计（OBSERVE→PROTECT
-        升级为高风险，其余中风险）并触发网关配置发布（risk_policy 段热生效；enabled=false 时网关风险处置零行为；OBSERVE 模式仅观测，事件 action_taken=would_block/would_rate_limit）。权限：`risk_policy.edit`
+      description: 全量更新全局风险策略（version 乐观锁，冲突返回 409；mode 限定 OBSERVE/PROTECT、block/rate_limit 阈值 1-100 且限速阈值必须小于阻断阈值；challenge_threshold
+        可选，0=关闭，启用时须满足 rate_limit_threshold < challenge_threshold < block_threshold，PUT 省略时保留原值；rate_limit_rps 1-100000、signal_window_seconds
+        1-604800、scores 键为大写信号类型格式且值 0-100、risk_levels 恰为 medium/high/critical 三键且严格递增）。成功后记录审计（OBSERVE→PROTECT 升级为高风险，其余中风险）并触发网关配置发布（risk_policy
+        段热生效；enabled=false 时网关风险处置零行为；OBSERVE 模式仅观测，事件 action_taken=would_block/would_challenge/would_rate_limit）。权限：`risk_policy.edit`
       requestBody:
         required: true
         content:

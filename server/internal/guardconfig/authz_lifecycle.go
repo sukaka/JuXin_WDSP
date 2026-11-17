@@ -118,6 +118,7 @@ func cloneAuthzSnapshot(cfg *gatewayconfig.GuardConfig) *gatewayconfig.GuardAuth
 	models := append([]gatewayconfig.GuardAuthzObjectModel(nil), cfg.APIAuthzModels...)
 	for i := range models {
 		models[i].Identifiers = append([]gatewayconfig.GuardAuthzObjectIdentifier(nil), models[i].Identifiers...)
+		models[i].RequiredRelations = append([]string(nil), models[i].RequiredRelations...)
 		if models[i].SnapshotExpiresAt != nil {
 			expiresAt := models[i].SnapshotExpiresAt.UTC()
 			models[i].SnapshotExpiresAt = &expiresAt

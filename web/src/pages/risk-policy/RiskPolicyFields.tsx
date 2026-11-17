@@ -30,7 +30,7 @@ const SIGNAL_KEY_OPTIONS = [
 
 const MODE_OPTIONS = [
   { value: 'OBSERVE', label: '观察（只记录不处置）' },
-  { value: 'PROTECT', label: '防护（达阈限速/阻断）' },
+  { value: 'PROTECT', label: '防护（达阈限速/挑战/阻断）' },
 ]
 
 export default function RiskPolicyFields({
@@ -152,6 +152,54 @@ export default function RiskPolicyFields({
           >
             <InputNumber
               min={1}
+              max={100}
+              precision={0}
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
+        </Col>
+        <Col xs={24} sm={12} md={8}>
+          <Form.Item
+            name="challenge_threshold"
+            label="挑战阈值（0 关闭）"
+            dependencies={['rate_limit_threshold', 'block_threshold']}
+            extra="开启时取值 1-100，且须大于限速阈值、小于阻断阈值；依赖本应用 Bot 为 PROTECT 且已配置 selector。只对合格的 HTTPS GET 浏览器文档导航发起 JS 挑战，挑战后仍执行后续防护。"
+            rules={[
+              { required: true, message: '请输入挑战阈值' },
+              ({ getFieldValue }) => ({
+                validator(_, value: number | undefined) {
+                  if (value === undefined || value === null || value === 0) {
+                    return Promise.resolve()
+                  }
+                  if (value < 1 || value > 100) {
+                    return Promise.reject(
+                      new Error('挑战阈值开启时必须为 1-100，0 表示关闭'),
+                    )
+                  }
+                  const rateLimit = getFieldValue('rate_limit_threshold') as
+                    number | undefined
+                  const block = getFieldValue('block_threshold') as
+                    number | undefined
+                  if (
+                    rateLimit === undefined ||
+                    rateLimit === null ||
+                    block === undefined ||
+                    block === null
+                  ) {
+                    return Promise.resolve()
+                  }
+                  if (value <= rateLimit || value >= block) {
+                    return Promise.reject(
+                      new Error('须满足：限速阈值 < 挑战阈值 < 阻断阈值'),
+                    )
+                  }
+                  return Promise.resolve()
+                },
+              }),
+            ]}
+          >
+            <InputNumber
+              min={0}
               max={100}
               precision={0}
               style={{ width: '100%' }}

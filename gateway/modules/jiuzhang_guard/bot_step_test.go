@@ -22,11 +22,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/botchallenge"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/events"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/identitybehavior"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/l7rules"
+	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/ratelimit"
 	"go.uber.org/zap"
 )
 
@@ -741,5 +744,393 @@ func TestBotStepNoSignalNoChallenge(t *testing.T) {
 	if err := g2.ServeHTTP(rec, botStepReq("203.0.113.10:1", "https://waf-test.local/docs/x", botBrowserHeaders()),
 		nextHandler{&called}); err != nil || !called {
 		t.Fatalf("identity behavior disabled must not challenge: err=%v called=%v", err, called)
+	}
+}
+
+// ---------- 身份风险 CHALLENGE 纵向测试 ----------
+
+func riskChallengeTestPolicy() riskPolicyJSON {
+	return riskPolicyJSON{
+		Enabled: true, Mode: "PROTECT", Version: 9,
+		RateLimitThreshold: 20, ChallengeThreshold: 40, BlockThreshold: 80,
+	}
+}
+
+func newRiskChallengeBotGuard(t *testing.T, cfg Guard, beforeBot ...func(*Guard)) (*Guard, *fakeGuardValkey) {
+	t.Helper()
+	if cfg.IdentitySalt == "" {
+		cfg.IdentitySalt = "test-salt"
+	}
+	if cfg.RiskPolicy == nil && len(cfg.RiskPolicyOverrides) == 0 {
+		policy := riskChallengeTestPolicy()
+		cfg.RiskPolicy = &policy
+	}
+	g, fk := newBotStepGuard(t, cfg)
+	g.provisionRiskPolicy(g.engine)
+	for _, configure := range beforeBot {
+		configure(g)
+	}
+	sec := botStepSection(botModeProtect)
+	sec.ApplicationID = g.AppID
+	assembleBotStep(t, g, sec)
+	return g, fk
+}
+
+func seedRiskChallengeScore(t *testing.T, g *Guard, ip, target string, headers map[string]string, score int) {
+	t.Helper()
+	r := botStepReq(ip+":1", target, headers)
+	key := identitybehavior.ResolveIdentity(r, "test-salt", ip).Key
+	eng := g.riskEngineForApp()
+	if eng == nil {
+		t.Fatal("risk engine must be assembled")
+	}
+	eng.AddSignal(g.riskIdentityKey(key), "WAF", score, "risk challenge test seed")
+}
+
+func riskChallengeEventsFrom(evs []events.Event) []events.Event {
+	out := []events.Event{}
+	for _, ev := range evs {
+		if ev.EventType == events.RiskPolicyChallenge {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func TestRiskChallengeProtectOffersWithoutSecondBotThreshold(t *testing.T) {
+	g, _ := newRiskChallengeBotGuard(t, Guard{})
+	ip := "203.0.113.10"
+	target := "https://waf-test.local/docs/x"
+	headers := botBrowserHeaders()
+	seedRiskChallengeScore(t, g, ip, target, headers, 50)
+
+	called := false
+	rec := httptest.NewRecorder()
+	if err := g.ServeHTTP(rec, botStepReq(ip+":1", target, headers), nextHandler{&called}); err != nil {
+		t.Fatalf("risk challenge serve: %v", err)
+	}
+	if called || rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "wdsp-bot-params") {
+		t.Fatalf("risk threshold must offer real 403 page without bot behavior seed: code=%d called=%v body=%.100s",
+			rec.Code, called, rec.Body.String())
+	}
+
+	params, sess := extractChallenge(t, rec)
+	solution := solveChallenge(t, params)
+	vrec := botVerify(t, g, ip+":1", "waf-test.local", sess,
+		`{"challenge_id":"`+params.ChallengeID+`","solution":"`+solution+`"}`)
+	if vrec.Code != http.StatusNoContent {
+		t.Fatalf("verify=%d body=%s", vrec.Code, vrec.Body.String())
+	}
+	clearance := ""
+	for _, cookie := range vrec.Result().Cookies() {
+		if cookie.Name == botchallenge.ClearanceCookieName {
+			clearance = cookie.Value
+		}
+	}
+	if clearance == "" {
+		t.Fatal("clearance missing after risk challenge verify")
+	}
+	withClearance := botBrowserHeaders()
+	withClearance["Cookie"] = botchallenge.SessionCookieName + "=" + sess + "; " +
+		botchallenge.ClearanceCookieName + "=" + clearance
+	called = false
+	if err := g.ServeHTTP(httptest.NewRecorder(), botStepReq(ip+":1", target, withClearance), nextHandler{&called}); err != nil || !called {
+		t.Fatalf("clearance must pass only the Bot step and continue downstream: err=%v called=%v", err, called)
+	}
+
+	evs := g.readEvents(t)
+	riskEvs := riskChallengeEventsFrom(evs)
+	if len(riskEvs) != 1 || riskEvs[0].Action != "challenged" || riskEvs[0].ResponseStatus != http.StatusForbidden {
+		t.Fatalf("actual 403 must emit one challenged event: %+v", riskEvs)
+	}
+	risk := riskEvs[0].Risk
+	if risk == nil || risk.ActionTaken != "challenged" || risk.Score != 50 || risk.Threshold != 40 ||
+		risk.Mode != "PROTECT" || risk.PolicyVersion != 9 || risk.Reason != "identity_risk_policy" {
+		t.Fatalf("challenged risk detail=%+v", risk)
+	}
+	fd := decodeEventFD(t, riskEvs[0])
+	if fd["security_action"] != "CHALLENGE" || fd["executor_module"] != "BOT" || fd["http_status"].(float64) != 403 {
+		t.Fatalf("challenged final_decision=%v", fd)
+	}
+	botEvent := false
+	for _, ev := range evs {
+		if ev.EventType == events.BotChallengeOffered && ev.Action == "CHALLENGE" && ev.Bot != nil && ev.Bot.Reason == "IDENTITY_RISK_POLICY" {
+			botEvent = true
+		}
+	}
+	if !botEvent {
+		t.Fatal("Bot event must identify the identity-risk challenge source")
+	}
+}
+
+func TestRiskChallengeDefaultOffAndPassThrough(t *testing.T) {
+	t.Run("default_off_preserves_legacy_behavior", func(t *testing.T) {
+		policy := riskChallengeTestPolicy()
+		policy.ChallengeThreshold = 0
+		g, _ := newRiskChallengeBotGuard(t, Guard{RiskPolicy: &policy})
+		ip := "203.0.113.11"
+		target := "https://waf-test.local/docs/x"
+		headers := botBrowserHeaders()
+		seedRiskChallengeScore(t, g, ip, target, headers, 50)
+		called := false
+		rec := httptest.NewRecorder()
+		if err := g.ServeHTTP(rec, botStepReq(ip+":1", target, headers), nextHandler{&called}); err != nil || !called {
+			t.Fatalf("default-off challenge tier must retain legacy pass/rate-limit behavior: err=%v called=%v", err, called)
+		}
+		if evs := riskChallengeEventsFrom(g.readEvents(t)); len(evs) != 0 {
+			t.Fatalf("default-off must emit no risk challenge event: %+v", evs)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		target string
+	}{
+		{name: "selector_outside", method: http.MethodGet, target: "https://waf-test.local/api/x"},
+		{name: "ineligible_post", method: http.MethodPost, target: "https://waf-test.local/docs/x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, _ := newRiskChallengeBotGuard(t, Guard{})
+			ip := "203.0.113.12"
+			headers := botBrowserHeaders()
+			seedRiskChallengeScore(t, g, ip, tc.target, headers, 50)
+			r := httptest.NewRequest(tc.method, tc.target, nil)
+			r.RemoteAddr = ip + ":1"
+			for k, v := range headers {
+				r.Header.Set(k, v)
+			}
+			called := false
+			rec := httptest.NewRecorder()
+			if err := g.ServeHTTP(rec, r, nextHandler{&called}); err != nil || !called || rec.Code != http.StatusOK {
+				t.Fatalf("out-of-scope/ineligible request must continue: err=%v called=%v code=%d", err, called, rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), "wdsp-bot-params") {
+				t.Fatal("out-of-scope/ineligible request must never receive challenge HTML")
+			}
+			evs := g.readEvents(t)
+			if riskEvs := riskChallengeEventsFrom(evs); len(riskEvs) != 0 {
+				t.Fatalf("no challenged event without actual 403 offer: %+v", riskEvs)
+			}
+			for _, ev := range evs {
+				if ev.EventType == events.BotChallengeOffered && ev.Action == "CHALLENGE" {
+					t.Fatalf("no actual Bot challenge expected: %+v", ev)
+				}
+			}
+		})
+	}
+}
+
+func TestRiskChallengeBlockAndCCPriority(t *testing.T) {
+	t.Run("block_before_bot", func(t *testing.T) {
+		g, _ := newRiskChallengeBotGuard(t, Guard{})
+		ip := "203.0.113.13"
+		target := "https://waf-test.local/docs/x"
+		headers := botBrowserHeaders()
+		seedRiskChallengeScore(t, g, ip, target, headers, 80)
+		called := false
+		err := g.ServeHTTP(httptest.NewRecorder(), botStepReq(ip+":1", target, headers), nextHandler{&called})
+		var handlerErr caddyhttp.HandlerError
+		if !errors.As(err, &handlerErr) || handlerErr.StatusCode != http.StatusForbidden || called {
+			t.Fatalf("risk BLOCK must precede Bot: err=%v called=%v", err, called)
+		}
+		evs := g.readEvents(t)
+		if len(riskChallengeEventsFrom(evs)) != 0 {
+			t.Fatal("BLOCK must not emit a risk challenge event")
+		}
+		blocked := false
+		for _, ev := range evs {
+			if ev.EventType == events.RiskPolicyBlock && ev.Action == "blocked" {
+				blocked = true
+			}
+			if ev.EventType == events.BotChallengeOffered {
+				t.Fatalf("BLOCK must not reach Bot Offer: %+v", ev)
+			}
+		}
+		if !blocked {
+			t.Fatal("risk blocked event missing")
+		}
+	})
+
+	t.Run("cc_before_pending_challenge", func(t *testing.T) {
+		g, _ := newRiskChallengeBotGuard(t, Guard{RateLimits: []policyJSON{{
+			ID: "cc-risk-challenge", Dimension: "CLIENT_IP", Algorithm: "TOKEN_BUCKET",
+			URIMatchType: "ALL", RequestsLimit: 1, WindowSeconds: 60, BurstCapacity: 1,
+			Action: "REJECT", Priority: 1,
+		}}})
+		ip := "203.0.113.14"
+		target := "https://waf-test.local/docs/x"
+		headers := botBrowserHeaders()
+		seedRiskChallengeScore(t, g, ip, target, headers, 50)
+		called := false
+		first := httptest.NewRecorder()
+		if err := g.ServeHTTP(first, botStepReq(ip+":1", target, headers), nextHandler{&called}); err != nil || called || first.Code != http.StatusForbidden {
+			t.Fatalf("first request must pass CC then challenge: err=%v called=%v code=%d", err, called, first.Code)
+		}
+		second := httptest.NewRecorder()
+		if err := g.ServeHTTP(second, botStepReq(ip+":1", target, headers), nextHandler{&called}); err != nil || called || second.Code != http.StatusTooManyRequests {
+			t.Fatalf("second request must be rejected by CC before Bot: err=%v called=%v code=%d", err, called, second.Code)
+		}
+		evs := g.readEvents(t)
+		if riskEvs := riskChallengeEventsFrom(evs); len(riskEvs) != 1 {
+			t.Fatalf("CC rejection must not be counted as another challenge: %+v", riskEvs)
+		}
+		ccRejected := false
+		for _, ev := range evs {
+			if ev.EventType == events.CCRequestRejected && ev.ResponseStatus == http.StatusTooManyRequests {
+				ccRejected = true
+			}
+		}
+		if !ccRejected {
+			t.Fatal("CC rejection event missing")
+		}
+	})
+}
+
+type rejectBotIssueLimiter struct{}
+
+func (rejectBotIssueLimiter) Allow(_ context.Context, key string, _ ratelimit.Algorithm, _ int64, _ time.Duration, _ int64) (ratelimit.Result, error) {
+	if strings.HasPrefix(key, "iss-") {
+		return ratelimit.Result{Allowed: false, RetryAfter: time.Second}, nil
+	}
+	return ratelimit.Result{Allowed: true}, nil
+}
+
+func (rejectBotIssueLimiter) Peek(context.Context, string, ratelimit.Algorithm, int64, time.Duration, int64) (int64, bool, error) {
+	return 0, false, nil
+}
+
+func TestRiskChallengeOfferFailuresAreNotChallenged(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configure  func(*Guard)
+		failStore  bool
+		wantStatus int
+	}{
+		{
+			name: "rate_limited_429", wantStatus: http.StatusTooManyRequests,
+			configure: func(g *Guard) { g.engine.limiter = rejectBotIssueLimiter{} },
+		},
+		{name: "store_unavailable_503", failStore: true, wantStatus: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var before []func(*Guard)
+			if tc.configure != nil {
+				before = append(before, tc.configure)
+			}
+			g, fk := newRiskChallengeBotGuard(t, Guard{}, before...)
+			fk.fail = tc.failStore
+			ip := "203.0.113.15"
+			target := "https://waf-test.local/docs/x"
+			headers := botBrowserHeaders()
+			seedRiskChallengeScore(t, g, ip, target, headers, 50)
+			called := false
+			rec := httptest.NewRecorder()
+			if err := g.ServeHTTP(rec, botStepReq(ip+":1", target, headers), nextHandler{&called}); err != nil {
+				t.Fatalf("Offer failure serve: %v", err)
+			}
+			if called || rec.Code != tc.wantStatus {
+				t.Fatalf("Offer must preserve real failure status: code=%d called=%v want=%d", rec.Code, called, tc.wantStatus)
+			}
+			evs := g.readEvents(t)
+			if riskEvs := riskChallengeEventsFrom(evs); len(riskEvs) != 0 {
+				t.Fatalf("failed Offer must not emit challenged: %+v", riskEvs)
+			}
+			failureEvent := false
+			for _, ev := range evs {
+				if ev.EventType == events.BotStateUnavailable && ev.ResponseStatus == tc.wantStatus {
+					failureEvent = true
+					fd := decodeEventFD(t, ev)
+					if fd["security_action"] == "CHALLENGE" {
+						t.Fatalf("failed Offer final decision must not be CHALLENGE: %v", fd)
+					}
+				}
+			}
+			if !failureEvent {
+				t.Fatal("real Bot failure event missing")
+			}
+		})
+	}
+}
+
+func TestRiskChallengeApplicationOverride(t *testing.T) {
+	appID := "app-risk-challenge-override"
+	override := riskChallengeTestPolicy()
+	override.Version = 12
+	g, _ := newRiskChallengeBotGuard(t, Guard{
+		AppID:               appID,
+		RiskPolicy:          &riskPolicyJSON{Enabled: true, Mode: "OBSERVE"},
+		RiskPolicyOverrides: []riskPolicyOverrideJSON{{ApplicationID: appID, Policy: override}},
+	})
+	ip := "203.0.113.16"
+	target := "https://waf-test.local/docs/x"
+	headers := botBrowserHeaders()
+	seedRiskChallengeScore(t, g, ip, target, headers, 50)
+	called := false
+	rec := httptest.NewRecorder()
+	if err := g.ServeHTTP(rec, botStepReq(ip+":1", target, headers), nextHandler{&called}); err != nil || called || rec.Code != http.StatusForbidden {
+		t.Fatalf("application override must challenge: err=%v called=%v code=%d", err, called, rec.Code)
+	}
+	evs := riskChallengeEventsFrom(g.readEvents(t))
+	if len(evs) != 1 || evs[0].Risk == nil || evs[0].Risk.PolicyVersion != 12 || evs[0].Risk.Threshold != 40 {
+		t.Fatalf("application override challenge event=%+v", evs)
+	}
+}
+
+func TestRiskChallengePassThroughKeepsJWTAndDownstreamWAF(t *testing.T) {
+	g, _ := newRiskChallengeBotGuard(t, Guard{AppID: "app-1"})
+	key := jwtTestRSA(t)
+	jwtSec := jwtStaticSection("PROTECT", true, jwtTestJWKS(t, &key.PublicKey, "risk-challenge-jwt"))
+	jwtSec.ApplicationID = g.AppID
+	jwtSec.Selectors[0].PathPrefix = "/docs"
+	jwtSec.Selectors[0].Methods = []string{http.MethodPost}
+	g.JWTTrust = mustJSON(t, jwtSec)
+	if err := g.assembleJWTTrust(); err != nil {
+		t.Fatalf("assemble JWT: %v", err)
+	}
+
+	ip := "203.0.113.17"
+	target := "https://waf-test.local/docs/x"
+	headers := botBrowserHeaders()
+	seedRiskChallengeScore(t, g, ip, target, headers, 50)
+	newPost := func(token string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, target, nil)
+		r.RemoteAddr = ip + ":1"
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		return r
+	}
+	called := false
+	rec := httptest.NewRecorder()
+	if err := g.ServeHTTP(rec, newPost(""), nextHandler{&called}); err != nil || called || rec.Code != http.StatusUnauthorized {
+		t.Fatalf("ineligible risk challenge pass-through must still enforce JWT: err=%v called=%v code=%d", err, called, rec.Code)
+	}
+
+	token := jwtSignRS256(t, key, "risk-challenge-jwt", jwtValidClaims())
+	wafCalled := false
+	err := g.ServeHTTP(httptest.NewRecorder(), newPost(token), ibHandlerFunc(func(http.ResponseWriter, *http.Request) error {
+		wafCalled = true
+		return caddyhttp.Error(http.StatusForbidden, errors.New("downstream WAF test interception"))
+	}))
+	var handlerErr caddyhttp.HandlerError
+	if !errors.As(err, &handlerErr) || handlerErr.StatusCode != http.StatusForbidden || !wafCalled {
+		t.Fatalf("downstream WAF handler must remain reachable after Bot pass-through: err=%v called=%v", err, wafCalled)
+	}
+	evs := g.readEvents(t)
+	if riskEvs := riskChallengeEventsFrom(evs); len(riskEvs) != 0 {
+		t.Fatalf("JWT/downstream WAF outcomes must not be marked challenged: %+v", riskEvs)
+	}
+	jwtRejected := false
+	for _, ev := range evs {
+		if ev.EventType == events.JWTAuthFailed && ev.ResponseStatus == http.StatusUnauthorized {
+			jwtRejected = true
+		}
+	}
+	if !jwtRejected {
+		t.Fatal("JWT rejection fact missing")
 	}
 }

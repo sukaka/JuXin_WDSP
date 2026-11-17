@@ -26,6 +26,7 @@ import {
   apiAuthzApi,
   type ApiAuthzDecision,
   type ApiAuthzObjectRelation,
+  type ApiAuthzObjectRelationType,
   type ApiAuthzRelationCandidate,
 } from '../../api/apiAuthz'
 import { ApiError } from '../../api/client'
@@ -60,6 +61,15 @@ const relationStatus = {
   EXPIRED: { color: 'default', label: '已过期' },
 } as const
 
+const relationKind = {
+  OWNER: { color: 'blue', label: '所有者' },
+  SHARED_WITH: { color: 'purple', label: '共享接收人' },
+} as const
+
+function relationLabel(value?: string) {
+  return (value && relationKind[value as ApiAuthzObjectRelationType]?.label) || value || '对象'
+}
+
 /** OBSERVE 形态降级留痕（NG-AZ-03 §1.1）：checks 中任一检查携带 proposed_decision=VERIFIED_VIOLATION */
 function hasProposedVerifiedViolation(checks: unknown[]): boolean {
   return checks.some(
@@ -79,6 +89,22 @@ function percent(value?: number) {
 interface ReviewValues {
   reason: string
   valid_until?: { toISOString: () => string }
+}
+
+interface CreateRelationValues {
+  relation: ApiAuthzObjectRelationType
+  object_type: string
+  object_ref: string
+  principal_id: string
+  tenant_id?: string
+  valid_from?: { toISOString: () => string }
+  valid_until?: { toISOString: () => string }
+  evidence_ref?: string
+  reason: string
+}
+
+interface RevokeValues {
+  reason: string
 }
 
 interface ReauthorizeValues {
@@ -107,9 +133,13 @@ export default function ObjectAuthorizationTab() {
   const [relationPage, setRelationPage] = useState(1)
   const [decisionPage, setDecisionPage] = useState(1)
   const [reviewing, setReviewing] = useState<{ candidate: ApiAuthzRelationCandidate; action: 'confirm' | 'reject' } | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [revoking, setRevoking] = useState<ApiAuthzObjectRelation | null>(null)
   const [reauthorizing, setReauthorizing] = useState<ApiAuthzObjectRelation | null>(null)
   const [decisionDetail, setDecisionDetail] = useState<ApiAuthzDecision | null>(null)
   const [form] = Form.useForm<ReviewValues>()
+  const [createForm] = Form.useForm<CreateRelationValues>()
+  const [revokeForm] = Form.useForm<RevokeValues>()
   const [reauthForm] = Form.useForm<ReauthorizeValues>()
 
   const applicationsQuery = useQuery({
@@ -165,6 +195,43 @@ export default function ObjectAuthorizationTab() {
     onError: (error: unknown) => message.error(error instanceof ApiError ? error.message : '审核失败'),
   })
 
+  const createMutation = useMutation<ApiAuthzObjectRelation, unknown, CreateRelationValues>({
+    mutationFn: (values) => {
+      if (!applicationId) throw new Error('请选择应用')
+      return apiAuthzApi.createObjectRelation({
+        application_id: applicationId,
+        object_type: values.object_type.trim(),
+        object_ref: values.object_ref.trim(),
+        principal_id: values.principal_id.trim(),
+        tenant_id: values.tenant_id?.trim() || undefined,
+        relation: values.relation,
+        source: 'MANUAL',
+        valid_from: values.valid_from?.toISOString(),
+        valid_until: values.valid_until?.toISOString(),
+        evidence_ref: values.evidence_ref?.trim() || undefined,
+        reason: values.reason.trim(),
+      })
+    },
+    onSuccess: (relation) => {
+      message.success(relation.relation === 'SHARED_WITH' ? '共享关系已创建' : '所有者关系已创建')
+      setCreating(false)
+      createForm.resetFields()
+      invalidate()
+    },
+    onError: (error: unknown) => message.error(error instanceof ApiError ? error.message : '创建对象关系失败'),
+  })
+
+  const revokeMutation = useMutation<ApiAuthzObjectRelation, unknown, { relation: ApiAuthzObjectRelation; values: RevokeValues }>({
+    mutationFn: ({ relation, values }) => apiAuthzApi.revokeObjectRelation(relation.id, { reason: values.reason.trim() }),
+    onSuccess: () => {
+      message.success('对象关系已撤销')
+      setRevoking(null)
+      revokeForm.resetFields()
+      invalidate()
+    },
+    onError: (error: unknown) => message.error(error instanceof ApiError ? error.message : '撤销对象关系失败'),
+  })
+
   const reauthorizeMutation = useMutation<ApiAuthzObjectRelation, unknown, { relation: ApiAuthzObjectRelation; values: ReauthorizeValues }>({
     mutationFn: ({ relation, values }) =>
       apiAuthzApi.reauthorizeObjectRelation(relation.id, {
@@ -207,18 +274,30 @@ export default function ObjectAuthorizationTab() {
     { title: '对象类型', dataIndex: 'object_type', width: 140 },
     { title: '对象引用', dataIndex: 'object_ref', width: 230, render: (value: string) => <Typography.Text code title={value}>{shortRef(value)}</Typography.Text> },
     { title: '主体', dataIndex: 'principal_id', width: 210, render: (value: string) => <Typography.Text code title={value}>{shortRef(value)}</Typography.Text> },
-    { title: '关系', dataIndex: 'relation', width: 90, render: () => <Tag color="blue">OWNER</Tag> },
+    {
+      title: '关系', dataIndex: 'relation', width: 130,
+      render: (value: ApiAuthzObjectRelationType) => {
+        const meta = relationKind[value]
+        return <Tag color={meta?.color} title={value}>{meta?.label ?? value}</Tag>
+      },
+    },
     { title: '来源', dataIndex: 'source', width: 130, render: (value: string) => <StatusTag value={value} map={RELATION_SOURCE_META} /> },
     { title: '确认人', dataIndex: 'confirmed_by', width: 130 },
     { title: '生效时间', dataIndex: 'valid_from', width: 170, render: formatDateTime },
     { title: '失效时间', dataIndex: 'valid_until', width: 170, render: formatDateTime },
     { title: '确认原因', dataIndex: 'reason', width: 220, ellipsis: true },
     {
-      title: '操作', key: 'actions', width: 110, fixed: 'right',
-      render: (_, record) =>
-        canManage && (record.status === 'REVOKED' || record.status === 'EXPIRED') ? (
-          <Button type="link" size="small" onClick={() => { reauthForm.resetFields(); setReauthorizing(record) }}>重新授权</Button>
-        ) : null
+      title: '操作', key: 'actions', width: 170, fixed: 'right',
+      render: (_, record) => canManage ? (
+        <Space size={0}>
+          {record.status === 'CONFIRMED' ? (
+            <Button type="link" size="small" danger onClick={() => { revokeForm.resetFields(); setRevoking(record) }}>撤销</Button>
+          ) : null}
+          {record.status === 'REVOKED' || record.status === 'EXPIRED' ? (
+            <Button type="link" size="small" onClick={() => { reauthForm.resetFields(); setReauthorizing(record) }}>重新授权</Button>
+          ) : null}
+        </Space>
+      ) : null,
     },
   ]
   const decisionColumns: ColumnsType<ApiAuthzDecision> = [
@@ -266,9 +345,12 @@ export default function ObjectAuthorizationTab() {
             },
             {
               key: 'relations', label: `对象关系（已确认 ${coverage?.confirmed_relations ?? 0}）`, children: <>
-                <Space style={{ marginBottom: 12 }}><Select value={relationStatusFilter} style={{ width: 150 }} options={[{ value: '', label: '全部状态' }, ...Object.entries(relationStatus).map(([value, meta]) => ({ value, label: meta.label }))]} onChange={(value) => { setRelationStatusFilter(value); setRelationPage(1) }} /></Space>
+                <Space style={{ marginBottom: 12 }} wrap>
+                  <Select value={relationStatusFilter} style={{ width: 150 }} options={[{ value: '', label: '全部状态' }, ...Object.entries(relationStatus).map(([value, meta]) => ({ value, label: meta.label }))]} onChange={(value) => { setRelationStatusFilter(value); setRelationPage(1) }} />
+                  {canManage ? <Button type="primary" onClick={() => { createForm.resetFields(); createForm.setFieldsValue({ relation: 'SHARED_WITH' }); setCreating(true) }}>手工登记关系</Button> : null}
+                </Space>
                 <QueryErrorAlert error={relationsQuery.error} message="加载对象关系失败" />
-                <SmartTable<ApiAuthzObjectRelation> rowKey="id" storageKey="api-authz-object-relations" columns={relationColumns} dataSource={relationsQuery.data?.items ?? []} loading={relationsQuery.isLoading} pagination={{ current: relationPage, pageSize: 20, total: relationsQuery.data?.total ?? 0, showSizeChanger: false, onChange: setRelationPage }} scroll={{ x: 1650 }} locale={{ emptyText: '暂无对象关系' }} />
+                <SmartTable<ApiAuthzObjectRelation> rowKey="id" storageKey="api-authz-object-relations" columns={relationColumns} dataSource={relationsQuery.data?.items ?? []} loading={relationsQuery.isLoading} pagination={{ current: relationPage, pageSize: 20, total: relationsQuery.data?.total ?? 0, showSizeChanger: false, onChange: setRelationPage }} scroll={{ x: 1720 }} locale={{ emptyText: '暂无对象关系' }} />
               </>,
             },
             {
@@ -297,8 +379,114 @@ export default function ObjectAuthorizationTab() {
         </Form>
       </Modal>
       <Modal
+        open={creating}
+        title="手工登记对象关系"
+        okText="确认登记"
+        width={640}
+        confirmLoading={createMutation.isPending}
+        onCancel={() => setCreating(false)}
+        onOk={() => createForm.validateFields().then((values) => createMutation.mutate(values), () => { /* 校验失败由表单内联提示 */ })}
+      >
+        <Form form={createForm} layout="vertical" initialValues={{ relation: 'SHARED_WITH' }}>
+          <Form.Item name="relation" label="关系" rules={[{ required: true, message: '请选择关系' }]}>
+            <Select options={Object.entries(relationKind).map(([value, meta]) => ({ value, label: `${meta.label}（${value}）` }))} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(previous, current) => previous.relation !== current.relation}>
+            {({ getFieldValue }) => {
+              const shared = getFieldValue('relation') === 'SHARED_WITH'
+              return (
+                <Typography.Paragraph type="secondary">
+                  {shared
+                    ? '共享方向：object_ref 是被共享的对象（共享源），principal_id 是共享接收人。普通访问候选不会被确认为共享关系。'
+                    : '所有者方向：principal_id 是 object_ref 所引用对象的所有者。'}
+                  请使用服务端生成的 HMAC 引用，不要填写对象明文。
+                </Typography.Paragraph>
+              )
+            }}
+          </Form.Item>
+          <Form.Item name="object_type" label="对象类型" rules={[{ required: true, whitespace: true, message: '请填写对象类型' }, { max: 128, message: '最多 128 字符' }]}>
+            <Input placeholder="如 order" autoComplete="off" />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(previous, current) => previous.relation !== current.relation}>
+            {({ getFieldValue }) => {
+              const shared = getFieldValue('relation') === 'SHARED_WITH'
+              return (
+                <>
+                  <Form.Item
+                    name="object_ref"
+                    label={shared ? '共享源对象 HMAC 引用（object_ref）' : '对象 HMAC 引用（object_ref）'}
+                    rules={[
+                      { required: true, whitespace: true, message: '请填写对象 HMAC 引用' },
+                      { max: 160, message: '最多 160 字符' },
+                      {
+                        validator: (_, value?: string) => value && /^objref:.+/.test(value.trim())
+                          ? Promise.resolve()
+                          : Promise.reject(new Error('请输入 objref: 开头的服务端 HMAC 对象引用')),
+                      },
+                    ]}
+                  >
+                    <Input placeholder="objref:…" autoComplete="off" />
+                  </Form.Item>
+                  <Form.Item name="principal_id" label={shared ? '共享接收人（principal_id）' : '所有者（principal_id）'} rules={[{ required: true, whitespace: true, message: '请填写已验证主体 ID' }, { max: 256, message: '最多 256 字符' }]}>
+                    <Input placeholder="已验证主体的 HMAC 引用" autoComplete="off" />
+                  </Form.Item>
+                </>
+              )
+            }}
+          </Form.Item>
+          <Form.Item name="tenant_id" label="租户 ID（可选）" rules={[{ max: 256, message: '最多 256 字符' }]}>
+            <Input autoComplete="off" />
+          </Form.Item>
+          <Form.Item name="valid_from" label="生效时间（可选，默认立即）">
+            <DatePicker showTime style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            name="valid_until"
+            label="失效时间（可选）"
+            dependencies={['valid_from']}
+            rules={[({ getFieldValue }) => ({
+              validator: (_, value?: { toISOString: () => string }) => {
+                const from = getFieldValue('valid_from') as { toISOString: () => string } | undefined
+                const error = validateReauthorizationWindow(from, value)
+                return error ? Promise.reject(new Error(error)) : Promise.resolve()
+              },
+            })]}
+          >
+            <DatePicker showTime style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="evidence_ref" label="证据引用（可选）" rules={[{ max: 256, message: '最多 256 字符' }]}>
+            <Input autoComplete="off" />
+          </Form.Item>
+          <Form.Item name="reason" label="审计原因" rules={[{ required: true, whitespace: true, message: '请填写审计原因' }, { max: 512, message: '最多 512 字符' }]}>
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        open={revoking !== null}
+        title={`撤销${relationLabel(revoking?.relation)}关系`}
+        okText="确认撤销"
+        okButtonProps={{ danger: true }}
+        confirmLoading={revokeMutation.isPending}
+        onCancel={() => setRevoking(null)}
+        onOk={() => revokeForm.validateFields().then((values) => revoking && revokeMutation.mutate({ relation: revoking, values }), () => { /* 校验失败由表单内联提示 */ })}
+      >
+        {revoking ? (
+          <Typography.Paragraph type="secondary">
+            {revoking.relation === 'SHARED_WITH' ? '共享源对象' : '对象'}：<Typography.Text code>{revoking.object_ref}</Typography.Text>；
+            {revoking.relation === 'SHARED_WITH' ? '共享接收人' : '所有者'}：<Typography.Text code>{revoking.principal_id}</Typography.Text>。
+            撤销后保留历史记录并触发授权配置重新发布。
+          </Typography.Paragraph>
+        ) : null}
+        <Form form={revokeForm} layout="vertical">
+          <Form.Item name="reason" label="撤销原因" rules={[{ required: true, whitespace: true, message: '请填写撤销原因' }, { max: 512, message: '最多 512 字符' }]}>
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
         open={reauthorizing !== null}
-        title="重新授权 OWNER 关系"
+        title={`重新授权${relationLabel(reauthorizing?.relation)}关系`}
         okText="确认重新授权"
         confirmLoading={reauthorizeMutation.isPending}
         onCancel={() => setReauthorizing(null)}

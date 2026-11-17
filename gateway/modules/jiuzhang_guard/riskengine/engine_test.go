@@ -1,6 +1,7 @@
 package riskengine
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -139,5 +140,34 @@ func TestIdentityKeyForDeterministic(t *testing.T) {
 	r3.Header.Set("X-API-Key", "key-abc")
 	if k3 := IdentityKeyFor(r3, "salt", "203.0.113.10"); k3 == k1 {
 		t.Fatal("credential identity must differ from anon")
+	}
+}
+
+func TestEvaluateChallengeBoundariesAndPriority(t *testing.T) {
+	for _, tc := range []struct {
+		score     int
+		action    string
+		threshold int
+	}{
+		{19, ActionPass, 0},
+		{20, ActionRateLimit, 20},
+		{39, ActionRateLimit, 20},
+		{40, ActionChallenge, 40},
+		{79, ActionChallenge, 40},
+		{80, ActionBlock, 80},
+		{100, ActionBlock, 80},
+	} {
+		t.Run(fmt.Sprintf("score_%d", tc.score), func(t *testing.T) {
+			eng := newTestEngine(t, &Params{
+				Enabled: true, Mode: ModeProtect, RateLimitThreshold: 20,
+				ChallengeThreshold: 40, BlockThreshold: 80,
+			})
+			eng.AddSignal("id1", "WAF", tc.score, "boundary")
+			dec, err := eng.Evaluate("id1")
+			if err != nil || dec.Action != tc.action || dec.Threshold != tc.threshold || dec.Score != tc.score {
+				t.Fatalf("decision=%+v, err=%v; want action=%s threshold=%d score=%d",
+					dec, err, tc.action, tc.threshold, tc.score)
+			}
+		})
 	}
 }

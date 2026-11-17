@@ -238,7 +238,7 @@ type Guard struct {
 	// 角色功能级基线（发布通道下发 api_role_baselines；对应管理面 api_role_baselines 表 confirmed 行；
 	// nil/空 = 无端点基线，BFLA 检测零行为）
 	APIRoleBaselines []detectors.RoleBaseline `json:"api_role_baselines,omitempty"`
-	// AUTHZ-01 对象授权快照（发布通道下发；仅 gateway 侧 OBSERVE 判定）。
+	// 对象授权快照（发布通道下发；OWNER 或 ANY_OF=OWNER/SHARED_WITH，OBSERVE/PROTECT）。
 	// 模型/关系中的对象标识仅用于运行时匹配，事件只保留 HMAC objref。
 	APIAuthzModels            []detectors.ObjectModel          `json:"api_authz_models,omitempty"`
 	APIAuthzRelations         []detectors.ObjectRelation       `json:"api_authz_relations,omitempty"`
@@ -452,6 +452,10 @@ type Guard struct {
 	// 本身不计入 CC 计数（探针自污染防控）
 	DebugCCCounter bool `json:"debug_cc_counter,omitempty"`
 
+	// PublishSmoke 单次发布的独立 HMAC 认证材料（见 publish_smoke.go）。与 Bot、
+	// API 授权等密钥完全分离；nil 时精确内部端点仍本地拒绝，不落入源站。
+	PublishSmoke *publishSmokeJSON `json:"publish_smoke,omitempty"`
+
 	// 运行时
 	logger         *zap.Logger
 	resolver       clientip.Resolver
@@ -509,6 +513,7 @@ type Guard struct {
 	jwtCancel                 context.CancelFunc                      // 远程 JWKS 后台刷新取消（nil = 未启动；Cleanup 调用）
 	botPolicy                 *botPolicyJSON                          // 按 BotPolicy 装配（nil = 未下发；OFF 也保留段内容以维持 verify 命名空间墓碑；B3 起请求链经 serveNextViaBot 消费）
 	botSvc                    *botchallenge.Service                   // Bot 挑战服务（nil = OFF/未下发/OBSERVE 依赖缺失降级；PROTECT 依赖缺失在装配期 fail-closed 拒载）
+	publishSmokeKey           []byte                                  // 按 PublishSmoke 解码（单次发布独立秘密，不落日志/快照）
 }
 
 // authzSnapshotJSON is the explicit hand-off contract for the last known

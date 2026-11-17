@@ -580,7 +580,10 @@ services:
     image: $GATEWAY_IMAGE
     container_name: jiuzhang-gateway
     restart: unless-stopped
+    user: "0:0"
+    entrypoint: ["/usr/local/bin/wdsp-gateway-bind"]
     environment:
+      HOME: /var/lib/caddy
       # autosave 落点持久化：配合 --resume，容器重建后自动恢复最近一次发布配置
       XDG_CONFIG_HOME: /config
       # Caddy 存储（实例 ID、证书缓存、锁文件）持久化
@@ -602,7 +605,7 @@ services:
       - ./gateway/rules:/etc/caddy/rules:ro
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
+    cap_add: [NET_BIND_SERVICE, SETUID, SETGID, SETPCAP]
 
   # 日志轮转 sidecar：对网关日志卷中常驻 append 写入的日志做 copytruncate 轮转
   # （coraza-audit.log / api-runtime-events.log / guard-events.log / access-full.jsonl /

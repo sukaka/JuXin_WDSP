@@ -92,7 +92,7 @@ func (e *Engine) AddDetectorMatches(identityKey string, matches []dsctx.Detector
 
 // Decision 单请求风险处置评估结果（策略判定与模式无关；OBSERVE/PROTECT 语义由调用方执行）。
 type Decision struct {
-	Action      string // PASS | RATE_LIMIT | BLOCK
+	Action      string // PASS | RATE_LIMIT | CHALLENGE | BLOCK
 	IdentityKey string
 	Score       int    // 滑窗求和并截断 [0,100]
 	Level       string // LOW | MEDIUM | HIGH | CRITICAL
@@ -100,8 +100,8 @@ type Decision struct {
 	Signals     []SignalEntry
 }
 
-// Evaluate 滑窗评估：score>=block_threshold → BLOCK；>=rate_limit_threshold → RATE_LIMIT；
-// 否则 PASS。返回完整 signals 明细（可解释性：事件必须能说明"为什么得 N 分"）。
+// Evaluate 滑窗评估按 BLOCK → CHALLENGE → RATE_LIMIT 优先；challenge_threshold=0
+// 时跳过挑战档。返回完整 signals 明细（可解释性：事件必须能说明"为什么得 N 分"）。
 // 存储故障 fail-open 返回错误——调用方按放行处理（评估失败永不实断）。
 func (e *Engine) Evaluate(identityKey string) (Decision, error) {
 	if e == nil || e.cfg == nil || e.store == nil || identityKey == "" {
@@ -122,6 +122,9 @@ func (e *Engine) Evaluate(identityKey string) (Decision, error) {
 	case score >= e.cfg.BlockThreshold:
 		dec.Action = ActionBlock
 		dec.Threshold = e.cfg.BlockThreshold
+	case e.cfg.ChallengeThreshold > 0 && score >= e.cfg.ChallengeThreshold:
+		dec.Action = ActionChallenge
+		dec.Threshold = e.cfg.ChallengeThreshold
 	case score >= e.cfg.RateLimitThreshold:
 		dec.Action = ActionRateLimit
 		dec.Threshold = e.cfg.RateLimitThreshold

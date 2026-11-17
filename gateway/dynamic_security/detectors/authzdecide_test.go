@@ -641,3 +641,340 @@ func TestEvaluateAuthorizationFallbackCoversBFLA(t *testing.T) {
 		t.Fatalf("stale snapshot did not fall back for BFLA: %+v", group)
 	}
 }
+
+var az4TestNow = time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+
+func newAZ4AuthorizationConfig() AuthorizationConfig {
+	key := []byte("az4-object-secret")
+	ref := ObjectRefHMAC(key, "7")
+	return AuthorizationConfig{
+		EndpointKey: "GET /orders/7", ObjectRefHMACKey: key,
+		Models: []ObjectModel{{
+			EndpointKey: "GET /orders/{id}", PathTemplate: "/orders/{id}", ObjectType: "ORDER",
+			Identifiers:      []ObjectIdentifier{{Location: "path", Name: "id", Primary: true}},
+			RequiredRelation: "ANY_OF", RequiredRelations: []string{"OWNER", "SHARED_WITH"},
+			OwnerExclusive: true, Publishable: true, UniqueEndpointTemplate: true,
+		}},
+		Relations: []ObjectRelation{
+			{PrincipalID: "user-owner", ObjectType: "ORDER", ObjectRef: ref, Relation: "OWNER", Status: "CONFIRMED"},
+			{PrincipalID: "user-shared", ObjectType: "ORDER", ObjectRef: ref, Relation: "SHARED_WITH", Status: "CONFIRMED"},
+		},
+		Now: func() time.Time { return az4TestNow }, PolicyVersion: "authz-v4",
+	}
+}
+
+func az4VerifiedJWT(principal string) *jwtverify.VerificationResult {
+	return &jwtverify.VerificationResult{Status: jwtverify.StatusVerified, VerifiedPrincipalID: principal}
+}
+
+func evalAZ4Authorization(t *testing.T, cfg AuthorizationConfig, jwt *jwtverify.VerificationResult, path string) (*AuthorizationDecisionGroup, *dsctx.RequestContext) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "https://example.test"+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := dsctx.New("req-az4", dsctx.DefaultParseLimits())
+	parsed, err := parser.ParseRequest(req, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return EvaluateAuthorization(ctx, parsed, cfg, jwt), ctx
+}
+
+func az4BOLACheck(t *testing.T, group *AuthorizationDecisionGroup) AuthorizationCheck {
+	t.Helper()
+	if group == nil {
+		t.Fatal("missing authorization group")
+	}
+	for _, check := range group.Checks {
+		if check.Type == "BOLA" {
+			return check
+		}
+	}
+	t.Fatalf("missing primary BOLA check: %+v", group.Checks)
+	return AuthorizationCheck{}
+}
+
+func TestEvaluateAuthorizationAnyOfPolicyValidationAndLegacyCompatibility(t *testing.T) {
+	cases := []struct {
+		name             string
+		requiredRelation string
+		required         []string
+		wantDecision     AuthorizationDecision
+		wantReason       string
+		wantState        string
+	}{
+		{name: "canonical any_of allows shared", requiredRelation: "ANY_OF", required: []string{"OWNER", "SHARED_WITH"}, wantDecision: AuthorizationAllow, wantState: "EFFECTIVE_SHARED_WITH"},
+		{name: "reverse any_of order allows shared", requiredRelation: "ANY_OF", required: []string{"SHARED_WITH", "OWNER"}, wantDecision: AuthorizationAllow, wantState: "EFFECTIVE_SHARED_WITH"},
+		{name: "owner only any_of is unknown", requiredRelation: "ANY_OF", required: []string{"OWNER"}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-POLICY-001"},
+		{name: "legacy owner ignores share", requiredRelation: "OWNER", wantDecision: AuthorizationObserveViolation, wantReason: "AUTHZ-BOLA-001", wantState: "OTHER_OWNER"},
+		{name: "legacy owner with relations is unknown", requiredRelation: "OWNER", required: []string{"OWNER"}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-POLICY-001"},
+		{name: "empty any_of is unknown", requiredRelation: "ANY_OF", wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-POLICY-001"},
+		{name: "any_of requires owner", requiredRelation: "ANY_OF", required: []string{"SHARED_WITH"}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-POLICY-001"},
+		{name: "duplicate any_of relation is unknown", requiredRelation: "ANY_OF", required: []string{"OWNER", "owner", "SHARED_WITH"}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-POLICY-001"},
+		{name: "unsupported any_of relation is unknown", requiredRelation: "ANY_OF", required: []string{"OWNER", "DELEGATED_TO"}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-POLICY-001"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newAZ4AuthorizationConfig()
+			cfg.Models[0].RequiredRelation = tc.requiredRelation
+			cfg.Models[0].RequiredRelations = cloneAuthorizationSlice(tc.required)
+			group, ctx := evalAZ4Authorization(t, cfg, az4VerifiedJWT("user-shared"), "/orders/7")
+			check := az4BOLACheck(t, group)
+			if check.Decision != tc.wantDecision || check.ReasonCode != tc.wantReason || check.RelationState != tc.wantState {
+				t.Fatalf("check=%+v, want %s/%s/%s", check, tc.wantDecision, tc.wantReason, tc.wantState)
+			}
+			v3AssertNeverBlocked(t, group, ctx)
+		})
+	}
+}
+
+func TestEvaluateAuthorizationAnyOfSharedWithLifecycleAndDirection(t *testing.T) {
+	t.Run("owner keeps legacy effective state", func(t *testing.T) {
+		group, _ := evalAZ4Authorization(t, newAZ4AuthorizationConfig(), az4VerifiedJWT("user-owner"), "/orders/7")
+		check := az4BOLACheck(t, group)
+		if check.Decision != AuthorizationAllow || check.RelationState != "EFFECTIVE_OWNER" {
+			t.Fatalf("owner check=%+v", check)
+		}
+	})
+
+	t.Run("subject principal recipient alias is supported", func(t *testing.T) {
+		cfg := newAZ4AuthorizationConfig()
+		cfg.Relations[1].SubjectPrincipalID = cfg.Relations[1].PrincipalID
+		cfg.Relations[1].PrincipalID = ""
+		group, _ := evalAZ4Authorization(t, cfg, az4VerifiedJWT("user-shared"), "/orders/7")
+		if check := az4BOLACheck(t, group); check.Decision != AuthorizationAllow || check.RelationState != "EFFECTIVE_SHARED_WITH" {
+			t.Fatalf("shared recipient check=%+v", check)
+		}
+	})
+
+	cases := []struct {
+		name         string
+		mutate       func(*AuthorizationConfig)
+		wantDecision AuthorizationDecision
+		wantReason   string
+	}{
+		{name: "missing owner anchor", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations = cfg.Relations[1:]
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-RELATION-001"},
+		{name: "revoked owner anchor", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[0].Status = "REVOKED"
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-RELATION-001"},
+		{name: "expired owner anchor", mutate: func(cfg *AuthorizationConfig) {
+			until := az4TestNow
+			cfg.Relations[0].ValidUntil = &until
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-RELATION-001"},
+		{name: "future owner anchor", mutate: func(cfg *AuthorizationConfig) {
+			from := az4TestNow.Add(time.Minute)
+			cfg.Relations[0].ValidFrom = &from
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-RELATION-001"},
+		{name: "unidentified owner anchor", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[0].PrincipalID = ""
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-BOLA-002"},
+		{name: "owner on another object is not an anchor", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[0].ObjectRef = ObjectRefHMAC(cfg.ObjectRefHMACKey, "8")
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-RELATION-001"},
+		{name: "revoked share", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[1].Status = "REVOKED"
+		}, wantDecision: AuthorizationObserveViolation, wantReason: "AUTHZ-BOLA-001"},
+		{name: "expired share", mutate: func(cfg *AuthorizationConfig) {
+			until := az4TestNow
+			cfg.Relations[1].ValidUntil = &until
+		}, wantDecision: AuthorizationObserveViolation, wantReason: "AUTHZ-BOLA-001"},
+		{name: "future share", mutate: func(cfg *AuthorizationConfig) {
+			from := az4TestNow.Add(time.Minute)
+			cfg.Relations[1].ValidFrom = &from
+		}, wantDecision: AuthorizationObserveViolation, wantReason: "AUTHZ-BOLA-001"},
+		{name: "share recipient is someone else", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[1].PrincipalID = "user-other"
+		}, wantDecision: AuthorizationObserveViolation, wantReason: "AUTHZ-BOLA-001"},
+		{name: "share belongs to another object", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[1].ObjectRef = ObjectRefHMAC(cfg.ObjectRefHMACKey, "8")
+		}, wantDecision: AuthorizationObserveViolation, wantReason: "AUTHZ-BOLA-001"},
+		{name: "share belongs to another application", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[1].ApplicationID = "app-b"
+		}, wantDecision: AuthorizationObserveViolation, wantReason: "AUTHZ-BOLA-001"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newAZ4AuthorizationConfig()
+			tc.mutate(&cfg)
+			group, ctx := evalAZ4Authorization(t, cfg, az4VerifiedJWT("user-shared"), "/orders/7")
+			check := az4BOLACheck(t, group)
+			if check.Decision != tc.wantDecision || check.ReasonCode != tc.wantReason {
+				t.Fatalf("check=%+v, want %s/%s", check, tc.wantDecision, tc.wantReason)
+			}
+			if check.Decision == AuthorizationAllow || check.RelationState == "EFFECTIVE_SHARED_WITH" {
+				t.Fatalf("invalid or reverse share must not authorize: %+v", check)
+			}
+			v3AssertNeverBlocked(t, group, ctx)
+		})
+	}
+}
+
+func TestEvaluateAuthorizationAnyOfIsOrderAndIndexIndependent(t *testing.T) {
+	base := newAZ4AuthorizationConfig()
+	base.Models[0].RequiredRelations = []string{"SHARED_WITH", "OWNER"}
+	for _, reverse := range []bool{false, true} {
+		for _, indexed := range []bool{false, true} {
+			t.Run("reverse="+strconv.FormatBool(reverse)+"/indexed="+strconv.FormatBool(indexed), func(t *testing.T) {
+				cfg := CloneAuthorizationConfig(base)
+				if reverse {
+					cfg.Relations[0], cfg.Relations[1] = cfg.Relations[1], cfg.Relations[0]
+				}
+				if indexed {
+					cfg.RelationIndex = BuildAuthorizationRelationIndex(cfg.Relations)
+				}
+				for _, tc := range []struct {
+					principal string
+					decision  AuthorizationDecision
+					reason    string
+					state     string
+				}{
+					{principal: "user-shared", decision: AuthorizationAllow, state: "EFFECTIVE_SHARED_WITH"},
+					{principal: "user-other", decision: AuthorizationObserveViolation, reason: "AUTHZ-BOLA-001", state: "OTHER_OWNER"},
+				} {
+					group, _ := evalAZ4Authorization(t, cfg, az4VerifiedJWT(tc.principal), "/orders/7")
+					check := az4BOLACheck(t, group)
+					if check.Decision != tc.decision || check.ReasonCode != tc.reason || check.RelationState != tc.state {
+						t.Fatalf("principal=%s check=%+v", tc.principal, check)
+					}
+				}
+				if cfg.Models[0].RequiredRelations[0] != "SHARED_WITH" || cfg.Models[0].RequiredRelations[1] != "OWNER" {
+					t.Fatalf("runtime normalization must not mutate source order: %+v", cfg.Models[0].RequiredRelations)
+				}
+			})
+		}
+	}
+}
+
+func TestEvaluateAuthorizationAnyOfSharedDoesNotBypassSafetyGates(t *testing.T) {
+	cases := []struct {
+		name         string
+		mutate       func(*AuthorizationConfig)
+		mutateJWT    func(*jwtverify.VerificationResult)
+		wantDecision AuthorizationDecision
+		wantReason   string
+	}{
+		{name: "open conflict", mutate: func(cfg *AuthorizationConfig) {
+			cfg.ConflictedIndex = BuildConflictedObjectIndex([]ConflictedObject{{ObjectType: "ORDER", ObjectRef: cfg.Relations[0].ObjectRef}})
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-CONFLICT-001"},
+		{name: "tenant mismatch", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[0].TenantID = "tenant-a"
+			cfg.Relations[1].TenantID = "tenant-a"
+		}, mutateJWT: func(jwt *jwtverify.VerificationResult) {
+			jwt.VerifiedTenantID = "tenant-b"
+		}, wantDecision: AuthorizationObserveViolation, wantReason: "AUTHZ-TENANT-001"},
+		{name: "tenant conflict includes share", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[0].TenantID = "tenant-a"
+			cfg.Relations[1].TenantID = "tenant-b"
+		}, mutateJWT: func(jwt *jwtverify.VerificationResult) {
+			jwt.VerifiedTenantID = "tenant-a"
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-TENANT-002"},
+		{name: "tenant incomplete", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[0].TenantID = "tenant-a"
+			cfg.Relations[1].TenantID = "tenant-a"
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-TENANT-002"},
+		{name: "untrusted recipient", mutateJWT: func(jwt *jwtverify.VerificationResult) {
+			jwt.Status = jwtverify.StatusUnverified
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-IDENTITY-001"},
+		{name: "strict lease expiry", mutate: func(cfg *AuthorizationConfig) {
+			cfg.LeaseSeconds = 60
+			cfg.AppliedAt = az4TestNow.Add(-2 * time.Minute)
+		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-LEASE-001"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newAZ4AuthorizationConfig()
+			cfg.Schema = AuthzSnapshotSchemaV2
+			cfg.Models[0].Enforcement = "PROTECT"
+			cfg.EngineProtect = true
+			if tc.mutate != nil {
+				tc.mutate(&cfg)
+			}
+			jwt := az4VerifiedJWT("user-shared")
+			if tc.mutateJWT != nil {
+				tc.mutateJWT(jwt)
+			}
+			group, ctx := evalAZ4Authorization(t, cfg, jwt, "/orders/7")
+			check := az4BOLACheck(t, group)
+			if check.Decision != tc.wantDecision || check.ReasonCode != tc.wantReason {
+				t.Fatalf("check=%+v, want %s/%s", check, tc.wantDecision, tc.wantReason)
+			}
+			if check.Decision == AuthorizationAllow {
+				t.Fatalf("safety gate produced shared ALLOW: %+v", check)
+			}
+			v3AssertNeverBlocked(t, group, ctx)
+		})
+	}
+}
+
+func TestEvaluateAuthorizationAnyOfPreviousValidAndWatermark(t *testing.T) {
+	t.Run("previous valid retains required relations and shared decision", func(t *testing.T) {
+		previous := newAZ4AuthorizationConfig()
+		previous.Schema = AuthzSnapshotSchemaV2
+		previous.RevocationWatermark = &RevocationWatermark{ManualSeq: 5, Sources: map[string]int64{"src-a": 3}}
+		previous.RelationIndex = BuildAuthorizationRelationIndex(previous.Relations)
+		previous.Models[0].RequiredRelations = []string{"SHARED_WITH", "OWNER"}
+		current := CloneAuthorizationConfig(previous)
+		current.Stale = true
+		current.PreviousValid = &previous
+		current.RelationIndex = nil
+		group, ctx := evalAZ4Authorization(t, current, az4VerifiedJWT("user-shared"), "/orders/7")
+		if group.Decision != AuthorizationUnknown || len(group.Checks) != 2 || group.Checks[0].ReasonCode != "AUTHZ-POLICY-002" {
+			t.Fatalf("fallback group=%+v", group)
+		}
+		check := az4BOLACheck(t, group)
+		if check.Decision != AuthorizationAllow || check.RelationState != "EFFECTIVE_SHARED_WITH" {
+			t.Fatalf("previous shared check=%+v", check)
+		}
+		if previous.Models[0].RequiredRelations[0] != "SHARED_WITH" || previous.Models[0].RequiredRelations[1] != "OWNER" {
+			t.Fatalf("previous model was mutated: %+v", previous.Models[0].RequiredRelations)
+		}
+		v3AssertNeverBlocked(t, group, ctx)
+	})
+
+	t.Run("watermark regression rejects shared fallback", func(t *testing.T) {
+		previous := newAZ4AuthorizationConfig()
+		previous.Schema = AuthzSnapshotSchemaV2
+		previous.RevocationWatermark = &RevocationWatermark{ManualSeq: 4}
+		current := CloneAuthorizationConfig(previous)
+		current.Stale = true
+		current.RevocationWatermark = &RevocationWatermark{ManualSeq: 5}
+		current.PreviousValid = &previous
+		group, ctx := evalAZ4Authorization(t, current, az4VerifiedJWT("user-shared"), "/orders/7")
+		if group == nil || len(group.Checks) != 1 || group.Checks[0].Decision != AuthorizationUnknown || group.Checks[0].ReasonCode != "AUTHZ-POLICY-002" {
+			t.Fatalf("regressed fallback group=%+v", group)
+		}
+		v3AssertNeverBlocked(t, group, ctx)
+	})
+}
+
+func TestCloneAuthorizationConfigDeepCopiesSlices(t *testing.T) {
+	original := newAZ4AuthorizationConfig()
+	original.RoleBaselines = []VerifiedRoleBaseline{{Role: "reader"}}
+	original.ConflictedObjects = []ConflictedObject{{ObjectType: "ORDER"}}
+	original.RelationIndex = BuildAuthorizationRelationIndex(original.Relations)
+	cloned := CloneAuthorizationConfig(original)
+	cloned.Models[0].Identifiers[0].Name = "changed"
+	cloned.Models[0].RequiredRelations[0] = "CHANGED"
+	cloned.Relations[0].PrincipalID = "changed"
+	cloned.RoleBaselines[0].Role = "changed"
+	cloned.ObjectRefHMACKey[0] ^= 0xff
+	cloned.ConflictedObjects[0].ObjectType = "CHANGED"
+	for _, relations := range cloned.RelationIndex {
+		relations[0].PrincipalID = "changed"
+	}
+	if original.Models[0].Identifiers[0].Name != "id" || original.Models[0].RequiredRelations[0] != "OWNER" ||
+		original.Relations[0].PrincipalID != "user-owner" || original.RoleBaselines[0].Role != "reader" ||
+		original.ObjectRefHMACKey[0] != 'a' || original.ConflictedObjects[0].ObjectType != "ORDER" {
+		t.Fatalf("clone shares source slices: %+v", original)
+	}
+	for _, relations := range original.RelationIndex {
+		for _, relation := range relations {
+			if relation.PrincipalID == "changed" {
+				t.Fatalf("clone shares relation index slices: %+v", original.RelationIndex)
+			}
+		}
+	}
+}

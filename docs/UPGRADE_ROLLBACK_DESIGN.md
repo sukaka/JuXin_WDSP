@@ -11,7 +11,7 @@
 升级由「管理 API 升级任务」与「运维脚本」两部分协作完成：
 
 - **API 侧**：升级包登记/校验、升级前检查（9 项）、升级前强制 FULL 备份、迁移文件成对校验、执行数据库迁移（up）、升级后验证、失败自动回滚（恢复升级前备份）；
-- **脚本侧**：组件健康预检、调用 API 备份、**容器镜像切换（retag）**、重启 api/gateway、等待健康、失败时按状态文件回滚镜像（可选同时恢复数据）。
+- **脚本侧**：组件健康预检、调用 API 备份、**容器镜像切换（retag）**、同步重建 api/gateway/netmgrd、等待健康、失败时按状态文件回滚镜像（可选同时恢复数据）。
 
 镜像切换属运维脚本职责（`applyDryRun` 注释明确：API 侧完成迁移文件校验与目标版本记录）。
 
@@ -94,33 +94,58 @@ validate 备份 → 创建恢复任务（scope=FULL，来源 upgrade-rollback）
 
 ## 8. ops/upgrade 脚本
 
+本节仅描述手动脚本通道；宿主机 `upgrade-executor.sh` 的执行协议不在本节范围内。
+
 ### 8.1 apply.sh（升级执行）
 
 ```bash
 ops/upgrade/apply.sh \
   --server-image jiuzhang-server:2.1.0 \
   --gateway-image jiuzhang-gateway:2.1.0 \
-  [--images-tar images.tar] \     # 离线场景先 docker load
-  [-c docker-compose.yml] [-e .env] [--timeout 600]
+  [--images-tar images.tar] \
+  [-c docker-compose.yml] [--new-compose-file docker-compose.new.yml] \
+  [-e .env] [--timeout 600]
 ```
+
+`--compose-file` 始终是**当前/旧 Compose**，负责升级前预检以及旧 api/gateway 镜像名和旧镜像 ID 的来源；`--new-compose-file` 是**目标 Compose**，负责升级后的镜像标签、`up` 和健康检查。未指定后者时二者为同一文件。`--env-file` 同时供当前和目标 Compose 使用。不得从新 Compose 的目标标签反查旧 ID，否则目标标签已指向新镜像时会丢失真实回滚点。
 
 执行流程（与脚本步骤一致）：
 
-1. 预检：调用 `ops/healthcheck/check.sh`，未通过即中止；
+1. 预检：使用旧 Compose 调用 `ops/healthcheck/check.sh`，未通过即中止；
 2. 备份：调用管理 API 创建 `FULL` 备份并等待 `SUCCESS + verified`，失败即中止升级；
-3. 镜像切换：`--images-tar` 存在则先 `docker load`；从 compose 配置解析 api/gateway 当前镜像名，记录**旧镜像 ID** 与备份任务ID 到 `ops/upgrade/.upgrade-state.env`（权限 600，不含敏感信息），然后 `docker tag` 将新镜像标记为 compose 使用的镜像名（retag）；
-4. `docker compose up -d --no-deps api gateway` 重启，等待管理 API 健康（默认 600s），数据库迁移随服务启动执行；
-5. 升级后再次 `check.sh`；失败时提示执行 `rollback.sh`。
+3. 镜像与契约检查：`--images-tar` 存在则先 `docker load`；分别渲染旧/目标 Compose，从旧 Compose 读取旧镜像名和 ID，从目标 Compose 读取 retag 目标标签。根据目标 gateway 镜像的实际 `Config.Entrypoint` 分类，不根据版本号或标签猜测：
+   - `/usr/local/bin/wdsp-gateway-bind`：目标 Compose 必须满足 `user=0:0`、`cap_drop=ALL`、恰好 `cap_add=NET_BIND_SERVICE/SETUID/SETGID/SETPCAP`、`no-new-privileges:true`；Compose 未覆盖入口时继承已核验的镜像入口，显式覆盖时只允许该启动器。旧 Compose 不满足时 fail-closed，并提示提供 `--new-compose-file`；
+   - `/usr/local/bin/docker-entrypoint.sh`：只允许安全的 legacy Compose 目标，不得直接套用会让旧 Caddy 以 root 常驻的新启动器 Compose；
+   - 其他、缺失或无法读取的入口：拒绝升级。
+
+   上述门禁全部发生在写状态、`docker tag` 和 `compose up` 之前；
+4. 将旧镜像名/ID、目标镜像名、`TARGET_COMPOSE_FILE`、`TARGET_ENV_FILE` 与备份任务 ID 写入 `ops/upgrade/.upgrade-state.env`（权限 600，不含敏感信息），再 retag 到目标 Compose 的镜像标签；
+5. 使用目标 Compose 执行 `docker compose up -d --no-deps --force-recreate api gateway netmgrd`，等待管理 API 健康（默认 600s），数据库迁移随服务启动执行；升级后再次以目标 Compose 运行 `check.sh`，失败时提示执行 `rollback.sh`。
 
 ### 8.2 rollback.sh（升级回滚）
 
 ```bash
 ops/upgrade/rollback.sh [--restore-backup] [-y] [--timeout 600]
+# 显式覆盖状态中的目标路径时才需要：
+# ops/upgrade/rollback.sh -c docker-compose.yml -e .env
 ```
 
-1. 读取 `.upgrade-state.env`（无升级记录则退出）；
-2. 校验旧镜像 ID 仍在本机（被清理则报错并提示重新加载旧镜像），`docker tag <旧镜像ID> <compose镜像名>` retag 回旧镜像，重启 api/gateway 并等待健康；
-3. `--restore-backup` 时追加数据回滚：调用 `ops/restore/restore.sh --backup-id <升级前备份ID> --scope FULL`（validate → create → 人工确认 → confirm），不加该选项则只回退镜像。
+1. 读取 `.upgrade-state.env`（无升级记录则退出），默认复用 `TARGET_COMPOSE_FILE` / `TARGET_ENV_FILE`，因此双 Compose 升级后无需手工改回旧 Compose；
+2. 校验旧 api/gateway 镜像 ID 仍在本机，并检查 `OLD_GATEWAY_IMAGE_ID` 对应镜像的实际 `Config.Entrypoint`。新启动器镜像仍要求目标 Compose 满足上述新契约；未知入口 fail-closed；
+3. legacy `/usr/local/bin/docker-entrypoint.sh` 镜像遇新启动器 Compose 时，用 `mktemp` 创建权限 600 的一次性 override，不改写用户 Compose：
+
+   ```yaml
+   services:
+     gateway:
+       entrypoint: !override ["/usr/local/bin/docker-entrypoint.sh"]
+       user: "1000:1000"
+       cap_add: !reset ["NET_BIND_SERVICE"]
+       cap_drop: !reset ["ALL"]
+   ```
+
+   override 不设置 `security_opt`，从而保留目标 Compose 的 `no-new-privileges:true`。脚本必须把目标 Compose 与 override 合并渲染为 JSON，并精确断言原入口、`1000:1000`、仅 `NET_BIND_SERVICE`、`cap_drop=ALL` 和 no-new-privileges 后，才允许 retag/up。部分 Compose 版本会忽略 `!reset` 附带的列表值；只有首次渲染已确认其余字段正确且 `cap_add`/`cap_drop` 均被移除时，脚本才追加同样由 `mktemp` 创建、权限 600 的临时补值层并重新执行完整断言，其他不符一律拒绝。这样旧 Caddy 不会带着新 Compose 的 root 用户或降权器 capabilities 常驻。所有临时文件均由 `EXIT` trap 清理，成功 `up` 后也立即删除；
+4. 所有镜像和渲染门禁通过后，执行 `docker tag <旧镜像ID> <目标Compose镜像名>`，再以同一目标 Compose（必要时附一次性 override）同步 force-recreate `api gateway netmgrd` 并等待健康；
+5. `--restore-backup` 时追加数据回滚：调用 `ops/restore/restore.sh --backup-id <升级前备份ID> --scope FULL`（validate → create → 人工确认 → confirm），不加该选项则只回退镜像。
 
 ### 8.3 脚本与 API 的关系
 
@@ -134,4 +159,5 @@ ops/upgrade/rollback.sh [--restore-backup] [-y] [--timeout 600]
 2. 迁移必须具备回滚能力（up/down 成对），禁止只更新数据库而没有回滚方案；
 3. 失败必须可查询原因（`failure_code`/`failure_message`）并告警，不静默吞错；
 4. 存在未处置严重告警、进行中任务、主密钥缺失时阻断升级；
-5. 升级/预检/回滚全部记录操作审计；回滚状态文件不含敏感信息（仅镜像名/ID、备份任务ID）。
+5. 升级/预检/回滚全部记录操作审计；回滚状态文件不含敏感信息（仅镜像名/ID、目标 Compose/env 路径、备份任务ID）；
+6. gateway 入口类型只以实际镜像配置为准；契约不明、渲染失败或断言不符时，必须在状态写入、retag 和容器重建之前停止。

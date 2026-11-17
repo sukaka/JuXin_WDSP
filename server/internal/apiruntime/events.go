@@ -52,10 +52,13 @@ func (s *Store) WithDB(db DBTX) *Store { return &Store{db: db} }
 // 空串（未上报/管线未写 api.classification）落 NULL，历史事件不回填。
 // application_id（共享设备群控观察应用隔离，迁移 000201）由已识别应用 UUID 落库；
 // 未识别应用与历史事件保持 NULL，不从同名端点猜测归属；非 UUID 在 INSERT 前拒绝。
+// trace_id（迁移 000217）仅持久化合法 W3C 关联键；缺失或非法值落 NULL，
+// request_id 幂等重放不更新该列，已有 Trace 不被缺字段的重复事件清空。
 func (s *Store) SavePrimary(ctx context.Context, ev *PrimaryEvent) error {
 	if ev == nil {
 		return nil
 	}
+	ev.TraceID = normalizeTraceID(ev.TraceID)
 	if ev.AuthzDecision != nil {
 		if _, err := validateAuthorizationDecision(ev.AuthzDecision); err != nil {
 			return err
@@ -122,14 +125,14 @@ func (s *Store) SavePrimary(ctx context.Context, ev *PrimaryEvent) error {
 		applicationID = parsed
 	}
 	ct, err := s.db.Exec(ctx, `
-INSERT INTO api_runtime_events (id, request_id, endpoint_key, risk_score, risk_level, final_action, details_json, occurred_at, identity_fingerprint, auth_type, response_status, client_ip, method, raw_path, latency_ms, model_version, policy_version, gateway_node, jwt_verification, final_decision, device_fingerprint, object_identifiers, api_level, application_id)
-SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
+INSERT INTO api_runtime_events (id, request_id, endpoint_key, risk_score, risk_level, final_action, details_json, occurred_at, identity_fingerprint, auth_type, response_status, client_ip, method, raw_path, latency_ms, model_version, policy_version, gateway_node, jwt_verification, final_decision, device_fingerprint, object_identifiers, api_level, application_id, trace_id)
+SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25
 WHERE NOT EXISTS (SELECT 1 FROM api_runtime_events WHERE request_id = NULLIF($2::varchar, ''))`,
 		id, ev.RequestID, ev.EndpointKey, ev.RiskScore, ev.RiskLevel, ev.FinalAction, raw, ev.OccurredAt,
 		ev.IdentityFingerprint, ev.AuthType, ev.ResponseStatus,
 		nullIfEmpty(ev.ClientIP), nullIfEmpty(ev.Method), nullIfEmpty(ev.RawPath), nullIfNonPositive(ev.LatencyMs),
 		nullIfEmpty(ev.ModelVersion), nullIfEmpty(ev.PolicyVersion), nullIfEmpty(ev.GatewayNode), jwtRaw, fdRaw,
-		nullIfEmpty(ev.DeviceFingerprint), objIDsRaw, nullIfEmpty(ev.APILevel), applicationID)
+		nullIfEmpty(ev.DeviceFingerprint), objIDsRaw, nullIfEmpty(ev.APILevel), applicationID, nullIfEmpty(ev.TraceID))
 	if err != nil {
 		return err
 	}

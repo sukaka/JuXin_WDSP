@@ -52,7 +52,8 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 
 // updateRequest 是全量更新请求体（version 为乐观锁预期值；scope 可选、不可变，
 // 允许前端按 GET 全量行回传，若提供则必须与当前值一致；id/updated_by/updated_at
-// 为服务端只读字段，请求体不承接）。
+// 为服务端只读字段，请求体不承接。challenge_threshold 用指针区分省略与显式 0：
+// 旧客户端省略时继承原值，新建应用覆盖省略时为 0）。
 type updateRequest struct {
 	Scope                    string         `json:"scope"`
 	Enabled                  bool           `json:"enabled"`
@@ -60,11 +61,22 @@ type updateRequest struct {
 	Version                  int            `json:"version"`
 	BlockThreshold           int            `json:"block_threshold"`
 	RateLimitThreshold       int            `json:"rate_limit_threshold"`
+	ChallengeThreshold       *int           `json:"challenge_threshold"`
 	RateLimitRPS             int            `json:"rate_limit_rps"`
 	SignalWindowSeconds      int            `json:"signal_window_seconds"`
 	SharedDeviceAccountLimit int            `json:"shared_device_account_limit"`
 	Scores                   map[string]int `json:"scores"`
 	RiskLevels               map[string]int `json:"risk_levels"`
+}
+
+func (r updateRequest) challengeThreshold(before *Policy) int {
+	if r.ChallengeThreshold != nil {
+		return *r.ChallengeThreshold
+	}
+	if before != nil {
+		return before.ChallengeThreshold
+	}
+	return 0
 }
 
 // Update 全量更新 GLOBAL 策略（乐观锁 + 校验 + 审计 + 触发发布）。
@@ -97,6 +109,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		Version:                  req.Version,
 		BlockThreshold:           req.BlockThreshold,
 		RateLimitThreshold:       req.RateLimitThreshold,
+		ChallengeThreshold:       req.challengeThreshold(before),
 		RateLimitRPS:             req.RateLimitRPS,
 		SignalWindowSeconds:      req.SignalWindowSeconds,
 		SharedDeviceAccountLimit: req.SharedDeviceAccountLimit,

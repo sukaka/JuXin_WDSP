@@ -389,3 +389,63 @@ func TestCHContributionStoreLateClientReplacesBoundaryIntegration(t *testing.T) 
 		t.Fatalf("late CLIENT did not form the service edge: %+v", service.Edges)
 	}
 }
+
+func TestCHReaderRuntimeFieldEnrichmentIntegration(t *testing.T) {
+	dsn := os.Getenv("WDSP_CLICKHOUSE_TEST_DSN")
+	if dsn == "" {
+		t.Skip("WDSP_CLICKHOUSE_TEST_DSN is not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	querier, err := apm.OpenClickHouse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	applicationID := uuid.New()
+	traceID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	client := observationForTest("orders", "CLIENT", now.Add(-time.Second))
+	client.AgentID = uuid.New()
+	client.EventID = "runtime-client-" + uuid.NewString()
+	client.ApplicationID = &applicationID
+	client.Trace.TraceID = traceID
+	client.Trace.SpanID = strings.Repeat("1", 16)
+	client.HTTP.Method = "POST"
+	client.HTTP.PathTemplate = "/login"
+	client.Fields = nil
+	server := observationForTest("profile", "SERVER", now.Add(-time.Second+5*time.Millisecond))
+	server.AgentID = uuid.New()
+	server.EventID = "runtime-server-" + uuid.NewString()
+	server.ApplicationID = &applicationID
+	server.Trace.TraceID = traceID
+	server.Trace.SpanID = strings.Repeat("a", 16)
+	server.Trace.ParentSpanID = client.Trace.SpanID
+	server.HTTP.Method = "POST"
+	server.HTTP.PathTemplate = "/login"
+	server.Fields = nil
+	writer := NewCHContributionStore(func(context.Context) apm.CHQuerier { return querier })
+	if err := writer.SaveContributions(ctx, BuildContributions([]agents.APIObservationEnvelope{client, server})); err != nil {
+		t.Fatal(err)
+	}
+	reference := RuntimeFieldReference{TraceID: traceID, Method: "POST", PathTemplate: "/login", ApplicationID: &applicationID}
+	runtime := &runtimeFieldFakeReader{records: []RuntimeFieldRecord{{
+		Reference: reference,
+		Fields:    []FieldEvidence{{Side: "REQUEST", Path: "form.pwd", DataType: "CREDENTIAL", Match: "OBSERVED"}},
+	}}}
+	reader := NewCHReader(func(context.Context) apm.CHQuerier { return querier }).WithRuntimeFields(runtime)
+	filter := GraphFilter{Start: now.Add(-time.Hour), End: now.Add(time.Hour), ApplicationID: &applicationID, DataType: "credential", MaxEdges: 10, View: "service"}
+	graph, err := reader.Graph(ctx, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.Edges) != 1 || len(graph.Edges[0].Fields) != 1 || graph.Edges[0].Fields[0].Path != "form.pwd" || graph.Edges[0].DataTypes[0] != "CREDENTIAL" {
+		t.Fatalf("runtime-only field did not survive ClickHouse graph filtering: %+v", graph.Edges)
+	}
+	evidence, err := reader.Evidence(ctx, graph.Edges[0].ID, filter, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || len(evidence[0].Fields) != 1 || evidence[0].Fields[0].Path != "form.pwd" || evidence[0].Fields[0].Match != "OBSERVED" {
+		t.Fatalf("runtime-only field did not survive ClickHouse evidence filtering: %+v", evidence)
+	}
+}

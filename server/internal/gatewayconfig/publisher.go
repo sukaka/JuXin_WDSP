@@ -677,6 +677,13 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	}
 	appsData, guardCfg = applyLicenseState(appsData, guardCfg, snapshot, licenseValid, licenseMaxQPS)
 
+	// 每次发布（含访问控制回滚重发）都新建独立探针密钥与 taskID 绑定；
+	// 在 Generate 前注入，保证实际加载配置与后续冒烟使用同一份认证材料。
+	if err := preparePublishSmoke(taskID, guardCfg); err != nil {
+		p.finishTask(ctx, taskID, TaskFailed, "SMOKE_AUTH_INIT_FAILED", err.Error(), nil)
+		return
+	}
+
 	// 步骤2：生成候选配置
 	p.updateTaskStep(ctx, taskID, TaskGenerating, "生成候选配置", 25)
 	gen, err := Generate(GenerateInput{
@@ -723,7 +730,7 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	// required_capabilities 由本次负载特性段推导；空需求免门禁（存量发布零变化），
 	// 缺能力（CAPABILITY_MISSING）/清单缺失或过期（CAPABILITY_MANIFEST_UNAVAILABLE）
 	// 该节点发布失败并展示缺口明细，不发送 /load、不得静默降级。
-	if ok, code, msg := p.evaluateCapabilityGate(ctx, guardCfg); !ok {
+	if ok, code, msg := p.evaluateCapabilityGate(ctx, guardCfg, in.AppIDs...); !ok {
 		p.markVersionResult(ctx, version.ID, "FAILED")
 		p.finishTask(ctx, taskID, TaskFailed, code, msg, &version.ID)
 		return

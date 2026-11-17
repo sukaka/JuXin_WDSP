@@ -190,6 +190,11 @@ type App struct {
 	dataflowWorker          *apidataflow.DataflowWorker
 }
 
+func newAPIDataflowReader(resolve func(context.Context) apm.CHQuerier, db *pgxpool.Pool) *apidataflow.CHReader {
+	return apidataflow.NewCHReader(resolve).
+		WithRuntimeFields(apidataflow.NewPGXRuntimeFieldReader(db))
+}
+
 // New 装配生产应用，授权验签信任根来自二进制内嵌公钥表。
 func New(cfg *config.Config, db *pgxpool.Pool, c *cache.Client) (*App, error) {
 	return newWithVendorKeys(cfg, db, c, license.LoadVendorKeys())
@@ -1492,7 +1497,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		}
 		apisecurity.RegisterRoutes(mux, authz, apiSecurityHandler)
 		apidataflow.RegisterRoutes(mux, authz, apidataflow.NewHandler(
-			apidataflow.NewCHReader(chManager.ResolveQuerier)).SetAudits(auditSvc))
+			newAPIDataflowReader(chManager.ResolveQuerier, db)).SetAudits(auditSvc))
 		// 弱点中心（P0-13）与敏感数据管理面（P0-19）：权限点在各自路由层（种子见迁移 000041）
 		apiweakness.RegisterRoutes(mux, authz, apiweakness.NewHandler(apiweakness.NewStore(db), auditSvc))
 		apiDataHandler := apidata.NewHandler(apidata.NewStore(db), auditSvc)

@@ -41,6 +41,28 @@
   margin: 0;
 }
 
+.data-flow-sensitive-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.data-flow-sensitive-fields .ant-tag {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  max-width: 100%;
+  height: auto;
+  margin-inline-end: 0;
+  padding-block: 2px;
+  white-space: normal;
+}
+
+.data-flow-sensitive-fields .ant-typography {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .data-flow-filters {
   display: grid;
   grid-template-columns: minmax(258px, 1.5fr) 136px minmax(180px, 1fr) 132px minmax(150px, 0.85fr) 112px auto;

@@ -15,7 +15,7 @@ func TestSavePrimaryPersistsApplicationID(t *testing.T) {
 	if err := (&Store{db: db}).SavePrimary(context.Background(), ev); err != nil {
 		t.Fatalf("SavePrimary: %v", err)
 	}
-	if len(db.args) != 1 || len(db.args[0]) != 24 {
+	if len(db.args) != 1 || len(db.args[0]) != 25 {
 		t.Fatalf("primary insert args = %+v", db.args)
 	}
 	applicationID, ok := db.args[0][23].(uuid.UUID)

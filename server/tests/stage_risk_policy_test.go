@@ -118,8 +118,9 @@ func TestRiskPolicyAPI(t *testing.T) {
 	if int(s5Num(t, policy, "version")) != 1 {
 		t.Fatalf("default policy version = %v, want 1", policy["version"])
 	}
-	if int(s5Num(t, policy, "block_threshold")) != 80 || int(s5Num(t, policy, "rate_limit_threshold")) != 40 {
-		t.Fatalf("default thresholds = %v/%v, want 80/40", policy["block_threshold"], policy["rate_limit_threshold"])
+	if int(s5Num(t, policy, "block_threshold")) != 80 || int(s5Num(t, policy, "rate_limit_threshold")) != 40 ||
+		int(s5Num(t, policy, "challenge_threshold")) != 0 {
+		t.Fatalf("default thresholds = %v/%v/%v, want 80/40/0", policy["block_threshold"], policy["rate_limit_threshold"], policy["challenge_threshold"])
 	}
 	levels, _ := policy["risk_levels"].(map[string]interface{})
 	if levels["medium"] != float64(20) || levels["high"] != float64(40) || levels["critical"] != float64(70) {
@@ -172,15 +173,16 @@ func TestRiskPolicyAPI(t *testing.T) {
 
 	// PUT 成功 → 200 + version+1（PUT 会异步触发发布任务，无网关时任务失败不影响响应）
 	resp = env.do(t, http.MethodPut, "/api/v1/security/risk-policy",
-		`{"enabled":true,"mode":"OBSERVE","version":1,"block_threshold":75,"rate_limit_threshold":35,"rate_limit_rps":5,
+		`{"enabled":true,"mode":"OBSERVE","version":1,"block_threshold":75,"rate_limit_threshold":35,"challenge_threshold":55,"rate_limit_rps":5,
 "signal_window_seconds":43200,"scores":{"URI_ENUMERATION":25,"SQLI":50},"risk_levels":{"medium":20,"high":40,"critical":70}}`, cookies, csrf)
 	result = s5OK(t, resp, "put risk policy")
 	policy = s5Obj(t, result, "policy")
 	if int(s5Num(t, policy, "version")) != 2 {
 		t.Errorf("policy version after update = %v, want 2", policy["version"])
 	}
-	if int(s5Num(t, policy, "block_threshold")) != 75 || int(s5Num(t, policy, "signal_window_seconds")) != 43200 {
-		t.Errorf("updated thresholds = %v/%v, want 75/43200", policy["block_threshold"], policy["signal_window_seconds"])
+	if int(s5Num(t, policy, "block_threshold")) != 75 || int(s5Num(t, policy, "challenge_threshold")) != 55 ||
+		int(s5Num(t, policy, "signal_window_seconds")) != 43200 {
+		t.Errorf("updated thresholds = %v/%v/%v, want 75/55/43200", policy["block_threshold"], policy["challenge_threshold"], policy["signal_window_seconds"])
 	}
 	scores, _ := policy["scores"].(map[string]interface{})
 	if scores["SQLI"] != float64(50) {
@@ -197,14 +199,14 @@ WHERE module='security' AND object_type='risk_policy' AND action='update' AND ri
 		t.Errorf("risk policy update audit missing")
 	}
 
-	// PUT OBSERVE→PROTECT → 200 + 高风险审计（观测转实际处置，影响面扩大）
+	// 旧客户端 PUT 省略 challenge_threshold：保留已启用值；OBSERVE→PROTECT 仍记高风险审计。
 	resp = env.do(t, http.MethodPut, "/api/v1/security/risk-policy",
 		`{"enabled":true,"mode":"PROTECT","version":2,"block_threshold":75,"rate_limit_threshold":35,"rate_limit_rps":5,
 "signal_window_seconds":43200,"scores":{"URI_ENUMERATION":25,"SQLI":50},"risk_levels":{"medium":20,"high":40,"critical":70}}`, cookies, csrf)
 	result = s5OK(t, resp, "put risk policy to PROTECT")
 	policy = s5Obj(t, result, "policy")
-	if policy["mode"] != "PROTECT" || int(s5Num(t, policy, "version")) != 3 {
-		t.Errorf("policy after PROTECT update = mode %v version %v, want PROTECT/3", policy["mode"], policy["version"])
+	if policy["mode"] != "PROTECT" || int(s5Num(t, policy, "version")) != 3 || int(s5Num(t, policy, "challenge_threshold")) != 55 {
+		t.Errorf("policy after legacy PROTECT update = %+v, want PROTECT/version 3/challenge 55", policy)
 	}
 	if err := env.db.QueryRow(context.Background(), `SELECT count(*) FROM operation_audits
 WHERE module='security' AND object_type='risk_policy' AND action='update' AND risk_level='HIGH'`).Scan(&auditCount); err != nil {
@@ -213,10 +215,21 @@ WHERE module='security' AND object_type='risk_policy' AND action='update' AND ri
 	if auditCount < 1 {
 		t.Errorf("risk policy OBSERVE→PROTECT high-risk audit missing")
 	}
+
+	// 显式 0 关闭挑战，响应与数据库均不得吞掉该值。
+	resp = env.do(t, http.MethodPut, "/api/v1/security/risk-policy",
+		`{"enabled":true,"mode":"PROTECT","version":3,"block_threshold":75,"rate_limit_threshold":35,"challenge_threshold":0,"rate_limit_rps":5,
+"signal_window_seconds":43200,"scores":{"URI_ENUMERATION":25,"SQLI":50},"risk_levels":{"medium":20,"high":40,"critical":70}}`, cookies, csrf)
+	result = s5OK(t, resp, "disable risk challenge")
+	policy = s5Obj(t, result, "policy")
+	if int(s5Num(t, policy, "version")) != 4 || int(s5Num(t, policy, "challenge_threshold")) != 0 {
+		t.Errorf("policy after explicit zero = %+v, want version 4/challenge 0", policy)
+	}
 }
 
 // TestRiskPolicyEventCollection 风险处置事件经 guard 事件通道采集落库：
-// 两类型入库 + details 证据载荷 + action 映射；不错标 temporary_blocks、不进 CC 运行汇总。
+// 阻断/限速/挑战入库 + details 证据载荷 + action 映射；挑战不计 REJECT，
+// 不错标 temporary_blocks、不进 CC 运行汇总。
 func TestRiskPolicyEventCollection(t *testing.T) {
 	env := setupTestEnv(t)
 	ctx := context.Background()
@@ -230,6 +243,10 @@ func TestRiskPolicyEventCollection(t *testing.T) {
 		fmt.Sprintf(`{"request_id":"r-rp-1","occurred_at":%q,"gateway_node_id":"gw-rp-01","client_ip":"203.0.113.10","connection_ip":"10.0.0.2","domain":"shop.example.com","request_method":"GET","request_path":"/api/orders","event_type":"RISK_POLICY_BLOCK","action":"blocked","risk":{"identity_key":"ik-rp-1","score":85,"risk_level":"CRITICAL","threshold":80,"signals":[{"type":"URI_ENUMERATION","score":15},{"type":"SQLI","score":50}],"mode":"PROTECT","policy_version":3,"action_taken":"blocked","reason":"identity_risk_policy"},"response_status":403}`, ts),
 		// OBSERVE 模式限速（would_rate_limit → OBSERVE）
 		fmt.Sprintf(`{"request_id":"r-rp-2","occurred_at":%q,"gateway_node_id":"gw-rp-01","client_ip":"203.0.113.11","domain":"shop.example.com","request_method":"POST","request_path":"/api/login","event_type":"RISK_POLICY_RATE_LIMIT","action":"would_rate_limit","risk":{"identity_key":"ik-rp-2","score":45,"risk_level":"HIGH","threshold":40,"signals":[{"type":"AUTH_FAIL_PROBE","score":15}],"mode":"OBSERVE","policy_version":3,"action_taken":"would_rate_limit","reason":"identity_risk_policy"},"response_status":429}`, ts),
+		// PROTECT 身份挑战（challenged → CHALLENGE，不计 REJECT）
+		fmt.Sprintf(`{"request_id":"r-rp-3","occurred_at":%q,"gateway_node_id":"gw-rp-01","client_ip":"203.0.113.12","domain":"shop.example.com","request_method":"GET","request_path":"/api/orders","event_type":"RISK_POLICY_CHALLENGE","action":"challenged","risk":{"identity_key":"ik-rp-3","score":60,"risk_level":"HIGH","threshold":55,"signals":[],"mode":"PROTECT","policy_version":3,"action_taken":"challenged","reason":"identity_risk_policy"},"response_status":403}`, ts),
+		// OBSERVE 身份挑战（would_challenge → OBSERVE）
+		fmt.Sprintf(`{"request_id":"r-rp-4","occurred_at":%q,"gateway_node_id":"gw-rp-01","client_ip":"203.0.113.13","domain":"shop.example.com","request_method":"GET","request_path":"/api/orders","event_type":"RISK_POLICY_CHALLENGE","action":"would_challenge","risk":{"identity_key":"ik-rp-4","score":60,"risk_level":"HIGH","threshold":55,"signals":[],"mode":"OBSERVE","policy_version":3,"action_taken":"would_challenge","reason":"identity_risk_policy"},"response_status":200}`, ts),
 	}
 	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatalf("write log: %v", err)
@@ -242,8 +259,8 @@ func TestRiskPolicyEventCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectOnce: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("processed = %d, want 2", n)
+	if n != 4 {
+		t.Fatalf("processed = %d, want 4", n)
 	}
 
 	// RISK_POLICY_BLOCK：action=REJECT + details 证据载荷完整
@@ -277,6 +294,22 @@ FROM access_control_events WHERE request_id='r-rp-2'`).Scan(&action, &actionTake
 	}
 	if action != "OBSERVE" || actionTaken != "would_rate_limit" || mode != "OBSERVE" {
 		t.Errorf("rate limit event = action %s taken %s mode %s, want OBSERVE/would_rate_limit/OBSERVE", action, actionTaken, mode)
+	}
+
+	// RISK_POLICY_CHALLENGE：实际挑战为 CHALLENGE，观察挑战为 OBSERVE，均不映射 REJECT。
+	for _, tc := range []struct {
+		requestID, wantAction, wantTaken string
+	}{
+		{requestID: "r-rp-3", wantAction: "CHALLENGE", wantTaken: "challenged"},
+		{requestID: "r-rp-4", wantAction: "OBSERVE", wantTaken: "would_challenge"},
+	} {
+		if err := env.db.QueryRow(ctx, `SELECT action, details->>'action_taken'
+FROM access_control_events WHERE request_id=$1`, tc.requestID).Scan(&action, &actionTaken); err != nil {
+			t.Fatalf("query risk challenge event %s: %v", tc.requestID, err)
+		}
+		if action != tc.wantAction || actionTaken != tc.wantTaken {
+			t.Errorf("challenge event %s = action %s taken %s, want %s/%s", tc.requestID, action, actionTaken, tc.wantAction, tc.wantTaken)
+		}
 	}
 
 	// 不错标 temporary_blocks（风险处置不产 CC_AUTO 封禁记录）

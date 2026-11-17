@@ -266,8 +266,9 @@ export interface ApiObjectModel {
   updated_at: string
   /** NG-AZ-02 D5/D7 发布资格（管理写入走 patch；服务端恒返回，类型置可空兼容旧调用方） */
   publishable?: boolean
-  /** 首批仅 OWNER 词表；空=未声明 */
+  /** OWNER 或 ANY_OF；空=未声明。ANY_OF 时 required_relations 为 OWNER + SHARED_WITH */
   required_relation?: string
+  required_relations?: Array<'OWNER' | 'SHARED_WITH'>
   /** 排他所有权（VERIFIED_VIOLATION 语义前提） */
   owner_exclusive?: boolean
   /** 租约过期策略 strict|degraded（缺省 strict） */
@@ -285,7 +286,9 @@ export interface ApiObjectModel {
 /** 对象模型 PATCH 请求体（字段三分态：缺省=不变更；NG-AZ-04 §1.4：enforcement=PROTECT 必须携带 confirm_token，切回 OBSERVE 免 token） */
 export interface ApiObjectModelPatch {
   publishable?: boolean
-  required_relation?: string
+  required_relation?: 'OWNER' | 'ANY_OF'
+  /** 仅 ANY_OF 携带；本切片固定且按 OWNER、SHARED_WITH 顺序提交 */
+  required_relations?: Array<'OWNER' | 'SHARED_WITH'>
   owner_exclusive?: boolean
   on_lease_expired?: string
   enforcement?: 'OBSERVE' | 'PROTECT' | string

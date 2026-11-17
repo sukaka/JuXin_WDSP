@@ -80,7 +80,8 @@ func (h *OverrideHandler) Put(w http.ResponseWriter, r *http.Request) {
 		ApplicationID: &applicationID, Scope: ScopeApplication,
 		Enabled: req.Enabled, Mode: req.Mode, Version: req.Version,
 		BlockThreshold: req.BlockThreshold, RateLimitThreshold: req.RateLimitThreshold,
-		RateLimitRPS: req.RateLimitRPS, SignalWindowSeconds: req.SignalWindowSeconds,
+		ChallengeThreshold: req.challengeThreshold(before),
+		RateLimitRPS:       req.RateLimitRPS, SignalWindowSeconds: req.SignalWindowSeconds,
 		SharedDeviceAccountLimit: req.SharedDeviceAccountLimit,
 		Scores:                   req.Scores, RiskLevels: req.RiskLevels,
 	}

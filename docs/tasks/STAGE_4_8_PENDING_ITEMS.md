@@ -34,7 +34,7 @@
 | 条目 | 要求 | 状态 | 证据 |
 |------|------|------|------|
 | ~~§十一 事件→黑名单~~ | 从安全事件加入黑名单：自动填充 8 字段 + 管理员确认 5 项 | **已完成 2026-09-10** | `accessrules/prefill.go` 预填接口（8 字段+建议时长分档≤72h+共享出口/保护地址/已有规则确认项，无数据不编造）+ Create 支持 source_type=SECURITY_EVENT（白名单校验+事件存在性校验）+ 前端双入口与确认 Modal；实库集成测试 18 个用例通过 |
-| ~~§十七 发布后验证~~ | 发布后执行真实IP/黑白名单/CC 测试 → 标记生效 | **已完成 2026-09-11** | `gatewayconfig/publisher_smoke.go`：发布后经 `/_wdsp/bot/v1/publish-smoke` 404 墓碑路径三探针（REAL_IP/BLACKLIST/CC 行为验证），FAIL 走既有回滚路径，探针不可达降级 SKIPPED 如实记录；版本 validation_result 落 SMOKE_PASS/FAIL/SKIPPED；前端版本列表加"流量验证"列；实库集成通过。~~遗留：CC 精确计数探针~~ 已于 2026-09-11 第十波补齐：网关 `/_wdsp/debug/v1/cc-counter` 回显端点（仅回环/RFC1918/ULA、不回显键材料、自身不计数、结构不可反代；ratelimit.Peek 只读访问器）+ publisher_smoke 第四探针 CC_EXACT（合成来源打满阈值+回显验证递增+第 N+1 次断言 429，不可达/未采信如实 SKIP）+ 开关 system_settings `gateway_runtime.debug_cc_counter`（迁移 000157 缺省 true，可关） |
+| ~~§十七 发布后验证~~ | 发布后执行真实IP/黑白名单/CC 测试 → 标记生效 | **已完成 2026-09-11** | `gatewayconfig/publisher_smoke.go`：发布后经独立精确端点 `/_wdsp/internal/v1/publish-smoke` 执行 REAL_IP/BLACKLIST/CC 探针，每次发布使用独立 HMAC 绑定站点、发布 ID、nonce 与时效，独立于 Bot 配置且不进源站，FAIL 走既有回滚路径，探针不可达降级 SKIPPED 如实记录；版本 validation_result 落 SMOKE_PASS/FAIL/SKIPPED；前端版本列表加"流量验证"列；实库集成通过。~~遗留：CC 精确计数探针~~ 已于 2026-09-11 第十波补齐：网关 `/_wdsp/debug/v1/cc-counter` 回显端点（仅回环/RFC1918/ULA、不回显键材料、自身不计数、结构不可反代；ratelimit.Peek 只读访问器）+ publisher_smoke 第四探针 CC_EXACT（合成来源打满阈值+回显验证递增+第 N+1 次断言 429，不可达/未采信如实 SKIP）+ 开关 system_settings `gateway_runtime.debug_cc_counter`（迁移 000157 缺省 true，可关） |
 | ~~§6.5 日志字段~~ | `client_ip_source`/`trusted_proxy_used`/`forwarded_chain_summary` | **已完成 2026-09-10** | events.Event 与 accessLogRecord 三字段（omitempty+截断）+ 迁移 000144 加列 + server 解析/落库/读回同步，单测全绿。~~遗留：JWT_*/BOT_*~~ JWT/BOT 事件点三字段已于 2026-09-11 补齐（jwtEventBase + botchallenge CallContext 透传，各带单测） |
 | ~~§5.1 自定义 429 页面~~ | 429/阻断响应可配置、随发布下发 | **已完成 2026-09-11** | 迁移 000151 block_response 组 4 设置键 + 网关 `blockresponse.go`（x/net/html 白名单净化防 XSS）+ module.go writeTooMany 配置化（默认逐字节不变有单测锁定）+ 随发布热下发 + 系统设置页"阻断响应页面"页签；实库 TestStage5BlockResponseSettings 通过 |
 | ~~§七 保护地址自动维护~~ | 系统自动登记 | **已完成 2026-09-11** | `protectedaddresses/scheduler.go`：启动即刷 + 周期调度（PROTECTED_ADDRESS_REFRESH_INTERVAL，默认 1h，失败记日志不退出），挂接 cmd/api/main.go；手动端点保留；4 个单测全绿 |
@@ -109,7 +109,7 @@
 - 正式 P95/吞吐/RSS/长稳与 20 万关系集端到端指标仍缺
 - 真实跨进程发布/多节点编排/机器网络故障恢复未验收
 - AI 自动运营定时任务（api_ai_schedules 表与前端骨架已有，调度能力介于骨架与完整之间）
-- ~~身份手工封禁/解封为阶段3+ 范围~~ 已完成000214状态/发布/网关403/前端闭环；CHALLENGE 身份动作仍未做，实库与跨进程验收待环境
+- ~~身份手工封禁/解封与身份 CHALLENGE 为后续范围~~ 已完成000214状态/发布/网关403/前端闭环及000215挑战阈值/风险决策/Bot执行/事件闭环；实库与跨进程验收待环境
 - 请求 Schema 冻结模型的 E2E 覆盖不全（同 §62）
 
 ---

@@ -10,6 +10,7 @@ export interface PolicyFormValues {
   mode: string
   block_threshold: number
   rate_limit_threshold: number
+  challenge_threshold: number
   rate_limit_rps: number
   signal_window_seconds: number
   shared_device_account_limit?: number
@@ -23,6 +24,7 @@ export function policyToFormValues(policy: RiskPolicy): PolicyFormValues {
     mode: policy.mode,
     block_threshold: policy.block_threshold,
     rate_limit_threshold: policy.rate_limit_threshold,
+    challenge_threshold: policy.challenge_threshold ?? 0,
     rate_limit_rps: policy.rate_limit_rps,
     signal_window_seconds: policy.signal_window_seconds,
     shared_device_account_limit: policy.shared_device_account_limit ?? 0,
@@ -52,6 +54,7 @@ export function formValuesToBody(
     version,
     block_threshold: values.block_threshold,
     rate_limit_threshold: values.rate_limit_threshold,
+    challenge_threshold: values.challenge_threshold,
     rate_limit_rps: values.rate_limit_rps,
     signal_window_seconds: values.signal_window_seconds,
     scores,

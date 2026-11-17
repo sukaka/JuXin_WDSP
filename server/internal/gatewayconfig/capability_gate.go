@@ -21,6 +21,8 @@
 //	APIAuthzSchema 非空           → detectors.authzdecide("az/2")（NG-AZ-02 v2 快照消费语义）
 //	APIAuthz 模型/角色基线含任一 enforcement=PROTECT
 //	                             → detectors.authzdecide("az/3")（NG-AZ-03 实断消费语义；覆盖 az/2 需求）
+//	当前/PreviousValid APIAuthz 模型含任一 ANY_OF
+//	                             → detectors.authzdecide("az/4")（含 OBSERVE；覆盖 az/2/az/3 需求）
 //	APIStrongFlows 含任一 mode=PROTECT
 //	                             → detectors.flowguard("flow/1")（NG-FLOW-02 强流程实断消费语义）
 //	APIMCPBindings 含任一 mode=PROTECT
@@ -44,6 +46,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/capability"
 )
 
@@ -62,10 +65,11 @@ type CapabilityFacts struct {
 	// GRPCBindingProtect NG-GRPC G1 批次 B1：api_grpc_bindings 含任一 mode=PROTECT
 	// 绑定（gRPC 字段结构违规协议化执行（trailers-only grpc-status）消费需要 grpc/2——
 	// 旧节点（grpc/1=帧校验+描述符观测）会把违规实断成 HTTP 403 误形态，fail-closed）
-	GRPCBindingProtect  bool
-	AuthzSnapshotV2     bool // NG-AZ-02 D4-4：api_authz_schema 非空（v2 快照——水位/租约/冲突集消费需要 az/2）
-	AuthzEnforceProtect bool // NG-AZ-03 D6：api_authz_models/api_authz_role_baselines 含任一 enforcement=PROTECT（实断消费需要 az/3）
-	StrongFlowProtect   bool // NG-FLOW-02 D6/D12：api_strong_flows 含任一 mode=PROTECT 定义（强流程实断消费需要 flow/1）
+	GRPCBindingProtect    bool
+	AuthzSnapshotV2       bool // NG-AZ-02 D4-4：api_authz_schema 非空（v2 快照——水位/租约/冲突集消费需要 az/2）
+	AuthzEnforceProtect   bool // NG-AZ-03 D6：api_authz_models/api_authz_role_baselines 含任一 enforcement=PROTECT（实断消费需要 az/3）
+	AuthzComplexRelations bool // 当前或 PreviousValid 含 ANY_OF（OWNER/SHARED_WITH 消费需要 az/4，包括 OBSERVE）
+	StrongFlowProtect     bool // NG-FLOW-02 D6/D12：api_strong_flows 含任一 mode=PROTECT 定义（强流程实断消费需要 flow/1）
 	// MCPToolCallProtect NG-MCP G1 批次 B1：api_mcp_bindings 含任一 mode=PROTECT 绑定
 	//（MCP 工具调用 ACL 实断消费需要 mcp/2 + protocols.mcp=acl_v1——不认识 MCP 目录
 	// 段的旧节点会把 PROTECT 绑定漏放行，fail-closed；全 OBSERVE/空绑定不产生需求）
@@ -76,10 +80,13 @@ type CapabilityFacts struct {
 	// 机器身份是检测器能力不是协议层级（capability/types.go:22-27 现实约束）；
 	// 全 OBSERVE/空绑定不产生需求，滚动升级可行）
 	MachineIDProtect bool
+	// RiskChallenge 表示发布范围内至少一个最终生效的已启用风险策略配置了 CHALLENGE 阈值。
+	RiskChallenge bool
 }
 
-// capabilityFactsFromGuard 从发布负载提取能力事实（nil guardCfg = 无 API 特性段）。
-func capabilityFactsFromGuard(guardCfg *GuardConfig) CapabilityFacts {
+// capabilityFactsFromGuard 从发布负载提取能力事实（nil guardCfg = 无特性需求）。
+// targetAppIDs 为空表示全局发布，非空表示仅按这些应用的最终生效策略计算风险挑战需求。
+func capabilityFactsFromGuard(guardCfg *GuardConfig, targetAppIDs ...uuid.UUID) CapabilityFacts {
 	if guardCfg == nil {
 		return CapabilityFacts{}
 	}
@@ -97,12 +104,22 @@ func capabilityFactsFromGuard(guardCfg *GuardConfig) CapabilityFacts {
 			break
 		}
 	}
-	// NG-AZ-03 D6：门评估输入从发布负载 enforcement 字段聚合（编译期已知，无运行时探测）——
-	// 对象模型与角色基线任一 PROTECT 行即构成「含实断配置的快照」
+	// 当前与 PreviousValid 都可能被网关消费；任一 ANY_OF 即需要 az/4，
+	// 与 enforcement 无关。PROTECT 仍按既有规则聚合 az/3，最终由 az/4 覆盖。
 	for _, m := range guardCfg.APIAuthzModels {
+		if strings.EqualFold(strings.TrimSpace(m.RequiredRelation), "ANY_OF") {
+			facts.AuthzComplexRelations = true
+		}
 		if m.Enforcement == "PROTECT" {
 			facts.AuthzEnforceProtect = true
-			break
+		}
+	}
+	if guardCfg.APIAuthzPreviousValid != nil {
+		for _, m := range guardCfg.APIAuthzPreviousValid.Models {
+			if strings.EqualFold(strings.TrimSpace(m.RequiredRelation), "ANY_OF") {
+				facts.AuthzComplexRelations = true
+				break
+			}
 		}
 	}
 	if !facts.AuthzEnforceProtect {
@@ -137,7 +154,39 @@ func capabilityFactsFromGuard(guardCfg *GuardConfig) CapabilityFacts {
 			break
 		}
 	}
+	facts.RiskChallenge = riskChallengeRequired(guardCfg, targetAppIDs)
 	return facts
+}
+
+func riskChallengeRequired(guardCfg *GuardConfig, targetAppIDs []uuid.UUID) bool {
+	if len(targetAppIDs) == 0 {
+		if riskPolicyChallengeEnabled(guardCfg.RiskPolicy) {
+			return true
+		}
+		for i := range guardCfg.RiskPolicyOverrides {
+			if riskPolicyChallengeEnabled(&guardCfg.RiskPolicyOverrides[i].Policy) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, appID := range targetAppIDs {
+		policy := guardCfg.RiskPolicy
+		for i := range guardCfg.RiskPolicyOverrides {
+			override := &guardCfg.RiskPolicyOverrides[i]
+			if override.ApplicationID == appID.String() {
+				policy = &override.Policy
+			}
+		}
+		if riskPolicyChallengeEnabled(policy) {
+			return true
+		}
+	}
+	return false
+}
+
+func riskPolicyChallengeEnabled(policy *GuardRiskPolicy) bool {
+	return policy != nil && policy.Enabled && policy.ChallengeThreshold > 0
 }
 
 // RequiredCapabilities 从负载事实推导需求清单（同构子集；空需求 = 免门禁）。
@@ -145,6 +194,7 @@ func RequiredCapabilities(f CapabilityFacts) capability.Manifest {
 	required := capability.Manifest{ContractVersion: capability.ContractVersion}
 	protocols := map[string]string{}
 	var detectors []capability.DetectorCap
+	var actions []string
 	if f.GRPCDescriptorSets > 0 {
 		protocols["grpc"] = "unary_g1"
 	}
@@ -166,14 +216,13 @@ func RequiredCapabilities(f CapabilityFacts) capability.Manifest {
 	if f.GRPCMaxFrameBytes > 0 {
 		limits["max_grpc_frame_bytes"] = int64(f.GRPCMaxFrameBytes)
 	}
-	// NG-AZ-03 D6：含任一 enforcement=PROTECT 端点的快照需要 az/3 实断消费语义——
-	// az/1/az/2 节点 fail-closed 拒绝（不得在看不见资格的节点上实断或漏断）；
-	// enforcement 全 OBSERVE 不产生 az/3 需求（az/2 节点照常，滚动升级可行）
-	if f.AuthzEnforceProtect {
+	// ANY_OF 是当前/PreviousValid 的关系集合消费语义，OBSERVE 同样要求 az/4；
+	// 纯旧 OWNER 模型继续维持 az/2（v2）或 az/3（PROTECT）。
+	if f.AuthzComplexRelations {
+		detectors = append(detectors, capability.DetectorCap{Name: "authzdecide", Version: "az/4"})
+	} else if f.AuthzEnforceProtect {
 		detectors = append(detectors, capability.DetectorCap{Name: "authzdecide", Version: "az/3"})
 	} else if f.AuthzSnapshotV2 {
-		// NG-AZ-02 D4-4：v2 授权快照（水位/租约/冲突集）需要 az/2 消费语义——
-		// az/1 旧节点被能力门 fail-closed 拒绝（不得在看不见水位的情况下静默应用）
 		detectors = append(detectors, capability.DetectorCap{Name: "authzdecide", Version: "az/2"})
 	}
 	// NG-FLOW-02 D12：含任一 mode=PROTECT 强流程定义的快照需要 flow/1 实断消费语义——
@@ -198,10 +247,14 @@ func RequiredCapabilities(f CapabilityFacts) capability.Manifest {
 	if f.MachineIDProtect {
 		detectors = append(detectors, capability.DetectorCap{Name: "machineid", Version: "mid/1"})
 	}
+	if f.RiskChallenge {
+		actions = append(actions, "risk_challenge")
+	}
 	if len(protocols) > 0 {
 		required.Protocols = protocols
 	}
 	required.Detectors = detectors
+	required.Actions = actions
 	if len(limits) > 0 {
 		required.Limits = limits
 	}
@@ -260,10 +313,10 @@ func formatMissing(missing []capability.Missing) string {
 }
 
 // evaluateCapabilityGate 节点能力发布门评估（executePublish 在回归门禁之后、
-// 发往节点 /load 之前调用）。返回 (是否继续发布, 失败码, 失败消息)；
-// 空需求/全部满足时放行。
-func (p *Publisher) evaluateCapabilityGate(ctx context.Context, guardCfg *GuardConfig) (bool, string, string) {
-	required := RequiredCapabilities(capabilityFactsFromGuard(guardCfg))
+// 发往节点 /load 之前调用）。targetAppIDs 为空表示全局发布，非空仅评估目标应用。
+// 返回 (是否继续发布, 失败码, 失败消息)；空需求/全部满足时放行。
+func (p *Publisher) evaluateCapabilityGate(ctx context.Context, guardCfg *GuardConfig, targetAppIDs ...uuid.UUID) (bool, string, string) {
+	required := RequiredCapabilities(capabilityFactsFromGuard(guardCfg, targetAppIDs...))
 	if requiredEmpty(required) {
 		return true, "", "" // 空需求免门禁——存量发布零变化
 	}

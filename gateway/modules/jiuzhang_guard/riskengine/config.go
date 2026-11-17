@@ -5,7 +5,8 @@
 //     请求链路无评估、无事件、无存储；
 //   - 任何配置缺失/非法 fail-open 按 OBSERVE：Compile 逐项消毒（默认值兜底 + zap Warn），
 //     mode 非法按 OBSERVE——风险策略配置问题永不阻断整体配置加载，也绝不据非法配置实断；
-//   - OBSERVE 永不实断（只记录"假设会处置"事件）；PROTECT 按阈值实断 403/429，
+//   - OBSERVE 永不实断（只记录"假设会处置"事件）；PROTECT 的 BLOCK/RATE_LIMIT
+//     按阈值实断 403/429，CHALLENGE 由 Guard 请求上下文交给 Bot 实际执行；
 //     事件 reason 固定 identity_risk_policy，不伪装成规则阻断（设计 #15.2 红线）；
 //   - 请求路径禁止 DB/复杂计算：累加器为内存滑窗 + 可选 Valkey（单 Lua 原子往返），
 //     Valkey 故障 fail-open 回退进程内存（节流 Warn），评估/记账失败仅告警——请求永不因本包失败而失败；
@@ -25,16 +26,18 @@ const (
 	ModeProtect = "PROTECT"
 )
 
-// 执行动作（冻结契约：仅这四类，不做 CHALLENGE/TEMP_BLOCK 新类别）。
+// 执行动作（风险评分决策词表；CHALLENGE 由 Bot 统一步骤实际执行）。
 const (
 	ActionPass      = "PASS"
 	ActionRateLimit = "RATE_LIMIT"
+	ActionChallenge = "CHALLENGE"
 	ActionBlock     = "BLOCK"
 )
 
 // 引擎默认值（发布通道未显式下发或值非法时兜底；与冻结契约示例一致）。
 const (
 	DefaultBlockThreshold      = 80
+	DefaultChallengeThreshold  = 0 // 0 = 新挑战档默认关闭
 	DefaultRateLimitThreshold  = 40
 	DefaultRateLimitRPS        = 10
 	DefaultSignalWindowSeconds = 86400 // 24h
@@ -61,6 +64,7 @@ type Params struct {
 	Mode                string `json:"mode,omitempty"`                 // OBSERVE（默认）| PROTECT
 	Version             int    `json:"version,omitempty"`              // 策略版本，原样写入事件 policy_version
 	BlockThreshold      int    `json:"block_threshold,omitempty"`      // 默认 80
+	ChallengeThreshold  int    `json:"challenge_threshold,omitempty"`  // 默认 0 = 关闭；须位于限速与阻断阈值之间
 	RateLimitThreshold  int    `json:"rate_limit_threshold,omitempty"` // 默认 40
 	RateLimitRPS        int    `json:"rate_limit_rps,omitempty"`       // 默认 10
 	SignalWindowSeconds int    `json:"signal_window_seconds,omitempty"`
@@ -82,6 +86,7 @@ type Config struct {
 	Mode                string // OBSERVE | PROTECT（非法值已按 OBSERVE 消毒）
 	Version             int
 	BlockThreshold      int
+	ChallengeThreshold  int // 0 = 关闭；非法或倒置时仅关闭本档
 	RateLimitThreshold  int
 	RateLimitRPS        int
 	SignalWindowSeconds int
@@ -108,6 +113,7 @@ func Compile(p *Params, logger *zap.Logger) (*Config, error) {
 		Mode:                ModeObserve,
 		Version:             p.Version,
 		BlockThreshold:      DefaultBlockThreshold,
+		ChallengeThreshold:  DefaultChallengeThreshold,
 		RateLimitThreshold:  DefaultRateLimitThreshold,
 		RateLimitRPS:        DefaultRateLimitRPS,
 		SignalWindowSeconds: DefaultSignalWindowSeconds,
@@ -140,6 +146,21 @@ func Compile(p *Params, logger *zap.Logger) (*Config, error) {
 	if c.RateLimitThreshold >= c.BlockThreshold {
 		warn("rate_limit_threshold >= block_threshold，RATE_LIMIT 档为空（BLOCK 优先评估）",
 			zap.Int("rate_limit_threshold", c.RateLimitThreshold), zap.Int("block_threshold", c.BlockThreshold))
+	}
+	switch {
+	case p.ChallengeThreshold == 0:
+	case p.ChallengeThreshold > 0 && p.ChallengeThreshold <= maxScore:
+		c.ChallengeThreshold = p.ChallengeThreshold
+	default:
+		warn("challenge_threshold 非法，仅关闭 CHALLENGE 档", zap.Int("challenge_threshold", p.ChallengeThreshold))
+	}
+	if c.ChallengeThreshold > 0 &&
+		(c.ChallengeThreshold <= c.RateLimitThreshold || c.ChallengeThreshold >= c.BlockThreshold) {
+		warn("challenge_threshold 未严格位于 rate_limit_threshold 与 block_threshold 之间，仅关闭 CHALLENGE 档",
+			zap.Int("rate_limit_threshold", c.RateLimitThreshold),
+			zap.Int("challenge_threshold", c.ChallengeThreshold),
+			zap.Int("block_threshold", c.BlockThreshold))
+		c.ChallengeThreshold = DefaultChallengeThreshold
 	}
 	if p.RateLimitRPS > 0 {
 		c.RateLimitRPS = p.RateLimitRPS

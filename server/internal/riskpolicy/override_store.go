@@ -14,7 +14,7 @@ import (
 var ErrApplicationRequired = errors.New("应用不能为空")
 
 const applicationOverrideColumns = `id, application_id, enabled, mode, version,
-	block_threshold, rate_limit_threshold, rate_limit_rps, signal_window_seconds,
+	block_threshold, rate_limit_threshold, challenge_threshold, rate_limit_rps, signal_window_seconds,
 	shared_device_account_limit, scores, risk_levels, updated_by, created_at, updated_at`
 
 type applicationOverrideScanner interface{ Scan(...any) error }
@@ -25,7 +25,7 @@ func scanApplicationOverride(row applicationOverrideScanner) (*Policy, error) {
 	var scores, riskLevels []byte
 	var updatedBy *string
 	if err := row.Scan(&p.ID, &applicationID, &p.Enabled, &p.Mode, &p.Version,
-		&p.BlockThreshold, &p.RateLimitThreshold, &p.RateLimitRPS, &p.SignalWindowSeconds,
+		&p.BlockThreshold, &p.RateLimitThreshold, &p.ChallengeThreshold, &p.RateLimitRPS, &p.SignalWindowSeconds,
 		&p.SharedDeviceAccountLimit, &scores, &riskLevels, &updatedBy, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -70,19 +70,19 @@ func (s *Store) PutApplicationOverride(ctx context.Context, p *Policy, expectedV
 		return nil, err
 	}
 	row := s.db.QueryRow(ctx, `INSERT INTO security_risk_policy_overrides
-		(id, application_id, enabled, mode, block_threshold, rate_limit_threshold,
+		(id, application_id, enabled, mode, block_threshold, rate_limit_threshold, challenge_threshold,
 		 rate_limit_rps, signal_window_seconds, shared_device_account_limit, scores, risk_levels, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		ON CONFLICT (application_id) DO UPDATE SET
 		 enabled=EXCLUDED.enabled, mode=EXCLUDED.mode, block_threshold=EXCLUDED.block_threshold,
-		 rate_limit_threshold=EXCLUDED.rate_limit_threshold, rate_limit_rps=EXCLUDED.rate_limit_rps,
-		 signal_window_seconds=EXCLUDED.signal_window_seconds,
+		 rate_limit_threshold=EXCLUDED.rate_limit_threshold, challenge_threshold=EXCLUDED.challenge_threshold,
+		 rate_limit_rps=EXCLUDED.rate_limit_rps, signal_window_seconds=EXCLUDED.signal_window_seconds,
 		 shared_device_account_limit=EXCLUDED.shared_device_account_limit, scores=EXCLUDED.scores,
 		 risk_levels=EXCLUDED.risk_levels, updated_by=EXCLUDED.updated_by, updated_at=now(),
 		 version=security_risk_policy_overrides.version+1
-		WHERE security_risk_policy_overrides.version=$13
+		WHERE security_risk_policy_overrides.version=$14
 		RETURNING `+applicationOverrideColumns,
-		p.ID, *p.ApplicationID, p.Enabled, p.Mode, p.BlockThreshold, p.RateLimitThreshold,
+		p.ID, *p.ApplicationID, p.Enabled, p.Mode, p.BlockThreshold, p.RateLimitThreshold, p.ChallengeThreshold,
 		p.RateLimitRPS, p.SignalWindowSeconds, p.SharedDeviceAccountLimit, scores, riskLevels, updatedBy, expectedVersion)
 	updated, err := scanApplicationOverride(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -130,7 +130,8 @@ func guardRiskPolicy(p *Policy) gatewayconfig.GuardRiskPolicy {
 	return gatewayconfig.GuardRiskPolicy{
 		Enabled: p.Enabled, Mode: p.Mode, Version: p.Version,
 		BlockThreshold: p.BlockThreshold, RateLimitThreshold: p.RateLimitThreshold,
-		RateLimitRPS: p.RateLimitRPS, SignalWindowSeconds: p.SignalWindowSeconds,
+		ChallengeThreshold: p.ChallengeThreshold,
+		RateLimitRPS:       p.RateLimitRPS, SignalWindowSeconds: p.SignalWindowSeconds,
 		Scores: nonNilScores(p.Scores), RiskLevels: nonNilScores(p.RiskLevels),
 	}
 }

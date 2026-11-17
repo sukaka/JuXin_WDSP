@@ -1,8 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { App } from 'antd'
 import ApiAccessProfilesPage from '../ApiAccessProfilesPage'
+import { useAuthStore } from '../../../stores/auth'
+import type { CurrentUser } from '../../../types'
 
 vi.mock('../../../api/apiSecurity', () => ({
   apiBehaviorProfilesApi: {
@@ -10,10 +12,23 @@ vi.mock('../../../api/apiSecurity', () => ({
   },
   apiObjectModelsApi: {
     list: vi.fn(),
+    patch: vi.fn(),
   },
 }))
 
 import { apiBehaviorProfilesApi, apiObjectModelsApi } from '../../../api/apiSecurity'
+
+function makeUser(permissions: string[]): CurrentUser {
+  return {
+    id: 'u1',
+    username: 'sec',
+    display_name: '安全管理员',
+    status: 'ACTIVE',
+    roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+    permissions,
+    must_change_password: false,
+  }
+}
 
 const behaviorRow = {
   id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -54,8 +69,11 @@ describe('ApiAccessProfilesPage', () => {
   beforeEach(() => {
     vi.mocked(apiBehaviorProfilesApi.list).mockReset()
     vi.mocked(apiObjectModelsApi.list).mockReset()
+    vi.mocked(apiObjectModelsApi.patch).mockReset()
     vi.mocked(apiBehaviorProfilesApi.list).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
     vi.mocked(apiObjectModelsApi.list).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
+    vi.mocked(apiObjectModelsApi.patch).mockResolvedValue(objectRow)
+    useAuthStore.setState({ user: makeUser(['api_runtime.read']), csrfToken: null, initialized: true })
   })
 
   it('默认渲染环境维度 Tab：行为画像列表', async () => {
@@ -129,5 +147,85 @@ describe('ApiAccessProfilesPage', () => {
     })
     expect(screen.getByText('cafebabe')).toBeInTheDocument()
     expect(screen.getByText('脱敏说明')).toBeInTheDocument()
+  })
+
+  async function openObjectModelDetail() {
+    wrap(<ApiAccessProfilesPage />)
+    fireEvent.click(screen.getByText('对象维度 · 对象模型'))
+    fireEvent.click(await screen.findByText('path:2'))
+    expect(await screen.findByText('对象模型详情')).toBeInTheDocument()
+  }
+
+  it('旧 OWNER 对象模型可展示与编辑，PATCH 不携带 required_relations', async () => {
+    const ownerRow = { ...objectRow, required_relation: 'OWNER' }
+    useAuthStore.setState({ user: makeUser(['api_runtime.read', 'api_authorization.manage']), csrfToken: null, initialized: true })
+    vi.mocked(apiObjectModelsApi.list).mockResolvedValue({ items: [ownerRow], total: 1, page: 1, page_size: 20 })
+    vi.mocked(apiObjectModelsApi.patch).mockResolvedValue(ownerRow)
+    await openObjectModelDetail()
+    expect(screen.getAllByText('所有者（OWNER）').length).toBeGreaterThanOrEqual(2)
+    fireEvent.click(screen.getByRole('button', { name: '编辑要求关系' }))
+    const dialog = (await screen.findByText('编辑对象要求关系')).closest('[role="dialog"]') as HTMLElement
+    expect(within(dialog).getByText(/不会提交 required_relations 字段/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存关系配置' }))
+    await waitFor(() => expect(apiObjectModelsApi.patch).toHaveBeenCalledWith(objectRow.id, { required_relation: 'OWNER' }))
+    expect(await screen.findByText('对象要求关系已更新')).toBeInTheDocument()
+  })
+
+  it('ANY_OF 编辑固定为 OWNER + SHARED_WITH，并按规范顺序提交', async () => {
+    const ownerRow = { ...objectRow, required_relation: 'OWNER' }
+    const anyOfRow = { ...objectRow, required_relation: 'ANY_OF', required_relations: ['OWNER', 'SHARED_WITH'] as Array<'OWNER' | 'SHARED_WITH'> }
+    useAuthStore.setState({ user: makeUser(['api_runtime.read', 'api_authorization.manage']), csrfToken: null, initialized: true })
+    vi.mocked(apiObjectModelsApi.list).mockResolvedValue({ items: [ownerRow], total: 1, page: 1, page_size: 20 })
+    vi.mocked(apiObjectModelsApi.patch).mockResolvedValue(anyOfRow)
+    await openObjectModelDetail()
+    fireEvent.click(screen.getByRole('button', { name: '编辑要求关系' }))
+    const dialog = (await screen.findByText('编辑对象要求关系')).closest('[role="dialog"]') as HTMLElement
+    fireEvent.mouseDown(within(dialog).getByRole('combobox'))
+    fireEvent.click(await screen.findByText('任一关系（ANY_OF）'))
+    expect(within(dialog).getByText('共享接收人（SHARED_WITH）')).toBeInTheDocument()
+    expect(within(dialog).getByText(/本切片固定为 OWNER \+ SHARED_WITH/)).toBeInTheDocument()
+    expect(within(dialog).queryByText(/DELEGATED_TO/)).not.toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存关系配置' }))
+    await waitFor(() => expect(apiObjectModelsApi.patch).toHaveBeenCalledWith(objectRow.id, {
+      required_relation: 'ANY_OF',
+      required_relations: ['OWNER', 'SHARED_WITH'],
+    }))
+  })
+
+  it('既有 ANY_OF 展示真实关系集合，保存时将逆序输入规范化', async () => {
+    const reversedAnyOfRow = { ...objectRow, required_relation: 'ANY_OF', required_relations: ['SHARED_WITH', 'OWNER'] as Array<'OWNER' | 'SHARED_WITH'> }
+    useAuthStore.setState({ user: makeUser(['api_runtime.read', 'api_authorization.manage']), csrfToken: null, initialized: true })
+    vi.mocked(apiObjectModelsApi.list).mockResolvedValue({ items: [reversedAnyOfRow], total: 1, page: 1, page_size: 20 })
+    vi.mocked(apiObjectModelsApi.patch).mockResolvedValue({ ...reversedAnyOfRow, required_relations: ['OWNER', 'SHARED_WITH'] })
+    await openObjectModelDetail()
+    expect(screen.getAllByText('任一关系（ANY_OF）').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('任一满足的关系')).toBeInTheDocument()
+    expect(screen.getByText('共享接收人（SHARED_WITH）')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '编辑要求关系' }))
+    const dialog = (await screen.findByText('编辑对象要求关系')).closest('[role="dialog"]') as HTMLElement
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存关系配置' }))
+    await waitFor(() => expect(apiObjectModelsApi.patch).toHaveBeenCalledWith(objectRow.id, {
+      required_relation: 'ANY_OF',
+      required_relations: ['OWNER', 'SHARED_WITH'],
+    }))
+  })
+
+  it('无 api_authorization.manage 权限时不展示要求关系编辑入口', async () => {
+    const anyOfRow = { ...objectRow, required_relation: 'ANY_OF', required_relations: ['OWNER', 'SHARED_WITH'] as Array<'OWNER' | 'SHARED_WITH'> }
+    vi.mocked(apiObjectModelsApi.list).mockResolvedValue({ items: [anyOfRow], total: 1, page: 1, page_size: 20 })
+    await openObjectModelDetail()
+    expect(screen.getByText('任一满足的关系')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '编辑要求关系' })).not.toBeInTheDocument()
+    expect(apiObjectModelsApi.patch).not.toHaveBeenCalled()
+  })
+
+  it('委托等本切片不支持的关系不提供编辑入口', async () => {
+    const delegatedRow = { ...objectRow, required_relation: 'DELEGATED_TO' }
+    useAuthStore.setState({ user: makeUser(['api_runtime.read', 'api_authorization.manage']), csrfToken: null, initialized: true })
+    vi.mocked(apiObjectModelsApi.list).mockResolvedValue({ items: [delegatedRow], total: 1, page: 1, page_size: 20 })
+    await openObjectModelDetail()
+    expect(screen.getByText(/当前配置不属于本切片支持的 OWNER 或 ANY_OF/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '编辑要求关系' })).not.toBeInTheDocument()
+    expect(apiObjectModelsApi.patch).not.toHaveBeenCalled()
   })
 })

@@ -68,6 +68,7 @@ check_unit() {
   local props
   props="$(systemctl show "$UNIT_NAME" \
     -p Type -p NotifyAccess -p User -p Group -p CapabilityBoundingSet \
+    -p AmbientCapabilities -p MainPID \
     -p ProtectSystem -p NoNewPrivileges -p ActiveState -p SubState 2>/dev/null)"
   prop() { printf '%s\n' "$props" | awk -F= -v k="$1" '$1==k{print $2}'; }
 
@@ -93,6 +94,20 @@ check_unit() {
     ok "CapabilityBoundingSet 仅 CAP_NET_BIND_SERVICE"
   else
     bad "CapabilityBoundingSet=${caps:-<空>}（期望仅 CAP_NET_BIND_SERVICE）"
+  fi
+  [[ "$(prop AmbientCapabilities)" == "CAP_NET_BIND_SERVICE" ]] && \
+    ok "AmbientCapabilities 含 CAP_NET_BIND_SERVICE" || bad "AmbientCapabilities 未包含 CAP_NET_BIND_SERVICE"
+  local main_pid cap_eff
+  main_pid="$(prop MainPID)"
+  if [[ "$main_pid" =~ ^[0-9]+$ ]] && (( main_pid > 0 )) && [[ -r "/proc/$main_pid/status" ]]; then
+    cap_eff="$(awk '/^CapEff:/ {print $2}' "/proc/$main_pid/status")"
+    if [[ "$cap_eff" =~ ^[0-9A-Fa-f]+$ ]] && (( 16#$cap_eff == 16#0400 )); then
+      ok "运行进程 CapEff=0x400（仅 CAP_NET_BIND_SERVICE）"
+    else
+      bad "运行进程 CapEff=${cap_eff:-<空>}，期望 0x400（仅 CAP_NET_BIND_SERVICE）"
+    fi
+  else
+    bad "无法读取 MainPID=${main_pid:-<空>} 的 CapEff"
   fi
   [[ "$(prop ProtectSystem)" == "strict" ]] && ok "ProtectSystem=strict" || bad "ProtectSystem=$(prop ProtectSystem)（期望 strict）"
   [[ "$(prop NoNewPrivileges)" == "yes" ]] && ok "NoNewPrivileges=yes" || bad "NoNewPrivileges=$(prop NoNewPrivileges)（期望 yes）"

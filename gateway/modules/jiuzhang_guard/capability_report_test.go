@@ -156,3 +156,11 @@ func TestCapabilityProvisionEndToEnd(t *testing.T) {
 		t.Fatalf("端到端清单契约校验失败: %s", msg)
 	}
 }
+
+func TestCapabilityManifestRiskChallenge(t *testing.T) {
+	m := buildCapabilityManifest(capabilityInputs{NodeID: "gw-risk-challenge"}, time.Now())
+	required := capability.Manifest{ContractVersion: capability.ContractVersion, Actions: []string{"risk_challenge"}}
+	if missing := capability.CheckRequirements(required, m); len(missing) != 0 {
+		t.Fatalf("actions.risk_challenge must be self-reported: %+v", missing)
+	}
+}

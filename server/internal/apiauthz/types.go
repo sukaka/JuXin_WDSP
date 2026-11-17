@@ -32,12 +32,14 @@ const (
 )
 
 const (
-	CandidateSourceObserved     = "OBSERVED_ACCESS"
-	CandidateStatusPending      = "PENDING"
-	CandidateStatusRejected     = "REJECTED"
-	CandidateStatusFrozen       = "FROZEN"
-	CandidateStatusConfirmed    = "CONFIRMED"
-	RelationOwner               = "OWNER"
+	CandidateSourceObserved  = "OBSERVED_ACCESS"
+	CandidateStatusPending   = "PENDING"
+	CandidateStatusRejected  = "REJECTED"
+	CandidateStatusFrozen    = "FROZEN"
+	CandidateStatusConfirmed = "CONFIRMED"
+	RelationOwner            = "OWNER"
+	// RelationSharedWith 表示 object_ref 指向的对象共享给 principal_id 接收人。
+	RelationSharedWith          = "SHARED_WITH"
 	RelationStatusConfirmed     = "CONFIRMED"
 	RelationStatusRevoked       = "REVOKED"
 	RelationStatusExpired       = "EXPIRED"
@@ -191,11 +193,14 @@ func validateObjectRelation(r *ObjectRelation) error {
 	if strings.TrimSpace(r.PrincipalID) == "" || len(r.PrincipalID) > maxIdentity {
 		return errors.New("principal_id 必填且过长")
 	}
-	if r.Relation != RelationOwner {
-		return errors.New("首期仅允许 OWNER 关系")
+	if r.Relation != RelationOwner && r.Relation != RelationSharedWith {
+		return errors.New("仅允许 OWNER 或 SHARED_WITH 关系")
 	}
 	if r.Source != RelationSourceManual && r.Source != RelationSourceImport && r.Source != RelationSourceCreateBinding {
 		return errors.New("无效的 source")
+	}
+	if r.Relation == RelationSharedWith && r.Source != RelationSourceManual {
+		return errors.New("SHARED_WITH 仅允许人工创建，候选确认与权威导入不支持")
 	}
 	if strings.TrimSpace(r.Reason) == "" {
 		return errors.New("reason 必填")

@@ -22,24 +22,28 @@ type ObjectIdentifier struct {
 }
 
 // ObjectModel is the deliberately narrow BOLA model accepted by the gateway.
-// A model must be OWNER-only, publishable and unique before it can authorize.
+// A model must be publishable and unique and declare either legacy OWNER-only
+// authorization or a validated ANY_OF relation set before it can authorize.
 type ObjectModel struct {
-	ApplicationID          string             `json:"application_id,omitempty"`
-	EndpointKey            string             `json:"endpoint_key"`
-	Endpoint               string             `json:"endpoint,omitempty"`
-	Method                 string             `json:"method,omitempty"`
-	PathTemplate           string             `json:"path_template,omitempty"`
-	ObjectType             string             `json:"object_type"`
-	Identifiers            []ObjectIdentifier `json:"identifiers"`
-	RequiredRelation       string             `json:"required_relation"`
-	OwnerExclusive         bool               `json:"owner_exclusive"`
-	Publishable            bool               `json:"publishable"`
-	UniqueEndpointTemplate bool               `json:"unique_endpoint_template"`
-	TenantID               string             `json:"tenant_id,omitempty"`
-	PolicyVersion          string             `json:"policy_version,omitempty"`
-	ModelVersion           string             `json:"model_version,omitempty"`
-	Stale                  bool               `json:"stale,omitempty"`
-	SnapshotExpiresAt      *time.Time         `json:"snapshot_expires_at,omitempty"`
+	ApplicationID    string             `json:"application_id,omitempty"`
+	EndpointKey      string             `json:"endpoint_key"`
+	Endpoint         string             `json:"endpoint,omitempty"`
+	Method           string             `json:"method,omitempty"`
+	PathTemplate     string             `json:"path_template,omitempty"`
+	ObjectType       string             `json:"object_type"`
+	Identifiers      []ObjectIdentifier `json:"identifiers"`
+	RequiredRelation string             `json:"required_relation"`
+	// RequiredRelations is used only by ANY_OF. The canonical runtime order is
+	// OWNER, SHARED_WITH; legacy OWNER models omit this field.
+	RequiredRelations      []string   `json:"required_relations,omitempty"`
+	OwnerExclusive         bool       `json:"owner_exclusive"`
+	Publishable            bool       `json:"publishable"`
+	UniqueEndpointTemplate bool       `json:"unique_endpoint_template"`
+	TenantID               string     `json:"tenant_id,omitempty"`
+	PolicyVersion          string     `json:"policy_version,omitempty"`
+	ModelVersion           string     `json:"model_version,omitempty"`
+	Stale                  bool       `json:"stale,omitempty"`
+	SnapshotExpiresAt      *time.Time `json:"snapshot_expires_at,omitempty"`
 	// OnLeaseExpired per-endpoint 租约过期策略（NG-AZ-02 D5；
 	// "strict"（缺省，过期 UNKNOWN 不做授权性放行）| "degraded"（评估继续强制 OBSERVE 标记））
 	OnLeaseExpired string `json:"on_lease_expired,omitempty"`
@@ -152,6 +156,49 @@ func BuildAuthorizationRelationIndex(relations []ObjectRelation) map[string][]Ob
 	return index
 }
 
+func cloneAuthorizationSlice[T any](values []T) []T {
+	if values == nil {
+		return nil
+	}
+	out := make([]T, len(values))
+	copy(out, values)
+	return out
+}
+
+func cloneAuthorizationModels(models []ObjectModel) []ObjectModel {
+	out := cloneAuthorizationSlice(models)
+	for i := range out {
+		out[i].Identifiers = cloneAuthorizationSlice(models[i].Identifiers)
+		out[i].RequiredRelations = cloneAuthorizationSlice(models[i].RequiredRelations)
+	}
+	return out
+}
+
+func cloneAuthorizationRelationIndex(index map[string][]ObjectRelation) map[string][]ObjectRelation {
+	if index == nil {
+		return nil
+	}
+	out := make(map[string][]ObjectRelation, len(index))
+	for key, relations := range index {
+		out[key] = cloneAuthorizationSlice(relations)
+	}
+	return out
+}
+
+// CloneAuthorizationConfig isolates every slice in a retained snapshot before
+// request-scoped fallback evaluation. Model arrays are copied recursively so
+// normalizing or extending one snapshot cannot mutate another.
+func CloneAuthorizationConfig(cfg AuthorizationConfig) AuthorizationConfig {
+	out := cfg
+	out.Models = cloneAuthorizationModels(cfg.Models)
+	out.Relations = cloneAuthorizationSlice(cfg.Relations)
+	out.RelationIndex = cloneAuthorizationRelationIndex(cfg.RelationIndex)
+	out.RoleBaselines = cloneAuthorizationSlice(cfg.RoleBaselines)
+	out.ObjectRefHMACKey = cloneAuthorizationSlice(cfg.ObjectRefHMACKey)
+	out.ConflictedObjects = cloneAuthorizationSlice(cfg.ConflictedObjects)
+	return out
+}
+
 func authorizationRelationIndexKey(applicationID, objectType, objectRef string) string {
 	return applicationID + "\x00" + strings.ToUpper(objectType) + "\x00" + objectRef
 }
@@ -206,7 +253,7 @@ func EvaluateAuthorization(ctx *dsctx.RequestContext, parsed *parser.Parsed, cfg
 			fallbackEligible = false
 		}
 		if fallbackEligible {
-			effectiveCfg = *cfg.PreviousValid
+			effectiveCfg = CloneAuthorizationConfig(*cfg.PreviousValid)
 			// PreviousValid is a snapshot of authorization data. Keep the
 			// request-scoped application and endpoint selectors from the active
 			// configuration so the snapshot can still match the current request.
@@ -535,11 +582,16 @@ func evaluateBOLA(ctx *dsctx.RequestContext, parsed *parser.Parsed, cfg Authoriz
 		check.Decision, check.ReasonCode = AuthorizationUnknown, "AUTHZ-IDENTITY-001"
 		return []AuthorizationCheck{check}, true
 	}
-	if len(models) != 1 || !models[0].UniqueEndpointTemplate || !models[0].Publishable || !models[0].OwnerExclusive || !strings.EqualFold(models[0].RequiredRelation, "OWNER") {
+	if len(models) != 1 {
 		check.Decision, check.ReasonCode = AuthorizationUnknown, "AUTHZ-POLICY-001"
 		return []AuthorizationCheck{check}, true
 	}
 	model := models[0]
+	allowedRelations, relationPolicyOK := authorizationAllowedRelations(model)
+	if !model.UniqueEndpointTemplate || !model.Publishable || !model.OwnerExclusive || !relationPolicyOK {
+		check.Decision, check.ReasonCode = AuthorizationUnknown, "AUTHZ-POLICY-001"
+		return []AuthorizationCheck{check}, true
+	}
 	check.ObjectType, check.ModelVersion = model.ObjectType, model.ModelVersion
 	// NG-AZ-02 D5/D8：strict 端点时效拒绝（不做授权性放行；租约附依赖不可用披露）
 	if reason := authzTimedOutReason(model, skewExceeded, leaseExpired); reason != "" {
@@ -567,25 +619,36 @@ func evaluateBOLA(ctx *dsctx.RequestContext, parsed *parser.Parsed, cfg Authoriz
 	if cfg.RelationIndex != nil {
 		relations = cfg.RelationIndex[authorizationRelationIndexKey(cfg.ApplicationID, model.ObjectType, ref)]
 	}
-	var rels []ObjectRelation
+	var ownerRels, sharedRels []ObjectRelation
 	for _, r := range relations {
-		if !sameApplication(cfg.ApplicationID, r.ApplicationID) || r.ObjectRef != ref || !strings.EqualFold(r.ObjectType, model.ObjectType) || !strings.EqualFold(relationName(r), "OWNER") || !strings.EqualFold(r.Status, "CONFIRMED") || !relationValid(r, now) {
+		if !sameApplication(cfg.ApplicationID, r.ApplicationID) || r.ObjectRef != ref || !strings.EqualFold(r.ObjectType, model.ObjectType) || !strings.EqualFold(r.Status, "CONFIRMED") || !relationValid(r, now) {
 			continue
 		}
-		rels = append(rels, r)
+		switch relation := strings.ToUpper(relationName(r)); relation {
+		case "OWNER":
+			ownerRels = append(ownerRels, r)
+		case "SHARED_WITH":
+			if authorizationRelationAllowed(allowedRelations, relation) {
+				sharedRels = append(sharedRels, r)
+			}
+		}
 	}
-	if len(rels) == 0 {
+	// Sharing is never a standalone ownership fact: without a valid OWNER row the
+	// object remains indeterminate even when the requester has a valid share.
+	if len(ownerRels) == 0 {
 		check.Decision, check.ReasonCode, check.RelationState = AuthorizationUnknown, "AUTHZ-RELATION-001", "NONE"
 		return authzBOLAWithDegradedMarker(check, model, skewExceeded, leaseExpired), true
 	}
 	identityTenant := strings.TrimSpace(jwt.VerifiedTenantID)
-	tenantIDs := make(map[string]struct{}, len(rels)+1)
+	tenantIDs := make(map[string]struct{}, len(ownerRels)+len(sharedRels)+1)
 	if tenant := strings.TrimSpace(model.TenantID); tenant != "" {
 		tenantIDs[tenant] = struct{}{}
 	}
-	for _, r := range rels {
-		if tenant := strings.TrimSpace(r.TenantID); tenant != "" {
-			tenantIDs[tenant] = struct{}{}
+	for _, rels := range [][]ObjectRelation{ownerRels, sharedRels} {
+		for _, r := range rels {
+			if tenant := strings.TrimSpace(r.TenantID); tenant != "" {
+				tenantIDs[tenant] = struct{}{}
+			}
 		}
 	}
 	if len(tenantIDs) > 1 {
@@ -604,20 +667,26 @@ func evaluateBOLA(ctx *dsctx.RequestContext, parsed *parser.Parsed, cfg Authoriz
 		check.Decision, check.ReasonCode, check.TenantState = AuthorizationUnknown, "AUTHZ-TENANT-002", "INCOMPLETE"
 		return authzBOLAWithDegradedMarker(check, model, skewExceeded, leaseExpired), true
 	}
-	var own, other bool
-	for _, r := range rels {
-		pid := r.PrincipalID
-		if pid == "" {
-			pid = r.SubjectPrincipalID
-		}
+	var own, other, shared bool
+	for _, r := range ownerRels {
+		pid := authorizationRelationPrincipal(r)
 		if pid == jwt.VerifiedPrincipalID {
 			own = true
 		} else if pid != "" {
 			other = true
 		}
 	}
+	for _, r := range sharedRels {
+		if authorizationRelationPrincipal(r) == jwt.VerifiedPrincipalID {
+			shared = true
+		}
+	}
 	if own {
 		check.Decision, check.RelationState = AuthorizationAllow, "EFFECTIVE_OWNER"
+		return authzBOLAWithDegradedMarker(check, model, skewExceeded, leaseExpired), true
+	}
+	if shared && other {
+		check.Decision, check.RelationState = AuthorizationAllow, "EFFECTIVE_SHARED_WITH"
 		return authzBOLAWithDegradedMarker(check, model, skewExceeded, leaseExpired), true
 	}
 	if other {
@@ -627,10 +696,9 @@ func evaluateBOLA(ctx *dsctx.RequestContext, parsed *parser.Parsed, cfg Authoriz
 		// 又防未来改动静默放大实断面；「部分满足」绝无折算空间。
 		eligibility := map[string]bool{
 			"trusted_identity": trustedIdentity(jwt),
-			"model_applicable": len(models) == 1 && model.UniqueEndpointTemplate && model.Publishable &&
-				strings.EqualFold(model.RequiredRelation, "OWNER") &&
+			"model_applicable": len(models) == 1 && model.UniqueEndpointTemplate && model.Publishable && relationPolicyOK &&
 				!model.Stale && (model.SnapshotExpiresAt == nil || now.Before(model.SnapshotExpiresAt.UTC())),
-			"relation_valid":    len(rels) > 0,
+			"relation_valid":    len(ownerRels) > 0,
 			"no_conflict":       !authzV2(cfg) || !Conflicted(cfg.ConflictedIndex, cfg.ApplicationID, model.ObjectType, ref),
 			"tenant_consistent": authzBOLATenantConsistent(identityTenant, objectTenant, tenantIDs),
 			// 证据新鲜（授权事实）：租约未过期 + 无负向漂移；水位回退由装配期
@@ -825,6 +893,57 @@ func authzAppliedAtAgeSeconds(cfg AuthorizationConfig, now time.Time) int64 {
 	return age
 }
 
+// authorizationAllowedRelations validates the narrow relation vocabulary and
+// returns a canonical OWNER, SHARED_WITH order independent of snapshot order.
+func authorizationAllowedRelations(model ObjectModel) ([]string, bool) {
+	if strings.EqualFold(model.RequiredRelation, "OWNER") {
+		if len(model.RequiredRelations) != 0 {
+			return nil, false
+		}
+		return []string{"OWNER"}, true
+	}
+	if !strings.EqualFold(model.RequiredRelation, "ANY_OF") || len(model.RequiredRelations) != 2 {
+		return nil, false
+	}
+	seen := make(map[string]struct{}, len(model.RequiredRelations))
+	for _, raw := range model.RequiredRelations {
+		relation := strings.ToUpper(strings.TrimSpace(raw))
+		if relation != "OWNER" && relation != "SHARED_WITH" {
+			return nil, false
+		}
+		if _, duplicate := seen[relation]; duplicate {
+			return nil, false
+		}
+		seen[relation] = struct{}{}
+	}
+	if _, ok := seen["OWNER"]; !ok {
+		return nil, false
+	}
+	out := make([]string, 0, len(seen))
+	for _, relation := range []string{"OWNER", "SHARED_WITH"} {
+		if _, ok := seen[relation]; ok {
+			out = append(out, relation)
+		}
+	}
+	return out, true
+}
+
+func authorizationRelationAllowed(allowed []string, relation string) bool {
+	for _, candidate := range allowed {
+		if candidate == relation {
+			return true
+		}
+	}
+	return false
+}
+
+func authorizationRelationPrincipal(r ObjectRelation) string {
+	if r.PrincipalID != "" {
+		return r.PrincipalID
+	}
+	return r.SubjectPrincipalID
+}
+
 func relationName(r ObjectRelation) string {
 	if r.Relation != "" {
 		return r.Relation
@@ -853,6 +972,8 @@ func matchingModels(models []ObjectModel, applicationID, endpoint string, parsed
 		if key == endpoint ||
 			(m.PathTemplate != "" && pathTemplateMatches(m.PathTemplate, parsed.RawPath)) ||
 			(key != "" && pathTemplateMatches(endpointPath(key), endpointPath(endpoint))) {
+			m.Identifiers = cloneAuthorizationSlice(m.Identifiers)
+			m.RequiredRelations = cloneAuthorizationSlice(m.RequiredRelations)
 			out = append(out, m)
 		}
 	}

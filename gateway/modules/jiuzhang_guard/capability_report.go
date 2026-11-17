@@ -19,8 +19,8 @@
 //     （GRPCDescriptors 编译注册非空）时报 "unary_g1"（detectors/grpc_desc.go
 //     字段级深检生效），无描述符时不得报 unary_g1；stream_g2 未实现；
 //     protocols.mcp="observe"——detectors/mcp.go 观察线索（acl_v1 执行层未实现）；
-//     actions 按决策枚举实报（block/temp_block/rate_limit/mask_response/observe/allow；
-//     grpc_error 无协议适配执行层不得报）；
+//     actions 按决策枚举实报（block/temp_block/rate_limit/risk_challenge/mask_response/observe/allow；
+//     risk_challenge 复用 Bot 挑战执行层；grpc_error 无协议适配执行层不得报）；
 //     limits.max_grpc_frame_bytes 取当前生效值（api_grpc_max_frame_bytes 下发值
 //     ≤0 时按 dsctx.DefaultGRPCMaxFrameBytes 4MiB 兜底——与 pipeline 兜底链一致）；
 //   - product_version 为信息性字段（契约：不作为能力判定依据）：进程内无产品
@@ -97,7 +97,7 @@ func buildCapabilityManifest(in capabilityInputs, now time.Time) capability.Mani
 	grpcLevel := "frame"
 	detectors := []capability.DetectorCap{
 		{Name: "pipeline", Version: "pipeline/1"},  // dynamic_security/pipeline 统一引擎
-		{Name: "authzdecide", Version: "az/3"},     // detectors/authzdecide.go 授权决策（NG-AZ-03：VERIFIED_VIOLATION 资格判定与实断执行；含 az/2 水位/租约/冲突集消费）
+		{Name: "authzdecide", Version: "az/4"},     // detectors/authzdecide.go 授权决策（ANY_OF=OWNER/SHARED_WITH；含 az/3 实断资格及 az/2 水位/租约/冲突集消费）
 		{Name: "flowguard", Version: "flow/1"},     // detectors/flowguard 强流程（NG-FLOW-02：Valkey Lua 原子预留+fencing、OBSERVE/PROTECT 定义级实断；D12 能力门——含 PROTECT 定义的快照要求 flow/1）
 		{Name: "graphql.parser", Version: "gql/1"}, // parser/parse_graphql.go 基础识别
 		{Name: "grpc.frame", Version: "grpc/1"},    // parser/parse_grpc.go + detectors/grpc.go 帧校验
@@ -125,7 +125,7 @@ func buildCapabilityManifest(in capabilityInputs, now time.Time) capability.Mani
 			"mcp":     "acl_v1", // mcpguard 在 binary 即成立（NG-MCP D13 恒报进程能力；层级表预登记 capability/types.go）
 		},
 		Detectors:   detectors,
-		Actions:     []string{"block", "temp_block", "rate_limit", "mask_response", "observe", "allow"},
+		Actions:     []string{"block", "temp_block", "rate_limit", "risk_challenge", "mask_response", "observe", "allow"},
 		Limits:      map[string]int64{"max_grpc_frame_bytes": maxFrame},
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 	}
@@ -158,7 +158,7 @@ func (g *Guard) provisionCapabilityReport() {
 		NodeID: nodeID,
 		// GRPCUnary 恒 true：detectors/protocols 为进程能力清单（grpcguard
 		// （G1 完成态：重组+解压+结构校验+协议化执行）在 binary 即能力成立，
-		// 与 flowguard=flow/1、authzdecide=az/3 恒报同纪律——若绑定「当前配置
+		// 与 flowguard=flow/1、authzdecide=az/4 恒报同纪律——若绑定「当前配置
 		// 有描述符」则首次引入描述符的发布被能力门死锁（需求 unary_g1+grpc/2，
 		// 自报 frame/空——fail-closed 永拒；批次 C 联调实证）
 		GRPCUnary:         true,
