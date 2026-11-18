@@ -127,7 +127,11 @@ else
     gateway_ports+=("$port")
   done < <(jq -r '.[]?.listen[]?' <<<"$listeners" 2>/dev/null | LC_ALL=C sort -u)
   if [[ ${#gateway_ports[@]} -eq 0 ]]; then
-    report "gateway" FAIL "无法从 Caddy Admin Unix Socket 读取实际监听端口"
+    if jq -e 'type == "object" and length == 0' <<<"$listeners" >/dev/null 2>&1; then
+      report "gateway" OK "Caddy Admin 可访问，当前无站点监听"
+    else
+      report "gateway" FAIL "无法从 Caddy Admin Unix Socket 读取实际监听端口"
+    fi
   else
     gw_fail=""
     for gw_port in "${gateway_ports[@]}"; do

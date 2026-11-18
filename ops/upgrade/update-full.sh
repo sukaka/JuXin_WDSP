@@ -77,7 +77,7 @@ fi
 docker compose version >/dev/null 2>&1 || die "缺少 Docker Compose 插件"
 [[ -x "$CURRENT_RELEASE/ops/upgrade/install-executor.sh" && -x "$CURRENT_RELEASE/ops/upgrade/upgrade-executor.sh" ]] \
   || die "原 release 缺少升级执行器，无法在失败时安全恢复"
-[[ -d "$CURRENT_RELEASE/runtime/upgrade-executor" ]] || die "原升级执行器共享目录不存在"
+install -d -m 0755 "$CURRENT_RELEASE/runtime/upgrade-executor"
 exec 8>"$CURRENT_RELEASE/runtime/upgrade-executor/executor.lock"
 flock -n 8 || die "已有宿主升级任务在执行，禁止并发切换；请等待其结束后重试"
 if [[ -z "$API_URL" ]]; then

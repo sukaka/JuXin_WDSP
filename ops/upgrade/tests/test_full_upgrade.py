@@ -59,6 +59,11 @@ class FullUpgradeContractTests(unittest.TestCase):
             "--current-link", self.current, "--timeout", "2",
         )
 
+    def test_wrapper_initializes_executor_directory_for_legacy_releases(self):
+        source = (gateway_contract.ROOT / "ops/upgrade/update-full.sh").read_text()
+        self.assertIn('install -d -m 0755 "$CURRENT_RELEASE/runtime/upgrade-executor"', source)
+        self.assertNotIn("原升级执行器共享目录不存在", source)
+
     def test_full_upgrade_reconciles_all_components_and_leaves_current_until_wrapper_finishes(self):
         result = self.run_full()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
