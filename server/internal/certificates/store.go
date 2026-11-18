@@ -372,7 +372,7 @@ WHERE ac.application_id = $1 AND ac.is_active = TRUE AND c.deleted_at IS NULL`, 
 // ListApplicationIDs 查询证书绑定的应用ID列表。
 func (s *Store) ListApplicationIDs(ctx context.Context, certID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT application_id FROM application_certificates WHERE certificate_id = $1`, certID)
+		`SELECT application_id FROM application_certificates WHERE certificate_id = $1 AND is_active = TRUE`, certID)
 	if err != nil {
 		return nil, err
 	}

@@ -1,40 +1,29 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Tag, Tooltip } from 'antd'
+import { Alert, Button, Space, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../../api/client'
 import { certificatesApi } from '../../../api/certificates'
 import RecordDetailDrawer from '../../../components/RecordDetailDrawer'
 import SmartTable from '../../../components/SmartTable'
+import CertificateBindingModal from '../../certificates/CertificateBindingModal'
+import { useAuthStore } from '../../../stores/auth'
 import { formatDateTime } from '../../../utils/format'
+import { hasPermission } from '../../../utils/permission'
 import { CERT_STATUS_META, certRemainingColor, certRemainingDays } from '../../../utils/stage3'
-import type { CertificateItem } from '../../../types'
+import type { ApplicationItem, CertificateItem } from '../../../types'
 
-/**
- * 应用维度的证书绑定查询：
- * 后端暂无“按应用查询绑定证书”的接口，这里通过证书列表 + 各证书的绑定应用列表反查（前 100 个证书）。
- */
-async function fetchBoundCertificates(appId: string): Promise<CertificateItem[]> {
-  const page = await certificatesApi.list({ page: 1, page_size: 100 })
-  const certs = page.items ?? []
-  if (certs.length === 0) return []
-  const flags = await Promise.all(
-    certs.map((cert) =>
-      certificatesApi
-        .applications(cert.id)
-        .then((r) => (r.application_ids ?? []).includes(appId))
-        .catch(() => false),
-    ),
-  )
-  return certs.filter((_, i) => flags[i])
-}
-
-export default function CertificatesTab({ appId }: { appId: string }) {
+export default function CertificatesTab({ application }: { application: ApplicationItem }) {
   const [detailRecord, setDetailRecord] = useState<CertificateItem | null>(null)
+  const [operation, setOperation] = useState<'bind' | 'unbind' | null>(null)
+  const permissions = useAuthStore((s) => s.user?.permissions)
+  const canBind = hasPermission(permissions, 'certificates.bind')
+
   const boundQuery = useQuery({
-    queryKey: ['app-certificates', appId],
-    queryFn: () => fetchBoundCertificates(appId),
+    queryKey: ['app-certificates', application.id],
+    queryFn: () => certificatesApi.applicationCertificate(application.id),
   })
+  const boundCertificate = boundQuery.data?.certificate ?? null
 
   const columns: ColumnsType<CertificateItem> = [
     { title: '证书名称', dataIndex: 'name', width: 180 },
@@ -84,9 +73,21 @@ export default function CertificatesTab({ appId }: { appId: string }) {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="证书绑定关系由后端发布流程管理"
-        description="当前后端未提供证书绑定/解绑的 HTTP API（certificates.bind 权限已预留），本页展示已绑定到本应用的证书。绑定与替换请在后续版本通过发布流程完成。"
+        message="证书绑定、替换和解绑均需经过配置发布后生效"
+        description="后端会校验证书有效期及 CN/SAN 对应用全部 HTTPS 域名的覆盖。保存关系后可在操作结果中直接进入配置发布页。"
       />
+      {canBind && (
+        <Space style={{ marginBottom: 16 }}>
+          <Button type="primary" onClick={() => setOperation('bind')}>
+            {boundCertificate ? '替换证书' : '绑定证书'}
+          </Button>
+          {boundCertificate && (
+            <Button danger onClick={() => setOperation('unbind')}>
+              解绑证书
+            </Button>
+          )}
+        </Space>
+      )}
       {boundQuery.isError ? (
         <Alert
           type="error"
@@ -100,7 +101,7 @@ export default function CertificatesTab({ appId }: { appId: string }) {
           rowKey="id"
           loading={boundQuery.isLoading}
           columns={columns}
-          dataSource={boundQuery.data}
+          dataSource={boundCertificate ? [boundCertificate] : []}
           pagination={false}
           locale={{ emptyText: '当前应用未绑定证书' }}
           onRow={(record) => ({
@@ -115,6 +116,15 @@ export default function CertificatesTab({ appId }: { appId: string }) {
         record={detailRecord as Record<string, unknown> | null}
         onClose={() => setDetailRecord(null)}
       />
+      {operation && (
+        <CertificateBindingModal
+          open
+          operation={operation}
+          application={application}
+          certificate={operation === 'unbind' ? boundCertificate ?? undefined : undefined}
+          onClose={() => setOperation(null)}
+        />
+      )}
     </div>
   )
 }

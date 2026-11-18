@@ -18,7 +18,7 @@ deployment/docker/tproxy-lab/testorigin
 *.dylib
 
 # 测试产物
-coverage/
+/coverage/
 *.coverprofile
 *.out
 

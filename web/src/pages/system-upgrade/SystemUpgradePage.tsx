@@ -23,7 +23,7 @@ import {
 import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { InboxOutlined, PlusOutlined, RollbackOutlined, UploadOutlined } from '@ant-design/icons'
-import { ApiError } from '../../api/client'
+import { ApiError, type UploadProgress } from '../../api/client'
 import { upgradesApi, type UpgradePackageResp } from '../../api/upgrades'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
@@ -67,6 +67,7 @@ export default function SystemUpgradePage() {
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [uploadTiming, setUploadTiming] = useState<UpgradeTiming>('NOW')
   const [uploadScheduledAt, setUploadScheduledAt] = useState<Dayjs | null>(null)
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
   const [uploadResult, setUploadResult] = useState<UpgradePackageResp | null>(null)
   const [selectedPackageId, setSelectedPackageId] = useState<string>()
   const [precheck, setPrecheck] = useState<UpgradePrecheckResult | null>(null)
@@ -123,10 +124,12 @@ export default function SystemUpgradePage() {
     setUploadFile(null)
     setUploadTiming('NOW')
     setUploadScheduledAt(null)
+    setUploadProgress(null)
   }
 
   const uploadMutation = useMutation({
-    mutationFn: (vars: { file: File; scheduledAt?: string }) => upgradesApi.uploadPackage(vars.file, vars.scheduledAt),
+    mutationFn: (vars: { file: File; scheduledAt?: string }) =>
+      upgradesApi.uploadPackage(vars.file, vars.scheduledAt, setUploadProgress),
     onSuccess: (resp) => {
       // 上传响应即最终处置：execution 非空表示验证通过且已创建升级任务
       // （立即更新为执行态，定时更新为 SCHEDULED）；为 null 时 warning 说明原因
@@ -140,11 +143,15 @@ export default function SystemUpgradePage() {
         setPrecheck(null)
       }
     },
-    onError,
+    onError: (e) => {
+      setUploadProgress(null)
+      onError(e)
+    },
   })
 
   const confirmUpload = () => {
-    if (!uploadFile) return
+    if (!uploadFile || uploadMutation.isPending) return
+    setUploadProgress(null)
     if (uploadTiming === 'SCHEDULED') {
       if (!uploadScheduledAt) {
         message.warning('请选择升级开始时间')
@@ -451,13 +458,18 @@ export default function SystemUpgradePage() {
         title="上传升级包"
         open={uploadOpen}
         onCancel={() => {
+          if (uploadMutation.isPending) return
           setUploadOpen(false)
           resetUploadForm()
         }}
         onOk={confirmUpload}
         okText="确认上传"
-        okButtonProps={{ disabled: !uploadFile }}
+        okButtonProps={{ disabled: !uploadFile || uploadMutation.isPending }}
+        cancelButtonProps={{ disabled: uploadMutation.isPending }}
         confirmLoading={uploadMutation.isPending}
+        closable={!uploadMutation.isPending}
+        maskClosable={false}
+        keyboard={!uploadMutation.isPending}
         destroyOnHidden
       >
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
@@ -467,7 +479,9 @@ export default function SystemUpgradePage() {
         <Upload.Dragger
           accept=".tar.gz"
           maxCount={1}
+          disabled={uploadMutation.isPending}
           beforeUpload={(file) => {
+            if (uploadMutation.isPending) return Upload.LIST_IGNORE
             if (!file.name.toLowerCase().endsWith('.tar.gz')) {
               message.error('仅支持 .tar.gz 格式的升级包')
               return Upload.LIST_IGNORE
@@ -475,7 +489,11 @@ export default function SystemUpgradePage() {
             setUploadFile(file)
             return false
           }}
-          onRemove={() => setUploadFile(null)}
+          onRemove={() => {
+            if (uploadMutation.isPending) return false
+            setUploadFile(null)
+            return true
+          }}
         >
           <p className="ant-upload-drag-icon">
             <InboxOutlined />
@@ -483,11 +501,31 @@ export default function SystemUpgradePage() {
           <p className="ant-upload-text">点击或拖拽升级包文件到此区域</p>
           <p className="ant-upload-hint">仅支持 .tar.gz 格式，如：jiuzhang-wdsp-upgrade-1.3.0-amd64.tar.gz</p>
         </Upload.Dragger>
+        {uploadMutation.isPending && (
+          <div style={{ marginTop: 16 }} role="status" aria-live="polite">
+            <Progress
+              percent={
+                uploadProgress?.lengthComputable && uploadProgress.total > 0
+                  ? Math.min(100, Math.round((uploadProgress.loaded / uploadProgress.total) * 100))
+                  : 0
+              }
+              status="active"
+            />
+            <Typography.Text type="secondary">
+              {uploadProgress?.lengthComputable && uploadProgress.total > 0 && uploadProgress.loaded >= uploadProgress.total
+                ? '升级包已上传，正在等待服务端验签并创建升级任务…'
+                : uploadProgress
+                  ? `正在上传：${formatBytes(uploadProgress.loaded)}${uploadProgress.lengthComputable ? ` / ${formatBytes(uploadProgress.total)}` : ''}`
+                  : '正在准备上传…'}
+            </Typography.Text>
+          </div>
+        )}
         <div style={{ marginTop: 16 }}>
           <Typography.Text strong>更新时机</Typography.Text>
           <div style={{ marginTop: 8 }}>
             <Radio.Group
               value={uploadTiming}
+              disabled={uploadMutation.isPending}
               onChange={(e) => setUploadTiming(e.target.value as UpgradeTiming)}
               options={[
                 { value: 'NOW', label: '立即更新' },
@@ -502,6 +540,7 @@ export default function SystemUpgradePage() {
               placeholder="选择升级开始时间"
               style={{ width: '100%', marginTop: 8 }}
               value={uploadScheduledAt}
+              disabled={uploadMutation.isPending}
               onChange={(v) => setUploadScheduledAt(v)}
               disabledDate={(current) => current.isBefore(dayjs().startOf('day'))}
               disabledTime={(date) => {

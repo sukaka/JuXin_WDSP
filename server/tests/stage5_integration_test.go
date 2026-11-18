@@ -976,6 +976,36 @@ func TestStage5CertificateBindUnbind(t *testing.T) {
 		t.Errorf("cert applications not contain app: %s", raw)
 	}
 
+	// 应用侧直接读取当前活动证书，不再逐张反查。
+	resp = env.get(t, fmt.Sprintf("/api/v1/applications/%s/certificate", appID), cookies)
+	result = s5OK(t, resp, "get application certificate")
+	raw, _ = json.Marshal(result.Data)
+	if !strings.Contains(string(raw), certID) {
+		t.Fatalf("application certificate not contain cert: %s", raw)
+	}
+
+	// 同应用替换证书后，旧证书的绑定应用列表不再包含该应用。
+	certPEM2, keyPEM2 := generateTestCertPEM(t, host, []string{host})
+	resp = env.post(t, "/api/v1/certificates",
+		fmt.Sprintf(`{"name":"bind-cert-replacement-%s","cert_pem":%q,"key_pem":%q}`, s5Rand(), certPEM2, keyPEM2), cookies, csrf)
+	result = s5OK(t, resp, "upload replacement cert")
+	replacementID, _ := result.Data["id"].(string)
+	resp = env.post(t, fmt.Sprintf("/api/v1/certificates/%s/bind", replacementID),
+		fmt.Sprintf(`{"application_id":%q}`, appID), cookies, csrf)
+	s5OK(t, resp, "replace certificate")
+	resp = env.get(t, fmt.Sprintf("/api/v1/certificates/%s/applications", certID), cookies)
+	result = s5OK(t, resp, "list replaced cert applications")
+	raw, _ = json.Marshal(result.Data)
+	if strings.Contains(string(raw), appID) {
+		t.Fatalf("replaced certificate still lists app as active: %s", raw)
+	}
+	resp = env.get(t, fmt.Sprintf("/api/v1/applications/%s/certificate", appID), cookies)
+	result = s5OK(t, resp, "get replacement application certificate")
+	raw, _ = json.Marshal(result.Data)
+	if !strings.Contains(string(raw), replacementID) {
+		t.Fatalf("application current certificate is not replacement: %s", raw)
+	}
+
 	// 域名不匹配的绑定应失败
 	resp = env.post(t, "/api/v1/applications",
 		fmt.Sprintf(`{"code":"otherapp-%s","name":"其他应用","description":"","business_owner":"t","technical_owner":"t","protection_mode":"OFF"}`, s5Rand()), cookies, csrf)
@@ -987,14 +1017,19 @@ func TestStage5CertificateBindUnbind(t *testing.T) {
 	resp = env.post(t, fmt.Sprintf("/api/v1/applications/%s/domains", otherID),
 		`{"hostname":"other.example.com","is_primary":true,"http_enabled":false,"https_enabled":true,"https_port":8443,"redirect_http_to_https":false}`, cookies, csrf)
 	s5OK(t, resp, "create other domain")
-	resp = env.post(t, fmt.Sprintf("/api/v1/certificates/%s/bind", certID),
+	resp = env.post(t, fmt.Sprintf("/api/v1/certificates/%s/bind", replacementID),
 		fmt.Sprintf(`{"application_id":%q}`, otherID), cookies, csrf)
 	s5Expect(t, resp, http.StatusBadRequest, "bind mismatched domain")
 
 	// 解绑
-	resp = env.post(t, fmt.Sprintf("/api/v1/certificates/%s/unbind", certID),
+	resp = env.post(t, fmt.Sprintf("/api/v1/certificates/%s/unbind", replacementID),
 		fmt.Sprintf(`{"application_id":%q}`, appID), cookies, csrf)
 	s5OK(t, resp, "unbind certificate")
+	resp = env.get(t, fmt.Sprintf("/api/v1/applications/%s/certificate", appID), cookies)
+	result = s5OK(t, resp, "get unbound application certificate")
+	if certificate, exists := result.Data["certificate"]; !exists || certificate != nil {
+		t.Fatalf("unbound application certificate = %#v, want null", result.Data["certificate"])
+	}
 }
 
 // TestS5BlacklistFromEvent §十一：事件→黑名单全链路——预填聚合 + SECURITY_EVENT 来源创建。

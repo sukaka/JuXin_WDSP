@@ -4,11 +4,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // writeTmpPackage 写入临时升级包文件，返回路径与内容哈希。
@@ -176,5 +180,46 @@ func TestFinalizeUploadConcurrent(t *testing.T) {
 	}
 	if finalHash != hashes[succeeded[0]] {
 		t.Errorf("最终文件哈希应为胜出版本 %s, got %s（发生覆盖）", hashes[succeeded[0]], finalHash)
+	}
+}
+
+func TestUploadRequestDeadlineExtensionAllowsSlowBody(t *testing.T) {
+	const serverTimeout = 40 * time.Millisecond
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		extendUploadRequestDeadlines(w)
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.Config.ReadTimeout = serverTimeout
+	server.Config.WriteTimeout = serverTimeout
+	server.Start()
+	defer server.Close()
+
+	reader, writer := io.Pipe()
+	go func() {
+		defer func() { _ = writer.Close() }()
+		if _, err := writer.Write([]byte("first")); err != nil {
+			return
+		}
+		time.Sleep(3 * serverTimeout)
+		_, _ = writer.Write([]byte("second"))
+	}()
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/upgrades/packages/upload", reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := server.Client()
+	client.Timeout = 2 * time.Second
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("慢速上传被全局期限中断: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("慢速上传状态码 = %d, body=%s", resp.StatusCode, body)
 	}
 }

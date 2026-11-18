@@ -148,6 +148,25 @@ func (h *Handler) ListApplications(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"application_ids": appIDs, "count": len(appIDs)})
 }
 
+// GetApplication 查询应用当前活动证书；未绑定时 certificate=null。
+func (h *Handler) GetApplication(w http.ResponseWriter, r *http.Request) {
+	appID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的应用ID")
+		return
+	}
+	cert, err := h.store.GetApplicationCertificate(r.Context(), appID)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	var item map[string]interface{}
+	if cert != nil {
+		item = certItem(cert, 1)
+	}
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{"certificate": item})
+}
+
 // ---------- 辅助 ----------
 
 func certItem(c *Certificate, usage int) map[string]interface{} {

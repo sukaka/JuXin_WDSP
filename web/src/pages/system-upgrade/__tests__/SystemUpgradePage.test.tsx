@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import SystemUpgradePage from '../SystemUpgradePage'
 import { useAuthStore } from '../../../stores/auth'
-import { ApiError } from '../../../api/client'
+import { ApiError, type UploadProgress } from '../../../api/client'
 import { formatDateTime } from '../../../utils/format'
 import type { CurrentUser } from '../../../types'
 
@@ -20,7 +20,13 @@ import { request, upload } from '../../../api/client'
 const requestMock = vi.mocked(
   request as unknown as (path: string, options?: { method?: string }) => Promise<unknown>,
 )
-const uploadMock = vi.mocked(upload as unknown as (path: string, form: FormData) => Promise<unknown>)
+const uploadMock = vi.mocked(
+  upload as unknown as (
+    path: string,
+    form: FormData,
+    options?: { onProgress?: (progress: UploadProgress) => void },
+  ) => Promise<unknown>,
+)
 
 function makeUser(permissions: string[]): CurrentUser {
   return {
@@ -82,7 +88,7 @@ async function openUploadModal() {
 }
 
 function okButton() {
-  return screen.getByRole('button', { name: '确认上传' })
+  return screen.getByRole('button', { name: /确认上传/ })
 }
 
 function selectPackageFile(input: HTMLInputElement) {
@@ -223,6 +229,36 @@ describe('SystemUpgradePage 升级包上传（单文件 + 自动识别版本 + �
 
     expect(await screen.findByText('升级包签名校验失败', undefined, SLOW)).toBeInTheDocument()
     expect(screen.getByText('点击或拖拽升级包文件到此区域')).toBeInTheDocument()
+  })
+
+  it('上传中显示真实字节与百分比，100% 后提示等待验签而非升级成功', async () => {
+    let reportProgress: ((progress: UploadProgress) => void) | undefined
+    let resolveUpload: ((value: unknown) => void) | undefined
+    uploadMock.mockImplementation((_path, _form, options) => {
+      reportProgress = options?.onProgress
+      return new Promise((resolve) => {
+        resolveUpload = resolve
+      })
+    })
+    renderPage()
+    const pkgInput = await openUploadModal()
+    selectPackageFile(pkgInput)
+    await waitFor(() => expect(okButton()).toBeEnabled(), SLOW)
+    fireEvent.click(okButton())
+
+    await waitFor(() => expect(reportProgress).toBeDefined(), SLOW)
+    act(() => reportProgress?.({ loaded: 50, total: 100, lengthComputable: true }))
+    expect(await screen.findByText('50%', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('正在上传：50 B / 100 B')).toBeInTheDocument()
+
+    act(() => reportProgress?.({ loaded: 100, total: 100, lengthComputable: true }))
+    expect(await screen.findByText('100%', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('升级包已上传，正在等待服务端验签并创建升级任务…')).toBeInTheDocument()
+    expect(screen.queryByText('已开始自动升级，可在下方列表查看进度')).toBeNull()
+    expect(okButton()).toBeDisabled()
+
+    act(() => resolveUpload?.({ package: uploadedPackage(), execution: startedExecution() }))
+    expect(await screen.findByText('已开始自动升级，可在下方列表查看进度', undefined, SLOW)).toBeInTheDocument()
   })
 
   it('非 .tar.gz 文件：拒绝选择并提示，不发起上传', async () => {

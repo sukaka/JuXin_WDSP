@@ -29,4 +29,16 @@ export const certificatesApi = {
   remove: (id: string) => request<{ message: string }>(`/certificates/${id}`, { method: 'DELETE' }),
   applications: (id: string) =>
     request<CertificateApplications>(`/certificates/${id}/applications`),
+  applicationCertificate: (applicationId: string) =>
+    request<{ certificate: CertificateItem | null }>(`/applications/${applicationId}/certificate`),
+  bind: (certificateId: string, applicationId: string) =>
+    request<{ message: string }>(`/certificates/${certificateId}/bind`, {
+      method: 'POST',
+      body: { application_id: applicationId },
+    }),
+  unbind: (certificateId: string, applicationId: string) =>
+    request<{ message: string }>(`/certificates/${certificateId}/unbind`, {
+      method: 'POST',
+      body: { application_id: applicationId },
+    }),
 }

@@ -232,11 +232,25 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
  * （浏览器需自动生成带 boundary 的 Content-Type）。按 request() 同一纪律
  * （credentials、CSRF 头、401/423 全局回调、统一信封解析、超时与响应大小上限）封装，新增上传统一复用。
  */
+export interface UploadProgress {
+  loaded: number
+  total: number
+  lengthComputable: boolean
+}
+
+export interface UploadOptions {
+  timeoutMs?: number
+  onProgress?: (progress: UploadProgress) => void
+}
+
 export async function upload<T>(
   path: string,
   form: FormData,
-  options: { timeoutMs?: number } = {},
+  options: UploadOptions = {},
 ): Promise<T> {
+  if (options.onProgress) {
+    return uploadWithProgress<T>(path, form, options)
+  }
   const headers: Record<string, string> = {}
   if (csrfToken) {
     headers['X-CSRF-Token'] = csrfToken
@@ -282,4 +296,52 @@ export async function upload<T>(
     throw new ApiError(message, code, resp.status, env?.request_id, env?.details)
   }
   return env.data
+}
+
+function uploadWithProgress<T>(path: string, form: FormData, options: UploadOptions): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', buildUrl(path))
+    xhr.withCredentials = true
+    xhr.timeout = options.timeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS
+    if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken)
+
+    xhr.upload.onprogress = (event) => {
+      options.onProgress?.({
+        loaded: event.loaded,
+        total: event.lengthComputable ? event.total : 0,
+        lengthComputable: event.lengthComputable,
+      })
+    }
+    xhr.onerror = () => reject(new ApiError('网络异常，请检查网络连接后重试', 'NETWORK_ERROR', 0))
+    xhr.ontimeout = () => reject(new ApiError('请求超时，请稍后重试', 'TIMEOUT', 0))
+    xhr.onabort = () => reject(new ApiError('上传已取消', 'UPLOAD_CANCELLED', 0))
+    xhr.onload = () => {
+      if (xhr.status === 401) sessionExpiredHandler?.()
+      if (xhr.status === 423) licenseInvalidHandler?.()
+
+      const declared = Number(xhr.getResponseHeader('Content-Length'))
+      if ((Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) || new Blob([xhr.responseText]).size > MAX_RESPONSE_BYTES) {
+        reject(new ApiError('响应体超过大小上限，已中断接收', 'RESPONSE_TOO_LARGE', xhr.status))
+        return
+      }
+      let payload: unknown = null
+      if (xhr.responseText) {
+        try {
+          payload = JSON.parse(xhr.responseText)
+        } catch {
+          payload = null
+        }
+      }
+      const env = payload as ApiEnvelope<T> | null
+      if (xhr.status < 200 || xhr.status >= 300 || !env || typeof env.code !== 'string' || env.code !== 'SUCCESS') {
+        const code = env && typeof env.code === 'string' ? env.code : 'HTTP_ERROR'
+        const message = env && typeof env.message === 'string' ? env.message : `请求失败（HTTP ${xhr.status}）`
+        reject(new ApiError(message, code, xhr.status, env?.request_id, env?.details))
+        return
+      }
+      resolve(env.data)
+    }
+    xhr.send(form)
+  })
 }

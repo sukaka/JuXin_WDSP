@@ -1160,6 +1160,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		mux.Handle("GET /api/v1/security/regression-policy", authz(middleware.RequirePermission("security_regression.read")(http.HandlerFunc(regressionHandler.GetPolicy))))
 		mux.Handle("PUT /api/v1/security/regression-policy", authz(middleware.RequirePermission("security_regression.policy")(http.HandlerFunc(regressionHandler.PutPolicy))))
 		mux.Handle("POST /api/v1/security/regression-objects", authz(middleware.RequirePermission("security_regression.import")(http.HandlerFunc(regressionHandler.UploadObject))))
+		mux.Handle("GET /api/v1/applications/{id}/certificate", authz(middleware.RequirePermission("certificates.read")(http.HandlerFunc(certHandler.GetApplication))))
 		mux.Handle("POST /api/v1/applications/{id}/certificate", authz(middleware.RequirePermission("certificates.bind")(http.HandlerFunc(appHandler.BindCertificate))))
 		mux.Handle("DELETE /api/v1/applications/{id}/certificate", authz(middleware.RequirePermission("certificates.bind")(http.HandlerFunc(appHandler.UnbindCertificate))))
 

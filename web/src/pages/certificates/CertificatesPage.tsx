@@ -23,6 +23,7 @@ import { applicationsApi } from '../../api/applications'
 import { certificatesApi } from '../../api/certificates'
 import type { UploadCertificateBody } from '../../api/certificates'
 import SmartTable from '../../components/SmartTable'
+import CertificateBindingModal from './CertificateBindingModal'
 import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
@@ -91,6 +92,7 @@ export default function CertificatesPage() {
   const [pageSize, setPageSize] = useState(20)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [detailId, setDetailId] = useState<string | null>(null)
+  const [binding, setBinding] = useState<{ operation: 'bind' | 'unbind'; certificate: CertificateItem } | null>(null)
   const [uploadForm] = Form.useForm<UploadCertificateBody>()
 
   const listQuery = useQuery({
@@ -217,13 +219,34 @@ export default function CertificatesPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 140,
+      width: 250,
       fixed: 'right',
       render: (_, record) => (
         <Space>
           <Button type="link" size="small" onClick={() => setDetailId(record.id)}>
             详情
           </Button>
+          {hasPermission(permissions, 'certificates.bind') && (
+            <>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => setBinding({ operation: 'bind', certificate: record })}
+              >
+                绑定/替换
+              </Button>
+              {record.usage_count > 0 && (
+                <Button
+                  type="link"
+                  size="small"
+                  danger
+                  onClick={() => setBinding({ operation: 'unbind', certificate: record })}
+                >
+                  解绑
+                </Button>
+              )}
+            </>
+          )}
           {hasPermission(permissions, 'certificates.delete') && (
             <Button
               type="link"
@@ -485,6 +508,14 @@ export default function CertificatesPage() {
           </Descriptions>
         )}
       </Drawer>
+      {binding && (
+        <CertificateBindingModal
+          open
+          operation={binding.operation}
+          certificate={binding.certificate}
+          onClose={() => setBinding(null)}
+        />
+      )}
     </Card>
   )
 }

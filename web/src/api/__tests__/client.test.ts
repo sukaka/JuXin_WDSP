@@ -22,6 +22,51 @@ function stubFetch(handler: (input: RequestInfo | URL, init?: RequestInit) => Pr
   return fn
 }
 
+class MockXMLHttpRequest {
+  static instances: MockXMLHttpRequest[] = []
+
+  upload: { onprogress: ((event: ProgressEvent) => void) | null } = { onprogress: null }
+  onload: (() => void) | null = null
+  onerror: (() => void) | null = null
+  ontimeout: (() => void) | null = null
+  onabort: (() => void) | null = null
+  withCredentials = false
+  timeout = 0
+  status = 0
+  responseText = ''
+  method = ''
+  path = ''
+  body?: FormData
+  headers: Record<string, string> = {}
+
+  constructor() {
+    MockXMLHttpRequest.instances.push(this)
+  }
+
+  open(method: string, path: string) {
+    this.method = method
+    this.path = path
+  }
+
+  setRequestHeader(name: string, value: string) {
+    this.headers[name] = value
+  }
+
+  getResponseHeader() {
+    return null
+  }
+
+  send(body: FormData) {
+    this.body = body
+  }
+
+  respond(status: number, body: unknown) {
+    this.status = status
+    this.responseText = JSON.stringify(body)
+    this.onload?.()
+  }
+}
+
 describe('api client', () => {
   beforeEach(() => {
     setCsrfToken(null)
@@ -223,5 +268,47 @@ describe('api client', () => {
     const err = await upload('/upgrades/packages/upload', new FormData()).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ApiError)
     expect((err as ApiError).code).toBe('TIMEOUT')
+  })
+
+  it('upload 传 onProgress 时使用 XHR 返回真实进度并保留 CSRF 与 cookie', async () => {
+    setCsrfToken('csrf-xhr')
+    MockXMLHttpRequest.instances = []
+    vi.stubGlobal('XMLHttpRequest', MockXMLHttpRequest)
+    const onProgress = vi.fn()
+    const form = new FormData()
+    form.append('file', new Blob(['x']), 'x.tar.gz')
+    const pending = upload<{ id: string }>('/upgrades/packages/upload', form, {
+      timeoutMs: 1234,
+      onProgress,
+    })
+    const xhr = MockXMLHttpRequest.instances[0]
+    expect(xhr.method).toBe('POST')
+    expect(xhr.path).toBe('/api/v1/upgrades/packages/upload')
+    expect(xhr.withCredentials).toBe(true)
+    expect(xhr.timeout).toBe(1234)
+    expect(xhr.headers['X-CSRF-Token']).toBe('csrf-xhr')
+    expect(xhr.body).toBe(form)
+
+    xhr.upload.onprogress?.({ loaded: 50, total: 100, lengthComputable: true } as ProgressEvent)
+    expect(onProgress).toHaveBeenCalledWith({ loaded: 50, total: 100, lengthComputable: true })
+    xhr.respond(200, { code: 'SUCCESS', message: 'ok', data: { id: 'p1' } })
+    await expect(pending).resolves.toEqual({ id: 'p1' })
+  })
+
+  it('XHR 上传超时与 502 均映射为明确的 ApiError', async () => {
+    MockXMLHttpRequest.instances = []
+    vi.stubGlobal('XMLHttpRequest', MockXMLHttpRequest)
+    const timedOut = upload('/upgrades/packages/upload', new FormData(), { onProgress: vi.fn() })
+    MockXMLHttpRequest.instances[0].ontimeout?.()
+    const timeoutError = await timedOut.catch((e: unknown) => e)
+    expect(timeoutError).toBeInstanceOf(ApiError)
+    expect((timeoutError as ApiError).code).toBe('TIMEOUT')
+
+    const badGateway = upload('/upgrades/packages/upload', new FormData(), { onProgress: vi.fn() })
+    MockXMLHttpRequest.instances[1].respond(502, '<html>Bad Gateway</html>')
+    const gatewayError = await badGateway.catch((e: unknown) => e)
+    expect(gatewayError).toBeInstanceOf(ApiError)
+    expect((gatewayError as ApiError).status).toBe(502)
+    expect((gatewayError as ApiError).message).toBe('请求失败（HTTP 502）')
   })
 })

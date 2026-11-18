@@ -29,6 +29,16 @@ const DefaultMaxPackageBytes int64 = 4 << 30
 // multipartFormOverhead multipart 表单字段开销上限（version/manifest 等字段）。
 const multipartFormOverhead int64 = 1 << 20
 
+// uploadRequestTimeout 仅覆盖升级包上传请求的读写期限，避免全局 30 秒超时中断大文件上传。
+const uploadRequestTimeout = 10 * time.Minute
+
+func extendUploadRequestDeadlines(w http.ResponseWriter) {
+	rc := http.NewResponseController(w)
+	deadline := time.Now().Add(uploadRequestTimeout)
+	_ = rc.SetReadDeadline(deadline)
+	_ = rc.SetWriteDeadline(deadline)
+}
+
 // SetUploadDir 配置升级包存储目录与上传大小上限；目录不存在时创建（0o750）。
 // dir 为空时上传接口不可用（返回 503）。
 func (h *Handler) SetUploadDir(dir string, maxBytes int64) *Handler {
@@ -70,6 +80,7 @@ func (h *Handler) UploadPackage(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, errors.New("升级包登记存储未配置"))
 		return
 	}
+	extendUploadRequestDeadlines(w)
 	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadBytes+multipartFormOverhead)
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument,

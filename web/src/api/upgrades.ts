@@ -1,4 +1,4 @@
-import { request, upload } from './client'
+import { request, upload, type UploadProgress } from './client'
 import { summarizeCheckResult } from '../utils/stage6'
 import type {
   PageResult,
@@ -56,11 +56,11 @@ export const upgradesApi = {
    * 上传升级包：multipart 携带 file；scheduledAt（RFC3339 带时区）存在时创建定时升级任务
    * （execution.status 为 SCHEDULED），缺省立即开始升级（upgrades.execute）
    */
-  uploadPackage: (file: File, scheduledAt?: string) => {
+  uploadPackage: (file: File, scheduledAt?: string, onProgress?: (progress: UploadProgress) => void) => {
     const form = new FormData()
     form.append('file', file)
     if (scheduledAt) form.append('scheduled_at', scheduledAt)
-    return upload<UpgradePackageResp>('/upgrades/packages/upload', form)
+    return upload<UpgradePackageResp>('/upgrades/packages/upload', form, { onProgress })
   },
   /** 登记升级包元数据（文件经离线介质拷贝到服务端升级包目录） */
   registerPackage: (body: RegisterUpgradePackageBody) =>

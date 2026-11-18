@@ -230,6 +230,34 @@ paths:
         '500': { $ref: '#/components/responses/InternalError' }
 
   /applications/{id}/certificate:
+    get:
+      operationId: appGetCertificate
+      tags: [certificates]
+      summary: 查询应用当前活动证书
+      description: 返回应用当前绑定的活动证书；未绑定时 data.certificate=null。权限：`certificates.read`
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 应用ID }
+      responses:
+        '200':
+          description: 当前活动证书或 null
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: SUCCESS }
+                  message: { type: string, example: 操作成功 }
+                  data:
+                    type: object
+                    properties:
+                      certificate:
+                        nullable: true
+                        $ref: '#/components/schemas/CertCertificate'
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
     post:
       operationId: appBindCertificate
       tags: [certificates]

@@ -225,7 +225,7 @@ export default function ApplicationDetailPage() {
               key: 'certificates',
               label: '证书绑定',
               children: hasHttps ? (
-                <CertificatesTab appId={app.id} />
+                <CertificatesTab application={app} />
               ) : (
                 <Alert
                   type="info"
