@@ -228,11 +228,12 @@ func (g GatewayConfig) ValkeyAddress(cache CacheConfig) string {
 
 // HTTPConfig 是 HTTP 服务配置。
 type HTTPConfig struct {
-	Host         string
-	Port         int
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
+	Host          string
+	Port          int
+	ReadTimeout   time.Duration
+	WriteTimeout  time.Duration
+	IdleTimeout   time.Duration
+	UploadTimeout time.Duration
 }
 
 const (
@@ -363,11 +364,12 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Env: getEnv("APP_ENV", "dev"),
 		HTTP: HTTPConfig{
-			Host:         getEnv("SERVER_HOST", "0.0.0.0"),
-			Port:         getEnvInt("SERVER_PORT", 8080),
-			ReadTimeout:  getEnvDuration("SERVER_READ_TIMEOUT", 30*time.Second),
-			WriteTimeout: getEnvDuration("SERVER_WRITE_TIMEOUT", 30*time.Second),
-			IdleTimeout:  getEnvDuration("SERVER_IDLE_TIMEOUT", 60*time.Second),
+			Host:          getEnv("SERVER_HOST", "0.0.0.0"),
+			Port:          getEnvInt("SERVER_PORT", 8080),
+			ReadTimeout:   getEnvDuration("SERVER_READ_TIMEOUT", 30*time.Second),
+			WriteTimeout:  getEnvDuration("SERVER_WRITE_TIMEOUT", 30*time.Second),
+			IdleTimeout:   getEnvDuration("SERVER_IDLE_TIMEOUT", 60*time.Second),
+			UploadTimeout: getEnvDuration("UPGRADE_UPLOAD_TIMEOUT", 10*time.Minute),
 		},
 		DB: loadDBConfig(dialect),
 		Cache: CacheConfig{
@@ -469,6 +471,9 @@ func Load() (*Config, error) {
 	}
 	if err := cfg.DB.Validate(); err != nil {
 		return nil, err
+	}
+	if cfg.HTTP.UploadTimeout < time.Minute || cfg.HTTP.UploadTimeout > time.Hour {
+		return nil, fmt.Errorf("UPGRADE_UPLOAD_TIMEOUT must be between 1m and 1h")
 	}
 	if err := cfg.Kafka.Validate(); err != nil {
 		return nil, err

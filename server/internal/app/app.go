@@ -781,6 +781,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		upgradeMaxBytes = v
 	}
 	upgradeHandler.SetUploadDir(upgradePackagesDir, upgradeMaxBytes)
+	upgradeHandler.SetUploadTimeout(cfg.HTTP.UploadTimeout)
 	prechecker.SetPackagesDir(upgradePackagesDir)
 	if upgradeSvc != nil {
 		upgradeExecutorDir := os.Getenv("UPGRADE_EXECUTOR_DIR")

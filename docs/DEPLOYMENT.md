@@ -143,6 +143,9 @@ sudo bash jiuzhang-wdsp-update-full-X.Y.Z-amd64.sh \
 
 - 必须是 Linux root、Docker Compose 与 systemd 环境；API 地址从旧 Compose 实际发布端口读取，也可用
   `--api-url` 显式覆盖。管理员密码和图形验证码按需交互输入，不要把密码写进命令行。
+- Web 上传升级包时，仅当前上传请求使用 `UPGRADE_UPLOAD_TIMEOUT`（默认 `10m`，允许 `1m` 至 `1h`）
+  的读写期限，其他接口仍使用 `SERVER_READ_TIMEOUT` / `SERVER_WRITE_TIMEOUT`（默认各 `30s`）。
+  不通过调大全接口超时来解决大文件上传；上传大小上限、CSRF、权限、验签和失败审计不变。
 - 先检查真实组件健康并创建、验证 FULL 加密备份；备份失败不加载或切换镜像。健康检查读取 Caddy Admin
   的真实 listeners，不再默认探测开发端口 18080。
 - 一次重建 `api/web/gateway/netmgrd/logrotator/containerops`，逐个核对镜像 ID、Running/Healthy 和实际探针；

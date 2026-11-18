@@ -49,6 +49,8 @@ type Handler struct {
 	// uploadLocks 按目标文件名划分上传互斥锁（同名并发上传串行化，防 check-then-rename
 	// TOCTOU 竞态互相覆盖导致登记哈希与落盘文件不符）
 	uploadLocks sync.Map
+	// uploadTimeout 仅覆盖当前上传请求的读写期限，不改变全局 HTTP 超时配置。
+	uploadTimeout time.Duration
 	// artifactVerifier 负责固定信任根、签名和归档内容绑定校验。
 	// 仅测试可替换；生产默认使用 verifyPackageArtifact。
 	artifactVerifier PackageArtifactVerifier
@@ -68,6 +70,7 @@ func NewHandler(store *Store, svc *Service, au *audits.Service) *Handler {
 		service:          svc,
 		audits:           au,
 		artifactVerifier: verifyPackageArtifact,
+		uploadTimeout:    DefaultUploadTimeout,
 	}
 	if store != nil {
 		h.registrar = store
@@ -76,6 +79,15 @@ func NewHandler(store *Store, svc *Service, au *audits.Service) *Handler {
 		h.executor = svc
 		h.canceller = svc
 	}
+	return h
+}
+
+// SetUploadTimeout 配置单次升级包上传的读写期限；仅作用于当前上传请求。
+func (h *Handler) SetUploadTimeout(timeout time.Duration) *Handler {
+	if timeout <= 0 {
+		timeout = DefaultUploadTimeout
+	}
+	h.uploadTimeout = timeout
 	return h
 }
 

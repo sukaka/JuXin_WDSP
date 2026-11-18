@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestLoad(t *testing.T) {
@@ -313,5 +314,27 @@ func TestRequestPCAPConfigurationIsExplicitAndComplete(t *testing.T) {
 	}
 	if !cfg.RequestPCAP.Enabled() {
 		t.Fatalf("explicit capture enable was rejected: %+v", cfg.RequestPCAP)
+	}
+}
+
+func TestUpgradeUploadTimeoutConfiguration(t *testing.T) {
+	t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+	t.Setenv("UPGRADE_UPLOAD_TIMEOUT", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTP.UploadTimeout != 10*time.Minute {
+		t.Fatalf("default upload timeout = %s", cfg.HTTP.UploadTimeout)
+	}
+	t.Setenv("UPGRADE_UPLOAD_TIMEOUT", "30m")
+	cfg, err = Load()
+	if err != nil || cfg.HTTP.UploadTimeout != 30*time.Minute {
+		t.Fatalf("30m upload timeout rejected: %v", err)
+	}
+	t.Setenv("UPGRADE_UPLOAD_TIMEOUT", "30s")
+	if _, err := Load(); err == nil {
+		t.Fatal("30s upload timeout must be rejected")
 	}
 }

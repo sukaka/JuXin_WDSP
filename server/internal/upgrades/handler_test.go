@@ -105,10 +105,15 @@ type uploadResult struct {
 	Message   string   `json:"message"`
 }
 
+type deadlineRecordingWriter struct{ *httptest.ResponseRecorder }
+
+func (w *deadlineRecordingWriter) SetReadDeadline(time.Time) error  { return nil }
+func (w *deadlineRecordingWriter) SetWriteDeadline(time.Time) error { return nil }
+
 func serveUpload(t *testing.T, h *Handler, r *http.Request) (int, string, uploadResult) {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	h.UploadPackage(rec, r)
+	h.UploadPackage(&deadlineRecordingWriter{rec}, r)
 	var body struct {
 		Code    string          `json:"code"`
 		Message string          `json:"message"`

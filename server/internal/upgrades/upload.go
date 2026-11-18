@@ -26,6 +26,9 @@ import (
 // DefaultMaxPackageBytes 升级包上传大小上限默认值（4GiB；离线包实测 175MB~563MB）。
 const DefaultMaxPackageBytes int64 = 4 << 30
 
+// DefaultUploadTimeout 单次升级包上传的读写期限；不扩大其他接口的默认 30 秒限制。
+const DefaultUploadTimeout = 10 * time.Minute
+
 // multipartFormOverhead multipart 表单字段开销上限（version/manifest 等字段）。
 const multipartFormOverhead int64 = 1 << 20
 
@@ -61,6 +64,21 @@ func (h *Handler) SetUploadDir(dir string, maxBytes int64) *Handler {
 // VERIFIED 后自动创建升级执行（等同 POST /api/v1/upgrades），创建失败时包保持
 // VERIFIED 并以 warning 说明可手动执行。权限：upgrades.execute。
 func (h *Handler) UploadPackage(w http.ResponseWriter, r *http.Request) {
+	controller := http.NewResponseController(w)
+	defer func() {
+		_ = controller.SetReadDeadline(time.Time{})
+		_ = controller.SetWriteDeadline(time.Time{})
+	}()
+	if err := controller.SetReadDeadline(time.Now().Add(h.uploadTimeout)); err != nil {
+		slog.Error("upgrade upload read deadline unsupported", "error", err)
+		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "当前环境不支持上传期限控制")
+		return
+	}
+	if err := controller.SetWriteDeadline(time.Now().Add(h.uploadTimeout)); err != nil {
+		slog.Error("upgrade upload write deadline unsupported", "error", err)
+		response.Error(w, r, http.StatusInternalServerError, response.CodeInternalError, "当前环境不支持上传期限控制")
+		return
+	}
 	p := authz.PrincipalFrom(r.Context())
 	if h.packagesDir == "" {
 		response.Error(w, r, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "升级包上传目录未配置")
