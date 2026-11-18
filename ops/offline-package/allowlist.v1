@@ -9,6 +9,7 @@ file=healthcheck/check.sh
 file=install/console-cert.sh
 file=install/install-gateway-baremetal.sh
 file=install/install.sh
+file=install/lifecycle.py
 file=install/install-hostctl.sh
 file=install/pcap.sh
 file=install/install-pcapd.sh

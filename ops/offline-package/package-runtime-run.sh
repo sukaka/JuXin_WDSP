@@ -29,6 +29,7 @@ usage() {
   -o, --output DIR          独立输出目录；默认 dist/run-YYYYmmdd-HHMMSS
       --signing-key FILE    Ed25519 发布私钥路径；也可通过 WDSP_SIGNING_KEY 提供
       --rpm-dir DIR         必填；匹配目标 openEuler x86-64 的完整离线 RPM 目录
+      --alinux-rpm-dir DIR  加入 Alibaba Cloud Linux 4 仓库；两套目录均需 repodata
       --development         构建并验收未签名 development 完整包；禁止与签名参数同用
       --dry-run             仅显示将执行的构建命令，不写入文件或调用 Docker
   -h, --help                显示帮助
@@ -43,7 +44,7 @@ usage() {
 
 本脚本不会修改版本号、提交/推送 Git 或部署。development 包不得用于生产。
 RPM 目录必须在顶层包含 docker-compose-plugin 的 x86-64 RPM 及其全部依赖。
-脚本校验 RPM 架构和文件完整性；依赖闭包仍须在干净 openEuler 测试机验收。
+脚本校验 RPM 架构和文件完整性；依赖闭包仍须在各目标系统的干净测试机验收。
 EOF
 }
 
@@ -52,6 +53,7 @@ VERSION_EXPLICIT=false
 OUTPUT_DIR=''
 SIGNING_KEY=''
 RPM_DIR=''
+ALINUX_RPM_DIR=''
 DRY_RUN=false
 DEVELOPMENT=false
 while [[ $# -gt 0 ]]; do
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     -o|--output) OUTPUT_DIR="${2:-}"; shift 2 ;;
     --signing-key) SIGNING_KEY="${2:-}"; shift 2 ;;
     --rpm-dir) RPM_DIR="${2:-}"; shift 2 ;;
+    --alinux-rpm-dir) ALINUX_RPM_DIR="${2:-}"; shift 2 ;;
     --development) DEVELOPMENT=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -125,6 +128,14 @@ fi
 [[ -n "$RPM_DIR" ]] || die '完整离线 .run 打包必须提供 --rpm-dir；其中必须包含 docker-compose-plugin 及其依赖 RPM'
 [[ -d "$RPM_DIR" ]] || die "RPM 目录不存在：$RPM_DIR"
 RPM_DIR="$(cd "$RPM_DIR" && pwd -P)"
+RUN_BASENAME="jiuzhang-wdsp-openeuler-zhaoxin-${VERSION}-amd64.run"
+if [[ -n "$ALINUX_RPM_DIR" ]]; then
+  [[ -f "$ALINUX_RPM_DIR/repodata/repomd.xml" && -f "$RPM_DIR/repodata/repomd.xml" ]] \
+    || die '双系统离线包需要两个完整 RPM 仓库，均需包含 repodata/repomd.xml'
+  ALINUX_RPM_DIR="$(cd "$ALINUX_RPM_DIR" && pwd -P)"
+  [[ "$RPM_DIR" != "$ALINUX_RPM_DIR" ]] || die '两套 RPM 仓库必须独立'
+  RUN_BASENAME="jiuzhang-wdsp-install-${VERSION}-amd64.run"
+fi
 shopt -s nullglob
 RPM_FILES=("$RPM_DIR"/*.rpm)
 COMPOSE_PLUGIN_RPMS=("$RPM_DIR"/docker-compose-plugin-*.rpm)
@@ -192,12 +203,38 @@ source_snapshot() {
   } | sha256_of | awk '{print $1}'
 }
 
+verify_packed_rpm_repository() (
+  local payload_dir="$1" platform="$2" source_dir="$3" repo_path="rpms/$2" file
+  export LC_ALL=C
+  shopt -s nullglob
+  local -a source_files=("$source_dir"/*.rpm) source_metadata=("$source_dir"/repodata/*)
+  cd "$payload_dir"
+  local -a rpm_files=("$repo_path"/*.rpm) metadata=("$repo_path"/repodata/*)
+  [[ ${#source_files[@]} -eq ${#rpm_files[@]} && ${#source_metadata[@]} -eq ${#metadata[@]} ]] \
+    || die "$platform 离线仓库文件数量与输入不一致"
+  for file in "${source_files[@]}"; do
+    cmp -s "$file" "$repo_path/${file##*/}" || die "$platform 离线仓库 RPM 内容不一致"
+  done
+  for file in "${source_metadata[@]}"; do
+    cmp -s "$file" "$repo_path/repodata/${file##*/}" || die "$platform 离线仓库元数据不一致"
+  done
+  {
+    for file in "${rpm_files[@]}" "${metadata[@]}"; do
+      sha256_of "$file"
+    done
+  } | cmp -s - "$repo_path/rpms.sha256" || die "$platform 离线仓库哈希清单不一致"
+  if [[ "$DEVELOPMENT" != true ]]; then
+    ed25519_verify_file "$TRUSTED_PUBLIC_KEY" "$repo_path/rpms.sha256" "$repo_path/rpms.sha256.sig" \
+      || die "$platform 离线仓库签名无效"
+  fi
+)
+
 verify_delivery() {
-  local run_file="$OUTPUT_DIR/jiuzhang-wdsp-openeuler-zhaoxin-${VERSION}-amd64.run"
+  local run_file="$OUTPUT_DIR/$RUN_BASENAME"
   local offline_name="jiuzhang-wdsp-offline-${VERSION}-amd64.tar.gz"
   local offline_file scan_report manifest_member payload_dir rpm_file archive_listing
   local expected_delivery_mode=production expected_signed=true verification_scope='正式签名'
-  local -a packaged_rpms required_images
+  local -a packaged_rpms=() required_images
   if [[ "$DEVELOPMENT" == true ]]; then
     expected_delivery_mode=development
     expected_signed=false
@@ -215,14 +252,16 @@ verify_delivery() {
   fi
   bash "$run_file" --help >/dev/null || die '最终 .run --help 冒烟失败'
   local install_alias="$OUTPUT_DIR/jiuzhang-wdsp-install-${VERSION}-amd64.run"
-  [[ -x "$install_alias" ]] || die '缺少 install 安装交付别名'
-  cmp -s "$run_file" "$install_alias" || die 'install 别名与原始安装包内容不一致'
-  sha256_check_sidecar "$install_alias" || die 'install 别名 SHA-256 校验失败'
-  if [[ "$DEVELOPMENT" == true ]]; then
-    [[ ! -e "${install_alias}.sig" ]] || die 'development install 别名不应带生产签名'
-  else
-    ed25519_verify_file "$TRUSTED_PUBLIC_KEY" "$install_alias" "${install_alias}.sig" \
-      || die 'install 别名验签失败'
+  if [[ "$run_file" != "$install_alias" ]]; then
+    [[ -x "$install_alias" ]] || die '缺少 install 安装交付别名'
+    cmp -s "$run_file" "$install_alias" || die 'install 别名与原始安装包内容不一致'
+    sha256_check_sidecar "$install_alias" || die 'install 别名 SHA-256 校验失败'
+    if [[ "$DEVELOPMENT" == true ]]; then
+      [[ ! -e "${install_alias}.sig" ]] || die 'development install 别名不应带生产签名'
+    else
+      ed25519_verify_file "$TRUSTED_PUBLIC_KEY" "$install_alias" "${install_alias}.sig" \
+        || die 'install 别名验签失败'
+    fi
   fi
 
   payload_dir="$WORK_DIR/final-payload"
@@ -245,15 +284,28 @@ verify_delivery() {
       || die '嵌入基础离线包 Ed25519 验签失败'
   fi
 
-  shopt -s nullglob
-  packaged_rpms=("$payload_dir"/rpms/*.rpm)
-  shopt -u nullglob
-  [[ ${#packaged_rpms[@]} -eq ${#RPM_FILES[@]} ]] || die '最终 .run 中 RPM 数量与输入目录不一致'
-  for rpm_file in "${RPM_FILES[@]}"; do
-    [[ -f "$payload_dir/rpms/$(basename "$rpm_file")" ]] || die "最终 .run 缺少 RPM：$(basename "$rpm_file")"
-    [[ "$(sha256_of "$rpm_file" | awk '{print $1}')" == "$(sha256_of "$payload_dir/rpms/$(basename "$rpm_file")" | awk '{print $1}')" ]] \
-      || die "最终 .run 中 RPM 内容不一致：$(basename "$rpm_file")"
-  done
+  if [[ -n "$ALINUX_RPM_DIR" ]]; then
+    local platform rpm_source repo_path
+    shopt -s nullglob
+    for platform in openeuler alinux4; do
+      rpm_source="$RPM_DIR"
+      [[ "$platform" != alinux4 ]] || rpm_source="$ALINUX_RPM_DIR"
+      repo_path="$payload_dir/rpms/$platform"
+      verify_packed_rpm_repository "$payload_dir" "$platform" "$rpm_source"
+      packaged_rpms+=("$repo_path"/*.rpm)
+    done
+    shopt -u nullglob
+  else
+    shopt -s nullglob
+    packaged_rpms=("$payload_dir"/rpms/*.rpm)
+    shopt -u nullglob
+    [[ ${#packaged_rpms[@]} -eq ${#RPM_FILES[@]} ]] || die '最终 .run 中 RPM 数量与输入目录不一致'
+    for rpm_file in "${RPM_FILES[@]}"; do
+      [[ -f "$payload_dir/rpms/$(basename "$rpm_file")" ]] || die "最终 .run 缺少 RPM：$(basename "$rpm_file")"
+      [[ "$(sha256_of "$rpm_file" | awk '{print $1}')" == "$(sha256_of "$payload_dir/rpms/$(basename "$rpm_file")" | awk '{print $1}')" ]] \
+        || die "最终 .run 中 RPM 内容不一致：$(basename "$rpm_file")"
+    done
+  fi
 
   scan_report="$OUTPUT_DIR/${offline_name%.tar.gz}.scan.json"
   [[ -f "$scan_report" ]] || die '基础离线包缺少最终扫描报告'
@@ -304,7 +356,7 @@ verify_delivery() {
     die '基础离线包混入测试目录或产品文档目录'
   fi
   log_info "最终验收通过：${verification_scope}、哈希、11 个运行镜像（含默认不启动的 pcapd）、Agent、${#packaged_rpms[@]} 个 RPM、内容扫描均有效"
-  log_warn 'RPM 依赖闭包仍须在干净的目标 openEuler x86-64 测试机完成离线安装验收'
+  log_warn 'RPM 依赖闭包仍须在干净的目标 x86-64 测试机完成离线安装验收'
 }
 
 build_image() {
@@ -363,6 +415,7 @@ fi
 
 export WDSP_AGENT_BINARY="$AGENT_BINARY"
 run_args=(--version "$VERSION" --output "$OUTPUT_DIR" --rpm-dir "$RPM_DIR")
+[[ -z "$ALINUX_RPM_DIR" ]] || run_args+=(--alinux-rpm-dir "$ALINUX_RPM_DIR")
 [[ "$DEVELOPMENT" != true ]] || run_args+=(--development)
 log_info '调用 .run 包装器（运行时裁剪、镜像历史清理、完整性校验由其执行）...'
 run_command bash "$RUN_BUILDER" "${run_args[@]}"
@@ -374,5 +427,5 @@ else
   [[ "$SOURCE_SNAPSHOT_AFTER" == "$SOURCE_SNAPSHOT_BEFORE" ]] \
     || die '构建期间源码或工作区状态发生变化，拒绝交付；请确认变更后重新打包'
   verify_delivery
-  log_info "打包完成：$OUTPUT_DIR/jiuzhang-wdsp-openeuler-zhaoxin-${VERSION}-amd64.run"
+  log_info "打包完成：$OUTPUT_DIR/$RUN_BASENAME"
 fi

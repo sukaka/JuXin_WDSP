@@ -52,6 +52,7 @@ usage() {
       --pcap-ports LIST    明确端口，逗号分隔，例如 80,443；不接受端口区间
       --pcap-hot-dir DIR   SSD热证据目录（绝对路径）
       --pcap-warm-dir DIR  SAS温证据目录（绝对路径，须与热目录不同）
+      --reuse-env          保留数据复装，复用已有 .env/密钥并跳过账号初始化
       --force              允许覆盖已存在的 .env
       --no-firewall        跳过 firewalld 放行
       --skip-accounts      跳过三权账号初始化
@@ -70,6 +71,7 @@ WEB_PORT=8080
 WEB_HTTPS_PORT=8443
 SITE_PORTS=""
 FORCE=false
+REUSE_ENV=false
 NO_FIREWALL=false
 SKIP_ACCOUNTS=false
 ALLOW_UNSIGNED=false
@@ -89,6 +91,7 @@ while [[ $# -gt 0 ]]; do
     --pcap-ports)      PCAP_PORTS="$2"; shift 2 ;;
     --pcap-hot-dir)    PCAP_HOT_DIR="$2"; shift 2 ;;
     --pcap-warm-dir)   PCAP_WARM_DIR="$2"; shift 2 ;;
+    --reuse-env)       REUSE_ENV=true; shift ;;
     --force)           FORCE=true; shift ;;
     --no-firewall)     NO_FIREWALL=true; shift ;;
     --skip-accounts)   SKIP_ACCOUNTS=true; shift ;;
@@ -97,6 +100,11 @@ while [[ $# -gt 0 ]]; do
     *) log_err "未知参数: $1"; usage; exit 2 ;;
   esac
 done
+if [[ "$REUSE_ENV" == "true" ]]; then
+  [[ "$FORCE" != "true" && "$PCAP_ENABLE" != "true" ]] || die '--reuse-env 不可与 --force 或 --enable-pcap 同用'
+  [[ -f "$JZ_ENV_FILE" && ! -L "$JZ_ENV_FILE" ]] || die '保留数据复装需要已有的独立 .env 文件'
+  SKIP_ACCOUNTS=true
+fi
 pcap_validate_args
 pcap_validate_enabled
 # 端口清单格式校验：每项为 1-65535 或起点-终点区间
@@ -244,6 +252,20 @@ if [[ -n "$pkg_manifest" ]]; then
   log_info "完整包升级执行器预检通过"
 fi
 
+if [[ "$REUSE_ENV" == "true" ]]; then
+  # Read rendered ports without executing the retained .env as shell code.
+  require_cmd jq
+  rendered="$(compose config --format json)"
+  API_PORT="$(printf '%s' "$rendered" | jq -er '.services.api.ports[] | select(.target == 8080) | .published' | head -1)"
+  WEB_PORT="$(printf '%s' "$rendered" | jq -er '.services.web.ports[] | select(.target == 8080) | .published' | head -1)"
+  WEB_HTTPS_PORT="$(printf '%s' "$rendered" | jq -er '.services.web.ports[] | select(.target == 8443) | .published' | head -1)"
+  unset rendered
+  for port in "$API_PORT" "$WEB_PORT" "$WEB_HTTPS_PORT"; do
+    [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || die '保留配置中的控制台/API 端口非法'
+  done
+  JZ_API_BASE="$(compose_api_url "$JZ_COMPOSE_FILE" "$JZ_ENV_FILE")"
+fi
+
 # ---------- 1. 环境检查 ----------
 log_info "步骤 1/9：环境检查"
 
@@ -303,6 +325,10 @@ else
 fi
 
 # ---------- 2. 生成 .env ----------
+if [[ "$REUSE_ENV" == "true" ]]; then
+  chmod 600 "$JZ_ENV_FILE"
+  log_info '步骤 2/9：复用保留配置，保留原密码和加密主密钥；不重新初始化账号'
+else
 log_info "步骤 2/9：生成环境文件 $JZ_ENV_FILE"
 if [[ -f "$JZ_ENV_FILE" && "$FORCE" != "true" ]]; then
   die "$JZ_ENV_FILE 已存在（--force 可覆盖；覆盖前请备份）"
@@ -337,6 +363,7 @@ EOF
 chmod 600 "$JZ_ENV_FILE"
 log_info "已生成随机口令/主密钥，并写入产品线 PRODUCT_EDITION=${PKG_EDITION}（不回显口令）"
 pcap_configure
+fi
 
 # ---------- 3. 采集宿主机指纹（离线授权绑定用） ----------
 # 算法与授权中心 tools/fingerprint 一致；api 容器经只读挂载（compose 的

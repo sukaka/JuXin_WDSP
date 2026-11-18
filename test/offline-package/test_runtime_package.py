@@ -25,6 +25,8 @@ class RuntimePackageTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             with tarfile.open(Path(output) / "jiuzhang-wdsp-offline-9.9.9-amd64.tar.gz") as archive:
                 names = archive.getnames()
+                for member in archive:
+                    self.assertFalse([key for key in member.pax_headers if "xattr" in key], member.name)
                 for name in names:
                     parts = Path(name).parts
                     self.assertFalse(set(parts) & {"docs", "tests", "test", "testdata", "__tests__", "__pycache__"}, name)
@@ -48,6 +50,7 @@ class RuntimePackageTests(unittest.TestCase):
                 self.assertIn('tmpfs: ["/tmp:size=8m,mode=1777"]', compose)
                 for relative in (
                     "ops/install/install-hostctl.sh",
+                    "ops/install/lifecycle.py",
                     "ops/system/hostctl-exec.sh",
                     "ops/system/firewall-ensure.sh",
                     "ops/system/factory-reset.sh",

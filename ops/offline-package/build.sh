@@ -151,7 +151,7 @@ runtime_copy() {
   local src="$1" dst="$2"
   mkdir -p "$dst"
   if [[ "$RUNTIME_ONLY" == "true" ]]; then
-    COPYFILE_DISABLE=1 tar --exclude='*.md' --exclude='README*' --exclude='INSTALL' \
+    COPYFILE_DISABLE=1 tar --no-xattrs --exclude='*.md' --exclude='README*' --exclude='INSTALL' \
       --exclude='.git*' --exclude='test' --exclude='tests' --exclude='testdata' \
       --exclude='__tests__' --exclude='__pycache__' -cf - -C "$src" . | tar -xf - -C "$dst"
   else
@@ -416,7 +416,7 @@ build_gateway_baremetal_pkg() {
   else
     (cd "$gdir" && sha256_of caddy jiuzhang-pcapd delivery_mode VERSION > sha256sums)
   fi
-  COPYFILE_DISABLE=1 tar -czf "$out" -C "$gtmp" "gateway-linux-${ARCH}"
+  COPYFILE_DISABLE=1 tar --no-xattrs -czf "$out" -C "$gtmp" "gateway-linux-${ARCH}"
   gateway_scan_report="$gtmp/gateway-scan.json"
   python3 "$SCANNER_FILE" \
     --root "$out" \
@@ -979,7 +979,7 @@ package_files_manifest_sha256="$(jq -r '.manifest.files_manifest_sha256 // empty
 
 # ---------- 7. 打包 ----------
 out="$OUT_DIR/${PKG_BASENAME}.tar.gz"
-COPYFILE_DISABLE=1 tar -czf "$out" -C "$work" "$PKG_BASENAME"
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$out" -C "$work" "$PKG_BASENAME"
 
 # 对最终归档再次递归扫描，覆盖镜像层/历史层和嵌套归档；报告中的摘要
 # 是签名对象的摘要，任何扫描后修改都会在签名/交付前被拒绝。
