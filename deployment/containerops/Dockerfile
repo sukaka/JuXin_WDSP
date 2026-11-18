@@ -38,11 +38,11 @@ ARG TARGETARCH
 ARG GOPROXY=https://goproxy.cn,direct
 ENV GOPROXY=${GOPROXY}
 
-# server 模块含 replace 指令指向 ../gateway/dynamic_security，构建上下文须与
-# server/Dockerfile 一致（仓库根），容器运维守护进程自身仅使用 Go 标准库。
+# server 模块含本地 gateway replace，构建上下文须与 server/Dockerfile 一致（仓库根）。
 WORKDIR /build/server
 COPY server/go.mod server/go.sum ./
 COPY gateway/dynamic_security/ /build/gateway/dynamic_security/
+COPY gateway/pcapevidence/ /build/gateway/pcapevidence/
 RUN go mod download
 COPY server/ ./
 # GOOS/GOARCH 显式指向目标平台（Go 交叉编译）

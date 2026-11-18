@@ -148,6 +148,7 @@ sudo bash jiuzhang-wdsp-update-full-X.Y.Z-amd64.sh \
 - 一次重建 `api/web/gateway/netmgrd/logrotator/containerops`，逐个核对镜像 ID、Running/Healthy 和实际探针；
   sidecar 先清理自身旧容器再重建，不删除命名卷。已显式启用 PCAP 时才把 `pcapd` 纳入同次升级。
 - 新 release 复用原 `.env` 和 `runtime`，保留原证书、授权、数据库、命名卷及全部旧镜像 ID。
+  完整升级持有既有宿主执行器互斥锁，不能与 Web 升级并发切换镜像；回滚同时恢复旧 release 的执行器配置。
   `current` 只在容器、数据库迁移、hostctl 和升级执行器检查全部通过后原子切换。
 - 启动或健康检查失败自动恢复原镜像，并按升级前记录逐步回退本轮新增迁移；不会猜测迁移版本。
   自动回滚不默认恢复 FULL 备份。确需覆盖升级期间业务数据时，须另用

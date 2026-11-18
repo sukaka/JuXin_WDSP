@@ -52,7 +52,7 @@ done
 [[ "$(id -u)" == 0 ]] || die "完整升级必须以 root 执行"
 [[ "$(uname -s)" == Linux ]] || die "完整升级仅支持目标 Linux 主机"
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "--timeout 必须为正整数"
-for cmd in docker curl jq openssl python3 tar sha256sum realpath systemctl install base64 timeout; do require_cmd "$cmd"; done
+for cmd in docker curl jq openssl python3 tar sha256sum realpath systemctl install base64 timeout flock; do require_cmd "$cmd"; done
 [[ -f "$PACKAGE" ]] || die "升级归档不存在"
 PACKAGE="$(realpath "$PACKAGE")"
 [[ "$(basename "$PACKAGE")" == jiuzhang-wdsp-update-full-*-*.tar.gz ]] || die "请使用名称含 update-full 的完整升级归档，不能用 install/run 或应用镜像包"
@@ -75,6 +75,11 @@ if [[ -e "$CURRENT_LINK" || -L "$CURRENT_LINK" ]]; then
 fi
 [[ -d /run/systemd/system ]] || die "systemd 不可用"
 docker compose version >/dev/null 2>&1 || die "缺少 Docker Compose 插件"
+[[ -x "$CURRENT_RELEASE/ops/upgrade/install-executor.sh" && -x "$CURRENT_RELEASE/ops/upgrade/upgrade-executor.sh" ]] \
+  || die "原 release 缺少升级执行器，无法在失败时安全恢复"
+[[ -d "$CURRENT_RELEASE/runtime/upgrade-executor" ]] || die "原升级执行器共享目录不存在"
+exec 8>"$CURRENT_RELEASE/runtime/upgrade-executor/executor.lock"
+flock -n 8 || die "已有宿主升级任务在执行，禁止并发切换；请等待其结束后重试"
 if [[ -z "$API_URL" ]]; then
   API_URL="$(compose_api_url "$OLD_COMPOSE" "$OLD_ENV")" || die "无法从现有 Compose 读取管理 API 地址，请使用 --api-url 显式指定"
 fi

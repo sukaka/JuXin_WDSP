@@ -77,6 +77,10 @@ class FullUpgradeContractTests(unittest.TestCase):
 
     def test_post_switch_health_failure_restores_all_old_images_and_only_new_migrations(self):
         self.base.write_executable(
+            self.base.work / "ops/upgrade/install-executor.sh",
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$HOSTCTL_HELPER_LOG"\n',
+        )
+        self.base.write_executable(
             self.base.work / "ops/healthcheck/check.sh",
             '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$HEALTH_LOG"\n'
             '[[ "$(wc -l < "$HEALTH_LOG")" -eq 1 ]]\n',
@@ -99,6 +103,8 @@ class FullUpgradeContractTests(unittest.TestCase):
                 expected = f"{expected}-old"
             self.assertEqual(fixture["running"][service]["image_id"], f"sha256:{expected}")
         self.assertEqual(self.current.resolve(), self.work.resolve())
+        helper_log = self.base.hostctl_log.read_text()
+        self.assertIn(f"--compose-file {self.base.old_compose}", helper_log)
 
     def test_previously_enabled_pcap_is_upgraded_but_never_enabled_by_default(self):
         for path, suffix in ((self.base.old_compose, "old"), (self.base.new_compose, "target")):

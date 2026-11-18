@@ -57,6 +57,19 @@ class RuntimePackageTests(unittest.TestCase):
                     self.assertTrue(any(n.endswith("/" + relative) for n in names), relative)
                 self.assertIn("GATEWAY_NODE_NAME: ${GATEWAY_NODE_NAME:-gateway-poc-01}", compose)
                 self.assertTrue(any(n.endswith("/licenses/THIRD_PARTY_NOTICES") for n in names))
+    def test_root_context_images_include_all_local_replace_modules(self):
+        replacements = []
+        for line in (ROOT / "server/go.mod").read_text().splitlines():
+            fields = line.split()
+            if fields[:1] == ["replace"] and "=>" in fields:
+                target = fields[fields.index("=>") + 1]
+                if target.startswith("../"):
+                    replacements.append(target[3:])
+        self.assertTrue(replacements)
+        for dockerfile in (ROOT / "server/Dockerfile", ROOT / "deployment/containerops/Dockerfile"):
+            text = dockerfile.read_text()
+            for replacement in replacements:
+                self.assertIn(f"COPY {replacement}/ /build/{replacement}/", text, dockerfile.name)
 
 
 if __name__ == "__main__":

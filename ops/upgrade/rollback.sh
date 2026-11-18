@@ -227,6 +227,11 @@ if [[ -n "$OLD_INSTALL_ROOT" && -f "$SCRIPT_DIR/../install/install-hostctl.sh" ]
   bash "$SCRIPT_DIR/../install/install-hostctl.sh" --install-root "$OLD_INSTALL_ROOT" --strict \
     || die "hostctl 尚未恢复原 release 路径"
 fi
+if [[ "$FULL_UPGRADE" == true && -n "$OLD_INSTALL_ROOT" ]]; then
+  bash "$SCRIPT_DIR/install-executor.sh" --compose-file "$PREVIOUS_COMPOSE_FILE" \
+    --env-file "$OLD_INSTALL_ROOT/.env" --api-url "$JZ_API_BASE" \
+    || die "升级执行器尚未恢复原 release 配置"
+fi
 switch_current
 
 if [[ "$RESTORE_BACKUP" == true ]]; then
