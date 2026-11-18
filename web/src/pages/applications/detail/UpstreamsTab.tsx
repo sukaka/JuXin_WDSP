@@ -26,6 +26,7 @@ import useBatchDelete from '../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../stores/auth'
 import { hasPermission } from '../../../utils/permission'
 import type { UpstreamItem, UpstreamTestResult } from '../../../types'
+import { UPSTREAM_DETAIL_FIELD_LABELS, UPSTREAM_DETAIL_VALUE_LABELS } from './upstreamDetail'
 
 interface UpstreamFormValues {
   name: string
@@ -536,6 +537,8 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
         open={detailRecord !== null}
         title="源站详情"
         record={detailRecord as Record<string, unknown> | null}
+        fieldLabels={UPSTREAM_DETAIL_FIELD_LABELS}
+        valueLabels={UPSTREAM_DETAIL_VALUE_LABELS}
         onClose={() => setDetailRecord(null)}
       />
     </>

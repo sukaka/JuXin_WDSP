@@ -17,8 +17,10 @@ function isEmpty(v: unknown): boolean {
   return v === null || v === undefined || v === ''
 }
 
-function renderValue(key: string, value: unknown) {
+function renderValue(key: string, value: unknown, valueLabels?: Record<string, Record<string, string>>) {
   if (isEmpty(value)) return <Typography.Text type="secondary">-</Typography.Text>
+  const mapped = valueLabels?.[key]?.[String(value)]
+  if (mapped !== undefined) return mapped
   if (typeof value === 'boolean') return value ? '是' : '否'
   if (typeof value === 'object') {
     return (
@@ -58,6 +60,8 @@ export interface RecordDetailDrawerProps {
   record: Record<string, unknown> | null
   onClose: () => void
   width?: number
+  fieldLabels?: Record<string, string>
+  valueLabels?: Record<string, Record<string, string>>
 }
 
 export default function RecordDetailDrawer({
@@ -66,15 +70,17 @@ export default function RecordDetailDrawer({
   record,
   onClose,
   width = 640,
+  fieldLabels,
+  valueLabels,
 }: RecordDetailDrawerProps) {
   const items = useMemo(
     () =>
       Object.entries(record ?? {}).map(([key, value]) => ({
         key,
-        label: key,
-        children: renderValue(key, value),
+        label: fieldLabels?.[key] ?? key,
+        children: renderValue(key, value, valueLabels),
       })),
-    [record],
+    [record, fieldLabels, valueLabels],
   )
   return (
     <Drawer title={title} open={open} onClose={onClose} width={width} destroyOnHidden>

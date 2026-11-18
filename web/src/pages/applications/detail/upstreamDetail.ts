@@ -1,0 +1,30 @@
+export const UPSTREAM_DETAIL_FIELD_LABELS: Record<string, string> = {
+  id: '源站 ID',
+  application_id: '应用 ID',
+  name: '名称',
+  scheme: '协议',
+  host: '主机地址',
+  normalized_host: '规范化主机地址',
+  port: '端口',
+  weight: '权重',
+  priority: '优先级',
+  status: '状态',
+  health_check_enabled: '启用主动健康检查',
+  health_check_path: '健康检查路径',
+  health_check_method: '健康检查方法',
+  health_check_interval_seconds: '健康检查间隔（秒）',
+  health_check_timeout_seconds: '健康检查超时（秒）',
+  expected_status_codes: '预期 HTTP 状态码',
+  connect_timeout_ms: '连接超时（毫秒）',
+  response_header_timeout_ms: '响应头超时（毫秒）',
+  tls_server_name: 'TLS 服务器名称',
+  tls_verify: '校验 TLS 证书',
+  max_retries: '最大重试次数',
+  created_at: '创建时间',
+  updated_at: '更新时间',
+  version: '配置版本',
+}
+
+export const UPSTREAM_DETAIL_VALUE_LABELS: Record<string, Record<string, string>> = {
+  status: { ACTIVE: '启用', DISABLED: '停用' },
+}
