@@ -431,7 +431,27 @@ bash "$SCRIPT_DIR/install-hostctl.sh" --install-root "$INSTALL_ROOT"
 
 # ---------- 6. 启动 ----------
 log_info "步骤 7/9：启动服务（compose up -d）"
-compose up -d
+if [[ -n "$pkg_manifest" ]]; then
+  required_images="$(compose config --images)" || die "无法解析离线 Compose 镜像清单"
+  [[ -n "$required_images" ]] || die "离线 Compose 镜像清单为空"
+  # 只加载通过 manifest.files 校验的镜像。
+  if [[ "$mfv_rc" == 0 ]]; then
+    image_archives="$(jq -r '.files[].path | select(test("^images/[^/]+\\.tar$"))' "$pkg_manifest")" \
+      || die "无法读取离线包镜像文件清单"
+    while IFS= read -r image_tar; do
+      [[ -n "$image_tar" ]] || continue
+      log_info "加载离线镜像：${image_tar##*/}"
+      docker image load -i "$pkg_dir/$image_tar" >/dev/null || die "加载离线镜像失败：$image_tar"
+    done <<< "$image_archives"
+  fi
+  while IFS= read -r image; do
+    docker image inspect "$image" >/dev/null 2>&1 || die "缺少 Compose 所需离线镜像：${image}，请核对完整安装包"
+  done <<< "$required_images"
+  log_info "Compose 所需镜像已全部就绪"
+  compose up -d --pull never --no-build
+else
+  compose up -d
+fi
 log_info "等待管理 API 健康检查（最长 180s）..."
 wait_http_ok "$JZ_API_BASE/api/v1/health" 180 || die "管理 API 启动超时，请用 ops/diagnostics/collect.sh 收集诊断信息"
 log_info "管理 API 已就绪"
