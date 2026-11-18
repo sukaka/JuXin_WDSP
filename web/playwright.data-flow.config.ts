@@ -5,7 +5,7 @@ const baseURL = `http://127.0.0.1:${port}`
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: 'api-data-flow.spec.ts',
+  testMatch: ['api-data-flow.spec.ts', 'request-audit.spec.ts', 'request-pcap.spec.ts'],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   workers: 1,

@@ -1,51 +1,55 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Alert, Button, Card, DatePicker, Input, InputNumber, Select, Space, Tag, Tooltip, Typography } from 'antd'
+import { Alert, Button, Card, DatePicker, Input, InputNumber, Segmented, Select, Space, Tag, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import dayjs, { type Dayjs } from 'dayjs'
 import ExportDropdown from '../../components/ExportDropdown'
-import type dayjs from 'dayjs'
+import QueryErrorAlert from '../../components/QueryErrorAlert'
 import { ApiError } from '../../api/client'
-import { accessLogsApi } from '../../api/accessLogs'
+import { accessLogsApi, type AccessLogTrendParams } from '../../api/accessLogs'
+import { applicationsApi } from '../../api/applications'
 import SmartTable from '../../components/SmartTable'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import AccessLogDetailDrawer from './AccessLogDetailDrawer'
+import AccessLogTrend from './AccessLogTrend'
+import AccessLogFlow from './AccessLogFlow'
 import type { AccessLogItem } from '../../types'
 
-interface Filters {
-  start_time?: string
-  end_time?: string
-  domain?: string
-  client_ip?: string
-  method?: string
-  uri?: string
-  status?: number
-  waf_action?: string
-  request_id?: string
-}
+type Filters = AccessLogTrendParams
 
-type RangeValue = [dayjs.Dayjs | null, dayjs.Dayjs | null] | null
+type RangeValue = [Dayjs | null, Dayjs | null] | null
 
 const METHOD_OPTIONS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'].map((m) => ({
   value: m,
   label: m,
 }))
 
-// 网关仅当错误链确证 WAF 归属（Coraza 中断 / guard API 防护管线阻断）才标 BLOCK；
-// 源站自返 403 等其余请求 waf_action 为空（放行或不归因），见 gateway/modules/jiuzhang_guard/accesslog.go
-const WAF_ACTION_OPTIONS = [{ value: 'BLOCK', label: '阻断' }]
+const WAF_ACTION_OPTIONS = [{ value: 'ALLOW', label: '放行' }, { value: 'BLOCK', label: '阻断' }]
 
 export default function AccessLogsPage() {
   const permissions = useAuthStore((s) => s.user?.permissions)
-  const [filters, setFilters] = useState<Filters>({})
+  const [filters, setFilters] = useState<Filters>(() => ({
+    start_time: dayjs().subtract(24, 'hour').toISOString(),
+    end_time: dayjs().toISOString(),
+  }))
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [view, setView] = useState<'list' | 'flow'>('list')
 
+  const applicationsQuery = useQuery({
+    queryKey: ['applications', 'access-log-audit-options'],
+    queryFn: () => applicationsApi.list({ page: 1, page_size: 100 }),
+  })
   const listQuery = useQuery({
     queryKey: ['access-logs', filters, page, pageSize],
     queryFn: () => accessLogsApi.list({ ...filters, page, page_size: pageSize }),
+  })
+  const trendQuery = useQuery({
+    queryKey: ['access-logs-trend', filters],
+    queryFn: () => accessLogsApi.trend(filters),
   })
 
   const setFilter = (patch: Partial<Filters>) => {
@@ -53,30 +57,16 @@ export default function AccessLogsPage() {
     setPage(1)
   }
 
-  /** 导出筛选结果：携带当前全部过滤条件（后端上限 10000 行） */
-  const exportFiltered = () =>
-    window.open(
-      accessLogsApi.exportUrl({
-        start_time: filters.start_time,
-        end_time: filters.end_time,
-        domain: filters.domain,
-        client_ip: filters.client_ip,
-        method: filters.method,
-        uri: filters.uri,
-        status: filters.status,
-        waf_action: filters.waf_action,
-        request_id: filters.request_id,
-      }),
-      '_blank',
-    )
+  /** 导出与列表、趋势共用同一筛选快照（后端上限 10000 行） */
+  const exportFiltered = () => window.open(accessLogsApi.exportUrl({ ...filters }), '_blank')
 
   /** 导出全部：不带任何过滤条件（后端上限 10000 行） */
   const exportAll = () => window.open(accessLogsApi.exportUrl({}), '_blank')
 
   const onRangeChange = (range: RangeValue) => {
     setFilter({
-      start_time: range?.[0] ? range[0].startOf('day').toISOString() : undefined,
-      end_time: range?.[1] ? range[1].endOf('day').toISOString() : undefined,
+      start_time: range?.[0]?.toISOString(),
+      end_time: range?.[1]?.toISOString(),
     })
   }
 
@@ -164,8 +154,35 @@ export default function AccessLogsPage() {
         )
       }
     >
+      <Segmented
+        aria-label="审计视图"
+        value={view}
+        onChange={(value) => setView(value as 'list' | 'flow')}
+        options={[{ label: '请求列表', value: 'list' }, { label: '审计流向', value: 'flow' }]}
+        style={{ marginBottom: 16 }}
+      />
       <Space style={{ marginBottom: 16 }} wrap>
-        <DatePicker.RangePicker onChange={onRangeChange} />
+        <DatePicker.RangePicker
+          showTime
+          allowClear={false}
+          value={filters.start_time && filters.end_time ? [dayjs(filters.start_time), dayjs(filters.end_time)] : null}
+          onChange={onRangeChange}
+        />
+        <Select
+          aria-label="应用"
+          placeholder="应用"
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          style={{ width: 190 }}
+          value={filters.application_id}
+          loading={applicationsQuery.isLoading}
+          options={(applicationsQuery.data?.items ?? []).map((application) => ({
+            value: application.id,
+            label: `${application.name} (${application.code})`,
+          }))}
+          onChange={(value) => setFilter({ application_id: value || undefined })}
+        />
         <Input.Search
           placeholder="域名"
           allowClear
@@ -199,7 +216,7 @@ export default function AccessLogsPage() {
           onChange={(v) => setFilter({ status: v ?? undefined })}
         />
         <Select
-          placeholder="WAF 动作"
+          placeholder="处理结果"
           allowClear
           style={{ width: 110 }}
           options={WAF_ACTION_OPTIONS}
@@ -208,12 +225,40 @@ export default function AccessLogsPage() {
         <Input.Search
           placeholder="请求 ID"
           allowClear
-          style={{ width: 220 }}
+          maxLength={64}
+          style={{ width: 210 }}
           onSearch={(v) => setFilter({ request_id: v || undefined })}
+        />
+        <Input.Search
+          placeholder="Trace ID"
+          allowClear
+          maxLength={32}
+          style={{ width: 260 }}
+          onSearch={(v) => setFilter({ trace_id: v || undefined })}
+        />
+        <Input.Search
+          placeholder="身份指纹"
+          allowClear
+          maxLength={128}
+          style={{ width: 210 }}
+          onSearch={(v) => setFilter({ identity_fingerprint: v || undefined })}
+        />
+        <Input.Search
+          placeholder="命中规则 ID"
+          allowClear
+          maxLength={128}
+          style={{ width: 190 }}
+          onSearch={(v) => setFilter({ rule_id: v || undefined })}
         />
       </Space>
 
-      {listQuery.isError ? (
+      <QueryErrorAlert error={applicationsQuery.error} message="加载应用列表失败" />
+      <QueryErrorAlert error={trendQuery.error} message="加载访问趋势失败" />
+      <AccessLogTrend items={trendQuery.data?.items ?? []} loading={trendQuery.isLoading || trendQuery.isFetching} />
+
+      {view === 'flow' ? (
+        <AccessLogFlow filters={filters} onDrill={(next) => { setFilter(next); setView('list') }} />
+      ) : listQuery.isError ? (
         <Alert
           type="error"
           showIcon

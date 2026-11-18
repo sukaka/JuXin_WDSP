@@ -994,12 +994,17 @@ export interface AccessLogItem {
   bytes_in: number
   bytes_out: number
   duration_ms: number
-  /** WAF 动作：BLOCK 或空串（放行）；网关仅对 403 推断 BLOCK，其余不推断 */
+  /** 实际 WAF 动作（如 ALLOW/BLOCK）；无明确归因时不得标为阻断 */
   waf_action: string
 }
 
-/** 访问日志详情（额外含请求/响应头体留痕；敏感头已掩码，体超限截断） */
+/** 访问日志详情（额外含Trace、真实TTFB与脱敏头体留痕；未采集字段保持空值） */
 export interface AccessLogDetail extends AccessLogItem {
+  trace_id?: string
+  span_id?: string
+  endpoint_key?: string
+  path_template?: string
+  ttfb_ms?: number | null
   request_headers?: Record<string, string[]> | null
   request_body?: string
   request_body_truncated?: boolean

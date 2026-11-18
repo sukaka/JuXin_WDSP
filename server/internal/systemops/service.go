@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,9 +24,10 @@ import (
 
 // 控制动作
 const (
-	ActionReboot       = "reboot"
-	ActionShutdown     = "shutdown"
-	ActionFactoryReset = "factory_reset"
+	ActionReboot         = "reboot"
+	ActionShutdown       = "shutdown"
+	ActionFactoryReset   = "factory_reset"
+	ActionFirewallEnsure = "firewall_ensure"
 )
 
 // FactoryResetConfirmText 恢复出厂设置的确认文本（严格相等）。
@@ -33,6 +35,8 @@ const FactoryResetConfirmText = "恢复出厂"
 
 // 指令延迟执行秒数（写入标志文件，给 HTTP 响应返回留出时间）。
 const delaySeconds = 3
+
+const maxFirewallPorts = 128
 
 // HostctlSecretName 共享密钥文件名（置于标志目录下，hostctl-exec.sh 启动时也会
 // 自举同名文件，先到者生效）。内容为 32 字节随机数的 hex 编码（64 字符），
@@ -42,6 +46,7 @@ const HostctlSecretName = ".hostctl-secret"
 // hostctlSignVersion 签名规范化载荷版本前缀；签名字段集合变更时必须递增并同步
 // hostctl-exec.sh 验签逻辑。
 const hostctlSignVersion = "v1"
+const hostctlFirewallSignVersion = "v2"
 
 // Command 是写入 HOSTCTL_DIR 的宿主控制指令标志文件内容。
 // HMAC 为对 CanonicalPayload 的 HMAC-SHA256（hex）；宿主侧 fail-closed 验签，
@@ -53,14 +58,16 @@ type Command struct {
 	RequestID    string `json:"requestID"`
 	RequestedAt  string `json:"requestedAt"`
 	DelaySeconds int    `json:"delaySeconds"`
+	Ports        []int  `json:"ports,omitempty"`
 	HMAC         string `json:"hmac"`
 }
 
 // CanonicalPayload 生成标志文件的规范化签名载荷：固定字段顺序覆盖全部语义字段
 // （requestedAt 兼作防重放时间戳，requestID 兼作 nonce），以 \n 连接、无结尾
-// 换行；hostctl-exec.sh 验签侧必须保持逐字节一致。
+// 换行；hostctl-exec.sh 验签侧必须保持逐字节一致。firewall_ensure 使用 v2，
+// 第八字段为排序去重后的逗号分隔 TCP 端口；旧动作保持 v1 字节级兼容。
 func CanonicalPayload(cmd Command) string {
-	return strings.Join([]string{
+	fields := []string{
 		hostctlSignVersion,
 		cmd.Action,
 		cmd.RequestedBy,
@@ -68,7 +75,59 @@ func CanonicalPayload(cmd Command) string {
 		cmd.RequestID,
 		cmd.RequestedAt,
 		strconv.Itoa(cmd.DelaySeconds),
-	}, "\n")
+	}
+	if cmd.Action == ActionFirewallEnsure {
+		fields[0] = hostctlFirewallSignVersion
+		ports := sortedUniquePorts(cmd.Ports)
+		values := make([]string, len(ports))
+		for i, port := range ports {
+			values[i] = strconv.Itoa(port)
+		}
+		fields = append(fields, strings.Join(values, ","))
+	}
+	return strings.Join(fields, "\n")
+}
+
+func sortedUniquePorts(ports []int) []int {
+	out := append([]int(nil), ports...)
+	sort.Ints(out)
+	write := 0
+	for _, port := range out {
+		if write > 0 && out[write-1] == port {
+			continue
+		}
+		out[write] = port
+		write++
+	}
+	return out[:write]
+}
+
+// EnsureFirewallPorts 提交网关监听 TCP 端口的宿主防火墙放行指令。空列表不写标志；
+// 非空列表校验 1..65535，排序去重后最多 128 个端口。返回成功仅表示指令已写入
+// 宿主通道，不表示宿主防火墙已经执行完成。
+func EnsureFirewallPorts(dir string, ports []int, userID uuid.UUID, requestID string) error {
+	if len(ports) == 0 {
+		return nil
+	}
+	for _, port := range ports {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("firewall port out of range: %d", port)
+		}
+	}
+	ports = sortedUniquePorts(ports)
+	if len(ports) > maxFirewallPorts {
+		return fmt.Errorf("too many firewall ports: %d, maximum is %d", len(ports), maxFirewallPorts)
+	}
+	_, err := WriteFlagFile(dir, Command{
+		Action:       ActionFirewallEnsure,
+		RequestedBy:  "gateway-publish",
+		UserID:       userID.String(),
+		RequestID:    requestID,
+		RequestedAt:  time.Now().UTC().Format(time.RFC3339),
+		DelaySeconds: 0,
+		Ports:        ports,
+	})
+	return err
 }
 
 // SignCommand 用共享密钥对规范化载荷计算 HMAC-SHA256（hex）并填入 cmd.HMAC。

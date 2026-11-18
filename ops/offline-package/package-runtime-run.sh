@@ -86,6 +86,7 @@ fi
 [[ -f "$REPO_ROOT/web/Dockerfile" ]] || die '缺少 web Dockerfile'
 [[ -f "$REPO_ROOT/gateway/Dockerfile" ]] || die '缺少 gateway Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/netmgrd/Dockerfile" ]] || die '缺少 netmgrd Dockerfile'
+[[ -f "$REPO_ROOT/gateway/images/pcapd/Dockerfile" ]] || die '缺少 pcapd Dockerfile'
 [[ -f "$REPO_ROOT/gateway/images/logrotator/Dockerfile" ]] || die '缺少 logrotator Dockerfile'
 [[ -f "$REPO_ROOT/deployment/containerops/Dockerfile" ]] || die '缺少 containerops Dockerfile'
 [[ -f "$REPO_ROOT/wdsp-agent/go.mod" ]] || die '缺少 wdsp-agent Go 模块'
@@ -160,6 +161,7 @@ preflight() {
   require_cmd file
   require_cmd jq
   require_cmd openssl
+  require_cmd cmp
   [[ "$MIN_FREE_GIB" =~ ^[0-9]+$ ]] || die 'WDSP_PACKAGE_MIN_FREE_GIB 必须是非负整数'
   local free_kib required_kib builder_info
   free_kib="$(df -Pk "$OUTPUT_DIR" | awk 'NR==2 {print $4}')"
@@ -212,6 +214,16 @@ verify_delivery() {
       || die '最终 .run Ed25519 验签失败'
   fi
   bash "$run_file" --help >/dev/null || die '最终 .run --help 冒烟失败'
+  local install_alias="$OUTPUT_DIR/jiuzhang-wdsp-install-${VERSION}-amd64.run"
+  [[ -x "$install_alias" ]] || die '缺少 install 安装交付别名'
+  cmp -s "$run_file" "$install_alias" || die 'install 别名与原始安装包内容不一致'
+  sha256_check_sidecar "$install_alias" || die 'install 别名 SHA-256 校验失败'
+  if [[ "$DEVELOPMENT" == true ]]; then
+    [[ ! -e "${install_alias}.sig" ]] || die 'development install 别名不应带生产签名'
+  else
+    ed25519_verify_file "$TRUSTED_PUBLIC_KEY" "$install_alias" "${install_alias}.sig" \
+      || die 'install 别名验签失败'
+  fi
 
   payload_dir="$WORK_DIR/final-payload"
   mkdir -p "$payload_dir"
@@ -257,7 +269,7 @@ verify_delivery() {
   jq -e --arg version "$VERSION" --arg delivery_mode "$expected_delivery_mode" \
     --argjson expected_signed "$expected_signed" \
     '.edition == "wdsp" and .version == $version and .arch == "amd64" and
-     .delivery_mode == $delivery_mode and .signed == $expected_signed and (.images | length) == 10 and
+     .delivery_mode == $delivery_mode and .signed == $expected_signed and (.images | length) == 11 and
      any(.files[]; .path == "agents/wdsp-agent")' "$payload_dir/manifest.json" >/dev/null \
     || die '基础离线包 manifest 的版本、架构、交付模式、签名、镜像或 Agent 清单不完整'
 
@@ -283,7 +295,7 @@ verify_delivery() {
     ($netmgrd.network_mode == "service:gateway")
   ' <<<"$compose_json" >/dev/null \
     || die '最终 .run 的 gateway 低端口入口、最小 capability 或 netmgrd 网络约束不符合交付基线'
-  required_images=(jiuzhang-server jiuzhang-web jiuzhang-gateway jiuzhang-netmgrd jiuzhang-logrotator jiuzhang-containerops postgres valkey clickhouse opentelemetry-collector-contrib)
+  required_images=(jiuzhang-server jiuzhang-web jiuzhang-gateway jiuzhang-netmgrd jiuzhang-logrotator jiuzhang-containerops jiuzhang-pcapd postgres valkey clickhouse opentelemetry-collector-contrib)
   for image_name in "${required_images[@]}"; do
     grep -q "/images/${image_name}\.tar$" "$archive_listing" \
       || die "基础离线包缺少运行镜像：$image_name"
@@ -291,7 +303,7 @@ verify_delivery() {
   if grep -Eq '(^|/)(test|tests|__tests__|docs)(/|$)' "$archive_listing"; then
     die '基础离线包混入测试目录或产品文档目录'
   fi
-  log_info "最终验收通过：${verification_scope}、哈希、10 个运行镜像（含 containerops）、Agent、${#packaged_rpms[@]} 个 RPM、内容扫描均有效"
+  log_info "最终验收通过：${verification_scope}、哈希、11 个运行镜像（含默认不启动的 pcapd）、Agent、${#packaged_rpms[@]} 个 RPM、内容扫描均有效"
   log_warn 'RPM 依赖闭包仍须在干净的目标 openEuler x86-64 测试机完成离线安装验收'
 }
 
@@ -330,6 +342,7 @@ build_image 'jiuzhang-server' 'server/Dockerfile' '.'
 build_image 'jiuzhang-web' 'web/Dockerfile' 'web'
 build_image 'jiuzhang-gateway' 'gateway/Dockerfile' 'gateway'
 build_image 'jiuzhang-netmgrd' 'gateway/images/netmgrd/Dockerfile' 'gateway'
+build_image 'jiuzhang-pcapd' 'gateway/images/pcapd/Dockerfile' 'gateway'
 build_image 'jiuzhang-logrotator' 'gateway/images/logrotator/Dockerfile' 'gateway/images/logrotator'
 build_image 'jiuzhang-containerops' 'deployment/containerops/Dockerfile' '.'
 

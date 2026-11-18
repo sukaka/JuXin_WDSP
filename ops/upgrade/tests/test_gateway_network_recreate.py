@@ -74,10 +74,16 @@ printf 'RESULT=%s SERVICES=%s IMAGES=%s IDS=%s MESSAGE=%s\\n' \
     def test_manual_apply_and_rollback_recreate_netmgrd(self):
         for script in (APPLY, ROLLBACK):
             with self.subTest(script=script.name):
-                self.assertIn(
-                    "compose up -d --no-deps --force-recreate api gateway netmgrd",
-                    script.read_text(),
-                )
+                text = script.read_text()
+                self.assertIn('compose up -d --no-deps --force-recreate ', text)
+                self.assertIn('netmgrd', text)
+                self.assertIn('OLD_IDS', text)
+                if script == APPLY:
+                    self.assertIn('"${SERVICES[@]}"', text)
+                    self.assertIn('candidates=(api web gateway netmgrd logrotator containerops)', text)
+                else:
+                    self.assertIn('"${EXISTING_SERVICES[@]}"', text)
+                    self.assertIn('SERVICES=(api gateway netmgrd)', text)
         self.assertIn(
             'compose up -d --no-deps --force-recreate "${SERVICES[@]}"',
             SOURCE,

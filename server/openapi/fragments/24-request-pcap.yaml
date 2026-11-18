@@ -1,0 +1,215 @@
+paths:
+  /request-pcap/lookup:
+    get:
+      operationId: requestPcapLookup
+      tags: [request-pcap]
+      summary: 按业务请求查询PCAP证据状态
+      description: 权限：request_pcap.read。只返回捕获、关联、完整性和非内容清单；不包含密钥、原始报文或内部路径。未配置证据服务时返回503。
+      parameters:
+        - { name: request_id, in: query, required: true, schema: { type: string, maxLength: 64 }, description: 业务请求ID }
+      responses:
+        '200':
+          description: 证据状态列表，没有关联时items为空数组
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request_id, items]
+                properties:
+                  request_id: { type: string }
+                  items: { type: array, items: { $ref: '#/components/schemas/RequestPcapEvidence' } }
+                  truncated: { type: boolean, description: 仅返回最新100条且还有更多证据时为true；指定证据操作使用精确关联，不受列表截断影响 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /request-pcap/artifacts/{id}/manifest:
+    get:
+      operationId: requestPcapManifest
+      tags: [request-pcap]
+      summary: 查询指定请求的受限证据清单
+      description: 权限：request_pcap.read。证据必须确实关联request_id；响应不含Wrapped DEK、清单原文和存储路径。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 证据分片ID }
+        - { name: request_id, in: query, required: true, schema: { type: string, maxLength: 64 }, description: 业务请求ID }
+      responses:
+        '200':
+          description: 受限证据清单
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestPcapEvidence' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /request-pcap/artifacts/{id}/verify:
+    post:
+      operationId: requestPcapVerify
+      tags: [request-pcap]
+      summary: 流式核验真实加密证据
+      description: 权限：request_pcap.verify。需要理由并记录高风险审计；每用户最多一个执行中的核验/下载，全局最多两个。核验成功后才能申请下载。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 证据分片ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [request_id, reason]
+              properties:
+                request_id: { type: string, maxLength: 64 }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        '200':
+          description: 完整性核验通过
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RequestPcapEvidence' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { description: 已有核验或下载执行中，或敏感操作限流触发 }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /request-pcap/artifacts/{id}/download-grants:
+    post:
+      operationId: requestPcapDownloadGrant
+      tags: [request-pcap]
+      summary: 签发60秒单次下载授权
+      description: 权限：request_pcap.download。密码二次确认、理由、权限、限流和高风险审计均强制；授权绑定当前用户及会话。仅完整性通过、唯一匹配、具有真实包范围、未过期且未截断的证据可授权。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 证据分片ID }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [request_id, reason, password]
+              properties:
+                request_id: { type: string, maxLength: 64 }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+                password: { type: string, format: password, maxLength: 256 }
+      responses:
+        '201':
+          description: 授权已创建；授权ID只能由该用户在同一会话内消费一次
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [grant_id, expires_at, artifact_id, request_id]
+                properties:
+                  grant_id: { type: string, format: uuid }
+                  expires_at: { type: string, format: date-time }
+                  artifact_id: { type: string, format: uuid }
+                  request_id: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { description: 敏感操作限流触发 }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /request-pcap/artifacts/{id}/download:
+    get:
+      operationId: requestPcapDownload
+      tags: [request-pcap]
+      summary: 按真实包范围流式派生PCAP
+      description: 权限：request_pcap.download。使用前原子消费短时单次授权并再次复核证据状态；在同一受控打开文件上校验并解密，不写明文临时文件。连接级证据可能包含同连接的其他请求。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid }, description: 证据分片ID }
+        - { name: request_id, in: query, required: true, schema: { type: string, maxLength: 64 }, description: 业务请求ID }
+        - { name: grant_id, in: query, required: true, schema: { type: string, format: uuid }, description: 60秒单次下载授权ID }
+      responses:
+        '200':
+          description: PCAP附件；固定ASCII文件名、no-store及nosniff。下载中断或校验失败不会记录成功审计。
+          content:
+            application/vnd.tcpdump.pcap:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { description: 已有核验或下载执行中，或敏感操作限流触发 }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+  /request-pcap/keys/rotate:
+    post:
+      operationId: requestPcapKeyRotate
+      tags: [request-pcap]
+      summary: 轮换证据密钥并发布节点公钥
+      description: 权限：request_pcap.manage。理由、密码二次确认、限流及关键风险审计强制。历史证据私钥保留，发布验签信任根不变；不返回任何私钥或明文DEK。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, password]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+                password: { type: string, format: password, maxLength: 256 }
+      responses:
+        '200':
+          description: 密钥轮换及新公钥签发成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rotated]
+                properties:
+                  rotated: { type: boolean, enum: [true] }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { description: 敏感操作限流触发 }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+
+components:
+  schemas:
+    RequestPcapEvidence:
+      type: object
+      required: [artifact_id, gateway_node_id, capture_point, state, storage_tier, capture_started_at, capture_ended_at, packet_count, dropped_count, truncated, plaintext_size_bytes, ciphertext_size_bytes, plaintext_sha256, ciphertext_sha256, expires_at, integrity_status, match_status, match_basis, coverage, candidate_count, download_eligible]
+      properties:
+        artifact_id: { type: string, format: uuid }
+        gateway_node_id: { type: string }
+        capture_point: { type: string }
+        state: { type: string, enum: [HOT, MIGRATING, WARM, EXPIRING, EXPIRED, UNAVAILABLE] }
+        storage_tier: { type: string, enum: [HOT, WARM] }
+        capture_started_at: { type: string, format: date-time }
+        capture_ended_at: { type: string, format: date-time }
+        packet_count: { type: integer, format: int64 }
+        dropped_count: { type: integer, format: int64 }
+        truncated: { type: boolean }
+        plaintext_size_bytes: { type: integer, format: int64 }
+        ciphertext_size_bytes: { type: integer, format: int64 }
+        plaintext_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        ciphertext_sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        expires_at: { type: string, format: date-time }
+        integrity_status: { type: string, enum: [UNVERIFIED, PASS, FAILED, KEY_UNAVAILABLE] }
+        last_verified_at: { type: string, format: date-time, nullable: true }
+        verification_error_code: { type: string }
+        match_status: { type: string, enum: [PENDING, UNMATCHED, FAILED, AMBIGUOUS, MATCHED] }
+        match_basis: { type: string }
+        coverage: { type: string, enum: [REQUEST, CONNECTION, UNKNOWN], description: CONNECTION表示包含同连接其他请求的可能 }
+        candidate_count: { type: integer }
+        first_packet_no: { type: integer, format: int64, nullable: true }
+        last_packet_no: { type: integer, format: int64, nullable: true }
+        download_eligible: { type: boolean }
+        download_blocked_reason: { type: string, enum: [STORAGE_UNAVAILABLE, EVIDENCE_INCOMPLETE, EVIDENCE_EXPIRED, UNIQUE_CORRELATION_REQUIRED, PACKET_RANGE_REQUIRED, VERIFICATION_REQUIRED] }

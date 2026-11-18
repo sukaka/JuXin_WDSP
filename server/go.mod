@@ -5,9 +5,11 @@ go 1.25.6
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
 	github.com/gomutex/godocx v0.1.5
+	github.com/google/gopacket v1.1.19
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.2
-	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0-00010101000000-000000000000
+	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0
+	github.com/jiuzhang-waf/gateway/pcapevidence v0.0.0-00010101000000-000000000000
 	github.com/jung-kurt/gofpdf/v2 v2.17.3
 	github.com/redis/go-redis/v9 v9.7.0
 	github.com/twmb/franz-go v1.21.0
@@ -20,6 +22,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.44.0
 	go.opentelemetry.io/otel/sdk/metric v1.44.0
 	golang.org/x/crypto v0.54.0
+	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -57,7 +60,6 @@ require (
 	golang.org/x/image v0.0.0-20200927104501-e162460cd6b5 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
@@ -67,3 +69,5 @@ require (
 )
 
 replace github.com/jiuzhang-waf/gateway/dynamic_security => ../gateway/dynamic_security
+
+replace github.com/jiuzhang-waf/gateway/pcapevidence => ../gateway/pcapevidence

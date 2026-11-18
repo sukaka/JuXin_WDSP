@@ -1,6 +1,7 @@
 package accesslogs
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -28,45 +29,121 @@ func NewHandler(store *Store, au *audits.Service) *Handler {
 	return &Handler{store: store, audits: au}
 }
 
-// filterFromQuery 解析查询参数（列表与导出共用）。
-func filterFromQuery(r *http.Request) ListFilter {
+// filterFromQuery 解析查询参数（列表、趋势与导出共用）。
+func filterFromQuery(r *http.Request) (ListFilter, error) {
 	f := ListFilter{
-		Domain:    r.URL.Query().Get("domain"),
-		ClientIP:  r.URL.Query().Get("client_ip"),
-		Method:    r.URL.Query().Get("method"),
-		URI:       r.URL.Query().Get("uri"),
-		WAFAction: r.URL.Query().Get("waf_action"),
-		RequestID: r.URL.Query().Get("request_id"),
+		Domain:    strings.TrimSpace(r.URL.Query().Get("domain")),
+		ClientIP:  strings.TrimSpace(r.URL.Query().Get("client_ip")),
+		Method:    strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("method"))),
+		URI:       strings.TrimSpace(r.URL.Query().Get("uri")),
+		WAFAction: strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("waf_action"))),
+		RequestID: strings.TrimSpace(r.URL.Query().Get("request_id")),
 		Page:      queryInt(r, "page", 1),
 		PageSize:  queryInt(r, "page_size", 20),
 	}
-	if st := r.URL.Query().Get("start_time"); st != "" {
-		if t, err := time.Parse(time.RFC3339, st); err == nil {
-			f.StartTime = &t
-		}
+	var err error
+	if f.StartTime, err = parseAuditTime(r.URL.Query().Get("start_time"), "start_time"); err != nil {
+		return f, err
 	}
-	if et := r.URL.Query().Get("end_time"); et != "" {
-		if t, err := time.Parse(time.RFC3339, et); err == nil {
-			f.EndTime = &t
-		}
+	if f.EndTime, err = parseAuditTime(r.URL.Query().Get("end_time"), "end_time"); err != nil {
+		return f, err
 	}
 	if s := r.URL.Query().Get("status"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil {
-			f.Status = &n
+		n, parseErr := strconv.Atoi(s)
+		if parseErr != nil {
+			return f, fmt.Errorf("status 必须是整数")
 		}
+		f.Status = &n
 	}
-	return f
+	if err := validateAuditFilter(&f, r.URL.Query()); err != nil {
+		return f, err
+	}
+	return f, nil
 }
 
 // List 访问日志列表。
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	f := filterFromQuery(r)
+	f, err := filterFromQuery(r)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
 	list, total, err := h.store.List(r.Context(), f)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
 	response.Page(w, r, list, total, f.Page, f.PageSize)
+}
+
+// Trend 按真实访问日志聚合趋势，默认最近24小时，最长31天。
+func (h *Handler) Trend(w http.ResponseWriter, r *http.Request) {
+	f, err := filterFromQuery(r)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	if f.EndTime == nil {
+		f.EndTime = &now
+	}
+	if f.StartTime == nil {
+		start := f.EndTime.Add(-24 * time.Hour)
+		f.StartTime = &start
+	}
+	if f.EndTime.Sub(*f.StartTime) > 31*24*time.Hour {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "趋势时间范围不能超过31天")
+		return
+	}
+	bucketSeconds, err := trendBucketSeconds(*f.StartTime, *f.EndTime, r.URL.Query().Get("bucket_seconds"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	items, err := h.store.Trend(r.Context(), f, bucketSeconds)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, map[string]interface{}{
+		"items": items, "bucket_seconds": bucketSeconds,
+		"start_time": f.StartTime.UTC(), "end_time": f.EndTime.UTC(),
+	})
+}
+
+// Flow 返回真实请求集合的来源、应用、API与敏感字段流向；字段原值不参与聚合。
+func (h *Handler) Flow(w http.ResponseWriter, r *http.Request) {
+	f, err := filterFromQuery(r)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	if f.EndTime == nil {
+		f.EndTime = &now
+	}
+	if f.StartTime == nil {
+		start := f.EndTime.Add(-24 * time.Hour)
+		f.StartTime = &start
+	}
+	if f.EndTime.Sub(*f.StartTime) > 31*24*time.Hour {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "流向图时间范围不能超过31天")
+		return
+	}
+	nodeLimit := 8
+	if raw := strings.TrimSpace(r.URL.Query().Get("node_limit")); raw != "" {
+		nodeLimit, err = strconv.Atoi(raw)
+		if err != nil || nodeLimit < 1 || nodeLimit > 20 {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "node_limit 必须在1到20之间")
+			return
+		}
+	}
+	result, err := h.store.Flow(r.Context(), f, nodeLimit)
+	if err != nil {
+		response.InternalError(w, r, err)
+		return
+	}
+	response.JSON(w, r, http.StatusOK, result)
 }
 
 // Get 访问日志详情（含请求/响应头体留痕）。
@@ -77,8 +154,12 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry, err := h.store.GetByID(r.Context(), id)
-	if err != nil {
+	if errors.Is(err, ErrNotFound) {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "访问日志不存在")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, r, err)
 		return
 	}
 	response.JSON(w, r, http.StatusOK, entry)
@@ -87,7 +168,11 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 // Export 导出访问日志（CSV，上限 exportMaxRows 行）。
 func (h *Handler) Export(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
-	f := filterFromQuery(r)
+	f, err := filterFromQuery(r)
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
+		return
+	}
 	f.Page = 1
 	f.PageSize = exportMaxRows
 	list, _, err := h.store.ListForExport(r.Context(), f)

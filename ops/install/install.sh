@@ -8,6 +8,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/pcap.sh"
 # shellcheck source=../lib/signing.sh
 source "$SCRIPT_DIR/../lib/signing.sh"
 
@@ -46,6 +47,11 @@ usage() {
                            动态决定，安装期无法静态枚举，须按实际发布端口精确追加。
                            切勿图省事放行全部高位端口（1024-65535）：宿主机上任何监听
                            高位端口的无关服务都会被一并暴露到外部
+      --enable-pcap        显式启用加密请求PCAP；必须同时指定以下网卡、端口和冷热目录
+      --pcap-iface IFACE   受控抓包网卡（例如 eth0；默认不启用混杂模式）
+      --pcap-ports LIST    明确端口，逗号分隔，例如 80,443；不接受端口区间
+      --pcap-hot-dir DIR   SSD热证据目录（绝对路径）
+      --pcap-warm-dir DIR  SAS温证据目录（绝对路径，须与热目录不同）
       --force              允许覆盖已存在的 .env
       --no-firewall        跳过 firewalld 放行
       --skip-accounts      跳过三权账号初始化
@@ -78,6 +84,11 @@ while [[ $# -gt 0 ]]; do
     --web-port)        WEB_PORT="$2"; shift 2 ;;
     --web-https-port)  WEB_HTTPS_PORT="$2"; shift 2 ;;
     --site-ports)      SITE_PORTS="$2"; shift 2 ;;
+    --enable-pcap)     PCAP_ENABLE=true; shift ;;
+    --pcap-iface)      PCAP_IFACE="$2"; shift 2 ;;
+    --pcap-ports)      PCAP_PORTS="$2"; shift 2 ;;
+    --pcap-hot-dir)    PCAP_HOT_DIR="$2"; shift 2 ;;
+    --pcap-warm-dir)   PCAP_WARM_DIR="$2"; shift 2 ;;
     --force)           FORCE=true; shift ;;
     --no-firewall)     NO_FIREWALL=true; shift ;;
     --skip-accounts)   SKIP_ACCOUNTS=true; shift ;;
@@ -86,6 +97,8 @@ while [[ $# -gt 0 ]]; do
     *) log_err "未知参数: $1"; usage; exit 2 ;;
   esac
 done
+pcap_validate_args
+pcap_validate_enabled
 # 端口清单格式校验：每项为 1-65535 或起点-终点区间
 if [[ -n "$SITE_PORTS" ]]; then
   validate_port_list "$SITE_PORTS" || { log_err "--site-ports 格式非法: ${SITE_PORTS}（逗号分隔端口或区间，如 8080,9000-9010）"; exit 2; }
@@ -323,6 +336,7 @@ API_PROTECTION_MODE=OBSERVE
 EOF
 chmod 600 "$JZ_ENV_FILE"
 log_info "已生成随机口令/主密钥，并写入产品线 PRODUCT_EDITION=${PKG_EDITION}（不回显口令）"
+pcap_configure
 
 # ---------- 3. 采集宿主机指纹（离线授权绑定用） ----------
 # 算法与授权中心 tools/fingerprint 一致；api 容器经只读挂载（compose 的
@@ -356,8 +370,9 @@ bash "$SCRIPT_DIR/console-cert.sh" --output "$INSTALL_ROOT/runtime/certificates"
 # ---------- 5. firewalld ----------
 # 端口收敛（LOW-O3）：默认只放行网关默认监听 80/443。生产网关 network_mode: host，
 # 站点监听端口由管理面发布配置动态决定（1024-65535 任意高位端口），安装期无法静态
-# 枚举，须由部署方按实际发布端口经 --site-ports 精确追加；安装后新增站点端口同理
-# 手工 firewall-cmd 放行。切勿图省事直接放行 1024-65535：宿主机上任何监听高位端口
+# 枚举，须由部署方按实际发布端口经 --site-ports 精确追加；安装后新增站点端口由管理面
+# 发布触发宿主 firewall_ensure 自动精确放行（runtime+permanent），无需手工 firewall-cmd。
+# 切勿图省事直接放行 1024-65535：宿主机上任何监听高位端口
 # 的无关服务都会被一并暴露到外部（历史默认行为，已按代码审查 LOW-O3 收敛）。
 log_info "步骤 5/9：配置 firewalld（80/443${SITE_PORTS:+ 与站点端口 ${SITE_PORTS}}）"
 if [[ "$NO_FIREWALL" == "true" ]]; then
@@ -376,73 +391,16 @@ elif command -v firewall-cmd >/dev/null 2>&1 && \
   firewall-cmd --reload
   log_info "firewalld 已放行 80/tcp、443/tcp${SITE_PORTS:+、${SITE_PORTS//,/、}/tcp}"
   if [[ -z "$SITE_PORTS" ]]; then
-    log_warn "仅放行了 80/443；站点若使用其他端口（管理面站点配置决定），请用 --site-ports 重跑或手工 firewall-cmd --permanent --add-port=<端口>/tcp 放行"
+    log_warn "安装时仅放行 80/443；安装后新增站点端口由管理面发布自动精确放行，也可用 --site-ports 重跑安装配置"
   fi
 else
   log_info "firewalld 未安装或未运行，跳过；如需外部访问请按部署环境自行放行端口（站点端口以管理面发布配置为准）"
 fi
 
-# ---------- 5. 安装 jiuzhang-hostctl systemd 单元（系统控制执行通道） ----------
-# 系统控制（重启/关机/恢复出厂）：API 容器 read_only + cap_drop ALL，仅往
-# runtime/hostctl/ 写标志文件；宿主机 path 单元监视该目录并触发 hostctl-exec.sh 执行。
-# 检测 systemd 可用才安装；不可用（容器/无 systemd 环境）或非 root 时告警跳过不阻断，
-# 届时可手工执行 ops/system/hostctl-exec.sh 处理标志文件（见 docs/DEPLOYMENT.md）。
+# ---------- 6. 安装 jiuzhang-hostctl systemd 单元（系统控制执行通道） ----------
+# 完整安装与升级共用目标包内 helper，确保 unit 指向对应 release 的宿主脚本。
 log_info "步骤 6/9：安装 jiuzhang-hostctl systemd 单元（系统控制）"
-mkdir -p "$INSTALL_ROOT/runtime/hostctl"
-chmod 755 "$INSTALL_ROOT/runtime/hostctl"
-# api 容器以 uid 1000 写入标志文件：尽量调整属主（非 root 安装可能失败，届时容器写入受限）
-if ! chown 1000:1000 "$INSTALL_ROOT/runtime/hostctl" 2>/dev/null; then
-  chmod 1777 "$INSTALL_ROOT/runtime/hostctl" 2>/dev/null \
-    || log_warn "未能调整 $INSTALL_ROOT/runtime/hostctl 属主/权限，api 容器可能无法写入系统控制标志文件"
-fi
-# 安全复核（与 ops/system/hostctl-exec.sh 执行前校验同一约定）：属主须为 1000 且目录
-# 不得 other-writable。chown 失败退化为 1777 时，任意本地用户可伪造系统控制标志，
-# hostctl-exec.sh 将 fail-closed 拒绝执行——此处必须给出醒目警告而非静默带过。
-_hc_uid="$(stat -c '%u' "$INSTALL_ROOT/runtime/hostctl" 2>/dev/null || stat -f '%u' "$INSTALL_ROOT/runtime/hostctl" 2>/dev/null || echo unknown)"
-_hc_mode="$(stat -c '%a' "$INSTALL_ROOT/runtime/hostctl" 2>/dev/null || stat -f '%Lp' "$INSTALL_ROOT/runtime/hostctl" 2>/dev/null || echo "")"
-_hc_insecure=false
-[[ "$_hc_uid" == "1000" ]] || _hc_insecure=true
-if [[ "$_hc_mode" =~ ^[0-7]{3,4}$ ]] && (( (8#${_hc_mode:${#_hc_mode}-3} & 2) != 0 )); then
-  _hc_insecure=true
-fi
-if [[ "$_hc_insecure" == "true" ]]; then
-  log_warn "==================== 安全警告（系统控制通道不可用） ===================="
-  log_warn "  $INSTALL_ROOT/runtime/hostctl 当前属主 uid=${_hc_uid}、权限 ${_hc_mode:-unknown}，"
-  log_warn "  不满足约定（属主 1000:1000、权限 755 且非全局可写）。"
-  log_warn "  该状态下可写该目录的本地用户可伪造重启/关机/恢复出厂标志；"
-  log_warn "  hostctl-exec.sh 将因执行前安全校验拒绝处理（fail-closed），"
-  log_warn "  即 Web 端系统控制（重启/关机/恢复出厂）不可用，直至修复："
-  log_warn "    sudo chown 1000:1000 $INSTALL_ROOT/runtime/hostctl && sudo chmod 755 $INSTALL_ROOT/runtime/hostctl"
-  log_warn "======================================================================"
-fi
-unset _hc_uid _hc_mode _hc_insecure
-if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]] && [[ "$(id -u)" == "0" ]]; then
-  hostctl_install_ok=true
-  for unit in jiuzhang-hostctl.path jiuzhang-hostctl.service; do
-    if [[ ! -f "$SCRIPT_DIR/../../deployment/systemd/$unit" ]]; then
-      log_warn "单元模板缺失: deployment/systemd/${unit}，跳过 systemd 单元安装"
-      hostctl_install_ok=false
-      break
-    fi
-    # 渲染 install root 占位符后安装（仅覆盖带 jiuzhang-managed: hostctl-unit 管理标记的既有文件）
-    if [[ -f "/etc/systemd/system/$unit" ]] && ! grep -q 'jiuzhang-managed: hostctl-unit' "/etc/systemd/system/$unit" 2>/dev/null; then
-      log_warn "/etc/systemd/system/$unit 已存在且非九章安装器管理，跳过覆盖"
-      hostctl_install_ok=false
-      break
-    fi
-    sed "s|__INSTALL_ROOT__|$INSTALL_ROOT|g" "$SCRIPT_DIR/../../deployment/systemd/$unit" > "/etc/systemd/system/$unit" \
-      || { log_warn "安装 /etc/systemd/system/$unit 失败"; hostctl_install_ok=false; break; }
-  done
-  if [[ "$hostctl_install_ok" == "true" ]]; then
-    if systemctl daemon-reload && systemctl enable --now jiuzhang-hostctl.path; then
-      log_info "jiuzhang-hostctl.path 已安装并启用（监视 $INSTALL_ROOT/runtime/hostctl/*.json）"
-    else
-      log_warn "systemctl daemon-reload/enable 失败，请手工执行后启用 jiuzhang-hostctl.path"
-    fi
-  fi
-else
-  log_warn "systemd 不可用或非 root，跳过 jiuzhang-hostctl 单元安装；系统控制可手工执行 ops/system/hostctl-exec.sh"
-fi
+bash "$SCRIPT_DIR/install-hostctl.sh" --install-root "$INSTALL_ROOT"
 
 # ---------- 6. 启动 ----------
 log_info "步骤 7/9：启动服务（compose up -d）"

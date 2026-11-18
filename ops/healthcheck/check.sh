@@ -2,6 +2,8 @@
 # check.sh —— 组件健康检查：容器状态 / 管理 API / 防护网关 / PostgreSQL / Valkey。
 # 退出码：0=全部健康 1=存在异常 2=用法错误
 set -euo pipefail
+API_URL_EXPLICIT=false
+[[ -z "${JZ_API_BASE+x}" ]] || API_URL_EXPLICIT=true
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
 
@@ -14,20 +16,20 @@ usage() {
 选项:
   -c, --compose-file FILE   docker compose 文件（默认 docker-compose.yml，或 JZ_COMPOSE_FILE）
   -e, --env-file FILE       环境变量文件（默认 .env，或 JZ_ENV_FILE）
-      --api-url URL         管理 API 地址（默认 http://127.0.0.1:18081，或 JZ_API_BASE）
-      --gateway-url URL     网关地址（默认 http://127.0.0.1:18080，或 JZ_GATEWAY_URL）
+      --api-url URL            管理 API 地址（默认从 Compose 的 API 发布端口读取，或 JZ_API_BASE）
+      --gateway-url URL      显式覆盖网关探测地址；缺省读取 Caddy Admin 实际 listeners
   -h, --help                显示帮助
 
 退出码: 0=全部健康 1=存在异常 2=用法错误
 EOF
 }
 
-GATEWAY_URL="${JZ_GATEWAY_URL:-http://127.0.0.1:18080}"
+GATEWAY_URL="${JZ_GATEWAY_URL:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -c|--compose-file) JZ_COMPOSE_FILE="$2"; shift 2 ;;
     -e|--env-file)     JZ_ENV_FILE="$2"; shift 2 ;;
-    --api-url)         JZ_API_BASE="$2"; shift 2 ;;
+    --api-url)         JZ_API_BASE="$2"; API_URL_EXPLICIT=true; shift 2 ;;
     --gateway-url)     GATEWAY_URL="$2"; shift 2 ;;
     -h|--help)         usage; exit 0 ;;
     *) log_err "未知参数: $1"; usage; exit 2 ;;
@@ -36,6 +38,11 @@ done
 
 require_cmd docker
 require_cmd curl
+if [[ "$API_URL_EXPLICIT" == false && -f "$JZ_COMPOSE_FILE" && -f "$JZ_ENV_FILE" ]]; then
+  require_cmd jq
+  JZ_API_BASE="$(compose_api_url "$JZ_COMPOSE_FILE" "$JZ_ENV_FILE")" \
+    || { log_err "无法从 Compose 读取 API 发布端口，请显式传 --api-url"; exit 1; }
+fi
 
 FAILED=0
 report() { # report NAME OK|FAIL DETAIL
@@ -89,15 +96,53 @@ else
   report "api" FAIL "不可达: $JZ_API_BASE"
 fi
 
-# ---- 3. 防护网关（TCP 可达性；无公开健康端点） ----
-gw_host="$(printf '%s' "$GATEWAY_URL" | sed -E 's#^[a-z]+://([^:/]+).*#\1#')"
-gw_port="$(printf '%s' "$GATEWAY_URL" | sed -E 's#^[a-z]+://[^:/]+:([0-9]+).*#\1#')"
-[[ "$gw_port" =~ ^[0-9]+$ ]] || gw_port=80
-if (exec 3<>"/dev/tcp/$gw_host/$gw_port") 2>/dev/null; then
-  exec 3>&- 3<&- || true
-  report "gateway" OK "$gw_host:$gw_port 可连接"
+# ---- 3. 防护网关（缺省读取实际 Caddy listeners，不猜开发端口） ----
+if [[ -n "$GATEWAY_URL" ]]; then
+  gw_host="$(printf '%s' "$GATEWAY_URL" | sed -E 's#^[a-z]+://([^:/]+).*#\1#')"
+  gw_port="$(printf '%s' "$GATEWAY_URL" | sed -E 's#^[a-z]+://[^:/]+:([0-9]+).*#\1#')"
+  [[ "$gw_port" =~ ^[0-9]+$ ]] || gw_port=80
+  if (exec 3<>"/dev/tcp/$gw_host/$gw_port") 2>/dev/null; then
+    exec 3>&- 3<&- || true
+    report "gateway" OK "$gw_host:$gw_port 可连接"
+  else
+    report "gateway" FAIL "$gw_host:$gw_port 不可连接"
+  fi
 else
-  report "gateway" FAIL "$gw_host:$gw_port 不可连接"
+  require_cmd jq
+  gateway_id="$(compose ps -q gateway 2>/dev/null || true)"
+  socket_dir=""
+  if [[ "$gateway_id" =~ ^[a-fA-F0-9]+$ ]]; then
+    socket_dir="$(docker inspect --format '{{json .Mounts}}' "$gateway_id" 2>/dev/null \
+      | jq -er '[.[] | select(.Destination == "/var/run/caddy") | .Source] | if length == 1 then .[0] else empty end' 2>/dev/null || true)"
+  fi
+  listeners=""
+  if [[ -n "$socket_dir" && -S "$socket_dir/admin.sock" ]]; then
+    listeners="$(curl -fsS --max-time 5 --unix-socket "$socket_dir/admin.sock" http://localhost/config/apps/http/servers 2>/dev/null || true)"
+  fi
+  gateway_ports=()
+  while IFS= read -r listen; do
+    port="${listen##*:}"
+    [[ "$port" =~ ^[0-9]+$ ]] || continue
+    (( 10#$port >= 1 && 10#$port <= 65535 )) || continue
+    gateway_ports+=("$port")
+  done < <(jq -r '.[]?.listen[]?' <<<"$listeners" 2>/dev/null | LC_ALL=C sort -u)
+  if [[ ${#gateway_ports[@]} -eq 0 ]]; then
+    report "gateway" FAIL "无法从 Caddy Admin Unix Socket 读取实际监听端口"
+  else
+    gw_fail=""
+    for gw_port in "${gateway_ports[@]}"; do
+      if (exec 3<>"/dev/tcp/127.0.0.1/$gw_port") 2>/dev/null; then
+        exec 3>&- 3<&- || true
+      else
+        gw_fail="$gw_fail $gw_port"
+      fi
+    done
+    if [[ -n "$gw_fail" ]]; then
+      report "gateway" FAIL "实际监听端口不可连接:$gw_fail"
+    else
+      report "gateway" OK "Caddy 实际监听 ${gateway_ports[*]} 均可连接"
+    fi
+  fi
 fi
 
 # ---- 4. PostgreSQL ----

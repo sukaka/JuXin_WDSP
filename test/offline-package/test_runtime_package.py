@@ -31,6 +31,9 @@ class RuntimePackageTests(unittest.TestCase):
                     self.assertFalse(name.endswith((".md", "_test.go", ".spec.ts", ".test.ts")), name)
                 compose_name = next(n for n in names if n.endswith("/docker-compose.yml"))
                 compose = archive.extractfile(compose_name).read().decode()
+                api = compose.split("\n  api:\n", 1)[1].split("\n  web:\n", 1)[0]
+                self.assertIn("- runtime-data:/app/runtime", api)
+                self.assertIn("- ./runtime/hostctl:/app/runtime/hostctl", api)
                 gateway = compose.split("\n  gateway:\n", 1)[1].split("\n  # 日志轮转", 1)[0]
                 self.assertIn('user: "0:0"', gateway)
                 self.assertIn('entrypoint: ["/usr/local/bin/wdsp-gateway-bind"]', gateway)
@@ -42,6 +45,16 @@ class RuntimePackageTests(unittest.TestCase):
                 self.assertNotIn("ip_unprivileged_port_start", compose)
                 self.assertIn("image: jiuzhang-netmgrd:9.9.9", compose)
                 self.assertIn("network_mode: service:gateway", compose)
+                self.assertIn('tmpfs: ["/tmp:size=8m,mode=1777"]', compose)
+                for relative in (
+                    "ops/install/install-hostctl.sh",
+                    "ops/system/hostctl-exec.sh",
+                    "ops/system/firewall-ensure.sh",
+                    "ops/system/factory-reset.sh",
+                    "deployment/systemd/jiuzhang-hostctl.path",
+                    "deployment/systemd/jiuzhang-hostctl.service",
+                ):
+                    self.assertTrue(any(n.endswith("/" + relative) for n in names), relative)
                 self.assertIn("GATEWAY_NODE_NAME: ${GATEWAY_NODE_NAME:-gateway-poc-01}", compose)
                 self.assertTrue(any(n.endswith("/licenses/THIRD_PARTY_NOTICES") for n in names))
 

@@ -239,6 +239,9 @@ type Publisher struct {
 	smokeClient   *http.Client
 	// lockBackend 仅用于测试注入；生产路径由 cache.Redis() 构造 Redis 后端。
 	lockBackend publishLockBackend
+	// firewallEnsurer 在候选配置加载前提交实际监听端口的防火墙放行指令；
+	// nil 保持未接入宿主通道环境的既有发布行为。
+	firewallEnsurer FirewallEnsurer
 }
 
 type gatewayConfigLoader interface {
@@ -764,10 +767,15 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 		p.finishTask(ctx, taskID, TaskFailed, "LOCK_LOST", err.Error(), &version.ID)
 		return
 	}
-	prevConfig, err := loadGatewayConfig(ctx, p.caddy, gen.JSON)
+	prevConfig, firewallPorts, err := p.loadGatewayConfigWithFirewall(ctx, p.caddy, gen.JSON, appsData, in)
 	if err != nil {
 		p.markVersionResult(ctx, version.ID, "FAILED")
 		markAC("FAILED")
+		if code, message, ok := firewallEnsureTaskFailure(err); ok {
+			slog.Error("submit firewall ensure command failed", "task", taskID, "version", version.ID, "error", err)
+			p.finishTask(ctx, taskID, TaskFailed, code, message, &version.ID)
+			return
+		}
 		if errors.Is(err, errPreviousConfigRead) {
 			p.finishTask(ctx, taskID, TaskFailed, "PREVIOUS_CONFIG_READ_FAILED",
 				"无法读取发布前网关配置: "+sanitizeCaddyError(err), &version.ID)
@@ -886,6 +894,9 @@ func (p *Publisher) executePublish(ctx context.Context, taskID uuid.UUID, in Pub
 	successMsg := "发布成功"
 	if smoke != nil {
 		successMsg += "；" + smoke.summary()
+	}
+	if p.firewallEnsurer != nil {
+		successMsg += firewallEnsureSummary(firewallPorts)
 	}
 	p.finishTask(ctx, taskID, TaskSuccess, "", successMsg, &version.ID)
 }

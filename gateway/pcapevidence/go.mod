@@ -1,0 +1,15 @@
+module github.com/jiuzhang-waf/gateway/pcapevidence
+
+go 1.25.6
+
+require (
+	github.com/google/gopacket v1.1.19
+	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0
+)
+
+require (
+	golang.org/x/net v0.0.0-20190620200207-3b0461eec859 // indirect
+	golang.org/x/sys v0.47.0
+)
+
+replace github.com/jiuzhang-waf/gateway/dynamic_security => ../dynamic_security

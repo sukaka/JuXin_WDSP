@@ -59,6 +59,17 @@ compose() {
   docker compose -f "$JZ_COMPOSE_FILE" --env-file "$JZ_ENV_FILE" "$@"
 }
 
+# compose_api_url FILE ENV_FILE —— 从实际发布的 API 端口生成本机健康检查地址。
+compose_api_url() {
+  local file="$1" env_file="$2" rendered endpoint host port
+  rendered="$(docker compose -f "$file" --env-file "$env_file" config --format json 2>/dev/null)" || return 1
+  endpoint="$(jq -er '[.services.api.ports[]? | select(.target == 8080) | {host:(.host_ip // "127.0.0.1"),port:(.published | tostring)}][0] // empty' <<<"$rendered")" || return 1
+  host="$(jq -er .host <<<"$endpoint")"; port="$(jq -er .port <<<"$endpoint")"
+  [[ "$port" =~ ^[0-9]+$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || return 1
+  case "$host" in ''|'0.0.0.0'|'::') host='127.0.0.1' ;; '::1') host='[::1]' ;; esac
+  printf 'http://%s:%s\n' "$host" "$port"
+}
+
 # wait_http_ok URL TIMEOUT_SEC —— 等待 HTTP 200。
 wait_http_ok() {
   local url="$1" timeout="${2:-60}" i

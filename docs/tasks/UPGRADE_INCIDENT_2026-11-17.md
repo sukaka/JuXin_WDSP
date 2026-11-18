@@ -1,0 +1,109 @@
+# 2026-11-17 WDSP 1.3.0 → 1.5.0 升级问题复盘与强制预防清单
+
+## 1. 目的
+
+本文记录本次 openEuler / 兆芯服务器实际升级中暴露的问题，作为后续升级开发、打包和验收的强制输入。
+
+核心教训：**代码提交、镜像构建、签名、单测、Compose 渲染和 mock 测试，都不能替代目标机真实升级与外部访问验收。不得把现场临时 CLI 补救当作产品能力完成。**
+
+## 2. 最终结果口径
+
+已确认：
+
+- 发布提交、分支和 `wdsp-v1.5.0` 标签已推送，正式包签名与摘要有效。
+- 目标机 api/gateway/netmgrd 已完成核心升级，Caddy 实际监听 `:82`。
+- 目标机 PID 1 为 Caddy，UID/GID 1000，`CapEff/CapBnd/CapAmb=0x400`，`NoNewPrivs=1`。
+- 新前端已加载，数据流向页面能够打开。
+- 发布探针的 Bot 耦合问题已修复；现场补充拨号地址后，用户确认探针恢复正常。
+
+不能据此宣称全部完成：
+
+- 数据流 ClickHouse 数据面是否最终恢复，未取得最后确认。
+- 局域网客户端访问 `192.168.3.232:82/dedecms/` 曾持续 `ERR_CONNECTION_REFUSED`，防火墙自动放行产品修复尚未发布到该服务器。
+- 自动防火墙、宿主通道、完整组件升级和若干部署缺陷的源码修复仍在本地，不属于已推送的 1.5.0。
+
+## 3. 问题台账
+
+| 问题 | 根因 | 状态与预防要求 |
+|---|---|---|
+| 本地菜单说明与服务器页面不一致 | 未先确认用户访问的是远程服务器旧实例，误按本机源码和新导航回答 | 先确认实例、版本和实际前端资源；不得凭本地源码猜远程页面 |
+| install/update 文件难以区分 | 完整包同时作为安装与升级介质，文件名只有 offline/openeuler-zhaoxin | 已约定安装名含 `install`、升级名含 `update`，完整升级使用 `update-full`；旁车签名和摘要必须同步 |
+| `--new-compose-file` 报 `$2` 未绑定 | 调用只给选项名，未给路径；最初升级说明没有提供完整可执行命令 | 交付命令必须含旧 Compose、新 Compose、env、目标镜像、运行时目录和后续组件步骤 |
+| 新 Compose 可能误记旧镜像 ID | 从目标 Compose 的新标签反查旧镜像 | 旧镜像名/ID只能来自当前旧 Compose；目标标签来自新 Compose |
+| 镜像名称硬编码风险 | runtime-only 包将镜像改为 `jiuzhang-runtime-*:<内容ID>`，并非固定 `jiuzhang-server:X.Y.Z` | 从目标 Compose 渲染结果读取实际镜像，不凭版本号猜标签 |
+| 交互 SSH 在预检失败后断开 | 在交互 shell 中粘贴 `set -e`，失败命令导致会话退出 | 不给交互 SSH 默认加 `set -e`；用显式条件或 `&&` 防止失败后继续 |
+| 升级前 gateway 健康检查误报 18080 | 健康检查默认开发端口 18080，生产 host 网络实际监听 82 | 生产检查必须按实际监听配置探测；显式指定正确端口只是现场措施，不能关闭检查 |
+| containerops 无法启动：`mode=1777` 非绝对路径 | `tmpfs: [/tmp:size=8m,mode=1777]` 的 YAML 行内列表被逗号拆成两项 | 源码已改为带引号单字符串并加渲染断言；必须验证 Docker 实际创建，不只看 YAML 语法 |
+| logrotator 重建发生容器名冲突 | force-recreate 的改名/删除过程留下临时容器名 | 只清理对应服务的陈旧容器，不删除数据卷；升级器需增加幂等重建和重建后状态核验 |
+| web 处于 Created，管理台无法访问 | 只看 Compose 创建结果，没有确认容器真正 Started/Running | 每个变更组件必须检查 `ps -a`、实际状态和 HTTP；Created 不是升级成功 |
+| apply 成功后 web/sidecar 未完整更新 | `apply.sh` 只重建 api/gateway/netmgrd，web、logrotator、containerops 需要额外步骤 | 完整升级必须声明并执行全部变更组件，不得让用户自行拼接遗漏步骤 |
+| runtime、`.env` 与 current 切换风险 | 新包目录没有现有运行数据；直接换 Compose 会指向空 runtime，current 切换还可能造成符号链接回环 | 升级前解析旧 release 真实路径，复用运行数据与 env；健康后才切 current；不得覆盖原 env |
+| ClickHouse 配置与状态不可用 | 数据流 UI 已发布，但独立 APM ClickHouse、DSN 和容器网络未自动接入 | 功能交付必须包含依赖就绪检查；存储不可用与无观测数据必须区分，不能只交付菜单 |
+| 发布探针拨 `127.0.0.1:82` | API 容器内回环指向自身，生产 Compose 未传 `GATEWAY_PUBLISH_SMOKE_ADDR` | 探针必须从真实 API 容器访问真实 gateway；多端口长期方案应为固定网关主机并跟随各站点端口 |
+| 探针正常但浏览器仍拒绝连接 | 探针只证明 API→gateway，不证明局域网客户端→宿主机；firewalld 未放行 82 | 外部客户端访问是独立强制验收，不能用探针通过替代 |
+| Web 配置后仍需手工 firewall-cmd | 安装器只处理初始 `--site-ports`，发布链未联动防火墙 | 产品缺口。已本地实现签名 hostctl 自动精确放行，但未提交、推送或生成新包 |
+| 自动放行若只写 API 代码不会生效 | 离线 API 使用 runtime 命名卷，hostctl 宿主目录不可见；离线白名单可能漏脚本；systemd 可能继续指向旧 release | 必须同时接通嵌套 hostctl bind、离线文件白名单、unit 模板和升级后的 hostctl 单元更新 |
+| 本地发布构建前期失败 | macOS 默认 Python 3.9/LibreSSL 与测试、Ed25519 工具链不匹配；空输出目录触发防覆盖 | 固定使用项目验证的 Python 3.12/OpenSSL 3；输出目录问题按工具约束处理，不降低检查 |
+| 全仓测试存在红色项 | tproxyd、apifiles、behaviorstore 等既存失败 | 不伪称全绿；与本次变更相关测试必须单独通过，既存失败应独立登记和修复 |
+
+## 4. 后续发布禁止事项
+
+1. 禁止将“构建成功、签名通过、单测通过、mock 通过”表述为目标机升级通过。
+2. 禁止将“容器 Created”“部分容器 Running”“配置已加载”“防火墙指令已提交”表述为服务或外部访问可用。
+3. 禁止以“用户再执行一条 firewall-cmd / docker 命令”作为正式产品方案；临时恢复必须明确标记为临时措施。
+4. 禁止只更新 api/gateway 而遗漏实际变更的 web、netmgrd、logrotator、containerops、hostctl 和可选数据面。
+5. 禁止硬编码 runtime-only 镜像标签、猜测实际监听端口或让 API 容器用回环地址冒充网关地址。
+6. 禁止覆盖现有 `.env`、丢失 runtime、提前切换 current，或在失败后继续执行后续切换步骤。
+7. 禁止在交互 SSH 命令中默认加入可能断开会话的 `set -e`。
+8. 禁止为通过验收关闭权限、HMAC、防重放、防火墙安全边界、数据面验签或失败回滚。
+
+## 5. 正式升级强制验收门
+
+每次升级包交付前必须保存以下真实证据；任何一项未执行就标 `NOT_RUN`，不得写 `PASS`。
+
+### A. 干净目标机与真实包
+
+- 使用真实前版本和目标 Linux/amd64 环境，不用本机源码树或仿制旧镜像替代。
+- 从正式命名的 update 文件开始，验证签名、摘要、manifest 和全部镜像。
+- 执行首次安装、前版本→候选升级、失败回滚；基础设施启动契约变化时验证 old→new→old→new。
+
+### B. 配置与数据保持
+
+- 旧镜像 ID 来自旧栈，候选镜像 ID 与包清单一致。
+- 原 `.env`、证书、授权、数据库、配置版本和运行数据保持。
+- `current` 只在全部健康后切换；回滚路径仍可使用。
+
+### C. 所有组件的真实状态
+
+- 对每个变更服务检查容器名、镜像 ID、Running/Healthy，不接受 Created。
+- 管理 API、管理 Web、gateway、netmgrd、logrotator、containerops 和启用的数据面分别验证。
+- hostctl path/service 指向目标 release；API 写入的指令宿主机实际可见并消费。
+
+### D. 真实业务发布
+
+- Bot 未配置及 OFF+RELEASED 都发布成功。
+- 独立探针从真实 API 容器拨号，普通源站 404、错误 Host、错误签名仍回滚。
+- 不接受因回环地址错误造成的 `SMOKE_SKIPPED` 冒充验证通过。
+- 新端口由 Web 发布自动放行，不为正常流程追加手工 CLI。
+
+### E. 从外部客户端验收
+
+- 从服务器外部浏览器/客户端访问实际站点 Host、端口和业务路径。
+- 分别记录连接、HTTP 状态、防护命中和源站响应；connection refused、403、404、502 不混为一类。
+- 外部不可达时检查真实监听、firewalld、上游 ACL/安全组，不能用本机 curl 或探针结果替代。
+
+### F. 功能依赖与降级
+
+- ClickHouse/Kafka/Agent 等被页面宣称依赖的组件必须有真实状态和连接证据。
+- 明确区分存储不可用、未接入 Agent、无观测数据、证据不足和正常空图。
+- 镜像 HTTP 事件、进程内 Observation 与数据流图的不同链路不得混称已支持。
+
+## 6. 1.6.0 产品化修复与现场验收边界
+
+- 已实现 `update-full` 独立入口与完整升级编排：一次更新全部变更组件及 hostctl，失败自动恢复旧镜像和本轮新增迁移；只更新已显式启用的 PCAP 数据面，默认不启动 PCAP。
+- 健康检查从实际 Compose 和 Caddy Admin 读取端口；离线发布探针经 `host.docker.internal:host-gateway` 访问宿主网关，主机名不带端口时逐站点跟随真实端口。
+- sidecar 使用同次受控清理与重建，保留命名卷；web/API/网关实际探针与目标镜像 ID 逐项复核，不能只看 Created。
+- 新 release 复用原 `.env`、runtime 与命名卷，备份成功且验证后才切换；current 在完整健康后原子切换，旧镜像 ID 与迁移版本保留为回滚点。
+- 交付明确区分 `install` 与 `update-full`，独立启动脚本和归档均提供签名/SHA-256 旁车；构建器拒绝不受信任的签名私钥。
+- ClickHouse 等独立数据流依赖的就绪展示不混同正常空图；真实 ClickHouse/Kafka/Agent 状态仍须目标环境验收。
+- 以下项目仍为 `NOT_RUN`：真实 openEuler/兆芯首次安装、前版本→1.6.0→前版本→1.6.0、真实 firewalld 的 Web 发布→端口放行→外部访问闭环、目标物理 SAS 大流量及 72 小时长稳。不得因本机契约测试、业务 E2E 或打包通过改写为 `PASS`。

@@ -276,3 +276,25 @@ func TestLoadContainerOpsSocketFromEnv(t *testing.T) {
 		t.Fatalf("ContainerOps.Socket = %q, want /app/runtime/containerops/containerops.sock", cfg.ContainerOps.Socket)
 	}
 }
+
+func TestRequestPCAPConfigurationIsExplicitAndComplete(t *testing.T) {
+	t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+	t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+	t.Setenv("REQUEST_PCAP_HOT_DIR", "")
+	t.Setenv("REQUEST_PCAP_WARM_DIR", "")
+	t.Setenv("REQUEST_PCAP_KEY_FILE", "")
+	cfg, err := Load()
+	if err != nil || cfg.RequestPCAP.Enabled() {
+		t.Fatalf("request PCAP must be disabled by default: %+v err=%v", cfg.RequestPCAP, err)
+	}
+	t.Setenv("REQUEST_PCAP_HOT_DIR", "/app/runtime/pcap-hot")
+	if _, err := Load(); err == nil {
+		t.Fatal("partial request PCAP configuration was accepted")
+	}
+	t.Setenv("REQUEST_PCAP_WARM_DIR", "/app/runtime/pcap-warm")
+	t.Setenv("REQUEST_PCAP_KEY_FILE", "/app/runtime/keys/pcap-private.key")
+	cfg, err = Load()
+	if err != nil || !cfg.RequestPCAP.Enabled() {
+		t.Fatalf("complete request PCAP configuration was rejected: %+v err=%v", cfg.RequestPCAP, err)
+	}
+}

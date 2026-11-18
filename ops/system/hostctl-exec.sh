@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# hostctl-exec.sh —— 系统控制执行通道：扫描 hostctl 标志目录，执行重启/关机/恢复出厂。
+# hostctl-exec.sh —— 系统控制执行通道：扫描 hostctl 标志目录，执行重启/关机/恢复出厂/端口放行。
 #
 # 背景：API 容器 read_only + cap_drop ALL，不能执行主机命令；校验通过后仅往
 # 标志目录写 <action>-<unixts>-<requestid>.json（JSON 内容含 action/requestedBy/
-# userID/requestID/requestedAt/delaySeconds/hmac）。宿主机由 jiuzhang-hostctl.path
+# userID/requestID/requestedAt/delaySeconds/hmac，firewall_ensure 另含 ports）。
+# 宿主机由 jiuzhang-hostctl.path
 # systemd path 单元监视目录并触发本脚本（无 systemd 环境可手工执行）。
 #
 # JSON 解析：优先 python3，缺失时回退 jq（二者须至少其一，用 require_cmd 检查）。
 # 安全要点：执行前先 stat 校验标志目录属主（约定 uid 1000）、目录非 other-writable、
 # 标志文件属主与目录属主一致，任一不满足即归档拒绝并 logger 告警（fail-closed）；
 # 处理前先把标志文件改名为 <原名>.done（防 systemd path 单元重复触发）；
-# action 必须在白名单（reboot/shutdown/factory_reset）内，非法标志同样改名归档并
+# action 必须在白名单（reboot/shutdown/factory_reset/firewall_ensure）内，非法标志同样改名归档并
 # 报错退出（不改名会导致 path 单元反复触发同一非法文件）。
 #
 # 请求真实性（HIGH-14 后续增强）：属主/权限校验只证明文件来自预期本地用户，不证明
@@ -20,8 +21,10 @@
 # 自举对称，先到者生效）。验签 fail-closed：缺 hmac/requestedAt/delaySeconds 字段
 # （含升级窗口内旧 server 写出的未签名标志）、hmac 格式非法、HMAC 不符、requestedAt
 # 超出 ±HOSTCTL_MAX_SKEW 秒（默认 300，防重放）一律归档拒绝并告警。
-# 规范化签名载荷（两端必须逐字节一致）：以 \n 连接、无结尾换行的
+# 规范化签名载荷（两端必须逐字节一致）：以 \n 连接、无结尾换行。旧动作固定使用 v1：
 #   v1\n<action>\n<requestedBy>\n<userID>\n<requestID>\n<requestedAt>\n<delaySeconds>
+# firewall_ensure 使用 v2，在原七字段后追加第 8 字段逗号分隔端口：
+#   v2\nfirewall_ensure\n<requestedBy>\n<userID>\n<requestID>\n<requestedAt>\n0\n<portsCSV>
 #
 # 用法: hostctl-exec.sh [--dry-run] [标志目录]
 #   标志目录：位置参数 $1 或环境变量 HOSTCTL_DIR，默认 <仓库根>/runtime/hostctl
@@ -60,7 +63,8 @@ require_cmd logger
 require_cmd openssl
 
 # json_fields FILE —— 依次输出 action / requestedBy / userID / requestID /
-# requestedAt / delaySeconds / hmac 七行（缺失字段输出空行，由调用方判空拒绝）
+# requestedAt / delaySeconds / hmac / ports 八行。ports 数组规范化为 CSV；
+# 非数组输出固定非法标记，由调用方按动作校验（旧动作忽略该字段）。
 json_fields() {
   local f="$1"
   if [[ "$JSON_TOOL" == "python3" ]]; then
@@ -77,9 +81,16 @@ print(s("requestID"))
 print(s("requestedAt"))
 print(s("delaySeconds"))
 print(s("hmac"))
+ports = d.get("ports", [])
+if ports is None:
+    ports = []
+if isinstance(ports, list):
+    print(",".join("" if v is None else str(v) for v in ports))
+else:
+    print("<invalid-ports>")
 PY
   else
-    jq -r '[.action // "", .requestedBy // "", .userID // "", .requestID // "", .requestedAt // "", (.delaySeconds // ""), .hmac // ""] | .[] | tostring' "$f" 2>/dev/null
+    jq -r '[.action // "", .requestedBy // "", .userID // "", .requestID // "", .requestedAt // "", (.delaySeconds // ""), .hmac // "", ((.ports // []) | if type == "array" then map(if . == null then "" else tostring end) | join(",") else "<invalid-ports>" end)] | .[] | tostring' "$f" 2>/dev/null
   fi
 }
 
@@ -231,6 +242,7 @@ REQUEST_ID="${F[3]:-}"
 REQUESTED_AT="${F[4]:-}"
 DELAY="${F[5]:-}"
 HMAC_FIELD="${F[6]:-}"
+PORTS="${F[7]:-}"
 
 # 签名验真（fail-closed）：缺字段（含升级窗口内旧 server 写出的未签名标志）、
 # 格式非法、HMAC 不符、时间戳超窗一律拒绝
@@ -238,8 +250,13 @@ HMAC_FIELD="${F[6]:-}"
   || reject_parsed "缺少 hmac/requestedAt/delaySeconds 字段（未签名标志一律拒绝）"
 [[ "$HMAC_FIELD" =~ ^[0-9a-f]{64}$ ]] || reject_parsed "hmac 字段格式非法"
 
-canonical="$(printf 'v1\n%s\n%s\n%s\n%s\n%s\n%s' \
-  "$ACTION" "$REQUESTED_BY" "$USER_ID" "$REQUEST_ID" "$REQUESTED_AT" "$DELAY")"
+if [[ "$ACTION" == "firewall_ensure" ]]; then
+  canonical="$(printf 'v2\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    "$ACTION" "$REQUESTED_BY" "$USER_ID" "$REQUEST_ID" "$REQUESTED_AT" "$DELAY" "$PORTS")"
+else
+  canonical="$(printf 'v1\n%s\n%s\n%s\n%s\n%s\n%s' \
+    "$ACTION" "$REQUESTED_BY" "$USER_ID" "$REQUEST_ID" "$REQUESTED_AT" "$DELAY")"
+fi
 expected_hmac="$(printf '%s' "$canonical" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $NF}')"
 [[ -n "$expected_hmac" && "$expected_hmac" == "$HMAC_FIELD" ]] \
   || reject_parsed "HMAC 验签失败（内容被篡改或密钥不符）"
@@ -253,26 +270,51 @@ skew=$(( now_ts - ts ))
 
 # action 白名单校验
 case "$ACTION" in
-  reboot|shutdown|factory_reset) ;;
+  reboot|shutdown|factory_reset|firewall_ensure) ;;
   *)
-    log_err "非法 action: ${ACTION:-<空>}（白名单: reboot/shutdown/factory_reset），已归档不执行"
+    log_err "非法 action: ${ACTION:-<空>}（白名单: reboot/shutdown/factory_reset/firewall_ensure），已归档不执行"
     logger -t jiuzhang-hostctl -- "rejected action=${ACTION:-empty} requestedBy=${REQUESTED_BY:-unknown} requestID=${REQUEST_ID:-unknown}"
     exit 1 ;;
 esac
 
-# delaySeconds：默认 3，上限 60，非法值按 3
-[[ "$DELAY" =~ ^[0-9]+$ ]] || DELAY=3
-(( DELAY > 60 )) && DELAY=60
+if [[ "$ACTION" == "firewall_ensure" ]]; then
+  [[ "$PORTS" =~ ^[1-9][0-9]{0,4}(,[1-9][0-9]{0,4})*$ ]] \
+    || reject_parsed "firewall_ensure ports 必须为十进制整数数组，每项 1..65535"
+  IFS=',' read -r -a PORT_ITEMS <<< "$PORTS"
+  (( ${#PORT_ITEMS[@]} >= 1 && ${#PORT_ITEMS[@]} <= 128 )) \
+    || reject_parsed "firewall_ensure ports 必须包含 1..128 项"
+  previous_port=0
+  for port in "${PORT_ITEMS[@]}"; do
+    port_number=$((10#$port))
+    (( port_number >= 1 && port_number <= 65535 )) \
+      || reject_parsed "firewall_ensure 端口超出 1..65535: $port"
+    (( port_number > previous_port )) \
+      || reject_parsed "firewall_ensure ports 必须严格升序且无重复"
+    previous_port="$port_number"
+  done
+fi
+
+# delaySeconds：旧动作默认 3、上限 60、非法值按 3；firewall_ensure 固定不等待。
+if [[ "$ACTION" == "firewall_ensure" ]]; then
+  [[ "$DELAY" == "0" ]] || reject_parsed "firewall_ensure 的 delaySeconds 必须为 0"
+else
+  [[ "$DELAY" =~ ^[0-9]+$ ]] || DELAY=3
+  (( DELAY > 60 )) && DELAY=60
+fi
 
 logger -t jiuzhang-hostctl -- "execute action=$ACTION requestedBy=${REQUESTED_BY:-unknown} requestID=${REQUEST_ID:-unknown} delay=$DELAY file=$FLAG_BASE"
 log_info "动作=$ACTION 操作人=${REQUESTED_BY:-unknown} requestID=${REQUEST_ID:-unknown} 延迟=${DELAY}s"
 
 if [[ "$DRY_RUN" == "true" ]]; then
-  log_info "[dry-run] 将 sleep ${DELAY}s 后执行: ${ACTION}（不实际执行）"
+  if [[ "$ACTION" == "firewall_ensure" ]]; then
+    log_info "[dry-run] 将执行: firewall-ensure.sh ${PORTS}（delay=0 不等待，不实际执行）"
+  else
+    log_info "[dry-run] 将 sleep ${DELAY}s 后执行: ${ACTION}（不实际执行）"
+  fi
   exit 0
 fi
 
-sleep "$DELAY"
+(( DELAY > 0 )) && sleep "$DELAY"
 case "$ACTION" in
   reboot)
     require_cmd systemctl
@@ -286,4 +328,8 @@ case "$ACTION" in
     [[ -x "$SCRIPT_DIR/factory-reset.sh" ]] || die "恢复出厂脚本不存在或不可执行: $SCRIPT_DIR/factory-reset.sh"
     log_info "执行恢复出厂: $SCRIPT_DIR/factory-reset.sh"
     JZ_ASSUME_YES=true bash "$SCRIPT_DIR/factory-reset.sh" ;;
+  firewall_ensure)
+    [[ -x "$SCRIPT_DIR/firewall-ensure.sh" ]] || die "防火墙放行脚本不存在或不可执行: $SCRIPT_DIR/firewall-ensure.sh"
+    log_info "确保 firewalld runtime+permanent 放行: $PORTS"
+    bash "$SCRIPT_DIR/firewall-ensure.sh" "$PORTS" ;;
 esac

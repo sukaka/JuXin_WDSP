@@ -33,6 +33,7 @@ ENV GOPROXY=${GOPROXY}
 WORKDIR /build/server
 COPY server/go.mod server/go.sum ./
 COPY gateway/dynamic_security/ /build/gateway/dynamic_security/
+COPY gateway/pcapevidence/ /build/gateway/pcapevidence/
 RUN go mod download
 COPY server/ ./
 # GOOS/GOARCH 显式指向目标平台（Go 交叉编译）

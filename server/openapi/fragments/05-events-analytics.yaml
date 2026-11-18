@@ -314,18 +314,27 @@ paths:
       tags: [access-logs]
       summary: 访问日志分页列表
       description: >-
-        全量访问日志（网关放行路径采集）按时间倒序分页查询。权限：access_logs.read。
+        启用全量访问日志后按时间倒序分页查询。权限：access_logs.read。时间范围左闭右开。
         page_size 上限 100；列表不返回请求/响应头体留痕（字段缺省），详情见 GET /access-logs/{id}。
       parameters:
-        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
-        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，含边界） }
-        - { name: domain, in: query, required: false, schema: { type: string }, description: 域名模糊匹配（ILIKE） }
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339，含边界） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，不含边界） }
+        - { name: domain, in: query, required: false, schema: { type: string, maxLength: 255 }, description: 域名模糊匹配（ILIKE） }
         - { name: client_ip, in: query, required: false, schema: { type: string }, description: 客户端 IP 精确匹配 }
-        - { name: method, in: query, required: false, schema: { type: string }, description: 请求方法精确匹配 }
-        - { name: uri, in: query, required: false, schema: { type: string }, description: 请求 URI 模糊匹配（ILIKE） }
-        - { name: status, in: query, required: false, schema: { type: integer }, description: 响应状态码精确匹配（如 200/403） }
-        - { name: waf_action, in: query, required: false, schema: { type: string }, description: WAF 动作（BLOCK 或空串=放行；网关仅对 403 推断 BLOCK） }
-        - { name: request_id, in: query, required: false, schema: { type: string }, description: 请求 ID 精确匹配 }
+        - { name: method, in: query, required: false, schema: { type: string, maxLength: 16 }, description: 请求方法精确匹配 }
+        - { name: uri, in: query, required: false, schema: { type: string, maxLength: 2048 }, description: 请求 URI 模糊匹配（ILIKE） }
+        - { name: status, in: query, required: false, schema: { type: integer, minimum: 100, maximum: 599 }, description: 响应状态码精确匹配 }
+        - { name: waf_action, in: query, required: false, schema: { type: string, maxLength: 32 }, description: 实际 WAF 动作（如 ALLOW/BLOCK） }
+        - { name: request_id, in: query, required: false, schema: { type: string, maxLength: 64 }, description: 请求 ID 精确匹配 }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID 精确匹配 }
+        - { name: trace_id, in: query, required: false, schema: { type: string, pattern: '^[0-9a-f]{32}$' }, description: W3C Trace ID（非全零）精确匹配 }
+        - { name: identity_fingerprint, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 通过同一请求的运行事件精确匹配身份指纹 }
+        - { name: rule_id, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 通过同一请求的运行事件 details_json 精确匹配命中规则 }
+        - { name: endpoint_key, in: query, required: false, schema: { type: string, maxLength: 600 }, description: 规范化API精确匹配 }
+        - { name: field_path, in: query, required: false, schema: { type: string, maxLength: 512 }, description: 敏感字段结构化路径，不含字段值 }
+        - { name: data_type, in: query, required: false, schema: { type: string, maxLength: 64 }, description: 敏感数据类型标签 }
+        - { name: direction, in: query, required: false, schema: { type: string, enum: [REQUEST, RESPONSE] }, description: 敏感字段方向 }
+        - { name: request_ids, in: query, required: false, schema: { type: string, maxLength: 6500 }, description: 图下钻的逗号分隔请求ID集合，最多100个；不与request_id混用 }
         - { name: page, in: query, required: false, schema: { type: integer, default: 1, minimum: 1 }, description: 页码 }
         - { name: page_size, in: query, required: false, schema: { type: integer, default: 20 }, description: 每页条数（上限 100） }
       responses:
@@ -334,6 +343,41 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AccessLogListResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /access-logs/trend:
+    get:
+      operationId: accessLogTrend
+      tags: [access-logs]
+      summary: 访问日志真实趋势
+      description: >-
+        按访问日志时间桶聚合请求数、WAF阻断数和5xx数，权限：access_logs.read。
+        与列表共用筛选条件；默认最近24小时，最长31天；不读取报文正文或PCAP。
+      parameters:
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339，含边界） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，不含边界） }
+        - { name: bucket_seconds, in: query, required: false, schema: { type: integer, enum: [60, 300, 900, 3600, 86400] }, description: 时间桶秒数；缺省按时间窗自动选择 }
+        - { name: domain, in: query, required: false, schema: { type: string, maxLength: 255 } }
+        - { name: client_ip, in: query, required: false, schema: { type: string } }
+        - { name: method, in: query, required: false, schema: { type: string, maxLength: 16 } }
+        - { name: uri, in: query, required: false, schema: { type: string, maxLength: 2048 } }
+        - { name: status, in: query, required: false, schema: { type: integer, minimum: 100, maximum: 599 } }
+        - { name: waf_action, in: query, required: false, schema: { type: string, maxLength: 32 } }
+        - { name: request_id, in: query, required: false, schema: { type: string, maxLength: 64 } }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: trace_id, in: query, required: false, schema: { type: string, pattern: '^[0-9a-f]{32}$' } }
+        - { name: identity_fingerprint, in: query, required: false, schema: { type: string, maxLength: 128 } }
+        - { name: rule_id, in: query, required: false, schema: { type: string, maxLength: 128 } }
+      responses:
+        '200':
+          description: 真实访问日志趋势；无数据时items为空数组，不生成虚假计数
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessLogTrendResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
@@ -348,21 +392,26 @@ paths:
         waf_action, bytes_in, bytes_out, duration_ms, gateway_node_id, request_id。上限 10000 行。
         权限：access_logs.export。限流：每 IP 5 次/分钟（超限返回 429）。导出行为记录操作审计（中风险）。
       parameters:
-        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339） }
-        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，含边界） }
-        - { name: domain, in: query, required: false, schema: { type: string }, description: 域名模糊匹配 }
+        - { name: start_time, in: query, required: false, schema: { type: string, format: date-time }, description: 起始时间（RFC3339，含边界） }
+        - { name: end_time, in: query, required: false, schema: { type: string, format: date-time }, description: 结束时间（RFC3339，不含边界） }
+        - { name: domain, in: query, required: false, schema: { type: string, maxLength: 255 }, description: 域名模糊匹配 }
         - { name: client_ip, in: query, required: false, schema: { type: string }, description: 客户端 IP 精确匹配 }
-        - { name: method, in: query, required: false, schema: { type: string }, description: 请求方法 }
-        - { name: uri, in: query, required: false, schema: { type: string }, description: 请求 URI 模糊匹配 }
-        - { name: status, in: query, required: false, schema: { type: integer }, description: 响应状态码 }
-        - { name: waf_action, in: query, required: false, schema: { type: string }, description: WAF 动作 }
-        - { name: request_id, in: query, required: false, schema: { type: string }, description: 请求 ID }
+        - { name: method, in: query, required: false, schema: { type: string, maxLength: 16 }, description: 请求方法 }
+        - { name: uri, in: query, required: false, schema: { type: string, maxLength: 2048 }, description: 请求 URI 模糊匹配 }
+        - { name: status, in: query, required: false, schema: { type: integer, minimum: 100, maximum: 599 }, description: 响应状态码 }
+        - { name: waf_action, in: query, required: false, schema: { type: string, maxLength: 32 }, description: 实际WAF动作 }
+        - { name: request_id, in: query, required: false, schema: { type: string, maxLength: 64 }, description: 请求 ID }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 应用 ID }
+        - { name: trace_id, in: query, required: false, schema: { type: string, pattern: '^[0-9a-f]{32}$' }, description: W3C Trace ID（非全零） }
+        - { name: identity_fingerprint, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 身份指纹 }
+        - { name: rule_id, in: query, required: false, schema: { type: string, maxLength: 128 }, description: 命中规则 ID }
       responses:
         '200':
           description: "CSV 文件（text/csv; charset=utf-8，Content-Disposition: attachment）"
           content:
             text/csv:
               schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
@@ -1470,7 +1519,12 @@ components:
         bytes_in: { type: integer, format: int64, description: 请求字节数 }
         bytes_out: { type: integer, format: int64, description: 响应字节数 }
         duration_ms: { type: integer, description: 处理耗时（毫秒） }
-        waf_action: { type: string, description: WAF 动作（BLOCK 或空串=放行；网关仅对 403 推断 BLOCK） }
+        waf_action: { type: string, description: 实际WAF动作（如ALLOW/BLOCK） }
+        trace_id: { type: string, description: W3C Trace ID；仅详情返回，未采集时缺省 }
+        span_id: { type: string, description: W3C Span ID；仅详情返回，未采集时缺省 }
+        endpoint_key: { type: string, description: 规范化接口键（METHOD + path_template）；仅详情返回 }
+        path_template: { type: string, description: 规范化路径模板；仅详情返回 }
+        ttfb_ms: { type: integer, format: int64, nullable: true, description: 实际采集的上游首字节耗时（毫秒）；未采集为null }
         request_headers:
           type: object
           additionalProperties: { type: array, items: { type: string } }
@@ -1493,6 +1547,22 @@ components:
         page: { type: integer, description: 当前页码 }
         page_size: { type: integer, description: 每页条数 }
         total: { type: integer, format: int64, description: 总条数 }
+
+    AccessLogTrendPoint:
+      type: object
+      properties:
+        bucket: { type: string, format: date-time, description: UTC时间桶起点 }
+        total: { type: integer, format: int64, description: 请求数 }
+        blocked: { type: integer, format: int64, description: WAF阻断数 }
+        errors: { type: integer, format: int64, description: 响应状态码>=500的请求数 }
+
+    AccessLogTrendResponse:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AccessLogTrendPoint' }, description: 有真实日志的时间桶；无数据为空数组 }
+        bucket_seconds: { type: integer, enum: [60, 300, 900, 3600, 86400] }
+        start_time: { type: string, format: date-time, description: 实际查询起始时间 }
+        end_time: { type: string, format: date-time, description: 实际查询结束时间（不含边界） }
 
     # ==================== 态势首页 ====================
     DashboardKV:

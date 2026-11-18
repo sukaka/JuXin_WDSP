@@ -87,6 +87,11 @@ if python3 "$SCRIPT_DIR/test_gateway_runtime_contract.py"; then
 else
   fail "手动完整包双 Compose 与 legacy 回滚契约回归"
 fi
+if python3 "$SCRIPT_DIR/test_full_upgrade.py"; then
+  pass "完整升级全组件、备份前置与数据库回滚契约回归"
+else
+  fail "完整升级全组件、备份前置与数据库回滚契约回归"
+fi
 if python3 "$SCRIPT_DIR/test_gateway_upgrade_executor_contract.py"; then
   pass "Web gateway 启动契约门禁与切换前回滚回归"
 else
@@ -541,16 +546,17 @@ git -C "$SIGNED_FIX" config user.email harness@example.invalid
 git -C "$SIGNED_FIX" add -A
 git -C "$SIGNED_FIX" commit -qm baseline
 git -C "$SIGNED_FIX" tag wdsp-v1.2.0
+git -C "$SIGNED_FIX" tag wdsp-v1.3.0
 mkdir -p "$SIGNED_FIX/web"
 printf 'changed\n' > "$SIGNED_FIX/web/app.js"
 printf 'changed\n' > "$SIGNED_FIX/server/app.go"
 expect_exit "正式构建拒绝不受信任的随机密钥" 1 env WDSP_SIGNING_KEY="$TMP_ROOT/rel.key" \
-  bash "$BUILDER" --to 1.4.0 --components api --images-dir "$FIX" --output-dir "$TMP_ROOT/wrong-key"
+  bash "$BUILDER" --from 1.3.0 --to 1.4.0 --components api --images-dir "$FIX" --output-dir "$TMP_ROOT/wrong-key"
 DIST_S="$TMP_ROOT/dist-signed"
 S_OUT="$TMP_ROOT/build-signed.out"
 ROOT_S="jiuzhang-wdsp-upgrade-1.4.0-$HOST_ARCH"
 PKG_S="$DIST_S/$ROOT_S.tar.gz"
-if WDSP_SIGNING_KEY="$TMP_ROOT/rel.key" bash "$SIGNED_FIX/ops/upgrade/build-upgrade-pack.sh" --to 1.4.0 --arch "$HOST_ARCH" \
+if WDSP_SIGNING_KEY="$TMP_ROOT/rel.key" bash "$SIGNED_FIX/ops/upgrade/build-upgrade-pack.sh" --from 1.3.0 --to 1.4.0 --arch "$HOST_ARCH" \
     --images-dir "$FIX" --output-dir "$DIST_S" > "$S_OUT" 2>&1; then
   pass "默认 auto 自动识别并签名构建成功"
 else
@@ -613,12 +619,12 @@ fi
 # 同名输出必须保持原字节，补丁版本同样由统一入口自动识别并签名。
 cp "$PKG_S" "$TMP_ROOT/original-signed.tar.gz"
 expect_exit "拒绝覆盖同名升级包" 1 env WDSP_SIGNING_KEY="$TMP_ROOT/rel.key" \
-  bash "$SIGNED_FIX/ops/upgrade/build-upgrade-pack.sh" --to 1.4.0 --arch "$HOST_ARCH" \
+  bash "$SIGNED_FIX/ops/upgrade/build-upgrade-pack.sh" --from 1.3.0 --to 1.4.0 --arch "$HOST_ARCH" \
   --images-dir "$FIX" --output-dir "$DIST_S"
 check "拒绝覆盖后原包字节不变" cmp "$PKG_S" "$TMP_ROOT/original-signed.tar.gz"
 PATCH_DIST="$TMP_ROOT/unified-bugfix"
 if WDSP_SIGNING_KEY="$TMP_ROOT/rel.key" bash "$SIGNED_FIX/ops/upgrade/build-upgrade-pack.sh" \
-    --to 1.2.1 --arch "$HOST_ARCH" --images-dir "$FIX" --output-dir "$PATCH_DIST" \
+    --from 1.2.0 --to 1.2.1 --arch "$HOST_ARCH" --images-dir "$FIX" --output-dir "$PATCH_DIST" \
     > "$TMP_ROOT/bugfix.out" 2>&1 \
    && tar -xOzf "$PATCH_DIST/jiuzhang-wdsp-upgrade-1.2.1-$HOST_ARCH.tar.gz" \
       "jiuzhang-wdsp-upgrade-1.2.1-$HOST_ARCH/manifest.json" \
@@ -630,7 +636,7 @@ fi
 
 # ---------- 9. 负例：未配置私钥且未显式 --unsigned ----------
 N_OUT="$TMP_ROOT/build-nokey.out"
-if env -u WDSP_SIGNING_KEY bash "$BUILDER" --to 1.5.0 --arch "$HOST_ARCH" \
+if env -u WDSP_SIGNING_KEY bash "$BUILDER" --from 1.3.0 --to 1.5.0 --arch "$HOST_ARCH" \
     --components "api web" --images-dir "$FIX" --output-dir "$TMP_ROOT/dist-nokey" > "$N_OUT" 2>&1; then
   fail "未配置私钥且未 --unsigned 应失败"
 else

@@ -121,6 +121,19 @@ else
   die '正式 .run 构建缺少发布签名私钥'
 fi
 
+INSTALL_ALIAS="$OUTPUT_DIR/jiuzhang-wdsp-install-${VERSION}-amd64.run"
+[[ ! -e "$INSTALL_ALIAS" && ! -e "${INSTALL_ALIAS}.sha256" && ! -e "${INSTALL_ALIAS}.sig" ]] \
+  || die '安装交付别名已存在，拒绝覆盖'
+ln "$OUT" "$INSTALL_ALIAS" || die '无法创建安装交付别名'
+(cd "$OUTPUT_DIR" && sha256_of "$(basename "$INSTALL_ALIAS")" > "$(basename "$INSTALL_ALIAS").sha256")
+sha256_check_sidecar "$INSTALL_ALIAS" || die '安装交付别名 SHA-256 校验失败'
+if [[ -n "${WDSP_SIGNING_KEY:-}" ]]; then
+  cp "${OUT}.sig" "${INSTALL_ALIAS}.sig"
+  ed25519_verify_file "$REPO_ROOT/ops/offline-package/release-signing.pub" "$INSTALL_ALIAS" "${INSTALL_ALIAS}.sig" \
+    || die '安装交付别名验签失败'
+fi
+
 log_info "openEuler / 兆芯 .run 已生成：$OUT"
+log_info "安装入口：sudo $INSTALL_ALIAS"
 log_info "校验：sha256sum -c $(basename "$OUT").sha256"
 log_info "安装：sudo ./$(basename "$OUT")"

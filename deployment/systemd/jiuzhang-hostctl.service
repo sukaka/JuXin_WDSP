@@ -1,9 +1,9 @@
 # jiuzhang-hostctl.service —— 九章 WAF 系统控制执行通道 systemd service 单元（模板）
 # 由 jiuzhang-hostctl.path 触发（Type=oneshot），调用 ops/system/hostctl-exec.sh
 # 扫描标志目录并执行重启/关机/恢复出厂。恢复出厂依赖 docker compose，故 After docker.service。
-# 本文件是【模板】：__INSTALL_ROOT__ 为占位符，由 ops/install/install.sh 按实际
+# 本文件是【模板】：__INSTALL_ROOT__ 为占位符，由 ops/install/install-hostctl.sh 按实际
 # 安装根目录渲染后安装到 /etc/systemd/system/jiuzhang-hostctl.service。
-# 管理标记：install 脚本凭下一行识别本文件由九章安装器管理，允许覆盖。
+# 管理标记：helper 凭下一行识别本文件由九章安装器管理，允许覆盖。
 # jiuzhang-managed: hostctl-unit
 
 [Unit]

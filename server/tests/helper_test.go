@@ -31,6 +31,7 @@ type testEnv struct {
 	cfg      *config.Config
 	adminPwd string
 	app      *app.App
+	sourceIP string
 }
 
 // baseTestCfg 公共测试配置（DB/Valkey/Security），各产品形态套件在此之上叠加
@@ -270,6 +271,9 @@ func (e *testEnv) rawRequest(method, path, body string, cookies []*http.Cookie, 
 	}
 	for _, c := range cookies {
 		req.AddCookie(c)
+	}
+	if e.sourceIP != "" {
+		req.Header.Set("X-Forwarded-For", e.sourceIP)
 	}
 	return http.DefaultClient.Do(req)
 }

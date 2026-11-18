@@ -1,5 +1,5 @@
 .PHONY: help build test lint fmt typecheck clean docker-up docker-down init-web init-server \
-	gateway-build gateway-up gateway-down gateway-logs gateway-test waf-test ftw-test \
+	gateway-build gateway-up gateway-down gateway-logs gateway-test waf-test ftw-test pcap-test pcap-test-live pcap-build \
 	server-build server-test server-test-integration web-install web-typecheck web-lint web-test web-build \
 	stage2-up stage2-down stage2-test stage2-status \
 	guard-build guard-test gateway-low-port-test trusted-proxy-test access-control-test rate-limit-test \
@@ -56,7 +56,7 @@ help:
 	@echo "  make ftw-test       运行go-ftw CRS回归测试"
 	@echo "  make waf-test       运行全部阶段1测试"
 
-build: build-server build-web
+build: build-server build-web pcap-build
 
 build-server:
 	@echo "构建后端..."
@@ -66,7 +66,7 @@ build-web:
 	@echo "构建前端..."
 	cd web && npm run build
 
-test: test-server test-web
+test: test-server test-web pcap-test
 
 test-server:
 	@echo "运行后端测试..."
@@ -200,6 +200,22 @@ guard-test:
 gateway-low-port-test:
 	@echo "验证非 root 网关在最小权限下可监听 1024 以下端口..."
 	bash scripts/tests/gateway-low-port.sh
+
+pcap-build:
+	@echo "构建Linux请求PCAP daemon..."
+	cd gateway && GOOS=linux CGO_ENABLED=0 go build -trimpath -o ../bin/jiuzhang-pcapd ./cmd/pcapd
+
+pcap-test:
+	@echo "运行PCAP内核、密钥与daemon测试..."
+	cd gateway/pcapevidence && go test -race ./...
+	cd gateway/dynamic_security && go test -race ./evidencekey
+	cd gateway && go test -race ./pcapcapture ./cmd/pcapd
+
+pcap-test-live:
+	@echo "使用锁定镜像执行真实NET_RAW抓包测试..."
+	docker run --rm --cap-add NET_RAW -e PCAPD_REQUIRE_LIVE=1 -v "$$PWD/gateway:/src:ro" -w /src \
+		golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 \
+		sh -c 'cd pcapevidence && go test -count=1 ./... && cd .. && go test -count=1 ./pcapcapture ./cmd/pcapd'
 
 trusted-proxy-test:
 	@echo "运行可信代理相关单元测试..."

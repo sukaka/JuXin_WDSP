@@ -142,7 +142,18 @@ Caddy 中间件顺序必须经过集成测试验证，不得凭经验随意调�
 - `.gitignore` 必须排除依赖目录、编译产物、`.env`、凭据和个人 IDE 配置；不得把秘密提交到仓库。
 - 目标仓库：`https://github.com/sukaka/JuXin_WDSP.git`。是否提交、合并、打标签和推送仍以用户当次明确指令为准，不因日常修改自动执行。
 - 用户说「推送」时：先按本次改动类型确定新版本号，更新 CHANGELOG.md（从 Unreleased 归入新版本节），打 tag `wdsp-vX.Y.Z`，再 `git push origin` 分支与 tag。
-- 当前基线：`1.5.0`（WDSP 产品线自 1.0.0 起重新编号；仓库内历史 tag `wdsp-v2.5.x` 为旧基线，不再延续）。
+- 正式交付文件必须按用途命名：安装文件名包含 `install`，升级文件名包含 `update`。完整安装入口默认为 `jiuzhang-wdsp-install-X.Y.Z-amd64.run`，完整升级介质默认为 `jiuzhang-wdsp-update-full-X.Y.Z-amd64.tar.gz`；原始构建名可保留兼容，但交付入口必须明确，且别名的签名与 SHA-256 旁车必须同步验证。
+- 当前基线：`1.6.0`（WDSP 产品线自 1.0.0 起重新编号；仓库内历史 tag `wdsp-v2.5.x` 为旧基线，不再延续）。
+
+### 升级交付强制门槛
+
+每次升级开发、打包和验收必须先阅读并执行 [2026-11-17 升级问题复盘与预防清单](docs/tasks/UPGRADE_INCIDENT_2026-11-17.md)，不得只核对代码差异：
+
+- 单测、mock、镜像构建、签名和 Compose 渲染不能替代目标 Linux 的真实安装、升级、回滚及外部客户端访问；未执行项必须标 `NOT_RUN`。
+- 容器 `Created`、部分服务 `Running`、配置已加载、探针或防火墙指令已提交，均不等于服务或外部访问可用；所有变更组件必须逐项检查真实状态与 HTTP。
+- 完整升级必须覆盖全部变更的 api/web/gateway/netmgrd/logrotator/containerops、hostctl 单元和启用的数据面，保持旧镜像回滚点、`.env`、runtime 和 current 切换安全。
+- Web 声明的站点端口应通过受控宿主通道自动精确放行，不得把用户补执行 CLI 作为正式方案；API 回环地址、开发默认端口和 runtime 镜像标签不得凭经验猜测。
+- 不得为通过验收关闭权限、HMAC、防重放、数据面验签、防火墙边界或失败回滚，也不得把既存红色测试从发布记录中隐去。
 
 ## 版权
 

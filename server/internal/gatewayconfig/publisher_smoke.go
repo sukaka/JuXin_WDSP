@@ -362,6 +362,7 @@ func smokeableHostname(host string) string {
 // smokeDialAddress 探针拨号地址：显式注入 > 环境变量 > 默认回环。
 // 环境变量 GATEWAY_PUBLISH_SMOKE_ADDR 用于管理面与网关分主机部署
 // （值形如 http://10.0.0.5:8080 或 10.0.0.5:8080；仅取拨号地址，Host/SNI 仍用应用域名）。
+// 只提供主机（如 host.docker.internal）时跟随当前站点端口；显式 host:port 保留兼容。
 func (p *Publisher) smokeDialAddress(t smokeTarget) string {
 	addr := p.smokeDialAddr
 	if addr == "" {
@@ -373,7 +374,10 @@ func (p *Publisher) smokeDialAddress(t smokeTarget) string {
 		}
 		addr = strings.TrimSuffix(addr, "/")
 		if addr != "" {
-			return addr
+			if host, port, err := net.SplitHostPort(addr); err == nil && host != "" && port != "" {
+				return addr
+			}
+			return net.JoinHostPort(strings.Trim(addr, "[]"), fmt.Sprintf("%d", t.port))
 		}
 	}
 	return net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", t.port))

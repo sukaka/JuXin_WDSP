@@ -31,6 +31,8 @@ type Config struct {
 	SystemOps SystemOpsConfig
 	// ContainerOps 容器运维 sidecar（containeropsd）通道配置
 	ContainerOps ContainerOpsConfig
+	// RequestPCAP 默认空配置即关闭；三个路径配置完整时才加载证据服务。
+	RequestPCAP RequestPCAPConfig
 	// Product 产品 edition 与 WDSP/API 能力开关（阶段8）
 	Product product.Settings
 }
@@ -47,6 +49,33 @@ type ContainerOpsConfig struct {
 	// Socket containeropsd 本地 Unix Socket 路径；环境变量 CONTAINEROPS_SOCKET，
 	// 默认空 = 功能不可用（裸机/未部署 sidecar 形态），接口返回明确 503，不伪造空列表
 	Socket string
+}
+
+type RequestPCAPConfig struct {
+	HotDir                string
+	WarmDir               string
+	KeyFile               string
+	PublicDir             string
+	Retention             time.Duration
+	HotAge                time.Duration
+	GrantTTL              time.Duration
+	MigrateBytesPerSecond int64
+	MinFreePercent        int
+}
+
+func (c RequestPCAPConfig) Enabled() bool {
+	return c.HotDir != "" && c.WarmDir != "" && c.KeyFile != ""
+}
+
+func (c RequestPCAPConfig) Validate() error {
+	if !c.Enabled() && (c.HotDir != "" || c.WarmDir != "" || c.KeyFile != "") {
+		return fmt.Errorf("REQUEST_PCAP_HOT_DIR, REQUEST_PCAP_WARM_DIR and REQUEST_PCAP_KEY_FILE must be configured together")
+	}
+	if c.Enabled() && (c.Retention <= 0 || c.HotAge <= 0 || c.GrantTTL < time.Minute || c.GrantTTL > 7*24*time.Hour ||
+		c.MigrateBytesPerSecond <= 0 || c.MigrateBytesPerSecond > 1<<30 || c.MinFreePercent < 1 || c.MinFreePercent > 95) {
+		return fmt.Errorf("invalid request PCAP retention, migration limit or capacity watermark")
+	}
+	return nil
 }
 
 // AIConfig 阶段7 AI 模块开关（关闭时 /api/v1/ai/* 返回不可用，不影响 WAF 核心）。
@@ -410,6 +439,16 @@ func Load() (*Config, error) {
 			ProduceTimeout:    getEnvDuration("KAFKA_PRODUCE_TIMEOUT", 10*time.Second),
 			MaxBatchBytes:     getEnvInt("KAFKA_MAX_BATCH_BYTES", 4<<20), MaxBatchRecords: getEnvInt("KAFKA_MAX_BATCH_RECORDS", 100),
 		},
+		RequestPCAP: RequestPCAPConfig{
+			HotDir: strings.TrimSpace(os.Getenv("REQUEST_PCAP_HOT_DIR")), WarmDir: strings.TrimSpace(os.Getenv("REQUEST_PCAP_WARM_DIR")),
+			KeyFile:               strings.TrimSpace(os.Getenv("REQUEST_PCAP_KEY_FILE")),
+			PublicDir:             strings.TrimSpace(os.Getenv("REQUEST_PCAP_PUBLIC_DIR")),
+			Retention:             getEnvDuration("REQUEST_PCAP_RETENTION", 24*time.Hour),
+			HotAge:                getEnvDuration("REQUEST_PCAP_HOT_AGE", 15*time.Minute),
+			GrantTTL:              getEnvDuration("REQUEST_PCAP_GRANT_TTL", 24*time.Hour),
+			MigrateBytesPerSecond: int64(getEnvInt("REQUEST_PCAP_MIGRATE_BPS", 32<<20)),
+			MinFreePercent:        getEnvInt("REQUEST_PCAP_MIN_FREE_PERCENT", 10),
+		},
 		Product: product.Load(),
 		SystemOps: SystemOpsConfig{
 			HostctlDir: getEnv("HOSTCTL_DIR", "/app/runtime/hostctl"),
@@ -422,6 +461,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.Kafka.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.RequestPCAP.Validate(); err != nil {
 		return nil, err
 	}
 	if cfg.DB.Password == "" {

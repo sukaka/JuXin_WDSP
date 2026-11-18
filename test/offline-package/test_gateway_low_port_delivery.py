@@ -66,6 +66,7 @@ def assert_rendered_contract(test, rendered, stage5=False):
     )
     test.assertIn("no-new-privileges:true", gateway["security_opt"])
     test.assertEqual(rendered["services"]["netmgrd"]["network_mode"], "service:gateway")
+    test.assertEqual(rendered["services"]["containerops"]["tmpfs"], ["/tmp:size=8m,mode=1777"])
     test.assertNotIn("ip_unprivileged_port_start", json.dumps(rendered))
     if stage5:
         test.assertTrue(any(
@@ -74,6 +75,20 @@ def assert_rendered_contract(test, rendered, stage5=False):
         ))
     else:
         test.assertEqual(gateway["network_mode"], "host")
+        api = rendered["services"]["api"]
+        test.assertEqual(api["environment"]["GATEWAY_PUBLISH_SMOKE_ADDR"], "host.docker.internal")
+        test.assertIn(api["extra_hosts"], [
+            ["host.docker.internal:host-gateway"],
+            ["host.docker.internal=host-gateway"],
+        ])
+        api_volumes = api["volumes"]
+        runtime_volume = next(v for v in api_volumes if v.get("target") == "/app/runtime")
+        test.assertEqual(runtime_volume["type"], "volume")
+        test.assertEqual(runtime_volume["source"], "runtime-data")
+        hostctl_volume = next(v for v in api_volumes if v.get("target") == "/app/runtime/hostctl")
+        test.assertEqual(hostctl_volume["type"], "bind")
+        test.assertTrue(hostctl_volume["source"].endswith("/runtime/hostctl"))
+        test.assertNotEqual(hostctl_volume.get("read_only"), True)
 
 
 class GatewayLowPortDeliveryTests(unittest.TestCase):

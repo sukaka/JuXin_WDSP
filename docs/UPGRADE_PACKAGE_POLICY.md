@@ -115,6 +115,19 @@ WDSP_SIGNING_KEY=/path/to/ed25519-private.pem \
 2. 初始完整安装必须已安装支持 `package_type=upgrade` 的宿主机执行器及内嵌签名上传的管理后端。包内附带执行器文件不代表会自动更新执行器；不支持此协议的旧环境不能直接使用此包，本流程不提供手工 SSH 升级旁路。
 3. 再在 Web 系统升级页面上传执行。执行器发现宿主 compose 缺失的服务时，校验包内片段「新增服务集合恰好等于缺失服务集合、不改写既有服务镜像、镜像与 manifest 声明一致」后，将片段并入 `<DataDir>/upgrade-executor/compose-overrides.d/` 并创建新服务。失败回滚会一并摘除片段、移除新容器与新镜像标签。
 
+### 完整升级介质（宿主/Compose/基础设施变更）
+
+只要变更涉及 Compose、宿主单元、防火墙通道、网关启动契约或新增数据面，就不使用上述应用镜像包。
+用 `ops/offline-package/build-update-full.sh --version X.Y.Z --signing-key <受信任发布私钥>` 从已提交且已打版本标签的干净工作区构建：
+
+- `jiuzhang-wdsp-update-full-X.Y.Z-amd64.tar.gz` 及 `.sha256`、`.sig`；
+- 同名 `.sh` 独立启动脚本及旁车，内含固定发布公钥，先验签再安全解压；
+- `jiuzhang-wdsp-install-X.Y.Z-amd64.run` 由完整安装构建入口提供。
+
+现场只需执行 `sudo bash <update-full脚本> --package <原始update-full归档> --current-release <旧release目录>`。
+脚本自动从旧 Compose 读取 API 地址、验证 FULL 备份、更新全部变更组件与 hostctl，失败恢复旧镜像和新增迁移，全部健康后切换 current。
+保留原 `.env` 与 runtime，PCAP 默认关闭；已显式启用时才更新对应数据面。详细操作与回滚语义见 `docs/DEPLOYMENT.md`。
+
 ### 当前开发基线限制（2026-09-17）
 
 以 `wdsp-v1.2.0` 对比当前开发工作区，自动预览发现 `deployment/docker-compose.stage5.yml` 和 `ops/upgrade/upgrade-executor.sh` 存在变更，因此拒绝自动生成完整升级包。必须先建立包含新协议执行器的完整安装发布基线，并让 VERSION/tag 与实际安装版本一致，后续应用更新才能直接通过此脚本打包、前台升级。不能通过改写 `--from` 或手填组件清单伪装兼容。

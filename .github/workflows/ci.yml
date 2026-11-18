@@ -59,6 +59,7 @@ jobs:
         module:
           - gateway/modules/jiuzhang_guard
           - gateway/dynamic_security
+          - gateway/pcapevidence
           - wdsp-agent
           - tools/apisrc
           - tools/regsign

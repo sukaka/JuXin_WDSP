@@ -2,9 +2,11 @@ package accesslogs
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -108,6 +110,11 @@ type AccessLog struct {
 	BytesOut         int64      `json:"bytes_out"`
 	DurationMS       int        `json:"duration_ms"`
 	WAFAction        string     `json:"waf_action"`
+	TraceID          string     `json:"trace_id,omitempty"`
+	SpanID           string     `json:"span_id,omitempty"`
+	EndpointKey      string     `json:"endpoint_key,omitempty"`
+	PathTemplate     string     `json:"path_template,omitempty"`
+	TTFBMs           *int64     `json:"ttfb_ms"`
 	// 阶段5 §6.5 真实 IP 识别日志字段（迁移 000144；旧数据为 NULL）
 	ClientIPSource        string              `json:"client_ip_source"`
 	TrustedProxyUsed      string              `json:"trusted_proxy_used"`
@@ -122,17 +129,26 @@ type AccessLog struct {
 
 // ListFilter 是访问日志查询筛选。
 type ListFilter struct {
-	StartTime *time.Time
-	EndTime   *time.Time
-	Domain    string
-	ClientIP  string
-	Method    string
-	URI       string
-	Status    *int
-	WAFAction string
-	RequestID string
-	Page      int
-	PageSize  int
+	StartTime           *time.Time
+	EndTime             *time.Time
+	Domain              string
+	ClientIP            string
+	Method              string
+	URI                 string
+	Status              *int
+	WAFAction           string
+	RequestID           string
+	ApplicationID       *uuid.UUID
+	TraceID             string
+	IdentityFingerprint string
+	RuleID              string
+	EndpointKey         string
+	FieldPath           string
+	DataType            string
+	Direction           string
+	RequestIDs          []string
+	Page                int
+	PageSize            int
 }
 
 // buildListWhere 构建参数化 WHERE 子句（单测覆盖；禁止字符串拼接用户输入）。
@@ -149,7 +165,7 @@ func buildListWhere(f ListFilter) (string, []interface{}) {
 		add("occurred_at >= $%d", *f.StartTime)
 	}
 	if f.EndTime != nil {
-		add("occurred_at <= $%d", *f.EndTime)
+		add("occurred_at < $%d", *f.EndTime)
 	}
 	if f.Domain != "" {
 		add("domain ILIKE $%d", "%"+f.Domain+"%")
@@ -171,6 +187,49 @@ func buildListWhere(f ListFilter) (string, []interface{}) {
 	}
 	if f.RequestID != "" {
 		add("request_id = $%d", f.RequestID)
+	}
+	if f.ApplicationID != nil {
+		add("application_id = $%d", *f.ApplicationID)
+	}
+	if f.TraceID != "" {
+		add("trace_id = $%d", f.TraceID)
+	}
+	if f.IdentityFingerprint != "" {
+		add(`EXISTS (
+		  SELECT 1 FROM api_runtime_events audit_event
+		  WHERE audit_event.request_id = access_logs.request_id
+		    AND audit_event.identity_fingerprint = $%d)`, f.IdentityFingerprint)
+	}
+	if f.RuleID != "" {
+		add(`EXISTS (
+		  SELECT 1 FROM api_runtime_events audit_event
+		  WHERE audit_event.request_id = access_logs.request_id
+		    AND audit_event.details_json @> jsonb_build_array(jsonb_build_object('rule_id', $%d::text)))`, f.RuleID)
+	}
+	if f.EndpointKey != "" {
+		add(`COALESCE(NULLIF(endpoint_key,''),request_method || ' ' || COALESCE(NULLIF(path_template,''),NULLIF(request_path,''),NULLIF(split_part(request_uri,'?',1),''),'/'))) = $%d`, f.EndpointKey)
+	}
+	if len(f.RequestIDs) > 0 {
+		add(`request_id = ANY($%d::text[])`, f.RequestIDs)
+	}
+	if f.FieldPath != "" || f.DataType != "" || f.Direction != "" {
+		conditions := []string{`detail.value->>'detector'='sensitive_data'`, `COALESCE(detail.value->'evidence'->>'field','')<>''`}
+		if f.FieldPath != "" {
+			conditions = append(conditions, fmt.Sprintf(`CASE WHEN COALESCE(detail.value->'evidence'->>'location','')='' THEN detail.value->'evidence'->>'field'
+			 ELSE detail.value->'evidence'->>'location' || '.' || (detail.value->'evidence'->>'field') END = $%d`, len(args)+1))
+			args = append(args, f.FieldPath)
+		}
+		if f.DataType != "" {
+			conditions = append(conditions, fmt.Sprintf(`COALESCE(detail.value->'evidence'->>'data_type','') = $%d`, len(args)+1))
+			args = append(args, f.DataType)
+		}
+		if f.Direction != "" {
+			conditions = append(conditions, fmt.Sprintf(`UPPER(COALESCE(detail.value->'evidence'->>'direction','REQUEST')) = $%d`, len(args)+1))
+			args = append(args, f.Direction)
+		}
+		where += ` AND EXISTS (SELECT 1 FROM api_runtime_events audit_event,
+		 LATERAL jsonb_array_elements(COALESCE(audit_event.details_json,'[]'::jsonb)) detail(value)
+		 WHERE audit_event.request_id=access_logs.request_id AND ` + strings.Join(conditions, " AND ") + `)`
 	}
 	return where, args
 }
@@ -245,18 +304,22 @@ func (s *Store) list(ctx context.Context, f ListFilter, maxPageSize int) ([]Acce
 // ErrNotFound 访问日志不存在。
 var ErrNotFound = errors.New("access log not found")
 
-// GetByID 查询访问日志详情（含请求/响应头体留痕）。
+// GetByID 查询访问日志详情（含Trace、真实TTFB及请求/响应头体留痕）。
 func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*AccessLog, error) {
 	row := s.db.QueryRow(ctx,
-		`SELECT `+listColumns+payloadColumns+` FROM access_logs WHERE id = $1`, id)
+		`SELECT `+listColumns+`, trace_id, span_id, endpoint_key, path_template, ttfb_ms`+payloadColumns+
+			` FROM access_logs WHERE id = $1`, id)
 	var e AccessLog
 	var cip *string
+	var traceID, spanID, endpointKey, pathTemplate *string
+	var ttfb sql.NullInt64
 	var ipSource, proxyUsed, chainSummary *string
 	err := row.Scan(&e.ID, &e.OccurredAt, &e.RequestID, &e.ApplicationID, &e.Domain, &e.GatewayNodeID,
 		&cip, &e.ClientPort, &e.RequestMethod, &e.RequestURI, &e.RequestPath, &e.QuerySummary,
 		&e.HTTPVersion, &e.ContentType, &e.UserAgentSummary, &e.RefererSummary,
 		&e.ResponseStatus, &e.BytesIn, &e.BytesOut, &e.DurationMS, &e.WAFAction,
 		&ipSource, &proxyUsed, &chainSummary,
+		&traceID, &spanID, &endpointKey, &pathTemplate, &ttfb,
 		&e.RequestHeaders, &e.RequestBody, &e.RequestBodyTruncated,
 		&e.ResponseHeaders, &e.ResponseBody, &e.ResponseBodyTruncated)
 	if err != nil {
@@ -265,9 +328,17 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (*AccessLog, error) {
 		}
 		return nil, err
 	}
+	if ttfb.Valid {
+		value := ttfb.Int64
+		e.TTFBMs = &value
+	}
 	if cip != nil {
 		e.ClientIP = *cip
 	}
+	e.TraceID = strOrEmpty(traceID)
+	e.SpanID = strOrEmpty(spanID)
+	e.EndpointKey = strOrEmpty(endpointKey)
+	e.PathTemplate = strOrEmpty(pathTemplate)
 	e.ClientIPSource = strOrEmpty(ipSource)
 	e.TrustedProxyUsed = strOrEmpty(proxyUsed)
 	e.ForwardedChainSummary = strOrEmpty(chainSummary)

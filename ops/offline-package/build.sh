@@ -79,8 +79,8 @@ usage() {
   arm64   ARM64
 
 包内：
-  images/             docker save 的 server/gateway/web/logrotator/netmgrd/containerops/postgres/valkey
-                      及 APM 数据面镜像 clickhouse/opentelemetry-collector-contrib
+  images/             docker save 的 server/gateway/web/logrotator/netmgrd/containerops/pcapd/postgres/valkey
+                      及 APM 数据面镜像 clickhouse/opentelemetry-collector-contrib（共 11 个）
   gateway-linux-<arch>.tar.gz  裸机网关包（caddy 二进制 + sha256sums + VERSION + rules +
                       blockpage + bootstrap + unit + 安装/验收脚本）
   gateway/            生产 compose gateway 服务挂载源（rules/bootstrap Caddyfile/blockpage）
@@ -215,6 +215,11 @@ if [[ -n "$SIGNING_KEY" ]]; then
   require_cmd openssl
   openssl pkey -in "$SIGNING_KEY" -noout >/dev/null 2>&1 \
     || die "WDSP_SIGNING_KEY 私钥无法解析（须为 Ed25519 私钥，openssl genpkey -algorithm ED25519 生成）: $SIGNING_KEY"
+  TRUSTED_PUB="$SCRIPT_DIR/release-signing.pub"
+  [[ -f "$TRUSTED_PUB" ]] || die "缺少固定发布公钥"
+  expected_pub="$(openssl pkey -pubin -in "$TRUSTED_PUB" -outform DER 2>/dev/null | base64)" || die "发布公钥无效"
+  actual_pub="$(openssl pkey -in "$SIGNING_KEY" -pubout -outform DER 2>/dev/null | base64)" || die "无法导出签名公钥"
+  [[ "$actual_pub" == "$expected_pub" ]] || die "WDSP_SIGNING_KEY 与固定发布公钥不匹配，拒绝生成无法验证的正式包"
   PKG_SIGNED=true
   log_info "发布签名已启用：将对整包与内嵌裸机网关包产出旁车 .sig（Ed25519）"
 else
@@ -247,6 +252,7 @@ WEB_IMAGE="jiuzhang-web:$VERSION"
 # 构建上下文 gateway/images/logrotator，基础镜像 alpine:3.24 digest 在其 Dockerfile 内锁定）
 LOGROTATOR_IMAGE="jiuzhang-logrotator:$VERSION"
 NETMGRD_IMAGE="jiuzhang-netmgrd:$VERSION"
+PCAPD_IMAGE="jiuzhang-pcapd:$VERSION"
 # 容器运维 sidecar（本地构建镜像；唯一挂载 docker.sock 的组件，构建上下文=仓库根，
 # Dockerfile 为 deployment/containerops/Dockerfile，基础镜像 digest 在其文件内锁定）
 CONTAINEROPS_IMAGE="jiuzhang-containerops:$VERSION"
@@ -290,7 +296,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
       docker pull --platform "linux/${ARCH}" "$img" || die "拉取失败: $img"
     fi
   done
-  for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$CONTAINEROPS_IMAGE"; do
+  for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$PCAPD_IMAGE" "$CONTAINEROPS_IMAGE"; do
     docker image inspect "$img" >/dev/null 2>&1 \
       || die "镜像不存在: ${img}（请先用 docker buildx build --platform linux/${ARCH} 构建）"
   done
@@ -303,6 +309,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   check_image_arch "$WEB_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -t ${WEB_IMAGE} web/ 重新构建"
   check_image_arch "$LOGROTATOR_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -t ${LOGROTATOR_IMAGE} gateway/images/logrotator 重新构建"
   check_image_arch "$NETMGRD_IMAGE" "请构建 gateway/images/netmgrd/Dockerfile"
+  check_image_arch "$PCAPD_IMAGE" "请构建 gateway/images/pcapd/Dockerfile"
   check_image_arch "$CONTAINEROPS_IMAGE" "请用 docker buildx build --platform linux/${ARCH} -f deployment/containerops/Dockerfile -t ${CONTAINEROPS_IMAGE} . 重新构建"
 fi
 
@@ -344,6 +351,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   save_image WEB_IMAGE "$pkg_dir/images/jiuzhang-web.tar"
   save_image LOGROTATOR_IMAGE "$pkg_dir/images/jiuzhang-logrotator.tar"
   save_image NETMGRD_IMAGE "$pkg_dir/images/jiuzhang-netmgrd.tar"
+  save_image PCAPD_IMAGE "$pkg_dir/images/jiuzhang-pcapd.tar"
   save_image CONTAINEROPS_IMAGE "$pkg_dir/images/jiuzhang-containerops.tar"
   save_image POSTGRES_IMAGE "$pkg_dir/images/postgres.tar"
   save_image VALKEY_IMAGE "$pkg_dir/images/valkey.tar"
@@ -351,7 +359,7 @@ if [[ "$SKIP_IMAGES" != "true" ]]; then
   save_image OTEL_COLLECTOR_IMAGE "$pkg_dir/images/opentelemetry-collector-contrib.tar"
 fi
 if [[ "$RUNTIME_ONLY" != "true" || "$SKIP_IMAGES" == "true" ]]; then
-for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$CONTAINEROPS_IMAGE" "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
+for img in "$SERVER_IMAGE" "$GATEWAY_IMAGE" "$WEB_IMAGE" "$LOGROTATOR_IMAGE" "$NETMGRD_IMAGE" "$PCAPD_IMAGE" "$CONTAINEROPS_IMAGE" "$POSTGRES_IMAGE" "$VALKEY_IMAGE" "$CLICKHOUSE_IMAGE" "$OTEL_COLLECTOR_IMAGE"; do
   if [[ "$SKIP_IMAGES" != "true" ]]; then
     digest="$(docker image inspect --platform "linux/${ARCH}" "$img" --format '{{.Id}}' 2>/dev/null || docker image inspect "$img" --format '{{.Id}}')"
   else
@@ -378,6 +386,12 @@ build_gateway_baremetal_pkg() {
       die "docker cp 抽取 /usr/bin/caddy 失败: $GATEWAY_IMAGE"
     fi
     docker rm -f "$cid" >/dev/null
+    cid="$(docker create "$PCAPD_IMAGE")" || die "docker create 失败: $PCAPD_IMAGE"
+    if ! docker cp "$cid:/usr/local/bin/jiuzhang-pcapd" "$gdir/jiuzhang-pcapd"; then
+      docker rm -f "$cid" >/dev/null 2>&1 || true
+      die "docker cp 抽取 pcapd 失败: $PCAPD_IMAGE"
+    fi
+    docker rm -f "$cid" >/dev/null
     docker run --rm --entrypoint /usr/bin/caddy "$GATEWAY_IMAGE" version > "$gdir/VERSION" \
       || die "读取网关版本失败: $GATEWAY_IMAGE"
   else
@@ -390,12 +404,17 @@ build_gateway_baremetal_pkg() {
   cp "$REPO_ROOT/gateway/configs/blockpage.html" "$gdir/blockpage.html"
   cp "$REPO_ROOT/deployment/baremetal/Caddyfile.bootstrap" "$gdir/Caddyfile.bootstrap"
   cp "$REPO_ROOT/deployment/systemd/jiuzhang-gateway.service" "$gdir/jiuzhang-gateway.service"
+  cp "$REPO_ROOT/deployment/systemd/jiuzhang-pcapd.service" "$gdir/jiuzhang-pcapd.service"
   cp "$REPO_ROOT/ops/install/install-gateway-baremetal.sh" "$gdir/"
+  cp "$REPO_ROOT/ops/install/install-pcapd.sh" "$gdir/"
+  cp "$REPO_ROOT/ops/install/pcap.sh" "$gdir/"
+  mkdir -p "$gdir/lib"
+  cp "$REPO_ROOT/ops/lib/common.sh" "$REPO_ROOT/ops/lib/signing.sh" "$gdir/lib/"
   cp "$REPO_ROOT/ops/install/verify-gateway-baremetal.sh" "$gdir/"
   if [[ "$SKIP_IMAGES" == "true" ]]; then
     (cd "$gdir" && sha256_of delivery_mode VERSION > sha256sums)
   else
-    (cd "$gdir" && sha256_of caddy delivery_mode VERSION > sha256sums)
+    (cd "$gdir" && sha256_of caddy jiuzhang-pcapd delivery_mode VERSION > sha256sums)
   fi
   COPYFILE_DISABLE=1 tar -czf "$out" -C "$gtmp" "gateway-linux-${ARCH}"
   gateway_scan_report="$gtmp/gateway-scan.json"
@@ -491,6 +510,8 @@ services:
       # 生产 gateway 使用 host 网络，guard 配置发布须连接宿主机发布的 Valkey 端口。
       GATEWAY_VALKEY_ADDR: 127.0.0.1:\${VALKEY_PORT:-6379}
       GATEWAY_NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
+      # API 容器经宿主网关访问 host 网络 Caddy；只给主机，端口按每个站点配置跟随。
+      GATEWAY_PUBLISH_SMOKE_ADDR: \${GATEWAY_PUBLISH_SMOKE_ADDR:-host.docker.internal}
       VALKEY_PASSWORD: \${VALKEY_PASSWORD:?VALKEY_PASSWORD is required}
       COOKIE_SECURE: \${COOKIE_SECURE:-true}
       INITIAL_ADMIN_USERNAME: \${INITIAL_ADMIN_USERNAME:-jiuzhang_admin}
@@ -527,14 +548,29 @@ services:
       # 采集器批量/周期 flush 旋钮（崩溃重扫量有界；默认值与 server config.go 一致，可经 .env 覆盖）
       WAF_COLLECTOR_FLUSH_BATCH: \${WAF_COLLECTOR_FLUSH_BATCH:-2000}
       WAF_COLLECTOR_FLUSH_INTERVAL: \${WAF_COLLECTOR_FLUSH_INTERVAL:-2s}
+      # 请求PCAP默认关闭；安装器显式启用时才设置容器内热/温目录和私钥路径。
+      REQUEST_PCAP_HOT_DIR: \${PCAP_SERVER_HOT_DIR:-}
+      REQUEST_PCAP_WARM_DIR: \${PCAP_SERVER_WARM_DIR:-}
+      REQUEST_PCAP_KEY_FILE: \${PCAP_SERVER_KEY_FILE:-}
+      REQUEST_PCAP_PUBLIC_DIR: /app/runtime/pcap-public
+      REQUEST_PCAP_RETENTION: \${REQUEST_PCAP_RETENTION:-24h}
+      REQUEST_PCAP_HOT_AGE: \${REQUEST_PCAP_HOT_AGE:-15m}
+      REQUEST_PCAP_GRANT_TTL: \${REQUEST_PCAP_GRANT_TTL:-24h}
+      REQUEST_PCAP_MIGRATE_BPS: \${REQUEST_PCAP_MIGRATE_BPS:-33554432}
+      REQUEST_PCAP_MIN_FREE_PERCENT: \${REQUEST_PCAP_MIN_FREE_PERCENT:-10}
       # 容器运维通道：经共享卷上的 Unix Socket 访问 containerops sidecar（API 不直接持有 docker.sock）
       CONTAINEROPS_SOCKET: /app/runtime/containerops/containerops.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:\${API_PORT:-18081}:8080"
     volumes:
       - gateway-admin:/var/run/caddy
       - gateway-logs:/var/log/caddy-audit:ro
       - runtime-data:/app/runtime
+      # 系统控制通道：API 写入的 hostctl 标志必须对宿主机 path 单元可见；
+      # 在 runtime-data 挂载点下叠加嵌套 bind，保留其余 runtime 命名卷数据。
+      - ./runtime/hostctl:/app/runtime/hostctl
       # 容器运维通道：与 containerops sidecar 共享的 Unix Socket 卷（API 仅见 socket 文件，
       # 不挂载 /var/run/docker.sock；嵌套在 runtime-data 挂载点之下）
       - containerops-data:/app/runtime/containerops
@@ -543,6 +579,11 @@ services:
       # 故在其挂载点 /app/runtime 之下叠加一个相对包根的 bind 只读挂载（Docker 支持嵌套挂载）；
       # 指纹文件不进命名卷，升级/换卷时不丢失，也避免改动既有 runtime-data 数据面。
       - ./runtime/license:/app/runtime/license:ro
+      # 私有证据密钥仅API可见；pcapd只见独立的只读公钥目录。
+      - ./runtime/pcap-private:/app/runtime/pcap-private
+      - ./runtime/pcap-public:/app/runtime/pcap-public
+      - \${REQUEST_PCAP_HOT_DIR:-./runtime/pcap-hot}:/app/runtime/pcap-hot
+      - \${REQUEST_PCAP_WARM_DIR:-./runtime/pcap-warm}:/app/runtime/pcap-warm
     depends_on:
       postgres: {condition: service_healthy}
       valkey:   {condition: service_healthy}
@@ -635,6 +676,32 @@ services:
     security_opt: [no-new-privileges:true]
     networks: [jiuzhang-internal]
 
+  # 请求PCAP为显式启用的独立组件；默认profile不会启动持续抓包。
+  pcapd:
+    image: $PCAPD_IMAGE
+    container_name: jiuzhang-pcapd
+    restart: unless-stopped
+    profiles: ["request-pcap"]
+    network_mode: host
+    # 仅保留NET_RAW；启动后将文件系统身份收敛到证据目录UID 1000。
+    user: "0:0"
+    environment:
+      GATEWAY_NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
+      REQUEST_PCAP_IFACE: \${REQUEST_PCAP_IFACE:-}
+      REQUEST_PCAP_PORTS: \${REQUEST_PCAP_PORTS:-}
+      REQUEST_PCAP_POLICY_VERSION: \${REQUEST_PCAP_POLICY_VERSION:-installer-approved-v1}
+    command: ["--promiscuous=false"]
+    volumes:
+      - \${REQUEST_PCAP_HOT_DIR:-./runtime/pcap-hot}:/var/lib/jiuzhang/pcap-hot
+      - ./runtime/pcap-public:/etc/jiuzhang:ro
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=8m,mode=1777"]
+    depends_on:
+      api: {condition: service_healthy}
+
   # 容器运维 sidecar（containeropsd）：全栈唯一挂载 /var/run/docker.sock 的组件。
   # API 容器只挂载共享 Unix Socket 卷（containerops-data）发起受控运维请求；
   # sidecar 校验 compose 项目标签与服务白名单后才触碰 Docker API。
@@ -648,7 +715,7 @@ services:
       DOCKER_HOST: unix:///var/run/docker.sock
       # 仅允许运维本 compose 项目内、且在白名单中的服务（双重校验，fail-closed）
       CONTAINEROPS_PROJECT: jiuzhang-${PRODUCT}
-      CONTAINEROPS_ALLOWED_SERVICES: api,web,gateway,postgres,valkey,logrotator,netmgrd
+      CONTAINEROPS_ALLOWED_SERVICES: api,web,gateway,postgres,valkey,logrotator,netmgrd,pcapd
     volumes:
       # 全栈唯一 docker.sock 挂载点（安全底线；严禁复制到 api 或其他服务）
       - /var/run/docker.sock:/var/run/docker.sock
@@ -661,7 +728,7 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp:size=8m,mode=1777]
+    tmpfs: ["/tmp:size=8m,mode=1777"]
 
 volumes:
   postgres-data: {driver: local}
@@ -745,6 +812,11 @@ for rel in "${ops_allowlist[@]}"; do
   cp -p "$src" "$pkg_dir/ops/$rel"
 done
 allowlist_sha256="$(sha256_of "$ALLOWLIST_FILE" | awk '{print $1}')"
+# hostctl helper 在纯离线包内也需要这两份模板；与 allowlist 中的宿主脚本一并交付。
+mkdir -p "$pkg_dir/deployment/systemd"
+cp -p "$REPO_ROOT/deployment/systemd/jiuzhang-hostctl.path" \
+  "$REPO_ROOT/deployment/systemd/jiuzhang-hostctl.service" \
+  "$pkg_dir/deployment/systemd/"
 cp -R "$REPO_ROOT/licenses/." "$pkg_dir/licenses/"
 if [[ "$RUNTIME_ONLY" == "true" ]]; then
   # 保留许可归属信息，但不把 Markdown 文档作为交付内容。
@@ -989,4 +1061,38 @@ fi
 size="$(stat -f%z "$out" 2>/dev/null || stat -c%s "$out")"
 log_info "离线交付包已生成: ${out}（${size} 字节，旁车 ${PKG_BASENAME}.tar.gz.sha256$( [[ "$PKG_SIGNED" == "true" ]] && printf ' / .sig（已签名）' || printf '，未签名' )）"
 log_info "交付追溯记录已生成: ${traceability_report}$( [[ "$PKG_SIGNED" == "true" ]] && printf '（已签名）' || printf '（开发包未签名）' )"
+# 同一签名字节可同时用于原名与 update-full 别名；文件名不属于 Ed25519 签名对象。
+# 不复制第二份大镜像归档，硬链接节省构建与交付磁盘；摘要旁车使用各自的交付文件名。
+update_alias="$OUT_DIR/jiuzhang-${PRODUCT}-update-full-${VERSION}-${ARCH}.tar.gz"
+[[ ! -e "$update_alias" && ! -e "${update_alias}.sha256" && ! -e "${update_alias}.sig" ]] \
+  || die "完整升级交付别名已存在，拒绝覆盖"
+ln "$out" "$update_alias" || die "无法创建完整升级交付别名"
+(cd "$OUT_DIR" && sha256_of "$(basename "$update_alias")" > "$(basename "$update_alias").sha256")
+sha256_check_sidecar "$update_alias" || die "完整升级别名 SHA-256 校验失败"
+if [[ "$PKG_SIGNED" == "true" ]]; then
+  cp "${out}.sig" "${update_alias}.sig"
+  ed25519_verify_file "$SCRIPT_DIR/release-signing.pub" "$update_alias" "${update_alias}.sig" \
+    || die "完整升级别名验签失败"
+fi
+log_info "完整升级交付入口: ${update_alias}"
+# 独立入口内嵌公共函数与固定信任根；现场无需先解开未验签的归档寻找升级脚本。
+update_launcher="$OUT_DIR/jiuzhang-${PRODUCT}-update-full-${VERSION}-${ARCH}.sh"
+{
+  tail -n +2 "$REPO_ROOT/ops/lib/common.sh"
+  tail -n +2 "$REPO_ROOT/ops/lib/signing.sh"
+  sed '/^source "\$SCRIPT_DIR\/\.\.\/lib\/common\.sh"$/d; /^source "\$SCRIPT_DIR\/\.\.\/lib\/signing\.sh"$/d' \
+    "$REPO_ROOT/ops/upgrade/update-full.sh"
+} > "$update_launcher"
+chmod 0755 "$update_launcher"
+bash -n "$update_launcher" || die "独立升级入口语法检查失败"
+(cd "$OUT_DIR" && sha256_of "$(basename "$update_launcher")" > "$(basename "$update_launcher").sha256")
+sha256_check_sidecar "$update_launcher" || die "独立升级入口摘要校验失败"
+if [[ "$PKG_SIGNED" == "true" ]]; then
+  ed25519_sign_file "$SIGNING_KEY" "$update_launcher" "${update_launcher}.sig" || die "独立升级入口签名失败"
+  ed25519_verify_file "$SCRIPT_DIR/release-signing.pub" "$update_launcher" "${update_launcher}.sig" \
+    || die "独立升级入口验签失败"
+fi
+bash "$update_launcher" --help >/dev/null || die "独立升级入口 --help 冒烟失败"
+log_info "独立升级启动脚本: ${update_launcher}"
 log_info "安装: tar -xzf $(basename "$out") && cd ${PKG_BASENAME} && sudo bash ops/install/install.sh（请保留 .tar.gz 与 .tar.gz.sha256$( [[ "$PKG_SIGNED" == "true" ]] && printf ' / .tar.gz.sig' ) 于解压目录同级，安装前将验签并校验整包哈希）"
+log_info "已有完整安装的升级: bash ops/upgrade/update-full.sh --package ${update_alias:-<正式update-full包>} --current-release <当前release目录>"

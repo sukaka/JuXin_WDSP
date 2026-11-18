@@ -32,7 +32,7 @@ func TestBuildListWhere(t *testing.T) {
 			filter: ListFilter{
 				StartTime: &now, EndTime: &now,
 			},
-			wantConds: []string{"occurred_at >= $1", "occurred_at <= $2"},
+			wantConds: []string{"occurred_at >= $1", "occurred_at < $2"},
 			wantArgs:  2,
 		},
 		{

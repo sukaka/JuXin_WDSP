@@ -825,3 +825,22 @@ func TestPublishSmokeRouteConflictValidation(t *testing.T) {
 		t.Fatalf("Generate must enforce route conflict validation: %v", err)
 	}
 }
+
+func TestSmokeDialAddressHostFollowsEachSitePort(t *testing.T) {
+	p := &Publisher{}
+	t.Setenv("GATEWAY_PUBLISH_SMOKE_ADDR", "host.docker.internal")
+	if got := p.smokeDialAddress(smokeTarget{port: 82}); got != "host.docker.internal:82" {
+		t.Fatalf("host-only smoke address = %q", got)
+	}
+	if got := p.smokeDialAddress(smokeTarget{port: 8443}); got != "host.docker.internal:8443" {
+		t.Fatalf("host-only smoke address did not follow site port: %q", got)
+	}
+	t.Setenv("GATEWAY_PUBLISH_SMOKE_ADDR", "gateway.example.internal:9443")
+	if got := p.smokeDialAddress(smokeTarget{port: 82}); got != "gateway.example.internal:9443" {
+		t.Fatalf("explicit host:port compatibility changed: %q", got)
+	}
+	t.Setenv("GATEWAY_PUBLISH_SMOKE_ADDR", "")
+	if got := p.smokeDialAddress(smokeTarget{port: 82}); got != "127.0.0.1:82" {
+		t.Fatalf("shared-network fallback changed: %q", got)
+	}
+}

@@ -68,11 +68,54 @@ if args[:2] == ["image", "inspect"]:
 
 if args[:1] == ["tag"]:
     log({"kind": "tag", "source": args[1], "target": args[2]})
+    found = image(args[1])
+    if found is None:
+        sys.exit(1)
+    fixture["images"][args[2]] = dict(found)
+    Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
     sys.exit(0)
 
 if args[:1] == ["load"]:
     log({"kind": "load", "args": args})
     sys.exit(0)
+
+if args[:1] == ["run"]:
+    log({"kind": "run", "args": args})
+    if fixture.get("fail_migration_rollback"):
+        sys.exit(1)
+    if "schema" in fixture:
+        fixture["schema"] -= 1
+        Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
+    sys.exit(0)
+
+if args[:1] == ["inspect"]:
+    fmt = args[args.index("--format") + 1]
+    container_id = args[-1]
+    running = next((v for v in fixture.get("running", {}).values() if v["id"] == container_id), None)
+    if running is None:
+        sys.exit(1)
+    log({"kind": "container-inspect", "id": container_id, "format": fmt})
+    if fmt == "{{.State.Status}}":
+        print(running.get("state", "running"))
+    elif fmt == "{{json .Mounts}}":
+        print("[]")
+    else:
+        image_id = running.get("image_id", running["image"])
+        if fmt.endswith("{{.State.StartedAt}}"):
+            print(f"{running.get('state', 'running')}|{running.get('health', 'healthy')}|{image_id}|0|2026-11-18T00:00:00Z")
+        else:
+            print(f"{running.get('state', 'running')}|{running.get('health', 'healthy')}|{image_id}")
+    sys.exit(0)
+
+if args[:1] == ["exec"]:
+    log({"kind": "exec", "args": args})
+    if "schema" in fixture and args[1] == fixture.get("postgres_id"):
+        print(fixture["schema"])
+    elif fixture.get("migrate_api") and args[1] == fixture.get("running", {}).get("api", {}).get("id") \
+            and fixture["running"]["api"].get("image_id") == "sha256:server-new":
+        fixture["schema"] = fixture["target_schema"]
+        Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
+    sys.exit(0 if not fixture.get("fail_probe") else 1)
 
 if args[:1] == ["compose"]:
     files = []
@@ -89,10 +132,36 @@ if args[:1] == ["compose"]:
             index += 2
             continue
         index += 1
-    action = "config" if "config" in args else "up" if "up" in args else "other"
+    action = next((a for a in ("config", "up", "ps", "rm") if a in args), "other")
     log({"kind": "compose", "action": action, "files": files, "env_file": env_file, "args": args})
     if action == "up":
-        sys.exit(1 if fixture.get("fail_up") else 0)
+        if fixture.get("fail_up"):
+            sys.exit(1)
+        rendered = json.loads(Path(files[0]).read_text())
+        running = fixture.setdefault("running", {})
+        for service in args[args.index("up") + 1:]:
+            if service.startswith("-") or service not in rendered["services"]:
+                continue
+            ref = rendered["services"][service]["image"]
+            running[service] = {
+                "id": f"{list(rendered['services']).index(service) + 1:064x}",
+                "image": ref,
+                "image_id": image(ref)["id"],
+            }
+        Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
+        sys.exit(0)
+    if action == "ps":
+        service = args[-1]
+        if service == "postgres" and "schema" in fixture:
+            print(fixture.get("postgres_id", "a" * 64))
+            sys.exit(0)
+        running = fixture.get("running", {}).get(service)
+        if running:
+            print(running["id"])
+            sys.exit(0)
+        sys.exit(1)
+    if action == "rm":
+        sys.exit(0)
     if action != "config":
         sys.exit(1)
     rendered = json.loads(Path(files[0]).read_text())
@@ -151,8 +220,8 @@ args = " ".join(sys.argv[1:])
 if "/api/v1/auth/login" in args:
     print('{"code":"SUCCESS","data":{"csrf_token":"fixture-csrf"}}')
 elif "-X POST" in args and "/api/v1/backups" in args:
-    print('{"code":"SUCCESS","data":{"job":{"id":"backup-fixture"}}}')
-elif "/api/v1/backups/backup-fixture" in args:
+    print('{"code":"SUCCESS","data":{"job":{"id":"00000000-0000-4000-8000-000000000001"}}}')
+elif "/api/v1/backups/00000000-0000-4000-8000-000000000001" in args:
     print('{"data":{"job":{"status":"SUCCESS","verified":true}}}')
 sys.exit(0)
 '''
@@ -176,15 +245,36 @@ class GatewayRuntimeContractTests(unittest.TestCase):
         self.bin.mkdir()
         self.write_executable(self.bin / "docker", DOCKER_STUB)
         self.write_executable(self.bin / "curl", CURL_STUB)
+        self.write_executable(
+            self.bin / "timeout",
+            '#!/usr/bin/env bash\nshift\nexec "$@"\n',
+        )
+        self.write_executable(
+            self.bin / "mv",
+            '#!/usr/bin/env python3\nimport os, sys\n'
+            'if sys.argv[1:2] == ["-Tf"]:\n'
+            ' os.replace(sys.argv[2], sys.argv[3])\n'
+            'else:\n'
+            ' os.execv("/bin/mv", ["mv"] + sys.argv[1:])\n',
+        )
         self.health_log = self.work / "health.log"
         self.write_executable(
             self.work / "ops/healthcheck/check.sh",
             '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$HEALTH_LOG"\n',
         )
+        self.target_release = self.work / "target-release"
+        target_install = self.target_release / "ops/install"
+        target_install.mkdir(parents=True)
+        self.hostctl_log = self.work / "hostctl-helper.log"
+        self.hostctl_helper = target_install / "install-hostctl.sh"
+        self.write_executable(
+            self.hostctl_helper,
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$HOSTCTL_HELPER_LOG"\n',
+        )
 
-        self.old_compose = self.work / "old-compose.yml"
-        self.new_compose = self.work / "new-compose.yml"
-        self.env_file = self.work / "fixture.env"
+        self.old_compose = (self.work / "old-compose.yml").resolve()
+        self.new_compose = (self.target_release / "new-compose.yml").resolve()
+        self.env_file = (self.work / "fixture.env").resolve()
         self.old_compose.write_text(json.dumps(self.compose_config(old=True)))
         self.new_compose.write_text(json.dumps(self.compose_config(old=False)))
         self.env_file.write_text("FIXTURE_ONLY=1\n")
@@ -234,6 +324,7 @@ class GatewayRuntimeContractTests(unittest.TestCase):
             "fixture-server:target-stable": {"id": "sha256:server-target-tag", "entrypoint": None},
             "fixture-gateway:target-stable": {"id": "sha256:gateway-target-tag", "entrypoint": [BIND_ENTRYPOINT]},
             "fixture-server:new": {"id": "sha256:server-new", "entrypoint": None},
+            "fixture-netmgrd:stable": {"id": "sha256:netmgrd-stable", "entrypoint": None},
             "fixture-gateway:new": {"id": "sha256:gateway-new", "entrypoint": [new_entrypoint]},
         }
         self.fixture_file.write_text(json.dumps({"images": images, "bad_override": bad_override}))
@@ -247,8 +338,11 @@ class GatewayRuntimeContractTests(unittest.TestCase):
             "DOCKER_LOG": str(self.docker_log),
             "OVERRIDE_CAPTURE": str(self.override_capture),
             "HEALTH_LOG": str(self.health_log),
+            "HOSTCTL_HELPER_LOG": str(self.hostctl_log),
             "JZ_ADMIN_PASSWORD": "fixture-only-password",
             "JZ_CAPTCHA_CODE": "fixture-captcha",
+            "LC_ALL": "C",
+            "LANG": "C",
         })
         return subprocess.run(
             ["/bin/bash", str(script)] + [str(arg) for arg in args],
@@ -256,7 +350,7 @@ class GatewayRuntimeContractTests(unittest.TestCase):
             env=env,
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=45,
         )
 
     def run_apply(self, dual_compose=True):
@@ -282,7 +376,7 @@ class GatewayRuntimeContractTests(unittest.TestCase):
             "NEW_GATEWAY_IMAGE=fixture-gateway:new\n"
             f"TARGET_COMPOSE_FILE={target}\n"
             f"TARGET_ENV_FILE={self.env_file}\n"
-            "BACKUP_JOB_ID=backup-fixture\n"
+            "BACKUP_JOB_ID=00000000-0000-4000-8000-000000000001\n"
         )
         self.state.chmod(0o600)
 
@@ -315,8 +409,8 @@ class GatewayRuntimeContractTests(unittest.TestCase):
         self.assertEqual(state["OLD_SERVER_IMAGE_ID"], "sha256:server-old")
         self.assertEqual(state["OLD_GATEWAY_IMAGE_ID"], "sha256:gateway-old")
         self.assertNotEqual(state["OLD_GATEWAY_IMAGE_ID"], "sha256:gateway-target-tag")
-        self.assertEqual(state["TARGET_COMPOSE_FILE"], str(self.new_compose))
-        self.assertEqual(state["TARGET_ENV_FILE"], str(self.env_file))
+        self.assertEqual(state["TARGET_COMPOSE_FILE"], str(self.new_compose.resolve()))
+        self.assertEqual(state["TARGET_ENV_FILE"], str(self.env_file.resolve()))
         self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o600)
 
         events = self.events()
@@ -334,7 +428,25 @@ class GatewayRuntimeContractTests(unittest.TestCase):
         self.assertEqual(len(health), 2)
         self.assertIn(str(self.old_compose), health[0])
         self.assertIn(str(self.new_compose), health[1])
+        self.assertEqual(
+            self.hostctl_log.read_text(encoding="utf-8").splitlines(),
+            [f"--install-root {self.target_release.resolve()} --strict"],
+        )
         self.assert_user_files_unchanged(before)
+
+    def test_apply_target_hostctl_helper_failure_is_explicit(self):
+        self.write_executable(
+            self.hostctl_helper,
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$HOSTCTL_HELPER_LOG"\nexit 1\n',
+        )
+        result = self.run_apply()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("升级后 hostctl 单元更新失败", result.stderr)
+        self.assertIn(str(self.target_release.resolve()), result.stderr)
+        self.assertEqual(
+            self.hostctl_log.read_text(encoding="utf-8").splitlines(),
+            [f"--install-root {self.target_release.resolve()} --strict"],
+        )
 
     def test_apply_bind_image_with_old_compose_fails_before_state_or_retag(self):
         result = self.run_apply(dual_compose=False)
@@ -387,6 +499,7 @@ class GatewayRuntimeContractTests(unittest.TestCase):
         self.assertEqual(tags, [
             ("sha256:server-old", "fixture-server:target-stable"),
             ("sha256:gateway-old", "fixture-gateway:target-stable"),
+            ("sha256:netmgrd-stable", "fixture-netmgrd:stable"),
         ])
         self.assert_user_files_unchanged(before)
 

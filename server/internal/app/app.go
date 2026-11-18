@@ -100,6 +100,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/ratelimitpolicies"
 	"github.com/jiuzhang-waf/server/internal/regression"
 	"github.com/jiuzhang-waf/server/internal/reports"
+	"github.com/jiuzhang-waf/server/internal/requestpcap"
 	"github.com/jiuzhang-waf/server/internal/response"
 	"github.com/jiuzhang-waf/server/internal/restores"
 	"github.com/jiuzhang-waf/server/internal/riskpolicy"
@@ -188,11 +189,28 @@ type App struct {
 	kafkaBroker             *ingest.Broker
 	apiObservationProjector *apidataflow.Projector
 	dataflowWorker          *apidataflow.DataflowWorker
+	requestPCAP             *requestpcap.Runtime
+}
+
+func (a *App) StartRequestPCAP(ctx context.Context) {
+	if a.requestPCAP != nil {
+		go a.requestPCAP.Run(ctx)
+	}
 }
 
 func newAPIDataflowReader(resolve func(context.Context) apm.CHQuerier, db *pgxpool.Pool) *apidataflow.CHReader {
 	return apidataflow.NewCHReader(resolve).
 		WithRuntimeFields(apidataflow.NewPGXRuntimeFieldReader(db))
+}
+
+type publisherFirewallConfigurer interface {
+	SetFirewallEnsurer(gatewayconfig.FirewallEnsurer)
+}
+
+func configurePublisherFirewallEnsurer(publisher publisherFirewallConfigurer, cfg *config.Config) {
+	publisher.SetFirewallEnsurer(func(ports []int, userID uuid.UUID, requestID string) error {
+		return systemops.EnsureFirewallPorts(cfg.SystemOps.HostctlDir, ports, userID, requestID)
+	})
 }
 
 // New 装配生产应用，授权验签信任根来自二进制内嵌公钥表。
@@ -261,6 +279,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		certStore = certificates.NewStore(db, encSvc)
 		publisher = gatewayconfig.NewPublisher(db, c, appStore, certStore,
 			cfg.Gateway.AdminSocket, cfg.Gateway.DataDir, policyStore, exceptionStore)
+		configurePublisherFirewallEnsurer(publisher, cfg)
 		// 网关原生 OTel tracing 下发开关（默认关；仅影响生成内容，不改变发布流程）
 		publisher.SetGatewayTracing(cfg.Gateway.TracingEnabled)
 		appHandler = applications.NewHandler(appStore, auditSvc, certStore)
@@ -1263,8 +1282,32 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	// 全量访问日志（二期）
 	accessLogHandler := accesslogs.NewHandler(accesslogs.NewStore(db), auditSvc)
 	mux.Handle("GET /api/v1/access-logs", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.List))))
+	mux.Handle("GET /api/v1/access-logs/trend", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.Trend))))
+	mux.Handle("GET /api/v1/access-logs/flow", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.Flow))))
 	mux.Handle("GET /api/v1/access-logs/export", authz(exportRate(middleware.RequirePermission("access_logs.export")(http.HandlerFunc(accessLogHandler.Export)))))
 	mux.Handle("GET /api/v1/access-logs/{id}", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.Get))))
+
+	var pcapService *requestpcap.Service
+	if cfg.RequestPCAP.Enabled() {
+		if encSvc == nil {
+			return nil, fmt.Errorf("request PCAP requires the configured master encryption key")
+		}
+		runtime, err := requestpcap.NewRuntime(db, cfg.RequestPCAP, cfg.WAF.GatewayNodeName, encSvc)
+		if err != nil {
+			return nil, fmt.Errorf("initialize request PCAP runtime: %w", err)
+		}
+		a.requestPCAP = runtime
+		pcapService, err = requestpcap.NewService(runtime.Store, runtime.Keyring, cfg.RequestPCAP.HotDir, cfg.RequestPCAP.WarmDir)
+		if err != nil {
+			runtime.Keyring.Close()
+			return nil, fmt.Errorf("initialize request PCAP service: %w", err)
+		}
+	}
+	pcapHandler := requestpcap.NewHandler(pcapService, userStore, auditSvc)
+	if a.requestPCAP != nil {
+		pcapHandler.SetRotation(a.requestPCAP.Rotate)
+	}
+	pcapHandler.RegisterRoutes(mux, authz, sensitiveRate)
 
 	// ---- 阶段5：可信代理/保护地址/黑白名单/CC策略/临时封禁/访问控制事件/版本 ----
 	// 可信代理

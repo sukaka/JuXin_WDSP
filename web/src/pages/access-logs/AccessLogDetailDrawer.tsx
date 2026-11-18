@@ -4,6 +4,7 @@ import { Alert, Descriptions, Drawer, Tag, Typography } from 'antd'
 import { ApiError } from '../../api/client'
 import { accessLogsApi } from '../../api/accessLogs'
 import { formatDateTime } from '../../utils/format'
+import RequestPcapEvidence from './RequestPcapEvidence'
 
 const preStyle: CSSProperties = {
   margin: '4px 0 0',
@@ -102,16 +103,32 @@ export default function AccessLogDetailDrawer({
               </Typography.Text>
             </Descriptions.Item>
             <Descriptions.Item label="响应状态码">{log.response_status || '-'}</Descriptions.Item>
-            <Descriptions.Item label="耗时">{`${log.duration_ms} ms`}</Descriptions.Item>
+            <Descriptions.Item label="请求总耗时">{`${log.duration_ms} ms`}</Descriptions.Item>
+            <Descriptions.Item label="上游首字节耗时">
+              {log.ttfb_ms === null || log.ttfb_ms === undefined ? '未采集' : `${log.ttfb_ms} ms`}
+            </Descriptions.Item>
             <Descriptions.Item label="请求大小">{`${log.bytes_in} B`}</Descriptions.Item>
             <Descriptions.Item label="响应大小">{`${log.bytes_out} B`}</Descriptions.Item>
             <Descriptions.Item label="WAF 动作">
               {log.waf_action === 'BLOCK' ? <Tag color="red">阻断</Tag> : <Tag>放行</Tag>}
             </Descriptions.Item>
             <Descriptions.Item label="网关节点">{log.gateway_node_id || '-'}</Descriptions.Item>
+            <Descriptions.Item label="规范化 API">
+              <Typography.Text code>{log.endpoint_key || log.path_template || '未识别'}</Typography.Text>
+            </Descriptions.Item>
             <Descriptions.Item label="请求 ID" span={2}>
               <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }} copyable>
                 {log.request_id || '-'}
+              </Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="Trace ID" span={2}>
+              <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }} copyable={Boolean(log.trace_id)}>
+                {log.trace_id || '未采集'}
+              </Typography.Text>
+            </Descriptions.Item>
+            <Descriptions.Item label="Span ID" span={2}>
+              <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }} copyable={Boolean(log.span_id)}>
+                {log.span_id || '未采集'}
               </Typography.Text>
             </Descriptions.Item>
             <Descriptions.Item label="HTTP 版本">{log.http_version || '-'}</Descriptions.Item>
@@ -123,6 +140,8 @@ export default function AccessLogDetailDrawer({
               {log.referer_summary || '-'}
             </Descriptions.Item>
           </Descriptions>
+
+          <RequestPcapEvidence requestId={log.request_id} />
 
           <Typography.Title level={5}>请求/响应留痕</Typography.Title>
           <PayloadSection title="请求头" headers={log.request_headers} />

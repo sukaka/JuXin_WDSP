@@ -7,6 +7,7 @@ require (
 	github.com/google/gopacket v1.1.19
 	github.com/jiuzhang-waf/gateway/dynamic_security v0.0.0
 	github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard v0.0.0
+	github.com/jiuzhang-waf/gateway/pcapevidence v0.0.0
 )
 
 require (
@@ -37,3 +38,5 @@ require (
 replace github.com/jiuzhang-waf/gateway/dynamic_security => ./dynamic_security
 
 replace github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard => ./modules/jiuzhang_guard
+
+replace github.com/jiuzhang-waf/gateway/pcapevidence => ./pcapevidence

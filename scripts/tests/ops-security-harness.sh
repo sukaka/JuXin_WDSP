@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
 COMMON="$REPO_ROOT/ops/lib/common.sh"
 HOSTCTL="$REPO_ROOT/ops/system/hostctl-exec.sh"
+HOSTCTL_INSTALL="$REPO_ROOT/ops/install/install-hostctl.sh"
 COLLECT="$REPO_ROOT/ops/diagnostics/collect.sh"
 INSTALL="$REPO_ROOT/ops/install/install.sh"
 BM_INSTALL="$REPO_ROOT/ops/install/install-gateway-baremetal.sh"
@@ -34,7 +35,7 @@ check() { # check NAME CMD...
 }
 
 # ---------- 0. 语法检查 ----------
-for f in "$COMMON" "$HOSTCTL" "$COLLECT" "$INSTALL" "$BM_INSTALL" "$BUILD"; do
+for f in "$COMMON" "$HOSTCTL" "$HOSTCTL_INSTALL" "$COLLECT" "$INSTALL" "$BM_INSTALL" "$BUILD"; do
   check "bash -n $(basename "$f")" bash -n "$f"
 done
 
@@ -149,6 +150,7 @@ fake_pkg() { # fake_pkg OUT_TAR [evil]
     printf 'evil\n' >> "$d/gateway-linux-arm64/caddy"
   fi
   printf '2.11.4 h1:fake\n' > "$d/gateway-linux-arm64/VERSION"
+  printf 'development\n' > "$d/gateway-linux-arm64/delivery_mode"
   printf '# fake crs\n' > "$d/gateway-linux-arm64/rules/crs/crs-setup.conf"
   printf '<html>block</html>\n' > "$d/gateway-linux-arm64/blockpage.html"
   cp "$REPO_ROOT/deployment/baremetal/Caddyfile.bootstrap" "$d/gateway-linux-arm64/"
@@ -327,8 +329,8 @@ else
     || fail "hostctl 非法 action 拒绝但输出异常（输出见 $TMP_ROOT/hc-bad.out）"
 fi
 
-# install.sh 侧：chown 失败退化路径的安全警告文本存在
-check "install.sh 含 hostctl 属主退化安全警告" grep -q "安全警告（系统控制通道不可用）" "$INSTALL"
+# 共用 hostctl helper：chown 失败退化路径的安全警告文本存在
+check "install-hostctl.sh 含 hostctl 属主退化安全警告" grep -q "安全警告（系统控制通道不可用）" "$HOSTCTL_INSTALL"
 
 # ---------- 5. MED-21：collect.sh .env 脱敏 ----------
 FAKE_ENV="$TMP_ROOT/fake.env"

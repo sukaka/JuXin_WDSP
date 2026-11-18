@@ -16,6 +16,19 @@ import (
 
 func runCloudAPIDataFlowBrowser(t *testing.T, env *testEnv, applicationID uuid.UUID, username, password string) {
 	t.Helper()
+	runRequestEvidenceBrowser(t, env, applicationID, username, password, "api-data-flow.spec.ts")
+}
+
+func runRequestAuditBrowser(t *testing.T, env *testEnv, username, password string) {
+	t.Helper()
+	if os.Getenv("WDSP_DATA_FLOW_BROWSER_E2E") != "1" {
+		return
+	}
+	runRequestEvidenceBrowser(t, env, uuid.Nil, username, password, "request-audit.spec.ts")
+}
+
+func runRequestEvidenceBrowser(t *testing.T, env *testEnv, applicationID uuid.UUID, username, password, spec string) {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("allocate browser test port: %v", err)
@@ -40,11 +53,12 @@ func runCloudAPIDataFlowBrowser(t *testing.T, env *testEnv, applicationID uuid.U
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	command := exec.CommandContext(ctx, "npx", "playwright", "test", "--config=playwright.data-flow.config.ts")
+	command := exec.CommandContext(ctx, "npx", "playwright", "test", "--config=playwright.data-flow.config.ts", spec)
 	command.WaitDelay = 10 * time.Second
 	command.Dir = webDir
 	command.Env = append(os.Environ(),
 		"CI=1",
+		"WDSP_REQUEST_AUDIT_E2E="+strconv.FormatBool(spec == "request-audit.spec.ts" || spec == "request-pcap.spec.ts"),
 		"E2E_BASE_URL="+baseURL,
 		"E2E_SEC_USER="+username,
 		"E2E_SEC_PWD="+password,

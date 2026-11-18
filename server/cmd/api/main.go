@@ -191,6 +191,7 @@ func run() error {
 	accessFullCollector.SetBatchTxFactory(db.Begin)
 	go accessFullCollector.Run(collectorCtx, 2*time.Second)
 	go accesslogs.NewRetentionCleaner(db, settings.NewService(db)).Run(collectorCtx, 10*time.Minute)
+	application.StartRequestPCAP(collectorCtx)
 
 	// 站点资产被动发现：mirrorcap site-discovery.jsonl 断点续传 upsert（幂等键 domain+ip+port；
 	// 日志文件未生成时采集器空转；checkpoint 落在可写数据目录，日志卷只读挂载）

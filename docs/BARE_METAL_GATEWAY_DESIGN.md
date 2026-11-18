@@ -324,13 +324,11 @@ WantedBy=multi-user.target
 
 **防火墙语义闭环**：
 
-- 裸机安装器默认放行 80/443 与 1024-65535/tcp；发布阶段仍**不自动修改**宿主机
-  firewalld，站点使用 1-1023 端口时由运维按发布结果单独放行；
-- 发布结果三态展示：**配置发布状态 / 本机监听状态 / 外部可达状态**；
-  外部可达 = 从管理后端经宿主机地址探测站点端口，失败时报告
-  「疑似 firewalld 未放行 TCP/N，执行 firewall-cmd --add-port=N/tcp --permanent
-  && firewall-cmd --reload」，状态为「成功（外部不可达）」而非失败；
-- 巡检脚本对每个已发布站点端口做定期探测，外部不可达持续存在则上报告警。
+- 安装器只放行 80/443 与管理员显式声明的初始站点端口，不开放整个高位端口段。
+- Web 发布在加载候选网关配置前，按本次实际监听站点生成排序去重的 TCP 端口清单，经带 HMAC、时效和属主校验的 hostctl 通道提交 `firewall_ensure`；宿主侧在 firewalld 默认 zone 同时确保 runtime 与 permanent 精确放行，API 容器不直接获得宿主 root 权限。
+- 首版只增不删：不自动移除历史端口，避免多站点共享端口或管理员既有规则被误删；宿主通道写入失败时发布在候选加载前以 `FIREWALL_ENSURE_FAILED` 中止。
+- 发布结果明确区分「配置发布」「本机监听」「防火墙指令已提交」「外部可达」。摘要显示已提交端口，不把它冒充外部可达证明；云安全组、上游 ACL 与运营商网络仍需按部署环境核验。
+- 巡检与发布验证继续报告真实数据面结果，外部不可达不得改写为验证通过。
 
 ### 4.8 日志轮转
 
@@ -348,7 +346,7 @@ WantedBy=multi-user.target
 - **安装**（`ops/install/` 新增裸机路径，主向导按部署形态调用）：检测 OS/架构
   （openEuler/UOS/通用 systemd 发行版）→ 分配 UID/GID（4.3）→ 建目录 →
   安装 releases + 规则 + blockpage + bootstrap + unit → SELinux 处理（4.10）→
-  firewalld 放行 80/443 与 1024-65535 并输出运维约定 → `systemctl enable --now` →
+  firewalld 仅放行 80/443 与显式初始站点端口并输出运维约定；后续发布经 hostctl 自动提交精确端口 → `systemctl enable --now` →
   冒烟检查（socket 存在 + Ping）。
 - **升级**（`ops/upgrade/`）健康门禁 + 自动回滚：
 

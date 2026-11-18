@@ -56,6 +56,7 @@ TAG_DESCRIPTIONS = {
     'security-regression': '安全回归证据与发布门禁（WDSP P1-04）',
     'attack-sessions': '攻击活动（Attack Session）',
     'access-logs': '访问日志',
+    'request-pcap': '请求PCAP证据（完整性核验与单次派生下载）',
     'dashboard': '态势总览',
     'analytics': '统计分析',
     'system-health': '系统健康',

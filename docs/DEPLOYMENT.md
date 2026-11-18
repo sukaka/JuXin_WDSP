@@ -114,7 +114,7 @@ openssl pkey -pubin -in release-signing.pub -outform DER | sha256sum
 | Valkey | 6379 | 仅绑定 127.0.0.1 |
 | Caddy Admin | Unix Socket | /var/run/caddy/admin.sock |
 | 容器运维 sidecar | Unix Socket | containeropsd 仅监听共享卷内 `/run/containerops/containerops.sock`（API 侧经卷挂载为 `/app/runtime/containerops/containerops.sock`），不暴露 TCP；docker.sock 仅该组件挂载 |
-| 业务代理 | 默认 80/443，站点端口按发布结果精确放行 | 生产离线包网关直绑宿主机端口；安装时用 `--site-ports` 显式指定站点端口（ops/install 不再默认放行 1024-65535 全高位端口） |
+| 业务代理 | 默认 80/443，站点端口按发布结果精确放行 | 安装时放行 80/443 与 `--site-ports` 显式初始端口；后续 Web 发布通过带 HMAC 的 hostctl 通道自动提交实际监听 TCP 端口的 runtime+permanent 放行，无需再手工执行 firewall-cmd，也不会自动删除历史规则 |
 
 ### 网关低端口与 82 端口
 
@@ -124,9 +124,37 @@ openssl pkey -pubin -in release-signing.pub -outform DER | sha256sum
   `net.ipv4.ip_unprivileged_port_start` 规避低端口权限。
 - `deployment/docker-compose.stage5.yml` 的演示 HTTP 站点由 Caddy 直接监听容器 82 端口，
   默认映射为 `82:82`；`GATEWAY_SITE_HTTP_PORT` 只覆盖宿主机侧端口。完整离线包的生产 gateway
-  使用 host 网络，82 由站点发布配置直接监听；需要开放该站点时，安装/防火墙配置须精确加入 `82/tcp`。
+  使用 host 网络，82 由站点发布配置直接监听；发布时由 hostctl 自动提交 `82/tcp` 的 runtime+permanent 精确放行。
 - 升级或回滚重建 gateway 时必须同次重建 `network_mode: service:gateway` 的 netmgrd，避免其继续附着
   已删除容器的网络命名空间。`ops/upgrade/apply.sh`、`rollback.sh` 与 Web 升级执行器均遵守该约束。
+
+### 完整离线升级（Compose、宿主单元或基础设施变更）
+
+本类变更不能使用只替换应用镜像的前台升级包。交付目录包含
+`jiuzhang-wdsp-update-full-X.Y.Z-amd64.tar.gz`、`.sha256`、`.sig` 以及同名 `.sh` 独立启动脚本。
+启动脚本内嵌固定发布公钥，先验签和安全解压原始归档，再执行升级；无需先解开未验签归档寻找脚本。
+以实际目录替换下列占位符，不需要手工填写镜像名或 `--new-compose-file`：
+
+```bash
+sudo bash jiuzhang-wdsp-update-full-X.Y.Z-amd64.sh \
+  --package "$PWD/jiuzhang-wdsp-update-full-X.Y.Z-amd64.tar.gz" \
+  --current-release /path/to/jiuzhang-wdsp-offline-旧版本-amd64
+```
+
+- 必须是 Linux root、Docker Compose 与 systemd 环境；API 地址从旧 Compose 实际发布端口读取，也可用
+  `--api-url` 显式覆盖。管理员密码和图形验证码按需交互输入，不要把密码写进命令行。
+- 先检查真实组件健康并创建、验证 FULL 加密备份；备份失败不加载或切换镜像。健康检查读取 Caddy Admin
+  的真实 listeners，不再默认探测开发端口 18080。
+- 一次重建 `api/web/gateway/netmgrd/logrotator/containerops`，逐个核对镜像 ID、Running/Healthy 和实际探针；
+  sidecar 先清理自身旧容器再重建，不删除命名卷。已显式启用 PCAP 时才把 `pcapd` 纳入同次升级。
+- 新 release 复用原 `.env` 和 `runtime`，保留原证书、授权、数据库、命名卷及全部旧镜像 ID。
+  `current` 只在容器、数据库迁移、hostctl 和升级执行器检查全部通过后原子切换。
+- 启动或健康检查失败自动恢复原镜像，并按升级前记录逐步回退本轮新增迁移；不会猜测迁移版本。
+  自动回滚不默认恢复 FULL 备份。确需覆盖升级期间业务数据时，须另用
+  `rollback.sh --restore-backup` 明确确认，不能把数据恢复静默混入普通回滚。
+- `--allow-unsigned` 只用于隔离验证且只接受 `delivery_mode=development`、未签名包；不能用于正式包。
+- 本机脚本、容器或 mock 验收不能替代目标 openEuler/兆芯主机的安装、old→new→old→new、真实 firewalld
+  与服务器外部客户端访问。未执行这些项目时必须记录 `NOT_RUN`，不能以构建或签名通过代替。
 
 ## 数据目录
 
@@ -307,3 +335,74 @@ docker compose -f deployment/ha-lab/docker-compose.ha-lab.yml down -v
   ha-lab 形态（admin_addr 登记为共享卷 unix socket 路径、业务端口一律绑 127.0.0.1）仅限单机实验，
   跨机生产部署才涉及 http(s) 管理地址、必须按本条纪律收敛暴露面。
   风险分析与设计依据见 [docs/HA_TWO_NODE_DESIGN.md](HA_TWO_NODE_DESIGN.md) §8.1。
+
+
+## 请求 PCAP 取证（可选，默认关闭）
+
+该能力用于按真实请求关联和派生原始 PCAP，不是 WDSP 内部数据流监控，也不复用网络诊断的
+临时抓包任务。普通访问日志、敏感字段和审计流向图无需启用 PCAP；只有需要原始包证据时才
+显式启用。TLS、HTTP/2/QUIC或无法唯一关联的流量必须如实降级，不从时间窗猜测请求归属。
+
+### 容器部署
+
+安装时同时指定网卡、明确端口、SSD热目录和SAS温目录：
+
+```bash
+sudo bash ops/install/install.sh \
+  --enable-pcap \
+  --pcap-iface eth0 \
+  --pcap-ports 80,443 \
+  --pcap-hot-dir /srv/jiuzhang-ssd/pcap \
+  --pcap-warm-dir /srv/jiuzhang-sas/pcap
+```
+
+- 只捕获明确列出的端口，不接受端口区间，不默认开启混杂模式，不新增TCP管理端口。
+- 安装器创建受限热/温目录，生成 `COMPOSE_PROFILES=request-pcap` 和对应挂载配置。
+  未传 `--enable-pcap` 时默认Compose不含pcapd服务，也不生成证据私钥。
+- API私有密钥目录为 `runtime/pcap-private`；节点只读挂载 `runtime/pcap-public`。
+  节点不持有证据私钥或管理面主密钥。私钥文件由现有主密钥加密，不能通过备份明文导出。
+- 默认证据保留24小时、热层15分钟、公钥授权24小时并定时续签；SAS迁移限速32MiB/s，
+  热/温盘最低剩余空间10%。这些默认值不是大流量容量承诺，必须按实测调整。
+- 使用 `findmnt -T <目录>`、实际盘阵信息和业务包长分布确认挂载位置。不要仅凭目录名判断
+  SSD/SAS，也不要把系统盘某个目录误当成独立数据盘。
+
+手动启用或扩容时，管理面容器内路径固定为 `/app/runtime/pcap-hot`、`/app/runtime/pcap-warm`、
+`/app/runtime/pcap-private/private.key` 和 `/app/runtime/pcap-public`；宿主路径由
+`REQUEST_PCAP_HOT_DIR` / `REQUEST_PCAP_WARM_DIR` 绑定。切勿把宿主物理路径直接当作容器内路径。
+启用前需显式创建目录并确保API与pcapd的专用UID可访问；已有配置修改后重建对应服务。
+
+### 裸机部署
+
+裸机网关包同时包含 `jiuzhang-pcapd`、受控systemd单元及独立安装器。只有显式执行下列命令
+才安装并启动持续抓包：
+
+```bash
+sudo bash gateway-linux-amd64/install-pcapd.sh \
+  --package gateway-linux-amd64.tar.gz \
+  --iface eth0 --ports 80,443 \
+  --hot-dir /srv/jiuzhang-ssd/pcap \
+  --warm-dir /srv/jiuzhang-sas/pcap \
+  --node gateway-poc-01
+```
+
+管理面需使用相同节点ID，并把私钥/公钥目录分别配置为 `/var/lib/jiuzhang/pcap-private` 与
+`/var/lib/jiuzhang/pcap-public`。正式包必须通过Ed25519验签和SHA-256检查；`--allow-unsigned`
+只允许开发自验包。服务只保留 `CAP_NET_RAW`，不以 `privileged` 方式运行。
+
+### 核验、下载和轮换
+
+在访问日志详情的“PCAP证据”区域查看真实关联与完整性。核验需理由；下载需独立权限、理由和
+当前账号密码，授权60秒内、当前用户当前会话、只能使用一次。下载前再次检查完整性、包范围、
+保留期和丢包/截断状态。连接级证据可能含同连接其他请求，下载前必须确认授权范围。
+
+密钥轮换接口为 `POST /api/v1/request-pcap/keys/rotate`，权限 `request_pcap.manage`，需理由和
+密码二次确认。轮换保留历史证据解封能力并签发新公钥，不替换节点发布信任根。普通核验、下载、
+轮换均记录操作审计；下载中断或完整性失败不能记为成功。
+
+### 容量与性能验收边界
+
+代码测试只能证明加密、关联、权限、迁移一致性与降级行为，不能证明SAS可承受指定业务流量。
+生产启用前须在目标物理SSD+SAS上执行PCAP OFF/ON配对压测，记录实际RPS/PPS、包长分布、
+TLS及HTTP协议比例、CPU/RSS、丢包、磁盘吞吐、IOPS、await、fsync、迁移积压及WAF P95/P99。
+至少72小时组合长稳不能用短时峰值测试替代。达不到容量目标时应缩小抓包范围、增加盘阵或
+独立证据存储，不得以静默丢包冒充全量证据。

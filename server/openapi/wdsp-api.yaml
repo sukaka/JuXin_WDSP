@@ -6174,7 +6174,24 @@ components:
           description: 处理耗时（毫秒）
         waf_action:
           type: string
-          description: WAF 动作（BLOCK 或空串=放行；网关仅对 403 推断 BLOCK）
+          description: 实际WAF动作（如ALLOW/BLOCK）
+        trace_id:
+          type: string
+          description: W3C Trace ID；仅详情返回，未采集时缺省
+        span_id:
+          type: string
+          description: W3C Span ID；仅详情返回，未采集时缺省
+        endpoint_key:
+          type: string
+          description: 规范化接口键（METHOD + path_template）；仅详情返回
+        path_template:
+          type: string
+          description: 规范化路径模板；仅详情返回
+        ttfb_ms:
+          type: integer
+          format: int64
+          nullable: true
+          description: 实际采集的上游首字节耗时（毫秒）；未采集为null
         request_headers:
           type: object
           additionalProperties:
@@ -6221,6 +6238,49 @@ components:
           type: integer
           format: int64
           description: 总条数
+    AccessLogTrendPoint:
+      type: object
+      properties:
+        bucket:
+          type: string
+          format: date-time
+          description: UTC时间桶起点
+        total:
+          type: integer
+          format: int64
+          description: 请求数
+        blocked:
+          type: integer
+          format: int64
+          description: WAF阻断数
+        errors:
+          type: integer
+          format: int64
+          description: 响应状态码>=500的请求数
+    AccessLogTrendResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccessLogTrendPoint'
+          description: 有真实日志的时间桶；无数据为空数组
+        bucket_seconds:
+          type: integer
+          enum:
+          - 60
+          - 300
+          - 900
+          - 3600
+          - 86400
+        start_time:
+          type: string
+          format: date-time
+          description: 实际查询起始时间
+        end_time:
+          type: string
+          format: date-time
+          description: 实际查询结束时间（不含边界）
     DashboardKV:
       type: object
       description: 键值对（排行/分布项）
@@ -29405,6 +29465,263 @@ components:
           type: string
           enum:
           - deleted
+    RequestPcapEvidence:
+      type: object
+      required:
+      - artifact_id
+      - gateway_node_id
+      - capture_point
+      - state
+      - storage_tier
+      - capture_started_at
+      - capture_ended_at
+      - packet_count
+      - dropped_count
+      - truncated
+      - plaintext_size_bytes
+      - ciphertext_size_bytes
+      - plaintext_sha256
+      - ciphertext_sha256
+      - expires_at
+      - integrity_status
+      - match_status
+      - match_basis
+      - coverage
+      - candidate_count
+      - download_eligible
+      properties:
+        artifact_id:
+          type: string
+          format: uuid
+        gateway_node_id:
+          type: string
+        capture_point:
+          type: string
+        state:
+          type: string
+          enum:
+          - HOT
+          - MIGRATING
+          - WARM
+          - EXPIRING
+          - EXPIRED
+          - UNAVAILABLE
+        storage_tier:
+          type: string
+          enum:
+          - HOT
+          - WARM
+        capture_started_at:
+          type: string
+          format: date-time
+        capture_ended_at:
+          type: string
+          format: date-time
+        packet_count:
+          type: integer
+          format: int64
+        dropped_count:
+          type: integer
+          format: int64
+        truncated:
+          type: boolean
+        plaintext_size_bytes:
+          type: integer
+          format: int64
+        ciphertext_size_bytes:
+          type: integer
+          format: int64
+        plaintext_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        ciphertext_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        expires_at:
+          type: string
+          format: date-time
+        integrity_status:
+          type: string
+          enum:
+          - UNVERIFIED
+          - PASS
+          - FAILED
+          - KEY_UNAVAILABLE
+        last_verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        verification_error_code:
+          type: string
+        match_status:
+          type: string
+          enum:
+          - PENDING
+          - UNMATCHED
+          - FAILED
+          - AMBIGUOUS
+          - MATCHED
+        match_basis:
+          type: string
+        coverage:
+          type: string
+          enum:
+          - REQUEST
+          - CONNECTION
+          - UNKNOWN
+          description: CONNECTION表示包含同连接其他请求的可能
+        candidate_count:
+          type: integer
+        first_packet_no:
+          type: integer
+          format: int64
+          nullable: true
+        last_packet_no:
+          type: integer
+          format: int64
+          nullable: true
+        download_eligible:
+          type: boolean
+        download_blocked_reason:
+          type: string
+          enum:
+          - STORAGE_UNAVAILABLE
+          - EVIDENCE_INCOMPLETE
+          - EVIDENCE_EXPIRED
+          - UNIQUE_CORRELATION_REQUIRED
+          - PACKET_RANGE_REQUIRED
+          - VERIFICATION_REQUIRED
+    RequestAuditFlow:
+      type: object
+      required:
+      - nodes
+      - edges
+      - request_count
+      - sensitive_request_count
+      - start_time
+      - end_time
+      - truncated
+      - data_source
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequestAuditFlowNode'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequestAuditFlowEdge'
+        request_count:
+          type: integer
+          description: 筛选集合内去重请求数
+        sensitive_request_count:
+          type: integer
+          description: 含至少一个真实敏感字段证据的去重请求数
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        truncated:
+          type: boolean
+          description: 存在TopN合并或达到有界扫描上限
+        data_source:
+          type: string
+          enum:
+          - access_logs+api_runtime_events
+    RequestAuditFlowNode:
+      type: object
+      required:
+      - id
+      - name
+      - kind
+      - request_count
+      - field_hits
+      - verified
+      - other
+      - filters
+      - drill_exact
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          description: 节点名或字段path+类型；不含字段原值
+        kind:
+          type: string
+          enum:
+          - SOURCE
+          - ACCOUNT
+          - REQUEST_FIELD
+          - APPLICATION
+          - API
+          - RESPONSE_FIELD
+        request_count:
+          type: integer
+          description: 节点覆盖的去重请求数
+        field_hits:
+          type: integer
+          format: int64
+          description: 字段节点命中数，与请求数不同
+        verified:
+          type: boolean
+          description: ACCOUNT节点是否带真实JWT VERIFIED信号
+        other:
+          type: boolean
+          description: 是否为TopN聚合的其他桶
+        aggregated_nodes:
+          type: integer
+          description: 其他桶合并的真实节点数
+        filters:
+          type: object
+          additionalProperties:
+            type: string
+          description: 下钻筛选条件
+        request_ids:
+          type: array
+          items:
+            type: string
+          description: 最多100个精确下钻请求ID；更大集合省略
+        drill_exact:
+          type: boolean
+          description: request_ids是否能精确还原节点集合；false时按filters下钻
+    RequestAuditFlowEdge:
+      type: object
+      required:
+      - id
+      - source_id
+      - target_id
+      - request_count
+      - field_hits
+      - filters
+      - drill_exact
+      properties:
+        id:
+          type: string
+        source_id:
+          type: string
+        target_id:
+          type: string
+        request_count:
+          type: integer
+          description: 边覆盖的去重请求数
+        field_hits:
+          type: integer
+          format: int64
+          description: 与字段节点直接相连的命中数
+        filters:
+          type: object
+          additionalProperties:
+            type: string
+        request_ids:
+          type: array
+          items:
+            type: string
+          description: 最多100个精确下钻请求ID；更大集合省略
+        drill_exact:
+          type: boolean
+          description: 是否能精确还原边对应的请求集合
 paths:
   /auth/captcha:
     get:
@@ -37969,7 +38286,7 @@ paths:
       tags:
       - access-logs
       summary: 访问日志分页列表
-      description: 全量访问日志（网关放行路径采集）按时间倒序分页查询。权限：access_logs.read。 page_size 上限 100；列表不返回请求/响应头体留痕（字段缺省），详情见 GET /access-logs/{id}。
+      description: 启用全量访问日志后按时间倒序分页查询。权限：access_logs.read。时间范围左闭右开。 page_size 上限 100；列表不返回请求/响应头体留痕（字段缺省），详情见 GET /access-logs/{id}。
       parameters:
       - name: start_time
         in: query
@@ -37977,19 +38294,20 @@ paths:
         schema:
           type: string
           format: date-time
-        description: 起始时间（RFC3339）
+        description: 起始时间（RFC3339，含边界）
       - name: end_time
         in: query
         required: false
         schema:
           type: string
           format: date-time
-        description: 结束时间（RFC3339，含边界）
+        description: 结束时间（RFC3339，不含边界）
       - name: domain
         in: query
         required: false
         schema:
           type: string
+          maxLength: 255
         description: 域名模糊匹配（ILIKE）
       - name: client_ip
         in: query
@@ -38002,31 +38320,102 @@ paths:
         required: false
         schema:
           type: string
+          maxLength: 16
         description: 请求方法精确匹配
       - name: uri
         in: query
         required: false
         schema:
           type: string
+          maxLength: 2048
         description: 请求 URI 模糊匹配（ILIKE）
       - name: status
         in: query
         required: false
         schema:
           type: integer
-        description: 响应状态码精确匹配（如 200/403）
+          minimum: 100
+          maximum: 599
+        description: 响应状态码精确匹配
       - name: waf_action
         in: query
         required: false
         schema:
           type: string
-        description: WAF 动作（BLOCK 或空串=放行；网关仅对 403 推断 BLOCK）
+          maxLength: 32
+        description: 实际 WAF 动作（如 ALLOW/BLOCK）
       - name: request_id
         in: query
         required: false
         schema:
           type: string
+          maxLength: 64
         description: 请求 ID 精确匹配
+      - name: application_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID 精确匹配
+      - name: trace_id
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[0-9a-f]{32}$
+        description: W3C Trace ID（非全零）精确匹配
+      - name: identity_fingerprint
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+        description: 通过同一请求的运行事件精确匹配身份指纹
+      - name: rule_id
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+        description: 通过同一请求的运行事件 details_json 精确匹配命中规则
+      - name: endpoint_key
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 600
+        description: 规范化API精确匹配
+      - name: field_path
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+        description: 敏感字段结构化路径，不含字段值
+      - name: data_type
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 64
+        description: 敏感数据类型标签
+      - name: direction
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - REQUEST
+          - RESPONSE
+        description: 敏感字段方向
+      - name: request_ids
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 6500
+        description: 图下钻的逗号分隔请求ID集合，最多100个；不与request_id混用
       - name: page
         in: query
         required: false
@@ -38049,6 +38438,124 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccessLogListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 05-events-analytics.yaml
+  /access-logs/trend:
+    get:
+      operationId: accessLogTrend
+      tags:
+      - access-logs
+      summary: 访问日志真实趋势
+      description: 按访问日志时间桶聚合请求数、WAF阻断数和5xx数，权限：access_logs.read。 与列表共用筛选条件；默认最近24小时，最长31天；不读取报文正文或PCAP。
+      parameters:
+      - name: start_time
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 起始时间（RFC3339，含边界）
+      - name: end_time
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 结束时间（RFC3339，不含边界）
+      - name: bucket_seconds
+        in: query
+        required: false
+        schema:
+          type: integer
+          enum:
+          - 60
+          - 300
+          - 900
+          - 3600
+          - 86400
+        description: 时间桶秒数；缺省按时间窗自动选择
+      - name: domain
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 255
+      - name: client_ip
+        in: query
+        required: false
+        schema:
+          type: string
+      - name: method
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 16
+      - name: uri
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 2048
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 100
+          maximum: 599
+      - name: waf_action
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 32
+      - name: request_id
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 64
+      - name: application_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: trace_id
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[0-9a-f]{32}$
+      - name: identity_fingerprint
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+      - name: rule_id
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+      responses:
+        '200':
+          description: 真实访问日志趋势；无数据时items为空数组，不生成虚假计数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessLogTrendResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -38072,19 +38579,20 @@ paths:
         schema:
           type: string
           format: date-time
-        description: 起始时间（RFC3339）
+        description: 起始时间（RFC3339，含边界）
       - name: end_time
         in: query
         required: false
         schema:
           type: string
           format: date-time
-        description: 结束时间（RFC3339，含边界）
+        description: 结束时间（RFC3339，不含边界）
       - name: domain
         in: query
         required: false
         schema:
           type: string
+          maxLength: 255
         description: 域名模糊匹配
       - name: client_ip
         in: query
@@ -38097,31 +38605,65 @@ paths:
         required: false
         schema:
           type: string
+          maxLength: 16
         description: 请求方法
       - name: uri
         in: query
         required: false
         schema:
           type: string
+          maxLength: 2048
         description: 请求 URI 模糊匹配
       - name: status
         in: query
         required: false
         schema:
           type: integer
+          minimum: 100
+          maximum: 599
         description: 响应状态码
       - name: waf_action
         in: query
         required: false
         schema:
           type: string
-        description: WAF 动作
+          maxLength: 32
+        description: 实际WAF动作
       - name: request_id
         in: query
         required: false
         schema:
           type: string
+          maxLength: 64
         description: 请求 ID
+      - name: application_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+        description: 应用 ID
+      - name: trace_id
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[0-9a-f]{32}$
+        description: W3C Trace ID（非全零）
+      - name: identity_fingerprint
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+        description: 身份指纹
+      - name: rule_id
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+        description: 命中规则 ID
       responses:
         '200':
           description: 'CSV 文件（text/csv; charset=utf-8，Content-Disposition: attachment）'
@@ -38130,6 +38672,8 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -62002,6 +62546,485 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
     x-source: 23-endpoint-groups.yaml
+  /request-pcap/lookup:
+    get:
+      operationId: requestPcapLookup
+      tags:
+      - request-pcap
+      summary: 按业务请求查询PCAP证据状态
+      description: 权限：request_pcap.read。只返回捕获、关联、完整性和非内容清单；不包含密钥、原始报文或内部路径。未配置证据服务时返回503。
+      parameters:
+      - name: request_id
+        in: query
+        required: true
+        schema:
+          type: string
+          maxLength: 64
+        description: 业务请求ID
+      responses:
+        '200':
+          description: 证据状态列表，没有关联时items为空数组
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - request_id
+                - items
+                properties:
+                  request_id:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RequestPcapEvidence'
+                  truncated:
+                    type: boolean
+                    description: 仅返回最新100条且还有更多证据时为true；指定证据操作使用精确关联，不受列表截断影响
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    x-source: 24-request-pcap.yaml
+  /request-pcap/artifacts/{id}/manifest:
+    get:
+      operationId: requestPcapManifest
+      tags:
+      - request-pcap
+      summary: 查询指定请求的受限证据清单
+      description: 权限：request_pcap.read。证据必须确实关联request_id；响应不含Wrapped DEK、清单原文和存储路径。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 证据分片ID
+      - name: request_id
+        in: query
+        required: true
+        schema:
+          type: string
+          maxLength: 64
+        description: 业务请求ID
+      responses:
+        '200':
+          description: 受限证据清单
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestPcapEvidence'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    x-source: 24-request-pcap.yaml
+  /request-pcap/artifacts/{id}/verify:
+    post:
+      operationId: requestPcapVerify
+      tags:
+      - request-pcap
+      summary: 流式核验真实加密证据
+      description: 权限：request_pcap.verify。需要理由并记录高风险审计；每用户最多一个执行中的核验/下载，全局最多两个。核验成功后才能申请下载。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 证据分片ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - request_id
+              - reason
+              properties:
+                request_id:
+                  type: string
+                  maxLength: 64
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+      responses:
+        '200':
+          description: 完整性核验通过
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestPcapEvidence'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          description: 已有核验或下载执行中，或敏感操作限流触发
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    x-source: 24-request-pcap.yaml
+  /request-pcap/artifacts/{id}/download-grants:
+    post:
+      operationId: requestPcapDownloadGrant
+      tags:
+      - request-pcap
+      summary: 签发60秒单次下载授权
+      description: 权限：request_pcap.download。密码二次确认、理由、权限、限流和高风险审计均强制；授权绑定当前用户及会话。仅完整性通过、唯一匹配、具有真实包范围、未过期且未截断的证据可授权。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 证据分片ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - request_id
+              - reason
+              - password
+              properties:
+                request_id:
+                  type: string
+                  maxLength: 64
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                password:
+                  type: string
+                  format: password
+                  maxLength: 256
+      responses:
+        '201':
+          description: 授权已创建；授权ID只能由该用户在同一会话内消费一次
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - grant_id
+                - expires_at
+                - artifact_id
+                - request_id
+                properties:
+                  grant_id:
+                    type: string
+                    format: uuid
+                  expires_at:
+                    type: string
+                    format: date-time
+                  artifact_id:
+                    type: string
+                    format: uuid
+                  request_id:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          description: 敏感操作限流触发
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    x-source: 24-request-pcap.yaml
+  /request-pcap/artifacts/{id}/download:
+    get:
+      operationId: requestPcapDownload
+      tags:
+      - request-pcap
+      summary: 按真实包范围流式派生PCAP
+      description: 权限：request_pcap.download。使用前原子消费短时单次授权并再次复核证据状态；在同一受控打开文件上校验并解密，不写明文临时文件。连接级证据可能包含同连接的其他请求。
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 证据分片ID
+      - name: request_id
+        in: query
+        required: true
+        schema:
+          type: string
+          maxLength: 64
+        description: 业务请求ID
+      - name: grant_id
+        in: query
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: 60秒单次下载授权ID
+      responses:
+        '200':
+          description: PCAP附件；固定ASCII文件名、no-store及nosniff。下载中断或校验失败不会记录成功审计。
+          content:
+            application/vnd.tcpdump.pcap:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          description: 已有核验或下载执行中，或敏感操作限流触发
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    x-source: 24-request-pcap.yaml
+  /request-pcap/keys/rotate:
+    post:
+      operationId: requestPcapKeyRotate
+      tags:
+      - request-pcap
+      summary: 轮换证据密钥并发布节点公钥
+      description: 权限：request_pcap.manage。理由、密码二次确认、限流及关键风险审计强制。历史证据私钥保留，发布验签信任根不变；不返回任何私钥或明文DEK。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - reason
+              - password
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                password:
+                  type: string
+                  format: password
+                  maxLength: 256
+      responses:
+        '200':
+          description: 密钥轮换及新公钥签发成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - rotated
+                properties:
+                  rotated:
+                    type: boolean
+                    enum:
+                    - true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          description: 敏感操作限流触发
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    x-source: 24-request-pcap.yaml
+  /access-logs/flow:
+    get:
+      operationId: accessLogFlow
+      tags:
+      - access-logs
+      summary: 真实请求审计流向图
+      description: 权限：access_logs.read。按请求去重统计来源、身份、应用、API、请求与响应敏感字段；字段命中数独立保留。默认最近24小时，最长31天；每类节点Top N（1至20，默认8），其余进入真实数量“其他”桶。不返回字段原值，不读取PCAP。
+      parameters:
+      - name: start_time
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 起始时间，左闭区间
+      - name: end_time
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 结束时间，右开区间
+      - name: domain
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 255
+      - name: client_ip
+        in: query
+        required: false
+        schema:
+          type: string
+        description: 来源IP精确匹配
+      - name: method
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 16
+      - name: uri
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 2048
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 100
+          maximum: 599
+      - name: waf_action
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 32
+      - name: request_id
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 64
+      - name: application_id
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: trace_id
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^[0-9a-f]{32}$
+      - name: identity_fingerprint
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+      - name: rule_id
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+      - name: endpoint_key
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 600
+      - name: field_path
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+      - name: data_type
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 64
+      - name: direction
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - REQUEST
+          - RESPONSE
+      - name: request_ids
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 6500
+        description: 精确下钻的逗号分隔请求ID，最多100个
+      - name: node_limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 8
+        description: 每种节点类型保留的Top N数量
+      responses:
+        '200':
+          description: 审计节点和边，集合与访问日志筛选一致
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestAuditFlow'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    x-source: 25-audit-flow.yaml
 tags:
 - name: auth
   description: 身份认证
@@ -62083,6 +63106,8 @@ tags:
   description: 攻击活动（Attack Session）
 - name: access-logs
   description: 访问日志
+- name: request-pcap
+  description: 请求PCAP证据（完整性核验与单次派生下载）
 - name: dashboard
   description: 态势总览
 - name: analytics
