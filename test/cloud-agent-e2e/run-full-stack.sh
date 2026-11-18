@@ -102,5 +102,5 @@ VALKEY_PASSWORD="${VALKEY_PASSWORD}" \
 WDSP_KAFKA_TEST_ADDR="127.0.0.1:${KAFKA_PORT}" \
 WDSP_CLICKHOUSE_TEST_DSN="clickhouse://default:${CLICKHOUSE_PASSWORD}@127.0.0.1:${CLICKHOUSE_ENDPOINT##*:}/wdsp" \
 WDSP_DATA_FLOW_BROWSER_E2E=1 \
-go test ./tests -run '^(TestCloudAPIDataFlowEndToEnd|TestRequestAuditAccessLogsEndToEnd|TestRequestPCAPFullStackEndToEnd)$' -count=1 -v -timeout 300s
+go test ./tests -run '^(TestCloudAPIDataFlowEndToEnd|TestRequestAuditAccessLogsEndToEnd|TestRequestPCAPFullStackEndToEnd|TestRequestPCAPCaptureAdminRBAC)$' -count=1 -v -timeout 300s
 go test ./internal/requestpcap -count=1 -timeout 120s

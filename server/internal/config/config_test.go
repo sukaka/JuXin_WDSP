@@ -283,6 +283,7 @@ func TestRequestPCAPConfigurationIsExplicitAndComplete(t *testing.T) {
 	t.Setenv("REQUEST_PCAP_HOT_DIR", "")
 	t.Setenv("REQUEST_PCAP_WARM_DIR", "")
 	t.Setenv("REQUEST_PCAP_KEY_FILE", "")
+	t.Setenv("REQUEST_PCAP_CAPTURE_ENABLED", "")
 	cfg, err := Load()
 	if err != nil || cfg.RequestPCAP.Enabled() {
 		t.Fatalf("request PCAP must be disabled by default: %+v err=%v", cfg.RequestPCAP, err)
@@ -296,5 +297,21 @@ func TestRequestPCAPConfigurationIsExplicitAndComplete(t *testing.T) {
 	cfg, err = Load()
 	if err != nil || !cfg.RequestPCAP.Enabled() {
 		t.Fatalf("complete request PCAP configuration was rejected: %+v err=%v", cfg.RequestPCAP, err)
+	}
+	t.Setenv("REQUEST_PCAP_CAPTURE_ENABLED", "false")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load explicit capture disable: %v", err)
+	}
+	if cfg.RequestPCAP.Enabled() {
+		t.Fatalf("explicit capture disable was ignored: %+v", cfg.RequestPCAP)
+	}
+	t.Setenv("REQUEST_PCAP_CAPTURE_ENABLED", "true")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("load explicit capture enable: %v", err)
+	}
+	if !cfg.RequestPCAP.Enabled() {
+		t.Fatalf("explicit capture enable was rejected: %+v", cfg.RequestPCAP)
 	}
 }

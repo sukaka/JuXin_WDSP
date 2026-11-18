@@ -11,7 +11,7 @@
 # 安全要点：执行前先 stat 校验标志目录属主（约定 uid 1000）、目录非 other-writable、
 # 标志文件属主与目录属主一致，任一不满足即归档拒绝并 logger 告警（fail-closed）；
 # 处理前先把标志文件改名为 <原名>.done（防 systemd path 单元重复触发）；
-# action 必须在白名单（reboot/shutdown/factory_reset/firewall_ensure）内，非法标志同样改名归档并
+# action 必须在白名单（reboot/shutdown/factory_reset/firewall_ensure/pcap_capture）内，非法标志同样改名归档并
 # 报错退出（不改名会导致 path 单元反复触发同一非法文件）。
 #
 # 请求真实性（HIGH-14 后续增强）：属主/权限校验只证明文件来自预期本地用户，不证明
@@ -25,6 +25,8 @@
 #   v1\n<action>\n<requestedBy>\n<userID>\n<requestID>\n<requestedAt>\n<delaySeconds>
 # firewall_ensure 使用 v2，在原七字段后追加第 8 字段逗号分隔端口：
 #   v2\nfirewall_ensure\n<requestedBy>\n<userID>\n<requestID>\n<requestedAt>\n0\n<portsCSV>
+# pcap_capture 使用 v3，追加端口、网卡、热目录、温目录、节点ID和enabled：
+#   v3\npcap_capture\n<requestedBy>\n<userID>\n<requestID>\n<requestedAt>\n0\n<portsCSV>\n<interface>\n<hotDir>\n<warmDir>\n<nodeID>\n<enabled>
 #
 # 用法: hostctl-exec.sh [--dry-run] [标志目录]
 #   标志目录：位置参数 $1 或环境变量 HOSTCTL_DIR，默认 <仓库根>/runtime/hostctl
@@ -253,6 +255,30 @@ PORTS="${F[7]:-}"
 if [[ "$ACTION" == "firewall_ensure" ]]; then
   canonical="$(printf 'v2\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
     "$ACTION" "$REQUESTED_BY" "$USER_ID" "$REQUEST_ID" "$REQUESTED_AT" "$DELAY" "$PORTS")"
+elif [[ "$ACTION" == "pcap_capture" ]]; then
+  [[ "$JSON_TOOL" == "python3" ]] || reject_parsed "pcap_capture 需要 python3 解析并执行受控配置"
+  pcap_parsed="$(python3 - "$DONE_FILE" 2>/dev/null <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d["interface"])
+print(d["hot_dir"])
+print(d["warm_dir"])
+print(d["node_id"])
+print(str(d["enabled"]).lower())
+print(",".join(str(p) for p in sorted(d["ports"])))
+PY
+)" || reject_parsed "pcap_capture 配置字段缺失或类型非法"
+  PCAP_FIELDS=()
+  while IFS= read -r _line; do PCAP_FIELDS+=("$_line"); done <<< "$pcap_parsed"
+  PCAP_INTERFACE="${PCAP_FIELDS[0]:-}"
+  PCAP_HOT_DIR="${PCAP_FIELDS[1]:-}"
+  PCAP_WARM_DIR="${PCAP_FIELDS[2]:-}"
+  PCAP_NODE_ID="${PCAP_FIELDS[3]:-}"
+  PCAP_ENABLED="${PCAP_FIELDS[4]:-}"
+  PORTS="${PCAP_FIELDS[5]:-}"
+  canonical="$(printf 'v3\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
+    "$ACTION" "$REQUESTED_BY" "$USER_ID" "$REQUEST_ID" "$REQUESTED_AT" "$DELAY" "$PORTS" \
+    "$PCAP_INTERFACE" "$PCAP_HOT_DIR" "$PCAP_WARM_DIR" "$PCAP_NODE_ID" "$PCAP_ENABLED")"
 else
   canonical="$(printf 'v1\n%s\n%s\n%s\n%s\n%s\n%s' \
     "$ACTION" "$REQUESTED_BY" "$USER_ID" "$REQUEST_ID" "$REQUESTED_AT" "$DELAY")"
@@ -270,33 +296,42 @@ skew=$(( now_ts - ts ))
 
 # action 白名单校验
 case "$ACTION" in
-  reboot|shutdown|factory_reset|firewall_ensure) ;;
+  reboot|shutdown|factory_reset|firewall_ensure|pcap_capture) ;;
   *)
-    log_err "非法 action: ${ACTION:-<空>}（白名单: reboot/shutdown/factory_reset/firewall_ensure），已归档不执行"
+    log_err "非法 action: ${ACTION:-<空>}（白名单: reboot/shutdown/factory_reset/firewall_ensure/pcap_capture），已归档不执行"
     logger -t jiuzhang-hostctl -- "rejected action=${ACTION:-empty} requestedBy=${REQUESTED_BY:-unknown} requestID=${REQUEST_ID:-unknown}"
     exit 1 ;;
 esac
 
-if [[ "$ACTION" == "firewall_ensure" ]]; then
+if [[ "$ACTION" == "firewall_ensure" || "$ACTION" == "pcap_capture" ]]; then
   [[ "$PORTS" =~ ^[1-9][0-9]{0,4}(,[1-9][0-9]{0,4})*$ ]] \
-    || reject_parsed "firewall_ensure ports 必须为十进制整数数组，每项 1..65535"
+    || reject_parsed "$ACTION ports 必须为十进制整数数组，每项 1..65535"
   IFS=',' read -r -a PORT_ITEMS <<< "$PORTS"
   (( ${#PORT_ITEMS[@]} >= 1 && ${#PORT_ITEMS[@]} <= 128 )) \
-    || reject_parsed "firewall_ensure ports 必须包含 1..128 项"
+    || reject_parsed "$ACTION ports 必须包含 1..128 项"
   previous_port=0
   for port in "${PORT_ITEMS[@]}"; do
     port_number=$((10#$port))
     (( port_number >= 1 && port_number <= 65535 )) \
-      || reject_parsed "firewall_ensure 端口超出 1..65535: $port"
+      || reject_parsed "$ACTION 端口超出 1..65535: $port"
     (( port_number > previous_port )) \
-      || reject_parsed "firewall_ensure ports 必须严格升序且无重复"
+      || reject_parsed "$ACTION ports 必须严格升序且无重复"
     previous_port="$port_number"
   done
 fi
+if [[ "$ACTION" == "pcap_capture" ]]; then
+  [[ "$PCAP_INTERFACE" =~ ^[A-Za-z0-9_.:-]{1,64}$ ]] || reject_parsed "pcap_capture 网卡名称非法"
+  [[ "$PCAP_NODE_ID" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || reject_parsed "pcap_capture 节点ID非法"
+  [[ "$PCAP_ENABLED" == true || "$PCAP_ENABLED" == false ]] || reject_parsed "pcap_capture enabled必须为布尔值"
+  [[ "$PCAP_HOT_DIR" =~ ^/[A-Za-z0-9._/-]+$ && "$PCAP_WARM_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] \
+    || reject_parsed "pcap_capture 存储路径非法"
+  [[ "$PCAP_HOT_DIR" != "$PCAP_WARM_DIR" && "$PCAP_HOT_DIR" != / && "$PCAP_WARM_DIR" != / ]] \
+    || reject_parsed "pcap_capture 冷热目录不能相同或为根目录"
+fi
 
-# delaySeconds：旧动作默认 3、上限 60、非法值按 3；firewall_ensure 固定不等待。
-if [[ "$ACTION" == "firewall_ensure" ]]; then
-  [[ "$DELAY" == "0" ]] || reject_parsed "firewall_ensure 的 delaySeconds 必须为 0"
+# delaySeconds：旧动作默认 3、上限 60、非法值按 3；防火墙和PCAP控制固定不等待。
+if [[ "$ACTION" == "firewall_ensure" || "$ACTION" == "pcap_capture" ]]; then
+  [[ "$DELAY" == "0" ]] || reject_parsed "$ACTION 的 delaySeconds 必须为 0"
 else
   [[ "$DELAY" =~ ^[0-9]+$ ]] || DELAY=3
   (( DELAY > 60 )) && DELAY=60
@@ -308,6 +343,8 @@ log_info "动作=$ACTION 操作人=${REQUESTED_BY:-unknown} requestID=${REQUEST_
 if [[ "$DRY_RUN" == "true" ]]; then
   if [[ "$ACTION" == "firewall_ensure" ]]; then
     log_info "[dry-run] 将执行: firewall-ensure.sh ${PORTS}（delay=0 不等待，不实际执行）"
+  elif [[ "$ACTION" == "pcap_capture" ]]; then
+    log_info "[dry-run] 将按验签范围执行PCAP启停（delay=0 不等待，不实际执行）"
   else
     log_info "[dry-run] 将 sleep ${DELAY}s 后执行: ${ACTION}（不实际执行）"
   fi
@@ -332,4 +369,7 @@ case "$ACTION" in
     [[ -x "$SCRIPT_DIR/firewall-ensure.sh" ]] || die "防火墙放行脚本不存在或不可执行: $SCRIPT_DIR/firewall-ensure.sh"
     log_info "确保 firewalld runtime+permanent 放行: $PORTS"
     bash "$SCRIPT_DIR/firewall-ensure.sh" "$PORTS" ;;
+  pcap_capture)
+    [[ -f "$SCRIPT_DIR/pcap_capture_control.py" ]] || die "PCAP控制脚本不存在: $SCRIPT_DIR/pcap_capture_control.py"
+    python3 "$SCRIPT_DIR/pcap_capture_control.py" --repo-root "$REPO_ROOT" --flag "$DONE_FILE" ;;
 esac

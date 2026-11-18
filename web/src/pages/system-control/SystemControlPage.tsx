@@ -7,6 +7,7 @@ import { FACTORY_RESET_CONFIRM_TEXT, systemOpsApi } from '../../api/systemOps'
 import PasswordConfirmModal from '../../components/PasswordConfirmModal'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
+import CaptureControlCard from './CaptureControlCard'
 
 type OpKind = 'reboot' | 'shutdown' | 'factory_reset'
 
@@ -124,6 +125,7 @@ export default function SystemControlPage() {
         <OperationCard kind="reboot" />
         <OperationCard kind="shutdown" />
         <OperationCard kind="factory_reset" />
+        <CaptureControlCard />
       </Space>
     </Card>
   )

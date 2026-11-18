@@ -224,3 +224,63 @@ func writeRealPCAPSpool(t *testing.T, provider *pcapevidence.PublicKeyDEKProvide
 	}
 	return uuid.MustParse(artifactID.String()), plaintext.Bytes()
 }
+
+func TestRequestPCAPCaptureAdminRBAC(t *testing.T) {
+	cfg := baseTestCfg()
+	cfg.SystemOps.HostctlDir = filepath.Join(t.TempDir(), "hostctl")
+	cfg.WAF.GatewayNodeName = "gw-capture-control"
+	env := newTestEnv(t, cfg)
+	env.importBaseLicense(t)
+	systemPassword, securityPassword := "S5@Test2026!", "S5@Test2026!"
+	systemUser, securityUser := "capture_system_"+s5Rand(), "capture_security_"+s5Rand()
+	env.createUserDirect(t, systemUser, systemPassword, "SYSTEM_ADMIN")
+	env.createUserDirect(t, securityUser, securityPassword, "SECURITY_ADMIN")
+	systemCookies, systemCSRF := env.login(t, systemUser, systemPassword)
+	securityCookies, securityCSRF := env.login(t, securityUser, securityPassword)
+
+	resp := env.get(t, "/api/v1/request-pcap/capture", systemCookies)
+	assertRequestAuditStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = env.get(t, "/api/v1/request-pcap/capture", securityCookies)
+	assertRequestAuditStatus(t, resp, http.StatusForbidden)
+	resp.Body.Close()
+	body := `{"enabled":true,"interface":"eth0","ports":[80,443],"hot_dir":"/srv/hot","warm_dir":"/srv/warm","reason":"采集授权"}`
+	resp = env.post(t, "/api/v1/request-pcap/capture", body, securityCookies, securityCSRF)
+	assertRequestAuditStatus(t, resp, http.StatusForbidden)
+	resp.Body.Close()
+	resp = env.post(t, "/api/v1/request-pcap/capture", `{"enabled":true,"interface":"eth0;id","ports":[80],"hot_dir":"/srv/hot","warm_dir":"/srv/warm","reason":"非法范围"}`, systemCookies, systemCSRF)
+	assertRequestAuditStatus(t, resp, http.StatusBadRequest)
+	resp.Body.Close()
+	resp = env.post(t, "/api/v1/request-pcap/capture", body, systemCookies, systemCSRF)
+	assertRequestAuditStatus(t, resp, http.StatusAccepted)
+	var status struct {
+		Data requestpcap.CaptureStatus `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if status.Data.State != "PENDING" || status.Data.Enabled {
+		t.Fatalf("accepted command was presented as running: %+v", status.Data)
+	}
+	matches, err := filepath.Glob(filepath.Join(cfg.SystemOps.HostctlDir, "pcap_capture-*.json"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected one signed capture command, matches=%v err=%v", matches, err)
+	}
+	var command struct {
+		Enabled bool   `json:"enabled"`
+		HMAC    string `json:"hmac"`
+		Ports   []int  `json:"ports"`
+	}
+	raw, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &command); err != nil {
+		t.Fatal(err)
+	}
+	if !command.Enabled || command.HMAC == "" || len(command.Ports) != 2 {
+		t.Fatalf("invalid capture command: %+v", command)
+	}
+}

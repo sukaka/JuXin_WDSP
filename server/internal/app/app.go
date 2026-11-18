@@ -1308,6 +1308,9 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		pcapHandler.SetRotation(a.requestPCAP.Rotate)
 	}
 	pcapHandler.RegisterRoutes(mux, authz, sensitiveRate)
+	captureController := requestpcap.NewCaptureController(settingsSvc, cfg.SystemOps.HostctlDir, cfg.WAF.GatewayNodeName, auditSvc)
+	mux.Handle("GET /api/v1/request-pcap/capture", authz(middleware.RequirePermission(requestpcap.PermissionCaptureControl)(http.HandlerFunc(captureController.Get))))
+	mux.Handle("POST /api/v1/request-pcap/capture", authz(sensitiveRate(middleware.RequirePermission(requestpcap.PermissionCaptureControl)(http.HandlerFunc(captureController.Set)))))
 
 	// ---- 阶段5：可信代理/保护地址/黑白名单/CC策略/临时封禁/访问控制事件/版本 ----
 	// 可信代理

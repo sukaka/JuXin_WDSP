@@ -109,9 +109,9 @@ func TestRequestPCAPStoreIntegration(t *testing.T) {
 	if _, err := store.GetArtifact(ctx, uuid.New()); !errors.Is(err, ErrArtifactNotFound) {
 		t.Fatalf("unknown artifact error=%v", err)
 	}
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 5; i++ {
 		if err := database.Migrate(ctx, pool, "../../migrations", "down"); err != nil {
-			t.Fatalf("rollback request PCAP migration %d: %v", 221-i, err)
+			t.Fatalf("rollback request PCAP migration %d: %v", 222-i, err)
 		}
 	}
 	var schemaVersion int
@@ -127,7 +127,7 @@ func TestRequestPCAPStoreIntegration(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&schemaVersion); err != nil {
 		t.Fatal(err)
 	}
-	if schemaVersion != 221 {
-		t.Fatalf("restore stopped at migration %d, want 221", schemaVersion)
+	if schemaVersion != 222 {
+		t.Fatalf("restore stopped at migration %d, want 222", schemaVersion)
 	}
 }

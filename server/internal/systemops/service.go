@@ -28,6 +28,7 @@ const (
 	ActionShutdown       = "shutdown"
 	ActionFactoryReset   = "factory_reset"
 	ActionFirewallEnsure = "firewall_ensure"
+	ActionPCAPCapture    = "pcap_capture"
 )
 
 // FactoryResetConfirmText 恢复出厂设置的确认文本（严格相等）。
@@ -47,6 +48,7 @@ const HostctlSecretName = ".hostctl-secret"
 // hostctl-exec.sh 验签逻辑。
 const hostctlSignVersion = "v1"
 const hostctlFirewallSignVersion = "v2"
+const hostctlPCAPSignVersion = "v3"
 
 // Command 是写入 HOSTCTL_DIR 的宿主控制指令标志文件内容。
 // HMAC 为对 CanonicalPayload 的 HMAC-SHA256（hex）；宿主侧 fail-closed 验签，
@@ -59,6 +61,11 @@ type Command struct {
 	RequestedAt  string `json:"requestedAt"`
 	DelaySeconds int    `json:"delaySeconds"`
 	Ports        []int  `json:"ports,omitempty"`
+	Interface    string `json:"interface,omitempty"`
+	HotDir       string `json:"hot_dir,omitempty"`
+	WarmDir      string `json:"warm_dir,omitempty"`
+	NodeID       string `json:"node_id,omitempty"`
+	Enabled      *bool  `json:"enabled,omitempty"`
 	HMAC         string `json:"hmac"`
 }
 
@@ -76,14 +83,24 @@ func CanonicalPayload(cmd Command) string {
 		cmd.RequestedAt,
 		strconv.Itoa(cmd.DelaySeconds),
 	}
-	if cmd.Action == ActionFirewallEnsure {
-		fields[0] = hostctlFirewallSignVersion
+	if cmd.Action == ActionFirewallEnsure || cmd.Action == ActionPCAPCapture {
 		ports := sortedUniquePorts(cmd.Ports)
 		values := make([]string, len(ports))
 		for i, port := range ports {
 			values[i] = strconv.Itoa(port)
 		}
 		fields = append(fields, strings.Join(values, ","))
+	}
+	if cmd.Action == ActionFirewallEnsure {
+		fields[0] = hostctlFirewallSignVersion
+	}
+	if cmd.Action == ActionPCAPCapture {
+		fields[0] = hostctlPCAPSignVersion
+		enabled := false
+		if cmd.Enabled != nil {
+			enabled = *cmd.Enabled
+		}
+		fields = append(fields, cmd.Interface, cmd.HotDir, cmd.WarmDir, cmd.NodeID, strconv.FormatBool(enabled))
 	}
 	return strings.Join(fields, "\n")
 }
@@ -198,6 +215,9 @@ func FlagFileName(action, requestID string, now time.Time) string {
 // 写入前加载/自举共享密钥并对指令签名（hmac 字段）。
 // 返回最终文件路径。目录不存在时自动创建；不可写/写失败/密钥异常返回错误。
 func WriteFlagFile(dir string, cmd Command) (string, error) {
+	if cmd.Action == ActionPCAPCapture && (cmd.Enabled == nil || cmd.Interface == "" || cmd.HotDir == "" || cmd.WarmDir == "" || cmd.NodeID == "") {
+		return "", fmt.Errorf("incomplete PCAP capture command")
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("create hostctl dir: %w", err)
 	}

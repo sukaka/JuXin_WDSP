@@ -44,7 +44,32 @@ export interface RequestPcapGrant {
   request_id: string
 }
 
+export interface RequestPcapCaptureStatus {
+  enabled: boolean
+  state: 'DISABLED' | 'PENDING' | 'ENABLED' | 'FAILED'
+  interface: string
+  ports: number[]
+  hot_dir: string
+  warm_dir: string
+  request_id: string
+  requested_at: string
+  message?: string
+}
+
+export interface RequestPcapCaptureInput {
+  enabled: boolean
+  interface?: string
+  ports?: number[]
+  hot_dir?: string
+  warm_dir?: string
+  reason: string
+}
+
 export const requestPcapApi = {
+  getCapture: () => request<RequestPcapCaptureStatus>('/request-pcap/capture'),
+  setCapture: (input: RequestPcapCaptureInput) => request<RequestPcapCaptureStatus>('/request-pcap/capture', {
+    method: 'POST', body: input,
+  }),
   lookup: async (requestId: string) => {
     const result = await request<RequestPcapLookup>('/request-pcap/lookup', { query: { request_id: requestId } })
     return { ...result, items: result.items ?? [] }

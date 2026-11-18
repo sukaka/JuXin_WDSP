@@ -23,6 +23,7 @@ file=restore/restore.sh
 file=system/factory-reset.sh
 file=system/hostctl-exec.sh
 file=system/firewall-ensure.sh
+file=system/pcap_capture_control.py
 file=upgrade/apply.sh
 file=upgrade/install-executor.sh
 file=upgrade/rollback.sh

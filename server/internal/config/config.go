@@ -52,23 +52,26 @@ type ContainerOpsConfig struct {
 }
 
 type RequestPCAPConfig struct {
-	HotDir                string
-	WarmDir               string
-	KeyFile               string
-	PublicDir             string
-	Retention             time.Duration
-	HotAge                time.Duration
-	GrantTTL              time.Duration
-	MigrateBytesPerSecond int64
-	MinFreePercent        int
+	HotDir                   string
+	WarmDir                  string
+	KeyFile                  string
+	PublicDir                string
+	Retention                time.Duration
+	HotAge                   time.Duration
+	GrantTTL                 time.Duration
+	MigrateBytesPerSecond    int64
+	MinFreePercent           int
+	CaptureEnabled           bool
+	CaptureControlConfigured bool
 }
 
 func (c RequestPCAPConfig) Enabled() bool {
-	return c.HotDir != "" && c.WarmDir != "" && c.KeyFile != ""
+	return c.HotDir != "" && c.WarmDir != "" && c.KeyFile != "" && (!c.CaptureControlConfigured || c.CaptureEnabled)
 }
 
 func (c RequestPCAPConfig) Validate() error {
-	if !c.Enabled() && (c.HotDir != "" || c.WarmDir != "" || c.KeyFile != "") {
+	complete := c.HotDir != "" && c.WarmDir != "" && c.KeyFile != ""
+	if !complete && (c.HotDir != "" || c.WarmDir != "" || c.KeyFile != "") {
 		return fmt.Errorf("REQUEST_PCAP_HOT_DIR, REQUEST_PCAP_WARM_DIR and REQUEST_PCAP_KEY_FILE must be configured together")
 	}
 	if c.Enabled() && (c.Retention <= 0 || c.HotAge <= 0 || c.GrantTTL < time.Minute || c.GrantTTL > 7*24*time.Hour ||
@@ -352,6 +355,11 @@ func loadDBConfig(dialect string) DBConfig {
 // Load 从环境变量加载配置。
 func Load() (*Config, error) {
 	dialect := strings.ToLower(strings.TrimSpace(getEnv("DB_DIALECT", DBDialectPostgres)))
+	captureEnabled, captureControlConfigured := false, false
+	if strings.TrimSpace(os.Getenv("REQUEST_PCAP_CAPTURE_ENABLED")) != "" {
+		captureControlConfigured = true
+		captureEnabled = getEnvBool("REQUEST_PCAP_CAPTURE_ENABLED", false)
+	}
 	cfg := &Config{
 		Env: getEnv("APP_ENV", "dev"),
 		HTTP: HTTPConfig{
@@ -441,13 +449,15 @@ func Load() (*Config, error) {
 		},
 		RequestPCAP: RequestPCAPConfig{
 			HotDir: strings.TrimSpace(os.Getenv("REQUEST_PCAP_HOT_DIR")), WarmDir: strings.TrimSpace(os.Getenv("REQUEST_PCAP_WARM_DIR")),
-			KeyFile:               strings.TrimSpace(os.Getenv("REQUEST_PCAP_KEY_FILE")),
-			PublicDir:             strings.TrimSpace(os.Getenv("REQUEST_PCAP_PUBLIC_DIR")),
-			Retention:             getEnvDuration("REQUEST_PCAP_RETENTION", 24*time.Hour),
-			HotAge:                getEnvDuration("REQUEST_PCAP_HOT_AGE", 15*time.Minute),
-			GrantTTL:              getEnvDuration("REQUEST_PCAP_GRANT_TTL", 24*time.Hour),
-			MigrateBytesPerSecond: int64(getEnvInt("REQUEST_PCAP_MIGRATE_BPS", 32<<20)),
-			MinFreePercent:        getEnvInt("REQUEST_PCAP_MIN_FREE_PERCENT", 10),
+			KeyFile:                  strings.TrimSpace(os.Getenv("REQUEST_PCAP_KEY_FILE")),
+			PublicDir:                strings.TrimSpace(os.Getenv("REQUEST_PCAP_PUBLIC_DIR")),
+			Retention:                getEnvDuration("REQUEST_PCAP_RETENTION", 24*time.Hour),
+			HotAge:                   getEnvDuration("REQUEST_PCAP_HOT_AGE", 15*time.Minute),
+			GrantTTL:                 getEnvDuration("REQUEST_PCAP_GRANT_TTL", 24*time.Hour),
+			MigrateBytesPerSecond:    int64(getEnvInt("REQUEST_PCAP_MIGRATE_BPS", 32<<20)),
+			MinFreePercent:           getEnvInt("REQUEST_PCAP_MIN_FREE_PERCENT", 10),
+			CaptureControlConfigured: captureControlConfigured,
+			CaptureEnabled:           captureEnabled,
 		},
 		Product: product.Load(),
 		SystemOps: SystemOpsConfig{

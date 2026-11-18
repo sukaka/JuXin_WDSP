@@ -548,7 +548,8 @@ services:
       # 采集器批量/周期 flush 旋钮（崩溃重扫量有界；默认值与 server config.go 一致，可经 .env 覆盖）
       WAF_COLLECTOR_FLUSH_BATCH: \${WAF_COLLECTOR_FLUSH_BATCH:-2000}
       WAF_COLLECTOR_FLUSH_INTERVAL: \${WAF_COLLECTOR_FLUSH_INTERVAL:-2s}
-      # 请求PCAP默认关闭；安装器显式启用时才设置容器内热/温目录和私钥路径。
+      # 请求PCAP默认关闭；安装器或系统管理员显式启用时才配置采集与存储。
+      REQUEST_PCAP_CAPTURE_ENABLED: \${REQUEST_PCAP_CAPTURE_ENABLED:-}
       REQUEST_PCAP_HOT_DIR: \${PCAP_SERVER_HOT_DIR:-}
       REQUEST_PCAP_WARM_DIR: \${PCAP_SERVER_WARM_DIR:-}
       REQUEST_PCAP_KEY_FILE: \${PCAP_SERVER_KEY_FILE:-}
