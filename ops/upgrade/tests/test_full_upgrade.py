@@ -64,6 +64,20 @@ class FullUpgradeContractTests(unittest.TestCase):
         self.assertIn('install -d -m 0755 "$CURRENT_RELEASE/runtime/upgrade-executor"', source)
         self.assertNotIn("原升级执行器共享目录不存在", source)
 
+    def test_target_gateway_entrypoint_is_read_after_images_load(self):
+        fixture = json.loads(self.base.fixture_file.read_text())
+        target = fixture["images"].pop("fixture-gateway:new")
+        fixture["load_images"] = {"fixture-gateway:new": target}
+        self.base.fixture_file.write_text(json.dumps(fixture))
+        result = self.run_full()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        events = self.base.events()
+        load_indexes = [i for i, event in enumerate(events) if event["kind"] == "load"]
+        inspect_indexes = [i for i, event in enumerate(events)
+                           if event["kind"] == "inspect" and event["ref"] == "fixture-gateway:new"]
+        self.assertTrue(load_indexes and inspect_indexes)
+        self.assertLess(max(load_indexes), min(inspect_indexes))
+
     def test_full_upgrade_reconciles_all_components_and_leaves_current_until_wrapper_finishes(self):
         result = self.run_full()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

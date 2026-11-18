@@ -77,6 +77,9 @@ if args[:1] == ["tag"]:
 
 if args[:1] == ["load"]:
     log({"kind": "load", "args": args})
+    for ref, loaded in fixture.get("load_images", {}).items():
+        fixture["images"][ref] = loaded
+    Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
     sys.exit(0)
 
 if args[:1] == ["run"]:

@@ -164,15 +164,6 @@ for service in "${SERVICES[@]}"; do
     OLD_IMAGES+=(""); OLD_IDS+=("")
   fi
 done
-GATEWAY_ENTRYPOINT="$(image_entrypoint "$GATEWAY_IMAGE")" || die "无法读取目标 gateway 镜像入口"
-case "$GATEWAY_ENTRYPOINT" in
-  /usr/local/bin/wdsp-gateway-bind)
-    assert_bind_gateway_compose "$TARGET_COMPOSE_JSON" || die "新 gateway 启动器要求匹配的 Compose 安全契约，请使用 --new-compose-file；未切换镜像" ;;
-  /usr/local/bin/docker-entrypoint.sh)
-    legacy_gateway_compose_is_safe "$TARGET_COMPOSE_JSON" || die "legacy gateway 镜像不能使用新启动器 Compose，未切换镜像" ;;
-  *) die "拒绝未知 gateway 镜像入口: $GATEWAY_ENTRYPOINT" ;;
-esac
-
 SCHEMA_BEFORE=""
 if [[ "$FULL_UPGRADE" == true ]]; then
   [[ -n "$IMAGES_DIR" && -d "$IMAGES_DIR" ]] || die "完整升级必须指定 --images-dir"
@@ -196,6 +187,14 @@ fi
 for target in "${TARGET_IMAGES[@]}" "$SERVER_IMAGE" "$GATEWAY_IMAGE"; do
   docker image inspect "$target" >/dev/null 2>&1 || die "目标镜像不存在: $target"
 done
+GATEWAY_ENTRYPOINT="$(image_entrypoint "$GATEWAY_IMAGE")" || die "无法读取目标 gateway 镜像入口"
+case "$GATEWAY_ENTRYPOINT" in
+  /usr/local/bin/wdsp-gateway-bind)
+    assert_bind_gateway_compose "$TARGET_COMPOSE_JSON" || die "新 gateway 启动器要求匹配的 Compose 安全契约，请使用 --new-compose-file；未切换镜像" ;;
+  /usr/local/bin/docker-entrypoint.sh)
+    legacy_gateway_compose_is_safe "$TARGET_COMPOSE_JSON" || die "legacy gateway 镜像不能使用新启动器 Compose，未切换镜像" ;;
+  *) die "拒绝未知 gateway 镜像入口: $GATEWAY_ENTRYPOINT" ;;
+esac
 [[ "$SERVER_IMAGE" == "$CUR_SERVER_IMAGE" ]] || docker image inspect "$SERVER_IMAGE" >/dev/null
 NEW_SERVER_IMAGE_ID="$(docker image inspect "$SERVER_IMAGE" --format '{{.Id}}')" || die "无法读取目标 API 镜像 ID"
 
