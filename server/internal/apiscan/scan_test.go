@@ -76,7 +76,8 @@ func TestResolveProbeSets(t *testing.T) {
 	}
 }
 
-// TestHostAllowed 主机白名单：空名单 = 仅 base_url 主机；非空须精确命中（支持 host:port 形态）。
+// TestHostAllowed 主机与端口白名单：空名单放行合法目标自身；非空须精确命中主机与端口；
+// 云元数据始终硬拒绝，回环地址默认拒绝（除非显式开启 allowLoopback）。
 func TestHostAllowed(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -84,21 +85,47 @@ func TestHostAllowed(t *testing.T) {
 		allowlist []string
 		want      bool
 	}{
-		{"空名单放行自身", "http://127.0.0.1:8080", nil, true},
+		{"空名单放行合法内网目标", "http://10.0.0.1:8080", nil, true},
 		{"精确命中", "https://api.example.com", []string{"api.example.com"}, true},
 		{"大小写不敏感", "https://API.example.com", []string{"api.example.com"}, true},
 		{"未命中", "https://evil.example.com", []string{"api.example.com"}, false},
-		{"host:port 形态按主机命中", "http://10.0.0.1:9000", []string{"10.0.0.1:9000"}, true},
-		{"端口不同不影响主机命中", "http://10.0.0.1:9000", []string{"10.0.0.1:80"}, true},
+		{"host:port 精确命中", "http://10.0.0.1:9000", []string{"10.0.0.1:9000"}, true},
+		{"端口不同必须拒绝", "http://10.0.0.1:9000", []string{"10.0.0.1:80"}, false},
+		{"默认端口归一匹配", "https://api.example.com", []string{"api.example.com:443"}, true},
+		{"默认端口不匹配", "https://api.example.com", []string{"api.example.com:80"}, false},
+		{"IPv6 带方括号与端口匹配", "https://[2001:db8::1]:8443", []string{"[2001:db8::1]:8443"}, true},
+		{"IPv6 带方括号端口不同拒绝", "https://[2001:db8::1]:8443", []string{"[2001:db8::1]:443"}, false},
+		{"IPv6 无端口条目匹配主机", "https://[2001:db8::1]:8443", []string{"2001:db8::1"}, true},
+		{"IPv6 方括号无端口匹配主机", "https://[2001:db8::1]:8443", []string{"[2001:db8::1]"}, true},
+		{"默认拒绝回环 IPv4", "http://127.0.0.1:8080", nil, false},
+		{"默认拒绝回环即使在 allowlist", "http://127.0.0.1:8080", []string{"127.0.0.1:8080"}, false},
+		{"默认拒绝 IPv4-mapped 回环", "http://[::ffff:127.0.0.1]:8080", nil, false},
+		{"默认拒绝回环 IPv6", "http://[::1]:8080", nil, false},
+		{"默认拒绝 localhost", "http://localhost:8080", nil, false},
+		{"硬拒绝 AWS/GCP 元数据", "http://169.254.169.254/latest", []string{"169.254.169.254"}, false},
+		{"硬拒绝 IPv4-mapped 元数据", "http://[::ffff:169.254.169.254]/latest", []string{"169.254.169.254"}, false},
+		{"硬拒绝 AWS ECS 元数据", "http://169.254.170.2/v2", []string{"169.254.170.2"}, false},
+		{"硬拒绝阿里云元数据", "http://100.100.100.200/latest", []string{"100.100.100.200"}, false},
+		{"硬拒绝 AWS IPv6 元数据", "http://[fd00:ec2::254]/latest", []string{"fd00:ec2::254"}, false},
 		{"非法地址拒绝", "://bad", nil, false},
 		{"空主机拒绝", "http://", nil, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			if got := hostAllowed(c.baseURL, c.allowlist); got != c.want {
-				t.Fatalf("hostAllowed=%v, want %v", got, c.want)
+				t.Fatalf("hostAllowed(%q, %v)=%v, want %v", c.baseURL, c.allowlist, got, c.want)
 			}
 		})
+	}
+	// 显式开启 allowLoopback 时仅放行回环，云元数据仍永久拒绝
+	if !hostAllowedWithOptions("http://127.0.0.1:8080", []string{"127.0.0.1:8080"}, true) {
+		t.Fatal("allowLoopback=true should allow matching loopback host:port")
+	}
+	if hostAllowedWithOptions("http://127.0.0.1:8080", []string{"127.0.0.1:9090"}, true) {
+		t.Fatal("allowLoopback=true must still enforce allowlist port")
+	}
+	if hostAllowedWithOptions("http://169.254.169.254", []string{"169.254.169.254"}, true) {
+		t.Fatal("metadata must stay denied even with allowLoopback=true")
 	}
 }
 

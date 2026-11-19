@@ -91,6 +91,15 @@ func RedactConfigSecrets(configJSON string) (string, error) {
 			if v, ok := m["api_mask_crypto"].(mapT); ok {
 				redactMapSecret(v, "key_hex")
 			}
+			if bp, ok := m["bot_policy"].(mapT); ok {
+				if sk, ok := bp["signing_keys"].(mapT); ok {
+					for k, val := range sk {
+						if s, ok := val.(string); ok && s != "" {
+							sk[k] = redactedSecretPlaceholder
+						}
+					}
+				}
+			}
 		}
 		if isTLSTicketKeySourceNode(m) {
 			if keys, ok := m["keys_hex"].([]interface{}); ok {
@@ -118,10 +127,11 @@ type configSecretNeeds struct {
 	maskCrypto     bool
 	authzObjectKey bool
 	tlsTicketKey   bool
+	botSigningKeys bool
 }
 
 func (n *configSecretNeeds) any() bool {
-	return n.valkey || n.identitySalt || n.scanVerify || n.fileSignature || n.maskCrypto || n.authzObjectKey || n.tlsTicketKey
+	return n.valkey || n.identitySalt || n.scanVerify || n.fileSignature || n.maskCrypto || n.authzObjectKey || n.tlsTicketKey || n.botSigningKeys
 }
 
 // reinjectConfigSecrets 回滚重放前将历史配置 JSON 中 guard 段密钥类字段替换为当前设置值
@@ -158,6 +168,11 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 			if v, ok := m["api_authz_previous_valid"].(mapT); ok {
 				if _, exists := v["object_hmac_key_hex"]; exists {
 					needs.authzObjectKey = true
+				}
+			}
+			if bp, ok := m["bot_policy"].(mapT); ok {
+				if sk, ok := bp["signing_keys"].(mapT); ok && len(sk) > 0 {
+					needs.botSigningKeys = true
 				}
 			}
 		}
@@ -197,6 +212,9 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 	if needs.tlsTicketKey && cur.TLSSessionTicketKey == "" {
 		return "", fmt.Errorf("回滚重注入当前密钥失败：历史配置含 TLS 会话票据键，但当前 gateway_runtime 设置未配置 tls_session_ticket_key")
 	}
+	if needs.botSigningKeys && len(cur.BotSigningKeys) == 0 {
+		return "", fmt.Errorf("回滚重注入当前密钥失败：历史配置含 bot_policy.signing_keys，但当前未配置 Bot 签名密钥")
+	}
 	// 重注入：valkey 段整体按当前运行时替换（地址/凭据/库同口径，与 InjectRuntimeSecrets 一致）；
 	// 其余密钥字段替换为当前设置值
 	walkConfigMaps(root, func(m mapT) {
@@ -222,6 +240,11 @@ func (p *Publisher) reinjectConfigSecrets(ctx context.Context, configJSON string
 			if v, ok := m["api_authz_previous_valid"].(mapT); ok {
 				if _, exists := v["object_hmac_key_hex"]; exists {
 					v["object_hmac_key_hex"] = cur.APIAuthzObjectHMACKeyHex
+				}
+			}
+			if bp, ok := m["bot_policy"].(mapT); ok {
+				if sk, ok := bp["signing_keys"].(mapT); ok && len(sk) > 0 {
+					bp["signing_keys"] = cur.BotSigningKeys
 				}
 			}
 		}

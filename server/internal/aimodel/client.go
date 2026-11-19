@@ -154,6 +154,7 @@ func (c *OpenAIClient) ChatProvider(ctx context.Context, p *Provider, apiKey, mo
 	if err != nil {
 		return nil, err
 	}
+	defer httpClient.CloseIdleConnections()
 	body := oaiRequest{
 		Model:       modelCode,
 		Messages:    req.Messages,
@@ -213,12 +214,20 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, baseURL, apiKey, modelCod
 	return c.ChatStreamProvider(ctx, p, apiKey, modelCode, req, cb)
 }
 
+const (
+	// maxSSEStreamBytes 限制单次 SSE 流式响应读取总字节上限（8 MiB），防止恶意/异常上游耗尽内存。
+	maxSSEStreamBytes int64 = 8 << 20
+	// maxSSEBufferBytes 限制未分帧 SSE 缓冲上限（1 MiB），防止缺少 \n\n 分隔符时无限膨胀。
+	maxSSEBufferBytes = 1 << 20
+)
+
 // ChatStreamProvider performs a guarded streaming request.
 func (c *OpenAIClient) ChatStreamProvider(ctx context.Context, p *Provider, apiKey, modelCode string, req ChatRequest, cb StreamCallback) (*ChatResult, error) {
 	httpClient, endpoint, err := c.prepareProviderRequest(ctx, p, "/v1/chat/completions")
 	if err != nil {
 		return nil, err
 	}
+	defer httpClient.CloseIdleConnections()
 	body := oaiRequest{
 		Model:       modelCode,
 		Messages:    req.Messages,
@@ -254,9 +263,18 @@ func (c *OpenAIClient) ChatStreamProvider(ctx context.Context, p *Provider, apiK
 	}
 	buf := make([]byte, 0, 4096)
 	tmp := make([]byte, 4096)
+	limitedBody := io.LimitReader(resp.Body, maxSSEStreamBytes+1)
+	var totalRead int64
 	for {
-		n, rerr := resp.Body.Read(tmp)
+		n, rerr := limitedBody.Read(tmp)
 		if n > 0 {
+			totalRead += int64(n)
+			if totalRead > maxSSEStreamBytes {
+				return nil, fmt.Errorf("%w: SSE stream exceeded %d bytes limit", ErrModelDown, maxSSEStreamBytes)
+			}
+			if len(buf)+n > maxSSEBufferBytes {
+				return nil, fmt.Errorf("%w: SSE frame buffer exceeded %d bytes limit", ErrModelDown, maxSSEBufferBytes)
+			}
 			buf = append(buf, tmp[:n]...)
 			for {
 				idx := bytes.Index(buf, []byte("\n\n"))
@@ -304,6 +322,13 @@ func (c *OpenAIClient) ChatStreamProvider(ctx context.Context, p *Provider, apiK
 						usage.CompletionTokens = chunk.Usage.CompletionTokens
 					}
 				}
+			}
+			if len(buf) == 0 {
+				buf = buf[:0]
+			} else if cap(buf) > 64*1024 && len(buf) < cap(buf)/4 {
+				compacted := make([]byte, len(buf))
+				copy(compacted, buf)
+				buf = compacted
 			}
 		}
 		if rerr != nil {

@@ -253,6 +253,9 @@ func TestGenerateHTTPSRedirect(t *testing.T) {
 	apps[0].Domains[0].RedirectHTTPToHTTPS = true
 	apps[0].Domains[0].HTTPSEnabled = true
 	apps[0].Domains[0].HTTPSPort = intPtr(443)
+	apps[0].PathRoutes = []AppPathRoute{
+		{PathPrefix: "/api", UpstreamScheme: "http", UpstreamHost: "192.0.2.50", UpstreamPort: 8080, Priority: 10},
+	}
 	apps[0].HasCert = true
 	apps[0].CertID = "cert-1"
 	apps[0].CertFileName = "cert1.pem"
@@ -262,6 +265,48 @@ func TestGenerateHTTPSRedirect(t *testing.T) {
 	}
 	if !contains(g.JSON, "308") {
 		t.Error("http->https redirect should return 308")
+	}
+	// H-15: 启用 HTTP→HTTPS 重定向时，明文 HTTP server 只能下发 308 重定向，不得下发 pathRouteEntries 绕过重定向
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(g.JSON), &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	servers := parsed["apps"].(map[string]interface{})["http"].(map[string]interface{})["servers"].(map[string]interface{})
+	var httpSrv, httpsSrv map[string]interface{}
+	for _, raw := range servers {
+		srv := raw.(map[string]interface{})
+		listen := srv["listen"].([]interface{})[0].(string)
+		if listen == ":8080" {
+			httpSrv = srv
+		}
+		if listen == ":443" {
+			httpsSrv = srv
+		}
+	}
+	if httpSrv == nil || httpsSrv == nil {
+		t.Fatalf("expected :8080 and :443 servers, got %+v", servers)
+	}
+	httpRoutes := httpSrv["routes"].([]interface{})
+	if len(httpRoutes) != 1 {
+		t.Fatalf("HTTP redirect server must only have 1 redirect route (no pathRouteEntries), got %d", len(httpRoutes))
+	}
+	loc := httpRoutes[0].(map[string]interface{})["handle"].([]interface{})[0].(map[string]interface{})["headers"].(map[string]interface{})["Location"].([]interface{})[0].(string)
+	if loc != "https://{http.request.host}{http.request.uri}" {
+		t.Fatalf("443 redirect Location = %q", loc)
+	}
+	// HTTPS server 仍完整保留路径转发 + 默认路由
+	if len(httpsSrv["routes"].([]interface{})) != 2 {
+		t.Fatalf("HTTPS server should have path route + default route, got %d", len(httpsSrv["routes"].([]interface{})))
+	}
+
+	// 非 443 HTTPS 端口：308 Location 必须携带目标端口
+	apps[0].Domains[0].HTTPSPort = intPtr(8443)
+	g2, err := Generate(GenerateInput{Apps: apps, AdminSocket: "unix//var/run/caddy/admin.sock"})
+	if err != nil {
+		t.Fatalf("Generate(8443): %v", err)
+	}
+	if !contains(g2.JSON, "https://{http.request.host}:8443{http.request.uri}") {
+		t.Fatalf("non-443 redirect must include port 8443 in Location: %s", g2.JSON)
 	}
 }
 

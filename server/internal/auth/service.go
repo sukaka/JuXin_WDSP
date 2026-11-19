@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -78,11 +79,41 @@ type captchaVerifier interface {
 	Verify(ctx context.Context, id, code string, caseSensitive bool) error
 }
 
-// kvCache 是键值缓存接口（由 *cache.Client 实现）。
+// kvCache 是键值缓存接口（生产经 redisKVCache 包装 *cache.Client 提供原子操作）。
 type kvCache interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key, value string, ttl time.Duration) error
 	Del(ctx context.Context, keys ...string) error
+}
+
+// atomicKVCache 扩展原子操作接口（SetNX / DelCount），用于 TOTP 防重放与挑战令牌原子消费。
+type atomicKVCache interface {
+	SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error)
+	DelCount(ctx context.Context, key string) (int64, error)
+}
+
+type redisKVCache struct {
+	client *cache.Client
+}
+
+func (r redisKVCache) Get(ctx context.Context, key string) (string, error) {
+	return r.client.Get(ctx, key)
+}
+
+func (r redisKVCache) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	return r.client.Set(ctx, key, value, ttl)
+}
+
+func (r redisKVCache) Del(ctx context.Context, keys ...string) error {
+	return r.client.Del(ctx, keys...)
+}
+
+func (r redisKVCache) SetNX(ctx context.Context, key, value string, ttl time.Duration) (bool, error) {
+	return r.client.Redis().SetNX(ctx, key, value, ttl).Result()
+}
+
+func (r redisKVCache) DelCount(ctx context.Context, key string) (int64, error) {
+	return r.client.Redis().Del(ctx, key).Result()
 }
 
 // secretCipher 是敏感字段加解密接口（由 *encryption.Service 实现，AES-256-GCM）。
@@ -125,7 +156,11 @@ func (s *Service) notifyAccountLocked(ctx context.Context, in LoginInput, lockMi
 func NewService(u *users.Store, sess *sessions.Service, st *settings.Service,
 	lg *loginlogs.Service, au *audits.Service, cap *security.CaptchaService, c *cache.Client,
 	enc *encryption.Service) *Service {
-	return &Service{users: u, sessions: sess, settings: st, logs: lg, audits: au, captcha: cap, cache: c, enc: enc}
+	var kv kvCache
+	if c != nil {
+		kv = redisKVCache{client: c}
+	}
+	return &Service{users: u, sessions: sess, settings: st, logs: lg, audits: au, captcha: cap, cache: kv, enc: enc}
 }
 
 // dummyPasswordHash 是预设的 Argon2id 假哈希（参数与 security.HashPassword 一致），
@@ -191,7 +226,14 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginResult, error
 		return nil, fmt.Errorf("clear expired account lock: %w", err)
 	}
 
-	// 4. 状态检查
+	// 4. 密码校验（M-S5：在 DISABLED/LOCKED 状态判定之前执行 Argon2id，拉平响应耗时以防账号枚举）
+	verifyHash := user.PasswordHash
+	if verifyHash == "" {
+		verifyHash = dummyPasswordHash
+	}
+	pwdErr := security.VerifyPassword(in.Password, verifyHash)
+
+	// 5. 状态检查
 	if user.Status == users.StatusDisabled {
 		s.recordLog(ctx, in, &user.ID, loginlogs.EventLoginFailure, loginlogs.ResultFailure, "ACCOUNT_DISABLED")
 		return nil, ErrAccountUnavailable
@@ -201,8 +243,8 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginResult, error
 		return nil, ErrAccountUnavailable
 	}
 
-	// 5. 密码校验
-	if err := security.VerifyPassword(in.Password, user.PasswordHash); err != nil {
+	// 6. 校验结果处理
+	if pwdErr != nil {
 		locked, recordErr := s.users.RecordLoginFailure(ctx, user.ID, policy.MaxFailedAttempts,
 			time.Duration(policy.LockMinutes)*time.Minute)
 		if recordErr != nil {
@@ -312,6 +354,10 @@ func (s *Service) ChangePassword(ctx context.Context, in ChangePasswordInput) er
 	if err := security.VerifyPassword(in.OldPassword, user.PasswordHash); err != nil {
 		return ErrOldPasswordWrong
 	}
+	// H-19: 新密码绝不得与当前密码相同（即使用户尚无 password_histories 或 HistoryCount==0）
+	if in.NewPassword == in.OldPassword || security.VerifyPassword(in.NewPassword, user.PasswordHash) == nil {
+		return ErrPasswordReused
+	}
 	// 策略校验
 	policy := s.settings.PasswordPolicy(ctx)
 	if perr := security.ValidatePassword(in.NewPassword, user.Username, policy); perr != nil {
@@ -420,17 +466,46 @@ func (s *Service) IssueCSRFToken(ctx context.Context, sessionID string) (string,
 	return token, nil
 }
 
-// ValidateCSRFToken 校验会话的 CSRF Token。
+// GetOrIssueCSRFToken 复用会话当前有效 CSRF Token（供 GET /auth/me 幂等读取）；
+// 仅在缺失时签发新 Token，避免多标签页并发刷新互相覆盖导致在途写请求 CSRF 失败。
+func (s *Service) GetOrIssueCSRFToken(ctx context.Context, sessionID string) (string, error) {
+	key := csrfKeyPrefix + hashSessionForCSRF(sessionID)
+	if existing, err := s.cache.Get(ctx, key); err == nil && existing != "" {
+		return existing, nil
+	}
+	candidate, err := security.NewRandomToken(32)
+	if err != nil {
+		return "", err
+	}
+	if ac, ok := s.cache.(atomicKVCache); ok {
+		claimed, err := ac.SetNX(ctx, key, candidate, 8*time.Hour)
+		if err != nil {
+			return "", err
+		}
+		if claimed {
+			return candidate, nil
+		}
+		if existing, err := s.cache.Get(ctx, key); err == nil && existing != "" {
+			return existing, nil
+		}
+	}
+	if err := s.cache.Set(ctx, key, candidate, 8*time.Hour); err != nil {
+		return "", err
+	}
+	return candidate, nil
+}
+
+// ValidateCSRFToken 校验会话的 CSRF Token（常量时间比较）。
 func (s *Service) ValidateCSRFToken(ctx context.Context, sessionID, token string) bool {
 	if token == "" {
 		return false
 	}
 	key := csrfKeyPrefix + hashSessionForCSRF(sessionID)
 	stored, err := s.cache.Get(ctx, key)
-	if err != nil {
+	if err != nil || stored == "" {
 		return false
 	}
-	return stored == token
+	return subtle.ConstantTimeCompare([]byte(stored), []byte(token)) == 1
 }
 
 func hashSessionForCSRF(sessionID string) string {

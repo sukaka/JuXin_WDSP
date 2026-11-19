@@ -57,6 +57,9 @@ var allowedVariables = map[string]bool{
 // 必须在此拒绝引号、空白与一切控制字符，否则可注入独立指令行（如 SecAction ctl:ruleEngine=Off）。
 var variablePattern = regexp.MustCompile(`^[A-Z_]+(:[A-Za-z0-9_.-]+)?$`)
 
+// AttackType / Tags 严格白名单：禁止反斜杠、引号、逗号与控制字符，防 Coraza SecLang 动作注入。
+var tagPattern = regexp.MustCompile(`^[A-Za-z0-9._:/ -]{1,64}$`)
+
 // 允许的动作
 var allowedActions = map[string]bool{
 	"LOG": true, "OBSERVE": true, "BLOCK": true,
@@ -105,9 +108,24 @@ func ValidateInput(r *CustomRule) (generated string, err error) {
 	if r.RuleID < UserCustomMin || r.RuleID > UserCustomMax {
 		return "", fmt.Errorf("%w: 自定义规则ID必须在 %d-%d 之间", ErrIDOutOfRange, UserCustomMin, UserCustomMax)
 	}
-	// 名称
+	// 名称：拒绝反斜杠、双引号与控制字符（防 Coraza parseActions 单/双引号边界逃逸）
 	if r.Name == "" || len(r.Name) > 128 {
 		return "", fmt.Errorf("%w: 规则名称不能为空且不超过128字符", ErrInvalidRule)
+	}
+	if strings.ContainsAny(r.Name, `\"`) || validation.ContainsControlChars(r.Name) {
+		return "", fmt.Errorf("%w: 规则名称包含非法字符（禁止反斜杠、双引号与控制字符）", ErrInvalidRule)
+	}
+	// AttackType 严格白名单（非空时校验）
+	if r.AttackType != "" {
+		if strings.ContainsAny(r.AttackType, `\"`) || validation.ContainsControlChars(r.AttackType) || !tagPattern.MatchString(r.AttackType) {
+			return "", fmt.Errorf("%w: 攻击类型格式非法 %q", ErrInvalidRule, r.AttackType)
+		}
+	}
+	// Tags 严格白名单
+	for _, t := range r.Tags {
+		if strings.ContainsAny(t, `\"`) || validation.ContainsControlChars(t) || !tagPattern.MatchString(t) {
+			return "", fmt.Errorf("%w: 规则标签格式非法 %q", ErrInvalidRule, t)
+		}
 	}
 	// 操作符白名单
 	op := strings.TrimSpace(r.Operator)
@@ -120,12 +138,15 @@ func ValidateInput(r *CustomRule) (generated string, err error) {
 			return "", fmt.Errorf("%w: 操作符 %q 需要匹配内容", ErrInvalidRule, op)
 		}
 	}
-	// 操作值嵌入双引号 SecLang 参数；引号和换行会改变指令边界，必须拒绝。
-	if strings.ContainsAny(r.OperatorValue, "\"\r\n") {
+	// 操作值嵌入双引号 SecLang 参数；引号、控制字符及尾部奇数个反斜杠会破坏指令边界，必须拒绝。
+	if strings.ContainsAny(r.OperatorValue, "\"\r\n") || validation.ContainsControlChars(r.OperatorValue) {
 		return "", fmt.Errorf("%w: 操作值包含非法 SecLang 控制字符", ErrInvalidRule)
 	}
-	// 危险内容检测（覆盖全部进入 SecLang 的自由文本面，含检测变量）
-	fullText := r.OperatorValue + " " + r.Name + " " + r.Description + " " + strings.Join(r.TargetVariables, " ")
+	if hasOddTrailingBackslashes(r.OperatorValue) {
+		return "", fmt.Errorf("%w: 操作值不能以奇数个反斜杠结尾（会吞并 SecLang 闭合引号）", ErrInvalidRule)
+	}
+	// 危险内容检测（覆盖全部进入 SecLang 的自由文本面，含攻击类型、标签与检测变量）
+	fullText := r.OperatorValue + " " + r.Name + " " + r.Description + " " + r.AttackType + " " + strings.Join(r.Tags, " ") + " " + strings.Join(r.TargetVariables, " ")
 	for _, dp := range dangerousPatterns {
 		if dp.MatchString(fullText) {
 			return "", fmt.Errorf("%w: 规则包含禁止内容（命令执行/文件读取/危险引用）", ErrDangerousContent)
@@ -220,24 +241,47 @@ func GenerateSecLang(ruleID int, name string, variables []string, operator, oper
 	return fmt.Sprintf("SecRule %s \"%s\" \"%s\"", vars, opExpr, strings.Join(actionParts, ","))
 }
 
+// hasOddTrailingBackslashes 判断字符串是否以奇数个连续反斜杠结尾。
+// Coraza cutQuotedString 在闭合双引号前遇到奇数个反斜杠会将其视作转义引号并吞并后续内容。
+func hasOddTrailingBackslashes(s string) bool {
+	count := 0
+	for i := len(s) - 1; i >= 0 && s[i] == '\\'; i-- {
+		count++
+	}
+	return count%2 == 1
+}
+
 // escapeSecLangArg 转义 SecLang 操作值参数（防注入）。
 func escapeSecLangArg(s string) string {
-	// 正则反斜杠是语义的一部分，不能像普通字符串那样加倍；引号由输入校验拒绝，
-	// 这里保留转义以保证直接调用 GenerateSecLang 时仍不会打开参数边界。
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	return s
+	// 正则反斜杠是语义的一部分，不能像普通字符串那样加倍；引号、控制字符与尾部奇数个反斜杠
+	// 由输入校验拒绝，此处做纵深兜底保证直接调用 GenerateSecLang 时仍不会破坏双引号参数边界。
+	var b strings.Builder
+	for _, c := range s {
+		if c >= 0x20 && c != 0x7f && c != '"' {
+			b.WriteRune(c)
+		}
+	}
+	out := b.String()
+	if hasOddTrailingBackslashes(out) {
+		out = out[:len(out)-1]
+	}
+	return out
 }
 
 // escapeSecLangString 转义 SecLang 单引号字符串。
 func escapeSecLangString(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `'`, `\'`)
-	// 移除控制字符
+	// Coraza parseActions 仅检查前驱单字符是否为 '\'，双反斜杠在闭合单引号前仍会吞并引号；
+	// 输入校验已拒绝反斜杠/双引号/控制字符，此处兜底剔除它们并转义单引号。
 	var b strings.Builder
 	for _, c := range s {
-		if c >= 0x20 && c != 0x7f {
-			b.WriteRune(c)
+		if c < 0x20 || c == 0x7f || c == '\\' || c == '"' {
+			continue
 		}
+		if c == '\'' {
+			b.WriteString(`\'`)
+			continue
+		}
+		b.WriteRune(c)
 	}
 	return b.String()
 }

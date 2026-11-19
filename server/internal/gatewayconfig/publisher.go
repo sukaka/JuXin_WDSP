@@ -1552,7 +1552,11 @@ func sanitizeCaddyError(err error) string {
 	return msg
 }
 
-// saveFailedCandidate 保存失败候选配置（供排查）。
+// saveFailedCandidate 保存失败候选配置（供排查；写入磁盘前经 RedactConfigSecrets 脱敏）。
 func (p *Publisher) saveFailedCandidate(gen *Generated, snapshot map[string]interface{}, cause error) {
-	_ = WriteFailedCandidate(p.dataDir, gen.JSON, cause.Error())
+	redacted, err := RedactConfigSecrets(gen.JSON)
+	if err != nil {
+		redacted = `{"redacted_on_parse_error":true}`
+	}
+	_ = WriteFailedCandidate(p.dataDir, redacted, cause.Error())
 }

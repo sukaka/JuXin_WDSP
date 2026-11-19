@@ -662,9 +662,9 @@ func TestStage7ModelManagement(t *testing.T) {
 	body, result := s7OKRaw(t, env.post(t, "/api/v1/ai/models/providers",
 		s7Body(t, map[string]interface{}{
 			"name": "t7prov" + s5Rand(), "provider_type": "openai_compatible",
-			"base_url": "http://127.0.0.1:18999", "api_key": apiKey,
-			// 000139 出站 SSRF 校验：回环测试端点显式列入目标白名单
-			"allowed_targets": []string{"127.0.0.1/32"},
+			"base_url": "http://10.199.0.10:18999", "api_key": apiKey,
+			// 出站 SSRF 校验：用户提交的 allowed_targets 禁止回环 CIDR，改用内网私有地址显式入白名单
+			"allowed_targets": []string{"10.199.0.10/32"},
 		}), sysCookies, sysCSRF), "create provider")
 	if strings.Contains(body, apiKey) {
 		t.Errorf("create provider response leaks api key: %s", body)

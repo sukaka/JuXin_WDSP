@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jiuzhang-waf/server/internal/applications"
@@ -255,22 +257,28 @@ func buildServers(in GenerateInput) (map[string]interface{}, int) {
 			route := mapT{}
 			if d.HTTPEnabled && d.HTTPPort != nil {
 				addr := fmt.Sprintf(":%d", *d.HTTPPort)
-				r := mapT{
-					"match":  []interface{}{mapT{"host": hosts}},
-					"handle": buildHandles(in, app, d, *d.HTTPPort),
-				}
-				// HTTP 跳 HTTPS：仅返回重定向
+				// HTTP 跳 HTTPS：仅返回 308 重定向，绝不下发路径转发路由绕过 HTTPS 强制跳转
 				if d.RedirectHTTPToHTTPS && d.HTTPSEnabled {
-					r = mapT{
+					location := "https://{http.request.host}{http.request.uri}"
+					if d.HTTPSPort != nil && *d.HTTPSPort != 443 {
+						location = fmt.Sprintf("https://{http.request.host}:%d{http.request.uri}", *d.HTTPSPort)
+					}
+					r := mapT{
 						"match": []interface{}{mapT{"host": hosts}},
 						"handle": []interface{}{
 							mapT{"handler": "static_response", "status_code": 308,
-								"headers": mapT{"Location": []string{"https://{http.request.host}{http.request.uri}"}}},
+								"headers": mapT{"Location": []string{location}}},
 						},
 					}
+					httpServers[addr] = append(httpServers[addr], routeEntry{appCode: app.Code, route: r})
+				} else {
+					r := mapT{
+						"match":  []interface{}{mapT{"host": hosts}},
+						"handle": buildHandles(in, app, d, *d.HTTPPort),
+					}
+					httpServers[addr] = append(httpServers[addr], pathRouteEntries(in, app, hosts, *d.HTTPPort)...)
+					httpServers[addr] = append(httpServers[addr], routeEntry{appCode: app.Code, route: r})
 				}
-				httpServers[addr] = append(httpServers[addr], pathRouteEntries(in, app, hosts, *d.HTTPPort)...)
-				httpServers[addr] = append(httpServers[addr], routeEntry{appCode: app.Code, route: r})
 			}
 			if d.HTTPSEnabled && d.HTTPSPort != nil {
 				addr := fmt.Sprintf(":%d", *d.HTTPSPort)
@@ -589,17 +597,17 @@ func buildReverseProxy(upstreams []applications.Upstream) mapT {
 			active = append(active, u)
 		}
 	}
-	// 确定性排序（按 host:port）
+	// 确定性排序（按 host:port，IPv6 经 JoinHostPort 规范化方括号）
 	sort.Slice(active, func(i, j int) bool {
-		ai := fmt.Sprintf("%s:%d", active[i].NormalizedHost, active[i].Port)
-		aj := fmt.Sprintf("%s:%d", active[j].NormalizedHost, active[j].Port)
+		ai := net.JoinHostPort(active[i].NormalizedHost, strconv.Itoa(active[i].Port))
+		aj := net.JoinHostPort(active[j].NormalizedHost, strconv.Itoa(active[j].Port))
 		return ai < aj
 	})
 
 	var ups []interface{}
 	var weights []int
 	for _, u := range active {
-		dial := fmt.Sprintf("%s:%d", u.NormalizedHost, u.Port)
+		dial := net.JoinHostPort(u.NormalizedHost, strconv.Itoa(u.Port))
 		ups = append(ups, mapT{"dial": dial})
 		// Caddy upstream 不支持 weight 字段；权重通过 selection_policy.weights 数组表达
 		w := u.Weight

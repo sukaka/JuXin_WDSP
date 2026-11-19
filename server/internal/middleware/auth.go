@@ -3,6 +3,7 @@ package middleware
 import (
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/jiuzhang-waf/server/internal/authz"
@@ -67,9 +68,9 @@ func CSRFProtect(validate func(r *http.Request, token string) bool) func(http.Ha
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Origin 校验：存在时必须与 Host 同源
+			// Origin 校验：存在时必须与 Host 同源（且 HTTPS 请求禁止 http:// Origin 降级）
 			origin := r.Header.Get("Origin")
-			if origin != "" && !sameOrigin(origin, r.Host) {
+			if origin != "" && !sameOriginForRequest(origin, r) {
 				response.Error(w, r, http.StatusForbidden,
 					response.CodeCSRFInvalid, "请求来源校验失败")
 				return
@@ -93,65 +94,122 @@ func isSafeMethod(m string) bool {
 	return false
 }
 
+// sameOriginForRequest 校验 Origin 与请求同源；当请求经 HTTPS 到达时，禁止 http:// Origin 降级。
+func sameOriginForRequest(origin string, r *http.Request) bool {
+	if r == nil || !sameOrigin(origin, r.Host) {
+		return false
+	}
+	scheme, _, ok := parseOrigin(origin)
+	if !ok {
+		return false
+	}
+	if r.TLS != nil ||
+		strings.EqualFold(r.URL.Scheme, "https") ||
+		strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+		if scheme != "https" {
+			return false
+		}
+	}
+	return true
+}
+
 // sameOrigin 校验 Origin 与 Host 是否同源。
 // 比较前对双方做默认端口归一：https 默认 443、http 默认 80，
-// 显式默认端口与省略端口等价；非默认端口必须精确匹配。
+// 显式默认端口与省略端口等价；协议默认端口与显式端口必须精确匹配。
 func sameOrigin(origin, host string) bool {
 	scheme, originHost, ok := parseOrigin(origin)
 	if !ok {
 		return false
 	}
-	originName, originPort := splitHostPort(originHost)
-	if originName == "" {
+	originName, originPort, ok := splitHostPort(originHost)
+	if !ok || originName == "" {
+		return false
+	}
+	defPort := defaultPort(scheme)
+	if defPort == "" {
 		return false
 	}
 	if originPort == "" {
-		originPort = defaultPort(scheme)
+		originPort = defPort
 	}
-	hostName, hostPort := splitHostPort(host)
-	if hostName == "" || !strings.EqualFold(originName, hostName) {
+	hostName, hostPort, ok := splitHostPort(host)
+	if !ok || hostName == "" || !strings.EqualFold(originName, hostName) {
 		return false
 	}
-	switch {
-	case originPort == "" && hostPort == "":
-		return true
-	case originPort == "":
-		// Origin 未声明端口，无法与显式端口 Host 判定同源
-		return false
-	case hostPort == "":
-		// Host 未带端口，仅当 Origin 使用默认端口时视为同源
-		return originPort == "80" || originPort == "443"
-	default:
-		return originPort == hostPort
+	if hostPort == "" {
+		// Host 未带端口：仅当 Origin 端口与自身 scheme 默认端口一致时视为同源
+		// （拒绝 http://host:443、https://host:80 等协议/端口不匹配）
+		return originPort == defPort
 	}
+	return originPort == hostPort
 }
 
 // parseOrigin 拆解 Origin 为 scheme 与 host（不含路径）。
-// scheme 仅接受 http/https；Origin 无 host 或 scheme 非法时视为畸形并拒绝。
+// 强制要求显式 http/https scheme（必须含 "://"）；拒绝 userinfo、控制字符或空 host。
 func parseOrigin(origin string) (scheme, host string, ok bool) {
-	rest := origin
-	if i := strings.Index(origin, "://"); i >= 0 {
-		scheme = strings.ToLower(origin[:i])
-		if scheme != "http" && scheme != "https" {
+	if origin == "" || strings.TrimSpace(origin) != origin {
+		return "", "", false
+	}
+	for i := 0; i < len(origin); i++ {
+		if origin[i] < 0x20 || origin[i] == 0x7f {
 			return "", "", false
 		}
-		rest = origin[i+3:]
 	}
-	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
-		rest = rest[:i]
+	i := strings.Index(origin, "://")
+	if i <= 0 {
+		return "", "", false
 	}
-	if rest == "" {
+	scheme = strings.ToLower(origin[:i])
+	if scheme != "http" && scheme != "https" {
+		return "", "", false
+	}
+	rest := origin[i+3:]
+	if j := strings.IndexAny(rest, "/?#"); j >= 0 {
+		rest = rest[:j]
+	}
+	if rest == "" || strings.ContainsAny(rest, "@ \t") {
 		return "", "", false
 	}
 	return scheme, rest, true
 }
 
-// splitHostPort 拆分 host[:port]；无端口时 port 返回空串。
-func splitHostPort(s string) (host, port string) {
-	if h, p, err := net.SplitHostPort(s); err == nil {
-		return h, p
+// splitHostPort 拆分 host[:port]（支持 IPv6 字面量）；非法语法或无效端口返回 ok=false。
+func splitHostPort(s string) (host, port string, ok bool) {
+	if s == "" || strings.ContainsAny(s, "@ \t\r\n") {
+		return "", "", false
 	}
-	return s, ""
+	if strings.HasPrefix(s, "[") {
+		if h, p, err := net.SplitHostPort(s); err == nil {
+			if h == "" || !isValidPort(p) {
+				return "", "", false
+			}
+			return h, p, true
+		}
+		if strings.HasSuffix(s, "]") && strings.Count(s, "[") == 1 && strings.Count(s, "]") == 1 {
+			h := s[1 : len(s)-1]
+			if h == "" {
+				return "", "", false
+			}
+			return h, "", true
+		}
+		return "", "", false
+	}
+	if strings.Contains(s, ":") {
+		h, p, err := net.SplitHostPort(s)
+		if err != nil || h == "" || !isValidPort(p) {
+			return "", "", false
+		}
+		return h, p, true
+	}
+	return s, "", true
+}
+
+func isValidPort(p string) bool {
+	if p == "" {
+		return false
+	}
+	n, err := strconv.Atoi(p)
+	return err == nil && n >= 1 && n <= 65535
 }
 
 // defaultPort 返回 scheme 对应的默认端口。

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -50,17 +51,99 @@ var sensitiveProviderPorts = map[string]bool{
 	"6379": true, // Redis/Valkey
 }
 
+var (
+	metadataProviderPrefixes = []netip.Prefix{
+		netip.MustParsePrefix("169.254.169.254/32"),
+		netip.MustParsePrefix("169.254.170.2/32"),
+		netip.MustParsePrefix("100.100.100.200/32"),
+		netip.MustParsePrefix("fd00:ec2::254/128"),
+		netip.MustParsePrefix("169.254.0.0/16"),
+		netip.MustParsePrefix("fe80::/10"),
+	}
+	userDeniedAllowedTargetPrefixes = []netip.Prefix{
+		netip.MustParsePrefix("127.0.0.0/8"),
+		netip.MustParsePrefix("::1/128"),
+		netip.MustParsePrefix("0.0.0.0/8"),
+		netip.MustParsePrefix("::/128"),
+		netip.MustParsePrefix("169.254.169.254/32"),
+		netip.MustParsePrefix("169.254.170.2/32"),
+		netip.MustParsePrefix("100.100.100.200/32"),
+		netip.MustParsePrefix("fd00:ec2::254/128"),
+		netip.MustParsePrefix("169.254.0.0/16"),
+		netip.MustParsePrefix("fe80::/10"),
+	}
+)
+
 func providerHostDenied(host string, port string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	if sensitiveProviderHosts[host] || strings.HasSuffix(host, ".metadata.google.internal") {
+	if sensitiveProviderHosts[host] || strings.HasSuffix(host, ".metadata.google.internal") || strings.HasSuffix(host, ".localhost") {
 		return true
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLinkLocalUnicast() || ip.Equal(net.ParseIP("fd00:ec2::254")) {
+	if addr, err := netip.ParseAddr(host); err == nil {
+		if addr.Zone() != "" {
 			return true
+		}
+		addr = addr.Unmap()
+		for _, prefix := range metadataProviderPrefixes {
+			if prefix.Contains(addr) {
+				return true
+			}
 		}
 	}
 	return sensitiveProviderPorts[port]
+}
+
+// ValidateUserAllowedTargets 校验用户通过 API 提交的 allowed_targets：
+// 禁止任何与回环（127.0.0.0/8、::1/128）、未指定（0.0.0.0/8、::/128）或云元数据/链路本地
+// 重叠的 CIDR，以及敏感主机名（localhost、metadata 等）。
+func ValidateUserAllowedTargets(targets []string) error {
+	if len(targets) > 32 {
+		return fmt.Errorf("%w: too many allowed targets", ErrInvalidProviderEndpoint)
+	}
+	for _, raw := range targets {
+		target := strings.TrimSpace(raw)
+		if target == "" || len(target) > 253 {
+			return fmt.Errorf("%w: invalid allowed target", ErrInvalidProviderEndpoint)
+		}
+		if prefix, err := netip.ParsePrefix(target); err == nil {
+			prefix = normalizePrefixForCheck(prefix)
+			for _, denied := range userDeniedAllowedTargetPrefixes {
+				if prefix.Overlaps(denied) {
+					return fmt.Errorf("%w: %w: loopback/metadata CIDR denied in allowed_targets: %q",
+						ErrInvalidProviderEndpoint, outboundhttp.ErrDenied, target)
+				}
+			}
+			continue
+		}
+		host := strings.ToLower(strings.TrimSuffix(target, "."))
+		if sensitiveProviderHosts[host] || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".metadata.google.internal") {
+			return fmt.Errorf("%w: %w: sensitive host denied in allowed_targets: %q",
+				ErrInvalidProviderEndpoint, outboundhttp.ErrDenied, target)
+		}
+	}
+	return nil
+}
+
+func normalizePrefixForCheck(p netip.Prefix) netip.Prefix {
+	addr := p.Addr()
+	if addr.Is4In6() && p.Bits() >= 96 {
+		return netip.PrefixFrom(addr.Unmap(), p.Bits()-96).Masked()
+	}
+	return p.Masked()
+}
+
+func isMetadataTargetCIDR(raw string) bool {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	prefix = normalizePrefixForCheck(prefix)
+	for _, denied := range metadataProviderPrefixes {
+		if prefix.Overlaps(denied) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateProviderEndpoint validates the configured endpoint and target scope.
@@ -84,6 +167,9 @@ func ValidateProviderEndpoint(ctx context.Context, p *Provider) error {
 		target = strings.TrimSpace(target)
 		if target == "" || len(target) > 253 {
 			return fmt.Errorf("%w: invalid allowed target", ErrInvalidProviderEndpoint)
+		}
+		if isMetadataTargetCIDR(target) {
+			return fmt.Errorf("%w: %w: metadata CIDR denied in allowed_targets", ErrInvalidProviderEndpoint, outboundhttp.ErrDenied)
 		}
 		allow = append(allow, target)
 	}

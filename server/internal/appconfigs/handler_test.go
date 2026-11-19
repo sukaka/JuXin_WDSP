@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -207,6 +208,43 @@ func TestHeaderConfigHTTP(t *testing.T) {
 		"delete rule with value": func(b map[string]any) {
 			b["custom_response_rules"] = []map[string]any{{"name": "X-A", "method": "delete", "value": "x"}}
 		},
+		// H-14: Caddy 占位符外泄与控制字符注入拦截
+		"req rule caddy placeholder": func(b map[string]any) {
+			b["custom_request_rules"] = []map[string]any{{"name": "X-Leak", "method": "set", "value": "{env.JIUZHANG_MASTER_KEY}"}}
+		},
+		"resp rule caddy placeholder": func(b map[string]any) {
+			b["custom_response_rules"] = []map[string]any{{"name": "X-Leak", "method": "set", "value": "{env.POSTGRES_PASSWORD}"}}
+		},
+		"resp rule crlf": func(b map[string]any) {
+			b["custom_response_rules"] = []map[string]any{{"name": "X-A", "method": "set", "value": "ok\r\nSet-Cookie: evil=1"}}
+		},
+		"req rule too long": func(b map[string]any) {
+			b["custom_request_rules"] = []map[string]any{{"name": "X-A", "method": "set", "value": strings.Repeat("a", 1025)}}
+		},
+		"server_value placeholder": func(b map[string]any) {
+			b["server_action"] = "replace"
+			b["server_value"] = "{env.SECRET}"
+		},
+		"x_powered_by placeholder": func(b map[string]any) {
+			b["x_powered_by_action"] = "replace"
+			b["x_powered_by_value"] = "php/{env.KEY}"
+		},
+		"x_author control char": func(b map[string]any) {
+			b["x_author_action"] = "replace"
+			b["x_author_value"] = "team\nheader"
+		},
+		"x_frame_options_url placeholder": func(b map[string]any) {
+			b["x_frame_options"] = "allow_from"
+			b["x_frame_options_url"] = "https://{env.HOST}"
+		},
+		"csp_value placeholder": func(b map[string]any) {
+			b["csp_mode"] = "custom"
+			b["csp_value"] = "default-src 'self' https://{env.SECRET}.evil.com"
+		},
+		"csp_value too long": func(b map[string]any) {
+			b["csp_mode"] = "custom"
+			b["csp_value"] = strings.Repeat("a", 4097)
+		},
 	}
 	for name, mutate := range badCases {
 		body := validHeaderConfigBody(2)
@@ -307,11 +345,17 @@ func TestPathRoutesHTTP(t *testing.T) {
 
 	// ---- 其他校验失败 → 400 ----
 	badCases := map[string]func(map[string]any){
-		"host empty":   func(b map[string]any) { b["upstream_host"] = "" },
-		"port zero":    func(b map[string]any) { b["upstream_port"] = 0 },
-		"port too big": func(b map[string]any) { b["upstream_port"] = 65536 },
-		"bad scheme":   func(b map[string]any) { b["upstream_scheme"] = "ftp" },
-		"bad status":   func(b map[string]any) { b["status"] = "ACTIVE" },
+		"host empty":          func(b map[string]any) { b["upstream_host"] = "" },
+		"host with scheme":    func(b map[string]any) { b["upstream_host"] = "http://10.0.0.1" },
+		"host with port":      func(b map[string]any) { b["upstream_host"] = "10.0.0.1:9000" },
+		"host with path":      func(b map[string]any) { b["upstream_host"] = "backend.internal/admin" },
+		"host with userinfo":  func(b map[string]any) { b["upstream_host"] = "user:pass@backend.internal" },
+		"host with wildcard":  func(b map[string]any) { b["upstream_host"] = "*.example.com" },
+		"host with brace":     func(b map[string]any) { b["upstream_host"] = "{env.HOST}" },
+		"port zero":           func(b map[string]any) { b["upstream_port"] = 0 },
+		"port too big":        func(b map[string]any) { b["upstream_port"] = 65536 },
+		"bad scheme":          func(b map[string]any) { b["upstream_scheme"] = "ftp" },
+		"bad status":          func(b map[string]any) { b["status"] = "ACTIVE" },
 	}
 	for name, mutate := range badCases {
 		body := validRouteBody()

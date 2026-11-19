@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -47,10 +49,11 @@ type AuditRecorder interface {
 
 // 调度设置键（settings 组 api_scan）。
 const (
-	settingsGroup          = "api_scan"
-	settingsKeyEnabled     = "enabled"                // 整体开关（默认关）
-	settingsKeyMaxJobs     = "max_concurrent_jobs"    // 全局并发任务数（默认 1）
-	settingsKeySweepSecond = "sweep_interval_seconds" // 调度间隔（默认 10s）
+	settingsGroup            = "api_scan"
+	settingsKeyEnabled       = "enabled"                // 整体开关（默认关）
+	settingsKeyMaxJobs       = "max_concurrent_jobs"    // 全局并发任务数（默认 1）
+	settingsKeySweepSecond   = "sweep_interval_seconds" // 调度间隔（默认 10s）
+	settingsKeyAllowLoopback = "allow_loopback"         // 是否显式允许扫描回环地址（默认 false）
 )
 
 const (
@@ -103,6 +106,14 @@ func (w *Worker) Enabled(ctx context.Context) bool {
 		return false
 	}
 	return w.settings.GetBool(ctx, settingsGroup, settingsKeyEnabled, false)
+}
+
+// allowLoopback 是否显式配置允许扫描回环目标（默认 false）。
+func (w *Worker) allowLoopback(ctx context.Context) bool {
+	if w.settings == nil {
+		return false
+	}
+	return w.settings.GetBool(ctx, settingsGroup, settingsKeyAllowLoopback, false)
 }
 
 // maxConcurrentJobs 全局并发任务数上限（默认 1，夹取 [1,8]）。
@@ -353,12 +364,13 @@ func (w *Worker) execute(ctx context.Context, jobID uuid.UUID) (string, error) {
 	if reason := authz.InactiveReason(now); reason != "" {
 		return finish(JobStatusFailed, reason)
 	}
-	if !hostAllowed(target.BaseURL, authz.Allowlist) {
-		return finish(JobStatusFailed, "目标主机不在授权 allowlist 内")
+	allowLoopback := w.allowLoopback(ctx)
+	if !hostAllowedWithOptions(target.BaseURL, authz.Allowlist, allowLoopback) {
+		return finish(JobStatusFailed, "目标主机不在授权 allowlist 内或命中禁止地址")
 	}
 	// DNS 重绑定防护：授权校验时刻固化主机解析快照，探测拨号逐次重解析比对
 	// （hostAllowed 仅是字符串白名单，真实拨号须经快照复检，见 dial_guard.go）。
-	snapshot, err := resolveHostSnapshot(ctx, target.BaseURL)
+	snapshot, err := resolveHostSnapshotWithOptions(ctx, target.BaseURL, allowLoopback)
 	if err != nil {
 		return finish(JobStatusFailed, err.Error())
 	}
@@ -422,6 +434,8 @@ func (w *Worker) execute(ctx context.Context, jobID uuid.UUID) (string, error) {
 		pmu.Unlock()
 		return nil
 	}
+	pinnedClient := newPinnedHTTPClient(snapshot)
+	defer pinnedClient.CloseIdleConnections()
 	task := &ProbeTask{
 		JobID:          jobID,
 		BaseURL:        target.BaseURL,
@@ -432,7 +446,7 @@ func (w *Worker) execute(ctx context.Context, jobID uuid.UUID) (string, error) {
 		Signer:         w.signer,
 		Guard:          guard,
 		// 拨号复检客户端：重解析比对授权快照（DNS 重绑定防护），语义同引擎默认客户端
-		HTTPClient: newPinnedHTTPClient(snapshot),
+		HTTPClient: pinnedClient,
 		OnEndpointDone: func(done, total int) {
 			pmu.Lock()
 			progress.Done, progress.Total = done, total
@@ -554,28 +568,161 @@ func resolveProbeSets(jobProbeSet, testProfile string) ([]string, error) {
 	return sets, nil
 }
 
-// hostAllowed base_url 主机白名单校验：allowlist 为空 = 仅允许 base_url 主机自身
-// （探测只发向 base_url 主机，天然满足）；非空时主机须精确命中（不区分大小写）。
+// hardDeniedScanPrefixes 主动扫描永久禁止的目标地址段（云元数据与链路本地/未指定）。
+var hardDeniedScanPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("169.254.169.254/32"),
+	netip.MustParsePrefix("169.254.170.2/32"),
+	netip.MustParsePrefix("100.100.100.200/32"),
+	netip.MustParsePrefix("fd00:ec2::254/128"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("::/128"),
+}
+
+func isHardDeniedScanAddr(addr netip.Addr) bool {
+	if !addr.IsValid() || addr.Zone() != "" {
+		return true
+	}
+	addr = addr.Unmap()
+	for _, p := range hardDeniedScanPrefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsUnspecified() || addr.IsMulticast()
+}
+
+func isLoopbackScanHost(host string) bool {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	if addr, err := netip.ParseAddr(h); err == nil {
+		return addr.Unmap().IsLoopback()
+	}
+	return false
+}
+
+func isHardDeniedScanHost(host string) bool {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if h == "" || h == "metadata" || h == "metadata.google.internal" || strings.HasSuffix(h, ".metadata.google.internal") {
+		return true
+	}
+	if addr, err := netip.ParseAddr(h); err == nil {
+		return isHardDeniedScanAddr(addr)
+	}
+	return false
+}
+
+func normalizedURLPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
+	}
+}
+
+func canonicalHostKey(host string) string {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if addr, err := netip.ParseAddr(h); err == nil && addr.Zone() == "" {
+		return addr.Unmap().String()
+	}
+	return h
+}
+
+// parseAllowlistEntry 解析 allowlist 单条项（支持 host、host:port、IPv6、[IPv6]、[IPv6]:port）。
+func parseAllowlistEntry(item string) (host, port string, ok bool) {
+	item = strings.ToLower(strings.TrimSpace(item))
+	if item == "" {
+		return "", "", false
+	}
+	if strings.HasPrefix(item, "[") {
+		if h, p, err := net.SplitHostPort(item); err == nil {
+			if h == "" || p == "" {
+				return "", "", false
+			}
+			return canonicalHostKey(h), p, true
+		}
+		if strings.HasSuffix(item, "]") {
+			inner := item[1 : len(item)-1]
+			if inner == "" {
+				return "", "", false
+			}
+			return canonicalHostKey(inner), "", true
+		}
+		return "", "", false
+	}
+	// 纯 IP（含无方括号 IPv6 如 2001:db8::1）
+	if addr, err := netip.ParseAddr(item); err == nil {
+		if addr.Zone() != "" {
+			return "", "", false
+		}
+		return addr.Unmap().String(), "", true
+	}
+	// host:port（IPv4 或域名带端口）
+	if h, p, err := net.SplitHostPort(item); err == nil {
+		if h == "" || p == "" {
+			return "", "", false
+		}
+		return canonicalHostKey(h), p, true
+	}
+	// 非法冒号形态（如坏 IPv6 或缺少端口）拒绝
+	if strings.Contains(item, ":") {
+		return "", "", false
+	}
+	return canonicalHostKey(item), "", true
+}
+
+// hostAllowed base_url 主机与端口白名单校验（默认禁止云元数据与回环地址）：
+// allowlist 为空 = 仅允许 base_url 自身（仍受元数据与回环硬拒绝约束）；
+// allowlist 非空时按主机精确匹配，条目带端口时必须同时精确匹配规范化端口。
 func hostAllowed(baseURL string, allowlist []string) bool {
-	u, err := url.Parse(baseURL)
-	if err != nil || u.Host == "" {
+	return hostAllowedWithOptions(baseURL, allowlist, false)
+}
+
+func hostAllowedWithOptions(baseURL string, allowlist []string, allowLoopback bool) bool {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || u == nil || u.Host == "" {
 		return false
 	}
-	host := strings.ToLower(u.Hostname())
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	rawHost := u.Hostname()
+	if rawHost == "" || strings.Contains(rawHost, "%") {
+		return false
+	}
+	if isHardDeniedScanHost(rawHost) {
+		return false
+	}
+	if !allowLoopback && isLoopbackScanHost(rawHost) {
+		return false
+	}
+	host := canonicalHostKey(rawHost)
+	targetPort := normalizedURLPort(u)
 	if len(allowlist) == 0 {
 		return true
 	}
 	for _, item := range allowlist {
-		item = strings.ToLower(strings.TrimSpace(item))
-		if item == "" {
+		entryHost, entryPort, ok := parseAllowlistEntry(item)
+		if !ok {
 			continue
 		}
-		if h, _, split := strings.Cut(item, ":"); split && h == host {
-			return true // 允许 "host:port" 形态按主机命中
+		if entryHost != host {
+			continue
 		}
-		if item == host {
-			return true
+		if entryPort != "" && entryPort != targetPort {
+			continue
 		}
+		return true
 	}
 	return false
 }

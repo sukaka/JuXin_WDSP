@@ -36,12 +36,51 @@ func TestValidateProviderEndpointRequiresExplicitPrivateScope(t *testing.T) {
 func TestValidateProviderEndpointAlwaysRejectsSensitiveTargets(t *testing.T) {
 	for _, baseURL := range []string{
 		"http://169.254.169.254/latest/meta-data",
+		"http://[::ffff:169.254.169.254]/latest/meta-data",
+		"http://169.254.170.2/v2/credentials",
+		"http://100.100.100.200/latest/meta-data",
+		"http://[fd00:ec2::254]/latest/meta-data",
 		"http://127.0.0.1:2019",
 		"http://127.0.0.1:5432",
 	} {
 		p := &Provider{Type: ProviderOpenAICompatible, BaseURL: baseURL, AllowedTargets: []string{"127.0.0.0/8", "169.254.0.0/16"}}
 		if err := ValidateProviderEndpoint(context.Background(), p); !errors.Is(err, outboundhttp.ErrDenied) {
 			t.Errorf("sensitive endpoint %s should be denied, err=%v", baseURL, err)
+		}
+	}
+}
+
+func TestH20ValidateUserAllowedTargetsRejectsLoopbackAndMetadata(t *testing.T) {
+	denied := [][]string{
+		{"127.0.0.0/8"},
+		{"127.0.0.1/32"},
+		{"::1/128"},
+		{"::ffff:127.0.0.1/128"},
+		{"0.0.0.0/0"},
+		{"::/0"},
+		{"169.254.169.254/32"},
+		{"169.254.170.2/32"},
+		{"100.100.100.200/32"},
+		{"fd00:ec2::254/128"},
+		{"169.254.0.0/16"},
+		{"fe80::/10"},
+		{"localhost"},
+		{"sub.localhost"},
+		{"metadata.google.internal"},
+	}
+	for _, targets := range denied {
+		if err := ValidateUserAllowedTargets(targets); !errors.Is(err, outboundhttp.ErrDenied) {
+			t.Errorf("ValidateUserAllowedTargets(%v) = %v, want ErrDenied", targets, err)
+		}
+	}
+	// 合法企业内网段/主机名放行
+	for _, okTargets := range [][]string{
+		{"10.10.0.0/16"},
+		{"192.168.10.0/24"},
+		{"vllm.internal.corp"},
+	} {
+		if err := ValidateUserAllowedTargets(okTargets); err != nil {
+			t.Errorf("ValidateUserAllowedTargets(%v) unexpected err: %v", okTargets, err)
 		}
 	}
 }

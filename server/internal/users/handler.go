@@ -1,6 +1,7 @@
 package users
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -16,17 +17,32 @@ import (
 	"github.com/jiuzhang-waf/server/internal/settings"
 )
 
+// userStatusStore 抽象状态流转仓储操作（生产默认使用 *Store，单测可注入内存替身）。
+type userStatusStore interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*User, error)
+	Enable(ctx context.Context, id uuid.UUID) error
+	Unlock(ctx context.Context, id uuid.UUID) error
+}
+
 // Handler 是用户管理处理器。
 type Handler struct {
-	store    *Store
-	sessions *sessions.Service
-	settings *settings.Service
-	audits   *audits.Service
+	store       *Store
+	statusStore userStatusStore
+	sessions    *sessions.Service
+	settings    *settings.Service
+	audits      *audits.Service
 }
 
 // NewHandler 创建用户管理处理器。
 func NewHandler(store *Store, sess *sessions.Service, st *settings.Service, au *audits.Service) *Handler {
-	return &Handler{store: store, sessions: sess, settings: st, audits: au}
+	return &Handler{store: store, statusStore: store, sessions: sess, settings: st, audits: au}
+}
+
+func (h *Handler) statusRepo() userStatusStore {
+	if h.statusStore != nil {
+		return h.statusStore
+	}
+	return h.store
 }
 
 type createUserRequest struct {
@@ -248,9 +264,42 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, userItem(target, roles))
 }
 
-// Enable 启用用户。
+// Enable 启用已停用的用户（状态机约束：仅允许 DISABLED -> ACTIVE）。
 func (h *Handler) Enable(w http.ResponseWriter, r *http.Request) {
-	h.setStatus(w, r, StatusActive, "enable")
+	p := authz.PrincipalFrom(r.Context())
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的用户ID")
+		return
+	}
+	repo := h.statusRepo()
+	target, err := repo.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "用户不存在")
+			return
+		}
+		response.InternalError(w, r, err)
+		return
+	}
+	if target.Status != StatusDisabled {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "仅已停用的用户可执行启用操作")
+		return
+	}
+	if err := repo.Enable(r.Context(), id); err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidStatus):
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "仅已停用的用户可执行启用操作")
+		case errors.Is(err, ErrNotFound):
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "用户不存在")
+		default:
+			response.InternalError(w, r, err)
+		}
+		return
+	}
+	h.recordAudit(r, p, "users", "enable", "user", id.String(), target.Username,
+		"status=DISABLED", "status=ACTIVE", audits.ResultSuccess, "", audits.RiskLow)
+	response.JSON(w, r, http.StatusOK, map[string]string{"message": "用户已启用"})
 }
 
 // Disable 停用用户。
@@ -288,28 +337,7 @@ func (h *Handler) Disable(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "用户已停用"})
 }
 
-func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, status, action string) {
-	p := authz.PrincipalFrom(r.Context())
-	id, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的用户ID")
-		return
-	}
-	target, err := h.store.GetByID(r.Context(), id)
-	if err != nil {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "用户不存在")
-		return
-	}
-	if err := h.store.SetStatus(r.Context(), id, status); err != nil {
-		response.InternalError(w, r, err)
-		return
-	}
-	h.recordAudit(r, p, "users", action, "user", id.String(), target.Username,
-		"", "status="+status, audits.ResultSuccess, "", audits.RiskLow)
-	response.JSON(w, r, http.StatusOK, map[string]string{"message": "操作成功"})
-}
-
-// Unlock 解锁用户。
+// Unlock 解锁已锁定的用户（状态机约束：仅允许 LOCKED -> ACTIVE，不得重启用已停用账号）。
 func (h *Handler) Unlock(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
 	id, err := uuid.Parse(r.PathValue("id"))
@@ -317,13 +345,29 @@ func (h *Handler) Unlock(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的用户ID")
 		return
 	}
-	target, err := h.store.GetByID(r.Context(), id)
+	repo := h.statusRepo()
+	target, err := repo.GetByID(r.Context(), id)
 	if err != nil {
-		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "用户不存在")
+		if errors.Is(err, ErrNotFound) {
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "用户不存在")
+			return
+		}
+		response.InternalError(w, r, err)
 		return
 	}
-	if err := h.store.Unlock(r.Context(), id); err != nil {
-		response.InternalError(w, r, err)
+	if target.Status != StatusLocked {
+		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "仅已锁定的用户可执行解锁操作")
+		return
+	}
+	if err := repo.Unlock(r.Context(), id); err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidStatus):
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "仅已锁定的用户可执行解锁操作")
+		case errors.Is(err, ErrNotFound):
+			response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "用户不存在")
+		default:
+			response.InternalError(w, r, err)
+		}
 		return
 	}
 	h.recordAudit(r, p, "users", "unlock", "user", id.String(), target.Username,
@@ -461,6 +505,9 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, module, action, objType, objID, objName, before, after, result, failReason, risk string) {
+	if h.audits == nil || p == nil {
+		return
+	}
 	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,

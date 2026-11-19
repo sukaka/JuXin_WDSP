@@ -54,6 +54,31 @@ func TestVerifyTOTPTimeSkew(t *testing.T) {
 	}
 }
 
+// TestH19VerifyTOTPWithStepReturnsExactMatchedStep 验证返回命中的精确时间步，供防重放登记使用。
+func TestH19VerifyTOTPWithStepReturnsExactMatchedStep(t *testing.T) {
+	base := time.Unix(1000000000, 0).UTC()
+	wantStep := base.Unix() / totpPeriod
+	code, err := TOTPCode(rfc6238Secret, base)
+	if err != nil {
+		t.Fatalf("TOTPCode: %v", err)
+	}
+	for _, offset := range []int64{-30, 0, 30} {
+		step, ok := VerifyTOTPWithStep(rfc6238Secret, code, base.Add(time.Duration(offset)*time.Second))
+		if !ok {
+			t.Fatalf("VerifyTOTPWithStep(offset=%ds) = false, want true", offset)
+		}
+		if step != wantStep {
+			t.Fatalf("VerifyTOTPWithStep(offset=%ds) step = %d, want %d", offset, step, wantStep)
+		}
+	}
+	if step, ok := VerifyTOTPWithStep(rfc6238Secret, code, base.Add(60*time.Second)); ok || step != 0 {
+		t.Fatalf("out-of-window VerifyTOTPWithStep = (%d, %v), want (0, false)", step, ok)
+	}
+	if step, ok := VerifyTOTPWithStep(rfc6238Secret, "invalid", base); ok || step != 0 {
+		t.Fatalf("malformed VerifyTOTPWithStep = (%d, %v), want (0, false)", step, ok)
+	}
+}
+
 // TestVerifyTOTPRejectsMalformed 非法格式与错误验证码拒绝。
 func TestVerifyTOTPRejectsMalformed(t *testing.T) {
 	now := time.Now()

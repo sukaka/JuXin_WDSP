@@ -349,9 +349,15 @@ func mapNVDCVE(c *nvdCVE) (*Advisory, error) {
 
 	refs := make([]string, 0, len(c.References))
 	for _, r := range c.References {
-		if r.URL != "" {
-			refs = append(refs, r.URL)
+		ref := strings.TrimSpace(r.URL)
+		if ref == "" {
+			continue
 		}
+		if err := ValidateReferenceURL(ref); err != nil {
+			slog.Warn("skip non-http(s) NVD reference url", "cve_id", c.ID, "error", err)
+			continue
+		}
+		refs = append(refs, ref)
 	}
 
 	var cpes []string

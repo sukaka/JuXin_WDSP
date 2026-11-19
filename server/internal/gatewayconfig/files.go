@@ -49,14 +49,22 @@ func WriteCandidate(dataDir, versionNum, configJSON string) (string, error) {
 	return file, nil
 }
 
-// WriteActiveConfig 保存生效配置。
+// WriteActiveConfig 保存生效配置（权限 0600，落盘前统一脱敏，避免密钥明文留存磁盘）。
 func WriteActiveConfig(dataDir, versionNum, configJSON string) (string, error) {
 	dir := filepath.Join(dataDir, "configs", "active")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
+	stored := configJSON
+	if strings.TrimSpace(configJSON) != "" {
+		redacted, err := RedactConfigSecrets(configJSON)
+		if err != nil {
+			return "", fmt.Errorf("redact active config secrets: %w", err)
+		}
+		stored = redacted
+	}
 	file := filepath.Join(dir, sanitizeFilename(versionNum)+".json")
-	if err := os.WriteFile(file, []byte(configJSON), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(stored), 0o600); err != nil {
 		return "", err
 	}
 	return file, nil
@@ -75,15 +83,20 @@ func WriteVersionConfig(dataDir, versionNum, configJSON string) (string, error) 
 	return file, nil
 }
 
-// WriteFailedCandidate 保存失败候选配置。
+// WriteFailedCandidate 保存失败候选配置（落盘前强制脱敏，防止密钥明文写入 failed-*.json）。
 func WriteFailedCandidate(dataDir, configJSON, reason string) error {
 	dir := filepath.Join(dataDir, "configs", "failed")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	safeConfig, err := RedactConfigSecrets(configJSON)
+	if err != nil {
+		// 无法解析 JSON 完成脱敏时，绝不将潜在明文密钥原样落盘
+		safeConfig = `{"redacted_on_parse_error":true}`
+	}
 	name := fmt.Sprintf("failed-%d.json", time.Now().Unix())
 	file := filepath.Join(dir, name)
-	content := fmt.Sprintf("{\"failure_reason\": %q, \"config\": %s}", reason, configJSON)
+	content := fmt.Sprintf("{\"failure_reason\": %q, \"config\": %s}", reason, safeConfig)
 	return os.WriteFile(file, []byte(content), 0o600)
 }
 

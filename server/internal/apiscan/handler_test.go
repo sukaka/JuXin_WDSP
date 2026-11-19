@@ -264,7 +264,7 @@ func TestCreateJobSwitchAndValidation(t *testing.T) {
 		t.Fatalf("disabled create status=%d", rr.Code)
 	}
 
-	h := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true})
+	h := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true, allowLoopback: true})
 	mux := newTestMux(h, uuid.New())
 	// 词表外探针集 → 400
 	rr = doJSON(t, mux, http.MethodPost, "/api/v1/api-security/scans/jobs", map[string]any{
@@ -443,7 +443,7 @@ func TestRetestFinding(t *testing.T) {
 
 	// 复现 → FAIL 回写
 	writer := &fakeRetestWriter{}
-	h := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true})
+	h := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true, allowLoopback: true})
 	h.SetRetest(fakeEngine{reproduce: true}, nil, writer)
 	rr = doJSON(t, newTestMux(h, uuid.New()), http.MethodPost, base, nil)
 	if rr.Code != http.StatusOK {
@@ -458,7 +458,7 @@ func TestRetestFinding(t *testing.T) {
 	}
 
 	// 未复现 → PASS 回写
-	h2 := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true})
+	h2 := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true, allowLoopback: true})
 	h2.SetRetest(fakeEngine{reproduce: false}, nil, writer)
 	rr = doJSON(t, newTestMux(h2, uuid.New()), http.MethodPost, base, nil)
 	if rr.Code != http.StatusOK {
@@ -470,7 +470,7 @@ func TestRetestFinding(t *testing.T) {
 
 	// 回写失败（弱点非 FIXED 等）→ 400 如实报错
 	badWriter := &fakeRetestWriter{err: errors.New("invalid weakness status transition: ARCHIVED 状态不允许 RETEST_PASS")}
-	h3 := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true})
+	h3 := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true, allowLoopback: true})
 	h3.SetRetest(fakeEngine{reproduce: false}, nil, badWriter)
 	rr = doJSON(t, newTestMux(h3, uuid.New()), http.MethodPost, base, nil)
 	if rr.Code != http.StatusBadRequest {
@@ -498,7 +498,7 @@ func TestRetestValidationBeforeProbe(t *testing.T) {
 	base := "/api/v1/api-security/scans/findings/" + finding.ID.String() + "/retest"
 
 	newMux := func(writer *fakeRetestWriter, runs *int) *http.ServeMux {
-		h := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true})
+		h := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true, allowLoopback: true})
 		h.SetRetest(fakeEngine{reproduce: true, runs: runs}, nil, writer)
 		return newTestMux(h, uuid.New())
 	}
@@ -546,6 +546,156 @@ func TestRetestValidationBeforeProbe(t *testing.T) {
 	rr = doJSON(t, newMux(writer, &runs), http.MethodPost, base, nil)
 	if rr.Code != http.StatusOK || runs != 1 || writer.calls != 1 {
 		t.Fatalf("fixed retest status=%d runs=%d writeback=%d", rr.Code, runs, writer.calls)
+	}
+}
+
+type summaryFakeEngine struct {
+	summary    RunSummary
+	lastClient *http.Client
+}
+
+func (f *summaryFakeEngine) ProbeSets() []string { return AllProbeSets() }
+func (f *summaryFakeEngine) Run(_ context.Context, task *ProbeTask, _ func(*ProbeResult) error) (RunSummary, error) {
+	f.lastClient = task.HTTPClient
+	return f.summary, nil
+}
+
+// TestH18UpdateTargetRevokesActiveAuthorizations 双人分离回归：修改 base_url 或 allowed_paths
+// 时必须自动撤销已有活跃授权并停止其下任务，且更新建标人防止修改者自审自批。
+func TestH18UpdateTargetRevokesActiveAuthorizations(t *testing.T) {
+	store := NewMemStore()
+	creator := uuid.New()
+	approver := uuid.New()
+	worker := NewWorker(store, NewBuiltinEngine(nil), nil, fakeSettings{enabled: true}, nil)
+	h := NewHandler(store, nil).SetController(worker)
+
+	// 建标 + 另一人授权 + 建排队任务
+	rr := doJSON(t, newTestMux(h, creator), http.MethodPost, "/api/v1/api-security/scans/targets", map[string]any{
+		"application_id": uuid.NewString(), "name": "原目标",
+		"base_url": "https://api.example.com", "allowed_paths": []string{"/v1/health"},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create target: %d %s", rr.Code, rr.Body.String())
+	}
+	targetID := decodeData(t, rr)["target"].(map[string]any)["id"].(string)
+
+	rr = doJSON(t, newTestMux(h, approver), http.MethodPost, "/api/v1/api-security/scans/targets/"+targetID+"/authorize",
+		map[string]any{"expires_at": time.Now().Add(time.Hour), "allowlist": []string{"api.example.com:443"}})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("authorize: %d %s", rr.Code, rr.Body.String())
+	}
+	authzID := uuid.MustParse(decodeData(t, rr)["authorization"].(map[string]any)["id"].(string))
+	job := &Job{TargetID: uuid.MustParse(targetID), AuthorizationID: authzID}
+	if err := store.CreateJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+
+	// 仅改名称（不改 base_url/allowed_paths）：授权保持有效
+	rr = doJSON(t, newTestMux(h, creator), http.MethodPut, "/api/v1/api-security/scans/targets/"+targetID, map[string]any{
+		"name": "改名目标", "base_url": "https://api.example.com",
+		"allowed_paths": []string{"/v1/health"}, "status": TargetStatusEnabled,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("rename target: %d %s", rr.Code, rr.Body.String())
+	}
+	if a, _ := store.GetAuthorization(context.Background(), authzID); a.RevokedAt != nil {
+		t.Fatal("renaming target without changing scope should not revoke authorization")
+	}
+
+	// 修改 base_url：必须撤销既有活跃授权并停止排队任务
+	rr = doJSON(t, newTestMux(h, approver), http.MethodPut, "/api/v1/api-security/scans/targets/"+targetID, map[string]any{
+		"name": "篡改目标", "base_url": "https://internal.example.com:8443",
+		"allowed_paths": []string{"/v1/health"}, "status": TargetStatusEnabled,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update base_url: %d %s", rr.Code, rr.Body.String())
+	}
+	if a, _ := store.GetAuthorization(context.Background(), authzID); a.RevokedAt == nil {
+		t.Fatal("changing base_url must revoke existing active authorization")
+	}
+	if j, _ := store.GetJob(context.Background(), job.ID); j.Status != JobStatusStopped {
+		t.Fatalf("pending job under revoked authorization should be STOPPED, got %s", j.Status)
+	}
+	// 修改者 approver 成为新 CreatedBy，不能自审自批自己改过的目标
+	rr = doJSON(t, newTestMux(h, approver), http.MethodPost, "/api/v1/api-security/scans/targets/"+targetID+"/authorize",
+		map[string]any{"expires_at": time.Now().Add(time.Hour)})
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("modifier must not self-authorize updated target, got status=%d", rr.Code)
+	}
+}
+
+// TestH18RetestFindingGuardsAndNoFalsePass 回归：停用目标/allowlist越界/回环默认拒绝/
+// 拨号固定客户端装配/探针失败或零执行绝不误判 RETEST_PASS。
+func TestH18RetestFindingGuardsAndNoFalsePass(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. 默认关闭 allowLoopback 时，回环目标复测被拒（400）
+	store := NewMemStore()
+	finding, _ := setupRetestFinding(t, store)
+	base := "/api/v1/api-security/scans/findings/" + finding.ID.String() + "/retest"
+	writer := &fakeRetestWriter{}
+	eng := &summaryFakeEngine{summary: RunSummary{EndpointsDone: 1, Requests: 1}}
+	hNoLoop := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true})
+	hNoLoop.SetRetest(eng, nil, writer)
+	if rr := doJSON(t, newTestMux(hNoLoop, uuid.New()), http.MethodPost, base, nil); rr.Code != http.StatusBadRequest {
+		t.Fatalf("loopback retest without allowLoopback: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if writer.calls != 0 {
+		t.Fatal("rejected loopback retest must not write back")
+	}
+
+	// 2. 开启 allowLoopback 后，确认注入了防 DNS 重绑定的 pinned HTTPClient
+	hAllow := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true, allowLoopback: true})
+	hAllow.SetRetest(eng, nil, writer)
+	if rr := doJSON(t, newTestMux(hAllow, uuid.New()), http.MethodPost, base, nil); rr.Code != http.StatusOK {
+		t.Fatalf("valid retest failed: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if eng.lastClient == nil {
+		t.Fatal("RetestFinding must attach pinned anti-DNS-rebinding HTTPClient")
+	}
+
+	// 3. 探针失败（EndpointsFailed > 0）或未执行（Requests == 0）→ 502，绝不回写 RETEST_PASS
+	for _, tc := range []struct {
+		name    string
+		summary RunSummary
+	}{
+		{"endpoint failed", RunSummary{EndpointsDone: 1, EndpointsFailed: 1, Requests: 1, Errors: 1, LastError: "dial refused"}},
+		{"zero executed", RunSummary{EndpointsDone: 0, Requests: 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w2 := &fakeRetestWriter{}
+			e2 := &summaryFakeEngine{summary: tc.summary}
+			h2 := NewHandler(store, nil).SetSettings(fakeSettings{enabled: true, allowLoopback: true})
+			h2.SetRetest(e2, nil, w2)
+			rr := doJSON(t, newTestMux(h2, uuid.New()), http.MethodPost, base, nil)
+			if rr.Code != http.StatusBadGateway {
+				t.Fatalf("status=%d, want 502 (body=%s)", rr.Code, rr.Body.String())
+			}
+			if w2.calls != 0 {
+				t.Fatal("failed/unexecuted retest must NEVER mark RETEST_PASS")
+			}
+		})
+	}
+
+	// 4. allowlist 端口不匹配 → 400
+	job, _ := store.GetJob(ctx, finding.JobID)
+	authzObj, _ := store.GetAuthorization(ctx, job.AuthorizationID)
+	authzObj.Allowlist = []string{"127.0.0.1:9999"} // target is 127.0.0.1:8080
+	store.mu.Lock()
+	store.authzs[authzObj.ID] = authzObj
+	store.mu.Unlock()
+	w3 := &fakeRetestWriter{}
+	hAllow.SetRetest(eng, nil, w3)
+	if rr := doJSON(t, newTestMux(hAllow, uuid.New()), http.MethodPost, base, nil); rr.Code != http.StatusBadRequest {
+		t.Fatalf("allowlist port mismatch retest status=%d, want 400", rr.Code)
+	}
+
+	// 5. 目标停用 → 400
+	target, _ := store.GetTarget(ctx, job.TargetID)
+	target.Status = TargetStatusDisabled
+	_ = store.UpdateTarget(ctx, target)
+	if rr := doJSON(t, newTestMux(hAllow, uuid.New()), http.MethodPost, base, nil); rr.Code != http.StatusBadRequest {
+		t.Fatalf("disabled target retest status=%d, want 400", rr.Code)
 	}
 }
 

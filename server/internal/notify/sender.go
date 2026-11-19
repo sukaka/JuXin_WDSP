@@ -50,7 +50,9 @@ func postJSONWithHeaders(ctx context.Context, url string, body []byte, headers m
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := pol.Client().Do(req)
+	client := pol.Client()
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}

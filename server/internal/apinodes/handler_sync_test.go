@@ -155,6 +155,22 @@ func TestUpdateNodeValidation(t *testing.T) {
 			t.Fatalf("status = %d, want 400", rr.Code)
 		}
 	})
+
+	t.Run("非白名单 unix socket 与元数据地址拦截 400", func(t *testing.T) {
+		for _, addr := range []string{
+			"/var/run/docker.sock",
+			"/run/caddy/../docker.sock",
+			"http://169.254.169.254:80",
+			"http://[fd00:ec2::254]:80",
+		} {
+			h, _ := newHandler()
+			rr := doPatch(t, newSyncMux(h, syncInjectPerms(PermPolicyPublish)), base+node.ID.String(),
+				`{"admin_addr":"`+addr+`"}`)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("addr %q: status = %d, want 400", addr, rr.Code)
+			}
+		}
+	})
 }
 
 // TestUpdateNodeSuccessAndAudit 登记成功：admin_addr/sync_enabled 落库（未提供字段保持原值），

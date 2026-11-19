@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/gatewayconfig"
+	"github.com/jiuzhang-waf/server/internal/validation"
 )
 
 // 错误
@@ -399,6 +400,22 @@ func scanPathRoute(row pgx.Row) (*PathRoute, error) {
 	return &r, nil
 }
 
+// validateHeaderValue 校验所有写入 Caddy headers 配置的值字段：
+// 拒绝控制字符（\r/\n/\x00-\x1f/\x7f）、拒绝 Caddy 占位符定界符（{ 与 }，防 {env.*} 密钥外泄），
+// 并强制长度上限。
+func validateHeaderValue(field, val string, maxLen int) error {
+	if len(val) > maxLen {
+		return fmt.Errorf("%w: %s 长度不能超过 %d", ErrInvalid, field, maxLen)
+	}
+	if validation.ContainsControlChars(val) {
+		return fmt.Errorf("%w: %s 不能包含控制字符", ErrInvalid, field)
+	}
+	if strings.ContainsAny(val, "{}") {
+		return fmt.Errorf("%w: %s 不能包含 Caddy 占位符字符 { 或 }", ErrInvalid, field)
+	}
+	return nil
+}
+
 // validateHeaderConfig 校验头合规配置（写库前调用，非法输入报 ErrInvalid）。
 func validateHeaderConfig(cfg *gatewayconfig.AppHeaderConfig) error {
 	if cfg == nil {
@@ -413,8 +430,14 @@ func validateHeaderConfig(cfg *gatewayconfig.AppHeaderConfig) error {
 	if !headerActions[cfg.XAuthorAction] {
 		return fmt.Errorf("%w: x_author_action 取值无效（keep/hide/replace）", ErrInvalid)
 	}
-	if len(cfg.ServerValue) > 255 || len(cfg.XPoweredByValue) > 255 || len(cfg.XAuthorValue) > 255 {
-		return fmt.Errorf("%w: server_value/x_author_value/x_powered_by_value 长度不能超过 255", ErrInvalid)
+	if err := validateHeaderValue("server_value", cfg.ServerValue, 255); err != nil {
+		return err
+	}
+	if err := validateHeaderValue("x_powered_by_value", cfg.XPoweredByValue, 255); err != nil {
+		return err
+	}
+	if err := validateHeaderValue("x_author_value", cfg.XAuthorValue, 255); err != nil {
+		return err
 	}
 	if !frameOptions[cfg.XFrameOptions] {
 		return fmt.Errorf("%w: x_frame_options 取值无效（default/inherit/deny/sameorigin/allow_from）", ErrInvalid)
@@ -422,8 +445,8 @@ func validateHeaderConfig(cfg *gatewayconfig.AppHeaderConfig) error {
 	if cfg.XFrameOptions == "allow_from" && strings.TrimSpace(cfg.XFrameOptionsURL) == "" {
 		return fmt.Errorf("%w: x_frame_options 为 allow_from 时必须提供 x_frame_options_url", ErrInvalid)
 	}
-	if len(cfg.XFrameOptionsURL) > 512 {
-		return fmt.Errorf("%w: x_frame_options_url 长度不能超过 512", ErrInvalid)
+	if err := validateHeaderValue("x_frame_options_url", cfg.XFrameOptionsURL, 512); err != nil {
+		return err
 	}
 	if cfg.HstsMaxAge <= 0 {
 		return fmt.Errorf("%w: hsts_max_age 必须大于 0", ErrInvalid)
@@ -433,6 +456,9 @@ func validateHeaderConfig(cfg *gatewayconfig.AppHeaderConfig) error {
 	}
 	if cfg.CspMode == "custom" && strings.TrimSpace(cfg.CspValue) == "" {
 		return fmt.Errorf("%w: csp_mode 为 custom 时必须提供 csp_value", ErrInvalid)
+	}
+	if err := validateHeaderValue("csp_value", cfg.CspValue, 4096); err != nil {
+		return err
 	}
 	if err := validateHeaderRules("custom_request_rules", cfg.CustomRequestRules); err != nil {
 		return err
@@ -444,7 +470,7 @@ func validateHeaderConfig(cfg *gatewayconfig.AppHeaderConfig) error {
 }
 
 // validateHeaderRules 校验自定义头修改规则：method ∈ set|add|delete、
-// name 必填且为合法 header 名、delete 时 value 必须为空。
+// name 必填且为合法 header 名、delete 时 value 必须为空、非 delete 时校验 value 安全性。
 func validateHeaderRules(field string, rules []gatewayconfig.HeaderRule) error {
 	if len(rules) > 64 {
 		return fmt.Errorf("%w: %s 规则数量不能超过 64", ErrInvalid, field)
@@ -462,6 +488,9 @@ func validateHeaderRules(field string, rules []gatewayconfig.HeaderRule) error {
 		}
 		if rule.Method == "delete" && rule.Value != "" {
 			return fmt.Errorf("%w: %s[%d] method 为 delete 时 value 必须为空", ErrInvalid, field, i)
+		}
+		if err := validateHeaderValue(fmt.Sprintf("%s[%d].value", field, i), rule.Value, 1024); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -482,8 +511,8 @@ func validatePathRoute(r *PathRoute) error {
 	if strings.Contains(prefix, "..") {
 		return fmt.Errorf("%w: path_prefix 不能包含 ..", ErrInvalid)
 	}
-	if strings.TrimSpace(r.UpstreamHost) == "" || len(r.UpstreamHost) > 255 {
-		return fmt.Errorf("%w: upstream_host 不能为空且长度不能超过 255", ErrInvalid)
+	if err := validation.IsValidUpstreamHost(r.UpstreamHost); err != nil {
+		return fmt.Errorf("%w: upstream_host %v", ErrInvalid, err)
 	}
 	if r.UpstreamPort < 1 || r.UpstreamPort > 65535 {
 		return fmt.Errorf("%w: upstream_port 必须在 1-65535 之间", ErrInvalid)

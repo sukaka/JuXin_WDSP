@@ -301,9 +301,15 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]User, int64, error) {
 	return out, total, rows.Err()
 }
 
-// Create 创建用户。
+// Create 创建用户，并在同一事务内将初始密码哈希写入 password_histories（防止首次改密复用当前密码）。
 func (s *Store) Create(ctx context.Context, u *User) error {
-	err := s.db.QueryRow(ctx, `
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	err = tx.QueryRow(ctx, `
 INSERT INTO users (username, display_name, password_hash, status, must_change_password,
                    password_changed_at, password_expires_at, created_by)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -317,10 +323,13 @@ RETURNING id, created_at, updated_at, version`,
 		}
 		return err
 	}
-	return nil
+	if err := seedPasswordHistoryTx(ctx, tx, u.ID, u.PasswordHash); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
-// CreateWithRole 在同一事务内创建用户并分配角色。
+// CreateWithRole 在同一事务内创建用户、分配角色并写入初始密码历史。
 func (s *Store) CreateWithRole(ctx context.Context, u *User, roleID, operatorID uuid.UUID) error {
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -347,7 +356,25 @@ RETURNING id, created_at, updated_at, version`,
 		u.ID, roleID, operatorID); err != nil {
 		return err
 	}
+	if err := seedPasswordHistoryTx(ctx, tx, u.ID, u.PasswordHash); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+const sqlSeedPasswordHistory = `
+INSERT INTO password_histories (user_id, password_hash)
+SELECT $1, $2
+WHERE NOT EXISTS (
+  SELECT 1 FROM password_histories WHERE user_id = $1 AND password_hash = $2
+)`
+
+func seedPasswordHistoryTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, hash string) error {
+	if hash == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, sqlSeedPasswordHistory, userID, hash)
+	return err
 }
 
 // Update 更新用户基础信息（乐观锁）。
@@ -366,9 +393,21 @@ WHERE id = $3 AND version = $4 AND deleted_at IS NULL`,
 	return nil
 }
 
-// UpdatePassword 更新密码（乐观锁），返回新过期时间由调用方计算。
+// UpdatePassword 更新密码，并在同一事务内将旧密码写入 password_histories。
 func (s *Store) UpdatePassword(ctx context.Context, userID uuid.UUID, hash string, expiresAt *time.Time) error {
-	res, err := s.db.Exec(ctx, `
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var oldHash string
+	if err := tx.QueryRow(ctx,
+		`SELECT password_hash FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, userID).
+		Scan(&oldHash); err != nil {
+		return mapNotFound(err)
+	}
+	res, err := tx.Exec(ctx, `
 UPDATE users SET password_hash = $1, password_changed_at = now(), password_expires_at = $2,
        must_change_password = FALSE, failed_login_count = 0, locked_until = NULL,
        updated_at = now(), version = version + 1
@@ -380,7 +419,10 @@ WHERE id = $3 AND deleted_at IS NULL`,
 	if res.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if err := seedPasswordHistoryTx(ctx, tx, userID, oldHash); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ChangePassword 在同一事务内更新密码、记录旧密码历史并撤销持久化会话。
@@ -411,9 +453,7 @@ WHERE id = $3 AND deleted_at IS NULL`,
 	if res.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO password_histories (user_id, password_hash) VALUES ($1, $2)`,
-		userID, oldHash); err != nil {
+	if err := seedPasswordHistoryTx(ctx, tx, userID, oldHash); err != nil {
 		return err
 	}
 	if revokeSessions {
@@ -455,9 +495,7 @@ WHERE id = $3 AND deleted_at IS NULL`,
 	if res.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO password_histories (user_id, password_hash) VALUES ($1, $2)`,
-		userID, oldHash); err != nil {
+	if err := seedPasswordHistoryTx(ctx, tx, userID, oldHash); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -602,18 +640,52 @@ WHERE id = $1`, id, int(lockDuration.Seconds()), StatusLocked)
 	return false, nil
 }
 
-// Unlock 解锁用户。
-func (s *Store) Unlock(ctx context.Context, id uuid.UUID) error {
-	res, err := s.db.Exec(ctx, `
+const (
+	sqlEnableUser = `
+UPDATE users SET status = $2, updated_at = now(), version = version + 1
+WHERE id = $1 AND deleted_at IS NULL AND status = 'DISABLED'`
+
+	sqlUnlockUser = `
 UPDATE users SET failed_login_count = 0, locked_until = NULL, status = $2, updated_at = now(), version = version + 1
-WHERE id = $1 AND deleted_at IS NULL`, id, StatusActive)
+WHERE id = $1 AND deleted_at IS NULL AND status = 'LOCKED'`
+)
+
+// Enable 启用已停用的用户（状态机强约束：仅允许 DISABLED -> ACTIVE，不得绕过 LOCKED 状态）。
+func (s *Store) Enable(ctx context.Context, id uuid.UUID) error {
+	res, err := s.db.Exec(ctx, sqlEnableUser, id, StatusActive)
 	if err != nil {
 		return err
 	}
 	if res.RowsAffected() == 0 {
-		return ErrNotFound
+		return s.classifyTransitionMiss(ctx, id)
 	}
 	return nil
+}
+
+// Unlock 解锁已锁定的用户（状态机强约束：仅允许 LOCKED -> ACTIVE，不得重启用 DISABLED 账号）。
+func (s *Store) Unlock(ctx context.Context, id uuid.UUID) error {
+	res, err := s.db.Exec(ctx, sqlUnlockUser, id, StatusActive)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return s.classifyTransitionMiss(ctx, id)
+	}
+	return nil
+}
+
+// classifyTransitionMiss 区分目标用户不存在与当前状态不满足流转条件。
+func (s *Store) classifyTransitionMiss(ctx context.Context, id uuid.UUID) error {
+	var exists bool
+	if err := s.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`, id).
+		Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrNotFound
+	}
+	return ErrInvalidStatus
 }
 
 // ClearExpiredLock 清除过期锁定（登录时检查）。

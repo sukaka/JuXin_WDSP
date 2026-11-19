@@ -2,9 +2,14 @@ package vulnintel
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jiuzhang-waf/server/internal/authz"
 )
 
 // TestValidateCVE CVE 编号形态校验与归一化。
@@ -196,5 +201,96 @@ func TestValidateSubscription(t *testing.T) {
 	}
 	if err := ValidateSubscription(&Subscription{WatchTechs: many, MinSeverity: "LOW"}); !errors.Is(err, ErrInvalidInput) {
 		t.Errorf("watch_techs 超上限应拒绝: %v", err)
+	}
+}
+
+// TestMF1ReferenceURLSchemeValidation 验证参考链接仅允许 http:// 与 https:// 协议。
+func TestMF1ReferenceURLSchemeValidation(t *testing.T) {
+	allowed := []string{
+		"https://nvd.nist.gov/vuln/detail/CVE-2024-0001",
+		"http://example.com/advisory?id=1#top",
+		"HTTPS://EXAMPLE.COM/path",
+	}
+	for _, u := range allowed {
+		a := &Advisory{
+			CVEID:      "CVE-2024-1111",
+			Severity:   SeverityHigh,
+			TechTags:   []string{"php"},
+			References: []string{u},
+			Source:     SourceManual,
+		}
+		if err := ValidateAdvisory(a); err != nil {
+			t.Errorf("ValidateAdvisory(%q) unexpected error: %v", u, err)
+		}
+	}
+
+	rejected := []string{
+		"javascript:alert(1)",
+		"JAVASCRIPT:alert(1)",
+		"data:text/html,<script>alert(1)</script>",
+		"vbscript:msgbox(1)",
+		"file:///etc/passwd",
+		"ftp://example.com/patch.tar.gz",
+		"//example.com/protocol-relative",
+		"example.com/no-scheme",
+		"https:///missing-host",
+		"https://example.com/bad\r\nheader",
+		"https://example.com/null\x00byte",
+	}
+	for _, u := range rejected {
+		a := &Advisory{
+			CVEID:      "CVE-2024-1111",
+			Severity:   SeverityHigh,
+			TechTags:   []string{"php"},
+			References: []string{u},
+			Source:     SourceManual,
+		}
+		if err := ValidateAdvisory(a); !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("ValidateAdvisory(%q) = %v, want ErrInvalidInput", u, err)
+		}
+	}
+}
+
+type deadlineResponseRecorder struct {
+	*httptest.ResponseRecorder
+	deadlineSet bool
+	deadline    time.Time
+}
+
+func (d *deadlineResponseRecorder) SetWriteDeadline(t time.Time) error {
+	d.deadlineSet = true
+	d.deadline = t
+	return nil
+}
+
+// TestMS12SyncExtendsWriteDeadline 验证手动同步通过 ResponseController 放宽 HTTP 写超时。
+func TestMS12SyncExtendsWriteDeadline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resultsPerPage":0,"startIndex":0,"totalResults":0,"vulnerabilities":[]}`))
+	}))
+	defer srv.Close()
+
+	store := newMemSyncStore()
+	syncer := newTestSyncer(store, srv.URL, time.Now().UTC())
+	h := NewHandler(nil, syncer, nil, nil, nil, nil)
+
+	rec := &deadlineResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/vuln-intel/sync", nil)
+	req = req.WithContext(authz.WithPrincipal(req.Context(), &authz.Principal{
+		UserID:   uuid.New(),
+		Username: "admin",
+	}))
+	before := time.Now()
+	h.Sync(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Sync status = %d body = %s, want 200", rec.Code, rec.Body.String())
+	}
+	if !rec.deadlineSet {
+		t.Fatal("Sync did not call ResponseController.SetWriteDeadline")
+	}
+	if rec.deadline.Before(before.Add(manualSyncTimeout)) {
+		t.Fatalf("write deadline %v is shorter than manualSyncTimeout (%v)", rec.deadline.Sub(before), manualSyncTimeout)
 	}
 }

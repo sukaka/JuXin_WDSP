@@ -238,14 +238,114 @@ func TestInvalidRegex(t *testing.T) {
 }
 
 func TestSecLangEscaping(t *testing.T) {
+	// C-05: Name 含双引号、反斜杠或控制字符必须在 ValidateInput 阶段被拒绝
+	for _, badName := range []string{
+		"test\"quote",
+		"test\\backslash",
+		"test\nnewline",
+		"test\rcr",
+		"test\x00nul",
+		"test\x7fdel",
+	} {
+		r := validRule()
+		r.Name = badName
+		if _, err := ValidateInput(r); err == nil {
+			t.Errorf("Name %q should be rejected by ValidateInput", badName)
+		}
+	}
+	// 单引号在合法 Name 中仍可安全转义
 	r := validRule()
-	r.Name = "test'quote\"and\nnewline"
+	r.Name = "user's sql rule"
 	gen, err := ValidateInput(r)
 	if err != nil {
-		t.Fatalf("ValidateInput: %v", err)
+		t.Fatalf("ValidateInput with single quote in Name: %v", err)
 	}
-	if strings.Contains(gen, "\n") {
-		t.Error("generated rule contains control character")
+	if !strings.Contains(gen, `msg:'user\'s sql rule'`) {
+		t.Errorf("expected escaped single quote in msg: %s", gen)
+	}
+	// 纵深兜底：直接调用 GenerateSecLang 时也不得留下控制字符、双引号或尾部反斜杠
+	direct := GenerateSecLang(7100001, "a\"b\\c\nd", []string{"ARGS"}, "contains", "foo\\", "BLOCK", "HIGH", 2, `SQLI\`, []string{",ctl:ruleEngine=Off"})
+	if strings.ContainsAny(direct, "\n\r") {
+		t.Errorf("direct GenerateSecLang contains control char: %q", direct)
+	}
+	if strings.Contains(direct, `foo\"`) {
+		t.Errorf("direct GenerateSecLang allowed trailing backslash to escape closing quote: %q", direct)
+	}
+	if strings.Contains(direct, `tag:'SQLI\`) {
+		t.Errorf("direct GenerateSecLang preserved backslash in tag: %q", direct)
+	}
+}
+
+func TestC05SecLangActionInjectionAndTrailingBackslashRejected(t *testing.T) {
+	// 场景1：trailing-backslash attack_type + `,ctl:ruleEngine=Off` tag 注入
+	r := validRule()
+	r.AttackType = `SQLI\`
+	r.Tags = []string{",ctl:ruleEngine=Off"}
+	if _, err := ValidateInput(r); err == nil {
+		t.Fatal("trailing-backslash attack_type with ctl tag injection must be rejected")
+	}
+
+	// 单独测试 AttackType 严格白名单与危险内容
+	for _, badType := range []string{
+		`SQLI\`,
+		`SQLI"`,
+		"SQLI'",
+		"SQLI,ctl:ruleEngine=Off",
+		"SQLI\nSecAction",
+		"/etc/passwd",
+		strings.Repeat("A", 65),
+	} {
+		r := validRule()
+		r.AttackType = badType
+		if _, err := ValidateInput(r); err == nil {
+			t.Errorf("malicious AttackType %q should be rejected", badType)
+		}
+	}
+
+	// 单独测试 Tags 严格白名单与危险内容
+	for _, badTag := range []string{
+		",ctl:ruleEngine=Off",
+		`tag\`,
+		`tag"`,
+		"tag'",
+		"tag\nnewline",
+		"tag\x7f",
+		"/etc/shadow",
+		"",
+		strings.Repeat("t", 65),
+	} {
+		r := validRule()
+		r.Tags = []string{badTag}
+		if _, err := ValidateInput(r); err == nil {
+			t.Errorf("malicious Tag %q should be rejected", badTag)
+		}
+	}
+
+	// 合法 AttackType / Tags 通过
+	rOK := validRule()
+	rOK.AttackType = "OWASP_CRS/SQLI:v1.0"
+	rOK.Tags = []string{"attack-sqli", "app:portal 1.0"}
+	if _, err := ValidateInput(rOK); err != nil {
+		t.Fatalf("valid AttackType/Tags rejected: %v", err)
+	}
+
+	// 场景2：非正则操作符尾部奇数个反斜杠会吞并闭合双引号导致 Coraza 编译失败/注入
+	for _, op := range []string{"contains", "streq", "beginsWith", "endsWith", "pm"} {
+		for _, badVal := range []string{`foo\`, `foo\\\`, `\`, "foo\x00bar", "foo\tbar"} {
+			r := validRule()
+			r.Operator = op
+			r.OperatorValue = badVal
+			if _, err := ValidateInput(r); err == nil {
+				t.Errorf("operator %s with %q should be rejected", op, badVal)
+			}
+		}
+		// 偶数个反斜杠结尾（不会转义闭合引号）允许通过
+		rEven := validRule()
+		rEven.Operator = op
+		rEven.OperatorValue = `foo\\`
+		if _, err := ValidateInput(rEven); err != nil {
+			t.Errorf("operator %s with even trailing backslashes should pass: %v", op, err)
+		}
 	}
 }
 

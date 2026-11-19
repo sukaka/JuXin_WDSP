@@ -151,13 +151,16 @@ func IsValidUpstreamHost(host string) error {
 var privateNetworks = []string{
 	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
 	"127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10",
-	"0.0.0.0/8", "100.64.0.0/10", "198.18.0.0/15",
+	"0.0.0.0/8", "::/128", "100.64.0.0/10", "198.18.0.0/15",
+	"224.0.0.0/4", "ff00::/8",
 }
 
 // 云元数据与高危地址
 var blockedNetworks = []string{
-	"169.254.169.254/32", // 云元数据
+	"169.254.169.254/32", // 云元数据（AWS/GCP/Azure/OpenStack）
+	"169.254.170.2/32",   // AWS ECS 任务元数据
 	"100.100.100.200/32", // 阿里云元数据
+	"fd00:ec2::254/128",  // AWS IPv6 元数据
 }
 
 var parsedPrivate, parsedBlocked []netip.Prefix
@@ -176,7 +179,12 @@ func init() {
 }
 
 // IsBlockedAddress 判断是否为云元数据等绝对禁止地址。
+// 先解映射 IPv4-in-IPv6 并剥离 Zone 再比对，防止 ::ffff:169.254.169.254 或带 Zone 地址绕过。
 func IsBlockedAddress(ip netip.Addr) bool {
+	if !ip.IsValid() {
+		return true
+	}
+	ip = ip.Unmap().WithZone("")
 	for _, p := range parsedBlocked {
 		if p.Contains(ip) {
 			return true
@@ -186,7 +194,12 @@ func IsBlockedAddress(ip netip.Addr) bool {
 }
 
 // IsPrivateOrSpecialAddress 判断是否为私网/回环/链路本地等特殊地址。
+// 带接口 Zone 的 IPv6 地址一律视为特殊地址；IPv4-in-IPv6 先 Unmap 再比对。
 func IsPrivateOrSpecialAddress(ip netip.Addr) bool {
+	if !ip.IsValid() || ip.Zone() != "" {
+		return true
+	}
+	ip = ip.Unmap()
 	for _, p := range parsedPrivate {
 		if p.Contains(ip) {
 			return true
@@ -198,9 +211,12 @@ func IsPrivateOrSpecialAddress(ip netip.Addr) bool {
 // ResolveAndValidate 解析域名并校验所有解析 IP（SSRF 防 DNS 重绑定）。
 // allowPrivate 为 false 时拒绝私网/特殊地址。
 func ResolveAndValidate(host string, allowPrivate bool) ([]netip.Addr, error) {
-	// 云元数据主机名黑名单
-	lower := strings.ToLower(host)
-	blockedHosts := []string{"metadata.google.internal", "metadata", "169.254.169.254", "100.100.100.200"}
+	// 云元数据主机名黑名单（去尾点防 FQDN 绕过）
+	lower := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	blockedHosts := []string{
+		"metadata.google.internal", "metadata",
+		"169.254.169.254", "169.254.170.2", "100.100.100.200", "fd00:ec2::254",
+	}
 	for _, bh := range blockedHosts {
 		if lower == bh {
 			return nil, fmt.Errorf("禁止访问元数据地址")
@@ -209,6 +225,10 @@ func ResolveAndValidate(host string, allowPrivate bool) ([]netip.Addr, error) {
 
 	// 直接 IP
 	if addr, err := netip.ParseAddr(host); err == nil {
+		if addr.Zone() != "" {
+			return nil, fmt.Errorf("禁止包含网络接口作用域的IP地址")
+		}
+		addr = addr.Unmap()
 		if IsBlockedAddress(addr) {
 			return nil, fmt.Errorf("禁止访问元数据地址")
 		}
@@ -232,6 +252,10 @@ func ResolveAndValidate(host string, allowPrivate bool) ([]netip.Addr, error) {
 		if !ok {
 			continue
 		}
+		if addr.Zone() != "" {
+			return nil, fmt.Errorf("禁止包含网络接口作用域的IP地址")
+		}
+		addr = addr.Unmap()
 		if IsBlockedAddress(addr) {
 			return nil, fmt.Errorf("禁止访问元数据地址")
 		}

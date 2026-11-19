@@ -22,29 +22,44 @@ func TestValidateNodeAdminAddr(t *testing.T) {
 		addr    string
 		wantErr bool
 	}{
-		// 放行：unix socket 两种形态 + 内网 http(s)
-		{"unix 绝对路径", "/run/caddy-admin.sock", false},
-		{"unix:// 形式", "unix:///run/caddy-admin.sock", false},
+		// 放行：unix socket 白名单目录 + 内网 http(s)
+		{"unix /run/caddy/", "/run/caddy/admin.sock", false},
+		{"unix /var/run/caddy/", "/var/run/caddy/admin.sock", false},
+		{"unix:// /run/caddy/", "unix:///run/caddy/admin.sock", false},
+		{"unix:// /var/run/caddy/", "unix:///var/run/caddy/admin.sock", false},
 		{"http 私网地址带端口", "http://10.0.0.5:2019", false},
 		{"https 私网地址", "https://192.168.1.2:2019", false},
 		{"http 回环地址", "http://127.0.0.1:2019", false},
 		{"http 回环 v6", "http://[::1]:2019", false},
-		{"http 链路本地", "http://169.254.1.1:2019", false},
 		{"http 根路径斜杠", "http://172.16.0.3:2019/", false},
 		{"localhost 主机名", "http://localhost:2019", false},
-		// 拦截：格式与范围
+		// 拦截：格式、云元数据、链路本地与非白名单 unix socket
 		{"空地址", "", true},
 		{"纯主机名无方案", "10.0.0.5:2019", true},
 		{"非 http 方案", "ftp://10.0.0.5:2019", true},
 		{"公网 IP", "http://8.8.8.8:2019", true},
 		{"公网 IP https", "https://203.0.113.10:2019", true},
+		{"IPv4-mapped 公网", "http://[::ffff:8.8.8.8]:2019", true},
 		{"未指定地址", "http://0.0.0.0:2019", true},
 		{"组播地址", "http://224.0.0.1:2019", true},
+		{"云元数据 AWS/GCP", "http://169.254.169.254:80", true},
+		{"IPv4-mapped 云元数据", "http://[::ffff:169.254.169.254]:80", true},
+		{"云元数据 AWS ECS", "http://169.254.170.2:80", true},
+		{"云元数据 阿里云", "http://100.100.100.200:80", true},
+		{"云元数据 AWS IPv6", "http://[fd00:ec2::254]:80", true},
+		{"IPv4 链路本地", "http://169.254.1.1:2019", true},
+		{"IPv6 链路本地", "http://[fe80::1]:2019", true},
 		{"携带用户信息", "http://user:pass@10.0.0.5:2019", true},
 		{"携带路径", "http://10.0.0.5:2019/admin", true},
 		{"携带查询", "http://10.0.0.5:2019?x=1", true},
 		{"缺少主机名", "http://", true},
-		{"unix:// 相对路径", "unix://run/caddy.sock", true},
+		{"unix:// 相对路径", "unix://run/caddy/admin.sock", true},
+		{"非白名单 unix docker.sock", "/var/run/docker.sock", true},
+		{"非白名单 unix /run/caddy-admin.sock", "/run/caddy-admin.sock", true},
+		{"非白名单 unix 前缀混淆", "/run/caddy-evil/admin.sock", true},
+		{"unix 路径穿越 ..", "/run/caddy/../docker.sock", true},
+		{"unix:// 路径穿越 ..", "unix:///var/run/caddy/../../etc/passwd", true},
+		{"unix 目录自身", "/var/run/caddy/", true},
 		{"不可解析主机名", "http://node-nonexistent.invalid:2019", true},
 	}
 	for _, c := range cases {
@@ -186,12 +201,42 @@ func TestCaddyClientForAdminAddrRejected(t *testing.T) {
 
 // TestCaddyClientForAdminAddrUnix unix 目标与 NewCaddyClient 等价（socketPath 保留）。
 func TestCaddyClientForAdminAddrUnix(t *testing.T) {
-	client, err := NewCaddyClientForAdminAddr("/run/caddy-admin.sock")
+	client, err := NewCaddyClientForAdminAddr("/run/caddy/admin.sock")
 	if err != nil {
 		t.Fatalf("NewCaddyClientForAdminAddr: %v", err)
 	}
-	if client.SocketPath() != "/run/caddy-admin.sock" {
+	if client.SocketPath() != "/run/caddy/admin.sock" {
 		t.Fatalf("socket path = %q", client.SocketPath())
+	}
+}
+
+// TestH17CaddyClientDoesNotFollow307Redirect 回归：次要节点返回 307 重定向到外部/其他地址时，
+// LoadConfig 不得跟随重定向（防止携带密钥的配置体被转发到攻击者可控目标）。
+func TestH17CaddyClientDoesNotFollow307Redirect(t *testing.T) {
+	targetHit := false
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer sink.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", sink.URL+"/steal")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+
+	client, err := NewCaddyClientForAdminAddr(redirector.URL)
+	if err != nil {
+		t.Fatalf("NewCaddyClientForAdminAddr: %v", err)
+	}
+	err = client.LoadConfig(context.Background(), `{"apps":{},"secret":"do-not-leak"}`)
+	var loadErr *LoadError
+	if !errors.As(err, &loadErr) || loadErr.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("expected LoadError with 307 (not followed), got %v", err)
+	}
+	if targetHit {
+		t.Fatal("CaddyClient followed 307 redirect and leaked POST /load config body")
 	}
 }
 

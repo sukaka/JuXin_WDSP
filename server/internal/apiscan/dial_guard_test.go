@@ -80,7 +80,7 @@ func TestWorkerExecuteInjectsPinnedClient(t *testing.T) {
 
 	store := NewMemStore()
 	_, _, jobID := seedJob(t, store, srv.URL, []string{"/open"}, nil)
-	worker, _ := newTestWorker(store, fakeSettings{enabled: true})
+	worker, _ := newTestWorker(store, fakeSettings{enabled: true, allowLoopback: true})
 
 	stats, err := worker.RunOnce(context.Background())
 	if err != nil {

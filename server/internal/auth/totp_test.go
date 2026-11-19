@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 // ---------- fakes（实现 service.go 中的窄接口） ----------
 
 type fakeUserStore struct {
+	mu         sync.Mutex
 	byID       map[uuid.UUID]*users.User
 	byName     map[string]*users.User
 	failCounts map[uuid.UUID]int
@@ -38,20 +41,34 @@ func newFakeUserStore() *fakeUserStore {
 }
 
 func (f *fakeUserStore) add(u *users.User) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.byID[u.ID] = u
 	f.byName[u.Username] = u
 }
 
+func cloneFakeUser(u *users.User) *users.User {
+	cp := *u
+	if u.TOTPRecoveryCodeHashes != nil {
+		cp.TOTPRecoveryCodeHashes = append([]string(nil), u.TOTPRecoveryCodeHashes...)
+	}
+	return &cp
+}
+
 func (f *fakeUserStore) GetByUsername(_ context.Context, username string) (*users.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if u, ok := f.byName[username]; ok {
-		return u, nil
+		return cloneFakeUser(u), nil
 	}
 	return nil, users.ErrNotFound
 }
 
 func (f *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (*users.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if u, ok := f.byID[id]; ok {
-		return u, nil
+		return cloneFakeUser(u), nil
 	}
 	return nil, users.ErrNotFound
 }
@@ -59,11 +76,15 @@ func (f *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (*users.User, e
 func (f *fakeUserStore) ClearExpiredLock(_ context.Context, id uuid.UUID) error { return nil }
 
 func (f *fakeUserStore) RecordLoginSuccess(_ context.Context, id uuid.UUID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.failCounts[id] = 0
 	return nil
 }
 
 func (f *fakeUserStore) RecordLoginFailure(_ context.Context, id uuid.UUID, maxAttempts int, lock time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.failCounts[id]++
 	if maxAttempts > 0 && f.failCounts[id] >= maxAttempts {
 		u := f.byID[id]
@@ -132,6 +153,8 @@ func (f *fakeUserStore) ClearTOTP(_ context.Context, userID uuid.UUID) error {
 }
 
 func (f *fakeUserStore) ConsumeTOTPRecoveryCode(_ context.Context, userID uuid.UUID, hash string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	u, ok := f.byID[userID]
 	if !ok || !u.TOTPEnabled {
 		return false, nil
@@ -147,6 +170,7 @@ func (f *fakeUserStore) ConsumeTOTPRecoveryCode(_ context.Context, userID uuid.U
 }
 
 type fakeSessionService struct {
+	mu      sync.Mutex
 	created int
 	// revokedAll 记录 RevokeAllForUser 调用的 userID 与 reason
 	revokedAll []revokeAllCall
@@ -159,6 +183,8 @@ type revokeAllCall struct {
 
 func (f *fakeSessionService) Create(_ context.Context, userID uuid.UUID, username string, roles, perms []string,
 	ip, ua string, mustChangePwd bool, _ sessions.Policy) (*sessions.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.created++
 	return &sessions.Session{
 		ID:             "test-session-" + uuid.NewString(),
@@ -173,6 +199,8 @@ func (f *fakeSessionService) Create(_ context.Context, userID uuid.UUID, usernam
 func (f *fakeSessionService) Revoke(_ context.Context, _, _ string) error { return nil }
 
 func (f *fakeSessionService) RevokeAllForUser(_ context.Context, userID uuid.UUID, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.revokedAll = append(f.revokedAll, revokeAllCall{userID: userID, reason: reason})
 	return nil
 }
@@ -193,14 +221,21 @@ func (fakeSettingsService) SessionPolicyValues(context.Context) (int, int, int, 
 
 func (fakeSettingsService) GetBool(_ context.Context, _, _ string, def bool) bool { return def }
 
-type fakeLoginLogs struct{ entries []loginlogs.RecordInput }
+type fakeLoginLogs struct {
+	mu      sync.Mutex
+	entries []loginlogs.RecordInput
+}
 
 func (f *fakeLoginLogs) Record(_ context.Context, in loginlogs.RecordInput) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.entries = append(f.entries, in)
 	return nil
 }
 
 func (f *fakeLoginLogs) count(eventType, failureCode string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	n := 0
 	for _, e := range f.entries {
 		if e.EventType == eventType && e.FailureCode == failureCode {
@@ -210,14 +245,21 @@ func (f *fakeLoginLogs) count(eventType, failureCode string) int {
 	return n
 }
 
-type fakeAudits struct{ entries []audits.RecordInput }
+type fakeAudits struct {
+	mu      sync.Mutex
+	entries []audits.RecordInput
+}
 
 func (f *fakeAudits) Record(_ context.Context, in audits.RecordInput) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.entries = append(f.entries, in)
 	return nil
 }
 
 func (f *fakeAudits) hasAction(action string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, e := range f.entries {
 		if e.Action == action {
 			return true
@@ -226,11 +268,18 @@ func (f *fakeAudits) hasAction(action string) bool {
 	return false
 }
 
-type fakeCache struct{ m map[string]string }
+type fakeCache struct {
+	mu       sync.Mutex
+	m        map[string]string
+	delErr   error
+	setNXErr error
+}
 
 func newFakeCache() *fakeCache { return &fakeCache{m: map[string]string{}} }
 
 func (f *fakeCache) Get(_ context.Context, key string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if v, ok := f.m[key]; ok {
 		return v, nil
 	}
@@ -238,15 +287,48 @@ func (f *fakeCache) Get(_ context.Context, key string) (string, error) {
 }
 
 func (f *fakeCache) Set(_ context.Context, key, value string, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.m[key] = value
 	return nil
 }
 
 func (f *fakeCache) Del(_ context.Context, keys ...string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.delErr != nil {
+		return f.delErr
+	}
 	for _, k := range keys {
 		delete(f.m, k)
 	}
 	return nil
+}
+
+func (f *fakeCache) SetNX(_ context.Context, key, value string, _ time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.setNXErr != nil {
+		return false, f.setNXErr
+	}
+	if _, exists := f.m[key]; exists {
+		return false, nil
+	}
+	f.m[key] = value
+	return true, nil
+}
+
+func (f *fakeCache) DelCount(_ context.Context, key string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.delErr != nil {
+		return 0, f.delErr
+	}
+	if _, exists := f.m[key]; !exists {
+		return 0, nil
+	}
+	delete(f.m, key)
+	return 1, nil
 }
 
 // ---------- 测试装配 ----------
@@ -812,5 +894,183 @@ func TestLoginUnknownUserVerifiesDummyHash(t *testing.T) {
 	}
 	if env.logs.count(loginlogs.EventLoginFailure, "BAD_CREDENTIALS") != 1 {
 		t.Fatal("missing BAD_CREDENTIALS login failure log for unknown user")
+	}
+}
+
+// ---------- H-19: 密码复用拦截、TOTP 90s 防重放、挑战原子消费 ----------
+
+func TestH19ChangePasswordRejectsSameAsCurrentPassword(t *testing.T) {
+	env := newTOTPTestEnv(t)
+	u := env.addUser(t, "kate", "Passw0rd!2026", false)
+
+	// 即使 password_histories 为空且 HistoryCount=0，新密码与当前密码相同也必须拒绝
+	err := env.svc.ChangePassword(context.Background(), ChangePasswordInput{
+		UserID:      u.ID,
+		OldPassword: "Passw0rd!2026",
+		NewPassword: "Passw0rd!2026",
+	})
+	if !errors.Is(err, ErrPasswordReused) {
+		t.Fatalf("ChangePassword same as current err = %v, want ErrPasswordReused", err)
+	}
+	if len(env.store.changePwdRevokeSessions) != 0 {
+		t.Fatal("store.ChangePassword must not be called on password reuse")
+	}
+}
+
+func TestH19TOTPReplayBlockedWithin90sWindow(t *testing.T) {
+	env := newTOTPTestEnv(t)
+	u := env.addUser(t, "leo", "Passw0rd!2026", true)
+	secret, _ := env.armTOTP(t, u)
+
+	code, err := security.TOTPCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("totp code: %v", err)
+	}
+
+	// 第一次登录挑战 + 验证码：成功并登记 totp_used:<userID>:<step>
+	token1 := env.loginChallenge(t, "leo", "Passw0rd!2026")
+	rr1 := doJSON(t, http.HandlerFunc(env.handler.TOTPVerify), http.MethodPost, "/api/v1/auth/totp-verify",
+		`{"challenge_token":"`+token1+`","code":"`+code+`"}`)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first verify status=%d body=%s", rr1.Code, rr1.Body.String())
+	}
+
+	// 同一时间步内，即使拿到全新挑战令牌，重放同一 6 位验证码也必须被拒绝
+	token2 := env.loginChallenge(t, "leo", "Passw0rd!2026")
+	rr2 := doJSON(t, http.HandlerFunc(env.handler.TOTPVerify), http.MethodPost, "/api/v1/auth/totp-verify",
+		`{"challenge_token":"`+token2+`","code":"`+code+`"}`)
+	if envResp := decodeEnvelope(t, rr2); rr2.Code != http.StatusUnauthorized || envResp.Code != "TOTP_INVALID" {
+		t.Fatalf("replayed TOTP code status=%d code=%s, want 401 TOTP_INVALID", rr2.Code, envResp.Code)
+	}
+	if env.sessions.created != 1 {
+		t.Fatalf("sessions created = %d, want 1", env.sessions.created)
+	}
+
+	// SetNX 后端故障时必须 fail-closed 拒绝
+	u2 := env.addUser(t, "mia", "Passw0rd!2026", true)
+	secret2, _ := env.armTOTP(t, u2)
+	code2, _ := security.TOTPCode(secret2, time.Now())
+	token3 := env.loginChallenge(t, "mia", "Passw0rd!2026")
+	env.cache.setNXErr = errors.New("valkey unavailable")
+	rr3 := doJSON(t, http.HandlerFunc(env.handler.TOTPVerify), http.MethodPost, "/api/v1/auth/totp-verify",
+		`{"challenge_token":"`+token3+`","code":"`+code2+`"}`)
+	if rr3.Code != http.StatusUnauthorized {
+		t.Fatalf("SetNX error verify status=%d, want 401", rr3.Code)
+	}
+}
+
+func TestH19TOTPChallengeAtomicConsumptionAndFailClosed(t *testing.T) {
+	// 1. 删除挑战返回缓存错误时必须 fail-closed，不得建立会话
+	env := newTOTPTestEnv(t)
+	u := env.addUser(t, "nina", "Passw0rd!2026", true)
+	secret, _ := env.armTOTP(t, u)
+	token := env.loginChallenge(t, "nina", "Passw0rd!2026")
+	code, _ := security.TOTPCode(secret, time.Now())
+
+	env.cache.delErr = errors.New("valkey del error")
+	rr := doJSON(t, http.HandlerFunc(env.handler.TOTPVerify), http.MethodPost, "/api/v1/auth/totp-verify",
+		`{"challenge_token":"`+token+`","code":"`+code+`"}`)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("del error verify status=%d, want 401 fail-closed", rr.Code)
+	}
+	if env.sessions.created != 0 {
+		t.Fatalf("session must not be created when challenge consume fails, created=%d", env.sessions.created)
+	}
+
+	// 2. 并发使用同一挑战令牌（两个不同有效恢复码）：仅一个能原子消费并建会话
+	env2 := newTOTPTestEnv(t)
+	u2 := env2.addUser(t, "oscar", "Passw0rd!2026", true)
+	_, recCodes := env2.armTOTP(t, u2)
+	sharedToken := env2.loginChallenge(t, "oscar", "Passw0rd!2026")
+
+	var okCount atomic.Int32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		rc := recCodes[i]
+		go func() {
+			defer wg.Done()
+			<-start
+			resp := doJSON(t, http.HandlerFunc(env2.handler.TOTPVerify), http.MethodPost, "/api/v1/auth/totp-verify",
+				`{"challenge_token":"`+sharedToken+`","code":"`+rc+`"}`)
+			if resp.Code == http.StatusOK {
+				okCount.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if okCount.Load() != 1 || env2.sessions.created != 1 {
+		t.Fatalf("concurrent challenge consume: ok=%d sessions=%d, want 1 and 1", okCount.Load(), env2.sessions.created)
+	}
+}
+
+// ---------- M-S4: CSRF 常量时间比较与 GetOrIssueCSRFToken 不覆盖在途 Token ----------
+
+func TestMS4CSRFReuseAndValidation(t *testing.T) {
+	env := newTOTPTestEnv(t)
+	ctx := context.Background()
+	sessID := "sess-csrf-1"
+
+	tok1, err := env.svc.GetOrIssueCSRFToken(ctx, sessID)
+	if err != nil || tok1 == "" {
+		t.Fatalf("GetOrIssueCSRFToken #1 = (%q, %v)", tok1, err)
+	}
+	// 再次调用应复用已有有效 Token，不得覆盖
+	tok2, err := env.svc.GetOrIssueCSRFToken(ctx, sessID)
+	if err != nil || tok2 != tok1 {
+		t.Fatalf("GetOrIssueCSRFToken #2 = %q, want reuse %q (err=%v)", tok2, tok1, err)
+	}
+	if !env.svc.ValidateCSRFToken(ctx, sessID, tok1) {
+		t.Fatal("ValidateCSRFToken rejected valid token")
+	}
+	if env.svc.ValidateCSRFToken(ctx, sessID, tok1+"x") || env.svc.ValidateCSRFToken(ctx, sessID, "") {
+		t.Fatal("ValidateCSRFToken accepted invalid/empty token")
+	}
+}
+
+// ---------- M-S5: DISABLED/LOCKED 账号先做 Argon2id 校验防时间枚举 ----------
+
+func TestMS5LoginRunsPasswordVerifyBeforeStatusCheck(t *testing.T) {
+	env := newTOTPTestEnv(t)
+	disabledUser := env.addUser(t, "disabled_u", "Passw0rd!2026", false)
+	disabledUser.Status = users.StatusDisabled
+
+	lockedUser := env.addUser(t, "locked_u", "Passw0rd!2026", false)
+	lockedUser.Status = users.StatusLocked
+	future := time.Now().Add(15 * time.Minute)
+	lockedUser.LockedUntil = &future
+
+	// 基准单次 Argon2id 耗时，用于自适应断言（不依赖硬件绝对毫秒数）
+	refStart := time.Now()
+	_ = security.VerifyPassword("wrong", disabledUser.PasswordHash)
+	refDur := time.Since(refStart)
+
+	t1 := time.Now()
+	_, err := env.svc.Login(context.Background(), LoginInput{Username: "disabled_u", Password: "wrong"})
+	d1 := time.Since(t1)
+	if !errors.Is(err, ErrAccountUnavailable) {
+		t.Fatalf("disabled login err = %v, want ErrAccountUnavailable", err)
+	}
+	if d1 < refDur/4 {
+		t.Fatalf("disabled login returned too fast (%v vs argon2 ref %v): password verification skipped", d1, refDur)
+	}
+	if env.store.failCounts[disabledUser.ID] != 0 {
+		t.Fatalf("disabled login should not increment failCounts, got %d", env.store.failCounts[disabledUser.ID])
+	}
+
+	t2 := time.Now()
+	_, err = env.svc.Login(context.Background(), LoginInput{Username: "locked_u", Password: "wrong"})
+	d2 := time.Since(t2)
+	if !errors.Is(err, ErrAccountUnavailable) {
+		t.Fatalf("locked login err = %v, want ErrAccountUnavailable", err)
+	}
+	if d2 < refDur/4 {
+		t.Fatalf("locked login returned too fast (%v vs argon2 ref %v): password verification skipped", d2, refDur)
+	}
+	if env.store.failCounts[lockedUser.ID] != 0 {
+		t.Fatalf("locked login should not increment failCounts, got %d", env.store.failCounts[lockedUser.ID])
 	}
 }

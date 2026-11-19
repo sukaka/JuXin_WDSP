@@ -100,17 +100,79 @@ func TestNewPolicyBadAllowlist(t *testing.T) {
 }
 
 func TestAllowlistCannotAuthorizeMetadataAddress(t *testing.T) {
-	p := mustPolicy(t, Options{Allowlist: "169.254.0.0/16"})
-	if err := p.CheckIP(net.ParseIP("169.254.169.254")); !errors.Is(err, ErrDenied) {
-		t.Fatalf("metadata IP must remain denied through CIDR allowlist, err=%v", err)
+	p := mustPolicy(t, Options{Allowlist: "169.254.0.0/16, 100.64.0.0/10, fd00::/8"})
+	for _, metaIP := range []string{"169.254.169.254", "169.254.170.2", "100.100.100.200", "fd00:ec2::254", "::ffff:169.254.170.2", "::ffff:100.100.100.200"} {
+		if err := p.CheckIP(net.ParseIP(metaIP)); !errors.Is(err, ErrDenied) {
+			t.Fatalf("metadata IP %s must remain denied through CIDR allowlist, err=%v", metaIP, err)
+		}
 	}
 
 	resolver := staticResolver(map[string][]net.IP{
 		"provider.internal": {net.ParseIP("169.254.169.254")},
+		"ecs.internal":      {net.ParseIP("169.254.170.2")},
+		"aliyun.internal":   {net.ParseIP("100.100.100.200")},
 	})
-	p = mustPolicy(t, Options{Resolver: resolver, Allowlist: "provider.internal"})
-	if _, err := p.ValidateURL(context.Background(), "http://provider.internal/v1"); !errors.Is(err, ErrDenied) {
-		t.Fatalf("metadata IP must remain denied through hostname allowlist, err=%v", err)
+	p = mustPolicy(t, Options{Resolver: resolver, Allowlist: "provider.internal, ecs.internal, aliyun.internal"})
+	for _, host := range []string{"provider.internal", "ecs.internal", "aliyun.internal"} {
+		if _, err := p.ValidateURL(context.Background(), "http://"+host+"/v1"); !errors.Is(err, ErrDenied) {
+			t.Fatalf("metadata IP via %s must remain denied through hostname allowlist, err=%v", host, err)
+		}
+	}
+}
+
+func TestH20RedirectStripsHeadersOnSameHostDifferentPortOrScheme(t *testing.T) {
+	var gotAuth, gotCookie string
+	bSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotCookie = r.Header.Get("Cookie")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer bSrv.Close()
+	bPort := mustPort(t, bSrv.URL)
+
+	aSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 相同主机名 a.test，但跳转到不同端口
+		http.Redirect(w, r, "http://a.test:"+bPort+"/next", http.StatusFound)
+	}))
+	defer aSrv.Close()
+	aPort := mustPort(t, aSrv.URL)
+
+	p := mustPolicy(t, Options{
+		Resolver:     staticResolver(map[string][]net.IP{"a.test": {net.ParseIP("127.0.0.1")}}),
+		Allowlist:    "127.0.0.0/8",
+		MaxRedirects: 3,
+	})
+	// 验证 Transport 防止连接池泄漏
+	tr := p.Transport()
+	if !tr.DisableKeepAlives || tr.IdleConnTimeout <= 0 {
+		t.Fatalf("Transport should disable keep-alives and set IdleConnTimeout, got %+v", tr)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://a.test:"+aPort+"/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Cookie", "sid=secret")
+	resp, err := p.Client().Do(req)
+	if err != nil {
+		t.Fatalf("same-host cross-port redirect failed: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if gotAuth != "" || gotCookie != "" {
+		t.Fatalf("sensitive headers leaked across port change: auth=%q cookie=%q", gotAuth, gotCookie)
+	}
+
+	// 同主机但 scheme 变化（https -> http）必须判定为跨源
+	u1, _ := ParseURL("https://a.test/path")
+	u2, _ := ParseURL("http://a.test/path")
+	if sameRedirectOrigin(u1, u2) {
+		t.Fatal("https -> http on same hostname must not be treated as same origin")
+	}
+	u3, _ := ParseURL("https://a.test:443/other")
+	if !sameRedirectOrigin(u1, u3) {
+		t.Fatal("https default port 443 should normalize to same origin")
 	}
 }
 

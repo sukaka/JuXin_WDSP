@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jiuzhang-waf/server/internal/cache"
+	"github.com/redis/go-redis/v9"
 )
 
 // 验证码错误
@@ -30,14 +32,35 @@ const captchaKeyPrefix = "jiuzhang:captcha:"
 // 验证码字符集（去除易混淆字符 0/O、1/I/l）
 const captchaCharset = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
+// captchaStore 抽象原子消费能力（生产由 Valkey GETDEL 实现，测试可注入内存替身）。
+type captchaStore interface {
+	Set(ctx context.Context, key, value string, ttl time.Duration) error
+	GetDel(ctx context.Context, key string) (string, error)
+}
+
+type redisCaptchaStore struct {
+	client *cache.Client
+}
+
+func (r redisCaptchaStore) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	return r.client.Set(ctx, key, value, ttl)
+}
+
+func (r redisCaptchaStore) GetDel(ctx context.Context, key string) (string, error) {
+	return r.client.Redis().GetDel(ctx, key).Result()
+}
+
 // CaptchaService 提供图形验证码生成与校验。
 type CaptchaService struct {
-	cache *cache.Client
+	store captchaStore
 }
 
 // NewCaptchaService 创建验证码服务。
 func NewCaptchaService(c *cache.Client) *CaptchaService {
-	return &CaptchaService{cache: c}
+	if c == nil {
+		return &CaptchaService{}
+	}
+	return &CaptchaService{store: redisCaptchaStore{client: c}}
 }
 
 // Captcha 是生成的验证码结果。
@@ -68,7 +91,10 @@ func (s *CaptchaService) Generate(ctx context.Context, codeLen int, expireSecond
 		return nil, err
 	}
 	key := captchaKeyPrefix + id
-	if err := s.cache.Set(ctx, key, code, time.Duration(expireSeconds)*time.Second); err != nil {
+	if s.store == nil {
+		return nil, fmt.Errorf("store captcha: cache unavailable")
+	}
+	if err := s.store.Set(ctx, key, code, time.Duration(expireSeconds)*time.Second); err != nil {
 		return nil, fmt.Errorf("store captcha: %w", err)
 	}
 	return &Captcha{
@@ -78,27 +104,30 @@ func (s *CaptchaService) Generate(ctx context.Context, codeLen int, expireSecond
 	}, nil
 }
 
-// Verify 校验验证码。一次性使用：校验后立即失效。
+// Verify 校验验证码。原子一次性消费（Valkey GETDEL）：
+// 并发请求至多仅一个能读出并消费同一验证码；缓存异常时 fail-closed 拒绝。
 // caseSensitive 控制是否区分大小写。
 func (s *CaptchaService) Verify(ctx context.Context, id, code string, caseSensitive bool) error {
 	if id == "" || code == "" {
 		return ErrCaptchaMismatch
 	}
-	key := captchaKeyPrefix + id
-	stored, err := s.cache.Get(ctx, key)
-	if err != nil {
+	if s.store == nil {
 		return ErrCaptchaNotFound
 	}
-	// 一次性使用：无论对错立即删除
-	_ = s.cache.Del(ctx, key)
-	if caseSensitive {
-		if stored != code {
-			return ErrCaptchaMismatch
+	key := captchaKeyPrefix + id
+	stored, err := s.store.GetDel(ctx, key)
+	if err != nil {
+		if errors.Is(err, redis.Nil) || errors.Is(err, ErrCaptchaNotFound) {
+			return ErrCaptchaNotFound
 		}
-	} else {
-		if !strings.EqualFold(stored, code) {
-			return ErrCaptchaMismatch
-		}
+		return fmt.Errorf("consume captcha: %w", err)
+	}
+	if !caseSensitive {
+		stored = strings.ToLower(stored)
+		code = strings.ToLower(code)
+	}
+	if subtle.ConstantTimeCompare([]byte(stored), []byte(code)) != 1 {
+		return ErrCaptchaMismatch
 	}
 	return nil
 }

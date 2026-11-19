@@ -129,6 +129,10 @@ func (d *Deps) ProviderCreate(w http.ResponseWriter, r *http.Request) {
 		BaseURL: req.BaseURL, Status: status,
 	}
 	if req.AllowedTargets != nil {
+		if err := aimodel.ValidateUserAllowedTargets(*req.AllowedTargets); err != nil {
+			d.modelError(w, r, err)
+			return
+		}
 		prov.AllowedTargets = append([]string{}, (*req.AllowedTargets)...)
 	}
 	if err := d.Models.CreateProvider(r.Context(), prov, req.APIKey); err != nil {
@@ -183,6 +187,10 @@ func (d *Deps) ProviderPatch(w http.ResponseWriter, r *http.Request) {
 		prov.BaseURL = baseURL
 	}
 	if req.AllowedTargets != nil {
+		if err := aimodel.ValidateUserAllowedTargets(*req.AllowedTargets); err != nil {
+			d.modelError(w, r, err)
+			return
+		}
 		prov.AllowedTargets = append([]string{}, (*req.AllowedTargets)...)
 	}
 	if req.Status != "" {

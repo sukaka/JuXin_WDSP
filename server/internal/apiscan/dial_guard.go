@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"time"
 )
@@ -28,17 +29,42 @@ func normalizeIP(ip net.IP) net.IP {
 }
 
 // resolveHostSnapshot 授权校验时刻的解析快照：base_url 主机当前全部解析结果
-// （字面 IP 直接收录，不经 DNS）。解析失败/为空返回错误（fail-closed）。
+// （字面 IP 直接收录，不经 DNS）。解析失败/为空或命中云元数据返回错误（fail-closed）。
 func resolveHostSnapshot(ctx context.Context, rawBaseURL string) ([]net.IP, error) {
+	return resolveHostSnapshotWithOptions(ctx, rawBaseURL, true)
+}
+
+// resolveHostSnapshotWithOptions 在固化解析快照时一并校验全部解析 IP：
+// 云元数据/链路本地/未指定/组播永久拒绝；回环地址仅当 allowLoopback=true 时放行。
+func resolveHostSnapshotWithOptions(ctx context.Context, rawBaseURL string, allowLoopback bool) ([]net.IP, error) {
 	u, err := url.Parse(rawBaseURL)
 	if err != nil || u == nil || u.Hostname() == "" {
 		return nil, fmt.Errorf("apiscan: 目标 base_url 非法: %q", rawBaseURL)
 	}
 	host := u.Hostname()
+	var ips []net.IP
 	if ip := net.ParseIP(host); ip != nil {
-		return []net.IP{normalizeIP(ip)}, nil
+		ips = []net.IP{normalizeIP(ip)}
+	} else {
+		ips, err = lookupHostIPs(ctx, host)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return lookupHostIPs(ctx, host)
+	for _, ip := range ips {
+		addr, ok := netip.AddrFromSlice(ip)
+		if !ok {
+			return nil, fmt.Errorf("apiscan: 目标地址非法: %s", ip)
+		}
+		addr = addr.Unmap()
+		if isHardDeniedScanAddr(addr) {
+			return nil, fmt.Errorf("apiscan: 禁止扫描云元数据/链路本地/保留地址 %s", addr)
+		}
+		if !allowLoopback && addr.IsLoopback() {
+			return nil, fmt.Errorf("apiscan: 默认禁止扫描回环地址 %s", addr)
+		}
+	}
+	return ips, nil
 }
 
 // lookupHostIPs 解析主机全部 A/AAAA 记录（归一化；失败/为空返回错误）。
@@ -67,6 +93,8 @@ func pinnedTransport(snapshot []net.IP, lookup func(ctx context.Context, host st
 	}
 	dialer := &net.Dialer{Timeout: scanHTTPTimeout}
 	return &http.Transport{
+		DisableKeepAlives:   true,
+		IdleConnTimeout:     30 * time.Second,
 		TLSHandshakeTimeout: scanHTTPTimeout,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
@@ -78,7 +106,11 @@ func pinnedTransport(snapshot []net.IP, lookup func(ctx context.Context, host st
 				return nil, err
 			}
 			for _, ip := range ips {
-				if !allowed[normalizeIP(ip).String()] {
+				norm := normalizeIP(ip)
+				if a, ok := netip.AddrFromSlice(norm); !ok || isHardDeniedScanAddr(a.Unmap()) {
+					return nil, fmt.Errorf("apiscan: 主机 %s 解析命中禁止地址 %s，拒绝拨号", host, norm)
+				}
+				if !allowed[norm.String()] {
 					return nil, fmt.Errorf("apiscan: 主机 %s 重解析出现授权快照外地址 %s，拒绝拨号（疑似 DNS 重绑定）", host, ip)
 				}
 			}

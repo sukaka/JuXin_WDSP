@@ -25,7 +25,7 @@ func TestStartJobConcurrentCapNotExceeded(t *testing.T) {
 	defer srv.Close()
 
 	store := NewMemStore()
-	worker, _ := newTestWorker(store, fakeSettings{enabled: true, maxJobs: 1})
+	worker, _ := newTestWorker(store, fakeSettings{enabled: true, maxJobs: 1, allowLoopback: true})
 
 	const n = 8
 	jobIDs := make([]uuid.UUID, n)
@@ -85,7 +85,7 @@ func TestStartJobFailureRollsBackSlot(t *testing.T) {
 	defer srv.Close()
 
 	store := NewMemStore()
-	worker, _ := newTestWorker(store, fakeSettings{enabled: true, maxJobs: 1})
+	worker, _ := newTestWorker(store, fakeSettings{enabled: true, maxJobs: 1, allowLoopback: true})
 
 	// 不存在的任务：占槽后库操作失败，应回滚
 	if err := worker.StartJob(context.Background(), uuid.New()); err == nil {

@@ -30,6 +30,8 @@ const (
 	// 挑战令牌键纪律与 jiuzhang:csrf: / jiuzhang:captcha: 一致：前缀 + 随机令牌
 	totpChallengePrefix   = "jiuzhang:totp:challenge:"
 	totpChallengeTTL      = 5 * time.Minute
+	totpUsedPrefix        = "jiuzhang:totp_used:"
+	totpUsedTTL           = 120 * time.Second
 	totpRecoveryCodeCount = 10
 	// totpIssuer 是 otpauth:// 链接中的发行方（令牌 App 内展示名）
 	totpIssuer = "九章WEB应用智能防护系统"
@@ -104,11 +106,51 @@ func (s *Service) lookupTOTPChallenge(ctx context.Context, token string) (*totpC
 	return &ch, nil
 }
 
-// consumeTOTPChallenge 删除挑战令牌（验证成功后一次性消费）。
+// consumeTOTPChallenge 尽最大努力清理已失效的挑战令牌（错误分支清理用）。
 func (s *Service) consumeTOTPChallenge(ctx context.Context, token string) {
 	if err := s.cache.Del(ctx, totpChallengePrefix+token); err != nil {
 		slog.Warn("totp challenge consume failed", "error", err)
 	}
+}
+
+// consumeTOTPChallengeAtomic 原子消费挑战令牌（成功路径必须使用）。
+// 仅当 Valkey DEL 返回删除数 == 1 且无错误时视为消费成功；
+// 缓存异常或并发重复消费一律 fail-closed 拒绝，防止挑战令牌被重放或并发多次建会话。
+func (s *Service) consumeTOTPChallengeAtomic(ctx context.Context, token string) error {
+	if token == "" {
+		return ErrTOTPChallengeInvalid
+	}
+	ac, ok := s.cache.(atomicKVCache)
+	if !ok {
+		slog.Error("totp challenge atomic consume unavailable: cache lacks atomic DelCount")
+		return ErrTOTPChallengeInvalid
+	}
+	deleted, err := ac.DelCount(ctx, totpChallengePrefix+token)
+	if err != nil {
+		slog.Warn("totp challenge atomic consume failed", "error", err)
+		return ErrTOTPChallengeInvalid
+	}
+	if deleted != 1 {
+		return ErrTOTPChallengeInvalid
+	}
+	return nil
+}
+
+// claimTOTPStep 原子登记 (userID, timeStep) 已使用标记（Valkey SETNX，TTL 120s），
+// 阻断 ±1 时间步 90s 容差窗口内的同一 TOTP 验证码重放。缓存异常时 fail-closed 拒绝。
+func (s *Service) claimTOTPStep(ctx context.Context, userID uuid.UUID, step int64) bool {
+	ac, ok := s.cache.(atomicKVCache)
+	if !ok {
+		slog.Error("totp replay guard unavailable: cache lacks atomic SetNX", "user_id", userID)
+		return false
+	}
+	key := fmt.Sprintf("%s%s:%d", totpUsedPrefix, userID.String(), step)
+	claimed, err := ac.SetNX(ctx, key, "1", totpUsedTTL)
+	if err != nil {
+		slog.Error("totp replay guard setnx failed", "user_id", userID, "error", err)
+		return false
+	}
+	return claimed
 }
 
 // VerifyTOTPLogin 完成登录第二步：校验挑战令牌 + 动态令牌/恢复码，通过后创建会话。
@@ -173,12 +215,16 @@ func (s *Service) VerifyTOTPLogin(ctx context.Context, in TOTPVerifyInput) (*Log
 		return nil, ErrTOTPInvalid
 	}
 
-	// 验证通过：消费挑战令牌（一次性），走与登录完全一致的会话建立与成功日志路径
-	s.consumeTOTPChallenge(ctx, in.ChallengeToken)
+	// 验证通过：原子消费挑战令牌（一次性，缓存删除失败或并发竞争一律 fail-closed），
+	// 消费成功后再走与登录完全一致的会话建立与成功日志路径。
+	if err := s.consumeTOTPChallengeAtomic(ctx, in.ChallengeToken); err != nil {
+		s.recordLog(ctx, logIn, &user.ID, loginlogs.EventLoginFailure, loginlogs.ResultFailure, "TOTP_CHALLENGE_INVALID")
+		return nil, ErrTOTPChallengeInvalid
+	}
 	return s.completeLogin(ctx, user, logIn)
 }
 
-// verifyTOTPCredential 校验已启用密钥的动态令牌，或一次性恢复码（命中即消费）。
+// verifyTOTPCredential 校验已启用密钥的动态令牌（含防重放时间步登记），或一次性恢复码（命中即消费）。
 func (s *Service) verifyTOTPCredential(ctx context.Context, user *users.User, code string) bool {
 	code = strings.TrimSpace(code)
 	switch {
@@ -191,7 +237,11 @@ func (s *Service) verifyTOTPCredential(ctx context.Context, user *users.User, co
 			slog.Error("decrypt totp secret failed", "user_id", user.ID, "error", err)
 			return false
 		}
-		return security.VerifyTOTP(secret, code, time.Now())
+		step, ok := security.VerifyTOTPWithStep(secret, code, time.Now())
+		if !ok {
+			return false
+		}
+		return s.claimTOTPStep(ctx, user.ID, step)
 	case security.IsRecoveryCodeFormat(code):
 		// 恢复码哈希为 Argon2id（随机盐），无法按哈希等值反查：先逐条匹配出命中的
 		// 存储哈希（兼容存量无盐 SHA-256），再按该哈希原子消费，保证一次性语义。
@@ -271,7 +321,8 @@ func (s *Service) EnableTOTP(ctx context.Context, in TOTPSelfInput) error {
 	if err != nil {
 		return fmt.Errorf("decrypt pending totp secret: %w", err)
 	}
-	if !security.VerifyTOTP(secret, in.Code, time.Now()) {
+	step, ok := security.VerifyTOTPWithStep(secret, in.Code, time.Now())
+	if !ok || !s.claimTOTPStep(ctx, user.ID, step) {
 		return ErrTOTPInvalid
 	}
 	if err := s.users.EnableTOTP(ctx, in.UserID); err != nil {

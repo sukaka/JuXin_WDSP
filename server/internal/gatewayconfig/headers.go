@@ -244,23 +244,16 @@ func pathRouteEntries(in GenerateInput, app AppData, hosts []string, publicPort 
 			TLSVerify: true,
 		}
 		proxy := applyProxyOptions(buildReverseProxy([]applications.Upstream{upstream}), app.HeaderConfig)
-		handles := buildChainHandles(in, app, proxy, publicPort)
+		var preProxy []interface{}
+		if pr.StripPrefix {
+			// 安全底线（H-15）：strip_path_prefix 必须位于 jiuzhang_guard 与 Coraza WAF 之后、
+			// reverse_proxy 正前方，防止改写路径后绕过基于原始路径的 L7/API/Bot/WAF 规则。
+			preProxy = []interface{}{mapT{"handler": "rewrite", "strip_path_prefix": prefix}}
+		}
+		handles := buildChainHandlesWithPreProxy(in, app, proxy, publicPort, preProxy...)
 		route := mapT{
 			"match":  []interface{}{mapT{"host": hosts, "path": []string{prefix + "*"}}},
 			"handle": handles,
-		}
-		if pr.StripPrefix {
-			// handle_path 的 JSON 形态：match host+path → subroute[rewrite strip_path_prefix → 处理链]
-			route = mapT{
-				"match": []interface{}{mapT{"host": hosts, "path": []string{prefix + "*"}}},
-				"handle": []interface{}{mapT{
-					"handler": "subroute",
-					"routes": []interface{}{
-						mapT{"handle": []interface{}{mapT{"handler": "rewrite", "strip_path_prefix": prefix}}},
-						mapT{"handle": handles},
-					},
-				}},
-			}
 		}
 		out = append(out, routeEntry{appCode: app.Code, route: route})
 	}
@@ -271,6 +264,10 @@ func pathRouteEntries(in GenerateInput, app AppData, hosts []string, publicPort 
 // 纯透传链在同一选择器内预编译，二者共用外层 reverse_proxy；超阈时不会经过 guard/WAF。
 // BYPASS（数据透传）模式的两条链均为纯透传，保持手工应急直通的绝对优先级。
 func buildChainHandles(in GenerateInput, app AppData, proxy mapT, publicPort int) []interface{} {
+	return buildChainHandlesWithPreProxy(in, app, proxy, publicPort)
+}
+
+func buildChainHandlesWithPreProxy(in GenerateInput, app AppData, proxy mapT, publicPort int, preProxy ...interface{}) []interface{} {
 	requestID := mapT{
 		"handler": "headers",
 		"request": mapT{"set": mapT{"X-Request-Id": []string{"{http.request.uuid}"}},
@@ -310,10 +307,14 @@ func buildChainHandles(in GenerateInput, app AppData, proxy mapT, publicPort int
 			"normal":                   mapT{"routes": []interface{}{mapT{"handle": normal}}},
 			"bypass":                   mapT{"routes": []interface{}{mapT{"handle": bypass}}},
 		}
-		return []interface{}{selector, proxy}
+		out := []interface{}{selector}
+		out = append(out, preProxy...)
+		return append(out, proxy)
 	}
 	if app.ProtectionMode == applications.ModeBypass {
-		return append(bypass, proxy)
+		out := append(bypass, preProxy...)
+		return append(out, proxy)
 	}
-	return append(normal, proxy)
+	out := append(normal, preProxy...)
+	return append(out, proxy)
 }

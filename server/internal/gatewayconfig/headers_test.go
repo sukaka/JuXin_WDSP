@@ -3,6 +3,8 @@ package gatewayconfig
 import (
 	"strings"
 	"testing"
+
+	"github.com/jiuzhang-waf/server/internal/applications"
 )
 
 func TestVersionDisclosureResponseHeadersAlwaysHidden(t *testing.T) {
@@ -65,5 +67,71 @@ func TestHeaderHandlerKeepsNonVersionCustomRules(t *testing.T) {
 	}
 	if got := set["X-Safe"]; len(got) != 1 || got[0] != "ok" {
 		t.Fatalf("普通自定义响应头被改变: %v", got)
+	}
+}
+
+func TestH15StripPrefixPlacedAfterGuardAndWAFBeforeReverseProxy(t *testing.T) {
+	app := AppData{
+		AppID:          "app-1",
+		Code:           "portal",
+		ProtectionMode: applications.ModeProtect,
+		PathRoutes: []AppPathRoute{
+			{
+				PathPrefix:     "/admin",
+				UpstreamScheme: "http",
+				UpstreamHost:   "2001:db8::10",
+				UpstreamPort:   8080,
+				StripPrefix:    true,
+				Priority:       10,
+			},
+		},
+	}
+	entries := pathRouteEntries(GenerateInput{Guard: testGuardConfig()}, app, []string{"portal.example.com"}, 80)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	handles, ok := entries[0].route["handle"].([]interface{})
+	if !ok {
+		t.Fatalf("handle type = %T, want []interface{}", entries[0].route["handle"])
+	}
+	var guardIdx, wafIdx, rewriteIdx, proxyIdx = -1, -1, -1, -1
+	for i, raw := range handles {
+		h := raw.(mapT)
+		switch h["handler"] {
+		case "jiuzhang_guard":
+			guardIdx = i
+		case "waf":
+			wafIdx = i
+		case "rewrite":
+			rewriteIdx = i
+			if h["strip_path_prefix"] != "/admin" {
+				t.Fatalf("strip_path_prefix = %v, want /admin", h["strip_path_prefix"])
+			}
+		case "reverse_proxy":
+			proxyIdx = i
+			ups := h["upstreams"].([]interface{})
+			dial := ups[0].(mapT)["dial"].(string)
+			if dial != "[2001:db8::10]:8080" {
+				t.Fatalf("IPv6 upstream dial = %q, want [2001:db8::10]:8080", dial)
+			}
+		}
+	}
+	if guardIdx < 0 || wafIdx < 0 || rewriteIdx < 0 || proxyIdx < 0 {
+		t.Fatalf("missing handlers: guard=%d waf=%d rewrite=%d proxy=%d", guardIdx, wafIdx, rewriteIdx, proxyIdx)
+	}
+	if !(guardIdx < wafIdx && wafIdx < rewriteIdx && rewriteIdx+1 == proxyIdx) {
+		t.Fatalf("invalid middleware order: guard=%d waf=%d rewrite=%d proxy=%d", guardIdx, wafIdx, rewriteIdx, proxyIdx)
+	}
+
+	// 软件旁路模式：rewrite 必须在 jiuzhang_software_bypass 选择器之后、reverse_proxy 正前方
+	guardWithSB := testGuardConfig()
+	guardWithSB.SoftwareBypass = &GuardSoftwareBypass{Enabled: true, CPUThresholdPercent: 90, MemoryThresholdPercent: 90, MinHoldSeconds: 30}
+	sbEntries := pathRouteEntries(GenerateInput{Guard: guardWithSB}, app, []string{"portal.example.com"}, 80)
+	sbHandles := sbEntries[0].route["handle"].([]interface{})
+	if len(sbHandles) != 3 ||
+		sbHandles[0].(mapT)["handler"] != "jiuzhang_software_bypass" ||
+		sbHandles[1].(mapT)["handler"] != "rewrite" ||
+		sbHandles[2].(mapT)["handler"] != "reverse_proxy" {
+		t.Fatalf("software bypass strip_prefix order invalid: %+v", sbHandles)
 	}
 }

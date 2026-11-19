@@ -325,3 +325,44 @@ func TestUsageCost(t *testing.T) {
 		t.Errorf("UsageCost = %v, want 1.25", got)
 	}
 }
+
+// TestH20ChatStreamCapsUnframedBufferAndTotalBytes 回归：限制 SSE 未分帧缓冲（1 MiB）与总读取上限（8 MiB），防 OOM。
+func TestH20ChatStreamCapsUnframedBufferAndTotalBytes(t *testing.T) {
+	req := ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "hi"}}}
+	c := NewOpenAIClient()
+
+	t.Run("unframed buffer cap", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			chunk := strings.Repeat("A", 64*1024)
+			for i := 0; i < 20; i++ { // 1.28 MiB without "\n\n"
+				if _, err := io.WriteString(w, chunk); err != nil {
+					return
+				}
+			}
+		}))
+		defer srv.Close()
+		_, err := c.ChatStreamProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", req, func(string, bool, *ChatResult) error { return nil })
+		if !errors.Is(err, ErrModelDown) || !strings.Contains(err.Error(), "frame buffer") {
+			t.Fatalf("expected frame buffer limit error, got %v", err)
+		}
+	})
+
+	t.Run("total 8MiB stream cap", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			// 合法的小 SSE 事件重复发送超过 8 MiB
+			ev := "data: {\"choices\":[{\"delta\":{\"content\":\"" + strings.Repeat("x", 4000) + "\"}}]}\n\n"
+			for i := 0; i < 2300; i++ { // > 9 MiB
+				if _, err := io.WriteString(w, ev); err != nil {
+					return
+				}
+			}
+		}))
+		defer srv.Close()
+		_, err := c.ChatStreamProvider(context.Background(), scopedTestProvider(srv.URL), "", "m", req, func(string, bool, *ChatResult) error { return nil })
+		if !errors.Is(err, ErrModelDown) || !strings.Contains(err.Error(), "exceeded") {
+			t.Fatalf("expected 8MiB stream limit error, got %v", err)
+		}
+	})
+}

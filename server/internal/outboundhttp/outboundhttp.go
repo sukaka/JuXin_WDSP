@@ -61,7 +61,9 @@ var deniedCIDRs = mustParseCIDRs([]string{
 	"100.64.0.0/10",      // 运营商级 NAT
 	"198.18.0.0/15",      // 基准测试
 	"240.0.0.0/4",        // 保留
-	"169.254.169.254/32", // 云元数据（IPv4 链路本地）
+	"169.254.169.254/32", // 云元数据（AWS/GCP/Azure IPv4）
+	"169.254.170.2/32",   // AWS ECS 任务元数据
+	"100.100.100.200/32", // 阿里云元数据
 	"fd00:ec2::254/128",  // 云元数据（AWS IPv6，ULA 内）
 })
 
@@ -70,6 +72,8 @@ var deniedCIDRs = mustParseCIDRs([]string{
 // application-level outbound destination.
 var hardDeniedCIDRs = mustParseCIDRs([]string{
 	"169.254.169.254/32",
+	"169.254.170.2/32",
+	"100.100.100.200/32",
 	"fd00:ec2::254/128",
 })
 
@@ -222,6 +226,8 @@ func (p *Policy) checkHost(ctx context.Context, host string) error {
 func (p *Policy) Transport() *http.Transport {
 	dialer := &net.Dialer{Timeout: p.timeout}
 	return &http.Transport{
+		DisableKeepAlives:   true,
+		IdleConnTimeout:     30 * time.Second,
 		TLSHandshakeTimeout: p.timeout,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
@@ -290,12 +296,35 @@ func (p *Policy) Client() *http.Client {
 			if _, err := p.ValidateURL(req.Context(), req.URL.String()); err != nil {
 				return err
 			}
-			if !strings.EqualFold(req.URL.Hostname(), via[0].URL.Hostname()) {
+			if !sameRedirectOrigin(req.URL, via[0].URL) {
 				for _, h := range p.stripHeaders {
 					req.Header.Del(h)
 				}
 			}
 			return nil
 		},
+	}
+}
+
+func sameRedirectOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		normalizedSchemePort(a) == normalizedSchemePort(b)
+}
+
+func normalizedSchemePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
 	}
 }

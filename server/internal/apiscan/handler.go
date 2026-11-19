@@ -234,15 +234,92 @@ func (h *Handler) UpdateTarget(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	scopeChanged := before.BaseURL != t.BaseURL || !stringSlicesEqual(before.AllowedPaths, t.AllowedPaths)
+	var revokedCount int
+	if scopeChanged {
+		// 双人分离防护（H-18）：修改 base_url 或 allowed_paths 会改变已批准扫描范围，
+		// 必须撤销该目标下全部未撤销授权单并联动停止任务，要求重新走双人审批。
+		n, revErr := h.revokeActiveAuthorizationsForTarget(r.Context(), id)
+		if revErr != nil {
+			response.InternalError(w, r, revErr)
+			return
+		}
+		revokedCount = n
+	}
 	t.ID, t.ApplicationID, t.CreatedBy = id, before.ApplicationID, before.CreatedBy
+	if scopeChanged && p != nil {
+		// 变更扫描范围后将建标人更新为本次修改者，防止原审批人修改目标后自审自批
+		uid := p.UserID
+		t.CreatedBy = &uid
+	}
 	if err := h.store.UpdateTarget(r.Context(), t); err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
+	afterSummary := fmt.Sprintf("status=%s base_url=%s", t.Status, t.BaseURL)
+	if scopeChanged {
+		afterSummary += fmt.Sprintf(" revoked_authorizations=%d", revokedCount)
+	}
 	h.recordAudit(r, p, "scan_target_update", id.String(), t.Name,
 		fmt.Sprintf("status=%s base_url=%s", before.Status, before.BaseURL),
-		fmt.Sprintf("status=%s base_url=%s", t.Status, t.BaseURL), audits.RiskMedium)
-	response.JSON(w, r, http.StatusOK, map[string]any{"target": t})
+		afterSummary, audits.RiskMedium)
+	response.JSON(w, r, http.StatusOK, map[string]any{
+		"target":                 t,
+		"revoked_authorizations": revokedCount,
+	})
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Handler) allowLoopback(ctx context.Context) bool {
+	if h.settings == nil {
+		return false
+	}
+	return h.settings.GetBool(ctx, settingsGroup, settingsKeyAllowLoopback, false)
+}
+
+func (h *Handler) revokeActiveAuthorizationsForTarget(ctx context.Context, targetID uuid.UUID) (int, error) {
+	now := time.Now().UTC()
+	revoked := 0
+	const pageSize = 100
+	for page := 1; ; page++ {
+		authzs, total, err := h.store.ListAuthorizations(ctx, targetID, page, pageSize)
+		if err != nil {
+			return revoked, fmt.Errorf("list target authorizations: %w", err)
+		}
+		for _, a := range authzs {
+			if a.RevokedAt != nil {
+				continue
+			}
+			if h.controller != nil {
+				if _, _, err := h.controller.RevokeAuthorization(ctx, a.ID); err != nil {
+					return revoked, fmt.Errorf("revoke authorization %s: %w", a.ID, err)
+				}
+			} else {
+				if _, err := h.store.RevokeAuthorization(ctx, a.ID, now); err != nil {
+					return revoked, fmt.Errorf("revoke authorization %s: %w", a.ID, err)
+				}
+				if _, err := h.store.StopJobsByAuthorization(ctx, a.ID, now); err != nil {
+					return revoked, fmt.Errorf("stop jobs for authorization %s: %w", a.ID, err)
+				}
+			}
+			revoked++
+		}
+		if int64(page*pageSize) >= total || len(authzs) == 0 {
+			break
+		}
+	}
+	return revoked, nil
 }
 
 // ---------- 授权 ----------
@@ -487,8 +564,8 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "授权无效："+reason)
 		return
 	}
-	if !hostAllowed(t.BaseURL, a.Allowlist) {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "目标主机不在授权 allowlist 内")
+	if !hostAllowedWithOptions(t.BaseURL, a.Allowlist, h.allowLoopback(r.Context())) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "目标主机不在授权 allowlist 内或命中禁止地址")
 		return
 	}
 	sets, err := resolveProbeSets(req.ProbeSet, a.TestProfile)
@@ -807,6 +884,10 @@ func (h *Handler) RetestFinding(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	if target.Status != TargetStatusEnabled {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "扫描目标已停用，拒绝复测")
+		return
+	}
 	authz, err := h.store.GetAuthorization(r.Context(), job.AuthorizationID)
 	if err != nil {
 		response.InternalError(w, r, err)
@@ -814,6 +895,11 @@ func (h *Handler) RetestFinding(w http.ResponseWriter, r *http.Request) {
 	}
 	if reason := authz.InactiveReason(time.Now()); reason != "" {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "授权无效，拒绝复测："+reason)
+		return
+	}
+	allowLoopback := h.allowLoopback(r.Context())
+	if !hostAllowedWithOptions(target.BaseURL, authz.Allowlist, allowLoopback) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "目标主机不在授权 allowlist 内或命中禁止地址，拒绝复测")
 		return
 	}
 	// 复测目标端点：从发现 endpoint_key 还原路径（"METHOD /path"）
@@ -826,6 +912,14 @@ func (h *Handler) RetestFinding(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "复测端点已不在目标允许路径内，拒绝复测")
 		return
 	}
+	snapshot, err := resolveHostSnapshotWithOptions(r.Context(), target.BaseURL, allowLoopback)
+	if err != nil {
+		slog.Warn("复测目标解析或安全校验失败", "request_id", response.RequestIDFrom(r), "finding_id", id.String(), "error", err)
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "复测目标地址校验失败，拒绝复测")
+		return
+	}
+	pinnedClient := newPinnedHTTPClient(snapshot)
+	defer pinnedClient.CloseIdleConnections()
 	guard := func(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -858,10 +952,20 @@ func (h *Handler) RetestFinding(w http.ResponseWriter, r *http.Request) {
 		MaxConcurrency: 1,
 		Signer:         h.signer,
 		Guard:          guard,
+		HTTPClient:     pinnedClient,
 	}
-	if _, err := h.engine.Run(r.Context(), task, emit); err != nil {
+	summary, err := h.engine.Run(r.Context(), task, emit)
+	if err != nil {
 		slog.Warn("复测探测执行失败", "request_id", response.RequestIDFrom(r), "finding_id", id.String(), "error", err)
 		response.Error(w, r, http.StatusBadGateway, response.CodeServiceUnavailable, "复测探测执行失败，请确认目标可访问后重试")
+		return
+	}
+	// H-18: 任一探针网络失败或未实际执行请求，绝不得因未复现而误判 RETEST_PASS
+	if summary.EndpointsFailed > 0 || summary.Errors > 0 || summary.EndpointsDone == 0 || summary.Requests == 0 {
+		slog.Warn("复测探测未完整触达目标", "request_id", response.RequestIDFrom(r), "finding_id", id.String(),
+			"endpoints_done", summary.EndpointsDone, "endpoints_failed", summary.EndpointsFailed,
+			"requests", summary.Requests, "errors", summary.Errors, "last_error", summary.LastError)
+		response.Error(w, r, http.StatusBadGateway, response.CodeServiceUnavailable, "复测探测未成功触达目标，请确认目标可访问后重试")
 		return
 	}
 	pass := !reproduced

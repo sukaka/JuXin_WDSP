@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -47,6 +49,19 @@ func secretTestGuardConfig(tag string) *GuardConfig {
 	g.APIScanVerification = &GuardScanVerification{KeyHex: tag + "-scan-key-hex"}
 	g.APIFileSignature = &GuardFileSignature{Enabled: true, KID: tag + "-kid", KeyHex: tag + "-file-sig-key-hex"}
 	g.APIMaskCrypto = &GuardMaskCrypto{KID: tag + "-mask-kid", KeyHex: tag + "-mask-crypto-key-hex"}
+	g.BotPolicy = map[string]*GuardBotPolicy{
+		"shop": {
+			SchemaVersion: 1,
+			ApplicationID: "app-shop",
+			Mode:          "OBSERVE",
+			Version:       1,
+			Challenge:     GuardBotChallenge{Type: "JS", KeyRef: "k1"},
+		},
+	}
+	g.BotSigningKeys = map[string]string{
+		"k1": tag + "-bot-signing-secret-1",
+		"k2": tag + "-bot-signing-secret-2",
+	}
 	return g
 }
 
@@ -55,6 +70,7 @@ func secretValues(tag string) []string {
 	return []string{
 		tag + "-valkey-secret", tag + "-identity-salt", tag + "-scan-key-hex",
 		tag + "-file-sig-key-hex", tag + "-mask-crypto-key-hex", tag + "-tls-ticket-key",
+		tag + "-bot-signing-secret-1", tag + "-bot-signing-secret-2",
 	}
 }
 
@@ -224,6 +240,7 @@ func TestReinjectConfigSecretsMissingCurrentValues(t *testing.T) {
 		{"缺文件签名密钥", without(func(g *GuardConfig) { g.APIFileSignature = nil }), "api_file_signature"},
 		{"缺脱敏加密密钥", without(func(g *GuardConfig) { g.APIMaskCrypto = nil }), "api_mask_crypto"},
 		{"缺 TLS 票据键", without(func(g *GuardConfig) { g.TLSSessionTicketKey = "" }), "tls_session_ticket_key"},
+		{"缺 Bot 签名密钥", without(func(g *GuardConfig) { g.BotSigningKeys = nil }), "bot_policy.signing_keys"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -386,5 +403,67 @@ func TestGateGuardOverrideBuildError(t *testing.T) {
 	gated, err := p.gateGuardOverride(context.Background(), secretTestGuardConfig("old"))
 	if err == nil || gated != nil {
 		t.Fatalf("读取当前配置失败应返回错误, gated=%v err=%v", gated, err)
+	}
+}
+
+// TestH16DiskWritesRedactSecretsAndUse0600 回归：failed-*.json 与 active/current.json
+// 落盘前必须脱敏（不含任何明文密钥含 bot_policy.signing_keys），且权限必须为 0600。
+func TestH16DiskWritesRedactSecretsAndUse0600(t *testing.T) {
+	dir := t.TempDir()
+	plain := generateGuardJSON(t, secretTestGuardConfig("disk"))
+
+	activeFile, err := WriteActiveConfig(dir, "current", plain)
+	if err != nil {
+		t.Fatalf("WriteActiveConfig: %v", err)
+	}
+	info, err := os.Stat(activeFile)
+	if err != nil {
+		t.Fatalf("stat active: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("current.json perm = %o, want 0600", perm)
+	}
+	activeRaw, err := os.ReadFile(activeFile)
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	for _, s := range secretValues("disk") {
+		if strings.Contains(string(activeRaw), s) {
+			t.Errorf("current.json leaked plaintext secret %q", s)
+		}
+	}
+
+	p := &Publisher{dataDir: dir}
+	p.saveFailedCandidate(&Generated{JSON: plain}, nil, errors.New("validation failed"))
+	matches, err := filepath.Glob(filepath.Join(dir, "configs", "failed", "failed-*.json"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("expected 1 failed candidate file, got %v err=%v", matches, err)
+	}
+	failedInfo, err := os.Stat(matches[0])
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	if perm := failedInfo.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("failed-*.json perm = %o, want 0600", perm)
+	}
+	failedRaw, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	for _, s := range secretValues("disk") {
+		if strings.Contains(string(failedRaw), s) {
+			t.Errorf("failed-*.json leaked plaintext secret %q", s)
+		}
+	}
+
+	// 畸形 JSON 失败候选也不能原样将含密钥原文写盘
+	dir2 := t.TempDir()
+	if err := WriteFailedCandidate(dir2, `{"bad_json": "disk-bot-signing-secret-1"`, "invalid json"); err != nil {
+		t.Fatalf("WriteFailedCandidate malformed: %v", err)
+	}
+	m2, _ := filepath.Glob(filepath.Join(dir2, "configs", "failed", "failed-*.json"))
+	raw2, _ := os.ReadFile(m2[0])
+	if strings.Contains(string(raw2), "disk-bot-signing-secret-1") {
+		t.Error("malformed failed candidate leaked raw content")
 	}
 }

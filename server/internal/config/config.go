@@ -17,7 +17,7 @@ import (
 
 // Config 是管理后端完整配置。
 type Config struct {
-	Env      string // dev / staging / prod
+	Env      string // dev / test / prod
 	HTTP     HTTPConfig
 	DB       DBConfig
 	Cache    CacheConfig
@@ -352,8 +352,30 @@ func loadDBConfig(dialect string) DBConfig {
 	return cfg
 }
 
+// NormalizeEnv 归一化并校验 APP_ENV：去空白转小写，映射 "production" -> "prod"，
+// 空值回落 "dev"；仅允许 dev / test / prod，未识别值一律 fail-closed 返回错误。
+func NormalizeEnv(raw string) (string, error) {
+	env := strings.ToLower(strings.TrimSpace(raw))
+	if env == "" {
+		return "dev", nil
+	}
+	if env == "production" {
+		env = "prod"
+	}
+	switch env {
+	case "dev", "test", "prod":
+		return env, nil
+	default:
+		return "", fmt.Errorf("invalid APP_ENV %q (allowed: dev, test, prod)", raw)
+	}
+}
+
 // Load 从环境变量加载配置。
 func Load() (*Config, error) {
+	env, err := NormalizeEnv(os.Getenv("APP_ENV"))
+	if err != nil {
+		return nil, err
+	}
 	dialect := strings.ToLower(strings.TrimSpace(getEnv("DB_DIALECT", DBDialectPostgres)))
 	captureEnabled, captureControlConfigured := false, false
 	if strings.TrimSpace(os.Getenv("REQUEST_PCAP_CAPTURE_ENABLED")) != "" {
@@ -361,7 +383,7 @@ func Load() (*Config, error) {
 		captureEnabled = getEnvBool("REQUEST_PCAP_CAPTURE_ENABLED", false)
 	}
 	cfg := &Config{
-		Env: getEnv("APP_ENV", "dev"),
+		Env: env,
 		HTTP: HTTPConfig{
 			Host:         getEnv("SERVER_HOST", "0.0.0.0"),
 			Port:         getEnvInt("SERVER_PORT", 8080),
@@ -397,7 +419,7 @@ func Load() (*Config, error) {
 			GuardEventsLog:        getEnv("WAF_GUARD_EVENTS_LOG", "runtime/logs/guard-events.log"),
 			GuardEventsLogGateway: getEnv("GATEWAY_GUARD_EVENTS_LOG", "/var/log/caddy/guard-events.log"),
 			// 非 prod 默认 fail-open 便于开发；prod 默认 fail-closed（可用 GUARD_FAIL_OPEN 覆盖）
-			GuardFailOpen:        getEnvBool("GUARD_FAIL_OPEN", getEnv("APP_ENV", "dev") != "prod"),
+			GuardFailOpen:        getEnvBool("GUARD_FAIL_OPEN", env != "prod"),
 			AccessLogPath:        getEnv("WAF_ACCESS_LOG", "runtime/logs/access.log"),
 			APIEventsLog:         getEnv("WAF_API_EVENTS_LOG", "runtime/logs/api-runtime-events.log"),
 			APIEventsLogGateway:  getEnv("GATEWAY_API_EVENTS_LOG", "/var/log/caddy/api-runtime-events.log"),

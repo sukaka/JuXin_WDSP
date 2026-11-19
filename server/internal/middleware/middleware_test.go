@@ -42,6 +42,19 @@ func TestSameOrigin(t *testing.T) {
 		{"javascript://waf.example.com", "waf.example.com", false},
 		{"ftp://waf.example.com", "waf.example.com", false},
 		{"HTTPS://WAF.EXAMPLE.COM:443", "waf.example.com", true},
+		// M-S4: 无 scheme、null、跨协议默认端口、userinfo 与非法端口一律拒绝
+		{"waf.example.com", "waf.example.com", false},
+		{"null", "null", false},
+		{"http://waf.example.com:443", "waf.example.com", false},
+		{"https://waf.example.com:80", "waf.example.com", false},
+		{"https://evil@waf.example.com", "waf.example.com", false},
+		{"https://waf.example.com@evil.com", "waf.example.com", false},
+		{"http://waf.example.com:99999", "waf.example.com:99999", false},
+		// IPv6 字面量支持
+		{"https://[::1]:8443", "[::1]:8443", true},
+		{"https://[::1]", "[::1]:443", true},
+		{"https://[::1]:443", "[::1]", true},
+		{"http://[::1]:443", "[::1]", false},
 	}
 	for _, c := range cases {
 		if got := sameOrigin(c.origin, c.host); got != c.want {
@@ -258,5 +271,58 @@ func TestCSRFProtectOriginDefaultPortNormalization(t *testing.T) {
 				t.Errorf("Origin %q Host %q status = %d, want %d", c.origin, c.host, rec.Code, c.want)
 			}
 		})
+	}
+}
+
+func TestMS4CSRFProtectRejectsHTTPOriginOnHTTPSRequest(t *testing.T) {
+	handler := CSRFProtect(func(r *http.Request, token string) bool {
+		return token == "valid-token"
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// 直连 TLS 请求：http:// Origin 必须拒绝
+	req := httptest.NewRequest(http.MethodPost, "https://waf.example.com/x", nil)
+	req.Host = "waf.example.com"
+	req.Header.Set("Origin", "http://waf.example.com")
+	req.Header.Set("X-CSRF-Token", "valid-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("TLS request with http:// Origin status = %d, want 403", rec.Code)
+	}
+
+	// 直连 TLS 请求：https:// Origin 放行
+	req2 := httptest.NewRequest(http.MethodPost, "https://waf.example.com/x", nil)
+	req2.Host = "waf.example.com"
+	req2.Header.Set("Origin", "https://waf.example.com")
+	req2.Header.Set("X-CSRF-Token", "valid-token")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("TLS request with https:// Origin status = %d, want 200", rec2.Code)
+	}
+
+	// 反代声明 X-Forwarded-Proto: https 时，http:// Origin 也必须拒绝
+	req3 := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req3.Host = "waf.example.com"
+	req3.Header.Set("X-Forwarded-Proto", "https")
+	req3.Header.Set("Origin", "http://waf.example.com")
+	req3.Header.Set("X-CSRF-Token", "valid-token")
+	rec3 := httptest.NewRecorder()
+	handler.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusForbidden {
+		t.Fatalf("proxied HTTPS request with http:// Origin status = %d, want 403", rec3.Code)
+	}
+
+	// 无 scheme Origin 必须拒绝
+	req4 := httptest.NewRequest(http.MethodPost, "/x", nil)
+	req4.Host = "waf.example.com"
+	req4.Header.Set("Origin", "waf.example.com")
+	req4.Header.Set("X-CSRF-Token", "valid-token")
+	rec4 := httptest.NewRecorder()
+	handler.ServeHTTP(rec4, req4)
+	if rec4.Code != http.StatusForbidden {
+		t.Fatalf("schemeless Origin status = %d, want 403", rec4.Code)
 	}
 }

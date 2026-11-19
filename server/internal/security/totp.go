@@ -68,22 +68,33 @@ func TOTPCode(secret string, at time.Time) (string, error) {
 
 // VerifyTOTP 校验动态验证码，允许 ±totpSkewSteps 个时间步容差（常量时间比较）。
 func VerifyTOTP(secret, code string, at time.Time) bool {
+	_, ok := VerifyTOTPWithStep(secret, code, at)
+	return ok
+}
+
+// VerifyTOTPWithStep 校验动态验证码并返回命中的时间步（Unix / 30s），
+// 供调用方记录 totp_used:<userID>:<step> 防重放（阻断 ±1 步 90s 窗口内同一验证码重放）。
+func VerifyTOTPWithStep(secret, code string, at time.Time) (int64, bool) {
 	code = strings.TrimSpace(code)
 	if !totpCodePattern.MatchString(code) {
-		return false
+		return 0, false
 	}
 	key, err := decodeTOTPSecret(secret)
 	if err != nil {
-		return false
+		return 0, false
 	}
-	counter := uint64(at.Unix()) / totpPeriod
-	for step := -totpSkewSteps; step <= totpSkewSteps; step++ {
-		expected := hotpCode(key, counter+uint64(int64(step)))
+	counter := at.Unix() / totpPeriod
+	for step := int64(-totpSkewSteps); step <= int64(totpSkewSteps); step++ {
+		matchedStep := counter + step
+		if matchedStep < 0 {
+			continue
+		}
+		expected := hotpCode(key, uint64(matchedStep))
 		if subtle.ConstantTimeCompare([]byte(expected), []byte(code)) == 1 {
-			return true
+			return matchedStep, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 // TOTPAuthURL 生成 otpauth:// 链接（供令牌 App 扫码/手动录入）。

@@ -315,3 +315,71 @@ func TestRequestPCAPConfigurationIsExplicitAndComplete(t *testing.T) {
 		t.Fatalf("explicit capture enable was rejected: %+v", cfg.RequestPCAP)
 	}
 }
+
+func TestMS1EnvNormalizationAndAllowlist(t *testing.T) {
+	cases := []struct {
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{"", "dev", false},
+		{"  ", "dev", false},
+		{"dev", "dev", false},
+		{" DEV ", "dev", false},
+		{"Test", "test", false},
+		{"prod", "prod", false},
+		{"PROD", "prod", false},
+		{" production ", "prod", false},
+		{"PRODUCTION", "prod", false},
+		{"staging", "", true},
+		{"prd", "", true},
+		{"unknown", "", true},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeEnv(tc.raw)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("NormalizeEnv(%q) = %q, want error", tc.raw, got)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("NormalizeEnv(%q) = (%q, %v), want (%q, nil)", tc.raw, got, err, tc.want)
+		}
+	}
+
+	// APP_ENV="Production" 归一化为 prod，必须强制 COOKIE_SECURE=true 且默认 GuardFailOpen=false
+	t.Run("ProductionEnforcesProdGuards", func(t *testing.T) {
+		t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+		t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+		t.Setenv("APP_ENV", " Production ")
+		t.Setenv("COOKIE_SECURE", "false")
+		t.Setenv("GUARD_FAIL_OPEN", "")
+		if _, err := Load(); err == nil {
+			t.Fatal("Load() accepted APP_ENV=' Production ' with COOKIE_SECURE=false")
+		}
+
+		t.Setenv("COOKIE_SECURE", "true")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() with COOKIE_SECURE=true failed: %v", err)
+		}
+		if cfg.Env != "prod" {
+			t.Fatalf("cfg.Env = %q, want prod", cfg.Env)
+		}
+		if cfg.WAF.GuardFailOpen {
+			t.Fatal("cfg.WAF.GuardFailOpen should default to false in normalized prod")
+		}
+	})
+
+	// 未识别 APP_ENV 必须 fail-closed 拒绝启动
+	t.Run("UnrecognizedEnvFailsClosed", func(t *testing.T) {
+		t.Setenv("POSTGRES_PASSWORD", "test-postgres-password")
+		t.Setenv("VALKEY_PASSWORD", "test-valkey-password")
+		t.Setenv("APP_ENV", "staging")
+		t.Setenv("COOKIE_SECURE", "true")
+		if _, err := Load(); err == nil {
+			t.Fatal("Load() accepted unrecognized APP_ENV=staging")
+		}
+	})
+}

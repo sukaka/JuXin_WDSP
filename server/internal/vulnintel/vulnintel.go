@@ -11,6 +11,7 @@ package vulnintel
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -179,6 +180,28 @@ func SeverityGte(severity, minSeverity string) bool {
 	return severityRank(severity) >= severityRank(minSeverity) && severityRank(severity) > 0
 }
 
+// ValidateReferenceURL 校验漏洞参考链接仅允许 http:// 或 https:// 协议，
+// 拒绝 javascript:/data:/file:/ftp: 等危险或非 Web 协议以及控制字符。
+func ValidateReferenceURL(raw string) error {
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < 0x20 || raw[i] == 0x7f {
+			return fmt.Errorf("%w: reference URL 包含非法控制字符", ErrInvalidInput)
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%w: reference URL 格式非法: %v", ErrInvalidInput, err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("%w: reference URL 仅允许 http:// 或 https:// 协议: %q", ErrInvalidInput, u.Scheme)
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return fmt.Errorf("%w: reference URL 缺少主机名", ErrInvalidInput)
+	}
+	return nil
+}
+
 // ValidateAdvisory 校验并归一化情报条目（导入/同步共用入口）。
 // 归一化：cve_id 大写、tech_tags 去重排序、空切片非 nil。
 func ValidateAdvisory(a *Advisory) error {
@@ -218,6 +241,9 @@ func ValidateAdvisory(a *Advisory) error {
 		}
 		if len(ref) > MaxRefLen {
 			return fmt.Errorf("%w: 单条 reference 超过 %d 字符上限", ErrInvalidInput, MaxRefLen)
+		}
+		if err := ValidateReferenceURL(ref); err != nil {
+			return err
 		}
 		if seenRef[ref] {
 			continue

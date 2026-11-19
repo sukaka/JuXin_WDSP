@@ -15,15 +15,19 @@ import (
 	"github.com/jiuzhang-waf/server/internal/audits"
 )
 
-// fakeSettings 设置替身（开关/并发上限）。
+// fakeSettings 设置替身（开关/并发上限/测试回环放行开关）。
 type fakeSettings struct {
-	enabled bool
-	maxJobs int
+	enabled       bool
+	maxJobs       int
+	allowLoopback bool
 }
 
 func (f fakeSettings) GetBool(_ context.Context, _, key string, def bool) bool {
 	if key == settingsKeyEnabled {
 		return f.enabled
+	}
+	if key == settingsKeyAllowLoopback {
+		return f.allowLoopback
 	}
 	return def
 }
@@ -91,7 +95,7 @@ func TestWorkerRunOnceEndToEnd(t *testing.T) {
 
 	store := NewMemStore()
 	_, _, jobID := seedJob(t, store, srv.URL, []string{"/open", "/closed"}, nil)
-	worker, spy := newTestWorker(store, fakeSettings{enabled: true})
+	worker, spy := newTestWorker(store, fakeSettings{enabled: true, allowLoopback: true})
 
 	stats, err := worker.RunOnce(context.Background())
 	if err != nil {
@@ -199,7 +203,7 @@ func TestWorkerRevokeMidRunStops(t *testing.T) {
 	store := NewMemStore()
 	paths := []string{"/p1", "/p2", "/p3", "/p4", "/p5", "/p6", "/p7", "/p8"}
 	_, authzID, jobID := seedJob(t, store, srv.URL, paths, nil)
-	worker, _ := newTestWorker(store, fakeSettings{enabled: true})
+	worker, _ := newTestWorker(store, fakeSettings{enabled: true, allowLoopback: true})
 
 	done := make(chan Stats, 1)
 	go func() {

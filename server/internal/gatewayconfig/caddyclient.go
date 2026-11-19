@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
@@ -38,6 +40,9 @@ func NewCaddyClient(socketPath string) *CaddyClient {
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   30 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 }
@@ -71,6 +76,50 @@ type adminAddrTarget struct {
 	httpURL    *url.URL // http(s) 目标（socketPath 为空时有效）
 }
 
+// allowedAdminSocketDirs 允许作为次要节点 Caddy Admin Unix Socket 的目录白名单。
+var allowedAdminSocketDirs = []string{
+	"/var/run/caddy/",
+	"/run/caddy/",
+}
+
+// deniedAdminPrefixes 次要节点管理地址永久禁止网段（云元数据与链路本地，先于 IsPrivate 判定）。
+var deniedAdminPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("169.254.169.254/32"),
+	netip.MustParsePrefix("169.254.170.2/32"),
+	netip.MustParsePrefix("100.100.100.200/32"),
+	netip.MustParsePrefix("fd00:ec2::254/128"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("fe80::/10"),
+}
+
+// validateAdminSocketPath 校验 unix socket 路径：仅允许位于 /var/run/caddy/ 或 /run/caddy/
+// 下的绝对路径，拒绝控制字符与 .. 路径穿越。
+func validateAdminSocketPath(raw string) (string, error) {
+	if raw == "" {
+		return "", fmt.Errorf("%w: unix socket 路径为空", ErrAdminAddrDenied)
+	}
+	for _, c := range raw {
+		if c < 0x20 || c == 0x7f {
+			return "", fmt.Errorf("%w: unix socket 路径包含控制字符", ErrAdminAddrDenied)
+		}
+	}
+	if !strings.HasPrefix(raw, "/") {
+		return "", fmt.Errorf("%w: unix socket 路径须为绝对路径", ErrAdminAddrDenied)
+	}
+	for _, seg := range strings.Split(raw, "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("%w: unix socket 路径不允许包含 ..", ErrAdminAddrDenied)
+		}
+	}
+	clean := path.Clean(raw)
+	for _, dir := range allowedAdminSocketDirs {
+		if strings.HasPrefix(clean, dir) && len(clean) > len(dir) {
+			return clean, nil
+		}
+	}
+	return "", fmt.Errorf("%w: unix socket 路径必须在 /var/run/caddy/ 或 /run/caddy/ 目录下", ErrAdminAddrDenied)
+}
+
 // parseAdminAddr 解析并校验管理通道地址。
 func parseAdminAddr(addr string) (*adminAddrTarget, error) {
 	addr = strings.TrimSpace(addr)
@@ -80,16 +129,21 @@ func parseAdminAddr(addr string) (*adminAddrTarget, error) {
 	if len(addr) > 255 {
 		return nil, fmt.Errorf("%w: 地址过长", ErrAdminAddrDenied)
 	}
-	// unix socket：绝对路径或 unix:// 形式
+	// unix socket：绝对路径或 unix:// 形式，仅允许白名单 Caddy socket 目录
 	if strings.HasPrefix(addr, "/") {
-		return &adminAddrTarget{socketPath: addr}, nil
+		clean, err := validateAdminSocketPath(addr)
+		if err != nil {
+			return nil, err
+		}
+		return &adminAddrTarget{socketPath: clean}, nil
 	}
 	if strings.HasPrefix(addr, "unix://") {
 		p := strings.TrimPrefix(addr, "unix://")
-		if !strings.HasPrefix(p, "/") {
-			return nil, fmt.Errorf("%w: unix socket 路径须为绝对路径", ErrAdminAddrDenied)
+		clean, err := validateAdminSocketPath(p)
+		if err != nil {
+			return nil, err
 		}
-		return &adminAddrTarget{socketPath: p}, nil
+		return &adminAddrTarget{socketPath: clean}, nil
 	}
 	u, err := url.Parse(addr)
 	if err != nil {
@@ -145,24 +199,35 @@ func warnPlaintextAdminScheme(u *url.URL) {
 		"admin_addr", u.Host)
 }
 
-// checkInternalAdminIP 校验目标 IP 属于内网管理面（回环/私网/链路本地单播）。
+// checkInternalAdminIP 校验目标 IP 属于内网管理面（仅允许回环与 RFC1918/ULA 私网，
+// 显式拒绝云元数据与链路本地地址，防止 SSRF 探测云元数据或链路本地服务）。
 func checkInternalAdminIP(ip net.IP) error {
 	if ip == nil {
 		return fmt.Errorf("%w: 空地址", ErrAdminAddrDenied)
 	}
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return fmt.Errorf("%w: 非法地址 %s", ErrAdminAddrDenied, ip)
 	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+	addr = addr.Unmap()
+	for _, prefix := range deniedAdminPrefixes {
+		if prefix.Contains(addr) {
+			return fmt.Errorf("%w: 禁止访问元数据或链路本地地址 %s", ErrAdminAddrDenied, addr)
+		}
+	}
+	if addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() {
+		return fmt.Errorf("%w: 禁止访问链路本地地址 %s", ErrAdminAddrDenied, addr)
+	}
+	if addr.IsLoopback() || addr.IsPrivate() {
 		return nil
 	}
-	return fmt.Errorf("%w: 非内网管理面地址 %s", ErrAdminAddrDenied, ip)
+	return fmt.Errorf("%w: 非内网管理面地址 %s", ErrAdminAddrDenied, addr)
 }
 
 // NewCaddyClientForAdminAddr 按节点登记的管理通道地址构建 Caddy Admin 客户端
 // （发布扇出到次要节点用）。unix 目标与 NewCaddyClient 等价；http(s) 目标走
 // 普通 TCP，拨号时重解析并复检内网地址（防校验与连接之间的 DNS 重绑定，
-// 与 apisecurity specFetchTransport 同一纪律）。
+// 与 apisecurity specFetchTransport 同一纪律），并禁用重定向以防 307 泄露推送配置中的密钥材料。
 func NewCaddyClientForAdminAddr(addr string) (*CaddyClient, error) {
 	target, err := parseAdminAddr(addr)
 	if err != nil {
@@ -177,6 +242,8 @@ func NewCaddyClientForAdminAddr(addr string) (*CaddyClient, error) {
 	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	transport := &http.Transport{
+		DisableKeepAlives: true,
+		IdleConnTimeout:   30 * time.Second,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
@@ -191,7 +258,11 @@ func NewCaddyClientForAdminAddr(addr string) (*CaddyClient, error) {
 					return nil, err
 				}
 			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+			first, ok := netip.AddrFromSlice(ips[0])
+			if !ok {
+				return nil, fmt.Errorf("%w: 地址解析失败", ErrAdminAddrDenied)
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(first.Unmap().String(), port))
 		},
 	}
 	return &CaddyClient{
@@ -199,6 +270,9 @@ func NewCaddyClientForAdminAddr(addr string) (*CaddyClient, error) {
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   30 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}, nil
 }

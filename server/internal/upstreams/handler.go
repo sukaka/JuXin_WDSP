@@ -12,12 +12,19 @@ import (
 
 // TestHandler 是源站测试处理器。
 type TestHandler struct {
-	audits *audits.Service
+	audits       *audits.Service
+	allowPrivate bool // 仅由服务端配置决定是否允许测试 RFC1918/ULA 私网源站，默认 false，绝不信任请求体
 }
 
-// NewTestHandler 创建源站测试处理器。
+// NewTestHandler 创建源站测试处理器（默认禁止访问私网/回环/元数据地址）。
 func NewTestHandler(au *audits.Service) *TestHandler {
 	return &TestHandler{audits: au}
+}
+
+// SetAllowPrivate 服务端显式配置是否允许测试内网源站（不含回环/链路本地/云元数据）。
+func (h *TestHandler) SetAllowPrivate(allow bool) *TestHandler {
+	h.allowPrivate = allow
+	return h
 }
 
 type testRequest struct {
@@ -27,7 +34,9 @@ type testRequest struct {
 	HealthCheckPath string `json:"health_check_path"`
 	TLSServerName   string `json:"tls_server_name"`
 	TLSVerify       bool   `json:"tls_verify"`
-	AllowPrivate    bool   `json:"allow_private"`
+	// AllowPrivate 保留字段仅为兼容前端既有 JSON 载荷（DecodeJSON 启用了 DisallowUnknownFields），
+	// 服务端完全忽略客户端传入值，私网策略仅以 h.allowPrivate 为准。
+	AllowPrivate bool `json:"allow_private"`
 }
 
 // Test 执行源站连通性测试（SSRF防护）。
@@ -45,7 +54,7 @@ func (h *TestHandler) Test(w http.ResponseWriter, r *http.Request) {
 		HealthCheckPath: req.HealthCheckPath,
 		TLSServerName:   req.TLSServerName,
 		TLSVerify:       req.TLSVerify,
-		AllowPrivate:    req.AllowPrivate,
+		AllowPrivate:    h.allowPrivate,
 	})
 
 	// 记录测试审计
@@ -53,22 +62,24 @@ func (h *TestHandler) Test(w http.ResponseWriter, r *http.Request) {
 	if result.ErrorCode == "SSRF_BLOCKED" {
 		risk = audits.RiskMedium
 	}
-	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
-		UserID:       &p.UserID,
-		Username:     p.Username,
-		SourceIP:     middleware.RemoteIP(r),
-		ConnectionIP: middleware.ConnectionIP(r),
-		UserAgent:    r.UserAgent(),
-		Module:       "upstreams",
-		Action:       "test",
-		ObjectType:   "upstream",
-		ObjectID:     "",
-		ObjectName:   req.Host,
-		AfterSummary: summarizeResult(result),
-		Result:       resultToAuditStatus(result),
-		RiskLevel:    risk,
-		RequestID:    response.RequestIDFrom(r),
-	})
+	if h.audits != nil && p != nil {
+		audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
+			UserID:       &p.UserID,
+			Username:     p.Username,
+			SourceIP:     middleware.RemoteIP(r),
+			ConnectionIP: middleware.ConnectionIP(r),
+			UserAgent:    r.UserAgent(),
+			Module:       "upstreams",
+			Action:       "test",
+			ObjectType:   "upstream",
+			ObjectID:     "",
+			ObjectName:   req.Host,
+			AfterSummary: summarizeResult(result),
+			Result:       resultToAuditStatus(result),
+			RiskLevel:    risk,
+			RequestID:    response.RequestIDFrom(r),
+		})
+	}
 
 	// 返回结果（不含完整响应体）
 	response.JSON(w, r, http.StatusOK, result)

@@ -225,6 +225,15 @@ func NewWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 }
 
 func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, vendorKeys map[string]ed25519.PublicKey) (*App, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+	// M-S1: 归一化并校验 APP_ENV，防止 "PROD"/"production"/未知环境名绕过生产安全门禁。
+	env, err := config.NormalizeEnv(cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Env = env
 	// 加密能力是生产环境的启动前置条件，必须在装配其他依赖前校验。
 	encSvc, err := initEncryption(cfg)
 	if err != nil {
@@ -2452,6 +2461,14 @@ func (a *App) health(w http.ResponseWriter, r *http.Request) {
 // 开发环境未配置时生成临时密钥并打印警告（不持久化，重启后旧密文无法解密）；
 // 生产环境必须配置 JIUZHANG_MASTER_KEY。
 func initEncryption(cfg *config.Config) (*encryption.Service, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+	env, normErr := config.NormalizeEnv(cfg.Env)
+	if normErr != nil {
+		return nil, normErr
+	}
+	cfg.Env = env
 	svc, err := encryption.NewFromEnv()
 	if err == nil {
 		return svc, nil

@@ -82,6 +82,17 @@ func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 		result.ErrorMessage = err.Error()
 		return result
 	}
+	// 纵深防御：即使服务端显式允许测试内网（RFC1918/ULA），也绝不允许探测回环、链路本地、未指定、组播或云元数据地址。
+	for i, a := range addrs {
+		a = a.Unmap()
+		addrs[i] = a
+		if isAlwaysDeniedUpstreamAddr(a) {
+			result.DNSResult = "failed"
+			result.ErrorCode = "SSRF_BLOCKED"
+			result.ErrorMessage = "禁止访问回环/链路本地/云元数据等保留地址"
+			return result
+		}
+	}
 	result.DNSResult = "ok"
 	for _, a := range addrs {
 		result.ResolvedAddresses = append(result.ResolvedAddresses, a.String())
@@ -90,6 +101,7 @@ func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 	// 5. 建立带自定义 Dial 的 HTTP 客户端（强制使用已校验的 IP）
 	start := time.Now()
 	client := buildSafeClient(in, addrs)
+	defer client.CloseIdleConnections()
 
 	// 6. 发起 HTTP 请求
 	path := in.HealthCheckPath
@@ -144,6 +156,20 @@ func TestConnectivity(ctx context.Context, in TestInput) *TestResult {
 	return result
 }
 
+// isAlwaysDeniedUpstreamAddr 判定源站连通性测试永久禁止的目标地址（回环/链路本地/未指定/组播/云元数据/带Zone）。
+func isAlwaysDeniedUpstreamAddr(a netip.Addr) bool {
+	if !a.IsValid() || a.Zone() != "" {
+		return true
+	}
+	a = a.Unmap()
+	return validation.IsBlockedAddress(a) ||
+		a.IsLoopback() ||
+		a.IsLinkLocalUnicast() ||
+		a.IsLinkLocalMulticast() ||
+		a.IsUnspecified() ||
+		a.IsMulticast()
+}
+
 // buildSafeClient 构建使用预校验 IP 的安全 HTTP 客户端。
 func buildSafeClient(in TestInput, addrs []netip.Addr) *http.Client {
 	dialer := &net.Dialer{
@@ -153,6 +179,7 @@ func buildSafeClient(in TestInput, addrs []netip.Addr) *http.Client {
 	transport := &http.Transport{
 		DisableKeepAlives:   true,
 		MaxIdleConns:        0,
+		IdleConnTimeout:     30 * time.Second,
 		TLSHandshakeTimeout: tlsTimeout,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			// 强制使用已校验的 IP 地址（防 DNS 重绑定）
@@ -162,6 +189,10 @@ func buildSafeClient(in TestInput, addrs []netip.Addr) *http.Client {
 			}
 			var lastErr error
 			for _, a := range addrs {
+				a = a.Unmap()
+				if isAlwaysDeniedUpstreamAddr(a) || (!in.AllowPrivate && validation.IsPrivateOrSpecialAddress(a)) {
+					return nil, fmt.Errorf("ssrf blocked: %s", a)
+				}
 				conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(a.String(), port))
 				if err == nil {
 					return conn, nil

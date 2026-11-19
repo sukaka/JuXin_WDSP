@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -189,6 +190,12 @@ func (h *Handler) GetAdvisory(w http.ResponseWriter, r *http.Request) {
 // Sync 手动触发一次 NVD 同步（不受 sync_enabled 开关约束；失败如实落同步状态并返回 502）。
 func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
+	// M-S12: 手动同步可能耗时达 manualSyncTimeout（5 分钟），显式扩展当前响应的写截止时间，
+	// 防止被 HTTP Server 全局 WriteTimeout（默认 30s）提前中断。
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(manualSyncTimeout + 10*time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		slog.Warn("vuln intel sync extend write deadline failed", "error", err)
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), manualSyncTimeout)
 	defer cancel()
 	res, err := h.syncer.Run(ctx)
@@ -491,6 +498,9 @@ func auditSummary(v map[string]interface{}) string {
 // recordAudit 记录漏洞情报写操作审计（失败进入 fallback 队列，不影响主流程）。
 func (h *Handler) recordAudit(r *http.Request, p *authz.Principal, action, objectType, objectID,
 	afterSummary, result, failureReason, risk string) {
+	if h.audits == nil || p == nil {
+		return
+	}
 	audits.RecordWithFallback(r.Context(), h.audits, audits.RecordInput{
 		UserID:        &p.UserID,
 		Username:      p.Username,
