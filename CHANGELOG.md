@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-11-19
+
+### 修复与安全加固
+
+- **宿主机升级、hostctl 与部署安全**：升级执行器内嵌 Ed25519 公钥并在 `docker load` 前 fail-closed 验签，特权状态与锁目录迁至 `/var/lib/jiuzhang/upgrade-executor`（`0700 root:root`），严格校验 `version_to` 与 `upgrade-services.yml` 不可变性及危险配置；`hostctl-exec.sh` 改用 Python `O_NOFOLLOW` 读密钥与常时间 HMAC 验签、移除命令行密钥参数、持久化 `requestID` 防重放并支持 FIFO 批量消费；PCAP 目录白名单收紧至 `jiuzhang` 专属前缀且状态文件统一改为 `runtime/hostctl/pcap-status.state`；裸机 PostgreSQL 改用 `--auth-local=peer` 与私有 socket 目录；恢复容器 `read_only`、`cap_drop: [ALL]`、非 root 运行及 `REDISCLI_AUTH` 健康检查；加固 `rollback.sh` 精确迁移回滚与防重复回滚、`.run` 压缩包提取、K8s `fsGroup`/`--token-file`、`install-console.sh` 与 `netapply.sh`。
+- **网关防护管线与守护进程**：全链路统一 `CanonicalPath`/`CanonicalSegments` 路径规范化；修复 BOLA/StrongFlow `//` 分段错位、Method 漏检与跨租户 BOLA 在 `PROTECT` 下的实断拦截；修复 `>4 MiB` 与 `1–4 MiB` 大包绕过 API 防护管线；修复 GraphQL DAG 片段指数 DoS、循环检测顺序、别名预扫及 `CostCacheKey` 缺失 `OperationName`；修复 1.9.0 L7 内容控制在直通切换前跳过 `response_header`、覆盖网关本地终结响应以及多值头/Query/Cookie 漏匹配；修复多头 IP 伪造、多凭据绕过身份封禁/风控与 `MemoryStore` LRU 抖动、`Range`/`206` 响应控制绕过、MachineID 分块大包与重放窗缺口、MCP `path_prefix` 穿越与 batch 放行、`MaskCrypto` HKDF 子密钥隔离与 AAD 绑定；加固 `pcapd` `setfsid` 校验与 `SOL_PACKET`、`tproxyd` 自环拨号与 SNI fail-closed、`havipd` 崩溃拉起及 `netmgrd` 诊断上限。
+- **后端管理面、认证、出站防护与备份恢复**：修复自定义规则 SecLang 动作注入与奇数尾反斜杠；修复 IPv4-mapped IPv6、IPv6 Zone ID、云元数据与客户端 `allow_private` SSRF；修复站点头注入、`StripPrefix` 中间件顺序、`bot_policy.signing_keys` 脱敏与配置落盘 `0600`、Caddy Admin 跳转/Unix Socket 边界、`apiscan` 目标变更自动吊销授权与复测误报、用户 `allowed_targets` 禁止回环与 SSE 读取上限；加固改密复用检查、TOTP 90s 防重放、Challenge/CAPTCHA 原子消费、CSRF 常时间校验与登录时序枚举；升级上传改为流式直写+并发限流+空间预检+锁内校验，修复升级 `VERIFYING` 卡死与双重回滚；`.jzbk` 备份新增清单 HMAC、分块 AAD 防重排、`REPEATABLE READ` 一致性导出与解压上限，修复 `worker` 告警回调与 `requestpcap` 队列防饿死、`certificates` 活动关系与事务锁、`containeropsd` 单次超时与原子 socket 等缺陷。
+- **分布式 Agent、Kafka 摄取与管理前端**：修复 Agent PoP→Bearer 认证降级、不完整证书吊销、PoP 重放、HTTP v2 `application_binding_id` 越权、递归/L0 URI 脱敏与 `\x00` 毒丸阻断、Kafka rebalance 锁泄漏与分批上限，支持 `--token-file`/`WDSP_ENROLL_TOKEN`；前端修复 ECharts Tooltip XSS、`javascript:` 链接注入、1.9.0 `uploadWithProgress` 大响应 OOM、非 HTTPS 局域网 `randomUUID` 崩溃、跨账号查询缓存串用、升级预检与 `ProtectWizard` 竞态、PCAP 证据串单及跨模块 RBAC 门禁。
+
+### 验证与边界
+
+- 全仓独立构建与回归通过：`gateway/pcapevidence` 与 `gateway` 守护进程 `-race` 测试及 Linux amd64 交叉编译通过；`gateway/dynamic_security`（24/24）与 `gateway/modules/jiuzhang_guard`（17/17，不含需实时 Valkey 的 4 项 `*RealValkey` 用例）通过；`server` 编译、`go vet`、`./tests` 编检及全部 111 个 `internal/cmd` 包通过；`wdsp-agent`（24/24 `-race`）通过；`web` 类型检查、`vite build` 与全量 Vitest（185/185 文件、1366/1366 用例）通过；`ops` 22 个变更脚本 `bash -n`、`ops/system/tests`（27/27）、`ops/upgrade/tests`（58/58）、`test/offline-package`（100/100）、`ops/healthcheck/check_test.py`（2/2）、`firewall-ensure-harness.sh`（14/14）、`ops-security-harness.sh`（40/40）及 `openeuler-zhaoxin-run-harness.sh`（31/31）通过。
+- 目标 Linux 宿主机实机安装/升级/回滚、真实 `systemd`/`pcapd`/`tproxyd` 内核运行态、外部客户端访问，以及需真实 PostgreSQL/Valkey 的集成测试（`behaviorstore/*RealValkey`、`server/tests` 实库运行）均为 `NOT_RUN`。
+
 ## [1.9.0] - 2026-11-19
 
 ### 新增

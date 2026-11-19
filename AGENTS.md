@@ -143,7 +143,7 @@ Caddy 中间件顺序必须经过集成测试验证，不得凭经验随意调�
 - 目标仓库：`https://github.com/sukaka/JuXin_WDSP.git`。是否提交、合并、打标签和推送仍以用户当次明确指令为准，不因日常修改自动执行。
 - 用户说「推送」时：先按本次改动类型确定新版本号，更新 CHANGELOG.md（从 Unreleased 归入新版本节），打 tag `wdsp-vX.Y.Z`，再 `git push origin` 分支与 tag。
 - 正式交付文件必须按用途命名：安装文件名包含 `install`，升级文件名包含 `update`。完整安装入口默认为 `jiuzhang-wdsp-install-X.Y.Z-amd64.run`，完整升级介质默认为 `jiuzhang-wdsp-update-full-X.Y.Z-amd64.tar.gz`；原始构建名可保留兼容，但交付入口必须明确，且别名的签名与 SHA-256 旁车必须同步验证。
-- 当前基线：`1.9.0`（WDSP 产品线自 1.0.0 起重新编号；仓库内历史 tag `wdsp-v2.5.x` 为旧基线，不再延续）。
+- 当前基线：`1.9.1`（WDSP 产品线自 1.0.0 起重新编号；仓库内历史 tag `wdsp-v2.5.x` 为旧基线，不再延续）。
 
 ### 升级交付强制门槛
 
