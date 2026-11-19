@@ -23,6 +23,7 @@ import { ApiError } from '../../api/client'
 import { networkConfigApi } from '../../api/networkConfig'
 import { nodeInterfacesApi } from '../../api/nodeInterfaces'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import TableRefreshControl from '../../components/TableRefreshControl'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
@@ -54,7 +55,7 @@ const STATE_META: Record<string, { label: string; color?: string }> = {
 /** 端口联动状态机展示（netmgrd link_pairs[].state 取值） */
 const LINK_PAIR_STATE_META: Record<string, { label: string; color?: string }> = {
   BOTH_UP: { label: '正常', color: 'green' },
-  PROPAGATED_DOWN: { label: '已联动 down', color: 'orange' },
+  PROPAGATED_DOWN: { label: '已联动断开', color: 'orange' },
   SUPPRESSED: { label: '已抑制', color: 'red' },
 }
 
@@ -482,6 +483,11 @@ export default function NetworkConfigPage() {
               保存配置
             </Button>
           )}
+          <TableRefreshControl
+            storageKey="network-config"
+            loading={configQuery.isFetching || interfacesQuery.isFetching}
+            onRefresh={() => Promise.all([configQuery.refetch(), interfacesQuery.refetch()])}
+          />
         </Space>
         <Alert
           style={{ marginTop: 12 }}
@@ -540,8 +546,8 @@ export default function NetworkConfigPage() {
           )}
           <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 12 }}>
             网桥用于透明串接等二层部署模式；成员口仅可选该节点在线且未分配为管理口的物理网口。
-            开启端口联动（Link-Pair）后：任一成员口链路故障时将联动 down 配对口，引导上游设备切换链路；
-            故障恢复后配对口自动回 up；联动频率超限将进入抑制态（保存一次配置或重启 netmgrd 复位）。
+            开启端口联动后：任一成员口链路故障时将联动断开配对口，引导上游设备切换链路；
+            故障恢复后配对口自动恢复连通；联动频率超限将进入抑制态（保存一次配置或重启 netmgrd 复位）。
           </Typography.Paragraph>
         </Card>
       )}
@@ -550,7 +556,7 @@ export default function NetworkConfigPage() {
         <Card title="路由牵引">
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
             <Space>
-              <Typography.Text>内核三层转发（ip_forward）</Typography.Text>
+              <Typography.Text>内核三层转发</Typography.Text>
               <Switch
                 checked={desired.ip_forward}
                 disabled={!canUpdate}

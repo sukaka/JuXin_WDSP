@@ -7,6 +7,7 @@ import { ApiError } from '../../api/client'
 import { nodeInterfacesApi } from '../../api/nodeInterfaces'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
+import TableRefreshControl from '../../components/TableRefreshControl'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
 import type { NodeInterfaceItem } from '../../types'
@@ -206,7 +207,12 @@ export default function NodeInterfacesPage() {
     <Card
       title="网口管理"
       extra={
-        <Space>
+        <Space wrap>
+          <TableRefreshControl
+            storageKey="node-interfaces"
+            loading={listQuery.isFetching}
+            onRefresh={() => listQuery.refetch()}
+          />
           {dirty && <Typography.Text type="warning">有未保存的修改</Typography.Text>}
           {canUpdate && (
             <Button

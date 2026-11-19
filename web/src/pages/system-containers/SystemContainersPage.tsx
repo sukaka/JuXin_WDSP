@@ -49,6 +49,31 @@ const CONTAINER_HEALTH_META: Record<string, { color: string; label: string }> = 
   healthy: { color: 'success', label: '健康' },
   unhealthy: { color: 'error', label: '不健康' },
   starting: { color: 'processing', label: '检查中' },
+  none: { color: 'default', label: '无探针' },
+}
+
+/** Docker 容器状态描述中文化（常见短语替换，未知片段原样保留） */
+function formatDockerStatus(status?: string): string | undefined {
+  if (!status) return undefined
+  return status
+    .replace(/^Up /, '已运行 ')
+    .replace(/^Exited /, '已退出 ')
+    .replace(/^Restarting /, '重启中 ')
+    .replace(/^Created$/, '已创建')
+    .replace(/\bLess than a second\b/g, '不足 1 秒')
+    .replace(/\bAbout a minute\b/g, '约 1 分钟')
+    .replace(/\bAbout an hour\b/g, '约 1 小时')
+    .replace(/\s*\(healthy\)/g, '（健康）')
+    .replace(/\s*\(unhealthy\)/g, '（异常）')
+    .replace(/\s*\(starting\)/g, '（启动中）')
+    .replace(/\s*\(Paused\)/g, '（已暂停）')
+    .replace(/\bmonths?\b/g, '个月')
+    .replace(/\bweeks?\b/g, '周')
+    .replace(/\bdays?\b/g, '天')
+    .replace(/\bhours?\b/g, '小时')
+    .replace(/\bminutes?\b/g, '分钟')
+    .replace(/\bseconds?\b/g, '秒')
+    .replace(/\s+ago\b/g, '前')
 }
 
 const ACTION_LABEL: Record<ContainerActionKind, string> = {
@@ -193,9 +218,9 @@ function ContainerLogsDrawer({
               size="small"
               aria-label="日志行数"
               value={tail}
-              style={{ width: 96 }}
+              style={{ width: 120 }}
               onChange={(v) => setTail(v)}
-              options={LOG_TAIL_OPTIONS.map((v) => ({ value: v, label: `tail ${v}` }))}
+              options={LOG_TAIL_OPTIONS.map((v) => ({ value: v, label: `最近 ${v} 行` }))}
             />
           </span>
           <Button size="small" onClick={() => setPaused((p) => !p)}>
@@ -338,7 +363,7 @@ export default function SystemContainersPage() {
       dataIndex: 'state',
       width: 100,
       render: (v: string, r) => (
-        <Tooltip title={r.status || undefined}>
+        <Tooltip title={formatDockerStatus(r.status)}>
           <span>
             <StatusTag value={v} map={CONTAINER_STATE_META} />
           </span>
@@ -453,6 +478,7 @@ export default function SystemContainersPage() {
         ) : (
           <SmartTable<ContainerInfo>
             storageKey="system-containers"
+            hideRefresh
             rowKey={(r) => r.id || r.service}
             loading={listQuery.isLoading}
             columns={columns}

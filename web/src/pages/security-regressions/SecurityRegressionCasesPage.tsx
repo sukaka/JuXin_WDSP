@@ -16,7 +16,9 @@ import { securityRegressionApi } from '../../api/securityRegression'
 import type { SecurityRegressionCase } from '../../api/securityRegression'
 import StatusTag from '../../components/StatusTag'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import TableRefreshControl from '../../components/TableRefreshControl'
 import { useBreadcrumbObjectName } from '../../stores/breadcrumb'
+import { DIFF_SUMMARY_KEY_LABELS, REG_FAMILY_LABELS } from '../../utils/i18nLabels'
 import {
   REG_CASE_STATUS_META,
   REG_CRITICALITY_META,
@@ -29,12 +31,37 @@ import type { RegressionDiffKind } from '../../utils/securityRegression'
 
 const CASE_STATUS_OPTIONS = Object.entries(REG_CASE_STATUS_META).map(([value, m]) => ({
   value,
-  label: `${m.label}（${value}）`,
+  label: m.label,
 }))
 const DIFF_KIND_OPTIONS = Object.entries(REG_DIFF_KIND_META).map(([value, m]) => ({
   value,
   label: m.label,
 }))
+
+const DIFF_ACTION_LABELS: Record<string, string> = {
+  BLOCK: '阻断',
+  ALLOW: '放行',
+  PASS: '放行',
+  OBSERVE: '观察',
+}
+const DIFF_ACTION_KEYS = new Set(['expected_action', 'observed_action', 'action_change'])
+
+function formatDiffValue(key: string, value: unknown): string {
+  if (DIFF_ACTION_KEYS.has(key) && typeof value === 'string') {
+    const trimmed = value.trim()
+    if (DIFF_ACTION_LABELS[trimmed]) return DIFF_ACTION_LABELS[trimmed]
+    if (trimmed.includes('->')) {
+      return trimmed
+        .split('->')
+        .map((part) => {
+          const p = part.trim()
+          return DIFF_ACTION_LABELS[p] ?? p
+        })
+        .join(' → ')
+    }
+  }
+  return diffValueToText(value)
+}
 
 /** 差异摘要纯文本视图：逐键字符串化展示（React 默认转义，不渲染任何标记——
  * REG-023 恶意 HTML 不执行）；长值受限展开（省略号 + 点击展开），不一次铺满。 */
@@ -50,16 +77,23 @@ function DiffSummaryView({ diff }: { diff?: Record<string, unknown> | null }) {
       pagination={false}
       dataSource={entries}
       columns={[
-        { title: '差异项', dataIndex: 0, width: 200, render: (k: string) => <Typography.Text code>{k}</Typography.Text> },
+        {
+          title: '差异项',
+          dataIndex: 0,
+          width: 200,
+          render: (k: string) => (
+            <Typography.Text strong>{DIFF_SUMMARY_KEY_LABELS[k] ?? k}</Typography.Text>
+          ),
+        },
         {
           title: '内容（脱敏摘要，纯文本）',
           dataIndex: 1,
-          render: (v: unknown) => (
+          render: (v: unknown, row: [string, unknown]) => (
             <Typography.Paragraph
               style={{ marginBottom: 0, fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap' }}
               ellipsis={{ rows: 3, expandable: true, symbol: '展开' }}
             >
-              {diffValueToText(v)}
+              {formatDiffValue(row[0], v)}
             </Typography.Paragraph>
           ),
         },
@@ -115,7 +149,7 @@ export default function SecurityRegressionCasesPage() {
     () =>
       Array.from(new Set(pageItems.map((c) => c.family)))
         .sort()
-        .map((f) => ({ value: f, label: f })),
+        .map((f) => ({ value: f, label: REG_FAMILY_LABELS[f] ?? f })),
     [pageItems],
   )
   const filtered = useMemo(
@@ -142,7 +176,12 @@ export default function SecurityRegressionCasesPage() {
         </Space>
       ),
     },
-    { title: '类别', dataIndex: 'family', width: 140 },
+    {
+      title: '类别',
+      dataIndex: 'family',
+      width: 140,
+      render: (v: string) => REG_FAMILY_LABELS[v] ?? v,
+    },
     {
       title: '真值',
       dataIndex: 'truth',
@@ -205,6 +244,11 @@ export default function SecurityRegressionCasesPage() {
             options={DIFF_KIND_OPTIONS}
             value={diffKind}
             onChange={(v) => updateQuery({ diff: v })}
+          />
+          <TableRefreshControl
+            storageKey="security-regression-cases"
+            loading={casesQuery.isFetching}
+            onRefresh={() => Promise.all([casesQuery.refetch(), runQuery.refetch()])}
           />
         </Space>
         {(family || diffKind) && (

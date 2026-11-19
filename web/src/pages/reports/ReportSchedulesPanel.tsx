@@ -23,6 +23,7 @@ import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { ApiError } from '../../api/client'
 import { reportSchedulesApi } from '../../api/reportSchedules'
+import TableRefreshControl from '../../components/TableRefreshControl'
 import type { SaveReportScheduleBody } from '../../api/reportSchedules'
 import { reportTemplatesApi } from '../../api/reportTemplates'
 import { applicationsApi } from '../../api/applications'
@@ -85,7 +86,7 @@ function scheduleDesc(s: ReportScheduleItem): string {
     return `每周${weekNames[s.day_of_week] ?? s.day_of_week} ${s.time_of_day} UTC`
   if (s.report_type === 'MONTHLY')
     return `每月${s.day_of_month}号 ${s.time_of_day} UTC`
-  return s.report_type
+  return REPORT_TYPE_META[s.report_type]?.label ?? s.report_type
 }
 
 /** 定时报告计划：CRUD + 启停 + 立即执行 + 邮件发送状态 */
@@ -400,14 +401,21 @@ export default function ReportSchedulesPanel() {
           按计划自动创建报告（UTC 时刻）；邮件发送需先在「系统告警 →
           通知渠道」配置 SMTP 邮件渠道
         </Typography.Text>
-        {canManage && (
-          <Space wrap>
-            {batchDeleteButton}
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              新建定时计划
-            </Button>
-          </Space>
-        )}
+        <Space wrap>
+          <TableRefreshControl
+            storageKey="report-schedules"
+            loading={listQuery.isFetching}
+            onRefresh={() => listQuery.refetch()}
+          />
+          {canManage && (
+            <>
+              {batchDeleteButton}
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+                新建定时计划
+              </Button>
+            </>
+          )}
+        </Space>
       </Space>
 
       {listQuery.isError ? (

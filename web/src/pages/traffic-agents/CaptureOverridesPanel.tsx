@@ -19,6 +19,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../api/client'
 import { trafficAgentsApi } from '../../api/trafficAgents'
+import TableRefreshControl from '../../components/TableRefreshControl'
 import type {
   CreateCaptureOverrideBody,
   TrafficCaptureOverride,
@@ -39,9 +40,9 @@ const LEVEL_TAG_COLORS: Record<string, string> = {
 
 const LEVEL_OPTIONS = [
   { value: 'L0', label: 'L0：仅元数据' },
-  { value: 'L1', label: 'L1：+ Header' },
-  { value: 'L2', label: 'L2：+ Body' },
-  { value: 'L3', label: 'L3：+ RAW 包' },
+  { value: 'L1', label: 'L1：+ 请求/响应头' },
+  { value: 'L2', label: 'L2：+ 正文' },
+  { value: 'L3', label: 'L3：+ 原始包' },
 ]
 
 interface OverrideFormValues {
@@ -57,11 +58,11 @@ interface OverrideFormValues {
 /** 匹配条件可读化（仅展示已填字段，多字段 AND） */
 function matchText(match: TrafficCaptureOverrideMatch): string[] {
   const parts: string[] = []
-  if (match.dst_ip) parts.push(`dst_ip=${match.dst_ip}`)
+  if (match.dst_ip) parts.push(`目标 IP=${match.dst_ip}`)
   if (match.dst_port !== undefined && match.dst_port !== null)
-    parts.push(`dst_port=${match.dst_port}`)
-  if (match.host) parts.push(`host=${match.host}`)
-  if (match.uri_prefix) parts.push(`uri_prefix=${match.uri_prefix}`)
+    parts.push(`目标端口=${match.dst_port}`)
+  if (match.host) parts.push(`域名=${match.host}`)
+  if (match.uri_prefix) parts.push(`URI 前缀=${match.uri_prefix}`)
   return parts
 }
 
@@ -147,7 +148,7 @@ export default function CaptureOverridesPanel({
     if (host) match.host = host
     if (uriPrefix) match.uri_prefix = uriPrefix
     if (Object.keys(match).length === 0) {
-      message.error('至少填写一个匹配条件（dst_ip / dst_port / host / uri_prefix）')
+      message.error('至少填写一个匹配条件（目标 IP / 目标端口 / 域名 / URI 前缀）')
       return
     }
     createMutation.mutate({
@@ -241,13 +242,20 @@ export default function CaptureOverridesPanel({
         showIcon
         message="定向采集规则仅提升不降低采集等级（生效等级 = max（策略基础等级， 命中规则等级）），命中流量经配置热更即时生效；规则过期后 Agent 自动忽略。"
       />
-      {canManage ? (
+      <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
         <div>
-          <Button type="primary" onClick={() => setEditorOpen(true)}>
-            新增规则
-          </Button>
+          {canManage ? (
+            <Button type="primary" onClick={() => setEditorOpen(true)}>
+              新增规则
+            </Button>
+          ) : null}
         </div>
-      ) : null}
+        <TableRefreshControl
+          storageKey="traffic-capture-overrides"
+          loading={listQuery.isFetching}
+          onRefresh={() => listQuery.refetch()}
+        />
+      </Space>
       {listQuery.isError ? (
         <QueryErrorAlert error={listQuery.error} message="加载定向采集规则失败" />
       ) : (
@@ -290,7 +298,7 @@ export default function CaptureOverridesPanel({
         >
           <Form.Item
             name="dst_ip"
-            label="目标 IP / CIDR（dst_ip，v4/v6）"
+            label="目标 IP / CIDR（IPv4/IPv6）"
             rules={[
               {
                 // 与后端 CaptureOverrideMatch.validate 口径一致：单 IP 或 CIDR（v4/v6）
@@ -305,15 +313,15 @@ export default function CaptureOverridesPanel({
           >
             <Input placeholder="如 10.10.20.30 或 10.10.20.0/24" maxLength={64} />
           </Form.Item>
-          <Form.Item name="dst_port" label="目标端口（dst_port，1-65535）">
+          <Form.Item name="dst_port" label="目标端口（1-65535）">
             <InputNumber min={1} max={65535} style={{ width: '100%' }} placeholder="如 8443" />
           </Form.Item>
-          <Form.Item name="host" label="Host（精确匹配，大小写不敏感）">
+          <Form.Item name="host" label="域名（精确匹配，大小写不敏感）">
             <Input placeholder="如 api.example.com" maxLength={255} />
           </Form.Item>
           <Form.Item
             name="uri_prefix"
-            label="URI 前缀（uri_prefix，以 / 开头，≤512 字节）"
+            label="URI 前缀（以 / 开头，≤512 字节）"
             rules={[
               {
                 // 与后端 CaptureOverrideMatch.validate 口径一致：须以 / 开头

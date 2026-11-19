@@ -23,6 +23,7 @@ import { DeleteOutlined, EditOutlined, PlusOutlined, SwapOutlined } from '@ant-d
 import dayjs from 'dayjs'
 import { ApiError } from '../../api/client'
 import { haGroupsApi } from '../../api/haGroups'
+import TableRefreshControl from '../../components/TableRefreshControl'
 import { apiNodesApi } from '../../api/apiNodes'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
@@ -33,11 +34,11 @@ import type { HaGroup, HaGroupUpsert } from '../../types'
 
 /** VRRP 运行状态展示（havipd state 取值） */
 const HA_STATE_META: Record<string, { label: string; color?: string }> = {
-  MASTER: { label: 'MASTER（持有 VIP）', color: 'green' },
-  BACKUP: { label: 'BACKUP（待命）', color: 'blue' },
-  FAULT: { label: 'FAULT（实例异常）', color: 'red' },
-  DISABLED: { label: 'DISABLED（已停用）' },
-  STOPPED: { label: 'STOPPED（未下发）' },
+  MASTER: { label: '主节点（持有 VIP）', color: 'green' },
+  BACKUP: { label: '备节点（待命）', color: 'blue' },
+  FAULT: { label: '实例故障', color: 'red' },
+  DISABLED: { label: '已停用' },
+  STOPPED: { label: '未下发' },
 }
 
 /** 表单值（members 固定两行） */
@@ -325,7 +326,16 @@ export default function HaGroupsPage() {
           <QueryErrorAlert error={groupsQuery.error} message="加载主备组失败" />
         </Card>
       ) : (
-        <Card title="主备组">
+        <Card
+          title="主备组"
+          extra={
+            <TableRefreshControl
+              storageKey="ha-groups"
+              loading={groupsQuery.isFetching}
+              onRefresh={() => Promise.all([groupsQuery.refetch(), nodesQuery.refetch()])}
+            />
+          }
+        >
           <Table<HaGroup>
             rowKey="id"
             rowSelection={rowSelection}
@@ -376,7 +386,9 @@ export default function HaGroupsPage() {
                   color: e.to === 'MASTER' ? 'green' : e.to === 'FAULT' ? 'red' : 'blue',
                   children: (
                     <>
-                      <Typography.Text strong>{e.from} → {e.to}</Typography.Text>
+                      <Typography.Text strong>
+                        {HA_STATE_META[e.from]?.label ?? e.from} → {HA_STATE_META[e.to]?.label ?? e.to}
+                      </Typography.Text>
                       <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
                         {dayjs(e.at).format('MM-DD HH:mm:ss')}
                       </Typography.Text>
@@ -449,7 +461,7 @@ export default function HaGroupsPage() {
           >
             <Input.Password placeholder={editing?.has_auth_pass ? '已配置（不显示）' : '可选'} autoComplete="new-password" />
           </Form.Item>
-          <Typography.Text strong>成员（恰 2 台已登记网关节点，优先级高者倾向 MASTER）</Typography.Text>
+          <Typography.Text strong>成员（恰 2 台已登记网关节点，优先级高者倾向成为主节点）</Typography.Text>
           <Space size={16} wrap style={{ marginTop: 8 }}>
             {[0, 1].map((i) => (
               <Space key={i}>

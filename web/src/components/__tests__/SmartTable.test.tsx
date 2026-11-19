@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import SmartTable from '../SmartTable'
+import { Tooltip } from 'antd'
+import SmartTable, { extractNodeText } from '../SmartTable'
 
 interface Row {
   id: string
@@ -81,5 +82,63 @@ describe('SmartTable', () => {
     const table = document.querySelector('table')!
     expect(within(table).queryByText('状态')).not.toBeInTheDocument()
     expect(within(table).getByText('名称')).toBeInTheDocument()
+  })
+
+  it('列设置从 JSX 表头提取中文文本，不回退为原始英文 dataIndex', async () => {
+    const jsxColumns = [
+      {
+        title: (
+          <span>
+            应用名称
+            <Tooltip title="说明提示">
+              <span />
+            </Tooltip>
+          </span>
+        ),
+        dataIndex: 'name',
+        key: 'name',
+      },
+      {
+        title: <span>运行状态</span>,
+        dataIndex: 'status',
+        key: 'status',
+      },
+    ]
+    expect(extractNodeText(<span>风险等级</span>)).toBe('风险等级')
+    expect(extractNodeText(['请求', ' ', <strong>次数</strong>])).toBe('请求 次数')
+    render(<SmartTable<Row> rowKey="id" columns={jsxColumns} dataSource={data} pagination={false} />)
+    fireEvent.click(screen.getByRole('button', { name: /列设置/ }))
+    const box = (await screen.findByText('重置列宽与显隐')).parentElement!.parentElement as HTMLElement
+    expect(within(box).getByLabelText('应用名称')).toBeInTheDocument()
+    expect(within(box).getByLabelText('运行状态')).toBeInTheDocument()
+    expect(within(box).queryByText('name')).not.toBeInTheDocument()
+    expect(within(box).queryByText('status')).not.toBeInTheDocument()
+  })
+
+  it('默认在表格右上角展示刷新与自动刷新控件，hideRefresh 时隐藏', () => {
+    const onRefresh = vi.fn()
+    const { rerender } = render(
+      <SmartTable<Row>
+        rowKey="id"
+        columns={columns}
+        dataSource={data}
+        pagination={false}
+        onRefresh={onRefresh}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '刷新列表' }))
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: '自动刷新' })).toBeInTheDocument()
+
+    rerender(
+      <SmartTable<Row>
+        rowKey="id"
+        columns={columns}
+        dataSource={data}
+        pagination={false}
+        hideRefresh
+      />,
+    )
+    expect(screen.queryByRole('button', { name: '刷新列表' })).not.toBeInTheDocument()
   })
 })
