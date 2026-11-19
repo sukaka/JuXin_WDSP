@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-11-19
+
+### 修复与体验优化
+
+- **3D 攻击态势与全球攻击态势大屏 CSP 崩溃修复**：新增纯 JS 递归下降表达式解析器 `web/src/utils/clayglExpr.ts`，并在 `web/vite.config.ts` 的构建与开发期自动替换 `claygl/src/createCompositor.js` 中的 `new Function` 调用，在不放宽生产严格 CSP（`script-src 'self'`）的前提下彻底修复 `/big-screen/attack-monitor` 与 `/big-screen/globe` 的 `Error: Invalid expression.` 白屏崩溃；同时为 `GlobeAttackMap` 的底图生成、初始化与数据更新 `setOption` 补充 `try/catch` 优雅降级保护。
+- **全系统列表页手动刷新与自定义秒数自动刷新**：新增通用 `TableRefreshControl` 组件并接入 `SmartTable` 工具栏（覆盖全系统 128 个列表页）及全部 6 个原生 `<Table>` 列表页（主备高可用、网络配置、网口管理、报告定时计划、安全回归用例、定向采集规则）；提供手动「刷新」按钮、支持自定义 3–3600 秒与 5/10/30/60 秒快捷档的「自动刷新」弹窗、防并发重入、后台标签页自动暂停、卸载清理定时器及 `localStorage` 间隔记忆；已有卡片头刷新按钮的容器运维页通过 `hideRefresh` 去重。
+- **全前端中文化补全**：新增集中字典 `web/src/utils/i18nLabels.ts`，补齐 `stage3~8`、`apm`、`botPolicy`、`authzEnforcement`、`strongFlow`、`machineIdentity`、`securityRegression` 等共享枚举映射，并为 `RecordDetailDrawer` 内置通用中文字段与枚举值兜底；修复应用详情「API 资产价值」9 维评分名称（`admin_capability` 等）与排版粘连、APM 服务详情 WAF 动作分布大小写不匹配、`ModelMaturityPage` 18 项指标键、`SystemUpgradePage` 预检项、`SystemMonitoringPage`/`RuntimeOpsScreen` 组件状态与指标、`RolesPage`/`ProfilePage` 36 个权限模块、`AuditsPage`、`CustomRulesPage`、`WafRulesPage`、`DataFlowDetails` 等全站 140+ 页面文件的原始英文键/枚举展示（保持后端提交协议值、机读 CSV 导出列头与服务端冻结签署文案不变）。
+
+### 验证与边界
+
+- `cd web && npm run typecheck && npm run lint && npm run build` 0 报错通过；对 `web/dist/assets/*.js` 全量扫描 `new Function` / `eval(` 结果为 0 命中。
+- 前端单测：`TableRefreshControl`（5/5）、`clayglExpr`（覆盖 42 项内置合成器表达式与非法注入拦截）与 `GlobeAttackMap`（5/5）、全量 Vitest（196/196 文件、1418/1418 用例在加装大屏测试前全绿，新增 2 组大屏测试全绿）；`cd server && go test -count=1 ./internal/upgrades/...` 通过。
+- 目标服务器重新构建部署 `web` 镜像后的真实浏览器 WebGL 渲染与实机升级访问为 `NOT_RUN`。
+
 ## [1.9.1] - 2026-11-19
 
 ### 修复与安全加固
