@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
@@ -70,7 +70,15 @@ export default function SystemUpgradePage() {
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null)
   const [uploadResult, setUploadResult] = useState<UpgradePackageResp | null>(null)
   const [selectedPackageId, setSelectedPackageId] = useState<string>()
+  const selectedPackageIdRef = useRef<string | undefined>(undefined)
+  selectedPackageIdRef.current = selectedPackageId
   const [precheck, setPrecheck] = useState<UpgradePrecheckResult | null>(null)
+
+  const selectPackage = (nextId: string | undefined) => {
+    selectedPackageIdRef.current = nextId
+    setSelectedPackageId(nextId)
+    setPrecheck(null)
+  }
   const [detailJob, setDetailJob] = useState<UpgradeJobItem | null>(null)
   const [detailPrecheck, setDetailPrecheck] = useState<UpgradePrecheckItem | null>(null)
   const [form] = Form.useForm<PackageFormValues>()
@@ -104,8 +112,7 @@ export default function SystemUpgradePage() {
     }
     invalidatePackages()
     if (pkg.status !== 'REJECTED') {
-      setSelectedPackageId(pkg.id)
-      setPrecheck(null)
+      selectPackage(pkg.id)
     }
   }
 
@@ -139,8 +146,7 @@ export default function SystemUpgradePage() {
       invalidatePackages()
       invalidate()
       if (resp.package.status !== 'REJECTED') {
-        setSelectedPackageId(resp.package.id)
-        setPrecheck(null)
+        selectPackage(resp.package.id)
       }
     },
     onError: (e) => {
@@ -165,13 +171,19 @@ export default function SystemUpgradePage() {
 
   const precheckMutation = useMutation({
     mutationFn: (packageId: string) => upgradesApi.precheck(packageId),
-    onSuccess: (result) => {
-      setPrecheck(result)
+    onSuccess: (result, packageId) => {
+      const resultPackageId = result.package_id ?? packageId
+      // 防竞态：若用户在预检请求在途期间切换了升级包，丢弃过期的预检结果，避免跨包误启用执行按钮
+      if (resultPackageId !== selectedPackageIdRef.current) return
+      setPrecheck({ ...result, package_id: resultPackageId })
       if (result.overall_result === 'FAIL') message.error('预检存在失败项，禁止执行升级')
       else if (result.overall_result === 'WARNING') message.warning('预检存在警告项，请确认后再执行升级')
       else message.success('预检全部通过')
     },
-    onError,
+    onError: (e, packageId) => {
+      if (packageId !== selectedPackageIdRef.current) return
+      onError(e)
+    },
   })
 
   const executeMutation = useMutation({
@@ -201,10 +213,13 @@ export default function SystemUpgradePage() {
     onError,
   })
 
+  const precheckMatchesSelected = Boolean(
+    selectedPackageId && precheck && precheck.package_id === selectedPackageId,
+  )
   const precheckBlocked = (precheck?.items ?? []).some((i) => i.result === 'FAIL')
 
   const confirmExecute = () => {
-    if (!selectedPackageId) return
+    if (!selectedPackageId || !precheckMatchesSelected || precheckBlocked) return
     modal.confirm({
       title: '高风险操作确认',
       content:
@@ -353,8 +368,7 @@ export default function SystemUpgradePage() {
               loading={packagesQuery.isLoading}
               value={selectedPackageId}
               onChange={(v) => {
-                setSelectedPackageId(v)
-                setPrecheck(null)
+                selectPackage(v)
               }}
               options={packages.map((p) => ({
                 value: p.id,
@@ -376,7 +390,7 @@ export default function SystemUpgradePage() {
               <Button
                 type="primary"
                 danger
-                disabled={!selectedPackageId || !precheck || precheckBlocked}
+                disabled={!selectedPackageId || precheck?.package_id !== selectedPackageId || precheckBlocked}
                 loading={executeMutation.isPending}
                 onClick={confirmExecute}
               >
@@ -385,7 +399,7 @@ export default function SystemUpgradePage() {
             )}
           </Space>
 
-          {precheck && (
+          {precheckMatchesSelected && precheck && (
             <>
               <Alert
                 type={precheck.overall_result === 'PASS' ? 'success' : precheck.overall_result === 'WARNING' ? 'warning' : 'error'}

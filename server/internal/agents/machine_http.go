@@ -149,6 +149,36 @@ func (h *MachineHandler) httpEventsV2(w http.ResponseWriter, r *http.Request, ag
 		})
 		return
 	}
+	// 服务端校验工作负载绑定归属与有效性（防跨应用 application_binding_id 伪造，与 api-observations 同口径）。
+	resolvedBindingIDs := make([]*uuid.UUID, len(req.Records))
+	resolvedAppIDs := make([]*uuid.UUID, len(req.Records))
+	for i := range req.Records {
+		rec := &req.Records[i]
+		if rec.ApplicationBindingID == nil {
+			continue
+		}
+		bindings := h.workloadBindings()
+		if bindings == nil {
+			machineError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "工作负载绑定校验不可用")
+			return
+		}
+		id, err := uuid.Parse(strings.TrimSpace(*rec.ApplicationBindingID))
+		if err != nil {
+			machineError(w, http.StatusBadRequest, mcInvalidArgument, "application_binding_id 不是合法 UUID")
+			return
+		}
+		applicationID, err := bindings.ResolveWorkloadBinding(r.Context(), agent.AgentID, id, *rec.BindingVersion, "", "")
+		if err != nil {
+			if errors.Is(err, ErrWorkloadBinding) {
+				machineError(w, http.StatusForbidden, mcForbidden, "工作负载绑定不存在、已失效或不属于当前 Agent")
+				return
+			}
+			machineInternal(w, r, err)
+			return
+		}
+		resolvedBindingIDs[i] = &id
+		resolvedAppIDs[i] = applicationID
+	}
 	acceptedIdx, duplicates, err := h.store.InsertHTTPEventsV2(r.Context(), agent.AgentID, req.Records, h.now().UTC())
 	if err != nil {
 		machineInternal(w, r, err)
@@ -173,10 +203,9 @@ func (h *MachineHandler) httpEventsV2(w http.ResponseWriter, r *http.Request, ag
 		if rec.GRPC != nil {
 			item.ProtocolType = "GRPC" // 可信协议元数据（grpc 子对象），不写死 REST
 		}
-		if rec.ApplicationBindingID != nil {
-			if id, err := uuid.Parse(*rec.ApplicationBindingID); err == nil { // validate 已保证合法
-				item.BindingID = &id
-			}
+		if resolvedBindingIDs[i] != nil {
+			item.BindingID = resolvedBindingIDs[i]
+			item.ApplicationID = resolvedAppIDs[i]
 			item.BindingVersion = rec.BindingVersion
 		}
 		items = append(items, item)
@@ -249,6 +278,7 @@ type httpAssetLinkItem struct {
 	SourceType     string
 	SourceInstance string
 	SourceEpoch    int64
+	ApplicationID  *uuid.UUID
 	BindingID      *uuid.UUID
 	BindingVersion *int64
 	// RequireBinding v2 语义：未声明来源绑定 → UNASSIGNED 待确认、不执行端点 upsert
@@ -296,6 +326,7 @@ func (h *MachineHandler) linkHTTPAssets(ctx context.Context, agentID uuid.UUID, 
 				ep, err := h.discovery.UpsertDiscovery(ctx, apiassets.DiscoveryInput{
 					Method:               item.Method,
 					PathTemplate:         tpl,
+					ApplicationID:        item.ApplicationID,
 					ApplicationBindingID: item.BindingID,
 					Host:                 item.Host,
 					Confidence:           item.Confidence,

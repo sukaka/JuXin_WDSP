@@ -32,6 +32,7 @@ type fakeObservationReceipts struct {
 	duplicates int
 	err        error
 	eventIDs   []string
+	deletedIDs []string
 }
 
 func (f *fakeObservationReceipts) RecordAPIObservationReceipts(_ context.Context, _ uuid.UUID, eventIDs []string, _ time.Time) ([]int, int, error) {
@@ -43,6 +44,11 @@ func (f *fakeObservationReceipts) RecordAPIObservationReceipts(_ context.Context
 		}
 	}
 	return f.accepted, f.duplicates, f.err
+}
+
+func (f *fakeObservationReceipts) DeleteAPIObservationReceipts(_ context.Context, _ uuid.UUID, eventIDs []string) error {
+	f.deletedIDs = append(f.deletedIDs, eventIDs...)
+	return nil
 }
 
 type fakeWorkloadBindings struct {
@@ -142,7 +148,7 @@ func TestAPIObservationsEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate and producer failure", func(t *testing.T) {
+	t.Run("duplicate skipped before kafka and producer failure rolls back receipts", func(t *testing.T) {
 		store := newFakeMachineStore()
 		agentID := uuid.New()
 		cred := registerAgent(store, agentID, false)
@@ -154,10 +160,31 @@ func TestAPIObservationsEndpoint(t *testing.T) {
 		if rr.Code != http.StatusAccepted || !strings.Contains(rr.Body.String(), `"duplicate_count":1`) {
 			t.Fatalf("duplicate response: %d %s", rr.Code, rr.Body.String())
 		}
+		if len(producer.records) != 0 {
+			t.Fatalf("duplicate observation must not be published to kafka: got %d", len(producer.records))
+		}
+		// 混合批次（第 0 条重复、第 1 条新记录）：仅发布新记录到 Kafka
+		recA := validAPIObservationRecord()
+		recA.EventID = "ev-dup"
+		recB := validAPIObservationRecord()
+		recB.EventID = "ev-new"
+		receipts.accepted = []int{1}
+		receipts.duplicates = 1
+		rr = doMachine(t, mux, http.MethodPost, "/api/v1/agents/"+agentID.String()+"/api-observations", observationBatchJSON(t, recA, recB), cred)
+		if rr.Code != http.StatusAccepted || len(producer.records) != 1 || producer.records[0].Headers["event_id"] != "ev-new" {
+			t.Fatalf("expected only new record published: code=%d records=%+v", rr.Code, producer.records)
+		}
+		// Kafka 发布失败：返回 503 并回滚本次新增回执，保证重试不丢失
+		receipts.accepted = nil
+		receipts.duplicates = 0
+		receipts.deletedIDs = nil
 		producer.err = errors.New("broker unavailable")
-		rr = doMachine(t, mux, http.MethodPost, "/api/v1/agents/"+agentID.String()+"/api-observations", observationBatchJSON(t, validAPIObservationRecord()), cred)
+		rr = doMachine(t, mux, http.MethodPost, "/api/v1/agents/"+agentID.String()+"/api-observations", observationBatchJSON(t, recB), cred)
 		if rr.Code != http.StatusServiceUnavailable || rr.Header().Get("Retry-After") == "" {
 			t.Fatalf("producer failure response: %d %s", rr.Code, rr.Body.String())
+		}
+		if len(receipts.deletedIDs) != 1 || receipts.deletedIDs[0] != "ev-new" {
+			t.Fatalf("expected newly recorded receipt to be rolled back on publish failure, got %v", receipts.deletedIDs)
 		}
 	})
 

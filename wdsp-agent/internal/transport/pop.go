@@ -51,12 +51,13 @@ func (id *Identity) sign(input []byte) (string, error) {
 	return base64.StdEncoding.EncodeToString(sig), nil
 }
 
-// applyPoP 注入 PoP 三头。证书已过期 → 不注入（回退 Bearer，防降级攻击面在服务端：
-// PoP 头完全缺失时服务端才走 Bearer 校验）。签名失败返回错误（请求不发出）。
-func (c *Client) applyPoP(req *http.Request, body []byte) error {
+// applyPoP 注入 PoP 三头；返回值 applied=true 表示本次请求已使用 PoP 认证（调用方
+// 不应再附带 Authorization: Bearer 静态凭据，防降级/凭据泄露）。
+// 证书未配置或已过期返回 (false, nil)；签名失败返回错误（请求不发出）。
+func (c *Client) applyPoP(req *http.Request, body []byte) (bool, error) {
 	id := c.identity.Load()
 	if id == nil {
-		return nil
+		return false, nil
 	}
 	now := c.now()
 	if !now.Before(id.NotAfter) {
@@ -64,16 +65,16 @@ func (c *Client) applyPoP(req *http.Request, body []byte) error {
 			slog.Warn("机器身份证书已过期，PoP 停用回退 Bearer（rotate-cert 需 PoP，需管理员重新注册）",
 				"not_after", id.NotAfter)
 		}
-		return nil
+		return false, nil
 	}
 	ts := strconv.FormatInt(now.Unix(), 10)
 	// PATH 为请求路径（不含 host/query），契约 §8
 	sig, err := id.sign(popSigningInput(req.Method, req.URL.Path, ts, body))
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set(HeaderAgentCert, base64.StdEncoding.EncodeToString(id.CertDER))
 	req.Header.Set(HeaderAgentTimestamp, ts)
 	req.Header.Set(HeaderAgentSignature, sig)
-	return nil
+	return true, nil
 }

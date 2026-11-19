@@ -138,8 +138,8 @@ func TestPoPHeadersSignedPost(t *testing.T) {
 	if pc.method != http.MethodPost || pc.path != "/api/v1/agents/agent-1/heartbeat" {
 		t.Fatalf("%s %s", pc.method, pc.path)
 	}
-	if pc.authHeader != "Bearer wda_x" {
-		t.Fatalf("PoP 与 Bearer 应同时携带, auth=%q", pc.authHeader)
+	if pc.authHeader != "" {
+		t.Fatalf("启用 PoP 身份时不得附带 Bearer 凭据（防降级泄露）, auth=%q", pc.authHeader)
 	}
 	if len(pc.body) == 0 {
 		t.Fatal("POST 应有 JSON body")

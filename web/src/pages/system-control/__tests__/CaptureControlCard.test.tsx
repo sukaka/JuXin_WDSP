@@ -100,4 +100,58 @@ describe('CaptureControlCard', () => {
     expect(screen.queryByText('PCAP 取证采集')).not.toBeInTheDocument()
     expect(api.calls).toHaveLength(0)
   })
+
+  it('校验端口范围 1..65535、目录占位符更新为规范路径，且表单校验失败不产生未捕获异常', async () => {
+    const api = mockApi(status('DISABLED'))
+    renderCard()
+    const toggle = await screen.findByRole('switch', { name: 'PCAP取证采集开关' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    fireEvent.click(toggle)
+
+    expect(await screen.findByPlaceholderText('例如 /srv/jiuzhang-pcap-hot')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('例如 /srv/jiuzhang-pcap-warm')).toBeInTheDocument()
+
+    // 超范围端口 65536 与 0 均被表单拦截，不发起 POST
+    fireEvent.change(screen.getByLabelText('采集端口'), { target: { value: '80,65536' } })
+    fireEvent.change(screen.getByLabelText('操作理由'), { target: { value: '测试端口范围' } })
+    fireEvent.click(screen.getByRole('button', { name: '开启并保存' }))
+    expect(await screen.findByText('端口号必须在 1 到 65535 之间')).toBeInTheDocument()
+    expect(api.calls.some((c) => c.body !== undefined)).toBe(false)
+
+    fireEvent.change(screen.getByLabelText('采集端口'), { target: { value: '0' } })
+    fireEvent.click(screen.getByRole('button', { name: '开启并保存' }))
+    expect(await screen.findByText('端口号必须在 1 到 65535 之间')).toBeInTheDocument()
+    expect(api.calls.some((c) => c.body !== undefined)).toBe(false)
+  })
+
+  it('弹窗打开期间后台状态刷新不覆盖用户编辑中的输入', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    mockApi(status('DISABLED'))
+    useAuthStore.setState({
+      user: {
+        id: 'u1', username: 'admin', display_name: '系统管理员', status: 'ACTIVE',
+        roles: [{ code: 'SYSTEM_ADMIN', name: '系统管理员' }],
+        permissions: ['request_pcap.capture_control'],
+        must_change_password: false,
+      } as CurrentUser,
+      csrfToken: null,
+      initialized: true,
+    })
+    render(
+      <QueryClientProvider client={qc}>
+        <AntdApp><CaptureControlCard /></AntdApp>
+      </QueryClientProvider>,
+    )
+    const toggle = await screen.findByRole('switch', { name: 'PCAP取证采集开关' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    fireEvent.click(toggle)
+
+    const ifaceInput = (await screen.findByLabelText('采集网卡')) as HTMLInputElement
+    fireEvent.change(ifaceInput, { target: { value: 'ens192' } })
+    expect(ifaceInput.value).toBe('ens192')
+
+    // 模拟后台查询刷新返回新对象（interface 仍为 eth0）
+    qc.setQueryData(['request-pcap-capture'], { ...status('DISABLED'), interface: 'eth0' })
+    await waitFor(() => expect((screen.getByLabelText('采集网卡') as HTMLInputElement).value).toBe('ens192'))
+  })
 })

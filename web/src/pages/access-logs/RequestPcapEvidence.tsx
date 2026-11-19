@@ -40,11 +40,11 @@ export default function RequestPcapEvidence({ requestId }: { requestId: string }
     retry: false,
   })
   const verify = useMutation({
-    mutationFn: ({ item, actionReason }: { item: RequestPcapItem; actionReason: string }) =>
-      requestPcapApi.verify(item.artifact_id, requestId, actionReason),
-    onSuccess: (item) => {
-      queryClient.setQueryData<RequestPcapLookup>(queryKey, (current) => ({
-        request_id: requestId,
+    mutationFn: ({ item, targetRequestId, actionReason }: { item: RequestPcapItem; targetRequestId: string; actionReason: string }) =>
+      requestPcapApi.verify(item.artifact_id, targetRequestId, actionReason),
+    onSuccess: (item, variables) => {
+      queryClient.setQueryData<RequestPcapLookup>(['request-pcap', variables.targetRequestId], (current) => ({
+        request_id: variables.targetRequestId,
         items: (current?.items ?? []).map((candidate) => candidate.artifact_id === item.artifact_id ? item : candidate),
       }))
       setVerifyTarget(null)
@@ -53,8 +53,8 @@ export default function RequestPcapEvidence({ requestId }: { requestId: string }
     },
   })
   const grant = useMutation({
-    mutationFn: ({ item, actionReason, secret }: { item: RequestPcapItem; actionReason: string; secret: string }) =>
-      requestPcapApi.createGrant(item.artifact_id, requestId, actionReason, secret),
+    mutationFn: ({ item, targetRequestId, actionReason, secret }: { item: RequestPcapItem; targetRequestId: string; actionReason: string; secret: string }) =>
+      requestPcapApi.createGrant(item.artifact_id, targetRequestId, actionReason, secret),
     onSuccess: (authorization) => {
       const anchor = document.createElement('a')
       anchor.href = requestPcapApi.downloadUrl(authorization)
@@ -118,8 +118,8 @@ export default function RequestPcapEvidence({ requestId }: { requestId: string }
                   {item.coverage === 'CONNECTION' && <Typography.Text type="warning" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>连接级 PCAP 可能包含同连接的其他请求，导出前请确认授权范围。</Typography.Text>}
                   {!item.download_eligible && <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>{blockedReasons[item.download_blocked_reason ?? ''] ?? '当前不可下载'}</Typography.Text>}
                   <Space wrap>
-                    {canVerify && <Button size="small" disabled={item.state === 'EXPIRED'} onClick={() => { setReason(''); setVerifyTarget(item) }}>完整性核验</Button>}
-                    {canDownload && <Button size="small" type="primary" disabled={!item.download_eligible} onClick={() => { setReason(''); setDownloadTarget(item) }}>申请派生下载</Button>}
+                    {canVerify && <Button size="small" disabled={item.state === 'EXPIRED'} onClick={() => { setReason(''); verify.reset(); setVerifyTarget(item) }}>完整性核验</Button>}
+                    {canDownload && <Button size="small" type="primary" disabled={!item.download_eligible} onClick={() => { setReason(''); setPassword(''); grant.reset(); setDownloadTarget(item) }}>申请派生下载</Button>}
                   </Space>
                 </div>
               ))}
@@ -129,7 +129,7 @@ export default function RequestPcapEvidence({ requestId }: { requestId: string }
         title="核验 PCAP 证据"
         open={verifyTarget !== null}
         onCancel={closeVerify}
-        onOk={() => verifyTarget && verify.mutate({ item: verifyTarget, actionReason: reason.trim() })}
+        onOk={() => verifyTarget && verify.mutate({ item: verifyTarget, targetRequestId: requestId, actionReason: reason.trim() })}
         okText="开始核验"
         confirmLoading={verify.isPending}
         okButtonProps={{ disabled: !reason.trim() }}
@@ -143,7 +143,7 @@ export default function RequestPcapEvidence({ requestId }: { requestId: string }
         title="确认派生下载"
         open={downloadTarget !== null}
         onCancel={closeDownload}
-        onOk={() => downloadTarget && grant.mutate({ item: downloadTarget, actionReason: reason.trim(), secret: password })}
+        onOk={() => downloadTarget && grant.mutate({ item: downloadTarget, targetRequestId: requestId, actionReason: reason.trim(), secret: password })}
         okText="授权并下载"
         confirmLoading={grant.isPending}
         okButtonProps={{ danger: true, disabled: !reason.trim() || !password }}

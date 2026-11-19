@@ -59,7 +59,7 @@ func (m *Manager) Load() (*Identity, error) {
 		return nil, pendingErr
 	}
 	id, err := LoadIdentity(m.KeyPath, m.CertPath)
-	if err != nil {
+	if err != nil || (id == nil && pending != nil && pending.AgentCertPEM != "") {
 		if pending == nil || pending.AgentCertPEM == "" {
 			return nil, err
 		}
@@ -73,7 +73,7 @@ func (m *Manager) Load() (*Identity, error) {
 			return nil, fmt.Errorf("校验恢复后的身份: %w", err)
 		}
 	}
-	if pending != nil && pending.AgentCertPEM != "" {
+	if id != nil && id.Cert != nil && pending != nil && pending.AgentCertPEM != "" {
 		pendingCert, parseErr := ParseCertificatePEM([]byte(pending.AgentCertPEM))
 		if parseErr != nil {
 			return nil, fmt.Errorf("待轮换新证书: %w", parseErr)

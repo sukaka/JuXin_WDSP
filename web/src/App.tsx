@@ -10,14 +10,13 @@ import { queryClient } from './api/queryClient'
 import { useAuthStore } from './stores/auth'
 import { useLicenseStore } from './stores/license'
 import { useProductStore } from './stores/product'
+import { clearClientSession } from './utils/session'
 
 export default function App() {
   // 会话失效（401）：清理登录状态并跳登录页
   useEffect(() => {
     setSessionExpiredHandler(() => {
-      useAuthStore.getState().reset()
-      useProductStore.getState().reset()
-      useLicenseStore.getState().reset()
+      clearClientSession(queryClient)
       if (!window.location.pathname.startsWith('/login')) {
         window.location.assign('/login')
       }

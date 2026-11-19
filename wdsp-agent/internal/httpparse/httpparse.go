@@ -11,6 +11,14 @@ package httpparse
 
 import (
 	"bytes"
+	"strings"
+)
+
+// 服务端 FlowEvent 字段硬上限（server/internal/agents/types.go）。
+const (
+	maxHTTPMethodBytes = 16
+	maxHTTPHostBytes   = 255
+	maxHTTPURIBytes    = 4096
 )
 
 // 可见性枚举（契约 §3.4）。
@@ -125,6 +133,17 @@ func (s *Sniffer) classifyHTTP() bool {
 	return true
 }
 
+// sanitizeField 剥离 NUL/CR/LF 控制字符并按服务端字段字节上限截断，防远程毒丸记录触发 400 阻滞补传。
+func sanitizeField(s string, maxBytes int) string {
+	if strings.ContainsAny(s, "\x00\r\n") {
+		s = strings.NewReplacer("\x00", "", "\r", "", "\n", "").Replace(s)
+	}
+	if len(s) > maxBytes {
+		s = s[:maxBytes]
+	}
+	return s
+}
+
 // parseRequestLine 解析 "METHOD SP URI SP HTTP/1.x"。
 func parseRequestLine(line string) (method, uri string, ok bool) {
 	sp1 := 0
@@ -149,12 +168,12 @@ func parseRequestLine(line string) (method, uri string, ok bool) {
 	if sp2 <= 0 {
 		return "", "", false
 	}
-	uri = rest[:sp2]
+	uri = sanitizeField(rest[:sp2], maxHTTPURIBytes)
 	version := rest[sp2+1:]
 	if len(version) != 8 || version[:7] != "HTTP/1." || version[7] < '0' || version[7] > '9' {
 		return "", "", false
 	}
-	return line[:sp1], uri, true
+	return sanitizeField(line[:sp1], maxHTTPMethodBytes), uri, true
 }
 
 // findHost 在头部块中查找 Host 头；done 表示已遇到头部结束标记。
@@ -179,7 +198,7 @@ func findHost(headers []byte) (host string, done bool) {
 			for len(v) > 0 && (v[len(v)-1] == ' ' || v[len(v)-1] == '\t') {
 				v = v[:len(v)-1]
 			}
-			return string(v), false
+			return sanitizeField(string(v), maxHTTPHostBytes), false
 		}
 		headers = headers[idx+2:]
 	}

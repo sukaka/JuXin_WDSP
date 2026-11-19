@@ -23,6 +23,7 @@ import {
 import { ApiError } from '../../api/client'
 import { gatewayConfigApi, publishTasksApi } from '../../api/gatewayConfig'
 import type { PreviewResult } from '../../api/gatewayConfig'
+import { generateIdempotencyKey } from '../../utils/idempotency'
 import SmartTable from '../../components/SmartTable'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
@@ -145,7 +146,7 @@ export default function ConfigPublishPage() {
   })
 
   const publishMutation = useMutation({
-    mutationFn: () => gatewayConfigApi.publish({ idempotency_key: crypto.randomUUID() }),
+    mutationFn: () => gatewayConfigApi.publish({ idempotency_key: generateIdempotencyKey() }),
     onSuccess: (task) => {
       setActiveTaskId(task.id)
       void queryClient.invalidateQueries({ queryKey: ['gateway-config-current'] })

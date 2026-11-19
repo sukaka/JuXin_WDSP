@@ -36,6 +36,7 @@ function shortRef(value?: string | null) {
 export default function PostureTab() {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canManage = hasPermission(permissions, 'api_authorization.manage')
+  const canReadApps = hasPermission(permissions, 'applications.read')
   const [applicationId, setApplicationId] = useState<string>()
   const [conflictPage, setConflictPage] = useState(1)
   const [wizardPreset, setWizardPreset] = useState<{ endpoint_id: string; object_segment: string } | null>(null)
@@ -43,6 +44,7 @@ export default function PostureTab() {
   const applicationsQuery = useQuery({
     queryKey: ['applications', 'api-authz-options'],
     queryFn: () => applicationsApi.list({ page: 1, page_size: 100 }),
+    enabled: canReadApps,
   })
   const applicationOptions = useMemo(
     () => (applicationsQuery.data?.items ?? []).map((app) => ({ value: app.id, label: `${app.name}（${app.code}）` })),

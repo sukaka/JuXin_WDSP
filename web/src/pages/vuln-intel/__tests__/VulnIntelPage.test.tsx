@@ -209,6 +209,39 @@ describe('VulnIntelPage 漏洞情报', () => {
     expect(link.getAttribute('href')).toBe('https://nvd.nist.gov/vuln/detail/CVE-2026-0001')
   })
 
+  it('详情抽屉：javascript: 非法协议参考链接渲染为纯文本，禁止生成可点击 href', async () => {
+    const evilDetail = {
+      ...DETAIL,
+      advisory: {
+        ...ADVISORY,
+        references: ['javascript:alert(1)', 'https://nvd.nist.gov/vuln/detail/CVE-2026-0001'],
+      },
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        const ok = (data: unknown) =>
+          Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
+        if (url.includes('/vuln-intel/overview')) return ok(OVERVIEW)
+        if (url.includes('/vuln-intel/advisories/')) return ok(evilDetail)
+        if (url.includes('/vuln-intel/advisories')) {
+          return ok({ items: [ADVISORY], total: 1, page: 1, page_size: 20 })
+        }
+        return ok({})
+      }),
+    )
+    renderPage()
+    await screen.findByText('PHP 远程代码执行漏洞')
+    fireEvent.click(screen.getAllByRole('button', { name: 'CVE-2026-0001' })[0])
+
+    expect(await screen.findByText('javascript:alert(1)')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'javascript:alert(1)' })).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: 'https://nvd.nist.gov/vuln/detail/CVE-2026-0001' }),
+    ).toHaveAttribute('href', 'https://nvd.nist.gov/vuln/detail/CVE-2026-0001')
+  })
+
   it('订阅设置：加载当前配置，保存时 PUT 更新后的设置', async () => {
     renderPage()
     await screen.findByText('PHP 远程代码执行漏洞')

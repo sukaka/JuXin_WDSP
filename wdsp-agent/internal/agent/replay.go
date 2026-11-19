@@ -172,6 +172,22 @@ func (a *Agent) replayFlowUnit(evs []events.FlowEvent) error {
 	accepted, err := a.client.PostFlows(ctx, a.cfg.AgentID, evs)
 	cancel()
 	if err != nil {
+		if transport.IsPermanent(err) {
+			if len(evs) == 1 {
+				if a.log != nil {
+					a.log.Warn("补传 flow 记录被服务端判定永久非法，隔离丢弃",
+						"flow_id", evs[0].FlowID, "err", err)
+				}
+				a.metrics.Dropped.Add(1)
+				a.metrics.DropReason(DropReasonPermanentInvalid, 1)
+				return nil
+			}
+			mid := len(evs) / 2
+			if err := a.replayFlowUnit(evs[:mid]); err != nil {
+				return err
+			}
+			return a.replayFlowUnit(evs[mid:])
+		}
 		return err
 	}
 	a.metrics.Forwarded.Add(uint64(len(evs)))

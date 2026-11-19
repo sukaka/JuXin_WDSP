@@ -18,8 +18,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jiuzhang-waf/wdsp-agent/internal/config"
 	"github.com/jiuzhang-waf/wdsp-agent/internal/events"
 	"github.com/jiuzhang-waf/wdsp-agent/internal/httpparse"
+	"github.com/jiuzhang-waf/wdsp-agent/internal/httpsensor"
 )
 
 // 默认参数（契约 §6 / 任务约定）。
@@ -130,9 +132,10 @@ type Tracker struct {
 	//   - levelFn：生效等级函数 ruleLevel→effectiveRank（基础等级 max 规则、
 	//     降级帽 min；nil=按 ruleLevel 原样）；
 	//   - sampleFn：建流时采样成员判定（nil=全采）。
-	eval     Evaluator
-	levelFn  func(ruleLevel int) int
-	sampleFn func(flowID string) bool
+	eval       Evaluator
+	levelFn    func(ruleLevel int) int
+	sampleFn   func(flowID string) bool
+	paramsMask config.MaskRule
 }
 
 // NewTracker 创建流跟踪器。onEvent 必须非阻塞快速返回（自行异步化）。
@@ -146,8 +149,11 @@ func NewTracker(agentID string, maxEntries int, idleTimeout time.Duration,
 	}
 	return &Tracker{
 		agentID: agentID, maxEntries: maxEntries, idleTimeout: idleTimeout,
-		finGrace: DefaultFinGrace,
-		flows:    make(map[Key]*Flow), onEvent: onEvent, onOverflow: onOverflow,
+		finGrace:   DefaultFinGrace,
+		flows:      make(map[Key]*Flow),
+		onEvent:    onEvent,
+		onOverflow: onOverflow,
+		paramsMask: config.DefaultMasking().Params,
 	}
 }
 
@@ -178,6 +184,13 @@ func (t *Tracker) SetLevelFunc(fn func(ruleLevel int) int) {
 func (t *Tracker) SetSampler(fn func(flowID string) bool) {
 	t.mu.Lock()
 	t.sampleFn = fn
+	t.mu.Unlock()
+}
+
+// SetParamsMasking 热更 L0 request 事件 URI query 参数脱敏规则。
+func (t *Tracker) SetParamsMasking(rule config.MaskRule) {
+	t.mu.Lock()
+	t.paramsMask = rule
 	t.mu.Unlock()
 }
 
@@ -231,7 +244,8 @@ func (t *Tracker) Track(p Packet) FlowState {
 				if f.visibility == httpparse.Plaintext {
 					ev.HTTPMethod = r.Method
 					ev.HTTPHost = r.Host
-					ev.HTTPURI = r.URI
+					maskedURI, _ := httpsensor.MaskURI(r.URI, t.paramsMask)
+					ev.HTTPURI = maskedURI
 				}
 				reqEv = &ev
 			}

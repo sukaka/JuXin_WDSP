@@ -401,3 +401,16 @@ func TestHTTPEventSweeper(t *testing.T) {
 		}
 	})
 }
+
+func TestHTTPRecordV1BodyNulRejected(t *testing.T) {
+	req := HTTPRecordsRequest{Records: []HTTPRecord{validHTTPRecord()}}
+	req.Records[0].Request.Body = "hello\x00world"
+	if err := req.Validate(); err == nil {
+		t.Fatal("v1 request.body containing NUL must fail validation (400)")
+	}
+	req2 := HTTPRecordsRequest{Records: []HTTPRecord{validHTTPRecord()}}
+	req2.Records[0].Response.Body = "ok\x00bad"
+	if err := req2.Validate(); err == nil {
+		t.Fatal("v1 response.body containing NUL must fail validation (400)")
+	}
+}

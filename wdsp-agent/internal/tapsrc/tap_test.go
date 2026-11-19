@@ -502,3 +502,47 @@ func TestLoopbackValidation(t *testing.T) {
 	_ = net.IPv4(127, 0, 0, 1) // 保留 net 引用
 	_ = fmt.Sprint()
 }
+
+func TestRunShutdownConcurrentRaceFree(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	t.Run("concurrent Run and Shutdown", func(t *testing.T) {
+		s, err := New("agent-race", Config{
+			AdminAddr:      addr,
+			SourceInstance: "inst",
+			ConfigID:       "cfg",
+			ReconnectMin:   20 * time.Millisecond,
+			ReconnectMax:   40 * time.Millisecond,
+		}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.Run(context.Background())
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		s.Shutdown(ctx)
+		wg.Wait()
+	})
+
+	t.Run("Shutdown before Run returns immediately", func(t *testing.T) {
+		s, err := New("agent-race", Config{
+			AdminAddr:      addr,
+			SourceInstance: "inst",
+			ConfigID:       "cfg",
+		}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Shutdown(context.Background())
+		s.Run(context.Background())
+	})
+}

@@ -146,3 +146,66 @@ func TestCmdEnrollLegacyServerBearer(t *testing.T) {
 		t.Fatalf("cfg=%+v", cfg)
 	}
 }
+
+func TestResolveEnrollTokenSources(t *testing.T) {
+	dir := t.TempDir()
+	tokFile := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokFile, []byte("  wdt_fromfile\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if tok, err := resolveEnrollToken("", tokFile, "wdt_fromenv"); err != nil || tok != "wdt_fromfile" {
+		t.Fatalf("token-file priority failed: tok=%q err=%v", tok, err)
+	}
+	if tok, err := resolveEnrollToken("", "", "  wdt_fromenv  "); err != nil || tok != "wdt_fromenv" {
+		t.Fatalf("env fallback failed: tok=%q err=%v", tok, err)
+	}
+	if tok, err := resolveEnrollToken("wdt_fromflag", "", "wdt_fromenv"); err != nil || tok != "wdt_fromflag" {
+		t.Fatalf("flag priority failed: tok=%q err=%v", tok, err)
+	}
+	if _, err := resolveEnrollToken("wdt_fromflag", tokFile, ""); err == nil {
+		t.Fatal("expected error when both --token and --token-file are provided")
+	}
+	emptyFile := filepath.Join(dir, "empty")
+	if err := os.WriteFile(emptyFile, []byte("  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveEnrollToken("", emptyFile, ""); err == nil {
+		t.Fatal("expected error for empty --token-file")
+	}
+}
+
+func TestCmdEnrollSupportsTokenFileAndEnv(t *testing.T) {
+	var gotTokens []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			EnrollmentToken string `json:"enrollment_token"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotTokens = append(gotTokens, req.EnrollmentToken)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"agent_id":"agent-1","credential":"wda_x","heartbeat_interval_seconds":15,"config_version":0}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	tokFile := filepath.Join(dir, "enroll.tok")
+	if err := os.WriteFile(tokFile, []byte("wdt_file_token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdEnroll([]string{
+		"--server", srv.URL, "--token-file", tokFile,
+		"--config", filepath.Join(dir, "a1.json"), "--state-dir", filepath.Join(dir, "s1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WDSP_ENROLL_TOKEN", "wdt_env_token")
+	if err := cmdEnroll([]string{
+		"--server", srv.URL,
+		"--config", filepath.Join(dir, "a2.json"), "--state-dir", filepath.Join(dir, "s2"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotTokens) != 2 || gotTokens[0] != "wdt_file_token" || gotTokens[1] != "wdt_env_token" {
+		t.Fatalf("unexpected enrolled tokens: %v", gotTokens)
+	}
+}

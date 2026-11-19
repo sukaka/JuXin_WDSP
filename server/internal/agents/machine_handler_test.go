@@ -17,6 +17,12 @@ import (
 	"github.com/google/uuid"
 )
 
+type fakeWorkloadBindingKey struct {
+	agentID   uuid.UUID
+	bindingID uuid.UUID
+	version   int64
+}
+
 // fakeMachineStore MachineRepository 内存实现。
 type fakeMachineStore struct {
 	agentsByHash map[string]*Agent
@@ -53,13 +59,15 @@ type fakeMachineStore struct {
 	heartbeatSchemas []int16
 
 	// Phase 2-B：PoP 认证与证书轮换 fake 状态
-	agentsByID   map[uuid.UUID]*Agent
-	graceFP      map[string]time.Time // 宽限中指纹 → grace_until（模拟 revocations 宽限行）
-	revokedFP    map[string]bool      // 立即撤销指纹（模拟 revocations grace_until=NULL / disable 清空当前指纹后状态）
-	rotateIn     *RotateCertInput
-	rotateErr    error
-	rotateResult map[string]RotateCertResult
-	rotateCalls  int
+	agentsByID       map[uuid.UUID]*Agent
+	graceFP          map[string]time.Time // 宽限中指纹 → grace_until（模拟 revocations 宽限行）
+	revokedFP        map[string]bool      // 立即撤销指纹（模拟 revocations grace_until=NULL / disable 清空当前指纹后状态）
+	revokedAgents    map[uuid.UUID]bool   // 存在任意 agent_cert_revocations 记录的 Agent
+	workloadBindings map[fakeWorkloadBindingKey]*uuid.UUID
+	rotateIn         *RotateCertInput
+	rotateErr        error
+	rotateResult     map[string]RotateCertResult
+	rotateCalls      int
 
 	// Phase 4：定向采集规则 fake 状态（config 下发）
 	overrides []CaptureOverride
@@ -67,12 +75,26 @@ type fakeMachineStore struct {
 
 func newFakeMachineStore() *fakeMachineStore {
 	return &fakeMachineStore{
-		agentsByHash:  map[string]*Agent{},
-		agentsByID:    map[uuid.UUID]*Agent{},
-		graceFP:       map[string]time.Time{},
-		revokedFP:     map[string]bool{},
-		httpV2SeenIDs: map[string]bool{},
+		agentsByHash:     map[string]*Agent{},
+		agentsByID:       map[uuid.UUID]*Agent{},
+		graceFP:          map[string]time.Time{},
+		revokedFP:        map[string]bool{},
+		revokedAgents:    map[uuid.UUID]bool{},
+		workloadBindings: map[fakeWorkloadBindingKey]*uuid.UUID{},
+		httpV2SeenIDs:    map[string]bool{},
 	}
+}
+
+func (f *fakeMachineStore) registerWorkloadBinding(agentID, bindingID uuid.UUID, version int64, appID *uuid.UUID) {
+	f.workloadBindings[fakeWorkloadBindingKey{agentID: agentID, bindingID: bindingID, version: version}] = appID
+}
+
+func (f *fakeMachineStore) ResolveWorkloadBinding(_ context.Context, agentID, bindingID uuid.UUID, version int64, _, _ string) (*uuid.UUID, error) {
+	appID, ok := f.workloadBindings[fakeWorkloadBindingKey{agentID: agentID, bindingID: bindingID, version: version}]
+	if !ok {
+		return nil, ErrWorkloadBinding
+	}
+	return appID, nil
 }
 
 func (f *fakeMachineStore) Enroll(_ context.Context, in EnrollInput) (*Agent, error) {

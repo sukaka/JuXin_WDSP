@@ -30,9 +30,10 @@ const (
 	DropUnserializable = "unserializable" // 记录无法 JSON 序列化
 )
 
-// BodySkippedBudgetExceeded 批次预算缩减的正文跳过标记（body_skipped_reason 取值，
-// 与 httpsensor 的 content_type/encoding 同字段语义：正文未随记录外发）。
-const BodySkippedBudgetExceeded = "budget_exceeded"
+// BodySkippedBudgetExceeded 批次预算缩减的正文跳过标记：与服务端 v1/v2 枚举
+// （"" | "content_type" | "encoding"）保持一致——预算缩减通过 body="" +
+// body_truncated=true + original_body_size 表达，不再发送服务端 400 拒绝的枚举外值。
+const BodySkippedBudgetExceeded = ""
 
 // HTTPMessage 单向 HTTP 消息（请求或响应）。
 type HTTPMessage struct {

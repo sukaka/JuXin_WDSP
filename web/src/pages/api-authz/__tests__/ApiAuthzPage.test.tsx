@@ -369,7 +369,7 @@ describe('ApiAuthzPage', () => {
   })
 
   it('角色基线 Tab：渲染角色/方法/动作、来源与确认状态 Tag、分页总数', async () => {
-    useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({ user: makeUser(['api_authorization.read', 'api_asset.read']), csrfToken: null, initialized: true })
     renderPage()
     expect(await screen.findByText('admin')).toBeInTheDocument()
     expect(screen.getByText('ops')).toBeInTheDocument()
@@ -384,7 +384,7 @@ describe('ApiAuthzPage', () => {
   })
 
   it('对象授权 Tab：按应用展示覆盖率和候选，read 权限不能确认关系', async () => {
-    useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({ user: makeUser(['api_authorization.read', 'applications.read']), csrfToken: null, initialized: true })
     renderPage()
     fireEvent.click(screen.getByRole('tab', { name: /^对象授权$/ }))
     const applicationSelect = (await screen.findByText('选择应用后查看对象授权')).closest('.ant-select') as HTMLElement
@@ -464,7 +464,7 @@ describe('ApiAuthzPage', () => {
     baselineItems = []
     fieldPermItems = []
     useAuthStore.setState({
-      user: makeUser(['api_authorization.read', 'api_authorization.manage']),
+      user: makeUser(['api_authorization.read', 'api_authorization.manage', 'api_asset.read']),
       csrfToken: null,
       initialized: true,
     })
@@ -491,7 +491,7 @@ describe('ApiAuthzPage', () => {
   it('BOLA 评估：选接口+身份+对象后展示五档结论、置信度与证据计数', async () => {
     // 置空基线列表，避免下拉选项文本与表格接口列冲突
     baselineItems = []
-    useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({ user: makeUser(['api_authorization.read', 'api_asset.read']), csrfToken: null, initialized: true })
     renderPage()
     // 评估卡片内的端点选择器（antd Select 的 placeholder 不是 input 属性，按 combobox 角色取）
     const evalCard = screen.getByText('BOLA 评估工具').closest('.ant-card') as HTMLElement
@@ -531,7 +531,7 @@ describe('ApiAuthzPage', () => {
 
   it('对象关系 Tab：按 record.relation 展示所有者/共享接收人，不隐藏历史状态', async () => {
     relationItems = relationFixtures
-    useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({ user: makeUser(['api_authorization.read', 'applications.read']), csrfToken: null, initialized: true })
     renderPage()
     await openRelationsTab()
     expect(await screen.findByText('已撤销')).toBeInTheDocument()
@@ -546,7 +546,7 @@ describe('ApiAuthzPage', () => {
 
   it('无 relation_manage 权限：共享登记、撤销与重新授权入口均不展示', async () => {
     relationItems = relationFixtures
-    useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
+    useAuthStore.setState({ user: makeUser(['api_authorization.read', 'applications.read']), csrfToken: null, initialized: true })
     renderPage()
     await openRelationsTab()
     await screen.findByText('共享接收人')
@@ -558,7 +558,7 @@ describe('ApiAuthzPage', () => {
   it('重新授权入口：CONFIRMED 行不展示，REVOKED/EXPIRED 行展示', async () => {
     relationItems = relationFixtures
     useAuthStore.setState({
-      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage', 'applications.read']),
       csrfToken: null,
       initialized: true,
     })
@@ -571,7 +571,7 @@ describe('ApiAuthzPage', () => {
   it('重新授权：原因+生效/失效时间 POST 到 reauthorize，成功提示、关弹窗并刷新关系/覆盖率', async () => {
     relationItems = relationFixtures
     useAuthStore.setState({
-      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage', 'applications.read']),
       csrfToken: null,
       initialized: true,
     })
@@ -610,7 +610,7 @@ describe('ApiAuthzPage', () => {
 
   it('普通访问候选只能确认为 OWNER，不提供 SHARED_WITH 确认入口', async () => {
     useAuthStore.setState({
-      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage', 'applications.read']),
       csrfToken: null,
       initialized: true,
     })
@@ -632,7 +632,7 @@ describe('ApiAuthzPage', () => {
   it('共享创建：按共享源→接收人方向提交真实 HMAC 引用、有效期与审计原因', async () => {
     relationItems = [relationFixtures[3]]
     useAuthStore.setState({
-      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage', 'applications.read']),
       csrfToken: null,
       initialized: true,
     })
@@ -673,7 +673,7 @@ describe('ApiAuthzPage', () => {
   it('共享创建 409：展示服务端冲突原因并保留弹窗与输入', async () => {
     createRelationConflict = true
     useAuthStore.setState({
-      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage', 'applications.read']),
       csrfToken: null,
       initialized: true,
     })
@@ -695,7 +695,7 @@ describe('ApiAuthzPage', () => {
   it('共享撤销：确认共享源与接收人方向，POST 到目标关系并提交审计原因', async () => {
     relationItems = [relationFixtures[3]]
     useAuthStore.setState({
-      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage']),
+      user: makeUser(['api_authorization.read', 'api_authorization.relation_manage', 'applications.read']),
       csrfToken: null,
       initialized: true,
     })
@@ -722,5 +722,17 @@ describe('ApiAuthzPage', () => {
     expect(validateReauthorizationWindow(from, value('2026-09-10T10:00:00.000Z'))).toBe('失效时间必须晚于生效时间')
     expect(validateReauthorizationWindow(from, value('2026-09-10T10:00:01.000Z'))).toBeUndefined()
     expect(validateReauthorizationWindow(from)).toBeUndefined()
+  })
+
+  it('跨模块权限门控：缺少 api_asset.read 与 applications.read 时不发起未授权列表请求', async () => {
+    useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
+    renderPage()
+    expect(await screen.findByText('admin')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: /^对象授权$/ }))
+    expect(await screen.findByText('选择应用后查看对象授权')).toBeInTheDocument()
+
+    const urls = (fetch as Mock).mock.calls.map((c) => String(c[0]))
+    expect(urls.some((u) => u.includes('/api-security/endpoints'))).toBe(false)
+    expect(urls.some((u) => u.includes('/applications'))).toBe(false)
   })
 })

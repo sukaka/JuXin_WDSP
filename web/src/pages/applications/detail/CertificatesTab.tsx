@@ -17,11 +17,13 @@ export default function CertificatesTab({ application }: { application: Applicat
   const [detailRecord, setDetailRecord] = useState<CertificateItem | null>(null)
   const [operation, setOperation] = useState<'bind' | 'unbind' | null>(null)
   const permissions = useAuthStore((s) => s.user?.permissions)
+  const canRead = hasPermission(permissions, 'certificates.read')
   const canBind = hasPermission(permissions, 'certificates.bind')
 
   const boundQuery = useQuery({
     queryKey: ['app-certificates', application.id],
     queryFn: () => certificatesApi.applicationCertificate(application.id),
+    enabled: canRead,
   })
   const boundCertificate = boundQuery.data?.certificate ?? null
 
@@ -66,6 +68,16 @@ export default function CertificatesTab({ application }: { application: Applicat
       },
     },
   ]
+
+  if (!canRead) {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        message="缺少 certificates.read 权限，无法查看证书绑定信息"
+      />
+    )
+  }
 
   return (
     <div>

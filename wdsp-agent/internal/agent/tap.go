@@ -43,7 +43,9 @@ func (a *Agent) startTap() {
 	if a.tap == nil {
 		return
 	}
+	a.tapWG.Add(1)
 	go func() {
+		defer a.tapWG.Done()
 		defer a.recover("tapsrc")
 		a.tap.Run(context.Background())
 	}()
@@ -59,6 +61,15 @@ func (a *Agent) stopTap() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	a.tap.Shutdown(ctx)
+	done := make(chan struct{})
+	go func() {
+		a.tapWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 	cancel()
 }
 

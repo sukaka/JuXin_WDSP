@@ -196,10 +196,10 @@ func TestNewHTTPRecordV2OriginalVersion(t *testing.T) {
 // 跳过重采（content_type）时 captured=0。
 func TestNewHTTPRecordV2BodyQuality(t *testing.T) {
 	rec := v2TestRecord(true)
-	// 批次预算缩减标记（v1 内部词表）→ v2 枚举外，语义即预算截断
+	// 兼容旧版缓存中的 budget_exceeded 标记 → v2 枚举外，转写为 truncated=true / skipped_reason=""
 	rec.Request.Body = ""
 	rec.Request.BodyTruncated = true
-	rec.Request.BodySkippedReason = BodySkippedBudgetExceeded
+	rec.Request.BodySkippedReason = "budget_exceeded"
 	rec.Request.OriginalBodySize = 4096
 	out := NewHTTPRecordV2("a1", rec, SourceRef{Type: SourcePassiveHTTP1})
 	q := out.Request.BodyQuality

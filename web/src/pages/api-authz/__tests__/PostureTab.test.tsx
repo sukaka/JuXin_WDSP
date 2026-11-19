@@ -193,7 +193,7 @@ describe('PostureTab（NG-AZ-04 §1.1 六要素态势 Tab）', () => {
   })
 
   it('六要素区块与 readiness 徽章渲染（manage 权限含切换入口，PROTECT 行无入口）', async () => {
-    await renderAndSelectApp(['api_authorization.read', 'api_authorization.manage'])
+    await renderAndSelectApp(['api_authorization.read', 'api_authorization.manage', 'applications.read'])
     // 端点实断资格表格：三态徽章
     expect(await screen.findByText('端点实断资格（readiness 服务端派生）')).toBeInTheDocument()
     expect(screen.getByText('可实断')).toBeInTheDocument()
@@ -222,8 +222,21 @@ describe('PostureTab（NG-AZ-04 §1.1 六要素态势 Tab）', () => {
   })
 
   it('无 manage 权限：隐藏全部「切换 PROTECT」入口，态势数据仍可读', async () => {
-    await renderAndSelectApp(['api_authorization.read'])
+    await renderAndSelectApp(['api_authorization.read', 'applications.read'])
     expect(await screen.findByText('可实断')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '切换 PROTECT' })).not.toBeInTheDocument()
+  })
+
+  it('无 applications.read 权限时不调用 applicationsApi.list', () => {
+    useAuthStore.setState({ user: makeUser(['api_authorization.read']), csrfToken: null, initialized: true })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <AntdApp>
+          <PostureTab />
+        </AntdApp>
+      </QueryClientProvider>,
+    )
+    expect(applicationsApi.list).not.toHaveBeenCalled()
   })
 })

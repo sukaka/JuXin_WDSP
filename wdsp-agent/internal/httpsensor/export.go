@@ -30,7 +30,11 @@ type MaskedRequestInput struct {
 // 内容类型白名单/一级参数脱敏）。stats 可为 nil；masked 指标照常累加。
 func MaskedRequestMessage(in MaskedRequestInput, pol *Policy, stats *Stats) *events.HTTPMessage {
 	if pol == nil {
-		p := Policy{Level: config.LevelL1}
+		p := Policy{
+			Level:       config.LevelL1,
+			MaxBodySize: config.DefaultMaxBodySize,
+			Masking:     config.DefaultMasking(),
+		}
 		pol = &p
 	}
 	req := &requestInfo{
@@ -60,7 +64,11 @@ type MaskedResponseInput struct {
 // 脱敏）。stats 可为 nil；masked 指标照常累加。
 func MaskedResponseMessage(in MaskedResponseInput, pol *Policy, stats *Stats) *events.HTTPMessage {
 	if pol == nil {
-		p := Policy{Level: config.LevelL1}
+		p := Policy{
+			Level:       config.LevelL1,
+			MaxBodySize: config.DefaultMaxBodySize,
+			Masking:     config.DefaultMasking(),
+		}
 		pol = &p
 	}
 	resp := &responseInfo{

@@ -1481,6 +1481,7 @@ export default function AppRoutes() {
                   'system.reboot',
                   'system.shutdown',
                   'system.factory_reset',
+                  'request_pcap.capture_control',
                 ]}
               >
                 <SystemControlPage />

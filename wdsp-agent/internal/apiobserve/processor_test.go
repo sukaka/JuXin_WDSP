@@ -135,3 +135,35 @@ func TestProcessorLegacyPeerAddressRemainsCompatible(t *testing.T) {
 		}
 	}
 }
+
+func TestProcessorMaxBodyBytesAndPathTruncation(t *testing.T) {
+	processor := NewProcessor("agent-1", nil, "").WithMaxBodyBytes(32)
+	if processor.MaxBodyBytes() != 32 {
+		t.Fatalf("MaxBodyBytes() = %d, want 32", processor.MaxBodyBytes())
+	}
+	bigBody := `{"key":"` + strings.Repeat("a", 64) + `"}`
+	rec, err := processor.Process(captureWithBody(bigBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Quality.RequestBodyState != "TRUNCATED" || len(rec.Fields) != 0 {
+		t.Fatalf("body exceeding custom maxBodyBytes must be TRUNCATED: %+v", rec)
+	}
+
+	// Overlong JSON key path (>512 bytes) and overlong HTTP route/path_template are truncated to <=512 bytes
+	longKey := strings.Repeat("k", 600)
+	longCapture := captureWithBody(`{"` + longKey + `":"v"}`)
+	longCapture.HTTP.Route = "/" + strings.Repeat("r", 600)
+	longCapture.HTTP.PathTemplate = "/" + strings.Repeat("p", 600)
+	rec2, err := NewProcessor("agent-1", nil, "").Process(longCapture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec2.HTTP.Route) > 512 || len(rec2.HTTP.PathTemplate) > 512 || !rec2.Quality.Truncated {
+		t.Fatalf("HTTP route/path_template not truncated to <=512: route=%d path=%d trunc=%v",
+			len(rec2.HTTP.Route), len(rec2.HTTP.PathTemplate), rec2.Quality.Truncated)
+	}
+	if len(rec2.Fields) != 1 || len(rec2.Fields[0].Path) > 512 || !rec2.Fields[0].Truncated {
+		t.Fatalf("field path not truncated to <=512: %+v", rec2.Fields)
+	}
+}

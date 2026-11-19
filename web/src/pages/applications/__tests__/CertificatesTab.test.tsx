@@ -51,7 +51,7 @@ describe('CertificatesTab', () => {
 
   it('有绑定权限时可替换和解绑，且不再显示后端无 API 的旧文案', async () => {
     useAuthStore.setState({
-      user: { permissions: ['certificates.bind'] } as CurrentUser,
+      user: { permissions: ['certificates.read', 'certificates.bind'] } as CurrentUser,
       initialized: true,
     })
     renderTab()
@@ -78,7 +78,7 @@ describe('CertificatesTab', () => {
   it('未绑定时显示空状态和绑定入口', async () => {
     vi.mocked(certificatesApi.applicationCertificate).mockResolvedValue({ certificate: null })
     useAuthStore.setState({
-      user: { permissions: ['certificates.bind'] } as CurrentUser,
+      user: { permissions: ['certificates.read', 'certificates.bind'] } as CurrentUser,
       initialized: true,
     })
     renderTab()
@@ -86,5 +86,17 @@ describe('CertificatesTab', () => {
     expect(await screen.findByText('当前应用未绑定证书')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '绑定证书' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '解绑证书' })).not.toBeInTheDocument()
+  })
+
+  it('无 certificates.read 权限时不调用证书查询接口', () => {
+    useAuthStore.setState({
+      user: { permissions: ['applications.read'] } as CurrentUser,
+      initialized: true,
+    })
+    renderTab()
+
+    expect(screen.getByText('缺少 certificates.read 权限，无法查看证书绑定信息')).toBeInTheDocument()
+    expect(certificatesApi.applicationCertificate).not.toHaveBeenCalled()
+    expect(certificatesApi.list).not.toHaveBeenCalled()
   })
 })

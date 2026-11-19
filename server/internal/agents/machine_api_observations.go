@@ -16,6 +16,10 @@ type apiObservationCapabilityStore interface {
 	UpdateAPIObservationSchemas(context.Context, uuid.UUID, []int16) error
 }
 
+type apiObservationReceiptCleaner interface {
+	DeleteAPIObservationReceipts(context.Context, uuid.UUID, []string) error
+}
+
 type apiObservationReceiver struct {
 	producer     ingest.Producer
 	topic        string
@@ -107,16 +111,32 @@ func (h *MachineHandler) APIObservations(w http.ResponseWriter, r *http.Request)
 		})
 		eventIDs = append(eventIDs, record.EventID)
 	}
-	if err := receiver.producer.PublishBatch(r.Context(), receiver.topic, records); err != nil {
-		w.Header().Set("Retry-After", "5")
-		machineError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "API Observation 接收层暂时不可用，请有界重试")
-		return
-	}
+	// 先检查并记录幂等去重回执，再向 Kafka 发布非重复记录，防止重试放大 Kafka 流量。
 	accepted, duplicates, err := receiver.receipts.RecordAPIObservationReceipts(r.Context(), agent.AgentID, eventIDs, receivedAt)
 	if err != nil {
 		w.Header().Set("Retry-After", "5")
 		machineError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "接收回执暂时不可用；重试将按事件 ID 幂等")
 		return
+	}
+	if len(accepted) > 0 {
+		toPublish := make([]ingest.Record, 0, len(accepted))
+		acceptedEventIDs := make([]string, 0, len(accepted))
+		for _, idx := range accepted {
+			if idx >= 0 && idx < len(records) {
+				toPublish = append(toPublish, records[idx])
+				acceptedEventIDs = append(acceptedEventIDs, eventIDs[idx])
+			}
+		}
+		if len(toPublish) > 0 {
+			if err := receiver.producer.PublishBatch(r.Context(), receiver.topic, toPublish); err != nil {
+				if cleaner, ok := receiver.receipts.(apiObservationReceiptCleaner); ok {
+					_ = cleaner.DeleteAPIObservationReceipts(r.Context(), agent.AgentID, acceptedEventIDs)
+				}
+				w.Header().Set("Retry-After", "5")
+				machineError(w, http.StatusServiceUnavailable, "UNAVAILABLE", "API Observation 接收层暂时不可用，请有界重试")
+				return
+			}
+		}
 	}
 	machineJSON(w, http.StatusAccepted, map[string]interface{}{
 		"accepted_count": len(accepted), "duplicate_count": duplicates,

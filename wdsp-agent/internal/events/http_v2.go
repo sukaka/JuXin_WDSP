@@ -287,9 +287,8 @@ func bodyQualityOf(m *HTTPMessage) BodyQuality {
 		SkippedReason: m.BodySkippedReason,
 		CapturedBytes: int64(len(m.Body)),
 	}
-	// 批次预算缩减标记 budget_exceeded 不在 v2 skipped_reason 枚举内；其语义即
-	// "因预算截断"，如实转写为 truncated=true / skipped_reason=""。
-	if q.SkippedReason == BodySkippedBudgetExceeded {
+	// 兼容旧版缓存中的 "budget_exceeded" 标记（不在服务端枚举内），转写为 truncated=true / skipped_reason=""。
+	if q.SkippedReason == "budget_exceeded" {
 		q.SkippedReason = ""
 		q.Truncated = true
 	}

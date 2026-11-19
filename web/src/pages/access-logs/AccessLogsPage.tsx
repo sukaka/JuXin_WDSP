@@ -28,12 +28,38 @@ const METHOD_OPTIONS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTION
 
 const WAF_ACTION_OPTIONS = [{ value: 'ALLOW', label: '放行' }, { value: 'BLOCK', label: '阻断' }]
 
-export default function AccessLogsPage() {
-  const permissions = useAuthStore((s) => s.user?.permissions)
-  const [filters, setFilters] = useState<Filters>(() => ({
+type SearchDraft = {
+  domain: string
+  client_ip: string
+  uri: string
+  request_id: string
+  trace_id: string
+  identity_fingerprint: string
+  rule_id: string
+}
+
+const EMPTY_SEARCH_DRAFT: SearchDraft = {
+  domain: '',
+  client_ip: '',
+  uri: '',
+  request_id: '',
+  trace_id: '',
+  identity_fingerprint: '',
+  rule_id: '',
+}
+
+function defaultTimeRange(): Filters {
+  return {
     start_time: dayjs().subtract(24, 'hour').toISOString(),
     end_time: dayjs().toISOString(),
-  }))
+  }
+}
+
+export default function AccessLogsPage() {
+  const permissions = useAuthStore((s) => s.user?.permissions)
+  const canReadApps = hasPermission(permissions, 'applications.read')
+  const [filters, setFilters] = useState<Filters>(defaultTimeRange)
+  const [draft, setDraft] = useState<SearchDraft>(EMPTY_SEARCH_DRAFT)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -42,6 +68,7 @@ export default function AccessLogsPage() {
   const applicationsQuery = useQuery({
     queryKey: ['applications', 'access-log-audit-options'],
     queryFn: () => applicationsApi.list({ page: 1, page_size: 100 }),
+    enabled: canReadApps,
   })
   const listQuery = useQuery({
     queryKey: ['access-logs', filters, page, pageSize],
@@ -54,6 +81,32 @@ export default function AccessLogsPage() {
 
   const setFilter = (patch: Partial<Filters>) => {
     setFilters((f) => ({ ...f, ...patch }))
+    setPage(1)
+  }
+
+  const updateSearchDraft = (key: keyof SearchDraft, value: string) => {
+    setDraft((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const applyDrill = (next: Partial<Filters>) => {
+    setFilter(next)
+    setDraft((prev) => ({
+      ...prev,
+      domain: next.domain !== undefined ? next.domain ?? '' : prev.domain,
+      client_ip: next.client_ip !== undefined ? next.client_ip ?? '' : prev.client_ip,
+      uri: next.uri !== undefined ? next.uri ?? '' : prev.uri,
+      request_id: next.request_id !== undefined ? next.request_id ?? '' : prev.request_id,
+      trace_id: next.trace_id !== undefined ? next.trace_id ?? '' : prev.trace_id,
+      identity_fingerprint:
+        next.identity_fingerprint !== undefined ? next.identity_fingerprint ?? '' : prev.identity_fingerprint,
+      rule_id: next.rule_id !== undefined ? next.rule_id ?? '' : prev.rule_id,
+    }))
+    setView('list')
+  }
+
+  const resetFilters = () => {
+    setFilters(defaultTimeRange())
+    setDraft(EMPTY_SEARCH_DRAFT)
     setPage(1)
   }
 
@@ -168,43 +221,52 @@ export default function AccessLogsPage() {
           value={filters.start_time && filters.end_time ? [dayjs(filters.start_time), dayjs(filters.end_time)] : null}
           onChange={onRangeChange}
         />
-        <Select
-          aria-label="应用"
-          placeholder="应用"
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          style={{ width: 190 }}
-          value={filters.application_id}
-          loading={applicationsQuery.isLoading}
-          options={(applicationsQuery.data?.items ?? []).map((application) => ({
-            value: application.id,
-            label: `${application.name} (${application.code})`,
-          }))}
-          onChange={(value) => setFilter({ application_id: value || undefined })}
-        />
+        {canReadApps && (
+          <Select
+            aria-label="应用"
+            placeholder="应用"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            style={{ width: 190 }}
+            value={filters.application_id}
+            loading={applicationsQuery.isLoading}
+            options={(applicationsQuery.data?.items ?? []).map((application) => ({
+              value: application.id,
+              label: `${application.name} (${application.code})`,
+            }))}
+            onChange={(value) => setFilter({ application_id: value || undefined })}
+          />
+        )}
         <Input.Search
           placeholder="域名"
           allowClear
           style={{ width: 160 }}
+          value={draft.domain}
+          onChange={(e) => updateSearchDraft('domain', e.target.value)}
           onSearch={(v) => setFilter({ domain: v || undefined })}
         />
         <Input.Search
           placeholder="客户端IP"
           allowClear
           style={{ width: 140 }}
+          value={draft.client_ip}
+          onChange={(e) => updateSearchDraft('client_ip', e.target.value)}
           onSearch={(v) => setFilter({ client_ip: v || undefined })}
         />
         <Input.Search
           placeholder="请求路径"
           allowClear
           style={{ width: 150 }}
+          value={draft.uri}
+          onChange={(e) => updateSearchDraft('uri', e.target.value)}
           onSearch={(v) => setFilter({ uri: v || undefined })}
         />
         <Select
           placeholder="方法"
           allowClear
           style={{ width: 100 }}
+          value={filters.method}
           options={METHOD_OPTIONS}
           onChange={(v) => setFilter({ method: v })}
         />
@@ -213,12 +275,14 @@ export default function AccessLogsPage() {
           min={100}
           max={599}
           style={{ width: 110 }}
+          value={filters.status ?? null}
           onChange={(v) => setFilter({ status: v ?? undefined })}
         />
         <Select
           placeholder="处理结果"
           allowClear
           style={{ width: 110 }}
+          value={filters.waf_action}
           options={WAF_ACTION_OPTIONS}
           onChange={(v) => setFilter({ waf_action: v })}
         />
@@ -227,6 +291,8 @@ export default function AccessLogsPage() {
           allowClear
           maxLength={64}
           style={{ width: 210 }}
+          value={draft.request_id}
+          onChange={(e) => updateSearchDraft('request_id', e.target.value)}
           onSearch={(v) => setFilter({ request_id: v || undefined })}
         />
         <Input.Search
@@ -234,6 +300,8 @@ export default function AccessLogsPage() {
           allowClear
           maxLength={32}
           style={{ width: 260 }}
+          value={draft.trace_id}
+          onChange={(e) => updateSearchDraft('trace_id', e.target.value)}
           onSearch={(v) => setFilter({ trace_id: v || undefined })}
         />
         <Input.Search
@@ -241,6 +309,8 @@ export default function AccessLogsPage() {
           allowClear
           maxLength={128}
           style={{ width: 210 }}
+          value={draft.identity_fingerprint}
+          onChange={(e) => updateSearchDraft('identity_fingerprint', e.target.value)}
           onSearch={(v) => setFilter({ identity_fingerprint: v || undefined })}
         />
         <Input.Search
@@ -248,16 +318,60 @@ export default function AccessLogsPage() {
           allowClear
           maxLength={128}
           style={{ width: 190 }}
+          value={draft.rule_id}
+          onChange={(e) => updateSearchDraft('rule_id', e.target.value)}
           onSearch={(v) => setFilter({ rule_id: v || undefined })}
         />
+        <Button onClick={resetFilters}>重置筛选</Button>
       </Space>
 
-      <QueryErrorAlert error={applicationsQuery.error} message="加载应用列表失败" />
+      {(filters.request_ids || filters.field_path || filters.endpoint_key) && (
+        <Space style={{ marginBottom: 12 }} wrap>
+          {filters.request_ids && (
+            <Tag
+              color="blue"
+              closable
+              onClose={(e) => {
+                e.preventDefault()
+                setFilter({ request_ids: undefined })
+              }}
+            >
+              请求集合（{filters.request_ids.split(',').filter(Boolean).length} 条）：{filters.request_ids}
+            </Tag>
+          )}
+          {filters.field_path && (
+            <Tag
+              color="geekblue"
+              closable
+              onClose={(e) => {
+                e.preventDefault()
+                setFilter({ field_path: undefined, direction: undefined, data_type: undefined })
+              }}
+            >
+              敏感字段：{filters.field_path}
+            </Tag>
+          )}
+          {filters.endpoint_key && (
+            <Tag
+              color="cyan"
+              closable
+              onClose={(e) => {
+                e.preventDefault()
+                setFilter({ endpoint_key: undefined })
+              }}
+            >
+              API：{filters.endpoint_key}
+            </Tag>
+          )}
+        </Space>
+      )}
+
+      {canReadApps && <QueryErrorAlert error={applicationsQuery.error} message="加载应用列表失败" />}
       <QueryErrorAlert error={trendQuery.error} message="加载访问趋势失败" />
       <AccessLogTrend items={trendQuery.data?.items ?? []} loading={trendQuery.isLoading || trendQuery.isFetching} />
 
       {view === 'flow' ? (
-        <AccessLogFlow filters={filters} onDrill={(next) => { setFilter(next); setView('list') }} />
+        <AccessLogFlow filters={filters} onDrill={applyDrill} />
       ) : listQuery.isError ? (
         <Alert
           type="error"

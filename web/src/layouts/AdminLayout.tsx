@@ -104,6 +104,7 @@ import { useBreadcrumbStore } from '../stores/breadcrumb'
 import { useLicenseStore } from '../stores/license'
 import { useProductStore } from '../stores/product'
 import { API_MENU_SECTIONS, filterCoreMenus, filterMenusByLicense, filterMenusByRoles } from '../utils/menu'
+import { clearClientSession } from '../utils/session'
 import { SYSTEM_NAME } from '../constants'
 
 const { Header, Sider, Content } = Layout
@@ -268,7 +269,6 @@ export default function AdminLayout() {
   const location = useLocation()
   const { message } = AntdApp.useApp()
   const user = useAuthStore((s) => s.user)
-  const reset = useAuthStore((s) => s.reset)
   const apiDynamicProtection = useProductStore((s) => s.apiDynamicProtection)
   const webWafEnabled = useProductStore((s) => s.webWafEnabled)
   const apmEnabled = useProductStore((s) => s.apmEnabled)
@@ -442,15 +442,11 @@ export default function AdminLayout() {
     } catch {
       // 退出登录失败不阻断本地清理
     } finally {
-      reset()
-      useProductStore.getState().reset()
-      useLicenseStore.getState().reset()
       setLoggingOut(false)
       message.success('已退出登录')
-      // SPA 跳转不刷新页面，必须清空查询缓存，防共享浏览器跨账号数据残留；
+      // SPA 跳转不刷新页面，必须清空查询缓存并重置全部 store，防共享浏览器跨账号数据残留；
       // 先 flushSync 完成路由卸载（摘掉活跃查询观察器），再清缓存，避免 AI 状态轮询等活跃查询在 clear 后立即重取回灌
-      flushSync(() => navigate('/login', { replace: true }))
-      queryClient.clear()
+      clearClientSession(queryClient, () => flushSync(() => navigate('/login', { replace: true })))
     }
   }
 

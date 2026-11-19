@@ -22,6 +22,8 @@ var (
 	apiObservationHMACPattern    = regexp.MustCompile(`^hmac-sha256:[0-9a-f]{64}$`)
 	apiObservationTracePattern   = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	apiObservationSpanPattern    = regexp.MustCompile(`^[0-9a-f]{16}$`)
+	apiObservationMethodPattern  = regexp.MustCompile(`^[A-Z]+$`)
+	apiObservationLevelPattern   = regexp.MustCompile(`^L[1-5]$`)
 )
 
 type APIObservationSource struct {
@@ -207,7 +209,7 @@ func (h *APIObservationHTTP) validate() error {
 		return errors.New("direction 仅支持 SERVER/CLIENT/PRODUCER/CONSUMER")
 	}
 	h.Method = strings.ToUpper(strings.TrimSpace(h.Method))
-	if len(h.Method) > 16 || (h.Direction == "SERVER" || h.Direction == "CLIENT") && !regexp.MustCompile(`^[A-Z]+$`).MatchString(h.Method) {
+	if len(h.Method) > 16 || (h.Direction == "SERVER" || h.Direction == "CLIENT") && !apiObservationMethodPattern.MatchString(h.Method) {
 		return errors.New("method 非法")
 	}
 	if h.Scheme != "" && h.Scheme != "http" && h.Scheme != "https" {
@@ -295,7 +297,7 @@ func (f *APIObservationField) validate() error {
 	if f.Path == "" || f.DataType == "" {
 		return errors.New("path 与 data_type 必填")
 	}
-	if f.Level != "" && !regexp.MustCompile(`^L[1-5]$`).MatchString(f.Level) {
+	if f.Level != "" && !apiObservationLevelPattern.MatchString(f.Level) {
 		return errors.New("level 仅支持 L1..L5")
 	}
 	if f.ValueHMAC != "" {

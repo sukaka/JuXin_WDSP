@@ -35,10 +35,10 @@ func (f *fakeMachineStore) AgentByID(_ context.Context, agentID uuid.UUID) (*Age
 }
 
 // CertFingerprintUsable 模拟契约 §10 语义：当前指纹直接可用；宽限行 grace_until > now 可用；
-// 立即撤销（revokedFP）与未知指纹不可用。
+// 立即撤销（revokedFP）、禁用 Agent 与未知指纹不可用。
 func (f *fakeMachineStore) CertFingerprintUsable(_ context.Context, agentID uuid.UUID, fingerprint string, now time.Time) (bool, error) {
 	a, ok := f.agentsByID[agentID]
-	if !ok {
+	if !ok || a.Disabled {
 		return false, nil
 	}
 	if f.revokedFP[fingerprint] {
@@ -51,6 +51,10 @@ func (f *fakeMachineStore) CertFingerprintUsable(_ context.Context, agentID uuid
 		return true, nil
 	}
 	return false, nil
+}
+
+func (f *fakeMachineStore) HasCertRevocations(_ context.Context, agentID uuid.UUID) (bool, error) {
+	return f.revokedAgents[agentID], nil
 }
 
 // RotateAgentCert 模拟契约 §9 事务语义：出示指纹须==当前指纹，旧指纹入宽限，当前指纹/到期换新。
@@ -644,5 +648,124 @@ func TestLoadOrCreateAgentCA(t *testing.T) {
 	cert, _ := issueTestCert(t, ca2, uuid.New(), key, time.Now())
 	if err := ca2.VerifyClientCert(cert, time.Now()); err != nil {
 		t.Errorf("复原 CA 签发的证书链校验失败: %v", err)
+	}
+}
+
+// ---------- H-22.1 & M-A1 安全回归测试 ----------
+
+func TestBearerFallbackRejectedForCertBoundOrRevokedAgent(t *testing.T) {
+	cred := "wda_" + strings.Repeat("ef", 32)
+	body := `{"timestamp":1788256800,"status":"ONLINE"}`
+
+	t.Run("持有效证书指纹的 Agent 剥离 PoP 头回退 Bearer 被 401 拒绝", func(t *testing.T) {
+		fx := newPopFixture(t)
+		rr := doMachine(t, fx.mux, http.MethodPost, fx.hbPath(), body, cred)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401 (body=%s)", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("证书已清空但存在撤销记录的 Agent 回退 Bearer 被 401 拒绝", func(t *testing.T) {
+		fx := newPopFixture(t)
+		fx.store.agentsByID[fx.agentID].CertFingerprint = nil
+		fx.store.revokedAgents[fx.agentID] = true
+		rr := doMachine(t, fx.mux, http.MethodPost, fx.hbPath(), body, cred)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401 (body=%s)", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+func TestPoPReplayProtection(t *testing.T) {
+	t.Run("相同签名请求在时钟偏差窗口内重放被 401 拒绝", func(t *testing.T) {
+		fx := newPopFixture(t)
+		body := `{"timestamp":1788256800,"status":"ONLINE"}`
+		ts := popTS(fx.now)
+		digest := sha256.Sum256(popSigningInput(http.MethodPost, fx.hbPath(), ts, BodySHA256Hex([]byte(body))))
+		sig, err := ecdsa.SignASN1(rand.Reader, fx.key, digest[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		sendOnce := func() *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, fx.hbPath(), strings.NewReader(body))
+			req.Header.Set(popCertHeader, base64.StdEncoding.EncodeToString(fx.cert.Raw))
+			req.Header.Set(popTimestampHeader, ts)
+			req.Header.Set(popSignatureHeader, base64.StdEncoding.EncodeToString(sig))
+			rr := httptest.NewRecorder()
+			fx.mux.ServeHTTP(rr, req)
+			return rr
+		}
+		if rr := sendOnce(); rr.Code != http.StatusOK {
+			t.Fatalf("first status = %d, want 200 (body=%s)", rr.Code, rr.Body.String())
+		}
+		if rr := sendOnce(); rr.Code != http.StatusUnauthorized {
+			t.Fatalf("replayed status = %d, want 401 (body=%s)", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("重复携带相同 X-WDSP-PoP-Nonce 被 401 拒绝", func(t *testing.T) {
+		fx := newPopFixture(t)
+		body := `{"timestamp":1788256800,"status":"ONLINE"}`
+		ts := popTS(fx.now)
+		sendWithNonce := func(nonce string) *httptest.ResponseRecorder {
+			digest := sha256.Sum256(popSigningInput(http.MethodPost, fx.hbPath(), ts, BodySHA256Hex([]byte(body))))
+			sig, err := ecdsa.SignASN1(rand.Reader, fx.key, digest[:])
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, fx.hbPath(), strings.NewReader(body))
+			req.Header.Set(popCertHeader, base64.StdEncoding.EncodeToString(fx.cert.Raw))
+			req.Header.Set(popTimestampHeader, ts)
+			req.Header.Set(popSignatureHeader, base64.StdEncoding.EncodeToString(sig))
+			req.Header.Set(popNonceHeader, nonce)
+			rr := httptest.NewRecorder()
+			fx.mux.ServeHTTP(rr, req)
+			return rr
+		}
+		if rr := sendWithNonce("nonce-abc-123"); rr.Code != http.StatusOK {
+			t.Fatalf("first nonce status = %d, want 200", rr.Code)
+		}
+		if rr := sendWithNonce("nonce-abc-123"); rr.Code != http.StatusUnauthorized {
+			t.Fatalf("replayed nonce status = %d, want 401", rr.Code)
+		}
+		if rr := sendWithNonce("nonce-abc-456"); rr.Code != http.StatusOK {
+			t.Fatalf("fresh nonce status = %d, want 200", rr.Code)
+		}
+	})
+
+	t.Run("有界缓存淘汰与过期清理", func(t *testing.T) {
+		cache := newPopReplayCache(4)
+		now := time.Unix(1788256800, 0).UTC()
+		ts := strconv.FormatInt(now.Unix(), 10)
+		for i := 0; i < 10; i++ {
+			if !cache.CheckAndRecord("agent-1", ts, "sig-"+strconv.Itoa(i), "", now) {
+				t.Fatalf("unexpected duplicate at %d", i)
+			}
+		}
+		if len(cache.entries) > 4 {
+			t.Fatalf("cache exceeded bound: got %d, max 4", len(cache.entries))
+		}
+		if cache.CheckAndRecord("agent-1", ts, "sig-9", "", now) {
+			t.Fatal("recent signature should still be detected as replay")
+		}
+		// 越过偏差窗口后自动过期可清理
+		afterWindow := now.Add((popMaxClockSkewSeconds + 2) * time.Second)
+		if !cache.CheckAndRecord("agent-1", ts, "sig-9", "", afterWindow) {
+			t.Fatal("expired entry should not block after skew window")
+		}
+	})
+}
+
+func TestRevokedCredentialHashInvalidatesBearer(t *testing.T) {
+	h1, err := revokedCredentialHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := revokedCredentialHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h1) != 64 || !strings.HasPrefix(h1, "revoked:") || h1 == h2 {
+		t.Fatalf("unexpected revoked credential hash: h1=%q h2=%q", h1, h2)
 	}
 }

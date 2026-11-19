@@ -24,18 +24,24 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-// PoP 认证头（契约 §8 冻结）。
+// PoP 认证头（契约 §8 冻结；X-WDSP-PoP-Nonce 为可选重放防重 nonce 扩展）。
 const (
 	popCertHeader      = "X-WDSP-Agent-Cert"
 	popTimestampHeader = "X-WDSP-Agent-Timestamp"
 	popSignatureHeader = "X-WDSP-Agent-Signature"
+	popNonceHeader     = "X-WDSP-PoP-Nonce"
 )
 
 // popMaxClockSkewSeconds PoP 时间戳允许的最大时钟偏差（秒；契约 §8：≤300s）。
-const popMaxClockSkewSeconds = 300
+const (
+	popMaxClockSkewSeconds     = 300
+	defaultPopReplayMaxEntries = 65536
+	maxPopNonceLen             = 128
+)
 
 // ErrPoPFailed 持有证明校验失败（HTTP 401；消息可安全返回客户端）。
 var ErrPoPFailed = errors.New("客户端证书持有证明校验失败")
@@ -98,4 +104,131 @@ func VerifyPoPSignature(cert *x509.Certificate, method, path, timestamp string, 
 		return ErrPoPFailed
 	}
 	return nil
+}
+
+// ValidatePoPNonce 校验可选 X-WDSP-PoP-Nonce 头（空表示未携带；携带时限长且禁控制字符）。
+func ValidatePoPNonce(nonce string) error {
+	if nonce == "" {
+		return nil
+	}
+	if len(nonce) > maxPopNonceLen || strings.ContainsAny(nonce, "\r\n\x00\t ") {
+		return fmt.Errorf("%w：PoP nonce 格式非法", ErrPoPFailed)
+	}
+	return nil
+}
+
+type popReplayEntry struct {
+	key       string
+	expiresAt time.Time
+}
+
+// popReplayCache 有界 PoP 重放去重缓存（匹配 ±300s 时钟偏差窗口；内存硬上限防 OOM）。
+type popReplayCache struct {
+	mu         sync.Mutex
+	entries    map[string]time.Time
+	order      []popReplayEntry
+	maxEntries int
+}
+
+func newPopReplayCache(maxEntries int) *popReplayCache {
+	if maxEntries <= 0 {
+		maxEntries = defaultPopReplayMaxEntries
+	}
+	return &popReplayCache{
+		entries:    make(map[string]time.Time),
+		maxEntries: maxEntries,
+	}
+}
+
+func popReplayHashKey(parts ...string) string {
+	h := sha256.New()
+	for i, p := range parts {
+		if i > 0 {
+			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte(p))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// CheckAndRecord 校验并登记一次已验签 PoP 请求（返回 false 表示窗口内重放）。
+// 键覆盖 (agentID, ts, sig)；携带可选 X-WDSP-PoP-Nonce 时同时对 (agentID, nonce) 防重放。
+func (c *popReplayCache) CheckAndRecord(agentID, ts, sig, nonce string, now time.Time) bool {
+	now = now.UTC()
+	exp := now.Add((popMaxClockSkewSeconds + 1) * time.Second)
+	if unix, err := strconv.ParseInt(strings.TrimSpace(ts), 10, 64); err == nil {
+		tsExp := time.Unix(unix, 0).UTC().Add((popMaxClockSkewSeconds + 1) * time.Second)
+		if tsExp.After(now) {
+			exp = tsExp
+		}
+	}
+	sigKey := popReplayHashKey("sig", agentID, strings.TrimSpace(ts), strings.TrimSpace(sig))
+	var nonceKey string
+	if nonce != "" {
+		nonceKey = popReplayHashKey("nonce", agentID, nonce)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneLocked(now, 2)
+	if existing, ok := c.entries[sigKey]; ok && existing.After(now) {
+		return false
+	}
+	if nonceKey != "" {
+		if existing, ok := c.entries[nonceKey]; ok && existing.After(now) {
+			return false
+		}
+	}
+	c.recordLocked(sigKey, exp)
+	if nonceKey != "" {
+		c.recordLocked(nonceKey, exp)
+	}
+	return true
+}
+
+func (c *popReplayCache) recordLocked(key string, expiresAt time.Time) {
+	c.entries[key] = expiresAt
+	c.order = append(c.order, popReplayEntry{key: key, expiresAt: expiresAt})
+}
+
+func (c *popReplayCache) pruneLocked(now time.Time, reserve int) {
+	// 惰性清理队头已过期项
+	drop := 0
+	for drop < len(c.order) && !c.order[drop].expiresAt.After(now) {
+		e := c.order[drop]
+		if cur, ok := c.entries[e.key]; ok && !cur.After(now) {
+			delete(c.entries, e.key)
+		}
+		drop++
+	}
+	if drop > 0 {
+		if drop == len(c.order) {
+			c.order = c.order[:0]
+		} else if drop > len(c.order)/2 || len(c.order) > c.maxEntries {
+			compacted := make([]popReplayEntry, len(c.order)-drop)
+			copy(compacted, c.order[drop:])
+			c.order = compacted
+		} else {
+			c.order = c.order[drop:]
+		}
+	}
+	// 超容量时全量清过期项，仍超限则按 FIFO 淘汰最旧项，保证严格有界
+	if len(c.entries)+reserve > c.maxEntries {
+		live := make([]popReplayEntry, 0, len(c.entries))
+		for _, e := range c.order {
+			if cur, ok := c.entries[e.key]; ok && cur.Equal(e.expiresAt) && cur.After(now) {
+				live = append(live, e)
+			} else if ok && !cur.After(now) {
+				delete(c.entries, e.key)
+			}
+		}
+		c.order = live
+		for len(c.entries)+reserve > c.maxEntries && len(c.order) > 0 {
+			oldest := c.order[0]
+			c.order = c.order[1:]
+			if cur, ok := c.entries[oldest.key]; ok && cur.Equal(oldest.expiresAt) {
+				delete(c.entries, oldest.key)
+			}
+		}
+	}
 }

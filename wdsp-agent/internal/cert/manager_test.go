@@ -225,6 +225,46 @@ func TestManagerRotateWithoutIdentity(t *testing.T) {
 	}
 }
 
+func TestManagerLoadWithPendingAndMissingKeyCertNoPanic(t *testing.T) {
+	dir := t.TempDir()
+	key, err := GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := MarshalKeyPEM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := NewCSR(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := selfSignedCert(t, key, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour))
+	m := NewManager(
+		filepath.Join(dir, KeyFileName),
+		filepath.Join(dir, CertFileName),
+		filepath.Join(dir, CAFileName),
+		nil,
+	)
+	if err := savePendingRotation(m.pendingRotationPath(), &pendingRotation{
+		AgentID:        "agent-1",
+		OldFingerprint: "oldfp",
+		PrivateKeyPEM:  string(keyPEM),
+		CSRPEM:         string(csr),
+		AgentCertPEM:   string(certPEM),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Both agent.key and agent.crt are missing -> Load must not panic on nil id, and should recover cleanly
+	id, err := m.Load()
+	if err != nil {
+		t.Fatalf("Load returned unexpected error: %v", err)
+	}
+	if id == nil || id.Cert == nil {
+		t.Fatal("expected recovered identity from signed pending rotation")
+	}
+}
+
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)

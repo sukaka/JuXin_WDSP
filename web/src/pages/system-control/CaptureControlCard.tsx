@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert, App as AntdApp, Button, Card, Form, Input, Modal, Space, Switch, Tag, Typography } from 'antd'
 import { ApiError } from '../../api/client'
@@ -51,8 +51,12 @@ export default function CaptureControlCard() {
   })
 
   const status = query.data
+  const prevEnableOpenRef = useRef(false)
   useEffect(() => {
-    if (enableOpen && status) {
+    const justOpened = enableOpen && !prevEnableOpenRef.current
+    prevEnableOpenRef.current = enableOpen
+    // 仅在弹窗从关闭→打开跃迁时初始化表单，避免后台 status 轮询刷新覆盖用户编辑中的输入
+    if (justOpened && status) {
       form.setFieldsValue({
         interface: status.interface,
         portsText: status.ports?.join(','),
@@ -63,15 +67,20 @@ export default function CaptureControlCard() {
     }
   }, [enableOpen, status, form])
 
-  if (!hasPermission(permissions, 'request_pcap.capture_control')) return null
+  if (!allowed) return null
   const meta = status ? STATE_META[status.state] : { color: 'default', text: '状态未知' }
 
   const enable = async () => {
-    const values = await form.validateFields()
+    let values: CaptureForm
+    try {
+      values = await form.validateFields()
+    } catch {
+      return
+    }
     mutation.mutate({
       enabled: true,
       interface: values.interface.trim(),
-      ports: values.portsText.split(',').map((port) => Number(port.trim())),
+      ports: values.portsText.trim().split(',').map((port) => Number(port.trim())),
       hot_dir: values.hotDir.trim(),
       warm_dir: values.warmDir.trim(),
       reason: values.reason.trim(),
@@ -128,14 +137,34 @@ export default function CaptureControlCard() {
           <Form.Item name="interface" label="采集网卡" rules={[{ required: true, message: '请输入实际网卡名称' }, { pattern: /^[A-Za-z0-9_.:-]{1,64}$/, message: '网卡名称格式不正确' }]}>
             <Input placeholder="例如 eth0，请按实际网卡填写" maxLength={64} />
           </Form.Item>
-          <Form.Item name="portsText" label="采集端口" rules={[{ required: true, message: '请输入逗号分隔的端口' }, { pattern: /^\d+(,\d+)*$/, message: '仅支持明确端口，例如80,443，不支持区间' }]}>
+          <Form.Item
+            name="portsText"
+            label="采集端口"
+            rules={[
+              { required: true, message: '请输入逗号分隔的端口' },
+              {
+                validator: (_, value?: string) => {
+                  const raw = (value ?? '').trim()
+                  if (!raw) return Promise.resolve()
+                  if (!/^\d+(,\d+)*$/.test(raw)) {
+                    return Promise.reject(new Error('仅支持明确端口，例如80,443，不支持区间'))
+                  }
+                  const ports = raw.split(',').map((p) => Number(p))
+                  if (ports.some((p) => !Number.isInteger(p) || p < 1 || p > 65535)) {
+                    return Promise.reject(new Error('端口号必须在 1 到 65535 之间'))
+                  }
+                  return Promise.resolve()
+                },
+              },
+            ]}
+          >
             <Input placeholder="例如80,443" />
           </Form.Item>
           <Form.Item name="hotDir" label="SSD 热证据目录" rules={[{ required: true, message: '请输入热证据绝对路径' }, { pattern: /^\/[A-Za-z0-9._/-]+$/, message: '请输入受限字符的绝对路径' }]}>
-            <Input placeholder="例如 /srv/jiuzhang-ssd/pcap" />
+            <Input placeholder="例如 /srv/jiuzhang-pcap-hot" />
           </Form.Item>
           <Form.Item name="warmDir" label="SAS 温证据目录" rules={[{ required: true, message: '请输入温证据绝对路径' }, { pattern: /^\/[A-Za-z0-9._/-]+$/, message: '请输入受限字符的绝对路径' }]}>
-            <Input placeholder="例如 /srv/jiuzhang-sas/pcap" />
+            <Input placeholder="例如 /srv/jiuzhang-pcap-warm" />
           </Form.Item>
           <Form.Item name="reason" label="操作理由" rules={[{ required: true, whitespace: true, message: '请填写操作理由' }, { max: 500, message: '最多500字符' }]}>
             <Input.TextArea rows={3} maxLength={500} placeholder="说明本次开启采集的授权范围" />

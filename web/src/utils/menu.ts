@@ -693,7 +693,12 @@ export const MENU_ITEMS: MenuDef[] = [
     key: '/system-control',
     label: '系统控制',
     roles: ['SYSTEM_ADMIN'],
-    permissions: ['system.reboot', 'system.shutdown', 'system.factory_reset'],
+    permissions: [
+      'system.reboot',
+      'system.shutdown',
+      'system.factory_reset',
+      'request_pcap.capture_control',
+    ],
     group: '系统运维',
   },
   {

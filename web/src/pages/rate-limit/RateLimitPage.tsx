@@ -26,6 +26,7 @@ import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { PublishTaskProgress } from '../config-publish/ConfigPublishPage'
 import { useAuthStore } from '../../stores/auth'
+import { generateIdempotencyKey } from '../../utils/idempotency'
 import { hasPermission } from '../../utils/permission'
 import {
   RATE_LIMIT_ACTION_META,
@@ -153,7 +154,7 @@ export default function RateLimitPage() {
   })
 
   const publishMutation = useMutation({
-    mutationFn: () => rateLimitPoliciesApi.publish(crypto.randomUUID()),
+    mutationFn: () => rateLimitPoliciesApi.publish(generateIdempotencyKey()),
     onSuccess: (task) => {
       setActiveTaskId(task.id)
       if (task.status === 'SUCCESS') message.success('发布成功')

@@ -8,6 +8,7 @@ import { systemHealthApi } from '../../api/systemHealth'
 import EChart from '../../components/EChart'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import { formatBytes } from '../../utils/format'
+import { escapeHtml } from '../../utils/html'
 
 function percent(used?: number, total?: number): number {
   if (!used || !total || total <= 0) return 0
@@ -36,7 +37,7 @@ export default function StoragePage() {
       tooltip: {
         formatter: (params: unknown) => {
           const p = params as { name: string; value: number }
-          return `${p.name}: ${formatBytes(p.value)}`
+          return `${escapeHtml(p.name)}: ${escapeHtml(formatBytes(p.value))}`
         },
       },
       xAxis: { type: 'value', axisLabel: { formatter: (v: number) => formatBytes(v) } },

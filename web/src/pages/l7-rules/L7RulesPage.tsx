@@ -12,6 +12,7 @@ import useBatchDelete from '../../hooks/useBatchDelete'
 import { PublishTaskProgress } from '../config-publish/ConfigPublishPage'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { generateIdempotencyKey } from '../../utils/idempotency'
 import { hasPermission } from '../../utils/permission'
 import { L7_RULE_ACTION_META, summarizeConditions } from '../../utils/l7rules'
 import L7RuleFormDrawer from './L7RuleFormDrawer'
@@ -91,7 +92,7 @@ export default function L7RulesPage() {
   })
 
   const publishMutation = useMutation({
-    mutationFn: () => l7RulesApi.publish(crypto.randomUUID()),
+    mutationFn: () => l7RulesApi.publish(generateIdempotencyKey()),
     onSuccess: (task) => {
       if (task?.id) setActiveTaskId(task.id)
       if (task?.status === 'SUCCESS') message.success('发布成功')

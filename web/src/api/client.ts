@@ -12,6 +12,21 @@ const DEFAULT_UPLOAD_TIMEOUT_MS = 600_000
  * SSE 流式路径（api/ai.ts streamPostSSE）不经 request()/upload()，不受此限 */
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 
+/** 仅对未登录态预期可能返回 401 的公开/探测认证端点跳过全局会话失效回调；
+ * 已认证端点（如 /auth/password、/auth/totp/* 管理接口）返回 401 时必须触发会话失效处理 */
+const PUBLIC_AUTH_401_PATHS = new Set([
+  '/auth/login',
+  '/auth/me',
+  '/auth/logout',
+  '/auth/captcha',
+  '/auth/totp/verify',
+])
+
+function isPublicAuth401Path(path: string): boolean {
+  const normalized = path.split('?')[0]
+  return PUBLIC_AUTH_401_PATHS.has(normalized)
+}
+
 export class ApiError extends Error {
   readonly code: string
   readonly status: number
@@ -162,9 +177,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     throw new ApiError('网络异常，请检查网络连接后重试', 'NETWORK_ERROR', 0)
   }
 
-  // /auth/* 的 401 多为未登录态预期响应（登录密码错误、启动时 /auth/me 探测），
-  // 不触发全局会话失效回调（避免误重置全部 store / 整页刷新丢失登录回跳地址），由调用方按错误处理
-  if (resp.status === 401 && !path.startsWith('/auth/')) {
+  // 仅对公开/探测认证端点忽略 401 全局会话失效回调，已认证接口 401 必须触发会话失效处理
+  if (resp.status === 401 && !isPublicAuth401Path(path)) {
     sessionExpiredHandler?.()
   }
 
@@ -301,6 +315,29 @@ export async function upload<T>(
 function uploadWithProgress<T>(path: string, form: FormData, options: UploadOptions): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
+    let settled = false
+    let abortedForSize = false
+
+    const rejectOnce = (err: ApiError) => {
+      if (settled) return
+      settled = true
+      reject(err)
+    }
+
+    const exceedsLimit = (loaded: number): boolean => {
+      const declared = Number(xhr.getResponseHeader('Content-Length'))
+      return loaded > MAX_RESPONSE_BYTES || (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES)
+    }
+
+    const abortIfOversized = (loaded: number): boolean => {
+      if (settled || !exceedsLimit(loaded)) return false
+      abortedForSize = true
+      const status = xhr.status
+      xhr.abort()
+      rejectOnce(new ApiError('响应体超过大小上限，已中断接收', 'RESPONSE_TOO_LARGE', status))
+      return true
+    }
+
     xhr.open('POST', buildUrl(path))
     xhr.withCredentials = true
     xhr.timeout = options.timeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS
@@ -313,16 +350,27 @@ function uploadWithProgress<T>(path: string, form: FormData, options: UploadOpti
         lengthComputable: event.lengthComputable,
       })
     }
-    xhr.onerror = () => reject(new ApiError('网络异常，请检查网络连接后重试', 'NETWORK_ERROR', 0))
-    xhr.ontimeout = () => reject(new ApiError('请求超时，请稍后重试', 'TIMEOUT', 0))
-    xhr.onabort = () => reject(new ApiError('上传已取消', 'UPLOAD_CANCELLED', 0))
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState >= 2) {
+        abortIfOversized(0)
+      }
+    }
+    xhr.onprogress = (event) => {
+      abortIfOversized(event.loaded)
+    }
+    xhr.onerror = () => rejectOnce(new ApiError('网络异常，请检查网络连接后重试', 'NETWORK_ERROR', 0))
+    xhr.ontimeout = () => rejectOnce(new ApiError('请求超时，请稍后重试', 'TIMEOUT', 0))
+    xhr.onabort = () => {
+      if (abortedForSize) return
+      rejectOnce(new ApiError('上传已取消', 'UPLOAD_CANCELLED', 0))
+    }
     xhr.onload = () => {
+      if (settled || abortedForSize) return
       if (xhr.status === 401) sessionExpiredHandler?.()
       if (xhr.status === 423) licenseInvalidHandler?.()
 
-      const declared = Number(xhr.getResponseHeader('Content-Length'))
-      if ((Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) || new Blob([xhr.responseText]).size > MAX_RESPONSE_BYTES) {
-        reject(new ApiError('响应体超过大小上限，已中断接收', 'RESPONSE_TOO_LARGE', xhr.status))
+      if (exceedsLimit(new Blob([xhr.responseText]).size)) {
+        rejectOnce(new ApiError('响应体超过大小上限，已中断接收', 'RESPONSE_TOO_LARGE', xhr.status))
         return
       }
       let payload: unknown = null
@@ -337,9 +385,10 @@ function uploadWithProgress<T>(path: string, form: FormData, options: UploadOpti
       if (xhr.status < 200 || xhr.status >= 300 || !env || typeof env.code !== 'string' || env.code !== 'SUCCESS') {
         const code = env && typeof env.code === 'string' ? env.code : 'HTTP_ERROR'
         const message = env && typeof env.message === 'string' ? env.message : `请求失败（HTTP ${xhr.status}）`
-        reject(new ApiError(message, code, xhr.status, env?.request_id, env?.details))
+        rejectOnce(new ApiError(message, code, xhr.status, env?.request_id, env?.details))
         return
       }
+      settled = true
       resolve(env.data)
     }
     xhr.send(form)

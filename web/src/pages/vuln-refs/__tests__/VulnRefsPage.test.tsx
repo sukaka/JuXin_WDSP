@@ -263,6 +263,27 @@ describe('VulnRefsPage 漏洞档案', () => {
     expect(screen.getByText('阻断')).toBeInTheDocument()
   })
 
+  it('详情抽屉：javascript: 官方条目链接不渲染为可点击超链接', async () => {
+    const evilDetail = {
+      ...REF_DETAIL,
+      ref: { ...REF_ITEM, url: 'javascript:alert(document.domain)' },
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        const ok = (data: unknown) =>
+          Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
+        if (url.includes('/waf/vuln-refs/')) return ok(evilDetail)
+        return ok({ items: [REF_ITEM], total: 1, page: 1, page_size: 20 })
+      }),
+    )
+    renderPage(['/waf/vuln-refs?focus=CNNVD-202401-2345'])
+    expect(await screen.findByText('漏洞档案详情：CNNVD-202401-2345')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'CNNVD 官方条目' })).not.toBeInTheDocument()
+    expect(screen.getByText('javascript:alert(document.domain)')).toBeInTheDocument()
+  })
+
   it('无 waf_rule.vuln_ref.edit 权限：隐藏新建/编辑/删除，保留读操作', async () => {
     useAuthStore.setState({
       user: makeUser(['waf_rules.read']),

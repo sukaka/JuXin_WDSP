@@ -414,4 +414,57 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
     expect(await screen.findByText('排队中', undefined, SLOW)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '取消' })).toBeNull()
   })
+
+  it('预检竞态防护：切换升级包后，旧包在途预检晚到不得覆盖新包或启用执行按钮', async () => {
+    const pkgA = { ...uploadedPackage(), id: 'pkg-a', file_name: 'pkg-a.tar.gz', version_to: '2.6.0' }
+    const pkgB = { ...uploadedPackage(), id: 'pkg-b', file_name: 'pkg-b.tar.gz', version_to: '2.7.0' }
+    let resolvePrecheckA: ((value: unknown) => void) | undefined
+
+    requestMock.mockImplementation((path, options) => {
+      const method = options?.method ?? 'GET'
+      if (method === 'GET' && path === '/upgrades') {
+        return Promise.resolve({ items: [], page: 1, page_size: 20, total: 0 })
+      }
+      if (method === 'GET' && path === '/upgrade-packages') {
+        return Promise.resolve({ items: [pkgA, pkgB], page: 1, page_size: 50, total: 2 })
+      }
+      if (method === 'POST' && path === '/upgrades/precheck') {
+        return new Promise((resolve) => {
+          resolvePrecheckA = resolve
+        })
+      }
+      return Promise.reject(new ApiError(`未打桩的请求：${method} ${path}`, 'MOCK_MISS', 500))
+    })
+
+    renderPage()
+    const select = await screen.findByRole('combobox', undefined, SLOW)
+
+    // 选择 pkg-a 并触发预检（请求挂起）
+    fireEvent.mouseDown(select)
+    fireEvent.click(await screen.findByText(/pkg-a\.tar\.gz/, undefined, SLOW))
+    const precheckBtn = screen.getByRole('button', { name: /执行预检/ })
+    const executeBtn = screen.getByRole('button', { name: /执行升级/ })
+    expect(executeBtn).toBeDisabled()
+    fireEvent.click(precheckBtn)
+    await waitFor(() => expect(resolvePrecheckA).toBeDefined(), SLOW)
+
+    // 预检返回前切换为 pkg-b
+    fireEvent.mouseDown(select)
+    fireEvent.click(await screen.findByText(/pkg-b\.tar\.gz/, undefined, SLOW))
+
+    // 旧包 pkg-a 的预检结果延迟返回 PASS
+    act(() => {
+      resolvePrecheckA?.({
+        package_id: 'pkg-a',
+        overall_result: 'PASS',
+        items: [{ name: '磁盘空间', result: 'PASS', message: 'ok' }],
+      })
+    })
+
+    // 执行升级按钮必须继续保持禁用，且不得渲染 pkg-a 的预检结果
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /执行升级/ })).toBeDisabled()
+    }, SLOW)
+    expect(screen.queryByText(/预检结果：通过/)).toBeNull()
+  })
 })

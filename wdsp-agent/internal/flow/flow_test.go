@@ -326,3 +326,19 @@ func TestFinGraceEmittedOnce(t *testing.T) {
 		t.Fatalf("flow_end 应恰好一条, got %d", n)
 	}
 }
+
+func TestL0RequestEventMasksSensitiveQueryParams(t *testing.T) {
+	var evs []events.FlowEvent
+	tr := NewTracker("agent-1", 0, 0, collect(&evs), nil)
+	tr.Track(pkt("10.1.1.10", 51234, "10.1.2.20", 8080, true,
+		"GET /api/login?password=secret123&%74oken=tok456&user=alice HTTP/1.1\r\nHost: api.example.com\r\n\r\n", base))
+	if len(evs) != 1 || evs[0].EventType != events.TypeRequest {
+		t.Fatalf("expected 1 request event, got %+v", evs)
+	}
+	if strings.Contains(evs[0].HTTPURI, "secret123") || strings.Contains(evs[0].HTTPURI, "tok456") {
+		t.Fatalf("L0 flow event leaked plaintext credentials in URI: %q", evs[0].HTTPURI)
+	}
+	if !strings.Contains(evs[0].HTTPURI, "user=alice") || !strings.Contains(evs[0].HTTPURI, "********") {
+		t.Fatalf("unexpected masked URI: %q", evs[0].HTTPURI)
+	}
+}

@@ -26,18 +26,23 @@ class MockXMLHttpRequest {
   static instances: MockXMLHttpRequest[] = []
 
   upload: { onprogress: ((event: ProgressEvent) => void) | null } = { onprogress: null }
+  onreadystatechange: (() => void) | null = null
+  onprogress: ((event: ProgressEvent) => void) | null = null
   onload: (() => void) | null = null
   onerror: (() => void) | null = null
   ontimeout: (() => void) | null = null
   onabort: (() => void) | null = null
   withCredentials = false
   timeout = 0
+  readyState = 0
   status = 0
   responseText = ''
   method = ''
   path = ''
   body?: FormData
   headers: Record<string, string> = {}
+  responseHeaders: Record<string, string> = {}
+  aborted = false
 
   constructor() {
     MockXMLHttpRequest.instances.push(this)
@@ -52,8 +57,14 @@ class MockXMLHttpRequest {
     this.headers[name] = value
   }
 
-  getResponseHeader() {
-    return null
+  getResponseHeader(name: string) {
+    return this.responseHeaders[name.toLowerCase()] ?? this.responseHeaders[name] ?? null
+  }
+
+  abort() {
+    this.aborted = true
+    this.status = 0
+    this.onabort?.()
   }
 
   send(body: FormData) {
@@ -310,5 +321,49 @@ describe('api client', () => {
     expect(gatewayError).toBeInstanceOf(ApiError)
     expect((gatewayError as ApiError).status).toBe(502)
     expect((gatewayError as ApiError).message).toBe('请求失败（HTTP 502）')
+  })
+
+  it('公开/探测认证端点 401 不触发全局会话失效回调，已认证 /auth/* 端点 401 必须触发', async () => {
+    const onExpired = vi.fn()
+    setSessionExpiredHandler(onExpired)
+    stubFetch(() =>
+      Promise.resolve(jsonResponse(401, { code: 'UNAUTHENTICATED', message: '未登录或会话已过期' })),
+    )
+    for (const pubPath of ['/auth/login', '/auth/me', '/auth/logout', '/auth/captcha', '/auth/totp/verify']) {
+      await expect(request(pubPath)).rejects.toBeInstanceOf(ApiError)
+    }
+    expect(onExpired).not.toHaveBeenCalled()
+
+    await expect(request('/auth/password', { method: 'POST', body: {} })).rejects.toBeInstanceOf(ApiError)
+    expect(onExpired).toHaveBeenCalledTimes(1)
+  })
+
+  it('XHR 上传响应体在 onprogress / Content-Length 超限时立即 abort 并抛 RESPONSE_TOO_LARGE', async () => {
+    MockXMLHttpRequest.instances = []
+    vi.stubGlobal('XMLHttpRequest', MockXMLHttpRequest)
+
+    // 场景1：无 Content-Length 但 onprogress 已加载字节数超过 10MiB
+    const p1 = upload('/upgrades/packages/upload', new FormData(), { onProgress: vi.fn() })
+    const xhr1 = MockXMLHttpRequest.instances[0]
+    xhr1.status = 200
+    xhr1.onprogress?.({ loaded: 10 * 1024 * 1024 + 1, total: 0, lengthComputable: false } as ProgressEvent)
+    const err1 = await p1.catch((e: unknown) => e)
+    expect(xhr1.aborted).toBe(true)
+    expect(err1).toBeInstanceOf(ApiError)
+    expect((err1 as ApiError).code).toBe('RESPONSE_TOO_LARGE')
+    expect((err1 as ApiError).status).toBe(200)
+
+    // 场景2：Content-Length 超过 10MiB，在收到响应头/首次进度时即刻 abort
+    const p2 = upload('/upgrades/packages/upload', new FormData(), { onProgress: vi.fn() })
+    const xhr2 = MockXMLHttpRequest.instances[1]
+    xhr2.status = 200
+    xhr2.readyState = 2
+    xhr2.responseHeaders['content-length'] = String(10 * 1024 * 1024 + 100)
+    xhr2.onreadystatechange?.()
+    const err2 = await p2.catch((e: unknown) => e)
+    expect(xhr2.aborted).toBe(true)
+    expect(err2).toBeInstanceOf(ApiError)
+    expect((err2 as ApiError).code).toBe('RESPONSE_TOO_LARGE')
+    expect((err2 as ApiError).status).toBe(200)
   })
 })

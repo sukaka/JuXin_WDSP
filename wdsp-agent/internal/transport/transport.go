@@ -411,9 +411,12 @@ func (c *Client) do(ctx context.Context, method, path string, body any, auth boo
 	}
 	req.Header.Set("User-Agent", c.agent)
 	if auth {
-		req.Header.Set("Authorization", "Bearer "+c.cred)
-		if err := c.applyPoP(req, bodyBytes); err != nil {
+		appliedPoP, err := c.applyPoP(req, bodyBytes)
+		if err != nil {
 			return nil, 0, err
+		}
+		if !appliedPoP {
+			req.Header.Set("Authorization", "Bearer "+c.cred)
 		}
 	}
 	resp, err := c.hc.Do(req)

@@ -7,10 +7,13 @@ import type { FlowResult } from '../../../api/accessLogs'
 import type EChart from '../../../components/EChart'
 
 let graphNodeKinds: string[] = []
+let lastTooltipFormatter: ((params: unknown) => string) | undefined
 vi.mock('../../../components/EChart', () => ({
   default: ({ option }: ComponentProps<typeof EChart>) => {
     const series = (option.series ?? []) as Array<{ data?: Array<{ id: string }> }>
     graphNodeKinds = (series[0]?.data ?? []).map((node) => node.id.split(':')[0])
+    const tooltip = option.tooltip as { formatter?: (params: unknown) => string } | undefined
+    lastTooltipFormatter = tooltip?.formatter
     return <div data-testid="audit-flow-chart" />
   },
 }))
@@ -39,6 +42,7 @@ describe('AccessLogFlow', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     graphNodeKinds = []
+    lastTooltipFormatter = undefined
   })
   it('显示真实请求与字段计数，类型开关只改变显示', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ code: 'SUCCESS', data: flow }), { status: 200 }))))
@@ -58,5 +62,31 @@ describe('AccessLogFlow', () => {
     fireEvent.click(button)
     expect(drill).toHaveBeenCalledWith(expect.objectContaining({ field_path: 'form.pwd', direction: 'REQUEST', request_ids: 'req-1,req-2' }))
     expect(JSON.stringify(drill.mock.calls)).not.toContain('password-value')
+  })
+
+  it('tooltip 渲染对节点名称执行 HTML 转义，防止存储型 XSS', async () => {
+    const xssName = '<img src=x onerror="alert(1)">'
+    const xssFlow: FlowResult = {
+      ...flow,
+      nodes: [
+        {
+          ...flow.nodes[0],
+          id: 'API:xss',
+          kind: 'API',
+          name: xssName,
+        },
+      ],
+      edges: [],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(new Response(JSON.stringify({ code: 'SUCCESS', data: xssFlow }), { status: 200 }))),
+    )
+    renderFlow()
+    expect(await screen.findByTestId('audit-flow-chart')).toBeInTheDocument()
+    expect(lastTooltipFormatter).toBeTypeOf('function')
+    const html = lastTooltipFormatter!({ dataType: 'node', data: { id: 'API:xss' } })
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;')
   })
 })

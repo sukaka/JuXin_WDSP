@@ -60,13 +60,32 @@ RETURNING 1`, agentID, eventID, receivedAt.UTC()).Scan(&id)
 	return accepted, duplicates, nil
 }
 
+func (s *Store) DeleteAPIObservationReceipts(ctx context.Context, agentID uuid.UUID, eventIDs []string) error {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(ctx, `
+DELETE FROM agent_api_observation_receipts
+WHERE agent_id=$1 AND event_id = ANY($2)`, agentID, eventIDs)
+	return err
+}
+
 func (s *Store) ResolveWorkloadBinding(ctx context.Context, agentID, bindingID uuid.UUID, version int64, serviceName, environment string) (*uuid.UUID, error) {
 	var applicationID *uuid.UUID
-	err := s.db.QueryRow(ctx, `
+	var err error
+	if serviceName == "" {
+		err = s.db.QueryRow(ctx, `
+SELECT application_id FROM agent_workload_bindings
+WHERE traffic_agent_id=$1 AND id=$2 AND binding_version=$3
+  AND status='ACTIVE'`,
+			agentID, bindingID, version).Scan(&applicationID)
+	} else {
+		err = s.db.QueryRow(ctx, `
 SELECT application_id FROM agent_workload_bindings
 WHERE traffic_agent_id=$1 AND id=$2 AND binding_version=$3
   AND service_name=$4 AND environment=$5 AND status='ACTIVE'`,
-		agentID, bindingID, version, serviceName, environment).Scan(&applicationID)
+			agentID, bindingID, version, serviceName, environment).Scan(&applicationID)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrWorkloadBinding
 	}

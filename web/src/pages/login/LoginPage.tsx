@@ -10,10 +10,12 @@ import {
 } from '@ant-design/icons'
 import { ApiError } from '../../api/client'
 import { authApi } from '../../api/auth'
+import { queryClient } from '../../api/queryClient'
 import { useAuthStore } from '../../stores/auth'
 import { useLicenseStore } from '../../stores/license'
 import { useProductStore } from '../../stores/product'
 import { filterMenusByRoles } from '../../utils/menu'
+import { clearClientSession } from '../../utils/session'
 import { SUPPORT_INFO, SYSTEM_NAME, SYSTEM_VERSION } from '../../constants'
 import type { CaptchaData, LoginResult } from '../../types'
 
@@ -54,8 +56,9 @@ export default function LoginPage() {
     void refreshCaptcha()
   }, [refreshCaptcha])
 
-  /** 登录成功（含第二步验证通过）的统一收尾：写会话、载产品与授权信息、按来源跳转 */
+  /** 登录成功（含第二步验证通过）的统一收尾：先清理残留会话/缓存再写新会话、载产品与授权信息、按来源跳转 */
   const handleLoginSuccess = async (data: LoginResult) => {
+    clearClientSession(queryClient)
     setSession(data.user, data.csrf_token)
     await useProductStore.getState().load()
     await useLicenseStore.getState().load()
@@ -79,7 +82,11 @@ export default function LoginPage() {
       const visible = filterMenusByRoles(
         data.user.roles.map((r) => r.code),
         data.user.permissions,
-        { apiDynamicProtection: product.apiDynamicProtection, webWafEnabled: product.webWafEnabled },
+        {
+          apiDynamicProtection: product.apiDynamicProtection,
+          webWafEnabled: product.webWafEnabled,
+          apmEnabled: product.apmEnabled,
+        },
       )
       const canAccess = visible.some((m) => target === m.key || target.startsWith(`${m.key}/`))
       if (!canAccess) {

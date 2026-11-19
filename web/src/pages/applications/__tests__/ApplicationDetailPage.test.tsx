@@ -108,5 +108,7 @@ describe('ApplicationDetailPage 资产价值', () => {
         ),
       ),
     ).toBe(true)
+    // 无 certificates.read 权限时不露出「证书绑定」页签
+    expect(screen.queryByRole('tab', { name: '证书绑定' })).not.toBeInTheDocument()
   })
 })

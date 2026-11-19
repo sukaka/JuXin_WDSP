@@ -36,6 +36,7 @@ import useBatchDelete from '../../hooks/useBatchDelete'
 import { PublishTaskProgress } from '../config-publish/ConfigPublishPage'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { generateIdempotencyKey } from '../../utils/idempotency'
 import { hasPermission } from '../../utils/permission'
 import {
   ACCESS_RULE_SCOPE_META,
@@ -287,7 +288,7 @@ export default function AccessRulesPage() {
   })
 
   const publishMutation = useMutation({
-    mutationFn: () => accessRulesApi.publish(crypto.randomUUID()),
+    mutationFn: () => accessRulesApi.publish(generateIdempotencyKey()),
     onSuccess: (task) => {
       setActiveTaskId(task.id)
       if (task.status === 'SUCCESS') message.success('发布成功')

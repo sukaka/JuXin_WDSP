@@ -36,3 +36,35 @@ func TestHeaderRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected headers: %#v", got)
 	}
 }
+
+func TestSplitKafkaChunks(t *testing.T) {
+	records := []Record{
+		{Key: "k1", Value: []byte(strings.Repeat("a", 30)), Headers: map[string]string{"id": "1"}},
+		{Key: "k2", Value: []byte(strings.Repeat("b", 30)), Headers: map[string]string{"id": "2"}},
+		{Key: "k3", Value: []byte(strings.Repeat("c", 30)), Headers: map[string]string{"id": "3"}},
+	}
+	chunks, err := splitKafkaChunks("wdsp.api.observations.v1", records, 64)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks of <=64B, got %d", len(chunks))
+	}
+	for i, chunk := range chunks {
+		if len(chunk) != 1 || string(chunk[0].Key) != records[i].Key {
+			t.Fatalf("chunk %d mismatch: %+v", i, chunk)
+		}
+	}
+	// Two records fit in 80 bytes, third goes into second chunk
+	chunks, err = splitKafkaChunks("wdsp.api.observations.v1", records, 80)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 2 || len(chunks[0]) != 2 || len(chunks[1]) != 1 {
+		t.Fatalf("expected [2,1] chunks, got %d chunks (%d, %d)", len(chunks), len(chunks[0]), len(chunks[1]))
+	}
+	// Single record exceeding maxBatchBytes returns explicit error
+	if _, err := splitKafkaChunks("wdsp.api.observations.v1", []Record{{Key: "k", Value: []byte(strings.Repeat("x", 65))}}, 64); err == nil {
+		t.Fatal("expected single oversized record error")
+	}
+}

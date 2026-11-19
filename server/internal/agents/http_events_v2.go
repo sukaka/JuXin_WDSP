@@ -375,6 +375,9 @@ func (p *HTTPRequestPartV2) validate() error {
 	if err := p.Trailers.validate("request.trailers"); err != nil {
 		return err
 	}
+	if strings.IndexByte(p.Body, 0) >= 0 {
+		return errors.New("request.body 含非法 NUL 字符")
+	}
 	return p.BodyQuality.validate("request")
 }
 
@@ -387,6 +390,9 @@ func (p *HTTPResponsePartV2) validate() error {
 	}
 	if err := p.Trailers.validate("response.trailers"); err != nil {
 		return err
+	}
+	if strings.IndexByte(p.Body, 0) >= 0 {
+		return errors.New("response.body 含非法 NUL 字符")
 	}
 	return p.BodyQuality.validate("response")
 }

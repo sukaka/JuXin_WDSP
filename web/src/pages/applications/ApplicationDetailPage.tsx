@@ -221,19 +221,24 @@ export default function ApplicationDetailPage() {
                   },
                 ]
               : []),
-            {
-              key: 'certificates',
-              label: '证书绑定',
-              children: hasHttps ? (
-                <CertificatesTab application={app} />
-              ) : (
-                <Alert
-                  type="info"
-                  showIcon
-                  message="当前应用未启用 HTTPS 域名，无需绑定证书"
-                />
-              ),
-            },
+            // 证书绑定：无 certificates.read 权限不露入口，避免跨模块请求触发 403
+            ...(hasPermission(permissions, 'certificates.read')
+              ? [
+                  {
+                    key: 'certificates',
+                    label: '证书绑定',
+                    children: hasHttps ? (
+                      <CertificatesTab application={app} />
+                    ) : (
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="当前应用未启用 HTTPS 域名，无需绑定证书"
+                      />
+                    ),
+                  },
+                ]
+              : []),
           ]}
         />
       </Card>

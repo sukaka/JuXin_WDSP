@@ -43,6 +43,7 @@ import {
   isReadinessBlocking,
 } from '../../utils/authzEnforcement'
 import { formatDateTime } from '../../utils/format'
+import { generateIdempotencyKey } from '../../utils/idempotency'
 import { hasPermission } from '../../utils/permission'
 import { isTerminalTaskStatus } from '../../utils/stage3'
 import type { PublishTaskItem } from '../../types'
@@ -118,6 +119,10 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
   const [windowDays, setWindowDays] = useState(7)
   const [impact, setImpact] = useState<ApiAuthzEnforcementImpact | null>(null)
   const [evalKey, setEvalKey] = useState('')
+  const [impactLoading, setImpactLoading] = useState(false)
+  const [impactError, setImpactError] = useState(false)
+  const impactSeqRef = useRef(0)
+  const activeEvalKeyRef = useRef('')
   const [elements, setElements] = useState<ElementValues | null>(null)
   const [signed, setSigned] = useState(false)
   const [ackChecked, setAckChecked] = useState(false)
@@ -160,22 +165,54 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
     else if (modelsQuery.data) setStep(0)
   }, [preset, selectedId, models, modelsQuery.isLoading, modelsQuery.data])
 
-  // 影响评估：进入第 2 步即请求（§1.3）；换窗口/端点重新评估（重新签发 token）
+  // 影响评估：进入第 2 步即请求（§1.3）；换窗口/端点立即重新评估并用序号丢弃过期响应（防旧 confirm_token 覆盖）
   const impactMut = useMutation({
-    mutationFn: (params: { endpoint_id: string; window_days: number; object_segment?: string }) => apiAuthzApi.evaluateEnforcementImpact(params),
-    onSuccess: (data) => {
+    mutationFn: ({
+      endpoint_id,
+      window_days,
+      object_segment,
+    }: {
+      endpoint_id: string
+      window_days: number
+      object_segment?: string
+      reqSeq: number
+      reqEvalKey: string
+    }) => apiAuthzApi.evaluateEnforcementImpact({ endpoint_id, window_days, object_segment }),
+    onSuccess: (data, vars) => {
+      if (vars.reqSeq !== impactSeqRef.current || vars.reqEvalKey !== activeEvalKeyRef.current) return
+      setImpactLoading(false)
+      setImpactError(false)
       setImpact(data)
       setSigned(false)
       setAckChecked(false)
     },
-    onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '影响评估失败'),
+    onError: (e: unknown, vars) => {
+      if (vars.reqSeq !== impactSeqRef.current || vars.reqEvalKey !== activeEvalKeyRef.current) return
+      setImpactLoading(false)
+      setImpactError(true)
+      message.error(e instanceof ApiError ? e.message : '影响评估失败')
+    },
   })
   const wantEvalKey = selected ? `${selected.endpoint_id}:${selected.object_segment}:${windowDays}` : ''
   useEffect(() => {
-    if (step !== 1 || !selected || impactMut.isPending) return
+    if (step !== 1 || !selected) return
     if (evalKey === wantEvalKey) return
+    const nextSeq = impactSeqRef.current + 1
+    impactSeqRef.current = nextSeq
+    activeEvalKeyRef.current = wantEvalKey
     setEvalKey(wantEvalKey)
-    impactMut.mutate({ endpoint_id: selected.endpoint_id, window_days: windowDays, object_segment: selected.object_segment })
+    setImpact(null)
+    setImpactError(false)
+    setImpactLoading(true)
+    setSigned(false)
+    setAckChecked(false)
+    impactMut.mutate({
+      endpoint_id: selected.endpoint_id,
+      window_days: windowDays,
+      object_segment: selected.object_segment,
+      reqSeq: nextSeq,
+      reqEvalKey: wantEvalKey,
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, selected, wantEvalKey, evalKey])
 
@@ -193,8 +230,12 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
       message.error(msg)
       if (e instanceof ApiError && classifyPatchError(e.message) === 'token') {
         // token 失效（过期/已消费）→ 回影响评估重新签发
+        impactSeqRef.current += 1
+        activeEvalKeyRef.current = ''
         setImpact(null)
         setEvalKey('')
+        setSigned(false)
+        setAckChecked(false)
         setStep(1)
       }
     },
@@ -209,7 +250,7 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
       query.state.data && isTerminalTaskStatus(query.state.data.status) ? false : 1500,
   })
   const publishMut = useMutation({
-    mutationFn: () => gatewayConfigApi.publish({ idempotency_key: crypto.randomUUID() }),
+    mutationFn: () => gatewayConfigApi.publish({ idempotency_key: generateIdempotencyKey() }),
     onSuccess: (task: PublishTaskItem) => {
       setTaskId(task.id)
       setSubmitPhase('publishing')
@@ -260,8 +301,12 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
         const kind = classifyPatchError(e.message)
         if (kind === 'token') {
           // token 过期/失效：回影响评估重新签发（§1.5 失败路径）
+          impactSeqRef.current += 1
+          activeEvalKeyRef.current = ''
           setImpact(null)
           setEvalKey('')
+          setSigned(false)
+          setAckChecked(false)
           setStep(1)
         } else if (kind === 'elements') {
           setStep(2)
@@ -298,9 +343,12 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
   const bounceIfTokenExpired = (): boolean => {
     if (isConfirmTokenExpired(impact?.confirm_token_expires_at)) {
       message.warning('签署令牌已过期（15 分钟），请重新评估签发')
+      impactSeqRef.current += 1
+      activeEvalKeyRef.current = ''
       setImpact(null)
       setEvalKey('')
       setSigned(false)
+      setAckChecked(false)
       setStep(1)
       return true
     }
@@ -310,7 +358,19 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
   const goNextFromElements = async () => {
     try {
       const values = await elementsForm.validateFields()
-      setElements({ enforcement_owner: values.enforcement_owner, evidence_source: values.evidence_source })
+      const nextElements: ElementValues = {
+        enforcement_owner: values.enforcement_owner.trim(),
+        evidence_source: values.evidence_source,
+      }
+      const changed =
+        !elements ||
+        elements.enforcement_owner.trim() !== nextElements.enforcement_owner ||
+        elements.evidence_source !== nextElements.evidence_source
+      if (changed) {
+        setSigned(false)
+        setAckChecked(false)
+      }
+      setElements(nextElements)
       setStep(3)
     } catch {
       // 校验未通过：停留当前步，错误内联展示
@@ -374,7 +434,17 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
             rowSelection={{
               type: 'radio',
               selectedRowKeys: selectedId ? [selectedId] : [],
-              onChange: (keys) => setSelectedId(keys[0] as string),
+              onChange: (keys) => {
+                impactSeqRef.current += 1
+                activeEvalKeyRef.current = ''
+                setSelectedId(keys[0] as string)
+                setImpact(null)
+                setEvalKey('')
+                setImpactError(false)
+                setImpactLoading(false)
+                setSigned(false)
+                setAckChecked(false)
+              },
               getCheckboxProps: (record) => {
                 const item = readinessMap.get(`${record.endpoint_id}:${record.object_segment}`)
                 return { disabled: record.enforcement === 'PROTECT' || item?.readiness === 'NOT_PUBLISHABLE' }
@@ -399,15 +469,24 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
                   value={windowDays}
                   style={{ width: 110 }}
                   options={[7, 14, 30].map((d) => ({ value: d, label: `近 ${d} 天` }))}
-                  onChange={(d) => { setWindowDays(d); setImpact(null); setEvalKey('') }}
+                  onChange={(d) => {
+                    impactSeqRef.current += 1
+                    activeEvalKeyRef.current = ''
+                    setWindowDays(d)
+                    setImpact(null)
+                    setEvalKey('')
+                    setImpactError(false)
+                    setSigned(false)
+                    setAckChecked(false)
+                  }}
                 />
               </Space>
-              {impactMut.isError ? (
+              {impactError ? (
                 <Alert type="error" showIcon message="影响评估失败" description="请返回上一步重选端点，或调整窗口后重试；失败不会签发任何令牌。" />
               ) : null}
-              {impactMut.isPending || !impact ? (
+              {impactLoading || (!impact && !impactError) ? (
                 <Spin tip="评估中…"><div style={{ minHeight: 160 }} /></Spin>
-              ) : (
+              ) : impact ? (
                 <>
                   {impact.observe_violation_count > 0 ? (
                     <Alert type="error" showIcon message="这些请求切换后将被实断" description={`近 ${impact.window_days} 天观测到 ${impact.observe_violation_count} 次违规请求，切换 PROTECT 后将被 403（AUTHZ_VIOLATION_DENIED）。`} />
@@ -464,7 +543,7 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
                     <Alert type="warning" showIcon message="当前账号无 api_authorization.manage 权限，未签发签署令牌——可查看评估，不能继续切换。" />
                   ) : null}
                 </>
-              )}
+              ) : null}
             </>
           )}
         </>

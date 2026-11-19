@@ -522,4 +522,12 @@ describe('filterMenusByRoles', () => {
       '/license',
     ])
   })
+
+  it('持有 request_pcap.capture_control 权限的自定义角色可见系统控制菜单', () => {
+    const keys = filterMenusByRoles(['CUSTOM_ROLE'], ['request_pcap.capture_control'], {
+      apiDynamicProtection: true,
+      webWafEnabled: true,
+    }).map((m) => m.key)
+    expect(keys).toContain('/system-control')
+  })
 })

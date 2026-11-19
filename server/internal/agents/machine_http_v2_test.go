@@ -389,7 +389,8 @@ func mustNow() time.Time { return time.Unix(1788256800, 0).UTC() }
 // 未绑定 UNASSIGNED 不 upsert 端点；配额/失败状态落行；去重键含 Host；重复事件不联动。
 func TestHTTPEventsV2AssetSources(t *testing.T) {
 	path := func(id uuid.UUID) string { return "/api/v1/agents/" + id.String() + "/http" }
-	bindingID := uuid.New().String()
+	bindingUUID := uuid.New()
+	bindingID := bindingUUID.String()
 	bindingVer := int64(7)
 
 	withBinding := func(rec HTTPRecordV2) HTTPRecordV2 {
@@ -402,6 +403,8 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 		store := newFakeMachineStore()
 		agentID := uuid.New()
 		cred := registerAgentV2(store, agentID)
+		appID := uuid.New()
+		store.registerWorkloadBinding(agentID, bindingUUID, bindingVer, &appID)
 		upserter := &fakeDiscoveryUpserter{}
 		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
 		rr := doMachine(t, mux, http.MethodPost, path(agentID), httpRecordsV2JSON(t, withBinding(validHTTPRecordV2())), cred)
@@ -421,7 +424,8 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 		if src.ApplicationBindingID == nil || src.BindingVersion == nil || *src.BindingVersion != 7 {
 			t.Errorf("绑定字段未落行: %+v", src)
 		}
-		if len(upserter.inputs) != 1 || upserter.inputs[0].ProtocolType != "REST" {
+		if len(upserter.inputs) != 1 || upserter.inputs[0].ProtocolType != "REST" ||
+			upserter.inputs[0].ApplicationID == nil || *upserter.inputs[0].ApplicationID != appID {
 			t.Errorf("端点 upsert 异常: %+v", upserter.inputs)
 		}
 	})
@@ -430,6 +434,7 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 		store := newFakeMachineStore()
 		agentID := uuid.New()
 		cred := registerAgentV2(store, agentID)
+		store.registerWorkloadBinding(agentID, bindingUUID, bindingVer, nil)
 		upserter := &fakeDiscoveryUpserter{}
 		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
 		rec := withBinding(validHTTPRecordV2())
@@ -469,6 +474,7 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 		store := newFakeMachineStore()
 		agentID := uuid.New()
 		cred := registerAgentV2(store, agentID)
+		store.registerWorkloadBinding(agentID, bindingUUID, bindingVer, nil)
 		upserter := &fakeDiscoveryUpserter{err: apiassets.ErrLicenseQuotaExceeded}
 		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
 		rr := doMachine(t, mux, http.MethodPost, path(agentID), httpRecordsV2JSON(t, withBinding(validHTTPRecordV2())), cred)
@@ -484,6 +490,7 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 		store := newFakeMachineStore()
 		agentID := uuid.New()
 		cred := registerAgentV2(store, agentID)
+		store.registerWorkloadBinding(agentID, bindingUUID, bindingVer, nil)
 		upserter := &fakeDiscoveryUpserter{err: errors.New("asset store down")}
 		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
 		rr := doMachine(t, mux, http.MethodPost, path(agentID), httpRecordsV2JSON(t, withBinding(validHTTPRecordV2())), cred)
@@ -500,6 +507,7 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 		store := newFakeMachineStore()
 		agentID := uuid.New()
 		cred := registerAgentV2(store, agentID)
+		store.registerWorkloadBinding(agentID, bindingUUID, bindingVer, nil)
 		upserter := &fakeDiscoveryUpserter{}
 		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
 		recA := withBinding(validHTTPRecordV2())
@@ -526,6 +534,7 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 		store := newFakeMachineStore()
 		agentID := uuid.New()
 		cred := registerAgentV2(store, agentID)
+		store.registerWorkloadBinding(agentID, bindingUUID, bindingVer, nil)
 		upserter := &fakeDiscoveryUpserter{}
 		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
 		rest := withBinding(validHTTPRecordV2())
@@ -548,8 +557,11 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 		cred := registerAgentV2(store, agentID)
 		upserter := &fakeDiscoveryUpserter{}
 		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
-		bindingA, bindingB := uuid.New().String(), uuid.New().String()
+		bindingUUIDA, bindingUUIDB := uuid.New(), uuid.New()
+		bindingA, bindingB := bindingUUIDA.String(), bindingUUIDB.String()
 		versionA, versionB := int64(1), int64(2)
+		store.registerWorkloadBinding(agentID, bindingUUIDA, versionA, nil)
+		store.registerWorkloadBinding(agentID, bindingUUIDB, versionB, nil)
 		recA := validHTTPRecordV2()
 		recA.ApplicationBindingID, recA.BindingVersion = &bindingA, &versionA
 		recB := validHTTPRecordV2()
@@ -572,6 +584,7 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 		store := newFakeMachineStore()
 		agentID := uuid.New()
 		cred := registerAgentV2(store, agentID)
+		store.registerWorkloadBinding(agentID, bindingUUID, bindingVer, nil)
 		upserter := &fakeDiscoveryUpserter{}
 		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
 		body := httpRecordsV2JSON(t, withBinding(validHTTPRecordV2()))
@@ -588,13 +601,50 @@ func TestHTTPEventsV2AssetSources(t *testing.T) {
 			t.Errorf("重复重放不应重复落来源行: %d 行", len(store.assetSources))
 		}
 	})
+
+	t.Run("H-22.2 伪造或跨 Agent 的 application_binding_id 被 403 拒绝且不入库不联动", func(t *testing.T) {
+		store := newFakeMachineStore()
+		agentID := uuid.New()
+		otherAgentID := uuid.New()
+		cred := registerAgentV2(store, agentID)
+		otherAppID := uuid.New()
+		// 该绑定仅属于 otherAgentID，不属于当前 agentID
+		store.registerWorkloadBinding(otherAgentID, bindingUUID, bindingVer, &otherAppID)
+		upserter := &fakeDiscoveryUpserter{}
+		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
+		rr := doMachine(t, mux, http.MethodPost, path(agentID), httpRecordsV2JSON(t, withBinding(validHTTPRecordV2())), cred)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403 (body=%s)", rr.Code, rr.Body.String())
+		}
+		if len(store.insertedHTTPV2) != 0 || len(upserter.inputs) != 0 || len(store.assetSources) != 0 {
+			t.Fatalf("伪造绑定不应入库或联动: events=%d upserts=%d sources=%d",
+				len(store.insertedHTTPV2), len(upserter.inputs), len(store.assetSources))
+		}
+	})
+
+	t.Run("H-22.2 binding_version 不匹配被 403 拒绝", func(t *testing.T) {
+		store := newFakeMachineStore()
+		agentID := uuid.New()
+		cred := registerAgentV2(store, agentID)
+		store.registerWorkloadBinding(agentID, bindingUUID, bindingVer+1, nil)
+		upserter := &fakeDiscoveryUpserter{}
+		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
+		rr := doMachine(t, mux, http.MethodPost, path(agentID), httpRecordsV2JSON(t, withBinding(validHTTPRecordV2())), cred)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403 (body=%s)", rr.Code, rr.Body.String())
+		}
+		if len(store.insertedHTTPV2) != 0 || len(upserter.inputs) != 0 {
+			t.Fatal("错误 binding_version 不应入库或联动")
+		}
+	})
 }
 
 // TestHTTPEventsV2AssetClassification v2 资产联动按请求/响应可见证据分类，
 // 不再对已绑定事件统一写死 true/0.8；v1 兼容口径由 machine_http_test.go 覆盖。
 func TestHTTPEventsV2AssetClassification(t *testing.T) {
 	path := func(id uuid.UUID) string { return "/api/v1/agents/" + id.String() + "/http" }
-	bindingID := uuid.New().String()
+	bindingUUID := uuid.New()
+	bindingID := bindingUUID.String()
 	bindingVer := int64(7)
 
 	run := func(t *testing.T, rec HTTPRecordV2) apiassets.DiscoveryInput {
@@ -604,6 +654,7 @@ func TestHTTPEventsV2AssetClassification(t *testing.T) {
 		store := newFakeMachineStore()
 		agentID := uuid.New()
 		cred := registerAgentV2(store, agentID)
+		store.registerWorkloadBinding(agentID, bindingUUID, bindingVer, nil)
 		upserter := &fakeDiscoveryUpserter{}
 		mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
 		rr := doMachine(t, mux, http.MethodPost, path(agentID), httpRecordsV2JSON(t, rec), cred)
@@ -708,8 +759,10 @@ func TestHTTPEventsV2AssetClassificationPersisted(t *testing.T) {
 	upserter := &fakeDiscoveryUpserter{}
 	mux := newMachineMux(NewMachineHandler(store).SetDiscoveryUpserter(upserter))
 	rec := validHTTPRecordV2()
-	bindingID := uuid.New().String()
+	bindingUUID := uuid.New()
+	bindingID := bindingUUID.String()
 	bindingVer := int64(7)
+	store.registerWorkloadBinding(agentID, bindingUUID, bindingVer, nil)
 	rec.ApplicationBindingID = &bindingID
 	rec.BindingVersion = &bindingVer
 	rr := doMachine(t, mux, http.MethodPost, "/api/v1/agents/"+agentID.String()+"/http",
@@ -791,6 +844,8 @@ func TestHTTPRecordV2Validate(t *testing.T) {
 		}},
 		{"grpc_status 越界", func(r *HTTPRecordV2) { s := 17; r.GRPC = &GRPCMeta{GRPCStatus: &s, StreamState: GRPCStreamClosed} }},
 		{"grpc stream_state 非法", func(r *HTTPRecordV2) { r.GRPC = &GRPCMeta{StreamState: "HALF"} }},
+		{"request.body 含 NUL", func(r *HTTPRecordV2) { r.Request.Body = "abc\x00def" }},
+		{"response.body 含 NUL", func(r *HTTPRecordV2) { r.Response.Body = "ok\x00bad" }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

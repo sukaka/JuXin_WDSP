@@ -43,6 +43,7 @@ import {
   type VulnTechAssetItem,
 } from '../../api/vulnIntel'
 import SmartTable from '../../components/SmartTable'
+import { isSafeHttpUrl } from '../../utils/url'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
@@ -584,9 +585,13 @@ export default function VulnIntelPage() {
                 dataSource={detail.advisory.references}
                 renderItem={(url) => (
                   <List.Item style={{ padding: '4px 0' }}>
-                    <Typography.Link href={url} target="_blank" rel="noreferrer">
-                      {url}
-                    </Typography.Link>
+                    {isSafeHttpUrl(url) ? (
+                      <Typography.Link href={url.trim()} target="_blank" rel="noopener noreferrer">
+                        {url}
+                      </Typography.Link>
+                    ) : (
+                      <Typography.Text type="secondary">{url}</Typography.Text>
+                    )}
                   </List.Item>
                 )}
               />

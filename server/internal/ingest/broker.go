@@ -84,6 +84,52 @@ func (b *Broker) Close() error {
 	return nil
 }
 
+func recordByteSize(rec *Record) int {
+	size := len(rec.Key) + len(rec.Value)
+	for key, value := range rec.Headers {
+		size += len(key) + len(value)
+	}
+	return size
+}
+
+func splitKafkaChunks(topic string, records []Record, maxBatchBytes int) ([][]*kgo.Record, error) {
+	if maxBatchBytes <= 0 {
+		maxBatchBytes = DefaultMaxBatchBytes
+	}
+	var chunks [][]*kgo.Record
+	var cur []*kgo.Record
+	curBytes := 0
+	for i := range records {
+		rec := &records[i]
+		if rec.Key == "" || len(rec.Key) > 128 {
+			return nil, fmt.Errorf("record %d key must be 1..128 characters", i)
+		}
+		if len(rec.Value) == 0 {
+			return nil, fmt.Errorf("record %d value is empty", i)
+		}
+		recSize := recordByteSize(rec)
+		if recSize > maxBatchBytes {
+			return nil, fmt.Errorf("record %d exceeds max batch size of %d bytes (%d bytes)", i, maxBatchBytes, recSize)
+		}
+		if len(cur) > 0 && curBytes+recSize > maxBatchBytes {
+			chunks = append(chunks, cur)
+			cur = nil
+			curBytes = 0
+		}
+		cur = append(cur, &kgo.Record{
+			Topic:   topic,
+			Key:     []byte(rec.Key),
+			Value:   append([]byte(nil), rec.Value...),
+			Headers: kafkaHeaders(rec.Headers),
+		})
+		curBytes += recSize
+	}
+	if len(cur) > 0 {
+		chunks = append(chunks, cur)
+	}
+	return chunks, nil
+}
+
 func (b *Broker) PublishBatch(ctx context.Context, topic string, records []Record) error {
 	if len(records) == 0 {
 		return nil
@@ -94,36 +140,29 @@ func (b *Broker) PublishBatch(ctx context.Context, topic string, records []Recor
 	if len(records) > b.config.MaxBatchRecords {
 		return fmt.Errorf("kafka batch has %d records, limit is %d", len(records), b.config.MaxBatchRecords)
 	}
-	total := 0
-	out := make([]*kgo.Record, 0, len(records))
-	for i := range records {
-		rec := &records[i]
-		if rec.Key == "" || len(rec.Key) > 128 {
-			return fmt.Errorf("record %d key must be 1..128 characters", i)
-		}
-		if len(rec.Value) == 0 {
-			return fmt.Errorf("record %d value is empty", i)
-		}
-		total += len(rec.Key) + len(rec.Value)
-		for key, value := range rec.Headers {
-			total += len(key) + len(value)
-		}
-		if total > b.config.MaxBatchBytes {
-			return fmt.Errorf("kafka batch exceeds %d bytes", b.config.MaxBatchBytes)
-		}
-		out = append(out, &kgo.Record{Topic: topic, Key: []byte(rec.Key), Value: append([]byte(nil), rec.Value...), Headers: kafkaHeaders(rec.Headers)})
+	maxBytes := b.config.MaxBatchBytes
+	if maxBytes <= 0 || maxBytes > DefaultMaxBatchBytes {
+		maxBytes = DefaultMaxBatchBytes
+	}
+	chunks, err := splitKafkaChunks(topic, records, maxBytes)
+	if err != nil {
+		return err
 	}
 	client, err := b.producerClient()
 	if err != nil {
 		return err
 	}
-	produceCtx, cancel := context.WithTimeout(ctx, b.config.ProduceTimeout+10*time.Second)
-	defer cancel()
-	results := client.ProduceSync(produceCtx, out...)
-	for i, result := range results {
-		if result.Err != nil {
-			return fmt.Errorf("produce record %d: %w", i, result.Err)
+	offset := 0
+	for _, chunk := range chunks {
+		produceCtx, cancel := context.WithTimeout(ctx, b.config.ProduceTimeout+10*time.Second)
+		results := client.ProduceSync(produceCtx, chunk...)
+		cancel()
+		for i, result := range results {
+			if result.Err != nil {
+				return fmt.Errorf("produce record %d: %w", offset+i, result.Err)
+			}
 		}
+		offset += len(chunk)
 	}
 	return nil
 }
@@ -149,34 +188,43 @@ func (b *Broker) Run(ctx context.Context, group string, topics []string, handler
 	}
 	defer client.CloseAllowingRebalance()
 	for {
-		fetches := client.PollRecords(ctx, b.config.MaxBatchRecords)
-		if ctx.Err() != nil {
-			return nil
-		}
-		if errs := fetches.Errors(); len(errs) > 0 {
-			client.AllowRebalance()
-			return fmt.Errorf("consume kafka: %v", errs)
-		}
-		records := fetches.Records()
-		if len(records) == 0 {
-			continue
-		}
-		batch := make([]Record, 0, len(records))
-		for _, rec := range records {
-			batch = append(batch, Record{Key: string(rec.Key), Value: append([]byte(nil), rec.Value...), Headers: headerMap(rec.Headers)})
-		}
-		if err := handler(ctx, batch); err != nil {
-			client.AllowRebalance()
+		stop, err := b.pollAndProcessOnce(ctx, client, handler)
+		if err != nil {
 			return err
 		}
-		commitCtx, commitCancel := context.WithTimeout(context.WithoutCancel(ctx), b.config.ProduceTimeout)
-		err := client.CommitRecords(commitCtx, records...)
-		commitCancel()
-		client.AllowRebalance()
-		if err != nil {
-			return fmt.Errorf("commit kafka offsets: %w", err)
+		if stop {
+			return nil
 		}
 	}
+}
+
+func (b *Broker) pollAndProcessOnce(ctx context.Context, client *kgo.Client, handler BatchHandler) (bool, error) {
+	fetches := client.PollRecords(ctx, b.config.MaxBatchRecords)
+	defer client.AllowRebalance()
+	if ctx.Err() != nil {
+		return true, nil
+	}
+	if errs := fetches.Errors(); len(errs) > 0 {
+		return false, fmt.Errorf("consume kafka: %v", errs)
+	}
+	records := fetches.Records()
+	if len(records) == 0 {
+		return false, nil
+	}
+	batch := make([]Record, 0, len(records))
+	for _, rec := range records {
+		batch = append(batch, Record{Key: string(rec.Key), Value: append([]byte(nil), rec.Value...), Headers: headerMap(rec.Headers)})
+	}
+	if err := handler(ctx, batch); err != nil {
+		return false, err
+	}
+	commitCtx, commitCancel := context.WithTimeout(context.WithoutCancel(ctx), b.config.ProduceTimeout)
+	err := client.CommitRecords(commitCtx, records...)
+	commitCancel()
+	if err != nil {
+		return false, fmt.Errorf("commit kafka offsets: %w", err)
+	}
+	return false, nil
 }
 
 func kafkaHeaders(headers map[string]string) []kgo.RecordHeader {

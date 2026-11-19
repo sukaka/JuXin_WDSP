@@ -162,7 +162,8 @@ type Agent struct {
 	rotateBackoff *transport.Backoff
 	rotateNext    time.Time // 下次允许尝试轮换的时刻（失败退避）
 
-	wg sync.WaitGroup
+	wg    sync.WaitGroup
+	tapWG sync.WaitGroup
 }
 
 // New 组装 Agent（cfg 必须已含 server/agent_id/credential；stateDir 存 agent.key/agent.crt/ca.crt）。
@@ -216,12 +217,20 @@ func New(cfg *config.Config, cfgPath, stateDir string, log *slog.Logger) (*Agent
 	if !cfg.Buffer.Enabled {
 		bufCfg.Enabled = false
 	}
-	a.buf, err = buffer.Open(config.DefaultBufferDir, buffer.DefaultSegmentBytes,
+	bufDir := cfg.Buffer.Dir
+	if bufDir == "" {
+		if stateDir != "" {
+			bufDir = filepath.Join(stateDir, "buffer")
+		} else {
+			bufDir = config.DefaultBufferDir
+		}
+	}
+	a.buf, err = buffer.Open(bufDir, buffer.DefaultSegmentBytes,
 		int64(bufCfg.MaxSizeMB)<<20, time.Duration(bufCfg.MaxAgeMinutes)*time.Minute, bufCfg.Enabled)
 	if err != nil {
 		// 缓存不可用不致命：降级为无缓存运行（Fail-Open）
 		log.Error("磁盘缓存初始化失败，降级为无缓存运行", "err", err)
-		a.buf, _ = buffer.Open(config.DefaultBufferDir, buffer.DefaultSegmentBytes, 1, time.Minute, false)
+		a.buf, _ = buffer.Open(bufDir, buffer.DefaultSegmentBytes, 1, time.Minute, false)
 	}
 
 	a.flowQ = make(chan events.FlowEvent, flowQueueCap)
@@ -277,25 +286,27 @@ func (a *Agent) Run(ctx context.Context) error {
 		OnCapabilitiesFn:          a.applyCapabilities,
 	})
 
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
+
 	workers := 5
 	if a.k8sClient != nil {
 		workers++
 	}
 	a.wg.Add(workers)
-	go func() { defer a.wg.Done(); defer a.recover("control"); ctrl.Run(ctx) }()
-	go func() { defer a.wg.Done(); defer a.recover("sender"); a.senderLoop(ctx) }()
-	go func() { defer a.wg.Done(); defer a.recover("replay"); a.replayLoop(ctx) }()
-	go func() { defer a.wg.Done(); defer a.recover("selfmon"); a.selfmonLoop(ctx) }()
-	go func() { defer a.wg.Done(); defer a.recover("housekeep"); a.housekeepLoop(ctx) }()
+	go func() { defer a.wg.Done(); defer a.recover("control"); ctrl.Run(workerCtx) }()
+	go func() { defer a.wg.Done(); defer a.recover("sender"); a.senderLoop(workerCtx) }()
+	go func() { defer a.wg.Done(); defer a.recover("replay"); a.replayLoop(workerCtx) }()
+	go func() { defer a.wg.Done(); defer a.recover("selfmon"); a.selfmonLoop(workerCtx) }()
+	go func() { defer a.wg.Done(); defer a.recover("housekeep"); a.housekeepLoop(workerCtx) }()
 	if a.k8sClient != nil {
-		go func() { defer a.wg.Done(); defer a.recover("k8smeta"); a.k8sClient.Run(ctx, a.k8sResolver) }()
+		go func() { defer a.wg.Done(); defer a.recover("k8smeta"); a.k8sClient.Run(workerCtx, a.k8sResolver) }()
 	}
-	a.startAPIObservation(ctx)
+	a.startAPIObservation(workerCtx)
 
 	<-ctx.Done()
 	a.log.Info("收到退出信号，优雅停机")
-	a.shutdown()
-	a.wg.Wait()
+	a.shutdown(cancelWorkers)
 	return nil
 }
 
@@ -306,15 +317,19 @@ func (a *Agent) recover(name string) {
 	}
 }
 
-// shutdown 停抓并冲刷流表与缓存句柄。
-func (a *Agent) shutdown() {
+// shutdown 先停全部输入与后台工作协程并等待 wg.Wait()，最后再把队列残留落盘并关闭磁盘缓存。
+func (a *Agent) shutdown(cancelWorkers context.CancelFunc) {
 	a.stopMirror() // 先停镜像接收器（不再收新镜像请求）
 	a.stopTap()    // 停止 tap 适配器（取消全部 tap 管理流）
 	a.stopAPIObservation()
 	a.stopCaptures()
 	a.sensor.Close() // 收尾 HTTP 会话（补发 response=null 记录）后再冲刷流表
 	a.tracker.Close(time.Now())
-	// 尝试把内存队列中残留事件落盘
+	if cancelWorkers != nil {
+		cancelWorkers()
+	}
+	a.wg.Wait()
+	// 所有使用 a.buf 的工作协程均已退出，再把内存队列残留落盘并安全关闭缓存句柄
 	a.drainQueueToBuffer()
 	_ = a.buf.Close()
 }
@@ -405,15 +420,17 @@ func (a *Agent) applyPolicy(policy *config.Policy) {
 	if a.httpGone.Load() {
 		level = config.LevelL0
 	}
-	a.sensor.UpdatePolicy(level, policy.Limits.EffectiveMaxBodySize(), policy.Masking.Effective())
+	masking := policy.Masking.Effective()
+	a.tracker.SetParamsMasking(masking.Params)
+	a.sensor.UpdatePolicy(level, policy.Limits.EffectiveMaxBodySize(), masking)
 	if a.mirror != nil {
 		// G2：镜像适配器与被动传感器同口径应用策略（等级门控/脱敏/正文上限），
 		// 不绕过原采集策略（P1-03 §3.1）
-		a.mirror.UpdatePolicy(level, policy.Limits.EffectiveMaxBodySize(), policy.Masking.Effective())
+		a.mirror.UpdatePolicy(level, policy.Limits.EffectiveMaxBodySize(), masking)
 	}
 	if a.tap != nil {
 		// G3：tap 适配器同口径应用策略（不绕过原采集策略）
-		a.tap.UpdatePolicy(level, policy.Limits.EffectiveMaxBodySize(), policy.Masking.Effective())
+		a.tap.UpdatePolicy(level, policy.Limits.EffectiveMaxBodySize(), masking)
 	}
 	// Phase 4：基础等级缓存（生效等级=max(基础,规则) 后按背压帽 min 压制，
 	// request 事件抑制由 flow 包按流生效等级驱动：≥L1 停发旧 request 事件）
@@ -875,6 +892,10 @@ func (a *Agent) sendFlowBatch(batch []events.FlowEvent) {
 	accepted, err := a.client.PostFlows(ctx, a.cfg.AgentID, batch)
 	cancel()
 	if err != nil {
+		if transport.IsPermanent(err) {
+			a.isolateFlowBatch(batch, err)
+			return
+		}
 		a.log.Warn("flows 上报失败，转磁盘缓存", "events", len(batch), "err", err)
 		a.bufferEvents(batch)
 		return
@@ -882,6 +903,25 @@ func (a *Agent) sendFlowBatch(batch []events.FlowEvent) {
 	a.metrics.Forwarded.Add(uint64(len(batch)))
 	a.metrics.Accepted.Add(uint64(accepted))
 	a.metrics.ForwardBytes.Add(uint64(len(data)))
+}
+
+// isolateFlowBatch 永久非法 flow 批次隔离：二分拆分定位单条毒丸记录并丢弃计数，
+// 防止 400 记录转入磁盘缓存导致补传永久卡死。
+func (a *Agent) isolateFlowBatch(batch []events.FlowEvent, cause error) {
+	if len(batch) == 0 {
+		return
+	}
+	if len(batch) == 1 {
+		a.log.Warn("flow 记录被服务端判定永久非法，隔离丢弃",
+			"flow_id", batch[0].FlowID, "err", cause)
+		a.metrics.Dropped.Add(1)
+		a.metrics.DropReason(DropReasonPermanentInvalid, 1)
+		return
+	}
+	a.log.Warn("flow 批次含永久非法记录，二分隔离重建", "events", len(batch), "err", cause)
+	mid := len(batch) / 2
+	a.sendFlowBatch(batch[:mid])
+	a.sendFlowBatch(batch[mid:])
 }
 
 // httpRetryWait 当前 429 Retry-After 退避剩余时长（无退避为 0）。
@@ -1293,7 +1333,7 @@ func (a *Agent) metricsSnapshot() transport.Metrics {
 	}
 	m.Accepted = a.metrics.Accepted.Load()
 	m.Duplicate = a.metrics.Duplicate.Load()
-	m.SourceDisconnects = a.metrics.SourceDisconnects.Load()
+	m.SourceDisconnects += a.metrics.SourceDisconnects.Load()
 	m.AssociationPending = a.sensor.Conns()
 	m.SpoolBytes = m.BufferBytes
 	m.OldestAgeSec = a.buf.OldestAge(time.Now()).Seconds()

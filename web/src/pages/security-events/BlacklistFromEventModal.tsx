@@ -17,6 +17,7 @@ import { ApiError } from '../../api/client'
 import { accessRulesApi } from '../../api/accessRules'
 import { securityEventsApi } from '../../api/securityEvents'
 import { formatDateTime } from '../../utils/format'
+import { generateIdempotencyKey } from '../../utils/idempotency'
 import { ATTACK_TYPE_META, EVENT_SEVERITY_META } from '../../utils/stage4'
 import StatusTag from '../../components/StatusTag'
 
@@ -85,7 +86,7 @@ export default function BlacklistFromEventModal({
       let publishError: string | null = null
       if (publishNow) {
         try {
-          await accessRulesApi.publish(crypto.randomUUID())
+          await accessRulesApi.publish(generateIdempotencyKey())
         } catch (e) {
           publishError = e instanceof ApiError ? e.message : '发布失败'
         }

@@ -58,17 +58,42 @@ type MachineHandler struct {
 	ca    *AgentCA // traffic-agent CA（Phase 2-B；nil 时 PoP/证书签发不可用——仅测试或装配缺失场景）
 	// discovery API 资产联动入口（Phase 3 契约 §6；*apiassets.Store 实现，nil 时跳过联动）。
 	discovery      DiscoveryUpserter
+	bindings       WorkloadBindingStore
 	apiObservation *apiObservationReceiver
+	replayCache    *popReplayCache
 	now            func() time.Time
 }
 
 // NewMachineHandler 创建机器端点处理器。
 func NewMachineHandler(store MachineRepository) *MachineHandler {
-	return &MachineHandler{store: store, now: time.Now}
+	return &MachineHandler{
+		store:       store,
+		replayCache: newPopReplayCache(defaultPopReplayMaxEntries),
+		now:         time.Now,
+	}
 }
 
 // SetCA 注入 traffic-agent CA（生产由 app 装配 LoadOrCreateAgentCA 产物）。
 func (h *MachineHandler) SetCA(ca *AgentCA) *MachineHandler { h.ca = ca; return h }
+
+// SetWorkloadBindingStore 注入工作负载绑定校验仓储（缺省自动复用实现了 WorkloadBindingStore 的 h.store）。
+func (h *MachineHandler) SetWorkloadBindingStore(b WorkloadBindingStore) *MachineHandler {
+	h.bindings = b
+	return h
+}
+
+func (h *MachineHandler) workloadBindings() WorkloadBindingStore {
+	if h.apiObservation != nil && h.apiObservation.bindings != nil {
+		return h.apiObservation.bindings
+	}
+	if h.bindings != nil {
+		return h.bindings
+	}
+	if b, ok := h.store.(WorkloadBindingStore); ok {
+		return b
+	}
+	return nil
+}
 
 // machineError 契约 §2 错误信封。
 func machineError(w http.ResponseWriter, status int, code, msg string) {
@@ -158,6 +183,20 @@ func (h *MachineHandler) authenticateBearer(w http.ResponseWriter, r *http.Reque
 		machineInternal(w, r, err)
 		return nil, false
 	}
+	// 防 PoP 降级攻击：已签发机器身份证书或存在证书撤销记录的 Agent 严禁回退 Bearer。
+	if agent.CertFingerprint != nil && strings.TrimSpace(*agent.CertFingerprint) != "" {
+		machineError(w, http.StatusUnauthorized, mcUnauthenticated, "已启用证书 PoP 认证的 Agent 不允许回退 Bearer")
+		return nil, false
+	}
+	hasRevocations, err := h.store.HasCertRevocations(r.Context(), agent.AgentID)
+	if err != nil {
+		machineInternal(w, r, err)
+		return nil, false
+	}
+	if hasRevocations {
+		machineError(w, http.StatusUnauthorized, mcUnauthenticated, "已吊销或曾签发证书的 Agent 不允许回退 Bearer")
+		return nil, false
+	}
 	// 契约 §8：Bearer 回退成功记日志（低基数字段），供后续收紧为仅证书模式时评估存量。
 	slog.Debug("traffic agent authenticated via bearer credential (PoP fallback)",
 		"agent_id", agent.AgentID, "path", r.URL.Path)
@@ -185,6 +224,11 @@ func (h *MachineHandler) authenticatePoP(w http.ResponseWriter, r *http.Request,
 		machineError(w, http.StatusUnauthorized, mcUnauthenticated, "时间戳无效或超出允许时钟偏差")
 		return nil, false
 	}
+	nonce := strings.TrimSpace(r.Header.Get(popNonceHeader))
+	if err := ValidatePoPNonce(nonce); err != nil {
+		machineError(w, http.StatusUnauthorized, mcUnauthenticated, "PoP nonce 非法")
+		return nil, false
+	}
 	if err := VerifyPoPSignature(cert, r.Method, r.URL.Path, ts, body, sig); err != nil {
 		machineError(w, http.StatusUnauthorized, mcUnauthenticated, "持有证明签名校验失败")
 		return nil, false
@@ -205,6 +249,10 @@ func (h *MachineHandler) authenticatePoP(w http.ResponseWriter, r *http.Request,
 	}
 	if !usable {
 		machineError(w, http.StatusUnauthorized, mcUnauthenticated, "证书指纹未登记或已撤销")
+		return nil, false
+	}
+	if h.replayCache != nil && !h.replayCache.CheckAndRecord(agentID.String(), ts, sig, nonce, h.now().UTC()) {
+		machineError(w, http.StatusUnauthorized, mcUnauthenticated, "检测到 PoP 请求重放")
 		return nil, false
 	}
 	agent, err := h.store.AgentByID(r.Context(), agentID)

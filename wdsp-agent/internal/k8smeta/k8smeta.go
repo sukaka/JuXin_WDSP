@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -232,7 +233,7 @@ func NewInCluster(nodeName, cluster string, log *slog.Logger) (*Client, error) {
 	if !pool.AppendCertsFromPEM(ca) {
 		return nil, errors.New("invalid service-account CA")
 	}
-	return &Client{baseURL: "https://" + host + ":" + port, token: strings.TrimSpace(string(token)), tokenPath: tokenPath, nodeName: nodeName, cluster: cluster, http: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}, Timeout: 15 * time.Second}, log: log}, nil
+	return &Client{baseURL: "https://" + net.JoinHostPort(host, port), token: strings.TrimSpace(string(token)), tokenPath: tokenPath, nodeName: nodeName, cluster: cluster, http: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}, Timeout: 15 * time.Second}, log: log}, nil
 }
 
 // reloadToken re-reads the service-account token file. Projected volumes rotate

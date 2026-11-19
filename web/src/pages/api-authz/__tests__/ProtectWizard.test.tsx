@@ -289,4 +289,63 @@ describe('ProtectWizard（NG-AZ-04 §1.5 五步状态机）', () => {
     fireEvent.click(radios[0])
     expect(screen.getByRole('button', { name: '下一步' })).not.toBeDisabled()
   })
+
+  it('影响评估竞态防护：切换窗口后旧评估乱序返回不得覆盖新窗口的 impact 与 confirm_token', async () => {
+    let resolve7d: ((v: typeof impactReady) => void) | undefined
+    let resolve14d: ((v: typeof impactReady) => void) | undefined
+    vi.mocked(apiAuthzApi.evaluateEnforcementImpact).mockImplementation((params) => {
+      if (params.window_days === 7) {
+        return new Promise((resolve) => { resolve7d = resolve })
+      }
+      return new Promise((resolve) => { resolve14d = resolve })
+    })
+
+    renderWizard({ preset: { endpoint_id: 'e1', object_segment: 'path:3' } })
+    await waitFor(() => expect(resolve7d).toBeDefined())
+
+    // 7天评估在途时切换为近 14 天
+    fireEvent.mouseDown(screen.getByRole('combobox'))
+    fireEvent.click(await screen.findByText('近 14 天'))
+    await waitFor(() => expect(resolve14d).toBeDefined())
+
+    // 先返回 14 天结果，再乱序返回过期的 7 天结果
+    resolve14d!({ ...impactReady, window_days: 14, observe_violation_count: 99, confirm_token: 'token-14d' })
+    expect(await screen.findByText('99')).toBeInTheDocument()
+
+    resolve7d!({ ...impactReady, window_days: 7, observe_violation_count: 12, confirm_token: 'token-stale-7d' })
+    // 过期的 7 天响应不得覆盖 14 天数据与 confirm_token
+    await waitFor(() => expect(screen.getByText('99')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+    fireEvent.change(await screen.findByLabelText('业务负责人（enforcement_owner）'), { target: { value: '张磊' } })
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '我已阅读并确认' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交签署' }))
+    await waitFor(() =>
+      expect(vi.mocked(apiAuthzApi.signEnforcementConfirmation)).toHaveBeenCalledWith('token-14d', expect.anything()),
+    )
+  })
+
+  it('签署后退回修改四要素：重置 signed 与勾选状态，禁止携带过期签署直接提交', async () => {
+    renderWizard({ preset: { endpoint_id: 'e1', object_segment: 'path:3' } })
+    await waitFor(() => expect(vi.mocked(apiAuthzApi.evaluateEnforcementImpact)).toHaveBeenCalled())
+    expect(await screen.findByText('切换后将被 403（近似）')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+    fireEvent.change(await screen.findByLabelText('业务负责人（enforcement_owner）'), { target: { value: '张磊' } })
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '我已阅读并确认' }))
+    fireEvent.click(screen.getByRole('button', { name: '提交签署' }))
+    expect(await screen.findByText(/已签署（signed_at 已落库）/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '下一步：提交切换' })).not.toBeDisabled()
+
+    // 退回四要素步并修改负责人
+    fireEvent.click(screen.getByRole('button', { name: '上一步' }))
+    fireEvent.change(await screen.findByLabelText('业务负责人（enforcement_owner）'), { target: { value: '李四' } })
+    fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+
+    // 返回签署步后必须重置为未签署、未勾选，且禁止进入提交步
+    const resetCheckbox = await screen.findByRole('checkbox', { name: '我已阅读并确认' })
+    expect(screen.queryByText(/已签署（signed_at 已落库）/)).not.toBeInTheDocument()
+    expect(resetCheckbox).not.toBeChecked()
+    expect(screen.getByRole('button', { name: '下一步：提交切换' })).toBeDisabled()
+  })
 })

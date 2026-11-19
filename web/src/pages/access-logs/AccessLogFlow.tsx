@@ -4,6 +4,7 @@ import { Alert, Checkbox, Empty, Space, Tag, Typography } from 'antd'
 import { accessLogsApi, type AccessLogFlowParams, type FlowNode } from '../../api/accessLogs'
 import { ApiError } from '../../api/client'
 import EChart, { type EChartOption } from '../../components/EChart'
+import { escapeHtml } from '../../utils/html'
 
 const kinds: Array<{ key: FlowNode['kind']; label: string; column: number; color: string }> = [
   { key: 'SOURCE', label: '来源 IP', column: 0, color: '#3b6ea5' },
@@ -25,7 +26,7 @@ function truncatedLabel(name: string): string {
 }
 
 function tooltip(node: FlowNode): string {
-  return `${node.name}<br/>去重请求：${node.request_count}<br/>字段命中：${node.field_hits}${node.other ? `<br/>合并节点：${node.aggregated_nodes ?? 0}` : ''}${node.drill_exact ? '<br/>点击查看对应请求' : '<br/>集合较大，下钻使用所示筛选条件'}`
+  return `${escapeHtml(node.name)}<br/>去重请求：${escapeHtml(node.request_count)}<br/>字段命中：${escapeHtml(node.field_hits)}${node.other ? `<br/>合并节点：${escapeHtml(node.aggregated_nodes ?? 0)}` : ''}${node.drill_exact ? '<br/>点击查看对应请求' : '<br/>集合较大，下钻使用所示筛选条件'}`
 }
 
 export default function AccessLogFlow({ filters, onDrill }: { filters: AccessLogFlowParams; onDrill: (filters: AccessLogFlowParams) => void }) {

@@ -50,6 +50,8 @@ export default function CertificateBindingModal({
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
+  const canReadApps = hasPermission(permissions, 'applications.read')
+  const canReadCerts = hasPermission(permissions, 'certificates.read')
   const [selectedID, setSelectedID] = useState('')
   const [saved, setSaved] = useState(false)
 
@@ -62,12 +64,17 @@ export default function CertificateBindingModal({
       const ids = new Set(bound.application_ids ?? [])
       return apps.filter((app) => ids.has(app.id))
     },
-    enabled: open && Boolean(certificate) && !application,
+    enabled:
+      open &&
+      Boolean(certificate) &&
+      !application &&
+      canReadApps &&
+      (operation === 'bind' || canReadCerts),
   })
   const certificatesQuery = useQuery({
     queryKey: ['certificate-binding-certificates', application?.id],
     queryFn: listAllCertificates,
-    enabled: open && operation === 'bind' && Boolean(application) && !certificate,
+    enabled: open && operation === 'bind' && Boolean(application) && !certificate && canReadCerts,
   })
 
   const mutation = useMutation({

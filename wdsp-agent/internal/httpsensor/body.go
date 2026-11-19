@@ -88,8 +88,8 @@ func processBody(raw []byte, wireSize int64, truncated bool, headers map[string]
 		res.body = summary
 		return res
 	case bodyTypeAllowed(mediaType):
-		res.body = string(data)
-		// 表单/JSON Body 一级字段脱敏（契约 §5；嵌套 JSON 不递归——Phase 3 限制）
+		res.body = strings.ReplaceAll(string(data), "\x00", "")
+		// 表单/JSON/GraphQL/XML/纯文本敏感字段脱敏（契约 §5 增强）
 		var n int
 		res.body, n = maskBodyParams(res.body, mediaType, pol.Masking.Params)
 		if masked != nil {
@@ -112,14 +112,15 @@ func mediaTypeOf(ct string) string {
 	return strings.ToLower(strings.TrimSpace(ct))
 }
 
-// bodyTypeAllowed 内容类型白名单（契约 §4 逐字）。
+// bodyTypeAllowed 内容类型白名单（契约 §4 + +json/+xml 结构化变体）。
 func bodyTypeAllowed(mt string) bool {
 	switch mt {
 	case "application/json", "application/x-www-form-urlencoded",
 		"application/xml", "application/javascript", "application/graphql":
 		return true
 	}
-	return strings.HasPrefix(mt, "text/")
+	return strings.HasPrefix(mt, "text/") ||
+		(strings.HasPrefix(mt, "application/") && (strings.HasSuffix(mt, "+json") || strings.HasSuffix(mt, "+xml")))
 }
 
 // decompress gzip/deflate 解码；输出钳制在 max（防解压炸弹驻留内存）。
@@ -190,7 +191,11 @@ func multipartSummary(data []byte, contentType string, rule config.MaskRule, mas
 				Filename    string `json:"filename"`
 				ContentType string `json:"content_type"`
 				Size        int64  `json:"size"`
-			}{Filename: fn, ContentType: part.Header.Get("Content-Type"), Size: size})
+			}{
+				Filename:    strings.ReplaceAll(fn, "\x00", ""),
+				ContentType: strings.ReplaceAll(part.Header.Get("Content-Type"), "\x00", ""),
+				Size:        size,
+			})
 			continue
 		}
 		// 字段 part：值过 params 脱敏（契约 §4）
@@ -201,13 +206,19 @@ func multipartSummary(data []byte, contentType string, rule config.MaskRule, mas
 		if len(val) > maxMultipartFieldBytes {
 			val = val[:maxMultipartFieldBytes]
 		}
-		name := part.FormName()
+		name := strings.ReplaceAll(part.FormName(), "\x00", "")
 		if name == "" {
 			continue
 		}
-		v, hit := maskParamValue(name, string(val), rule)
-		if hit && masked != nil {
-			*masked++
+		cleanVal := strings.ReplaceAll(string(val), "\x00", "")
+		v, hit := maskParamValue(name, cleanVal, rule)
+		if hit {
+			if masked != nil {
+				*masked++
+			}
+			if rule.Mode == config.MaskModeDrop {
+				continue
+			}
 		}
 		summary.Multipart.Fields[name] = v
 	}

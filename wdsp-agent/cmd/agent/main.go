@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/jiuzhang-waf/wdsp-agent/internal/agent"
@@ -65,7 +66,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `wdsp-agent — 九章 WDSP 分布式流量采集边缘 Agent（Phase 1-5）
 
 用法:
-  wdsp-agent enroll --server <url> --token <wdt_...> [--insecure-skip-verify] [--config path] [--state-dir dir]
+  wdsp-agent enroll --server <url> (--token-file <path> | --token <wdt_...> | WDSP_ENROLL_TOKEN) [--insecure-skip-verify] [--config path] [--state-dir dir]
   wdsp-agent run [--config path] [--state-dir dir] [--debug]
   wdsp-agent version
 
@@ -79,21 +80,52 @@ func usage() {
 `)
 }
 
+// resolveEnrollToken 按优先级解析一次性注册令牌（--token-file > --token > WDSP_ENROLL_TOKEN）。
+// 同时显式提供 --token 与 --token-file 时拒绝，避免歧义。
+func resolveEnrollToken(flagToken, tokenFile, envToken string) (string, error) {
+	flagToken = strings.TrimSpace(flagToken)
+	tokenFile = strings.TrimSpace(tokenFile)
+	envToken = strings.TrimSpace(envToken)
+	if flagToken != "" && tokenFile != "" {
+		return "", fmt.Errorf("--token 与 --token-file 不能同时指定")
+	}
+	if tokenFile != "" {
+		data, err := os.ReadFile(tokenFile)
+		if err != nil {
+			return "", fmt.Errorf("读取 --token-file 失败: %w", err)
+		}
+		tok := strings.TrimSpace(string(data))
+		if tok == "" {
+			return "", fmt.Errorf("--token-file 内容为空")
+		}
+		return tok, nil
+	}
+	if flagToken != "" {
+		return flagToken, nil
+	}
+	return envToken, nil
+}
+
 // cmdEnroll 注册（契约 §3.1）：成功后将 agent_id/credential/server 写入 agent.json。
 // Phase 2-B（契约 §7/§12）：自动生成/复用机器身份密钥并随注册上送 CSR；
 // 服务端签发证书则保存 agent.crt/ca.crt 并记录 cert_expires_at，否则 Bearer 模式。
 func cmdEnroll(args []string) error {
 	fs := flag.NewFlagSet("enroll", flag.ContinueOnError)
 	server := fs.String("server", "", "WDSP 地址（https://host[:port]，必填）")
-	token := fs.String("token", "", "一次性 Enrollment Token（wdt_...，必填）")
+	token := fs.String("token", "", "一次性 Enrollment Token（wdt_...；建议优先使用 --token-file 或 WDSP_ENROLL_TOKEN 避免命令行进程列表泄露）")
+	tokenFile := fs.String("token-file", "", "包含一次性 Enrollment Token 的文件路径（优先于 WDSP_ENROLL_TOKEN）")
 	insecure := fs.Bool("insecure-skip-verify", false, "跳过服务端证书校验（仅自签实验环境）")
 	cfgPath := fs.String("config", config.DefaultConfigPath, "agent.json 路径")
 	stateDir := fs.String("state-dir", config.DefaultStateDir, "状态目录（agent.key/agent.crt/ca.crt/buffer）")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *server == "" || *token == "" {
-		return fmt.Errorf("enroll 需要 --server 与 --token")
+	enrollToken, err := resolveEnrollToken(*token, *tokenFile, os.Getenv("WDSP_ENROLL_TOKEN"))
+	if err != nil {
+		return err
+	}
+	if *server == "" || enrollToken == "" {
+		return fmt.Errorf("enroll 需要 --server 与注册令牌（--token-file / WDSP_ENROLL_TOKEN / --token）")
 	}
 
 	// 机器身份密钥（契约 §12）：已存在且可用则复用；不可用仅降级告警，不阻断注册
@@ -130,7 +162,7 @@ func cmdEnroll(args []string) error {
 	hostname, _ := os.Hostname()
 
 	resp, err := client.Enroll(context.Background(), transport.EnrollRequest{
-		EnrollmentToken: *token,
+		EnrollmentToken: enrollToken,
 		Hostname:        hostname,
 		IP:              primaryIP,
 		OS:              agent.OSRelease(),

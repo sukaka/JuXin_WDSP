@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { flushSync } from 'react-dom'
 import { Alert, App as AntdApp, Button, Form, Input } from 'antd'
 import { ApiError } from '../api/client'
 import { authApi } from '../api/auth'
-import { useAuthStore } from '../stores/auth'
+import { queryClient } from '../api/queryClient'
+import { clearClientSession } from '../utils/session'
 
 interface ChangePasswordFormProps {
   onSuccess?: () => void
@@ -28,8 +30,7 @@ export default function ChangePasswordForm({ onSuccess }: ChangePasswordFormProp
         new_password: values.new_password,
       })
       message.success('密码修改成功，请使用新密码重新登录')
-      useAuthStore.getState().reset()
-      onSuccess?.()
+      clearClientSession(queryClient, onSuccess ? () => flushSync(() => onSuccess()) : undefined)
     } catch (e) {
       if (e instanceof ApiError) {
         if (Array.isArray(e.details) && e.details.length > 0) {

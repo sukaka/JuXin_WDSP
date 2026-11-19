@@ -125,6 +125,7 @@ export default function ObjectAuthorizationTab() {
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canManage = hasPermission(permissions, 'api_authorization.relation_manage')
   const canReadEvidence = hasPermission(permissions, 'api_authorization.evidence_read')
+  const canReadApps = hasPermission(permissions, 'applications.read')
   const [applicationId, setApplicationId] = useState<string>()
   const [candidateStatusFilter, setCandidateStatusFilter] = useState('PENDING')
   const [relationStatusFilter, setRelationStatusFilter] = useState('')
@@ -145,6 +146,7 @@ export default function ObjectAuthorizationTab() {
   const applicationsQuery = useQuery({
     queryKey: ['applications', 'api-authz-options'],
     queryFn: () => applicationsApi.list({ page: 1, page_size: 100 }),
+    enabled: canReadApps,
   })
   const applicationOptions = useMemo(
     () => (applicationsQuery.data?.items ?? []).map((app) => ({ value: app.id, label: `${app.name}（${app.code}）` })),
@@ -370,7 +372,14 @@ export default function ObjectAuthorizationTab() {
         okButtonProps={{ danger: reviewing?.action === 'reject' }}
         confirmLoading={reviewMutation.isPending}
         onCancel={() => setReviewing(null)}
-        onOk={() => form.validateFields().then((values) => reviewing && reviewMutation.mutate({ ...reviewing, values }))}
+        onOk={async () => {
+          try {
+            const values = await form.validateFields()
+            if (reviewing) reviewMutation.mutate({ ...reviewing, values })
+          } catch {
+            // 校验失败由表单内联提示
+          }
+        }}
       >
         <Form form={form} layout="vertical">
           {reviewing?.action === 'confirm' ? <Form.Item label="关系"><Input value="OWNER" disabled /></Form.Item> : null}

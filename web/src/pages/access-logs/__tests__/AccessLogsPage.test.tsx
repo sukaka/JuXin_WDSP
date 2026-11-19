@@ -90,6 +90,31 @@ describe('AccessLogsPage request audit', () => {
       if (url.includes('/applications')) {
         return Promise.resolve(jsonResponse({ items: [{ id: applicationID, name: '商城', code: 'shop' }], total: 1 }))
       }
+      if (url.includes('/access-logs/flow')) {
+        return Promise.resolve(jsonResponse({
+          request_count: 2,
+          sensitive_request_count: 1,
+          truncated: false,
+          data_source: 'access_logs+api_runtime_events',
+          start_time: '2026-11-17T00:00:00Z',
+          end_time: '2026-11-17T01:00:00Z',
+          nodes: [
+            {
+              id: 'API:POST /v1/login',
+              name: 'POST /v1/login',
+              kind: 'API',
+              request_count: 2,
+              field_hits: 0,
+              verified: false,
+              other: false,
+              filters: { endpoint_key: 'POST /v1/login' },
+              request_ids: ['req-1', 'req-2'],
+              drill_exact: true,
+            },
+          ],
+          edges: [],
+        }))
+      }
       if (url.includes('/access-logs/trend')) {
         return Promise.resolve(jsonResponse({
           items: [{ bucket: '2026-11-17T01:30:00Z', total: 2, blocked: 1, errors: 0 }],
@@ -129,5 +154,49 @@ describe('AccessLogsPage request audit', () => {
     expect(await within(drawer).findByText(traceID)).toBeInTheDocument()
     expect(within(drawer).getByText('42 ms')).toBeInTheDocument()
     expect(within(drawer).getByText('POST /v1/login')).toBeInTheDocument()
+  })
+
+  it('无 applications.read 权限时不请求应用列表接口', async () => {
+    renderPage()
+    expect(await screen.findByText('/v1/login')).toBeInTheDocument()
+    const calls = (fetch as Mock).mock.calls.map((call) => String(call[0]))
+    expect(calls.some((url) => url.includes('/applications'))).toBe(false)
+  })
+
+  it('审计流向下钻产生 request_ids 可关闭标签，且重置筛选可清空全部受控输入框与下钻条件', async () => {
+    renderPage()
+    expect(await screen.findByText('/v1/login')).toBeInTheDocument()
+
+    // 在搜索框输入并搜索
+    triggerSearch('域名', 'shop.internal')
+    expect((screen.getByPlaceholderText('域名') as HTMLInputElement).value).toBe('shop.internal')
+
+    // 切到审计流向并下钻
+    fireEvent.click(screen.getByText('审计流向'))
+    const drillBtn = await screen.findByRole('button', { name: 'API / POST /v1/login' })
+    fireEvent.click(drillBtn)
+
+    // 下钻后返回列表并展示可关闭的 request_ids 标签
+    const reqTag = await screen.findByText(/请求集合（2 条）：req-1,req-2/)
+    expect(reqTag).toBeInTheDocument()
+    await waitFor(() => {
+      const calls = (fetch as Mock).mock.calls.map((call) => String(call[0]))
+      expect(calls.some((url) => url.includes('/access-logs?') && url.includes('request_ids=req-1%2Creq-2'))).toBe(true)
+    })
+
+    // 关闭 request_ids 标签后从请求参数移除 request_ids
+    const closeBtn = reqTag.closest('.ant-tag')?.querySelector('.ant-tag-close-icon') as HTMLElement
+    expect(closeBtn).toBeTruthy()
+    const callsBeforeClose = (fetch as Mock).mock.calls.length
+    fireEvent.click(closeBtn)
+    await waitFor(() => {
+      expect(screen.queryByText(/请求集合（2 条）/)).not.toBeInTheDocument()
+      const newCalls = (fetch as Mock).mock.calls.slice(callsBeforeClose).map((c) => String(c[0]))
+      expect(newCalls.some((url) => url.includes('/access-logs?') && !url.includes('request_ids='))).toBe(true)
+    })
+
+    // 点击重置筛选清空受控输入框
+    fireEvent.click(screen.getByRole('button', { name: /重置筛选/ }))
+    expect((screen.getByPlaceholderText('域名') as HTMLInputElement).value).toBe('')
   })
 })

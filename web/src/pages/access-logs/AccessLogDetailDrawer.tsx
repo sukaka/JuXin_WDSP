@@ -141,7 +141,7 @@ export default function AccessLogDetailDrawer({
             </Descriptions.Item>
           </Descriptions>
 
-          <RequestPcapEvidence requestId={log.request_id} />
+          <RequestPcapEvidence key={log.request_id} requestId={log.request_id} />
 
           <Typography.Title level={5}>请求/响应留痕</Typography.Title>
           <PayloadSection title="请求头" headers={log.request_headers} />

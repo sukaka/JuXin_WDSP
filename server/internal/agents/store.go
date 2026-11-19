@@ -13,7 +13,10 @@ package agents
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -131,6 +134,8 @@ type MachineRepository interface {
 	// CertFingerprintUsable 证书指纹可用性（契约 §10：== agents 当前指纹，
 	// 或存在于 revocations 且 grace_until > now——宽限中；立即撤销 grace_until=NULL 不可用）。
 	CertFingerprintUsable(ctx context.Context, agentID uuid.UUID, fingerprint string, now time.Time) (bool, error)
+	// HasCertRevocations Agent 是否存在任何证书撤销/宽限记录（防已持证/已吊销 Agent 降级回退 Bearer）。
+	HasCertRevocations(ctx context.Context, agentID uuid.UUID) (bool, error)
 	// RotateAgentCert 证书轮换（契约 §9）：同一 agent+旧指纹+CSR 公钥重试返回已签发身份；
 	// 首次请求将响应和状态推进在同一事务提交，避免响应丢失后无法恢复。
 	RotateAgentCert(ctx context.Context, in RotateCertInput) (*RotateCertResult, error)
@@ -454,15 +459,25 @@ func (s *Store) AgentByID(ctx context.Context, agentID uuid.UUID) (*Agent, error
 }
 
 // CertFingerprintUsable 证书指纹可用性（契约 §10 语义：当前指纹直接可用；
-// 撤销表中仅 grace_until > now 的宽限行可用，grace_until IS NULL 为立即撤销）。
+// 撤销表中仅 grace_until > now 且无立即撤销行的宽限行可用；已禁用 Agent 全部拒绝）。
 func (s *Store) CertFingerprintUsable(ctx context.Context, agentID uuid.UUID, fingerprint string, now time.Time) (bool, error) {
 	var ok bool
 	err := s.db.QueryRow(ctx, `
-SELECT EXISTS(SELECT 1 FROM agents WHERE agent_id=$1 AND agent_cert_fingerprint=$2)
-    OR EXISTS(SELECT 1 FROM agent_cert_revocations
-              WHERE agent_id=$1 AND fingerprint=$2 AND grace_until IS NOT NULL AND grace_until > $3)`,
+SELECT EXISTS(SELECT 1 FROM agents WHERE agent_id=$1 AND agent_cert_fingerprint=$2 AND NOT disabled)
+    OR (EXISTS(SELECT 1 FROM agents WHERE agent_id=$1 AND NOT disabled)
+        AND EXISTS(SELECT 1 FROM agent_cert_revocations
+                   WHERE agent_id=$1 AND fingerprint=$2 AND grace_until IS NOT NULL AND grace_until > $3)
+        AND NOT EXISTS(SELECT 1 FROM agent_cert_revocations
+                       WHERE agent_id=$1 AND fingerprint=$2 AND grace_until IS NULL))`,
 		agentID, fingerprint, now.UTC()).Scan(&ok)
 	return ok, err
+}
+
+// HasCertRevocations 返回该 Agent 是否在 agent_cert_revocations 表中存在任意记录。
+func (s *Store) HasCertRevocations(ctx context.Context, agentID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_cert_revocations WHERE agent_id=$1)`, agentID).Scan(&exists)
+	return exists, err
 }
 
 // RotateAgentCert 证书轮换（契约 §9）：行锁校验出示指纹==当前指纹 → 旧指纹入撤销表
@@ -487,8 +502,8 @@ func (s *Store) RotateAgentCert(ctx context.Context, in RotateCertInput) (*Rotat
 	err = tx.QueryRow(ctx, `
 SELECT agent_cert_pem, ca_cert_pem, new_not_after
 FROM agent_cert_rotations
-WHERE agent_id=$1 AND old_fingerprint=$2 AND public_key_sha256=$3`,
-		in.AgentID, in.OldFingerprint, in.PublicKeyHash).Scan(&replay.AgentCertPEM, &replay.CACertPEM, &replay.CertExpiresAt)
+WHERE agent_id=$1 AND old_fingerprint=$2 AND public_key_sha256=$3 AND grace_until > $4`,
+		in.AgentID, in.OldFingerprint, in.PublicKeyHash, in.Now.UTC()).Scan(&replay.AgentCertPEM, &replay.CACertPEM, &replay.CertExpiresAt)
 	if err == nil {
 		return &replay, nil
 	}
@@ -737,10 +752,20 @@ WHERE b.agent_id=$1`, agentID).
 	return &d, nil
 }
 
+// revokedCredentialHash 生成 64 字符不可匹配的吊销占位值（CHAR(64) NOT NULL UNIQUE；
+// "revoked:" 前缀非十六进制，永不与任何 HashSecret SHA-256 hex 摘要碰撞）。
+func revokedCredentialHash() (string, error) {
+	buf := make([]byte, 28)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate revoked credential hash: %w", err)
+	}
+	return "revoked:" + hex.EncodeToString(buf), nil
+}
+
 // SetAgentDisabled 禁用/启用（desired_state 经心跳下发；契约 §4）。
 // 吊销即禁用（Phase 2-B §11）：禁用时把当前证书指纹写入撤销表（grace_until=NULL，
-// 立即撤销）并清空当前指纹/到期——同一事务；启用不回滚撤销（证书吊销为终态，
-// Agent 需重新注册或后续轮换流程恢复证书）。
+// 立即撤销）、终止全部既有宽限与活跃轮换记录、清空当前指纹/到期并作废 credential_hash——
+// 同一事务；启用不回滚吊销（凭据与证书吊销为终态，Agent 需重新注册恢复）。
 func (s *Store) SetAgentDisabled(ctx context.Context, agentID uuid.UUID, disabled bool) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -756,6 +781,10 @@ UPDATE agents SET disabled=$2, updated_at=now() WHERE agent_id=$1`, agentID, dis
 		return ErrAgentNotFound
 	}
 	if disabled {
+		revokedHash, err := revokedCredentialHash()
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
 INSERT INTO agent_cert_revocations (agent_id, fingerprint, revoked_at, reason)
 SELECT agent_id, agent_cert_fingerprint, now(), 'agent disabled'
@@ -763,8 +792,18 @@ FROM agents WHERE agent_id=$1 AND agent_cert_fingerprint IS NOT NULL`, agentID);
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-UPDATE agents SET agent_cert_fingerprint=NULL, agent_cert_not_after=NULL
-WHERE agent_id=$1 AND agent_cert_fingerprint IS NOT NULL`, agentID); err != nil {
+UPDATE agent_cert_revocations SET grace_until=NULL
+WHERE agent_id=$1 AND grace_until IS NOT NULL`, agentID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE agent_cert_rotations SET grace_until=now()
+WHERE agent_id=$1 AND grace_until > now()`, agentID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE agents SET agent_cert_fingerprint=NULL, agent_cert_not_after=NULL, credential_hash=$2, updated_at=now()
+WHERE agent_id=$1`, agentID, revokedHash); err != nil {
 			return err
 		}
 	}

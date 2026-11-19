@@ -92,4 +92,74 @@ describe('RequestPcapEvidence', () => {
     expect(requestPcapApi.downloadUrl).toHaveBeenCalledWith(expect.objectContaining({ grant_id: 'grant-1' }))
     expect(document.querySelector('a[href*="grant_id"]')).toBeNull()
   })
+
+  it('关闭并重开派生下载弹窗时清空密码输入，不残留旧密码', async () => {
+    setPermissions(['request_pcap.read', 'request_pcap.download'])
+    ;(fetch as Mock).mockImplementation(() =>
+      Promise.resolve(response({ request_id: 'req-pcap-1', items: [{ ...evidence, integrity_status: 'PASS', download_eligible: true }] })),
+    )
+    renderEvidence()
+    fireEvent.click(await screen.findByRole('button', { name: '申请派生下载' }))
+    const pwdInput = screen.getByLabelText('当前账号密码') as HTMLInputElement
+    fireEvent.change(pwdInput, { target: { value: 'Secret@123' } })
+    expect(pwdInput.value).toBe('Secret@123')
+
+    // 取消关闭后再次打开，密码必须已清空
+    fireEvent.click(screen.getByRole('button', { name: /取\s*消|^Cancel$/ }))
+    fireEvent.click(screen.getByRole('button', { name: '申请派生下载' }))
+    expect((await screen.findByLabelText('当前账号密码') as HTMLInputElement).value).toBe('')
+  })
+
+  it('在途核验完成后写入原 requestId 缓存键，切换 requestId 不污染新请求的 PCAP 缓存', async () => {
+    setPermissions(['request_pcap.read', 'request_pcap.verify'])
+    let resolveVerify: ((res: Response) => void) | undefined
+    const evidence2: RequestPcapItem = {
+      ...evidence,
+      artifact_id: '11111111-2222-3333-4444-555555555555',
+      integrity_status: 'UNVERIFIED',
+    }
+    ;(fetch as Mock).mockImplementation((input) => {
+      const url = String(input)
+      if (url.includes('/verify')) {
+        return new Promise<Response>((resolve) => {
+          resolveVerify = resolve
+        })
+      }
+      if (url.includes('req-pcap-2')) {
+        return Promise.resolve(response({ request_id: 'req-pcap-2', items: [evidence2] }))
+      }
+      return Promise.resolve(response({ request_id: 'req-pcap-1', items: [evidence] }))
+    })
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <RequestPcapEvidence requestId="req-pcap-1" />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByText('未核验')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '完整性核验' }))
+    fireEvent.change(screen.getByLabelText('核验理由'), { target: { value: '核验1' } })
+    fireEvent.click(screen.getByRole('button', { name: '开始核验' }))
+    await waitFor(() => expect(resolveVerify).toBeDefined())
+
+    // 核验尚未返回即切换至 req-pcap-2
+    rerender(
+      <QueryClientProvider client={client}>
+        <RequestPcapEvidence requestId="req-pcap-2" />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(client.getQueryData(['request-pcap', 'req-pcap-2'])).toBeTruthy())
+
+    // req-pcap-1 的核验结果晚到：只能更新 req-pcap-1 缓存，不得污染 req-pcap-2
+    resolveVerify!(response({ ...evidence, integrity_status: 'PASS', download_eligible: true }))
+    await waitFor(() => {
+      const cache1 = client.getQueryData<{ items: RequestPcapItem[] }>(['request-pcap', 'req-pcap-1'])
+      expect(cache1?.items[0].integrity_status).toBe('PASS')
+    })
+    const cache2 = client.getQueryData<{ request_id: string; items: RequestPcapItem[] }>(['request-pcap', 'req-pcap-2'])
+    expect(cache2?.request_id).toBe('req-pcap-2')
+    expect(cache2?.items[0].artifact_id).toBe(evidence2.artifact_id)
+    expect(cache2?.items[0].integrity_status).toBe('UNVERIFIED')
+  })
 })

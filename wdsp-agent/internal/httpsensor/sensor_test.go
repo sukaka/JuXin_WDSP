@@ -207,9 +207,9 @@ func TestPostJSONBodyMasking(t *testing.T) {
 	if !strings.Contains(b, `"password":"********"`) {
 		t.Fatalf("一级 password 未脱敏: %q", b)
 	}
-	// 嵌套 JSON 不递归（Phase 3 限制，契约 §5）
-	if !strings.Contains(b, `"nested":{"password":"inner"}`) {
-		t.Fatalf("嵌套字段不应脱敏: %q", b)
+	// H-22.3：嵌套 JSON 必须递归脱敏，杜绝凭据明文泄漏
+	if !strings.Contains(b, `"nested":{"password":"********"}`) || strings.Contains(b, "inner") {
+		t.Fatalf("嵌套字段应递归脱敏: %q", b)
 	}
 	if recs[0].Request.OriginalBodySize != int64(len(body)) {
 		t.Fatalf("original_body_size 错误: %d", recs[0].Request.OriginalBodySize)

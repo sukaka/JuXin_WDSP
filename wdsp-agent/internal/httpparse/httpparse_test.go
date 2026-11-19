@@ -124,3 +124,24 @@ func TestDecidedLatches(t *testing.T) {
 		t.Fatal("决定后应保持结论")
 	}
 }
+
+func TestSanitizeAndTruncateToServerLimits(t *testing.T) {
+	s := NewSniffer(0)
+	longMethod := "ABCDEFGHIJKLMNOPQRST" // 20 chars -> truncated to 16
+	longHost := strings.Repeat("h", 300) + "\x00bad"
+	longURI := "/" + strings.Repeat("u", 5000) + "\x00bad"
+	raw := longMethod + " " + longURI + " HTTP/1.1\r\nHost: " + longHost + "\r\n\r\n"
+	res := feedAll(t, s, raw)
+	if res.Visibility != Plaintext {
+		t.Fatalf("visibility=%s, want PLAINTEXT", res.Visibility)
+	}
+	if len(res.Method) != 16 {
+		t.Fatalf("method len=%d, want 16", len(res.Method))
+	}
+	if len(res.Host) != 255 || strings.ContainsRune(res.Host, 0) {
+		t.Fatalf("host len=%d containsNul=%v, want 255 without NUL", len(res.Host), strings.ContainsRune(res.Host, 0))
+	}
+	if len(res.URI) != 4096 || strings.ContainsRune(res.URI, 0) {
+		t.Fatalf("uri len=%d containsNul=%v, want 4096 without NUL", len(res.URI), strings.ContainsRune(res.URI, 0))
+	}
+}

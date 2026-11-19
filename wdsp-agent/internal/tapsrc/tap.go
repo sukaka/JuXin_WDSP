@@ -126,9 +126,11 @@ type Source struct {
 	policy atomic.Pointer[httpsensor.Policy]
 	Stats  Stats
 
-	seq    atomic.Uint64 // flow_id 序号
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	seq     atomic.Uint64 // flow_id 序号
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	stopped bool
+	wg      sync.WaitGroup
 }
 
 // New 创建适配器（校验配置；onRecord 必须非阻塞快速返回）。
@@ -232,12 +234,18 @@ func (s *Source) UpdatePolicy(level string, maxBodySize int, masking config.Mask
 
 // Run 启动 tap 管理流读取协程并阻塞至 ctx 取消（优雅停机有界）。
 func (s *Source) Run(ctx context.Context) {
-	ctx, cancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	s.wg.Add(1)
+	s.mu.Unlock()
 	go func() {
 		defer s.wg.Done()
-		s.runSession(ctx)
+		s.runSession(runCtx)
 	}()
 	s.log.Info("tapsrc Envoy tap 适配器已启动",
 		"admin", s.cfg.AdminAddr, "source_instance", s.cfg.SourceInstance,
@@ -247,10 +255,14 @@ func (s *Source) Run(ctx context.Context) {
 	s.wg.Wait()
 }
 
-// Shutdown 停止全部 channel（有界等待）。
+// Shutdown 停止全部 channel（有界等待；与 Run 并发调用安全）。
 func (s *Source) Shutdown(ctx context.Context) {
-	if s.cancel != nil {
-		s.cancel()
+	s.mu.Lock()
+	s.stopped = true
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 	done := make(chan struct{})
 	go func() { s.wg.Wait(); close(done) }()

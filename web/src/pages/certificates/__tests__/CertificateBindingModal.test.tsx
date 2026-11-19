@@ -76,7 +76,9 @@ describe('CertificateBindingModal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useAuthStore.setState({
-      user: { permissions: ['certificates.bind', 'gateway_configs.preview'] } as CurrentUser,
+      user: {
+        permissions: ['certificates.read', 'certificates.bind', 'applications.read', 'gateway_configs.preview'],
+      } as CurrentUser,
       initialized: true,
     })
     vi.mocked(applicationsApi.list).mockResolvedValue({
@@ -141,5 +143,15 @@ describe('CertificateBindingModal', () => {
 
     expect(await screen.findByText(/证书域名不匹配/)).toBeInTheDocument()
     expect(screen.queryByText('绑定关系已保存，尚未发布')).not.toBeInTheDocument()
+  })
+
+  it('无 certificates.read / applications.read 权限时不发起跨模块列表查询', () => {
+    useAuthStore.setState({
+      user: { permissions: ['certificates.bind'] } as CurrentUser,
+      initialized: true,
+    })
+    renderModal('bind', true)
+    expect(certificatesApi.list).not.toHaveBeenCalled()
+    expect(applicationsApi.list).not.toHaveBeenCalled()
   })
 })

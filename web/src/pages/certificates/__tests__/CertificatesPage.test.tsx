@@ -39,7 +39,7 @@ describe('CertificatesPage', () => {
     vi.clearAllMocks()
     useAuthStore.setState({
       user: {
-        permissions: ['certificates.read', 'certificates.bind', 'certificates.delete'],
+        permissions: ['certificates.read', 'certificates.bind', 'certificates.delete', 'applications.read'],
       } as CurrentUser,
       initialized: true,
     })

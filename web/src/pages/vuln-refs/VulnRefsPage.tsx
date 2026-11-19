@@ -29,6 +29,7 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
+import { isSafeHttpUrl } from '../../utils/url'
 import { CNNVD_ID_PATTERN, CVE_ID_PATTERN } from '../../utils/vulnIds'
 import { ATTACK_TYPE_META, EVENT_ACTION_META } from '../../utils/stage4'
 import type { VulnRefItem, VulnRefRule, VulnRefSampleEvent } from '../../types'
@@ -449,10 +450,12 @@ export default function VulnRefsPage() {
                 {formatDate(detail.ref.published_at)}
               </Descriptions.Item>
               <Descriptions.Item label="官方条目" span={2}>
-                {detail.ref.url ? (
-                  <Typography.Link href={detail.ref.url} target="_blank" rel="noreferrer">
+                {detail.ref.url && isSafeHttpUrl(detail.ref.url) ? (
+                  <Typography.Link href={detail.ref.url.trim()} target="_blank" rel="noopener noreferrer">
                     CNNVD 官方条目
                   </Typography.Link>
+                ) : detail.ref.url ? (
+                  <Typography.Text type="secondary">{detail.ref.url}</Typography.Text>
                 ) : (
                   '-'
                 )}

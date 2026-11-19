@@ -128,9 +128,9 @@ func TestShrinkHTTPRecordOrder(t *testing.T) {
 	if !r.Request.BodyTruncated || !r.Response.BodyTruncated {
 		t.Fatal("双向 Body 应标记截断")
 	}
-	if r.Request.BodySkippedReason != BodySkippedBudgetExceeded ||
-		r.Response.BodySkippedReason != BodySkippedBudgetExceeded {
-		t.Fatal("应标记 budget_exceeded")
+	if r.Request.BodySkippedReason != "" || r.Response.BodySkippedReason != "" {
+		t.Fatalf("shrinkHTTPRecord BodySkippedReason 须对齐服务端枚举空串: req=%q resp=%q",
+			r.Request.BodySkippedReason, r.Response.BodySkippedReason)
 	}
 	if recordBytes(&r) > MaxHTTPRecordBytes {
 		t.Fatalf("缩减后仍超预算: %d", recordBytes(&r))

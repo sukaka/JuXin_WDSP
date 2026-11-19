@@ -211,6 +211,9 @@ func (b *HTTPBodyFields) validate(side string) error {
 			return fmt.Errorf("%s.headers[%q] 值超过 %d 字节或含控制字符", side, name, maxHTTPHeaderValueLen)
 		}
 	}
+	if strings.IndexByte(b.Body, 0) >= 0 {
+		return fmt.Errorf("%s.body 含非法 NUL 字符", side)
+	}
 	if b.OriginalBodySize < 0 {
 		return fmt.Errorf("%s.original_body_size 不能为负", side)
 	}

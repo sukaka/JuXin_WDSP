@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { App as AntdApp } from 'antd'
 import LoginPage from '../LoginPage'
+import { queryClient } from '../../../api/queryClient'
 import { useAuthStore } from '../../../stores/auth'
 import { useProductStore } from '../../../stores/product'
 import type { CurrentUser } from '../../../types'
@@ -33,6 +34,7 @@ function renderLogin(initialEntry: string | { pathname: string; state?: unknown 
           <Route path="/dashboard" element={<div>dashboard-page</div>} />
           <Route path="/users" element={<div>users-page</div>} />
           <Route path="/ha-groups" element={<div>ha-groups-page</div>} />
+          <Route path="/apm-overview" element={<div>apm-overview-page</div>} />
         </Routes>
       </AntdApp>
     </MemoryRouter>,
@@ -218,5 +220,59 @@ describe('LoginPage', () => {
     renderLogin({ pathname: '/login', state: { from: '/' } })
     await submitLogin()
     expect(await screen.findByText('dashboard-page')).toBeInTheDocument()
+  })
+
+  it('新账号登录前清空上一账号残留的 QueryClient 缓存', async () => {
+    queryClient.setQueryData(['security-events', 'stale'], { items: [{ id: 'prev-user-evt' }] })
+    expect(queryClient.getQueryCache().getAll().length).toBeGreaterThan(0)
+    stubLoginSuccess(fakeUser)
+    renderLogin()
+    await submitLogin()
+    expect(await screen.findByText('dashboard-page')).toBeInTheDocument()
+    expect(queryClient.getQueryCache().getAll()).toHaveLength(0)
+  })
+
+  it('登录后回跳：apm_enabled=true 且有权限时允许直接回跳 APM 页面', async () => {
+    const secUser: CurrentUser = {
+      ...fakeUser,
+      roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+      permissions: ['apm.overview.read'],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>((input) => {
+        const url = String(input)
+        if (url.includes('/auth/captcha')) {
+          return Promise.resolve(
+            jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { enabled: false } }),
+          )
+        }
+        if (url.includes('/auth/login')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: { user: secUser, csrf_token: 'csrf-apm' },
+            }),
+          )
+        }
+        if (url.includes('/product/edition')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: { edition: 'wdsp', api_dynamic_protection: true, apm_enabled: true },
+            }),
+          )
+        }
+        if (url.includes('/license')) {
+          return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { valid: true } }))
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+    renderLogin({ pathname: '/login', state: { from: '/apm-overview' } })
+    await submitLogin()
+    expect(await screen.findByText('apm-overview-page')).toBeInTheDocument()
   })
 })

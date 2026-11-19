@@ -6,6 +6,7 @@ import 'echarts-gl/lib/chart/lines3D'
 import 'echarts-gl/lib/chart/scatter3D'
 import { geoEquirectangular, geoPath } from 'd3-geo'
 import { getCountryFeatures } from './geoData'
+import { escapeHtml, safeCssColor } from '../../../utils/html'
 
 // 本组件使用 tooltip，自行注册组件，不依赖其他模块的注册副作用
 echarts.use([TooltipComponent])
@@ -141,10 +142,10 @@ export default function GlobeAttackMap({
         formatter: (params: { seriesId?: string; data?: { name?: string; count?: number; color?: string } }) => {
           const d = params.data
           if (params.seriesId === 'attack-arcs' && d) {
-            return `<span style="color:${d.color}">●</span> ${d.name} → 本站<br/>攻击事件：${d.count} 次`
+            return `<span style="color:${safeCssColor(d.color)}">●</span> ${escapeHtml(d.name)} → 本站<br/>攻击事件：${escapeHtml(d.count)} 次`
           }
           if (params.seriesId === 'attack-sources' && d) {
-            return `${d.name}：${d.count} 次`
+            return `${escapeHtml(d.name)}：${escapeHtml(d.count)} 次`
           }
           if (params.seriesId === 'protected-target') return '本站（被防护目标）'
           return ''

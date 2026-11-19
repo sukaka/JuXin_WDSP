@@ -18,7 +18,10 @@ import (
 
 const (
 	DefaultMaxBodyBytes = 256 << 10
+	HardMaxBodyBytes    = 10 << 20
 	DefaultMaxFields    = 256
+	maxFieldPathBytes   = 512
+	maxHTTPFieldBytes   = 512
 )
 
 var eventIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -36,6 +39,22 @@ type Processor struct {
 func NewProcessor(agentID string, hmacKey []byte, hmacKeyID string) *Processor {
 	return &Processor{agentID: agentID, hmacKey: append([]byte(nil), hmacKey...), hmacKeyID: hmacKeyID, maxBodyBytes: DefaultMaxBodyBytes, maxFields: DefaultMaxFields}
 }
+
+// WithMaxBodyBytes 配置单消息正文解码字节上限（<=0 保持默认，超硬上限钳制到 HardMaxBodyBytes）。
+func (p *Processor) WithMaxBodyBytes(n int) *Processor {
+	if n <= 0 {
+		p.maxBodyBytes = DefaultMaxBodyBytes
+		return p
+	}
+	if n > HardMaxBodyBytes {
+		n = HardMaxBodyBytes
+	}
+	p.maxBodyBytes = n
+	return p
+}
+
+// MaxBodyBytes 返回当前生效的正文解码字节上限。
+func (p *Processor) MaxBodyBytes() int { return p.maxBodyBytes }
 
 func (p *Processor) ProcessBatch(batch apievent.CaptureBatch) ([]apievent.Record, error) {
 	if batch.SchemaVersion != apievent.SchemaVersion {
@@ -73,13 +92,16 @@ func (p *Processor) Process(capture apievent.CaptureRecord) (apievent.Record, er
 		return out, errors.New("direction is invalid")
 	}
 	id := sha256.Sum256([]byte(p.agentID + "\x00" + capture.EventID))
+	httpHost, _ := truncateUTF8(sanitizeBoundedText(capture.HTTP.Host), maxHTTPFieldBytes)
+	httpRoute, routeTrunc := truncateUTF8(sanitizeBoundedText(capture.HTTP.Route), maxHTTPFieldBytes)
+	httpPathTpl, pathTrunc := truncateUTF8(sanitizeBoundedText(capture.HTTP.PathTemplate), maxHTTPFieldBytes)
 	out = apievent.Record{
 		EventID: "ev-" + hex.EncodeToString(id[:]), OccurredAt: capture.OccurredAt.UTC(),
 		ApplicationBindingID: capture.ApplicationBindingID, BindingVersion: capture.BindingVersion,
 		Source: capture.Source, Service: capture.Service, Trace: capture.Trace,
 		HTTP: apievent.HTTP{
 			Direction: capture.HTTP.Direction, Method: strings.ToUpper(capture.HTTP.Method), Scheme: capture.HTTP.Scheme,
-			Host: capture.HTTP.Host, Route: capture.HTTP.Route, PathTemplate: capture.HTTP.PathTemplate,
+			Host: httpHost, Route: httpRoute, PathTemplate: httpPathTpl,
 			Status: capture.HTTP.Status, LatencyMS: capture.HTTP.LatencyMS,
 			RequestContentType: capture.HTTP.Request.ContentType, ResponseContentType: capture.HTTP.Response.ContentType,
 			PeerService: capture.HTTP.PeerService, PeerAddress: capture.HTTP.PeerAddress,
@@ -90,7 +112,7 @@ func (p *Processor) Process(capture apievent.CaptureRecord) (apievent.Record, er
 		Fields: []apievent.Field{}, Quality: apievent.Quality{
 			RouteSource: routeSource(capture.HTTP), RequestBodyState: capture.HTTP.Request.BodyState,
 			ResponseBodyState: capture.HTTP.Response.BodyState, CaptureSampled: true,
-			Truncated: capture.HTTP.Request.Truncated || capture.HTTP.Response.Truncated,
+			Truncated: capture.HTTP.Request.Truncated || capture.HTTP.Response.Truncated || routeTrunc || pathTrunc,
 		},
 	}
 	if out.Quality.RouteSource == "" {
@@ -186,7 +208,8 @@ func (w *fieldWalker) walk(path string, value any, depth int) {
 	case bool:
 		w.add(path, "BOOLEAN", fmt.Sprintf("%t", typed))
 	case nil:
-		w.fields = append(w.fields, apievent.Field{Side: w.side, Location: "JSON_BODY", Path: path, DataType: "NULL", ValuePresent: false})
+		trimmedPath, pathTruncated := truncateUTF8(path, maxFieldPathBytes)
+		w.fields = append(w.fields, apievent.Field{Side: w.side, Location: "JSON_BODY", Path: trimmedPath, DataType: "NULL", ValuePresent: false, Truncated: pathTruncated})
 	}
 }
 
@@ -194,7 +217,8 @@ func (w *fieldWalker) add(path, dataType, value string) {
 	if len(w.fields) >= w.limit {
 		return
 	}
-	field := apievent.Field{Side: w.side, Location: "JSON_BODY", Path: path, DataType: dataType, ValuePresent: true}
+	trimmedPath, pathTruncated := truncateUTF8(path, maxFieldPathBytes)
+	field := apievent.Field{Side: w.side, Location: "JSON_BODY", Path: trimmedPath, DataType: dataType, ValuePresent: true, Truncated: pathTruncated}
 	normalized := normalizeDigits(value)
 	switch {
 	case phonePattern.MatchString(normalized):
@@ -205,6 +229,28 @@ func (w *fieldWalker) add(path, dataType, value string) {
 		field.ValueHMAC, field.HMACKeyID = w.processor.fingerprint(strings.ToUpper(value))
 	}
 	w.fields = append(w.fields, field)
+}
+
+func sanitizeBoundedText(s string) string {
+	if strings.ContainsAny(s, "\x00\r\n") {
+		s = strings.NewReplacer("\x00", "", "\r", "", "\n", "").Replace(s)
+	}
+	return s
+}
+
+// truncateUTF8 按最大字节数安全截断 UTF-8 字符串，不切碎多字节字符。
+func truncateUTF8(s string, maxBytes int) (string, bool) {
+	if len(s) <= maxBytes {
+		return s, false
+	}
+	if maxBytes <= 0 {
+		return "", true
+	}
+	n := maxBytes
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n], true
 }
 
 func (p *Processor) fingerprint(value string) (string, string) {

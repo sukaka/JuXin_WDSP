@@ -264,11 +264,12 @@ func (m *Masking) Effective() Masking {
 	}
 }
 
-// Buffer 磁盘缓存配置（契约 §3.3 policy.buffer）。
+// Buffer 磁盘缓存配置（契约 §3.3 policy.buffer；Dir 仅本地 agent.json 可选覆写）。
 type Buffer struct {
-	Enabled       bool `json:"enabled"`
-	MaxSizeMB     int  `json:"max_size_mb"`
-	MaxAgeMinutes int  `json:"max_age_minutes"`
+	Dir           string `json:"dir,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	MaxSizeMB     int    `json:"max_size_mb"`
+	MaxAgeMinutes int    `json:"max_age_minutes"`
 	// ReplaySharePercent 补传公平预算（P1-03 §5.5）：补传占用出站带宽的
 	// 百分比上限（相对 limits.outbound_mbps），实时采集保底其余份额——
 	// 长期离线积压不会饿死实时流量。0=默认 30；>100 按 100（不限份额）。
