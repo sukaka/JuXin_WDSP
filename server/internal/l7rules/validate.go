@@ -59,11 +59,24 @@ func validateCondition(c *Condition) error {
 		return validateValuesCondition(c, "来源IP")
 	case CondTypeURI:
 		return validateURICondition(c)
-	case CondTypeHeader, CondTypeCookie, CondTypeQuery:
+	case CondTypeHeader, CondTypeCookie, CondTypeQuery, CondTypeResponseHeader:
 		return validateNamedCondition(c)
+	case CondTypeRequestBody, CondTypeResponseBody:
+		return validateBodyCondition(c)
 	default:
-		return fmt.Errorf("条件类型必须为 uri/method/header/cookie/query/client_ip，收到: %s", c.Type)
+		return fmt.Errorf("条件类型必须为 uri/method/header/cookie/query/client_ip/request_body/response_header/response_body，收到: %s", c.Type)
 	}
+}
+
+// validateBodyCondition 校验正文关键字/正则条件。正文不支持名称、多值和存在性运算。
+func validateBodyCondition(c *Condition) error {
+	if c.Name != "" || len(c.Values) > 0 {
+		return fmt.Errorf("正文条件只支持 op+value，不支持 name/values 字段")
+	}
+	if !namedValueOps[c.Op] {
+		return fmt.Errorf("正文条件运算符必须为 eq/ne/prefix/contains/regex，收到: %s", c.Op)
+	}
+	return validateCondValue(c)
 }
 
 // validateValuesCondition 校验 values 数组型条件（method/client_ip，等价 op=in）。
@@ -124,10 +137,10 @@ func validateURICondition(c *Condition) error {
 	return nil
 }
 
-// validateNamedCondition 校验命名条件（header/cookie/query：name + op + value）。
+// validateNamedCondition 校验命名条件（请求头/Cookie/Query/响应头：name + op + value）。
 func validateNamedCondition(c *Condition) error {
 	if len(c.Values) > 0 {
-		return fmt.Errorf("header/cookie/query 条件只支持单值 value，不支持 values 数组")
+		return fmt.Errorf("命名条件只支持单值 value，不支持 values 数组")
 	}
 	c.Name = strings.TrimSpace(c.Name)
 	if c.Name == "" {
@@ -136,7 +149,7 @@ func validateNamedCondition(c *Condition) error {
 	if len(c.Name) > MaxCondNameLen {
 		return fmt.Errorf("条件名称长度不能超过%d字符", MaxCondNameLen)
 	}
-	if c.Type == CondTypeHeader || c.Type == CondTypeCookie {
+	if c.Type == CondTypeHeader || c.Type == CondTypeCookie || c.Type == CondTypeResponseHeader {
 		if !isToken(c.Name) {
 			return fmt.Errorf("条件名称含非法字符（须为HTTP token）: %s", c.Name)
 		}

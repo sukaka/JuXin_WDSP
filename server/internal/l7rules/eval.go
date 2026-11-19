@@ -10,12 +10,15 @@ import (
 
 // Input 是一次请求的评估输入（规则测试器与网关评估语义一致）。
 type Input struct {
-	URI      string            // 请求 URI（可含 query，评估时仅取路径部分）
-	Method   string            // 请求方法（大小写不敏感，评估时转大写）
-	Headers  map[string]string // 请求头（名称大小写不敏感）
-	Cookies  map[string]string // Cookie（名称大小写敏感）
-	Query    map[string]string // Query 参数（名称大小写敏感）
-	ClientIP string            // 来源 IP（为空或非法时 client_ip 条件不命中）
+	URI             string            // 请求 URI（可含 query，评估时仅取路径部分）
+	Method          string            // 请求方法（大小写不敏感，评估时转大写）
+	Headers         map[string]string // 请求头（名称大小写不敏感）
+	Cookies         map[string]string // Cookie（名称大小写敏感）
+	Query           map[string]string // Query 参数（名称大小写敏感）
+	ClientIP        string            // 来源 IP（为空或非法时 client_ip 条件不命中）
+	RequestBody     string            // 请求体（测试器输入均为完整内容）
+	ResponseHeaders map[string]string // 响应头（名称大小写不敏感）
+	ResponseBody    string            // 响应体（测试器输入均为完整内容）
 }
 
 // Result 是评估结果。Matched=false 表示不命中任何规则，将继续后续检查。
@@ -97,30 +100,41 @@ func NewEvaluator(rules []Rule) (*Evaluator, error) {
 
 // evalView 是输入的预处理视图（评估时复用，避免每条件重复归一化）。
 type evalView struct {
-	uriPath    string
-	method     string
-	headers    map[string]string // 键已小写
-	cookies    map[string]string
-	query      map[string]string
-	clientAddr netip.Addr
-	hasClient  bool
+	uriPath         string
+	method          string
+	headers         map[string]string // 键已小写
+	cookies         map[string]string
+	query           map[string]string
+	clientAddr      netip.Addr
+	hasClient       bool
+	requestBody     string
+	responseHeaders map[string]string // 键已小写
+	responseBody    string
 }
 
 func newEvalView(in Input) evalView {
 	v := evalView{
-		uriPath: in.URI,
-		method:  strings.ToUpper(strings.TrimSpace(in.Method)),
-		cookies: in.Cookies,
-		query:   in.Query,
+		uriPath:      in.URI,
+		method:       strings.ToUpper(strings.TrimSpace(in.Method)),
+		cookies:      in.Cookies,
+		query:        in.Query,
+		requestBody:  in.RequestBody,
+		responseBody: in.ResponseBody,
 	}
+	normalizeHeaders := func(headers map[string]string) map[string]string {
+		if len(headers) == 0 {
+			return nil
+		}
+		out := make(map[string]string, len(headers))
+		for k, val := range headers {
+			out[strings.ToLower(k)] = val
+		}
+		return out
+	}
+	v.headers = normalizeHeaders(in.Headers)
+	v.responseHeaders = normalizeHeaders(in.ResponseHeaders)
 	if i := strings.IndexByte(v.uriPath, '?'); i >= 0 {
 		v.uriPath = v.uriPath[:i] // uri 条件只匹配路径部分
-	}
-	if len(in.Headers) > 0 {
-		v.headers = make(map[string]string, len(in.Headers))
-		for k, val := range in.Headers {
-			v.headers[strings.ToLower(k)] = val
-		}
 	}
 	if ip := strings.TrimSpace(in.ClientIP); ip != "" {
 		if a, err := netip.ParseAddr(ip); err == nil {
@@ -175,6 +189,12 @@ func (c compiledCondition) match(v *evalView) bool {
 		return c.matchNamed(v.cookies, c.cond.Name)
 	case CondTypeQuery:
 		return c.matchNamed(v.query, c.cond.Name)
+	case CondTypeRequestBody:
+		return matchValue(c.cond.Op, c.cond.Value, v.requestBody, c.re)
+	case CondTypeResponseHeader:
+		return c.matchNamed(v.responseHeaders, strings.ToLower(c.cond.Name))
+	case CondTypeResponseBody:
+		return matchValue(c.cond.Op, c.cond.Value, v.responseBody, c.re)
 	case CondTypeClientIP:
 		if !v.hasClient {
 			return false

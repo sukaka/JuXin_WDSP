@@ -309,8 +309,8 @@ export default function L7RulesPage() {
       }
     >
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-        按 URI / 请求方法 / 请求头 / Cookie / Query 参数 / 来源 IP 组合条件（多条件 AND）匹配请求，
-        按优先级升序首中即停；全部未命中则继续 CC 等后续检查。规则的增删改需发布后才会下发网关生效。
+        按 URI / 请求方法 / 请求头 / Cookie / Query 参数 / 来源 IP / 请求体 / 返回头 / 返回体组合条件（多条件 AND）。
+        请求条件在源站前评估，响应条件在响应回程评估，各阶段按优先级首中即停；全部未命中则继续后续检查。规则的增删改需发布后才会下发网关生效。
       </Typography.Paragraph>
       <Tabs
         items={[

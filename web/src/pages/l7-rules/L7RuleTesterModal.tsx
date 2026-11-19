@@ -21,6 +21,9 @@ interface TesterFormValues {
   headers: KVRow[]
   cookies: KVRow[]
   query: KVRow[]
+  request_body?: string
+  response_headers: KVRow[]
+  response_body?: string
 }
 
 /** 键值对行 → Record（跳过空名称行；重名键后者覆盖前者） */
@@ -81,6 +84,9 @@ export default function L7RuleTesterModal({ open, onClose }: { open: boolean; on
         headers: kvRowsToRecord(values.headers),
         cookies: kvRowsToRecord(values.cookies),
         query: kvRowsToRecord(values.query),
+        request_body: values.request_body ?? '',
+        response_headers: kvRowsToRecord(values.response_headers),
+        response_body: values.response_body ?? '',
       }),
     onSuccess: (data) => setResult(data),
     onError: (e: unknown) => {
@@ -106,12 +112,12 @@ export default function L7RuleTesterModal({ open, onClose }: { open: boolean; on
       destroyOnHidden
     >
       <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-        按当前已保存的规则（含未发布的草稿）模拟评估：优先级升序、首中即停；测试不产生真实流量，也不写命中事件。
+        按当前已保存的规则（含未发布的草稿）模拟请求和响应内容评估：优先级升序、首中即停；测试不产生真实流量，也不写命中事件。
       </Typography.Paragraph>
       <Form<TesterFormValues>
         form={form}
         layout="vertical"
-        initialValues={{ method: 'GET', uri: '/', headers: [], cookies: [], query: [] }}
+        initialValues={{ method: 'GET', uri: '/', headers: [], cookies: [], query: [], response_headers: [] }}
         onFinish={(values) => {
           setResult(null)
           testMutation.mutate(values)
@@ -162,6 +168,15 @@ export default function L7RuleTesterModal({ open, onClose }: { open: boolean; on
         </Form.Item>
         <Form.Item label="Query 参数">
           <KVList name="query" addText="添加参数" />
+        </Form.Item>
+        <Form.Item name="request_body" label="请求体">
+          <Input.TextArea rows={3} placeholder="可选，用于测试请求体关键字或正则条件" />
+        </Form.Item>
+        <Form.Item label="返回头">
+          <KVList name="response_headers" addText="添加返回头" />
+        </Form.Item>
+        <Form.Item name="response_body" label="返回体">
+          <Input.TextArea rows={3} placeholder="可选，用于测试返回体关键字或正则条件" />
         </Form.Item>
         <Button type="primary" htmlType="submit" loading={testMutation.isPending}>
           开始测试

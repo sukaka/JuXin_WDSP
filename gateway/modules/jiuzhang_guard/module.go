@@ -2,7 +2,7 @@
 //
 // 请求处理顺序（与 ServeHTTP 实现一致）：真实IP识别 → JWT 信任链本地验证（可选，仅计算入上下文）
 // → 身份解析与行为观测（可选）→ 保护地址
-// → 人工临时封禁 → 全局白 → 应用白 → 全局黑 → 应用黑 → L7 访问控制（首中即停）→ 自动临时封禁
+// → 人工临时封禁 → 全局白 → 应用白 → 全局黑 → 应用黑 → L7 请求阶段（首中即停）→ 自动临时封禁
 // → 身份风险策略处置（risk_policy，可选，OBSERVE 默认不实断；CHALLENGE 仅登记请求内待挑战事实）
 // → 授权全局限速（可选，默认关闭）→ CC限速 → 发布冒烟精确端点
 // （/_wdsp/internal/v1/publish-smoke，独立 HMAC，本地应答且不进源站）→ Bot 挑战判定
@@ -11,6 +11,8 @@
 // verify 固定协议端点与墓碑均不反向代理）
 // → API 动态防护管线（可选，默认关闭；JWT 强制处置在管线阶段统一放行出口 serveNext 执行，
 // 白名单/L7 allow 不绕过 JWT PROTECT）→ 下一处理器（WAF）。
+// 含响应头/响应体条件的 L7 规则由 l7content.go 在下游响应回程受控缓冲后评估；
+// 完整正文超过 1 MiB、流式或无法解码时不产生正文匹配，原响应完整透传并记录降级告警。
 // 人工临时封禁查询在黑白名单之前（白名单不绕过人工封禁）；自动 CC 封禁可被白名单/L7 allow 绕过。
 // 白名单命中直接放行：跳过 L7 访问控制、自动临时封禁、授权全局限速与 CC，
 // 不绕过 Bot 挑战、API 动态防护、协议校验与 WAF（安全底线）；
@@ -1228,9 +1230,14 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("access denied"))
 	}
 
-	// 4.5 L7 访问控制（IP 黑白名单之后、CC 之前；按优先级首中即停）
+	// 4.5 L7 请求阶段（IP 黑白名单之后、CC 之前）；响应条件规则在下游返回后评估。
+	var l7RequestBody []byte
+	l7RequestBodyReady := true
 	if g.l7 != nil {
-		if l7dec, ok := g.l7.Eval(r, clientIP); ok {
+		if g.l7.NeedsRequestBody() {
+			l7RequestBody, l7RequestBodyReady = g.readL7RequestBody(r)
+		}
+		if l7dec, ok := g.l7.EvalRequest(r, clientIP, l7RequestBody, l7RequestBodyReady); ok {
 			return g.executeL7(w, r, next, base, res, l7dec)
 		}
 	}
@@ -1274,8 +1281,8 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 		return err
 	}
 
-	// 7. 放行（经 Bot 挑战判定与 API 动态防护管线后进入 WAF 等后续处理器）
-	return g.serveNextViaBot(w, r, next, base, res)
+	// 7. 放行；存在响应条件规则时先挂留受控响应，完成 L7 响应阶段评估。
+	return g.serveNextWithL7Response(w, r, next, base, res, clientIP, l7RequestBody, l7RequestBodyReady)
 }
 
 // l7SkipKey 请求上下文标记：L7 allow 命中后设置，CC 等后续 guard 检查据此跳过。

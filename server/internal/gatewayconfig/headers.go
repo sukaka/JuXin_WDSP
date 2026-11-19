@@ -53,25 +53,38 @@ type AppPathRoute struct {
 	Priority       int    `json:"priority"`
 }
 
+// versionDisclosureResponseHeaders 对外响应固定隐藏的中间件与数据库版本头。
+var versionDisclosureResponseHeaders = []string{
+	"Server", "Via", "X-Powered-By", "X-AspNet-Version", "X-AspNetMvc-Version", "X-Generator",
+	"X-Server-Version", "X-Middleware-Version", "X-DB-Version", "X-Database-Version",
+	"X-MySQL-Version", "X-PostgreSQL-Version", "X-Redis-Version", "X-Valkey-Version",
+	"X-ClickHouse-Version", "X-ClickHouse-Server-Version",
+}
+
+func isVersionDisclosureResponseHeader(name string) bool {
+	for _, protected := range versionDisclosureResponseHeaders {
+		if strings.EqualFold(name, protected) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildHeaderHandler 构建安全响应头处理器（含头合规配置与自定义返回头规则）。
-// 默认（无配置）：与既有静态行为一致（nosniff + X-Frame-Options:DENY + Referrer-Policy + 删除 Server）。
-// 说明：response 必须 deferred=true —— Caddy reverse_proxy 在回源后会删除 w.Header() 中的
-// Server（issue #6275，改用 Via），非 deferred 的 set Server 会被抹掉、delete 也压不住
-// 源站随后拷贝来的同名头；deferred 在 WriteHeader 时应用，顺序在代理拷贝之后，语义才正确。
+// 中间件与数据库版本头始终隐藏，旧配置和自定义响应规则不能重新添加。
+// response 必须 deferred=true，确保代理拷贝源站响应头后仍执行最终清理。
 func buildHeaderHandler(cfg *AppHeaderConfig) mapT {
 	set := map[string][]string{}
-	del := []string{}
+	del := append([]string{}, versionDisclosureResponseHeaders...)
 	add := map[string][]string{}
 
 	if cfg == nil {
 		set["X-Content-Type-Options"] = []string{"nosniff"}
 		set["X-Frame-Options"] = []string{"DENY"}
 		set["Referrer-Policy"] = []string{"no-referrer"}
-		del = append(del, "Server")
 		return mapT{"handler": "headers", "response": mapT{"set": set, "delete": del, "deferred": true}}
 	}
 
-	// Server / X-Author / X-Powered-By
 	applyAction := func(field, action, value string) {
 		switch action {
 		case "hide":
@@ -82,28 +95,23 @@ func buildHeaderHandler(cfg *AppHeaderConfig) mapT {
 			} else {
 				del = append(del, field)
 			}
-		default: // keep：不干预
 		}
 	}
-	applyAction("Server", cfg.ServerAction, cfg.ServerValue)
 	applyAction("X-Author", cfg.XAuthorAction, cfg.XAuthorValue)
-	applyAction("X-Powered-By", cfg.XPoweredByAction, cfg.XPoweredByValue)
 
 	// X-Frame-Options
 	switch cfg.XFrameOptions {
 	case "inherit":
-		// 透传源站：不设置
 	case "sameorigin":
 		set["X-Frame-Options"] = []string{"SAMEORIGIN"}
 	case "allow_from":
 		if cfg.XFrameOptionsURL != "" {
 			set["X-Frame-Options"] = []string{"ALLOW-FROM " + cfg.XFrameOptionsURL}
 		}
-	default: // default/deny
+	default:
 		set["X-Frame-Options"] = []string{"DENY"}
 	}
 
-	// 固定安全基线（不因配置丢失）
 	set["X-Content-Type-Options"] = []string{"nosniff"}
 	set["Referrer-Policy"] = []string{"no-referrer"}
 	if cfg.XXssProtection {
@@ -128,10 +136,9 @@ func buildHeaderHandler(cfg *AppHeaderConfig) mapT {
 		}
 	}
 
-	// 自定义返回头规则
 	for _, rule := range cfg.CustomResponseRules {
 		name := strings.TrimSpace(rule.Name)
-		if name == "" {
+		if name == "" || isVersionDisclosureResponseHeader(name) {
 			continue
 		}
 		switch rule.Method {
@@ -139,7 +146,7 @@ func buildHeaderHandler(cfg *AppHeaderConfig) mapT {
 			add[name] = append(add[name], rule.Value)
 		case "delete":
 			del = append(del, name)
-		default: // set
+		default:
 			set[name] = []string{rule.Value}
 		}
 	}

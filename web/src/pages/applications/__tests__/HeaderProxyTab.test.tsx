@@ -182,8 +182,10 @@ describe('HeaderProxyTab', () => {
     expect(await screen.findByText('HTTP头合规')).toBeInTheDocument()
     expect(screen.getByText('HTTP代理配置')).toBeInTheDocument()
     expect(screen.getByText('路径转发配置')).toBeInTheDocument()
-    // 默认值：Server / X-Author / X-Powered-By 保持原样、X-Frame-Options 默认 DENY、CSP 关闭（按选中项文本断言，不依赖 antd 类名）
-    await waitFor(() => expect(screen.getAllByText('保持原样')).toHaveLength(3))
+    // Server / Via / X-Powered-By / 数据库版本头固定隐藏，X-Author 仍可配置
+    await waitFor(() => expect(screen.getAllByText('保持原样')).toHaveLength(1))
+    expect(screen.getAllByText('始终隐藏')).toHaveLength(2)
+    expect(screen.getByText('中间件和数据库版本信息始终隐藏')).toBeInTheDocument()
     expect(screen.getByText('默认（DENY）')).toBeInTheDocument()
     expect(screen.getByText('关闭')).toBeInTheDocument()
     // 开关默认关闭；下划线头为内核强制说明项
@@ -222,7 +224,8 @@ describe('HeaderProxyTab', () => {
       expect(putCall).toBeTruthy()
       const body = JSON.parse(String(putCall![1]?.body)) as Record<string, unknown>
       expect(body.version).toBe(3)
-      expect(body.server_action).toBe('keep')
+      expect(body.server_action).toBe('hide')
+      expect(body.x_powered_by_action).toBe('hide')
       expect(body.x_frame_options).toBe('sameorigin')
       expect(body.custom_request_rules).toEqual([])
     })

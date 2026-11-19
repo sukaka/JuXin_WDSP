@@ -1329,7 +1329,15 @@ export interface AccessControlEventDetail {
 
 /** L7 条件类型 */
 export type L7ConditionType =
-  'uri' | 'method' | 'header' | 'cookie' | 'query' | 'client_ip'
+  | 'uri'
+  | 'method'
+  | 'header'
+  | 'cookie'
+  | 'query'
+  | 'client_ip'
+  | 'request_body'
+  | 'response_header'
+  | 'response_body'
 
 /** L7 条件运算符（method/client_ip 用 values 数组，等价 in） */
 export type L7ConditionOp =
@@ -1387,6 +1395,9 @@ export interface L7RuleTestRequest {
   cookies: Record<string, string>
   query: Record<string, string>
   client_ip: string
+  request_body?: string
+  response_headers?: Record<string, string>
+  response_body?: string
 }
 
 /** L7 规则测试器结果（不产生真实流量、不写事件） */

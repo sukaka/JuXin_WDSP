@@ -139,8 +139,10 @@ jq -e '(.services | has("pcapd") | not) and
   .services.gateway.cap_drop == ["ALL"] and
   (.services.gateway.cap_add | sort == (["NET_BIND_SERVICE", "SETUID", "SETGID", "SETPCAP"] | sort)) and
   (.services.containerops.tmpfs == ["/tmp:size=8m,mode=1777"]) and
-  (.services.netmgrd.network_mode == "service:gateway")' <<<"$COMPOSE_JSON" >/dev/null \
-  || die "交付 Compose 的低端口、sidecar 或默认关闭 PCAP 契约不合格"
+  (.services.netmgrd.network_mode == "service:gateway") and
+  any(.services.api.volumes[]?; .source == "gateway-certs" and .target == "/app/runtime/certificates") and
+  any(.services.gateway.volumes[]?; .source == "gateway-certs" and .target == "/etc/caddy/certs" and .read_only == true)' <<<"$COMPOSE_JSON" >/dev/null \
+  || die "交付 Compose 的低端口、证书下发、sidecar 或默认关闭 PCAP 契约不合格"
 SCAN="$OUTPUT_DIR/jiuzhang-wdsp-offline-$VERSION-amd64.scan.json"
 jq -e --arg digest "$(sha256_of "$ARCHIVE" | awk '{print $1}')" '.result == "PASS" and .input.sha256 == $digest' "$SCAN" >/dev/null \
   || die "最终内容扫描未绑定本次交付归档"

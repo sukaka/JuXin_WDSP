@@ -3,8 +3,8 @@
 // 下发网关的 JSON 契约（guardconfig l7_rules 段）见契约一，由 guardconfig 组装。
 //
 // 评估语义（与网关 jiuzhang_guard l7rules 引擎一致）：
-// 规则按 (priority 升序, created_at 升序) 稳定排序，首个 enabled 且条件全中（多条件 AND）
-// 的规则生效（首中即停）；全部未命中 = 继续后续检查（默认放行到 CC）。
+// 请求阶段与响应阶段分别按 (priority 升序, created_at 升序) 稳定排序，首个 enabled 且条件全中
+// （多条件 AND）的规则生效（首中即停）；含响应头/响应体条件的规则在响应回程评估。
 package l7rules
 
 import (
@@ -16,12 +16,15 @@ import (
 
 // 条件类型（契约一）
 const (
-	CondTypeURI      = "uri"       // 访问 URI（路径部分，不含 query）
-	CondTypeMethod   = "method"    // 请求方法（values 数组，等价 op=in）
-	CondTypeHeader   = "header"    // 请求头（name + op + value；名称大小写不敏感）
-	CondTypeCookie   = "cookie"    // Cookie（name + op + value）
-	CondTypeQuery    = "query"     // Query 参数（name + op + value）
-	CondTypeClientIP = "client_ip" // 来源 IP（values 数组：单 IP 或 CIDR，等价 op=in）
+	CondTypeURI            = "uri"             // 访问 URI（路径部分，不含 query）
+	CondTypeMethod         = "method"          // 请求方法（values 数组，等价 op=in）
+	CondTypeHeader         = "header"          // 请求头（name + op + value；名称大小写不敏感）
+	CondTypeCookie         = "cookie"          // Cookie（name + op + value）
+	CondTypeQuery          = "query"           // Query 参数（name + op + value）
+	CondTypeClientIP       = "client_ip"       // 来源 IP（values 数组：单 IP 或 CIDR，等价 op=in）
+	CondTypeRequestBody    = "request_body"    // 请求体（op + value；网关有界读取并还原）
+	CondTypeResponseHeader = "response_header" // 响应头（name + op + value；名称大小写不敏感）
+	CondTypeResponseBody   = "response_body"   // 响应体（op + value；完整且不超过 1 MiB 时检查）
 )
 
 // 运算符（契约一）。exists/not_exists 不需要 value；
@@ -70,7 +73,7 @@ var (
 )
 
 // Condition 是一条匹配条件。method/client_ip 用 Values（数组，等价 op=in）；
-// 其余类型用 Name+Op+Value（uri 无 Name）；exists/not_exists 不需要 Value。
+// header/cookie/query/response_header 用 Name+Op+Value；uri/request_body/response_body 无 Name。
 type Condition struct {
 	Type   string   `json:"type"`
 	Name   string   `json:"name,omitempty"`

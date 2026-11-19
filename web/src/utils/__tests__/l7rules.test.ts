@@ -72,6 +72,9 @@ describe('conditionToRow（契约 JSON → 表单行，编辑回显）', () => {
       { type: 'cookie', name: 'session', op: 'exists' },
       { type: 'query', name: 'debug', op: 'ne', value: '1' },
       { type: 'client_ip', values: ['10.0.0.0/8', '192.168.1.5'] },
+      { type: 'request_body', op: 'contains', value: 'request-secret' },
+      { type: 'response_header', name: 'X-Result', op: 'eq', value: 'ready' },
+      { type: 'response_body', op: 'contains', value: 'response-secret' },
     ]
     for (const cond of cases) {
       expect(rowToCondition(conditionToRow(cond))).toEqual(cond)
@@ -164,6 +167,15 @@ describe('validateConditionRow（提交前逐行校验）', () => {
   it('命名类型必须填名称', () => {
     expect(validateConditionRow({ type: 'header', name: '', op: 'eq', value: 'a' })).not.toBeNull()
     expect(validateConditionRow({ type: 'header', name: 'X-A', op: 'eq', value: 'a' })).toBeNull()
+    expect(validateConditionRow({ type: 'response_header', name: 'X-Result', op: 'contains', value: 'secret' })).toBeNull()
+    expect(validateConditionRow({ type: 'response_header', name: '', op: 'contains', value: 'secret' })).not.toBeNull()
+  })
+
+  it('请求体和返回体默认支持关键字包含，不支持存在性运算', () => {
+    expect(validateConditionRow({ type: 'request_body', op: 'contains', value: 'secret' })).toBeNull()
+    expect(validateConditionRow({ type: 'response_body', op: 'contains', value: 'secret' })).toBeNull()
+    expect(validateConditionRow({ type: 'request_body', op: 'exists' })).not.toBeNull()
+    expect(validateConditionRow({ type: 'response_body', op: 'contains', value: '' })).not.toBeNull()
   })
 
   it('exists/not_exists 不需要匹配值', () => {

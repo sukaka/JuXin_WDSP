@@ -13,6 +13,22 @@
 		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
 		Cache-Control "no-store"
 		-Server
+		-Via
+		-X-Powered-By
+		-X-AspNet-Version
+		-X-AspNetMvc-Version
+		-X-Generator
+		-X-Server-Version
+		-X-Middleware-Version
+		-X-DB-Version
+		-X-Database-Version
+		-X-MySQL-Version
+		-X-PostgreSQL-Version
+		-X-Redis-Version
+		-X-Valkey-Version
+		-X-ClickHouse-Version
+		-X-ClickHouse-Server-Version
+		defer
 	}
 
 	# API 反向代理到管理后端

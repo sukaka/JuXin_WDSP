@@ -17,6 +17,9 @@ export const L7_CONDITION_TYPE_META: Record<L7ConditionType, { label: string }> 
   cookie: { label: 'Cookie' },
   query: { label: 'Query参数' },
   client_ip: { label: '来源IP' },
+  request_body: { label: '请求体' },
+  response_header: { label: '返回头' },
+  response_body: { label: '返回体' },
 }
 
 /** 条件运算符中文标签 */
@@ -47,10 +50,13 @@ export const L7_OPS_BY_TYPE: Record<L7ConditionType, L7ConditionOp[]> = {
   cookie: ['eq', 'ne', 'prefix', 'contains', 'regex', 'exists', 'not_exists'],
   query: ['eq', 'ne', 'prefix', 'contains', 'regex', 'exists', 'not_exists'],
   client_ip: [],
+  request_body: ['contains', 'eq', 'ne', 'prefix', 'regex'],
+  response_header: ['eq', 'ne', 'prefix', 'contains', 'regex', 'exists', 'not_exists'],
+  response_body: ['contains', 'eq', 'ne', 'prefix', 'regex'],
 }
 
 /** 需要「名称」输入的条件类型 */
-export const L7_NAMED_TYPES: readonly L7ConditionType[] = ['header', 'cookie', 'query']
+export const L7_NAMED_TYPES: readonly L7ConditionType[] = ['header', 'cookie', 'query', 'response_header']
 
 /** 使用多值数组（values）的条件类型 */
 export const L7_MULTI_VALUE_TYPES: readonly L7ConditionType[] = ['method', 'client_ip']

@@ -153,12 +153,15 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 // testRequest 是规则测试器输入。
 type testRequest struct {
-	URI      string            `json:"uri"`
-	Method   string            `json:"method"`
-	Headers  map[string]string `json:"headers"`
-	Cookies  map[string]string `json:"cookies"`
-	Query    map[string]string `json:"query"`
-	ClientIP string            `json:"client_ip"`
+	URI             string            `json:"uri"`
+	Method          string            `json:"method"`
+	Headers         map[string]string `json:"headers"`
+	Cookies         map[string]string `json:"cookies"`
+	Query           map[string]string `json:"query"`
+	ClientIP        string            `json:"client_ip"`
+	RequestBody     string            `json:"request_body"`
+	ResponseHeaders map[string]string `json:"response_headers"`
+	ResponseBody    string            `json:"response_body"`
 }
 
 // Test 规则测试器：以当前规则集（含停用，评估时跳过）纯函数评估输入，
@@ -184,12 +187,15 @@ func (h *Handler) Test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := ev.Eval(Input{
-		URI:      req.URI,
-		Method:   req.Method,
-		Headers:  req.Headers,
-		Cookies:  req.Cookies,
-		Query:    req.Query,
-		ClientIP: req.ClientIP,
+		URI:             req.URI,
+		Method:          req.Method,
+		Headers:         req.Headers,
+		Cookies:         req.Cookies,
+		Query:           req.Query,
+		ClientIP:        req.ClientIP,
+		RequestBody:     req.RequestBody,
+		ResponseHeaders: req.ResponseHeaders,
+		ResponseBody:    req.ResponseBody,
 	})
 	out := map[string]interface{}{
 		"matched":   result.Matched,
@@ -226,7 +232,7 @@ func validateTestInput(req *testRequest) error {
 			return err
 		}
 	}
-	for label, m := range map[string]map[string]string{"请求头": req.Headers, "Cookie": req.Cookies, "Query参数": req.Query} {
+	for label, m := range map[string]map[string]string{"请求头": req.Headers, "Cookie": req.Cookies, "Query参数": req.Query, "响应头": req.ResponseHeaders} {
 		if len(m) > MaxValues {
 			return fmt.Errorf("%s条目数不能超过%d个", label, MaxValues)
 		}

@@ -129,9 +129,7 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
   // ---------- 头合规 + 代理配置（同一表单，一起保存） ----------
   const [headerForm] = Form.useForm<AppHeaderConfig>()
   const [configVersion, setConfigVersion] = useState(1)
-  const serverAction = Form.useWatch('server_action', headerForm)
   const xAuthorAction = Form.useWatch('x_author_action', headerForm)
-  const poweredByAction = Form.useWatch('x_powered_by_action', headerForm)
   const xFrameOptions = Form.useWatch('x_frame_options', headerForm)
   const hstsEnabled = Form.useWatch('hsts_enabled', headerForm)
   const cspMode = Form.useWatch('csp_mode', headerForm)
@@ -178,8 +176,10 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
   const onSaveConfig = (values: AppHeaderConfig) => {
     saveConfigMutation.mutate({
       ...values,
-      server_value: values.server_action === 'replace' ? values.server_value : '',
-      x_powered_by_value: values.x_powered_by_action === 'replace' ? values.x_powered_by_value : '',
+      server_action: 'hide',
+      server_value: '',
+      x_powered_by_action: 'hide',
+      x_powered_by_value: '',
       x_frame_options_url: values.x_frame_options === 'allow_from' ? values.x_frame_options_url : '',
       csp_value: values.csp_mode === 'custom' ? values.csp_value : '',
       custom_request_rules: values.custom_request_rules ?? [],
@@ -430,20 +430,17 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
               />
             ) : (
               <>
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message="中间件和数据库版本信息始终隐藏"
+                  description="Server、Via、X-Powered-By、ASP.NET、MySQL、PostgreSQL、Redis/Valkey、ClickHouse 等版本头均由网关最终删除，自定义响应规则也不能恢复。"
+                />
                 <Space size="middle" wrap style={{ display: 'flex' }}>
-                  <Form.Item name="server_action" label="Server 响应头" style={{ width: 200 }}>
-                    <Select options={HEADER_ACTION_OPTIONS} />
+                  <Form.Item label="Server / Via 响应头">
+                    <Tag color="green">始终隐藏</Tag>
                   </Form.Item>
-                  {serverAction === 'replace' && (
-                    <Form.Item
-                      name="server_value"
-                      label="Server 自定义值"
-                      style={{ width: 260 }}
-                      rules={[{ required: true, message: '请输入自定义值' }]}
-                    >
-                      <Input placeholder="如 Web-Server" autoComplete="off" />
-                    </Form.Item>
-                  )}
                   <Form.Item name="x_author_action" label="X-Author 响应头" style={{ width: 200 }}>
                     <Select options={HEADER_ACTION_OPTIONS} />
                   </Form.Item>
@@ -457,19 +454,9 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
                       <Input placeholder="自定义值" autoComplete="off" />
                     </Form.Item>
                   )}
-                  <Form.Item name="x_powered_by_action" label="X-Powered-By 响应头" style={{ width: 200 }}>
-                    <Select options={HEADER_ACTION_OPTIONS} />
+                  <Form.Item label="X-Powered-By / 数据库版本头">
+                    <Tag color="green">始终隐藏</Tag>
                   </Form.Item>
-                  {poweredByAction === 'replace' && (
-                    <Form.Item
-                      name="x_powered_by_value"
-                      label="X-Powered-By 自定义值"
-                      style={{ width: 260 }}
-                      rules={[{ required: true, message: '请输入自定义值' }]}
-                    >
-                      <Input placeholder="自定义值" autoComplete="off" />
-                    </Form.Item>
-                  )}
                 </Space>
 
                 <Space size="middle" wrap style={{ display: 'flex' }}>

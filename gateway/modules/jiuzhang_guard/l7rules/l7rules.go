@@ -1,5 +1,5 @@
-// Package l7rules L7 访问控制规则引擎：按 URI/请求方法/请求头/Cookie/Query 参数/来源IP
-// 组合条件（多条件 AND）匹配请求，按优先级升序首中即停，执行 block/allow/redirect/custom_page 动作。
+// Package l7rules L7 访问控制规则引擎：按 URI/请求方法/请求头/Cookie/Query 参数/来源IP/请求体
+// 以及响应头/响应体组合条件（多条件 AND）分阶段匹配，各阶段按优先级升序首中即停。
 //
 // 配置契约（与管理面发布通道冻结契约一致）：
 //
@@ -15,11 +15,11 @@
 //	    "redirect_status":302,"content_type":"text/html; charset=utf-8","body":""}}]}}
 //
 // 语义约定：
-//   - 评估按 priority 升序，首个 enabled 且条件全中的规则生效；全部未命中=继续后续检查；
-//   - 条件 type ∈ uri|method|header|cookie|query|client_ip；
+//   - 请求阶段与响应阶段分别按 priority 升序，首个 enabled 且条件全中的规则生效；
+//   - 条件 type ∈ uri|method|header|cookie|query|client_ip|request_body|response_header|response_body；
 //     op ∈ eq|ne|prefix|contains|regex|exists|not_exists|in；
-//   - method 与 client_ip 仅用 values（数组，等价 op=in）；uri 无 name；
-//     header/cookie/query 用 name+op+value（in 用 name+values）；
+//   - method 与 client_ip 仅用 values（数组，等价 op=in）；uri 与正文无 name；
+//     header/cookie/query/response_header 用 name+op+value（in 用 name+values）；
 //   - exists/not_exists 不需要 value；键不存在时一切值比较（含 ne/in）均为不命中；
 //   - 正则使用 RE2（线性时间，防正则拒绝服务），长度 ≤512；
 //   - 大小写：method 不敏感（统一大写比较）；header 名不敏感（RFC 7230 规范形）；
@@ -75,12 +75,15 @@ const (
 
 // 条件类型。
 const (
-	condURI      = "uri"
-	condMethod   = "method"
-	condHeader   = "header"
-	condCookie   = "cookie"
-	condQuery    = "query"
-	condClientIP = "client_ip"
+	condURI            = "uri"
+	condMethod         = "method"
+	condHeader         = "header"
+	condCookie         = "cookie"
+	condQuery          = "query"
+	condClientIP       = "client_ip"
+	condRequestBody    = "request_body"
+	condResponseHeader = "response_header"
+	condResponseBody   = "response_body"
 )
 
 // 条件运算符。
@@ -115,9 +118,9 @@ type RuleJSON struct {
 
 // ConditionJSON 一个匹配条件。
 type ConditionJSON struct {
-	Type   string   `json:"type"`             // uri|method|header|cookie|query|client_ip
+	Type   string   `json:"type"`             // uri|method|header|cookie|query|client_ip|request_body|response_header|response_body
 	Op     string   `json:"op,omitempty"`     // eq|ne|prefix|contains|regex|exists|not_exists|in
-	Name   string   `json:"name,omitempty"`   // header/cookie/query 参数名
+	Name   string   `json:"name,omitempty"`   // header/cookie/query/response_header 参数名
 	Value  string   `json:"value,omitempty"`  // 单值（exists/not_exists 不需要）
 	Values []string `json:"values,omitempty"` // method/client_ip 或 op=in
 }
@@ -158,20 +161,24 @@ type Decision struct {
 	Config   ActionConfig
 }
 
-// Engine 编译后的规则引擎（优先级升序，首中即停；并发只读安全）。
+// Engine 编译后的规则引擎（各阶段内按优先级升序首中即停；并发只读安全）。
 type Engine struct {
-	rules []*compiledRule
+	rules        []*compiledRule
+	requestBody  bool
+	responseRule bool
 }
 
 // compiledRule 编译后的单条规则。
 type compiledRule struct {
-	id       string
-	name     string
-	priority int
-	enabled  bool
-	conds    []condition
-	action   Action
-	cfg      ActionConfig
+	id            string
+	name          string
+	priority      int
+	enabled       bool
+	conds         []condition
+	action        Action
+	cfg           ActionConfig
+	requestBody   bool
+	responsePhase bool
 }
 
 // Compile 校验并编译配置：正则预编译、CIDR 预解析、动作配置默认值填充。
@@ -198,6 +205,10 @@ func Compile(cfg *Config) (*Engine, []RuleError) {
 			continue
 		}
 		e.rules = append(e.rules, cr)
+		if cr.enabled {
+			e.requestBody = e.requestBody || cr.requestBody
+			e.responseRule = e.responseRule || cr.responsePhase
+		}
 	}
 	sort.SliceStable(e.rules, func(i, j int) bool { return e.rules[i].priority < e.rules[j].priority })
 	return e, errs
@@ -210,6 +221,12 @@ func (e *Engine) RulesCount() int {
 	}
 	return len(e.rules)
 }
+
+// NeedsRequestBody 是否存在启用规则需要读取请求体。
+func (e *Engine) NeedsRequestBody() bool { return e != nil && e.requestBody }
+
+// HasResponseRules 是否存在启用规则需要在响应返回后评估。
+func (e *Engine) HasResponseRules() bool { return e != nil && e.responseRule }
 
 // compileRule 编译单条规则。
 func compileRule(r RuleJSON) (*compiledRule, error) {
@@ -229,25 +246,24 @@ func compileRule(r RuleJSON) (*compiledRule, error) {
 		return nil, fmt.Errorf("rule %q: conditions count %d exceeds limit %d", r.ID, len(r.Conditions), maxConditionsPerRule)
 	}
 	conds := make([]condition, 0, len(r.Conditions))
+	requestBody, responsePhase := false, false
 	for i, c := range r.Conditions {
 		cc, err := compileCondition(r.ID, i, c)
 		if err != nil {
 			return nil, err
 		}
 		conds = append(conds, cc)
+		requestBody = requestBody || c.Type == condRequestBody
+		responsePhase = responsePhase || c.Type == condResponseHeader || c.Type == condResponseBody
 	}
 	action, cfg, err := compileActionConfig(r)
 	if err != nil {
 		return nil, err
 	}
 	return &compiledRule{
-		id:       r.ID,
-		name:     r.Name,
-		priority: r.Priority,
-		enabled:  r.Enabled,
-		conds:    conds,
-		action:   action,
-		cfg:      cfg,
+		id: r.ID, name: r.Name, priority: r.Priority, enabled: r.Enabled,
+		conds: conds, action: action, cfg: cfg,
+		requestBody: requestBody, responsePhase: responsePhase,
 	}, nil
 }
 
@@ -394,7 +410,7 @@ func compileCondition(ruleID string, idx int, c ConditionJSON) (condition, error
 		return nil, fmt.Errorf("rule %q: condition[%d]: %s", ruleID, idx, fmt.Sprintf(format, args...))
 	}
 	switch c.Type {
-	case condURI, condHeader, condCookie, condQuery:
+	case condURI, condHeader, condCookie, condQuery, condRequestBody, condResponseHeader, condResponseBody:
 		return compileStringCond(fail, c)
 	case condMethod:
 		return compileMethodCond(fail, c)
@@ -405,19 +421,23 @@ func compileCondition(ruleID string, idx int, c ConditionJSON) (condition, error
 	}
 }
 
-// compileStringCond 编译 uri/header/cookie/query 字符串条件。
+// compileStringCond 编译 URI、头、Cookie、Query 与正文字符串条件。
 func compileStringCond(fail func(string, ...any) (condition, error), c ConditionJSON) (condition, error) {
-	// op 白名单
 	switch c.Op {
 	case opEq, opNe, opPrefix, opContains, opRegex, opIn, opExists, opNotExists:
 	default:
 		return fail("unknown op %q", c.Op)
 	}
-	// uri 无参数名，且 exists/not_exists 无意义
-	if c.Type == condURI && (c.Op == opExists || c.Op == opNotExists) {
-		return fail("uri does not support exists/not_exists")
+	isBody := c.Type == condRequestBody || c.Type == condResponseBody
+	if (c.Type == condURI || isBody) && (c.Op == opExists || c.Op == opNotExists) {
+		return fail("%s does not support exists/not_exists", c.Type)
 	}
-	// header/cookie/query 必须带参数名
+	if isBody && c.Op == opIn {
+		return fail("%s does not support in", c.Type)
+	}
+	if isBody && (c.Name != "" || c.Value == "") {
+		return fail("body condition requires value and does not support name")
+	}
 	var target func(in *evalInput) (string, bool)
 	switch c.Type {
 	case condURI:
@@ -425,13 +445,17 @@ func compileStringCond(fail func(string, ...any) (condition, error), c Condition
 			return fail("value too long")
 		}
 		target = func(in *evalInput) (string, bool) { return in.path, true }
-	case condHeader:
+	case condHeader, condResponseHeader:
 		if !validToken(c.Name) || len(c.Name) > maxCondNameLen {
 			return fail("invalid header name %q", c.Name)
 		}
 		name := textproto.CanonicalMIMEHeaderKey(c.Name)
 		target = func(in *evalInput) (string, bool) {
-			vals, ok := in.header[name]
+			headers := in.header
+			if c.Type == condResponseHeader {
+				headers = in.responseHeader
+			}
+			vals, ok := headers[name]
 			if !ok || len(vals) == 0 {
 				return "", false
 			}
@@ -458,11 +482,14 @@ func compileStringCond(fail func(string, ...any) (condition, error), c Condition
 			}
 			return vals[0], true
 		}
+	case condRequestBody:
+		target = func(in *evalInput) (string, bool) { return in.requestBody, in.requestBodyReady }
+	case condResponseBody:
+		target = func(in *evalInput) (string, bool) { return in.responseBody, in.responseBodyReady }
 	}
 	out := &stringCond{target: target, op: c.Op, value: c.Value}
 	switch c.Op {
 	case opExists, opNotExists:
-		// 不需要 value
 	case opRegex:
 		if len(c.Value) == 0 || len(c.Value) > maxRegexLen {
 			return fail("regex required and must be <= %d chars", maxRegexLen)
@@ -561,12 +588,17 @@ func hasControl(s string) bool {
 
 // evalInput 单请求预取的条件输入（一次解析，全条件复用）。
 type evalInput struct {
-	method   string            // 大写规范化
-	path     string            // r.URL.Path（空归一为 "/"）
-	header   http.Header       // 规范形键
-	cookies  map[string]string // cookie 名 -> 首个值
-	query    url.Values
-	clientIP netip.Addr
+	method            string            // 大写规范化
+	path              string            // r.URL.Path（空归一为 "/"）
+	header            http.Header       // 规范形键
+	cookies           map[string]string // cookie 名 -> 首个值
+	query             url.Values
+	clientIP          netip.Addr
+	requestBody       string
+	requestBodyReady  bool
+	responseHeader    http.Header
+	responseBody      string
+	responseBodyReady bool
 }
 
 // newEvalInput 从请求构造评估输入。clientIP 为 guard 已识别的真实客户端 IP。
@@ -592,15 +624,42 @@ func newEvalInput(r *http.Request, clientIP netip.Addr) *evalInput {
 	return in
 }
 
-// Eval 评估请求：按优先级升序，返回首个 enabled 且条件全中的规则决策；
-// 未命中返回 ok=false（调用方继续后续检查，默认放行到 CC）。
+// ResponseInput 是响应阶段的评估输入。正文只有完整读取或成功有界解压后才标记 Ready。
+type ResponseInput struct {
+	Header           http.Header
+	Body             []byte
+	BodyReady        bool
+	RequestBody      []byte
+	RequestBodyReady bool
+}
+
+// Eval 保持原请求前评估入口；正文按完整空体处理，旧规则行为不变。
 func (e *Engine) Eval(r *http.Request, clientIP netip.Addr) (Decision, bool) {
+	return e.EvalRequest(r, clientIP, nil, true)
+}
+
+// EvalRequest 评估请求阶段规则；含响应条件的规则在本阶段跳过。
+func (e *Engine) EvalRequest(r *http.Request, clientIP netip.Addr, body []byte, bodyReady bool) (Decision, bool) {
+	return e.eval(r, clientIP, ResponseInput{RequestBody: body, RequestBodyReady: bodyReady}, false)
+}
+
+// EvalResponse 评估含响应条件的规则，请求条件仍在同一规则内按 AND 参与匹配。
+func (e *Engine) EvalResponse(r *http.Request, clientIP netip.Addr, in ResponseInput) (Decision, bool) {
+	return e.eval(r, clientIP, in, true)
+}
+
+func (e *Engine) eval(r *http.Request, clientIP netip.Addr, response ResponseInput, responsePhase bool) (Decision, bool) {
 	if e == nil || len(e.rules) == 0 {
 		return Decision{}, false
 	}
 	in := newEvalInput(r, clientIP)
+	in.requestBody = string(response.RequestBody)
+	in.requestBodyReady = response.RequestBodyReady
+	in.responseHeader = response.Header
+	in.responseBody = string(response.Body)
+	in.responseBodyReady = response.BodyReady
 	for _, rule := range e.rules {
-		if !rule.enabled {
+		if !rule.enabled || rule.responsePhase != responsePhase {
 			continue
 		}
 		matched := true
@@ -613,12 +672,7 @@ func (e *Engine) Eval(r *http.Request, clientIP netip.Addr) (Decision, bool) {
 		if !matched {
 			continue
 		}
-		return Decision{
-			RuleID:   rule.id,
-			RuleName: rule.name,
-			Action:   rule.action,
-			Config:   rule.cfg,
-		}, true
+		return Decision{RuleID: rule.id, RuleName: rule.name, Action: rule.action, Config: rule.cfg}, true
 	}
 	return Decision{}, false
 }

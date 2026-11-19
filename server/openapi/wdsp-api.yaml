@@ -1337,7 +1337,7 @@ components:
           type: string
     AppHeaderConfig:
       type: object
-      description: 应用级 HTTP 头合规与代理配置（与 app_header_configs 表一致）。下划线请求头由网关内核入口强制丢弃，始终生效、不可配置，故无该开关。
+      description: 应用级 HTTP 头合规与代理配置（与 app_header_configs 表一致）。下划线请求头由网关内核入口强制丢弃；中间件和数据库版本响应头始终删除，自定义响应规则不能恢复。server_action/x_powered_by_action 仅为兼容保留。
       required:
       - server_action
       - x_author_action
@@ -5504,8 +5504,9 @@ components:
       type: object
       required:
       - type
-      description: 匹配条件（多条件 AND）。method/client_ip 用 values 数组（等价 op=in，规范化后不携带 op）；uri 无 name；header/cookie/query 用 name+op+value；exists/not_exists
-        不需要 value
+      description: 匹配条件（多条件 AND）。method/client_ip 用 values 数组（等价 op=in，规范化后不携带 op）；uri/request_body/response_body
+        无 name；header/cookie/query/response_header 用 name+op+value；exists/not_exists 不需要 value。含响应条件的规则在响应回程评估，正文仅检查完整且不超过
+        1 MiB 的内容
       properties:
         type:
           type: string
@@ -5516,11 +5517,14 @@ components:
           - cookie
           - query
           - client_ip
+          - request_body
+          - response_header
+          - response_body
           description: 条件类型
         name:
           type: string
           maxLength: 128
-          description: 条件名称（header/cookie/query 必填；header/cookie 须为合法 HTTP token，header 名称大小写不敏感）
+          description: 条件名称（header/cookie/query/response_header 必填；头名称须为合法 HTTP token 且大小写不敏感）
         op:
           type: string
           enum:
@@ -5532,7 +5536,7 @@ components:
           - exists
           - not_exists
           - in
-          description: 运算符（uri 仅支持 eq/ne/prefix/contains/regex；regex 须可编译）
+          description: 运算符（uri 和正文支持 eq/ne/prefix/contains/regex；正文不支持 exists/not_exists/in；regex 须可编译）
         value:
           type: string
           description: 条件值（最长 512 字节，regex 最长 512 字节；非 regex 的 uri 条件值须以 / 开头）
@@ -5572,8 +5576,9 @@ components:
           description: 自定义页面内容（custom_page 必填，≤64KB）
     L7Rule:
       type: object
-      description: L7 访问控制规则。评估语义（与网关引擎一致）：按（priority 升序, created_at 升序）稳定排序，首个 enabled 且条件全中的规则生效（首中即停）；全部未命中 = 继续后续检查（默认放行到
-        CC）
+      description: L7 访问控制规则。含请求条件的规则在源站前评估；含 response_header/response_body 的规则在响应回程评估。各阶段按（priority
+        升序, created_at 升序）稳定排序，首个 enabled 且条件全中的规则生效（首中即停）；正文仅检查完整且不超过 1 MiB
+        的内容，超限、流式或无法解码时不产生正文匹配并完整透传
       properties:
         id:
           type: string
@@ -5688,7 +5693,8 @@ components:
       type: object
       required:
       - uri
-      description: 规则测试器输入（uri 以 / 开头且 ≤2048 字符；client_ip 为单个 IP 不支持 CIDR；headers/cookies/query 各 ≤64 条，值 ≤8192 字节且不含控制字符）
+      description: 规则测试器输入（uri 以 / 开头且 ≤2048 字符；client_ip 为单个 IP 不支持 CIDR；headers/cookies/query/response_headers
+        各 ≤64 条，值 ≤8192 字节且不含控制字符；请求体和响应体用于模拟完整正文）
       properties:
         uri:
           type: string
@@ -5714,6 +5720,17 @@ components:
         client_ip:
           type: string
           description: 来源 IP（单个 IP，可空）
+        request_body:
+          type: string
+          description: 模拟请求体
+        response_headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: 模拟响应头键值
+        response_body:
+          type: string
+          description: 模拟响应体
     L7RuleTestResponse:
       type: object
       description: 规则测试器评估结果

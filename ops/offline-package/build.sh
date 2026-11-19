@@ -569,6 +569,8 @@ services:
       - gateway-admin:/var/run/caddy
       - gateway-logs:/var/log/caddy-audit:ro
       - runtime-data:/app/runtime
+      # HTTPS 证书下发：与 gateway 的 /etc/caddy/certs 共用同一卷；嵌套在 runtime-data 下
+      - gateway-certs:/app/runtime/certificates
       # 系统控制通道：API 写入的 hostctl 标志必须对宿主机 path 单元可见；
       # 在 runtime-data 挂载点下叠加嵌套 bind，保留其余 runtime 命名卷数据。
       - ./runtime/hostctl:/app/runtime/hostctl
@@ -639,6 +641,8 @@ services:
       # autosave 与 Caddy 存储持久化（对应 XDG_CONFIG_HOME=/config、XDG_DATA_HOME=/data）
       - gateway-config:/config
       - gateway-config:/data
+      # API 写入 /app/runtime/certificates；Caddy 经同一卷只读加载
+      - gateway-certs:/etc/caddy/certs:ro
       # 修复既有缺陷（设计文档「二、现状与关键事实」）：原生产模板缺少
       # rules/Caddyfile/blockpage 挂载，参照 deployment/docker-compose.stage5.yml 补齐。
       # 离线生产包统一从 bootstrap Caddyfile 启动，配置由 API 经 Unix Socket 发布。
@@ -737,6 +741,7 @@ volumes:
   gateway-admin: {driver: local}
   gateway-logs: {driver: local}
   gateway-config: {driver: local}
+  gateway-certs: {driver: local}
   runtime-data: {driver: local}
   containerops-data: {driver: local}
 

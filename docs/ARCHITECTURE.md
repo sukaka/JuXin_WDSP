@@ -86,6 +86,8 @@ IP 白名单判断
   ↓
 IP 黑名单判断
   ↓
+L7 请求阶段（URI/方法/请求头/Cookie/Query/来源 IP/请求体，首中即停）
+  ↓
 CC 频率限制
   ↓
 Bot 挑战判定（bot_policy，可选，默认 OFF；OBSERVE 只记录不实断，PROTECT 挑战/verify；
@@ -97,6 +99,8 @@ Bot 挑战判定（bot_policy，可选，默认 OFF；OBSERVE 只记录不实断
 Coraza/CRS 攻击检测
   ↓
 反向代理到源站
+  ↓
+L7 响应阶段（返回头/返回体关键字或正则；完整正文 ≤1 MiB，超限/流式降级透传）
   ↓
 返回响应
   ↓
