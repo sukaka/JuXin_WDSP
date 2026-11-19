@@ -88,7 +88,8 @@ function getGlobeTexture(): string {
   const canvas = document.createElement('canvas')
   canvas.width = 2048
   canvas.height = 1024
-  const ctx = canvas.getContext('2d')!
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('2d canvas context unavailable')
   ctx.fillStyle = '#04122b'
   ctx.fillRect(0, 0, canvas.width, canvas.height)
   const projection = geoEquirectangular()
@@ -125,99 +126,102 @@ export default function GlobeAttackMap({
 
   useEffect(() => {
     if (!containerRef.current) return
-    let chart: echarts.ECharts
+    let chart: echarts.ECharts | null = null
     try {
       chart = echarts.init(containerRef.current)
+      chart.setOption({
+        tooltip: {
+          backgroundColor: 'rgba(5, 17, 41, 0.92)',
+          borderColor: 'rgba(0, 229, 255, 0.4)',
+          textStyle: { color: '#d6e4ff', fontSize: 12 },
+          formatter: (params: { seriesId?: string; data?: { name?: string; count?: number; color?: string } }) => {
+            const d = params.data
+            if (params.seriesId === 'attack-arcs' && d) {
+              return `<span style="color:${safeCssColor(d.color)}">●</span> ${escapeHtml(d.name)} → 本站<br/>攻击事件：${escapeHtml(d.count)} 次`
+            }
+            if (params.seriesId === 'attack-sources' && d) {
+              return `${escapeHtml(d.name)}：${escapeHtml(d.count)} 次`
+            }
+            if (params.seriesId === 'protected-target') return '本站（被防护目标）'
+            return ''
+          },
+        },
+        globe: {
+          baseTexture: getGlobeTexture(),
+          shading: 'lambert',
+          light: { ambient: { intensity: 0.55 }, main: { intensity: 1.4 }, displacementScale: 0 },
+          atmosphere: { show: true, offset: 3, color: 'rgba(0, 229, 255, 0.35)' },
+          viewControl: {
+            autoRotate: true,
+            autoRotateSpeed: 9,
+            autoRotateAfterStill: 4,
+            damping: 0.85,
+            distance: 200,
+            minDistance: 120,
+            maxDistance: 320,
+            alpha: 22,
+            beta: 150,
+            targetCoord: target,
+          },
+        },
+        series: [
+          {
+            id: 'attack-arcs',
+            type: 'lines3D',
+            coordinateSystem: 'globe',
+            blendMode: 'lighter',
+            polyline: true,
+            lineStyle: { width: 1.6, opacity: 0.85 },
+            // 沿弧从来源地流向本站的流动光点，指示攻击方向
+            effect: { show: true, period: 3.5, trailWidth: 3.5, trailLength: 0.35, trailOpacity: 1 },
+            data: [],
+          },
+          {
+            id: 'attack-sources',
+            type: 'scatter3D',
+            coordinateSystem: 'globe',
+            // 不透明渲染：球体背面的光点被遮挡，避免透出光晕
+            itemStyle: { opacity: 1 },
+            symbolSize: 8,
+            data: [],
+          },
+          {
+            id: 'protected-target',
+            type: 'scatter3D',
+            coordinateSystem: 'globe',
+            symbol: 'diamond',
+            symbolSize: 14,
+            itemStyle: { color: '#00e5ff', opacity: 1 },
+            data: [],
+          },
+          {
+            // 隐藏参考点：钉住 echarts-gl 高度轴的数据范围（高度轴按 dataMin/dataMax
+            // 归一化到 [0, 50] 球面单位），保证光点高度不随数据波动
+            id: 'alt-reference',
+            type: 'scatter3D',
+            coordinateSystem: 'globe',
+            silent: true,
+            symbolSize: 1,
+            itemStyle: { opacity: 0 },
+            tooltip: { show: false },
+            data: [{ value: [0, -89.9, 0] }, { value: [0, 89.9, 10] }],
+          },
+        ],
+      })
     } catch {
-      // 无 WebGL 环境（如部分虚拟化/远程桌面）时降级为提示
+      // 无 WebGL 环境（如部分虚拟化/远程桌面）或着色器初始化失败时降级为提示，避免大屏白屏
+      chart?.dispose()
+      chartRef.current = null
       setFailed(true)
       return
     }
     chartRef.current = chart
-    chart.setOption({
-      tooltip: {
-        backgroundColor: 'rgba(5, 17, 41, 0.92)',
-        borderColor: 'rgba(0, 229, 255, 0.4)',
-        textStyle: { color: '#d6e4ff', fontSize: 12 },
-        formatter: (params: { seriesId?: string; data?: { name?: string; count?: number; color?: string } }) => {
-          const d = params.data
-          if (params.seriesId === 'attack-arcs' && d) {
-            return `<span style="color:${safeCssColor(d.color)}">●</span> ${escapeHtml(d.name)} → 本站<br/>攻击事件：${escapeHtml(d.count)} 次`
-          }
-          if (params.seriesId === 'attack-sources' && d) {
-            return `${escapeHtml(d.name)}：${escapeHtml(d.count)} 次`
-          }
-          if (params.seriesId === 'protected-target') return '本站（被防护目标）'
-          return ''
-        },
-      },
-      globe: {
-        baseTexture: getGlobeTexture(),
-        shading: 'lambert',
-        light: { ambient: { intensity: 0.55 }, main: { intensity: 1.4 }, displacementScale: 0 },
-        atmosphere: { show: true, offset: 3, color: 'rgba(0, 229, 255, 0.35)' },
-        viewControl: {
-          autoRotate: true,
-          autoRotateSpeed: 9,
-          autoRotateAfterStill: 4,
-          damping: 0.85,
-          distance: 200,
-          minDistance: 120,
-          maxDistance: 320,
-          alpha: 22,
-          beta: 150,
-          targetCoord: target,
-        },
-      },
-      series: [
-        {
-          id: 'attack-arcs',
-          type: 'lines3D',
-          coordinateSystem: 'globe',
-          blendMode: 'lighter',
-          polyline: true,
-          lineStyle: { width: 1.6, opacity: 0.85 },
-          // 沿弧从来源地流向本站的流动光点，指示攻击方向
-          effect: { show: true, period: 3.5, trailWidth: 3.5, trailLength: 0.35, trailOpacity: 1 },
-          data: [],
-        },
-        {
-          id: 'attack-sources',
-          type: 'scatter3D',
-          coordinateSystem: 'globe',
-          // 不透明渲染：球体背面的光点被遮挡，避免透出光晕
-          itemStyle: { opacity: 1 },
-          symbolSize: 8,
-          data: [],
-        },
-        {
-          id: 'protected-target',
-          type: 'scatter3D',
-          coordinateSystem: 'globe',
-          symbol: 'diamond',
-          symbolSize: 14,
-          itemStyle: { color: '#00e5ff', opacity: 1 },
-          data: [],
-        },
-        {
-          // 隐藏参考点：钉住 echarts-gl 高度轴的数据范围（高度轴按 dataMin/dataMax
-          // 归一化到 [0, 50] 球面单位），保证光点高度不随数据波动
-          id: 'alt-reference',
-          type: 'scatter3D',
-          coordinateSystem: 'globe',
-          silent: true,
-          symbolSize: 1,
-          itemStyle: { opacity: 0 },
-          tooltip: { show: false },
-          data: [{ value: [0, -89.9, 0] }, { value: [0, 89.9, 10] }],
-        },
-      ],
-    })
-    const observer = new ResizeObserver(() => chart.resize())
+    const mountedChart = chart
+    const observer = new ResizeObserver(() => mountedChart.resize())
     observer.observe(containerRef.current)
     return () => {
       observer.disconnect()
-      chart.dispose()
+      mountedChart.dispose()
       chartRef.current = null
     }
     // target 在组件生命周期内不变（页面级常量），仅在挂载时初始化
@@ -227,43 +231,49 @@ export default function GlobeAttackMap({
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
-    chart.setOption(
-      {
-        series: [
-          {
-            id: 'attack-arcs',
-            data: routes.map((r) => ({
-              name: r.name,
-              count: r.count,
-              color: r.color,
-              coords: makeArc(r.from, target),
-              lineStyle: { color: r.color, width: Math.min(1.4 + r.count * 0.12, 3) },
-              effect: { trailColor: r.color },
-            })),
-          },
-          {
-            id: 'attack-sources',
-            // 第三维为离地高度：光点悬浮于球面之上，不再贴着地球
-            data: routes.map((r) => ({
-              name: r.name,
-              count: r.count,
-              value: [r.from[0], r.from[1], 1],
-              itemStyle: { color: r.color },
-            })),
-            symbolSize: (val: number[]) => Math.min(5 + val[2] * 0.7, 14),
-          },
-          {
-            id: 'protected-target',
-            data: [{ value: [target[0], target[1], 2] }],
-          },
-          {
-            id: 'alt-reference',
-            data: [{ value: [0, -89.9, 0] }, { value: [0, 89.9, 10] }],
-          },
-        ],
-      },
-      { replaceMerge: 'series' },
-    )
+    try {
+      chart.setOption(
+        {
+          series: [
+            {
+              id: 'attack-arcs',
+              data: routes.map((r) => ({
+                name: r.name,
+                count: r.count,
+                color: r.color,
+                coords: makeArc(r.from, target),
+                lineStyle: { color: r.color, width: Math.min(1.4 + r.count * 0.12, 3) },
+                effect: { trailColor: r.color },
+              })),
+            },
+            {
+              id: 'attack-sources',
+              // 第三维为离地高度：光点悬浮于球面之上，不再贴着地球
+              data: routes.map((r) => ({
+                name: r.name,
+                count: r.count,
+                value: [r.from[0], r.from[1], 1],
+                itemStyle: { color: r.color },
+              })),
+              symbolSize: (val: number[]) => Math.min(5 + val[2] * 0.7, 14),
+            },
+            {
+              id: 'protected-target',
+              data: [{ value: [target[0], target[1], 2] }],
+            },
+            {
+              id: 'alt-reference',
+              data: [{ value: [0, -89.9, 0] }, { value: [0, 89.9, 10] }],
+            },
+          ],
+        },
+        { replaceMerge: 'series' },
+      )
+    } catch {
+      chart.dispose()
+      chartRef.current = null
+      setFailed(true)
+    }
   }, [routes, target])
 
   if (failed) {
