@@ -182,22 +182,25 @@ func (s *Service) executeUpdate(ctx context.Context, job *ActionJob) error {
 var errUpdateNoop = errors.New("目标镜像与当前运行镜像一致")
 
 // rollback 尽力回滚：移除新容器 → 旧容器改回原名 → 重新拉起旧容器。
+// 使用独立的 2 分钟超时上下文，避免原任务 ctx 已超时或取消时回滚全部失败。
 // 各步失败只记录日志并汇总，不掩盖原始失败原因。
-func (s *Service) rollback(ctx context.Context, oldID, newID, origName string, oldStarted *bool) {
+func (s *Service) rollback(_ context.Context, oldID, newID, origName string, oldStarted *bool) {
+	rbCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 	var problems []string
 	if newID != "" {
-		if err := s.docker.StopContainer(ctx, newID, s.stopTimeoutSec); err != nil {
+		if err := s.docker.StopContainer(rbCtx, newID, s.stopTimeoutSec); err != nil {
 			problems = append(problems, "停止新容器: "+err.Error())
 		}
-		if err := s.docker.RemoveContainer(ctx, newID, true); err != nil {
+		if err := s.docker.RemoveContainer(rbCtx, newID, true); err != nil {
 			problems = append(problems, "移除新容器: "+err.Error())
 		}
 	}
-	if err := s.docker.RenameContainer(ctx, oldID, origName); err != nil {
+	if err := s.docker.RenameContainer(rbCtx, oldID, origName); err != nil {
 		problems = append(problems, "改回旧容器名: "+err.Error())
 	}
 	if *oldStarted {
-		if err := s.docker.StartContainer(ctx, oldID); err != nil {
+		if err := s.docker.StartContainer(rbCtx, oldID); err != nil {
 			problems = append(problems, "拉起旧容器: "+err.Error())
 		}
 	}

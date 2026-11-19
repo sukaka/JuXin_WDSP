@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -108,6 +109,12 @@ func (s *Store) Upload(ctx context.Context, in UploadInput) (*Certificate, error
 	if err != nil {
 		return nil, err
 	}
+	// 证书链非空时严格校验 PEM 与 X.509 结构
+	if strings.TrimSpace(in.ChainPEM) != "" {
+		if _, _, err := ParseCertificateChainPEM(in.ChainPEM); err != nil {
+			return nil, fmt.Errorf("证书链无效: %w", err)
+		}
+	}
 	// 密钥强度
 	if err := ValidateKeyStrength(parsed); err != nil {
 		return nil, err
@@ -119,6 +126,9 @@ func (s *Store) Upload(ctx context.Context, in UploadInput) (*Certificate, error
 	// 有效期
 	if err := ValidateCertValidity(cert, time.Now()); err != nil {
 		return nil, err
+	}
+	if s.enc == nil {
+		return nil, fmt.Errorf("加密服务未配置，无法安全存储私钥")
 	}
 	// 重复证书（指纹）
 	var existingID uuid.UUID
@@ -256,18 +266,32 @@ WHERE id = $2 AND version = $3 AND deleted_at IS NULL`, name, id, expectedVersio
 	return nil
 }
 
-// Delete 删除证书（使用中的证书禁止删除）。
+// Delete 删除证书（事务内锁定证书行并校验活动绑定，使用中的证书禁止删除）。
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
-	// 检查是否被应用使用
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var lockedID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM certificates WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&lockedID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	// 检查是否被应用活动使用
 	var useCount int
-	if err := s.db.QueryRow(ctx,
-		`SELECT count(*) FROM application_certificates WHERE certificate_id = $1`, id).Scan(&useCount); err != nil {
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM application_certificates WHERE certificate_id = $1 AND is_active = TRUE`, id).Scan(&useCount); err != nil {
 		return err
 	}
 	if useCount > 0 {
 		return ErrInUse
 	}
-	res, err := s.db.Exec(ctx,
+	res, err := tx.Exec(ctx,
 		`UPDATE certificates SET deleted_at = now(), updated_at = now(), version = version + 1 WHERE id = $1 AND deleted_at IS NULL`, id)
 	if err != nil {
 		return err
@@ -275,14 +299,14 @@ func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	if res.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
-// CountUsage 查询证书被绑定的应用数。
+// CountUsage 查询证书当前活动绑定的应用数。
 func (s *Store) CountUsage(ctx context.Context, id uuid.UUID) (int, error) {
 	var n int
 	err := s.db.QueryRow(ctx,
-		`SELECT count(*) FROM application_certificates WHERE certificate_id = $1`, id).Scan(&n)
+		`SELECT count(*) FROM application_certificates WHERE certificate_id = $1 AND is_active = TRUE`, id).Scan(&n)
 	return n, err
 }
 
@@ -297,6 +321,9 @@ func (s *Store) GetCertPEM(ctx context.Context, id uuid.UUID) (certPEM, chainPEM
 
 // GetDecryptedKey 解密获取私钥（仅供配置发布内部使用）。
 func (s *Store) GetDecryptedKey(ctx context.Context, id uuid.UUID) (string, error) {
+	if s.enc == nil {
+		return "", fmt.Errorf("加密服务未配置")
+	}
 	c, err := s.GetByID(ctx, id)
 	if err != nil {
 		return "", err
@@ -331,6 +358,15 @@ func (s *Store) BindApplication(ctx context.Context, appID, certID, operatorID u
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// 共享锁防止并发软删该证书
+	var lockedID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM certificates WHERE id = $1 AND deleted_at IS NULL FOR SHARE`, certID).Scan(&lockedID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
 	// 一个应用仅一个活动证书：先将旧证书设为非活动
 	if _, err := tx.Exec(ctx,
 		`UPDATE application_certificates SET is_active = FALSE, updated_at = now() WHERE application_id = $1`, appID); err != nil {
@@ -346,10 +382,17 @@ DO UPDATE SET is_active = TRUE, updated_at = now()`, appID, certID, operatorID);
 	return tx.Commit(ctx)
 }
 
-// UnbindApplication 解绑应用证书。
+// UnbindApplication 解绑应用证书（解绑该应用的所有证书绑定）。
 func (s *Store) UnbindApplication(ctx context.Context, appID uuid.UUID) error {
 	_, err := s.db.Exec(ctx,
 		`DELETE FROM application_certificates WHERE application_id = $1`, appID)
+	return err
+}
+
+// UnbindCertificate 仅解绑指定应用与指定证书的绑定关系。
+func (s *Store) UnbindCertificate(ctx context.Context, appID, certID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`DELETE FROM application_certificates WHERE application_id = $1 AND certificate_id = $2`, appID, certID)
 	return err
 }
 

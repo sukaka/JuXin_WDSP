@@ -44,6 +44,9 @@ func NewStore(db *pgxpool.Pool) *Store {
 const jobColumns = `id, backup_job_id, restore_scope, status, preview, confirmed_by, confirmed_at,
 requested_by, requested_at, started_at, finished_at, failure_code, failure_message, request_id`
 
+// restoreJobLockKey 串行化活动恢复任务的检查与创建，避免并发请求同时通过 HasActive 校验。
+const restoreJobLockKey int64 = 0x4a5a574146525354
+
 func (s *Store) scanJob(row pgx.Row) (*Job, error) {
 	var j Job
 	err := row.Scan(&j.ID, &j.BackupJobID, &j.RestoreScope, &j.Status, &j.Preview,
@@ -56,6 +59,42 @@ func (s *Store) scanJob(row pgx.Row) (*Job, error) {
 		return nil, err
 	}
 	return &j, nil
+}
+
+// CreateIfNoActive 在同一事务中以事务级咨询锁串行化活动任务检查并创建 PENDING 恢复任务。
+func (s *Store) CreateIfNoActive(ctx context.Context, backupJobID uuid.UUID, scope string, requestedBy *uuid.UUID, requestID string) (*Job, error) {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, restoreJobLockKey); err != nil {
+		return nil, err
+	}
+	var active bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS(SELECT 1 FROM restore_jobs
+  WHERE status IN ($1,$2,$3,$4,$5,$6))`,
+		StatusPending, StatusValidating, StatusIsolatedRestore, StatusVerifying,
+		StatusAwaitingConfirm, StatusRestoring).Scan(&active); err != nil {
+		return nil, err
+	}
+	if active {
+		return nil, ErrActiveRestore
+	}
+	row := tx.QueryRow(ctx, `
+INSERT INTO restore_jobs (backup_job_id, restore_scope, status, requested_by, request_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING `+jobColumns, backupJobID, scope, StatusPending, requestedBy, requestID)
+	job, err := s.scanJob(row)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return job, nil
 }
 
 // Create 创建 PENDING 恢复任务。

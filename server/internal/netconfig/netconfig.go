@@ -184,12 +184,16 @@ func Validate(cfg *Config, ifaces []nodeinterfaces.Interface) error {
 		return fmt.Errorf("routes 数量超出上限（%d）", maxRoutes)
 	}
 	seenDst := make(map[string]bool, len(cfg.Routes))
-	for _, rt := range cfg.Routes {
-		if _, _, err := net.ParseCIDR(rt.Dst); err != nil {
-			return fmt.Errorf("路由 dst 不是合法 CIDR: %q", rt.Dst)
+	for i := range cfg.Routes {
+		rt := &cfg.Routes[i]
+		_, ipnet, err := net.ParseCIDR(rt.Dst)
+		if err != nil || ipnet.IP.To4() == nil {
+			return fmt.Errorf("路由 dst 不是合法 IPv4 CIDR（仅支持 IPv4）: %q", rt.Dst)
 		}
-		if ip := net.ParseIP(rt.Via); ip == nil {
-			return fmt.Errorf("路由 via 不是合法 IP: %q", rt.Via)
+		rt.Dst = ipnet.String() // 与 netmgrd 一致，归一化为网络地址 CIDR
+		via := net.ParseIP(rt.Via)
+		if via == nil || via.To4() == nil {
+			return fmt.Errorf("路由 via 不是合法 IPv4 IP: %q", rt.Via)
 		}
 		if seenDst[rt.Dst] {
 			return fmt.Errorf("路由 dst 重复: %s", rt.Dst)

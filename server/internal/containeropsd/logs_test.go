@@ -132,3 +132,30 @@ func TestStripControlsInStream(t *testing.T) {
 		t.Fatalf("行数 = %d, want 2", len(lines))
 	}
 }
+
+type infiniteByteReader struct {
+	read int64
+}
+
+func (r *infiniteByteReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'a'
+	}
+	r.read += int64(len(p))
+	return len(p), nil
+}
+
+func TestParseRawStreamBoundsUnboundedSingleLine(t *testing.T) {
+	src := &infiniteByteReader{}
+	_, truncated, _, err := ParseLogStream(src, true, MaxLogBytes)
+	if err != nil {
+		t.Fatalf("ParseLogStream on unbounded line: %v", err)
+	}
+	if !truncated {
+		t.Fatal("unbounded line must be marked truncated")
+	}
+	maxExpected := int64(MaxLogBytes) + 64*1024
+	if src.read > maxExpected {
+		t.Fatalf("parseRawStream read %d bytes, exceeds bound %d", src.read, maxExpected)
+	}
+}

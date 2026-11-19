@@ -46,8 +46,8 @@ const (
 // 主机名：标签内仅字母数字与 -/.，总长 ≤253，不以 - 开头，拒绝一切 shell 元字符。
 var reHostname = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$`)
 
-// 抓包网口名：字母数字及 ._-，最长 32。
-var reIface = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,32}$`)
+// 抓包网口名：与 Linux IFNAMSIZ（15 字符）和 netmgrd 对齐，字母数字开头，允许 _ . : -。
+var reIface = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}$`)
 
 // ValidAction 校验诊断动作枚举。
 func ValidAction(a string) bool {
@@ -58,14 +58,14 @@ func ValidAction(a string) bool {
 	return false
 }
 
-// ValidHost 校验诊断目标：IPv4/IPv6 字面量或合法主机名
+// ValidHost 校验诊断目标：IPv4/IPv6 字面量（拒绝 zone 标识）或合法主机名
 // （不以 - 开头、拒绝一切 shell 元字符；对齐 sysconsole.ValidHost 语义）。
 func ValidHost(s string) bool {
 	if s == "" || len(s) > 253 {
 		return false
 	}
-	if _, err := netip.ParseAddr(s); err == nil {
-		return true
+	if addr, err := netip.ParseAddr(s); err == nil {
+		return addr.Zone() == ""
 	}
 	return reHostname.MatchString(s)
 }
@@ -138,7 +138,7 @@ func Validate(action, target string, p *Params) error {
 			return fmt.Errorf("capture 必须指定 iface")
 		}
 		if !ValidIface(p.Iface) {
-			return fmt.Errorf("iface 含非法字符（仅允许字母数字及 ._-，最长 32）")
+			return fmt.Errorf("iface 含非法字符（须字母数字开头，仅允许字母数字及 _.:-，最长 15）")
 		}
 		if p.DurationSec == 0 {
 			p.DurationSec = defaultCaptureDurSec

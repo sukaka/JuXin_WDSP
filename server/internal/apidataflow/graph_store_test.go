@@ -395,3 +395,28 @@ func TestGraphNodeNetworkZoneConflictRemainsUnknown(t *testing.T) {
 		t.Fatalf("unexpected network zones: %+v", nodes)
 	}
 }
+
+func TestGraphNodeComputesCumulativeErrorRateAndHealth(t *testing.T) {
+	nodes := map[string]*Node{}
+	// Edge 1: 100 calls, 20 errors -> 20% (ERROR)
+	upsertGraphNode(nodes, "service:orders", "orders", "SERVICE", Edge{Calls: 100, Errors: 20}, true)
+	node := nodes["service:orders"]
+	if node.ErrorRate < 0.1999 || node.ErrorRate > 0.2001 || node.Health != "ERROR" {
+		t.Fatalf("after edge 1: rate=%v health=%s, want 0.20 ERROR", node.ErrorRate, node.Health)
+	}
+	// Edge 2: 100 calls, 0 errors -> cumulative 20/200 = 10% (DEGRADED, NOT 0% from last edge!)
+	upsertGraphNode(nodes, "service:orders", "orders", "SERVICE", Edge{Calls: 100, Errors: 0}, false)
+	if node.Calls != 200 || node.ErrorRate < 0.0999 || node.ErrorRate > 0.1001 || node.Health != "DEGRADED" {
+		t.Fatalf("after edge 2: calls=%d rate=%v health=%s, want 200 0.10 DEGRADED", node.Calls, node.ErrorRate, node.Health)
+	}
+	// Edge 3: 100 calls, 15 errors -> cumulative 35/300 = 11.67% (ERROR)
+	upsertGraphNode(nodes, "service:orders", "orders", "SERVICE", Edge{Calls: 100, Errors: 15}, true)
+	if node.Calls != 300 || node.ErrorRate < 0.116 || node.ErrorRate > 0.117 || node.Health != "ERROR" {
+		t.Fatalf("after edge 3: calls=%d rate=%v health=%s, want 300 ~0.1167 ERROR", node.Calls, node.ErrorRate, node.Health)
+	}
+	// Edge 4: 700 calls, 0 errors -> cumulative 35/1000 = 3.5% (HEALTHY)
+	upsertGraphNode(nodes, "service:orders", "orders", "SERVICE", Edge{Calls: 700, Errors: 0}, false)
+	if node.Calls != 1000 || node.ErrorRate < 0.0349 || node.ErrorRate > 0.0351 || node.Health != "HEALTHY" {
+		t.Fatalf("after edge 4: calls=%d rate=%v health=%s, want 1000 0.035 HEALTHY", node.Calls, node.ErrorRate, node.Health)
+	}
+}

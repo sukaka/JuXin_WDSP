@@ -123,7 +123,7 @@ func (m *StorageManager) ExpireOne(ctx context.Context, id uuid.UUID) error {
 		return nil
 	}
 	wasExpiring := artifact.State == "EXPIRING"
-	if artifact.State != "WARM" && !wasExpiring {
+	if artifact.State != "WARM" && artifact.State != "HOT" && !wasExpiring {
 		return fmt.Errorf("evidence state %s cannot expire", artifact.State)
 	}
 	if !wasExpiring {
@@ -131,11 +131,15 @@ func (m *StorageManager) ExpireOne(ctx context.Context, id uuid.UUID) error {
 			return err
 		}
 	}
-	_, warmPath, err := m.paths(artifact.ID)
+	hotPath, warmPath, err := m.paths(artifact.ID)
 	if err != nil {
 		return err
 	}
-	if _, err := os.Lstat(warmPath); err != nil {
+	targetPath := warmPath
+	if artifact.State == "HOT" || (wasExpiring && artifact.StorageTier == "HOT") {
+		targetPath = hotPath
+	}
+	if _, err := os.Lstat(targetPath); err != nil {
 		if os.IsNotExist(err) && wasExpiring {
 			// 已有删除意图，允许在崩溃恢复时确认文件已不再存在。
 			return m.store.CompleteExpiry(ctx, artifact.ID)
@@ -143,7 +147,7 @@ func (m *StorageManager) ExpireOne(ctx context.Context, id uuid.UUID) error {
 		_ = m.store.MarkUnavailable(ctx, artifact.ID)
 		return fmt.Errorf("expired evidence is unexpectedly missing: %w", err)
 	}
-	if err := removeRegularIfExists(warmPath); err != nil {
+	if err := removeRegularIfExists(targetPath); err != nil {
 		_ = m.store.MarkUnavailable(ctx, artifact.ID)
 		return fmt.Errorf("delete expired evidence: %w", err)
 	}

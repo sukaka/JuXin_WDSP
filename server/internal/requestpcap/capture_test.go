@@ -74,7 +74,7 @@ func TestCaptureControlRequiresSystemAdminPermission(t *testing.T) {
 	if got := requestJSON(t, mux, http.MethodGet, "/api/v1/request-pcap/capture", nil); got.Code != http.StatusForbidden {
 		t.Fatalf("GET capture without permission = %d", got.Code)
 	}
-	body := map[string]interface{}{"enabled": true, "interface": "eth0", "ports": []int{80}, "hot_dir": "/srv/hot", "warm_dir": "/srv/warm", "reason": "test"}
+	body := map[string]interface{}{"enabled": true, "interface": "eth0", "ports": []int{80}, "hot_dir": "/srv/jiuzhang-hot", "warm_dir": "/srv/jiuzhang-warm", "reason": "test"}
 	if got := requestJSON(t, mux, http.MethodPost, "/api/v1/request-pcap/capture", body); got.Code != http.StatusForbidden {
 		t.Fatalf("POST capture without permission = %d", got.Code)
 	}
@@ -82,7 +82,7 @@ func TestCaptureControlRequiresSystemAdminPermission(t *testing.T) {
 
 func TestCaptureEnableAndDisableUseRealSignedCommands(t *testing.T) {
 	controller, _, spy, mux := newCaptureFixture(t, PermissionCaptureControl)
-	body := map[string]interface{}{"enabled": true, "interface": "eth0", "ports": []int{443, 80}, "hot_dir": "/srv/hot", "warm_dir": "/srv/warm", "reason": "业务取证"}
+	body := map[string]interface{}{"enabled": true, "interface": "eth0", "ports": []int{443, 80}, "hot_dir": "/srv/jiuzhang-hot", "warm_dir": "/srv/jiuzhang-warm", "reason": "业务取证"}
 	if got := requestJSON(t, mux, http.MethodPost, "/api/v1/request-pcap/capture", body); got.Code != http.StatusAccepted {
 		t.Fatalf("enable = %d: %s", got.Code, got.Body.String())
 	}
@@ -109,11 +109,11 @@ func TestCaptureEnableAndDisableUseRealSignedCommands(t *testing.T) {
 			last = command
 		}
 	}
-	if last.Enabled == nil || *last.Enabled || last.Interface != "eth0" || last.HotDir != "/srv/hot" || last.WarmDir != "/srv/warm" {
+	if last.Enabled == nil || *last.Enabled || last.Interface != "eth0" || last.HotDir != "/srv/jiuzhang-hot" || last.WarmDir != "/srv/jiuzhang-warm" {
 		t.Fatalf("disable did not preserve scope: %+v", last)
 	}
 	statusRaw, _ := json.Marshal(map[string]string{"requestID": last.RequestID, "state": "DISABLED"})
-	if err := os.WriteFile(filepath.Join(controller.hostctl, "pcap-status.json"), statusRaw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(controller.hostctl, "pcap-status.state"), statusRaw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	status := controller.status(&CaptureConfig{Enabled: true, RequestID: last.RequestID, RequestedAt: controller.now()})
@@ -124,14 +124,21 @@ func TestCaptureEnableAndDisableUseRealSignedCommands(t *testing.T) {
 
 func TestCaptureRejectsInvalidScopeWithoutWritingCommand(t *testing.T) {
 	controller, _, _, mux := newCaptureFixture(t, PermissionCaptureControl)
-	body := map[string]interface{}{"enabled": true, "interface": "eth0;id", "ports": []int{80}, "hot_dir": "/srv/hot", "warm_dir": "/srv/warm", "reason": "test"}
+	body := map[string]interface{}{"enabled": true, "interface": "eth0;id", "ports": []int{80}, "hot_dir": "/srv/jiuzhang-hot", "warm_dir": "/srv/jiuzhang-warm", "reason": "test"}
 	if got := requestJSON(t, mux, http.MethodPost, "/api/v1/request-pcap/capture", body); got.Code != http.StatusBadRequest {
 		t.Fatalf("invalid interface = %d", got.Code)
 	}
 	body["interface"] = "eth0"
-	body["hot_dir"] = "/srv/warm/nested"
+	body["hot_dir"] = "/srv/jiuzhang-warm/nested"
 	if got := requestJSON(t, mux, http.MethodPost, "/api/v1/request-pcap/capture", body); got.Code != http.StatusBadRequest {
 		t.Fatalf("nested storage = %d", got.Code)
+	}
+	for _, badDir := range []string{"/var/lib/docker", "/var/lib/systemd", "/srv/other", "/var/lib/jiuzhang-other", "/srv/jiuzhang"} {
+		body["hot_dir"] = badDir
+		body["warm_dir"] = "/srv/jiuzhang-warm"
+		if got := requestJSON(t, mux, http.MethodPost, "/api/v1/request-pcap/capture", body); got.Code != http.StatusBadRequest {
+			t.Fatalf("unsafe storage dir %s accepted with status=%d", badDir, got.Code)
+		}
 	}
 	if commands := captureCommands(t, controller); len(commands) != 0 {
 		t.Fatalf("invalid request wrote command: %+v", commands)
@@ -142,7 +149,7 @@ func TestCaptureFailedStatusDoesNotLookEnabled(t *testing.T) {
 	controller, _, _, _ := newCaptureFixture(t, PermissionCaptureControl)
 	config := &CaptureConfig{Enabled: true, RequestID: uuid.NewString(), RequestedAt: controller.now()}
 	raw, _ := json.Marshal(map[string]string{"requestID": config.RequestID, "state": "FAILED", "message": "pcapd启动失败"})
-	if err := os.WriteFile(filepath.Join(controller.hostctl, "pcap-status.json"), raw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(controller.hostctl, "pcap-status.state"), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	status := controller.status(config)
@@ -153,11 +160,55 @@ func TestCaptureFailedStatusDoesNotLookEnabled(t *testing.T) {
 
 func TestCaptureUnreadableStatusIsFailureNotPending(t *testing.T) {
 	controller, _, _, _ := newCaptureFixture(t, PermissionCaptureControl)
-	if err := os.Mkdir(filepath.Join(controller.hostctl, "pcap-status.json"), 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(controller.hostctl, "pcap-status.state"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	status := controller.status(&CaptureConfig{Enabled: true, RequestID: uuid.NewString(), RequestedAt: controller.now()})
 	if status.Enabled || status.State != "FAILED" {
 		t.Fatalf("unreadable host status was treated as pending: %+v", status)
+	}
+}
+
+func TestCaptureWriteFlagFailureDoesNotDesyncSettings(t *testing.T) {
+	controller, settings, _, mux := newCaptureFixture(t, PermissionCaptureControl)
+	blocker := filepath.Join(t.TempDir(), "hostctl-file")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	controller.hostctl = blocker
+	body := map[string]interface{}{"enabled": true, "interface": "eth0", "ports": []int{443}, "hot_dir": "/var/lib/jiuzhang-pcap/hot", "warm_dir": "/var/lib/jiuzhang-pcap/warm", "reason": "test"}
+	if got := requestJSON(t, mux, http.MethodPost, "/api/v1/request-pcap/capture", body); got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("hostctl failure status = %d, want 503", got.Code)
+	}
+	if settings.value != "" {
+		t.Fatalf("settings desynced after flag write failure: %s", settings.value)
+	}
+}
+
+func TestCaptureDisableRetriesWhenHostNotDisabled(t *testing.T) {
+	controller, settings, _, mux := newCaptureFixture(t, PermissionCaptureControl)
+	prevReqID := uuid.NewString()
+	prev := CaptureConfig{
+		Enabled:     false,
+		Interface:   "eth0",
+		Ports:       []int{443},
+		HotDir:      "/var/lib/jiuzhang-pcap/hot",
+		WarmDir:     "/var/lib/jiuzhang-pcap/warm",
+		RequestID:   prevReqID,
+		RequestedAt: controller.now(),
+	}
+	raw, _ := json.Marshal(prev)
+	settings.value = string(raw)
+	statusRaw, _ := json.Marshal(map[string]string{"requestID": prevReqID, "state": "FAILED", "message": "stop failed"})
+	if err := os.WriteFile(filepath.Join(controller.hostctl, "pcap-status.state"), statusRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := requestJSON(t, mux, http.MethodPost, "/api/v1/request-pcap/capture", map[string]interface{}{"enabled": false, "reason": "retry disable"})
+	if got.Code != http.StatusAccepted {
+		t.Fatalf("retry disable when host FAILED = %d, want 202 (%s)", got.Code, got.Body.String())
+	}
+	commands := captureCommands(t, controller)
+	if len(commands) != 1 || commands[0].Enabled == nil || *commands[0].Enabled {
+		t.Fatalf("expected fresh disable command, got %+v", commands)
 	}
 }

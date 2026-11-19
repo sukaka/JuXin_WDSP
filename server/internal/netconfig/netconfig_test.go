@@ -53,19 +53,22 @@ func TestValidateOK(t *testing.T) {
 	if err := Validate(&cfg, testIfaces()); err != nil {
 		t.Fatalf("valid config: %v", err)
 	}
-	// 多桥 + 多路由 + IPv6
+	// 多桥 + 多路由（仅 IPv4，与 netmgrd 对齐）
 	cfg = Config{
 		Bridges: []Bridge{
 			{Name: "br0", Ports: []string{"eth2", "eth3"}},
 			{Name: "br99", Ports: []string{"eth4", "eth5"}},
 		},
 		Routes: []Route{
-			{Dst: "10.9.0.0/24", Via: "192.168.50.1"},
-			{Dst: "fd00::/64", Via: "fe80::1"},
+			{Dst: "10.9.0.1/24", Via: "192.168.50.1"},
+			{Dst: "10.10.0.0/16", Via: "192.168.50.2"},
 		},
 	}
 	if err := Validate(&cfg, testIfaces()); err != nil {
 		t.Fatalf("multi bridge/route: %v", err)
+	}
+	if cfg.Routes[0].Dst != "10.9.0.0/24" {
+		t.Fatalf("route dst should normalize to network CIDR, got %q", cfg.Routes[0].Dst)
 	}
 	// 去空白归一化
 	cfg = Config{Bridges: []Bridge{{Name: " br1 ", Ports: []string{" eth2 ", "eth3"}}},
@@ -107,13 +110,18 @@ func TestValidateReject(t *testing.T) {
 			c.Bridges = append(c.Bridges, Bridge{Name: "br1", Ports: []string{"eth3", "eth4"}})
 		}, "不得同时出现"},
 		{"bad dst", func(c *Config) { c.Routes[0].Dst = "10.9.0.0/33" }, "CIDR"},
+		{"ipv6 dst rejected", func(c *Config) { c.Routes[0].Dst = "fd00::/64" }, "IPv4 CIDR"},
 		{"dst not cidr", func(c *Config) { c.Routes[0].Dst = "10.9.0.0" }, "CIDR"},
 		{"dst garbage", func(c *Config) { c.Routes[0].Dst = "abc" }, "CIDR"},
 		{"bad via", func(c *Config) { c.Routes[0].Via = "999.1.1.1" }, "IP"},
+		{"ipv6 via rejected", func(c *Config) { c.Routes[0].Via = "fe80::1" }, "IPv4 IP"},
 		{"via empty", func(c *Config) { c.Routes[0].Via = "" }, "IP"},
 		{"via hostname", func(c *Config) { c.Routes[0].Via = "gw.local" }, "IP"},
 		{"dup dst", func(c *Config) {
 			c.Routes = append(c.Routes, Route{Dst: "10.9.0.0/24", Via: "192.168.50.2"})
+		}, "重复"},
+		{"dup dst after normalization", func(c *Config) {
+			c.Routes = append(c.Routes, Route{Dst: "10.9.0.99/24", Via: "192.168.50.2"})
 		}, "重复"},
 	}
 	for _, tc := range cases {

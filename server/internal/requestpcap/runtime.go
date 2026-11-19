@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,6 +22,7 @@ type Runtime struct {
 	grantTTL  time.Duration
 	grantPath string
 	trustPath string
+	rotateMu  sync.Mutex
 }
 
 func NewRuntime(db *pgxpool.Pool, cfg config.RequestPCAPConfig, nodeID string, encryption *encryption.Service) (*Runtime, error) {
@@ -62,13 +64,17 @@ func NewRuntime(db *pgxpool.Pool, cfg config.RequestPCAPConfig, nodeID string, e
 }
 
 func (r *Runtime) Rotate() error {
+	r.rotateMu.Lock()
+	defer r.rotateMu.Unlock()
 	if err := r.Keyring.Rotate(); err != nil {
 		return err
 	}
-	return r.publishGrant(time.Now().UTC())
+	return r.Keyring.WritePublicGrant(r.grantPath, r.trustPath, r.Storage.nodeID, time.Now().UTC(), r.grantTTL)
 }
 
 func (r *Runtime) publishGrant(now time.Time) error {
+	r.rotateMu.Lock()
+	defer r.rotateMu.Unlock()
 	return r.Keyring.WritePublicGrant(r.grantPath, r.trustPath, r.Storage.nodeID, now, r.grantTTL)
 }
 

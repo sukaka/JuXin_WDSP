@@ -130,12 +130,13 @@ func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !validReason(strings.TrimSpace(input.Reason)) {
+	reason := strings.TrimSpace(input.Reason)
+	if !validReason(reason) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请填写1至500字符的核验理由")
 		return
 	}
 	item, err := h.service.Verify(r.Context(), requestID, artifactID, principal.UserID)
-	h.record(r, principal, "request_pcap.verify", artifactID, err, "核验未通过", audits.RiskHigh)
+	h.record(r, principal, "request_pcap.verify", artifactID, err, "核验未通过", audits.RiskHigh, reason)
 	if err != nil {
 		h.writeError(w, r, err)
 		return
@@ -157,7 +158,8 @@ func (h *Handler) CreateGrant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !validReason(strings.TrimSpace(input.Reason)) || input.Password == "" || len(input.Password) > 256 {
+	reason := strings.TrimSpace(input.Reason)
+	if !validReason(reason) || input.Password == "" || len(input.Password) > 256 {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请填写1至500字符的下载理由和密码")
 		return
 	}
@@ -167,12 +169,12 @@ func (h *Handler) CreateGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := security.VerifyPassword(input.Password, user.PasswordHash); err != nil {
-		h.record(r, principal, "request_pcap.download_grant", artifactID, errors.New("password rejected"), "密码校验失败", audits.RiskCritical)
+		h.record(r, principal, "request_pcap.download_grant", artifactID, errors.New("password rejected"), "密码校验失败", audits.RiskCritical, reason)
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "密码错误")
 		return
 	}
-	grant, err := h.service.CreateGrant(r.Context(), requestID, artifactID, principal.UserID, principal.SessionID, input.Reason, middleware.RemoteIP(r))
-	h.record(r, principal, "request_pcap.download_grant", artifactID, err, "授权未创建", audits.RiskCritical)
+	grant, err := h.service.CreateGrant(r.Context(), requestID, artifactID, principal.UserID, principal.SessionID, reason, middleware.RemoteIP(r))
+	h.record(r, principal, "request_pcap.download_grant", artifactID, err, "授权未创建", audits.RiskCritical, reason)
 	if err != nil {
 		h.writeError(w, r, err)
 		return

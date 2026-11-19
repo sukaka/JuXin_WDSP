@@ -52,10 +52,10 @@ func (s *Service) submitExecutorJob(ctx context.Context, job *Job) error {
 	if err != nil {
 		return err
 	}
-	name := filepath.Base(pkg.FileName)
-	if name != pkg.FileName || name == "." || name == "" {
-		return errors.New("升级包文件名无效")
+	if err := validatePackageFileName(pkg.FileName); err != nil {
+		return fmt.Errorf("升级包文件名无效: %w", err)
 	}
+	name := pkg.FileName
 	if len(pkg.FileHash) != 64 {
 		return errors.New("升级包 SHA-256 无效")
 	}
@@ -159,15 +159,19 @@ func (s *Service) waitExecutorResult(ctx context.Context, id uuid.UUID) (*Execut
 func (s *Service) processExecutorResult(ctx context.Context, result *ExecutorResult) error {
 	s.resultMu.Lock()
 	defer s.resultMu.Unlock()
+	repo := s.resultRepo()
+	if repo == nil {
+		return errors.New("升级任务存储未配置")
+	}
 	id, err := uuid.Parse(result.JobID)
 	if err != nil {
 		return err
 	}
-	job, err := s.store.GetJob(ctx, id)
+	job, err := repo.GetJob(ctx, id)
 	if err != nil {
 		return err
 	}
-	if job.Status == StatusSuccess || job.Status == StatusFailed || job.Status == StatusRolledBack {
+	if TerminalStatus(job.Status) || job.Status == StatusRollingBack {
 		return nil
 	}
 	if result.Status == "FAILED" {
@@ -176,35 +180,44 @@ func (s *Service) processExecutorResult(ctx context.Context, result *ExecutorRes
 			code = FailApply
 		}
 		stepErr := fmt.Errorf("宿主机升级失败（%s）：%s", code, result.Message)
-		if err := s.rollback(ctx, id, job.RequestedBy); err != nil {
-			combined := fmt.Errorf("%v；自动回滚失败：%w", stepErr, err)
-			_ = s.store.MarkFailed(context.Background(), id, FailRollback, combined)
-			backups.NotifyAlert(s.alertFn, "UPGRADE_ROLLBACK_FAILED", "UPGRADE", "升级失败且自动回滚失败",
-				"升级任务 "+id.String()+" 的宿主机执行失败，自动恢复数据库失败："+failMsg(err))
-			return combined
-		}
-		if err := s.store.MarkFinished(context.Background(), id, StatusRolledBack); err != nil {
-			return err
-		}
-		backups.NotifyAlert(s.alertFn, "UPGRADE_ROLLED_BACK", "UPGRADE", "升级失败已自动回滚",
-			"升级任务 "+id.String()+" 的宿主机执行失败，容器镜像和数据库均已尝试恢复："+failMsg(stepErr))
-		return nil
+		return s.rollbackExecutorFailure(ctx, repo, id, job.RequestedBy, stepErr, "宿主机执行失败")
 	}
 	if job.Status == StatusApplying {
-		if err := s.store.Transition(ctx, id, StatusApplying, StatusMigrating); err != nil {
+		if err := repo.Transition(ctx, id, StatusApplying, StatusMigrating); err != nil {
 			return err
 		}
 		job.Status = StatusMigrating
 	}
 	if job.Status == StatusMigrating {
-		if err := s.store.Transition(ctx, id, StatusMigrating, StatusVerifying); err != nil {
+		if err := repo.Transition(ctx, id, StatusMigrating, StatusVerifying); err != nil {
 			return err
 		}
+		job.Status = StatusVerifying
 	}
-	if err := s.verify(ctx); err != nil {
+	if err := s.runVerify(ctx); err != nil {
+		stepErr := fmt.Errorf("升级后验证失败：%w", err)
+		return s.rollbackExecutorFailure(ctx, repo, id, job.RequestedBy, stepErr, "升级后验证失败")
+	}
+	return repo.MarkFinished(ctx, id, StatusSuccess)
+}
+
+func (s *Service) rollbackExecutorFailure(ctx context.Context, repo resultStore, id uuid.UUID, requestedBy *uuid.UUID, stepErr error, stageDesc string) error {
+	if rbErr := s.runRollback(ctx, id, requestedBy); rbErr != nil {
+		combined := fmt.Errorf("%v；自动回滚失败：%w", stepErr, rbErr)
+		if dbErr := repo.MarkFailed(context.Background(), id, FailRollback, combined); dbErr != nil {
+			slog.Error("mark upgrade rollback-failed status error", "id", id, "error", dbErr)
+		}
+		backups.NotifyAlert(s.alertFn, "UPGRADE_ROLLBACK_FAILED", "UPGRADE", "升级失败且自动回滚失败",
+			"升级任务 "+id.String()+" 的"+stageDesc+"，自动恢复数据库失败："+failMsg(rbErr))
+		return combined
+	}
+	if err := repo.MarkFinished(context.Background(), id, StatusRolledBack); err != nil {
+		slog.Error("mark upgrade rolled-back status error", "id", id, "error", err)
 		return err
 	}
-	return s.store.MarkFinished(ctx, id, StatusSuccess)
+	backups.NotifyAlert(s.alertFn, "UPGRADE_ROLLED_BACK", "UPGRADE", "升级失败已自动回滚",
+		"升级任务 "+id.String()+" 的"+stageDesc+"，容器镜像和数据库均已尝试恢复："+failMsg(stepErr))
+	return nil
 }
 
 // RunResultReconciler 在 API 因升级重启后补偿处理宿主机已写入的结果。

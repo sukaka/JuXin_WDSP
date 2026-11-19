@@ -177,13 +177,6 @@ func (s *Service) Create(ctx context.Context, backupID uuid.UUID, scope string, 
 	if !ValidScope(scope) {
 		return nil, ErrInvalidScope
 	}
-	active, err := s.store.HasActive(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if active {
-		return nil, ErrActiveRestore
-	}
 	job, _, err := s.loadVerifiedBackup(ctx, backupID)
 	if err != nil {
 		return nil, err
@@ -204,7 +197,7 @@ func (s *Service) Create(ctx context.Context, backupID uuid.UUID, scope string, 
 	if len(tables) == 0 {
 		return nil, ErrEmptyScope
 	}
-	rj, err := s.store.Create(ctx, backupID, scope, requestedBy, requestID)
+	rj, err := s.store.CreateIfNoActive(ctx, backupID, scope, requestedBy, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +213,9 @@ func (s *Service) runIsolated(id uuid.UUID) {
 	extractDir := ""
 	fail := func(code string, err error) {
 		slog.Error("restore isolated stage failed", "id", id, "code", code, "error", err)
-		if dbErr := s.store.MarkFailed(ctx, id, code, err); dbErr != nil {
+		fctx, fcancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer fcancel()
+		if dbErr := s.store.MarkFailed(fctx, id, code, err); dbErr != nil {
 			slog.Error("mark restore failed status error", "id", id, "error", dbErr)
 		}
 		backups.NotifyAlert(s.alertFn, "RESTORE_FAILED", "restore", "恢复任务失败",

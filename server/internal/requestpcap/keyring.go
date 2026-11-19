@@ -22,6 +22,7 @@ type keyEncryption interface {
 
 // Keyring 在内存中保存证据私钥；私钥文件只保存主密钥加密后的密文。
 type Keyring struct {
+	ioMu              sync.Mutex
 	mu                sync.RWMutex
 	path              string
 	encryption        keyEncryption
@@ -190,6 +191,8 @@ func (k *Keyring) Unwrap(keyID string, envelope []byte) ([]byte, error) {
 }
 
 func (k *Keyring) Rotate() error {
+	k.ioMu.Lock()
+	defer k.ioMu.Unlock()
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if k.encryption == nil || len(k.privateKey) == 0 || len(k.history) >= 256 {
@@ -242,6 +245,8 @@ func (k *Keyring) WritePublicGrant(grantPath, trustPath, nodeID string, now time
 	if k == nil || !filepath.IsAbs(grantPath) || !filepath.IsAbs(trustPath) || lifetime < time.Minute || lifetime > 7*24*time.Hour {
 		return fmt.Errorf("invalid evidence public key grant configuration")
 	}
+	k.ioMu.Lock()
+	defer k.ioMu.Unlock()
 	k.mu.RLock()
 	if len(k.releasePrivate) == 0 {
 		k.mu.RUnlock()
@@ -268,14 +273,11 @@ func (k *Keyring) WritePublicGrant(grantPath, trustPath, nodeID string, now time
 }
 
 func writeKeyFile(path string, payload []byte, overwrite bool) error {
-	temporary := path + ".tmp"
-	if err := removeRegularIfExists(temporary); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
+	temporary := file.Name()
 	ok := false
 	defer func() {
 		_ = file.Close()
@@ -283,6 +285,9 @@ func writeKeyFile(path string, payload []byte, overwrite bool) error {
 			_ = os.Remove(temporary)
 		}
 	}()
+	if err := file.Chmod(0o600); err != nil {
+		return err
+	}
 	if err := writeKeyBytes(file, payload); err != nil {
 		return err
 	}
@@ -303,6 +308,7 @@ func writeKeyFile(path string, payload []byte, overwrite bool) error {
 	if err != nil {
 		return fmt.Errorf("publish evidence key: %w", err)
 	}
+	ok = true
 	directory, err := os.Open(filepath.Dir(path))
 	if err != nil {
 		return err
@@ -312,17 +318,15 @@ func writeKeyFile(path string, payload []byte, overwrite bool) error {
 }
 
 func writePublicFile(path string, payload []byte) error {
-	if stat, err := os.Stat(filepath.Dir(path)); err != nil || !stat.IsDir() {
+	dir := filepath.Dir(path)
+	if stat, err := os.Stat(dir); err != nil || !stat.IsDir() {
 		return fmt.Errorf("evidence public key parent directory is unavailable")
 	}
-	temporary := path + ".tmp"
-	if err := removeRegularIfExists(temporary); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	file, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
+	temporary := file.Name()
 	ok := false
 	defer func() {
 		_ = file.Close()
@@ -330,6 +334,9 @@ func writePublicFile(path string, payload []byte) error {
 			_ = os.Remove(temporary)
 		}
 	}()
+	if err := file.Chmod(0o644); err != nil {
+		return err
+	}
 	if err := writeKeyBytes(file, payload); err != nil {
 		return err
 	}

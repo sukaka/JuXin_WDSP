@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,11 +20,28 @@ import (
 	"github.com/jiuzhang-waf/server/internal/encryption"
 )
 
+// MaxDecompressedBytes 备份解压后总字节硬上限（8GiB，防 gzip 炸弹耗尽磁盘/CPU）。
+const MaxDecompressedBytes = int64(8) << 30
+
+// queryRunner 抽象数据库查询能力，供 Export 在 RepeatableRead 只读事务内执行。
+type queryRunner interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // Exporter 备份导出器/验证器。
 type Exporter struct {
-	db      *pgxpool.Pool
-	enc     *encryption.Service
-	dataDir string
+	db                   *pgxpool.Pool
+	enc                  *encryption.Service
+	dataDir              string
+	maxDecompressedBytes int64
+}
+
+func (e *Exporter) decompressedLimit() int64 {
+	if e != nil && e.maxDecompressedBytes > 0 {
+		return e.maxDecompressedBytes
+	}
+	return MaxDecompressedBytes
 }
 
 // NewExporter 创建导出器。
@@ -38,8 +56,12 @@ func (e *Exporter) BackupDir() string {
 
 // SchemaVersion 当前库最大迁移版本（schema_migrations 由 database 包维护）。
 func SchemaVersion(ctx context.Context, db *pgxpool.Pool) (int, error) {
+	return schemaVersionFrom(ctx, db)
+}
+
+func schemaVersionFrom(ctx context.Context, q queryRunner) (int, error) {
 	var v int
-	err := db.QueryRow(ctx, `SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&v)
+	err := q.QueryRow(ctx, `SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&v)
 	if err != nil {
 		return 0, fmt.Errorf("query schema version: %w", err)
 	}
@@ -47,16 +69,26 @@ func SchemaVersion(ctx context.Context, db *pgxpool.Pool) (int, error) {
 }
 
 // Export 执行逻辑导出并写入加密备份文件，返回清单、全文件哈希与大小。
+// 全过程在 REPEATABLE READ 只读事务内执行，确保跨表快照一致。
 // outPath 由调用方决定（临时路径，成功后原子改名）。
 func (e *Exporter) Export(ctx context.Context, jobID uuid.UUID, backupType, createdBy, outPath string) (*Manifest, string, int64, error) {
 	if e.enc == nil {
 		return nil, "", 0, ErrNoEncryption
 	}
-	schemaVer, err := SchemaVersion(ctx, e.db)
+	tx, err := e.db.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("begin repeatable read backup tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	schemaVer, err := schemaVersionFrom(ctx, tx)
 	if err != nil {
 		return nil, "", 0, err
 	}
-	w, err := CreateWriter(outPath, e.enc)
+	w, err := CreateWriterWithID(outPath, e.enc, jobID.String())
 	if err != nil {
 		return nil, "", 0, err
 	}
@@ -81,12 +113,15 @@ func (e *Exporter) Export(ctx context.Context, jobID uuid.UUID, backupType, crea
 		ArchiveFormat: "tar",
 	}
 	for _, t := range TablesForBackup(backupType) {
-		tm, err := e.exportTable(ctx, tw, t)
+		tm, err := e.exportTable(ctx, tx, tw, t)
 		if err != nil {
 			return cleanup(fmt.Errorf("export table %s: %w", t.Name, err))
 		}
 		m.Tables = append(m.Tables, *tm)
 		m.TotalRows += tm.RowCount
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return cleanup(fmt.Errorf("commit backup read tx: %w", err))
 	}
 	if err := tw.Close(); err != nil {
 		return cleanup(err)
@@ -103,8 +138,8 @@ func (e *Exporter) Export(ctx context.Context, jobID uuid.UUID, backupType, crea
 
 // exportTable 导出单表为一个 tar 条目（JSON Lines，每行一个 JSON 对象）。
 // 大表经临时卷文件中转，避免整表驻留内存。
-func (e *Exporter) exportTable(ctx context.Context, tw *tar.Writer, t TableDef) (*TableManifest, error) {
-	cols, err := e.tableColumns(ctx, t.Name)
+func (e *Exporter) exportTable(ctx context.Context, q queryRunner, tw *tar.Writer, t TableDef) (*TableManifest, error) {
+	cols, err := e.tableColumns(ctx, q, t.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +151,7 @@ func (e *Exporter) exportTable(ctx context.Context, tw *tar.Writer, t TableDef) 
 		query = fmt.Sprintf(`SELECT to_jsonb(t)::text FROM (SELECT * FROM %s ORDER BY %s DESC LIMIT %d) t`,
 			pgx.Identifier{t.Name}.Sanitize(), pgx.Identifier{t.OrderBy}.Sanitize(), t.RecentLimit)
 	}
-	rows, err := e.db.Query(ctx, query)
+	rows, err := q.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -181,8 +216,8 @@ func (e *Exporter) exportTable(ctx context.Context, tw *tar.Writer, t TableDef) 
 }
 
 // tableColumns 当前库表列名（按定义顺序）。
-func (e *Exporter) tableColumns(ctx context.Context, table string) ([]string, error) {
-	rows, err := e.db.Query(ctx, `
+func (e *Exporter) tableColumns(ctx context.Context, q queryRunner, table string) ([]string, error) {
+	rows, err := q.Query(ctx, `
 SELECT column_name FROM information_schema.columns
 WHERE table_schema = 'public' AND table_name = $1
 ORDER BY ordinal_position`, table)
@@ -268,8 +303,36 @@ func (e *Exporter) Verify(ctx context.Context, path, expectedFileHash string) (*
 	return res, nil
 }
 
+// cappedReader 对解压后流实施硬字节上限，防止 gzip 炸弹耗尽 CPU/磁盘。
+type cappedReader struct {
+	r    io.Reader
+	read int64
+	max  int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.read += int64(n)
+		if c.read > c.max {
+			return n, fmt.Errorf("%w: decompressed backup exceeds %d bytes limit", ErrTooLarge, c.max)
+		}
+	}
+	return n, err
+}
+
+// byteCounter 统计经过 TeeReader 的明文字节数。
+type byteCounter struct {
+	n int64
+}
+
+func (b *byteCounter) Write(p []byte) (int, error) {
+	b.n += int64(len(p))
+	return len(p), nil
+}
+
 // WalkSegments 遍历备份文件数据段：先回调清单（onManifest），再逐表回调明文 JSONL 流。
-// 条目名经白名单校验，拒绝非表数据条目。fn 必须消费完流。
+// 条目名经白名单校验，拒绝非表数据条目与重复表条目，并强制执行解压字节上限与密文/明文摘要核验。
 func (e *Exporter) WalkSegments(path string, onManifest func(*Manifest) error, fn func(table string, r io.Reader) error) error {
 	rd, err := OpenReader(path, e.enc)
 	if err != nil {
@@ -279,35 +342,59 @@ func (e *Exporter) WalkSegments(path string, onManifest func(*Manifest) error, f
 	if err := onManifest(rd.Manifest); err != nil {
 		return err
 	}
-	// 明文整体哈希在解压前校验（gzip 可能预读，结束后需排空 tee 保证全量计数）
+	// 明文整体哈希与长度在解压前统计（gzip 可能预读，结束后排空 tee 并核验密文段与明文段摘要）
 	ph := sha256.New()
-	tee := io.TeeReader(rd, ph)
+	plainCount := &byteCounter{}
+	tee := io.TeeReader(rd, io.MultiWriter(ph, plainCount))
 	gz, err := gzip.NewReader(tee)
 	if err != nil {
 		return fmt.Errorf("%w: gzip: %v", ErrBadFile, err)
 	}
-	tr := tar.NewReader(gz)
+	defer func() { _ = gz.Close() }()
+
+	maxDecomp := e.decompressedLimit()
+	limitedGZ := &cappedReader{r: gz, max: maxDecomp}
+	tr := tar.NewReader(limitedGZ)
+	seenTables := make(map[string]bool)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			if errors.Is(err, ErrTooLarge) {
+				return err
+			}
 			return fmt.Errorf("%w: tar: %v", ErrBadFile, err)
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			return fmt.Errorf("%w: non-regular entry %q", ErrBadFile, hdr.Name)
 		}
+		if hdr.Size < 0 || hdr.Size > maxDecomp {
+			return fmt.Errorf("%w: entry %q exceeds decompressed limit", ErrTooLarge, hdr.Name)
+		}
 		table := SegmentTableName(hdr.Name)
 		if table == "" || !IsBackupTable(table) {
 			return fmt.Errorf("%w: illegal entry %q", ErrBadFile, hdr.Name)
 		}
+		if seenTables[table] {
+			return fmt.Errorf("%w: duplicate table entry %q", ErrBadFile, table)
+		}
+		seenTables[table] = true
 		if err := fn(table, tr); err != nil {
 			return err
 		}
 	}
-	// 排空残余字节后比对明文整体哈希
-	_, _ = io.Copy(io.Discard, tee)
+	if err := gz.Close(); err != nil {
+		return fmt.Errorf("%w: gzip close: %v", ErrBadFile, err)
+	}
+	// 排空残余字节并触发 Reader 的 ChunkCount / SHA256Encrypted 校验，不吞任何错误
+	if _, err := io.Copy(io.Discard, tee); err != nil {
+		return err
+	}
+	if plainCount.n != rd.Manifest.Data.SizePlain {
+		return fmt.Errorf("%w: plaintext stream size %d != manifest %d", ErrHashMismatch, plainCount.n, rd.Manifest.Data.SizePlain)
+	}
 	if got := hex.EncodeToString(ph.Sum(nil)); got != rd.Manifest.Data.SHA256Plain {
 		return fmt.Errorf("%w: plaintext stream sha256 mismatch", ErrHashMismatch)
 	}

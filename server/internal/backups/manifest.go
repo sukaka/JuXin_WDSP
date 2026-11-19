@@ -24,9 +24,10 @@ const (
 
 // EncryptionMeta 清单中的加密信息（nonce 由每块独立随机生成并随密文存储）。
 type EncryptionMeta struct {
-	Algorithm  string `json:"algorithm"`
-	ChunkSize  int    `json:"chunk_size"`
-	ChunkCount int64  `json:"chunk_count"`
+	Algorithm      string `json:"algorithm"`
+	ChunkSize      int    `json:"chunk_size"`
+	ChunkCount     int64  `json:"chunk_count"`
+	ChunkBindingID string `json:"chunk_binding_id,omitempty"`
 }
 
 // DataMeta 清单中的数据段统计与哈希。
@@ -71,6 +72,9 @@ type Manifest struct {
 	Data          DataMeta        `json:"data"`
 	Tables        []TableManifest `json:"tables"`
 	TotalRows     int64           `json:"total_rows"`
+	// AuthKey 与 AuthMAC 对清单本身做主密钥绑定的 HMAC-SHA256 认证，防未授权篡改。
+	AuthKey string `json:"auth_key,omitempty"`
+	AuthMAC string `json:"auth_mac,omitempty"`
 }
 
 // Validate 校验清单完整性与自洽性（不含数据哈希比对）。

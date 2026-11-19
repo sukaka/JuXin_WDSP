@@ -357,8 +357,9 @@ func nullableIP(ip string) interface{} {
 	if ip == "" {
 		return nil
 	}
-	if _, err := netip.ParseAddr(ip); err != nil {
-		return nil // 脏数据不入 inet 列（防插入失败整行丢失）
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || addr.Zone() != "" {
+		return nil // 脏数据或带 zone ID 的 IPv6 不入 inet 列（防插入失败整行丢失）
 	}
 	return ip
 }

@@ -5,8 +5,11 @@
 package netdiag
 
 import (
+	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"time"
 )
@@ -22,6 +25,7 @@ const (
 	pcapGlobalHeaderLen = 24
 	pcapRecordHeaderLen = 16
 	linkTypeEthernet    = 1
+	maxPcapFrameBytes   = 262144
 )
 
 // CapturePacket 单个数据包的页面展示结构（capture_packets JSONB 数组元素）。
@@ -45,14 +49,23 @@ type pcapByteOrder struct {
 }
 
 // ParsePcap 解析 pcap 字节流，返回最多 MaxCapturePackets 个数据包。
-// 全局头非法（长度不足/魔数未知/非 Ethernet 链路类型）返回 error；
-// 记录头或包数据截断、畸形包跳过不报错；文件包含更多包时 truncated=true。
 func ParsePcap(data []byte) (packets []CapturePacket, truncated bool, err error) {
-	if len(data) < pcapGlobalHeaderLen {
-		return nil, false, fmt.Errorf("pcap 全局头长度不足（%d < %d 字节）", len(data), pcapGlobalHeaderLen)
+	return ParsePcapReader(bytes.NewReader(data))
+}
+
+// ParsePcapReader 流式解析 pcap 数据，仅读取至多 MaxCapturePackets 个包即停止，
+// 避免将大体积抓包文件整体读入内存。
+func ParsePcapReader(r io.Reader) (packets []CapturePacket, truncated bool, err error) {
+	var globalHdr [pcapGlobalHeaderLen]byte
+	n, err := io.ReadFull(r, globalHdr[:])
+	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, false, fmt.Errorf("pcap 全局头长度不足（%d < %d 字节）", n, pcapGlobalHeaderLen)
+		}
+		return nil, false, fmt.Errorf("读取 pcap 全局头失败: %w", err)
 	}
 	var bo pcapByteOrder
-	switch binary.BigEndian.Uint32(data[:4]) {
+	switch binary.BigEndian.Uint32(globalHdr[:4]) {
 	case 0xa1b2c3d4:
 		bo = pcapByteOrder{order: binary.BigEndian}
 	case 0xd4c3b2a1:
@@ -62,30 +75,48 @@ func ParsePcap(data []byte) (packets []CapturePacket, truncated bool, err error)
 	case 0x4d3cb2a1:
 		bo = pcapByteOrder{order: binary.LittleEndian, nano: true}
 	default:
-		return nil, false, fmt.Errorf("pcap 魔数非法: 0x%08x", binary.BigEndian.Uint32(data[:4]))
+		return nil, false, fmt.Errorf("pcap 魔数非法: 0x%08x", binary.BigEndian.Uint32(globalHdr[:4]))
 	}
-	if linkType := bo.order.Uint32(data[20:24]); linkType != linkTypeEthernet {
+	if linkType := bo.order.Uint32(globalHdr[20:24]); linkType != linkTypeEthernet {
 		return nil, false, fmt.Errorf("pcap 链路类型不支持（linktype=%d，仅支持 Ethernet=%d）", linkType, linkTypeEthernet)
 	}
 
 	packets = []CapturePacket{}
-	off := pcapGlobalHeaderLen
-	for off+pcapRecordHeaderLen <= len(data) {
+	var recHdr [pcapRecordHeaderLen]byte
+	var frameBuf []byte
+	for {
+		_, err := io.ReadFull(r, recHdr[:])
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				break
+			}
+			return nil, false, fmt.Errorf("读取 pcap 记录头失败: %w", err)
+		}
 		if len(packets) >= MaxCapturePackets {
-			return packets, true, nil // 后续仍有记录 → 截断标记
+			return packets, true, nil // 后续仍有记录 → 截断标记，立即停止读取
 		}
-		tsSec := bo.order.Uint32(data[off : off+4])
-		tsFrac := bo.order.Uint32(data[off+4 : off+8])
-		inclLen := bo.order.Uint32(data[off+8 : off+12])
-		origLen := bo.order.Uint32(data[off+12 : off+16])
-		rec := data[off+pcapRecordHeaderLen:]
-		// 记录数据超出文件剩余 → 文件尾部截断，正常收尾不报错
-		if uint64(inclLen) > uint64(len(rec)) {
-			break
+		tsSec := bo.order.Uint32(recHdr[0:4])
+		tsFrac := bo.order.Uint32(recHdr[4:8])
+		inclLen := bo.order.Uint32(recHdr[8:12])
+		origLen := bo.order.Uint32(recHdr[12:16])
+		if inclLen > maxPcapFrameBytes {
+			if _, derr := io.CopyN(io.Discard, r, int64(inclLen)); derr != nil {
+				break
+			}
+			continue
 		}
-		off += pcapRecordHeaderLen + int(inclLen)
-		frame := rec[:inclLen]
-		pkt, ok := decodeFrame(frame, tsSec, tsFrac, bo.nano, int(origLen))
+		if cap(frameBuf) < int(inclLen) {
+			frameBuf = make([]byte, inclLen)
+		} else {
+			frameBuf = frameBuf[:inclLen]
+		}
+		if _, err := io.ReadFull(r, frameBuf); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				break // 文件尾部截断，正常收尾不报错
+			}
+			return nil, false, fmt.Errorf("读取 pcap 帧数据失败: %w", err)
+		}
+		pkt, ok := decodeFrame(frameBuf, tsSec, tsFrac, bo.nano, int(origLen))
 		if !ok {
 			continue // 截断/畸形包跳过
 		}

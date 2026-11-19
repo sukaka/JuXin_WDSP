@@ -201,20 +201,40 @@ func LoadOrCreateHostctlSecret(dir string) ([]byte, error) {
 	return readValid()
 }
 
+func isSafeFlagSegment(s string) bool {
+	if s == "" || len(s) > 128 {
+		return false
+	}
+	if strings.Contains(s, "..") || strings.ContainsAny(s, "/\\\r\n\x00") {
+		return false
+	}
+	return true
+}
+
 // FlagFileName 生成标志文件名：<action>-<unixts>-<requestid>.json。
-// requestID 为空时使用随机 UUID 兜底，保证文件名唯一且不含路径分隔符。
+// requestID 为空或包含不安全路径/换行字符时使用随机 UUID 兜底，保证文件名唯一且安全。
 func FlagFileName(action, requestID string, now time.Time) string {
+	act := action
+	if !isSafeFlagSegment(act) {
+		act = "invalid"
+	}
 	id := requestID
-	if id == "" {
+	if !isSafeFlagSegment(id) {
 		id = uuid.NewString()
 	}
-	return fmt.Sprintf("%s-%d-%s.json", action, now.Unix(), id)
+	return fmt.Sprintf("%s-%d-%s.json", act, now.Unix(), id)
 }
 
 // WriteFlagFile 原子写入控制指令标志文件（写临时文件 + fsync + rename），
 // 写入前加载/自举共享密钥并对指令签名（hmac 字段）。
 // 返回最终文件路径。目录不存在时自动创建；不可写/写失败/密钥异常返回错误。
 func WriteFlagFile(dir string, cmd Command) (string, error) {
+	if !isSafeFlagSegment(cmd.Action) {
+		return "", fmt.Errorf("invalid hostctl action")
+	}
+	if cmd.RequestID != "" && !isSafeFlagSegment(cmd.RequestID) {
+		return "", fmt.Errorf("invalid hostctl request_id")
+	}
 	if cmd.Action == ActionPCAPCapture && (cmd.Enabled == nil || cmd.Interface == "" || cmd.HotDir == "" || cmd.WarmDir == "" || cmd.NodeID == "") {
 		return "", fmt.Errorf("incomplete PCAP capture command")
 	}

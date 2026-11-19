@@ -109,11 +109,18 @@ func TestSetRouteAndDNS(t *testing.T) {
 		"set route add 10.0.0.0/8 through 192.168.1.1",
 		"set route del 999.0.0.0/8",
 		"set dns 300.0.0.1",
+		"set dns fe80::1%eth0;id",
 		"set dns",
 	} {
 		if _, err := s.Execute("opsadmin", bad); err == nil {
 			t.Errorf("%q 应被拒绝", bad)
 		}
+	}
+	if ValidHost("fe80::1%eth0;id") || ValidHost("fe80::1%eth0") {
+		t.Error("ValidHost must reject IPv6 addresses with zone")
+	}
+	if _, err := ParseAddr("fe80::1%eth0"); err == nil {
+		t.Error("ParseAddr must reject IPv6 addresses with zone")
 	}
 	// helper 失败要透传错误
 	f.err = errors.New("sudo: a password is required")

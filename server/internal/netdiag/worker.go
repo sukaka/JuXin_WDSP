@@ -4,6 +4,7 @@
 package netdiag
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -328,12 +329,13 @@ func (w *Worker) parseCapture(ctx context.Context, id uuid.UUID) {
 		slog.Warn("netdiag worker: capture path invalid, skip parse", "job_id", id, "error", err)
 		return
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
-		slog.Warn("netdiag worker: read capture for parse failed", "job_id", id, "error", err)
+		slog.Warn("netdiag worker: open capture for parse failed", "job_id", id, "error", err)
 		return
 	}
-	packets, truncated, err := ParsePcap(data)
+	defer func() { _ = f.Close() }()
+	packets, truncated, err := ParsePcapReader(bufio.NewReaderSize(f, 64*1024))
 	if err != nil {
 		slog.Warn("netdiag worker: parse capture failed", "job_id", id, "error", err)
 		return

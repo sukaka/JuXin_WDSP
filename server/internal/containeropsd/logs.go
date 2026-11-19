@@ -180,8 +180,14 @@ func parseMultiplexedStream(r io.Reader, a *logAccumulator) error {
 }
 
 // parseRawStream 解析 TTY 容器的原始日志流（timestamps=true 时仍逐行带时间戳前缀）。
+// 使用有界 LimitedReader 约束总读取量，防止超长无换行日志行耗尽内存。
 func parseRawStream(r io.Reader, a *logAccumulator) error {
-	br := bufio.NewReaderSize(r, 64*1024)
+	limit := int64(MaxLogBytes) + 64*1024
+	if a.maxBytes > 0 && int64(a.maxBytes)+64*1024 < limit {
+		limit = int64(a.maxBytes) + 64*1024
+	}
+	lr := &io.LimitedReader{R: r, N: limit}
+	br := bufio.NewReaderSize(lr, 64*1024)
 	for {
 		chunk, err := br.ReadBytes('\n')
 		if len(chunk) > 0 {
@@ -198,6 +204,9 @@ func parseRawStream(r io.Reader, a *logAccumulator) error {
 		}
 		if err != nil {
 			if err == io.EOF {
+				if lr.N <= 0 {
+					a.truncated = true
+				}
 				return nil
 			}
 			return fmt.Errorf("读取日志流失败: %w", err)

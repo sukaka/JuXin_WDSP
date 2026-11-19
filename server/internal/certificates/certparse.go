@@ -100,10 +100,13 @@ func ParseCertificateChainPEM(certPEM string) (leaf *x509.Certificate, chainCoun
 		var block *pem.Block
 		block, rest = pem.Decode(rest)
 		if block == nil {
+			if len(strings.TrimSpace(string(rest))) > 0 {
+				return nil, 0, ErrInvalidPEM
+			}
 			break
 		}
 		if block.Type != "CERTIFICATE" {
-			continue
+			return nil, 0, fmt.Errorf("%w: expect CERTIFICATE block, got %s", ErrInvalidPEM, block.Type)
 		}
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
@@ -170,7 +173,7 @@ func matchKey(cert *x509.Certificate, priv interface{}) error {
 		if !ok {
 			return ErrKeyMismatch
 		}
-		if pub.N.Cmp(privKey.N) != 0 {
+		if !pub.Equal(privKey.Public()) {
 			return ErrKeyMismatch
 		}
 	case *ecdsa.PublicKey:
@@ -178,7 +181,7 @@ func matchKey(cert *x509.Certificate, priv interface{}) error {
 		if !ok {
 			return ErrKeyMismatch
 		}
-		if pub.X.Cmp(privKey.X) != 0 || pub.Y.Cmp(privKey.Y) != 0 {
+		if !pub.Equal(privKey.Public()) {
 			return ErrKeyMismatch
 		}
 	case ed25519.PublicKey:
@@ -239,7 +242,7 @@ func CertStatus(notAfter time.Time, now time.Time) string {
 	if now.After(notAfter) {
 		return StatusExpired
 	}
-	daysLeft := int(time.Until(notAfter).Hours() / 24)
+	daysLeft := int(notAfter.Sub(now).Hours() / 24)
 	if daysLeft <= 30 {
 		return StatusExpiring
 	}
@@ -248,9 +251,10 @@ func CertStatus(notAfter time.Time, now time.Time) string {
 
 // ExpiryLevel 返回到期级别（用于前端展示）。
 func ExpiryLevel(notAfter time.Time, now time.Time) (level string, daysLeft int) {
-	daysLeft = int(time.Until(notAfter).Hours() / 24)
+	diff := notAfter.Sub(now)
+	daysLeft = int(diff.Hours() / 24)
 	switch {
-	case daysLeft < 0:
+	case diff < 0:
 		return "expired", daysLeft
 	case daysLeft <= 7:
 		return "critical", daysLeft

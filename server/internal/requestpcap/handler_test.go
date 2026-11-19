@@ -117,18 +117,27 @@ func TestHandlerPermissionsPasswordAndRealDownload(t *testing.T) {
 
 	fixture := newHandlerFixture(t, PermissionRead, PermissionVerify, PermissionDownload)
 	verifyPath := fmt.Sprintf("/api/v1/request-pcap/artifacts/%s/verify", fixture.store.artifact.ID)
-	response = requestJSON(t, fixture.mux, http.MethodPost, verifyPath, map[string]string{"request_id": fixture.store.link.RequestID, "reason": "核验攻击证据"})
+	response = requestJSON(t, fixture.mux, http.MethodPost, verifyPath, map[string]string{"request_id": fixture.store.link.RequestID, "reason": "  核验攻击证据  "})
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"integrity_status":"PASS"`) {
 		t.Fatalf("real verification response: %d %s", response.Code, response.Body.String())
+	}
+	if got := fixture.audits.last().AfterSummary; got != "操作理由：核验攻击证据" {
+		t.Fatalf("verify audit missing reason: %q", got)
 	}
 	grantPath := fmt.Sprintf("/api/v1/request-pcap/artifacts/%s/download-grants", fixture.store.artifact.ID)
 	response = requestJSON(t, fixture.mux, http.MethodPost, grantPath, map[string]string{"request_id": fixture.store.link.RequestID, "reason": "调查事件", "password": "incorrect"})
 	if response.Code != http.StatusBadRequest || strings.Contains(response.Body.String(), "incorrect") || fixture.audits.last().Result != audits.ResultFailure {
 		t.Fatalf("wrong password response or audit: %d %s %+v", response.Code, response.Body.String(), fixture.audits.last())
 	}
+	if got := fixture.audits.last().AfterSummary; got != "操作理由：调查事件" {
+		t.Fatalf("failed grant audit missing reason: %q", got)
+	}
 	response = requestJSON(t, fixture.mux, http.MethodPost, grantPath, map[string]string{"request_id": fixture.store.link.RequestID, "reason": "调查事件", "password": handlerTestPassword})
 	if response.Code != http.StatusCreated {
 		t.Fatalf("grant response: %d %s", response.Code, response.Body.String())
+	}
+	if got := fixture.audits.last().AfterSummary; got != "操作理由：调查事件" {
+		t.Fatalf("grant audit missing reason: %q", got)
 	}
 	var body struct {
 		Data struct {

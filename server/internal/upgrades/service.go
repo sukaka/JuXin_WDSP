@@ -45,6 +45,14 @@ type strandedStore interface {
 	MarkFailedIfStatus(ctx context.Context, id uuid.UUID, from, code string, err error) error
 }
 
+// resultStore 执行器结果处理所需的持久化能力（*Store 实现；测试可注入内存实现）。
+type resultStore interface {
+	GetJob(ctx context.Context, id uuid.UUID) (*Job, error)
+	Transition(ctx context.Context, id uuid.UUID, from, to string) error
+	MarkFailed(ctx context.Context, id uuid.UUID, code string, err error) error
+	MarkFinished(ctx context.Context, id uuid.UUID, status string) error
+}
+
 // Service 升级服务。
 type Service struct {
 	db            *pgxpool.Pool
@@ -68,6 +76,9 @@ type Service struct {
 	// 定时升级（测试可替换的协作点，生产由 NewService 绑定默认实现）
 	schedStore   scheduleStore
 	stranded     strandedStore
+	resStore     resultStore
+	verifyFn     func(ctx context.Context) error
+	rollbackFn   func(ctx context.Context, id uuid.UUID, requestedBy *uuid.UUID) error
 	nowFn        func() time.Time
 	startRun     func(id uuid.UUID)
 	auditFn      func(ctx context.Context, in audits.RecordInput) error
@@ -82,10 +93,34 @@ func NewService(db *pgxpool.Pool, store *Store, backupStore *backups.Store, rest
 		prechecker: prechecker, migrationsDir: migrationsDir, alertFn: alertFn,
 		backupWait: defaultBackupWait, restoreWait: defaultRestoreWait, poll: defaultPoll,
 		executorWait: defaultExecutorWait,
-		schedStore: store, stranded: store, nowFn: time.Now, scheduleTick: defaultScheduleTick,
+		schedStore: store, stranded: store, resStore: store, nowFn: time.Now, scheduleTick: defaultScheduleTick,
 	}
 	s.startRun = func(id uuid.UUID) { go s.run(id) }
 	return s
+}
+
+func (s *Service) resultRepo() resultStore {
+	if s.resStore != nil {
+		return s.resStore
+	}
+	if s.store != nil {
+		return s.store
+	}
+	return nil
+}
+
+func (s *Service) runVerify(ctx context.Context) error {
+	if s.verifyFn != nil {
+		return s.verifyFn(ctx)
+	}
+	return s.verify(ctx)
+}
+
+func (s *Service) runRollback(ctx context.Context, id uuid.UUID, requestedBy *uuid.UUID) error {
+	if s.rollbackFn != nil {
+		return s.rollbackFn(ctx, id, requestedBy)
+	}
+	return s.rollback(ctx, id, requestedBy)
 }
 
 // SetTimeouts 覆盖等待参数（测试用）。
@@ -364,7 +399,11 @@ func (s *Service) run(id uuid.UUID) {
 		return
 	}
 	if err := s.processExecutorResult(context.Background(), result); err != nil {
-		rollbackOnFail(result.Stage, result.ErrorCode, err)
+		slog.Error("process upgrade executor result failed", "id", id, "status", result.Status, "error", err)
+		// 仅在任务尚未进入终态或回滚态时兜底回滚，避免与 processExecutorResult 内已执行的回滚重复。
+		if cur, getErr := s.resultRepo().GetJob(context.Background(), id); getErr == nil && !TerminalStatus(cur.Status) && cur.Status != StatusRollingBack {
+			rollbackOnFail(result.Stage, result.ErrorCode, err)
+		}
 	}
 }
 

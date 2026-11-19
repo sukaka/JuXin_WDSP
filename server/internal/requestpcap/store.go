@@ -101,12 +101,28 @@ func (s *Store) CompleteMigration(ctx context.Context, id uuid.UUID, ciphertextS
 }
 
 func (s *Store) BeginExpiry(ctx context.Context, id uuid.UUID) error {
-	return s.transition(ctx, id, "WARM", "EXPIRING", "WARM", "")
+	result, err := s.db.Exec(ctx, `UPDATE request_pcap_artifacts SET state='EXPIRING',updated_at=now()
+		WHERE id=$1 AND state IN ('WARM','HOT')`, id)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrInvalidTransition
+	}
+	return nil
 }
 
 // CompleteExpiry 只允许在文件删除已成功、墓碑需要落库时调用。
 func (s *Store) CompleteExpiry(ctx context.Context, id uuid.UUID) error {
-	return s.transition(ctx, id, "EXPIRING", "EXPIRED", "WARM", "")
+	result, err := s.db.Exec(ctx, `UPDATE request_pcap_artifacts SET state='EXPIRED',updated_at=now()
+		WHERE id=$1 AND state='EXPIRING'`, id)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return ErrInvalidTransition
+	}
+	return nil
 }
 
 func (s *Store) MarkUnavailable(ctx context.Context, id uuid.UUID) error {

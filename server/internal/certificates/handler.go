@@ -2,6 +2,7 @@ package certificates
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -182,7 +183,23 @@ func certItem(c *Certificate, usage int) map[string]interface{} {
 }
 
 func certSummary(c *Certificate) string {
-	return `{"name":"` + c.Name + `","cn":"` + c.CommonName + `","fingerprint":"` + c.FingerprintSHA256[:16] + `"}`
+	fp := c.FingerprintSHA256
+	if len(fp) > 16 {
+		fp = fp[:16]
+	}
+	b, err := json.Marshal(struct {
+		Name        string `json:"name"`
+		CN          string `json:"cn"`
+		Fingerprint string `json:"fingerprint"`
+	}{
+		Name:        c.Name,
+		CN:          c.CommonName,
+		Fingerprint: fp,
+	})
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 // bindRequest 是绑定/解绑请求体。
@@ -241,10 +258,11 @@ func (h *Handler) Bind(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "证书已绑定"})
 }
 
-// Unbind 解绑应用证书（独立接口，权限 certificates.bind）。
+// Unbind 解绑应用证书（独立接口，权限 certificates.bind；仅解绑路径指定的证书）。
 func (h *Handler) Unbind(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
-	if _, err := uuid.Parse(r.PathValue("id")); err != nil {
+	certID, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的证书ID")
 		return
 	}
@@ -258,11 +276,11 @@ func (h *Handler) Unbind(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的应用ID")
 		return
 	}
-	if err := h.store.UnbindApplication(r.Context(), appID); err != nil {
+	if err := h.store.UnbindCertificate(r.Context(), appID, certID); err != nil {
 		response.InternalError(w, r, err)
 		return
 	}
-	h.recordAudit(r, p, "certificates", "unbind", "certificate", r.PathValue("id"), r.PathValue("id"),
+	h.recordAudit(r, p, "certificates", "unbind", "certificate", certID.String(), certID.String(),
 		"bound_to="+appID.String(), "", audits.ResultSuccess, audits.RiskMedium)
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "证书已解绑"})
 }

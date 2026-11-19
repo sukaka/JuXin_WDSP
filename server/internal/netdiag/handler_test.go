@@ -223,6 +223,7 @@ func TestCreateValidationMatrix(t *testing.T) {
 		{"非法 action", `{"action":"nmap","target":"10.0.0.1"}`},
 		{"空 target", `{"action":"ping","target":""}`},
 		{"target 含 shell 元字符", `{"action":"ping","target":"10.0.0.1;rm -rf /"}`},
+		{"target 含 IPv6 zone", `{"action":"ping","target":"fe80::1%eth0;id"}`},
 		{"target 以 - 开头", `{"action":"ping","target":"-evil.com"}`},
 		{"target 含空格", `{"action":"ping","target":"10.0.0.1 8.8.8.8"}`},
 		{"ping count 越界", `{"action":"ping","target":"10.0.0.1","count":21}`},
@@ -231,10 +232,13 @@ func TestCreateValidationMatrix(t *testing.T) {
 		{"traceroute max_hops 越界", `{"action":"traceroute","target":"10.0.0.1","max_hops":31}`},
 		{"capture 缺 iface", `{"action":"capture","target":"10.0.0.1","duration_sec":10}`},
 		{"capture iface 非法", `{"action":"capture","target":"10.0.0.1","iface":"eth0;id","duration_sec":10}`},
+		{"capture iface 以连字符开头", `{"action":"capture","target":"10.0.0.1","iface":"-eth0","duration_sec":10}`},
+		{"capture iface 超15字符", `{"action":"capture","target":"10.0.0.1","iface":"abcdefghijklmnop","duration_sec":10}`},
 		{"capture duration 越界", `{"action":"capture","target":"10.0.0.1","iface":"eth0","duration_sec":4}`},
 		{"capture filter_proto 非法", `{"action":"capture","target":"10.0.0.1","iface":"eth0","filter_proto":"gre"}`},
 		{"capture filter_port 越界", `{"action":"capture","target":"10.0.0.1","iface":"eth0","filter_port":65536}`},
 		{"capture filter_host 非法", `{"action":"capture","target":"10.0.0.1","iface":"eth0","filter_host":"$(id)"}`},
+		{"capture filter_host 含 IPv6 zone", `{"action":"capture","target":"10.0.0.1","iface":"eth0","filter_host":"fe80::1%eth0"}`},
 		{"node 非法", `{"action":"ping","target":"10.0.0.1","node":"node;rm"}`},
 	}
 	for _, tc := range cases {
@@ -375,6 +379,24 @@ func TestGetDetailCapturePackets(t *testing.T) {
 	if len(detail.Job.CapturePackets) != 1 || detail.Job.CapturePackets[0].Proto != "TCP" ||
 		detail.Job.CapturePackets[0].Sport == nil || *detail.Job.CapturePackets[0].Sport != 52344 {
 		t.Fatalf("capture_packets 不符: %+v", detail.Job.CapturePackets)
+	}
+	if detail.Job.CapturePackets[0].Preview != "" {
+		t.Fatalf("无 network_tools.download 权限时 preview 必须脱敏为空，实际 %q", detail.Job.CapturePackets[0].Preview)
+	}
+
+	// 拥有 network_tools.download 权限时返回 preview
+	dlEnv := newHandlerEnv(t, true, execPerm, dlPerm)
+	dlEnv.store.add(parsed)
+	code, body, _ = doReq(t, dlEnv.handler, http.MethodGet, "/api/v1/network-tools/jobs/"+parsed.ID.String(), "")
+	if code != http.StatusOK {
+		t.Fatalf("带下载权限详情应 200: code=%d", code)
+	}
+	detail.Job.CapturePackets = nil
+	if err := json.Unmarshal(body.Data, &detail); err != nil {
+		t.Fatalf("解析带下载权限详情: %v", err)
+	}
+	if len(detail.Job.CapturePackets) != 1 || detail.Job.CapturePackets[0].Preview != "GET / HTTP/1.1" {
+		t.Fatalf("带 download 权限应返回 preview: %+v", detail.Job.CapturePackets)
 	}
 
 	// 未解析 → 详情字段显式为 null

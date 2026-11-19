@@ -22,11 +22,11 @@ type ArtifactLifecycleStore interface {
 }
 
 func (s *Store) ListHotArtifacts(ctx context.Context, nodeID string, before time.Time, limit int) ([]Artifact, error) {
-	return s.listArtifactLifecycle(ctx, nodeID, "state='HOT' AND capture_ended_at <= $1", before, limit)
+	return s.listArtifactLifecycle(ctx, nodeID, "state IN ('HOT','MIGRATING') AND capture_ended_at <= $1", before, limit)
 }
 
 func (s *Store) ListExpiredArtifacts(ctx context.Context, nodeID string, at time.Time, limit int) ([]Artifact, error) {
-	return s.listArtifactLifecycle(ctx, nodeID, "state='WARM' AND expires_at <= $1", at, limit)
+	return s.listArtifactLifecycle(ctx, nodeID, "state IN ('WARM','EXPIRING','HOT') AND expires_at <= $1", at, limit)
 }
 
 func (s *Store) listArtifactLifecycle(ctx context.Context, nodeID, condition string, at time.Time, limit int) ([]Artifact, error) {

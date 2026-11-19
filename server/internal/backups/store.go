@@ -224,7 +224,7 @@ func (s *Store) IsReferencedByRestore(ctx context.Context, id uuid.UUID) (bool, 
 	return exists, err
 }
 
-// Delete 删除任务与文件记录（调用方先校验引用与状态、先删文件）。
+// Delete 删除任务与文件记录（PENDING/RUNNING/VERIFYING 或被恢复引用时拒绝）。
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -236,8 +236,8 @@ func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 	}
 	res, err := tx.Exec(ctx, `
 DELETE FROM backup_jobs WHERE id = $1
-  AND status NOT IN ($2, $3)
-  AND NOT EXISTS (SELECT 1 FROM restore_jobs WHERE backup_job_id = $1)`, id, StatusRunning, StatusVerifying)
+  AND status NOT IN ($2, $3, $4)
+  AND NOT EXISTS (SELECT 1 FROM restore_jobs WHERE backup_job_id = $1)`, id, StatusPending, StatusRunning, StatusVerifying)
 	if err != nil {
 		return err
 	}

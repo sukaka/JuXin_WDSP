@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/audits"
@@ -131,11 +132,16 @@ func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req confirmRequest
-	if r.ContentLength > 0 {
-		if err := response.DecodeJSON(w, r, &req, 4096); err != nil {
+	if r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 {
+		if err := response.DecodeJSON(w, r, &req, 4096); err != nil && !errors.Is(err, io.EOF) {
 			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请求格式错误")
 			return
 		}
+	}
+	req.Reason = strings.TrimSpace(req.Reason)
+	if len([]rune(req.Reason)) > 500 {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "确认理由不能超过 500 字符")
+		return
 	}
 	job, summary, err := h.service.Confirm(r.Context(), id, p.UserID)
 	if err != nil {
@@ -149,53 +155,128 @@ func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"job": job, "post_verify": summary})
 }
 
-// Import 导入外部备份文件（multipart 上传，全新环境恢复入口）。
-// 文件先落临时目录（流式，内存有界），再经 Service.ImportBackup 全量验证后登记。
+const (
+	importUploadTimeout = 10 * time.Minute
+	importDefaultConnTO = 30 * time.Second
+)
+
+func extendImportDeadlines(w http.ResponseWriter) {
+	rc := http.NewResponseController(w)
+	deadline := time.Now().Add(importUploadTimeout)
+	_ = rc.SetReadDeadline(deadline)
+	_ = rc.SetWriteDeadline(deadline)
+}
+
+func restoreImportDeadlines(w http.ResponseWriter) {
+	rc := http.NewResponseController(w)
+	deadline := time.Now().Add(importDefaultConnTO)
+	_ = rc.SetReadDeadline(deadline)
+	_ = rc.SetWriteDeadline(deadline)
+}
+
+// Import 导入外部备份文件（multipart 流式上传，全新环境恢复入口）。
+// 文件经 MultipartReader 直接流式落暂存目录（零 /tmp 缓冲），再经 Service.ImportBackup 全量验证后登记。
 func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 	p := authz.PrincipalFrom(r.Context())
-	// 限制上传大小（与备份文件上限一致）
-	r.Body = http.MaxBytesReader(w, r.Body, 2<<30)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	extendImportDeadlines(w)
+	defer restoreImportDeadlines(w)
+
+	// 限制上传大小（与备份文件上限一致 + multipart 开销）
+	r.Body = http.MaxBytesReader(w, r.Body, backups.MaxBackupFileSize+(1<<20))
+	mr, err := r.MultipartReader()
+	if err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的上传请求")
 		return
 	}
-	file, header, err := r.FormFile("file")
-	if err != nil {
+
+	var (
+		fileName string
+		tmpPath  string
+		written  int64
+	)
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	for {
+		part, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			var mbErr *http.MaxBytesError
+			if errors.As(err, &mbErr) {
+				response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "备份文件超过 2GB 大小限制")
+				return
+			}
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的上传请求")
+			return
+		}
+		if part.FormName() != "file" {
+			_, _ = io.Copy(io.Discard, io.LimitReader(part, 64<<10))
+			_ = part.Close()
+			continue
+		}
+		if tmpPath != "" {
+			_ = part.Close()
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "仅允许上传单个备份文件")
+			return
+		}
+		fileName = strings.TrimSpace(part.FileName())
+		// 文件名安全：仅接受 .jzbk 后缀，原名仅记录不使用其路径语义
+		if !strings.HasSuffix(strings.ToLower(fileName), ".jzbk") {
+			_ = part.Close()
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "仅支持 .jzbk 备份文件")
+			return
+		}
+		tmpPath, err = h.service.StagingImportPath("jz-import-" + uuid.NewString() + ".jzbk")
+		if err != nil {
+			_ = part.Close()
+			response.InternalError(w, r, err)
+			return
+		}
+		out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			_ = part.Close()
+			response.InternalError(w, r, err)
+			return
+		}
+		n, copyErr := io.Copy(out, io.LimitReader(part, backups.MaxBackupFileSize+1))
+		closeErr := out.Close()
+		_ = part.Close()
+		if copyErr != nil || closeErr != nil {
+			var mbErr *http.MaxBytesError
+			if errors.As(copyErr, &mbErr) {
+				response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "备份文件超过 2GB 大小限制")
+				return
+			}
+			errToReport := copyErr
+			if errToReport == nil {
+				errToReport = closeErr
+			}
+			response.InternalError(w, r, errToReport)
+			return
+		}
+		if n > backups.MaxBackupFileSize {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "备份文件超过 2GB 大小限制")
+			return
+		}
+		written = n
+	}
+	if tmpPath == "" || written == 0 {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "缺少备份文件")
 		return
 	}
-	defer file.Close()
-	// 文件名安全：仅接受 .jzbk 后缀，原名仅记录不使用其路径语义
-	if !strings.HasSuffix(strings.ToLower(header.Filename), ".jzbk") {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "仅支持 .jzbk 备份文件")
-		return
-	}
-	tmpPath, err := h.service.StagingImportPath("jz-import-" + uuid.NewString() + ".jzbk")
-	if err != nil {
-		response.InternalError(w, r, err)
-		return
-	}
-	out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		response.InternalError(w, r, err)
-		return
-	}
-	if _, err := io.Copy(out, file); err != nil {
-		out.Close()
-		os.Remove(tmpPath)
-		response.InternalError(w, r, err)
-		return
-	}
-	out.Close()
-	defer os.Remove(tmpPath)
 
 	job, err := h.service.ImportBackup(r.Context(), tmpPath, &p.UserID)
 	if err != nil {
-		h.recordAudit(r, p, "import", "", header.Filename, audits.ResultFailure, audits.RiskHigh, err.Error())
+		h.recordAudit(r, p, "import", "", fileName, audits.ResultFailure, audits.RiskHigh, err.Error())
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, err.Error())
 		return
 	}
-	h.recordAudit(r, p, "import", job.ID.String(), header.Filename, audits.ResultSuccess, audits.RiskHigh, "")
+	h.recordAudit(r, p, "import", job.ID.String(), fileName, audits.ResultSuccess, audits.RiskHigh, "")
 	response.JSON(w, r, http.StatusOK, job)
 }
 

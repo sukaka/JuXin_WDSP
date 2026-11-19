@@ -79,3 +79,27 @@ func TestWizardSignForbiddenForReadOnly(t *testing.T) {
 		t.Fatalf("只读主体签署应 403, got %d", rr.Code)
 	}
 }
+
+func TestConflictItemMarshalsPrincipalsAsJSONArrayNotBase64(t *testing.T) {
+	item := ConflictItem{
+		ID:            uuid.New(),
+		ApplicationID: uuid.New(),
+		ObjectType:    "orders",
+		ObjectRef:     "objref:123",
+		Principals:    json.RawMessage(`["principal-a","principal-b"]`),
+		Status:        "OPEN",
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal ConflictItem: %v", err)
+	}
+	var decoded struct {
+		Principals []string `json:"principals"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("principals must marshal as JSON array (not base64 string): %v raw=%s", err, string(raw))
+	}
+	if len(decoded.Principals) != 2 || decoded.Principals[0] != "principal-a" || decoded.Principals[1] != "principal-b" {
+		t.Fatalf("unexpected decoded principals: %v", decoded.Principals)
+	}
+}

@@ -551,6 +551,7 @@ func upsertGraphNode(nodes map[string]*Node, id, name, nodeType string, edge Edg
 		nodes[id] = node
 	}
 	node.Calls += edge.Calls
+	node.errors += edge.Errors
 	if outgoing {
 		node.OutgoingCount++
 	} else {
@@ -570,11 +571,15 @@ func upsertGraphNode(nodes map[string]*Node, id, name, nodeType string, edge Edg
 	}
 	if edge.Calls > 0 {
 		node.AvgLatencyMS = (node.AvgLatencyMS*float64(node.Calls-edge.Calls) + edge.AvgLatencyMS*float64(edge.Calls)) / float64(node.Calls)
-		rate := float64(edge.Errors) / float64(edge.Calls)
+	}
+	if node.Calls > 0 {
+		rate := float64(node.errors) / float64(node.Calls)
 		if rate > 0.10 {
 			node.Health = "ERROR"
-		} else if rate > 0.05 && node.Health != "ERROR" {
+		} else if rate > 0.05 {
 			node.Health = "DEGRADED"
+		} else {
+			node.Health = "HEALTHY"
 		}
 		node.ErrorRate = rate
 	}

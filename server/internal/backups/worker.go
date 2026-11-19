@@ -25,16 +25,32 @@ const (
 	cleanupInterval = time.Hour
 )
 
+// workerStore 备份执行器所需的最小持久化接口（*Store 实现；单测可注入内存实现）。
+type workerStore interface {
+	Claim(ctx context.Context) (*Job, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*Job, error)
+	SetStatus(ctx context.Context, id uuid.UUID, status string) error
+	MarkSuccess(ctx context.Context, id uuid.UUID, m *Manifest, fileRef string, fileSize int64, fileHash string) error
+	MarkFailed(ctx context.Context, id uuid.UUID, code string, err error) error
+	MarkVerified(ctx context.Context, id uuid.UUID, ok bool, verifyErr error) error
+	RetentionCandidates(ctx context.Context, keepSuccess int, cutoff time.Time) ([]Job, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+}
+
 // Worker 备份执行器。
 type Worker struct {
-	store    *Store
+	store    workerStore
 	exporter *Exporter
 	alertFn  AlertFunc
 }
 
 // NewWorker 创建执行器。
 func NewWorker(store *Store, exporter *Exporter, alertFn AlertFunc) *Worker {
-	return &Worker{store: store, exporter: exporter}
+	var st workerStore
+	if store != nil {
+		st = store
+	}
+	return &Worker{store: st, exporter: exporter, alertFn: alertFn}
 }
 
 // SetAlertFunc 注入告警回调。
@@ -93,8 +109,12 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 func (w *Worker) process(ctx context.Context, job *Job) {
 	fail := func(code string, err error) {
 		slog.Error("backup job failed", "id", job.ID, "code", code, "error", err)
-		if dbErr := w.store.MarkFailed(ctx, job.ID, code, err); dbErr != nil {
-			slog.Error("mark backup failed status error", "id", job.ID, "error", dbErr)
+		if w.store != nil {
+			fctx, fcancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer fcancel()
+			if dbErr := w.store.MarkFailed(fctx, job.ID, code, err); dbErr != nil {
+				slog.Error("mark backup failed status error", "id", job.ID, "error", dbErr)
+			}
 		}
 		NotifyAlert(w.alertFn, "BACKUP_FAILED", "backup", "备份任务失败",
 			"备份任务 "+job.ID.String()+" 失败（"+code+"）："+failMsg(err))
@@ -203,16 +223,14 @@ func (w *Worker) CleanupRetention(ctx context.Context) (int, error) {
 	}
 	deleted := 0
 	for _, j := range candidates {
-		path, err := BackupPath(w.exporter.dataDir, j.ID)
-		if err == nil {
-			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
-				slog.Error("remove backup file failed", "path", filepath.Base(path), "error", rmErr)
-				continue // 文件删除失败则保留记录，下轮再试，不静默
-			}
-		}
 		if err := w.store.Delete(ctx, j.ID); err != nil {
 			slog.Error("delete backup job failed", "id", j.ID, "error", err)
 			continue
+		}
+		if path, err := BackupPath(w.exporter.dataDir, j.ID); err == nil {
+			if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+				slog.Error("remove backup file failed", "path", filepath.Base(path), "error", rmErr)
+			}
 		}
 		deleted++
 	}

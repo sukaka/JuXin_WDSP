@@ -3,6 +3,7 @@ package backups
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -170,8 +171,8 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusNotFound, response.CodeResourceNotFound, "备份任务不存在")
 		return
 	}
-	if job.Status == StatusRunning || job.Status == StatusVerifying {
-		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "任务执行中，不可删除")
+	if job.Status == StatusPending || job.Status == StatusRunning || job.Status == StatusVerifying {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "任务待执行或执行中，不可删除")
 		return
 	}
 	ref, err := h.store.IsReferencedByRestore(r.Context(), id)
@@ -183,16 +184,19 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "存在关联恢复任务，不可删除")
 		return
 	}
-	// 先删文件再删记录；文件删除失败不继续（不静默）
-	if path, perr := BackupPath(h.dataDir, id); perr == nil {
-		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
-			response.InternalError(w, r, rmErr)
+	// 先删库记录（事务内二次守卫状态与恢复引用），成功后再删磁盘文件，防竞态误删仍被引用/认领的文件
+	if err := h.store.Delete(r.Context(), id); err != nil {
+		if errors.Is(err, ErrInvalidStatus) {
+			response.Error(w, r, http.StatusConflict, response.CodeResourceConflict, "备份状态已变更或存在关联恢复任务，不可删除")
 			return
 		}
-	}
-	if err := h.store.Delete(r.Context(), id); err != nil {
 		response.InternalError(w, r, err)
 		return
+	}
+	if path, perr := BackupPath(h.dataDir, id); perr == nil {
+		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+			slog.Error("remove deleted backup file failed", "id", id, "error", rmErr)
+		}
 	}
 	h.recordAudit(r, p, "delete", id.String(), job.BackupType, audits.ResultSuccess, audits.RiskMedium, "")
 	response.JSON(w, r, http.StatusOK, map[string]string{"message": "备份已删除"})

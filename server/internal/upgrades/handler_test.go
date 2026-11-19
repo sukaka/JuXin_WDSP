@@ -23,23 +23,29 @@ import (
 // ---------- 内存版登记/执行依赖（同 artifactVerifier 的测试替换模式） ----------
 
 type fakePackageRegistrar struct {
-	byHash map[string]*Package
+	byHash    map[string]*Package
+	createErr error
 }
 
 func (f *fakePackageRegistrar) FindPackageByHash(_ context.Context, hash string) (*Package, error) {
-	if p, ok := f.byHash[hash]; ok {
+	if p, ok := f.byHash[hash]; ok && p.Status == PackageVerified {
 		return p, nil
 	}
 	return nil, ErrNotFound
 }
 
 func (f *fakePackageRegistrar) CreatePackage(_ context.Context, pkg *Package) error {
+	if f.createErr != nil {
+		return f.createErr
+	}
 	pkg.ID = uuid.New()
 	pkg.UploadedAt = time.Now().UTC()
 	if f.byHash == nil {
 		f.byHash = map[string]*Package{}
 	}
-	f.byHash[pkg.FileHash] = pkg
+	if pkg.Status == PackageVerified {
+		f.byHash[pkg.FileHash] = pkg
+	}
 	return nil
 }
 
@@ -354,5 +360,163 @@ func TestUploadPackageManifestTargetSchema(t *testing.T) {
 	}
 	if got := ManifestTargetSchema(result.Package.Manifest); got != 12 {
 		t.Errorf("表单覆盖后目标迁移号 = %d, want 12", got)
+	}
+}
+
+func TestUploadPackageRejectsUnsafeFileNames(t *testing.T) {
+	content, pub, _ := embeddedPackageBytes(t, "2.0.0", "2.1.0", 0)
+	h, _, _, dir := newUploadTestHandler(t, pub)
+	for _, bad := range []string{"..", ".", ".hidden.tar.gz", ".upload-abc", "pkg.tar.gz.sig", "PKG.SIG"} {
+		code, _, _ := serveUpload(t, h, buildUploadRequest(t, bad, content, nil))
+		if code != http.StatusBadRequest {
+			t.Errorf("filename %q status = %d, want 400", bad, code)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("rejected uploads left files behind: %v", entries)
+	}
+}
+
+func TestUploadPackageDoesNotDeleteReusedTargetOnFailureOrLeaveOrphans(t *testing.T) {
+	content, pub, _ := embeddedPackageBytes(t, "2.0.0", "2.1.0", 0)
+	h, reg, _, dir := newUploadTestHandler(t, pub)
+
+	// 1. Pre-existing target file with identical content; upload fails verification (wrong key) -> target must NOT be removed!
+	target := filepath.Join(dir, "existing.tar.gz")
+	if err := os.WriteFile(target, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	otherPub, _, _ := ed25519.GenerateKey(nil)
+	h.SetArtifactVerifier(func(path string, pkg *Package) error {
+		return verifyPackageArtifactWithKey(path, pkg, otherPub)
+	})
+	code, _, res := serveUpload(t, h, buildUploadRequest(t, "existing.tar.gz", content, nil))
+	if code != http.StatusOK || res.Package == nil || res.Package.Status != PackageRejected {
+		t.Fatalf("expected REJECTED on bad key: code=%d pkg=%+v", code, res.Package)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("pre-existing target file was improperly deleted on rejected upload: %v", err)
+	}
+
+	// 2. Re-uploading same hash with correct verifier succeeds (previous REJECTED record does not block)
+	h.SetArtifactVerifier(func(path string, pkg *Package) error {
+		return verifyPackageArtifactWithKey(path, pkg, pub)
+	})
+	code, msg, res := serveUpload(t, h, buildUploadRequest(t, "existing.tar.gz", content, nil))
+	if code != http.StatusOK || res.Package == nil || res.Package.Status != PackageVerified {
+		t.Fatalf("valid re-upload after REJECTED failed: code=%d msg=%s", code, msg)
+	}
+
+	// 3. Duplicate VERIFIED hash under new filename -> 409 Conflict and NO orphan file created!
+	code, _, _ = serveUpload(t, h, buildUploadRequest(t, "duplicate-name.tar.gz", content, nil))
+	if code != http.StatusConflict {
+		t.Fatalf("duplicate hash status = %d, want 409", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "duplicate-name.tar.gz")); !os.IsNotExist(err) {
+		t.Fatalf("duplicate hash upload left orphan file behind")
+	}
+
+	// 4. CreatePackage DB error rolls back newly moved target file (no orphan!)
+	content2, pub2, _ := embeddedPackageBytes(t, "2.1.0", "2.2.0", 0)
+	h2, reg2, _, dir2 := newUploadTestHandler(t, pub2)
+	reg2.createErr = context.DeadlineExceeded
+	code, _, _ = serveUpload(t, h2, buildUploadRequest(t, "db-fail.tar.gz", content2, nil))
+	if code != http.StatusInternalServerError {
+		t.Fatalf("db error status = %d, want 500", code)
+	}
+	entries, err := os.ReadDir(dir2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("DB failure left orphan files: %v", entries)
+	}
+	_ = reg
+}
+
+func TestUploadPackageDiskSpaceAndConcurrencySemaphore(t *testing.T) {
+	content, pub, _ := embeddedPackageBytes(t, "2.0.0", "2.1.0", 0)
+	h, _, _, dir := newUploadTestHandler(t, pub)
+
+	// Upfront disk full -> 507
+	h.diskFreeFn = func(string) int64 { return 1024 }
+	code, _, _ := serveUpload(t, h, buildUploadRequest(t, "pkg.tar.gz", content, nil))
+	if code != http.StatusInsufficientStorage {
+		t.Fatalf("upfront low disk status = %d, want 507", code)
+	}
+
+	// Mid-stream disk full -> 507 and clean temp dir
+	calls := 0
+	h.diskCheckInterval = 128
+	h.diskFreeFn = func(string) int64 {
+		calls++
+		if calls == 1 {
+			return 1 << 30
+		}
+		return 1024
+	}
+	code, _, _ = serveUpload(t, h, buildUploadRequest(t, "pkg-mid.tar.gz", content, nil))
+	if code != http.StatusInsufficientStorage {
+		t.Fatalf("mid-stream low disk status = %d, want 507", code)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("mid-stream disk full left temp files: %v", entries)
+	}
+
+	// Concurrency semaphore saturation -> 429
+	h.diskFreeFn = nil
+	r1, ok1 := h.acquireUploadSlot()
+	r2, ok2 := h.acquireUploadSlot()
+	if !ok1 || !ok2 {
+		t.Fatal("expected 2 concurrent upload slots")
+	}
+	defer r1()
+	defer r2()
+	code, _, _ = serveUpload(t, h, buildUploadRequest(t, "pkg-third.tar.gz", content, nil))
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("3rd concurrent upload status = %d, want 429", code)
+	}
+}
+
+func TestUploadPackageFieldsAfterFilePart(t *testing.T) {
+	content, pub, sig := legacyPackageBytes(t, "2.1.0")
+	h, _, _, _ := newUploadTestHandler(t, pub)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "legacy-after.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]string{
+		"signature":    sig,
+		"version_from": "2.0.0",
+		"version_to":   "2.1.0",
+	} {
+		if err := writer.WriteField(k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/upgrades/packages/upload", &body)
+	r.Header.Set("Content-Type", writer.FormDataContentType())
+	r = r.WithContext(authz.WithPrincipal(r.Context(), &authz.Principal{UserID: uuid.New(), Username: "tester"}))
+
+	code, msg, res := serveUpload(t, h, r)
+	if code != http.StatusOK || res.Package == nil || res.Package.Status != PackageVerified {
+		t.Fatalf("fields after file part failed: code=%d msg=%s", code, msg)
 	}
 }

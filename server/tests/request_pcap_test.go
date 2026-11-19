@@ -244,11 +244,14 @@ func TestRequestPCAPCaptureAdminRBAC(t *testing.T) {
 	resp = env.get(t, "/api/v1/request-pcap/capture", securityCookies)
 	assertRequestAuditStatus(t, resp, http.StatusForbidden)
 	resp.Body.Close()
-	body := `{"enabled":true,"interface":"eth0","ports":[80,443],"hot_dir":"/srv/hot","warm_dir":"/srv/warm","reason":"采集授权"}`
+	body := `{"enabled":true,"interface":"eth0","ports":[80,443],"hot_dir":"/srv/jiuzhang-hot","warm_dir":"/srv/jiuzhang-warm","reason":"采集授权"}`
 	resp = env.post(t, "/api/v1/request-pcap/capture", body, securityCookies, securityCSRF)
 	assertRequestAuditStatus(t, resp, http.StatusForbidden)
 	resp.Body.Close()
-	resp = env.post(t, "/api/v1/request-pcap/capture", `{"enabled":true,"interface":"eth0;id","ports":[80],"hot_dir":"/srv/hot","warm_dir":"/srv/warm","reason":"非法范围"}`, systemCookies, systemCSRF)
+	resp = env.post(t, "/api/v1/request-pcap/capture", `{"enabled":true,"interface":"eth0","ports":[80],"hot_dir":"/srv/hot","warm_dir":"/srv/warm","reason":"越权目录"}`, systemCookies, systemCSRF)
+	assertRequestAuditStatus(t, resp, http.StatusBadRequest)
+	resp.Body.Close()
+	resp = env.post(t, "/api/v1/request-pcap/capture", `{"enabled":true,"interface":"eth0;id","ports":[80],"hot_dir":"/srv/jiuzhang-hot","warm_dir":"/srv/jiuzhang-warm","reason":"非法范围"}`, systemCookies, systemCSRF)
 	assertRequestAuditStatus(t, resp, http.StatusBadRequest)
 	resp.Body.Close()
 	resp = env.post(t, "/api/v1/request-pcap/capture", body, systemCookies, systemCSRF)

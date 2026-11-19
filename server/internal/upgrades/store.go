@@ -102,10 +102,10 @@ func (s *Store) GetPackage(ctx context.Context, id uuid.UUID) (*Package, error) 
 	return scanPackage(row)
 }
 
-// FindPackageByHash 按文件哈希查询最近登记的升级包；不存在返回 ErrNotFound。
+// FindPackageByHash 按文件哈希查询最近已通过验证（VERIFIED）的升级包；不存在返回 ErrNotFound。
 func (s *Store) FindPackageByHash(ctx context.Context, hash string) (*Package, error) {
 	row := s.db.QueryRow(ctx, `SELECT `+packageColumns+` FROM upgrade_packages
-WHERE file_hash = $1 ORDER BY uploaded_at DESC LIMIT 1`, hash)
+WHERE file_hash = $1 AND status = $2 ORDER BY uploaded_at DESC LIMIT 1`, hash, PackageVerified)
 	return scanPackage(row)
 }
 

@@ -168,6 +168,7 @@ func (s *Store) SweepRelationCandidatesOnce(ctx context.Context, keyHex string) 
 	if err != nil {
 		return nil, fmt.Errorf("authz candidate query: %w", err)
 	}
+	defer rows.Close()
 	type eventRow struct {
 		id, endpointID, appID uuid.UUID
 		template, rawPath     string

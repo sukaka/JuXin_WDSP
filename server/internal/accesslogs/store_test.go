@@ -176,3 +176,92 @@ func TestNormalizeWAFAction(t *testing.T) {
 		t.Error("explicit actions must pass through")
 	}
 }
+
+func TestNullableIPRejectsScopedIPv6AndMalformed(t *testing.T) {
+	if got := nullableIP("203.0.113.10"); got != "203.0.113.10" {
+		t.Fatalf("valid IPv4 = %v, want 203.0.113.10", got)
+	}
+	if got := nullableIP("2001:db8::1"); got != "2001:db8::1" {
+		t.Fatalf("valid IPv6 = %v, want 2001:db8::1", got)
+	}
+	for _, bad := range []string{"", "not-an-ip", "fe80::1%eth0", "fe80::1%25eth0"} {
+		if got := nullableIP(bad); got != nil {
+			t.Fatalf("nullableIP(%q) = %v, want nil", bad, got)
+		}
+	}
+}
+
+func TestFlowBuilderPreservesEdgeRequestCountAndNodeFilters(t *testing.T) {
+	start := time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	filter := ListFilter{StartTime: &start, EndTime: &end}
+	builder := &flowBuilder{
+		nodes:       make(map[string]*flowAggregate),
+		edges:       make(map[string]*flowAggregate),
+		nodeMeta:    make(map[string]FlowNode),
+		edgeMeta:    make(map[string]FlowEdge),
+		allRequests: make(map[string]struct{}),
+		sensitive:   make(map[string]struct{}),
+	}
+	rows := []flowRow{
+		{
+			requestID: "req-1", sourceIP: "192.0.2.10", applicationID: "app-1", applicationName: "Shop",
+			endpoint: "POST /v1/login", identity: "id-alice", jwtStatus: "VERIFIED",
+			eventID: "ev-1", fieldPath: "form.pwd", dataType: "credential", direction: "REQUEST",
+		},
+		{
+			requestID: "req-2", sourceIP: "192.0.2.10", applicationID: "app-1", applicationName: "Shop",
+			endpoint: "POST /v1/login", identity: "id-alice", jwtStatus: "VERIFIED",
+			eventID: "ev-2", fieldPath: "form.pwd", dataType: "credential", direction: "REQUEST",
+		},
+		{
+			requestID: "req-3", sourceIP: "192.0.2.11", applicationID: "app-1", applicationName: "Shop",
+			endpoint: "POST /v1/login", identity: "id-bob", jwtStatus: "VERIFIED",
+			eventID: "ev-3", fieldPath: "form.pwd", dataType: "credential", direction: "REQUEST",
+		},
+	}
+	for _, row := range rows {
+		builder.addRow(row, filter)
+	}
+
+	res := builder.result(start, end, 8)
+	if len(res.Edges) == 0 {
+		t.Fatal("expected non-empty edges")
+	}
+	foundSourceToAccount := false
+	foundAccountToField := false
+	for _, edge := range res.Edges {
+		if edge.RequestCount == 0 || edge.RequestCount != len(edge.RequestIDs) {
+			t.Fatalf("edge %s RequestCount=%d, want %d (RequestIDs=%v)", edge.ID, edge.RequestCount, len(edge.RequestIDs), edge.RequestIDs)
+		}
+		if edge.SourceID == "SOURCE:192.0.2.10" && edge.TargetID == "ACCOUNT:id-alice" {
+			foundSourceToAccount = true
+			if edge.RequestCount != 2 {
+				t.Fatalf("SOURCE->ACCOUNT RequestCount=%d, want 2", edge.RequestCount)
+			}
+			if edge.Filters["client_ip"] != "192.0.2.10" || edge.Filters["identity_fingerprint"] != "id-alice" {
+				t.Fatalf("edge did not inherit source/target node filters: %+v", edge.Filters)
+			}
+		}
+		if edge.SourceID == "ACCOUNT:id-alice" && strings.HasPrefix(edge.TargetID, "REQUEST_FIELD:") {
+			foundAccountToField = true
+			if edge.Filters["identity_fingerprint"] != "id-alice" || edge.Filters["field_path"] != "form.pwd" || edge.Filters["direction"] != "REQUEST" {
+				t.Fatalf("account->field edge missing node filters: %+v", edge.Filters)
+			}
+		}
+	}
+	if !foundSourceToAccount || !foundAccountToField {
+		t.Fatalf("expected edges not found: sourceToAccount=%v accountToField=%v", foundSourceToAccount, foundAccountToField)
+	}
+
+	// Verify RequestCount is also populated when nodes collapse into OTHER buckets.
+	limited := builder.result(start, end, 1)
+	if !limited.Truncated {
+		t.Fatal("expected truncated result when nodeLimit=1")
+	}
+	for _, edge := range limited.Edges {
+		if edge.RequestCount == 0 || edge.RequestCount != len(edge.RequestIDs) {
+			t.Fatalf("aggregated edge %s RequestCount=%d, want %d", edge.ID, edge.RequestCount, len(edge.RequestIDs))
+		}
+	}
+}

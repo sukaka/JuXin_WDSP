@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,7 +47,11 @@ type Handler struct {
 	maxUploadBytes int64
 	// uploadLocks 按目标文件名划分上传互斥锁（同名并发上传串行化，防 check-then-rename
 	// TOCTOU 竞态互相覆盖导致登记哈希与落盘文件不符）
-	uploadLocks sync.Map
+	uploadLocks       sync.Map
+	uploadSemOnce     sync.Once
+	uploadSem         chan struct{}
+	diskFreeFn        func(string) int64
+	diskCheckInterval int64
 	// artifactVerifier 负责固定信任根、签名和归档内容绑定校验。
 	// 仅测试可替换；生产默认使用 verifyPackageArtifact。
 	artifactVerifier PackageArtifactVerifier
@@ -234,12 +237,8 @@ func buildPackage(req *registerPackageRequest, uploadedBy uuid.UUID) (*Package, 
 		UploadedBy:  &uploadedBy,
 	}
 	validate := func() error {
-		if pkg.FileName == "" || len(pkg.FileName) > 255 {
-			return errors.New("文件名不能为空且不超过255字符")
-		}
-		// 防路径穿越：仅允许纯文件名
-		if filepath.Base(pkg.FileName) != pkg.FileName || strings.ContainsRune(pkg.FileName, 0) {
-			return errors.New("文件名不允许包含路径分隔符")
+		if err := validatePackageFileName(pkg.FileName); err != nil {
+			return err
 		}
 		if _, err := ParseVersion(pkg.VersionFrom); err != nil {
 			return err

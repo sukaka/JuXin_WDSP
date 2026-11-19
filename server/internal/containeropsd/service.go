@@ -28,8 +28,7 @@ const apiSelfService = "api"
 const maxRequestBody = 64 * 1024
 
 type queuedActionJob struct {
-	jobID    string
-	delaySec int
+	jobID string
 }
 
 // Service 是 containeropsd 核心服务。
@@ -393,8 +392,16 @@ func (s *Service) handleSubmitAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.workersOnce.Do(s.startJobWorkers)
-	// create 已预留活动名额，队列容量等于活动任务上限，因此此处无需新建 goroutine 或无限等待。
-	s.jobQueue <- queuedActionJob{jobID: job.JobID, delaySec: req.DelaySeconds}
+	// create 已预留活动名额，队列容量等于活动任务上限，因此此处无需无限等待。
+	// 延迟任务经 time.AfterFunc 到点入队，避免在固定工作池内睡眠阻塞其他立即执行任务。
+	if req.DelaySeconds > 0 {
+		jobID := job.JobID
+		time.AfterFunc(time.Duration(req.DelaySeconds)*time.Second, func() {
+			s.jobQueue <- queuedActionJob{jobID: jobID}
+		})
+	} else {
+		s.jobQueue <- queuedActionJob{jobID: job.JobID}
+	}
 	writeJSON(w, http.StatusAccepted, job)
 }
 
@@ -421,14 +428,14 @@ func (s *Service) startJobWorkers() {
 	for i := 0; i < jobWorkerCount; i++ {
 		go func() {
 			for queued := range s.jobQueue {
-				s.runJob(queued.jobID, queued.delaySec)
+				s.runJob(queued.jobID)
 			}
 		}()
 	}
 }
 
-// runJob 异步执行动作任务：延迟 → RUNNING → 按服务串行执行 → SUCCESS/FAILED 落盘。
-func (s *Service) runJob(jobID string, delaySec int) {
+// runJob 异步执行动作任务：RUNNING → 按服务串行执行 → SUCCESS/FAILED 落盘。
+func (s *Service) runJob(jobID string) {
 	defer s.jobs.done(jobID)
 	job, ok := s.jobs.get(jobID)
 	if !ok {
@@ -437,18 +444,6 @@ func (s *Service) runJob(jobID string, delaySec int) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.jobTimeout)
 	defer cancel()
-	if delaySec > 0 {
-		timer := time.NewTimer(time.Duration(delaySec) * time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			if err := s.jobs.transition(jobID, JobFailed, "任务等待执行超时"); err != nil {
-				s.logger.Error("持久化超时任务结果失败", "job_id", jobID, "error", err)
-			}
-			return
-		case <-timer.C:
-		}
-	}
 	if err := s.jobs.transition(jobID, JobRunning, ""); err != nil {
 		s.logger.Error("持久化运维任务运行状态失败，动作未执行",
 			"job_id", job.JobID, "service", job.Service, "action", job.Action, "error", err)
@@ -524,14 +519,33 @@ func (s *Service) Run(ctx context.Context) error {
 			return fmt.Errorf("清理陈旧 socket 失败: %w", err)
 		}
 	}
-	ln, err := net.Listen("unix", sockPath)
+	// 先在同目录绑定临时 socket 并设为 0660 后原子 rename，消除 0755->0660 权限竞争窗口
+	tmpSock := filepath.Join(filepath.Dir(sockPath), ".cops.tmp")
+	if fi, err := os.Stat(tmpSock); err == nil {
+		if fi.Mode()&os.ModeSocket == 0 {
+			return fmt.Errorf("临时 socket 路径已被非 socket 文件占用: %s", tmpSock)
+		}
+		if err := os.Remove(tmpSock); err != nil {
+			return fmt.Errorf("清理陈旧临时 socket 失败: %w", err)
+		}
+	}
+	ln, err := net.Listen("unix", tmpSock)
 	if err != nil {
 		return fmt.Errorf("监听 socket 失败: %w", err)
 	}
+	if ul, ok := ln.(*net.UnixListener); ok {
+		ul.SetUnlinkOnClose(false)
+	}
 	// 0660：共享卷内由同组 API 容器访问（设计文档第 2 节）
-	if err := os.Chmod(sockPath, 0o660); err != nil {
+	if err := os.Chmod(tmpSock, 0o660); err != nil {
 		_ = ln.Close()
+		_ = os.Remove(tmpSock)
 		return fmt.Errorf("设置 socket 权限失败: %w", err)
+	}
+	if err := os.Rename(tmpSock, sockPath); err != nil {
+		_ = ln.Close()
+		_ = os.Remove(tmpSock)
+		return fmt.Errorf("发布 socket 路径失败: %w", err)
 	}
 
 	srv := &http.Server{

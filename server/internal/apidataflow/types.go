@@ -28,6 +28,7 @@ type Node struct {
 	Namespace     string   `json:"namespace"`
 	Cluster       string   `json:"cluster"`
 	Calls         uint64   `json:"calls"`
+	errors        uint64
 	APICount      uint64   `json:"api_count"`
 	AvgLatencyMS  float64  `json:"avg_latency_ms"`
 	MaxLatencyMS  int64    `json:"max_latency_ms"`

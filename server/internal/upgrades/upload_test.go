@@ -184,9 +184,11 @@ func TestFinalizeUploadConcurrent(t *testing.T) {
 }
 
 func TestUploadRequestDeadlineExtensionAllowsSlowBody(t *testing.T) {
-	const serverTimeout = 40 * time.Millisecond
+	const serverTimeout = 300 * time.Millisecond
+	entered := make(chan struct{})
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		extendUploadRequestDeadlines(w)
+		close(entered)
 		if _, err := io.Copy(io.Discard, r.Body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -204,7 +206,8 @@ func TestUploadRequestDeadlineExtensionAllowsSlowBody(t *testing.T) {
 		if _, err := writer.Write([]byte("first")); err != nil {
 			return
 		}
-		time.Sleep(3 * serverTimeout)
+		<-entered
+		time.Sleep(2 * serverTimeout)
 		_, _ = writer.Write([]byte("second"))
 	}()
 	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/upgrades/packages/upload", reader)
@@ -212,7 +215,7 @@ func TestUploadRequestDeadlineExtensionAllowsSlowBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := server.Client()
-	client.Timeout = 2 * time.Second
+	client.Timeout = 5 * time.Second
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("慢速上传被全局期限中断: %v", err)

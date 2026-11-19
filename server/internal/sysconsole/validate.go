@@ -17,10 +17,10 @@ var reHostname = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9]
 // ValidIfName 校验网口名。
 func ValidIfName(s string) bool { return reIfName.MatchString(s) }
 
-// ValidHost 校验 ping 目标：IP 或合法主机名。
+// ValidHost 校验 ping 目标：IP（拒绝 zone 标识）或合法主机名。
 func ValidHost(s string) bool {
-	if _, err := netip.ParseAddr(s); err == nil {
-		return true
+	if addr, err := netip.ParseAddr(s); err == nil {
+		return addr.Zone() == ""
 	}
 	return len(s) <= 253 && reHostname.MatchString(s)
 }
@@ -28,8 +28,17 @@ func ValidHost(s string) bool {
 // ParsePrefix 校验 CIDR（如 192.168.1.10/24 或 0.0.0.0/0）。
 func ParsePrefix(s string) (netip.Prefix, error) { return netip.ParsePrefix(s) }
 
-// ParseAddr 校验单个 IP（网关 / DNS）。
-func ParseAddr(s string) (netip.Addr, error) { return netip.ParseAddr(s) }
+// ParseAddr 校验单个 IP（网关 / DNS；拒绝 zone 标识）。
+func ParseAddr(s string) (netip.Addr, error) {
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	if addr.Zone() != "" {
+		return netip.Addr{}, fmt.Errorf("IP 地址不允许包含 zone 标识")
+	}
+	return addr, nil
+}
 
 // ParseHostList 解析逗号分隔的主机列表（DNS/NTP 服务器等系统设置与下发配置共用）：
 // 各项去首尾空白并丢弃空项；每项必须为 IP 或合法主机名（ValidHost 语义，拒绝

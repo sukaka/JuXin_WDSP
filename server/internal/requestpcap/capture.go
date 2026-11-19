@@ -126,14 +126,25 @@ func captureStoragePath(path string) error {
 		return fmt.Errorf("%w: 存储路径必须是规范绝对路径", ErrCaptureInvalid)
 	}
 	allowed := false
-	for _, prefix := range []string{"/srv/", "/var/lib/", "/data/", "/mnt/", "/media/"} {
+	for _, prefix := range []string{
+		"/var/lib/jiuzhang-pcap/",
+		"/var/lib/jiuzhang/",
+		"/srv/jiuzhang-",
+		"/srv/jiuzhang/",
+		"/data/jiuzhang-",
+		"/data/jiuzhang/",
+		"/mnt/jiuzhang-",
+		"/mnt/jiuzhang/",
+		"/media/jiuzhang-",
+		"/media/jiuzhang/",
+	} {
 		if strings.HasPrefix(path, prefix) && len(path) > len(prefix) {
 			allowed = true
 			break
 		}
 	}
 	if !allowed {
-		return fmt.Errorf("%w: 存储路径仅允许位于受控数据盘目录", ErrCaptureInvalid)
+		return fmt.Errorf("%w: 存储路径仅允许位于受控产品专用数据目录", ErrCaptureInvalid)
 	}
 	return nil
 }
@@ -155,7 +166,7 @@ func (c *CaptureController) status(config *CaptureConfig) CaptureStatus {
 		return CaptureStatus{CaptureConfig: CaptureConfig{Enabled: false, Ports: []int{}}, State: "DISABLED"}
 	}
 	result := CaptureStatus{CaptureConfig: *config, State: "PENDING"}
-	statusPath := filepath.Join(c.hostctl, "pcap-status.json")
+	statusPath := filepath.Join(c.hostctl, "pcap-status.state")
 	stat, err := os.Stat(statusPath)
 	if err == nil {
 		if stat.Size() > 65536 {
@@ -219,7 +230,11 @@ func (c *CaptureController) Set(w http.ResponseWriter, r *http.Request) {
 	config := CaptureConfig{Enabled: input.Enabled, Interface: strings.TrimSpace(input.Interface), Ports: input.Ports,
 		HotDir: strings.TrimSpace(input.HotDir), WarmDir: strings.TrimSpace(input.WarmDir)}
 	if !input.Enabled {
-		if previous == nil || !previous.Enabled {
+		if previous == nil {
+			response.JSON(w, r, http.StatusOK, c.status(previous))
+			return
+		}
+		if !previous.Enabled && c.status(previous).State == "DISABLED" {
 			response.JSON(w, r, http.StatusOK, c.status(previous))
 			return
 		}
@@ -236,16 +251,19 @@ func (c *CaptureController) Set(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
-	if err := c.settings.UpsertString(r.Context(), "request_pcap_capture", "config", string(raw), "系统管理员控制的PCAP采集范围与开关", principal.UserID); err != nil {
-		response.InternalError(w, r, err)
-		return
-	}
-	_, err = systemops.WriteFlagFile(c.hostctl, systemops.Command{
+	flagPath, writeErr := systemops.WriteFlagFile(c.hostctl, systemops.Command{
 		Action: systemops.ActionPCAPCapture, RequestedBy: principal.Username, UserID: principal.UserID.String(),
 		RequestID: config.RequestID, RequestedAt: config.RequestedAt.Format(time.RFC3339), DelaySeconds: 0,
 		Interface: config.Interface, Ports: config.Ports, HotDir: config.HotDir, WarmDir: config.WarmDir,
 		NodeID: c.nodeID, Enabled: &config.Enabled,
 	})
+	var upsertErr error
+	if writeErr == nil {
+		upsertErr = c.settings.UpsertString(r.Context(), "request_pcap_capture", "config", string(raw), "系统管理员控制的PCAP采集范围与开关", principal.UserID)
+		if upsertErr != nil {
+			_ = os.Remove(flagPath)
+		}
+	}
 	if c.audits != nil {
 		action := "request_pcap.capture_disable"
 		if config.Enabled {
@@ -255,16 +273,22 @@ func (c *CaptureController) Set(w http.ResponseWriter, r *http.Request) {
 			ConnectionIP: middleware.ConnectionIP(r), UserAgent: r.UserAgent(), Module: "api_audit", Action: action,
 			ObjectType: "request_pcap", ObjectID: config.RequestID, Result: audits.ResultSuccess,
 			AfterSummary: "操作理由：" + strings.TrimSpace(input.Reason), RiskLevel: audits.RiskHigh, RequestID: response.RequestIDFrom(r)}
-		if err != nil {
+		if writeErr != nil {
 			record.Result, record.FailureReason = audits.ResultFailure, "宿主控制指令写入失败"
+		} else if upsertErr != nil {
+			record.Result, record.FailureReason = audits.ResultFailure, "采集配置持久化失败"
 		}
 		if auditErr := c.audits.Record(context.WithoutCancel(r.Context()), record); auditErr != nil {
 			response.InternalError(w, r, auditErr)
 			return
 		}
 	}
-	if err != nil {
+	if writeErr != nil {
 		response.Error(w, r, http.StatusServiceUnavailable, response.CodeServiceUnavailable, "宿主控制指令写入失败，请检查hostctl通道")
+		return
+	}
+	if upsertErr != nil {
+		response.InternalError(w, r, upsertErr)
 		return
 	}
 	response.JSON(w, r, http.StatusAccepted, c.status(&config))

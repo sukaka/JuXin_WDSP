@@ -375,6 +375,9 @@ func TestBuildPackageRejected(t *testing.T) {
 	}{
 		{"空文件名", registerPackageRequest{FileName: "", VersionFrom: "2.0.0", VersionTo: "2.1.0", FileHash: strings.Repeat("a", 64), FileSize: 1}},
 		{"路径穿越", registerPackageRequest{FileName: "../evil.tar.gz", VersionFrom: "2.0.0", VersionTo: "2.1.0", FileHash: strings.Repeat("a", 64), FileSize: 1}},
+		{"上级目录名", registerPackageRequest{FileName: "..", VersionFrom: "2.0.0", VersionTo: "2.1.0", FileHash: strings.Repeat("a", 64), FileSize: 1}},
+		{"点前缀文件名", registerPackageRequest{FileName: ".hidden.tar.gz", VersionFrom: "2.0.0", VersionTo: "2.1.0", FileHash: strings.Repeat("a", 64), FileSize: 1}},
+		{"签名后缀文件名", registerPackageRequest{FileName: "a.tar.gz.sig", VersionFrom: "2.0.0", VersionTo: "2.1.0", FileHash: strings.Repeat("a", 64), FileSize: 1}},
 		{"起始版本非法", registerPackageRequest{FileName: "a.tar.gz", VersionFrom: "2.0", VersionTo: "2.1.0", FileHash: strings.Repeat("a", 64), FileSize: 1}},
 		{"目标版本不回退", registerPackageRequest{FileName: "a.tar.gz", VersionFrom: "2.1.0", VersionTo: "2.0.0", FileHash: strings.Repeat("a", 64), FileSize: 1}},
 		{"哈希非法", registerPackageRequest{FileName: "a.tar.gz", VersionFrom: "2.0.0", VersionTo: "2.1.0", FileHash: "xyz", FileSize: 1}},

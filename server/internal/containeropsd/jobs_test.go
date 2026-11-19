@@ -2,6 +2,7 @@ package containeropsd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -418,4 +419,71 @@ func TestAsyncResultPersistenceFailureKeepsLastDurableState(t *testing.T) {
 	if persisted.Status != JobRunning || persisted.StartedAt == nil || persisted.FinishedAt != nil {
 		t.Fatalf("磁盘应保留与内存一致的 RUNNING 状态: %+v", persisted)
 	}
+}
+
+func TestDockerClientUsesPerOpTimeoutNotClientTimeout(t *testing.T) {
+	dc, err := NewDockerClient("unix:///tmp/test-docker.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dc.hc.Timeout != 0 {
+		t.Fatalf("DockerClient hc.Timeout = %v, want 0 (per-op context timeouts)", dc.hc.Timeout)
+	}
+	if dc.defaultOpTimeout != 30*time.Second || dc.pullTimeout != 5*time.Minute {
+		t.Fatalf("unexpected timeouts: default=%v pull=%v", dc.defaultOpTimeout, dc.pullTimeout)
+	}
+}
+
+func TestRollbackUsesFreshContextWhenCallerCanceled(t *testing.T) {
+	engine, dc := newFakeEngine(t)
+	oldC := engine.addContainer(&fakeContainer{name: "proj-web-1-old-12345678", service: "web", running: false})
+	newC := engine.addContainer(&fakeContainer{name: "proj-web-1", service: "web", running: true})
+	svc := newTestService(t, dc, shortTempDir(t), "proj", "web")
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := true
+	svc.rollback(canceledCtx, oldC.id, newC.id, "proj-web-1", &started)
+
+	// New container removed, old container renamed back and started
+	if len(engine.callsWith("/start")) == 0 || len(engine.callsWith("/rename")) == 0 {
+		t.Fatalf("rollback failed under canceled caller ctx: calls=%v", engine.calls)
+	}
+}
+
+func TestDelayedJobsDoNotBlockImmediateJobsInWorkerPool(t *testing.T) {
+	engine, dc := newFakeEngine(t)
+	engine.addContainer(&fakeContainer{name: "proj-web-1", service: "web", running: true})
+	engine.addContainer(&fakeContainer{name: "proj-api-1", service: "api", running: true})
+	svc := newTestService(t, dc, shortTempDir(t), "proj", "web", "api")
+
+	// Submit jobWorkerCount delayed jobs (2s delay) — must NOT occupy worker goroutines
+	delayedIDs := make([]string, 0, jobWorkerCount)
+	for i := 0; i < jobWorkerCount; i++ {
+		code, body := submitAction(t, svc, "web", `{"action":"restart","delay_seconds":2}`)
+		if code != http.StatusAccepted {
+			t.Fatalf("delayed job %d code=%d body=%v", i, code, body)
+		}
+		delayedIDs = append(delayedIDs, body["job_id"].(string))
+	}
+
+	// Submit immediate job on another service; must complete well before the 2s delay expires
+	start := time.Now()
+	code, body := submitAction(t, svc, "api", `{"action":"restart"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("immediate job code=%d body=%v", code, body)
+	}
+	immID := body["job_id"].(string)
+	if job := waitJob(t, svc, immID); job.Status != JobSuccess {
+		t.Fatalf("immediate job failed: %+v", job)
+	}
+	if elapsed := time.Since(start); elapsed >= 1500*time.Millisecond {
+		t.Fatalf("immediate job starved behind delayed jobs: elapsed=%v", elapsed)
+	}
+	for _, id := range delayedIDs {
+		if job := waitJob(t, svc, id); job.Status != JobSuccess {
+			t.Fatalf("delayed job %s failed: %+v", id, job)
+		}
+	}
+	waitActiveJobs(t, svc, 0)
 }

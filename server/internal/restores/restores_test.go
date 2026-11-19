@@ -1,7 +1,11 @@
 package restores
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/backups"
@@ -211,5 +215,47 @@ func TestQuotedColumnList(t *testing.T) {
 	evil := quotedColumnList([]string{`x"; DROP TABLE users; --`})
 	if evil != `"x""; DROP TABLE users; --"` {
 		t.Errorf("evil quoting = %s", evil)
+	}
+}
+
+func TestExtendImportDeadlinesAllowsSlowBody(t *testing.T) {
+	const serverTimeout = 300 * time.Millisecond
+	entered := make(chan struct{})
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		extendImportDeadlines(w)
+		defer restoreImportDeadlines(w)
+		close(entered)
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	srv.Config.ReadTimeout = serverTimeout
+	srv.Config.WriteTimeout = serverTimeout
+	srv.Start()
+	defer srv.Close()
+
+	pr, pw := io.Pipe()
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("part1"))
+		<-entered
+		time.Sleep(2 * serverTimeout)
+		_, _ = pw.Write([]byte("part2"))
+	}()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/restores/import", pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := srv.Client()
+	client.Timeout = 5 * time.Second
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("slow import body interrupted: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
 }

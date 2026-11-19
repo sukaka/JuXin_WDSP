@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,11 +26,18 @@ type spoolRecord struct {
 	Requests   []pcapevidence.RequestEvidence `json:"requests,omitempty"`
 }
 
+const (
+	defaultSpoolRetryTTL   = 10 * time.Minute
+	spoolDeliverBatchLimit = 64
+	spoolScanBatchLimit    = 1024
+)
+
 type SpoolStats struct {
-	Scanned   uint64
-	Delivered uint64
-	Pending   uint64
-	Errors    uint64
+	Scanned     uint64
+	Delivered   uint64
+	Pending     uint64
+	Errors      uint64
+	Quarantined uint64
 }
 
 type spoolStore interface {
@@ -39,15 +47,19 @@ type spoolStore interface {
 }
 
 type SpoolCollector struct {
-	store     spoolStore
-	hotRoot   string
-	nodeID    string
-	retention time.Duration
-	now       func() time.Time
-	scanned   atomic.Uint64
-	delivered atomic.Uint64
-	pending   atomic.Uint64
-	errors    atomic.Uint64
+	store       spoolStore
+	hotRoot     string
+	nodeID      string
+	retention   time.Duration
+	retryTTL    time.Duration
+	now         func() time.Time
+	mu          sync.Mutex
+	scanCursor  int
+	scanned     atomic.Uint64
+	delivered   atomic.Uint64
+	pending     atomic.Uint64
+	errors      atomic.Uint64
+	quarantined atomic.Uint64
 }
 
 func NewSpoolCollector(store spoolStore, hotRoot, nodeID string, retention time.Duration) (*SpoolCollector, error) {
@@ -57,11 +69,31 @@ func NewSpoolCollector(store spoolStore, hotRoot, nodeID string, retention time.
 	if stat, err := os.Stat(hotRoot); err != nil || !stat.IsDir() {
 		return nil, fmt.Errorf("evidence spool root is unavailable")
 	}
-	return &SpoolCollector{store: store, hotRoot: filepath.Clean(hotRoot), nodeID: nodeID, retention: retention, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &SpoolCollector{store: store, hotRoot: filepath.Clean(hotRoot), nodeID: nodeID, retention: retention, retryTTL: defaultSpoolRetryTTL, now: func() time.Time { return time.Now().UTC() }}, nil
+}
+
+func (c *SpoolCollector) currentTime() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now().UTC()
+}
+
+func (c *SpoolCollector) effectiveRetryTTL() time.Duration {
+	if c.retryTTL > 0 {
+		return c.retryTTL
+	}
+	return defaultSpoolRetryTTL
 }
 
 func (c *SpoolCollector) Stats() SpoolStats {
-	return SpoolStats{Scanned: c.scanned.Load(), Delivered: c.delivered.Load(), Pending: c.pending.Load(), Errors: c.errors.Load()}
+	return SpoolStats{
+		Scanned:     c.scanned.Load(),
+		Delivered:   c.delivered.Load(),
+		Pending:     c.pending.Load(),
+		Errors:      c.errors.Load(),
+		Quarantined: c.quarantined.Load(),
+	}
 }
 
 func (c *SpoolCollector) CollectOnce(ctx context.Context) error {
@@ -69,27 +101,71 @@ func (c *SpoolCollector) CollectOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	processed := 0
-	var errs []error
+	candidates := make([]os.DirEntry, 0, len(entries))
 	for _, entry := range entries {
-		if processed >= 64 {
-			break
-		}
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".wpcap.json") {
 			continue
 		}
-		processed++
+		candidates = append(candidates, entry)
+	}
+	if len(candidates) == 0 {
+		c.mu.Lock()
+		c.scanCursor = 0
+		c.mu.Unlock()
+		return nil
+	}
+
+	c.mu.Lock()
+	start := c.scanCursor % len(candidates)
+	c.mu.Unlock()
+
+	now := c.currentTime()
+	retryTTL := c.effectiveRetryTTL()
+	scanned := 0
+	delivered := 0
+	var errs []error
+	for i := 0; i < len(candidates) && scanned < spoolScanBatchLimit && delivered < spoolDeliverBatchLimit; i++ {
+		if ctx.Err() != nil {
+			break
+		}
+		entry := candidates[(start+i)%len(candidates)]
+		scanned++
 		c.scanned.Add(1)
 		if err := c.collect(ctx, entry.Name()); err != nil {
+			if info, infoErr := entry.Info(); infoErr == nil && now.Sub(info.ModTime()) > retryTTL {
+				c.quarantineSidecar(entry.Name(), err)
+				if !errors.Is(err, ErrRequestAuditNotFound) {
+					c.errors.Add(1)
+					errs = append(errs, fmt.Errorf("collect %s (quarantined): %w", entry.Name(), err))
+				}
+				continue
+			}
 			if errors.Is(err, ErrRequestAuditNotFound) {
 				c.pending.Add(1)
 				continue
 			}
 			c.errors.Add(1)
 			errs = append(errs, fmt.Errorf("collect %s: %w", entry.Name(), err))
+			continue
 		}
+		delivered++
 	}
+
+	c.mu.Lock()
+	c.scanCursor = (start + scanned) % len(candidates)
+	c.mu.Unlock()
 	return errors.Join(errs...)
+}
+
+func (c *SpoolCollector) quarantineSidecar(name string, cause error) {
+	src := filepath.Join(c.hotRoot, name)
+	dst := src + ".quarantined"
+	if err := os.Rename(src, dst); err != nil && !os.IsNotExist(err) {
+		slog.Warn("quarantine expired PCAP spool sidecar failed", "file", name, "error", err, "cause", cause)
+		return
+	}
+	c.quarantined.Add(1)
+	slog.Warn("quarantined expired PCAP spool sidecar", "file", name, "cause", cause)
 }
 
 func (c *SpoolCollector) collect(ctx context.Context, name string) error {
@@ -150,13 +226,26 @@ func (c *SpoolCollector) collect(ctx context.Context, name string) error {
 	if err := c.store.CreateArtifact(ctx, artifact); err != nil {
 		return err
 	}
+	var pendingCount int
+	var permanentErrs []error
 	for _, request := range record.Requests {
 		if request.CapturePoint != "GATEWAY_EGRESS" {
-			return fmt.Errorf("untrusted capture point cannot be correlated")
+			permanentErrs = append(permanentErrs, fmt.Errorf("untrusted capture point cannot be correlated for request %s", request.RequestID))
+			continue
 		}
 		if err := c.store.RecordCapturedRequest(ctx, artifact.ID, CapturedRequest(request)); err != nil {
-			return err
+			if errors.Is(err, ErrRequestAuditNotFound) {
+				pendingCount++
+				continue
+			}
+			permanentErrs = append(permanentErrs, fmt.Errorf("correlate request %s: %w", request.RequestID, err))
 		}
+	}
+	if len(permanentErrs) > 0 {
+		return errors.Join(permanentErrs...)
+	}
+	if pendingCount > 0 {
+		return ErrRequestAuditNotFound
 	}
 	if err := removeRegularIfExists(path); err != nil {
 		return err

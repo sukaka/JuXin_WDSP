@@ -2,9 +2,11 @@
 package netdiag
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -137,8 +139,9 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	response.Page(w, r, jobs, total, page, pageSize)
 }
 
-// Get 查询任务详情（含 result_text）。
+// Get 查询任务详情（含 result_text；无 network_tools.download 权限时脱敏抓包 payload preview）。
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
+	p := authz.PrincipalFrom(r.Context())
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的任务ID")
@@ -153,7 +156,31 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, r, err)
 		return
 	}
+	if len(job.CapturePackets) > 0 && (p == nil || !p.HasPermission("network_tools.download")) {
+		jobCopy := *job
+		jobCopy.CapturePackets = redactCapturePacketPreviews(job.CapturePackets)
+		job = &jobCopy
+	}
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"job": job})
+}
+
+func redactCapturePacketPreviews(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return raw
+	}
+	var packets []CapturePacket
+	if err := json.Unmarshal(trimmed, &packets); err != nil {
+		return nil
+	}
+	for i := range packets {
+		packets[i].Preview = ""
+	}
+	out, err := json.Marshal(packets)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // Stop 停止诊断任务：PENDING 直接置 STOPPED；RUNNING 写停止标记文件由 netmgrd 终止执行。

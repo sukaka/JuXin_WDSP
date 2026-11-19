@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testSecret = "abababababababababababababababababababababababababababababababab"
@@ -139,5 +140,60 @@ func TestWriteFlagFileSecretDirBlocked(t *testing.T) {
 	}
 	if _, err := WriteFlagFile(blocker, testCommand()); err == nil {
 		t.Fatal("目录不可写应返回错误")
+	}
+}
+
+func TestWriteFlagFileRejectsUnsafeRequestIDAndAction(t *testing.T) {
+	badIDs := []string{
+		"../escape",
+		"a/b",
+		`a\b`,
+		"a..b",
+		"req\nid",
+		"req\rid",
+		"req\x00id",
+		strings.Repeat("x", 129),
+	}
+	for _, bad := range badIDs {
+		dir := t.TempDir()
+		cmd := testCommand()
+		cmd.RequestID = bad
+		if _, err := WriteFlagFile(dir, cmd); err == nil {
+			t.Fatalf("WriteFlagFile accepted unsafe RequestID %q", bad)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("readdir: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("rejected RequestID %q still created files: %v", bad, entries)
+		}
+
+		name := FlagFileName(ActionReboot, bad, time.Unix(1700000000, 0))
+		if strings.Contains(name, "..") || strings.ContainsAny(name, "/\\\r\n\x00") {
+			t.Fatalf("FlagFileName returned unsafe name %q for RequestID %q", name, bad)
+		}
+		if !strings.HasPrefix(name, ActionReboot+"-") || !strings.HasSuffix(name, ".json") {
+			t.Fatalf("FlagFileName format invalid: %q", name)
+		}
+	}
+
+	// Empty RequestID remains valid and falls back to UUID in filename.
+	dir := t.TempDir()
+	cmd := testCommand()
+	cmd.RequestID = ""
+	final, err := WriteFlagFile(dir, cmd)
+	if err != nil {
+		t.Fatalf("empty RequestID should be allowed: %v", err)
+	}
+	if filepath.Dir(final) != dir {
+		t.Fatalf("flag file escaped dir: got %q, want dir %q", final, dir)
+	}
+
+	// Unsafe action is also rejected.
+	cmd = testCommand()
+	cmd.Action = "../reboot"
+	if _, err := WriteFlagFile(t.TempDir(), cmd); err == nil {
+		t.Fatal("WriteFlagFile accepted unsafe Action")
 	}
 }

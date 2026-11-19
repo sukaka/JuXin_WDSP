@@ -39,38 +39,44 @@ func (s *Service) ImportBackup(ctx context.Context, srcPath string, importedBy *
 	if err != nil || st.IsDir() {
 		return nil, fmt.Errorf("%w: source file missing", backups.ErrFileMissing)
 	}
-
-	// 复制到备份目录（新 ID 命名，不覆盖既有文件）
-	newID := uuid.New()
-	dst, err := backups.BackupPath(s.dataDir, newID)
-	if err != nil {
-		return nil, err
-	}
-	if err := copyFile(srcAbs, dst); err != nil {
-		return nil, fmt.Errorf("copy backup file: %w", err)
+	if st.Size() <= 0 || st.Size() > backups.MaxBackupFileSize {
+		return nil, fmt.Errorf("%w: invalid backup file size", ErrInvalidInput)
 	}
 
-	// 全量完整性验证（文件哈希自算 + 解密 + 清单 + 逐表行数/哈希）
-	res, err := s.exporter.Verify(ctx, dst, "")
+	// 先在暂存路径上完成全量完整性验证（解密 + 清单 HMAC + 逐表行数/哈希），不通过绝不落入 backups 目录
+	res, err := s.exporter.Verify(ctx, srcAbs, "")
 	if err != nil {
-		_ = os.Remove(dst)
 		return nil, fmt.Errorf("import verify failed: %w", err)
 	}
 	manifestJSON, err := json.Marshal(res.Manifest)
 	if err != nil {
-		_ = os.Remove(dst)
 		return nil, err
 	}
 	backupType := res.Manifest.BackupType
 	if backupType == "" {
 		backupType = backups.TypeFull
 	}
-	fileHash, err := backups.FileSHA256(dst)
+	fileHash, err := backups.FileSHA256(srcAbs)
 	if err != nil {
-		_ = os.Remove(dst)
 		return nil, err
 	}
-	job, err := s.backups.InsertImported(ctx, newID, backupType, dst, st.Size(), fileHash, manifestJSON, importedBy)
+
+	// 同文件系统硬链接进入备份目录（零拷贝且不覆盖既有文件）；跨设备时回退流式复制
+	newID := uuid.New()
+	dst, err := backups.BackupPath(s.dataDir, newID)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		return nil, fmt.Errorf("prepare backup dir: %w", err)
+	}
+	if err := os.Link(srcAbs, dst); err != nil {
+		if copyErr := copyFile(srcAbs, dst); copyErr != nil {
+			return nil, fmt.Errorf("store backup file: %w", copyErr)
+		}
+	}
+
+	job, err := s.backups.InsertImported(ctx, newID, backupType, backups.BackupFileName(newID), st.Size(), fileHash, manifestJSON, importedBy)
 	if err != nil {
 		_ = os.Remove(dst)
 		return nil, err

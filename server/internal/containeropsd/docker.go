@@ -47,10 +47,22 @@ func isNotModified(err error) bool {
 
 // DockerClient 调用 Docker Engine API。
 type DockerClient struct {
-	socketPath string
-	hc         *http.Client
+	socketPath       string
+	hc               *http.Client
+	defaultOpTimeout time.Duration
 	// pullTimeout 镜像拉取超时（离线环境快速失败，在线大镜像给足余量）
 	pullTimeout time.Duration
+}
+
+type cancelReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelReadCloser) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 // NewDockerClient 创建 Docker 客户端。host 仅支持 unix:// 方案。
@@ -70,10 +82,21 @@ func NewDockerClient(host string) (*DockerClient, error) {
 		MaxIdleConnsPerHost: 4,
 	}
 	return &DockerClient{
-		socketPath:  socketPath,
-		hc:          &http.Client{Transport: transport, Timeout: 30 * time.Second},
-		pullTimeout: 5 * time.Minute,
+		socketPath:       socketPath,
+		hc:               &http.Client{Transport: transport, Timeout: 0},
+		defaultOpTimeout: 30 * time.Second,
+		pullTimeout:      5 * time.Minute,
 	}, nil
+}
+
+func (c *DockerClient) withOpTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		d = c.defaultOpTimeout
+	}
+	if d <= 0 {
+		d = 30 * time.Second
+	}
+	return context.WithTimeout(ctx, d)
 }
 
 // do 发起一次 Engine API 调用；调用方负责关闭响应体。
@@ -111,6 +134,8 @@ func (c *DockerClient) do(ctx context.Context, method, path string, query url.Va
 
 // Ping 探测 Engine 可用性（GET /_ping）。
 func (c *DockerClient) Ping(ctx context.Context) error {
+	ctx, cancel := c.withOpTimeout(ctx, 0)
+	defer cancel()
 	resp, err := c.do(ctx, http.MethodGet, "/_ping", nil, nil)
 	if err != nil {
 		return err
@@ -141,6 +166,8 @@ func (cs ContainerSummary) Name() string {
 
 // ListContainers 按 compose 项目标签过滤列出全部容器（含已停止）。
 func (c *DockerClient) ListContainers(ctx context.Context, project string) ([]ContainerSummary, error) {
+	ctx, cancel := c.withOpTimeout(ctx, 0)
+	defer cancel()
 	filters, _ := json.Marshal(map[string][]string{"label": {LabelProject + "=" + project}})
 	q := url.Values{}
 	q.Set("all", "1")
@@ -226,6 +253,8 @@ func (ci *ContainerInspect) HasHealthcheck() bool {
 
 // InspectContainer 读取容器完整信息。
 func (c *DockerClient) InspectContainer(ctx context.Context, id string) (*ContainerInspect, error) {
+	ctx, cancel := c.withOpTimeout(ctx, 0)
+	defer cancel()
 	resp, err := c.do(ctx, http.MethodGet, "/containers/"+id+"/json", nil, nil)
 	if err != nil {
 		return nil, err
@@ -241,6 +270,7 @@ func (c *DockerClient) InspectContainer(ctx context.Context, id string) (*Contai
 // ContainerLogs 打开日志流（stdout+stderr、带时间戳、尾部 tail 行、since 之后）。
 // 返回的 ReadCloser 由调用方关闭；是否为多路复用流取决于容器的 Tty 配置（调用方先 inspect）。
 func (c *DockerClient) ContainerLogs(ctx context.Context, id string, tail int, since int64) (io.ReadCloser, error) {
+	opCtx, cancel := c.withOpTimeout(ctx, 0)
 	q := url.Values{}
 	q.Set("stdout", "1")
 	q.Set("stderr", "1")
@@ -249,15 +279,18 @@ func (c *DockerClient) ContainerLogs(ctx context.Context, id string, tail int, s
 	if since > 0 {
 		q.Set("since", strconv.FormatInt(since, 10))
 	}
-	resp, err := c.do(ctx, http.MethodGet, "/containers/"+id+"/logs", q, nil)
+	resp, err := c.do(opCtx, http.MethodGet, "/containers/"+id+"/logs", q, nil)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	return resp.Body, nil
+	return &cancelReadCloser{ReadCloser: resp.Body, cancel: cancel}, nil
 }
 
 // StartContainer 启动容器；已运行（304）视为成功。
 func (c *DockerClient) StartContainer(ctx context.Context, id string) error {
+	ctx, cancel := c.withOpTimeout(ctx, 0)
+	defer cancel()
 	resp, err := c.do(ctx, http.MethodPost, "/containers/"+id+"/start", nil, nil)
 	if err != nil {
 		if isNotModified(err) {
@@ -271,6 +304,12 @@ func (c *DockerClient) StartContainer(ctx context.Context, id string) error {
 
 // StopContainer 停止容器（timeoutSec 为 SIGKILL 前等待秒数）；已停止（304）视为成功。
 func (c *DockerClient) StopContainer(ctx context.Context, id string, timeoutSec int) error {
+	opTimeout := c.defaultOpTimeout
+	if need := time.Duration(timeoutSec+15) * time.Second; need > opTimeout {
+		opTimeout = need
+	}
+	ctx, cancel := c.withOpTimeout(ctx, opTimeout)
+	defer cancel()
 	q := url.Values{}
 	q.Set("t", strconv.Itoa(timeoutSec))
 	resp, err := c.do(ctx, http.MethodPost, "/containers/"+id+"/stop", q, nil)
@@ -286,6 +325,12 @@ func (c *DockerClient) StopContainer(ctx context.Context, id string, timeoutSec 
 
 // RestartContainer 重启容器。
 func (c *DockerClient) RestartContainer(ctx context.Context, id string, timeoutSec int) error {
+	opTimeout := c.defaultOpTimeout
+	if need := time.Duration(timeoutSec+15) * time.Second; need > opTimeout {
+		opTimeout = need
+	}
+	ctx, cancel := c.withOpTimeout(ctx, opTimeout)
+	defer cancel()
 	q := url.Values{}
 	q.Set("t", strconv.Itoa(timeoutSec))
 	resp, err := c.do(ctx, http.MethodPost, "/containers/"+id+"/restart", q, nil)
@@ -298,6 +343,8 @@ func (c *DockerClient) RestartContainer(ctx context.Context, id string, timeoutS
 
 // RenameContainer 重命名容器（update 重建前腾出原名）。
 func (c *DockerClient) RenameContainer(ctx context.Context, id, newName string) error {
+	ctx, cancel := c.withOpTimeout(ctx, 0)
+	defer cancel()
 	q := url.Values{}
 	q.Set("name", newName)
 	resp, err := c.do(ctx, http.MethodPost, "/containers/"+id+"/rename", q, nil)
@@ -310,6 +357,8 @@ func (c *DockerClient) RenameContainer(ctx context.Context, id, newName string) 
 
 // CreateContainer 以给定名称与完整配置体创建容器，返回新容器 ID。
 func (c *DockerClient) CreateContainer(ctx context.Context, name string, body []byte) (string, error) {
+	ctx, cancel := c.withOpTimeout(ctx, 0)
+	defer cancel()
 	q := url.Values{}
 	q.Set("name", name)
 	resp, err := c.do(ctx, http.MethodPost, "/containers/create", q, strings.NewReader(string(body)))
@@ -331,6 +380,8 @@ func (c *DockerClient) CreateContainer(ctx context.Context, name string, body []
 
 // RemoveContainer 删除容器。
 func (c *DockerClient) RemoveContainer(ctx context.Context, id string, force bool) error {
+	ctx, cancel := c.withOpTimeout(ctx, 0)
+	defer cancel()
 	q := url.Values{}
 	if force {
 		q.Set("force", "1")
@@ -345,6 +396,8 @@ func (c *DockerClient) RemoveContainer(ctx context.Context, id string, force boo
 
 // ImageInspect 返回镜像 ID（用于比对更新前后镜像是否变化）。
 func (c *DockerClient) ImageInspect(ctx context.Context, ref string) (imageID string, err error) {
+	ctx, cancel := c.withOpTimeout(ctx, 0)
+	defer cancel()
 	resp, err := c.do(ctx, http.MethodGet, "/images/"+ref+"/json", nil, nil)
 	if err != nil {
 		return "", err

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -614,6 +615,22 @@ func TestRunLifecycleSocketFile(t *testing.T) {
 	}
 	if perm := fi.Mode().Perm(); perm != 0o660 {
 		t.Fatalf("socket 权限 = %o, want 660", perm)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)
+			},
+		},
+		Timeout: 2 * time.Second,
+	}
+	resp, err := client.Get("http://unix/v1/containers")
+	if err != nil {
+		t.Fatalf("通过原子发布的 unix socket 请求失败: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/containers = %d, want 200", resp.StatusCode)
 	}
 	cancel()
 	if err := <-done; err != nil {

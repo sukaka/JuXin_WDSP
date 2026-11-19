@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,5 +172,58 @@ func TestKeyringRotationRetainsHistoricalEvidenceKey(t *testing.T) {
 	}
 	if bytes.Contains(disk, oldDEK) || bytes.Contains(disk, []byte("private_key\":")) {
 		t.Fatal("plaintext key material appeared after rotation")
+	}
+}
+
+func TestKeyringConcurrentRotateAndWritePublicGrant(t *testing.T) {
+	master, err := encryption.NewWithKey(bytes.Repeat([]byte{23}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	keyring, err := LoadOrCreateKeyring(filepath.Join(dir, "private.key"), master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keyring.Close()
+
+	grantPath := filepath.Join(dir, "pcap-public.json")
+	trustPath := filepath.Join(dir, "pcap-release.pub")
+	var wg sync.WaitGroup
+	errs := make(chan error, 32)
+	for i := 0; i < 6; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := keyring.Rotate(); err != nil {
+				errs <- err
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := keyring.WritePublicGrant(grantPath, trustPath, "gw-race", time.Now(), time.Hour); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent rotate/grant failed: %v", err)
+	}
+	if err := keyring.WritePublicGrant(grantPath, trustPath, "gw-race", time.Now(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := os.ReadFile(grantPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust, err := os.ReadFile(trustPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, keyID, err := evidencekey.VerifyPublicKeyGrant(grant, trust, "gw-race", time.Now())
+	if err != nil || keyID != keyring.KeyID() {
+		t.Fatalf("final grant invalid or stale: keyID=%s want=%s err=%v", keyID, keyring.KeyID(), err)
 	}
 }

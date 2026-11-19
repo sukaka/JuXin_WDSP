@@ -432,15 +432,15 @@ func (h *Handler) SignConfirmation(w http.ResponseWriter, r *http.Request) {
 
 // ConflictItem 冲突出参行（列同 api_authority_conflicts）。
 type ConflictItem struct {
-	ID            uuid.UUID `json:"id"`
-	ApplicationID uuid.UUID `json:"application_id"`
-	ObjectType    string    `json:"object_type"`
-	TenantDomain  string    `json:"tenant_domain"`
-	ObjectRef     string    `json:"object_ref"`
-	Principals    []byte    `json:"principals"`
-	Status        string    `json:"status"`
-	FirstSeen     time.Time `json:"first_seen"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID            uuid.UUID       `json:"id"`
+	ApplicationID uuid.UUID       `json:"application_id"`
+	ObjectType    string          `json:"object_type"`
+	TenantDomain  string          `json:"tenant_domain"`
+	ObjectRef     string          `json:"object_ref"`
+	Principals    json.RawMessage `json:"principals"`
+	Status        string          `json:"status"`
+	FirstSeen     time.Time       `json:"first_seen"`
+	UpdatedAt     time.Time       `json:"updated_at"`
 }
 
 // ListConflicts GET /api/v1/api-security/authz/conflicts?application_id=&status=OPEN
@@ -488,11 +488,21 @@ func (h *Handler) ListConflicts(w http.ResponseWriter, r *http.Request) {
 	items := []ConflictItem{}
 	for rows.Next() {
 		var c ConflictItem
-		if err := rows.Scan(&c.ID, &c.ApplicationID, &c.ObjectType, &c.TenantDomain, &c.ObjectRef, &c.Principals, &c.Status, &c.FirstSeen, &c.UpdatedAt); err != nil {
+		var principals []byte
+		if err := rows.Scan(&c.ID, &c.ApplicationID, &c.ObjectType, &c.TenantDomain, &c.ObjectRef, &principals, &c.Status, &c.FirstSeen, &c.UpdatedAt); err != nil {
 			response.InternalError(w, r, err)
 			return
 		}
+		if len(principals) > 0 {
+			c.Principals = json.RawMessage(principals)
+		} else {
+			c.Principals = json.RawMessage("[]")
+		}
 		items = append(items, c)
+	}
+	if err := rows.Err(); err != nil {
+		response.InternalError(w, r, err)
+		return
 	}
 	response.Page(w, r, items, total, page, pageSize)
 }

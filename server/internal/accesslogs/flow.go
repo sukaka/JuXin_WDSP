@@ -211,8 +211,13 @@ func (b *flowBuilder) node(kind, key, name string, verified bool, filters map[st
 func (b *flowBuilder) link(sourceID, targetID string, row flowRow, filter ListFilter, fieldHit bool) {
 	id := sourceID + "->" + targetID
 	if _, exists := b.edges[id]; !exists {
-		filters := mergeFilters(flowFilters(filter), b.nodeMeta[sourceID].Filters)
-		filters = mergeFilters(filters, b.nodeMeta[targetID].Filters)
+		filters := flowFilters(filter)
+		if src := b.nodes[sourceID]; src != nil {
+			filters = mergeFilters(filters, src.filters)
+		}
+		if dst := b.nodes[targetID]; dst != nil {
+			filters = mergeFilters(filters, dst.filters)
+		}
 		if row.applicationID != "" {
 			filters["application_id"] = row.applicationID
 		}
@@ -325,6 +330,7 @@ func limitFlowNodes(result FlowResult, limit int) FlowResult {
 	result.Nodes = kept
 	result.Edges = make([]FlowEdge, 0, len(edges))
 	for id, edge := range edges {
+		edge.RequestCount = len(requestSets[id])
 		edge.RequestIDs, edge.DrillExact = flowRequestIDs(requestSets[id])
 		result.Edges = append(result.Edges, edge)
 	}
