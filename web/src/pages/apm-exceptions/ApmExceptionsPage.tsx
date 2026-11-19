@@ -286,7 +286,7 @@ export default function ApmExceptionsPage() {
               message={
                 matchMeta
                   ? `${matchMeta.label}：Trace ${traceId.slice(0, 8)}…`
-                  : '状态信息不足：当前服务未返回定位语义（match_mode），以下结果按时间窗聚合理解'
+                  : '状态信息不足：当前服务未返回定位语义，以下结果按时间窗聚合理解'
               }
               description={
                 <Space direction="vertical" size={4}>

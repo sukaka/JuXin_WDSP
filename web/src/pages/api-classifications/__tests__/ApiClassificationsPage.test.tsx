@@ -423,4 +423,29 @@ describe('ApiClassificationsPage', () => {
     expect(await within(drawer).findByText('交互模式')).toBeInTheDocument()
     expect(within(drawer).getByText('FUTURE_INTERACTION')).toBeInTheDocument()
   })
+
+  it('扩展分类维度（PURPOSE/ACCESS/ACTION/BUSINESS_DOMAIN/DATA_LEVEL/LIFECYCLE/DIRECTION/AUTH_TYPE/动态RISK_LABEL）均展示中文', async () => {
+    const cases: [string, string, string][] = [
+      ['PURPOSE', 'TRADE', '交易支付'],
+      ['ACCESS', 'READ_WRITE', '读写'],
+      ['ACTION', 'TOKEN_REFRESH', '刷新令牌'],
+      ['BUSINESS_DOMAIN', 'TRANSACTION_FUND', '交易资金'],
+      ['DATA_LEVEL', 'CORE', '核心数据'],
+      ['LIFECYCLE', 'CONFIRMED', '已确认'],
+      ['DIRECTION', 'EAST_WEST', '东西向'],
+      ['AUTH_TYPE', 'cookie_session', 'Cookie 会话'],
+      ['RISK_LABEL', 'LLM_PROMPT_INJECTION', 'LLM 提示词注入'],
+    ]
+    stubClassificationRows(
+      cases.map(([dim, val], idx) => classificationRow(`ext-${idx}`, dim, val)),
+    )
+    renderPage()
+
+    const table = screen.getByRole('table')
+    expect(await within(table).findByText('交易支付')).toBeInTheDocument()
+    for (const [, raw, expected] of cases) {
+      expect(within(table).getByText(expected)).toBeInTheDocument()
+      expect(within(table).queryByText(raw)).not.toBeInTheDocument()
+    }
+  })
 })

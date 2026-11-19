@@ -1,4 +1,30 @@
 import type { RiskPolicy, RiskPolicyBody } from '../../api/riskPolicy'
+import { COMMON_DETAIL_FIELD_LABELS } from '../../utils/i18nLabels'
+import { SIGNAL_META } from '../../utils/identitySecurity'
+
+const RISK_POLICY_FIELD_LABELS: Record<string, string> = {
+  block_threshold: '阻断阈值',
+  rate_limit_threshold: '限速阈值',
+  challenge_threshold: '挑战阈值',
+  rate_limit_rps: '限速速率',
+  signal_window_seconds: '统计窗口',
+  shared_device_account_limit: '同设备账号观察阈值',
+  'risk_levels.medium': '中风险下限',
+  'risk_levels.high': '高风险下限',
+  'risk_levels.critical': '严重风险下限',
+  risk_levels: '风险等级划分',
+  scores: '信号分值',
+}
+
+/** 将风险策略校验错误字段名转为中文展示（未知字段回退原值） */
+export function formatRiskPolicyField(field?: string): string {
+  if (!field) return ''
+  if (field.startsWith('scores.')) {
+    const key = field.slice('scores.'.length)
+    return `信号分值（${SIGNAL_META[key]?.label ?? key}）`
+  }
+  return RISK_POLICY_FIELD_LABELS[field] ?? COMMON_DETAIL_FIELD_LABELS[field] ?? field
+}
 
 export interface ScoreEntry {
   key?: string

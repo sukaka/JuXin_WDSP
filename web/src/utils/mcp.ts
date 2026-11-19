@@ -30,8 +30,8 @@ export const MCP_CATALOG_STATUS_META: Record<string, { color: string; label: str
 
 /** 绑定模式（OBSERVE 只记录 / PROTECT 协议化执行 JSON-RPC 错误对象） */
 export const MCP_BINDING_MODE_META: Record<string, { color: string; label: string }> = {
-  OBSERVE: { color: 'default', label: '观测（OBSERVE）' },
-  PROTECT: { color: 'red', label: '实断（PROTECT）' },
+  OBSERVE: { color: 'default', label: '观察' },
+  PROTECT: { color: 'red', label: '实断' },
 }
 
 /** 审核语义固定说明（导入/再导入状态机 + 发布通道口径；M02 红线不美化） */
@@ -74,10 +74,10 @@ export function parseArgConstraintsText(text: string): { value?: { field: string
     for (const [i, item] of parsed.entries()) {
       const it = item as Record<string, unknown>
       if (typeof it !== 'object' || it === null) return { error: `第 ${i + 1} 项须为对象` }
-      if (typeof it.field !== 'string' || it.field.trim() === '') return { error: `第 ${i + 1} 项 field 必填` }
-      if (it.kind !== 'path_prefix' && it.kind !== 'domain_suffix') return { error: `第 ${i + 1} 项 kind 非法（path_prefix|domain_suffix）` }
+      if (typeof it.field !== 'string' || it.field.trim() === '') return { error: `第 ${i + 1} 项参数字段名必填` }
+      if (it.kind !== 'path_prefix' && it.kind !== 'domain_suffix') return { error: `第 ${i + 1} 项约束类型非法（仅支持路径前缀或域名后缀）` }
       if (!Array.isArray(it.allow) || it.allow.length === 0 || it.allow.some((a) => typeof a !== 'string' || a === '')) {
-        return { error: `第 ${i + 1} 项 allow 须为非空字符串数组` }
+        return { error: `第 ${i + 1} 项允许列表须为非空字符串数组` }
       }
     }
     return { value: parsed as { field: string; kind: string; allow: string[] }[] }

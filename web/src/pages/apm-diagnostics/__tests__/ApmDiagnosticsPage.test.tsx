@@ -293,7 +293,9 @@ describe('ApmDiagnosticsPage', () => {
     expect(screen.getByText('已熔断')).toBeInTheDocument()
     // 范围摘要：服务名与环境 · 实例数（多条会话同为 production/app-1，按多元素断言）
     expect(screen.getAllByText('shop').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getAllByText(/production · 2 实例 · 应用 app-1/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText(/生产 · 2 实例 · 应用 app-1/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/预发布 · 1 实例 · 应用 app-1/)).toBeInTheDocument()
+    expect(screen.queryByText(/production · 2 实例/)).not.toBeInTheDocument()
     // 能力标签
     expect(screen.getAllByText('SQL 明细').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('函数探针')).toBeInTheDocument()
@@ -334,10 +336,10 @@ describe('ApmDiagnosticsPage', () => {
     )
     renderPage()
     expect(
-      await screen.findByText('全局 Kill Switch 已开启，新建会话被拒绝'),
+      await screen.findByText('全局熔断开关已开启，新建会话被拒绝'),
     ).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '新建诊断会话' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '解除 Kill Switch' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '解除全局熔断开关' })).toBeInTheDocument()
   })
 
   it('创建向导四步流转：dry_run 预估展示，未勾选确认时不能提交', { timeout: 60000 }, async () => {
@@ -448,11 +450,11 @@ describe('ApmDiagnosticsPage', () => {
     expect(await screen.findByText('诊断会话已停止')).toBeInTheDocument()
   })
 
-  it('全局 Kill Switch：Popconfirm 说明影响，确认后 POST enable=true', { timeout: 60000 }, async () => {
+  it('全局熔断开关：Popconfirm 说明影响，确认后 POST enable=true', { timeout: 60000 }, async () => {
     renderPage()
     await screen.findAllByText('进行中')
 
-    fireEvent.click(screen.getByRole('button', { name: '全局 Kill Switch' }))
+    fireEvent.click(screen.getByRole('button', { name: '开启全局熔断开关' }))
     expect(
       await screen.findByText(/开启后将立即终止全部进行中的诊断会话，并拒绝新建任何诊断会话/),
     ).toBeInTheDocument()
@@ -466,10 +468,19 @@ describe('ApmDiagnosticsPage', () => {
       expect((call![1] as RequestInit | undefined)?.method).toBe('POST')
       expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({ enable: true })
     })
-    expect(await screen.findByText('全局 Kill Switch 已开启')).toBeInTheDocument()
+    expect(await screen.findByText('全局熔断开关已开启')).toBeInTheDocument()
   })
 
-  it('详情 Drawer：会话全字段、倒计时与关联审计列表', { timeout: 60000 }, async () => {
+  it('详情 Drawer：会话全字段、倒计时、停止原因与关联审计中文映射', { timeout: 60000 }, async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch({
+        detail: {
+          ...SESSION_DETAIL,
+          stop_reason: 'kill_switch',
+        },
+      }),
+    )
     renderPage()
     await screen.findAllByText('进行中')
 
@@ -478,10 +489,12 @@ describe('ApmDiagnosticsPage', () => {
     // 详情为异步查询，等待数据落位后再断言字段
     expect(await screen.findByText('diag-1')).toBeInTheDocument()
     expect(screen.getByText('inst-001、inst-002')).toBeInTheDocument()
+    expect(screen.getByText('全局熔断终止')).toBeInTheDocument()
     // ACTIVE 详情显示倒计时与停止入口
     expect(screen.getAllByText(/^\d+ 分 \d+ 秒$/).length).toBeGreaterThanOrEqual(1)
-    // 关联审计
+    // 关联审计：CREATE 映射为「创建诊断会话」，未知动作 POLICY_PUSH 原样兜底
     expect(await screen.findByText('关联审计')).toBeInTheDocument()
+    expect(screen.getByText('创建诊断会话')).toBeInTheDocument()
     expect(screen.getByText('POLICY_PUSH')).toBeInTheDocument()
     expect(screen.getByText('策略已下发至 2 个实例')).toBeInTheDocument()
     // 详情接口被调用

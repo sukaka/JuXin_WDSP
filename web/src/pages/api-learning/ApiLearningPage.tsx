@@ -11,6 +11,7 @@ import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { formatLearningExcludeReason } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { API_LEARNING_STATUS_META } from '../../utils/stage8'
 
@@ -150,7 +151,7 @@ export default function ApiLearningPage() {
       title: '排除原因',
       dataIndex: 'exclude_reason',
       ellipsis: true,
-      render: (v: string) => v || '-',
+      render: (v: string) => formatLearningExcludeReason(v),
     },
     {
       title: '采集时间',

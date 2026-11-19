@@ -387,10 +387,10 @@ export default function TargetsTab() {
           </Form.Item>
           <Form.Item
             name="base_url"
-            label="基准地址（base_url）"
+            label="基准地址"
             rules={[
               { required: true, message: '请填写基准地址' },
-              { pattern: /^https?:\/\/[^\s/]+/, message: 'base_url 必须为合法 http/https 地址' },
+              { pattern: /^https?:\/\/[^\s/]+/, message: '基准地址必须为合法 http/https 地址' },
             ]}
           >
             <Input placeholder="如 https://api.example.com" allowClear autoComplete="off" />
@@ -437,7 +437,7 @@ export default function TargetsTab() {
           showIcon
           style={{ marginBottom: 16 }}
           message="双人分离：目标创建人与授权人不得为同一人"
-          description="扫描授权是高危操作：目标的创建人不能再为该目标签发授权（后端强制校验，建标人提交将返回 403）。授权仅在时间窗与有效期内生效，扫描引擎严格按 allowlist 与限流参数执行。"
+          description="扫描授权是高危操作：目标的创建人不能再为该目标签发授权（后端强制校验，建标人提交将返回 403）。授权仅在时间窗与有效期内生效，扫描引擎严格按白名单与限流参数执行。"
         />
         <Form<AuthorizeFormValues>
           form={authorizeForm}
@@ -450,16 +450,16 @@ export default function TargetsTab() {
         >
           <Form.Item
             name="allowlist"
-            label="允许探测的域名/IP（allowlist）"
+            label="允许探测的域名/IP（白名单）"
             rules={[
               {
                 validator: (_, v?: string[]) => {
                   if ((v ?? []).length > 64) {
-                    return Promise.reject(new Error('allowlist 不能超过 64 条'))
+                    return Promise.reject(new Error('白名单不能超过 64 条'))
                   }
                   const bad = (v ?? []).find((s) => s.trim().length === 0 || s.trim().length > 255)
                   return bad
-                    ? Promise.reject(new Error('allowlist 每项须为 1~255 字符的域名/IP'))
+                    ? Promise.reject(new Error('白名单每项须为 1~255 字符的域名/IP'))
                     : Promise.resolve()
                 },
               },
@@ -498,7 +498,7 @@ export default function TargetsTab() {
               placeholder="选择允许的探针集"
               options={API_SCAN_PROBE_SETS.map((s) => ({
                 value: s,
-                label: `${SCAN_PROBE_SET_META[s] ?? s}（${s}）`,
+                label: SCAN_PROBE_SET_META[s] ?? s,
               }))}
             />
           </Form.Item>

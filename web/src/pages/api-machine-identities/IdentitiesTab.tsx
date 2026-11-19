@@ -109,7 +109,7 @@ function IdentityEditorModal({
           name="identity_name"
           label="身份名"
           rules={[{ required: true, whitespace: true, message: '身份名必填' }, { max: 128, message: '不超过 128 字符' }]}
-          extra="全局唯一（同名 409）；签名 keyid 登记册按身份+kid 精确查找"
+          extra="全局唯一（同名 409）；签名密钥登记册按身份与密钥标识精确查找"
         >
           <Input placeholder="如：billing-agent" />
         </Form.Item>
@@ -133,7 +133,7 @@ function IdentityEditorModal({
           <Form.Item name="status" label="状态" rules={[{ required: true, message: '请选择状态' }]}>
             <Select
               style={{ width: 160 }}
-              options={Object.entries(IDENTITY_STATUS_META).map(([value, meta]) => ({ value, label: `${meta.label}（${value}）` }))}
+              options={Object.entries(IDENTITY_STATUS_META).map(([value, meta]) => ({ value, label: meta.label }))}
             />
           </Form.Item>
           <Form.Item name="bot_challenge_exempt" label="Bot 挑战豁免" valuePropName="checked">
@@ -188,9 +188,9 @@ export default function IdentitiesTab() {
       render: (_, record) => (
         <Space size={4} wrap>
           <Tag>共 {record.key_count}</Tag>
-          <Tag color="green">ACTIVE {record.active_keys}</Tag>
-          <Tag color="gold">RETIRED {record.retired_keys}</Tag>
-          <Tag color="red">REVOKED {record.revoked_keys}</Tag>
+          <Tag color="green">生效中 {record.active_keys}</Tag>
+          <Tag color="gold">已退役 {record.retired_keys}</Tag>
+          <Tag color="red">已撤销 {record.revoked_keys}</Tag>
         </Space>
       ),
     },

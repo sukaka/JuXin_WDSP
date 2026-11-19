@@ -237,7 +237,7 @@ describe('ApiLLMPage', () => {
       screen.getByText(title).closest('.ant-statistic') as HTMLElement
     expect(statOf('观测总数').textContent).toContain('120')
     expect(statOf('命中观测').textContent).toContain('5')
-    expect(statOf('token 合计').textContent).toContain('34,000')
+    expect(statOf('Token 合计').textContent).toContain('34,000')
     expect(statOf('流式调用').textContent).toContain('12')
     expect(statOf('涉及模型').textContent).toContain('3')
   })
@@ -261,7 +261,8 @@ describe('ApiLLMPage', () => {
     expect(within(row1).getByText('257-1024')).toBeInTheDocument()
     expect(within(row1).getByText('512')).toBeInTheDocument()
     expect(within(row1).getByText('流式')).toBeInTheDocument()
-    expect(within(row1).getByText('llm.pii.id_card')).toBeInTheDocument()
+    expect(within(row1).getByText('敏感个人信息（身份证号）')).toBeInTheDocument()
+    expect(within(row1).queryByText('llm.pii.id_card')).not.toBeInTheDocument()
     // 未声明模型行：Tag 占位 + MCP 方法展示
     const row2 = screen.getByText('POST /v1/mcp').closest('tr') as HTMLElement
     expect(within(row2).getByText('未声明')).toBeInTheDocument()
@@ -311,7 +312,7 @@ describe('ApiLLMPage', () => {
     await screen.findByText('新建 AI 安全策略')
     expect(screen.getByLabelText('应用')).toBeInTheDocument()
     expect(screen.getByLabelText('策略名称')).toBeInTheDocument()
-    expect(screen.getByText('Prompt 注入攻击防护')).toBeInTheDocument()
+    expect(screen.getByText('提示词注入攻击防护')).toBeInTheDocument()
     fireEvent.mouseDown(screen.getByLabelText('应用'))
     fireEvent.click(await screen.findByText('智能客服（ai-service）'))
     fireEvent.change(screen.getByLabelText('策略名称'), {

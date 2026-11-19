@@ -121,7 +121,7 @@ export default function TemporaryBlocksPage() {
     modal.confirm({
       title: '高风险操作确认：转永久封禁',
       icon: <WarningOutlined />,
-      content: `确定将 ${record.client_ip} 转为永久封禁吗？系统将创建一条永久 DENY 规则并发布到网关，该地址将被长期阻断，只能在「IP黑白名单」中手工删除。请确认该地址确属恶意来源。`,
+      content: `确定将 ${record.client_ip} 转为永久封禁吗？系统将创建一条永久黑名单规则并发布到网关，该地址将被长期阻断，只能在「IP黑白名单」中手工删除。请确认该地址确属恶意来源。`,
       okText: '确认转永久',
       okButtonProps: { danger: true },
       onOk: () => convertMutation.mutate(record.id),

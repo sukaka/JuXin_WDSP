@@ -27,6 +27,7 @@ import useBatchDelete from '../../hooks/useBatchDelete'
 import { PublishTaskProgress } from '../config-publish/ConfigPublishPage'
 import { useAuthStore } from '../../stores/auth'
 import { generateIdempotencyKey } from '../../utils/idempotency'
+import { COMMON_DETAIL_FIELD_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import {
   RATE_LIMIT_ACTION_META,
@@ -53,6 +54,19 @@ interface TestFormValues {
   requests: number
   client_ips?: string[]
   uri?: string
+}
+
+const RATE_LIMIT_FIELD_LABELS: Record<string, string> = {
+  requests_limit: '请求数阈值',
+  window_seconds: '统计窗口',
+  block_duration_seconds: '临时封禁时长',
+  burst_capacity: '突发容量',
+  uri_match_type: 'URI 匹配方式',
+  uri_pattern: 'URI 匹配规则',
+  dimension: '统计维度',
+  algorithm: '限速算法',
+  priority: '优先级',
+  observe_only: '仅观察模式',
 }
 
 export default function RateLimitPage() {
@@ -96,7 +110,12 @@ export default function RateLimitPage() {
     if (e instanceof ApiError && Array.isArray(e.details)) {
       // 后端字段级校验错误（ValidationError.details = [{field, message}]）
       const msgs = (e.details as { field?: string; message?: string }[])
-        .map((d) => `${d.field ?? ''}: ${d.message ?? ''}`)
+        .map((d) => {
+          const label = d.field
+            ? (RATE_LIMIT_FIELD_LABELS[d.field] ?? COMMON_DETAIL_FIELD_LABELS[d.field] ?? d.field)
+            : ''
+          return label ? `${label}：${d.message ?? ''}` : (d.message ?? '')
+        })
         .join('；')
       message.error(msgs || e.message)
       return

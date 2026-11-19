@@ -266,12 +266,10 @@ describe('ApiSpecsPage 规范审计', () => {
     expect(
       within(drawer).queryByText('PATH_PARAMETER_MISSING'),
     ).not.toBeInTheDocument()
-    expect(within(drawer).getAllByRole('cell', { name: 'HIGH' })).toHaveLength(
-      3,
-    )
-    expect(
-      within(drawer).getAllByRole('cell', { name: 'MEDIUM' }),
-    ).toHaveLength(3)
+    expect(within(drawer).getAllByRole('cell', { name: '高' })).toHaveLength(3)
+    expect(within(drawer).getAllByRole('cell', { name: '中' })).toHaveLength(3)
+    expect(within(drawer).getAllByText('路径参数')).toHaveLength(3)
+    expect(within(drawer).getByText('查询参数')).toBeInTheDocument()
     expect(
       within(drawer).getByText('GET /v1/users/{user_id}'),
     ).toBeInTheDocument()
@@ -290,8 +288,8 @@ describe('ApiSpecsPage 规范审计', () => {
     ).toBeInTheDocument()
     expectStatistic(drawer, '操作数', 4)
     expectStatistic(drawer, '问题数', 6)
-    expectStatistic(drawer, 'HIGH', 3)
-    expectStatistic(drawer, 'MEDIUM', 3)
+    expectStatistic(drawer, '高危问题', 3)
+    expectStatistic(drawer, '中危问题', 3)
     expect(auditCalls).toEqual([{ id: 'spec-v1', method: 'GET' }])
     const request = vi
       .mocked(fetch)
@@ -335,9 +333,9 @@ describe('ApiSpecsPage 规范审计', () => {
       await within(drawer).findByText('认证方案未定义'),
     ).toBeInTheDocument()
     expect(within(drawer).getByText('查询参数传递 API Key')).toBeInTheDocument()
-    expect(within(drawer).getAllByRole('cell', { name: 'HIGH' })).toHaveLength(
-      2,
-    )
+    expect(within(drawer).getAllByRole('cell', { name: '高' })).toHaveLength(2)
+    expect(within(drawer).getByText('认证方案')).toBeInTheDocument()
+    expect(within(drawer).getByText('查询参数')).toBeInTheDocument()
     expect(
       within(drawer).getByText('GET /v1/orders/{order_id}'),
     ).toBeInTheDocument()
@@ -449,8 +447,8 @@ describe('ApiSpecsPage 规范审计', () => {
       await within(drawer).findByText('成功响应未声明'),
     ).toBeInTheDocument()
     expect(within(drawer).getByText('错误响应未声明')).toBeInTheDocument()
-    expect(within(drawer).getByRole('cell', { name: 'HIGH' })).toBeVisible()
-    expect(within(drawer).getByRole('cell', { name: 'MEDIUM' })).toBeVisible()
+    expect(within(drawer).getByRole('cell', { name: '高' })).toBeVisible()
+    expect(within(drawer).getByRole('cell', { name: '中' })).toBeVisible()
     expect(within(drawer).getByText('GET /v1/health')).toBeInTheDocument()
     expect(within(drawer).getByText('POST /v1/payments')).toBeInTheDocument()
     expect(

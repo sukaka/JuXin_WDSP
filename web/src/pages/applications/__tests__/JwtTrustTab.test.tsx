@@ -185,7 +185,7 @@ describe('JwtTrustTab', () => {
     )
     expect(
       await screen.findByText(
-        /强制验证要求应用 API 动态管线已启用且为 PROTECT/,
+        /强制验证要求应用 API 动态管线已启用且处于防护模式/,
       ),
     ).toBeInTheDocument()
   })

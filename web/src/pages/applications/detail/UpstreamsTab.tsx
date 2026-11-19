@@ -13,6 +13,7 @@ import {
   Select,
   Space,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -24,6 +25,7 @@ import RecordDetailDrawer from '../../../components/RecordDetailDrawer'
 import SmartTable from '../../../components/SmartTable'
 import useBatchDelete from '../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../stores/auth'
+import { UPSTREAM_ERROR_CODE_LABELS } from '../../../utils/i18nLabels'
 import { hasPermission } from '../../../utils/permission'
 import type { UpstreamItem, UpstreamTestResult } from '../../../types'
 import { UPSTREAM_DETAIL_FIELD_LABELS, UPSTREAM_DETAIL_VALUE_LABELS } from './upstreamDetail'
@@ -86,6 +88,7 @@ function validateHost(value: string): string | null {
 
 function TestResultView({ result }: { result: UpstreamTestResult }) {
   const failed = result.error_code !== ''
+  const errorLabel = UPSTREAM_ERROR_CODE_LABELS[result.error_code] ?? result.error_code
   const stepTag = (ok: boolean, okText: string, failText = '失败') =>
     ok ? <Tag color="green">{okText}</Tag> : <Tag color="red">{failText}</Tag>
   return (
@@ -93,7 +96,7 @@ function TestResultView({ result }: { result: UpstreamTestResult }) {
       <Alert
         type={failed ? 'error' : 'success'}
         showIcon
-        message={failed ? `测试失败：${result.error_code}` : '连通性测试通过'}
+        message={failed ? `测试失败：${errorLabel}` : '连通性测试通过'}
         description={failed ? result.error_message : undefined}
         style={{ marginBottom: 16 }}
       />
@@ -121,8 +124,12 @@ function TestResultView({ result }: { result: UpstreamTestResult }) {
         <Descriptions.Item label="证书校验">
           {result.tls_verify_result === 'ok' ? (
             <Tag color="green">通过</Tag>
+          ) : result.tls_verify_result ? (
+            <Tooltip title={result.tls_verify_result}>
+              <Tag color="red">校验失败</Tag>
+            </Tooltip>
           ) : (
-            <span>{result.tls_verify_result || '-'}</span>
+            '-'
           )}
         </Descriptions.Item>
         <Descriptions.Item label="HTTP 状态码">

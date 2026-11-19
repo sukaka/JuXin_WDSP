@@ -2,6 +2,23 @@ import { Button, Descriptions, Drawer, List, Tabs, Tag, Typography } from 'antd'
 import type { DataFlowEdge, DataFlowEvidenceRecord, DataFlowFieldEvidence, DataFlowNode, DataFlowNodeDetail } from '../../api/apiDataFlow'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import { DATA_TYPE_LABELS, dataFlowBoundaryEvidenceLabel, dataFlowBoundaryTypeLabel, dataFlowDataTypes, dataFlowNetworkZoneLabel } from '../../utils/dataFlowCharts'
+import {
+  CLIENT_ADDRESS_SOURCE_LABELS,
+  DATA_FLOW_EVIDENCE_TYPE_LABELS,
+  DATA_FLOW_MATCH_LABELS,
+  formatEnvironment,
+} from '../../utils/i18nLabels'
+
+const FIELD_MATCH_LABELS: Record<string, string> = {
+  ...DATA_FLOW_MATCH_LABELS,
+  CORRELATED_FIELD: '关联字段命中',
+  EXACT: '精确匹配',
+}
+
+function evidenceTypeLabel(type?: string): string {
+  if (!type) return '-'
+  return DATA_FLOW_EVIDENCE_TYPE_LABELS[type] ?? type
+}
 
 function percentage(value: number): string {
   return `${(value * 100).toFixed(2)}%`
@@ -22,36 +39,43 @@ function SensitiveTypes({ edge, side }: { edge: DataFlowEdge; side: 'REQUEST' | 
 
 function BoundaryTypeValue({ type }: { type?: string }) {
   if (!type) return null
-  return <Tag className={`data-flow-boundary-type ${type === 'PUBLIC_TO_INTERNAL' ? 'is-public' : 'is-unknown'}`} color={type === 'PUBLIC_TO_INTERNAL' ? 'volcano' : 'default'}>{dataFlowBoundaryTypeLabel(type)} · {type}</Tag>
+  return <Tag className={`data-flow-boundary-type ${type === 'PUBLIC_TO_INTERNAL' ? 'is-public' : 'is-unknown'}`} color={type === 'PUBLIC_TO_INTERNAL' ? 'volcano' : 'default'}>{dataFlowBoundaryTypeLabel(type)}</Tag>
 }
 
 function BoundaryEvidenceFields({ record }: { record: DataFlowEvidenceRecord }) {
   const addresses = [
-    { label: 'client_address', value: record.client_address },
-    { label: 'peer_address', value: record.peer_address },
-    { label: 'server_address', value: record.server_address },
-    { label: 'client_address_source', value: record.client_address_source },
+    { key: 'client_address', label: '客户端地址', value: record.client_address, isCode: true },
+    { key: 'peer_address', label: '对端地址', value: record.peer_address, isCode: true },
+    { key: 'server_address', label: '服务端地址', value: record.server_address, isCode: true },
+    {
+      key: 'client_address_source',
+      label: '客户端地址来源',
+      value: record.client_address_source
+        ? (CLIENT_ADDRESS_SOURCE_LABELS[record.client_address_source] ?? record.client_address_source)
+        : undefined,
+      isCode: false,
+    },
   ]
   if (!record.boundary_type && !record.boundary_evidence && !record.source_zone && !record.target_zone && !addresses.some((field) => field.value)) return null
   return (
     <div className="data-flow-boundary-record" aria-label="边界地址证据">
-      {record.boundary_type && <div className="data-flow-boundary-field"><span>boundary_type</span><BoundaryTypeValue type={record.boundary_type} /></div>}
+      {record.boundary_type && <div className="data-flow-boundary-field"><span>边界类型</span><BoundaryTypeValue type={record.boundary_type} /></div>}
       {(record.source_zone || record.target_zone) && (
         <div className="data-flow-boundary-field">
-          <span>source_zone → target_zone</span>
+          <span>区域方向</span>
           <Typography.Text>{dataFlowNetworkZoneLabel(record.source_zone)} → {dataFlowNetworkZoneLabel(record.target_zone)}</Typography.Text>
         </div>
       )}
       {addresses.map((field) => field.value && (
-        <div className="data-flow-boundary-field" key={field.label}>
+        <div className="data-flow-boundary-field" key={field.key}>
           <span>{field.label}</span>
-          <Typography.Text code>{field.value}</Typography.Text>
+          {field.isCode ? <Typography.Text code>{field.value}</Typography.Text> : <Typography.Text>{field.value}</Typography.Text>}
         </div>
       ))}
       {record.boundary_evidence && (
         <div className="data-flow-boundary-field">
-          <span>boundary_evidence</span>
-          <Typography.Text>{dataFlowBoundaryEvidenceLabel(record.boundary_evidence)}（{record.boundary_evidence}）</Typography.Text>
+          <span>边界依据</span>
+          <Typography.Text>{dataFlowBoundaryEvidenceLabel(record.boundary_evidence)}</Typography.Text>
         </div>
       )}
     </div>
@@ -127,8 +151,8 @@ export function NodeDetailDrawer({ node, detail, error, onClose, onEdge }: NodeD
                     <Descriptions.Item label="观测地址">
                       {addresses.length ? addresses.map((address) => <div key={address}><Typography.Text code>{address}</Typography.Text></div>) : '未知'}
                     </Descriptions.Item>
-                    {node.network_zone && <Descriptions.Item label="network_zone">{dataFlowNetworkZoneLabel(node.network_zone)}（{node.network_zone}）</Descriptions.Item>}
-                    <Descriptions.Item label="环境">{node.environment || '未知'}</Descriptions.Item>
+                    {node.network_zone && <Descriptions.Item label="网络区域">{dataFlowNetworkZoneLabel(node.network_zone)}</Descriptions.Item>}
+                    <Descriptions.Item label="环境">{node.environment ? formatEnvironment(node.environment) : '未知'}</Descriptions.Item>
                     <Descriptions.Item label="命名空间">{node.namespace || '未知'}</Descriptions.Item>
                     <Descriptions.Item label="集群">{node.cluster || '未知'}</Descriptions.Item>
                   </Descriptions>
@@ -164,11 +188,11 @@ export function EvidenceDrawer({ edge, items, loading, error, onClose }: Evidenc
             {(edge.source_zone || edge.target_zone) && (
               <Descriptions.Item label="区域方向">{dataFlowNetworkZoneLabel(edge.source_zone)} → {dataFlowNetworkZoneLabel(edge.target_zone)}</Descriptions.Item>
             )}
-            {edge.boundary_evidence && <Descriptions.Item label="boundary_evidence">{dataFlowBoundaryEvidenceLabel(edge.boundary_evidence)}（{edge.boundary_evidence}）</Descriptions.Item>}
+            {edge.boundary_evidence && <Descriptions.Item label="边界依据">{dataFlowBoundaryEvidenceLabel(edge.boundary_evidence)}</Descriptions.Item>}
             <Descriptions.Item label={`请求敏感数据（${edge.source_name} → ${edge.target_name}）`}><SensitiveTypes edge={edge} side="REQUEST" /></Descriptions.Item>
             <Descriptions.Item label={`响应敏感数据（${edge.target_name} → ${edge.source_name}）`}><SensitiveTypes edge={edge} side="RESPONSE" /></Descriptions.Item>
             {dataFlowDataTypes(edge, 'MESSAGE').length > 0 && <Descriptions.Item label={`消息敏感数据（${edge.source_name} → ${edge.target_name}）`}><SensitiveTypes edge={edge} side="MESSAGE" /></Descriptions.Item>}
-            <Descriptions.Item label="证据类型">{edge.evidence_type}</Descriptions.Item>
+            <Descriptions.Item label="证据类型">{evidenceTypeLabel(edge.evidence_type)}</Descriptions.Item>
             <Descriptions.Item label="置信度">{percentage(edge.confidence)}</Descriptions.Item>
             <Descriptions.Item label="样本 Trace">
               {edge.sample_trace_ids.length ? edge.sample_trace_ids.map((id) => <div key={id}><Typography.Text code>{id}</Typography.Text></div>) : '无'}
@@ -182,7 +206,7 @@ export function EvidenceDrawer({ edge, items, loading, error, onClose }: Evidenc
             renderItem={(record) => (
               <List.Item>
                 <List.Item.Meta
-                  title={`${record.service_name} · ${record.evidence_type}`}
+                  title={`${record.service_name} · ${evidenceTypeLabel(record.evidence_type)}`}
                   description={
                     <div className="data-flow-evidence-record">
                       <BoundaryEvidenceFields record={record} />
@@ -190,7 +214,7 @@ export function EvidenceDrawer({ edge, items, loading, error, onClose }: Evidenc
                         <div key={`${field.path}-${index}`}>
                           <Tag color={field.side === 'MESSAGE' ? 'green' : field.side === 'RESPONSE' ? 'purple' : 'gold'}>{DATA_TYPE_LABELS[field.data_type] ?? field.data_type}</Tag>
                           <Typography.Text code>{field.path}</Typography.Text>
-                          <div><Typography.Text type="secondary">{fieldDirection(field, edge)} · {field.match}</Typography.Text></div>
+                          <div><Typography.Text type="secondary">{fieldDirection(field, edge)} · {FIELD_MATCH_LABELS[field.match] ?? field.match}</Typography.Text></div>
                           {field.value_hmac && <Typography.Text type="secondary" copyable={{ text: field.value_hmac }}>{field.value_hmac}</Typography.Text>}
                         </div>
                       ))}

@@ -5,5 +5,5 @@ import { PROTECTION_MODE_META } from '../utils/stage3'
 export default function ProtectionModeTag({ mode }: { mode: string }) {
   const item = PROTECTION_MODE_META[mode]
   if (!item) return <Tag>{mode}</Tag>
-  return <Tag color={item.color}>{`${mode} ${item.label}`}</Tag>
+  return <Tag color={item.color}>{item.label}</Tag>
 }

@@ -4,6 +4,7 @@ import dayjs from 'dayjs'
 import { dashboardsApi } from '../../api/dashboards'
 import { ApiError } from '../../api/client'
 import { systemHealthApi } from '../../api/systemHealth'
+import { COMPONENT_NAME_META, COMPONENT_STATUS_META } from '../../utils/stage6'
 import { BIG_SCREENS, REFRESH_INTERVAL } from './screens'
 import ScreenFrame from './components/ScreenFrame'
 import ScreenPanel from './components/ScreenPanel'
@@ -92,7 +93,7 @@ export default function RuntimeOpsScreen() {
         key: c.component,
         color: '#ff5252',
         time: c.taken_at ? dayjs(c.taken_at).format('HH:mm:ss') : '--:--:--',
-        content: `${c.component} 状态异常：${c.status}${c.message ? `（${c.message}）` : ''}`,
+        content: `${COMPONENT_NAME_META[c.component] ?? c.component} 状态异常：${COMPONENT_STATUS_META[c.status]?.label ?? c.status}${c.message ? `（${c.message}）` : ''}`,
       }))
     // 演示数据（查询成功但无真实数据时兜底）：演示组件全部 UP，异常动态自然为空（显示"全部组件运行正常"）
     for (const name of healthEmpty ? [] : (healthQuery.data?.missing_components ?? [])) {
@@ -100,7 +101,7 @@ export default function RuntimeOpsScreen() {
         key: `missing-${name}`,
         color: '#ffd54f',
         time: '--:--:--',
-        content: `${name} 缺少健康快照`,
+        content: `${COMPONENT_NAME_META[name] ?? name} 缺少健康快照`,
       })
     }
     return issues
@@ -168,10 +169,12 @@ export default function RuntimeOpsScreen() {
                     />
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13, color: '#d6e4ff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {c.component}
+                        {COMPONENT_NAME_META[c.component] ?? c.component}
                       </div>
                       <div style={{ fontSize: 11, color: 'rgba(214,228,255,0.5)' }}>
-                        {up ? `正常${c.latency_ms != null ? ` · ${c.latency_ms}ms` : ''}` : c.status}
+                        {up
+                          ? `正常${c.latency_ms != null ? ` · ${c.latency_ms}ms` : ''}`
+                          : (COMPONENT_STATUS_META[c.status]?.label ?? c.status)}
                       </div>
                     </div>
                   </div>
@@ -203,7 +206,13 @@ export default function RuntimeOpsScreen() {
           <ScreenPanel title="运行总览" style={{ flex: 1 }}>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 14, padding: '0 8px' }}>
               {[
-                { label: '网关状态', value: overview?.gateway?.status ?? '未知', color: overview?.gateway?.status === 'UP' ? '#69f0ae' : '#ffd54f' },
+                {
+                  label: '网关状态',
+                  value: overview?.gateway?.status
+                    ? (COMPONENT_STATUS_META[overview.gateway.status]?.label ?? overview.gateway.status)
+                    : '未知',
+                  color: overview?.gateway?.status === 'UP' ? '#69f0ae' : '#ffd54f',
+                },
                 { label: '近期待发布任务', value: `${overview?.publish?.total ?? 0} 个（失败 ${overview?.publish?.failed ?? 0}）`, color: '#d6e4ff' },
                 { label: '近期报告任务', value: `${overview?.reports?.total ?? 0} 个（失败 ${overview?.reports?.failed ?? 0}）`, color: '#d6e4ff' },
                 { label: '报表文件数', value: `${storage?.reports_file_count ?? 0} 个`, color: '#d6e4ff' },

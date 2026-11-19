@@ -195,7 +195,7 @@ function CatalogEditorDrawer({
         showIcon
         style={{ marginBottom: 16 }}
         message={isReimport
-          ? '整体再导入：语义相等行（名称+版本+描述+双 schema 一致）保留 tool_hash 与审核态；变更/新增行重算 tool_hash 并重置待审核，消失行删除。'
+          ? '整体再导入：语义相等行（名称+版本+描述+双结构定义一致）保留工具哈希与审核态；变更/新增行重算工具哈希并重置待审核，消失行删除。'
           : '导入后全部工具行落「待审核」；发布通道只下发「已通过」工具行。'}
       />
       {isReimport && detailQuery.error ? <QueryErrorAlert error={detailQuery.error} /> : null}
@@ -266,13 +266,13 @@ function CatalogEditorDrawer({
                       <Form.Item name={[field.name, 'risk_level']} label="风险等级" initialValue="HIGH">
                         <Select
                           style={{ width: 120 }}
-                          options={Object.entries(MCP_RISK_LEVEL_META).map(([value, meta]) => ({ value, label: `${meta.label}（${value}）` }))}
+                          options={Object.entries(MCP_RISK_LEVEL_META).map(([value, meta]) => ({ value, label: meta.label }))}
                         />
                       </Form.Item>
                       <Form.Item name={[field.name, 'data_classification']} label="数据分级" initialValue="UNKNOWN">
                         <Select
                           style={{ width: 150 }}
-                          options={Object.entries(MCP_DATA_CLASSIFICATION_META).map(([value, meta]) => ({ value, label: `${meta.label}（${value}）` }))}
+                          options={Object.entries(MCP_DATA_CLASSIFICATION_META).map(([value, meta]) => ({ value, label: meta.label }))}
                         />
                       </Form.Item>
                       <Form.Item name={[field.name, 'max_calls_per_minute']} label="调用预算/分钟" initialValue={0} extra="0=不限">
@@ -283,14 +283,14 @@ function CatalogEditorDrawer({
                         label="需审批"
                         valuePropName="checked"
                         initialValue={false}
-                        extra="G1 语义=默认拒绝（同 HIGH）"
+                        extra="默认拒绝（同高风险等级策略）"
                       >
                         <Switch />
                       </Form.Item>
                     </Space>
                     <Form.Item
                       name={[field.name, 'description']}
-                      label="描述全文（入 tool_hash——同名变更将重置待审核）"
+                      label="描述全文（计入工具哈希——同名变更将重置待审核）"
                       rules={[{ max: 65536, message: '不超过 65536 字符' }]}
                     >
                       <Input.TextArea rows={2} placeholder="工具描述（规范化全文参与不可变摘要）" />
@@ -412,7 +412,7 @@ export default function CatalogsTab() {
       ),
     },
     {
-      title: 'catalog_hash', dataIndex: 'catalog_hash', width: 140,
+      title: '目录哈希', dataIndex: 'catalog_hash', width: 140,
       render: (v: string) => <Typography.Text code title={v}>{shortMcpHash(v)}</Typography.Text>,
     },
     { title: '更新时间', dataIndex: 'updated_at', width: 170, render: formatDateTime },
@@ -444,7 +444,7 @@ export default function CatalogsTab() {
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Space style={{ display: 'flex', justifyContent: 'space-between' }} wrap>
         <Typography.Text type="secondary">
-          导入/再导入后，新工具与语义变更行恒落「待审核」（同名变更重算 tool_hash，旧审批不继承）；发布通道只下发「已通过」工具行。
+          导入/再导入后，新工具与语义变更行恒落「待审核」（同名变更重算工具哈希，旧审批不继承）；发布通道只下发「已通过」工具行。
         </Typography.Text>
         {canManage ? (
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setEditor(null)}>

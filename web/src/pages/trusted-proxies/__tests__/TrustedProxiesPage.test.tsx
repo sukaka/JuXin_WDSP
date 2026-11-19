@@ -145,4 +145,17 @@ describe('TrustedProxiesPage 保护地址服务端分页', () => {
       ).toBe(true)
     })
   })
+
+  it('可信代理头类型筛选下拉使用纯中文标签（不含原始枚举后缀）', async () => {
+    const { fn } = mockFetch(0)
+    vi.stubGlobal('fetch', fn)
+    renderPage()
+
+    const placeholders = await screen.findAllByText('头类型')
+    const headerSelect = placeholders.find((el) => el.closest('.ant-select'))
+    expect(headerSelect).toBeTruthy()
+    fireEvent.mouseDown(headerSelect as HTMLElement)
+    expect(await screen.findByText('自定义头')).toBeInTheDocument()
+    expect(screen.queryByText('自定义头（CUSTOM）')).not.toBeInTheDocument()
+  })
 })

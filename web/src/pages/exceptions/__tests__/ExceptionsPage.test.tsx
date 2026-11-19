@@ -156,15 +156,15 @@ describe('ExceptionsPage（P0-04）', () => {
     fireEvent.mouseDown(selectOfFormItem('例外动作'))
     const disabled = document.querySelectorAll('.ant-select-item-option-disabled')
     const disabledTexts = Array.from(disabled).map((o) => o.textContent ?? '')
-    expect(disabledTexts.some((t) => t.includes('LOG_ONLY'))).toBe(true)
-    expect(disabledTexts.some((t) => t.includes('ADJUST_SCORE'))).toBe(true)
+    expect(disabledTexts.some((t) => t.includes('仅记录不阻断'))).toBe(true)
+    expect(disabledTexts.some((t) => t.includes('调整异常评分'))).toBe(true)
     expect(disabledTexts.every((t) => t.includes('不支持新启用'))).toBe(true)
     const enabled = document.querySelectorAll(
       '.ant-select-item-option:not(.ant-select-item-option-disabled)',
     )
     const enabledTexts = Array.from(enabled).map((o) => o.textContent ?? '')
-    expect(enabledTexts.some((t) => t.includes('REMOVE_RULE'))).toBe(true)
-    expect(enabledTexts.some((t) => t.includes('OBSERVE_RULE'))).toBe(false)
+    expect(enabledTexts.some((t) => t.includes('移除指定规则'))).toBe(true)
+    expect(enabledTexts.some((t) => t.includes('API 规则仅观察'))).toBe(false)
   })
 
   it('切换 target_engine=API：动作仅 OBSERVE_RULE，规则引用编辑为 detector_id + rule_id + model_version', async () => {
@@ -184,17 +184,17 @@ describe('ExceptionsPage（P0-04）', () => {
     await screen.findByText('API 规则引用')
     expect(screen.queryByText('规则ID')).not.toBeInTheDocument()
 
-    // 添加一条规则引用：detector_id 下拉（受支持注册表）+ rule_id + model_version(可空)
+    // 添加一条规则引用：检测器下拉（中文）+ 规则标识 + 模型版本（可选）
     fireEvent.click(screen.getByRole('button', { name: /添加规则引用/ }))
-    expect(await screen.findByPlaceholderText('rule_id（稳定规则标识）')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('model_version（可空）')).toBeInTheDocument()
+    expect(await screen.findByPlaceholderText('规则标识')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('模型版本（可选）')).toBeInTheDocument()
 
     fireEvent.mouseDown(selectOfFormItem('例外动作'))
     const options = Array.from(
       document.querySelectorAll('.ant-select-item-option-content'),
     ).map((o) => o.textContent ?? '')
-    expect(options.some((t) => t.includes('OBSERVE_RULE'))).toBe(true)
-    expect(options.some((t) => t.includes('REMOVE_RULE'))).toBe(false)
+    expect(options.some((t) => t.includes('API 规则仅观察'))).toBe(true)
+    expect(options.some((t) => t.includes('移除指定规则'))).toBe(false)
   })
 
   it('派生状态：ENABLED 且无发布/节点数据时显示「未发布/未知」，不假装全节点一致', async () => {
@@ -222,7 +222,7 @@ describe('ExceptionsPage（P0-04）', () => {
 
     fireEvent.click(screen.getByText('订单导出误报豁免'))
     expect(
-      await screen.findByText('该例外待审查（NEEDS_REVIEW），达标前禁止启用'),
+      await screen.findByText('该例外待审查，达标前禁止启用'),
     ).toBeInTheDocument()
     expect(screen.getByText('历史 LOG_ONLY 动作需迁移为精确目标排除')).toBeInTheDocument()
     expect(screen.getByText('缺少目标应用绑定')).toBeInTheDocument()
@@ -278,9 +278,10 @@ describe('ExceptionsPage（P0-04）', () => {
     fireEvent.click(await screen.findByRole('button', { name: '影响预览' }))
 
     expect(await screen.findByText('不支持项（需迁移）')).toBeInTheDocument()
+    expect(screen.getByText('仅记录不阻断')).toBeInTheDocument()
     expect(screen.getByText(/改为 REMOVE_VAR_DETECTION 精确目标排除/)).toBeInTheDocument()
     expect(
-      screen.getByText('校验状态：待审查（NEEDS_REVIEW），达标前禁止启用'),
+      screen.getByText('校验状态：待审查，达标前禁止启用'),
     ).toBeInTheDocument()
   })
 })

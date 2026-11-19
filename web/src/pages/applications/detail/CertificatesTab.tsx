@@ -74,7 +74,7 @@ export default function CertificatesTab({ application }: { application: Applicat
       <Alert
         type="info"
         showIcon
-        message="缺少 certificates.read 权限，无法查看证书绑定信息"
+        message="缺少「证书查看」权限，无法查看证书绑定信息"
       />
     )
   }

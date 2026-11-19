@@ -49,11 +49,11 @@ import {
 
 const LEVEL_OPTIONS = Object.entries(REG_LEVEL_META).map(([value, m]) => ({
   value,
-  label: `${m.label}（${value}）`,
+  label: m.label,
 }))
 const VERIFY_OPTIONS = Object.entries(REG_VERIFY_META).map(([value, m]) => ({
   value,
-  label: `${m.label}（${value}）`,
+  label: m.label,
 }))
 const GATE_MODE_OPTIONS = Object.entries(REG_GATE_MODE_META).map(([value, m]) => ({
   value,
@@ -356,21 +356,21 @@ export default function SecurityRegressionsPage() {
               <Alert
                 type="warning"
                 showIcon
-                message="回归门禁未强制（OFF）：发布不检查回归证据，规则/模型变更可在无回归证据下发布"
+                message="回归门禁未强制：发布不检查回归证据，规则/模型变更可在无回归证据下发布"
               />
             )}
             {policy.mode === 'OBSERVE' && (
               <Alert
                 type="info"
                 showIcon
-                message="观察模式（OBSERVE）：发布时计算并记录门禁结论，但不阻断不合规发布"
+                message="观察模式：发布时计算并记录门禁结论，但不阻断不合规发布"
               />
             )}
             {policy.mode === 'ENFORCE' && (
               <Alert
                 type="success"
                 showIcon
-                message="强制模式（ENFORCE）：缺少绑定当前候选指纹且核验通过的回归证据时，发布将被拒绝"
+                message="强制模式：缺少绑定当前候选指纹且核验通过的回归证据时，发布将被拒绝"
               />
             )}
           </Space>
@@ -456,7 +456,7 @@ export default function SecurityRegressionsPage() {
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message="高风险操作：启用或降级门禁都会记录操作审计；ENFORCE 下缺失/过期/不完整证据将拒绝新发布"
+          message="高风险操作：启用或降级门禁都会记录操作审计；强制模式下缺失、过期或不完整证据将拒绝新发布"
         />
         <Form
           form={policyForm}
@@ -470,7 +470,7 @@ export default function SecurityRegressionsPage() {
             name="required_level"
             label="要求运行级别"
             rules={[{ required: true, message: '请选择要求级别' }]}
-            extra="低于该级别的回归证据不能支撑发布（SMOKE 不支撑 FULL/RELEASE 发布）"
+            extra="低于该级别的回归证据不能支撑发布（冒烟级别不支撑全量或发布级发布）"
           >
             <Select options={LEVEL_OPTIONS} />
           </Form.Item>

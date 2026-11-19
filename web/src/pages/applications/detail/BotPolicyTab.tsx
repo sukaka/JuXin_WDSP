@@ -49,6 +49,7 @@ import {
   BOT_NODE_SYNC_META,
   BOT_RESERVATION_META,
   BOT_STATE_META,
+  formatBotParamOption,
   mapBotFieldErrorPath,
 } from '../../../utils/botPolicy'
 import BotChallengePreview from './BotChallengePreview'
@@ -373,7 +374,7 @@ export default function BotPolicyTab({
             showIcon
             style={{ marginTop: 12 }}
             message="尚未配置 Bot 策略，当前不观测、不挑战"
-            description="默认 OFF 不改变既有流量；建议先以 OBSERVE 采集基线，再由操作者明确启用 PROTECT。"
+            description="默认关闭，不改变既有流量；建议先以观察模式采集基线，再由操作者明确启用强制挑战。"
           />
         )}
         {publishMissing && (
@@ -487,8 +488,7 @@ export default function BotPolicyTab({
             extra={
               mode === 'PROTECT' ? (
                 <Typography.Text type="warning">
-                  强制挑战要求共享状态存储（Valkey）已配置、签名密钥已就绪且目标节点无已知同步失败，否则发布将被拒绝（防全站
-                  fail-closed 503）
+                  强制挑战要求共享状态存储（Valkey）已配置、签名密钥已就绪且目标节点无已知同步失败，否则发布将被拒绝（防全站故障拒绝（503））
                 </Typography.Text>
               ) : undefined
             }
@@ -545,7 +545,7 @@ export default function BotPolicyTab({
                               )
                             if (v.includes('?') || v.includes('#'))
                               return Promise.reject(
-                                new Error('路径不得包含 query 或 fragment'),
+                                new Error('路径不得包含查询串或锚点'),
                               )
                             if (v.includes('%'))
                               return Promise.reject(
@@ -707,7 +707,7 @@ export default function BotPolicyTab({
                               <Select
                                 options={p.options.map((o) => ({
                                   value: o,
-                                  label: o,
+                                  label: formatBotParamOption(p, o),
                                 }))}
                                 style={{ minWidth: 160 }}
                                 placeholder={`选择${p.label}`}
@@ -864,7 +864,7 @@ export default function BotPolicyTab({
             <Form.Item
               name="key_ref"
               label="签名密钥引用名"
-              tooltip="仅引用系统设置中预置的 Bot 签名密钥（gateway_runtime.bot_signing_keys）；不接受、不显示任何密钥材料"
+              tooltip="仅引用系统设置中的 Bot 签名密钥；不接受、不显示任何密钥材料"
               rules={[
                 {
                   pattern: /^[a-z0-9][a-z0-9_.-]{0,63}$/,
@@ -888,8 +888,7 @@ export default function BotPolicyTab({
             extra={
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 保留命名空间 {BOT_RESERVED_NAMESPACE}：从已启用状态关闭时应保留
-                404 墓碑（防旧挑战提交打到业务源站）；确认无存量挑战流量后才解除保留。PROTECT
-                要求启用保留路由。
+                404 墓碑（防旧挑战提交打到业务源站）；确认无存量挑战流量后才解除保留。强制挑战模式要求启用保留路由。
               </Typography.Text>
             }
           >
@@ -901,7 +900,7 @@ export default function BotPolicyTab({
               name="reason"
               label="变更理由"
               style={{ marginTop: 8, maxWidth: 720 }}
-              extra="必填，进入操作审计与不可变版本记录；升级为强制挑战（PROTECT）属高风险审计"
+              extra="必填，进入操作审计与不可变版本记录；升级为强制挑战属高风险审计"
               rules={[
                 { required: true, message: '请填写变更理由' },
                 {
@@ -978,7 +977,7 @@ export default function BotPolicyTab({
               style={{ marginTop: 12 }}
               header={
                 <Typography.Text strong>
-                  保留路由冲突（FAIL 阻断发布，WARN 仅提示）
+                  保留路由冲突（未通过阻断发布，警告仅提示）
                 </Typography.Text>
               }
               dataSource={preflight.conflicts}

@@ -53,6 +53,7 @@ import {
   API_PARAM_DIRECTION_META,
   API_PARAM_LOCATION_META,
   API_PROTOCOL_META,
+  API_SEMANTIC_TYPE_META,
   EXPOSURE_CONFIDENCE_META,
   apiExposureLabel,
 } from '../../utils/stage8'
@@ -414,7 +415,8 @@ export default function EndpointDetailDrawer({ endpoint, onClose }: Props) {
       dataIndex: 'semantic_type',
       width: 110,
       ellipsis: true,
-      render: (v: string) => v || '-',
+      render: (v: string) =>
+        v ? <StatusTag value={v} map={API_SEMANTIC_TYPE_META} /> : '-',
     },
     {
       title: '必填',
@@ -806,7 +808,14 @@ export default function EndpointDetailDrawer({ endpoint, onClose }: Props) {
                       <Typography.Text code>{v}</Typography.Text>
                     ),
                   },
-                  { title: '类型', dataIndex: 'type', width: 160 },
+                  {
+                    title: '类型',
+                    dataIndex: 'type',
+                    width: 160,
+                    render: (v: string) => (
+                      <StatusTag value={v} map={API_BASE_TYPE_META} />
+                    ),
+                  },
                 ]}
                 dataSource={schemaFields}
                 pagination={false}
@@ -820,7 +829,7 @@ export default function EndpointDetailDrawer({ endpoint, onClose }: Props) {
                 versionsQuery.data?.items.length
                   ? // GET/HEAD 无请求体，采样不到参数属正常情况，与「管线尚未生成」区分展示
                     ['GET', 'HEAD'].includes(endpoint.http_method)
-                    ? `该接口为 ${endpoint.http_method} 请求，未观测到 PATH / QUERY / BODY 参数`
+                    ? `该接口为 ${endpoint.http_method} 请求，未观测到路径 / 查询 / 请求体参数`
                     : '当前版本暂无参数数据'
                   : '该接口暂无模型版本，参数需经学习中心完成采样学习后生成'
               }

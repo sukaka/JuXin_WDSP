@@ -169,13 +169,17 @@ describe('SecurityRegressionCasesPage', () => {
     vi.stubGlobal('fetch', mockFetch())
     renderPage()
     expect(await screen.findByText('sqli-001')).toBeTruthy()
+    expect(screen.getByText('SQL 注入')).toBeTruthy()
+    expect(screen.getByText('正常业务流量')).toBeTruthy()
     expect(screen.getByText('丢失检测')).toBeTruthy()
     expect(screen.getByText('新增误报')).toBeTruthy()
-    // 展开第一行看差异摘要（前后预期/实际）
+    // 展开第一行看差异摘要（前后预期/实际中文化）
     const expandButtons = document.querySelectorAll('button.ant-table-row-expand-icon')
     fireEvent.click(expandButtons[0])
-    expect(await screen.findByText('expected_action')).toBeTruthy()
-    expect(screen.getByText('BLOCK')).toBeTruthy()
+    expect(await screen.findByText('预期动作')).toBeTruthy()
+    expect(screen.getByText('阻断')).toBeTruthy()
+    expect(screen.getByText('实际动作')).toBeTruthy()
+    expect(screen.getByText('放行')).toBeTruthy()
   })
 
   it('长 Payload/恶意 HTML 一律纯文本渲染，不产生可执行标记（REG-023）', async () => {

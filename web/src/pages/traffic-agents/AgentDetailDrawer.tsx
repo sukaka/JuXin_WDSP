@@ -35,6 +35,7 @@ import {
   FLOW_EVENT_TYPE_META,
   TRAFFIC_AGENT_STATUS_META,
   formatClockOffset,
+  formatK8sSide,
   formatMbps,
   formatRate,
   formatUnixTime,
@@ -174,7 +175,7 @@ export default function AgentDetailDrawer({
       render: (_, r) =>
         r.k8s ? (
           <Tooltip
-            title={`集群: ${r.k8s.cluster || '-'}；命名空间: ${r.k8s.namespace || '-'}；Pod: ${r.k8s.pod || '-'}；工作负载: ${r.k8s.workload || '-'}；服务: ${r.k8s.service || '-'}；端点: ${r.k8s.side}`}
+            title={`集群: ${r.k8s.cluster || '-'}；命名空间: ${r.k8s.namespace || '-'}；Pod: ${r.k8s.pod || '-'}；工作负载: ${r.k8s.workload || '-'}；服务: ${r.k8s.service || '-'}；端点: ${formatK8sSide(r.k8s.side)}`}
           >
             <Typography.Text ellipsis style={{ maxWidth: 170 }}>
               {`${r.k8s.namespace}/${r.k8s.pod}`}
@@ -307,7 +308,7 @@ export default function AgentDetailDrawer({
                     <Descriptions.Item label="版本">
                       {detail.version || '-'}
                     </Descriptions.Item>
-                    <Descriptions.Item label="OS">
+                    <Descriptions.Item label="操作系统">
                       {detail.os || '-'}
                     </Descriptions.Item>
                     <Descriptions.Item label="内核">
@@ -320,11 +321,11 @@ export default function AgentDetailDrawer({
                       <Space size={8} wrap>
                         {(detail.http_event_schemas ?? [1]).map((v) => (
                           <Tag key={v} color={v === 2 ? 'green' : 'default'}>
-                            {`schema v${v}`}
+                            {`协议 v${v}`}
                           </Tag>
                         ))}
                         {supportsHttpEventV2(detail.http_event_schemas) ? null : (
-                          <Tooltip title="该 Agent 能力协商生效集仅含 v1：来源、协议观测、关联状态、Body 数据质量等 v2 事件字段不可用。升级 Agent 并重新注册/心跳声明 capabilities 后自动生效">
+                          <Tooltip title="该 Agent 能力协商生效集仅含 v1：来源、协议观测、关联状态、正文数据质量等 v2 事件字段不可用。升级 Agent 并重新注册/心跳声明能力集后自动生效">
                             <Tag color="orange">需升级</Tag>
                           </Tooltip>
                         )}

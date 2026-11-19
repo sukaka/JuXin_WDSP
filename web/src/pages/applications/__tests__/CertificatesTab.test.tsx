@@ -95,7 +95,7 @@ describe('CertificatesTab', () => {
     })
     renderTab()
 
-    expect(screen.getByText('缺少 certificates.read 权限，无法查看证书绑定信息')).toBeInTheDocument()
+    expect(screen.getByText('缺少「证书查看」权限，无法查看证书绑定信息')).toBeInTheDocument()
     expect(certificatesApi.applicationCertificate).not.toHaveBeenCalled()
     expect(certificatesApi.list).not.toHaveBeenCalled()
   })

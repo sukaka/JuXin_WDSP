@@ -18,8 +18,9 @@ import { aiEvaluationsApi, aiFeedbackApi } from '../../../../api/ai'
 import type { AiEvalRun, AiEvalSet, AiFeedbackSummaryItem } from '../../../../api/ai'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../../../components/RecordDetailDrawer'
+import StatusTag from '../../../../components/StatusTag'
 import { formatDateTime } from '../../../../utils/format'
-import { AI_TASK_TYPE_META } from '../../../../utils/ai'
+import { AI_TASK_STATUS_META, AI_TASK_TYPE_META } from '../../../../utils/ai'
 import { useAuthStore } from '../../../../stores/auth'
 import { hasPermission } from '../../../../utils/permission'
 
@@ -119,7 +120,12 @@ export default function AiEvaluationsPage() {
 
   const runColumns: ColumnsType<AiEvalRun> = [
     { title: '评估集', dataIndex: 'set_code', width: 160 },
-    { title: '状态', dataIndex: 'status', width: 100 },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 100,
+      render: (v: string) => <StatusTag value={v} map={AI_TASK_STATUS_META} />,
+    },
     {
       title: '得分',
       dataIndex: 'score',

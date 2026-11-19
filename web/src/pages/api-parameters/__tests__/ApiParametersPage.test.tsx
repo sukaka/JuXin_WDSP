@@ -148,14 +148,14 @@ describe('ApiParametersPage', () => {
 
     // 预填：max_length=32、enum 标签 A/B
     await waitFor(() => {
-      expect(screen.getByLabelText('最大长度（max_length，字符数）')).toHaveValue('32')
+      expect(screen.getByLabelText('最大长度（字符数）')).toHaveValue('32')
     })
     expect(drawer.textContent).toContain('A')
     expect(drawer.textContent).toContain('B')
 
     // 修改：填入数值下界 minimum=5，清空 max_length
-    fireEvent.change(screen.getByLabelText('数值下界（minimum）'), { target: { value: '5' } })
-    fireEvent.change(screen.getByLabelText('最大长度（max_length，字符数）'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('数值下界'), { target: { value: '5' } })
+    fireEvent.change(screen.getByLabelText('最大长度（字符数）'), { target: { value: '' } })
 
     fireEvent.click(screen.getByRole('button', { name: '保 存' }))
 
@@ -220,11 +220,11 @@ describe('ApiParametersPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
     await screen.findByRole('dialog')
     await waitFor(() => {
-      expect(screen.getByLabelText('最大长度（max_length，字符数）')).toHaveValue('32')
+      expect(screen.getByLabelText('最大长度（字符数）')).toHaveValue('32')
     })
 
     // 清空 max_length 与 enum 后提交
-    fireEvent.change(screen.getByLabelText('最大长度（max_length，字符数）'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('最大长度（字符数）'), { target: { value: '' } })
     for (const close of document.querySelectorAll('.ant-select-selection-item-remove')) {
       fireEvent.click(close)
     }
@@ -241,12 +241,12 @@ describe('ApiParametersPage', () => {
     expect(screen.queryByRole('button', { name: '编辑' })).not.toBeInTheDocument()
   })
 
-  it('四层视图：Observed/Recommended/Confirmed/Runtime 四列同屏展示约束内容', async () => {
+  it('四层视图：观测/推荐/确认/运行时生效约束四列同屏展示中文约束键与布尔值', async () => {
     useAuthStore.setState({ user: makeUser(['api_parameter.read']), csrfToken: null, initialized: true })
     const richParameter = {
       ...parameter,
-      observed_constraints: { max_length: 64 },
-      recommended_constraints: { max_length: 48 },
+      observed_constraints: { max_length: 64, enum_suspected: true },
+      recommended_constraints: { max_length: 48, nullable: false },
       confirmed_constraints: { max_length: 32 },
     }
     ;(fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((input: RequestInfo | URL) => {
@@ -270,15 +270,17 @@ describe('ApiParametersPage', () => {
     const headers = within(table)
       .getAllByRole('columnheader')
       .map((th) => th.textContent ?? '')
-    expect(headers.some((h) => h.includes('Observed（观测）'))).toBe(true)
-    expect(headers.some((h) => h.includes('Recommended（推荐）'))).toBe(true)
-    expect(headers.some((h) => h.includes('Confirmed（确认）'))).toBe(true)
-    expect(headers.some((h) => h.includes('Runtime（生效值）'))).toBe(true)
+    expect(headers.some((h) => h.includes('观测约束'))).toBe(true)
+    expect(headers.some((h) => h.includes('推荐约束'))).toBe(true)
+    expect(headers.some((h) => h.includes('确认约束'))).toBe(true)
+    expect(headers.some((h) => h.includes('运行时生效约束'))).toBe(true)
 
-    // 行内容：观测 64 / 推荐 48 / 确认 32；Runtime 列 = Confirmed 生效值（32 出现两次）
-    await waitFor(() => expect(table.textContent).toContain('max_length'))
-    expect(table.textContent).toContain('max_length: 64')
-    expect(table.textContent).toContain('max_length: 48')
-    expect(table.textContent?.match(/max_length: 32/g)).toHaveLength(2)
+    // 行内容：中文约束键 + 布尔转「是/否」；运行时生效约束 = 确认约束（最大长度：32 出现两次）
+    await waitFor(() => expect(table.textContent).toContain('最大长度：64'))
+    expect(table.textContent).toContain('疑似枚举：是')
+    expect(table.textContent).toContain('最大长度：48')
+    expect(table.textContent).toContain('允许为空：否')
+    expect(table.textContent?.match(/最大长度：32/g)).toHaveLength(2)
+    expect(table.textContent).not.toContain('max_length')
   })
 })

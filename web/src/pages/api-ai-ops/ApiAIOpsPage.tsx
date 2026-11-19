@@ -11,7 +11,7 @@ export default function ApiAIOpsPage() {
   return (
     <Card title="AI 定时运营">
       <Typography.Paragraph type="secondary">
-        按 cron 计划定期生成 API 安全运营报告（资产变化摘要、Shadow API 运营、弱点整改跟进、
+        按 cron 计划定期生成 API 安全运营报告（资产变化摘要、影子 API 运营、弱点整改跟进、
         高风险发现摘要、涉敏概览变化），支持手动立即执行；报告含结构化明细，处置动作均为人工流程。
       </Typography.Paragraph>
       <Tabs

@@ -115,21 +115,21 @@ export default function ApmTracesPage() {
     const warnings: string[] = []
     const tid = searchParams.get('trace_id')?.trim() ?? ''
     if (tid && !APM_TRACE_ID_PATTERN.test(tid)) {
-      warnings.push('URL 参数 trace_id 格式非法（需 32 位十六进制），已忽略')
+      warnings.push('URL 参数 Trace ID 格式非法（需 32 位十六进制），已忽略')
     }
     const svc = searchParams.get('service')?.trim() ?? ''
     if (svc && svc.length > URL_TEXT_PARAM_MAX) {
-      warnings.push('URL 参数 service 超长，已忽略')
+      warnings.push('URL 参数服务名超长，已忽略')
     }
     const appId = searchParams.get('application_id')?.trim() ?? ''
     if (appId && !APM_APPLICATION_ID_PATTERN.test(appId)) {
-      warnings.push('URL 参数 application_id 格式非法（需 UUID），已忽略')
+      warnings.push('URL 参数应用 ID 格式非法（需 UUID），已忽略')
     }
     const win = parseApmUrlTimeWindow(searchParams.get('start_time'), searchParams.get('end_time'))
     if (win && 'error' in win) warnings.push(win.error)
     const fromRaw = searchParams.get('from')
     const from = sanitizeApmReturnPath(fromRaw)
-    if (fromRaw && !from) warnings.push('URL 参数 from 不是允许的站内地址，已忽略')
+    if (fromRaw && !from) warnings.push('URL 参数返回地址不是允许的站内地址，已忽略')
     return {
       filters: {
         trace_id: APM_TRACE_ID_PATTERN.test(tid) ? tid.toLowerCase() : undefined,

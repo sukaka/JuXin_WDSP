@@ -113,9 +113,9 @@ describe('BehaviorPolicyPage', () => {
     // 敏感路径与白名单 tags 回填
     expect(screen.getByText('/admin')).toBeInTheDocument()
     expect(screen.getByText('10.0.0.1')).toBeInTheDocument()
-    // 行为检测固定 OBSERVE，处置模式由风险策略控制
-    expect(screen.getByText(/行为策略只负责生成 OBSERVE 信号/)).toBeInTheDocument()
-    expect(screen.getByText(/行为检测固定为 OBSERVE/)).toBeInTheDocument()
+    // 行为检测固定观察模式，处置模式由风险策略控制
+    expect(screen.getByText(/行为策略只负责生成观察信号/)).toBeInTheDocument()
+    expect(screen.getByText(/行为检测固定为观察模式；风险引擎的处置模式由风险策略控制/)).toBeInTheDocument()
     // 页脚版本信息
     expect(screen.getByText(/版本 v3/)).toBeInTheDocument()
   }, 15000)

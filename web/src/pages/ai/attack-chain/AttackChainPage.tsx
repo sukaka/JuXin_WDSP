@@ -5,7 +5,7 @@ import { ApiError } from '../../../api/client'
 import { aiAnalyzeApi } from '../../../api/ai'
 import type { AiAnalyzeResult, AiSseEvent } from '../../../api/ai'
 import AnalyzeResultView from '../../../components/ai/AnalyzeResultView'
-import { AI_AGENT_NAMES, visibleSteps } from '../../../utils/ai'
+import { AI_AGENT_NAMES, AI_STEP_META, visibleSteps } from '../../../utils/ai'
 
 type ChainStepItem = {
   title: string
@@ -21,13 +21,13 @@ function toChainItems(events?: AiSseEvent[] | null): ChainStepItem[] {
       case 'plan':
         return { title: '任务规划', description: e.text, status: 'finish' }
       case 'agent_start':
-        return { title: `执行 ${name || 'Agent'}`, status: 'finish' }
+        return { title: `执行 ${name || '智能体'}`, status: 'finish' }
       case 'agent_done':
-        return { title: `${name || 'Agent'} 完成`, status: 'finish' }
+        return { title: `${name || '智能体'} 完成`, status: 'finish' }
       case 'error':
         return { title: '执行出错', description: e.text, status: 'error' }
       default:
-        return { title: e.text || e.type, status: 'finish' }
+        return { title: e.text || (AI_STEP_META[e.type]?.label ?? e.type), status: 'finish' }
     }
   })
 }

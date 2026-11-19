@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { StrongFlowStep } from '../../api/strongFlow'
 import {
+  STEP_EVENT_RESULT_META,
+  STRONG_FLOW_MODE_META,
   canResolveInstance,
   classifyResolveConflict,
   isTerminalInstance,
@@ -34,24 +36,24 @@ describe('validateStrongFlowSteps（镜像 server validateSteps 结构规则）'
 
   it('step_key 重复 / sequence 重复', () => {
     expect(validateStrongFlowSteps([step(), step({ endpoint_key: 'POST /api/v1/pay', sequence: 2 })])).toBe(
-      'step_key "register" 重复（定义内唯一）',
+      '步骤标识 "register" 重复（定义内唯一）',
     )
     expect(validateStrongFlowSteps([step(), step({ step_key: 'pay', endpoint_key: 'POST /api/v1/pay' })])).toBe(
-      'sequence 1 重复（定义内唯一——严格递增即首步唯一最小的承载）',
+      '顺序号 1 重复（定义内唯一——严格递增即首步唯一最小的承载）',
     )
   })
 
   it('parallel_group 单步与不相邻', () => {
     expect(
       validateStrongFlowSteps([step({ parallel_group: 'g1' })]),
-    ).toBe('parallel_group "g1" 仅一步（并行组至少两步；单步请置空串行）')
+    ).toBe('并行组 "g1" 仅一步（并行组至少两步；单步请置空串行）')
     expect(
       validateStrongFlowSteps([
         step({ parallel_group: 'g1' }),
         step({ step_key: 'a', sequence: 2, parallel_group: 'g1' }),
         step({ step_key: 'b', sequence: 4, parallel_group: 'g1' }),
       ]),
-    ).toBe('parallel_group "g1" 步骤 sequence 不相邻（同组须连续区间）')
+    ).toBe('并行组 "g1" 步骤顺序号不相邻（同组须连续区间）')
     // 相邻连续合法
     expect(
       validateStrongFlowSteps([
@@ -62,14 +64,14 @@ describe('validateStrongFlowSteps（镜像 server validateSteps 结构规则）'
   })
 
   it('timeout/lease 词表外拒收不夹紧', () => {
-    expect(validateStrongFlowSteps([step({ timeout_seconds: 14 })])).toContain('timeout_seconds 词表外（15~600')
-    expect(validateStrongFlowSteps([step({ timeout_seconds: 601 })])).toContain('timeout_seconds 词表外（15~600')
-    expect(validateStrongFlowSteps([step({ lease_seconds: 301 })])).toContain('lease_seconds 词表外（15~300')
+    expect(validateStrongFlowSteps([step({ timeout_seconds: 14 })])).toContain('超时时间超出范围（15~600')
+    expect(validateStrongFlowSteps([step({ timeout_seconds: 601 })])).toContain('超时时间超出范围（15~600')
+    expect(validateStrongFlowSteps([step({ lease_seconds: 301 })])).toContain('租约时长超出范围（15~300')
   })
 
   it('success_rule 必填与至少一形态', () => {
-    expect(validateStrongFlowSteps([step({ success_rule: null })])).toContain('success_rule：必填（无成功判定式的步骤恒 UNKNOWN')
-    expect(validateStrongFlowSteps([step({ success_rule: {} })])).toContain('至少配置一种成功判定形态')
+    expect(validateStrongFlowSteps([step({ success_rule: null })])).toContain('成功判定规则：必填（无成功判定规则的步骤恒为未知')
+    expect(validateStrongFlowSteps([step({ success_rule: {} })])).toContain('至少配置一种成功判定条件')
   })
 
   it('合法定义返回空串', () => {
@@ -79,25 +81,32 @@ describe('validateStrongFlowSteps（镜像 server validateSteps 结构规则）'
 
 describe('validateStrongFlowSuccessRule（§1.4 三形态）', () => {
   it('状态码值域 / JSONPath 子集形态 / value 必填', () => {
-    expect(validateStrongFlowSuccessRule({ status_codes: [99] })).toBe('status_codes 元素须为合法 HTTP 状态码（100~599）')
-    expect(validateStrongFlowSuccessRule({ body_jsonpath_equals: { path: 'status', value: 'PAID' } })).toContain('形态非法（仅点路径子集 $.a.b')
-    expect(validateStrongFlowSuccessRule({ body_jsonpath_equals: { path: '$.status', value: '' } })).toBe('body_jsonpath_equals.value 必填（等值目标）')
+    expect(validateStrongFlowSuccessRule({ status_codes: [99] })).toBe('状态码列表元素须为合法 HTTP 状态码（100~599）')
+    expect(validateStrongFlowSuccessRule({ body_jsonpath_equals: { path: 'status', value: 'PAID' } })).toContain('形态非法（仅支持点路径子集，如 $.a.b')
+    expect(validateStrongFlowSuccessRule({ body_jsonpath_equals: { path: '$.status', value: '' } })).toBe('响应体字段目标值必填')
     expect(validateStrongFlowSuccessRule({ body_jsonpath_equals: { path: '$.status', value: 'PAID' } })).toBe('')
     expect(validateStrongFlowSuccessRule({ graphql_errors_empty: true })).toBe('')
   })
 })
 
-describe('successRuleText（成功条件可读化）', () => {
-  it('三形态组合与连接，无配置如实显示恒 UNKNOWN', () => {
+describe('successRuleText & 中文词表（成功条件与结果标签）', () => {
+  it('三形态组合与连接，无配置如实显示恒为未知', () => {
     expect(
       successRuleText({
         status_codes: [200, 201],
         body_jsonpath_equals: { path: '$.status', value: 'PAID' },
         graphql_errors_empty: true,
       }),
-    ).toBe('状态码 ∈ [200, 201] 且 $.status == "PAID" 且 GraphQL errors 为空')
-    expect(successRuleText(null)).toBe('未配置（该步骤恒 UNKNOWN）')
-    expect(successRuleText({})).toBe('未配置（该步骤恒 UNKNOWN）')
+    ).toBe('状态码 ∈ [200, 201] 且 $.status == "PAID" 且 GraphQL 错误列表为空')
+    expect(successRuleText(null)).toBe('未配置（该步骤恒为未知）')
+    expect(successRuleText({})).toBe('未配置（该步骤恒为未知）')
+  })
+
+  it('步骤结果与模式词表均为纯中文标签', () => {
+    expect(STEP_EVENT_RESULT_META.OK.label).toBe('成功')
+    expect(STEP_EVENT_RESULT_META.UNKNOWN.label).toBe('未知')
+    expect(STRONG_FLOW_MODE_META.OBSERVE.label).toBe('观察')
+    expect(STRONG_FLOW_MODE_META.PROTECT.label).toBe('实断')
   })
 })
 

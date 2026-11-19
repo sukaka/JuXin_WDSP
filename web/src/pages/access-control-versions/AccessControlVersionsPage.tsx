@@ -15,6 +15,7 @@ import { hasPermission } from '../../utils/permission'
 const PUBLISH_RESULT_META: Record<string, { color: string; label: string }> = {
   SUCCESS: { color: 'success', label: '成功' },
   FAILED: { color: 'error', label: '失败' },
+  VERIFY_FAILED: { color: 'orange', label: '验证失败' },
   PENDING: { color: 'processing', label: '进行中' },
 }
 

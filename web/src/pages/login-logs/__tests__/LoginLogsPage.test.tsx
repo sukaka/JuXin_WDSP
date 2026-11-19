@@ -93,17 +93,25 @@ describe('LoginLogsPage 登录日志', () => {
           result: 'FAILURE',
           failure_code: 'TOTP_INVALID',
         }),
+        makeEntry({
+          id: 'l4',
+          event_type: 'LOGIN_FAILURE',
+          result: 'FAILURE',
+          failure_code: 'TOTP_CHALLENGE_ORIGIN_MISMATCH',
+        }),
       ]),
     )
     renderPage()
 
     // 事件类型：LOGIN_TOTP_CHALLENGE 不裸码显示
     expect(await screen.findByText('双因子挑战（TOTP）')).toBeInTheDocument()
-    // 失败码：TOTP_CHALLENGE_INVALID / TOTP_INVALID 不裸码显示
+    // 失败码：TOTP_CHALLENGE_INVALID / TOTP_INVALID / TOTP_CHALLENGE_ORIGIN_MISMATCH 不裸码显示
     expect(screen.getByText('双因子挑战无效或过期')).toBeInTheDocument()
     expect(screen.getByText('动态令牌或恢复码错误')).toBeInTheDocument()
+    expect(screen.getByText('双因子挑战来源不匹配')).toBeInTheDocument()
     expect(screen.queryByText('LOGIN_TOTP_CHALLENGE')).not.toBeInTheDocument()
     expect(screen.queryByText('TOTP_INVALID')).not.toBeInTheDocument()
+    expect(screen.queryByText('TOTP_CHALLENGE_ORIGIN_MISMATCH')).not.toBeInTheDocument()
   })
 
   it('事件类型筛选下拉包含「双因子挑战（TOTP）」选项', async () => {

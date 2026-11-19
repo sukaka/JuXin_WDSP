@@ -132,7 +132,7 @@ describe('ApiFileCompliancePage', () => {
     expect(within(row1).getByText('扩展名')).toBeInTheDocument()
     expect(within(row1).getByText('阻断')).toBeInTheDocument()
     expect(within(row1).getByText('禁止上传可执行文件')).toBeInTheDocument()
-    expect(within(row1).getByRole('switch', { name: '启停规则 EXT:exe' })).toBeChecked()
+    expect(within(row1).getByRole('switch', { name: '启停规则 扩展名:exe' })).toBeChecked()
 
     const row2 = screen.getByText('.*\\.sql$').closest('tr') as HTMLElement
     expect(within(row2).getByText('下载')).toBeInTheDocument()
@@ -140,7 +140,7 @@ describe('ApiFileCompliancePage', () => {
     expect(within(row2).getByText('观察')).toBeInTheDocument()
     // 空理由渲染占位符
     expect(within(row2).getByText('-')).toBeInTheDocument()
-    expect(within(row2).getByRole('switch', { name: '启停规则 FILENAME_REGEX:.*\\.sql$' })).not.toBeChecked()
+    expect(within(row2).getByRole('switch', { name: '启停规则 文件名正则:.*\\.sql$' })).not.toBeChecked()
   })
 
   it('新建：match_type 联动 match_value 提示，提交体正确', async () => {
@@ -206,7 +206,7 @@ describe('ApiFileCompliancePage', () => {
     const row = (await screen.findByText('.*\\.sql$')).closest('tr') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: /编\s*辑/ }))
 
-    await screen.findByText('编辑规则：FILENAME_REGEX:.*\\.sql$')
+    await screen.findByText('编辑规则：文件名正则:.*\\.sql$')
     await waitFor(() => {
       expect(screen.getByLabelText('匹配值')).toHaveValue('.*\\.sql$')
     })
@@ -232,7 +232,7 @@ describe('ApiFileCompliancePage', () => {
     })
     renderPage()
 
-    fireEvent.click(await screen.findByRole('switch', { name: '启停规则 EXT:exe' }))
+    fireEvent.click(await screen.findByRole('switch', { name: '启停规则 扩展名:exe' }))
     // 确认弹窗出现，确定后发出 PATCH（测试环境默认英文 locale，OK 按钮文案为 OK）
     fireEvent.click(await screen.findByRole('button', { name: /确\s*定|^OK$/ }))
 
@@ -269,6 +269,6 @@ describe('ApiFileCompliancePage', () => {
     expect(screen.queryByRole('button', { name: /新建规则/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /编\s*辑/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /删\s*除/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('switch', { name: '启停规则 EXT:exe' })).toBeDisabled()
+    expect(screen.getByRole('switch', { name: '启停规则 扩展名:exe' })).toBeDisabled()
   })
 })

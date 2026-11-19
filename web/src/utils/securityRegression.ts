@@ -113,17 +113,20 @@ export function previewPublishUsability(
     )
   }
   if (run.declared_status !== 'PASS') {
-    reasons.push(`回归声明状态为 ${run.declared_status}（非 PASS）`)
+    const declaredLabel = REG_DECLARED_META[run.declared_status]?.label ?? run.declared_status
+    reasons.push(`回归声明状态为「${declaredLabel}」（非通过）`)
   }
   if (run.counts.executed === 0) {
     reasons.push('回归执行数为 0（执行不完整）')
   }
   if (run.counts.mandatory_failed > 0) {
-    reasons.push(`强制用例未全部通过（mandatory_failed=${run.counts.mandatory_failed}）`)
+    reasons.push(`强制用例未全部通过（失败 ${run.counts.mandatory_failed} 项）`)
   }
   if (policy) {
     if (regressionLevelRank(run.level) < regressionLevelRank(policy.required_level)) {
-      reasons.push(`证据级别 ${run.level} 低于门禁要求 ${policy.required_level}`)
+      const runLevelLabel = REG_LEVEL_META[run.level]?.label ?? run.level
+      const reqLevelLabel = REG_LEVEL_META[policy.required_level]?.label ?? policy.required_level
+      reasons.push(`证据级别（${runLevelLabel}）低于门禁要求（${reqLevelLabel}）`)
     }
     if (policy.required_corpus_id && run.corpus_id !== policy.required_corpus_id) {
       reasons.push(`证据语料 ${run.corpus_id} 与门禁要求语料 ${policy.required_corpus_id} 不一致`)
@@ -198,7 +201,7 @@ export function gateReasonAdvice(reason: string): string {
     return '恢复动作：按当前候选配置重新执行回归并导入已签名证据（imports API / CI 受信通道）。'
   }
   if (reason.includes('级别')) {
-    return '恢复动作：以门禁要求的更高级别（FULL/RELEASE）重新执行回归。'
+    return '恢复动作：以门禁要求的更高级别（全量/发布级）重新执行回归。'
   }
   if (reason.includes('语料')) {
     return '恢复动作：使用门禁要求的语料重新执行回归，或核对门禁语料配置。'
@@ -207,7 +210,7 @@ export function gateReasonAdvice(reason: string): string {
     return '恢复动作：证据已过期，需重新执行回归生成新鲜证据；已知良好恢复通道不受此项阻断。'
   }
   if (reason.includes('强制用例')) {
-    return '恢复动作：定位强制用例失败项（用例差异页按 FAIL 筛选），修复后重新回归。'
+    return '恢复动作：定位强制用例失败项（用例差异页按失败筛选），修复后重新回归。'
   }
   if (reason.includes('执行数为 0') || reason.includes('执行不完整')) {
     return '恢复动作：检查执行环境与计划，确保用例真实执行后重新导入。'
@@ -219,7 +222,7 @@ export function gateReasonAdvice(reason: string): string {
     return '恢复动作：原始证据已被清理，需从受控存储重新导入完整证据对象。'
   }
   if (reason.includes('声明状态')) {
-    return '恢复动作：回归声明结果非 PASS，修复后重新执行；声明不采信，以服务端核验为准。'
+    return '恢复动作：回归声明结果非通过，修复后重新执行；声明不采信，以服务端核验为准。'
   }
   return '恢复动作：按门禁要求重新执行回归并导入证据后重试发布。'
 }

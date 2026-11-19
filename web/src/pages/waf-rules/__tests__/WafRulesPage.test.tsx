@@ -184,4 +184,115 @@ describe('WafRulesPage 规则效果', () => {
     const last = String(calls[calls.length - 1]![0])
     expect(last).not.toContain('rule_id=')
   })
+
+  it('规则详情中文化：建议切换防护模式标签与规则覆盖动作/范围中文展示', async () => {
+    useAuthStore.setState({
+      user: {
+        id: 'u1',
+        username: 'secops',
+        display_name: '安全管理员',
+        status: 'ACTIVE',
+        roles: [{ code: 'SECURITY_ADMIN', name: '安全管理员' }],
+        permissions: ['waf_rules.read', 'rule_overrides.manage'],
+        must_change_password: false,
+      },
+      csrfToken: null,
+      initialized: true,
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/waf-rules/effect-statistics')) {
+          return Promise.resolve(
+            jsonResponse({
+              items: [
+                {
+                  date: '2026-09-02',
+                  rule_id: 942100,
+                  rule_key: '942100',
+                  rule_name: RULE.name,
+                  rule_source: 'OWASP_CRS',
+                  rule_version: '4.0.0',
+                  hits: 20,
+                  blocks: 18,
+                  unresolved: 0,
+                  confirmed_attacks: 20,
+                  false_positives: 0,
+                  reviewed: 20,
+                  confirmation_rate: 1.0,
+                  fp_rate: 0.0,
+                  protect_recommendation: true,
+                  protect_recommendation_reason: '连续高置信命中',
+                },
+              ],
+              page: 1,
+              page_size: 30,
+              total: 1,
+            }),
+          )
+        }
+        if (url.includes('/rule-overrides')) {
+          return Promise.resolve(
+            jsonResponse({
+              items: [
+                {
+                  id: 'ov-1',
+                  rule_id: 942100,
+                  action: 'DISABLE',
+                  scope_type: 'POLICY',
+                  scope_id: 'pol-12345678',
+                  reason: '临时误报处理',
+                },
+                {
+                  id: 'ov-2',
+                  rule_id: 942100,
+                  action: 'ENABLE',
+                  scope_type: 'APPLICATION',
+                  scope_id: 'app-87654321',
+                  reason: '关键业务强制启用',
+                },
+              ],
+              page: 1,
+              page_size: 50,
+              total: 2,
+            }),
+          )
+        }
+        if (url.includes('/applications')) {
+          return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 100, total: 0 }))
+        }
+        if (url.includes('/protection-policies')) {
+          return Promise.resolve(jsonResponse({ items: [], page: 1, page_size: 100, total: 0 }))
+        }
+        if (url.includes('/waf-rules/categories')) {
+          return Promise.resolve(jsonResponse({ items: [{ attack_type: 'SQL_INJECTION', count: 1 }] }))
+        }
+        if (url.includes('/waf-rules/versions')) {
+          return Promise.resolve(jsonResponse({ versions: ['4.0.0'] }))
+        }
+        if (url.includes('/waf-rules/942100')) {
+          return Promise.resolve(jsonResponse(RULE))
+        }
+        if (url.includes('/waf-rules')) {
+          return Promise.resolve(jsonResponse({ items: [RULE], page: 1, page_size: 20, total: 1 }))
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: '详情' }))
+    expect(await screen.findByText('建议人工评估切换防护模式')).toBeInTheDocument()
+    expect(screen.queryByText('建议人工评估 PROTECT')).not.toBeInTheDocument()
+
+    expect(await screen.findByText('启用规则')).toBeInTheDocument()
+    expect(screen.getAllByText('停用规则').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('防护策略').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('应用').length).toBeGreaterThan(0)
+    expect(screen.queryByText('DISABLE')).not.toBeInTheDocument()
+    expect(screen.queryByText('ENABLE')).not.toBeInTheDocument()
+    expect(screen.queryByText('POLICY')).not.toBeInTheDocument()
+    expect(screen.queryByText('APPLICATION')).not.toBeInTheDocument()
+  })
 })

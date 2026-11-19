@@ -112,10 +112,10 @@ describe('RiskPolicyPage', () => {
       (screen.getByLabelText('统计窗口（秒）') as HTMLInputElement).value,
     ).toBe('86400')
     expect(
-      (screen.getByLabelText('中风险下限（MEDIUM）') as HTMLInputElement).value,
+      (screen.getByLabelText('中风险下限') as HTMLInputElement).value,
     ).toBe('20')
     expect(
-      (screen.getByLabelText('严重风险下限（CRITICAL）') as HTMLInputElement)
+      (screen.getByLabelText('严重风险下限') as HTMLInputElement)
         .value,
     ).toBe('70')
     expect(screen.getByRole('switch')).toBeChecked()

@@ -177,8 +177,8 @@ describe('StrongFlowDefinitionsTab（NG-FLOW-01/04 §1.9 定义管理）', () =>
     expect(screen.getByText('v3')).toBeInTheDocument()
     expect(screen.getByText('草稿')).toBeInTheDocument()
     expect(screen.getByText('已激活')).toBeInTheDocument()
-    expect(screen.getByText('实断（PROTECT）')).toBeInTheDocument()
-    expect(screen.getByText('观测（OBSERVE）')).toBeInTheDocument()
+    expect(screen.getByText('实断')).toBeInTheDocument()
+    expect(screen.getByText('观察')).toBeInTheDocument()
     expect(screen.getAllByText('/api/v1/orders')).toHaveLength(2)
     expect(screen.getAllByText('query:order_id')).toHaveLength(2)
   })
@@ -227,7 +227,7 @@ describe('StrongFlowDefinitionsTab（NG-FLOW-01/04 §1.9 定义管理）', () =>
       fireEvent.change(input, { target: { value: '200' } })
     fireEvent.click(screen.getByRole('button', { name: '保 存' }))
     expect(
-      await screen.findByText('step_key "dup" 重复（定义内唯一）'),
+      await screen.findByText('步骤标识 "dup" 重复（定义内唯一）'),
     ).toBeInTheDocument()
     expect(strongFlowApi.createDefinition).not.toHaveBeenCalled()
   })
@@ -237,15 +237,15 @@ describe('StrongFlowDefinitionsTab（NG-FLOW-01/04 §1.9 定义管理）', () =>
     await screen.findByText('下单支付流程')
     fireEvent.click(screen.getByRole('button', { name: /新建强流程定义/ }))
     const dialog = await screen.findByRole('dialog')
-    fireEvent.mouseDown(within(dialog).getByText('观测（OBSERVE）'))
-    const protectOption = (await screen.findAllByText('实断（PROTECT）')).find(
+    fireEvent.mouseDown(within(dialog).getByText('观察'))
+    const protectOption = (await screen.findAllByText('实断')).find(
       (el) => el.closest('.ant-select-item-option-content'),
     ) as HTMLElement
     fireEvent.click(protectOption)
     expect(
-      await screen.findByText('PROTECT 模式：违规请求将被 403'),
+      await screen.findByText('实断模式：违规请求将被 403 拦截'),
     ).toBeInTheDocument()
-    expect(screen.getByText(/UNKNOWN 恒不阻断/)).toBeInTheDocument()
+    expect(screen.getByText(/证据不足恒不阻断/)).toBeInTheDocument()
   })
 
   it('激活确认：PROTECT 定义展示红色后果警示，确认后调用 activate', async () => {
@@ -254,7 +254,7 @@ describe('StrongFlowDefinitionsTab（NG-FLOW-01/04 §1.9 定义管理）', () =>
     fireEvent.click(screen.getByRole('button', { name: '激活' }))
     expect(
       await screen.findByText(
-        /激活后该流程违规请求将被实断（FLOW_VIOLATION_DENIED）/,
+        /激活后该流程违规请求将被实断（流程违规拒绝）/,
       ),
     ).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认激活' }))
@@ -268,13 +268,13 @@ describe('StrongFlowDefinitionsTab（NG-FLOW-01/04 §1.9 定义管理）', () =>
     await screen.findByText('下单支付流程')
     fireEvent.click(screen.getAllByRole('button', { name: '详情' })[0])
     expect(
-      await screen.findByText('步骤序列（按 sequence）'),
+      await screen.findByText('步骤序列（按序号）'),
     ).toBeInTheDocument()
     expect(
       screen.getByText('成功条件：状态码 ∈ [200] 且 $.status == "ok"'),
     ).toBeInTheDocument()
     expect(screen.getByText('成功条件：状态码 ∈ [200]')).toBeInTheDocument()
-    expect(screen.getByText(/允许转换：进行中（ACTIVE）→/)).toBeInTheDocument()
+    expect(screen.getByText(/允许转换：进行中 →/)).toBeInTheDocument()
     expect(
       screen.getByText('超时 30s · 租约 15s · 不可重试'),
     ).toBeInTheDocument()

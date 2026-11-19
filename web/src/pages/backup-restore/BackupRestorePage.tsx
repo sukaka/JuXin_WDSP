@@ -27,6 +27,7 @@ import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatBytes, formatDateTime } from '../../utils/format'
+import { BACKUP_GROUP_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { truncateHash } from '../../utils/stage3'
 import {
@@ -39,6 +40,19 @@ import {
   isTerminalRestoreStatus,
 } from '../../utils/stage6'
 import type { BackupJobItem, RestoreJobItem, RestorePreviewData } from '../../types'
+
+const toLabelMap = (meta: Record<string, { label: string }>): Record<string, string> =>
+  Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, v.label]))
+
+const BACKUP_DETAIL_VALUE_LABELS: Record<string, Record<string, string>> = {
+  backup_type: toLabelMap(BACKUP_TYPE_META),
+  status: toLabelMap(BACKUP_STATUS_META),
+}
+
+const RESTORE_DETAIL_VALUE_LABELS: Record<string, Record<string, string>> = {
+  restore_scope: toLabelMap(RESTORE_SCOPE_META),
+  status: toLabelMap(RESTORE_STATUS_META),
+}
 
 /* -------------------- 备份管理 -------------------- */
 
@@ -270,6 +284,7 @@ function BackupPanel() {
         open={detailRecord !== null}
         title="备份任务详情"
         record={detailRecord as Record<string, unknown> | null}
+        valueLabels={BACKUP_DETAIL_VALUE_LABELS}
         onClose={() => setDetailRecord(null)}
       />
     </>
@@ -576,7 +591,12 @@ function RestorePanel() {
               dataSource={(preview.tables ?? []).filter((t) => t.in_scope)}
               columns={[
                 { title: '数据表', dataIndex: 'name', width: 220, ellipsis: true },
-                { title: '分组', dataIndex: 'group', width: 120 },
+                {
+                  title: '分组',
+                  dataIndex: 'group',
+                  width: 140,
+                  render: (v: string) => BACKUP_GROUP_LABELS[v] ?? v,
+                },
                 { title: '备份行数', dataIndex: 'backup_rows', width: 110 },
                 {
                   title: '行数一致',
@@ -650,6 +670,7 @@ function RestorePanel() {
         open={detailRecord !== null}
         title="恢复任务详情"
         record={detailRecord as Record<string, unknown> | null}
+        valueLabels={RESTORE_DETAIL_VALUE_LABELS}
         onClose={() => setDetailRecord(null)}
       />
     </>

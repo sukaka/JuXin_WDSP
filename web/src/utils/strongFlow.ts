@@ -23,8 +23,8 @@ export const STRONG_FLOW_MODE_META: Record<
   string,
   { color: string; label: string }
 > = {
-  OBSERVE: { color: 'default', label: '观测（OBSERVE）' },
-  PROTECT: { color: 'red', label: '实断（PROTECT）' },
+  OBSERVE: { color: 'default', label: '观察' },
+  PROTECT: { color: 'red', label: '实断' },
 }
 
 /** 步骤可重试语义词表（异常策略） */
@@ -56,15 +56,15 @@ export const RESOLVE_ACTION_META: Record<
 > = {
   CONFIRM_SUCCEEDED: {
     label: '确认业务已执行',
-    hint: '实例推进为已确认完成（CONFIRMED 终态）',
+    hint: '实例推进为已确认完成（终态）',
   },
   CONFIRM_NOT_EXECUTED: {
     label: '确认业务未执行',
-    hint: '实例推进为明确业务失败（FAILED 终态）',
+    hint: '实例推进为明确业务失败（终态）',
   },
   KEEP_UNKNOWN: {
     label: '保持未知',
-    hint: '不推进状态，仅留对账审计与 RESOLVE 事件（未知不显示安全通过）',
+    hint: '不推进状态，仅留对账审计与处置记录（未知不显示安全通过）',
   },
 }
 
@@ -73,15 +73,15 @@ export const STEP_EVENT_RESULT_META: Record<
   string,
   { color: string; label: string }
 > = {
-  OK: { color: 'green', label: 'OK' },
+  OK: { color: 'green', label: '成功' },
   CONFLICT: { color: 'orange', label: '冲突' },
   REJECTED: { color: 'red', label: '拒绝' },
-  UNKNOWN: { color: 'gold', label: 'UNKNOWN' },
+  UNKNOWN: { color: 'gold', label: '未知' },
 }
 
 /** 实例状态机允许转换说明（§1.2 五态 + §1.5 管理对账推进；固定文案不美化） */
 export const INSTANCE_TRANSITIONS_NOTE =
-  '允许转换：进行中（ACTIVE）→ 已确认完成 / 未知待对账 / 已取消 / 明确业务失败；未知待对账（INDETERMINATE）经管理对账 → 已确认完成（确认已执行）/ 明确业务失败（确认未执行）/ 保持未知不推进；已确认完成 / 已取消 / 明确业务失败为终态，不可再转换（终态拒绝重复恢复）。'
+  '允许转换：进行中 → 已确认完成 / 未知待对账 / 已取消 / 明确业务失败；未知待对账经管理对账 → 已确认完成（确认已执行）/ 明确业务失败（确认未执行）/ 保持未知不推进；已确认完成 / 已取消 / 明确业务失败为终态，不可再转换（终态拒绝重复恢复）。'
 
 /** 终态判定（CONFIRMED/CANCELLED/FAILED 已定案） */
 export function isTerminalInstance(status?: string): boolean {
@@ -99,9 +99,9 @@ export function shortInstanceKey(value?: string | null): string {
   return value.length > 24 ? `${value.slice(0, 14)}…${value.slice(-8)}` : value
 }
 
-/** 成功判定式可读化（三形态可组合与；无配置如实显示「未配置」——该步骤恒 UNKNOWN） */
+/** 成功判定式可读化（三形态可组合与；无配置如实显示「未配置」——该步骤恒未知） */
 export function successRuleText(rule?: StrongFlowSuccessRule | null): string {
-  if (!rule) return '未配置（该步骤恒 UNKNOWN）'
+  if (!rule) return '未配置（该步骤恒为未知）'
   const parts: string[] = []
   if (rule.status_codes && rule.status_codes.length > 0) {
     parts.push(`状态码 ∈ [${rule.status_codes.join(', ')}]`)
@@ -113,9 +113,9 @@ export function successRuleText(rule?: StrongFlowSuccessRule | null): string {
     )
   }
   if (rule.graphql_errors_empty) {
-    parts.push('GraphQL errors 为空')
+    parts.push('GraphQL 错误列表为空')
   }
-  return parts.length > 0 ? parts.join(' 且 ') : '未配置（该步骤恒 UNKNOWN）'
+  return parts.length > 0 ? parts.join(' 且 ') : '未配置（该步骤恒为未知）'
 }
 
 /**
@@ -134,13 +134,13 @@ export function validateStrongFlowSteps(steps: StrongFlowStep[]): string {
   for (let i = 0; i < steps.length; i++) {
     const st = steps[i]
     const key = (st.step_key ?? '').trim()
-    if (!key) return `steps[${i}].step_key 必填`
-    if (seenKey.has(key)) return `step_key "${key}" 重复（定义内唯一）`
+    if (!key) return `第 ${i + 1} 步的步骤标识必填`
+    if (seenKey.has(key)) return `步骤标识 "${key}" 重复（定义内唯一）`
     seenKey.add(key)
     if (!Number.isInteger(st.sequence) || st.sequence < 1)
-      return `steps[${i}].sequence 必须 ≥1`
+      return `第 ${i + 1} 步的顺序号必须 ≥1`
     if (seenSeq.has(st.sequence))
-      return `sequence ${st.sequence} 重复（定义内唯一——严格递增即首步唯一最小的承载）`
+      return `顺序号 ${st.sequence} 重复（定义内唯一——严格递增即首步唯一最小的承载）`
     seenSeq.add(st.sequence)
     if (minCount === 0 || st.sequence < minSeq) {
       minSeq = st.sequence
@@ -148,13 +148,13 @@ export function validateStrongFlowSteps(steps: StrongFlowStep[]): string {
     } else if (st.sequence === minSeq) {
       minCount++
     }
-    if (!(st.endpoint_key ?? '').trim()) return `steps[${i}].endpoint_key 必填`
+    if (!(st.endpoint_key ?? '').trim()) return `第 ${i + 1} 步的接口标识必填`
     const ruleMsg = validateStrongFlowSuccessRule(st.success_rule)
-    if (ruleMsg) return `steps[${i}].success_rule：${ruleMsg}`
+    if (ruleMsg) return `第 ${i + 1} 步的成功判定规则：${ruleMsg}`
     if (st.timeout_seconds < 15 || st.timeout_seconds > 600)
-      return `steps[${i}].timeout_seconds 词表外（15~600；词表外拒收不夹紧猜义）`
+      return `第 ${i + 1} 步的超时时间超出范围（15~600 秒）`
     if (st.lease_seconds < 15 || st.lease_seconds > 300)
-      return `steps[${i}].lease_seconds 词表外（15~300；词表外拒收不夹紧猜义）`
+      return `第 ${i + 1} 步的租约时长超出范围（15~300 秒）`
     const g = (st.parallel_group ?? '').trim()
     if (g) {
       const list = parallelSeqs.get(g) ?? []
@@ -163,14 +163,14 @@ export function validateStrongFlowSteps(steps: StrongFlowStep[]): string {
     }
   }
   if (minCount !== 1)
-    return `首步须唯一（sequence 最小值恰一步；当前最小值 ${minSeq} 出现 ${minCount} 次）`
+    return `首步须唯一（顺序号最小值恰一步；当前最小值 ${minSeq} 出现 ${minCount} 次）`
   for (const [g, seqs] of parallelSeqs) {
     if (seqs.length < 2)
-      return `parallel_group "${g}" 仅一步（并行组至少两步；单步请置空串行）`
+      return `并行组 "${g}" 仅一步（并行组至少两步；单步请置空串行）`
     const sorted = [...seqs].sort((a, b) => a - b)
     for (let i = 1; i < sorted.length; i++) {
       if (sorted[i] - sorted[i - 1] !== 1)
-        return `parallel_group "${g}" 步骤 sequence 不相邻（同组须连续区间）`
+        return `并行组 "${g}" 步骤顺序号不相邻（同组须连续区间）`
     }
   }
   return ''
@@ -181,13 +181,13 @@ export function validateStrongFlowSuccessRule(
   rule?: StrongFlowSuccessRule | null,
 ): string {
   if (!rule)
-    return '必填（无成功判定式的步骤恒 UNKNOWN——判定式必须显式配置，§9.3）'
+    return '必填（无成功判定规则的步骤恒为未知，判定规则必须显式配置）'
   let has = false
   if (rule.status_codes && rule.status_codes.length > 0) {
     has = true
     for (const c of rule.status_codes) {
       if (!Number.isInteger(c) || c < 100 || c > 599)
-        return 'status_codes 元素须为合法 HTTP 状态码（100~599）'
+        return '状态码列表元素须为合法 HTTP 状态码（100~599）'
     }
   }
   if (rule.body_jsonpath_equals) {
@@ -197,19 +197,19 @@ export function validateStrongFlowSuccessRule(
         rule.body_jsonpath_equals.path ?? '',
       )
     ) {
-      return 'body_jsonpath_equals.path 形态非法（仅点路径子集 $.a.b；非法形态拒收）'
+      return '响应体字段路径形态非法（仅支持点路径子集，如 $.a.b）'
     }
     if (
       rule.body_jsonpath_equals.value === undefined ||
       rule.body_jsonpath_equals.value === null ||
       rule.body_jsonpath_equals.value === ''
     ) {
-      return 'body_jsonpath_equals.value 必填（等值目标）'
+      return '响应体字段目标值必填'
     }
   }
   if (rule.graphql_errors_empty) has = true
   if (!has)
-    return '至少配置一种成功判定形态（status_codes / body_jsonpath_equals / graphql_errors_empty）'
+    return '至少配置一种成功判定条件（状态码 / 响应体字段等值 / GraphQL 无错误）'
   return ''
 }
 

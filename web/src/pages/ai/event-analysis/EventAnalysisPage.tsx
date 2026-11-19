@@ -114,7 +114,7 @@ export default function EventAnalysisPage() {
     <Card title="事件分析">
       <Typography.Paragraph type="secondary">
         对安全事件进行 AI 分析，给出攻击类型、命中规则、风险等级、是否阻断与排查建议；所有结论附证据引用。
-        支持按时间范围、应用、IP、URI、规则、Request ID 维度组合检索真实事件数据后分析。
+        支持按时间范围、应用、IP、URI、规则、请求 ID 维度组合检索真实事件数据后分析。
       </Typography.Paragraph>
       <Tabs
         activeKey={activeTab}
@@ -157,7 +157,7 @@ export default function EventAnalysisPage() {
                 <Form.Item name="rule_id" label="规则 ID">
                   <InputNumber placeholder="如 942100" style={{ width: 130 }} min={1} precision={0} />
                 </Form.Item>
-                <Form.Item name="request_id" label="Request ID">
+                <Form.Item name="request_id" label="请求 ID">
                   <Input placeholder="网关请求 ID" style={{ width: 200 }} allowClear />
                 </Form.Item>
                 <Form.Item>

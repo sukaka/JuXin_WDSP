@@ -315,13 +315,13 @@ describe('ApiMaskingRulesPage', () => {
 
     // 切换到应用级
     openScopeSelect()
-    await clickOption('应用级（APPLICATION）')
+    await clickOption('应用级')
     expect(await screen.findByLabelText('目标应用')).toBeInTheDocument()
     expect(screen.queryByLabelText('目标接口')).not.toBeInTheDocument()
 
     // 切换到接口级
     openScopeSelect()
-    await clickOption('接口级（ENDPOINT）')
+    await clickOption('接口级')
     expect(await screen.findByLabelText('目标接口')).toBeInTheDocument()
     expect(screen.queryByLabelText('目标应用')).not.toBeInTheDocument()
   })
@@ -349,7 +349,7 @@ describe('ApiMaskingRulesPage', () => {
     expect(screen.getByText('u123')).toBeInTheDocument()
     expect(screen.getByText('10.0.0.0/24')).toBeInTheDocument()
     // REMOVE 算法不渲染 MASK 参数
-    expect(screen.queryByLabelText(/keep_head/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('前保留字符数')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
 
@@ -407,19 +407,19 @@ describe('ApiMaskingRulesPage', () => {
     fireEvent.change(screen.getByLabelText('目标字段路径'), {
       target: { value: 'user.phone' },
     })
-    await selectAlgorithm('加密（ENCRYPT）')
+    await selectAlgorithm('加密')
 
     expect(
-      await screen.findByLabelText('密钥标识（key_id）'),
+      await screen.findByLabelText('密钥标识'),
     ).toBeInTheDocument()
     expect(
-      screen.queryByLabelText('映射表标识（map_id）'),
+      screen.queryByLabelText('映射表标识'),
     ).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
     expect(await screen.findByText('请填写密钥标识')).toBeInTheDocument()
     expect(createBodies).toHaveLength(0)
 
-    fireEvent.change(screen.getByLabelText('密钥标识（key_id）'), {
+    fireEvent.change(screen.getByLabelText('密钥标识'), {
       target: { value: 'bad key!' },
     })
     fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
@@ -428,7 +428,7 @@ describe('ApiMaskingRulesPage', () => {
     ).toBeInTheDocument()
     expect(createBodies).toHaveLength(0)
 
-    fireEvent.change(screen.getByLabelText('密钥标识（key_id）'), {
+    fireEvent.change(screen.getByLabelText('密钥标识'), {
       target: { value: 'key_prod-01_ABC' },
     })
     fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
@@ -446,15 +446,15 @@ describe('ApiMaskingRulesPage', () => {
     fireEvent.change(screen.getByLabelText('目标字段路径'), {
       target: { value: 'user.id_card' },
     })
-    await selectAlgorithm('映射（MAP）')
+    await selectAlgorithm('映射')
 
     expect(
-      await screen.findByLabelText('映射表标识（map_id）'),
+      await screen.findByLabelText('映射表标识'),
     ).toBeInTheDocument()
     expect(
-      screen.queryByLabelText('密钥标识（key_id）'),
+      screen.queryByLabelText('密钥标识'),
     ).not.toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('映射表标识（map_id）'), {
+    fireEvent.change(screen.getByLabelText('映射表标识'), {
       target: { value: 'bad/map' },
     })
     fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
@@ -465,7 +465,7 @@ describe('ApiMaskingRulesPage', () => {
     ).toBeInTheDocument()
     expect(createBodies).toHaveLength(1)
 
-    fireEvent.change(screen.getByLabelText('映射表标识（map_id）'), {
+    fireEvent.change(screen.getByLabelText('映射表标识'), {
       target: { value: 'map_prod-02' },
     })
     fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
@@ -490,12 +490,12 @@ describe('ApiMaskingRulesPage', () => {
     fireEvent.click(within(row).getByRole('button', { name: /编\s*辑/ }))
     await screen.findByText('编辑规则：用户手机号加密')
     await waitFor(() => {
-      expect(screen.getByLabelText('密钥标识（key_id）')).toHaveValue(
+      expect(screen.getByLabelText('密钥标识')).toHaveValue(
         'key-prod_01',
       )
     })
     expect(
-      screen.queryByLabelText('映射表标识（map_id）'),
+      screen.queryByLabelText('映射表标识'),
     ).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
@@ -517,7 +517,7 @@ describe('ApiMaskingRulesPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '恢复验证' }))
     const dialog = await screen.findByRole('dialog')
-    fireEvent.change(within(dialog).getByLabelText('密文（ciphertext）'), {
+    fireEvent.change(within(dialog).getByLabelText('密文'), {
       target: { value: 'ciphertext_123==' },
     })
     fireEvent.click(within(dialog).getByRole('button', { name: /验\s*证/ }))
@@ -528,7 +528,7 @@ describe('ApiMaskingRulesPage', () => {
     )
     expect(decryptCalls[0].body).toEqual({ ciphertext: 'ciphertext_123==' })
     expect(
-      await within(dialog).findByLabelText('明文（plaintext）'),
+      await within(dialog).findByLabelText('明文'),
     ).toHaveValue('服务端恢复明文')
   })
 
@@ -543,7 +543,7 @@ describe('ApiMaskingRulesPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '恢复验证' }))
     const dialog = await screen.findByRole('dialog')
-    fireEvent.change(within(dialog).getByLabelText('密文（ciphertext）'), {
+    fireEvent.change(within(dialog).getByLabelText('密文'), {
       target: { value: 'invalid-ciphertext' },
     })
     fireEvent.click(within(dialog).getByRole('button', { name: /验\s*证/ }))
@@ -552,7 +552,7 @@ describe('ApiMaskingRulesPage', () => {
       await within(dialog).findByText('密文无效或密钥不可用'),
     ).toBeInTheDocument()
     expect(
-      within(dialog).queryByLabelText('明文（plaintext）'),
+      within(dialog).queryByLabelText('明文'),
     ).not.toBeInTheDocument()
   })
 

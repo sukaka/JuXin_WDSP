@@ -35,6 +35,7 @@ import { ruleNameZh } from '../../utils/crsRuleNames'
 import { hasPermission } from '../../utils/permission'
 import {
   ATTACK_TYPE_META,
+  EXCEPTION_SCOPE_META,
   parseWafRuleTags,
   RULE_DEFAULT_STATE_META,
   RULE_SEVERITY_META,
@@ -53,8 +54,18 @@ interface Filters {
 
 const SEVERITY_OPTIONS = Object.entries(RULE_SEVERITY_META).map(([value, meta]) => ({
   value,
-  label: `${meta.label}（${value}）`,
+  label: meta.label,
 }))
+
+const OVERRIDE_ACTION_META: Record<string, { color: string; label: string }> = {
+  DISABLE: { color: 'red', label: '停用规则' },
+  ENABLE: { color: 'green', label: '启用规则' },
+}
+
+const OVERRIDE_SCOPE_META: Record<string, { color: string; label: string }> = {
+  ...EXCEPTION_SCOPE_META,
+  POLICY: { ...EXCEPTION_SCOPE_META.POLICY, label: '防护策略' },
+}
 
 export default function WafRulesPage() {
   const { message, modal } = AntdApp.useApp()
@@ -487,7 +498,7 @@ export default function WafRulesPage() {
                           <Typography.Text>已研判 {item.reviewed}</Typography.Text>
                           <Typography.Text>未确认 {item.unresolved}</Typography.Text>
                           {item.protect_recommendation ? (
-                            <Tag color="green">建议人工评估 PROTECT</Tag>
+                            <Tag color="green">建议人工评估切换防护模式</Tag>
                           ) : null}
                         </Space>
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -511,7 +522,7 @@ export default function WafRulesPage() {
                   规则覆盖
                 </Typography.Title>
                 <Typography.Paragraph type="secondary">
-                  优先级：应用级 &gt; 策略级 &gt; 全局。DISABLE 发布后通过 ctl:ruleRemoveById
+                  优先级：应用级 &gt; 策略级 &gt; 全局。停用规则发布后通过 ctl:ruleRemoveById
                   停用该 CRS 规则；修改后需配置发布生效。
                 </Typography.Paragraph>
                 <List
@@ -536,8 +547,8 @@ export default function WafRulesPage() {
                       ]}
                     >
                       <Space wrap>
-                        <Tag color={item.action === 'DISABLE' ? 'red' : 'green'}>{item.action}</Tag>
-                        <Tag>{item.scope_type}</Tag>
+                        <StatusTag value={item.action} map={OVERRIDE_ACTION_META} />
+                        <StatusTag value={item.scope_type} map={OVERRIDE_SCOPE_META} />
                         {item.scope_id && (
                           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                             {item.scope_id.slice(0, 8)}…

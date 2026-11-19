@@ -329,6 +329,8 @@ describe('ApmSlosPage', () => {
     fireEvent.click(screen.getAllByText('详情')[0])
     expect(await screen.findByText('SLO 详情')).toBeInTheDocument()
     expect(await screen.findByText('达标率趋势')).toBeInTheDocument()
+    expect(screen.getByText('30 天')).toBeInTheDocument()
+    expect(screen.queryByText('30d')).not.toBeInTheDocument()
     expect(screen.getByTestId('echart-stub')).toBeInTheDocument()
     // 详情接口被调用
     const detailCalls = (fetch as Mock).mock.calls.filter((c) => String(c[0]).includes('/apm/slos/slo-1'))

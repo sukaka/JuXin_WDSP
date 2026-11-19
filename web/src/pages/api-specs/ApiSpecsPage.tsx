@@ -32,6 +32,7 @@ import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { SPEC_FORMAT_LABELS, formatLocation } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { API_SPEC_DIFF_TYPE_META } from '../../utils/stage8'
 import { specAuditCSV } from './specAuditExport'
@@ -84,8 +85,8 @@ const SPEC_AUDIT_SEVERITY_META: Record<
   string,
   { color: string; label: string }
 > = {
-  HIGH: { color: 'red', label: 'HIGH' },
-  MEDIUM: { color: 'orange', label: 'MEDIUM' },
+  HIGH: { color: 'red', label: '高' },
+  MEDIUM: { color: 'orange', label: '中' },
 }
 
 /** 导入成功提示（粘贴/URL 导入同构） */
@@ -251,7 +252,7 @@ export default function ApiSpecsPage() {
   const confirmActivate = (record: ApiImportSpec) => {
     modal.confirm({
       title: '激活规范版本',
-      content: `确定激活「${record.name} v${record.version_no}」吗？同名当前 ACTIVE 版本将降为历史。`,
+      content: `确定激活「${record.name} v${record.version_no}」吗？同名当前激活版本将降为历史。`,
       onOk: () => activateMut.mutate(record.id),
     })
   }
@@ -286,8 +287,8 @@ export default function ApiSpecsPage() {
     {
       title: '格式',
       dataIndex: 'format',
-      width: 110,
-      render: (v: string) => v || '-',
+      width: 120,
+      render: (v: string) => (v ? (SPEC_FORMAT_LABELS[v] ?? v) : '-'),
     },
     { title: '接口数', dataIndex: 'endpoint_count', width: 90 },
     {
@@ -398,10 +399,10 @@ export default function ApiSpecsPage() {
       ellipsis: true,
       render: (_, record) =>
         record.param_name ? (
-          <Typography.Text code>
-            {record.param_in ? `${record.param_in}.` : ''}
-            {record.param_name}
-          </Typography.Text>
+          <Space size={4}>
+            {record.param_in ? <Tag>{formatLocation(record.param_in)}</Tag> : null}
+            <Typography.Text code>{record.param_name}</Typography.Text>
+          </Space>
         ) : (
           '-'
         ),
@@ -448,8 +449,12 @@ export default function ApiSpecsPage() {
     {
       title: '参数位置',
       dataIndex: 'param_in',
-      width: 100,
-      render: (v: string) => v || '-',
+      width: 110,
+      render: (v: string) => {
+        if (!v) return '-'
+        if (v.toUpperCase() === 'SECURITY') return '认证方案'
+        return formatLocation(v)
+      },
     },
     {
       title: '参数名称',
@@ -514,8 +519,7 @@ export default function ApiSpecsPage() {
       <Typography.Paragraph type="secondary">
         导入 OpenAPI
         规范后，系统自动与运行时发现的接口对比：规范缺失、运行时缺失与定义变更三类差异可用于发现影子
-        API。同名再导入形成版本链（version_no 自增），同名唯一 ACTIVE
-        版本，可跨版本对比定义变更。
+        API。同名再导入形成版本链（版本号自增），同名唯一激活版本，可跨版本对比定义变更。
       </Typography.Paragraph>
       <QueryErrorAlert error={listQuery.error} />
       <SmartTable<ApiImportSpec>
@@ -687,8 +691,8 @@ export default function ApiSpecsPage() {
           <Space size="large" wrap style={{ margin: '16px 0' }}>
             <Statistic title="操作数" value={auditData.operation_count} />
             <Statistic title="问题数" value={auditData.issue_count} />
-            <Statistic title="HIGH" value={auditData.high_count} />
-            <Statistic title="MEDIUM" value={auditData.medium_count} />
+            <Statistic title="高危问题" value={auditData.high_count} />
+            <Statistic title="中危问题" value={auditData.medium_count} />
           </Space>
         ) : null}
         {auditData?.truncated ? (

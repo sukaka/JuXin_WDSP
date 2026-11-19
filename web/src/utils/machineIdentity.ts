@@ -2,9 +2,9 @@
 
 /** 键状态机（§1.2：ACTIVE 可签发可验证 / RETIRED 重叠窗口内仅验证（不得用于新签名）/ REVOKED 立即拒验） */
 export const KEY_STATUS_META: Record<string, { color: string; label: string }> = {
-  ACTIVE: { color: 'green', label: 'ACTIVE（可签发可验证）' },
-  RETIRED: { color: 'gold', label: 'RETIRED（窗口内仅验证）' },
-  REVOKED: { color: 'red', label: 'REVOKED（立即拒验）' },
+  ACTIVE: { color: 'green', label: '生效中（可签发可验证）' },
+  RETIRED: { color: 'gold', label: '已退役（窗口内仅验证）' },
+  REVOKED: { color: 'red', label: '已撤销（立即拒验）' },
 }
 
 /** 身份启停（DISABLED 不下发不参与验证） */
@@ -22,8 +22,8 @@ export const KEY_ALG_META: Record<string, { label: string }> = {
 
 /** 绑定模式（OBSERVE 只记录 / PROTECT 验签失败与违规模态协议化执行 401） */
 export const MACHINE_IDENTITY_MODE_META: Record<string, { color: string; label: string }> = {
-  OBSERVE: { color: 'default', label: '观测（OBSERVE）' },
-  PROTECT: { color: 'red', label: '实断（PROTECT）' },
+  OBSERVE: { color: 'default', label: '观察' },
+  PROTECT: { color: 'red', label: '实断' },
 }
 
 /** 覆盖范围提示（设计 §3 口径：可选叠加缺省 OFF；RFC 9421 首期；DPoP/stdio 未覆盖——不冒充已保护） */

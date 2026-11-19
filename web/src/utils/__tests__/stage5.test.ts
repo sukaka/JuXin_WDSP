@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ACCESS_RULE_TYPE_META,
+  AC_EVENT_ACTION_META,
   AC_EVENT_TYPE_META,
   CUSTOM_HEADER_NAME_PATTERN,
   RATE_LIMIT_ACTION_META,
@@ -97,14 +98,21 @@ describe('展示元数据完整性', () => {
     expect(ACCESS_RULE_TYPE_META.DENY.color).toBe('red')
   })
 
-  it('访问控制事件类型覆盖后端全部 15 种（含 L7_RULE_* 四种）', () => {
-    expect(Object.keys(AC_EVENT_TYPE_META)).toHaveLength(15)
+  it('访问控制事件类型覆盖全部 35 种（含 L7_RULE_* 与 WDSP 事件）', () => {
+    expect(Object.keys(AC_EVENT_TYPE_META)).toHaveLength(35)
     expect(AC_EVENT_TYPE_META.CC_THRESHOLD_EXCEEDED.label).toBe('频率超阈值')
     expect(AC_EVENT_TYPE_META.IP_ALLOW_MATCH.label).toBe('命中白名单')
     expect(AC_EVENT_TYPE_META.L7_RULE_ALLOW.label).toBe('L7规则放行')
     expect(AC_EVENT_TYPE_META.L7_RULE_BLOCK.label).toBe('L7规则阻断')
     expect(AC_EVENT_TYPE_META.L7_RULE_REDIRECT.label).toBe('L7规则重定向')
     expect(AC_EVENT_TYPE_META.L7_RULE_CUSTOM.label).toBe('L7自定义页面')
+    expect(AC_EVENT_TYPE_META.IDENTITY_MANUAL_BLOCK.label).toBe('身份手工封禁')
+    expect(AC_EVENT_TYPE_META.BOT_CHALLENGE_OFFERED.label).toBe('Bot 挑战下发')
+    expect(AC_EVENT_TYPE_META.JWT_AUTH_FAILED.label).toBe('JWT 认证失败')
+    expect(AC_EVENT_TYPE_META.MID_BOT_EXEMPT.label).toBe('机器身份豁免 Bot 挑战')
+    expect(AC_EVENT_ACTION_META.CHALLENGE.label).toBe('挑战')
+    expect(AC_EVENT_ACTION_META.would_block.label).toBe('拟阻断（观察）')
+    expect(AC_EVENT_ACTION_META.rate_limited.label).toBe('已限速')
   })
 
   it('CC 动作与临时封禁状态元数据', () => {

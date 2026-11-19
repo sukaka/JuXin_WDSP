@@ -320,6 +320,42 @@ describe('SystemSettingsPage · logging 分组 syslog 配置', () => {
       expect(within(row).getByRole('switch')).toBeInTheDocument()
     }
   })
+
+  it('只读权限渲染布尔值为「已开启/已关闭」、枚举值为选项中文/标签，并展示日志设施号中文说明', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch([
+        ...loggingItems(),
+        makeItem({
+          id: 's10',
+          setting_key: 'syslog_facility',
+          setting_value: '1',
+          value_type: 'integer',
+        }),
+      ]),
+    )
+    useAuthStore.setState({
+      user: makeUser(['system_settings.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await openLoggingTab()
+
+    const enabledRow = screen.getByText('syslog_enabled').closest('tr')!
+    expect(within(enabledRow).getByText('已开启')).toBeInTheDocument()
+    expect(within(enabledRow).queryByText('true')).not.toBeInTheDocument()
+
+    const disabledRow = screen.getByText('syslog_forward_access_logs').closest('tr')!
+    expect(within(disabledRow).getByText('已关闭')).toBeInTheDocument()
+    expect(within(disabledRow).queryByText('false')).not.toBeInTheDocument()
+
+    const protoRow = screen.getByText('syslog_protocol').closest('tr')!
+    expect(within(protoRow).getByText('UDP')).toBeInTheDocument()
+
+    const facilityRow = screen.getByText('syslog_facility').closest('tr')!
+    expect(within(facilityRow).getByText('RFC5424 日志设施号，默认 1（用户级）')).toBeInTheDocument()
+  })
 })
 
 function makeApmSettings(partial: Partial<ApmSettings> = {}): ApmSettings {

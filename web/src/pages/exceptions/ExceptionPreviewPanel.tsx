@@ -4,6 +4,45 @@ import { ApiError } from '../../api/client'
 import { exceptionsApi } from '../../api/exceptions'
 import type { ExceptionPreviewResult } from '../../types'
 import { formatDateTime } from '../../utils/format'
+import { COMMON_DETAIL_FIELD_LABELS } from '../../utils/i18nLabels'
+import { EXCEPTION_ACTION_META } from '../../utils/stage4'
+import { API_DETECTOR_META } from '../../utils/stage8'
+
+/** 例外校验字段中文名兜底（补足 COMMON_DETAIL_FIELD_LABELS 中未列出的例外专属字段） */
+const EXCEPTION_FIELD_LABELS: Record<string, string> = {
+  uri_exact: '路径精确匹配',
+  uri_prefix: '路径前缀匹配',
+  uri_regex: '路径正则匹配',
+  methods: 'HTTP 方法',
+  source_ips: '来源 IP',
+  content_types: '内容类型',
+  param_names: '参数名',
+  cookie_names: 'Cookie 名称',
+  header_names: '请求头名',
+  rule_ids: '规则 ID',
+  rule_tags: '规则标签',
+  attack_types: '攻击类型',
+  exception_action: '例外动作',
+  action_target: '动作目标',
+  effective_from: '生效时间',
+  effective_until: '失效时间',
+  target_engine: '目标引擎',
+  api_rule_refs: 'API 规则引用',
+  risk_acknowledged: '风险确认',
+}
+
+function formatFieldLabel(key: string): string {
+  return EXCEPTION_FIELD_LABELS[key] ?? COMMON_DETAIL_FIELD_LABELS[key] ?? key
+}
+
+function formatUnsupportedLabel(key: string): string {
+  return (
+    EXCEPTION_ACTION_META[key]?.label ??
+    EXCEPTION_FIELD_LABELS[key] ??
+    COMMON_DETAIL_FIELD_LABELS[key] ??
+    key
+  )
+}
 
 /** 受保护模块词表中文名（S4 §8 protected_modules_unchanged；例外不绕过这些模块） */
 const PROTECTED_MODULE_LABELS: Record<string, string> = {
@@ -60,7 +99,7 @@ export default function ExceptionPreviewPanel({
               type="warning"
               showIcon
               style={{ marginBottom: 8 }}
-              message="校验状态：待审查（NEEDS_REVIEW），达标前禁止启用"
+              message="校验状态：待审查，达标前禁止启用"
             />
           )}
           {(p.field_errors ?? []).length > 0 && (
@@ -73,7 +112,7 @@ export default function ExceptionPreviewPanel({
                 <ul style={{ margin: 0, paddingLeft: 18 }}>
                   {(p.field_errors ?? []).map((fe, i) => (
                     <li key={`${fe.field}-${i}`}>
-                      <Typography.Text code>{fe.field}</Typography.Text>：{fe.message}
+                      <Typography.Text strong>{formatFieldLabel(fe.field)}</Typography.Text>：{fe.message}
                     </li>
                   ))}
                 </ul>
@@ -90,7 +129,7 @@ export default function ExceptionPreviewPanel({
                 <ul style={{ margin: 0, paddingLeft: 18 }}>
                   {(p.unsupported ?? []).map((u, i) => (
                     <li key={`${u.field_or_action}-${i}`}>
-                      <Typography.Text code>{u.field_or_action}</Typography.Text>
+                      <Typography.Text strong>{formatUnsupportedLabel(u.field_or_action)}</Typography.Text>
                       {u.migration_preview ? `：${u.migration_preview}` : ''}
                     </li>
                   ))}
@@ -123,7 +162,7 @@ export default function ExceptionPreviewPanel({
                   {(p.resolved_rule_refs ?? []).map((r, i) => (
                     <Tag key={`${r.engine}-${r.detector_id ?? ''}-${String(r.rule_id ?? '')}-${i}`}>
                       {r.engine === 'API'
-                        ? `${r.detector_id ?? ''}/${String(r.rule_id ?? '')}`
+                        ? `${API_DETECTOR_META[r.detector_id ?? '']?.label ?? r.detector_id ?? ''}/${String(r.rule_id ?? '')}`
                         : `WAF ${String(r.rule_id ?? '')}`}
                     </Tag>
                   ))}

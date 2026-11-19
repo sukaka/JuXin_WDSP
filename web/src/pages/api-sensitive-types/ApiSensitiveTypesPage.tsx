@@ -29,7 +29,9 @@ import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { formatLocation } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
+import { API_SENSITIVE_TYPE_META } from '../../utils/stage8'
 
 /** 五级敏感等级（与 server/internal/apidata level 枚举一致） */
 const SENSITIVE_LEVEL_META: Record<string, { color: string; label: string }> = {
@@ -48,15 +50,15 @@ const TYPE_STATUS_META: Record<string, { color: string; label: string }> = {
 
 /** 可能出现位置（与 server/internal/apidata validLocations 白名单一致） */
 const LOCATION_OPTIONS = [
-  { value: 'query', label: '查询参数（query）' },
-  { value: 'json', label: 'JSON 请求体（json）' },
-  { value: 'form', label: '表单（form）' },
-  { value: 'xml', label: 'XML（xml）' },
-  { value: 'header', label: '请求头（header）' },
-  { value: 'cookie', label: 'Cookie（cookie）' },
-  { value: 'path', label: '路径（path）' },
-  { value: 'response_body', label: '响应体（response_body）' },
-  { value: 'file', label: '文件内容（file）' },
+  { value: 'query', label: '查询参数' },
+  { value: 'json', label: 'JSON 请求体' },
+  { value: 'form', label: '表单数据' },
+  { value: 'xml', label: 'XML 数据' },
+  { value: 'header', label: '请求头' },
+  { value: 'cookie', label: 'Cookie' },
+  { value: 'path', label: '路径参数' },
+  { value: 'response_body', label: '响应体' },
+  { value: 'file', label: '文件内容' },
 ]
 
 interface TypeFormValues {
@@ -197,7 +199,7 @@ export default function ApiSensitiveTypesPage() {
     }
     modal.confirm({
       title: '导入敏感数据类型',
-      content: `文件「${file.name}」包含 ${types.length} 条类型定义，按名称 upsert（同名更新、不存在则新建，单事务整体生效）。确认导入吗？`,
+      content: `文件「${file.name}」包含 ${types.length} 条类型定义，按名称更新或新建（同名更新、不存在则新建，单事务整体生效）。确认导入吗？`,
       onOk: () => importMut.mutate(types as ApiSensitiveTypeBody[]),
     })
   }
@@ -274,7 +276,7 @@ export default function ApiSensitiveTypesPage() {
       title: '数据类型',
       dataIndex: 'data_type',
       width: 120,
-      render: (v: string) => <Tag>{v}</Tag>,
+      render: (v: string) => (v ? <StatusTag value={v} map={API_SENSITIVE_TYPE_META} /> : '-'),
     },
     {
       title: '等级',
@@ -288,7 +290,7 @@ export default function ApiSensitiveTypesPage() {
       dataIndex: 'locations',
       width: 180,
       ellipsis: true,
-      render: (v: string[]) => (v?.length ? v.map((l) => <Tag key={l}>{l}</Tag>) : '-'),
+      render: (v: string[]) => (v?.length ? v.map((l) => <Tag key={l}>{formatLocation(l)}</Tag>) : '-'),
     },
     {
       title: '状态',
@@ -358,7 +360,7 @@ export default function ApiSensitiveTypesPage() {
     >
       <Typography.Paragraph type="secondary">
         登记敏感数据类型（字段词根、值级正则、位置与等级），网关据此在运行时识别敏感字段；
-        内置类型与网关词表对齐，不可删除、名称不可改。导入导出为 JSON 文件，按名称 upsert。
+        内置类型与网关词表对齐，不可删除、名称不可改。导入导出为 JSON 文件，按名称更新或新建。
       </Typography.Paragraph>
       {/* 导入文件选择（隐藏 input；JSON 文件，解析后经二次确认提交） */}
       <input
@@ -497,7 +499,7 @@ export default function ApiSensitiveTypesPage() {
             <Select
               options={Object.entries(SENSITIVE_LEVEL_META).map(([value, meta]) => ({
                 value,
-                label: `${meta.label}（${value}）`,
+                label: meta.label,
               }))}
             />
           </Form.Item>
@@ -529,7 +531,7 @@ export default function ApiSensitiveTypesPage() {
             <Select
               allowClear
               placeholder="无"
-              options={[{ value: 'luhn', label: 'luhn（银行卡号校验）' }]}
+              options={[{ value: 'luhn', label: 'Luhn 银行卡号校验' }]}
             />
           </Form.Item>
           <Form.Item name="exclude_fields" label="排除字段名（可选，回车添加）">

@@ -32,7 +32,7 @@ const IDENTITY = {
   identity_key: 'ip:1.2.3.4',
   identity_type: 'BOT',
   identity_confidence: 90,
-  confidence_source: ['UA'],
+  confidence_source: ['browser_fingerprint', 'client_ip'],
   risk_score: 86,
   risk_level: 'HIGH',
   primary_ip: '1.2.3.4',
@@ -43,7 +43,7 @@ const IDENTITY = {
   jwt_subject: '',
   api_key_hash: '',
   oauth_client_id: '',
-  device_type: '',
+  device_type: 'DESKTOP',
   request_count: 100,
   first_seen_at: '2026-08-01T00:00:00Z',
   last_seen_at: '2026-08-31T12:00:00Z',
@@ -198,6 +198,10 @@ describe('IdentityDetailPage 封禁与解封', () => {
     renderPage()
 
     expect(await screen.findByText('已封禁')).toBeInTheDocument()
+    expect(screen.getByText('浏览器指纹、客户端 IP')).toBeInTheDocument()
+    expect(screen.getByText('桌面设备')).toBeInTheDocument()
+    expect(screen.getByText('JWT 主体')).toBeInTheDocument()
+    expect(screen.getByText('OAuth 客户端 ID')).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: /^封\s*禁$/ }),
     ).not.toBeInTheDocument()
@@ -215,7 +219,7 @@ describe('IdentityDetailPage 封禁与解封', () => {
     expect(await screen.findByText('请输入封禁原因')).toBeInTheDocument()
     expect(blockCalls).toHaveLength(0)
 
-    fireEvent.change(screen.getByLabelText('封禁原因（reason）'), {
+    fireEvent.change(screen.getByLabelText('封禁原因'), {
       target: { value: 'x'.repeat(513) },
     })
     fireEvent.click(screen.getByRole('button', { name: '确认封禁' }))
@@ -224,7 +228,7 @@ describe('IdentityDetailPage 封禁与解封', () => {
     ).toBeInTheDocument()
     expect(blockCalls).toHaveLength(0)
 
-    fireEvent.change(screen.getByLabelText('封禁原因（reason）'), {
+    fireEvent.change(screen.getByLabelText('封禁原因'), {
       target: { value: '确认恶意扫描' },
     })
     fireEvent.click(screen.getByRole('button', { name: '确认封禁' }))
@@ -245,7 +249,7 @@ describe('IdentityDetailPage 封禁与解封', () => {
     actionError = '封禁失败：策略发布冲突'
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: /^封\s*禁$/ }))
-    fireEvent.change(screen.getByLabelText('封禁原因（reason）'), {
+    fireEvent.change(screen.getByLabelText('封禁原因'), {
       target: { value: '恶意扫描' },
     })
     fireEvent.click(screen.getByRole('button', { name: '确认封禁' }))

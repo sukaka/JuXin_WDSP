@@ -4,8 +4,9 @@ import { apmApi } from '../../api/apm'
 import type { ApmTimeRangeParams } from '../../api/apm'
 import EChart from '../../components/EChart'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
-import { APM_WAF_ACTION_META, formatMs, formatPercent } from '../../utils/apm'
+import { formatMs, formatPercent, getApmWafActionMeta } from '../../utils/apm'
 import { apmKvPieOption, apmTrendOption } from '../../utils/apmCharts'
+import { formatApmEndpoint } from '../../utils/i18nLabels'
 import type { ApmServiceDetail } from '../../types'
 
 /** 服务详情抽屉：RED 趋势 + 状态码分布 + WAF 动作分布 + Top 端点（全部来自无 Agent 管道） */
@@ -97,7 +98,7 @@ export default function ApmServiceDetailDrawer({
                 <EChart
                   option={apmKvPieOption(
                     (detail.actions ?? []).map((a) => ({
-                      name: APM_WAF_ACTION_META[a.action]?.label ?? a.action,
+                      name: getApmWafActionMeta(a.action).label,
                       value: a.count,
                     })),
                   )}
@@ -114,7 +115,7 @@ export default function ApmServiceDetailDrawer({
                 type="info"
                 showIcon
                 message="无端点级数据"
-                description="端点级数据依赖全量访问日志（logging.access_log_enabled），未开启或无流量时为空。"
+                description="端点级数据依赖「全量访问日志开关」，未开启或无流量时为空。"
               />
             ) : (
               <Table
@@ -128,7 +129,9 @@ export default function ApmServiceDetailDrawer({
                     dataIndex: 'endpoint',
                     ellipsis: true,
                     render: (v: string) => (
-                      <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>{v}</Typography.Text>
+                      <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                        {formatApmEndpoint(v)}
+                      </Typography.Text>
                     ),
                   },
                   { title: '请求量', dataIndex: 'requests', width: 100 },

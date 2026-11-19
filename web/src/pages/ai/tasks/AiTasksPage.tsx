@@ -20,6 +20,33 @@ import QueryErrorAlert from '../../../components/QueryErrorAlert'
 import StatusTag from '../../../components/StatusTag'
 import { formatDateTime } from '../../../utils/format'
 import { AI_RISK_META, AI_TASK_STATUS_META, AI_TASK_TYPE_META } from '../../../utils/ai'
+import { COMMON_DETAIL_VALUE_LABELS } from '../../../utils/i18nLabels'
+
+const AI_TASK_FAILURE_CODE_LABELS: Record<string, string> = {
+  TIMEOUT: '执行超时',
+  MODEL_UNAVAILABLE: '模型服务不可用',
+  MODEL_ERROR: '模型调用失败',
+  TOOL_ERROR: '工具调用失败',
+  TOOL_DENIED: '工具调用被拒绝',
+  PERMISSION_DENIED: '权限不足',
+  RATE_LIMITED: '触发频率限制',
+  QUOTA_EXCEEDED: '超出调用配额',
+  BUDGET_EXCEEDED: '超出调用预算',
+  CONTEXT_OVERFLOW: '上下文长度超限',
+  INVALID_ARGUMENT: '参数非法',
+  CANCELLED: '任务已取消',
+  INTERNAL_ERROR: '内部处理错误',
+  UNKNOWN: '未知错误',
+}
+
+function formatTaskFailureCode(code?: string): string {
+  if (!code) return '-'
+  return (
+    AI_TASK_FAILURE_CODE_LABELS[code] ??
+    COMMON_DETAIL_VALUE_LABELS.failure_code?.[code] ??
+    code
+  )
+}
 
 interface Filters {
   status?: string
@@ -232,7 +259,7 @@ export default function AiTasksPage() {
                 {formatDateTime(detail.finished_at)}
               </Descriptions.Item>
               <Descriptions.Item label="失败码">
-                {detail.failure_code || '-'}
+                {formatTaskFailureCode(detail.failure_code)}
               </Descriptions.Item>
               <Descriptions.Item label="创建时间">
                 {formatDateTime(detail.created_at)}

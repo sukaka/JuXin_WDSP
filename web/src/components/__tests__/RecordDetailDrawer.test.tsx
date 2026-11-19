@@ -9,7 +9,7 @@ import {
 } from '../../pages/applications/detail/upstreamDetail'
 
 describe('RecordDetailDrawer', () => {
-  it('按字段渲染全部键值，空值/布尔/对象按口径展示', () => {
+  it('按字段渲染全部键值，内置通用中文字段/枚举兜底且空值/布尔/对象按口径展示', () => {
     render(
       <RecordDetailDrawer
         open
@@ -17,24 +17,48 @@ describe('RecordDetailDrawer', () => {
         record={{
           username: 'alice',
           enabled: true,
+          status: 'ACTIVE',
           deleted_at: null,
           created_at: '2026-09-01T10:00:00Z',
+          custom_raw_field: 'raw-val',
           extra: { role: 'admin' },
         }}
         onClose={() => {}}
       />,
     )
     expect(screen.getByText('用户详情')).toBeInTheDocument()
-    expect(screen.getByText('username')).toBeInTheDocument()
+    expect(screen.getByText('用户名')).toBeInTheDocument()
+    expect(screen.queryByText('username')).not.toBeInTheDocument()
+    expect(screen.getByText('是否启用')).toBeInTheDocument()
+    expect(screen.getByText('状态')).toBeInTheDocument()
+    expect(screen.getByText('启用')).toBeInTheDocument()
+    expect(screen.getByText('创建时间')).toBeInTheDocument()
+    expect(screen.getByText('custom_raw_field')).toBeInTheDocument()
     expect(screen.getByText('alice')).toBeInTheDocument()
     expect(screen.getByText('是')).toBeInTheDocument()
     expect(screen.getAllByText('-').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText(/"role": "admin"/)).toBeInTheDocument()
   })
 
+  it('调用方显式 fieldLabels/valueLabels 优先于内置兜底字典', () => {
+    render(
+      <RecordDetailDrawer
+        open
+        title="覆盖优先级测试"
+        record={{ status: 'ACTIVE', username: 'bob' }}
+        fieldLabels={{ username: '自定义账号名' }}
+        valueLabels={{ status: { ACTIVE: '自定义激活态' } }}
+        onClose={() => {}}
+      />,
+    )
+    expect(screen.getByText('自定义账号名')).toBeInTheDocument()
+    expect(screen.getByText('自定义激活态')).toBeInTheDocument()
+    expect(screen.queryByText('用户名')).not.toBeInTheDocument()
+  })
+
   it('record 为 null 时不渲染字段', () => {
     render(<RecordDetailDrawer open title="详情" record={null} onClose={() => {}} />)
-    expect(screen.queryByText('username')).not.toBeInTheDocument()
+    expect(screen.queryByText('用户名')).not.toBeInTheDocument()
   })
 
   it('关闭回调触发', async () => {

@@ -986,6 +986,7 @@ export default function AccessRulesPage() {
                           INVALID: { color: 'orange', label: '格式非法' },
                           DUPLICATE: { color: 'orange', label: '重复' },
                           CONFLICT: { color: 'orange', label: '冲突' },
+                          APP_NOT_FOUND: { color: 'orange', label: '应用不存在' },
                         }
                         const m = meta[v]
                         return <Tag color={m?.color ?? 'orange'}>{m?.label ?? v}</Tag>

@@ -11,6 +11,7 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { formatAuditAction } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { ATTACK_TYPE_META, DISPOSITION_STATUS_META, EVENT_SEVERITY_META } from '../../utils/stage4'
 import { COMPONENT_NAME_META, COMPONENT_STATUS_META, TREND_RANGE_OPTIONS } from '../../utils/stage6'
@@ -376,7 +377,12 @@ export default function SecurityOverviewPage() {
                     locale={{ emptyText: '暂无数据' }}
                     onRow={(record) => ({ onDoubleClick: () => setActionDetail(record), style: { cursor: 'pointer' } })}
                     columns={[
-                      { title: '操作', dataIndex: 'action', ellipsis: true },
+                      {
+                        title: '操作',
+                        dataIndex: 'action',
+                        ellipsis: true,
+                        render: (v: string) => formatAuditAction(v),
+                      },
                       { title: '数量', dataIndex: 'count', width: 90 },
                     ]}
                   />

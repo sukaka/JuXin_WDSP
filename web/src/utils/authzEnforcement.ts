@@ -3,32 +3,32 @@
  * readiness 判定为服务端唯一事实源，前端只渲染徽章与 reasons，不复制判定逻辑（D2）。
  */
 
-/** 「UNKNOWN 永不阻断」固定注明（契约文案：readiness tooltip 与向导中固定出现） */
-export const UNKNOWN_NEVER_BLOCKS_NOTE = 'UNKNOWN 永不阻断'
+/** 「证据不足永不阻断」固定注明（契约文案：readiness tooltip 与向导中固定出现） */
+export const UNKNOWN_NEVER_BLOCKS_NOTE = '证据不足永不阻断'
 
 /** readiness 徽章词表（§1.2 六态 + PROTECT_ACTIVE 展示态） */
 export const ENFORCEMENT_READINESS_META: Record<string, { color: string; label: string }> = {
   READY: { color: 'green', label: '可实断' },
-  PROTECT_ACTIVE: { color: 'geekblue', label: '实断中（PROTECT）' },
+  PROTECT_ACTIVE: { color: 'geekblue', label: '实断中' },
   NOT_PUBLISHABLE: { color: 'default', label: '资格不齐' },
-  BLOCKED_BY_NO_RELATION: { color: 'orange', label: '无有效 OWNER 关系' },
-  BLOCKED_BY_CONFLICT: { color: 'gold', label: '存在 OPEN 冲突' },
+  BLOCKED_BY_NO_RELATION: { color: 'orange', label: '无有效属主关系' },
+  BLOCKED_BY_CONFLICT: { color: 'gold', label: '存在未处理冲突' },
   BLOCKED_BY_STALE: { color: 'volcano', label: '快照/租约过期' },
   BLOCKED_BY_NODE: { color: 'red', label: '节点未就绪' },
 }
 
 /** enforcement 当前值词表（api_object_models.enforcement） */
 export const ENFORCEMENT_VALUE_META: Record<string, { color: string; label: string }> = {
-  OBSERVE: { color: 'default', label: '观测（OBSERVE）' },
-  PROTECT: { color: 'red', label: '实断（PROTECT）' },
+  OBSERVE: { color: 'default', label: '观察' },
+  PROTECT: { color: 'red', label: '实断' },
 }
 
 /** 节点 ACK 五态词表（NG-AZ-02 D6，服务端派生） */
 export const ACK_STATE_META: Record<string, { color: string; label: string }> = {
-  FRESH: { color: 'green', label: 'FRESH' },
+  FRESH: { color: 'green', label: '最新' },
   STALE_WITHIN_LEASE: { color: 'gold', label: '租约内陈旧' },
   STALE_EXPIRED: { color: 'red', label: '租约外陈旧' },
-  NEVER_ACKED: { color: 'default', label: '从未 ACK' },
+  NEVER_ACKED: { color: 'default', label: '从未确认' },
   CLOCK_SKEW: { color: 'orange', label: '时钟偏差' },
 }
 
@@ -49,8 +49,8 @@ export const RELATION_SOURCE_META: Record<string, { color: string; label: string
 
 /** 证据来源声明词表（§8.4 四要素之二） */
 export const EVIDENCE_SOURCE_META: Record<string, { label: string; hint: string }> = {
-  AUTHORITY_SYNC: { label: '权威同步（AUTHORITY_SYNC）', hint: '对象关系来自权威来源签名批次同步' },
-  MANUAL_CONFIRMED: { label: '人工确认（MANUAL_CONFIRMED）', hint: '对象关系经管理面人工审核确认' },
+  AUTHORITY_SYNC: { label: '权威同步', hint: '对象关系来自权威来源签名批次同步' },
+  MANUAL_CONFIRMED: { label: '人工确认', hint: '对象关系经管理面人工审核确认' },
 }
 
 /**

@@ -27,12 +27,14 @@ import VulnIdTags from '../../components/VulnIdTags'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { hasPermission } from '../../utils/permission'
+import { CORAZA_VARIABLE_LABELS } from '../../utils/i18nLabels'
 import { CNNVD_ID_PATTERN, CVE_ID_PATTERN, findInvalidVulnIds } from '../../utils/vulnIds'
 import {
   ATTACK_TYPE_META,
   ATTACK_TYPE_OPTIONS,
   CUSTOM_RULE_ACTION_META,
   ENABLE_STATUS_META,
+  EXCEPTION_SCOPE_META,
   RULE_SEVERITY_META,
 } from '../../utils/stage4'
 import type { CustomRuleItem, CustomRuleValidateResult } from '../../types'
@@ -78,10 +80,14 @@ const OPERATOR_OPTIONS = [
   { value: 'validateUtf8Encoding', label: 'UTF-8 编码校验' },
 ]
 
+const OPERATOR_LABEL_MAP: Record<string, string> = Object.fromEntries(
+  OPERATOR_OPTIONS.map((o) => [o.value, o.label]),
+)
+
 /** 无需匹配内容的操作符 */
 const NO_VALUE_OPERATORS = ['detectSQLi', 'detectXSS', 'validateUrlEncoding', 'validateUtf8Encoding']
 
-/** 后端 customrules.allowedVariables 白名单 */
+/** 后端 customrules.allowedVariables 白名单（展示中文名，提交值为 Coraza 变量名） */
 const VARIABLE_OPTIONS = [
   'ARGS',
   'ARGS_GET',
@@ -101,7 +107,7 @@ const VARIABLE_OPTIONS = [
   'CONTENT_TYPE',
   'REQUEST_PROTOCOL',
   'REQUEST_LINE',
-].map((v) => ({ value: v, label: v }))
+].map((v) => ({ value: v, label: CORAZA_VARIABLE_LABELS[v] ?? v }))
 
 const PHASE_OPTIONS = [1, 2, 3, 4, 5].map((n) => ({
   value: n,
@@ -110,7 +116,7 @@ const PHASE_OPTIONS = [1, 2, 3, 4, 5].map((n) => ({
 
 const SEVERITY_OPTIONS = ['CRITICAL', 'ERROR', 'WARNING', 'NOTICE'].map((v) => ({
   value: v,
-  label: `${RULE_SEVERITY_META[v]?.label ?? v}（${v}）`,
+  label: RULE_SEVERITY_META[v]?.label ?? v,
 }))
 
 const ACTION_OPTIONS = Object.entries(CUSTOM_RULE_ACTION_META).map(([value, meta]) => ({
@@ -410,13 +416,14 @@ export default function CustomRulesPage() {
         name="phase"
         label="执行阶段"
         rules={[{ required: true }]}
-        extra="阶段 2 的阻断（BLOCK）规则可能被 CRS 阻断评估抢先而无法触发；期望首命中即拦截的规则建议选阶段 1"
+        extra="阶段 2 的阻断规则可能被 CRS 阻断评估抢先而无法触发；期望首命中即拦截的规则建议选阶段 1"
       >
         <Select options={PHASE_OPTIONS} />
       </Form.Item>
       <Form.Item name="operator" label="操作符" rules={[{ required: true, message: '请选择操作符' }]}>
         <Select
           showSearch
+          optionFilterProp="label"
           options={OPERATOR_OPTIONS}
           placeholder="选择匹配操作符"
           onChange={() => setValidateResult(null)}
@@ -429,7 +436,7 @@ export default function CustomRulesPage() {
               name="operator_value"
               label="匹配内容"
               rules={[{ required: true, message: '请输入匹配内容' }]}
-              extra="正则（rx）需语法正确；禁止包含命令执行/文件读取等危险内容"
+              extra="正则匹配需语法正确；禁止包含命令执行/文件读取等危险内容"
             >
               <Input.TextArea rows={2} placeholder="如：(?i)(union.*select)" autoComplete="off" />
             </Form.Item>
@@ -441,7 +448,7 @@ export default function CustomRulesPage() {
         label="检测变量"
         rules={[{ required: true, message: '至少选择一个检测变量' }]}
       >
-        <Select mode="multiple" options={VARIABLE_OPTIONS} placeholder="选择要检测的请求变量" />
+        <Select mode="multiple" optionFilterProp="label" options={VARIABLE_OPTIONS} placeholder="选择要检测的请求变量" />
       </Form.Item>
       <Form.Item name="action" label="动作" rules={[{ required: true }]}>
         <Select
@@ -707,9 +714,11 @@ export default function CustomRulesPage() {
               <Descriptions.Item label="状态">
                 <StatusTag value={detail.status} map={ENABLE_STATUS_META} />
               </Descriptions.Item>
-              <Descriptions.Item label="作用范围">{detail.scope_type}</Descriptions.Item>
+              <Descriptions.Item label="作用范围">
+                <StatusTag value={detail.scope_type} map={EXCEPTION_SCOPE_META} />
+              </Descriptions.Item>
               <Descriptions.Item label="操作符" span={2}>
-                <Typography.Text code>{detail.operator}</Typography.Text>
+                {OPERATOR_LABEL_MAP[detail.operator] ?? detail.operator}
               </Descriptions.Item>
               <Descriptions.Item label="匹配内容" span={2}>
                 <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
@@ -719,7 +728,7 @@ export default function CustomRulesPage() {
               <Descriptions.Item label="检测变量" span={2}>
                 <Space wrap>
                   {(detail.target_variables ?? []).map((v) => (
-                    <Tag key={v}>{v}</Tag>
+                    <Tag key={v}>{CORAZA_VARIABLE_LABELS[v] ?? v}</Tag>
                   ))}
                 </Space>
               </Descriptions.Item>

@@ -1,4 +1,5 @@
 import type { ExceptionItem } from '../types'
+import { EXCEPTION_ACTION_META } from './stage4'
 
 /**
  * 例外派生状态（P0-04 §8）：由草稿字段 + 有效期时间 + （可获得的）发布/节点回执数据计算。
@@ -136,8 +137,10 @@ export function getExceptionEnableBlockers(
     )
   }
   if (!isActionSupportedForNewEnable(record.target_engine, record.exception_action)) {
+    const actionLabel = EXCEPTION_ACTION_META[record.exception_action]?.label ?? record.exception_action
+    const recommendedLabel = EXCEPTION_ACTION_META.REMOVE_VAR_DETECTION?.label ?? '移除变量检测'
     blockers.push(
-      `动作 ${record.exception_action} 不支持新启用（S4 §3 动作矩阵），请改为精确目标排除（如 REMOVE_VAR_DETECTION）`,
+      `动作「${actionLabel}」不支持新启用，请改为精确目标排除（如「${recommendedLabel}」）`,
     )
   }
   return blockers

@@ -106,6 +106,8 @@ describe('ApiSensitiveFieldsPage', () => {
     expect(within(drawer).getByText('敏感字段详情')).toBeInTheDocument()
     expect(within(drawer).getByText('query.phone')).toBeInTheDocument()
     expect(within(drawer).getByText('sensitive.in_query')).toBeInTheDocument()
+    expect(within(drawer).getByText('运行时识别')).toBeInTheDocument()
+    expect(within(drawer).getByText('查询参数')).toBeInTheDocument()
     expect(within(drawer).getByText('ev-1')).toBeInTheDocument()
     expect(within(drawer).getByText('累计命中')).toBeInTheDocument()
     expect(within(drawer).getByText('首次发现')).toBeInTheDocument()

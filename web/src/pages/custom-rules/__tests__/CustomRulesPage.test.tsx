@@ -54,6 +54,7 @@ function mockFetch() {
     const ok = (data: unknown) =>
       Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
     if (init?.method === 'POST' && url.endsWith('/custom-rules')) return ok(RULE)
+    if (/\/custom-rules\/[^/?]+$/.test(url)) return ok(RULE)
     if (url.includes('/custom-rules')) {
       return ok({ items: [RULE], total: 1, page: 1, page_size: 20 })
     }
@@ -218,7 +219,7 @@ describe('执行阶段与动作联动（phase=2 BLOCK 被 CRS 抢先问题修复
 
     // 阶段提示文案
     expect(
-      within(dialog).getByText(/阶段 2 的阻断（BLOCK）规则可能被 CRS 阻断评估抢先/),
+      within(dialog).getByText(/阶段 2 的阻断规则可能被 CRS 阻断评估抢先/),
     ).toBeInTheDocument()
 
     // antd 6 Select：选中值渲染在 .ant-select-content（title 属性同为选中项文本）
@@ -273,5 +274,23 @@ describe('执行阶段与动作联动（phase=2 BLOCK 被 CRS 抢先问题修复
       expect(actionText).toBe('阻断')
     })
     expect(phaseText()).toContain('阶段 3')
+  })
+
+  it('检测变量、作用范围与操作符中文化展示（表单下拉与详情抽屉）', async () => {
+    renderPage()
+    await screen.findByText('Struts2 RCE 虚拟补丁')
+
+    // 详情抽屉：检测变量 ARGS → 全部参数，作用范围 GLOBAL → 全局，操作符 rx → 正则匹配
+    fireEvent.click(screen.getByRole('button', { name: '详情' }))
+    expect(await screen.findByText('全部参数')).toBeInTheDocument()
+    expect(screen.getByText('全局')).toBeInTheDocument()
+    expect(screen.getByText('正则匹配')).toBeInTheDocument()
+    expect(screen.queryByText('GLOBAL')).not.toBeInTheDocument()
+
+    // 新建弹窗：默认选中的检测变量 ARGS 显示为中文「全部参数」
+    fireEvent.click(screen.getByRole('button', { name: /新建规则/ }))
+    await waitFor(() => expect(document.querySelector('.ant-modal')).toBeTruthy())
+    const modal = document.querySelector('.ant-modal') as HTMLElement
+    expect(within(modal).getByText('全部参数')).toBeInTheDocument()
   })
 })

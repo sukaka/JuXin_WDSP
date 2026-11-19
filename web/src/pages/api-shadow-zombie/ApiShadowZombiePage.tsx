@@ -21,8 +21,8 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { formatDateTime } from '../../utils/format'
+import { API_LIFECYCLE_STATUS_META } from '../../utils/i18nLabels'
 import {
-  API_ENDPOINT_STATUS_META,
   API_FINDING_SEVERITY_META,
   API_FINDING_STATUS_META,
   API_FINDING_TYPE_META,
@@ -168,7 +168,7 @@ export default function ApiShadowZombiePage() {
           </Card>
         </Col>
       </Row>
-      <Card title="Shadow 与 Zombie API">
+      <Card title="影子与僵尸 API">
         <Typography.Paragraph type="secondary">
           影子 API：运行时观测到但未登记的 API；僵尸 API：登记在册但长期无流量的 API；已下线 API：已废弃仍被调用的 API。
         </Typography.Paragraph>
@@ -248,17 +248,20 @@ export default function ApiShadowZombiePage() {
         ) : (
           <Timeline
             items={(lifecycleQuery.data?.items ?? []).map((e) => ({
-              color: API_ENDPOINT_STATUS_META[e.to_status]?.color === 'default' ? 'gray' : (API_ENDPOINT_STATUS_META[e.to_status]?.color ?? 'blue'),
+              color:
+                API_LIFECYCLE_STATUS_META[e.to_status]?.color === 'default'
+                  ? 'gray'
+                  : (API_LIFECYCLE_STATUS_META[e.to_status]?.color ?? 'blue'),
               children: (
                 <>
                   <Space size={4}>
-                    <StatusTag value={e.from_status} map={API_ENDPOINT_STATUS_META} />
+                    <StatusTag value={e.from_status} map={API_LIFECYCLE_STATUS_META} />
                     <Typography.Text type="secondary">→</Typography.Text>
-                    <StatusTag value={e.to_status} map={API_ENDPOINT_STATUS_META} />
+                    <StatusTag value={e.to_status} map={API_LIFECYCLE_STATUS_META} />
                   </Space>
                   <div>{e.reason || '-'}</div>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {e.actor || '-'} · {formatDateTime(e.created_at)}
+                    {e.actor === 'system' ? '系统' : e.actor || '-'} · {formatDateTime(e.created_at)}
                   </Typography.Text>
                 </>
               ),

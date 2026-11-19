@@ -24,7 +24,7 @@ import type { ApmDependencyEdge } from '../../types'
 
 const COLUMNS: ColumnsType<ApmDependencyEdge> = [
   {
-    title: '调用方（source）',
+    title: '调用方',
     dataIndex: 'source',
     width: 200,
     ellipsis: true,
@@ -33,7 +33,7 @@ const COLUMNS: ColumnsType<ApmDependencyEdge> = [
     ),
   },
   {
-    title: '被调方（target）',
+    title: '被调方',
     dataIndex: 'target',
     width: 200,
     ellipsis: true,

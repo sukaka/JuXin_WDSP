@@ -18,6 +18,7 @@ import {
 } from '../../api/apiAssets'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import { useAuthStore } from '../../stores/auth'
+import { ASSET_VALUE_DIMENSION_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 
 const LEVEL_META: Record<string, { color: string; label: string }> = {
@@ -49,7 +50,7 @@ export default function ApplicationAssetValueCard({ applicationId }: Props) {
     {
       title: '评分维度',
       dataIndex: 'name',
-      render: (name: string) => <Typography.Text code>{name}</Typography.Text>,
+      render: (name: string) => ASSET_VALUE_DIMENSION_LABELS[name] ?? name,
     },
     {
       title: '平均分',
@@ -74,7 +75,7 @@ export default function ApplicationAssetValueCard({ applicationId }: Props) {
         <Alert
           type="info"
           showIcon
-          message="缺少 api_asset.read 权限，无法查看应用资产价值"
+          message="缺少「API 资产查看」权限，无法查看应用资产价值"
         />
       ) : (
         <>
@@ -107,7 +108,11 @@ export default function ApplicationAssetValueCard({ applicationId }: Props) {
                   />
                 </Col>
               </Row>
-              <Space size={8} wrap style={{ marginBottom: 16 }}>
+              <Space
+                size={8}
+                wrap
+                style={{ display: 'flex', marginBottom: 12 }}
+              >
                 <Typography.Text strong>综合等级</Typography.Text>
                 {value.level ? (
                   <Tag color={LEVEL_META[value.level]?.color}>
@@ -128,7 +133,11 @@ export default function ApplicationAssetValueCard({ applicationId }: Props) {
                   style={{ marginBottom: 16 }}
                 />
               )}
-              <Space size={6} wrap style={{ marginBottom: 16 }}>
+              <Space
+                size={6}
+                wrap
+                style={{ display: 'flex', marginBottom: 16 }}
+              >
                 <Typography.Text type="secondary">等级分布</Typography.Text>
                 {Object.entries(value.level_distribution)
                   .sort(([left], [right]) => left.localeCompare(right))

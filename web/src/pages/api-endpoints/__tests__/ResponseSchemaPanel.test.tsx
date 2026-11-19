@@ -89,7 +89,9 @@ describe('ResponseSchemaPanel', () => {
     expect(expand).toBeTruthy()
     fireEvent.click(expand as HTMLElement)
     expect(await screen.findByText('order.id')).toBeInTheDocument()
-    expect(screen.getByText('number')).toBeInTheDocument()
+    expect(screen.getByText('数字')).toBeInTheDocument()
+    expect(screen.getByText('字符串')).toBeInTheDocument()
+    expect(screen.queryByText('number')).not.toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/api-security/endpoints/e1/response-schemas',
       expect.objectContaining({ method: 'GET' }),

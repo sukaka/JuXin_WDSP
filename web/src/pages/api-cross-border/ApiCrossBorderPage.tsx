@@ -187,7 +187,7 @@ export default function ApiCrossBorderPage() {
           <Typography.Text type="secondary">本土地区判定基准：</Typography.Text>
           {(data?.home_regions ?? []).map((r) => (
             <Tag key={r} color="green">
-              {r}
+              {API_COUNTRY_META[r]?.label ?? r}
             </Tag>
           ))}
         </Space>

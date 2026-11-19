@@ -530,7 +530,7 @@ export default function ApiWeaknessesPage() {
                 <Typography.Text code>{current.id}</Typography.Text>
               </Descriptions.Item>
             </Descriptions>
-            <Typography.Title level={5}>派生证据（evidence）</Typography.Title>
+            <Typography.Title level={5}>派生证据</Typography.Title>
             <Typography.Paragraph>
               <pre
                 style={{
@@ -560,7 +560,7 @@ export default function ApiWeaknessesPage() {
                             {meta?.label ?? a.action}
                           </Typography.Text>
                           <Typography.Text type="secondary">
-                            {a.actor || 'system'} ·{' '}
+                            {!a.actor || a.actor === 'system' ? '系统' : a.actor} ·{' '}
                             {formatDateTime(a.created_at)}
                           </Typography.Text>
                         </Space>

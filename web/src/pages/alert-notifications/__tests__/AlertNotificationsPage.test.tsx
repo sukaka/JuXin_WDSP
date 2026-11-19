@@ -198,7 +198,7 @@ describe('AlertNotificationsPage', () => {
     fireEvent.mouseDown(within(dialog).getAllByRole('combobox')[0])
     fireEvent.click(await screen.findByTitle('syslog'))
     expect(
-      await within(dialog).findByText(/沿用系统设置 logging 组的 syslog 配置/),
+      await within(dialog).findByText(/沿用系统设置「日志设置」组的 syslog 配置/),
     ).toBeInTheDocument()
   })
 

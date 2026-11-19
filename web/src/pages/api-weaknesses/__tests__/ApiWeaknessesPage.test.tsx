@@ -237,6 +237,10 @@ describe('ApiWeaknessesPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /详\s*情/ }))
     const drawer = await screen.findByRole('dialog')
     await within(drawer).findByText('未认证敏感接口被调用')
+    expect(within(drawer).getByText('派生证据')).toBeInTheDocument()
+    expect(within(drawer).queryByText('派生证据（evidence）')).not.toBeInTheDocument()
+    expect(within(drawer).getByText(/系统 ·/)).toBeInTheDocument()
+    expect(within(drawer).queryByText(/^system ·/)).not.toBeInTheDocument()
 
     expect(
       within(drawer).getByRole('button', { name: /确\s*认/ }),
@@ -358,6 +362,10 @@ describe('ApiWeaknessesPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /详\s*情/ }))
     const drawer = await screen.findByRole('dialog')
     await within(drawer).findByText('未认证敏感接口被调用')
+    expect(within(drawer).getByText('派生证据')).toBeInTheDocument()
+    expect(within(drawer).queryByText('派生证据（evidence）')).not.toBeInTheDocument()
+    expect(within(drawer).getByText(/系统 ·/)).toBeInTheDocument()
+    expect(within(drawer).queryByText(/^system ·/)).not.toBeInTheDocument()
 
     expect(
       within(drawer).queryByRole('button', { name: /确\s*认/ }),

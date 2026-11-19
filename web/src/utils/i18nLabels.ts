@@ -1,0 +1,2177 @@
+/* ==================== 全局共享中文展示词表与格式化辅助 ====================
+ * 集中维护跨页面、跨组件复用的后端枚举、字段名、错误码与指标键中文映射。
+ * 纪律：仅做界面展示中文化，不改后端协议/提交值；未知枚举一律原样回退，不伪造语义。
+ */
+
+import { ATTACK_STAGE_META, SIGNAL_META } from './identitySecurity'
+
+/** 通用标签元数据项（与 StatusTag 兼容） */
+export interface LabelMeta {
+  color: string
+  label: string
+}
+
+/* ==================== 资产价值评估 ==================== */
+
+/** 资产价值评估 9 维指标名（server/internal/apiassets/value.go） */
+export const ASSET_VALUE_DIMENSION_LABELS: Record<string, string> = {
+  business_sensitivity: '业务敏感度',
+  data_sensitivity: '数据敏感度',
+  internet_exposure: '公网暴露',
+  privilege: '权限等级',
+  write_capability: '写能力',
+  admin_capability: '管理能力',
+  transaction_capability: '交易能力',
+  dependency_degree: '依赖度',
+  traffic_scale: '流量规模',
+}
+
+/** 资产价值等级（LOW / MEDIUM / HIGH / CRITICAL） */
+export const ASSET_VALUE_LEVEL_META: Record<string, LabelMeta> = {
+  LOW: { color: 'blue', label: '低' },
+  MEDIUM: { color: 'orange', label: '中' },
+  HIGH: { color: 'red', label: '高' },
+  CRITICAL: { color: 'magenta', label: '极高' },
+}
+
+/* ==================== 权限模块 ==================== */
+
+/** 后端权限模块（permissions.module，全量覆盖迁移脚本 36 个模块） */
+export const PERMISSION_MODULE_LABELS: Record<string, string> = {
+  access_control: '访问控制',
+  access_logs: '访问日志',
+  ai: '智能运营',
+  analytics: '统计分析',
+  api: '接口防护',
+  api_protection: 'API 动态防护',
+  apm: '应用性能监控',
+  applications: '应用管理',
+  audits: '操作审计',
+  backup: '备份恢复',
+  certificates: '证书管理',
+  custom_rules: '自定义规则',
+  dashboard: '工作台',
+  delivery: '交付检查',
+  exceptions: '例外策略',
+  gateway: '网关管理',
+  ha: '主备高可用',
+  license: '授权管理',
+  login_logs: '登录日志',
+  monitoring: '运行监控',
+  network_tools: '网络诊断',
+  notification: '通知告警',
+  policies: '防护策略',
+  profile: '个人中心',
+  reports: '安全报表',
+  request_pcap: '请求抓包',
+  roles: '角色权限',
+  security: '安全防护',
+  security_events: '安全事件',
+  sessions: '会话管理',
+  system: '系统管理',
+  traffic: '流量分析',
+  upgrade: '系统升级',
+  upstreams: '源站管理',
+  users: '用户管理',
+  waf_rules: '防护规则',
+  other: '其他',
+}
+
+/** 权限模块中文名（未知模块原样返回） */
+export function formatPermissionModule(mod: string): string {
+  if (!mod) return '-'
+  return PERMISSION_MODULE_LABELS[mod] ?? PERMISSION_MODULE_LABELS[mod.trim().toLowerCase()] ?? mod
+}
+
+/* ==================== 操作审计（模块 / 动作 / 对象类型） ==================== */
+
+/** 操作审计模块（operation_audits.module） */
+export const AUDIT_MODULE_LABELS: Record<string, string> = {
+  WAF: 'WAF 防护',
+  waf: 'WAF 防护',
+  access_control: '访问控制',
+  access_control_events: '访问控制事件',
+  access_control_versions: '访问控制版本',
+  access_logs: '访问日志',
+  ai: '智能运营',
+  ai_assistant: '智能安全助手',
+  api: 'API 安全',
+  api_ai_ops: 'API AI 定时运营',
+  api_assets: 'API 资产管理',
+  api_audit: 'API 审计溯源',
+  api_authorization: 'API 授权防护',
+  api_data: 'API 敏感数据',
+  api_data_flow: 'API 数据流向',
+  api_exposure: 'API 暴露面评估',
+  api_files: 'API 文件安全',
+  api_learning: 'API 流量学习',
+  api_llm: 'LLM 安全',
+  api_scan: 'API 主动扫描',
+  api_security: 'API 动态防护',
+  apm: '应用性能监控',
+  app_configs: '应用配置',
+  applications: '应用管理',
+  auth: '认证与会话',
+  backups: '系统备份',
+  certificates: '证书管理',
+  custom_rules: '自定义规则',
+  delivery: '交付检查',
+  exceptions: '例外策略',
+  gateway: '网关管理',
+  ha: '主备高可用',
+  l7_rules: 'L7 访问控制',
+  license: '授权管理',
+  login_logs: '登录日志',
+  monitoring: '运行监控',
+  network_tools: '网络诊断',
+  notification: '通知告警',
+  policies: '防护策略',
+  protection_policies: '防护策略',
+  rate_limit: '频率限制',
+  reports: '安全报表',
+  request_pcap: '请求抓包',
+  restores: '系统恢复',
+  roles: '角色权限',
+  rule_overrides: '规则覆写',
+  security: '安全防护',
+  security_events: '安全事件',
+  security_identities: '风险身份',
+  sessions: '会话管理',
+  settings: '系统设置',
+  site_discovery: '站点发现',
+  system: '系统管理',
+  system_alerts: '系统告警',
+  system_settings: '系统设置',
+  temporary_blocks: '临时封禁',
+  trusted_proxies: '可信代理',
+  upgrades: '系统升级',
+  upstreams: '源站管理',
+  users: '用户管理',
+  vuln_intel: '漏洞情报',
+  vuln_refs: '漏洞规则关联',
+  waf_rules: 'WAF 规则',
+}
+
+/** 操作审计动作（operation_audits.action） */
+export const AUDIT_ACTION_LABELS: Record<string, string> = {
+  create: '创建',
+  CREATE: '创建',
+  update: '更新',
+  UPDATE: '更新',
+  delete: '删除',
+  DELETE: '删除',
+  read: '查看',
+  READ: '查看',
+  read_evidence: '查看证据',
+  write: '写入',
+  WRITE: '写入',
+  enable: '启用',
+  ENABLE: '启用',
+  disable: '停用',
+  DISABLE: '停用',
+  publish: '发布',
+  PUBLISH: '发布',
+  rollback: '回滚',
+  ROLLBACK: '回滚',
+  activate: '激活',
+  ACTIVATE: '激活',
+  retire: '停用归档',
+  RETIRE: '停用归档',
+  import: '导入',
+  IMPORT: '导入',
+  export: '导出',
+  EXPORT: '导出',
+  download: '下载',
+  DOWNLOAD: '下载',
+  verify: '核验',
+  VERIFY: '核验',
+  test: '测试',
+  TEST: '测试',
+  start: '启动',
+  START: '启动',
+  stop: '停止',
+  STOP: '停止',
+  pause: '暂停',
+  PAUSE: '暂停',
+  resume: '恢复',
+  RESUME: '恢复',
+  cancel: '取消',
+  CANCEL: '取消',
+  execute: '执行',
+  EXECUTE: '执行',
+  confirm: '确认',
+  CONFIRM: '确认',
+  approve: '批准',
+  APPROVED: '已批准',
+  reject: '拒绝',
+  REJECT: '拒绝',
+  REJECTED: '已拒绝',
+  release: '解封/释放',
+  RELEASE: '解封/释放',
+  revoke: '撤销',
+  REVOKE: '撤销',
+  rotate: '轮换',
+  ROTATE: '轮换',
+  acknowledge: '确认告警',
+  resolve: '解决/对账',
+  ignore: '忽略',
+  reassess: '重新评估',
+  replace: '替换',
+  merge: '合并',
+  split: '拆分',
+  bind: '绑定',
+  unbind: '解绑',
+  allow: '放行',
+  ALLOW: '放行',
+  block: '阻断',
+  BLOCK: '阻断',
+  observe: '观察',
+  OBSERVE: '观察',
+  RATE_LIMIT: '限速',
+  TEMP_BLOCK: '临时封禁',
+  REMOVE_RULE: '移除规则',
+  RESERVE: '步骤预留',
+  INSTANCE_NEW: '新建实例',
+  CONFIRM_SUCCEEDED: '确认已执行',
+  CONFIRM_NOT_EXECUTED: '确认未执行',
+  KEEP_UNKNOWN: '保持未知',
+  keep_unknown: '保持未知',
+  keep: '保留',
+  FORCE_CLOSE: '强制关闭',
+  auto_expire: '自动过期',
+  expire_object_relation: '对象关系到期',
+  executor_timeout_close: '执行器超时关闭',
+  learning_auto_complete: '学习自动完成',
+  schedule_fire: '定时触发',
+  scheduled_execute: '定时执行',
+  syslog_test: 'Syslog 连通测试',
+  threat_intel_import: '威胁情报导入',
+  update_gateway_interface_order: '调整网关接口顺序',
+  update_gateway_network_config: '更新网关网络配置',
+  kill: '强制终止',
+  kill_switch: '触发全局熔断',
+  login: '登录',
+  logout: '登出',
+  force_logout: '强制下线',
+  reset_password: '重置密码',
+  change_password: '修改密码',
+  noop: '无变更',
+  chat: '智能对话',
+  analyze: '智能分析',
+  tool_call: '工具调用',
+  draft_create: '创建草稿',
+  draft_discard: '废弃草稿',
+  recommendation_accept: '采纳建议',
+  recommendation_reject: '拒绝建议',
+  model_provider_create: '创建模型供应商',
+  model_provider_update: '更新模型供应商',
+  model_provider_delete: '删除模型供应商',
+  model_key_rotate: '轮换供应商密钥',
+  model_create: '创建模型',
+  model_update: '更新模型',
+  model_delete: '删除模型',
+  model_status: '切换模型状态',
+  model_test: '测试模型连通性',
+  model_route_update: '更新模型路由',
+  prompt_create: '创建提示词',
+  prompt_rename: '重命名提示词',
+  prompt_delete: '删除提示词',
+  prompt_version_create: '新建提示词版本',
+  prompt_test: '提示词回归测试',
+  prompt_adversarial_test: '提示词对抗测试',
+  prompt_publish: '发布提示词版本',
+  prompt_rollback: '回滚提示词版本',
+  evaluation_set_create: '创建评估集',
+  evaluation_run: '执行评估任务',
+  noise_sweep: '执行降噪扫描',
+  noise_settings_update: '更新降噪配置',
+  noise_draft_rule: '生成降噪规则草稿',
+  ai_data_retention: 'AI 数据留存清理',
+  ai_schedule_circuit_open: 'AI 定时任务熔断',
+}
+
+/** 操作审计对象类型（operation_audits.object_type） */
+export const AUDIT_OBJECT_TYPE_LABELS: Record<string, string> = {
+  access_control_event: '访问控制事件',
+  access_control_version: '访问控制版本',
+  ai_data: 'AI 数据',
+  api_ai_schedule: 'AI 定时运营计划',
+  api_endpoint: 'API 接口',
+  api_graphql_policy: 'GraphQL 防护策略',
+  api_llm_security_policy: 'LLM 安全策略',
+  api_object_relation: '对象授权关系',
+  api_scan: 'API 扫描任务',
+  api_scan_job: 'API 扫描任务',
+  api_weakness: 'API 弱点',
+  apm_diagnostic_session: 'APM 深度诊断会话',
+  apm_diagnostics: 'APM 诊断总控',
+  apm_slo: 'APM SLO 目标',
+  app_config: '应用配置',
+  application: '应用',
+  backup_job: '备份任务',
+  behavior_policy: '行为检测策略',
+  bot_policy: 'Bot 挑战策略',
+  certificate: '证书',
+  client_identity: '客户端身份',
+  config_version: '配置版本',
+  custom_rule: '自定义规则',
+  data_flow_edge: '数据流向边',
+  delivery_check: '交付检查',
+  document: '文档对象',
+  exception_policy: '例外策略',
+  gateway_node_interfaces: '网关节点网口',
+  ha_groups: '主备高可用组',
+  invoice: '账单对象',
+  ip_access_rule: 'IP 黑白名单规则',
+  jwt_trust_policy: 'JWT 信任链策略',
+  l7_access_rule: 'L7 访问控制规则',
+  license: '系统授权',
+  netdiag_job: '网络诊断任务',
+  node_network_configs: '节点网络配置',
+  notification_channel: '通知渠道',
+  ORDER: '订单对象',
+  orders: '订单对象',
+  protected_address: '保护地址',
+  protection_policy: '防护策略',
+  rate_limit_policy: 'CC 频率限制策略',
+  report_schedule: '报表定时计划',
+  request_pcap: '请求抓包证据',
+  restore_job: '恢复任务',
+  risk_policy: '身份风险策略',
+  risk_policy_override: '身份风险策略覆写',
+  role: '角色',
+  rule_override: '规则覆写',
+  security_event: '安全事件',
+  session: '登录会话',
+  setting: '系统设置',
+  site_asset_discovery: '站点资产发现',
+  system: '系统',
+  temporary_block: '临时封禁',
+  temporary_rules: '临时规则',
+  trusted_proxy: '可信代理',
+  upgrade: '系统升级',
+  upstream: '源站',
+  user: '用户',
+  users: '用户',
+  vuln_ref: '漏洞规则关联',
+}
+
+/** 操作审计模块中文展示 */
+export function formatAuditModule(mod?: string): string {
+  if (!mod) return '-'
+  return AUDIT_MODULE_LABELS[mod] ?? AUDIT_MODULE_LABELS[mod.trim().toLowerCase()] ?? mod
+}
+
+/** 操作审计动作中文展示 */
+export function formatAuditAction(action?: string): string {
+  if (!action) return '-'
+  return (
+    AUDIT_ACTION_LABELS[action] ??
+    AUDIT_ACTION_LABELS[action.trim().toLowerCase()] ??
+    AUDIT_ACTION_LABELS[action.trim().toUpperCase()] ??
+    action
+  )
+}
+
+/** 操作审计对象类型中文展示 */
+export function formatAuditObjectType(objectType?: string): string {
+  if (!objectType) return '-'
+  return (
+    AUDIT_OBJECT_TYPE_LABELS[objectType] ??
+    AUDIT_OBJECT_TYPE_LABELS[objectType.trim().toLowerCase()] ??
+    objectType
+  )
+}
+
+/* ==================== 环境标识 ==================== */
+
+/** 环境中文映射 */
+export const ENVIRONMENT_LABELS: Record<string, string> = {
+  prod: '生产',
+  production: '生产',
+  staging: '预发布',
+  preprod: '预发布',
+  uat: '预发布',
+  test: '测试',
+  testing: '测试',
+  qa: '测试',
+  dev: '开发',
+  development: '开发',
+  local: '本地',
+}
+
+/** 环境中文展示（大小写归一，未知原样返回） */
+export function formatEnvironment(env?: string): string {
+  if (!env) return '-'
+  const key = env.trim().toLowerCase()
+  return ENVIRONMENT_LABELS[key] ?? env
+}
+
+/* ==================== 错误码 / 发布失败码 / 网关决策原因码 ==================== */
+
+/** 源站连通性测试错误码（server/internal/upstreams/tester.go 全量 11 项） */
+export const UPSTREAM_ERROR_CODE_LABELS: Record<string, string> = {
+  INVALID_SCHEME: '协议非法',
+  INVALID_HOST: '主机地址非法',
+  INVALID_PORT: '端口非法',
+  SSRF_BLOCKED: 'SSRF 防护拦截',
+  REQUEST_BUILD_FAILED: '探测请求构造失败',
+  TIMEOUT: '连接超时',
+  CONNECTION_REFUSED: '连接被拒绝',
+  NO_ROUTE: '网络不可达',
+  TLS_CERTIFICATE_ERROR: 'TLS 证书校验失败',
+  TLS_HANDSHAKE_FAILED: 'TLS 握手失败',
+  CONNECTION_FAILED: '连接失败',
+}
+
+/** 配置发布/回滚失败码（server/internal/gatewayconfig） */
+export const PUBLISH_FAILURE_CODE_LABELS: Record<string, string> = {
+  REGRESSION_GATE_REJECTED: '安全回归门禁拒绝',
+  REGRESSION_GATE_UNAVAILABLE: '安全回归门禁不可用',
+  VERIFY_FAILED_ROLLED_BACK: '发布验证失败并已回滚',
+  VERIFY_FAILED: '发布验证失败',
+  PUBLISH_FAILED: '配置发布失败',
+  CONFIG_PUBLISH_FAILED: '配置发布失败',
+  VALIDATE_FAILED: '配置校验失败',
+  GENERATE_FAILED: '配置生成失败',
+  SNAPSHOT_FAILED: '快照生成失败',
+  LOCK_BUSY: '发布锁被占用',
+  LOCK_LOST: '发布锁已丢失',
+  FIREWALL_ENSURE_FAILED: '防火墙端口放行失败',
+  LICENSE_INTEGRITY_UNAVAILABLE: '授权完整性校验不可用',
+  CAPABILITY_MANIFEST_UNAVAILABLE: '节点能力清单不可用',
+  SMOKE_AUTH_INIT_FAILED: '冒烟探针鉴权初始化失败',
+  SMOKE_PROBE_FAILED: '发布冒烟验证失败',
+  ACTIVATION_FAILED: '配置激活失败',
+  SAVE_VERSION_FAILED: '保存配置版本失败',
+  SET_CURRENT_VERSION_FAILED: '切换当前版本失败',
+  SET_CURRENT_VERSION_FAILED_ROLLED_BACK: '切换当前版本失败并已回滚',
+  ROLLBACK_FAILED: '配置回滚失败',
+  ROLLBACK_PUBLISH_FAILED: '回滚下发失败',
+  ROLLBACK_VERIFY_FAILED: '回滚验证失败',
+  ROLLBACK_NODE_SYNC_FAILED: '回滚节点同步失败',
+  ROLLBACK_CONFIG_HASH_FAILED: '回滚配置哈希校验失败',
+  ROLLBACK_NODE_SYNC_STATE_PERSIST_FAILED: '回滚节点同步状态写入失败',
+  ROLLBACK_SECRET_REINJECT_FAILED: '回滚密钥重注失败',
+  AC_VERSION_SAVE_FAILED: '访问控制版本保存失败',
+  ACTIVATION_STATE_SNAPSHOT_FAILED: '激活态快照构建失败',
+  BLOCK_RESPONSE_SNAPSHOT_FAILED: '阻断页快照构建失败',
+  CUSTOM_RULES_SNAPSHOT_FAILED: '自定义规则快照构建失败',
+  EXCEPTIONS_SNAPSHOT_FAILED: '例外策略快照构建失败',
+  GUARD_OVERRIDE_GATE_FAILED: '网关规则覆写门禁校验失败',
+  GUARD_SNAPSHOT_FAILED: '网关策略快照构建失败',
+  PREVIOUS_CONFIG_READ_FAILED: '读取上一版本配置失败',
+  SOFTWARE_BYPASS_SNAPSHOT_FAILED: '软件旁路配置快照构建失败',
+  VERSION_NOT_PUBLISHED: '目标版本未发布',
+  TIMEOUT: '发布超时',
+  UNKNOWN: '未知错误',
+}
+
+/** 网关请求决策原因码（gateway/modules/jiuzhang_guard） */
+export const DECISION_REASON_CODE_LABELS: Record<string, string> = {
+  WAF_INTERCEPT: 'WAF 规则拦截',
+  L7_RESPONSE_RULE_BLOCK: 'L7 响应规则阻断',
+  L7_RESPONSE_RULE_REDIRECT: 'L7 响应规则重定向',
+  L7_RESPONSE_RULE_CUSTOM_PAGE: 'L7 响应规则自定义页面',
+  L7_RULE_BLOCK: 'L7 访问控制阻断',
+  L7_RULE_REDIRECT: 'L7 访问控制重定向',
+  L7_RULE_CUSTOM_PAGE: 'L7 访问控制自定义页面',
+  L7_ACL: 'L7 访问控制命中',
+  L7_ACTION_UNAVAILABLE: 'L7 处置动作不可用',
+  UNPARSEABLE_REMOTE_ADDR: '客户端地址无法解析',
+  PUBLISH_SMOKE_OK: '发布冒烟验证通过',
+  PUBLISH_SMOKE_AUTH_FAILED: '发布冒烟鉴权失败',
+  PUBLISH_SMOKE_METHOD_NOT_ALLOWED: '发布冒烟方法不允许',
+  PUBLISH_SMOKE_RESPONSE_FAILED: '发布冒烟响应异常',
+  MANUAL_BAN: '人工临时封禁',
+  AUTO_BAN: '自动临时封禁',
+  IP_BLACKLIST: '命中 IP 黑名单',
+  IP_IN_BLACKLIST: '命中 IP 黑名单',
+  IP_ALLOWLIST: '命中 IP 白名单',
+  PROTECTED_ADDRESS: '命中保护地址',
+  IDENTITY_MANUAL_BLOCK: '身份手工封禁',
+  RISK_POLICY_BLOCK: '身份风险策略阻断',
+  CC_LIMIT: 'CC 频率限制拦截',
+  CC_THRESHOLD_EXCEEDED: 'CC 频率超阈值',
+  CC_ENGINE_ERROR_FAIL_CLOSED: '限速引擎异常（闭环阻断）',
+  BOT_CHALLENGE: 'Bot 挑战处置',
+  BOT_LOCAL_ENDPOINT: 'Bot 挑战本地端点',
+  BOT_ROUTE_TOMBSTONE: 'Bot 保留路由墓碑',
+  BOT_STATE_UNAVAILABLE: 'Bot 状态存储不可用',
+  JWT_REJECTED: 'JWT 校验拒绝',
+  JWT_AUTH_FAILED: 'JWT 认证失败',
+  JWT_UNAVAILABLE: 'JWT 验证服务不可用',
+  MID_UNAVAILABLE: '机器身份校验不可用',
+  API_BLOCK: 'API 动态防护阻断',
+  API_POLICY_BLOCK: 'API 策略阻断',
+  API_ADMISSION_DENIED: 'API 未确认准入拦截',
+  API_RATE_LIMIT: 'API 限速拦截',
+  API_TEMP_BLOCK: 'API 临时封禁',
+}
+
+/* ==================== API 授权（BOLA/BFLA）决策与原因码 ==================== */
+
+/** 授权决策原因码（gateway/dynamic_security/detectors/authzdecide.go & authz_watermark.go） */
+export const AUTHZ_REASON_CODE_LABELS: Record<string, string> = {
+  'AUTHZ-BOLA-001': '对象级越权（他人属主）',
+  'AUTHZ-BOLA-002': '对象级授权证据不足',
+  'AUTHZ-BFLA-001': '功能级越权（角色基线违例）',
+  'AUTHZ-IDENTITY-001': '缺少可信验证身份',
+  'AUTHZ-POLICY-001': '授权策略未配置或不适用',
+  'AUTHZ-POLICY-002': '授权策略或快照不可用',
+  'AUTHZ-RELATION-001': '未找到对象属主关系',
+  'AUTHZ-TENANT-001': '跨租户越权访问',
+  'AUTHZ-TENANT-002': '租户归属信息不完整或冲突',
+  'AUTHZ-CONFLICT-001': '存在未解决的属主冲突',
+  'AUTHZ-LEASE-001': '授权快照租约已过期',
+  'AUTHZ-LEASE-002': '授权快照降级运行中',
+  'AUTHZ-CLOCK-001': '节点时钟偏差超限',
+  'AUTHZ-ROLE-001': '缺少角色声明信息',
+}
+
+/** 授权原因码中文展示 */
+export function formatAuthzReasonCode(code?: string): string {
+  if (!code) return '-'
+  return AUTHZ_REASON_CODE_LABELS[code] ?? code
+}
+
+/** 授权决策结论（ALLOW / OBSERVE_VIOLATION / VERIFIED_VIOLATION / UNKNOWN） */
+export const AUTHZ_DECISION_META: Record<string, LabelMeta> = {
+  ALLOW: { color: 'green', label: '放行' },
+  OBSERVE_VIOLATION: { color: 'orange', label: '观察违规' },
+  VERIFIED_VIOLATION: { color: 'red', label: '实断违规' },
+  UNKNOWN: { color: 'default', label: '证据不足' },
+}
+
+/** 主体来源词表（authz_enforcement.principal_source） */
+export const PRINCIPAL_SOURCE_LABELS: Record<string, string> = {
+  JWT_VERIFIED: 'JWT 可信验证',
+  JWT: 'JWT 可信验证',
+  MTLS_VERIFIED: '双向 TLS 证书验证',
+  MTLS: '双向 TLS 证书验证',
+  SESSION: '会话凭据',
+  API_KEY: 'API 密钥',
+  OAUTH: 'OAuth 凭据',
+  MACHINE_IDENTITY: '机器身份签名',
+  UNVERIFIED: '未验证',
+  ANONYMOUS: '匿名',
+}
+
+/* ==================== 攻击活动 / 风险身份 / 凭据 ==================== */
+
+/**
+ * 格式化疑似自动化攻击判定依据（stages=RECON,DISCOVERY,EXPLOIT;indicator=HEADLESS）。
+ * 复用 identitySecurity.ts 的 ATTACK_STAGE_META 与 SIGNAL_META。
+ */
+export function formatAutomationBasis(basis?: string): string {
+  if (!basis) return ''
+  const trimmed = basis.trim()
+  if (!trimmed) return ''
+  const segments = trimmed.split(';').map((s) => s.trim()).filter(Boolean)
+  const formatted: string[] = []
+  let recognized = false
+  for (const seg of segments) {
+    const eqIdx = seg.indexOf('=')
+    if (eqIdx === -1) {
+      formatted.push(seg)
+      continue
+    }
+    const key = seg.slice(0, eqIdx).trim().toLowerCase()
+    const rawVal = seg.slice(eqIdx + 1).trim()
+    if (key === 'stages') {
+      recognized = true
+      const labels = rawVal
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean)
+        .map((v) => ATTACK_STAGE_META[v]?.label ?? v)
+      formatted.push(`命中阶段：${labels.join('、') || '-'}`)
+    } else if (key === 'indicator' || key === 'indicators') {
+      recognized = true
+      const labels = rawVal
+        .split(',')
+        .map((v) => v.trim())
+        .filter(Boolean)
+        .map((v) => SIGNAL_META[v]?.label ?? v)
+      formatted.push(`指示信号：${labels.join('、') || '-'}`)
+    } else {
+      formatted.push(seg)
+    }
+  }
+  return recognized ? formatted.join('；') : trimmed
+}
+
+/** 事件来源表中文映射 */
+export const SOURCE_TABLE_LABELS: Record<string, string> = {
+  identity_behavior_events: '身份行为事件',
+  access_control_events: '访问控制事件',
+  security_events: 'WAF 安全事件',
+  api_runtime_events: 'API 运行时事件',
+}
+
+/** 身份凭据类型（gateway identitybehavior.CredentialType） */
+export const CREDENTIAL_TYPE_META: Record<string, LabelMeta> = {
+  JWT: { color: 'blue', label: 'JWT 令牌' },
+  API_KEY: { color: 'geekblue', label: 'API 密钥' },
+  SESSION: { color: 'purple', label: '会话凭据' },
+  COOKIE: { color: 'cyan', label: 'Cookie' },
+  OAUTH: { color: 'green', label: 'OAuth 令牌' },
+  CUSTOM: { color: 'orange', label: '自定义凭据' },
+  MTLS: { color: 'gold', label: '双向 TLS 证书' },
+}
+
+/** 身份置信度来源（server/internal/identityevents/sanitize.go validIdentityEvidence） */
+export const CONFIDENCE_SOURCE_LABELS: Record<string, string> = {
+  'credential:mtls_verified': '双向 TLS 证书验证',
+  'credential:api_key_observed': 'API 密钥观测',
+  'credential:oauth_unverified': 'OAuth 凭据（未验签）',
+  'credential:oauth': 'OAuth 凭据',
+  'credential:jwt': 'JWT 凭据',
+  'credential:subject': '凭据主体声明',
+  'credential:session': '会话凭据',
+  'credential:cookie': 'Cookie 凭据',
+  'credential:custom': '自定义凭据',
+  browser_fingerprint: '浏览器指纹',
+  'user_agent:bot': '自动化客户端特征',
+  'user_agent:browser': '浏览器特征',
+  client_ip: '客户端 IP',
+  jwt_verified: 'JWT 可信验证',
+  tls_fingerprint: 'TLS 指纹',
+}
+
+/** 设备类型中文映射 */
+export const DEVICE_TYPE_LABELS: Record<string, string> = {
+  DESKTOP: '桌面设备',
+  desktop: '桌面设备',
+  MOBILE: '移动设备',
+  mobile: '移动设备',
+  TABLET: '平板设备',
+  tablet: '平板设备',
+  BOT: '自动化客户端',
+  bot: '自动化客户端',
+  SERVER: '服务器',
+  server: '服务器',
+  API_CLIENT: 'API 客户端',
+  api_client: 'API 客户端',
+  CLI: '命令行工具',
+  cli: '命令行工具',
+  BROWSER: '浏览器',
+  browser: '浏览器',
+  IOT: '物联网设备',
+  iot: '物联网设备',
+  UNKNOWN: '未知',
+  unknown: '未知',
+}
+
+/* ==================== 系统升级预检 / 运行监控指标 ==================== */
+
+/** 系统升级预检项名称（server/internal/upgrades/precheck.go 全量 11 项） */
+export const PRECHECK_NAME_LABELS: Record<string, string> = {
+  version_match: '版本兼容性检查',
+  disk_space: '磁盘空间检查',
+  postgres_reachable: '数据库连接检查',
+  valkey_reachable: '缓存服务连接检查',
+  no_active_tasks: '进行中任务检查',
+  migration_compat: '数据库迁移兼容性检查',
+  master_key: '主密钥就绪检查',
+  recent_backup: '近期备份检查',
+  no_critical_alerts: '严重告警检查',
+  package_file: '升级包文件检查',
+  package_artifact: '升级包产物校验',
+}
+
+/** 系统运行监控组件指标键（server/internal/runtimehealth/health.go） */
+export const COMPONENT_METRIC_LABELS: Record<string, string> = {
+  config_hash: '配置哈希',
+  goroutines: '协程数',
+  heap_alloc_bytes: '堆内存分配',
+  memory_sys_bytes: '系统内存占用',
+  uptime_seconds: '运行时长（秒）',
+  database_size_bytes: '数据库大小',
+  db_connections: '数据库连接数',
+  db_capacity_percent: '数据库容量占比',
+  used_memory_bytes: '已用内存',
+  connected_clients: '已连接客户端数',
+  dbsize_keys: '缓存键数量',
+  max_lag_seconds: '最大采集延迟（秒）',
+  checkpoints: '采集检查点',
+  upstream_total: '源站总数',
+  upstream_healthy: '健康源站数',
+  upstream_unhealthy: '异常源站数',
+  upstream_failures: '异常源站明细',
+  min_days_remaining: '最短证书剩余天数',
+  expiring_count: '即将过期证书数',
+  expired_count: '已过期证书数',
+  disk_total_bytes: '磁盘总空间',
+  disk_free_bytes: '磁盘可用空间',
+  disk_free_percent: '磁盘可用比例',
+  guard_log_stale_seconds: '访问控制日志滞后（秒）',
+  fd_open_files: '已打开文件句柄数',
+  fd_max_open_files: '最大文件句柄数',
+  fd_usage_percent: '文件句柄使用率',
+  api_last_event_at: 'API 最近事件时间',
+  api_event_stale_seconds: 'API 事件滞后（秒）',
+  api_events_total: 'API 事件总数',
+  api_last_sample_at: 'API 最近样本时间',
+  access_log_stale_seconds: '访问日志滞后（秒）',
+  cpu_usage_percent: 'CPU 使用率',
+  memory_usage_percent: '内存使用率',
+  cpu_percent: 'CPU 使用率',
+  memory_percent: '内存使用率',
+  memory_usage_bytes: '内存占用',
+  resource_sampled_at: '资源采样时间',
+  resource_sample_error: '资源采样错误',
+  runtime_metrics_error: '运行指标采集错误',
+  tcp_connections_active: '活跃 TCP 连接数',
+  tcp_connections_accepted_total: '累计接入 TCP 连接数',
+  tcp_connections_accepted_per_second: '每秒新建 TCP 连接数',
+  http_requests_in_flight: '处理中 HTTP 请求数',
+  http_requests_total: '累计 HTTP 请求数',
+  http_sessions_active: '活跃 HTTP 会话数',
+  http_sessions_new_total: '累计新建会话数',
+  http_sessions_overflow_total: '会话表溢出次数',
+  software_bypass_enabled: '自动软件旁路开关',
+  software_bypass_active: '软件旁路状态',
+  software_bypass_reason: '软件旁路原因',
+  software_bypass_cpu_threshold_percent: '旁路 CPU 阈值',
+  software_bypass_memory_threshold_percent: '旁路内存阈值',
+  software_bypass_transitions_total: '软件旁路切换次数',
+  software_bypass_requests_total: '软件旁路透传请求数',
+  active_connections: '活跃连接数',
+  version: '版本',
+  hit_rate: '缓存命中率',
+}
+
+/* ==================== 模型成熟度 / WAF 变量 / 参数位置与约束 ==================== */
+
+/** 三微模型成熟度指标键（server/internal/apisecurity/maturity.go 全量 18 项） */
+export const MODEL_MATURITY_METRIC_LABELS: Record<string, string> = {
+  parameters_total: '参数总数',
+  with_recommended: '已产出推荐约束',
+  with_confirmed: '已人工确认约束',
+  with_statistics: '含统计画像参数',
+  enforced_formal_constraints: '已下发生效约束',
+  events_24h: '近 24 小时事件数',
+  events_with_identity_24h: '近 24 小时带身份事件',
+  identity_coverage_24h: '近 24 小时身份覆盖率',
+  distinct_identities_24h: '近 24 小时独立身份数',
+  profiles_total: '行为画像总数',
+  profiles_with_hour_dist: '含时段分布画像',
+  endpoints_with_profiles: '已覆盖端点数',
+  endpoints_total: '端点总数',
+  endpoint_coverage: '端点画像覆盖率',
+  object_models_total: '对象模型总数',
+  endpoints_with_object_models: '含对象模型端点数',
+  object_endpoint_coverage: '对象模型覆盖率',
+  resource_signal_events_24h: '近 24 小时对象信号事件',
+}
+
+/** Coraza/CRS 规则匹配变量（全量 18 项） */
+export const CORAZA_VARIABLE_LABELS: Record<string, string> = {
+  ARGS: '全部参数',
+  ARGS_GET: '查询字符串参数',
+  ARGS_POST: '表单请求体参数',
+  ARGS_NAMES: '全部参数名',
+  QUERY_STRING: '查询字符串',
+  REQUEST_URI: '请求 URI',
+  REQUEST_METHOD: '请求方法',
+  REQUEST_HEADERS: '请求头值',
+  REQUEST_HEADERS_NAMES: '请求头名称',
+  REQUEST_COOKIES: '请求 Cookie',
+  REQUEST_BODY: '请求体',
+  REQUEST_FILENAME: '请求路径',
+  REQUEST_BASENAME: '请求文件名',
+  REMOTE_ADDR: '客户端地址',
+  HTTP_USER_AGENT: 'User-Agent',
+  CONTENT_TYPE: '内容类型',
+  REQUEST_PROTOCOL: '请求协议版本',
+  REQUEST_LINE: '请求行',
+}
+
+/** 参数/敏感字段位置（兼容大小写） */
+export const LOCATION_LABELS: Record<string, string> = {
+  query: '查询参数',
+  QUERY: '查询参数',
+  json: 'JSON 请求体',
+  JSON: 'JSON 请求体',
+  form: '表单数据',
+  FORM: '表单数据',
+  xml: 'XML 数据',
+  XML: 'XML 数据',
+  header: '请求头',
+  HEADER: '请求头',
+  cookie: 'Cookie',
+  COOKIE: 'Cookie',
+  path: '路径参数',
+  PATH: '路径参数',
+  body: '请求体',
+  BODY: '请求体',
+  response_body: '响应体',
+  RESPONSE_BODY: '响应体',
+  response_header: '响应头',
+  RESPONSE_HEADER: '响应头',
+  file: '文件内容',
+  FILE: '文件内容',
+}
+
+/** 位置标签格式化（大小写容错，未知原样返回） */
+export function formatLocation(loc?: string): string {
+  if (!loc) return '-'
+  const trimmed = loc.trim()
+  return LOCATION_LABELS[trimmed] ?? LOCATION_LABELS[trimmed.toLowerCase()] ?? loc
+}
+
+/** 参数约束属性中文名 */
+export const PARAM_CONSTRAINT_LABELS: Record<string, string> = {
+  min_length: '最小长度',
+  max_length: '最大长度',
+  minimum: '最小值',
+  maximum: '最大值',
+  enum: '枚举值',
+  enum_suspected: '疑似枚举',
+  distinct_count: '去重取值数',
+  format_candidate: '候选格式',
+  format_candidate_ratio: '候选格式占比',
+  pattern: '正则模式',
+  nullable: '允许为空',
+  allow_empty: '允许空串',
+  required: '是否必填',
+}
+
+/** API 生命周期事件状态（api_lifecycle_events） */
+export const API_LIFECYCLE_STATUS_META: Record<string, LabelMeta> = {
+  DISCOVERED: { color: 'blue', label: '已发现' },
+  CONFIRMED: { color: 'green', label: '已确认' },
+  IGNORED: { color: 'default', label: '已忽略' },
+  DEPRECATED: { color: 'orange', label: '已废弃' },
+  ZOMBIE: { color: 'purple', label: '僵尸接口' },
+  MERGED: { color: 'cyan', label: '已合并' },
+  SPLIT: { color: 'geekblue', label: '已拆分' },
+  LEARNING: { color: 'processing', label: '学习中' },
+  PAUSED: { color: 'gold', label: '已暂停' },
+  LEARNED: { color: 'green', label: '已完成学习' },
+}
+
+/* ==================== 请求抓包（PCAP） ==================== */
+
+/** PCAP 采集点（server/internal/requestpcap） */
+export const PCAP_CAPTURE_POINT_LABELS: Record<string, string> = {
+  GATEWAY_EGRESS: '网关出口',
+  GATEWAY_INGRESS: '网关入口',
+  HOST_NIC: '宿主网卡',
+}
+
+/** PCAP 关联匹配依据（server/internal/requestpcap/types.go 全量 6 项） */
+export const PCAP_MATCH_BASIS_LABELS: Record<string, string> = {
+  HTTP1_REQUEST_ID: 'HTTP/1 请求 ID 匹配',
+  HTTP1_SEQUENCE: 'HTTP/1 连接序号匹配',
+  H2_STREAM: 'HTTP/2 流标识匹配',
+  SOCKET_COOKIE: '套接字标识匹配',
+  CONNECTION_EPOCH: '连接周期匹配',
+  AGENT_FLOW_ID: '探针流标识匹配',
+}
+
+/** PCAP 校验错误码（server/internal/requestpcap/service.go & grants.go） */
+export const PCAP_VERIFY_ERROR_LABELS: Record<string, string> = {
+  INTEGRITY_FAILED: '完整性校验失败',
+  DECRYPTION_FAILED: '解密失败',
+  KEY_UNAVAILABLE: '解密密钥不可用',
+  MANIFEST_INVALID: '证据清单格式非法',
+  STORAGE_UNAVAILABLE: '证据存储不可用',
+  EVIDENCE_EXPIRED: '抓包证据已过期',
+  ARTIFACT_MISSING: '抓包文件缺失',
+  HASH_MISMATCH: '文件哈希不匹配',
+  SIGNATURE_INVALID: '签名校验失败',
+}
+
+/* ==================== 数据流向 ==================== */
+
+/** 数据流向证据类型（server/internal/apidataflow/builder.go） */
+export const DATA_FLOW_EVIDENCE_TYPE_LABELS: Record<string, string> = {
+  OBSERVED_TRACE: '调用链实测观测',
+  OBSERVED_SERVER: '服务端实测观测',
+  OBSERVED_MQ: '消息队列实测观测',
+  OBSERVED: '运行时实测观测',
+  PAIRED_CLIENT: '客户端配对观测',
+  PAIRED_SERVER: '服务端配对观测',
+  INFERRED: '流量推断',
+  DECLARED: '配置声明',
+}
+
+/** 数据流向字段命中方式 */
+export const DATA_FLOW_MATCH_LABELS: Record<string, string> = {
+  OBSERVED: '实测命中',
+  DECLARED: '声明匹配',
+  INFERRED: '规则推断',
+  MASKED: '已脱敏',
+  UNMASKED: '未脱敏',
+  PARTIAL: '部分命中',
+}
+
+/** 数据流向客户端地址来源 */
+export const CLIENT_ADDRESS_SOURCE_LABELS: Record<string, string> = {
+  TRUSTED_PROXY: '可信代理头',
+  DIRECT_PEER: '直连对端地址',
+  UNTRUSTED_CLIENT_SOURCE: '客户端来源不可信',
+  X_FORWARDED_FOR: 'X-Forwarded-For 头',
+  X_REAL_IP: 'X-Real-IP 头',
+  FORWARDED: 'Forwarded 头',
+  REMOTE_ADDR: '对端连接地址',
+  CONNECTION: '直连连接',
+  UNKNOWN: '未知',
+}
+
+/* ==================== 强流程（Strong Flow） ==================== */
+
+/** 强流程事件动作（server/internal/strongflow/instance_events.go & types.go） */
+export const STRONG_FLOW_ACTION_LABELS: Record<string, string> = {
+  RESERVE: '步骤预留',
+  COMMIT: '步骤提交',
+  RELEASE: '步骤释放',
+  EXPIRE: '租约到期接管',
+  RESOLVE: '人工对账处置',
+  INSTANCE_NEW: '实例创建',
+  INSTANCE_CONFIRMED: '实例确认完成',
+  INSTANCE_INDETERMINATE: '实例转未知待对账',
+  INSTANCE_CANCELLED: '实例已取消',
+  INSTANCE_FAILED: '实例明确失败',
+}
+
+/** 强流程实例状态语义（server/internal/strongflow/instances.go） */
+export const STRONG_FLOW_STATUS_SEMANTICS_LABELS: Record<string, string> = {
+  IN_PROGRESS: '进行中',
+  SUCCEEDED: '已确认完成',
+  UNKNOWN_NOT_CONFIRMED: '未知，不显示安全通过',
+  CANCELLED: '已取消',
+  FAILED: '明确业务失败',
+}
+
+/** 强流程原因码（gateway flowguard & server strongflow） */
+export const STRONG_FLOW_REASON_CODE_LABELS: Record<string, string> = {
+  'FLOW-RESERVE-001': '步骤预留违规',
+  'FENCE-001': 'Fencing 令牌已过期',
+  'IDEMPOTENT-CONFLICT-001': '同幂等键参数冲突',
+  'UNKNOWN-001': '证据不足或依赖不可用',
+  'FLOW-ACCEPTED-202': '异步请求已受理待完成',
+  'FLOW-STATE-001': '非法状态机转换',
+  'FLOW-ORDER-001': '步骤事件乱序到达',
+  'FLOW-RESOLVE-001': '管理面人工对账处置',
+}
+
+/* ==================== LLM 安全 / 学习样本排除 / 文件敏感类型 ==================== */
+
+/** LLM 检测规则元数据（gateway/dynamic_security/detectors/llm*.go & mcp.go） */
+export const LLM_RULE_META: Record<string, LabelMeta> = {
+  'llm.prompt_injection': { color: 'red', label: '提示词注入' },
+  'llm.unauthorized_model': { color: 'orange', label: '未授权模型调用' },
+  'llm.input_content_violation': { color: 'volcano', label: '输入内容违规' },
+  'llm.output_content_violation': { color: 'volcano', label: '输出内容违规' },
+  'llm.output_pii_detected': { color: 'magenta', label: '输出含敏感个人信息' },
+  'llm.pii_detected': { color: 'magenta', label: '输入含敏感个人信息' },
+  'llm.topic_violation': { color: 'orange', label: '话题违规' },
+  'llm.prompt_size_exceeded': { color: 'gold', label: '提示词长度超限' },
+  'llm.output_token_budget_exceeded': { color: 'gold', label: '输出令牌预算超限' },
+  'llm.output_not_inspected': { color: 'default', label: '输出未检测' },
+  'llm.output_partially_inspected': { color: 'blue', label: '输出部分检测' },
+  'llm.mcp_unknown_method': { color: 'cyan', label: 'MCP 未知扩展方法' },
+  'llm.mcp_sensitive_arg': { color: 'magenta', label: 'MCP 参数含敏感信息' },
+}
+
+/** 学习样本排除原因（server/internal/apiruntime/samples.go & apiassets/learning_automation.go） */
+export const LEARNING_EXCLUDE_REASON_LABELS: Record<string, string> = {
+  blocked_by_decision: '已被安全决策阻断或限速',
+  waf_hit: '命中 WAF 安全规则',
+  schema_deviation: '存在模型结构偏离',
+  scanner_traffic: '主动扫描流量',
+  source_ratio_cap: '超出单一来源占比上限',
+  unspecified: '未指定原因',
+  CONTENT_TYPE: '不支持的内容类型',
+  STATUS_CODE: '非正常响应状态码',
+  METHOD_EXCLUDED: '方法不在学习范围',
+  BODY_TOO_LARGE: '请求体超限',
+  PARSE_ERROR: '报文解析失败',
+}
+
+/** 学习样本排除原因格式化（动态支持 response_status_4xx / response_status_403 等） */
+export function formatLearningExcludeReason(reason?: string): string {
+  if (!reason) return '-'
+  const trimmed = reason.trim()
+  if (!trimmed) return '-'
+  if (LEARNING_EXCLUDE_REASON_LABELS[trimmed]) {
+    return LEARNING_EXCLUDE_REASON_LABELS[trimmed]
+  }
+  const statusMatch = /^response_status_(\d{3}|\dxx)$/i.exec(trimmed)
+  if (statusMatch) {
+    return `响应状态码 ${statusMatch[1].toLowerCase()}`
+  }
+  return trimmed
+}
+
+/** 文件敏感内容数据类型 */
+export const FILE_SENSITIVE_TYPE_LABELS: Record<string, string> = {
+  phone: '手机号',
+  PHONE: '手机号',
+  id_card: '身份证号',
+  ID_CARD: '身份证号',
+  CN_ID: '身份证号',
+  bank_card: '银行卡号',
+  BANK_CARD: '银行卡号',
+  email: '邮箱',
+  EMAIL: '邮箱',
+  credential: '凭据口令',
+  CREDENTIAL: '凭据口令',
+  password: '密码口令',
+  PASSWORD: '密码口令',
+  token: '令牌密钥',
+  TOKEN: '令牌密钥',
+  jwt: 'JWT 令牌',
+  JWT: 'JWT 令牌',
+  api_key: 'API 密钥',
+  API_KEY: 'API 密钥',
+  private_key: '私钥',
+  PRIVATE_KEY: '私钥',
+  secret: '密钥',
+  SECRET: '密钥',
+  name: '姓名',
+  NAME: '姓名',
+  address: '住址',
+  ADDRESS: '住址',
+  passport: '护照号',
+  PASSPORT: '护照号',
+  credit_card: '信用卡号',
+  CREDIT_CARD: '信用卡号',
+  ip_addr: 'IP 地址',
+  IP_ADDR: 'IP 地址',
+}
+
+/* ==================== 备份分组 / 安全回归 / 规范格式 ==================== */
+
+/** 备份表分组（server/internal/backups/tables.go 全量 6 组） */
+export const BACKUP_GROUP_LABELS: Record<string, string> = {
+  DATABASE: '基础数据与拓扑',
+  CERTIFICATE: '证书与密钥',
+  CONFIG: '策略与配置',
+  LEARNING: '学习与模型中间态',
+  FACT: '资产与事实快照',
+  AUDIT: '审计日志归档',
+}
+
+/** 安全回归用例类别（family） */
+export const REG_FAMILY_LABELS: Record<string, string> = {
+  sqli: 'SQL 注入',
+  xss: 'XSS 跨站脚本',
+  rce: '远程代码执行',
+  cmdi: '命令注入',
+  lfi: '本地文件包含',
+  rfi: '远程文件包含',
+  ssrf: 'SSRF 服务端请求伪造',
+  xxe: 'XXE 外部实体注入',
+  ssti: '模板注入',
+  path_traversal: '路径穿越',
+  scanner: '扫描器探测',
+  protocol: '协议违规',
+  bot: 'Bot 挑战',
+  cc: 'CC 频率限制',
+  l7: 'L7 访问控制',
+  jwt: 'JWT 信任链',
+  authz: '授权防护',
+  bola: '对象级越权',
+  bfla: '功能级越权',
+  schema: 'API 模型校验',
+  sensitive: '敏感数据检测',
+  file: '文件安全',
+  llm: 'LLM 安全',
+  mcp: 'MCP 安全',
+  benign: '正常业务流量',
+  false_positive: '误报回归',
+  other: '其他',
+}
+
+/** 安全回归差异摘要键名（diff_summary） */
+export const DIFF_SUMMARY_KEY_LABELS: Record<string, string> = {
+  expected_action: '预期动作',
+  observed_action: '实际动作',
+  action_change: '动作变化',
+  expected_status: '预期状态码',
+  observed_status: '实际状态码',
+  expected_rule_id: '预期规则 ID',
+  observed_rule_id: '实际命中规则',
+  matched_rules: '命中规则列表',
+  evidence: '判定证据',
+  reason: '差异原因',
+  note: '备注',
+  message: '说明',
+  latency_ms: '耗时（毫秒）',
+}
+
+/** API 规范导入文档格式（server/internal/apisecurity/spec_version.go & spec_formats.go） */
+export const SPEC_FORMAT_LABELS: Record<string, string> = {
+  openapi3: 'OpenAPI 3.x',
+  OPENAPI3: 'OpenAPI 3.x',
+  openapi: 'OpenAPI',
+  swagger2: 'Swagger 2.0',
+  SWAGGER2: 'Swagger 2.0',
+  postman: 'Postman 集合',
+  POSTMAN: 'Postman 集合',
+  jsonschema: 'JSON Schema',
+  JSONSCHEMA: 'JSON Schema',
+  graphql: 'GraphQL SDL',
+  GRAPHQL: 'GraphQL SDL',
+  protobuf: 'Protobuf 描述',
+  PROTOBUF: 'Protobuf 描述',
+}
+
+/* ==================== AI 智能运营 ==================== */
+
+/** AI 审计动作（server/internal/aihandlers & aiaudit） */
+export const AI_AUDIT_ACTION_LABELS: Record<string, string> = {
+  chat: '智能对话',
+  analyze: '智能分析',
+  tool_call: '工具调用',
+  draft_create: '创建策略草稿',
+  draft_discard: '废弃策略草稿',
+  recommendation_accept: '采纳建议草稿',
+  recommendation_reject: '拒绝建议草稿',
+  model_provider_create: '创建模型供应商',
+  model_provider_update: '更新模型供应商',
+  model_provider_delete: '删除模型供应商',
+  model_key_rotate: '轮换供应商密钥',
+  model_create: '创建模型配置',
+  model_update: '更新模型配置',
+  model_delete: '删除模型配置',
+  model_status: '切换模型状态',
+  model_test: '测试模型连通性',
+  model_route_update: '更新模型路由',
+  prompt_create: '创建提示词',
+  prompt_rename: '重命名提示词',
+  prompt_delete: '删除提示词',
+  prompt_version_create: '新建提示词版本',
+  prompt_test: '提示词回归测试',
+  prompt_adversarial_test: '提示词对抗测试',
+  prompt_publish: '发布提示词版本',
+  prompt_rollback: '回滚提示词版本',
+  evaluation_set_create: '创建评估集',
+  evaluation_run: '执行评估任务',
+  noise_sweep: '执行事件降噪',
+  noise_settings_update: '更新降噪配置',
+  noise_draft_rule: '生成降噪规则草稿',
+  ai_data_retention: 'AI 数据留存清理',
+  ai_schedule_circuit_open: '定时任务连续失败熔断',
+  scheduled_execute: '定时运营任务执行',
+}
+
+/** AI 建议草稿目标类型 */
+export const AI_DRAFT_TARGET_TYPE_LABELS: Record<string, string> = {
+  EXCEPTION: '例外策略',
+  BLACKLIST: 'IP 黑名单',
+  CC_POLICY: 'CC 频率策略',
+  CUSTOM_RULE: '自定义规则',
+  RULE: '防护规则',
+  POLICY: '防护策略',
+  APPLICATION: '应用',
+  ENDPOINT: 'API 端点',
+  REPORT: '安全报告',
+  GLOBAL: '全局',
+}
+
+/** AI 记忆来源类型 */
+export const AI_MEMORY_SOURCE_LABELS: Record<string, string> = {
+  MANUAL: '人工录入',
+  CHAT: '对话沉淀',
+  ANALYSIS: '分析提取',
+  TASK: '任务生成',
+  SYSTEM: '系统内置',
+  FEEDBACK: '用户反馈',
+  IMPORT: '批量导入',
+}
+
+/** AI 提示词发布门状态 */
+export const AI_PROMPT_GATE_STATE_META: Record<string, LabelMeta> = {
+  PASSED: { color: 'green', label: '回归通过' },
+  ADVERSARIAL_PASSED: { color: 'green', label: '对抗通过' },
+  FAILED: { color: 'red', label: '回归失败' },
+  ADVERSARIAL_FAILED: { color: 'red', label: '对抗失败' },
+  PENDING: { color: 'default', label: '待执行' },
+  NOT_RUN: { color: 'default', label: '未执行' },
+  未执行: { color: 'default', label: '未执行' },
+}
+
+/** AI 提示词状态 */
+export const AI_PROMPT_STATUS_META: Record<string, LabelMeta> = {
+  DRAFT: { color: 'default', label: '草稿' },
+  ACTIVE: { color: 'green', label: '已发布' },
+  PUBLISHED: { color: 'green', label: '已发布' },
+  ARCHIVED: { color: 'default', label: '已归档' },
+  DISABLED: { color: 'orange', label: '已停用' },
+}
+
+/** AI 证据来源 / 工具编码（server/internal/aitools 全量注册表） */
+export const AI_TOOL_SOURCE_LABELS: Record<string, string> = {
+  'access_control_log.search': '访问控制/CC 事件查询',
+  'access_log.search': '访问日志摘要查询',
+  'access_rule.search': '黑白名单查询',
+  'api_asset.get': 'API 接口详情',
+  'api_asset.search': 'API 接口搜索',
+  'api_classification.explain': 'API 分类解释',
+  'api_graph.query': 'API 调用图谱查询',
+  'api_learning.status': 'API 学习状态',
+  'api_model.diff': 'API 模型版本差异',
+  'api_model.get': 'API 模型版本详情',
+  'api_parameter.get': 'API 参数模型列表',
+  'api_posture.get': 'API 安全态势',
+  'api_risk.search': 'API 风险发现搜索',
+  'api_runtime_policy.get': 'API 运行时策略查询',
+  'api_runtime.statistics': 'API 运行时统计',
+  'api_sensitive.search': '敏感数据类型搜索',
+  'api_spec.get': 'API 规范查询',
+  'api_weakness.search': 'API 弱点搜索',
+  'application.get': '应用详情',
+  'application.search': '应用查询',
+  'audit_log.search': '操作审计查询',
+  'cc_log.search': 'CC 日志查询',
+  'certificate.get_metadata': '证书元数据',
+  'domain.get': '域名查询',
+  'draft.blacklist.create': '黑名单草稿',
+  'draft.cc_policy.create': 'CC 策略草稿',
+  'draft.custom_rule.create': '自定义规则草稿',
+  'draft.exception.create': '例外策略草稿',
+  'draft.report_summary.create': '报告总结草稿',
+  'exception.get': '例外策略详情',
+  'exception.search': '例外策略查询',
+  'gateway.get_status': '网关状态',
+  'noise_cluster.get': '降噪簇详情',
+  'noise_cluster.search': '降噪簇查询',
+  'policy.diff': '配置版本差异',
+  'policy.get': '防护策略查询',
+  'policy.version': '配置版本查询',
+  'rate_limit_policy.search': 'CC 策略查询',
+  'rate_limit_statistics.get': 'CC 频率限制统计',
+  'request_trace.get': 'Request ID 链路追踪',
+  'rule.get': 'WAF 规则详情',
+  'rule.hit_statistics': '规则命中统计',
+  'rule.search': 'WAF 规则查询',
+  'security_event.disposition_summary': '事件处置摘要',
+  'security_event.get': '安全事件详情',
+  'security_event.related': '关联事件',
+  'security_event.search': '安全事件查询',
+  'security_event.statistics': '事件统计',
+  'statistics.attack_trend': '攻击趋势统计',
+  'statistics.false_positive': '误报统计',
+  'statistics.runtime': '运行统计',
+  'statistics.security_overview': '安全概览统计',
+  'statistics.top_applications': '应用攻击排行',
+  'statistics.top_rules': '规则命中排行',
+  'statistics.top_source_ips': '攻击源 IP 排行',
+  'statistics.top_uris': 'URI 攻击排行',
+  'system_log.search': '系统告警查询',
+  'temporary_block.search': '临时封禁查询',
+  'trusted_proxy.get_summary': '可信代理摘要',
+  'upstream.get': '源站查询',
+  'waf_log.search': 'WAF 日志查询',
+}
+
+/** AI 定时运营结构化报告字段（server/internal/apiops/source.go） */
+export const AI_REPORT_FIELD_LABELS: Record<string, string> = {
+  total_endpoints: '端点总数',
+  status_counts: '状态分布',
+  new_in_window: '窗口内新增数',
+  confirmed_in_window: '窗口内确认数',
+  shadow_open: '未闭环影子 API 数',
+  zombie_open: '未闭环僵尸 API 数',
+  new_endpoints: '新增端点清单',
+  open_total: '未闭环总数',
+  items: '重点清单',
+  no_due_date: '未设期限数',
+  overdue: '已超期清单',
+  due_soon: '临近到期清单',
+  due_within_days: '临近到期窗口（天）',
+  open_high_total: '高危及以上未闭环数',
+  open_critical: '严重未闭环数',
+  type_distribution: '类型分布',
+  sensitive_endpoint_count: '涉敏端点数',
+  sensitive_field_count: '涉敏字段数',
+  new_fields_in_window: '窗口内新增涉敏字段数',
+  new_fields: '新增涉敏字段清单',
+  id: '标识',
+  endpoint_key: '接口标识',
+  method: '请求方法',
+  path: '请求路径',
+  asset_status: '资产状态',
+  first_seen_at: '首次发现时间',
+  last_seen_at: '最近发现时间',
+  finding_type: '发现类型',
+  severity: '严重级别',
+  status: '状态',
+  title: '标题',
+  count: '计数',
+  weakness_code: '弱点编码',
+  weakness_name: '弱点名称',
+  owner: '负责人',
+  due_date: '整改期限',
+  direction: '方向',
+  data_type: '数据类型',
+  first_seen: '首次发现',
+  type: '类型',
+}
+
+/* ==================== APM 深度诊断与特殊端点 ==================== */
+
+/** APM 诊断会话停止原因（server/internal/apm/diagnostics_types.go） */
+export const APM_DIAG_STOP_REASON_LABELS: Record<string, string> = {
+  manual: '手动停止',
+  MANUAL: '手动停止',
+  expired: '到期自动停止',
+  EXPIRED: '到期自动停止',
+  'kill switch': '全局熔断终止',
+  kill_switch: '全局熔断终止',
+  KILL_SWITCH: '全局熔断终止',
+}
+
+/** APM 诊断审计动作（server/internal/apm/diagnostics_handler.go） */
+export const APM_DIAG_AUDIT_ACTION_LABELS: Record<string, string> = {
+  create: '创建诊断会话',
+  stop: '停止诊断会话',
+  kill: '强制终止诊断会话',
+  kill_switch: '触发全局诊断熔断',
+}
+
+/** APM 端点特殊聚合桶 */
+export const APM_ENDPOINT_SPECIAL_LABELS: Record<string, string> = {
+  __UNCLASSIFIED__: '未归类端点',
+  __OTHER__: '其它（超出 Top-N）',
+}
+
+/** APM 端点展示（处理特殊桶） */
+export function formatApmEndpoint(ep?: string): string {
+  if (!ep) return '-'
+  return APM_ENDPOINT_SPECIAL_LABELS[ep] ?? ep
+}
+
+/* ==================== API 多维分类词表 ==================== */
+
+/** API 用途分类（PURPOSE） */
+export const CLASSIFICATION_PURPOSE_LABELS: Record<string, string> = {
+  AUTH: '身份认证',
+  TRADE: '交易支付',
+  FILE: '文件传输',
+  ADMIN: '管理运维',
+  USER_MGMT: '用户管理',
+  QUERY: '查询检索',
+  GENERAL: '通用业务',
+}
+
+/** API 访问类型（ACCESS） */
+export const CLASSIFICATION_ACCESS_LABELS: Record<string, string> = {
+  READ: '只读',
+  WRITE: '写入',
+  READ_WRITE: '读写',
+  ADMIN: '管理',
+}
+
+/** API 操作动作（ACTION，完整覆盖 server/internal/apiassets/classify.go 全部 44 项） */
+export const CLASSIFICATION_ACTION_LABELS: Record<string, string> = {
+  TOKEN_REFRESH: '刷新令牌',
+  TOKEN_REVOKE: '吊销令牌',
+  TOKEN_ISSUE: '签发令牌',
+  LOGIN: '登录',
+  LOGOUT: '登出',
+  REGISTER: '注册',
+  VERIFY: '验证核验',
+  SUBMIT: '提交',
+  BATCH_CREATE: '批量创建',
+  BATCH_UPDATE: '批量更新',
+  BATCH_DELETE: '批量删除',
+  APPROVE: '审批通过',
+  REJECT: '审批驳回',
+  WITHDRAW: '撤回',
+  ASSIGN: '指派分配',
+  TRANSFER: '转移流转',
+  UNPUBLISH: '取消发布',
+  PUBLISH: '发布',
+  ENABLE: '启用',
+  DISABLE: '停用',
+  UNLOCK: '解锁',
+  LOCK: '锁定',
+  IMPORT: '导入',
+  EXPORT: '导出',
+  UPLOAD: '上传',
+  DOWNLOAD: '下载',
+  PREVIEW: '预览',
+  SYNC: '同步',
+  CALLBACK: '回调通知',
+  START: '启动',
+  STOP: '停止',
+  RETRY: '重试',
+  BACKUP: '备份',
+  RESTORE: '恢复',
+  EXECUTE: '执行调用',
+  SEARCH: '搜索查询',
+  COUNT: '计数统计',
+  READ_LIST: '列表读取',
+  READ_DETAIL: '详情读取',
+  CREATE: '创建',
+  UPDATE: '更新',
+  PATCH: '局部更新',
+  DELETE: '删除',
+  CUSTOM: '自定义操作',
+}
+
+/** API 业务领域（BUSINESS_DOMAIN，与迁移 000073 16 项内置种子一致） */
+export const CLASSIFICATION_DOMAIN_LABELS: Record<string, string> = {
+  IDENTITY_AUTH: '身份认证',
+  USER_ACCOUNT: '用户账户',
+  ORG_PERMISSION: '组织权限',
+  DATA_RESOURCE: '数据资源',
+  PROCESS_APPROVAL: '流程审批',
+  TRANSACTION_FUND: '交易资金',
+  FILE_CONTENT: '文件内容',
+  QUERY_ANALYTICS: '查询分析',
+  IMPORT_EXPORT: '导入导出',
+  MESSAGE_NOTIFICATION: '消息通知',
+  EXTERNAL_INTEGRATION: '外部集成',
+  SYSTEM_CONFIG: '系统配置',
+  SYSTEM_OPS: '系统运维',
+  DEVICE_IOT: '设备物联网',
+  AI_INTELLIGENCE: '人工智能',
+  PRIVACY_COMPLIANCE: '隐私合规',
+}
+
+/** API 数据级别（DATA_LEVEL） */
+export const CLASSIFICATION_DATA_LEVEL_LABELS: Record<string, string> = {
+  CORE: '核心数据',
+  IMPORTANT: '重要数据',
+  GENERAL: '一般数据',
+  PUBLIC: '公开数据',
+  INTERNAL: '内部数据',
+  CONFIDENTIAL: '机密数据',
+  SENSITIVE: '敏感数据',
+  UNKNOWN: '未分级',
+}
+
+/** API 生命周期分类（LIFECYCLE） */
+export const CLASSIFICATION_LIFECYCLE_LABELS: Record<string, string> = {
+  ACTIVE: '活跃',
+  DISCOVERED: '已发现',
+  CONFIRMED: '已确认',
+  DEPRECATED: '已废弃',
+  ZOMBIE: '僵尸',
+  SHADOW: '影子',
+  IGNORED: '已忽略',
+  RETIRED: '已下线',
+  DRAFT: '草稿',
+}
+
+/** API 调用方向分类（DIRECTION） */
+export const CLASSIFICATION_DIRECTION_LABELS: Record<string, string> = {
+  INBOUND: '入向',
+  OUTBOUND: '出向',
+  INTERNAL: '内部调用',
+  EAST_WEST: '东西向',
+  NORTH_SOUTH: '南北向',
+  REQUEST: '请求',
+  RESPONSE: '响应',
+  BIDIRECTIONAL: '双向',
+}
+
+/* ==================== RecordDetailDrawer 通用中文字段名与枚举值兜底 ==================== */
+
+/** 通用详情抽屉字段名中文映射（所有 RecordDetailDrawer 自动兜底，调用方显式 fieldLabels 优先） */
+export const COMMON_DETAIL_FIELD_LABELS: Record<string, string> = {
+  id: '记录 ID',
+  name: '名称',
+  code: '编码',
+  username: '用户名',
+  display_name: '显示名',
+  description: '描述',
+  status: '状态',
+  state: '状态',
+  action: '动作',
+  action_taken: '处置动作',
+  final_action: '最终动作',
+  mode: '模式',
+  protection_mode: '防护模式',
+  deployment_mode: '部署模式',
+  scope: '生效范围',
+  scope_type: '范围类型',
+  severity: '严重级别',
+  level: '等级',
+  risk_level: '风险等级',
+  direction: '方向',
+  result: '结果',
+  event_type: '事件类型',
+  rule_type: '规则类型',
+  rule_id: '规则 ID',
+  rule_name: '规则名称',
+  source_type: '来源类型',
+  source: '来源',
+  module: '所属模块',
+  object_type: '对象类型',
+  object_id: '对象 ID',
+  object_name: '对象名称',
+  target_type: '目标类型',
+  target_id: '目标 ID',
+  trigger_type: '触发方式',
+  release_type: '解除方式',
+  validity_type: '有效期类型',
+  backup_type: '备份类型',
+  restore_scope: '恢复范围',
+  format: '格式',
+  media_type: '媒体类型',
+  operstate: '链路状态',
+  role: '角色',
+  roles: '角色列表',
+  credential_type: '凭据类型',
+  asset_status: '资产状态',
+  data_type: '数据类型',
+  violation_type: '违例类型',
+  finding_type: '风险类型',
+  failure_code: '失败码',
+  failure_message: '失败原因',
+  error: '错误信息',
+  error_code: '错误码',
+  error_message: '错误说明',
+  message: '说明',
+  reason: '原因',
+  reason_code: '原因码',
+  note: '备注',
+  remark: '备注',
+  summary: '摘要',
+  title: '标题',
+  version: '版本',
+  version_no: '版本号',
+  version_from: '起始版本',
+  version_to: '目标版本',
+  policy_version: '策略版本',
+  runtime_version: '运行时版本',
+  compiler_version: '编译器版本',
+  model_version: '模型版本',
+  content_hash: '内容哈希',
+  config_hash: '配置哈希',
+  file_hash: '文件哈希',
+  file_name: '文件名',
+  file_size: '文件大小',
+  size_bytes: '大小（字节）',
+  client_ip: '客户端 IP',
+  source_ip: '来源 IP',
+  ip: 'IP 地址',
+  cidr: '网段（CIDR）',
+  address: '地址',
+  ip_version: 'IP 版本',
+  port: '端口',
+  host: '主机',
+  domain: '域名',
+  domain_type: '域名类型',
+  path: '路径',
+  method: '请求方法',
+  request_method: '请求方法',
+  request_path: '请求路径',
+  request_id: '请求 ID',
+  trace_id: 'Trace ID',
+  span_id: 'Span ID',
+  endpoint: '端点',
+  endpoint_id: '端点 ID',
+  endpoint_key: '接口标识',
+  application_id: '应用 ID',
+  app_name: '应用名称',
+  app_code: '应用编码',
+  node_name: '节点名称',
+  node_id: '节点 ID',
+  node_count: '节点数',
+  nodes: '节点列表',
+  ifname: '网口名称',
+  mac: 'MAC 地址',
+  driver: '驱动',
+  pci_path: 'PCI 路径',
+  link_speed: '链路速率',
+  present: '物理在位',
+  sort_order: '排序序号',
+  hit_count: '命中次数',
+  event_count: '事件数',
+  call_count: '调用次数',
+  calls: '调用次数',
+  error_count: '错误数',
+  error_rate: '错误率',
+  avg_ms: '平均耗时（ms）',
+  p95_ms: 'P95 耗时（ms）',
+  duration_ms: '耗时（ms）',
+  total_requests: '总请求数',
+  blocked_requests: '阻断请求数',
+  unique_ips: '独立 IP 数',
+  total_bytes_in: '入向总流量（字节）',
+  total_bytes_out: '出向总流量（字节）',
+  created_at: '创建时间',
+  updated_at: '更新时间',
+  deleted_at: '删除时间',
+  created_by: '创建人',
+  updated_by: '更新人',
+  requested_at: '请求时间',
+  finished_at: '完成时间',
+  published_at: '发布时间',
+  activated_at: '激活时间',
+  started_at: '开始时间',
+  expires_at: '过期时间',
+  scheduled_at: '计划时间',
+  occurred_at: '发生时间',
+  revoked_at: '撤销时间',
+  stopped_at: '停止时间',
+  last_seen_at: '最近活跃时间',
+  first_seen_at: '首次发现时间',
+  last_login_at: '上次登录时间',
+  last_login_ip: '上次登录 IP',
+  locked_until: '锁定截止时间',
+  must_change_password: '需修改密码',
+  verified: '已验证',
+  critical: '关键项',
+  active: '活跃状态',
+  enabled: '是否启用',
+  is_current: '是否当前会话',
+  is_builtin: '是否内置',
+  is_sensitive: '是否敏感',
+  user_agent: 'User-Agent',
+  user_agent_summary: '终端信息',
+  setting_group: '设置分组',
+  setting_key: '设置键',
+  setting_value: '设置值',
+  value_type: '值类型',
+  progress: '进度',
+  current_step: '当前步骤',
+  package_id: '升级包 ID',
+  backup_job_id: '备份任务 ID',
+  agent_id: '探针 ID',
+  capture_level: '采集级别',
+  capture_point: '采集点',
+  match: '匹配方式',
+  match_basis: '匹配依据',
+  config: '配置',
+  current: '当前值',
+  header_type: '请求头类型',
+  custom_header_name: '自定义请求头名',
+  address_type: '地址类型',
+  matched_proxies: '匹配代理',
+  sync_enabled: '启用同步',
+  last_sync_result: '最近同步结果',
+  version_consistent: '版本一致',
+  vrid: '虚拟路由 ID（VRID）',
+  iface: '绑定网口',
+  vips: '虚拟 IP 列表',
+  preempt: '抢占模式',
+  advert_int_ms: '通告间隔（ms）',
+  unicast: '单播模式',
+  unicast_peers: '单播对端',
+  has_auth_pass: '已配置认证口令',
+  members: '成员列表',
+  company_name: '单位名称',
+  product_name: '产品名称',
+  logo_text: '标识文本',
+  header_text: '页眉文本',
+  footer_text: '页脚文本',
+  report_no_format: '报告编号格式',
+  prepared_by: '编制人',
+  reviewed_by: '审核人',
+  sections: '报告章节',
+  page_orientation: '页面方向',
+  last_email_status: '最近邮件发送状态',
+  server_ip: '服务端 IP',
+  application_count: '应用数',
+  api_count: '接口数',
+  traffic_7d: '近 7 天流量',
+  sensitive_api_count: '涉敏接口数',
+  risk_count: '风险数',
+  caller_fingerprint: '调用方指纹',
+  source_endpoint_id: '源端点 ID',
+  target_endpoint_id: '目标端点 ID',
+  sql_fingerprint: 'SQL 指纹',
+  db_system: '数据库类型',
+  namespace: '命名空间',
+  operation: '操作',
+  sample_trace_ids: '示例 Trace ID',
+  exception_type: '异常类型',
+  fingerprint: '指纹',
+  affected_services: '受影响服务',
+  count: '数量',
+  key: '键',
+  value: '值',
+  events: '事件数',
+  blocks: '阻断数',
+  series: '趋势序列',
+  seen_count: '观测次数',
+  client_count: '客户端数',
+  source_mode: '采集模式',
+  gateway_node: '网关节点',
+  protocol: '协议',
+  protocol_type: '协议类型',
+  first_seen: '首次发现',
+  last_seen: '最近发现',
+  location: '位置',
+  base_type: '基础类型',
+  semantic_type: '语义类型',
+  sensitivity_level: '敏感等级',
+  task_type: '任务类型',
+  item_key: '检查项编码',
+  item_name: '检查项名称',
+  category: '分类',
+  details: '明细',
+  environment: '环境',
+  env: '环境',
+  exposure: '暴露面',
+  confidence: '置信度',
+  device_type: '设备类型',
+  principal_source: '主体来源',
+  evidence_source: '证据来源',
+  stop_reason: '停止原因',
+  exclude_reason: '排除原因',
+  status_semantics: '状态语义',
+  verification_error_code: '校验错误码',
+}
+
+const COMMON_STATUS_VALUES: Record<string, string> = {
+  ACTIVE: '启用',
+  ENABLED: '已启用',
+  DISABLED: '已停用',
+  DRAFT: '草稿',
+  DELETED: '已删除',
+  ERROR: '异常',
+  PENDING: '等待中',
+  RUNNING: '运行中',
+  SUCCESS: '成功',
+  FAILED: '失败',
+  CANCELLED: '已取消',
+  ROLLED_BACK: '已回滚',
+  ROLLING_BACK: '回滚中',
+  ROLLBACK_FAILED: '回滚失败',
+  OPEN: '未处理',
+  CLOSED: '已关闭',
+  ACKNOWLEDGED: '已确认',
+  RESOLVED: '已解决',
+  IGNORED: '已忽略',
+  LOCKED: '已锁定',
+  VALID: '有效',
+  INVALID: '无效',
+  EXPIRING: '即将到期',
+  EXPIRED: '已过期',
+  KEY_MISMATCH: '密钥不匹配',
+  DISCOVERED: '已发现',
+  CONFIRMED: '已确认',
+  DEPRECATED: '已废弃',
+  ZOMBIE: '僵尸接口',
+  NEW: '待确认',
+  IN_PROGRESS: '处理中',
+  FALSE_POSITIVE: '误报',
+  ARCHIVED: '已归档',
+  UP: '正常',
+  DEGRADED: '降级',
+  DOWN: '故障',
+  UNKNOWN: '未知',
+  PASS: '通过',
+  PASSED: '通过',
+  FAIL: '失败',
+  WARNING: '警告',
+  WARN: '警告',
+  SKIP: '跳过',
+  NOT_APPLICABLE: '不适用',
+  REJECTED: '已拒绝',
+  REGISTERED: '已登记',
+  VERIFIED: '校验通过',
+  UNVERIFIED: '未验证',
+  PENDING_REVIEW: '待审核',
+  APPROVED: '已通过',
+  ACCEPTED: '已采纳',
+  RETIRED: '已停用',
+  INDETERMINATE: '未知待对账',
+  MANUALLY_RELEASED: '已人工解封',
+  NOT_PUBLISHED: '未发布',
+  PUBLISHING: '发布中',
+  PUBLISHED: '已发布',
+  PUBLISH_FAILED: '发布失败',
+  VALIDATING: '校验中',
+  GENERATING: '生成配置',
+  VERIFYING: '验证中',
+  COLLECTING: '数据采集中',
+  AGGREGATING: '数据聚合中',
+  RENDERING: '报告渲染中',
+  ISOLATED_RESTORE: '隔离恢复中',
+  AWAITING_CONFIRM: '待确认',
+  RESTORING: '正式恢复中',
+  SCHEDULED: '定时中',
+  PRECHECK: '升级前检查',
+  BACKUP: '升级前备份',
+  APPLYING: '应用升级',
+  MIGRATING: '数据库迁移',
+  NOT_STARTED: '未开始',
+  LEARNING: '学习中',
+  PAUSED: '已暂停',
+  LEARNED: '已完成',
+  CANDIDATE: '候选',
+  IN_REVIEW: '评审中',
+  FORMAL: '正式',
+  SUPERSEDED: '已被取代',
+  ENFORCING: '已生效',
+  ENROLLING: '注册中',
+  CONNECTED_BASELINE: '已连接·基线',
+  DIAGNOSING: '诊断中',
+  OFFLINE: '离线',
+  REVOKED: '已撤销',
+  STOPPED: '已停止',
+  KILLED: '已熔断',
+  SUPPRESSED: '已抑制',
+  PARTIAL: '部分成功',
+  PARTIAL_SUCCESS: '部分成功',
+  PLANNING: '规划中',
+  WAITING_TOOL: '等待工具',
+  COMPOSING: '生成回答',
+  OK: '正常',
+  AT_RISK: '有风险',
+  BREACHED: '已违约',
+  HOT: '热存储',
+  COLD: '冷存储',
+  UNAVAILABLE: '不可用',
+  TO_FIX: '待整改',
+  REPRODUCED: '已复现',
+  FIXED: '已修复',
+  NOT_CONFIGURED: '未配置',
+  DRAFT_PENDING: '草稿待发布',
+  RESERVED_TOMBSTONE: '墓碑保留',
+  RELEASED: '已解除',
+  HASH_MISMATCH: '哈希不一致',
+  READY: '就绪',
+  EMPTY: '无数据',
+  MATCHED: '已关联',
+  AMBIGUOUS: '存在多个候选',
+  NOT_FOUND: '未找到',
+  NOT_EXPECTED: '预期无数据',
+  HEALTHY: '健康',
+  UNHEALTHY: '不健康',
+  up: '正常（up）',
+  down: '断开（down）',
+  unknown: '未知',
+}
+
+const COMMON_SEVERITY_VALUES: Record<string, string> = {
+  CRITICAL: '严重',
+  HIGH: '高',
+  MEDIUM: '中',
+  LOW: '低',
+  INFO: '信息',
+  NONE: '无',
+  ERROR: '高',
+  WARNING: '中',
+  NOTICE: '低',
+}
+
+const COMMON_ACTION_VALUES: Record<string, string> = {
+  ...AUDIT_ACTION_LABELS,
+  ALLOW: '放行',
+  BLOCK: '阻断',
+  OBSERVE: '观察',
+  LOG: '仅记录',
+  REJECT: '拒绝',
+  CHALLENGE: '挑战',
+  TEMP_BLOCK: '临时封禁',
+  RATE_LIMIT: '限速',
+  MASK_RESPONSE: '响应脱敏',
+  REDIRECT: '重定向',
+  CUSTOM_PAGE: '自定义页面',
+  PASS: '放行',
+  DENY: '拒绝',
+  REMOVE_RULE: '移除指定规则',
+  REMOVE_RULE_TAG: '移除规则标签',
+  REMOVE_VAR_DETECTION: '移除变量检测',
+  ADJUST_SCORE: '调整异常评分',
+  LOG_ONLY: '仅记录不阻断',
+  OBSERVE_RULE: 'API 规则仅观察',
+}
+
+const COMMON_MODE_VALUES: Record<string, string> = {
+  OFF: '关闭',
+  OBSERVE: '观察',
+  PROTECT: '防护',
+  BYPASS: '透传',
+  ENFORCE: '强制',
+  REVERSE_PROXY: '反向代理',
+  ROUTED: '路由牵引',
+  MIRROR: '镜像',
+  TRANSPARENT: '透明串接',
+}
+
+/** 通用详情抽屉字段值中文映射（RecordDetailDrawer 自动兜底，调用方显式 valueLabels 优先） */
+export const COMMON_DETAIL_VALUE_LABELS: Record<string, Record<string, string>> = {
+  status: COMMON_STATUS_VALUES,
+  state: COMMON_STATUS_VALUES,
+  asset_status: {
+    DISCOVERED: '已发现',
+    CONFIRMED: '已确认',
+    IGNORED: '已忽略',
+    DEPRECATED: '已废弃',
+    ZOMBIE: '僵尸接口',
+  },
+  operstate: {
+    up: '正常',
+    UP: '正常',
+    down: '断开',
+    DOWN: '断开',
+    unknown: '未知',
+    UNKNOWN: '未知',
+    dormant: '休眠',
+    lowerlayerdown: '下层链路断开',
+  },
+  action: COMMON_ACTION_VALUES,
+  action_taken: COMMON_ACTION_VALUES,
+  final_action: COMMON_ACTION_VALUES,
+  mode: COMMON_MODE_VALUES,
+  protection_mode: COMMON_MODE_VALUES,
+  deployment_mode: COMMON_MODE_VALUES,
+  scope: {
+    GLOBAL: '全局',
+    APPLICATION: '指定应用',
+    POLICY: '策略',
+    NODE: '指定节点',
+    URI: '应用+路径',
+    SESSION: '会话',
+    PROJECT: '项目',
+    LONG_TERM: '长期',
+  },
+  scope_type: {
+    GLOBAL: '全局',
+    APPLICATION: '指定应用',
+    POLICY: '策略',
+    NODE: '指定节点',
+    URI: '应用+路径',
+  },
+  severity: COMMON_SEVERITY_VALUES,
+  level: {
+    ...COMMON_SEVERITY_VALUES,
+    SMOKE: '冒烟',
+    FULL: '全量',
+    RELEASE: '发布级',
+  },
+  risk_level: COMMON_SEVERITY_VALUES,
+  sensitivity_level: COMMON_SEVERITY_VALUES,
+  direction: {
+    REQUEST: '请求',
+    RESPONSE: '响应',
+    INBOUND: '入向',
+    OUTBOUND: '出向',
+    UPLOAD: '上传',
+    DOWNLOAD: '下载',
+    BIDIRECTIONAL: '双向',
+  },
+  result: {
+    SUCCESS: '成功',
+    FAILED: '失败',
+    FAILURE: '失败',
+    PASS: '通过',
+    PASSED: '通过',
+    FAIL: '失败',
+    WARNING: '警告',
+    NOT_APPLICABLE: '不适用',
+    VERIFY_FAILED: '验证失败',
+    OK: '成功',
+    CONFLICT: '冲突',
+    REJECTED: '拒绝',
+    UNKNOWN: '未知',
+  },
+  rule_type: {
+    ALLOW: '白名单',
+    DENY: '黑名单',
+  },
+  source: {
+    SYSTEM: '系统内置',
+    MANUAL: '手工创建',
+    AUTO: '自动识别',
+    CONFIG: '配置判定',
+    TRAFFIC_OBSERVED: '流量观测',
+    SECURITY_EVENT: '安全事件',
+    IMPORT: '批量导入',
+    AUTO_BLOCK: '自动封禁',
+    CREATE_BINDING: '创建绑定',
+    AUTHORITY_SYNC: '权威同步',
+    OWASP_CRS: 'OWASP 核心规则集',
+    CUSTOM: '自定义',
+    ...AI_TOOL_SOURCE_LABELS,
+  },
+  source_type: {
+    ...AI_MEMORY_SOURCE_LABELS,
+    MANUAL: '手工创建',
+    SYSTEM: '系统内置',
+    AUTO: '自动识别',
+    IMPORT: '批量导入',
+  },
+  module: AUDIT_MODULE_LABELS,
+  object_type: AUDIT_OBJECT_TYPE_LABELS,
+  target_type: {
+    ...AI_DRAFT_TARGET_TYPE_LABELS,
+    service: '服务',
+    db: '数据库',
+    messaging: '消息队列',
+    external: '外部服务',
+  },
+  trigger_type: {
+    CC_AUTO: '频率防护自动触发',
+    MANUAL: '人工添加',
+    SCHEDULED: '定时触发',
+    AUTO: '自动触发',
+  },
+  release_type: {
+    AUTO_EXPIRE: '到期自动解除',
+    MANUAL: '人工解封',
+    CONVERTED: '已转永久',
+  },
+  validity_type: {
+    PERMANENT: '永久',
+    TEMPORARY: '临时',
+  },
+  backup_type: {
+    FULL: '全量备份',
+    CONFIG_ONLY: '配置备份',
+  },
+  restore_scope: {
+    FULL: '全系统恢复',
+    CONFIG: '配置恢复',
+    DATABASE: '数据库恢复',
+    CERTIFICATE: '证书恢复',
+  },
+  format: {
+    html: '网页',
+    pdf: 'PDF 文档',
+    docx: 'Word 文档',
+    ...SPEC_FORMAT_LABELS,
+  },
+  credential_type: {
+    JWT: 'JWT 令牌',
+    API_KEY: 'API 密钥',
+    SESSION: '会话凭据',
+    COOKIE: 'Cookie',
+    OAUTH: 'OAuth 令牌',
+    CUSTOM: '自定义凭据',
+    MTLS: '双向 TLS 证书',
+    auth: '认证凭据',
+    key: 'API 密钥',
+    sess: '会话凭据',
+  },
+  data_type: FILE_SENSITIVE_TYPE_LABELS,
+  ip_version: {
+    IPV4: 'IPv4',
+    IPV6: 'IPv6',
+  },
+  header_type: {
+    X_FORWARDED_FOR: 'X-Forwarded-For 头',
+    X_REAL_IP: 'X-Real-IP 头',
+    FORWARDED: 'Forwarded 头',
+    CUSTOM: '自定义头',
+  },
+  address_type: {
+    GATEWAY: '网关地址',
+    MANAGEMENT: '管理面地址',
+    UPSTREAM: '源站地址',
+    DATABASE: '数据库地址',
+    CACHE: '缓存地址',
+    TRUSTED_PROXY: '可信代理',
+    LOOPBACK: '回环地址',
+    LINK_LOCAL: '链路本地',
+    CUSTOM: '自定义',
+  },
+  domain_type: {
+    EXACT: '精确域名',
+    WILDCARD: '通配符域名',
+    IP: 'IP 地址',
+  },
+  page_orientation: {
+    P: '纵向',
+    L: '横向',
+    PORTRAIT: '纵向',
+    LANDSCAPE: '横向',
+  },
+  last_sync_result: {
+    SUCCESS: '同步成功',
+    FAILED: '同步失败',
+    HASH_MISMATCH: '哈希不一致',
+    UNKNOWN: '未同步',
+  },
+  last_email_status: {
+    SUCCESS: '发送成功',
+    FAILED: '发送失败',
+    SKIPPED: '未发送',
+    PENDING: '待发送',
+  },
+  location: LOCATION_LABELS,
+  base_type: {
+    string: '字符串',
+    number: '数字',
+    integer: '整数',
+    bool: '布尔',
+    boolean: '布尔',
+    array: '数组',
+    object: '对象',
+  },
+  semantic_type: {
+    id: 'ID',
+    uuid: 'UUID',
+    email: '邮箱',
+    phone: '手机号',
+    token: '令牌',
+    secret: '口令',
+    money: '金额',
+    captcha: '验证码',
+    username: '用户名',
+    id_card: '身份证号',
+    bank_card: '银行卡号',
+  },
+  failure_code: {
+    ...PUBLISH_FAILURE_CODE_LABELS,
+    ...UPSTREAM_ERROR_CODE_LABELS,
+  },
+  error_code: {
+    ...UPSTREAM_ERROR_CODE_LABELS,
+    ...PUBLISH_FAILURE_CODE_LABELS,
+  },
+  reason_code: {
+    ...AUTHZ_REASON_CODE_LABELS,
+    ...STRONG_FLOW_REASON_CODE_LABELS,
+    ...DECISION_REASON_CODE_LABELS,
+  },
+  principal_source: PRINCIPAL_SOURCE_LABELS,
+  evidence_source: {
+    AUTHORITY_SYNC: '权威同步',
+    MANUAL_CONFIRMED: '人工确认',
+  },
+  device_type: DEVICE_TYPE_LABELS,
+  environment: ENVIRONMENT_LABELS,
+  env: ENVIRONMENT_LABELS,
+  exposure: {
+    INTERNAL: '内网',
+    PARTNER: '合作方',
+    PUBLIC: '外网',
+    UNKNOWN: '未知',
+  },
+  capture_point: PCAP_CAPTURE_POINT_LABELS,
+  match_basis: PCAP_MATCH_BASIS_LABELS,
+  verification_error_code: PCAP_VERIFY_ERROR_LABELS,
+  match: DATA_FLOW_MATCH_LABELS,
+  evidence_type: DATA_FLOW_EVIDENCE_TYPE_LABELS,
+  status_semantics: STRONG_FLOW_STATUS_SEMANTICS_LABELS,
+  stop_reason: APM_DIAG_STOP_REASON_LABELS,
+  exclude_reason: LEARNING_EXCLUDE_REASON_LABELS,
+  source_mode: {
+    GATEWAY: '网关采集',
+    AGENT: '分布式 Agent',
+    MIRROR: '流量镜像',
+    HYBRID: '混合采集',
+  },
+  capture_level: {
+    METADATA: '仅元数据',
+    HEADERS: '请求头',
+    FULL: '完整报文',
+  },
+  event_type: {
+    LOGIN_SUCCESS: '登录成功',
+    LOGIN_FAILURE: '登录失败',
+    CAPTCHA_FAILURE: '验证码错误',
+    ACCOUNT_LOCKED: '账号锁定',
+    LOGOUT: '登出',
+    FORCE_LOGOUT: '强制下线',
+    SESSION_EXPIRED: '会话过期',
+    PASSWORD_CHANGE: '修改密码',
+    PASSWORD_RESET: '重置密码',
+    FIRST_CHANGE_PASSWORD: '首次改密',
+  },
+}

@@ -60,7 +60,7 @@ export default function ApiTopologyPage() {
   return (
     <Card title="API 调用拓扑">
       <Typography.Paragraph type="secondary">
-        接口按所属应用分组展示，Tag 颜色对应资产状态（蓝=已发现、绿=已确认、灰=已忽略、橙=已废弃）；下方为运行时观测到的调用边明细。
+        接口按所属应用分组展示，标签颜色对应资产状态（蓝=已发现、绿=已确认、灰=已忽略、橙=已废弃）；下方为运行时观测到的调用边明细。
       </Typography.Paragraph>
       <QueryErrorAlert error={topologyQuery.error} />
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>

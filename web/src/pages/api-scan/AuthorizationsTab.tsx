@@ -118,11 +118,10 @@ export default function AuthorizationsTab() {
       ellipsis: true,
       render: (v: string) => {
         const sets = splitProbeSets(v)
+        const labels = sets.map((s) => SCAN_PROBE_SET_META[s] ?? s).join('、')
         return sets.length > 0 ? (
-          <Tooltip title={sets.join('、')}>
-            <Typography.Text style={{ fontSize: 12 }}>
-              {sets.map((s) => SCAN_PROBE_SET_META[s] ?? s).join('、')}
-            </Typography.Text>
+          <Tooltip title={labels}>
+            <Typography.Text style={{ fontSize: 12 }}>{labels}</Typography.Text>
           </Tooltip>
         ) : (
           <Typography.Text type="secondary">默认全集</Typography.Text>

@@ -49,7 +49,10 @@ const OVERVIEW = {
   top_error_applications: [
     { application_id: 'svc-2', app: 'pay', name: '支付网关', requests: 3000, error_rate: 0.08, p95: 150 },
   ],
-  top_slow_endpoints: [{ app: 'shop', endpoint: 'GET /api/orders', requests: 800, error_rate: 0.02, p95: 450 }],
+  top_slow_endpoints: [
+    { app: 'shop', endpoint: 'GET /api/orders', requests: 800, error_rate: 0.02, p95: 450 },
+    { app: 'shop', endpoint: '__UNCLASSIFIED__', requests: 12, error_rate: 0, p95: 320 },
+  ],
   unclassified_requests: 7,
 }
 
@@ -161,10 +164,12 @@ describe('ApmOverviewPage', () => {
     expect(screen.getByText('56')).toBeInTheDocument()
     // 未归类请求提示
     expect(screen.getByText(/未归类请求 7 条/)).toBeInTheDocument()
-    // Top 列表
+    // Top 列表（__UNCLASSIFIED__ 映射为中文「未归类端点」）
     expect(screen.getByText('商城站点')).toBeInTheDocument()
     expect(screen.getByText('支付网关')).toBeInTheDocument()
     expect(screen.getByText('GET /api/orders')).toBeInTheDocument()
+    expect(screen.getByText('未归类端点')).toBeInTheDocument()
+    expect(screen.queryByText('__UNCLASSIFIED__')).not.toBeInTheDocument()
     // 图表角标（趋势 + 三个 Top 卡片）
     expect(screen.getAllByText('无 Agent').length).toBeGreaterThanOrEqual(4)
   })

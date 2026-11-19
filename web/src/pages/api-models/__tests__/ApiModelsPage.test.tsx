@@ -254,6 +254,7 @@ describe('ApiModelsPage', () => {
     expect(await within(drawerEl).findByText('新增字段')).toBeInTheDocument()
     expect(within(drawerEl).getByText('name')).toBeInTheDocument()
     expect(within(drawerEl).getByText('类型变化')).toBeInTheDocument()
+    expect(within(drawerEl).getByText(/数字 → 字符串/)).toBeInTheDocument()
   })
 
   it('策略溯源抽屉：展示该模型版本编译产生的运行时策略', async () => {

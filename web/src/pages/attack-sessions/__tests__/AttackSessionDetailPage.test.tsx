@@ -44,9 +44,9 @@ const SESSION = {
 }
 
 const EVENTS = [
-  { source_table: 'behavior_event', source_id: '101', occurred_at: '2026-08-31T10:02:00Z', stage: 'RECON' },
+  { source_table: 'identity_behavior_events', source_id: '101', occurred_at: '2026-08-31T10:02:00Z', stage: 'RECON' },
   { source_table: 'behavior_event', source_id: '102', occurred_at: '2026-08-31T10:11:00Z', stage: 'AUTH_PROBE' },
-  { source_table: 'security_event', source_id: '207', occurred_at: '2026-08-31T10:40:00Z', stage: 'AUTH_PROBE' },
+  { source_table: 'security_events', source_id: '207', occurred_at: '2026-08-31T10:40:00Z', stage: 'AUTH_PROBE' },
 ]
 
 function mockFetchWith(body: unknown, status = 200) {
@@ -106,9 +106,11 @@ describe('AttackSessionDetailPage', () => {
     expect(screen.getByText('进行中')).toBeInTheDocument()
     expect(screen.getByText('43分钟')).toBeInTheDocument()
     expect(screen.getByText('286')).toBeInTheDocument()
-    // 自动化标注：徽标（标题区+描述列表各一）与判定依据
+    // 自动化标注：徽标（标题区+描述列表各一）与中文化判定依据
     expect(screen.getAllByText('疑似自动化攻击').length).toBeGreaterThan(0)
-    expect(screen.getByText('stages=AUTH_PROBE,EXPLOIT,RECON;indicator=SENSITIVE_PATH_PROBE')).toBeInTheDocument()
+    expect(
+      screen.getByText('命中阶段：认证探测、漏洞利用、侦察；指示信号：敏感路径探测'),
+    ).toBeInTheDocument()
   })
 
   it('未标注会话展示「未标注」且不渲染徽标', async () => {
@@ -130,9 +132,9 @@ describe('AttackSessionDetailPage', () => {
     renderPage()
 
     expect(await screen.findByText('关联事件（3）')).toBeInTheDocument()
-    expect(screen.getByText('behavior_event#101')).toBeInTheDocument()
+    expect(screen.getByText('身份行为事件#101')).toBeInTheDocument()
     expect(screen.getByText('behavior_event#102')).toBeInTheDocument()
-    expect(screen.getByText('security_event#207')).toBeInTheDocument()
+    expect(screen.getByText('WAF 安全事件#207')).toBeInTheDocument()
     // 阶段标签：侦察 ×1、认证探测 ×2（时间线标签 + 分布标签合计）
     expect(screen.getAllByText('侦察').length).toBeGreaterThan(0)
     expect(screen.getAllByText('认证探测').length).toBeGreaterThan(0)

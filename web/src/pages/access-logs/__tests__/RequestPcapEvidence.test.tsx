@@ -162,4 +162,30 @@ describe('RequestPcapEvidence', () => {
     expect(cache2?.items[0].artifact_id).toBe(evidence2.artifact_id)
     expect(cache2?.items[0].integrity_status).toBe('UNVERIFIED')
   })
+
+  it('采集点、关联依据与核验错误码以中文标签展示', async () => {
+    setPermissions(['request_pcap.read'])
+    ;(fetch as Mock).mockImplementation(() =>
+      Promise.resolve(
+        response({
+          request_id: 'req-pcap-1',
+          items: [
+            {
+              ...evidence,
+              capture_point: 'GATEWAY_EGRESS',
+              match_basis: 'HTTP1_REQUEST_ID',
+              integrity_status: 'FAILED',
+              verification_error_code: 'HASH_MISMATCH',
+            },
+          ],
+        }),
+      ),
+    )
+    renderEvidence()
+    expect(await screen.findByText('网关出口')).toBeInTheDocument()
+    expect(screen.getByText('HTTP/1 请求 ID 匹配（候选 1）')).toBeInTheDocument()
+    expect(screen.getByText('文件哈希不匹配')).toBeInTheDocument()
+    expect(screen.queryByText('GATEWAY_EGRESS')).not.toBeInTheDocument()
+    expect(screen.queryByText('HASH_MISMATCH')).not.toBeInTheDocument()
+  })
 })

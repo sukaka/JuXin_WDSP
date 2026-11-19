@@ -10,6 +10,7 @@ import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
+import { PARAM_CONSTRAINT_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { API_BASE_TYPE_META, API_MODEL_VERSION_STATUS_META, API_PARAM_DIRECTION_META, API_PARAM_LOCATION_META, API_SEMANTIC_TYPE_META } from '../../utils/stage8'
 
@@ -21,7 +22,16 @@ const SENSITIVITY_LEVEL_META: Record<string, { color: string; label: string }> =
   HIGH: { color: 'red', label: '高' },
 }
 
-/** 约束内容紧凑展示：每行一条「键: 值」，空约束显示占位符（四层视图单元格共用） */
+function formatConstraintValue(v: unknown): string {
+  if (typeof v === 'boolean') return v ? '是' : '否'
+  if (typeof v === 'string') return v
+  if (Array.isArray(v)) {
+    return v.map((item) => (typeof item === 'boolean' ? (item ? '是' : '否') : String(item))).join('、')
+  }
+  return JSON.stringify(v)
+}
+
+/** 约束内容紧凑展示：每行一条「中文键：值」，空约束显示占位符（四层视图单元格共用） */
 function ConstraintLines({ value }: { value: Record<string, unknown> | null | undefined }) {
   const entries = Object.entries(value ?? {})
   if (entries.length === 0) return <Typography.Text type="secondary">—</Typography.Text>
@@ -29,10 +39,10 @@ function ConstraintLines({ value }: { value: Record<string, unknown> | null | un
     <div style={{ fontSize: 12, lineHeight: '20px' }}>
       {entries.map(([k, v]) => (
         <div key={k}>
-          <Typography.Text code style={{ fontSize: 12 }}>
-            {k}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {PARAM_CONSTRAINT_LABELS[k] ?? k}：
           </Typography.Text>
-          <Typography.Text style={{ fontSize: 12 }}>: {typeof v === 'string' ? v : JSON.stringify(v)}</Typography.Text>
+          <Typography.Text style={{ fontSize: 12 }}>{formatConstraintValue(v)}</Typography.Text>
         </div>
       ))}
     </div>
@@ -40,9 +50,19 @@ function ConstraintLines({ value }: { value: Record<string, unknown> | null | un
 }
 
 /** 语义类型预设选项（自由输入，与 server/internal/apimodels statistics.go 推断词表对齐） */
-const SEMANTIC_TYPE_OPTIONS = ['id', 'uuid', 'email', 'phone', 'token', 'secret', 'money', 'captcha', 'username', 'id_card', 'bank_card'].map(
-  (v) => ({ value: v }),
-)
+const SEMANTIC_TYPE_OPTIONS = [
+  'id',
+  'uuid',
+  'email',
+  'phone',
+  'token',
+  'secret',
+  'money',
+  'captcha',
+  'username',
+  'id_card',
+  'bank_card',
+].map((v) => ({ value: v, label: API_SEMANTIC_TYPE_META[v]?.label ?? v }))
 
 interface EditFormValues {
   required: boolean
@@ -268,31 +288,31 @@ export default function ApiParametersPage() {
       width: 90,
       render: (v: number) => (v * 100).toFixed(0) + '%',
     },
-    // —— 四层视图：Observed / Recommended / Confirmed / Runtime 同屏对比 ——
+    // —— 四层视图：观测 / 推荐 / 确认 / 运行时生效 同屏对比 ——
     {
-      title: 'Observed（观测）',
+      title: '观测约束',
       dataIndex: 'observed_constraints',
       width: 170,
       render: (v: Record<string, unknown>) => <ConstraintLines value={v} />,
     },
     {
-      title: 'Recommended（推荐）',
+      title: '推荐约束',
       dataIndex: 'recommended_constraints',
       width: 170,
       render: (v: Record<string, unknown>) => <ConstraintLines value={v} />,
     },
     {
-      title: 'Confirmed（确认）',
+      title: '确认约束',
       dataIndex: 'confirmed_constraints',
       width: 170,
       render: (v: Record<string, unknown>) => <ConstraintLines value={v} />,
     },
     {
-      // Runtime 列 = 已下发网关的 confirmed 快照：当前无独立运行时快照接口，
-      // 以 Confirmed 约束作为「Runtime 生效值」展示（配置发布后网关即按 Confirmed 检测）。
+      // 运行时生效约束 = 已下发网关的确认约束快照：当前无独立运行时快照接口，
+      // 以确认约束作为「运行时生效约束」展示（配置发布后网关即按确认约束检测）。
       title: (
-        <Tooltip title="Runtime 生效值 = 已确认约束（Confirmed）快照，随配置发布下发网关后生效；当前无独立运行时快照接口">
-          <span>Runtime（生效值）</span>
+        <Tooltip title="运行时生效约束为已确认约束的发布快照，随配置发布下发网关后生效；当前无独立运行时快照接口">
+          <span>运行时生效约束</span>
         </Tooltip>
       ),
       key: 'runtime_constraints',
@@ -448,7 +468,7 @@ export default function ApiParametersPage() {
             <Select
               options={Object.entries(SENSITIVITY_LEVEL_META).map(([value, meta]) => ({
                 value,
-                label: `${value}（${meta.label}）`,
+                label: meta.label,
               }))}
             />
           </Form.Item>
@@ -458,19 +478,19 @@ export default function ApiParametersPage() {
           <Typography.Paragraph type="secondary">
             确认约束随发布通道下发网关并参与运行时检测；留空的约束项不生效，全部留空即清空确认约束。
           </Typography.Paragraph>
-          <Form.Item name="min_length" label="最小长度（min_length，字符数）">
+          <Form.Item name="min_length" label="最小长度（字符数）">
             <InputNumber min={0} precision={0} style={{ width: '100%' }} placeholder="不限制" />
           </Form.Item>
-          <Form.Item name="max_length" label="最大长度（max_length，字符数）">
+          <Form.Item name="max_length" label="最大长度（字符数）">
             <InputNumber min={0} precision={0} style={{ width: '100%' }} placeholder="不限制" />
           </Form.Item>
-          <Form.Item name="minimum" label="数值下界（minimum）">
+          <Form.Item name="minimum" label="数值下界">
             <InputNumber style={{ width: '100%' }} placeholder="不限制" />
           </Form.Item>
-          <Form.Item name="maximum" label="数值上界（maximum）">
+          <Form.Item name="maximum" label="数值上界">
             <InputNumber style={{ width: '100%' }} placeholder="不限制" />
           </Form.Item>
-          <Form.Item name="enum" label="枚举（enum，回车添加取值）">
+          <Form.Item name="enum" label="枚举值（回车添加）">
             <Select mode="tags" open={false} placeholder="输入取值后回车" tokenSeparators={[',']} />
           </Form.Item>
         </Form>

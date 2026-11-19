@@ -43,7 +43,7 @@ export default function RunsTab() {
         <Alert type="info" showIcon message="请先选择计划" description="执行记录按计划维度归集，选择计划后可查看其全部运行记录（含手动立即执行）。" />
       )}
       <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-        执行记录包含定时触发与手动立即执行；行展开可查看摘要与 report_json 结构化报告。
+        执行记录包含定时触发与手动立即执行；行展开可查看摘要与结构化执行报告。
       </Typography.Paragraph>
     </>
   )

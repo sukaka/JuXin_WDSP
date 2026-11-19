@@ -305,7 +305,15 @@ export default function ApiIdentityProfilesPage() {
                   ),
                 },
                 { key: 'site', label: '站点', children: <SiteCell row={profile} /> },
-                { key: 'auth', label: '认证类型', children: profile.auth_type || '—' },
+                {
+                  key: 'auth',
+                  label: '认证类型',
+                  children: profile.auth_type ? (
+                    <StatusTag value={profile.auth_type} map={API_AUTH_TYPE_META} />
+                  ) : (
+                    '—'
+                  ),
+                },
                 { key: 'count', label: '累计请求数', children: profile.request_count },
                 {
                   key: 'quality',

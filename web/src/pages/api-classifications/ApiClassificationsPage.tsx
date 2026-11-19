@@ -25,12 +25,27 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import { useAuthStore } from '../../stores/auth'
+import {
+  ASSET_VALUE_LEVEL_META,
+  CLASSIFICATION_ACCESS_LABELS,
+  CLASSIFICATION_ACTION_LABELS,
+  CLASSIFICATION_DATA_LEVEL_LABELS,
+  CLASSIFICATION_DIRECTION_LABELS,
+  CLASSIFICATION_DOMAIN_LABELS,
+  CLASSIFICATION_LIFECYCLE_LABELS,
+  CLASSIFICATION_PURPOSE_LABELS,
+  ENVIRONMENT_LABELS,
+  FILE_SENSITIVE_TYPE_LABELS,
+} from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import {
+  API_AUTH_TYPE_META,
   API_CLASSIFICATION_SOURCE_META,
   API_PROTOCOL_META,
+  API_SENSITIVE_TYPE_META,
   apiClassificationSourceLabel,
   apiExposureLabel,
+  getApiFindingTypeMeta,
 } from '../../utils/stage8'
 
 interface CreateFormValues {
@@ -120,13 +135,42 @@ const BUSINESS_OBJECT_LABELS: Record<string, string> = {
   MULTI_OBJECT: '多重业务对象',
 }
 
+const AUTH_TYPE_EXTRA_LABELS: Record<string, string> = {
+  NONE: '无认证',
+  ANONYMOUS: '匿名',
+  JWT: 'JWT 令牌',
+  BEARER: 'Bearer 令牌',
+  BASIC: 'Basic 认证',
+  OAUTH: 'OAuth 认证',
+  OAUTH2: 'OAuth 2.0',
+  MTLS: '双向 TLS',
+  SESSION: '会话认证',
+  API_KEY: 'API Key',
+  COOKIE_SESSION: 'Cookie 会话',
+  BEARER_OR_BASIC: '令牌/基本认证',
+}
+
+const DATA_CROSS_BORDER_LABELS: Record<string, string> = {
+  YES: '涉及出境',
+  NO: '未涉及出境',
+  TRUE: '涉及出境',
+  FALSE: '未涉及出境',
+  CROSS_BORDER: '跨境传输',
+  DOMESTIC: '境内传输',
+  OUTBOUND: '出境',
+  INBOUND: '入境',
+  UNKNOWN: '未知',
+}
+
 /** 分类取值中文展示：内置词表翻译已知枚举，未知值原样展示 */
 function classificationValueLabel(dimension: string, value: string): string {
   const normalizedDimension = dimension.trim().toUpperCase()
   if (normalizedDimension === 'EXPOSURE') {
     return apiExposureLabel(value)
   }
-  const normalizedValue = value.trim().toUpperCase()
+  const trimmed = value.trim()
+  const normalizedValue = trimmed.toUpperCase()
+  const lowerValue = trimmed.toLowerCase()
   if (normalizedDimension === 'TECHNICAL_PROTOCOL') {
     return API_PROTOCOL_META[normalizedValue]?.label ?? value
   }
@@ -143,10 +187,56 @@ function classificationValueLabel(dimension: string, value: string): string {
     return BUSINESS_FLOW_STAGE_LABELS[normalizedValue] ?? value
   }
   if (normalizedDimension === 'RISK_LABEL') {
-    return RISK_LABEL_LABELS[normalizedValue] ?? value
+    return RISK_LABEL_LABELS[normalizedValue] ?? getApiFindingTypeMeta(normalizedValue).label
   }
   if (normalizedDimension === 'BUSINESS_OBJECT') {
     return BUSINESS_OBJECT_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'PURPOSE') {
+    return CLASSIFICATION_PURPOSE_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'ACCESS') {
+    return CLASSIFICATION_ACCESS_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'ACTION' || normalizedDimension === 'OPERATION') {
+    return CLASSIFICATION_ACTION_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'BUSINESS_DOMAIN') {
+    return CLASSIFICATION_DOMAIN_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'DATA_LEVEL') {
+    return CLASSIFICATION_DATA_LEVEL_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'LIFECYCLE') {
+    return CLASSIFICATION_LIFECYCLE_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'DIRECTION') {
+    return CLASSIFICATION_DIRECTION_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'AUTH_TYPE') {
+    return (
+      API_AUTH_TYPE_META[lowerValue]?.label ??
+      API_AUTH_TYPE_META[normalizedValue]?.label ??
+      AUTH_TYPE_EXTRA_LABELS[normalizedValue] ??
+      value
+    )
+  }
+  if (normalizedDimension === 'DATA_TYPE') {
+    return (
+      FILE_SENSITIVE_TYPE_LABELS[trimmed] ??
+      FILE_SENSITIVE_TYPE_LABELS[normalizedValue] ??
+      API_SENSITIVE_TYPE_META[lowerValue]?.label ??
+      value
+    )
+  }
+  if (normalizedDimension === 'ENV') {
+    return ENVIRONMENT_LABELS[lowerValue] ?? value
+  }
+  if (normalizedDimension === 'CRITICALITY') {
+    return ASSET_VALUE_LEVEL_META[normalizedValue]?.label ?? DATA_SENSITIVITY_LABELS[normalizedValue] ?? value
+  }
+  if (normalizedDimension === 'DATA_CROSS_BORDER') {
+    return DATA_CROSS_BORDER_LABELS[normalizedValue] ?? value
   }
   return value
 }

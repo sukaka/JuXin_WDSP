@@ -310,7 +310,9 @@ describe('P1-03 G4a：HTTP 事件 v2 展示', () => {
       await within(dialog).findByText('HTTP 事件详情（#201）'),
     ).toBeInTheDocument()
     // 来源与数据质量分区
-    expect(within(dialog).getByText('来源与数据质量（schema v2）')).toBeInTheDocument()
+    expect(within(dialog).getByText('来源与数据质量（v2 协议）')).toBeInTheDocument()
+    expect(within(dialog).getByText('流 ID')).toBeInTheDocument()
+    expect(within(dialog).getByText(/\/ 代次 3/)).toBeInTheDocument()
     expect(
       within(dialog).getByText('agent1-mirror-nginx-a-1788256800123-7'),
     ).toBeInTheDocument()
@@ -326,7 +328,7 @@ describe('P1-03 G4a：HTTP 事件 v2 展示', () => {
     expect(within(dialog).getByText('a=1')).toBeInTheDocument()
     expect(within(dialog).getByText('b=2')).toBeInTheDocument()
     // trailers 还原
-    expect(within(dialog).getByText('请求 Trailers')).toBeInTheDocument()
+    expect(within(dialog).getByText('请求尾部头')).toBeInTheDocument()
     expect(within(dialog).getByText('t1')).toBeInTheDocument()
     // body_quality：实际捕获/原始总大小
     expect(within(dialog).getByText(/实际捕获 128 B \/ 原始总大小 4\.00 KB \/ 已截断/)).toBeInTheDocument()
@@ -350,8 +352,8 @@ describe('P1-03 G4a：HTTP 事件 v2 展示', () => {
     expect(
       await within(dialog).findByText('HTTP 事件详情（#202）'),
     ).toBeInTheDocument()
-    expect(within(dialog).queryByText('来源与数据质量（schema v2）')).not.toBeInTheDocument()
-    expect(within(dialog).queryByText('请求 Trailers')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('来源与数据质量（v2 协议）')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('请求尾部头')).not.toBeInTheDocument()
     expect(within(dialog).queryByText(/数据质量：/)).not.toBeInTheDocument()
     // v1 headers string map 照常展示
     expect(within(dialog).getByText('********')).toBeInTheDocument()
@@ -363,7 +365,7 @@ describe('P1-03 G4a：HTTP 事件 v2 展示', () => {
       <HttpEventsPanel agentId={AGENT_ID} enabled httpEventSchemas={[1, 2]} />,
     )
     await screen.findByText('POST api.example.com/pkg.UserService/GetUser')
-    const hostInput = screen.getByPlaceholderText('按 Host 过滤')
+    const hostInput = screen.getByPlaceholderText('按域名过滤')
     fireEvent.change(hostInput, { target: { value: 'api.example.com' } })
     fireEvent.keyDown(hostInput, { key: 'Enter', keyCode: 13 })
     await waitFor(() => {
@@ -397,14 +399,16 @@ describe('P1-03 G4a：Agent 详情能力集与版本分离', () => {
     vi.unstubAllGlobals()
   })
 
-  it('能力集 [1,2]：schema v1/v2 标签，无「需升级」；目标/实载版本分离显示待同步', async () => {
+  it('能力集 [1,2]：协议 v1/v2 标签，无「需升级」；目标/实载版本分离显示待同步', async () => {
     vi.stubGlobal('fetch', mockFetch(makeAgentDetail([1, 2])))
     renderWithProviders(
       <AgentDetailDrawer agentId={AGENT_ID} open onClose={() => {}} canManage />,
     )
     await screen.findByText('HTTP 事件能力')
-    expect(screen.getByText('schema v1')).toBeInTheDocument()
-    expect(screen.getByText('schema v2')).toBeInTheDocument()
+    expect(screen.getByText('协议 v1')).toBeInTheDocument()
+    expect(screen.getByText('协议 v2')).toBeInTheDocument()
+    expect(screen.getByText('操作系统')).toBeInTheDocument()
+    expect(screen.queryByText('schema v1')).not.toBeInTheDocument()
     expect(screen.queryByText('需升级')).not.toBeInTheDocument()
     // 保存/目标版本/实际加载分离：config_version=5、applied=3 → 待同步
     expect(screen.getByText('服务端目标版本')).toBeInTheDocument()
@@ -420,7 +424,7 @@ describe('P1-03 G4a：Agent 详情能力集与版本分离', () => {
     )
     await screen.findByText('HTTP 事件能力')
     expect(screen.getByText('需升级')).toBeInTheDocument()
-    expect(screen.queryByText('schema v2')).not.toBeInTheDocument()
+    expect(screen.queryByText('协议 v2')).not.toBeInTheDocument()
   })
 })
 

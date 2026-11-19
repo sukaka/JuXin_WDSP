@@ -10,6 +10,7 @@ import StatusTag from '../../components/StatusTag'
 import AutomationSuspectedTag from '../../components/AutomationSuspectedTag'
 import { useBreadcrumbObjectName } from '../../stores/breadcrumb'
 import { formatDateTime, formatDuration } from '../../utils/format'
+import { formatAutomationBasis, SOURCE_TABLE_LABELS } from '../../utils/i18nLabels'
 import { ATTACK_SESSION_STATUS_META, ATTACK_STAGE_META, RISK_LEVEL_META } from '../../utils/identitySecurity'
 
 /** 攻击链标准阶段顺序（设计文档 #16.2/#17；UNKNOWN 不在进展链上） */
@@ -135,8 +136,8 @@ export default function AttackSessionDetailPage() {
               {session.automation_suspected ? (
                 <Space size={8} wrap>
                   <AutomationSuspectedTag suspected basis={session.automation_basis} />
-                  <Typography.Text type="secondary" style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                    {session.automation_basis}
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {formatAutomationBasis(session.automation_basis)}
                   </Typography.Text>
                 </Space>
               ) : (
@@ -212,7 +213,7 @@ export default function AttackSessionDetailPage() {
                   </Space>
                   <div>
                     <Typography.Text type="secondary" style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                      {e.source_table}#{e.source_id}
+                      {SOURCE_TABLE_LABELS[e.source_table] ?? e.source_table}#{e.source_id}
                     </Typography.Text>
                   </div>
                 </>

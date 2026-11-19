@@ -13,7 +13,12 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { API_MODEL_VERSION_STATUS_META } from '../../utils/stage8'
+import { API_BASE_TYPE_META, API_MODEL_VERSION_STATUS_META } from '../../utils/stage8'
+
+/** 将模型差异中的基础类型映射为中文 */
+function formatBaseType(type: string): string {
+  return API_BASE_TYPE_META[type]?.label ?? API_BASE_TYPE_META[type.toLowerCase()]?.label ?? type
+}
 
 interface CandidateFormValues {
   schema_json: string
@@ -505,7 +510,7 @@ export default function ApiModelsPage() {
                   {diffQuery.data.diff.type_changed.length > 0 ? (
                     diffQuery.data.diff.type_changed.map((c) => (
                       <div key={c.field}>
-                        <Typography.Text code>{c.field}</Typography.Text>：{c.from} → {c.to}
+                        <Typography.Text code>{c.field}</Typography.Text>：{formatBaseType(c.from)} → {formatBaseType(c.to)}
                       </div>
                     ))
                   ) : (

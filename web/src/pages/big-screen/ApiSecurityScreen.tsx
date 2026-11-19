@@ -2,8 +2,12 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import dayjs from 'dayjs'
 import { apiFindingsApi, apiPostureApi } from '../../api/apiSecurity'
-import { EVENT_SEVERITY_META } from '../../utils/stage4'
-import { API_ENDPOINT_STATUS_META, API_LEARNING_STATUS_META } from '../../utils/stage8'
+import {
+  API_ACTION_META,
+  API_ENDPOINT_STATUS_META,
+  API_FINDING_SEVERITY_META,
+  API_LEARNING_STATUS_META,
+} from '../../utils/stage8'
 import { BIG_SCREENS, REFRESH_INTERVAL } from './screens'
 import ScreenFrame from './components/ScreenFrame'
 import ScreenPanel from './components/ScreenPanel'
@@ -17,20 +21,15 @@ import { DEMO_API_FINDINGS, DEMO_API_POSTURE, DEMO_API_RUNTIME_STATS } from './c
 const screen = BIG_SCREENS.find((s) => s.id === 'api-security')!
 
 const SEVERITY_COLORS: Record<string, string> = {
+  CRITICAL: '#e040fb',
   HIGH: '#ff5252',
   MEDIUM: '#ffd54f',
   LOW: '#2979ff',
   INFO: '#8a97a8',
+  NONE: '#8a97a8',
 }
 
 const columnStyle = { display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0 } as const
-
-/** 运行时处置动作展示名（与 server/internal/apiruntime final_action 枚举一致） */
-const FINAL_ACTION_LABELS: Record<string, string> = {
-  ALLOW: '放行',
-  LOG: '记录',
-  BLOCK: '拦截',
-}
 
 function kvToItems(record?: Record<string, number>, labels?: Record<string, { label: string } | string>) {
   return Object.entries(record ?? {}).map(([name, value]) => {
@@ -74,10 +73,10 @@ export default function ApiSecurityScreen() {
 
   const severityRadar = useMemo(() => {
     const bySeverity = posture?.findings.open_by_severity ?? {}
-    const levels = ['HIGH', 'MEDIUM', 'LOW', 'INFO']
+    const levels = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']
     const max = Math.max(1, ...levels.map((l) => bySeverity[l] ?? 0))
     return radarOption(
-      levels.map((l) => ({ name: EVENT_SEVERITY_META[l]?.label ?? l, max })),
+      levels.map((l) => ({ name: API_FINDING_SEVERITY_META[l]?.label ?? l, max })),
       levels.map((l) => bySeverity[l] ?? 0),
       '#ff5252',
       '开放风险',
@@ -85,12 +84,12 @@ export default function ApiSecurityScreen() {
   }, [posture])
 
   const finalActions = useMemo(
-    () => donutOption(kvToItems(stats?.by_final_action, FINAL_ACTION_LABELS), ['#69f0ae', '#ff5252', '#ffd54f', '#2979ff', '#b388ff']),
+    () => donutOption(kvToItems(stats?.by_final_action, API_ACTION_META), ['#69f0ae', '#ff5252', '#ffd54f', '#2979ff', '#b388ff']),
     [stats],
   )
 
   const riskLevels = useMemo(
-    () => hBarOption(kvToItems(stats?.by_risk_level).map((i) => ({ name: EVENT_SEVERITY_META[i.name]?.label ?? i.name, value: i.value })), '#ff8a65'),
+    () => hBarOption(kvToItems(stats?.by_risk_level, API_FINDING_SEVERITY_META), '#ff8a65'),
     [stats],
   )
 
@@ -111,7 +110,7 @@ export default function ApiSecurityScreen() {
       content: f.title,
       tail: (
         <span style={{ color: SEVERITY_COLORS[f.severity] ?? '#8a97a8', flexShrink: 0 }}>
-          {EVENT_SEVERITY_META[f.severity]?.label ?? f.severity}
+          {API_FINDING_SEVERITY_META[f.severity]?.label ?? f.severity}
         </span>
       ),
     })

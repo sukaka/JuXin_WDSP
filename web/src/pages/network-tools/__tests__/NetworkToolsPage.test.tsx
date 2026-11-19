@@ -226,8 +226,8 @@ describe('NetworkToolsPage', () => {
     expect(screen.getByText('DNS 查询')).toBeInTheDocument()
     expect(screen.getByText('流量抓包')).toBeInTheDocument()
     // 参数摘要与耗时（getByText 匹配时空白归一化为单空格）
-    expect(screen.getByText('port=443')).toBeInTheDocument()
-    expect(screen.getByText('iface=eth0 duration_sec=10')).toBeInTheDocument()
+    expect(screen.getByText('端口=443')).toBeInTheDocument()
+    expect(screen.getByText('网口=eth0 时长(秒)=10')).toBeInTheDocument()
     expect(screen.getAllByText('12 ms').length).toBeGreaterThan(0)
   })
 

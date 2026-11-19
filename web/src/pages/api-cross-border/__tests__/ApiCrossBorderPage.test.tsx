@@ -151,9 +151,10 @@ describe('ApiCrossBorderPage', () => {
     renderPage()
     expect(await screen.findByText('GeoIP 数据源未加载，跨境识别已降级')).toBeInTheDocument()
     expect(screen.getByText(/看板展示的是历史观察数据/)).toBeInTheDocument()
-    // 本土地区基准仍如实展示
+    // 本土地区基准仍如实展示中文
     expect(screen.getByText('本土地区判定基准：')).toBeInTheDocument()
-    expect(screen.getByText('CN')).toBeInTheDocument()
+    expect(screen.getByText('中国')).toBeInTheDocument()
+    expect(screen.queryByText('CN')).not.toBeInTheDocument()
   })
 
   it('看板：汇总卡片/home_regions/趋势图/按国家聚合表', async () => {
@@ -174,9 +175,11 @@ describe('ApiCrossBorderPage', () => {
     expect(statOf('涉及 API').textContent).toContain('3')
     expect(statOf('高风险事件').textContent).toContain('4')
 
-    // 本土地区判定基准标签
-    expect(screen.getByText('CN')).toBeInTheDocument()
-    expect(screen.getByText('HK')).toBeInTheDocument()
+    // 本土地区判定基准标签（中文化）
+    expect(screen.getByText('中国')).toBeInTheDocument()
+    expect(screen.getByText('中国香港')).toBeInTheDocument()
+    expect(screen.queryByText('CN')).not.toBeInTheDocument()
+    expect(screen.queryByText('HK')).not.toBeInTheDocument()
 
     // 趋势图
     await waitFor(() => expect(chartProps.length).toBeGreaterThan(0))

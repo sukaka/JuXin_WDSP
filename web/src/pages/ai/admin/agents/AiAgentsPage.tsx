@@ -178,7 +178,7 @@ export default function AiAgentsPage() {
       />
 
       <Modal
-        title={`配置 Agent：${configTarget?.name ?? ''}`}
+        title={`配置智能体：${configTarget?.name ?? ''}`}
         open={configTarget !== null}
         onCancel={() => setConfigTarget(null)}
         onOk={() => configForm.submit()}
@@ -193,7 +193,7 @@ export default function AiAgentsPage() {
           layout="vertical"
           onFinish={(values) => configMutation.mutate(values)}
         >
-          <Form.Item name="allowed_tool_ids" label="允许的 Tool">
+          <Form.Item name="allowed_tool_ids" label="允许调用的工具">
             <Select
               mode="tags"
               options={toolOptions}

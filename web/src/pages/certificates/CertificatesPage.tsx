@@ -297,12 +297,10 @@ export default function CertificatesPage() {
           placeholder="状态"
           allowClear
           style={{ width: 150 }}
-          options={[
-            { value: 'VALID', label: '有效' },
-            { value: 'EXPIRING', label: '即将到期' },
-            { value: 'EXPIRED', label: '已过期' },
-            { value: 'INVALID', label: '无效' },
-          ]}
+          options={Object.entries(CERT_STATUS_META).map(([value, meta]) => ({
+            value,
+            label: meta.label,
+          }))}
           onChange={(v) => {
             setFilters((f) => ({ ...f, status: v }))
             setPage(1)
@@ -384,7 +382,7 @@ export default function CertificatesPage() {
           </Form.Item>
           <Form.Item
             name="cert_pem"
-            label="证书 PEM（cert_pem）"
+            label="证书 PEM"
             rules={[
               { required: true, message: '请粘贴证书内容' },
               {
@@ -404,7 +402,7 @@ export default function CertificatesPage() {
           </Form.Item>
           <Form.Item
             name="key_pem"
-            label="私钥 PEM（key_pem）"
+            label="私钥 PEM"
             rules={[
               { required: true, message: '请粘贴私钥内容' },
               {
@@ -424,7 +422,7 @@ export default function CertificatesPage() {
           </Form.Item>
           <Form.Item
             name="chain_pem"
-            label="证书链 PEM（chain_pem，可选）"
+            label="证书链 PEM（可选）"
             rules={[
               {
                 validator: (_, v: string) => {
@@ -466,8 +464,8 @@ export default function CertificatesPage() {
               <StatusTag value={detail.status} map={CERT_STATUS_META} />
             </Descriptions.Item>
             <Descriptions.Item label="通用名称(CN)">{detail.common_name}</Descriptions.Item>
-            <Descriptions.Item label="主题(Subject)">{detail.subject}</Descriptions.Item>
-            <Descriptions.Item label="颁发者(Issuer)">{detail.issuer}</Descriptions.Item>
+            <Descriptions.Item label="主题">{detail.subject}</Descriptions.Item>
+            <Descriptions.Item label="颁发者">{detail.issuer}</Descriptions.Item>
             <Descriptions.Item label="序列号">{detail.serial_number}</Descriptions.Item>
             <Descriptions.Item label="备用域名">
               {detail.san_domains && detail.san_domains.length > 0 ? (

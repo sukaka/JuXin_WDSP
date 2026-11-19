@@ -122,7 +122,7 @@ export default function EventStatisticsPage() {
   return (
     <Card title="事件统计">
       <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-        卡片计数使用分页 total（精确）；攻击类型/动作/处置分布基于最近 {SAMPLE_SIZE}{' '}
+        卡片计数使用分页总数（精确）；攻击类型/动作/处置分布基于最近 {SAMPLE_SIZE}{' '}
         条事件样本估算占比，仅供趋势参考。完整统计请使用「统计分析」。
       </Typography.Paragraph>
       {firstError ? (

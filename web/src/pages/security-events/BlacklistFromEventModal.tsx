@@ -19,6 +19,7 @@ import { securityEventsApi } from '../../api/securityEvents'
 import { formatDateTime } from '../../utils/format'
 import { generateIdempotencyKey } from '../../utils/idempotency'
 import { ATTACK_TYPE_META, EVENT_SEVERITY_META } from '../../utils/stage4'
+import { ACCESS_RULE_STATUS_META } from '../../utils/stage5'
 import StatusTag from '../../components/StatusTag'
 
 /**
@@ -157,7 +158,7 @@ export default function BlacklistFromEventModal({
               type="info"
               showIcon
               message="该地址已存在黑名单规则"
-              description={`规则「${prefill.existing_deny_rule.name}」（状态 ${prefill.existing_deny_rule.status}），重复创建将返回冲突错误。`}
+              description={`规则「${prefill.existing_deny_rule.name}」（状态：${ACCESS_RULE_STATUS_META[prefill.existing_deny_rule.status]?.label ?? prefill.existing_deny_rule.status}），重复创建将返回冲突错误。`}
             />
           )}
           <Descriptions column={2} size="small" bordered>

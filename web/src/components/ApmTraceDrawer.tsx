@@ -11,7 +11,7 @@ import ApmTraceWaterfall from './ApmTraceWaterfall'
 import { useAuthStore } from '../stores/auth'
 import { formatDateTime } from '../utils/format'
 import { hasPermission } from '../utils/permission'
-import { APM_TRACE_DATA_SOURCE_META, APM_WAF_ACTION_META } from '../utils/apm'
+import { APM_TRACE_DATA_SOURCE_META, getApmWafActionMeta } from '../utils/apm'
 import type { ApmTraceAccessLog, ApmTraceDetail, ApmTraceSecurityEvent } from '../types'
 
 /** Trace 详情查询上下文（P1-01 A3）：详情与下钻携带相同时间窗；application_id 仅用于展示与下钻透传 */
@@ -50,7 +50,7 @@ const TRACE_LOG_COLUMNS: ColumnsType<ApmTraceAccessLog> = [
     dataIndex: 'waf_action',
     width: 80,
     render: (v: string) => {
-      const meta = APM_WAF_ACTION_META[v] ?? APM_WAF_ACTION_META.ALLOW
+      const meta = getApmWafActionMeta(v)
       return <Tag color={meta.color}>{meta.label}</Tag>
     },
   },
@@ -64,8 +64,8 @@ const TRACE_EVENT_COLUMNS: ColumnsType<ApmTraceSecurityEvent> = [
     dataIndex: 'action',
     width: 80,
     render: (v: string) => {
-      const meta = APM_WAF_ACTION_META[v]
-      return meta ? <Tag color={meta.color}>{meta.label}</Tag> : v
+      const meta = getApmWafActionMeta(v)
+      return <Tag color={meta.color}>{meta.label}</Tag>
     },
   },
   { title: '命中规则', dataIndex: 'rule_id', width: 140, ellipsis: true },
@@ -118,7 +118,7 @@ function TraceDetailContent({
     <Space direction="vertical" size={16} style={{ display: 'flex' }}>
       <Space wrap>
         <Typography.Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>
-          trace_id：{trace.trace_id}
+          Trace ID：{trace.trace_id}
         </Typography.Text>
         {dsMeta && <Tag color={dsMeta.color}>数据来源：{dsMeta.label}</Tag>}
         {typeof trace.span_count === 'number' && (

@@ -2,6 +2,19 @@ import { useState } from 'react'
 import { Descriptions, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { formatJson } from '../../utils/format'
+import {
+  AI_REPORT_FIELD_LABELS,
+  COMMON_DETAIL_FIELD_LABELS,
+  COMMON_DETAIL_VALUE_LABELS,
+  FILE_SENSITIVE_TYPE_LABELS,
+} from '../../utils/i18nLabels'
+import {
+  API_ENDPOINT_STATUS_META,
+  API_FINDING_SEVERITY_META,
+  API_PARAM_DIRECTION_META,
+  API_SENSITIVE_TYPE_META,
+  getApiFindingTypeMeta,
+} from '../../utils/stage8'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 
 /** 单键值清单表格化时最多展示的列数与行数（报告可能较宽，防爆版式） */
@@ -13,10 +26,35 @@ function isScalar(v: unknown): v is string | number | boolean {
   return typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
 }
 
-/** 标量展示文本（布尔转是/否） */
-function scalarText(v: string | number | boolean): string {
+/** 字段名中文映射 */
+function reportFieldLabel(key: string): string {
+  return AI_REPORT_FIELD_LABELS[key] ?? COMMON_DETAIL_FIELD_LABELS[key] ?? key
+}
+
+/** 标量展示文本（布尔转是/否，已知枚举按字段键映射为中文） */
+function scalarText(v: string | number | boolean, fieldKey?: string): string {
   if (typeof v === 'boolean') return v ? '是' : '否'
-  return String(v)
+  if (typeof v !== 'string') return String(v)
+  if (!fieldKey) return v
+  if (fieldKey === 'asset_status') {
+    return API_ENDPOINT_STATUS_META[v]?.label ?? COMMON_DETAIL_VALUE_LABELS.asset_status?.[v] ?? v
+  }
+  if (fieldKey === 'finding_type') {
+    return getApiFindingTypeMeta(v).label
+  }
+  if (fieldKey === 'severity') {
+    return API_FINDING_SEVERITY_META[v]?.label ?? COMMON_DETAIL_VALUE_LABELS.severity?.[v] ?? v
+  }
+  if (fieldKey === 'status') {
+    return COMMON_DETAIL_VALUE_LABELS.status?.[v] ?? v
+  }
+  if (fieldKey === 'direction') {
+    return API_PARAM_DIRECTION_META[v]?.label ?? COMMON_DETAIL_VALUE_LABELS.direction?.[v] ?? v
+  }
+  if (fieldKey === 'data_type') {
+    return API_SENSITIVE_TYPE_META[v]?.label ?? FILE_SENSITIVE_TYPE_LABELS[v] ?? v
+  }
+  return COMMON_DETAIL_VALUE_LABELS[fieldKey]?.[v] ?? v
 }
 
 /**
@@ -52,8 +90,8 @@ export default function ReportView({ report }: { report: Record<string, unknown>
       {scalars.length > 0 ? (
         <Descriptions column={2} size="small" bordered style={{ marginBottom: 12 }}>
           {scalars.map(([k, v]) => (
-            <Descriptions.Item key={k} label={k}>
-              {scalarText(v)}
+            <Descriptions.Item key={k} label={reportFieldLabel(k)}>
+              {scalarText(v, k)}
             </Descriptions.Item>
           ))}
         </Descriptions>
@@ -64,15 +102,15 @@ export default function ReportView({ report }: { report: Record<string, unknown>
           .filter((ck) => isScalar(rows[0][ck]))
           .slice(0, MAX_LIST_COLS)
         const columns: ColumnsType<Record<string, unknown>> = colKeys.map((ck) => ({
-          title: ck,
+          title: reportFieldLabel(ck),
           dataIndex: ck,
           ellipsis: true,
-          render: (cv: unknown) => (isScalar(cv) ? scalarText(cv) : formatJson(cv)),
+          render: (cv: unknown) => (isScalar(cv) ? scalarText(cv, ck) : formatJson(cv)),
         }))
         return (
           <div key={k} style={{ marginBottom: 12 }}>
             <Typography.Text strong style={{ fontSize: 12 }}>
-              {k}（{(v as unknown[]).length} 条{(v as unknown[]).length > MAX_LIST_ROWS ? `，展示前 ${MAX_LIST_ROWS} 条` : ''}）
+              {reportFieldLabel(k)}（{(v as unknown[]).length} 条{(v as unknown[]).length > MAX_LIST_ROWS ? `，展示前 ${MAX_LIST_ROWS} 条` : ''}）
             </Typography.Text>
             <Table<Record<string, unknown>>
               rowKey={(_, i) => `${k}-${i}`}
@@ -89,11 +127,11 @@ export default function ReportView({ report }: { report: Record<string, unknown>
       {scalarLists.map(([k, v]) => (
         <div key={k} style={{ marginBottom: 12 }}>
           <Typography.Text strong style={{ fontSize: 12 }}>
-            {k}：
+            {reportFieldLabel(k)}：
           </Typography.Text>
           {(v as (string | number | boolean)[]).map((it, i) => (
             <Tag key={i} style={{ marginTop: 4 }}>
-              {scalarText(it)}
+              {scalarText(it, k)}
             </Tag>
           ))}
         </div>
@@ -101,7 +139,7 @@ export default function ReportView({ report }: { report: Record<string, unknown>
       {others.map(([k, v]) => (
         <div key={k} style={{ marginBottom: 12 }}>
           <Typography.Text strong style={{ fontSize: 12 }}>
-            {k}：
+            {reportFieldLabel(k)}：
           </Typography.Text>
           <Typography.Paragraph>
             <pre style={{ margin: '4px 0 0', fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>

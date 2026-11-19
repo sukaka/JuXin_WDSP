@@ -198,7 +198,7 @@ export default function AiModelsPage() {
       modal.confirm({
         title: '确认修改服务地址？',
         content:
-          '服务地址的规范 origin（协议+主机+端口）若发生变化，已配置的旧密钥会立即失效，保存后可能需要重新录入密钥。确定保存吗？',
+          '服务地址的规范源地址（协议+主机+端口）若发生变化，已配置的旧密钥会立即失效，保存后可能需要重新录入密钥。确定保存吗？',
         okText: '确认保存',
         cancelText: '取消',
         onOk: () => saveProviderMutation.mutate(values),
@@ -379,7 +379,7 @@ export default function AiModelsPage() {
     },
     { title: '服务地址', dataIndex: 'base_url', ellipsis: true },
     {
-      title: '规范 Origin',
+      title: '规范源地址',
       dataIndex: 'canonical_origin',
       width: 210,
       ellipsis: true,
@@ -724,7 +724,7 @@ export default function AiModelsPage() {
           <Form.Item
             name="allowed_targets"
             label="附加出站目标白名单（可选）"
-            extra="回车添加，origin 形式（如 https://api.example.com:8443）。私网目标必须在此显式授权才可访问；云 metadata 地址（如 169.254.169.254）不允许授权。"
+            extra="回车添加，源地址形式（如 https://api.example.com:8443）。私网目标必须在此显式授权才可访问；云元数据地址（如 169.254.169.254）不允许授权。"
           >
             <Select mode="tags" open={false} tokenSeparators={[',']} placeholder="输入出站目标后回车添加" />
           </Form.Item>

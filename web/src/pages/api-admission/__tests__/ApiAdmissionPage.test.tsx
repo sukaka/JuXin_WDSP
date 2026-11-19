@@ -381,13 +381,13 @@ describe('ApiAdmissionPage', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '切换模式' })[0])
     const dialog = await screen.findByRole('dialog')
     // 当前模式 OBSERVE（非 OFF）+ 全局 OBSERVE：提示随策略查询就绪直接出现
-    expect(await within(dialog).findByText(/全局 API 防护模式当前为 OBSERVE/)).toBeInTheDocument()
+    expect(await within(dialog).findByText(/全局 API 防护模式当前为「观察」/)).toBeInTheDocument()
     expect(within(dialog).getByText(/准入拦截将只记录、不实际阻断/)).toBeInTheDocument()
     expect(within(dialog).getByRole('link', { name: '前往 API 防护策略' })).toBeInTheDocument()
     // 选择 PROTECT 后提示仍在
     fireEvent.click(within(dialog).getByText('防护（PROTECT）'))
     await within(dialog).findByText('覆盖率与影响面评估')
-    expect(within(dialog).getByText(/全局 API 防护模式当前为 OBSERVE/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/全局 API 防护模式当前为「观察」/)).toBeInTheDocument()
   })
 
   it('切换模式弹窗：全局 PROTECT 时不显示实断总阀门联动提示', async () => {

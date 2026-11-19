@@ -152,7 +152,8 @@ describe('ApiLearningPage', () => {
     expect(screen.getByText('abcdef1234…')).toBeInTheDocument()
     expect(screen.getByText('已采纳')).toBeInTheDocument()
     expect(screen.getByText('已排除')).toBeInTheDocument()
-    expect(screen.getByText('CONTENT_TYPE')).toBeInTheDocument()
+    expect(screen.getByText('不支持的内容类型')).toBeInTheDocument()
+    expect(screen.queryByText('CONTENT_TYPE')).not.toBeInTheDocument()
     expect(screen.getByText('共 2 条')).toBeInTheDocument()
   })
 

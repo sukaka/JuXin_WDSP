@@ -6,9 +6,15 @@ import ApmServicesPage from '../ApmServicesPage'
 import { useAuthStore } from '../../../stores/auth'
 import type { CurrentUser } from '../../../types'
 
-/** EChart 在 jsdom 下无法真实渲染（无 canvas），替换为桩组件 */
+/** EChart 在 jsdom 下无法真实渲染（无 canvas），替换为桩组件并透出 option 与 ariaLabel 供回归断言 */
 vi.mock('../../../components/EChart', () => ({
-  default: () => <div data-testid="echart-stub" />,
+  default: ({ option, ariaLabel }: { option?: unknown; ariaLabel?: string }) => (
+    <div
+      data-testid="echart-stub"
+      data-label={ariaLabel ?? ''}
+      data-option={JSON.stringify(option ?? {})}
+    />
+  ),
 }))
 
 function makeUser(permissions: string[]): CurrentUser {
@@ -65,10 +71,15 @@ const SERVICE_DETAIL = {
     { status_class: '5xx', count: 100 },
   ],
   actions: [
-    { action: 'ALLOW', count: 4997 },
-    { action: 'BLOCK', count: 3 },
+    { action: 'allow', count: 4990 },
+    { action: 'observe', count: 7 },
+    { action: 'block', count: 3 },
   ],
-  top_endpoints: [{ endpoint: 'GET /api/orders', requests: 800, error_rate: 0.02, p95: 450 }],
+  top_endpoints: [
+    { endpoint: 'GET /api/orders', requests: 800, error_rate: 0.02, p95: 450 },
+    { endpoint: '__UNCLASSIFIED__', requests: 10, error_rate: 0, p95: 120 },
+    { endpoint: '__OTHER__', requests: 50, error_rate: 0.01, p95: 90 },
+  ],
 }
 
 interface MockOptions {
@@ -145,7 +156,7 @@ describe('ApmServicesPage', () => {
     expect(screen.getByText('数据来源：无 Agent')).toBeInTheDocument()
   })
 
-  it('行点击打开详情抽屉：趋势、状态码分布、WAF 动作分布与 Top 端点', async () => {
+  it('行点击打开详情抽屉：趋势、状态码分布、WAF 动作大小写无关中文化与特殊端点桶中文映射', async () => {
     renderPage()
     const row = (await screen.findByText('商城站点')).closest('tr')!
     fireEvent.click(row)
@@ -155,6 +166,21 @@ describe('ApmServicesPage', () => {
     expect(screen.getByText('WAF 动作分布')).toBeInTheDocument()
     expect(screen.getByText('Top 端点')).toBeInTheDocument()
     expect(screen.getByText('GET /api/orders')).toBeInTheDocument()
+    // 特殊端点聚合桶映射为中文
+    expect(screen.getByText('未归类端点')).toBeInTheDocument()
+    expect(screen.getByText('其它（超出 Top-N）')).toBeInTheDocument()
+    expect(screen.queryByText('__UNCLASSIFIED__')).not.toBeInTheDocument()
+    expect(screen.queryByText('__OTHER__')).not.toBeInTheDocument()
+
+    // 回归校验：小写 allow/observe/block 均经 getApmWafActionMeta 映射为中文「放行」「观察」「阻断」
+    const charts = screen.getAllByTestId('echart-stub')
+    const wafChart = charts.find((el) => el.getAttribute('data-label') === 'WAF 动作分布')
+    expect(wafChart).toBeTruthy()
+    const option = JSON.parse(wafChart!.getAttribute('data-option') ?? '{}') as {
+      series?: Array<{ data?: Array<{ name: string; value: number }> }>
+    }
+    const actionNames = (option.series?.[0]?.data ?? []).map((d) => d.name)
+    expect(actionNames).toEqual(['放行', '观察', '阻断'])
   })
 
   it('查询失败（500）展示 QueryErrorAlert', async () => {

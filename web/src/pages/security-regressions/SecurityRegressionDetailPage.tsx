@@ -103,7 +103,7 @@ export default function SecurityRegressionDetailPage() {
               {run.config_fingerprint}
             </Typography.Text>
           </Descriptions.Item>
-          <Descriptions.Item label="manifest 哈希">
+          <Descriptions.Item label="清单哈希">
             <Typography.Text code>{truncateHash(run.manifest_sha256, 24)}</Typography.Text>
           </Descriptions.Item>
           <Descriptions.Item label="构建摘要">

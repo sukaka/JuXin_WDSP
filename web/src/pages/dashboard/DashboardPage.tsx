@@ -7,6 +7,16 @@ import { formatDateTime } from '../../utils/format'
 import UserStatusTag from '../../components/UserStatusTag'
 import { SYSTEM_NAME, SYSTEM_VERSION } from '../../constants'
 
+const HEALTH_STATUS_META: Record<
+  string,
+  { status: 'success' | 'warning' | 'error'; text: string }
+> = {
+  ok: { status: 'success', text: '运行中' },
+  degraded: { status: 'warning', text: '降级' },
+  error: { status: 'error', text: '异常' },
+  unhealthy: { status: 'error', text: '异常' },
+}
+
 export default function DashboardPage() {
   const user = useAuthStore((s) => s.user)
   const healthQuery = useQuery({
@@ -67,10 +77,17 @@ export default function DashboardPage() {
             ) : (
               <Descriptions column={1} size="small">
                 <Descriptions.Item label="服务状态">
-                  <Badge
-                    status={healthQuery.data?.status === 'ok' ? 'success' : 'error'}
-                    text={healthQuery.data?.status === 'ok' ? '运行中' : healthQuery.data?.status ?? '加载中'}
-                  />
+                  {(() => {
+                    const raw = healthQuery.data?.status
+                    if (!raw) return <Badge status="default" text="加载中" />
+                    const meta = HEALTH_STATUS_META[raw.trim().toLowerCase()]
+                    return (
+                      <Badge
+                        status={meta?.status ?? 'error'}
+                        text={meta?.text ?? '未知'}
+                      />
+                    )
+                  })()}
                 </Descriptions.Item>
                 <Descriptions.Item label="数据库">
                   <Badge

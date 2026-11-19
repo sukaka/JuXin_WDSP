@@ -3,11 +3,49 @@ import { Table, Tag, Typography } from 'antd'
 import dayjs from 'dayjs'
 import type { ApmOtelSpan } from '../types'
 
+/** span 类型中文映射（大小写归一，兼容 OpenTelemetry SPAN_KIND_* 前缀） */
+const SPAN_KIND_LABELS: Record<string, string> = {
+  SERVER: '服务端',
+  SPAN_KIND_SERVER: '服务端',
+  CLIENT: '客户端',
+  SPAN_KIND_CLIENT: '客户端',
+  INTERNAL: '内部调用',
+  SPAN_KIND_INTERNAL: '内部调用',
+  PRODUCER: '消息生产',
+  SPAN_KIND_PRODUCER: '消息生产',
+  CONSUMER: '消息消费',
+  SPAN_KIND_CONSUMER: '消息消费',
+  UNSPECIFIED: '未指定',
+  SPAN_KIND_UNSPECIFIED: '未指定',
+}
+
+/** span 状态码中文映射（大小写归一，兼容 OpenTelemetry STATUS_CODE_* 前缀） */
+const SPAN_STATUS_LABELS: Record<string, string> = {
+  UNSET: '未设置',
+  STATUS_CODE_UNSET: '未设置',
+  OK: '正常',
+  STATUS_CODE_OK: '正常',
+  ERROR: '错误',
+  STATUS_CODE_ERROR: '错误',
+}
+
+function formatSpanKind(kind?: string): string {
+  const raw = (kind || '').trim()
+  if (!raw) return ''
+  return SPAN_KIND_LABELS[raw.toUpperCase()] ?? raw
+}
+
+function formatSpanStatus(statusCode?: string): string {
+  const raw = (statusCode || '').trim()
+  if (!raw) return '未设置'
+  return SPAN_STATUS_LABELS[raw.toUpperCase()] ?? raw
+}
+
 /** span 状态条配色：ERROR 红、OK 绿、UNSET/其它蓝（与 antd 主题色一致，不引入新依赖） */
 function spanBarColor(statusCode: string): string {
   const s = (statusCode || '').toUpperCase()
-  if (s === 'ERROR') return '#ff4d4f'
-  if (s === 'OK') return '#52c41a'
+  if (s === 'ERROR' || s === 'STATUS_CODE_ERROR') return '#ff4d4f'
+  if (s === 'OK' || s === 'STATUS_CODE_OK') return '#52c41a'
   return '#1677ff'
 }
 
@@ -105,7 +143,9 @@ export default function ApmTraceWaterfall({ spans }: { spans: ApmOtelSpan[] }) {
           ? Math.min(100, Math.max(0, ((start - window_.minStart) / window_.total) * 100))
           : 0
         const widthPct = Math.max(0.5, Math.min(100 - leftPct, (Math.max(0, span.duration_ms || 0) / window_.total) * 100))
-        const isError = (span.status_code || '').toUpperCase() === 'ERROR'
+        const isError =
+          (span.status_code || '').toUpperCase() === 'ERROR' ||
+          (span.status_code || '').toUpperCase() === 'STATUS_CODE_ERROR'
         const expanded = expandedId === span.span_id
         return (
           <div key={span.span_id}>
@@ -147,7 +187,7 @@ export default function ApmTraceWaterfall({ spans }: { spans: ApmOtelSpan[] }) {
                 </Typography.Text>
                 {isError && (
                   <Tag color="red" style={{ marginLeft: 4 }}>
-                    ERROR
+                    错误
                   </Tag>
                 )}
               </div>
@@ -169,21 +209,21 @@ export default function ApmTraceWaterfall({ spans }: { spans: ApmOtelSpan[] }) {
             {expanded && (
               <div style={{ padding: '4px 0 8px', paddingLeft: depth * 16 + 16 }}>
                 <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 4 }}>
-                  span_id：<Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }} copyable>
+                  Span ID：<Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }} copyable>
                     {span.span_id}
                   </Typography.Text>
                   {span.parent_span_id ? (
                     <>
-                      {'　'}parent：
+                      {'　'}父 Span：
                       <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
                         {span.parent_span_id}
                       </Typography.Text>
                     </>
                   ) : (
-                    <Tag style={{ marginLeft: 8 }}>根 span</Tag>
+                    <Tag style={{ marginLeft: 8 }}>根 Span</Tag>
                   )}
-                  {span.span_kind && <Tag style={{ marginLeft: 8 }}>{span.span_kind}</Tag>}
-                  <Tag style={{ marginLeft: 8 }}>{span.status_code || 'UNSET'}</Tag>
+                  {span.span_kind && <Tag style={{ marginLeft: 8 }}>{formatSpanKind(span.span_kind)}</Tag>}
+                  <Tag style={{ marginLeft: 8 }}>{formatSpanStatus(span.status_code)}</Tag>
                 </div>
                 <Table
                   size="small"

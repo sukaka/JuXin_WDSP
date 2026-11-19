@@ -26,6 +26,7 @@ import StatusTag from '../../../../components/StatusTag'
 import useBatchDelete from '../../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../../stores/auth'
 import { AI_MEMORY_CONFIDENCE_META, AI_MEMORY_SCOPE_META } from '../../../../utils/ai'
+import { AI_MEMORY_SOURCE_LABELS } from '../../../../utils/i18nLabels'
 import { formatDateTime } from '../../../../utils/format'
 import { hasPermission } from '../../../../utils/permission'
 
@@ -169,7 +170,7 @@ export default function AiMemoriesPage() {
       title: '来源',
       dataIndex: 'source_type',
       width: 110,
-      render: (v: string) => v || '-',
+      render: (v: string) => (v ? AI_MEMORY_SOURCE_LABELS[v] ?? v : '-'),
     },
     {
       title: '状态',

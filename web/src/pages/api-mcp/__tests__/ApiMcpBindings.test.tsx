@@ -93,7 +93,7 @@ describe('BindingsTab（NG-MCP G1 绑定管理）', () => {
     expect(await screen.findByText('商城（SHOP）')).toBeInTheDocument()
     expect(screen.getByText('/mcp')).toBeInTheDocument()
     expect(screen.getByText('pay-tools')).toBeInTheDocument()
-    expect(screen.getByText('观测（OBSERVE）')).toBeInTheDocument()
+    expect(screen.getByText('观察')).toBeInTheDocument()
     expect(screen.getByText('v3')).toBeInTheDocument()
   })
 
@@ -135,8 +135,8 @@ describe('BindingsTab（NG-MCP G1 绑定管理）', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/当前乐观锁版本 v3/)).toBeInTheDocument()
     // 改 mode 为 PROTECT
-    fireEvent.mouseDown(within(dialog).getByText('观测（OBSERVE）'))
-    fireEvent.click(await screen.findByText('实断（PROTECT）'))
+    fireEvent.mouseDown(within(dialog).getByText('观察'))
+    fireEvent.click(await screen.findByText('实断'))
     // 第一次提交 409 版本冲突
     vi.mocked(mcpApi.updateBinding).mockRejectedValueOnce(new ApiError('binding version conflict（乐观锁不匹配）', 'RESOURCE_CONFLICT', 409))
     fireEvent.click(within(dialog).getByRole('button', { name: '保 存' }))

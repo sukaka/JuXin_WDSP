@@ -202,12 +202,12 @@ describe('StrongFlowInstancesTab（NG-FLOW-02/03/04 §1.9 实例管理区块）'
       '.ant-alert-warning .ant-alert-title',
     )
     expect(alertMessage?.textContent).toBe('未知，不显示安全通过')
-    expect(screen.getByText('UNKNOWN_NOT_CONFIRMED')).toBeInTheDocument()
-    // 步骤轨迹：action/result/fencing/reason_code 明细（evidence_read 档）
-    expect(screen.getAllByText('RESERVE').length).toBeGreaterThanOrEqual(2)
-    expect(screen.getByText('INSTANCE_INDETERMINATE')).toBeInTheDocument()
+    expect(screen.queryByText('UNKNOWN_NOT_CONFIRMED')).not.toBeInTheDocument()
+    // 步骤轨迹：action/result/fencing/reason_code 明细（evidence_read 档）已中文化
+    expect(screen.getAllByText('步骤预留').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('实例转未知待对账')).toBeInTheDocument()
     expect(
-      screen.getByText(/fencing_token=2 · UNKNOWN-001/),
+      screen.getByText(/防重入序号=2 · 证据不足或依赖不可用/),
     ).toBeInTheDocument()
     // 实例恢复记录：本例无管理对账事件
     expect(screen.getByText('暂无管理恢复记录。')).toBeInTheDocument()
@@ -217,13 +217,13 @@ describe('StrongFlowInstancesTab（NG-FLOW-02/03/04 §1.9 实例管理区块）'
     await openIndeterminateDetail()
     const submit = screen.getByRole('button', { name: '提交恢复' })
     expect(submit).toBeDisabled()
-    expect(screen.getByText('reason 必填')).toBeInTheDocument()
+    expect(screen.getByText('对账理由必填')).toBeInTheDocument()
     expect(strongFlowApi.resolveInstance).not.toHaveBeenCalled()
   })
 
   it('恢复提交：三 action 之一 + reason + expected_version 随行', async () => {
     await openIndeterminateDetail()
-    fireEvent.click(screen.getByText('确认业务已执行（CONFIRM_SUCCEEDED）'))
+    fireEvent.click(screen.getByText('确认业务已执行'))
     fireEvent.change(screen.getByLabelText('对账理由'), {
       target: { value: '  源站日志确认支付已执行  ' },
     })

@@ -33,6 +33,7 @@ import useBatchDelete from '../../../../hooks/useBatchDelete'
 import { useAuthStore } from '../../../../stores/auth'
 import { AI_PROMPT_TYPE_META } from '../../../../utils/ai'
 import { formatDateTime } from '../../../../utils/format'
+import { AI_PROMPT_GATE_STATE_META, AI_PROMPT_STATUS_META } from '../../../../utils/i18nLabels'
 import { hasPermission } from '../../../../utils/permission'
 
 const PROMPT_TYPE_OPTIONS = Object.entries(AI_PROMPT_TYPE_META).map(([value, meta]) => ({
@@ -54,8 +55,8 @@ const ADVERSARIAL_CATEGORY_LABEL: Record<string, string> = {
 
 /** 发布门两个门槛的状态标签（发布门错误文案中的取值：PASSED/ADVERSARIAL_* /FAILED/未执行） */
 function gateStateTag(state: string) {
-  if (state === 'PASSED' || state === 'ADVERSARIAL_PASSED') return <Tag color="green">{state}</Tag>
-  if (state === '未执行') return <Tag>未执行</Tag>
+  const m = AI_PROMPT_GATE_STATE_META[state]
+  if (m) return <Tag color={m.color}>{m.label}</Tag>
   return <Tag color="red">{state || '未知'}</Tag>
 }
 
@@ -294,7 +295,7 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
           content: (
             <div>
               <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                仅回归测试 PASSED 且对抗测试 ADVERSARIAL_PASSED 的版本可发布。
+                仅回归测试「回归通过」且对抗测试「对抗通过」的版本可发布。
               </Typography.Paragraph>
               <Space direction="vertical" size={4}>
                 <span>回归测试：{gateStateTag(gate.testResult)}</span>
@@ -502,7 +503,7 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
     >
       <Space direction="vertical" size={12} style={{ display: 'flex' }}>
         <Typography.Text type="secondary">
-          版本不可变；仅回归测试通过（PASSED）且对抗测试通过（ADVERSARIAL_PASSED）的版本可发布。
+          版本不可变；仅回归测试通过且对抗测试通过的版本可发布。
         </Typography.Text>
         {versionsQuery.isError ? (
           <QueryErrorAlert error={versionsQuery.error} message="加载版本列表失败" />
@@ -692,7 +693,7 @@ export default function AiPromptsPage() {
       title: '状态',
       dataIndex: 'status',
       width: 100,
-      render: (v: string) => v || '-',
+      render: (v: string) => (v ? <StatusTag value={v} map={AI_PROMPT_STATUS_META} /> : '-'),
     },
     {
       title: '当前版本',

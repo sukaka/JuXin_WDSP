@@ -281,6 +281,11 @@ describe('TrafficAgentsPage', () => {
     expect(screen.getByText('Agent 总数')).toBeInTheDocument()
     const totalCard = screen.getByText('Agent 总数').closest('.ant-statistic')!
     expect(totalCard.textContent).toContain('4')
+    // 列头中文化（操作系统 / 丢包/秒）
+    expect(screen.getAllByText('操作系统').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('丢包/秒').length).toBeGreaterThan(0)
+    expect(screen.queryByText('OS')).not.toBeInTheDocument()
+    expect(screen.queryByText('Drop/s')).not.toBeInTheDocument()
   })
 
   it('无权限（403）展示暂无权限提示', async () => {
@@ -399,6 +404,10 @@ describe('TrafficAgentsPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: '采集策略' }))
     expect(await screen.findByText('production-web')).toBeInTheDocument()
     expect(screen.getByText('v3')).toBeInTheDocument()
+    // 采集配置列展示中文方向与输出模式，不裸露 both / FLOW
+    expect(
+      screen.getByText(/等级 L0 \/ eth0 \/ 双向 \/ 端口 80,443 \/ 流元数据 \/ 限速 100 Mbps/),
+    ).toBeInTheDocument()
 
     // 编辑：保存时提交 name + config（表单字段覆盖 JSON 对应键）
     fireEvent.click(screen.getByRole('button', { name: /编\s*辑/ }))

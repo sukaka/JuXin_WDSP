@@ -490,14 +490,14 @@ export default function LicensePage() {
           <Alert
             type="info"
             showIcon
-            message="当前账号无授权导入权限（license.manage），如需导入授权请联系系统管理员。"
+            message="当前账号无授权导入权限，如需导入授权请联系系统管理员。"
           />
         )}
       </Card>
 
       <Card title="导入历史">
         {!canReadHistory ? (
-          <Alert type="info" showIcon message="当前账号无授权历史查看权限（license.read）。" />
+          <Alert type="info" showIcon message="当前账号无授权历史查看权限。" />
         ) : historyQuery.isError ? (
           <Alert
             type="error"

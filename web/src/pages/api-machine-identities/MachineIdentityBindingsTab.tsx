@@ -102,8 +102,8 @@ function CreateBindingModal({ onClose, onSaved }: { onClose: () => void; onSaved
         <Space size={16} wrap style={{ display: 'flex' }}>
           <Form.Item name="path_kind" label="路径形态" rules={[{ required: true, message: '请选择路径形态' }]}>
             <Radio.Group>
-              <Radio value="path_exact">精确路径（path_exact）</Radio>
-              <Radio value="path_prefix">路径前缀（path_prefix）</Radio>
+              <Radio value="path_exact">精确路径</Radio>
+              <Radio value="path_prefix">路径前缀</Radio>
             </Radio.Group>
           </Form.Item>
           <Form.Item
@@ -119,7 +119,7 @@ function CreateBindingModal({ onClose, onSaved }: { onClose: () => void; onSaved
                 },
               },
             ]}
-            extra="/ 开头、≤512、不含 query/fragment（jwt selector 同形）"
+            extra="/ 开头、≤512 字符、不含查询串或锚点"
           >
             <Input placeholder="如：/api/v1/billing 或 /api/v1/billing/" />
           </Form.Item>
@@ -133,9 +133,9 @@ function CreateBindingModal({ onClose, onSaved }: { onClose: () => void; onSaved
           </Form.Item>
           <Form.Item
             name="proof_required"
-            label="强制签名（proof_required）"
+            label="强制签名"
             valuePropName="checked"
-            extra="true=绑定命中且未签名请求拒绝 401"
+            extra="开启后，命中绑定路径且未签名的请求将被拒绝（401）"
           >
             <Switch />
           </Form.Item>
@@ -144,12 +144,12 @@ function CreateBindingModal({ onClose, onSaved }: { onClose: () => void; onSaved
           <Alert
             type="warning"
             showIcon
-            message="PROTECT 模式：验签失败与违规模态协议化执行（401 固定短语）"
-            description="proof_required=true 时绑定命中且未签名的请求即拒绝 401（准入语义）；false 时未签名按普通流量继续既有防护。机器身份 VERIFIED 不产生全局放行——授权/预算/WAF/API 防护照常。"
+            message="实断模式：验签失败与违规请求按协议执行（401 固定短语）"
+            description="开启强制签名时，命中绑定路径且未签名的请求将直接拒绝 401（准入语义）；关闭时未签名按普通流量继续既有防护。机器身份验证通过不产生全局放行——授权/预算/WAF/API 防护照常。"
           />
         ) : null}
         {watchedMode !== 'PROTECT' && watchedProof ? (
-          <Alert type="info" showIcon message="proof_required=true：绑定命中且未签名的请求将拒绝 401。" />
+          <Alert type="info" showIcon message="已开启强制签名：命中绑定路径且未签名的请求将拒绝 401。" />
         ) : null}
       </Form>
     </Modal>
@@ -213,7 +213,7 @@ function EditBindingModal({
         <Form.Item name="mode" label="模式" rules={[{ required: true, message: '请选择模式' }]}>
           <Select options={Object.entries(MACHINE_IDENTITY_MODE_META).map(([value, meta]) => ({ value, label: meta.label }))} />
         </Form.Item>
-        <Form.Item name="proof_required" label="强制签名（proof_required）" valuePropName="checked" extra="true=绑定命中且未签名请求拒绝 401">
+        <Form.Item name="proof_required" label="强制签名" valuePropName="checked" extra="开启后，命中绑定路径且未签名的请求将被拒绝（401）">
           <Switch />
         </Form.Item>
       </Form>

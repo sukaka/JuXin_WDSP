@@ -13,19 +13,22 @@ import {
   Typography,
 } from 'antd'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { SIGNAL_META } from '../../utils/identitySecurity'
+
+const EXTRA_SIGNAL_OPTIONS = [
+  { value: 'RECON', label: '侦察' },
+  { value: 'WAF', label: 'WAF 攻击命中' },
+  { value: 'API_SCHEMA', label: 'API 模型偏离' },
+  { value: 'API_PARSER', label: 'API 解析异常' },
+  { value: 'AUTHENTICATION', label: '认证失败' },
+]
 
 const SIGNAL_KEY_OPTIONS = [
-  { value: 'RECON', label: 'RECON（侦察）' },
-  {
-    value: 'SENSITIVE_PATH_PROBE',
-    label: 'SENSITIVE_PATH_PROBE（敏感路径探测）',
-  },
-  { value: 'AUTH_FAIL_PROBE', label: 'AUTH_FAIL_PROBE（认证探测）' },
-  { value: 'WAF', label: 'WAF（WAF 攻击命中）' },
-  { value: 'API_SCHEMA', label: 'API_SCHEMA（Schema 偏离）' },
-  { value: 'API_PARSER', label: 'API_PARSER（解析异常）' },
-  { value: 'HEADLESS', label: 'HEADLESS（无头浏览器）' },
-  { value: 'AUTHENTICATION', label: 'AUTHENTICATION（认证失败）' },
+  ...Object.entries(SIGNAL_META).map(([value, meta]) => ({
+    value,
+    label: meta.label,
+  })),
+  ...EXTRA_SIGNAL_OPTIONS.filter((opt) => !(opt.value in SIGNAL_META)),
 ]
 
 const MODE_OPTIONS = [
@@ -163,7 +166,7 @@ export default function RiskPolicyFields({
             name="challenge_threshold"
             label="挑战阈值（0 关闭）"
             dependencies={['rate_limit_threshold', 'block_threshold']}
-            extra="开启时取值 1-100，且须大于限速阈值、小于阻断阈值；依赖本应用 Bot 为 PROTECT 且已配置 selector。只对合格的 HTTPS GET 浏览器文档导航发起 JS 挑战，挑战后仍执行后续防护。"
+            extra="开启时取值 1-100，且须大于限速阈值、小于阻断阈值；依赖本应用 Bot 防护为防护模式且已配置匹配规则。只对合格的 HTTPS GET 浏览器文档导航发起 JS 挑战，挑战后仍执行后续防护。"
             rules={[
               { required: true, message: '请输入挑战阈值' },
               ({ getFieldValue }) => ({
@@ -244,7 +247,7 @@ export default function RiskPolicyFields({
         <Col xs={24} sm={12} md={8}>
           <Form.Item
             name={['risk_levels', 'medium']}
-            label="中风险下限（MEDIUM）"
+            label="中风险下限"
             rules={[{ required: true, message: '请输入中风险下限' }]}
           >
             <InputNumber
@@ -258,7 +261,7 @@ export default function RiskPolicyFields({
         <Col xs={24} sm={12} md={8}>
           <Form.Item
             name={['risk_levels', 'high']}
-            label="高风险下限（HIGH）"
+            label="高风险下限"
             rules={[{ required: true, message: '请输入高风险下限' }]}
           >
             <InputNumber
@@ -272,7 +275,7 @@ export default function RiskPolicyFields({
         <Col xs={24} sm={12} md={8}>
           <Form.Item
             name={['risk_levels', 'critical']}
-            label="严重风险下限（CRITICAL）"
+            label="严重风险下限"
             rules={[{ required: true, message: '请输入严重风险下限' }]}
           >
             <InputNumber
@@ -286,7 +289,7 @@ export default function RiskPolicyFields({
       </Row>
 
       <Divider titlePlacement="start" plain>
-        信号分值（各信号命中加分，0-100；键为大写蛇形 signal_type）
+        信号分值（各信号命中加分，0-100）
       </Divider>
       <Form.List name="score_entries">
         {(fields, { add, remove }) => (
@@ -305,13 +308,13 @@ export default function RiskPolicyFields({
                     { required: true, message: '请输入信号类型' },
                     {
                       pattern: /^[A-Z][A-Z0-9_]*$/,
-                      message: '大写蛇形命名，如 RECON',
+                      message: '仅支持大写字母、数字与下划线，如 RECON',
                     },
                   ]}
                 >
                   <AutoComplete
                     options={SIGNAL_KEY_OPTIONS}
-                    placeholder="信号类型，如 RECON"
+                    placeholder="选择或输入信号类型"
                     style={{ width: 320 }}
                   />
                 </Form.Item>

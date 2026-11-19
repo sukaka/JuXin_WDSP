@@ -397,7 +397,7 @@ describe('NetworkConfigPage', () => {
       },
     }
     renderPage()
-    expect(await screen.findByText('已联动 down')).toBeInTheDocument()
+    expect(await screen.findByText('已联动断开')).toBeInTheDocument()
     expect(screen.getByText('eth1 / eth2')).toBeInTheDocument()
     expect(screen.getByText('1 次')).toBeInTheDocument()
     expect(screen.getByText(/配对口 eth2 已联动 down/)).toBeInTheDocument()

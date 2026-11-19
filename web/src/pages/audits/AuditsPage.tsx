@@ -24,6 +24,7 @@ import { auditsApi } from '../../api/audits'
 import RiskLevelTag from '../../components/RiskLevelTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatJson } from '../../utils/format'
+import { formatAuditAction, formatAuditModule, formatAuditObjectType } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import type { AuditEntry } from '../../types'
 
@@ -102,8 +103,8 @@ export default function AuditsPage() {
     { title: '时间', dataIndex: 'occurred_at', width: 170, render: (v: string) => formatDateTime(v) },
     { title: '操作人', dataIndex: 'username', width: 120 },
     { title: '来源 IP', dataIndex: 'source_ip', width: 130 },
-    { title: '模块', dataIndex: 'module', width: 120 },
-    { title: '操作', dataIndex: 'action', width: 120 },
+    { title: '模块', dataIndex: 'module', width: 120, render: (v: string) => formatAuditModule(v) },
+    { title: '操作', dataIndex: 'action', width: 120, render: (v: string) => formatAuditAction(v) },
     {
       title: '对象',
       key: 'object',
@@ -274,9 +275,9 @@ export default function AuditsPage() {
               <Descriptions.Item label="时间" span={2}>{formatDateTime(detail.occurred_at)}</Descriptions.Item>
               <Descriptions.Item label="操作人">{detail.username}</Descriptions.Item>
               <Descriptions.Item label="来源 IP">{detail.source_ip}</Descriptions.Item>
-              <Descriptions.Item label="模块">{detail.module}</Descriptions.Item>
-              <Descriptions.Item label="操作">{detail.action}</Descriptions.Item>
-              <Descriptions.Item label="对象类型">{detail.object_type || '-'}</Descriptions.Item>
+              <Descriptions.Item label="模块">{formatAuditModule(detail.module)}</Descriptions.Item>
+              <Descriptions.Item label="操作">{formatAuditAction(detail.action)}</Descriptions.Item>
+              <Descriptions.Item label="对象类型">{formatAuditObjectType(detail.object_type ?? undefined)}</Descriptions.Item>
               <Descriptions.Item label="对象名称">{detail.object_name || detail.object_id || '-'}</Descriptions.Item>
               <Descriptions.Item label="结果">
                 {detail.result === 'SUCCESS' ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>}

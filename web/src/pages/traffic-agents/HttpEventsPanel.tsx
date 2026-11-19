@@ -32,6 +32,7 @@ import {
   REPLAY_DELAY_THRESHOLD_SEC,
   SOURCE_TYPE_META,
   TLS_VISIBILITY_META,
+  formatK8sSide,
   formatUnixTime,
   httpStatusColor,
   httpVersionLabel,
@@ -171,7 +172,7 @@ function BodyView({ message }: { message: TrafficHttpMessage }) {
           type="warning"
           showIcon
           style={{ marginBottom: 8 }}
-          message={`Body 未采集（${skipped}）：${BODY_SKIPPED_REASON_META[skipped] ?? skipped}`}
+          message={`正文未采集：${BODY_SKIPPED_REASON_META[skipped] ?? skipped}`}
           description={`原始大小 ${formatBytes(message.original_body_size)}`}
         />
       ) : message.body_truncated ? (
@@ -179,8 +180,8 @@ function BodyView({ message }: { message: TrafficHttpMessage }) {
           type="info"
           showIcon
           style={{ marginBottom: 8 }}
-          message="Body 已截断"
-          description={`受策略 max_body_size 上限限制仅采集前缀，原始大小 ${formatBytes(message.original_body_size)}`}
+          message="正文已截断"
+          description={`受策略最大正文长度上限限制仅采集前缀，原始大小 ${formatBytes(message.original_body_size)}`}
         />
       ) : null}
       {message.body ? (
@@ -201,7 +202,7 @@ function BodyView({ message }: { message: TrafficHttpMessage }) {
           {formatJson(message.body)}
         </pre>
       ) : !skipped ? (
-        <Typography.Text type="secondary">无 Body</Typography.Text>
+        <Typography.Text type="secondary">无正文</Typography.Text>
       ) : null}
       <BodyQualityLine message={message} />
       <Typography.Text
@@ -221,7 +222,7 @@ function EventV2Section({ event }: { event: TrafficHttpEvent }) {
   const replaySuspected = delay !== null && delay > REPLAY_DELAY_THRESHOLD_SEC
   return (
     <div>
-      <Typography.Text strong>来源与数据质量（schema v2）</Typography.Text>
+      <Typography.Text strong>来源与数据质量（v2 协议）</Typography.Text>
       <Descriptions
         column={2}
         size="small"
@@ -242,7 +243,7 @@ function EventV2Section({ event }: { event: TrafficHttpEvent }) {
           <SourceTypeTag event={event} />
         </Descriptions.Item>
         <Descriptions.Item label="来源实例 / 代次">
-          {`${event.source_instance || '-'} / epoch ${event.source_epoch ?? 0}`}
+          {`${event.source_instance || '-'} / 代次 ${event.source_epoch ?? 0}`}
         </Descriptions.Item>
         <Descriptions.Item label="来源能力版本">
           {event.source_capabilities_version || '-'}
@@ -348,7 +349,7 @@ function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
   return (
     <Space direction="vertical" size={16} style={{ display: 'flex' }}>
       <Descriptions column={2} size="small" bordered>
-        <Descriptions.Item label="Flow ID" span={2}>
+        <Descriptions.Item label="流 ID" span={2}>
           <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
             {event.flow_id}
           </Typography.Text>
@@ -367,7 +368,7 @@ function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
         {event.k8s ? (
           <Descriptions.Item label="K8s 工作负载" span={2}>
             <Tooltip
-              title={`集群: ${event.k8s.cluster || '-'}；工作负载: ${event.k8s.workload || '-'}；服务: ${event.k8s.service || '-'}；端点: ${event.k8s.side}`}
+              title={`集群: ${event.k8s.cluster || '-'}；工作负载: ${event.k8s.workload || '-'}；服务: ${event.k8s.service || '-'}；端点: ${formatK8sSide(event.k8s.side)}`}
             >
               {`${event.k8s.namespace}/${event.k8s.pod}`}
             </Tooltip>
@@ -404,11 +405,11 @@ function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
               strong
               style={{ display: 'block', margin: '8px 0 4px' }}
             >
-              请求 Trailers
+              请求尾部头
             </Typography.Text>
             <HeadersTable
               headers={req.trailers}
-              emptyText="确认无请求 Trailer"
+              emptyText="确认无请求尾部头"
             />
           </>
         ) : null}
@@ -416,7 +417,7 @@ function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
           strong
           style={{ display: 'block', margin: '8px 0 4px' }}
         >
-          请求 Body
+          请求正文
         </Typography.Text>
         <BodyView message={req} />
       </div>
@@ -435,11 +436,11 @@ function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
                   strong
                   style={{ display: 'block', margin: '8px 0 4px' }}
                 >
-                  响应 Trailers
+                  响应尾部头
                 </Typography.Text>
                 <HeadersTable
                   headers={resp.trailers}
-                  emptyText="确认无响应 Trailer"
+                  emptyText="确认无响应尾部头"
                 />
               </>
             ) : null}
@@ -447,7 +448,7 @@ function HttpEventDetail({ event }: { event: TrafficHttpEvent }) {
               strong
               style={{ display: 'block', margin: '8px 0 4px' }}
             >
-              响应 Body
+              响应正文
             </Typography.Text>
             <BodyView message={resp} />
           </>
@@ -567,7 +568,7 @@ export default function HttpEventsPanel({
       render: (_, r) =>
         r.k8s ? (
           <Tooltip
-            title={`集群: ${r.k8s.cluster || '-'}；命名空间: ${r.k8s.namespace || '-'}；Pod: ${r.k8s.pod || '-'}；工作负载: ${r.k8s.workload || '-'}；服务: ${r.k8s.service || '-'}；端点: ${r.k8s.side}`}
+            title={`集群: ${r.k8s.cluster || '-'}；命名空间: ${r.k8s.namespace || '-'}；Pod: ${r.k8s.pod || '-'}；工作负载: ${r.k8s.workload || '-'}；服务: ${r.k8s.service || '-'}；端点: ${formatK8sSide(r.k8s.side)}`}
           >
             <Typography.Text ellipsis style={{ maxWidth: 170 }}>
               {`${r.k8s.namespace}/${r.k8s.pod}`}
@@ -598,14 +599,14 @@ export default function HttpEventsPanel({
         const tags = []
         if (r.request.body_truncated) {
           tags.push(
-            <Tooltip key="req" title="请求 Body 已按策略上限截断">
+            <Tooltip key="req" title="请求正文已按策略上限截断">
               <Tag color="orange">请求截断</Tag>
             </Tooltip>,
           )
         }
         if (r.response?.body_truncated) {
           tags.push(
-            <Tooltip key="resp" title="响应 Body 已按策略上限截断">
+            <Tooltip key="resp" title="响应正文已按策略上限截断">
               <Tag color="orange">响应截断</Tag>
             </Tooltip>,
           )
@@ -623,12 +624,12 @@ export default function HttpEventsPanel({
           showIcon
           style={{ marginBottom: 12 }}
           message="该 Agent 仅支持 v1 事件（需升级）"
-          description="来源、协议观测、关联状态、Body 数据质量等 v2 字段需要 Agent 升级并在注册/心跳中声明 schema v2 能力后才会产生；当前列表中 v1 记录的相应位置显示为「-」。"
+          description="来源、协议观测、关联状态、正文数据质量等 v2 字段需要 Agent 升级并在注册/心跳中声明 v2 协议能力后才会产生；当前列表中 v1 记录的相应位置显示为「-」。"
         />
       ) : null}
       <Space style={{ marginBottom: 12 }} wrap>
         <Input.Search
-          placeholder="按 Host 过滤"
+          placeholder="按域名过滤"
           allowClear
           style={{ width: 220 }}
           onSearch={(v) => {
@@ -637,7 +638,7 @@ export default function HttpEventsPanel({
           }}
         />
         <Select
-          placeholder="按 Method 过滤"
+          placeholder="按请求方法过滤"
           allowClear
           style={{ width: 140 }}
           options={METHOD_OPTIONS}

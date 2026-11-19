@@ -32,6 +32,7 @@ import RegressionGateNotice, {
 } from './RegressionGateNotice'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatJson } from '../../utils/format'
+import { PUBLISH_FAILURE_CODE_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import {
   PROTECTION_MODE_META,
@@ -94,7 +95,7 @@ export function PublishTaskProgress({ taskId }: { taskId: string }) {
           <Alert
             type="error"
             showIcon
-            message={`发布失败（${task.failure_code || '未知原因'}）`}
+            message={`发布失败（${task.failure_code ? (PUBLISH_FAILURE_CODE_LABELS[task.failure_code] ?? task.failure_code) : '未知原因'}）`}
             description={
               <>
                 {task.failure_message || task.result_summary}

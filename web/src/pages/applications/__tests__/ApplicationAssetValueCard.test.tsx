@@ -72,12 +72,73 @@ describe('ApplicationAssetValueCard', () => {
     expect(screen.getByText('已评分 2，未评分 1')).toBeInTheDocument()
     expect(screen.getByText('高：1')).toBeInTheDocument()
     expect(screen.getByText('中：1')).toBeInTheDocument()
-    expect(screen.getByText('data_sensitivity')).toBeInTheDocument()
+    expect(screen.getByText('数据敏感度')).toBeInTheDocument()
+    expect(screen.queryByText('data_sensitivity')).not.toBeInTheDocument()
     expect(screen.getByText('2.50')).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/api-security/applications/app-1/asset-value',
       expect.objectContaining({ method: 'GET' }),
     )
+  })
+
+  it('9 个资产价值评估维度全部展示中文名称且综合等级与等级分布分行排布', async () => {
+    setPermissions(['api_asset.read'])
+    const allDimensions = [
+      { name: 'admin_capability', average_score: 0.14, max: 3 },
+      { name: 'business_sensitivity', average_score: 1.5, max: 5 },
+      { name: 'data_sensitivity', average_score: 0.04, max: 4 },
+      { name: 'dependency_degree', average_score: 0, max: 3 },
+      { name: 'internet_exposure', average_score: 3, max: 3 },
+      { name: 'privilege', average_score: 0.14, max: 3 },
+      { name: 'traffic_scale', average_score: 0.25, max: 3 },
+      { name: 'transaction_capability', average_score: 0, max: 3 },
+      { name: 'write_capability', average_score: 1.01, max: 3 },
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        response(200, {
+          application_id: 'app-1',
+          level: 'LOW',
+          average_score: 6.08,
+          max_score: 10,
+          max_total: 30,
+          endpoint_count: 140,
+          scored_count: 140,
+          unscored_count: 0,
+          level_distribution: { LOW: 130, MEDIUM: 10 },
+          dimensions: allDimensions,
+          generated_at: '2026-11-19T04:00:00Z',
+        }),
+      ),
+    )
+    renderCard()
+    await screen.findByText('平均得分')
+
+    const expectedLabels = [
+      '管理能力',
+      '业务敏感度',
+      '数据敏感度',
+      '依赖度',
+      '公网暴露',
+      '权限等级',
+      '流量规模',
+      '交易能力',
+      '写能力',
+    ]
+    for (const label of expectedLabels) {
+      expect(screen.getByText(label)).toBeInTheDocument()
+    }
+    for (const dim of allDimensions) {
+      expect(screen.queryByText(dim.name)).not.toBeInTheDocument()
+    }
+
+    // 综合等级与等级分布分别占据独立块级 flex 行，不粘连
+    const levelRow = screen.getByText('综合等级').closest('.ant-space') as HTMLElement
+    const distRow = screen.getByText('等级分布').closest('.ant-space') as HTMLElement
+    expect(levelRow).not.toBe(distRow)
+    expect(levelRow.style.display).toBe('flex')
+    expect(distRow.style.display).toBe('flex')
   })
 
   it('无评分时明确披露，不将空数据冒充低分', async () => {
@@ -114,7 +175,7 @@ describe('ApplicationAssetValueCard', () => {
     vi.stubGlobal('fetch', fetchMock)
     renderCard()
     expect(
-      screen.getByText('缺少 api_asset.read 权限，无法查看应用资产价值'),
+      screen.getByText('缺少「API 资产查看」权限，无法查看应用资产价值'),
     ).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
   })

@@ -3,9 +3,11 @@ import type { ColumnsType } from 'antd/es/table'
 import { useQuery } from '@tanstack/react-query'
 import { apiModelsApi, type ApiResponseSchemaItem } from '../../api/apiAssets'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
+import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
+import { API_BASE_TYPE_META } from '../../utils/stage8'
 
 interface Props {
   endpointId: string
@@ -124,7 +126,9 @@ export default function ResponseSchemaPanel({ endpointId }: Props) {
                       title: '类型',
                       dataIndex: 'type',
                       width: 160,
-                      render: (value: string) => <Tag>{value}</Tag>,
+                      render: (value: string) => (
+                        <StatusTag value={value} map={API_BASE_TYPE_META} />
+                      ),
                     },
                   ]}
                   dataSource={Object.entries(record.fields)

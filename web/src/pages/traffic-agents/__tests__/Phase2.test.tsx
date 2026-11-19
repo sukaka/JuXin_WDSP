@@ -4,6 +4,7 @@ import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import TrafficAgentsPage from '../TrafficAgentsPage'
 import PolicyPanel from '../PolicyPanel'
+import { HEALTH_REASON_META } from '../meta'
 import { useAuthStore } from '../../../stores/auth'
 import type { CurrentUser } from '../../../types'
 
@@ -183,6 +184,7 @@ describe('Phase 2：健康分列与详情', () => {
     expect(await within(drawer).findByText('健康分')).toBeInTheDocument()
     expect(within(drawer).getByText(/CPU 超过阈值；时钟偏移超阈/)).toBeInTheDocument()
     expect(within(drawer).getByText('+6.0s（偏慢）')).toBeInTheDocument()
+    expect(HEALTH_REASON_META.status_error).toBe('自报状态异常')
   })
 })
 

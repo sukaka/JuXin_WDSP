@@ -6,6 +6,7 @@ import SmartTable from '../../components/SmartTable'
 import type { ColumnsType } from 'antd/es/table'
 import { ApiError } from '../../api/client'
 import { rolesApi } from '../../api/roles'
+import { formatPermissionModule } from '../../utils/i18nLabels'
 import type { PermissionItem, RoleItem } from '../../types'
 
 function groupByModule(permissions: PermissionItem[]): [string, PermissionItem[]][] {
@@ -103,7 +104,7 @@ export default function RolesPage() {
           <Collapse
             items={allPermissionGroups.map(([module, items]) => ({
               key: module,
-              label: `${module}（${items.length}）`,
+              label: `${formatPermissionModule(module)}（${items.length}）`,
               children: (
                 <SmartTable<PermissionItem>
                   storageKey="roles-2"
@@ -149,7 +150,7 @@ export default function RolesPage() {
             <Collapse
               items={rolePermissionGroups.map(([module, items]) => ({
                 key: module,
-                label: `${module}（${items.length}）`,
+                label: `${formatPermissionModule(module)}（${items.length}）`,
                 children: (
                   <SmartTable<PermissionItem>
                     storageKey="roles-3"

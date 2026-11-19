@@ -23,6 +23,7 @@ import { hasPermission } from '../../utils/permission'
 import RiskPolicyFields from './RiskPolicyFields'
 import {
   duplicateScoreKeys,
+  formatRiskPolicyField,
   formValuesToBody,
   policyToFormValues,
   type PolicyFormValues,
@@ -64,7 +65,11 @@ export default function ApplicationRiskOverridesPanel({ globalPolicy }: Props) {
     if (Array.isArray(error.details)) {
       const details = error.details as { field?: string; message?: string }[]
       const text = details
-        .map((item) => `${item.field ?? ''}: ${item.message ?? '取值不合法'}`)
+        .map((item) => {
+          const label = formatRiskPolicyField(item.field)
+          const msg = item.message ?? '取值不合法'
+          return label ? `${label}：${msg}` : msg
+        })
         .join('；')
       if (text) return `${error.message}（${text}）`
     }

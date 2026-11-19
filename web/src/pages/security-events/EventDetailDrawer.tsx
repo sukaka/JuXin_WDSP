@@ -12,6 +12,7 @@ import {
   List,
   Space,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import { Link } from 'react-router-dom'
@@ -24,6 +25,7 @@ import { useAuthStore } from '../../stores/auth'
 import { useProductStore } from '../../stores/product'
 import { buildEventApmTraceHref } from '../../utils/apm'
 import { formatDateTime } from '../../utils/format'
+import { DECISION_REASON_CODE_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import BlacklistFromEventModal from './BlacklistFromEventModal'
 import {
@@ -64,6 +66,7 @@ const FINAL_SECURITY_ACTION_META: Record<string, { color: string; label: string 
 const EXECUTOR_MODULE_META: Record<string, { color: string; label: string }> = {
   PROTECTED_ADDRESS: { color: 'geekblue', label: '保护地址' },
   MANUAL_BAN: { color: 'red', label: '人工临时封禁' },
+  IP_ALLOWLIST: { color: 'green', label: 'IP 白名单' },
   IP_BLACKLIST: { color: 'red', label: 'IP 黑名单' },
   L7_ACL: { color: 'red', label: 'L7 访问控制' },
   AUTO_BAN: { color: 'red', label: '自动临时封禁' },
@@ -74,6 +77,7 @@ const EXECUTOR_MODULE_META: Record<string, { color: string; label: string }> = {
   JWT: { color: 'purple', label: 'JWT 信任链' },
   API: { color: 'purple', label: 'API 动态防护' },
   WAF: { color: 'red', label: 'WAF（Coraza/CRS）' },
+  TRUNCATED: { color: 'default', label: '已截断' },
   NONE: { color: 'green', label: '无' },
   UNKNOWN: { color: 'default', label: '未知' },
 }
@@ -146,13 +150,13 @@ function FinalDecisionSection({ decision }: { decision: FinalDecision }) {
             <Space wrap size={4}>
               {apiSteps.map((s, i) => (
                 <Tag key={`api-step-${i}`} color={STEP_RESULT_META[s.result ?? '']?.color}>
-                  {`API ${s.result ?? ''}${s.detail ? `：${s.detail}` : ''}`}
+                  {`API ${STEP_RESULT_META[s.result ?? '']?.label ?? (s.result ?? '')}${s.detail ? `：${s.detail}` : ''}`}
                 </Tag>
               ))}
             </Space>
             <div style={{ fontSize: 12, marginTop: 4 }}>
               <Typography.Text type="secondary">
-                API 决策为中间结果：API ALLOW 不等于最终放行，最终处置以本节安全动作为准
+                API 决策为中间结果：API 放行不等于最终放行，最终处置以本节安全动作为准
               </Typography.Text>
             </div>
           </Descriptions.Item>
@@ -161,7 +165,7 @@ function FinalDecisionSection({ decision }: { decision: FinalDecision }) {
           {(decision.reason_codes ?? []).length > 0 ? (
             <Space wrap size={4}>
               {(decision.reason_codes ?? []).map((c) => (
-                <Tag key={c}>{c}</Tag>
+                <Tag key={c}>{DECISION_REASON_CODE_LABELS[c] ?? c}</Tag>
               ))}
             </Space>
           ) : (
@@ -174,7 +178,7 @@ function FinalDecisionSection({ decision }: { decision: FinalDecision }) {
               <Space wrap size={4}>
                 {shownRuleRefs.map((r, i) => (
                   <Tag key={`${r.module ?? ''}-${r.rule_id ?? ''}-${i}`}>
-                    {`${r.module ?? ''} ${r.rule_id ?? ''}${r.version ? `@${r.version}` : ''}`}
+                    {`${EXECUTOR_MODULE_META[r.module ?? '']?.label ?? (r.module ?? '')} ${r.rule_id ?? ''}${r.version ? `@${r.version}` : ''}`}
                   </Tag>
                 ))}
               </Space>
@@ -239,7 +243,7 @@ function FinalDecisionSection({ decision }: { decision: FinalDecision }) {
             '-'
           )}
         </Descriptions.Item>
-        <Descriptions.Item label="Finding 计数" span={2}>
+        <Descriptions.Item label="检测发现计数" span={2}>
           {decision.findings ? (
             <Space wrap size={4}>
               <Tag color="gold">仅观察 {decision.findings.observed ?? 0}</Tag>
@@ -284,7 +288,9 @@ function FinalDecisionSection({ decision }: { decision: FinalDecision }) {
           <div style={{ marginTop: 4, maxHeight: 240, overflow: 'auto' }}>
             {shownSteps.map((s: FinalDecisionStep, i) => (
               <div key={`step-${i}`} style={{ fontSize: 12, marginBottom: 4 }}>
-                <Tag style={{ fontFamily: 'monospace' }}>{s.module ?? '-'}</Tag>
+                <Tag color={EXECUTOR_MODULE_META[s.module ?? '']?.color}>
+                  {EXECUTOR_MODULE_META[s.module ?? '']?.label ?? (s.module ?? '-')}
+                </Tag>
                 <StatusTag value={s.result ?? ''} map={STEP_RESULT_META} />
                 {s.detail && (
                   <Typography.Text type="secondary" style={{ marginLeft: 4 }}>
@@ -623,13 +629,12 @@ export default function EventDetailDrawer({
                 </Descriptions.Item>
                 <Descriptions.Item label="原因">
                   {evt.jwt_verification.reason_code ? (
-                    <Typography.Text>
-                      {JWT_REASON_CODE_LABELS[evt.jwt_verification.reason_code] ??
-                        evt.jwt_verification.reason_code}
-                      <Typography.Text code style={{ marginLeft: 6, fontSize: 12 }}>
-                        {evt.jwt_verification.reason_code}
+                    <Tooltip title={`原因码：${evt.jwt_verification.reason_code}`}>
+                      <Typography.Text>
+                        {JWT_REASON_CODE_LABELS[evt.jwt_verification.reason_code] ??
+                          evt.jwt_verification.reason_code}
                       </Typography.Text>
-                    </Typography.Text>
+                    </Tooltip>
                   ) : (
                     '-'
                   )}
@@ -646,7 +651,7 @@ export default function EventDetailDrawer({
                 <Descriptions.Item label="策略版本">
                   {evt.jwt_verification.policy_version ?? '-'}
                 </Descriptions.Item>
-                <Descriptions.Item label="Issuer 配置">
+                <Descriptions.Item label="签发方配置">
                   {evt.jwt_verification.issuer_config_id || '-'}
                 </Descriptions.Item>
                 <Descriptions.Item label="密钥集版本">

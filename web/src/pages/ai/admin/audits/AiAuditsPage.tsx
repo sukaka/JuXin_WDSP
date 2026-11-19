@@ -23,8 +23,16 @@ import { ApiError } from '../../../../api/client'
 import QueryErrorAlert from '../../../../components/QueryErrorAlert'
 import StatusTag from '../../../../components/StatusTag'
 import { useAuthStore } from '../../../../stores/auth'
-import { AI_TASK_TYPE_META } from '../../../../utils/ai'
+import { AI_AGENT_NAMES, AI_TASK_TYPE_META } from '../../../../utils/ai'
+import { AI_AUDIT_ACTION_LABELS } from '../../../../utils/i18nLabels'
 import { hasPermission } from '../../../../utils/permission'
+
+const AI_CONFIRM_RESULT_LABELS: Record<string, string> = {
+  CONFIRMED: '已确认',
+  REJECTED: '已拒绝',
+  PENDING: '待确认',
+  EXPIRED: '已过期',
+}
 
 interface Filters {
   action?: string
@@ -95,14 +103,24 @@ export default function AiAuditsPage() {
       render: (v: string) => (v ? new Date(v).toLocaleString() : '-'),
     },
     { title: '操作人', dataIndex: 'username', width: 120, render: (v: string) => v || '-' },
-    { title: '操作', dataIndex: 'action', width: 140, render: (v: string) => v || '-' },
+    {
+      title: '操作',
+      dataIndex: 'action',
+      width: 140,
+      render: (v: string) => (v ? AI_AUDIT_ACTION_LABELS[v] ?? v : '-'),
+    },
     {
       title: '任务类型',
       dataIndex: 'task_type',
       width: 120,
       render: (v: string) => (v ? <StatusTag value={v} map={AI_TASK_TYPE_META} /> : '-'),
     },
-    { title: '智能体', dataIndex: 'agent_code', width: 130, render: (v: string) => v || '-' },
+    {
+      title: '智能体',
+      dataIndex: 'agent_code',
+      width: 150,
+      render: (v: string) => (v ? AI_AGENT_NAMES[v] ?? v : '-'),
+    },
     { title: '工具', dataIndex: 'tool_code', width: 130, render: (v: string) => v || '-' },
     {
       title: '令牌用量',
@@ -219,7 +237,9 @@ export default function AiAuditsPage() {
                 {selected.occurred_at ? new Date(selected.occurred_at).toLocaleString() : '-'}
               </Descriptions.Item>
               <Descriptions.Item label="操作人">{selected.username || '-'}</Descriptions.Item>
-              <Descriptions.Item label="操作">{selected.action || '-'}</Descriptions.Item>
+              <Descriptions.Item label="操作">
+                {selected.action ? AI_AUDIT_ACTION_LABELS[selected.action] ?? selected.action : '-'}
+              </Descriptions.Item>
               <Descriptions.Item label="任务类型">
                 {selected.task_type ? (
                   <StatusTag value={selected.task_type} map={AI_TASK_TYPE_META} />
@@ -227,7 +247,9 @@ export default function AiAuditsPage() {
                   '-'
                 )}
               </Descriptions.Item>
-              <Descriptions.Item label="智能体">{selected.agent_code || '-'}</Descriptions.Item>
+              <Descriptions.Item label="智能体">
+                {selected.agent_code ? AI_AGENT_NAMES[selected.agent_code] ?? selected.agent_code : '-'}
+              </Descriptions.Item>
               <Descriptions.Item label="工具">{selected.tool_code || '-'}</Descriptions.Item>
               <Descriptions.Item label="模型">{selected.model_code || '-'}</Descriptions.Item>
               <Descriptions.Item label="提示词版本">
@@ -241,7 +263,9 @@ export default function AiAuditsPage() {
               </Descriptions.Item>
               <Descriptions.Item label="用户 ID">{selected.user_id || '-'}</Descriptions.Item>
               <Descriptions.Item label="确认结果">
-                {selected.confirm_result || '-'}
+                {selected.confirm_result
+                  ? AI_CONFIRM_RESULT_LABELS[selected.confirm_result] ?? selected.confirm_result
+                  : '-'}
               </Descriptions.Item>
               <Descriptions.Item label="会话 ID" span={2}>
                 {selected.session_id || '-'}

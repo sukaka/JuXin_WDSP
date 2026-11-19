@@ -98,7 +98,7 @@ export default function JobsTab() {
     ? splitProbeSets(selectedAuthorization.test_profile)
     : API_SCAN_PROBE_SETS
   const probeSetOptions = (probeSetChoices.length > 0 ? probeSetChoices : API_SCAN_PROBE_SETS).map(
-    (s) => ({ value: s, label: `${SCAN_PROBE_SET_META[s] ?? s}（${s}）` }),
+    (s) => ({ value: s, label: SCAN_PROBE_SET_META[s] ?? s }),
   )
 
   const invalidateJobs = () => void qc.invalidateQueries({ queryKey: ['api-scan-jobs'] })
@@ -195,7 +195,7 @@ export default function JobsTab() {
             </Typography.Text>
           )}
           <Typography.Text>
-            启动后引擎将按授权 allowlist、时间窗与限流参数向目标发送真实探针流量，确定启动吗？
+            启动后引擎将按授权白名单、时间窗与限流参数向目标发送真实探针流量，确定启动吗？
           </Typography.Text>
         </Space>
       ),
@@ -239,11 +239,10 @@ export default function JobsTab() {
       ellipsis: true,
       render: (v: string) => {
         const sets = splitProbeSets(v)
+        const labels = sets.map((s) => SCAN_PROBE_SET_META[s] ?? s).join('、')
         return sets.length > 0 ? (
-          <Tooltip title={sets.join('、')}>
-            <Typography.Text style={{ fontSize: 12 }}>
-              {sets.map((s) => SCAN_PROBE_SET_META[s] ?? s).join('、')}
-            </Typography.Text>
+          <Tooltip title={labels}>
+            <Typography.Text style={{ fontSize: 12 }}>{labels}</Typography.Text>
           </Tooltip>
         ) : (
           <Typography.Text type="secondary">授权画像默认</Typography.Text>
@@ -436,7 +435,7 @@ export default function JobsTab() {
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="任务创建后为「待启动」，需在列表手动启动；引擎严格按授权的 allowlist、时间窗与限流参数执行。"
+          message="任务创建后为「待启动」，需在列表手动启动；引擎严格按授权的白名单、时间窗与限流参数执行。"
         />
         <Form<JobFormValues>
           form={form}

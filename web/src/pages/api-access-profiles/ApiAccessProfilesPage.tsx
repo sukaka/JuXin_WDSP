@@ -17,7 +17,7 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
-import { ENFORCEMENT_VALUE_META } from '../../utils/authzEnforcement'
+import { ENFORCEMENT_VALUE_META, EVIDENCE_SOURCE_META } from '../../utils/authzEnforcement'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import ProtectWizard from '../api-authz/ProtectWizard'
@@ -262,9 +262,18 @@ function BehaviorProfilesTab({ applicationId }: { applicationId?: string }) {
 
 const ANY_OF_RELATIONS = ['OWNER', 'SHARED_WITH'] as const
 
+const LEASE_EXPIRED_POLICY_LABELS: Record<string, string> = {
+  strict: '严格模式',
+  degraded: '降级模式',
+}
+
+const ON_UNKNOWN_LABELS: Record<string, string> = {
+  ALLOW_UNKNOWN: '放行未知',
+}
+
 function objectRelationTag(value: string) {
-  if (value === 'OWNER') return <Tag color="blue">所有者（OWNER）</Tag>
-  if (value === 'SHARED_WITH') return <Tag color="purple">共享接收人（SHARED_WITH）</Tag>
+  if (value === 'OWNER') return <Tag color="blue">所有者</Tag>
+  if (value === 'SHARED_WITH') return <Tag color="purple">共享接收人</Tag>
   return <Tag>{value}</Tag>
 }
 
@@ -381,7 +390,7 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
       key: 'required_relation',
       width: 190,
       render: (_, row) => row.required_relation === 'ANY_OF'
-        ? <Tag color="purple">任一关系（ANY_OF）</Tag>
+        ? <Tag color="purple">任一关系</Tag>
         : row.required_relation === 'OWNER' ? objectRelationTag('OWNER') : row.required_relation || '—',
     },
     {
@@ -498,7 +507,7 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
                   span: 2,
                   children: (
                     <Typography.Text type="secondary">
-                      观测原值不落库，仅保留 SHA-256 示例哈希；identifier_type 为启发式形态识别（只认形态不认语义）。
+                      观测原值不落库，仅保留 SHA-256 示例哈希；标识形态为启发式识别（只认形态不认语义）。
                     </Typography.Text>
                   ),
                 },
@@ -506,7 +515,7 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
             />
             <div>
               <Space size={8} align="center" style={{ marginBottom: 8 }}>
-                <Typography.Text strong>实断资格（NG-AZ-02/03/04）</Typography.Text>
+                <Typography.Text strong>实断资格</Typography.Text>
                 <ReadinessBadge
                   readiness={readinessMap.get(`${selected.endpoint_id}:${selected.object_segment}`)?.readiness}
                   reasons={readinessMap.get(`${selected.endpoint_id}:${selected.object_segment}`)?.reasons}
@@ -519,20 +528,20 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
                 items={[
                   {
                     key: 'enf',
-                    label: '当前 enforcement',
+                    label: '当前执行模式',
                     children: <StatusTag value={selected.enforcement || 'OBSERVE'} map={ENFORCEMENT_VALUE_META} />,
                   },
                   {
                     key: 'pub',
                     label: '发布资格',
                     children:
-                      selected.publishable === undefined ? '—' : selected.publishable ? <Tag color="green">publishable</Tag> : <Tag>未声明</Tag>,
+                      selected.publishable === undefined ? '—' : selected.publishable ? <Tag color="green">可发布</Tag> : <Tag>未声明</Tag>,
                   },
                   {
                     key: 'rel',
                     label: '要求关系',
                     children: selected.required_relation === 'ANY_OF'
-                      ? <Tag color="purple">任一关系（ANY_OF）</Tag>
+                      ? <Tag color="purple">任一关系</Tag>
                       : selected.required_relation === 'OWNER' ? objectRelationTag('OWNER') : selected.required_relation || '—',
                   },
                   ...(selected.required_relation === 'ANY_OF' ? [{
@@ -548,10 +557,28 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
                     children:
                       selected.owner_exclusive === undefined ? '—' : selected.owner_exclusive ? <Tag color="green">是</Tag> : <Tag>否</Tag>,
                   },
-                  { key: 'lease', label: '租约过期策略', children: selected.on_lease_expired || 'strict（缺省）' },
-                  { key: 'unk', label: 'UNKNOWN 处理', children: selected.on_unknown || 'ALLOW_UNKNOWN（缺省）' },
+                  {
+                    key: 'lease',
+                    label: '租约过期策略',
+                    children: selected.on_lease_expired
+                      ? (LEASE_EXPIRED_POLICY_LABELS[selected.on_lease_expired] ?? selected.on_lease_expired)
+                      : '严格模式（缺省）',
+                  },
+                  {
+                    key: 'unk',
+                    label: '证据不足处理',
+                    children: selected.on_unknown
+                      ? (ON_UNKNOWN_LABELS[selected.on_unknown] ?? selected.on_unknown)
+                      : '放行未知（缺省）',
+                  },
                   { key: 'owner', label: '业务负责人', children: selected.enforcement_owner || '—' },
-                  { key: 'evid', label: '证据来源', children: selected.evidence_source || '—' },
+                  {
+                    key: 'evid',
+                    label: '证据来源',
+                    children: selected.evidence_source
+                      ? (EVIDENCE_SOURCE_META[selected.evidence_source]?.label ?? selected.evidence_source)
+                      : '—',
+                  },
                 ]}
               />
               <Space wrap style={{ marginTop: 12 }}>
@@ -570,13 +597,13 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
                     danger
                     onClick={() => setWizardPreset({ endpoint_id: selected.endpoint_id, object_segment: selected.object_segment })}
                   >
-                    切换 PROTECT
+                    切换实断
                   </Button>
                 ) : null}
               </Space>
               {canManage && !selectedRelationEditable ? (
                 <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-                  当前配置不属于本切片支持的 OWNER 或 ANY_OF（OWNER、SHARED_WITH），不可编辑。
+                  当前配置不属于本功能支持的「所有者」或「任一关系（所有者、共享接收人）」，不可编辑。
                 </Typography.Paragraph>
               ) : null}
             </div>
@@ -596,8 +623,8 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
         <Form form={relationForm} layout="vertical">
           <Form.Item name="required_relation" label="关系匹配方式" rules={[{ required: true, message: '请选择关系匹配方式' }]}>
             <Select options={[
-              { value: 'OWNER', label: '所有者（OWNER）' },
-              { value: 'ANY_OF', label: '任一关系（ANY_OF）' },
+              { value: 'OWNER', label: '所有者' },
+              { value: 'ANY_OF', label: '任一关系' },
             ]} />
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(previous, current) => previous.required_relation !== current.required_relation}>
@@ -608,15 +635,15 @@ function ObjectModelsTab({ applicationId }: { applicationId?: string }) {
                     mode="multiple"
                     value={[...ANY_OF_RELATIONS]}
                     disabled
-                    options={ANY_OF_RELATIONS.map((relation) => ({ value: relation, label: relation === 'OWNER' ? '所有者（OWNER）' : '共享接收人（SHARED_WITH）' }))}
+                    options={ANY_OF_RELATIONS.map((relation) => ({ value: relation, label: relation === 'OWNER' ? '所有者' : '共享接收人' }))}
                   />
                 </Form.Item>
                 <Typography.Paragraph type="secondary">
-                  主体只需满足任一列出的关系。本切片固定为 OWNER + SHARED_WITH，不包含委托或租户层级。
+                  主体只需满足任一列出的关系。当前固定为「所有者」或「共享接收人」，不包含委托或租户层级。
                 </Typography.Paragraph>
               </>
             ) : (
-              <Typography.Paragraph type="secondary">仅要求主体是对象所有者；不会提交 required_relations 字段。</Typography.Paragraph>
+              <Typography.Paragraph type="secondary">仅要求主体是对象所有者；无需额外配置备选关系列表。</Typography.Paragraph>
             )}
           </Form.Item>
         </Form>

@@ -242,10 +242,10 @@ describe('ApmTracesPage', () => {
     const row = (await screen.findByText('shop-web')).closest('tr')!
     fireEvent.click(row)
 
-    // 瀑布视图：span 行 + 层级缩进 + ERROR 标识
+    // 瀑布视图：span 行 + 层级缩进 + 错误标识
     expect(await screen.findByText('调用链瀑布')).toBeInTheDocument()
     expect(screen.getByText('SELECT orders')).toBeInTheDocument()
-    expect(screen.getByText('ERROR')).toBeInTheDocument()
+    expect(screen.getByText('错误')).toBeInTheDocument()
     expect(screen.getByText('共 2 个 span')).toBeInTheDocument()
     // 子 span 有缩进
     const childLabel = screen.getByText('SELECT orders').closest('div')!
@@ -461,10 +461,10 @@ describe('ApmTracesPage · A3 五态与跳转上下文', () => {
       '/apm-traces?trace_id=bad-id&application_id=not-uuid&start_time=2026-08-30T00%3A25%3A00Z&from=https://evil.example.com',
     )
 
-    expect(await screen.findByText(/URL 参数 trace_id 格式非法/)).toBeInTheDocument()
-    expect(screen.getByText(/URL 参数 application_id 格式非法/)).toBeInTheDocument()
-    expect(screen.getByText(/start_time\/end_time 需同时提供/)).toBeInTheDocument()
-    expect(screen.getByText(/from 不是允许的站内地址/)).toBeInTheDocument()
+    expect(await screen.findByText(/URL 参数 Trace ID 格式非法/)).toBeInTheDocument()
+    expect(screen.getByText(/URL 参数应用 ID 格式非法/)).toBeInTheDocument()
+    expect(screen.getByText(/起止时间需同时提供/)).toBeInTheDocument()
+    expect(screen.getByText(/返回地址不是允许的站内地址/)).toBeInTheDocument()
     // 非法值均未进入检索请求；无返回按钮
     await waitFor(() => expect(searchCalls().length).toBeGreaterThan(0))
     for (const c of searchCalls()) {

@@ -6,7 +6,16 @@ import { apiMaturityApi, type ApiModelMaturityItem } from '../../api/apiSecurity
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import StatusTag from '../../components/StatusTag'
 import { formatDateTime } from '../../utils/format'
+import { MODEL_MATURITY_METRIC_LABELS } from '../../utils/i18nLabels'
 import { MODEL_MATURITY_STAGE_META } from '../../utils/stage8'
+
+/** 成熟度模型名称兜底映射 */
+const MODEL_NAME_LABELS: Record<string, string> = {
+  parameter: '参数模型',
+  identity: '身份模型',
+  access_env: '访问环境模型',
+  access_object: '访问对象模型',
+}
 
 /** 成熟度卡片钻取：参数/身份 → 对应运营页 */
 const MODEL_DRILLDOWN: Record<string, { path: string; label: string }> = {
@@ -25,7 +34,7 @@ function ModelMaturityCard({ model }: { model: ApiModelMaturityItem }) {
   return (
     <Card
       size="small"
-      title={model.name || model.key}
+      title={model.name || MODEL_NAME_LABELS[model.key] || model.key}
       extra={<StatusTag value={model.stage} map={MODEL_MATURITY_STAGE_META} />}
       style={{ height: '100%' }}
     >
@@ -33,7 +42,11 @@ function ModelMaturityCard({ model }: { model: ApiModelMaturityItem }) {
         <Row gutter={[8, 8]}>
           {metrics.map(([k, v]) => (
             <Col span={12} key={k}>
-              <Statistic title={k} value={v} styles={{ content: { fontSize: 18 } }} />
+              <Statistic
+                title={MODEL_MATURITY_METRIC_LABELS[k] ?? k}
+                value={v}
+                styles={{ content: { fontSize: 18 } }}
+              />
             </Col>
           ))}
         </Row>

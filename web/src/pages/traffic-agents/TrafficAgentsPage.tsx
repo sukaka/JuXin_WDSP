@@ -144,7 +144,7 @@ export default function TrafficAgentsPage() {
       ),
     },
     { title: 'IP', dataIndex: 'ip', width: 120 },
-    { title: 'OS', dataIndex: 'os', width: 140, ellipsis: true },
+    { title: '操作系统', dataIndex: 'os', width: 140, ellipsis: true },
     { title: '版本', dataIndex: 'version', width: 90 },
     {
       title: '状态',
@@ -177,7 +177,7 @@ export default function TrafficAgentsPage() {
       render: (_, r) => formatRate(r.last_metrics?.capture_pps),
     },
     {
-      title: 'Drop/s',
+      title: '丢包/秒',
       key: 'drop_pps',
       width: 80,
       render: (_, r) => formatRate(r.last_metrics?.drop_pps),

@@ -129,9 +129,9 @@ describe('ApiMachineIdentitiesPage / IdentitiesTab（NG-ID G1 身份与键管理
     renderUi(<ApiMachineIdentitiesPage />, FULL)
     expect(await screen.findByText('billing-agent')).toBeInTheDocument()
     expect(screen.getByText('跨租户共享')).toBeInTheDocument()
-    expect(screen.getByText('ACTIVE 1')).toBeInTheDocument()
-    expect(screen.getByText('RETIRED 1')).toBeInTheDocument()
-    expect(screen.getByText('REVOKED 1')).toBeInTheDocument()
+    expect(screen.getByText('生效中 1')).toBeInTheDocument()
+    expect(screen.getByText('已退役 1')).toBeInTheDocument()
+    expect(screen.getByText('已撤销 1')).toBeInTheDocument()
     expect(screen.getByText('声明豁免')).toBeInTheDocument()
     expect(screen.getByText(/撤销水位（单调不下降）/)).toBeInTheDocument()
     // 覆盖范围提示（可选叠加缺省 OFF / RFC 9421 首期 / DPoP 与 stdio 未覆盖）
@@ -142,9 +142,9 @@ describe('ApiMachineIdentitiesPage / IdentitiesTab（NG-ID G1 身份与键管理
 
   it('详情抽屉：键状态三态/重叠窗口终点/revoked_seq 溯源/指纹短显', async () => {
     await openDetail()
-    expect(screen.getByText('ACTIVE（可签发可验证）')).toBeInTheDocument()
-    expect(screen.getByText('RETIRED（窗口内仅验证）')).toBeInTheDocument()
-    expect(screen.getByText('REVOKED（立即拒验）')).toBeInTheDocument()
+    expect(screen.getByText('生效中（可签发可验证）')).toBeInTheDocument()
+    expect(screen.getByText('已退役（窗口内仅验证）')).toBeInTheDocument()
+    expect(screen.getByText('已撤销（立即拒验）')).toBeInTheDocument()
     const revokedRow = screen.getByText('k-2025-06').closest('tr') as HTMLElement
     expect(within(revokedRow).getByText('7')).toBeInTheDocument()
     expect(screen.getByText('a1b2c3d4e5f60718')).toBeInTheDocument()
@@ -216,7 +216,7 @@ describe('ApiMachineIdentitiesPage / IdentitiesTab（NG-ID G1 身份与键管理
     expect(screen.getByText(/普通策略回滚不复活已撤销密钥/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '确认撤销' }))
     await waitFor(() => expect(machineIdentityApi.revokeKey).toHaveBeenCalledWith('mi1', 'k1'))
-    expect(await screen.findByText(/已撤销 k-2026-01（revoked_seq=8/)).toBeInTheDocument()
+    expect(await screen.findByText(/已撤销 k-2026-01（撤销水位序号=8/)).toBeInTheDocument()
   })
 
   it('权限隐藏：无 manage 时登记/编辑/删除/导入/轮换/撤销全部隐藏（非禁用）', async () => {

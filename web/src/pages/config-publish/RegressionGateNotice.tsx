@@ -44,16 +44,16 @@ export default function RegressionGateNotice() {
     policy.mode === 'ENFORCE'
       ? {
           type: 'success' as const,
-          text: '回归门禁强制中（ENFORCE）：缺少绑定当前候选指纹且核验通过的回归证据时，发布将被拒绝（失败码 REGRESSION_GATE_REJECTED）',
+          text: '回归门禁强制中：缺少绑定当前候选指纹且核验通过的回归证据时，发布将被拒绝',
         }
       : policy.mode === 'OBSERVE'
         ? {
             type: 'info' as const,
-            text: '回归门禁观察中（OBSERVE）：发布时计算并记录门禁结论，但不阻断不合规发布',
+            text: '回归门禁观察中：发布时计算并记录门禁结论，但不阻断不合规发布',
           }
         : {
             type: 'warning' as const,
-            text: '回归门禁未强制（OFF）：本次发布不检查回归证据',
+            text: '回归门禁未强制：本次发布不检查回归证据',
           }
   return (
     <Alert

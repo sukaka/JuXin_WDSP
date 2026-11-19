@@ -4,7 +4,8 @@ import { dashboardsApi } from '../../api/dashboards'
 import { systemHealthApi } from '../../api/systemHealth'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import StatusTag from '../../components/StatusTag'
-import { formatDateTime } from '../../utils/format'
+import { formatBytes, formatDateTime } from '../../utils/format'
+import { COMPONENT_METRIC_LABELS } from '../../utils/i18nLabels'
 import {
   COMPONENT_NAME_META,
   COMPONENT_STATUS_META,
@@ -12,6 +13,31 @@ import {
 } from '../../utils/stage6'
 import type { RuntimeComponent } from '../../types'
 import GatewayTrafficCard from './GatewayTrafficCard'
+
+const ISO_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/
+
+/** 格式化运行监控组件指标值（字节/布尔/结构化对象等） */
+function formatMetricValue(key: string, value: unknown): string {
+  if (value === null || value === undefined || value === '') return '-'
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'number') {
+    if (key.endsWith('_bytes')) return formatBytes(value)
+    if (key.endsWith('_percent') && Number.isFinite(value)) return `${value}%`
+    return String(value)
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return String(value)
+    }
+  }
+  const text = String(value)
+  if (key.endsWith('_at') && ISO_TIME_PATTERN.test(text)) {
+    return formatDateTime(text)
+  }
+  return text
+}
 
 /** 组件状态卡片 */
 function ComponentCard({ component }: { component: RuntimeComponent }) {
@@ -42,16 +68,20 @@ function ComponentCard({ component }: { component: RuntimeComponent }) {
           延迟：
           {component.latency_ms != null ? `${component.latency_ms} ms` : '-'}
         </Typography.Text>
-        {metrics.map(([k, v]) => (
-          <Typography.Text
-            key={k}
-            type="secondary"
-            style={{ fontSize: 12 }}
-            ellipsis
-          >
-            {k}：{String(v)}
-          </Typography.Text>
-        ))}
+        {metrics.map(([k, v]) => {
+          const label = COMPONENT_METRIC_LABELS[k] ?? k
+          const display = formatMetricValue(k, v)
+          return (
+            <Typography.Text
+              key={k}
+              type="secondary"
+              style={{ fontSize: 12 }}
+              ellipsis={{ tooltip: `${label}：${display}` }}
+            >
+              {label}：{display}
+            </Typography.Text>
+          )
+        })}
         {component.message && (
           <Typography.Text
             type="secondary"
@@ -126,7 +156,10 @@ export default function SystemMonitoringPage() {
               <Card size="small">
                 <Statistic
                   title="网关状态"
-                  value={runtime.gateway?.status ?? 'UNKNOWN'}
+                  value={
+                    COMPONENT_STATUS_META[runtime.gateway?.status ?? 'UNKNOWN']
+                      ?.label ?? '未知'
+                  }
                 />
               </Card>
             </Col>

@@ -43,7 +43,6 @@ import {
   RETRY_SEMANTICS_META,
   STRONG_FLOW_MODE_META,
   STRONG_FLOW_STATUS_META,
-  UNKNOWN_NEVER_BLOCKS_FLOW,
   successRuleText,
   validInstanceKeyParam,
   validateStrongFlowSteps,
@@ -289,7 +288,7 @@ function DefinitionEditorDrawer({
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="同名新草稿语义：保存后由服务端生成 version+1 新草稿；激活的版本不可变（D1）。"
+          message="同名新草稿说明：保存后由服务端自动生成下一版本草稿；已激活版本不可修改。"
         />
       ) : null}
       <Form<DefinitionFormValues>
@@ -347,8 +346,8 @@ function DefinitionEditorDrawer({
             type="error"
             showIcon
             style={{ marginBottom: 16 }}
-            message="PROTECT 模式：违规请求将被 403"
-            description={`激活后，无有效预留执行依赖步骤 / 重复执行已确认步骤 / 非法并行 / fencing 过期提交的请求将被 403（FLOW_VIOLATION_DENIED）；${UNKNOWN_NEVER_BLOCKS_FLOW}（证据不足恒放行并标记对账）。`}
+            message="实断模式：违规请求将被 403 拦截"
+            description="激活后，无有效预留执行依赖步骤 / 重复执行已确认步骤 / 非法并行 / 防重入序号过期提交的请求将被 403 拦截（流程违规拒绝）；证据不足恒不阻断（恒放行并标记待对账）。"
           />
         ) : null}
         <Space size={16} wrap style={{ display: 'flex' }}>
@@ -361,7 +360,7 @@ function DefinitionEditorDrawer({
               { max: 512, message: '不超过 512 字符' },
               { pattern: /^\//, message: '须为 / 开头路径前缀' },
             ]}
-            extra="步骤端点须属该前缀下本应用已 CONFIRMED 端点（激活时服务端核对）"
+            extra="步骤端点须属该前缀下本应用已确认端点（激活时服务端核对）"
           >
             <Input placeholder="如：/api/v1/orders" />
           </Form.Item>
@@ -503,7 +502,7 @@ function DefinitionEditorDrawer({
                         options={Object.entries(RETRY_SEMANTICS_META).map(
                           ([value, meta]) => ({
                             value,
-                            label: `${meta.label}（${value}）`,
+                            label: meta.label,
                           }),
                         )}
                       />
@@ -563,7 +562,7 @@ function DefinitionEditorDrawer({
                       </Form.Item>
                       <Form.Item
                         name={[field.name, 'body_jsonpath']}
-                        label="body JSONPath 等值"
+                        label="响应体 JSONPath 等值"
                         style={{ width: 200 }}
                         rules={[
                           {
@@ -595,7 +594,7 @@ function DefinitionEditorDrawer({
                       </Form.Item>
                       <Form.Item
                         name={[field.name, 'graphql_errors_empty']}
-                        label="GraphQL errors 为空"
+                        label="GraphQL 错误列表为空"
                         valuePropName="checked"
                       >
                         <Checkbox />
@@ -725,7 +724,7 @@ function DefinitionDetailDrawer({
             </Descriptions.Item>
           </Descriptions>
           <div>
-            <Typography.Text strong>步骤序列（按 sequence）</Typography.Text>
+            <Typography.Text strong>步骤序列（按序号）</Typography.Text>
             <Steps
               direction="vertical"
               size="small"
@@ -778,9 +777,7 @@ function DefinitionDetailDrawer({
                   type="secondary"
                   style={{ marginBottom: 0 }}
                 >
-                  异常策略：超时 / 连接失败 / 判定式不命中 / 形态无法解析恒为
-                  UNKNOWN 进入对账（不自动回滚为可重试——超时但源站可能已成功）；
-                  {UNKNOWN_NEVER_BLOCKS_FLOW}（任何形态不把 UNKNOWN 映射为
+                  异常策略：超时 / 连接失败 / 判定式不命中 / 形态无法解析恒记为未知并进入对账（不自动回滚为可重试——超时但源站可能已成功）；证据不足恒不阻断（任何形态均不将未知结果映射为
                   403）。
                 </Typography.Paragraph>
               </>
@@ -834,7 +831,7 @@ export default function StrongFlowDefinitionsTab() {
     mutationFn: (id: string) => strongFlowApi.activateDefinition(id),
     onSuccess: (d) => {
       message.success(
-        `已激活（${d.name} v${d.version}），同名旧 ACTIVE 版本已停用`,
+        `已激活（${d.name} v${d.version}），同名旧已激活版本已停用`,
       )
       invalidateList()
     },
@@ -844,7 +841,7 @@ export default function StrongFlowDefinitionsTab() {
   const retireMut = useMutation({
     mutationFn: (id: string) => strongFlowApi.retireDefinition(id),
     onSuccess: () => {
-      message.success('已停用（RETIRED 单向终态）')
+      message.success('已停用（单向终态）')
       invalidateList()
     },
     onError: (e: unknown) =>
@@ -860,13 +857,12 @@ export default function StrongFlowDefinitionsTab() {
             <Alert
               type="error"
               showIcon
-              message="PROTECT 模式：违规请求将被 403"
-              description={`激活后该流程违规请求将被实断（FLOW_VIOLATION_DENIED）；${UNKNOWN_NEVER_BLOCKS_FLOW}。`}
+              message="实断模式：违规请求将被 403 拦截"
+              description="激活后该流程违规请求将被实断（流程违规拒绝）；证据不足恒不阻断。"
             />
           ) : null}
           <Typography.Text>
-            激活即冻结不可再编辑；同应用同名称的旧 ACTIVE
-            版本将同时停用（RETIRED）。存量实例固定创建时版本，不换图。
+            激活即冻结不可再编辑；同应用同名称的旧已激活版本将同时停用。存量实例固定创建时版本，不换图。
           </Typography.Text>
         </Space>
       ),
@@ -983,7 +979,7 @@ export default function StrongFlowDefinitionsTab() {
           {canManage && record.status !== 'RETIRED' ? (
             <Popconfirm
               title={`停用「${record.name} v${record.version}」？`}
-              description="RETIRED 单向终态不可恢复；存量非终态实例可按旧版本走完，新实例须按 ACTIVE 版本键。"
+              description="停用为单向终态，不可恢复；存量非终态实例可按旧版本走完，新实例须按已激活版本执行。"
               okText="确认停用"
               okButtonProps={{ danger: true }}
               onConfirm={() => retireMut.mutate(record.id)}
@@ -1001,9 +997,7 @@ export default function StrongFlowDefinitionsTab() {
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        强流程定义（响应确认型业务流程防护）：编辑产新草稿
-        version+1、激活即冻结、RETIRED 单向终态； 与既有流程观察（OBSERVE
-        基线）物理隔离，无导入路径。
+        强流程定义（响应确认型业务流程防护）：编辑产生下一版本草稿、激活即冻结、停用为单向终态；与既有流程观察基线物理隔离，无导入路径。
       </Typography.Paragraph>
       <Space wrap>
         <Select

@@ -46,7 +46,7 @@ export default function HttpAssetSourcesPanel({
 
   const columns: ColumnsType<TrafficHttpAssetSource> = [
     {
-      title: '资产键（Host + Method + 路径模板）',
+      title: '资产键（域名 + 请求方法 + 路径模板）',
       key: 'asset',
       ellipsis: true,
       render: (_, r) => (

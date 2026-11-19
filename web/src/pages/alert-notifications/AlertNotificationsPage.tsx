@@ -738,7 +738,7 @@ export default function AlertNotificationsPage() {
             <Alert
               type="info"
               showIcon
-              message="syslog 渠道沿用系统设置 logging 组的 syslog 配置，无需额外参数。"
+              message="syslog 渠道沿用系统设置「日志设置」组的 syslog 配置，无需额外参数。"
             />
           )}
           {formType === 'sms' && (

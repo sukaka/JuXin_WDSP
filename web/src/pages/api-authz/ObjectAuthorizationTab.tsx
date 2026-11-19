@@ -37,6 +37,11 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { RELATION_SOURCE_META, extractAuthzEnforcement } from '../../utils/authzEnforcement'
 import { formatDateTime } from '../../utils/format'
+import {
+  AUTHZ_DECISION_META,
+  COMMON_DETAIL_FIELD_LABELS,
+  formatAuthzReasonCode,
+} from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { validateReauthorizationWindow } from './reauthorization'
 
@@ -74,6 +79,68 @@ function relationLabel(value?: string) {
 function hasProposedVerifiedViolation(checks: unknown[]): boolean {
   return checks.some(
     (c) => typeof c === 'object' && c !== null && (c as Record<string, unknown>).proposed_decision === 'VERIFIED_VIOLATION',
+  )
+}
+
+const CHECK_FIELD_LABELS: Record<string, string> = {
+  stage: '阶段',
+  step: '步骤',
+  check: '检查项',
+  rule: '规则',
+  name: '名称',
+  decision: '决策',
+  proposed_decision: '拟结论',
+  reason_code: '原因码',
+  reason: '原因',
+  message: '说明',
+  matched: '命中',
+  passed: '通过',
+}
+
+function renderDecisionCheck(check: unknown, index: number) {
+  if (typeof check !== 'object' || check === null || Array.isArray(check)) {
+    return <Typography.Text>{`${index + 1}. ${String(check)}`}</Typography.Text>
+  }
+  const obj = check as Record<string, unknown>
+  const decision = typeof obj.decision === 'string' ? obj.decision : undefined
+  const proposed = typeof obj.proposed_decision === 'string' ? obj.proposed_decision : undefined
+  const reasonCode = typeof obj.reason_code === 'string' ? obj.reason_code : undefined
+  const rule =
+    (typeof obj.rule === 'string' && obj.rule) ||
+    (typeof obj.check === 'string' && obj.check) ||
+    (typeof obj.stage === 'string' && obj.stage) ||
+    (typeof obj.step === 'string' && obj.step) ||
+    (typeof obj.name === 'string' && obj.name) ||
+    ''
+  const messageText =
+    (typeof obj.message === 'string' && obj.message) ||
+    (typeof obj.reason === 'string' && obj.reason) ||
+    ''
+  const handled = new Set(['decision', 'proposed_decision', 'reason_code', 'rule', 'check', 'stage', 'step', 'name', 'message', 'reason'])
+  const extras = Object.entries(obj).filter(([k, v]) => !handled.has(k) && v !== undefined && v !== null && v !== '')
+
+  return (
+    <Space wrap size={[8, 4]}>
+      <Typography.Text strong>步骤 {index + 1}</Typography.Text>
+      {rule ? <Tag>{rule}</Tag> : null}
+      {decision ? <StatusTag value={decision} map={AUTHZ_DECISION_META} /> : null}
+      {proposed ? (
+        <Tag color="gold">拟结论：{AUTHZ_DECISION_META[proposed]?.label ?? proposed}</Tag>
+      ) : null}
+      {reasonCode ? (
+        <Typography.Text type="secondary">原因：{formatAuthzReasonCode(reasonCode)}</Typography.Text>
+      ) : null}
+      {messageText ? <Typography.Text>{messageText}</Typography.Text> : null}
+      {extras.map(([k, v]) => {
+        const label = CHECK_FIELD_LABELS[k] ?? COMMON_DETAIL_FIELD_LABELS[k] ?? k
+        const text = typeof v === 'boolean' ? (v ? '是' : '否') : typeof v === 'object' ? JSON.stringify(v) : String(v)
+        return (
+          <Typography.Text key={k} type="secondary">
+            {label}：{text}
+          </Typography.Text>
+        )
+      })}
+    </Space>
   )
 }
 
@@ -189,7 +256,7 @@ export default function ObjectAuthorizationTab() {
           })
         : apiAuthzApi.rejectRelationCandidate(candidate.id, values.reason.trim()),
     onSuccess: (_, variables) => {
-      message.success(variables.action === 'confirm' ? '候选已确认为 OWNER 关系' : '候选已拒绝')
+      message.success(variables.action === 'confirm' ? '候选已确认为所有者关系' : '候选已拒绝')
       setReviewing(null)
       form.resetFields()
       invalidate()
@@ -332,10 +399,10 @@ export default function ObjectAuthorizationTab() {
       ) : (
         <>
           <Row gutter={[12, 12]}>
-            <Col xs={12} lg={6}><Card size="small"><Statistic title="VERIFIED 身份占比" value={percent(coverage?.verified_identity_rate)} suffix="%" /></Card></Col>
+            <Col xs={12} lg={6}><Card size="small"><Statistic title="已验证身份占比" value={percent(coverage?.verified_identity_rate)} suffix="%" /></Card></Col>
             <Col xs={12} lg={6}><Card size="small"><Statistic title="对象模型覆盖" value={percent(coverage?.model_coverage_rate)} suffix="%" /></Card></Col>
             <Col xs={12} lg={6}><Card size="small"><Statistic title="已确认关系占比" value={percent(coverage?.confirmed_relation_rate)} suffix="%" /></Card></Col>
-            <Col xs={12} lg={6}><Card size="small"><Statistic title="UNKNOWN 率" value={percent(coverage?.unknown_rate)} suffix="%" valueStyle={{ color: '#ad6800' }} /></Card></Col>
+            <Col xs={12} lg={6}><Card size="small"><Statistic title="证据不足占比" value={percent(coverage?.unknown_rate)} suffix="%" valueStyle={{ color: '#ad6800' }} /></Card></Col>
           </Row>
           <Tabs items={[
             {
@@ -356,7 +423,7 @@ export default function ObjectAuthorizationTab() {
               </>,
             },
             {
-              key: 'decisions', label: `OBSERVE 决策（${coverage?.decisions ?? 0}）`, children: <>
+              key: 'decisions', label: `观察决策（${coverage?.decisions ?? 0}）`, children: <>
                 <Space style={{ marginBottom: 12 }}><Select allowClear value={decisionFilter} placeholder="全部结论" style={{ width: 170 }} options={Object.entries(decisionStatus).map(([value, meta]) => ({ value, label: meta.label }))} onChange={(value) => { setDecisionFilter(value); setDecisionPage(1) }} /></Space>
                 <QueryErrorAlert error={decisionsQuery.error} message="加载授权决策失败" />
                 <SmartTable<ApiAuthzDecision> rowKey="id" storageKey="api-authz-decisions" columns={decisionColumns} dataSource={decisionsQuery.data?.items ?? []} loading={decisionsQuery.isLoading} onRow={(record) => ({ onClick: () => setDecisionDetail(record), style: { cursor: 'pointer' } })} pagination={{ current: decisionPage, pageSize: 20, total: decisionsQuery.data?.total ?? 0, showSizeChanger: false, onChange: setDecisionPage }} locale={{ emptyText: '暂无授权决策' }} />
@@ -367,7 +434,7 @@ export default function ObjectAuthorizationTab() {
       )}
       <Modal
         open={reviewing !== null}
-        title={reviewing?.action === 'confirm' ? '确认 OWNER 关系' : '拒绝候选关系'}
+        title={reviewing?.action === 'confirm' ? '确认所有者关系' : '拒绝候选关系'}
         okText={reviewing?.action === 'confirm' ? '确认关系' : '确认拒绝'}
         okButtonProps={{ danger: reviewing?.action === 'reject' }}
         confirmLoading={reviewMutation.isPending}
@@ -382,7 +449,7 @@ export default function ObjectAuthorizationTab() {
         }}
       >
         <Form form={form} layout="vertical">
-          {reviewing?.action === 'confirm' ? <Form.Item label="关系"><Input value="OWNER" disabled /></Form.Item> : null}
+          {reviewing?.action === 'confirm' ? <Form.Item label="关系"><Input value="所有者" disabled /></Form.Item> : null}
           <Form.Item name="reason" label="审核原因" rules={[{ required: true, whitespace: true, message: '请填写审核原因' }, { max: 500, message: '最多 500 字符' }]}><Input.TextArea rows={3} /></Form.Item>
           {reviewing?.action === 'confirm' ? <Form.Item name="valid_until" label="失效时间（可选）"><DatePicker showTime style={{ width: '100%' }} /></Form.Item> : null}
         </Form>
@@ -536,7 +603,7 @@ export default function ObjectAuthorizationTab() {
               <Descriptions.Item label="结论">
                 <Space size={8}>
                   <Tag color={decisionStatus[decisionDetail.decision]?.color}>{decisionStatus[decisionDetail.decision]?.label ?? decisionDetail.decision}</Tag>
-                  {hasProposedVerifiedViolation(decisionDetail.checks ?? []) ? <Tag color="gold">拟实断（当前 OBSERVE 不实断）</Tag> : null}
+                  {hasProposedVerifiedViolation(decisionDetail.checks ?? []) ? <Tag color="gold">拟实断（当前观察模式不实断）</Tag> : null}
                 </Space>
               </Descriptions.Item>
               <Descriptions.Item label="时间">{formatDateTime(decisionDetail.occurred_at)}</Descriptions.Item>
@@ -554,7 +621,7 @@ export default function ObjectAuthorizationTab() {
                 style={{ marginTop: 12 }}
                 items={(decisionDetail.checks ?? []).map((check, index) => ({
                   color: decisionDetail.decision === 'UNKNOWN' ? 'gray' : decisionDetail.decision === 'VERIFIED_VIOLATION' ? 'red' : 'blue',
-                  children: <Typography.Text code>{`${index + 1}. ${JSON.stringify(check)}`}</Typography.Text>,
+                  children: renderDecisionCheck(check, index),
                 }))}
               />
             </div>

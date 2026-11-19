@@ -130,8 +130,9 @@ describe('SiteAccessTrendsPage', () => {
     expect(screen.getByText('10.0 MB')).toBeInTheDocument()
     expect(screen.getByText('24.0 MB')).toBeInTheDocument()
     expect(screen.getByText(/峰值桶请求数 888/)).toBeInTheDocument()
-    // 数据来源口径副标题
-    expect(screen.getByText(/近30天来自按日聚合表/)).toBeInTheDocument()
+    // 数据来源口径副标题（不含裸表名）
+    expect(screen.getByText(/近30天来自按日汇总数据/)).toBeInTheDocument()
+    expect(screen.queryByText(/access_logs|site_traffic_daily/)).toBeNull()
     // 非实时档不显示自动刷新提示
     expect(screen.queryByText('每30秒自动刷新')).toBeNull()
   })
@@ -255,7 +256,8 @@ describe('SiteAccessTrendsPage', () => {
     expect(within(drawer).getByText('时间范围')).toBeInTheDocument()
     expect(within(drawer).getByText('统计粒度')).toBeInTheDocument()
     expect(within(drawer).getByText('小时')).toBeInTheDocument()
-    expect(within(drawer).getByText(/访问日志实时聚合（access_logs）/)).toBeInTheDocument()
+    expect(within(drawer).getByText('访问日志实时聚合')).toBeInTheDocument()
+    expect(within(drawer).queryByText(/access_logs/)).toBeNull()
   })
 
   it('7 天内档位展开行触发域名趋势查询（今天档映射 range=today）', async () => {

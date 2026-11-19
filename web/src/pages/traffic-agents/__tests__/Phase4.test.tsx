@@ -183,11 +183,11 @@ describe('Phase 4：定向采集规则面板', () => {
     renderWithProviders(<CaptureOverridesPanel agentId={AGENT_ID} enabled canManage />)
 
     // 匹配条件可读化（多字段 AND 逐项展示）
-    expect(await screen.findByText('dst_ip=10.10.20.30')).toBeInTheDocument()
-    expect(screen.getByText('dst_port=8443')).toBeInTheDocument()
-    expect(screen.getByText('host=api.example.com')).toBeInTheDocument()
-    expect(screen.getByText('uri_prefix=/api/payment')).toBeInTheDocument()
-    expect(screen.getByText('host=old.example.com')).toBeInTheDocument()
+    expect(await screen.findByText('目标 IP=10.10.20.30')).toBeInTheDocument()
+    expect(screen.getByText('目标端口=8443')).toBeInTheDocument()
+    expect(screen.getByText('域名=api.example.com')).toBeInTheDocument()
+    expect(screen.getByText('URI 前缀=/api/payment')).toBeInTheDocument()
+    expect(screen.getByText('域名=old.example.com')).toBeInTheDocument()
     // 目标等级 Tag / 创建人 / 备注
     expect(screen.getByText('L2')).toBeInTheDocument()
     expect(screen.getByText('L3')).toBeInTheDocument()
@@ -200,7 +200,7 @@ describe('Phase 4：定向采集规则面板', () => {
   it('过期规则灰显：标注「已过期」且不展示剩余倒计时', async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderWithProviders(<CaptureOverridesPanel agentId={AGENT_ID} enabled canManage />)
-    await screen.findByText('host=old.example.com')
+    await screen.findByText('域名=old.example.com')
 
     expect(screen.getByText('已过期')).toBeInTheDocument()
     // 倒计时仅一条（未过期规则）
@@ -210,7 +210,7 @@ describe('Phase 4：定向采集规则面板', () => {
   it('新增规则：提交体为 {match, capture_level, ttl_minutes, note}（默认 L2 / 30 分钟）', async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderWithProviders(<CaptureOverridesPanel agentId={AGENT_ID} enabled canManage />)
-    await screen.findByText('dst_ip=10.10.20.30')
+    await screen.findByText('目标 IP=10.10.20.30')
 
     fireEvent.click(screen.getByRole('button', { name: '新增规则' }))
     const dialog = await screen.findByRole('dialog')
@@ -241,14 +241,14 @@ describe('Phase 4：定向采集规则面板', () => {
   it('新增规则：匹配条件全空时前端拦截不提交', async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderWithProviders(<CaptureOverridesPanel agentId={AGENT_ID} enabled canManage />)
-    await screen.findByText('dst_ip=10.10.20.30')
+    await screen.findByText('目标 IP=10.10.20.30')
 
     fireEvent.click(screen.getByRole('button', { name: '新增规则' }))
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }))
 
     expect(
-      await screen.findByText('至少填写一个匹配条件（dst_ip / dst_port / host / uri_prefix）'),
+      await screen.findByText('至少填写一个匹配条件（目标 IP / 目标端口 / 域名 / URI 前缀）'),
     ).toBeInTheDocument()
     expect(
       (fetch as Mock).mock.calls.some(
@@ -260,7 +260,7 @@ describe('Phase 4：定向采集规则面板', () => {
   it('新增规则：dst_ip 非 IP/CIDR 时前端校验拦截不提交', async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderWithProviders(<CaptureOverridesPanel agentId={AGENT_ID} enabled canManage />)
-    await screen.findByText('dst_ip=10.10.20.30')
+    await screen.findByText('目标 IP=10.10.20.30')
 
     fireEvent.click(screen.getByRole('button', { name: '新增规则' }))
     const dialog = await screen.findByRole('dialog')
@@ -278,7 +278,7 @@ describe('Phase 4：定向采集规则面板', () => {
   it('新增规则：uri_prefix 不以 / 开头时前端校验拦截不提交', async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderWithProviders(<CaptureOverridesPanel agentId={AGENT_ID} enabled canManage />)
-    await screen.findByText('dst_ip=10.10.20.30')
+    await screen.findByText('目标 IP=10.10.20.30')
 
     fireEvent.click(screen.getByRole('button', { name: '新增规则' }))
     const dialog = await screen.findByRole('dialog')
@@ -296,9 +296,9 @@ describe('Phase 4：定向采集规则面板', () => {
   it('删除规则：Popconfirm 确认后调用 DELETE（裸 204 按成功处理）', async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderWithProviders(<CaptureOverridesPanel agentId={AGENT_ID} enabled canManage />)
-    await screen.findByText('dst_ip=10.10.20.30')
+    await screen.findByText('目标 IP=10.10.20.30')
 
-    const row = screen.getByText('dst_ip=10.10.20.30').closest('tr')!
+    const row = screen.getByText('目标 IP=10.10.20.30').closest('tr')!
     fireEvent.click(within(row).getByRole('button', { name: /删\s*除/ }))
     fireEvent.click(await screen.findByRole('button', { name: '确认删除' }))
 
@@ -317,7 +317,7 @@ describe('Phase 4：定向采集规则面板', () => {
   it('仅 view 权限：隐藏新增/删除写操作', async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderWithProviders(<CaptureOverridesPanel agentId={AGENT_ID} enabled canManage={false} />)
-    await screen.findByText('dst_ip=10.10.20.30')
+    await screen.findByText('目标 IP=10.10.20.30')
 
     expect(screen.queryByRole('button', { name: '新增规则' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /删\s*除/ })).not.toBeInTheDocument()
@@ -361,8 +361,8 @@ describe('Phase 4：背压降级帽展示', () => {
     await within(drawer).findByText('Agent ID')
 
     fireEvent.click(within(drawer).getByRole('tab', { name: '定向采集' }))
-    expect(await within(drawer).findByText('dst_ip=10.10.20.30')).toBeInTheDocument()
-    expect(within(drawer).getByText('host=old.example.com')).toBeInTheDocument()
+    expect(await within(drawer).findByText('目标 IP=10.10.20.30')).toBeInTheDocument()
+    expect(within(drawer).getByText('域名=old.example.com')).toBeInTheDocument()
   })
 })
 

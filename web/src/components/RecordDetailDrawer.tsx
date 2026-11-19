@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { Descriptions, Drawer, Typography } from 'antd'
 import { formatDateTime, formatJson } from '../utils/format'
+import { COMMON_DETAIL_FIELD_LABELS, COMMON_DETAIL_VALUE_LABELS } from '../utils/i18nLabels'
 
 /**
  * RecordDetailDrawer：通用只读行详情抽屉。
@@ -19,8 +20,8 @@ function isEmpty(v: unknown): boolean {
 
 function renderValue(key: string, value: unknown, valueLabels?: Record<string, Record<string, string>>) {
   if (isEmpty(value)) return <Typography.Text type="secondary">-</Typography.Text>
-  const mapped = valueLabels?.[key]?.[String(value)]
-  if (mapped !== undefined) return mapped
+  const explicitMapped = valueLabels?.[key]?.[String(value)]
+  if (explicitMapped !== undefined) return explicitMapped
   if (typeof value === 'boolean') return value ? '是' : '否'
   if (typeof value === 'object') {
     return (
@@ -33,6 +34,8 @@ function renderValue(key: string, value: unknown, valueLabels?: Record<string, R
     )
   }
   const text = String(value)
+  const fallbackMapped = COMMON_DETAIL_VALUE_LABELS[key]?.[text]
+  if (fallbackMapped !== undefined) return fallbackMapped
   if (
     (TIME_KEY_PATTERN.test(key) || ISO_DATETIME_PATTERN.test(text)) &&
     ISO_DATETIME_PATTERN.test(text)
@@ -77,7 +80,7 @@ export default function RecordDetailDrawer({
     () =>
       Object.entries(record ?? {}).map(([key, value]) => ({
         key,
-        label: fieldLabels?.[key] ?? key,
+        label: fieldLabels?.[key] ?? COMMON_DETAIL_FIELD_LABELS[key] ?? key,
         children: renderValue(key, value, valueLabels),
       })),
     [record, fieldLabels, valueLabels],

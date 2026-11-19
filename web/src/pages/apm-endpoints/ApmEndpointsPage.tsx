@@ -190,7 +190,7 @@ export default function ApmEndpointsPage() {
           type="warning"
           showIcon
           message="端点级数据需开启全量访问日志"
-          description="当前未开启全量访问日志（logging.access_log_enabled），端点级性能数据不可用；请联系系统管理员在日志配置中开启后刷新本页。应用级指标请见「服务性能」页。"
+          description="当前未开启「全量访问日志开关」，端点级性能数据不可用；请联系系统管理员在日志配置中开启后刷新本页。应用级指标请见「服务性能」页。"
         />
       ) : (
         <SmartTable<ApmEndpointItem>

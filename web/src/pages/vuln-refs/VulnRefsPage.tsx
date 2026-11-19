@@ -31,7 +31,7 @@ import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import { isSafeHttpUrl } from '../../utils/url'
 import { CNNVD_ID_PATTERN, CVE_ID_PATTERN } from '../../utils/vulnIds'
-import { ATTACK_TYPE_META, EVENT_ACTION_META } from '../../utils/stage4'
+import { ATTACK_TYPE_META, EVENT_ACTION_META, RULE_SOURCE_META } from '../../utils/stage4'
 import type { VulnRefItem, VulnRefRule, VulnRefSampleEvent } from '../../types'
 
 /** CNNVD 危害等级（四级分类）；未命中时 StatusTag 原样展示 */
@@ -249,8 +249,8 @@ export default function VulnRefsPage() {
     {
       title: '来源',
       dataIndex: 'rule_source',
-      width: 110,
-      render: (v: string) => <Tag>{v}</Tag>,
+      width: 130,
+      render: (v: string) => <StatusTag value={v} map={RULE_SOURCE_META} />,
     },
     {
       title: '启用',

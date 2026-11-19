@@ -249,11 +249,41 @@ describe('SystemContainersPage', () => {
 
     // 切换 tail 为 500：重置为首屏快照（不携带 since）
     fireEvent.mouseDown(screen.getByLabelText('日志行数'))
-    const option = await screen.findByText('tail 500')
+    const option = await screen.findByText('最近 500 行')
     fireEvent.click(option)
     await waitFor(() =>
       expect(containerOpsApi.logs).toHaveBeenLastCalledWith('gateway', { tail: 500, since: undefined }),
     )
+  })
+
+  it('健康检查 none 显示「无探针」，容器状态 Tooltip 翻译常见 Docker 英文短语', async () => {
+    vi.mocked(containerOpsApi.list).mockResolvedValue({
+      containers: [
+        makeContainer({
+          status: 'Up 2 hours (healthy)',
+          health: 'none',
+        }),
+        makeContainer({
+          service: 'worker',
+          id: 'c-worker',
+          name: 'jiuzhang-worker',
+          state: 'exited',
+          status: 'Exited (0) 10 minutes ago',
+          health: 'unhealthy',
+          running: false,
+        }),
+      ],
+    })
+    renderPage()
+
+    const row1 = (await screen.findByText('jiuzhang-gateway')).closest('tr')!
+    expect(within(row1).getByText('无探针')).toBeInTheDocument()
+    fireEvent.mouseOver(within(row1).getByText('运行中'))
+    expect(await screen.findByText('已运行 2 小时（健康）')).toBeInTheDocument()
+
+    const row2 = screen.getByText('jiuzhang-worker').closest('tr')!
+    fireEvent.mouseOver(within(row2).getByText('已退出'))
+    expect(await screen.findByText('已退出 (0) 10 分钟前')).toBeInTheDocument()
   })
 
   it('启动按钮仅对未运行容器展示，确认后调用 start 接口', async () => {

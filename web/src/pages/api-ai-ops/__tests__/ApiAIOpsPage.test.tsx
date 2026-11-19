@@ -344,14 +344,16 @@ describe('ApiAIOpsPage', () => {
     expect(within(drawer).getByText('2.0 s')).toBeInTheDocument()
     expect(within(drawer).getByText(/API 资产共 42 个/)).toBeInTheDocument()
 
-    // 展开行：标量指标入关键指标区，对象清单入小表
+    // 展开行：标量指标入关键指标区，对象清单入小表（字段名与枚举中文化）
     const expandIcon = drawer.querySelector('.ant-table-row-expand-icon')
     expect(expandIcon).toBeTruthy()
     fireEvent.click(expandIcon as HTMLElement)
-    expect(await within(drawer).findByText('total_endpoints')).toBeInTheDocument()
-    expect(within(drawer).getByText('new_endpoints（1 条）')).toBeInTheDocument()
+    expect(await within(drawer).findByText('端点总数')).toBeInTheDocument()
+    expect(within(drawer).getByText('新增端点清单（1 条）')).toBeInTheDocument()
     expect(within(drawer).getByText('GET /v1/assets/new')).toBeInTheDocument()
-    expect(within(drawer).getByText('DISCOVERED')).toBeInTheDocument()
+    expect(within(drawer).getByText('已发现')).toBeInTheDocument()
+    expect(within(drawer).queryByText('total_endpoints')).not.toBeInTheDocument()
+    expect(within(drawer).queryByText('DISCOVERED')).not.toBeInTheDocument()
   })
 
   it('运行记录 Tab：选择计划后展示其执行记录', async () => {

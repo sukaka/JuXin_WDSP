@@ -61,7 +61,7 @@ describe('阶段6 展示元数据完整性', () => {
     expect(Object.keys(ALERT_STATUS_META)).toEqual(['OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'IGNORED'])
   })
 
-  it('系统告警类型覆盖全部 20 类（含 FD_USAGE_HIGH、VULN_INTEL_NEW）', () => {
+  it('系统告警类型覆盖全部 43 类（含 FD_USAGE_HIGH、VULN_INTEL_NEW、WDSP/APM/HA 告警）', () => {
     expect(Object.keys(ALERT_TYPE_META).sort()).toEqual(
       [
         'GATEWAY_DOWN',
@@ -79,11 +79,34 @@ describe('阶段6 展示元数据完整性', () => {
         'DISK_SPACE_LOW',
         'DATABASE_CAPACITY_HIGH',
         'BACKUP_FAILED',
+        'BACKUP_VERIFY_FAILED',
         'RESTORE_VALIDATION_FAILED',
+        'RESTORE_CLEANUP_FAILED',
         'REPORT_FAILED',
         'UPGRADE_FAILED',
+        'UPGRADE_ROLLBACK_FAILED',
+        'UPGRADE_ROLLED_BACK',
         'AUDIT_INTEGRITY_FAILED',
+        'AUDIT_WRITE_FAILED',
         'VULN_INTEL_NEW',
+        'API_CRITICAL_FINDING',
+        'API_FINDING_SPIKE',
+        'API_MASK_FAILURE',
+        'SECURITY_EVENT_SPIKE',
+        'LOGIN_BRUTE_FORCE',
+        'CC_BAN_SPIKE',
+        'LICENSE_INVALID',
+        'LICENSE_EXPIRING_SOON',
+        'LICENSE_QUOTA_EXCEEDED',
+        'HA_VIP_FAULT',
+        'NETWORK_APPLY_FAILED',
+        'LINK_PAIR_DOWN',
+        'LINK_PAIR_SUPPRESSED',
+        'ENDPOINT_LATENCY_HIGH',
+        'ENDPOINT_ERROR_RATE_HIGH',
+        'APM_SLO_BREACH',
+        'APM_INGEST_LAG',
+        'AI_OPS_SCHEDULE_CIRCUIT_OPEN',
       ].sort(),
     )
   })
@@ -109,7 +132,7 @@ describe('阶段6 展示元数据完整性', () => {
     expect(Object.keys(CHECK_RESULT_META)).toEqual(['PASS', 'WARNING', 'FAIL', 'NOT_APPLICABLE'])
   })
 
-  it('监控组件名覆盖任务书组件清单', () => {
+  it('监控组件名覆盖任务书组件清单（含 API_SECURITY 与 APM_CLICKHOUSE）', () => {
     for (const c of [
       'GATEWAY',
       'CORAZA',
@@ -121,9 +144,13 @@ describe('阶段6 展示元数据完整性', () => {
       'UPSTREAM',
       'CERTIFICATE',
       'DISK',
+      'API_SECURITY',
+      'APM_CLICKHOUSE',
     ]) {
       expect(COMPONENT_NAME_META[c]).toBeTruthy()
     }
+    expect(COMPONENT_NAME_META.API_SECURITY).toBe('API 安全采集')
+    expect(COMPONENT_NAME_META.APM_CLICKHOUSE).toBe('APM 时序存储')
     expect(COMPONENT_STATUS_META.UP).toBeDefined()
     expect(COMPONENT_STATUS_META.DOWN).toBeDefined()
   })

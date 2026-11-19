@@ -9,11 +9,19 @@ import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { formatLocation } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { API_SENSITIVE_TYPE_META } from '../../utils/stage8'
 
 /** 方向词表（api_sensitive_fields.direction） */
 const DIRECTION_LABEL: Record<string, string> = { REQUEST: '请求', RESPONSE: '响应' }
+
+/** 识别来源词表（api_sensitive_fields.detection_source） */
+const DETECTION_SOURCE_META: Record<string, { color: string; label: string }> = {
+  AUTO: { color: 'cyan', label: '自动识别' },
+  MANUAL: { color: 'purple', label: '人工标记' },
+  RUNTIME: { color: 'blue', label: '运行时识别' },
+}
 
 /** 置信度展示（0-1 → 百分比）与口径说明 */
 function ConfidenceCell({ value }: { value: number }) {
@@ -93,8 +101,8 @@ export default function ApiSensitiveFieldsPage() {
     {
       title: '识别来源',
       dataIndex: 'detection_source',
-      width: 100,
-      render: (v: string) => v || '-',
+      width: 110,
+      render: (v: string) => (v ? <StatusTag value={v} map={DETECTION_SOURCE_META} /> : '-'),
     },
     {
       title: '命中次数',
@@ -211,7 +219,13 @@ export default function ApiSensitiveFieldsPage() {
             <Descriptions.Item label="置信度">
               <ConfidenceCell value={selected.confidence} />
             </Descriptions.Item>
-            <Descriptions.Item label="识别来源">{selected.detection_source || '-'}</Descriptions.Item>
+            <Descriptions.Item label="识别来源">
+              {selected.detection_source ? (
+                <StatusTag value={selected.detection_source} map={DETECTION_SOURCE_META} />
+              ) : (
+                '-'
+              )}
+            </Descriptions.Item>
             <Descriptions.Item label="累计命中">{selected.occurrence_count}</Descriptions.Item>
             <Descriptions.Item label="记录 ID">
               <Typography.Text code>{selected.id}</Typography.Text>
@@ -229,7 +243,9 @@ export default function ApiSensitiveFieldsPage() {
                 '-'
               )}
             </Descriptions.Item>
-            <Descriptions.Item label="命中位置">{selected.source_detail?.location ?? '-'}</Descriptions.Item>
+            <Descriptions.Item label="命中位置">
+              {formatLocation(selected.source_detail?.location)}
+            </Descriptions.Item>
             <Descriptions.Item label="来源事件 ID" span={2}>
               {selected.source_detail?.event_id ? (
                 <Typography.Text code>{selected.source_detail.event_id}</Typography.Text>

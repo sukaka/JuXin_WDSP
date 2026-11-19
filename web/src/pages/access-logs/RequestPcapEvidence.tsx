@@ -5,6 +5,11 @@ import { ApiError } from '../../api/client'
 import { requestPcapApi, type RequestPcapItem, type RequestPcapLookup } from '../../api/requestPcap'
 import { useAuthStore } from '../../stores/auth'
 import { formatBytes, formatDateTime } from '../../utils/format'
+import {
+  PCAP_CAPTURE_POINT_LABELS,
+  PCAP_MATCH_BASIS_LABELS,
+  PCAP_VERIFY_ERROR_LABELS,
+} from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 
 const integrityLabels = { UNVERIFIED: '未核验', PASS: '完整性通过', FAILED: '完整性失败', KEY_UNAVAILABLE: '密钥不可用' }
@@ -101,7 +106,9 @@ export default function RequestPcapEvidence({ requestId }: { requestId: string }
               {lookup.data?.items.map((item) => (
                 <div key={item.artifact_id} style={{ padding: '14px 0', borderTop: '1px solid #e8edf3' }}>
                   <Space wrap size={8}>
-                    <Typography.Text strong>{item.capture_point}</Typography.Text>
+                    <Typography.Text strong>
+                      {PCAP_CAPTURE_POINT_LABELS[item.capture_point] ?? item.capture_point}
+                    </Typography.Text>
                     <Tag color={integrityColors[item.integrity_status]}>{integrityLabels[item.integrity_status]}</Tag>
                     <Tag color={item.storage_tier === 'HOT' ? 'blue' : 'default'}>{item.storage_tier === 'HOT' ? 'SSD 热层' : 'SAS 温层'}</Tag>
                     <Tag>{item.coverage === 'CONNECTION' ? '连接级证据' : item.coverage === 'REQUEST' ? '请求级证据' : '未确定范围'}</Tag>
@@ -112,8 +119,16 @@ export default function RequestPcapEvidence({ requestId }: { requestId: string }
                     <Descriptions.Item label="包数 / 丢包">{item.packet_count} / {item.dropped_count}</Descriptions.Item>
                     <Descriptions.Item label="加密大小">{formatBytes(item.ciphertext_size_bytes)}</Descriptions.Item>
                     <Descriptions.Item label="到期时间">{formatDateTime(item.expires_at)}</Descriptions.Item>
-                    <Descriptions.Item label="关联依据" span={2}>{item.match_basis}（候选 {item.candidate_count}）</Descriptions.Item>
-                    {item.verification_error_code && <Descriptions.Item label="核验状态" span={2}><Typography.Text type="danger">{item.verification_error_code}</Typography.Text></Descriptions.Item>}
+                    <Descriptions.Item label="关联依据" span={2}>
+                      {PCAP_MATCH_BASIS_LABELS[item.match_basis] ?? item.match_basis}（候选 {item.candidate_count}）
+                    </Descriptions.Item>
+                    {item.verification_error_code && (
+                      <Descriptions.Item label="核验状态" span={2}>
+                        <Typography.Text type="danger">
+                          {PCAP_VERIFY_ERROR_LABELS[item.verification_error_code] ?? item.verification_error_code}
+                        </Typography.Text>
+                      </Descriptions.Item>
+                    )}
                   </Descriptions>
                   {item.coverage === 'CONNECTION' && <Typography.Text type="warning" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>连接级 PCAP 可能包含同连接的其他请求，导出前请确认授权范围。</Typography.Text>}
                   {!item.download_eligible && <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>{blockedReasons[item.download_blocked_reason ?? ''] ?? '当前不可下载'}</Typography.Text>}

@@ -57,7 +57,7 @@ export const BOT_RESERVATION_META: Record<
   RELEASED: { color: 'default', label: '已解除（不抢占业务路径）' },
 }
 
-/** 节点同步结果（gatewayconfig NodeSync 词表；空=从未同步） */
+/** 节点同步结果（gatewayconfig NodeSync 词表；空/UNKNOWN=未同步） */
 export const BOT_NODE_SYNC_META: Record<
   string,
   { color: string; label: string }
@@ -65,6 +65,7 @@ export const BOT_NODE_SYNC_META: Record<
   SUCCESS: { color: 'success', label: '同步成功' },
   FAILED: { color: 'error', label: '同步失败' },
   HASH_MISMATCH: { color: 'error', label: '哈希不一致' },
+  UNKNOWN: { color: 'default', label: '未同步' },
 }
 
 /** 信号组（B0 冻结；client_claim 为可伪造弱信号声明组） */
@@ -74,16 +75,51 @@ export const BOT_GROUP_LABELS: Record<string, string> = {
   client_claim: '客户端声明组（可伪造弱信号）',
 }
 
+/** 信号指标参数规格 */
+export interface BotMetricParamSpec {
+  key: string
+  label: string
+  options?: string[]
+  optionLabels?: Record<string, string>
+  placeholder?: string
+}
+
 /** 信号指标规格（B0 冻结白名单；group 由指标推导，不接受请求侧覆盖） */
 export interface BotMetricSpec {
   group: 'request_behavior' | 'access_sequence' | 'client_claim'
   label: string
   description: string
   /** 参数键白名单（全部必填）；空数组 = 不接受参数 */
-  params: { key: string; label: string; options?: string[]; placeholder?: string }[]
+  params: BotMetricParamSpec[]
   /** 阈值语义：ratio_gte 占比≥触发 / ratio_lte 占比≤触发 / count_gte 计数≥触发 / none 命中即触发（threshold 恒 0） */
   threshold: 'ratio_gte' | 'ratio_lte' | 'count_gte' | 'none'
   defaultThreshold: number
+}
+
+/** Bot 信号指标参数选项中文映射 */
+export const BOT_PARAM_OPTION_LABELS: Record<string, Record<string, string>> = {
+  class: {
+    BOT: '爬虫/机器人',
+    APPLICATION: '应用程序',
+    SERVICE: '服务调用',
+    AGENT: '自动化代理',
+    UNKNOWN: '未知',
+  },
+  field: {
+    version: 'TLS 版本',
+    cipher_suite: '密码套件',
+  },
+}
+
+/** 格式化 Bot 信号参数选项文本（支持传入参数规格或参数键名） */
+export function formatBotParamOption(
+  param: Pick<BotMetricParamSpec, 'key' | 'optionLabels'> | string,
+  opt: string,
+): string {
+  if (typeof param === 'string') {
+    return BOT_PARAM_OPTION_LABELS[param]?.[opt] ?? opt
+  }
+  return param.optionLabels?.[opt] ?? BOT_PARAM_OPTION_LABELS[param.key]?.[opt] ?? opt
 }
 
 export const BOT_METRIC_SPECS: Record<string, BotMetricSpec> = {
@@ -130,7 +166,7 @@ export const BOT_METRIC_SPECS: Record<string, BotMetricSpec> = {
   method_enumeration_size: {
     group: 'access_sequence',
     label: '方法枚举数',
-    description: '窗口内 distinct HTTP 方法数（无参数），≥ 阈值触发',
+    description: '窗口内不同 HTTP 方法数（无参数），≥ 阈值触发',
     params: [],
     threshold: 'count_gte',
     defaultThreshold: 4,
@@ -144,6 +180,7 @@ export const BOT_METRIC_SPECS: Record<string, BotMetricSpec> = {
         key: 'class',
         label: 'UA 分类',
         options: ['BOT', 'APPLICATION', 'SERVICE', 'AGENT', 'UNKNOWN'],
+        optionLabels: BOT_PARAM_OPTION_LABELS.class,
       },
     ],
     threshold: 'none',
@@ -155,7 +192,12 @@ export const BOT_METRIC_SPECS: Record<string, BotMetricSpec> = {
     description:
       'TLS 版本/密码套件轻量特征精确比对（非 JA3/JA4 指纹；可伪造弱信号）',
     params: [
-      { key: 'field', label: '特征字段', options: ['version', 'cipher_suite'] },
+      {
+        key: 'field',
+        label: '特征字段',
+        options: ['version', 'cipher_suite'],
+        optionLabels: BOT_PARAM_OPTION_LABELS.field,
+      },
       { key: 'equals', label: '比对值', placeholder: '如 TLS1.3' },
     ],
     threshold: 'none',

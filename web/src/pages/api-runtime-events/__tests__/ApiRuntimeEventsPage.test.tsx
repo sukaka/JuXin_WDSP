@@ -38,7 +38,7 @@ const eventFull = {
     {
       detector: 'api_schema',
       rule_id: 'R-1',
-      category: 'schema',
+      category: 'BLOCK',
       severity: 'HIGH',
       message: '未知字段 debug',
       evidence: { field: 'debug' },
@@ -222,11 +222,14 @@ describe('ApiRuntimeEventsPage', () => {
     expect(within(drawer).getAllByText('pv-2').length).toBeGreaterThanOrEqual(1)
     expect(within(drawer).getByText('fp-user-1')).toBeInTheDocument()
     expect(within(drawer).getByText('API Key')).toBeInTheDocument()
-    // details_json 明细表格化：检测器/规则/信息/证据键值
+    // details_json 明细表格化：检测器/规则/类别/信息/证据中文键
     expect(within(drawer).getByText('模型校验')).toBeInTheDocument()
     expect(within(drawer).getByText('R-1')).toBeInTheDocument()
+    expect(within(drawer).getAllByText('阻断').length).toBeGreaterThanOrEqual(2)
     expect(within(drawer).getByText('未知字段 debug')).toBeInTheDocument()
-    expect(within(drawer).getByText('field')).toBeInTheDocument()
+    expect(within(drawer).getByText('字段：')).toBeInTheDocument()
+    expect(within(drawer).getByText('检测明细')).toBeInTheDocument()
+    expect(within(drawer).queryByText('检测明细（details）')).not.toBeInTheDocument()
   })
 
   it('详情抽屉：旧版事件（details 为 NULL）显示匿名身份与「无检测明细」', async () => {
@@ -234,7 +237,8 @@ describe('ApiRuntimeEventsPage', () => {
     fireEvent.click(await screen.findAllByRole('button', { name: /^详\s*情$/ }).then((btns) => btns[1]))
     const drawer = await screen.findByRole('dialog')
     expect(within(drawer).getByText('req-101')).toBeInTheDocument()
-    expect(within(drawer).getByText('匿名')).toBeInTheDocument()
+    // 身份指纹与认证方式均显示「匿名」
+    expect(within(drawer).getAllByText('匿名')).toHaveLength(2)
     expect(within(drawer).getByText('无检测明细')).toBeInTheDocument()
   })
 
@@ -243,9 +247,9 @@ describe('ApiRuntimeEventsPage', () => {
     fireEvent.click(await screen.findAllByRole('button', { name: /^详\s*情$/ }).then((btns) => btns[0]))
     const drawer = await screen.findByRole('dialog')
     expect(within(drawer).getByText('JWT 验证信息')).toBeInTheDocument()
-    // VERIFIED 状态标签与 VALID 原因文案均为「验证通过」，应各出现一次
+    // VERIFIED 状态标签与 VALID 原因文案均为「验证通过」，原始原因码收进 Tooltip
     expect(within(drawer).getAllByText('验证通过').length).toBeGreaterThanOrEqual(2)
-    expect(within(drawer).getByText('VALID')).toBeInTheDocument()
+    expect(within(drawer).queryByText('VALID')).not.toBeInTheDocument()
     expect(within(drawer).getByText('jwt-pv-7')).toBeInTheDocument()
     expect(within(drawer).getByText('ks-3')).toBeInTheDocument()
     expect(within(drawer).getByText('prin-hmac-abc123')).toBeInTheDocument()
@@ -267,17 +271,18 @@ describe('ApiRuntimeEventsPage', () => {
     fireEvent.click(await screen.findAllByRole('button', { name: /^详\s*情$/ }).then((btns) => btns[0]))
     const drawer = await screen.findByRole('dialog')
     expect(within(drawer).getByText('授权实断证据')).toBeInTheDocument()
-    expect(within(drawer).getByText('实断证据（authz_enforcement）')).toBeInTheDocument()
+    expect(within(drawer).getByText('实断证据')).toBeInTheDocument()
     expect(within(drawer).getByText('已实断')).toBeInTheDocument()
-    expect(within(drawer).getByText('VERIFIED_VIOLATION')).toBeInTheDocument()
-    expect(within(drawer).getByText('AUTHZ-BOLA-001')).toBeInTheDocument()
+    expect(within(drawer).getByText('实断违规')).toBeInTheDocument()
+    expect(within(drawer).getByText('对象级越权（他人属主）')).toBeInTheDocument()
     // 八因子逐项对错图标（中文名渲染；全真即全 success）
     for (const label of ['可信身份', '模型适用', '关系有效', '无冲突', '租户一致', '证据新鲜', '他人属主', '排他所有权']) {
       expect(within(drawer).getByText(label)).toBeInTheDocument()
     }
     // 版本/租约/四要素回执
     expect(within(drawer).getByText('zhang.lei@example.com')).toBeInTheDocument()
-    expect(within(drawer).getByText('MANUAL_CONFIRMED')).toBeInTheDocument()
+    expect(within(drawer).getByText('人工确认')).toBeInTheDocument()
+    expect(within(drawer).getByText('JWT 可信验证')).toBeInTheDocument()
     expect(within(drawer).getByText('objref:74a55c5af21c3efa')).toBeInTheDocument()
   })
 

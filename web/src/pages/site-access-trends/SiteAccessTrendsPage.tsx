@@ -64,8 +64,8 @@ const GRANULARITY_LABEL: Record<string, string> = {
 }
 
 const SOURCE_LABEL: Record<string, string> = {
-  access_logs: '访问日志实时聚合（access_logs）',
-  site_traffic_daily: '按日聚合表（site_traffic_daily）',
+  access_logs: '访问日志实时聚合',
+  site_traffic_daily: '按日汇总数据',
 }
 
 /** 档位换算为起止时间（RFC3339）：实时=最近1小时，今天=当日零点至今，近7/30天=向前回溯 */
@@ -430,7 +430,7 @@ export default function SiteAccessTrendsPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="实时 / 今天 / 近7天数据来自访问日志（access_logs）实时聚合；近30天来自按日聚合表（site_traffic_daily），独立访客 IP 不跨天去重。域名明细仅支持 7 天内范围。"
+        message="实时 / 今天 / 近7天数据来自访问日志实时聚合；近30天来自按日汇总数据，独立访客 IP 不跨天去重。域名明细仅支持 7 天内范围。"
       />
       <Space style={{ marginBottom: 16 }} wrap>
         <Segmented<RangeKey> value={range} options={RANGE_OPTIONS} onChange={setRange} />
@@ -480,7 +480,7 @@ export default function SiteAccessTrendsPage() {
           <Card size="small">
             <Statistic
               title={
-                <Tooltip title="按时间范围去重的独立访客 IP；近30天档来自按日聚合表，不跨天去重，显示为 -">
+                <Tooltip title="按时间范围去重的独立访客 IP；近30天档来自按日汇总数据，不跨天去重，显示为 -">
                   <span>独立访客IP</span>
                 </Tooltip>
               }

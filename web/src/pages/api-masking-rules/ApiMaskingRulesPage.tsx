@@ -35,6 +35,7 @@ import StatusTag from '../../components/StatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { FILE_SENSITIVE_TYPE_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { API_SENSITIVE_TYPE_META } from '../../utils/stage8'
 
@@ -162,7 +163,15 @@ export default function ApiMaskingRulesPage() {
     new Set(
       (typesQuery.data?.items ?? []).map((t) => t.data_type).filter(Boolean),
     ),
-  ).map((v) => ({ value: v, label: v }))
+  ).map((v) => ({
+    value: v,
+    label:
+      API_SENSITIVE_TYPE_META[v]?.label ??
+      API_SENSITIVE_TYPE_META[v.toLowerCase()]?.label ??
+      FILE_SENSITIVE_TYPE_LABELS[v] ??
+      FILE_SENSITIVE_TYPE_LABELS[v.toUpperCase()] ??
+      v,
+  }))
 
   const invalidate = () =>
     void qc.invalidateQueries({ queryKey: ['api-masking-rules'] })
@@ -518,7 +527,7 @@ export default function ApiMaskingRulesPage() {
             <Select
               options={Object.entries(SCOPE_META).map(([value, meta]) => ({
                 value,
-                label: `${meta.label}（${value}）`,
+                label: meta.label,
               }))}
             />
           </Form.Item>
@@ -548,7 +557,7 @@ export default function ApiMaskingRulesPage() {
                 { required: true, message: '接口级规则必须填写接口' },
                 { max: 560, message: '接口标识不超过 560 字符' },
               ]}
-              extra="格式：METHOD + 空格 + 路径模板，如 GET /v1/users/{id}"
+              extra="格式：请求方法 + 空格 + 路径模板，如 GET /v1/users/{id}"
             >
               <Input
                 placeholder="GET /v1/users/{id}"
@@ -575,6 +584,7 @@ export default function ApiMaskingRulesPage() {
             <Select
               allowClear
               showSearch
+              optionFilterProp="label"
               placeholder="选择数据类型标签"
               loading={typesQuery.isLoading}
               options={dataTypeOptions}
@@ -588,7 +598,7 @@ export default function ApiMaskingRulesPage() {
             <Select
               options={Object.entries(ALGORITHM_META).map(([value, meta]) => ({
                 value,
-                label: `${meta.label}（${value}）`,
+                label: meta.label,
               }))}
             />
           </Form.Item>
@@ -596,7 +606,7 @@ export default function ApiMaskingRulesPage() {
             <Space.Compact block>
               <Form.Item
                 name="keep_head"
-                label="前保留字符数（keep_head）"
+                label="前保留字符数"
                 style={{ width: '50%', marginRight: 8 }}
                 extra="默认 3，0–64"
               >
@@ -610,9 +620,9 @@ export default function ApiMaskingRulesPage() {
               </Form.Item>
               <Form.Item
                 name="keep_tail"
-                label="后保留字符数（keep_tail）"
+                label="后保留字符数"
                 style={{ width: '50%' }}
-                extra="默认 4，0–64；短于 keep_head+keep_tail 的值整体替换为 ****"
+                extra="默认 4，0–64；短于前后保留总长度的值整体替换为 ****"
               >
                 <InputNumber
                   min={0}
@@ -627,7 +637,7 @@ export default function ApiMaskingRulesPage() {
           {formAlgorithm === 'ENCRYPT' ? (
             <Form.Item
               name="key_id"
-              label="密钥标识（key_id）"
+              label="密钥标识"
               rules={[
                 { required: true, message: '请填写密钥标识' },
                 {
@@ -647,7 +657,7 @@ export default function ApiMaskingRulesPage() {
           {formAlgorithm === 'MAP' ? (
             <Form.Item
               name="map_id"
-              label="映射表标识（map_id）"
+              label="映射表标识"
               rules={[
                 { required: true, message: '请填写映射表标识' },
                 {
@@ -669,7 +679,7 @@ export default function ApiMaskingRulesPage() {
           </Typography.Paragraph>
           <Form.Item
             name="excl_identity"
-            label="身份指纹（identity，回车添加）"
+            label="身份指纹（回车添加）"
           >
             <Select
               mode="tags"
@@ -678,7 +688,7 @@ export default function ApiMaskingRulesPage() {
               placeholder="身份指纹精确匹配"
             />
           </Form.Item>
-          <Form.Item name="excl_role" label="角色码（role，回车添加）">
+          <Form.Item name="excl_role" label="角色码（回车添加）">
             <Select
               mode="tags"
               open={false}
@@ -686,7 +696,7 @@ export default function ApiMaskingRulesPage() {
               placeholder="角色码精确匹配"
             />
           </Form.Item>
-          <Form.Item name="excl_ip" label="IP / CIDR（ip，回车添加）">
+          <Form.Item name="excl_ip" label="IP / CIDR（回车添加）">
             <Select
               mode="tags"
               open={false}
@@ -731,7 +741,7 @@ export default function ApiMaskingRulesPage() {
         >
           <Form.Item
             name="ciphertext"
-            label="密文（ciphertext）"
+            label="密文"
             rules={[
               { required: true, message: '请输入待验证密文' },
               { whitespace: true, message: '请输入待验证密文' },
@@ -746,9 +756,9 @@ export default function ApiMaskingRulesPage() {
         </Form>
         {plaintext !== null ? (
           <div>
-            <Typography.Text strong>明文（plaintext）</Typography.Text>
+            <Typography.Text strong>明文</Typography.Text>
             <Input.TextArea
-              aria-label="明文（plaintext）"
+              aria-label="明文"
               value={plaintext}
               readOnly
               rows={4}

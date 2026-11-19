@@ -12,7 +12,7 @@ export default function ScreenLobbyPage() {
   return (
     <div className="bs-lobby">
       <div className="bs-lobby-title">大屏展示中心</div>
-      <div className="bs-lobby-subtitle">JiuZhang Dynamic Security · 选择一块大屏进入全屏态势监控</div>
+      <div className="bs-lobby-subtitle">九章动态安全防护 · 选择一块大屏进入全屏态势监控</div>
       {screens.length === 0 ? (
         <div className="bs-lobby-empty">当前账号没有可访问的大屏，请联系管理员分配相应权限</div>
       ) : (

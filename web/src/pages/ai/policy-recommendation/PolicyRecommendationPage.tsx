@@ -30,6 +30,7 @@ import { useAuthStore } from '../../../stores/auth'
 import { formatDateTime, formatJson } from '../../../utils/format'
 import { hasAnyPermission, hasPermission } from '../../../utils/permission'
 import { AI_DRAFT_ACTIONABLE_STATUSES, AI_DRAFT_STATUS_META, AI_DRAFT_TARGET_ROUTES, AI_DRAFT_TYPE_META, AI_RISK_META } from '../../../utils/ai'
+import { AI_DRAFT_TARGET_TYPE_LABELS } from '../../../utils/i18nLabels'
 import {
   WHAT_IF_PARANOIA_LEVEL_OPTIONS,
   WHAT_IF_SCENARIO_OPTIONS,
@@ -567,7 +568,9 @@ export default function PolicyRecommendationPage() {
                 {draft.task_id ? <Typography.Text code>{draft.task_id}</Typography.Text> : '-'}
               </Descriptions.Item>
               <Descriptions.Item label="目标类型">
-                {draft.target_type || '-'}
+                {draft.target_type
+                  ? AI_DRAFT_TARGET_TYPE_LABELS[draft.target_type] ?? draft.target_type
+                  : '-'}
               </Descriptions.Item>
               <Descriptions.Item label="目标 ID">{draft.target_id || '-'}</Descriptions.Item>
               <Descriptions.Item label="草稿引用" span={2}>

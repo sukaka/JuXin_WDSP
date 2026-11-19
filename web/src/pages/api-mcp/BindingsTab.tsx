@@ -123,8 +123,8 @@ function CreateBindingModal({ onClose, onSaved }: { onClose: () => void; onSaved
           <Alert
             type="warning"
             showIcon
-            message="PROTECT 协议化执行：违规调用将以 JSON-RPC 错误对象拒绝"
-            description="发布校验提示：PROTECT 绑定端点未被 jwt_trust 覆盖时，管理面给出非阻断警示——无可信主体的请求不按目录 ACL 定案（UNKNOWN 恒不阻断）。"
+            message="实断模式协议化执行：违规调用将以 JSON-RPC 错误对象拒绝"
+            description="发布校验提示：实断绑定端点未被 JWT 信任链覆盖时，管理面给出非阻断警示——无可信主体的请求不按目录访问控制定案（证据不足恒不阻断）。"
           />
         ) : null}
       </Form>

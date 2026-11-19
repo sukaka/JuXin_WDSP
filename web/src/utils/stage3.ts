@@ -22,6 +22,7 @@ export const APP_STATUS_META: Record<string, { color: string; label: string }> =
   ACTIVE: { color: 'green', label: '已启用' },
   DISABLED: { color: 'orange', label: '已停用' },
   ERROR: { color: 'red', label: '异常' },
+  DELETED: { color: 'default', label: '已删除' },
 }
 
 export const DEPLOYMENT_STATUS_META: Record<string, { color: string; label: string }> = {

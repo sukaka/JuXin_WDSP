@@ -188,7 +188,7 @@ describe('SecurityRegressionsPage', () => {
     // 计划/实际/缺失 12/12/0
     expect(screen.getByText('12 / 12 / 0')).toBeTruthy()
     expect(
-      screen.getByText(/回归门禁未强制（OFF）/),
+      screen.getByText(/回归门禁未强制：发布不检查回归证据/),
     ).toBeTruthy()
   })
 

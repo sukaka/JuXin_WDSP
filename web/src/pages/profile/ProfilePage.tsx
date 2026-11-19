@@ -23,15 +23,18 @@ import { profileApi } from '../../api/profile'
 import ChangePasswordForm from '../../components/ChangePasswordForm'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
+import UserStatusTag from '../../components/UserStatusTag'
 import useBatchDelete from '../../hooks/useBatchDelete'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { formatPermissionModule } from '../../utils/i18nLabels'
 import type { LoginLogEntry, SessionItem } from '../../types'
 import TotpPanel from './TotpPanel'
 
 const EVENT_TYPE_LABELS: Record<string, string> = {
   LOGIN_SUCCESS: '登录成功',
   LOGIN_FAILURE: '登录失败',
+  LOGIN_TOTP_CHALLENGE: '双因子挑战（TOTP）',
   CAPTCHA_FAILURE: '验证码错误',
   ACCOUNT_LOCKED: '账号锁定',
   LOGOUT: '登出',
@@ -42,35 +45,18 @@ const EVENT_TYPE_LABELS: Record<string, string> = {
   FIRST_CHANGE_PASSWORD: '首次改密',
 }
 
-/** 权限模块中文名（permissions.module → 中文；未知模块原样显示） */
-const PERMISSION_MODULE_LABELS: Record<string, string> = {
-  access_control: '访问控制',
-  access_logs: '访问日志',
-  ai: '智能运营',
-  analytics: '统计分析',
-  api: '接口防护',
-  applications: '应用管理',
-  audits: '操作审计',
-  backup: '备份恢复',
-  certificates: '证书管理',
-  custom_rules: '自定义规则',
-  dashboard: '工作台',
-  delivery: '交付检查',
-  exceptions: '例外策略',
-  gateway: '网关管理',
-  login_logs: '登录日志',
-  monitoring: '运行监控',
-  policies: '防护策略',
-  profile: '个人中心',
-  reports: '安全报表',
-  roles: '角色权限',
-  security_events: '安全事件',
-  sessions: '会话管理',
-  system: '系统管理',
-  upgrade: '系统升级',
-  upstreams: '源站管理',
-  users: '用户管理',
-  waf_rules: '防护规则',
+const FAILURE_CODE_LABELS: Record<string, string> = {
+  CAPTCHA_REQUIRED: '需要验证码',
+  CAPTCHA_INVALID: '验证码错误',
+  BAD_CREDENTIALS: '账号或密码错误',
+  ACCOUNT_DISABLED: '账号已停用',
+  ACCOUNT_LOCKED: '账号已锁定',
+  MAX_FAILED_ATTEMPTS: '失败次数超限',
+  PASSWORD_EXPIRED: '密码已过期',
+  TOTP_CHALLENGE_INVALID: '双因子挑战无效或过期',
+  TOTP_CHALLENGE_EXPIRED: '双因子挑战已过期',
+  TOTP_CHALLENGE_ORIGIN_MISMATCH: '双因子挑战来源不匹配',
+  TOTP_INVALID: '动态验证码错误',
 }
 
 function ProfilePanel() {
@@ -108,14 +94,14 @@ function ProfilePanel() {
     const map = new Map<string, { code: string; label: string }[]>()
     if (details && details.length > 0) {
       for (const d of details) {
-        const module = PERMISSION_MODULE_LABELS[d.module] ?? d.module
+        const module = formatPermissionModule(d.module)
         const arr = map.get(module) ?? []
         arr.push({ code: d.code, label: d.name })
         map.set(module, arr)
       }
     } else {
       for (const code of profile?.permissions ?? []) {
-        const module = code.split('.')[0] || 'other'
+        const module = formatPermissionModule(code.split('.')[0] || 'other')
         const arr = map.get(module) ?? []
         arr.push({ code, label: code })
         map.set(module, arr)
@@ -156,7 +142,7 @@ function ProfilePanel() {
             <Descriptions.Item label="用户名">{profile.username}</Descriptions.Item>
             <Descriptions.Item label="显示名">{profile.display_name}</Descriptions.Item>
             <Descriptions.Item label="账号状态">
-              {profile.status === 'ACTIVE' ? <Tag color="green">正常</Tag> : <Tag>{profile.status}</Tag>}
+              <UserStatusTag status={profile.status} />
             </Descriptions.Item>
             <Descriptions.Item label="所属角色">
               <Space wrap>
@@ -338,7 +324,11 @@ function MyLoginLogsPanel() {
       render: (v: string) =>
         v === 'SUCCESS' ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>,
     },
-    { title: '失败码', dataIndex: 'failure_code', render: (v?: string | null) => v || '-' },
+    {
+      title: '失败码',
+      dataIndex: 'failure_code',
+      render: (v?: string | null) => (v ? (FAILURE_CODE_LABELS[v] ?? v) : '-'),
+    },
   ]
 
   if (logsQuery.isError) {
@@ -380,6 +370,7 @@ function MyLoginLogsPanel() {
         open={detailRecord !== null}
         title="登录记录详情"
         record={detailRecord as Record<string, unknown> | null}
+        valueLabels={{ event_type: EVENT_TYPE_LABELS, failure_code: FAILURE_CODE_LABELS }}
         onClose={() => setDetailRecord(null)}
       />
     </>

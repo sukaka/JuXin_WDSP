@@ -62,7 +62,7 @@ function ReviewModal({
   const reviewMut = useMutation({
     mutationFn: (body: McpToolReviewInput) => mcpApi.reviewTool(catalogId, tool.id, body),
     onSuccess: (saved) => {
-      message.success(saved.review_status === 'APPROVED' ? `已通过：${saved.tool_name} 进入发布集（catalog_hash 即时变化）` : `已拒绝：${saved.tool_name} 不下发`)
+      message.success(saved.review_status === 'APPROVED' ? `已通过：${saved.tool_name} 进入发布集（目录哈希即时变化）` : `已拒绝：${saved.tool_name} 不下发`)
       void qc.invalidateQueries({ queryKey: ['mcp-catalog', catalogId] })
       void qc.invalidateQueries({ queryKey: ['mcp-catalogs'] })
       onClose()
@@ -87,7 +87,7 @@ function ReviewModal({
       ) : null}
       <Alert type="info" showIcon style={{ marginBottom: 16 }} message={MCP_REVIEW_NOTE} />
       <Descriptions size="small" column={2} bordered style={{ marginBottom: 16 }}>
-        <Descriptions.Item label="tool_hash" span={2}>
+        <Descriptions.Item label="工具哈希" span={2}>
           <Typography.Text code copyable={{ text: tool.tool_hash }} style={{ fontSize: 12 }}>{tool.tool_hash}</Typography.Text>
         </Descriptions.Item>
         <Descriptions.Item label="当前状态">
@@ -126,8 +126,8 @@ function ReviewModal({
       >
         <Form.Item name="action" label="审核结论" rules={[{ required: true, message: '请选择审核结论' }]}>
           <Radio.Group>
-            <Radio value="APPROVED">通过（APPROVED，进入发布集）</Radio>
-            <Radio value="REJECTED">拒绝（REJECTED，不下发）</Radio>
+            <Radio value="APPROVED">通过（进入发布集）</Radio>
+            <Radio value="REJECTED">拒绝（不下发）</Radio>
           </Radio.Group>
         </Form.Item>
         {watchedAction === 'REJECTED' ? (
@@ -137,23 +137,23 @@ function ReviewModal({
           <Form.Item name="risk_level" label="风险等级（定级）" rules={[{ required: true, message: '请选择风险等级' }]}>
             <Select
               style={{ width: 160 }}
-              options={Object.entries(MCP_RISK_LEVEL_META).map(([value, meta]) => ({ value, label: `${meta.label}（${value}）` }))}
+              options={Object.entries(MCP_RISK_LEVEL_META).map(([value, meta]) => ({ value, label: meta.label }))}
             />
           </Form.Item>
           <Form.Item name="data_classification" label="数据分级" rules={[{ required: true, message: '请选择数据分级' }]}>
             <Select
               style={{ width: 180 }}
-              options={Object.entries(MCP_DATA_CLASSIFICATION_META).map(([value, meta]) => ({ value, label: `${meta.label}（${value}）` }))}
+              options={Object.entries(MCP_DATA_CLASSIFICATION_META).map(([value, meta]) => ({ value, label: meta.label }))}
             />
           </Form.Item>
           <Form.Item name="max_calls_per_minute" label="调用预算/分钟" extra="0=不限" rules={[{ required: true, message: '预算必填' }]}>
             <InputNumber min={0} precision={0} style={{ width: 140 }} />
           </Form.Item>
-          <Form.Item name="approval_required" label="需审批" valuePropName="checked" extra="G1 语义=默认拒绝（同 HIGH）">
+          <Form.Item name="approval_required" label="需审批" valuePropName="checked" extra="默认拒绝（同高风险等级策略）">
             <Switch />
           </Form.Item>
         </Space>
-        <Form.Item name="allowed_principals" label="允许主体（空=该维度不约束；非空逐维 AND）">
+        <Form.Item name="allowed_principals" label="允许主体（空=该维度不约束；非空逐维同时满足）">
           <Select mode="tags" placeholder="回车添加（JWT VerifiedPrincipalID 精确值）" open={false} suffixIcon={null} />
         </Form.Item>
         <Space size={16} wrap style={{ display: 'flex' }}>
@@ -196,7 +196,7 @@ export default function CatalogDetailDrawer({
     { title: '数据分级', dataIndex: 'data_classification', width: 90, render: (v: string) => <StatusTag value={v} map={MCP_DATA_CLASSIFICATION_META} /> },
     { title: '审核状态', dataIndex: 'review_status', width: 100, render: (v: string) => <StatusTag value={v} map={MCP_REVIEW_STATUS_META} /> },
     {
-      title: 'tool_hash', dataIndex: 'tool_hash', width: 120,
+      title: '工具哈希', dataIndex: 'tool_hash', width: 120,
       render: (v: string) => <Typography.Text code title={v}>{shortMcpHash(v)}</Typography.Text>,
     },
     {
@@ -248,7 +248,7 @@ export default function CatalogDetailDrawer({
             <Descriptions.Item label="协议版本">{detail.catalog.protocol_version}</Descriptions.Item>
             <Descriptions.Item label="状态"><StatusTag value={detail.catalog.status} map={MCP_CATALOG_STATUS_META} /></Descriptions.Item>
             <Descriptions.Item label="来源">{detail.catalog.source === 'MANUAL_IMPORT' ? '显式导入' : detail.catalog.source}</Descriptions.Item>
-            <Descriptions.Item label="catalog_hash" span={2}>
+            <Descriptions.Item label="目录哈希" span={2}>
               <Typography.Text code copyable={{ text: detail.catalog.catalog_hash }} style={{ fontSize: 12 }}>{detail.catalog.catalog_hash}</Typography.Text>
             </Descriptions.Item>
             <Descriptions.Item label="版本">v{detail.catalog.version}（乐观锁）</Descriptions.Item>

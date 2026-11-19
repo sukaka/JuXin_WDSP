@@ -30,6 +30,7 @@ import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatBytes, formatDateTime } from '../../utils/format'
+import { PRECHECK_NAME_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { truncateHash } from '../../utils/stage3'
 import {
@@ -418,7 +419,12 @@ export default function SystemUpgradePage() {
                   style: { cursor: 'pointer' },
                 })}
                 columns={[
-                  { title: '检查项', dataIndex: 'name', width: 220 },
+                  {
+                    title: '检查项',
+                    dataIndex: 'name',
+                    width: 220,
+                    render: (v: string) => PRECHECK_NAME_LABELS[v] ?? v,
+                  },
                   {
                     title: '结果',
                     dataIndex: 'result',
@@ -620,6 +626,8 @@ export default function SystemUpgradePage() {
         open={detailPrecheck !== null}
         title="预检项详情"
         record={detailPrecheck as Record<string, unknown> | null}
+        fieldLabels={{ name: '检查项', result: '结果', critical: '关键项', message: '说明' }}
+        valueLabels={{ name: PRECHECK_NAME_LABELS }}
         onClose={() => setDetailPrecheck(null)}
       />
       <RecordDetailDrawer

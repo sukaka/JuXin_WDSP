@@ -42,9 +42,14 @@ const METRIC_TYPE_OPTIONS: { value: ApmSloMetricType; label: string }[] = [
   { value: 'latency_p95', label: 'P95 时延（毫秒阈值）' },
 ]
 
+const WINDOW_LABELS: Record<string, string> = {
+  '7d': '7 天',
+  '30d': '30 天',
+}
+
 const WINDOW_OPTIONS = [
-  { value: '7d', label: '7 天（7d）' },
-  { value: '30d', label: '30 天（30d）' },
+  { value: '7d', label: '7 天' },
+  { value: '30d', label: '30 天' },
 ]
 
 /** SLO 管理（读权限 apm.overview.read，写权限 apm.settings.manage 控制按钮显隐）：
@@ -333,7 +338,9 @@ export default function ApmSlosPage() {
               <Descriptions.Item label="指标类型">
                 <StatusTag value={detailQuery.data.metric_type} map={APM_SLO_METRIC_TYPE_META} />
               </Descriptions.Item>
-              <Descriptions.Item label="评估窗口">{detailQuery.data.window}</Descriptions.Item>
+              <Descriptions.Item label="评估窗口">
+                {WINDOW_LABELS[detailQuery.data.window] ?? detailQuery.data.window}
+              </Descriptions.Item>
               <Descriptions.Item label="目标">
                 {formatSloValue(detailQuery.data.metric_type, detailQuery.data.target)}
               </Descriptions.Item>

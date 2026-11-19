@@ -29,6 +29,10 @@ import {
   SCAN_PROBE_SET_META,
 } from './meta'
 
+const SCAN_ENGINE_LABELS: Record<string, string> = {
+  builtin: '内置引擎',
+}
+
 /** 样本展示框样式（与弱点中心证据展示一致） */
 const SAMPLE_PRE_STYLE: React.CSSProperties = {
   background: '#fafafa',
@@ -158,11 +162,14 @@ export default function FindingsTab() {
       dataIndex: 'template',
       width: 170,
       ellipsis: true,
-      render: (v: string) => (
-        <Tooltip title={v}>
-          <Typography.Text>{SCAN_PROBE_SET_META[v] ?? v}</Typography.Text>
-        </Tooltip>
-      ),
+      render: (v: string) => {
+        const label = SCAN_PROBE_SET_META[v] ?? v
+        return (
+          <Tooltip title={label}>
+            <Typography.Text>{label}</Typography.Text>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '分类',
@@ -344,7 +351,9 @@ export default function FindingsTab() {
               <Descriptions.Item label="置信度">
                 {Math.round(current.confidence * 100)}%
               </Descriptions.Item>
-              <Descriptions.Item label="引擎">{current.engine || '-'}</Descriptions.Item>
+              <Descriptions.Item label="引擎">
+                {current.engine ? (SCAN_ENGINE_LABELS[current.engine] ?? current.engine) : '-'}
+              </Descriptions.Item>
               <Descriptions.Item label="发现时间">
                 {formatDateTime(current.created_at)}
               </Descriptions.Item>

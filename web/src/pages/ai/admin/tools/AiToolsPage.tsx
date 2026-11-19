@@ -120,7 +120,7 @@ export default function AiToolsPage() {
       render: (_, record) => (
         <Space>
           <Button type="link" size="small" onClick={() => setSchemaTarget(record)}>
-            Schema
+            结构定义
           </Button>
           {canManage && (
             <Button type="link" size="small" onClick={() => openConfig(record)}>
@@ -144,7 +144,7 @@ export default function AiToolsPage() {
         <Alert
           type="info"
           showIcon
-          message="阶段7 仅允许 READ_ONLY 与 DRAFT_ONLY 风险等级 Tool；停用后编排器立即跳过该 Tool。"
+          message="阶段7 仅允许「只读」与「仅草稿」风险等级工具；停用后编排器立即跳过该工具。"
         />
         {toolsQuery.isError ? (
           <QueryErrorAlert error={toolsQuery.error} message="加载工具列表失败" />
@@ -187,7 +187,7 @@ export default function AiToolsPage() {
       </Modal>
 
       <Modal
-        title={`配置 Tool：${configTarget?.name ?? ''}`}
+        title={`配置工具：${configTarget?.name ?? ''}`}
         open={configTarget !== null}
         onCancel={() => setConfigTarget(null)}
         onOk={() => configForm.submit()}

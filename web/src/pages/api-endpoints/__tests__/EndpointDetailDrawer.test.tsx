@@ -434,7 +434,7 @@ describe('EndpointDetailDrawer 访问趋势', () => {
     renderDrawer()
     expect(
       await screen.findByText(
-        '该接口为 GET 请求，未观测到 PATH / QUERY / BODY 参数',
+        '该接口为 GET 请求，未观测到路径 / 查询 / 请求体参数',
       ),
     ).toBeInTheDocument()
     expect(screen.queryByText('当前版本暂无参数数据')).not.toBeInTheDocument()

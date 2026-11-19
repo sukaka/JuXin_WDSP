@@ -53,9 +53,9 @@ function KeyFormFields({ rotate }: { rotate?: boolean }) {
     <>
       <Form.Item
         name="kid"
-        label={rotate ? '新键标识（kid）' : '键标识（kid）'}
-        rules={[{ required: true, whitespace: true, message: 'kid 必填' }, { max: 128, message: '不超过 128 字符' }]}
-        extra="身份内唯一（重复 409）；签名 keyid 登记册精确查找"
+        label={rotate ? '新密钥标识（kid）' : '密钥标识（kid）'}
+        rules={[{ required: true, whitespace: true, message: '密钥标识必填' }, { max: 128, message: '不超过 128 字符' }]}
+        extra="身份内唯一（重复 409）；签名密钥登记册精确查找"
       >
         <Input placeholder="如：2026-10-primary" />
       </Form.Item>
@@ -147,7 +147,7 @@ export default function IdentityDetailDrawer({
   const importMut = useMutation({
     mutationFn: (body: MachineIdentityKeyInput) => machineIdentityApi.importKey(id, body),
     onSuccess: (key) => {
-      message.success(`公钥已导入（${key.kid}，落库即 ACTIVE）`)
+      message.success(`公钥已导入（${key.kid}，落库即生效中）`)
       setImporting(false)
       importForm.resetFields()
       invalidate()
@@ -158,7 +158,7 @@ export default function IdentityDetailDrawer({
   const rotateMut = useMutation({
     mutationFn: (body: MachineIdentityKeyInput) => machineIdentityApi.rotateKey(id, (rotating as MachineIdentityKey).id, body),
     onSuccess: (r) => {
-      message.success(`已轮换：新键 ${r.key.kid} ACTIVE；旧键 ${r.retired_key.kid} RETIRED（重叠窗口终点 ${r.retired_key.retire_overlap_until ?? '—'}）`)
+      message.success(`已轮换：新键 ${r.key.kid} 已生效；旧键 ${r.retired_key.kid} 已退役（重叠窗口终点 ${r.retired_key.retire_overlap_until ?? '—'}）`)
       setRotating(null)
       rotateForm.resetFields()
       invalidate()
@@ -169,7 +169,7 @@ export default function IdentityDetailDrawer({
   const revokeMut = useMutation({
     mutationFn: (keyId: string) => machineIdentityApi.revokeKey(id, keyId),
     onSuccess: (key) => {
-      message.success(`已撤销 ${key.kid}（revoked_seq=${key.revoked_seq ?? '—'}，即时生效）`)
+      message.success(`已撤销 ${key.kid}（撤销水位序号=${key.revoked_seq ?? '—'}，即时生效）`)
       invalidate()
     },
     onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '撤销失败'),
@@ -191,7 +191,7 @@ export default function IdentityDetailDrawer({
   }
 
   const keyColumns: ColumnsType<MachineIdentityKey> = [
-    { title: 'kid', dataIndex: 'kid', width: 160, ellipsis: true, render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
+    { title: '密钥标识（kid）', dataIndex: 'kid', width: 160, ellipsis: true, render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
     { title: '算法', dataIndex: 'alg', width: 160 },
     {
       title: '状态', dataIndex: 'status', width: 190,
@@ -204,7 +204,7 @@ export default function IdentityDetailDrawer({
       render: (v?: string | null) => (v ? formatDateTime(v) : '—'),
     },
     {
-      title: 'revoked_seq', dataIndex: 'revoked_seq', width: 110,
+      title: '撤销水位序号', dataIndex: 'revoked_seq', width: 120,
       render: (v?: number | null) => (v !== null && v !== undefined ? <Typography.Text code>{v}</Typography.Text> : '—'),
     },
     {

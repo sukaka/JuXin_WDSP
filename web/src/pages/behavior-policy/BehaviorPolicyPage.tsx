@@ -164,7 +164,7 @@ export default function BehaviorPolicyPage() {
             type="info"
             showIcon
             style={{ maxWidth: 1080, marginBottom: 16 }}
-            title="行为策略只负责生成 OBSERVE 信号，不直接阻断请求；需要限速或阻断时，请在风险策略中显式切换为 PROTECT。"
+            title="行为策略只负责生成观察信号，不直接阻断请求；需要限速或阻断时，请在风险策略中显式切换为防护模式。"
           />
           <Form<PolicyFormValues>
             form={form}
@@ -183,7 +183,7 @@ export default function BehaviorPolicyPage() {
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12} md={8}>
-                <Form.Item label="检测模式" extra="行为检测固定为 OBSERVE；Risk Engine 的处置模式由风险策略控制">
+                <Form.Item label="检测模式" extra="行为检测固定为观察模式；风险引擎的处置模式由风险策略控制">
                   <Select
                     disabled
                     value="OBSERVE"

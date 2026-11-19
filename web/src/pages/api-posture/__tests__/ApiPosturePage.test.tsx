@@ -29,9 +29,11 @@ vi.mock('../../../api/apiPosture', () => ({
   },
 }))
 
-/** EChart 在 jsdom 下无法真实渲染（无 canvas），替换为桩组件 */
+/** EChart 在 jsdom 下无法真实渲染（无 canvas），替换为桩组件并透出 option JSON 供中文标签断言 */
 vi.mock('../../../components/EChart', () => ({
-  default: () => <div data-testid="echart-stub" />,
+  default: ({ option, ariaLabel }: { option?: unknown; ariaLabel?: string }) => (
+    <div data-testid="echart-stub" data-label={ariaLabel} data-option={JSON.stringify(option ?? {})} />
+  ),
 }))
 
 import { apiPostureOverviewApi } from '../../../api/apiPosture'
@@ -236,8 +238,16 @@ describe('ApiPosturePage', () => {
     expect(apiPostureOverviewApi.targets).toHaveBeenCalledWith(7)
   })
 
-  it('W10-SEC：GeoIP 启用时渲染地域分桶与国家 Top 图表', async () => {
-    vi.mocked(apiPostureOverviewApi.sources).mockResolvedValue(sourcesGeoData)
+  it('W10-SEC：GeoIP 启用时渲染地域分桶与国家 Top 图表（国家码、资产等级与认证方式中文化）', async () => {
+    vi.mocked(apiPostureOverviewApi.sources).mockResolvedValue({
+      ...sourcesGeoData,
+      geo_truncated: true,
+      auth_types: [
+        { auth_type: 'bearer_or_basic', count: 5 },
+        { auth_type: 'api_key', count: 9 },
+        { auth_type: '', count: 3 },
+      ],
+    })
     wrap(<ApiPosturePage />)
     await waitFor(() => {
       expect(screen.getByText('访问地域（GeoIP）')).toBeInTheDocument()
@@ -245,10 +255,17 @@ describe('ApiPosturePage', () => {
     expect(
       screen.queryByText('GeoIP 数据源未启用，地域维度不可用'),
     ).not.toBeInTheDocument()
+    expect(screen.getByText(/去重客户端 IP 超上限/)).toBeInTheDocument()
     // 趋势 2 + 来源 5（IP/身份/认证 + 地域分桶与国家 Top 两张）+ 目标 5 = 12
     await waitFor(() => {
       expect(screen.getAllByTestId('echart-stub')).toHaveLength(12)
     })
+    const charts = screen.getAllByTestId('echart-stub')
+    const allOptionsText = charts.map((c) => c.getAttribute('data-option') ?? '').join('\n')
+    expect(allOptionsText).toContain('中国')
+    expect(allOptionsText).toContain('美国')
+    expect(allOptionsText).toContain('令牌/基本认证')
+    expect(allOptionsText).toContain('GET /pay/{id} [高]')
   })
 
   it('切换天数后按新 days 重新查询趋势', async () => {

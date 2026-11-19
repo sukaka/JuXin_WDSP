@@ -77,9 +77,9 @@ const CSP_MODE_OPTIONS = [
 ]
 
 const RULE_METHOD_OPTIONS = [
-  { value: 'set', label: 'set 覆盖' },
-  { value: 'add', label: 'add 新增' },
-  { value: 'delete', label: 'delete 删除' },
+  { value: 'set', label: '覆盖' },
+  { value: 'add', label: '新增' },
+  { value: 'delete', label: '删除' },
 ]
 
 /** 与后端一致的 host 前端校验：IP 或域名，不含协议/路径/端口 */
@@ -221,7 +221,7 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
                     }),
                   ]}
                 >
-                  <Input placeholder="内容（delete 时无需填写）" style={{ width: 280 }} autoComplete="off" />
+                  <Input placeholder="内容（删除时无需填写）" style={{ width: 280 }} autoComplete="off" />
                 </Form.Item>
                 <Tooltip title="删除此头修改规则">
                   <Button

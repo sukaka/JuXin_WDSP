@@ -105,12 +105,17 @@ export const RULE_DEFAULT_STATE_META: Record<string, { color: string; label: str
 export const RULE_SOURCE_META: Record<string, { color: string; label: string }> = {
   OWASP_CRS: { color: 'blue', label: 'OWASP 核心规则集' },
   CUSTOM: { color: 'purple', label: '自定义' },
+  CUSTOM_PACK: { color: 'cyan', label: '扩展规则包' },
+  USER_CUSTOM: { color: 'purple', label: '用户自定义' },
+  CRS_PLUGIN: { color: 'geekblue', label: 'CRS 插件' },
+  THIRD_PARTY: { color: 'orange', label: '第三方规则' },
+  JIUZHANG_BUILTIN: { color: 'green', label: '九章内置规则' },
 }
 
-/** 攻击类型下拉选项（label 为 中文 + 编码） */
+/** 攻击类型下拉选项（纯中文标签，提交值仍为后端枚举） */
 export const ATTACK_TYPE_OPTIONS = Object.entries(ATTACK_TYPE_META).map(([value, meta]) => ({
   value,
-  label: `${meta.label}（${value}）`,
+  label: meta.label,
 }))
 
 /**

@@ -25,6 +25,7 @@ import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { ASSET_VALUE_DIMENSION_LABELS } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import {
   API_ENDPOINT_STATUS_META,
@@ -46,19 +47,6 @@ const ASSET_VALUE_META: Record<string, { color: string; label: string }> = {
   MEDIUM: { color: 'gold', label: '中' },
   HIGH: { color: 'orange', label: '高' },
   CRITICAL: { color: 'magenta', label: '严重' },
-}
-
-/** 资产价值评分九维中文名（asset_value_explain.dimensions[].name） */
-const ASSET_VALUE_DIMENSION_LABELS: Record<string, string> = {
-  business_sensitivity: '业务敏感度',
-  data_sensitivity: '数据敏感度',
-  internet_exposure: '公网暴露',
-  privilege: '权限等级',
-  write_capability: '写能力',
-  admin_capability: '管理能力',
-  transaction_capability: '交易能力',
-  dependency_degree: '依赖度',
-  traffic_scale: '流量规模',
 }
 
 /** 站点过滤：applicationId 与 unassigned 二选一；皆空表示全部 */
@@ -273,7 +261,7 @@ export default function ApiEndpointsPage() {
   const deprecateEndpoint = (record: ApiEndpointItem) => {
     modal.confirm({
       title: '标记下线',
-      content: `确定将接口「${record.http_method} ${record.normalized_path}」标记下线（DEPRECATED）吗？下线后若观察窗口内仍有流量将自动转为僵尸态。`,
+      content: `确定将接口「${record.http_method} ${record.normalized_path}」标记下线吗？下线后若观察窗口内仍有流量将自动转为僵尸态。`,
       onOk: () => deprecateMut.mutate(record.id),
     })
   }
@@ -281,7 +269,7 @@ export default function ApiEndpointsPage() {
   const restoreEndpoint = (record: ApiEndpointItem) => {
     modal.confirm({
       title: '恢复接口',
-      content: `确定将接口「${record.http_method} ${record.normalized_path}」恢复为已确认（CONFIRMED）吗？恢复后重新进入正式资产管理。`,
+      content: `确定将接口「${record.http_method} ${record.normalized_path}」恢复为已确认吗？恢复后重新进入正式资产管理。`,
       onOk: () => restoreMut.mutate(record.id),
     })
   }

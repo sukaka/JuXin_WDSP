@@ -596,7 +596,7 @@ export function dataFlowGraphOption(graph: DataFlowGraph, options: DataFlowLayou
           const messageLabels = dataFlowSideLabels(edge, 'MESSAGE').join('、')
           const apis = edge.apis.slice(0, 5).map(escapeHtml).join('<br/>') || '未知'
           const evidence = edge.boundary_evidence
-            ? `${dataFlowBoundaryEvidenceLabel(edge.boundary_evidence)}（${edge.boundary_evidence}）`
+            ? dataFlowBoundaryEvidenceLabel(edge.boundary_evidence)
             : '证据未提供'
           const boundary = graph.view === 'boundary'
             ? `<br/>区域：${dataFlowNetworkZoneLabel(edge.source_zone)} → ${dataFlowNetworkZoneLabel(edge.target_zone)}<br/>边界：${dataFlowBoundaryTypeLabel(edge.boundary_type)} · ${escapeHtml(evidence)}`

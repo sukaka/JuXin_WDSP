@@ -153,7 +153,9 @@ describe('ApmAgentsPage', () => {
     expect(row.textContent).toContain('i-abcdef01')
     expect(row.textContent).toContain('Java')
     expect(row.textContent).toContain('1.2.0')
-    expect(row.textContent).toContain('prod')
+    expect(row.textContent).toContain('生产')
+    const row2 = screen.getByText('shop-web').closest('tr')!
+    expect(row2.textContent).toContain('测试')
     expect(screen.getByText('已连接·基线')).toBeInTheDocument()
     expect(screen.getByText('已撤销')).toBeInTheDocument()
     // 最后心跳相对时间（65 秒前 → 1 分钟前）

@@ -38,6 +38,7 @@ import {
   AI_NOISE_SWEEP_STATUS_META,
   AI_NOISE_VERDICT_META,
 } from '../../../utils/ai'
+import { API_DETECTOR_META } from '../../../utils/stage8'
 
 // 取值范围与 server/internal/ainoise/worker.go 常量保持一致
 const INTERVAL_RANGE = { min: 30, max: 86400 }
@@ -56,10 +57,11 @@ function formatConfidence(value?: number | null): string {
   return `${(value * 100).toFixed(0)}%`
 }
 
-/** 规则标识：WAF 簇展示 rule_id，API 簇展示 detector_code */
+/** 规则标识：WAF 簇展示 rule_id，API 簇展示检测器中文名 */
 function formatRule(record: AiNoiseCluster): string {
   if (record.rule_id !== null && record.rule_id !== undefined) return `#${record.rule_id}`
-  return record.detector_code || '-'
+  if (!record.detector_code) return '-'
+  return API_DETECTOR_META[record.detector_code]?.label ?? record.detector_code
 }
 
 /** 设置表单字段（与 AiNoiseSettings 一一对应） */
@@ -192,8 +194,13 @@ export default function NoiseReductionPage() {
     {
       title: '规则/检测器',
       key: 'rule',
-      width: 130,
-      render: (_, record) => <Typography.Text code>{formatRule(record)}</Typography.Text>,
+      width: 150,
+      render: (_, record) =>
+        record.rule_id !== null && record.rule_id !== undefined ? (
+          <Typography.Text code>{formatRule(record)}</Typography.Text>
+        ) : (
+          formatRule(record)
+        ),
     },
     { title: '客户端 IP', dataIndex: 'client_ip', width: 130, render: (v: string) => v || '-' },
     { title: '折叠事件数', dataIndex: 'event_count', width: 100 },

@@ -140,7 +140,7 @@ describe('ApiSensitiveTypesPage', () => {
     vi.unstubAllGlobals()
   })
 
-  it('列表渲染：内置标识展示，内置类型删除禁用、自定义可删', async () => {
+  it('列表渲染：内置标识展示，内置类型删除禁用、自定义可删；数据类型与位置中文化', async () => {
     useAuthStore.setState({
       user: makeUser(['api_data.read', 'api_data.manage']),
       csrfToken: null,
@@ -148,9 +148,14 @@ describe('ApiSensitiveTypesPage', () => {
     })
     renderPage()
 
-    const builtinCell = await screen.findByText('手机号')
-    const builtinRow = builtinCell.closest('tr') as HTMLElement
+    // 内置类型名称为「手机号」，data_type='phone' 也展示中文标签「手机号」
+    const builtinCells = await screen.findAllByText('手机号')
+    const builtinRow = builtinCells[0].closest('tr') as HTMLElement
     expect(within(builtinRow).getByText('内置')).toBeInTheDocument()
+    expect(within(builtinRow).getByText('查询参数')).toBeInTheDocument()
+    expect(within(builtinRow).getByText('JSON 请求体')).toBeInTheDocument()
+    expect(within(builtinRow).queryByText('phone')).not.toBeInTheDocument()
+    expect(within(builtinRow).queryByText('query')).not.toBeInTheDocument()
     expect(within(builtinRow).getByRole('button', { name: /删\s*除/ })).toBeDisabled()
 
     const customRow = (await screen.findByText('员工编号')).closest('tr') as HTMLElement
@@ -201,7 +206,7 @@ describe('ApiSensitiveTypesPage', () => {
     fireEvent.change(screen.getByLabelText('类型名称'), { target: { value: '导出手机号' } })
     fireEvent.change(screen.getByLabelText('数据类型标签'), { target: { value: 'phone' } })
     fireEvent.mouseDown(screen.getByLabelText('可能出现位置（可选）'))
-    fireEvent.click(await screen.findByText('文件内容（file）'))
+    fireEvent.click(await screen.findByText('文件内容'))
     fireEvent.change(screen.getByLabelText('值级正则（可选）'), { target: { value: '^1[3-9]\\d{9}$' } })
     fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
 
@@ -249,7 +254,7 @@ describe('ApiSensitiveTypesPage', () => {
       initialized: true,
     })
     renderPage()
-    await screen.findByText('手机号')
+    await screen.findAllByText('手机号')
 
     const file = new File(
       [JSON.stringify({ types: [{ name: '工号', data_type: 'emp_no' }] })],
@@ -274,7 +279,7 @@ describe('ApiSensitiveTypesPage', () => {
     })
     renderPage()
 
-    await screen.findByText('手机号')
+    await screen.findAllByText('手机号')
     expect(screen.queryByRole('button', { name: /新建类型/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /导\s*入/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /编\s*辑/ })).not.toBeInTheDocument()

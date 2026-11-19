@@ -41,12 +41,14 @@ import {
   isActionSupportedForNewEnable,
 } from '../../utils/exceptionStatus'
 import {
+  ATTACK_TYPE_META,
   ATTACK_TYPE_OPTIONS,
   EXCEPTION_ACTION_META,
   EXCEPTION_SCOPE_META,
   EXCEPTION_STATUS_META,
   isBroadExceptionDraft,
 } from '../../utils/stage4'
+import { API_DETECTOR_META } from '../../utils/stage8'
 import type { ApiExceptionRuleRef, ExceptionItem, ExceptionTargetEngine } from '../../types'
 import ExceptionPreviewPanel from './ExceptionPreviewPanel'
 
@@ -62,8 +64,8 @@ const METHOD_OPTIONS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTION
 
 /** API 例外受支持 detector 注册表（S4 §3 首批，Finding.RuleID 稳定） */
 const API_DETECTOR_OPTIONS = [
-  { value: 'api_schema', label: 'api_schema（schema 违例）' },
-  { value: 'api_parser', label: 'api_parser（参数/解析观测）' },
+  { value: 'api_schema', label: `${API_DETECTOR_META.api_schema?.label ?? '模型校验'}（模型违例）` },
+  { value: 'api_parser', label: `${API_DETECTOR_META.api_parser?.label ?? '报文解析检测'}（参数/解析观测）` },
 ]
 
 /**
@@ -78,7 +80,7 @@ function buildActionOptions(
     return [
       {
         value: 'OBSERVE_RULE',
-        label: `OBSERVE_RULE ${EXCEPTION_ACTION_META.OBSERVE_RULE.label}`,
+        label: EXCEPTION_ACTION_META.OBSERVE_RULE.label,
       },
     ]
   }
@@ -90,11 +92,11 @@ function buildActionOptions(
         value,
         disabled: unsupported,
         label: unsupported ? (
-          <Tooltip title="不支持新启用：禁止整请求仅观察/调分替代语义，请改用精确目标排除（REMOVE_VAR_DETECTION）">
-            <span>{`${value} ${meta.label}（不支持新启用）`}</span>
+          <Tooltip title="不支持新启用：禁止整请求仅观察/调分替代语义，请改用精确目标排除（移除变量检测）">
+            <span>{`${meta.label}（不支持新启用）`}</span>
           </Tooltip>
         ) : (
-          `${value} ${meta.label}`
+          meta.label
         ),
       }
     })
@@ -639,7 +641,7 @@ export default function ExceptionsPage() {
                   <Form.Item
                     name="application_id"
                     label="目标应用"
-                    extra="启用门禁要求绑定具体应用；留空保存的草稿将被标记为待审查（NEEDS_REVIEW）且禁止启用"
+                    extra="启用门禁要求绑定具体应用；留空保存的草稿将被标记为待审查且禁止启用"
                   >
                     <Select
                       allowClear
@@ -779,7 +781,7 @@ export default function ExceptionsPage() {
             name="target_engine"
             label="目标引擎"
             rules={[{ required: true }]}
-            extra="WAF：Coraza/CRS 规则例外；API：API 动态防护 Finding 级规则例外（首批支持 api_schema / api_parser）"
+            extra="WAF：Coraza/CRS 规则例外；API：API 动态防护规则级例外（首批支持模型校验与报文解析检测）"
           >
             <Select
               options={[
@@ -800,8 +802,8 @@ export default function ExceptionsPage() {
             rules={[{ required: true }]}
             extra={
               watchedEngine === 'WAF'
-                ? 'LOG_ONLY / ADJUST_SCORE 为历史动作，不支持新启用；请改用精确目标排除'
-                : 'API 引擎仅支持 OBSERVE_RULE：被例外命中保留观察记录并取消本次执法贡献，其余命中重新计算决策'
+                ? '「仅记录不阻断」与「调整异常评分」为历史动作，不支持新启用；请改用精确目标排除'
+                : 'API 引擎仅支持「API 规则仅观察」：被例外命中保留观察记录并取消本次执法贡献，其余命中重新计算决策'
             }
           >
             <Select options={actionOptions} />
@@ -812,8 +814,8 @@ export default function ExceptionsPage() {
                 type="warning"
                 showIcon
                 style={{ marginBottom: 16 }}
-                message={`动作 ${watched?.exception_action} 不支持新启用`}
-                description="该历史动作保存后仍为待审查（NEEDS_REVIEW）且禁止启用；请改为精确目标排除（REMOVE_VAR_DETECTION / REMOVE_RULE）。"
+                message={`动作「${EXCEPTION_ACTION_META[watched?.exception_action ?? '']?.label ?? watched?.exception_action}」不支持新启用`}
+                description="该历史动作保存后仍为待审查且禁止启用；请改为精确目标排除（移除变量检测或移除指定规则）。"
               />
             )}
           {watchedEngine === 'WAF' && (
@@ -830,7 +832,7 @@ export default function ExceptionsPage() {
                 </Form.Item>
               </Space.Compact>
               <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: -8 }}>
-                规则标签在启用时经规则目录展开为冻结规则集（resolved_rule_ids），不自动扩展；攻击类型仅作事件分类筛选，不参与运行时范围、不能仅凭它授权启用。
+                规则标签在启用时经规则目录展开为冻结规则集，不自动扩展；攻击类型仅作事件分类筛选，不参与运行时范围、不能仅凭它授权启用。
               </Typography.Paragraph>
               <Space.Compact block>
                 <Form.Item name="param_names" label="参数名" style={{ width: '33%', marginRight: 8 }}>
@@ -844,10 +846,10 @@ export default function ExceptionsPage() {
                 </Form.Item>
               </Space.Compact>
               <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: -8 }}>
-                参数/Cookie/请求头名为检测目标（ARGS / REQUEST_COOKIES / REQUEST_HEADERS），REMOVE_VAR_DETECTION 必须同时填写规则 ID 与目标名；不代表这些名字对应的所有模块均放行。
+                参数、Cookie、请求头名为检测目标，选择「移除变量检测」时必须同时填写规则 ID 与目标名；不代表这些名字对应的所有模块均放行。
               </Typography.Paragraph>
               <Form.Item name="action_target" label="动作目标">
-                <Input placeholder="REMOVE_VAR_DETECTION 的目标集合别名（可选；禁止自由文本拼规则）" autoComplete="off" />
+                <Input placeholder="「移除变量检测」的目标集合别名（可选；禁止自由文本拼规则）" autoComplete="off" />
               </Form.Item>
             </>
           )}
@@ -861,7 +863,7 @@ export default function ExceptionsPage() {
                       (v ?? []).filter((r) => r?.detector_id && r?.rule_id).length > 0
                         ? Promise.resolve()
                         : Promise.reject(
-                            new Error('API 例外必须至少引用一条规则（detector_id + rule_id）'),
+                            new Error('API 例外必须至少引用一条规则（需选择检测器并填写规则标识）'),
                           ),
                   },
                 ]}
@@ -877,7 +879,7 @@ export default function ExceptionsPage() {
                         >
                           <Select
                             options={API_DETECTOR_OPTIONS}
-                            placeholder="detector_id"
+                            placeholder="选择检测器"
                             style={{ width: 230 }}
                           />
                         </Form.Item>
@@ -887,14 +889,14 @@ export default function ExceptionsPage() {
                           style={{ marginBottom: 0 }}
                         >
                           <Input
-                            placeholder="rule_id（稳定规则标识）"
+                            placeholder="规则标识"
                             style={{ width: 200 }}
                             autoComplete="off"
                           />
                         </Form.Item>
                         <Form.Item name={[field.name, 'model_version']} style={{ marginBottom: 0 }}>
                           <Input
-                            placeholder="model_version（可空）"
+                            placeholder="模型版本（可选）"
                             style={{ width: 170 }}
                             autoComplete="off"
                           />
@@ -1040,7 +1042,7 @@ export default function ExceptionsPage() {
                 type="warning"
                 showIcon
                 style={{ marginBottom: 16 }}
-                message="该例外待审查（NEEDS_REVIEW），达标前禁止启用"
+                message="该例外待审查，达标前禁止启用"
                 description={
                   (exc.unsupported_reasons ?? []).length > 0 ? (
                     <ul style={{ margin: 0, paddingLeft: 18 }}>
@@ -1077,9 +1079,11 @@ export default function ExceptionsPage() {
               </Descriptions.Item>
               <Descriptions.Item label="校验状态">
                 {exc.validation_status === 'NEEDS_REVIEW' ? (
-                  <Tag color="red">NEEDS_REVIEW 待审查</Tag>
+                  <Tag color="red">待审查</Tag>
+                ) : !exc.validation_status || exc.validation_status === 'VALID' ? (
+                  <Tag color="green">校验通过</Tag>
                 ) : (
-                  <Tag color="green">{exc.validation_status ?? 'VALID'}</Tag>
+                  <Tag>{exc.validation_status}</Tag>
                 )}
               </Descriptions.Item>
               <Descriptions.Item label="版本">v{exc.version}</Descriptions.Item>
@@ -1101,14 +1105,24 @@ export default function ExceptionsPage() {
               {listSection('规则ID', exc.rule_ids)}
               {listSection('规则标签', exc.rule_tags)}
               {listSection('冻结规则集', exc.resolved_rule_ids)}
-              {listSection('攻击类型', exc.attack_types)}
+              <Descriptions.Item label="攻击类型" span={2}>
+                {(exc.attack_types ?? []).length > 0 ? (
+                  <Space wrap>
+                    {(exc.attack_types ?? []).map((t) => (
+                      <StatusTag key={t} value={t} map={ATTACK_TYPE_META} />
+                    ))}
+                  </Space>
+                ) : (
+                  '-'
+                )}
+              </Descriptions.Item>
               {listSection('Content-Type', exc.content_types)}
               <Descriptions.Item label="API 规则引用" span={2}>
                 {(exc.api_rule_refs ?? []).length > 0 ? (
                   <Space wrap size={4}>
                     {(exc.api_rule_refs ?? []).map((r, i) => (
                       <Tag key={`${r.detector_id}-${r.rule_id}-${i}`}>
-                        {`${r.detector_id}/${r.rule_id}${r.model_version ? `@${r.model_version}` : ''}`}
+                        {`${API_DETECTOR_META[r.detector_id]?.label ?? r.detector_id}/${r.rule_id}${r.model_version ? `@${r.model_version}` : ''}`}
                       </Tag>
                     ))}
                   </Space>

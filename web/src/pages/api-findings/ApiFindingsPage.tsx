@@ -13,6 +13,7 @@ import {
   Select,
   Space,
   Table,
+  Tag,
   Tooltip,
   Typography,
 } from 'antd'
@@ -38,7 +39,14 @@ import {
   API_FINDING_STATUS_META,
   API_FINDING_TYPE_META,
   API_SUBJECT_TYPE_META,
+  getApiFindingTypeMeta,
 } from '../../utils/stage8'
+
+/** 动态兼容动态/扩展风险类型（如 SCHEMA_*、LLM_* 等），避免页面回退原始英文码 */
+function FindingTypeTag({ value }: { value: string }) {
+  const meta = getApiFindingTypeMeta(value)
+  return <Tag color={meta.color}>{meta.label}</Tag>
+}
 
 /** 页面内全部处置动作（confirm/start/ignore/archive 备注可选；resolve/false-positive 走必填弹窗） */
 type FindingAction = ApiFindingHandleAction | 'resolve' | 'false-positive'
@@ -94,7 +102,7 @@ function summaryRowKey(view: ApiFindingSummaryGroupBy, r: ApiFindingSummaryBucke
 /** 汇总桶分组键展示：subject=主体标识（空为匿名主体）、endpoint=接口键（空为未关联）、type=风险类型标签 */
 function SummaryKeyCell({ view, bucket }: { view: ApiFindingSummaryGroupBy; bucket: ApiFindingSummaryBucket }) {
   if (view === 'type') {
-    return <StatusTag value={bucket.finding_type ?? ''} map={API_FINDING_TYPE_META} />
+    return <FindingTypeTag value={bucket.finding_type ?? ''} />
   }
   if (view === 'endpoint') {
     return bucket.endpoint_key ? (
@@ -324,7 +332,7 @@ export default function ApiFindingsPage() {
       title: '类型',
       dataIndex: 'finding_type',
       width: 110,
-      render: (v: string) => <StatusTag value={v} map={API_FINDING_TYPE_META} />,
+      render: (v: string) => <FindingTypeTag value={v} />,
     },
     {
       title: '严重级别',
@@ -506,7 +514,7 @@ export default function ApiFindingsPage() {
           <>
             <Descriptions column={2} size="small" style={{ marginBottom: 16 }}>
               <Descriptions.Item label="风险类型">
-                <StatusTag value={selected.finding_type} map={API_FINDING_TYPE_META} />
+                <FindingTypeTag value={selected.finding_type} />
               </Descriptions.Item>
               <Descriptions.Item label="严重级别">
                 <StatusTag value={selected.severity} map={API_FINDING_SEVERITY_META} />
@@ -531,7 +539,9 @@ export default function ApiFindingsPage() {
               {/* 以下为风险中心详情字段（GET /findings/{id}，api_risk.read），加载完成后展示 */}
               {detail ? (
                 <>
-                  <Descriptions.Item label="主体类型">{detail.subject_type || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="主体类型">
+                    {detail.subject_type ? <StatusTag value={detail.subject_type} map={API_SUBJECT_TYPE_META} /> : '-'}
+                  </Descriptions.Item>
                   <Descriptions.Item label="主体标识">
                     {detail.subject_id ? <Typography.Text code>{detail.subject_id}</Typography.Text> : '匿名主体'}
                   </Descriptions.Item>
@@ -557,7 +567,7 @@ export default function ApiFindingsPage() {
                 <Typography.Title level={5}>关联请求</Typography.Title>
                 <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
                   {detailQuery.data?.related_request_note ??
-                    '同 API（同身份）近期运行时事件的 request_id，近似关联，非精确命中回放'}
+                    '同 API（同身份）近期运行时事件的请求 ID，近似关联，非精确命中回放'}
                 </Typography.Paragraph>
                 {relatedIds.length > 0 ? (
                   <Space size={4} wrap style={{ marginBottom: 16 }}>
@@ -582,7 +592,7 @@ export default function ApiFindingsPage() {
                 </Typography.Paragraph>
               </>
             ) : null}
-            <Typography.Title level={5}>风险明细（detail）</Typography.Title>
+            <Typography.Title level={5}>风险明细</Typography.Title>
             <Typography.Paragraph>
               <pre style={{ background: '#fafafa', padding: 12, fontSize: 12, overflow: 'auto', margin: 0 }}>
                 {formatJson(detail?.detail ?? selected.detail)}

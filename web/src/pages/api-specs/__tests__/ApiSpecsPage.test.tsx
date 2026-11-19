@@ -170,7 +170,7 @@ describe('ApiSpecsPage', () => {
     useAuthStore.setState({ user: makeUser(['api_spec.read']), csrfToken: null, initialized: true })
     renderPage()
     expect(await screen.findByText('openapi-payment.json')).toBeInTheDocument()
-    expect(screen.getByText('openapi3')).toBeInTheDocument()
+    expect(screen.getByText('OpenAPI 3.x')).toBeInTheDocument()
     expect(screen.getByText('abcdef1234…')).toBeInTheDocument()
     expect(screen.getByText('12')).toBeInTheDocument()
     expect(screen.getByText('共 1 条')).toBeInTheDocument()
@@ -245,7 +245,8 @@ describe('ApiSpecsPage', () => {
     fireEvent.click(await screen.findByText('v1（历史）'))
     expect(await within(drawer).findByText('新增参数')).toBeInTheDocument()
     expect(within(drawer).getByText('移除 API')).toBeInTheDocument()
-    expect(within(drawer).getByText('body.trace_id')).toBeInTheDocument()
+    expect(within(drawer).getByText('请求体')).toBeInTheDocument()
+    expect(within(drawer).getByText('trace_id')).toBeInTheDocument()
     expect(within(drawer).getByText(/共 2 处定义变更/)).toBeInTheDocument()
   })
 

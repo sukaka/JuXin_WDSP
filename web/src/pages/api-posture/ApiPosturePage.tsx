@@ -26,7 +26,9 @@ import type { EChartOption } from '../../components/EChart'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import { ASSET_VALUE_LEVEL_META } from '../../utils/i18nLabels'
 import { hasAnyPermission } from '../../utils/permission'
+import { API_COUNTRY_META } from '../../utils/stage8'
 
 const DAYS_OPTIONS = [
   { value: 7, label: '最近7天' },
@@ -145,7 +147,7 @@ function RiskTrendChart({ points }: { points: ApiPostureTrendPoint[] }) {
 /** 认证类型展示名（auth_type 空串 = 匿名流量；词表见迁移 000029） */
 const AUTH_TYPE_LABELS: Record<string, string> = {
   '': '匿名',
-  bearer_or_basic: 'Bearer/Basic',
+  bearer_or_basic: '令牌/基本认证',
   api_key: 'API Key',
   cookie_session: 'Cookie会话',
 }
@@ -255,7 +257,7 @@ function SourcesSection({ data }: { data: ApiPostureSources }) {
               <>
                 {data.geo_truncated ? (
                   <Typography.Text type="secondary">
-                     distinct 客户端 IP 超上限，地域统计已按事件数截取头部
+                    去重客户端 IP 超上限，地域统计已按事件数截取头部
                   </Typography.Text>
                 ) : null}
                 <EChart
@@ -272,7 +274,7 @@ function SourcesSection({ data }: { data: ApiPostureSources }) {
                 <EChart
                   option={rankBarOption(
                     data.top_countries.map((i) => ({
-                      name: i.country,
+                      name: API_COUNTRY_META[i.country]?.label ?? i.country,
                       value: i.count,
                     })),
                     '#722ed1',
@@ -342,7 +344,7 @@ function TargetsSection({ data }: { data: ApiPostureTargets }) {
             title="高风险 API 访问量 Top10"
             color="#fa541c"
             items={data.top_high_risk.map((i) => ({
-              name: `${i.endpoint_key} [${i.asset_value}]`,
+              name: `${i.endpoint_key} [${ASSET_VALUE_LEVEL_META[i.asset_value]?.label ?? i.asset_value}]`,
               value: i.request_count,
             }))}
           />

@@ -104,9 +104,9 @@ describe('RegressionGateNotice', () => {
   it('OFF/OBSERVE/ENFORCE 三态文案如实展示并给出安全回归入口', async () => {
     grant(['security_regression.read'])
     const cases: Array<[string, RegExp]> = [
-      ['OFF', /回归门禁未强制（OFF）：本次发布不检查回归证据/],
-      ['OBSERVE', /回归门禁观察中（OBSERVE）：发布时计算并记录门禁结论，但不阻断不合规发布/],
-      ['ENFORCE', /回归门禁强制中（ENFORCE）：缺少绑定当前候选指纹且核验通过的回归证据时，发布将被拒绝/],
+      ['OFF', /回归门禁未强制：本次发布不检查回归证据/],
+      ['OBSERVE', /回归门禁观察中：发布时计算并记录门禁结论，但不阻断不合规发布/],
+      ['ENFORCE', /回归门禁强制中：缺少绑定当前候选指纹且核验通过的回归证据时，发布将被拒绝/],
     ]
     for (const [mode, pattern] of cases) {
       vi.stubGlobal('fetch', mockPolicyFetch(makePolicy(mode)))

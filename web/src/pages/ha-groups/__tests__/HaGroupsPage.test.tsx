@@ -116,9 +116,9 @@ describe('HaGroupsPage', () => {
       },
     })
     renderPage()
-    expect(await screen.findByText('MASTER（持有 VIP）')).toBeInTheDocument()
+    expect(await screen.findByText('主节点（持有 VIP）')).toBeInTheDocument()
     expect(screen.getByText('keepalived 运行中')).toBeInTheDocument()
-    expect(screen.getByText('BACKUP → MASTER')).toBeInTheDocument()
+    expect(screen.getByText('备节点（待命） → 主节点（持有 VIP）')).toBeInTheDocument()
   })
 
   it('新建主备组：提交体含成员与 VIP，保存后关闭弹窗并刷新', async () => {

@@ -338,8 +338,10 @@ describe('dataFlowCharts', () => {
     const tooltip = (option.tooltip as { formatter: (params: unknown) => string }).formatter
     const publicTooltip = tooltip({ data: { kind: 'edge', edge: boundaryGraph.edges[0] } })
     const unknownTooltip = tooltip({ data: { kind: 'edge', edge: boundaryGraph.edges[1] } })
-    expect(publicTooltip).toContain('边界：公网 → 内网 · 直连对端（DIRECT_PEER）')
-    expect(unknownTooltip).toContain('边界：边界未知 · 客户端来源不可信（UNTRUSTED_CLIENT_SOURCE）')
+    expect(publicTooltip).toContain('边界：公网 → 内网 · 直连对端')
+    expect(publicTooltip).not.toContain('DIRECT_PEER')
+    expect(unknownTooltip).toContain('边界：边界未知 · 客户端来源不可信')
+    expect(unknownTooltip).not.toContain('UNTRUSTED_CLIENT_SOURCE')
     expect(unknownTooltip).not.toContain('边界：公网 → 内网')
 
     const collapsed = dataFlowGraphOption(boundaryGraph, { collapsedGroups: ['内外网边界 · 01'] })

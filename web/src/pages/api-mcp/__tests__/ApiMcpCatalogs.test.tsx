@@ -185,8 +185,8 @@ describe('ApiMcpPage / CatalogsTab（NG-MCP G1 目录列表与审核状态机）
     const dialogs = await screen.findAllByRole('dialog')
     const dialog = dialogs[dialogs.length - 1]
     // 行值回填（定级/允许维度/预算）
-    expect(within(dialog).getByText('高（HIGH）')).toBeInTheDocument()
-    fireEvent.click(within(dialog).getByText('拒绝（REJECTED，不下发）'))
+    expect(within(dialog).getByText('高')).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByText('拒绝（不下发）'))
     expect(await within(dialog).findByText(/拒绝后该工具不出现在发布快照/)).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: '提交审核' }))
     await waitFor(() =>

@@ -30,13 +30,25 @@ export const FLOW_EVENT_TYPE_META: Record<string, { color: string; label: string
   flow_end: { color: 'default', label: '流结束' },
 }
 
+/** K8s 端点方向（src / dst）展示 */
+export const K8S_SIDE_LABELS: Record<string, string> = {
+  src: '源端',
+  dst: '目标端',
+}
+
+/** K8s 端点方向中文格式化（未知原样返回） */
+export function formatK8sSide(side?: string | null): string {
+  if (!side) return '-'
+  return K8S_SIDE_LABELS[side] ?? side
+}
+
 /* ==================== Phase 2：健康评分（PHASE2 契约 §4 原因码 → 展示文案） ==================== */
 
 /** 健康评分扣分原因码展示（机读码由服务端 ComputeHealth 输出；未知码原样展示） */
 export const HEALTH_REASON_META: Record<string, string> = {
   agent_disabled: 'Agent 已禁用',
   agent_offline: 'Agent 离线',
-  status_error: '自报状态 ERROR',
+  status_error: '自报状态异常',
   status_degraded: '自报状态降级',
   cpu_over_limit: 'CPU 超过阈值',
   cpu_high: 'CPU 偏高（>80% 阈值）',

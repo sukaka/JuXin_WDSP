@@ -188,11 +188,11 @@ export default function ApiDataFlowPage() {
         <label className="data-flow-filter">
           <span className="data-flow-filter-label">请求方法</span>
           <Select
-            aria-label="Method"
+            aria-label="请求方法"
             value={method}
             onChange={setMethod}
             allowClear
-            placeholder="全部 Method"
+            placeholder="全部请求方法"
             options={['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((value) => ({ value, label: value }))}
           />
         </label>
@@ -202,7 +202,7 @@ export default function ApiDataFlowPage() {
             aria-label="数据类型"
             value={dataType}
             onChange={(event) => setDataType(event.target.value)}
-            placeholder="如 PHONE"
+            placeholder="如：手机号"
             maxLength={64}
           />
         </label>

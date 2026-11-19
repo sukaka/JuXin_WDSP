@@ -98,11 +98,34 @@ export const ALERT_TYPE_META: Record<string, { color: string; label: string }> =
   DATABASE_CAPACITY_HIGH: { color: 'orange', label: '数据库容量高' },
   FD_USAGE_HIGH: { color: 'orange', label: '文件句柄使用率高' },
   BACKUP_FAILED: { color: 'volcano', label: '备份失败' },
+  BACKUP_VERIFY_FAILED: { color: 'volcano', label: '备份校验失败' },
   RESTORE_VALIDATION_FAILED: { color: 'volcano', label: '恢复校验失败' },
+  RESTORE_CLEANUP_FAILED: { color: 'orange', label: '恢复清理失败' },
   REPORT_FAILED: { color: 'orange', label: '报告生成失败' },
   UPGRADE_FAILED: { color: 'red', label: '升级失败' },
+  UPGRADE_ROLLBACK_FAILED: { color: 'red', label: '升级回滚失败' },
+  UPGRADE_ROLLED_BACK: { color: 'orange', label: '升级已回滚' },
   AUDIT_INTEGRITY_FAILED: { color: 'red', label: '审计完整性失败' },
+  AUDIT_WRITE_FAILED: { color: 'red', label: '审计写入失败' },
   VULN_INTEL_NEW: { color: 'volcano', label: '漏洞情报' },
+  API_CRITICAL_FINDING: { color: 'red', label: 'API 严重风险发现' },
+  API_FINDING_SPIKE: { color: 'volcano', label: 'API 风险发现激增' },
+  API_MASK_FAILURE: { color: 'volcano', label: 'API 响应脱敏失败' },
+  SECURITY_EVENT_SPIKE: { color: 'volcano', label: '安全事件激增' },
+  LOGIN_BRUTE_FORCE: { color: 'red', label: '登录暴力破解' },
+  CC_BAN_SPIKE: { color: 'orange', label: 'CC 封禁激增' },
+  LICENSE_INVALID: { color: 'red', label: '系统授权无效' },
+  LICENSE_EXPIRING_SOON: { color: 'gold', label: '系统授权即将到期' },
+  LICENSE_QUOTA_EXCEEDED: { color: 'volcano', label: '授权配额超限' },
+  HA_VIP_FAULT: { color: 'red', label: '高可用虚拟 IP 故障' },
+  NETWORK_APPLY_FAILED: { color: 'red', label: '网络配置应用失败' },
+  LINK_PAIR_DOWN: { color: 'red', label: '网桥链路对中断' },
+  LINK_PAIR_SUPPRESSED: { color: 'orange', label: '网桥链路对联动抑制' },
+  ENDPOINT_LATENCY_HIGH: { color: 'orange', label: '端点时延偏高' },
+  ENDPOINT_ERROR_RATE_HIGH: { color: 'volcano', label: '端点错误率偏高' },
+  APM_SLO_BREACH: { color: 'red', label: 'APM SLO 违约' },
+  APM_INGEST_LAG: { color: 'orange', label: 'APM 采集入库滞后' },
+  AI_OPS_SCHEDULE_CIRCUIT_OPEN: { color: 'volcano', label: 'AI 定时运营任务熔断' },
 }
 
 /** 监控组件展示名 */
@@ -117,6 +140,8 @@ export const COMPONENT_NAME_META: Record<string, string> = {
   UPSTREAM: '源站',
   CERTIFICATE: '证书',
   DISK: '磁盘',
+  API_SECURITY: 'API 安全采集',
+  APM_CLICKHOUSE: 'APM 时序存储',
 }
 
 /** 组件健康状态（与后端 runtimehealth 状态枚举一致） */

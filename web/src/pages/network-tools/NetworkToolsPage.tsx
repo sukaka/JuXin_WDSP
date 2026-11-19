@@ -83,11 +83,26 @@ function formatCaptureSize(bytes?: number | null): string {
   return `${bytes} B`
 }
 
-/** 参数摘要：params 回显为 key=value 序列 */
+/** 诊断任务参数键中文展示映射 */
+const PARAM_KEY_LABELS: Record<string, string> = {
+  count: '次数',
+  port: '端口',
+  max_hops: '最大跳数',
+  iface: '网口',
+  duration_sec: '时长(秒)',
+  filter_proto: '协议',
+  filter_port: '过滤端口',
+  filter_host: '过滤主机',
+  timeout_sec: '超时(秒)',
+  domain: '域名',
+  record_type: '记录类型',
+}
+
+/** 参数摘要：params 回显为中文键=值序列 */
 function paramsSummary(params: Record<string, unknown>): string {
   const entries = Object.entries(params ?? {})
   if (entries.length === 0) return '-'
-  return entries.map(([k, v]) => `${k}=${String(v)}`).join('  ')
+  return entries.map(([k, v]) => `${PARAM_KEY_LABELS[k] ?? k}=${String(v)}`).join('  ')
 }
 
 /** 后端最多解析并返回的数据包条数，达到该值提示可能截断 */

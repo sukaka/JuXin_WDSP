@@ -43,6 +43,11 @@ import {
   isReadinessBlocking,
 } from '../../utils/authzEnforcement'
 import { formatDateTime } from '../../utils/format'
+import {
+  AUTHZ_DECISION_META,
+  PUBLISH_FAILURE_CODE_LABELS,
+  formatAuthzReasonCode,
+} from '../../utils/i18nLabels'
 import { generateIdempotencyKey } from '../../utils/idempotency'
 import { hasPermission } from '../../utils/permission'
 import { isTerminalTaskStatus } from '../../utils/stage3'
@@ -100,7 +105,7 @@ interface FailureInfo {
 export default function ProtectWizard(props: ProtectWizardProps) {
   const { open, onClose } = props
   return (
-    <Drawer title="切换 PROTECT（实断）" open={open} onClose={onClose} width={920} destroyOnHidden maskClosable={false}>
+    <Drawer title="切换实断模式" open={open} onClose={onClose} width={920} destroyOnHidden maskClosable={false}>
       {open ? <WizardBody {...props} /> : null}
     </Drawer>
   )
@@ -259,11 +264,12 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
       // PATCH 已落库但发布未能触发——同属「配置与生效不一致」，如实呈现
       setSubmitPhase('failed')
       const reason = e instanceof ApiError ? e.message : '发布触发失败'
+      const actionLabel = ENFORCEMENT_VALUE_META[submitAction]?.label ?? submitAction
       setFailure({
         code: 'PUBLISH_TRIGGER_FAILED',
         message: canPublish
-          ? `${reason}（enforcement 已落库 ${submitAction}，但发布未触发；可点「重新发布」重试或前往配置发布页手动发布）`
-          : `${reason}（enforcement 已落库 ${submitAction}，但当前账号无 gateway_configs.publish 权限，发布未触发；请由有权限账号在配置发布页发布）`,
+          ? `${reason}（执行模式已落库为「${actionLabel}」，但发布未触发；可点「重新发布」重试或前往配置发布页手动发布）`
+          : `${reason}（执行模式已落库为「${actionLabel}」，但当前账号无发布权限，发布未触发；请由有权限账号在配置发布页发布）`,
       })
     },
   })
@@ -381,7 +387,7 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
     { title: '接口', dataIndex: 'endpoint_key', ellipsis: true, render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
     { title: '对象段', dataIndex: 'object_segment', width: 120, render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
     {
-      title: '当前 enforcement', dataIndex: 'enforcement', width: 150,
+      title: '当前执行模式', dataIndex: 'enforcement', width: 150,
       render: (v?: string) => <StatusTag value={v || 'OBSERVE'} map={ENFORCEMENT_VALUE_META} />,
     },
     {
@@ -419,7 +425,7 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
       {step === 0 ? (
         <>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            仅 publishable 候选对象模型行可切换；资格不齐（NOT_PUBLISHABLE）行禁用并注明缺项。
+            仅具备发布资格的对象模型行可切换；资格不齐行已禁用并注明缺项。
           </Typography.Paragraph>
           <QueryErrorAlert error={modelsQuery.error ?? readinessQuery.error} message="加载候选端点失败" />
           <Table<ApiObjectModel>
@@ -489,14 +495,14 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
               ) : impact ? (
                 <>
                   {impact.observe_violation_count > 0 ? (
-                    <Alert type="error" showIcon message="这些请求切换后将被实断" description={`近 ${impact.window_days} 天观测到 ${impact.observe_violation_count} 次违规请求，切换 PROTECT 后将被 403（AUTHZ_VIOLATION_DENIED）。`} />
+                    <Alert type="error" showIcon message="这些请求切换后将被实断" description={`近 ${impact.window_days} 天观测到 ${impact.observe_violation_count} 次违规请求，切换实断后将被 403 阻断。`} />
                   ) : null}
                   <Row gutter={[12, 12]}>
                     <Col xs={12} lg={6}>
                       <Card size="small"><Statistic title="切换后将被 403（近似）" value={impact.observe_violation_count} valueStyle={{ color: impact.observe_violation_count > 0 ? '#cf1322' : undefined }} /></Card>
                     </Col>
                     <Col xs={12} lg={6}><Card size="small"><Statistic title="涉及主体数" value={impact.distinct_principal_count} /></Card></Col>
-                    <Col xs={12} lg={6}><Card size="small"><Statistic title="UNKNOWN 总数" value={impact.unknown_total} valueStyle={{ color: '#ad6800' }} /></Card></Col>
+                    <Col xs={12} lg={6}><Card size="small"><Statistic title="证据不足总数" value={impact.unknown_total} valueStyle={{ color: '#ad6800' }} /></Card></Col>
                     <Col xs={12} lg={6}><Card size="small"><Statistic title="已实断数（复评）" value={impact.verified_violation_count} /></Card></Col>
                   </Row>
                   <Space align="center" wrap>
@@ -505,21 +511,21 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
                     <Typography.Text type="secondary">评估时间 {formatDateTime(impact.evaluated_at)}</Typography.Text>
                   </Space>
                   <div>
-                    <Typography.Text strong>UNKNOWN 分桶（{UNKNOWN_NEVER_BLOCKS_NOTE}）</Typography.Text>
+                    <Typography.Text strong>证据不足分桶（{UNKNOWN_NEVER_BLOCKS_NOTE}）</Typography.Text>
                     <Table
                       rowKey="reason_code"
                       size="small"
                       style={{ marginTop: 8 }}
                       columns={[
-                        { title: '原因码', dataIndex: 'reason_code' },
+                        { title: '原因', dataIndex: 'reason_code', render: (v: string) => formatAuthzReasonCode(v) },
                         { title: '次数', dataIndex: 'count', width: 100 },
                       ]}
                       dataSource={unknownBuckets}
                       pagination={false}
-                      locale={{ emptyText: '近窗口内无 UNKNOWN 决策' }}
+                      locale={{ emptyText: '近窗口内无证据不足决策' }}
                     />
                     <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
-                      UNKNOWN 永不阻断：证据不足的请求在 PROTECT 下仍放行（ALLOW_UNKNOWN）。
+                      证据不足永不阻断：证据不足的请求在实断模式下仍放行。
                     </Typography.Paragraph>
                   </div>
                   {impact.recent_samples && impact.recent_samples.length > 0 ? (
@@ -531,8 +537,13 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
                         style={{ marginTop: 8 }}
                         columns={[
                           { title: '时间', dataIndex: 'occurred_at', width: 180, render: formatDateTime },
-                          { title: '决策', dataIndex: 'decision', width: 170, render: (v: string) => <Tag>{v}</Tag> },
-                          { title: '原因码', dataIndex: 'reason_code' },
+                          {
+                            title: '决策',
+                            dataIndex: 'decision',
+                            width: 170,
+                            render: (v: string) => <StatusTag value={v} map={AUTHZ_DECISION_META} />,
+                          },
+                          { title: '原因', dataIndex: 'reason_code', render: (v: string) => formatAuthzReasonCode(v) },
                         ]}
                         dataSource={impact.recent_samples}
                         pagination={false}
@@ -540,7 +551,7 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
                     </div>
                   ) : null}
                   {!impact.confirm_token ? (
-                    <Alert type="warning" showIcon message="当前账号无 api_authorization.manage 权限，未签发签署令牌——可查看评估，不能继续切换。" />
+                    <Alert type="warning" showIcon message="当前账号无授权管理权限，未签发签署令牌——可查看评估，不能继续切换。" />
                   ) : null}
                 </>
               ) : null}
@@ -555,7 +566,7 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
             <Alert
               type="warning"
               showIcon
-              message="当前 readiness 非 READY——允许继续切换，但切换后也可能不实断（如实预期管理）"
+              message="当前尚未满足实断就绪条件——允许继续切换，但切换后也可能不实断（如实预期管理）"
               description={
                 <ul style={{ margin: 0, paddingInlineStart: 18 }}>
                   {displayReasons.map((r) => (
@@ -568,7 +579,7 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
           <Form form={elementsForm} layout="vertical" initialValues={{ evidence_source: 'MANUAL_CONFIRMED' }}>
             <Form.Item
               name="enforcement_owner"
-              label="业务负责人（enforcement_owner）"
+              label="业务负责人"
               rules={[
                 { required: true, whitespace: true, message: '请填写业务负责人标识' },
                 { max: 128, message: '不超过 128 字符' },
@@ -576,7 +587,7 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
             >
               <Input placeholder="如 zhang.lei@example.com" allowClear autoComplete="off" />
             </Form.Item>
-            <Form.Item name="evidence_source" label="证据来源声明（evidence_source）" rules={[{ required: true, message: '请选择证据来源' }]}>
+            <Form.Item name="evidence_source" label="证据来源声明" rules={[{ required: true, message: '请选择证据来源' }]}>
               <Radio.Group>
                 {Object.entries(EVIDENCE_SOURCE_META).map(([value, meta]) => (
                   <Radio key={value} value={value}>
@@ -586,10 +597,10 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
                 ))}
               </Radio.Group>
             </Form.Item>
-            <Form.Item label="UNKNOWN 处理方式（on_unknown）">
-              <Input value="ALLOW_UNKNOWN" disabled />
+            <Form.Item label="证据不足处理">
+              <Input value="放行未知（证据不足永不阻断）" disabled />
               <Typography.Paragraph type="secondary" style={{ marginTop: 4, marginBottom: 0 }}>
-                首批唯一处理方式：UNKNOWN 永不阻断（证据不足的请求不实断）。
+                首批唯一处理方式：证据不足永不阻断（证据不足的请求不实断）。
               </Typography.Paragraph>
             </Form.Item>
           </Form>
@@ -608,7 +619,11 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
               <Descriptions.Item label="观测违规">{impact.observe_violation_count} 次</Descriptions.Item>
               <Descriptions.Item label="涉及主体">{impact.distinct_principal_count} 个</Descriptions.Item>
               <Descriptions.Item label="业务负责人">{elements?.enforcement_owner ?? '—'}</Descriptions.Item>
-              <Descriptions.Item label="证据来源">{elements?.evidence_source ?? '—'}</Descriptions.Item>
+              <Descriptions.Item label="证据来源">
+                {elements?.evidence_source
+                  ? (EVIDENCE_SOURCE_META[elements.evidence_source]?.label ?? elements.evidence_source)
+                  : '—'}
+              </Descriptions.Item>
             </Descriptions>
             <Card size="small" title="确认语义（确认文案 v1）">
               <Typography.Paragraph style={{ marginBottom: 0 }}>{confirmText}</Typography.Paragraph>
@@ -630,7 +645,7 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
                 >
                   提交签署
                 </Button>
-                {signed ? <Tag color="green">已签署（signed_at 已落库）</Tag> : null}
+                {signed ? <Tag color="green">已签署（签署时间已落库）</Tag> : null}
               </Space>
             </Space>
           </>
@@ -643,15 +658,19 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
         <>
           {submitPhase === 'idle' || submitPhase === 'submitting' ? (
             <>
-              <Alert type="warning" showIcon message="提交后将 PATCH enforcement=PROTECT 并触发全站发布；确认单随 PATCH 同事务消费（一次性）。" />
+              <Alert type="warning" showIcon message="提交后将切换为实断模式并触发全站发布；确认单随提交同事务消费（一次性）。" />
               <Descriptions size="small" column={2} bordered>
                 <Descriptions.Item label="接口" span={2}>
                   <Typography.Text code>{impact?.endpoint_key ?? selected?.endpoint_key ?? '—'}</Typography.Text>
                 </Descriptions.Item>
                 <Descriptions.Item label="对象段"><Typography.Text code>{selected?.object_segment ?? '—'}</Typography.Text></Descriptions.Item>
                 <Descriptions.Item label="业务负责人">{elements?.enforcement_owner ?? '—'}</Descriptions.Item>
-                <Descriptions.Item label="证据来源">{elements?.evidence_source ?? '—'}</Descriptions.Item>
-                <Descriptions.Item label="on_unknown">ALLOW_UNKNOWN（UNKNOWN 永不阻断）</Descriptions.Item>
+                <Descriptions.Item label="证据来源">
+                  {elements?.evidence_source
+                    ? (EVIDENCE_SOURCE_META[elements.evidence_source]?.label ?? elements.evidence_source)
+                    : '—'}
+                </Descriptions.Item>
+                <Descriptions.Item label="证据不足处理">放行未知（证据不足永不阻断）</Descriptions.Item>
               </Descriptions>
               <Button
                 type="primary"
@@ -674,7 +693,7 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
                 <Space>
                   <Spin size="small" />
-                  <Typography.Text>{task?.current_step || '等待执行'}（每 1.5 秒自动刷新；LOCK_BUSY 自动退避重试）</Typography.Text>
+                  <Typography.Text>{task?.current_step || '等待执行'}（每 1.5 秒自动刷新；发布锁忙时自动退避重试）</Typography.Text>
                 </Space>
               </Space>
             </Card>
@@ -684,11 +703,11 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
             <Alert
               type="success"
               showIcon
-              message={submitAction === 'PROTECT' ? '已生效：端点已进入 PROTECT（实断）' : '已切回 OBSERVE'}
+              message={submitAction === 'PROTECT' ? '已生效：端点已进入实断模式' : '已切回观察模式'}
               description={
                 submitAction === 'PROTECT' ? (
                   <>
-                    资格全真（VERIFIED_VIOLATION）的请求将被 403 实断；UNKNOWN 永不阻断。前往{' '}
+                    资格全真且判定为实断违规的请求将被 403 实断；证据不足永不阻断。前往{' '}
                     <Link to="/api-authz" onClick={onClose}>授权决策列表</Link>
                     按「已验证违规（实断）」过滤查看。
                   </>
@@ -708,27 +727,27 @@ function WizardBody({ applicationId, preset, onClose, onSwitched }: ProtectWizar
                 description={
                   <>
                     <Typography.Paragraph style={{ marginBottom: 8 }}>
-                      enforcement 已落库 {submitAction}，但节点未应用（{failure.code}）。管理面配置与网关生效状态当前不一致。
+                      执行模式已落库为「{ENFORCEMENT_VALUE_META[submitAction]?.label ?? submitAction}」，但节点未应用（{PUBLISH_FAILURE_CODE_LABELS[failure.code] ?? failure.code}）。管理面配置与网关生效状态当前不一致。
                     </Typography.Paragraph>
                     <Typography.Paragraph code copyable style={{ whiteSpace: 'pre-wrap' }}>
                       {failure.code}: {failure.message}
                     </Typography.Paragraph>
                     <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
                       修复指引：能力门缺口（CAP_MISSING，如 detectors.authzdecide required=az/3）请升级网关节点至 az/3 后重新发布；
-                      其他失败请按失败消息处理后重新发布，或切回 OBSERVE。
+                      其他失败请按失败消息处理后重新发布，或切回观察模式。
                     </Typography.Paragraph>
                   </>
                 }
               />
               <Space>
                 <Popconfirm
-                  title="切回 OBSERVE 不要求签署令牌"
+                  title="切回观察模式不要求签署令牌"
                   description="端点将回到观测模式（回滚不回退事实，确认单留存）。"
                   okText="立即切回"
                   cancelText="取消"
                   onConfirm={() => submitMut.mutate('OBSERVE')}
                 >
-                  <Button danger loading={submitMut.isPending}>立即切回 OBSERVE</Button>
+                  <Button danger loading={submitMut.isPending}>立即切回观察模式</Button>
                 </Popconfirm>
                 <Button onClick={() => { setFailure(null); setSubmitPhase('publishing'); lockBusyRetries.current = 0; publishMut.mutate() }}>
                   重新发布

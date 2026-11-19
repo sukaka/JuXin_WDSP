@@ -2,10 +2,10 @@
 
 /** 任务类型中文名（与 apiops.TaskTypeInfos 口径一致；接口 /task-types 返回同名词表） */
 export const AI_TASK_TYPE_META: Record<string, { label: string; description: string }> = {
-  API_ASSET_DIGEST: { label: '资产变化摘要', description: '新增/确认 API 与 Shadow/Zombie 未闭环计数' },
-  SHADOW_REVIEW: { label: 'Shadow API 运营', description: '未闭环 Shadow 清单与纳管建议' },
+  API_ASSET_DIGEST: { label: '资产变化摘要', description: '新增/确认 API 与影子/僵尸未闭环计数' },
+  SHADOW_REVIEW: { label: '影子 API 运营', description: '未闭环影子 API 清单与纳管建议' },
   WEAKNESS_FOLLOW: { label: '弱点整改跟进', description: '超期与临近到期弱点清单与催办建议' },
-  RISK_DIGEST: { label: '高风险发现摘要', description: 'HIGH/CRITICAL 未闭环发现分布与清单' },
+  RISK_DIGEST: { label: '高风险发现摘要', description: '高/严重未闭环发现分布与清单' },
   SENSITIVE_DIGEST: { label: '涉敏概览变化', description: '涉敏 API/字段总量与窗口新增清单' },
 }
 

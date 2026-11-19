@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Button, Card, Descriptions, Drawer, Input, Select, Space, Table, Typography } from 'antd'
+import { Button, Card, Descriptions, Drawer, Input, Select, Space, Table, Tooltip, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { apiRuntimeEventsApi } from '../../api/apiAssets'
 import type { ApiRuntimeEvent, ApiRuntimeEventDetail } from '../../api/apiSecurity'
@@ -54,9 +54,34 @@ const RISK_LEVEL_META: Record<string, { color: string; label: string }> = {
 
 /** 认证方式展示名（空串 = 匿名或未识别） */
 const AUTH_TYPE_LABEL: Record<string, string> = {
-  bearer_or_basic: 'Bearer/Basic',
+  '': '匿名',
+  bearer_or_basic: '令牌/基本认证',
   api_key: 'API Key',
   cookie_session: 'Cookie 会话',
+}
+
+/** 检测明细类别展示映射（DetectorMatch.Category 词表） */
+const DETAIL_CATEGORY_META: Record<string, { color: string; label: string }> = {
+  BLOCK: { color: 'red', label: '阻断' },
+  OBSERVE: { color: 'gold', label: '观察' },
+  INFO: { color: 'default', label: '信息' },
+  RATE_LIMIT: { color: 'orange', label: '限速' },
+  TEMP_BLOCK: { color: 'volcano', label: '临时封禁' },
+  MASK_RESPONSE: { color: 'purple', label: '响应脱敏' },
+}
+
+/** 证据键中文展示映射 */
+const EVIDENCE_KEY_LABELS: Record<string, string> = {
+  field: '字段',
+  want: '期望',
+  got: '实际',
+  location: '位置',
+  data_type: '数据类型',
+  constraint: '约束',
+  value: '值',
+  expected: '期望值',
+  actual: '实际值',
+  rule: '规则',
 }
 
 /** 可空文本展示：NULL/空串统一占位符 */
@@ -68,7 +93,12 @@ function dash(v?: string | number | null): string | number {
 const detailColumns: ColumnsType<ApiRuntimeEventDetail> = [
   { title: '检测器', dataIndex: 'detector', width: 130, render: (v: string) => <StatusTag value={v} map={API_DETECTOR_META} /> },
   { title: '规则 ID', dataIndex: 'rule_id', width: 120, render: dash },
-  { title: '类别', dataIndex: 'category', width: 130, render: dash },
+  {
+    title: '类别',
+    dataIndex: 'category',
+    width: 110,
+    render: (v: string) => (v ? <StatusTag value={v} map={DETAIL_CATEGORY_META} /> : '-'),
+  },
   {
     title: '级别',
     dataIndex: 'severity',
@@ -88,10 +118,10 @@ const detailColumns: ColumnsType<ApiRuntimeEventDetail> = [
         <div style={{ fontSize: 12, lineHeight: '20px' }}>
           {entries.map(([k, v]) => (
             <div key={k}>
-              <Typography.Text code style={{ fontSize: 12 }}>
-                {k}
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {EVIDENCE_KEY_LABELS[k] ?? k}：
               </Typography.Text>
-              <Typography.Text style={{ fontSize: 12 }}>: {v}</Typography.Text>
+              <Typography.Text style={{ fontSize: 12 }}>{v}</Typography.Text>
             </div>
           ))}
         </div>
@@ -291,7 +321,7 @@ export default function ApiRuntimeEventsPage() {
                 )}
               </Descriptions.Item>
               <Descriptions.Item label="认证方式">
-                {AUTH_TYPE_LABEL[selected.auth_type] ?? dash(selected.auth_type)}
+                {selected.auth_type ? (AUTH_TYPE_LABEL[selected.auth_type] ?? selected.auth_type) : '匿名'}
               </Descriptions.Item>
               <Descriptions.Item label="发生时间">{formatDateTime(selected.occurred_at)}</Descriptions.Item>
               <Descriptions.Item label="模型版本">{dash(selected.model_version)}</Descriptions.Item>
@@ -312,12 +342,11 @@ export default function ApiRuntimeEventsPage() {
                   </Descriptions.Item>
                   <Descriptions.Item label="原因">
                     {jwt.reason_code ? (
-                      <Typography.Text>
-                        {JWT_REASON_CODE_LABELS[jwt.reason_code] ?? jwt.reason_code}
-                        <Typography.Text code style={{ marginLeft: 6, fontSize: 12 }}>
-                          {jwt.reason_code}
+                      <Tooltip title={`原因码：${jwt.reason_code}`}>
+                        <Typography.Text>
+                          {JWT_REASON_CODE_LABELS[jwt.reason_code] ?? jwt.reason_code}
                         </Typography.Text>
-                      </Typography.Text>
+                      </Tooltip>
                     ) : (
                       '-'
                     )}
@@ -362,7 +391,7 @@ export default function ApiRuntimeEventsPage() {
               </div>
             ) : null}
             <Typography.Title level={5} style={{ margin: 0 }}>
-              检测明细（details）
+              检测明细
             </Typography.Title>
             <Table<ApiRuntimeEventDetail>
               rowKey={(_, i) => String(i)}

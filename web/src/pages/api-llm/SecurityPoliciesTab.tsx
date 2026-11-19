@@ -198,9 +198,9 @@ export default function SecurityPoliciesTab() {
       width: 190,
       render: (_, record) => (
         <Space size={4} wrap>
-          {record.prompt_injection_enabled && <Tag>Prompt 注入</Tag>}
+          {record.prompt_injection_enabled && <Tag>提示词注入</Tag>}
           {record.input_content_enabled && <Tag>恶意内容</Tag>}
-          {record.pii_detection_enabled && <Tag>PII 识别</Tag>}
+          {record.pii_detection_enabled && <Tag>敏感个人信息识别</Tag>}
           {record.max_prompt_bytes > 0 && <Tag>体量限制</Tag>}
         </Space>
       ),
@@ -212,7 +212,7 @@ export default function SecurityPoliciesTab() {
       render: (_, record) => (
         <Space size={4} wrap>
           {record.output_content_enabled && <Tag>内容审核</Tag>}
-          {record.output_pii_enabled && <Tag>输出 PII</Tag>}
+          {record.output_pii_enabled && <Tag>输出敏感信息</Tag>}
           {!record.output_content_enabled && !record.output_pii_enabled && '—'}
         </Space>
       ),
@@ -305,7 +305,7 @@ export default function SecurityPoliciesTab() {
       <Alert
         type="info"
         showIcon
-        message="策略按应用配置；保存后需通过整站配置发布生效。PROTECT 下输入注入/恶意内容/受限话题及输出有害内容/PII 可阻断，超大体量或输出 Token 预算将限流；所有证据均不保存原始内容。"
+        message="策略按应用配置；保存后需通过整站配置发布生效。防护模式下输入注入、恶意内容、受限话题及输出有害内容/敏感个人信息可阻断，超大体量或输出 Token 预算将限流；所有证据均不保存原始内容。"
         style={{ marginBottom: 16 }}
       />
       <QueryErrorAlert error={policiesQuery.error} />
@@ -389,9 +389,9 @@ export default function SecurityPoliciesTab() {
           </Form.Item>
           <Form.Item
             name="prompt_injection_enabled"
-            label="Prompt 注入攻击防护"
+            label="提示词注入攻击防护"
             valuePropName="checked"
-            extra="PROTECT 模式下，命中高置信注入规则时阻断。"
+            extra="防护模式下，命中高置信注入规则时阻断。"
           >
             <Switch />
           </Form.Item>
@@ -399,13 +399,13 @@ export default function SecurityPoliciesTab() {
             name="input_content_enabled"
             label="输入恶意内容过滤"
             valuePropName="checked"
-            extra="采用高置信规则识别明确的有害请求，PROTECT 下命中阻断；沿用现有标量留存边界，不保存原文。"
+            extra="采用高置信规则识别明确的有害请求，防护模式下命中阻断；沿用现有标量留存边界，不保存原文。"
           >
             <Switch />
           </Form.Item>
           <Form.Item
             name="pii_detection_enabled"
-            label="PII 识别"
+            label="敏感个人信息（PII）识别"
             valuePropName="checked"
             extra="识别邮箱、身份证号、手机号；事件不保存原始内容。"
           >
@@ -415,15 +415,15 @@ export default function SecurityPoliciesTab() {
             name="output_content_enabled"
             label="输出有害内容过滤"
             valuePropName="checked"
-            extra="采用高置信规则；完整非流式 JSON 响应才可判定，PROTECT 下命中阻断。"
+            extra="采用高置信规则；完整非流式 JSON 响应才可判定，防护模式下命中阻断。"
           >
             <Switch />
           </Form.Item>
           <Form.Item
             name="output_pii_enabled"
-            label="输出 PII 识别"
+            label="输出敏感个人信息（PII）识别"
             valuePropName="checked"
-            extra="检测输出中的邮箱、身份证号、手机号；PROTECT 下命中阻断，不落原文。"
+            extra="检测输出中的邮箱、身份证号、手机号；防护模式下命中阻断，不落原文。"
           >
             <Switch />
           </Form.Item>
@@ -479,7 +479,7 @@ export default function SecurityPoliciesTab() {
             <List.Item>
               <List.Item.Meta
                 title={`v${version.version} · ${formatDateTime(version.created_at)}`}
-                description={`${version.policy_snapshot.mode} · 注入防护 ${version.policy_snapshot.prompt_injection_enabled ? '开启' : '关闭'} · 输入内容 ${version.policy_snapshot.input_content_enabled ? '开启' : '关闭'} · 输入 PII ${version.policy_snapshot.pii_detection_enabled ? '开启' : '关闭'} · 输出内容 ${version.policy_snapshot.output_content_enabled ? '开启' : '关闭'} · 输出 PII ${version.policy_snapshot.output_pii_enabled ? '开启' : '关闭'} · 提示词上限 ${version.policy_snapshot.max_prompt_bytes || '不限制'} · 输出 Token 上限 ${version.policy_snapshot.max_output_tokens || '不限制'}`}
+                description={`${version.policy_snapshot.mode === 'PROTECT' ? '防护' : '观察'} · 注入防护 ${version.policy_snapshot.prompt_injection_enabled ? '开启' : '关闭'} · 输入内容 ${version.policy_snapshot.input_content_enabled ? '开启' : '关闭'} · 输入敏感信息 ${version.policy_snapshot.pii_detection_enabled ? '开启' : '关闭'} · 输出内容 ${version.policy_snapshot.output_content_enabled ? '开启' : '关闭'} · 输出敏感信息 ${version.policy_snapshot.output_pii_enabled ? '开启' : '关闭'} · 提示词上限 ${version.policy_snapshot.max_prompt_bytes || '不限制'} · 输出 Token 上限 ${version.policy_snapshot.max_output_tokens || '不限制'}`}
               />
             </List.Item>
           )}

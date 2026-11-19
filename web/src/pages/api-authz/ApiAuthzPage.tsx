@@ -36,7 +36,7 @@ export default function ApiAuthzPage() {
   return (
     <Card title="API 授权管理">
       <Typography.Paragraph type="secondary">
-        维护可信对象关系与接口级授权基线：对象授权面板用于登记所有者、共享接收人关系并查看 OBSERVE 决策链，角色基线覆盖功能级越权（BFLA），
+        维护可信对象关系与接口级授权基线：对象授权面板用于登记所有者、共享接收人关系并查看观察决策链，角色基线覆盖功能级越权（BFLA），
         对象权属观测支撑 BOLA 人工研判，字段权限约束字段级读写；评估工具按五档阶梯给出结论，不仅凭 ID 变化定罪。
       </Typography.Paragraph>
 

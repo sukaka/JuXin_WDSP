@@ -30,6 +30,11 @@ import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { formatDateTime } from '../../utils/format'
 import {
+  APM_DIAG_AUDIT_ACTION_LABELS,
+  APM_DIAG_STOP_REASON_LABELS,
+  formatEnvironment,
+} from '../../utils/i18nLabels'
+import {
   APM_DIAGNOSTIC_CAPABILITY_META,
   APM_DIAGNOSTIC_STATUS_META,
   formatDiagnosticCountdown,
@@ -166,7 +171,7 @@ export default function ApmDiagnosticsPage() {
   const killSwitchMutation = useMutation({
     mutationFn: (enable: boolean) => apmApi.setDiagnosticKillSwitch(enable),
     onSuccess: (_data, enable) => {
-      message.success(enable ? '全局 Kill Switch 已开启' : '全局 Kill Switch 已解除')
+      message.success(enable ? '全局熔断开关已开启' : '全局熔断开关已解除')
       invalidateList()
     },
     onError,
@@ -235,7 +240,7 @@ export default function ApmDiagnosticsPage() {
             {r.scope?.service || '-'}
           </Typography.Text>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {r.scope?.environment || '-'} · {r.scope?.instance_ids?.length ?? 0} 实例 · 应用{' '}
+            {formatEnvironment(r.scope?.environment)} · {r.scope?.instance_ids?.length ?? 0} 实例 · 应用{' '}
             {r.scope?.application_id || '-'}
           </Typography.Text>
         </Space>
@@ -324,7 +329,7 @@ export default function ApmDiagnosticsPage() {
             30 秒自动刷新
           </Typography.Text>
           <Popconfirm
-            title={killSwitchOn ? '解除全局 Kill Switch' : '开启全局 Kill Switch'}
+            title={killSwitchOn ? '解除全局熔断开关' : '开启全局熔断开关'}
             description={
               killSwitchOn
                 ? '解除后将允许新建诊断会话。确定解除吗？'
@@ -336,7 +341,7 @@ export default function ApmDiagnosticsPage() {
             onConfirm={() => killSwitchMutation.mutate(!killSwitchOn)}
           >
             <Button danger type={killSwitchOn || hasActive ? 'primary' : 'default'}>
-              {killSwitchOn ? '解除 Kill Switch' : '全局 Kill Switch'}
+              {killSwitchOn ? '解除全局熔断开关' : '开启全局熔断开关'}
             </Button>
           </Popconfirm>
           <Button type="primary" onClick={() => setWizardOpen(true)} disabled={killSwitchOn}>
@@ -349,8 +354,8 @@ export default function ApmDiagnosticsPage() {
         <Alert
           type="error"
           showIcon
-          message="全局 Kill Switch 已开启，新建会话被拒绝"
-          description="全部进行中的诊断会话已被终止；解除右上角 Kill Switch 后方可恢复诊断能力。"
+          message="全局熔断开关已开启，新建会话被拒绝"
+          description="全部进行中的诊断会话已被终止；解除右上角全局熔断开关后方可恢复诊断能力。"
           style={{ marginBottom: 16 }}
         />
       )}
@@ -590,7 +595,7 @@ export default function ApmDiagnosticsPage() {
               />
             ) : overhead ? (
               <Space direction="vertical" size={16} style={{ display: 'flex' }}>
-                <Descriptions column={1} size="small" bordered title="预计开销（dry_run 预估）">
+                <Descriptions column={1} size="small" bordered title="预计开销（试算预估）">
                   <Descriptions.Item label="CPU 开销">{overhead.cpu_hint || '-'}</Descriptions.Item>
                   <Descriptions.Item label="Span 速率">
                     {overhead.spans_per_s_hint || '-'}
@@ -657,7 +662,7 @@ export default function ApmDiagnosticsPage() {
               </Descriptions.Item>
               <Descriptions.Item label="应用">{detail.scope?.application_id || '-'}</Descriptions.Item>
               <Descriptions.Item label="服务">{detail.scope?.service || '-'}</Descriptions.Item>
-              <Descriptions.Item label="环境">{detail.scope?.environment || '-'}</Descriptions.Item>
+              <Descriptions.Item label="环境">{formatEnvironment(detail.scope?.environment)}</Descriptions.Item>
               <Descriptions.Item label="实例数">
                 {detail.scope?.instance_ids?.length ?? 0}
               </Descriptions.Item>
@@ -697,7 +702,7 @@ export default function ApmDiagnosticsPage() {
               ) : null}
               {detail.stop_reason ? (
                 <Descriptions.Item label="停止原因" span={2}>
-                  {detail.stop_reason}
+                  {APM_DIAG_STOP_REASON_LABELS[detail.stop_reason] ?? detail.stop_reason}
                 </Descriptions.Item>
               ) : null}
             </Descriptions>
@@ -725,7 +730,11 @@ export default function ApmDiagnosticsPage() {
                       <Space direction="vertical" size={0}>
                         <Space size={8}>
                           <Typography.Text strong style={{ fontSize: 12 }}>
-                            {audit.action || '-'}
+                            {audit.action
+                              ? (APM_DIAG_AUDIT_ACTION_LABELS[audit.action] ??
+                                APM_DIAG_AUDIT_ACTION_LABELS[audit.action.toLowerCase()] ??
+                                audit.action)
+                              : '-'}
                           </Typography.Text>
                           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                             {audit.actor || '-'} · {formatDateTime(audit.created_at)}

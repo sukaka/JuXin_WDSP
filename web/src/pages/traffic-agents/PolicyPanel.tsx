@@ -26,32 +26,44 @@ import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import { formatDateTime } from '../../utils/format'
 
+const DIRECTION_LABELS: Record<string, string> = {
+  both: '双向',
+  ingress: '入站',
+  egress: '出站',
+}
+
 const DIRECTION_OPTIONS = [
-  { value: 'both', label: '双向（both）' },
-  { value: 'ingress', label: '入站（ingress）' },
-  { value: 'egress', label: '出站（egress）' },
+  { value: 'both', label: '双向' },
+  { value: 'ingress', label: '入站' },
+  { value: 'egress', label: '出站' },
 ]
 
+const OUTPUT_MODE_LABELS: Record<string, string> = {
+  FLOW: '流元数据',
+  RAW: '原始包',
+  FLOW_RAW: '流与原始包',
+}
+
 const OUTPUT_MODE_OPTIONS = [
-  { value: 'FLOW', label: 'FLOW（流元数据+HTTP 元数据）' },
-  { value: 'RAW', label: 'RAW（原始包，服务端仅校验计数）' },
-  { value: 'FLOW_RAW', label: 'FLOW_RAW（同时输出）' },
+  { value: 'FLOW', label: '流元数据（含 HTTP 元数据）' },
+  { value: 'RAW', label: '原始包（服务端仅校验计数）' },
+  { value: 'FLOW_RAW', label: '流与原始包（同时输出）' },
 ]
 
 /** 采集等级（Phase 3 契约 §2 语义） */
 const CAPTURE_LEVEL_OPTIONS = [
-  { value: 'L0', label: 'L0：仅元数据（请求行三元组，无 Header/Body）' },
-  { value: 'L1', label: 'L1：L0 + 请求/响应 Header（脱敏后）' },
-  { value: 'L2', label: 'L2：L1 + Body（受大小与内容类型限制）' },
-  { value: 'L3', label: 'L3：L2 + RAW 原始包通道' },
+  { value: 'L0', label: 'L0：仅元数据（请求行三元组，无请求头/正文）' },
+  { value: 'L1', label: 'L1：L0 + 请求/响应头（脱敏后）' },
+  { value: 'L2', label: 'L2：L1 + 正文（受大小与内容类型限制）' },
+  { value: 'L3', label: 'L3：L2 + 原始包通道' },
 ]
 
 /** 脱敏方式（Phase 3 契约 §5） */
 const MASKING_MODE_OPTIONS = [
-  { value: 'NONE', label: 'NONE（不脱敏）' },
-  { value: 'MASK', label: 'MASK（替换为 ********）' },
-  { value: 'HASH', label: 'HASH（sha256 前 16 位）' },
-  { value: 'DROP', label: 'DROP（整行/参数删除）' },
+  { value: 'NONE', label: '不脱敏' },
+  { value: 'MASK', label: '掩码替换（********）' },
+  { value: 'HASH', label: '哈希摘要（SHA-256 前 16 位）' },
+  { value: 'DROP', label: '整行/参数删除' },
 ]
 
 /** 契约 §5 缺省脱敏名单（既有策略无 masking 段时按缺省值展示） */
@@ -296,7 +308,9 @@ export default function PolicyPanel({ canManage }: { canManage: boolean }) {
       ellipsis: true,
       render: (_, r) => {
         const values = extractFormValues(r)
-        return `等级 ${values.capture_level} / ${values.interfaces.join(',') || '-'} / ${values.direction} / 端口 ${values.ports.join(',') || '-'} / ${values.output_mode} / 限速 ${values.outbound_mbps} Mbps`
+        const dirLabel = DIRECTION_LABELS[values.direction] ?? values.direction
+        const outLabel = OUTPUT_MODE_LABELS[values.output_mode] ?? values.output_mode
+        return `等级 ${values.capture_level} / ${values.interfaces.join(',') || '-'} / ${dirLabel} / 端口 ${values.ports.join(',') || '-'} / ${outLabel} / 限速 ${values.outbound_mbps} Mbps`
       },
     },
     {
@@ -538,7 +552,7 @@ export default function PolicyPanel({ canManage }: { canManage: boolean }) {
               tokenSeparators={[',', ' ']}
             />
           </Form.Item>
-          <Form.Item name="output_mode" label="输出模式（output.mode）" rules={[{ required: true }]}>
+          <Form.Item name="output_mode" label="输出模式" rules={[{ required: true }]}>
             <Select options={OUTPUT_MODE_OPTIONS} />
           </Form.Item>
           <Form.Item
@@ -550,16 +564,16 @@ export default function PolicyPanel({ canManage }: { canManage: boolean }) {
           </Form.Item>
           <Form.Item
             name="capture_level"
-            label="采集等级（capture_level）"
+            label="采集等级"
             rules={[{ required: true }]}
           >
             <Select options={CAPTURE_LEVEL_OPTIONS} />
           </Form.Item>
           <Form.Item
             name="sampling_enabled"
-            label="启用采样（sampling.enabled）"
+            label="启用采样"
             valuePropName="checked"
-            extra="开启后按 flow 级确定性采样：SHA-256(flow_id) 映射 [0,1) < rate 则采集，同流一致；采样外 flow 仅保留计数事件（统计不丢量）"
+            extra="开启后按流级确定性采样：SHA-256(flow_id) 映射 [0,1) < 采样率则采集，同流一致；采样外流仅保留计数事件（统计不丢量）"
           >
             <Switch />
           </Form.Item>
@@ -568,7 +582,7 @@ export default function PolicyPanel({ canManage }: { canManage: boolean }) {
               getFieldValue('sampling_enabled') ? (
                 <Form.Item
                   name="sampling_rate"
-                  label="采样率（sampling.rate，0-1 小数，rate=1 等价关闭）"
+                  label="采样率（0-1 小数，1 等价关闭）"
                   rules={[{ required: true, message: '请填写采样率' }]}
                 >
                   <InputNumber min={0.0001} max={1} step={0.05} style={{ width: '100%' }} />
@@ -576,16 +590,16 @@ export default function PolicyPanel({ canManage }: { canManage: boolean }) {
               ) : null
             }
           </Form.Item>
-          <Typography.Text strong>脱敏（masking，Agent 侧离主机前执行）</Typography.Text>
+          <Typography.Text strong>脱敏配置（Agent 侧离主机前执行）</Typography.Text>
           <Form.Item
             name="masking_headers_mode"
-            label="Header 脱敏方式"
+            label="请求/响应头脱敏方式"
             rules={[{ required: true }]}
             style={{ marginTop: 8 }}
           >
             <Select options={MASKING_MODE_OPTIONS} />
           </Form.Item>
-          <Form.Item name="masking_headers_names" label="Header 脱敏名单（大小写不敏感）">
+          <Form.Item name="masking_headers_names" label="请求/响应头脱敏名单（大小写不敏感）">
             <Select
               mode="tags"
               placeholder="如 authorization（回车添加多个）"
@@ -603,7 +617,7 @@ export default function PolicyPanel({ canManage }: { canManage: boolean }) {
           </Form.Item>
           <Form.Item
             name="masking_params_names"
-            label="参数脱敏名单（query/form/JSON 一级字段，大小写不敏感）"
+            label="参数脱敏名单（查询参数/表单/JSON 一级字段，大小写不敏感）"
           >
             <Select
               mode="tags"

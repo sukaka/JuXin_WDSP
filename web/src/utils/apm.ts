@@ -51,11 +51,23 @@ export const APM_ENDPOINT_UNCLASSIFIED = '__UNCLASSIFIED__'
 /** 端点特殊桶：超出 Top-N 护栏的聚合 */
 export const APM_ENDPOINT_OTHER = '__OTHER__'
 
-/** WAF 动作三态展示（与 D9 waf_action 口径一致；空串按 ALLOW 放行展示） */
+/** WAF 动作展示（与 D9 waf_action 口径一致；空串按 ALLOW 放行展示） */
 export const APM_WAF_ACTION_META: Record<string, { color: string; label: string }> = {
   BLOCK: { color: 'red', label: '阻断' },
   OBSERVE: { color: 'orange', label: '观察' },
   ALLOW: { color: 'default', label: '放行' },
+  PASS: { color: 'default', label: '放行' },
+  LOG: { color: 'blue', label: '仅记录' },
+  REJECT: { color: 'red', label: '拒绝' },
+  TEMP_BLOCK: { color: 'magenta', label: '临时封禁' },
+}
+
+/** 查询 WAF 动作展示元数据（支持大小写与空串默认放行，未知动作原样回退） */
+export function getApmWafActionMeta(action?: string | null): { color: string; label: string } {
+  const trimmed = (action ?? '').trim()
+  if (!trimmed) return APM_WAF_ACTION_META.ALLOW
+  const upper = trimmed.toUpperCase()
+  return APM_WAF_ACTION_META[upper] ?? { color: 'default', label: trimmed }
 }
 
 /** trace_id 格式：32 位十六进制（W3C Trace Context） */
@@ -332,14 +344,14 @@ export function parseApmUrlTimeWindow(
   const sv = startRaw?.trim() ?? ''
   const ev = endRaw?.trim() ?? ''
   if (!sv && !ev) return null
-  if (!sv || !ev) return { error: 'URL 时间参数 start_time/end_time 需同时提供，已忽略该时间窗' }
+  if (!sv || !ev) return { error: 'URL 时间参数起止时间需同时提供，已忽略该时间窗' }
   const start = dayjs(sv)
   const end = dayjs(ev)
   if (!start.isValid() || !end.isValid()) {
     return { error: 'URL 时间参数格式非法（需 RFC3339），已忽略该时间窗' }
   }
   if (!start.isBefore(end)) {
-    return { error: 'URL 时间参数 start_time 必须早于 end_time，已忽略该时间窗' }
+    return { error: 'URL 时间参数开始时间必须早于结束时间，已忽略该时间窗' }
   }
   if (end.diff(start, 'millisecond') > APM_SEARCH_WINDOW_HOURS * 3600_000) {
     return { error: `URL 时间窗超过 ${APM_SEARCH_WINDOW_HOURS} 小时上限，已忽略该时间窗` }

@@ -3,7 +3,7 @@ import StatusTag from '../StatusTag'
 import AiRunSteps from './AiRunSteps'
 import EvidenceList from './EvidenceList'
 import type { AiAnalyzeResult } from '../../api/ai'
-import { AI_RISK_META, AI_TASK_TYPE_META } from '../../utils/ai'
+import { AI_AGENT_NAMES, AI_RISK_META, AI_TASK_TYPE_META } from '../../utils/ai'
 
 /**
  * 一次性 AI 分析结果展示：计划摘要 + 执行过程（可折叠）+ 主回答 + 证据引用。
@@ -32,9 +32,9 @@ export default function AnalyzeResultView({ result }: { result: AiAnalyzeResult 
               </Descriptions.Item>
             )}
             {result.plan.agents && result.plan.agents.length > 0 && (
-              <Descriptions.Item label="参与 Agent" span={3}>
+              <Descriptions.Item label="参与智能体" span={3}>
                 {result.plan.agents.map((a) => (
-                  <Tag key={a}>{a}</Tag>
+                  <Tag key={a}>{AI_AGENT_NAMES[a] ?? a}</Tag>
                 ))}
               </Descriptions.Item>
             )}

@@ -260,8 +260,10 @@ describe('getExceptionEnableBlockers', () => {
       exception_action: 'LOG_ONLY',
     })
     expect(blockers).toHaveLength(1)
-    expect(blockers[0]).toContain('LOG_ONLY')
-    expect(blockers[0]).toContain('REMOVE_VAR_DETECTION')
+    expect(blockers[0]).toContain('仅记录不阻断')
+    expect(blockers[0]).toContain('移除变量检测')
+    expect(blockers[0]).not.toContain('LOG_ONLY')
+    expect(blockers[0]).not.toContain('REMOVE_VAR_DETECTION')
   })
 
   it('NEEDS_REVIEW + 不支持动作 → 两条阻断叠加', () => {

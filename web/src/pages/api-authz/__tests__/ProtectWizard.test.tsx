@@ -155,7 +155,7 @@ async function walkToSubmit() {
   expect(screen.getByText('这些请求切换后将被实断')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '下一步' }))
   // 四要素
-  const ownerInput = await screen.findByLabelText('业务负责人（enforcement_owner）')
+  const ownerInput = await screen.findByLabelText('业务负责人')
   fireEvent.change(ownerInput, { target: { value: '张磊' } })
   fireEvent.click(screen.getByRole('button', { name: '下一步' }))
   // 确认单签署：冻结文案占位符已替换
@@ -170,7 +170,7 @@ async function walkToSubmit() {
       on_unknown: 'ALLOW_UNKNOWN',
     }),
   )
-  expect(await screen.findByText(/已签署（signed_at 已落库）/)).toBeInTheDocument()
+  expect(await screen.findByText(/已签署（签署时间已落库）/)).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '下一步：提交切换' }))
   expect(await screen.findByRole('button', { name: '确认提交切换' })).toBeInTheDocument()
 }
@@ -206,7 +206,7 @@ describe('ProtectWizard（NG-AZ-04 §1.5 五步状态机）', () => {
       }),
     )
     await waitFor(() => expect(vi.mocked(gatewayConfigApi.publish)).toHaveBeenCalled())
-    expect(await screen.findByText(/已生效：端点已进入 PROTECT（实断）/)).toBeInTheDocument()
+    expect(await screen.findByText(/已生效：端点已进入实断模式/)).toBeInTheDocument()
     expect(screen.getByText('授权决策列表')).toBeInTheDocument()
   })
 
@@ -229,7 +229,7 @@ describe('ProtectWizard（NG-AZ-04 §1.5 五步状态机）', () => {
     await walkToSubmit()
     fireEvent.click(screen.getByRole('button', { name: '确认提交切换' }))
     await waitFor(() => expect(vi.mocked(apiObjectModelsApi.patch)).toHaveBeenCalled())
-    expect(await screen.findByLabelText('业务负责人（enforcement_owner）')).toBeInTheDocument()
+    expect(await screen.findByLabelText('业务负责人')).toBeInTheDocument()
   })
 
   it('发布 FAILED（能力门 CAP_MISSING）：如实展示「配置与生效不一致」+ 缺口明细，快捷切回 OBSERVE 免 token', async () => {
@@ -256,11 +256,11 @@ describe('ProtectWizard（NG-AZ-04 §1.5 五步状态机）', () => {
     expect(await screen.findByText('配置与生效不一致')).toBeInTheDocument()
     expect(screen.getByText(/detectors\.authzdecide\(required=az\/3,actual=az\/2\)/)).toBeInTheDocument()
     expect(screen.getByText(/能力门缺口（CAP_MISSING/)).toBeInTheDocument()
-    // 快捷切回 OBSERVE：PATCH 不携带 confirm_token
-    fireEvent.click(screen.getByRole('button', { name: '立即切回 OBSERVE' }))
+    // 快捷切回观察模式：PATCH 不携带 confirm_token
+    fireEvent.click(screen.getByRole('button', { name: '立即切回观察模式' }))
     fireEvent.click(await screen.findByRole('button', { name: '立即切回' }))
     await waitFor(() => expect(vi.mocked(apiObjectModelsApi.patch)).toHaveBeenCalledWith('m1', { enforcement: 'OBSERVE' }))
-    expect(await screen.findByText('已切回 OBSERVE')).toBeInTheDocument()
+    expect(await screen.findByText('已切回观察模式')).toBeInTheDocument()
   })
 
   it('无 manage 权限：影响评估不签发 token，下一步禁用并如实提示', async () => {
@@ -279,7 +279,7 @@ describe('ProtectWizard（NG-AZ-04 §1.5 五步状态机）', () => {
     renderWizard()
     expect(await screen.findByText('POST /api/v1/orders')).toBeInTheDocument()
     expect(screen.getByText('资格不齐')).toBeInTheDocument()
-    expect(screen.getByText('实断中（PROTECT）')).toBeInTheDocument()
+    expect(screen.getByText('实断中')).toBeInTheDocument()
     expect(screen.getByText(/publishable=false（发布资格未声明）/)).toBeInTheDocument()
     const radios = screen.getAllByRole('radio')
     // 行序：m1 READY（可选）/ m2 NOT_PUBLISHABLE（禁用）/ m3 PROTECT（禁用）
@@ -316,7 +316,7 @@ describe('ProtectWizard（NG-AZ-04 §1.5 五步状态机）', () => {
     // 过期的 7 天响应不得覆盖 14 天数据与 confirm_token
     await waitFor(() => expect(screen.getByText('99')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '下一步' }))
-    fireEvent.change(await screen.findByLabelText('业务负责人（enforcement_owner）'), { target: { value: '张磊' } })
+    fireEvent.change(await screen.findByLabelText('业务负责人'), { target: { value: '张磊' } })
     fireEvent.click(screen.getByRole('button', { name: '下一步' }))
     fireEvent.click(await screen.findByRole('checkbox', { name: '我已阅读并确认' }))
     fireEvent.click(screen.getByRole('button', { name: '提交签署' }))
@@ -330,21 +330,21 @@ describe('ProtectWizard（NG-AZ-04 §1.5 五步状态机）', () => {
     await waitFor(() => expect(vi.mocked(apiAuthzApi.evaluateEnforcementImpact)).toHaveBeenCalled())
     expect(await screen.findByText('切换后将被 403（近似）')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '下一步' }))
-    fireEvent.change(await screen.findByLabelText('业务负责人（enforcement_owner）'), { target: { value: '张磊' } })
+    fireEvent.change(await screen.findByLabelText('业务负责人'), { target: { value: '张磊' } })
     fireEvent.click(screen.getByRole('button', { name: '下一步' }))
     fireEvent.click(await screen.findByRole('checkbox', { name: '我已阅读并确认' }))
     fireEvent.click(screen.getByRole('button', { name: '提交签署' }))
-    expect(await screen.findByText(/已签署（signed_at 已落库）/)).toBeInTheDocument()
+    expect(await screen.findByText(/已签署（签署时间已落库）/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '下一步：提交切换' })).not.toBeDisabled()
 
     // 退回四要素步并修改负责人
     fireEvent.click(screen.getByRole('button', { name: '上一步' }))
-    fireEvent.change(await screen.findByLabelText('业务负责人（enforcement_owner）'), { target: { value: '李四' } })
+    fireEvent.change(await screen.findByLabelText('业务负责人'), { target: { value: '李四' } })
     fireEvent.click(screen.getByRole('button', { name: '下一步' }))
 
     // 返回签署步后必须重置为未签署、未勾选，且禁止进入提交步
     const resetCheckbox = await screen.findByRole('checkbox', { name: '我已阅读并确认' })
-    expect(screen.queryByText(/已签署（signed_at 已落库）/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/已签署（签署时间已落库）/)).not.toBeInTheDocument()
     expect(resetCheckbox).not.toBeChecked()
     expect(screen.getByRole('button', { name: '下一步：提交切换' })).toBeDisabled()
   })

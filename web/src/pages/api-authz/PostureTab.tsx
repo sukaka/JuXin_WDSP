@@ -24,6 +24,12 @@ import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import ProtectWizard from './ProtectWizard'
 
+const NODE_LIVENESS_META: Record<string, { color: string; label: string }> = {
+  ACTIVE: { color: 'green', label: '在线' },
+  STALE: { color: 'orange', label: '陈旧' },
+  SILENT: { color: 'red', label: '静默' },
+}
+
 function shortRef(value?: string | null) {
   if (!value) return '-'
   return value.length > 28 ? `${value.slice(0, 15)}…${value.slice(-8)}` : value
@@ -110,7 +116,7 @@ export default function PostureTab() {
     { title: '接口', dataIndex: 'endpoint_key', ellipsis: true, render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
     { title: '对象段', dataIndex: 'object_segment', width: 130, render: (v: string) => <Typography.Text code>{v}</Typography.Text> },
     {
-      title: '当前 enforcement', dataIndex: 'enforcement', width: 150,
+      title: '当前执行模式', dataIndex: 'enforcement', width: 150,
       render: (v: string) => <StatusTag value={v || 'OBSERVE'} map={ENFORCEMENT_VALUE_META} />,
     },
     {
@@ -127,7 +133,7 @@ export default function PostureTab() {
       render: (_, record) =>
         canManage && record.enforcement !== 'PROTECT' ? (
           <Button type="link" size="small" onClick={() => setWizardPreset({ endpoint_id: record.endpoint_id, object_segment: record.object_segment })}>
-            切换 PROTECT
+            切换实断
           </Button>
         ) : null,
     },
@@ -143,8 +149,8 @@ export default function PostureTab() {
 
   const nodeAckColumns: ColumnsType<ApiAuthzNodeAck> = [
     { title: '节点', dataIndex: 'node_name', width: 160 },
-    { title: '活性', dataIndex: 'status', width: 100, render: (v: string) => <Tag color={v === 'ACTIVE' ? 'green' : 'orange'}>{v}</Tag> },
-    { title: 'ACK 状态', dataIndex: 'ack_state', width: 130, render: (v: string) => <StatusTag value={v} map={ACK_STATE_META} /> },
+    { title: '活性', dataIndex: 'status', width: 100, render: (v: string) => <StatusTag value={v} map={NODE_LIVENESS_META} /> },
+    { title: '确认状态', dataIndex: 'ack_state', width: 130, render: (v: string) => <StatusTag value={v} map={ACK_STATE_META} /> },
     {
       title: '陈旧秒数', dataIndex: 'staleness_seconds', width: 110,
       render: (v?: number | null) => (v === null || v === undefined ? <Typography.Text type="secondary">—</Typography.Text> : `${v}s`),
@@ -154,15 +160,15 @@ export default function PostureTab() {
       render: (v: string) => (v ? <Typography.Text code>{v}</Typography.Text> : <Typography.Text type="secondary">未上报</Typography.Text>),
     },
     {
-      title: '水位', dataIndex: 'authz_watermark', width: 150,
+      title: '水位', dataIndex: 'authz_watermark', width: 180,
       render: (v?: { manual_seq: number; sources: Record<string, number> } | null) =>
-        v ? <Typography.Text code>manual={v.manual_seq} · sources={Object.keys(v.sources ?? {}).length}</Typography.Text> : <Typography.Text type="secondary">—</Typography.Text>,
+        v ? <Typography.Text>手工序号 {v.manual_seq} · 权威源 {Object.keys(v.sources ?? {}).length} 个</Typography.Text> : <Typography.Text type="secondary">—</Typography.Text>,
     },
     {
       title: '租约', dataIndex: 'lease_seconds', width: 90,
       render: (v?: number | null) => (v === null || v === undefined ? <Typography.Text type="secondary">—</Typography.Text> : `${v}s`),
     },
-    { title: '最近 ACK', dataIndex: 'last_ack_at', width: 170, render: (v?: string | null) => (v ? formatDateTime(v) : '—') },
+    { title: '最近确认', dataIndex: 'last_ack_at', width: 170, render: (v?: string | null) => (v ? formatDateTime(v) : '—') },
   ]
 
   const noApplication = !applicationId
@@ -186,18 +192,18 @@ export default function PostureTab() {
         message="加载授权态势失败"
       />
       {noApplication ? (
-        <Card><Typography.Text type="secondary">请选择应用。来源、有效期、冲突、最后同步、节点 ACK 与实断资格共同回答「这个端点现在切 PROTECT 会发生什么」。</Typography.Text></Card>
+        <Card><Typography.Text type="secondary">请选择应用。来源、有效期、冲突、最后同步、节点确认与实断资格共同回答「这个端点现在切换实断会发生什么」。</Typography.Text></Card>
       ) : (
         <>
           <Row gutter={[12, 12]}>
             <Col xs={12} lg={4}><Card size="small"><Statistic title="已确认关系" value={relationsQuery.data?.total ?? 0} /></Card></Col>
             <Col xs={12} lg={5}>
               <Card size="small">
-                <Statistic title="OPEN 冲突" value={conflictsQuery.data?.total ?? 0} valueStyle={{ color: (conflictsQuery.data?.total ?? 0) > 0 ? '#ad6800' : undefined }} />
+                <Statistic title="未处理冲突" value={conflictsQuery.data?.total ?? 0} valueStyle={{ color: (conflictsQuery.data?.total ?? 0) > 0 ? '#ad6800' : undefined }} />
               </Card>
             </Col>
-            <Col xs={12} lg={5}><Card size="small"><Statistic title="节点 ACK（FRESH/全部）" value={freshCount} suffix={`/ ${nodeAcks.length}`} /></Card></Col>
-            <Col xs={12} lg={5}><Card size="small"><Statistic title="可实断端点（READY/全部）" value={readyCount} suffix={`/ ${readinessItems.length}`} /></Card></Col>
+            <Col xs={12} lg={5}><Card size="small"><Statistic title="节点确认（最新/全部）" value={freshCount} suffix={`/ ${nodeAcks.length}`} /></Card></Col>
+            <Col xs={12} lg={5}><Card size="small"><Statistic title="可实断端点（可实断/全部）" value={readyCount} suffix={`/ ${readinessItems.length}`} /></Card></Col>
             <Col xs={12} lg={5}>
               <Card size="small">
                 <Statistic title="最大陈旧窗口" value={nodeAcksQuery.data?.max_staleness_seconds ?? '—'} suffix={nodeAcksQuery.data?.max_staleness_seconds != null ? '秒' : ''} />
@@ -216,10 +222,10 @@ export default function PostureTab() {
                     : <Typography.Text type="secondary">暂无已确认关系</Typography.Text>}
                 </Space>
               </Descriptions.Item>
-              <Descriptions.Item label="手工登记（MANUAL）最后同步">
+              <Descriptions.Item label="手工登记最后同步">
                 {manualLastSync ? formatDateTime(manualLastSync) : <Typography.Text type="secondary">无手工关系</Typography.Text>}
               </Descriptions.Item>
-              <Descriptions.Item label="权威同步（AUTHORITY_SYNC）">
+              <Descriptions.Item label="权威同步">
                 {authorityStatuses.length > 0 ? (
                   <Space direction="vertical" size={4} style={{ width: '100%' }}>
                     {authorityStatuses.map((st) => {
@@ -228,7 +234,7 @@ export default function PostureTab() {
                         <Space key={st.source.id} size={8} wrap>
                           <Typography.Text strong>{st.source.name}</Typography.Text>
                           <StatusTag value={st.gap_status} map={GAP_STATUS_META} />
-                          <Typography.Text type="secondary">水位 seq={st.watermark.last_sequence}</Typography.Text>
+                          <Typography.Text type="secondary">水位序号 {st.watermark.last_sequence}</Typography.Text>
                           <Typography.Text type="secondary">
                             最近批次 {lastBatch ? formatDateTime(lastBatch.created_at) : '—'}
                           </Typography.Text>
@@ -243,7 +249,7 @@ export default function PostureTab() {
             </Descriptions>
           </Card>
 
-          <Card size="small" title="端点实断资格（readiness 服务端派生）">
+          <Card size="small" title="端点实断资格（服务端评估）">
             <SmartTable<ApiAuthzEnforcementReadinessItem>
               rowKey={(r) => `${r.endpoint_id}:${r.object_segment}`}
               storageKey="api-authz-enforcement-readiness"
@@ -256,7 +262,7 @@ export default function PostureTab() {
             />
           </Card>
 
-          <Card size="small" title={`OPEN 冲突（${conflictsQuery.data?.total ?? 0}）`}>
+          <Card size="small" title={`未处理冲突（${conflictsQuery.data?.total ?? 0}）`}>
             <SmartTable<ApiAuthzConflict>
               rowKey="id"
               storageKey="api-authz-conflicts"
@@ -265,13 +271,13 @@ export default function PostureTab() {
               loading={conflictsQuery.isLoading}
               pagination={{ current: conflictPage, pageSize: 20, total: conflictsQuery.data?.total ?? 0, showSizeChanger: false, onChange: setConflictPage }}
               scroll={{ x: 950 }}
-              locale={{ emptyText: '无 OPEN 冲突' }}
+              locale={{ emptyText: '无未处理冲突' }}
             />
           </Card>
 
-          <Card size="small" title="节点 ACK（全节点授权快照应用状态）">
+          <Card size="small" title="节点快照确认状态">
             <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-              管理面向量水位 manual_seq={nodeAcksQuery.data?.management_watermark?.manual_seq ?? 0}
+              管理面手工水位序号 {nodeAcksQuery.data?.management_watermark?.manual_seq ?? 0}
               {nodeAcksQuery.data?.generated_at ? ` · 视图生成于 ${formatDateTime(nodeAcksQuery.data.generated_at)}` : ''}
             </Typography.Paragraph>
             <Table<ApiAuthzNodeAck>

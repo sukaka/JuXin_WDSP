@@ -28,7 +28,7 @@ import { useAuthStore } from '../../stores/auth'
 import type { ApiAdmissionHotEndpoint, ApiAdmissionMode, ApplicationItem } from '../../types'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { API_ENDPOINT_STATUS_META } from '../../utils/stage8'
+import { API_ENDPOINT_STATUS_META, API_PROTECTION_MODE_META } from '../../utils/stage8'
 import { ADMISSION_MODE_META } from './admissionMeta'
 import PublishHint from './PublishHint'
 
@@ -235,7 +235,7 @@ export default function ModeSwitchModal({
           message="实断总阀门未开启"
           description={
             <>
-              {`全局 API 防护模式当前为 ${globalMode}：准入拦截将只记录、不实际阻断。需实断请先在 API 防护策略中将全局模式设为 PROTECT。`}
+              {`全局 API 防护模式当前为「${API_PROTECTION_MODE_META[globalMode]?.label ?? globalMode}」：准入拦截将只记录、不实际阻断。需实断请先在 API 防护策略中将全局模式设为防护模式。`}
               <Link to="/api-policy">前往 API 防护策略</Link>
             </>
           }

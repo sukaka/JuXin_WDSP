@@ -95,7 +95,7 @@ function validateMatchValue(
       // 与服务端归一一致：剥离前导点 + 转小写后校验
       const normalized = value.replace(/^\.+/, '').toLowerCase()
       if (!EXT_PATTERN.test(normalized)) {
-        return 'EXT 形式非法（小写字母数字，可含 _+-，1-16 字符，不含点），如 .exe'
+        return '扩展名格式非法（小写字母数字，可含 _+-，1-16 字符，不含点），如 .exe'
       }
       return null
     }
@@ -245,9 +245,9 @@ export default function ApiFileCompliancePage() {
     })
   }
 
-  /** 规则名称（审计/确认弹窗用）：match_type:match_value */
+  /** 规则名称（审计/确认弹窗用）：匹配类型中文名:match_value */
   const ruleName = (r: ApiFileComplianceRule) =>
-    `${r.match_type}:${r.match_value}`
+    `${MATCH_TYPE_META[r.match_type]?.label ?? r.match_type}:${r.match_value}`
 
   const toggleEnabled = (record: ApiFileComplianceRule) => {
     modal.confirm({

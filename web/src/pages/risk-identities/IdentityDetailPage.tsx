@@ -41,6 +41,11 @@ import { useAuthStore } from '../../stores/auth'
 import { useBreadcrumbObjectName } from '../../stores/breadcrumb'
 import { formatDateTime } from '../../utils/format'
 import {
+  CONFIDENCE_SOURCE_LABELS,
+  CREDENTIAL_TYPE_META,
+  DEVICE_TYPE_LABELS,
+} from '../../utils/i18nLabels'
+import {
   IDENTITY_TYPE_META,
   RISK_LEVEL_META,
   SIGNAL_META,
@@ -140,7 +145,12 @@ const ipHistoryColumns: ColumnsType<IdentityIpHistoryItem> = [
 ]
 
 const credentialColumns: ColumnsType<IdentityCredentialItem> = [
-  { title: '凭据类型', dataIndex: 'credential_type', width: 160 },
+  {
+    title: '凭据类型',
+    dataIndex: 'credential_type',
+    width: 160,
+    render: (v: string) => <StatusTag value={v} map={CREDENTIAL_TYPE_META} />,
+  },
   {
     title: '凭据哈希',
     dataIndex: 'credential_hash',
@@ -412,7 +422,9 @@ export default function IdentityDetailPage() {
             </Descriptions.Item>
             <Descriptions.Item label="置信度依据" span={2}>
               {detail.confidence_source.length > 0
-                ? detail.confidence_source.join('、')
+                ? detail.confidence_source
+                    .map((s) => CONFIDENCE_SOURCE_LABELS[s] ?? s)
+                    .join('、')
                 : '-'}
             </Descriptions.Item>
             <Descriptions.Item label="风险分">
@@ -431,18 +443,20 @@ export default function IdentityDetailPage() {
               {detail.asn || '-'}
             </Descriptions.Item>
             <Descriptions.Item label="设备类型">
-              {detail.device_type || '-'}
+              {detail.device_type
+                ? (DEVICE_TYPE_LABELS[detail.device_type] ?? detail.device_type)
+                : '-'}
             </Descriptions.Item>
             <Descriptions.Item label="账号">
               {detail.account_id || '-'}
             </Descriptions.Item>
-            <Descriptions.Item label="JWT Subject">
+            <Descriptions.Item label="JWT 主体">
               <CopyableLongValue value={detail.jwt_subject} />
             </Descriptions.Item>
             <Descriptions.Item label="API Key 哈希">
               <CopyableLongValue value={detail.api_key_hash} />
             </Descriptions.Item>
-            <Descriptions.Item label="OAuth Client ID">
+            <Descriptions.Item label="OAuth 客户端 ID">
               <CopyableLongValue value={detail.oauth_client_id} />
             </Descriptions.Item>
             <Descriptions.Item label="TLS 指纹">
@@ -645,7 +659,7 @@ export default function IdentityDetailPage() {
         >
           <Form.Item
             name="reason"
-            label="封禁原因（reason）"
+            label="封禁原因"
             rules={[
               { required: true, message: '请输入封禁原因' },
               { whitespace: true, message: '请输入封禁原因' },

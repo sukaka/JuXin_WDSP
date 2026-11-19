@@ -399,7 +399,7 @@ export default function ApplicationsPage() {
       return
     }
     modal.confirm({
-      title: '开启透传（BYPASS）确认',
+      title: '开启透传模式确认',
       content:
         '开启后该应用全部流量直接透传至源站，WAF 检测、访问控制、CC 防护与 API 动态防护全部失效，请仅用于排障/应急。确定开启吗？',
       okText: '确认开启',

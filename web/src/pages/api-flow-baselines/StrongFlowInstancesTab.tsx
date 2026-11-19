@@ -29,6 +29,11 @@ import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
+import {
+  STRONG_FLOW_ACTION_LABELS,
+  STRONG_FLOW_REASON_CODE_LABELS,
+  STRONG_FLOW_STATUS_SEMANTICS_LABELS,
+} from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import {
   INSTANCE_STATUS_META,
@@ -54,11 +59,25 @@ function eventColor(ev: StrongFlowStepEvent): string {
 
 /** 步骤轨迹单条目渲染（摘要档四字段 + 明细档按 evidence_read 服务端裁剪后如实带出） */
 function StepEventLine({ ev }: { ev: StrongFlowStepEvent }) {
+  const metaParts: string[] = []
+  if (ev.fencing_token !== undefined) {
+    metaParts.push(`防重入序号=${ev.fencing_token}`)
+  }
+  if (ev.reason_code) {
+    metaParts.push(
+      STRONG_FLOW_REASON_CODE_LABELS[ev.reason_code] ?? ev.reason_code,
+    )
+  }
+  if (ev.request_id) {
+    metaParts.push(`请求 ${ev.request_id.slice(0, 8)}…`)
+  }
   return (
     <Space direction="vertical" size={2}>
       <Space size={8} wrap>
         <Typography.Text strong>{ev.step_key || '（实例级）'}</Typography.Text>
-        <Tag color="blue">{ev.action}</Tag>
+        <Tag color="blue">
+          {STRONG_FLOW_ACTION_LABELS[ev.action] ?? ev.action}
+        </Tag>
         <Tag color={STEP_EVENT_RESULT_META[ev.result]?.color}>
           {STEP_EVENT_RESULT_META[ev.result]?.label ?? ev.result}
         </Tag>
@@ -67,13 +86,9 @@ function StepEventLine({ ev }: { ev: StrongFlowStepEvent }) {
           {formatDateTime(ev.occurred_at)}
         </Typography.Text>
       </Space>
-      {ev.fencing_token !== undefined || ev.reason_code || ev.request_id ? (
+      {metaParts.length > 0 ? (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {ev.fencing_token !== undefined
-            ? `fencing_token=${ev.fencing_token}`
-            : ''}
-          {ev.reason_code ? ` · ${ev.reason_code}` : ''}
-          {ev.request_id ? ` · request ${ev.request_id.slice(0, 8)}…` : ''}
+          {metaParts.join(' · ')}
         </Typography.Text>
       ) : null}
     </Space>
@@ -106,7 +121,7 @@ function ResolvePanel({
     onSuccess: () => {
       message.success(
         action === 'KEEP_UNKNOWN'
-          ? '已留痕保持未知（RESOLVE 事件落库）'
+          ? '已留痕保持未知（人工对账记录已入库）'
           : '实例已按对账结论推进终态',
       )
       setConflict(null)
@@ -140,7 +155,7 @@ function ResolvePanel({
           onChange={(e) => setAction(e.target.value as string)}
           options={Object.entries(RESOLVE_ACTION_META).map(([value, meta]) => ({
             value,
-            label: `${meta.label}（${value}）`,
+            label: meta.label,
           }))}
         />
         <Typography.Text type="secondary">
@@ -154,7 +169,7 @@ function ResolvePanel({
           rows={3}
           maxLength={512}
           showCount
-          placeholder="对账理由（必填——恢复决定必须留理由，HIGH 审计全值在册）"
+          placeholder="对账理由（必填——恢复决定必须留理由，高危审计完整记录）"
           value={reason}
           onChange={(e) => setReason(e.target.value)}
         />
@@ -192,7 +207,7 @@ function ResolvePanel({
             提交恢复
           </Button>
           {reasonMissing ? (
-            <Typography.Text type="secondary">reason 必填</Typography.Text>
+            <Typography.Text type="secondary">对账理由必填</Typography.Text>
           ) : null}
         </Space>
       </Space>
@@ -251,11 +266,13 @@ function InstanceDetailDrawer({
               message={detail.status_message}
               description={
                 <>
-                  状态语义{' '}
-                  <Typography.Text code>
-                    {detail.status_semantics}
+                  状态语义：
+                  <Typography.Text strong>
+                    {STRONG_FLOW_STATUS_SEMANTICS_LABELS[
+                      detail.status_semantics
+                    ] ?? detail.status_semantics}
                   </Typography.Text>
-                  ：本实例业务执行结果未确认（超时/失败/判定不命中均不自动回滚——源站可能已成功），
+                  。本实例业务执行结果未确认（超时/失败/判定不命中均不自动回滚——源站可能已成功），
                   请核实源站事实后人工对账；不得按已通过处理。
                 </>
               }
@@ -315,8 +332,7 @@ function InstanceDetailDrawer({
                 type="secondary"
                 style={{ marginTop: 4, marginBottom: 0 }}
               >
-                证据明细（fencing_token / reason_code / request_id）需
-                api_authorization.evidence_read 权限，当前为摘要档轨迹。
+                证据明细（防重入序号 / 原因码 / 请求 ID）需「授权证据查看」权限，当前为摘要档轨迹。
               </Typography.Paragraph>
             ) : null}
             <Timeline
@@ -468,10 +484,7 @@ export default function StrongFlowInstancesTab() {
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        强流程实例（PG
-        事实源）：五态状态机，INDETERMINATE=未知待对账——超时/失败/判定不命中恒
-        UNKNOWN 不自动回滚； 恢复操作仅在 ACTIVE/INDETERMINATE
-        可用，终态拒绝重复恢复。
+        强流程实例（数据库事实源）：五态状态机，未知待对账在超时/失败/判定不命中时恒保持未知、不自动回滚；恢复操作仅在「进行中 / 未知待对账」状态可用，终态拒绝重复恢复。
       </Typography.Paragraph>
       <Space wrap>
         <Select

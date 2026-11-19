@@ -467,4 +467,44 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
     }, SLOW)
     expect(screen.queryByText(/预检结果：通过/)).toBeNull()
   })
+
+  it('预检列表将后端英文检查项编码映射为中文名称展示', async () => {
+    const pkg = uploadedPackage()
+    requestMock.mockImplementation(async (path, options) => {
+      const method = options?.method ?? 'GET'
+      if (method === 'GET' && path === '/upgrades') {
+        return { items: [], page: 1, page_size: 20, total: 0 }
+      }
+      if (method === 'GET' && path === '/upgrade-packages') {
+        return { items: [pkg], page: 1, page_size: 50, total: 1 }
+      }
+      if (method === 'POST' && path === '/upgrades/precheck') {
+        return {
+          passed: true,
+          precheck: [
+            { name: 'version_match', result: 'PASS', critical: true, message: '版本兼容' },
+            { name: 'disk_space', result: 'PASS', critical: true, message: '剩余空间充足' },
+            { name: 'postgres_reachable', result: 'PASS', critical: true, message: '连接正常' },
+            { name: 'valkey_reachable', result: 'PASS', critical: true, message: '连接正常' },
+            { name: 'package_artifact', result: 'PASS', critical: true, message: '签名校验通过' },
+          ],
+        }
+      }
+      throw new ApiError(`未打桩的请求：${method} ${path}`, 'MOCK_MISS', 500)
+    })
+
+    renderPage()
+    const select = await screen.findByRole('combobox', undefined, SLOW)
+    fireEvent.mouseDown(select)
+    fireEvent.click(await screen.findByText(/jiuzhang-wdsp-offline-2\.6\.0-amd64\.tar\.gz/, undefined, SLOW))
+    fireEvent.click(screen.getByRole('button', { name: /执行预检/ }))
+
+    expect(await screen.findByText('版本兼容性检查', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText('磁盘空间检查')).toBeInTheDocument()
+    expect(screen.getByText('数据库连接检查')).toBeInTheDocument()
+    expect(screen.getByText('缓存服务连接检查')).toBeInTheDocument()
+    expect(screen.getByText('升级包产物校验')).toBeInTheDocument()
+    expect(screen.queryByText('version_match')).not.toBeInTheDocument()
+    expect(screen.queryByText('postgres_reachable')).not.toBeInTheDocument()
+  })
 })

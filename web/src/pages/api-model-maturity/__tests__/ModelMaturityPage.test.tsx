@@ -122,4 +122,35 @@ describe('ModelMaturityPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /刷新/ }))
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2))
   })
+
+  it('后端成熟度指标键与缺省模型名中文化展示，不回退原始 snake_case', async () => {
+    responseBody = {
+      generated_at: '2026-08-07T10:00:00Z',
+      models: [
+        {
+          key: 'parameter',
+          name: '',
+          stage: 'LEARNING',
+          metrics: { parameters_total: 42, with_recommended: 18 },
+          summary: '参数统计中',
+        },
+        {
+          key: 'access_object',
+          name: '',
+          stage: 'ENFORCING',
+          metrics: { object_models_total: 11, resource_signal_events_24h: 256 },
+          summary: '对象模型运行中',
+        },
+      ],
+    }
+    renderPage()
+    expect(await screen.findByText('参数模型')).toBeInTheDocument()
+    expect(screen.getByText('访问对象模型')).toBeInTheDocument()
+    expect(screen.getByText('参数总数')).toBeInTheDocument()
+    expect(screen.getByText('已产出推荐约束')).toBeInTheDocument()
+    expect(screen.getByText('对象模型总数')).toBeInTheDocument()
+    expect(screen.getByText('近 24 小时对象信号事件')).toBeInTheDocument()
+    expect(screen.queryByText('parameters_total')).not.toBeInTheDocument()
+    expect(screen.queryByText('object_models_total')).not.toBeInTheDocument()
+  })
 })

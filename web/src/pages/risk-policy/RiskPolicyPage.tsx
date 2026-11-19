@@ -19,6 +19,7 @@ import { formatDateTime } from '../../utils/format'
 import ApplicationRiskOverridesPanel from './ApplicationRiskOverridesPanel'
 import RiskPolicyFields from './RiskPolicyFields'
 import {
+  formatRiskPolicyField,
   formValuesToBody,
   policyToFormValues,
   type PolicyFormValues,
@@ -112,7 +113,7 @@ export default function RiskPolicyPage() {
                 errors: [errMsg],
               })
             } else {
-              unmapped.push(`${d.field}: ${errMsg}`)
+              unmapped.push(`${formatRiskPolicyField(d.field)}：${errMsg}`)
             }
           } else {
             fields.push({
@@ -167,7 +168,7 @@ export default function RiskPolicyPage() {
               type="info"
               showIcon
               style={{ maxWidth: 1080, marginBottom: 16 }}
-              message="风险分为身份级跨请求累计（24h 滑窗）：达限速阈值（rate_limit_threshold）限速、达挑战阈值（challenge_threshold）发起 JS 挑战、达阻断阈值（block_threshold）阻断；挑战后仍执行后续防护，OBSERVE 模式只记录不处置。"
+              message="风险分为身份级跨请求累计（24h 滑窗）：达限速阈值时限速、达挑战阈值时发起 JS 挑战、达阻断阈值时阻断；挑战后仍执行后续防护，观察模式只记录不处置。"
             />
             <Form<PolicyFormValues>
               form={form}

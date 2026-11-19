@@ -338,7 +338,7 @@ export default function JwtTrustTab({
             showIcon
             style={{ marginTop: 12 }}
             message="尚未配置 JWT 信任策略，当前不校验业务 Token"
-            description="默认 OFF 不改变既有流量；密钥不可用、部分节点未生效等运行态以预检与发布回执为准。"
+            description="默认关闭，不改变既有流量；密钥不可用、部分节点未生效等运行态以预检与发布回执为准。"
           />
         )}
       </Card>
@@ -385,8 +385,7 @@ export default function JwtTrustTab({
             extra={
               mode === 'PROTECT' ? (
                 <Typography.Text type="warning">
-                  强制验证要求应用 API 动态管线已启用且为
-                  PROTECT，且目标节点无已知同步失败，否则发布将被拒绝
+                  强制验证要求应用 API 动态管线已启用且处于防护模式，且目标节点无已知同步失败，否则发布将被拒绝
                 </Typography.Text>
               ) : undefined
             }
@@ -398,8 +397,7 @@ export default function JwtTrustTab({
             校验范围（选择器）
           </Typography.Title>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-            不同选择器之间为或（OR）关系，重叠时「必须携带 Token」取 true
-            优先；路径前缀按完整路径段匹配（/api 匹配 /api 与
+            不同选择器之间为或（OR）关系，重叠时「必须携带 Token」取开启优先；路径前缀按完整路径段匹配（/api 匹配 /api 与
             /api/orders，不匹配 /apix）；未命中选择器的请求维持原行为。
             {mode !== 'OFF' && '非关闭模式下至少需要一条选择器。'}
           </Typography.Paragraph>
@@ -459,7 +457,7 @@ export default function JwtTrustTab({
                               )
                             if (v.includes('?') || v.includes('#')) {
                               return Promise.reject(
-                                new Error('路径不得包含 query 或 fragment'),
+                                new Error('路径不得包含查询串或锚点'),
                               )
                             }
                             return Promise.resolve()
@@ -519,8 +517,7 @@ export default function JwtTrustTab({
             受信发行方（最多 {JWT_TRUST_LIMITS.maxIssuers} 个）
           </Typography.Title>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-            issuer 为大小写敏感精确值且策略内唯一；Token 的 aud 与配置 audiences
-            至少匹配一项；算法白名单仅 RS256 / ES256，不由 Token 扩展。
+            发行方（Issuer）为大小写敏感精确值且策略内唯一；Token 的受众声明（aud）与配置的受众列表至少匹配一项；算法白名单仅 RS256 / ES256，不由 Token 扩展。
             {mode !== 'OFF' && '非关闭模式下至少需要一个发行方。'}
           </Typography.Paragraph>
           <Form.List name="issuers">
@@ -547,14 +544,14 @@ export default function JwtTrustTab({
                     <Space size="middle" wrap style={{ display: 'flex' }}>
                       <Form.Item
                         name={[field.name, 'issuer']}
-                        label="Issuer 精确值"
+                        label="发行方精确值（Issuer）"
                         style={{ width: 320 }}
                         rules={[
                           {
                             required: mode !== 'OFF',
-                            message: '请输入 issuer 精确值',
+                            message: '请输入发行方精确值',
                           },
-                          { max: 512, message: 'issuer 长度不能超过 512' },
+                          { max: 512, message: '发行方长度不能超过 512' },
                         ]}
                       >
                         <Input
@@ -564,12 +561,12 @@ export default function JwtTrustTab({
                       </Form.Item>
                       <Form.Item
                         name={[field.name, 'audiences']}
-                        label="Audiences"
+                        label="受众列表（Audience）"
                         style={{ minWidth: 260 }}
                         rules={[
                           {
                             required: mode !== 'OFF',
-                            message: '请至少填写一个 audience',
+                            message: '请至少填写一个受众',
                           },
                         ]}
                       >
@@ -667,7 +664,7 @@ export default function JwtTrustTab({
                           <Form.Item
                             name={[field.name, 'url']}
                             label="远程 JWKS 地址"
-                            extra="仅 HTTPS；默认拒绝私网/回环/云元数据地址，企业内网 IdP 须由系统管理员在 jwt_trust:remote_jwks_allowlist 显式登记"
+                            extra="仅 HTTPS；默认拒绝私网/回环/云元数据地址，企业内网 IdP 须由系统管理员在系统设置中的远程 JWKS 白名单显式登记"
                             rules={[
                               {
                                 required: mode !== 'OFF',
@@ -822,8 +819,7 @@ export default function JwtTrustTab({
             style={{ fontSize: 12, marginTop: 12 }}
           >
             说明：远程 JWKS
-            连通性为管理端探测结果；「节点状态与能力」为各目标节点的注册与同步回执状态，已知同步失败的节点将阻断
-            PROTECT 策略发布（防静默降级，避免部分节点未生效）。
+            连通性为管理端探测结果；「节点状态与能力」为各目标节点的注册与同步回执状态，已知同步失败的节点将阻断强制验证策略发布（防静默降级，避免部分节点未生效）。
           </Typography.Paragraph>
         </Card>
       )}

@@ -253,9 +253,9 @@ export default function L7RuleFormDrawer({
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message="请求体在访问源站前检查；返回头、返回体在源站响应后检查。含响应条件的规则与其他请求条件仍按 AND 组合，各阶段内按优先级首中即停。正文仅检查完整且不超过 1 MiB 的内容；超限、流式或无法解码时完整透传并不产生正文匹配。"
+          message="请求体在访问源站前检查；返回头、返回体在源站响应后检查。含响应条件的规则与其他请求条件仍按且（全部满足）组合，各阶段内按优先级首中即停。正文仅检查完整且不超过 1 MiB 的内容；超限、流式或无法解码时完整透传并不产生正文匹配。"
         />
-        <Form.Item label={`匹配条件（多条件 AND，最多 ${L7_MAX_CONDITIONS} 个；无条件匹配全部请求）`}>
+        <Form.Item label={`匹配条件（多条件且（全部满足），最多 ${L7_MAX_CONDITIONS} 个；无条件匹配全部请求）`}>
           <Form.List name="conditions">
             {(fields, { add, remove }) => (
               <>
@@ -307,7 +307,7 @@ export default function L7RuleFormDrawer({
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
-            message="命中后放行请求，并跳过 CC 频率限制等后续 guard 检查；请求仍会经过 Coraza/CRS 攻击检测（安全底线）。"
+            message="命中后放行请求，并跳过 CC 频率限制等后续访问控制检查；请求仍会经过 Coraza/CRS 攻击检测（安全底线）。"
           />
         )}
         {action === 'redirect' && (

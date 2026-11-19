@@ -425,7 +425,8 @@ export default function VulnIntelPage() {
                   }
                 >
                   <Tag color={SYNC_STATUS_META[s.status]?.color ?? 'default'}>
-                    {s.source} {SYNC_STATUS_META[s.status]?.label ?? s.status}
+                    {SOURCE_META[s.source]?.label ?? s.source}{' '}
+                    {SYNC_STATUS_META[s.status]?.label ?? s.status}
                     {`（${s.records_upserted} 条）`}
                   </Tag>
                 </Tooltip>
@@ -438,7 +439,7 @@ export default function VulnIntelPage() {
               <Typography.Paragraph type="danger" style={{ marginTop: 8, marginBottom: 0 }}>
                 {overview.sources
                   .filter((s) => s.status === 'FAILED' && s.failure_message)
-                  .map((s) => `${s.source} 同步失败：${s.failure_message}`)
+                  .map((s) => `${SOURCE_META[s.source]?.label ?? s.source} 同步失败：${s.failure_message}`)
                   .join('；')}
               </Typography.Paragraph>
             )}

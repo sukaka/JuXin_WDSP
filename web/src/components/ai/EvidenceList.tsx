@@ -1,6 +1,7 @@
 import { Empty, Popover, Tag, Typography } from 'antd'
 import type { AiEvidenceItem } from '../../api/ai'
 import { formatJson } from '../../utils/format'
+import { AI_TOOL_SOURCE_LABELS } from '../../utils/i18nLabels'
 
 /** AI 证据引用列表（[Ex] 编号与回答中的引用对应；有 detail 时可悬浮查看） */
 export default function EvidenceList({ items }: { items?: AiEvidenceItem[] | null }) {
@@ -18,7 +19,9 @@ export default function EvidenceList({ items }: { items?: AiEvidenceItem[] | nul
                 {e.id}
               </Tag>
               <Typography.Text style={{ fontSize: 13 }}>
-                <Typography.Text type="secondary">{e.source}：</Typography.Text>
+                <Typography.Text type="secondary">
+                  {AI_TOOL_SOURCE_LABELS[e.source] ?? e.source}：
+                </Typography.Text>
                 {e.summary}
               </Typography.Text>
             </div>

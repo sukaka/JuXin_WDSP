@@ -66,7 +66,7 @@ interface TestFormValues {
 
 const HEADER_TYPE_OPTIONS = Object.entries(TRUSTED_PROXY_HEADER_TYPE_META).map(([value, meta]) => ({
   value,
-  label: `${meta.label}（${value}）`,
+  label: meta.label,
 }))
 
 const SCOPE_OPTIONS = Object.entries(TRUSTED_PROXY_SCOPE_META).map(([value, meta]) => ({

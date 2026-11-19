@@ -16,7 +16,7 @@ export default function ApiScanPage() {
       <Typography.Paragraph type="secondary">
         在授权边界内对目标 API 做主动探测（未认证访问、下线 API 存活、敏感字段暴露、边界参数校验、
         对象级差异比对、方法枚举），发现可确认关联弱点并定向复测。
-        能力默认关闭（settings api_scan.enabled），未启用时无法发起任务与复测；证据与样本均已脱敏截断。
+        能力默认关闭（系统设置中的「主动扫描开关」），未启用时无法发起任务与复测；证据与样本均已脱敏截断。
       </Typography.Paragraph>
       <Tabs
         items={[

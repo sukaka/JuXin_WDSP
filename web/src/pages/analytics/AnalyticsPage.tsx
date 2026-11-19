@@ -15,7 +15,7 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { hasAnyPermission, hasPermission } from '../../utils/permission'
 import { ATTACK_TYPE_META, DISPOSITION_STATUS_META, EVENT_SEVERITY_META } from '../../utils/stage4'
-import { CLIENT_IP_SOURCE_META } from '../../utils/stage5'
+import { AC_EVENT_TYPE_META, CLIENT_IP_SOURCE_META } from '../../utils/stage5'
 import { TREND_RANGE_OPTIONS } from '../../utils/stage6'
 import type { CountPoint, KeyValue } from '../../types'
 
@@ -326,7 +326,13 @@ export default function AnalyticsPage() {
                     locale={{ emptyText: '暂无数据' }}
                     columns={[
                       { title: '规则', dataIndex: 'rule_id', width: 220, ellipsis: true },
-                      { title: '事件类型', dataIndex: 'event_type', width: 200, ellipsis: true },
+                      {
+                        title: '事件类型',
+                        dataIndex: 'event_type',
+                        width: 200,
+                        ellipsis: true,
+                        render: (v: string) => <StatusTag value={v} map={AC_EVENT_TYPE_META} />,
+                      },
                       { title: '命中次数', dataIndex: 'hits', width: 100 },
                     ]}
                   />

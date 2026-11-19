@@ -325,7 +325,7 @@ export default function SchedulesTab() {
       <QueryErrorAlert error={listQuery.error} />
       <Space style={{ marginBottom: 16 }} wrap>
         <Typography.Text type="secondary">
-          任务只产出报告与建议，不变更业务；总开关见系统设置 api_ai_ops.schedules_enabled。
+          任务只产出报告与建议，不变更业务；总开关见系统设置中的定时任务总开关。
         </Typography.Text>
         {canExecute ? (
           <Button type="primary" onClick={openCreate}>

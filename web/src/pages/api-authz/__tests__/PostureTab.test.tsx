@@ -195,36 +195,37 @@ describe('PostureTab（NG-AZ-04 §1.1 六要素态势 Tab）', () => {
   it('六要素区块与 readiness 徽章渲染（manage 权限含切换入口，PROTECT 行无入口）', async () => {
     await renderAndSelectApp(['api_authorization.read', 'api_authorization.manage', 'applications.read'])
     // 端点实断资格表格：三态徽章
-    expect(await screen.findByText('端点实断资格（readiness 服务端派生）')).toBeInTheDocument()
+    expect(await screen.findByText('端点实断资格（服务端评估）')).toBeInTheDocument()
     expect(screen.getByText('可实断')).toBeInTheDocument()
     expect(screen.getByText('节点未就绪')).toBeInTheDocument()
-    expect(screen.getByText('实断中（PROTECT）')).toBeInTheDocument()
-    // readiness 徽章 tooltip 固定注明 UNKNOWN 永不阻断
+    expect(screen.getByText('实断中')).toBeInTheDocument()
+    // readiness 徽章 tooltip 固定注明 证据不足永不阻断
     fireEvent.mouseEnter(screen.getByText('节点未就绪'))
-    expect(await screen.findByText(/UNKNOWN 永不阻断/)).toBeInTheDocument()
-    // 切换 PROTECT 入口：READY/BLOCKED 两行有，PROTECT 行无
-    expect(screen.getAllByRole('button', { name: '切换 PROTECT' })).toHaveLength(2)
+    expect(await screen.findByText(/证据不足永不阻断/)).toBeInTheDocument()
+    // 切换实断入口：READY/BLOCKED 两行有，PROTECT 行无
+    expect(screen.getAllByRole('button', { name: '切换实断' })).toHaveLength(2)
     // 来源与最后同步区块：权威来源 + 缺口状态 + 水位
     expect(screen.getByText('关系来源与最后同步')).toBeInTheDocument()
     expect(screen.getByText('CRM 权威源')).toBeInTheDocument()
     expect(screen.getByText('连续')).toBeInTheDocument()
-    expect(screen.getByText(/水位 seq=42/)).toBeInTheDocument()
+    expect(screen.getByText(/水位序号 42/)).toBeInTheDocument()
     expect(screen.getByText(/权威同步 1/)).toBeInTheDocument()
     // 冲突区块：对象类型/涉及主体数
-    expect(screen.getByText('OPEN 冲突（1）')).toBeInTheDocument()
+    expect(screen.getByText('未处理冲突（1）')).toBeInTheDocument()
     expect(screen.getByText('order')).toBeInTheDocument()
     expect(screen.getByText('tenant-a')).toBeInTheDocument()
-    // 节点 ACK 区块：FRESH 与时钟偏差如实呈现（含 null 字段占位）
+    // 节点 ACK 区块：在线、FRESH 与时钟偏差如实呈现（含 null 字段占位）
     expect(screen.getByText('gw-1')).toBeInTheDocument()
     expect(screen.getByText('gw-2')).toBeInTheDocument()
+    expect(screen.getAllByText('在线')).toHaveLength(2)
     expect(screen.getByText('时钟偏差')).toBeInTheDocument()
-    expect(screen.getByText(/管理面向量水位 manual_seq=7/)).toBeInTheDocument()
+    expect(screen.getByText(/管理面手工水位序号 7/)).toBeInTheDocument()
   })
 
-  it('无 manage 权限：隐藏全部「切换 PROTECT」入口，态势数据仍可读', async () => {
+  it('无 manage 权限：隐藏全部「切换实断」入口，态势数据仍可读', async () => {
     await renderAndSelectApp(['api_authorization.read', 'applications.read'])
     expect(await screen.findByText('可实断')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '切换 PROTECT' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '切换实断' })).not.toBeInTheDocument()
   })
 
   it('无 applications.read 权限时不调用 applicationsApi.list', () => {

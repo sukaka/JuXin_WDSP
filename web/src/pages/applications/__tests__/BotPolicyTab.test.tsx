@@ -444,4 +444,55 @@ describe('BotPolicyTab', () => {
     expect(await screen.findByText('服务暂不可用')).toBeInTheDocument()
     expect(screen.getByText(/安全验证服务暂时不可用/)).toBeInTheDocument()
   })
+
+  it('节点同步状态为空/UNKNOWN 显示「未同步」，信号参数选项展示中文标签', async () => {
+    const data = {
+      policy: {
+        ...DRAFT_PENDING.policy,
+        signal_rules: {
+          min_independent_groups: 2,
+          require_behavior_group: true,
+          rules: [
+            {
+              id: 'ua_bot',
+              group: 'client_claim',
+              metric: 'ua_class_match',
+              params: { class: 'BOT' },
+              window_seconds: 300,
+              weight: 1,
+              threshold: 0,
+            },
+            {
+              id: 'tls_ver',
+              group: 'client_claim',
+              metric: 'tls_client_hint',
+              params: { field: 'cipher_suite', equals: 'TLS_AES_128_GCM_SHA256' },
+              window_seconds: 300,
+              weight: 1,
+              threshold: 0,
+            },
+          ],
+        },
+      },
+      summary: {
+        ...PARTIAL_NODES.summary,
+        nodes: [
+          {
+            node_name: 'gw-node-c',
+            last_sync_result: '',
+            last_sync_version_id: null,
+            effective: false,
+          },
+        ],
+      },
+    }
+    vi.stubGlobal('fetch', mockFetch(data))
+    grant(['bot_policy.read', 'bot_policy.edit'])
+    renderTab()
+    expect(await screen.findByText('未同步')).toBeInTheDocument()
+    expect(await screen.findByText('爬虫/机器人')).toBeInTheDocument()
+    expect(await screen.findByText('密码套件')).toBeInTheDocument()
+    expect(screen.queryByText('BOT')).not.toBeInTheDocument()
+    expect(screen.queryByText('cipher_suite')).not.toBeInTheDocument()
+  })
 })

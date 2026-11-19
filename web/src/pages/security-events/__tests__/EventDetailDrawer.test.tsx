@@ -186,8 +186,10 @@ describe('EventDetailDrawer JWT 验证信息', () => {
     expect(screen.getAllByText('验证通过').length).toBeGreaterThan(0)
     expect(screen.getByText('hmac-fp-9f8e7d')).toBeInTheDocument()
     expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByText('签发方配置')).toBeInTheDocument()
     expect(screen.getByText('iss-01')).toBeInTheDocument()
     expect(screen.getByText('ks-2026-09')).toBeInTheDocument()
+    expect(screen.queryByText('VALID')).not.toBeInTheDocument()
   })
 
   it('历史事件无 jwt_verification 字段时显示「当时未记录」', async () => {
@@ -269,7 +271,7 @@ describe('EventDetailDrawer 最终处置（P0-04）', () => {
             response_source: 'GATEWAY',
             http_status: 403,
             response_committed: true,
-            reason_codes: ['WAF_RULE_MATCH'],
+            reason_codes: ['WAF_INTERCEPT'],
             rule_refs: [{ module: 'WAF', rule_id: '942100', version: '4.26.0' }],
             effective_config: {
               config_fingerprint: 'fp-shop-01',
@@ -304,7 +306,7 @@ describe('EventDetailDrawer 最终处置（P0-04）', () => {
     expect(await screen.findByText('最终处置')).toBeInTheDocument()
     // 最终处置：执行模块为 WAF，安全动作行为「阻断」
     expect(screen.getByText('执行模块')).toBeInTheDocument()
-    expect(screen.getByText('WAF（Coraza/CRS）')).toBeInTheDocument()
+    expect(screen.getAllByText('WAF（Coraza/CRS）').length).toBeGreaterThanOrEqual(2)
     {
       let row: HTMLElement | null = screen.getByText('安全动作')
       while (row && !row.textContent?.includes('阻断')) row = row.parentElement
@@ -312,12 +314,16 @@ describe('EventDetailDrawer 最终处置（P0-04）', () => {
     }
     // API 中间决策单独一行，且不等于最终放行
     expect(screen.getByText('API 中间决策')).toBeInTheDocument()
-    expect(screen.getByText('API EXECUTED：final_action=ALLOW')).toBeInTheDocument()
+    expect(screen.getByText('API 已执行：final_action=ALLOW')).toBeInTheDocument()
     expect(
-      screen.getByText(/API 决策为中间结果：API ALLOW 不等于最终放行/),
+      screen.getByText(/API 决策为中间结果：API 放行不等于最终放行/),
     ).toBeInTheDocument()
-    // 规则引用 / 有效配置 / 命中例外 / Finding 计数 / 步骤语义
-    expect(screen.getByText('WAF 942100@4.26.0')).toBeInTheDocument()
+    // 原因码 / 规则引用 / 有效配置 / 命中例外 / 检测发现计数 / 步骤语义均中文化
+    expect(screen.getByText('WAF 规则拦截')).toBeInTheDocument()
+    expect(screen.getByText('WAF（Coraza/CRS） 942100@4.26.0')).toBeInTheDocument()
+    expect(screen.getByText('检测发现计数')).toBeInTheDocument()
+    expect(screen.getByText('身份风险策略')).toBeInTheDocument()
+    expect(screen.getByText('CC 频率限制')).toBeInTheDocument()
     expect(screen.getByText(/fp-shop-01/)).toBeInTheDocument()
     expect(screen.getByText(/shop\.example\.com POST \/api\/orders/)).toBeInTheDocument()
     expect(screen.getByText('仅观察 1')).toBeInTheDocument()

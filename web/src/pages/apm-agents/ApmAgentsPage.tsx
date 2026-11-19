@@ -30,6 +30,7 @@ import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { formatDateTime } from '../../utils/format'
+import { formatEnvironment } from '../../utils/i18nLabels'
 import { APM_AGENT_STATUS_META, formatRelativeTime } from '../../utils/apm'
 import type { ApmAgentItem } from '../../types'
 
@@ -291,7 +292,7 @@ export default function ApmAgentsPage() {
     },
     { title: '语言', dataIndex: 'language', width: 90 },
     { title: 'Agent 版本', dataIndex: 'agent_version', width: 110 },
-    { title: '环境', dataIndex: 'environment', width: 100 },
+    { title: '环境', dataIndex: 'environment', width: 100, render: (v: string) => formatEnvironment(v) },
     {
       title: '最后心跳',
       dataIndex: 'last_heartbeat_at',

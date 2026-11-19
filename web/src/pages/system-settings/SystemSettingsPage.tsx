@@ -210,7 +210,7 @@ const SETTING_META: Record<
     description: 'syslog 服务器地址与端口（支持 IPv4/IPv6 或域名）',
   },
   'logging:syslog_facility': {
-    description: 'RFC5424 facility，默认 1（user-level）',
+    description: 'RFC5424 日志设施号，默认 1（用户级）',
     min: 0,
     max: 23,
   },
@@ -434,6 +434,17 @@ function SettingGroupPanel({ group }: { group: string }) {
     const value = draftValue(item)
     const setValue = (v: string) => setDrafts((d) => ({ ...d, [item.id]: v }))
     if (!canUpdate) {
+      if (item.value_type === 'boolean') {
+        return (
+          <Tag color={value === 'true' ? 'green' : 'default'}>
+            {value === 'true' ? '已开启' : '已关闭'}
+          </Tag>
+        )
+      }
+      if (meta?.options) {
+        const matched = meta.options.find((opt) => opt.value === value)
+        return <Typography.Text>{matched?.label ?? value}</Typography.Text>
+      }
       return <Typography.Text>{value}</Typography.Text>
     }
     // syslog_address 存储契约仍是 host:port，前端拆为「服务器地址 + 端口」两个控件编辑

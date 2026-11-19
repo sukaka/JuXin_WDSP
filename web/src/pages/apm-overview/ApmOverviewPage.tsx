@@ -23,6 +23,7 @@ import EChart from '../../components/EChart'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import { useAuthStore } from '../../stores/auth'
+import { formatApmEndpoint } from '../../utils/i18nLabels'
 import { hasPermission } from '../../utils/permission'
 import { TREND_RANGE_OPTIONS } from '../../utils/stage6'
 import { apmTrendOption } from '../../utils/apmCharts'
@@ -220,7 +221,7 @@ export default function ApmOverviewPage() {
                     type="warning"
                     showIcon
                     message="端点级数据需开启全量访问日志"
-                    description="当前未开启全量访问日志（logging.access_log_enabled），端点级性能数据不可用；请联系系统管理员在日志配置中开启。应用级 RED 指标不受影响。"
+                    description="当前未开启「全量访问日志开关」，端点级性能数据不可用；请联系系统管理员在日志配置中开启。应用级 RED 指标不受影响。"
                   />
                 ) : (
                   <SmartTable<ApmTopEndpointItem>
@@ -241,7 +242,7 @@ export default function ApmOverviewPage() {
                         ellipsis: true,
                         render: (v: string) => (
                           <Typography.Text style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                            {v}
+                            {formatApmEndpoint(v)}
                           </Typography.Text>
                         ),
                       },

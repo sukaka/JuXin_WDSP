@@ -27,6 +27,26 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import RecordDetailDrawer from '../../components/RecordDetailDrawer'
 import SmartTable from '../../components/SmartTable'
 import { formatDateTime } from '../../utils/format'
+import { FILE_SENSITIVE_TYPE_LABELS, LLM_RULE_META } from '../../utils/i18nLabels'
+import { API_DETECTOR_META, API_SENSITIVE_TYPE_META } from '../../utils/stage8'
+
+/** 将大模型规则 ID / 检测器标识映射为中文标签（动态兼容 llm.pii.<type> 子规则） */
+function formatLlmRuleLabel(ruleId?: string, detector?: string): string {
+  const key = ruleId || detector || ''
+  if (!key) return '-'
+  if (LLM_RULE_META[key]) return LLM_RULE_META[key].label
+  if (key.startsWith('llm.pii.')) {
+    const suffix = key.slice('llm.pii.'.length)
+    const sensitiveLabel =
+      FILE_SENSITIVE_TYPE_LABELS[suffix] ??
+      FILE_SENSITIVE_TYPE_LABELS[suffix.toUpperCase()] ??
+      API_SENSITIVE_TYPE_META[suffix.toUpperCase()]?.label
+    return sensitiveLabel ? `敏感个人信息（${sensitiveLabel}）` : '敏感个人信息检测'
+  }
+  if (API_DETECTOR_META[key]) return API_DETECTOR_META[key].label
+  if (detector && API_DETECTOR_META[detector]) return API_DETECTOR_META[detector].label
+  return key
+}
 
 /** 可空文本展示：NULL/空串统一占位符 */
 function dash(v?: string | number | null): string | number {
@@ -81,7 +101,8 @@ function FindingsCell({
   const shown = list.slice(0, 2)
   const tip = list
     .map(
-      (f) => `${f.rule_id || f.detector}${f.message ? `：${f.message}` : ''}`,
+      (f) =>
+        `${formatLlmRuleLabel(f.rule_id, f.detector)}${f.message ? `：${f.message}` : ''}`,
     )
     .join('\n')
   return (
@@ -89,7 +110,7 @@ function FindingsCell({
       <span>
         {shown.map((f, i) => (
           <Tag key={i} color="red" style={{ marginInlineEnd: 4 }}>
-            {f.rule_id || f.detector}
+            {formatLlmRuleLabel(f.rule_id, f.detector)}
           </Tag>
         ))}
         {list.length > 2 ? <Tag color="red">+{list.length - 2}</Tag> : null}
@@ -166,7 +187,7 @@ export default function ApiLLMPage() {
         v ? <Typography.Text code>{v}</Typography.Text> : '-',
     },
     {
-      title: 'prompt 长度桶',
+      title: '提示词长度桶',
       dataIndex: 'prompt_len_bucket',
       width: 120,
       render: dash,
@@ -214,9 +235,7 @@ export default function ApiLLMPage() {
             children: (
               <>
                 <Typography.Paragraph type="secondary">
-                  LLM 流量观测（模型/prompt 长度桶/token 用量/流式/MCP 方法）与
-                  llm.* 检测命中； 原始 prompt
-                  与响应内容不采集，统计窗口与列表明细一致（按发生时间口径）。
+                  LLM 流量观测（模型/提示词长度桶/Token 用量/流式/MCP 方法）与大模型安全规则命中；原始提示词与响应内容不采集，统计窗口与列表明细一致（按发生时间口径）。
                 </Typography.Paragraph>
                 <QueryErrorAlert error={statsQuery.error} />
                 <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
@@ -242,7 +261,7 @@ export default function ApiLLMPage() {
                   <Col flex="1 1 160px">
                     <Card size="small">
                       <Statistic
-                        title="token 合计"
+                        title="Token 合计"
                         value={summary?.total_tokens ?? 0}
                         loading={statsQuery.isLoading}
                       />

@@ -157,7 +157,15 @@ export default function StoragePage() {
       <RecordDetailDrawer
         open={detailRecord !== null}
         title="分区详情"
-        record={detailRecord}
+        record={
+          detailRecord
+            ? {
+                name: detailRecord.name,
+                size_bytes: formatBytes(detailRecord.size_bytes),
+              }
+            : null
+        }
+        fieldLabels={{ name: '分区名称', size_bytes: '占用大小' }}
         onClose={() => setDetailRecord(null)}
       />
     </Card>

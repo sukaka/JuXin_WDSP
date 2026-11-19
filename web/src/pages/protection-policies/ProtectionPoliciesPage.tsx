@@ -98,7 +98,7 @@ function PolicyFormFields({ isCreate }: { isCreate: boolean }) {
       </Form.Item>
       <Form.Item
         name="paranoia_level"
-        label="执行等级（Paranoia Level）"
+        label="严格等级（PL）"
         rules={[{ required: true }]}
         extra="等级越高检测越严格、误报越多，建议从 PL1 开始"
       >

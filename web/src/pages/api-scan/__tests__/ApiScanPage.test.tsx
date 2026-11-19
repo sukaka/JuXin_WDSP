@@ -97,7 +97,7 @@ const job2 = {
 const finding1 = {
   id: 'f1',
   job_id: 'j1',
-  engine: 'apiscan',
+  engine: 'builtin',
   template: 'AUTH_REQUIRED',
   endpoint_key: 'GET /v1/orders',
   category: 'AUTHN',
@@ -292,7 +292,7 @@ describe('ApiScanPage', () => {
 
     await selectOption('选择应用', '订单中心（order）')
     fireEvent.change(screen.getByLabelText('目标名称'), { target: { value: '支付 API' } })
-    fireEvent.change(screen.getByLabelText('基准地址（base_url）'), {
+    fireEvent.change(screen.getByLabelText('基准地址'), {
       target: { value: 'https://pay.example.com' },
     })
     await clickDialogOk()
@@ -430,8 +430,9 @@ describe('ApiScanPage', () => {
     const row = screen.getByText('GET /v1/orders').closest('tr') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: /详\s*情/ }))
     const drawer = await screen.findByRole('dialog')
-    // 脱敏证据与样本展示
+    // 脱敏证据与样本展示，内置引擎显示中文
     await within(drawer).findByText('证据（已脱敏）')
+    expect(within(drawer).getByText('内置引擎')).toBeInTheDocument()
     expect(within(drawer).getByText(/Authorization: \[redacted\]/)).toBeInTheDocument()
     expect(within(drawer).getByText('请求样本（凭据头已脱敏）')).toBeInTheDocument()
 

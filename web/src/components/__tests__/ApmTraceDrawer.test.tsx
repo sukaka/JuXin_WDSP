@@ -89,10 +89,12 @@ describe('ApmTraceDrawer · L27 旧数据结构运行时归一化', () => {
     expect(await screen.findByText('未命中，可能未采样或已超保留期')).toBeInTheDocument()
   })
 
-  it('access_logs 为 null、otel_spans 缺失但有关联事件时正常渲染事件表', async () => {
+  it('access_logs 为 null、otel_spans 缺失但有关联事件时正常渲染事件表且中文化动作与 Trace ID', async () => {
     traceBody = legacyMixedTrace
     renderDrawer()
     expect(await screen.findByText('关联 WAF 事件（1）')).toBeInTheDocument()
+    expect(screen.getByText(/Trace ID：t-mixed/)).toBeInTheDocument()
+    expect(screen.getByText('阻断')).toBeInTheDocument()
     expect(screen.getByText('req-1')).toBeInTheDocument()
   })
 })

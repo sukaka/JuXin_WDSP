@@ -323,7 +323,7 @@ describe('Phase 3：HTTP 事件 Tab', () => {
     await screen.findByText('POST api.example.com/api/login')
 
     // host 过滤（Input.Search 回车触发 onSearch）
-    const hostInput = screen.getByPlaceholderText('按 Host 过滤')
+    const hostInput = screen.getByPlaceholderText('按域名过滤')
     fireEvent.change(hostInput, { target: { value: 'api.example.com' } })
     fireEvent.keyDown(hostInput, { key: 'Enter', keyCode: 13 })
     await waitFor(() => {
@@ -334,7 +334,7 @@ describe('Phase 3：HTTP 事件 Tab', () => {
 
     // method 过滤
     const methodSelect = screen
-      .getByText('按 Method 过滤')
+      .getByText('按请求方法过滤')
       .closest('.ant-select')!
     fireEvent.mouseDown(methodSelect.querySelector('[role="combobox"]')!)
     await clickSelectOption('POST')
@@ -372,10 +372,11 @@ describe('Phase 3：HTTP 事件 Tab', () => {
     expect(workload).toBeInTheDocument()
     fireEvent.mouseOver(workload)
     expect(
-      await screen.findByText(/集群: prod-cluster；工作负载: api/),
+      await screen.findByText(/集群: prod-cluster；工作负载: api；服务: api-service；端点: 目标端/),
     ).toBeInTheDocument()
     // 响应 Body 截断 Alert + 原始大小
-    expect(within(dialog).getByText('Body 已截断')).toBeInTheDocument()
+    expect(within(dialog).getByText('正文已截断')).toBeInTheDocument()
+    expect(within(dialog).getByText(/受策略最大正文长度上限限制仅采集前缀/)).toBeInTheDocument()
     expect(within(dialog).getByText(/原始大小/)).toBeInTheDocument()
     // 脱敏值即最终值（界面不标"明文"、不暗示可还原）；请求/响应两处脱敏说明
     expect(within(dialog).getAllByText('********').length).toBeGreaterThan(0)
@@ -410,9 +411,10 @@ describe('Phase 3：HTTP 事件 Tab', () => {
     ).toBeInTheDocument()
     expect(
       within(dialog).getByText(
-        /Body 未采集（content_type）：内容类型不在采集白名单/,
+        /正文未采集：内容类型不在采集白名单/,
       ),
     ).toBeInTheDocument()
+    expect(within(dialog).queryByText(/content_type/)).not.toBeInTheDocument()
     expect(within(dialog).getByText(/原始大小/)).toBeInTheDocument()
     // 响应状态 4xx 橙色 Tag 文案仍在
     expect(within(dialog).getAllByText('404').length).toBeGreaterThan(0)
@@ -430,7 +432,7 @@ describe('Phase 3：HTTP 事件 Tab', () => {
     expect(
       within(dialog).getByText('响应未捕获（超时或连接中断），无响应数据'),
     ).toBeInTheDocument()
-    expect(within(dialog).queryByText('响应 Body')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('响应正文')).not.toBeInTheDocument()
     // 状态灰显"无响应"，时延/响应时间为占位符
     expect(within(dialog).getAllByText('无响应').length).toBeGreaterThan(0)
     expect(within(dialog).getAllByText('-').length).toBeGreaterThan(0)
@@ -458,6 +460,9 @@ describe('Phase 3：策略采集等级与 masking', () => {
       renderWithProviders(<PolicyPanel canManage={true} />)
       await screen.findByText('production-web')
 
+      // 采集配置摘要使用中文方向与输出模式
+      expect(screen.getByText(/等级 L0 \/ eth0 \/ 双向 \/ 端口 80,443 \/ 流元数据 \/ 限速 100 Mbps/)).toBeInTheDocument()
+
       fireEvent.click(screen.getByRole('button', { name: /编\s*辑/ }))
       const dialog = await screen.findByRole('dialog')
 
@@ -466,21 +471,21 @@ describe('Phase 3：策略采集等级与 masking', () => {
         .getByText(/L0：仅元数据/)
         .closest('.ant-select')!
       fireEvent.mouseDown(levelSelect.querySelector('[role="combobox"]')!)
-      await clickSelectOption('L2：L1 + Body（受大小与内容类型限制）')
+      await clickSelectOption('L2：L1 + 正文（受大小与内容类型限制）')
 
       // Header 脱敏方式 MASK → HASH
       const headerMode = within(dialog)
-        .getAllByText('MASK（替换为 ********）')[0]
+        .getAllByText('掩码替换（********）')[0]
         .closest('.ant-select')!
       fireEvent.mouseDown(headerMode.querySelector('[role="combobox"]')!)
-      await clickSelectOption('HASH（sha256 前 16 位）')
+      await clickSelectOption('哈希摘要（SHA-256 前 16 位）')
 
       // 参数脱敏方式 MASK → DROP（此时仅剩一个 MASK 选中项）
       const paramMode = within(dialog)
-        .getAllByText('MASK（替换为 ********）')[0]
+        .getAllByText('掩码替换（********）')[0]
         .closest('.ant-select')!
       fireEvent.mouseDown(paramMode.querySelector('[role="combobox"]')!)
-      await clickSelectOption('DROP（整行/参数删除）')
+      await clickSelectOption('整行/参数删除')
 
       fireEvent.click(within(dialog).getByRole('button', { name: /保\s*存/ }))
       await waitFor(() => {
@@ -549,5 +554,55 @@ describe('Phase 3：策略采集等级与 masking', () => {
       screen.queryByRole('button', { name: /删\s*除/ }),
     ).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /历\s*史/ })).toBeInTheDocument()
+  })
+
+  it('策略列表采集配置列将 ingress/egress 与 RAW/FLOW_RAW 映射为中文', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/traffic/policies')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: {
+                items: [
+                  {
+                    ...POLICY,
+                    id: 'pol-raw',
+                    name: 'raw-ingress',
+                    config: {
+                      capture: { interfaces: ['eth1'], direction: 'ingress', ports: [443] },
+                      output: { mode: 'RAW' },
+                      limits: { outbound_mbps: 50 },
+                    },
+                  },
+                  {
+                    ...POLICY,
+                    id: 'pol-flow-raw',
+                    name: 'both-egress',
+                    config: {
+                      capture: { interfaces: ['eth2'], direction: 'egress', ports: [8080] },
+                      output: { mode: 'FLOW_RAW' },
+                      limits: { outbound_mbps: 200 },
+                    },
+                  },
+                ],
+                total: 2,
+              },
+            }),
+          )
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+    renderWithProviders(<PolicyPanel canManage={false} />)
+    expect(
+      await screen.findByText(/等级 L0 \/ eth1 \/ 入站 \/ 端口 443 \/ 原始包 \/ 限速 50 Mbps/),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/等级 L0 \/ eth2 \/ 出站 \/ 端口 8080 \/ 流与原始包 \/ 限速 200 Mbps/),
+    ).toBeInTheDocument()
   })
 })

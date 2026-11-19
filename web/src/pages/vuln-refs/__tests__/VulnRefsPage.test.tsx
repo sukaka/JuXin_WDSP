@@ -43,6 +43,13 @@ const REF_DETAIL = {
       description: '拦截 Struts2 OGNL 注入',
       enabled: true,
     },
+    {
+      rule_id: 932100,
+      rule_source: 'OWASP_CRS',
+      rule_name: 'Unix 命令注入检测',
+      description: 'OWASP CRS 命令注入规则',
+      enabled: true,
+    },
   ],
   event_count_30d: 3,
   sample_events: [
@@ -250,10 +257,13 @@ describe('VulnRefsPage 漏洞档案', () => {
       'https://www.cnnvd.org.cn/home/loophole?id=CNNVD-202401-2345',
     )
     // 关联规则表
-    expect(screen.getByText('关联规则（1）')).toBeInTheDocument()
+    expect(screen.getByText('关联规则（2）')).toBeInTheDocument()
     expect(screen.getByText('7100001')).toBeInTheDocument()
     expect(screen.getByText('Struts2 RCE 虚拟补丁')).toBeInTheDocument()
-    expect(screen.getByText('CUSTOM')).toBeInTheDocument()
+    expect(screen.getByText('自定义')).toBeInTheDocument()
+    expect(screen.getByText('OWASP 核心规则集')).toBeInTheDocument()
+    expect(screen.queryByText('CUSTOM')).not.toBeInTheDocument()
+    expect(screen.queryByText('OWASP_CRS')).not.toBeInTheDocument()
     expect(screen.getAllByText('启用').length).toBeGreaterThanOrEqual(2)
     // 近 30 天事件计数与样例事件
     expect(screen.getByText('近 30 天命中事件（3）')).toBeInTheDocument()

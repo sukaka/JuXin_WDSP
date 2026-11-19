@@ -278,12 +278,13 @@ describe('AiPromptsPage · Prompt 对抗测试与发布门', () => {
     expect(publishCalls[0].body).toEqual({ version_id: 'v4' })
     // 发布门结构化错误友好展示
     expect((await screen.findAllByText('发布门未通过')).length).toBeGreaterThan(0)
-    expect(screen.getByText(/仅回归测试 PASSED 且对抗测试 ADVERSARIAL_PASSED 的版本可发布/)).toBeInTheDocument()
+    expect(screen.getByText(/仅回归测试「回归通过」且对抗测试「对抗通过」的版本可发布/)).toBeInTheDocument()
     const gateDialog = screen
       .getAllByRole('dialog')
       .find((d) => within(d).queryAllByText('发布门未通过').length > 0)
     if (!gateDialog) throw new Error('未找到发布门提示弹窗')
     expect(within(gateDialog).getByText('回归测试：', { exact: false })).toBeInTheDocument()
+    expect(within(gateDialog).getByText('回归通过')).toBeInTheDocument()
     expect(within(gateDialog).getByText('未执行')).toBeInTheDocument()
   })
 })

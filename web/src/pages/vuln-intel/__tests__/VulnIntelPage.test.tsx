@@ -410,6 +410,40 @@ describe('VulnIntelPage 漏洞情报', () => {
     expect(screen.getByRole('button', { name: /漏洞情报告警/ })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '详情' }).length).toBeGreaterThan(0)
   })
+
+  it('概览情报源标签与失败提示使用 SOURCE_META 中文标签', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        const ok = (data: unknown) =>
+          Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
+        if (url.includes('/vuln-intel/overview')) {
+          return ok({
+            ...OVERVIEW,
+            sources: [
+              {
+                source: 'MANUAL',
+                status: 'FAILED',
+                last_sync_at: '2026-10-21T02:00:00Z',
+                records_upserted: 2,
+                failure_message: '导入校验失败',
+              },
+            ],
+          })
+        }
+        if (url.includes('/vuln-intel/advisories')) {
+          return ok({ items: [ADVISORY], total: 1, page: 1, page_size: 20 })
+        }
+        return ok({})
+      }),
+    )
+    renderPage()
+
+    expect(await screen.findByText(/手工导入 失败/)).toBeInTheDocument()
+    expect(screen.getByText('手工导入 同步失败：导入校验失败')).toBeInTheDocument()
+    expect(screen.queryByText(/MANUAL 失败/)).not.toBeInTheDocument()
+  })
 })
 
 describe('parseImportJson 导入内容解析', () => {

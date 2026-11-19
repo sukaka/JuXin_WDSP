@@ -128,4 +128,20 @@ describe('BlacklistFromEventModal', () => {
     await screen.findByText('198.51.100.77')
     expect(screen.queryByText('疑似共享出口/代理')).not.toBeInTheDocument()
   })
+
+  it('已存在黑名单规则时以中文展示状态', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch(
+        {
+          ...PREFILL,
+          existing_deny_rule: { id: 'r1', name: '历史黑名单', status: 'ACTIVE' },
+        },
+        captured,
+      ),
+    )
+    renderModal()
+    expect(await screen.findByText('该地址已存在黑名单规则')).toBeInTheDocument()
+    expect(screen.getByText(/规则「历史黑名单」（状态：生效中）/)).toBeInTheDocument()
+  })
 })

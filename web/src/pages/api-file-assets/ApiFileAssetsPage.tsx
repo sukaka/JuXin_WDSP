@@ -23,6 +23,8 @@ import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { formatDateTime } from '../../utils/format'
+import { FILE_SENSITIVE_TYPE_LABELS } from '../../utils/i18nLabels'
+import { API_SENSITIVE_TYPE_META } from '../../utils/stage8'
 
 const DIRECTION_META = {
   UPLOAD: { color: 'blue', label: '上传' },
@@ -160,7 +162,13 @@ export default function ApiFileAssetsPage() {
       width: 180,
       render: (value: string[]) =>
         value.length > 0
-          ? value.map((item) => <Tag key={item}>{item}</Tag>)
+          ? value.map((item) => (
+              <Tag key={item}>
+                {FILE_SENSITIVE_TYPE_LABELS[item] ??
+                  API_SENSITIVE_TYPE_META[item]?.label ??
+                  item}
+              </Tag>
+            ))
           : '-',
     },
     {

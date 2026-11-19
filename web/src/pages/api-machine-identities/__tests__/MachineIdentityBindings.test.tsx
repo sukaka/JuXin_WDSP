@@ -93,9 +93,9 @@ describe('MachineIdentityBindingsTab（NG-ID G1 绑定管理）', () => {
     expect(screen.getByText('/api/v1/billing')).toBeInTheDocument()
     expect(screen.getByText('精确')).toBeInTheDocument()
     expect(screen.getByText('前缀')).toBeInTheDocument()
-    expect(screen.getByText('实断（PROTECT）')).toBeInTheDocument()
+    expect(screen.getByText('实断')).toBeInTheDocument()
     expect(screen.getByText('未签名 401')).toBeInTheDocument()
-    expect(screen.getByText('观测（OBSERVE）')).toBeInTheDocument()
+    expect(screen.getByText('观察')).toBeInTheDocument()
   })
 
   it('新建绑定：路径二选一校验（非 / 开头与含 query 拦截）+ 载荷 path_exact 逐键', async () => {
@@ -110,7 +110,7 @@ describe('MachineIdentityBindingsTab（NG-ID G1 绑定管理）', () => {
     fireEvent.mouseDown(within(dialog).getByText('选择应用'))
     await clickOption('商城（SHOP）')
     fireEvent.change(within(dialog).getByPlaceholderText('如：/api/v1/billing 或 /api/v1/billing/'), { target: { value: '/api/v1/billing' } })
-    fireEvent.click(within(dialog).getByText('强制签名（proof_required）').closest('.ant-form-item')?.querySelector('button') as HTMLElement)
+    fireEvent.click(within(dialog).getByText('强制签名').closest('.ant-form-item')?.querySelector('button') as HTMLElement)
     fireEvent.click(within(dialog).getByRole('button', { name: '创建绑定' }))
     await waitFor(() =>
       expect(machineIdentityApi.createBinding).toHaveBeenCalledWith({
@@ -127,14 +127,14 @@ describe('MachineIdentityBindingsTab（NG-ID G1 绑定管理）', () => {
     renderTab(FULL)
     fireEvent.click(await screen.findByRole('button', { name: /新建绑定/ }))
     const dialog = await screen.findByRole('dialog')
-    fireEvent.click(within(dialog).getByText('路径前缀（path_prefix）'))
+    fireEvent.click(within(dialog).getByText('路径前缀'))
     fireEvent.mouseDown(within(dialog).getByText('选择应用'))
     await clickOption('报表（BI）')
     fireEvent.change(within(dialog).getByPlaceholderText('如：/api/v1/billing 或 /api/v1/billing/'), { target: { value: '/api/v1/reports/' } })
     // 选 PROTECT 展示准入语义警示
-    fireEvent.mouseDown(within(dialog).getByText('观测（OBSERVE）'))
-    await clickOption('实断（PROTECT）')
-    expect(await within(dialog).findByText(/未签名的请求即拒绝 401（准入语义）/)).toBeInTheDocument()
+    fireEvent.mouseDown(within(dialog).getByText('观察'))
+    await clickOption('实断')
+    expect(await within(dialog).findByText(/未签名的请求将直接拒绝 401（准入语义）/)).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: '创建绑定' }))
     await waitFor(() =>
       expect(machineIdentityApi.createBinding).toHaveBeenCalledWith({

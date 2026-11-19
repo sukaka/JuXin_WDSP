@@ -39,8 +39,10 @@ const FAILURE_CODE_LABELS: Record<string, string> = {
   ACCOUNT_LOCKED: '账号已锁定',
   MAX_FAILED_ATTEMPTS: '失败次数超限',
   PASSWORD_EXPIRED: '密码已过期',
-  // TOTP 双因子（server/internal/auth/totp.go）：挑战令牌无效/过期、动态令牌/恢复码错误
+  // TOTP 双因子（server/internal/auth/totp.go）：挑战令牌无效/过期/来源不匹配、动态令牌/恢复码错误
   TOTP_CHALLENGE_INVALID: '双因子挑战无效或过期',
+  TOTP_CHALLENGE_EXPIRED: '双因子挑战已过期',
+  TOTP_CHALLENGE_ORIGIN_MISMATCH: '双因子挑战来源不匹配',
   TOTP_INVALID: '动态令牌或恢复码错误',
 }
 
@@ -200,6 +202,7 @@ export default function LoginLogsPage() {
         open={detailRecord !== null}
         title="登录日志详情"
         record={detailRecord as Record<string, unknown> | null}
+        valueLabels={{ event_type: EVENT_TYPE_LABELS, failure_code: FAILURE_CODE_LABELS }}
         onClose={() => setDetailRecord(null)}
       />
     </Card>
