@@ -211,28 +211,32 @@ func (c *apiResponseCapture) Write(p []byte) (int, error) {
 		c.mode = capturePassthrough
 		c.spilled = true
 		c.base.WriteHeader(c.status)
+		warnSpill := func() {
+			if c.hasMaskRules {
+				c.warnSkip("response body exceeds capture limit, mask transform skipped (fail-open)")
+			} else if c.downloadCandidate {
+				c.warnSkip("response body exceeds capture limit, file download rewrite skipped (fail-open)")
+			} else if c.inlineHTML {
+				c.warnSkip("response body exceeds capture limit, inline html watermark skipped (fail-open)")
+			} else if c.downloadHold {
+				// 合规下载挂留超限：已缓冲前缀连同后续字节直通外发，PROTECT 阻断无法执行——
+				// 诚实降级（不静默），挂点侧据终态补记 file.download_block_unavailable
+				c.warnSkip("response body exceeds capture limit, file compliance download check degraded (fail-open)")
+			}
+		}
 		n1, err1 := c.base.Write(c.body.Bytes())
+		c.bytesStreamed += int64(n1)
+		if err1 != nil {
+			warnSpill()
+			return 0, err1
+		}
 		n2, err2 := c.base.Write(p)
-		c.bytesStreamed += int64(n1 + n2)
-		if c.hasMaskRules {
-			c.warnSkip("response body exceeds capture limit, mask transform skipped (fail-open)")
-		} else if c.downloadCandidate {
-			c.warnSkip("response body exceeds capture limit, file download rewrite skipped (fail-open)")
-		} else if c.inlineHTML {
-			c.warnSkip("response body exceeds capture limit, inline html watermark skipped (fail-open)")
-		} else if c.downloadHold {
-			// 合规下载挂留超限：已缓冲前缀连同后续字节直通外发，PROTECT 阻断无法执行——
-			// 诚实降级（不静默），挂点侧据终态补记 file.download_block_unavailable
-			c.warnSkip("response body exceeds capture limit, file compliance download check degraded (fail-open)")
+		c.bytesStreamed += int64(n2)
+		warnSpill()
+		if err2 != nil {
+			return n2, err2
 		}
-		switch {
-		case err1 != nil:
-			return n1, err1
-		case err2 != nil:
-			return len(p), err2
-		default:
-			return len(p), nil
-		}
+		return len(p), nil
 	}
 }
 

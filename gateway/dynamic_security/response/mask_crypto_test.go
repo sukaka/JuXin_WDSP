@@ -58,21 +58,42 @@ func TestApplyJSONWithKeyAllAlgorithmsAndDecrypt(t *testing.T) {
 	if len(payload) <= nonceSize {
 		t.Fatal("ciphertext payload must contain nonce and sealed value")
 	}
-	plaintext, err := crypto.aead.Open(nil, payload[:nonceSize], payload[nonceSize:], nil)
+	if _, err := crypto.aead.Open(nil, payload[:nonceSize], payload[nonceSize:], nil); err == nil {
+		t.Fatal("AES-GCM decrypt without AAD must fail (M-G5 AAD binding)")
+	}
+	if _, err := crypto.aead.Open(nil, payload[:nonceSize], payload[nonceSize:], maskEncAAD("wrong-kid")); err == nil {
+		t.Fatal("AES-GCM decrypt with mismatched keyID AAD must fail")
+	}
+	plaintext, err := crypto.aead.Open(nil, payload[:nonceSize], payload[nonceSize:], maskEncAAD("kid-1"))
 	if err != nil {
 		t.Fatalf("AES-GCM decrypt: %v", err)
 	}
 	if string(plaintext) != "plain-secret" {
 		t.Fatalf("decrypted=%q", plaintext)
 	}
+	if bytes.Equal(crypto.encKey[:], crypto.mapKey[:]) {
+		t.Fatal("M-G5: HKDF must derive distinct AES-GCM and HMAC-MAP subkeys")
+	}
 	mapped := got["alias"].(string)
-	mac := hmac.New(sha256.New, crypto.key[:])
-	_, _ = mac.Write([]byte(maskMapDomain))
-	_, _ = mac.Write([]byte("map-1"))
-	_, _ = mac.Write([]byte("customer-123"))
+	mac := hmac.New(sha256.New, crypto.mapKey[:])
+	writeLengthFramed(mac, maskMapDomain)
+	writeLengthFramed(mac, "map-1")
+	writeLengthFramed(mac, "customer-123")
 	wantMap := "map_map-1_" + hex.EncodeToString(mac.Sum(nil)[:8])
 	if mapped != wantMap {
 		t.Fatalf("mapped=%q want=%q", mapped, wantMap)
+	}
+	// M-G5: length framing prevents mapID/value boundary collisions ("a"+"bc" != "ab"+"c")
+	m1, err := crypto.mapValue("a", "bc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := crypto.mapValue("ab", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimPrefix(m1, "map_a_") == strings.TrimPrefix(m2, "map_ab_") {
+		t.Fatalf("M-G5: length-framed HMAC-MAP must not collide across mapID/value boundary: %q vs %q", m1, m2)
 	}
 	if got["masked"] != "1*******90" || got["hashed"] != hashValue("abc") || got["keep"] != true {
 		t.Fatalf("legacy algorithms changed: %+v", got)

@@ -2,6 +2,7 @@
 package normalizer
 
 import (
+	"path"
 	"regexp"
 	"strings"
 )
@@ -12,23 +13,64 @@ var (
 	reInt     = regexp.MustCompile(`^\d+$`)
 )
 
-// NormalizePath 将动态段替换为模板占位符，保证端点稳定身份。
-// 规则：纯数字 → {id}；UUID → {uuid}；长十六进制 → {hex}；其余保持字面量。
-func NormalizePath(raw string) string {
+// CanonicalPath 将请求或规则路径规范化：剥离 query/fragment、补齐前导 '/'、
+// 通过 path.Clean 折叠连续 '//' 并解析 '.' / '..' 点段；若原路径以 '/' 结尾且
+// 规范化后非根路径 '/'，则保留单个尾斜杠。
+func CanonicalPath(raw string) string {
 	if raw == "" {
 		return "/"
 	}
-	// strip query/fragment if present
 	if i := strings.IndexAny(raw, "?#"); i >= 0 {
 		raw = raw[:i]
+	}
+	if raw == "" {
+		return "/"
 	}
 	if !strings.HasPrefix(raw, "/") {
 		raw = "/" + raw
 	}
-	// collapse multiple slashes
-	for strings.Contains(raw, "//") {
-		raw = strings.ReplaceAll(raw, "//", "/")
+	hadTrailing := strings.HasSuffix(raw, "/")
+	cleaned := path.Clean(raw)
+	if cleaned == "" || cleaned == "." {
+		return "/"
 	}
+	if !strings.HasPrefix(cleaned, "/") {
+		cleaned = "/" + cleaned
+	}
+	if hadTrailing && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned
+}
+
+// CanonicalSegments 返回 CanonicalPath 规范化后的非空路径段序列（根路径返回 nil）。
+// 供路径模板匹配与位置段提取复用，保证 '//'、'.'、'..' 与模板段 1:1 对齐。
+func CanonicalSegments(raw string) []string {
+	trimmed := strings.Trim(CanonicalPath(raw), "/")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "/")
+}
+
+// PrefixSegmentMatch 按规范化完整路径段匹配前缀：
+// "/api" 匹配 "/api"、"/api/"、"/api/orders"、"/api//orders"、"/x/../api/orders"，
+// 不匹配 "/apiv2"；根前缀 "/" 匹配所有以 '/' 开头的路径。
+func PrefixSegmentMatch(prefix, reqPath string) bool {
+	cp := CanonicalPath(reqPath)
+	pref := CanonicalPath(prefix)
+	if pref == "/" {
+		return strings.HasPrefix(cp, "/")
+	}
+	pref = strings.TrimSuffix(pref, "/")
+	return cp == pref || strings.HasPrefix(cp, pref+"/")
+}
+
+// NormalizePath 将动态段替换为模板占位符，保证端点稳定身份。
+// 规则：先经 CanonicalPath 折叠 '//' 并解析 '.'/'..'，去非根尾斜杠后：
+// 纯数字 → {id}；UUID → {uuid}；长十六进制 → {hex}；其余保持字面量。
+func NormalizePath(raw string) string {
+	raw = CanonicalPath(raw)
 	if raw != "/" {
 		raw = strings.TrimSuffix(raw, "/")
 	}

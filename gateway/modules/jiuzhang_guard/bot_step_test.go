@@ -1134,3 +1134,60 @@ func TestRiskChallengePassThroughKeepsJWTAndDownstreamWAF(t *testing.T) {
 		t.Fatal("JWT rejection fact missing")
 	}
 }
+
+// M-G2 + C-07 回归：
+// 1. 风险引擎 CHALLENGE 在 Bot PROTECT 下不得被 X-Requested-With / Accept: */* / Sec-Fetch-* 头绕过；
+// 2. C-07 Bot 选择器与保留命名空间路径规范化防 // 与 .. 绕过。
+func TestMG2RiskChallengeNotBypassedBySpoofedHeadersAndC07CanonicalPaths(t *testing.T) {
+	t.Run("风险 CHALLENGE 不得被 X-Requested-With 或 Accept:*/* 绕过", func(t *testing.T) {
+		target := "https://waf-test.local/docs/x"
+		for i, tc := range []struct {
+			name    string
+			headers map[string]string
+		}{
+			{"X-Requested-With", map[string]string{"User-Agent": "Mozilla/5.0", "Accept": "text/html", "X-Requested-With": "XMLHttpRequest"}},
+			{"Accept_star", map[string]string{"User-Agent": "Mozilla/5.0", "Accept": "*/*"}},
+			{"Sec-Fetch-Mode_cors", map[string]string{"User-Agent": "Mozilla/5.0", "Accept": "text/html", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				g, _ := newRiskChallengeBotGuard(t, Guard{})
+				ip := "203.0.113." + strconv.Itoa(71+i)
+				seedRiskChallengeScore(t, g, ip, target, tc.headers, 50)
+				called := false
+				rec := httptest.NewRecorder()
+				err := g.ServeHTTP(rec, botStepReq(ip+":1", target, tc.headers), nextHandler{&called})
+				if err != nil || called || rec.Code != http.StatusForbidden {
+					t.Fatalf("M-G2: %s 不得绕过风险 CHALLENGE: err=%v called=%v code=%d", tc.name, err, called, rec.Code)
+				}
+				if !strings.Contains(rec.Body.String(), "wdsp-bot-params") {
+					t.Fatalf("M-G2: 应签发 Bot 挑战页: %s", rec.Body.String())
+				}
+			})
+		}
+	})
+
+	t.Run("C-07 Bot 选择器与保留命名空间规范化拦截 // 和 ..", func(t *testing.T) {
+		g, _ := newRiskChallengeBotGuard(t, Guard{})
+		ip := "203.0.113.72"
+		headers := botBrowserHeaders()
+		seedRiskChallengeScore(t, g, ip, "https://waf-test.local/docs/x", headers, 50)
+		for _, target := range []string{
+			"https://waf-test.local//docs//x",
+			"https://waf-test.local/public/../docs/x",
+		} {
+			called := false
+			rec := httptest.NewRecorder()
+			err := g.ServeHTTP(rec, botStepReq(ip+":1", target, headers), nextHandler{&called})
+			if err != nil || called || rec.Code != http.StatusForbidden {
+				t.Fatalf("C-07: %q 不得绕过 Bot 选择器: err=%v called=%v code=%d", target, err, called, rec.Code)
+			}
+		}
+		// 保留命名空间 //_wdsp/bot/v1/unknown 必须本地 404，不得穿透到上游
+		called := false
+		rec := httptest.NewRecorder()
+		err := g.ServeHTTP(rec, botStepReq(ip+":1", "https://waf-test.local//_wdsp/bot/v1/unknown", headers), nextHandler{&called})
+		if err != nil || called || rec.Code != http.StatusNotFound {
+			t.Fatalf("C-07: //_wdsp/bot/v1/unknown 必须本地 404: err=%v called=%v code=%d", err, called, rec.Code)
+		}
+	})
+}

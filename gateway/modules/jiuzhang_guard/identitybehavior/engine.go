@@ -215,9 +215,12 @@ func (e *Engine) End(r *http.Request, obs *Observation, chainErr error) {
 	for _, sig := range sigs {
 		e.events.EmitReconSignal(base, sig)
 	}
-	// 阶段3 Risk Engine：信号汇聚身份风险累加器（sink 由装配层注入；nil = 无汇聚零变化）
+	// 阶段3 Risk Engine：信号汇聚身份风险累加器（sink 由装配层注入；nil = 无汇聚零变化）；
+	// H-08：对请求携带的全部候选凭据键一并入账，防附加假 Authorization 绕过 X-API-Key/Cookie 风险累计。
 	if e.signalSink != nil && len(sigs) > 0 {
-		e.signalSink(obs.identity.Key, sigs)
+		for _, key := range obs.identity.CandidateKeys(e.opts.Salt) {
+			e.signalSink(key, sigs)
+		}
 	}
 }
 

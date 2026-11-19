@@ -110,17 +110,29 @@ func (s *Store) Remove(ctx context.Context, ip, appID string) error {
 	return s.cli.HDel(ctx, s.hashKey, FieldKey(ip, appID))
 }
 
+const (
+	// defaultMaxCacheItems / defaultMaxLocalOnly 防止 Valkey 异常或自动封禁洪泛撑爆网关内存（M-G4）。
+	defaultMaxCacheItems = 100000
+	defaultMaxLocalOnly  = 100000
+	defaultSweepInterval = 30 * time.Second
+)
+
 // Cache 网关侧内存缓存（后台轮询同步）。
 type Cache struct {
 	store    *Store
 	interval time.Duration
 	now      func() time.Time
 
+	maxItems      int
+	maxLocalOnly  int
+	sweepInterval time.Duration
+
 	mu    sync.RWMutex
 	items map[string]Block
 	// localOnly：Valkey Put 失败时保留的本地条目；Refresh 时合并回 items，避免被全量覆盖冲掉。
 	// 成功同步到 Valkey 或过期后清除。人工解封（远程删除）不在此集合内，Refresh 会正常清除。
 	localOnly map[string]Block
+	lastSweep time.Time
 	lastErr   error
 
 	stopCh chan struct{}
@@ -133,14 +145,96 @@ func NewCache(store *Store, interval time.Duration) *Cache {
 		interval = time.Second
 	}
 	return &Cache{
-		store:     store,
-		interval:  interval,
-		now:       time.Now,
-		items:     map[string]Block{},
-		localOnly: map[string]Block{},
-		stopCh:    make(chan struct{}),
-		doneCh:    make(chan struct{}),
+		store:         store,
+		interval:      interval,
+		now:           time.Now,
+		maxItems:      defaultMaxCacheItems,
+		maxLocalOnly:  defaultMaxLocalOnly,
+		sweepInterval: defaultSweepInterval,
+		items:         map[string]Block{},
+		localOnly:     map[string]Block{},
+		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
 	}
+}
+
+func (c *Cache) maxItemsLimit() int {
+	if c.maxItems > 0 {
+		return c.maxItems
+	}
+	return defaultMaxCacheItems
+}
+
+func (c *Cache) maxLocalOnlyLimit() int {
+	if c.maxLocalOnly > 0 {
+		return c.maxLocalOnly
+	}
+	return defaultMaxLocalOnly
+}
+
+func (c *Cache) sweepIntervalDur() time.Duration {
+	if c.sweepInterval > 0 {
+		return c.sweepInterval
+	}
+	return defaultSweepInterval
+}
+
+// sweepExpiredMap 清理指定 map 中已过期条目（须持有 c.mu.Lock）。
+func sweepExpiredMap(m map[string]Block, now time.Time) {
+	for k, cur := range m {
+		if !cur.ExpiresAt.IsZero() && !now.Before(cur.ExpiresAt) {
+			delete(m, k)
+		}
+	}
+}
+
+// putBounded 向有界封禁 map 写入条目：满额时优先清理过期项，其次淘汰最早过期的自动封禁，
+// 绝不让自动封禁洪泛挤出人工封禁（M-G4）。须持有 c.mu.Lock。
+func putBounded(m map[string]Block, key string, b Block, now time.Time, maxCap int) {
+	if _, exists := m[key]; exists {
+		m[key] = b
+		return
+	}
+	if len(m) >= maxCap {
+		sweepExpiredMap(m, now)
+	}
+	if len(m) >= maxCap {
+		var victimKey string
+		var victimExp time.Time
+		foundAuto := false
+		for k, cur := range m {
+			if !cur.Auto {
+				continue
+			}
+			if !foundAuto || (!cur.ExpiresAt.IsZero() && (victimExp.IsZero() || cur.ExpiresAt.Before(victimExp))) {
+				victimKey = k
+				victimExp = cur.ExpiresAt
+				foundAuto = true
+			}
+		}
+		if foundAuto {
+			delete(m, victimKey)
+		} else if b.Auto {
+			// 全部均为有效人工封禁时，自动封禁不得挤出人工封禁
+			return
+		} else {
+			// 新条目也是人工封禁：淘汰最早过期的条目腾出空间
+			var anyKey string
+			var anyExp time.Time
+			found := false
+			for k, cur := range m {
+				if !found || (!cur.ExpiresAt.IsZero() && (anyExp.IsZero() || cur.ExpiresAt.Before(anyExp))) {
+					anyKey = k
+					anyExp = cur.ExpiresAt
+					found = true
+				}
+			}
+			if found {
+				delete(m, anyKey)
+			}
+		}
+	}
+	m[key] = b
 }
 
 // Refresh 立即同步一次（启动与测试用）。
@@ -167,6 +261,7 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	// 合并 Valkey 写入失败的本地条目；若远程已有同 key 且过期更晚，以远程为准并清除 dirty
+	itemsCap := c.maxItemsLimit()
 	for k, local := range c.localOnly {
 		if !local.ExpiresAt.IsZero() && !now.Before(local.ExpiresAt) {
 			delete(c.localOnly, k)
@@ -178,9 +273,10 @@ func (c *Cache) Refresh(ctx context.Context) error {
 				continue
 			}
 		}
-		items[k] = local
+		putBounded(items, k, local, now, itemsCap)
 	}
 	c.items = items
+	c.lastSweep = now
 	c.lastErr = nil
 	c.mu.Unlock()
 	// 锁外清理 Valkey 过期 field（网络调用不阻塞请求路径读锁）；失败留下轮重试并如实上报。
@@ -219,26 +315,26 @@ func (c *Cache) Stop() {
 }
 
 // PutLocal 网关自动封禁：写 Valkey（可能失败时仍本地生效）并更新内存。
-// 写入前惰性清扫内存中的过期项：纯内存模式（store 为 nil）无后台轮询，
-// 过期条目仅靠 Blocked 跳过永不删除，轮换源 IP（如 IPv6 /64）自动封禁可无限撑大 map；
-// 每次写入顺带全量清扫后，map 规模有界于存活封禁数（写入频率受 CC 触发节流，O(n) 可接受）。
+// 按周期（默认 30s）或达到容量上限时才惰性清扫过期项，避免每次写入在写锁内做 O(N) 全表扫描；
+// 同时对 items 与 localOnly 施加上限保护，优先淘汰过期与自动封禁，保护人工封禁不被挤出（M-G4）。
 func (c *Cache) PutLocal(ctx context.Context, b Block) error {
 	key := FieldKey(b.ClientIP, b.AppID)
 	now := c.now()
 	c.mu.Lock()
-	for k, cur := range c.items {
-		if !cur.ExpiresAt.IsZero() && !now.Before(cur.ExpiresAt) {
-			delete(c.items, k)
-		}
+	if c.lastSweep.IsZero() {
+		c.lastSweep = now
+	} else if now.Sub(c.lastSweep) >= c.sweepIntervalDur() {
+		sweepExpiredMap(c.items, now)
+		c.lastSweep = now
 	}
-	c.items[key] = b
+	putBounded(c.items, key, b, now, c.maxItemsLimit())
 	c.mu.Unlock()
 	if c.store == nil {
 		return nil
 	}
 	if err := c.store.Put(ctx, b); err != nil {
 		c.mu.Lock()
-		c.localOnly[key] = b
+		putBounded(c.localOnly, key, b, now, c.maxLocalOnlyLimit())
 		c.mu.Unlock()
 		return err
 	}

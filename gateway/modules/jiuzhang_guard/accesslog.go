@@ -486,7 +486,7 @@ func (g *Guard) captureAccessLog(w http.ResponseWriter, r *http.Request, handler
 			rec.ResponseHeaders = maskAccessLogHeaders(cw.Header())
 		}
 		if cw.captureBody {
-			rec.ResponseBody = sanitizeAccessLogBody(cw.body.String())
+			rec.ResponseBody = sanitizeAccessLogBody(maskAccessLogBody(cw.body.String(), cw.Header().Get("Content-Type")))
 			rec.ResponseBodyTruncated = cw.bodyTruncated
 		}
 		if g.accessLog != nil {

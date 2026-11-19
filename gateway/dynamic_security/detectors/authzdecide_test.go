@@ -855,11 +855,19 @@ func TestEvaluateAuthorizationAnyOfSharedDoesNotBypassSafetyGates(t *testing.T) 
 		mutateJWT    func(*jwtverify.VerificationResult)
 		wantDecision AuthorizationDecision
 		wantReason   string
+		wantEnforced bool
 	}{
 		{name: "open conflict", mutate: func(cfg *AuthorizationConfig) {
 			cfg.ConflictedIndex = BuildConflictedObjectIndex([]ConflictedObject{{ObjectType: "ORDER", ObjectRef: cfg.Relations[0].ObjectRef}})
 		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-CONFLICT-001"},
-		{name: "tenant mismatch", mutate: func(cfg *AuthorizationConfig) {
+		{name: "tenant mismatch enforced under PROTECT", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Relations[0].TenantID = "tenant-a"
+			cfg.Relations[1].TenantID = "tenant-a"
+		}, mutateJWT: func(jwt *jwtverify.VerificationResult) {
+			jwt.VerifiedTenantID = "tenant-b"
+		}, wantDecision: AuthorizationVerifiedViolation, wantReason: "AUTHZ-TENANT-001", wantEnforced: true},
+		{name: "tenant mismatch observes under OBSERVE", mutate: func(cfg *AuthorizationConfig) {
+			cfg.Models[0].Enforcement = "OBSERVE"
 			cfg.Relations[0].TenantID = "tenant-a"
 			cfg.Relations[1].TenantID = "tenant-a"
 		}, mutateJWT: func(jwt *jwtverify.VerificationResult) {
@@ -904,7 +912,19 @@ func TestEvaluateAuthorizationAnyOfSharedDoesNotBypassSafetyGates(t *testing.T) 
 			if check.Decision == AuthorizationAllow {
 				t.Fatalf("safety gate produced shared ALLOW: %+v", check)
 			}
-			v3AssertNeverBlocked(t, group, ctx)
+			if tc.wantEnforced {
+				var sawBlock bool
+				for _, m := range ctx.CopyMatches() {
+					if m.RuleID == tc.wantReason && m.Category == "BLOCK" {
+						sawBlock = true
+					}
+				}
+				if !sawBlock {
+					t.Fatalf("expected enforced BLOCK match for %s: %+v", tc.wantReason, ctx.CopyMatches())
+				}
+			} else {
+				v3AssertNeverBlocked(t, group, ctx)
+			}
 		})
 	}
 }

@@ -69,8 +69,12 @@ func (s *MemoryStore) Add(identityKey string, entries ...SignalEntry) error {
 }
 
 // State 滑窗求和并截断 [0,100]（返回明细副本，调用方只读）。
+// 使用只读 Get 避免未建档良性身份触发 GetOrCreate 插入并挤出高风险受罚身份（H-08）。
 func (s *MemoryStore) State(identityKey string) (int, []SignalEntry, error) {
-	v := s.ids.GetOrCreate(identityKey, func() interface{} { return &memRisk{} })
+	v, ok := s.ids.Get(identityKey)
+	if !ok || v == nil {
+		return 0, nil, nil
+	}
 	r := v.(*memRisk)
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -5,6 +5,8 @@ package pipeline
 import (
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jiuzhang-waf/gateway/dynamic_security/classifier"
@@ -177,6 +179,13 @@ type Config struct {
 	// （≤4MiB 保全同源），不经公共 1MiB 解析上限与 256 字符截留；nil/空 =
 	// 体不可得，ParseMessage 按形态不可判定 SKIPPED 如实）
 	MCPBody []byte
+	// BodyPreserveSkipped 挂点层请求体超过保全上限（>4MiB）或读取失败，仅保留元数据进入管线。
+	BodyPreserveSkipped bool
+	// BodyPreserveSkipReason 请求体未保全的原因标识（用于 request.body_preserve_skipped 明细）。
+	BodyPreserveSkipReason string
+	// BodyInspectionFailClosed 响应/大报文失败策略为 FAIL_CLOSED 时，截断或未保全请求体在
+	// PROTECT 下执行 413 fail-closed 拦截而非静默跳过。
+	BodyInspectionFailClosed bool
 }
 
 // Result 管线输出。
@@ -232,6 +241,25 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 	parsed, err := parser.ParseRequest(r, ctx)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.BodyPreserveSkipped {
+		if parsed != nil {
+			parsed.BodyTruncated = true
+		}
+		ctx.BodyTruncated = true
+		evidence := map[string]string{"reason": cfg.BodyPreserveSkipReason}
+		if r != nil && r.ContentLength >= 0 {
+			evidence["content_length"] = strconv.FormatInt(r.ContentLength, 10)
+		}
+		ctx.AddMatch(dsctx.DetectorMatch{
+			Detector:   "api_request",
+			RuleID:     "request.body_preserve_skipped",
+			Category:   "OBSERVE",
+			Severity:   "HIGH",
+			Message:    "api request body exceeds preserve limit or read failed: metadata-only inspection performed",
+			Confidence: 1.0,
+			Evidence:   evidence,
+		})
 	}
 	// §7 标识字段在管线内落 ctx（device_fingerprint/object_identifiers）：请求相位检测器
 	// 自此可读（对象维度限速直接消费 ctx.ObjectIdentifiers）；产出为 parser 纯函数、
@@ -529,22 +557,35 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		// 错误对象；UNKNOWN 恒不阻断（目录缺失/解析失败/Schema 降级/jwt 未覆盖全
 		// SKIPPED 五态如实）。绑定缺失 = 零行为 NG-T-C01，现状 llm.mcp_* 观测并行不动）
 		if cfg.MCPGuard != nil && parsed != nil {
-			if scoped := cfg.MCPGuard.ForEndpoint(cfg.ApplicationID, r.URL.Path); scoped != nil {
+			if scoped := cfg.MCPGuard.ForEndpoint(cfg.ApplicationID, normalizer.CanonicalPath(r.URL.Path)); scoped != nil {
 				engineProtect := mode == decision.ModeProtect
 				if candidate, cov := mcpguard.EvaluateCandidate(ctx, parsed, r, scoped, cfg.ApplicationID); cov != nil {
 					cov.EndpointKey = ek
 					cfg.emitCov(*cov)
 				} else if candidate {
 					mcpguard.NoteHeadObservations(ctx, r.Header.Get, scoped)
-					msg, perr := mcprpc.ParseMessage(cfg.MCPBody, mcprpc.DefaultBudgets())
-					if perr != nil {
-						if cov := mcpguard.HandleParseError(ctx, perr, scoped, cfg.ApplicationID, engineProtect, len(cfg.MCPBody)); cov != nil {
+					if cfg.BodyPreserveSkipped {
+						budgets := mcprpc.DefaultBudgets()
+						actual := budgets.MaxMessageBytes + 1
+						if r != nil && r.ContentLength > int64(actual) {
+							actual = int(r.ContentLength)
+						}
+						be := &mcprpc.BudgetError{Rule: "message_bytes", Limit: budgets.MaxMessageBytes, Actual: actual}
+						if cov := mcpguard.HandleParseError(ctx, be, scoped, cfg.ApplicationID, engineProtect, actual); cov != nil {
 							cov.EndpointKey = ek
 							cfg.emitCov(*cov)
 						}
-					} else if cov := mcpguard.Evaluate(ctx, msg, scoped, cfg.JWTVerification, cfg.ApplicationID, engineProtect); cov != nil {
-						cov.EndpointKey = ek
-						cfg.emitCov(*cov)
+					} else {
+						msg, perr := mcprpc.ParseMessage(cfg.MCPBody, mcprpc.DefaultBudgets())
+						if perr != nil {
+							if cov := mcpguard.HandleParseError(ctx, perr, scoped, cfg.ApplicationID, engineProtect, len(cfg.MCPBody)); cov != nil {
+								cov.EndpointKey = ek
+								cfg.emitCov(*cov)
+							}
+						} else if cov := mcpguard.Evaluate(ctx, msg, scoped, cfg.JWTVerification, cfg.ApplicationID, engineProtect); cov != nil {
+							cov.EndpointKey = ek
+							cfg.emitCov(*cov)
+						}
 					}
 				}
 			}
@@ -575,6 +616,26 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		if len(cfg.FlowBaselines) > 0 {
 			detectors.CheckFlowDeviation(ctx, r, tracking, ek, cfg.IdentitySalt, cfg.FlowBaselines)
 		}
+		// C-10：当请求体超过解析上限（>1MiB）或保全上限（>4MiB）被截断时，若本端点存在依赖请求体的
+		// PROTECT 策略（Schema / Body 参数约束 / 请求侧字段权限 / LLM PROTECT）或全局 FAIL_CLOSED，
+		// 在 PROTECT 模式下执行 fail-closed 413 阻断，禁止通过超大请求体静默绕过体级检测。
+		if parsed.BodyTruncated && mode == decision.ModeProtect {
+			if reason := cfg.truncatedBodyFailClosedReason(parsed, llmRes); reason != "" {
+				ctx.AddMatch(dsctx.DetectorMatch{
+					Detector:   "api_schema",
+					RuleID:     "request.body_too_large_fail_closed",
+					Category:   "BLOCK",
+					Severity:   "HIGH",
+					Confidence: 1.0,
+					Message:    "request body exceeds inspection limit under fail-closed or body-dependent PROTECT policy",
+					Evidence: map[string]string{
+						"endpoint_key": ek,
+						"http_status":  "413",
+						"reason":       reason,
+					},
+				})
+			}
+		}
 	}
 
 	act := decision.Decide(ctx, decision.Input{Mode: mode, RateLimitAction: cfg.RateLimitAction, Exceptions: cfg.Exceptions})
@@ -586,6 +647,37 @@ func Process(r *http.Request, cfg Config, externalMatches []dsctx.DetectorMatch)
 		EndpointKey: ek,
 		FinalAction: act,
 	}, nil
+}
+
+// truncatedBodyFailClosedReason 判断截断/未保全请求体在 PROTECT 模式下是否必须 fail-closed 413 拒收。
+func (cfg *Config) truncatedBodyFailClosedReason(parsed *parser.Parsed, llmRes classifier.LLMResult) string {
+	if len(cfg.FormalSchema) > 0 {
+		return "schema_protect"
+	}
+	for _, pc := range cfg.ParamConstraints {
+		loc := strings.ToUpper(strings.TrimSpace(pc.Location))
+		if loc == "BODY" || loc == "JSON" || loc == "FORM" {
+			return "body_param_constraint_protect"
+		}
+	}
+	for _, fp := range cfg.FieldPermissions {
+		if fp.Direction != "" && !strings.EqualFold(fp.Direction, "REQUEST") {
+			continue
+		}
+		switch strings.ToUpper(strings.TrimSpace(fp.Attribute)) {
+		case "FORBIDDEN", "READ_ONLY", "SERVER_GENERATED", "ADMIN_WRITABLE":
+			return "forbidden_field_protect"
+		}
+	}
+	if cfg.LLMSecurityPolicy != nil && strings.EqualFold(cfg.LLMSecurityPolicy.Mode, detectors.LLMSecurityProtect) {
+		if llmRes.IsLLM || classifier.IsLLMCandidatePath(parsed) {
+			return "llm_protect"
+		}
+	}
+	if cfg.BodyInspectionFailClosed {
+		return "fail_closed_policy"
+	}
+	return ""
 }
 
 // emitCov 发射覆盖观测（NG-COV-01）：cfg.Coverage 为 nil 时零开销直返；

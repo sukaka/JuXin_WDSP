@@ -82,3 +82,24 @@ func TestMemoryStoreEntryCap(t *testing.T) {
 		t.Fatalf("oldest must be evicted: %s..%s", entries[0].Type, entries[len(entries)-1].Type)
 	}
 }
+
+// H-08 回归：只读 State() 查询良性/未知身份不得插入空桶或挤出受罚身份（防 LRU 驱逐绕过）。
+func TestH08MemoryStoreReadOnlyStateDoesNotEvictPenalized(t *testing.T) {
+	s := NewMemoryStore(time.Hour, 4, nil)
+	now := time.Now().UTC()
+	if err := s.Add("attacker", entryAt("WAF", 90, now)); err != nil {
+		t.Fatal(err)
+	}
+	// 大量未知良性身份读取 State()，远超 maxKeys=4
+	for i := 0; i < 100; i++ {
+		score, entries, err := s.State(fmt.Sprintf("benign-%d", i))
+		if err != nil || score != 0 || len(entries) != 0 {
+			t.Fatalf("benign-%d state=(%d, %v, %v)", i, score, entries, err)
+		}
+	}
+	// 受罚攻击者分数必须完好保留，未被良性读取挤出
+	score, _, err := s.State("attacker")
+	if err != nil || score != 90 {
+		t.Fatalf("H-08: penalized attacker score evicted by benign State() reads: score=%d err=%v", score, err)
+	}
+}

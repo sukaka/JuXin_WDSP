@@ -267,11 +267,6 @@ func TestV3BOLAEligibilityNegativeMatrix(t *testing.T) {
 		}, mutateJWT: func(j *jwtverify.VerificationResult) {
 			j.VerifiedTenantID = "tenant-a"
 		}, wantDecision: AuthorizationUnknown, wantReason: "AUTHZ-TENANT-002"},
-		{name: "租户不一致维持OBSERVE不实断", mutate: func(cfg *AuthorizationConfig, _ *ObjectModel) {
-			cfg.Relations[0].TenantID = "tenant-b"
-		}, mutateJWT: func(j *jwtverify.VerificationResult) {
-			j.VerifiedTenantID = "tenant-a"
-		}, wantDecision: AuthorizationObserveViolation, wantReason: "AUTHZ-TENANT-001"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -287,6 +282,128 @@ func TestV3BOLAEligibilityNegativeMatrix(t *testing.T) {
 			v3AssertNeverBlocked(t, group, ctx)
 		})
 	}
+}
+
+// C-09 回归：跨租户 BOLA（identityTenant != objectTenant）在双闸 PROTECT 且资格全真时
+// 必须实断为 VERIFIED_VIOLATION (AUTHZ-TENANT-001, BLOCK)；OBSERVE 或证据降级时维持 OBSERVE_VIOLATION。
+func TestV3CrossTenantBOLAEnforcement(t *testing.T) {
+	t.Run("PROTECT 实断跨租户访问", func(t *testing.T) {
+		f := newV3Fixture(t, func(cfg *AuthorizationConfig, _ *ObjectModel) {
+			cfg.Relations[0].TenantID = "tenant-b"
+			// 即使调用方与关系主体同 principal_id（或不同），跨租户必须阻断
+		})
+		f.jwt.VerifiedPrincipalID = "user-1"
+		f.jwt.VerifiedTenantID = "tenant-a"
+		group, ctx := f.eval(t)
+		check := v3PrimaryCheck(t, group)
+		if check.Decision != AuthorizationVerifiedViolation || check.ReasonCode != "AUTHZ-TENANT-001" || check.TenantState != "MISMATCH" {
+			t.Fatalf("PROTECT 跨租户应 VERIFIED_VIOLATION/AUTHZ-TENANT-001: %+v", check)
+		}
+		if group.Decision != AuthorizationVerifiedViolation {
+			t.Fatalf("group.Decision=%s want VERIFIED_VIOLATION", group.Decision)
+		}
+		var sawBlock bool
+		for _, m := range ctx.CopyMatches() {
+			if m.RuleID == "AUTHZ-TENANT-001" && m.Category == "BLOCK" && m.Evidence["enforced"] == "true" {
+				sawBlock = true
+			}
+		}
+		if !sawBlock {
+			t.Fatalf("缺少 AUTHZ-TENANT-001 BLOCK 明细: %+v", ctx.CopyMatches())
+		}
+		ev := AuthzEnforcementEvidenceFromContext(ctx)
+		if ev == nil || ev.ReasonCode != "AUTHZ-TENANT-001" || !ev.Enforced {
+			t.Fatalf("缺少 AUTHZ-TENANT-001 实断证据: %+v", ev)
+		}
+	})
+
+	t.Run("OBSERVE 模式降级并保留拟动作", func(t *testing.T) {
+		f := newV3Fixture(t, func(cfg *AuthorizationConfig, m *ObjectModel) {
+			cfg.Relations[0].TenantID = "tenant-b"
+			m.Enforcement = "OBSERVE"
+		})
+		f.jwt.VerifiedTenantID = "tenant-a"
+		group, ctx := f.eval(t)
+		check := v3PrimaryCheck(t, group)
+		if check.Decision != AuthorizationObserveViolation || check.ReasonCode != "AUTHZ-TENANT-001" || check.ProposedDecision != AuthorizationVerifiedViolation {
+			t.Fatalf("OBSERVE 跨租户应 OBSERVE_VIOLATION+ProposedDecision: %+v", check)
+		}
+		v3AssertNeverBlocked(t, group, ctx)
+	})
+
+	t.Run("EngineProtect=false 降级不实断", func(t *testing.T) {
+		f := newV3Fixture(t, func(cfg *AuthorizationConfig, _ *ObjectModel) {
+			cfg.Relations[0].TenantID = "tenant-b"
+			cfg.EngineProtect = false
+		})
+		f.jwt.VerifiedTenantID = "tenant-a"
+		group, ctx := f.eval(t)
+		check := v3PrimaryCheck(t, group)
+		if check.Decision != AuthorizationObserveViolation || check.ReasonCode != "AUTHZ-TENANT-001" {
+			t.Fatalf("EngineProtect=false 跨租户应 OBSERVE_VIOLATION: %+v", check)
+		}
+		v3AssertNeverBlocked(t, group, ctx)
+	})
+
+	t.Run("degraded 租约过期证据不新鲜不实断", func(t *testing.T) {
+		f := newV3Fixture(t, func(cfg *AuthorizationConfig, m *ObjectModel) {
+			cfg.Relations[0].TenantID = "tenant-b"
+			cfg.AppliedAt = v2Now.Add(-2 * time.Minute)
+			m.OnLeaseExpired = "degraded"
+		})
+		f.jwt.VerifiedTenantID = "tenant-a"
+		group, ctx := f.eval(t)
+		check := v3PrimaryCheck(t, group)
+		if check.Decision != AuthorizationObserveViolation || check.ReasonCode != "AUTHZ-TENANT-001" || check.ProposedDecision != "" {
+			t.Fatalf("证据不新鲜应 OBSERVE_VIOLATION 且无拟动作: %+v", check)
+		}
+		v3AssertNeverBlocked(t, group, ctx)
+	})
+}
+
+// C-08 回归：// 与 '.'/'..' 路径段对齐防 BOLA PROTECT 绕过，以及 Method="" 时按 EndpointKey 方法过滤。
+func TestC08BOLAPathNormalizationAndMethodCheck(t *testing.T) {
+	for _, rawPath := range []string{"//orders//7", "/orders//7", "/./orders/./7", "/foo/../orders/7"} {
+		t.Run("path="+rawPath, func(t *testing.T) {
+			f := newV3Fixture(t, nil)
+			f.path = rawPath
+			group, ctx := f.eval(t)
+			check := v3PrimaryCheck(t, group)
+			if check.Decision != AuthorizationVerifiedViolation || check.ReasonCode != "AUTHZ-BOLA-001" {
+				t.Fatalf("路径 %q 不得绕过 BOLA PROTECT: %+v", rawPath, check)
+			}
+			var sawBlock bool
+			for _, m := range ctx.CopyMatches() {
+				if m.RuleID == "AUTHZ-BOLA-001" && m.Category == "BLOCK" {
+					sawBlock = true
+				}
+			}
+			if !sawBlock {
+				t.Fatalf("路径 %q 缺少 BLOCK 明细", rawPath)
+			}
+		})
+	}
+
+	t.Run("EndpointKey 方法不匹配不得跨方法命中模型", func(t *testing.T) {
+		f := newV3Fixture(t, func(cfg *AuthorizationConfig, m *ObjectModel) {
+			m.Method = ""
+			m.EndpointKey = "GET /orders/{orderId}"
+			cfg.EndpointKey = "POST /orders/{id}"
+		})
+		r, err := http.NewRequest(http.MethodPost, "https://example.test/orders/7", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := dsctx.New("req-c08-method", dsctx.DefaultParseLimits())
+		parsed, err := parser.ParseRequest(r, ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		group := EvaluateAuthorization(ctx, parsed, f.cfg, f.jwt)
+		if group != nil {
+			t.Fatalf("GET 模型不应匹配 POST 请求: %+v", group)
+		}
+	})
 }
 
 // 时效异常 degraded：评估继续但 evidence_fresh=false → OBSERVE_VIOLATION +

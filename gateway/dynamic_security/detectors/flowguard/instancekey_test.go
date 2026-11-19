@@ -83,6 +83,12 @@ func TestExtractInstanceRef(t *testing.T) {
 	if got := ExtractInstanceRef("path:0", &parser.Parsed{RawPath: "/"}); got != "" {
 		t.Fatal("根路径无段应空串")
 	}
+	// C-08 回归：// 与 ./.. 路径段对齐
+	for _, raw := range []string{"//v1//orders//o-9//pay", "/./v1/x/../orders/o-9/pay"} {
+		if got := ExtractInstanceRef("path:2", &parser.Parsed{RawPath: raw}); got != "o-9" {
+			t.Fatalf("ExtractInstanceRef(path:2, %q) = %q，应 o-9", raw, got)
+		}
+	}
 }
 
 func TestParamDigestDeterminism(t *testing.T) {

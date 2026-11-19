@@ -10,6 +10,7 @@ import (
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 )
 
@@ -660,7 +661,24 @@ func evaluateBOLA(ctx *dsctx.RequestContext, parsed *parser.Parsed, cfg Authoriz
 		objectTenant = tenant
 	}
 	if identityTenant != "" && objectTenant != "" && identityTenant != objectTenant {
+		eligibility := map[string]bool{
+			"trusted_identity": trustedIdentity(jwt),
+			"model_applicable": len(models) == 1 && model.UniqueEndpointTemplate && model.Publishable && relationPolicyOK &&
+				!model.Stale && (model.SnapshotExpiresAt == nil || now.Before(model.SnapshotExpiresAt.UTC())),
+			"relation_valid":  len(ownerRels) > 0,
+			"no_conflict":     !authzV2(cfg) || !Conflicted(cfg.ConflictedIndex, cfg.ApplicationID, model.ObjectType, ref),
+			"tenant_mismatch": true,
+			"evidence_fresh":  !skewExceeded && !leaseExpired,
+		}
+		if authzEligibilityAllTrue(eligibility) && authzEnforcementProtect(model.Enforcement) && cfg.EngineProtect {
+			check.Decision, check.ReasonCode, check.TenantState = AuthorizationVerifiedViolation, "AUTHZ-TENANT-001", "MISMATCH"
+			authzAppendEnforcementEvidence(ctx, buildBOLAEnforcementEvidence(cfg, model, ref, "AUTHZ-TENANT-001", eligibility, jwt, now))
+			return authzBOLAWithDegradedMarker(check, model, skewExceeded, leaseExpired), true
+		}
 		check.Decision, check.ReasonCode, check.TenantState = AuthorizationObserveViolation, "AUTHZ-TENANT-001", "MISMATCH"
+		if authzEligibilityAllTrue(eligibility) && strings.TrimSpace(model.Enforcement) != "" {
+			check.ProposedDecision = AuthorizationVerifiedViolation
+		}
 		return authzBOLAWithDegradedMarker(check, model, skewExceeded, leaseExpired), true
 	}
 	if (identityTenant == "") != (objectTenant == "") {
@@ -709,7 +727,7 @@ func evaluateBOLA(ctx *dsctx.RequestContext, parsed *parser.Parsed, cfg Authoriz
 		}
 		if authzEligibilityAllTrue(eligibility) && authzEnforcementProtect(model.Enforcement) && cfg.EngineProtect {
 			check.Decision, check.ReasonCode, check.RelationState = AuthorizationVerifiedViolation, "AUTHZ-BOLA-001", "OTHER_OWNER"
-			authzAppendEnforcementEvidence(ctx, buildBOLAEnforcementEvidence(cfg, model, ref, eligibility, jwt, now))
+			authzAppendEnforcementEvidence(ctx, buildBOLAEnforcementEvidence(cfg, model, ref, "AUTHZ-BOLA-001", eligibility, jwt, now))
 			return authzBOLAWithDegradedMarker(check, model, skewExceeded, leaseExpired), true
 		}
 		check.Decision, check.ReasonCode, check.RelationState = AuthorizationObserveViolation, "AUTHZ-BOLA-001", "OTHER_OWNER"
@@ -812,8 +830,8 @@ func AuthzEnforcementEvidenceFromContext(ctx *dsctx.RequestContext) *dsevents.Au
 }
 
 // buildBOLAEnforcementEvidence BOLA VERIFIED_VIOLATION 实断证据（§1.4 逐键冻结；
-// eligibility 为冻结八键，object_ref 恒 HMAC 指纹——不落明文对象/主体标识）。
-func buildBOLAEnforcementEvidence(cfg AuthorizationConfig, model ObjectModel, ref string, eligibility map[string]bool, jwt *jwtverify.VerificationResult, now time.Time) *dsevents.AuthzEnforcementEvidence {
+// object_ref 恒 HMAC 指纹——不落明文对象/主体标识）。
+func buildBOLAEnforcementEvidence(cfg AuthorizationConfig, model ObjectModel, ref, reasonCode string, eligibility map[string]bool, jwt *jwtverify.VerificationResult, now time.Time) *dsevents.AuthzEnforcementEvidence {
 	endpointKey := model.EndpointKey
 	if endpointKey == "" {
 		endpointKey = model.Endpoint
@@ -821,9 +839,12 @@ func buildBOLAEnforcementEvidence(cfg AuthorizationConfig, model ObjectModel, re
 	if endpointKey == "" {
 		endpointKey = cfg.EndpointKey
 	}
+	if reasonCode == "" {
+		reasonCode = "AUTHZ-BOLA-001"
+	}
 	return &dsevents.AuthzEnforcementEvidence{
 		Decision:            string(AuthorizationVerifiedViolation),
-		ReasonCode:          "AUTHZ-BOLA-001",
+		ReasonCode:          reasonCode,
 		Enforced:            true,
 		EndpointKey:         endpointKey,
 		ModelVersion:        model.ModelVersion,
@@ -955,19 +976,28 @@ func relationValid(r ObjectRelation, now time.Time) bool {
 }
 
 func matchingModels(models []ObjectModel, applicationID, endpoint string, parsed *parser.Parsed) []ObjectModel {
+	reqMethod := strings.ToUpper(strings.TrimSpace(parsed.Method))
+	if reqMethod == "" {
+		reqMethod = endpointMethod(endpoint)
+	}
 	var out []ObjectModel
 	for _, m := range models {
 		if !sameApplication(applicationID, m.ApplicationID) {
 			continue
 		}
-		// A compiled model with an explicit method must never match a request
-		// of another method through the endpoint-path fallback below.
-		if m.Method != "" && !strings.EqualFold(m.Method, parsed.Method) {
-			continue
-		}
 		key := m.EndpointKey
 		if key == "" {
 			key = m.Endpoint
+		}
+		// A compiled model with an explicit method — or a method embedded in
+		// EndpointKey/Endpoint — must never match a request of another method
+		// through the path template fallback below.
+		modelMethod := strings.TrimSpace(m.Method)
+		if modelMethod == "" {
+			modelMethod = endpointMethod(key)
+		}
+		if modelMethod != "" && reqMethod != "" && !strings.EqualFold(modelMethod, reqMethod) {
+			continue
 		}
 		if key == endpoint ||
 			(m.PathTemplate != "" && pathTemplateMatches(m.PathTemplate, parsed.RawPath)) ||
@@ -988,6 +1018,13 @@ func sameApplication(requestApplicationID, snapshotApplicationID string) bool {
 	return requestApplicationID == snapshotApplicationID
 }
 
+func endpointMethod(endpoint string) string {
+	if i := strings.IndexByte(endpoint, ' '); i > 0 {
+		return strings.ToUpper(strings.TrimSpace(endpoint[:i]))
+	}
+	return ""
+}
+
 func endpointPath(endpoint string) string {
 	if i := strings.IndexByte(endpoint, ' '); i >= 0 {
 		return endpoint[i+1:]
@@ -995,8 +1032,8 @@ func endpointPath(endpoint string) string {
 	return endpoint
 }
 func pathTemplateMatches(template, path string) bool {
-	t := strings.Split(strings.Trim(template, "/"), "/")
-	p := strings.Split(strings.Trim(path, "/"), "/")
+	t := normalizer.CanonicalSegments(template)
+	p := normalizer.CanonicalSegments(path)
 	if len(t) != len(p) {
 		return false
 	}
@@ -1044,7 +1081,7 @@ func extractObjectRef(parsed *parser.Parsed, model ObjectModel, key []byte) (str
 		if template == "" {
 			template = endpointPath(model.EndpointKey)
 		}
-		t, p := strings.Split(strings.Trim(template, "/"), "/"), strings.Split(strings.Trim(parsed.RawPath, "/"), "/")
+		t, p := normalizer.CanonicalSegments(template), normalizer.CanonicalSegments(parsed.RawPath)
 		for i := range t {
 			if t[i] == "{"+id.Name+"}" && i < len(p) {
 				raw = p[i]

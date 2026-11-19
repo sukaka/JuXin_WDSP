@@ -2,6 +2,7 @@ package jiuzhang_guard
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -708,4 +709,119 @@ func TestGuardValidateSensitiveValueRules(t *testing.T) {
 	if err := g.Validate(); err != nil {
 		t.Fatalf("disabled protection must skip sensitive value rule validation: %v", err)
 	}
+}
+
+// H-09 回归：FAIL_CLOSED + MASK_RESPONSE 下必须剥离 Range/If-Range 请求头；
+// 若源站仍返回 206/Content-Range，必须 500 fail-closed 抑制，禁止泄露未脱敏分段体。
+func TestH09RangeStrippedAnd206FailClosed(t *testing.T) {
+	t.Run("FAIL_CLOSED 剥离 Range/If-Range 并正常脱敏", func(t *testing.T) {
+		g, _ := newAPIResponseTestGuard(t, "PROTECT", []maskRuleJSON{
+			{EndpointKey: "POST /v1/users", FieldPath: "phone", Algorithm: "MASK"},
+		})
+		g.APIResponseFailPolicy = "FAIL_CLOSED"
+		var gotRange, gotIfRange string
+		next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+			gotRange = r.Header.Get("Range")
+			gotIfRange = r.Header.Get("If-Range")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"phone":"13800138000"}`)
+			return nil
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/users", strings.NewReader(`{"name":"x"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Range", "bytes=0-10")
+		req.Header.Set("If-Range", `"etag-1"`)
+		rec := httptest.NewRecorder()
+		if err := g.serveNext(rec, req, next); err != nil {
+			t.Fatalf("serveNext: %v", err)
+		}
+		if gotRange != "" || gotIfRange != "" {
+			t.Fatalf("FAIL_CLOSED 必须剥离 Range/If-Range: range=%q if-range=%q", gotRange, gotIfRange)
+		}
+		if strings.Contains(rec.Body.String(), "13800138000") {
+			t.Fatalf("响应应被脱敏: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("FAIL_CLOSED 源站强行返回 206 时 500 抑制", func(t *testing.T) {
+		g, _ := newAPIResponseTestGuard(t, "PROTECT", []maskRuleJSON{
+			{EndpointKey: "POST /v1/users", FieldPath: "phone", Algorithm: "MASK"},
+		})
+		g.APIResponseFailPolicy = "FAIL_CLOSED"
+		next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Range", "bytes 0-22/100")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = io.WriteString(w, `{"phone":"13800138000"}`)
+			return nil
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/users", strings.NewReader(`{"name":"x"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		if err := g.serveNext(rec, req, next); err != nil {
+			t.Fatalf("serveNext: %v", err)
+		}
+		if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "13800138000") {
+			t.Fatalf("FAIL_CLOSED 下 206 必须 500 抑制且不泄露原文: code=%d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+type failingSpillWriter struct {
+	header      http.Header
+	failOnWrite int
+	writes      int
+	partialN    int
+	err         error
+}
+
+func (f *failingSpillWriter) Header() http.Header {
+	if f.header == nil {
+		f.header = make(http.Header)
+	}
+	return f.header
+}
+func (f *failingSpillWriter) WriteHeader(int) {}
+func (f *failingSpillWriter) Write(p []byte) (int, error) {
+	f.writes++
+	if f.writes == f.failOnWrite {
+		return f.partialN, f.err
+	}
+	return len(p), nil
+}
+
+// M-G6 回归：apiResponseCapture.Write 溢出转直通时 err1 返回 (0, err1)，err2 返回 (n2, err2)。
+func TestMG6APIResponseCaptureSpillErrorCounts(t *testing.T) {
+	errBoom := errors.New("write boom")
+	t.Run("err1 returns 0 and err1", func(t *testing.T) {
+		fw := &failingSpillWriter{failOnWrite: 1, partialN: 2, err: errBoom}
+		c := newAPIResponseCapture(fw, 4, false, false, nil, false, "GET /x", "req-1", zap.NewNop())
+		c.Header().Set("Content-Type", "application/json")
+		c.WriteHeader(http.StatusOK)
+		if _, err := c.Write([]byte("abc")); err != nil {
+			t.Fatalf("buffered write: %v", err)
+		}
+		n, err := c.Write([]byte("defg"))
+		if n != 0 || !errors.Is(err, errBoom) {
+			t.Fatalf("err1 应返回 (0, errBoom)，实际 (%d, %v)", n, err)
+		}
+		if fw.writes != 1 {
+			t.Fatalf("err1 后不应继续写当前块: writes=%d", fw.writes)
+		}
+	})
+
+	t.Run("err2 returns n2 and err2", func(t *testing.T) {
+		fw := &failingSpillWriter{failOnWrite: 2, partialN: 2, err: errBoom}
+		c := newAPIResponseCapture(fw, 4, false, false, nil, false, "GET /x", "req-2", zap.NewNop())
+		c.Header().Set("Content-Type", "application/json")
+		c.WriteHeader(http.StatusOK)
+		if _, err := c.Write([]byte("abc")); err != nil {
+			t.Fatalf("buffered write: %v", err)
+		}
+		n, err := c.Write([]byte("defg"))
+		if n != 2 || !errors.Is(err, errBoom) {
+			t.Fatalf("err2 应返回 (2, errBoom)，实际 (%d, %v)", n, err)
+		}
+	})
 }

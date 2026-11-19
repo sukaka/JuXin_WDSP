@@ -138,15 +138,20 @@ func proofFreshnessReason(p *httpsig.Params, now time.Time, skew int64) string {
 	return ""
 }
 
-// proofTTL 重放登记 TTL（证明 expires 剩余期，夹紧 [1s, 120s]——§1.5：
-// TTL=证明 expires 剩余期（上界 120s）；PX 相对 TTL 不依赖跨节点时钟）。
-func proofTTL(p *httpsig.Params, now time.Time) time.Duration {
-	remain := time.Unix(p.Expires, 0).Sub(now)
+// proofTTL 重放登记 TTL：覆盖完整可接受窗口 (now, expires+skew]，夹紧
+// [1s, MaxProofLifetimeSeconds+2*skew]，消除 expires 之后至 expires+skew 之间的重放空窗。
+func proofTTL(p *httpsig.Params, now time.Time, skew int64) time.Duration {
+	if skew < 0 {
+		skew = 0
+	}
+	deadline := time.Unix(p.Expires, 0).Add(time.Duration(skew) * time.Second)
+	remain := deadline.Sub(now)
 	if remain < time.Second {
 		remain = time.Second // 防御归一最小存活期（过期证明已在步 5 拒绝——边界防御）
 	}
-	if remain > MaxProofLifetimeSeconds*time.Second {
-		remain = MaxProofLifetimeSeconds * time.Second
+	maxTTL := time.Duration(MaxProofLifetimeSeconds+2*skew) * time.Second
+	if remain > maxTTL {
+		remain = maxTTL
 	}
 	return remain
 }

@@ -172,6 +172,35 @@ func ResolveIdentity(r *http.Request, salt, clientIP string) *Identity {
 	return id
 }
 
+// CandidateKeys 返回本请求提取出的全部候选身份键（去重，主身份键 id.Key 在首位）。
+// 请求携带多个凭据（如伪造 Authorization + 真实 X-API-Key/Cookie）时，所有提取出的
+// 凭据键均参与封禁与风险评估，防止通过附加高优先级凭据头绕过既有封禁或风险累计（H-08）。
+// 不改变 id.Key 与 id.Type 的既有语义。
+func (id *Identity) CandidateKeys(salt string) []string {
+	if id == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(id.Credentials)+1)
+	out := make([]string, 0, len(id.Credentials)+1)
+	add := func(k string) {
+		if k == "" {
+			return
+		}
+		if _, ok := seen[k]; ok {
+			return
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	add(id.Key)
+	for _, c := range id.Credentials {
+		if c.raw != "" {
+			add(detectors.Fingerprint(salt, "cred:"+string(c.Type)+":"+c.raw))
+		}
+	}
+	return out
+}
+
 // identityConfidence derives a bounded, explainable confidence score. Values
 // are deliberately conservative because gateway credentials are observed, not
 // verified here; confidence must not be used as a standalone block decision.

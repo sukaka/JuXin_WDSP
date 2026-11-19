@@ -33,6 +33,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors/machineid"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/httpsig"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientip"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/events"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/identitybehavior"
@@ -290,7 +291,8 @@ func (g *Guard) verifyMachineIdentity(r *http.Request) {
 	if cfg == nil {
 		return
 	}
-	if !cfg.MatchBindingPath(r.URL.Path) {
+	canonPath := normalizer.CanonicalPath(r.URL.Path)
+	if !cfg.MatchBindingPath(canonPath) {
 		return // 未命中绑定：零行为零覆盖（非候选）
 	}
 	requestID := r.Header.Get("X-Request-Id")
@@ -298,10 +300,13 @@ func (g *Guard) verifyMachineIdentity(r *http.Request) {
 	var body []byte
 	// 仅携带签名头时才读体（零行为优先；体读取=保全同源纪律读出即还原）
 	if r.Header.Get("Signature-Input") != "" || r.Header.Get("Signature") != "" {
-		restore, bodySample, _ := preserveRequestBody(r)
+		restore, bodySample, skipReason := preserveRequestBody(r)
 		if restore != nil {
 			body = bodySample
 			restore() // 立即还原（后续 serveNext 保全重读为内存重读——零新增网络读取）
+		} else {
+			// 超 4MiB（含 chunked 未知长度）或读体失败：显式标记不可用，禁止当作空体放行（H-10）
+			rc.SetExtension(machineid.BodyUnavailableExtension, skipReason)
 		}
 	}
 	jwtRes, hasJWT := jwtResultFrom(r.Context())
@@ -365,6 +370,7 @@ func (g *Guard) enforceMachineIdentity(w http.ResponseWriter, r *http.Request) (
 		// PROTECT 401 固定短语（不带 WWW-Authenticate——不冒用未注册方案）
 		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusUnauthorized, true,
 			[]string{res.ReasonCode}, nil)
+		accessLogAnnotate(r.Context(), wafActionBlock)
 		g.writeMachineIDAuthFailed(w, r.Header.Get("X-Request-Id"))
 		g.emitMachineIDEvent(r, events.MIDAuthFailed, "REJECT", http.StatusUnauthorized, outcome)
 		return true, nil
@@ -376,6 +382,7 @@ func (g *Guard) enforceMachineIdentity(w http.ResponseWriter, r *http.Request) (
 		// PROTECT 403（证明通过但越界——401≠403 形态区分，M01 同思想）
 		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, true,
 			[]string{machineid.ReasonScopeDenied}, nil)
+		accessLogAnnotate(r.Context(), wafActionBlock)
 		g.writeMachineIDScopeDenied(w, r.Header.Get("X-Request-Id"))
 		g.emitMachineIDEvent(r, events.MIDScopeDenied, "REJECT", http.StatusForbidden, outcome)
 		return true, nil
@@ -392,6 +399,7 @@ func (g *Guard) enforceMachineIdentity(w http.ResponseWriter, r *http.Request) (
 		}
 		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, status, true,
 			[]string{"MID_UNAVAILABLE"}, nil)
+		accessLogAnnotate(r.Context(), wafActionBlock)
 		g.writeMachineIDUnavailable(w, r.Header.Get("X-Request-Id"), status)
 		g.emitMachineIDEvent(r, events.MIDUnavailable, "REJECT", status, outcome)
 		return true, nil

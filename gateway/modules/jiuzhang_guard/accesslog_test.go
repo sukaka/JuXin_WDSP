@@ -590,3 +590,34 @@ func TestAccessLogForwardedChainSummaryTruncated(t *testing.T) {
 		t.Errorf("trusted_proxy_used = %q, want lb", recs[0].TrustedProxyUsed)
 	}
 }
+
+// M-G1 回归：访问日志捕获响应体时必须对 access_token/refresh_token/id_token/client_secret/password 等敏感字段脱敏。
+func TestMG1AccessLogMasksSensitiveResponseBody(t *testing.T) {
+	g, logPath := newAccessLogTestGuard(t, &accessLogJSON{
+		Enabled: true, CaptureResponseBody: true, BodyLimitKB: 64,
+	})
+	next := caddyHTTPHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"access_token":"tok-secret-1","refresh_token":"ref-secret-2","id_token":"idt-secret-3","client_secret":"cs-secret-4","ok":true}`))
+		return nil
+	})
+	r := httptest.NewRequest("POST", "http://waf-test.local/oauth/token", nil)
+	r.RemoteAddr = "203.0.113.20:1234"
+	if err := g.ServeHTTP(httptest.NewRecorder(), r, next); err != nil {
+		t.Fatal(err)
+	}
+	recs := readAccessLogRecords(t, logPath)
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+	body := recs[0].ResponseBody
+	for _, secret := range []string{"tok-secret-1", "ref-secret-2", "idt-secret-3", "cs-secret-4"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("M-G1: sensitive response token %q leaked into access log: %s", secret, body)
+		}
+	}
+	if !strings.Contains(body, `"ok":true`) {
+		t.Fatalf("non-sensitive field should remain visible: %s", body)
+	}
+}

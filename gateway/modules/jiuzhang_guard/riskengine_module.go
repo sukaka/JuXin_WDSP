@@ -125,9 +125,29 @@ func (g *Guard) enforceRiskPolicy(w http.ResponseWriter, r *http.Request, res cl
 	if g.ibh != nil && g.ibh.Whitelisted(res.ClientIP, r.Header.Get("User-Agent")) {
 		return false, nil
 	}
-	dec, err := eng.Evaluate(g.riskIdentityKey(riskengine.IdentityKeyFor(r, g.IdentitySalt, res.ClientIP.String())))
-	if err != nil {
-		g.logger.Warn("risk_policy: 评估失败（fail-open 放行）", zap.Error(err), zap.String("path", r.URL.Path))
+	// H-08：评估请求携带的全部候选身份键，取最严格处置（BLOCK > CHALLENGE > RATE_LIMIT > PASS），
+	// 防止攻击者在已受罚的 X-API-Key/Cookie 之外附加无关 Authorization 头绕过风险策略。
+	keys := riskengine.IdentityKeysFor(r, g.IdentitySalt, res.ClientIP.String())
+	var dec riskengine.Decision
+	var firstErr error
+	evaluated := false
+	for _, k := range keys {
+		d, err := eng.Evaluate(g.riskIdentityKey(k))
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if !evaluated || riskDecisionMoreSevere(d, dec) {
+			dec = d
+			evaluated = true
+		}
+	}
+	if !evaluated {
+		if firstErr != nil {
+			g.logger.Warn("risk_policy: 评估失败（fail-open 放行）", zap.Error(firstErr), zap.String("path", r.URL.Path))
+		}
 		return false, nil
 	}
 	switch dec.Action {
@@ -248,5 +268,29 @@ func (g *Guard) feedRiskSignals(r *http.Request, matches []dsctx.DetectorMatch) 
 	if g.ibh != nil && g.ibh.Whitelisted(ip, r.Header.Get("User-Agent")) {
 		return
 	}
-	eng.AddDetectorMatches(g.riskIdentityKey(riskengine.IdentityKeyFor(r, g.IdentitySalt, ip.String())), matches)
+	// H-08：向全部候选凭据键同步累计检测器风险信号。
+	for _, k := range riskengine.IdentityKeysFor(r, g.IdentitySalt, ip.String()) {
+		eng.AddDetectorMatches(g.riskIdentityKey(k), matches)
+	}
+}
+
+func riskActionRank(action string) int {
+	switch action {
+	case riskengine.ActionBlock:
+		return 3
+	case riskengine.ActionChallenge:
+		return 2
+	case riskengine.ActionRateLimit:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func riskDecisionMoreSevere(a, b riskengine.Decision) bool {
+	ra, rb := riskActionRank(a.Action), riskActionRank(b.Action)
+	if ra != rb {
+		return ra > rb
+	}
+	return a.Score > b.Score
 }

@@ -3,6 +3,9 @@ package gqlast
 import (
 	"strings"
 	"testing"
+
+	"github.com/vektah/gqlparser/v2/ast"
+	gqlparser "github.com/vektah/gqlparser/v2/parser"
 )
 
 // GQ-C01：手算推演锚定。查询：
@@ -195,5 +198,51 @@ func TestCostCacheLRUEviction(t *testing.T) {
 	}
 	if v, ok := c.Get(k("c")); !ok || v != 3 {
 		t.Fatal("新键应保留")
+	}
+}
+
+func TestC11CostCacheIncludesOperationName(t *testing.T) {
+	doc := mustParse(t, `query Cheap { id }
+query Expensive { __schema { types { name } } }`)
+	cheapOp, err := SelectOperation(doc, "Cheap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expOp, err := SelectOperation(doc, "Expensive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := NewCostCache(10)
+	oCheap := CostOfCached(cache, doc, cheapOp, WeightsConfig{}, BudgetConfig{PerRequest: 10}, "s1", "p1")
+	if oCheap.Exceeded || oCheap.Cost != 1 {
+		t.Fatalf("Cheap 应通过且 cost=1: %+v", oCheap)
+	}
+	oExp := CostOfCached(cache, doc, expOp, WeightsConfig{}, BudgetConfig{PerRequest: 10}, "s1", "p1")
+	if oExp.Note == "cache:hit" || !oExp.Exceeded || oExp.Cost != 52 {
+		t.Fatalf("Expensive 不得复用 Cheap 缓存，必须超预算 cost=52: %+v", oExp)
+	}
+}
+
+func TestC11CostOfFragmentDAGMemoizedAndSaturates(t *testing.T) {
+	// 构造 65 层双分支 DAG（若无记忆化将产生 2^65 次遍历），绕过 ParseBounded 直接进入 CostOf 也须瞬间完成并饱和超预算。
+	var b strings.Builder
+	b.WriteString("query { ...F0 }\n")
+	for i := 0; i < 65; i++ {
+		b.WriteString("fragment F" + itoaForTest(i) + " on T { x { ...F" + itoaForTest(i+1) + " } y { ...F" + itoaForTest(i+1) + " } }\n")
+	}
+	b.WriteString("fragment F65 on T { leaf }\n")
+	q := b.String()
+	parsedAST, perr := gqlparser.ParseQuery(&ast.Source{Input: q})
+	if perr != nil {
+		t.Fatalf("ParseQuery: %v", perr)
+	}
+	rawDoc := &Document{AST: parsedAST, Query: q}
+	op, err := SelectOperation(rawDoc, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := CostOf(rawDoc, op, WeightsConfig{}, BudgetConfig{PerRequest: 5000})
+	if !out.Exceeded || !out.Saturated {
+		t.Fatalf("DAG 指数成本应快速饱和并判超预算: %+v", out)
 	}
 }

@@ -1,6 +1,7 @@
 package riskengine
 
 import (
+	"container/list"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,6 +18,11 @@ const emitThrottleInterval = time.Minute
 // throttleCap 事件节流状态键上限（identity 键量级与内存存储一致）。
 const throttleCap = 50000
 
+type throttleEntry struct {
+	key string
+	at  time.Time
+}
+
 // Engine 身份风险引擎：信号累加（AddSignal 族）+ 滑窗评估（Evaluate）+ 事件节流（ShouldEmit）。
 // 所有方法 nil 安全、内部 fail-open——存储故障仅告警，绝不向请求路径返回错误外的副作用。
 type Engine struct {
@@ -25,9 +31,10 @@ type Engine struct {
 	logger *zap.Logger
 	now    func() time.Time
 
-	thMu      sync.Mutex
-	throttle  map[string]time.Time // identity|action -> 上次发出时间
-	throttled int                  // 节流状态键数（超 throttleCap 重建）
+	thMu        sync.Mutex
+	throttleCap int
+	throttle    map[string]*list.Element // identity|action -> LRU 节点（严格有界 O(1) 淘汰，H-08）
+	throttleLRU *list.List
 }
 
 // NewEngine 装配引擎（cfg 为 Compile 产物；store 由装配层按配置选定实现）。
@@ -36,11 +43,13 @@ func NewEngine(cfg *Config, store Store, logger *zap.Logger) *Engine {
 		logger = zap.NewNop()
 	}
 	return &Engine{
-		cfg:      cfg,
-		store:    store,
-		logger:   logger,
-		now:      time.Now,
-		throttle: map[string]time.Time{},
+		cfg:         cfg,
+		store:       store,
+		logger:      logger,
+		now:         time.Now,
+		throttleCap: throttleCap,
+		throttle:    map[string]*list.Element{},
+		throttleLRU: list.New(),
 	}
 }
 
@@ -132,32 +141,46 @@ func (e *Engine) Evaluate(identityKey string) (Decision, error) {
 	return dec, nil
 }
 
-// ShouldEmit 处置事件节流（60s / identity+action；状态随引擎实例，配置重载即复位——
-// 与 identitybehavior 事件节流同实例语义）。
+// ShouldEmit 处置事件节流（60s / identity+action；严格有界 O(1) LRU，
+// 防止 >50k 随机键触发 O(N^2) 全量重建导致锁停顿，H-08）。
 func (e *Engine) ShouldEmit(identityKey, action string) bool {
 	if e == nil {
 		return true
 	}
 	e.thMu.Lock()
 	defer e.thMu.Unlock()
+	if e.throttle == nil {
+		e.throttle = map[string]*list.Element{}
+	}
+	if e.throttleLRU == nil {
+		e.throttleLRU = list.New()
+	}
+	capLimit := e.throttleCap
+	if capLimit <= 0 {
+		capLimit = throttleCap
+	}
 	now := e.now()
 	k := identityKey + "|" + action
-	if t, ok := e.throttle[k]; ok && now.Sub(t) < emitThrottleInterval {
-		return false
-	}
-	e.throttle[k] = now
-	e.throttled++
-	if e.throttled > throttleCap {
-		// 容量纪律：整体重建保近期项（近似 LRU；防随机 identity 键撑爆内存）
-		kept := make(map[string]time.Time, throttleCap/2)
-		for kk, v := range e.throttle {
-			if now.Sub(v) < emitThrottleInterval {
-				kept[kk] = v
-			}
+	if elem, ok := e.throttle[k]; ok {
+		ent := elem.Value.(*throttleEntry)
+		if now.Sub(ent.at) < emitThrottleInterval {
+			e.throttleLRU.MoveToFront(elem)
+			return false
 		}
-		e.throttle = kept
-		e.throttled = len(kept)
+		ent.at = now
+		e.throttleLRU.MoveToFront(elem)
+		return true
 	}
+	for len(e.throttle) >= capLimit {
+		back := e.throttleLRU.Back()
+		if back == nil {
+			break
+		}
+		e.throttleLRU.Remove(back)
+		delete(e.throttle, back.Value.(*throttleEntry).key)
+	}
+	elem := e.throttleLRU.PushFront(&throttleEntry{key: k, at: now})
+	e.throttle[k] = elem
 	return true
 }
 
@@ -176,6 +199,15 @@ func IdentityKeyFor(r *http.Request, salt, clientIP string) string {
 		return id.Key
 	}
 	return identitybehavior.ResolveIdentity(r, salt, clientIP).Key
+}
+
+// IdentityKeysFor 返回本请求全部候选身份键（去重，主身份键在首位），
+// 用于多凭据场景下的风险评估与信号入账，防附加假 Authorization 绕过受罚 X-API-Key/Cookie（H-08）。
+func IdentityKeysFor(r *http.Request, salt, clientIP string) []string {
+	if id := identitybehavior.IdentityFrom(r.Context()); id != nil {
+		return id.CandidateKeys(salt)
+	}
+	return identitybehavior.ResolveIdentity(r, salt, clientIP).CandidateKeys(salt)
 }
 
 // matchReason DetectorMatch 信号原因（rule_id + message，去敏截断由 AddSignal 兜底）。

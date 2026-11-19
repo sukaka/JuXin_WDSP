@@ -626,6 +626,17 @@ func (d *Disposition) Settled() bool {
 	return d.terminal != nil || d.origin != nil || d.errored
 }
 
+// Terminated 是否已由网关本地终止（Bot/JWT/MachineID/API 阻断/WAF/发布探针等），
+// 与正常回源响应（RecordOrigin）区分，避免回程 L7 响应规则覆写或剥离网关本地错误响应（N-01）。
+func (d *Disposition) Terminated() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.terminal != nil
+}
+
 // JSON 序列化为 final_decision JSON（内部先 Finalize；重复调用结果稳定）。
 func (d *Disposition) JSON() json.RawMessage {
 	if d == nil {

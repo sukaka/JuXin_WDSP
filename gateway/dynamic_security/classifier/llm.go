@@ -15,6 +15,7 @@ package classifier
 import (
 	"strings"
 
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 )
 
@@ -70,7 +71,7 @@ func ClassifyLLM(p *parser.Parsed) LLMResult {
 	if p == nil || p.Method != "POST" {
 		return LLMResult{}
 	}
-	path := strings.ToLower(p.RawPath)
+	path := strings.ToLower(strings.TrimSuffix(normalizer.CanonicalPath(p.RawPath), "/"))
 	for _, rule := range llmPathRules {
 		if !strings.HasSuffix(path, rule.suffix) {
 			continue
@@ -82,6 +83,26 @@ func ClassifyLLM(p *parser.Parsed) LLMResult {
 		return LLMResult{}
 	}
 	return LLMResult{}
+}
+
+// IsLLMCandidatePath 仅依据路径与内容类型判定是否为 LLM 推理端点候选
+// （供大报文/截断体场景下 LLM PROTECT fail-closed 检查使用，避免跳过 JSON 字段提取导致绕过）。
+func IsLLMCandidatePath(p *parser.Parsed) bool {
+	if p == nil || p.Method != "POST" {
+		return false
+	}
+	path := strings.ToLower(strings.TrimSuffix(normalizer.CanonicalPath(p.RawPath), "/"))
+	ct := strings.ToLower(p.ContentType)
+	for _, rule := range llmPathRules {
+		if !strings.HasSuffix(path, rule.suffix) {
+			continue
+		}
+		if p.IsJSON || strings.Contains(ct, "json") || (rule.multipartShape && strings.Contains(ct, "multipart/form-data")) {
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 // llmShapeConfirmed 内容形态确认：JSON 体看顶层形态字段（任一命中）；

@@ -60,11 +60,15 @@ func VerifySignatureBase(r *http.Request, p *Params, body []byte, key Key) error
 		return verifyErr("nil input")
 	}
 	b := DefaultBudgets()
+	if r.ContentLength > int64(b.MaxBodyBytes) {
+		return &BudgetError{Rule: "body_bytes_exceeded", Limit: b.MaxBodyBytes, Actual: int(r.ContentLength)}
+	}
 	if len(body) > b.MaxBodyBytes {
 		return &BudgetError{Rule: "body_bytes_exceeded", Limit: b.MaxBodyBytes, Actual: len(body)}
 	}
-	// 步 6：覆盖成分充分性
-	if err := checkCoverage(r, p, len(body) > 0); err != nil {
+	// 步 6：覆盖成分充分性（未知长度分块流或声明正长度时不可视作无体请求）
+	hasBody := len(body) > 0 || r.ContentLength > 0 || (r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody)
+	if err := checkCoverage(r, p, hasBody); err != nil {
 		return err
 	}
 	// 步 7/9 前段：基线重构 + 签名提取（重读请求头原文——参数序忠实重现）

@@ -38,6 +38,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/cidr"
 )
 
@@ -179,6 +180,7 @@ type compiledRule struct {
 	cfg           ActionConfig
 	requestBody   bool
 	responsePhase bool
+	responseBody  bool
 }
 
 // Compile 校验并编译配置：正则预编译、CIDR 预解析、动作配置默认值填充。
@@ -246,7 +248,7 @@ func compileRule(r RuleJSON) (*compiledRule, error) {
 		return nil, fmt.Errorf("rule %q: conditions count %d exceeds limit %d", r.ID, len(r.Conditions), maxConditionsPerRule)
 	}
 	conds := make([]condition, 0, len(r.Conditions))
-	requestBody, responsePhase := false, false
+	requestBody, responsePhase, responseBody := false, false, false
 	for i, c := range r.Conditions {
 		cc, err := compileCondition(r.ID, i, c)
 		if err != nil {
@@ -254,6 +256,7 @@ func compileRule(r RuleJSON) (*compiledRule, error) {
 		}
 		conds = append(conds, cc)
 		requestBody = requestBody || c.Type == condRequestBody
+		responseBody = responseBody || c.Type == condResponseBody
 		responsePhase = responsePhase || c.Type == condResponseHeader || c.Type == condResponseBody
 	}
 	action, cfg, err := compileActionConfig(r)
@@ -263,7 +266,7 @@ func compileRule(r RuleJSON) (*compiledRule, error) {
 	return &compiledRule{
 		id: r.ID, name: r.Name, priority: r.Priority, enabled: r.Enabled,
 		conds: conds, action: action, cfg: cfg,
-		requestBody: requestBody, responsePhase: responsePhase,
+		requestBody: requestBody, responsePhase: responsePhase, responseBody: responseBody,
 	}, nil
 }
 
@@ -346,9 +349,11 @@ type condition interface {
 	match(in *evalInput) bool
 }
 
-// stringCond 字符串条件（uri/header/cookie/query）。
+// stringCond 字符串条件（uri/header/response_header/cookie/query/request_body/response_body）。
+// 多值目标（header/response_header/query/cookie）评估全部值：正向操作符（eq/prefix/contains/regex/in）
+// 任一值命中即真；否定操作符（ne）要求全部值均不等于目标值（任一值等于目标即失败），防重复头/参数/Cookie 绕过。
 type stringCond struct {
-	target func(in *evalInput) (val string, present bool)
+	target func(in *evalInput) (vals []string, present bool)
 	op     string
 	value  string
 	values map[string]struct{} // op=in
@@ -356,7 +361,7 @@ type stringCond struct {
 }
 
 func (c *stringCond) match(in *evalInput) bool {
-	val, present := c.target(in)
+	vals, present := c.target(in)
 	switch c.op {
 	case opExists:
 		return present
@@ -364,23 +369,40 @@ func (c *stringCond) match(in *evalInput) bool {
 		return !present
 	}
 	// 键不存在时一切值比较（含 ne/in）均不命中
-	if !present {
+	if !present || len(vals) == 0 {
 		return false
 	}
-	switch c.op {
-	case opEq:
-		return val == c.value
-	case opNe:
-		return val != c.value
-	case opPrefix:
-		return strings.HasPrefix(val, c.value)
-	case opContains:
-		return strings.Contains(val, c.value)
-	case opRegex:
-		return c.re.MatchString(val)
-	case opIn:
-		_, ok := c.values[val]
-		return ok
+	if c.op == opNe {
+		for _, val := range vals {
+			if val == c.value {
+				return false
+			}
+		}
+		return true
+	}
+	for _, val := range vals {
+		switch c.op {
+		case opEq:
+			if val == c.value {
+				return true
+			}
+		case opPrefix:
+			if strings.HasPrefix(val, c.value) {
+				return true
+			}
+		case opContains:
+			if strings.Contains(val, c.value) {
+				return true
+			}
+		case opRegex:
+			if c.re.MatchString(val) {
+				return true
+			}
+		case opIn:
+			if _, ok := c.values[val]; ok {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -438,54 +460,67 @@ func compileStringCond(fail func(string, ...any) (condition, error), c Condition
 	if isBody && (c.Name != "" || c.Value == "") {
 		return fail("body condition requires value and does not support name")
 	}
-	var target func(in *evalInput) (string, bool)
+	var target func(in *evalInput) ([]string, bool)
 	switch c.Type {
 	case condURI:
 		if len(c.Value) > maxCondValueLen {
 			return fail("value too long")
 		}
-		target = func(in *evalInput) (string, bool) { return in.path, true }
+		target = func(in *evalInput) ([]string, bool) { return []string{in.path}, true }
 	case condHeader, condResponseHeader:
 		if !validToken(c.Name) || len(c.Name) > maxCondNameLen {
 			return fail("invalid header name %q", c.Name)
 		}
 		name := textproto.CanonicalMIMEHeaderKey(c.Name)
-		target = func(in *evalInput) (string, bool) {
+		target = func(in *evalInput) ([]string, bool) {
 			headers := in.header
 			if c.Type == condResponseHeader {
 				headers = in.responseHeader
 			}
 			vals, ok := headers[name]
 			if !ok || len(vals) == 0 {
-				return "", false
+				return nil, false
 			}
-			return vals[0], true
+			return vals, true
 		}
 	case condCookie:
 		if !validToken(c.Name) || len(c.Name) > maxCondNameLen {
 			return fail("invalid cookie name %q", c.Name)
 		}
 		name := c.Name
-		target = func(in *evalInput) (string, bool) {
-			v, ok := in.cookies[name]
-			return v, ok
+		target = func(in *evalInput) ([]string, bool) {
+			vals, ok := in.cookies[name]
+			if !ok || len(vals) == 0 {
+				return nil, false
+			}
+			return vals, true
 		}
 	case condQuery:
 		if c.Name == "" || len(c.Name) > maxCondNameLen || hasControl(c.Name) {
 			return fail("invalid query name %q", c.Name)
 		}
 		name := c.Name
-		target = func(in *evalInput) (string, bool) {
+		target = func(in *evalInput) ([]string, bool) {
 			vals, ok := in.query[name]
 			if !ok || len(vals) == 0 {
-				return "", false
+				return nil, false
 			}
-			return vals[0], true
+			return vals, true
 		}
 	case condRequestBody:
-		target = func(in *evalInput) (string, bool) { return in.requestBody, in.requestBodyReady }
+		target = func(in *evalInput) ([]string, bool) {
+			if !in.requestBodyReady {
+				return nil, false
+			}
+			return []string{in.requestBody}, true
+		}
 	case condResponseBody:
-		target = func(in *evalInput) (string, bool) { return in.responseBody, in.responseBodyReady }
+		target = func(in *evalInput) ([]string, bool) {
+			if !in.responseBodyReady {
+				return nil, false
+			}
+			return []string{in.responseBody}, true
+		}
 	}
 	out := &stringCond{target: target, op: c.Op, value: c.Value}
 	switch c.Op {
@@ -588,10 +623,10 @@ func hasControl(s string) bool {
 
 // evalInput 单请求预取的条件输入（一次解析，全条件复用）。
 type evalInput struct {
-	method            string            // 大写规范化
-	path              string            // r.URL.Path（空归一为 "/"）
-	header            http.Header       // 规范形键
-	cookies           map[string]string // cookie 名 -> 首个值
+	method            string              // 大写规范化
+	path              string              // CanonicalPath(r.URL.Path)
+	header            http.Header         // 规范形键
+	cookies           map[string][]string // cookie 名 -> 全部值（防同名多 Cookie 绕过）
 	query             url.Values
 	clientIP          netip.Addr
 	requestBody       string
@@ -605,20 +640,15 @@ type evalInput struct {
 func newEvalInput(r *http.Request, clientIP netip.Addr) *evalInput {
 	in := &evalInput{
 		method:   strings.ToUpper(r.Method),
-		path:     r.URL.Path,
+		path:     normalizer.CanonicalPath(r.URL.Path),
 		header:   r.Header,
 		query:    r.URL.Query(),
 		clientIP: clientIP,
 	}
-	if in.path == "" {
-		in.path = "/"
-	}
-	if c := r.Header.Get("Cookie"); c != "" {
-		in.cookies = make(map[string]string, 8)
+	if len(r.Header.Values("Cookie")) > 0 {
+		in.cookies = make(map[string][]string, 8)
 		for _, ck := range r.Cookies() {
-			if _, ok := in.cookies[ck.Name]; !ok {
-				in.cookies[ck.Name] = ck.Value
-			}
+			in.cookies[ck.Name] = append(in.cookies[ck.Name], ck.Value)
 		}
 	}
 	return in
@@ -640,15 +670,21 @@ func (e *Engine) Eval(r *http.Request, clientIP netip.Addr) (Decision, bool) {
 
 // EvalRequest 评估请求阶段规则；含响应条件的规则在本阶段跳过。
 func (e *Engine) EvalRequest(r *http.Request, clientIP netip.Addr, body []byte, bodyReady bool) (Decision, bool) {
-	return e.eval(r, clientIP, ResponseInput{RequestBody: body, RequestBodyReady: bodyReady}, false)
+	return e.eval(r, clientIP, ResponseInput{RequestBody: body, RequestBodyReady: bodyReady}, false, false)
 }
 
 // EvalResponse 评估含响应条件的规则，请求条件仍在同一规则内按 AND 参与匹配。
 func (e *Engine) EvalResponse(r *http.Request, clientIP netip.Addr, in ResponseInput) (Decision, bool) {
-	return e.eval(r, clientIP, in, true)
+	return e.eval(r, clientIP, in, true, false)
 }
 
-func (e *Engine) eval(r *http.Request, clientIP netip.Addr, response ResponseInput, responsePhase bool) (Decision, bool) {
+// EvalResponseHeaders 仅评估不含 response_body 条件的响应头规则（用于 WriteHeader/切直通前即时拦截，
+// 防止超大响应体或流式/Flush 绕过 response_header 阻断规则，N-01）。
+func (e *Engine) EvalResponseHeaders(r *http.Request, clientIP netip.Addr, in ResponseInput) (Decision, bool) {
+	return e.eval(r, clientIP, in, true, true)
+}
+
+func (e *Engine) eval(r *http.Request, clientIP netip.Addr, response ResponseInput, responsePhase, headersOnly bool) (Decision, bool) {
 	if e == nil || len(e.rules) == 0 {
 		return Decision{}, false
 	}
@@ -660,6 +696,9 @@ func (e *Engine) eval(r *http.Request, clientIP netip.Addr, response ResponseInp
 	in.responseBodyReady = response.BodyReady
 	for _, rule := range e.rules {
 		if !rule.enabled || rule.responsePhase != responsePhase {
+			continue
+		}
+		if headersOnly && rule.responseBody {
 			continue
 		}
 		matched := true

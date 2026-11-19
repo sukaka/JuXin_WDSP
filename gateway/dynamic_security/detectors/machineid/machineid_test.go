@@ -422,3 +422,73 @@ func findMIDMatch(ctx *dsctx.RequestContext, ruleID string) *dsctx.DetectorMatch
 }
 
 var errFakeStore = errors.New("fake store down")
+
+func TestC07MatchBindingPathCanonicalAndBoundary(t *testing.T) {
+	cfg := &Config{
+		Bindings: []Binding{
+			{ID: "b-api", PathPrefix: "/api", Mode: ModeProtect},
+			{ID: "b-exact", PathExact: "/exact/endpoint", Mode: ModeProtect},
+		},
+	}
+	for _, wantMatch := range []string{"/api", "/api/", "/api/v1", "//api//v1", "/x/../api/v1", "/./exact//endpoint", "/a/../exact/endpoint"} {
+		if !cfg.MatchBindingPath(wantMatch) {
+			t.Fatalf("MatchBindingPath(%q) = false, want true", wantMatch)
+		}
+	}
+	for _, wantNoMatch := range []string{"/apiv2", "/apiv2/orders", "/api_admin", "/exact/endpoint/extra"} {
+		if cfg.MatchBindingPath(wantNoMatch) {
+			t.Fatalf("MatchBindingPath(%q) = true, want false (must enforce '/' boundary)", wantNoMatch)
+		}
+	}
+}
+
+func TestH10ChunkedOversizedAndReplayTTLWindow(t *testing.T) {
+	priv := genEDPriv(t)
+	edPub := priv.Public().(ed25519.PublicKey)
+	reg := testRegistry(t, httpsig.AlgEd25519, edPub, nil)
+	created := testNow.Add(-10 * time.Second).Unix()
+	expires := testNow.Add(60 * time.Second).Unix()
+
+	t.Run("chunked 无 content-digest + BodyUnavailableExtension 必须 fail-closed UNAVAILABLE", func(t *testing.T) {
+		// 构造未覆盖 content-digest 的签名头，模拟攻击者发送 >4MiB chunked 请求试图当作空体通过
+		r := signRequest(t, "POST", "/foo", nil, priv, created, expires, "nonce-chunked-1")
+		r.ContentLength = -1
+		r.Body = http.NoBody
+		cfg := &Config{
+			AppID:    "app-1",
+			Bindings: []Binding{{ID: "app-1|/foo", PathPrefix: "/foo", Mode: ModeProtect}},
+			Registry: reg, IdentitySalt: "test-salt",
+			Now: func() time.Time { return testNow },
+		}
+		ctx := dsctx.New("req-h10-chunked", dsctx.DefaultParseLimits())
+		ctx.SetExtension(BodyUnavailableExtension, "body_exceeds_preserve_limit")
+		Evaluate(ctx, r, nil, cfg, wrapReplay(newFakeReplay()), nil, true)
+		res := ResultFromContext(ctx)
+		if res == nil || res.Status != StatusUnavailable {
+			t.Fatalf("chunked 超限请求不得被当作空体 VERIFIED，应 UNAVAILABLE: %+v", res)
+		}
+		if findMIDMatch(ctx, "machineid.body_unavailable") == nil {
+			t.Fatalf("缺少 machineid.body_unavailable 明细: %+v", ctx.CopyMatches())
+		}
+	})
+
+	t.Run("proofTTL 覆盖完整 expires+skew 接受窗口", func(t *testing.T) {
+		skew := int64(30)
+		p := &httpsig.Params{Created: testNow.Unix(), Expires: testNow.Add(120 * time.Second).Unix()}
+		ttl := proofTTL(p, testNow, skew)
+		if ttl != 150*time.Second {
+			t.Fatalf("proofTTL=%v want 150s (expires+skew)", ttl)
+		}
+		// 已过 expires 但仍在 expires+skew 容差窗内：TTL 仍须覆盖剩余 skew 窗
+		afterExp := testNow.Add(130 * time.Second)
+		ttlInSkew := proofTTL(p, afterExp, skew)
+		if ttlInSkew != 20*time.Second {
+			t.Fatalf("skew 窗内 proofTTL=%v want 20s", ttlInSkew)
+		}
+		// 最大正偏移边界（created = now+skew, expires = now+skew+120）：上限 120+2*skew = 180s
+		pMax := &httpsig.Params{Created: testNow.Add(30 * time.Second).Unix(), Expires: testNow.Add(150 * time.Second).Unix()}
+		if ttlMax := proofTTL(pMax, testNow, skew); ttlMax != 180*time.Second {
+			t.Fatalf("最大偏移边界 proofTTL=%v want 180s", ttlMax)
+		}
+	})
+}

@@ -6,6 +6,7 @@ package mcpguard
 import (
 	"net"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 
@@ -35,7 +36,7 @@ func (rc *chainRecorder) checkArgConstraints(tool *Tool, arguments any) *map[str
 		}
 		switch c.Kind {
 		case ConstraintPathPrefix:
-			if !hasPrefixAny(s, c.Allow) {
+			if !pathPrefixAllowed(s, c.Allow) {
 				return &map[string]string{
 					"tool": truncateString(tool.Name, 128), "field": c.Field, "kind": c.Kind,
 					"value_len": strconv.Itoa(len(s)), "value_fp": fingerprint(rc.cfg.IdentitySalt, s),
@@ -59,10 +60,35 @@ func (rc *chainRecorder) checkArgConstraints(tool *Tool, arguments any) *map[str
 	return nil
 }
 
-// hasPrefixAny 前缀集匹配（任一允许前缀即通过）。
-func hasPrefixAny(s string, allow []string) bool {
+// pathPrefixAllowed 安全路径前缀集匹配：拒绝 NUL、反斜杠与任意 ".." 穿越段，
+// 经 path.Clean 规范化后按目录边界比对（/allowed 匹配 /allowed 与 /allowed/...，
+// 不匹配 /allowed_evil 或 /allowed/../etc/passwd）。
+func pathPrefixAllowed(s string, allow []string) bool {
+	if s == "" || strings.ContainsRune(s, '\x00') || strings.ContainsRune(s, '\\') {
+		return false
+	}
+	for _, seg := range strings.Split(s, "/") {
+		if seg == ".." {
+			return false
+		}
+	}
+	clean := path.Clean(s)
+	if clean == ".." || strings.HasPrefix(clean, "../") {
+		return false
+	}
 	for _, p := range allow {
-		if p != "" && strings.HasPrefix(s, p) {
+		if p == "" || strings.ContainsRune(p, '\x00') || strings.ContainsRune(p, '\\') {
+			continue
+		}
+		cleanP := path.Clean(p)
+		if cleanP == "/" {
+			if strings.HasPrefix(clean, "/") {
+				return true
+			}
+			continue
+		}
+		base := strings.TrimSuffix(cleanP, "/")
+		if clean == base || strings.HasPrefix(clean, base+"/") {
 			return true
 		}
 	}

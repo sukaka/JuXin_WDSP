@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 )
 
@@ -74,11 +75,7 @@ func ExtractInstanceRef(instanceKeyParam string, p *parser.Parsed) string {
 		if err != nil || pos < 0 {
 			return ""
 		}
-		body := strings.TrimPrefix(p.RawPath, "/")
-		if body == "" {
-			return ""
-		}
-		segs := strings.Split(body, "/")
+		segs := normalizer.CanonicalSegments(p.RawPath)
 		if pos >= len(segs) {
 			return ""
 		}

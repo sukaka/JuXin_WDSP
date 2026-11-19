@@ -37,6 +37,7 @@ import (
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/coverage"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser/mcprpc"
 )
@@ -129,7 +130,7 @@ type Config struct {
 	resolved *Endpoint
 }
 
-// ForEndpoint 端点解析（精确匹配、大小写敏感——与反代路径语义一致）；
+// ForEndpoint 端点解析（规范化路径后精确匹配、大小写敏感——消除 '//' 与 '.'/'..' 差异）；
 // 命中返回单端点作用域 Config（resolved 承载），未命中 nil（零行为）。
 func (c *Config) ForEndpoint(appID, endpointPath string) *Config {
 	if c == nil {
@@ -139,9 +140,19 @@ func (c *Config) ForEndpoint(appID, endpointPath string) *Config {
 	if !ok {
 		return nil
 	}
-	ep, ok := eps[endpointPath]
+	canon := normalizer.CanonicalPath(endpointPath)
+	ep, ok := eps[canon]
 	if !ok {
-		return nil
+		for k, v := range eps {
+			if normalizer.CanonicalPath(k) == canon {
+				ep = v
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil
+		}
 	}
 	e := ep
 	return &Config{IdentitySalt: c.IdentitySalt, resolved: &e}
@@ -263,12 +274,20 @@ func HandleParseError(ctx *dsctx.RequestContext, perr error, cfg *Config, appID 
 	cov.Scope.Bytes = int64(msgBytes)
 	switch {
 	case errorsIsShape(perr):
+		rc := &chainRecorder{ctx: ctx, cov: cov, cfg: cfg, ep: ep, engineProtect: engineProtect}
+		if rc.doubleGate() {
+			rc.violation("mcp.unsupported_shape", CodeArgumentRejected, http.StatusForbidden,
+				map[string]string{"shape": "batch_array", "reason_code": "MCP_UNSUPPORTED_SHAPE"})
+			emitCoverageMatch(ctx, cov, map[string]string{"shape": "batch_array"}, "partial", "")
+			cov.Status = coverage.StatusPartial
+			return cov
+		}
 		ctx.AddMatch(dsctx.DetectorMatch{
 			Detector: "mcpguard",
 			RuleID:   "mcp.unsupported_shape",
 			Category: "OBSERVE",
 			Severity: "LOW",
-			Message:  "mcp batch shape (removed in frozen protocol revision): pass through, not an attack verdict",
+			Message:  "mcp batch shape (removed in frozen protocol revision): pass through in OBSERVE mode",
 			Evidence: map[string]string{"shape": "batch_array"},
 		})
 		emitCoverageMatch(ctx, cov, map[string]string{"shape": "batch_array"}, "not_applicable", "")

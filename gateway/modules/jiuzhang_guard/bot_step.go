@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/botchallenge"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/clientip"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/events"
@@ -44,7 +45,8 @@ import (
 func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler, base events.Event, res clientip.Result) error {
 	// 发布冒烟是独立 WDSP 内部精确端点：必须在 bp==nil 与 RELEASED 分支之前处理，
 	// 且无论认证成败都不得进入 Bot、API/WAF 或 reverse_proxy 下游。
-	if r.URL.Path == publishSmokePath {
+	canonPath := normalizer.CanonicalPath(r.URL.Path)
+	if canonPath == publishSmokePath {
 		return g.servePublishSmoke(w, r)
 	}
 	bp := g.botPolicy
@@ -78,7 +80,7 @@ func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next cad
 	// 1. 保留命名空间最前置本地处理（verify 固定协议端点 / 墓碑；全部结局本地响应，
 	// 结构上不可能反向代理——任务书 §3.2 末段）。服务未装配且保留已解除（RELEASED）
 	// 时不抢占业务路径（首次 OFF 且从未启用的应用不注册保留路由）。
-	if strings.HasPrefix(r.URL.Path, botReservedNamespace) {
+	if strings.HasPrefix(canonPath, botReservedNamespace) {
 		if svc != nil || botNamespaceActive(bp) {
 			return g.serveBotNamespace(w, r, bp, cc)
 		}
@@ -91,7 +93,7 @@ func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next cad
 	}
 
 	// 2. 选择器（显式配置路径；不匹配零行为）
-	if !botSelectorMatch(bp.Selectors, r.URL.Path) {
+	if !botSelectorMatch(bp.Selectors, canonPath) {
 		return g.serveNext(w, r, next)
 	}
 
@@ -115,10 +117,21 @@ func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next cad
 	}
 
 	// 4. 挑战合格性（任务书 §3.1：仅显式配置路径上的 HTTPS GET 浏览器文档导航；
-	// HEAD/POST/JSON/上传/WebSocket/gRPC/流式不返回 HTML 挑战，默认仅观测记录 INELIGIBLE）
-	if ok, reason := botEligibility(r); !ok {
-		svc.LogObservedOffer(r, cc, reason)
-		dispo.RecordStep(ExecutorBot, StepObserved, reason)
+	// HEAD/POST/JSON/上传/WebSocket/gRPC/流式不返回 HTML 挑战，默认仅观测记录 INELIGIBLE）。
+	// M-G2：当风险引擎已判定 CHALLENGE 且 Bot 处于 PROTECT 模式时，仅以协议硬条件
+	// （HTTPS + GET + 非 Upgrade）过滤，避免攻击者通过伪造 X-Requested-With / Accept: */*
+	// 或 Sec-Fetch-* 头静默绕过风险挑战；常规非风险 Bot 判定维持原 botEligibility（BOT-001..024）。
+	pendingRisk := pendingRiskChallengeFor(r)
+	var eligOK bool
+	var eligReason string
+	if pendingRisk != nil && bp.Mode == botModeProtect {
+		eligOK, eligReason = botRiskChallengeEligibility(r)
+	} else {
+		eligOK, eligReason = botEligibility(r)
+	}
+	if !eligOK {
+		svc.LogObservedOffer(r, cc, eligReason)
+		dispo.RecordStep(ExecutorBot, StepObserved, eligReason)
 		return g.serveNext(w, r, next)
 	}
 
@@ -137,7 +150,7 @@ func (g *Guard) serveNextViaBot(w http.ResponseWriter, r *http.Request, next cad
 	// 5. 风险达阈挑战直接复用本步骤，不再要求 Bot 多信号二次达阈；
 	// 无风险待挑战事实时保持原有多信号判定（≥2 独立信号组且 ≥1 行为组）。
 	dec := botDecision{}
-	if pendingRiskChallengeFor(r) != nil {
+	if pendingRisk != nil {
 		dec = botDecision{challenge: true, reason: "IDENTITY_RISK_POLICY"}
 	} else {
 		dec = g.evaluateBotSignals(r, bp)
@@ -244,12 +257,13 @@ func (g *Guard) serveBotNamespace(w http.ResponseWriter, r *http.Request, bp *bo
 		// OFF 墓碑 verify POST 本地 404（旧挑战提交绝不落入业务源站）；
 		// OBSERVE 依赖缺失 verify POST 503 + Retry-After（状态不可签验，如实）；
 		// 未知子路径一律本地 404。
+		canonPath := normalizer.CanonicalPath(r.URL.Path)
 		status := http.StatusNotFound
 		reason := "BOT_ROUTE_TOMBSTONE"
-		if r.URL.Path == botReservedVerifyPath && r.Method != http.MethodPost {
+		if canonPath == botReservedVerifyPath && r.Method != http.MethodPost {
 			status = http.StatusMethodNotAllowed
 			w.Header().Set("Allow", http.MethodPost)
-		} else if r.URL.Path == botReservedVerifyPath && bp.Mode != botModeOff {
+		} else if canonPath == botReservedVerifyPath && bp.Mode != botModeOff {
 			status = http.StatusServiceUnavailable
 			reason = "BOT_STATE_UNAVAILABLE"
 			w.Header().Set("Retry-After", "15")
@@ -273,20 +287,35 @@ func (g *Guard) serveBotNamespace(w http.ResponseWriter, r *http.Request, bp *bo
 	}
 }
 
-// botSelectorMatch 选择器匹配（路径精确 / 规范化前缀——前缀按完整路径段匹配，
-// 防相邻目录前缀绕过；路径形态非法性在配置校验期已拒绝）。
+// botSelectorMatch 选择器匹配（规范化路径精确 / 规范化前缀——前缀按完整路径段匹配，
+// 防相邻目录前缀及 '//'/'.'/'..' 绕过；路径形态非法性在配置校验期已拒绝）。
 func botSelectorMatch(sels []botSelectorJSON, path string) bool {
+	canonPath := normalizer.CanonicalPath(path)
 	for _, s := range sels {
-		if s.PathExact != "" && path == s.PathExact {
+		if s.PathExact != "" && canonPath == normalizer.CanonicalPath(s.PathExact) {
 			return true
 		}
-		if p := s.PathPrefix; p != "" {
-			if path == p || strings.HasPrefix(path, p+"/") {
-				return true
-			}
+		if p := s.PathPrefix; p != "" && normalizer.PrefixSegmentMatch(p, canonPath) {
+			return true
 		}
 	}
 	return false
+}
+
+// botRiskChallengeEligibility 风险引擎 CHALLENGE 在 PROTECT 下的合格性检查（M-G2）：
+// 仅保留协议层不可挑战条件（非 GET / 非 HTTPS / Upgrade），不被客户端可随意伪造的
+// X-Requested-With / Accept: */* / Sec-Fetch-* 请求头绕过。
+func botRiskChallengeEligibility(r *http.Request) (bool, string) {
+	if r.Method != http.MethodGet {
+		return false, "INELIGIBLE_METHOD"
+	}
+	if r.TLS == nil {
+		return false, "INELIGIBLE_SCHEME"
+	}
+	if r.Header.Get("Upgrade") != "" {
+		return false, "INELIGIBLE_UPGRADE"
+	}
+	return true, ""
 }
 
 // botEligibility 挑战合格性（任务书 §3.1：仅 HTTPS、GET、浏览器文档导航）。

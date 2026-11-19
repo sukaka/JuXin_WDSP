@@ -11,6 +11,7 @@ import (
 
 	dsctx "github.com/jiuzhang-waf/gateway/dynamic_security/context"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 )
 
@@ -431,8 +432,8 @@ func pathSegmentValue(p *parser.Parsed, name, pathIdx string) (string, bool) {
 	if p == nil {
 		return "", false
 	}
-	norm := strings.Split(strings.Trim(p.NormalizedPath, "/"), "/")
-	raw := strings.Split(strings.Trim(p.RawPath, "/"), "/")
+	norm := normalizer.CanonicalSegments(p.NormalizedPath)
+	raw := normalizer.CanonicalSegments(p.RawPath)
 	// 优先按段序号
 	if pathIdx != "" {
 		if i, err := strconv.Atoi(pathIdx); err == nil && i >= 0 && i < len(raw) && i < len(norm) {

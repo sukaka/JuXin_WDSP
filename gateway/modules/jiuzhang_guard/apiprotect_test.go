@@ -873,3 +873,102 @@ func TestEmitAPIEvent_APILevelOmittedWithoutExtension(t *testing.T) {
 		t.Fatalf("api_level key must be omitted: %s", data)
 	}
 }
+
+// C-10 回归：
+// 1. >4MiB 请求体不得跳过请求侧元数据检查（准入/BOLA 等）或响应侧 MASK_RESPONSE；
+// 2. >1MiB 截断体或 >4MiB 未保全请求体在含体依赖 PROTECT 策略（Schema/ForbiddenField/GraphQL/FAIL_CLOSED）
+//    的端点上必须 fail-closed 413/阻断，不得静默放行。
+func TestC10OversizedAndTruncatedBodyNoBypass(t *testing.T) {
+	t.Run(">4MiB 请求仍执行响应侧 MASK_RESPONSE", func(t *testing.T) {
+		g, _ := newAPIResponseTestGuard(t, "PROTECT", []maskRuleJSON{
+			{EndpointKey: "POST /v1/users", FieldPath: "phone", Algorithm: "MASK"},
+		})
+		big := strings.Repeat("a", maxBodyPreserveBytes+32)
+		var gotLen int
+		next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+			b, _ := io.ReadAll(r.Body)
+			gotLen = len(b)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"phone":"13800138000"}`)
+			return nil
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/users", strings.NewReader(big))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		if err := g.serveNext(rec, req, next); err != nil {
+			t.Fatalf("serveNext: %v", err)
+		}
+		if gotLen != len(big) {
+			t.Fatalf("下游请求体应保持完整: %d != %d", gotLen, len(big))
+		}
+		if strings.Contains(rec.Body.String(), "13800138000") {
+			t.Fatalf(">4MiB 请求不得绕过响应脱敏: %s", rec.Body.String())
+		}
+	})
+
+	t.Run(">1MiB 截断体命中 FormalSchema PROTECT 返回 413 阻断", func(t *testing.T) {
+		g, _ := newAPITestGuard(t, "PROTECT", nil)
+		g.APIFormalSchemas = map[string]map[string]string{
+			"POST /v1/orders": {"amount": "number"},
+		}
+		overParser := `{"pad":"` + strings.Repeat("x", (1<<20)+1024) + `"}`
+		called := false
+		next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+			called = true
+			return nil
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/orders", strings.NewReader(overParser))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		if err := g.serveNext(rec, req, next); err != nil {
+			t.Fatalf("serveNext: %v", err)
+		}
+		if called || rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("Schema PROTECT 截断体必须 413 阻断: called=%v code=%d body=%s", called, rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run(">4MiB 请求体命中 FAIL_CLOSED 策略返回 413 阻断", func(t *testing.T) {
+		g, _ := newAPITestGuard(t, "PROTECT", nil)
+		g.APIResponseFailPolicy = "FAIL_CLOSED"
+		big := strings.Repeat("z", maxBodyPreserveBytes+64)
+		called := false
+		next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+			called = true
+			return nil
+		})
+		req := httptest.NewRequest(http.MethodPost, "/v1/items", strings.NewReader(big))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		if err := g.serveNext(rec, req, next); err != nil {
+			t.Fatalf("serveNext: %v", err)
+		}
+		if called || rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("FAIL_CLOSED >4MiB 必须 413 阻断: called=%v code=%d body=%s", called, rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run(">1MiB 截断体命中 GraphQL PROTECT 阻断", func(t *testing.T) {
+		g, _ := newAPITestGuard(t, "PROTECT", nil)
+		g.AppID = "app-gql-c10"
+		g.apiGraphQL = map[string]*pipeline.GraphQLPolicy{
+			"app-gql-c10": {Enabled: true},
+		}
+		overParser := `{"query":"` + strings.Repeat("a", (1<<20)+512) + `"}`
+		called := false
+		next := nextFunc(func(w http.ResponseWriter, r *http.Request) error {
+			called = true
+			return nil
+		})
+		req := httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(overParser))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		if err := g.serveNext(rec, req, next); err != nil {
+			t.Fatalf("serveNext: %v", err)
+		}
+		if called || rec.Code != http.StatusForbidden {
+			t.Fatalf("GraphQL PROTECT 截断体必须阻断: called=%v code=%d body=%s", called, rec.Code, rec.Body.String())
+		}
+	})
+}

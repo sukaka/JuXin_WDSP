@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/counters"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/events"
 	"go.uber.org/zap"
@@ -68,7 +69,7 @@ var verifyErrorMessages = map[string]string{
 // 精确 verify 路径 → ServeVerify；其余子路径本地 404；均不反向代理。
 // 返回 true = 本请求已由 Bot 端点处理（调用方不得再传递）。
 func (s *Service) ServeNamespace(w http.ResponseWriter, r *http.Request, cc CallContext) bool {
-	if r.URL.Path == VerifyPath {
+	if normalizer.CanonicalPath(r.URL.Path) == VerifyPath {
 		s.ServeVerify(w, r, cc)
 		return true
 	}

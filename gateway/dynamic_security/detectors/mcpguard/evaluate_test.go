@@ -214,8 +214,13 @@ func TestArgConstraints(t *testing.T) {
 		want bool // true=违规
 	}{
 		{"file_read", map[string]any{"path": "/var/data/a.txt"}, false},
+		{"file_read", map[string]any{"path": "/var/data"}, false},
 		{"file_read", map[string]any{"path": "/etc/passwd"}, true},
 		{"file_read", map[string]any{"path": "/var/datax/a"}, true},
+		{"file_read", map[string]any{"path": "/var/data/../etc/passwd"}, true},
+		{"file_read", map[string]any{"path": "/var/data/sub/../../etc/passwd"}, true},
+		{"file_read", map[string]any{"path": "/var/data\\..\\etc\\passwd"}, true},
+		{"file_read", map[string]any{"path": "/var/data/a\x00.txt"}, true},
 		{"file_read", map[string]any{}, false},           // 缺失由 Schema 层判（本工具无 Schema——约束不冒充存在性）
 		{"file_read", map[string]any{"path": 42}, false}, // 非字符串由类型层判
 		{"net_fetch", map[string]any{"url": "https://example.com/x"}, false},
@@ -396,4 +401,39 @@ func TestRuleIDVerbatim(t *testing.T) {
 			t.Errorf("rule_id 未产出: %s", rule)
 		}
 	}
+}
+
+func TestH11BatchArrayBlockedInProtectAndCanonicalEndpoint(t *testing.T) {
+	t.Run("PROTECT 拒绝批处理数组为 BLOCK", func(t *testing.T) {
+		ctx := newTestCtx()
+		cov := HandleParseError(ctx, shapeErrForTest(), scopedConfig(testCatalog(), ModeProtect), "app-1", true, 32)
+		m := findMatch(ctx, "mcp.unsupported_shape")
+		if m == nil || m.Category != "BLOCK" || m.Evidence["mcp_http_status"] != "403" || m.Evidence["mcp_error_code"] != "-32012" {
+			t.Fatalf("PROTECT 下批处理数组必须 BLOCK: %+v", m)
+		}
+		assertCov(t, cov, coverage.StatusPartial, "")
+	})
+
+	t.Run("OBSERVE 维持 OBSERVE", func(t *testing.T) {
+		ctx := newTestCtx()
+		cov := HandleParseError(ctx, shapeErrForTest(), scopedConfig(testCatalog(), ModeObserve), "app-1", false, 32)
+		m := findMatch(ctx, "mcp.unsupported_shape")
+		if m == nil || m.Category != "OBSERVE" {
+			t.Fatalf("OBSERVE 下批处理数组应 OBSERVE: %+v", m)
+		}
+		assertCov(t, cov, coverage.StatusNotApplicable, coverage.ReasonNAFrozenRule)
+	})
+
+	t.Run("ForEndpoint 规范化路径防绕过", func(t *testing.T) {
+		cfg := &Config{
+			Apps: map[string]map[string]Endpoint{
+				"app-1": {"/mcp/rpc": {Catalog: testCatalog(), Mode: ModeProtect}},
+			},
+		}
+		for _, p := range []string{"/mcp/rpc", "//mcp//rpc", "/x/../mcp/./rpc"} {
+			if cfg.ForEndpoint("app-1", p) == nil {
+				t.Fatalf("ForEndpoint(%q) = nil, want match", p)
+			}
+		}
+	})
 }

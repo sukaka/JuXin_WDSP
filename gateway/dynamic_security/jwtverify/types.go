@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 )
 
 // Status 验证状态（冻结契约 §5）。
@@ -288,10 +290,16 @@ func normalizeSelector(s *Selector) error {
 	if len(path) > 1024 {
 		return policyErr("selector 路径过长")
 	}
-	if s.PathPrefix != "" && len(s.PathPrefix) > 1 {
-		s.PathPrefix = strings.TrimRight(s.PathPrefix, "/")
-		if s.PathPrefix == "" {
-			s.PathPrefix = "/"
+	if s.PathExact != "" {
+		s.PathExact = normalizer.CanonicalPath(s.PathExact)
+	}
+	if s.PathPrefix != "" {
+		s.PathPrefix = normalizer.CanonicalPath(s.PathPrefix)
+		if len(s.PathPrefix) > 1 {
+			s.PathPrefix = strings.TrimRight(s.PathPrefix, "/")
+			if s.PathPrefix == "" {
+				s.PathPrefix = "/"
+			}
 		}
 	}
 	seen := make(map[string]struct{}, len(s.Methods))
@@ -346,6 +354,7 @@ func derivedIssuerConfigID(issuer string) string {
 // token_required（重叠时 true 优先）。path 须为已规范的请求路径（不含 query）。
 func matchSelectors(selectors []Selector, method, path string) (matched, tokenRequired bool) {
 	method = strings.ToUpper(method)
+	path = normalizer.CanonicalPath(path)
 	for i := range selectors {
 		s := &selectors[i]
 		if len(s.Methods) > 0 {

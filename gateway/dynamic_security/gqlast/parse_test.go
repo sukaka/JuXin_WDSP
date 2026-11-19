@@ -200,3 +200,90 @@ func TestNodesBudget(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestC11FragmentDepthAliasAndDAGBomb(t *testing.T) {
+	t.Run("fragment 链深度绕过被拦截", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString("query { a { ...F0 } }\n")
+		for i := 0; i < 25; i++ {
+			b.WriteString("fragment F")
+			b.WriteString(strings.Repeat("", 0))
+			b.WriteString(itoaForTest(i))
+			b.WriteString(" on T { x { ...F")
+			b.WriteString(itoaForTest(i + 1))
+			b.WriteString(" } }\n")
+		}
+		b.WriteString("fragment F25 on T { leaf }\n")
+		mustErr(t, b.String(), ErrTooDeep)
+	})
+
+	t.Run("fragment 展开 alias 绕过被拦截", func(t *testing.T) {
+		q := `query { a { ...F1 } b { ...F1 } c { ...F1 } }
+fragment F1 on T { ...F2 ...F3 }
+fragment F2 on T { x1: f x2: f x3: f x4: f x5: f }
+fragment F3 on T { y1: f y2: f y3: f y4: f y5: f }`
+		lim := DefaultLimits()
+		lim.MaxAliases = 20 // 展开后 3 * 10 = 30 > 20
+		_, err := ParseBounded(q, lim)
+		if err == nil || err.(*Error).Kind != ErrTooManyAliases {
+			t.Fatalf("展开后超 alias 上限应返回 ErrTooManyAliases, got %v", err)
+		}
+	})
+
+	t.Run("DAG 指数展开炸弹在线性时间内被拦截", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString("query { ...F0 }\n")
+		for i := 0; i < 30; i++ {
+			b.WriteString("fragment F" + itoaForTest(i) + " on T { x { ...F" + itoaForTest(i+1) + " } y { ...F" + itoaForTest(i+1) + " } }\n")
+		}
+		b.WriteString("fragment F30 on T { leaf }\n")
+		lim := DefaultLimits()
+		lim.MaxDepth = 50
+		lim.MaxNodes = 1 << 20
+		lim.MaxFragmentExp = 1000
+		_, err := ParseBounded(b.String(), lim)
+		if err == nil || err.(*Error).Kind != ErrTooManyNodes {
+			t.Fatalf("DAG fragment 炸弹应触发 ErrTooManyNodes, got %v", err)
+		}
+	})
+
+	t.Run("prescan 正确识别语法 alias 且不误伤字面量/参数/字段名 alias", func(t *testing.T) {
+		// 正常查询含大量名为 "alias" 的字段与参数键值不误拒
+		var benign strings.Builder
+		benign.WriteString("query Q($id: ID!) { ")
+		for i := 0; i < 15; i++ {
+			benign.WriteString("alias(filter: { key: \"a:b\", k2: \"c:d\" }) ")
+		}
+		benign.WriteString("}")
+		lim := DefaultLimits()
+		lim.MaxAliases = 5
+		if _, err := ParseBounded(benign.String(), lim); err != nil {
+			t.Fatalf("字面量 alias 与参数键值不应触发 ErrTooManyAliases: %v", err)
+		}
+
+		// prescan 自身应对真实语法 alias 计数
+		var bad strings.Builder
+		bad.WriteString("query { ")
+		for i := 0; i < 10; i++ {
+			bad.WriteString("a" + itoaForTest(i) + ": field ")
+		}
+		bad.WriteString("}")
+		if _, err := prescan(bad.String(), lim); err == nil || err.(*Error).Kind != ErrTooManyAliases {
+			t.Fatalf("prescan 应识别真实语法 alias 超限, got %v", err)
+		}
+	})
+}
+
+func itoaForTest(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [12]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}

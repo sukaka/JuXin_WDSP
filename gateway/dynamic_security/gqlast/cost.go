@@ -98,26 +98,71 @@ func (b BudgetConfig) withDefaults() BudgetConfig {
 	return b
 }
 
+// defaultMaxCostSteps 成本评估硬展开/节点步数上限（防极端 AST/DAG 消耗 CPU）。
+const defaultMaxCostSteps = 50000
+
 // CostOf 计算被选 operation 的成本并做单请求预算判定。
 // doc 必须来自 ParseBounded（深度/节点/循环已有硬边界）；op 必须属于 doc。
 func CostOf(doc *Document, op *Operation, weights WeightsConfig, budget BudgetConfig) CostOutcome {
 	weights = weights.withDefaults()
 	budget = budget.withDefaults()
-	sat := &satFlag{}
-	c := costOfSelectionSet(op.Definition.SelectionSet, weights, doc.AST, sat)
-	out := CostOutcome{Cost: c, Budget: budget.PerRequest, Saturated: sat.hit}
-	if sat.hit || c > budget.PerRequest {
+	frags := make(map[string]*ast.FragmentDefinition, len(doc.AST.Fragments))
+	for _, f := range doc.AST.Fragments {
+		frags[f.Name] = f
+	}
+	st := &costState{
+		weights:    weights,
+		frags:      frags,
+		fragMemo:   make(map[string]fragCostEntry, len(frags)),
+		fragActive: make(map[string]bool, len(frags)),
+		maxSteps:   defaultMaxCostSteps,
+	}
+	c := st.costOfSelectionSet(op.Definition.SelectionSet)
+	out := CostOutcome{Cost: c, Budget: budget.PerRequest, Saturated: st.saturated}
+	if st.saturated || c > budget.PerRequest {
 		out.Exceeded = true
 	}
 	return out
 }
 
-type satFlag struct{ hit bool }
+type fragCostEntry struct {
+	cost      int64
+	saturated bool
+}
+
+type costState struct {
+	weights    WeightsConfig
+	frags      map[string]*ast.FragmentDefinition
+	fragMemo   map[string]fragCostEntry
+	fragActive map[string]bool
+	steps      int
+	maxSteps   int
+	saturated  bool
+}
+
+func (st *costState) satAdd(a, b int64) int64 {
+	if a > satCap-b {
+		st.saturated = true
+		return satCap
+	}
+	return a + b
+}
+
+func (st *costState) satMul(a, b int64) int64 {
+	if a == 0 || b == 0 {
+		return 0
+	}
+	if a > satCap/b {
+		st.saturated = true
+		return satCap
+	}
+	return a * b
+}
 
 // costOfSelectionSet 递归成本：response key 合并（D2）——同 key 多次出现
-// base 计 1 次、子成本取 max；fragment 经 expandFragment 展开（循环已由 ParseBounded 拦截，
-// 此处对展开次数做并节点预算内的防御性封顶）。
-func costOfSelectionSet(set ast.SelectionSet, weights WeightsConfig, doc *ast.QueryDocument, sat *satFlag) int64 {
+// base 计 1 次、子成本取 max；fragment 经 fragMemo 记忆化避免 DAG 指数展开，
+// 同时对步数与环路做防御性封顶（超限即 saturated=true 判超预算）。
+func (st *costState) costOfSelectionSet(set ast.SelectionSet) int64 {
 	type fieldCost struct {
 		base    int64
 		subCost int64
@@ -135,36 +180,59 @@ func costOfSelectionSet(set ast.SelectionSet, weights WeightsConfig, doc *ast.Qu
 		order = append(order, key)
 	}
 	for _, sel := range set {
+		st.steps++
+		if st.steps > st.maxSteps {
+			st.saturated = true
+			return satCap
+		}
 		switch s := sel.(type) {
 		case *ast.Field:
 			key := s.Alias
 			if key == "" {
 				key = s.Name
 			}
-			base := fieldBaseCost(s, weights)
-			sub := costOfSelectionSet(s.SelectionSet, weights, doc, sat)
+			base := fieldBaseCost(s, st.weights)
+			sub := st.costOfSelectionSet(s.SelectionSet)
 			if len(s.SelectionSet) > 0 {
-				sub = satMul(sizeFactor(s, weights), sub)
+				sub = st.satMul(sizeFactor(s, st.weights), sub)
 			}
 			add(key, base, sub)
 		case *ast.FragmentSpread:
-			frag := findFragment(doc, s.Name)
+			frag := st.frags[s.Name]
 			if frag == nil {
-				add(s.Name, weights.DefaultFieldWeight, 0)
+				add(s.Name, st.weights.DefaultFieldWeight, 0)
 				continue
 			}
-			sub := costOfSelectionSet(frag.SelectionSet, weights, doc, sat)
-			add(s.Name, weights.DefaultFieldWeight, sub)
+			var sub int64
+			if entry, ok := st.fragMemo[s.Name]; ok {
+				if entry.saturated {
+					st.saturated = true
+				}
+				sub = entry.cost
+			} else if st.fragActive[s.Name] {
+				st.saturated = true
+				return satCap
+			} else {
+				st.fragActive[s.Name] = true
+				prevSat := st.saturated
+				st.saturated = false
+				sub = st.costOfSelectionSet(frag.SelectionSet)
+				fragSat := st.saturated
+				st.saturated = prevSat || fragSat
+				delete(st.fragActive, s.Name)
+				st.fragMemo[s.Name] = fragCostEntry{cost: sub, saturated: fragSat}
+			}
+			add(s.Name, st.weights.DefaultFieldWeight, sub)
 		case *ast.InlineFragment:
-			sub := costOfSelectionSet(s.SelectionSet, weights, doc, sat)
-			add("inline:"+s.TypeCondition, weights.DefaultFieldWeight, sub)
+			sub := st.costOfSelectionSet(s.SelectionSet)
+			add("inline:"+s.TypeCondition, st.weights.DefaultFieldWeight, sub)
 		}
 	}
 	sort.Strings(order) // 确定性：合并求和与顺序无关，但排序使黄金样本可 diff
 	var total int64
 	for _, k := range order {
 		fc := merged[k]
-		total = satAdd(total, satAdd(fc.base, fc.subCost))
+		total = st.satAdd(total, st.satAdd(fc.base, fc.subCost))
 	}
 	return total
 }
@@ -225,9 +293,10 @@ func isListType(t *ast.Type) bool {
 
 // ---------- 成本缓存（D9） ----------
 
-// CostCacheKey 缓存键：文档摘要 + schemaVersion + policyVersion（D9）。
+// CostCacheKey 缓存键：文档摘要 + operation 名称 + schemaVersion + policyVersion（D9）。
 type CostCacheKey struct {
 	DocDigest     string
+	OperationName string
 	SchemaVersion string
 	PolicyVersion string
 }
@@ -321,7 +390,16 @@ func (c *CostCache) Put(k CostCacheKey, v int64) {
 
 // CostOfCached 带缓存的成本计算（docDigest 由调用方经 DigestDocument 计算并随版本传入）。
 func CostOfCached(cache *CostCache, doc *Document, op *Operation, weights WeightsConfig, budget BudgetConfig, schemaVersion, policyVersion string) CostOutcome {
-	key := CostCacheKey{DocDigest: DigestDocument(doc.Query), SchemaVersion: schemaVersion, PolicyVersion: policyVersion}
+	opName := ""
+	if op != nil {
+		opName = op.Name
+	}
+	key := CostCacheKey{
+		DocDigest:     DigestDocument(doc.Query),
+		OperationName: opName,
+		SchemaVersion: schemaVersion,
+		PolicyVersion: policyVersion,
+	}
 	if cache != nil {
 		if v, ok := cache.Get(key); ok {
 			out := CostOutcome{Cost: v, Budget: budget.withDefaults().PerRequest, Note: "cache:hit"}

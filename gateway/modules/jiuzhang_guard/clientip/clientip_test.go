@@ -207,3 +207,53 @@ func TestXRealIPTrustedValueFallback(t *testing.T) {
 		t.Errorf("trusted x-real-ip value must fallback to connection: %+v", res)
 	}
 }
+
+// H-07 回归：多同名头 IP 伪造防护（X-Forwarded-For / Forwarded / Custom 合并全量头；多冲突 X-Real-IP 判非法回落连接源）。
+func TestH07MultiHeaderIPSpoofing(t *testing.T) {
+	rs := NewResolver(0)
+
+	t.Run("multiple X-Forwarded-For headers joined", func(t *testing.T) {
+		set := mustSet(t, trustedproxy.Proxy{Name: "lb", Prefix: pfx(t, "10.0.0.1"), HeaderType: trustedproxy.HeaderXForwardedFor})
+		r := req("10.0.0.1:8080", nil)
+		// 攻击者注入第一行 XFF，可信代理追加第二行 XFF 含真实客户端 IP
+		r.Header.Add("X-Forwarded-For", "1.2.3.4")
+		r.Header.Add("X-Forwarded-For", "198.51.100.88")
+		res := rs.Resolve(r, set)
+		if res.ClientIP.String() != "198.51.100.88" || res.Source != SourceXForwardedFor {
+			t.Fatalf("H-07: must join all X-Forwarded-For headers and pick rightmost untrusted: %+v", res)
+		}
+	})
+
+	t.Run("multiple Forwarded headers joined", func(t *testing.T) {
+		set := mustSet(t, trustedproxy.Proxy{Name: "cdn", Prefix: pfx(t, "10.0.0.3"), HeaderType: trustedproxy.HeaderForwarded})
+		r := req("10.0.0.3:8080", nil)
+		r.Header.Add("Forwarded", "for=1.2.3.4")
+		r.Header.Add("Forwarded", "for=198.51.100.99")
+		res := rs.Resolve(r, set)
+		if res.ClientIP.String() != "198.51.100.99" || res.Source != SourceForwarded {
+			t.Fatalf("H-07: must join all Forwarded headers: %+v", res)
+		}
+	})
+
+	t.Run("multiple Custom headers joined", func(t *testing.T) {
+		set := mustSet(t, trustedproxy.Proxy{Name: "cdn", Prefix: pfx(t, "10.0.0.4"), HeaderType: trustedproxy.HeaderCustom, CustomHeaderName: "X-True-Client"})
+		r := req("10.0.0.4:8080", nil)
+		r.Header.Add("X-True-Client", "1.2.3.4")
+		r.Header.Add("X-True-Client", "198.51.100.77")
+		res := rs.Resolve(r, set)
+		if res.ClientIP.String() != "198.51.100.77" || res.Source != SourceCustomHeader {
+			t.Fatalf("H-07: must join all Custom headers: %+v", res)
+		}
+	})
+
+	t.Run("conflicting multiple X-Real-IP headers rejected as invalid", func(t *testing.T) {
+		set := mustSet(t, trustedproxy.Proxy{Name: "nginx", Prefix: pfx(t, "10.0.0.2"), HeaderType: trustedproxy.HeaderXRealIP})
+		r := req("10.0.0.2:8080", nil)
+		r.Header.Add("X-Real-IP", "1.2.3.4")
+		r.Header.Add("X-Real-IP", "198.51.100.20")
+		res := rs.Resolve(r, set)
+		if !res.HeaderInvalid || res.ClientIP.String() != "10.0.0.2" || res.Source != SourceConnection {
+			t.Fatalf("H-07: conflicting X-Real-IP headers must mark HeaderInvalid and fallback to connection: %+v", res)
+		}
+	})
+}

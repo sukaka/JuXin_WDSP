@@ -284,3 +284,52 @@ func mustJSON(t *testing.T, b Block) []byte {
 	}
 	return d
 }
+
+type failPutValkey struct {
+	*fakeValkey
+}
+
+func (f *failPutValkey) HSet(_ context.Context, _, _, _ string) error {
+	return errors.New("valkey write failed")
+}
+
+// M-G4 回归：items 与 localOnly 严格有界，自动封禁洪泛不得挤出人工封禁，
+// 且短时间突发 PutLocal 不逐次做全表扫描。
+func TestMG4BoundedCacheProtectsManualBlocksAndCapsLocalOnly(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	fk := &failPutValkey{fakeValkey: newFake()}
+	c := NewCache(NewStore(fk, ""), 0)
+	c.now = func() time.Time { return now }
+	c.maxItems = 5
+	c.maxLocalOnly = 5
+	c.sweepInterval = 30 * time.Second
+
+	// 写入 2 条人工封禁
+	_ = c.PutLocal(ctx, Block{ID: "m1", ClientIP: "198.51.100.1", Auto: false, ExpiresAt: now.Add(time.Hour)})
+	_ = c.PutLocal(ctx, Block{ID: "m2", ClientIP: "198.51.100.2", Auto: false, ExpiresAt: now.Add(time.Hour)})
+
+	// 洪泛写入 50 条自动封禁（Valkey 写失败同时压测 localOnly 上限）
+	for i := 10; i < 60; i++ {
+		_ = c.PutLocal(ctx, Block{
+			ID:        "a",
+			ClientIP:  netip.AddrFrom4([4]byte{203, 0, 113, byte(i)}).String(),
+			Auto:      true,
+			ExpiresAt: now.Add(time.Duration(i) * time.Minute),
+		})
+	}
+
+	c.mu.RLock()
+	itemsLen := len(c.items)
+	localLen := len(c.localOnly)
+	c.mu.RUnlock()
+	if itemsLen > 5 || localLen > 5 {
+		t.Fatalf("M-G4: cache maps exceeded cap 5: items=%d localOnly=%d", itemsLen, localLen)
+	}
+	// 两条人工封禁必须完好无损
+	for _, ipStr := range []string{"198.51.100.1", "198.51.100.2"} {
+		if b, ok := c.Blocked(netip.MustParseAddr(ipStr), ""); !ok || b.Auto {
+			t.Fatalf("M-G4: manual block %s must not be evicted by auto flood: %+v ok=%v", ipStr, b, ok)
+		}
+	}
+}

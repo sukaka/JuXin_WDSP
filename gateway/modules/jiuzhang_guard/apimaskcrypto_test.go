@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -166,7 +168,11 @@ func TestServeNextMaskCryptoEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	block, err := aes.NewCipher(key)
+	encKey, err := hkdf.Key(sha256.New, key, nil, "jiuzhang-wdsp-mask-aes-gcm-v1", 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(encKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +181,10 @@ func TestServeNextMaskCryptoEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	nonceSize := gcm.NonceSize()
-	plaintext, err := gcm.Open(nil, payload[:nonceSize], payload[nonceSize:], nil)
+	if _, err := gcm.Open(nil, payload[:nonceSize], payload[nonceSize:], nil); err == nil {
+		t.Fatal("M-G5: Guard ciphertext must require AAD binding")
+	}
+	plaintext, err := gcm.Open(nil, payload[:nonceSize], payload[nonceSize:], []byte("jiuzhang-wdsp-mask-enc-v1\x00kid-1"))
 	if err != nil || string(plaintext) != "plain-secret" {
 		t.Fatalf("Guard ciphertext cannot be decrypted: %q err=%v", plaintext, err)
 	}

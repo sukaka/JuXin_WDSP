@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -552,4 +553,31 @@ func TestMIDEnforceOrderNonBypass(t *testing.T) {
 		t.Fatalf("直达分支不得绕过机器身份 PROTECT: called=%v code=%d", called, rec.Code)
 	}
 	assertMIDBody(t, rec, "machine_identity_failed")
+}
+
+// H-10 + M-G6 回归：chunked >4MiB 无 content-digest 请求在 PROTECT 下必须 413 拒收且标注访问日志 wafActionBlock。
+func TestH10AndMG6MachineIDChunkedOversizedAndAccessLogAnnotate(t *testing.T) {
+	priv, pubPEM := midTestKey(t)
+	g, _, _ := newMIDGuard(t, pubPEM, machineid.ModeProtect, httpsig.NewReplayStore(&fakeMIDEval{}))
+
+	// 构造未覆盖 content-digest 的合法签名头，然后挂上 chunked >4MiB 请求体
+	r := midSignedRequest(t, priv, nil)
+	big := strings.Repeat("x", maxBodyPreserveBytes+16)
+	r.Body = io.NopCloser(strings.NewReader(big))
+	r.ContentLength = -1
+
+	al := &accessLogAnnotation{}
+	r = r.WithContext(context.WithValue(r.Context(), accessLogAnnotationKey{}, al))
+
+	called := false
+	rec := midServe(t, g, r, &called)
+	if called {
+		t.Fatal("chunked >4MiB 机器身份请求不得放行至下游")
+	}
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("chunked >4MiB PROTECT 应 413，实际 %d body=%s", rec.Code, rec.Body.String())
+	}
+	if al.wafAction != wafActionBlock {
+		t.Fatalf("M-G6: 机器身份拦截应标注 wafActionBlock，实际 %q", al.wafAction)
+	}
 }

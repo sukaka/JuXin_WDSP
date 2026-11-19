@@ -92,37 +92,51 @@ func (rs Resolver) Resolve(r *http.Request, proxies *trustedproxy.Set) Result {
 	}
 	res.TrustedProxyUsed = proxy.Name
 
-	// 按可信代理配置的头类型取值（自定义头仅对显式配置 CUSTOM 的代理生效）
+	// 按可信代理配置的头类型取值（自定义头仅对显式配置 CUSTOM 的代理生效）；
+	// 合并全部同名头（r.Header.Values），防止客户端注入前置同名头利用 r.Header.Get 只取首行绕过（H-07）。
 	var values []netip.Addr
 	var headerName string
+	var rawVals []string
+	var raw string
 	switch proxy.HeaderType {
 	case trustedproxy.HeaderXForwardedFor:
 		headerName = "X-Forwarded-For"
-		values, err = parseIPList(r.Header.Get(headerName))
+		rawVals = r.Header.Values(headerName)
+		raw = strings.Join(rawVals, ", ")
+		if len(rawVals) > 0 {
+			values, err = parseIPList(raw)
+		}
 		res.Source = SourceXForwardedFor
 	case trustedproxy.HeaderXRealIP:
 		headerName = "X-Real-IP"
-		var ip netip.Addr
-		ip, err = parseSingleIP(r.Header.Get(headerName))
-		if err == nil {
-			values = []netip.Addr{ip}
+		rawVals = r.Header.Values(headerName)
+		raw = strings.Join(rawVals, ", ")
+		if len(rawVals) > 0 {
+			values, err = parseSingleHeaderValues(rawVals)
 		}
 		res.Source = SourceXRealIP
 	case trustedproxy.HeaderForwarded:
 		headerName = "Forwarded"
-		values, err = parseForwarded(r.Header.Get(headerName))
+		rawVals = r.Header.Values(headerName)
+		raw = strings.Join(rawVals, ", ")
+		if len(rawVals) > 0 {
+			values, err = parseForwarded(raw)
+		}
 		res.Source = SourceForwarded
 	case trustedproxy.HeaderCustom:
 		headerName = proxy.CustomHeaderName
-		values, err = parseIPList(r.Header.Get(headerName))
+		rawVals = r.Header.Values(headerName)
+		raw = strings.Join(rawVals, ", ")
+		if len(rawVals) > 0 {
+			values, err = parseIPList(raw)
+		}
 		res.Source = SourceCustomHeader
 	}
 
 	if headerName == "" {
 		return res
 	}
-	raw := r.Header.Get(headerName)
-	if raw == "" {
+	if len(rawVals) == 0 || raw == "" {
 		// 可信代理未携带对应头：回退连接源
 		res.Source = SourceConnection
 		return res
@@ -180,6 +194,28 @@ func parseIPList(v string) ([]netip.Addr, error) {
 		out = append(out, ip)
 	}
 	return out, nil
+}
+
+// parseSingleHeaderValues 解析单值头（X-Real-IP 语义）：检查全部同名头；
+// 任一头非法或存在多个相互冲突的 X-Real-IP 头时返回 errInvalid（回退连接源并标记 HeaderInvalid）。
+func parseSingleHeaderValues(vals []string) ([]netip.Addr, error) {
+	var parsed netip.Addr
+	hasIP := false
+	for _, v := range vals {
+		ip, err := parseSingleIP(v)
+		if err != nil {
+			return nil, errInvalid
+		}
+		if hasIP && ip != parsed {
+			return nil, errInvalid
+		}
+		parsed = ip
+		hasIP = true
+	}
+	if !hasIP {
+		return nil, errInvalid
+	}
+	return []netip.Addr{parsed}, nil
 }
 
 // parseSingleIP 解析单 IP 头（X-Real-IP 语义）。

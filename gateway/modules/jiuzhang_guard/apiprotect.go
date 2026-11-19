@@ -216,8 +216,8 @@ func (g *Guard) serveAPIProtected(w http.ResponseWriter, r *http.Request, next c
 	if res == nil || res.Skipped {
 		return proxyAndCount(w, r, next)
 	}
-	if !res.API.IsAPI {
-		// 非 API 流量：无响应捕获，维持响应前输出（状态码 0 语义不变）。
+	if !res.API.IsAPI && !g.hasAPIResponseControls(res.EndpointKey) {
+		// 非 API 流量且无响应相位控制：无响应捕获，维持响应前输出（状态码 0 语义不变）。
 		// 强流程（NG-FLOW-02）：命中绑定端点即产动作条目——定义绑定本身就是
 		// API 语义声明（仅 CONFIRMED 端点可入定义），条目不随分类漏判丢失
 		// （PG 事件溯源完整性），故条目存在即输出事件。
@@ -237,7 +237,13 @@ func (g *Guard) serveAPIProtected(w http.ResponseWriter, r *http.Request, next c
 		}
 		return nextErr
 	}
-	// API 流量：包装捕获响应（脱敏改写的执行前提），响应完成后进入响应相位并输出事件
+	// H-09：FAIL_CLOSED 下存在响应脱敏/水印/签名/下载合规控制时，转发前剥离 Range/If-Range，
+	// 防止客户端通过 206 Partial Content 分段响应绕过响应体脱敏、水印、签名或下载合规检查。
+	if g.responseFailClosed() && g.requiresResponseTransformOrCompliance(res.EndpointKey) {
+		r.Header.Del("Range")
+		r.Header.Del("If-Range")
+	}
+	// API 流量或启用响应控制的端点：包装捕获响应（脱敏/水印/签名/合规改写的执行前提）
 	// 水印/签名启用时传入下载改写类型判定（候选文本族下载随 JSON 族同样进入缓冲，改写需完整体）；
 	// 合规下载方向规则存在时挂留全部 Content-Disposition 下载（评估与 PROTECT 抑制的前提）
 	var downloadTypes func(string) bool
@@ -275,6 +281,52 @@ func (g *Guard) serveAPIProtected(w http.ResponseWriter, r *http.Request, next c
 	g.finalizeStrongFlow(res.Context, sfRec, nextErr != nil)
 	g.finishAPIResponse(w, cw, r, res, start, nextErr)
 	return nextErr
+}
+
+// hasAPIResponseControls 判断端点或应用是否配置了响应相位安全控制（脱敏/下载合规/水印/签名/敏感值/LLM/MCP），
+// 确保大请求体或分类漏判时仍包装 apiResponseCapture，不绕过响应相位控制（C-10）。
+func (g *Guard) hasAPIResponseControls(ek string) bool {
+	return len(g.apiMaskRules[ek]) > 0 ||
+		g.apiFileCompliance.HasDownloadRules() ||
+		g.apiFileWatermark != nil ||
+		g.apiFileSignature != nil ||
+		detectors.HasFileSensitiveLocation(g.APISensitiveValueRules) ||
+		detectors.HasResponseBodySensitiveLocation(g.APISensitiveValueRules) ||
+		g.llmSecurityPolicyForApp() != nil ||
+		g.apiMCPGuard != nil
+}
+
+// requiresResponseTransformOrCompliance 判断本端点是否存在需完整响应体执行改写或拦截的控制（H-09）。
+func (g *Guard) requiresResponseTransformOrCompliance(ek string) bool {
+	return len(g.apiMaskRules[ek]) > 0 ||
+		g.apiFileWatermark != nil ||
+		g.apiFileSignature != nil ||
+		g.apiFileCompliance.HasDownloadRules()
+}
+
+// partialContentNeedsFailClosed 在 FAIL_CLOSED 策略下，判断 206/Content-Range 分段响应是否会绕过
+// 必须执行的脱敏、水印或文件签名转换（H-09）。
+func (g *Guard) partialContentNeedsFailClosed(act dsctx.FinalAction, res *pipeline.Result, cw *apiResponseCapture) bool {
+	if !g.responseFailClosed() {
+		return false
+	}
+	if act == dsctx.ActionMaskResp || len(g.apiMaskRules[res.EndpointKey]) > 0 {
+		return true
+	}
+	rc := res.Context.GetResponse()
+	ct := cw.base.Header().Get("Content-Type")
+	isDownload := rc != nil && rc.FileObservation != nil && rc.FileObservation.Direction == dsctx.FileDirectionDownload
+	if g.apiFileWatermark != nil {
+		isInlineHTML := g.apiFileWatermark.IncludeInlineHTML && !isDownload &&
+			cw.base.Header().Get("Content-Disposition") == "" && response.IsHTMLMediaType(ct)
+		if (isDownload || isInlineHTML) && g.apiFileWatermark.AllowsContentType(ct) {
+			return true
+		}
+	}
+	if g.apiFileSignature != nil && isDownload && g.apiFileSignature.AllowsContentType(ct) {
+		return true
+	}
+	return false
 }
 
 // finishAPIResponse 响应收束：响应相位 → MASK_RESPONSE 执行 → 缓冲响应写回 → 事件输出。
@@ -475,6 +527,24 @@ func (g *Guard) finishAPIResponse(w http.ResponseWriter, cw *apiResponseCapture,
 	masked := false
 	var transformed []byte // 脱敏改写后的响应体（masked=true 时有效；写回统一在下方进行）
 	partialContent := status == http.StatusPartialContent || cw.base.Header().Get("Content-Range") != ""
+	if kind == outcomeBuffered && partialContent && g.partialContentNeedsFailClosed(act, res, cw) {
+		res.Context.AddMatch(dsctx.DetectorMatch{
+			Detector: "api_response",
+			RuleID:   "response.fail_closed",
+			Category: "OBSERVE",
+			Severity: "HIGH",
+			Message:  "partial content (206/Content-Range) suppressed under fail-closed policy to prevent response control bypass",
+			Evidence: map[string]string{"endpoint_key": res.EndpointKey, "reason": "partial_content_fail_closed"},
+		})
+		g.logger.Warn("api partial content (206/Content-Range) suppressed under fail-closed policy",
+			zap.String("endpoint_key", res.EndpointKey), zap.String("request_id", res.Context.RequestID))
+		g.writeFailClosedResponse(w, res.Context.RequestID)
+		tail.status = http.StatusInternalServerError
+		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusInternalServerError, true,
+			[]string{"RESPONSE_FAIL_CLOSED"}, []string{"api_response:response.fail_closed"})
+		g.emitAPIEvent(r, res, tail)
+		return
+	}
 	if act == dsctx.ActionMaskResp && kind == outcomeBuffered && partialContent {
 		res.Context.AddMatch(dsctx.DetectorMatch{
 			Detector: "api_response",
@@ -1123,13 +1193,18 @@ func (g *Guard) writeFailClosedResponse(w http.ResponseWriter, requestID string)
 // w 仅供该分支直接回包使用，其余路径不触碰）。
 func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start time.Time) (*pipeline.Result, bool, error) {
 	restore, bodySample, skipReason := preserveRequestBody(r)
-	if restore == nil {
-		// 请求体读取失败或超保全上限：已尽力还原，跳过管线（fail-open）；
-		// 跳过必须可见——落 OBSERVE 明细事件并节流 Warn（code-review HIGH-7）
-		g.noteAPIBodyPreserveSkipped(r, start, skipReason)
-		return nil, false, nil
+	bodyPreserveSkipped := restore == nil
+	pipeReq := r
+	if bodyPreserveSkipped {
+		// C-10：请求体超 4MiB 保全上限或读体失败时不再整体跳过 API 管线，
+		// 保持 r.Body 原样留给下游，克隆元数据请求（Body=http.NoBody）继续执行
+		// URL/方法/头/Query/身份/准入/BOLA/BFLA/限速/强流程/大报文 fail-closed 检查。
+		g.warnAPIBodyPreserveSkipped(r, skipReason)
+		pipeReq = r.Clone(r.Context())
+		pipeReq.Body = http.NoBody
+	} else {
+		defer restore()
 	}
-	defer restore()
 
 	// 端点键与管线内部同一算法，用于按端点选取冻结模型与参数约束
 	ek := normalizer.EndpointKey(r.Method, r.URL.Path)
@@ -1137,7 +1212,9 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 	// （parser 之后 r.Body 已消费；样本仅请求内存活，不落证据）；不挂 api.IsAPI 分类门槛——
 	// WebShell 端点通常非 API 分类，分类漏判不应关掉观测；只记账不产明细，
 	// 评估在响应收束处（见 pipeline webshellc2 挂点）
-	pipeline.ObserveWebShellC2RequestWithStores(r, g.IdentitySalt, bodySample, g.behaviorStores)
+	if !bodyPreserveSkipped {
+		pipeline.ObserveWebShellC2RequestWithStores(r, g.IdentitySalt, bodySample, g.behaviorStores)
+	}
 	dispo := DispositionFrom(r.Context())
 	// API 受限例外（WDSP P0-04；契约 S4_DESIGN_BASELINE §6/§10）：按请求事实范围筛选
 	// （domain/path/method/可信 IP/当前 UTC 秒；clientIP 为可信代理处理后值），结果传入
@@ -1272,10 +1349,13 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 			ProducedAt:          g.APIAuthzProducedAt,
 			ClockSkewMaxSeconds: g.APIAuthzClockSkewMaxSeconds,
 		},
-		JWTVerification: jwtVerification,
+		JWTVerification:          jwtVerification,
+		BodyPreserveSkipped:      bodyPreserveSkipped,
+		BodyPreserveSkipReason:   skipReason,
+		BodyInspectionFailClosed: g.responseFailClosed(),
 	}
 	DefaultCovCounters.Inc(StageAPIPipelineReached)
-	res, err := pipeline.Process(r, cfg, nil)
+	res, err := pipeline.Process(pipeReq, cfg, nil)
 	if err != nil {
 		g.logger.Warn("api protection pipeline error (fail-open)", zap.Error(err))
 		return nil, false, nil
@@ -1400,6 +1480,14 @@ func (g *Guard) runAPIProtection(w http.ResponseWriter, r *http.Request, start t
 			g.writeMCPErrorResponse(w, res.Context.RequestID, mcpCode, mcpHTTP, mcpRequestIDRaw(res.Context))
 			return res, true, nil
 		}
+		if bodyTooLargeFailClosedMatched(matches) {
+			dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusRequestEntityTooLarge, true,
+				[]string{"BODY_TOO_LARGE_FAIL_CLOSED"}, apiEnforcementRuleRefs(matches))
+			accessLogAnnotate(r.Context(), wafActionBlock)
+			emitBlocked(http.StatusRequestEntityTooLarge)
+			g.writeAPIBodyTooLargeResponse(w, res.Context.RequestID)
+			return res, true, nil
+		}
 		dispo.RecordTerminal(ExecutorAPI, DisActionBlock, http.StatusForbidden, false,
 			[]string{"API_POLICY_BLOCK"}, apiEnforcementRuleRefs(matches))
 		emitBlocked(http.StatusForbidden)
@@ -1479,6 +1567,46 @@ const bodySkipWarnInterval = time.Minute
 
 // bodySkipWarnLast 上次跳过告警时刻（UnixNano；CAS 节流，防大报文洪泛刷日志）。
 var bodySkipWarnLast atomic.Int64
+
+func bodyTooLargeFailClosedMatched(matches []dsctx.DetectorMatch) bool {
+	for _, m := range matches {
+		if m.Excepted {
+			continue
+		}
+		if m.RuleID == "request.body_too_large_fail_closed" && strings.EqualFold(m.Category, "BLOCK") {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Guard) writeAPIBodyTooLargeResponse(w http.ResponseWriter, requestID string) {
+	h := w.Header()
+	h.Del("Content-Length")
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("X-Jiuzhang-Request-ID", requestID)
+	body, _ := json.Marshal(map[string]string{
+		"error":      "payload_too_large",
+		"request_id": requestID,
+	})
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusRequestEntityTooLarge)
+	if _, err := w.Write(body); err != nil {
+		g.logger.Warn("api body too large response write failed", zap.Error(err), zap.String("request_id", requestID))
+	}
+}
+
+func (g *Guard) warnAPIBodyPreserveSkipped(r *http.Request, reason string) {
+	now := time.Now()
+	if last := bodySkipWarnLast.Load(); now.UnixNano()-last >= int64(bodySkipWarnInterval) &&
+		bodySkipWarnLast.CompareAndSwap(last, now.UnixNano()) {
+		g.logger.Warn("api request body not preserved: running metadata-only pipeline (body-dependent PROTECT/FAIL_CLOSED policies enforce fail-closed)",
+			zap.String("reason", reason),
+			zap.String("endpoint_key", normalizer.EndpointKey(r.Method, r.URL.Path)),
+			zap.Int64("content_length", r.ContentLength),
+			zap.Int("preserve_limit_bytes", maxBodyPreserveBytes))
+	}
+}
 
 // noteAPIBodyPreserveSkipped 请求体无法保全（读取失败/超 maxBodyPreserveBytes）导致 API
 // 动态防护请求相位被跳过时的可见性留痕（code-review HIGH-7）：节流 Warn + OBSERVE 明细事件

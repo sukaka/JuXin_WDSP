@@ -40,24 +40,30 @@ func (g *Guard) readL7RequestBody(r *http.Request) ([]byte, bool) {
 }
 
 type l7ResponseCapture struct {
-	base        http.ResponseWriter
-	status      int
-	body        bytes.Buffer
-	passthrough bool
-	overflow    bool
-	hijacked    bool
-	committed   bool
+	base           http.ResponseWriter
+	status         int
+	body           bytes.Buffer
+	passthrough    bool
+	overflow       bool
+	hijacked       bool
+	committed      bool
+	discarded      bool
+	headerDecision *l7rules.Decision
+	// evalHeadersBeforePassthrough 在切直通（SSE/Upgrade/Flush/>1MiB）前评估纯响应头规则：
+	// 若命中阻断/重定向/自定义页，转入 discarded 丢弃上游正文，绝不先提交源站头或正文（N-01）。
+	evalHeadersBeforePassthrough func(http.Header) (l7rules.Decision, bool)
+	headerEvaluated              bool
 }
 
-func newL7ResponseCapture(base http.ResponseWriter) *l7ResponseCapture {
-	return &l7ResponseCapture{base: base}
+func newL7ResponseCapture(base http.ResponseWriter, evalHeaders func(http.Header) (l7rules.Decision, bool)) *l7ResponseCapture {
+	return &l7ResponseCapture{base: base, evalHeadersBeforePassthrough: evalHeaders}
 }
 
 func (w *l7ResponseCapture) Header() http.Header { return w.base.Header() }
 
 func (w *l7ResponseCapture) WriteHeader(code int) {
 	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
-		if w.status == 0 {
+		if w.status == 0 && !w.discarded {
 			w.base.WriteHeader(code)
 		}
 		return
@@ -76,6 +82,9 @@ func (w *l7ResponseCapture) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
 	}
+	if w.discarded {
+		return len(p), nil
+	}
 	if w.passthrough {
 		return w.base.Write(p)
 	}
@@ -83,12 +92,28 @@ func (w *l7ResponseCapture) Write(p []byte) (int, error) {
 		return w.body.Write(p)
 	}
 	w.startPassthrough(true)
+	if w.discarded {
+		return len(p), nil
+	}
 	return w.base.Write(p)
 }
 
 func (w *l7ResponseCapture) startPassthrough(overflow bool) {
-	if w.passthrough {
+	if w.passthrough || w.discarded {
 		return
+	}
+	if !w.headerEvaluated && w.evalHeadersBeforePassthrough != nil {
+		w.headerEvaluated = true
+		if dec, matched := w.evalHeadersBeforePassthrough(w.Header()); matched {
+			decCopy := dec
+			w.headerDecision = &decCopy
+			if dec.Action != l7rules.ActionAllow {
+				w.discarded = true
+				w.overflow = overflow
+				w.body.Reset()
+				return
+			}
+		}
 	}
 	w.passthrough = true
 	w.overflow = overflow
@@ -96,7 +121,7 @@ func (w *l7ResponseCapture) startPassthrough(overflow bool) {
 }
 
 func (w *l7ResponseCapture) commit() {
-	if w.committed || w.hijacked {
+	if w.committed || w.hijacked || w.discarded {
 		return
 	}
 	w.committed = true
@@ -115,6 +140,9 @@ func (w *l7ResponseCapture) Flush() {
 		w.WriteHeader(http.StatusOK)
 	}
 	w.startPassthrough(false)
+	if w.discarded {
+		return
+	}
 	if f, ok := w.base.(http.Flusher); ok {
 		f.Flush()
 	}
@@ -137,18 +165,42 @@ func (g *Guard) serveNextWithL7Response(w http.ResponseWriter, r *http.Request, 
 	if g.l7 == nil || !g.l7.HasResponseRules() {
 		return g.serveNextViaBot(w, r, next, base, res)
 	}
-	capture := newL7ResponseCapture(w)
+	dispo := DispositionFrom(r.Context())
+	evalHeaders := func(h http.Header) (l7rules.Decision, bool) {
+		if dispo != nil && dispo.Terminated() {
+			return l7rules.Decision{}, false
+		}
+		return g.l7.EvalResponseHeaders(r, clientIP, l7rules.ResponseInput{
+			Header: h, RequestBody: requestBody, RequestBodyReady: requestBodyReady,
+		})
+	}
+	capture := newL7ResponseCapture(w, evalHeaders)
 	if err := g.serveNextViaBot(capture, r, next, base, res); err != nil {
 		return err
 	}
 	if capture.hijacked {
 		return nil
 	}
-	if capture.overflow {
-		g.logger.Warn("l7 response inspection skipped: body exceeds 1 MiB", zap.String("request_id", base.RequestID))
+	// N-01：若响应已由网关本地终止（Bot 403/503、JWT 401/503、MachineID 401/403/413/503、
+	// API 403/413/429/500、Coraza WAF、发布探针等），绝不对其执行源站 L7 响应规则，
+	// 防止剥离 WWW-Authenticate/Retry-After/X-Jiuzhang-* 或覆写网关拦截响应。
+	if dispo != nil && dispo.Terminated() {
+		capture.commit()
 		return nil
 	}
+	if capture.discarded && capture.headerDecision != nil {
+		return g.executeL7Response(w, r, base, *capture.headerDecision, capture.status, capture.commit)
+	}
 	if capture.passthrough {
+		if capture.headerDecision != nil && capture.headerDecision.Action == l7rules.ActionAllow {
+			dispo.RecordStep(ExecutorL7ACL, StepExecuted, "response allow hit rule="+capture.headerDecision.RuleID)
+			ev := base
+			ev.AccessRuleID = capture.headerDecision.RuleID
+			g.emit(ev, events.L7RuleAllow, "ALLOW", capture.status)
+		}
+		if capture.overflow {
+			g.logger.Warn("l7 response inspection skipped: body exceeds 1 MiB", zap.String("request_id", base.RequestID))
+		}
 		return nil
 	}
 

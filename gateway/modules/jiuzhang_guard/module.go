@@ -47,6 +47,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/grpcdesc"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/httpsig"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/pipeline"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/response"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/accesscontrol"
@@ -1117,7 +1118,7 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	// CC 精确计数探针）：真实 IP 识别之后、CC 限速之前挂接——回显请求本身不进入
 	// CC 计数（探针自污染防控），也不进入 JWT/身份观测步骤；全部结局本地响应，
 	// 结构上不可能反向代理（见 debug_cccounter.go）
-	if g.DebugCCCounter && strings.HasPrefix(r.URL.Path, debugReservedNamespace) {
+	if g.DebugCCCounter && strings.HasPrefix(normalizer.CanonicalPath(r.URL.Path), debugReservedNamespace) {
 		return g.serveDebugNamespace(w, r, res)
 	}
 
@@ -1158,17 +1159,19 @@ func (g *Guard) serveGuard(w http.ResponseWriter, r *http.Request, next caddyhtt
 	// 事件只携带名单记录 ID，不携带身份键或凭据原文。
 	if len(g.apiIdentityBlocks) > 0 {
 		identity := identitybehavior.ResolveIdentity(r, g.IdentitySalt, clientIP.String())
-		if blockID, blocked := g.apiIdentityBlocks[identity.Key]; blocked {
-			dispo.RecordTerminal(ExecutorManualBan, DisActionBlock, http.StatusForbidden, false,
-				[]string{"IDENTITY_MANUAL_BLOCK"}, []string{blockID})
-			ev := base
-			ev.Action = "BLOCK"
-			ev.PolicyID = blockID
-			ev.FinalDecision = dispo.JSON()
-			g.emit(ev, events.IdentityManualBlock, "BLOCK", http.StatusForbidden)
-			accessLogAnnotate(r.Context(), wafActionBlock)
-			DefaultCovCounters.Inc(StageManualBan)
-			return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("identity blocked"))
+		for _, key := range identity.CandidateKeys(g.IdentitySalt) {
+			if blockID, blocked := g.apiIdentityBlocks[key]; blocked {
+				dispo.RecordTerminal(ExecutorManualBan, DisActionBlock, http.StatusForbidden, false,
+					[]string{"IDENTITY_MANUAL_BLOCK"}, []string{blockID})
+				ev := base
+				ev.Action = "BLOCK"
+				ev.PolicyID = blockID
+				ev.FinalDecision = dispo.JSON()
+				g.emit(ev, events.IdentityManualBlock, "BLOCK", http.StatusForbidden)
+				accessLogAnnotate(r.Context(), wafActionBlock)
+				DefaultCovCounters.Inc(StageManualBan)
+				return caddyhttp.Error(http.StatusForbidden, fmt.Errorf("identity blocked"))
+			}
 		}
 	}
 
@@ -1424,7 +1427,7 @@ func (g *Guard) enforceRateLimits(w http.ResponseWriter, r *http.Request, client
 	if l7Skip(r.Context()) {
 		return false, nil
 	}
-	path := r.URL.Path
+	path := normalizer.CanonicalPath(r.URL.Path)
 	for _, p := range g.policies {
 		if p.from != nil && now.Before(*p.from) {
 			continue

@@ -23,6 +23,7 @@ package pipeline
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/decision"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/gqlast"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/parser"
 )
 
@@ -116,13 +118,50 @@ func (m *memWindowBudgetStore) AddAndSum(key string, cost, windowSeconds int64, 
 	return b.sum
 }
 
+func isGraphQLCandidate(parsed *parser.Parsed) bool {
+	if parsed == nil {
+		return false
+	}
+	if parsed.GraphQLQuery != "" {
+		return true
+	}
+	ct := strings.ToLower(parsed.ContentType)
+	if strings.Contains(ct, "application/graphql") {
+		return true
+	}
+	p := strings.ToLower(normalizer.CanonicalPath(parsed.RawPath))
+	if strings.Contains(p, "/graphql") && (parsed.Method == http.MethodPost || parsed.Method == http.MethodPut || parsed.Method == http.MethodPatch) {
+		return true
+	}
+	return false
+}
+
 // checkGraphQL GraphQL 判定（Admission 短路之后、统一决策之前调用）。
 // 非 GraphQL 请求直返（零记录零开销）；GraphQL 分类请求按策略执行并记覆盖观测。
+// 当请求体因超解析上限（>1MiB）或超保全上限（>4MiB）被截断时，GraphQL 候选端点按
+// ErrDocTooLarge 走结构准入失败（PROTECT 下阻断，禁止借大请求体绕过 GraphQL 防护）。
 func (cfg *Config) checkGraphQL(ctx *dsctx.RequestContext, r *http.Request, parsed *parser.Parsed, mode decision.Mode, ek string) {
-	if parsed == nil || parsed.GraphQLQuery == "" {
-		return // 非 GraphQL：不产生该检测器任何记录
+	if parsed == nil {
+		return
 	}
 	pol := cfg.GraphQL
+	if parsed.GraphQLQuery == "" {
+		if parsed.BodyTruncated && isGraphQLCandidate(parsed) {
+			if pol == nil || !pol.Enabled {
+				cfg.emitGraphQLCov(ctx, ek, int64(parsed.BodySize), int64(parsed.BodySize), coverage.StatusSkipped, coverage.ReasonDisabled, true)
+				return
+			}
+			docBytes := int64(parsed.BodySize)
+			if r != nil && r.ContentLength > docBytes {
+				docBytes = r.ContentLength
+			}
+			cfg.graphQLAdmissionFail(ctx, ek, &gqlast.Error{
+				Kind:    gqlast.ErrDocTooLarge,
+				Message: "graphql request body exceeds inspection limit",
+			}, docBytes, mode)
+		}
+		return // 非 GraphQL：不产生该检测器任何记录
+	}
 	docBytes := int64(len(parsed.GraphQLQuery))
 	if pol == nil || !pol.Enabled {
 		cfg.emitGraphQLCov(ctx, ek, docBytes, docBytes, coverage.StatusSkipped, coverage.ReasonDisabled, false)

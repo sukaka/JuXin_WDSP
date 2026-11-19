@@ -38,6 +38,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/coverage"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/httpsig"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 )
 
 // 状态词表（jwtverify.VerificationResult 五态同形纪律）。
@@ -159,21 +160,33 @@ type Result struct {
 	BindingID string // 命中绑定标识（豁免事件引用）
 }
 
-// matchBinding 绑定选择器匹配（path_exact 优先；path_prefix 取最长前缀——
-// 精确优先于前缀，前缀最长优先（与 L7/路由语义同向））。
+// BodyUnavailableExtension 挂点侧在请求体超保全上限（含 chunked 未知长度 >4MiB）或读取失败时
+// 写入 RequestContext 的扩展键；Evaluate 检测到即按 UNAVAILABLE(body_unavailable) fail-closed，
+// 防止大报文/分块流被当作空体绕过 content-digest 校验。
+const BodyUnavailableExtension = "machineid.body_unavailable_reason"
+
+// matchBinding 绑定选择器匹配（path_exact 优先；path_prefix 取最长规范化前缀并强制 '/'
+// 路径段边界，使 "/api" 不会错误匹配 "/apiv2"；精确优先于前缀，前缀最长优先）。
 func (c *Config) matchBinding(path string) *Binding {
 	if c == nil {
 		return nil
 	}
+	canonPath := normalizer.CanonicalPath(path)
 	var best *Binding
+	bestLen := -1
 	for i := range c.Bindings {
 		b := &c.Bindings[i]
-		if b.PathExact != "" && path == b.PathExact {
+		if b.PathExact != "" && canonPath == normalizer.CanonicalPath(b.PathExact) {
 			return b
 		}
-		if b.PathPrefix != "" && strings.HasPrefix(path, b.PathPrefix) {
-			if best == nil || len(b.PathPrefix) > len(best.PathPrefix) {
+		if b.PathPrefix != "" && normalizer.PrefixSegmentMatch(b.PathPrefix, canonPath) {
+			pref := normalizer.CanonicalPath(b.PathPrefix)
+			if pref != "/" {
+				pref = strings.TrimSuffix(pref, "/")
+			}
+			if best == nil || len(pref) > bestLen {
 				best = b
+				bestLen = len(pref)
 			}
 		}
 	}
@@ -270,11 +283,21 @@ func Evaluate(ctx *dsctx.RequestContext, r *http.Request, body []byte, cfg *Conf
 	}
 
 	// 步 6/7/8/9：覆盖充分性+目标绑定+体摘要+基线重构验签（httpsig 纯库）
-	// 体不可读（保全失败而请求有体）→ UNKNOWN 不判无效（§1.8：OBSERVE 放行
-	// 披露/PROTECT 413；覆盖 PARTIAL(COV_INPUT_TRUNCATED)）
-	bodyUnreadable := r.ContentLength > 0 && len(body) == 0
-	if bodyUnreadable && coveredHas(p, "content-digest") {
-		e.dependencyUnavailableBody("body_unavailable（体保全失败——content-digest 待验不判无效）", b)
+	// 体不可读（保全失败、分块流超限或请求有体而未提供体字节）→ UNKNOWN 不判无效
+	// （§1.8：OBSERVE 放行披露/PROTECT 413；覆盖 PARTIAL(COV_INPUT_TRUNCATED)）；
+	// 无论客户端是否声明 content-digest 均不可当作空体放行（防 chunked >4MiB 绕过）。
+	if reasonVal, hasExt := ctx.GetExtension(BodyUnavailableExtension); hasExt {
+		reason, _ := reasonVal.(string)
+		if reason == "" {
+			reason = "body_too_large"
+		}
+		e.dependencyUnavailableBody("body_unavailable（"+reason+"——体保全失败或超 4MiB 预算，fail-closed）", b)
+		return e.finish()
+	}
+	bodyUnreadable := (r.ContentLength > 0 && len(body) == 0) ||
+		(r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody && len(body) == 0)
+	if bodyUnreadable {
+		e.dependencyUnavailableBody("body_unavailable（体保全失败——有体/分块请求未提供体字节，fail-closed）", b)
 		return e.finish()
 	}
 	verr := httpsig.VerifySignatureBase(r, p, body, httpsig.Key{Kid: p.KeyID, Alg: hit.key.Alg, PublicKeyPEM: hit.key.PublicKeyPEM})
@@ -296,7 +319,7 @@ func Evaluate(ctx *dsctx.RequestContext, r *http.Request, body []byte, cfg *Conf
 		return e.finish()
 	}
 	nonceDigest := sha256.Sum256([]byte(p.Nonce))
-	ttl := proofTTL(p, now)
+	ttl := proofTTL(p, now, cfg.skewSeconds())
 	isReplay, rerr := replay.CheckAndSet(r.Context(), e.result.MachineIDFP, hex.EncodeToString(nonceDigest[:])[:32], ttl)
 	if rerr != nil {
 		e.dependencyUnavailable("replay_store_error: "+rerr.Error(), "COV_DEPENDENCY_UNAVAILABLE", b)

@@ -611,3 +611,65 @@ func TestRiskPolicyChallengeDependencyUsesApplicationOverride(t *testing.T) {
 		})
 	}
 }
+
+// H-08 回归：在已封禁或已达风险阈值的 X-API-Key/Cookie 之上附加伪造 Authorization 头，
+// 不得绕过 api_identity_blocks 或 Risk Engine 处置。
+func TestH08MultiCredentialBypassBlocked(t *testing.T) {
+	t.Run("api_identity_blocks 检查全部提取凭据", func(t *testing.T) {
+		rBase := httptest.NewRequest("GET", "http://waf-test.local/api", nil)
+		rBase.Header.Set("X-API-Key", "blocked-api-key")
+		blockedKey := identitybehavior.ResolveIdentity(rBase, "salt-h08", "203.0.113.50").Key
+
+		g := provisionIBHTestGuard(t, Guard{
+			AppID:        "app1",
+			EventsLog:    filepath.Join(t.TempDir(), "events.log"),
+			IdentitySalt: "salt-h08",
+			APIIdentityBlocks: []identityBlockJSON{
+				{ID: "blk-1", IdentityKey: blockedKey},
+			},
+		})
+		// 附加假 Authorization 头，试图掩盖被封禁的 X-API-Key
+		rBypass := httptest.NewRequest("GET", "http://waf-test.local/api", nil)
+		rBypass.RemoteAddr = "203.0.113.50:1234"
+		rBypass.Header.Set("Authorization", "Bearer dummy-bypass-token")
+		rBypass.Header.Set("X-API-Key", "blocked-api-key")
+		called := false
+		err := g.ServeHTTP(httptest.NewRecorder(), rBypass, ibHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+			called = true
+			return nil
+		}))
+		var he caddyhttp.HandlerError
+		if !errors.As(err, &he) || he.StatusCode != http.StatusForbidden || called {
+			t.Fatalf("H-08: 附加 Authorization 不得绕过 X-API-Key 封禁: err=%v called=%v", err, called)
+		}
+	})
+
+	t.Run("Risk Engine 评估全部提取凭据防附加 Authorization 绕过", func(t *testing.T) {
+		rKey := httptest.NewRequest("GET", "http://waf-test.local/api", nil)
+		rKey.Header.Set("X-API-Key", "risky-api-key")
+		riskyKey := identitybehavior.ResolveIdentity(rKey, "salt-h08", "203.0.113.51").Key
+
+		g := provisionIBHTestGuard(t, Guard{
+			AppID:        "app1",
+			EventsLog:    filepath.Join(t.TempDir(), "events.log"),
+			IdentitySalt: "salt-h08",
+			RiskPolicy:   &riskPolicyJSON{Enabled: true, Mode: "PROTECT", BlockThreshold: 80},
+		})
+		g.risk.AddSignal(riskyKey, "WAF", 90, "seeded-risky-apikey")
+
+		// 同时携带假 Authorization 与受罚 X-API-Key
+		rBypass := httptest.NewRequest("GET", "http://waf-test.local/api", nil)
+		rBypass.RemoteAddr = "203.0.113.51:1234"
+		rBypass.Header.Set("Authorization", "Bearer dummy-fresh-token")
+		rBypass.Header.Set("X-API-Key", "risky-api-key")
+		called := false
+		err := g.ServeHTTP(httptest.NewRecorder(), rBypass, ibHandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+			called = true
+			return nil
+		}))
+		var he caddyhttp.HandlerError
+		if !errors.As(err, &he) || he.StatusCode != http.StatusForbidden || called {
+			t.Fatalf("H-08: 附加 Authorization 不得绕过受罚 X-API-Key 风险阻断: err=%v called=%v", err, called)
+		}
+	})
+}

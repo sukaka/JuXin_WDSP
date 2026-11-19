@@ -527,3 +527,25 @@ func TestVerifierConfigValidation(t *testing.T) {
 		}
 	})
 }
+
+func TestC07VerifySelectorsCanonicalPath(t *testing.T) {
+	clock := newFakeClock()
+	key := genRSA(t, 2048)
+	jwks := jwksJSON(t, rsaJWK(key, "rsa-1"))
+	p := testPolicy(ModeProtect, staticIssuerCfg(jwks))
+	p.Selectors = []Selector{
+		{PathPrefix: "/api", TokenRequired: true},
+		{PathExact: "/admin/export", TokenRequired: true},
+	}
+	v := newTestVerifier(t, p, clock)
+
+	for _, bypassPath := range []string{"//api/orders", "/api//orders", "/public/../api/orders", "/./admin//export", "/foo/../admin/export"} {
+		res := v.Verify(nil, "GET", bypassPath)
+		if res.Status != StatusInvalid || res.ReasonCode != ReasonMissingToken {
+			t.Fatalf("path %q bypassed JWT selector: got %s/%s", bypassPath, res.Status, res.ReasonCode)
+		}
+	}
+	if res := v.Verify(nil, "GET", "/apiv2/orders"); res.Status != StatusUnverified || res.ReasonCode != ReasonOutOfScope {
+		t.Fatalf("/apiv2/orders must remain out of scope for /api prefix: %s/%s", res.Status, res.ReasonCode)
+	}
+}

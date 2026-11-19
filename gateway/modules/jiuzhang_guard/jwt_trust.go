@@ -29,6 +29,7 @@ import (
 	"github.com/jiuzhang-waf/gateway/dynamic_security/detectors"
 	dsevents "github.com/jiuzhang-waf/gateway/dynamic_security/events"
 	"github.com/jiuzhang-waf/gateway/dynamic_security/jwtverify"
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/events"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/identitybehavior"
 	"go.uber.org/zap"
@@ -209,7 +210,7 @@ func jwtResultFrom(ctx context.Context) (jwtverify.VerificationResult, bool) {
 // identity_type 语义）。纯本地、热路径零网络 IO；Verifier.Verify 内部 recover，
 // 任何异常落成 UNAVAILABLE/VERIFIER_ERROR，绝不 panic 到请求链。
 func (g *Guard) verifyJWTTrust(r *http.Request) {
-	res := g.jwtVerifier.Verify(r.Header.Values("Authorization"), r.Method, r.URL.Path)
+	res := g.jwtVerifier.Verify(r.Header.Values("Authorization"), r.Method, normalizer.CanonicalPath(r.URL.Path))
 	*r = *r.WithContext(context.WithValue(r.Context(), jwtResultKey{}, res))
 	// P0-04：身份验证状态/主体指纹写入处置上下文（指纹为 HMAC 值，不落明文 sub）
 	DispositionFrom(r.Context()).SetIdentityVerification(string(res.Status), res.VerifiedPrincipalID)

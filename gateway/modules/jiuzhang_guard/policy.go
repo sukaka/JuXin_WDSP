@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jiuzhang-waf/gateway/dynamic_security/normalizer"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/accesscontrol"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/cidr"
 	"github.com/jiuzhang-waf/gateway/modules/jiuzhang_guard/counters"
@@ -119,17 +120,18 @@ func compilePolicies(in []policyJSON) ([]*compiledPolicy, error) {
 	return out, nil
 }
 
-// matchURI URI 匹配。
+// matchURI URI 匹配（对请求路径与 EXACT/PREFIX 规则模式统一执行规范化，防止 '//'/'.'/'..' 绕过）。
 func (p *compiledPolicy) matchURI(path string) bool {
+	canonPath := normalizer.CanonicalPath(path)
 	switch p.cfg.URIMatchType {
 	case "", "ALL":
 		return true
 	case "EXACT":
-		return path == p.cfg.URIPattern
+		return canonPath == normalizer.CanonicalPath(p.cfg.URIPattern)
 	case "PREFIX":
-		return strings.HasPrefix(path, p.cfg.URIPattern)
+		return strings.HasPrefix(canonPath, normalizer.CanonicalPath(p.cfg.URIPattern))
 	case "REGEX":
-		return p.uriRe.MatchString(path)
+		return p.uriRe.MatchString(canonPath)
 	}
 	return false
 }

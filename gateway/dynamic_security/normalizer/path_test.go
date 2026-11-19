@@ -12,11 +12,53 @@ func TestNormalizePathDynamicSegments(t *testing.T) {
 		{"/static/app.js", "/static/app.js"},
 		{"users/1?x=1", "/users/{id}"},
 		{"//a//b//", "/a/b"},
+		{"/a/./b/../users/42", "/a/users/{id}"},
+		{"/a/b/../../users/42/", "/users/{id}"},
 	}
 	for _, c := range cases {
 		got := NormalizePath(c.in)
 		if got != c.want {
 			t.Fatalf("%q -> %q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestCanonicalPathAndPrefixSegmentMatch(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", "/"},
+		{"/", "/"},
+		{"//", "/"},
+		{"/api//v1/orders", "/api/v1/orders"},
+		{"/api/./v1/../v2/", "/api/v2/"},
+		{"/api/v1/..", "/api"},
+		{"/../../../etc/passwd", "/etc/passwd"},
+		{"/api/v1?x=1#frag", "/api/v1"},
+		{"api/v1/", "/api/v1/"},
+	}
+	for _, c := range cases {
+		if got := CanonicalPath(c.in); got != c.want {
+			t.Fatalf("CanonicalPath(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+
+	prefixCases := []struct {
+		prefix, path string
+		want         bool
+	}{
+		{"/api", "/api", true},
+		{"/api", "/api/", true},
+		{"/api", "/api/orders", true},
+		{"/api", "//api//orders", true},
+		{"/api", "/x/../api/orders", true},
+		{"/api", "/apiv2", false},
+		{"/api", "/apiv2/orders", false},
+		{"/", "/anything", true},
+	}
+	for _, c := range prefixCases {
+		if got := PrefixSegmentMatch(c.prefix, c.path); got != c.want {
+			t.Fatalf("PrefixSegmentMatch(%q, %q)=%v want %v", c.prefix, c.path, got, c.want)
 		}
 	}
 }

@@ -171,3 +171,27 @@ func TestEvaluateChallengeBoundariesAndPriority(t *testing.T) {
 		})
 	}
 }
+
+// H-08 回归：ShouldEmit 使用严格有界 O(1) LRU，超容量不膨胀且无 O(N^2) 重建停顿。
+func TestH08ShouldEmitBoundedLRU(t *testing.T) {
+	eng := newTestEngine(t, &Params{Enabled: true})
+	eng.throttleCap = 16
+	base := time.Now().UTC()
+	eng.now = func() time.Time { return base }
+	for i := 0; i < 200; i++ {
+		if !eng.ShouldEmit(fmt.Sprintf("id-%d", i), "blocked") {
+			t.Fatalf("unique key id-%d should emit", i)
+		}
+		if len(eng.throttle) > 16 || eng.throttleLRU.Len() > 16 {
+			t.Fatalf("throttle exceeded cap 16: map=%d list=%d", len(eng.throttle), eng.throttleLRU.Len())
+		}
+	}
+	// 最近写入的 id-199 在 60s 内仍被节流
+	if eng.ShouldEmit("id-199", "blocked") {
+		t.Fatal("most recent key must remain throttled within 60s")
+	}
+	// 最旧的 id-0 已被 LRU 淘汰
+	if !eng.ShouldEmit("id-0", "blocked") {
+		t.Fatal("evicted oldest key should be allowed to emit again")
+	}
+}
