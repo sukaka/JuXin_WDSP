@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // ---------- 测试基础设施 ----------
@@ -44,8 +45,10 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) ([]byte
 
 // fakeProc 进程桩：存活集合与信号记录。
 type fakeProc struct {
-	alive   map[int]bool
-	signals []string
+	alive      map[int]bool
+	signals    []string
+	ignoreTERM bool
+	ignoreKILL bool
 }
 
 func (f *fakeProc) Alive(pid int) bool { return f.alive[pid] }
@@ -54,8 +57,11 @@ func (f *fakeProc) Signal(pid int, sig os.Signal) error {
 	if !f.alive[pid] {
 		return fmt.Errorf("no such process")
 	}
-	if sig == syscall.SIGTERM {
+	if sig == syscall.SIGTERM && !f.ignoreTERM {
 		f.alive[pid] = false // 模拟退出
+	}
+	if sig == syscall.SIGKILL && !f.ignoreKILL {
+		f.alive[pid] = false // 模拟强制终止
 	}
 	return nil
 }
@@ -381,6 +387,171 @@ func TestSupervisorConfigRemovedReleasesVIP(t *testing.T) {
 	if !foundTERM {
 		t.Fatalf("收回应停止实例: %v", fp.signals)
 	}
+}
+
+// H-13 回归：指纹未变但 keepalived 意外死亡进入 FAULT 后，下轮 configTick 必须拉起恢复。
+func TestSupervisorRestartsDeadKeepalivedWithSameFingerprint(t *testing.T) {
+	fr := &fakeRunner{addrDump: addrDump("192.168.31.61")}
+	fp := &fakeProc{alive: map[int]bool{}}
+	sv, dir := newTestSupervisor(t, fr, fp)
+	defer sv.CloseWithoutStop()
+
+	writeCfg(t, dir, validConfigJSON("ENABLED"))
+	sv.configTick()
+	simulateKeepalivedRunning(t, sv, fp, 4321)
+	sv.stateTick()
+	if sv.state != StateBackup {
+		t.Fatalf("正常启动后应为 BACKUP: %s", sv.state)
+	}
+
+	// keepalived 意外崩溃 → stateTick 落 FAULT
+	fp.alive[4321] = false
+	sv.stateTick()
+	if sv.state != StateFault {
+		t.Fatalf("进程死亡后应为 FAULT: %s", sv.state)
+	}
+
+	// 配置内容完全未变（同指纹）→ configTick 仍应检测到进程死亡并重新拉起 keepalived
+	cmdsBefore := len(fr.cmds)
+	sv.configTick()
+	restarted := false
+	for _, cmd := range fr.cmds[cmdsBefore:] {
+		if strings.HasPrefix(cmd, "keepalived -f ") {
+			restarted = true
+			break
+		}
+	}
+	if !restarted {
+		t.Fatalf("keepalived 死亡后同指纹 configTick 未拉起恢复: cmds=%v", fr.cmds[cmdsBefore:])
+	}
+
+	// 新实例运行后 stateTick 应从 FAULT 恢复
+	simulateKeepalivedRunning(t, sv, fp, 5678)
+	sv.stateTick()
+	if sv.state != StateBackup {
+		t.Fatalf("拉起恢复后应退出 FAULT: %s", sv.state)
+	}
+}
+
+// H-13 回归：配置组名变更时必须先停止旧组 keepalived（防双实例脑裂），再切换新组配置。
+func TestSupervisorGroupRenameStopsOldInstanceBeforeStartingNew(t *testing.T) {
+	fr := &fakeRunner{addrDump: addrDump("192.168.31.61")}
+	fp := &fakeProc{alive: map[int]bool{}}
+	sv, dir := newTestSupervisor(t, fr, fp)
+	defer sv.CloseWithoutStop()
+
+	writeCfg(t, dir, validConfigJSON("ENABLED"))
+	sv.configTick()
+	simulateKeepalivedRunning(t, sv, fp, 4321)
+	oldPidFile := pathsFor(sv.WorkDir, "ha-main").PidFile
+
+	// 改组名为 ha-next（ENABLED）
+	writeCfg(t, dir, strings.Replace(validConfigJSON("ENABLED"), `"ha-main"`, `"ha-next"`, 1))
+	cmdsBefore := len(fr.cmds)
+	sv.configTick()
+
+	foundOldTerm := false
+	for _, sig := range fp.signals {
+		if sig == fmt.Sprintf("%d:%v", 4321, syscall.SIGTERM) {
+			foundOldTerm = true
+			break
+		}
+	}
+	if !foundOldTerm {
+		t.Fatalf("组名变更未停止旧组实例 4321: signals=%v", fp.signals)
+	}
+	if _, err := os.Stat(oldPidFile); !os.IsNotExist(err) {
+		t.Fatalf("旧组 pidfile 未清理: %v", err)
+	}
+	startedNew := false
+	for _, cmd := range fr.cmds[cmdsBefore:] {
+		if strings.Contains(cmd, "ha-next.conf") && strings.Contains(cmd, "ha-next.pid") {
+			startedNew = true
+			break
+		}
+	}
+	if !startedNew {
+		t.Fatalf("新组 ha-next 未启动: cmds=%v", fr.cmds[cmdsBefore:])
+	}
+
+	// 再次改组名并切 DISABLED：仍必须先停 ha-next 实例
+	simulateKeepalivedRunning(t, sv, fp, 5678)
+	writeCfg(t, dir, strings.Replace(validConfigJSON("DISABLED"), `"ha-main"`, `"ha-off"`, 1))
+	sv.configTick()
+	foundNextTerm := false
+	for _, sig := range fp.signals {
+		if sig == fmt.Sprintf("%d:%v", 5678, syscall.SIGTERM) {
+			foundNextTerm = true
+			break
+		}
+	}
+	if !foundNextTerm {
+		t.Fatalf("改组名并 DISABLED 未停止旧组实例 5678: signals=%v", fp.signals)
+	}
+	if sv.state != StateDisabled {
+		t.Fatalf("期望 StateDisabled, got %s", sv.state)
+	}
+}
+
+// H-13 回归：SIGTERM 宽限后实例仍存活时必须升级 SIGKILL，且仅在确认退出后清理 pidfile。
+func TestSupervisorStopEscalatesToSIGKILL(t *testing.T) {
+	origInterval, origTerm, origKill := stopPollInterval, stopTermMaxPolls, stopKillMaxPolls
+	stopPollInterval = time.Millisecond
+	stopTermMaxPolls = 3
+	stopKillMaxPolls = 3
+	t.Cleanup(func() {
+		stopPollInterval = origInterval
+		stopTermMaxPolls = origTerm
+		stopKillMaxPolls = origKill
+	})
+
+	t.Run("升级SIGKILL并清理pidfile", func(t *testing.T) {
+		fr := &fakeRunner{addrDump: addrDump("192.168.31.61")}
+		fp := &fakeProc{alive: map[int]bool{}, ignoreTERM: true}
+		sv, dir := newTestSupervisor(t, fr, fp)
+		defer sv.CloseWithoutStop()
+
+		writeCfg(t, dir, validConfigJSON("ENABLED"))
+		sv.configTick()
+		simulateKeepalivedRunning(t, sv, fp, 7001)
+		pidFile := pathsFor(sv.WorkDir, "ha-main").PidFile
+
+		writeCfg(t, dir, validConfigJSON("DISABLED"))
+		sv.configTick()
+
+		want := []string{
+			fmt.Sprintf("%d:%v", 7001, syscall.SIGTERM),
+			fmt.Sprintf("%d:%v", 7001, syscall.SIGKILL),
+		}
+		if strings.Join(fp.signals, ",") != strings.Join(want, ",") {
+			t.Fatalf("期望先 SIGTERM 再升级 SIGKILL: got=%v want=%v", fp.signals, want)
+		}
+		if fp.alive[7001] {
+			t.Fatal("SIGKILL 后进程应已终止")
+		}
+		if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+			t.Fatalf("进程已退出，pidfile 应被清理: %v", err)
+		}
+	})
+
+	t.Run("SIGKILL后仍存活不删除pidfile", func(t *testing.T) {
+		fr := &fakeRunner{addrDump: addrDump("192.168.31.61")}
+		fp := &fakeProc{alive: map[int]bool{}, ignoreTERM: true, ignoreKILL: true}
+		sv, dir := newTestSupervisor(t, fr, fp)
+		defer sv.CloseWithoutStop()
+
+		writeCfg(t, dir, validConfigJSON("ENABLED"))
+		sv.configTick()
+		simulateKeepalivedRunning(t, sv, fp, 7002)
+		pidFile := pathsFor(sv.WorkDir, "ha-main").PidFile
+
+		writeCfg(t, dir, validConfigJSON("DISABLED"))
+		sv.configTick()
+
+		if _, err := os.Stat(pidFile); err != nil {
+			t.Fatalf("进程仍存活时不应删除 pidfile（保留追踪）: %v", err)
+		}
+	})
 }
 
 // ---------- 状态推导与漂移事件 ----------

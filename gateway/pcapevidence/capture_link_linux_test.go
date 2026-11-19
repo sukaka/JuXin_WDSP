@@ -4,10 +4,17 @@ package pcapevidence
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 )
 
 func TestRequestCorrelationContinuesAcrossSegments(t *testing.T) {
@@ -89,5 +96,171 @@ func TestLateEvidenceDuringSealJoinsOriginalSegment(t *testing.T) {
 	}
 	if capture.countUnattachedRequests() != 0 {
 		t.Fatal("sealed segment left a late request unattached")
+	}
+}
+
+func TestRememberEvidenceMetadataNilSafeAndRaceFree(t *testing.T) {
+	// Zero-value Capture simulates non-GATEWAY_EGRESS mode where evidenceArtifacts was previously nil.
+	capture := &Capture{}
+	firstID := testArtifactID(t)
+	capture.rememberEvidenceMetadata(Manifest{Segment: Segment{ArtifactID: firstID, NodeID: "gw-mirror"}}, "key-1", []byte("w1"))
+
+	capture.linkMu.Lock()
+	if _, ok := capture.evidenceArtifacts[firstID]; !ok {
+		capture.linkMu.Unlock()
+		t.Fatal("rememberEvidenceMetadata did not store artifact metadata")
+	}
+	capture.linkMu.Unlock()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			id := testArtifactID(t)
+			capture.rememberEvidenceMetadata(Manifest{
+				Segment: Segment{ArtifactID: id, NodeID: "gw-race"},
+				EndedAt: time.Now().UTC(),
+			}, "key-id", []byte("wrapped"))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			capture.addRequestEvidence(RequestEvidence{
+				RequestID:    fmt.Sprintf("req-race-%d", i),
+				ConnectionID: fmt.Sprintf("conn-%d", i%8),
+				CapturePoint: "GATEWAY_EGRESS",
+				Method:       "GET",
+				Path:         "/race",
+			})
+		}
+	}()
+	wg.Wait()
+}
+
+func TestFlushDeferredEvidenceUsesRestrictedWriterIdentity(t *testing.T) {
+	artifactID := testArtifactID(t)
+	hotDir := t.TempDir()
+	capture := &Capture{
+		config:             CaptureConfig{HotDir: hotDir, FilesystemUID: 1000, FilesystemGID: 1000},
+		pendingRequests:    make(map[ArtifactID][]RequestEvidence),
+		connectionRequests: make(map[string]map[string]RequestEvidence),
+		orphanRequests:     make(map[string][]RequestEvidence),
+		lastPacketRanges:   make(map[string]trackedPacketRange),
+		evidenceArtifacts:  make(map[ArtifactID]storedEvidenceMetadata),
+		deferredArtifacts:  make(map[ArtifactID]bool),
+	}
+	capture.rememberEvidenceMetadata(Manifest{Segment: Segment{ArtifactID: artifactID, NodeID: "gw-deferred"}}, "key-id", []byte("wrapped"))
+	capture.lastPacketRanges["conn-1"] = trackedPacketRange{artifactID: artifactID, first: 1, last: 2, observedAt: time.Now().UTC()}
+	capture.addRequestEvidence(RequestEvidence{RequestID: "req-1", ConnectionID: "conn-1", CapturePoint: "GATEWAY_EGRESS", Method: "GET", Path: "/v1/deferred"})
+
+	origRestrict := restrictEvidenceWriterFn
+	t.Cleanup(func() { restrictEvidenceWriterFn = origRestrict })
+
+	// Failure in restrictEvidenceWriter must prevent writing deferred sidecars as root.
+	restrictEvidenceWriterFn = func(uid, gid int) (func() error, error) {
+		return nil, errors.New("injected fsuid failure")
+	}
+	if err := capture.flushDeferredEvidence(); err == nil {
+		t.Fatal("expected error when restrictEvidenceWriter fails")
+	}
+	if entries, err := os.ReadDir(hotDir); err != nil || len(entries) != 0 {
+		t.Fatalf("sidecar should not be written when identity restriction fails: entries=%d err=%v", len(entries), err)
+	}
+
+	// Success path must restrict to configured uid/gid and invoke restore afterward.
+	var gotUID, gotGID int
+	restored := false
+	restrictEvidenceWriterFn = func(uid, gid int) (func() error, error) {
+		gotUID, gotGID = uid, gid
+		return func() error {
+			restored = true
+			return nil
+		}, nil
+	}
+	if err := capture.flushDeferredEvidence(); err != nil {
+		t.Fatalf("flushDeferredEvidence failed: %v", err)
+	}
+	if gotUID != 1000 || gotGID != 1000 || !restored {
+		t.Fatalf("expected restrict(1000,1000) + restore, got uid=%d gid=%d restored=%t", gotUID, gotGID, restored)
+	}
+	if entries, err := os.ReadDir(hotDir); err != nil || len(entries) != 1 {
+		t.Fatalf("expected 1 deferred sidecar after flush, got %d err=%v", len(entries), err)
+	}
+}
+
+func buildTestTCPPacket(t *testing.T, srcPort, dstPort uint16) []byte {
+	t.Helper()
+	eth := &layers.Ethernet{
+		SrcMAC:       net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, 0x01},
+		DstMAC:       net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x00, 0x02},
+		EthernetType: layers.EthernetTypeIPv4,
+	}
+	ip := &layers.IPv4{
+		Version:  4,
+		IHL:      5,
+		TTL:      64,
+		Protocol: layers.IPProtocolTCP,
+		SrcIP:    net.IPv4(10, 0, 0, 1),
+		DstIP:    net.IPv4(10, 0, 0, 2),
+	}
+	tcp := &layers.TCP{
+		SrcPort: layers.TCPPort(srcPort),
+		DstPort: layers.TCPPort(dstPort),
+		Seq:     1,
+	}
+	if err := tcp.SetNetworkLayerForChecksum(ip); err != nil {
+		t.Fatal(err)
+	}
+	buf := gopacket.NewSerializeBuffer()
+	if err := gopacket.SerializeLayers(buf, gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}, eth, ip, tcp); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestActivePacketRangesAndConnectionRequestsAreBounded(t *testing.T) {
+	linker, err := NewRequestLinker("gw-cap", "GATEWAY_EGRESS", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := &Capture{
+		linker:             linker,
+		pendingRequests:    make(map[ArtifactID][]RequestEvidence),
+		connectionRequests: make(map[string]map[string]RequestEvidence),
+		orphanRequests:     make(map[string][]RequestEvidence),
+		lastPacketRanges:   make(map[string]trackedPacketRange),
+		evidenceArtifacts:  make(map[ArtifactID]storedEvidenceMetadata),
+		deferredArtifacts:  make(map[ArtifactID]bool),
+	}
+	capture.beginRequestLinkSegment(testArtifactID(t))
+
+	const extra = 32
+	for i := 0; i < maxTrackedPacketRanges+extra; i++ {
+		pkt := buildTestTCPPacket(t, uint16(10000+i), 8080)
+		capture.trackPacketConnection(pkt)
+	}
+	if got := len(capture.activePacketRanges); got != maxTrackedPacketRanges {
+		t.Fatalf("activePacketRanges len=%d want cap %d", got, maxTrackedPacketRanges)
+	}
+	if dropped := capture.Stats().LinkDropped; dropped < extra {
+		t.Fatalf("expected at least %d dropped active packet ranges, got %d", extra, dropped)
+	}
+
+	for i := 0; i < maxTrackedConnectionRequests+extra; i++ {
+		capture.addRequestEvidence(RequestEvidence{
+			RequestID:    fmt.Sprintf("req-%d", i),
+			ConnectionID: fmt.Sprintf("conn-%d", i),
+			CapturePoint: "GATEWAY_EGRESS",
+			Method:       "GET",
+			Path:         "/bounded",
+		})
+	}
+	if got := len(capture.connectionRequests); got != maxTrackedConnectionRequests {
+		t.Fatalf("connectionRequests leaked empty maps: len=%d want %d", got, maxTrackedConnectionRequests)
+	}
+	if capture.trackedRequestCount != maxTrackedConnectionRequests {
+		t.Fatalf("trackedRequestCount=%d want %d", capture.trackedRequestCount, maxTrackedConnectionRequests)
 	}
 }

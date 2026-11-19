@@ -31,12 +31,14 @@ func sniProtected(set map[string]struct{}, sni string) bool {
 
 // Server 牵引服务。
 type Server struct {
-	cfg        Config
-	stats      *Stats
-	ln         *net.TCPListener
-	sem        chan struct{} // 并发连接上限令牌（背压护栏）
-	resolveDst resolveDstFunc
-	protectSet map[string]struct{} // SNI 防护域名集合（nil = 功能关闭）
+	cfg            Config
+	stats          *Stats
+	ln             *net.TCPListener
+	sem            chan struct{} // 并发连接上限令牌（背压护栏）
+	resolveDst     resolveDstFunc
+	protectSet     map[string]struct{} // SNI 防护域名集合（nil = 功能关闭）
+	passthroughSet map[string]struct{} // 显式允许端到端透传的 SNI 白名单（nil = 禁止任意未列明 SNI 透传）
+	localAddrs     func() ([]net.IP, error)
 
 	closing atomic.Bool
 	wg      sync.WaitGroup
@@ -58,14 +60,78 @@ func NewServer(cfg Config, stats *Stats) (*Server, error) {
 		return nil, fmt.Errorf("监听 %s 失败: %w", cfg.Listen, err)
 	}
 	return &Server{
-		cfg:        cfg,
-		stats:      stats,
-		ln:         ln,
-		sem:        make(chan struct{}, cfg.MaxConns),
-		resolveDst: originalDst,
-		protectSet: cfg.protectHostSet(),
-		conns:      make(map[net.Conn]struct{}),
+		cfg:            cfg,
+		stats:          stats,
+		ln:             ln,
+		sem:            make(chan struct{}, cfg.MaxConns),
+		resolveDst:     originalDst,
+		protectSet:     cfg.protectHostSet(),
+		passthroughSet: cfg.passthroughHostSet(),
+		localAddrs:     defaultLocalAddrs,
+		conns:          make(map[net.Conn]struct{}),
 	}, nil
+}
+
+// defaultLocalAddrs 枚举本机所有接口的 IP 地址，用于识别指向本机监听端口的自连环路。
+func defaultLocalAddrs() ([]net.IP, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		switch v := a.(type) {
+		case *net.IPNet:
+			if v.IP != nil {
+				ips = append(ips, v.IP)
+			}
+		case *net.IPAddr:
+			if v.IP != nil {
+				ips = append(ips, v.IP)
+			}
+		}
+	}
+	return ips, nil
+}
+
+// isLocalInterfaceIP 判定给定 IP 是否属于本机任意网络接口；查询失败时按 fail-closed 视为本机。
+func (s *Server) isLocalInterfaceIP(ip net.IP) bool {
+	fn := s.localAddrs
+	if fn == nil {
+		fn = defaultLocalAddrs
+	}
+	ips, err := fn()
+	if err != nil {
+		return true
+	}
+	for _, local := range ips {
+		if local.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSelfTarget 判定原始目的地址是否指向 tproxyd 自身监听地址/端口（或任意本机接口 IP 的
+// tproxyd 监听端口），在任何拨号之前拒绝，杜绝自连环路 DoS 与非 REDIRECT 直连。
+func (s *Server) isSelfTarget(orig *net.TCPAddr, localAddr net.Addr) bool {
+	if orig == nil || orig.IP == nil || orig.Port <= 0 {
+		return true
+	}
+	if localTCP, ok := localAddr.(*net.TCPAddr); ok && localTCP.Port == orig.Port && localTCP.IP.Equal(orig.IP) {
+		return true
+	}
+	listenTCP, ok := s.ln.Addr().(*net.TCPAddr)
+	if !ok || orig.Port != listenTCP.Port {
+		return false
+	}
+	if orig.IP.IsUnspecified() || orig.IP.IsLoopback() {
+		return true
+	}
+	if listenTCP.IP != nil && !listenTCP.IP.IsUnspecified() && orig.IP.Equal(listenTCP.IP) {
+		return true
+	}
+	return s.isLocalInterfaceIP(orig.IP)
 }
 
 // Addr 实际监听地址（测试取动态端口用）。
@@ -123,10 +189,17 @@ func (s *Server) serveConn(client *net.TCPConn) {
 		log.Printf("[tproxyd] 原始目的解析失败 src=%s: %v", src, err)
 		return
 	}
+	if s.isSelfTarget(orig, client.LocalAddr()) {
+		s.stats.OrigDstErrors.Add(1)
+		log.Printf("[tproxyd] 拒绝指向本机监听端口的原始目的（防自连环路） src=%s orig=%s listen=%s", src, orig, s.Addr())
+		return
+	}
 
 	// SNI 嗅探分流（ProtectHosts 为空时功能关闭，走原路径零开销）：
-	//   TLS + SNI∈清单 → TargetTLS（Caddy 终结检测）；TLS + SNI∉清单 → 按原始目的
-	//   透传（端到端 TLS）；明文 HTTP → Target；解析失败 → 倒向 TargetTLS（防绕过）；
+	//   TLS + SNI∈ProtectHosts → TargetTLS（Caddy 终结检测）；
+	//   TLS + SNI∈PassthroughAllowlist → 按原始目的透传（端到端 TLS）；
+	//   TLS + 未列明 SNI → fail-closed 倒向 TargetTLS（防绕过）；
+	//   明文 HTTP → Target；解析失败 → 倒向 TargetTLS（防绕过）；
 	//   嗅探读超时 → 关连接（防空闲占用）。
 	upstream := s.cfg.Target
 	sendProxy := true
@@ -150,11 +223,16 @@ func (s *Server) serveConn(client *net.TCPConn) {
 		case isTLS && sniProtected(s.protectSet, sni):
 			upstream = s.cfg.TargetTLS
 			s.stats.ConnsProtected.Add(1)
-		case isTLS:
-			// 清单外域名：透传回原始目的（TLS 端到端，不可注入 PROXY 头）
+		case isTLS && sniProtected(s.passthroughSet, sni):
+			// 仅显式列入透传白名单的域名允许按原始目的透传（TLS 端到端，不可注入 PROXY 头）
 			upstream = orig.String()
 			sendProxy = false
 			s.stats.ConnsPassthrough.Add(1)
+		case isTLS:
+			// 未列明 SNI 默认 fail-closed 倒向 TLS 检测路径，禁止任意域名绕过 WAF 直通原始目的
+			upstream = s.cfg.TargetTLS
+			s.stats.ConnsUnlistedTLS.Add(1)
+			log.Printf("[tproxyd] 未列明 SNI %q 不在透传白名单 src=%s orig=%s，倒向 TLS 检测路径", sni, src, orig)
 		}
 	}
 

@@ -81,7 +81,12 @@ func NewCapture(config CaptureConfig) (*Capture, error) {
 		return nil, fmt.Errorf("capture hot directory is not a directory")
 	}
 	capture := &Capture{
-		config: config, handle: handle, packets: make(chan capturedPacket, config.QueuePackets), stop: make(chan struct{}),
+		config:            config,
+		handle:            handle,
+		packets:           make(chan capturedPacket, config.QueuePackets),
+		stop:              make(chan struct{}),
+		evidenceArtifacts: make(map[ArtifactID]storedEvidenceMetadata),
+		deferredArtifacts: make(map[ArtifactID]bool),
 	}
 	if config.CapturePoint == "GATEWAY_EGRESS" {
 		linker, err := NewRequestLinker(config.NodeID, config.CapturePoint, capture.addRequestEvidence)
@@ -103,8 +108,6 @@ func NewCapture(config CaptureConfig) (*Capture, error) {
 		capture.connectionRequests = make(map[string]map[string]RequestEvidence)
 		capture.orphanRequests = make(map[string][]RequestEvidence)
 		capture.lastPacketRanges = make(map[string]trackedPacketRange)
-		capture.evidenceArtifacts = make(map[ArtifactID]storedEvidenceMetadata)
-		capture.deferredArtifacts = make(map[ArtifactID]bool)
 	}
 	return capture, nil
 }
@@ -225,7 +228,7 @@ func (c *Capture) dequeue(packet capturedPacket) {
 }
 
 func (c *Capture) writePackets(ready chan<- error) (runErr error) {
-	restore, err := restrictEvidenceWriter(c.config.FilesystemUID, c.config.FilesystemGID)
+	restore, err := restrictEvidenceWriterFn(c.config.FilesystemUID, c.config.FilesystemGID)
 	if err != nil {
 		ready <- err
 		return err

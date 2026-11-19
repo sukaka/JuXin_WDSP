@@ -88,10 +88,10 @@ func (d desired) stateKey() string {
 	return fmt.Sprintf("run:%s:%s:ports=%v", d.source, cfgKey(d.cfg), ports)
 }
 
-// cfgKey 监听配置指纹（listen/target/target_tls/protect_hosts 全参与：
+// cfgKey 监听配置指纹（listen/target/target_tls/protect_hosts/passthrough_allowlist 全参与：
 // 任一变化都需重启监听生效）。
 func cfgKey(cfg Config) string {
-	return fmt.Sprintf("%s→%s,tls→%s,protect=%v", cfg.Listen, cfg.Target, cfg.TargetTLS, cfg.ProtectHosts)
+	return fmt.Sprintf("%s→%s,tls→%s,protect=%v,passthrough=%v", cfg.Listen, cfg.Target, cfg.TargetTLS, cfg.ProtectHosts, cfg.PassthroughAllowlist)
 }
 
 // Run 阻塞运行监督循环：启动即应用一次，此后每 interval 轮询，直到 Close。
@@ -167,6 +167,9 @@ func (s *Supervisor) resolve() (desired, error) {
 		if len(fc.ProtectHosts) > 0 {
 			cfg.ProtectHosts = fc.ProtectHosts
 		}
+		if fc.PassthroughAllowlist != nil {
+			cfg.PassthroughAllowlist = fc.PassthroughAllowlist
+		}
 		if err := cfg.Validate(); err != nil {
 			return desired{}, fmt.Errorf("下发配置叠加 env 基线后校验失败: %w", err)
 		}
@@ -228,8 +231,8 @@ func (s *Supervisor) applyLocked(d desired) {
 		return
 	}
 	if changed {
-		log.Printf("[tproxyd] 生效配置：source=%s listen=%s target=%s target_tls=%s protect_hosts=%v redirect_ports=%v",
-			d.source, d.cfg.Listen, d.cfg.Target, d.cfg.TargetTLS, d.cfg.ProtectHosts, d.ports)
+		log.Printf("[tproxyd] 生效配置：source=%s listen=%s target=%s target_tls=%s protect_hosts=%v passthrough_allowlist=%v redirect_ports=%v",
+			d.source, d.cfg.Listen, d.cfg.Target, d.cfg.TargetTLS, d.cfg.ProtectHosts, d.cfg.PassthroughAllowlist, d.ports)
 	}
 }
 

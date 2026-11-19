@@ -34,8 +34,10 @@ func TestPCAPDContainerRestrictedIdentityCapturesRealHTTP(t *testing.T) {
 	if err := os.Mkdir(hotRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(hotRoot, 0o777); err != nil {
-		t.Fatal(err)
+	if os.Geteuid() == 0 {
+		if err := os.Chown(hotRoot, 1000, 1000); err != nil {
+			t.Fatal(err)
+		}
 	}
 	releasePublic, releasePrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -69,7 +71,7 @@ func TestPCAPDContainerRestrictedIdentityCapturesRealHTTP(t *testing.T) {
 	}
 	defer func() { _, _ = run("rm", "-f", name) }()
 	output, err := run("run", "-d", "--name", name, "--network", "none", "--user", "0:0",
-		"--cap-drop", "ALL", "--cap-add", "NET_RAW", "--security-opt", "no-new-privileges:true", "--read-only",
+		"--cap-drop", "ALL", "--cap-add", "NET_RAW", "--cap-add", "SETUID", "--cap-add", "SETGID", "--security-opt", "no-new-privileges:true", "--read-only",
 		"--tmpfs", "/tmp:rw,size=8m,mode=1777", "-v", directory+":/etc/jiuzhang:ro", "-v", hotRoot+":/var/lib/jiuzhang/pcap-hot",
 		"-v", originBinary+":/usr/local/bin/pcap-test-origin:ro",
 		image, "--iface=lo", "--ports=18082", "--node=gw-container", "--grant=/etc/jiuzhang/grant.json",

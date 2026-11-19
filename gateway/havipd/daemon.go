@@ -182,7 +182,15 @@ func (s *Supervisor) configTick() {
 
 	fp := cfg.fingerprint()
 	if fp == s.lastFP {
-		return // 指纹不变：幂等跳过
+		if cfg.State != ConfigEnabled || s.keepalivedPidLocked() > 0 {
+			return // 指纹不变且实例状态符合预期：幂等跳过
+		}
+		log.Printf("[havipd] 配置未变但 keepalived 未运行（group=%s），尝试拉起恢复", cfg.Group)
+	}
+	if s.cfg != nil && s.cfg.Group != cfg.Group {
+		log.Printf("[havipd] 配置组名变更 %s → %s：先停止旧组 keepalived 实例", s.cfg.Group, cfg.Group)
+		s.stopKeepalivedLocked()
+		s.lastFP = ""
 	}
 	s.cfg = &cfg
 	s.self = self
@@ -373,9 +381,16 @@ func (s *Supervisor) startKeepalivedLocked(paths keepalivedPaths) error {
 	return nil
 }
 
-// stopKeepalivedLocked 停止本组件管理的实例（SIGTERM，keepalived 释放 VIP）。
-// 停止为同步语义：轮询等待进程退出（上限 3s）并清理 pidfile——否则 DISABLED 后
-// 立即重新 ENABLED 时，可能向尚未退出的旧实例误发 SIGHUP（lab 实测暴露的竞态）。
+// stopPollInterval / stopTermMaxPolls / stopKillMaxPolls 停止轮询参数（变量化便于单测加速）。
+var (
+	stopPollInterval = 100 * time.Millisecond
+	stopTermMaxPolls = 30 // SIGTERM 宽限 3s
+	stopKillMaxPolls = 10 // SIGKILL 确认退出等待 1s
+)
+
+// stopKeepalivedLocked 停止本组件管理的实例（先 SIGTERM 释放 VIP，超时升级 SIGKILL）。
+// 停止为同步语义：轮询等待进程退出并清理 pidfile——否则 DISABLED 后立即重新 ENABLED
+// 或组名切换时，可能向尚未退出的旧实例误发 SIGHUP 或产生双实例脑裂。
 func (s *Supervisor) stopKeepalivedLocked() {
 	if s.cfg == nil {
 		return
@@ -386,14 +401,35 @@ func (s *Supervisor) stopKeepalivedLocked() {
 		return
 	}
 	if err := s.Proc.Signal(pid, syscall.SIGTERM); err != nil {
+		if !s.Proc.Alive(pid) {
+			_ = os.Remove(pidFile)
+			return
+		}
 		s.logOnce("stoperr", "keepalived 停止失败（pid=%d）: %v", pid, err)
 		return
 	}
-	for i := 0; i < 30; i++ {
+	for i := 0; i < stopTermMaxPolls; i++ {
 		if !s.Proc.Alive(pid) {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(stopPollInterval)
+	}
+	if s.Proc.Alive(pid) {
+		log.Printf("[havipd] keepalived SIGTERM 宽限超时仍存活（pid=%d），升级 SIGKILL", pid)
+		if err := s.Proc.Signal(pid, syscall.SIGKILL); err != nil && s.Proc.Alive(pid) {
+			s.logOnce("killerr", "keepalived SIGKILL 失败（pid=%d）: %v", pid, err)
+			return
+		}
+		for i := 0; i < stopKillMaxPolls; i++ {
+			if !s.Proc.Alive(pid) {
+				break
+			}
+			time.Sleep(stopPollInterval)
+		}
+		if s.Proc.Alive(pid) {
+			s.logOnce("stillalive", "keepalived SIGKILL 后仍存活（pid=%d），保留 pidfile", pid)
+			return
+		}
 	}
 	_ = os.Remove(pidFile) // keepalived 正常退出会自删；异常残留由本组件兜底清理
 	log.Printf("[havipd] keepalived 已停止（pid=%d），VIP 已释放", pid)

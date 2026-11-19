@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -38,6 +39,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -50,6 +52,8 @@ const (
 	diagCaptureSizePollInterval = 100 * time.Millisecond
 	// diagOutputLimit stdout/stderr 单字段截断上限（64KB）。
 	diagOutputLimit = 64 * 1024
+	// diagMaxRequestBytes 单个诊断请求 JSON 读取上限（256KB，防大文件 OOM）。
+	diagMaxRequestBytes = 256 * 1024
 	// diagCaptureMaxBytes capture 产物大小上限（100MB，超限删除并报 FAILED）。
 	diagCaptureMaxBytes = 100 * 1024 * 1024
 	// diagDefaultTimeoutSec 请求未给 timeout_sec 时的缺省值。
@@ -243,11 +247,19 @@ func (d *DiagService) scanOnce() {
 	}
 }
 
-// loadRequest 读取并校验请求文件（版本/动作白名单/job_id 一致性）。
+// loadRequest 读取并校验请求文件（大小上限/版本/动作白名单/job_id 一致性）。
 func (d *DiagService) loadRequest(fileName, jobID string) (DiagRequest, error) {
-	data, err := os.ReadFile(filepath.Join(d.Dir, fileName))
+	f, err := os.Open(filepath.Join(d.Dir, fileName))
 	if err != nil {
 		return DiagRequest{}, fmt.Errorf("读取请求文件失败: %v", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, diagMaxRequestBytes+1))
+	if err != nil {
+		return DiagRequest{}, fmt.Errorf("读取请求文件失败: %v", err)
+	}
+	if len(data) > diagMaxRequestBytes {
+		return DiagRequest{}, fmt.Errorf("请求文件超过大小上限（最大 %d 字节）", diagMaxRequestBytes)
 	}
 	var req DiagRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -546,11 +558,17 @@ func (d *DiagService) execCapture(req DiagRequest, res *DiagResult) {
 		return
 	}
 	if out.stopped {
+		if err := os.Remove(pcapPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("[netmgrd/diag] 停止抓包后删除产物失败 %s: %v", pcapPath, err)
+		}
 		res.Status = DiagStopped
 		res.Stdout, res.Stderr, res.ExitCode = out.stdout, out.stderr, out.exitCode
 		return
 	}
 	if !out.timedOut && out.exitCode != 0 {
+		if err := os.Remove(pcapPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("[netmgrd/diag] 失败抓包后删除产物失败 %s: %v", pcapPath, err)
+		}
 		res.Status = DiagFailed
 		res.Stdout, res.Stderr, res.ExitCode = out.stdout, out.stderr, out.exitCode
 		return
@@ -628,13 +646,52 @@ func mapCmdOutcome(res *DiagResult, out cmdOutcome) {
 	}
 }
 
+// limitedBuffer 有界输出缓冲：执行期间将 stdout/stderr 内存占用严格限制在 max 字节以内，
+// 超限字节静默丢弃并返回满写入长度（避免子进程管道阻塞或 SIGPIPE）。
+type limitedBuffer struct {
+	mu         sync.Mutex
+	buf        bytes.Buffer
+	max        int
+	overflowed bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	rem := b.max - b.buf.Len()
+	if rem <= 0 {
+		if len(p) > 0 {
+			b.overflowed = true
+		}
+		return len(p), nil
+	}
+	if len(p) > rem {
+		_, _ = b.buf.Write(p[:rem])
+		b.overflowed = true
+		return len(p), nil
+	}
+	_, _ = b.buf.Write(p)
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.buf.String()
+	if b.overflowed {
+		return trimTrailingIncompleteUTF8(s)
+	}
+	return s
+}
+
 // defaultRunCmd 生产命令执行器：参数数组不经 shell；超时/停止按 softKill
 // 决定先 SIGTERM（宽限 diagSoftKillGrace 后 SIGKILL）还是直接 SIGKILL。
 func defaultRunCmd(ctx context.Context, opts cmdRunOpts) cmdOutcome {
 	cmd := exec.Command(opts.name, opts.args...) //nolint:gosec // 动作白名单 + 参数数组 + 目标校验
-	var so, se bytes.Buffer
-	cmd.Stdout = &so
-	cmd.Stderr = &se
+	so := &limitedBuffer{max: diagOutputLimit}
+	se := &limitedBuffer{max: diagOutputLimit}
+	cmd.Stdout = so
+	cmd.Stderr = se
 	if err := cmd.Start(); err != nil {
 		return cmdOutcome{err: fmt.Errorf("启动 %s: %w", opts.name, err), exitCode: -1}
 	}
@@ -654,8 +711,11 @@ func defaultRunCmd(ctx context.Context, opts cmdRunOpts) cmdOutcome {
 		stopTick = ticker.C
 	}
 	killAndWait := func() {
-		terminateCmd(cmd, opts.softKill)
+		killTimer := terminateCmd(cmd, opts.softKill)
 		<-done
+		if killTimer != nil {
+			killTimer.Stop()
+		}
 	}
 	for {
 		select {
@@ -688,17 +748,18 @@ func defaultRunCmd(ctx context.Context, opts cmdRunOpts) cmdOutcome {
 }
 
 // terminateCmd 终止进程：soft=true 先 SIGTERM（tcpdump 等需要刷盘），
-// 宽限 diagSoftKillGrace 后仍未退出则 SIGKILL。
-func terminateCmd(cmd *exec.Cmd, soft bool) {
+// 宽限 diagSoftKillGrace 后仍未退出则 SIGKILL。返回延迟 SIGKILL 定时器，
+// 调用方必须在 cmd.Wait() 完成后 Stop，避免定时器泄漏或退出后误触发。
+func terminateCmd(cmd *exec.Cmd, soft bool) *time.Timer {
 	if cmd.Process == nil {
-		return
+		return nil
 	}
 	if soft {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
-		time.AfterFunc(diagSoftKillGrace, func() { _ = cmd.Process.Kill() })
-		return
+		return time.AfterFunc(diagSoftKillGrace, func() { _ = cmd.Process.Kill() })
 	}
 	_ = cmd.Process.Kill()
+	return nil
 }
 
 // exitCodeOf 从 Wait 错误提取退出码（nil=0；信号终止=-1）。
@@ -713,12 +774,32 @@ func exitCodeOf(err error) int {
 	return -1
 }
 
-// truncDiagOutput 输出截断到 64KB（保留头部）。
+// truncDiagOutput 输出截断到 64KB（保留头部，保证 UTF-8 字符边界完整）。
 func truncDiagOutput(s string) string {
 	if len(s) <= diagOutputLimit {
 		return s
 	}
-	return s[:diagOutputLimit]
+	return trimTrailingIncompleteUTF8(s[:diagOutputLimit])
+}
+
+// trimTrailingIncompleteUTF8 裁去末尾因字节截断产生的不完整 UTF-8 字符前缀。
+func trimTrailingIncompleteUTF8(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	minIdx := len(s) - utf8.UTFMax
+	if minIdx < 0 {
+		minIdx = 0
+	}
+	for i := len(s) - 1; i >= minIdx; i-- {
+		if utf8.RuneStart(s[i]) {
+			if !utf8.FullRuneInString(s[i:]) {
+				return s[:i]
+			}
+			return s
+		}
+	}
+	return s
 }
 
 // clampInt 整数夹紧到 [lo, hi]。

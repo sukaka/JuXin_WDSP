@@ -96,6 +96,7 @@ func TestLoadFileConfigSNIDispatch(t *testing.T) {
 	writeFile(t, path, `{
 		"enabled": true,
 		"protect_hosts": ["Www.Test.COM.", "www.test.com", "api.test.com"],
+		"passthrough_allowlist": ["Pass.Test.COM.", "pass.test.com"],
 		"target_tls": "127.0.0.1:8443"
 	}`)
 	fc, err := LoadFileConfig(path)
@@ -104,6 +105,9 @@ func TestLoadFileConfigSNIDispatch(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fc.ProtectHosts, []string{"www.test.com", "api.test.com"}) {
 		t.Fatalf("ProtectHosts 归一化/去重错误: %v", fc.ProtectHosts)
+	}
+	if !reflect.DeepEqual(fc.PassthroughAllowlist, []string{"pass.test.com"}) {
+		t.Fatalf("PassthroughAllowlist 归一化/去重错误: %v", fc.PassthroughAllowlist)
 	}
 	if fc.TargetTLS != "127.0.0.1:8443" {
 		t.Fatalf("TargetTLS=%q", fc.TargetTLS)
@@ -118,6 +122,8 @@ func TestLoadFileConfigRejectsBadSNIDispatch(t *testing.T) {
 		{"target_tls 非法", `{"enabled":true,"target_tls":"no-port"}`},
 		{"protect_hosts 非法域名", `{"enabled":true,"protect_hosts":["bad host.com"]}`},
 		{"protect_hosts 通配符", `{"enabled":true,"protect_hosts":["*.test.com"]}`},
+		{"passthrough_allowlist 非法域名", `{"enabled":true,"passthrough_allowlist":["bad host.com"]}`},
+		{"passthrough_allowlist 通配符", `{"enabled":true,"passthrough_allowlist":["*.test.com"]}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -181,5 +187,16 @@ func TestResolveOverlaySNIDispatch(t *testing.T) {
 	}
 	if d2.stateKey() == k1 || cfgKey(d2.cfg) == cfgKey(d.cfg) {
 		t.Fatal("protect_hosts 变化应改变状态/监听指纹")
+	}
+	writeFile(t, path, `{"enabled":true,"protect_hosts":["www.test.com","api.test.com"],"passthrough_allowlist":["pass.test.com"],"target_tls":"127.0.0.1:8443"}`)
+	d3, err := s.resolve()
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !reflect.DeepEqual(d3.cfg.PassthroughAllowlist, []string{"pass.test.com"}) {
+		t.Fatalf("passthrough_allowlist 叠加错误: %v", d3.cfg.PassthroughAllowlist)
+	}
+	if d3.stateKey() == d2.stateKey() || cfgKey(d3.cfg) == cfgKey(d2.cfg) {
+		t.Fatal("passthrough_allowlist 变化应改变状态/监听指纹")
 	}
 }

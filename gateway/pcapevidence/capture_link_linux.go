@@ -4,6 +4,7 @@ package pcapevidence
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -67,8 +68,15 @@ func (c *Capture) trackPacketConnection(data []byte) {
 		return
 	}
 	c.activePacketSeq++
-	bounds := c.activePacketRanges[connectionID]
-	if bounds.first == 0 {
+	if c.activePacketRanges == nil {
+		c.activePacketRanges = make(map[string]packetRange)
+	}
+	bounds, tracked := c.activePacketRanges[connectionID]
+	if !tracked {
+		if len(c.activePacketRanges) >= maxTrackedPacketRanges {
+			c.counters.linkDropped.Add(1)
+			return
+		}
 		bounds.first = c.activePacketSeq
 	}
 	bounds.last = c.activePacketSeq
@@ -102,17 +110,21 @@ func (c *Capture) addRequestEvidence(evidence RequestEvidence) {
 	c.linkMu.Lock()
 	defer c.linkMu.Unlock()
 	requests := c.connectionRequests[evidence.ConnectionID]
-	if requests == nil {
-		requests = make(map[string]RequestEvidence)
-		c.connectionRequests[evidence.ConnectionID] = requests
-	}
 	known, exists := requests[evidence.RequestID]
 	if exists {
 		evidence = known
 	} else {
-		if c.trackedRequestCount >= maxTrackedConnectionRequests {
+		if c.trackedRequestCount >= maxTrackedConnectionRequests ||
+			(requests == nil && len(c.connectionRequests) >= maxTrackedConnectionRequests) {
 			c.counters.linkDropped.Add(1)
 			return
+		}
+		if requests == nil {
+			if c.connectionRequests == nil {
+				c.connectionRequests = make(map[string]map[string]RequestEvidence)
+			}
+			requests = make(map[string]RequestEvidence)
+			c.connectionRequests[evidence.ConnectionID] = requests
 		}
 		requests[evidence.RequestID] = evidence
 		c.trackedRequestCount++
@@ -125,12 +137,18 @@ func (c *Capture) addRequestEvidence(evidence RequestEvidence) {
 	if last, ok := c.lastPacketRanges[evidence.ConnectionID]; ok {
 		if _, exists := c.evidenceArtifacts[last.artifactID]; exists {
 			if c.appendRequestLocked(last.artifactID, evidence, packetRange{first: last.first, last: last.last}) {
+				if c.deferredArtifacts == nil {
+					c.deferredArtifacts = make(map[ArtifactID]bool)
+				}
 				c.deferredArtifacts[last.artifactID] = true
 			}
 			return
 		}
 	}
 	if !exists {
+		if c.orphanRequests == nil {
+			c.orphanRequests = make(map[string][]RequestEvidence)
+		}
 		c.orphanRequests[evidence.ConnectionID] = append(c.orphanRequests[evidence.ConnectionID], evidence)
 	}
 }
@@ -138,6 +156,9 @@ func (c *Capture) addRequestEvidence(evidence RequestEvidence) {
 func (c *Capture) appendRequestLocked(id ArtifactID, evidence RequestEvidence, bounds packetRange) bool {
 	if id.IsZero() {
 		return false
+	}
+	if c.pendingRequests == nil {
+		c.pendingRequests = make(map[ArtifactID][]RequestEvidence)
 	}
 	links := c.pendingRequests[id]
 	for _, existing := range links {
@@ -177,6 +198,9 @@ func (c *Capture) attachPendingLocked(connectionID string, bounds packetRange) {
 }
 
 func (c *Capture) rememberPacketRangeLocked(connectionID string, value trackedPacketRange) {
+	if c.lastPacketRanges == nil {
+		c.lastPacketRanges = make(map[string]trackedPacketRange)
+	}
 	if _, exists := c.lastPacketRanges[connectionID]; !exists && len(c.lastPacketRanges) >= maxTrackedPacketRanges {
 		var oldestID string
 		var oldest time.Time
@@ -191,7 +215,12 @@ func (c *Capture) rememberPacketRangeLocked(connectionID string, value trackedPa
 }
 
 func (c *Capture) rememberEvidenceMetadata(manifest Manifest, keyID string, wrappedKey []byte) {
-	if len(c.evidenceArtifacts) >= maxStoredEvidenceMetadata {
+	c.linkMu.Lock()
+	defer c.linkMu.Unlock()
+	if c.evidenceArtifacts == nil {
+		c.evidenceArtifacts = make(map[ArtifactID]storedEvidenceMetadata)
+	}
+	if _, exists := c.evidenceArtifacts[manifest.Segment.ArtifactID]; !exists && len(c.evidenceArtifacts) >= maxStoredEvidenceMetadata {
 		var oldestID ArtifactID
 		var oldest time.Time
 		for id, current := range c.evidenceArtifacts {
@@ -200,11 +229,33 @@ func (c *Capture) rememberEvidenceMetadata(manifest Manifest, keyID string, wrap
 			}
 		}
 		delete(c.evidenceArtifacts, oldestID)
+		delete(c.deferredArtifacts, oldestID)
+		if dropped := len(c.pendingRequests[oldestID]); dropped > 0 {
+			c.counters.linkDropped.Add(uint64(dropped))
+		}
+		delete(c.pendingRequests, oldestID)
 	}
 	c.evidenceArtifacts[manifest.Segment.ArtifactID] = storedEvidenceMetadata{manifest: manifest, keyID: keyID, wrappedKey: append([]byte(nil), wrappedKey...)}
 }
 
-func (c *Capture) flushDeferredEvidence() error {
+func (c *Capture) flushDeferredEvidence() (flushErr error) {
+	c.linkMu.Lock()
+	if len(c.deferredArtifacts) == 0 {
+		c.linkMu.Unlock()
+		return nil
+	}
+	c.linkMu.Unlock()
+
+	restore, err := restrictEvidenceWriterFn(c.config.FilesystemUID, c.config.FilesystemGID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := restore(); err != nil {
+			flushErr = errors.Join(flushErr, err)
+		}
+	}()
+
 	c.linkMu.Lock()
 	defer c.linkMu.Unlock()
 	for id := range c.deferredArtifacts {

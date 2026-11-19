@@ -36,7 +36,8 @@ func startFakeCaddy(t *testing.T, headerCh chan<- string) string {
 			}
 			go func(c net.Conn) {
 				defer c.Close()
-				line, err := bufio.NewReader(c).ReadString('\n')
+				br := bufio.NewReader(c)
+				line, err := br.ReadString('\n')
 				if err != nil {
 					return
 				}
@@ -45,7 +46,7 @@ func startFakeCaddy(t *testing.T, headerCh chan<- string) string {
 				}
 				// echo 模式（读超时防止协程泄漏）
 				_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
-				_, _ = io.Copy(c, c)
+				_, _ = io.Copy(c, br)
 			}(conn)
 		}
 	}()
@@ -309,7 +310,7 @@ func TestSNIProtectedTLSRoutesToTargetTLS(t *testing.T) {
 	}
 }
 
-// 清单外域名的 TLS 连接：按原始目的端到端透传，不注入 PROXY 头、不进任何下游。
+// 显式透传白名单内域名的 TLS 连接：按原始目的端到端透传，不注入 PROXY 头、不进任何下游。
 func TestSNIPassthroughToOriginalDst(t *testing.T) {
 	httpAddr, httpConns := startCountingEcho(t, true, nil)
 	tlsAddr, tlsConns := startCountingEcho(t, true, nil)
@@ -323,10 +324,11 @@ func TestSNIPassthroughToOriginalDst(t *testing.T) {
 		return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}, nil
 	}
 	srv, stats := startSNIServer(t, Config{
-		Target:       httpAddr,
-		TargetTLS:    tlsAddr,
-		ProtectHosts: []string{"www.test.com"},
-		SniffTimeout: time.Second,
+		Target:               httpAddr,
+		TargetTLS:            tlsAddr,
+		ProtectHosts:         []string{"www.test.com"},
+		PassthroughAllowlist: []string{"www.test1.com"},
+		SniffTimeout:         time.Second,
 	}, resolve)
 
 	client, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
@@ -353,6 +355,177 @@ func TestSNIPassthroughToOriginalDst(t *testing.T) {
 		t.Fatalf("透传流量不应到达下游: http=%d tls=%d", httpConns.Load(), tlsConns.Load())
 	}
 	waitFor(t, "ConnsPassthrough 计数", func() bool { return stats.ConnsPassthrough.Load() == 1 })
+}
+
+// 未列明 SNI（既不在 ProtectHosts 也不在 PassthroughAllowlist）：默认 fail-closed 倒向 TargetTLS，
+// 绝不直连原始目的绕过 WAF。
+func TestSNIUnlistedDefaultsFailClosedToTargetTLS(t *testing.T) {
+	cases := []struct {
+		name      string
+		allowlist []string
+		sni       string
+	}{
+		{"空透传白名单默认拒绝直通", nil, "www.test1.com"},
+		{"不在白名单内的未列明域名", []string{"allowed.example.com"}, "attacker.evil"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tlsHeader := make(chan string, 1)
+			httpAddr, httpConns := startCountingEcho(t, true, nil)
+			tlsAddr, _ := startCountingEcho(t, true, tlsHeader)
+			originAddr, originConns := startCountingEcho(t, false, nil)
+			_, originPort, _ := net.SplitHostPort(originAddr)
+			port := 0
+			_, _ = fmt.Sscanf(originPort, "%d", &port)
+			resolve := func(conn *net.TCPConn) (*net.TCPAddr, error) {
+				return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}, nil
+			}
+
+			srv, stats := startSNIServer(t, Config{
+				Target:               httpAddr,
+				TargetTLS:            tlsAddr,
+				ProtectHosts:         []string{"www.test.com"},
+				PassthroughAllowlist: tc.allowlist,
+				SniffTimeout:         time.Second,
+			}, resolve)
+
+			client, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer client.Close()
+
+			ch := clientHelloBytes(t, tc.sni)
+			if _, err := client.Write(ch); err != nil {
+				t.Fatalf("write ClientHello: %v", err)
+			}
+			select {
+			case line := <-tlsHeader:
+				if !strings.HasPrefix(line, "PROXY TCP4 ") {
+					t.Fatalf("未列明 SNI 倒向 TargetTLS 缺 PROXY 头: %q", line)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("未列明 SNI 未 fail-closed 倒向 TargetTLS")
+			}
+			buf := make([]byte, len(ch))
+			_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+			if _, err := io.ReadFull(client, buf); err != nil {
+				t.Fatalf("read echo: %v", err)
+			}
+			if !bytes.Equal(buf, ch) {
+				t.Fatal("ClientHello 字节流在倒向 TargetTLS 后损坏")
+			}
+			if originConns.Load() != 0 || httpConns.Load() != 0 {
+				t.Fatalf("未列明 SNI 不得直通源站或 HTTP 路径: origin=%d http=%d", originConns.Load(), httpConns.Load())
+			}
+			if stats.ConnsPassthrough.Load() != 0 {
+				t.Fatalf("未列明 SNI 不应计入透传: %d", stats.ConnsPassthrough.Load())
+			}
+			waitFor(t, "ConnsUnlistedTLS 计数", func() bool { return stats.ConnsUnlistedTLS.Load() == 1 })
+		})
+	}
+}
+
+// ProtectHosts 优先级高于 PassthroughAllowlist：同一域名同时出现在两份清单时必须送检测路径。
+func TestSNIProtectHostsOverridesPassthroughAllowlist(t *testing.T) {
+	tlsHeader := make(chan string, 1)
+	httpAddr, _ := startCountingEcho(t, true, nil)
+	tlsAddr, _ := startCountingEcho(t, true, tlsHeader)
+	originAddr, originConns := startCountingEcho(t, false, nil)
+	_, originPort, _ := net.SplitHostPort(originAddr)
+	port := 0
+	_, _ = fmt.Sscanf(originPort, "%d", &port)
+	resolve := func(conn *net.TCPConn) (*net.TCPAddr, error) {
+		return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}, nil
+	}
+
+	srv, stats := startSNIServer(t, Config{
+		Target:               httpAddr,
+		TargetTLS:            tlsAddr,
+		ProtectHosts:         []string{"www.test.com"},
+		PassthroughAllowlist: []string{"www.test.com"},
+		SniffTimeout:         time.Second,
+	}, resolve)
+
+	client, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer client.Close()
+
+	ch := clientHelloBytes(t, "www.test.com")
+	if _, err := client.Write(ch); err != nil {
+		t.Fatalf("write ClientHello: %v", err)
+	}
+	select {
+	case line := <-tlsHeader:
+		if !strings.HasPrefix(line, "PROXY TCP4 ") {
+			t.Fatalf("防护域名缺 PROXY 头: %q", line)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("防护域名未送 TargetTLS")
+	}
+	if originConns.Load() != 0 || stats.ConnsPassthrough.Load() != 0 {
+		t.Fatalf("防护域名被错误透传: origin=%d passthrough=%d", originConns.Load(), stats.ConnsPassthrough.Load())
+	}
+	waitFor(t, "ConnsProtected 计数", func() bool { return stats.ConnsProtected.Load() == 1 })
+}
+
+// 防自连环路 DoS：SO_ORIGINAL_DST 指向 tproxyd 自身监听地址/端口或任意本机接口 IP+监听端口时，
+// 必须在拨号前拒绝，绝不自连放大耗尽 MaxConns。
+func TestSelfDialLoopOrigDstRejected(t *testing.T) {
+	httpAddr, httpConns := startCountingEcho(t, true, nil)
+	tlsAddr, tlsConns := startCountingEcho(t, true, nil)
+
+	var targetIP atomic.Value
+	srv, stats := startSNIServer(t, Config{
+		Target:               httpAddr,
+		TargetTLS:            tlsAddr,
+		ProtectHosts:         []string{"www.test.com"},
+		PassthroughAllowlist: []string{"pass.test.com"},
+		SniffTimeout:         time.Second,
+	}, func(conn *net.TCPConn) (*net.TCPAddr, error) {
+		listenTCP := conn.LocalAddr().(*net.TCPAddr)
+		ip := targetIP.Load().(net.IP)
+		return &net.TCPAddr{IP: ip, Port: listenTCP.Port}, nil
+	})
+	srv.localAddrs = func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("10.20.30.40")}, nil
+	}
+
+	cases := []struct {
+		name string
+		ip   string
+	}{
+		{"自身监听回环地址与端口", "127.0.0.1"},
+		{"本机其他接口IP配自身监听端口", "10.20.30.40"},
+		{"未指定地址配自身监听端口", "0.0.0.0"},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			targetIP.Store(net.ParseIP(tc.ip))
+			client, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer client.Close()
+			// 即便携带透传白名单 SNI 也应在嗅探/拨号前直接关闭
+			_, _ = client.Write(clientHelloBytes(t, "pass.test.com"))
+			_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+			if _, err := client.Read(make([]byte, 1)); err == nil {
+				t.Fatalf("指向自身监听端口 %s 的连接应被立即关闭", tc.ip)
+			}
+			wantErrs := uint64(i + 1)
+			waitFor(t, "OrigDstErrors 递增", func() bool { return stats.OrigDstErrors.Load() == wantErrs })
+			if stats.ConnAccepted.Load() != wantErrs {
+				t.Fatalf("疑似发生自连递归: accepted=%d want %d", stats.ConnAccepted.Load(), wantErrs)
+			}
+			if stats.DialErrors.Load() != 0 || stats.ConnsPassthrough.Load() != 0 || httpConns.Load() != 0 || tlsConns.Load() != 0 {
+				t.Fatalf("自连目标不应发起任何拨号: dialErr=%d pass=%d http=%d tls=%d",
+					stats.DialErrors.Load(), stats.ConnsPassthrough.Load(), httpConns.Load(), tlsConns.Load())
+			}
+		})
+	}
 }
 
 // 畸形 TLS（握手消息非 ClientHello）：倒向 TargetTLS 检测路径并计数，不直通源站。

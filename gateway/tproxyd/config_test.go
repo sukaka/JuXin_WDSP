@@ -38,6 +38,7 @@ func TestFromEnvDefaults(t *testing.T) {
 
 func TestFromEnvSNIDispatch(t *testing.T) {
 	t.Setenv("TPROXY_PROTECT_HOSTS", "Www.Test.COM., api.test.com")
+	t.Setenv("TPROXY_PASSTHROUGH_ALLOWLIST", "Pass.Test.COM., other.test.com")
 	t.Setenv("TPROXY_TARGET_TLS", "127.0.0.1:9443")
 	t.Setenv("TPROXY_SNIFF_TIMEOUT", "5")
 	cfg, err := FromEnv()
@@ -46,6 +47,9 @@ func TestFromEnvSNIDispatch(t *testing.T) {
 	}
 	if len(cfg.ProtectHosts) != 2 || cfg.ProtectHosts[0] != "www.test.com" || cfg.ProtectHosts[1] != "api.test.com" {
 		t.Fatalf("ProtectHosts 归一化错误: %v", cfg.ProtectHosts)
+	}
+	if len(cfg.PassthroughAllowlist) != 2 || cfg.PassthroughAllowlist[0] != "pass.test.com" || cfg.PassthroughAllowlist[1] != "other.test.com" {
+		t.Fatalf("PassthroughAllowlist 归一化错误: %v", cfg.PassthroughAllowlist)
 	}
 	if cfg.TargetTLS != "127.0.0.1:9443" || cfg.SniffTimeout != 5*time.Second {
 		t.Fatalf("TargetTLS=%q SniffTimeout=%s", cfg.TargetTLS, cfg.SniffTimeout)
@@ -57,9 +61,10 @@ func TestFromEnvSNIDispatch(t *testing.T) {
 
 func TestFromEnvSNIDispatchRejectsInvalid(t *testing.T) {
 	cases := map[string]string{
-		"TPROXY_PROTECT_HOSTS": "bad host.com",
-		"TPROXY_TARGET_TLS":    "no-port",
-		"TPROXY_SNIFF_TIMEOUT": "0",
+		"TPROXY_PROTECT_HOSTS":         "bad host.com",
+		"TPROXY_PASSTHROUGH_ALLOWLIST": "*.evil.com",
+		"TPROXY_TARGET_TLS":            "no-port",
+		"TPROXY_SNIFF_TIMEOUT":         "0",
 	}
 	for key, val := range cases {
 		t.Run(key, func(t *testing.T) {

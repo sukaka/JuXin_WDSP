@@ -90,7 +90,7 @@ func (s *pollPacketSource) Stats() (uint32, uint32, error) {
 	if fd < 0 {
 		return 0, 0, net.ErrClosed
 	}
-	stats, err := unix.GetsockoptTpacketStats(fd, unix.SOL_SOCKET, unix.PACKET_STATISTICS)
+	stats, err := unix.GetsockoptTpacketStats(fd, unix.SOL_PACKET, unix.PACKET_STATISTICS)
 	if err != nil {
 		return 0, 0, err
 	}

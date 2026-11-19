@@ -45,9 +45,14 @@ type Config struct {
 	ShutdownGrace time.Duration
 	// ProtectHosts SNI 防护域名清单（TPROXY_PROTECT_HOSTS，逗号分隔；空 = 功能关闭，
 	// 全部流量按原路径送 Target）。非空时启用 TLS 嗅探分流：清单内域名的 TLS 连接送
-	// TargetTLS 终结检测，清单外域名按原始目的直接 TCP 透传（端到端 TLS 不断开）。
+	// TargetTLS 终结检测；未列明域名默认 fail-closed 倒向 TargetTLS，仅显式列入
+	// PassthroughAllowlist 的域名才按原始目的端到端透传。
 	// 精确匹配，小写归一、容忍末尾点，不支持通配符。
 	ProtectHosts []string
+	// PassthroughAllowlist 显式允许按原始目的端到端透传的 TLS SNI 域名白名单
+	// （TPROXY_PASSTHROUGH_ALLOWLIST，逗号分隔；默认空 = 禁止任意未列明 SNI 绕过检测）。
+	// ProtectHosts 优先级高于本白名单；精确匹配，小写归一、容忍末尾点，不支持通配符。
+	PassthroughAllowlist []string
 	// TargetTLS 下游 Caddy TLS 监听器地址（TPROXY_TARGET_TLS；仅 ProtectHosts 非空时
 	// 生效，listener 同样需挂 proxy_protocol wrapper）。
 	TargetTLS string
@@ -112,6 +117,12 @@ func FromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("TPROXY_PROTECT_HOSTS 非法: %w", err)
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("TPROXY_PASSTHROUGH_ALLOWLIST")); v != "" {
+		cfg.PassthroughAllowlist, err = normalizeHosts(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("TPROXY_PASSTHROUGH_ALLOWLIST 非法: %w", err)
+		}
+	}
 	return cfg, cfg.Validate()
 }
 
@@ -155,12 +166,27 @@ func validHostName(h string) bool {
 
 // protectHostSet 返回防护域名匹配集合（nil 表示功能关闭）。
 func (c Config) protectHostSet() map[string]struct{} {
-	if len(c.ProtectHosts) == 0 {
+	return hostSet(c.ProtectHosts)
+}
+
+// passthroughHostSet 返回显式透传白名单匹配集合（nil 表示禁止任何未列明 SNI 透传）。
+func (c Config) passthroughHostSet() map[string]struct{} {
+	return hostSet(c.PassthroughAllowlist)
+}
+
+func hostSet(hosts []string) map[string]struct{} {
+	if len(hosts) == 0 {
 		return nil
 	}
-	set := make(map[string]struct{}, len(c.ProtectHosts))
-	for _, h := range c.ProtectHosts {
-		set[h] = struct{}{}
+	set := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		norm := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), "."))
+		if norm != "" {
+			set[norm] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		return nil
 	}
 	return set
 }
@@ -181,6 +207,16 @@ func (c Config) Validate() error {
 	}
 	if c.RelayIdleTimeout <= 0 {
 		return fmt.Errorf("TPROXY_RELAY_IDLE_TIMEOUT 必须为正数")
+	}
+	if len(c.ProtectHosts) > 0 {
+		if _, err := normalizeHosts(strings.Join(c.ProtectHosts, ",")); err != nil {
+			return fmt.Errorf("TPROXY_PROTECT_HOSTS 非法: %w", err)
+		}
+	}
+	if len(c.PassthroughAllowlist) > 0 {
+		if _, err := normalizeHosts(strings.Join(c.PassthroughAllowlist, ",")); err != nil {
+			return fmt.Errorf("TPROXY_PASSTHROUGH_ALLOWLIST 非法: %w", err)
+		}
 	}
 	if c.sniDispatchEnabled() {
 		if err := checkAddr("TPROXY_TARGET_TLS", c.TargetTLS); err != nil {

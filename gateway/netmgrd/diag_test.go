@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const testJobID = "123e4567-e89b-42d3-a456-426614174000"
@@ -771,5 +773,122 @@ func TestDefaultRunCmdRealExec(t *testing.T) {
 	})
 	if out.err == nil {
 		t.Fatal("不存在的二进制应返回启动错误")
+	}
+}
+
+// M-G7 回归：超大诊断请求 JSON 必须被有界读取拦截并消化，防止大文件 OOM。
+func TestDiagOversizeRequestRejected(t *testing.T) {
+	h := newDiagHarness(t, "")
+	oversize := `{"version":1,"job_id":"` + testJobID + `","action":"ping","target":"` + strings.Repeat("a", diagMaxRequestBytes+1024) + `"}`
+	writeDiagRequest(t, h.d.Dir, testJobID, oversize)
+
+	h.d.scanOnce()
+
+	res, ok := readDiagResult(t, h.d.Dir, testJobID)
+	if !ok || res.Status != DiagFailed || !strings.Contains(res.Stderr, "超过大小上限") {
+		t.Fatalf("超限请求应写 FAILED 并说明超限: %+v exists=%v", res, ok)
+	}
+	if fileExists(filepath.Join(h.d.Dir, "request-"+testJobID+".json")) {
+		t.Fatal("超限毒请求文件应被删除")
+	}
+	if len(h.calls()) != 0 {
+		t.Fatalf("超限请求不得执行任何命令: %v", h.calls())
+	}
+}
+
+// M-G7 回归：手工停止 capture 时（产物未超 100MB），必须清理孤立的 pcap 产物。
+func TestDiagCaptureStoppedRemovesOrphanPcap(t *testing.T) {
+	h := newDiagHarness(t, "")
+	h.runFn = func(opts cmdRunOpts) cmdOutcome {
+		writePcapFromArgs(t, opts.args, 4096)
+		return cmdOutcome{stopped: true, exitCode: -1}
+	}
+	writeDiagRequest(t, h.d.Dir, testJobID,
+		fmt.Sprintf(`{"version":1,"job_id":%q,"node":"","action":"capture","target":"",
+			"params":{"iface":"eth0","duration_sec":5},"timeout_sec":30}`, testJobID))
+
+	h.d.scanOnce()
+
+	res, ok := readDiagResult(t, h.d.Dir, testJobID)
+	if !ok || res.Status != DiagStopped || res.CaptureFile != "" {
+		t.Fatalf("手工停止应映射 STOPPED 且不汇报 capture_file: %+v", res)
+	}
+	if fileExists(filepath.Join(h.d.Dir, "capture-"+testJobID+".pcap")) {
+		t.Fatal("手工停止 capture 后残留孤立 pcap 文件未删除")
+	}
+}
+
+// M-G7 回归：truncDiagOutput 与 limitedBuffer 截断必须保证 UTF-8 字符边界完整且有界。
+func TestDiagTruncOutputAndLimitedBufferUTF8Safe(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  int
+	}{
+		{"3字节中文截断1字节", strings.Repeat("a", diagOutputLimit-1) + "中tail", diagOutputLimit - 1},
+		{"3字节中文截断2字节", strings.Repeat("a", diagOutputLimit-2) + "中tail", diagOutputLimit - 2},
+		{"3字节中文刚好贴边", strings.Repeat("a", diagOutputLimit-3) + "中tail", diagOutputLimit},
+		{"4字节Emoji截断1字节", strings.Repeat("a", diagOutputLimit-1) + "😀tail", diagOutputLimit - 1},
+		{"4字节Emoji截断2字节", strings.Repeat("a", diagOutputLimit-2) + "😀tail", diagOutputLimit - 2},
+		{"4字节Emoji截断3字节", strings.Repeat("a", diagOutputLimit-3) + "😀tail", diagOutputLimit - 3},
+		{"4字节Emoji刚好贴边", strings.Repeat("a", diagOutputLimit-4) + "😀tail", diagOutputLimit},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncDiagOutput(tc.input)
+			if len(got) != tc.want || !utf8.ValidString(got) {
+				t.Fatalf("truncDiagOutput len=%d want=%d validUTF8=%t", len(got), tc.want, utf8.ValidString(got))
+			}
+			lb := &limitedBuffer{max: diagOutputLimit}
+			// 分两段写入，验证流式写入同样有界且按 UTF-8 边界安全返回
+			mid := len(tc.input) / 2
+			if n, err := lb.Write([]byte(tc.input[:mid])); err != nil || n != mid {
+				t.Fatalf("limitedBuffer.Write(part1) = (%d, %v)", n, err)
+			}
+			if n, err := lb.Write([]byte(tc.input[mid:])); err != nil || n != len(tc.input)-mid {
+				t.Fatalf("limitedBuffer.Write(part2) = (%d, %v)", n, err)
+			}
+			if lb.buf.Len() > diagOutputLimit {
+				t.Fatalf("limitedBuffer 内部缓冲超出上限: %d > %d", lb.buf.Len(), diagOutputLimit)
+			}
+			gotLB := lb.String()
+			if len(gotLB) != tc.want || !utf8.ValidString(gotLB) {
+				t.Fatalf("limitedBuffer.String() len=%d want=%d validUTF8=%t", len(gotLB), tc.want, utf8.ValidString(gotLB))
+			}
+		})
+	}
+}
+
+// M-G7 回归：真实子进程输出超过 64KB 时执行期间严格有界且不触发 EPIPE 异常退出。
+func TestDefaultRunCmdBoundsOutputDuringExec(t *testing.T) {
+	out := defaultRunCmd(context.Background(), cmdRunOpts{
+		name:    "sh",
+		args:    []string{"-c", "dd if=/dev/zero bs=1024 count=128 2>/dev/null | tr '\\0' 'a'; dd if=/dev/zero bs=1024 count=128 2>/dev/null | tr '\\0' 'b' >&2"},
+		timeout: 5 * time.Second,
+	})
+	if out.err != nil || out.exitCode != 0 {
+		t.Fatalf("超限输出子进程不应因管道写入失败: %+v", out)
+	}
+	if len(out.stdout) != diagOutputLimit || len(out.stderr) != diagOutputLimit {
+		t.Fatalf("stdout/stderr 应在执行期间有界截断为 %d: stdout=%d stderr=%d",
+			diagOutputLimit, len(out.stdout), len(out.stderr))
+	}
+}
+
+// M-G7 回归：softKill 启动的延迟 SIGKILL 定时器必须在 cmd.Wait 完成后及时取消。
+func TestTerminateCmdReturnsStoppableTimer(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	killTimer := terminateCmd(cmd, true)
+	if killTimer == nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatal("softKill 应返回可取消的延迟 SIGKILL 定时器")
+	}
+	_ = cmd.Wait()
+	if !killTimer.Stop() {
+		t.Fatal("子进程 SIGTERM 退出后延迟 SIGKILL 定时器应尚未触发且可被 Stop 取消")
 	}
 }

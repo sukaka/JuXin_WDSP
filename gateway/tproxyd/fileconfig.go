@@ -46,6 +46,8 @@ type FileConfig struct {
 	Ports []uint16 `json:"ports"`
 	// ProtectHosts SNI 防护域名清单（空回退 env TPROXY_PROTECT_HOSTS 语义）。
 	ProtectHosts []string `json:"protect_hosts"`
+	// PassthroughAllowlist 显式允许端到端透传的 TLS SNI 域名白名单（空 = 禁止任意未列明 SNI 透传）。
+	PassthroughAllowlist []string `json:"passthrough_allowlist,omitempty"`
 	// TargetTLS 下游 Caddy TLS 监听器地址（空回退 env TPROXY_TARGET_TLS）。
 	TargetTLS string `json:"target_tls"`
 }
@@ -95,6 +97,13 @@ func (fc *FileConfig) normalize() error {
 			return err
 		}
 		fc.ProtectHosts = hosts
+	}
+	if len(fc.PassthroughAllowlist) > 0 {
+		hosts, err := normalizeHosts(strings.Join(fc.PassthroughAllowlist, ","))
+		if err != nil {
+			return err
+		}
+		fc.PassthroughAllowlist = hosts
 	}
 	seen := map[uint16]struct{}{}
 	ports := make([]uint16, 0, len(fc.Ports))

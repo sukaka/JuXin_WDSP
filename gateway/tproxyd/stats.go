@@ -20,7 +20,8 @@ type Stats struct {
 	AcceptErrors      atomic.Uint64 // accept 异常数（句柄耗尽等，记录后重试）
 	ShutdownForceCx   atomic.Uint64 // 优雅退出宽限超时被强制断开的连接数
 	ConnsProtected    atomic.Uint64 // SNI 命中防护清单、送 Caddy TLS 终结检测的连接数
-	ConnsPassthrough  atomic.Uint64 // SNI 在清单外、按原始目的端到端透传的连接数
+	ConnsPassthrough  atomic.Uint64 // SNI 命中透传白名单、按原始目的端到端透传的连接数
+	ConnsUnlistedTLS  atomic.Uint64 // 未列明 SNI（不在防护清单也不在透传白名单）fail-closed 倒向 TLS 检测的连接数
 	SniffErrors       atomic.Uint64 // ClientHello 解析失败数（倒向 TLS 检测路径）
 	SniffTimeouts     atomic.Uint64 // SNI 嗅探读超时关闭的连接数
 	RelayIdleTimeouts atomic.Uint64 // 透传滚动空闲超时关闭的连接数
@@ -36,12 +37,12 @@ func (s *Stats) Logger(interval time.Duration, stop <-chan struct{}) {
 			return
 		case <-t.C:
 		}
-		log.Printf("[tproxyd] stats accepted=%d rejected=%d active=%d bytes(c2t=%d t2c=%d) errors(origdst=%d dial=%d header=%d accept=%d) force_closed=%d sni(protected=%d passthrough=%d sniff_err=%d sniff_timeout=%d) relay_idle_timeout=%d",
+		log.Printf("[tproxyd] stats accepted=%d rejected=%d active=%d bytes(c2t=%d t2c=%d) errors(origdst=%d dial=%d header=%d accept=%d) force_closed=%d sni(protected=%d passthrough=%d unlisted_tls=%d sniff_err=%d sniff_timeout=%d) relay_idle_timeout=%d",
 			s.ConnAccepted.Load(), s.ConnRejected.Load(), s.ActiveConns.Load(),
 			s.BytesToTarget.Load(), s.BytesToClient.Load(),
 			s.OrigDstErrors.Load(), s.DialErrors.Load(), s.HeaderErrors.Load(), s.AcceptErrors.Load(),
 			s.ShutdownForceCx.Load(),
-			s.ConnsProtected.Load(), s.ConnsPassthrough.Load(), s.SniffErrors.Load(), s.SniffTimeouts.Load(),
+			s.ConnsProtected.Load(), s.ConnsPassthrough.Load(), s.ConnsUnlistedTLS.Load(), s.SniffErrors.Load(), s.SniffTimeouts.Load(),
 			s.RelayIdleTimeouts.Load())
 	}
 }

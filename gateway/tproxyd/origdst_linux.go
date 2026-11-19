@@ -37,5 +37,12 @@ func originalDst(conn *net.TCPConn) (*net.TCPAddr, error) {
 	if sockErr != nil {
 		return nil, fmt.Errorf("getsockopt(SO_ORIGINAL_DST): %w", sockErr)
 	}
-	return DecodeOriginalDst(sa.Family, sa.Port, sa.Addr)
+	orig, err := DecodeOriginalDst(sa.Family, sa.Port, sa.Addr)
+	if err != nil {
+		return nil, err
+	}
+	if local, ok := conn.LocalAddr().(*net.TCPAddr); ok && local.Port == orig.Port && local.IP.Equal(orig.IP) {
+		return nil, fmt.Errorf("getsockopt(SO_ORIGINAL_DST): 原始目的 %s 与本机监听地址相同（连接未经 REDIRECT 牵引）", orig)
+	}
+	return orig, nil
 }
