@@ -133,6 +133,7 @@ class Lifecycle:
                 units.append(path)
         upgrade_units = [self.system_dir / ("jiuzhang-upgrade-executor." + suffix) for suffix in ("path", "service")]
         runtime = None
+        host_state = None
         if self.config.is_symlink() or self.binary.is_symlink():
             raise LifecycleError("升级执行器配置或程序不得为符号链接")
         if self.config.exists():
@@ -149,6 +150,8 @@ class Lifecycle:
             if not config.get("ENV_FILE") or not self.inside(config["ENV_FILE"]):
                 raise LifecycleError("升级执行器环境文件归属不明")
             runtime = Path(config["RUNTIME_DIR"])
+            if config.get("HOST_STATE_DIR"):
+                host_state = Path(config["HOST_STATE_DIR"])
             auxiliary.append(self.config)
             if self.binary.exists():
                 auxiliary.append(self.binary)
@@ -161,20 +164,31 @@ class Lifecycle:
         for unit in units:
             if (self.system_dir / (unit.name + ".d")).exists():
                 raise LifecycleError("存在自定义 systemd drop-in，需先人工处理：" + unit.name)
-        return units, auxiliary, runtime
+        return units, auxiliary, runtime, host_state
 
     @contextmanager
-    def executor_lock(self, runtime, volumes):
-        if runtime is None:
+    def executor_lock(self, runtime, volumes, host_state=None):
+        if runtime is None and host_state is None:
             yield
             return
-        mounts = [Path(v["Mountpoint"]).resolve() for v in volumes if v["Name"] == PROJECT + "_runtime-data"]
-        if runtime.resolve() not in mounts:
-            raise LifecycleError("升级执行器共享目录不是 WDSP runtime 数据卷")
-        lock = runtime / "upgrade-executor/executor.lock"
-        if lock.is_symlink() or not lock.parent.is_dir():
+        if host_state is not None:
+            if not host_state.is_absolute() or ".." in host_state.parts:
+                raise LifecycleError("升级状态目录非法")
+            cur = Path("/")
+            for part in host_state.parts[1:]:
+                cur = cur / part
+                if cur.is_symlink():
+                    raise LifecycleError("升级锁目录不得包含符号链接")
+            lock = host_state / "executor.lock"
+        else:
+            mounts = [Path(v["Mountpoint"]).resolve() for v in volumes if v["Name"] == PROJECT + "_runtime-data"]
+            if runtime.resolve() not in mounts:
+                raise LifecycleError("升级执行器共享目录不是 WDSP runtime 数据卷")
+            lock = runtime / "upgrade-executor/executor.lock"
+        if lock.is_symlink() or lock.parent.is_symlink() or not lock.parent.is_dir():
             raise LifecycleError("升级锁目录异常")
-        with lock.open("a") as handle:
+        fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as handle:
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
@@ -222,7 +236,7 @@ class Lifecycle:
             raise LifecycleError("彻底删除需要 --confirm-delete-data 明确确认")
         product = self.selected()
         containers, networks, volumes = self.inventory()
-        units, auxiliary, runtime = self.owned_units()
+        units, auxiliary, runtime, host_state = self.owned_units()
         if purge:
             self.check_delete_tree()
         required = {PROJECT + "_postgres-data", PROJECT + "_runtime-data"}
@@ -231,7 +245,7 @@ class Lifecycle:
         state = {"schema": 1, "phase": "removing", "product": str(product),
                  "env_sha256": digest(product / ".env"),
                  "volumes": {v["Name"]: v["CreatedAt"] for v in volumes}}
-        with self.executor_lock(runtime, volumes):
+        with self.executor_lock(runtime, volumes, host_state=host_state):
             self.write_state(state)
             # Disable path watchers before stopping their workers.
             for unit in sorted(units, key=lambda p: (not p.name.endswith(".path"), p.name)):
@@ -287,7 +301,7 @@ class Lifecycle:
 
     def check_empty(self):
         containers, networks, volumes = self.inventory()
-        units, auxiliary, _ = self.owned_units()
+        units, auxiliary, _, _ = self.owned_units()
         if containers or networks or volumes or units or auxiliary:
             raise LifecycleError("已存在 WDSP 项目资源，请先用原安装根目录卸载")
 

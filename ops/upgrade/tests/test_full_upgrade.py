@@ -61,7 +61,11 @@ class FullUpgradeContractTests(unittest.TestCase):
 
     def test_wrapper_initializes_executor_directory_for_legacy_releases(self):
         source = (gateway_contract.ROOT / "ops/upgrade/update-full.sh").read_text()
-        self.assertIn('install -d -m 0755 "$CURRENT_RELEASE/runtime/upgrade-executor"', source)
+        self.assertIn('HOST_STATE_DIR="/var/lib/jiuzhang/upgrade-executor"', source)
+        self.assertIn('install -d -m 0700 -o root -g root "$HOST_STATE_DIR"', source)
+        self.assertNotIn('install -d -m 0755 "$CURRENT_RELEASE/runtime/upgrade-executor"', source)
+        self.assertIn('roots != {expected_root}', source)
+        self.assertIn('RUNTIME_REAL="$(realpath "$CURRENT_RELEASE/runtime")"', source)
         self.assertNotIn("原升级执行器共享目录不存在", source)
 
     def test_target_gateway_entrypoint_is_read_after_images_load(self):
@@ -124,6 +128,45 @@ class FullUpgradeContractTests(unittest.TestCase):
         self.assertEqual(self.current.resolve(), self.work.resolve())
         helper_log = self.base.hostctl_log.read_text()
         self.assertIn(f"--compose-file {self.base.old_compose}", helper_log)
+        # H-05: rollback must restore using PREVIOUS_COMPOSE_FILE without poisoning new tags
+        self.assertEqual(fixture["images"]["fixture-server:target-stable"]["id"], "sha256:server-new")
+        self.assertEqual(fixture["images"]["fixture-gateway:target-stable"]["id"], "sha256:gateway-new")
+        self.assertEqual(fixture["images"]["fixture-web:target-stable"]["id"], "sha256:web-target")
+        ups = [e for e in self.base.events() if e["kind"] == "compose" and e["action"] == "up"]
+        self.assertEqual(ups[-1]["files"], [str(self.base.old_compose)])
+        # H-05: state file must be archived/renamed so outer update-full.sh does not double-rollback
+        self.assertFalse(self.base.state.exists())
+        archived_states = list(self.base.upgrade_dir.glob(".upgrade-state.env.rolled-back.*"))
+        self.assertEqual(len(archived_states), 1)
+        # H-05: apply.sh passes --api-url to rollback.sh
+        apply_src = (gateway_contract.ROOT / "ops/upgrade/apply.sh").read_text()
+        self.assertIn('rollback.sh" --yes --timeout "$TIMEOUT" --api-url "$JZ_API_BASE"', apply_src)
+
+    def test_non_contiguous_migrations_only_roll_back_actual_count(self):
+        self.base.write_executable(
+            self.base.work / "ops/upgrade/install-executor.sh",
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$HOSTCTL_HELPER_LOG"\n',
+        )
+        self.base.write_executable(
+            self.base.work / "ops/healthcheck/check.sh",
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$HEALTH_LOG"\n'
+            '[[ "$(wc -l < "$HEALTH_LOG")" -eq 1 ]]\n',
+        )
+        fixture = json.loads(self.base.fixture_file.read_text())
+        fixture.update({
+            "schema": 217,
+            "migrations": [215, 217],
+            "target_migrations": [215, 217, 219, 222],
+        })
+        self.base.fixture_file.write_text(json.dumps(fixture))
+        result = self.run_full()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("自动回滚完成", result.stderr)
+        fixture = json.loads(self.base.fixture_file.read_text())
+        self.assertEqual(fixture["schema"], 217)
+        migrations = [e for e in self.base.events() if e["kind"] == "run"]
+        # Gap 222 - 217 = 5, but only 2 actual migrations (219, 222) were added!
+        self.assertEqual(len(migrations), 2)
 
     def test_previously_enabled_pcap_is_upgraded_but_never_enabled_by_default(self):
         for path, suffix in ((self.base.old_compose, "old"), (self.base.new_compose, "target")):

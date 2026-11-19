@@ -154,6 +154,20 @@ elif [[ -n "$RPM_DIR" ]]; then
   [[ ${#compose_plugin_rpms[@]} -gt 0 ]] \
     || die "RPM 目录缺少 docker-compose-plugin RPM：$RPM_DIR"
   cp "${rpm_files[@]}" "$PAYLOAD_DIR/rpms/"
+  (
+    cd "$PAYLOAD_DIR"
+    export LC_ALL=C
+    shopt -s nullglob
+    {
+      for rpm_file in rpms/*.rpm; do
+        sha256_of "$rpm_file"
+      done
+    } > rpms/rpms.sha256
+    if [[ -n "${WDSP_SIGNING_KEY:-}" ]]; then
+      ed25519_sign_file "$WDSP_SIGNING_KEY" rpms/rpms.sha256 rpms/rpms.sha256.sig \
+        || die '随包依赖 RPM 清单签名失败'
+    fi
+  )
 fi
 
 PAYLOAD="$WORK_DIR/payload.tar.gz"

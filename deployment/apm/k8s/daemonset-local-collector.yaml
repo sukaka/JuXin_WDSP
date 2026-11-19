@@ -168,6 +168,7 @@ spec:
     spec:
       # 如需覆盖污点节点（如控制面/网关节点）按需追加 tolerations。
       securityContext:
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -212,4 +213,4 @@ spec:
         - name: tls
           secret:
             secretName: apm-local-collector-tls
-            defaultMode: 0640      # 私钥最小可读范围（容器内非 root 用户经组读取）
+            defaultMode: 0440      # 私钥最小可读范围（容器内非 root 用户经 fsGroup 组只读）

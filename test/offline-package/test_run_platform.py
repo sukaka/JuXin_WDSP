@@ -172,6 +172,99 @@ class RunPlatformTests(unittest.TestCase):
                 for member in target:
                     self.assertFalse([key for key in member.pax_headers if "xattr" in key], member.name)
 
+    def test_safe_extract_tar_rejects_traversal_and_symlinks_and_strips_suid(self):
+        header = HEADER.read_text()
+        safe_fn = "safe_extract_tar() {" + header.split("safe_extract_tar() {", 1)[1].split("\nextract_payload() {", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="wdsp-safe-tar-") as tmp:
+            folder = Path(tmp)
+
+            def make_tar(name, entries):
+                arc = folder / name
+                with tarfile.open(arc, "w:gz") as tf:
+                    for info, data in entries:
+                        if data is not None:
+                            tf.addfile(info, io.BytesIO(data))
+                        else:
+                            tf.addfile(info)
+                return arc
+
+            # 1) Clean tar with SUID bit should extract cleanly with SUID/SGID stripped
+            suid_info = tarfile.TarInfo("pkg/bin/tool")
+            suid_data = b"#!/bin/sh\n"
+            suid_info.size = len(suid_data)
+            suid_info.mode = 0o4755
+            good_tar = make_tar("good.tar.gz", [(suid_info, suid_data)])
+            dest_good = folder / "out-good"
+            dest_good.mkdir()
+            res = subprocess.run(
+                ["bash", "-ec", safe_fn + '\nsafe_extract_tar "$1" "$2" pkg\n', "t", str(good_tar), str(dest_good)],
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            extracted = dest_good / "pkg/bin/tool"
+            self.assertTrue(extracted.is_file())
+            self.assertEqual(extracted.stat().st_mode & 0o6000, 0)
+
+            # 2) Path traversal member must be rejected
+            trav = tarfile.TarInfo("../escape.txt")
+            trav.size = 3
+            bad_trav = make_tar("trav.tar.gz", [(trav, b"bad")])
+            dest_bad = folder / "out-bad"
+            dest_bad.mkdir()
+            res = subprocess.run(
+                ["bash", "-ec", safe_fn + '\nsafe_extract_tar "$1" "$2"\n', "t", str(bad_trav), str(dest_bad)],
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertFalse((folder / "escape.txt").exists())
+
+            # 3) Symlink member must be rejected
+            sym = tarfile.TarInfo("pkg/evil-link")
+            sym.type = tarfile.SYMTYPE
+            sym.linkname = "/etc/passwd"
+            bad_sym = make_tar("sym.tar.gz", [(sym, None)])
+            res = subprocess.run(
+                ["bash", "-ec", safe_fn + '\nsafe_extract_tar "$1" "$2"\n', "t", str(bad_sym), str(dest_bad)],
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertNotEqual(res.returncode, 0)
+
+    def test_single_os_rpm_dir_generates_and_verifies_rpms_sha256(self):
+        with tempfile.TemporaryDirectory(prefix="wdsp-single-rpm-sha-") as tmp:
+            folder = Path(tmp)
+            archive = folder / "jiuzhang-wdsp-offline-9.9.9-amd64.tar.gz"
+            with tarfile.open(archive, "w:gz") as target:
+                member = tarfile.TarInfo("fixture")
+                member.size = 7
+                target.addfile(member, io.BytesIO(b"fixture"))
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            Path(str(archive) + ".sha256").write_text(f"{digest}  {archive.name}\n")
+            rpm_dir = folder / "rpms-src"
+            rpm_dir.mkdir()
+            (rpm_dir / "docker-compose-plugin-2.29.7-1.x86_64.rpm").write_bytes(b"fake-rpm-bytes")
+            env = dict(os.environ)
+            env.pop("WDSP_SIGNING_KEY", None)
+            result = subprocess.run(
+                ["bash", str(ROOT / "ops/offline-package/build-openeuler-zhaoxin-run.sh"),
+                 "--version", "9.9.9", "--offline-package", str(archive),
+                 "--rpm-dir", str(rpm_dir), "--development", "--output", str(folder / "output")],
+                env=env, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            run = (folder / "output/jiuzhang-wdsp-openeuler-zhaoxin-9.9.9-amd64.run").read_bytes()
+            payload = run.split(b"\n__WDSP_PAYLOAD_BELOW__\n", 1)[1]
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as target:
+                sha_member = next(
+                    (m for m in target.getmembers() if m.name.lstrip("./") == "rpms/rpms.sha256"),
+                    None,
+                )
+                self.assertIsNotNone(sha_member, target.getnames())
+                sha_content = target.extractfile(sha_member).read().decode()
+                self.assertIn("rpms/docker-compose-plugin-2.29.7-1.x86_64.rpm", sha_content)
+        header_text = HEADER.read_text()
+        self.assertIn('verify_package_signature "$WORK_DIR/rpms/rpms.sha256"', header_text)
+        self.assertIn("随包依赖 RPM 校验和验证失败", header_text)
+
 
 if __name__ == "__main__":
     unittest.main()

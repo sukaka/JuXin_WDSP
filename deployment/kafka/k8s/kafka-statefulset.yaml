@@ -46,6 +46,7 @@ spec:
                 matchLabels: {app.kubernetes.io/name: wdsp-kafka}
               topologyKey: kubernetes.io/hostname
       securityContext:
+        fsGroup: 1000
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: kafka
@@ -109,7 +110,7 @@ spec:
       volumes:
         - {name: config, emptyDir: {sizeLimit: 16Mi}}
         - name: tls
-          secret: {secretName: wdsp-kafka-tls, defaultMode: 0400}
+          secret: {secretName: wdsp-kafka-tls, defaultMode: 0440}
         - {name: tmp, emptyDir: {medium: Memory, sizeLimit: 64Mi}}
   volumeClaimTemplates:
     - metadata: {name: data}

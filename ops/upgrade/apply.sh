@@ -229,7 +229,7 @@ rollback_failed_upgrade() {
   api_cleanup
   if [[ "$SWITCH_STARTED" == true ]]; then
     log_err "升级失败，自动恢复原镜像及新增迁移"
-    if bash "$SCRIPT_DIR/rollback.sh" --yes --timeout "$TIMEOUT"; then
+    if bash "$SCRIPT_DIR/rollback.sh" --yes --timeout "$TIMEOUT" --api-url "$JZ_API_BASE"; then
       log_err "自动回滚完成；current 保持原 release，备份任务 $BACKUP_JOB_ID"
     else
       log_err "自动回滚未完成；请勿继续启动其他版本，使用备份任务 $BACKUP_JOB_ID 诊断恢复"

@@ -72,9 +72,12 @@ redact_stream() {
     }
     {
       # HTTP authentication and session headers.
-      gsub(/[Aa]uthorization:[[:space:]]*[Bb]earer[[:space:]]+[^[:space:]]+/, "Authorization: Bearer [REDACTED]")
-      gsub(/[Cc]ookie:[^\r\n]*/, "Cookie: [REDACTED]")
-      gsub(/[Ss]et-[Cc]ookie:[^\r\n]*/, "Set-Cookie: [REDACTED]")
+      gsub(/[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+[^[:space:]"]+/, "Authorization: Bearer [REDACTED]")
+      gsub(/[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*[Bb][Aa][Ss][Ii][Cc][[:space:]]+[^[:space:]"]+/, "Authorization: Basic [REDACTED]")
+      gsub(/[Xx]-[Aa][Pp][Ii]-[Kk][Ee][Yy]:[^\r\n]*/, "X-API-Key: [REDACTED]")
+      gsub(/[Xx]-[Cc][Ss][Rr][Ff]-[Tt][Oo][Kk][Ee][Nn]:[^\r\n]*/, "X-CSRF-Token: [REDACTED]")
+      gsub(/[Cc][Oo][Oo][Kk][Ii][Ee]:[^\r\n]*/, "Cookie: [REDACTED]")
+      gsub(/[Ss][Ee][Tt]-[Cc][Oo][Oo][Kk][Ii][Ee]:[^\r\n]*/, "Set-Cookie: [REDACTED]")
 
       # JSON/log key-value forms. Keep the key and redact only the value.
       gsub(/\"([Pp]assword|[Pp]asswd|[Ss]ecret|[Tt]oken|[Aa]ccess[_-][Tt]oken|[Rr]efresh[_-][Tt]oken|[Aa]pi[_-]?[Kk]ey|[Cc]lient[_-][Ss]ecret|[Pp]rivate[_-]?[Kk]ey|[Ss]ignature|[Rr]equest[_-]?[Bb]ody|[Rr]esponse[_-]?[Bb]ody|[Pp]ayload)[\"]?[[:space:]]*:[[:space:]]*\"[^\"]*\"/, "\"REDACTED\":\"[REDACTED]\"")
@@ -96,6 +99,7 @@ write_redacted() {
   redact_stream > "$destination"
 }
 
+umask 077
 ts="$(date '+%Y%m%d-%H%M%S')"
 work="$(mktemp -d "${TMPDIR:-/tmp}/jzdiag.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
@@ -127,10 +131,22 @@ log_info "收集诊断信息到临时目录 $work"
 #  2) 兜底通用掩码：任意值中 scheme://user:pass@ 的 user:pass 段（覆盖键名不含上述
 #     关键字但值里内嵌凭据的形态，如 EXTRA_HOSTS、自定义连接串）。
 if [[ -f "$JZ_ENV_FILE" ]]; then
-  sed -E \
-    -e 's/^([A-Za-z_][A-Za-z0-9_]*(PASSWORD|SECRET|KEY|TOKEN|DSN|URL|URI)[A-Za-z0-9_]*)=.*/\1=********/I' \
-    -e 's#(://)[^/:@[:space:]]+:[^/@[:space:]]+@#\1***:***@#g' \
-    "$JZ_ENV_FILE" | redact_stream > "$work/env.sanitized.txt"
+  awk '
+    {
+      line = $0
+      sub(/\r$/, "", line)
+      idx = index(line, "=")
+      if (idx > 1) {
+        key = substr(line, 1, idx - 1)
+        if (key ~ /^[A-Za-z_][A-Za-z0-9_]*$/ && toupper(key) ~ /(PASSWORD|SECRET|KEY|TOKEN|DSN|URL|URI)/) {
+          print key "=********"
+          next
+        }
+      }
+      gsub(/:\/\/[^\/:@[:space:]]+:[^\/@[:space:]]+@/, "://***:***@")
+      print
+    }
+  ' "$JZ_ENV_FILE" | redact_stream > "$work/env.sanitized.txt"
   log_info "环境配置已脱敏（PASSWORD/SECRET/KEY/TOKEN/DSN/URL/URI → ********，值内 user:pass@ → ***:***@）"
 else
   log_warn "环境文件 $JZ_ENV_FILE 不存在，跳过"
@@ -190,5 +206,6 @@ release_id="$(printf '%s' "$release_id" | LC_ALL=C tr -cd 'A-Za-z0-9._:-' | cut 
 
 out="$OUT_DIR/diagnostics-$ts.tar.gz"
 tar -czf "$out" -C "$work" .
+chmod 600 "$out"
 size="$(stat -f%z "$out" 2>/dev/null || stat -c%s "$out")"
 log_info "诊断包已生成: ${out}（${size} 字节）"

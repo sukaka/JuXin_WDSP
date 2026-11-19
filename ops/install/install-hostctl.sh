@@ -39,8 +39,7 @@ install_error() {
 mkdir -p "$INSTALL_ROOT/runtime/hostctl"
 chmod 755 "$INSTALL_ROOT/runtime/hostctl"
 if ! chown 1000:1000 "$INSTALL_ROOT/runtime/hostctl" 2>/dev/null; then
-  chmod 1777 "$INSTALL_ROOT/runtime/hostctl" 2>/dev/null \
-    || log_warn "未能调整 $INSTALL_ROOT/runtime/hostctl 属主/权限，api 容器可能无法写入系统控制标志文件"
+  install_error "未能调整 $INSTALL_ROOT/runtime/hostctl 属主为 1000:1000（拒绝降级为全局可写权限；api 容器将无法写入系统控制标志文件）"
 fi
 
 _hc_uid="$(stat -c '%u' "$INSTALL_ROOT/runtime/hostctl" 2>/dev/null || stat -f '%u' "$INSTALL_ROOT/runtime/hostctl" 2>/dev/null || echo unknown)"
@@ -71,18 +70,41 @@ if command -v systemctl >/dev/null 2>&1 && [[ -d "$SYSTEMD_RUNTIME_DIR" ]] && [[
   for unit in jiuzhang-hostctl.path jiuzhang-hostctl.service; do
     [[ "$hostctl_install_ok" == "true" ]] || break
     if [[ ! -f "$UNIT_TEMPLATE_DIR/$unit" ]]; then
-      install_error "单元模板缺失: $UNIT_TEMPLATE_DIR/$unit，跳过 systemd 单元安装"
+      install_error "单元模板缺失: $UNIT_TEMPLATE_DIR/${unit}，跳过 systemd 单元安装"
       hostctl_install_ok=false
       break
     fi
-    # 仅覆盖带九章管理标记的既有文件，避免覆盖部署方自行维护的同名单元。
+    # 仅覆盖带九章管理标记的既有常规文件，避免覆盖部署方自行维护的同名单元或符号链接。
+    if [[ -L "$SYSTEMD_UNIT_DIR/$unit" ]]; then
+      install_error "$SYSTEMD_UNIT_DIR/$unit 为符号链接，拒绝覆盖"
+      hostctl_install_ok=false
+      break
+    fi
     if [[ -f "$SYSTEMD_UNIT_DIR/$unit" ]] && ! grep -q 'jiuzhang-managed: hostctl-unit' "$SYSTEMD_UNIT_DIR/$unit" 2>/dev/null; then
       install_error "$SYSTEMD_UNIT_DIR/$unit 已存在且非九章安装器管理，跳过覆盖"
       hostctl_install_ok=false
       break
     fi
-    if ! sed "s|__INSTALL_ROOT__|$INSTALL_ROOT|g" "$UNIT_TEMPLATE_DIR/$unit" > "$SYSTEMD_UNIT_DIR/$unit"; then
-      install_error "安装 $SYSTEMD_UNIT_DIR/$unit 失败"
+    unit_tmp="$(mktemp "${TMPDIR:-/tmp}/jz-hostctl-unit.XXXXXX")"
+    if python3 - "$UNIT_TEMPLATE_DIR/$unit" "$unit_tmp" "$INSTALL_ROOT" <<'PY'
+import pathlib, sys
+src, dst, root = sys.argv[1:]
+if "\n" in root or "\r" in root or "\x00" in root:
+    raise SystemExit("INSTALL_ROOT 含非法控制字符")
+content = pathlib.Path(src).read_text(encoding="utf-8")
+pathlib.Path(dst).write_text(content.replace("__INSTALL_ROOT__", root), encoding="utf-8")
+PY
+    then
+      if ! install -m 0644 "$unit_tmp" "$SYSTEMD_UNIT_DIR/$unit"; then
+        rm -f "$unit_tmp"
+        install_error "安装 $SYSTEMD_UNIT_DIR/$unit 失败"
+        hostctl_install_ok=false
+        break
+      fi
+      rm -f "$unit_tmp"
+    else
+      rm -f "$unit_tmp"
+      install_error "渲染 $SYSTEMD_UNIT_DIR/$unit 失败"
       hostctl_install_ok=false
       break
     fi

@@ -86,7 +86,11 @@ if args[:1] == ["run"]:
     log({"kind": "run", "args": args})
     if fixture.get("fail_migration_rollback"):
         sys.exit(1)
-    if "schema" in fixture:
+    if "migrations" in fixture and fixture["migrations"]:
+        fixture["migrations"].pop()
+        fixture["schema"] = max(fixture["migrations"]) if fixture["migrations"] else 0
+        Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
+    elif "schema" in fixture:
         fixture["schema"] -= 1
         Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
     sys.exit(0)
@@ -112,11 +116,24 @@ if args[:1] == ["inspect"]:
 
 if args[:1] == ["exec"]:
     log({"kind": "exec", "args": args})
+    cmd_str = " ".join(args)
     if "schema" in fixture and args[1] == fixture.get("postgres_id"):
-        print(fixture["schema"])
+        if "SELECT COUNT(*)" in cmd_str and "WHERE version >" in cmd_str:
+            after = cmd_str.split("WHERE version >", 1)[1].strip().split()[0].strip("'\"")
+            before_v = int(after)
+            if "migrations" in fixture:
+                print(sum(1 for v in fixture["migrations"] if v > before_v))
+            else:
+                print(max(0, int(fixture["schema"]) - before_v))
+        else:
+            print(fixture["schema"])
     elif fixture.get("migrate_api") and args[1] == fixture.get("running", {}).get("api", {}).get("id") \
             and fixture["running"]["api"].get("image_id") == "sha256:server-new":
-        fixture["schema"] = fixture["target_schema"]
+        if "target_migrations" in fixture:
+            fixture["migrations"] = list(fixture["target_migrations"])
+            fixture["schema"] = max(fixture["migrations"])
+        else:
+            fixture["schema"] = fixture["target_schema"]
         Path(os.environ["DOCKER_FIXTURE"]).write_text(json.dumps(fixture))
     sys.exit(0 if not fixture.get("fail_probe") else 1)
 

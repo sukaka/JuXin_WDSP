@@ -37,6 +37,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+USER_RE='^[a-z_][a-z0-9_-]{0,31}$'
+[[ "$OPS_USER" =~ $USER_RE && "$OPS_USER" != "root" ]] || {
+  echo "非法 OS 用户名: ${OPS_USER}（需匹配 ${USER_RE} 且不能为 root）" >&2; exit 2;
+}
+[[ "$ACCOUNT" =~ $USER_RE ]] || {
+  echo "非法控制台账号: ${ACCOUNT}（需匹配 ${USER_RE}）" >&2; exit 2;
+}
+
 [[ $(id -u) -eq 0 ]] || { echo "需 root 运行" >&2; exit 1; }
 
 # 1) 构建/校验二进制
@@ -61,17 +69,21 @@ else
   usermod -s /usr/local/bin/jiuzhang-console "$OPS_USER"
 fi
 
-# 4) sudoers 精确放行（仅 netapply 一个入口）
-cat >/etc/sudoers.d/90-jiuzhang-console <<EOF
+# 4) sudoers 精确放行（仅 netapply 一个入口）：先落临时文件并经 visudo -cf 校验后再原子安装
+SUDOERS_TMP="$(mktemp "${TMPDIR:-/tmp}/jz-console-sudoers.XXXXXX")"
+SSHD_TMP="$(mktemp "${TMPDIR:-/tmp}/jz-console-sshd.XXXXXX")"
+trap 'rm -f "$SUDOERS_TMP" "$SSHD_TMP"' EXIT
+cat >"$SUDOERS_TMP" <<EOF
 $OPS_USER ALL=(root) NOPASSWD: /opt/jiuzhang/console/netapply.sh
 EOF
-chmod 0440 /etc/sudoers.d/90-jiuzhang-console
-visudo -cf /etc/sudoers.d/90-jiuzhang-console >/dev/null
+chmod 0440 "$SUDOERS_TMP"
+visudo -cf "$SUDOERS_TMP" >/dev/null || { echo "sudoers 语法校验失败，拒绝安装" >&2; exit 1; }
+install -m 0440 -o root -g root "$SUDOERS_TMP" /etc/sudoers.d/90-jiuzhang-console
 
 # 4b) SSH 加固：该账户任何会话（含 exec/sftp/子系统）都强制进控制台，禁止转发隧道
 #     —— 客户只拿得到白名单 REPL，接触不到系统 shell 与文件传输通道
 if [[ -d /etc/ssh/sshd_config.d ]]; then
-  cat >/etc/ssh/sshd_config.d/jiuzhang-console.conf <<EOF
+  cat >"$SSHD_TMP" <<EOF
 Match User $OPS_USER
     ForceCommand /usr/local/bin/jiuzhang-console
     DisableForwarding yes
@@ -79,7 +91,7 @@ Match User $OPS_USER
     PermitTunnel no
     AllowAgentForwarding no
 EOF
-  chmod 0644 /etc/ssh/sshd_config.d/jiuzhang-console.conf
+  install -m 0644 -o root -g root "$SSHD_TMP" /etc/ssh/sshd_config.d/jiuzhang-console.conf
   if sshd -t 2>/dev/null; then
     systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
   else
@@ -89,7 +101,8 @@ EOF
 fi
 
 # 5) 初始口令（随机，仅打印一次）；OS 密码与控制台口令同值，SSH/TTY 登录后直接进控制台
-install -d -m 0750 /etc/jiuzhang
+# 保持 /etc/jiuzhang 为 0755 root:root（避免收窄公共配置目录影响其他组件，敏感文件自身 0600 管控）
+install -d -m 0755 -o root -g root /etc/jiuzhang
 PASSWORD=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16 || true)
 [[ ${#PASSWORD} -ge 16 ]] || { echo "随机口令生成失败" >&2; exit 1; }
 echo "$OPS_USER:$PASSWORD" | chpasswd
@@ -110,7 +123,7 @@ cat <<EOF
 
 ==========================================
 九章运维控制台安装完成
-  OS 用户:    $OPS_USER（SSH/TTY 登录，已禁用其转发与 sftp）
+  OS 用户:    ${OPS_USER}（SSH/TTY 登录，已禁用其转发与 sftp）
   控制台账号: $ACCOUNT
   初始口令:   $PASSWORD
   （仅打印一次，请立即记录；登录后 passwd 修改）

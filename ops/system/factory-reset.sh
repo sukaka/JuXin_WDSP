@@ -20,6 +20,7 @@
 #   JZ_HEALTH_TIMEOUT   api 健康等待超时秒数（默认 180）
 # 退出码: 0=成功 1=失败 2=用法错误
 set -euo pipefail
+API_BASE_EXPLICIT="${JZ_API_BASE:+true}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
 
@@ -43,6 +44,13 @@ HEALTH_TIMEOUT="${JZ_HEALTH_TIMEOUT:-180}"
 require_cmd docker
 require_cmd curl
 docker compose version >/dev/null 2>&1 || die "缺少 docker compose 插件"
+
+if [[ "${API_BASE_EXPLICIT:-}" != "true" ]] && command -v jq >/dev/null 2>&1; then
+  if _resolved_api="$(compose_api_url "$JZ_COMPOSE_FILE" "$JZ_ENV_FILE" 2>/dev/null)" && [[ -n "$_resolved_api" ]]; then
+    JZ_API_BASE="$_resolved_api"
+  fi
+  unset _resolved_api
+fi
 
 log_warn "危险操作：恢复出厂将清空全部数据（数据库/缓存/配置/备份/日志/授权），不可恢复"
 confirm "确认恢复出厂并清空全部数据？" || { log_info "已取消"; exit 0; }

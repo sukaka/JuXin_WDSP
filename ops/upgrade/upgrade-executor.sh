@@ -7,6 +7,7 @@
 set -euo pipefail
 
 CONFIG_FILE="/etc/jiuzhang/upgrade-executor.conf"
+TEST_PUBKEY_FILE=""
 
 usage() {
   printf '%s\n' '用法: upgrade-executor.sh [--config FILE]' \
@@ -16,23 +17,49 @@ usage() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config) CONFIG_FILE="${2:-}"; shift 2 ;;
+    --test-pubkey) TEST_PUBKEY_FILE="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) printf '未知参数: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 
+if [[ -n "$TEST_PUBKEY_FILE" && "$CONFIG_FILE" == "/etc/jiuzhang/upgrade-executor.conf" ]]; then
+  printf '%s\n' '生产配置禁止使用 --test-pubkey' >&2
+  exit 1
+fi
+
 [[ $EUID -eq 0 ]] || { printf '%s\n' '必须以 root 运行' >&2; exit 1; }
-[[ -f "$CONFIG_FILE" ]] || { printf '配置文件不存在: %s\n' "$CONFIG_FILE" >&2; exit 1; }
+[[ -f "$CONFIG_FILE" && ! -L "$CONFIG_FILE" ]] || { printf '配置文件不存在或为符号链接: %s\n' "$CONFIG_FILE" >&2; exit 1; }
 owner="$(stat -c '%u' "$CONFIG_FILE")"
 mode="$(stat -c '%a' "$CONFIG_FILE")"
 [[ "$owner" == 0 ]] && (( (0$mode & 022) == 0 )) || {
   printf '%s\n' '配置文件必须由 root 拥有且组/其他用户不可写' >&2; exit 1;
 }
+# 防止配置文件覆盖只读 CLI 测试公钥或内置发布公钥
+_cli_test_pubkey="$TEST_PUBKEY_FILE"
 # 配置由本项目安装脚本生成，权限已在上方验证。
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
+TEST_PUBKEY_FILE="$_cli_test_pubkey"
+unset _cli_test_pubkey
+
+# 内置可信发布公钥（Ed25519，与 ops/offline-package/release-signing.pub 同源；
+# 放在 source CONFIG_FILE 之后设为 readonly，禁止配置或环境覆盖生产信任根）。
+readonly WDSP_RELEASE_PUBKEY_PEM="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAJBzjZs04R6NVLDuKoJsViPuBEGlo70z/zpnKi6ZHq2s=
+-----END PUBLIC KEY-----"
+
+if [[ -n "$TEST_PUBKEY_FILE" ]]; then
+  [[ "$CONFIG_FILE" != "/etc/jiuzhang/upgrade-executor.conf" ]] || {
+    printf '%s\n' '生产配置禁止使用 --test-pubkey' >&2; exit 1;
+  }
+  [[ -f "$TEST_PUBKEY_FILE" && ! -L "$TEST_PUBKEY_FILE" ]] || {
+    printf '测试公钥文件无效: %s\n' "$TEST_PUBKEY_FILE" >&2; exit 1;
+  }
+fi
 
 : "${RUNTIME_DIR:?缺少 RUNTIME_DIR}"
+: "${HOST_STATE_DIR:=/var/lib/jiuzhang/upgrade-executor}"
 : "${COMPOSE_FILE:?缺少 COMPOSE_FILE}"
 : "${ENV_FILE:?缺少 ENV_FILE}"
 : "${API_URL:=http://127.0.0.1:18081}"
@@ -40,7 +67,7 @@ source "$CONFIG_FILE"
 
 # diff/cmp 属 diffutils：manifest 文件清单比对与 compose 覆盖判异必需；
 # openEuler 最小化镜像缺省不带，缺失时必须报准确错误而非下游误导性比对失败。
-for cmd in docker jq python3 curl flock sha256sum gzip timeout diff cmp; do
+for cmd in docker jq python3 curl flock sha256sum gzip timeout diff cmp openssl; do
   command -v "$cmd" >/dev/null 2>&1 && continue
   case "$cmd" in
     diff|cmp) printf '缺少命令: %s（diffutils 包；manifest 文件比对与 compose 覆盖判异必需）\n' "$cmd" >&2 ;;
@@ -48,18 +75,57 @@ for cmd in docker jq python3 curl flock sha256sum gzip timeout diff cmp; do
   esac
   exit 1
 done
-[[ -d "$RUNTIME_DIR" && -f "$COMPOSE_FILE" && -f "$ENV_FILE" ]] || {
-  printf '%s\n' '运行目录、compose 文件或 env 文件不存在' >&2; exit 1;
+[[ -d "$RUNTIME_DIR" && ! -L "$RUNTIME_DIR" && -f "$COMPOSE_FILE" && ! -L "$COMPOSE_FILE" && -f "$ENV_FILE" && ! -L "$ENV_FILE" ]] || {
+  printf '%s\n' '运行目录、compose 文件或 env 文件不存在或为符号链接' >&2; exit 1;
 }
+
+# 宿主机 root 专用特权状态目录（工作区/状态/compose 覆盖片段/锁文件），与 uid 1000 可写目录彻底隔离。
+python3 - "$HOST_STATE_DIR" <<'PY'
+import os, pathlib, stat, sys
+p = pathlib.Path(sys.argv[1])
+if not p.is_absolute() or ".." in p.parts or len(p.parts) < 3:
+    raise SystemExit(f"非法 HOST_STATE_DIR: {p}")
+cur = pathlib.Path("/")
+for part in p.parts[1:]:
+    cur = cur / part
+    if cur.is_symlink():
+        raise SystemExit(f"HOST_STATE_DIR 组件不得为符号链接: {cur}")
+    if cur.exists():
+        st = os.lstat(cur)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or (stat.S_IMODE(st.st_mode) & 0o022) != 0:
+            raise SystemExit(f"HOST_STATE_DIR 组件属主或权限不安全: {cur}")
+    else:
+        cur.mkdir(mode=0o700)
+        os.chown(cur, 0, 0)
+        os.chmod(cur, 0o700)
+for sub in ("", "work", "state", "compose-overrides.d"):
+    d = p / sub if sub else p
+    if d.is_symlink():
+        raise SystemExit(f"特权目录不得为符号链接: {d}")
+    if not d.exists():
+        d.mkdir(mode=0o700)
+    st = os.lstat(d)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0:
+        raise SystemExit(f"特权目录属主或类型异常: {d}")
+    os.chmod(d, 0o700)
+lock_file = p / "executor.lock"
+if lock_file.is_symlink():
+    raise SystemExit(f"锁文件不得为符号链接: {lock_file}")
+PY
 
 JOBS_DIR="$RUNTIME_DIR/upgrade-executor/jobs"
 RESULTS_DIR="$RUNTIME_DIR/upgrade-executor/results"
-WORK_DIR="$RUNTIME_DIR/upgrade-executor/work"
-STATE_DIR="$RUNTIME_DIR/upgrade-executor/state"
 PACKAGES_DIR="$RUNTIME_DIR/upgrade-packages"
-# OVERRIDES_DIR 升级包新组件 compose 片段持久化目录（随每次 compose 调用并入）。
-OVERRIDES_DIR="$RUNTIME_DIR/upgrade-executor/compose-overrides.d"
-mkdir -p "$JOBS_DIR" "$RESULTS_DIR" "$WORK_DIR" "$STATE_DIR" "$OVERRIDES_DIR"
+WORK_DIR="$HOST_STATE_DIR/work"
+STATE_DIR="$HOST_STATE_DIR/state"
+# OVERRIDES_DIR 升级包新组件 compose 片段持久化目录（位于 root 0700 状态目录，随每次 compose 调用并入）。
+OVERRIDES_DIR="$HOST_STATE_DIR/compose-overrides.d"
+LOCK_FILE="$HOST_STATE_DIR/executor.lock"
+for _shared in "$RUNTIME_DIR/upgrade-executor" "$JOBS_DIR" "$RESULTS_DIR" "$PACKAGES_DIR"; do
+  [[ ! -L "$_shared" ]] || { printf '共享通道目录不得为符号链接: %s\n' "$_shared" >&2; exit 1; }
+done
+unset _shared
+mkdir -p "$JOBS_DIR" "$RESULTS_DIR"
 
 # compose ARGS... —— 基础 compose 文件 + 已并入的新组件片段（按文件名升序）。
 compose() {
@@ -76,6 +142,7 @@ sha256_file() {
 }
 write_result() {
   local job_id="$1" status="$2" stage="$3" code="$4" message="$5" tmp
+  [[ ! -L "$RESULTS_DIR/$job_id.json" ]] || return 1
   tmp="$(mktemp "$RESULTS_DIR/.result.XXXXXX")"
   jq -n --arg id "$job_id" --arg status "$status" --arg stage "$stage" \
     --arg code "$code" --arg message "$message" --arg finished "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
@@ -252,6 +319,7 @@ process_job() {
   local work package_root manifest package_type
   CURRENT_STAGE="APPLYING"
   SERVICES=(); STABLE_IMAGES=(); OLD_IDS=(); NEW_SERVICES=(); INSTALLED_OVERRIDE=""; IMAGE_SWITCH_STARTED=false
+  [[ -f "$job_file" && ! -L "$job_file" ]] || { CURRENT_MESSAGE="任务文件无效或为符号链接"; return 1; }
   job_id="$(jq -er '.job_id | strings' "$job_file")" || return 1
   [[ "$job_id" =~ ^[0-9a-fA-F-]{36}$ ]] || return 1
   CURRENT_JOB="$job_id"
@@ -261,8 +329,10 @@ process_job() {
   [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || return 1
   version_from="$(jq -er '.version_from | strings' "$job_file")" || return 1
   version_to="$(jq -er '.version_to | strings' "$job_file")" || return 1
+  validate_version_string "$version_from" || { CURRENT_MESSAGE="起始版本号格式非法"; return 1; }
+  validate_version_string "$version_to" || { CURRENT_MESSAGE="目标版本号格式非法"; return 1; }
   package="$PACKAGES_DIR/$package_name"
-  [[ -f "$package" ]] || { CURRENT_MESSAGE="找不到升级包"; return 1; }
+  [[ -f "$package" && ! -L "$package" ]] || { CURRENT_MESSAGE="找不到升级包或升级包为符号链接"; return 1; }
   [[ "$(sha256_file "$package")" == "$expected_sha" ]] || { CURRENT_MESSAGE="升级包 SHA-256 不匹配"; return 1; }
 
   work="$WORK_DIR/$job_id"
@@ -273,7 +343,8 @@ process_job() {
   [[ ${#roots[@]} -eq 1 ]] || { CURRENT_MESSAGE="升级包目录结构无效"; return 1; }
   package_root="${roots[0]}"
   manifest="$package_root/manifest.json"
-  [[ -f "$manifest" ]] || { CURRENT_MESSAGE="升级包清单缺失"; return 1; }
+  [[ -f "$manifest" && ! -L "$manifest" ]] || { CURRENT_MESSAGE="升级包清单缺失"; return 1; }
+  verify_package_signature "$package_root" "$manifest" || return 1
   package_type="$(jq -er '.package_type | strings' "$manifest")" || { CURRENT_MESSAGE="升级包 manifest 缺少 package_type"; return 1; }
   case "$package_type" in
     runtime-patch) process_runtime_patch "$package_root" "$manifest" "$version_from" "$version_to" ;;
@@ -285,7 +356,10 @@ process_job() {
 # 运行时小补丁（bugfix，组件 api/web/gateway）；gateway 在 retag 前执行同一启动契约门禁。
 process_runtime_patch() {
   local package_root="$1" manifest="$2" version_from="$3" version_to="$4"
-  local archive archive_sha host_arch service target stable old i
+  local archive archive_sha host_arch service target stable old i recreate_netmgrd=false
+  validate_version_string "$version_from" || { CURRENT_MESSAGE="起始版本号格式非法"; return 1; }
+  validate_version_string "$version_to" || { CURRENT_MESSAGE="目标版本号格式非法"; return 1; }
+  verify_package_signature "$package_root" "$manifest" || return 1
   [[ -f "$package_root/SHA256SUMS" ]] || { CURRENT_MESSAGE="升级包清单缺失"; return 1; }
   (cd "$package_root" && sha256sum -c SHA256SUMS >/dev/null) || { CURRENT_MESSAGE="包内校验和失败"; return 1; }
   jq -e --arg from "$version_from" --arg to "$version_to" '
@@ -315,22 +389,39 @@ process_runtime_patch() {
   done
 
   docker load -i "$archive" >/dev/null || { CURRENT_MESSAGE="加载镜像失败"; return 1; }
-  for i in "${!SERVICES[@]}"; do
+  for i in "${!targets[@]}"; do
     docker image inspect "${targets[$i]}" >/dev/null 2>&1 || { CURRENT_MESSAGE="包内缺少镜像 ${targets[$i]}"; return 1; }
   done
-  for i in "${!SERVICES[@]}"; do
+  for i in "${!targets[@]}"; do
     [[ "${SERVICES[$i]}" == gateway ]] || continue
     validate_gateway_start_contract "${targets[$i]}" || return 1
   done
+  # runtime-patch 涉及 gateway 重建时，共享 gateway 网络命名空间的 netmgrd 必须同步强制重建。
+  if printf '%s\n' "${SERVICES[@]}" | grep -Fxq gateway \
+    && ! printf '%s\n' "${SERVICES[@]}" | grep -Fxq netmgrd \
+    && printf '%s\n' "${compose_services[@]}" | grep -Fxq netmgrd; then
+    stable="$(compose config --format json | jq -er '.services.netmgrd.image | select(type == "string" and length > 0)')" \
+      || { CURRENT_MESSAGE="无法读取 netmgrd 的 compose 镜像"; return 1; }
+    old="$(docker image inspect "$stable" --format '{{.Id}}' 2>/dev/null)" \
+      || { CURRENT_MESSAGE="无法读取当前 netmgrd 镜像"; return 1; }
+    SERVICES+=(netmgrd)
+    STABLE_IMAGES+=("$stable")
+    OLD_IDS+=("$old")
+    recreate_netmgrd=true
+  fi
   IMAGE_SWITCH_STARTED=true
-  for i in "${!SERVICES[@]}"; do
+  for i in "${!targets[@]}"; do
     docker tag "${targets[$i]}" "${STABLE_IMAGES[$i]}" || return 1
   done
 
   # API 镜像入口会在启动服务前执行 migrate up；这里保持 MIGRATING 状态，
   # 直到新容器成功启动，再进入健康检查阶段。
   CURRENT_STAGE="MIGRATING"
-  compose up -d --no-deps "${SERVICES[@]}" || { CURRENT_MESSAGE="启动新版本容器失败"; return 1; }
+  if [[ "$recreate_netmgrd" == true ]]; then
+    compose up -d --no-deps --force-recreate "${SERVICES[@]}" || { CURRENT_MESSAGE="启动新版本容器失败"; return 1; }
+  else
+    compose up -d --no-deps "${SERVICES[@]}" || { CURRENT_MESSAGE="启动新版本容器失败"; return 1; }
+  fi
   CURRENT_STAGE="VERIFYING"
   wait_selected_services || return 1
   return 0
@@ -376,6 +467,91 @@ validate_gateway_start_contract() {
   fi
 }
 
+validate_version_string() {
+  local v="$1"
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9._-]+)?$ && "$v" != *..* ]]
+}
+
+# 宿主机执行器独立 Ed25519 验签（fail-closed）：
+#   验证包内 manifest.sig（base64 单行 64 字节 Ed25519 签名）覆盖 manifest.json 原始字节；
+#   若 manifest.json 声明 files_manifest_sha256，则同步校验其与 files 紧凑 JSON 摘要一致。
+#   信任根为内置 WDSP_RELEASE_PUBKEY_PEM；仅显式 CLI --test-pubkey 在非生产配置下可替换测试公钥。
+verify_package_signature() {
+  local package_root="$1" manifest="$2"
+  local sig_file="$package_root/manifest.sig"
+  local pub_tmp="" raw_sig="" pub_path="" verify_err=""
+  if [[ ! -f "$sig_file" || -L "$sig_file" ]]; then
+    CURRENT_MESSAGE="升级包缺少 Ed25519 签名（manifest.sig），宿主机执行器拒绝加载或切换镜像"
+    return 1
+  fi
+  if [[ ! -f "$manifest" || -L "$manifest" ]]; then
+    CURRENT_MESSAGE="升级包 manifest.json 无效或为符号链接"
+    return 1
+  fi
+  raw_sig="$(mktemp "${STATE_DIR:-${TMPDIR:-/tmp}}/.sig.XXXXXX")"
+  if ! python3 - "$sig_file" "$raw_sig" <<'PY'
+import base64, pathlib, sys
+sig_path, out_path = sys.argv[1:]
+text = pathlib.Path(sig_path).read_text(encoding="ascii").strip()
+if not text or "\n" in text or "\r" in text:
+    raise SystemExit("manifest.sig 必须为单行 base64")
+raw = base64.b64decode(text.encode("ascii"), validate=True)
+if len(raw) != 64:
+    raise SystemExit("manifest.sig 解码长度非 64 字节 Ed25519 签名")
+pathlib.Path(out_path).write_bytes(raw)
+PY
+  then
+    rm -f "$raw_sig"
+    CURRENT_MESSAGE="升级包 manifest.sig 格式非法（期望单行 base64 64 字节 Ed25519 签名）"
+    return 1
+  fi
+
+  if [[ -n "${TEST_PUBKEY_FILE:-}" ]]; then
+    pub_path="$TEST_PUBKEY_FILE"
+  else
+    local default_pubkey="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAJBzjZs04R6NVLDuKoJsViPuBEGlo70z/zpnKi6ZHq2s=
+-----END PUBLIC KEY-----"
+    pub_tmp="$(mktemp "${STATE_DIR:-${TMPDIR:-/tmp}}/.pub.XXXXXX")"
+    chmod 0600 "$pub_tmp"
+    printf '%s\n' "${WDSP_RELEASE_PUBKEY_PEM:-$default_pubkey}" > "$pub_tmp"
+    pub_path="$pub_tmp"
+  fi
+
+  if ! openssl pkeyutl -verify -pubin -inkey "$pub_path" -rawin -in "$manifest" -sigfile "$raw_sig" >/dev/null 2>&1; then
+    rm -f "$raw_sig" ${pub_tmp:+"$pub_tmp"}
+    CURRENT_MESSAGE="升级包 Ed25519 验签失败（manifest.json 与 manifest.sig 不匹配或非官方签发）"
+    return 1
+  fi
+  rm -f "$raw_sig" ${pub_tmp:+"$pub_tmp"}
+
+  # 若 manifest 含 files_manifest_sha256，校验其与 files 紧凑序列化摘要字节一致
+  if ! verify_err="$(python3 - "$manifest" <<'PY' 2>&1
+import hashlib, json, pathlib, re, sys
+m = json.loads(pathlib.Path(sys.argv[1]).read_bytes().decode("utf-8"))
+if "files_manifest_sha256" in m and m["files_manifest_sha256"] is not None:
+    want = m["files_manifest_sha256"]
+    if not isinstance(want, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", want):
+        raise SystemExit("manifest.files_manifest_sha256 格式非法")
+    files = m.get("files")
+    if not isinstance(files, list) or not files:
+        raise SystemExit("manifest.files 缺失或为空")
+    normalized = [
+        {"path": item["path"], "sha256": item["sha256"], "size": item["size"]}
+        for item in files
+    ]
+    compact = json.dumps(normalized, separators=(",", ":"), ensure_ascii=False)
+    actual = hashlib.sha256(compact.encode("utf-8")).hexdigest()
+    if actual.lower() != want.lower():
+        raise SystemExit("manifest.files_manifest_sha256 摘要不匹配")
+PY
+  )"; then
+    CURRENT_MESSAGE="${verify_err:-升级包 files_manifest_sha256 校验失败}"
+    return 1
+  fi
+  return 0
+}
+
 # 功能升级包（package_type=upgrade，build-upgrade-pack.sh 产物）：
 #   逐组件 images[].tar（gzip）docker load 并 inspect → 启动契约检查 → 统一 retag → compose up -d；
 #   manifest.files 逐一校验（存在性/大小/SHA-256）并反查无未声明文件（口径同服务端
@@ -385,6 +561,10 @@ validate_gateway_start_contract() {
 process_upgrade_pack() {
   local package_root="$1" manifest="$2" version_from="$3" version_to="$4"
   local host_arch service target stable old i f rel expected_size expected_sha actual_size actual_sha
+
+  validate_version_string "$version_from" || { CURRENT_MESSAGE="起始版本号格式非法"; return 1; }
+  validate_version_string "$version_to" || { CURRENT_MESSAGE="目标版本号格式非法"; return 1; }
+  verify_package_signature "$package_root" "$manifest" || return 1
 
   # 可选纵深：构建器总是产出 SHA256SUMS，存在即校验（manifest.files 才是主校验）
   if [[ -f "$package_root/SHA256SUMS" ]]; then
@@ -481,24 +661,84 @@ process_upgrade_pack() {
     added="$(comm -13 <(printf '%s\n' "$before_services") <(printf '%s\n' "$after_services"))"
     [[ "$added" == "$(printf '%s\n' "${missing[@]}" | LC_ALL=C sort)" ]] \
       || { CURRENT_MESSAGE="compose 片段新增服务与缺失服务不一致"; return 1; }
-    # 片段不得改写既有服务的镜像
-    local img_before img_after
-    while IFS= read -r c; do
-      [[ -n "$c" ]] || continue
-      img_before="$(printf '%s' "$merged_before" | jq -er --arg s "$c" '.services[$s].image // ""')"
-      img_after="$(printf '%s' "$merged_after" | jq -er --arg s "$c" '.services[$s].image // ""')"
-      [[ "$img_before" == "$img_after" ]] || { CURRENT_MESSAGE="compose 片段试图改写既有服务 $c 的镜像"; return 1; }
-    done <<< "$before_services"
-    # 新服务镜像必须与 manifest 声明一致
-    local want
-    while IFS= read -r c; do
-      [[ -n "$c" ]] || continue
-      want="$(jq -er --arg s "$c" '.images[] | select(.service == $s) | .image' "$manifest")" || return 1
-      [[ "$(printf '%s' "$merged_after" | jq -er --arg s "$c" '.services[$s].image // ""')" == "$want" ]] \
-        || { CURRENT_MESSAGE="新服务 $c 的 compose 镜像与 manifest 声明不一致"; return 1; }
-    done <<< "$added"
+    # 片段不得修改任何既有服务的任何字段（严格全量规范化 JSON 相等）
+    if ! jq -ne --argjson before "$merged_before" --argjson after "$merged_after" '
+      ($before.services | keys) as $existing |
+      all($existing[]; $before.services[.] == $after.services[.])
+    ' >/dev/null; then
+      CURRENT_MESSAGE="compose 片段试图修改既有服务定义（禁止改写任何字段）"
+      return 1
+    fi
+    # 新服务镜像必须与 manifest 声明一致，且禁止提权/宿主机命名空间/危险挂载/越权能力
+    local sec_err=""
+    if ! sec_err="$(python3 - "$manifest" "$added" <<'PY' 2>&1 <<<"$merged_after"
+import json, pathlib, sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+added = [line.strip() for line in sys.argv[2].splitlines() if line.strip()]
+merged_after = json.loads(sys.stdin.read())
+services = merged_after.get("services") or {}
+
+allowed_caps = {
+    "netmgrd": {"NET_RAW", "NET_ADMIN"},
+    "gateway": {"NET_BIND_SERVICE", "SETUID", "SETGID", "SETPCAP"},
+    "api": set(),
+    "web": set(),
+}
+forbidden_bind_prefixes = (
+    "/etc", "/proc", "/sys", "/dev", "/boot", "/root",
+    "/usr", "/bin", "/sbin", "/lib", "/lib64", "/var/lib/jiuzhang",
+)
+manifest_images = {item["service"]: item["image"] for item in manifest.get("images", [])}
+
+for name in added:
+    svc = services.get(name)
+    if not isinstance(svc, dict):
+        raise SystemExit(f"新增服务定义异常: {name}")
+    if svc.get("image") != manifest_images.get(name):
+        raise SystemExit(f"新服务 {name} 的 compose 镜像与 manifest 声明不一致")
+    if svc.get("privileged") is True:
+        raise SystemExit(f"拒绝新增服务 {name} 启用 privileged")
+    for ns_field in ("pid", "ipc", "uts", "userns_mode", "cgroup"):
+        val = svc.get(ns_field)
+        if val:
+            raise SystemExit(f"拒绝新增服务 {name} 使用宿主/共享命名空间字段 {ns_field}={val}")
+    if svc.get("devices"):
+        raise SystemExit(f"拒绝新增服务 {name} 挂载宿主机设备")
+    for opt in (svc.get("security_opt") or []):
+        opt_l = str(opt).lower()
+        if "unconfined" in opt_l or "label:disable" in opt_l:
+            raise SystemExit(f"拒绝新增服务 {name} 弱化安全配置: {opt}")
+    caps = {str(c).upper().removeprefix("CAP_") for c in (svc.get("cap_add") or [])}
+    allowed = allowed_caps.get(name, set())
+    disallowed = sorted(caps - allowed)
+    if disallowed:
+        raise SystemExit(f"拒绝新增服务 {name} 申请越权 capability: {','.join(disallowed)}")
+    for vol in (svc.get("volumes") or []):
+        src = ""
+        vtype = ""
+        if isinstance(vol, dict):
+            vtype = str(vol.get("type") or "")
+            src = str(vol.get("source") or "")
+        elif isinstance(vol, str):
+            src = vol.split(":", 1)[0]
+            if src.startswith("/") or src.startswith("."):
+                vtype = "bind"
+        if vtype == "bind" or src.startswith("/") or "docker.sock" in src:
+            norm = "/" + src.lstrip("/") if src.startswith("/") else src
+            norm_stripped = norm.rstrip("/") or "/"
+            if norm_stripped == "/" or ".." in pathlib.PurePosixPath(norm).parts or "docker.sock" in norm:
+                raise SystemExit(f"拒绝新增服务 {name} 绑定宿主机根路径或敏感路径: {src}")
+            if any(norm_stripped == p or norm_stripped.startswith(p + "/") for p in forbidden_bind_prefixes):
+                raise SystemExit(f"拒绝新增服务 {name} 绑定宿主机系统路径: {src}")
+PY
+    )"; then
+      CURRENT_MESSAGE="${sec_err:-compose 片段安全校验失败}"
+      return 1
+    fi
     # 幂等安装片段：同名文件内容必须一致
     local target_override="$OVERRIDES_DIR/upgrade-${version_to}.yml"
+    [[ ! -L "$target_override" ]] || { CURRENT_MESSAGE="compose 片段目标路径为符号链接"; return 1; }
     if [[ -f "$target_override" ]] && ! cmp -s "$fragment" "$target_override"; then
       CURRENT_MESSAGE="compose 片段与已安装的同名片段冲突: upgrade-${version_to}.yml"
       return 1
@@ -563,11 +803,13 @@ process_upgrade_pack() {
   return 0
 }
 
-exec 9>"$RUNTIME_DIR/upgrade-executor/executor.lock"
+exec 9>"$LOCK_FILE"
 flock -n 9 || exit 0
 shopt -s nullglob
 for queued in "$JOBS_DIR"/*.json; do
+  [[ ! -L "$queued" && -f "$queued" ]] || continue
   processing="${queued%.json}.processing"
+  [[ ! -L "$processing" ]] || continue
   mv "$queued" "$processing" || continue
   CURRENT_JOB="$(basename "$queued" .json)"; CURRENT_MESSAGE="执行器内部错误"
   if process_job "$processing"; then

@@ -1,31 +1,18 @@
 #!/usr/bin/env bash
-# hostctl-exec.sh —— 系统控制执行通道：扫描 hostctl 标志目录，执行重启/关机/恢复出厂/端口放行。
+# hostctl-exec.sh —— 系统控制执行通道：扫描 hostctl 标志目录，执行重启/关机/恢复出厂/端口放行/PCAP 控制。
 #
-# 背景：API 容器 read_only + cap_drop ALL，不能执行主机命令；校验通过后仅往
-# 标志目录写 <action>-<unixts>-<requestid>.json（JSON 内容含 action/requestedBy/
-# userID/requestID/requestedAt/delaySeconds/hmac，firewall_ensure 另含 ports）。
-# 宿主机由 jiuzhang-hostctl.path
-# systemd path 单元监视目录并触发本脚本（无 systemd 环境可手工执行）。
+# 安全要点（C-03 / H-01 / H-02 / H-21）：
+#   1. 拒绝标志目录、共享密钥与标志文件的符号链接（! -L + Python os.O_NOFOLLOW + fstat）；
+#   2. 独占 flock 串行处理全部待处理 .json 标志（显式排除 pcap-status.*），按 mtime 升序（FIFO）执行；
+#   3. .hostctl-secret 的原子自举/读取、标志文件读取、HMAC-SHA256 验签（hmac.compare_digest）
+#      全部在 Python 内完成，绝不通过命令行参数传递密钥；
+#   4. 消费后的 requestID 持久化至 root 属主防重放状态文件（保留 >= 2 * HOSTCTL_MAX_SKEW），
+#      阻断时间窗内的重放攻击；
+#   5. 验签后的标志内容复制到 root 0700 临时目录后再传给 pcap_capture_control.py（消除 TOCTOU）。
 #
-# JSON 解析：优先 python3，缺失时回退 jq（二者须至少其一，用 require_cmd 检查）。
-# 安全要点：执行前先 stat 校验标志目录属主（约定 uid 1000）、目录非 other-writable、
-# 标志文件属主与目录属主一致，任一不满足即归档拒绝并 logger 告警（fail-closed）；
-# 处理前先把标志文件改名为 <原名>.done（防 systemd path 单元重复触发）；
-# action 必须在白名单（reboot/shutdown/factory_reset/firewall_ensure/pcap_capture）内，非法标志同样改名归档并
-# 报错退出（不改名会导致 path 单元反复触发同一非法文件）。
-#
-# 请求真实性（HIGH-14 后续增强）：属主/权限校验只证明文件来自预期本地用户，不证明
-# 请求真实性，故标志文件必须携带共享密钥 HMAC-SHA256 签名（hmac 字段）。密钥为
-# <标志目录>/.hostctl-secret（64 字符 hex，权限 600，属主=目录属主即写入方服务用户）；
-# 本脚本启动时若密钥缺失且目录属主/权限符合约定则以安全权限自举（与 server 侧
-# 自举对称，先到者生效）。验签 fail-closed：缺 hmac/requestedAt/delaySeconds 字段
-# （含升级窗口内旧 server 写出的未签名标志）、hmac 格式非法、HMAC 不符、requestedAt
-# 超出 ±HOSTCTL_MAX_SKEW 秒（默认 300，防重放）一律归档拒绝并告警。
-# 规范化签名载荷（两端必须逐字节一致）：以 \n 连接、无结尾换行。旧动作固定使用 v1：
+# 规范化签名载荷（两端必须逐字节一致）：以 \n 连接、无结尾换行。
 #   v1\n<action>\n<requestedBy>\n<userID>\n<requestID>\n<requestedAt>\n<delaySeconds>
-# firewall_ensure 使用 v2，在原七字段后追加第 8 字段逗号分隔端口：
 #   v2\nfirewall_ensure\n<requestedBy>\n<userID>\n<requestID>\n<requestedAt>\n0\n<portsCSV>
-# pcap_capture 使用 v3，追加端口、网卡、热目录、温目录、节点ID和enabled：
 #   v3\npcap_capture\n<requestedBy>\n<userID>\n<requestID>\n<requestedAt>\n0\n<portsCSV>\n<interface>\n<hotDir>\n<warmDir>\n<nodeID>\n<enabled>
 #
 # 用法: hostctl-exec.sh [--dry-run] [标志目录]
@@ -36,13 +23,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
 
+ORIG_ARGS=("$@")
 DRY_RUN=false
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help)
-      sed -n '2,18p' "$0"
+      sed -n '2,23p' "$0"
       exit 0 ;;
     *) POSITIONAL+=("$1"); shift ;;
   esac
@@ -51,325 +39,639 @@ done
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HOSTCTL_DIR="${POSITIONAL[0]:-${HOSTCTL_DIR:-$REPO_ROOT/runtime/hostctl}}"
+
+require_cmd python3
+require_cmd logger
+
+# 先检查符号链接（-d 会跟随符号链接，因此必须先判 -L）
+if [[ -L "$HOSTCTL_DIR" ]]; then
+  log_err "标志目录不得为符号链接: ${HOSTCTL_DIR}（fail-closed）"
+  logger -t jiuzhang-hostctl -- "security_rejected reason=hostctl_dir_symlink path=$HOSTCTL_DIR"
+  exit 1
+fi
 [[ -d "$HOSTCTL_DIR" ]] || { log_info "标志目录不存在（${HOSTCTL_DIR}），无待处理项"; exit 0; }
 
-# JSON 解析器：优先 python3，回退 jq
-if command -v python3 >/dev/null 2>&1; then
-  JSON_TOOL=python3
-elif command -v jq >/dev/null 2>&1; then
-  JSON_TOOL=jq
-else
-  die "缺少 JSON 解析工具：请安装 python3 或 jq 之一"
-fi
-require_cmd logger
-require_cmd openssl
-
-# json_fields FILE —— 依次输出 action / requestedBy / userID / requestID /
-# requestedAt / delaySeconds / hmac / ports 八行。ports 数组规范化为 CSV；
-# 非数组输出固定非法标记，由调用方按动作校验（旧动作忽略该字段）。
-json_fields() {
-  local f="$1"
-  if [[ "$JSON_TOOL" == "python3" ]]; then
-    python3 - "$f" 2>/dev/null <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-def s(k):
-    v = d.get(k, "")
-    return "" if v is None else str(v)
-print(s("action"))
-print(s("requestedBy"))
-print(s("userID"))
-print(s("requestID"))
-print(s("requestedAt"))
-print(s("delaySeconds"))
-print(s("hmac"))
-ports = d.get("ports", [])
-if ports is None:
-    ports = []
-if isinstance(ports, list):
-    print(",".join("" if v is None else str(v) for v in ports))
-else:
-    print("<invalid-ports>")
-PY
-  else
-    jq -r '[.action // "", .requestedBy // "", .userID // "", .requestID // "", .requestedAt // "", (.delaySeconds // ""), .hmac // "", ((.ports // []) | if type == "array" then map(if . == null then "" else tostring end) | join(",") else "<invalid-ports>" end)] | .[] | tostring' "$f" 2>/dev/null
-  fi
-}
-
-# ts_epoch RFC3339 —— 输出 unix epoch，无法解析返回非 0
-ts_epoch() {
-  local ts="$1"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$ts" 2>/dev/null <<'PY'
-import sys
-from datetime import datetime
-s = sys.argv[1].strip()
-if s.endswith("Z"):
-    s = s[:-1] + "+00:00"
-try:
-    print(int(datetime.fromisoformat(s).timestamp()))
-except ValueError:
-    sys.exit(1)
-PY
-    return
-  fi
-  date -d "$ts" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null
-}
-
-# ---- 执行前安全校验（HIGH-14）：root 执行通道先验证标志来源，再解析执行 ----
-# 约定（ops/install/install.sh 步骤 5）：标志目录属主 1000:1000、权限 755，api 容器以
-# uid 1000 写入标志。若目录属主错误（uid 1000 对应非预期本地用户）或 chown 失败退化
-# 为 1777，能写该目录的本地用户即可伪造合法 JSON 让 root 执行 reboot/shutdown/
-# factory_reset。此处 fail-closed：校验不过即归档拒绝并告警。
-# 请求真实性由共享密钥 HMAC 签名保证（见文件头注释）：仅通过属主/权限校验的目录
-# 才允许自举密钥，验签不过一律拒绝。
 HOSTCTL_EXPECT_UID="${HOSTCTL_EXPECT_UID:-1000}"
 HOSTCTL_MAX_SKEW="${HOSTCTL_MAX_SKEW:-300}"
+[[ "$HOSTCTL_EXPECT_UID" =~ ^[0-9]+$ ]] || { log_err "HOSTCTL_EXPECT_UID 非法: $HOSTCTL_EXPECT_UID"; exit 2; }
 [[ "$HOSTCTL_MAX_SKEW" =~ ^[0-9]+$ ]] || { log_err "HOSTCTL_MAX_SKEW 非法: $HOSTCTL_MAX_SKEW"; exit 2; }
-SECRET_FILE="$HOSTCTL_DIR/.hostctl-secret"
-SECRET=""
 
-file_uid() { stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1"; }
-file_gid() { stat -c '%g' "$1" 2>/dev/null || stat -f '%g' "$1"; }
-file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+# 解析并准备安全的锁文件与防重放状态文件路径（root 模式下位于 root 专用 0700 目录）
+STATE_PATHS="$(python3 - "$HOSTCTL_DIR" "${HOSTCTL_LOCK_FILE:-}" "${HOSTCTL_NONCE_FILE:-}" <<'PY'
+import hashlib, os, pathlib, stat, sys, tempfile
 
-dir_uid="$(file_uid "$HOSTCTL_DIR")"
-dir_mode="$(file_mode "$HOSTCTL_DIR")"
+hostctl_dir, lock_override, nonce_override = sys.argv[1:]
+euid = os.geteuid()
+dir_hash = hashlib.sha256(os.path.realpath(hostctl_dir).encode("utf-8")).hexdigest()[:16]
 
-dir_ok() { # 目录属主/权限是否符合约定（启动自举门控；执行路径另有逐条拒绝原因）
-  [[ "$dir_mode" =~ ^[0-7]{3,4}$ ]] || return 1
-  local perm="${dir_mode:${#dir_mode}-3}"
-  [[ "$dir_uid" == "$HOSTCTL_EXPECT_UID" ]] || return 1
-  (( (8#$perm & 2) == 0 ))
-}
+def ensure_private_dir(path_str):
+    p = pathlib.Path(path_str)
+    cur = pathlib.Path("/")
+    for part in p.parts[1:]:
+        cur = cur / part
+        if cur.is_symlink():
+            raise SystemExit(f"状态目录含符号链接组件: {cur}")
+        if not cur.exists():
+            cur.mkdir(mode=0o700)
+    st = os.lstat(p)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != euid:
+        raise SystemExit(f"状态目录属主或类型异常: {p}")
+    os.chmod(p, 0o700)
+    return p
 
-ensure_secret() { # ensure_secret —— 自举/校验共享密钥并装入 SECRET；失败返回 1
-  if [[ ! -f "$SECRET_FILE" ]]; then
-    # noclobber 原子创建，与 server 侧 O_EXCL 自举对称：先到者生效，后到者沿用
-    ( umask 077; set -o noclobber; openssl rand -hex 32 > "$SECRET_FILE" ) 2>/dev/null || true
-    if [[ -f "$SECRET_FILE" && "$(id -u)" != "$dir_uid" ]]; then
-      chown "${dir_uid}:$(file_gid "$HOSTCTL_DIR")" "$SECRET_FILE" 2>/dev/null || true
-    fi
+def check_target_file(path_str):
+    p = pathlib.Path(path_str)
+    if p.is_symlink():
+        raise SystemExit(f"状态文件不得为符号链接: {p}")
+    if p.parent.is_symlink():
+        raise SystemExit(f"状态文件父目录不得为符号链接: {p.parent}")
+    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return str(p)
+
+if lock_override:
+    lock_file = check_target_file(lock_override)
+elif euid == 0:
+    lock_dir = ensure_private_dir("/run/jiuzhang-hostctl")
+    lock_file = str(lock_dir / "hostctl.lock")
+else:
+    base = pathlib.Path(tempfile.gettempdir()).resolve() / f"jiuzhang-hostctl-state-{euid}"
+    lock_dir = ensure_private_dir(str(base))
+    lock_file = str(lock_dir / f"hostctl-{dir_hash}.lock")
+
+if nonce_override:
+    nonce_file = check_target_file(nonce_override)
+elif euid == 0:
+    nonce_dir = ensure_private_dir("/var/lib/jiuzhang/hostctl")
+    nonce_file = str(nonce_dir / "nonces.json")
+else:
+    base = pathlib.Path(tempfile.gettempdir()).resolve() / f"jiuzhang-hostctl-state-{euid}"
+    nonce_dir = ensure_private_dir(str(base))
+    nonce_file = str(nonce_dir / f"nonces-{dir_hash}.json")
+
+print(lock_file)
+print(nonce_file)
+PY
+)" || die "无法初始化 hostctl 锁或防重放状态路径"
+
+LOCK_FILE="$(printf '%s\n' "$STATE_PATHS" | sed -n '1p')"
+NONCE_FILE="$(printf '%s\n' "$STATE_PATHS" | sed -n '2p')"
+
+# 独占 flock：优先使用系统 flock，缺失时（如 macOS 测试）由 Python fcntl.flock 持有锁并 exec 本脚本
+if [[ "${HOSTCTL_LOCK_HELD:-0}" != "1" ]]; then
+  if [[ -L "$LOCK_FILE" ]]; then
+    die "锁文件不得为符号链接: $LOCK_FILE"
   fi
-  if [[ ! -f "$SECRET_FILE" ]]; then
-    log_err "共享密钥缺失且无法自举: ${SECRET_FILE}（fail-closed）"
-    return 1
-  fi
-  chmod 600 "$SECRET_FILE" 2>/dev/null || true
-  local sec_uid
-  sec_uid="$(file_uid "$SECRET_FILE")"
-  if [[ "$sec_uid" != "$dir_uid" ]]; then
-    log_err "共享密钥属主 uid=${sec_uid:-unknown} 与目录约定属主 uid=${dir_uid} 不一致（fail-closed）"
-    return 1
-  fi
-  SECRET="$(tr -d '[:space:]' < "$SECRET_FILE" 2>/dev/null)"
-  if [[ ! "$SECRET" =~ ^[0-9a-f]{64}$ ]]; then
-    log_err "共享密钥格式非法（期望 64 字符 hex）: ${SECRET_FILE}（fail-closed）"
-    SECRET=""
-    return 1
-  fi
-}
-
-# 启动时密钥自举：目录属主/权限符合约定才允许创建；目录正常而自举失败即
-# fail-closed（不依赖 install.sh 预置）。目录异常时跳过自举，由执行路径拒绝。
-if dir_ok; then
-  if ! ensure_secret; then
-    logger -t jiuzhang-hostctl -- "secret_bootstrap_failed dir=$HOSTCTL_DIR"
-    exit 1
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE"
+    flock -x 9
+    export HOSTCTL_LOCK_HELD=1
+  else
+    exec python3 - "$LOCK_FILE" "$0" "${ORIG_ARGS[@]}" <<'PY'
+import fcntl, os, shutil, sys
+lock_path = sys.argv[1]
+script = sys.argv[2]
+args = sys.argv[3:]
+fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+os.set_inheritable(fd, True)
+os.environ["HOSTCTL_LOCK_HELD"] = "1"
+bash = shutil.which("bash") or "/bin/bash"
+os.execv(bash, [bash, script, *args])
+PY
   fi
 fi
 
-# 取最新的未处理标志文件（.json 后缀；.done 为已处理归档）
-latest_flag=""
-shopt -s nullglob
-flags=("$HOSTCTL_DIR"/*.json)
-shopt -u nullglob
-if [[ ${#flags[@]} -eq 0 ]]; then
+# 临时隔离目录（仅当前用户/root 0700 可访问），用于暂存验签后的标志副本
+STAGE_DIR="$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/jz-hostctl-stage.XXXXXX")"
+chmod 0700 "$STAGE_DIR"
+cleanup_stage() {
+  case "${STAGE_DIR:-}" in
+    */jz-hostctl-stage.*) rm -rf "$STAGE_DIR" ;;
+  esac
+}
+trap cleanup_stage EXIT INT TERM HUP
+
+# 1. 启动阶段：校验标志目录并按需原子自举共享密钥（目录异常时留给逐标志拒绝路径处理）
+SECRET_FILE="$HOSTCTL_DIR/.hostctl-secret"
+if [[ -L "$SECRET_FILE" ]]; then
+  log_err "共享密钥不得为符号链接: ${SECRET_FILE}（fail-closed）"
+  logger -t jiuzhang-hostctl -- "secret_bootstrap_failed dir=$HOSTCTL_DIR reason=secret_symlink"
+  exit 1
+fi
+
+bootstrap_rc=0
+bootstrap_msg="$(python3 - "$HOSTCTL_DIR" "$HOSTCTL_EXPECT_UID" <<'PY' 2>&1
+import errno, os, re, secrets, stat, sys
+
+hostctl_dir = sys.argv[1]
+expect_uid = int(sys.argv[2])
+
+try:
+    dir_fd = os.open(hostctl_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+except OSError as exc:
+    sys.stderr.write(f"无法安全打开标志目录: {exc}\n")
+    sys.exit(2)
+
+try:
+    dir_st = os.fstat(dir_fd)
+    if dir_st.st_uid != expect_uid or (stat.S_IMODE(dir_st.st_mode) & 0o002) != 0:
+        # 目录属主或权限异常：跳过自举，由逐标志安全校验路径归档拒绝
+        sys.exit(10)
+    secret_path = os.path.join(hostctl_dir, ".hostctl-secret")
+    try:
+        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            if os.geteuid() == 0:
+                os.fchown(fd, dir_st.st_uid, dir_st.st_gid)
+            token = (secrets.token_hex(32) + "\n").encode("ascii")
+            os.write(fd, token)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        sys.stderr.write(f"共享密钥缺失且无法自举: {secret_path}（{exc}，fail-closed）\n")
+        sys.exit(1)
+
+    try:
+        rfd = os.open(secret_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            sys.stderr.write(f"共享密钥不得为符号链接: {secret_path}（fail-closed）\n")
+        else:
+            sys.stderr.write(f"无法读取共享密钥: {secret_path}（{exc}，fail-closed）\n")
+        sys.exit(1)
+    try:
+        sec_st = os.fstat(rfd)
+        if not stat.S_ISREG(sec_st.st_mode):
+            sys.stderr.write(f"共享密钥不是常规文件: {secret_path}（fail-closed）\n")
+            sys.exit(1)
+        if sec_st.st_uid != dir_st.st_uid:
+            sys.stderr.write(
+                f"共享密钥属主 uid={sec_st.st_uid} 与目录约定属主 uid={dir_st.st_uid} 不一致（fail-closed）\n"
+            )
+            sys.exit(1)
+        try:
+            os.fchmod(rfd, 0o600)
+        except OSError:
+            if (stat.S_IMODE(sec_st.st_mode) & 0o077) != 0:
+                sys.stderr.write(f"共享密钥权限过宽且无法收紧为 0600: {secret_path}（fail-closed）\n")
+                sys.exit(1)
+        raw = os.read(rfd, 256).decode("ascii", errors="strict").strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", raw):
+            sys.stderr.write(f"共享密钥格式非法（期望 64 字符 hex）: {secret_path}（fail-closed）\n")
+            sys.exit(1)
+    finally:
+        os.close(rfd)
+finally:
+    os.close(dir_fd)
+PY
+)" || bootstrap_rc=$?
+
+if [[ "$bootstrap_rc" -ne 0 && "$bootstrap_rc" -ne 10 ]]; then
+  log_err "${bootstrap_msg:-共享密钥校验失败（fail-closed）}"
+  logger -t jiuzhang-hostctl -- "secret_bootstrap_failed dir=$HOSTCTL_DIR"
+  exit 1
+fi
+
+# 2. 按 mtime 升序（FIFO）枚举所有待处理 .json 标志文件（显式排除 pcap-status.*）
+FLAG_LIST=()
+while IFS= read -r _flag_path; do
+  [[ -n "$_flag_path" ]] && FLAG_LIST+=("$_flag_path")
+done < <(python3 - "$HOSTCTL_DIR" <<'PY'
+import os, sys
+
+hostctl_dir = sys.argv[1]
+items = []
+for entry in os.scandir(hostctl_dir):
+    name = entry.name
+    if not name.endswith(".json"):
+        continue
+    if name.startswith("pcap-status."):
+        continue
+    full = os.path.join(hostctl_dir, name)
+    try:
+        st = os.lstat(full)
+    except OSError:
+        continue
+    items.append((st.st_mtime_ns, name, full))
+
+items.sort(key=lambda x: (x[0], x[1]))
+for _, _, full in items:
+    print(full)
+PY
+)
+unset _flag_path
+
+if [[ ${#FLAG_LIST[@]} -eq 0 ]]; then
   log_info "无待处理标志文件（${HOSTCTL_DIR}）"
   exit 0
 fi
-# 文件名含 unixts 但前缀为 action，字典序不可靠，按 mtime 取最新
-latest_flag="$(ls -1t "${flags[@]}" 2>/dev/null | head -1)"
-[[ -n "$latest_flag" && -f "$latest_flag" ]] || { log_info "无待处理标志文件"; exit 0; }
-FLAG_BASE="$(basename "$latest_flag")"
-log_info "发现标志文件: ${FLAG_BASE}（共 ${#flags[@]} 个待处理，仅执行最新一个）"
 
-DONE_FILE="$latest_flag.done"
+log_info "发现 ${#FLAG_LIST[@]} 个待处理标志文件，按 FIFO（oldest-first）顺序依次处理"
 
-reject_flag() { # reject_flag REASON —— 归档标志、告警并退出（fail-closed）
-  local reason="$1"
-  mv "$latest_flag" "$DONE_FILE" \
-    || log_warn "归档失败（原文件保留，path 单元将重复触发本条告警）"
-  log_err "标志文件安全校验未通过：${reason}（已归档为 ${FLAG_BASE}.done，不执行）"
-  logger -t jiuzhang-hostctl -- "security_rejected file=$FLAG_BASE reason=$reason"
-  exit 1
-}
+HAD_ERROR=0
+FLAG_INDEX=0
 
-[[ "$dir_mode" =~ ^[0-7]{3,4}$ ]] || reject_flag "无法读取标志目录权限: $HOSTCTL_DIR"
-# 仅取末三位权限位（含粘滞位时 stat 输出四位，如 1777 → 777）
-dir_perm="${dir_mode:${#dir_mode}-3}"
-[[ "$dir_uid" == "$HOSTCTL_EXPECT_UID" ]] \
-  || reject_flag "标志目录属主 uid=${dir_uid:-unknown} 非约定属主 uid=${HOSTCTL_EXPECT_UID}（属主配置错误，拒绝执行）"
-(( (8#$dir_perm & 2) == 0 )) \
-  || reject_flag "标志目录权限 ${dir_mode} 为 other-writable，任意本地用户可伪造标志（请 chmod 755 并核对属主）"
-flag_uid="$(file_uid "$latest_flag")"
-[[ -n "$flag_uid" && "$flag_uid" == "$dir_uid" ]] \
-  || reject_flag "标志文件属主 uid=${flag_uid:-unknown} 与目录约定属主 uid=${dir_uid} 不一致（非 api 容器写入，拒绝执行）"
-# 目录属主异常时启动自举已跳过，此处再兜一层（fail-closed）
-[[ -n "$SECRET" ]] || reject_flag "共享密钥不可用（未自举或属主/格式非法）"
+for flag_path in "${FLAG_LIST[@]}"; do
+  FLAG_INDEX=$((FLAG_INDEX + 1))
+  FLAG_BASE="$(basename "$flag_path")"
+  DONE_FILE="${flag_path}.done"
+  STAGED_FLAG="${STAGE_DIR}/flag-${FLAG_INDEX}.json"
+  rm -f "$STAGED_FLAG"
 
-# 防重复触发：先改名为 .done，再做解析与执行；后续同名触发不会重复执行
-mv "$latest_flag" "$DONE_FILE"
-
-reject_parsed() { # reject_parsed REASON —— 已归档(.done)后的拒绝：告警并退出
-  local reason="$1"
-  log_err "标志文件安全校验未通过：${reason}（已归档为 ${FLAG_BASE}.done，不执行）"
-  logger -t jiuzhang-hostctl -- "security_rejected file=$FLAG_BASE reason=$reason"
-  exit 1
-}
-
-if ! parsed="$(json_fields "$DONE_FILE")"; then
-  log_err "标志文件 JSON 解析失败: ${FLAG_BASE}（已归档为 ${FLAG_BASE}.done）"
-  logger -t jiuzhang-hostctl -- "parse_failed file=$FLAG_BASE"
-  exit 1
-fi
-# 逐行读入（兼容 bash 3.2，无 mapfile）
-F=()
-while IFS= read -r _line; do F+=("$_line"); done <<< "$parsed"
-unset _line
-ACTION="${F[0]:-}"
-REQUESTED_BY="${F[1]:-}"
-USER_ID="${F[2]:-}"
-REQUEST_ID="${F[3]:-}"
-REQUESTED_AT="${F[4]:-}"
-DELAY="${F[5]:-}"
-HMAC_FIELD="${F[6]:-}"
-PORTS="${F[7]:-}"
-
-# 签名验真（fail-closed）：缺字段（含升级窗口内旧 server 写出的未签名标志）、
-# 格式非法、HMAC 不符、时间戳超窗一律拒绝
-[[ -n "$HMAC_FIELD" && -n "$REQUESTED_AT" && -n "$DELAY" ]] \
-  || reject_parsed "缺少 hmac/requestedAt/delaySeconds 字段（未签名标志一律拒绝）"
-[[ "$HMAC_FIELD" =~ ^[0-9a-f]{64}$ ]] || reject_parsed "hmac 字段格式非法"
-
-if [[ "$ACTION" == "firewall_ensure" ]]; then
-  canonical="$(printf 'v2\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
-    "$ACTION" "$REQUESTED_BY" "$USER_ID" "$REQUEST_ID" "$REQUESTED_AT" "$DELAY" "$PORTS")"
-elif [[ "$ACTION" == "pcap_capture" ]]; then
-  [[ "$JSON_TOOL" == "python3" ]] || reject_parsed "pcap_capture 需要 python3 解析并执行受控配置"
-  pcap_parsed="$(python3 - "$DONE_FILE" 2>/dev/null <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-print(d["interface"])
-print(d["hot_dir"])
-print(d["warm_dir"])
-print(d["node_id"])
-print(str(d["enabled"]).lower())
-print(",".join(str(p) for p in sorted(d["ports"])))
-PY
-)" || reject_parsed "pcap_capture 配置字段缺失或类型非法"
-  PCAP_FIELDS=()
-  while IFS= read -r _line; do PCAP_FIELDS+=("$_line"); done <<< "$pcap_parsed"
-  PCAP_INTERFACE="${PCAP_FIELDS[0]:-}"
-  PCAP_HOT_DIR="${PCAP_FIELDS[1]:-}"
-  PCAP_WARM_DIR="${PCAP_FIELDS[2]:-}"
-  PCAP_NODE_ID="${PCAP_FIELDS[3]:-}"
-  PCAP_ENABLED="${PCAP_FIELDS[4]:-}"
-  PORTS="${PCAP_FIELDS[5]:-}"
-  canonical="$(printf 'v3\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s' \
-    "$ACTION" "$REQUESTED_BY" "$USER_ID" "$REQUEST_ID" "$REQUESTED_AT" "$DELAY" "$PORTS" \
-    "$PCAP_INTERFACE" "$PCAP_HOT_DIR" "$PCAP_WARM_DIR" "$PCAP_NODE_ID" "$PCAP_ENABLED")"
-else
-  canonical="$(printf 'v1\n%s\n%s\n%s\n%s\n%s\n%s' \
-    "$ACTION" "$REQUESTED_BY" "$USER_ID" "$REQUEST_ID" "$REQUESTED_AT" "$DELAY")"
-fi
-expected_hmac="$(printf '%s' "$canonical" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $NF}')"
-[[ -n "$expected_hmac" && "$expected_hmac" == "$HMAC_FIELD" ]] \
-  || reject_parsed "HMAC 验签失败（内容被篡改或密钥不符）"
-
-ts="$(ts_epoch "$REQUESTED_AT")" || reject_parsed "requestedAt 时间戳无法解析: $REQUESTED_AT"
-now_ts="$(date +%s)"
-skew=$(( now_ts - ts ))
-(( skew < 0 )) && skew=$(( -skew ))
-(( skew <= HOSTCTL_MAX_SKEW )) \
-  || reject_parsed "requestedAt 超出允许时间窗（±${HOSTCTL_MAX_SKEW}s，疑似重放或时钟异常）"
-
-# action 白名单校验
-case "$ACTION" in
-  reboot|shutdown|factory_reset|firewall_ensure|pcap_capture) ;;
-  *)
-    log_err "非法 action: ${ACTION:-<空>}（白名单: reboot/shutdown/factory_reset/firewall_ensure/pcap_capture），已归档不执行"
-    logger -t jiuzhang-hostctl -- "rejected action=${ACTION:-empty} requestedBy=${REQUESTED_BY:-unknown} requestID=${REQUEST_ID:-unknown}"
-    exit 1 ;;
-esac
-
-if [[ "$ACTION" == "firewall_ensure" || "$ACTION" == "pcap_capture" ]]; then
-  [[ "$PORTS" =~ ^[1-9][0-9]{0,4}(,[1-9][0-9]{0,4})*$ ]] \
-    || reject_parsed "$ACTION ports 必须为十进制整数数组，每项 1..65535"
-  IFS=',' read -r -a PORT_ITEMS <<< "$PORTS"
-  (( ${#PORT_ITEMS[@]} >= 1 && ${#PORT_ITEMS[@]} <= 128 )) \
-    || reject_parsed "$ACTION ports 必须包含 1..128 项"
-  previous_port=0
-  for port in "${PORT_ITEMS[@]}"; do
-    port_number=$((10#$port))
-    (( port_number >= 1 && port_number <= 65535 )) \
-      || reject_parsed "$ACTION 端口超出 1..65535: $port"
-    (( port_number > previous_port )) \
-      || reject_parsed "$ACTION ports 必须严格升序且无重复"
-    previous_port="$port_number"
-  done
-fi
-if [[ "$ACTION" == "pcap_capture" ]]; then
-  [[ "$PCAP_INTERFACE" =~ ^[A-Za-z0-9_.:-]{1,64}$ ]] || reject_parsed "pcap_capture 网卡名称非法"
-  [[ "$PCAP_NODE_ID" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || reject_parsed "pcap_capture 节点ID非法"
-  [[ "$PCAP_ENABLED" == true || "$PCAP_ENABLED" == false ]] || reject_parsed "pcap_capture enabled必须为布尔值"
-  [[ "$PCAP_HOT_DIR" =~ ^/[A-Za-z0-9._/-]+$ && "$PCAP_WARM_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] \
-    || reject_parsed "pcap_capture 存储路径非法"
-  [[ "$PCAP_HOT_DIR" != "$PCAP_WARM_DIR" && "$PCAP_HOT_DIR" != / && "$PCAP_WARM_DIR" != / ]] \
-    || reject_parsed "pcap_capture 冷热目录不能相同或为根目录"
-fi
-
-# delaySeconds：旧动作默认 3、上限 60、非法值按 3；防火墙和PCAP控制固定不等待。
-if [[ "$ACTION" == "firewall_ensure" || "$ACTION" == "pcap_capture" ]]; then
-  [[ "$DELAY" == "0" ]] || reject_parsed "$ACTION 的 delaySeconds 必须为 0"
-else
-  [[ "$DELAY" =~ ^[0-9]+$ ]] || DELAY=3
-  (( DELAY > 60 )) && DELAY=60
-fi
-
-logger -t jiuzhang-hostctl -- "execute action=$ACTION requestedBy=${REQUESTED_BY:-unknown} requestID=${REQUEST_ID:-unknown} delay=$DELAY file=$FLAG_BASE"
-log_info "动作=$ACTION 操作人=${REQUESTED_BY:-unknown} requestID=${REQUEST_ID:-unknown} 延迟=${DELAY}s"
-
-if [[ "$DRY_RUN" == "true" ]]; then
-  if [[ "$ACTION" == "firewall_ensure" ]]; then
-    log_info "[dry-run] 将执行: firewall-ensure.sh ${PORTS}（delay=0 不等待，不实际执行）"
-  elif [[ "$ACTION" == "pcap_capture" ]]; then
-    log_info "[dry-run] 将按验签范围执行PCAP启停（delay=0 不等待，不实际执行）"
-  else
-    log_info "[dry-run] 将 sleep ${DELAY}s 后执行: ${ACTION}（不实际执行）"
+  # 原子前置校验并归档（绝不跟随符号链接）
+  if [[ -L "$flag_path" ]]; then
+    mv -f "$flag_path" "$DONE_FILE" 2>/dev/null || true
+    log_err "标志文件安全校验未通过：标志文件不得为符号链接（已归档为 ${FLAG_BASE}.done，不执行）"
+    logger -t jiuzhang-hostctl -- "security_rejected file=$FLAG_BASE reason=flag_symlink"
+    HAD_ERROR=1
+    continue
   fi
-  exit 0
-fi
+  if [[ ! -f "$flag_path" ]]; then
+    continue
+  fi
+  if [[ -L "$DONE_FILE" ]]; then
+    log_err "归档目标为符号链接，拒绝覆盖: ${DONE_FILE}"
+    logger -t jiuzhang-hostctl -- "security_rejected file=$FLAG_BASE reason=done_symlink"
+    HAD_ERROR=1
+    continue
+  fi
 
-(( DELAY > 0 )) && sleep "$DELAY"
-case "$ACTION" in
-  reboot)
-    require_cmd systemctl
-    log_info "执行 systemctl reboot"
-    systemctl reboot ;;
-  shutdown)
-    require_cmd systemctl
-    log_info "执行 systemctl poweroff"
-    systemctl poweroff ;;
-  factory_reset)
-    [[ -x "$SCRIPT_DIR/factory-reset.sh" ]] || die "恢复出厂脚本不存在或不可执行: $SCRIPT_DIR/factory-reset.sh"
-    log_info "执行恢复出厂: $SCRIPT_DIR/factory-reset.sh"
-    JZ_ASSUME_YES=true bash "$SCRIPT_DIR/factory-reset.sh" ;;
-  firewall_ensure)
-    [[ -x "$SCRIPT_DIR/firewall-ensure.sh" ]] || die "防火墙放行脚本不存在或不可执行: $SCRIPT_DIR/firewall-ensure.sh"
-    log_info "确保 firewalld runtime+permanent 放行: $PORTS"
-    bash "$SCRIPT_DIR/firewall-ensure.sh" "$PORTS" ;;
-  pcap_capture)
-    [[ -f "$SCRIPT_DIR/pcap_capture_control.py" ]] || die "PCAP控制脚本不存在: $SCRIPT_DIR/pcap_capture_control.py"
-    python3 "$SCRIPT_DIR/pcap_capture_control.py" --repo-root "$REPO_ROOT" --flag "$DONE_FILE" ;;
-esac
+  # 先归档再验签（防 systemd path 单元重复触发同一文件）
+  mv "$flag_path" "$DONE_FILE"
+
+  # 在 Python 中完成目录属主/权限复核、O_NOFOLLOW 读密钥与标志、HMAC 恒定时间验签、
+  # 时间窗校验、requestID 防重放登记、白名单参数校验，并复制验签后原文至 0700 临时目录
+  verify_rc=0
+  verify_out="$(python3 - "$HOSTCTL_DIR" "$DONE_FILE" "$STAGED_FLAG" "$HOSTCTL_EXPECT_UID" "$HOSTCTL_MAX_SKEW" "$NONCE_FILE" <<'PY' 2>&1
+import datetime, errno, hashlib, hmac, json, os, pathlib, re, stat, sys, time, uuid
+
+hostctl_dir, done_path, staged_path, expect_uid_s, max_skew_s, nonce_file = sys.argv[1:]
+expect_uid = int(expect_uid_s)
+max_skew = int(max_skew_s)
+
+def fail(reason, tag="security_rejected"):
+    sys.stderr.write(f"{tag}|{reason}\n")
+    sys.exit(1)
+
+# 1. 目录属主与权限校验（O_NOFOLLOW）
+try:
+    dir_fd = os.open(hostctl_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+except OSError as exc:
+    fail(f"无法安全打开标志目录: {exc}")
+
+try:
+    dir_st = os.fstat(dir_fd)
+    dir_uid = dir_st.st_uid
+    dir_mode = stat.S_IMODE(dir_st.st_mode)
+    if dir_uid != expect_uid:
+        fail(f"标志目录属主 uid={dir_uid} 非约定属主 uid={expect_uid}（属主配置错误，拒绝执行）")
+    if (dir_mode & 0o002) != 0:
+        fail(f"标志目录权限 {oct(dir_mode)[2:]} 为 other-writable，任意本地用户可伪造标志（请 chmod 755 并核对属主）")
+
+    # 2. 标志文件属主校验 + O_NOFOLLOW 读取原始字节
+    try:
+        flag_fd = os.open(done_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            fail("标志文件不得为符号链接")
+        fail(f"无法读取标志文件: {exc}")
+    try:
+        flag_st = os.fstat(flag_fd)
+        if not stat.S_ISREG(flag_st.st_mode):
+            fail("标志文件不是常规文件")
+        if flag_st.st_uid != dir_uid:
+            fail(f"标志文件属主 uid={flag_st.st_uid} 与目录约定属主 uid={dir_uid} 不一致（非 api 容器写入，拒绝执行）")
+        if flag_st.st_size > 65536:
+            fail("标志文件超过 64 KiB 安全上限")
+        raw_bytes = os.read(flag_fd, 65537)
+        if len(raw_bytes) > 65536:
+            fail("标志文件超过 64 KiB 安全上限")
+    finally:
+        os.close(flag_fd)
+
+    # 3. 共享密钥安全读取（O_NOFOLLOW + fstat，绝不泄露给子进程 argv）
+    secret_path = os.path.join(hostctl_dir, ".hostctl-secret")
+    try:
+        sec_fd = os.open(secret_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            fail("共享密钥不得为符号链接")
+        fail(f"共享密钥不可用（未自举或无法读取）: {exc}")
+    try:
+        sec_st = os.fstat(sec_fd)
+        if not stat.S_ISREG(sec_st.st_mode):
+            fail("共享密钥不是常规文件")
+        if sec_st.st_uid != dir_uid:
+            fail(f"共享密钥属主 uid={sec_st.st_uid} 与目录约定属主 uid={dir_uid} 不一致")
+        if (stat.S_IMODE(sec_st.st_mode) & 0o077) != 0:
+            try:
+                os.fchmod(sec_fd, 0o600)
+            except OSError:
+                fail("共享密钥权限过宽（必须为 0600）")
+        secret = os.read(sec_fd, 256).decode("ascii", errors="strict").strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", secret):
+            fail("共享密钥格式非法（期望 64 字符 hex）")
+    finally:
+        os.close(sec_fd)
+finally:
+    os.close(dir_fd)
+
+# 4. JSON 解析
+try:
+    data = json.loads(raw_bytes.decode("utf-8"))
+except Exception:
+    fail("标志文件 JSON 解析失败", tag="parse_failed")
+if not isinstance(data, dict):
+    fail("标志文件 JSON 顶层必须是对象", tag="parse_failed")
+
+def field_str(key):
+    val = data.get(key, "")
+    return "" if val is None else str(val)
+
+action = field_str("action")
+requested_by = field_str("requestedBy")
+user_id = field_str("userID")
+request_id = field_str("requestID")
+requested_at = field_str("requestedAt")
+delay_raw = data.get("delaySeconds")
+delay_str = "" if delay_raw is None else (str(delay_raw) if not isinstance(delay_raw, bool) else "")
+hmac_field = field_str("hmac")
+
+if not hmac_field or not requested_at or delay_str == "":
+    fail("缺少 hmac/requestedAt/delaySeconds 字段（未签名标志一律拒绝）")
+if not re.fullmatch(r"[0-9a-f]{64}", hmac_field):
+    fail("hmac 字段格式非法")
+
+ports_csv = ""
+pcap_interface = ""
+pcap_hot_dir = ""
+pcap_warm_dir = ""
+pcap_node_id = ""
+pcap_enabled = ""
+
+if action == "firewall_ensure":
+    ports = data.get("ports", [])
+    if ports is None:
+        ports = []
+    if isinstance(ports, list):
+        ports_csv = ",".join("" if v is None else str(v) for v in ports)
+    else:
+        ports_csv = "<invalid-ports>"
+    canonical = "\n".join([
+        "v2", action, requested_by, user_id, request_id, requested_at, delay_str, ports_csv
+    ])
+elif action == "pcap_capture":
+    try:
+        pcap_interface = data["interface"]
+        pcap_hot_dir = data["hot_dir"]
+        pcap_warm_dir = data["warm_dir"]
+        pcap_node_id = data["node_id"]
+        enabled_val = data["enabled"]
+        ports_val = data["ports"]
+        if not isinstance(pcap_interface, str) or not isinstance(pcap_hot_dir, str) \
+                or not isinstance(pcap_warm_dir, str) or not isinstance(pcap_node_id, str) \
+                or not isinstance(enabled_val, bool) or not isinstance(ports_val, list):
+            raise TypeError("invalid pcap_capture field type")
+        if not all(isinstance(p, int) and not isinstance(p, bool) for p in ports_val):
+            raise TypeError("invalid pcap_capture port type")
+        pcap_enabled = "true" if enabled_val else "false"
+        ports_csv = ",".join(str(p) for p in sorted(ports_val))
+    except Exception:
+        fail("pcap_capture 配置字段缺失或类型非法")
+    canonical = "\n".join([
+        "v3", action, requested_by, user_id, request_id, requested_at, delay_str, ports_csv,
+        pcap_interface, pcap_hot_dir, pcap_warm_dir, pcap_node_id, pcap_enabled,
+    ])
+else:
+    canonical = "\n".join([
+        "v1", action, requested_by, user_id, request_id, requested_at, delay_str
+    ])
+
+expected_hmac = hmac.new(
+    secret.encode("ascii"), canonical.encode("utf-8"), hashlib.sha256
+).hexdigest()
+if not hmac.compare_digest(expected_hmac, hmac_field):
+    fail("HMAC 验签失败（内容被篡改或密钥不符）")
+
+# 5. 时间戳窗口校验
+ts_text = requested_at.strip()
+if ts_text.endswith("Z"):
+    ts_text = ts_text[:-1] + "+00:00"
+try:
+    req_epoch = int(datetime.datetime.fromisoformat(ts_text).timestamp())
+except ValueError:
+    fail(f"requestedAt 时间戳无法解析: {requested_at}")
+
+now_epoch = int(time.time())
+if abs(now_epoch - req_epoch) > max_skew:
+    fail(f"requestedAt 超出允许时间窗（±{max_skew}s，疑似重放或时钟异常）")
+
+# 6. Action 白名单与参数校验
+allowed_actions = ("reboot", "shutdown", "factory_reset", "firewall_ensure", "pcap_capture")
+if action not in allowed_actions:
+    fail(f"非法 action: {action or '<空>'}（白名单: {'/'.join(allowed_actions)}）", tag="rejected")
+
+if not request_id or len(request_id) > 128 or any(ch.isspace() for ch in request_id):
+    fail("requestID 缺失或格式非法")
+
+if action in ("firewall_ensure", "pcap_capture"):
+    if not re.fullmatch(r"[1-9][0-9]{0,4}(,[1-9][0-9]{0,4})*", ports_csv):
+        fail(f"{action} ports 必须为十进制整数数组，每项 1..65535")
+    port_items = ports_csv.split(",")
+    if not (1 <= len(port_items) <= 128):
+        fail(f"{action} ports 必须包含 1..128 项")
+    prev = 0
+    for item in port_items:
+        port_num = int(item, 10)
+        if not (1 <= port_num <= 65535):
+            fail(f"{action} 端口超出 1..65535: {item}")
+        if port_num <= prev:
+            fail(f"{action} ports 必须严格升序且无重复")
+        prev = port_num
+
+if action == "pcap_capture":
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", pcap_interface):
+        fail("pcap_capture 网卡名称非法")
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", pcap_node_id):
+        fail("pcap_capture 节点ID非法")
+    if pcap_enabled not in ("true", "false"):
+        fail("pcap_capture enabled必须为布尔值")
+    if not re.fullmatch(r"/[A-Za-z0-9._/-]+", pcap_hot_dir) or not re.fullmatch(r"/[A-Za-z0-9._/-]+", pcap_warm_dir):
+        fail("pcap_capture 存储路径非法")
+    if pcap_hot_dir == pcap_warm_dir or pcap_hot_dir == "/" or pcap_warm_dir == "/":
+        fail("pcap_capture 冷热目录不能相同或为根目录")
+
+if action in ("firewall_ensure", "pcap_capture"):
+    if delay_str != "0":
+        fail(f"{action} 的 delaySeconds 必须为 0")
+    delay_int = 0
+else:
+    if re.fullmatch(r"[0-9]+", delay_str):
+        delay_int = min(int(delay_str, 10), 60)
+    else:
+        delay_int = 3
+
+# 7. requestID 防重放检查与持久化登记（保留 >= 2 * HOSTCTL_MAX_SKEW）
+nonce_path = pathlib.Path(nonce_file)
+if nonce_path.is_symlink() or nonce_path.parent.is_symlink():
+    fail("防重放状态文件不得为符号链接")
+nonces = {}
+if nonce_path.exists():
+    try:
+        nfd = os.open(str(nonce_path), os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            nst = os.fstat(nfd)
+            if not stat.S_ISREG(nst.st_mode) or nst.st_uid != os.geteuid():
+                fail("防重放状态文件属主或类型异常")
+            content = os.read(nfd, 4 * 1024 * 1024).decode("utf-8")
+            loaded = json.loads(content) if content.strip() else {}
+            if isinstance(loaded, dict):
+                nonces = {k: int(v) for k, v in loaded.items() if isinstance(k, str) and isinstance(v, (int, float))}
+        finally:
+            os.close(nfd)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        fail(f"读取防重放状态文件失败: {exc}")
+
+retention = max(2 * max_skew, 600)
+nonces = {k: v for k, v in nonces.items() if v >= now_epoch}
+dir_scope = hashlib.sha256(os.path.realpath(hostctl_dir).encode("utf-8")).hexdigest()[:16]
+nonce_key = f"{dir_scope}:{request_id}"
+if nonce_key in nonces:
+    fail(f"检测到重放请求（requestID={request_id} 已消费，拒绝重复执行）")
+nonces[nonce_key] = now_epoch + retention
+
+tmp_nonce = nonce_path.with_name(f".{nonce_path.name}.{uuid.uuid4().hex}.tmp")
+tnfd = os.open(str(tmp_nonce), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+try:
+    os.fchmod(tnfd, 0o600)
+    with os.fdopen(tnfd, "w", encoding="utf-8") as nf:
+        tnfd = -1
+        json.dump(nonces, nf, separators=(",", ":"), sort_keys=True)
+        nf.write("\n")
+        nf.flush()
+        os.fsync(nf.fileno())
+    os.replace(tmp_nonce, nonce_path)
+finally:
+    if tnfd >= 0:
+        os.close(tnfd)
+    if tmp_nonce.exists():
+        tmp_nonce.unlink()
+
+# 8. 将已验签原始标志字节复制到 root 0700 临时目录，供下游处理器（如 pcap_capture_control.py）安全消费
+sfd = os.open(staged_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+try:
+    os.fchmod(sfd, 0o600)
+    with os.fdopen(sfd, "wb") as sf:
+        sfd = -1
+        sf.write(raw_bytes)
+        sf.flush()
+        os.fsync(sf.fileno())
+finally:
+    if sfd >= 0:
+        os.close(sfd)
+
+# 输出脱敏后的执行元数据（不含密钥）
+print(json.dumps({
+    "action": action,
+    "requestedBy": requested_by or "unknown",
+    "requestID": request_id,
+    "delay": delay_int,
+    "ports": ports_csv,
+}, ensure_ascii=False, separators=(",", ":")))
+PY
+)" || verify_rc=$?
+
+  if [[ "$verify_rc" -ne 0 ]]; then
+    err_tag="${verify_out%%|*}"
+    err_reason="${verify_out#*|}"
+    [[ "$err_tag" == "$verify_out" ]] && { err_tag="security_rejected"; err_reason="$verify_out"; }
+    if [[ "$err_tag" == "parse_failed" ]]; then
+      log_err "标志文件 JSON 解析失败: ${FLAG_BASE}（已归档为 ${FLAG_BASE}.done）"
+      logger -t jiuzhang-hostctl -- "parse_failed file=$FLAG_BASE"
+    elif [[ "$err_tag" == "rejected" ]]; then
+      log_err "${err_reason}，已归档不执行"
+      logger -t jiuzhang-hostctl -- "rejected file=$FLAG_BASE reason=$err_reason"
+    else
+      log_err "标志文件安全校验未通过：${err_reason}（已归档为 ${FLAG_BASE}.done，不执行）"
+      logger -t jiuzhang-hostctl -- "security_rejected file=$FLAG_BASE reason=$err_reason"
+    fi
+    rm -f "$STAGED_FLAG"
+    HAD_ERROR=1
+    continue
+  fi
+
+  META_LINES=()
+  while IFS= read -r _line; do META_LINES+=("$_line"); done < <(python3 - "$verify_out" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+print(d["action"])
+print(d["requestedBy"])
+print(d["requestID"])
+print(d["delay"])
+print(d["ports"])
+PY
+)
+  unset _line
+  ACTION="${META_LINES[0]:-}"
+  REQUESTED_BY="${META_LINES[1]:-unknown}"
+  REQUEST_ID="${META_LINES[2]:-unknown}"
+  DELAY="${META_LINES[3]:-0}"
+  PORTS="${META_LINES[4]:-}"
+
+  logger -t jiuzhang-hostctl -- "execute action=$ACTION requestedBy=$REQUESTED_BY requestID=$REQUEST_ID delay=$DELAY file=$FLAG_BASE"
+  log_info "动作=$ACTION 操作人=$REQUESTED_BY requestID=$REQUEST_ID 延迟=${DELAY}s"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    if [[ "$ACTION" == "firewall_ensure" ]]; then
+      log_info "[dry-run] 将执行: firewall-ensure.sh ${PORTS}（delay=0 不等待，不实际执行）"
+    elif [[ "$ACTION" == "pcap_capture" ]]; then
+      log_info "[dry-run] 将按验签范围执行PCAP启停（delay=0 不等待，不实际执行）"
+    else
+      log_info "[dry-run] 将 sleep ${DELAY}s 后执行: ${ACTION}（不实际执行）"
+    fi
+    rm -f "$STAGED_FLAG"
+    continue
+  fi
+
+  (( DELAY > 0 )) && sleep "$DELAY"
+  action_rc=0
+  case "$ACTION" in
+    reboot)
+      require_cmd systemctl
+      log_info "执行 systemctl reboot"
+      systemctl reboot || action_rc=$? ;;
+    shutdown)
+      require_cmd systemctl
+      log_info "执行 systemctl poweroff"
+      systemctl poweroff || action_rc=$? ;;
+    factory_reset)
+      [[ -x "$SCRIPT_DIR/factory-reset.sh" ]] || { log_err "恢复出厂脚本不存在或不可执行: $SCRIPT_DIR/factory-reset.sh"; action_rc=1; }
+      if [[ "$action_rc" -eq 0 ]]; then
+        log_info "执行恢复出厂: $SCRIPT_DIR/factory-reset.sh"
+        JZ_ASSUME_YES=true bash "$SCRIPT_DIR/factory-reset.sh" || action_rc=$?
+      fi ;;
+    firewall_ensure)
+      [[ -x "$SCRIPT_DIR/firewall-ensure.sh" ]] || { log_err "防火墙放行脚本不存在或不可执行: $SCRIPT_DIR/firewall-ensure.sh"; action_rc=1; }
+      if [[ "$action_rc" -eq 0 ]]; then
+        log_info "确保 firewalld runtime+permanent 放行: $PORTS"
+        bash "$SCRIPT_DIR/firewall-ensure.sh" "$PORTS" || action_rc=$?
+      fi ;;
+    pcap_capture)
+      [[ -f "$SCRIPT_DIR/pcap_capture_control.py" ]] || { log_err "PCAP控制脚本不存在: $SCRIPT_DIR/pcap_capture_control.py"; action_rc=1; }
+      if [[ "$action_rc" -eq 0 ]]; then
+        python3 "$SCRIPT_DIR/pcap_capture_control.py" --repo-root "$REPO_ROOT" --flag "$STAGED_FLAG" || action_rc=$?
+      fi ;;
+  esac
+  rm -f "$STAGED_FLAG"
+  if [[ "$action_rc" -ne 0 ]]; then
+    HAD_ERROR=1
+  fi
+done
+
+exit "$HAD_ERROR"

@@ -12,6 +12,11 @@ ARG ALPINE_IMAGE_DIGEST=sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db8691619
 
 FROM alpine:3.24${ALPINE_IMAGE_DIGEST:+@$ALPINE_IMAGE_DIGEST}
 
+RUN addgroup -g 1000 -S logrotator \
+    && adduser -u 1000 -S -G logrotator -H logrotator
+
 COPY --chmod=0755 rotate.sh /usr/local/bin/rotate.sh
+
+USER 1000:1000
 
 ENTRYPOINT ["/usr/local/bin/rotate.sh"]

@@ -455,6 +455,23 @@ write_sysctl_conf() {
   fi
 }
 
+# valid_iface NAME —— 严格校验网口名，防止命令注入或路径穿越。
+valid_iface() {
+  local name="$1"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$ ]] || return 1
+  [[ "$name" != "." && "$name" != ".." ]] || return 1
+  return 0
+}
+
+# add_replay_cmd CMD ARGS... —— 使用 printf '%q' 安全转义每个参数后再写入开机重放队列。
+add_replay_cmd() {
+  local formatted="" arg
+  for arg in "$@"; do
+    printf -v formatted '%s %q' "$formatted" "$arg"
+  done
+  REPLAY_CMDS+=("${formatted# }")
+}
+
 # ---------- 4. 网卡 ethtool 即时生效 + IRQ 亲和性 ----------
 # 输出全局：REPLAY_CMDS（持久化辅助脚本要重放的命令）、IFACE_Q（队列数，报告用）
 REPLAY_CMDS=()
@@ -463,6 +480,7 @@ IFACE_Q=()
 tune_iface_nic() {
   local iface="$1" ncpu="$2"
   local rx tx q maxrx maxtx maxq
+  valid_iface "$iface" || die "非法网卡名: $iface"
   rx="$(ring_preset_for_target "$TARGET")"
   tx="$rx"
   q="$ncpu"
@@ -483,11 +501,11 @@ tune_iface_nic() {
     log_warn "$iface: ring 上限未知（dry-run/无 ethtool），按预设值演示"
   fi
   ethtool_try ethtool -G "$iface" rx "$rx" tx "$tx"
-  REPLAY_CMDS+=("ethtool -G $iface rx $rx tx $tx")
+  add_replay_cmd ethtool -G "$iface" rx "$rx" tx "$tx"
   # TSO/GSO/GRO 开启降低 CPU 拷贝与协议栈开销；LRO 必须关——网桥/透明代理模式下
   # LRO 聚合后再转发会改写包内容并导致桥接转发异常（见设计文档 LRO 小节）。
   ethtool_try ethtool -K "$iface" tso on gso on gro on lro off
-  REPLAY_CMDS+=("ethtool -K $iface tso on gso on gro on lro off")
+  add_replay_cmd ethtool -K "$iface" tso on gso on gro on lro off
   # 队列数：min(NUMA 本地核数, 网卡最大 combined 队列)
   if [[ "$maxq" =~ ^[0-9]+$ ]] && ((maxq > 0)); then
     ((maxq < q)) && q="$maxq"
@@ -499,22 +517,23 @@ tune_iface_nic() {
     return 0
   fi
   ethtool_try ethtool -L "$iface" combined "$q"
-  REPLAY_CMDS+=("ethtool -L $iface combined $q")
+  add_replay_cmd ethtool -L "$iface" combined "$q"
   IFACE_Q+=("$q")
   # 中断合并：自适应模式；不支持的驱动告警跳过
   ethtool_try ethtool -C "$iface" adaptive-rx on adaptive-tx on
-  REPLAY_CMDS+=("ethtool -C $iface adaptive-rx on adaptive-tx on")
+  add_replay_cmd ethtool -C "$iface" adaptive-rx on adaptive-tx on
 }
 
 # tune_iface_irq IFACE CPUS —— MSI-X IRQ 绑同 NUMA 核（轮转分配）。
 tune_iface_irq() {
   local iface="$1" cpus="$2"
+  valid_iface "$iface" || die "非法网卡名: $iface"
   local irqs="" irqdir="$SYSFS_ROOT/class/net/$iface/device/msi_irqs"
   if [[ -d "$irqdir" ]]; then
     irqs="$(ls "$irqdir" 2>/dev/null | sort -n | tr '\n' ' ' | sed 's/ $//')"
   fi
   if [[ -z "$irqs" && -r /proc/interrupts ]]; then
-    irqs="$(awk -v if="$iface" 'index($NF, if) > 0 { gsub(":", "", $1); print $1 }' \
+    irqs="$(awk -v iface="$iface" 'index($NF, iface) > 0 { gsub(":", "", $1); print $1 }' \
       /proc/interrupts 2>/dev/null | sort -n | tr '\n' ' ' | sed 's/ $//')"
   fi
   if [[ -z "$irqs" ]]; then
@@ -534,13 +553,15 @@ tune_iface_irq() {
     return 0
   fi
   for irq in $irqs; do
+    [[ "$irq" =~ ^[0-9]+$ ]] || continue
     cpu="${arr[$((i % n))]}"
+    [[ "$cpu" =~ ^[0-9]+$ ]] || continue
     if write_file "/proc/irq/$irq/smp_affinity_list" "$cpu"; then
       count=$((count + 1))
     else
       note_failed "$iface: 写入 /proc/irq/$irq/smp_affinity_list 失败"
     fi
-    REPLAY_CMDS+=("irq_affinity $irq $cpu")
+    add_replay_cmd irq_affinity "$irq" "$cpu"
     i=$((i + 1))
   done
   note_applied "$iface: IRQ 亲和性（$count 个 IRQ 绑 NUMA 本地 ${n} 核轮转）"
@@ -777,7 +798,9 @@ main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --target)          TARGET="$2"; shift 2 ;;
-      --iface)           IFACES+=("$2"); shift 2 ;;
+      --iface)
+        valid_iface "${2:-}" || { log_err "--iface 非法网口名: ${2:-<空>}"; usage; exit 2; }
+        IFACES+=("$2"); shift 2 ;;
       --apply)
         if [[ "$MODE_EXPLICIT" == "true" && "$MODE" != "apply" ]]; then
           log_err "--apply 与 --check 互斥"; usage; exit 2

@@ -64,6 +64,7 @@ spec:
                   app.kubernetes.io/component: central-router
               topologyKey: kubernetes.io/hostname
       securityContext:
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -108,7 +109,7 @@ spec:
         - name: tls
           secret:
             secretName: apm-central-tls
-            defaultMode: 0640
+            defaultMode: 0440
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -170,6 +171,7 @@ spec:
                   app.kubernetes.io/component: central-sampler
               topologyKey: kubernetes.io/hostname
       securityContext:
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -217,7 +219,7 @@ spec:
         - name: tls
           secret:
             secretName: apm-central-tls
-            defaultMode: 0640
+            defaultMode: 0440
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

@@ -149,7 +149,10 @@ api_login() {
       local vcont vpass
       vcont="$(docker ps --format '{{.Names}}' | grep -E 'valkey$' | head -1 || true)"
       # 读取调用方经 -e/--env-file 传入的 $JZ_ENV_FILE（而非硬编码 CWD 下 .env）
-      vpass="$(grep -E '^VALKEY_PASSWORD=' "$JZ_ENV_FILE" 2>/dev/null | cut -d= -f2 || true)"
+      vpass="$(grep -E '^VALKEY_PASSWORD=' "$JZ_ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+      vpass="${vpass%$'\r'}"
+      vpass="${vpass%\"}"; vpass="${vpass#\"}"
+      vpass="${vpass%\'}"; vpass="${vpass#\'}"
       if [[ -n "$vcont" && -n "$vpass" ]]; then
         # 口令经 REDISCLI_AUTH 环境变量传入，不出现在进程命令行（同 ops/healthcheck/check.sh）
         capcode="$(docker exec -e REDISCLI_AUTH="$vpass" "$vcont" \

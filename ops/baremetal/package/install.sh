@@ -181,11 +181,13 @@ log_info "==> [5/16] 数据目录树"
 mkdir -p "${R}/data/pgdata" "${R}/data/valkey" \
   "${R}/data/caddy/config" "${R}/data/caddy/data" "${R}/data/caddy-console" \
   "${R}/data/runtime" "${R}/data/logs/caddy" "${R}/data/run/caddy/sidecars" \
-  "${R}/certificates" "${R}/backups"
-chown -R "${RUN_USER}:${RUN_USER}" "${R}/data" "${R}/certificates" "${R}/backups"
-chmod 0750 "${R}/data" "${R}/backups"
+  "${R}/data/run/pg" "${R}/certificates" "${R}/backups"
+chown -R "${RUN_USER}:${RUN_USER}" "${R}/data" "${R}/certificates"
+chown root:root "${R}/backups"
+chmod 0750 "${R}/data"
+chmod 0700 "${R}/backups"
 chmod 0700 "${R}/data/pgdata" "${R}/data/caddy" "${R}/data/caddy-console" "${R}/certificates"
-chmod 0750 "${R}/data/valkey" "${R}/data/runtime" "${R}/data/logs" "${R}/data/logs/caddy" "${R}/data/run" "${R}/data/run/caddy"
+chmod 0750 "${R}/data/valkey" "${R}/data/runtime" "${R}/data/logs" "${R}/data/logs/caddy" "${R}/data/run" "${R}/data/run/caddy" "${R}/data/run/pg"
 # sidecars：api（jiuzhang）写 network.json，netmgrd（root）写回 status（0644 默认，jiuzhang 可读）
 chmod 0755 "${R}/data/run/caddy/sidecars"
 
@@ -198,7 +200,7 @@ if [[ -z "$(ls -A "${R}/data/pgdata" 2>/dev/null)" ]]; then
   printf '%s\n' "${PG_PW}" > "${pwfile}"
   chown "${RUN_USER}:${RUN_USER}" "${pwfile}"
   pg_exec "${PG_BIN}/initdb" -D "${R}/data/pgdata" -U "${RUN_USER}" \
-    --locale=C -E UTF-8 --auth-local=trust --auth-host=scram-sha-256 \
+    --locale=C -E UTF-8 --auth-local=peer --auth-host=scram-sha-256 \
     --pwfile="${pwfile}" >/dev/null
   shred -u "${pwfile}" 2>/dev/null || rm -f "${pwfile}"
 
@@ -209,7 +211,8 @@ if [[ -z "$(ls -A "${R}/data/pgdata" 2>/dev/null)" ]]; then
 listen_addresses = '127.0.0.1'
 port = 5432
 password_encryption = 'scram-sha-256'
-unix_socket_directories = '/tmp'
+unix_socket_directories = '${R}/data/run/pg'
+unix_socket_permissions = 0700
 EOF
   cat >> "${R}/data/pgdata/pg_hba.conf" <<'EOF'
 

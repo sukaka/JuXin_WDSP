@@ -485,7 +485,7 @@ services:
     ports:
       - "127.0.0.1:\${VALKEY_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD-SHELL", "valkey-cli -a \"\$\$VALKEY_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"\$\$VALKEY_PASSWORD\" valkey-cli --no-auth-warning ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -598,7 +598,10 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    read_only: true
+    cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
     networks: [jiuzhang-internal]
 
   # 管理前端：Caddy 托管 SPA 并反代 /api 到 api 服务（web/Caddyfile.docker）
@@ -617,7 +620,13 @@ services:
       - ./runtime/certificates:/etc/caddy/console-certs:ro
     depends_on:
       api: {condition: service_healthy}
+    read_only: true
+    cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /config:size=8m,mode=0755
+      - /data:size=16m,mode=0755
     networks: [jiuzhang-internal]
 
   gateway:
@@ -660,6 +669,8 @@ services:
     image: $NETMGRD_IMAGE
     restart: unless-stopped
     network_mode: service:gateway
+    read_only: true
+    cap_drop: [ALL]
     cap_add: [NET_RAW, NET_ADMIN]
     environment:
       NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
@@ -668,6 +679,7 @@ services:
     depends_on:
       gateway: {condition: service_started}
     security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
 
   logrotator:
     image: $LOGROTATOR_IMAGE
@@ -678,7 +690,10 @@ services:
       - gateway-logs:/var/log/caddy
     depends_on:
       gateway: {condition: service_started}
+    read_only: true
+    cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=8m,mode=1777"]
     networks: [jiuzhang-internal]
 
   # 请求PCAP为显式启用的独立组件；默认profile不会启动持续抓包。
@@ -688,7 +703,7 @@ services:
     restart: unless-stopped
     profiles: ["request-pcap"]
     network_mode: host
-    # 仅保留NET_RAW；启动后将文件系统身份收敛到证据目录UID 1000。
+    # 仅保留 NET_RAW/SETUID/SETGID；启动后 restrictEvidenceWriter 将文件系统身份收敛到证据目录 UID 1000。
     user: "0:0"
     environment:
       GATEWAY_NODE_NAME: \${GATEWAY_NODE_NAME:-gateway-poc-01}
@@ -701,7 +716,7 @@ services:
       - ./runtime/pcap-public:/etc/jiuzhang:ro
     read_only: true
     cap_drop: [ALL]
-    cap_add: [NET_RAW]
+    cap_add: [NET_RAW, SETUID, SETGID]
     security_opt: [no-new-privileges:true]
     tmpfs: ["/tmp:size=8m,mode=1777"]
     depends_on:
@@ -1084,10 +1099,12 @@ log_info "完整升级交付入口: ${update_alias}"
 # 独立入口内嵌公共函数与固定信任根；现场无需先解开未验签的归档寻找升级脚本。
 update_launcher="$OUT_DIR/jiuzhang-${PRODUCT}-update-full-${VERSION}-${ARCH}.sh"
 {
+  printf '#!/usr/bin/env bash\n'
+  printf 'set -euo pipefail\n'
   tail -n +2 "$REPO_ROOT/ops/lib/common.sh"
   tail -n +2 "$REPO_ROOT/ops/lib/signing.sh"
-  sed '/^source "\$SCRIPT_DIR\/\.\.\/lib\/common\.sh"$/d; /^source "\$SCRIPT_DIR\/\.\.\/lib\/signing\.sh"$/d' \
-    "$REPO_ROOT/ops/upgrade/update-full.sh"
+  tail -n +2 "$REPO_ROOT/ops/upgrade/update-full.sh" \
+    | sed '/^source "\$SCRIPT_DIR\/\.\.\/lib\/common\.sh"$/d; /^source "\$SCRIPT_DIR\/\.\.\/lib\/signing\.sh"$/d'
 } > "$update_launcher"
 chmod 0755 "$update_launcher"
 bash -n "$update_launcher" || die "独立升级入口语法检查失败"

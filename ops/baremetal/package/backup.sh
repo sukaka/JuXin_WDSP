@@ -55,9 +55,10 @@ VK_PW="$(env_get VALKEY_PASSWORD)"
 TS="$(date '+%Y%m%d-%H%M%S')"
 OUT_DIR="${R}/backups"
 OUT="${OUT_DIR}/jiuzhang-wdsp-baremetal-${TS}.tar.gz"
+umask 077
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
-mkdir -p "${OUT_DIR}"
+install -d -m 0700 -o root -g root "${OUT_DIR}"
 
 log_info "备份目标：${OUT}"
 
@@ -99,9 +100,23 @@ fi
 # ---------- 6. Valkey（先 BGREWRITEAOF 再拷） ----------
 log_info "[6/6] data/valkey（BGREWRITEAOF 后拷贝）"
 if [[ -n "${VK_PW}" ]] && [[ -d "${R}/data/valkey" ]]; then
-  env REDISCLI_AUTH="${VK_PW}" "${R}/bin/valkey/valkey-cli" BGREWRITEAOF >/dev/null 2>&1 \
-    || log_warn "BGREWRITEAOF 未成功（Valkey 未运行？），直接拷贝现有文件"
-  sleep 2
+  if env REDISCLI_AUTH="${VK_PW}" "${R}/bin/valkey/valkey-cli" BGREWRITEAOF >/dev/null 2>&1; then
+    _vk_waited=0
+    while (( _vk_waited < 60 )); do
+      if env REDISCLI_AUTH="${VK_PW}" "${R}/bin/valkey/valkey-cli" INFO persistence 2>/dev/null \
+         | tr -d '\r' | grep -qx 'aof_rewrite_in_progress:0'; then
+        break
+      fi
+      sleep 1
+      _vk_waited=$((_vk_waited + 1))
+    done
+    if (( _vk_waited >= 60 )); then
+      log_warn "等待 Valkey BGREWRITEAOF 完成超时（60s），继续拷贝现有文件"
+    fi
+    unset _vk_waited
+  else
+    log_warn "BGREWRITEAOF 未成功（Valkey 未运行？），直接拷贝现有文件"
+  fi
   cp -a "${R}/data/valkey" "${WORK}/data-valkey"
 else
   log_warn "跳过 Valkey 备份（无口令或目录不存在）"

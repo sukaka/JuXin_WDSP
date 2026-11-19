@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE=""
 ENV_FILE=""
 PATCH_FILE=""
+HOST_STATE_DIR="/var/lib/jiuzhang/upgrade-executor"
 API_URL="http://127.0.0.1:18081"
 TIMEOUT=600
 
@@ -15,12 +16,13 @@ usage() {
   sudo ./install-executor.sh -c /绝对路径/docker-compose.yml -e /绝对路径/.env [选项]
 
 选项:
-  -c, --compose-file FILE  当前生产环境使用的 compose 文件（必填）
-  -e, --env-file FILE      当前生产环境使用的 env 文件（必填）
-      --patch FILE         安装后立即应用 1.0.0 → 1.0.1 小补丁（首次引导推荐）
-      --api-url URL        健康检查地址（默认 http://127.0.0.1:18081）
-      --timeout SEC        健康检查/补丁等待超时（默认 600 秒）
-  -h, --help               显示帮助
+  -c, --compose-file FILE    当前生产环境使用的 compose 文件（必填）
+  -e, --env-file FILE        当前生产环境使用的 env 文件（必填）
+      --host-state-dir DIR   宿主机 root 专用状态目录（默认 /var/lib/jiuzhang/upgrade-executor）
+      --patch FILE           安装后立即应用 1.0.0 → 1.0.1 小补丁（首次引导推荐）
+      --api-url URL          健康检查地址（默认 http://127.0.0.1:18081）
+      --timeout SEC          健康检查/补丁等待超时（默认 600 秒）
+  -h, --help                 显示帮助
 EOF
 }
 
@@ -28,6 +30,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -c|--compose-file) COMPOSE_FILE="${2:-}"; shift 2 ;;
     -e|--env-file) ENV_FILE="${2:-}"; shift 2 ;;
+    --host-state-dir) HOST_STATE_DIR="${2:-}"; shift 2 ;;
     --patch) PATCH_FILE="${2:-}"; shift 2 ;;
     --api-url) API_URL="${2:-}"; shift 2 ;;
     --timeout) TIMEOUT="${2:-}"; shift 2 ;;
@@ -40,7 +43,7 @@ done
 [[ -n "$COMPOSE_FILE" && -n "$ENV_FILE" ]] || { usage >&2; exit 2; }
 [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { printf '%s\n' '--timeout 必须是整数' >&2; exit 2; }
 # diff/cmp 属 diffutils：被安装的 upgrade-executor.sh 运行期必需，安装期一并核查。
-for cmd in docker systemctl jq python3 curl flock install sha256sum realpath timeout diff cmp; do
+for cmd in docker systemctl jq python3 curl flock install sha256sum realpath timeout diff cmp openssl; do
   command -v "$cmd" >/dev/null 2>&1 && continue
   case "$cmd" in
     diff|cmp) printf '缺少命令: %s（diffutils 包；升级执行器文件比对必需）\n' "$cmd" >&2 ;;
@@ -63,14 +66,30 @@ runtime_dir="$(docker inspect "$api_container" --format '{{range .Mounts}}{{if e
 
 install -d -m 0755 /usr/local/libexec /etc/jiuzhang
 install -m 0755 "$SCRIPT_DIR/upgrade-executor.sh" /usr/local/libexec/jiuzhang-upgrade-executor
+# 校验并初始化宿主机 root 专用状态目录（与 uid 1000 可写共享目录严格隔离，防止符号链接/compose 片段注入）
+python3 - "$HOST_STATE_DIR" <<'PY'
+import os, pathlib, stat, sys
+p = pathlib.Path(sys.argv[1])
+if not p.is_absolute() or ".." in p.parts or len(p.parts) < 3:
+    raise SystemExit(f"非法 HOST_STATE_DIR: {p}")
+cur = pathlib.Path("/")
+for part in p.parts[1:]:
+    cur = cur / part
+    if cur.is_symlink():
+        raise SystemExit(f"HOST_STATE_DIR 组件不得为符号链接: {cur}")
+    if cur.exists():
+        st = os.lstat(cur)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or (stat.S_IMODE(st.st_mode) & 0o022) != 0:
+            raise SystemExit(f"HOST_STATE_DIR 组件属主或权限不安全: {cur}")
+PY
+install -d -m 0700 -o root -g root "$HOST_STATE_DIR" "$HOST_STATE_DIR/work" "$HOST_STATE_DIR/state" "$HOST_STATE_DIR/compose-overrides.d"
 install -d -m 0770 -o 1000 -g root "$runtime_dir/upgrade-packages" "$runtime_dir/upgrade-executor/jobs"
 install -d -m 0750 -o root -g 1000 "$runtime_dir/upgrade-executor/results"
-install -d -m 0700 -o root -g root "$runtime_dir/upgrade-executor/work" "$runtime_dir/upgrade-executor/state"
 
 config_tmp="$(mktemp)"; path_tmp="$(mktemp)"; service_tmp="$(mktemp)"
 trap 'rm -f "$config_tmp" "$path_tmp" "$service_tmp"' EXIT
-printf 'RUNTIME_DIR=%q\nCOMPOSE_FILE=%q\nENV_FILE=%q\nAPI_URL=%q\nTIMEOUT=%q\n' \
-  "$runtime_dir" "$COMPOSE_FILE" "$ENV_FILE" "$API_URL" "$TIMEOUT" >"$config_tmp"
+printf 'RUNTIME_DIR=%q\nHOST_STATE_DIR=%q\nCOMPOSE_FILE=%q\nENV_FILE=%q\nAPI_URL=%q\nTIMEOUT=%q\n' \
+  "$runtime_dir" "$HOST_STATE_DIR" "$COMPOSE_FILE" "$ENV_FILE" "$API_URL" "$TIMEOUT" >"$config_tmp"
 install -m 0600 -o root -g root "$config_tmp" /etc/jiuzhang/upgrade-executor.conf
 cat >"$path_tmp" <<EOF
 [Unit]

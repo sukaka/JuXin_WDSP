@@ -20,6 +20,8 @@ spec:
       hostNetwork: false
       hostPID: false
       terminationGracePeriodSeconds: 30
+      securityContext:
+        fsGroup: 1000
       initContainers:
         - name: enroll
           # 镜像为自主构建（deployment/docker/wdsp-agent/Dockerfile），当前未发布到可访问的
@@ -39,7 +41,7 @@ spec:
                 fi
                 /usr/local/bin/wdsp-agent enroll \
                   --server "${WDSP_SERVER}" \
-                  --token "$(cat "${token_file}")" \
+                  --token-file "${token_file}" \
                   --config /var/lib/wdsp-agent/agent.json \
                   --state-dir /var/lib/wdsp-agent
               fi
@@ -105,7 +107,7 @@ spec:
         - name: bootstrap-tokens
           secret:
             secretName: wdsp-agent-bootstrap-tokens
-            defaultMode: 0400
+            defaultMode: 0440
         - name: state
           hostPath:
             path: /var/lib/wdsp-agent

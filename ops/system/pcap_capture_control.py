@@ -40,8 +40,9 @@ def load_config(flag_path):
         path = PurePosixPath(value)
         require(not any(part in ("", ".", "..") for part in path.parts[1:]), "存储路径必须规范")
         require("\x00" not in value and "\r" not in value and "\n" not in value and "'" not in value and "\\" not in value, "存储路径含非法字符")
-        require(any(value.startswith(prefix) and len(value) > len(prefix) for prefix in allowed_roots()), "存储路径不在受控数据盘目录")
-        data[key] = str(path)
+        normalized = str(path)
+        require(any(normalized.startswith(prefix) and len(normalized) > len(prefix) for prefix in allowed_roots()), "存储路径不在受控数据盘目录")
+        data[key] = normalized
     hot, warm = Path(data["hot_dir"]), Path(data["warm_dir"])
     require(hot != warm and hot not in warm.parents and warm not in hot.parents, "冷热目录不能相同或嵌套")
     return data
@@ -50,47 +51,129 @@ def load_config(flag_path):
 def allowed_roots():
     if TEST_MODE and os.environ.get("PCAP_TEST_ALLOWED_ROOT"):
         return (os.environ["PCAP_TEST_ALLOWED_ROOT"].rstrip("/") + "/",)
-    return ("/srv/", "/var/lib/", "/data/", "/mnt/", "/media/")
+    return (
+        "/var/lib/jiuzhang-pcap/",
+        "/var/lib/jiuzhang/",
+        "/srv/jiuzhang-",
+        "/srv/jiuzhang/",
+        "/data/jiuzhang-",
+        "/data/jiuzhang/",
+        "/mnt/jiuzhang-",
+        "/mnt/jiuzhang/",
+        "/media/jiuzhang-",
+        "/media/jiuzhang/",
+    )
 
 
 def atomic_write(path, content, mode=0o600, group=1000):
     path = Path(path)
+    require(not path.parent.is_symlink(), f"目标目录不得为符号链接: {path.parent}")
+    require(not path.is_symlink(), f"目标文件不得为符号链接: {path}")
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     try:
-        with open(temp, "w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temp, mode)
-        if os.geteuid() == 0:
-            os.chown(temp, 0, group)
+        try:
+            os.fchmod(fd, mode)
+            if os.geteuid() == 0:
+                os.fchown(fd, 0, group)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                fd = -1
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            if fd >= 0:
+                os.close(fd)
         os.replace(temp, path)
     finally:
         if temp.exists():
             temp.unlink()
 
 
+def _check_no_symlink_components(path):
+    cur = Path("/")
+    for part in path.parts[1:]:
+        cur = cur / part
+        if cur.is_symlink():
+            raise ValueError(f"存储路径包含符号链接组件: {cur}")
+
+
+def _safe_mkdir_dir(path, mode=0o700):
+    _check_no_symlink_components(path)
+    cur = Path("/")
+    for part in path.parts[1:]:
+        cur = cur / part
+        if cur.is_symlink():
+            raise ValueError(f"存储路径包含符号链接组件: {cur}")
+        if cur.exists():
+            require(cur.is_dir(), f"存储路径组件不是目录: {cur}")
+        else:
+            cur.mkdir(mode=mode)
+
+
 def prepare_directories(root, config):
     for key in ("hot_dir", "warm_dir"):
         path = Path(config[key])
-        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _check_no_symlink_components(path)
+        if path.exists():
+            require(not path.is_symlink() and path.is_dir(), f"存储路径不是常规目录: {path}")
+            st = os.lstat(path)
+            if any(path.iterdir()) and (st.st_uid != 1000 or st.st_gid != 1000):
+                raise ValueError(f"拒绝修改既有非空且非 1000:1000 属主目录的权限: {path}")
+        else:
+            _safe_mkdir_dir(path, mode=0o700)
         resolved = path.resolve(strict=True)
-        require(any(str(resolved).startswith(prefix) for prefix in allowed_roots()), "存储目录解析后越出允许范围")
-        if os.geteuid() == 0:
-            os.chown(resolved, 1000, 1000)
-        os.chmod(resolved, 0o700)
+        require(resolved == path, f"存储目录解析后与声明路径不一致: {path}")
+        resolved_str = str(resolved)
+        require(
+            any(resolved_str.startswith(prefix) and len(resolved_str) > len(prefix) for prefix in allowed_roots()),
+            "存储目录解析后越出允许范围",
+        )
+        dir_fd = os.open(str(resolved), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            st = os.fstat(dir_fd)
+            if any(resolved.iterdir()) and (st.st_uid != 1000 or st.st_gid != 1000):
+                raise ValueError(f"拒绝修改既有非空且非 1000:1000 属主目录的权限: {resolved}")
+            if os.geteuid() == 0:
+                os.fchown(dir_fd, 1000, 1000)
+            os.fchmod(dir_fd, 0o700)
+        finally:
+            os.close(dir_fd)
+    runtime_dir = root / "runtime"
+    require(not runtime_dir.is_symlink(), "runtime 目录不得为符号链接")
     for name, mode in (("pcap-private", 0o700), ("pcap-public", 0o755)):
-        directory = root / "runtime" / name
+        directory = runtime_dir / name
+        require(not directory.is_symlink(), f"运行目录不得为符号链接: {directory}")
         directory.mkdir(parents=True, exist_ok=True, mode=mode)
-        if os.geteuid() == 0:
-            os.chown(directory, 1000, 1000)
-        os.chmod(directory, mode)
+        dir_fd = os.open(str(directory), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if os.geteuid() == 0:
+                os.fchown(dir_fd, 1000, 1000)
+            os.fchmod(dir_fd, mode)
+        finally:
+            os.close(dir_fd)
 
 
-def environment(config):
+def merge_compose_profiles(original_env, extra_profile="request-pcap"):
+    existing = []
+    for raw_line in original_env.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        if key.strip() == "COMPOSE_PROFILES":
+            val = val.strip().strip('"').strip("'")
+            existing = [item.strip() for item in val.split(",") if item.strip()]
+    merged = list(existing)
+    if extra_profile and extra_profile not in merged:
+        merged.append(extra_profile)
+    return ",".join(merged)
+
+
+def environment(config, compose_profiles="request-pcap"):
     enabled = "true" if config["enabled"] else "false"
     return "\n".join((
-        "COMPOSE_PROFILES=request-pcap",
+        f"COMPOSE_PROFILES={compose_profiles}",
         f"REQUEST_PCAP_CAPTURE_ENABLED={enabled}",
         f"REQUEST_PCAP_IFACE={config['interface']}",
         "REQUEST_PCAP_PORTS=" + ",".join(str(port) for port in config["ports"]),
@@ -156,10 +239,12 @@ def apply(root, config):
     prepare_directories(root, config)
     control = root / "runtime/pcap-control.env"
     merged = root / "runtime/pcap-runtime.env"
-    atomic_write(control, environment(config))
     with open(root / ".env", encoding="utf-8") as stream:
         original = stream.read()
-    atomic_write(merged, original.rstrip("\n") + "\n\n# system-admin PCAP control\n" + environment(config))
+    profiles = merge_compose_profiles(original, "request-pcap")
+    env_block = environment(config, compose_profiles=profiles)
+    atomic_write(control, env_block)
+    atomic_write(merged, original.rstrip("\n") + "\n\n# system-admin PCAP control\n" + env_block)
     if not config["enabled"]:
         stop_capture(root)
         recreate_api(root)
@@ -178,7 +263,7 @@ def apply(root, config):
 
 
 def write_status(root, request_id, state, message=""):
-    atomic_write(root / "runtime/hostctl/pcap-status.json", json.dumps({
+    atomic_write(root / "runtime/hostctl/pcap-status.state", json.dumps({
         "requestID": request_id, "state": state, "message": message,
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }, ensure_ascii=False, separators=(",", ":")) + "\n", mode=0o640)

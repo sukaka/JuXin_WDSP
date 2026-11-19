@@ -182,6 +182,32 @@ class LifecycleTests(unittest.TestCase):
         for option in ("--uninstall", "--keep-data", "--purge-data", "--confirm-delete-data"):
             self.assertIn(option, result.stdout)
 
+    def test_executor_lock_rejects_symlink_parent_and_lockfile(self):
+        runtime_vol = self.base / "runtime-vol"
+        runtime_vol.mkdir()
+        outside = self.base / "outside-lock-dir"
+        outside.mkdir()
+        (runtime_vol / "upgrade-executor").symlink_to(outside)
+        volumes = [{"Name": P + "_runtime-data", "Mountpoint": str(runtime_vol)}]
+        with self.assertRaises(module.LifecycleError):
+            with self.life.executor_lock(runtime_vol, volumes):
+                pass
+
+        # Also reject symlink on HOST_STATE_DIR
+        state_link = self.base / "host-state-link"
+        state_link.symlink_to(outside)
+        with self.assertRaises(module.LifecycleError):
+            with self.life.executor_lock(None, volumes, host_state=state_link):
+                pass
+
+        # Also reject symlink on executor.lock inside real HOST_STATE_DIR
+        real_state = self.base / "real-host-state"
+        real_state.mkdir()
+        (real_state / "executor.lock").symlink_to(outside / "target")
+        with self.assertRaises(module.LifecycleError):
+            with self.life.executor_lock(None, volumes, host_state=real_state):
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

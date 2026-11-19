@@ -81,16 +81,84 @@ class RequestPcapDeliveryTest(unittest.TestCase):
             self.assertNotIn("/app/runtime/pcap-private", [mount["target"] for mount in daemon_mounts])
             hot = [mount for mount in daemon_mounts if mount["target"] == "/var/lib/jiuzhang/pcap-hot"]
             self.assertEqual(hot[0]["source"], "/srv/jiuzhang-ssd/pcap")
+            # H-02: pcapd needs SETUID/SETGID to drop evidence writer privileges to 1000:1000
+            self.assertEqual(
+                sorted(enabled["services"]["pcapd"]["cap_add"]),
+                sorted(["NET_RAW", "SETUID", "SETGID"]),
+            )
+            # H-04/H-21: hardened container runtime flags + preserved 1.9.0 gateway-certs mounts
+            for svc_name in ("api", "web", "netmgrd", "logrotator"):
+                svc = default["services"][svc_name]
+                self.assertTrue(svc.get("read_only"), svc_name)
+                self.assertEqual(svc.get("cap_drop"), ["ALL"], svc_name)
+                self.assertTrue(svc.get("tmpfs"), svc_name)
+            self.assertEqual(
+                sorted(default["services"]["netmgrd"]["cap_add"]),
+                sorted(["NET_ADMIN", "NET_RAW"]),
+            )
+            self.assertTrue(any(
+                m.get("source") == "gateway-certs" and m.get("target") == "/app/runtime/certificates"
+                for m in default["services"]["api"]["volumes"]
+            ))
+            self.assertTrue(any(
+                m.get("source") == "gateway-certs" and m.get("target") == "/etc/caddy/certs" and m.get("read_only") is True
+                for m in default["services"]["gateway"]["volumes"]
+            ))
+            # LOW-01: valkey healthcheck uses REDISCLI_AUTH instead of -a argv
+            valkey_test = " ".join(default["services"]["valkey"]["healthcheck"]["test"])
+            self.assertIn("REDISCLI_AUTH=", valkey_test)
+            self.assertNotIn("valkey-cli -a", valkey_test)
+            # M-O1: standalone update launcher starts with #!/usr/bin/env bash
+            launcher = Path(temporary) / "out/jiuzhang-wdsp-update-full-0.0.0-pcap-test-arm64.sh"
+            self.assertTrue(launcher.is_file())
+            self.assertTrue(launcher.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash\n"))
 
     def test_baremetal_and_daemon_security_contract(self):
         dockerfile = (ROOT / "gateway/images/pcapd/Dockerfile").read_text()
+        logrotator_dockerfile = (ROOT / "gateway/images/logrotator/Dockerfile").read_text()
         unit = (ROOT / "deployment/systemd/jiuzhang-pcapd.service").read_text()
+        install_pcapd = (ROOT / "ops/install/install-pcapd.sh").read_text()
+        release_pub = (ROOT / "ops/offline-package/release-signing.pub").read_text().strip()
         self.assertNotIn(":latest", dockerfile)
         self.assertIn("sha256:", dockerfile)
+        self.assertIn("USER 1000:1000", logrotator_dockerfile)
+        self.assertIn("User=1000", unit)
+        self.assertIn("Group=1000", unit)
+        self.assertNotIn("User=root", unit)
+        self.assertIn("ReadWritePaths=__PCAP_HOT_DIR__", unit)
         self.assertIn("CapabilityBoundingSet=CAP_NET_RAW", unit)
         self.assertIn("AmbientCapabilities=CAP_NET_RAW", unit)
         self.assertIn("NoNewPrivileges=yes", unit)
         self.assertIn("ProtectSystem=strict", unit)
+        self.assertIn(release_pub, install_pcapd)
+        self.assertIn("__PCAP_HOT_DIR__", install_pcapd)
+        # H-02: install-pcapd.sh fails closed on tampered signature even with --allow-unsigned
+        with tempfile.TemporaryDirectory(prefix="wdsp-pcapd-sig-") as tmp:
+            tmp_path = Path(tmp)
+            pkg = tmp_path / "jiuzhang-pcapd-test.tar.gz"
+            with tarfile.open(pkg, "w:gz") as tf:
+                import io
+                info = tarfile.TarInfo("jiuzhang-pcapd")
+                data = b"#!/bin/sh\necho ok\n"
+                info.size = len(data)
+                info.mode = 0o755
+                tf.addfile(info, io.BytesIO(data))
+            (tmp_path / "jiuzhang-pcapd-test.tar.gz.sig").write_text("AAAA\n", encoding="ascii")
+            res = subprocess.run(
+                [
+                    "bash", str(ROOT / "ops/install/install-pcapd.sh"),
+                    "--package", str(pkg),
+                    "--allow-unsigned",
+                    "--dry-run",
+                    "--iface", "eth0",
+                    "--ports", "80,443",
+                    "--hot-dir", "/var/lib/jiuzhang-pcap/hot",
+                    "--warm-dir", "/var/lib/jiuzhang-pcap/warm",
+                ],
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("验签失败", res.stderr)
         for script in ("ops/install/install.sh", "ops/install/pcap.sh", "ops/install/install-pcapd.sh", "ops/offline-package/build.sh"):
             subprocess.run(["bash", "-n", str(ROOT / script)], check=True)
         subprocess.run(["bash", str(ROOT / "scripts/tests/test-pcap-installer.sh")], check=True)

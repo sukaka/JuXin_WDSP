@@ -7,13 +7,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# 例外：netmgrd 以 root 运行——需 NET_ADMIN 改网口、写 /etc/resolv.conf 与
-# timesyncd/chronyd 配置。输入 network.json 由 api（jiuzhang 用户）写入
-# sidecars 目录（0755 jiuzhang:jiuzhang）；状态文件由本服务以 root 写回。
-# 不设 NoNewPrivileges/ProtectSystem：需调用 ip/ping/traceroute/tcpdump
-# 并写系统网络配置。
+# 例外：netmgrd 以 root 运行——需 NET_ADMIN/NET_RAW 改网口、写 /etc/resolv.conf 与
+# timesyncd/chronyd 配置；仍通过 NoNewPrivileges=yes 与 CapabilityBoundingSet
+# 严格收敛能力集至 CAP_NET_ADMIN CAP_NET_RAW。
 User=root
 Group=root
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 ExecStart=__ROOT__/bin/netmgrd --config __ROOT__/data/run/caddy/sidecars/network.json --status __ROOT__/data/run/caddy/sidecars/network-status.json --node __NODE_NAME__
 Restart=always
 RestartSec=5

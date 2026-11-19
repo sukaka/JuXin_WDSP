@@ -6,8 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=1000
+Group=1000
 EnvironmentFile=/etc/jiuzhang/pcapd.env
 ExecStart=/usr/local/bin/jiuzhang-pcapd
 Restart=on-failure
@@ -24,7 +24,7 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 ReadOnlyPaths=/etc/jiuzhang
-ReadWritePaths=/var/lib/jiuzhang/pcap-hot
+ReadWritePaths=__PCAP_HOT_DIR__
 RestrictAddressFamilies=AF_PACKET AF_UNIX
 MemoryMax=512M
 TasksMax=64

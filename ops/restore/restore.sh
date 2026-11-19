@@ -49,8 +49,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+UUID_RE='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 [[ -n "$BACKUP_ID" ]] || { log_err "必须指定 --backup-id"; usage; exit 2; }
+[[ "$BACKUP_ID" =~ $UUID_RE ]] || { log_err "无效 --backup-id（必须为 UUID）: $BACKUP_ID"; exit 2; }
 [[ "$SCOPE" =~ ^(FULL|CONFIG|DATABASE|CERTIFICATE)$ ]] || { log_err "无效恢复范围: $SCOPE"; exit 2; }
+[[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { log_err "--timeout 必须为正整数: $TIMEOUT"; exit 2; }
 require_cmd curl
 require_cmd jq
 
@@ -59,7 +62,8 @@ api_login "$USER"
 
 # ---- 1. 校验备份 ----
 log_info "步骤 1/4：校验备份 $BACKUP_ID ..."
-resp="$(api_req POST /api/v1/restores/validate "{\"backup_job_id\":\"$BACKUP_ID\"}")"
+validate_body="$(jq -cn --arg id "$BACKUP_ID" '{backup_job_id:$id}')"
+resp="$(api_req POST /api/v1/restores/validate "$validate_body")"
 if [[ "$(api_code "$resp")" != "SUCCESS" ]]; then
   die "备份校验未通过: $(printf '%s' "$resp" | jq -r '.message // "未知错误"')"
 fi
@@ -68,10 +72,11 @@ confirm "备份校验通过。确认创建隔离恢复任务（范围 ${SCOPE}�
 
 # ---- 2. 创建隔离恢复 ----
 log_info "步骤 2/4：创建隔离恢复任务（范围 ${SCOPE}）..."
-resp="$(api_req POST /api/v1/restores "{\"backup_job_id\":\"$BACKUP_ID\",\"scope\":\"$SCOPE\"}")"
+create_body="$(jq -cn --arg id "$BACKUP_ID" --arg scope "$SCOPE" '{backup_job_id:$id, scope:$scope}')"
+resp="$(api_req POST /api/v1/restores "$create_body")"
 [[ "$(api_code "$resp")" == "SUCCESS" ]] || die "创建恢复任务失败: $(printf '%s' "$resp" | jq -r '.message // "未知错误"')"
 JOB_ID="$(printf '%s' "$resp" | jq -r '.data.job.id // empty')"
-[[ -n "$JOB_ID" ]] || die "响应中无恢复任务ID"
+[[ "$JOB_ID" =~ $UUID_RE ]] || die "响应中无有效恢复任务ID（期望 UUID）"
 log_info "隔离恢复任务: $JOB_ID"
 
 # ---- 3. 等待 AWAITING_CONFIRM ----
@@ -105,7 +110,8 @@ confirm "确认执行正式恢复？" || {
   log_warn "已取消。隔离环境保留，可通过 API 取消任务: POST /api/v1/restores/$JOB_ID/cancel"
   exit 3
 }
-resp="$(api_req POST "/api/v1/restores/$JOB_ID/confirm" "{\"reason\":\"ops restore.sh 人工确认\"}")"
+confirm_body="$(jq -cn --arg reason "ops restore.sh 人工确认" '{reason:$reason}')"
+resp="$(api_req POST "/api/v1/restores/$JOB_ID/confirm" "$confirm_body")"
 [[ "$(api_code "$resp")" == "SUCCESS" ]] || die "正式恢复失败: $(printf '%s' "$resp" | jq -r '.message // "未知错误"')"
 log_info "正式恢复完成"
 printf '%s\n' "$resp" | jq -r '.data.post_verify | to_entries[] | "  核对 \(.key): \(.value) 行"' 2>/dev/null || true

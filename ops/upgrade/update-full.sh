@@ -77,8 +77,47 @@ fi
 docker compose version >/dev/null 2>&1 || die "缺少 Docker Compose 插件"
 [[ -x "$CURRENT_RELEASE/ops/upgrade/install-executor.sh" && -x "$CURRENT_RELEASE/ops/upgrade/upgrade-executor.sh" ]] \
   || die "原 release 缺少升级执行器，无法在失败时安全恢复"
-install -d -m 0755 "$CURRENT_RELEASE/runtime/upgrade-executor"
-exec 8>"$CURRENT_RELEASE/runtime/upgrade-executor/executor.lock"
+HOST_STATE_DIR="/var/lib/jiuzhang/upgrade-executor"
+if [[ -f /etc/jiuzhang/upgrade-executor.conf && ! -L /etc/jiuzhang/upgrade-executor.conf ]]; then
+  _conf_owner="$(stat -c '%u' /etc/jiuzhang/upgrade-executor.conf 2>/dev/null || echo "")"
+  _conf_mode="$(stat -c '%a' /etc/jiuzhang/upgrade-executor.conf 2>/dev/null || echo "")"
+  if [[ "$_conf_owner" == "0" && "$_conf_mode" =~ ^[0-7]{3,4}$ ]] && (( (0$_conf_mode & 022) == 0 )); then
+    _configured_state="$(python3 - /etc/jiuzhang/upgrade-executor.conf <<'PY' 2>/dev/null || true
+import shlex, sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    s = line.strip()
+    if not s or s.startswith("#"):
+        continue
+    words = shlex.split(s)
+    if len(words) == 1 and words[0].startswith("HOST_STATE_DIR="):
+        print(words[0].split("=", 1)[1])
+PY
+)"
+    [[ -n "$_configured_state" ]] && HOST_STATE_DIR="$_configured_state"
+    unset _configured_state
+  fi
+  unset _conf_owner _conf_mode
+fi
+python3 - "$HOST_STATE_DIR" <<'PY' || die "宿主机升级状态目录不安全，停止升级"
+import os, pathlib, stat, sys
+p = pathlib.Path(sys.argv[1])
+if not p.is_absolute() or ".." in p.parts or len(p.parts) < 3:
+    raise SystemExit(f"非法 HOST_STATE_DIR: {p}")
+cur = pathlib.Path("/")
+for part in p.parts[1:]:
+    cur = cur / part
+    if cur.is_symlink():
+        raise SystemExit(f"HOST_STATE_DIR 组件不得为符号链接: {cur}")
+    if cur.exists():
+        st = os.lstat(cur)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or (stat.S_IMODE(st.st_mode) & 0o022) != 0:
+            raise SystemExit(f"HOST_STATE_DIR 组件属主或权限不安全: {cur}")
+lock_file = p / "executor.lock"
+if lock_file.is_symlink():
+    raise SystemExit(f"锁文件不得为符号链接: {lock_file}")
+PY
+install -d -m 0700 -o root -g root "$HOST_STATE_DIR"
+exec 8>"$HOST_STATE_DIR/executor.lock"
 flock -n 8 || die "已有宿主升级任务在执行，禁止并发切换；请等待其结束后重试"
 if [[ -z "$API_URL" ]]; then
   API_URL="$(compose_api_url "$OLD_COMPOSE" "$OLD_ENV")" || die "无法从现有 Compose 读取管理 API 地址，请使用 --api-url 显式指定"
@@ -126,7 +165,13 @@ with tarfile.open(archive, "r:gz") as tf:
     version = data.get("version", "")
     if not isinstance(version, str) or not version or any(c not in "0123456789." for c in version):
         raise SystemExit("包内版本号非法")
-    print(json.dumps({"root": next(iter(roots)), "version": version, "arch": data.get("arch"), "size": total}))
+    arch = data.get("arch", "")
+    if arch not in ("amd64", "arm64"):
+        raise SystemExit("包内架构非法")
+    expected_root = f"jiuzhang-wdsp-offline-{version}-{arch}"
+    if roots != {expected_root}:
+        raise SystemExit(f"归档根目录必须唯一且为 {expected_root}")
+    print(json.dumps({"root": expected_root, "version": version, "arch": arch, "size": total}))
 PY
 )" || die "完整包安全检查失败"
 VERSION="$(jq -er .version <<<"$PACKAGE_INFO")"
@@ -140,17 +185,32 @@ FREE_KIB="$(df -Pk "$PARENT" | awk 'NR==2 {print $4}')"
 REQUIRED_KIB=$(( $(jq -er .size <<<"$PACKAGE_INFO") / 1024 + 2097152 ))
 [[ "$FREE_KIB" -gt "$REQUIRED_KIB" ]] || die "目标磁盘空间不足；解压完整镜像前需保留包大小及至少 2 GiB 余量"
 
-log_info "安全解压 WDSP $VERSION；原 current 与运行目录保持不变"
-python3 - "$PACKAGE" "$PARENT" <<'PY'
-import pathlib, sys, tarfile
-archive, destination = sys.argv[1:]
+log_info "安全解压 WDSP ${VERSION}；原 current 与运行目录保持不变"
+python3 - "$PACKAGE" "$PARENT" "jiuzhang-wdsp-offline-$VERSION-$ARCH" <<'PY'
+import os, pathlib, sys, tarfile
+archive, destination, expected_root = sys.argv[1:]
 root = pathlib.Path(destination).resolve()
 with tarfile.open(archive, "r:gz") as tf:
-    for member in tf.getmembers():
-        target = (root / pathlib.PurePosixPath(member.name)).resolve()
+    members = tf.getmembers()
+    for member in members:
+        rel = pathlib.PurePosixPath(member.name)
+        if rel.is_absolute() or ".." in rel.parts or not rel.parts or rel.parts[0] != expected_root:
+            raise SystemExit("归档路径非法或根目录不匹配")
+        if not (member.isdir() or member.isfile()):
+            raise SystemExit("归档含符号链接、硬链接或特殊文件")
+        target = (root / rel).resolve()
         if root != target and root not in target.parents:
             raise SystemExit("归档路径越界")
-    tf.extractall(root)
+        # 剥离 SUID/SGID/粘滞位及组/其他写位，统一 root 属主
+        safe_mode = member.mode & 0o0755
+        safe_mode |= 0o0700 if member.isdir() else 0o0600
+        member.mode = safe_mode
+        member.uid = 0
+        member.gid = 0
+        member.uname = ""
+        member.gname = ""
+        tf.extract(member, path=root, set_attrs=True)
+        os.chmod(target, safe_mode)
 PY
 [[ -d "$NEW_RELEASE" && -f "$NEW_RELEASE/manifest.json" ]] || die "目标 release 解压结果异常"
 manifest_files_verify "$NEW_RELEASE/manifest.json" "$NEW_RELEASE" || die "目标包文件级完整性校验失败"
@@ -161,7 +221,9 @@ if grep -Eq '^GATEWAY_PUBLISH_SMOKE_ADDR=(127\.0\.0\.1|localhost)(:[0-9]+)?$' "$
   sed -i 's/^GATEWAY_PUBLISH_SMOKE_ADDR=.*$/GATEWAY_PUBLISH_SMOKE_ADDR=host.docker.internal/' "$NEW_RELEASE/.env"
   log_info "已在新 release 副本中修正旧离线包的回环探针地址；原 env 未修改"
 fi
-ln -s "$CURRENT_RELEASE/runtime" "$NEW_RELEASE/runtime"
+RUNTIME_REAL="$(realpath "$CURRENT_RELEASE/runtime")"
+[[ -d "$RUNTIME_REAL" ]] || die "原 runtime 真实目录不存在：$RUNTIME_REAL"
+ln -s "$RUNTIME_REAL" "$NEW_RELEASE/runtime"
 TARGET_COMPOSE="$NEW_RELEASE/docker-compose.yml"
 TARGET_ENV="$NEW_RELEASE/.env"
 TARGET_STATE="$NEW_RELEASE/ops/upgrade/.upgrade-state.env"
@@ -193,5 +255,5 @@ CURRENT_TMP="$PARENT/.current.upgrade.$$"
 ln -s "$NEW_RELEASE" "$CURRENT_TMP"
 mv -Tf "$CURRENT_TMP" "$CURRENT_LINK"
 trap - EXIT
-log_info "完整升级完成：current 已切换到 $NEW_RELEASE；旧 release、镜像与 FULL 备份均保留"
+log_info "完整升级完成：current 已切换到 ${NEW_RELEASE}；旧 release、镜像与 FULL 备份均保留"
 log_warn "目标 Linux 的外部客户端访问、真实 firewalld 放行及业务请求验收仍需在目标网络执行；未执行项不得记为 PASS"

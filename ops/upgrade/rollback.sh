@@ -71,6 +71,10 @@ compose() {
 schema_version() {
   docker exec "$1" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COALESCE(MAX(version),0) FROM schema_migrations"' 2>/dev/null
 }
+schema_migrations_above() {
+  local pg="$1" before="$2"
+  docker exec "$pg" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT COUNT(*) FROM schema_migrations WHERE version > '"$before"'"' 2>/dev/null
+}
 array_decode() { printf '%s' "$1" | base64 --decode | jq -er '.[]'; }
 switch_current() {
   [[ -n "$CURRENT_LINK" && -n "$OLD_INSTALL_ROOT" ]] || return 0
@@ -111,9 +115,19 @@ if [[ "$ENV_FILE_EXPLICIT" == false && -n "$TARGET_ENV_FILE" ]]; then JZ_ENV_FIL
 [[ -f "$JZ_COMPOSE_FILE" && -f "$JZ_ENV_FILE" ]] || die "回滚 Compose 或 env 文件不存在"
 OLD_INSTALL_ROOT=""
 [[ -z "$PREVIOUS_COMPOSE_FILE" ]] || OLD_INSTALL_ROOT="$(cd "$(dirname "$PREVIOUS_COMPOSE_FILE")" && pwd -P)"
+ROLLBACK_TO_PREVIOUS_RELEASE=false
+NEW_COMPOSE_FOR_CLEANUP="$JZ_COMPOSE_FILE"
+NEW_ENV_FOR_CLEANUP="$JZ_ENV_FILE"
+if [[ "$FULL_UPGRADE" == true && "$COMPOSE_FILE_EXPLICIT" == false && -n "$PREVIOUS_COMPOSE_FILE" && -f "$PREVIOUS_COMPOSE_FILE" ]]; then
+  ROLLBACK_TO_PREVIOUS_RELEASE=true
+  JZ_COMPOSE_FILE="$PREVIOUS_COMPOSE_FILE"
+  if [[ "$ENV_FILE_EXPLICIT" == false && -n "$OLD_INSTALL_ROOT" && -f "$OLD_INSTALL_ROOT/.env" ]]; then
+    JZ_ENV_FILE="$OLD_INSTALL_ROOT/.env"
+  fi
+fi
 
-TARGET_COMPOSE_JSON="$(render_compose "$JZ_COMPOSE_FILE" "$JZ_ENV_FILE")" || die "无法渲染目标 Compose"
-CUR_GATEWAY_IMAGE="$(compose_service_image "$TARGET_COMPOSE_JSON" gateway)" || die "目标 Compose 无 gateway"
+TARGET_COMPOSE_JSON="$(render_compose "$JZ_COMPOSE_FILE" "$JZ_ENV_FILE")" || die "无法渲染回滚 Compose"
+CUR_GATEWAY_IMAGE="$(compose_service_image "$TARGET_COMPOSE_JSON" gateway)" || die "回滚 Compose 无 gateway"
 SERVICES=(); OLD_IDS=(); RESTORE_IMAGES=(); REMOVE_SERVICES=()
 if [[ -n "$UPGRADE_SERVICES" && -n "$OLD_IDS_B64" ]]; then
   IFS=',' read -ra SERVICES <<<"$UPGRADE_SERVICES"
@@ -136,7 +150,11 @@ for i in "${!SERVICES[@]}"; do
     continue
   fi
   docker image inspect "${OLD_IDS[$i]}" >/dev/null 2>&1 || die "原 $service 镜像已被清理，禁止切换"
-  RESTORE_IMAGES+=("${TARGET_IMAGES[$i]}")
+  if [[ "$ROLLBACK_TO_PREVIOUS_RELEASE" == true ]]; then
+    RESTORE_IMAGES+=("${OLD_IMAGES[$i]}")
+  else
+    RESTORE_IMAGES+=("${TARGET_IMAGES[$i]}")
+  fi
 done
 
 OLD_GATEWAY_ENTRYPOINT="$(image_entrypoint "$OLD_GATEWAY_IMAGE_ID")" || die "无法读取旧 gateway 镜像入口"
@@ -180,20 +198,43 @@ if [[ "$FULL_UPGRADE" == true ]]; then
   current_schema="$(schema_version "$pg_container")"
   [[ "$current_schema" =~ ^[0-9]+$ ]] || die "无法读取当前数据库迁移版本"
   (( current_schema >= SCHEMA_BEFORE )) || die "数据库迁移版本低于升级前记录，停止回滚"
-  rollback_steps=$((current_schema - SCHEMA_BEFORE))
-  for ((i=0; i<rollback_steps; i++)); do
+  expected_steps="$(schema_migrations_above "$pg_container" "$SCHEMA_BEFORE")"
+  [[ "$expected_steps" =~ ^[0-9]+$ ]] || die "无法统计待回退迁移数量，停止回滚"
+  max_steps=$((expected_steps + 1))
+  (( max_steps > 200 )) && max_steps=200
+  steps_done=0
+  while (( current_schema > SCHEMA_BEFORE )); do
+    (( steps_done < max_steps )) || die "数据库迁移回退步数超过安全上限（${max_steps}），停止回滚"
     docker run --rm --network "container:$pg_container" --env-file "$JZ_ENV_FILE" \
       -e POSTGRES_HOST=127.0.0.1 -e POSTGRES_PORT=5432 -e MIGRATIONS_DIR=/app/migrations \
       --entrypoint /usr/local/bin/jiuzhang-api "$NEW_SERVER_IMAGE_ID" migrate down >/dev/null \
       || die "数据库迁移回退失败，保留当前容器供诊断；可使用备份 $BACKUP_JOB_ID 恢复"
+    steps_done=$((steps_done + 1))
+    next_schema="$(schema_version "$pg_container")"
+    [[ "$next_schema" =~ ^[0-9]+$ ]] || die "无法读取回退后数据库迁移版本"
+    (( next_schema < current_schema )) || die "数据库迁移版本未递减（仍为 ${next_schema}），停止回滚"
+    current_schema="$next_schema"
   done
-  [[ "$(schema_version "$pg_container")" == "$SCHEMA_BEFORE" ]] || die "数据库迁移版本未恢复到升级前记录"
+  [[ "$current_schema" == "$SCHEMA_BEFORE" ]] || die "数据库迁移版本未恢复到升级前记录"
 fi
 
-for i in "${!SERVICES[@]}"; do
-  [[ -z "${OLD_IDS[$i]}" ]] || docker tag "${OLD_IDS[$i]}" "${TARGET_IMAGES[$i]}"
-done
-((${#REMOVE_SERVICES[@]} == 0)) || compose rm -sf "${REMOVE_SERVICES[@]}" >/dev/null 2>&1 || true
+if [[ "$ROLLBACK_TO_PREVIOUS_RELEASE" == true ]]; then
+  # 完整升级回滚：使用原 release 的 Compose 与旧镜像标签恢复，绝不覆盖/污染新版本镜像标签
+  for i in "${!SERVICES[@]}"; do
+    [[ -z "${OLD_IDS[$i]}" || -z "${OLD_IMAGES[$i]}" ]] || {
+      cur_old_id="$(docker image inspect "${OLD_IMAGES[$i]}" --format '{{.Id}}' 2>/dev/null || true)"
+      [[ "$cur_old_id" == "${OLD_IDS[$i]}" ]] || docker tag "${OLD_IDS[$i]}" "${OLD_IMAGES[$i]}"
+    }
+  done
+  if ((${#REMOVE_SERVICES[@]} > 0)); then
+    docker compose -f "$NEW_COMPOSE_FOR_CLEANUP" --env-file "$NEW_ENV_FOR_CLEANUP" rm -sf "${REMOVE_SERVICES[@]}" >/dev/null 2>&1 || true
+  fi
+else
+  for i in "${!SERVICES[@]}"; do
+    [[ -z "${OLD_IDS[$i]}" ]] || docker tag "${OLD_IDS[$i]}" "${TARGET_IMAGES[$i]}"
+  done
+  ((${#REMOVE_SERVICES[@]} == 0)) || compose rm -sf "${REMOVE_SERVICES[@]}" >/dev/null 2>&1 || true
+fi
 EXISTING_SERVICES=()
 for i in "${!SERVICES[@]}"; do [[ -z "${OLD_IDS[$i]}" ]] || EXISTING_SERVICES+=("${SERVICES[$i]}"); done
 log_info "重建原组件: ${EXISTING_SERVICES[*]}"
@@ -223,13 +264,22 @@ while (( SECONDS < end )); do
 done
 [[ "$ready" == true ]] || die "回滚后容器或 HTTP 健康检查未通过"
 wait_http_ok "$JZ_API_BASE/api/v1/health" "$TIMEOUT" || die "回滚后管理 API 未就绪"
-if [[ -n "$OLD_INSTALL_ROOT" && -f "$SCRIPT_DIR/../install/install-hostctl.sh" ]]; then
-  bash "$SCRIPT_DIR/../install/install-hostctl.sh" --install-root "$OLD_INSTALL_ROOT" --strict \
-    || die "hostctl 尚未恢复原 release 路径"
+if [[ -n "$OLD_INSTALL_ROOT" ]]; then
+  if [[ -f "$OLD_INSTALL_ROOT/ops/install/install-hostctl.sh" ]]; then
+    bash "$OLD_INSTALL_ROOT/ops/install/install-hostctl.sh" --install-root "$OLD_INSTALL_ROOT" --strict \
+      || die "hostctl 尚未恢复原 release 路径"
+  elif [[ -f "$SCRIPT_DIR/../install/install-hostctl.sh" ]]; then
+    bash "$SCRIPT_DIR/../install/install-hostctl.sh" --install-root "$OLD_INSTALL_ROOT" --strict \
+      || die "hostctl 尚未恢复原 release 路径"
+  fi
 fi
 if [[ "$FULL_UPGRADE" == true && -n "$OLD_INSTALL_ROOT" ]]; then
-  bash "$SCRIPT_DIR/install-executor.sh" --compose-file "$PREVIOUS_COMPOSE_FILE" \
-    --env-file "$OLD_INSTALL_ROOT/.env" --api-url "$JZ_API_BASE" \
+  [[ -f "$OLD_INSTALL_ROOT/ops/upgrade/install-executor.sh" ]] \
+    || die "原 release 缺少升级执行器安装脚本: $OLD_INSTALL_ROOT/ops/upgrade/install-executor.sh"
+  old_exec_env="$OLD_INSTALL_ROOT/.env"
+  [[ -f "$old_exec_env" ]] || old_exec_env="$JZ_ENV_FILE"
+  bash "$OLD_INSTALL_ROOT/ops/upgrade/install-executor.sh" --compose-file "$PREVIOUS_COMPOSE_FILE" \
+    --env-file "$old_exec_env" --api-url "$JZ_API_BASE" \
     || die "升级执行器尚未恢复原 release 配置"
 fi
 switch_current
@@ -239,5 +289,9 @@ if [[ "$RESTORE_BACKUP" == true ]]; then
   log_warn "恢复 FULL 备份将覆盖范围内现有数据"
   "$SCRIPT_DIR/../restore/restore.sh" --backup-id "$BACKUP_JOB_ID" --scope FULL \
     --user "$USER" --api-url "$JZ_API_BASE" --yes
+fi
+# 标记并归档回滚状态文件，避免外层 update-full.sh EXIT trap 触发二次回滚
+if [[ -f "$STATE_FILE" ]]; then
+  mv -f "$STATE_FILE" "${STATE_FILE}.rolled-back.$(date -u '+%Y%m%dT%H%M%SZ')"
 fi
 log_info "回滚完成；原镜像、迁移版本和实际服务已复核"

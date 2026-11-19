@@ -34,8 +34,11 @@ MGMT_IF=""; MGMT_CIDR=""; MGMT_GW=""; DNS1=""; DNS2=""; ROUTES=""  # ROUTES 元�
 [[ -f "$STATE_FILE" ]] && source "$STATE_FILE"
 
 save_state() {
-  install -m 0600 /dev/null "$STATE_FILE"
-  cat >"$STATE_FILE" <<EOF
+  local tmp
+  install -d -m 0755 /etc/jiuzhang
+  tmp="$(mktemp /etc/jiuzhang/.netconsole.env.XXXXXX)"
+  chmod 0600 "$tmp"
+  cat >"$tmp" <<EOF
 MGMT_IF='$MGMT_IF'
 MGMT_CIDR='$MGMT_CIDR'
 MGMT_GW='$MGMT_GW'
@@ -43,39 +46,57 @@ DNS1='$DNS1'
 DNS2='$DNS2'
 ROUTES='$ROUTES'
 EOF
+  mv -f "$tmp" "$STATE_FILE"
+  chmod 0600 "$STATE_FILE"
 }
 
 # ---------- netplan 落地 ----------
 render_netplan() {
   [[ -n "$MGMT_IF" && -n "$MGMT_CIDR" ]] || die "尚未设置管理地址（先执行 set mgmt-ip）"
+  local bak=""
   {
     echo "# 由九章运维控制台管理（netapply.sh），勿手改；改动会被覆盖"
     echo "network:"
     echo "  version: 2"
     echo "  ethernets:"
-    echo "    $MGMT_IF:"
+    printf '    "%s":\n' "$MGMT_IF"
     echo "      dhcp4: false"
-    echo "      addresses: [$MGMT_CIDR]"
+    printf '      addresses: ["%s"]\n' "$MGMT_CIDR"
     if [[ -n "$MGMT_GW" || -n "$ROUTES" ]]; then
       echo "      routes:"
-      [[ -n "$MGMT_GW" ]] && { echo "        - to: default"; echo "          via: $MGMT_GW"; }
+      [[ -n "$MGMT_GW" ]] && { echo "        - to: default"; printf '          via: "%s"\n' "$MGMT_GW"; }
       local r dest gw dev
       for r in $ROUTES; do
         IFS='|' read -r dest gw dev <<<"$r"
-        echo "        - to: $dest"
-        echo "          via: $gw"
+        printf '        - to: "%s"\n' "$dest"
+        printf '          via: "%s"\n' "$gw"
       done
     fi
     if [[ -n "$DNS1" ]]; then
       echo "      nameservers:"
-      if [[ -n "$DNS2" ]]; then echo "        addresses: [$DNS1, $DNS2]"; else echo "        addresses: [$DNS1]"; fi
+      if [[ -n "$DNS2" ]]; then
+        printf '        addresses: ["%s", "%s"]\n' "$DNS1" "$DNS2"
+      else
+        printf '        addresses: ["%s"]\n' "$DNS1"
+      fi
     fi
   } >"$NETPLAN_FILE.new"
+  chmod 600 "$NETPLAN_FILE.new"
   if [[ -f "$NETPLAN_FILE" ]]; then
-    cp -a "$NETPLAN_FILE" "$NETPLAN_FILE.bak.$(date +%Y%m%d%H%M%S)"
+    bak="$NETPLAN_FILE.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a "$NETPLAN_FILE" "$bak"
   fi
-  mv "$NETPLAN_FILE.new" "$NETPLAN_FILE"
+  mv -f "$NETPLAN_FILE.new" "$NETPLAN_FILE"
   chmod 600 "$NETPLAN_FILE"
+  if ! netplan generate; then
+    if [[ -n "$bak" && -f "$bak" ]]; then
+      cp -a "$bak" "$NETPLAN_FILE"
+      chmod 600 "$NETPLAN_FILE"
+    else
+      rm -f "$NETPLAN_FILE"
+    fi
+    die "netplan generate 语法校验失败，已恢复原配置"
+  fi
   netplan apply
 }
 
@@ -86,8 +107,9 @@ apply_nmcli() {
   [[ -n "$MGMT_IF" && -n "$MGMT_CIDR" ]] || die "尚未设置管理地址（先执行 set mgmt-ip）"
   local con; con=$(nmcli_con_for "$MGMT_IF")
   [[ -n "$con" && "$con" != "--" ]] || die "网口 $MGMT_IF 无活动连接（nmcli）"
+  # 先清空 ipv4.routes 再按当前 ROUTES 全量回写，确保 route-del 能真正移除旧路由
   nmcli con mod "$con" ipv4.method manual ipv4.addresses "$MGMT_CIDR" \
-    ipv4.gateway "${MGMT_GW:-}" ipv4.dns "${DNS1:-}${DNS2:+ $DNS2}"
+    ipv4.gateway "${MGMT_GW:-}" ipv4.dns "${DNS1:-}${DNS2:+ $DNS2}" ipv4.routes ""
   local r dest gw dev
   for r in $ROUTES; do
     IFS='|' read -r dest gw dev <<<"$r"
@@ -97,12 +119,13 @@ apply_nmcli() {
 }
 
 apply() {
-  save_state
   if command -v netplan >/dev/null 2>&1; then
     render_netplan
+    save_state
     log "已应用（netplan，备份在 ${NETPLAN_FILE}.bak.*）"
   elif command -v nmcli >/dev/null 2>&1; then
     apply_nmcli
+    save_state
     log "已应用（nmcli）"
   else
     die "既不识别 netplan 也无 nmcli，当前发行版暂不支持自动网络配置"

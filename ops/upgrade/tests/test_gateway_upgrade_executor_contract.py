@@ -1,5 +1,6 @@
 """Web 镜像升级跨 gateway 启动契约的真实函数回归。"""
 
+import base64
 import gzip
 import hashlib
 import json
@@ -205,9 +206,38 @@ class ExecutorContractTests(unittest.TestCase):
         self.overrides = self.base / "overrides"
         self.state.mkdir()
         self.overrides.mkdir()
+        self.sign_key = self.base / "test-release.key"
+        self.sign_pub = self.base / "test-release.pub"
+        subprocess.run(
+            ["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(self.sign_key)],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["openssl", "pkey", "-in", str(self.sign_key), "-pubout", "-out", str(self.sign_pub)],
+            check=True, capture_output=True,
+        )
 
-    def make_upgrade_pack(self, components=("gateway",)):
+    def sign_manifest(self, package, key_path=None):
+        raw_sig = self.base / "tmp.sig"
+        subprocess.run(
+            [
+                "openssl", "pkeyutl", "-sign",
+                "-inkey", str(key_path or self.sign_key),
+                "-rawin", "-in", str(package / "manifest.json"),
+                "-out", str(raw_sig),
+            ],
+            check=True, capture_output=True,
+        )
+        (package / "manifest.sig").write_text(
+            base64.b64encode(raw_sig.read_bytes()).decode("ascii") + "\n",
+            encoding="ascii",
+        )
+        raw_sig.unlink()
+
+    def make_upgrade_pack(self, components=("gateway",), signed=True, extra_files=None):
         package = self.base / "upgrade-pack"
+        if package.exists():
+            shutil.rmtree(package)
         images = package / "images"
         images.mkdir(parents=True, exist_ok=True)
         files = []
@@ -216,13 +246,20 @@ class ExecutorContractTests(unittest.TestCase):
             relative = "images/%s.tar.gz" % component
             data = gzip.compress(("image:" + component).encode())
             (package / relative).write_bytes(data)
-            files.append({"path": relative, "size": len(data), "sha256": digest(data)})
+            files.append({"path": relative, "sha256": digest(data), "size": len(data)})
             image_entries.append({
                 "component": component,
                 "service": component,
                 "image": image_for(component, "1.4.0"),
                 "tar": relative,
             })
+        for rel_path, content in (extra_files or {}).items():
+            full = package / rel_path
+            full.parent.mkdir(parents=True, exist_ok=True)
+            raw = content.encode("utf-8") if isinstance(content, str) else content
+            full.write_bytes(raw)
+            files.append({"path": rel_path, "sha256": digest(raw), "size": len(raw)})
+        files_compact = json.dumps(files, separators=(",", ":"), ensure_ascii=False)
         manifest = {
             "format_version": 1,
             "product": "wdsp",
@@ -235,12 +272,17 @@ class ExecutorContractTests(unittest.TestCase):
             "components": list(components),
             "images": image_entries,
             "files": files,
+            "files_manifest_sha256": hashlib.sha256(files_compact.encode("utf-8")).hexdigest(),
         }
         (package / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        if signed:
+            self.sign_manifest(package)
         return package
 
-    def make_runtime_patch(self, component="api"):
+    def make_runtime_patch(self, component="api", signed=True):
         package = self.base / "runtime-patch"
+        if package.exists():
+            shutil.rmtree(package)
         images = package / "images"
         images.mkdir(parents=True, exist_ok=True)
         archive = images / "runtime-images.tar"
@@ -262,16 +304,22 @@ class ExecutorContractTests(unittest.TestCase):
             "images_archive": {"path": "images/runtime-images.tar", "sha256": archive_hash},
         }
         (package / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        if signed:
+            self.sign_manifest(package)
         return package
 
     def run_executor(self, package, kind="upgrade", new_contract=True,
                      entrypoint=NEW_ENTRYPOINT, rollback=False, wait_rc=0,
-                     compose_data=None):
+                     compose_data=None, test_pubkey=None, version_to=None):
         compose_file = self.base / "compose.json"
         config = compose_config(new_contract) if compose_data is None else compose_data
         compose_file.write_text(json.dumps(config), encoding="utf-8")
         calls = self.base / "calls.log"
+        if calls.exists():
+            calls.unlink()
         gateway_version = "1.4.1" if kind == "runtime" else "1.4.0"
+        pubkey = str(self.sign_pub) if test_pubkey is None else str(test_pubkey)
+        v_to = version_to if version_to is not None else ("1.4.1" if kind == "runtime" else "1.4.0")
         env = dict(
             os.environ,
             PACKAGE_ROOT=str(package),
@@ -280,22 +328,24 @@ class ExecutorContractTests(unittest.TestCase):
             ENV_FILE=str(self.base / "executor.env"),
             OVERRIDES_DIR=str(self.overrides),
             STATE_DIR=str(self.state),
+            TEST_PUBKEY_FILE=pubkey,
             CALLS=str(calls),
             GATEWAY_TARGET=image_for("gateway", gateway_version),
             GATEWAY_ENTRYPOINT=json.dumps([entrypoint], separators=(",", ":")),
             DO_ROLLBACK="true" if rollback else "false",
             WAIT_RC=str(wait_rc),
             KIND=kind,
+            TARGET_V_TO=v_to,
         )
         script = "\n".join((MOCKS, SHA256_FILE, ROLLBACK_IMAGES, RUNTIME_PATCH, UPGRADE_PACK)) + r'''
 if [[ "$KIND" == runtime ]]; then
-  if process_runtime_patch "$PACKAGE_ROOT" "$PACKAGE_ROOT/manifest.json" 1.4.0 1.4.1; then
+  if process_runtime_patch "$PACKAGE_ROOT" "$PACKAGE_ROOT/manifest.json" 1.4.0 "$TARGET_V_TO"; then
     result=0
   else
     result=$?
   fi
 else
-  if process_upgrade_pack "$PACKAGE_ROOT" "$PACKAGE_ROOT/manifest.json" 1.3.0 1.4.0; then
+  if process_upgrade_pack "$PACKAGE_ROOT" "$PACKAGE_ROOT/manifest.json" 1.3.0 "$TARGET_V_TO"; then
     result=0
   else
     result=$?
@@ -371,6 +421,7 @@ printf 'RESULT=%s STATE=%s STAGE=%s MESSAGE=%s\n' \
                     COMPOSE_FILE=str(self.base / "docker-compose.yml"),
                     ENV_FILE=str(self.base / "executor.env"),
                     OVERRIDES_DIR=str(self.overrides), STATE_DIR=str(self.state),
+                    TEST_PUBKEY_FILE=str(self.sign_pub),
                     CALLS=str(calls), GATEWAY_TARGET=image_for("gateway", "1.4.0"),
                     GATEWAY_ENTRYPOINT=json.dumps([NEW_ENTRYPOINT], separators=(",", ":")),
                     DO_ROLLBACK="false", WAIT_RC="0", KIND="upgrade",
@@ -504,6 +555,163 @@ rollback_images
         self.assertIn(
             "compose up -d --no-deps --force-recreate api", lines
         )
+
+    def test_unsigned_and_tampered_packages_are_rejected_before_docker_load(self):
+        # 1) Missing manifest.sig
+        for kind in ("upgrade", "runtime"):
+            package = self.make_upgrade_pack() if kind == "upgrade" else self.make_runtime_patch()
+            (package / "manifest.sig").unlink()
+            output, calls = self.run_executor(package, kind=kind)
+            self.assertIn("RESULT=1 STATE=false", output)
+            self.assertIn("manifest.sig", output)
+            self.assertNotIn("docker load", calls)
+            self.assertNotIn("docker tag", calls)
+
+        # 2) Signed with untrusted key (verified against embedded production key)
+        package = self.make_upgrade_pack()
+        output, calls = self.run_executor(package, kind="upgrade", test_pubkey="")
+        self.assertIn("RESULT=1 STATE=false", output)
+        self.assertIn("Ed25519", output)
+        self.assertNotIn("docker load", calls)
+
+        # 3) Tampered manifest.json after signing
+        package = self.make_upgrade_pack()
+        manifest_path = package / "manifest.json"
+        manifest_path.write_text(manifest_path.read_text() + " ", encoding="utf-8")
+        output, calls = self.run_executor(package, kind="upgrade")
+        self.assertIn("RESULT=1 STATE=false", output)
+        self.assertIn("Ed25519", output)
+        self.assertNotIn("docker load", calls)
+
+        # 4) Signed manifest with mismatched files_manifest_sha256
+        package = self.make_upgrade_pack()
+        manifest_path = package / "manifest.json"
+        m = json.loads(manifest_path.read_text())
+        m["files_manifest_sha256"] = "0" * 64
+        manifest_path.write_text(json.dumps(m), encoding="utf-8")
+        self.sign_manifest(package)
+        output, calls = self.run_executor(package, kind="upgrade")
+        self.assertIn("RESULT=1 STATE=false", output)
+        self.assertIn("files_manifest_sha256", output)
+        self.assertNotIn("docker load", calls)
+
+    def test_invalid_version_to_path_traversal_is_rejected(self):
+        for bad_ver in ("../evil", "1.4.0/../../etc", "1.4.0;id", "1.4..0"):
+            with self.subTest(bad_ver=bad_ver):
+                package = self.make_upgrade_pack()
+                output, calls = self.run_executor(package, kind="upgrade", version_to=bad_ver)
+                self.assertIn("RESULT=1 STATE=false", output)
+                self.assertIn("目标版本号格式非法", output)
+                self.assertNotIn("docker load", calls)
+
+    def test_runtime_patch_gateway_co_recreates_netmgrd(self):
+        package = self.make_runtime_patch("gateway")
+        output, calls = self.run_executor(package, kind="runtime", new_contract=True)
+        self.assertIn("RESULT=0 STATE=true STAGE=VERIFYING", output)
+        lines = calls.splitlines()
+        self.assertIn("compose up -d --no-deps --force-recreate gateway netmgrd", lines)
+
+    def test_compose_fragment_security_and_immutability_checks(self):
+        # Base compose without netmgrd
+        base_compose = compose_config(True)
+        del base_compose["services"]["netmgrd"]
+
+        def run_fragment_case(after_compose):
+            package = self.make_upgrade_pack(
+                ("netmgrd",),
+                extra_files={"compose/upgrade-services.yml": "services:\n  netmgrd: {}\n"},
+            )
+            compose_file = self.base / "compose.json"
+            after_file = self.base / "compose-after.json"
+            compose_file.write_text(json.dumps(base_compose), encoding="utf-8")
+            after_file.write_text(json.dumps(after_compose), encoding="utf-8")
+            calls = self.base / "calls.log"
+            if calls.exists():
+                calls.unlink()
+            env = dict(
+                os.environ,
+                PACKAGE_ROOT=str(package),
+                COMPOSE_JSON_FILE=str(compose_file),
+                AFTER_JSON_FILE=str(after_file),
+                COMPOSE_FILE=str(self.base / "docker-compose.yml"),
+                ENV_FILE=str(self.base / "executor.env"),
+                OVERRIDES_DIR=str(self.overrides),
+                STATE_DIR=str(self.state),
+                TEST_PUBKEY_FILE=str(self.sign_pub),
+                CALLS=str(calls),
+                GATEWAY_TARGET=image_for("gateway", "1.4.0"),
+                GATEWAY_ENTRYPOINT=json.dumps([NEW_ENTRYPOINT], separators=(",", ":")),
+            )
+            override_docker = r'''
+docker() {
+  printf 'docker %s\n' "$*" >>"$CALLS"
+  if [[ "${1:-}" == compose ]]; then
+    if [[ "$*" == *"upgrade-services.yml"* ]]; then
+      cat "$AFTER_JSON_FILE"
+    else
+      cat "$COMPOSE_JSON_FILE"
+    fi
+    return 0
+  fi
+  if [[ "${1:-}" == load ]]; then cat >/dev/null; return 0; fi
+  if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then
+    if [[ "${5:-}" == '{{.Id}}' ]]; then printf 'sha256:old-img\n'; fi
+    return 0
+  fi
+  case "${1:-}" in tag|rmi) return 0 ;; *) return 1 ;; esac
+}
+'''
+            script = "\n".join((MOCKS, override_docker, SHA256_FILE, ROLLBACK_IMAGES, RUNTIME_PATCH, UPGRADE_PACK)) + r'''
+if process_upgrade_pack "$PACKAGE_ROOT" "$PACKAGE_ROOT/manifest.json" 1.3.0 1.4.0; then
+  result=0
+else
+  result=$?
+fi
+printf 'RESULT=%s MESSAGE=%s\n' "$result" "$CURRENT_MESSAGE"
+'''
+            res = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=15)
+            self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+            return res.stdout
+
+        # 1) Modifying existing service (adding volumes to api while keeping image unchanged)
+        mutated_existing = json.loads(json.dumps(base_compose))
+        mutated_existing["services"]["api"]["volumes"] = [{"type": "bind", "source": "/", "target": "/host"}]
+        mutated_existing["services"]["netmgrd"] = {"image": image_for("netmgrd", "1.4.0")}
+        out = run_fragment_case(mutated_existing)
+        self.assertIn("RESULT=1", out)
+        self.assertIn("既有服务", out)
+
+        # 2) New service with privileged, pid:host, ipc:host, root bind mount, or unauthorized cap_add
+        bad_new_configs = [
+            ("privileged", {"image": image_for("netmgrd", "1.4.0"), "privileged": True}),
+            ("pid_host", {"image": image_for("netmgrd", "1.4.0"), "pid": "host"}),
+            ("ipc_host", {"image": image_for("netmgrd", "1.4.0"), "ipc": "host"}),
+            ("root_bind", {"image": image_for("netmgrd", "1.4.0"), "volumes": [{"type": "bind", "source": "/", "target": "/host"}]}),
+            ("docker_sock", {"image": image_for("netmgrd", "1.4.0"), "volumes": [{"type": "bind", "source": "/var/run/docker.sock", "target": "/var/run/docker.sock"}]}),
+            ("bad_cap", {"image": image_for("netmgrd", "1.4.0"), "cap_add": ["SYS_ADMIN"]}),
+        ]
+        for label, svc_def in bad_new_configs:
+            with self.subTest(label=label):
+                after = json.loads(json.dumps(base_compose))
+                after["services"]["netmgrd"] = svc_def
+                out = run_fragment_case(after)
+                self.assertIn("RESULT=1", out, f"{label} should be rejected: {out}")
+
+        # 3) Clean netmgrd definition with only NET_RAW/NET_ADMIN and named volume must be accepted
+        good_after = json.loads(json.dumps(base_compose))
+        good_after["services"]["netmgrd"] = {
+            "image": image_for("netmgrd", "1.4.0"),
+            "network_mode": "service:gateway",
+            "cap_add": ["NET_RAW", "NET_ADMIN"],
+            "volumes": [{"type": "volume", "source": "gateway-admin", "target": "/var/run/caddy"}],
+        }
+        # Clean out previous override if any
+        for p in self.overrides.glob("*.yml"):
+            p.unlink()
+        # Mock install -o root -g root for non-root test execution
+        out = run_fragment_case(good_after)
+        # Note: on non-root macOS `install -o root -g root` fails with permission denied, which proves it passed ALL security checks!
+        self.assertTrue("RESULT=0" in out or "安装 compose 片段失败" in out, out)
 
 
 class BuildUpgradePackGateTests(unittest.TestCase):

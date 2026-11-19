@@ -174,8 +174,45 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
+safe_extract_tar() {
+  local archive="$1" dest="$2" expected_root="${3:-}"
+  python3 - "$archive" "$dest" "$expected_root" <<'PY'
+import os, pathlib, sys, tarfile
+archive, dest, expected_root = sys.argv[1:]
+root = pathlib.Path(dest).resolve()
+with tarfile.open(archive, "r:gz") as tf:
+    members = tf.getmembers()
+    if not members:
+        raise SystemExit("归档为空")
+    for m in members:
+        rel = pathlib.PurePosixPath(m.name)
+        if rel.is_absolute() or ".." in rel.parts:
+            raise SystemExit(f"归档含不安全路径: {m.name}")
+        if not (m.isdir() or m.isfile()):
+            raise SystemExit(f"归档含不允许的符号链接、硬链接或特殊文件: {m.name}")
+        if expected_root and rel.parts and rel.parts[0] != expected_root:
+            raise SystemExit(f"归档根目录与期望不符: {m.name}")
+        target = (root / rel).resolve()
+        if root != target and root not in target.parents:
+            raise SystemExit(f"归档路径越界: {m.name}")
+    for m in members:
+        rel = pathlib.PurePosixPath(m.name)
+        target = (root / rel).resolve()
+        if target == root:
+            continue
+        safe_mode = (m.mode & 0o0755) | (0o0700 if m.isdir() else 0o0600)
+        m.mode = safe_mode
+        m.uid = 0
+        m.gid = 0
+        m.uname = ""
+        m.gname = ""
+        tf.extract(m, path=root, set_attrs=True)
+        os.chmod(target, safe_mode)
+PY
+}
+
 extract_payload() {
-  local line found=false
+  local line found=false payload_tmp="$WORK_DIR/.payload.tar.gz"
   exec 9< "$0"
   while IFS= read -r line <&9; do
     if [[ "$line" == "$MARKER" ]]; then
@@ -184,8 +221,10 @@ extract_payload() {
     fi
   done
   [[ "$found" == "true" ]] || die '安装包载荷标记缺失'
-  tar -xzf - -C "$WORK_DIR" <&9
+  cat <&9 > "$payload_tmp"
   exec 9<&-
+  safe_extract_tar "$payload_tmp" "$WORK_DIR" || die '安装包载荷安全校验或解压失败'
+  rm -f "$payload_tmp"
 }
 
 extract_payload
@@ -291,6 +330,17 @@ elif [[ -d "$WORK_DIR/rpms" ]]; then
   shopt -u nullglob
   if [[ ${#rpms[@]} -gt 0 ]]; then
     check_bundled_rpm_platform /etc/os-release
+    if [[ -f "$WORK_DIR/rpms/rpms.sha256" ]]; then
+      verify_package_signature "$WORK_DIR/rpms/rpms.sha256"
+      (
+        cd "$WORK_DIR"
+        export LC_ALL=C
+        shopt -s nullglob
+        local_rpms=(rpms/*.rpm)
+        computed="$(sha256sum "${local_rpms[@]}")"
+        [[ "$computed" == "$(< rpms/rpms.sha256)" ]]
+      ) || die '随包依赖 RPM 校验和验证失败，拒绝安装'
+    fi
     log "安装 ${#rpms[@]} 个随包依赖 RPM"
     if command -v dnf >/dev/null 2>&1; then
       dnf -y install "${rpms[@]}"
@@ -309,7 +359,8 @@ fi
 mkdir -p "$RELEASE_DIR"
 cp "$PACKAGE" "${PACKAGE}.sha256" "$RELEASE_DIR/"
 [[ ! -f "${PACKAGE}.sig" ]] || cp "${PACKAGE}.sig" "$RELEASE_DIR/"
-tar -xzf "$RELEASE_DIR/$(basename "$PACKAGE")" -C "$RELEASE_DIR"
+safe_extract_tar "$RELEASE_DIR/$(basename "$PACKAGE")" "$RELEASE_DIR" "$PACKAGE_BASENAME" \
+  || die '离线包安全校验或解压失败'
 PRODUCT_DIR="$RELEASE_DIR/$PACKAGE_BASENAME"
 [[ -x "$PRODUCT_DIR/ops/install/prepare-openeuler-zhaoxin.sh" ]] \
   || die '离线包缺少 openEuler / 兆芯准备脚本'

@@ -101,6 +101,27 @@ class InstallHostctlTests(unittest.TestCase):
         self.assertIn('bash "$SCRIPT_DIR/install-hostctl.sh" --install-root "$INSTALL_ROOT"', source)
         self.assertNotIn('sed "s|__INSTALL_ROOT__|$INSTALL_ROOT|g"', source)
 
+    def test_no_chmod_1777_fallback_and_literal_substitution(self):
+        helper_src = HELPER.read_text(encoding="utf-8")
+        self.assertNotIn("chmod 1777", helper_src)
+        self.assertNotIn('sed "s|__INSTALL_ROOT__', helper_src)
+
+        special_target = self.work / "release&path|v1"
+        special_target.mkdir()
+        result = self.run_helper("--install-root", special_target, "--strict")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        service_unit = (self.units / "jiuzhang-hostctl.service").read_text(encoding="utf-8")
+        self.assertIn(f"ExecStart={special_target.resolve()}/ops/system/hostctl-exec.sh", service_unit)
+
+        # Failed chown must NOT fall back to 1777
+        self.write_executable("chown", '#!/usr/bin/env bash\nexit 1\n')
+        non_strict_target = self.work / "chown-fail"
+        non_strict_target.mkdir()
+        res = self.run_helper("--install-root", non_strict_target)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        mode = (non_strict_target / "runtime/hostctl").stat().st_mode & 0o7777
+        self.assertEqual(mode, 0o755)
+
 
 if __name__ == "__main__":
     unittest.main()

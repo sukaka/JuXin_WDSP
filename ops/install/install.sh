@@ -107,6 +107,12 @@ if [[ "$REUSE_ENV" == "true" ]]; then
 fi
 pcap_validate_args
 pcap_validate_enabled
+# 校验各端口 CLI 参数（必须为 1..65535 的十进制整数）
+for _cli_port in "$GATEWAY_PORT" "$API_PORT" "$WEB_PORT" "$WEB_HTTPS_PORT"; do
+  [[ "$_cli_port" =~ ^[1-9][0-9]*$ ]] && (( 10#$_cli_port >= 1 && 10#$_cli_port <= 65535 )) \
+    || { log_err "端口参数非法（必须为 1-65535 的整数）: ${_cli_port}"; exit 2; }
+done
+unset _cli_port
 # 端口清单格式校验：每项为 1-65535 或起点-终点区间
 if [[ -n "$SITE_PORTS" ]]; then
   validate_port_list "$SITE_PORTS" || { log_err "--site-ports 格式非法: ${SITE_PORTS}（逗号分隔端口或区间，如 8080,9000-9010）"; exit 2; }
@@ -173,7 +179,7 @@ if [[ -n "$pkg_manifest" ]]; then
       die "未找到与解压目录同级的交付包 $(basename "$pkg_tarball")，无法执行真实性验签，中止安装。请保留 <包>.tar.gz 及其旁车 .sha256 / .sig 于解压目录同级；本地开发自验可显式加 --allow-unsigned（不推荐）"
     fi
   fi
-  # 第二层：整包旁车哈希（验签通过后的纵深，防偶发损坏）
+  # 第二层：整包旁车哈希（验签通过后的纵深，防偶发损坏）+ 将解压 manifest.json 逐字节绑定到已验证归档
   if [[ -f "$pkg_tarball" ]]; then
     sidecar_rc=0
     sha256_check_sidecar "$pkg_tarball" || sidecar_rc=$?
@@ -182,6 +188,21 @@ if [[ -n "$pkg_manifest" ]]; then
       2) die "交付包旁车哈希缺失：${pkg_tarball}.sha256（交付不完整，中止安装；请从原始交付渠道补齐旁车文件）" ;;
       *) die "交付包整包哈希校验失败：${pkg_tarball} 可能已损坏或被篡改，中止安装" ;;
     esac
+    require_cmd python3
+    python3 - "$pkg_tarball" "$(basename "$pkg_dir")/manifest.json" "$pkg_manifest" <<'PY' \
+      || die "解压目录的 manifest.json 与已验签归档 $(basename "$pkg_tarball") 不一致，中止安装"
+import pathlib, sys, tarfile
+archive, member_name, extracted_manifest = sys.argv[1:]
+expected_bytes = pathlib.Path(extracted_manifest).read_bytes()
+with tarfile.open(archive, "r:gz") as tf:
+    matches = [m for m in tf.getmembers() if m.name.lstrip("./") == member_name]
+    if len(matches) != 1 or not matches[0].isfile():
+        raise SystemExit(f"归档内缺少唯一常规文件 {member_name}")
+    archive_bytes = tf.extractfile(matches[0]).read()
+if archive_bytes != expected_bytes:
+    raise SystemExit("解压目录 manifest.json 与已验签归档内 manifest.json 字节不一致")
+PY
+    log_info "解压目录 manifest.json 已与已验签归档逐字节绑定校验通过"
   fi
 
   host_arch="$(detect_arch)"
@@ -225,7 +246,7 @@ if [[ -n "$pkg_manifest" ]]; then
   manifest_files_verify "$pkg_manifest" "$pkg_dir" || mfv_rc=$?
   case "$mfv_rc" in
     0) ;;
-    2) log_warn "manifest.json 无 files 清单（历史包），跳过文件级完整性校验" ;;
+    2) die "离线包 manifest.json 缺少 files 清单，拒绝跳过文件级完整性校验，中止安装" ;;
     *) die "解压目录文件级完整性校验失败（manifest.files 不符），中止安装" ;;
   esac
 fi
@@ -305,23 +326,24 @@ if (( free_gb < 20 )); then
 fi
 log_info "磁盘可用 ${free_gb}GB"
 
-# 时间同步（偏移 >60s 视为异常；无法判定时告警不阻断）
-local_epoch="$(date +%s)"
-http_date="$(curl -sSI --max-time 5 https://www.baidu.com 2>/dev/null | grep -i '^date:' | head -1 | cut -d' ' -f2- || true)"
-if [[ -n "$http_date" ]]; then
-  remote_epoch="$(date -u -j -f '%a, %d %b %Y %T GMT' "$http_date" +%s 2>/dev/null || date -u -d "$http_date" +%s 2>/dev/null || echo 0)"
-  if [[ "$remote_epoch" =~ ^[0-9]+$ ]] && (( remote_epoch > 0 )); then
-    drift=$(( local_epoch - remote_epoch ))
-    (( drift < 0 )) && drift=$(( -drift ))
-    if (( drift > 60 )); then
-      die "系统时间与网络时间偏差 ${drift}s（>60s），请先配置 NTP 时间同步"
-    fi
-    log_info "时间同步正常（偏差 ${drift}s）"
+# 时间同步检查（离线交付禁止外联探测，仅检查本地 systemd-timesyncd / timedatectl 状态）
+if command -v timedatectl >/dev/null 2>&1; then
+  ntp_synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+  if [[ "$ntp_synced" == "yes" ]]; then
+    log_info "本地时钟已通过 NTP 同步"
   else
-    log_warn "无法解析远端时间，跳过时间同步检查"
+    log_warn "未检测到本地 NTP 同步状态（NTPSynchronized=${ntp_synced:-unknown}），请确认内网 NTP/时钟同步正常"
   fi
+  unset ntp_synced
 else
-  log_warn "无法访问外网时间源，跳过时间同步检查（离线环境请自行确认 NTP 正常）"
+  log_info "离线安装模式：跳过外网时间探测，请确认本机时钟与内网 NTP 同步正常"
+fi
+
+# 推导安装根目录：离线包以 $pkg_dir 为准，源码部署以 Compose 文件所在目录为准（不依赖 $PWD）
+if [[ -n "${pkg_dir:-}" ]]; then
+  INSTALL_ROOT="$(cd "$pkg_dir" && pwd -P)"
+else
+  INSTALL_ROOT="$(cd "$(dirname "$JZ_COMPOSE_FILE")" && pwd -P)"
 fi
 
 # ---------- 2. 生成 .env ----------
@@ -337,8 +359,9 @@ POSTGRES_PASSWORD="$(random_hex 24)"
 VALKEY_PASSWORD="$(random_hex 24)"
 JIUZHANG_MASTER_KEY="$(random_hex 32)"
 INITIAL_ADMIN_PASSWORD="$(random_hex 12)"
-umask 077
-cat > "$JZ_ENV_FILE" <<EOF
+(
+  umask 077
+  cat > "$JZ_ENV_FILE" <<EOF
 # 九章环境配置（由 ops/install/install.sh 生成于 $(date -u '+%Y-%m-%dT%H:%M:%SZ')）
 # 本文件含敏感信息，权限已设为 600，禁止提交到版本库。
 # 产品线：${PKG_EDITION}（来自离线包 manifest；waf|wdsp|api）
@@ -360,9 +383,16 @@ API_DYNAMIC_PROTECTION_ENABLED=$PKG_API_DYNAMIC
 WEB_WAF_ENABLED=$PKG_WEB_WAF
 API_PROTECTION_MODE=OBSERVE
 EOF
+)
 chmod 600 "$JZ_ENV_FILE"
 log_info "已生成随机口令/主密钥，并写入产品线 PRODUCT_EDITION=${PKG_EDITION}（不回显口令）"
 pcap_configure
+fi
+if [[ -S /var/run/docker.sock && -f "$SCRIPT_DIR/prepare-containerops.sh" ]]; then
+  if [[ "$REUSE_ENV" != "true" ]] || ! grep -q '^CONTAINEROPS_DOCKER_GID=' "$JZ_ENV_FILE" 2>/dev/null; then
+    bash "$SCRIPT_DIR/prepare-containerops.sh" -e "$JZ_ENV_FILE"
+    chmod 600 "$JZ_ENV_FILE"
+  fi
 fi
 
 # ---------- 3. 采集宿主机指纹（离线授权绑定用） ----------
@@ -371,7 +401,6 @@ fi
 # machine_fingerprint 比对（授权未绑定指纹时本文件不参与校验）。
 # 采集失败仅告警不中断：绑定指纹的授权在导入时才校验，可事后重新采集补齐。
 log_info "步骤 3/9：采集宿主机指纹（离线授权）"
-INSTALL_ROOT="$PWD"
 LICENSE_DIR="$INSTALL_ROOT/runtime/license"
 HOST_FP_FILE="$LICENSE_DIR/host_fingerprint"
 # 目录须 755：api 容器以 uid 1000（server/Dockerfile 的 jiuzhang 用户）只读访问

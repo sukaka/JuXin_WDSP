@@ -75,13 +75,112 @@ if [[ "${ASSUME_YES}" != "1" ]]; then
   [[ "${ans}" == "y" || "${ans}" == "Y" || "${ans}" == "yes" ]] || { log_info "已取消"; exit 0; }
 fi
 
-# ---------- 1. 解包 ----------
-log_info "[1/7] 解包备份"
+# ---------- 1. 安全校验并解包 + MANIFEST.txt SHA-256 校验 ----------
+log_info "[1/7] 安全校验并解包备份"
+umask 077
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
-tar -xzf "${ARCHIVE}" -C "${WORK}"
-[[ -f "${WORK}/MANIFEST.txt" ]] || die "备份内缺少 MANIFEST.txt（非本包备份产物？）"
-[[ -f "${WORK}/db.sql.gz" ]] || die "备份内缺少 db.sql.gz"
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "${ARCHIVE}" "${WORK}" <<'PY' || die "备份归档安全校验或解压失败"
+import os, pathlib, sys, tarfile
+archive, dest = sys.argv[1:]
+root = pathlib.Path(dest).resolve()
+with tarfile.open(archive, "r:gz") as tf:
+    members = tf.getmembers()
+    if not members:
+        raise SystemExit("备份归档为空")
+    for m in members:
+        rel = pathlib.PurePosixPath(m.name)
+        if rel.is_absolute() or ".." in rel.parts:
+            raise SystemExit(f"备份归档含非法路径: {m.name}")
+        if not (m.isdir() or m.isfile()):
+            raise SystemExit(f"备份归档含不允许的符号链接、硬链接或特殊文件: {m.name}")
+        target = (root / rel).resolve()
+        if root != target and root not in target.parents:
+            raise SystemExit(f"备份归档路径越界: {m.name}")
+    for m in members:
+        rel = pathlib.PurePosixPath(m.name)
+        target = (root / rel).resolve()
+        if target == root:
+            continue
+        safe_mode = (m.mode & 0o0755) | (0o0700 if m.isdir() else 0o0600)
+        m.mode = safe_mode
+        m.uid = 0
+        m.gid = 0
+        m.uname = ""
+        m.gname = ""
+        tf.extract(m, path=root, set_attrs=True)
+        os.chmod(target, safe_mode)
+PY
+else
+  # 无 python3 时使用 tar -tzvf 逐条校验文件类型与路径安全，禁止绝对路径/..与非普通文件/目录
+  while IFS= read -r entry_line; do
+    entry_type="${entry_line:0:1}"
+    case "${entry_type}" in
+      -|d) ;;
+      *) die "备份归档含不允许的链接或特殊文件条目: ${entry_line}" ;;
+    esac
+  done < <(tar -tzvf "${ARCHIVE}")
+  while IFS= read -r entry_name; do
+    case "${entry_name}" in
+      /*|*../*|*/..|..) die "备份归档含不安全路径: ${entry_name}" ;;
+    esac
+  done < <(tar -tzf "${ARCHIVE}")
+  tar --no-same-owner --no-same-permissions -xzf "${ARCHIVE}" -C "${WORK}"
+fi
+[[ -f "${WORK}/MANIFEST.txt" && ! -L "${WORK}/MANIFEST.txt" ]] || die "备份内缺少 MANIFEST.txt（非本包备份产物？）"
+[[ -f "${WORK}/db.sql.gz" && ! -L "${WORK}/db.sql.gz" ]] || die "备份内缺少 db.sql.gz"
+
+verify_manifest() {
+  local work="$1"
+  local sha size rel f actual_sha actual_size checked=0 listed_tmp actual_tmp
+  listed_tmp="$(mktemp)"
+  actual_tmp="$(mktemp)"
+  while IFS= read -r line; do
+    if [[ "${line}" =~ ^([0-9a-fA-F]{64})[[:space:]]{2}([0-9]+)[[:space:]]{2}(.+)$ ]]; then
+      sha="$(printf '%s' "${BASH_REMATCH[1]}" | tr 'A-F' 'a-f')"
+      size="${BASH_REMATCH[2]}"
+      rel="${BASH_REMATCH[3]}"
+      case "${rel}" in
+        /*|*../*|*/..|..|MANIFEST.txt) rm -f "${listed_tmp}" "${actual_tmp}"; die "MANIFEST.txt 含非法路径: ${rel}" ;;
+      esac
+      f="${work}/${rel}"
+      if [[ ! -f "${f}" || -L "${f}" ]]; then
+        rm -f "${listed_tmp}" "${actual_tmp}"
+        die "MANIFEST.txt 声明的文件缺失或为符号链接: ${rel}"
+      fi
+      actual_size="$(stat -c%s "${f}" 2>/dev/null || stat -f%z "${f}")"
+      if [[ "${actual_size}" != "${size}" ]]; then
+        rm -f "${listed_tmp}" "${actual_tmp}"
+        die "备份文件大小不符: ${rel}（期望 ${size}，实际 ${actual_size}）"
+      fi
+      if command -v sha256sum >/dev/null 2>&1; then
+        actual_sha="$(sha256sum "${f}" | awk '{print $1}')"
+      else
+        actual_sha="$(shasum -a 256 "${f}" | awk '{print $1}')"
+      fi
+      if [[ "${actual_sha}" != "${sha}" ]]; then
+        rm -f "${listed_tmp}" "${actual_tmp}"
+        die "备份文件 SHA-256 校验失败: ${rel}"
+      fi
+      printf '%s\n' "${rel}" >> "${listed_tmp}"
+      checked=$((checked + 1))
+    fi
+  done < "${work}/MANIFEST.txt"
+  if (( checked == 0 )); then
+    rm -f "${listed_tmp}" "${actual_tmp}"
+    die "MANIFEST.txt 缺少有效文件校验清单，拒绝恢复"
+  fi
+  LC_ALL=C sort -u "${listed_tmp}" -o "${listed_tmp}"
+  (cd "${work}" && find . -type f ! -name MANIFEST.txt | sed 's|^\./||' | LC_ALL=C sort) > "${actual_tmp}"
+  if ! cmp -s "${listed_tmp}" "${actual_tmp}"; then
+    rm -f "${listed_tmp}" "${actual_tmp}"
+    die "备份内存在未在 MANIFEST.txt 声明的额外文件，拒绝恢复"
+  fi
+  rm -f "${listed_tmp}" "${actual_tmp}"
+  log_info "MANIFEST.txt SHA-256 完整性校验通过（${checked} 个文件）"
+}
+verify_manifest "${WORK}"
 
 TS="$(date '+%Y%m%d-%H%M%S')"
 
