@@ -4,6 +4,7 @@ package apisecurity
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 func TestObjectModelPatchValidate(t *testing.T) {
 	boolPtr := func(v bool) *bool { return &v }
 	strPtr := func(v string) *string { return &v }
+	slicePtr := func(v ...string) *[]string { return &v }
 	cases := []struct {
 		name  string
 		patch ObjectModelPatch
@@ -21,7 +23,15 @@ func TestObjectModelPatchValidate(t *testing.T) {
 		{"空 patch 合法", ObjectModelPatch{}, ""},
 		{"全字段合法", ObjectModelPatch{Publishable: boolPtr(true), RequiredRelation: strPtr("owner"),
 			OwnerExclusive: boolPtr(true), OnLeaseExpired: strPtr("degraded")}, ""},
-		{"required_relation 非 OWNER 拒收", ObjectModelPatch{RequiredRelation: strPtr("SHARED_WITH")}, "OWNER"},
+		{"OWNER 显式空数组合法", ObjectModelPatch{RequiredRelation: strPtr("OWNER"), RequiredRelations: slicePtr()}, ""},
+		{"OWNER 非空 required_relations 拒收", ObjectModelPatch{RequiredRelation: strPtr("OWNER"), RequiredRelations: slicePtr("OWNER")}, "不允许"},
+		{"ANY_OF 规范化数组合法", ObjectModelPatch{RequiredRelation: strPtr("any_of"), RequiredRelations: slicePtr("shared_with", "owner", "OWNER")}, ""},
+		{"ANY_OF 缺少 required_relations 拒收", ObjectModelPatch{RequiredRelation: strPtr("ANY_OF")}, "required_relations"},
+		{"ANY_OF 空 required_relations 拒收", ObjectModelPatch{RequiredRelation: strPtr("ANY_OF"), RequiredRelations: slicePtr()}, "非空"},
+		{"ANY_OF 缺 SHARED_WITH 拒收", ObjectModelPatch{RequiredRelation: strPtr("ANY_OF"), RequiredRelations: slicePtr("OWNER")}, "SHARED_WITH"},
+		{"ANY_OF 含未知关系 DELEGATED_TO 拒收", ObjectModelPatch{RequiredRelation: strPtr("ANY_OF"), RequiredRelations: slicePtr("OWNER", "DELEGATED_TO")}, "OWNER 与 SHARED_WITH"},
+		{"单独传 required_relations 拒收", ObjectModelPatch{RequiredRelations: slicePtr("OWNER", "SHARED_WITH")}, "同请求"},
+		{"required_relation 非 OWNER/ANY_OF 拒收", ObjectModelPatch{RequiredRelation: strPtr("SHARED_WITH")}, "OWNER 或 ANY_OF"},
 		{"on_lease_expired 非法拒收", ObjectModelPatch{OnLeaseExpired: strPtr("block")}, "strict|degraded"},
 		{"publishable 但非排他拒收", ObjectModelPatch{Publishable: boolPtr(true), OwnerExclusive: boolPtr(false)}, "owner_exclusive"},
 		{"publishable 且排他合法", ObjectModelPatch{Publishable: boolPtr(true), OwnerExclusive: boolPtr(true)}, ""},
@@ -89,4 +99,29 @@ func TestObjectModelNotFoundSentinel(t *testing.T) {
 	}
 	var _ = context.Background
 	var _ = uuid.Nil
+}
+
+func TestObjectModelNormalizeAndJSON(t *testing.T) {
+	norm, msg := normalizeRequiredRelations([]string{" shared_with ", "owner", "SHARED_WITH"})
+	if msg != "" || len(norm) != 2 || norm[0] != "OWNER" || norm[1] != "SHARED_WITH" {
+		t.Fatalf("normalizeRequiredRelations got=(%v,%q), want ([OWNER SHARED_WITH], '')", norm, msg)
+	}
+	// OWNER 模型 RequiredRelations 为空切片时，JSON 省略 required_relations
+	ownerModel := ObjectModel{ID: uuid.New(), EndpointID: uuid.New(), RequiredRelation: "OWNER", RequiredRelations: []string{}}
+	rawOwner, err := json.Marshal(ownerModel)
+	if err != nil {
+		t.Fatalf("marshal owner model: %v", err)
+	}
+	if strings.Contains(string(rawOwner), "required_relations") {
+		t.Fatalf("OWNER model must omit required_relations: %s", rawOwner)
+	}
+	// ANY_OF 模型 JSON 携带 required_relations
+	anyOfModel := ObjectModel{ID: uuid.New(), EndpointID: uuid.New(), RequiredRelation: "ANY_OF", RequiredRelations: []string{"OWNER", "SHARED_WITH"}}
+	rawAny, err := json.Marshal(anyOfModel)
+	if err != nil {
+		t.Fatalf("marshal any_of model: %v", err)
+	}
+	if !strings.Contains(string(rawAny), `"required_relations":["OWNER","SHARED_WITH"]`) {
+		t.Fatalf("ANY_OF model must include required_relations: %s", rawAny)
+	}
 }

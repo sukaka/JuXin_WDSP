@@ -92,7 +92,10 @@ function buildActionOptions(
         value,
         disabled: unsupported,
         label: unsupported ? (
-          <Tooltip title="不支持新启用：禁止整请求仅观察/调分替代语义，请改用精确目标排除（移除变量检测）">
+          <Tooltip
+            placement="right"
+            title="不支持新启用：禁止整请求仅观察/调分替代语义，请改用精确目标排除（移除变量检测）"
+          >
             <span>{`${meta.label}（不支持新启用）`}</span>
           </Tooltip>
         ) : (
@@ -192,6 +195,8 @@ export default function ExceptionsPage() {
   // 目标引擎驱动的动作选项（P0-04 S4 §3 动作矩阵）
   const watchedEngine: ExceptionTargetEngine = watched?.target_engine ?? 'WAF'
   const actionOptions = useMemo(() => buildActionOptions(watchedEngine), [watchedEngine])
+  const hasUriRegex = Boolean(watched?.uri_regex?.trim())
+  const needsRiskAck = isBroad || hasUriRegex
 
   const listQuery = useQuery({
     queryKey: ['exceptions', filters, page, pageSize],
@@ -262,8 +267,13 @@ export default function ExceptionsPage() {
   })
 
   const statusMutation = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: 'enable' | 'disable' }) =>
-      action === 'enable' ? exceptionsApi.enable(id) : exceptionsApi.disable(id),
+    mutationFn: async ({ id, action }: { id: string; action: 'enable' | 'disable' }): Promise<void> => {
+      if (action === 'enable') {
+        await exceptionsApi.enable(id)
+      } else {
+        await exceptionsApi.disable(id)
+      }
+    },
     onSuccess: () => {
       message.success('操作成功')
       void invalidate()
@@ -981,21 +991,31 @@ export default function ExceptionsPage() {
               description="未限定具体 URI / 参数 / 规则ID / 来源IP 等条件，且作用于全部 SQLi/XSS/命令注入 攻击类型或全局范围，可能导致防护大面积失效。请补充限定条件；确需创建的，必须勾选下方风险确认。"
             />
           )}
-          {isBroad && (
+          {needsRiskAck && (
             <Form.Item
               name="risk_acknowledged"
               valuePropName="checked"
               rules={[
                 {
-                  validator: (_, v: boolean) =>
-                    v
-                      ? Promise.resolve()
-                      : Promise.reject(new Error('宽泛例外必须确认风险后才能创建')),
+                  validator: (_, v: boolean) => {
+                    if (v) return Promise.resolve()
+                    if (isBroad && hasUriRegex) {
+                      return Promise.reject(new Error('宽泛例外及路径正则配置必须确认风险后才能保存'))
+                    }
+                    if (hasUriRegex) {
+                      return Promise.reject(new Error('路径正则属于高级配置，必须确认风险后才能保存'))
+                    }
+                    return Promise.reject(new Error('宽泛例外必须确认风险后才能创建'))
+                  },
                 },
               ]}
             >
               <Checkbox>
-                我已知晓该宽泛例外的风险，并承担相应责任（后端将校验，未确认会被拒绝）
+                {isBroad && hasUriRegex
+                  ? '我已知晓该宽泛例外及路径正则配置的风险，并承担相应责任（后端将校验，未确认会被拒绝）'
+                  : hasUriRegex
+                    ? '我已知晓路径正则属于历史/高级配置的风险，并承担相应责任（启用时后端将校验，未确认会被拒绝）'
+                    : '我已知晓该宽泛例外的风险，并承担相应责任（后端将校验，未确认会被拒绝）'}
               </Checkbox>
             </Form.Item>
           )}

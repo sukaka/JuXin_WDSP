@@ -211,8 +211,10 @@ function makeAgentDetail(schemas: number[]) {
     interfaces: [],
     policy_binding: {
       policy_id: 'pol-1',
-      name: 'production-web',
-      version: 4,
+      policy_name: 'production-web',
+      policy_version: 4,
+      bound_by: 'secops',
+      bound_at: '2026-09-01T00:00:00Z',
     },
     http_event_schemas: schemas,
   }
@@ -414,6 +416,7 @@ describe('P1-03 G4a：Agent 详情能力集与版本分离', () => {
     expect(screen.getByText('服务端目标版本')).toBeInTheDocument()
     expect(screen.getByText('Agent 已加载版本')).toBeInTheDocument()
     expect(screen.getByText('待同步')).toBeInTheDocument()
+    expect(screen.getByText(/production-web（v4）/)).toBeInTheDocument()
     expect(screen.getByText(/已保存策略版本 v4/)).toBeInTheDocument()
   })
 

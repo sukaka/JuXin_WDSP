@@ -314,7 +314,7 @@ func versionItem(v *ConfigVersion) map[string]interface{} {
 		"id": v.ID, "version_number": v.VersionNumber, "configuration_hash": v.ConfigurationHash,
 		"business_snapshot": v.BusinessSnapshot, "change_summary": v.ChangeSummary,
 		"previous_version_id": v.PreviousVersionID, "publish_task_id": v.PublishTaskID,
-		"publish_result": v.PublishResult, "is_current": v.IsCurrent,
+		"publish_result": v.PublishResult, "validation_result": v.ValidationResult, "is_current": v.IsCurrent,
 		"created_by": v.CreatedBy, "created_at": v.CreatedAt, "published_at": v.PublishedAt,
 	}
 }

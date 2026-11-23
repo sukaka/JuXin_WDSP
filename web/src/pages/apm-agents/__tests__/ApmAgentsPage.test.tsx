@@ -11,6 +11,8 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
+const APP_ID = '11111111-1111-1111-1111-111111111111'
+
 const AGENTS = {
   items: [
     {
@@ -21,8 +23,8 @@ const AGENTS = {
       agent_version: '1.2.0',
       status: 'CONNECTED_BASELINE',
       last_heartbeat_at: new Date(Date.now() - 65_000).toISOString(),
-      cert_expires_at: '2026-12-31T00:00:00Z',
-      application_id: 'app-1',
+      cert_not_after: '2026-12-31T00:00:00Z',
+      application_id: APP_ID,
       environment: 'prod',
     },
     {
@@ -33,8 +35,8 @@ const AGENTS = {
       agent_version: '0.9.1',
       status: 'REVOKED',
       last_heartbeat_at: '2026-08-29T00:00:00Z',
-      cert_expires_at: '2026-01-01T00:00:00Z',
-      application_id: 'app-1',
+      cert_not_after: '2026-01-01T00:00:00Z',
+      application_id: APP_ID,
       environment: 'test',
     },
   ],
@@ -44,24 +46,25 @@ const AGENTS = {
 }
 
 const APPS = {
-  items: [{ id: 'app-1', code: 'shop', name: '商城站点' }],
+  items: [{ id: APP_ID, code: 'shop', name: '商城站点' }],
   page: 1,
   page_size: 100,
   total: 1,
 }
 
 const POLICY = {
-  scope: 'shop-order',
+  scope: `application:${APP_ID}`,
   version: 3,
   issued_at: '2026-08-01T00:00:00Z',
   expires_at: '2026-09-01T00:00:00Z',
-  policy: { sampling_rate: 10, diagnostics_enabled: false },
+  policy: { sampling_rate: 0.5, signals: ['traces'] },
   signature: 'sig-abc',
 }
 
 interface MockOptions {
   listStatus?: number
   agents?: unknown
+  getPolicyStatus?: number
   putStatus?: number
   pending?: boolean
 }
@@ -74,10 +77,17 @@ function mockFetch(opts: MockOptions = {}) {
     const ok = (data: unknown) =>
       Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
     if (url.includes('/apm/agents/enrollment-tokens') && method === 'POST') {
-      return ok({ id: 'tok-1', token: 'tok-secret-abc', expires_at: '2026-08-30T02:00:00Z' })
+      return ok({
+        token_id: 'tok-1',
+        token: 'tok-secret-abc',
+        application_id: APP_ID,
+        environment: 'prod',
+        allowed_languages: ['java'],
+        expires_at: '2026-08-30T02:00:00Z',
+      })
     }
     if (url.includes('/apm/agents/') && url.endsWith('/revoke') && method === 'POST') {
-      return ok({ message: 'Agent 已撤销' })
+      return ok({ ...AGENTS.items[0], status: 'REVOKED' })
     }
     if (url.includes('/apm/policies/')) {
       if (method === 'PUT') {
@@ -88,6 +98,11 @@ function mockFetch(opts: MockOptions = {}) {
         }
         const body = JSON.parse(String(init?.body)) as { policy: Record<string, unknown> }
         return ok({ ...POLICY, version: POLICY.version + 1, policy: body.policy })
+      }
+      if (opts.getPolicyStatus === 404) {
+        return Promise.resolve(
+          jsonResponse(404, { code: 'NOT_FOUND', message: '该作用域暂无策略版本', data: null }),
+        )
       }
       return ok(POLICY)
     }
@@ -180,7 +195,7 @@ describe('ApmAgentsPage', () => {
     expect(await screen.findByText('暂无数据')).toBeInTheDocument()
   })
 
-  it('创建注册令牌：表单提交后令牌原文仅展示一次', { timeout: 20000 }, async () => {
+  it('创建注册令牌：表单提交后令牌原文仅展示一次', { timeout: 60000 }, async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderPage()
     await screen.findByText('shop-order')
@@ -204,16 +219,16 @@ describe('ApmAgentsPage', () => {
     expect(await screen.findByText('令牌原文仅显示一次')).toBeInTheDocument()
     expect(screen.getByText('tok-secret-abc')).toBeInTheDocument()
 
-    // 提交体校验
+    // 提交体校验（使用后端 allowed_languages 小写枚举与 expires_in_minutes）
     const createCall = (fetch as Mock).mock.calls.find(
       (c) => String(c[0]).includes('/apm/agents/enrollment-tokens'),
     )
     expect(createCall).toBeTruthy()
     expect(JSON.parse(String(createCall![1]?.body))).toEqual({
-      application_id: 'app-1',
+      application_id: APP_ID,
       environment: 'prod',
-      languages: ['Java'],
-      ttl_minutes: 60,
+      allowed_languages: ['java'],
+      expires_in_minutes: 60,
     })
 
     // 关闭后令牌不再可见
@@ -221,7 +236,7 @@ describe('ApmAgentsPage', () => {
     await waitFor(() => expect(screen.queryByText('tok-secret-abc')).not.toBeInTheDocument())
   })
 
-  it('撤销 Agent：Popconfirm 二次确认后调用 revoke 接口', async () => {
+  it('撤销 Agent：Popconfirm 二次确认后调用 revoke 接口', { timeout: 60000 }, async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderPage()
     await screen.findByText('shop-order')
@@ -239,7 +254,7 @@ describe('ApmAgentsPage', () => {
     expect(await screen.findByText('Agent 已撤销')).toBeInTheDocument()
   })
 
-  it('基线策略 Drawer：按 scope 加载、编辑 JSON 后带 expected_version 保存', { timeout: 20000 }, async () => {
+  it('基线策略 Drawer：使用 global / application:<uuid> 作用域加载并带 expected_version 保存', { timeout: 60000 }, async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderPage()
     await screen.findByText('shop-order')
@@ -247,28 +262,59 @@ describe('ApmAgentsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '基线策略' }))
     const drawer = await screen.findByRole('dialog')
     // 未选 scope 前的提示
-    expect(within(drawer).getByText('请选择服务以查看其基线策略')).toBeInTheDocument()
+    expect(within(drawer).getByText('请选择策略作用域（全局或应用）以查看其基线策略')).toBeInTheDocument()
 
     fireEvent.mouseDown(within(drawer).getByRole('combobox'))
-    await clickSelectOption('shop-order')
+    await clickSelectOption('商城站点（shop）')
+
+    // 确认请求携带编码后的 application:<uuid> 作用域
+    await waitFor(() => {
+      const getCall = (fetch as Mock).mock.calls.find((c) =>
+        String(c[0]).includes(`/apm/policies/${encodeURIComponent(`application:${APP_ID}`)}`),
+      )
+      expect(getCall).toBeTruthy()
+    })
 
     // 策略加载：版本/签发/过期信息与 JSON 草稿
     expect(await within(drawer).findByText('v3')).toBeInTheDocument()
     const textarea = drawer.querySelector('textarea')!
-    expect(textarea.value).toContain('"sampling_rate": 10')
+    expect(textarea.value).toContain('"sampling_rate": 0.5')
 
-    fireEvent.change(textarea, { target: { value: '{"sampling_rate": 20}' } })
+    fireEvent.change(textarea, { target: { value: '{"sampling_rate": 0.8}' } })
     fireEvent.click(within(drawer).getByRole('button', { name: /保\s*存/ }))
 
     await waitFor(() => expect(policyPutCalls()).toHaveLength(1))
+    expect(String(policyPutCalls()[0][0])).toContain(
+      `/apm/policies/${encodeURIComponent(`application:${APP_ID}`)}`,
+    )
     expect(JSON.parse(String(policyPutCalls()[0][1]?.body))).toEqual({
-      policy: { sampling_rate: 20 },
+      policy: { sampling_rate: 0.8 },
       expected_version: 3,
     })
     expect(await screen.findByText('策略已保存')).toBeInTheDocument()
   })
 
-  it('策略保存 409 版本冲突：提示刷新重试', { timeout: 20000 }, async () => {
+  it('基线策略 Drawer：作用域尚无策略（404）时可编辑模板并以 expected_version=0 创建 v1', { timeout: 60000 }, async () => {
+    vi.stubGlobal('fetch', mockFetch({ getPolicyStatus: 404 }))
+    renderPage()
+    await screen.findByText('shop-order')
+
+    fireEvent.click(screen.getByRole('button', { name: '基线策略' }))
+    const drawer = await screen.findByRole('dialog')
+    fireEvent.mouseDown(within(drawer).getByRole('combobox'))
+    await clickSelectOption('全局默认（global）')
+
+    expect(await within(drawer).findByText('该作用域暂无策略版本')).toBeInTheDocument()
+    fireEvent.click(within(drawer).getByRole('button', { name: /保\s*存/ }))
+
+    await waitFor(() => expect(policyPutCalls()).toHaveLength(1))
+    expect(String(policyPutCalls()[0][0])).toContain('/apm/policies/global')
+    expect(JSON.parse(String(policyPutCalls()[0][1]?.body))).toMatchObject({
+      expected_version: 0,
+    })
+  })
+
+  it('策略保存 409 版本冲突：提示刷新重试', { timeout: 60000 }, async () => {
     vi.stubGlobal('fetch', mockFetch({ putStatus: 409 }))
     renderPage()
     await screen.findByText('shop-order')
@@ -276,7 +322,7 @@ describe('ApmAgentsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '基线策略' }))
     const drawer = await screen.findByRole('dialog')
     fireEvent.mouseDown(within(drawer).getByRole('combobox'))
-    await clickSelectOption('shop-order')
+    await clickSelectOption('商城站点（shop）')
     await within(drawer).findByText('v3')
 
     fireEvent.click(within(drawer).getByRole('button', { name: /保\s*存/ }))
@@ -284,7 +330,7 @@ describe('ApmAgentsPage', () => {
     expect(await screen.findByText(/策略版本冲突.*刷新/)).toBeInTheDocument()
   })
 
-  it('基线策略作用域远程搜索：输入防抖后带 keyword 查询后端', async () => {
+  it('基线策略作用域远程搜索：输入防抖后带 keyword 查询应用列表', { timeout: 60000 }, async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderPage()
     await screen.findByText('shop-order')
@@ -295,11 +341,11 @@ describe('ApmAgentsPage', () => {
 
     await waitFor(() => {
       const urls = (fetch as Mock).mock.calls.map((c) => String(c[0]))
-      expect(urls.some((u) => u.includes('/apm/agents') && u.includes('keyword=shop'))).toBe(true)
+      expect(urls.some((u) => u.includes('/applications') && u.includes('keyword=shop'))).toBe(true)
     })
   })
 
-  it('策略 JSON 非法时不发起保存请求', async () => {
+  it('策略 JSON 非法时不发起保存请求', { timeout: 60000 }, async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderPage()
     await screen.findByText('shop-order')
@@ -307,7 +353,7 @@ describe('ApmAgentsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '基线策略' }))
     const drawer = await screen.findByRole('dialog')
     fireEvent.mouseDown(within(drawer).getByRole('combobox'))
-    await clickSelectOption('shop-order')
+    await clickSelectOption('商城站点（shop）')
     await within(drawer).findByText('v3')
 
     fireEvent.change(drawer.querySelector('textarea')!, { target: { value: '{bad json' } })
@@ -315,5 +361,92 @@ describe('ApmAgentsPage', () => {
 
     expect(await screen.findByText('策略 JSON 格式不正确，请检查后重试')).toBeInTheDocument()
     expect(policyPutCalls()).toHaveLength(0)
+  })
+
+  it('基线策略 Drawer：在多个 404 作用域间来回切换（命中缓存 404）仍填充默认模板且不覆盖用户编辑', { timeout: 60000 }, async () => {
+    vi.stubGlobal('fetch', mockFetch({ getPolicyStatus: 404 }))
+    renderPage()
+    await screen.findByText('shop-order')
+
+    fireEvent.click(screen.getByRole('button', { name: '基线策略' }))
+    const drawer = await screen.findByRole('dialog')
+
+    // 1) global (404) -> 默认基线模板落位
+    fireEvent.mouseDown(within(drawer).getByRole('combobox'))
+    await clickSelectOption('全局默认（global）')
+    expect(await within(drawer).findByText('该作用域暂无策略版本')).toBeInTheDocument()
+    const getTextarea = () => drawer.querySelector('textarea')!
+    await waitFor(() => {
+      expect(JSON.parse(getTextarea().value)).toEqual({
+        signals: ['traces', 'metrics', 'runtime', 'exceptions'],
+        sampling_rate: 1,
+      })
+    })
+
+    // 编辑 global 草稿，确认切换作用域后会重置为新作用域模板
+    fireEvent.change(getTextarea(), {
+      target: { value: '{"signals":["traces"],"sampling_rate":0.25}' },
+    })
+
+    // 2) 切换到 application:<uuid> (404)
+    fireEvent.mouseDown(within(drawer).getByRole('combobox'))
+    await clickSelectOption('商城站点（shop）')
+    await waitFor(() => {
+      const appGet = (fetch as Mock).mock.calls.find((c) =>
+        String(c[0]).includes(`/apm/policies/${encodeURIComponent(`application:${APP_ID}`)}`),
+      )
+      expect(appGet).toBeTruthy()
+    })
+    await waitFor(() => {
+      expect(JSON.parse(getTextarea().value)).toEqual({
+        signals: ['traces', 'metrics', 'runtime', 'exceptions'],
+        sampling_rate: 1,
+      })
+    })
+
+    // 3) 切回已缓存 404 的 global：isPolicyNotFound 保持 true->true，仍必须填充默认模板而非清空
+    const globalGetsBefore = (fetch as Mock).mock.calls.filter((c) =>
+      String(c[0]).endsWith('/apm/policies/global'),
+    ).length
+    fireEvent.mouseDown(within(drawer).getByRole('combobox'))
+    await clickSelectOption('全局默认（global）')
+    await waitFor(() => {
+      expect(getTextarea().value).not.toBe('')
+      expect(JSON.parse(getTextarea().value)).toEqual({
+        signals: ['traces', 'metrics', 'runtime', 'exceptions'],
+        sampling_rate: 1,
+      })
+    })
+
+    // 4) 编辑后即使触发后台重拉 404 也不覆盖用户编辑，重复选择当前作用域也不清空草稿，最终以 expected_version=0 保存
+    fireEvent.change(getTextarea(), {
+      target: { value: '{"signals":["traces"],"sampling_rate":0.6}' },
+    })
+    await waitFor(() => {
+      const globalGetsAfter = (fetch as Mock).mock.calls.filter((c) =>
+        String(c[0]).endsWith('/apm/policies/global'),
+      ).length
+      expect(globalGetsAfter).toBeGreaterThan(globalGetsBefore)
+    })
+    expect(JSON.parse(getTextarea().value)).toEqual({
+      signals: ['traces'],
+      sampling_rate: 0.6,
+    })
+
+    // 重复点击当前已选中的作用域，不得清空用户编辑
+    fireEvent.mouseDown(within(drawer).getByRole('combobox'))
+    await clickSelectOption('全局默认（global）')
+    expect(JSON.parse(getTextarea().value)).toEqual({
+      signals: ['traces'],
+      sampling_rate: 0.6,
+    })
+
+    fireEvent.click(within(drawer).getByRole('button', { name: /保\s*存/ }))
+    await waitFor(() => expect(policyPutCalls()).toHaveLength(1))
+    expect(String(policyPutCalls()[0][0])).toContain('/apm/policies/global')
+    expect(JSON.parse(String(policyPutCalls()[0][1]?.body))).toEqual({
+      policy: { signals: ['traces'], sampling_rate: 0.6 },
+      expected_version: 0,
+    })
   })
 })

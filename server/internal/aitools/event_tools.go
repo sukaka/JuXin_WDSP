@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/audits"
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 // eventTools 安全事件 Tool 组。
@@ -223,6 +224,8 @@ FROM security_event_matches WHERE event_id = $1 LIMIT 20`, id)
 		if err := matchRows.Scan(&rid, &rname, &msg, &data); err != nil {
 			return nil, err
 		}
+		rname = wafrules.LocalizeRule(rid, "", rname)
+		msg = wafrules.LocalizeMatchMessage(rid, msg)
 		matches = append(matches, map[string]interface{}{
 			"rule_id": rid, "rule_name": rname, "message": msg, "data": audits.MaskSensitiveJSON(data),
 		})

@@ -5,6 +5,8 @@ package apisecurity
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +73,26 @@ func TestRuntimeEventJWTVerificationProjection(t *testing.T) {
 	for k, v := range want {
 		if jwt[k] != v {
 			t.Errorf("jwt_verification.%s = %v, want %q", k, jwt[k], v)
+		}
+	}
+}
+
+func TestListViolationsTimeParamValidation(t *testing.T) {
+	h := NewHandler(nil, nil)
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"invalid start_time", "/api/v1/api-security/violations?start_time=not-a-time"},
+		{"invalid end_time", "/api/v1/api-security/violations?end_time=2026-99-99"},
+		{"start_time after end_time", "/api/v1/api-security/violations?start_time=2026-08-02T00:00:00Z&end_time=2026-08-01T00:00:00Z"},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+		rr := httptest.NewRecorder()
+		h.ListViolations(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("%s: status=%d, want 400 (body=%s)", tc.name, rr.Code, rr.Body.String())
 		}
 	}
 }

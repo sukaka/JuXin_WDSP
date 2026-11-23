@@ -31,7 +31,10 @@ export const protectionPoliciesApi = {
     })
     return { ...data, items: data.items ?? [] }
   },
-  get: (id: string) => request<ProtectionPolicyDetail>(`/protection-policies/${id}`),
+  get: async (id: string): Promise<ProtectionPolicyDetail & { application_ids: string[] }> => {
+    const data = await request<ProtectionPolicyDetail>(`/protection-policies/${id}`)
+    return { ...data, application_ids: data.application_ids ?? [] }
+  },
   create: (body: CreateProtectionPolicyBody) =>
     request<ProtectionPolicyItem>('/protection-policies', { method: 'POST', body }),
   update: (id: string, body: UpdateProtectionPolicyBody) =>
@@ -40,8 +43,12 @@ export const protectionPoliciesApi = {
     request<{ message: string }>(`/protection-policies/${id}`, { method: 'DELETE' }),
   copy: (id: string) =>
     request<ProtectionPolicyItem>(`/protection-policies/${id}/copy`, { method: 'POST' }),
-  applications: (id: string) =>
-    request<{ application_ids: string[]; count: number }>(`/protection-policies/${id}/applications`),
+  applications: async (id: string) => {
+    const data = await request<{ application_ids: string[] | null; count: number }>(
+      `/protection-policies/${id}/applications`,
+    )
+    return { ...data, application_ids: data.application_ids ?? [] }
+  },
   bindApplication: (id: string, applicationId: string) =>
     request<{ message: string }>(`/protection-policies/${id}/applications`, {
       method: 'POST',

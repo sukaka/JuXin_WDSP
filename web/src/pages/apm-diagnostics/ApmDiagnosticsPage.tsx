@@ -220,7 +220,7 @@ export default function ApmDiagnosticsPage() {
   }
 
   const killSwitchOn = listQuery.data?.kill_switch_enabled === true
-  const hasActive = (listQuery.data?.list ?? []).some((s) => s.status === 'ACTIVE')
+  const hasActive = (listQuery.data?.items ?? []).some((s) => s.status === 'ACTIVE')
   const overhead = dryRunMutation.data?.estimated_overhead
 
   const columns: ColumnsType<ApmDiagnosticSession> = [
@@ -385,7 +385,7 @@ export default function ApmDiagnosticsPage() {
           rowKey="id"
           loading={listQuery.isLoading}
           columns={columns}
-          dataSource={listQuery.data?.list}
+          dataSource={listQuery.data?.items}
           scroll={{ x: 1150 }}
           locale={{ emptyText: '暂无诊断会话，点击右上角「新建诊断会话」创建' }}
           onRow={(record) => ({
@@ -724,30 +724,47 @@ export default function ApmDiagnosticsPage() {
               {(detail.audits ?? []).length > 0 ? (
                 <List
                   size="small"
-                  dataSource={detail.audits}
-                  renderItem={(audit) => (
-                    <List.Item>
-                      <Space direction="vertical" size={0}>
-                        <Space size={8}>
-                          <Typography.Text strong style={{ fontSize: 12 }}>
-                            {audit.action
-                              ? (APM_DIAG_AUDIT_ACTION_LABELS[audit.action] ??
-                                APM_DIAG_AUDIT_ACTION_LABELS[audit.action.toLowerCase()] ??
-                                audit.action)
-                              : '-'}
-                          </Typography.Text>
-                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            {audit.actor || '-'} · {formatDateTime(audit.created_at)}
-                          </Typography.Text>
+                  dataSource={detail.audits ?? []}
+                  renderItem={(audit) => {
+                    const summaryText = audit.failure_reason
+                      ? `失败原因：${audit.failure_reason}`
+                      : audit.before_summary && audit.after_summary
+                        ? `${audit.before_summary} → ${audit.after_summary}`
+                        : audit.after_summary || audit.before_summary || ''
+                    return (
+                      <List.Item>
+                        <Space direction="vertical" size={0}>
+                          <Space size={8} wrap>
+                            <Typography.Text strong style={{ fontSize: 12 }}>
+                              {audit.action
+                                ? (APM_DIAG_AUDIT_ACTION_LABELS[audit.action] ??
+                                  APM_DIAG_AUDIT_ACTION_LABELS[audit.action.toLowerCase()] ??
+                                  audit.action)
+                                : '-'}
+                            </Typography.Text>
+                            {audit.result ? (
+                              <Tag color={audit.result === 'FAILURE' ? 'red' : 'green'} style={{ marginInlineEnd: 0 }}>
+                                {audit.result === 'FAILURE' ? '失败' : audit.result === 'SUCCESS' ? '成功' : audit.result}
+                              </Tag>
+                            ) : null}
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              {audit.username || '-'} · {formatDateTime(audit.occurred_at)}
+                            </Typography.Text>
+                          </Space>
+                          {audit.object_name ? (
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              对象：{audit.object_name}
+                            </Typography.Text>
+                          ) : null}
+                          {summaryText ? (
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              {summaryText}
+                            </Typography.Text>
+                          ) : null}
                         </Space>
-                        {audit.detail ? (
-                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                            {audit.detail}
-                          </Typography.Text>
-                        ) : null}
-                      </Space>
-                    </List.Item>
-                  )}
+                      </List.Item>
+                    )
+                  }}
                 />
               ) : (
                 <Typography.Text type="secondary">暂无审计记录</Typography.Text>

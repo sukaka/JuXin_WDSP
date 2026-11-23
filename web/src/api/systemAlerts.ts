@@ -10,6 +10,7 @@ import type {
 
 export interface SystemAlertListParams {
   status?: string
+  view?: 'ACTIVE' | 'SILENCED' | 'HISTORY'
   severity?: string
   alert_type?: string
   component?: string
@@ -17,7 +18,9 @@ export interface SystemAlertListParams {
   page_size: number
 }
 
-export type SystemAlertExportParams = Partial<Omit<SystemAlertListParams, 'page' | 'page_size'>>
+export type SystemAlertExportParams = Partial<Omit<SystemAlertListParams, 'page' | 'page_size'>> & {
+  ids?: string
+}
 
 /**
  * 系统告警。

@@ -72,11 +72,11 @@ export default function ModeSwitchModal({
   // 覆盖率报告的未确认端点不含资产 id（冻结契约），按 endpoint_key 关联资产清单取得确认所需 id
   const endpointsQuery = useQuery({
     queryKey: ['api-admission', 'app-endpoint-keys', app.id],
-    queryFn: () => apiEndpointsApi.list({ application_id: app.id, page: 1, page_size: 200 }),
+    queryFn: () => apiEndpointsApi.listAllByApplication(app.id),
     enabled: mode === 'PROTECT',
   })
   const idByKey = useMemo(
-    () => new Map((endpointsQuery.data?.items ?? []).map((e) => [e.endpoint_key, e.id])),
+    () => new Map((endpointsQuery.data ?? []).map((e) => [e.endpoint_key, e.id])),
     [endpointsQuery.data],
   )
 
@@ -178,10 +178,12 @@ export default function ModeSwitchModal({
         const id = idByKey.get(record.endpoint_key)
         if (!id) {
           return (
-            <Tooltip title="未在资产清单匹配到该接口，请到 API 接口资产页确认">
-              <Button type="link" size="small" disabled>
-                确认
-              </Button>
+            <Tooltip title="未在资产清单匹配到该接口，请到 API 接口资产页确认" placement="left">
+              <span>
+                <Button type="link" size="small" disabled>
+                  确认
+                </Button>
+              </span>
             </Tooltip>
           )
         }

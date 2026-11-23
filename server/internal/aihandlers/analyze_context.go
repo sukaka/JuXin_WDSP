@@ -284,6 +284,12 @@ func buildEventFilterContext(req *analyzeRequest, label string, s *eventFilterSu
 	b.WriteString("分析维度：" + describeEventFilterDims(req) + "；统计区间：" + label + "\n")
 	if s.Total == 0 {
 		b.WriteString(fmt.Sprintf("检索结果：该维度组合在%s内无安全事件记录（访问控制事件 %d 条）。数据不足，无法确认攻击情况；请如实说明数据不足，不得推测。", label, s.AccessEvents))
+		if req.EventID != "" {
+			b.WriteString("\n另请结合事件 " + req.EventID + " 的详情做关联分析")
+		}
+		if req.Question != "" {
+			b.WriteString("\n分析侧重点：" + req.Question)
+		}
 		return b.String()
 	}
 	b.WriteString(fmt.Sprintf("检索结果（确定性数据）：安全事件 %d 条，其中阻断 %d 条；首次 %s，最近 %s。\n",
@@ -293,6 +299,9 @@ func buildEventFilterContext(req *analyzeRequest, label string, s *eventFilterSu
 	b.WriteString("目标 URI TOP：" + formatKVs(s.Paths) + "\n")
 	if req.IP != "" || req.RequestID != "" {
 		b.WriteString(fmt.Sprintf("同维度访问控制事件（CC/黑白名单/封禁）：%d 条\n", s.AccessEvents))
+	}
+	if req.EventID != "" {
+		b.WriteString("另请结合事件 " + req.EventID + " 的详情做关联分析\n")
 	}
 	if req.Question != "" {
 		b.WriteString("分析侧重点：" + req.Question)

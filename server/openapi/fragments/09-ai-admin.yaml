@@ -1432,7 +1432,7 @@ paths:
       summary: AI 审计详情
       description: |
         权限：ai.audits.read。
-        返回字段口径同审计列表项并附记录 ID；与列表不同，详情补查 prompt_version/confirm_result 两列。
+        返回字段口径与审计列表项一致（含记录 ID 及 prompt_version/confirm_result 列）。
         审计正文在写入时已脱敏：不保存密钥/密码/私钥/完整载荷与模型私有思维链。
         AI 模块全局关闭时本接口返回 503。
       parameters:
@@ -2558,9 +2558,13 @@ components:
     # ---- AI 审计 ----
     AiAuditRecord:
       type: object
-      description: AI 审计记录（写入时已脱敏；列表接口不查询 prompt_version/confirm_result 列，该两字段恒为空字符串）
-      required: [occurred_at, username, role_codes, action, task_type, agent_code, tool_code, model_code, prompt_version, input_tokens, output_tokens, duration_ms, estimated_cost, request_summary, result_summary, draft_reference, confirm_result]
+      description: AI 审计记录（写入时已脱敏；列表与详情接口字段口径一致，均返回 id、prompt_version、confirm_result 等字段，不回传哈希链列）
+      required: [id, occurred_at, username, role_codes, action, task_type, agent_code, tool_code, model_code, prompt_version, input_tokens, output_tokens, duration_ms, estimated_cost, request_summary, result_summary, draft_reference, confirm_result]
       properties:
+        id:
+          type: string
+          format: uuid
+          description: 审计记录 ID
         occurred_at:
           type: string
           format: date-time
@@ -2603,7 +2607,7 @@ components:
           description: 模型编码
         prompt_version:
           type: string
-          description: Prompt 版本号（列表接口不返回该列，恒为空字符串）
+          description: Prompt 版本号
         input_tokens:
           type: integer
           description: 输入 Token 数
@@ -2627,19 +2631,11 @@ components:
           description: 草稿引用
         confirm_result:
           type: string
-          description: 确认结果（列表接口不返回该列，恒为空字符串）
+          description: 确认结果
 
     AiAuditDetail:
-      description: AI 审计详情（列表项字段 + 记录 ID；详情接口补查 prompt_version/confirm_result 两列）
-      allOf:
-        - $ref: '#/components/schemas/AiAuditRecord'
-        - type: object
-          required: [id]
-          properties:
-            id:
-              type: string
-              format: uuid
-              description: 审计记录 ID
+      description: AI 审计详情（与 AiAuditRecord 字段口径一致）
+      $ref: '#/components/schemas/AiAuditRecord'
 
     AiAuditResponse:
       type: object

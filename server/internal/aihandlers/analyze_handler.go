@@ -79,30 +79,28 @@ func (d *Deps) AnalyzeEvent(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, verr)
 		return
 	}
-	msg := ""
+	var runIn aiorchestrator.RunInput
 	switch {
 	case hasEventFilter(req):
 		// 结构化维度过滤：按维度查询真实数据组装分析上下文；缺数据如实返回"数据不足"口径
-		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "24h", time.Now())
+		now := time.Now()
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "24h", now)
 		summary, err := d.queryEventFilterSummary(r.Context(), req, start, end)
 		if err != nil {
 			slog.Error("ai analyze event filter query failed", "error", err)
 			response.InternalError(w, r, err)
 			return
 		}
-		msg = buildEventFilterContext(req, label, summary)
-		if req.EventID != "" {
-			msg += "\n另请结合事件 " + req.EventID + " 的详情做关联分析"
-		}
+		runIn = buildEventFilterRunInput(req, label, summary, now)
 	case req.EventID != "":
-		msg = "请分析安全事件 " + req.EventID + "，给出攻击类型、命中规则、风险等级、是否阻断与处置建议"
+		runIn = buildEventIDRunInput(req)
 	case req.Question != "":
-		msg = "请分析安全事件：" + req.Question
+		runIn = buildEventQuestionRunInput(req)
 	default:
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供事件ID、过滤维度（时间范围/应用/IP/URI/规则/Request ID）或分析问题")
 		return
 	}
-	d.runAnalyze(w, r, msg, "安全事件分析")
+	d.runAnalyze(w, r, "安全事件分析", runIn)
 }
 
 // AnalyzeFalsePositive 误报 AI 研判。
@@ -126,8 +124,7 @@ func (d *Deps) AnalyzeFalsePositive(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供事件ID或规则ID")
 		return
 	}
-	msg := "请对以下对象做误报研判：" + strings.Join(parts, "，") + "，给出误报可能性、推荐例外范围与验证方法"
-	d.runAnalyze(w, r, msg, "误报研判")
+	d.runAnalyze(w, r, "误报研判", buildFalsePositiveRunInput(req, parts))
 }
 
 // AnalyzeAttackProfile 攻击画像（IP/URI/应用；§15.2/§15.3 URI 画像与应用画像为一等结构化入参）。
@@ -140,43 +137,39 @@ func (d *Deps) AnalyzeAttackProfile(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, verr)
 		return
 	}
-	msg := ""
+	var runIn aiorchestrator.RunInput
 	switch {
 	case req.IP != "":
-		msg = "请对 IP " + req.IP + " 做攻击画像分析，给出首次/最近出现、攻击类型、目标、阻断与封禁情况及处置建议"
+		runIn = buildIPProfileRunInput(req, time.Now())
 	case req.URI != "":
 		// URI 画像：真实 SQL 聚合（事件分布/攻击类型/来源 IP/命中规则 Top）
-		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "7d", time.Now())
+		now := time.Now()
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "7d", now)
 		profile, err := d.queryURIProfile(r.Context(), req.URI, start, end)
 		if err != nil {
 			slog.Error("ai uri profile query failed", "error", err)
 			response.InternalError(w, r, err)
 			return
 		}
-		msg = buildURIProfileContext(label, profile)
-		if req.Question != "" {
-			msg += "\n分析侧重点：" + req.Question
-		}
+		runIn = buildURIProfileRunInput(req, label, profile, now)
 	case req.ApplicationID != "":
 		// 应用画像：真实 SQL 聚合（应用维度同理）
-		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "7d", time.Now())
+		now := time.Now()
+		start, end, label, _ := parseAnalyzeTimeRange(req.TimeRange, "7d", now)
 		profile, err := d.queryAppProfile(r.Context(), req.ApplicationID, start, end)
 		if err != nil {
 			slog.Error("ai application profile query failed", "error", err)
 			response.InternalError(w, r, err)
 			return
 		}
-		msg = buildAppProfileContext(label, profile)
-		if req.Question != "" {
-			msg += "\n分析侧重点：" + req.Question
-		}
+		runIn = buildAppProfileRunInput(req, label, profile, now)
 	case req.Question != "":
-		msg = "请做攻击画像分析：" + req.Question
+		runIn = buildProfileQuestionRunInput(req)
 	default:
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供IP、URI、应用ID或画像问题")
 		return
 	}
-	d.runAnalyze(w, r, msg, "攻击画像")
+	d.runAnalyze(w, r, "攻击画像", runIn)
 }
 
 // AnalyzeAttackChain 攻击链关联分析。
@@ -185,25 +178,22 @@ func (d *Deps) AnalyzeAttackChain(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	msg := ""
 	switch {
 	case req.IP != "":
 		if net.ParseIP(req.IP) == nil {
 			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的IP地址")
 			return
 		}
-		msg = "请对 IP " + req.IP + " 做攻击链关联分析，输出攻击时间线、阶段、置信度与排查建议"
 	case req.EventID != "":
 		if !validEventID(req.EventID) {
 			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的事件ID")
 			return
 		}
-		msg = "请对事件 " + req.EventID + " 做攻击链关联分析（提取同源IP的连续攻击行为）"
 	default:
 		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供IP或事件ID")
 		return
 	}
-	d.runAnalyze(w, r, msg, "攻击链分析")
+	d.runAnalyze(w, r, "攻击链分析", buildAttackChainRunInput(req))
 }
 
 // AnalyzePolicyRecommendation 策略优化建议。
@@ -212,11 +202,7 @@ func (d *Deps) AnalyzePolicyRecommendation(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	msg := "请基于最近事件与误报统计，给出 WAF 策略优化建议（阈值、例外收敛、规则启停），不得建议直接关闭高风险规则"
-	if req.Question != "" {
-		msg += "；关注点：" + req.Question
-	}
-	d.runAnalyze(w, r, msg, "策略优化建议")
+	d.runAnalyze(w, r, "策略优化建议", buildPolicyRecommendationRunInput(req))
 }
 
 // AnalyzeWhatIf What-If 策略模拟（§19 八种场景：停用/启用规则、异常阈值、PL 切换、
@@ -235,6 +221,7 @@ func (d *Deps) AnalyzeWhatIf(w http.ResponseWriter, r *http.Request) {
 		scenario = whatIfScenarioDisableRule
 	}
 	msg := ""
+	defPreset := "30d"
 	switch scenario {
 	case whatIfScenarioDisableRule:
 		if req.RuleID <= 0 {
@@ -256,6 +243,7 @@ func (d *Deps) AnalyzeWhatIf(w http.ResponseWriter, r *http.Request) {
 		}
 		msg = buildEnableRuleContext(label, s)
 	case whatIfScenarioAnomalyThreshold:
+		defPreset = "7d"
 		if req.AnomalyThreshold <= 0 {
 			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供模拟的异常阈值（anomaly_threshold，1-10000）")
 			return
@@ -321,6 +309,7 @@ func (d *Deps) AnalyzeWhatIf(w http.ResponseWriter, r *http.Request) {
 		}
 		msg = buildRemoveExceptionContext(label, exc, s)
 	case whatIfScenarioCCThreshold:
+		defPreset = "7d"
 		if req.CCThreshold <= 0 {
 			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供模拟的 CC 阈值（cc_threshold，次/窗口）")
 			return
@@ -334,6 +323,7 @@ func (d *Deps) AnalyzeWhatIf(w http.ResponseWriter, r *http.Request) {
 		}
 		msg = buildCCThresholdContext(label, req.CCThreshold, estimateCCThreshold(samples, req.CCThreshold))
 	case whatIfScenarioBlockDuration:
+		defPreset = "7d"
 		if req.BlockDurationSeconds < 60 {
 			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "请提供模拟的封禁时长（block_duration_seconds，60-2592000 秒）")
 			return
@@ -348,7 +338,7 @@ func (d *Deps) AnalyzeWhatIf(w http.ResponseWriter, r *http.Request) {
 		msg = buildBlockDurationContext(label, time.Duration(req.BlockDurationSeconds)*time.Second,
 			estimateBlockDuration(samples, time.Duration(req.BlockDurationSeconds)*time.Second))
 	}
-	d.runAnalyze(w, r, msg, "What-If 模拟")
+	d.runAnalyze(w, r, "What-If 模拟", buildWhatIfRunInput(req, msg, defPreset, time.Now()))
 }
 
 // AnalyzeRootCause 运行异常根因分析。
@@ -357,12 +347,231 @@ func (d *Deps) AnalyzeRootCause(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	d.runAnalyze(w, r, "根因分析", buildRootCauseRunInput(req))
+}
+
+func sliceIfNonEmpty(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return []string{s}
+}
+
+func intSliceIfPos(n int) []int {
+	if n <= 0 {
+		return nil
+	}
+	return []int{n}
+}
+
+func explicitAnalyzeTimeRange(preset, defPreset string, now time.Time) aiorchestrator.QueryTimeRange {
+	start, end, label, err := parseAnalyzeTimeRange(preset, defPreset, now)
+	if err != nil {
+		return aiorchestrator.QueryTimeRange{}
+	}
+	return aiorchestrator.QueryTimeRange{
+		Start:    start,
+		End:      end,
+		Label:    label,
+		Explicit: true,
+	}
+}
+
+func buildEventFilterRunInput(req *analyzeRequest, label string, summary *eventFilterSummary, now time.Time) aiorchestrator.RunInput {
+	return aiorchestrator.RunInput{
+		Message:       buildEventFilterContext(req, label, summary),
+		TaskType:      aiorchestrator.TaskEventAnalysis,
+		StructuredIDs: true,
+		EventIDs:      sliceIfNonEmpty(req.EventID),
+		RuleIDs:       intSliceIfPos(req.RuleID),
+		IPs:           sliceIfNonEmpty(req.IP),
+		URI:           req.URI,
+		ApplicationID: req.ApplicationID,
+		TimeRange:     explicitAnalyzeTimeRange(req.TimeRange, "24h", now),
+	}
+}
+
+func buildEventIDRunInput(req *analyzeRequest) aiorchestrator.RunInput {
+	return aiorchestrator.RunInput{
+		Message:       buildEventIDAnalyzeMessage(req),
+		TaskType:      aiorchestrator.TaskEventAnalysis,
+		StructuredIDs: true,
+		EventIDs:      []string{req.EventID},
+	}
+}
+
+func buildEventQuestionRunInput(req *analyzeRequest) aiorchestrator.RunInput {
+	return aiorchestrator.RunInput{
+		Message:       "请分析安全事件：" + req.Question,
+		TaskType:      aiorchestrator.TaskEventAnalysis,
+		StructuredIDs: false,
+	}
+}
+
+func buildFalsePositiveRunInput(req *analyzeRequest, parts []string) aiorchestrator.RunInput {
+	if len(parts) == 0 {
+		if req.EventID != "" {
+			parts = append(parts, "事件 "+req.EventID)
+		}
+		if req.RuleID > 0 {
+			parts = append(parts, "规则 "+itoa(req.RuleID))
+		}
+	}
+	return aiorchestrator.RunInput{
+		Message:       "请对以下对象做误报研判：" + strings.Join(parts, "，") + "，给出误报可能性、推荐例外范围与验证方法",
+		TaskType:      aiorchestrator.TaskFalsePositive,
+		StructuredIDs: true,
+		EventIDs:      sliceIfNonEmpty(req.EventID),
+		RuleIDs:       intSliceIfPos(req.RuleID),
+	}
+}
+
+func buildIPProfileRunInput(req *analyzeRequest, now time.Time) aiorchestrator.RunInput {
+	var tr aiorchestrator.QueryTimeRange
+	if req.TimeRange != "" {
+		tr = explicitAnalyzeTimeRange(req.TimeRange, "7d", now)
+	}
+	return aiorchestrator.RunInput{
+		Message:       buildIPProfileMessage(req),
+		TaskType:      aiorchestrator.TaskAttackProfile,
+		StructuredIDs: true,
+		IPs:           []string{req.IP},
+		TimeRange:     tr,
+	}
+}
+
+func buildURIProfileRunInput(req *analyzeRequest, label string, profile *uriProfileSummary, now time.Time) aiorchestrator.RunInput {
+	msg := buildURIProfileContext(label, profile)
+	if req.Question != "" {
+		msg += "\n分析侧重点：" + req.Question
+	}
+	return aiorchestrator.RunInput{
+		Message:       msg,
+		TaskType:      aiorchestrator.TaskAttackProfile,
+		StructuredIDs: true,
+		URI:           req.URI,
+		TimeRange:     explicitAnalyzeTimeRange(req.TimeRange, "7d", now),
+	}
+}
+
+func buildAppProfileRunInput(req *analyzeRequest, label string, profile *appProfileSummary, now time.Time) aiorchestrator.RunInput {
+	msg := buildAppProfileContext(label, profile)
+	if req.Question != "" {
+		msg += "\n分析侧重点：" + req.Question
+	}
+	return aiorchestrator.RunInput{
+		Message:       msg,
+		TaskType:      aiorchestrator.TaskAttackProfile,
+		StructuredIDs: true,
+		ApplicationID: req.ApplicationID,
+		TimeRange:     explicitAnalyzeTimeRange(req.TimeRange, "7d", now),
+	}
+}
+
+func buildProfileQuestionRunInput(req *analyzeRequest) aiorchestrator.RunInput {
+	return aiorchestrator.RunInput{
+		Message:       "请做攻击画像分析：" + req.Question,
+		TaskType:      aiorchestrator.TaskAttackProfile,
+		StructuredIDs: false,
+	}
+}
+
+func buildAttackChainRunInput(req *analyzeRequest) aiorchestrator.RunInput {
+	msg := ""
+	var ips, eventIDs []string
+	if req.IP != "" {
+		msg = "请对 IP " + req.IP + " 做攻击链关联分析，输出攻击时间线、阶段、置信度与排查建议"
+		ips = []string{req.IP}
+	} else if req.EventID != "" {
+		msg = "请对事件 " + req.EventID + " 做攻击链关联分析（提取同源IP的连续攻击行为）"
+		eventIDs = []string{req.EventID}
+	}
+	return aiorchestrator.RunInput{
+		Message:       msg,
+		TaskType:      aiorchestrator.TaskAttackChain,
+		StructuredIDs: true,
+		IPs:           ips,
+		EventIDs:      eventIDs,
+	}
+}
+
+func buildPolicyRecommendationRunInput(req *analyzeRequest) aiorchestrator.RunInput {
+	msg := "请基于最近事件与误报统计，给出 WAF 策略优化建议（阈值、例外收敛、规则启停），不得建议直接关闭高风险规则"
+	if req.Question != "" {
+		msg += "；关注点：" + req.Question
+	}
+	return aiorchestrator.RunInput{
+		Message:       msg,
+		TaskType:      aiorchestrator.TaskPolicyRec,
+		StructuredIDs: false,
+	}
+}
+
+func buildWhatIfRunInput(req *analyzeRequest, msg, defPreset string, now time.Time) aiorchestrator.RunInput {
+	var tr aiorchestrator.QueryTimeRange
+	if req.TimeRange != "" {
+		tr = explicitAnalyzeTimeRange(req.TimeRange, defPreset, now)
+	}
+	return aiorchestrator.RunInput{
+		Message:       msg,
+		TaskType:      aiorchestrator.TaskWhatIf,
+		StructuredIDs: true,
+		RuleIDs:       intSliceIfPos(req.RuleID),
+		URI:           req.URI,
+		ApplicationID: req.ApplicationID,
+		TimeRange:     tr,
+	}
+}
+
+func buildRootCauseRunInput(req *analyzeRequest) aiorchestrator.RunInput {
 	q := req.Question
 	if q == "" {
 		q = "当前系统运行状态"
 	}
-	msg := "请做根因分析：" + q + "，结合组件健康、系统告警与最近发布记录，区分已确认/高概率/待验证原因"
-	d.runAnalyze(w, r, msg, "根因分析")
+	return aiorchestrator.RunInput{
+		Message:       "请做根因分析：" + q + "，结合组件健康、系统告警与最近发布记录，区分已确认/高概率/待验证原因",
+		TaskType:      aiorchestrator.TaskRootCause,
+		StructuredIDs: false,
+	}
+}
+
+// buildEventIDAnalyzeMessage 构造仅按事件 ID 分析的提示词；保持 EventID 在 Question 之前以保证 ExtractIDs 优先提取。
+func buildEventIDAnalyzeMessage(req *analyzeRequest) string {
+	msg := "请分析安全事件 " + req.EventID + "，给出攻击类型、命中规则、风险等级、是否阻断与处置建议"
+	if req.Question != "" {
+		msg += "\n分析侧重点：" + req.Question
+	}
+	return msg
+}
+
+// buildIPProfileMessage 构造 IP 攻击画像提示词；保持 IP 在 Question 之前以保证 ExtractIDs 优先提取目标 IP。
+func buildIPProfileMessage(req *analyzeRequest) string {
+	msg := "请对 IP " + req.IP + " 做攻击画像分析，给出首次/最近出现、攻击类型、目标、阻断与封禁情况及处置建议"
+	if req.Question != "" {
+		msg += "\n分析侧重点：" + req.Question
+	}
+	return msg
+}
+
+// buildReportSummaryMessage 构造安全报告总结提示词，附加可选补充说明。
+func buildReportSummaryMessage(req *analyzeRequest) string {
+	period := req.Period
+	if period == "" {
+		period = "近7天"
+	}
+	msg := "请总结" + period + "安全运营情况，生成安全报告总结（事件、阻断、主要攻击类型、攻击源、例外与处置建议）"
+	if req.Question != "" {
+		msg += "\n补充说明：" + req.Question
+	}
+	return msg
+}
+
+func buildReportSummaryRunInput(req *analyzeRequest) aiorchestrator.RunInput {
+	return aiorchestrator.RunInput{
+		Message:       buildReportSummaryMessage(req),
+		TaskType:      aiorchestrator.TaskReportSummary,
+		StructuredIDs: true,
+	}
 }
 
 // AnalyzeReportSummary AI 报告总结（日报/周报/月报摘要）。
@@ -371,18 +580,14 @@ func (d *Deps) AnalyzeReportSummary(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	period := req.Period
-	if period == "" {
-		period = "近7天"
-	}
-	msg := "请总结" + period + "安全运营情况，生成安全报告总结（事件、阻断、主要攻击类型、攻击源、误报与建议）"
-	d.runAnalyze(w, r, msg, "报告总结")
+	d.runAnalyze(w, r, "报告总结", buildReportSummaryRunInput(req))
 }
 
 // runAnalyze 一次性分析执行（非流式；一次性会话用完即删）。
-func (d *Deps) runAnalyze(w http.ResponseWriter, r *http.Request, message, label string) {
+func (d *Deps) runAnalyze(w http.ResponseWriter, r *http.Request, label string, runIn aiorchestrator.RunInput) {
 	p := authz.PrincipalFrom(r.Context())
 	ctx := r.Context()
+	message := runIn.Message
 	// 编排最长 120s + LLM 推理可能超过服务器 WriteTimeout（默认 30s），放宽本请求写期限
 	if rc := http.NewResponseController(w); rc != nil {
 		_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Minute))
@@ -419,10 +624,12 @@ func (d *Deps) runAnalyze(w http.ResponseWriter, r *http.Request, message, label
 		return nil
 	}
 	start := time.Now()
-	result, err := d.Orch.Run(ctx, aiorchestrator.RunInput{
-		SessionID: sess.ID, UserID: p.UserID, Username: p.Username,
-		RoleCodes: p.Roles, Permissions: p.PermsSet, Message: message,
-	}, onStep)
+	runIn.SessionID = sess.ID
+	runIn.UserID = p.UserID
+	runIn.Username = p.Username
+	runIn.RoleCodes = p.Roles
+	runIn.Permissions = p.PermsSet
+	result, err := d.Orch.Run(ctx, runIn, onStep)
 	durMs := int(time.Since(start).Milliseconds())
 	if err != nil {
 		if errors.Is(err, aicost.ErrQuotaExceeded) {

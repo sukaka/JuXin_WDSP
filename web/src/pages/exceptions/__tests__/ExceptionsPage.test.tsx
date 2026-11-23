@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import ExceptionsPage from '../ExceptionsPage'
@@ -96,12 +96,18 @@ function mockFetch({
     const ok = (data: unknown) =>
       Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
     if (url.includes('/preview')) return ok(preview)
+    if (url.includes('/enable') && init?.method === 'POST') {
+      return ok({ exception: { ...detail, status: 'ENABLED' } })
+    }
     if (url.includes('/applications')) return ok({ items: [], total: 0, page: 1, page_size: 100 })
     if (url.includes('/protection-policies')) {
       return ok({ items: [], total: 0, page: 1, page_size: 100 })
     }
     const method = init?.method ?? 'GET'
     if (/\/exceptions\/[^/?]+/.test(url) && method === 'GET') {
+      return ok({ exception: detail, is_broad: false })
+    }
+    if (url.includes('/exceptions') && method === 'POST') {
       return ok({ exception: detail, is_broad: false })
     }
     if (url.includes('/exceptions')) {
@@ -283,5 +289,130 @@ describe('ExceptionsPage（P0-04）', () => {
     expect(
       screen.getByText('校验状态：待审查，达标前禁止启用'),
     ).toBeInTheDocument()
+  })
+
+  it('B4-03：仅填写 uri_regex（非宽泛）也渲染并要求勾选 risk_acknowledged', async () => {
+    renderPage()
+    await screen.findByText('订单导出误报豁免')
+    fireEvent.click(screen.getByRole('button', { name: /新建例外/ }))
+    const dialog = await screen.findByRole('dialog')
+
+    fireEvent.change(within(dialog).getByPlaceholderText('如：管理后台导出 API 误报豁免'), {
+      target: { value: '正则例外' },
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('如 api.example.com（可选）'), {
+      target: { value: 'shop.example.com' },
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('^/api/v\\d+/export$'), {
+      target: { value: '^/api/v\\d+/export$' },
+    })
+    // 选择 HTTP 方法
+    fireEvent.mouseDown(selectOfFormItem('HTTP 方法'))
+    const getOpt = Array.from(document.querySelectorAll('.ant-select-item-option-content')).find(
+      (o) => o.textContent === 'GET',
+    )
+    fireEvent.click(getOpt as HTMLElement)
+    fireEvent.change(within(dialog).getByPlaceholderText('说明误报原因与评估结论'), {
+      target: { value: '动态路径需要正则' },
+    })
+
+    // 非宽泛（已填 domain）仍应显示 risk_acknowledged 复选框
+    const ackCheckbox = await within(dialog).findByRole('checkbox', {
+      name: /我已知晓路径正则属于历史\/高级配置的风险/,
+    })
+    expect(ackCheckbox).not.toBeChecked()
+
+    // 未勾选时点击保存草稿应被前端拦截
+    fireEvent.click(within(dialog).getByRole('button', { name: /保存草稿/ }))
+    expect(
+      await within(dialog).findByText('路径正则属于高级配置，必须确认风险后才能保存'),
+    ).toBeInTheDocument()
+    const postsBefore = (fetch as Mock).mock.calls.filter(
+      (c) => String(c[0]).endsWith('/exceptions') && (c[1] as RequestInit | undefined)?.method === 'POST',
+    )
+    expect(postsBefore).toHaveLength(0)
+
+    // 勾选后提交成功并携带 risk_acknowledged: true
+    fireEvent.click(ackCheckbox)
+    fireEvent.click(within(dialog).getByRole('button', { name: /保存草稿/ }))
+    await waitFor(() => {
+      const post = (fetch as Mock).mock.calls.find(
+        (c) => String(c[0]).endsWith('/exceptions') && (c[1] as RequestInit | undefined)?.method === 'POST',
+      )
+      expect(post).toBeTruthy()
+      const body = JSON.parse(String((post![1] as RequestInit).body))
+      expect(body.uri_regex).toBe('^/api/v\\d+/export$')
+      expect(body.risk_acknowledged).toBe(true)
+    })
+  })
+
+  it('B4-05：状态筛选包含「草稿 (DRAFT)」且详情原始状态正确渲染草稿标签', async () => {
+    const draftRecord = makeException({ status: 'DRAFT', validation_status: 'VALID' })
+    vi.stubGlobal('fetch', mockFetch({ list: [draftRecord], detail: draftRecord }))
+    renderPage()
+    await screen.findByText('订单导出误报豁免')
+
+    // 状态筛选下拉包含「草稿」
+    const statusCombo = screen.getAllByRole('combobox').find((el) =>
+      el.closest('.ant-select')?.textContent?.includes('状态'),
+    )
+    expect(statusCombo).toBeTruthy()
+    fireEvent.mouseDown(statusCombo as HTMLElement)
+    const draftOption = await screen.findByTitle('草稿')
+    fireEvent.click(draftOption)
+    await waitFor(() => {
+      expect(
+        (fetch as Mock).mock.calls.some((c) => String(c[0]).includes('status=DRAFT')),
+      ).toBe(true)
+    })
+
+    // 详情中原始状态渲染「草稿」而非原始字符串 DRAFT
+    fireEvent.click(await screen.findByText('订单导出误报豁免'))
+    const drawer = await screen.findByRole('dialog')
+    const statusLabel = await within(drawer).findByText('原始状态')
+    expect(statusLabel.closest('th')?.nextElementSibling?.textContent).toBe('草稿')
+    expect(within(drawer).queryByText('DRAFT')).not.toBeInTheDocument()
+  })
+
+  it('B4-06：影响预览展示 normalized_scope.uri_regex 并兼容可空数组字段', async () => {
+    const record = makeException({ uri_exact: '', uri_regex: '^/api/v\\d+/export$' })
+    vi.stubGlobal(
+      'fetch',
+      mockFetch({
+        list: [record],
+        detail: record,
+        preview: {
+          ...PREVIEW_RESULT,
+          field_errors: null,
+          resolved_rule_refs: null,
+          unsupported: null,
+          normalized_scope: {
+            domain: 'shop.example.com',
+            uri_regex: '^/api/v\\d+/export$',
+            methods: ['POST'],
+            source_ips: null,
+            content_types: null,
+          },
+        },
+      }),
+    )
+    renderPage()
+    fireEvent.click(await screen.findByText('订单导出误报豁免'))
+    fireEvent.click(await screen.findByRole('button', { name: '影响预览' }))
+
+    expect(await screen.findByText('正则 ^/api/v\\d+/export$')).toBeInTheDocument()
+  })
+
+  it('B4-09：启用例外兼容 { exception } 返回体并完成状态刷新', async () => {
+    renderPage()
+    await screen.findByText('订单导出误报豁免')
+
+    fireEvent.click(screen.getByRole('button', { name: '启用' }))
+    expect(await screen.findByText('操作成功')).toBeInTheDocument()
+    expect(
+      (fetch as Mock).mock.calls.some(
+        (c) => String(c[0]).includes('/exceptions/exc-1/enable') && (c[1] as RequestInit | undefined)?.method === 'POST',
+      ),
+    ).toBe(true)
   })
 })

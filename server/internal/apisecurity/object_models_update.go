@@ -24,12 +24,14 @@ import (
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
-// 词表（首批冻结：required_relation 仅 OWNER——其余关系词首批不支持拒收，不降级猜义）。
+// 词表（required_relation 支持 OWNER | ANY_OF；ANY_OF 须同请求携带规范化 required_relations=[OWNER,SHARED_WITH]）。
 const (
-	objectRelationOwner     = "OWNER"
-	leaseExpiredStrict      = "strict"
-	leaseExpiredDegraded    = "degraded"
-	permAuthorizationManage = "api_authorization.manage"
+	objectRelationOwner      = "OWNER"
+	objectRelationAnyOf      = "ANY_OF"
+	objectRelationSharedWith = "SHARED_WITH"
+	leaseExpiredStrict       = "strict"
+	leaseExpiredDegraded     = "degraded"
+	permAuthorizationManage  = "api_authorization.manage"
 	// NG-AZ-03 D3：enforcement 与 §8.4 四要素词表（首批冻结）。
 	enforcementObserve      = "OBSERVE"
 	enforcementProtect      = "PROTECT"
@@ -44,10 +46,11 @@ var ErrObjectModelNotFound = errors.New("object model not found")
 
 // ObjectModelPatch 发布状态变更（nil=不变更）。
 type ObjectModelPatch struct {
-	Publishable      *bool   `json:"publishable"`
-	RequiredRelation *string `json:"required_relation"`
-	OwnerExclusive   *bool   `json:"owner_exclusive"`
-	OnLeaseExpired   *string `json:"on_lease_expired"`
+	Publishable       *bool     `json:"publishable"`
+	RequiredRelation  *string   `json:"required_relation"`
+	RequiredRelations *[]string `json:"required_relations"`
+	OwnerExclusive    *bool     `json:"owner_exclusive"`
+	OnLeaseExpired    *string   `json:"on_lease_expired"`
 	// ---- NG-AZ-03 D3 阻断开关与 §8.4 四要素 ----
 	Enforcement      *string `json:"enforcement"`       // OBSERVE|PROTECT
 	EnforcementOwner *string `json:"enforcement_owner"` // 业务负责人标识（PROTECT 必填非空 ≤128）
@@ -57,10 +60,53 @@ type ObjectModelPatch struct {
 	ConfirmToken *string `json:"confirm_token"`
 }
 
+// normalizeRequiredRelations 校验并规范化 ANY_OF 的 required_relations：
+// 必须同时包含 OWNER 与 SHARED_WITH，不允许其他关系词（如 DELEGATED_TO），
+// 大小写归一、去重并固定返回 ["OWNER", "SHARED_WITH"]。
+func normalizeRequiredRelations(raw []string) ([]string, string) {
+	if len(raw) == 0 {
+		return nil, "required_relation=ANY_OF 必须同请求提供非空 required_relations（[OWNER, SHARED_WITH]）"
+	}
+	hasOwner := false
+	hasShared := false
+	for _, item := range raw {
+		v := strings.ToUpper(strings.TrimSpace(item))
+		switch v {
+		case objectRelationOwner:
+			hasOwner = true
+		case objectRelationSharedWith:
+			hasShared = true
+		default:
+			return nil, "required_relations 仅支持 OWNER 与 SHARED_WITH（不降级猜义）"
+		}
+	}
+	if !hasOwner || !hasShared {
+		return nil, "required_relation=ANY_OF 的 required_relations 必须同时包含 OWNER 与 SHARED_WITH"
+	}
+	return []string{objectRelationOwner, objectRelationSharedWith}, ""
+}
+
 // validate 词表校验（返回首个违规描述，空串=合法）。
 func (p ObjectModelPatch) validate() string {
-	if p.RequiredRelation != nil && strings.ToUpper(strings.TrimSpace(*p.RequiredRelation)) != objectRelationOwner {
-		return "required_relation 首批仅支持 OWNER（共享/委托/组继承不支持，不降级猜义）"
+	if p.RequiredRelation != nil {
+		rel := strings.ToUpper(strings.TrimSpace(*p.RequiredRelation))
+		switch rel {
+		case objectRelationOwner:
+			if p.RequiredRelations != nil && len(*p.RequiredRelations) > 0 {
+				return "required_relation=OWNER 不允许提供非空 required_relations"
+			}
+		case objectRelationAnyOf:
+			if p.RequiredRelations == nil {
+				return "required_relation=ANY_OF 必须同请求提供 required_relations（[OWNER, SHARED_WITH]）"
+			}
+			if _, msg := normalizeRequiredRelations(*p.RequiredRelations); msg != "" {
+				return msg
+			}
+		default:
+			return "required_relation 仅支持 OWNER 或 ANY_OF（委托/组继承等不支持，不降级猜义）"
+		}
+	} else if p.RequiredRelations != nil {
+		return "required_relations 必须与 required_relation=ANY_OF 同请求提供"
 	}
 	if p.OnLeaseExpired != nil {
 		v := strings.ToLower(strings.TrimSpace(*p.OnLeaseExpired))
@@ -127,8 +173,16 @@ func (s *Store) UpdateObjectModel(ctx context.Context, id uuid.UUID, p ObjectMod
 		sets = append(sets, fmt.Sprintf("publishable = $%d", len(args)))
 	}
 	if p.RequiredRelation != nil {
-		args = append(args, strings.ToUpper(strings.TrimSpace(*p.RequiredRelation)))
+		rel := strings.ToUpper(strings.TrimSpace(*p.RequiredRelation))
+		args = append(args, rel)
 		sets = append(sets, fmt.Sprintf("required_relation = $%d", len(args)))
+		if rel == objectRelationAnyOf {
+			norm, _ := normalizeRequiredRelations(*p.RequiredRelations)
+			args = append(args, norm)
+			sets = append(sets, fmt.Sprintf("required_relations = $%d", len(args)))
+		} else {
+			sets = append(sets, "required_relations = NULL")
+		}
 	}
 	if p.OwnerExclusive != nil {
 		args = append(args, *p.OwnerExclusive)
@@ -215,7 +269,7 @@ SELECT m.id, m.endpoint_id, COALESCE(e.endpoint_key, ''), COALESCE(a.name, ''),
          WHERE d.application_id = a.id ORDER BY d.is_primary DESC, d.created_at LIMIT 1), ''),
        m.object_segment, m.identifier_type,
        m.example_hash, m.sample_count, m.first_seen, m.last_seen, m.updated_at,
-       m.publishable, COALESCE(m.required_relation, ''), m.owner_exclusive, m.on_lease_expired,
+       m.publishable, COALESCE(m.required_relation, ''), COALESCE(m.required_relations, '{}'::TEXT[]), m.owner_exclusive, m.on_lease_expired,
        m.enforcement, m.enforcement_owner, m.evidence_source, m.on_unknown
 FROM api_object_models m
 LEFT JOIN api_endpoints e ON e.id = m.endpoint_id
@@ -223,7 +277,7 @@ LEFT JOIN applications a ON a.id = e.application_id
 WHERE m.id = $1`, id).Scan(&m.ID, &m.EndpointID, &m.EndpointKey, &m.ApplicationName, &m.ApplicationDomain,
 		&m.ObjectSegment, &m.IdentifierType,
 		&m.ExampleHash, &m.SampleCount, &m.FirstSeen, &m.LastSeen, &m.UpdatedAt,
-		&m.Publishable, &m.RequiredRelation, &m.OwnerExclusive, &m.OnLeaseExpired,
+		&m.Publishable, &m.RequiredRelation, &m.RequiredRelations, &m.OwnerExclusive, &m.OnLeaseExpired,
 		&m.Enforcement, &m.EnforcementOwner, &m.EvidenceSource, &m.OnUnknown)
 	if err != nil {
 		return nil, err
@@ -296,8 +350,8 @@ func objectModelSummary(m *ObjectModel) string {
 	if m == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s %s publishable=%v required_relation=%s owner_exclusive=%v on_lease_expired=%s enforcement=%s enforcement_owner=%s evidence_source=%s on_unknown=%s",
-		m.EndpointKey, m.ObjectSegment, m.Publishable, m.RequiredRelation, m.OwnerExclusive, m.OnLeaseExpired,
+	return fmt.Sprintf("%s %s publishable=%v required_relation=%s required_relations=%v owner_exclusive=%v on_lease_expired=%s enforcement=%s enforcement_owner=%s evidence_source=%s on_unknown=%s",
+		m.EndpointKey, m.ObjectSegment, m.Publishable, m.RequiredRelation, m.RequiredRelations, m.OwnerExclusive, m.OnLeaseExpired,
 		m.Enforcement, m.EnforcementOwner, m.EvidenceSource, m.OnUnknown)
 }
 

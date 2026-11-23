@@ -22,7 +22,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import { headerConfigApi, pathRoutesApi } from '../../../api/applications'
-import type { PathRouteBody } from '../../../api/applications'
+import type { PathRouteBody, UpdatePathRouteBody } from '../../../api/applications'
 import RecordDetailDrawer from '../../../components/RecordDetailDrawer'
 import SmartTable from '../../../components/SmartTable'
 import useBatchDelete from '../../../hooks/useBatchDelete'
@@ -146,6 +146,10 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
     headerForm.setFieldsValue({
       ...DEFAULT_CONFIG,
       ...data.config,
+      hsts_max_age:
+        data.config?.hsts_max_age && data.config.hsts_max_age > 0
+          ? data.config.hsts_max_age
+          : DEFAULT_CONFIG.hsts_max_age,
       // Go nil slice 会序列化为 null，统一归一化为空数组
       custom_request_rules: data.config?.custom_request_rules ?? [],
       custom_response_rules: data.config?.custom_response_rules ?? [],
@@ -174,16 +178,35 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
   })
 
   const onSaveConfig = (values: AppHeaderConfig) => {
+    const storedMaxAge = headerForm.getFieldValue('hsts_max_age') as number | undefined
+    const loadedMaxAge = configQuery.data?.config?.hsts_max_age
+    const resolvedMaxAge =
+      values.hsts_max_age && values.hsts_max_age > 0
+        ? values.hsts_max_age
+        : storedMaxAge && storedMaxAge > 0
+          ? storedMaxAge
+          : loadedMaxAge && loadedMaxAge > 0
+            ? loadedMaxAge
+            : DEFAULT_CONFIG.hsts_max_age
+
     saveConfigMutation.mutate({
       ...values,
       server_action: 'hide',
       server_value: '',
+      x_author_value: values.x_author_action === 'replace' ? (values.x_author_value ?? '') : '',
       x_powered_by_action: 'hide',
       x_powered_by_value: '',
-      x_frame_options_url: values.x_frame_options === 'allow_from' ? values.x_frame_options_url : '',
-      csp_value: values.csp_mode === 'custom' ? values.csp_value : '',
-      custom_request_rules: values.custom_request_rules ?? [],
-      custom_response_rules: values.custom_response_rules ?? [],
+      x_frame_options_url: values.x_frame_options === 'allow_from' ? (values.x_frame_options_url ?? '') : '',
+      hsts_max_age: resolvedMaxAge,
+      csp_value: values.csp_mode === 'custom' ? (values.csp_value ?? '') : '',
+      custom_request_rules: (values.custom_request_rules ?? []).map((r) => ({
+        ...r,
+        value: r.method === 'delete' ? '' : (r.value ?? ''),
+      })),
+      custom_response_rules: (values.custom_response_rules ?? []).map((r) => ({
+        ...r,
+        value: r.method === 'delete' ? '' : (r.value ?? ''),
+      })),
     })
   }
 
@@ -274,9 +297,9 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
   }
 
   const saveRouteMutation = useMutation({
-    mutationFn: ({ routeId, body }: { routeId: string | null; body: PathRouteBody }) =>
+    mutationFn: ({ routeId, version, body }: { routeId: string | null; version?: number; body: PathRouteBody }) =>
       routeId
-        ? pathRoutesApi.update(appId, routeId, body)
+        ? pathRoutesApi.update(appId, routeId, { ...body, version: version ?? 0 } satisfies UpdatePathRouteBody)
         : pathRoutesApi.create(appId, body),
     onSuccess: () => {
       setCreateOpen(false)
@@ -291,7 +314,15 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
   const toggleRouteMutation = useMutation({
     mutationFn: (record: AppPathRoute) =>
       pathRoutesApi.update(appId, record.id, {
+        path_prefix: record.path_prefix,
+        upstream_scheme: record.upstream_scheme,
+        upstream_host: record.upstream_host,
+        upstream_port: record.upstream_port,
+        strip_prefix: record.strip_prefix,
+        priority: record.priority,
         status: record.status === 'ENABLED' ? 'DISABLED' : 'ENABLED',
+        description: record.description ?? '',
+        version: record.version,
       }),
     onSuccess: () => {
       message.success('操作成功')
@@ -500,9 +531,12 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
                     <Form.Item
                       name="hsts_max_age"
                       label="max-age（秒）"
-                      rules={[{ required: true, message: '请输入 max-age' }]}
+                      rules={[
+                        { required: true, message: '请输入 max-age' },
+                        { type: 'number', min: 1, message: 'max-age 须大于 0' },
+                      ]}
                     >
-                      <InputNumber min={0} max={63072000} step={3600} style={{ width: 180 }} />
+                      <InputNumber min={1} max={63072000} step={3600} style={{ width: 180 }} />
                     </Form.Item>
                   )}
                   <Form.Item name="csp_mode" label="Content-Security-Policy" style={{ width: 200 }}>
@@ -668,7 +702,11 @@ export default function HeaderProxyTab({ appId }: { appId: string }) {
           layout="vertical"
           initialValues={ROUTE_DEFAULT_VALUES}
           onFinish={(values) =>
-            saveRouteMutation.mutate({ routeId: editing?.id ?? null, body: toRouteBody(values) })
+            saveRouteMutation.mutate({
+              routeId: editing?.id ?? null,
+              version: editing?.version,
+              body: toRouteBody(values),
+            })
           }
         >
           <Form.Item

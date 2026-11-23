@@ -206,10 +206,10 @@ export default function EndpointDetailDrawer({ endpoint, onClose }: Props) {
 
   /** 切换接口或外部数据更新时同步业务标签编辑态 */
   useEffect(() => {
-    const v = endpoint?.business_type || undefined
+    const v = endpoint?.business_type || endpoint?.asset?.business_type || undefined
     setBusinessType(v)
     setSavedBusinessType(v)
-  }, [endpointId, endpoint?.business_type])
+  }, [endpointId, endpoint?.business_type, endpoint?.asset?.business_type])
 
   /** 切换接口时清空暴露面人工确认选择 */
   useEffect(() => {
@@ -234,7 +234,7 @@ export default function EndpointDetailDrawer({ endpoint, onClose }: Props) {
       ),
     onSuccess: (r) => {
       message.success(r.message || '业务标签已保存')
-      const v = r.endpoint.business_type || undefined
+      const v = r.endpoint.business_type || r.endpoint.asset?.business_type || undefined
       setBusinessType(v)
       setSavedBusinessType(v)
       void queryClient.invalidateQueries({ queryKey: ['api-endpoints'] })
@@ -278,8 +278,8 @@ export default function EndpointDetailDrawer({ endpoint, onClose }: Props) {
       apiClassificationsApi.setEndpointClassification(endpointId as string, [
         { dimension: 'EXPOSURE', value },
       ]),
-    onSuccess: (r) => {
-      message.success(r.message || '已人工确认，引擎不再自动覆盖')
+    onSuccess: () => {
+      message.success('已人工确认，引擎不再自动覆盖')
       setExposureManual(undefined)
       void queryClient.invalidateQueries({
         queryKey: ['api-endpoint-exposure', endpointId],

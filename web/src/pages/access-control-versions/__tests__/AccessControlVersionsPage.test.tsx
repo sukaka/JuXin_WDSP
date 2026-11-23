@@ -41,7 +41,7 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
-function mockFetch() {
+function mockFetch(differences: string[] | null = []) {
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const method = init?.method ?? 'GET'
@@ -55,7 +55,7 @@ function mockFetch() {
         jsonResponse(200, {
           code: 'SUCCESS',
           message: 'ok',
-          data: { version_id: 'v1', version_no: 3, compare_with: 'v0', compare_with_no: 2, differences: [] },
+          data: { version_id: 'v1', version_no: 3, compare_with: 'v0', compare_with_no: 2, differences },
         }),
       )
     }
@@ -122,5 +122,33 @@ describe('AccessControlVersionsPage 访问控制版本', () => {
       ).toBe(true)
     })
     expect(await screen.findByText('回滚已提交，将触发配置重新发布')).toBeInTheDocument()
+  })
+
+  it('差异接口返回 differences=null 时归一化为空数组并展示无差异', async () => {
+    vi.stubGlobal('fetch', mockFetch(null))
+    useAuthStore.setState({
+      user: makeUser(['access_control_versions.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: /差\s*异/ }))
+    expect(await screen.findByText('版本 v3 vs v2')).toBeInTheDocument()
+    expect(await screen.findByText('无差异')).toBeInTheDocument()
+  })
+
+  it('差异接口返回差异行时展示每条差异', async () => {
+    vi.stubGlobal('fetch', mockFetch(['rate_limits: 数组内容已修改（2 项）']))
+    useAuthStore.setState({
+      user: makeUser(['access_control_versions.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: /差\s*异/ }))
+    expect(await screen.findByText('版本 v3 vs v2')).toBeInTheDocument()
+    expect(await screen.findByText('rate_limits: 数组内容已修改（2 项）')).toBeInTheDocument()
   })
 })

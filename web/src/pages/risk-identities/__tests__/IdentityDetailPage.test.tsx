@@ -8,6 +8,16 @@ import IdentityDetailPage from '../IdentityDetailPage'
 import { useAuthStore } from '../../../stores/auth'
 import type { CurrentUser } from '../../../types'
 
+const chartProps = vi.hoisted(
+  () => [] as { option: unknown; height?: number }[],
+)
+vi.mock('../../../components/EChart', () => ({
+  default: (props: { option: unknown; height?: number }) => {
+    chartProps.push(props)
+    return <div data-testid="echart-stub" data-height={props.height} />
+  },
+}))
+
 function makeUser(permissions: string[]): CurrentUser {
   return {
     id: 'u1',
@@ -76,14 +86,21 @@ describe('IdentityDetailPage 封禁与解封', () => {
   let detailRequests: number
   let blockCalls: { url: string; body: unknown }[]
   let unblockCalls: string[]
+  let behaviorCalls: string[]
   let actionError: string | null
+  let behaviorHandler: ((url: string) => unknown) | null
+  let eventsHandler: (() => unknown) | null
 
   beforeEach(() => {
-    status = 'ACTIVE'
+    chartProps.length = 0
+    status = 'NORMAL'
     detailRequests = 0
     blockCalls = []
     unblockCalls = []
+    behaviorCalls = []
     actionError = null
+    behaviorHandler = null
+    eventsHandler = null
     useAuthStore.setState({
       user: makeUser(['security_identities.read', 'security_identities.block']),
       csrfToken: null,
@@ -113,7 +130,10 @@ describe('IdentityDetailPage 封禁与解封', () => {
             jsonResponse(200, {
               code: 'SUCCESS',
               message: 'ok',
-              data: { message: '已封禁' },
+              data: {
+                identity: { ...IDENTITY, status },
+                changed: true,
+              },
             }),
           )
         }
@@ -131,12 +151,15 @@ describe('IdentityDetailPage 封禁与解封', () => {
               }),
             )
           }
-          status = 'ACTIVE'
+          status = 'NORMAL'
           return Promise.resolve(
             jsonResponse(200, {
               code: 'SUCCESS',
               message: 'ok',
-              data: { message: '已解封' },
+              data: {
+                identity: { ...IDENTITY, status },
+                changed: true,
+              },
             }),
           )
         }
@@ -157,13 +180,17 @@ describe('IdentityDetailPage 封禁与解封', () => {
         }
         if (
           method === 'GET' &&
-          url.endsWith('/security/identities/idn-1/behavior')
+          url.includes('/security/identities/idn-1/behavior?')
         ) {
+          behaviorCalls.push(url)
+          const payload = behaviorHandler
+            ? behaviorHandler(url)
+            : { items: [], page: 1, page_size: 200, total: 0 }
           return Promise.resolve(
             jsonResponse(200, {
               code: 'SUCCESS',
               message: 'ok',
-              data: { items: [], page: 1, page_size: 500, total: 0 },
+              data: payload,
             }),
           )
         }
@@ -171,11 +198,14 @@ describe('IdentityDetailPage 封禁与解封', () => {
           method === 'GET' &&
           url.includes('/security/identities/idn-1/events?')
         ) {
+          const payload = eventsHandler
+            ? eventsHandler()
+            : { items: [], page: 1, page_size: 20, total: 0 }
           return Promise.resolve(
             jsonResponse(200, {
               code: 'SUCCESS',
               message: 'ok',
-              data: { items: [], page: 1, page_size: 20, total: 0 },
+              data: payload,
             }),
           )
         }
@@ -289,5 +319,140 @@ describe('IdentityDetailPage 封禁与解封', () => {
     expect(
       screen.getByRole('button', { name: /^解\s*封$/ }),
     ).toBeInTheDocument()
+  })
+
+  it('NORMAL 状态渲染绿色正常标签', async () => {
+    status = 'NORMAL'
+    renderPage()
+
+    expect(await screen.findByText('正常')).toBeInTheDocument()
+  })
+
+  it('行为趋势按 page_size=200 分页拉取完整 288 个 5 分钟窗口', async () => {
+    const makeBucket = (idx: number) => ({
+      window_type: '5m',
+      window_start: new Date(Date.UTC(2026, 7, 30, 0, idx * 5)).toISOString(),
+      request_count: idx + 1,
+      unique_uri_count: 2,
+      new_uri_count: 1,
+      status_401_count: 0,
+      status_403_count: 0,
+      status_404_count: 0,
+      status_405_count: 0,
+      status_500_count: 0,
+      auth_fail_count: 0,
+      parameter_mutation_count: 0,
+      sensitive_path_hits: 0,
+      account_enum_count: 0,
+      object_enum_count: 0,
+    })
+    behaviorHandler = (url) => {
+      const qs = new URL(url, 'http://localhost').searchParams
+      const page = Number(qs.get('page'))
+      expect(qs.get('page_size')).toBe('200')
+      if (page === 1) {
+        return {
+          items: Array.from({ length: 200 }, (_, i) => makeBucket(i)),
+          page: 1,
+          page_size: 200,
+          total: 288,
+        }
+      }
+      return {
+        items: Array.from({ length: 88 }, (_, i) => makeBucket(200 + i)),
+        page: 2,
+        page_size: 200,
+        total: 288,
+      }
+    }
+
+    renderPage()
+    fireEvent.click(await screen.findByRole('tab', { name: '行为趋势' }))
+
+    expect(await screen.findByTestId('echart-stub')).toBeInTheDocument()
+    await waitFor(() => expect(behaviorCalls).toHaveLength(2))
+    expect(behaviorCalls[0]).toContain('page=1')
+    expect(behaviorCalls[0]).toContain('page_size=200')
+    expect(behaviorCalls[1]).toContain('page=2')
+    expect(behaviorCalls[1]).toContain('page_size=200')
+    const option = chartProps[chartProps.length - 1]?.option as {
+      xAxis: { data: string[] }
+    }
+    expect(option.xAxis.data).toHaveLength(288)
+  })
+
+  it('行为趋势遇到空页时提前终止翻页，避免死循环', async () => {
+    behaviorHandler = (url) => {
+      const qs = new URL(url, 'http://localhost').searchParams
+      const page = Number(qs.get('page'))
+      if (page === 1) {
+        return {
+          items: [
+            {
+              window_type: '5m',
+              window_start: '2026-08-30T00:00:00Z',
+              request_count: 5,
+              unique_uri_count: 1,
+              new_uri_count: 0,
+              status_401_count: 0,
+              status_403_count: 0,
+              status_404_count: 0,
+              status_405_count: 0,
+              status_500_count: 0,
+              auth_fail_count: 0,
+              parameter_mutation_count: 0,
+              sensitive_path_hits: 0,
+              account_enum_count: 0,
+              object_enum_count: 0,
+            },
+          ],
+          page: 1,
+          page_size: 200,
+          total: 600,
+        }
+      }
+      return { items: [], page, page_size: 200, total: 600 }
+    }
+
+    renderPage()
+    fireEvent.click(await screen.findByRole('tab', { name: '行为趋势' }))
+    expect(await screen.findByTestId('echart-stub')).toBeInTheDocument()
+    await waitFor(() => expect(behaviorCalls).toHaveLength(2))
+  })
+
+  it('行为事件标签页可正常渲染无 window 字段的后端事件', async () => {
+    eventsHandler = () => ({
+      items: [
+        {
+          id: 'ev-1',
+          occurred_at: '2026-08-31T10:00:00Z',
+          event_kind: 'RECON_SIGNAL',
+          rule_code: 'URI_ENUM_01',
+          rule_version: '1',
+          signal: 'URI_ENUMERATION',
+          risk_score_delta: 20,
+          mode: 'OBSERVE',
+          reason: '高频探测不同 URI',
+          metadata: {},
+          request_id: 'req-1',
+          client_ip: '1.2.3.4',
+          method: 'GET',
+          path: '/admin/test',
+          app_id: 'app-1',
+          domain: 'example.com',
+          gateway_node: 'gw-1',
+          identity_confidence: 90,
+          identity_evidence: ['client_ip'],
+        },
+      ],
+      page: 1,
+      page_size: 20,
+      total: 1,
+    })
+
+    renderPage()
+    fireEvent.click(await screen.findByRole('tab', { name: '行为事件' }))
+    expect(await screen.findByText('高频探测不同 URI')).toBeInTheDocument()
+    expect(screen.getByText('GET /admin/test')).toBeInTheDocument()
   })
 })

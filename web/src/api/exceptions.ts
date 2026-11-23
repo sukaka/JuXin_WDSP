@@ -64,7 +64,7 @@ export const exceptionsApi = {
   update: (id: string, body: UpdateExceptionBody) =>
     request<ExceptionDetail>(`/exceptions/${id}`, { method: 'PUT', body }),
   remove: (id: string) => request<{ message: string }>(`/exceptions/${id}`, { method: 'DELETE' }),
-  enable: (id: string) => request<{ message: string }>(`/exceptions/${id}/enable`, { method: 'POST' }),
+  enable: (id: string) => request<{ exception: ExceptionItem }>(`/exceptions/${id}/enable`, { method: 'POST' }),
   disable: (id: string) => request<{ message: string }>(`/exceptions/${id}/disable`, { method: 'POST' }),
   /** 影响预览（P0-04 S4 §8）：不启用、不发布、不回放；expected_version 与当前版本不符返回 409 */
   preview: (id: string, expected_version: number) =>

@@ -19,6 +19,7 @@ import (
 
 // Record 审计记录。
 type Record struct {
+	ID             uuid.UUID  `json:"id"`
 	OccurredAt     time.Time  `json:"occurred_at"`
 	UserID         *uuid.UUID `json:"user_id,omitempty"`
 	Username       string     `json:"username"`
@@ -232,20 +233,20 @@ func (s *Service) List(ctx context.Context, f ListFilter) ([]Record, int64, erro
 		f.PageSize = 20
 	}
 	rows, err := s.db.Query(ctx, `
-SELECT occurred_at, user_id, username, role_codes, session_id, task_id, action, task_type, agent_code, tool_code, model_code,
-  input_tokens, output_tokens, duration_ms, estimated_cost, request_summary, result_summary, draft_reference
+SELECT id, occurred_at, user_id, username, role_codes, session_id, task_id, action, task_type, agent_code, tool_code, model_code,
+  prompt_version, input_tokens, output_tokens, duration_ms, estimated_cost, request_summary, result_summary, draft_reference, confirm_result
 FROM ai_audit_records WHERE `+where+` ORDER BY occurred_at DESC LIMIT $`+fmt.Sprint(idx)+` OFFSET $`+fmt.Sprint(idx+1),
 		append(args, f.PageSize, (f.Page-1)*f.PageSize)...)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []Record
+	out := []Record{}
 	for rows.Next() {
 		var r Record
 		var uid, sid, tid *uuid.UUID
-		if err := rows.Scan(&r.OccurredAt, &uid, &r.Username, &r.RoleCodes, &sid, &tid, &r.Action, &r.TaskType, &r.AgentCode, &r.ToolCode, &r.ModelCode,
-			&r.InputTokens, &r.OutputTokens, &r.DurationMs, &r.EstimatedCost, &r.RequestSummary, &r.ResultSummary, &r.DraftReference); err != nil {
+		if err := rows.Scan(&r.ID, &r.OccurredAt, &uid, &r.Username, &r.RoleCodes, &sid, &tid, &r.Action, &r.TaskType, &r.AgentCode, &r.ToolCode, &r.ModelCode,
+			&r.PromptVersion, &r.InputTokens, &r.OutputTokens, &r.DurationMs, &r.EstimatedCost, &r.RequestSummary, &r.ResultSummary, &r.DraftReference, &r.ConfirmResult); err != nil {
 			return nil, 0, err
 		}
 		r.UserID = uid

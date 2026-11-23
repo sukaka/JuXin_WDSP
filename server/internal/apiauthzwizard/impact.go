@@ -56,7 +56,7 @@ type ImpactResult struct {
 	RecentSamples          []ImpactSample        `json:"recent_samples,omitempty"`
 	Readiness              string                `json:"readiness"`
 	ReadinessReasons       []string              `json:"readiness_reasons"`
-	ConfirmToken           uuid.UUID             `json:"confirm_token,omitempty"`
+	ConfirmToken           *uuid.UUID            `json:"confirm_token,omitempty"`
 	ConfirmTokenExpiresAt  *time.Time            `json:"confirm_token_expires_at,omitempty"`
 }
 

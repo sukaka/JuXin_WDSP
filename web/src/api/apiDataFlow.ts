@@ -1,4 +1,5 @@
 import { request } from './client'
+import { DATA_TYPE_LABELS } from '../utils/dataFlowCharts'
 
 export type DataFlowView = 'service' | 'network' | 'boundary'
 export type DataFlowNetworkZone = 'PUBLIC' | 'INTERNAL' | 'UNKNOWN'
@@ -120,6 +121,22 @@ export interface DataFlowEvidenceRecord {
 
 const PATH = '/api-security/data-flow'
 
+export function normalizeDataTypeFilter(raw?: string): string | undefined {
+  const trimmed = raw?.trim()
+  if (!trimmed) return undefined
+  for (const [code, label] of Object.entries(DATA_TYPE_LABELS)) {
+    if (label === trimmed) return code
+  }
+  return trimmed.toUpperCase()
+}
+
+function normalizeQuery(params: DataFlowQuery): DataFlowQuery {
+  return {
+    ...params,
+    data_type: normalizeDataTypeFilter(params.data_type),
+  }
+}
+
 function normalizeEdge(edge: DataFlowEdge): DataFlowEdge {
   return {
     ...edge,
@@ -134,23 +151,29 @@ function normalizeEvidenceRecord(record: DataFlowEvidenceRecord): DataFlowEviden
   const peerAddress = record.peer_address || undefined
   const clientAddressSource = record.client_address_source || (peerAddress ? 'DIRECT_PEER' : undefined)
   const clientAddress = record.client_address || (clientAddressSource === 'DIRECT_PEER' ? peerAddress : undefined)
-  return { ...record, peer_address: peerAddress, client_address: clientAddress, client_address_source: clientAddressSource }
+  return {
+    ...record,
+    fields: record.fields ?? [],
+    peer_address: peerAddress,
+    client_address: clientAddress,
+    client_address_source: clientAddressSource,
+  }
 }
 
 export const apiDataFlowApi = {
   graph: async (params: DataFlowQuery) => {
-    const data = await request<DataFlowGraph>(`${PATH}/graph`, { query: { ...params } })
+    const data = await request<DataFlowGraph>(`${PATH}/graph`, { query: { ...normalizeQuery(params) } })
     return { ...data, nodes: data.nodes ?? [], edges: (data.edges ?? []).map(normalizeEdge) }
   },
   node: async (id: string, params: DataFlowQuery) => {
-    const data = await request<DataFlowNodeDetail>(`${PATH}/nodes/${encodeURIComponent(id)}`, { query: { ...params } })
+    const data = await request<DataFlowNodeDetail>(`${PATH}/nodes/${encodeURIComponent(id)}`, { query: { ...normalizeQuery(params) } })
     return { ...data, dependencies: (data.dependencies ?? []).map(normalizeEdge), called_by: (data.called_by ?? []).map(normalizeEdge) }
   },
   evidence: async (edgeID: string, params: DataFlowQuery & { limit?: number }) => {
     const data = await request<{ items: DataFlowEvidenceRecord[]; total: number }>(`${PATH}/evidence`, {
-      query: { ...params, edge_id: edgeID },
+      query: { ...normalizeQuery(params), limit: params.limit, edge_id: edgeID },
     })
     return { ...data, items: (data.items ?? []).map(normalizeEvidenceRecord) }
   },
-  quality: (params: DataFlowQuery) => request<DataFlowQuality>(`${PATH}/quality`, { query: { ...params } }),
+  quality: (params: DataFlowQuery) => request<DataFlowQuality>(`${PATH}/quality`, { query: { ...normalizeQuery(params) } }),
 }

@@ -11,7 +11,8 @@ import ApmTraceWaterfall from './ApmTraceWaterfall'
 import { useAuthStore } from '../stores/auth'
 import { formatDateTime } from '../utils/format'
 import { hasPermission } from '../utils/permission'
-import { APM_TRACE_DATA_SOURCE_META, getApmWafActionMeta } from '../utils/apm'
+import { APM_TRACE_DATA_SOURCE_META, formatMs, getApmWafActionMeta } from '../utils/apm'
+import { ATTACK_TYPE_META, DISPOSITION_STATUS_META, EVENT_SEVERITY_META } from '../utils/stage4'
 import type { ApmTraceAccessLog, ApmTraceDetail, ApmTraceSecurityEvent } from '../types'
 
 /** Trace 详情查询上下文（P1-01 A3）：详情与下钻携带相同时间窗；application_id 仅用于展示与下钻透传 */
@@ -43,8 +44,13 @@ const TRACE_LOG_COLUMNS: ColumnsType<ApmTraceAccessLog> = [
       </Typography.Text>
     ),
   },
-  { title: '耗时', dataIndex: 'duration_ms', width: 90, render: (v: number) => `${v} ms` },
-  { title: 'TTFB', dataIndex: 'ttfb_ms', width: 90, render: (v: number) => `${v} ms` },
+  { title: '耗时', dataIndex: 'duration_ms', width: 90, render: (v: number) => formatMs(v) },
+  {
+    title: 'TTFB',
+    dataIndex: 'ttfb_ms',
+    width: 90,
+    render: (v: number | null | undefined) => formatMs(v),
+  },
   {
     title: 'WAF 动作',
     dataIndex: 'waf_action',
@@ -54,7 +60,13 @@ const TRACE_LOG_COLUMNS: ColumnsType<ApmTraceAccessLog> = [
       return <Tag color={meta.color}>{meta.label}</Tag>
     },
   },
-  { title: '端点', dataIndex: 'endpoint_key', width: 160, ellipsis: true },
+  {
+    title: '端点',
+    dataIndex: 'endpoint_key',
+    width: 160,
+    ellipsis: true,
+    render: (v: string | null | undefined) => v || '-',
+  },
 ]
 
 const TRACE_EVENT_COLUMNS: ColumnsType<ApmTraceSecurityEvent> = [
@@ -68,7 +80,39 @@ const TRACE_EVENT_COLUMNS: ColumnsType<ApmTraceSecurityEvent> = [
       return <Tag color={meta.color}>{meta.label}</Tag>
     },
   },
-  { title: '命中规则', dataIndex: 'rule_id', width: 140, ellipsis: true },
+  {
+    title: '攻击类型',
+    dataIndex: 'attack_type',
+    width: 130,
+    ellipsis: true,
+    render: (v: string | undefined) => (v ? (ATTACK_TYPE_META[v]?.label ?? v) : '-'),
+  },
+  {
+    title: '级别',
+    dataIndex: 'severity',
+    width: 75,
+    render: (v: string | undefined) => {
+      if (!v) return '-'
+      const meta = EVENT_SEVERITY_META[v]
+      return meta ? <Tag color={meta.color}>{meta.label}</Tag> : v
+    },
+  },
+  {
+    title: '命中数',
+    dataIndex: 'rule_match_count',
+    width: 75,
+    render: (v: number | undefined) => (typeof v === 'number' ? v : '-'),
+  },
+  {
+    title: '处置状态',
+    dataIndex: 'disposition_status',
+    width: 100,
+    render: (v: string | undefined) => {
+      if (!v) return '-'
+      const meta = DISPOSITION_STATUS_META[v]
+      return meta ? <Tag color={meta.color}>{meta.label}</Tag> : v
+    },
+  },
   {
     title: '请求 ID',
     dataIndex: 'request_id',
@@ -206,6 +250,7 @@ function TraceDetailContent({
                   pagination={false}
                   dataSource={securityEvents}
                   columns={TRACE_EVENT_COLUMNS}
+                  scroll={{ x: 820 }}
                 />
               ) : (
                 <Typography.Text type="secondary">无关联安全事件</Typography.Text>

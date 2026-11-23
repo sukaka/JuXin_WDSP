@@ -401,6 +401,9 @@ components:
         must_change_password:
           type: boolean
           description: 是否必须修改密码
+        totp_enabled:
+          type: boolean
+          description: 是否已开启双因子认证（TOTP）
         password_expires_at:
           type: string
           format: date-time
@@ -659,6 +662,9 @@ components:
         must_change_password:
           type: boolean
           description: 是否必须修改密码
+        totp_enabled:
+          type: boolean
+          description: 是否已开启双因子认证（TOTP）
         password_expires_at:
           type: string
           format: date-time
@@ -763,6 +769,7 @@ components:
           - PASSWORD_CHANGE
           - PASSWORD_RESET
           - FIRST_CHANGE_PASSWORD
+          - LOGIN_TOTP_CHALLENGE
           description: 事件类型
         result:
           type: string
@@ -1337,7 +1344,8 @@ components:
           type: string
     AppHeaderConfig:
       type: object
-      description: 应用级 HTTP 头合规与代理配置（与 app_header_configs 表一致）。下划线请求头由网关内核入口强制丢弃；中间件和数据库版本响应头始终删除，自定义响应规则不能恢复。server_action/x_powered_by_action 仅为兼容保留。
+      description: 应用级 HTTP 头合规与代理配置（与 app_header_configs 表一致）。下划线请求头由网关内核入口强制丢弃；中间件和数据库版本响应头始终删除，自定义响应规则不能恢复。server_action/x_powered_by_action
+        仅为兼容保留。
       required:
       - server_action
       - x_author_action
@@ -2172,6 +2180,14 @@ components:
         publish_result:
           type: string
           description: 发布结果（空串/SUCCESS/FAILED/VERIFY_FAILED/ACTIVATION_FAILED）
+        validation_result:
+          type: string
+          enum:
+          - ''
+          - SMOKE_PASS
+          - SMOKE_FAIL
+          - SMOKE_SKIPPED
+          description: 发布后冒烟验证结果（空串表示历史版本未执行冒烟/SMOKE_PASS/SMOKE_FAIL/SMOKE_SKIPPED）
         is_current:
           type: boolean
           description: 是否当前生效版本
@@ -5504,14 +5520,15 @@ components:
       type: object
       required:
       - type
-      description: 匹配条件（多条件 AND）。method/client_ip 用 values 数组（等价 op=in，规范化后不携带 op）；uri/request_body/response_body
-        无 name；header/cookie/query/response_header 用 name+op+value；exists/not_exists 不需要 value。含响应条件的规则在响应回程评估，正文仅检查完整且不超过
+      description: 匹配条件（多条件 AND）。method/client_ip 用 values 数组（等价 op=in，规范化后不携带 op）；uri/host/request_body/response_body 无 name；host
+        匹配大小写不敏感且自动兼容可选端口；header/cookie/query/response_header 用 name+op+value；exists/not_exists 不需要 value。含响应条件的规则在响应回程评估，正文仅检查完整且不超过
         1 MiB 的内容
       properties:
         type:
           type: string
           enum:
           - uri
+          - host
           - method
           - header
           - cookie
@@ -5536,10 +5553,10 @@ components:
           - exists
           - not_exists
           - in
-          description: 运算符（uri 和正文支持 eq/ne/prefix/contains/regex；正文不支持 exists/not_exists/in；regex 须可编译）
+          description: 运算符（uri/host 和正文支持 eq/ne/prefix/contains/regex；不支持 exists/not_exists/in；regex 须可编译）
         value:
           type: string
-          description: 条件值（最长 512 字节，regex 最长 512 字节；非 regex 的 uri 条件值须以 / 开头）
+          description: 条件值（最长 512 字节，regex 最长 512 字节；非 regex 的 uri 条件值须以 / 开头；非 regex 的 host 条件值不含协议/路径/端口，入库小写归一且匹配自动兼容大小写和可选端口）
         values:
           type: array
           items:
@@ -5548,7 +5565,7 @@ components:
           description: 值数组（method 为 HTTP 方法白名单，入库统一大写；client_ip 为单 IP 或 CIDR，入库严格规范化）
     L7RuleActionConfig:
       type: object
-      description: 动作配置（六键全量存储/下发，按动作取对应字段：block→status+message；allow→无；redirect→redirect_url+redirect_status；custom_page→status+content_type+body）
+      description: 动作配置（既有六键全量存储/下发，可选字段按需输出：block→status+message；allow→无；redirect→redirect_url+redirect_status(+preserve_path_query)；custom_page→status+content_type+body）
       properties:
         status:
           type: integer
@@ -5567,6 +5584,9 @@ components:
           - 301
           - 302
           description: 重定向状态码（缺省 302）
+        preserve_path_query:
+          type: boolean
+          description: 重定向时是否保留原请求路径和查询参数（仅 redirect 动作有效，缺省 false；开启后如 https://jxdr.cn/news?id=1 跳转至 https://www.jxdr.cn/news?id=1）
         content_type:
           type: string
           maxLength: 128
@@ -5576,9 +5596,8 @@ components:
           description: 自定义页面内容（custom_page 必填，≤64KB）
     L7Rule:
       type: object
-      description: L7 访问控制规则。含请求条件的规则在源站前评估；含 response_header/response_body 的规则在响应回程评估。各阶段按（priority
-        升序, created_at 升序）稳定排序，首个 enabled 且条件全中的规则生效（首中即停）；正文仅检查完整且不超过 1 MiB
-        的内容，超限、流式或无法解码时不产生正文匹配并完整透传
+      description: L7 访问控制规则。含请求条件的规则在源站前评估；含 response_header/response_body 的规则在响应回程评估。各阶段按（priority 升序, created_at 升序）稳定排序，首个
+        enabled 且条件全中的规则生效（首中即停）；正文仅检查完整且不超过 1 MiB 的内容，超限、流式或无法解码时不产生正文匹配并完整透传
       properties:
         id:
           type: string
@@ -5693,12 +5712,15 @@ components:
       type: object
       required:
       - uri
-      description: 规则测试器输入（uri 以 / 开头且 ≤2048 字符；client_ip 为单个 IP 不支持 CIDR；headers/cookies/query/response_headers
+      description: 规则测试器输入（uri 以 / 开头且 ≤2048 字符；host 可选，兼容大小写与可选端口；client_ip 为单个 IP 不支持 CIDR；headers/cookies/query/response_headers
         各 ≤64 条，值 ≤8192 字节且不含控制字符；请求体和响应体用于模拟完整正文）
       properties:
         uri:
           type: string
           description: 请求 URI（须以 / 开头）
+        host:
+          type: string
+          description: 请求域名（Host，可选，如 jxdr.cn 或 JXDR.CN:443）
         method:
           type: string
           description: 请求方法（GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS/TRACE/CONNECT，可空）
@@ -5750,6 +5772,12 @@ components:
         reason:
           type: string
           description: 评估说明
+        redirect_status:
+          type: integer
+          description: 命中 redirect 动作时的状态码（301/302）
+        redirect_location:
+          type: string
+          description: 命中 redirect 动作时的最终跳转 URL
     SecEvent:
       type: object
       description: 安全事件。请求/响应头体留痕仅详情接口有值，列表项对应字段为 null/空。
@@ -8526,6 +8554,20 @@ components:
         status:
           type: string
           description: 报告任务状态
+        file_format:
+          type: string
+          enum:
+          - html
+          - pdf
+          - docx
+          description: 导出格式
+        file_hash:
+          type: string
+          description: 报告文件 sha256
+        file_size:
+          type: integer
+          format: int64
+          description: 文件大小（字节）
         archived_at:
           type: string
           format: date-time
@@ -13655,7 +13697,10 @@ components:
         source_detail:
           type: object
           nullable: true
-          description: 最近一次命中摘要（location / rule_id / event_id / data_type）
+          description: 最近一次命中摘要（location / rule_id / event_id / data_type / masked_sample）
+        masked_sample:
+          type: string
+          description: 最新 1 条网关内存脱敏后的值级样本（如 138****8000；凭据类固定 ******；空串表示仅字段名识别）
         created_at:
           type: string
           format: date-time
@@ -21827,7 +21872,7 @@ components:
           - POLICY_CHANGE
           - REPORT_SUMMARY
           - NOISE_REDUCTION
-          description: 草稿类型（NOISE_REDUCTION 由降噪模块产生，不作为列表过滤值）
+          description: 草稿类型（NOISE_REDUCTION 由降噪模块产生，支持列表过滤）
         target_type:
           type: string
           description: 目标对象类型
@@ -23509,8 +23554,9 @@ components:
           $ref: '#/components/schemas/AiMemory'
     AiAuditRecord:
       type: object
-      description: AI 审计记录（写入时已脱敏；列表接口不查询 prompt_version/confirm_result 列，该两字段恒为空字符串）
+      description: AI 审计记录（写入时已脱敏；列表与详情接口字段口径一致，均返回 id、prompt_version、confirm_result 等字段，不回传哈希链列）
       required:
+      - id
       - occurred_at
       - username
       - role_codes
@@ -23529,6 +23575,10 @@ components:
       - draft_reference
       - confirm_result
       properties:
+        id:
+          type: string
+          format: uuid
+          description: 审计记录 ID
         occurred_at:
           type: string
           format: date-time
@@ -23571,7 +23621,7 @@ components:
           description: 模型编码
         prompt_version:
           type: string
-          description: Prompt 版本号（列表接口不返回该列，恒为空字符串）
+          description: Prompt 版本号
         input_tokens:
           type: integer
           description: 输入 Token 数
@@ -23595,19 +23645,10 @@ components:
           description: 草稿引用
         confirm_result:
           type: string
-          description: 确认结果（列表接口不返回该列，恒为空字符串）
+          description: 确认结果
     AiAuditDetail:
-      description: AI 审计详情（列表项字段 + 记录 ID；详情接口补查 prompt_version/confirm_result 两列）
-      allOf:
-      - $ref: '#/components/schemas/AiAuditRecord'
-      - type: object
-        required:
-        - id
-        properties:
-          id:
-            type: string
-            format: uuid
-            description: 审计记录 ID
+      description: AI 审计详情（与 AiAuditRecord 字段口径一致）
+      $ref: '#/components/schemas/AiAuditRecord'
     AiAuditResponse:
       type: object
       required:
@@ -30731,6 +30772,7 @@ paths:
           - PASSWORD_CHANGE
           - PASSWORD_RESET
           - FIRST_CHANGE_PASSWORD
+          - LOGIN_TOTP_CHALLENGE
         description: 按事件类型过滤
       - name: request_id
         in: query
@@ -30816,6 +30858,7 @@ paths:
           - PASSWORD_CHANGE
           - PASSWORD_RESET
           - FIRST_CHANGE_PASSWORD
+          - LOGIN_TOTP_CHALLENGE
         description: 按事件类型过滤
       - name: request_id
         in: query
@@ -40686,7 +40729,7 @@ paths:
       tags:
       - reports
       summary: 删除报告
-      description: 删除报告任务及报告文件；仅可删除本人创建的报告，持 `reports.delete_all` 的管理者可删除任意报告，否则 403。写操作审计。权限：`reports.delete_own`（路由）+ 归属或
+      description: 删除报告任务及报告文件；仅可删除本人创建的报告，持 `reports.delete_all` 的管理者可删除任意报告，否则 403。写操作审计。权限：`reports.delete_own` 或 `reports.delete_all`（路由）；非本人创建的报告须持
         `reports.delete_all`（归属校验，迁移 000084）。
       parameters:
       - name: id
@@ -45662,6 +45705,20 @@ paths:
         schema:
           type: string
         description: 违例类型（如 undefined_field / type_mismatch / missing_field）
+      - name: start_time
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 发生起始时间（RFC3339 / ISO 8601，含边界）
+      - name: end_time
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: 发生结束时间（RFC3339 / ISO 8601，含边界）
       - name: page
         in: query
         required: false
@@ -48038,16 +48095,18 @@ paths:
       parameters:
       - name: application_id
         in: query
-        required: true
+        required: false
         schema:
           type: string
           format: uuid
+        description: 按站点过滤（application_id 与 endpoint_id 至少提供一个）
       - name: endpoint_id
         in: query
         required: false
         schema:
           type: string
           format: uuid
+        description: 按接口过滤（endpoint_id 单查时可省略 application_id）
       responses:
         '200':
           description: readiness 派生列表
@@ -53700,7 +53759,9 @@ paths:
 
         请求需满足以下任一：event_id（须为 UUID）、question、或至少一个结构化过滤维度
 
-        （application_id/ip/uri/rule_id/request_id，可组合，time_range 指定统计区间、缺省 24h）。
+        （application_id/ip/uri/rule_id/request_id，可组合，time_range 指定统计区间、缺省 24h）；
+
+        question 亦可与 event_id 或结构化过滤维度同时传入，作为分析侧重点。
 
         结构化维度：后端按维度查询真实事件数据（security_events/access_control_events）组装分析上下文，
 
@@ -53782,7 +53843,9 @@ paths:
       summary: 攻击画像分析
       description: '触发一次性攻击画像分析（同步执行、非流式，行为同 /ai/analyze/event）。
 
-        请求需满足：ip / uri / application_id / question 至少提供一个，优先级 ip > uri > application_id > question。
+        请求需满足：ip / uri / application_id / question 至少提供一个，优先级 ip > uri > application_id > question；
+
+        选定 ip / uri / application_id 时可同时传入 question 作为分析侧重点。
 
         uri（须以 / 开头的请求路径）：URI 画像，后端真实 SQL 聚合该 URI 的事件分布、攻击类型、来源 IP 与命中规则 Top；
 
@@ -53987,7 +54050,7 @@ paths:
       summary: AI 报告总结
       description: '生成指定周期的安全运营报告总结（事件、阻断、主要攻击类型、攻击源、误报与建议；
 
-        同步执行、非流式，行为同 /ai/analyze/event）。period 可选（如「近7天」「日报」「本周」），缺省为「近7天」；允许空请求体。
+        同步执行、非流式，行为同 /ai/analyze/event）。period 可选（如「近7天」「日报」「本周」），缺省为「近7天」；question 可选，用于指定补充说明；允许空请求体。
 
         限流：AI 用量配额超限返回 429。权限：`ai.report_summary.use`。'
       requestBody:
@@ -54053,6 +54116,7 @@ paths:
           - CUSTOM_RULE
           - POLICY_CHANGE
           - REPORT_SUMMARY
+          - NOISE_REDUCTION
         description: 按草稿类型过滤（白名单校验，非法值 400）
       - name: status
         in: query
@@ -54237,6 +54301,7 @@ paths:
           - CUSTOM_RULE
           - POLICY_CHANGE
           - REPORT_SUMMARY
+          - NOISE_REDUCTION
         description: 按推荐类型过滤（白名单校验，非法值 400）
       - name: status
         in: query
@@ -56652,7 +56717,7 @@ paths:
       summary: AI 审计详情
       description: '权限：ai.audits.read。
 
-        返回字段口径同审计列表项并附记录 ID；与列表不同，详情补查 prompt_version/confirm_result 两列。
+        返回字段口径与审计列表项一致（含记录 ID 及 prompt_version/confirm_result 列）。
 
         审计正文在写入时已脱敏：不保存密钥/密码/私钥/完整载荷与模型私有思维链。
 

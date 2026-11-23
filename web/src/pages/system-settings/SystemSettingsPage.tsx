@@ -322,12 +322,17 @@ function SettingGroupPanel({ group }: { group: string }) {
     return raw
   }
 
+  const draftValue = (item: SettingItem): string =>
+    drafts[item.id] ?? String(item.setting_value ?? '')
+  const isDirty = (item: SettingItem): boolean =>
+    drafts[item.id] !== undefined && drafts[item.id] !== String(item.setting_value ?? '')
+
   const updateMutation = useMutation({
     mutationFn: (item: SettingItem) =>
       settingsApi.update({
         setting_group: item.setting_group,
         setting_key: item.setting_key,
-        setting_value: coerceValue(item, drafts[item.id] ?? item.setting_value),
+        setting_value: coerceValue(item, draftValue(item)),
         version: item.version,
       }),
     onSuccess: () => {
@@ -354,25 +359,24 @@ function SettingGroupPanel({ group }: { group: string }) {
     },
   })
 
-  const draftValue = (item: SettingItem) =>
-    drafts[item.id] ?? item.setting_value
-  const isDirty = (item: SettingItem) =>
-    drafts[item.id] !== undefined && drafts[item.id] !== item.setting_value
-
   const handleSave = (item: SettingItem) => {
     const meta = SETTING_META[`${item.setting_group}:${item.setting_key}`]
-    if (meta?.numeric) {
+    if (item.value_type === 'integer' || meta?.numeric) {
       const raw = draftValue(item).trim()
       const n = Number(raw)
       if (raw === '' || !Number.isFinite(n)) {
         message.error('请输入数值')
         return
       }
+      if (item.value_type === 'integer' && !Number.isInteger(n)) {
+        message.error('请输入整数')
+        return
+      }
       if (
-        (meta.min !== undefined && n < meta.min) ||
-        (meta.max !== undefined && n > meta.max)
+        (meta?.min !== undefined && n < meta.min) ||
+        (meta?.max !== undefined && n > meta.max)
       ) {
-        message.error(`取值需在 ${meta.min ?? '-∞'}~${meta.max ?? '+∞'} 之间`)
+        message.error(`取值需在 ${meta?.min ?? '-∞'}~${meta?.max ?? '+∞'} 之间`)
         return
       }
     }

@@ -76,6 +76,7 @@ describe('filterMenusByRoles', () => {
       '/exceptions',
       '/trusted-proxies',
       '/access-rules',
+      '/whitelists',
       '/l7-rules',
       '/rate-limit',
       '/temporary-blocks',
@@ -163,6 +164,7 @@ describe('filterMenusByRoles', () => {
       '/protection-policies',
       '/trusted-proxies',
       '/access-rules',
+      '/whitelists',
       '/l7-rules',
       '/rate-limit',
       '/api-endpoints',
@@ -216,6 +218,7 @@ describe('filterMenusByRoles', () => {
     expect(keys).toContain('/dashboard')
     expect(keys).toContain('/applications')
     expect(keys).toContain('/access-rules')
+    expect(keys).toContain('/whitelists')
     expect(keys).toContain('/reports')
     expect(keys).toContain('/audits')
     expect(keys).toContain('/api-endpoints')

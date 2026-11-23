@@ -1969,6 +1969,7 @@ components:
         previous_version_id: { type: string, format: uuid, nullable: true, description: 上一版本ID }
         publish_task_id: { type: string, format: uuid, nullable: true, description: 关联发布任务ID }
         publish_result: { type: string, description: 发布结果（空串/SUCCESS/FAILED/VERIFY_FAILED/ACTIVATION_FAILED） }
+        validation_result: { type: string, enum: ['', SMOKE_PASS, SMOKE_FAIL, SMOKE_SKIPPED], description: 发布后冒烟验证结果（空串表示历史版本未执行冒烟/SMOKE_PASS/SMOKE_FAIL/SMOKE_SKIPPED） }
         is_current: { type: boolean, description: 是否当前生效版本 }
         created_by: { type: string, format: uuid, nullable: true }
         created_at: { type: string, format: date-time }

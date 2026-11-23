@@ -165,10 +165,27 @@ describe('阶段6 展示元数据完整性', () => {
     expect(SEARCH_RANGE_OPTIONS.map((o) => o.value)).toEqual(['1h', '24h'])
   })
 
-  it('报告章节选项值不重复且含结论章节', () => {
+  it('报告章节选项值不重复且与后端 SectionTitles 键一致', () => {
     const values = REPORT_SECTION_OPTIONS.map((s) => s.value)
     expect(new Set(values).size).toBe(values.length)
-    expect(values).toContain('conclusion')
+    expect(values).toEqual([
+      'summary',
+      'traffic',
+      'events_overview',
+      'risk_level',
+      'attack_types',
+      'source_ips',
+      'applications',
+      'rule_hits',
+      'cc_protection',
+      'ip_lists',
+      'disposition',
+      'upstream_health',
+      'certificates',
+      'system_health',
+      'conclusions',
+    ])
+    expect(values).toContain('conclusions')
     expect(values.length).toBeGreaterThanOrEqual(10)
   })
 
@@ -221,9 +238,13 @@ describe('阶段6 终态判定', () => {
   })
 
   it('交付检查终态判定', () => {
-    expect(isTerminalDeliveryStatus('RUNNING')).toBe(false)
-    expect(isTerminalDeliveryStatus('SUCCESS')).toBe(true)
-    expect(isTerminalDeliveryStatus('FAILED')).toBe(true)
+    expect(isTerminalDeliveryStatus('PENDING')).toBe(false)
+    expect(isTerminalDeliveryStatus('PASS')).toBe(true)
+    expect(isTerminalDeliveryStatus('WARNING')).toBe(true)
+    expect(isTerminalDeliveryStatus('FAIL')).toBe(true)
+    expect(isTerminalDeliveryStatus('SUCCESS')).toBe(false)
+    expect(isTerminalDeliveryStatus('FAILED')).toBe(false)
+    expect(isTerminalDeliveryStatus('COMPLETED')).toBe(false)
   })
 })
 

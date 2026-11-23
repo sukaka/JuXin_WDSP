@@ -2,6 +2,7 @@
 package aiorchestrator
 
 import (
+	"net"
 	"regexp"
 	"strings"
 )
@@ -29,32 +30,70 @@ const (
 	TaskAPISecurityAnalysis TaskType = "API_SECURITY_ANALYSIS"
 )
 
+// taskTypeAgents 每种任务类型的规范调度 Agent（intentRules 与 PlanForTaskType 的唯一真源）。
+var taskTypeAgents = map[TaskType][]string{
+	TaskEventAnalysis:       {"security_event"},
+	TaskFalsePositive:       {"waf_policy", "security_event"},
+	TaskRuleExplanation:     {"waf_policy", "knowledge"},
+	TaskAttackProfile:       {"security_event", "log_analysis"},
+	TaskAttackChain:         {"security_event", "log_analysis"},
+	TaskRootCause:           {"ops_diagnostic", "log_analysis"},
+	TaskLogQuery:            {"log_analysis"},
+	TaskStatistics:          {"security_event"},
+	TaskPolicyRec:           {"waf_policy"},
+	TaskWhatIf:              {"waf_policy"},
+	TaskReportSummary:       {"report"},
+	TaskGeneralQA:           {"knowledge"},
+	TaskAPISecurityAnalysis: {"api_security"},
+}
+
+func agentsOf(t TaskType) ([]string, bool) {
+	agents, ok := taskTypeAgents[t]
+	if !ok {
+		return nil, false
+	}
+	return append([]string(nil), agents...), true
+}
+
+// PlanForTaskType 根据已知 TaskType 构造确定性任务计划（返回 Agents 的防御性拷贝）。
+func PlanForTaskType(t TaskType) (Plan, bool) {
+	agents, ok := agentsOf(t)
+	if !ok {
+		return Plan{}, false
+	}
+	return Plan{
+		TaskType:  t,
+		Agents:    agents,
+		RiskLevel: riskOf(t),
+		Summary:   summaryOf(t, agents),
+	}, true
+}
+
 // intentRule 意图规则（优先级排序）。
 type intentRule struct {
 	typ     TaskType
 	pattern *regexp.Regexp
-	agents  []string // 调度 Agent
 }
 
 var intentRules = []intentRule{
-	{TaskFalsePositive, regexp.MustCompile(`误报|false.?positive`), []string{"waf_policy", "security_event"}},
-	{TaskRuleExplanation, regexp.MustCompile(`规则.*(解释|什么意思|干什么|用途)|\b\d{6,7}\b.*(规则|解释)`), []string{"waf_policy", "knowledge"}},
-	{TaskAttackChain, regexp.MustCompile(`攻击链|攻击过程|入侵过程|chain`), []string{"security_event", "log_analysis"}},
-	{TaskRootCause, regexp.MustCompile(`为什么.*(延迟|失败|异常|升高|不足|错误|慢|积压|崩溃)|根因|root.?cause|怎么回事|排查`), []string{"ops_diagnostic", "log_analysis"}},
-	{TaskAttackProfile, regexp.MustCompile(`画像|谁在攻击|哪个ip|来源|攻击者`), []string{"security_event", "log_analysis"}},
-	{TaskFalsePositive, regexp.MustCompile(`误杀|误拦|误阻断`), []string{"waf_policy", "security_event"}},
+	{TaskFalsePositive, regexp.MustCompile(`误报|false.?positive`)},
+	{TaskRuleExplanation, regexp.MustCompile(`规则.*(解释|什么意思|干什么|用途)|\b\d{6,7}\b.*(规则|解释)`)},
+	{TaskAttackChain, regexp.MustCompile(`攻击链|攻击过程|入侵过程|chain`)},
+	{TaskRootCause, regexp.MustCompile(`为什么.*(延迟|失败|异常|升高|不足|错误|慢|积压|崩溃)|根因|root.?cause|怎么回事|排查`)},
+	{TaskAttackProfile, regexp.MustCompile(`画像|谁在攻击|哪个ip|来源|攻击者`)},
+	{TaskFalsePositive, regexp.MustCompile(`误杀|误拦|误阻断`)},
 	// API 安全分析：高信号词（影子/僵尸/越权/BOLA/BFLA/参数偏离/敏感数据/弱点等）直接命中；
 	// 泛词（资产/态势/模型/风险/统计等）必须与 api|接口|端点|字段 共现才路由，
 	// 避免把普通 WAF 统计/日志问题误路由到 API 域。位置在「事件分析/统计/日志」之前。
 	{TaskAPISecurityAnalysis, regexp.MustCompile(`shadow|zombie|bola|bfla|越权|参数偏离|涉敏|敏感数据|影子|僵尸|弱点` +
 		`|(?:api|接口|端点|字段)[^。，,；;]{0,16}(?:资产|态势|模型|schema|参数|风险|学习|发现|偏离|覆盖|清单|分类|图谱|运行时|规范|敏感|统计|调用量)` +
-		`|(?:资产|态势|模型|schema|参数|风险|学习|发现|偏离|覆盖|清单|分类|图谱|运行时|规范|敏感|统计|调用量)[^。，,；;]{0,16}(?:api|接口|端点|字段)`), []string{"api_security"}},
-	{TaskEventAnalysis, regexp.MustCompile(`事件.*分析|分析.*事件|这条事件|这个事件|分析一下`), []string{"security_event"}},
-	{TaskPolicyRec, regexp.MustCompile(`策略.*(建议|优化|调整|推荐)|优化.*策略|调优|建议.*规则`), []string{"waf_policy"}},
-	{TaskWhatIf, regexp.MustCompile(`what.?if|如果.*(关掉|关闭|启用|改成|切换|调整)|模拟|假设`), []string{"waf_policy"}},
-	{TaskReportSummary, regexp.MustCompile(`(日报|周报|月报|总结|汇总).*(安全|攻击|运营)?|(安全|攻击|运营).*(日报|周报|月报|总结|汇总)`), []string{"report"}},
-	{TaskLogQuery, regexp.MustCompile(`日志|log|查询.*请求|请求.*记录`), []string{"log_analysis"}},
-	{TaskStatistics, regexp.MustCompile(`统计|趋势|排行|top|多少|数量|分布|占比|(?:攻击|安全事件|拦截).*(?:最多|最高|最常见|主要|首位|第一)|(?:最多|最高|最常见|主要|首位|第一).*(?:攻击|安全事件|拦截)`), []string{"security_event"}},
+		`|(?:资产|态势|模型|schema|参数|风险|学习|发现|偏离|覆盖|清单|分类|图谱|运行时|规范|敏感|统计|调用量)[^。，,；;]{0,16}(?:api|接口|端点|字段)`)},
+	{TaskEventAnalysis, regexp.MustCompile(`事件.*分析|分析.*事件|这条事件|这个事件|分析一下`)},
+	{TaskPolicyRec, regexp.MustCompile(`策略.*(建议|优化|调整|推荐)|优化.*策略|调优|建议.*规则`)},
+	{TaskWhatIf, regexp.MustCompile(`what.?if|如果.*(关掉|关闭|启用|改成|切换|调整)|模拟|假设`)},
+	{TaskReportSummary, regexp.MustCompile(`(日报|周报|月报|总结|汇总).*(安全|攻击|运营)?|(安全|攻击|运营).*(日报|周报|月报|总结|汇总)`)},
+	{TaskLogQuery, regexp.MustCompile(`日志|log|查询.*请求|请求.*记录`)},
+	{TaskStatistics, regexp.MustCompile(`统计|趋势|排行|top|多少|数量|分布|占比|(?:攻击|安全事件|拦截).*(?:最多|最高|最常见|主要|首位|第一)|(?:最多|最高|最常见|主要|首位|第一).*(?:攻击|安全事件|拦截)`)},
 }
 
 // Plan 任务计划摘要（前端可展示，非私有思维链）。
@@ -79,22 +118,22 @@ func Classify(message string) Plan {
 	msg := strings.ToLower(message)
 	for _, rule := range intentRules {
 		if rule.pattern.MatchString(msg) {
-			return Plan{
-				TaskType:  rule.typ,
-				Agents:    rule.agents,
-				RiskLevel: riskOf(rule.typ),
-				Summary:   summaryOf(rule.typ, rule.agents),
+			if plan, ok := PlanForTaskType(rule.typ); ok {
+				return plan
 			}
 		}
 	}
 	// 含事件ID/规则ID/Request ID → 事件分析
 	if regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}`).MatchString(msg) || regexp.MustCompile(`\b\d{6,7}\b`).MatchString(msg) {
-		return Plan{TaskType: TaskEventAnalysis, Agents: []string{"security_event"}, RiskLevel: "LOW",
-			Summary: "识别到事件/规则标识，执行安全事件分析"}
+		if plan, ok := PlanForTaskType(TaskEventAnalysis); ok {
+			plan.Summary = "识别到事件/规则标识，执行安全事件分析"
+			return plan
+		}
 	}
 	// 通用问答默认只走知识库，不拉 24h 攻击统计（避免闲聊/非安全问题刷屏运营数据）
-	return Plan{TaskType: TaskGeneralQA, Agents: []string{"knowledge"}, RiskLevel: "LOW",
-		Summary: "通用安全问答"}
+	plan, _ := PlanForTaskType(TaskGeneralQA)
+	plan.Summary = "通用安全问答"
+	return plan
 }
 
 // ResolveContextualMessage 为短追问继承上一条用户问题中的事件、规则、IP 和查询条件。
@@ -230,7 +269,13 @@ func summaryOf(t TaskType, agents []string) string {
 	return names[t] + "（调度: " + strings.Join(agents, ", ") + "）"
 }
 
-// ExtractIDs 从消息提取事件ID/规则ID/IP/时间范围提示。
+var ipExtractRe = regexp.MustCompile(`(?:^|[^0-9a-zA-Z.])((?:\d{1,3}\.){3}\d{1,3}|[0-9a-fA-F:.]*:[0-9a-fA-F:.]*:[0-9a-fA-F:.]*)`)
+
+func isASCIIAlnum(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// ExtractIDs 从消息提取事件ID/规则ID/IP（单遍提取 IPv4/IPv6，经 net.ParseIP 校验后限 5 个）。
 func ExtractIDs(message string) (eventIDs []string, ruleIDs []int, ips []string) {
 	idRe := regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`)
 	eventIDs = idRe.FindAllString(message, 5)
@@ -243,23 +288,38 @@ func ExtractIDs(message string) (eventIDs []string, ruleIDs []int, ips []string)
 		}
 		ruleIDs = append(ruleIDs, n)
 	}
-	ipRe := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
-	for _, ip := range ipRe.FindAllString(message, 5) {
-		parts := 0
-		valid := true
-		for _, seg := range strings.Split(ip, ".") {
-			n := 0
-			for _, r := range seg {
-				n = n*10 + int(r-'0')
-			}
-			if n > 255 {
-				valid = false
-				break
-			}
-			parts++
+	for _, loc := range ipExtractRe.FindAllStringSubmatchIndex(message, -1) {
+		if len(loc) < 4 || loc[2] < 0 || loc[3] <= loc[2] {
+			continue
 		}
-		if valid && parts == 4 {
-			ips = append(ips, ip)
+		candStart, candEnd := loc[2], loc[3]
+		cand := message[candStart:candEnd]
+		if strings.Contains(cand, ":") {
+			if candEnd < len(message) && isASCIIAlnum(message[candEnd]) {
+				continue
+			}
+			cand = strings.TrimRight(cand, ".")
+			if strings.HasPrefix(cand, ":") && !strings.HasPrefix(cand, "::") {
+				cand = cand[1:]
+			}
+			if strings.HasSuffix(cand, ":") && !strings.HasSuffix(cand, "::") {
+				cand = cand[:len(cand)-1]
+			}
+			if cand == "" || cand == "::" {
+				continue
+			}
+		} else {
+			if candEnd < len(message) && (isASCIIAlnum(message[candEnd]) || (message[candEnd] == '.' && candEnd+1 < len(message) && message[candEnd+1] >= '0' && message[candEnd+1] <= '9')) {
+				continue
+			}
+		}
+		parsed := net.ParseIP(cand)
+		if parsed == nil {
+			continue
+		}
+		ips = append(ips, parsed.String())
+		if len(ips) >= 5 {
+			break
 		}
 	}
 	return

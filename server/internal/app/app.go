@@ -122,6 +122,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/trustedproxies"
 	"github.com/jiuzhang-waf/server/internal/upgrades"
 	"github.com/jiuzhang-waf/server/internal/upstreams"
+	"github.com/jiuzhang-waf/server/internal/urlwhitelists"
 	"github.com/jiuzhang-waf/server/internal/users"
 	"github.com/jiuzhang-waf/server/internal/validations"
 	"github.com/jiuzhang-waf/server/internal/vulnintel"
@@ -161,8 +162,8 @@ type App struct {
 	authzPublish apiauthz.PublishFunc
 	// 阶段8 / WDSP：API 主动扫描工人（仅 API 动态防护开启时装配，StartStage6Workers 内启动）
 	scanWorker *apiscan.Worker
-	// 阶段8 / WDSP：数据出境 GeoIP 读取器（文件缺失时 nil 降级，看板 geo_enabled=false）
-	apiGeoLookup *apigeo.MMDB
+	// 统一 GeoIP 引擎（ip2region + DB-IP/MMDB；无可用离线库时 nil 降级，看板 geo_enabled=false）
+	apiGeoLookup apigeo.CountryLookup
 	// 阶段8 / WDSP：AI 定时运营调度器（仅 API 动态防护开启时装配，StartStage6Workers 内启动）
 	aiOpsSweeper *apiops.Sweeper
 	// 阶段8 / WDSP：多节点版本校验聚合器（§201 遥测路径，仅 API 动态防护开启时装配）
@@ -322,14 +323,24 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	vulnRefHandler := vulnrefs.NewHandler(vulnrefs.NewStore(db), auditSvc)
 	ruleOverrideHandler := ruleoverrides.NewHandler(ruleOverrideStore, auditSvc)
 	exceptionHandler := exceptions.NewHandler(exceptionStore, auditSvc)
+	// 统一离线 GeoIP 引擎（ip2region + DB-IP/MMDB）：进程级单实例常驻内存，供安全事件、访问日志、
+	// 报告、攻击大屏批量接口、API 数据出境与来源统计共用；无可用库文件时保持降级不阻断启动。
+	geoEngine := apigeo.OpenEngine(apigeo.DefaultSearchDirs(cfg.Gateway.DataDir)...)
+	var sharedCountryGeo apigeo.CountryLookup
+	if geoEngine.Enabled() {
+		sharedCountryGeo = geoEngine
+	}
+
 	eventStore := securityevents.NewStore(db)
 	eventExceptionAdapter := &eventExceptionCreator{store: exceptionStore, events: eventStore}
 	eventHandler := securityevents.NewHandler(eventStore, auditSvc, eventExceptionAdapter)
+	eventHandler.SetGeoLookup(geoEngine)
 
 	// 阶段5：访问控制与CC防护服务
 	proxyStore := trustedproxies.NewStore(db)
 	protectedStore := protectedaddresses.NewStore(db)
 	accessRuleStore := accessrules.NewStore(db)
+	urlWhitelistStore := urlwhitelists.NewStore(db)
 	rateLimitStore := ratelimitpolicies.NewStore(db)
 	tempBlockStore := temporaryblocks.NewStore(db, c)
 	tempBlockStore.SetPermanentRuleCreator(accessRuleStore)
@@ -368,6 +379,8 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	proxyHandler := trustedproxies.NewHandler(proxyStore, auditSvc)
 	protectedHandler := protectedaddresses.NewHandler(protectedStore, auditSvc)
 	accessRuleHandler := accessrules.NewHandler(accessRuleStore, auditSvc, protectedStore)
+	accessRuleHandler.SetURLWhitelistChecker(urlWhitelistCheckerAdapter{store: urlWhitelistStore})
+	urlWhitelistHandler := urlwhitelists.NewHandler(urlWhitelistStore, auditSvc)
 	// 威胁情报导入（WDSP P2-C1）：Feodo C2 情报对账写入 IP 黑名单（复用 access_control 域）
 	threatIntelHandler := threatintel.NewHandler(threatintel.NewService(db, protectedStore), auditSvc)
 	rateLimitHandler := ratelimitpolicies.NewHandler(rateLimitStore, auditSvc)
@@ -653,9 +666,10 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 		publisher.SetSidecarConfig(cfg.WAF.GatewayNodeName, nodeinterfaces.NewStore(db))
 		// 边车共享卷目录（空串保持默认 DefaultSidecarDir；网络配置边车 network.json 同卷）
 		publisher.SetSidecarDir(cfg.WAF.SidecarDir)
-		// L7 访问控制：仅 WAF/WDSP 交付形态下发 l7_rules 段（API 形态 GuardConfig 与历史一致）
+		// L7 访问控制与 URL 白名单：仅 WAF/WDSP 交付形态下发（API 形态 GuardConfig 与历史一致）
 		if cfg.Product.WebWAFProtectionEnabled() {
 			guardProvider.SetL7Rules(l7RuleStore)
+			guardProvider.SetURLWhitelists(urlWhitelistStore)
 		}
 		acVersionHandler.SetRollbackFunc(func(ctx context.Context, versionID uuid.UUID, requestedBy uuid.UUID, requestID string) (interface{}, error) {
 			return publisher.RollbackAccessControl(ctx, versionID, requestedBy, requestID)
@@ -670,7 +684,7 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	if err := reportStore.EnsureBuiltinTemplate(context.Background()); err != nil {
 		slog.Warn("ensure builtin report template failed", "error", err)
 	}
-	reportHandler := reports.NewHandler(reportStore, db, aggStore, auditSvc, cfg.Gateway.DataDir)
+	reportHandler := reports.NewHandlerWithGeo(reportStore, db, aggStore, auditSvc, cfg.Gateway.DataDir, sharedCountryGeo)
 	healthStore := runtimehealth.NewStore(db)
 	// 磁盘探针路径：容器内为 /app；裸机/开发/测试环境 /app 不存在时回退数据目录
 	// （DataDir 承载报告/备份，正是需要监控容量的盘），避免存储接口 500。
@@ -1286,16 +1300,21 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("POST /api/v1/security-events/{id}/resolve", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.Resolve))))
 	mux.Handle("POST /api/v1/security-events/{id}/mark-analyzing", authz(middleware.RequirePermission("security_events.disposition")(http.HandlerFunc(eventHandler.MarkAnalyzing))))
 	mux.Handle("POST /api/v1/security-events/{id}/create-exception", authz(middleware.RequirePermission("exceptions.manage")(http.HandlerFunc(eventHandler.CreateException))))
-	// 阶段5 §十一：事件→黑名单预填（只读；确认创建走 POST /access-rules 携带 source_type=SECURITY_EVENT）
+	// 阶段5 §十一：事件→黑白名单预填（只读；确认创建走 POST /access-rules 或 POST /url-whitelists）
 	mux.Handle("GET /api/v1/security-events/{id}/blacklist-prefill", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(accessRuleHandler.BlacklistPrefill))))
+	mux.Handle("GET /api/v1/security-events/{id}/whitelist-prefill", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(accessRuleHandler.WhitelistPrefill))))
 
 	// 全量访问日志（二期）
 	accessLogHandler := accesslogs.NewHandler(accesslogs.NewStore(db), auditSvc)
+	accessLogHandler.SetGeoLookup(geoEngine)
 	mux.Handle("GET /api/v1/access-logs", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.List))))
 	mux.Handle("GET /api/v1/access-logs/trend", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.Trend))))
 	mux.Handle("GET /api/v1/access-logs/flow", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.Flow))))
 	mux.Handle("GET /api/v1/access-logs/export", authz(exportRate(middleware.RequirePermission("access_logs.export")(http.HandlerFunc(accessLogHandler.Export)))))
 	mux.Handle("GET /api/v1/access-logs/{id}", authz(middleware.RequirePermission("access_logs.read")(http.HandlerFunc(accessLogHandler.Get))))
+
+	// 统一 GeoIP 归属地单条 / 批量查询（ip2region + DB-IP/MMDB；大屏与控制台共用，要求登录态）
+	apigeo.RegisterLookupRoutes(mux, authz, apigeo.NewLookupHandler(geoEngine))
 
 	var pcapService *requestpcap.Service
 	if cfg.RequestPCAP.Enabled() {
@@ -1370,8 +1389,20 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 	mux.Handle("PUT /api/v1/vuln-intel/settings", authz(middleware.RequirePermission("vuln_intel.manage")(http.HandlerFunc(vulnIntelHandler.PutSettings))))
 	// 规则关联事件（阶段5 §8.5）：按 access_rule_id 过滤访问控制事件
 	mux.Handle("GET /api/v1/access-rules/{id}/events", authz(middleware.RequirePermission("access_rules.read")(http.HandlerFunc(acEventHandler.ListByRule))))
+	// URL 白名单
+	mux.Handle("GET /api/v1/url-whitelists", authz(middleware.RequirePermission("access_rules.read")(http.HandlerFunc(urlWhitelistHandler.List))))
+	mux.Handle("POST /api/v1/url-whitelists", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(urlWhitelistHandler.Create))))
+	mux.Handle("GET /api/v1/url-whitelists/{id}", authz(middleware.RequirePermission("access_rules.read")(http.HandlerFunc(urlWhitelistHandler.Get))))
+	mux.Handle("PUT /api/v1/url-whitelists/{id}", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(urlWhitelistHandler.Update))))
+	mux.Handle("DELETE /api/v1/url-whitelists/{id}", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(urlWhitelistHandler.Delete))))
+	mux.Handle("POST /api/v1/url-whitelists/{id}/enable", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(urlWhitelistHandler.Enable))))
+	mux.Handle("POST /api/v1/url-whitelists/{id}/disable", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(urlWhitelistHandler.Disable))))
+	mux.Handle("POST /api/v1/url-whitelists/{id}/extend", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(urlWhitelistHandler.Extend))))
+	mux.Handle("POST /api/v1/url-whitelists/{id}/release", authz(middleware.RequirePermission("access_rules.manage")(http.HandlerFunc(urlWhitelistHandler.Release))))
+	mux.Handle("GET /api/v1/url-whitelists/{id}/events", authz(middleware.RequirePermission("access_rules.read")(http.HandlerFunc(acEventHandler.ListByRule))))
 	if gatewayHandler != nil {
 		mux.Handle("POST /api/v1/access-rules/publish", authz(middleware.RequirePermission("access_rules.publish")(http.HandlerFunc(gatewayHandler.Publish))))
+		mux.Handle("POST /api/v1/url-whitelists/publish", authz(middleware.RequirePermission("access_rules.publish")(http.HandlerFunc(gatewayHandler.Publish))))
 		mux.Handle("POST /api/v1/rate-limit-policies/publish", authz(middleware.RequirePermission("rate_limits.publish")(http.HandlerFunc(gatewayHandler.Publish))))
 	}
 
@@ -1673,15 +1704,10 @@ func newWithVendorKeys(cfg *config.Config, db *pgxpool.Pool, c *cache.Client, ve
 			apiscan.NewHandler(scanStore, auditSvc).
 				SetController(a.scanWorker).
 				SetRetest(apiscan.NewBuiltinEngine(nil), scanSigner, apiscan.NewWeaknessRetestWriter(apiweakness.NewStore(db))))
-		// 数据出境（P1-03）：GeoIP 数据文件缺失时 nil 降级（Sweep 空转、看板 geo_enabled=false）
-		if mmdb, err := apigeo.OpenMMDB(filepath.Join(cfg.Gateway.DataDir, "geoip", "country.mmdb")); err != nil {
-			slog.Warn("api geo mmdb unavailable, cross-border detection degraded", "error", err)
-		} else {
-			a.apiGeoLookup = mmdb
-		}
+		// 数据出境（P1-03）：复用进程级统一 GeoIP 引擎；数据文件缺失时 nil 降级（Sweep 空转、看板 geo_enabled=false）
+		a.apiGeoLookup = sharedCountryGeo
 		apigeo.RegisterRoutes(mux, authz, apigeo.NewHandler(apigeo.NewStore(db), a.apiGeoLookup, settingsSvc))
-		// 态势访问来源 Geo 维度（mmdb 缺失时 a.apiGeoLookup 为 nil，不注入保持降级；
-		// 注意 typed-nil：*apigeo.MMDB(nil) 注入接口后非 nil 守卫会失效，必须判空后注入）
+		// 态势访问来源 Geo 维度（无离线库时 a.apiGeoLookup 为 nil，不注入保持降级）
 		if a.apiGeoLookup != nil {
 			apiSecurityHandler.SetGeoLookup(a.apiGeoLookup)
 		}
@@ -1992,7 +2018,7 @@ func requireAnyPerm(perms ...string) func(http.Handler) http.Handler {
 func (a *App) SyslogForwarder() *syslogfw.Forwarder { return a.syslogFw }
 
 // APIGeoLookup 返回数据出境 GeoIP 读取器（nil = 数据文件缺失降级；main 装配周期 Sweep 用）。
-func (a *App) APIGeoLookup() *apigeo.MMDB { return a.apiGeoLookup }
+func (a *App) APIGeoLookup() apigeo.CountryLookup { return a.apiGeoLookup }
 
 // APIExposureSweeper 返回暴露面判定评估器（nil = API 动态防护未开启；main 挂 sweeper 群用）。
 func (a *App) APIExposureSweeper() *apiexposure.Sweeper { return a.apiExposureSweeper }
@@ -2486,3 +2512,25 @@ func initEncryption(cfg *config.Config) (*encryption.Service, error) {
 }
 
 var _ = os.Getenv
+
+// urlWhitelistCheckerAdapter 桥接 urlwhitelists.Store 到 accessrules.URLWhitelistChecker（避免包循环依赖）。
+type urlWhitelistCheckerAdapter struct {
+	store *urlwhitelists.Store
+}
+
+func (a urlWhitelistCheckerAdapter) FindExistingURLWhitelist(ctx context.Context, pathStr string, appID *uuid.UUID) (*accessrules.ExistingURLWhitelist, error) {
+	if a.store == nil {
+		return nil, nil
+	}
+	m, err := a.store.FindExistingForPath(ctx, pathStr, appID)
+	if err != nil || m == nil {
+		return nil, err
+	}
+	return &accessrules.ExistingURLWhitelist{
+		ID:         m.ID,
+		Name:       m.Name,
+		MatchType:  m.MatchType,
+		URIPattern: m.URIPattern,
+		Status:     m.Status,
+	}, nil
+}

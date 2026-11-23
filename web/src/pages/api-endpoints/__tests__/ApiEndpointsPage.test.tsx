@@ -309,7 +309,7 @@ describe('ApiEndpointsPage', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('导出清单：按当前站点筛选打开 CSV URL', async () => {
+  it('导出清单：支持按当前站点筛选导出、按勾选导出与导出全部', async () => {
     const openMock = vi.fn()
     vi.stubGlobal('open', openMock)
     useAuthStore.setState({
@@ -320,13 +320,36 @@ describe('ApiEndpointsPage', () => {
     renderPage()
     fireEvent.click(await screen.findByText('站点B'))
     await screen.findByText('站点：站点B')
-    fireEvent.click(screen.getByRole('button', { name: /导出清单/ }))
+
+    // 1. 导出筛选结果：携带当前站点筛选
+    const exportBtn = screen.getByRole('button', { name: /导出清单/ })
+    fireEvent.click(exportBtn)
+    fireEvent.click(await screen.findByText('导出筛选结果'))
     expect(openMock).toHaveBeenCalledTimes(1)
-    const [url, target] = openMock.mock.calls[0] as [string, string]
-    expect(url).toContain('/api/v1/api-security/endpoints/export?')
-    expect(url).toContain('format=csv')
-    expect(url).toContain('application_id=app-2')
+    const [filteredUrl, target] = openMock.mock.calls[0] as [string, string]
+    expect(filteredUrl).toContain('/api/v1/api-security/endpoints/export?')
+    expect(filteredUrl).toContain('format=csv')
+    expect(filteredUrl).toContain('application_id=app-2')
     expect(target).toBe('_blank')
+
+    // 2. 勾选第一条记录后点击「导出已选（1）」
+    const checkboxes = screen.getAllByRole('checkbox')
+    fireEvent.click(checkboxes[1])
+    expect(await screen.findByText('已选 1 条')).toBeInTheDocument()
+    fireEvent.click(exportBtn)
+    fireEvent.click(await screen.findByText('导出已选（1）'))
+    expect(openMock).toHaveBeenCalledTimes(2)
+    const [selectedUrl] = openMock.mock.calls[1] as [string, string]
+    expect(selectedUrl).toContain('/api/v1/api-security/endpoints/export?')
+    expect(selectedUrl).toContain('ids=')
+    expect(selectedUrl).toContain('format=csv')
+
+    // 3. 导出全部：不带筛选与 ids
+    fireEvent.click(exportBtn)
+    fireEvent.click(await screen.findByText('导出全部'))
+    expect(openMock).toHaveBeenCalledTimes(3)
+    const [allUrl] = openMock.mock.calls[2] as [string, string]
+    expect(allUrl).toBe('/api/v1/api-security/endpoints/export?format=csv')
   })
 
   it('无 merge/split 权限：不显示行内「合并」与「拆分」', async () => {

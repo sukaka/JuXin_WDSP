@@ -288,7 +288,7 @@ export const aiAnalyzeApi = {
 export interface AiDraft {
   id: string
   task_id?: string | null
-  recommendation_type: string // EXCEPTION / BLACKLIST / CC_POLICY / CUSTOM_RULE / POLICY_CHANGE / REPORT_SUMMARY
+  recommendation_type: string // EXCEPTION / BLACKLIST / CC_POLICY / CUSTOM_RULE / POLICY_CHANGE / REPORT_SUMMARY / NOISE_REDUCTION
   target_type: string
   target_id: string
   summary: string
@@ -508,6 +508,7 @@ export interface AiPromptVersion {
   content_hash: string
   change_summary: string
   test_result: string // '' / PASSED / FAILED
+  test_detail?: AiPromptTestDetail | null
   adversarial_result: string // '' / ADVERSARIAL_PASSED / ADVERSARIAL_FAILED
   adversarial_detail?: AiPromptAdversarialCase[] | null
   created_at: string
@@ -521,37 +522,37 @@ export interface AiPromptTestCheck {
   message?: string
 }
 
-/** 回归测试逐用例摘要（test_detail.sets[].cases 元素；字段均可能缺省，渲染时容错） */
-export interface AiPromptTestSetCase {
-  id?: string
-  question?: string
-  passed?: boolean
-  message?: string
-}
-
-/** 单个评估集的模型回归结果（test_detail.sets 元素，与后端冻结契约一致） */
+/** 单个评估集的模型回归结果（test_detail.regression.sets 元素，与后端 promptRegressionSetResult 一致） */
 export interface AiPromptTestSetResult {
   code: string
-  name: string
-  score: number
   threshold: number
+  score: number
   passed: boolean
   total: number
   passed_count: number
-  model_code: string
-  message?: string
-  cases?: AiPromptTestSetCase[] | null
+  case_errors: number
+  run_id?: string
+  error?: string
 }
 
-/** 版本测试结构化明细：sets 为真实模型回归结果，static_checks 为静态检查（两者分区展示，不得混称） */
+/** 模型回归聚合结果（test_detail.regression / 顶层 regression） */
+export interface AiPromptRegressionDetail {
+  model: string
+  sets: AiPromptTestSetResult[]
+  failure_summary?: string
+}
+
+/** 版本测试结构化明细：static_checks 恒定落库，静态通过后附 regression 与可选 failure_summary */
 export interface AiPromptTestDetail {
-  sets?: AiPromptTestSetResult[] | null
   static_checks?: AiPromptTestCheck[] | null
+  regression?: AiPromptRegressionDetail | null
+  failure_summary?: string
 }
 
 export interface AiPromptTestResult {
   test_result: string
   checks?: AiPromptTestCheck[] | null
+  regression?: AiPromptRegressionDetail | null
   test_detail?: AiPromptTestDetail | null
 }
 
@@ -567,6 +568,9 @@ export interface AiPromptAdversarialTestResult {
   adversarial_result: string // ADVERSARIAL_PASSED / ADVERSARIAL_FAILED
   cases?: AiPromptAdversarialCase[] | null
 }
+
+/** Prompt 版本回归串行执行 4 个评估集，后端总时限 15 分钟、写期限 20 分钟，客户端留 1 分钟余量 */
+const AI_PROMPT_TEST_TIMEOUT_MS = 1_260_000
 
 /** Prompt 管理（ai.prompts.*） */
 export const aiPromptsApi = {
@@ -587,7 +591,10 @@ export const aiPromptsApi = {
   createVersion: (id: string, body: { content: string; change_summary?: string }) =>
     request<{ version: AiPromptVersion }>(`/ai/prompts/${id}/versions`, { method: 'POST', body }),
   testVersion: (versionId: string) =>
-    request<AiPromptTestResult>(`/ai/prompts/versions/${versionId}/test`, { method: 'POST' }),
+    request<AiPromptTestResult>(`/ai/prompts/versions/${versionId}/test`, {
+      method: 'POST',
+      timeoutMs: AI_PROMPT_TEST_TIMEOUT_MS,
+    }),
   adversarialTestVersion: (versionId: string) =>
     request<AiPromptAdversarialTestResult>(`/ai/prompts/versions/${versionId}/adversarial-test`, {
       method: 'POST',
@@ -643,12 +650,9 @@ export const aiMemoriesApi = {
 
 /* ==================== AI 审计 ==================== */
 
-/**
- * AI 审计记录。
- * 注意：后端 Record 无 JSON tag，序列化为 Go 字段名（PascalCase）；
- * 且 List 查询将 occurred_at 扫描进 RoleCodes 字段，前端以 RoleCodes 作为时间列展示。
- */
+/** AI 审计记录（与后端 server/internal/aiaudit.Record 一致） */
 export interface AiAuditRecord {
+  id: string
   occurred_at: string
   user_id?: string | null
   username: string
@@ -694,6 +698,7 @@ export const aiAuditsApi = {
     const data = await request<PageResult<AiAuditRecord>>('/ai/audits', { query: { ...params } })
     return { ...data, items: data.items ?? [] }
   },
+  get: async (id: string) => (await request<{ audit: AiAuditRecord }>(`/ai/audits/${id}`)).audit,
   verify: (limit?: number) =>
     request<AiAuditVerifyResult>('/ai/audits/verify', { method: 'POST', body: { limit } }),
 }

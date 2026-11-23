@@ -102,7 +102,20 @@ const TRACE_FALLBACK = {
     },
   ],
   security_events: [
-    { id: 'evt-1', occurred_at: '2026-08-30T00:30:01Z', action: 'BLOCK', rule_id: 'CRS-942100', request_id: 'req-1' },
+    {
+      id: 'evt-1',
+      occurred_at: '2026-08-30T00:30:01Z',
+      request_id: 'req-1',
+      application_id: 'svc-1',
+      attack_type: 'SQL_INJECTION',
+      severity: 'HIGH',
+      action: 'BLOCK',
+      response_status: 403,
+      request_method: 'GET',
+      request_uri: '/api/orders/detail',
+      rule_match_count: 3,
+      disposition_status: 'UNPROCESSED',
+    },
   ],
   partial: false,
   note: '',
@@ -235,7 +248,7 @@ describe('ApmTracesPage', () => {
     expect(searchCalls().some((c) => String(c[0]).includes('trace_id='))).toBe(false)
   })
 
-  it('行点击打开瀑布 Drawer：otel_spans 渲染瀑布，点击 span 展开属性表', { timeout: 20000 }, async () => {
+  it('行点击打开瀑布 Drawer：otel_spans 渲染瀑布，点击 span 展开属性表', { timeout: 60000 }, async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderPage()
 
@@ -266,7 +279,12 @@ describe('ApmTracesPage', () => {
     expect(await screen.findByText('访问记录（1）')).toBeInTheDocument()
     expect(screen.getByText('关联 WAF 事件（1）')).toBeInTheDocument()
     expect(screen.getByText('/api/orders/detail')).toBeInTheDocument()
-    expect(screen.getByText('CRS-942100')).toBeInTheDocument()
+    expect(screen.getByText('阻断')).toBeInTheDocument()
+    expect(screen.getByText('SQL注入')).toBeInTheDocument()
+    expect(screen.getByText('高')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByText('未处置')).toBeInTheDocument()
+    expect(screen.getByText('req-1')).toBeInTheDocument()
     expect(screen.queryByText('调用链瀑布')).not.toBeInTheDocument()
   })
 

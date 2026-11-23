@@ -2,12 +2,19 @@
 package roles
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
+
+type dbQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 // Role 是角色实体。
 type Role struct {
@@ -29,7 +36,7 @@ type Permission struct {
 
 // Handler 是角色权限处理器。
 type Handler struct {
-	db *pgxpool.Pool
+	db dbQuerier
 }
 
 // NewHandler 创建处理器。
@@ -46,7 +53,7 @@ func (h *Handler) ListRoles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	var out []Role
+	out := []Role{}
 	for rows.Next() {
 		var role Role
 		if err := rows.Scan(&role.ID, &role.Code, &role.Name, &role.Description, &role.IsBuiltin); err != nil {
@@ -54,6 +61,10 @@ func (h *Handler) ListRoles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out = append(out, role)
+	}
+	if err := rows.Err(); err != nil {
+		response.InternalError(w, r, err)
+		return
 	}
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"items": out})
 }
@@ -114,7 +125,7 @@ WHERE rp.role_id = $1 ORDER BY p.module, p.code`, roleID)
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Permission
+	out := []Permission{}
 	for rows.Next() {
 		var p Permission
 		if err := rows.Scan(&p.ID, &p.Code, &p.Name, &p.Module, &p.Description); err != nil {
@@ -134,7 +145,7 @@ func (h *Handler) ListPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	var out []Permission
+	out := []Permission{}
 	for rows.Next() {
 		var p Permission
 		if err := rows.Scan(&p.ID, &p.Code, &p.Name, &p.Module, &p.Description); err != nil {
@@ -142,6 +153,10 @@ func (h *Handler) ListPermissions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		response.InternalError(w, r, err)
+		return
 	}
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"items": out})
 }

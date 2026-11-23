@@ -39,11 +39,11 @@ import {
   REPORT_FORMAT_META,
   REPORT_TYPE_META,
 } from '../../utils/stage6'
-import type { ReportScheduleItem } from '../../types'
+import type { ReportScheduleItem, ReportScheduleType } from '../../types'
 
 interface ScheduleFormValues {
   name: string
-  report_type: string
+  report_type: ReportScheduleType
   api_report_type?: string
   content_scope: string
   application_ids?: string[]
@@ -70,6 +70,19 @@ const WEEKDAY_OPTIONS = [
 ]
 
 const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
+
+/** 定时报告仅支持 DAILY / WEEKLY / MONTHLY，过滤 ad-hoc CUSTOM */
+const SCHEDULE_REPORT_TYPE_OPTIONS = Object.entries(REPORT_TYPE_META)
+  .filter(([value]) => value !== 'CUSTOM')
+  .map(([value, meta]) => ({ value, label: meta.label }))
+
+function normalizeDayOfWeek(v: number | null | undefined): number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 7 ? v : 1
+}
+
+function normalizeDayOfMonth(v: number | null | undefined): number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 28 ? v : 1
+}
 
 const API_REPORT_TYPE_META: Record<string, { label: string }> = {
   API_ASSET: { label: 'API 资产周报' },
@@ -186,8 +199,8 @@ export default function ReportSchedulesPanel() {
         include_api_assets: record.include_api_assets,
         page_orientation: record.page_orientation ?? 'P',
         time_of_day: record.time_of_day,
-        day_of_week: record.day_of_week,
-        day_of_month: record.day_of_month,
+        day_of_week: normalizeDayOfWeek(record.day_of_week),
+        day_of_month: normalizeDayOfMonth(record.day_of_month),
         send_email: record.send_email,
         emails: record.emails ?? undefined,
         enabled: !record.enabled,
@@ -215,8 +228,8 @@ export default function ReportSchedulesPanel() {
       include_api_assets: record.include_api_assets ?? false,
       page_orientation: record.page_orientation ?? 'P',
       time_of_day: dayjs(record.time_of_day, 'HH:mm'),
-      day_of_week: record.day_of_week,
-      day_of_month: record.day_of_month,
+      day_of_week: normalizeDayOfWeek(record.day_of_week),
+      day_of_month: normalizeDayOfMonth(record.day_of_month),
       send_email: record.send_email,
       emails: record.emails ?? [],
       enabled: record.enabled,
@@ -239,8 +252,8 @@ export default function ReportSchedulesPanel() {
         values.content_scope !== 'WAF' ? values.include_api_assets : undefined,
       page_orientation: values.page_orientation,
       time_of_day: values.time_of_day.format('HH:mm'),
-      day_of_week: values.day_of_week,
-      day_of_month: values.day_of_month,
+      day_of_week: normalizeDayOfWeek(values.day_of_week ?? form.getFieldValue('day_of_week')),
+      day_of_month: normalizeDayOfMonth(values.day_of_month ?? form.getFieldValue('day_of_month')),
       send_email: values.send_email,
       emails: values.send_email ? values.emails : undefined,
       enabled: values.enabled,
@@ -473,6 +486,13 @@ export default function ReportSchedulesPanel() {
             send_email: false,
             enabled: true,
           }}
+          onValuesChange={(changed) => {
+            if (changed.report_type === 'WEEKLY') {
+              form.setFieldValue('day_of_week', normalizeDayOfWeek(form.getFieldValue('day_of_week')))
+            } else if (changed.report_type === 'MONTHLY') {
+              form.setFieldValue('day_of_month', normalizeDayOfMonth(form.getFieldValue('day_of_month')))
+            }
+          }}
           onFinish={submit}
         >
           <Form.Item
@@ -490,9 +510,7 @@ export default function ReportSchedulesPanel() {
             rules={[{ required: true }]}
           >
             <Radio.Group
-              options={Object.entries(REPORT_TYPE_META).map(
-                ([value, meta]) => ({ value, label: meta.label }),
-              )}
+              options={SCHEDULE_REPORT_TYPE_OPTIONS}
               optionType="button"
             />
           </Form.Item>
@@ -629,7 +647,7 @@ export default function ReportSchedulesPanel() {
                     label="每月日期（1-28）"
                     rules={[{ required: true }]}
                   >
-                    <InputNumber min={1} max={28} style={{ width: 100 }} />
+                    <InputNumber min={1} max={28} precision={0} style={{ width: 100 }} />
                   </Form.Item>
                 )
               }

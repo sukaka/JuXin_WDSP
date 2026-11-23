@@ -200,7 +200,7 @@ export default function AiAuditsPage() {
         <SmartTable<AiAuditRecord>
           storageKey="ai-admin-audits"
           rowKey={(r) =>
-            `${r.occurred_at}-${r.username}-${r.action}-${r.request_summary?.slice(0, 24)}`
+            r.id || `${r.occurred_at}-${r.username}-${r.action}-${r.request_summary?.slice(0, 24)}`
           }
           loading={listQuery.isLoading}
           columns={columns}

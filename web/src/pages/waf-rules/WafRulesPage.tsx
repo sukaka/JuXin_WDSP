@@ -31,7 +31,7 @@ import { wafRulesApi } from '../../api/wafRules'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
-import { ruleNameZh } from '../../utils/crsRuleNames'
+import { ruleMessageZh, ruleNameZh } from '../../utils/crsRuleNames'
 import { hasPermission } from '../../utils/permission'
 import {
   ATTACK_TYPE_META,
@@ -204,17 +204,20 @@ export default function WafRulesPage() {
       title: '名称',
       dataIndex: 'name',
       ellipsis: true,
-      render: (v: string, record) => (
-        <Button
-          type="link"
-          size="small"
-          style={{ padding: 0, height: 'auto' }}
-          title={v}
-          onClick={() => setDetailRuleId(record.rule_id)}
-        >
-          {ruleNameZh(record) || '-'}
-        </Button>
-      ),
+      render: (_v: string, record) => {
+        const display = ruleNameZh(record) || '-'
+        return (
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0, height: 'auto' }}
+            title={display}
+            onClick={() => setDetailRuleId(record.rule_id)}
+          >
+            {display}
+          </Button>
+        )
+      },
     },
     {
       title: '攻击类型',
@@ -424,14 +427,11 @@ export default function WafRulesPage() {
               <Descriptions.Item label="来源">
                 <StatusTag value={detail.rule_source} map={RULE_SOURCE_META} />
               </Descriptions.Item>
-              <Descriptions.Item label="中文名称" span={2}>
+              <Descriptions.Item label="规则名称" span={2}>
                 {ruleNameZh(detail) || '-'}
               </Descriptions.Item>
-              <Descriptions.Item label="名称" span={2}>
-                {detail.name || '-'}
-              </Descriptions.Item>
               <Descriptions.Item label="规则消息" span={2}>
-                {detail.message || '-'}
+                {ruleMessageZh(detail) || '-'}
               </Descriptions.Item>
               <Descriptions.Item label="攻击类型">
                 <StatusTag value={detail.attack_type} map={ATTACK_TYPE_META} />

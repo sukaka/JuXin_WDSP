@@ -75,7 +75,7 @@ func (q *dataflowFakeQuerier) Query(_ context.Context, query string, args ...any
 func TestGraphWhereQualifiesContributionColumns(t *testing.T) {
 	filter := GraphFilter{
 		Start: time.Now().Add(-time.Hour), End: time.Now(), View: "service",
-		Method: "POST", DataType: "PHONE",
+		Method: "POST", DataType: " phone ",
 	}
 	where, args := graphWhere(filter, false)
 	for _, column := range []string{"occurred_at", "protocol", "source_type", "evidence_type", "method", "data_types_json"} {
@@ -83,8 +83,8 @@ func TestGraphWhereQualifiesContributionColumns(t *testing.T) {
 			t.Errorf("column %s is not table-qualified: %s", column, where)
 		}
 	}
-	if len(args) != 4 {
-		t.Fatalf("unexpected argument count: %d", len(args))
+	if len(args) != 4 || args[3] != `%"PHONE"%` {
+		t.Fatalf("unexpected argument count or normalized data_type: %#v", args)
 	}
 	for _, predicate := range []string{"protocol = 'HTTP'", "source_type = 'SERVICE'", "target_type = 'SERVICE'", "evidence_type = 'OBSERVED_TRACE'"} {
 		if !strings.Contains(where, predicate) {

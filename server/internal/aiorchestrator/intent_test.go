@@ -2,6 +2,7 @@ package aiorchestrator
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -166,5 +167,102 @@ func TestExtractIDsEmpty(t *testing.T) {
 	eventIDs, ruleIDs, ips := ExtractIDs("没有任何标识的普通问题")
 	if len(eventIDs) != 0 || len(ruleIDs) != 0 || len(ips) != 0 {
 		t.Errorf("应全部为空, got %v %v %v", eventIDs, ruleIDs, ips)
+	}
+}
+
+func TestPlanForTaskTypeAllTypes(t *testing.T) {
+	wantAgents := map[TaskType][]string{
+		TaskEventAnalysis:       {"security_event"},
+		TaskFalsePositive:       {"waf_policy", "security_event"},
+		TaskRuleExplanation:     {"waf_policy", "knowledge"},
+		TaskAttackProfile:       {"security_event", "log_analysis"},
+		TaskAttackChain:         {"security_event", "log_analysis"},
+		TaskRootCause:           {"ops_diagnostic", "log_analysis"},
+		TaskLogQuery:            {"log_analysis"},
+		TaskStatistics:          {"security_event"},
+		TaskPolicyRec:           {"waf_policy"},
+		TaskWhatIf:              {"waf_policy"},
+		TaskReportSummary:       {"report"},
+		TaskGeneralQA:           {"knowledge"},
+		TaskAPISecurityAnalysis: {"api_security"},
+	}
+	for tt, want := range wantAgents {
+		plan, ok := PlanForTaskType(tt)
+		if !ok {
+			t.Fatalf("PlanForTaskType(%q) ok=false, want true", tt)
+		}
+		if plan.TaskType != tt {
+			t.Errorf("Plan.TaskType = %q, want %q", plan.TaskType, tt)
+		}
+		if len(plan.Agents) != len(want) {
+			t.Fatalf("PlanForTaskType(%q).Agents = %v, want %v", tt, plan.Agents, want)
+		}
+		for i := range want {
+			if plan.Agents[i] != want[i] {
+				t.Errorf("PlanForTaskType(%q).Agents[%d] = %q, want %q", tt, i, plan.Agents[i], want[i])
+			}
+		}
+		if plan.RiskLevel == "" || plan.Summary == "" {
+			t.Errorf("PlanForTaskType(%q) missing risk/summary: %+v", tt, plan)
+		}
+		// 防御性拷贝检查：修改返回的 Agents 不得影响后续调用
+		plan.Agents[0] = "mutated"
+		again, _ := PlanForTaskType(tt)
+		if again.Agents[0] != want[0] {
+			t.Fatalf("PlanForTaskType(%q) leaked mutable Agents slice", tt)
+		}
+	}
+	for _, bogus := range []TaskType{"", "BOGUS"} {
+		if _, ok := PlanForTaskType(bogus); ok {
+			t.Errorf("PlanForTaskType(%q) ok=true, want false", bogus)
+		}
+	}
+}
+
+func TestExtractIDsIPv6AndMixedOrder(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+		want []string
+	}{
+		{"ipv6 bare", "请分析 2001:db8::1 的行为", []string{"2001:db8::1"}},
+		{"ipv6 loopback", "来自 ::1 的请求", []string{"::1"}},
+		{"ipv6 bracketed port", "来源 [2001:db8::1]:8080 异常", []string{"2001:db8::1"}},
+		{"ipv6 prefix IP", "IP:2001:db8::1 命中规则", []string{"2001:db8::1"}},
+		{"ipv6 prefix src", "src:2001:db8::1 命中规则", []string{"2001:db8::1"}},
+		{"ipv6 adjacent cjk", "对2001:db8::1做画像", []string{"2001:db8::1"}},
+		{"ipv6 leading zero canonical", "分析 2001:0db8::1", []string{"2001:db8::1"}},
+		{"ipv4 mapped ipv6", "来源 ::ffff:192.0.2.1", []string{"192.0.2.1"}},
+		{"ipv6 then ipv4 order", "2001:db8::1 compare with 10.0.0.1", []string{"2001:db8::1", "10.0.0.1"}},
+		{"ipv4 then ipv6 order", "10.0.0.1 compare with 2001:db8::1", []string{"10.0.0.1", "2001:db8::1"}},
+		{"sentence period", "来自 1.2.3.4. 和 2001:db8::1.", []string{"1.2.3.4", "2001:db8::1"}},
+		{"reject timestamps macs bogus", "2026-11-20T05:05:41Z 12:34:56 00:11:22:33:44:55 std::vector foo::bar :: 2001:db8::1foo 1.2.3.4foo 999.1.1.1 10.0.0.256 1.2.3.4.5", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, ips := ExtractIDs(tc.msg)
+			if len(ips) != len(tc.want) {
+				t.Fatalf("ExtractIDs(%q) ips=%v, want %v", tc.msg, ips, tc.want)
+			}
+			for i := range tc.want {
+				if ips[i] != tc.want[i] {
+					t.Errorf("ips[%d]=%q, want %q (all=%v)", i, ips[i], tc.want[i], ips)
+				}
+			}
+		})
+	}
+
+	// 校验后限 5 个 IP：前置大量时间戳/非法 IP 不得挤占有效 IP 名额
+	noisy := strings.Repeat("12:34:56 999.1.1.1 ", 6) + "2001:db8::1"
+	_, _, ips := ExtractIDs(noisy)
+	if len(ips) != 1 || ips[0] != "2001:db8::1" {
+		t.Fatalf("post-validation cap failed: got %v", ips)
+	}
+
+	// 7 个有效 IPv4/IPv6 上限截断为 5 个
+	seven := "10.0.0.1 2001:db8::1 10.0.0.2 2001:db8::2 10.0.0.3 2001:db8::3 10.0.0.4"
+	_, _, ips = ExtractIDs(seven)
+	if len(ips) != 5 {
+		t.Fatalf("expected 5 IPs cap, got %d (%v)", len(ips), ips)
 	}
 }

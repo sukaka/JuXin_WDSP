@@ -362,7 +362,10 @@ export default function BotPolicyTab({
             />
           </Descriptions.Item>
           <Descriptions.Item label="最近更新">
-            {policy.updated_at
+            {policy.version > 0 &&
+            policy.updated_at &&
+            !policy.updated_at.startsWith('0001-') &&
+            !policy.updated_at.startsWith('0000-')
               ? `${formatDateTime(policy.updated_at)}${policy.updated_by ? ` · ${policy.updated_by}` : ''}`
               : '-'}
           </Descriptions.Item>
@@ -623,7 +626,7 @@ export default function BotPolicyTab({
                       style={{ marginBottom: 12 }}
                       title={`信号规则 #${field.name + 1}`}
                       extra={
-                        <Tooltip title="删除此规则">
+                        <Tooltip title="删除此规则" placement="left">
                           <Button
                             type="text"
                             danger

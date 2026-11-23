@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  API_FINDING_SEVERITY_FILTER_OPTIONS,
+  API_FINDING_SEVERITY_META,
   EXPOSURE_CONFIDENCE_META,
   apiAssetValueReasonLabel,
   apiClassificationSourceLabel,
@@ -124,5 +126,18 @@ describe('apiAssetValueReasonLabel', () => {
 
   it('不含 exposure 键的理由原样返回', () => {
     expect(apiAssetValueReasonLabel('含敏感数据类型')).toBe('含敏感数据类型')
+  })
+})
+
+describe('API_FINDING_SEVERITY_FILTER_OPTIONS', () => {
+  it('排除 NONE，仅包含服务端接受的五个严重级别，同时保留展示元数据', () => {
+    expect(API_FINDING_SEVERITY_META.NONE).toEqual({ color: 'default', label: '无' })
+    expect(API_FINDING_SEVERITY_FILTER_OPTIONS.map((o) => o.value)).toEqual([
+      'CRITICAL',
+      'HIGH',
+      'MEDIUM',
+      'LOW',
+      'INFO',
+    ])
   })
 })

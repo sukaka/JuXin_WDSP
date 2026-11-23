@@ -32,7 +32,7 @@ func DiffConfigs(oldConfig, newConfig json.RawMessage) ([]string, error) {
 	}
 	sort.Strings(sorted)
 
-	var lines []string
+	lines := []string{}
 	for _, k := range sorted {
 		oldV, inOld := oldObj[k]
 		newV, inNew := newObj[k]

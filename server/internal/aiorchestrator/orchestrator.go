@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -41,18 +42,20 @@ type Agent interface {
 
 // AnalyzeInput Agent 执行输入。
 type AnalyzeInput struct {
-	Principal  *aitools.Principal
-	TaskID     uuid.UUID
-	SessionID  uuid.UUID
-	TaskType   TaskType
-	Message    string
-	TimeRange  QueryTimeRange
-	EventIDs   []string
-	RuleIDs    []int
-	IPs        []string
-	ToolCtx    *ToolContext
-	Evidence   *EvidenceSet
-	LLMCompose func(ctx context.Context, system, user string) (string, error)
+	Principal     *aitools.Principal
+	TaskID        uuid.UUID
+	SessionID     uuid.UUID
+	TaskType      TaskType
+	Message       string
+	TimeRange     QueryTimeRange
+	EventIDs      []string
+	RuleIDs       []int
+	IPs           []string
+	URI           string
+	ApplicationID string
+	ToolCtx       *ToolContext
+	Evidence      *EvidenceSet
+	LLMCompose    func(ctx context.Context, system, user string) (string, error)
 }
 
 // AgentToolChecker Agent→Tool 白名单检查（aihandlers 以 ai_agents.allowed_tool_ids 实现；
@@ -117,13 +120,19 @@ type AnalyzeResult struct {
 	Facts     interface{} // 结构化事实（前端渲染用）
 }
 
+// SessionReader 只读会话上下文接口（*SessionStore 实现；便于离线单元测试注入）。
+type SessionReader interface {
+	Get(ctx context.Context, id uuid.UUID) (*Session, error)
+	RecentMessages(ctx context.Context, sessionID uuid.UUID, limit int) ([]Message, error)
+}
+
 // Orchestrator AI 编排器。
 type Orchestrator struct {
 	db       *pgxpool.Pool
 	gateway  *aimodel.Gateway
 	toolCtx  *ToolContext
 	agents   map[string]Agent
-	sessions *SessionStore
+	sessions SessionReader
 	tasks    *TaskStore
 	audit    aitools.Auditor
 	cost     CostRecorder
@@ -178,13 +187,17 @@ type ContinueQuotaChecker interface {
 }
 
 // New 创建编排器。
-func New(db *pgxpool.Pool, gw *aimodel.Gateway, registry *aitools.Registry, auditor aitools.Auditor, sessions *SessionStore, cost CostRecorder, limits TaskLimits) *Orchestrator {
+func New(db *pgxpool.Pool, gw *aimodel.Gateway, registry *aitools.Registry, auditor aitools.Auditor, sessions SessionReader, cost CostRecorder, limits TaskLimits) *Orchestrator {
+	var tasks *TaskStore
+	if db != nil {
+		tasks = NewTaskStore(db)
+	}
 	return &Orchestrator{
 		db: db, gateway: gw,
 		toolCtx:  &ToolContext{Registry: registry, Auditor: auditor, maxToolCalls: limits.MaxToolCalls},
 		agents:   map[string]Agent{},
 		sessions: sessions,
-		tasks:    NewTaskStore(db),
+		tasks:    tasks,
 		audit:    auditor,
 		cost:     cost,
 		limits:   limits,
@@ -235,10 +248,92 @@ type RunInput struct {
 	RoleCodes   []string
 	Permissions map[string]bool
 	Message     string
+	// 结构化直传覆盖（供 /api/v1/ai/analyze/* 端点锁定任务类型与目标维度；零值保持对话分类与文本提取行为）：
+	// TaskType 非空时跳过上下文追问拼接并直接按 PlanForTaskType 调度；
+	// StructuredIDs 为 true 时直接消费清洗后的 EventIDs/RuleIDs/IPs（不经 ExtractIDs 从正文/Question 误提取）。
+	TaskType      TaskType
+	EventIDs      []string
+	RuleIDs       []int
+	IPs           []string
+	StructuredIDs bool
+	URI           string
+	ApplicationID string
+	TimeRange     QueryTimeRange
 	// PromptOverrides 候选 Prompt 覆盖（Prompt 编码 → 候选内容）：仅本次运行有效，
 	// 覆盖同编码的已发布 Prompt（当前消费点为 composeAnswer 的 AnswerSummaryPromptCode），
 	// 不读写发布存储；nil/空值表示不覆盖。用于 Prompt 版本真实回归（候选内容先跑评估集再决定发布）。
 	PromptOverrides map[string]string
+}
+
+// ResolveRunPlan 解析本次编排的确定性任务计划（显式 TaskType 优先，未知值回退 Classify）。
+func ResolveRunPlan(in RunInput, effectiveMessage string) Plan {
+	if in.TaskType != "" {
+		if plan, ok := PlanForTaskType(in.TaskType); ok {
+			return plan
+		}
+		slog.Warn("unknown ai task type override, falling back to Classify", "task_type", in.TaskType)
+	}
+	return Classify(effectiveMessage)
+}
+
+// ResolveRunIDs 解析本次编排的目标 ID（StructuredIDs=true 返回清洗后的防御性拷贝，否则从文本提取）。
+func ResolveRunIDs(in RunInput, effectiveMessage string) (eventIDs []string, ruleIDs []int, ips []string) {
+	if !in.StructuredIDs {
+		return ExtractIDs(effectiveMessage)
+	}
+	seenEvents := make(map[string]struct{}, len(in.EventIDs))
+	for _, id := range in.EventIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, dup := seenEvents[id]; dup {
+			continue
+		}
+		seenEvents[id] = struct{}{}
+		eventIDs = append(eventIDs, id)
+	}
+	seenRules := make(map[int]struct{}, len(in.RuleIDs))
+	for _, rid := range in.RuleIDs {
+		if rid <= 0 {
+			continue
+		}
+		if _, dup := seenRules[rid]; dup {
+			continue
+		}
+		seenRules[rid] = struct{}{}
+		ruleIDs = append(ruleIDs, rid)
+	}
+	seenIPs := make(map[string]struct{}, len(in.IPs))
+	for _, rawIP := range in.IPs {
+		parsed := net.ParseIP(strings.TrimSpace(rawIP))
+		if parsed == nil {
+			continue
+		}
+		norm := parsed.String()
+		if _, dup := seenIPs[norm]; dup {
+			continue
+		}
+		seenIPs[norm] = struct{}{}
+		ips = append(ips, norm)
+	}
+	return eventIDs, ruleIDs, ips
+}
+
+// ResolveRunTimeRange 解析本次编排的查询时间范围（显式结构化范围优先，否则从文本解析）。
+func ResolveRunTimeRange(in RunInput, effectiveMessage string, now time.Time) QueryTimeRange {
+	if !in.TimeRange.Start.IsZero() && !in.TimeRange.End.IsZero() {
+		return in.TimeRange
+	}
+	if in.TimeRange.Explicit && !in.TimeRange.Start.IsZero() {
+		if now.IsZero() {
+			now = time.Now()
+		}
+		tr := in.TimeRange
+		tr.End = now
+		return tr
+	}
+	return ParseQueryTimeRange(effectiveMessage, now)
 }
 
 // RunResult 编排结果。
@@ -263,18 +358,28 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput, onStep StepFunc) (*
 
 	// 1. 上下文加载。调用方会在 Run 前保存当前用户消息，因此 recent 可能包含当前轮；
 	// 解析追问时只继承更早的用户条件，避免把助手回答当作可信指令。
-	sess, err := o.sessions.Get(ctx, in.SessionID)
-	if err != nil {
-		return nil, err
+	var sess *Session
+	var recent []Message
+	if o.sessions != nil {
+		var err error
+		sess, err = o.sessions.Get(ctx, in.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		recent, err = o.sessions.RecentMessages(ctx, in.SessionID, 10)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		sess = &Session{ID: in.SessionID}
 	}
-	recent, err := o.sessions.RecentMessages(ctx, in.SessionID, 10)
-	if err != nil {
-		return nil, err
+	effectiveMessage := in.Message
+	if in.TaskType == "" {
+		effectiveMessage = ResolveContextualMessage(in.Message, recent)
 	}
-	effectiveMessage := ResolveContextualMessage(in.Message, recent)
 
 	// 2. 意图识别与计划
-	plan := Classify(effectiveMessage)
+	plan := ResolveRunPlan(in, effectiveMessage)
 	// 高成本任务日配额：意图分类后按口径判定，超限直接拒绝（不登记任务、不调度 Agent）
 	if err := o.checkHighCostTaskQuota(ctx, in.UserID, plan, effectiveMessage); err != nil {
 		return nil, err
@@ -303,7 +408,8 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput, onStep StepFunc) (*
 
 	// 3. 执行 Agent 调度
 	evidence := NewEvidenceSet()
-	eventIDs, ruleIDs, ips := ExtractIDs(effectiveMessage)
+	eventIDs, ruleIDs, ips := ResolveRunIDs(in, effectiveMessage)
+	timeRange := ResolveRunTimeRange(in, effectiveMessage, time.Now())
 	var facts []string
 	var factsPayload []interface{}
 	// 单任务 Tool 调用计数器（TaskID 口径：同次编排全部 Agent 共享，CallTool 内强制上限）
@@ -344,8 +450,10 @@ func (o *Orchestrator) Run(ctx context.Context, in RunInput, onStep StepFunc) (*
 		input := &AnalyzeInput{
 			Principal: principal, TaskID: taskID, SessionID: in.SessionID,
 			TaskType: plan.TaskType, Message: effectiveMessage,
-			TimeRange: ParseQueryTimeRange(effectiveMessage, time.Now()),
-			EventIDs:  eventIDs, RuleIDs: ruleIDs, IPs: ips,
+			TimeRange:     timeRange,
+			EventIDs:      eventIDs, RuleIDs: ruleIDs, IPs: ips,
+			URI:           in.URI,
+			ApplicationID: in.ApplicationID,
 			// 每 Agent 派生 ToolContext：落定 TaskID 与 agentCode（白名单校验），共享任务计数器
 			ToolCtx: o.toolCtx.forAgent(taskID, code, toolCalls), Evidence: evidence,
 			LLMCompose: o.llmCompose,
@@ -471,6 +579,9 @@ func (o *Orchestrator) llmCompose(ctx context.Context, system, user string) (str
 
 // llmChat 编排层统一 LLM 呼叫：输入上限强制 + 独立短超时 + 网关路由，返回完整结果（含 finish_reason）。
 func (o *Orchestrator) llmChat(ctx context.Context, msgs []aimodel.ChatMessage) (*aimodel.ChatResult, error) {
+	if o.gateway == nil {
+		return nil, aimodel.ErrNoModel
+	}
 	// 输入上限：呼叫前估算，超限拒绝本次 LLM 呼叫（上层降级为确定性事实回答）
 	if o.limits.MaxInputTokens > 0 {
 		est := 0

@@ -187,14 +187,18 @@ type ReadinessItem struct {
 }
 
 // ListReadiness GET /api/v1/api-security/authz/enforcement-readiness
-// ?application_id=<uuid, 必填>&endpoint_id=<uuid, 可省>
+// ?application_id=<uuid>&endpoint_id=<uuid>（application_id 与 endpoint_id 至少提供一个）
 func (h *Handler) ListReadiness(w http.ResponseWriter, r *http.Request) {
-	applicationID, ok := parseRequiredUUID(w, r, "application_id", "站点ID")
+	applicationID, ok := parseOptionalUUID(w, r, "application_id", "站点ID")
 	if !ok {
 		return
 	}
 	endpointID, ok := parseOptionalUUID(w, r, "endpoint_id", "接口ID")
 	if !ok {
+		return
+	}
+	if applicationID == uuid.Nil && endpointID == uuid.Nil {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "缺少站点ID或接口ID（至少提供一个）")
 		return
 	}
 	now := h.utcNow()
@@ -318,7 +322,7 @@ func (h *Handler) EvaluateImpact(w http.ResponseWriter, r *http.Request) {
 			response.InternalError(w, r, err)
 			return
 		}
-		result.ConfirmToken = token
+		result.ConfirmToken = &token
 		result.ConfirmTokenExpiresAt = &expires
 	}
 	response.JSON(w, r, http.StatusOK, result)

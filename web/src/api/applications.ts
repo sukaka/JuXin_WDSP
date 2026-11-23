@@ -85,7 +85,6 @@ export interface UpstreamTestBody {
   health_check_path: string
   tls_server_name: string
   tls_verify: boolean
-  allow_private: boolean
 }
 
 export const applicationsApi = {
@@ -110,8 +109,10 @@ export const applicationsApi = {
 }
 
 export const domainsApi = {
-  list: (appId: string) =>
-    request<{ items: DomainItem[] }>(`/applications/${appId}/domains`),
+  list: async (appId: string) => {
+    const data = await request<{ items: DomainItem[] | null }>(`/applications/${appId}/domains`)
+    return { ...data, items: data.items ?? [] }
+  },
   create: (appId: string, body: DomainBody) =>
     request<DomainItem>(`/applications/${appId}/domains`, { method: 'POST', body }),
   update: (appId: string, domainId: string, body: DomainBody) =>
@@ -121,8 +122,10 @@ export const domainsApi = {
 }
 
 export const upstreamsApi = {
-  list: (appId: string) =>
-    request<{ items: UpstreamItem[] }>(`/applications/${appId}/upstreams`),
+  list: async (appId: string) => {
+    const data = await request<{ items: UpstreamItem[] | null }>(`/applications/${appId}/upstreams`)
+    return { ...data, items: data.items ?? [] }
+  },
   create: (appId: string, body: UpstreamBody) =>
     request<UpstreamItem>(`/applications/${appId}/upstreams`, { method: 'POST', body }),
   // 更新/删除/启停为平铺路径 /upstreams/{id}
@@ -151,6 +154,15 @@ export interface PathRouteBody {
   description: string
 }
 
+export interface UpdatePathRouteBody extends PathRouteBody {
+  version: number
+}
+
+export interface PathRouteMutationResult {
+  route: AppPathRoute
+  message: string
+}
+
 export interface PathRouteListParams {
   page: number
   page_size: number
@@ -167,9 +179,9 @@ export const pathRoutesApi = {
   list: (appId: string, params: PathRouteListParams) =>
     request<PageResult<AppPathRoute>>(`/applications/${appId}/path-routes`, { query: { ...params } }),
   create: (appId: string, body: PathRouteBody) =>
-    request<AppPathRoute>(`/applications/${appId}/path-routes`, { method: 'POST', body }),
-  update: (appId: string, routeId: string, body: Partial<PathRouteBody>) =>
-    request<AppPathRoute>(`/applications/${appId}/path-routes/${routeId}`, { method: 'PATCH', body }),
+    request<PathRouteMutationResult>(`/applications/${appId}/path-routes`, { method: 'POST', body }),
+  update: (appId: string, routeId: string, body: UpdatePathRouteBody) =>
+    request<PathRouteMutationResult>(`/applications/${appId}/path-routes/${routeId}`, { method: 'PATCH', body }),
   remove: (appId: string, routeId: string) =>
     request<{ message: string }>(`/applications/${appId}/path-routes/${routeId}`, { method: 'DELETE' }),
 }

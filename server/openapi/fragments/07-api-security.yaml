@@ -2297,6 +2297,16 @@ paths:
           required: false
           schema: { type: string }
           description: 违例类型（如 undefined_field / type_mismatch / missing_field）
+        - name: start_time
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: 发生起始时间（RFC3339 / ISO 8601，含边界）
+        - name: end_time
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: 发生结束时间（RFC3339 / ISO 8601，含边界）
         - name: page
           in: query
           required: false
@@ -4046,8 +4056,8 @@ paths:
         对象模型资格字段、有效 OWNER 关系、OPEN 冲突、快照/租约/时钟时效、节点 ACK 与
         能力自报（az/3）。权限：`api_authorization.read`
       parameters:
-        - { name: application_id, in: query, required: true, schema: { type: string, format: uuid } }
-        - { name: endpoint_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: application_id, in: query, required: false, schema: { type: string, format: uuid }, description: 按站点过滤（application_id 与 endpoint_id 至少提供一个） }
+        - { name: endpoint_id, in: query, required: false, schema: { type: string, format: uuid }, description: 按接口过滤（endpoint_id 单查时可省略 application_id） }
       responses:
         '200':
           description: readiness 派生列表
@@ -9625,7 +9635,10 @@ components:
         source_detail:
           type: object
           nullable: true
-          description: 最近一次命中摘要（location / rule_id / event_id / data_type）
+          description: 最近一次命中摘要（location / rule_id / event_id / data_type / masked_sample）
+        masked_sample:
+          type: string
+          description: 最新 1 条网关内存脱敏后的值级样本（如 138****8000；凭据类固定 ******；空串表示仅字段名识别）
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

@@ -12,6 +12,7 @@ package apimcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -334,6 +335,44 @@ func TestMCPCatalogStorePostgresContract(t *testing.T) {
 	}
 	if len(tools3) != 1 || tools3[0].ToolName != "refund" || tools3[0].ReviewStatus != ReviewApproved {
 		t.Fatalf("消失行删除+相等行保留: %+v", tools3)
+	}
+	// B12-03: preserve_description=true 且 description="" 时保留存量 digest/preview 与 APPROVED 审核态
+	// B12-04: UpdateCatalog 支持重命名 name 且同名 409 ErrDuplicateName
+	renamed := name + "-renamed"
+	c4, tools4, err := store.UpdateCatalog(ctx, c.ID, CatalogInput{
+		Name: renamed, ServiceIdentity: "mcp://pay.example.com", Version: 3,
+		Tools: []ToolInput{{ToolName: "refund", ToolVersion: "1.0.0", Description: "", PreserveDescription: true, InputSchema: &schema}},
+	})
+	if err != nil {
+		t.Fatalf("update rename + preserve_description: %v", err)
+	}
+	if c4.Name != renamed || len(tools4) != 1 || tools4[0].ReviewStatus != ReviewApproved ||
+		tools4[0].ToolHash != rt.ToolHash || tools4[0].DescriptionPreview != "发起退款" {
+		t.Fatalf("B12-03/B12-04 PG contract failed: catalog=%+v tools=%+v", c4, tools4)
+	}
+	// B12-03: preserve_description=true + version 变更且旧描述非空 → ValidationError 且事务回滚不动原 APPROVED 行
+	_, _, err = store.UpdateCatalog(ctx, c.ID, CatalogInput{
+		Name: renamed, ServiceIdentity: "mcp://pay.example.com", Version: 4,
+		Tools: []ToolInput{{ToolName: "refund", ToolVersion: "1.1.0", Description: "", PreserveDescription: true, InputSchema: &schema}},
+	})
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("B12-03 version change with preserve_description should fail with ValidationError, got %v", err)
+	}
+	cAfter, toolsAfter, err := store.GetCatalog(ctx, c.ID)
+	if err != nil || cAfter.Version != 4 || len(toolsAfter) != 1 || toolsAfter[0].ToolHash != rt.ToolHash || toolsAfter[0].ReviewStatus != ReviewApproved {
+		t.Fatalf("B12-03 rollback check failed: err=%v cat=%+v tools=%+v", err, cAfter, toolsAfter)
+	}
+	name = renamed
+	// 同名冲突返回 ErrDuplicateName
+	otherName := fmt.Sprintf("pay-mcp-other-%d", time.Now().UnixNano())
+	otherCat, _, err := store.CreateCatalog(ctx, CatalogInput{Name: otherName, ServiceIdentity: "mcp://other"}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM mcp_tool_catalogs WHERE id=$1`, otherCat.ID) })
+	if _, _, err := store.UpdateCatalog(ctx, c.ID, CatalogInput{Name: otherName, ServiceIdentity: "mcp://pay.example.com", Version: 4}); err != ErrDuplicateName {
+		t.Fatalf("重命名冲突应 ErrDuplicateName, got %v", err)
 	}
 	// ⑤ 绑定 CRUD + 发布段绑定读取
 	b, err := store.CreateBinding(ctx, BindingInput{ApplicationID: appID, EndpointPath: "/mcp/pay", CatalogID: c.ID.String()}, "tester")

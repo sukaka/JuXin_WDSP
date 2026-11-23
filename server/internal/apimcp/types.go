@@ -83,9 +83,10 @@ type ArgConstraint struct {
 // ToolInput 工具行写入载荷（导入/整体再导入共用）。
 type ToolInput struct {
 	ToolName           string          `json:"tool_name"`
-	ToolVersion        string          `json:"tool_version"`
-	Description        string          `json:"description"` // 规范化描述全文（入 tool_hash；preview 截断另存）
-	InputSchema        *map[string]any `json:"input_schema"`
+	ToolVersion         string          `json:"tool_version"`
+	Description         string          `json:"description"`                    // 规范化描述全文（入 tool_hash；preview 截断另存）
+	PreserveDescription bool            `json:"preserve_description,omitempty"` // 再导入未重填描述时保留存量 description_digest/preview
+	InputSchema         *map[string]any `json:"input_schema"`
 	OutputSchema       *map[string]any `json:"output_schema"`
 	CapabilityTags     []string        `json:"capability_tags"`
 	RiskLevel          string          `json:"risk_level"`          // 导入缺省 HIGH

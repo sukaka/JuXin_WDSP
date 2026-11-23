@@ -8,6 +8,9 @@ export type IdentityType =
 /** 身份风险等级 */
 export type IdentityRiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
 
+/** 身份状态 */
+export type IdentityStatus = 'NORMAL' | 'BLOCKED'
+
 /** 行为检测信号（十种） */
 export type BehaviorSignal =
   | 'URI_ENUMERATION'
@@ -28,7 +31,7 @@ export interface IdentityItem {
   identity_confidence: number
   risk_score: number
   risk_level: IdentityRiskLevel
-  status: string
+  status: IdentityStatus
   primary_ip: string
   ip_count: number
   account_id: string
@@ -76,7 +79,7 @@ export interface IdentityDetail {
   confidence_source: string[]
   risk_score: number
   risk_level: IdentityRiskLevel
-  status: string
+  status: IdentityStatus
   primary_ip: string
   asn: string
   tls_fingerprint: string
@@ -126,7 +129,6 @@ export interface IdentityEventItem {
   risk_score_delta: number
   mode: string
   reason: string
-  window: string
   metadata: Record<string, unknown>
   request_id: string
   client_ip: string
@@ -166,6 +168,14 @@ export interface IdentityEventListParams {
   page_size: number
 }
 
+export interface IdentityTransitionResult {
+  identity: Omit<
+    IdentityDetail,
+    'ip_history' | 'credentials' | 'recent_events'
+  >
+  changed: boolean
+}
+
 export const securityIdentitiesApi = {
   list: async (params: IdentityListParams) => {
     const data = await request<PageResult<IdentityItem>>(
@@ -196,15 +206,40 @@ export const securityIdentitiesApi = {
       recent_events: data.recent_events ?? [],
     }
   },
-  block: (id: string, reason: string) =>
-    request<{ message: string }>(`/security/identities/${id}/block`, {
-      method: 'POST',
-      body: { reason },
-    }),
-  unblock: (id: string) =>
-    request<{ message: string }>(`/security/identities/${id}/unblock`, {
-      method: 'POST',
-    }),
+  block: async (
+    id: string,
+    reason: string,
+  ): Promise<IdentityTransitionResult> => {
+    const data = await request<IdentityTransitionResult>(
+      `/security/identities/${id}/block`,
+      {
+        method: 'POST',
+        body: { reason },
+      },
+    )
+    return {
+      ...data,
+      identity: {
+        ...data.identity,
+        confidence_source: data.identity.confidence_source ?? [],
+      },
+    }
+  },
+  unblock: async (id: string): Promise<IdentityTransitionResult> => {
+    const data = await request<IdentityTransitionResult>(
+      `/security/identities/${id}/unblock`,
+      {
+        method: 'POST',
+      },
+    )
+    return {
+      ...data,
+      identity: {
+        ...data.identity,
+        confidence_source: data.identity.confidence_source ?? [],
+      },
+    }
+  },
   behavior: async (id: string, params: IdentityBehaviorParams = {}) => {
     const data = await request<PageResult<IdentityBehaviorItem>>(
       `/security/identities/${id}/behavior`,

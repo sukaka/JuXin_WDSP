@@ -2104,12 +2104,12 @@ components:
     L7RuleCondition:
       type: object
       required: [type]
-      description: 匹配条件（多条件 AND）。method/client_ip 用 values 数组（等价 op=in，规范化后不携带 op）；uri/request_body/response_body 无 name；header/cookie/query/response_header 用 name+op+value；exists/not_exists 不需要 value。含响应条件的规则在响应回程评估，正文仅检查完整且不超过 1 MiB 的内容
+      description: 匹配条件（多条件 AND）。method/client_ip 用 values 数组（等价 op=in，规范化后不携带 op）；uri/host/request_body/response_body 无 name；host 匹配大小写不敏感且自动兼容可选端口；header/cookie/query/response_header 用 name+op+value；exists/not_exists 不需要 value。含响应条件的规则在响应回程评估，正文仅检查完整且不超过 1 MiB 的内容
       properties:
-        type: { type: string, enum: [uri, method, header, cookie, query, client_ip, request_body, response_header, response_body], description: 条件类型 }
+        type: { type: string, enum: [uri, host, method, header, cookie, query, client_ip, request_body, response_header, response_body], description: 条件类型 }
         name: { type: string, maxLength: 128, description: 条件名称（header/cookie/query/response_header 必填；头名称须为合法 HTTP token 且大小写不敏感） }
-        op: { type: string, enum: [eq, ne, prefix, contains, regex, exists, not_exists, in], description: 运算符（uri 和正文支持 eq/ne/prefix/contains/regex；正文不支持 exists/not_exists/in；regex 须可编译） }
-        value: { type: string, description: 条件值（最长 512 字节，regex 最长 512 字节；非 regex 的 uri 条件值须以 / 开头） }
+        op: { type: string, enum: [eq, ne, prefix, contains, regex, exists, not_exists, in], description: 运算符（uri/host 和正文支持 eq/ne/prefix/contains/regex；不支持 exists/not_exists/in；regex 须可编译） }
+        value: { type: string, description: 条件值（最长 512 字节，regex 最长 512 字节；非 regex 的 uri 条件值须以 / 开头；非 regex 的 host 条件值不含协议/路径/端口，入库小写归一且匹配自动兼容大小写和可选端口） }
         values:
           type: array
           items: { type: string }
@@ -2118,12 +2118,13 @@ components:
 
     L7RuleActionConfig:
       type: object
-      description: 动作配置（六键全量存储/下发，按动作取对应字段：block→status+message；allow→无；redirect→redirect_url+redirect_status；custom_page→status+content_type+body）
+      description: 动作配置（既有六键全量存储/下发，可选字段按需输出：block→status+message；allow→无；redirect→redirect_url+redirect_status(+preserve_path_query)；custom_page→status+content_type+body）
       properties:
         status: { type: integer, description: 响应状态码（缺省 403，custom_page 缺省 200；block 限 400~599，custom_page 限 200~599） }
         message: { type: string, maxLength: 1024, description: 阻止文案（block 使用） }
         redirect_url: { type: string, maxLength: 2048, description: 重定向地址（redirect 必填，仅 http/https 绝对地址） }
         redirect_status: { type: integer, enum: [301, 302], description: 重定向状态码（缺省 302） }
+        preserve_path_query: { type: boolean, description: "重定向时是否保留原请求路径和查询参数（仅 redirect 动作有效，缺省 false；开启后如 https://jxdr.cn/news?id=1 跳转至 https://www.jxdr.cn/news?id=1）" }
         content_type: { type: string, maxLength: 128, description: 自定义页面 Content-Type（缺省 text/html; charset=utf-8） }
         body: { type: string, description: 自定义页面内容（custom_page 必填，≤64KB） }
 
@@ -2181,9 +2182,10 @@ components:
     L7RuleTestRequest:
       type: object
       required: [uri]
-      description: 规则测试器输入（uri 以 / 开头且 ≤2048 字符；client_ip 为单个 IP 不支持 CIDR；headers/cookies/query/response_headers 各 ≤64 条，值 ≤8192 字节且不含控制字符；请求体和响应体用于模拟完整正文）
+      description: 规则测试器输入（uri 以 / 开头且 ≤2048 字符；host 可选，兼容大小写与可选端口；client_ip 为单个 IP 不支持 CIDR；headers/cookies/query/response_headers 各 ≤64 条，值 ≤8192 字节且不含控制字符；请求体和响应体用于模拟完整正文）
       properties:
         uri: { type: string, description: 请求 URI（须以 / 开头） }
+        host: { type: string, description: 请求域名（Host，可选，如 jxdr.cn 或 JXDR.CN:443） }
         method: { type: string, description: 请求方法（GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS/TRACE/CONNECT，可空） }
         headers: { type: object, additionalProperties: { type: string }, description: 请求头键值 }
         cookies: { type: object, additionalProperties: { type: string }, description: Cookie 键值 }
@@ -2202,3 +2204,5 @@ components:
         rule_name: { type: string, description: 命中规则名称（未命中为空串） }
         action: { type: string, description: 命中规则动作（未命中为空串） }
         reason: { type: string, description: 评估说明 }
+        redirect_status: { type: integer, description: 命中 redirect 动作时的状态码（301/302） }
+        redirect_location: { type: string, description: 命中 redirect 动作时的最终跳转 URL }

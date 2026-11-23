@@ -34,10 +34,14 @@ import { formatEnvironment } from '../../utils/i18nLabels'
 import { APM_AGENT_STATUS_META, formatRelativeTime } from '../../utils/apm'
 import type { ApmAgentItem } from '../../types'
 
-const LANGUAGE_OPTIONS = ['Java', 'Go', '.NET', 'Node.js', 'Python'].map((v) => ({
-  value: v,
-  label: v,
-}))
+const LANGUAGE_OPTIONS = [
+  { value: 'java', label: 'Java' },
+  { value: 'go', label: 'Go' },
+  { value: 'dotnet', label: '.NET' },
+  { value: 'nodejs', label: 'Node.js' },
+  { value: 'python', label: 'Python' },
+  { value: 'php', label: 'PHP' },
+]
 
 /** 环境建议值（APM 设计 §8 维度模型：生产、预发布、测试、开发），允许自由输入 */
 const ENVIRONMENT_OPTIONS = [
@@ -50,12 +54,12 @@ const ENVIRONMENT_OPTIONS = [
 interface TokenFormValues {
   application_id: string
   environment: string
-  languages: string[]
-  ttl_minutes: number
+  allowed_languages: string[]
+  expires_in_minutes: number
 }
 
 interface CreatedToken {
-  id: string
+  token_id: string
   token: string
   expires_at: string
 }
@@ -172,8 +176,8 @@ export default function ApmAgentsPage() {
     queryFn: () => applicationsApi.list({ page: 1, page_size: 100 }),
   })
 
-  // 策略 scope 选项 = 已注册服务清单（远程搜索：keyword 透传后端模糊匹配 service_name/instance_id，
-  // 避免仅前 100 条 Agent 可选；输入防抖 300ms）
+  // 策略 scope 选项：仅允许 global 或 application:<uuid>（后端 ValidatePolicyScope 强校验）；
+  // 支持按应用名称/编码远程搜索（防抖 300ms）
   const [scopeSearch, setScopeSearch] = useState('')
   const [scopeKeyword, setScopeKeyword] = useState('')
   useEffect(() => {
@@ -181,19 +185,25 @@ export default function ApmAgentsPage() {
     return () => clearTimeout(timer)
   }, [scopeSearch])
   const scopeQuery = useQuery({
-    queryKey: ['apm', 'agents', 'policy-scopes', scopeKeyword],
-    queryFn: () => apmApi.agents({ keyword: scopeKeyword || undefined, page: 1, page_size: 100 }),
+    queryKey: ['applications', 'apm-policy-scopes', scopeKeyword],
+    queryFn: () => applicationsApi.list({ keyword: scopeKeyword || undefined, page: 1, page_size: 100 }),
     enabled: policyOpen,
   })
   const scopeOptions = useMemo(() => {
-    const names = new Set<string>()
-    // 当前选中项始终保留在选项内，避免远程搜索换页后选中值丢 label
-    if (policyScope) names.add(policyScope)
-    for (const a of scopeQuery.data?.items ?? []) {
-      if (a.service_name) names.add(a.service_name)
+    const map = new Map<string, string>()
+    const kw = scopeKeyword.toLowerCase()
+    if (!kw || 'global'.includes(kw) || '全局'.includes(kw)) {
+      map.set('global', '全局默认（global）')
     }
-    return [...names].sort().map((v) => ({ value: v, label: v }))
-  }, [scopeQuery.data, policyScope])
+    for (const app of scopeQuery.data?.items ?? []) {
+      map.set(`application:${app.id}`, `${app.name}（${app.code}）`)
+    }
+    // 当前选中项始终保留在选项内，避免远程搜索换页后选中值丢 label
+    if (policyScope && !map.has(policyScope)) {
+      map.set(policyScope, policyScope === 'global' ? '全局默认（global）' : policyScope)
+    }
+    return [...map.entries()].map(([value, label]) => ({ value, label }))
+  }, [scopeQuery.data, scopeKeyword, policyScope])
 
   const policyQuery = useQuery({
     queryKey: ['apm', 'policy', policyScope],
@@ -201,13 +211,26 @@ export default function ApmAgentsPage() {
     enabled: policyOpen && !!policyScope,
     retry: false,
   })
+  const isPolicyNotFound =
+    policyQuery.isError && policyQuery.error instanceof ApiError && policyQuery.error.status === 404
 
-  // 策略文档加载成功后同步 JSON 编辑草稿
+  // 策略文档加载成功后同步 JSON 编辑草稿；404 尚无版本时填充默认基线模板以便直接创建 v1
   useEffect(() => {
     if (policyQuery.data) {
       setPolicyText(JSON.stringify(policyQuery.data.policy ?? {}, null, 2))
+    } else if (isPolicyNotFound) {
+      setPolicyText(
+        JSON.stringify(
+          {
+            signals: ['traces', 'metrics', 'runtime', 'exceptions'],
+            sampling_rate: 1.0,
+          },
+          null,
+          2,
+        ),
+      )
     }
-  }, [policyQuery.data])
+  }, [policyScope, policyQuery.data, isPolicyNotFound])
 
   const onError = (e: unknown) => {
     message.error(e instanceof ApiError ? e.message : '操作失败')
@@ -217,7 +240,7 @@ export default function ApmAgentsPage() {
     mutationFn: (values: TokenFormValues) => apmApi.createEnrollmentToken(values),
     onSuccess: (data) => {
       // 令牌原文仅此一次返回：留在 Modal 内一次性展示，关闭后丢弃
-      setCreatedToken({ id: data.id, token: data.token, expires_at: data.expires_at })
+      setCreatedToken({ token_id: data.token_id, token: data.token, expires_at: data.expires_at })
     },
     onError,
   })
@@ -254,7 +277,7 @@ export default function ApmAgentsPage() {
   }
 
   const savePolicy = () => {
-    if (!policyScope || !policyQuery.data) return
+    if (!policyScope || (!policyQuery.data && !isPolicyNotFound)) return
     let parsed: unknown
     try {
       parsed = JSON.parse(policyText)
@@ -269,7 +292,7 @@ export default function ApmAgentsPage() {
     putPolicyMutation.mutate({
       scope: policyScope,
       policy: parsed as Record<string, unknown>,
-      expectedVersion: policyQuery.data.version,
+      expectedVersion: policyQuery.data?.version ?? 0,
     })
   }
 
@@ -305,7 +328,7 @@ export default function ApmAgentsPage() {
     },
     {
       title: '证书到期',
-      dataIndex: 'cert_expires_at',
+      dataIndex: 'cert_not_after',
       width: 165,
       render: (v: string) => {
         const expired = v && dayjs(v).isValid() && dayjs(v).isBefore(dayjs())
@@ -475,7 +498,7 @@ export default function ApmAgentsPage() {
           <Form<TokenFormValues>
             form={tokenForm}
             layout="vertical"
-            initialValues={{ ttl_minutes: 60, languages: [] }}
+            initialValues={{ expires_in_minutes: 60, allowed_languages: [] }}
             onFinish={(values) => createTokenMutation.mutate(values)}
           >
             <Form.Item
@@ -505,14 +528,14 @@ export default function ApmAgentsPage() {
               />
             </Form.Item>
             <Form.Item
-              name="languages"
+              name="allowed_languages"
               label="允许的语言"
               rules={[{ required: true, message: '请选择至少一种语言' }]}
             >
-              <Select mode="multiple" placeholder="Java / Go / .NET / Node.js / Python" options={LANGUAGE_OPTIONS} />
+              <Select mode="multiple" placeholder="Java / Go / .NET / Node.js / Python / PHP" options={LANGUAGE_OPTIONS} />
             </Form.Item>
             <Form.Item
-              name="ttl_minutes"
+              name="expires_in_minutes"
               label="有效期（分钟）"
               rules={[{ required: true, message: '请填写有效期' }]}
             >
@@ -547,7 +570,7 @@ export default function ApmAgentsPage() {
               type="primary"
               onClick={savePolicy}
               loading={putPolicyMutation.isPending}
-              disabled={!policyQuery.data}
+              disabled={!policyQuery.data && !isPolicyNotFound}
             >
               保存
             </Button>
@@ -556,7 +579,7 @@ export default function ApmAgentsPage() {
       >
         <Space direction="vertical" size={12} style={{ display: 'flex' }}>
           <Select
-            placeholder="选择策略作用域（已注册服务，可搜索）"
+            placeholder="选择策略作用域（全局或应用，可搜索）"
             style={{ width: 320 }}
             value={policyScope}
             showSearch
@@ -564,17 +587,39 @@ export default function ApmAgentsPage() {
             onSearch={setScopeSearch}
             loading={scopeQuery.isLoading || scopeQuery.isFetching}
             options={scopeOptions}
-            onChange={(v) => setPolicyScope(v)}
+            onChange={(v) => {
+              if (v === policyScope) return
+              setPolicyScope(v)
+              setPolicyText('')
+            }}
             notFoundContent={
-              scopeQuery.isLoading ? '加载中...' : '暂无匹配的已注册服务'
+              scopeQuery.isLoading ? '加载中...' : '暂无匹配的应用作用域'
             }
           />
           {!policyScope ? (
-            <Typography.Text type="secondary">请选择服务以查看其基线策略</Typography.Text>
+            <Typography.Text type="secondary">请选择策略作用域（全局或应用）以查看其基线策略</Typography.Text>
           ) : policyQuery.isLoading ? (
             <div style={{ textAlign: 'center', padding: 48 }}>
               <Spin />
             </div>
+          ) : isPolicyNotFound ? (
+            <>
+              <Alert
+                type="info"
+                showIcon
+                message="该作用域暂无策略版本"
+                description="可编辑下方基线策略 JSON 并点击「保存」发布第 1 版。"
+              />
+              <div>
+                <Typography.Text strong>策略内容（JSON，可编辑）</Typography.Text>
+                <Input.TextArea
+                  style={{ marginTop: 8, fontFamily: 'monospace', fontSize: 12 }}
+                  rows={14}
+                  value={policyText}
+                  onChange={(e) => setPolicyText(e.target.value)}
+                />
+              </div>
+            </>
           ) : policyQuery.isError ? (
             <QueryErrorAlert error={policyQuery.error} message="加载策略失败" />
           ) : policyQuery.data ? (

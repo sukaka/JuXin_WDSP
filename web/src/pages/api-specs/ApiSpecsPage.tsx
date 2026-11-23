@@ -118,8 +118,6 @@ export default function ApiSpecsPage() {
   const [importOpen, setImportOpen] = useState(false)
   const [importUrlOpen, setImportUrlOpen] = useState(false)
   const [diffSpec, setDiffSpec] = useState<ApiImportSpec | null>(null)
-  const [diffPage, setDiffPage] = useState(1)
-  const [diffPageSize, setDiffPageSize] = useState(20)
   const [auditSpec, setAuditSpec] = useState<ApiImportSpec | null>(null)
   /** 版本对比抽屉：vdSpec 为基准版本，vdOtherId 为对比目标版本 */
   const [vdSpec, setVdSpec] = useState<ApiImportSpec | null>(null)
@@ -133,12 +131,8 @@ export default function ApiSpecsPage() {
   })
 
   const diffQuery = useQuery({
-    queryKey: ['api-specs', 'diff', diffSpec?.id, diffPage, diffPageSize],
-    queryFn: () =>
-      apiSpecsApi.diff(diffSpec?.id as string, {
-        page: diffPage,
-        page_size: diffPageSize,
-      }),
+    queryKey: ['api-specs', 'diff', diffSpec?.id],
+    queryFn: () => apiSpecsApi.diff(diffSpec?.id as string),
     enabled: !!diffSpec,
   })
 
@@ -241,7 +235,6 @@ export default function ApiSpecsPage() {
 
   const openDiff = (record: ApiImportSpec) => {
     setDiffSpec(record)
-    setDiffPage(1)
   }
 
   const openVersionDiff = (record: ApiImportSpec) => {
@@ -653,18 +646,12 @@ export default function ApiSpecsPage() {
           rowKey="id"
           loading={diffQuery.isLoading}
           columns={diffColumns}
-          dataSource={diffQuery.data?.items ?? []}
+          dataSource={diffQuery.data?.diffs ?? []}
           scroll={{ x: 700 }}
           pagination={{
-            current: diffPage,
-            pageSize: diffPageSize,
-            total: diffQuery.data?.total ?? 0,
+            pageSize: 20,
             showSizeChanger: true,
             showTotal: (t) => `共 ${t} 条`,
-            onChange: (p, ps) => {
-              setDiffPage(p)
-              setDiffPageSize(ps)
-            },
           }}
         />
       </Drawer>

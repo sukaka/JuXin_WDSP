@@ -73,8 +73,6 @@ const endpoint: ApiEndpointItem = {
   first_seen_at: '2026-07-01T10:00:00Z',
   last_seen_at: '2026-07-22T08:30:00Z',
   classification_locked: false,
-  created_at: '2026-07-01T10:00:00Z',
-  updated_at: '2026-07-22T08:30:00Z',
 }
 
 const trend24h = {
@@ -642,6 +640,40 @@ describe('EndpointDetailDrawer 业务标签', () => {
     expect(
       await screen.findByText('business_type 取值非法'),
     ).toBeInTheDocument()
+  })
+
+  it('PATCH 响应仅在 asset.business_type 返回业务类型时仍能保留显示', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_asset.edit']),
+      csrfToken: 'csrf-token',
+      initialized: true,
+    })
+    stubFetchWithPatch(() =>
+      jsonResponse(200, {
+        code: 'SUCCESS',
+        message: 'ok',
+        data: {
+          endpoint: {
+            ...endpoint,
+            asset: { ...assetFixture, business_type: 'EXPORT' },
+          },
+          message: '资产信息已更新',
+        },
+      }),
+    )
+    renderDrawer(endpointWithType)
+
+    await screen.findByText('业务标签')
+    await chooseBusinessType('导出')
+    fireEvent.click(
+      within(businessTypeCell()).getByRole('button', { name: /保\s*存/ }),
+    )
+
+    expect(await screen.findByText('资产信息已更新')).toBeInTheDocument()
+    const cell = businessTypeCell()
+    expect(cell.querySelector('.ant-select-content')?.textContent).toContain(
+      '导出',
+    )
   })
 })
 

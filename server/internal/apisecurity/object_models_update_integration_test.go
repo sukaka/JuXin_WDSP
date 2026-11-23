@@ -272,3 +272,55 @@ func TestObjectModelProtectConfirmTokenTxContract(t *testing.T) {
 		t.Fatal("复用失败后 enforcement 必须保持 OBSERVE")
 	}
 }
+
+func TestObjectModelAnyOfAndRequiredRelationsPostgresContract(t *testing.T) {
+	pool, ctx := openObjectModelPG(t)
+	if err := database.Migrate(ctx, pool, "../../migrations", "up"); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	code := fmt.Sprintf("omany-%d", time.Now().UnixNano())
+	var applicationID, endpointID, modelID string
+	if err := pool.QueryRow(ctx, `INSERT INTO applications(code,name) VALUES ($1,$2) RETURNING id`, code, code).Scan(&applicationID); err != nil {
+		t.Fatalf("insert application: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO api_endpoints(application_id,http_method,normalized_path,endpoint_key) VALUES ($1,'GET','/docs/{id}',$2) RETURNING id`, applicationID, code+":GET:/docs/{id}").Scan(&endpointID); err != nil {
+		t.Fatalf("insert endpoint: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO api_object_models(endpoint_id,object_segment) VALUES ($1,'path:1') RETURNING id`, endpointID).Scan(&modelID); err != nil {
+		t.Fatalf("insert object model: %v", err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM api_object_models WHERE endpoint_id=$1`, endpointID)
+		_, _ = pool.Exec(bg, `DELETE FROM api_endpoints WHERE id=$1`, endpointID)
+		_, _ = pool.Exec(bg, `DELETE FROM applications WHERE id=$1`, applicationID)
+	})
+
+	store := NewStore(pool)
+	id := uuid.MustParse(modelID)
+	rels := []string{"shared_with", "owner"}
+	if err := store.UpdateObjectModel(ctx, id, ObjectModelPatch{
+		RequiredRelation:  strp("ANY_OF"),
+		RequiredRelations: &rels,
+	}, "req-anyof-1"); err != nil {
+		t.Fatalf("UpdateObjectModel ANY_OF: %v", err)
+	}
+	m, err := store.GetObjectModel(ctx, id)
+	if err != nil {
+		t.Fatalf("GetObjectModel ANY_OF: %v", err)
+	}
+	if m.RequiredRelation != "ANY_OF" || len(m.RequiredRelations) != 2 || m.RequiredRelations[0] != "OWNER" || m.RequiredRelations[1] != "SHARED_WITH" {
+		t.Fatalf("GetObjectModel ANY_OF mismatch: %+v", m)
+	}
+	list, _, err := store.ListObjectModels(ctx, endpointID, "", "", "", 1, 20)
+	if err != nil || len(list) != 1 || len(list[0].RequiredRelations) != 2 {
+		t.Fatalf("ListObjectModels ANY_OF mismatch: err=%v list=%+v", err, list)
+	}
+	if err := store.UpdateObjectModel(ctx, id, ObjectModelPatch{RequiredRelation: strp("OWNER")}, "req-owner-2"); err != nil {
+		t.Fatalf("UpdateObjectModel switch back to OWNER: %v", err)
+	}
+	var isNull bool
+	if err := pool.QueryRow(ctx, `SELECT required_relations IS NULL FROM api_object_models WHERE id=$1`, id).Scan(&isNull); err != nil || !isNull {
+		t.Fatalf("switching back to OWNER must clear required_relations=NULL, isNull=%v err=%v", isNull, err)
+	}
+}

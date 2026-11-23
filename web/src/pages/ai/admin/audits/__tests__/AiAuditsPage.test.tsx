@@ -27,6 +27,7 @@ function jsonResponse(status: number, body: unknown): Response {
 const DRAFT_ID = '11111111-2222-3333-4444-555555555555'
 
 const RECORD_WITH_DRAFT = {
+  id: 'aaaa1111-2222-3333-4444-555555555555',
   occurred_at: '2026-10-21T01:00:00Z',
   user_id: 'u1',
   username: 'secadmin',
@@ -38,7 +39,7 @@ const RECORD_WITH_DRAFT = {
   agent_code: 'waf_policy',
   tool_code: 'draft.exception.create',
   model_code: '',
-  prompt_version: '',
+  prompt_version: 'v3',
   input_tokens: 10,
   output_tokens: 20,
   duration_ms: 30,
@@ -46,15 +47,18 @@ const RECORD_WITH_DRAFT = {
   request_summary: '生成例外草稿',
   result_summary: 'DRAFT',
   draft_reference: DRAFT_ID,
-  confirm_result: '',
+  confirm_result: 'CONFIRMED',
 }
 
 const RECORD_WITHOUT_DRAFT = {
   ...RECORD_WITH_DRAFT,
+  id: 'bbbb1111-2222-3333-4444-555555555555',
   occurred_at: '2026-10-21T02:00:00Z',
   username: 'admin',
   action: 'chat_message',
+  prompt_version: '',
   draft_reference: '',
+  confirm_result: '',
 }
 
 function renderPage() {
@@ -104,13 +108,15 @@ describe('AiAuditsPage 草稿引用深链', () => {
     vi.unstubAllGlobals()
   })
 
-  it('草稿引用为可识别草稿 ID 时渲染为策略建议页链接', async () => {
+  it('草稿引用为可识别草稿 ID 时渲染为策略建议页链接，并展示 prompt_version 与 confirm_result', async () => {
     renderPage()
     const buttons = await screen.findAllByRole('button', { name: /详\s*情/ })
     fireEvent.click(buttons[0])
     const drawer = await screen.findByRole('dialog')
     const link = await within(drawer).findByRole('link', { name: DRAFT_ID })
     expect(link).toHaveAttribute('href', `/ai/policy-recommendation?draft_id=${DRAFT_ID}`)
+    expect(within(drawer).getByText('v3')).toBeInTheDocument()
+    expect(within(drawer).getByText('已确认')).toBeInTheDocument()
   })
 
   it('草稿引用为空时显示占位符，不渲染链接', async () => {

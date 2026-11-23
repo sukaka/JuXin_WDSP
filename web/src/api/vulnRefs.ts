@@ -1,5 +1,5 @@
 import { request } from './client'
-import type { PageResult, VulnRefDetail, VulnRefItem } from '../types'
+import type { PageResult, VulnRef, VulnRefDetail, VulnRefItem } from '../types'
 
 export interface VulnRefListParams {
   keyword?: string
@@ -27,9 +27,9 @@ export const vulnRefsApi = {
     // 后端对无关联规则/样例事件返回 null（Go nil slice），统一归一化为空数组
     return { ...data, rules: data.rules ?? [], sample_events: data.sample_events ?? [] }
   },
-  create: (body: VulnRefBody) => request<VulnRefItem>('/waf/vuln-refs', { method: 'POST', body }),
+  create: (body: VulnRefBody) => request<VulnRef>('/waf/vuln-refs', { method: 'POST', body }),
   update: (cnnvdId: string, body: VulnRefBody) =>
-    request<VulnRefItem>(`/waf/vuln-refs/${encodeURIComponent(cnnvdId)}`, { method: 'PUT', body }),
+    request<{ message: string }>(`/waf/vuln-refs/${encodeURIComponent(cnnvdId)}`, { method: 'PUT', body }),
   remove: (cnnvdId: string) =>
     request<{ message: string }>(`/waf/vuln-refs/${encodeURIComponent(cnnvdId)}`, {
       method: 'DELETE',

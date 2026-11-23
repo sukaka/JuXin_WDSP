@@ -88,7 +88,7 @@ function makeSession(over: Record<string, unknown>) {
 }
 
 const SESSIONS_PAGE = {
-  list: [
+  items: [
     makeSession({
       id: 'diag-1',
       status: 'ACTIVE',
@@ -133,21 +133,25 @@ const SESSIONS_PAGE = {
 }
 
 const SESSION_DETAIL = {
-  ...SESSIONS_PAGE.list[0],
+  ...SESSIONS_PAGE.items[0],
   audits: [
     {
       id: 'audit-1',
-      action: 'CREATE',
-      actor: 'secops',
-      detail: '创建诊断会话（dry_run 预估已确认）',
-      created_at: '2026-08-30T01:00:00Z',
+      action: 'create',
+      username: 'secops',
+      object_name: 'app-1/shop',
+      after_summary: '创建诊断会话（matched_agents=2）',
+      result: 'SUCCESS',
+      occurred_at: '2026-08-30T01:00:00Z',
     },
     {
       id: 'audit-2',
       action: 'POLICY_PUSH',
-      actor: 'system',
-      detail: '策略已下发至 2 个实例',
-      created_at: '2026-08-30T01:00:05Z',
+      username: 'system',
+      before_summary: '{"version":1}',
+      after_summary: '{"version":2}',
+      result: 'SUCCESS',
+      occurred_at: '2026-08-30T01:00:05Z',
     },
   ],
 }
@@ -315,7 +319,7 @@ describe('ApmDiagnosticsPage', () => {
   it('空列表展示空态文案', async () => {
     vi.stubGlobal(
       'fetch',
-      mockFetch({ list: { list: [], total: 0, page: 1, page_size: 20, kill_switch_enabled: false } }),
+      mockFetch({ list: { items: [], total: 0, page: 1, page_size: 20, kill_switch_enabled: false } }),
     )
     renderPage()
     expect(
@@ -492,15 +496,35 @@ describe('ApmDiagnosticsPage', () => {
     expect(screen.getByText('全局熔断终止')).toBeInTheDocument()
     // ACTIVE 详情显示倒计时与停止入口
     expect(screen.getAllByText(/^\d+ 分 \d+ 秒$/).length).toBeGreaterThanOrEqual(1)
-    // 关联审计：CREATE 映射为「创建诊断会话」，未知动作 POLICY_PUSH 原样兜底
+    // 关联审计：create 映射为「创建诊断会话」，未知动作 POLICY_PUSH 原样兜底，使用 username/occurred_at/after_summary
     expect(await screen.findByText('关联审计')).toBeInTheDocument()
     expect(screen.getByText('创建诊断会话')).toBeInTheDocument()
     expect(screen.getByText('POLICY_PUSH')).toBeInTheDocument()
-    expect(screen.getByText('策略已下发至 2 个实例')).toBeInTheDocument()
+    expect(screen.getByText('创建诊断会话（matched_agents=2）')).toBeInTheDocument()
+    expect(screen.getByText('{"version":1} → {"version":2}')).toBeInTheDocument()
+    expect(screen.getByText('对象：app-1/shop')).toBeInTheDocument()
     // 详情接口被调用
     const detailCalls = (fetch as Mock).mock.calls.filter((c) =>
       String(c[0]).includes('/apm/diagnostic-sessions/diag-1'),
     )
     expect(detailCalls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('详情 Drawer：后端返回 audits: null 时安全兜底显示「暂无审计记录」', { timeout: 60000 }, async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch({
+        detail: {
+          ...SESSIONS_PAGE.items[0],
+          audits: null,
+        },
+      }),
+    )
+    renderPage()
+    await screen.findAllByText('进行中')
+
+    fireEvent.click(screen.getAllByText('详情')[0])
+    expect(await screen.findByText('诊断会话详情')).toBeInTheDocument()
+    expect(await screen.findByText('暂无审计记录')).toBeInTheDocument()
   })
 })

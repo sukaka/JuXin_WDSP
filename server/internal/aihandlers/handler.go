@@ -35,17 +35,42 @@ import (
 // defaultModelCode 路由档位缺省模型（本地 Ollama 小模型，配置缺失不致命）。
 const defaultModelCode = "qwen2.5:3b"
 
+// SessionStore 会话仓储接口（*aiorchestrator.SessionStore 实现；便于离线测试注入）。
+type SessionStore interface {
+	Create(ctx context.Context, userID uuid.UUID, title string) (*aiorchestrator.Session, error)
+	Get(ctx context.Context, id uuid.UUID) (*aiorchestrator.Session, error)
+	List(ctx context.Context, userID uuid.UUID, includeArchived bool, page, pageSize int) ([]aiorchestrator.Session, int64, error)
+	Rename(ctx context.Context, id uuid.UUID, title string) error
+	Archive(ctx context.Context, id uuid.UUID) error
+	Delete(ctx context.Context, id uuid.UUID) error
+	AppendMessage(ctx context.Context, sessionID uuid.UUID, role, content string, modelID, promptVersionID *uuid.UUID, inTok, outTok int, finishReason string) (uuid.UUID, error)
+	RecentMessages(ctx context.Context, sessionID uuid.UUID, limit int) ([]aiorchestrator.Message, error)
+	MaybeCompress(ctx context.Context, sessionID uuid.UUID, contextWindow int) (bool, error)
+	AddFeedback(ctx context.Context, sessionID, messageID, userID uuid.UUID, rating int, feedbackType, comment string) error
+	GetMessage(ctx context.Context, messageID uuid.UUID) (*aiorchestrator.Message, *uuid.UUID, error)
+}
+
+// CostService 用量与配额服务接口（*aicost.Recorder 实现；便于离线测试注入）。
+type CostService interface {
+	RecordUsage(ctx context.Context, userID uuid.UUID, sessionID, taskID *uuid.UUID, modelID *uuid.UUID, inTok, outTok, toolCalls int, cost float64) error
+	CheckQuota(ctx context.Context, userID uuid.UUID, roleCode string, estimatedInput int) error
+	Overview(ctx context.Context) (*aicost.Usage, error)
+	ByUser(ctx context.Context) ([]map[string]interface{}, error)
+	ByAgent(ctx context.Context) ([]map[string]interface{}, error)
+	ByTask(ctx context.Context) ([]map[string]interface{}, error)
+}
+
 // Deps 阶段7接口层集中依赖。
 type Deps struct {
 	DB       *pgxpool.Pool
 	Orch     *aiorchestrator.Orchestrator
-	Sessions *aiorchestrator.SessionStore
+	Sessions SessionStore
 	Gateway  *aimodel.Gateway
 	Models   *aimodel.Store
 	Tools    *aitools.Registry
 	Drafts   *aitools.DraftStore
 	Audit    *aiaudit.Service
-	Cost     *aicost.Recorder
+	Cost     CostService
 	Memories *aimemory.Store
 	Prompts  *aiprompts.Store
 	Settings *settings.Service

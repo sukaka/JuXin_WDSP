@@ -84,10 +84,10 @@ function DeniedTab({ app, hitsWindowHours }: { app: ApplicationItem; hitsWindowH
   // 拦截项不含资产 id（冻结契约），按 endpoint_key 关联资产清单取得确认/忽略所需 id
   const endpointsQuery = useQuery({
     queryKey: ['api-admission', 'app-endpoint-keys', app.id],
-    queryFn: () => apiEndpointsApi.list({ application_id: app.id, page: 1, page_size: 200 }),
+    queryFn: () => apiEndpointsApi.listAllByApplication(app.id),
   })
   const idByKey = useMemo(
-    () => new Map((endpointsQuery.data?.items ?? []).map((e) => [e.endpoint_key, e.id])),
+    () => new Map((endpointsQuery.data ?? []).map((e) => [e.endpoint_key, e.id])),
     [endpointsQuery.data],
   )
 

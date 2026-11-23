@@ -54,7 +54,8 @@ const spec2 = {
 }
 
 const diffData = {
-  items: [
+  spec: spec1,
+  diffs: [
     {
       id: 'd1',
       spec_id: 'spec1',
@@ -72,9 +73,6 @@ const diffData = {
       created_at: '2026-07-21T03:00:02Z',
     },
   ],
-  page: 1,
-  page_size: 20,
-  total: 2,
 }
 
 const versionDiffData = {
@@ -211,7 +209,7 @@ describe('ApiSpecsPage', () => {
     expect(calls.some((u) => u.includes('/api-security/specs/import'))).toBe(false)
   })
 
-  it('「查看差异」打开抽屉并渲染差异类型与接口键', async () => {
+  it('「查看差异」打开抽屉并渲染差异类型与接口键（不携带分页参数）', async () => {
     useAuthStore.setState({ user: makeUser(['api_spec.read']), csrfToken: null, initialized: true })
     renderPage()
     const viewBtn = await screen.findByRole('button', { name: /查看差异/ })
@@ -220,6 +218,10 @@ describe('ApiSpecsPage', () => {
     expect(screen.getByText('定义变更')).toBeInTheDocument()
     expect(screen.getByText('GET /v1/health')).toBeInTheDocument()
     expect(screen.getByText('共 2 条')).toBeInTheDocument()
+    const diffCalls = vi.mocked(fetch).mock.calls.map((c) => String(c[0])).filter((u) => u.includes('/diff'))
+    expect(diffCalls).toHaveLength(1)
+    expect(diffCalls[0]).not.toContain('page=')
+    expect(diffCalls[0]).not.toContain('page_size=')
   })
 
   it('HISTORICAL 行显示「激活」，二次确认后发起 POST activate', async () => {

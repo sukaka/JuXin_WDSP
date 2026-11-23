@@ -130,16 +130,31 @@ type toolWriteRow struct {
 	constraints    []byte
 }
 
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+var emptyDescDigest = sha256Hex("")
+
 // prepareToolRow 工具载荷→入库参数（规范化+digest+tool_hash；risk/classification 归一）。
-func prepareToolRow(in ToolInput) (toolWriteRow, error) {
+// 当 preserve_description 为 true、in.Description 为空且存在旧行 existing 时，复用旧行的
+// description_digest 与 description_preview，使未改版本/Schema 的再导入保持语义相等与审核态；
+// 若版本或 Schema 发生变更且旧行存在非空描述（库内未存全文），拒绝写入不一致的 tool_hash。
+func prepareToolRow(in ToolInput, existing *Tool) (toolWriteRow, error) {
 	desc := strings.TrimSpace(in.Description)
-	descSum := sha256.Sum256([]byte(desc))
 	r := toolWriteRow{in: in}
-	r.digestDesc = hex.EncodeToString(descSum[:])
-	if len(desc) > maxPreviewLen {
-		r.preview = desc[:maxPreviewLen]
+	preserving := existing != nil && in.PreserveDescription && desc == ""
+	if preserving {
+		r.digestDesc = existing.DescriptionDigest
+		r.preview = existing.DescriptionPreview
 	} else {
-		r.preview = desc
+		r.digestDesc = sha256Hex(desc)
+		if len(desc) > maxPreviewLen {
+			r.preview = desc[:maxPreviewLen]
+		} else {
+			r.preview = desc
+		}
 	}
 	var err error
 	if in.InputSchema != nil {
@@ -162,7 +177,13 @@ func prepareToolRow(in ToolInput) (toolWriteRow, error) {
 		s := sha256.Sum256(r.outSchema)
 		r.outDigest = hex.EncodeToString(s[:])
 	}
-	if r.toolHash, err = ComputeToolHash(strings.TrimSpace(in.ToolName), strings.TrimSpace(in.ToolVersion), desc,
+	if preserving && existing.DescriptionDigest != emptyDescDigest {
+		if !toolSemanticallyEqual(*existing, strings.TrimSpace(in.ToolVersion), existing.DescriptionDigest,
+			nilSchemaP(in.InputSchema), nilSchemaP(in.OutputSchema)) {
+			return r, invalidf("tool %q 版本或 Schema 变更时须重新填写完整描述以重算 tool_hash", strings.TrimSpace(in.ToolName))
+		}
+		r.toolHash = existing.ToolHash
+	} else if r.toolHash, err = ComputeToolHash(strings.TrimSpace(in.ToolName), strings.TrimSpace(in.ToolVersion), desc,
 		nilSchemaP(in.InputSchema), nilSchemaP(in.OutputSchema)); err != nil {
 		return r, err
 	}
@@ -227,15 +248,19 @@ func (s *Store) replaceToolsTx(ctx context.Context, tx pgx.Tx, catalogID uuid.UU
 	for _, in := range tools {
 		name := strings.TrimSpace(in.ToolName)
 		keep[name] = true
-		row, err := prepareToolRow(in)
+		var existingPtr *Tool
+		if old, ok := existing[name]; ok {
+			existingPtr = &old
+		}
+		row, err := prepareToolRow(in, existingPtr)
 		if err != nil {
 			return nil, err
 		}
-		if old, ok := existing[name]; ok &&
-			toolSemanticallyEqual(old, strings.TrimSpace(in.ToolVersion), row.digestDesc,
+		if existingPtr != nil &&
+			toolSemanticallyEqual(*existingPtr, strings.TrimSpace(in.ToolVersion), row.digestDesc,
 				nilSchemaP(in.InputSchema), nilSchemaP(in.OutputSchema)) {
 			// 语义相等：更新非摘要维度（审核可调字段/标签/约束）但保留 tool_hash 与审核态
-			if err := updateToolPreserved(ctx, tx, old, row); err != nil {
+			if err := updateToolPreserved(ctx, tx, *existingPtr, row); err != nil {
 				return nil, err
 			}
 			continue
@@ -442,11 +467,15 @@ func (s *Store) UpdateCatalog(ctx context.Context, id uuid.UUID, in CatalogInput
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	ct, err := tx.Exec(ctx, `UPDATE mcp_tool_catalogs SET
-		service_identity=$3, protocol_version=$4, version=version+1, updated_at=now()
+		name=$3, service_identity=$4, protocol_version=$5, version=version+1, updated_at=now()
 		WHERE id=$1 AND version=$2`,
-		id, in.Version, strings.TrimSpace(in.ServiceIdentity),
+		id, in.Version, strings.TrimSpace(in.Name), strings.TrimSpace(in.ServiceIdentity),
 		orDefault(strings.TrimSpace(in.ProtocolVersion), ProtocolVersionDefault))
 	if err != nil {
+		var pe *pgconn.PgError
+		if errors.As(err, &pe) && pe.Code == "23505" && (pe.ConstraintName == "" || pe.ConstraintName == "uq_mcp_tool_catalogs_name") {
+			return nil, nil, ErrDuplicateName
+		}
 		return nil, nil, err
 	}
 	if ct.RowsAffected() == 0 {

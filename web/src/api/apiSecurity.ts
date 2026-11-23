@@ -5,8 +5,10 @@ import type { PageResult } from '../types'
 
 /** 学习任务状态 */
 export interface ApiLearningStatus {
+  endpoint_id: string
   job?: {
     id: string
+    endpoint_id?: string
     status: string
     sample_target: number
     collected_count: number
@@ -15,16 +17,19 @@ export interface ApiLearningStatus {
     last_error: string
     started_at: string
     stopped_at?: string | null
+    created_at?: string
   } | null
   learning_status: string
-  samples_total?: number
-  samples_valid?: number
-  samples_excluded?: number
+  samples: {
+    total: number
+    accepted: number
+    excluded: number
+  }
 }
 
 export interface ApiLearningSample {
   id: string
-  api_endpoint_id: string
+  endpoint_id: string
   request_id: string
   sample_hash: string
   source_fingerprint: string
@@ -427,7 +432,7 @@ export const apiClassificationsApi = {
     return [...builtin, ...custom] as ApiClassificationItem[]
   },
   create: (body: { dimension: string; value: string; description?: string }) =>
-    request<{ message: string }>(`/api-security/classifications`, {
+    request<ApiClassificationItem>(`/api-security/classifications`, {
       method: 'POST',
       body,
     }),
@@ -435,7 +440,11 @@ export const apiClassificationsApi = {
     endpointId: string,
     dimensions: { dimension: string; value: string }[],
   ) =>
-    request<{ message: string }>(
+    request<{
+      endpoint_id: string
+      classification_locked: boolean
+      dimensions: ApiClassificationDimension[]
+    }>(
       `/api-security/endpoints/${endpointId}/classification`,
       {
         method: 'PUT',
@@ -522,8 +531,10 @@ export interface ApiSensitiveField {
   occurrence_count: number
   first_seen?: string | null
   last_seen?: string | null
-  /** 最近一次命中摘要 { location, rule_id, event_id, data_type } */
+  /** 最近一次命中摘要 { location, rule_id, event_id, data_type, masked_sample? } */
   source_detail?: Record<string, string> | null
+  /** 最新 1 条网关内存脱敏后的值级样本（如 138****8000；空串表示仅字段名识别） */
+  masked_sample?: string
   created_at: string
   updated_at: string
 }
@@ -683,14 +694,11 @@ export const apiSpecsApi = {
     const data = await request<ApiSpecAudit>(`/api-security/specs/${id}/audit`)
     return { ...data, items: data.items ?? [] }
   },
-  diff: async (id: string, params: { page: number; page_size: number }) => {
-    const data = await request<PageResult<ApiSpecDiff>>(
+  diff: async (id: string) => {
+    const data = await request<{ spec: ApiImportSpec; diffs: ApiSpecDiff[] }>(
       `/api-security/specs/${id}/diff`,
-      {
-        query: { ...params },
-      },
     )
-    return { ...data, items: data.items ?? [] }
+    return { spec: data.spec, diffs: data.diffs ?? [] }
   },
 }
 
@@ -981,7 +989,10 @@ export const apiPolicyApi = {
       body: { mode },
     }),
   publish: () =>
-    request<{ message: string }>(`/api-security/policy/publish`, {
-      method: 'POST',
-    }),
+    request<{ task_id: string; status: 'SUCCESS' | 'FAILED' | string; message: string }>(
+      `/api-security/policy/publish`,
+      {
+        method: 'POST',
+      },
+    ),
 }

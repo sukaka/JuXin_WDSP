@@ -4,6 +4,7 @@ import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import TrafficAgentsPage from '../TrafficAgentsPage'
 import { useAuthStore } from '../../../stores/auth'
+import { formatDateTime } from '../../../utils/format'
 import type { CurrentUser } from '../../../types'
 
 function makeUser(permissions: string[]): CurrentUser {
@@ -118,9 +119,11 @@ const AGENT_DETAIL = {
 const EVENTS = {
   items: [
     {
+      id: 1,
+      agent_id: 'a3c98f51-0000-4000-8000-000000000001',
       event_type: 'request',
       flow_id: 'flow-1',
-      timestamp: 1788256800,
+      ts: '2026-09-01T10:00:00Z',
       src_ip: '10.1.1.10',
       src_port: 51234,
       dst_ip: '10.1.2.20',
@@ -136,9 +139,11 @@ const EVENTS = {
       http_status: 0,
     },
     {
+      id: 2,
+      agent_id: 'a3c98f51-0000-4000-8000-000000000001',
       event_type: 'flow_end',
-      flow_id: 'flow-2',
-      timestamp: 1788256900,
+      flow_id: 'flow-1',
+      ts: '2026-09-01T10:01:40Z',
       src_ip: '10.1.1.11',
       src_port: 51235,
       dst_ip: '10.1.2.21',
@@ -372,9 +377,12 @@ describe('TrafficAgentsPage', () => {
     // 网卡 Tab
     fireEvent.click(within(drawer).getByRole('tab', { name: '网卡' }))
     expect(await within(drawer).findByText('aa:bb:cc:dd:ee:ff')).toBeInTheDocument()
-    // 流量事件 Tab：五元组、TLS 可见性
+    // 流量事件 Tab：五元组、RFC3339 时间、TLS 可见性（同 flow_id 双事件行不冲突）
     fireEvent.click(within(drawer).getByRole('tab', { name: '流量事件' }))
     expect(await within(drawer).findByText(/10\.1\.1\.10:51234 → 10\.1\.2\.20:8080\/tcp/)).toBeInTheDocument()
+    expect(within(drawer).getByText(/10\.1\.1\.11:51235 → 10\.1\.2\.21:443\/tcp/)).toBeInTheDocument()
+    expect(within(drawer).getByText(formatDateTime('2026-09-01T10:00:00Z'))).toBeInTheDocument()
+    expect(within(drawer).getByText(formatDateTime('2026-09-01T10:01:40Z'))).toBeInTheDocument()
     expect(within(drawer).getByText('明文')).toBeInTheDocument()
     expect(within(drawer).getByText('加密')).toBeInTheDocument()
 
@@ -404,6 +412,7 @@ describe('TrafficAgentsPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: '采集策略' }))
     expect(await screen.findByText('production-web')).toBeInTheDocument()
     expect(screen.getByText('v3')).toBeInTheDocument()
+    expect(screen.queryByText('适配器 / 来源绑定')).not.toBeInTheDocument()
     // 采集配置列展示中文方向与输出模式，不裸露 both / FLOW
     expect(
       screen.getByText(/等级 L0 \/ eth0 \/ 双向 \/ 端口 80,443 \/ 流元数据 \/ 限速 100 Mbps/),
@@ -412,6 +421,9 @@ describe('TrafficAgentsPage', () => {
     // 编辑：保存时提交 name + config（表单字段覆盖 JSON 对应键）
     fireEvent.click(screen.getByRole('button', { name: /编\s*辑/ }))
     const dialog = await screen.findByRole('dialog')
+    expect(
+      within(dialog).queryByText(/adapters|source_bindings|适配器 enabled/),
+    ).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: /保\s*存/ }))
     await waitFor(() => {
       const call = (fetch as Mock).mock.calls.find(

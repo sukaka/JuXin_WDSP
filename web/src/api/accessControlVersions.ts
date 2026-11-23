@@ -34,10 +34,12 @@ export const accessControlVersionsApi = {
   },
   get: (id: string) =>
     request<{ version: AccessControlVersionDetail }>(`/access-control/versions/${id}`),
-  diff: (id: string, compareWith?: string) =>
-    request<AccessControlVersionDiff>(`/access-control/versions/${id}/diff`, {
+  diff: async (id: string, compareWith?: string) => {
+    const data = await request<AccessControlVersionDiff>(`/access-control/versions/${id}/diff`, {
       query: compareWith ? { compare_with: compareWith } : undefined,
-    }),
+    })
+    return { ...data, differences: data.differences ?? [] }
+  },
   rollback: (id: string) =>
     request<{ message: string; result?: unknown }>(`/access-control/versions/${id}/rollback`, {
       method: 'POST',

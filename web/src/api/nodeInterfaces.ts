@@ -6,5 +6,5 @@ export const nodeInterfacesApi = {
   list: (nodeName?: string) =>
     request<NodeInterfacesData>('/gateway/interfaces', { query: { node_name: nodeName } }),
   saveOrder: (body: NodeInterfaceOrderPayload) =>
-    request<{ message?: string }>('/gateway/interfaces/order', { method: 'PUT', body }),
+    request<NodeInterfacesData>('/gateway/interfaces/order', { method: 'PUT', body }),
 }

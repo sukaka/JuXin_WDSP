@@ -174,6 +174,16 @@ func (a *SecurityEventAgent) analyzeProfile(ctx context.Context, in *aiorchestra
 	if len(in.IPs) > 0 {
 		ip = in.IPs[0]
 	}
+	resolveProfileURI := func() string {
+		if in.URI != "" {
+			return in.URI
+		}
+		if in.ApplicationID == "" {
+			return extractProfileURI(in.Message)
+		}
+		return ""
+	}
+
 	if ip != "" {
 		searchInput, _ := withTimeRange(in, map[string]interface{}{"client_ip": ip, "page": 1})
 		res, ref, err := callTool(ctx, in, in.Principal, "security_event.search",
@@ -221,7 +231,7 @@ GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, ip, rangeValue.Start, rangeValue.End)
 			b.WriteString(fmtKV("封禁记录", fmt.Sprintf("%d 条", len(items))))
 			b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref2))
 		}
-	} else if uri := extractProfileURI(in.Message); uri != "" {
+	} else if uri := resolveProfileURI(); uri != "" {
 		// URI 画像（请求路径维度）
 		var total int64
 		var firstAt, lastAt time.Time
@@ -245,32 +255,21 @@ WHERE request_path = $1 AND occurred_at >= $2 AND occurred_at < $3`, uri, rangeV
 		}
 		ref := in.Evidence.Add("security_event.search", fmt.Sprintf("URI %s 事件（%s）", uri, rangeValue.Label), map[string]interface{}{"uri": uri, "total": total})
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+	} else if in.ApplicationID != "" {
+		appName := in.ApplicationID
+		if a.db != nil {
+			var dbName string
+			if err := a.db.QueryRow(ctx, `SELECT name FROM applications WHERE id = $1`, in.ApplicationID).Scan(&dbName); err == nil && dbName != "" {
+				appName = dbName
+			}
+		}
+		if err := a.writeAppProfile(ctx, &b, in, rangeValue, in.ApplicationID, appName); err != nil {
+			return nil, err
+		}
 	} else if appID, appName := a.matchApplication(ctx, in.Message); appID != "" {
-		// 应用画像（应用维度）
-		var total, blocked int64
-		err := a.db.QueryRow(ctx, `
-SELECT count(*), count(*) FILTER (WHERE action IN ('BLOCKED','BLOCK')) FROM security_events
-WHERE application_id = $1 AND occurred_at >= $2 AND occurred_at < $3`, appID, rangeValue.Start, rangeValue.End).Scan(&total, &blocked)
-		if err != nil {
-			return nil, fmt.Errorf("query application profile: %w", err)
+		if err := a.writeAppProfile(ctx, &b, in, rangeValue, appID, appName); err != nil {
+			return nil, err
 		}
-		var mode, status string
-		_ = a.db.QueryRow(ctx, `SELECT protection_mode, status FROM applications WHERE id = $1`, appID).Scan(&mode, &status)
-		b.WriteString(fmtKV("画像对象", "应用 "+appName))
-		b.WriteString(fmtKV("防护模式", mode))
-		b.WriteString(fmtKV("应用状态", status))
-		b.WriteString(fmtKV("事件总数（"+rangeValue.Label+"）", total))
-		b.WriteString(fmtKV("阻断数（"+rangeValue.Label+"）", blocked))
-		if total == 0 {
-			b.WriteString(fmt.Sprintf("该应用在%s无安全事件记录，数据不足，无法确认。\n", rangeValue.Label))
-		} else {
-			b.WriteString(fmtKV("攻击类型", a.topGroup(ctx, `SELECT attack_type, count(*) FROM security_events
-				WHERE application_id = $1 AND occurred_at >= $2 AND occurred_at < $3 GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, appID, rangeValue.Start, rangeValue.End)))
-			b.WriteString(fmtKV("主要来源 IP", a.topGroup(ctx, `SELECT client_ip::text, count(*) FROM security_events
-				WHERE application_id = $1 AND occurred_at >= $2 AND occurred_at < $3 GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, appID, rangeValue.Start, rangeValue.End)))
-		}
-		ref := in.Evidence.Add("security_event.search", fmt.Sprintf("应用 %s 事件（%s）", appName, rangeValue.Label), map[string]interface{}{"application_id": appID, "total": total, "blocked": blocked})
-		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 	} else {
 		topIPInput, rangeValue := withTimeRange(in, map[string]interface{}{"limit": 10})
 		res, ref, err := callTool(ctx, in, in.Principal, "statistics.top_source_ips",
@@ -285,6 +284,35 @@ WHERE application_id = $1 AND occurred_at >= $2 AND occurred_at < $3`, appID, ra
 		b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
 	}
 	return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
+}
+
+// writeAppProfile 写入应用维度画像事实（供显式 ApplicationID 与名称匹配两条分支共用）。
+func (a *SecurityEventAgent) writeAppProfile(ctx context.Context, b *strings.Builder, in *aiorchestrator.AnalyzeInput, rangeValue aiorchestrator.QueryTimeRange, appID, appName string) error {
+	var total, blocked int64
+	err := a.db.QueryRow(ctx, `
+SELECT count(*), count(*) FILTER (WHERE action IN ('BLOCKED','BLOCK')) FROM security_events
+WHERE application_id = $1 AND occurred_at >= $2 AND occurred_at < $3`, appID, rangeValue.Start, rangeValue.End).Scan(&total, &blocked)
+	if err != nil {
+		return fmt.Errorf("query application profile: %w", err)
+	}
+	var mode, status string
+	_ = a.db.QueryRow(ctx, `SELECT protection_mode, status FROM applications WHERE id = $1`, appID).Scan(&mode, &status)
+	b.WriteString(fmtKV("画像对象", "应用 "+appName))
+	b.WriteString(fmtKV("防护模式", mode))
+	b.WriteString(fmtKV("应用状态", status))
+	b.WriteString(fmtKV("事件总数（"+rangeValue.Label+"）", total))
+	b.WriteString(fmtKV("阻断数（"+rangeValue.Label+"）", blocked))
+	if total == 0 {
+		b.WriteString(fmt.Sprintf("该应用在%s无安全事件记录，数据不足，无法确认。\n", rangeValue.Label))
+	} else {
+		b.WriteString(fmtKV("攻击类型", a.topGroup(ctx, `SELECT attack_type, count(*) FROM security_events
+			WHERE application_id = $1 AND occurred_at >= $2 AND occurred_at < $3 GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, appID, rangeValue.Start, rangeValue.End)))
+		b.WriteString(fmtKV("主要来源 IP", a.topGroup(ctx, `SELECT client_ip::text, count(*) FROM security_events
+			WHERE application_id = $1 AND occurred_at >= $2 AND occurred_at < $3 GROUP BY 1 ORDER BY 2 DESC LIMIT 5`, appID, rangeValue.Start, rangeValue.End)))
+	}
+	ref := in.Evidence.Add("security_event.search", fmt.Sprintf("应用 %s 事件（%s）", appName, rangeValue.Label), map[string]interface{}{"application_id": appID, "total": total, "blocked": blocked})
+	b.WriteString(fmt.Sprintf("- 证据：[%s]\n", ref))
+	return nil
 }
 
 // analyzeChain 攻击链关联。

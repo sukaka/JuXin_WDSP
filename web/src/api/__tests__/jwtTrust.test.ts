@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  JWT_TRUST_LIMITS,
   jwtTrustApi,
   jwksHasPrivateMaterial,
   validateStaticJwks,
@@ -106,6 +107,7 @@ describe('jwtTrustApi', () => {
             algorithms: null,
             key_source: { type: 'STATIC_JWKS' },
             clock_skew_seconds: 30,
+            role_claims: null,
           },
         ],
         updated_by: 'secops',
@@ -126,6 +128,7 @@ describe('jwtTrustApi', () => {
           algorithms: ['RS256'],
           key_source: { type: 'STATIC_JWKS' as const, jwks: VALID_PUBLIC_JWKS },
           clock_skew_seconds: 30,
+          role_claims: ['roles', 'groups'],
         },
       ],
       reason: '接入身份发行方',
@@ -139,6 +142,78 @@ describe('jwtTrustApi', () => {
     expect(JSON.parse(String((call[1] as RequestInit).body))).toEqual(body)
     expect(saved.version).toBe(1)
     expect(saved.issuers[0].audiences).toEqual([])
+    expect(saved.issuers[0].role_claims).toEqual([])
+  })
+
+  it('B10-1: get 与 preflight 正确保留与归一化 issuers[].role_claims 及限制常量', async () => {
+    expect(JWT_TRUST_LIMITS.maxTenantClaimLen).toBe(64)
+    expect(JWT_TRUST_LIMITS.maxRoleClaims).toBe(8)
+    expect(JWT_TRUST_LIMITS.maxRoleClaimLen).toBe(64)
+
+    stubFetch({
+      policy: {
+        id: 'p1',
+        application_id: APP_ID,
+        mode: 'OBSERVE',
+        version: 2,
+        selectors: null,
+        issuers: [
+          {
+            issuer: 'https://idp.example.com/',
+            audiences: ['shop-api'],
+            algorithms: ['RS256'],
+            key_source: { type: 'STATIC_JWKS', jwks: VALID_PUBLIC_JWKS },
+            clock_skew_seconds: 30,
+            role_claims: ['roles', 'groups'],
+          },
+          {
+            issuer: 'https://idp2.example.com/',
+            audiences: ['shop-api'],
+            algorithms: ['ES256'],
+            key_source: { type: 'STATIC_JWKS', jwks: VALID_PUBLIC_JWKS },
+            clock_skew_seconds: 30,
+          },
+        ],
+        updated_by: 'secops',
+        created_at: '2026-09-06T00:00:00Z',
+        updated_at: '2026-09-06T00:00:00Z',
+      },
+      summary: {
+        state: 'DRAFT_PENDING',
+        draft_version: 2,
+        published_version: 0,
+      },
+    })
+    const got = await jwtTrustApi.get(APP_ID)
+    expect(got.policy.issuers[0].role_claims).toEqual(['roles', 'groups'])
+    expect(got.policy.issuers[1].role_claims).toEqual([])
+
+    stubFetch({
+      policy: {
+        id: 'p1',
+        application_id: APP_ID,
+        mode: 'OBSERVE',
+        version: 2,
+        selectors: null,
+        issuers: [
+          {
+            issuer: 'https://idp.example.com/',
+            audiences: null,
+            algorithms: null,
+            key_source: { type: 'STATIC_JWKS' },
+            clock_skew_seconds: 30,
+          },
+        ],
+        updated_by: '',
+        created_at: '',
+        updated_at: '',
+      },
+      checks: [],
+      publishable: true,
+    })
+    const preflightRes = await jwtTrustApi.preflight(APP_ID, { mode: 'OBSERVE' })
+    expect(preflightRes.policy.selectors).toEqual([])
+    expect(preflightRes.policy.issuers[0].role_claims).toEqual([])
   })
 
   it('preflight：POST 候选策略并返回 checks/publishable，checks 为 null 时归一化为空数组', async () => {

@@ -49,7 +49,13 @@ export default function ApiPolicyPage() {
 
   const publishMut = useMutation({
     mutationFn: () => apiPolicyApi.publish(),
-    onSuccess: (r) => message.success(r.message || '已发布'),
+    onSuccess: (r) => {
+      if (r.status !== 'SUCCESS') {
+        message.warning(r.message ? `${r.message}（发布状态：${r.status}）` : '发布未成功，请检查网关发布状态')
+        return
+      }
+      message.success(r.message || '已发布')
+    },
     onError: (e: unknown) => message.error(e instanceof ApiError ? e.message : '发布失败'),
   })
 

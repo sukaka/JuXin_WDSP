@@ -149,7 +149,10 @@ export default function AgentDetailDrawer({
       title: '时间',
       key: 'time',
       width: 160,
-      render: (_, r) => formatUnixTime(r.timestamp ?? r.ts),
+      render: (_, r) =>
+        typeof r.ts === 'string'
+          ? formatDateTime(r.ts)
+          : formatUnixTime(r.timestamp ?? r.ts),
     },
     {
       title: '五元组',
@@ -407,10 +410,10 @@ export default function AgentDetailDrawer({
                         {detail.policy_binding ? (
                           <>
                             <Tag color="blue">
-                              {detail.policy_binding.name ??
+                              {detail.policy_binding.policy_name ||
                                 detail.policy_binding.policy_id}
-                              {detail.policy_binding.version !== undefined
-                                ? `（v${detail.policy_binding.version}）`
+                              {detail.policy_binding.policy_version !== undefined
+                                ? `（v${detail.policy_binding.policy_version}）`
                                 : ''}
                             </Tag>
                             {canManage ? (
@@ -443,7 +446,7 @@ export default function AgentDetailDrawer({
                       >
                         {detail.policy_binding
                           ? `已保存策略版本 v${
-                              detail.policy_binding.version ?? '-'
+                              detail.policy_binding.policy_version ?? '-'
                             }（策略历史链不可变）；保存/换绑后服务端目标版本升为 v${
                               detail.config_version
                             }，Agent 实际加载 v${detail.applied_config_version}——目标与实载分离显示`
@@ -507,7 +510,11 @@ export default function AgentDetailDrawer({
               ) : (
                 <SmartTable<TrafficFlowEvent>
                   storageKey="traffic-agent-events"
-                  rowKey="flow_id"
+                  rowKey={(r) =>
+                    r.id !== undefined
+                      ? String(r.id)
+                      : `${r.flow_id}-${r.event_type}-${r.ts ?? r.timestamp ?? ''}`
+                  }
                   size="small"
                   loading={eventsQuery.isLoading}
                   columns={eventColumns}

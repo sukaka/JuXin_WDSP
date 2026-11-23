@@ -18,6 +18,6 @@ export const auditsApi = {
     request<PageResult<AuditEntry>>('/audits', { query: { ...params } }),
   detail: (id: string) => request<AuditEntry>(`/audits/${id}`),
   verifyChain: () => request<VerifyChainResult>('/audits/verify-chain', { method: 'POST' }),
-  exportUrl: (params: Omit<AuditParams, 'page' | 'page_size'>) =>
+  exportUrl: (params: Omit<AuditParams, 'page' | 'page_size'> & { ids?: string }) =>
     buildUrl('/audits/export', { ...params }),
 }

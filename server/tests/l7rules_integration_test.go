@@ -111,15 +111,22 @@ func TestL7RuleCRUD(t *testing.T) {
 	resp = env.get(t, "/api/v1/l7-rules?enabled=maybe", cookies)
 	s5Expect(t, resp, http.StatusBadRequest, "invalid enabled filter")
 
-	// PATCH 全量更新：改优先级 + 停用 + 换 redirect 动作
+	// PATCH 全量更新：改优先级 + 停用 + 换 host 条件 + redirect（301 + 保留路径和查询参数）动作
 	updated := fmt.Sprintf(`{"name":%q,"priority":50,"enabled":false,`+
-		`"conditions":[{"type":"uri","op":"prefix","value":"/admin"}],`+
-		`"action":"redirect","action_config":{"redirect_url":"https://example.com/moved","redirect_status":301}}`, name)
+		`"conditions":[{"type":"host","op":"eq","value":"JXDR.CN"}],`+
+		`"action":"redirect","action_config":{"redirect_url":"https://www.jxdr.cn","redirect_status":301,"preserve_path_query":true}}`, name)
 	resp = env.do(t, http.MethodPatch, "/api/v1/l7-rules/"+id, updated, cookies, csrf)
 	result = s5OK(t, resp, "update l7 rule")
 	rule = s5Obj(t, result, "rule")
 	if rule["enabled"] != false || s5Num(t, rule, "priority") != 50 || rule["action"] != "redirect" {
 		t.Errorf("updated rule unexpected: %+v", rule)
+	}
+	if uconds, ok := rule["conditions"].([]interface{}); !ok || len(uconds) != 1 ||
+		uconds[0].(map[string]interface{})["type"] != "host" || uconds[0].(map[string]interface{})["value"] != "jxdr.cn" {
+		t.Errorf("host condition not normalized: %+v", rule["conditions"])
+	}
+	if uac, ok := rule["action_config"].(map[string]interface{}); !ok || uac["preserve_path_query"] != true {
+		t.Errorf("preserve_path_query expected true: %+v", rule["action_config"])
 	}
 
 	// 删除 → 详情 404
@@ -138,6 +145,8 @@ func TestL7RuleValidationRejected(t *testing.T) {
 		{"缺条件", `{"name":"x","action":"allow","conditions":[]}`},
 		{"未知条件类型", `{"name":"x","conditions":[{"type":"body","op":"eq","value":"1"}],"action":"allow"}`},
 		{"uri不以斜杠开头", `{"name":"x","conditions":[{"type":"uri","op":"prefix","value":"admin"}],"action":"allow"}`},
+		{"host带端口拒绝", `{"name":"x","conditions":[{"type":"host","op":"eq","value":"jxdr.cn:443"}],"action":"allow"}`},
+		{"host带协议拒绝", `{"name":"x","conditions":[{"type":"host","op":"eq","value":"https://jxdr.cn"}],"action":"allow"}`},
 		{"正则不合法", `{"name":"x","conditions":[{"type":"uri","op":"regex","value":"([bad"}],"action":"allow"}`},
 		{"非法方法", `{"name":"x","conditions":[{"type":"method","values":["HACK"]}],"action":"allow"}`},
 		{"非法来源IP", `{"name":"x","conditions":[{"type":"client_ip","values":["999.1.1.1"]}],"action":"allow"}`},
@@ -215,6 +224,21 @@ func TestL7RuleTester(t *testing.T) {
 	s5Expect(t, resp, http.StatusBadRequest, "test invalid uri")
 	resp = env.post(t, "/api/v1/l7-rules/test", `{"uri":"/a","method":"GET","client_ip":"bad-ip"}`, cookies, csrf)
 	s5Expect(t, resp, http.StatusBadRequest, "test invalid ip")
+
+	// 请求域名（Host）+ 301 重定向保留路径和查询参数测试
+	resp = env.post(t, "/api/v1/l7-rules", fmt.Sprintf(
+		`{"name":"apex-%s","priority":10,"conditions":[{"type":"host","op":"eq","value":"jxdr.cn"}],`+
+			`"action":"redirect","action_config":{"redirect_url":"https://www.jxdr.cn","redirect_status":301,"preserve_path_query":true}}`,
+		s5Rand()), cookies, csrf)
+	s5OK(t, resp, "create host redirect rule")
+	resp = env.post(t, "/api/v1/l7-rules/test",
+		`{"uri":"/news?id=1","host":"JXDR.CN:443","method":"GET","client_ip":"8.8.8.8"}`, cookies, csrf)
+	result = s5OK(t, resp, "test host redirect rule")
+	if result.Data["matched"] != true || result.Data["action"] != "redirect" ||
+		s5Num(t, result.Data, "redirect_status") != 301 ||
+		result.Data["redirect_location"] != "https://www.jxdr.cn/news?id=1" {
+		t.Fatalf("host 重定向测试器结果异常: %+v", result.Data)
+	}
 }
 
 // s5ObjID 取测试器响应 rule_id。

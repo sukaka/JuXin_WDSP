@@ -22,7 +22,10 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatJson } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { API_FINDING_SEVERITY_META } from '../../utils/stage8'
+import {
+  API_FINDING_SEVERITY_FILTER_OPTIONS,
+  API_FINDING_SEVERITY_META,
+} from '../../utils/stage8'
 import {
   SCAN_CATEGORY_META,
   SCAN_FINDING_STATUS_META,
@@ -239,15 +242,17 @@ export default function FindingsTab() {
       ) : null}
       {canExecute ? (
         <Tooltip title={current.weakness_id ? undefined : '须先确认并关联弱点后方可复测'}>
-          <Button
-            disabled={!current.weakness_id}
-            onClick={() => {
-              retestForm.resetFields()
-              setRetestOpen(true)
-            }}
-          >
-            复测
-          </Button>
+          <span>
+            <Button
+              disabled={!current.weakness_id}
+              onClick={() => {
+                retestForm.resetFields()
+                setRetestOpen(true)
+              }}
+            >
+              复测
+            </Button>
+          </span>
         </Tooltip>
       ) : null}
     </Space>
@@ -275,10 +280,7 @@ export default function FindingsTab() {
           allowClear
           style={{ width: 130 }}
           value={severityFilter}
-          options={Object.entries(API_FINDING_SEVERITY_META).map(([value, meta]) => ({
-            value,
-            label: meta.label,
-          }))}
+          options={API_FINDING_SEVERITY_FILTER_OPTIONS}
           onChange={(v) => {
             setSeverityFilter(v)
             setPage(1)

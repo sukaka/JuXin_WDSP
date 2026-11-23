@@ -77,7 +77,7 @@ export default function UsersPage() {
 
   const onError = (e: unknown) => {
     if (e instanceof ApiError && e.code === 'RESOURCE_CONFLICT') {
-      message.error('数据已被他人修改，请刷新列表后重试')
+      message.error(e.message || '操作冲突，请刷新列表后重试')
       void invalidate()
       return
     }
@@ -189,7 +189,7 @@ export default function UsersPage() {
       width: 160,
       render: (roles: UserItem['roles']) => (
         <Space wrap>
-          {roles.map((r) => (
+          {(roles ?? []).map((r) => (
             <Tag color="blue" key={r.code}>
               {r.name}
             </Tag>
@@ -237,7 +237,7 @@ export default function UsersPage() {
                   setEditing(record)
                   editForm.setFieldsValue({
                     display_name: record.display_name,
-                    role_code: record.roles[0]?.code,
+                    role_code: record.roles?.[0]?.code,
                   })
                 }}
               >
@@ -302,7 +302,7 @@ export default function UsersPage() {
           allowClear
           style={{ width: 160 }}
           loading={rolesQuery.isLoading}
-          options={rolesQuery.data?.items.map((r) => ({ value: r.code, label: r.name }))}
+          options={(rolesQuery.data?.items ?? []).map((r) => ({ value: r.code, label: r.name }))}
           onChange={(v) => {
             setFilters((f) => ({ ...f, role_code: v }))
             setPage(1)
@@ -363,7 +363,7 @@ export default function UsersPage() {
             label="用户名"
             rules={[
               { required: true, message: '请输入用户名' },
-              { pattern: /^[a-zA-Z0-9_.-]{3,64}$/, message: '3-64 位字母、数字、下划线、点或短横线' },
+              { pattern: /^[a-zA-Z0-9_-]{4,64}$/, message: '4-64 位字母、数字、下划线或短横线' },
             ]}
           >
             <Input placeholder="登录用户名" autoComplete="off" />
@@ -375,7 +375,7 @@ export default function UsersPage() {
             <Select
               placeholder="选择角色"
               loading={rolesQuery.isLoading}
-              options={rolesQuery.data?.items.map((r) => ({ value: r.code, label: r.name }))}
+              options={(rolesQuery.data?.items ?? []).map((r) => ({ value: r.code, label: r.name }))}
             />
           </Form.Item>
         </Form>
@@ -407,7 +407,7 @@ export default function UsersPage() {
             <Select
               placeholder="选择角色"
               loading={rolesQuery.isLoading}
-              options={rolesQuery.data?.items.map((r) => ({ value: r.code, label: r.name }))}
+              options={(rolesQuery.data?.items ?? []).map((r) => ({ value: r.code, label: r.name }))}
             />
           </Form.Item>
         </Form>

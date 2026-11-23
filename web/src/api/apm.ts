@@ -76,10 +76,11 @@ export interface ApmAgentListParams {
 
 /** 创建一次性注册令牌入参（POST /apm/agents/enrollment-tokens） */
 export interface CreateApmEnrollmentTokenBody {
-  application_id: string
+  application_id?: string | null
   environment: string
-  languages: string[]
-  ttl_minutes: number
+  allowed_languages: string[]
+  expires_in_minutes: number
+  note?: string
 }
 
 /** 更新基线策略入参（PUT /apm/policies/{scope}；expected_version 乐观锁，409=版本冲突） */
@@ -189,7 +190,7 @@ export const apmApi = {
   },
   /** POST /apm/agents/{id}/revoke：撤销 Agent（撤销后其证书不再被接受） */
   revokeAgent: (id: string) =>
-    request<{ message: string }>(`/apm/agents/${id}/revoke`, { method: 'POST' }),
+    request<ApmAgentItem>(`/apm/agents/${id}/revoke`, { method: 'POST' }),
   /** GET /apm/policies/{scope}：读取 scope 的基线策略文档 */
   getPolicy: (scope: string) =>
     request<ApmPolicyDocument>(`/apm/policies/${encodeURIComponent(scope)}`),
@@ -235,12 +236,12 @@ export const apmApi = {
   /** DELETE /apm/slos/{id}：删除 SLO（写权限 apm.settings.manage） */
   deleteSlo: (id: string) =>
     request<{ message: string }>(`/apm/slos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  /** GET /apm/diagnostic-sessions：诊断会话分页（权限 apm.diagnostics.manage；list 缺省补空数组） */
+  /** GET /apm/diagnostic-sessions：诊断会话分页（权限 apm.diagnostics.manage；items 缺省补空数组） */
   diagnosticSessions: async (params: ApmDiagnosticSessionListParams) => {
     const data = await request<ApmDiagnosticSessionPage>('/apm/diagnostic-sessions', {
       query: { ...params },
     })
-    return { ...data, list: data.list ?? [] }
+    return { ...data, items: data.items ?? [] }
   },
   /** GET /apm/diagnostic-sessions/{id}：会话详情 + 关联审计（audits 缺省补空数组） */
   diagnosticSession: async (id: string) => {

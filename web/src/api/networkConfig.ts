@@ -5,11 +5,12 @@ import type { NetworkConfigData, NetworkDesiredConfig } from '../types'
 export const networkConfigApi = {
   get: (nodeName?: string) =>
     request<NetworkConfigData>('/gateway/network-config', { query: { node_name: nodeName } }),
-  /** 全量替换期望配置；节点通过 node_name 查询参数指定（与 GET 对齐） */
-  save: (body: NetworkDesiredConfig, nodeName?: string) =>
-    request<{ message?: string }>('/gateway/network-config', {
+  /** 全量替换期望配置；node_name 通过 JSON 请求体可选指定（缺省为默认节点） */
+  save: (body: NetworkDesiredConfig, nodeName?: string) => {
+    const trimmed = nodeName?.trim()
+    return request<NetworkConfigData>('/gateway/network-config', {
       method: 'PUT',
-      query: { node_name: nodeName },
-      body,
-    }),
+      body: trimmed ? { ...body, node_name: trimmed } : body,
+    })
+  },
 }

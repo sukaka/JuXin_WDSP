@@ -7,6 +7,7 @@ import {
   Drawer,
   Form,
   Input,
+  InputNumber,
   Modal,
   Select,
   Space,
@@ -20,6 +21,7 @@ import {
   apiAIOpsApi,
   type ApiAISchedule,
   type ApiAIScheduleBody,
+  type ApiAITaskConfig,
   type ApiAITaskType,
 } from '../../api/apiAIOps'
 import { ApiError } from '../../api/client'
@@ -38,6 +40,9 @@ interface ScheduleFormValues {
   name: string
   cron_expr: string
   enabled: boolean
+  window_hours?: number
+  limit?: number
+  due_within_days?: number
 }
 
 /**
@@ -57,6 +62,7 @@ export default function SchedulesTab() {
   const [editing, setEditing] = useState<ApiAISchedule | null>(null)
   const [runsOf, setRunsOf] = useState<ApiAISchedule | null>(null)
   const [form] = Form.useForm<ScheduleFormValues>()
+  const watchedTaskType = Form.useWatch('task_type', form)
 
   /** 任务类型词表（接口为空/失败时回退本地词表，保证弹窗可用） */
   const taskTypesQuery = useQuery({
@@ -77,11 +83,22 @@ export default function SchedulesTab() {
 
   const saveMut = useMutation({
     mutationFn: (v: ScheduleFormValues) => {
+      const config: ApiAITaskConfig = {}
+      if (v.window_hours !== undefined && v.window_hours !== null) {
+        config.window_hours = v.window_hours
+      }
+      if (v.limit !== undefined && v.limit !== null) {
+        config.limit = v.limit
+      }
+      if (v.due_within_days !== undefined && v.due_within_days !== null) {
+        config.due_within_days = v.due_within_days
+      }
       const body: ApiAIScheduleBody = {
         task_type: v.task_type,
         name: v.name.trim(),
         cron_expr: v.cron_expr.trim(),
         ...(editing ? {} : { enabled: v.enabled }),
+        ...(Object.keys(config).length > 0 ? { config } : {}),
       }
       return editing ? apiAIOpsApi.updateSchedule(editing.id, body) : apiAIOpsApi.createSchedule(body)
     },
@@ -196,6 +213,9 @@ export default function SchedulesTab() {
       name: record.name,
       cron_expr: record.cron_expr,
       enabled: record.enabled,
+      window_hours: record.config?.window_hours,
+      limit: record.config?.limit,
+      due_within_days: record.config?.due_within_days,
     })
     setModalOpen(true)
   }
@@ -414,6 +434,34 @@ export default function SchedulesTab() {
           >
             <Input placeholder="如：0 7 * * * 或 @daily" allowClear />
           </Form.Item>
+          <Space size={16} wrap style={{ display: 'flex' }}>
+            <Form.Item
+              name="window_hours"
+              label="统计窗口（小时）"
+              rules={[{ type: 'integer', min: 1, max: 720, message: '须为 1-720 的整数' }]}
+              extra="留空取后端缺省 24 小时"
+            >
+              <InputNumber min={1} max={720} precision={0} style={{ width: 150 }} placeholder="缺省 24" />
+            </Form.Item>
+            <Form.Item
+              name="limit"
+              label="清单条数上限"
+              rules={[{ type: 'integer', min: 1, max: 100, message: '须为 1-100 的整数' }]}
+              extra="留空取后端缺省 20 条"
+            >
+              <InputNumber min={1} max={100} precision={0} style={{ width: 150 }} placeholder="缺省 20" />
+            </Form.Item>
+            {watchedTaskType === 'WEAKNESS_FOLLOW' || editing?.config?.due_within_days !== undefined ? (
+              <Form.Item
+                name="due_within_days"
+                label="临近到期窗口（天）"
+                rules={[{ type: 'integer', min: 0, max: 30, message: '须为 0-30 的整数' }]}
+                extra="仅弱点整改跟进生效，缺省 3 天"
+              >
+                <InputNumber min={0} max={30} precision={0} style={{ width: 150 }} placeholder="缺省 3" />
+              </Form.Item>
+            ) : null}
+          </Space>
           {editing === null ? (
             <Form.Item name="enabled" label="创建后启用" valuePropName="checked">
               <Switch />

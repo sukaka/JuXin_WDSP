@@ -4,7 +4,7 @@ import { App as AntdApp } from 'antd'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import ApiDataFlowPage from '../ApiDataFlowPage'
-import type { DataFlowEvidenceRecord, DataFlowGraph } from '../../../api/apiDataFlow'
+import { normalizeDataTypeFilter, type DataFlowEvidenceRecord, type DataFlowGraph } from '../../../api/apiDataFlow'
 
 vi.mock('../../../components/EChart', () => ({
   default: () => <div data-testid="echart-stub" />,
@@ -290,5 +290,48 @@ describe('ApiDataFlowPage', () => {
     renderPage()
     expect(await screen.findByText('当前时间窗无观测数据')).toBeInTheDocument()
     expect(screen.queryByTestId('echart-stub')).toBeNull()
+  })
+
+  it('B6-7：证据记录 fields 为 null 时安全归一为空数组不崩溃', async () => {
+    const nullFieldsEvidence = {
+      items: [{
+        ...EVIDENCE.items[0],
+        fields: null as unknown as DataFlowEvidenceRecord['fields'],
+      }],
+      total: 1,
+    }
+    vi.stubGlobal('fetch', mockFetch(GRAPH, nullFieldsEvidence))
+    renderPage()
+    await screen.findByTestId('echart-stub')
+    fireEvent.click(screen.getByRole('radio', { name: '边明细' }))
+    fireEvent.click(await screen.findByRole('button', { name: '查看详情' }))
+    const title = await screen.findByText('orders → profile', { selector: '.ant-drawer-title' })
+    const drawer = title.closest('.data-flow-detail-drawer') as HTMLElement
+    expect(await within(drawer).findByText(`Trace: ${'a'.repeat(32)}`)).toBeInTheDocument()
+  })
+
+  it('B6-11：数据类型筛选提交规范大写编码并支持中文标签/小写归一', async () => {
+    expect(normalizeDataTypeFilter('手机号')).toBe('PHONE')
+    expect(normalizeDataTypeFilter(' phone ')).toBe('PHONE')
+    expect(normalizeDataTypeFilter('  ')).toBeUndefined()
+
+    const fetchMock = mockFetch()
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+    await screen.findByTestId('echart-stub')
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: '数据类型' }))
+    const option = (await screen.findAllByText('手机号 (PHONE)')).find((el) =>
+      el.closest('.ant-select-item-option-content'),
+    )
+    expect(option).toBeTruthy()
+    fireEvent.click(option as HTMLElement)
+    fireEvent.click(screen.getByRole('button', { name: /查\s*询/ }))
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([input]) => String(input).includes('/data-flow/graph?') && String(input).includes('data_type=PHONE'),
+        ),
+      ).toBe(true),
+    )
   })
 })

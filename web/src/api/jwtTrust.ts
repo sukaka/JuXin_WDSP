@@ -18,6 +18,9 @@ export const JWT_TRUST_LIMITS = {
   defaultClockSkew: 30,
   maxClockSkew: 120,
   maxReasonLen: 500,
+  maxTenantClaimLen: 64,
+  maxRoleClaims: 8,
+  maxRoleClaimLen: 64,
   maxJWKSKeys: 32,
   maxJWKSBytes: 256 * 1024,
   minRSAKeyBits: 2048,
@@ -46,6 +49,7 @@ export interface JwtTrustIssuer {
   key_source: JwtTrustKeySource
   clock_skew_seconds: number
   tenant_claim?: string
+  role_claims?: string[]
 }
 
 /** 应用 JWT 信任策略（当前草稿；version 乐观锁不可变递增；无记录应用 version=0） */
@@ -111,6 +115,7 @@ function normalizePolicy(p: JwtTrustPolicy): JwtTrustPolicy {
       ...is,
       audiences: is.audiences ?? [],
       algorithms: is.algorithms ?? [],
+      role_claims: is.role_claims ?? [],
     })),
   }
 }
@@ -143,7 +148,11 @@ export const jwtTrustApi = {
       `/applications/${appId}/jwt-trust-policy/preflight`,
       { method: 'POST', body },
     )
-    return { ...data, checks: data.checks ?? [] }
+    return {
+      ...data,
+      policy: data.policy ? normalizePolicy(data.policy) : data.policy,
+      checks: data.checks ?? [],
+    }
   },
 }
 

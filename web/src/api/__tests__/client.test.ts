@@ -329,13 +329,16 @@ describe('api client', () => {
     stubFetch(() =>
       Promise.resolve(jsonResponse(401, { code: 'UNAUTHENTICATED', message: '未登录或会话已过期' })),
     )
-    for (const pubPath of ['/auth/login', '/auth/me', '/auth/logout', '/auth/captcha', '/auth/totp/verify']) {
+    for (const pubPath of ['/auth/login', '/auth/me', '/auth/logout', '/auth/captcha', '/auth/totp-verify']) {
       await expect(request(pubPath)).rejects.toBeInstanceOf(ApiError)
     }
     expect(onExpired).not.toHaveBeenCalled()
 
     await expect(request('/auth/password', { method: 'POST', body: {} })).rejects.toBeInstanceOf(ApiError)
     expect(onExpired).toHaveBeenCalledTimes(1)
+
+    await expect(request('/auth/totp/setup', { method: 'POST' })).rejects.toBeInstanceOf(ApiError)
+    expect(onExpired).toHaveBeenCalledTimes(2)
   })
 
   it('XHR 上传响应体在 onprogress / Content-Length 超限时立即 abort 并抛 RESPONSE_TOO_LARGE', async () => {

@@ -140,6 +140,7 @@ describe('ApiMcpPage / CatalogsTab（NG-MCP G1 目录列表与审核状态机）
     vi.clearAllMocks()
     vi.mocked(mcpApi.listCatalogs).mockResolvedValue({ items: [catalogSummary], total: 1 })
     vi.mocked(mcpApi.getCatalog).mockResolvedValue(catalogDetail as never)
+    vi.mocked(mcpApi.updateCatalog).mockResolvedValue(catalogDetail as never)
     vi.mocked(mcpApi.reviewTool).mockImplementation((_c, _t, body) =>
       Promise.resolve({ ...tools[1], ...body, reviewed_by: 'sec', reviewed_at: '2026-10-06T00:00:00Z' } as never),
     )
@@ -223,5 +224,34 @@ describe('ApiMcpPage / CatalogsTab（NG-MCP G1 目录列表与审核状态机）
     fireEvent.click(screen.getByRole('button', { name: '详情' }))
     await screen.findByText('charge')
     expect(screen.queryByRole('button', { name: '审核' })).not.toBeInTheDocument()
+  })
+
+  it('B12-03：再导入展示只读描述预览；未修改描述发送 preserve_description=true，修改描述则不发送', async () => {
+    renderUi(<CatalogsTab />, FULL)
+    fireEvent.click(await screen.findByRole('button', { name: '再导入' }))
+    expect(await screen.findByText(/当前描述预览（只读）：回显参数/)).toBeInTheDocument()
+    expect(screen.getByText(/当前描述预览（只读）：扣款（合成数据）/)).toBeInTheDocument()
+
+    // 仅修改目录名，同时显式修改第 2 个工具（charge）的描述，第 1 个（echo）与第 3 个（refund）留空
+    fireEvent.change(screen.getByLabelText('目录名'), { target: { value: 'pay-tools-v2' } })
+    const descInputs = screen.getAllByLabelText('描述全文（计入工具哈希——同名变更将重置待审核）')
+    fireEvent.change(descInputs[1], { target: { value: '新版扣款说明' } })
+
+    fireEvent.click(screen.getByRole('button', { name: '确认再导入' }))
+    await waitFor(() => expect(mcpApi.updateCatalog).toHaveBeenCalledTimes(1))
+    const [id, payload] = vi.mocked(mcpApi.updateCatalog).mock.calls[0]
+    expect(id).toBe('c1')
+    expect(payload.name).toBe('pay-tools-v2')
+    expect(payload.version).toBe(2)
+    expect(payload.tools[0]).toEqual(
+      expect.objectContaining({ tool_name: 'echo', description: '', preserve_description: true }),
+    )
+    expect(payload.tools[1]).toEqual(
+      expect.objectContaining({ tool_name: 'charge', description: '新版扣款说明' }),
+    )
+    expect(payload.tools[1]).not.toHaveProperty('preserve_description')
+    expect(payload.tools[2]).toEqual(
+      expect.objectContaining({ tool_name: 'refund', description: '', preserve_description: true }),
+    )
   })
 })

@@ -28,6 +28,17 @@ type GuardRule struct {
 	EffectiveUntil string `json:"effective_until,omitempty"`
 }
 
+// GuardURLAllowRule URL 白名单规则（下发网关）。
+type GuardURLAllowRule struct {
+	ID             string   `json:"id"`
+	MatchType      string   `json:"match_type"`
+	URIPattern     string   `json:"uri_pattern"`
+	Methods        []string `json:"methods,omitempty"`
+	Priority       int      `json:"priority"`
+	EffectiveFrom  string   `json:"effective_from,omitempty"`
+	EffectiveUntil string   `json:"effective_until,omitempty"`
+}
+
 // GuardPolicy CC 防护策略（下发网关）。
 type GuardPolicy struct {
 	ID                   string `json:"id"`
@@ -81,9 +92,10 @@ type GuardBlockResponse struct {
 
 // GuardAppRules 单应用视角的规则与策略。
 type GuardAppRules struct {
-	Allow    []GuardRule   `json:"allow"`
-	Deny     []GuardRule   `json:"deny"`
-	Policies []GuardPolicy `json:"policies"`
+	Allow    []GuardRule         `json:"allow"`
+	Deny     []GuardRule         `json:"deny"`
+	URLAllow []GuardURLAllowRule `json:"url_allow,omitempty"`
+	Policies []GuardPolicy       `json:"policies"`
 }
 
 // GuardParamConstraint 单参数确认约束（下发网关；词汇与 apimodels.ParamConstraint 一致）。
@@ -109,13 +121,15 @@ type GuardMaskRule struct {
 
 // GuardSensitiveValueRule 值级敏感检测规则（下发网关，对应 api_sensitive_data_types 表
 // status=ENABLED 且 regex 非空的类型；该表由迁移 000040 建立）。
-// 网关对 locations 声明位置（query/json/form/header/path/file）的值做 RE2 匹配，
-// 证据只含 data_type/location/字段名/level，绝不落值。json tag 为跨分片契约，不得改动。
+// 网关对 locations 声明位置（query/json/form/header/path/response_body/file）的值做 RE2 匹配，
+// 证据含 data_type/location/字段名/level 及网关内存脱敏后的 masked_sample，绝不落原始明文。
+// 既有 json tag 为跨分片契约，不得改动；新增 exclude_fields 带 omitempty 保持零变化兼容。
 type GuardSensitiveValueRule struct {
-	DataType  string   `json:"data_type"` // 数据类型标签（与网关 evidence.data_type 对齐）
-	Regex     string   `json:"regex"`     // 值级正则（RE2）
-	Locations []string `json:"locations"` // 可能出现位置（query/json/form/xml/header/cookie/path/response_body/file）
-	Level     string   `json:"level"`     // 五级敏感等级（NON_SENSITIVE/GENERAL/SENSITIVE/IMPORTANT/CORE）
+	DataType      string   `json:"data_type"`                // 数据类型标签（与网关 evidence.data_type 对齐）
+	Regex         string   `json:"regex"`                    // 值级正则（RE2）
+	Locations     []string `json:"locations"`                // 可能出现位置（query/json/form/xml/header/cookie/path/response_body/file）
+	Level         string   `json:"level"`                    // 五级敏感等级（NON_SENSITIVE/GENERAL/SENSITIVE/IMPORTANT/CORE）
+	ExcludeFields []string `json:"exclude_fields,omitempty"` // 排除字段名（命中词根但非敏感值时跳过）
 }
 
 // GuardRoleBaseline 角色功能级基线（下发网关，对应 api_role_baselines 表 confirmed=true 行；
@@ -564,7 +578,7 @@ type GuardRevokedCredential struct {
 // ---------- L7 访问控制（契约一 l7_rules 段；仅 WAF/WDSP 下发） ----------
 
 // GuardL7Condition L7 匹配条件（下发网关）。
-// method/client_ip 用 Values（等价 op=in）；uri 用 Op+Value；header/cookie/query 用 Name+Op+Value。
+// method/client_ip 用 Values（等价 op=in）；uri/host 用 Op+Value；header/cookie/query/response_header 用 Name+Op+Value。
 type GuardL7Condition struct {
 	Type   string   `json:"type"`
 	Name   string   `json:"name,omitempty"`
@@ -573,14 +587,15 @@ type GuardL7Condition struct {
 	Values []string `json:"values,omitempty"`
 }
 
-// GuardL7ActionConfig L7 动作配置（下发网关）。六键恒出（与契约一示例一致），按动作取对应字段。
+// GuardL7ActionConfig L7 动作配置（下发网关）。既有六键恒出（与契约一示例一致），新增可选字段按需输出。
 type GuardL7ActionConfig struct {
-	Status         int    `json:"status"`
-	Message        string `json:"message"`
-	RedirectURL    string `json:"redirect_url"`
-	RedirectStatus int    `json:"redirect_status"`
-	ContentType    string `json:"content_type"`
-	Body           string `json:"body"`
+	Status            int    `json:"status"`
+	Message           string `json:"message"`
+	RedirectURL       string `json:"redirect_url"`
+	RedirectStatus    int    `json:"redirect_status"`
+	PreservePathQuery bool   `json:"preserve_path_query,omitempty"`
+	ContentType       string `json:"content_type"`
+	Body              string `json:"body"`
 }
 
 // GuardL7Rule L7 访问控制规则（下发网关）。
@@ -839,6 +854,7 @@ type GuardConfig struct {
 	ProtectedAddresses []string                  `json:"protected_addresses"`
 	GlobalAllow        []GuardRule               `json:"global_allow"`
 	GlobalDeny         []GuardRule               `json:"global_deny"`
+	GlobalURLAllow     []GuardURLAllowRule       `json:"global_url_allow,omitempty"`
 	GlobalPolicies     []GuardPolicy             `json:"global_policies"`
 	AppRules           map[string]*GuardAppRules `json:"app_rules"` // key: 应用编码
 	Valkey             *GuardValkey              `json:"valkey,omitempty"`
@@ -1145,6 +1161,7 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 	}
 	appAllow := []GuardRule{}
 	appDeny := []GuardRule{}
+	var appURLAllow []GuardURLAllowRule
 	policies := make([]GuardPolicy, 0, len(g.GlobalPolicies)+8)
 	for _, p := range g.GlobalPolicies {
 		cp := p
@@ -1156,6 +1173,7 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 	if ar, ok := g.AppRules[app.Code]; ok && ar != nil {
 		appAllow = ar.Allow
 		appDeny = ar.Deny
+		appURLAllow = ar.URLAllow
 		for _, p := range ar.Policies {
 			cp := p
 			if cp.Scope == "" {
@@ -1166,6 +1184,12 @@ func buildGuardHandler(g *GuardConfig, app AppData, publicPort int) mapT {
 	}
 	h["app_allow"] = appAllow
 	h["app_deny"] = appDeny
+	if len(g.GlobalURLAllow) > 0 {
+		h["global_url_allow"] = g.GlobalURLAllow
+	}
+	if len(appURLAllow) > 0 {
+		h["app_url_allow"] = appURLAllow
+	}
 	h["rate_limits"] = policies
 	if g.Valkey != nil {
 		h["valkey"] = g.Valkey

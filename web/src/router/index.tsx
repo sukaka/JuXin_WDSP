@@ -77,6 +77,9 @@ const TrustedProxiesPage = lazy(
 const AccessRulesPage = lazy(
   () => import('../pages/access-rules/AccessRulesPage'),
 )
+const WhitelistsPage = lazy(
+  () => import('../pages/whitelists/WhitelistsPage'),
+)
 const L7RulesPage = lazy(() => import('../pages/l7-rules/L7RulesPage'))
 const RateLimitPage = lazy(() => import('../pages/rate-limit/RateLimitPage'))
 const TemporaryBlocksPage = lazy(
@@ -688,6 +691,16 @@ export default function AppRoutes() {
               <RequireWebWaf>
                 <RequirePermission permission="access_rules.read">
                   <AccessRulesPage />
+                </RequirePermission>
+              </RequireWebWaf>
+            }
+          />
+          <Route
+            path="whitelists"
+            element={
+              <RequireWebWaf>
+                <RequirePermission permission="access_rules.read">
+                  <WhitelistsPage />
                 </RequirePermission>
               </RequireWebWaf>
             }

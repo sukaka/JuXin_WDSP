@@ -10,6 +10,7 @@ import { applicationsApi } from '../../../api/applications'
 import AnalyzeResultView from '../../../components/ai/AnalyzeResultView'
 import RemediationCard from '../../../components/RemediationCard'
 import { useAuthStore } from '../../../stores/auth'
+import { parsePositiveRuleId } from '../../../utils/ai'
 import { hasPermission } from '../../../utils/permission'
 
 /** 结构化统计区间选项（与后端 time_range 白名单一致） */
@@ -78,6 +79,11 @@ export default function EventAnalysisPage() {
     const v = eventForm.getFieldsValue()
     const eventId = v.event_id?.trim()
     const question = v.question?.trim()
+    const parsedRule = parsePositiveRuleId(v.rule_id)
+    if (!parsedRule.valid) {
+      message.warning('规则 ID 须为正整数')
+      return
+    }
     const body: AiAnalyzeBody = {
       event_id: eventId || undefined,
       question: question || undefined,
@@ -85,7 +91,7 @@ export default function EventAnalysisPage() {
       application_id: v.application_id || undefined,
       ip: v.ip?.trim() || undefined,
       uri: v.uri?.trim() || undefined,
-      rule_id: v.rule_id || undefined,
+      rule_id: parsedRule.value,
       request_id: v.request_id?.trim() || undefined,
     }
     const hasFilter = body.application_id || body.ip || body.uri || body.rule_id || body.request_id
@@ -100,13 +106,19 @@ export default function EventAnalysisPage() {
   const onFpAnalyze = async () => {
     const v = fpForm.getFieldsValue()
     const eventId = v.event_id?.trim()
-    if (!eventId && !v.rule_id) {
+    const parsedRule = parsePositiveRuleId(v.rule_id)
+    if (!parsedRule.valid) {
+      message.warning('规则 ID 须为正整数')
+      return
+    }
+    const ruleId = parsedRule.value
+    if (!eventId && ruleId === undefined) {
       message.warning('请输入事件 ID 或规则 ID')
       return
     }
     setLastEventId(eventId || null)
     await run(() =>
-      aiAnalyzeApi.falsePositive({ event_id: eventId || undefined, rule_id: v.rule_id || undefined }),
+      aiAnalyzeApi.falsePositive({ event_id: eventId || undefined, rule_id: ruleId }),
     )
   }
 
@@ -184,7 +196,7 @@ export default function EventAnalysisPage() {
                         <Input placeholder="安全事件 UUID（可选）" style={{ width: 320 }} allowClear />
                       </Form.Item>
                       <Form.Item name="rule_id" label="规则 ID">
-                        <Input type="number" placeholder="如 942100（可选）" style={{ width: 180 }} allowClear />
+                        <InputNumber placeholder="如 942100（可选）" style={{ width: 180 }} min={1} precision={0} />
                       </Form.Item>
                       <Form.Item>
                         <Button

@@ -394,6 +394,9 @@ func (p *Publisher) smokeClientFor(t smokeTarget) *http.Client {
 	dialer := &net.Dialer{Timeout: smokeRequestTimeout}
 	return &http.Client{
 		Timeout: smokeRequestTimeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				return dialer.DialContext(ctx, network, dialAddr)

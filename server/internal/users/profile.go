@@ -1,6 +1,7 @@
 package users
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/jiuzhang-waf/server/internal/authz"
@@ -8,15 +9,35 @@ import (
 	"github.com/jiuzhang-waf/server/internal/response"
 )
 
+// profileLoginLogLister 抽象个人中心登录日志查询（生产默认使用 *loginlogs.Service，单测可注入内存替身）。
+type profileLoginLogLister interface {
+	List(ctx context.Context, f loginlogs.ListFilter) ([]loginlogs.Entry, int64, error)
+}
+
 // ProfileHandler 是个人中心处理器。
 type ProfileHandler struct {
-	store *Store
-	logs  *loginlogs.Service
+	store     *Store
+	logs      *loginlogs.Service
+	logLister profileLoginLogLister
 }
 
 // NewProfileHandler 创建个人中心处理器。
 func NewProfileHandler(store *Store, logs *loginlogs.Service) *ProfileHandler {
-	return &ProfileHandler{store: store, logs: logs}
+	var lister profileLoginLogLister
+	if logs != nil {
+		lister = logs
+	}
+	return &ProfileHandler{store: store, logs: logs, logLister: lister}
+}
+
+func (h *ProfileHandler) logsRepo() profileLoginLogLister {
+	if h.logLister != nil {
+		return h.logLister
+	}
+	if h.logs != nil {
+		return h.logs
+	}
+	return nil
 }
 
 // Get 返回个人资料。
@@ -80,7 +101,13 @@ func (h *ProfileHandler) LoginLogs(w http.ResponseWriter, r *http.Request) {
 		Page:     queryInt(r, "page", 1),
 		PageSize: queryInt(r, "page_size", 20),
 	}
-	list, total, err := h.logs.List(r.Context(), f)
+	if f.Page <= 0 {
+		f.Page = 1
+	}
+	if f.PageSize <= 0 || f.PageSize > 100 {
+		f.PageSize = 20
+	}
+	list, total, err := h.logsRepo().List(r.Context(), f)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return

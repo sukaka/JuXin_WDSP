@@ -227,11 +227,13 @@ function mockFetch({ failApps = false, globalMode = 'OBSERVE' }: { failApps?: bo
     }
     if (url.includes('/api-security/endpoints')) {
       const items = appId === 'app-2' ? endpointsApp2 : endpointsApp1
+      const reqPageSize = Number(u.searchParams.get('page_size') ?? '20')
+      expect(reqPageSize).toBeLessThanOrEqual(100)
       return Promise.resolve(
         jsonResponse(200, {
           code: 'SUCCESS',
           message: 'ok',
-          data: { items, page: 1, page_size: 200, total: items.length },
+          data: { items, page: Number(u.searchParams.get('page') ?? '1'), page_size: reqPageSize, total: items.length },
         }),
       )
     }
@@ -466,5 +468,67 @@ describe('ApiAdmissionPage', () => {
     renderPage()
     expect(await screen.findByText('加载数据失败')).toBeInTheDocument()
     expect(screen.getByText('数据库连接失败')).toBeInTheDocument()
+  })
+
+  it('超过 100 个端点时按 page_size=100 翻页拉取全量端点以解析拦截项 id', async () => {
+    const inner = mockFetch()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const u = urlOf(input)
+        if (
+          url.includes('/api-security/endpoints') &&
+          !url.includes('/confirm') &&
+          !url.includes('/ignore') &&
+          u.searchParams.get('application_id') === 'app-2' &&
+          !u.searchParams.get('asset_status')
+        ) {
+          const reqPage = Number(u.searchParams.get('page') ?? '1')
+          const reqPageSize = Number(u.searchParams.get('page_size') ?? '20')
+          expect(reqPageSize).toBe(100)
+          if (reqPage === 1) {
+            const page1Items = Array.from({ length: 100 }, (_, i) => ({
+              ...endpointsApp2[0],
+              id: `e-filler-${i}`,
+              endpoint_key: `GET /v1/filler/${i}`,
+            }))
+            return Promise.resolve(
+              jsonResponse(200, {
+                code: 'SUCCESS',
+                message: 'ok',
+                data: { items: page1Items, page: 1, page_size: 100, total: 101 },
+              }),
+            )
+          }
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: { items: endpointsApp2, page: 2, page_size: 100, total: 101 },
+            }),
+          )
+        }
+        return inner(input, init)
+      }),
+    )
+    renderPage()
+    await screen.findByText('支付应用')
+    fireEvent.click(screen.getAllByRole('button', { name: '准入详情' })[1])
+    expect(await screen.findByText('/v1/admin')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(
+        fetchUrls().some((u) => u.includes('/api-security/endpoints?') && u.includes('page=2') && u.includes('page_size=100')),
+      ).toBe(true)
+    })
+    fireEvent.click(screen.getByRole('button', { name: '确认放行' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^确\s*定$/ }))
+    await waitFor(() => {
+      const call = (fetch as Mock).mock.calls.find((c) =>
+        String(c[0]).includes('/api-security/endpoints/confirm'),
+      )
+      expect(call).toBeTruthy()
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ ids: ['e9'] })
+    })
   })
 })

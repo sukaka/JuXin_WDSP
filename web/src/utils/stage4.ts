@@ -77,6 +77,7 @@ export const EXCEPTION_ACTION_META: Record<string, { color: string; label: strin
 
 /** 例外策略状态 */
 export const EXCEPTION_STATUS_META: Record<string, { color: string; label: string }> = {
+  DRAFT: { color: 'default', label: '草稿' },
   ENABLED: { color: 'green', label: '已启用' },
   DISABLED: { color: 'default', label: '已停用' },
   EXPIRED: { color: 'orange', label: '已过期' },
@@ -104,7 +105,6 @@ export const RULE_DEFAULT_STATE_META: Record<string, { color: string; label: str
 /** 规则来源 */
 export const RULE_SOURCE_META: Record<string, { color: string; label: string }> = {
   OWASP_CRS: { color: 'blue', label: 'OWASP 核心规则集' },
-  CUSTOM: { color: 'purple', label: '自定义' },
   CUSTOM_PACK: { color: 'cyan', label: '扩展规则包' },
   USER_CUSTOM: { color: 'purple', label: '用户自定义' },
   CRS_PLUGIN: { color: 'geekblue', label: 'CRS 插件' },

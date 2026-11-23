@@ -398,4 +398,23 @@ describe('ApiWeaknessesPage', () => {
       ).toBe(true)
     })
   })
+
+  it('严重级别筛选下拉排除 NONE', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_weakness.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await screen.findByRole('button', { name: /详\s*情/ })
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[1])
+    await waitFor(() => {
+      const labels = Array.from(document.querySelectorAll('.ant-select-item-option-content')).map((el) =>
+        el.textContent?.trim(),
+      )
+      expect(labels).toContain('严重')
+      expect(labels).toContain('信息')
+      expect(labels).not.toContain('无')
+    })
+  })
 })

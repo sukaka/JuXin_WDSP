@@ -292,7 +292,7 @@ paths:
       operationId: reportDelete
       tags: [reports]
       summary: 删除报告
-      description: 删除报告任务及报告文件；仅可删除本人创建的报告，持 `reports.delete_all` 的管理者可删除任意报告，否则 403。写操作审计。权限：`reports.delete_own`（路由）+ 归属或 `reports.delete_all`（归属校验，迁移 000084）。
+      description: 删除报告任务及报告文件；仅可删除本人创建的报告，持 `reports.delete_all` 的管理者可删除任意报告，否则 403。写操作审计。权限：`reports.delete_own` 或 `reports.delete_all`（路由）；非本人创建的报告须持 `reports.delete_all`（归属校验，迁移 000084）。
       parameters:
         - name: id
           in: path
@@ -2504,6 +2504,9 @@ components:
         report_no: {type: string, description: 报告编号}
         report_type: {type: string, enum: [DAILY, WEEKLY, MONTHLY, CUSTOM]}
         status: {type: string, description: 报告任务状态}
+        file_format: {type: string, enum: [html, pdf, docx], description: 导出格式}
+        file_hash: {type: string, description: 报告文件 sha256}
+        file_size: {type: integer, format: int64, description: 文件大小（字节）}
         archived_at: {type: string, format: date-time, description: 归档时间}
         note: {type: string, description: 归档备注}
         archived_by: {type: string, description: 归档人用户名（无则为空串）}

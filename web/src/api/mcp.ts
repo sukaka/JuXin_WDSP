@@ -97,6 +97,8 @@ export interface McpToolInput {
   tool_version?: string
   /** 规范化描述全文（入 tool_hash，≤65536） */
   description?: string
+  /** 再导入未重填描述时为 true，保留存量 description_digest/preview（不重置审核态） */
+  preserve_description?: boolean
   input_schema?: Record<string, unknown> | null
   output_schema?: Record<string, unknown> | null
   capability_tags?: string[]

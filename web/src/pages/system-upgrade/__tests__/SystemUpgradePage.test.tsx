@@ -57,10 +57,11 @@ function startedExecution() {
   return {
     id: 'job-1',
     package_id: 'pkg-1',
-    version_from: '2.5.5',
-    version_to: '2.6.0',
     status: 'PRECHECK',
-    created_at: '2026-09-14T00:00:00Z',
+    requested_at: '2026-09-14T00:00:00Z',
+    scheduled_at: null,
+    started_at: null,
+    finished_at: null,
   }
 }
 
@@ -275,17 +276,23 @@ describe('SystemUpgradePage 升级包上传（单文件 + 自动识别版本 + �
 })
 
 /** 打桩 GET 列表请求；execution 任务清单可自定义 */
-function stubListRequests(jobs: Record<string, unknown>[]) {
+function stubListRequests(
+  jobs: Record<string, unknown>[],
+  packages: Record<string, unknown>[] = [],
+) {
   requestMock.mockImplementation(async (path, options) => {
     const method = options?.method ?? 'GET'
     if (method === 'GET' && path === '/upgrades') {
       return { items: jobs, page: 1, page_size: 20, total: jobs.length }
     }
     if (method === 'GET' && path === '/upgrade-packages') {
-      return { items: [], page: 1, page_size: 50, total: 0 }
+      return { items: packages, page: 1, page_size: 50, total: packages.length }
     }
     if (method === 'POST' && path === '/upgrades/job-sched-1/cancel') {
       return { job: { ...scheduledJob(), status: 'CANCELLED' } }
+    }
+    if (method === 'POST' && path === '/upgrades/job-success-1/rollback') {
+      return { job: { id: 'job-success-1', package_id: 'pkg-1', status: 'ROLLING_BACK', requested_at: '2026-09-14T00:00:00Z' } }
     }
     throw new ApiError(`未打桩的请求：${method} ${path}`, 'MOCK_MISS', 500)
   })
@@ -295,11 +302,9 @@ function scheduledJob() {
   return {
     id: 'job-sched-1',
     package_id: 'pkg-1',
-    version_from: '2.5.5',
-    version_to: '2.6.0',
     status: 'SCHEDULED',
     scheduled_at: '2026-09-15T02:00:00Z',
-    created_at: '2026-09-14T00:00:00Z',
+    requested_at: '2026-09-14T00:00:00Z',
   }
 }
 
@@ -452,12 +457,11 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
     fireEvent.mouseDown(select)
     fireEvent.click(await screen.findByText(/pkg-b\.tar\.gz/, undefined, SLOW))
 
-    // 旧包 pkg-a 的预检结果延迟返回 PASS
+    // 旧包 pkg-a 的预检结果延迟返回 PASS（后端 PrecheckRawResp 原始载荷）
     act(() => {
       resolvePrecheckA?.({
-        package_id: 'pkg-a',
-        overall_result: 'PASS',
-        items: [{ name: '磁盘空间', result: 'PASS', message: 'ok' }],
+        passed: true,
+        precheck: [{ name: 'disk_space', result: 'PASS', message: 'ok' }],
       })
     })
 
@@ -466,6 +470,7 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
       expect(screen.getByRole('button', { name: /执行升级/ })).toBeDisabled()
     }, SLOW)
     expect(screen.queryByText(/预检结果：通过/)).toBeNull()
+    expect(screen.queryByText('磁盘空间检查')).toBeNull()
   })
 
   it('预检列表将后端英文检查项编码映射为中文名称展示', async () => {
@@ -506,5 +511,52 @@ describe('SystemUpgradePage 定时更新（scheduled_at + SCHEDULED 任务取消
     expect(screen.getByText('升级包产物校验')).toBeInTheDocument()
     expect(screen.queryByText('version_match')).not.toBeInTheDocument()
     expect(screen.queryByText('postgres_reachable')).not.toBeInTheDocument()
+  })
+
+  it('升级任务列表：展示 requested_at，通过 package_id 关联版本并在缺失时回退为 "-"，移除不存在的进度/当前步骤列', async () => {
+    stubListRequests(
+      [
+        {
+          id: 'job-success-1',
+          package_id: 'pkg-1',
+          status: 'SUCCESS',
+          requested_at: '2026-09-14T01:00:00Z',
+          scheduled_at: null,
+          started_at: '2026-09-14T01:00:05Z',
+          finished_at: '2026-09-14T01:05:00Z',
+        },
+        {
+          id: 'job-missing-pkg',
+          package_id: null,
+          status: 'FAILED',
+          requested_at: '2026-09-13T01:00:00Z',
+          scheduled_at: null,
+          started_at: null,
+          finished_at: null,
+          failure_message: '预检失败',
+        },
+      ],
+      [uploadedPackage()],
+    )
+    renderPage()
+
+    expect(await screen.findByText('2.5.5 → 2.6.0', undefined, SLOW)).toBeInTheDocument()
+    expect(screen.getByText(formatDateTime('2026-09-14T01:00:00Z'))).toBeInTheDocument()
+    expect(screen.getByText(formatDateTime('2026-09-14T01:00:05Z'))).toBeInTheDocument()
+    expect(screen.getByText(formatDateTime('2026-09-14T01:05:00Z'))).toBeInTheDocument()
+    expect(screen.getByText(formatDateTime('2026-09-13T01:00:00Z'))).toBeInTheDocument()
+    expect(screen.queryByText('当前步骤')).not.toBeInTheDocument()
+
+    // package_id=null 的行版本列回退为 '-'
+    const missingRow = screen.getByText('job-miss').closest('tr')!
+    expect(missingRow.textContent).toContain('-')
+
+    // 回滚弹窗使用 packageMap 解析的版本信息
+    const successRow = screen.getByText('job-succ').closest('tr')!
+    const rollbackBtn = successRow.querySelector('button')!
+    fireEvent.click(rollbackBtn)
+    expect(
+      await screen.findByText(/确定回滚升级任务「job-succ」（版本：2\.5\.5 → 2\.6\.0）吗/, undefined, SLOW),
+    ).toBeInTheDocument()
   })
 })

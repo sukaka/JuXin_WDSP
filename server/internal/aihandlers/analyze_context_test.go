@@ -3,9 +3,12 @@
 package aihandlers
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jiuzhang-waf/server/internal/aiorchestrator"
 )
 
 func TestParseAnalyzeTimeRange(t *testing.T) {
@@ -463,5 +466,204 @@ func TestDescribeExceptionScope(t *testing.T) {
 	}
 	if !strings.Contains(describeExceptionScope(&exceptionScope{}), "无显式范围条件") {
 		t.Fatal("empty scope should say so")
+	}
+}
+
+func TestBuildReportSummaryMessage(t *testing.T) {
+	def := buildReportSummaryMessage(&analyzeRequest{})
+	if !strings.Contains(def, "近7天") || strings.Contains(def, "补充说明") {
+		t.Fatalf("default report summary msg unexpected: %s", def)
+	}
+	withQ := buildReportSummaryMessage(&analyzeRequest{Period: "近30天", Question: "重点关注 ERP 应用"})
+	for _, want := range []string{"近30天", "补充说明：重点关注 ERP 应用"} {
+		if !strings.Contains(withQ, want) {
+			t.Errorf("report summary msg missing %q: %s", want, withQ)
+		}
+	}
+}
+
+func TestBuildIPProfileMessage(t *testing.T) {
+	plain := buildIPProfileMessage(&analyzeRequest{IP: "203.0.113.10"})
+	if !strings.Contains(plain, "203.0.113.10") || strings.Contains(plain, "分析侧重点") {
+		t.Fatalf("plain ip profile msg unexpected: %s", plain)
+	}
+	withQ := buildIPProfileMessage(&analyzeRequest{IP: "203.0.113.10", Question: "重点关注针对 198.51.100.2 的撞库手法"})
+	idxTarget := strings.Index(withQ, "203.0.113.10")
+	idxFocus := strings.Index(withQ, "分析侧重点：重点关注针对 198.51.100.2 的撞库手法")
+	if idxTarget < 0 || idxFocus < 0 || idxTarget >= idxFocus {
+		t.Fatalf("target IP must precede Question so ExtractIDs picks target IP first: %s", withQ)
+	}
+}
+
+func TestBuildEventIDAnalyzeMessage(t *testing.T) {
+	eid := "11111111-2222-3333-4444-555555555555"
+	plain := buildEventIDAnalyzeMessage(&analyzeRequest{EventID: eid})
+	if !strings.Contains(plain, eid) || strings.Contains(plain, "分析侧重点") {
+		t.Fatalf("plain event id msg unexpected: %s", plain)
+	}
+	withQ := buildEventIDAnalyzeMessage(&analyzeRequest{
+		EventID:  eid,
+		Question: "检查是否与 99999999-8888-7777-6666-555555555555 误报相关",
+	})
+	idxEvent := strings.Index(withQ, eid)
+	idxFocus := strings.Index(withQ, "分析侧重点：检查是否与 99999999-8888-7777-6666-555555555555 误报相关")
+	if idxEvent < 0 || idxFocus < 0 || idxEvent >= idxFocus {
+		t.Fatalf("target EventID must precede Question so ExtractIDs picks target EventID first: %s", withQ)
+	}
+}
+
+func TestAnalyzeEndpointsEmptyBodyValidation(t *testing.T) {
+	d := NewDeps(Deps{})
+	h := noiseMux(d, noisePrincipal("ai.event_analysis.use", "ai.attack_profile.use"))
+	for _, path := range []string{"/api/v1/ai/analyze/event", "/api/v1/ai/analyze/attack-profile"} {
+		rec := doRequest(t, h, http.MethodPost, path, `{}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s empty body status=%d want 400 body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestBuildEventFilterContextEventIDPrecedesQuestion(t *testing.T) {
+	eid := "11111111-2222-3333-4444-555555555555"
+	qUUID := "99999999-8888-7777-6666-555555555555"
+	req := &analyzeRequest{
+		ApplicationID: "22222222-2222-2222-2222-222222222222",
+		EventID:       eid,
+		Question:      "是否与 " + qUUID + " 误报相关",
+	}
+	emptyCtx := buildEventFilterContext(req, "近 24 小时", &eventFilterSummary{})
+	if iE, iQ := strings.Index(emptyCtx, eid), strings.Index(emptyCtx, qUUID); iE < 0 || iQ < 0 || iE >= iQ {
+		t.Fatalf("Total=0: EventID must precede Question: %s", emptyCtx)
+	}
+	fullCtx := buildEventFilterContext(req, "近 24 小时", &eventFilterSummary{
+		Total: 3, Blocked: 2, FirstAt: time.Now(), LastAt: time.Now(),
+	})
+	if iE, iQ := strings.Index(fullCtx, eid), strings.Index(fullCtx, qUUID); iE < 0 || iQ < 0 || iE >= iQ {
+		t.Fatalf("Total>0: EventID must precede Question: %s", fullCtx)
+	}
+}
+
+func TestBuildReportSummaryMessageNoFalsePositiveKeyword(t *testing.T) {
+	msg := buildReportSummaryMessage(&analyzeRequest{})
+	if strings.Contains(msg, "误报") {
+		t.Fatalf("buildReportSummaryMessage must not contain 误报: %s", msg)
+	}
+	if !strings.Contains(msg, "例外与处置建议") {
+		t.Fatalf("buildReportSummaryMessage missing 例外与处置建议: %s", msg)
+	}
+	if plan := aiorchestrator.Classify(msg); plan.TaskType != aiorchestrator.TaskReportSummary {
+		t.Fatalf("Classify(report summary) = %s, want %s", plan.TaskType, aiorchestrator.TaskReportSummary)
+	}
+}
+
+func TestAnalyzeRunInputBuildersAllEndpoints(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	appUUID := "22222222-2222-2222-2222-222222222222"
+	evtUUID := "11111111-2222-3333-4444-555555555555"
+	qUUID := "99999999-8888-7777-6666-555555555555"
+
+	// 1. AnalyzeEvent (filter + AppID + EventID + Question="昨天 是否误报")
+	evFilterIn := buildEventFilterRunInput(&analyzeRequest{
+		ApplicationID: appUUID, EventID: evtUUID, RuleID: 900110, IP: "2001:db8::1",
+		URI: "/login", TimeRange: "24h", Question: "昨天 是否误报 " + qUUID,
+	}, "近 24 小时", &eventFilterSummary{Total: 1, FirstAt: now, LastAt: now}, now)
+	plan := aiorchestrator.ResolveRunPlan(evFilterIn, evFilterIn.Message)
+	evIDs, rIDs, ips := aiorchestrator.ResolveRunIDs(evFilterIn, evFilterIn.Message)
+	tr := aiorchestrator.ResolveRunTimeRange(evFilterIn, evFilterIn.Message, now)
+	if plan.TaskType != aiorchestrator.TaskEventAnalysis {
+		t.Fatalf("event filter plan = %+v", plan)
+	}
+	if len(evIDs) != 1 || evIDs[0] != evtUUID || len(rIDs) != 1 || rIDs[0] != 900110 || len(ips) != 1 || ips[0] != "2001:db8::1" {
+		t.Fatalf("event filter IDs = %v %v %v", evIDs, rIDs, ips)
+	}
+	if evFilterIn.URI != "/login" || evFilterIn.ApplicationID != appUUID || tr.Label != "近 24 小时" {
+		t.Fatalf("event filter meta mismatch: uri=%q app=%q tr=%+v", evFilterIn.URI, evFilterIn.ApplicationID, tr)
+	}
+
+	// 1b. AnalyzeEvent (filter without EventID: AppID must NOT leak into EventIDs)
+	evNoEvtIn := buildEventFilterRunInput(&analyzeRequest{ApplicationID: appUUID, TimeRange: "24h"}, "近 24 小时", &eventFilterSummary{}, now)
+	if evNoEvt, _, _ := aiorchestrator.ResolveRunIDs(evNoEvtIn, evNoEvtIn.Message); len(evNoEvt) != 0 {
+		t.Fatalf("ApplicationID leaked into EventIDs: %v", evNoEvt)
+	}
+
+	// 1c. AnalyzeEvent (question only allows ExtractIDs)
+	evQIn := buildEventQuestionRunInput(&analyzeRequest{Question: "分析 " + evtUUID + " 根因"})
+	if qPlan := aiorchestrator.ResolveRunPlan(evQIn, evQIn.Message); qPlan.TaskType != aiorchestrator.TaskEventAnalysis {
+		t.Fatalf("event question plan = %+v", qPlan)
+	}
+	if qEvs, _, _ := aiorchestrator.ResolveRunIDs(evQIn, evQIn.Message); len(qEvs) != 1 || qEvs[0] != evtUUID {
+		t.Fatalf("event question ExtractIDs = %v", qEvs)
+	}
+
+	// 2. AnalyzeFalsePositive with non-91x..96x rule_id=900110
+	fpIn := buildFalsePositiveRunInput(&analyzeRequest{RuleID: 900110}, nil)
+	if fpPlan := aiorchestrator.ResolveRunPlan(fpIn, fpIn.Message); fpPlan.TaskType != aiorchestrator.TaskFalsePositive {
+		t.Fatalf("fp plan = %+v", fpPlan)
+	}
+	if _, fpRules, _ := aiorchestrator.ResolveRunIDs(fpIn, fpIn.Message); len(fpRules) != 1 || fpRules[0] != 900110 {
+		t.Fatalf("fp rules = %v, want [900110]", fpRules)
+	}
+
+	// 3. AnalyzeAttackProfile: IPv6 + URI + AppID + Question
+	ipProfIn := buildIPProfileRunInput(&analyzeRequest{IP: "2001:db8::1", TimeRange: "7d", Question: "昨天 是否误报 compare with 10.0.0.1"}, now)
+	if p := aiorchestrator.ResolveRunPlan(ipProfIn, ipProfIn.Message); p.TaskType != aiorchestrator.TaskAttackProfile {
+		t.Fatalf("ip profile plan = %+v", p)
+	}
+	if _, _, profIPs := aiorchestrator.ResolveRunIDs(ipProfIn, ipProfIn.Message); len(profIPs) != 1 || profIPs[0] != "2001:db8::1" {
+		t.Fatalf("ip profile IPs = %v", profIPs)
+	}
+	if profTR := aiorchestrator.ResolveRunTimeRange(ipProfIn, ipProfIn.Message, now); profTR.Label != "近 7 天" {
+		t.Fatalf("ip profile TimeRange = %+v", profTR)
+	}
+
+	uriProfIn := buildURIProfileRunInput(&analyzeRequest{URI: "/api/pay/", Question: "排查根因"}, "近 7 天", &uriProfileSummary{
+		URI: "/api/pay/", Total: 5, FirstAt: now, LastAt: now, SourceIPs: []countKV{{"198.51.100.7", 5}},
+	}, now)
+	if _, _, uriIPs := aiorchestrator.ResolveRunIDs(uriProfIn, uriProfIn.Message); len(uriIPs) != 0 || uriProfIn.URI != "/api/pay/" {
+		t.Fatalf("uri profile leaked TOP IP or lost URI: ips=%v uri=%q", uriIPs, uriProfIn.URI)
+	}
+
+	appProfIn := buildAppProfileRunInput(&analyzeRequest{ApplicationID: appUUID, Question: "是否误报"}, "近 7 天", &appProfileSummary{
+		AppID: appUUID, Total: 10, FirstAt: now, LastAt: now, URIs: []countKV{{"/order", 10}}, SourceIPs: []countKV{{"192.0.2.9", 5}},
+	}, now)
+	if aEv, _, aIP := aiorchestrator.ResolveRunIDs(appProfIn, appProfIn.Message); len(aEv) != 0 || len(aIP) != 0 || appProfIn.ApplicationID != appUUID {
+		t.Fatalf("app profile leaked IDs/IPs: ev=%v ip=%v app=%q", aEv, aIP, appProfIn.ApplicationID)
+	}
+
+	// 4. AnalyzeAttackChain with IPv6
+	acIn := buildAttackChainRunInput(&analyzeRequest{IP: "2001:db8::1"})
+	if p := aiorchestrator.ResolveRunPlan(acIn, acIn.Message); p.TaskType != aiorchestrator.TaskAttackChain {
+		t.Fatalf("attack chain plan = %+v", p)
+	}
+	if _, _, acIPs := aiorchestrator.ResolveRunIDs(acIn, acIn.Message); len(acIPs) != 1 || acIPs[0] != "2001:db8::1" {
+		t.Fatalf("attack chain IPv6 = %v", acIPs)
+	}
+
+	// 5. AnalyzePolicyRecommendation
+	prIn := buildPolicyRecommendationRunInput(&analyzeRequest{Question: "排查误报"})
+	if p := aiorchestrator.ResolveRunPlan(prIn, prIn.Message); p.TaskType != aiorchestrator.TaskPolicyRec {
+		t.Fatalf("policy rec plan = %+v", p)
+	}
+
+	// 6. AnalyzeWhatIf (including "误报" in prompt & exception UUID)
+	wiIn := buildWhatIfRunInput(&analyzeRequest{RuleID: 900110, ApplicationID: appUUID, URI: "/api/pay", TimeRange: "30d"},
+		"如果关闭规则 900110 会有什么影响？估算误报减少 "+qUUID, "30d", now)
+	if p := aiorchestrator.ResolveRunPlan(wiIn, wiIn.Message); p.TaskType != aiorchestrator.TaskWhatIf {
+		t.Fatalf("what-if plan = %+v", p)
+	}
+	if wiEv, wiRules, _ := aiorchestrator.ResolveRunIDs(wiIn, wiIn.Message); len(wiEv) != 0 || len(wiRules) != 1 || wiRules[0] != 900110 {
+		t.Fatalf("what-if IDs = ev:%v rules:%v", wiEv, wiRules)
+	}
+
+	// 7. AnalyzeRootCause with "误报" in question
+	rcIn := buildRootCauseRunInput(&analyzeRequest{Question: "为什么误报率升高"})
+	if p := aiorchestrator.ResolveRunPlan(rcIn, rcIn.Message); p.TaskType != aiorchestrator.TaskRootCause {
+		t.Fatalf("root cause plan = %+v", p)
+	}
+
+	// 8. AnalyzeReportSummary with adversarial question
+	rsIn := buildReportSummaryRunInput(&analyzeRequest{Period: "近7天", Question: "是否误报"})
+	if p := aiorchestrator.ResolveRunPlan(rsIn, rsIn.Message); p.TaskType != aiorchestrator.TaskReportSummary {
+		t.Fatalf("report summary plan = %+v", p)
 	}
 }

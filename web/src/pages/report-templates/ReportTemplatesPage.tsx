@@ -283,10 +283,10 @@ export default function ReportTemplatesPage() {
           <Form.Item
             name="report_no_format"
             label="报告编号格式"
-            rules={[{ max: 100 }]}
-            extra="支持变量：{TYPE} 报告类型、{DATE} 日期、{SEQ} 序号"
+            rules={[{ max: 50, message: '报告编号格式不能超过 50 个字符' }]}
+            extra="支持变量：{YYYYMM} 年月（UTC）、{SEQ} 当月序号（至少4位补零）；留空默认 JZ-{YYYYMM}-{SEQ}"
           >
-            <Input placeholder="如：防护报告-{类型}-{日期}-{序号}" />
+            <Input placeholder="如：JZ-{YYYYMM}-{SEQ}" />
           </Form.Item>
           <Form.Item name="prepared_by" label="编制人" rules={[{ max: 50 }]}>
             <Input />

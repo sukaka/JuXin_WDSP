@@ -48,8 +48,8 @@ const UNCONFIGURED = {
     challenge: null,
     route_reservation: null,
     updated_by: '',
-    created_at: '',
-    updated_at: '',
+    created_at: '0001-01-01T00:00:00Z',
+    updated_at: '0001-01-01T00:00:00Z',
   },
   summary: {
     state: 'NOT_CONFIGURED',
@@ -229,7 +229,7 @@ describe('BotPolicyTab', () => {
     vi.unstubAllGlobals()
   })
 
-  it('未配置空态：展示未配置状态、默认 OFF 与提示，不冒充已开启', async () => {
+  it('未配置空态：展示未配置状态、默认 OFF 与提示，不冒充已开启，zero-time 显示 -', async () => {
     grant(['bot_policy.read', 'bot_policy.edit'])
     renderTab()
     expect(await screen.findByText('未配置')).toBeInTheDocument()
@@ -239,6 +239,10 @@ describe('BotPolicyTab', () => {
     expect(screen.getByText('无草稿')).toBeInTheDocument()
     expect(screen.getByText('未成功发布')).toBeInTheDocument()
     expect(screen.getByText(APP_CODE)).toBeInTheDocument()
+    expect(screen.queryByText(/0001-01-01|0000-12-31/)).not.toBeInTheDocument()
+    const recentUpdatedLabel = screen.getByText('最近更新')
+    const recentUpdatedRow = recentUpdatedLabel.closest('tr')
+    expect(recentUpdatedRow?.textContent).toContain('-')
   })
 
   it('草稿待发布态：展示草稿与已发布版本差异提示与恢复入口', async () => {
@@ -248,6 +252,7 @@ describe('BotPolicyTab', () => {
     expect(await screen.findByText('草稿待发布')).toBeInTheDocument()
     expect(screen.getByText('草稿已保存，尚未生效')).toBeInTheDocument()
     expect(screen.getByText(/发布批次 #7 · 策略 v1/)).toBeInTheDocument()
+    expect(screen.getByText(/· secops/)).toBeInTheDocument()
     // 恢复入口：重新预检按钮 + 前往配置发布链接
     expect(
       screen.getAllByRole('button', { name: '重新预检' }).length,

@@ -137,6 +137,9 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	usage, _ := h.store.CountUsage(r.Context(), id)
 	appIDs, _ := h.store.ListApplicationIDs(r.Context(), id)
+	if appIDs == nil {
+		appIDs = []uuid.UUID{}
+	}
 	item := policyItem(policy, usage)
 	item["application_ids"] = appIDs
 	response.JSON(w, r, http.StatusOK, item)

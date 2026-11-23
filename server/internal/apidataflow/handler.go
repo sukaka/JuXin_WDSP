@@ -159,7 +159,7 @@ func parseGraphFilter(r *http.Request) (GraphFilter, error) {
 	if len(filter.Method) > 16 || len(query.Get("data_type")) > 64 {
 		return filter, errors.New("无效的 method 或 data_type")
 	}
-	filter.DataType = strings.TrimSpace(query.Get("data_type"))
+	filter.DataType = strings.ToUpper(strings.TrimSpace(query.Get("data_type")))
 	if value := strings.TrimSpace(query.Get("max_edges")); value != "" {
 		n, err := strconv.Atoi(value)
 		if err != nil {

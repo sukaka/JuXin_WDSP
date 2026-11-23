@@ -166,7 +166,7 @@ describe('NetworkConfigPage', () => {
     vi.mocked(networkConfigApi.get).mockImplementation((nodeName?: string) =>
       Promise.resolve(configs[nodeName ?? ''] ?? EMPTY_CONFIG),
     )
-    vi.mocked(networkConfigApi.save).mockResolvedValue({ message: '网络配置已保存' })
+    vi.mocked(networkConfigApi.save).mockResolvedValue(EMPTY_CONFIG)
     useAuthStore.setState({
       user: makeUser(['system_health.read', 'system_settings.update']),
       csrfToken: null,

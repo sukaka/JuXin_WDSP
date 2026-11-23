@@ -4,12 +4,15 @@ package aiagents
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/aiorchestrator"
 )
+
+var ccKeywordRe = regexp.MustCompile(`(?:^|[^a-z])cc(?:[^a-z]|$)`)
 
 // WafPolicyAgent WAF 策略 Agent。
 type WafPolicyAgent struct{ base }
@@ -232,7 +235,7 @@ FROM access_control_events WHERE occurred_at > now() - interval '7 days' AND eve
 		return &aiorchestrator.AnalyzeResult{FactsText: b.String()}, nil
 	}
 	// 模拟修改 CC：给出近期 CC 事件量
-	if strings.Contains(msg, "cc") || strings.Contains(msg, "限速") || strings.Contains(msg, "频率") {
+	if ccKeywordRe.MatchString(msg) || strings.Contains(msg, "限速") || strings.Contains(msg, "频率") {
 		var ccTotal, ccReject int64
 		_ = a.db.QueryRow(ctx, `
 SELECT count(*), count(*) FILTER (WHERE action IN ('REJECT','TEMP_BLOCK'))

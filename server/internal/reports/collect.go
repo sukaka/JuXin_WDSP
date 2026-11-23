@@ -13,6 +13,7 @@ import (
 	"github.com/jiuzhang-waf/server/internal/apigeo"
 	"github.com/jiuzhang-waf/server/internal/metrics"
 	"github.com/jiuzhang-waf/server/internal/product"
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 // CollectInput 采集输入。
@@ -516,8 +517,9 @@ GROUP BY 1 ORDER BY 3 DESC LIMIT 10`, ruleWhere), ruleArgs...)
 		if err := ruleRows.Scan(&rh.RuleID, &rh.RuleName, &rh.Hits); err != nil {
 			return err
 		}
-		if len(rh.RuleName) > 200 {
-			rh.RuleName = rh.RuleName[:200]
+		rh.RuleName = wafrules.LocalizeRule(rh.RuleID, "", rh.RuleName)
+		if runes := []rune(rh.RuleName); len(runes) > 200 {
+			rh.RuleName = string(runes[:200])
 		}
 		d.TopRules = append(d.TopRules, rh)
 	}

@@ -1,5 +1,5 @@
 import { request } from './client'
-import type { PageResult, ReportScheduleItem } from '../types'
+import type { PageResult, ReportScheduleItem, ReportScheduleType } from '../types'
 
 export interface ReportScheduleListParams {
   page: number
@@ -8,7 +8,7 @@ export interface ReportScheduleListParams {
 
 export interface SaveReportScheduleBody {
   name: string
-  report_type: string
+  report_type: ReportScheduleType
   api_report_type?: string
   content_scope: string
   application_ids?: string[]

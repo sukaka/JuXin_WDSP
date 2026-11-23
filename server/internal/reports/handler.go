@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/aggregations"
+	"github.com/jiuzhang-waf/server/internal/apigeo"
 	"github.com/jiuzhang-waf/server/internal/audits"
 	"github.com/jiuzhang-waf/server/internal/authz"
 	"github.com/jiuzhang-waf/server/internal/middleware"
@@ -42,6 +43,20 @@ func NewHandler(store *Store, db *pgxpool.Pool, aggStore *aggregations.Store, au
 		audits:    auditSvc,
 		dataDir:   dataDir,
 		gen:       NewGenerator(store, db, aggStore, dataDir, fontPath, auditSvc),
+		scheduler: NewScheduler(store, auditSvc),
+	}
+}
+
+// NewHandlerWithGeo 使用共享 GeoIP 查询器创建报告处理器（避免进程内重复加载离线库）。
+func NewHandlerWithGeo(store *Store, db *pgxpool.Pool, aggStore *aggregations.Store, auditSvc *audits.Service, dataDir string, geo apigeo.CountryLookup) *Handler {
+	fontPath := DefaultFontPath()
+	return &Handler{
+		store:     store,
+		db:        db,
+		agg:       aggStore,
+		audits:    auditSvc,
+		dataDir:   dataDir,
+		gen:       NewGeneratorWithGeo(store, db, aggStore, dataDir, fontPath, auditSvc, geo),
 		scheduler: NewScheduler(store, auditSvc),
 	}
 }
@@ -82,7 +97,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux, authChain func(http.Handler
 	mux.Handle("POST /api/v1/reports/{id}/retry", authChain(middleware.RequirePermission("reports.create")(http.HandlerFunc(h.Retry))))
 	mux.Handle("GET /api/v1/reports/{id}/preview", authChain(reportRead(http.HandlerFunc(h.Preview))))
 	mux.Handle("GET /api/v1/reports/{id}/download", authChain(requireAnyPermission("reports.download", "reports.download_audit")(http.HandlerFunc(h.Download))))
-	mux.Handle("DELETE /api/v1/reports/{id}", authChain(middleware.RequirePermission("reports.delete_own")(http.HandlerFunc(h.Delete))))
+	mux.Handle("DELETE /api/v1/reports/{id}", authChain(requireAnyPermission("reports.delete_own", "reports.delete_all")(http.HandlerFunc(h.Delete))))
 
 	// 定时报告计划（读：reports.read/read_audit；写：reports.create）
 	mux.Handle("GET /api/v1/report-schedules", authChain(reportRead(http.HandlerFunc(h.ScheduleList))))

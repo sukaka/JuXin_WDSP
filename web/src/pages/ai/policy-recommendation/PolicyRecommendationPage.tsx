@@ -45,8 +45,20 @@ interface DraftFilters {
   recommendation_type?: string
 }
 
-/** remove_exception 例外下拉拉取条数上限（例外量级有限，一次拉取供选择） */
-const WHAT_IF_EXCEPTION_PAGE_SIZE = 200
+/** remove_exception 例外下拉每页拉取上限（后端 exceptions.List 最大允许 page_size=100，超出按分页拉全） */
+const WHAT_IF_EXCEPTION_PAGE_SIZE = 100
+
+async function fetchAllWhatIfExceptions() {
+  const first = await exceptionsApi.list({ page: 1, page_size: WHAT_IF_EXCEPTION_PAGE_SIZE })
+  const items = [...first.items]
+  const totalPages = Math.ceil(first.total / WHAT_IF_EXCEPTION_PAGE_SIZE)
+  for (let page = 2; page <= totalPages; page++) {
+    const next = await exceptionsApi.list({ page, page_size: WHAT_IF_EXCEPTION_PAGE_SIZE })
+    items.push(...next.items)
+    if (next.items.length === 0) break
+  }
+  return { ...first, items }
+}
 
 /** AI 草稿查看权限点（任一即可） */
 const DRAFT_VIEW_PERMISSIONS = [
@@ -92,10 +104,10 @@ export default function PolicyRecommendationPage() {
   const [whatIfLoading, setWhatIfLoading] = useState(false)
   const [whatIfResult, setWhatIfResult] = useState<AiAnalyzeResult | null>(null)
 
-  // remove_exception 场景例外下拉（拉既有例外列表接口）
+  // remove_exception 场景例外下拉（拉既有例外列表接口，按后端 page_size<=100 上限自动翻页）
   const whatIfExceptionsQuery = useQuery({
     queryKey: ['what-if-exceptions'],
-    queryFn: () => exceptionsApi.list({ page: 1, page_size: WHAT_IF_EXCEPTION_PAGE_SIZE }),
+    queryFn: fetchAllWhatIfExceptions,
     enabled: canWhatIf && whatIfScenario === 'remove_exception',
   })
 

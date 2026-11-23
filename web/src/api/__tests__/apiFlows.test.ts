@@ -26,6 +26,8 @@ const FLOW: ApiFlowBaseline = {
   description: '',
   enabled: true,
   version: 3,
+  max_per_window: 0,
+  rate_window_seconds: 0,
   steps: [
     {
       id: 's-1',
@@ -129,6 +131,8 @@ describe('apiFlowBaselinesApi', () => {
   it('toUpsertInput：剥离仅出参字段（id/endpoint_key），保留乐观锁外全部字段', () => {
     const input = toUpsertInput(FLOW)
     expect(input.enabled).toBe(true)
+    expect(input).not.toHaveProperty('max_per_window')
+    expect(input).not.toHaveProperty('rate_window_seconds')
     expect(input.steps[1]).toEqual({
       step_id: 'pay-order',
       endpoint_id: 'e-2',
@@ -141,6 +145,32 @@ describe('apiFlowBaselinesApi', () => {
       rate_window_seconds: 120,
       cancels_flow: true,
     })
+  })
+
+  it('toUpsertInput：流程级 max_per_window/rate_window_seconds 非零保留、零值省略，且 PUT 一并提交', async () => {
+    const withLimit: ApiFlowBaseline = {
+      ...FLOW,
+      max_per_window: 25,
+      rate_window_seconds: 300,
+    }
+    const input = toUpsertInput(withLimit)
+    expect(input.max_per_window).toBe(25)
+    expect(input.rate_window_seconds).toBe(300)
+
+    const partial = toUpsertInput({
+      ...FLOW,
+      max_per_window: 15,
+      rate_window_seconds: 0,
+    })
+    expect(partial.max_per_window).toBe(15)
+    expect(partial).not.toHaveProperty('rate_window_seconds')
+
+    const fetchMock = stubFetch(withLimit)
+    await apiFlowBaselinesApi.update('f-1', input, 3)
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+    expect(body.max_per_window).toBe(25)
+    expect(body.rate_window_seconds).toBe(300)
+    expect(body.expected_version).toBe(3)
   })
 
   it('toUpsertInput：max_per_window/rate_window_seconds 为 0、cancels_flow 为 false 时省略不发送', () => {

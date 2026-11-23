@@ -70,6 +70,8 @@ tmp/
 temp/
 *.tmp
 *.tmp.mjs
+__pycache__/
+*.pyc
 
 # Go
 *.test

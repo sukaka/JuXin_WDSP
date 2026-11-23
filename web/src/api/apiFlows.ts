@@ -50,6 +50,10 @@ export interface ApiFlowBaseline {
   enabled: boolean
   /** 乐观锁版本戳（编辑 +1） */
   version: number
+  /** 流程级短窗调用上限（同主体对本流程任意步骤的合计调用；>0 启用 rapid_batch 流程级判定；0 = 不判定） */
+  max_per_window: number
+  /** 流程级短窗秒数（>0 覆盖缺省 60s，≤600；0 = 缺省窗口） */
+  rate_window_seconds: number
   steps: ApiFlowStep[]
   created_by: string
   created_at: string
@@ -76,6 +80,10 @@ export interface ApiFlowBaselineUpsertInput {
   name: string
   description: string
   enabled: boolean
+  /** 流程级短窗调用上限（>0 启用 rapid_batch 流程级判定；省略 = 不判定） */
+  max_per_window?: number
+  /** 流程级短窗秒数（>0 覆盖缺省 60s，≤600；省略 = 缺省窗口） */
+  rate_window_seconds?: number
   steps: ApiFlowStepInput[]
 }
 
@@ -127,6 +135,8 @@ export function toUpsertInput(f: ApiFlowBaseline): ApiFlowBaselineUpsertInput {
     name: f.name,
     description: f.description,
     enabled: f.enabled,
+    ...(f.max_per_window ? { max_per_window: f.max_per_window } : {}),
+    ...(f.rate_window_seconds ? { rate_window_seconds: f.rate_window_seconds } : {}),
     steps: (f.steps ?? []).map(toStepInput),
   }
 }

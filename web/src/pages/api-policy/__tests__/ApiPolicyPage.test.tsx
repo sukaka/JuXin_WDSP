@@ -39,10 +39,19 @@ const policyData = {
   },
 }
 
+let publishStatus: 'SUCCESS' | 'FAILED' = 'SUCCESS'
+let publishMessage = '配置发布已触发'
+
 const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input)
   if (url.includes('/api-security/policy/publish')) {
-    return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { message: '已发布' } }))
+    return Promise.resolve(
+      jsonResponse(200, {
+        code: 'SUCCESS',
+        message: 'ok',
+        data: { task_id: 'task-pub-1', status: publishStatus, message: publishMessage },
+      }),
+    )
   }
   if (url.includes('/api-security/policy')) {
     if (init?.method === 'PUT') {
@@ -74,6 +83,8 @@ function renderPage() {
 
 describe('ApiPolicyPage', () => {
   beforeEach(() => {
+    publishStatus = 'SUCCESS'
+    publishMessage = '配置发布已触发'
     fetchMock.mockClear()
     vi.stubGlobal('fetch', fetchMock)
   })
@@ -137,5 +148,27 @@ describe('ApiPolicyPage', () => {
     expect(JSON.parse(String(fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')?.[1]?.body))).toEqual({
       mode: 'PROTECT',
     })
+  })
+
+  it('发布到网关：status=SUCCESS 展示成功提示；status=FAILED 展示失败/警告提示而非成功', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_policy.read', 'api_policy.publish']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    await screen.findByText('观察')
+
+    // SUCCESS
+    fireEvent.click(screen.getByRole('button', { name: /发布到网关/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /确\s*认\s*发\s*布/ }))
+    expect(await screen.findByText('配置发布已触发')).toBeInTheDocument()
+
+    // FAILED (HTTP 200 with status: FAILED)
+    publishStatus = 'FAILED'
+    publishMessage = '部分节点同步失败'
+    fireEvent.click(screen.getByRole('button', { name: /发布到网关/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /确\s*认\s*发\s*布/ }))
+    expect(await screen.findByText(/部分节点同步失败（发布状态：FAILED）/)).toBeInTheDocument()
   })
 })

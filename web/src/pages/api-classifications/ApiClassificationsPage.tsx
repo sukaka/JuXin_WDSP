@@ -289,8 +289,8 @@ export default function ApiClassificationsPage() {
 
   const createMut = useMutation({
     mutationFn: (body: CreateFormValues) => apiClassificationsApi.create(body),
-    onSuccess: (r) => {
-      message.success(r.message || '分类已创建')
+    onSuccess: () => {
+      message.success('分类已创建')
       setCreateOpen(false)
       createForm.resetFields()
       void qc.invalidateQueries({ queryKey: ['api-classifications'] })
@@ -305,8 +305,8 @@ export default function ApiClassificationsPage() {
         endpointId as string,
         dimensions,
       ),
-    onSuccess: (r) => {
-      message.success(r.message || '接口分类已保存')
+    onSuccess: () => {
+      message.success('接口分类已保存')
     },
     onError: (e: unknown) =>
       message.error(e instanceof ApiError ? e.message : '保存失败'),

@@ -51,7 +51,9 @@ import (
 	"github.com/jiuzhang-waf/server/internal/syslogfw"
 	"github.com/jiuzhang-waf/server/internal/systemalerts"
 	"github.com/jiuzhang-waf/server/internal/temporaryblocks"
+	"github.com/jiuzhang-waf/server/internal/urlwhitelists"
 	"github.com/jiuzhang-waf/server/internal/users"
+	"github.com/jiuzhang-waf/server/internal/wafrules"
 )
 
 func main() {
@@ -113,6 +115,25 @@ func run() error {
 	// 告警通知外发（一期）：后台发送循环 + 聚合摘要 + spool 重放
 	go application.NotifyDispatcher().Run(collectorCtx)
 
+	// 阶段4：启动时异步同步 WAF 规则元数据（首次安装自动入库，升级时自动更新中文名称，不阻塞启动）
+	go func() {
+		syncCtx, cancel := context.WithTimeout(collectorCtx, 2*time.Minute)
+		defer cancel()
+		syncSvc := wafrules.NewSyncService(db)
+		report, err := syncSvc.SyncFromSources(syncCtx, cfg.WAF.CRSVersion, wafrules.BuildSyncSources(cfg.WAF.CRSDir))
+		if err != nil {
+			slog.Warn("startup waf rules sync failed", "crs_dir", cfg.WAF.CRSDir, "error", err)
+			return
+		}
+		slog.Info("startup waf rules sync completed",
+			"parsed", report.TotalParsed,
+			"total_in_db", report.TotalInDB,
+			"added", report.Added,
+			"updated", report.Updated,
+			"unchanged", report.Unchanged,
+		)
+	}()
+
 	// 阶段4：启动安全事件采集器（后台 goroutine）
 	eventCollector := securityevents.NewCollector(db, "collector-01", cfg.WAF.AuditLogPath, cfg.WAF.GatewayNodeName)
 	eventCollector.SetSyslogForwarder(syslogFw)
@@ -148,20 +169,22 @@ func run() error {
 		}
 	})
 	acRules := accessrules.NewStore(db)
+	urlWhitelistStore := urlwhitelists.NewStore(db)
 	acCollector := accesscontrolevents.NewCollector(acEventStore, "ac-collector-01",
 		cfg.WAF.GuardEventsLog, filepath.Join(cfg.Gateway.DataDir, "guard-events.checkpoint"), cfg.WAF.GatewayNodeName)
 	acCollector.SetBlockUpserter(acTempBlocks)
 	acCollector.SetHitRecorder(acRules)
+	acCollector.SetURLWhitelistHitRecorder(urlWhitelistStore)
 	acCollector.SetSyslogForwarder(syslogFw)
 	go acCollector.Run(collectorCtx, 2*time.Second)
 
-	// 阶段5：到期自动失效调度（临时规则/临时封禁/临时例外标记 EXPIRED + 系统审计）
+	// 阶段5：到期自动失效调度（临时规则/URL白名单/临时封禁/临时例外标记 EXPIRED + 系统审计）
 	auditSvcForJanitor := audits.NewService(db)
 	auditSvcForJanitor.SetSyslogForwarder(func(severityHint string, payload interface{}) {
 		syslogFw.Enqueue(syslogfw.KindOperationAudit, severityHint, payload)
 	})
 	exceptionStoreForJanitor := exceptions.NewStore(db)
-	go guardjanitor.RunFull(collectorCtx, time.Minute, acRules, acTempBlocks, exceptionStoreForJanitor, auditSvcForJanitor, acEventStore)
+	go guardjanitor.RunWithURLWhitelists(collectorCtx, time.Minute, acRules, urlWhitelistStore, acTempBlocks, exceptionStoreForJanitor, auditSvcForJanitor, acEventStore)
 
 	// 阶段5 §七：保护地址自动维护（系统自动登记；启动时一次 + 周期刷新，
 	// 周期由 PROTECTED_ADDRESS_REFRESH_INTERVAL 配置，默认 1 小时；

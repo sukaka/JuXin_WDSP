@@ -89,7 +89,7 @@ describe('securityIdentitiesApi', () => {
     const fetchMock = stubFetch({
       items: null,
       page: 1,
-      page_size: 500,
+      page_size: 200,
       total: 0,
     })
     const data = await securityIdentitiesApi.behavior('idn-1', {
@@ -97,7 +97,7 @@ describe('securityIdentitiesApi', () => {
       from: '2026-08-30',
       to: '2026-08-31',
       page: 1,
-      page_size: 500,
+      page_size: 200,
     })
     expect(data.items).toEqual([])
     const url = String(fetchMock.mock.calls[0][0])
@@ -105,6 +105,7 @@ describe('securityIdentitiesApi', () => {
     expect(url).toContain('window=5m')
     expect(url).toContain('from=2026-08-30')
     expect(url).toContain('to=2026-08-31')
+    expect(url).toContain('page_size=200')
   })
 
   it('events：signal 与分页参数拼接，空参不传', async () => {
@@ -127,23 +128,53 @@ describe('securityIdentitiesApi', () => {
     expect(url).not.toContain('to=')
   })
 
-  it('block：POST 封禁端点并提交 reason', async () => {
-    const fetchMock = stubFetch({ message: '已封禁' })
-    await securityIdentitiesApi.block('idn-1', '确认恶意扫描')
+  it('block：POST 封禁端点并返回 { identity, changed }', async () => {
+    const fetchMock = stubFetch({
+      identity: {
+        id: 'idn-1',
+        identity_key: 'ip:1.2.3.4',
+        identity_type: 'BOT',
+        identity_confidence: 90,
+        confidence_source: null,
+        risk_score: 86,
+        risk_level: 'HIGH',
+        status: 'BLOCKED',
+      },
+      changed: true,
+    })
+    const res = await securityIdentitiesApi.block('idn-1', '确认恶意扫描')
 
     const [url, init] = fetchMock.mock.calls[0]
     expect(String(url)).toBe('/api/v1/security/identities/idn-1/block')
     expect(init?.method).toBe('POST')
     expect(JSON.parse(String(init?.body))).toEqual({ reason: '确认恶意扫描' })
+    expect(res.changed).toBe(true)
+    expect(res.identity.status).toBe('BLOCKED')
+    expect(res.identity.confidence_source).toEqual([])
   })
 
-  it('unblock：POST 解封端点且不伪造请求体', async () => {
-    const fetchMock = stubFetch({ message: '已解封' })
-    await securityIdentitiesApi.unblock('idn-1')
+  it('unblock：POST 解封端点且不伪造请求体，返回 { identity, changed }', async () => {
+    const fetchMock = stubFetch({
+      identity: {
+        id: 'idn-1',
+        identity_key: 'ip:1.2.3.4',
+        identity_type: 'BOT',
+        identity_confidence: 90,
+        confidence_source: ['client_ip'],
+        risk_score: 86,
+        risk_level: 'HIGH',
+        status: 'NORMAL',
+      },
+      changed: true,
+    })
+    const res = await securityIdentitiesApi.unblock('idn-1')
 
     const [url, init] = fetchMock.mock.calls[0]
     expect(String(url)).toBe('/api/v1/security/identities/idn-1/unblock')
     expect(init?.method).toBe('POST')
     expect(init?.body).toBeUndefined()
+    expect(res.changed).toBe(true)
+    expect(res.identity.status).toBe('NORMAL')
+    expect(res.identity.confidence_source).toEqual(['client_ip'])
   })
 })

@@ -21,7 +21,9 @@ export interface AccessRuleListParams {
   page_size: number
 }
 
-export type AccessRuleExportParams = Partial<Omit<AccessRuleListParams, 'page' | 'page_size'>>
+export type AccessRuleExportParams = Partial<Omit<AccessRuleListParams, 'page' | 'page_size'>> & {
+  ids?: string
+}
 
 export interface CreateAccessRuleBody {
   name: string

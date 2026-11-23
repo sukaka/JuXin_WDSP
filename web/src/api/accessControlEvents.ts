@@ -17,7 +17,7 @@ export interface AccessControlEventListParams {
 
 export type AccessControlEventExportParams = Partial<
   Omit<AccessControlEventListParams, 'page' | 'page_size'>
->
+> & { ids?: string }
 
 export const accessControlEventsApi = {
   list: async (params: AccessControlEventListParams) => {

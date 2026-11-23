@@ -219,8 +219,8 @@ export default function NetworkConfigPage() {
 
   const saveMutation = useMutation({
     mutationFn: () => networkConfigApi.save(desired, currentNode),
-    onSuccess: (data) => {
-      message.success(data.message || '网络配置已保存')
+    onSuccess: () => {
+      message.success('网络配置已保存')
       setEdit(null)
       void queryClient.invalidateQueries({ queryKey: ['network-config'] })
     },

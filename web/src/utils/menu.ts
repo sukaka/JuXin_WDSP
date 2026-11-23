@@ -131,7 +131,14 @@ export const MENU_ITEMS: MenuDef[] = [
   },
   {
     key: '/access-rules',
-    label: 'IP 黑白名单',
+    label: 'IP 黑名单',
+    roles: ['SECURITY_ADMIN'],
+    capability: 'web_waf',
+    group: '访问控制',
+  },
+  {
+    key: '/whitelists',
+    label: '白名单管理',
     roles: ['SECURITY_ADMIN'],
     capability: 'web_waf',
     group: '访问控制',

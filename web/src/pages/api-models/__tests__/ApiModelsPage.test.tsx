@@ -131,7 +131,7 @@ describe('ApiModelsPage', () => {
     expect(screen.queryByRole('button', { name: /确\s*认\s*冻\s*结/ })).not.toBeInTheDocument()
   })
 
-  it('有 edit 权限：显示「创建候选」，候选行显示「确认冻结」', async () => {
+  it('有 edit 权限无 confirm 权限：显示「创建候选」，不显示「确认冻结」', async () => {
     useAuthStore.setState({
       user: makeUser(['api_model.read', 'api_model.edit']),
       csrfToken: null,
@@ -140,7 +140,39 @@ describe('ApiModelsPage', () => {
     renderPage()
     await screen.findByText('候选')
     expect(screen.getByRole('button', { name: /创\s*建\s*候\s*选/ })).toBeInTheDocument()
-    expect(screen.getAllByRole('button', { name: /确\s*认\s*冻\s*结/ })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: /确\s*认\s*冻\s*结/ })).not.toBeInTheDocument()
+  })
+
+  it('有 confirm 权限：候选行显示「确认冻结」，二次确认后 POST confirm', async () => {
+    useAuthStore.setState({
+      user: makeUser(['api_model.read', 'api_model.confirm']),
+      csrfToken: null,
+      initialized: true,
+    })
+    ;(fetch as Mock).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api-security/models/m1/confirm')) {
+        return Promise.resolve(
+          jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { version: {}, message: '已确认冻结为正式模型' } }),
+        )
+      }
+      if (url.includes('/api-security/endpoints/e1/models')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: listData }))
+      }
+      if (url.includes('/api-security/endpoints')) {
+        return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: endpointsData }))
+      }
+      return Promise.reject(new Error(`unexpected url: ${url}`))
+    })
+    renderPage()
+    await screen.findByText('候选')
+    expect(screen.queryByRole('button', { name: /创\s*建\s*候\s*选/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /确\s*认\s*冻\s*结/ }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /^O\s*K$|^确\s*定$/ }))
+    await waitFor(() => {
+      expect((fetch as Mock).mock.calls.some((c) => String(c[0]).includes('/api-security/models/m1/confirm'))).toBe(true)
+    })
   })
 
   it('生命周期按钮按权限与状态显隐：候选行可评审/拒绝，正式行可激活/归档', async () => {

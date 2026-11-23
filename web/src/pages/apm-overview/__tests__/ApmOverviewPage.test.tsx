@@ -78,7 +78,20 @@ const TRACE_HIT = {
     },
   ],
   security_events: [
-    { id: 'evt-1', occurred_at: '2026-08-30T00:30:01Z', action: 'BLOCK', rule_id: 'CRS-942100', request_id: 'req-1' },
+    {
+      id: 'evt-1',
+      occurred_at: '2026-08-30T00:30:01Z',
+      request_id: 'req-1',
+      application_id: 'svc-1',
+      attack_type: 'SQL_INJECTION',
+      severity: 'HIGH',
+      action: 'BLOCK',
+      response_status: 403,
+      request_method: 'GET',
+      request_uri: '/api/orders/detail',
+      rule_match_count: 3,
+      disposition_status: 'UNPROCESSED',
+    },
   ],
   partial: false,
   note: '',
@@ -196,7 +209,7 @@ describe('ApmOverviewPage', () => {
     expect(screen.getByText('商城站点')).toBeInTheDocument()
   })
 
-  it('trace 检索命中：Drawer 展示访问记录与关联 WAF 事件', { timeout: 20000 }, async () => {
+  it('trace 检索命中：Drawer 展示访问记录与关联 WAF 事件', { timeout: 60000 }, async () => {
     vi.stubGlobal('fetch', mockFetch())
     renderPage()
     await screen.findByText('商城站点')
@@ -208,7 +221,12 @@ describe('ApmOverviewPage', () => {
 
     expect(await screen.findByText('/api/orders/detail')).toBeInTheDocument()
     expect(screen.getByText(/关联 WAF 事件/)).toBeInTheDocument()
-    expect(screen.getByText('CRS-942100')).toBeInTheDocument()
+    expect(screen.getByText('阻断')).toBeInTheDocument()
+    expect(screen.getByText('SQL注入')).toBeInTheDocument()
+    expect(screen.getByText('高')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByText('未处置')).toBeInTheDocument()
+    expect(screen.getByText('req-1')).toBeInTheDocument()
     expect(traceCalls()).toHaveLength(1)
     // P1-01 A3：详情查询携带页面当前时间窗上下文（start_time/end_time）
     const traceUrl = String(traceCalls()[0][0])

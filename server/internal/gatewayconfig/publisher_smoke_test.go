@@ -844,3 +844,29 @@ func TestSmokeDialAddressHostFollowsEachSitePort(t *testing.T) {
 		t.Fatalf("shared-network fallback changed: %q", got)
 	}
 }
+
+func TestSmokeClientDoesNotFollowRedirect(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Location", "https://www.jxdr.cn"+r.URL.RequestURI())
+		w.WriteHeader(http.StatusMovedPermanently)
+	}))
+	defer srv.Close()
+	p := &Publisher{}
+	p.SetSmokeProbe(srv.Listener.Addr().String(), nil)
+	target := smokeTarget{
+		appID: "app-1", appCode: "site", scheme: "http", host: "jxdr.cn", port: 80,
+		publishSmoke: &GuardPublishSmoke{PublishID: uuid.NewString(), KeyHex: smokeTestKeyHex},
+	}
+	resp, err := p.doSmokeRequest(context.Background(), p.smokeClientFor(target), target, SmokeProbeRealIP, nil)
+	if err != nil {
+		t.Fatalf("doSmokeRequest: %v", err)
+	}
+	if resp.status != http.StatusMovedPermanently {
+		t.Fatalf("smoke client must return 301 without following redirect, got %d", resp.status)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("smoke client must not follow redirect: hits=%d", hits.Load())
+	}
+}

@@ -44,11 +44,57 @@ const legacyMixedTrace = {
       id: 'ev1',
       occurred_at: '2026-09-09T01:00:00Z',
       action: 'BLOCK',
-      rule_id: 942100,
+      attack_type: 'SQL_INJECTION',
+      severity: 'HIGH',
+      response_status: 403,
+      request_method: 'POST',
+      request_uri: '/api/orders',
+      rule_match_count: 2,
+      disposition_status: 'UNPROCESSED',
       request_id: 'req-1',
     },
   ],
   // otel_spans 缺失
+  partial: false,
+  note: '',
+}
+
+const traceWithLogs = {
+  trace_id: 't-logs',
+  access_logs: [
+    {
+      id: 'log-null-ttfb',
+      occurred_at: '2026-09-09T01:00:00Z',
+      request_id: 'req-null',
+      application_id: null,
+      domain: 'shop.example.com',
+      client_ip: '10.0.0.1',
+      request_method: 'GET',
+      request_path: '/health',
+      response_status: 200,
+      duration_ms: 25,
+      ttfb_ms: null,
+      waf_action: 'ALLOW',
+      endpoint_key: null,
+    },
+    {
+      id: 'log-with-ttfb',
+      occurred_at: '2026-09-09T01:00:05Z',
+      request_id: 'req-ttfb',
+      application_id: null,
+      domain: 'shop.example.com',
+      client_ip: '10.0.0.2',
+      request_method: 'POST',
+      request_path: '/checkout',
+      response_status: 200,
+      duration_ms: 48,
+      ttfb_ms: 12,
+      waf_action: 'ALLOW',
+      endpoint_key: 'POST /checkout',
+    },
+  ],
+  security_events: [],
+  otel_spans: [],
   partial: false,
   note: '',
 }
@@ -89,12 +135,27 @@ describe('ApmTraceDrawer · L27 旧数据结构运行时归一化', () => {
     expect(await screen.findByText('未命中，可能未采样或已超保留期')).toBeInTheDocument()
   })
 
-  it('access_logs 为 null、otel_spans 缺失但有关联事件时正常渲染事件表且中文化动作与 Trace ID', async () => {
+  it('access_logs 为 null、otel_spans 缺失但有关联事件时正常渲染事件表且展示攻击类型/级别/命中数/处置状态', async () => {
     traceBody = legacyMixedTrace
     renderDrawer()
     expect(await screen.findByText('关联 WAF 事件（1）')).toBeInTheDocument()
     expect(screen.getByText(/Trace ID：t-mixed/)).toBeInTheDocument()
     expect(screen.getByText('阻断')).toBeInTheDocument()
+    expect(screen.getByText('SQL注入')).toBeInTheDocument()
+    expect(screen.getByText('高')).toBeInTheDocument()
+    expect(screen.getByText('2')).toBeInTheDocument()
+    expect(screen.getByText('未处置')).toBeInTheDocument()
     expect(screen.getByText('req-1')).toBeInTheDocument()
+    expect(screen.queryByText('命中规则')).not.toBeInTheDocument()
+  })
+
+  it('access_logs 中 ttfb_ms 为 null 时展示占位符 "-"，绝不渲染 "null ms"', async () => {
+    traceBody = traceWithLogs
+    renderDrawer()
+    expect(await screen.findByText('访问记录（2）')).toBeInTheDocument()
+    expect(screen.getByText('25 ms')).toBeInTheDocument()
+    expect(screen.getByText('48 ms')).toBeInTheDocument()
+    expect(screen.getByText('12 ms')).toBeInTheDocument()
+    expect(screen.queryByText(/null ms/i)).not.toBeInTheDocument()
   })
 })

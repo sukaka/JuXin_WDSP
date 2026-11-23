@@ -17,7 +17,7 @@ import (
 // 草稿类型与状态白名单。
 var draftTypes = map[string]bool{
 	"EXCEPTION": true, "BLACKLIST": true, "CC_POLICY": true, "CUSTOM_RULE": true,
-	"POLICY_CHANGE": true, "REPORT_SUMMARY": true,
+	"POLICY_CHANGE": true, "REPORT_SUMMARY": true, "NOISE_REDUCTION": true,
 }
 var draftStatuses = map[string]bool{
 	"DRAFT": true, "PENDING_REVIEW": true, "ACCEPTED": true, "REJECTED": true, "EXPIRED": true,

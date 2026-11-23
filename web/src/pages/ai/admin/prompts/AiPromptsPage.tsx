@@ -4,7 +4,6 @@ import {
   App as AntdApp,
   Button,
   Card,
-  Collapse,
   Drawer,
   Form,
   Input,
@@ -93,9 +92,16 @@ function AdversarialCaseList({ cases }: { cases: AiPromptAdversarialCase[] }) {
   )
 }
 
-/** 模型回归单评估集卡片：分数/阈值/通过数/模型/失败原因 + 逐用例摘要（可折叠） */
-function RegressionSetCard({ set }: { set: AiPromptTestSetResult }) {
-  const cases = set.cases ?? []
+const PROMPT_REGRESSION_SET_LABELS: Record<string, string> = {
+  eval_prompt_injection: 'Prompt Injection防护集',
+  eval_privilege_denial: '权限越权集',
+  eval_insufficient_data: '数据不足集',
+  eval_api_security_analysis: 'API 安全分析集',
+}
+
+/** 模型回归单评估集卡片：分数/阈值/通过数/异常用例/模型/运行 ID/失败原因 */
+function RegressionSetCard({ set, model }: { set: AiPromptTestSetResult; model?: string }) {
+  const displayName = PROMPT_REGRESSION_SET_LABELS[set.code] ?? set.code
   return (
     <div
       style={{
@@ -106,7 +112,7 @@ function RegressionSetCard({ set }: { set: AiPromptTestSetResult }) {
       }}
     >
       <Space size={8} wrap>
-        <Typography.Text strong>{set.name || set.code}</Typography.Text>
+        <Typography.Text strong>{displayName}</Typography.Text>
         {set.code ? <Typography.Text code>{set.code}</Typography.Text> : null}
         {set.passed ? <Tag color="green">通过</Tag> : <Tag color="red">未通过</Tag>}
       </Space>
@@ -119,66 +125,62 @@ function RegressionSetCard({ set }: { set: AiPromptTestSetResult }) {
           <span>
             通过用例 {set.passed_count}/{set.total}
           </span>
+          {set.case_errors > 0 ? (
+            <Typography.Text type="danger">用例异常 {set.case_errors}</Typography.Text>
+          ) : null}
           <span>
-            模型 <Typography.Text code>{set.model_code || '-'}</Typography.Text>
+            模型 <Typography.Text code>{model || '-'}</Typography.Text>
           </span>
+          {set.run_id ? (
+            <span>
+              运行 ID <Typography.Text code>{set.run_id}</Typography.Text>
+            </span>
+          ) : null}
         </Space>
       </div>
-      {set.message ? (
+      {set.error ? (
         <Typography.Text type="danger" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
-          失败原因：{set.message}
+          失败原因：{set.error}
         </Typography.Text>
-      ) : null}
-      {cases.length > 0 ? (
-        <Collapse
-          size="small"
-          style={{ marginTop: 8 }}
-          items={[
-            {
-              key: 'cases',
-              label: `逐用例摘要（${cases.length} 条）`,
-              children: (
-                <div>
-                  {cases.map((c, i) => (
-                    <div key={c.id ?? i} style={{ marginBottom: 6 }}>
-                      <Typography.Text type={c.passed ? 'success' : 'danger'}>
-                        {c.passed ? '✓' : '✗'}
-                      </Typography.Text>{' '}
-                      {c.id ? <Typography.Text code>{c.id}</Typography.Text> : null}
-                      {c.question ? ` ${c.question}` : ''}
-                      {c.message ? (
-                        <div style={{ fontSize: 12, color: '#888' }}>{c.message}</div>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ),
-            },
-          ]}
-        />
       ) : null}
     </div>
   )
 }
 
 /**
- * 版本测试结果内容：带 test_detail 时按「模型回归测试 / 静态检查」分区如实展示真实回归结果，
+ * 版本测试结果内容：带 test_detail/regression 时按「模型回归测试 / 静态检查」分区如实展示真实回归结果，
  * 无 test_detail（旧版响应）时仅展示静态检查清单，不将静态检查称为模型回归。
  */
 function TestResultContent({ data }: { data: AiPromptTestResult }) {
   const detail = data.test_detail ?? null
-  const sets = detail?.sets ?? []
+  const regression = detail?.regression ?? data.regression ?? null
+  const sets = regression?.sets ?? []
+  const failureSummary = detail?.failure_summary ?? regression?.failure_summary
   const staticChecks = detail?.static_checks ?? data.checks ?? []
   return (
     <div>
-      {detail ? (
+      {detail || regression ? (
         <div style={{ marginBottom: 16 }}>
-          <Typography.Text strong>模型回归测试</Typography.Text>
+          <Space size={8} wrap>
+            <Typography.Text strong>模型回归测试</Typography.Text>
+            {regression?.model ? (
+              <Typography.Text type="secondary">
+                模型 <Typography.Text code>{regression.model}</Typography.Text>
+              </Typography.Text>
+            ) : null}
+          </Space>
+          {failureSummary ? (
+            <Typography.Text type="danger" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+              失败摘要：{failureSummary}
+            </Typography.Text>
+          ) : null}
           <div style={{ marginTop: 8 }}>
             {sets.length === 0 ? (
-              <Typography.Text type="secondary">无回归评估集明细</Typography.Text>
+              <Typography.Text type="secondary">
+                {failureSummary ? '已跳过模型回归' : '无回归评估集明细'}
+              </Typography.Text>
             ) : (
-              sets.map((s) => <RegressionSetCard key={s.code || s.name} set={s} />)
+              sets.map((s) => <RegressionSetCard key={s.code} set={s} model={regression?.model} />)
             )}
           </div>
         </div>
@@ -249,7 +251,7 @@ function VersionsDrawer({ prompt, onClose }: { prompt: AiPrompt; onClose: () => 
   const testMutation = useMutation({
     mutationFn: (versionId: string) => aiPromptsApi.testVersion(versionId),
     onSuccess: (data) => {
-      const hasDetail = data.test_detail != null
+      const hasDetail = data.test_detail != null || data.regression != null
       modal.info({
         title: hasDetail
           ? data.test_result === 'PASSED'

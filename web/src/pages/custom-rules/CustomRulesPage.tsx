@@ -546,10 +546,11 @@ export default function CustomRulesPage() {
           onSearch={(v) => {
             const value = v.trim()
             setFilters((f) => {
-              // 粘贴完整编号时按前缀识别走精确筛选，其余走关键词
+              // 粘贴完整编号时按完整格式识别走精确筛选，其余走关键词（避免前缀触发服务端 400）
               const next: Filters = { status: f.status }
-              if (/^CNNVD-/i.test(value)) next.cnnvd_id = value.toUpperCase()
-              else if (/^CVE-/i.test(value)) next.cve_id = value.toUpperCase()
+              const upper = value.toUpperCase()
+              if (CNNVD_ID_PATTERN.test(upper)) next.cnnvd_id = upper
+              else if (CVE_ID_PATTERN.test(upper)) next.cve_id = upper
               else if (value) next.keyword = value
               return next
             })

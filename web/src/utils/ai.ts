@@ -47,6 +47,7 @@ export const AI_DRAFT_TYPE_META: Record<string, { color: string; label: string }
   CUSTOM_RULE: { color: 'purple', label: '自定义规则' },
   POLICY_CHANGE: { color: 'gold', label: '策略变更' },
   REPORT_SUMMARY: { color: 'green', label: '报告总结' },
+  NOISE_REDUCTION: { color: 'cyan', label: '智能降噪' },
 }
 
 export const AI_DRAFT_STATUS_META: Record<string, { color: string; label: string }> = {
@@ -156,4 +157,17 @@ export const AI_STEP_META: Record<string, { color: string; label: string }> = {
 /** 过滤出可展示的过程步骤（done/answer 正文不在过程区重复展示） */
 export function visibleSteps(events: AiSseEvent[]): AiSseEvent[] {
   return events.filter((e) => e.type !== 'done' && e.type !== 'answer')
+}
+
+/** 校验并规范化可选正整数规则 ID（空值合法回退 undefined，非正整数判非法） */
+export function parsePositiveRuleId(raw: unknown): { value?: number; valid: boolean } {
+  const normalized = typeof raw === 'string' ? raw.trim() : raw
+  if (normalized === undefined || normalized === null || normalized === '') {
+    return { value: undefined, valid: true }
+  }
+  const n = typeof normalized === 'number' ? normalized : typeof normalized === 'string' ? Number(normalized) : Number.NaN
+  if (!Number.isInteger(n) || n <= 0) {
+    return { value: undefined, valid: false }
+  }
+  return { value: n, valid: true }
 }

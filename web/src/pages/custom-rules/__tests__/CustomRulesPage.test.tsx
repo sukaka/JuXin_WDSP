@@ -132,6 +132,26 @@ describe('CustomRulesPage CNNVD/CVE 编号（CNNVD 兼容性 P1）', () => {
     })
   })
 
+  it('B10-5：不完整 CNNVD-/CVE- 前缀走 keyword 查询而非触发服务端 400 的精确参数', async () => {
+    renderPage()
+    await screen.findByText('Struts2 RCE 虚拟补丁')
+
+    const input = screen.getByPlaceholderText('搜索规则ID/名称/CNNVD/CVE 编号')
+    for (const partial of ['CNNVD-2024', 'cnnvd-', 'CVE-2024', 'cve-']) {
+      fireEvent.change(input, { target: { value: partial } })
+      fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+      fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' })
+      await waitFor(() => {
+        const calls = (fetch as Mock).mock.calls.filter((c) =>
+          String(c[0]).includes(`keyword=${encodeURIComponent(partial)}`),
+        )
+        expect(calls.length).toBe(1)
+      })
+    }
+    expect((fetch as Mock).mock.calls.some((c) => String(c[0]).includes('cnnvd_id='))).toBe(false)
+    expect((fetch as Mock).mock.calls.some((c) => String(c[0]).includes('cve_id='))).toBe(false)
+  })
+
   it('表单编号校验：非法 CNNVD 编号即时标红提示，提交拦截不发起 POST', async () => {
     renderPage()
     await screen.findByText('Struts2 RCE 虚拟补丁')

@@ -79,8 +79,8 @@ export default function NodeInterfacesPage() {
         node_name: currentNode,
         items: rows.map((r, i) => ({ ifname: r.ifname, sort_order: i + 1, role: r.role ?? '' })),
       }),
-    onSuccess: (data) => {
-      message.success(data.message || '排序已保存')
+    onSuccess: () => {
+      message.success('排序已保存')
       setEdit(null)
       void queryClient.invalidateQueries({ queryKey: ['node-interfaces'] })
     },

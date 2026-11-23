@@ -20,7 +20,7 @@ import type { ColumnsType } from 'antd/es/table'
 import { ExperimentOutlined, PlusOutlined } from '@ant-design/icons'
 import { ApiError } from '../../../api/client'
 import { upstreamsApi } from '../../../api/applications'
-import type { UpstreamBody, UpstreamTestBody } from '../../../api/applications'
+import type { UpdateUpstreamBody, UpstreamBody, UpstreamTestBody } from '../../../api/applications'
 import RecordDetailDrawer from '../../../components/RecordDetailDrawer'
 import SmartTable from '../../../components/SmartTable'
 import useBatchDelete from '../../../hooks/useBatchDelete'
@@ -150,7 +150,6 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
   const [detailRecord, setDetailRecord] = useState<UpstreamItem | null>(null)
   const [testing, setTesting] = useState<UpstreamItem | null>(null)
   const [testResult, setTestResult] = useState<UpstreamTestResult | null>(null)
-  const [allowPrivate, setAllowPrivate] = useState(false)
   const [form] = Form.useForm<UpstreamFormValues>()
   const scheme = Form.useWatch('scheme', form)
   const healthCheckEnabled = Form.useWatch('health_check_enabled', form)
@@ -175,9 +174,9 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
   }
 
   const saveMutation = useMutation({
-    mutationFn: ({ id, body }: { id: string | null; body: UpstreamBody & { version?: number } }) =>
+    mutationFn: ({ id, version, body }: { id: string | null; version?: number; body: UpstreamBody }) =>
       id
-        ? upstreamsApi.update(id, { ...body, version: body.version ?? 0 } as UpstreamBody & { version: number })
+        ? upstreamsApi.update(id, { ...body, version: version ?? 0 } satisfies UpdateUpstreamBody)
         : upstreamsApi.create(appId, body),
     onSuccess: () => {
       setCreateOpen(false)
@@ -221,7 +220,7 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
     },
   })
 
-  const runTest = (record: UpstreamItem, allow: boolean) => {
+  const runTest = (record: UpstreamItem) => {
     setTestResult(null)
     testMutation.mutate({
       scheme: record.scheme,
@@ -230,8 +229,69 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
       health_check_path: record.health_check_path || '/health',
       tls_server_name: record.tls_server_name ?? '',
       tls_verify: record.tls_verify,
-      allow_private: allow,
     })
+  }
+
+  const pickPositive = (...candidates: (number | undefined | null)[]): number => {
+    for (const c of candidates) {
+      if (typeof c === 'number' && Number.isFinite(c) && c > 0) return c
+    }
+    return 0
+  }
+
+  const toUpstreamBody = (values: UpstreamFormValues): UpstreamBody => {
+    const storedHealthPath = form.getFieldValue('health_check_path') as string | undefined
+    const storedHealthMethod = form.getFieldValue('health_check_method') as string | undefined
+    const storedHealthInterval = form.getFieldValue('health_check_interval_seconds') as number | undefined
+    const storedHealthTimeout = form.getFieldValue('health_check_timeout_seconds') as number | undefined
+    const storedExpectedCodes = form.getFieldValue('expected_status_codes') as string | undefined
+    const storedTlsServerName = form.getFieldValue('tls_server_name') as string | undefined
+    const storedTlsVerify = form.getFieldValue('tls_verify') as boolean | undefined
+
+    return {
+      name: (values.name ?? '').trim(),
+      scheme: values.scheme,
+      host: values.host.trim(),
+      port: values.port,
+      weight: values.weight ?? editing?.weight ?? DEFAULT_VALUES.weight,
+      priority: values.priority ?? editing?.priority ?? DEFAULT_VALUES.priority,
+      health_check_enabled: values.health_check_enabled ?? false,
+      health_check_path:
+        (values.health_check_path ?? storedHealthPath ?? editing?.health_check_path) ||
+        DEFAULT_VALUES.health_check_path,
+      health_check_method:
+        (values.health_check_method ?? storedHealthMethod ?? editing?.health_check_method) ||
+        DEFAULT_VALUES.health_check_method,
+      health_check_interval_seconds: pickPositive(
+        values.health_check_interval_seconds,
+        storedHealthInterval,
+        editing?.health_check_interval_seconds,
+        DEFAULT_VALUES.health_check_interval_seconds,
+      ),
+      health_check_timeout_seconds: pickPositive(
+        values.health_check_timeout_seconds,
+        storedHealthTimeout,
+        editing?.health_check_timeout_seconds,
+        DEFAULT_VALUES.health_check_timeout_seconds,
+      ),
+      expected_status_codes:
+        (values.expected_status_codes ?? storedExpectedCodes ?? editing?.expected_status_codes) ||
+        DEFAULT_VALUES.expected_status_codes,
+      connect_timeout_ms: pickPositive(
+        values.connect_timeout_ms,
+        editing?.connect_timeout_ms,
+        DEFAULT_VALUES.connect_timeout_ms,
+      ),
+      response_header_timeout_ms: pickPositive(
+        values.response_header_timeout_ms,
+        editing?.response_header_timeout_ms,
+        DEFAULT_VALUES.response_header_timeout_ms,
+      ),
+      tls_server_name:
+        values.tls_server_name ?? storedTlsServerName ?? editing?.tls_server_name ?? DEFAULT_VALUES.tls_server_name,
+      tls_verify: values.tls_verify ?? storedTlsVerify ?? editing?.tls_verify ?? DEFAULT_VALUES.tls_verify,
+      max_retries: values.max_retries ?? editing?.max_retries ?? DEFAULT_VALUES.max_retries,
+    }
   }
 
   const columns: ColumnsType<UpstreamItem> = [
@@ -273,7 +333,6 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
               onClick={() => {
                 setTesting(record)
                 setTestResult(null)
-                setAllowPrivate(false)
               }}
             >
               测试
@@ -293,13 +352,23 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
                   weight: record.weight,
                   priority: record.priority,
                   health_check_enabled: record.health_check_enabled,
-                  health_check_path: record.health_check_path,
-                  health_check_method: record.health_check_method,
-                  health_check_interval_seconds: record.health_check_interval_seconds,
-                  health_check_timeout_seconds: record.health_check_timeout_seconds,
-                  expected_status_codes: record.expected_status_codes,
-                  connect_timeout_ms: record.connect_timeout_ms,
-                  response_header_timeout_ms: record.response_header_timeout_ms,
+                  health_check_path: record.health_check_path || DEFAULT_VALUES.health_check_path,
+                  health_check_method: record.health_check_method || DEFAULT_VALUES.health_check_method,
+                  health_check_interval_seconds:
+                    record.health_check_interval_seconds > 0
+                      ? record.health_check_interval_seconds
+                      : DEFAULT_VALUES.health_check_interval_seconds,
+                  health_check_timeout_seconds:
+                    record.health_check_timeout_seconds > 0
+                      ? record.health_check_timeout_seconds
+                      : DEFAULT_VALUES.health_check_timeout_seconds,
+                  expected_status_codes: record.expected_status_codes || DEFAULT_VALUES.expected_status_codes,
+                  connect_timeout_ms:
+                    record.connect_timeout_ms > 0 ? record.connect_timeout_ms : DEFAULT_VALUES.connect_timeout_ms,
+                  response_header_timeout_ms:
+                    record.response_header_timeout_ms > 0
+                      ? record.response_header_timeout_ms
+                      : DEFAULT_VALUES.response_header_timeout_ms,
                   tls_server_name: record.tls_server_name,
                   tls_verify: record.tls_verify,
                   max_retries: record.max_retries,
@@ -412,7 +481,8 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
           onFinish={(values) =>
             saveMutation.mutate({
               id: editing?.id ?? null,
-              body: { ...values, version: editing?.version },
+              version: editing?.version,
+              body: toUpstreamBody(values),
             })
           }
         >
@@ -523,16 +593,10 @@ export default function UpstreamsTab({ appId }: { appId: string }) {
               <Button
                 type="primary"
                 loading={testMutation.isPending}
-                onClick={() => runTest(testing, allowPrivate)}
+                onClick={() => runTest(testing)}
               >
                 开始测试
               </Button>
-              <Checkbox
-                checked={allowPrivate}
-                onChange={(e) => setAllowPrivate(e.target.checked)}
-              >
-                允许私网地址（SSRF 防护默认拦截，内网源站需勾选）
-              </Checkbox>
             </Space>
             {testMutation.isPending && <Typography.Text type="secondary">测试执行中…</Typography.Text>}
             {testResult && <TestResultView result={testResult} />}

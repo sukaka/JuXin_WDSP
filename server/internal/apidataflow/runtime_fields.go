@@ -315,7 +315,8 @@ func mergeRuntimeFieldLists(base, extra []FieldEvidence) []FieldEvidence {
 	for _, field := range base {
 		seen[runtimeFieldEvidenceKey(field)] = true
 	}
-	out := append([]FieldEvidence(nil), base...)
+	out := make([]FieldEvidence, 0, len(base)+len(extra))
+	out = append(out, base...)
 	for _, field := range extra {
 		field = FieldEvidence{
 			Side: strings.ToUpper(strings.TrimSpace(field.Side)), Path: strings.TrimSpace(field.Path),
@@ -391,7 +392,8 @@ func mergeFieldEvidenceLists(base, extra []FieldEvidence) []FieldEvidence {
 	for _, field := range base {
 		seen[fieldEvidenceKey(field)] = true
 	}
-	out := append([]FieldEvidence(nil), base...)
+	out := make([]FieldEvidence, 0, len(base)+len(extra))
+	out = append(out, base...)
 	for _, field := range extra {
 		key := fieldEvidenceKey(field)
 		if !seen[key] {

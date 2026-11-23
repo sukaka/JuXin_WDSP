@@ -41,6 +41,8 @@ const SUMMARY = {
 
 const DETAIL = {
   ...SUMMARY,
+  max_per_window: 25,
+  rate_window_seconds: 300,
   steps: [
     {
       id: 's-1',
@@ -307,7 +309,9 @@ describe('ApiFlowBaselinesPage', () => {
     fireEvent.click(screen.getByText('编辑'))
     expect(await screen.findByDisplayValue('order-checkout')).toBeTruthy()
     expect(screen.getByDisplayValue('create-order')).toBeTruthy()
-    // 短窗限速/取消语义字段从详情回填（零值回填为空，开关按布尔回填）
+    // 流程级 + 步骤级短窗限速/取消语义字段从详情回填（零值回填为空，开关按布尔回填）
+    expect(screen.getByDisplayValue('25')).toBeTruthy()
+    expect(screen.getByDisplayValue('300')).toBeTruthy()
     expect(screen.getByDisplayValue('10')).toBeTruthy()
     expect(screen.getByDisplayValue('120')).toBeTruthy()
     fireEvent.click(screen.getByText('保 存'))
@@ -317,9 +321,13 @@ describe('ApiFlowBaselinesPage', () => {
       expect(put?.url).toContain('/api-security/flow-baselines/f-1')
       const body = put?.body as {
         expected_version: number
+        max_per_window?: number
+        rate_window_seconds?: number
         steps: Record<string, unknown>[]
       }
       expect(body.expected_version).toBe(3)
+      expect(body.max_per_window).toBe(25)
+      expect(body.rate_window_seconds).toBe(300)
       expect(body.steps).toHaveLength(2)
       // 非零字段随载荷提交；零值/未填写字段省略不发送
       expect(body.steps[0].max_per_window).toBe(10)
@@ -359,10 +367,14 @@ describe('ApiFlowBaselinesPage', () => {
       const body = put?.body as {
         enabled: boolean
         expected_version: number
+        max_per_window?: number
+        rate_window_seconds?: number
         steps: unknown[]
       }
       expect(body.enabled).toBe(false)
       expect(body.expected_version).toBe(3)
+      expect(body.max_per_window).toBe(25)
+      expect(body.rate_window_seconds).toBe(300)
       expect(body.steps).toHaveLength(2)
     })
     expect(await screen.findByText('已禁用')).toBeTruthy()

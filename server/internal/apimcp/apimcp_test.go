@@ -8,6 +8,7 @@ package apimcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -208,20 +209,10 @@ func newFakeRepo() *fakeRepo {
 	}
 }
 
-func toolFromInput(catalogID uuid.UUID, in ToolInput) *Tool {
-	digest := "sha256:" + in.Description // fake 形态（真算法 PG 契约覆盖）
-	hash, _ := ComputeToolHash(in.ToolName, in.ToolVersion, in.Description, nilSchemaP(in.InputSchema), nilSchemaP(in.OutputSchema))
-	risk := strings.ToUpper(strings.TrimSpace(in.RiskLevel))
-	if risk == "" {
-		risk = RiskHigh
-	}
-	class := strings.ToUpper(strings.TrimSpace(in.DataClassification))
-	if class == "" {
-		class = ClassUnknown
-	}
+func toolFromRow(catalogID uuid.UUID, in ToolInput, row toolWriteRow) *Tool {
 	t := &Tool{ID: uuid.New(), CatalogID: catalogID, ToolName: strings.TrimSpace(in.ToolName),
-		ToolVersion: in.ToolVersion, DescriptionDigest: digest, DescriptionPreview: in.Description,
-		ToolHash: hash, RiskLevel: risk, DataClassification: class,
+		ToolVersion: strings.TrimSpace(in.ToolVersion), DescriptionDigest: row.digestDesc, DescriptionPreview: row.preview,
+		ToolHash: row.toolHash, RiskLevel: row.risk, DataClassification: row.classification,
 		CapabilityTags: in.CapabilityTags, AllowedPrincipals: in.AllowedPrincipals,
 		AllowedRoles: in.AllowedRoles, AllowedTenants: in.AllowedTenants,
 		ApprovalRequired: in.ApprovalRequired, MaxCallsPerMinute: in.MaxCallsPerMinute,
@@ -245,13 +236,19 @@ func (f *fakeRepo) CreateCatalog(_ context.Context, in CatalogInput, by string) 
 		ProtocolVersion: ProtocolVersionDefault, Source: "MANUAL_IMPORT", Status: StatusEnabled,
 		Version: 1, CreatedBy: by, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
 	tools := []Tool{}
+	built := []*Tool{}
 	for _, ti := range in.Tools {
-		t := toolFromInput(c.ID, ti)
-		f.tools[c.ID] = append(f.tools[c.ID], t)
+		row, err := prepareToolRow(ti, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		t := toolFromRow(c.ID, ti, row)
+		built = append(built, t)
 		tools = append(tools, *t)
 	}
 	c.CatalogHash = ComputeCatalogHash(nil)
 	f.catalogs[c.ID] = c
+	f.tools[c.ID] = built
 	f.nameIdx[name] = c.ID
 	return c, tools, nil
 }
@@ -299,18 +296,43 @@ func (f *fakeRepo) UpdateCatalog(_ context.Context, id uuid.UUID, in CatalogInpu
 	if other, dup := f.nameIdx[strings.TrimSpace(in.Name)]; dup && other != id {
 		return nil, nil, ErrDuplicateName
 	}
+	existing := map[string]*Tool{}
+	for _, old := range f.tools[id] {
+		existing[old.ToolName] = old
+	}
+	nextTools := []*Tool{}
+	tools := []Tool{}
+	for _, ti := range in.Tools {
+		old := existing[strings.TrimSpace(ti.ToolName)]
+		row, err := prepareToolRow(ti, old)
+		if err != nil {
+			return nil, nil, err
+		}
+		if old != nil && toolSemanticallyEqual(*old, strings.TrimSpace(ti.ToolVersion), row.digestDesc,
+			nilSchemaP(ti.InputSchema), nilSchemaP(ti.OutputSchema)) {
+			kept := *old
+			kept.DescriptionDigest = row.digestDesc
+			kept.DescriptionPreview = row.preview
+			kept.ApprovalRequired = ti.ApprovalRequired
+			kept.MaxCallsPerMinute = ti.MaxCallsPerMinute
+			nextTools = append(nextTools, &kept)
+			tools = append(tools, kept)
+			continue
+		}
+		t := toolFromRow(id, ti, row)
+		nextTools = append(nextTools, t)
+		tools = append(tools, *t)
+	}
 	delete(f.nameIdx, c.Name)
 	c.Name = strings.TrimSpace(in.Name)
 	c.ServiceIdentity = strings.TrimSpace(in.ServiceIdentity)
-	c.Version++
-	f.nameIdx[c.Name] = id
-	f.tools[id] = nil
-	tools := []Tool{}
-	for _, ti := range in.Tools {
-		t := toolFromInput(id, ti)
-		f.tools[id] = append(f.tools[id], t)
-		tools = append(tools, *t)
+	if pv := strings.TrimSpace(in.ProtocolVersion); pv != "" {
+		c.ProtocolVersion = pv
 	}
+	c.Version++
+	c.CatalogHash = ComputeCatalogHash(approvedHashes(tools))
+	f.nameIdx[c.Name] = id
+	f.tools[id] = nextTools
 	return c, tools, nil
 }
 
@@ -769,5 +791,248 @@ func TestBindingChangeTriggersPublish(t *testing.T) {
 	RegisterRoutes(mux2, injectPerms("api_spec.manage"), h2)
 	if rr := doReq(t, mux2, http.MethodPost, bindingPath, body); rr.Code != http.StatusOK {
 		t.Fatalf("无发布通道 create 仍 200: %d", rr.Code)
+	}
+}
+
+// B12-03 + B12-04：再导入 preserve_description 保留摘要/预览/APPROVED 态；PUT 支持目录重命名及重名 409。
+func TestUpdateCatalogPreserveDescriptionAndRenameHTTP(t *testing.T) {
+	repo := newFakeRepo()
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, injectPerms("api_spec.read", "api_spec.manage"), NewHandler(repo, nil))
+
+	rr := doReq(t, mux, http.MethodPost, catalogPath, validCatalogBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		Catalog Catalog `json:"catalog"`
+		Tools   []Tool  `json:"tools"`
+	}
+	decodeData(t, rr, &created)
+	catID := created.Catalog.ID.String()
+
+	// 另建一个目录供重名 409 验证
+	if rr := doReq(t, mux, http.MethodPost, catalogPath,
+		`{"name":"other-mcp","service_identity":"mcp://other.example.com","tools":[]}`); rr.Code != http.StatusOK {
+		t.Fatalf("create other: %d", rr.Code)
+	}
+
+	// 审核 refund 为 APPROVED
+	var refundID, refundHash, refundDigest string
+	for _, tool := range created.Tools {
+		if tool.ToolName == "refund" {
+			refundID = tool.ID.String()
+			refundHash = tool.ToolHash
+			refundDigest = tool.DescriptionDigest
+		}
+	}
+	if rr := doReq(t, mux, http.MethodPost, catalogPath+"/"+catID+"/tools/"+refundID+"/review",
+		`{"action":"APPROVED"}`); rr.Code != http.StatusOK {
+		t.Fatalf("approve refund: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// 1. 重命名冲突 → 409
+	if rr := doReq(t, mux, http.MethodPut, catalogPath+"/"+catID,
+		`{"name":"other-mcp","service_identity":"mcp://pay.example.com","tools":[],"version":1}`); rr.Code != http.StatusConflict {
+		t.Fatalf("重名应 409: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// 2. 重命名为 pay-mcp-v2，refund 携带 preserve_description:true 且 description:"" → 保留 APPROVED 与原摘要/预览/tool_hash；
+	//    query_order 填入新 description → 重算 tool_hash 且重置 PENDING_REVIEW
+	rr = doReq(t, mux, http.MethodPut, catalogPath+"/"+catID, `{
+		"name":"pay-mcp-v2",
+		"service_identity":"mcp://pay.example.com",
+		"version":1,
+		"tools":[
+			{"tool_name":"refund","tool_version":"1.0.0","description":"","preserve_description":true,"input_schema":{"type":"object"}},
+			{"tool_name":"query_order","description":"查询订单（更新描述）"}
+		]
+	}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update preserve_description: %d %s", rr.Code, rr.Body.String())
+	}
+	var updated struct {
+		Catalog Catalog `json:"catalog"`
+		Tools   []Tool  `json:"tools"`
+	}
+	decodeData(t, rr, &updated)
+	if updated.Catalog.Name != "pay-mcp-v2" || updated.Catalog.Version != 2 {
+		t.Fatalf("rename/version failed: %+v", updated.Catalog)
+	}
+	byName := map[string]Tool{}
+	for _, tool := range updated.Tools {
+		byName[tool.ToolName] = tool
+	}
+	if byName["refund"].ReviewStatus != ReviewApproved || byName["refund"].ToolHash != refundHash ||
+		byName["refund"].DescriptionDigest != refundDigest || byName["refund"].DescriptionPreview != "发起退款" {
+		t.Fatalf("preserve_description should retain digest/preview/APPROVED/tool_hash: %+v", byName["refund"])
+	}
+	if byName["query_order"].ReviewStatus != ReviewPending || byName["query_order"].DescriptionPreview != "查询订单（更新描述）" {
+		t.Fatalf("new description should reset PENDING_REVIEW: %+v", byName["query_order"])
+	}
+
+	// 3. (b) non-empty existing description + preserve_description:true + changed tool_version → HTTP 400 ValidationError,
+	//    and existing APPROVED tool / tool_hash / catalog version remain untouched.
+	rr = doReq(t, mux, http.MethodPut, catalogPath+"/"+catID, `{
+		"name":"pay-mcp-v2",
+		"service_identity":"mcp://pay.example.com",
+		"version":2,
+		"tools":[
+			{"tool_name":"refund","tool_version":"1.1.0","description":"","preserve_description":true,"input_schema":{"type":"object"}}
+		]
+	}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("preserve_description with version change should return 400, got %d %s", rr.Code, rr.Body.String())
+	}
+	// Changed input_schema with preserve_description:true → HTTP 400 as well
+	rr = doReq(t, mux, http.MethodPut, catalogPath+"/"+catID, `{
+		"name":"pay-mcp-v2",
+		"service_identity":"mcp://pay.example.com",
+		"version":2,
+		"tools":[
+			{"tool_name":"refund","tool_version":"1.0.0","description":"","preserve_description":true,"input_schema":{"type":"object","properties":{"amount":{"type":"number"}}}}
+		]
+	}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("preserve_description with schema change should return 400, got %d %s", rr.Code, rr.Body.String())
+	}
+	// Verify catalog and APPROVED tool were not corrupted or partially mutated
+	rrGet := doReq(t, mux, http.MethodGet, catalogPath+"/"+catID, "")
+	if rrGet.Code != http.StatusOK {
+		t.Fatalf("get after failed update: %d %s", rrGet.Code, rrGet.Body.String())
+	}
+	var afterReject struct {
+		Catalog Catalog `json:"catalog"`
+		Tools   []Tool  `json:"tools"`
+	}
+	decodeData(t, rrGet, &afterReject)
+	if afterReject.Catalog.Version != 2 {
+		t.Fatalf("failed update must not bump version, got %d", afterReject.Catalog.Version)
+	}
+	var gotRefund Tool
+	for _, tool := range afterReject.Tools {
+		if tool.ToolName == "refund" {
+			gotRefund = tool
+		}
+	}
+	if gotRefund.ReviewStatus != ReviewApproved || gotRefund.ToolHash != refundHash ||
+		gotRefund.DescriptionDigest != refundDigest || gotRefund.DescriptionPreview != "发起退款" {
+		t.Fatalf("failed update must leave APPROVED tool & tool_hash untouched: %+v", gotRefund)
+	}
+
+	// 4. (c) empty existing description (sha256("")) + preserve_description:true + changed tool_version → HTTP 200 with valid tool_hash & PENDING_REVIEW
+	rrEmpty := doReq(t, mux, http.MethodPost, catalogPath,
+		`{"name":"empty-desc-mcp","service_identity":"mcp://empty.example.com","tools":[{"tool_name":"ping","tool_version":"1.0.0","description":""}]}`)
+	if rrEmpty.Code != http.StatusOK {
+		t.Fatalf("create empty-desc catalog: %d %s", rrEmpty.Code, rrEmpty.Body.String())
+	}
+	var emptyCreated struct {
+		Catalog Catalog `json:"catalog"`
+		Tools   []Tool  `json:"tools"`
+	}
+	decodeData(t, rrEmpty, &emptyCreated)
+	rrEmptyPut := doReq(t, mux, http.MethodPut, catalogPath+"/"+emptyCreated.Catalog.ID.String(), `{
+		"name":"empty-desc-mcp",
+		"service_identity":"mcp://empty.example.com",
+		"version":1,
+		"tools":[
+			{"tool_name":"ping","tool_version":"2.0.0","description":"","preserve_description":true}
+		]
+	}`)
+	if rrEmptyPut.Code != http.StatusOK {
+		t.Fatalf("preserve_description with empty existing description & version change should return 200, got %d %s", rrEmptyPut.Code, rrEmptyPut.Body.String())
+	}
+	var emptyUpdated struct {
+		Catalog Catalog `json:"catalog"`
+		Tools   []Tool  `json:"tools"`
+	}
+	decodeData(t, rrEmptyPut, &emptyUpdated)
+	wantEmptyHash, err := ComputeToolHash("ping", "2.0.0", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emptyUpdated.Tools) != 1 || emptyUpdated.Tools[0].ReviewStatus != ReviewPending ||
+		emptyUpdated.Tools[0].ToolHash != wantEmptyHash || emptyUpdated.Tools[0].DescriptionDigest != emptyDescDigest {
+		t.Fatalf("empty existing description version change mismatch: got %+v want hash %s", emptyUpdated.Tools, wantEmptyHash)
+	}
+}
+
+func TestPrepareToolRowPreserveDescription(t *testing.T) {
+	old := &Tool{
+		ToolName:           "refund",
+		ToolVersion:        "1.0.0",
+		DescriptionDigest:  strings.Repeat("a", 64),
+		DescriptionPreview: "长描述预览",
+		ToolHash:           ToolHashPrefix + strings.Repeat("b", 64),
+	}
+	row, err := prepareToolRow(ToolInput{
+		ToolName:            "refund",
+		ToolVersion:         "1.0.0",
+		Description:         "",
+		PreserveDescription: true,
+	}, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.digestDesc != old.DescriptionDigest || row.preview != old.DescriptionPreview || row.toolHash != old.ToolHash {
+		t.Fatalf("expected preserved digest/preview/toolHash, got %+v", row)
+	}
+	if !toolSemanticallyEqual(*old, "1.0.0", row.digestDesc, nil, nil) {
+		t.Fatal("expected toolSemanticallyEqual to pass when preserve_description reuses old digest")
+	}
+	// 版本变更但 preserve_description=true 且旧描述非空 → ValidationError
+	_, errVer := prepareToolRow(ToolInput{
+		ToolName:            "refund",
+		ToolVersion:         "1.0.1",
+		Description:         "",
+		PreserveDescription: true,
+	}, old)
+	var ve *ValidationError
+	if !errors.As(errVer, &ve) {
+		t.Fatalf("expected ValidationError when version changes with preserve_description and non-empty digest, got %v", errVer)
+	}
+	// Schema 变更但 preserve_description=true 且旧描述非空 → ValidationError
+	newSchema := map[string]any{"type": "object"}
+	_, errSchema := prepareToolRow(ToolInput{
+		ToolName:            "refund",
+		ToolVersion:         "1.0.0",
+		Description:         "",
+		PreserveDescription: true,
+		InputSchema:         &newSchema,
+	}, old)
+	if !errors.As(errSchema, &ve) {
+		t.Fatalf("expected ValidationError when schema changes with preserve_description and non-empty digest, got %v", errSchema)
+	}
+	// 旧描述确实为空（emptyDescDigest）时允许版本变更并重算精确 tool_hash
+	oldEmpty := &Tool{
+		ToolName:          "ping",
+		ToolVersion:       "1.0.0",
+		DescriptionDigest: emptyDescDigest,
+	}
+	rowEmpty, err := prepareToolRow(ToolInput{
+		ToolName:            "ping",
+		ToolVersion:         "1.1.0",
+		Description:         "",
+		PreserveDescription: true,
+	}, oldEmpty)
+	if err != nil {
+		t.Fatalf("empty existing description should allow version change, got %v", err)
+	}
+	wantHash, _ := ComputeToolHash("ping", "1.1.0", "", nil, nil)
+	if rowEmpty.toolHash != wantHash || rowEmpty.digestDesc != emptyDescDigest {
+		t.Fatalf("unexpected row for empty existing description: %+v want hash %s", rowEmpty, wantHash)
+	}
+	// 新描述优先于 preserve_description
+	rowNew, err := prepareToolRow(ToolInput{
+		ToolName:            "refund",
+		ToolVersion:         "1.0.0",
+		Description:         "新版描述",
+		PreserveDescription: true,
+	}, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rowNew.digestDesc == old.DescriptionDigest || rowNew.preview != "新版描述" {
+		t.Fatalf("explicit new description must override preserve_description, got %+v", rowNew)
 	}
 }

@@ -28,22 +28,24 @@ export interface UpdateUserBody {
 }
 
 export const usersApi = {
-  list: (params: UserListParams) =>
-    request<PageResult<UserItem>>('/users', { query: { ...params } }),
+  list: async (params: UserListParams): Promise<PageResult<UserItem>> => {
+    const data = await request<PageResult<UserItem>>('/users', { query: { ...params } })
+    return { ...data, items: data.items ?? [] }
+  },
   get: (id: string) => request<UserItem>(`/users/${id}`),
   create: (body: CreateUserBody) =>
     request<CreateUserResult>('/users', { method: 'POST', body }),
   update: (id: string, body: UpdateUserBody) =>
     request<UserItem>(`/users/${id}`, { method: 'PUT', body }),
-  remove: (id: string) => request<null>(`/users/${id}`, { method: 'DELETE' }),
-  enable: (id: string) => request<null>(`/users/${id}/enable`, { method: 'POST' }),
-  disable: (id: string) => request<null>(`/users/${id}/disable`, { method: 'POST' }),
-  unlock: (id: string) => request<null>(`/users/${id}/unlock`, { method: 'POST' }),
+  remove: (id: string) => request<{ message: string }>(`/users/${id}`, { method: 'DELETE' }),
+  enable: (id: string) => request<{ message: string }>(`/users/${id}/enable`, { method: 'POST' }),
+  disable: (id: string) => request<{ message: string }>(`/users/${id}/disable`, { method: 'POST' }),
+  unlock: (id: string) => request<{ message: string }>(`/users/${id}/unlock`, { method: 'POST' }),
   resetPassword: (id: string) =>
     request<{ temporary_password: string; notice?: string }>(`/users/${id}/reset-password`, {
       method: 'POST',
     }),
-  /** 管理员重置用户双因子认证（users.update 权限）：清除密钥与恢复码 */
-  resetTotp: (id: string) => request<null>(`/users/${id}/totp/reset`, { method: 'POST' }),
-  forceLogout: (id: string) => request<null>(`/users/${id}/sessions`, { method: 'DELETE' }),
+  /** 管理员重置用户双因子认证（users.reset_password 权限）：清除密钥与恢复码 */
+  resetTotp: (id: string) => request<{ message: string }>(`/users/${id}/totp/reset`, { method: 'POST' }),
+  forceLogout: (id: string) => request<{ message: string }>(`/users/${id}/sessions`, { method: 'DELETE' }),
 }

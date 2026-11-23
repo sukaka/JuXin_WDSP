@@ -210,7 +210,7 @@ export function EvidenceDrawer({ edge, items, loading, error, onClose }: Evidenc
                   description={
                     <div className="data-flow-evidence-record">
                       <BoundaryEvidenceFields record={record} />
-                      {record.fields.map((field, index) => (
+                      {(record.fields ?? []).map((field, index) => (
                         <div key={`${field.path}-${index}`}>
                           <Tag color={field.side === 'MESSAGE' ? 'green' : field.side === 'RESPONSE' ? 'purple' : 'gold'}>{DATA_TYPE_LABELS[field.data_type] ?? field.data_type}</Tag>
                           <Typography.Text code>{field.path}</Typography.Text>

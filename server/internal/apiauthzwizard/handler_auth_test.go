@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -101,5 +102,74 @@ func TestConflictItemMarshalsPrincipalsAsJSONArrayNotBase64(t *testing.T) {
 	}
 	if len(decoded.Principals) != 2 || decoded.Principals[0] != "principal-a" || decoded.Principals[1] != "principal-b" {
 		t.Fatalf("unexpected decoded principals: %v", decoded.Principals)
+	}
+}
+
+func TestImpactResultOmitsConfirmTokenWhenNil(t *testing.T) {
+	res := ImpactResult{
+		EndpointID:    uuid.New(),
+		EndpointKey:   "GET /v1/orders/{id}",
+		ObjectSegment: "path:2",
+		WindowDays:    7,
+		Readiness:     "READY",
+	}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal ImpactResult: %v", err)
+	}
+	if strings.Contains(string(raw), "confirm_token") || strings.Contains(string(raw), "00000000-0000-0000-0000-000000000000") {
+		t.Fatalf("nil ConfirmToken must be omitted from JSON, got %s", string(raw))
+	}
+	tok := uuid.New()
+	res.ConfirmToken = &tok
+	rawWithTok, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal ImpactResult with token: %v", err)
+	}
+	if !strings.Contains(string(rawWithTok), tok.String()) {
+		t.Fatalf("non-nil ConfirmToken must serialize UUID, got %s", string(rawWithTok))
+	}
+}
+
+func TestConfirmationMarshalsImpactSnapshotAsJSONObjectNotBase64(t *testing.T) {
+	c := Confirmation{
+		ID:             uuid.New(),
+		ConfirmToken:   uuid.New(),
+		ApplicationID:  uuid.New(),
+		EndpointID:     uuid.New(),
+		EndpointKey:    "GET /v1/orders/{id}",
+		ObjectSegment:  "path:2",
+		WindowDays:     7,
+		ImpactSnapshot: json.RawMessage(`{"window_days":7,"observe_violation_count":3}`),
+	}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("marshal Confirmation: %v", err)
+	}
+	var decoded struct {
+		ImpactSnapshot map[string]any `json:"impact_snapshot"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("impact_snapshot must marshal as JSON object (not base64 string): %v raw=%s", err, string(raw))
+	}
+	if decoded.ImpactSnapshot["window_days"] != float64(7) || decoded.ImpactSnapshot["observe_violation_count"] != float64(3) {
+		t.Fatalf("unexpected decoded impact_snapshot: %v", decoded.ImpactSnapshot)
+	}
+}
+
+func TestListReadinessQueryValidation(t *testing.T) {
+	h := NewHandler(nil, nil, nil, nil)
+	mux := http.NewServeMux()
+	RegisterRoutes(mux, injectPerms(apiauthz.PermAuthzRead), h)
+
+	for _, url := range []string{
+		"/api/v1/api-security/authz/enforcement-readiness",
+		"/api/v1/api-security/authz/enforcement-readiness?application_id=bad",
+		"/api/v1/api-security/authz/enforcement-readiness?endpoint_id=bad",
+	} {
+		rr := doJSON(t, mux, http.MethodGet, url, nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s: status=%d, want 400 (body=%s)", url, rr.Code, rr.Body.String())
+		}
 	}
 }

@@ -2361,7 +2361,8 @@ components:
         structured_path: { type: string, example: '$.user.phone' }
         data_type: { type: string, example: phone }
         confidence: { type: number, format: double }
-        detection_source: { type: string, enum: [AUTO, MANUAL] }
+        detection_source: { type: string, enum: [AUTO, MANUAL, RUNTIME] }
+        masked_sample: { type: string, example: '138****8000' }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

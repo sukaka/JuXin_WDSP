@@ -148,10 +148,18 @@ export const TEMP_BLOCK_RELEASE_TYPE_META: Record<string, { color: string; label
   CONVERTED: { color: 'purple', label: '已转永久' },
 }
 
+/** URL 白名单匹配方式 */
+export const URL_WHITELIST_MATCH_META: Record<string, { color: string; label: string }> = {
+  EXACT: { color: 'blue', label: '精确匹配' },
+  PREFIX: { color: 'geekblue', label: '前缀匹配' },
+  REGEX: { color: 'orange', label: '正则匹配' },
+}
+
 /** 访问控制事件类型 */
 export const AC_EVENT_TYPE_META: Record<string, { color: string; label: string }> = {
-  IP_ALLOW_MATCH: { color: 'green', label: '命中白名单' },
-  IP_DENY_MATCH: { color: 'red', label: '命中黑名单' },
+  IP_ALLOW_MATCH: { color: 'green', label: '命中 IP 白名单' },
+  URL_ALLOW_MATCH: { color: 'green', label: '命中 URL 白名单' },
+  IP_DENY_MATCH: { color: 'red', label: '命中 IP 黑名单' },
   CC_THRESHOLD_EXCEEDED: { color: 'orange', label: '频率超阈值' },
   CC_REQUEST_REJECTED: { color: 'red', label: '频率请求被拒绝' },
   CC_TEMP_BLOCK_CREATED: { color: 'magenta', label: '频率临时封禁创建' },

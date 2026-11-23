@@ -16,13 +16,14 @@ import {
   Typography,
   theme,
 } from 'antd'
-import { DownloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { apiEndpointsApi, type ApiEndpointItem } from '../../api/apiAssets'
 import { ApiError } from '../../api/client'
+import ExportDropdown from '../../components/ExportDropdown'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
+import useExportSelection from '../../hooks/useExportSelection'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../utils/format'
 import { ASSET_VALUE_DIMENSION_LABELS } from '../../utils/i18nLabels'
@@ -67,6 +68,12 @@ export default function ApiEndpointsPage() {
   const canSplit = hasPermission(permissions, 'api_asset.split')
   const canEdit = hasPermission(permissions, 'api_asset.edit')
   const canExport = hasPermission(permissions, 'api_asset.export')
+  const {
+    selectedIds,
+    selectedCount,
+    clearSelection,
+    rowSelection,
+  } = useExportSelection<ApiEndpointItem>(canExport)
 
   const [assetStatus, setAssetStatus] = useState<string | undefined>()
   const [learningStatus, setLearningStatus] = useState<string | undefined>()
@@ -689,9 +696,17 @@ export default function ApiEndpointsPage() {
               }}
             />
             {canExport ? (
-              <Button
-                icon={<DownloadOutlined />}
-                onClick={() =>
+              <ExportDropdown
+                label="导出清单"
+                selectedCount={selectedCount}
+                onClearSelection={clearSelection}
+                onExportSelected={() =>
+                  window.open(
+                    apiEndpointsApi.listExportUrl({ ids: selectedIds.join(',') }),
+                    '_blank',
+                  )
+                }
+                onExportFiltered={() =>
                   window.open(
                     apiEndpointsApi.listExportUrl({
                       asset_status: assetStatus,
@@ -704,14 +719,14 @@ export default function ApiEndpointsPage() {
                     '_blank',
                   )
                 }
-              >
-                导出清单
-              </Button>
+                onExportAll={() => window.open(apiEndpointsApi.listExportUrl({}), '_blank')}
+              />
             ) : null}
           </Space>
           <SmartTable<ApiEndpointItem>
             storageKey="api-endpoints"
             rowKey="id"
+            rowSelection={rowSelection}
             loading={listQuery.isLoading}
             columns={columns}
             dataSource={listQuery.data?.items ?? []}

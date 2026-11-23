@@ -1,6 +1,10 @@
 package reports
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/jiuzhang-waf/server/internal/wafrules"
+)
 
 // 报告展示文案中文化：采集层保持英文枚举词表（与数据库/网关一致），
 // 展示层（HTML/PDF/Word 共用）经本文件映射为中文。词表与前端 utils 的
@@ -274,11 +278,14 @@ var crsRuleCategories = []struct {
 	{949000, 949999, "异常评分拦截评估"},
 }
 
-// RuleDisplayName 规则展示名：自研规则（中文名）原样；CRS 英文规则名加
-// 中文类别前缀（保留英文原名便于对照规则文档）；无法归类时原样返回。
+// RuleDisplayName 规则展示名：优先映射为完整中文规则名（覆盖 OWASP CRS/插件/第三方/扩展规则包）；
+// 自研中文规则名原样保留；未收录的 CRS 段英文名加中文类别前缀；无法归类时原样返回。
 func RuleDisplayName(ruleID int, name string) string {
 	if name == "" {
 		return "-"
+	}
+	if localized := wafrules.LocalizeMatchMessage(ruleID, name); hasCJK(localized) {
+		return localized
 	}
 	if hasCJK(name) {
 		return name

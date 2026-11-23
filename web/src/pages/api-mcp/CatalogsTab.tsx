@@ -47,6 +47,8 @@ interface ToolFormValue {
   tool_name?: string
   tool_version?: string
   description?: string
+  /** 服务端截断只读预览（仅用于再导入界面提示，不提交给后端） */
+  description_preview?: string
   input_schema_text?: string
   output_schema_text?: string
   capability_tags?: string[]
@@ -73,6 +75,7 @@ function toolToFormValue(t: McpToolCatalogDetail['tools'][number]): ToolFormValu
     tool_name: t.tool_name,
     tool_version: t.tool_version,
     description: '',
+    description_preview: t.description_preview ?? '',
     input_schema_text: t.input_schema ? JSON.stringify(t.input_schema) : '',
     output_schema_text: t.output_schema ? JSON.stringify(t.output_schema) : '',
     capability_tags: t.capability_tags ?? [],
@@ -88,23 +91,28 @@ function toolToFormValue(t: McpToolCatalogDetail['tools'][number]): ToolFormValu
 }
 
 /** 表单值 → 导入载荷（JSON 文本域经字段级校验保证可解析；整体替换语义） */
-function toCatalogPayload(values: CatalogFormValues, version?: number): McpToolCatalogInput {
-  const tools: McpToolInput[] = (values.tools ?? []).map((t) => ({
-    tool_name: (t.tool_name ?? '').trim(),
-    tool_version: (t.tool_version ?? '').trim(),
-    description: t.description ?? '',
-    input_schema: parseJsonText(t.input_schema_text ?? '').value ?? null,
-    output_schema: parseJsonText(t.output_schema_text ?? '').value ?? null,
-    capability_tags: t.capability_tags ?? [],
-    risk_level: t.risk_level ?? 'HIGH',
-    data_classification: t.data_classification ?? 'UNKNOWN',
-    allowed_principals: t.allowed_principals ?? [],
-    allowed_roles: t.allowed_roles ?? [],
-    allowed_tenants: t.allowed_tenants ?? [],
-    approval_required: t.approval_required ?? false,
-    max_calls_per_minute: t.max_calls_per_minute ?? 0,
-    arg_constraints: parseArgConstraintsText(t.arg_constraints_text ?? '').value ?? [],
-  }))
+function toCatalogPayload(values: CatalogFormValues, version?: number, isReimport = false): McpToolCatalogInput {
+  const tools: McpToolInput[] = (values.tools ?? []).map((t) => {
+    const trimmedDesc = (t.description ?? '').trim()
+    const preserveDescription = isReimport && trimmedDesc === ''
+    return {
+      tool_name: (t.tool_name ?? '').trim(),
+      tool_version: (t.tool_version ?? '').trim(),
+      description: t.description ?? '',
+      ...(preserveDescription ? { preserve_description: true } : {}),
+      input_schema: parseJsonText(t.input_schema_text ?? '').value ?? null,
+      output_schema: parseJsonText(t.output_schema_text ?? '').value ?? null,
+      capability_tags: t.capability_tags ?? [],
+      risk_level: t.risk_level ?? 'HIGH',
+      data_classification: t.data_classification ?? 'UNKNOWN',
+      allowed_principals: t.allowed_principals ?? [],
+      allowed_roles: t.allowed_roles ?? [],
+      allowed_tenants: t.allowed_tenants ?? [],
+      approval_required: t.approval_required ?? false,
+      max_calls_per_minute: t.max_calls_per_minute ?? 0,
+      arg_constraints: parseArgConstraintsText(t.arg_constraints_text ?? '').value ?? [],
+    }
+  })
   return {
     name: values.name.trim(),
     service_identity: values.service_identity.trim(),
@@ -128,6 +136,7 @@ function CatalogEditorDrawer({
   const [form] = Form.useForm<CatalogFormValues>()
   const isReimport = catalogId !== null
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const watchedTools = Form.useWatch('tools', form) as ToolFormValue[] | undefined
 
   const detailQuery = useQuery({
     queryKey: ['mcp-catalog', catalogId],
@@ -209,7 +218,7 @@ function CatalogEditorDrawer({
           initialValues={initialValues}
           onFinish={(values) => {
             setSubmitError(null)
-            saveMut.mutate(toCatalogPayload(values, detail?.catalog.version))
+            saveMut.mutate(toCatalogPayload(values, detail?.catalog.version, isReimport))
           }}
         >
           <Space size={16} wrap style={{ display: 'flex' }}>
@@ -239,7 +248,9 @@ function CatalogEditorDrawer({
           <Form.List name="tools">
             {(fields, { add, remove }) => (
               <>
-                {fields.map((field) => (
+                {fields.map((field) => {
+                  const preview = watchedTools?.[field.name]?.description_preview
+                  return (
                   <Card
                     key={field.key}
                     size="small"
@@ -251,6 +262,9 @@ function CatalogEditorDrawer({
                       </Button>
                     }
                   >
+                    <Form.Item name={[field.name, 'description_preview']} hidden>
+                      <Input />
+                    </Form.Item>
                     <Space size={12} wrap style={{ display: 'flex' }}>
                       <Form.Item
                         name={[field.name, 'tool_name']}
@@ -292,8 +306,24 @@ function CatalogEditorDrawer({
                       name={[field.name, 'description']}
                       label="描述全文（计入工具哈希——同名变更将重置待审核）"
                       rules={[{ max: 65536, message: '不超过 65536 字符' }]}
+                      extra={
+                        isReimport
+                          ? preview
+                            ? `当前描述预览（只读）：${preview}`
+                            : '留空将保留存量描述摘要与审核态'
+                          : undefined
+                      }
                     >
-                      <Input.TextArea rows={2} placeholder="工具描述（规范化全文参与不可变摘要）" />
+                      <Input.TextArea
+                        rows={2}
+                        placeholder={
+                          isReimport
+                            ? preview
+                              ? `留空保留现有描述（预览：${preview}）；输入新描述将重算工具哈希并重置待审核`
+                              : '留空保留现有描述摘要；输入新描述将重算工具哈希并重置待审核'
+                            : '工具描述（规范化全文参与不可变摘要）'
+                        }
+                      />
                     </Form.Item>
                     <Space size={12} wrap style={{ display: 'flex' }}>
                       <Form.Item name={[field.name, 'capability_tags']} label="能力标签" style={{ width: 300 }}>
@@ -351,7 +381,8 @@ function CatalogEditorDrawer({
                       </Form.Item>
                     </Space>
                   </Card>
-                ))}
+                  )
+                })}
                 <Button block icon={<PlusOutlined />} onClick={() => add({ risk_level: 'HIGH', data_classification: 'UNKNOWN', max_calls_per_minute: 0 })}>
                   添加工具
                 </Button>

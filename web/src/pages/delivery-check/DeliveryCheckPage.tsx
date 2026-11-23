@@ -29,7 +29,7 @@ export default function DeliveryCheckPage() {
     queryKey: ['delivery-checks'],
     queryFn: () => deliveryChecksApi.list({ page: 1, page_size: 10 }),
     refetchInterval: (query) =>
-      (query.state.data?.items ?? []).some((c) => !isTerminalDeliveryStatus(c.status)) ? 3000 : false,
+      (query.state.data?.items ?? []).some((c) => !isTerminalDeliveryStatus(c.overall_result)) ? 3000 : false,
   })
 
   const detailQuery = useQuery({
@@ -38,15 +38,16 @@ export default function DeliveryCheckPage() {
     enabled: selectedId !== null,
     refetchInterval: (query) => {
       const check = query.state.data?.check
-      return check && !isTerminalDeliveryStatus(check.status) ? 3000 : false
+      return check && !isTerminalDeliveryStatus(check.overall_result) ? 3000 : false
     },
   })
 
   const runMutation = useMutation({
     mutationFn: () => deliveryChecksApi.run(),
-    onSuccess: (check) => {
+    onSuccess: (res) => {
       message.success('交付检查已启动')
-      setSelectedId(check.id)
+      setSelectedId(res.check.id)
+      queryClient.setQueryData(['delivery-checks', 'detail', res.check.id], res)
       void queryClient.invalidateQueries({ queryKey: ['delivery-checks'] })
     },
     onError: (e) => message.error(e instanceof ApiError ? e.message : '启动检查失败'),
@@ -70,14 +71,14 @@ export default function DeliveryCheckPage() {
       title: '总结果',
       dataIndex: 'overall_result',
       width: 100,
-      render: (v: string) => (v ? <StatusTag value={v} map={CHECK_RESULT_META} /> : <Tag>进行中</Tag>),
+      render: (v: string) => (v && v !== 'PENDING' ? <StatusTag value={v} map={CHECK_RESULT_META} /> : <Tag>进行中</Tag>),
     },
     { title: '通过', dataIndex: 'pass_count', width: 70 },
     { title: '警告', dataIndex: 'warning_count', width: 70 },
     { title: '失败', dataIndex: 'fail_count', width: 70 },
     {
       title: '执行时间',
-      dataIndex: 'created_at',
+      dataIndex: 'started_at',
       width: 170,
       render: (v: string) => formatDateTime(v),
     },
@@ -104,7 +105,7 @@ export default function DeliveryCheckPage() {
   ]
 
   const resultColumns: ColumnsType<DeliveryCheckResultItem> = [
-    { title: '检查项', dataIndex: 'item', width: 220, ellipsis: true },
+    { title: '检查项', dataIndex: 'item_name', width: 220, ellipsis: true },
     { title: '分类', dataIndex: 'category', width: 120, render: (v: string) => v || '-' },
     {
       title: '结果',
@@ -166,7 +167,7 @@ export default function DeliveryCheckPage() {
             <QueryErrorAlert error={detailQuery.error} message="加载检查详情失败" />
           ) : check ? (
             <Space direction="vertical" size={16} style={{ display: 'flex' }}>
-              {!isTerminalDeliveryStatus(check.status) && (
+              {!isTerminalDeliveryStatus(check.overall_result) && (
                 <Alert type="info" showIcon message="检查执行中，结果将自动刷新…" />
               )}
               {check.overall_result === 'FAIL' && (
@@ -196,7 +197,7 @@ export default function DeliveryCheckPage() {
               </Row>
               <SmartTable<DeliveryCheckResultItem>
                 storageKey="delivery-check-2"
-                rowKey="item"
+                rowKey="item_key"
                 size="small"
                 columns={resultColumns}
                 dataSource={results}
@@ -207,7 +208,7 @@ export default function DeliveryCheckPage() {
                 pagination={false}
               />
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                执行时间：{formatDateTime(check.created_at)}
+                执行时间：{formatDateTime(check.started_at)}
                 {check.finished_at ? `；完成时间：${formatDateTime(check.finished_at)}` : ''}
               </Typography.Text>
             </Space>

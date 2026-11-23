@@ -207,7 +207,7 @@ prev := ""
 | start_time / end_time | RFC3339 | 可选，分别按 `occurred_at >=` / `occurred_at <` 过滤，格式错误 400 |
 | page / page_size | 整数 | 默认 1 / 20；page<1 归一为 1；page_size ≤0 或 >100 归一为 20 |
 
-过滤条件全部参数化（`$n` 占位），结果按 `occurred_at DESC` 返回，响应为标准分页结构（`response.Page`：items + total + page + page_size）。列表返回列为：`occurred_at, user_id, username, action, task_type, agent_code, tool_code, model_code, input_tokens, output_tokens, duration_ms, estimated_cost, request_summary, result_summary, draft_reference`（不回传哈希字段、session_id、task_id、prompt_version、confirm_result）。
+过滤条件全部参数化（`$n` 占位），结果按 `occurred_at DESC` 返回，响应为标准分页结构（`response.Page`：items + total + page + page_size）。列表返回列为：`id, occurred_at, user_id, username, role_codes, session_id, task_id, action, task_type, agent_code, tool_code, model_code, prompt_version, input_tokens, output_tokens, duration_ms, estimated_cost, request_summary, result_summary, draft_reference, confirm_result`（与 `GET /api/v1/ai/audits/{id}` 详情口径一致，不回传 `previous_hash`、`record_hash` 哈希字段）。
 
 校验接口（`AuditVerify`）：请求体 `{"limit": N}`（N≤0 取 10000，>100000 钳制为 100000），响应：
 
@@ -225,7 +225,7 @@ prev := ""
 | SYSTEM_ADMIN（系统管理员） | ✔ |
 | AUDIT_ADMIN（审计管理员） | ✔（仅 `ai.audits.read` + `ai.usage.read`，AI 审计只读） |
 
-前端 API 客户端已就绪：`web/src/api/ai.ts` 的 `aiAuditsApi`（`list` / `verify`）。AI 审计查询与校验均为只读操作，自身不再写入 `operation_audits`。
+前端 API 客户端已就绪：`web/src/api/ai.ts` 的 `aiAuditsApi`（`list` / `get` / `verify`）。AI 审计查询与校验均为只读操作，自身不再写入 `operation_audits`。
 
 ## 8. 实现现状说明（已知限制）
 

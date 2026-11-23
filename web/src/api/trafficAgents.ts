@@ -68,9 +68,9 @@ export interface TrafficAgentInterface {
 /** 当前策略绑定（详情接口返回，无绑定时为 null） */
 export interface TrafficPolicyBinding {
   policy_id: string
-  name?: string
-  version?: number
-  applied_version?: number
+  policy_name: string
+  policy_version: number
+  bound_by?: string
   bound_at?: string
 }
 
@@ -94,11 +94,13 @@ export interface TrafficK8sMetadata {
 }
 
 export interface TrafficFlowEvent {
+  id?: number
+  agent_id?: string
   event_type: 'request' | 'flow_end' | string
   flow_id: string
-  /** Unix 秒（契约 §3.4 字段名 timestamp；列表端点如按 ts 命名则取 ts） */
+  /** 管理端事件列表返回 RFC3339 字符串 ts；兼容保留 Unix 秒 number 与 timestamp */
+  ts?: string | number
   timestamp?: number
-  ts?: number
   src_ip: string
   src_port: number
   dst_ip: string
@@ -237,15 +239,23 @@ export interface TrafficHttpEventsParams extends TrafficPageParams {
   method?: string
 }
 
+export type TrafficEnrollmentTokenStatus =
+  | 'ACTIVE'
+  | 'USED'
+  | 'REVOKED'
+  | 'EXPIRED'
+
 /** 注册令牌列表项（GET /traffic/agents/enrollment-tokens；不含明文 token） */
 export interface TrafficEnrollmentTokenItem {
   id: string
   label: string
-  created_at?: string
+  status: TrafficEnrollmentTokenStatus | string
   expires_at: string
-  used?: boolean
-  revoked?: boolean
-  expired?: boolean
+  used_at?: string | null
+  used_by_agent_id?: string | null
+  revoked_at?: string | null
+  created_by?: string
+  created_at?: string
 }
 
 /** 创建注册令牌响应（token 明文仅此一次返回） */
@@ -351,7 +361,7 @@ export const trafficAgentsApi = {
         body,
       },
     ),
-  /** GET /traffic/agents/enrollment-tokens：令牌列表（不含明文，含 used/revoked/expired 状态） */
+  /** GET /traffic/agents/enrollment-tokens：令牌列表（不含明文，含 ACTIVE/USED/REVOKED/EXPIRED 派生状态） */
   enrollmentTokens: async () => {
     const data = await request<ItemsPage<TrafficEnrollmentTokenItem>>(
       '/traffic/agents/enrollment-tokens',

@@ -20,6 +20,7 @@ const LEARNING_JOB_STATUS_META: Record<string, { color: string; label: string }>
   RUNNING: { color: 'processing', label: '运行中' },
   STOPPED: { color: 'default', label: '已停止' },
   COMPLETED: { color: 'green', label: '已完成' },
+  FAILED: { color: 'red', label: '失败' },
 }
 
 /** API 学习中心（WDSP / 阶段8）：按接口查看学习状态、学习任务与采集样本，可启动/停止学习 */

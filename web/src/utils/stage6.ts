@@ -45,23 +45,23 @@ export const REPORT_FORMAT_META: Record<string, { color: string; label: string }
   docx: { color: 'geekblue', label: 'Word 文档' },
 }
 
-/** 报告模板可开关章节（与报告结构对应，key 为后端约定标识） */
+/** 报告模板可开关章节（与报告结构对应，key 为后端 SectionTitles 约定标识） */
 export const REPORT_SECTION_OPTIONS: { value: string; label: string }[] = [
   { value: 'summary', label: '管理摘要' },
   { value: 'traffic', label: '请求流量' },
-  { value: 'security_events', label: '安全事件总览' },
-  { value: 'risk_levels', label: '风险等级' },
+  { value: 'events_overview', label: '安全事件总览' },
+  { value: 'risk_level', label: '风险等级' },
   { value: 'attack_types', label: '攻击类型' },
   { value: 'source_ips', label: '攻击源IP' },
   { value: 'applications', label: '被攻击应用' },
-  { value: 'rules', label: '命中规则' },
-  { value: 'cc', label: '频率与 CC 防护' },
-  { value: 'access_control', label: '黑白名单' },
+  { value: 'rule_hits', label: '命中规则' },
+  { value: 'cc_protection', label: '频率与 CC 防护' },
+  { value: 'ip_lists', label: '黑白名单' },
   { value: 'disposition', label: '事件处置' },
-  { value: 'upstreams', label: '源站健康' },
+  { value: 'upstream_health', label: '源站健康' },
   { value: 'certificates', label: '证书状态' },
-  { value: 'runtime', label: '系统运行' },
-  { value: 'conclusion', label: '结论和建议' },
+  { value: 'system_health', label: '系统运行' },
+  { value: 'conclusions', label: '结论和建议' },
 ]
 
 /** 系统告警等级 */
@@ -258,9 +258,9 @@ export function summarizeCheckResult(items: { result: string }[]): string {
   return 'PASS'
 }
 
-/** 交付检查任务是否终态 */
+/** 交付检查任务是否终态（overall_result 终态：PASS / WARNING / FAIL；PENDING 为进行中） */
 export function isTerminalDeliveryStatus(status: string): boolean {
-  return status === 'SUCCESS' || status === 'FAILED' || status === 'COMPLETED'
+  return status === 'PASS' || status === 'WARNING' || status === 'FAIL'
 }
 
 /** 运行时长人性化展示（秒数或后端字符串原样展示） */

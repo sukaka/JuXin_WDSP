@@ -39,6 +39,7 @@ export default function AiEvaluationsPage() {
   const queryClient = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canRun = hasPermission(permissions, 'ai.evaluations.run')
+  const canViewFeedback = hasPermission(permissions, 'ai.usage.read')
   const [createOpen, setCreateOpen] = useState(false)
   const [detailSet, setDetailSet] = useState<AiEvalSet | null>(null)
   const [detailRun, setDetailRun] = useState<AiEvalRun | null>(null)
@@ -58,10 +59,11 @@ export default function AiEvaluationsPage() {
     queryKey: ['ai-evaluation-runs'],
     queryFn: () => aiEvaluationsApi.listRuns({ page: 1, page_size: 20 }),
   })
-  /** 用户反馈聚合（按任务类型 × 反馈类型；不含 comment 明细） */
+  /** 用户反馈聚合（按任务类型 × 反馈类型；不含 comment 明细；后端权限 ai.usage.read） */
   const feedbackQuery = useQuery({
     queryKey: ['ai-feedback-summary', feedbackDays],
     queryFn: () => aiFeedbackApi.summary(feedbackDays),
+    enabled: canViewFeedback,
   })
 
   const createMutation = useMutation({
@@ -251,36 +253,38 @@ export default function AiEvaluationsPage() {
         )}
       </Card>
 
-      <Card
-        title="反馈质量"
-        extra={
-          <Segmented<7 | 30>
-            value={feedbackDays}
-            options={[
-              { label: '近 7 天', value: 7 },
-              { label: '近 30 天', value: 30 },
-            ]}
-            onChange={setFeedbackDays}
-          />
-        }
-      >
-        <Typography.Paragraph type="secondary">
-          按任务类型与反馈类型聚合的用户评价（有用/无用）统计，仅展示聚合计数，不含反馈原文。
-        </Typography.Paragraph>
-        {feedbackQuery.isError ? (
-          <QueryErrorAlert error={feedbackQuery.error} message="加载反馈质量统计失败" />
-        ) : (
-          <SmartTable<AiFeedbackSummaryItem>
-            storageKey="ai-admin-feedback-summary"
-            rowKey={(r) => `${r.task_type}-${r.feedback_type}`}
-            size="middle"
-            loading={feedbackQuery.isLoading}
-            columns={feedbackColumns}
-            dataSource={feedbackQuery.data ?? []}
-            pagination={false}
-          />
-        )}
-      </Card>
+      {canViewFeedback && (
+        <Card
+          title="反馈质量"
+          extra={
+            <Segmented<7 | 30>
+              value={feedbackDays}
+              options={[
+                { label: '近 7 天', value: 7 },
+                { label: '近 30 天', value: 30 },
+              ]}
+              onChange={setFeedbackDays}
+            />
+          }
+        >
+          <Typography.Paragraph type="secondary">
+            按任务类型与反馈类型聚合的用户评价（有用/无用）统计，仅展示聚合计数，不含反馈原文。
+          </Typography.Paragraph>
+          {feedbackQuery.isError ? (
+            <QueryErrorAlert error={feedbackQuery.error} message="加载反馈质量统计失败" />
+          ) : (
+            <SmartTable<AiFeedbackSummaryItem>
+              storageKey="ai-admin-feedback-summary"
+              rowKey={(r) => `${r.task_type}-${r.feedback_type}`}
+              size="middle"
+              loading={feedbackQuery.isLoading}
+              columns={feedbackColumns}
+              dataSource={feedbackQuery.data ?? []}
+              pagination={false}
+            />
+          )}
+        </Card>
+      )}
 
       <RecordDetailDrawer
         open={detailSet !== null}

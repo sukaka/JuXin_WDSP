@@ -48,9 +48,11 @@ const endpointsData = {
 }
 
 const runningStatus = {
+  endpoint_id: 'e1',
   learning_status: 'LEARNING',
   job: {
     id: 'j1',
+    endpoint_id: 'e1',
     status: 'RUNNING',
     sample_target: 500,
     collected_count: 320,
@@ -60,21 +62,29 @@ const runningStatus = {
     started_at: '2026-07-20T02:00:00Z',
     stopped_at: null,
   },
-  samples_total: 320,
-  samples_valid: 280,
-  samples_excluded: 40,
+  samples: {
+    total: 320,
+    accepted: 280,
+    excluded: 40,
+  },
 }
 
 const notStartedStatus = {
+  endpoint_id: 'e1',
   learning_status: 'NOT_STARTED',
   job: null,
+  samples: {
+    total: 0,
+    accepted: 0,
+    excluded: 0,
+  },
 }
 
 const samplesData = {
   items: [
     {
       id: 's1',
-      api_endpoint_id: 'e1',
+      endpoint_id: 'e1',
       request_id: 'r1',
       sample_hash: 'abcdef1234567890',
       source_fingerprint: '',
@@ -86,7 +96,7 @@ const samplesData = {
     },
     {
       id: 's2',
-      api_endpoint_id: 'e1',
+      endpoint_id: 'e1',
       request_id: 'r2',
       sample_hash: '0011223344556677',
       source_fingerprint: '',
@@ -227,5 +237,17 @@ describe('ApiLearningPage', () => {
       expect(startCall).toBeTruthy()
       expect(JSON.parse(startCall?.body ?? '')).toEqual({ sample_target: 500 })
     })
+  })
+
+  it('任务状态 FAILED：渲染中文状态「失败」与错误原因', async () => {
+    statusBody = {
+      ...runningStatus,
+      learning_status: 'PAUSED',
+      job: { ...runningStatus.job, status: 'FAILED', last_error: '样本超时' },
+    }
+    useAuthStore.setState({ user: makeUser(['api_learning.read']), csrfToken: null, initialized: true })
+    renderPage()
+    expect(await screen.findByText('失败')).toBeInTheDocument()
+    expect(screen.getByText('样本超时')).toBeInTheDocument()
   })
 })

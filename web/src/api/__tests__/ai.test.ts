@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  aiAnalyzeApi,
+  aiAuditsApi,
   aiChatApi,
+  aiPromptsApi,
   patchAiAgent,
   patchAiProvider,
   patchAiTool,
@@ -144,5 +147,80 @@ describe('ai.ts 自制封装收敛与全局回调纪律', () => {
     ).rejects.toBeInstanceOf(ApiError)
     expect(onLicenseInvalid).toHaveBeenCalledTimes(1)
     expect(onExpired).not.toHaveBeenCalled()
+  })
+
+  it('aiPromptsApi.testVersion：使用 21 分钟（1_260_000ms）超时避免回归请求在 60s 中断', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(200, {
+          code: 'SUCCESS',
+          message: 'ok',
+          data: { test_result: 'PASSED', checks: [], test_detail: { static_checks: [] } },
+        }),
+      )
+      const res = await aiPromptsApi.testVersion('v1')
+      expect(res.test_result).toBe('PASSED')
+      expect(String(fetchMock.mock.calls[0][0])).toBe('/api/v1/ai/prompts/versions/v1/test')
+      expect(fetchMock.mock.calls[0][1]?.method).toBe('POST')
+      expect(timeoutSpy).toHaveBeenCalledWith(1_260_000)
+    } finally {
+      timeoutSpy.mockRestore()
+    }
+  })
+
+  it('aiAuditsApi.get：解包 data.audit 并保留 id / prompt_version / confirm_result', async () => {
+    const audit = {
+      id: 'audit-1',
+      occurred_at: '2026-11-20T03:00:00Z',
+      username: 'secadmin',
+      role_codes: 'SECURITY_ADMIN',
+      action: 'prompt_test',
+      task_type: 'EVENT_ANALYSIS',
+      agent_code: '',
+      tool_code: '',
+      model_code: 'qwen2.5:3b',
+      prompt_version: 'v3',
+      input_tokens: 10,
+      output_tokens: 20,
+      duration_ms: 50,
+      estimated_cost: 0.001,
+      request_summary: 'test',
+      result_summary: 'PASSED',
+      draft_reference: '',
+      confirm_result: 'CONFIRMED',
+    }
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { audit } }),
+    )
+    const got = await aiAuditsApi.get('audit-1')
+    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/v1/ai/audits/audit-1')
+    expect(got).toEqual(audit)
+  })
+
+  it('aiAnalyzeApi：reportSummary / attackProfile / event 透传 question 字段', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { task_id: 't1', answer: 'ok' } }),
+      ),
+    )
+    await aiAnalyzeApi.reportSummary({ period: '近7天', question: 'ERP 应用重点总结' })
+    await aiAnalyzeApi.attackProfile({ ip: '203.0.113.10', question: '关注撞库手法' })
+    await aiAnalyzeApi.event({
+      event_id: '11111111-2222-3333-4444-555555555555',
+      question: '检查是否绕过',
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      period: '近7天',
+      question: 'ERP 应用重点总结',
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
+      ip: '203.0.113.10',
+      question: '关注撞库手法',
+    })
+    expect(JSON.parse(String(fetchMock.mock.calls[2][1]?.body))).toEqual({
+      event_id: '11111111-2222-3333-4444-555555555555',
+      question: '检查是否绕过',
+    })
   })
 })

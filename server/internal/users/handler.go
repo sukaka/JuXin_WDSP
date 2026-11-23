@@ -539,6 +539,7 @@ func userItem(u *User, roles []RoleInfo) map[string]interface{} {
 		"display_name":         u.DisplayName,
 		"status":               u.Status,
 		"must_change_password": u.MustChangePassword,
+		"totp_enabled":         u.TOTPEnabled,
 		"password_expires_at":  u.PasswordExpiresAt,
 		"locked_until":         u.LockedUntil,
 		"last_login_at":        u.LastLoginAt,

@@ -71,7 +71,12 @@ const CHANNELS: NotificationChannel[] = [
   },
 ]
 
-function makeSetting(key: string, value: string, version: number, valueType = 'integer'): SettingItem {
+function makeSetting(
+  key: string,
+  value: string | number | boolean,
+  version: number,
+  valueType = 'integer',
+): SettingItem {
   return {
     id: `st-${key}`,
     setting_group: 'notify',
@@ -86,10 +91,10 @@ function makeSetting(key: string, value: string, version: number, valueType = 'i
 }
 
 const NOTIFY_SETTINGS: SettingItem[] = [
-  makeSetting('notify_rate_limit_per_minute', '10', 1),
-  makeSetting('notify_mute_minutes', '30', 2),
-  makeSetting('notify_group_window_seconds', '60', 3),
-  makeSetting('notify_resolved', 'false', 4, 'boolean'),
+  makeSetting('notify_rate_limit_per_minute', 10, 1),
+  makeSetting('notify_mute_minutes', 30, 2),
+  makeSetting('notify_group_window_seconds', 60, 3),
+  makeSetting('notify_resolved', false, 4, 'boolean'),
 ]
 
 function mockFetch() {
@@ -115,9 +120,7 @@ function mockFetch() {
     }
     if (url.includes('/notification-channels')) return ok({ items: CHANNELS })
     if (url.includes('/system-settings') && method === 'PUT') {
-      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
-      const item = NOTIFY_SETTINGS.find((i) => i.setting_key === body.setting_key)!
-      return ok({ ...item, setting_value: body.setting_value, version: item.version + 1 })
+      return ok({ message: '设置已更新' })
     }
     if (url.includes('/system-settings')) return ok({ items: NOTIFY_SETTINGS })
     return Promise.reject(new Error(`unexpected url: ${url} method=${method}`))
@@ -366,7 +369,7 @@ describe('AlertNotificationsPage', () => {
     expect(await screen.findByText('测试消息已发送')).toBeInTheDocument()
   })
 
-  it('风暴抑制参数：修改速率限制后保存，4 个键逐一 PUT', async () => {
+  it('风暴抑制参数：修改速率限制与恢复通知后保存，4 个键按原生整数与布尔 PUT', async () => {
     renderPage()
     // 等待抑制参数加载（速率限制初始值 10）
     const spinbuttons = await screen.findAllByRole('spinbutton')
@@ -382,14 +385,94 @@ describe('AlertNotificationsPage', () => {
     const byKey = new Map(bodies.map((b) => [b.setting_key, b]))
     expect(byKey.get('notify_rate_limit_per_minute')).toMatchObject({
       setting_group: 'notify',
-      setting_value: '20',
+      setting_value: 20,
       version: 1,
     })
-    expect(byKey.get('notify_mute_minutes')).toMatchObject({ setting_value: '30', version: 2 })
+    expect(typeof byKey.get('notify_rate_limit_per_minute')?.setting_value).toBe('number')
+    expect(byKey.get('notify_mute_minutes')).toMatchObject({ setting_value: 30, version: 2 })
     expect(byKey.get('notify_group_window_seconds')).toMatchObject({
-      setting_value: '60',
+      setting_value: 60,
       version: 3,
     })
-    expect(byKey.get('notify_resolved')).toMatchObject({ setting_value: 'false', version: 4 })
+    expect(byKey.get('notify_resolved')).toMatchObject({ setting_value: false, version: 4 })
+    expect(typeof byKey.get('notify_resolved')?.setting_value).toBe('boolean')
+  })
+
+  it('风暴抑制参数：后端返回原生 true 时恢复通知开关默认开启，关闭后提交 boolean false', async () => {
+    const resolvedEnabledSettings: SettingItem[] = [
+      makeSetting('notify_rate_limit_per_minute', 15, 1),
+      makeSetting('notify_mute_minutes', 0, 2),
+      makeSetting('notify_group_window_seconds', 30, 3),
+      makeSetting('notify_resolved', true, 4, 'boolean'),
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        const ok = (data: unknown) =>
+          Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
+        if (url.includes('/notification-meta')) return ok(META)
+        if (url.includes('/notification-channels')) return ok({ items: CHANNELS })
+        if (url.includes('/system-settings') && method === 'PUT') return ok({ message: '设置已更新' })
+        if (url.includes('/system-settings')) return ok({ items: resolvedEnabledSettings })
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+
+    renderPage()
+    await screen.findByText('运维值班群')
+    const allSwitches = screen.getAllByRole('switch')
+    // 前 2 个为渠道行开关，第 3 个为风暴抑制「恢复通知」开关
+    const resolvedSwitch = allSwitches[2]
+    await waitFor(() => expect(resolvedSwitch).toBeChecked())
+
+    fireEvent.click(screen.getByRole('button', { name: /^保\s*存$/ }))
+    await waitFor(() => expect(findCalls('/system-settings', 'PUT')).toHaveLength(4))
+    const bodies = findCalls('/system-settings', 'PUT').map(bodyOf)
+    const byKey = new Map(bodies.map((b) => [b.setting_key, b]))
+    expect(byKey.get('notify_resolved')?.setting_value).toBe(true)
+    expect(byKey.get('notify_mute_minutes')?.setting_value).toBe(0)
+  })
+
+  it('编辑企业微信渠道：脱敏 ******** 原样保留并通过校验，非法 URL 仍拦截', async () => {
+    renderPage()
+    await screen.findByText('运维值班群')
+    fireEvent.click(screen.getAllByRole('button', { name: /^编\s*辑$/ })[0])
+    const dialog = await screen.findByRole('dialog')
+
+    expect(await within(dialog).findByLabelText('Webhook 地址')).toHaveValue('********')
+    fireEvent.change(within(dialog).getByLabelText('名称'), { target: { value: '运维值班群-新' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /确\s*定|^OK$/ }))
+
+    await waitFor(() =>
+      expect(findCalls('/notification-channels/ch-1', 'PUT')).toHaveLength(1),
+    )
+    const body = bodyOf(findCalls('/notification-channels/ch-1', 'PUT')[0])
+    expect(body.name).toBe('运维值班群-新')
+    expect(body.config).toEqual({ webhook_url: '********', mention_all: true })
+
+    // 再次编辑并改为非法 URL：应拦截而不发 PUT
+    fireEvent.click(screen.getAllByRole('button', { name: /^编\s*辑$/ })[0])
+    const dialog2 = await screen.findByRole('dialog')
+    fireEvent.change(await within(dialog2).findByLabelText('Webhook 地址'), {
+      target: { value: 'not-a-valid-url' },
+    })
+    fireEvent.click(within(dialog2).getByRole('button', { name: /确\s*定|^OK$/ }))
+    expect(await within(dialog2).findByText('Webhook 地址格式不正确')).toBeInTheDocument()
+    expect(findCalls('/notification-channels/ch-1', 'PUT')).toHaveLength(1)
+  })
+
+  it('新增企业微信渠道：不允许填 ******** 作为 Webhook 地址', async () => {
+    renderPage()
+    await screen.findByText('运维值班群')
+    fireEvent.click(screen.getByRole('button', { name: /新\s*增\s*渠\s*道/ }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('名称'), { target: { value: '新建群' } })
+    fireEvent.change(within(dialog).getByLabelText('Webhook 地址'), { target: { value: '********' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /确\s*定|^OK$/ }))
+
+    expect(await within(dialog).findByText('Webhook 地址格式不正确')).toBeInTheDocument()
+    expect(findCalls('/api/v1/notification-channels', 'POST')).toHaveLength(0)
   })
 })

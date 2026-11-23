@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { isBroadExceptionDraft, parseWafRuleTags } from '../stage4'
+import {
+  EXCEPTION_STATUS_META,
+  RULE_SOURCE_META,
+  isBroadExceptionDraft,
+  parseWafRuleTags,
+} from '../stage4'
 
 describe('parseWafRuleTags', () => {
   it('解析后端 base64 编码的 JSON 数组（[]byte 序列化行为）', () => {
@@ -80,5 +85,25 @@ describe('isBroadExceptionDraft（镜像后端 exceptions.IsBroad）', () => {
     expect(
       isBroadExceptionDraft({ scope_type: 'GLOBAL', rule_ids: [942100], attack_types: ['SQL_INJECTION'] }),
     ).toBe(false)
+  })
+})
+
+describe('EXCEPTION_STATUS_META / RULE_SOURCE_META（B4-05 / B8-04）', () => {
+  it('EXCEPTION_STATUS_META 包含 DRAFT 草稿状态', () => {
+    expect(EXCEPTION_STATUS_META.DRAFT).toEqual({ color: 'default', label: '草稿' })
+    expect(Object.keys(EXCEPTION_STATUS_META)).toEqual(['DRAFT', 'ENABLED', 'DISABLED', 'EXPIRED'])
+  })
+
+  it('RULE_SOURCE_META 不含无效的 CUSTOM，保留后端 6 个合法来源', () => {
+    expect(RULE_SOURCE_META.CUSTOM).toBeUndefined()
+    expect(Object.keys(RULE_SOURCE_META).sort()).toEqual([
+      'CRS_PLUGIN',
+      'CUSTOM_PACK',
+      'JIUZHANG_BUILTIN',
+      'OWASP_CRS',
+      'THIRD_PARTY',
+      'USER_CUSTOM',
+    ])
+    expect(RULE_SOURCE_META.USER_CUSTOM).toEqual({ color: 'purple', label: '用户自定义' })
   })
 })

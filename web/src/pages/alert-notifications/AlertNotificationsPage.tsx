@@ -189,6 +189,11 @@ const SUPPRESSION_DEFS: SuppressionDef[] = [
   },
 ]
 
+function coerceSuppressionValue(def: SuppressionDef, raw: string): number | boolean {
+  if (def.boolean) return raw === 'true'
+  return Number(raw)
+}
+
 function SuppressionPanel({ canUpdate }: { canUpdate: boolean }) {
   const { message } = AntdApp.useApp()
   const queryClient = useQueryClient()
@@ -204,7 +209,8 @@ function SuppressionPanel({ canUpdate }: { canUpdate: boolean }) {
     const items = listQuery.data.items ?? []
     const next: Record<string, string> = {}
     for (const def of SUPPRESSION_DEFS) {
-      next[def.key] = items.find((i) => i.setting_key === def.key)?.setting_value ?? def.def
+      const raw = items.find((i) => i.setting_key === def.key)?.setting_value
+      next[def.key] = raw !== undefined && raw !== null ? String(raw) : def.def
     }
     setDrafts(next)
     setInitialized(true)
@@ -218,7 +224,7 @@ function SuppressionPanel({ canUpdate }: { canUpdate: boolean }) {
           settingsApi.update({
             setting_group: 'notify',
             setting_key: def.key,
-            setting_value: drafts[def.key] ?? def.def,
+            setting_value: coerceSuppressionValue(def, drafts[def.key] ?? def.def),
             version: items.find((i) => i.setting_key === def.key)?.version ?? 0,
           }),
         ),
@@ -232,6 +238,23 @@ function SuppressionPanel({ canUpdate }: { canUpdate: boolean }) {
       message.error(e instanceof ApiError ? e.message : '保存失败')
     },
   })
+
+  const handleSave = () => {
+    for (const def of SUPPRESSION_DEFS) {
+      if (def.boolean) continue
+      const raw = (drafts[def.key] ?? def.def).trim()
+      const n = Number(raw)
+      if (raw === '' || !Number.isInteger(n)) {
+        message.error(`${def.label}需为有效整数`)
+        return
+      }
+      if ((def.min !== undefined && n < def.min) || (def.max !== undefined && n > def.max)) {
+        message.error(`${def.label}需在 ${def.min ?? '-∞'}~${def.max ?? '+∞'} 之间`)
+        return
+      }
+    }
+    saveMutation.mutate()
+  }
 
   if (listQuery.isError) {
     return <QueryErrorAlert error={listQuery.error} message="加载抑制参数失败" />
@@ -254,11 +277,12 @@ function SuppressionPanel({ canUpdate }: { canUpdate: boolean }) {
             />
           ) : (
             <InputNumber
-              value={Number(drafts[def.key] ?? def.def)}
+              value={(drafts[def.key] ?? def.def) === '' ? null : Number(drafts[def.key] ?? def.def)}
               min={def.min}
               max={def.max}
+              precision={0}
               disabled={!canUpdate}
-              onChange={(v) => setDrafts((d) => ({ ...d, [def.key]: String(v ?? def.def) }))}
+              onChange={(v) => setDrafts((d) => ({ ...d, [def.key]: v === null ? '' : String(v) }))}
               style={{ width: 160 }}
             />
           )}
@@ -272,7 +296,7 @@ function SuppressionPanel({ canUpdate }: { canUpdate: boolean }) {
           type="primary"
           style={{ alignSelf: 'flex-start' }}
           loading={saveMutation.isPending}
-          onClick={() => saveMutation.mutate()}
+          onClick={handleSave}
         >
           保存
         </Button>
@@ -309,6 +333,21 @@ export default function AlertNotificationsPage() {
   const [detailRecord, setDetailRecord] = useState<NotificationChannel | null>(null)
   const [form] = Form.useForm<ChannelFormValues>()
   const formType = Form.useWatch('type', form)
+
+  const validateWebhookUrl = (_: unknown, value: string | undefined) => {
+    const raw = value ?? ''
+    if (!raw.trim()) return Promise.resolve()
+    if (editing !== null && raw === '********') return Promise.resolve()
+    try {
+      const parsed = new URL(raw.trim())
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return Promise.resolve()
+      }
+    } catch {
+      // ignore invalid URL parse errors
+    }
+    return Promise.reject(new Error('Webhook 地址格式不正确'))
+  }
 
   const invalidateChannels = () =>
     queryClient.invalidateQueries({ queryKey: ['notification-channels'] })
@@ -629,8 +668,9 @@ export default function AlertNotificationsPage() {
                 label="Webhook 地址"
                 rules={[
                   { required: true, message: '请输入 Webhook 地址' },
-                  { type: 'url', message: 'Webhook 地址格式不正确' },
+                  { validator: validateWebhookUrl },
                 ]}
+                extra={editing ? '保持 ******** 不变表示不修改原值' : undefined}
               >
                 <Input
                   placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
@@ -649,8 +689,9 @@ export default function AlertNotificationsPage() {
                 label="Webhook 地址"
                 rules={[
                   { required: true, message: '请输入 Webhook 地址' },
-                  { type: 'url', message: 'Webhook 地址格式不正确' },
+                  { validator: validateWebhookUrl },
                 ]}
+                extra={editing ? '保持 ******** 不变表示不修改原值' : undefined}
               >
                 <Input
                   placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..."

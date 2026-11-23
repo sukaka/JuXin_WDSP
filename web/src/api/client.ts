@@ -19,7 +19,7 @@ const PUBLIC_AUTH_401_PATHS = new Set([
   '/auth/me',
   '/auth/logout',
   '/auth/captcha',
-  '/auth/totp/verify',
+  '/auth/totp-verify',
 ])
 
 function isPublicAuth401Path(path: string): boolean {

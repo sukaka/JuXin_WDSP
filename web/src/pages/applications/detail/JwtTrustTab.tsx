@@ -86,6 +86,7 @@ interface IssuerFormValue {
   url?: string
   clock_skew_seconds: number
   tenant_claim?: string
+  role_claims?: string[]
 }
 
 interface PolicyFormValues {
@@ -124,6 +125,13 @@ function toIssuers(values: IssuerFormValue[]): JwtTrustIssuer[] {
     clock_skew_seconds:
       is.clock_skew_seconds ?? JWT_TRUST_LIMITS.defaultClockSkew,
     tenant_claim: is.tenant_claim?.trim() ? is.tenant_claim.trim() : undefined,
+    role_claims: Array.from(
+      new Set(
+        (is.role_claims ?? [])
+          .map((c) => c.trim())
+          .filter((c) => c.length > 0),
+      ),
+    ),
   }))
 }
 
@@ -172,6 +180,7 @@ export default function JwtTrustTab({
         clock_skew_seconds:
           is.clock_skew_seconds ?? JWT_TRUST_LIMITS.defaultClockSkew,
         tenant_claim: is.tenant_claim ?? '',
+        role_claims: is.role_claims ?? [],
       })),
       reason: '',
     })
@@ -530,7 +539,7 @@ export default function JwtTrustTab({
                     style={{ marginBottom: 12 }}
                     title={`发行方 #${field.name + 1}`}
                     extra={
-                      <Tooltip title="删除此发行方">
+                      <Tooltip title="删除此发行方" placement="left">
                         <Button
                           type="text"
                           danger
@@ -636,6 +645,10 @@ export default function JwtTrustTab({
                         style={{ width: 220 }}
                         rules={[
                           {
+                            max: JWT_TRUST_LIMITS.maxTenantClaimLen,
+                            message: `租户声明名长度不能超过 ${JWT_TRUST_LIMITS.maxTenantClaimLen}`,
+                          },
+                          {
                             pattern: /^[A-Za-z_][A-Za-z0-9_-]*$/,
                             message:
                               '字母/数字/下划线/短横线，字母或下划线开头',
@@ -643,6 +656,61 @@ export default function JwtTrustTab({
                         ]}
                       >
                         <Input placeholder="如 tenant_id" autoComplete="off" />
+                      </Form.Item>
+                      <Form.Item
+                        name={[field.name, 'role_claims']}
+                        label="角色声明名（可选）"
+                        extra={`仅在验证通过后读取，不自动猜测；最多 ${JWT_TRUST_LIMITS.maxRoleClaims} 项`}
+                        style={{ minWidth: 280 }}
+                        rules={[
+                          {
+                            validator: (_, value: string[] | undefined) => {
+                              if (!value || value.length === 0)
+                                return Promise.resolve()
+                              const normalized: string[] = []
+                              const seen = new Set<string>()
+                              for (const raw of value) {
+                                const trimmed = raw.trim()
+                                if (!trimmed) continue
+                                if (
+                                  trimmed.length >
+                                    JWT_TRUST_LIMITS.maxRoleClaimLen ||
+                                  !/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(
+                                    trimmed,
+                                  )
+                                ) {
+                                  return Promise.reject(
+                                    new Error(
+                                      `角色声明名格式不合法（字母/数字/下划线/短横线，字母或下划线开头，最长 ${JWT_TRUST_LIMITS.maxRoleClaimLen} 字符）`,
+                                    ),
+                                  )
+                                }
+                                if (!seen.has(trimmed)) {
+                                  seen.add(trimmed)
+                                  normalized.push(trimmed)
+                                }
+                              }
+                              if (
+                                normalized.length >
+                                JWT_TRUST_LIMITS.maxRoleClaims
+                              ) {
+                                return Promise.reject(
+                                  new Error(
+                                    `角色声明名最多 ${JWT_TRUST_LIMITS.maxRoleClaims} 项`,
+                                  ),
+                                )
+                              }
+                              return Promise.resolve()
+                            },
+                          },
+                        ]}
+                      >
+                        <Select
+                          mode="tags"
+                          placeholder="如 roles、groups，输入后回车添加"
+                          open={false}
+                          tokenSeparators={[',']}
+                        />
                       </Form.Item>
                     </Space>
                     <Form.Item
@@ -740,6 +808,7 @@ export default function JwtTrustTab({
                       url: '',
                       clock_skew_seconds: JWT_TRUST_LIMITS.defaultClockSkew,
                       tenant_claim: '',
+                      role_claims: [],
                     })
                   }
                 >

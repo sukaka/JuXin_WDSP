@@ -14,7 +14,7 @@ export type ApiWeaknessStatus =
   | 'ARCHIVED'
 
 /** 弱点分类（category 列取值） */
-export type ApiWeaknessCategory = 'AUTHN' | 'LIFECYCLE' | 'SENSITIVE' | 'SCHEMA'
+export type ApiWeaknessCategory = 'AUTHN' | 'AUTHZ' | 'LIFECYCLE' | 'SENSITIVE' | 'SCHEMA'
 
 /** 复测结果（POST /{id}/retest 请求体 result 字段） */
 export type ApiWeaknessRetestResult = 'PASS' | 'FAIL'

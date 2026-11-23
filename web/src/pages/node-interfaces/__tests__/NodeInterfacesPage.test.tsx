@@ -116,7 +116,7 @@ describe('NodeInterfacesPage', () => {
     vi.mocked(nodeInterfacesApi.list).mockReset()
     vi.mocked(nodeInterfacesApi.saveOrder).mockReset()
     vi.mocked(nodeInterfacesApi.list).mockResolvedValue({ nodes })
-    vi.mocked(nodeInterfacesApi.saveOrder).mockResolvedValue({ message: '排序已保存' })
+    vi.mocked(nodeInterfacesApi.saveOrder).mockResolvedValue({ nodes })
   })
 
   it('渲染节点分组与接口行：介质标签、速率、断开与已离线标注', async () => {

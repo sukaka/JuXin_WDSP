@@ -53,42 +53,58 @@ const versions = [
   },
 ]
 
-/** 带 test_detail 的版本测试响应：一个未通过集（含逐用例摘要与失败原因）+ 一个通过集 + 静态检查 */
+/** 与后端 PromptVersionTest 契约一致的真实响应（含顶层 regression 与 test_detail.regression/static_checks/failure_summary） */
+const TEST_DETAIL_REGRESSION = {
+  model: 'qwen2.5:3b',
+  failure_summary: 'eval_insufficient_data（得分 66.67 < 阈值 80）；eval_api_security_analysis（评估集未部署）',
+  sets: [
+    {
+      code: 'eval_prompt_injection',
+      threshold: 100,
+      score: 100,
+      passed: true,
+      total: 4,
+      passed_count: 4,
+      case_errors: 0,
+      run_id: 'run-1111',
+    },
+    {
+      code: 'eval_insufficient_data',
+      threshold: 80,
+      score: 66.67,
+      passed: false,
+      total: 3,
+      passed_count: 2,
+      case_errors: 1,
+      run_id: 'run-2222',
+    },
+    {
+      code: 'eval_api_security_analysis',
+      threshold: 80,
+      score: 0,
+      passed: false,
+      total: 0,
+      passed_count: 0,
+      case_errors: 0,
+      error: '评估集未部署',
+    },
+  ],
+}
+
 const TEST_DETAIL_RESPONSE = {
   test_result: 'FAILED',
-  checks: [{ name: '长度检查', passed: true }],
+  checks: [
+    { name: '非空与长度（≤50000 字符）', passed: true },
+    { name: '禁止内容扫描（密钥/Shell/越权/思维链）', passed: true },
+  ],
+  regression: TEST_DETAIL_REGRESSION,
   test_detail: {
-    sets: [
-      {
-        code: 'event_analysis_v1',
-        name: '事件分析回归集',
-        score: 0.62,
-        threshold: 0.8,
-        passed: false,
-        total: 5,
-        passed_count: 3,
-        model_code: 'gpt-4o-mini',
-        message: '得分低于阈值',
-        cases: [
-          { id: 'case-1', question: '942100 是什么规则', passed: true },
-          { id: 'case-2', question: '分析该安全事件', passed: false, message: '回答缺少证据引用' },
-        ],
-      },
-      {
-        code: 'qa_v1',
-        name: '安全问答集',
-        score: 0.95,
-        threshold: 0.8,
-        passed: true,
-        total: 4,
-        passed_count: 4,
-        model_code: 'gpt-4o-mini',
-      },
-    ],
     static_checks: [
-      { name: '长度检查', passed: true },
-      { name: '占位符检查', passed: false, message: '缺少 {input} 占位符' },
+      { name: '非空与长度（≤50000 字符）', passed: true },
+      { name: '禁止内容扫描（密钥/Shell/越权/思维链）', passed: true },
     ],
+    regression: TEST_DETAIL_REGRESSION,
+    failure_summary: TEST_DETAIL_REGRESSION.failure_summary,
   },
 }
 
@@ -171,50 +187,67 @@ describe('AiPromptsPage · Prompt 版本回归测试明细（test_detail）', ()
     vi.unstubAllGlobals()
   })
 
-  it('带 test_detail 的响应：模型回归与静态检查分区展示，整体结果取 test_result', async () => {
+  it('带 test_detail.regression 的响应：展示模型回归测试、模型、失败摘要与静态检查', async () => {
     renderPage()
     const dialog = await runTestAndGetDialog()
     expect(testCalls[0]).toBe('/api/v1/ai/prompts/versions/v1/test')
-    // 整体结论来自 test_result=FAILED（antd modal 标题渲染多处，按集合断言）；两个分区标题同时存在
     expect(within(dialog).getAllByText('测试未通过').length).toBeGreaterThan(0)
     expect(within(dialog).getByText('模型回归测试')).toBeInTheDocument()
     expect(within(dialog).getByText('静态检查')).toBeInTheDocument()
+    expect(within(dialog).getByText(/失败摘要：eval_insufficient_data/)).toBeInTheDocument()
+    expect(within(dialog).getAllByText('qwen2.5:3b').length).toBeGreaterThanOrEqual(3)
   })
 
-  it('回归集卡片：分数/阈值/通过数/模型/失败原因如实展示', async () => {
+  it('回归集卡片：展示百分制得分/阈值、通过用例、case_errors、run_id 与集合级 error', async () => {
     renderPage()
     const dialog = await runTestAndGetDialog()
-    // 未通过集
-    expect(within(dialog).getByText('事件分析回归集')).toBeInTheDocument()
-    expect(within(dialog).getByText('event_analysis_v1')).toBeInTheDocument()
-    expect(within(dialog).getByText('0.62')).toBeInTheDocument()
-    expect(within(dialog).getAllByText(/阈值/)).toHaveLength(3)
-    expect(within(dialog).getAllByText(/0\.80/)).toHaveLength(2)
-    expect(within(dialog).getByText('通过用例 3/5')).toBeInTheDocument()
-    expect(within(dialog).getByText(/失败原因：得分低于阈值/)).toBeInTheDocument()
-    expect(within(dialog).getByText('未通过')).toBeInTheDocument()
-    // 通过集与模型编码
-    expect(within(dialog).getByText('安全问答集')).toBeInTheDocument()
+    // 评估集名称与编码
+    expect(within(dialog).getByText('Prompt Injection防护集')).toBeInTheDocument()
+    expect(within(dialog).getByText('eval_prompt_injection')).toBeInTheDocument()
+    expect(within(dialog).getByText('数据不足集')).toBeInTheDocument()
+    expect(within(dialog).getByText('eval_insufficient_data')).toBeInTheDocument()
+    expect(within(dialog).getByText('API 安全分析集')).toBeInTheDocument()
+    expect(within(dialog).getByText('eval_api_security_analysis')).toBeInTheDocument()
+
+    // 百分制得分 / 阈值与通过用例
+    expect(within(dialog).getByText('100.00')).toBeInTheDocument()
+    expect(within(dialog).getByText('66.67')).toBeInTheDocument()
     expect(within(dialog).getByText('通过用例 4/4')).toBeInTheDocument()
-    expect(within(dialog).getAllByText('gpt-4o-mini')).toHaveLength(2)
+    expect(within(dialog).getByText('通过用例 2/3')).toBeInTheDocument()
+    expect(within(dialog).getByText('用例异常 1')).toBeInTheDocument()
+    expect(within(dialog).getByText('run-1111')).toBeInTheDocument()
+    expect(within(dialog).getByText('run-2222')).toBeInTheDocument()
+    expect(within(dialog).getByText(/失败原因：评估集未部署/)).toBeInTheDocument()
     expect(within(dialog).getByText('通过')).toBeInTheDocument()
-    // 静态检查与模型回归分区，静态项不被称作回归
-    expect(within(dialog).getByText(/占位符检查/)).toBeInTheDocument()
-    expect(within(dialog).getByText(/缺少 \{input\} 占位符/)).toBeInTheDocument()
+    expect(within(dialog).getAllByText('未通过')).toHaveLength(2)
   })
 
-  it('逐用例摘要默认折叠，点击后展开失败用例原因', async () => {
+  it('静态检查未通过跳过回归时：展示 failure_summary 与「已跳过模型回归」', async () => {
+    testDetailResponse = {
+      test_result: 'FAILED',
+      checks: [
+        { name: '非空与长度（≤50000 字符）', passed: true },
+        { name: '禁止内容扫描（密钥/Shell/越权/思维链）', passed: false, message: '命中禁止内容' },
+      ],
+      test_detail: {
+        static_checks: [
+          { name: '非空与长度（≤50000 字符）', passed: true },
+          { name: '禁止内容扫描（密钥/Shell/越权/思维链）', passed: false, message: '命中禁止内容' },
+        ],
+        failure_summary: '静态检查未通过，跳过真实回归（候选内容不安全不进模型）',
+      },
+    }
     renderPage()
     const dialog = await runTestAndGetDialog()
-    // 折叠面板内容懒渲染：展开前不在 DOM 中
-    expect(within(dialog).queryByText('case-2')).not.toBeInTheDocument()
-    fireEvent.click(within(dialog).getByText('逐用例摘要（2 条）'))
-    expect(await within(dialog).findByText('case-2')).toBeInTheDocument()
-    expect(within(dialog).getByText(/分析该安全事件/)).toBeInTheDocument()
-    expect(within(dialog).getByText('回答缺少证据引用')).toBeInTheDocument()
+    expect(within(dialog).getByText('模型回归测试')).toBeInTheDocument()
+    expect(
+      within(dialog).getByText('失败摘要：静态检查未通过，跳过真实回归（候选内容不安全不进模型）'),
+    ).toBeInTheDocument()
+    expect(within(dialog).getByText('已跳过模型回归')).toBeInTheDocument()
+    expect(within(dialog).getByText(/命中禁止内容/)).toBeInTheDocument()
   })
 
-  it('旧版响应（无 test_detail）：保持静态测试标题且不出现实回归分区', async () => {
+  it('旧版响应（无 test_detail）：保持静态测试标题且不出现模型回归分区', async () => {
     testDetailResponse = {
       test_result: 'PASSED',
       checks: [{ name: '长度检查', passed: true }],

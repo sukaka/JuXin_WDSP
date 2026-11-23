@@ -306,4 +306,179 @@ describe('JwtTrustTab', () => {
     renderTab()
     expect(await screen.findByText('暂无权限查看')).toBeInTheDocument()
   })
+
+  it('B10-1: 回显并保留已有 issuers[].role_claims（保存草稿与发布预检均携带）', async () => {
+    const withRoleClaims = {
+      ...DRAFT_PENDING,
+      policy: {
+        ...DRAFT_PENDING.policy,
+        issuers: [
+          {
+            ...DRAFT_PENDING.policy.issuers[0],
+            tenant_claim: 'tenant_id',
+            role_claims: ['roles', 'groups'],
+          },
+        ],
+      },
+    }
+    vi.stubGlobal('fetch', mockFetch(withRoleClaims))
+    useAuthStore.setState({
+      user: makeUser(['jwt_trust.read', 'jwt_trust.manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderTab()
+    expect(await screen.findByText('roles')).toBeInTheDocument()
+    expect(screen.getByText('groups')).toBeInTheDocument()
+
+    // 发布预检携带 role_claims
+    fireEvent.click(screen.getByRole('button', { name: '发布预检' }))
+    await waitFor(() => {
+      const preflightCall = (fetch as Mock).mock.calls.find(
+        (c) => String(c[0]).includes('/jwt-trust-policy/preflight') && c[1]?.method === 'POST',
+      )
+      expect(preflightCall).toBeTruthy()
+      const body = JSON.parse(String(preflightCall![1]?.body)) as {
+        issuers: { role_claims?: string[] }[]
+      }
+      expect(body.issuers[0].role_claims).toEqual(['roles', 'groups'])
+    })
+
+    // 保存草稿保留 role_claims
+    fireEvent.change(
+      screen.getByPlaceholderText('说明本次变更原因，如：接入新的身份发行方'),
+      { target: { value: '保留角色声明' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+    await waitFor(() => {
+      const putCall = (fetch as Mock).mock.calls.find(
+        (c) =>
+          String(c[0]).endsWith(`/applications/${APP_ID}/jwt-trust-policy`) &&
+          c[1]?.method === 'PUT',
+      )
+      expect(putCall).toBeTruthy()
+      const body = JSON.parse(String(putCall![1]?.body)) as {
+        expected_version: number
+        issuers: { role_claims?: string[]; tenant_claim?: string }[]
+      }
+      expect(body.expected_version).toBe(3)
+      expect(body.issuers[0].tenant_claim).toBe('tenant_id')
+      expect(body.issuers[0].role_claims).toEqual(['roles', 'groups'])
+    })
+  })
+
+  it('B10-1: 编辑 role_claims 裁剪空白并去重，清空后提交空数组', async () => {
+    vi.stubGlobal('fetch', mockFetch(DRAFT_PENDING))
+    useAuthStore.setState({
+      user: makeUser(['jwt_trust.read', 'jwt_trust.manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderTab()
+    await screen.findByText('草稿待发布')
+
+    const roleSelectInput = screen.getByLabelText('角色声明名（可选）')
+    fireEvent.change(roleSelectInput, { target: { value: ' team_roles ' } })
+    fireEvent.keyDown(roleSelectInput, { key: 'Enter', code: 'Enter' })
+    fireEvent.change(roleSelectInput, { target: { value: 'roles' } })
+    fireEvent.keyDown(roleSelectInput, { key: 'Enter', code: 'Enter' })
+    fireEvent.change(roleSelectInput, { target: { value: ' roles ' } })
+    fireEvent.keyDown(roleSelectInput, { key: 'Enter', code: 'Enter' })
+
+    fireEvent.change(
+      screen.getByPlaceholderText('说明本次变更原因，如：接入新的身份发行方'),
+      { target: { value: '测试角色声明' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+    await waitFor(() => {
+      const putCall = (fetch as Mock).mock.calls.find(
+        (c) =>
+          String(c[0]).endsWith(`/applications/${APP_ID}/jwt-trust-policy`) &&
+          c[1]?.method === 'PUT',
+      )
+      expect(putCall).toBeTruthy()
+      const body = JSON.parse(String(putCall![1]?.body)) as {
+        issuers: { role_claims?: string[] }[]
+      }
+      expect(body.issuers[0].role_claims).toEqual(['team_roles', 'roles'])
+    })
+
+    // 清空所有标签后保存，应显式提交 role_claims: []
+    for (const title of ['team_roles', 'roles']) {
+      const tag = screen.getByTitle(title)
+      const removeIcon = tag.querySelector('.ant-select-selection-item-remove') as HTMLElement
+      fireEvent.click(removeIcon)
+    }
+    ;(fetch as Mock).mockClear()
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+    await waitFor(() => {
+      const putCall = (fetch as Mock).mock.calls.find(
+        (c) =>
+          String(c[0]).endsWith(`/applications/${APP_ID}/jwt-trust-policy`) &&
+          c[1]?.method === 'PUT',
+      )
+      expect(putCall).toBeTruthy()
+      const body = JSON.parse(String(putCall![1]?.body)) as {
+        issuers: { role_claims?: string[] }[]
+      }
+      expect(body.issuers[0].role_claims).toEqual([])
+    })
+  })
+
+  it('B10-1: 前端校验非法 role_claims 并映射后端 400 issuers[0].role_claims 字段错误', async () => {
+    vi.stubGlobal('fetch', mockFetch(DRAFT_PENDING))
+    useAuthStore.setState({
+      user: makeUser(['jwt_trust.read', 'jwt_trust.manage']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderTab()
+    await screen.findByText('草稿待发布')
+
+    const roleSelectInput = screen.getByLabelText('角色声明名（可选）')
+    fireEvent.change(roleSelectInput, { target: { value: '1bad' } })
+    fireEvent.keyDown(roleSelectInput, { key: 'Enter', code: 'Enter' })
+
+    fireEvent.change(
+      screen.getByPlaceholderText('说明本次变更原因，如：接入新的身份发行方'),
+      { target: { value: '测试角色声明校验' } },
+    )
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+    expect(
+      await screen.findByText(/角色声明名格式不合法/),
+    ).toBeInTheDocument()
+
+    // 移除非法标签 1bad 后触发后端 400 字段错误映射
+    const badTag = screen.getByTitle('1bad')
+    const removeIcon = badTag.querySelector('.ant-select-selection-item-remove') as HTMLElement
+    fireEvent.click(removeIcon)
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (init?.method === 'PUT' && url.includes('/jwt-trust-policy')) {
+          return Promise.resolve(
+            jsonResponse(400, {
+              code: 'INVALID_ARGUMENT',
+              message: '参数校验失败',
+              details: [
+                {
+                  field: 'issuers[0].role_claims',
+                  message: 'role_claims 数量不能超过 8',
+                },
+              ],
+            }),
+          )
+        }
+        return Promise.resolve(
+          jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: DRAFT_PENDING }),
+        )
+      }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }))
+    expect(
+      await screen.findByText('role_claims 数量不能超过 8'),
+    ).toBeInTheDocument()
+  })
 })

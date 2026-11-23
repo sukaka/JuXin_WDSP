@@ -285,6 +285,9 @@ describe('WafRulesPage 规则效果', () => {
     fireEvent.click(await screen.findByRole('button', { name: '详情' }))
     expect(await screen.findByText('建议人工评估切换防护模式')).toBeInTheDocument()
     expect(screen.queryByText('建议人工评估 PROTECT')).not.toBeInTheDocument()
+    // 规则详情中规则名称与消息均展示中文，不暴露英文原名
+    expect(screen.getAllByText('通过 libinjection 检测到 SQL 注入攻击').length).toBeGreaterThanOrEqual(2)
+    expect(screen.queryByText('SQL Injection Attack Detected via libinjection')).not.toBeInTheDocument()
 
     expect(await screen.findByText('启用规则')).toBeInTheDocument()
     expect(screen.getAllByText('停用规则').length).toBeGreaterThan(0)
@@ -294,5 +297,27 @@ describe('WafRulesPage 规则效果', () => {
     expect(screen.queryByText('ENABLE')).not.toBeInTheDocument()
     expect(screen.queryByText('POLICY')).not.toBeInTheDocument()
     expect(screen.queryByText('APPLICATION')).not.toBeInTheDocument()
+  })
+
+  it('B8-04：来源筛选下拉不含无效的 CUSTOM，包含 USER_CUSTOM 等后端合法来源', async () => {
+    renderPage()
+    await screen.findByText('942100')
+
+    const sourceCombo = screen.getAllByRole('combobox').find((el) =>
+      el.closest('.ant-select')?.textContent?.includes('来源'),
+    )
+    expect(sourceCombo).toBeTruthy()
+    fireEvent.mouseDown(sourceCombo as HTMLElement)
+
+    expect(await screen.findByTitle('用户自定义')).toBeInTheDocument()
+    expect(screen.getByTitle('OWASP 核心规则集')).toBeInTheDocument()
+    expect(screen.queryByTitle('自定义')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTitle('用户自定义'))
+    await waitFor(() => {
+      expect(
+        (fetch as Mock).mock.calls.some((c) => String(c[0]).includes('rule_source=USER_CUSTOM')),
+      ).toBe(true)
+    })
   })
 })

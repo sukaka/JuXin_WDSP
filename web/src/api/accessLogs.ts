@@ -100,8 +100,8 @@ export const accessLogsApi = {
     }
   },
   get: (id: string) => request<AccessLogDetail>(`/access-logs/${id}`),
-  /** 导出 CSV（过滤参数与列表一致，上限 10000 行） */
+  /** 导出 CSV（过滤参数与列表一致，支持按勾选 ids 导出，上限 10000 行） */
   exportUrl: (
-    params: Partial<Omit<AccessLogListParams, 'page' | 'page_size'>>,
+    params: Partial<Omit<AccessLogListParams, 'page' | 'page_size'>> & { ids?: string },
   ) => buildUrl('/access-logs/export', { ...params }),
 }

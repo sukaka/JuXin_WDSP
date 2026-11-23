@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,15 +28,20 @@ type Generator struct {
 
 // NewGenerator 创建报告生成器。
 // fontPath 为内嵌中文字体路径（NotoSansCJKsc-VF.ttf），为空或文件缺失时
-// PDF 降级为 ASCII 摘要页。GeoIP 库（dataDir/geoip/country.mmdb）缺失时
+// PDF 降级为 ASCII 摘要页。统一 GeoIP 引擎（ip2region + DB-IP/MMDB）无可用库时
 // 攻击源地区分布降级为「未启用」占位。
 func NewGenerator(store *Store, db *pgxpool.Pool, agg *aggregations.Store, dataDir, fontPath string, auditSvc *audits.Service) *Generator {
 	var geo apigeo.CountryLookup
-	if m, err := apigeo.OpenMMDB(filepath.Join(dataDir, "geoip", "country.mmdb")); err != nil {
-		slog.Warn("geoip unavailable, source geo section degraded", "error", err)
+	if eng := apigeo.OpenEngine(apigeo.DefaultSearchDirs(dataDir)...); eng.Enabled() {
+		geo = eng
 	} else {
-		geo = m
+		slog.Warn("geoip unavailable, source geo section degraded")
 	}
+	return NewGeneratorWithGeo(store, db, agg, dataDir, fontPath, auditSvc, geo)
+}
+
+// NewGeneratorWithGeo 使用调用方共享的 GeoIP 实例创建报告生成器，避免重复加载离线库到内存。
+func NewGeneratorWithGeo(store *Store, db *pgxpool.Pool, agg *aggregations.Store, dataDir, fontPath string, auditSvc *audits.Service, geo apigeo.CountryLookup) *Generator {
 	return &Generator{
 		store:     store,
 		collector: NewCollector(db, agg, geo),

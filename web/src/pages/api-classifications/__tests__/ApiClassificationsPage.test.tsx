@@ -448,4 +448,40 @@ describe('ApiClassificationsPage', () => {
       expect(within(table).queryByText(raw)).not.toBeInTheDocument()
     }
   })
+
+  it('创建分类返回 CustomTaxonomyItem 时正常提示「分类已创建」', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (init?.method === 'POST' && url.endsWith('/api-security/classifications')) {
+          return Promise.resolve(
+            jsonResponse({
+              id: 'tax-1',
+              dimension: 'BU',
+              value: 'FINANCE',
+              description: '金融事业部',
+              created_at: '2026-08-01T00:00:00Z',
+            }),
+          )
+        }
+        if (url.includes('/api-security/classifications')) {
+          return Promise.resolve(jsonResponse({ builtin: [], custom: [] }))
+        }
+        if (url.includes('/api-security/endpoints')) {
+          return Promise.resolve(
+            jsonResponse({ items: [], page: 1, page_size: 100, total: 0 }),
+          )
+        }
+        return Promise.reject(new Error(`unexpected url: ${url}`))
+      }),
+    )
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: /新增分类/ }))
+    const drawer = await screen.findByRole('dialog')
+    fireEvent.change(within(drawer).getByLabelText('维度'), { target: { value: 'BU' } })
+    fireEvent.change(within(drawer).getByLabelText('取值'), { target: { value: 'FINANCE' } })
+    fireEvent.click(within(drawer).getByRole('button', { name: /创\s*建/ }))
+    expect(await screen.findByText('分类已创建')).toBeInTheDocument()
+  })
 })

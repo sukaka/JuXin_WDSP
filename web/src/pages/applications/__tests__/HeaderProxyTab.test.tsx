@@ -149,6 +149,15 @@ function mockFetch(routesData: unknown = pathRoutesData, configData: unknown = h
       return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: configData }))
     }
     if (url.includes(`/applications/${APP_ID}/path-routes`)) {
+      if (method === 'PATCH' || method === 'POST') {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { route: pathRoutesData.items[0], message: '保存成功' },
+          }),
+        )
+      }
       return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: routesData }))
     }
     return Promise.reject(new Error(`unexpected url: ${url}`))
@@ -227,7 +236,95 @@ describe('HeaderProxyTab', () => {
       expect(body.server_action).toBe('hide')
       expect(body.x_powered_by_action).toBe('hide')
       expect(body.x_frame_options).toBe('sameorigin')
+      expect(body.hsts_max_age).toBe(31536000)
       expect(body.custom_request_rules).toEqual([])
+    })
+  })
+
+  it('B9-2: HSTS 开启修改 max-age 后再关闭仍保留正整数 hsts_max_age 且 InputNumber min=1', async () => {
+    const loadedConfig = {
+      ...headerConfigData,
+      config: { ...headerConfigData.config, x_frame_options: 'sameorigin', hsts_enabled: false, hsts_max_age: 31536000 },
+    }
+    vi.stubGlobal('fetch', mockFetch(pathRoutesData, loadedConfig))
+    useAuthStore.setState({ user: makeUser(['applications.update']), csrfToken: null, initialized: true })
+    renderTab()
+    const saveBtn = await screen.findByRole('button', { name: /保\s*存\s*配\s*置/ })
+    await screen.findByText('SAMEORIGIN')
+    await act(async () => {})
+
+    const hstsItem = screen.getByText('HSTS').closest('.ant-form-item') as HTMLElement
+    const hstsSwitch = within(hstsItem).getByRole('switch')
+    fireEvent.click(hstsSwitch)
+
+    const maxAgeInput = await screen.findByRole('spinbutton')
+    expect(maxAgeInput).toHaveAttribute('aria-valuemin', '1')
+    fireEvent.change(maxAgeInput, { target: { value: '86400' } })
+    fireEvent.click(hstsSwitch)
+
+    fireEvent.click(saveBtn)
+    await waitFor(() => {
+      const body = lastConfigPut()
+      expect(body).toBeTruthy()
+      expect(body!.hsts_enabled).toBe(false)
+      expect(body!.hsts_max_age).toBe(86400)
+    })
+  })
+
+  it('B9-1: 编辑路径转发携带完整字段与 version，行内停用携带完整替换体与 version', async () => {
+    useAuthStore.setState({ user: makeUser(['applications.update']), csrfToken: null, initialized: true })
+    renderTab()
+    await screen.findByText('/api/v1')
+
+    const table = screen.getByRole('table')
+    const editButtons = within(table).getAllByRole('button', { name: /^编\s*辑$/ })
+    fireEvent.click(editButtons[0])
+
+    const drawer = await screen.findByRole('dialog')
+    expect(within(drawer).getByText('编辑路径转发：/api/v1')).toBeInTheDocument()
+    fireEvent.click(within(drawer).getByRole('button', { name: /^保\s*存$/ }))
+
+    await waitFor(() => {
+      const patchCall = (fetch as Mock).mock.calls.find(
+        (c) => String(c[0]).includes(`/applications/${APP_ID}/path-routes/r1`) && c[1]?.method === 'PATCH',
+      )
+      expect(patchCall).toBeTruthy()
+      const body = JSON.parse(String(patchCall![1]?.body)) as Record<string, unknown>
+      expect(body).toEqual({
+        path_prefix: '/api/v1',
+        upstream_scheme: 'http',
+        upstream_host: '10.0.0.11',
+        upstream_port: 8080,
+        strip_prefix: true,
+        priority: 50,
+        status: 'ENABLED',
+        description: 'API 转发',
+        version: 1,
+      })
+    })
+
+    // 清除历史调用记录后测试行内停用
+    ;(fetch as Mock).mockClear()
+    const disableBtn = within(table).getByRole('button', { name: /^停\s*用$/ })
+    fireEvent.click(disableBtn)
+
+    await waitFor(() => {
+      const patchCall = (fetch as Mock).mock.calls.find(
+        (c) => String(c[0]).includes(`/applications/${APP_ID}/path-routes/r1`) && c[1]?.method === 'PATCH',
+      )
+      expect(patchCall).toBeTruthy()
+      const body = JSON.parse(String(patchCall![1]?.body)) as Record<string, unknown>
+      expect(body).toEqual({
+        path_prefix: '/api/v1',
+        upstream_scheme: 'http',
+        upstream_host: '10.0.0.11',
+        upstream_port: 8080,
+        strip_prefix: true,
+        priority: 50,
+        status: 'DISABLED',
+        description: 'API 转发',
+        version: 1,
+      })
     })
   })
 

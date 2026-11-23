@@ -493,7 +493,8 @@ paths:
         触发一次性安全事件分析（同步执行、非流式；单次最长约 120 秒，服务端放宽本请求写期限至 10 分钟）。
         分析在一次性会话中执行，用完即删，不出现在会话列表；响应一次性返回 answer/plan/steps/evidence。
         请求需满足以下任一：event_id（须为 UUID）、question、或至少一个结构化过滤维度
-        （application_id/ip/uri/rule_id/request_id，可组合，time_range 指定统计区间、缺省 24h）。
+        （application_id/ip/uri/rule_id/request_id，可组合，time_range 指定统计区间、缺省 24h）；
+        question 亦可与 event_id 或结构化过滤维度同时传入，作为分析侧重点。
         结构化维度：后端按维度查询真实事件数据（security_events/access_control_events）组装分析上下文，
         维度组合下无数据时如实返回「数据不足」口径，不做推测。
         限流：AI 用量配额超限返回 429。权限：`ai.event_analysis.use`。
@@ -567,7 +568,8 @@ paths:
       summary: 攻击画像分析
       description: |-
         触发一次性攻击画像分析（同步执行、非流式，行为同 /ai/analyze/event）。
-        请求需满足：ip / uri / application_id / question 至少提供一个，优先级 ip > uri > application_id > question。
+        请求需满足：ip / uri / application_id / question 至少提供一个，优先级 ip > uri > application_id > question；
+        选定 ip / uri / application_id 时可同时传入 question 作为分析侧重点。
         uri（须以 / 开头的请求路径）：URI 画像，后端真实 SQL 聚合该 URI 的事件分布、攻击类型、来源 IP 与命中规则 Top；
         application_id（须为 UUID）：应用画像，应用维度同理（含防护模式与状态）；
         两者支持 time_range 指定统计区间（缺省 7d）；画像对象在区间内无事件时如实返回「数据不足」口径。
@@ -766,7 +768,7 @@ paths:
       summary: AI 报告总结
       description: |-
         生成指定周期的安全运营报告总结（事件、阻断、主要攻击类型、攻击源、误报与建议；
-        同步执行、非流式，行为同 /ai/analyze/event）。period 可选（如「近7天」「日报」「本周」），缺省为「近7天」；允许空请求体。
+        同步执行、非流式，行为同 /ai/analyze/event）。period 可选（如「近7天」「日报」「本周」），缺省为「近7天」；question 可选，用于指定补充说明；允许空请求体。
         限流：AI 用量配额超限返回 429。权限：`ai.report_summary.use`。
       requestBody:
         required: false
@@ -812,7 +814,7 @@ paths:
           description: 每页条数
         - name: recommendation_type
           in: query
-          schema: { type: string, enum: [EXCEPTION, BLACKLIST, CC_POLICY, CUSTOM_RULE, POLICY_CHANGE, REPORT_SUMMARY] }
+          schema: { type: string, enum: [EXCEPTION, BLACKLIST, CC_POLICY, CUSTOM_RULE, POLICY_CHANGE, REPORT_SUMMARY, NOISE_REDUCTION] }
           description: 按草稿类型过滤（白名单校验，非法值 400）
         - name: status
           in: query
@@ -954,7 +956,7 @@ paths:
           description: 每页条数
         - name: recommendation_type
           in: query
-          schema: { type: string, enum: [EXCEPTION, BLACKLIST, CC_POLICY, CUSTOM_RULE, POLICY_CHANGE, REPORT_SUMMARY] }
+          schema: { type: string, enum: [EXCEPTION, BLACKLIST, CC_POLICY, CUSTOM_RULE, POLICY_CHANGE, REPORT_SUMMARY, NOISE_REDUCTION] }
           description: 按推荐类型过滤（白名单校验，非法值 400）
         - name: status
           in: query
@@ -1769,7 +1771,7 @@ components:
         recommendation_type:
           type: string
           enum: [EXCEPTION, BLACKLIST, CC_POLICY, CUSTOM_RULE, POLICY_CHANGE, REPORT_SUMMARY, NOISE_REDUCTION]
-          description: 草稿类型（NOISE_REDUCTION 由降噪模块产生，不作为列表过滤值）
+          description: 草稿类型（NOISE_REDUCTION 由降噪模块产生，支持列表过滤）
         target_type: { type: string, description: 目标对象类型 }
         target_id: { type: string, description: 目标对象标识 }
         summary: { type: string, description: 草稿摘要 }

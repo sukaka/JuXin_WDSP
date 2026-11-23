@@ -2,13 +2,16 @@ package users
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jiuzhang-waf/server/internal/authz"
+	"github.com/jiuzhang-waf/server/internal/loginlogs"
 )
 
 type fakeStatusStore struct {
@@ -159,5 +162,129 @@ func TestMS3AndH19StoreSQLGuards(t *testing.T) {
 	}
 	if !strings.Contains(sqlSeedPasswordHistory, "INSERT INTO password_histories") {
 		t.Fatalf("sqlSeedPasswordHistory missing password_histories insert: %s", sqlSeedPasswordHistory)
+	}
+}
+
+func TestUserItemIncludesTOTPEnabled(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	for _, enabled := range []bool{false, true} {
+		u := &User{
+			ID:                 uuid.New(),
+			Username:           "alice_ops",
+			DisplayName:        "Alice",
+			Status:             StatusActive,
+			MustChangePassword: false,
+			TOTPEnabled:        enabled,
+			CreatedAt:          now,
+			UpdatedAt:          now,
+			Version:            1,
+		}
+		item := userItem(u, nil)
+		raw, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("json.Marshal(userItem) failed: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("json.Unmarshal failed: %v", err)
+		}
+		val, ok := decoded["totp_enabled"]
+		if !ok {
+			t.Fatalf("totp_enabled missing from serialized userItem (expected %v): %s", enabled, string(raw))
+		}
+		if val != enabled {
+			t.Fatalf("totp_enabled = %v, want %v", val, enabled)
+		}
+		rolesVal, ok := decoded["roles"].([]any)
+		if !ok || rolesVal == nil {
+			t.Fatalf("roles should serialize as JSON array, got %#v", decoded["roles"])
+		}
+	}
+}
+
+func TestValidateUsernameRules(t *testing.T) {
+	valid := []string{"abcd", "user_1-A", strings.Repeat("a", 64)}
+	for _, name := range valid {
+		if err := validateUsername(name); err != nil {
+			t.Fatalf("validateUsername(%q) unexpected error: %v", name, err)
+		}
+	}
+	invalid := []string{"abc", strings.Repeat("a", 65), "john.doe", "user@host", "root", "System"}
+	for _, name := range invalid {
+		if err := validateUsername(name); err == nil {
+			t.Fatalf("validateUsername(%q) expected error, got nil", name)
+		}
+	}
+}
+
+type fakeProfileLoginLogLister struct {
+	gotFilters []loginlogs.ListFilter
+	entries    []loginlogs.Entry
+	total      int64
+}
+
+func (f *fakeProfileLoginLogLister) List(_ context.Context, filter loginlogs.ListFilter) ([]loginlogs.Entry, int64, error) {
+	f.gotFilters = append(f.gotFilters, filter)
+	return f.entries, f.total, nil
+}
+
+func TestProfileLoginLogsClampsPageSize(t *testing.T) {
+	principalID := uuid.New()
+	lister := &fakeProfileLoginLogLister{
+		entries: []loginlogs.Entry{},
+		total:   0,
+	}
+	h := &ProfileHandler{logLister: lister}
+
+	cases := []struct {
+		name         string
+		query        string
+		wantPage     int
+		wantPageSize int
+	}{
+		{name: "over_max_clamped_to_20", query: "?page=1&page_size=200", wantPage: 1, wantPageSize: 20},
+		{name: "boundary_100_preserved", query: "?page=2&page_size=100", wantPage: 2, wantPageSize: 100},
+		{name: "zero_values_normalized", query: "?page=0&page_size=0", wantPage: 1, wantPageSize: 20},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/profile/login-logs"+tc.query, nil)
+			p := &authz.Principal{UserID: principalID, Username: "alice_ops"}
+			req = req.WithContext(authz.WithPrincipal(req.Context(), p))
+			rec := httptest.NewRecorder()
+
+			h.LoginLogs(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+			}
+
+			gotFilter := lister.gotFilters[i]
+			if gotFilter.UserID == nil || *gotFilter.UserID != principalID {
+				t.Fatalf("List UserID = %v, want %v", gotFilter.UserID, principalID)
+			}
+			if gotFilter.Page != tc.wantPage || gotFilter.PageSize != tc.wantPageSize {
+				t.Fatalf("List filter = (page=%d, page_size=%d), want (%d, %d)",
+					gotFilter.Page, gotFilter.PageSize, tc.wantPage, tc.wantPageSize)
+			}
+
+			var body struct {
+				Code string `json:"code"`
+				Data struct {
+					Page     int `json:"page"`
+					PageSize int `json:"page_size"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("json.Unmarshal failed: %v", err)
+			}
+			if body.Code != "SUCCESS" {
+				t.Fatalf("code = %q, want SUCCESS", body.Code)
+			}
+			if body.Data.Page != tc.wantPage || body.Data.PageSize != tc.wantPageSize {
+				t.Fatalf("response data = (page=%d, page_size=%d), want (%d, %d)",
+					body.Data.Page, body.Data.PageSize, tc.wantPage, tc.wantPageSize)
+			}
+		})
 	}
 }

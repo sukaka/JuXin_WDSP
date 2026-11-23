@@ -67,7 +67,7 @@ describe('AiEvaluationsPage · 反馈质量卡片', () => {
         jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { items: feedbackItems } }),
       )
     useAuthStore.setState({
-      user: makeUser(['ai.evaluations.run']),
+      user: makeUser(['ai.evaluations.run', 'ai.usage.read']),
       csrfToken: null,
       initialized: true,
     })
@@ -145,4 +145,21 @@ describe('AiEvaluationsPage · 反馈质量卡片', () => {
     expect(await within(card).findByText('加载反馈质量统计失败')).toBeInTheDocument()
     expect(within(card).getByText('feedback db down')).toBeInTheDocument()
   })
+
+  it.each([['ai.evaluations.run'], ['ai.audits.read']])(
+    '无 ai.usage.read 权限（仅有 %s）时不请求 feedback/summary 且不渲染反馈质量卡片',
+    async (perm) => {
+      feedbackUrls = []
+      useAuthStore.setState({
+        user: makeUser([perm]),
+        csrfToken: null,
+        initialized: true,
+      })
+      renderPage()
+      expect(await screen.findByText('评估集', { selector: '.ant-card-head-title' })).toBeInTheDocument()
+      expect(await screen.findByText('运行记录', { selector: '.ant-card-head-title' })).toBeInTheDocument()
+      expect(feedbackUrls).toHaveLength(0)
+      expect(screen.queryByText('反馈质量')).not.toBeInTheDocument()
+    },
+  )
 })

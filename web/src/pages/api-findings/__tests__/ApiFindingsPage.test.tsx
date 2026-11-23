@@ -302,4 +302,23 @@ describe('ApiFindingsPage', () => {
       expect(urls.some((u) => u.includes('/api-security/findings?') && u.includes('status=NEW'))).toBe(true)
     })
   })
+
+  it('严重级别过滤下拉排除 NONE（仅包含 INFO/LOW/MEDIUM/HIGH/CRITICAL）', async () => {
+    useAuthStore.setState({ user: makeUser(['api_runtime.read']), csrfToken: null, initialized: true })
+    renderPage()
+    await screen.findByText('发现未登记的影子接口')
+    const severityPlaceholder = screen
+      .getAllByText('严重级别')
+      .find((el) => el.classList.contains('ant-select-placeholder'))
+    expect(severityPlaceholder).toBeTruthy()
+    fireEvent.mouseDown(severityPlaceholder as HTMLElement)
+    await waitFor(() => {
+      const labels = Array.from(document.querySelectorAll('.ant-select-item-option-content')).map((el) =>
+        el.textContent?.trim(),
+      )
+      expect(labels).toContain('严重')
+      expect(labels).toContain('信息')
+      expect(labels).not.toContain('无')
+    })
+  })
 })

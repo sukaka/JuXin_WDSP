@@ -92,6 +92,7 @@ export const AUDIT_MODULE_LABELS: Record<string, string> = {
   access_control: '访问控制',
   access_control_events: '访问控制事件',
   access_control_versions: '访问控制版本',
+  url_whitelists: 'URL 白名单',
   access_logs: '访问日志',
   ai: '智能运营',
   ai_assistant: '智能安全助手',
@@ -323,6 +324,7 @@ export const AUDIT_OBJECT_TYPE_LABELS: Record<string, string> = {
   ha_groups: '主备高可用组',
   invoice: '账单对象',
   ip_access_rule: 'IP 黑白名单规则',
+  url_whitelist_rule: 'URL 白名单规则',
   jwt_trust_policy: 'JWT 信任链策略',
   l7_access_rule: 'L7 访问控制规则',
   license: '系统授权',
@@ -488,6 +490,8 @@ export const DECISION_REASON_CODE_LABELS: Record<string, string> = {
   IP_BLACKLIST: '命中 IP 黑名单',
   IP_IN_BLACKLIST: '命中 IP 黑名单',
   IP_ALLOWLIST: '命中 IP 白名单',
+  URL_ALLOWLIST: '命中 URL 白名单',
+  URL_ALLOW_MATCH: '命中 URL 白名单',
   PROTECTED_ADDRESS: '命中保护地址',
   IDENTITY_MANUAL_BLOCK: '身份手工封禁',
   RISK_POLICY_BLOCK: '身份风险策略阻断',
@@ -808,6 +812,8 @@ export const LOCATION_LABELS: Record<string, string> = {
   BODY: '请求体',
   response_body: '响应体',
   RESPONSE_BODY: '响应体',
+  response_json: '响应 JSON',
+  RESPONSE_JSON: '响应 JSON',
   response_header: '响应头',
   RESPONSE_HEADER: '响应头',
   file: '文件内容',
@@ -1172,6 +1178,7 @@ export const AI_DRAFT_TARGET_TYPE_LABELS: Record<string, string> = {
   ENDPOINT: 'API 端点',
   REPORT: '安全报告',
   GLOBAL: '全局',
+  NOISE_CLUSTER: '降噪簇',
 }
 
 /** AI 记忆来源类型 */

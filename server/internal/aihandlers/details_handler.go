@@ -76,11 +76,8 @@ SELECT id, code, name, description, version, risk_level, required_permission, in
 	response.JSON(w, r, http.StatusOK, map[string]interface{}{"tool": t})
 }
 
-// auditDetailDTO 审计详情输出（列表项字段 + 记录 ID；详情补查 prompt_version/confirm_result 列）。
-type auditDetailDTO struct {
-	ID uuid.UUID `json:"id"`
-	aiaudit.Record
-}
+// auditDetailDTO 审计详情输出（与列表项口径一致，含记录 ID 及 prompt_version/confirm_result 列）。
+type auditDetailDTO = aiaudit.Record
 
 // AuditGet AI 审计详情（字段口径同审计列表项；写入时已脱敏，此处原样返回）。
 func (d *Deps) AuditGet(w http.ResponseWriter, r *http.Request) {

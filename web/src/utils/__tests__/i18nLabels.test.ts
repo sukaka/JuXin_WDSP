@@ -220,6 +220,7 @@ describe('i18nLabels 核心词表完整性', () => {
     expect(SPEC_FORMAT_LABELS.openapi3).toBe('OpenAPI 3.x')
     expect(AI_AUDIT_ACTION_LABELS.prompt_publish).toBe('发布提示词版本')
     expect(AI_DRAFT_TARGET_TYPE_LABELS.EXCEPTION).toBe('例外策略')
+    expect(AI_DRAFT_TARGET_TYPE_LABELS.NOISE_CLUSTER).toBe('降噪簇')
     expect(AI_MEMORY_SOURCE_LABELS.MANUAL).toBe('人工录入')
     expect(AI_PROMPT_GATE_STATE_META.ADVERSARIAL_PASSED.label).toBe('对抗通过')
     expect(AI_PROMPT_STATUS_META.ACTIVE.label).toBe('已发布')
@@ -245,6 +246,8 @@ describe('i18nLabels 核心词表完整性', () => {
 describe('共享 utils 词表补全与中文化回归检查', () => {
   it('stage3/stage4 补全枚举且 ATTACK_TYPE_OPTIONS 不含英文编码后缀', () => {
     expect(APP_STATUS_META.DELETED.label).toBe('已删除')
+    expect(RULE_SOURCE_META.CUSTOM).toBeUndefined()
+    expect(RULE_SOURCE_META.USER_CUSTOM.label).toBe('用户自定义')
     expect(RULE_SOURCE_META.CUSTOM_PACK.label).toBe('扩展规则包')
     expect(RULE_SOURCE_META.JIUZHANG_BUILTIN.label).toBe('九章内置规则')
     const sqli = ATTACK_TYPE_OPTIONS.find((o) => o.value === 'SQL_INJECTION')

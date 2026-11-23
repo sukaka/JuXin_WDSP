@@ -224,7 +224,7 @@ func TestWizardImpactPostgresContract(t *testing.T) {
 	if bucket["AUTHZ-IDENTITY-001"] != 2 || bucket["AUTHZ-LEASE-001"] != 1 {
 		t.Fatalf("分桶不符: %+v", res.UnknownByReason)
 	}
-	if res.ConfirmToken != uuid.Nil || res.ConfirmTokenExpiresAt != nil {
+	if res.ConfirmToken != nil || res.ConfirmTokenExpiresAt != nil {
 		t.Fatalf("read 主体不得签发 token: %+v", res)
 	}
 	if len(res.RecentSamples) != 0 {
@@ -237,7 +237,7 @@ func TestWizardImpactPostgresContract(t *testing.T) {
 	// manage+evidence_read 评估：签发 token + 样本带出（≤5，ALLOW 不计入）
 	code, res = call(t, []string{apiauthz.PermAuthzRead, apiauthz.PermAuthzManage, apiauthz.PermEvidenceRead},
 		map[string]any{"endpoint_id": f.endpointID.String(), "window_days": 7})
-	if code != http.StatusOK || res.ConfirmToken == uuid.Nil || res.ConfirmTokenExpiresAt == nil {
+	if code != http.StatusOK || res.ConfirmToken == nil || *res.ConfirmToken == uuid.Nil || res.ConfirmTokenExpiresAt == nil {
 		t.Fatalf("manage 评估应签发 token: %d %+v", code, res)
 	}
 	if len(res.RecentSamples) != 5 {
@@ -469,9 +469,15 @@ func TestWizardConflictsAndReadinessContract(t *testing.T) {
 		t.Fatalf("reasons 应含冲突与节点因子: %v", item.Reasons)
 	}
 
-	// readiness：application_id 缺省 400
+	// readiness：仅传 endpoint_id（省略 application_id）应正常返回
+	rr = doJSON(t, mux, http.MethodGet, "/api/v1/api-security/authz/enforcement-readiness?endpoint_id="+f.endpointID.String(), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("endpoint_id 单查 readiness status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// readiness：application_id 与 endpoint_id 均缺省 400
 	rr = doJSON(t, mux, http.MethodGet, "/api/v1/api-security/authz/enforcement-readiness", nil)
 	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("缺 application_id 应 400, got %d", rr.Code)
+		t.Fatalf("缺 application_id 与 endpoint_id 应 400, got %d", rr.Code)
 	}
 }

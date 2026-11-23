@@ -106,6 +106,7 @@ export function mapJwtTrustFieldErrorPath(
     case 'algorithms':
     case 'clock_skew_seconds':
     case 'tenant_claim':
+    case 'role_claims':
       return [base, idx, sub]
     case 'key_source.jwks':
       return [base, idx, 'jwks']

@@ -256,3 +256,19 @@ func TestRuntimeFieldPathUsesObservationByteLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeFieldEvidenceListsReturnsEmptySliceNotNil(t *testing.T) {
+	merged := mergeFieldEvidenceLists(nil, nil)
+	if merged == nil || len(merged) != 0 {
+		t.Fatalf("expected non-nil empty slice, got %#v", merged)
+	}
+	encoded, err := json.Marshal(EvidenceRecord{
+		AgentID: uuid.New(), EventID: "ev-empty", EdgeID: "edge-1", Fields: merged,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"fields":[]`) {
+		t.Fatalf("empty fields marshaled as null instead of []: %s", encoded)
+	}
+}

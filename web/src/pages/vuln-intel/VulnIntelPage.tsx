@@ -75,8 +75,7 @@ const SOURCE_META: Record<string, { color: string; label: string }> = {
 const SYNC_STATUS_META: Record<string, { color: string; label: string }> = {
   SUCCESS: { color: 'green', label: '成功' },
   FAILED: { color: 'red', label: '失败' },
-  RUNNING: { color: 'blue', label: '同步中' },
-  NEVER: { color: 'default', label: '未同步' },
+  IDLE: { color: 'default', label: '未同步' },
 }
 
 /** 发布时间按日期粒度展示（后端可能返回日期或 RFC3339） */
@@ -174,14 +173,16 @@ export default function VulnIntelPage() {
   const syncMutation = useMutation({
     mutationFn: () => vulnIntelApi.sync(),
     onSuccess: (data) => {
-      if (data.status === 'FAILED') {
-        message.warning(data.message || '同步失败，请查看情报源状态')
-      } else {
-        message.success(`同步完成，新增/更新 ${data.records_upserted} 条`)
-      }
+      message.success(
+        `同步完成：拉取 ${data.fetched} 条，入库 ${data.upserted} 条（新增 ${data.new_advisories} 条），触发告警 ${data.alerts_raised} 条`,
+      )
       invalidate()
     },
-    onError,
+    onError: (e) => {
+      onError(e)
+      // 同步失败（如 502）后端已写入 sync_state，刷新概览以展示失败原因
+      invalidate()
+    },
   })
 
   const settingsMutation = useMutation({
@@ -189,7 +190,7 @@ export default function VulnIntelPage() {
     onSuccess: () => {
       message.success('订阅设置已保存')
       setSettingsOpen(false)
-      void queryClient.invalidateQueries({ queryKey: ['vuln-intel', 'settings'] })
+      invalidate()
     },
     onError,
   })
@@ -200,7 +201,7 @@ export default function VulnIntelPage() {
     onSuccess: () => {
       message.success('技术资产标记已保存')
       setAssetsOpen(false)
-      void queryClient.invalidateQueries({ queryKey: ['vuln-intel', 'tech-assets'] })
+      invalidate()
     },
     onError,
   })
@@ -225,10 +226,14 @@ export default function VulnIntelPage() {
   }
 
   const saveAssets = () => {
-    const items = (assetsQuery.data ?? []).map((item) => ({
-      application_id: item.application_id,
-      tech_tags: assetDraft[item.application_id] ? ['php'] : [],
-    }))
+    const items = (assetsQuery.data ?? []).map((item) => {
+      const otherTags = item.tech_tags.filter((t) => t !== 'php')
+      const enabled = assetDraft[item.application_id] ?? item.tech_tags.includes('php')
+      return {
+        application_id: item.application_id,
+        tech_tags: enabled ? [...otherTags, 'php'] : otherTags,
+      }
+    })
     assetsMutation.mutate(items)
   }
 
@@ -252,17 +257,22 @@ export default function VulnIntelPage() {
 
   const onRangeChange = (range: [Dayjs | null, Dayjs | null] | null) => {
     applyFilters({
-      published_start: range?.[0] ? range[0].format('YYYY-MM-DD') : undefined,
-      published_end: range?.[1] ? range[1].format('YYYY-MM-DD') : undefined,
+      published_start: range?.[0] ? range[0].startOf('day').toISOString() : undefined,
+      published_end: range?.[1] ? range[1].endOf('day').toISOString() : undefined,
     })
   }
 
-  // 技术筛选选项：订阅技术栈 + 常见的 php，去重
-  const techOptions = Array.from(
-    new Set([...(settingsQuery.data?.watch_techs ?? []), 'php']),
-  ).map((t) => ({ value: t, label: t.toUpperCase() }))
-
   const overview = overviewQuery.data
+  const syncState = overview?.sync_state ?? null
+
+  // 技术筛选选项：概览/订阅技术栈 + 常见的 php，去重
+  const techOptions = Array.from(
+    new Set([
+      ...(overview?.watch_techs ?? []),
+      ...(settingsQuery.data?.watch_techs ?? []),
+      'php',
+    ]),
+  ).map((t) => ({ value: t, label: t.toUpperCase() }))
 
   const columns: ColumnsType<VulnAdvisory> = [
     {
@@ -304,7 +314,7 @@ export default function VulnIntelPage() {
       title: '发布日期',
       dataIndex: 'published_at',
       width: 120,
-      render: (v: string) => formatDate(v),
+      render: (v: string | null) => formatDate(v),
     },
     {
       title: '来源',
@@ -391,14 +401,14 @@ export default function VulnIntelPage() {
               </Col>
               <Col xs={12} md={6}>
                 <Card size="small">
-                  <Statistic title="近 7 日新增" value={overview?.recent_7d ?? 0} />
+                  <Statistic title="近 7 日新增" value={overview?.new_last_7d ?? 0} />
                 </Card>
               </Col>
               <Col xs={12} md={6}>
                 <Card size="small">
                   <Statistic
                     title="超危"
-                    value={overview?.critical ?? 0}
+                    value={overview?.critical_count ?? 0}
                     valueStyle={{ color: '#7f1d1d' }}
                   />
                 </Card>
@@ -407,7 +417,7 @@ export default function VulnIntelPage() {
                 <Card size="small">
                   <Statistic
                     title="高危"
-                    value={overview?.high ?? 0}
+                    value={overview?.high_count ?? 0}
                     valueStyle={{ color: '#cf1322' }}
                   />
                 </Card>
@@ -415,32 +425,36 @@ export default function VulnIntelPage() {
             </Row>
             <Space style={{ marginTop: 16 }} wrap align="center">
               <Typography.Text type="secondary">情报源：</Typography.Text>
-              {(overview?.sources ?? []).map((s) => (
+              {syncState ? (
                 <Tooltip
-                  key={s.source}
                   title={
-                    s.status === 'FAILED' && s.failure_message
-                      ? `失败原因：${s.failure_message}`
-                      : `最近同步：${formatDateTime(s.last_sync_at)}`
+                    syncState.status === 'FAILED' && syncState.failure_message
+                      ? `失败原因：${syncState.failure_message}`
+                      : syncState.last_sync_at
+                        ? `最近同步：${formatDateTime(syncState.last_sync_at)}`
+                        : '尚未执行过同步'
                   }
                 >
-                  <Tag color={SYNC_STATUS_META[s.status]?.color ?? 'default'}>
-                    {SOURCE_META[s.source]?.label ?? s.source}{' '}
-                    {SYNC_STATUS_META[s.status]?.label ?? s.status}
-                    {`（${s.records_upserted} 条）`}
+                  <Tag color={SYNC_STATUS_META[syncState.status]?.color ?? 'default'}>
+                    {SOURCE_META[syncState.source]?.label ?? syncState.source}{' '}
+                    {SYNC_STATUS_META[syncState.status]?.label ?? syncState.status}
+                    {syncState.status === 'IDLE' && !syncState.last_sync_at
+                      ? ''
+                      : `（${syncState.records_upserted} 条）`}
                   </Tag>
                 </Tooltip>
-              ))}
-              {overview && overview.sources.length === 0 && (
-                <Typography.Text type="secondary">暂无同步记录</Typography.Text>
+              ) : (
+                overview && <Typography.Text type="secondary">暂无同步记录</Typography.Text>
+              )}
+              {overview && (
+                <Tag color={overview.sync_enabled ? 'blue' : 'default'}>
+                  {overview.sync_enabled ? '每日同步：已开启' : '每日同步：已关闭'}
+                </Tag>
               )}
             </Space>
-            {overview?.sources.some((s) => s.status === 'FAILED' && s.failure_message) && (
+            {syncState?.status === 'FAILED' && syncState.failure_message && (
               <Typography.Paragraph type="danger" style={{ marginTop: 8, marginBottom: 0 }}>
-                {overview.sources
-                  .filter((s) => s.status === 'FAILED' && s.failure_message)
-                  .map((s) => `${SOURCE_META[s.source]?.label ?? s.source} 同步失败：${s.failure_message}`)
-                  .join('；')}
+                {`${SOURCE_META[syncState.source]?.label ?? syncState.source} 同步失败：${syncState.failure_message}`}
               </Typography.Paragraph>
             )}
           </>
@@ -556,16 +570,19 @@ export default function VulnIntelPage() {
             </Typography.Paragraph>
 
             <Typography.Title level={5}>
-              受影响应用（{detail.applications.length}）
+              受影响应用（{detail.affected_apps.length}）
             </Typography.Title>
-            {detail.applications.length ? (
+            {detail.affected_apps.length ? (
               <List
                 size="small"
                 bordered
-                dataSource={detail.applications}
+                dataSource={detail.affected_apps}
                 renderItem={(app) => (
-                  <List.Item>
-                    <Typography.Text>{app.name}</Typography.Text>
+                  <List.Item key={`${app.application_id}-${app.tech}`}>
+                    <Space size={8}>
+                      <Typography.Text>{app.name}</Typography.Text>
+                      {app.tech && <Tag>{app.tech.toUpperCase()}</Tag>}
+                    </Space>
                     <Typography.Text type="secondary">{app.code}</Typography.Text>
                   </List.Item>
                 )}
@@ -617,18 +634,30 @@ export default function VulnIntelPage() {
           <Form<SettingsFormValues>
             form={settingsForm}
             layout="vertical"
-            initialValues={{ watch_techs: ['php'], min_severity: 'LOW', sync_enabled: true }}
-            onFinish={(values) =>
+            initialValues={{ watch_techs: ['php'], min_severity: 'HIGH', sync_enabled: false }}
+            onFinish={(values) => {
+              const normalizedTechs = Array.from(
+                new Set((values.watch_techs ?? []).map((t) => t.trim().toLowerCase()).filter(Boolean)),
+              )
               settingsMutation.mutate({
-                watch_techs: values.watch_techs ?? [],
+                watch_techs: normalizedTechs,
                 min_severity: values.min_severity,
                 sync_enabled: values.sync_enabled ?? false,
               })
-            }
+            }}
           >
             <Form.Item
               name="watch_techs"
               label="订阅技术栈"
+              rules={[
+                {
+                  required: true,
+                  type: 'array',
+                  min: 1,
+                  max: 10,
+                  message: '请至少保留 1 个、最多 10 个订阅技术栈',
+                },
+              ]}
               extra="命中订阅技术栈的新漏洞会产生系统告警；首版聚焦 PHP"
             >
               <Select
@@ -705,14 +734,15 @@ export default function VulnIntelPage() {
         destroyOnHidden
       >
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-          粘贴 JSON 数组（或 {'{'}"advisories": [...]{'}'}），字段：cve_id、title、severity、
-          cvss_score、published_at、tech_tags、references、summary。导入条目来源标记为「手工导入」。
+          粘贴 JSON 数组（或 {'{'}"advisories": [...]{'}'}），单批最多 500 条。必填字段：cve_id、
+          tech_tags；可选字段：title、severity、cvss_score、published_at（支持 YYYY-MM-DD 或
+          RFC3339）、last_modified_at、references、summary。导入条目来源标记为「手工导入」。
         </Typography.Paragraph>
         <Input.TextArea
           rows={10}
           value={importText}
           onChange={(e) => setImportText(e.target.value)}
-          placeholder='[{"cve_id":"CVE-2024-0001","title":"PHP ...","severity":"HIGH","cvss_score":7.5,"published_at":"2024-01-15","tech_tags":["php"],"references":["https://..."]}]'
+          placeholder='[{"cve_id":"CVE-2026-0001","title":"PHP ...","severity":"HIGH","cvss_score":7.5,"published_at":"2026-10-15T00:00:00Z","tech_tags":["php"],"references":["https://..."]}]'
           aria-label="导入 JSON 内容"
         />
         {importError && (
@@ -721,10 +751,36 @@ export default function VulnIntelPage() {
           </Typography.Paragraph>
         )}
         {importResult && (
-          <Typography.Paragraph type="success" style={{ marginTop: 8, marginBottom: 0 }}>
-            导入完成：共 {importResult.imported} 条，新增 {importResult.added} 条，更新{' '}
-            {importResult.updated} 条，触发告警 {importResult.alerts} 条。
-          </Typography.Paragraph>
+          <>
+            <Typography.Paragraph
+              type={
+                importResult.invalid > 0 && importResult.inserted === 0 && importResult.updated === 0
+                  ? 'warning'
+                  : 'success'
+              }
+              style={{ marginTop: 8, marginBottom: importResult.invalid_entries.length ? 8 : 0 }}
+            >
+              导入完成：共接收 {importResult.received} 条，新增 {importResult.inserted} 条，更新{' '}
+              {importResult.updated} 条，校验失败 {importResult.invalid} 条，触发告警{' '}
+              {importResult.alerts_raised} 条。
+            </Typography.Paragraph>
+            {importResult.invalid_entries.length > 0 && (
+              <List
+                size="small"
+                bordered
+                header={<Typography.Text type="danger">校验失败明细</Typography.Text>}
+                dataSource={importResult.invalid_entries}
+                renderItem={(entry) => (
+                  <List.Item key={`${entry.index}-${entry.cve_id}`}>
+                    <Typography.Text type="danger">
+                      第 {entry.index + 1} 条{entry.cve_id ? `（${entry.cve_id}）` : ''}：
+                      {entry.reason}
+                    </Typography.Text>
+                  </List.Item>
+                )}
+              />
+            )}
+          </>
         )}
       </Modal>
     </Space>

@@ -169,12 +169,17 @@ func (s *Store) GetIdentityProfileDetail(ctx context.Context, fingerprint, endpo
 	}
 	var p IdentityProfile
 	err = s.db.QueryRow(ctx, `
-SELECT p.identity_fingerprint, p.endpoint_id, COALESCE(e.endpoint_key, ''), COALESCE(p.auth_type, ''),
+SELECT p.identity_fingerprint, p.endpoint_id, COALESCE(e.endpoint_key, ''), COALESCE(a.name, ''),
+       COALESCE((SELECT d.hostname FROM application_domains d
+         WHERE d.application_id = a.id ORDER BY d.is_primary DESC, d.created_at LIMIT 1), ''),
+       COALESCE(p.auth_type, ''),
        p.request_count, p.first_seen_at, p.last_seen_at
 FROM api_identity_profiles p
 LEFT JOIN api_endpoints e ON e.id = p.endpoint_id
+LEFT JOIN applications a ON a.id = e.application_id
 WHERE p.identity_fingerprint=$1 AND p.endpoint_id=$2`, fingerprint, id).Scan(
-		&p.IdentityFingerprint, &p.EndpointID, &p.EndpointKey, &p.AuthType,
+		&p.IdentityFingerprint, &p.EndpointID, &p.EndpointKey, &p.ApplicationName,
+		&p.ApplicationDomain, &p.AuthType,
 		&p.RequestCount, &p.FirstSeenAt, &p.LastSeenAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound

@@ -27,6 +27,7 @@ import { vulnRefsApi, type VulnRefBody } from '../../api/vulnRefs'
 import SmartTable from '../../components/SmartTable'
 import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
+import { ruleNameZh } from '../../utils/crsRuleNames'
 import { formatDateTime } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
 import { isSafeHttpUrl } from '../../utils/url'
@@ -48,7 +49,7 @@ const SEVERITY_OPTIONS = Object.entries(VULN_SEVERITY_META).map(([value, meta]) 
 }))
 
 /** 发布时间按日期粒度展示（后端可能返回日期或 RFC3339） */
-const formatDate = (v?: string) => (v ? v.slice(0, 10) : '-')
+const formatDate = (v?: string | null) => (v ? v.slice(0, 10) : '-')
 
 interface VulnRefFormValues {
   cnnvd_id: string
@@ -194,7 +195,7 @@ export default function VulnRefsPage() {
       title: '发布时间',
       dataIndex: 'published_at',
       width: 120,
-      render: (v: string) => formatDate(v),
+      render: (v: string | null) => formatDate(v),
     },
     {
       title: '关联规则数',
@@ -245,7 +246,12 @@ export default function VulnRefsPage() {
       width: 110,
       render: (v: number) => <Typography.Text code>{v}</Typography.Text>,
     },
-    { title: '名称', dataIndex: 'rule_name', ellipsis: true },
+    {
+      title: '名称',
+      dataIndex: 'rule_name',
+      ellipsis: true,
+      render: (v: string, record) => ruleNameZh({ rule_id: record.rule_id, name: v }) || '-',
+    },
     {
       title: '来源',
       dataIndex: 'rule_source',

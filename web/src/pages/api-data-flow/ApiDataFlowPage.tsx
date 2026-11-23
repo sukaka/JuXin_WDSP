@@ -6,7 +6,6 @@ import {
   Card,
   DatePicker,
   Empty,
-  Input,
   InputNumber,
   Radio,
   Select,
@@ -16,7 +15,13 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
-import { apiDataFlowApi, type DataFlowEdge, type DataFlowNode, type DataFlowQuery } from '../../api/apiDataFlow'
+import {
+  apiDataFlowApi,
+  normalizeDataTypeFilter,
+  type DataFlowEdge,
+  type DataFlowNode,
+  type DataFlowQuery,
+} from '../../api/apiDataFlow'
 import { applicationsApi } from '../../api/applications'
 import QueryErrorAlert from '../../components/QueryErrorAlert'
 import SmartTable from '../../components/SmartTable'
@@ -29,11 +34,16 @@ function percent(value: number): string {
   return `${(value * 100).toFixed(2)}%`
 }
 
+const DATA_TYPE_OPTIONS = Object.entries(DATA_TYPE_LABELS).map(([value, label]) => ({
+  value,
+  label: `${label} (${value})`,
+}))
+
 export default function ApiDataFlowPage() {
   const [range, setRange] = useState<[Dayjs, Dayjs]>(() => [dayjs().subtract(1, 'hour'), dayjs()])
   const [applicationId, setApplicationId] = useState<string>()
   const [method, setMethod] = useState<string>()
-  const [dataType, setDataType] = useState('')
+  const [dataType, setDataType] = useState<string | undefined>()
   const [maxEdges, setMaxEdges] = useState(50)
   const [presentation, setPresentation] = useState<'graph' | 'table'>('graph')
   const [topology, setTopology] = useState<NonNullable<DataFlowQuery['view']>>('service')
@@ -74,7 +84,7 @@ export default function ApiDataFlowPage() {
       end: range[1].toISOString(),
       application_id: applicationId || undefined,
       method: method || undefined,
-      data_type: dataType.trim() || undefined,
+      data_type: normalizeDataTypeFilter(dataType),
       max_edges: maxEdges,
       view: topology,
     })
@@ -84,7 +94,7 @@ export default function ApiDataFlowPage() {
     setRange(nextRange)
     setApplicationId(undefined)
     setMethod(undefined)
-    setDataType('')
+    setDataType(undefined)
     setMaxEdges(50)
     setTopology('service')
     setSelectedNode(null)
@@ -198,12 +208,15 @@ export default function ApiDataFlowPage() {
         </label>
         <label className="data-flow-filter">
           <span className="data-flow-filter-label">数据类型</span>
-          <Input
+          <Select
             aria-label="数据类型"
             value={dataType}
-            onChange={(event) => setDataType(event.target.value)}
-            placeholder="如：手机号"
-            maxLength={64}
+            onChange={setDataType}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder="全部数据类型"
+            options={DATA_TYPE_OPTIONS}
           />
         </label>
         <label className="data-flow-filter">

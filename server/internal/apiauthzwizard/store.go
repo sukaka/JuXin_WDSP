@@ -5,6 +5,7 @@ package apiauthzwizard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -99,13 +100,21 @@ func scanObjectModelRow(row pgx.Row) (ObjectModelRow, error) {
 	return r, err
 }
 
-// ListObjectModelRows 对象模型行查询（endpoint_id 可空=按应用全量；application_id 必填）。
+// ListObjectModelRows 对象模型行查询（application_id 与 endpoint_id 均可选，调用方校验至少提供其一）。
 func (s *Store) ListObjectModelRows(ctx context.Context, applicationID, endpointID uuid.UUID) ([]ObjectModelRow, error) {
-	cond := " WHERE e.application_id = $1"
-	args := []any{applicationID}
+	where := []string{}
+	args := []any{}
+	if applicationID != uuid.Nil {
+		args = append(args, applicationID)
+		where = append(where, fmt.Sprintf("e.application_id = $%d", len(args)))
+	}
 	if endpointID != uuid.Nil {
 		args = append(args, endpointID)
-		cond += fmt.Sprintf(" AND m.endpoint_id = $%d", len(args))
+		where = append(where, fmt.Sprintf("m.endpoint_id = $%d", len(args)))
+	}
+	cond := ""
+	if len(where) > 0 {
+		cond = " WHERE " + strings.Join(where, " AND ")
 	}
 	rows, err := s.db.Query(ctx, listObjectModelRowsSQL+cond+" ORDER BY e.endpoint_key, m.object_segment", args...)
 	if err != nil {
@@ -185,9 +194,9 @@ type Confirmation struct {
 	EndpointID       uuid.UUID  `json:"endpoint_id"`
 	EndpointKey      string     `json:"endpoint_key"`
 	ObjectSegment    string     `json:"object_segment"`
-	WindowDays       int        `json:"window_days"`
-	ImpactSnapshot   []byte     `json:"impact_snapshot"`
-	ConfirmText      string     `json:"confirm_text"`
+	WindowDays       int             `json:"window_days"`
+	ImpactSnapshot   json.RawMessage `json:"impact_snapshot"`
+	ConfirmText      string          `json:"confirm_text"`
 	EnforcementOwner string     `json:"enforcement_owner"`
 	EvidenceSource   string     `json:"evidence_source"`
 	OnUnknown        string     `json:"on_unknown"`
@@ -220,10 +229,16 @@ const confirmationCols = `c.id, c.confirm_token, c.application_id, c.endpoint_id
 
 func scanConfirmation(row pgx.Row) (Confirmation, error) {
 	var c Confirmation
+	var snap []byte
 	err := row.Scan(&c.ID, &c.ConfirmToken, &c.ApplicationID, &c.EndpointID,
-		&c.EndpointKey, &c.ObjectSegment, &c.WindowDays, &c.ImpactSnapshot, &c.ConfirmText,
+		&c.EndpointKey, &c.ObjectSegment, &c.WindowDays, &snap, &c.ConfirmText,
 		&c.EnforcementOwner, &c.EvidenceSource, &c.OnUnknown, &c.ConfirmedByName,
 		&c.CreatedAt, &c.TokenExpiresAt, &c.SignedAt, &c.ConsumedAt, &c.ConsumedAuditID)
+	if len(snap) > 0 {
+		c.ImpactSnapshot = json.RawMessage(snap)
+	} else {
+		c.ImpactSnapshot = json.RawMessage("{}")
+	}
 	return c, err
 }
 

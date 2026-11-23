@@ -13,9 +13,11 @@ export interface LoginLogParams {
 }
 
 export const logsApi = {
-  loginLogs: (params: LoginLogParams) =>
-    request<PageResult<LoginLogEntry>>('/login-logs', { query: { ...params } }),
-  /** CSV 导出地址（浏览器导航自动携带 Cookie） */
-  loginLogsExportUrl: (params: Omit<LoginLogParams, 'page' | 'page_size'>) =>
+  loginLogs: async (params: LoginLogParams): Promise<PageResult<LoginLogEntry>> => {
+    const data = await request<PageResult<LoginLogEntry>>('/login-logs', { query: { ...params } })
+    return { ...data, items: data.items ?? [] }
+  },
+  /** CSV 导出地址（浏览器导航自动携带 Cookie；支持筛选与按勾选 ids 导出） */
+  loginLogsExportUrl: (params: Omit<LoginLogParams, 'page' | 'page_size'> & { ids?: string }) =>
     buildUrl('/login-logs/export', { ...params }),
 }

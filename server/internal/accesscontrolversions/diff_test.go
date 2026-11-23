@@ -65,8 +65,18 @@ func TestDiffConfigsNoDiff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if lines == nil {
+		t.Fatal("expected non-nil empty slice when no diff")
+	}
 	if len(lines) != 0 {
 		t.Errorf("expected no diff, got: %v", lines)
+	}
+	raw, err := json.Marshal(map[string]any{"differences": lines})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"differences":[]}` {
+		t.Errorf("expected differences to marshal as [], got: %s", string(raw))
 	}
 }
 

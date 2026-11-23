@@ -55,9 +55,11 @@ import { hasPermission } from '../../utils/permission'
 type RangeValue = [Dayjs | null, Dayjs | null] | null
 
 const IDENTITY_STATUS_META: Record<string, { color: string; label: string }> = {
-  ACTIVE: { color: 'green', label: '正常' },
+  NORMAL: { color: 'green', label: '正常' },
   BLOCKED: { color: 'red', label: '已封禁' },
 }
+
+const BEHAVIOR_PAGE_SIZE = 200
 
 const TREND_SERIES = [
   {
@@ -241,14 +243,31 @@ export default function IdentityDetailPage() {
       trendRange[0].toISOString(),
       trendRange[1].toISOString(),
     ],
-    queryFn: () =>
-      securityIdentitiesApi.behavior(id, {
+    queryFn: async () => {
+      const from = trendRange[0].toISOString()
+      const to = trendRange[1].toISOString()
+      const first = await securityIdentitiesApi.behavior(id, {
         window: '5m',
-        from: trendRange[0].toISOString(),
-        to: trendRange[1].toISOString(),
+        from,
+        to,
         page: 1,
-        page_size: 500,
-      }),
+        page_size: BEHAVIOR_PAGE_SIZE,
+      })
+      const items = [...first.items]
+      const totalPages = Math.ceil(first.total / BEHAVIOR_PAGE_SIZE)
+      for (let page = 2; page <= totalPages; page += 1) {
+        const next = await securityIdentitiesApi.behavior(id, {
+          window: '5m',
+          from,
+          to,
+          page,
+          page_size: BEHAVIOR_PAGE_SIZE,
+        })
+        if (next.items.length === 0) break
+        items.push(...next.items)
+      }
+      return { ...first, items }
+    },
     enabled: !!id,
   })
 

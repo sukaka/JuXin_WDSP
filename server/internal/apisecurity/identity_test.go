@@ -3,8 +3,12 @@
 package apisecurity
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // TestIdentityQualityScore 质量分分档：基础40 + 认证15 + 请求量（对数刻度 4…30）+ 存活跨度（3…15），封顶 100。
@@ -119,5 +123,31 @@ func TestAssessIdentityRisk(t *testing.T) {
 		if a := assessIdentityRisk(ind); !valid[a.Level] {
 			t.Errorf("invalid level %q for %+v", a.Level, ind)
 		}
+	}
+}
+
+func TestIdentityProfileDetailJSONIncludesApplicationFields(t *testing.T) {
+	detail := IdentityProfileDetail{
+		Profile: IdentityProfile{
+			IdentityFingerprint: "fp-1",
+			EndpointID:          uuid.New(),
+			EndpointKey:         "GET /v1/orders",
+			ApplicationName:     "商城应用",
+			ApplicationDomain:   "shop.example.com",
+			AuthType:            "jwt",
+			RequestCount:        10,
+			FirstSeenAt:         time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+			LastSeenAt:          time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC),
+			QualityScore:        72,
+		},
+		RecentEvents: []RuntimeEvent{},
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal IdentityProfileDetail: %v", err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"application_name":"商城应用"`) || !strings.Contains(s, `"application_domain":"shop.example.com"`) {
+		t.Fatalf("detail JSON missing application fields: %s", s)
 	}
 }

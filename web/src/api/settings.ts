@@ -13,7 +13,7 @@ export const settingsApi = {
   list: (group: string) =>
     request<{ items: SettingItem[] }>('/system-settings', { query: { group } }),
   update: (body: UpdateSettingBody) =>
-    request<SettingItem>('/system-settings', { method: 'PUT', body }),
+    request<{ message: string }>('/system-settings', { method: 'PUT', body }),
   syslogTest: () =>
     request<{ message: string }>('/system-settings/syslog-test', { method: 'POST' }),
 }

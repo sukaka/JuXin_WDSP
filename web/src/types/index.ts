@@ -172,7 +172,7 @@ export interface SettingItem {
   id: string
   setting_group: string
   setting_key: string
-  setting_value: string
+  setting_value: string | number | boolean
   value_type: string
   is_sensitive: boolean
   description: string
@@ -473,7 +473,7 @@ export interface ProtectionPolicyItem {
 
 /** 防护策略详情（含绑定应用 ID 列表） */
 export interface ProtectionPolicyDetail extends ProtectionPolicyItem {
-  application_ids: string[]
+  application_ids: string[] | null
 }
 
 /**
@@ -543,20 +543,24 @@ export interface CustomRuleItem {
   version: number
 }
 
-/** 漏洞档案条目（CNNVD 兼容性 P1，vuln_refs 表，管理员手工维护） */
-export interface VulnRefItem {
+/** 漏洞档案基础条目（POST /waf/vuln-refs 返回，不含交叉计数） */
+export interface VulnRef {
   id: string
   cnnvd_id: string
   cve_id: string
   title: string
   severity: string
-  published_at: string
+  published_at: string | null
   /** CNNVD 官方条目链接（可空） */
   url: string
-  rule_count: number
-  event_count_30d: number
   created_at: string
   updated_at: string
+}
+
+/** 漏洞档案条目（CNNVD 兼容性 P1，vuln_refs 表，含交叉计数） */
+export interface VulnRefItem extends VulnRef {
+  rule_count: number
+  event_count_30d: number
 }
 
 /** 漏洞档案关联规则（交叉查询：编号 → 规则） */
@@ -685,9 +689,10 @@ export interface ExceptionPreviewNormalizedScope {
   domain?: string
   uri_exact?: string
   uri_prefix?: string
-  methods?: string[]
-  source_ips?: string[]
-  content_types?: string[]
+  uri_regex?: string
+  methods?: string[] | null
+  source_ips?: string[] | null
+  content_types?: string[] | null
   effective_from?: string | null
   effective_until?: string | null
 }
@@ -853,6 +858,21 @@ export interface JwtVerificationInfo {
   evaluated_at?: string
 }
 
+/** IP 归属地与运营商信息（后端统一 GeoIP 引擎 ip2region + DB-IP/MMDB 实时补齐） */
+export interface IPGeoInfo {
+  ip: string
+  scope: 'PUBLIC' | 'INTERNAL' | 'INVALID' | string
+  country_code?: string
+  country?: string
+  province?: string
+  city?: string
+  isp?: string
+  label: string
+  latitude?: number
+  longitude?: number
+  source?: string
+}
+
 /** 安全事件列表项 */
 export interface SecurityEventItem {
   id: string
@@ -863,6 +883,7 @@ export interface SecurityEventItem {
   domain: string
   gateway_node_id: string
   client_ip: string
+  client_ip_geo?: IPGeoInfo | null
   client_port: number
   request_method: string
   request_uri: string
@@ -981,6 +1002,7 @@ export interface AccessLogItem {
   domain: string
   gateway_node_id: string
   client_ip: string
+  client_ip_geo?: IPGeoInfo | null
   client_port: number
   request_method: string
   request_uri: string
@@ -1209,6 +1231,76 @@ export interface BlacklistPrefillResult {
   prefill: BlacklistPrefill
 }
 
+/** URL 白名单规则 */
+export interface URLWhitelistRuleItem {
+  id: string
+  name: string
+  scope_type: 'GLOBAL' | 'APPLICATION'
+  application_id?: string | null
+  match_type: 'EXACT' | 'PREFIX' | 'REGEX'
+  uri_pattern: string
+  methods: string[]
+  priority: number
+  status: 'DRAFT' | 'ACTIVE' | 'DISABLED' | 'EXPIRED' | 'DELETED'
+  validity_type: 'PERMANENT' | 'TEMPORARY'
+  effective_from?: string | null
+  effective_until?: string | null
+  reason: string
+  source_type: 'MANUAL' | 'SECURITY_EVENT'
+  source_event_id?: string | null
+  hit_count: number
+  last_hit_at?: string | null
+  created_by?: string | null
+  created_at: string
+  updated_by?: string | null
+  updated_at: string
+  version: number
+}
+
+/** URL 白名单规则详情响应 */
+export interface URLWhitelistRuleDetail {
+  rule: URLWhitelistRuleItem
+}
+
+/** 同路径已存在的 URL 白名单简要信息 */
+export interface WhitelistPrefillExistingURL {
+  id: string
+  name: string
+  match_type: 'EXACT' | 'PREFIX' | 'REGEX'
+  uri_pattern: string
+  status: URLWhitelistRuleItem['status']
+}
+
+/** 事件→白名单预填数据（支持 IP 白名单 / URL 白名单 + 可选同步创建精确 WAF 例外） */
+export interface WhitelistPrefill {
+  event_id: string
+  address: string
+  request_path: string
+  request_method: string
+  domain: string
+  application_id?: string | null
+  application_name: string
+  attack_type: string
+  severity: string
+  related_event_count_24h: number
+  last_attack_at?: string | null
+  hit_rules: BlacklistPrefillHitRule[]
+  event_rule_ids: number[]
+  can_create_waf_exception: boolean
+  suggested_ip_name: string
+  suggested_url_name: string
+  suggested_reason: string
+  shared_egress_hint?: BlacklistPrefillSharedEgress | null
+  existing_allow_rule?: BlacklistPrefillExistingRule | null
+  existing_deny_rule?: BlacklistPrefillExistingRule | null
+  existing_url_whitelist?: WhitelistPrefillExistingURL | null
+}
+
+/** 白名单预填接口响应 */
+export interface WhitelistPrefillResult {
+  prefill: WhitelistPrefill
+}
+
 /** CC 防护（限速）策略 */
 export interface RateLimitPolicyItem {
   id: string
@@ -1330,6 +1422,7 @@ export interface AccessControlEventDetail {
 /** L7 条件类型 */
 export type L7ConditionType =
   | 'uri'
+  | 'host'
   | 'method'
   | 'header'
   | 'cookie'
@@ -1343,7 +1436,7 @@ export type L7ConditionType =
 export type L7ConditionOp =
   'eq' | 'ne' | 'prefix' | 'contains' | 'regex' | 'exists' | 'not_exists' | 'in'
 
-/** L7 访问控制条件（uri 无 name；exists/not_exists 无 value；method/client_ip 用 values） */
+/** L7 访问控制条件（uri/host 无 name；exists/not_exists 无 value；method/client_ip 用 values） */
 export interface L7RuleCondition {
   type: L7ConditionType
   name?: string
@@ -1361,6 +1454,7 @@ export interface L7RuleActionConfig {
   message?: string
   redirect_url?: string
   redirect_status?: number
+  preserve_path_query?: boolean
   content_type?: string
   body?: string
 }
@@ -1390,6 +1484,7 @@ export interface L7RuleDetail {
 /** L7 规则测试器入参 */
 export interface L7RuleTestRequest {
   uri: string
+  host?: string
   method: string
   headers: Record<string, string>
   cookies: Record<string, string>
@@ -1407,6 +1502,8 @@ export interface L7RuleTestResult {
   rule_name?: string
   action?: L7RuleAction | ''
   reason?: string
+  redirect_status?: number
+  redirect_location?: string
 }
 
 /* ==================== 阶段6：安全态势 / 统计分析 / 报告 / 监控告警 / 备份恢复 / 升级交付 ==================== */
@@ -1876,10 +1973,11 @@ export interface ReportTemplateItem {
 
 /** 报告归档记录（report_archives 表 + 关联报告信息） */
 export interface ReportArchiveItem {
-  id: string
+  archive_id: string
   report_job_id: string
   report_no?: string
   report_type?: string
+  status?: string
   file_format?: string
   file_hash?: string
   file_size?: number | null
@@ -2375,45 +2473,43 @@ export interface UpgradePrecheckResult {
 /** 升级任务 */
 export interface UpgradeJobItem {
   id: string
-  package_id: string
-  version_from?: string
-  version_to?: string
+  package_id: string | null
   status: string
-  current_step?: string
-  progress?: number
-  failure_code?: string
-  failure_message?: string
+  precheck?: unknown
+  backup_job_id?: string | null
   requested_by?: string | null
+  requested_at: string
   /** 定时升级的计划开始时间（RFC3339）；仅 SCHEDULED 状态任务携带，立即升级为 null */
   scheduled_at?: string | null
   started_at?: string | null
   finished_at?: string | null
-  created_at: string
+  failure_code?: string
+  failure_message?: string
   request_id?: string
 }
 
 /** 交付检查结果项 */
 export interface DeliveryCheckResultItem {
-  item: string
+  item_key: string
+  item_name: string
   category?: string
   result: 'PASS' | 'WARNING' | 'FAIL' | 'NOT_APPLICABLE'
   critical?: boolean
   message?: string
+  details?: Record<string, unknown> | null
 }
 
 /** 交付检查任务 */
 export interface DeliveryCheckItem {
   id: string
-  status: string
-  overall_result?: string
-  pass_count?: number
-  warning_count?: number
-  fail_count?: number
-  total_count?: number
-  triggered_by?: string | null
-  started_at?: string | null
+  overall_result: 'PENDING' | 'PASS' | 'WARNING' | 'FAIL' | string
+  total: number
+  pass_count: number
+  warning_count: number
+  fail_count: number
+  requested_by?: string | null
+  started_at: string
   finished_at?: string | null
-  created_at: string
 }
 
 /** 交付检查详情（含逐项结果） */
@@ -2622,11 +2718,14 @@ export interface LicenseHistoryItem {
   created_at: string
 }
 
+/** 定时报告周期类型（定时计划仅支持日/周/月，不支持 CUSTOM） */
+export type ReportScheduleType = 'DAILY' | 'WEEKLY' | 'MONTHLY'
+
 /** 定时报告计划 */
 export interface ReportScheduleItem {
   id: string
   name: string
-  report_type: ReportType
+  report_type: ReportScheduleType
   api_report_type?: string
   content_scope?: ReportContentScope
   application_ids?: string[] | null
@@ -2782,25 +2881,35 @@ export interface ApmTraceAccessLog {
   id: string
   occurred_at: string
   request_id: string
-  application_id: string
+  application_id: string | null
   domain: string
   client_ip: string
   request_method: string
+  request_uri?: string
   request_path: string
   response_status: number
   duration_ms: number
-  ttfb_ms: number
+  ttfb_ms: number | null
   waf_action: string
-  endpoint_key: string
+  span_id?: string | null
+  endpoint_key: string | null
+  path_template?: string | null
 }
 
 /** Trace 关联 WAF 安全事件（GET /api/v1/apm/traces/{trace_id} 的 security_events 元素） */
 export interface ApmTraceSecurityEvent {
   id: string
   occurred_at: string
-  action: string
-  rule_id: string
   request_id: string
+  application_id?: string | null
+  attack_type: string
+  severity: string
+  action: string
+  response_status: number
+  request_method: string
+  request_uri: string
+  rule_match_count: number
+  disposition_status: string
 }
 
 /* ---------- P1-01 A2：数据质量自述（availability）与关联（correlation） ----------
@@ -2910,23 +3019,35 @@ export type ApmAgentStatus =
 /** Agent 清单行（GET /api/v1/apm/agents 的 items 元素） */
 export interface ApmAgentItem {
   id: string
+  service_id?: string
   service_name: string
   instance_id: string
   language: string
   agent_version: string
+  sdk_version?: string
+  stored_status?: Exclude<ApmAgentStatus, 'OFFLINE'>
   status: ApmAgentStatus
-  last_heartbeat_at: string
-  cert_expires_at: string
-  application_id: string
+  cert_fingerprint?: string
+  last_heartbeat_at: string | null
+  cert_not_after: string
+  node_info?: Record<string, string>
+  registered_at?: string
+  revoked_at?: string | null
+  revoke_reason?: string
+  application_id: string | null
   environment: string
 }
 
 /** 一次性注册令牌创建结果（POST /api/v1/apm/agents/enrollment-tokens 的 data；token 原文仅此一次返回） */
 export interface ApmEnrollmentTokenResult {
-  id: string
+  token_id: string
   /** 令牌原文，仅此一次返回，页面须醒目提示并一次性展示 */
   token: string
+  application_id?: string | null
+  environment?: string
+  allowed_languages?: string[]
   expires_at: string
+  note?: string
 }
 
 /** Agent 基线策略（GET/PUT /api/v1/apm/policies/{scope}；policy 为 opaque JSON，前端原样编辑） */
@@ -3128,12 +3249,12 @@ export type ApmDiagnosticSessionStatus =
 /** 诊断范围（diagnostic-sessions 的 scope；深度诊断默认仅选定实例，见设计 §21.2） */
 export interface ApmDiagnosticScope {
   application_id: string
-  service: string
-  environment: string
-  instance_ids: string[]
+  service?: string
+  environment?: string
+  instance_ids?: string[]
 }
 
-/** 诊断会话行（GET /api/v1/apm/diagnostic-sessions 的 list 元素） */
+/** 诊断会话行（GET /api/v1/apm/diagnostic-sessions 的 items 元素） */
 export interface ApmDiagnosticSession {
   id: string
   scope: ApmDiagnosticScope
@@ -3142,17 +3263,19 @@ export interface ApmDiagnosticSession {
   sampling_rate: number
   duration_minutes: number
   status: ApmDiagnosticSessionStatus
-  created_by: string
+  created_by: string | null
   created_at: string
   expires_at: string
   stopped_at?: string | null
   stopped_by?: string | null
   stop_reason?: string | null
+  policy_version?: number
+  baseline_restored?: boolean
 }
 
 /** 诊断会话分页（GET /api/v1/apm/diagnostic-sessions 的 data；kill_switch_enabled=true 时新建会话被拒绝） */
 export interface ApmDiagnosticSessionPage {
-  list: ApmDiagnosticSession[]
+  items: ApmDiagnosticSession[]
   total: number
   page: number
   page_size: number
@@ -3162,10 +3285,23 @@ export interface ApmDiagnosticSessionPage {
 /** 诊断审计条目（GET /api/v1/apm/diagnostic-sessions/{id} 的 audits 元素） */
 export interface ApmDiagnosticAudit {
   id: string
+  occurred_at: string
+  user_id?: string | null
+  username: string
+  source_ip?: string
+  connection_ip?: string
+  user_agent_summary?: string
+  module?: string
   action: string
-  actor: string
-  detail?: string
-  created_at: string
+  object_type?: string
+  object_id?: string
+  object_name?: string
+  before_summary?: string
+  after_summary?: string
+  result?: 'SUCCESS' | 'FAILURE' | string
+  failure_reason?: string
+  risk_level?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | string
+  request_id?: string
 }
 
 /** 诊断会话详情（GET /api/v1/apm/diagnostic-sessions/{id} 的 data：会话全字段 + 关联审计） */

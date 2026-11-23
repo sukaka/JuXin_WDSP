@@ -48,19 +48,24 @@ func TestI18NMappings(t *testing.T) {
 }
 
 func TestRuleDisplayName(t *testing.T) {
-	// CRS 规则：加中文类别前缀，保留英文原名
+	// CRS 内置规则：直接返回完整中文规则名
 	got := RuleDisplayName(942100, "SQL Injection Attack Detected via libinjection")
-	want := "【SQL注入】SQL Injection Attack Detected via libinjection"
+	want := "通过 libinjection 检测到 SQL 注入攻击"
 	if got != want {
 		t.Fatalf("crs rule: got %q want %q", got, want)
 	}
 	got = RuleDisplayName(941160, "NoScript XSS InjectionChecker: HTML Injection")
-	if got != "【XSS跨站脚本】NoScript XSS InjectionChecker: HTML Injection" {
+	if got != "NoScript XSS InjectionChecker：HTML 注入" {
 		t.Fatalf("xss rule: got %q", got)
 	}
 	got = RuleDisplayName(949110, "Inbound Anomaly Score Exceeded (Total Score: 9)")
-	if got != "【异常评分拦截评估】Inbound Anomaly Score Exceeded (Total Score: 9)" {
+	if got != "入站异常评分超限（总分：9）" {
 		t.Fatalf("eval rule: got %q", got)
+	}
+	// 未收录的 CRS 段英文规则：回退为中文类别前缀 + 原文
+	got = RuleDisplayName(942999, "Future SQLi Rule")
+	if got != "【SQL注入】Future SQLi Rule" {
+		t.Fatalf("unmapped crs rule: got %q", got)
 	}
 	// 中文规则名（自研）原样
 	got = RuleDisplayName(1001101, "检测到SQL注入攻击")

@@ -50,6 +50,7 @@ export default function ApiModelsPage() {
   const qc = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions)
   const canEdit = hasPermission(permissions, 'api_model.edit')
+  const canConfirm = hasPermission(permissions, 'api_model.confirm')
   const canReview = hasPermission(permissions, 'api_model.review')
   const canActivate = hasPermission(permissions, 'api_model.activate')
   const canArchive = hasPermission(permissions, 'api_model.archive')
@@ -282,7 +283,7 @@ export default function ApiModelsPage() {
               提交评审
             </Button>
           ) : null}
-          {canEdit && canConfirmVersion(record.status) ? (
+          {canConfirm && canConfirmVersion(record.status) ? (
             <Button type="link" size="small" onClick={() => confirmFreeze(record)}>
               确认冻结
             </Button>

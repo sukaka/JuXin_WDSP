@@ -74,7 +74,7 @@ func TestDataflowHandlers(t *testing.T) {
 	t.Run("boundary graph", func(t *testing.T) {
 		reader.graph.View = "boundary"
 		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/api-security/data-flow/graph?view=BOUNDARY&max_edges=25&method=get&data_type=PHONE&application_id=7abf5de5-8c6f-4ea6-9420-f6d1b87c4215", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/api-security/data-flow/graph?view=BOUNDARY&max_edges=25&method=get&data_type=%20phone%20&application_id=7abf5de5-8c6f-4ea6-9420-f6d1b87c4215", nil)
 		authenticatedMux.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"view":"boundary"`) {
 			t.Fatalf("unexpected boundary graph response: %d %s", rr.Code, rr.Body.String())
@@ -96,7 +96,7 @@ func TestDataflowHandlers(t *testing.T) {
 
 	t.Run("evidence", func(t *testing.T) {
 		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/api-security/data-flow/evidence?edge_id=service:orders-%3Eservice:profile%7CHTTP&view=boundary", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/api-security/data-flow/evidence?edge_id=service:orders-%3Eservice:profile%7CHTTP&view=boundary&data_type=%20email%20", nil)
 		authenticatedMux.ServeHTTP(rr, req)
 		body := rr.Body.String()
 		if rr.Code != http.StatusOK || !strings.Contains(body, "ev-1") {
@@ -107,8 +107,8 @@ func TestDataflowHandlers(t *testing.T) {
 				t.Errorf("evidence response missing %s: %s", value, body)
 			}
 		}
-		if reader.lastFilter.View != "boundary" {
-			t.Fatalf("evidence view not passed: %+v", reader.lastFilter)
+		if reader.lastFilter.View != "boundary" || reader.lastFilter.DataType != "EMAIL" {
+			t.Fatalf("evidence filter not normalized: %+v", reader.lastFilter)
 		}
 	})
 

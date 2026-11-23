@@ -1,13 +1,17 @@
 package apillm
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func newSecurityPolicyTestMux(store *MemSecurityPolicyStore, authzFn func(http.Handler) http.Handler) *http.ServeMux {
@@ -133,5 +137,73 @@ func TestSecurityPolicyValidation(t *testing.T) {
 		if rr := doSecurityPolicyJSON(t, mux, http.MethodPost, "/api/v1/api-security/llm/security-policies", body); rr.Code != http.StatusBadRequest {
 			t.Fatalf("body=%s status=%d body=%s", body, rr.Code, rr.Body.String())
 		}
+	}
+}
+
+type fakePolicyRow struct {
+	id        uuid.UUID
+	version   int64
+	createdAt time.Time
+	updatedAt time.Time
+}
+
+func (r fakePolicyRow) Scan(dest ...any) error {
+	*dest[0].(*uuid.UUID) = r.id
+	*dest[1].(*int64) = r.version
+	*dest[2].(*time.Time) = r.createdAt
+	*dest[3].(*time.Time) = r.updatedAt
+	return nil
+}
+
+type fakeSecurityPolicyTx struct {
+	querySQL  string
+	queryArgs []any
+	execSQL   string
+	execArgs  []any
+}
+
+func (f *fakeSecurityPolicyTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+	f.querySQL = sql
+	f.queryArgs = append([]any(nil), args...)
+	now := time.Now().UTC()
+	return fakePolicyRow{id: uuid.New(), version: 1, createdAt: now, updatedAt: now}
+}
+
+func (f *fakeSecurityPolicyTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	f.execSQL = sql
+	f.execArgs = append([]any(nil), args...)
+	return pgconn.CommandTag{}, nil
+}
+
+func TestCreateSecurityPolicyTxBindsAll14Placeholders(t *testing.T) {
+	createdBy := uuid.New()
+	updatedBy := uuid.New()
+	p := &SecurityPolicy{
+		ApplicationID:          uuid.New(),
+		Name:                   "B7-2测试策略",
+		Mode:                   SecurityPolicyModeObserve,
+		PromptInjectionEnabled: true,
+		BlockedTopics:          []string{"topic-a"},
+		MaxPromptBytes:         1024,
+		MaxOutputTokens:        256,
+		Enabled:                true,
+		CreatedBy:              &createdBy,
+		UpdatedBy:              &updatedBy,
+	}
+	tx := &fakeSecurityPolicyTx{}
+	if err := createSecurityPolicyTx(context.Background(), tx, p); err != nil {
+		t.Fatalf("createSecurityPolicyTx error: %v", err)
+	}
+	if len(tx.queryArgs) != 14 {
+		t.Fatalf("expected 14 args, got %d", len(tx.queryArgs))
+	}
+	if !strings.Contains(tx.querySQL, "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)") {
+		t.Fatalf("SQL missing $1..$14 placeholders: %s", tx.querySQL)
+	}
+	if gotCreated := tx.queryArgs[12].(*uuid.UUID); gotCreated == nil || *gotCreated != createdBy {
+		t.Fatalf("arg[12] created_by=%v, want %v", gotCreated, createdBy)
+	}
+	if gotUpdated := tx.queryArgs[13].(*uuid.UUID); gotUpdated == nil || *gotUpdated != updatedBy {
+		t.Fatalf("arg[13] updated_by=%v, want %v", gotUpdated, updatedBy)
 	}
 }

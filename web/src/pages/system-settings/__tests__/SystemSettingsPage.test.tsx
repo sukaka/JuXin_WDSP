@@ -696,3 +696,104 @@ describe('SystemSettingsPage · network 分组 NTP/DNS 服务器', () => {
     expect(within(row).queryByRole('button', { name: /^保\s*存$/ })).toBeNull()
   })
 })
+
+describe('SystemSettingsPage · 原生 JSON boolean/number 设置项（B6-5 / B6-12）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function nativeLoggingItems(): SettingItem[] {
+    return [
+      makeItem({ id: 'nb1', setting_key: 'access_log_enabled', setting_value: true, value_type: 'boolean', version: 1 }),
+      makeItem({ id: 'nb2', setting_key: 'syslog_enabled', setting_value: false, value_type: 'boolean', version: 2 }),
+      makeItem({ id: 'nn1', setting_key: 'body_limit_kb', setting_value: 64, value_type: 'integer', version: 3 }),
+      makeItem({ id: 'nn2', setting_key: 'retention_days', setting_value: 30, value_type: 'integer', version: 4 }),
+    ]
+  }
+
+  function mockNativeFetch(items: SettingItem[]) {
+    return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      if (url.includes('/system-settings') && method === 'PUT') {
+        return Promise.resolve(
+          jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { message: '设置已更新' } }),
+        )
+      }
+      if (url.includes('/system-settings')) {
+        const group = new URL(url, 'http://localhost').searchParams.get('group')
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { items: group === 'logging' ? items : [] },
+          }),
+        )
+      }
+      return Promise.reject(new Error(`unexpected url: ${url}`))
+    })
+  }
+
+  it('原生 boolean true/false 正确渲染 Switch 状态，改回原值取消脏标记，保存提交原生类型', async () => {
+    vi.stubGlobal('fetch', mockNativeFetch(nativeLoggingItems()))
+    useAuthStore.setState({
+      user: makeUser(['system_settings.update']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    fireEvent.click(screen.getByRole('tab', { name: '日志记录' }))
+
+    const enabledRow = (await screen.findByText('access_log_enabled')).closest('tr')!
+    const enabledSwitch = within(enabledRow).getByRole('switch')
+    expect(enabledSwitch).toBeChecked()
+
+    const disabledRow = screen.getByText('syslog_enabled').closest('tr')!
+    expect(within(disabledRow).getByRole('switch')).not.toBeChecked()
+
+    const saveBtn = within(enabledRow).getByRole('button', { name: /^保\s*存$/ })
+    expect(saveBtn).toBeDisabled()
+
+    // 切换为 false 后再切回 true，保存按钮应恢复禁用（isDirty 使用 String(...) 对比）
+    fireEvent.click(enabledSwitch)
+    await waitFor(() => expect(saveBtn).toBeEnabled())
+    fireEvent.click(enabledSwitch)
+    await waitFor(() => expect(saveBtn).toBeDisabled())
+
+    // 修改原生 integer 设置项：不会因 .trim() 抛 TypeError，且提交原生 number
+    const limitRow = screen.getByText('body_limit_kb').closest('tr')!
+    const spin = within(limitRow).getByRole('spinbutton')
+    expect(spin).toHaveValue('64')
+    fireEvent.change(spin, { target: { value: '128' } })
+    await clickSaveWhenEnabled(limitRow)
+
+    const body = await waitForPutBody()
+    expect(body).toEqual({
+      setting_group: 'logging',
+      setting_key: 'body_limit_kb',
+      setting_value: 128,
+      version: 3,
+    })
+    expect(typeof body.setting_value).toBe('number')
+  })
+
+  it('只读模式下原生 boolean true/false 正确渲染为「已开启」「已关闭」，原生 number 正常显示', async () => {
+    vi.stubGlobal('fetch', mockNativeFetch(nativeLoggingItems()))
+    useAuthStore.setState({
+      user: makeUser(['system_settings.read']),
+      csrfToken: null,
+      initialized: true,
+    })
+    renderPage()
+    fireEvent.click(screen.getByRole('tab', { name: '日志记录' }))
+
+    const enabledRow = (await screen.findByText('access_log_enabled')).closest('tr')!
+    expect(within(enabledRow).getByText('已开启')).toBeInTheDocument()
+
+    const disabledRow = screen.getByText('syslog_enabled').closest('tr')!
+    expect(within(disabledRow).getByText('已关闭')).toBeInTheDocument()
+
+    const limitRow = screen.getByText('body_limit_kb').closest('tr')!
+    expect(within(limitRow).getByText('64')).toBeInTheDocument()
+  })
+})

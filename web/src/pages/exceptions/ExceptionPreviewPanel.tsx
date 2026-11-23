@@ -145,6 +145,9 @@ export default function ExceptionPreviewPanel({
                 {p.normalized_scope?.uri_prefix && (
                   <Tag>前缀 {p.normalized_scope.uri_prefix}</Tag>
                 )}
+                {p.normalized_scope?.uri_regex && (
+                  <Tag>正则 {p.normalized_scope.uri_regex}</Tag>
+                )}
                 {(p.normalized_scope?.methods ?? []).map((m) => (
                   <Tag key={`m-${m}`}>{m}</Tag>
                 ))}

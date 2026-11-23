@@ -539,7 +539,7 @@ func graphWhereForRuntime(filter GraphFilter, observations, runtimeEnabled bool)
 	}
 	if filter.DataType != "" && !observations && !runtimeEnabled {
 		where += " AND " + table + ".data_types_json LIKE ?"
-		args = append(args, "%\""+filter.DataType+"\"%")
+		args = append(args, "%\""+strings.ToUpper(strings.TrimSpace(filter.DataType))+"\"%")
 	}
 	return where, args
 }

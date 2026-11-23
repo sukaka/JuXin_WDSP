@@ -495,6 +495,9 @@ type ArchiveItem struct {
 	ReportNo    string    `json:"report_no"`
 	ReportType  string    `json:"report_type"`
 	Status      string    `json:"status"`
+	FileFormat  string    `json:"file_format"`
+	FileHash    string    `json:"file_hash"`
+	FileSize    int64     `json:"file_size"`
 	ArchivedAt  time.Time `json:"archived_at"`
 	Note        string    `json:"note"`
 	ArchivedBy  string    `json:"archived_by"`
@@ -514,6 +517,7 @@ func (s *Store) ListArchives(ctx context.Context, page, pageSize int) ([]Archive
 	}
 	rows, err := s.db.Query(ctx, `
 SELECT a.id, a.report_job_id, j.report_no, j.report_type, j.status,
+       j.file_format, j.file_hash, j.file_size,
        a.archived_at, a.note, COALESCE(u.username, '')
 FROM report_archives a
 JOIN report_jobs j ON j.id = a.report_job_id
@@ -523,11 +527,12 @@ ORDER BY a.archived_at DESC LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []ArchiveItem
+	out := []ArchiveItem{}
 	for rows.Next() {
 		var it ArchiveItem
 		var jobID *uuid.UUID
 		if err := rows.Scan(&it.ArchiveID, &jobID, &it.ReportNo, &it.ReportType, &it.Status,
+			&it.FileFormat, &it.FileHash, &it.FileSize,
 			&it.ArchivedAt, &it.Note, &it.ArchivedBy); err != nil {
 			return nil, 0, err
 		}

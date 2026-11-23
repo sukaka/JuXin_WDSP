@@ -35,6 +35,7 @@ import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatJson } from '../../utils/format'
 import { hasAnyPermission, hasPermission } from '../../utils/permission'
 import {
+  API_FINDING_SEVERITY_FILTER_OPTIONS,
   API_FINDING_SEVERITY_META,
   API_FINDING_STATUS_META,
   API_FINDING_TYPE_META,
@@ -457,10 +458,7 @@ export default function ApiFindingsPage() {
           allowClear
           style={{ width: 140 }}
           value={severity}
-          options={Object.entries(API_FINDING_SEVERITY_META).map(([value, meta]) => ({
-            value,
-            label: meta.label,
-          }))}
+          options={API_FINDING_SEVERITY_FILTER_OPTIONS}
           onChange={(v) => {
             setSeverity(v)
             setPage(1)

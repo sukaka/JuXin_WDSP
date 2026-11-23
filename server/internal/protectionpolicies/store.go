@@ -211,7 +211,7 @@ func (s *Store) List(ctx context.Context, keyword, mode string, page, pageSize i
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []Policy
+	out := []Policy{}
 	for rows.Next() {
 		var p Policy
 		if err := rows.Scan(&p.ID, &p.Code, &p.Name, &p.Description, &p.IsBuiltin, &p.Status,
@@ -385,7 +385,7 @@ func (s *Store) ListApplicationIDs(ctx context.Context, policyID uuid.UUID) ([]u
 		return nil, err
 	}
 	defer rows.Close()
-	var out []uuid.UUID
+	out := []uuid.UUID{}
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {

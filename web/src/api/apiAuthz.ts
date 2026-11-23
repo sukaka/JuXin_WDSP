@@ -287,6 +287,7 @@ export interface ApiAuthzEnforcementConfirmation {
   confirm_token: string
   application_id: string
   endpoint_id: string
+  endpoint_key?: string
   /** 确认粒度 = 对象模型行（端点×对象段） */
   object_segment: string
   window_days: number
@@ -298,7 +299,6 @@ export interface ApiAuthzEnforcementConfirmation {
   evidence_source: 'AUTHORITY_SYNC' | 'MANUAL_CONFIRMED' | string
   /** 首批唯一 UNKNOWN 处理方式：ALLOW_UNKNOWN（UNKNOWN 永不阻断） */
   on_unknown: string
-  confirmed_by: string
   confirmed_by_name: string
   created_at: string
   token_expires_at: string

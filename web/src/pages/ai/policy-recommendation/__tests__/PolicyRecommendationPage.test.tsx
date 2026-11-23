@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { App as AntdApp } from 'antd'
@@ -164,5 +164,129 @@ describe('PolicyRecommendationPage 草稿闭环', () => {
     expect(await within(drawer).findByText('草稿详情')).toBeInTheDocument()
     expect(within(drawer).getByText('建议为 942100 增加 URI 例外')).toBeInTheDocument()
     expect(within(drawer).getByRole('button', { name: /采\s*纳/ })).toBeInTheDocument()
+  })
+
+  it('支持 NOISE_REDUCTION 草稿类型筛选与 NOISE_CLUSTER 中文展示', async () => {
+    const NOISE_DRAFT = {
+      ...DRAFT,
+      id: '22222222-3333-4444-5555-666666666666',
+      recommendation_type: 'NOISE_REDUCTION',
+      target_type: 'NOISE_CLUSTER',
+      target_id: 'cluster-1',
+      summary: '高频误报降噪簇建议收敛规则',
+    }
+    const noiseFetch = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes(`/ai/drafts/${NOISE_DRAFT.id}`)) {
+        return Promise.resolve(
+          jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: { draft: NOISE_DRAFT } }),
+        )
+      }
+      if (url.includes('/ai/drafts')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { items: [NOISE_DRAFT], page: 1, page_size: 20, total: 1 },
+          }),
+        )
+      }
+      return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: null }))
+    })
+    vi.stubGlobal('fetch', noiseFetch)
+
+    renderPage()
+    // 表格行渲染「智能降噪」
+    expect(await screen.findByText('智能降噪')).toBeInTheDocument()
+
+    // 详情抽屉渲染「降噪簇」
+    fireEvent.click(await screen.findByRole('button', { name: /详\s*情/ }))
+    const drawer = await screen.findByRole('dialog')
+    expect(await within(drawer).findByText('降噪簇')).toBeInTheDocument()
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Close' }))
+
+    // 类型下拉筛选选中「智能降噪」后触发 recommendation_type=NOISE_REDUCTION 查询
+    const typeCombo = screen.getAllByRole('combobox').find((el) => {
+      const select = el.closest('.ant-select')
+      return select?.textContent?.includes('类型')
+    })
+    if (!typeCombo) throw new Error('未找到草稿类型下拉框')
+    fireEvent.mouseDown(typeCombo)
+    const option = await screen.findByTitle('智能降噪')
+    fireEvent.click(option)
+
+    expect(
+      noiseFetch.mock.calls.some((c) => String(c[0]).includes('recommendation_type=NOISE_REDUCTION')),
+    ).toBe(true)
+  })
+
+  it('B4-04：What-If remove_exception 按 page_size=100 请求并在 total > 100 时翻页拉全', async () => {
+    useAuthStore.getState().setSession(
+      {
+        ...fakeUser,
+        permissions: ['ai.policy_recommendation.use', 'ai.what_if.use', 'ai.draft.exception'],
+      },
+      'csrf-token',
+    )
+    const page1Items = Array.from({ length: 100 }, (_, i) => ({
+      id: `exc-${i + 1}`,
+      name: `例外-${i + 1}`,
+    }))
+    const page2Items = [
+      { id: 'exc-101', name: '例外-101' },
+      { id: 'exc-102', name: '例外-102' },
+    ]
+    const paginatedFetch = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('/exceptions')) {
+        if (url.includes('page=2')) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              code: 'SUCCESS',
+              message: 'ok',
+              data: { items: page2Items, page: 2, page_size: 100, total: 102 },
+            }),
+          )
+        }
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { items: page1Items, page: 1, page_size: 100, total: 102 },
+          }),
+        )
+      }
+      if (url.includes('/ai/drafts')) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            code: 'SUCCESS',
+            message: 'ok',
+            data: { items: [], page: 1, page_size: 20, total: 0 },
+          }),
+        )
+      }
+      return Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data: null }))
+    })
+    vi.stubGlobal('fetch', paginatedFetch)
+
+    renderPage()
+    const scenarioCombo = await screen.findByRole('combobox', { name: '模拟场景' })
+    fireEvent.mouseDown(scenarioCombo)
+    const removeOpt = await screen.findByTitle('删除例外')
+    fireEvent.click(removeOpt)
+
+    await waitFor(() => {
+      const excCalls = paginatedFetch.mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => u.includes('/exceptions'))
+      expect(excCalls.some((u) => u.includes('page=1') && u.includes('page_size=100'))).toBe(true)
+      expect(excCalls.some((u) => u.includes('page=2') && u.includes('page_size=100'))).toBe(true)
+      expect(excCalls.some((u) => u.includes('page_size=200'))).toBe(false)
+    })
+
+    const excCombo = await screen.findByRole('combobox', { name: '例外' })
+    fireEvent.mouseDown(excCombo)
+    fireEvent.change(excCombo, { target: { value: '例外-102' } })
+    expect(await screen.findByText(/例外-102/)).toBeInTheDocument()
   })
 })

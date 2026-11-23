@@ -77,7 +77,7 @@ export default function ReportArchivesPage() {
         ) : (
           <SmartTable<ReportArchiveItem>
             storageKey="report-archives"
-            rowKey="id"
+            rowKey="archive_id"
             onRow={(record) => ({
               onDoubleClick: () => setDetailRecord(record),
               style: { cursor: 'pointer' },

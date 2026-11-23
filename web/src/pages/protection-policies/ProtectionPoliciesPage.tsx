@@ -107,17 +107,36 @@ function PolicyFormFields({ isCreate }: { isCreate: boolean }) {
       <Form.Item
         name="inbound_anomaly_threshold"
         label="入站异常阈值"
-        rules={[{ required: true, message: '请输入入站异常阈值' }]}
-        extra="请求异常评分达到该阈值即按防护模式处理"
+        rules={[
+          { required: true, message: '请输入入站异常阈值' },
+          { type: 'number', min: 1, max: 100, message: '入站异常阈值必须在 1–100 之间' },
+          {
+            validator: (_, v) =>
+              v == null || Number.isInteger(v)
+                ? Promise.resolve()
+                : Promise.reject(new Error('请输入整数')),
+          },
+        ]}
+        extra="范围 1–100；请求异常评分达到该阈值即按防护模式处理"
       >
-        <InputNumber min={1} max={10000} style={{ width: '100%' }} />
+        <InputNumber min={1} max={100} precision={0} step={1} style={{ width: '100%' }} />
       </Form.Item>
       <Form.Item
         name="outbound_anomaly_threshold"
         label="出站异常阈值"
-        rules={[{ required: true, message: '请输入出站异常阈值' }]}
+        rules={[
+          { required: true, message: '请输入出站异常阈值' },
+          { type: 'number', min: 1, max: 100, message: '出站异常阈值必须在 1–100 之间' },
+          {
+            validator: (_, v) =>
+              v == null || Number.isInteger(v)
+                ? Promise.resolve()
+                : Promise.reject(new Error('请输入整数')),
+          },
+        ]}
+        extra="范围 1–100；响应异常评分达到该阈值即按防护模式处理"
       >
-        <InputNumber min={1} max={10000} style={{ width: '100%' }} />
+        <InputNumber min={1} max={100} precision={0} step={1} style={{ width: '100%' }} />
       </Form.Item>
       <Form.Item name="request_body_access" label="请求体检查" valuePropName="checked">
         <Switch checkedChildren="开启" unCheckedChildren="关闭" />
@@ -317,9 +336,11 @@ export default function ProtectionPoliciesPage() {
           </Button>
           {hasPermission(permissions, 'protection_policies.update') && (
             <Tooltip title={record.is_builtin ? '内置策略不允许修改' : undefined}>
-              <Button type="link" size="small" disabled={record.is_builtin} onClick={() => openEdit(record)}>
-                编辑
-              </Button>
+              <span>
+                <Button type="link" size="small" disabled={record.is_builtin} onClick={() => openEdit(record)}>
+                  编辑
+                </Button>
+              </span>
             </Tooltip>
           )}
           {hasPermission(permissions, 'protection_policies.create') && (
@@ -328,16 +349,18 @@ export default function ProtectionPoliciesPage() {
             </Button>
           )}
           {hasPermission(permissions, 'protection_policies.delete') && (
-            <Tooltip title={record.is_builtin ? '内置策略不允许删除' : undefined}>
-              <Button
-                type="link"
-                size="small"
-                danger
-                disabled={record.is_builtin}
-                onClick={() => runAction('delete', record)}
-              >
-                删除
-              </Button>
+            <Tooltip title={record.is_builtin ? '内置策略不允许删除' : undefined} placement="left">
+              <span>
+                <Button
+                  type="link"
+                  size="small"
+                  danger
+                  disabled={record.is_builtin}
+                  onClick={() => runAction('delete', record)}
+                >
+                  删除
+                </Button>
+              </span>
             </Tooltip>
           )}
         </Space>

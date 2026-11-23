@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jiuzhang-waf/server/internal/response"
 )
@@ -42,6 +44,48 @@ func TestCurrentConfigDBErrorReturns500(t *testing.T) {
 	if data, ok := body.Data.(map[string]interface{}); ok {
 		if hasCurrent, exists := data["has_current"]; exists && hasCurrent == false {
 			t.Error("错误被渲染成 has_current:false")
+		}
+	}
+}
+
+func TestVersionItemIncludesValidationResult(t *testing.T) {
+	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	for _, vr := range []string{"SMOKE_PASS", "SMOKE_FAIL", "SMOKE_SKIPPED", ""} {
+		v := &ConfigVersion{
+			ID:                uuid.New(),
+			VersionNumber:     "V20261120.090000.000-12345678",
+			ConfigurationHash: "1234567890abcdef",
+			BusinessSnapshot:  "{}",
+			ChangeSummary:     "test",
+			PublishResult:     "SUCCESS",
+			ValidationResult:  vr,
+			IsCurrent:         true,
+			CreatedAt:         now,
+			PublishedAt:       &now,
+		}
+		item := versionItem(v)
+		got, exists := item["validation_result"]
+		if !exists {
+			t.Fatalf("versionItem(%q) missing validation_result key", vr)
+		}
+		if got != vr {
+			t.Fatalf("versionItem(%q)[validation_result] = %v, want %q", vr, got, vr)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/config-versions", nil)
+		response.Page(rec, req, []map[string]interface{}{item}, 1, 1, 20)
+		var env struct {
+			Data struct {
+				Items []struct {
+					ValidationResult *string `json:"validation_result"`
+				} `json:"items"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if len(env.Data.Items) != 1 || env.Data.Items[0].ValidationResult == nil || *env.Data.Items[0].ValidationResult != vr {
+			t.Fatalf("serialized validation_result mismatch for %q: %+v", vr, env.Data.Items)
 		}
 	}
 }

@@ -58,6 +58,8 @@ interface FlowFormValues {
   name?: string
   description?: string
   enabled: boolean
+  max_per_window?: number
+  rate_window_seconds?: number
   steps: StepFormValue[]
 }
 
@@ -82,6 +84,10 @@ function toPayload(values: FlowFormValues): ApiFlowBaselineUpsertInput {
     name: (values.name ?? '').trim(),
     description: (values.description ?? '').trim(),
     enabled: values.enabled,
+    ...(values.max_per_window ? { max_per_window: values.max_per_window } : {}),
+    ...(values.rate_window_seconds
+      ? { rate_window_seconds: values.rate_window_seconds }
+      : {}),
     steps,
   }
 }
@@ -210,6 +216,9 @@ function FlowBaselineEditorDrawer({
         name: detail.name,
         description: detail.description,
         enabled: detail.enabled,
+        // 零值回填为 undefined（表单留空），与提交时的省略口径一致
+        max_per_window: detail.max_per_window || undefined,
+        rate_window_seconds: detail.rate_window_seconds || undefined,
         steps: (detail.steps ?? []).map((s) => ({
           step_id: s.step_id,
           endpoint_id: s.endpoint_id,
@@ -326,6 +335,42 @@ function FlowBaselineEditorDrawer({
           >
             <Input.TextArea rows={2} placeholder="选填" />
           </Form.Item>
+          <Space size={16} wrap style={{ display: 'flex' }}>
+            <Form.Item
+              name="max_per_window"
+              label="流程级短窗次数上限（选填）"
+              rules={[{ type: 'integer', min: 1, message: '须为正整数' }]}
+              extra="同主体对本流程任意步骤合计调用上限，留空不判定"
+            >
+              <InputNumber
+                min={1}
+                precision={0}
+                style={{ width: 160 }}
+                placeholder="留空不判定"
+              />
+            </Form.Item>
+            <Form.Item
+              name="rate_window_seconds"
+              label="流程级短窗秒数（选填）"
+              rules={[
+                {
+                  type: 'integer',
+                  min: 1,
+                  max: 600,
+                  message: '须为 1-600 的整数',
+                },
+              ]}
+              extra="覆盖缺省 60s，上限 600s"
+            >
+              <InputNumber
+                min={1}
+                max={600}
+                precision={0}
+                style={{ width: 160 }}
+                placeholder="缺省 60"
+              />
+            </Form.Item>
+          </Space>
 
           <Typography.Title level={5}>步骤</Typography.Title>
           {endpointsQuery.error ? (
@@ -550,8 +595,11 @@ function FlowBaselineDetailDrawer({
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           <Typography.Text type="secondary">
             {detail.name || '（无展示名）'} · 版本 {detail.version} ·{' '}
-            {detail.enabled ? '已启用' : '已禁用'} · 更新于{' '}
-            {formatDateTime(detail.updated_at)}
+            {detail.enabled ? '已启用' : '已禁用'}
+            {detail.max_per_window > 0
+              ? ` · 流程限速 ${detail.max_per_window} 次 / ${detail.rate_window_seconds > 0 ? detail.rate_window_seconds : 60}s`
+              : ''}
+            {' '}· 更新于 {formatDateTime(detail.updated_at)}
           </Typography.Text>
           {detail.description ? (
             <Typography.Paragraph>{detail.description}</Typography.Paragraph>

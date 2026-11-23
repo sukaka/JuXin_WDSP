@@ -60,7 +60,7 @@ const schedule2 = {
   name: '高危摘要',
   cron_expr: '@daily',
   enabled: false,
-  config: {},
+  config: { window_hours: 48, limit: 50 },
   next_run_at: null,
   last_run_at: null,
   last_status: '',
@@ -192,6 +192,10 @@ describe('ApiAIOpsPage', () => {
           putCalls.push({ path, body: JSON.parse(String(init?.body)) })
           return ok({ schedule: schedule1 })
         }
+        if (path.endsWith('/schedules/sch-2') && method === 'PUT') {
+          putCalls.push({ path, body: JSON.parse(String(init?.body)) })
+          return ok({ schedule: schedule2 })
+        }
         if (path.endsWith('/api-security/ai-ops/schedules')) {
           if (method === 'POST') {
             createBodies.push(JSON.parse(String(init?.body)))
@@ -269,6 +273,27 @@ describe('ApiAIOpsPage', () => {
       task_type: 'API_ASSET_DIGEST',
       name: '每日资产摘要',
       cron_expr: '0 9 * * *',
+    })
+  })
+
+  it('B10-6：编辑计划保留并允许修改 config（window_hours/limit）', async () => {
+    renderPage()
+    const row = (await screen.findByText('高危摘要')).closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: /编\s*辑/ }))
+    await screen.findByText('编辑计划：高危摘要')
+
+    expect(screen.getByDisplayValue('48')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('50')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('统计窗口（小时）'), { target: { value: '72' } })
+    fireEvent.click(screen.getByRole('button', { name: /确\s*定|^OK$/ }))
+
+    await waitFor(() => expect(putCalls).toHaveLength(1))
+    expect(putCalls[0].path).toContain('/api-security/ai-ops/schedules/sch-2')
+    expect(putCalls[0].body).toEqual({
+      task_type: 'RISK_DIGEST',
+      name: '高危摘要',
+      cron_expr: '@daily',
+      config: { window_hours: 72, limit: 50 },
     })
   })
 

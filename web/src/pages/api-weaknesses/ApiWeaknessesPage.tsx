@@ -33,7 +33,10 @@ import StatusTag from '../../components/StatusTag'
 import { useAuthStore } from '../../stores/auth'
 import { formatDateTime, formatJson } from '../../utils/format'
 import { hasPermission } from '../../utils/permission'
-import { API_FINDING_SEVERITY_META } from '../../utils/stage8'
+import {
+  API_FINDING_SEVERITY_FILTER_OPTIONS,
+  API_FINDING_SEVERITY_META,
+} from '../../utils/stage8'
 
 /** 弱点状态（与 server/internal/apiweakness 状态机枚举一致） */
 const WEAKNESS_STATUS_META: Record<string, { color: string; label: string }> = {
@@ -413,12 +416,7 @@ export default function ApiWeaknessesPage() {
           allowClear
           style={{ width: 140 }}
           value={severity}
-          options={Object.entries(API_FINDING_SEVERITY_META).map(
-            ([value, meta]) => ({
-              value,
-              label: meta.label,
-            }),
-          )}
+          options={API_FINDING_SEVERITY_FILTER_OPTIONS}
           onChange={(v) => {
             setSeverity(v)
             setPage(1)

@@ -97,8 +97,8 @@ type SchemaViolation struct {
 	OccurredAt     time.Time  `json:"occurred_at"`
 }
 
-// ListViolations Schema 违例分页列表（过滤 endpoint_id/violation_type）。
-func (s *Store) ListViolations(ctx context.Context, endpointID, violationType string, page, pageSize int) ([]SchemaViolation, int64, error) {
+// ListViolations Schema 违例分页列表（过滤 endpoint_id/violation_type/start_time/end_time）。
+func (s *Store) ListViolations(ctx context.Context, endpointID, violationType string, startTime, endTime *time.Time, page, pageSize int) ([]SchemaViolation, int64, error) {
 	if page <= 0 {
 		page = 1
 	}
@@ -119,6 +119,14 @@ func (s *Store) ListViolations(ctx context.Context, endpointID, violationType st
 	if violationType != "" {
 		args = append(args, violationType)
 		where = append(where, fmt.Sprintf("violation_type = $%d", len(args)))
+	}
+	if startTime != nil {
+		args = append(args, startTime.UTC())
+		where = append(where, fmt.Sprintf("occurred_at >= $%d", len(args)))
+	}
+	if endTime != nil {
+		args = append(args, endTime.UTC())
+		where = append(where, fmt.Sprintf("occurred_at <= $%d", len(args)))
 	}
 	cond := ""
 	if len(where) > 0 {

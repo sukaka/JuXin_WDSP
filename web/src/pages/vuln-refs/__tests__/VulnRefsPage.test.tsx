@@ -38,7 +38,7 @@ const REF_DETAIL = {
   rules: [
     {
       rule_id: 7100001,
-      rule_source: 'CUSTOM',
+      rule_source: 'USER_CUSTOM',
       rule_name: 'Struts2 RCE 虚拟补丁',
       description: '拦截 Struts2 OGNL 注入',
       enabled: true,
@@ -83,7 +83,7 @@ function mockFetch(opts: MockOptions = {}) {
       Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
     if (url.includes('/waf/vuln-refs/')) {
       if (init?.method === 'DELETE') return ok({ message: '已删除' })
-      if (init?.method === 'PUT') return ok(REF_ITEM)
+      if (init?.method === 'PUT') return ok({ message: '档案已更新' })
       if (opts.detailStatus) {
         return Promise.resolve(
           jsonResponse(opts.detailStatus, { code: 'NOT_FOUND', message: '档案不存在', data: null }),
@@ -102,7 +102,18 @@ function mockFetch(opts: MockOptions = {}) {
             }),
           )
         }
-        return ok(REF_ITEM)
+        const createdRef = {
+          id: REF_ITEM.id,
+          cnnvd_id: REF_ITEM.cnnvd_id,
+          cve_id: REF_ITEM.cve_id,
+          title: REF_ITEM.title,
+          severity: REF_ITEM.severity,
+          published_at: REF_ITEM.published_at,
+          url: REF_ITEM.url,
+          created_at: REF_ITEM.created_at,
+          updated_at: REF_ITEM.updated_at,
+        }
+        return ok(createdRef)
       }
       return ok({ items: [REF_ITEM], total: 1, page: 1, page_size: 20 })
     }
@@ -260,9 +271,9 @@ describe('VulnRefsPage 漏洞档案', () => {
     expect(screen.getByText('关联规则（2）')).toBeInTheDocument()
     expect(screen.getByText('7100001')).toBeInTheDocument()
     expect(screen.getByText('Struts2 RCE 虚拟补丁')).toBeInTheDocument()
-    expect(screen.getByText('自定义')).toBeInTheDocument()
+    expect(screen.getByText('用户自定义')).toBeInTheDocument()
     expect(screen.getByText('OWASP 核心规则集')).toBeInTheDocument()
-    expect(screen.queryByText('CUSTOM')).not.toBeInTheDocument()
+    expect(screen.queryByText('USER_CUSTOM')).not.toBeInTheDocument()
     expect(screen.queryByText('OWASP_CRS')).not.toBeInTheDocument()
     expect(screen.getAllByText('启用').length).toBeGreaterThanOrEqual(2)
     // 近 30 天事件计数与样例事件
@@ -307,5 +318,36 @@ describe('VulnRefsPage 漏洞档案', () => {
     expect(screen.queryByRole('button', { name: '编辑' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '删除' })).not.toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: '详情' }).length).toBeGreaterThan(0)
+  })
+
+  it('B9-8：published_at 为 null 时列表与详情抽屉正常渲染 "-"，编辑保存兼容 { message } 返回', async () => {
+    const nullDateItem = { ...REF_ITEM, published_at: null }
+    const nullDateDetail = { ...REF_DETAIL, ref: nullDateItem }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const ok = (data: unknown) =>
+          Promise.resolve(jsonResponse(200, { code: 'SUCCESS', message: 'ok', data }))
+        if (url.includes('/waf/vuln-refs/')) {
+          if (init?.method === 'PUT') return ok({ message: '档案已更新' })
+          return ok(nullDateDetail)
+        }
+        return ok({ items: [nullDateItem], total: 1, page: 1, page_size: 20 })
+      }),
+    )
+
+    renderPage(['/waf/vuln-refs?focus=CNNVD-202401-2345'])
+    expect(await screen.findByText('漏洞档案详情：CNNVD-202401-2345')).toBeInTheDocument()
+    const pubLabel = await screen.findByText('发布时间', { selector: '.ant-descriptions-item-label span' })
+    expect(pubLabel.closest('th')?.nextElementSibling?.textContent).toBe('-')
+
+    // 编辑提交 PUT 返回 { message }
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }))
+    const modalTitle = await screen.findByText('编辑漏洞档案：CNNVD-202401-2345')
+    const modalEl = modalTitle.closest('.ant-modal') as HTMLElement
+    expect(modalEl).not.toBeNull()
+    fireEvent.click(within(modalEl).getByRole('button', { name: /确\s*定|^OK$/ }))
+    expect(await screen.findByText('保存成功')).toBeInTheDocument()
   })
 })

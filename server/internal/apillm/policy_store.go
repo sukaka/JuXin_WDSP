@@ -73,7 +73,12 @@ func (s *Store) GetSecurityPolicy(ctx context.Context, id uuid.UUID) (*SecurityP
 	return p, err
 }
 
-func insertSecurityPolicyVersion(ctx context.Context, tx pgx.Tx, p *SecurityPolicy) error {
+type securityPolicyTx interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func insertSecurityPolicyVersion(ctx context.Context, tx securityPolicyTx, p *SecurityPolicy) error {
 	raw, err := json.Marshal(p)
 	if err != nil {
 		return err
@@ -84,22 +89,19 @@ func insertSecurityPolicyVersion(ctx context.Context, tx pgx.Tx, p *SecurityPoli
 	return err
 }
 
-func (s *Store) CreateSecurityPolicy(ctx context.Context, p *SecurityPolicy) error {
+const createSecurityPolicySQL = `INSERT INTO api_llm_security_policies
+		(application_id, name, mode, prompt_injection_enabled, input_content_enabled, pii_detection_enabled,
+		 output_content_enabled, output_pii_enabled,
+		 blocked_topics, max_prompt_bytes, max_output_tokens, enabled, created_by, updated_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		RETURNING id, version, created_at, updated_at`
+
+func createSecurityPolicyTx(ctx context.Context, tx securityPolicyTx, p *SecurityPolicy) error {
 	topics, err := json.Marshal(p.BlockedTopics)
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	err = tx.QueryRow(ctx, `INSERT INTO api_llm_security_policies
-		(application_id, name, mode, prompt_injection_enabled, input_content_enabled, pii_detection_enabled,
-		 output_content_enabled, output_pii_enabled,
-		 blocked_topics, max_prompt_bytes, max_output_tokens, enabled, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
-		RETURNING id, version, created_at, updated_at`, p.ApplicationID, p.Name, p.Mode,
+	err = tx.QueryRow(ctx, createSecurityPolicySQL, p.ApplicationID, p.Name, p.Mode,
 		p.PromptInjectionEnabled, p.InputContentEnabled, p.PIIDetectionEnabled, p.OutputContentEnabled, p.OutputPIIEnabled,
 		topics, p.MaxPromptBytes, p.MaxOutputTokens, p.Enabled, p.CreatedBy, p.UpdatedBy).Scan(&p.ID, &p.Version, &p.CreatedAt, &p.UpdatedAt)
 	if isSecurityPolicyUniqueViolation(err) {
@@ -108,7 +110,16 @@ func (s *Store) CreateSecurityPolicy(ctx context.Context, p *SecurityPolicy) err
 	if err != nil {
 		return err
 	}
-	if err := insertSecurityPolicyVersion(ctx, tx, p); err != nil {
+	return insertSecurityPolicyVersion(ctx, tx, p)
+}
+
+func (s *Store) CreateSecurityPolicy(ctx context.Context, p *SecurityPolicy) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := createSecurityPolicyTx(ctx, tx, p); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

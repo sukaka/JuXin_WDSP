@@ -58,8 +58,6 @@ export interface ApiEndpointItem {
   tags?: string[]
   /** 资产档案（详情接口附带；列表不返回） */
   asset?: ApiEndpointAsset | null
-  created_at: string
-  updated_at: string
 }
 
 /** API 资产档案（api_assets，与 server/internal/apiassets.Asset 一致；owner 即系统负责人） */
@@ -191,6 +189,7 @@ export interface ApiEndpointListExportParams {
   directory_path?: string
   unassigned?: boolean
   business_type?: string
+  ids?: string
 }
 
 export const apiEndpointsApi = {
@@ -213,6 +212,28 @@ export const apiEndpointsApi = {
       },
     )
     return { ...data, items: data.items ?? [] }
+  },
+  /** 分页拉取某站点下全量接口（遵守后端 page_size<=100 上限） */
+  listAllByApplication: async (applicationId: string): Promise<ApiEndpointItem[]> => {
+    const pageSize = 100
+    const first = await apiEndpointsApi.list({
+      application_id: applicationId,
+      page: 1,
+      page_size: pageSize,
+    })
+    const items = [...first.items]
+    const total = first.total ?? items.length
+    const totalPages = Math.ceil(total / pageSize)
+    for (let page = 2; page <= totalPages; page++) {
+      const next = await apiEndpointsApi.list({
+        application_id: applicationId,
+        page,
+        page_size: pageSize,
+      })
+      if (next.items.length === 0) break
+      items.push(...next.items)
+    }
+    return items
   },
   /** 单个 API 详细档案下载 URL（JSON；浏览器直接打开，不经前端缓存） */
   detailExportUrl: (id: string) =>

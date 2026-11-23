@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
@@ -88,7 +88,12 @@ export default function SystemUpgradePage() {
     queryKey: ['upgrade-packages'],
     queryFn: () => upgradesApi.listPackages({ page: 1, page_size: 50 }),
   })
-  const packages = packagesQuery.data?.items ?? []
+  const packages = useMemo(() => packagesQuery.data?.items ?? [], [packagesQuery.data?.items])
+  const packageMap = useMemo(() => new Map(packages.map((p) => [p.id, p])), [packages])
+  const formatJobVersion = (job: UpgradeJobItem) => {
+    const pkg = job.package_id ? packageMap.get(job.package_id) : undefined
+    return pkg ? `${pkg.version_from} → ${pkg.version_to}` : '-'
+  }
 
   const listQuery = useQuery({
     queryKey: ['upgrades', page, pageSize],
@@ -232,9 +237,10 @@ export default function SystemUpgradePage() {
   }
 
   const confirmRollback = (record: UpgradeJobItem) => {
+    const versionText = formatJobVersion(record)
     modal.confirm({
       title: '高风险操作确认',
-      content: `确定回滚升级任务「${record.id.slice(0, 8)}」（${record.version_from ?? '?'} → ${record.version_to ?? '?'}）吗？回滚将恢复旧版本组件、数据库迁移与配置。`,
+      content: `确定回滚升级任务「${record.id.slice(0, 8)}」（版本：${versionText}）吗？回滚将恢复旧版本组件、数据库迁移与配置。`,
       okText: '确认回滚',
       okButtonProps: { danger: true },
       onOk: () => rollbackMutation.mutate(record.id),
@@ -247,34 +253,14 @@ export default function SystemUpgradePage() {
       title: '版本',
       key: 'version',
       width: 160,
-      render: (_, r) => (
-        <Typography.Text>
-          {r.version_from ?? '-'} → {r.version_to ?? '-'}
-        </Typography.Text>
-      ),
+      render: (_, r) => <Typography.Text>{formatJobVersion(r)}</Typography.Text>,
     },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 100,
+      width: 110,
       render: (v: string) => <StatusTag value={v} map={UPGRADE_STATUS_META} />,
     },
-    {
-      title: '进度',
-      dataIndex: 'progress',
-      width: 150,
-      render: (v: number | undefined, record) =>
-        isTerminalUpgradeStatus(record.status) ? (
-          <Progress
-            percent={record.status === 'SUCCESS' ? 100 : (v ?? 0)}
-            size="small"
-            status={record.status === 'SUCCESS' ? 'success' : record.status === 'FAILED' ? 'exception' : 'normal'}
-          />
-        ) : (
-          <Progress percent={v ?? 0} size="small" status="active" />
-        ),
-    },
-    { title: '当前步骤', dataIndex: 'current_step', width: 160, ellipsis: true, render: (v: string) => v || '-' },
     {
       title: '计划时间',
       dataIndex: 'scheduled_at',
@@ -282,8 +268,20 @@ export default function SystemUpgradePage() {
       render: (v: string | null | undefined) => formatDateTime(v),
     },
     {
+      title: '开始时间',
+      dataIndex: 'started_at',
+      width: 170,
+      render: (v: string | null | undefined) => formatDateTime(v),
+    },
+    {
+      title: '完成时间',
+      dataIndex: 'finished_at',
+      width: 170,
+      render: (v: string | null | undefined) => formatDateTime(v),
+    },
+    {
       title: '创建时间',
-      dataIndex: 'created_at',
+      dataIndex: 'requested_at',
       width: 170,
       render: (v: string) => formatDateTime(v),
     },

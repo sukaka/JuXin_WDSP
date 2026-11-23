@@ -181,10 +181,10 @@ export default function DataFlowCanvas({ graph, onNode, onEdge }: DataFlowCanvas
       </div>
       <div className="data-flow-canvas-tools">
         <Space size={4} wrap>
-          <Tooltip title="放大"><Button aria-label="放大图" icon={<PlusOutlined />} onClick={() => zoom(0.8)} /></Tooltip>
-          <Tooltip title="缩小"><Button aria-label="缩小图" icon={<MinusOutlined />} onClick={() => zoom(1.25)} /></Tooltip>
-          <Tooltip title="还原布局与视口"><Button aria-label="还原图" icon={<RedoOutlined />} onClick={reset} /></Tooltip>
-          <Tooltip title={isFullscreen ? '退出全屏（Esc）' : '全屏画布'}><Button aria-label={isFullscreen ? '退出全屏' : '全屏画布'} aria-pressed={isFullscreen} icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => setIsFullscreen((value) => !value)} /></Tooltip>
+          <Tooltip title="放大" placement="bottom"><Button aria-label="放大图" icon={<PlusOutlined />} onClick={() => zoom(0.8)} /></Tooltip>
+          <Tooltip title="缩小" placement="bottom"><Button aria-label="缩小图" icon={<MinusOutlined />} onClick={() => zoom(1.25)} /></Tooltip>
+          <Tooltip title="还原布局与视口" placement="bottom"><Button aria-label="还原图" icon={<RedoOutlined />} onClick={reset} /></Tooltip>
+          <Tooltip title={isFullscreen ? '退出全屏（Esc）' : '全屏画布'} placement="bottom"><Button aria-label={isFullscreen ? '退出全屏' : '全屏画布'} aria-pressed={isFullscreen} icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={() => setIsFullscreen((value) => !value)} /></Tooltip>
           {depthLimit === undefined ? (
             <Button disabled={maxDepth <= 2} icon={<ExpandOutlined />} onClick={() => setDepthLimit(2)}>收起下游</Button>
           ) : (

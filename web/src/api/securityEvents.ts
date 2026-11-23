@@ -8,6 +8,7 @@ import type {
   SecurityEventDetail,
   SecurityEventItem,
   WafRuleEffectStatisticsPage,
+  WhitelistPrefillResult,
 } from '../types'
 
 export interface SecurityEventListParams {
@@ -101,11 +102,17 @@ export const securityEventsApi = {
     const data = await request<BlacklistPrefillResult>(`/security-events/${id}/blacklist-prefill`)
     return { ...data.prefill, hit_rules: data.prefill.hit_rules ?? [] }
   },
-  /** 导出 CSV（后端仅支持 start_time/end_time/domain/attack_type/severity 过滤） */
+  /** 事件→白名单预填（支持 IP 白名单 / URL 白名单及联动 WAF 精确例外；只读不落库） */
+  whitelistPrefill: async (id: string) => {
+    const data = await request<WhitelistPrefillResult>(`/security-events/${id}/whitelist-prefill`)
+    return {
+      ...data.prefill,
+      hit_rules: data.prefill.hit_rules ?? [],
+      event_rule_ids: data.prefill.event_rule_ids ?? [],
+    }
+  },
+  /** 导出 CSV（支持全部列表筛选维度及按勾选 ids 导出，上限 10000 行） */
   exportUrl: (
-    params: Pick<
-      SecurityEventListParams,
-      'start_time' | 'end_time' | 'domain' | 'attack_type' | 'severity'
-    >,
+    params: Partial<Omit<SecurityEventListParams, 'page' | 'page_size'>> & { ids?: string },
   ) => buildUrl('/security-events/export', { ...params }),
 }

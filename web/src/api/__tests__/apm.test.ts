@@ -157,15 +157,23 @@ describe('apmApi', () => {
     expect(url).not.toContain('error=')
   })
 
-  it('createEnrollmentToken：POST /api/v1/apm/agents/enrollment-tokens 携带入参', async () => {
-    const fetchMock = stubFetch({ id: 'tok-1', token: 'secret-token', expires_at: '2026-08-30T02:00:00Z' })
+  it('createEnrollmentToken：POST /api/v1/apm/agents/enrollment-tokens 携带 allowed_languages 与 expires_in_minutes 并返回 token_id', async () => {
+    const fetchMock = stubFetch({
+      token_id: 'tok-1',
+      token: 'secret-token',
+      application_id: 'app-1',
+      environment: 'prod',
+      allowed_languages: ['java', 'go'],
+      expires_at: '2026-08-30T02:00:00Z',
+    })
     const body = {
       application_id: 'app-1',
       environment: 'prod',
-      languages: ['Java', 'Go'],
-      ttl_minutes: 60,
+      allowed_languages: ['java', 'go'],
+      expires_in_minutes: 60,
     }
     const data = await apmApi.createEnrollmentToken(body)
+    expect(data.token_id).toBe('tok-1')
     expect(data.token).toBe('secret-token')
     const [url, init] = fetchMock.mock.calls[0]
     expect(String(url)).toBe('/api/v1/apm/agents/enrollment-tokens')
@@ -183,30 +191,47 @@ describe('apmApi', () => {
     expect(url).toContain(`keyword=${encodeURIComponent('shop')}`)
   })
 
-  it('revokeAgent：POST /api/v1/apm/agents/{id}/revoke 无请求体', async () => {
-    const fetchMock = stubFetch({ message: '已撤销' })
-    await apmApi.revokeAgent('agent-1')
+  it('revokeAgent：POST /api/v1/apm/agents/{id}/revoke 无请求体并返回撤销后 ApmAgentItem', async () => {
+    const fetchMock = stubFetch({
+      id: 'agent-1',
+      service_name: 'shop-order',
+      instance_id: 'inst-1',
+      language: 'java',
+      agent_version: '1.2.0',
+      status: 'REVOKED',
+      last_heartbeat_at: null,
+      cert_not_after: '2026-12-31T00:00:00Z',
+      application_id: 'app-1',
+      environment: 'prod',
+    })
+    const data = await apmApi.revokeAgent('agent-1')
+    expect(data.id).toBe('agent-1')
+    expect(data.status).toBe('REVOKED')
+    expect(data.cert_not_after).toBe('2026-12-31T00:00:00Z')
     const [url, init] = fetchMock.mock.calls[0]
     expect(String(url)).toBe('/api/v1/apm/agents/agent-1/revoke')
     expect((init as RequestInit).method).toBe('POST')
     expect((init as RequestInit).body).toBeUndefined()
   })
 
-  it('getPolicy：GET /api/v1/apm/policies/{scope}（scope 做 URL 编码）', async () => {
-    const fetchMock = stubFetch({ scope: 'order svc', version: 3, policy: {} })
-    const data = await apmApi.getPolicy('order svc')
+  it('getPolicy：GET /api/v1/apm/policies/{scope}（global 与 application:<uuid> 均做 URL 编码）', async () => {
+    const appScope = 'application:11111111-1111-1111-1111-111111111111'
+    const fetchMock = stubFetch({ scope: appScope, version: 3, policy: {} })
+    const data = await apmApi.getPolicy(appScope)
     expect(data.version).toBe(3)
-    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/v1/apm/policies/order%20svc')
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      `/api/v1/apm/policies/${encodeURIComponent(appScope)}`,
+    )
   })
 
   it('putPolicy：PUT /api/v1/apm/policies/{scope} 携带 policy 与 expected_version', async () => {
-    const fetchMock = stubFetch({ scope: 'shop', version: 4, policy: { sampling: 10 } })
-    await apmApi.putPolicy('shop', { policy: { sampling: 10 }, expected_version: 3 })
+    const fetchMock = stubFetch({ scope: 'global', version: 4, policy: { sampling_rate: 0.5 } })
+    await apmApi.putPolicy('global', { policy: { sampling_rate: 0.5 }, expected_version: 3 })
     const [url, init] = fetchMock.mock.calls[0]
-    expect(String(url)).toBe('/api/v1/apm/policies/shop')
+    expect(String(url)).toBe('/api/v1/apm/policies/global')
     expect((init as RequestInit).method).toBe('PUT')
     expect(JSON.parse(String((init as RequestInit).body))).toEqual({
-      policy: { sampling: 10 },
+      policy: { sampling_rate: 0.5 },
       expected_version: 3,
     })
   })
@@ -320,10 +345,10 @@ describe('apmApi', () => {
     expect((init as RequestInit).body).toBeUndefined()
   })
 
-  it('diagnosticSessions：GET /api/v1/apm/diagnostic-sessions 携带 status/分页；list 缺省补空数组并透传 kill_switch_enabled', async () => {
-    const fetchMock = stubFetch({ total: 0, page: 1, page_size: 20, kill_switch_enabled: true })
+  it('diagnosticSessions：GET /api/v1/apm/diagnostic-sessions 携带 status/分页；items 为 null/缺省补空数组并透传 kill_switch_enabled', async () => {
+    const fetchMock = stubFetch({ items: null, total: 0, page: 1, page_size: 20, kill_switch_enabled: true })
     const data = await apmApi.diagnosticSessions({ status: 'ACTIVE', page: 1, page_size: 20 })
-    expect(data.list).toEqual([])
+    expect(data.items).toEqual([])
     expect(data.kill_switch_enabled).toBe(true)
     const url = String(fetchMock.mock.calls[0][0])
     expect(url.startsWith('/api/v1/apm/diagnostic-sessions?')).toBe(true)
@@ -332,8 +357,8 @@ describe('apmApi', () => {
     expect(url).toContain('page_size=20')
   })
 
-  it('diagnosticSession：GET /api/v1/apm/diagnostic-sessions/{id}（id 做 URL 编码）；audits 缺省补空数组', async () => {
-    const fetchMock = stubFetch({ id: 'diag 1', status: 'ACTIVE' })
+  it('diagnosticSession：GET /api/v1/apm/diagnostic-sessions/{id}（id 做 URL 编码）；audits 为 null/缺省补空数组', async () => {
+    const fetchMock = stubFetch({ id: 'diag 1', status: 'ACTIVE', audits: null })
     const data = await apmApi.diagnosticSession('diag 1')
     expect(data.id).toBe('diag 1')
     expect(data.audits).toEqual([])

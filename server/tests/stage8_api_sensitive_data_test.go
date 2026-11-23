@@ -104,11 +104,16 @@ func TestStage8SensitiveDataMigration(t *testing.T) {
 			t.Fatalf("api_masking_rules column %s missing", col)
 		}
 	}
-	// api_sensitive_fields 新列
+	// api_sensitive_fields 新列（含 000224 masked_sample）
 	if n := s8Count(t, env, `SELECT count(*) FROM information_schema.columns
 		WHERE table_name='api_sensitive_fields'
-		AND column_name IN ('first_seen','last_seen','occurrence_count','source_detail')`); n != 4 {
-		t.Fatalf("api_sensitive_fields new columns = %d, want 4", n)
+		AND column_name IN ('first_seen','last_seen','occurrence_count','source_detail','masked_sample')`); n != 5 {
+		t.Fatalf("api_sensitive_fields new columns = %d, want 5", n)
+	}
+	// 内置值级类型（regex 非空）均默认包含 response_body 检测位置（000224）
+	if n := s8Count(t, env, `SELECT count(*) FROM api_sensitive_data_types
+		WHERE is_builtin AND regex <> '' AND locations @> '["response_body"]'::jsonb`); n != 5 {
+		t.Fatalf("builtin value types with response_body = %d, want 5", n)
 	}
 
 	// 内置种子：7 个内置类型且值级 regex 可编译（验证 SQL 转义正确）
@@ -383,11 +388,11 @@ func TestStage8SensitiveFieldsConfidenceAndBatchDelete(t *testing.T) {
 		t.Fatalf("UpsertDiscovery: %v", err)
 	}
 	base := time.Now().UTC().Add(-time.Hour)
-	// 值级命中（显式 confidence=1.0，与网关 addValueMatch 一致）+ 字段名命中（零值 → 回落 0.8）
+	// 值级命中（显式 confidence=1.0，与网关 addValueMatch 一致，带 masked_sample）+ 字段名命中（零值 → 回落 0.8）
 	valueHit := dsctx.DetectorMatch{
 		Detector: "sensitive_data", RuleID: "sensitive.value", Category: "OBSERVE", Severity: "MEDIUM",
 		Confidence: 1.0,
-		Evidence:   map[string]string{"field": "contact", "data_type": "phone", "location": "json"},
+		Evidence:   map[string]string{"field": "contact", "data_type": "phone", "location": "json", "masked_sample": "138****8000"},
 	}
 	apidataSaveEvent(t, env, ep.EndpointKey, "s5-req-"+rid+"-c1", base,
 		[]dsctx.DetectorMatch{valueHit, apidataQueryHit("phone", "phone")})
@@ -397,24 +402,29 @@ func TestStage8SensitiveFieldsConfidenceAndBatchDelete(t *testing.T) {
 		t.Fatalf("SweepOnce: %v", err)
 	}
 	confByPath := map[string]float64{}
-	rows, err := env.db.Query(ctx, `SELECT structured_path, confidence FROM api_sensitive_fields WHERE endpoint_id=$1`, ep.ID)
+	sampleByPath := map[string]string{}
+	rows, err := env.db.Query(ctx, `SELECT structured_path, confidence, masked_sample FROM api_sensitive_fields WHERE endpoint_id=$1`, ep.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for rows.Next() {
-		var p string
+		var p, ms string
 		var c float64
-		if err := rows.Scan(&p, &c); err != nil {
+		if err := rows.Scan(&p, &c, &ms); err != nil {
 			t.Fatal(err)
 		}
 		confByPath[p] = c
+		sampleByPath[p] = ms
 	}
 	rows.Close()
 	if confByPath["json.contact"] != 1.0 || confByPath["query.phone"] != 0.8 {
 		t.Fatalf("confidence by path=%v", confByPath)
 	}
+	if sampleByPath["json.contact"] != "138****8000" || sampleByPath["query.phone"] != "" {
+		t.Fatalf("masked_sample by path=%v", sampleByPath)
+	}
 
-	// 低置信度（字段名 0.8）再次命中已是 1.0 的字段 → 不降级（GREATEST）
+	// 低置信度（字段名 0.8，无 masked_sample）再次命中已是 1.0 的字段 → 置信度不降级且不清空已有脱敏样本
 	apidataSaveEvent(t, env, ep.EndpointKey, "s5-req-"+rid+"-c2", base.Add(time.Minute),
 		[]dsctx.DetectorMatch{{
 			Detector: "sensitive_data", RuleID: "sensitive.field", Category: "OBSERVE", Severity: "MEDIUM",
@@ -424,15 +434,27 @@ func TestStage8SensitiveFieldsConfidenceAndBatchDelete(t *testing.T) {
 		t.Fatalf("SweepOnce2: %v", err)
 	}
 	var conf float64
+	var ms string
 	if err := env.db.QueryRow(ctx,
-		`SELECT confidence FROM api_sensitive_fields WHERE endpoint_id=$1 AND structured_path='json.contact'`, ep.ID).Scan(&conf); err != nil {
+		`SELECT confidence, masked_sample FROM api_sensitive_fields WHERE endpoint_id=$1 AND structured_path='json.contact'`, ep.ID).Scan(&conf, &ms); err != nil {
 		t.Fatal(err)
 	}
-	if conf != 1.0 {
-		t.Fatalf("confidence downgraded: %v", conf)
+	if conf != 1.0 || ms != "138****8000" {
+		t.Fatalf("confidence/sample downgraded: conf=%v sample=%q", conf, ms)
 	}
 
-	// 列表扩展字段（apisecurity.Store：endpoint_key/首末次/命中次数/来源明细）
+	// 新的值级命中 → 覆盖为最新 1 条脱敏样本
+	apidataSaveEvent(t, env, ep.EndpointKey, "s5-req-"+rid+"-c3", base.Add(2*time.Minute),
+		[]dsctx.DetectorMatch{{
+			Detector: "sensitive_data", RuleID: "sensitive.value", Category: "OBSERVE", Severity: "MEDIUM",
+			Confidence: 1.0,
+			Evidence:   map[string]string{"field": "contact", "data_type": "phone", "location": "json", "masked_sample": "139****5678"},
+		}})
+	if _, err := store.SweepOnce(ctx); err != nil {
+		t.Fatalf("SweepOnce3: %v", err)
+	}
+
+	// 列表扩展字段（apisecurity.Store：endpoint_key/首末次/命中次数/来源明细/最新脱敏样本）
 	secStore := apisecurity.NewStore(env.db)
 	fields, total, err := secStore.ListSensitiveFields(ctx, ep.ID.String(), "", "", 1, 20)
 	if err != nil || total != 2 || len(fields) != 2 {
@@ -444,6 +466,9 @@ func TestStage8SensitiveFieldsConfidenceAndBatchDelete(t *testing.T) {
 		}
 		if f.FirstSeen == nil || f.LastSeen == nil || f.OccurrenceCount < 1 || len(f.SourceDetail) == 0 {
 			t.Fatalf("enrichment fields missing: %+v", f)
+		}
+		if f.StructuredPath == "json.contact" && f.MaskedSample != "139****5678" {
+			t.Fatalf("list masked_sample=%q want 139****5678", f.MaskedSample)
 		}
 	}
 

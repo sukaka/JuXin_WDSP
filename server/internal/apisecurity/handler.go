@@ -740,10 +740,31 @@ func (h *Handler) ListViolations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var startTime, endTime *time.Time
+	if raw := strings.TrimSpace(q.Get("start_time")); raw != "" {
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 start_time 格式（须为 RFC3339 / ISO 8601）")
+			return
+		}
+		startTime = &t
+	}
+	if raw := strings.TrimSpace(q.Get("end_time")); raw != "" {
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "无效的 end_time 格式（须为 RFC3339 / ISO 8601）")
+			return
+		}
+		endTime = &t
+	}
+	if startTime != nil && endTime != nil && startTime.After(*endTime) {
+		response.Error(w, r, http.StatusBadRequest, response.CodeInvalidArgument, "start_time 不能晚于 end_time")
+		return
+	}
 	page := queryInt(r, "page", 1)
 	pageSize := queryPageSize(r, 20)
 	list, total, err := h.store.ListViolations(r.Context(), endpointID,
-		strings.TrimSpace(q.Get("violation_type")), page, pageSize)
+		strings.TrimSpace(q.Get("violation_type")), startTime, endTime, page, pageSize)
 	if err != nil {
 		response.InternalError(w, r, err)
 		return

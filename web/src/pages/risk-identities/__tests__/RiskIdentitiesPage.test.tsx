@@ -33,7 +33,7 @@ const IDENTITY_ROW = {
   identity_type: 'BOT',
   risk_score: 86,
   risk_level: 'HIGH',
-  status: 'ACTIVE',
+  status: 'NORMAL',
   primary_ip: '1.2.3.4',
   ip_count: 3,
   account_id: 'acct-1001',

@@ -176,6 +176,11 @@ export const API_FINDING_SEVERITY_META: Record<string, { color: string; label: s
   NONE: { color: 'default', label: '无' },
 }
 
+/** 风险/弱点/扫描发现严重级别筛选下拉选项（排除 NONE；后端仅接受 CRITICAL/HIGH/MEDIUM/LOW/INFO） */
+export const API_FINDING_SEVERITY_FILTER_OPTIONS = Object.entries(API_FINDING_SEVERITY_META)
+  .filter(([value]) => value !== 'NONE')
+  .map(([value, meta]) => ({ value, label: meta.label }))
+
 /** 风险发现类型 */
 export const API_FINDING_TYPE_META: Record<string, { color: string; label: string }> = {
   SHADOW: { color: 'volcano', label: '影子 API' },

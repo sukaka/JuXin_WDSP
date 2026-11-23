@@ -1,10 +1,13 @@
 package aiaudit
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/google/uuid"
 )
 
 // TestComputeHash 哈希链：确定性、长度、任一字段变化即变化。
@@ -85,5 +88,54 @@ func TestMaskSensitive(t *testing.T) {
 	clean := strings.Repeat("normal ", 100)
 	if strings.Contains(mask(clean, 100), "***") {
 		t.Error("无敏感词不应触发令牌遮蔽")
+	}
+}
+
+// TestRecordJSONTags 校验 Record 含 id / prompt_version / confirm_result 且不暴露哈希链列。
+func TestRecordJSONTags(t *testing.T) {
+	id := uuid.MustParse("11111111-2222-3333-4444-555555555555")
+	uid := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	rec := Record{
+		ID:             id,
+		OccurredAt:     time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC),
+		UserID:         &uid,
+		Username:       "secadmin",
+		RoleCodes:      "SECURITY_ADMIN",
+		Action:         "prompt_test",
+		TaskType:       "EVENT_ANALYSIS",
+		AgentCode:      "security_event",
+		ToolCode:       "security_event.search",
+		ModelCode:      "qwen2.5:3b",
+		PromptVersion:  "v3",
+		InputTokens:    120,
+		OutputTokens:   45,
+		DurationMs:     310,
+		EstimatedCost:  0.002,
+		RequestSummary: "test summary",
+		ResultSummary:  "PASSED",
+		DraftReference: "draft-1",
+		ConfirmResult:  "CONFIRMED",
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("json.Marshal(Record) failed: %v", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if m["id"] != id.String() {
+		t.Errorf("id=%v want %s", m["id"], id.String())
+	}
+	if m["prompt_version"] != "v3" {
+		t.Errorf("prompt_version=%v want v3", m["prompt_version"])
+	}
+	if m["confirm_result"] != "CONFIRMED" {
+		t.Errorf("confirm_result=%v want CONFIRMED", m["confirm_result"])
+	}
+	for _, forbidden := range []string{"previous_hash", "record_hash"} {
+		if _, ok := m[forbidden]; ok {
+			t.Errorf("Record JSON must not contain %q", forbidden)
+		}
 	}
 }
